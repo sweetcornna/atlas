@@ -32,13 +32,13 @@ import {
   createRegistryHandler,
   renewIntervalFor,
 } from '@qianmo/registry'
-import { consoleRegistrationsPath } from '../consoleArgs.js'
-import { createRegistryPort } from '../consolePorts.js'
+import { consoleRegistrationsPath } from '../../src/commands/consoleArgs.js'
+import { createRegistryPort } from '../../src/commands/consolePorts.js'
 import {
   ConsoleRegistrations,
   REGISTRATION_LEDGER_VERSION,
   type RenewScheduler,
-} from '../consoleRegistrations.js'
+} from '../../src/commands/consoleRegistrations.js'
 
 const PLANNER = 'qianmo://node-a/planner'
 const REVIEWER = 'qianmo://node-b/reviewer'
@@ -502,7 +502,7 @@ describe('ConsoleRegistrations', () => {
 
 describe('consoleRegistrationsPath', () => {
   test('derives the ledger path from the config root, never from $HOME', () => {
-    // CLAUDE.md §1.1②，与转录、备注同一条：OCC_CONFIG_DIR 必须对它有效。
+    // CLAUDE.md §1.1②，与转录、备注同一条：QIANMO_CONFIG_DIR 必须对它有效。
     expect(
       consoleRegistrationsPath().endsWith('/qianmo/console/registrations.json'),
     ).toBe(true)

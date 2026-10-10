@@ -28,7 +28,7 @@
  *     reads with), and there is no default to fall back on;
  *   - an agent this node has never run: the check reads the resident's own
  *     session file under this config root, which also catches the most likely
- *     operator mistake — a shell whose `OCC_CONFIG_DIR` points somewhere other
+ *     operator mistake — a shell whose `QIANMO_CONFIG_DIR` points somewhere other
  *     than the node's, where the write would land in a store nobody reads;
  *   - a write as another account than the one owning the node's state: entry
  *     files are 0600, so the resident could not read what `sudo` wrote.
@@ -44,12 +44,13 @@ import { readFileSync, statSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import {
   defaultMemoryRoot,
+  buildMemoryReview,
   FileMemoryStore,
   isRecallable,
   type MemoryEntry,
   type WorkingScope,
 } from '@qianmo/memory'
-import { INJECTION_BUDGET, recall } from '@qianmo/recall'
+import { FileVectorIndex, INJECTION_BUDGET, recall } from '@qianmo/recall'
 import {
   agentOfSessionKey,
   assertNodeOwnedMemoryRoot,
@@ -64,8 +65,7 @@ import {
   type ResidentMemorySource,
   type ResidentMemoryTarget,
 } from '@qianmo/resident'
-import { occConfigDir, occConfigPath } from '../../config/paths.js'
-import { invokedBinName } from '../../constants/brand.js'
+import { qianmoConfigDir, qianmoConfigPath } from '@qianmo/paths'
 import { residentOptionValue } from './residentArgs.js'
 
 /** `--help` anywhere means help, matching `cert` / `audit` (whole-token). */
@@ -73,7 +73,7 @@ function isHelpRequest(args: readonly string[]): boolean {
   return args.some(arg => arg === '--help' || arg === '-h')
 }
 
-export const QIANMO_MEMORY_HELP_TEXT = `Usage: ${invokedBinName()} memory <command> [options]
+export const QIANMO_MEMORY_HELP_TEXT = `Usage: qm memory <command> [options]
 
 Write, list and retire the memory a resident agent on this node recalls.
 Entries go to the partition of one agent and one requester context: the
@@ -82,7 +82,11 @@ partition every turn of that (agent, context) pair reads from.
 Commands:
 
   add                      Write one entry.
+  backfill                 Populate persistent vectors (requires --max-chars).
+  rebuild                  Rebuild cached vectors (requires --max-chars).
   list                     Show partitions, their entry counts and entries.
+  undo-supersedes <id>     Cancel replacement links, preserving an operator audit.
+  review                   Read-only stale/conflict candidates for one target.
   revoke <id>              Withdraw an entry: never recalled again, kept on
                            disk for audit.
   invalidate <id>          End the fact: not recalled from --at on, still
@@ -92,7 +96,7 @@ Common options:
 
   -h, --help               Print this and exit.
 
-Target (required by add, revoke and invalidate):
+Target (required by add, revoke, invalidate, undo-supersedes and review):
 
   --agent <name>           An agent this node runs (\`resident --agent\`).
   --context <id>           The requester context: a watch job id, a console
@@ -106,6 +110,7 @@ add:
   --body <text>            The entry body.
   --body-file <path>       Read the body from a file; \`-\` reads stdin.
   --tag <tag>              Repeatable.
+  --supersedes <id>        Replace a live entry in this exact target (repeatable).
   --valid-at <iso-time>    When the fact became true; defaults to now.
   --invalid-at <iso-time>  When the fact stops being true, if known.
 
@@ -117,6 +122,14 @@ list:
                            entries, marked as such.
   --full                   Include summary, tags, validity and body.
 
+review:
+  --as-of <iso>             Fixed report time (default now)
+  --stale-days <number>     Age since write to flag (default 90)
+  --json                   Machine-readable report; never changes entries
+
+undo-supersedes:
+  --reason <text>           Required audit reason; operator identity is recorded
+
 revoke:
 
   --reason <text>          Required. Recorded with the entry.
@@ -127,7 +140,7 @@ invalidate:
 
 Entries are recorded with source user:qm-cli:<account running this command>.
 The store is the one the resident on this config root reads; set
-OCC_CONFIG_DIR (and CLAUDE_CODE_REMOTE_MEMORY_DIR, if the node uses it) the
+QIANMO_CONFIG_DIR (and QIANMO_MEMORY_DIR, if the node uses it) the
 same way the resident was started, and run as the account the resident runs
 as: entry files are private to their owner.
 `
@@ -135,7 +148,7 @@ as: entry files are private to their owner.
 function unknownOption(command: string, arg: unknown): never {
   throw new Error(
     `unknown memory ${command} option ${String(arg)}` +
-      ` (run \`${invokedBinName()} memory --help\` for the list)`,
+      ' (run `qm memory --help` for the list)',
   )
 }
 
@@ -279,7 +292,7 @@ function count(n: number, one: string, many: string): string {
 
 /** The resident's session file under this config root. */
 function residentSessionsPath(): string {
-  return occConfigPath('resident', 'sessions.json')
+  return qianmoConfigPath('resident', 'sessions.json')
 }
 
 function residentSessionKeys(): readonly string[] {
@@ -321,7 +334,7 @@ function assertNodeRunsAgent(agent: string): void {
   throw new Error(
     agents.length === 0
       ? `no resident has run from this config root (no sessions in ${path}); ` +
-          'start the node first, or set OCC_CONFIG_DIR to the root it runs from'
+          'start the node first, or set QIANMO_CONFIG_DIR to the root it runs from'
       : `agent ${agent} does not run on this node (agents with sessions in ` +
           `${path}: ${agents.join(', ')})`,
   )
@@ -361,14 +374,14 @@ function assertSameOwner(paths: readonly string[]): void {
 
 /** Everything a write checks before it touches the store. */
 function assertWritableFor(agent: string): FileMemoryStore {
-  const store = openStore()
-  assertSameOwner([occConfigDir(), store.root])
+  const store = openStore(true)
+  assertSameOwner([qianmoConfigDir(), store.root])
   assertNodeRunsAgent(agent)
-  return store
+  return new FileMemoryStore({ root: store.root })
 }
 
-function openStore(): FileMemoryStore {
-  const store = new FileMemoryStore({ root: defaultMemoryRoot() })
+function openStore(readOnly = true): FileMemoryStore {
+  const store = new FileMemoryStore({ root: defaultMemoryRoot(), readOnly })
   // Same rule the resident applies to the root it reads: a relative root
   // would resolve against this shell's cwd, not the node's store.
   assertNodeOwnedMemoryRoot(store.root)
@@ -471,6 +484,7 @@ function runAdd(args: readonly string[]): void {
   let body: string | undefined
   let bodyFile: string | undefined
   const tags: string[] = []
+  const supersedes: string[] = []
   let validAt: Date | undefined
   let invalidAt: Date | undefined
 
@@ -496,6 +510,8 @@ function runAdd(args: readonly string[]): void {
       bodyFile = take('--body-file')
     else if (arg === '--tag' || arg?.startsWith('--tag='))
       tags.push(take('--tag'))
+    else if (arg === '--supersedes' || arg?.startsWith('--supersedes='))
+      supersedes.push(take('--supersedes'))
     else if (arg === '--valid-at' || arg?.startsWith('--valid-at='))
       validAt = parseTime('--valid-at', take('--valid-at'))
     else if (arg === '--invalid-at' || arg?.startsWith('--invalid-at='))
@@ -521,7 +537,7 @@ function runAdd(args: readonly string[]): void {
 
   const store = assertWritableFor(where.agent)
   const source = operatorSource()
-  const entry = writeResidentMemory(store, {
+  const input = {
     ...where,
     title,
     summary: summary ?? title,
@@ -530,8 +546,11 @@ function runAdd(args: readonly string[]): void {
     ...(tags.length === 0 ? {} : { tags }),
     ...(validAt === undefined ? {} : { validAt }),
     ...(invalidAt === undefined ? {} : { invalidAt }),
-  })
+  }
   const scope = residentMemoryScope(where)
+  const entry = supersedes.length
+    ? store.write({ ...input, scope, supersedes }, 'operator')
+    : writeResidentMemory(store, input)
   const state = partitionState(store, scope)
   process.stdout.write(
     `Wrote ${entry.id} to ${line(where.agent)} / ${line(where.contextId)}\n` +
@@ -704,6 +723,12 @@ function runRevoke(args: readonly string[]): void {
     reason,
     by: source.id,
   })
+  const index = new FileVectorIndex(store.root)
+  try {
+    index.remove(revoked.id)
+  } finally {
+    index.close()
+  }
   process.stdout.write(
     `Revoked ${revoked.id} (${line(where.agent)} / ${line(where.contextId)}) ` +
       `at ${revoked.expiredAt ?? ''}: it is no longer recalled at any point ` +
@@ -743,6 +768,93 @@ function runInvalidate(args: readonly string[]): void {
   )
 }
 
+function runUndoSupersedes(args: readonly string[]): void {
+  const { id, rest } = splitId('undo-supersedes', args)
+  const target: TargetFlags = {}
+  let reason: string | undefined
+  for (let index = 0; index < rest.length; index++) {
+    const next = readTargetFlag(rest, index, target)
+    if (next >= 0) {
+      index = next
+      continue
+    }
+    const arg = rest[index]
+    if (arg === '--reason' || arg?.startsWith('--reason=')) {
+      const parsed = residentOptionValue(rest, index, '--reason')
+      reason = parsed.value
+      index = parsed.next
+    } else unknownOption('undo-supersedes', arg)
+  }
+  const where = requireTarget('undo-supersedes', target)
+  if (!reason?.trim())
+    throw new Error('undo-supersedes needs --reason for the audit')
+  const entry = assertWritableFor(where.agent).undoSupersedes(id, {
+    scope: residentMemoryScope(where),
+    writer: 'operator',
+    by: operatorSource().id,
+    reason,
+  })
+  process.stdout.write(
+    `Undid supersedes ${entry.id} at ${entry.supersedesUndo?.at}; audit retained with the entry.\n`,
+  )
+}
+
+function runReview(args: readonly string[]): void {
+  const target: TargetFlags = {}
+  let asOf = new Date()
+  let staleDays = 90
+  let json = false
+  for (let index = 0; index < args.length; index++) {
+    const next = readTargetFlag(args, index, target)
+    if (next >= 0) {
+      index = next
+      continue
+    }
+    const arg = args[index]
+    if (arg === '--json') {
+      json = true
+      continue
+    }
+    const take = (name: string) => {
+      const parsed = residentOptionValue(args, index, name)
+      index = parsed.next
+      return parsed.value
+    }
+    if (arg === '--as-of' || arg?.startsWith('--as-of='))
+      asOf = parseTime('--as-of', take('--as-of'))
+    else if (arg === '--stale-days' || arg?.startsWith('--stale-days='))
+      staleDays = Number(take('--stale-days'))
+    else unknownOption('review', arg)
+  }
+  const where = requireTarget('review', target)
+  const scope = residentMemoryScope(where)
+  // Do not use the writable opener: reports must not even repair a pending link.
+  const store = openStore(true)
+  const report = buildMemoryReview(
+    store.query({
+      layers: ['working'],
+      projectKey: scope.projectKey,
+      taskId: scope.taskId,
+      includeRetired: true,
+    }),
+    { asOf, staleDays },
+  )
+  process.stdout.write(
+    json
+      ? `${JSON.stringify(report)}\n`
+      : `Memory review at ${report.asOf}: ${report.evaluated} live entries; ${report.stale.length} stale candidates, ${report.conflicts.length} possible conflicts. No entries changed.\n` +
+          report.stale
+            .map(row => `  stale ${row.id}: ${row.ageDays} days since write\n`)
+            .join('') +
+          report.conflicts
+            .map(
+              row =>
+                `  review ${row.left} / ${row.right}: ${row.method}, ${row.similarity}\n`,
+            )
+            .join(''),
+  )
+}
+
 /** Entry point. Errors become one line on stderr plus exit 1, never a stack. */
 export function runQianmoMemory(args: readonly string[]): void {
   if (args.length === 0 || isHelpRequest(args)) {
@@ -764,17 +876,33 @@ export function runQianmoMemory(args: readonly string[]): void {
       case 'invalidate':
         runInvalidate(rest)
         return
+      case 'undo-supersedes':
+        runUndoSupersedes(rest)
+        return
+      case 'review':
+        runReview(rest)
+        return
       default:
         throw new Error(
           `unknown memory command ${String(command)} ` +
-            '(expected add, list, revoke or invalidate)',
+            '(expected add, list, revoke, invalidate, undo-supersedes or review)',
         )
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     process.stderr.write(
-      `${invokedBinName()} memory ${line(String(command))}: ${line(message)}\n`,
+      `qm memory ${line(String(command))}: ${line(message)}\n`,
     )
     process.exitCode = 1
   }
+}
+
+/** `qm memory`. */
+export async function run(argv: string[]): Promise<number> {
+  if (['backfill', 'rebuild'].includes(argv[0] ?? '')) {
+    const { runMemoryIndex } = await import('./memoryIndex.js')
+    return await runMemoryIndex(argv)
+  }
+  runQianmoMemory(argv)
+  return Number(process.exitCode ?? 0)
 }

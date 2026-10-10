@@ -5,7 +5,7 @@
  * What `now` takes of a session and when it refuses to start (P17.3 截断模式,
  * P17.4 本地命令): the three callers of a transcript whose last turn runs,
  * the session the caller names, and the one-handoff-at-a-time lock. Files go
- * to a throwaway `OCC_CONFIG_DIR` and `QMCODE_HOME`; git is real.
+ * to a throwaway `QIANMO_CONFIG_DIR` and `QMCODE_HOME`; git is real.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -18,13 +18,17 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { type HandoffCaller, runNow, sessionSnapshot } from '../handoffNow.js'
+import {
+  type HandoffCaller,
+  runNow,
+  sessionSnapshot,
+} from '../../src/commands/handoffNow.js'
 import {
   HandoffUserError,
   recordSession,
   saveProject,
   stateDir,
-} from '../handoffStore.js'
+} from '../../src/commands/handoffStore.js'
 import {
   claudeCodeMidTurnTranscript,
   qmcodeRollout,
@@ -38,7 +42,7 @@ const TURN_2 = '0199a4c2-8000-7000-8000-000000000002'
 const CC_SESSION = '7d8c2a10-3c55-4b2e-9a51-0f6c1d2e3a4b'
 
 const saved = {
-  config: process.env.OCC_CONFIG_DIR,
+  config: process.env.QIANMO_CONFIG_DIR,
   qmcode: process.env.QMCODE_HOME,
 }
 const roots: string[] = []
@@ -52,7 +56,7 @@ function tempDir(): string {
   return dir
 }
 
-function restore(name: 'OCC_CONFIG_DIR' | 'QMCODE_HOME', value?: string) {
+function restore(name: 'QIANMO_CONFIG_DIR' | 'QMCODE_HOME', value?: string) {
   if (value === undefined) delete process.env[name]
   else process.env[name] = value
 }
@@ -65,7 +69,7 @@ const fromTool = (thread?: string): HandoffCaller => ({
 
 beforeAll(async () => {
   const root = tempDir()
-  process.env.OCC_CONFIG_DIR = join(root, 'config')
+  process.env.QIANMO_CONFIG_DIR = join(root, 'config')
   qmHome = join(root, 'qmcode-home')
   process.env.QMCODE_HOME = qmHome
   repo = join(root, 'work', 'atlas')
@@ -87,7 +91,7 @@ beforeAll(async () => {
 })
 
 afterAll(() => {
-  restore('OCC_CONFIG_DIR', saved.config)
+  restore('QIANMO_CONFIG_DIR', saved.config)
   restore('QMCODE_HOME', saved.qmcode)
   for (const root of roots) rmSync(root, { recursive: true, force: true })
 })

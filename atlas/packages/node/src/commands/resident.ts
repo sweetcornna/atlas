@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import {
+  createMemoryEmbedder,
+  readEmbeddingConfig,
+} from '../host/memoryEmbedding.js'
+import {
   X509Certificate,
   createPrivateKey,
   createPublicKey,
@@ -10,16 +14,19 @@ import {
 import { chmodSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
 import { appendFile } from 'node:fs/promises'
 import { dirname, isAbsolute, resolve } from 'node:path'
-import { occConfigPath } from '../../config/paths.js'
-import { invokedBinName } from '../../constants/brand.js'
-import { sourceCommit } from '../../constants/buildProvenance.js'
-import { IDENTITY_MODE, type IdentityMode } from '../../constants/identity.js'
+import { qianmoConfigPath } from '@qianmo/paths'
+import { AuditSource } from '@qianmo/audit'
+import { FileTenantStore, canonicalTenantRoot } from './consoleTenancy.js'
+import { defaultMemoryRoot } from '@qianmo/memory'
+import { residentTenantGate } from '../host/residentTenancy.js'
+const invokedBinName = (): string => 'qm'
+import { sourceCommit } from '../provenance.js'
 import {
   QianmoResident,
   type ResidentProviderNode,
   type ResidentProviderSwitchEvent,
-} from '../../services/qianmo/resident.js'
-import { writePrivateFileAtomicSync } from '../../utils/secureStorage/atomicWrite.js'
+} from '../host/resident.js'
+import { writePrivateFileAtomic as writePrivateFileAtomicSync } from '../providers/store.js'
 import {
   DEFAULT_RESIDENT_ACTIVITY_TIME_JUMP_FACTOR,
   ResidentActivityReporter,
@@ -47,7 +54,7 @@ import {
   residentNotifyTrailSink,
   routerTrailSink,
   transportTrailSink,
-} from '../../services/qianmo/auditTrail.js'
+} from '../host/auditTrail.js'
 import {
   NodeCapabilities,
   OPEN_POLICY,
@@ -71,25 +78,20 @@ import {
   assertOwnCertificateMatchesIdentity,
   type CertificateDirectoryAuditSink,
   type CertificateDirectoryErrorSink,
-} from '../../services/qianmo/certificateDirectory.js'
-import {
-  loadOrCreateNodeKeys,
-  parseTrustedKey,
-} from '../../services/qianmo/nodeIdentity.js'
-import {
-  anchoredValidity,
-  readTrustAnchors,
-} from '../../services/qianmo/trustAnchors.js'
+} from '../host/certificateDirectory.js'
+import { loadOrCreateNodeKeys, parseTrustedKey } from '../host/nodeIdentity.js'
+import { anchoredValidity, readTrustAnchors } from '../host/trustAnchors.js'
 import { residentOptionValue } from './residentArgs.js'
 import {
-  anthropicAuthHeadersFromEnv,
+  createResidentModelProbeGate,
+  residentModelProbeFingerprint,
   probeResidentModel,
-  resolveResidentModelProbeTarget,
   warnRefusedModelCredentials,
   warnUnavailableModelCredentialProbe,
   type ResidentModelProbeInputs,
   type ResidentModelProbeVerdict,
 } from './residentModelProbe.js'
+import { ProbeExitUnconfirmedError } from './providerCall.js'
 
 export const MAX_PENDING_TIMING_EVENTS = 1_024
 
@@ -261,15 +263,16 @@ export const DEFAULT_RESIDENT_MEM_INTERVAL_MS = 60_000
 export const DEFAULT_REGISTRY_POLL_INTERVAL_MS = 3_600_000
 
 export interface ResidentCliConfig {
+  readonly approvers?: readonly (readonly [string, string])[]
+  readonly protectedRoots?: readonly string[]
+  readonly tenancyPath?: string
+  readonly tenantHubPeers?: readonly string[]
   readonly node: string
   readonly team: string
   readonly agents: readonly { agent: string; cwd: string }[]
   /**
-   * `--allow-workspace-edits`：把 ACP 会话的权限模式从 `dontAsk` 放宽到
-   * `acceptEdits`，也就是**只**自动放行工作目录之内的编辑。
-   *
-   * 缺省不给。放宽是显式动作，不该由「跑的是哪一版产物」决定——issue #10 记的是
-   * 同一个教训的另一半（任务策略两个开关也不许省成默认值）。
+   * Explicitly grant the resident extension workspace-local write/edit tools.
+   * Default is read-only. Hardline and protected configuration paths stay denied.
    */
   readonly allowWorkspaceEdits?: boolean
   readonly port?: number
@@ -366,10 +369,7 @@ export interface ResidentCliConfig {
   readonly witnessIntervalMs?: number
 }
 
-export function parseResidentArgs(
-  args: readonly string[],
-  identity: IdentityMode = IDENTITY_MODE,
-): ResidentCliConfig {
+export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
   let node: string | undefined
   let team: string | undefined
   let port: number | undefined
@@ -386,6 +386,10 @@ export function parseResidentArgs(
   let requireSignedTasks = true
   let openPolicy = false
   let allowWorkspaceEdits = false
+  let tenancyPath: string | undefined
+  const tenantHubPeers: string[] = []
+  const approvers: (readonly [string, string])[] = []
+  const protectedRoots: string[] = []
   let enforceRequested = false
   let auditSignedTasks = false
   let backupUrl: string | undefined
@@ -523,6 +527,31 @@ export function parseResidentArgs(
       requireSignedTasks = false
     } else if (arg === '--audit-signed-tasks') {
       auditSignedTasks = true
+    } else if (arg === '--approver' || arg?.startsWith('--approver=')) {
+      const parsed = residentOptionValue(args, index, '--approver')
+      approvers.push(parseTrustedKey(parsed.value))
+      index = parsed.next
+    } else if (
+      arg === '--protected-root' ||
+      arg?.startsWith('--protected-root=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--protected-root')
+      if (!isAbsolute(parsed.value))
+        throw new Error('--protected-root requires an absolute path')
+      protectedRoots.push(canonicalTenantRoot(parsed.value))
+      index = parsed.next
+    } else if (arg === '--tenancy' || arg?.startsWith('--tenancy=')) {
+      const parsed = residentOptionValue(args, index, '--tenancy')
+      if (!isAbsolute(parsed.value))
+        throw new Error('--tenancy requires an absolute path')
+      tenancyPath = resolve(parsed.value)
+      index = parsed.next
+    } else if (arg === '--tenant-hub' || arg?.startsWith('--tenant-hub=')) {
+      const parsed = residentOptionValue(args, index, '--tenant-hub')
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(parsed.value))
+        throw new Error('invalid tenant hub')
+      tenantHubPeers.push(parsed.value)
+      index = parsed.next
     } else if (arg === '--allow-workspace-edits') {
       allowWorkspaceEdits = true
     } else if (arg === '--backup-url' || arg?.startsWith('--backup-url=')) {
@@ -598,9 +627,6 @@ export function parseResidentArgs(
     }
   }
 
-  if (identity !== 'qianmo') {
-    throw new Error('resident mode requires OCC_IDENTITY=qianmo')
-  }
   if (!isValidSegment(node) || isReservedDeviceName(node)) {
     throw new Error('resident --node must be a valid non-reserved segment')
   }
@@ -699,10 +725,36 @@ export function parseResidentArgs(
       'resident takes either --open-policy or --require-signed-tasks, not both',
     )
   }
+  if (
+    tenancyPath !== undefined &&
+    (!requireSignedHandshake || tenantHubPeers.length === 0)
+  )
+    throw new Error(
+      '--tenancy requires --require-signed-handshake and --tenant-hub',
+    )
+  if (tenancyPath === undefined && tenantHubPeers.length > 0)
+    throw new Error('--tenant-hub requires --tenancy')
+  if (approvers.length > 0 && (!allowWorkspaceEdits || !requireSignedHandshake))
+    throw new Error(
+      '--approver requires --allow-workspace-edits and --require-signed-handshake',
+    )
+  if (new Set(approvers.map(([name]) => name)).size !== approvers.length)
+    throw new Error('duplicate approver')
+  for (const [name, key] of approvers) {
+    if (!trusted.some(([peer]) => peer === name))
+      throw new Error(
+        '--approver requires an explicit --trust for the console command key',
+      )
+    if (trusted.some(([, commander]) => commander === key))
+      throw new Error('approval key must differ from every command key')
+  }
   return {
     node,
     team,
     agents,
+    ...(tenancyPath === undefined ? {} : { tenancyPath, tenantHubPeers }),
+    ...(approvers.length === 0 ? {} : { approvers }),
+    ...(protectedRoots.length === 0 ? {} : { protectedRoots }),
     ...(allowWorkspaceEdits ? { allowWorkspaceEdits } : {}),
     ...(port === undefined ? {} : { port }),
     ...(hostname === undefined ? {} : { hostname }),
@@ -756,54 +808,6 @@ export function assertResidentRuntime(
 }
 
 /**
- * Open this process's config gate (issue #37 ①, follow-up).
- *
- * `qm resident` is one of the **fast paths** in `entrypoints/cli.tsx`: it is
- * dispatched before `main.tsx` bootstraps anything, so unlike an ordinary
- * subcommand it never passes the `enableConfigs()` the rest of the CLI relies
- * on. Every read of a config file therefore threw `Config accessed before
- * allowed.` — and because this handler's two startup credential checks are the
- * only things here that read one, and both of them catch, the whole credential
- * diagnosis layer was dead code in the shipped binary while every unit test
- * stayed green (they inject their inputs and never reach these calls).
- *
- * Why here rather than in the dispatch table next to the seven sibling
- * branches that each call `enableConfigs()` inline: this is a property of the
- * handler, not of the layer. None of the other `qm` subcommands (`audit`,
- * `console`, `resident-wake`, `ca`, `cert`, `watch`) touches config or auth at
- * all, and the comment on the `--daemon-worker` fast path in that same file
- * states the rule this follows — that layer stays lean, and "if a worker kind
- * needs configs/auth … it calls them inside its run() fn". `cli/handlers/
- * import.ts` already does exactly this, for the same reason.
- *
- * Never fatal. `enableConfigs()` validates the global config file and throws on
- * a corrupt one; taking a node down over that would make a *diagnostic* into an
- * admission decision, which is the rule this file follows everywhere else. A
- * node that comes up without the gate open still works — it simply cannot check
- * its own credential, and {@link warnUnavailableModelCredentialProbe} then says
- * so instead of leaving `<node>.err` empty.
- */
-async function enableResidentConfigAccess(
-  warn: (message: string) => void = message => {
-    process.stderr.write(`${message}\n`)
-  },
-): Promise<boolean> {
-  try {
-    const { enableConfigs } = await import('../../utils/config/config.js')
-    enableConfigs()
-    return true
-  } catch (error) {
-    warn(
-      `[resident] could not open this node's config store: ${formatResidentError(error)}\n` +
-        '[resident] startup continues, but this node cannot read its own stored login, so the ' +
-        'credential checks below are answering from the environment alone and may be wrong. ' +
-        "The global config file under this node's OCC_CONFIG_DIR is where to look.",
-    )
-    return false
-  }
-}
-
-/**
  * `--help` / `-h` 出现在任何位置都算请求帮助。
  *
  * 位置不限，是因为「敲到一半发现忘了选项名」正是人会做的事：
@@ -820,7 +824,7 @@ export function isResidentHelpRequest(args: readonly string[]): boolean {
 }
 
 /**
- * `occ resident --help` 打印的全文。
+ * `qm resident --help` 打印的全文。
  *
  * 常驻节点没有一份对应的选项表文档（`console.md` §3 只管控制台），所以这里是
  * 内测用户手上**唯一**的自助入口：凡是不看源码就会配错的事——三组互斥/依赖关系
@@ -833,7 +837,7 @@ export const RESIDENT_HELP_TEXT = `Usage: ${invokedBinName()} resident [options]
 
 Run a Qianmo resident agent node: an inbound-only endpoint that accepts wake
 and task messages over the transport and runs them in its agents' workspaces.
-Requires OCC_IDENTITY=qianmo, the Bun runtime, and a transport key in
+Requires the Bun runtime and a transport key in
 $${PSK_ENV_VAR}.
 
 Options (each accepts both --name value and --name=value):
@@ -860,6 +864,21 @@ Listener, exactly one of --port and --unix:
                            be an explicit choice.
 
 Authorization:
+
+  --approver <node>=<publicKey>
+                           Separate approval key for an explicitly trusted
+                           console; requires --allow-workspace-edits and
+                           --require-signed-handshake. Repeatable. It may not
+                           also be a command signing key.
+  --protected-root <abs path>
+                           Additional secret/state root that tools cannot
+                           read or write, even with approval. Repeatable;
+                           canonical paths and recursive access are checked.
+  --tenancy <abs path>    M2 tenant mapping. Requires signed handshakes and
+                           an explicit --tenant-hub. Invalid mapping refuses
+                           admission; this node's memory root must match.
+  --tenant-hub <node>     Trusted hub connection identity in M2. Repeatable;
+                           envelope from fields never establish this identity.
 
   --trust <node>=<publicKey>
                            Accept capability tokens issued by <node>, and
@@ -951,21 +970,12 @@ Authorization:
                            signed message changes its fate in either
                            direction. Cannot be combined with
                            --require-signed-tasks.
-  --allow-workspace-edits  Let a turn edit files inside its own working
-                           directory without asking. Off by default, and the
-                           default is the reason this flag exists: an
-                           unattended turn runs with permissionMode dontAsk —
-                           don't prompt, deny if not pre-approved — and this
-                           node answers every permission request as
-                           cancelled, so without this an agent cannot
-                           create a file in its own workspace. What it
-                           relaxes is only edits under the working directory
-                           (config files and sensitive paths stay blocked,
-                           and this node's own hardline list is checked
-                           first). Everything else that needs authorization
-                           is still refused. Settings-file allow rules are
-                           NOT an alternative — an ACP session builds an
-                           empty permission context, so they never reach it.
+  --allow-workspace-edits  Allow writes and edits inside the agent workspace.
+                           Default is read-only. The resident extension checks
+                           every call: hardline rules, sensitive paths, node
+                           configuration and writes outside the workspace stay
+                           blocked. Shell and subagent tools stay unavailable.
+                           Project settings cannot widen this policy.
   --audit-signed-tasks     Observation mode: record every message that
                            --require-signed-tasks would have refused, and
                            refuse nothing. Nothing about what this node
@@ -1018,9 +1028,6 @@ it from another directory.
 
 Environment:
 
-  OCC_IDENTITY             Must be "qianmo". A resident node is part of the
-                           Qianmo node identity, it does not run under plain
-                           occ.
   ${PSK_ENV_VAR}     Transport pre-shared key, required — still, even
                            with --require-signed-handshake, because this node
                            also dials out. Environment only, never a
@@ -1035,7 +1042,7 @@ Environment:
                            --witness-url is given. Environment only: it may
                            add evidence but must never appear in a process
                            listing.
-  OCC_CONFIG_DIR           Config root the node identity, the audit trail and
+  QIANMO_CONFIG_DIR           Config root the node identity, the audit trail and
                            the session table are derived from.
 
 Signals:
@@ -1221,289 +1228,61 @@ export function warnUnselectedTaskPolicy(
  * structurally so not even a type-only import is required. Same technique, and
  * the same reason, as `services/search/sourceCredentials.ts`.
  */
-type ModelCredentialProbe = {
-  hasAnyModelCredential: () => boolean
-}
-
-let modelCredentialProbe: ModelCredentialProbe | undefined
-
-function loadModelCredentialProbe(): ModelCredentialProbe {
-  if (!modelCredentialProbe) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    modelCredentialProbe =
-      require('../../utils/auth/auth.js') as ModelCredentialProbe
-  }
-  return modelCredentialProbe
-}
-
-/**
- * Whether this node can reach a model at all.
- *
- * Delegates to the credential-axis rule in `auth.ts` — the same one
- * `occ auth status` reports as `loggedIn` — rather than enumerating provider
- * environment variables here. A second, private list of credential keys is how
- * the node's answer and `auth status`'s answer start disagreeing, and the one
- * that disagrees is always the one nobody runs.
- *
- * Failure to answer is treated as "no credential": the auth stack throws only
- * from the CI / `NODE_ENV=test` branch, and only when nothing is configured.
- */
+/** Read the committed omp provider, including native stored API-key credentials. */
 export function nodeHasModelCredential(): boolean {
   try {
-    return loadModelCredentialProbe().hasAnyModelCredential()
+    const { configuredProvider } =
+      require('../providers/node.js') as typeof import('../providers/node.js')
+    return Boolean(configuredProvider()?.secret)
   } catch {
     return false
   }
 }
-
-/**
- * Say, once at startup, that no model credential is visible to this node.
- *
- * The failure this replaces took a live wake and a transcript read to see. On
- * the beta fleet every layer reported success — envelope delivered,
- * `receipt: "accepted"`, a `message_accepted` link appended to the audit
- * chain, an ACP child spawned, a real agent turn opened — and then the
- * assistant turn was `model: "<synthetic>"`, `error: "authentication_failed"`,
- * usage all zero, body "Not logged in · Please run /login". The node had been
- * up for five days in that state (issue #13). Nothing on the node said so,
- * because nothing on the node had asked.
- *
- * Timing is the whole point of doing this at startup rather than at first use:
- * the ACP child inherits this process's environment (`defaultSpawnAcp` passes
- * `{...process.env}`), so the credential must already be here *before* the
- * resident starts. A login performed afterwards in another shell never reaches
- * the child, and no later checkpoint could tell the operator anything they
- * could still act on without a restart.
- *
- * Deliberately not printed when a credential of any kind is present — not even
- * a "credential looks fine" line. This node's other startup warning
- * ({@link warnUnselectedTaskPolicy}) earns attention by being rare, and a
- * warning that also fires on healthy nodes trains people to skip both.
- *
- * stderr rather than stdout, for the same reason as the task-policy warning:
- * the banner owns stdout, and `<node>.err` is normally zero bytes.
- */
+export function nodeHasConfiguredModelCredential(): boolean {
+  return nodeHasModelCredential()
+}
 export function warnMissingModelCredentials(
-  hasCredential: boolean = nodeHasModelCredential(),
-  warn: (message: string) => void = message => {
-    process.stderr.write(`${message}\n`)
-  },
+  hasCredential = nodeHasModelCredential(),
+  warn: (message: string) => void = console.error,
 ): void {
-  if (hasCredential) return
-  warn(
-    '[resident] no model credential is visible to this node: no CLAUDE_CODE_USE_* provider selection, ' +
-      'no ANTHROPIC_API_KEY, no auth token, and no stored login under this OCC_CONFIG_DIR. ' +
-      'Every agent turn woken here will come back "Not logged in · Please run /login" ' +
-      '(authentication_failed, zero usage) after the delivery, the receipt and the audit link all report success. ' +
-      'The ACP child inherits this process environment, so the credential has to be in place before the resident ' +
-      'starts — logging in elsewhere afterwards does not reach it. ' +
-      `Run \`${invokedBinName()} auth status\` with this node OCC_CONFIG_DIR for the same answer in detail.`,
-  )
-}
-
-/**
- * The live inputs the startup liveness probe needs, loaded on first use.
- *
- * Same `require` technique and the same reason as
- * {@link loadModelCredentialProbe} above: `providers.ts`, `model.ts` and
- * `network/http.ts` sit on top of the settings/auth/config subgraph, and a
- * static edge would drag all of it into the graph the `check:cycles` ratchet
- * measures for three reads performed once at startup.
- */
-type ModelProbeEnvironment = {
-  getAPIProvider: () => string
-  getSmallFastModel: () => string
-  getAuthHeaders: () => { headers: Record<string, string>; error?: string }
-  /**
-   * `getEffectiveSettingsEnv()`: the env block the ACP child applies over its
-   * inherited environment at session start. Once a node's model service is
-   * managed (design `providers-console-m1.md` §2.6), the credential and the
-   * endpoint live there and not in this process's environment, so a probe
-   * that read `process.env` alone would test the wrong thing — or report "no
-   * credential" on a node that has one (§2.7). Optional so an injected
-   * environment without it reads `process.env` exactly as before.
-   */
-  getEffectiveSettingsEnv?: () => Record<string, string>
-}
-
-let modelProbeEnvironment: ModelProbeEnvironment | undefined
-
-function loadModelProbeEnvironment(): ModelProbeEnvironment {
-  if (!modelProbeEnvironment) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
-    const providers = require('../../utils/model/providers.js') as Pick<
-      ModelProbeEnvironment,
-      'getAPIProvider'
-    >
-    const model = require('../../utils/model/model.js') as Pick<
-      ModelProbeEnvironment,
-      'getSmallFastModel'
-    >
-    const http = require('../../utils/network/http.js') as Pick<
-      ModelProbeEnvironment,
-      'getAuthHeaders'
-    >
-    const managedEnv = require('../../utils/config/managedEnv.js') as Required<
-      Pick<ModelProbeEnvironment, 'getEffectiveSettingsEnv'>
-    >
-    /* eslint-enable @typescript-eslint/no-require-imports */
-    modelProbeEnvironment = {
-      getAPIProvider: providers.getAPIProvider,
-      getSmallFastModel: model.getSmallFastModel,
-      getAuthHeaders: http.getAuthHeaders,
-      getEffectiveSettingsEnv: managedEnv.getEffectiveSettingsEnv,
-    }
-  }
-  return modelProbeEnvironment
-}
-
-/**
- * Read this process's provider / model / auth-header resolution, once.
- *
- * Provider and model are read eagerly because every lane needs both. The auth
- * headers are **not**: they are handed over as a thunk so that only a node
- * actually speaking the Anthropic wire pays for the Anthropic credential
- * stack. See the field's own comment in `residentModelProbe.ts` for the
- * failure that shape prevents.
- *
- * The environment is this process's with the node's settings env laid over
- * it, the way the ACP child ends up with it (settings win). A settings read
- * that fails leaves `process.env` alone, which is the answer this gave before
- * settings could hold a model service. The model id still comes from this
- * process's own resolution; the probe does not depend on it (see the
- * module header of `residentModelProbe.ts`).
- */
-export function residentModelProbeInputs(
-  environment: ModelProbeEnvironment = loadModelProbeEnvironment(),
-): ResidentModelProbeInputs {
-  let settingsEnv: Record<string, string> | undefined
-  try {
-    settingsEnv = environment.getEffectiveSettingsEnv?.()
-  } catch {
-    settingsEnv = undefined
-  }
-  return {
-    provider: environment.getAPIProvider(),
-    model: environment.getSmallFastModel(),
-    env:
-      settingsEnv === undefined
-        ? process.env
-        : { ...process.env, ...settingsEnv },
-    anthropicAuthHeaders: () => {
-      if (settingsEnv !== undefined) {
-        // Settings win, as they do in the child.
-        const fromSettings = anthropicAuthHeadersFromEnv(settingsEnv)
-        if (Object.keys(fromSettings).length > 0) return fromSettings
-        // An endpoint from settings with no credential beside it: this
-        // process's own login must not be sent there (design §3.1).
-        const baseUrl = settingsEnv.ANTHROPIC_BASE_URL
-        if (
-          baseUrl !== undefined &&
-          baseUrl !== process.env.ANTHROPIC_BASE_URL
-        ) {
-          return {}
-        }
-      }
-      const auth = environment.getAuthHeaders()
-      return auth.error === undefined ? auth.headers : {}
-    },
-  }
-}
-
-/**
- * {@link nodeHasModelCredential}, or a credential this node's settings carry
- * for the lane it is configured for — the shape of a managed node, whose
- * provider keys are in `settings.json` and not in this process's environment.
- *
- * Asks the probe's own resolver rather than a list of key names: "is there a
- * request to send" is exactly "is there a credential for this lane", and a
- * second list would be the one that drifts.
- */
-export function nodeHasConfiguredModelCredential(
-  environment?: ModelProbeEnvironment,
-): boolean {
-  if (nodeHasModelCredential()) return true
-  try {
-    return !(
-      'status' in
-      resolveResidentModelProbeTarget(residentModelProbeInputs(environment))
+  if (!hasCredential)
+    warn(
+      '[resident] no model credential is configured in this node omp models.yml / agent.db. Use qm provider apply with this node QIANMO_CONFIG_DIR before admitting agent work.',
     )
-  } catch {
-    return false
-  }
 }
-
-/**
- * Ask this node's model endpoint whether the credential it was started with is
- * actually accepted, and say so on stderr when it is not (issue #37 ①).
- *
- * Runs **beside** startup rather than in front of it. The verdict is a
- * diagnosis, not an admission decision — a node whose endpoint is momentarily
- * unreachable must still come up and take work — so nothing here blocks the
- * listener, and the caller does not await it. The probe carries its own
- * timeout for the same reason.
- *
- * Skipped when no credential is visible at all: {@link
- * warnMissingModelCredentials} has already said so in more useful words, and
- * two warnings about one fault teach people to read neither.
- *
- * `environment` exists for one test and says so: the only step here that
- * touches the live process is {@link residentModelProbeInputs}, and it is the
- * step that threw on every real node in the first shipped version. Injecting a
- * throwing one is the only way to exercise the catch below without breaking
- * the process the test runs in.
- */
+export function residentModelProbeInputs() {
+  const { residentModelProbeInputs: inputs } =
+    require('./residentModelProbe.js') as typeof import('./residentModelProbe.js')
+  return inputs()
+}
 export async function runResidentModelCredentialProbe(
   options: {
-    readonly hasCredential?: boolean
-    readonly inputs?: ResidentModelProbeInputs
-    readonly environment?: ModelProbeEnvironment
-    readonly fetchImpl?: typeof fetch
-    readonly timeoutMs?: number
-    readonly warn?: (message: string) => void
+    hasCredential?: boolean
+    inputs?: ResidentModelProbeInputs
+    timeoutMs?: number
+    signal?: AbortSignal
+    warn?: (message: string) => void
   } = {},
 ): Promise<ResidentModelProbeVerdict> {
   try {
-    const hasCredential =
-      options.hasCredential ??
-      nodeHasConfiguredModelCredential(options.environment)
-    if (!hasCredential) {
-      return { status: 'skipped', detail: 'no model credential is visible' }
-    }
-    const target = resolveResidentModelProbeTarget(
-      options.inputs ?? residentModelProbeInputs(options.environment),
-    )
-    if ('status' in target) return target
+    if (!(options.hasCredential ?? nodeHasConfiguredModelCredential()))
+      return { status: 'skipped', detail: 'no model credential is configured' }
+    const target = options.inputs ?? residentModelProbeInputs()
+    if (!target) return { status: 'skipped', detail: 'no model is selected' }
     const verdict = await probeResidentModel(target, {
-      ...(options.fetchImpl === undefined
-        ? {}
-        : { fetchImpl: options.fetchImpl }),
-      ...(options.timeoutMs === undefined
-        ? {}
-        : { timeoutMs: options.timeoutMs }),
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
     })
-    warnRefusedModelCredentials(
-      verdict,
-      ...(options.warn === undefined ? [] : ([options.warn] as const)),
-    )
+    warnRefusedModelCredentials(verdict, options.warn)
     return verdict
   } catch (error) {
-    // A probe that cannot even be built is not a fault of the node — but it is
-    // a fault, and it used to be reported as `skipped` on the theory that "a
-    // caller can still see it". No caller ever looked, so for the whole of
-    // PR #50's life this branch was where the check went to die quietly: every
-    // real node threw here, and `<node>.err` stayed at zero bytes. It now has
-    // its own status and prints one line, because a diagnostic that fails
-    // silently is worth strictly less than no diagnostic at all — it also
-    // convinces the operator the question was asked and answered.
+    if (error instanceof ProbeExitUnconfirmedError) throw error
+    options.signal?.throwIfAborted()
     const verdict = {
       status: 'unavailable',
-      detail: error instanceof Error ? error.message : String(error),
+      detail: 'omp credential probe failed before obtaining a result',
     } as const
-    warnUnavailableModelCredentialProbe(
-      verdict,
-      ...(options.warn === undefined ? [] : ([options.warn] as const)),
-    )
+    warnUnavailableModelCredentialProbe(verdict, options.warn)
     return verdict
   }
 }
@@ -1793,14 +1572,13 @@ let providerNodeModule: ResidentProviderNode | undefined
 function loadProviderNode(): ResidentProviderNode {
   if (!providerNodeModule) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    providerNodeModule =
-      require('../../services/qianmo/providers/node.js') as ResidentProviderNode
+    providerNodeModule = require('../providers/node.js') as ResidentProviderNode
   }
   return providerNodeModule
 }
 
 /**
- * `occConfigPath('resident', 'resident.pid')`: who to send SIGHUP to when a
+ * `qianmoConfigPath('resident', 'resident.pid')`: who to send SIGHUP to when a
  * provider configuration has been staged (design `providers-console-m1.md`
  * §2.7). Read by `qm provider` (P18.7) through
  * {@link signalResidentProviderCheck}; nothing else acts on it.
@@ -1819,7 +1597,7 @@ export interface ResidentPidRecord {
 }
 
 export function residentPidPath(): string {
-  return occConfigPath('resident', 'resident.pid')
+  return qianmoConfigPath('resident', 'resident.pid')
 }
 
 /** `sysconf(_SC_CLK_TCK)`: `USER_HZ`, 100 on every Linux ABI this runs on. */
@@ -2003,7 +1781,7 @@ export function residentProviderSwitchLine(
 
 export async function runResident(args: readonly string[]): Promise<void> {
   // 帮助排在最前面，**在身份校验与运行时断言之前**：问「这个命令怎么用」的人
-  // 恰恰是还没把 `OCC_IDENTITY=qianmo` 和 PSK 配对的那个人，让他先撞一条错误
+  // 恰恰是还没把 节点参数和 PSK 配对的那个人，让他先撞一条错误
   // 再去查源码是把唯一的自助入口挡在门外。
   if (isResidentHelpRequest(args)) {
     process.stdout.write(RESIDENT_HELP_TEXT)
@@ -2012,7 +1790,6 @@ export async function runResident(args: readonly string[]): Promise<void> {
   assertResidentRuntime()
   // Before anything reads a credential — see the function's own comment for why
   // this is the handler's job and not the dispatch table's.
-  await enableResidentConfigAccess()
   const config = parseResidentArgs(args)
   const psk = pskFromEnv()
   const activity =
@@ -2161,22 +1938,17 @@ export async function runResident(args: readonly string[]): Promise<void> {
   // still unable to do any work.
   warnMissingModelCredentials(nodeHasConfiguredModelCredential())
 
-  // …and the same question asked of the endpoint rather than of the
-  // environment (issue #37 ①). Deliberately not awaited: the verdict is a
-  // diagnosis, not an admission decision, and a node must not wait on a
-  // network round trip before it starts listening. A refusal lands in
-  // `<node>.err` a moment later, which is where the other two startup warnings
-  // already are.
-  //
-  // The verdict is also remembered, in the same place the ACP child's own
-  // upstream statuses go: if the first task arrives while that 401 is still
-  // fresh, the inactivity watchdog can name the cause instead of reporting a
-  // silence (issue #37 ②). Stale verdicts fall out of the window on their own.
+  // Keep the listener reachable while validating the model. The generation
+  // barrier waits for this actual native probe to exit before starting RPC,
+  // including recovered startup configurations and later provider switches.
   const upstreamHealth = new ResidentUpstreamHealth()
-  void runResidentModelCredentialProbe().then(verdict => {
-    if (verdict.status === 'refused') {
-      upstreamHealth.record(verdict.httpStatus, verdict.detail)
-    }
+  const modelProbeGate = createResidentModelProbeGate({
+    fingerprint: residentModelProbeFingerprint,
+    probe: signal => runResidentModelCredentialProbe({ signal }),
+    onVerdict: verdict => {
+      if (verdict.status === 'refused')
+        upstreamHealth.record(verdict.httpStatus, verdict.detail)
+    },
   })
 
   // The write-only backup credential comes from the environment, never from a
@@ -2237,7 +2009,79 @@ export async function runResident(args: readonly string[]): Promise<void> {
     )
   }
 
+  const embedding = readEmbeddingConfig(residentModelProbeInputs()?.baseUrl)
+  trail.append({
+    at: Date.now(),
+    source: AuditSource.Resident,
+    node: config.node,
+    kind: 'memory.embedding.posture',
+    outcome: 'ok',
+    detail:
+      embedding === null
+        ? { enabled: false }
+        : {
+            enabled: true,
+            kind: embedding.kind,
+            model: embedding.model,
+            dimensions: embedding.dimensions,
+            dailyTokenLimit: embedding.dailyTokenLimit ?? 0,
+            timeoutMs: embedding.timeoutMs ?? 300,
+          },
+  })
   const resident = new QianmoResident({
+    beforeModelGeneration: ({ signal }) => modelProbeGate(signal),
+    ...(embedding === null
+      ? {}
+      : {
+          semanticRecall: {
+            embedder: createMemoryEmbedder(embedding),
+            dailyTokenLimit: embedding.dailyTokenLimit ?? 0,
+            ...(embedding.timeoutMs === undefined
+              ? {}
+              : { config: { timeoutMs: embedding.timeoutMs } }),
+          },
+        }),
+    ...(config.tenancyPath === undefined
+      ? {}
+      : {
+          tenantGate: residentTenantGate(
+            new FileTenantStore(config.tenancyPath),
+            config.node,
+            new Set(config.tenantHubPeers),
+            defaultMemoryRoot(),
+          ),
+        }),
+    ...(config.protectedRoots === undefined
+      ? {}
+      : { protectedRoots: config.protectedRoots }),
+    ...(config.approvers === undefined
+      ? {}
+      : {
+          authorization: {
+            keys,
+            approvers: new Map(config.approvers),
+            commanderKeys: () => [
+              keys.publicKey,
+              ...config.trusted.map(([, key]) => key),
+              ...(directory instanceof CertificateDirectory
+                ? directory.snapshot().values()
+                : []),
+            ],
+            audit: event =>
+              trail.append({
+                at: Date.now(),
+                source: AuditSource.Resident,
+                node: config.node,
+                kind: event.kind,
+                outcome: event.kind === 'authz.refused' ? 'refused' : 'ok',
+                ...(event.taskId === undefined ? {} : { taskId: event.taskId }),
+                ...(event.traceId === undefined
+                  ? {}
+                  : { traceId: event.traceId }),
+                detail: event.detail,
+              }),
+          },
+        }),
     node: config.node,
     team: config.team,
     agents: config.agents,
@@ -2256,6 +2100,42 @@ export async function runResident(args: readonly string[]): Promise<void> {
     // is "the operator was told, and the console receipted it", and no other
     // layer records that.
     notifyAudit: residentNotifyTrailSink(trail, config.node),
+    usageAudit: event => {
+      trail.append({
+        at: Date.now(),
+        source: AuditSource.Resident,
+        kind: 'usage.tokens',
+        outcome: 'ok',
+        node: config.node,
+        taskId: event.taskId,
+        msgId: event.msgId,
+        traceId: event.traceId,
+        detail: { ...event.usage, sequence: event.sequence, lowerBound: true },
+      })
+    },
+    usageEndAudit: (taskId, traceId) => {
+      trail.append({
+        at: Date.now(),
+        source: AuditSource.Resident,
+        kind: 'usage.turn_end',
+        outcome: 'ok',
+        node: config.node,
+        taskId,
+        traceId,
+      })
+    },
+    runtimeAudit: event => {
+      trail.append({
+        at: Date.now(),
+        source: AuditSource.Resident,
+        node: config.node,
+        kind: event.kind,
+        outcome: 'ok',
+        ...(event.taskId === undefined ? {} : { taskId: event.taskId }),
+        ...(event.traceId === undefined ? {} : { traceId: event.traceId }),
+        detail: event.detail,
+      })
+    },
     ...(backup === undefined ? {} : { backup }),
     ...(witness === undefined ? {} : { witness }),
     listen: {
@@ -2307,15 +2187,8 @@ export async function runResident(args: readonly string[]): Promise<void> {
       process.stdout.write(
         `${residentProviderSwitchLine(config.node, event)}\n`,
       )
-      // The startup probe asked about a configuration that is no longer the
-      // one on disk. A reconcile changed nothing on disk, so it is not asked
-      // again for that.
-      if (event.via === 'reconcile') return
-      void runResidentModelCredentialProbe().then(verdict => {
-        if (verdict.status === 'refused') {
-          upstreamHealth.record(verdict.httpStatus, verdict.detail)
-        }
-      })
+      // The next generation validates the effective configuration after the
+      // old child has closed. This observer never starts a parallel probe.
     },
   })
 
@@ -2358,5 +2231,15 @@ export async function runResident(args: readonly string[]): Promise<void> {
     await timingWriter?.close()
     await memWriter?.close()
     await activity?.close()
+  }
+}
+
+export async function run(argv: string[]): Promise<number> {
+  try {
+    await runResident(argv)
+    return 0
+  } catch (error) {
+    process.stderr.write(`${formatResidentError(error)}\n`)
+    return 1
   }
 }

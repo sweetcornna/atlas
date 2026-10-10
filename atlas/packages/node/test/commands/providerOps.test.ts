@@ -36,25 +36,26 @@ import {
   type ProviderErrorCode,
   secretFingerprint,
 } from '@qianmo/providers'
-import { occConfigPath } from '../../../config/paths.js'
-import { getModelCompatCapabilities } from '../../../services/qianmo/modelCompat/capabilities.js'
+import { qianmoConfigPath } from '@qianmo/paths'
+import { getModelCompatCapabilities } from '../../src/providers/capabilities.js'
 import {
   applyRequest,
   CANARY_KEY,
   CANARY_KEY_2,
   model,
-} from '../../../services/qianmo/providers/__tests__/helpers.js'
+} from '../providers/helpers.js'
 import {
   readProviderState,
+  configuredProvider,
+  readYaml,
   recordProviderGeneration,
-} from '../../../services/qianmo/providers/node.js'
-import { providerPaths } from '../../../services/qianmo/providers/store.js'
-import { resetSettingsCache } from '../../../utils/settings/settingsCache.js'
+} from '../../src/providers/node.js'
+import { providerPaths } from '../../src/providers/store.js'
 import {
   handleProviderLine,
   type NodeProviderResponse,
   type ProviderContext,
-} from '../providerOps.js'
+} from '../../src/commands/providerOps.js'
 import { sourceLaunch, withoutRunnerKeys } from './providerSource.js'
 import { RecordingStub, refusedOrigin } from './providerStub.js'
 
@@ -85,21 +86,19 @@ const responses: NodeProviderResponse[] = []
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'qianmo-provider-ops-'))
   config = join(root, 'config')
-  mkdirSync(config, { mode: 0o700 })
+  mkdirSync(join(config, 'omp', 'agent'), { mode: 0o700, recursive: true })
   chmodSync(config, 0o700)
-  previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = config
+  previousConfigDir = process.env.QIANMO_CONFIG_DIR
+  process.env.QIANMO_CONFIG_DIR = config
   previousUmask = process.umask(0o022)
-  resetSettingsCache()
   warnings = []
   signals = 0
 })
 
 afterEach(() => {
   process.umask(previousUmask)
-  if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
-  resetSettingsCache()
+  if (previousConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = previousConfigDir
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -186,13 +185,12 @@ const CHILD_TIMEOUT_MS = 60_000
 function sourceChild(cliArgs: string[], env: NodeJS.ProcessEnv) {
   return sourceLaunch(cliArgs, {
     ...withoutRunnerKeys(env),
-    HOME: root,
     NODE_ENV: 'production',
     NO_COLOR: '1',
   })
 }
 
-const settingsFile = () => join(config, 'settings.json')
+const settingsFile = () => join(config, 'omp', 'agent', 'config.yml')
 const readEnv = () =>
   (
     JSON.parse(readFileSync(settingsFile(), 'utf8')) as {
@@ -207,7 +205,7 @@ function deadPid(): number {
 }
 
 function writeResidentFile(name: string, value: unknown): void {
-  const path = occConfigPath('resident', name)
+  const path = qianmoConfigPath('resident', name)
   mkdirSync(join(config, 'resident'), { recursive: true, mode: 0o700 })
   writeFileSync(path, `${JSON.stringify(value)}\n`, { mode: 0o600 })
 }
@@ -339,13 +337,13 @@ describe('the closed error set: one case per code', () => {
     )
   })
 
-  test('unsupported-multi-key: two keys off the OpenAI lane (P18.18)', async () => {
+  test('unsupported-multi-key: two keys on custom Anthropic x-api-key endpoint', async () => {
     expectCode(
       await send(
         applyRequest({
           profile: {
             auth: {
-              scheme: 'bearer',
+              scheme: 'x-api-key',
               keys: [
                 { id: 'k1', value: CANARY_KEY },
                 { id: 'k2', value: CANARY_KEY_2 },
@@ -400,35 +398,34 @@ describe('the closed error set: one case per code', () => {
   })
 
   test(
-    'env-override: autocompact while CLAUDE_CODE_AUTO_COMPACT_WINDOW is set; the window stays as it was',
+    'legacy environment compaction override is ignored by native settings',
     async () => {
-      writeFileSync(settingsFile(), '{"autoCompactWindow":150000}\n', {
-        mode: 0o600,
-      })
+      await commitFirst()
       const previous = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
       process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '300000'
-      let response: NodeProviderResponse
       try {
-        response = await send(
-          { ...autocompactRequest(), value: 'auto' },
+        const response = await send(
+          { ...autocompactRequest(), value: 150000 },
           { launch: sourceChild },
         )
+        expect(response).toMatchObject({
+          ok: true,
+          autoCompactWindow: 150000,
+          source: 'settings',
+        })
       } finally {
         if (previous === undefined)
           delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
         else process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = previous
       }
-      expectCode(response, 'env-override')
-      expect(response).toMatchObject({ configured: 300_000, source: 'env' })
-      expect(readFileSync(settingsFile(), 'utf8')).toBe(
-        '{"autoCompactWindow":150000}\n',
-      )
     },
     CHILD_TIMEOUT_MS,
   )
 
   test('every code of the closed set has a case above', () => {
-    expect([...seen].sort()).toEqual([...PROVIDER_ERROR_CODES].sort())
+    expect([...seen].sort()).toEqual(
+      PROVIDER_ERROR_CODES.filter(code => code !== 'env-override').sort(),
+    )
   })
 })
 
@@ -436,9 +433,13 @@ describe('autocompact through the dispatcher', () => {
   test(
     'read only: the node’s window and where it comes from, nothing written',
     async () => {
-      writeFileSync(settingsFile(), '{"autoCompactWindow":150000}\n', {
-        mode: 0o600,
-      })
+      await commitFirst()
+      const raw =
+        JSON.stringify({
+          ...readYaml(settingsFile()),
+          compaction: { thresholdTokens: 150000, thresholdPercent: -1 },
+        }) + '\n'
+      writeFileSync(settingsFile(), raw, { mode: 0o600 })
       const response = await send(autocompactRequest(), { launch: sourceChild })
       expect(response).toMatchObject({
         ok: true,
@@ -446,9 +447,7 @@ describe('autocompact through the dispatcher', () => {
         configured: 150_000,
         source: 'settings',
       })
-      expect(readFileSync(settingsFile(), 'utf8')).toBe(
-        '{"autoCompactWindow":150000}\n',
-      )
+      expect(readFileSync(settingsFile(), 'utf8')).toBe(raw)
     },
     CHILD_TIMEOUT_MS,
   )
@@ -484,8 +483,8 @@ describe('apply', () => {
     expect(response.state?.managed).toBe(true)
     expect(response.state?.applied?.requestId).toBe(request.requestId)
     expect(response.state?.pending).toBeNull()
-    expect(response.diffKeys).toContain('env.ANTHROPIC_AUTH_TOKEN')
-    expect(readEnv().ANTHROPIC_AUTH_TOKEN).toBe(CANARY_KEY)
+    expect(response.diffKeys?.some(k => k.endsWith('.apiKey'))).toBe(true)
+    expect(configuredProvider()?.secret).toBe(CANARY_KEY)
     expect(readEnv().MY_TOOL_FLAG).toBe('on')
     expect(signals).toBe(0)
   })
@@ -495,7 +494,7 @@ describe('apply', () => {
     writeResidentFile('lifecycle.json', { phase: 'running', pid: deadPid() })
     const response = await send(applyRequest())
     expect(response.ok && response.state?.pending).toBeNull()
-    expect(readEnv().ANTHROPIC_AUTH_TOKEN).toBe(CANARY_KEY)
+    expect(configuredProvider()?.secret).toBe(CANARY_KEY)
     expect(signals).toBe(0)
   })
 
@@ -545,7 +544,7 @@ describe('apply', () => {
     expect(response.ok).toBe(true)
     if (!response.ok) return
     expect(response.state).toBeUndefined()
-    expect(response.diffKeys).toContain('env.ANTHROPIC_AUTH_TOKEN')
+    expect(response.diffKeys?.some(k => k.endsWith('.apiKey'))).toBe(true)
     expect(existsSync(join(config, 'qianmo', 'provider', 'pending.json'))).toBe(
       false,
     )
@@ -717,7 +716,7 @@ describe('status', () => {
       { id: 'k1', state: 'ok' },
       { id: 'k2', state: 'ok' },
     ])
-    expect(readEnv().OPENAI_API_KEY).toBe(CANARY_KEY)
+    expect(configuredProvider()?.secret).toBe(CANARY_KEY)
     const response = await send(statusRequest())
     expect(response.ok && response.state?.capabilities.multiKey).toBe(true)
     expect(response.ok && response.state?.keys).toEqual([
@@ -816,29 +815,23 @@ describe('probe and models through the dispatcher', () => {
 describe('the resident’s file names, as the resident spells them', () => {
   test('provider-switch.json, lifecycle.json and resident.pid are where the resident writes them', () => {
     const service = readFileSync(
-      join(
-        import.meta.dir,
-        '..',
-        '..',
-        '..',
-        'services',
-        'qianmo',
-        'resident.ts',
-      ),
+      join(import.meta.dir, '../../src/host/resident.ts'),
       'utf8',
     )
     expect(service).toContain(
       "const PROVIDER_SWITCH_FILE = 'provider-switch.json'",
     )
-    expect(service).toContain("occConfigPath('resident', PROVIDER_SWITCH_FILE)")
-    expect(service).toContain("occConfigPath('resident', 'lifecycle.json')")
+    expect(service).toContain(
+      "qianmoConfigPath('resident', PROVIDER_SWITCH_FILE)",
+    )
+    expect(service).toContain("qianmoConfigPath('resident', 'lifecycle.json')")
     const handler = readFileSync(
-      join(import.meta.dir, '..', 'resident.ts'),
+      join(import.meta.dir, '../../src/commands/resident.ts'),
       'utf8',
     )
-    expect(handler).toContain("occConfigPath('resident', 'resident.pid')")
+    expect(handler).toContain("qianmoConfigPath('resident', 'resident.pid')")
     expect(providerPaths.residentPid()).toBe(
-      occConfigPath('resident', 'resident.pid'),
+      qianmoConfigPath('resident', 'resident.pid'),
     )
   })
 })

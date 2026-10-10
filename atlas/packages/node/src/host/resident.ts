@@ -1,13 +1,10 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { ChildProcess } from 'node:child_process'
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { Readable, Writable } from 'node:stream'
 import {
-  AcpResidentTurnPort,
-  createResidentAcpStream,
+  OmpResidentTurnPort,
   DEFAULT_RESIDENT_INACTIVITY_MS,
   FileAdmissionLedger,
   FileDeliveryLedger,
@@ -15,11 +12,11 @@ import {
   NodeTurnExpiredError,
   NodeTurnGate,
   pendingSessionIds,
-  ResidentAcpConnection,
   ResidentDeadlineClock,
   ResidentEstop,
   ResidentLifecycleSentinel,
   ResidentMemorySidecar,
+  writeResidentMemory,
   ResidentNodeRuntime,
   ResidentNotifier,
   ResidentPoller,
@@ -65,10 +62,19 @@ import {
 import { QIANMO_WRAPPER_TYPE } from '@qianmo/adapter/wrapper'
 import { FileMemoryStore, defaultMemoryRoot } from '@qianmo/memory'
 import {
+  residentToolVerdict,
+  residentApprovalInput,
+} from '@qianmo/extension/policy'
+import { parseMemoryWrite } from './residentMemoryWrite.js'
+import {
+  ResidentAuthorization,
+  type ResidentAuthorizationOptions,
+} from './residentAuthorization.js'
+import {
   type EmbeddingProvider,
   FileEmbeddingUsageMeter,
   type HybridConfig,
-  InMemoryVectorIndex,
+  FileVectorIndex,
   type RetrievalMode,
 } from '@qianmo/recall'
 import {
@@ -92,17 +98,23 @@ import {
   isStructuredProtocolMessage,
   markMessagesAsReadBySnapshot,
   readMailbox,
-} from '../../utils/agents/teammateMailbox.js'
-import { occConfigPath } from '../../config/paths.js'
-import { buildCliLaunch, spawnCli } from '../../utils/process/cliLaunch.js'
-import { writePrivateFileAtomicSync } from '../../utils/secureStorage/atomicWrite.js'
+} from '@qianmo/mailbox'
+import { qianmoConfigPath, nodeHomeDir } from '@qianmo/paths'
+import {
+  protectedConfigRoots,
+  qianmoConfigDir,
+  qmcodeHome,
+} from '@qianmo/paths'
+import { contextOfSessionKey } from '@qianmo/resident'
+import { writePrivateFileAtomic as writePrivateFileAtomicSync } from '../providers/store.js'
 import {
   assembleResidentPrompt,
   assembleResidentPromptAsync,
 } from './residentPrompt.js'
-import { residentAcpEnvironment } from './residentAcpEnv.js'
+import { ResidentOmpPool, type ResidentOmpSpawn } from './residentOmp.js'
+import type { ChildProcess } from 'node:child_process'
 import { residentLocalCommand } from './residentLocalCommand.js'
-import { ACP_NOTIFY_METHOD, type QianmoNotifyVerdict } from './notifyWire.js'
+import type { QianmoNotifyVerdict } from './notifyWire.js'
 
 interface QianmoResidentAgentConfig {
   readonly agent: string
@@ -145,7 +157,9 @@ type ResidentProviderCommit =
 export interface ResidentProviderNode {
   /** A single `stat`. */
   hasPendingProviderConfig(): boolean
-  commitPendingProviderConfig(): ResidentProviderCommit
+  commitPendingProviderConfig():
+    | ResidentProviderCommit
+    | Promise<ResidentProviderCommit>
   recordProviderGeneration(input: {
     readonly generation: number
     readonly env?: Readonly<Record<string, string | undefined>>
@@ -157,7 +171,7 @@ export interface ResidentProviderNode {
   currentManagedHash(): string
 }
 
-/** What a provider switch would cut off if the ACP child stopped now. */
+/** What a provider switch would cut off if the omp RPC child stopped now. */
 interface ResidentInFlight {
   /** A turn is running in the node gate. */
   readonly turns: number
@@ -182,7 +196,7 @@ export interface ResidentProviderSwitchEvent {
   /** Finished something a crash had interrupted. */
   readonly recovered: boolean
   /**
-   * `switch`: committed at an idle boundary, ACP child recycled.
+   * `switch`: committed at an idle boundary, omp RPC child recycled.
    * `startup`: committed before the first generation (crash roll-forward).
    * `reconcile`: found already applied at startup without its session policy
    * having been carried out here; sessions were reset (R-7 default).
@@ -191,7 +205,7 @@ export interface ResidentProviderSwitchEvent {
 }
 
 /**
- * `occConfigPath('resident', 'provider-switch.json')`: what this resident is
+ * `qianmoConfigPath('resident', 'provider-switch.json')`: what this resident is
  * doing about the node's provider configuration, for `qm provider status`
  * (P18.7) to read next to `generation.json`. Written only when there is
  * something to say — a pending intent, a commit outcome, a startup
@@ -236,7 +250,7 @@ interface QianmoResidentOptions {
   /**
    * 放宽到「工作目录之内的编辑自动放行」（`--allow-workspace-edits`）。
    *
-   * 缺省不给，节点保持 `dontAsk`——不提示、未预批准即拒绝。放宽是显式动作：它改的
+   * 缺省不给，extension 只允许只读工具。放宽是显式动作：它改的
    * 是这台节点的权限姿态，不该由「跑的是哪一版产物」决定。
    */
   readonly allowWorkspaceEdits?: boolean
@@ -272,7 +286,7 @@ interface QianmoResidentOptions {
   readonly capability?: CapabilityGate
   /**
    * The console's signing names (`--local-commands-from`): a `task.request`
-   * one of them signed, marked as a local command, reaches the ACP child as
+   * one of them signed, marked as a local command, reaches the omp RPC child as
    * the command itself instead of as a message (P18.20,
    * `residentLocalCommand.ts`). Absent or empty, nothing arrives that way.
    */
@@ -307,12 +321,12 @@ interface QianmoResidentOptions {
   readonly onActivity?: (active: boolean) => void | Promise<void>
   readonly activityReconnectFactor?: number
   /**
-   * Silence budget for one ACP turn (design §3.B10). Defaults to
+   * Silence budget for one omp RPC turn (design §3.B10). Defaults to
    * {@link DEFAULT_RESIDENT_INACTIVITY_MS}; `0` turns the watchdog off.
    */
   readonly inactivityMs?: number
   /**
-   * Where upstream HTTP statuses reported by the ACP child are remembered, so
+   * Where upstream HTTP statuses reported by the omp RPC child are remembered, so
    * the inactivity watchdog can say *why* a turn went quiet (design §3.B10,
    * issue #37). Injected by the host because the startup credential probe
    * writes into the same memory; omitted, the node makes its own.
@@ -337,6 +351,23 @@ interface QianmoResidentOptions {
    * watch job produces, and it is not a refusal.
    */
   readonly notifyAudit?: ResidentNotifyAuditSink
+  readonly tenantGate?: (authenticatedPeer: string | null) => boolean
+  readonly protectedRoots?: readonly string[]
+  readonly authorization?: Omit<
+    ResidentAuthorizationOptions,
+    'node' | 'memoryRoot' | 'estop'
+  >
+  readonly runtimeAudit?: ResidentAuthorizationOptions['audit']
+  readonly usageAudit?: (event: {
+    readonly taskId: string
+    readonly msgId: string
+    readonly traceId: string
+    readonly sequence: number
+    readonly usage: Readonly<
+      Record<'input' | 'output' | 'cacheWrite' | 'cacheRead', number>
+    >
+  }) => void
+  readonly usageEndAudit?: (taskId: string, traceId: string) => void
   /**
    * Where this node's memory store lives (design §4.4). Defaults to
    * {@link defaultMemoryRoot}, which is derived from the identity config root.
@@ -363,9 +394,9 @@ interface QianmoResidentOptions {
    * config root that a restart does not reset; `dailyTokenLimit: 0` spends
    * nothing. Fallbacks are reported on `onError`.
    *
-   * No command-line switch or configuration file sets this yet: real
-   * embedding providers and their operator-only switch are P16.7, and the
-   * in-process index starts cold on every restart until P16.8 persists it.
+   * The resident command reads memory/embedding.json under its Qianmo
+   * config root. P16.8 persists vectors as a private, content-addressed cache;
+   * the operator-only memory backfill/rebuild commands warm that cache.
    */
   readonly semanticRecall?: {
     readonly embedder: EmbeddingProvider
@@ -378,9 +409,9 @@ interface QianmoResidentOptions {
     readonly unix?: string
     readonly url?: string
   }) => void
-  readonly spawnAcp?: () => ChildProcess
+  readonly spawnOmp?: (input: ResidentOmpSpawn) => ChildProcess
   /**
-   * Restart policy for the ACP child; both fields default to the supervisor's
+   * Restart policy for the omp RPC child; both fields default to the supervisor's
    * own constants.
    *
    * Exposed because parking became *visible*. It used to end the process, so
@@ -390,7 +421,7 @@ interface QianmoResidentOptions {
    * and lets a test reach the degraded state without waiting out the
    * production backoff ladder.
    */
-  readonly acpRestart?: {
+  readonly ompRestart?: {
     readonly initialBackoffMs?: number
     readonly maxRapidFailures?: number
   }
@@ -400,9 +431,9 @@ interface QianmoResidentOptions {
    * below happens** — no poll, no commit, no generation record.
    *
    * Present, a pending intent is committed at a generation boundary and only
-   * there: once at startup before the first ACP child (crash roll-forward),
+   * there: once at startup before the first omp RPC child (crash roll-forward),
    * and afterwards when the node is idle, immediately followed by a recycle of
-   * the ACP child. A node with no pending intent is never recycled and its
+   * the omp RPC child. A node with no pending intent is never recycled and its
    * child's environment is untouched; the only trace is `generation.json`.
    */
   readonly providerNode?: ResidentProviderNode
@@ -420,7 +451,13 @@ interface QianmoResidentOptions {
    * Absent, these go to {@link onError}.
    */
   readonly onProviderAlert?: (message: string) => void
-  /** A provider configuration was committed (the CLI re-runs its probe). */
+  /** Runs after the previous generation is closed, before any new OMP child.
+   * Rejection leaves the generation unavailable. The transport stays reachable. */
+  readonly beforeModelGeneration?: (input: {
+    readonly generation: number
+    readonly signal: AbortSignal
+  }) => Promise<void>
+  /** A provider configuration was committed. Observers must not spawn model children. */
   readonly onProviderSwitched?: (event: ResidentProviderSwitchEvent) => void
 }
 
@@ -514,54 +551,13 @@ function networkContextId(
     : undefined
 }
 
-/**
- * The ACP child, told which memory root this host serves memory from so its
- * hardline refuses that tree too — not only the default it would derive on
- * its own (`residentAcpEnv.ts`).
- */
-function defaultSpawnAcp(memoryRoot: string): ChildProcess {
-  const launch = buildCliLaunch(['--acp'], {
-    env: residentAcpEnvironment(process.env, { memoryRoot }),
-  })
-  return spawnCli(launch, { stdio: ['pipe', 'pipe', 'inherit'] })
-}
-
-function webStreams(child: ChildProcess): {
-  writable: WritableStream<Uint8Array>
-  readable: ReadableStream<Uint8Array>
-} {
-  if (child.stdin === null || child.stdout === null) {
-    throw new Error('resident ACP child requires piped stdin and stdout')
-  }
-  return {
-    writable: Writable.toWeb(
-      child.stdin,
-    ) as unknown as WritableStream<Uint8Array>,
-    readable: Readable.toWeb(
-      child.stdout,
-    ) as unknown as ReadableStream<Uint8Array>,
-  }
-}
-
-function childClosed(child: ChildProcess): Promise<void> {
-  return new Promise((resolve, reject) => {
-    child.once('error', reject)
-    child.once('exit', (code, signal) => {
-      if (code === 0 && signal === null) resolve()
-      else
-        reject(
-          new Error(`resident ACP child exited code=${code} signal=${signal}`),
-        )
-    })
-  })
-}
-
 const TASK_REPLY_RECEIPT_TIMEOUT_MS = 5_000
 
 /** Largest delay `setTimeout` takes before silently collapsing it to 1 ms. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
 interface ActiveResidentTask {
+  trust?: 'untrusted' | 'verified-capability'
   readonly envelope: QianmoMessage
   readonly channel: TransportChannel
   readonly releaseChannel: () => void
@@ -570,7 +566,7 @@ interface ActiveResidentTask {
   settled: boolean
   /**
    * True between `#registerTask` and the end of `deliver()` — the window in
-   * which this task belongs to no ACP generation yet. See `#failActiveTasks`.
+   * which this task belongs to no omp RPC generation yet. See `#failActiveTasks`.
    */
   delivering: boolean
   /**
@@ -648,7 +644,7 @@ class ResidentDeliveryError extends Error {
  * Deliberately not "not ready": the node *is* ready, it just has no agent.
  */
 const RESIDENT_AGENT_UNAVAILABLE =
-  'resident agent is unavailable on this node (the ACP child could not be started); delivery, receipts and audit still work'
+  'resident agent is unavailable on this node (the omp RPC child could not be started); delivery, receipts and audit still work'
 
 /**
  * What a peer is told when the agent is merely between generations.
@@ -681,7 +677,7 @@ export class QianmoResident {
   readonly #adapter: InboundAdapter
   readonly #router: NodeRouter
   readonly #sessions = new FileResidentSessionStore(
-    occConfigPath('resident', 'sessions.json'),
+    qianmoConfigPath('resident', 'sessions.json'),
   )
   readonly #ledgers = new Map<string, FileAdmissionLedger>()
   /**
@@ -693,7 +689,7 @@ export class QianmoResident {
    * produced the answer is not a key anything looks it up by.
    */
   readonly #deliveries = new FileDeliveryLedger(
-    occConfigPath('resident', 'deliveries.ndjson'),
+    qianmoConfigPath('resident', 'deliveries.ndjson'),
     { onError: error => this.#options.onError?.(error) },
   )
   /**
@@ -704,7 +700,7 @@ export class QianmoResident {
    * file is not.
    */
   readonly #notifies = new FileDeliveryLedger(
-    occConfigPath('resident', 'notifies.ndjson'),
+    qianmoConfigPath('resident', 'notifies.ndjson'),
     { onError: error => this.#options.onError?.(error) },
   )
   readonly #notifier: ResidentNotifier
@@ -712,18 +708,20 @@ export class QianmoResident {
   readonly #redelivering = new Set<string>()
   /** Emergency stop (design §3.B6). Existence of the file is the whole test. */
   readonly #estop = new ResidentEstop({
-    path: occConfigPath('resident', 'ESTOP'),
+    path: qianmoConfigPath('resident', 'ESTOP'),
     onError: error => this.#options.onError?.(error),
   })
   /** Termination-cause forensics (design §3.B2). */
   readonly #lifecycle: ResidentLifecycleSentinel
   readonly #timings: ResidentTimingRecorder
   #poller: ResidentPoller | null = null
-  readonly #turn: AcpResidentTurnPort
+  readonly #turn: OmpResidentTurnPort
   readonly #supervisor: ResidentSupervisor
   #runtime: ResidentNodeRuntime | null = null
   #transport: TransportServerHandle | null = null
   readonly #tasksByMessage = new Map<string, ActiveResidentTask>()
+  readonly #authorization: ResidentAuthorization | undefined
+  readonly #approvalChannels = new Map<string, TransportChannel>()
   readonly #tasksByTask = new Map<string, ActiveResidentTask>()
   /** Replies sent but not yet receipted. See {@link #drainReplyReceipts}. */
   readonly #settling = new Set<Promise<void>>()
@@ -731,24 +729,29 @@ export class QianmoResident {
   readonly #backups = new Map<string, BackupScheduler>()
   /** Memory recall for the user-message sidecar (design §4.4). */
   readonly #memory: ResidentMemorySidecar
-  /** The memory root in use, handed to the ACP child's hardline as well. */
+  /** The memory root in use, handed to the omp RPC child's hardline as well. */
   readonly #memoryRoot: string
+  readonly #memoryIndex: FileVectorIndex | undefined
   #stopping = false
   #releaseStop: (() => void) | null = null
   /** Woken when `#runtime` becomes available; see `#runtimeForDelivery`. */
   #runtimeWaiters: Array<() => void> = []
-  /** The ACP child backing `#runtime`; see `#runtimeIsLive`. */
-  #runtimeChild: ChildProcess | null = null
+  /** The omp RPC child backing `#runtime`; see `#runtimeIsLive`. */
+  #runtimeChild: ResidentOmpPool | null = null
   #witnessClosed = false
   /** Generations this process has started (`generation.json`, §2.4). */
   #generation = 0
-  /** Between the start of `#startAcp` and its runtime being ready. */
+  /** Between the start of `#startRuntime` and its runtime being ready. */
   #generationStarting = false
+  readonly #generationAbort = new AbortController()
   /** `deliver()` calls not yet past the hand-off to a turn. */
   #deliveriesInFlight = 0
   /** Admission polls not yet past submitting their turn. */
   #pollsInFlight = 0
   /** Set once startup has rolled a pending intent forward (§2.6 step 5). */
+  #providerCheckQueued = false
+  #providerCommitting = false
+  #providerCommitFlight: Promise<void> | undefined
   #providerReady = false
   #providerTimer: ReturnType<typeof setInterval> | null = null
   /** The pending intent being waited on, if any. */
@@ -759,7 +762,25 @@ export class QianmoResident {
   constructor(options: QianmoResidentOptions) {
     this.#options = options
     this.#localCommandIssuers = new Set(options.localCommandIssuers ?? [])
-    this.#timings = new ResidentTimingRecorder(options.onTiming)
+    this.#timings = new ResidentTimingRecorder(event => {
+      options.onTiming?.(event)
+      if (event.stage === 'detected' && event.networkMsgId !== undefined) {
+        const task = this.#tasksByMessage.get(event.networkMsgId)
+        if (task !== undefined)
+          (options.runtimeAudit ?? options.authorization?.audit)?.({
+            kind: 'authz.admission',
+            taskId: task.envelope.taskId,
+            traceId: task.envelope.traceId,
+            detail: {
+              sessionId: event.sessionId,
+              messageId: event.inputMessageId ?? '',
+              contextId: task.envelope.contextId ?? 'default',
+              agent: event.agent ?? '',
+              networkMsgId: event.networkMsgId,
+            },
+          })
+      }
+    })
     this.#notifier = new ResidentNotifier({
       node: options.node,
       ledger: this.#notifies,
@@ -769,7 +790,35 @@ export class QianmoResident {
         : { audit: options.notifyAudit }),
     })
     this.#memoryRoot = options.memoryRoot ?? defaultMemoryRoot()
+    this.#authorization =
+      options.authorization === undefined
+        ? undefined
+        : new ResidentAuthorization({
+            ...options.authorization,
+            node: options.node,
+            memoryRoot: this.#memoryRoot,
+            estop: this.#estop,
+            protectedRoots: options.protectedRoots,
+          })
     const semantic = options.semanticRecall
+    let memoryIndex: FileVectorIndex | undefined
+    try {
+      if (semantic !== undefined) {
+        memoryIndex = new FileVectorIndex(this.#memoryRoot)
+        memoryIndex.prune(
+          new FileMemoryStore({ root: this.#memoryRoot, readOnly: true }),
+        )
+      }
+    } catch (error) {
+      memoryIndex?.close()
+      memoryIndex = undefined
+      options.onError?.(
+        new Error(
+          `memory index unavailable; recall falls back to deterministic: ${errorText(error)}`,
+        ),
+      )
+    }
+    this.#memoryIndex = memoryIndex
     this.#memory = new ResidentMemorySidecar({
       store: new FileMemoryStore({
         root: this.#memoryRoot,
@@ -780,7 +829,14 @@ export class QianmoResident {
         : {
             semantic: {
               embedder: semantic.embedder,
-              index: new InMemoryVectorIndex(),
+              index: this.#memoryIndex ?? {
+                get() {
+                  throw new Error('persistent index unavailable')
+                },
+                set() {
+                  throw new Error('persistent index unavailable')
+                },
+              },
               meter: new FileEmbeddingUsageMeter({
                 dailyTokenLimit: semantic.dailyTokenLimit,
               }),
@@ -795,17 +851,21 @@ export class QianmoResident {
           }),
     })
     this.#lifecycle = new ResidentLifecycleSentinel({
-      path: occConfigPath('resident', 'lifecycle.json'),
+      path: qianmoConfigPath('resident', 'lifecycle.json'),
       node: options.node,
       onError: error => this.#options.onError?.(error),
     })
-    this.#turn = new AcpResidentTurnPort(
+    this.#turn = new OmpResidentTurnPort(
       {
-        extMethod: async () => {
-          throw new Error('resident ACP connection is not ready')
+        channelFor: async sessionId => {
+          if (this.#runtimeChild === null)
+            throw new Error('resident omp pool is not ready')
+          return await this.#runtimeChild.channelFor(sessionId)
         },
-        prompt: async () => {
-          throw new Error('resident ACP connection is not ready')
+        isAccepted: async (sessionId, messageId) => {
+          if (this.#runtimeChild === null)
+            throw new Error('resident omp pool is not ready')
+          return await this.#runtimeChild.isAccepted(sessionId, messageId)
         },
       },
       {
@@ -824,12 +884,28 @@ export class QianmoResident {
         // `#pushProgress` 一路下去是 `FileDeliveryLedger` 的三次同步 append 加
         // 一次全量积压排序，而调它的那条路以前只做一件事：戳一下存活看门狗。
         // 那条路同时喂着看门狗与首字时延，把每个工具调用都变成几次阻塞写盘，
-        // 就是拿 ACP 流的实时性换一条装饰行。顺序不受影响：setImmediate 是 FIFO。
+        // 就是拿 omp RPC 流的实时性换一条装饰行。顺序不受影响：setImmediate 是 FIFO。
         onProgress: progress => {
           setImmediate(() => {
             void this.#pushProgress(progress)
           })
         },
+        onUsage: (input, usage, sequence) => {
+          const task =
+            input.networkMsgId === undefined
+              ? undefined
+              : this.#tasksByMessage.get(input.networkMsgId)
+          if (task !== undefined)
+            this.#options.usageAudit?.({
+              taskId: task.envelope.taskId,
+              msgId: task.envelope.msgId,
+              traceId: task.envelope.traceId,
+              sequence,
+              usage,
+            })
+        },
+        memoryAnswer: (input, args) =>
+          this.#memory.answer(input.memoryIds ?? [], args),
       },
     )
     this.#adapter = new InboundAdapter({
@@ -868,17 +944,17 @@ export class QianmoResident {
       }
     }
     this.#supervisor = new ResidentSupervisor({
-      start: async () => await this.#startAcp(),
-      ...(options.acpRestart?.initialBackoffMs === undefined
+      start: async () => await this.#startRuntime(),
+      ...(options.ompRestart?.initialBackoffMs === undefined
         ? {}
-        : { initialBackoffMs: options.acpRestart.initialBackoffMs }),
-      ...(options.acpRestart?.maxRapidFailures === undefined
+        : { initialBackoffMs: options.ompRestart.initialBackoffMs }),
+      ...(options.ompRestart?.maxRapidFailures === undefined
         ? {}
-        : { maxRapidFailures: options.acpRestart.maxRapidFailures }),
+        : { maxRapidFailures: options.ompRestart.maxRapidFailures }),
       onError: error => this.#options.onError?.(error),
       onParked: failures =>
         this.#options.onError?.(
-          new Error(`resident ACP parked after ${failures} rapid failures`),
+          new Error(`resident omp RPC parked after ${failures} rapid failures`),
         ),
     })
   }
@@ -907,9 +983,9 @@ export class QianmoResident {
     for (const backups of this.#backups.values()) backups.start()
     // Bound before the agent, and outliving it. See `#startTransport`.
     this.#transport = this.#startTransport()
-    // Before the first ACP child: an intent a crash left behind is committed
+    // Before the first omp RPC child: an intent a crash left behind is committed
     // now, while no child can be reading settings (§2.6 step 5).
-    this.#prepareProviderConfig()
+    await this.#prepareProviderConfig()
     this.#startProviderPoll()
     try {
       await this.#supervisor.run()
@@ -917,7 +993,7 @@ export class QianmoResident {
       //
       // Stopped: we are shutting down, fall through and tear the node down.
       //
-      // **Parked**: the ACP child failed to start five times in a row and the
+      // **Parked**: the omp RPC child failed to start five times in a row and the
       // supervisor gave up on it. That says nothing about the rest of this
       // node — the listener is bound, the audit chain is intact, the delivery
       // ledger is loaded, and peers can still reach us. Tearing all of that
@@ -929,7 +1005,7 @@ export class QianmoResident {
       if (!this.#stopping) {
         this.#options.onError?.(
           new Error(
-            'resident is degraded: the ACP child could not be started, so no ' +
+            'resident is degraded: the omp RPC child could not be started, so no ' +
               'agent turn can run here. Delivery, receipts and audit continue; ' +
               'inbound task requests will be refused with a reason. The node ' +
               'stays reachable so peers can tell "agent unavailable" from ' +
@@ -967,7 +1043,7 @@ export class QianmoResident {
    * The turn is started but not awaited, and that is the whole of H-3. The
    * caller of this method is on the transport's receipt path, and a receipt is
    * a link-layer statement — "I have this envelope and will not lose it". It
-   * was previously withheld until the ACP turn had actually been admitted,
+   * was previously withheld until the omp RPC turn had actually been admitted,
    * which meant that queueing behind a running turn was paid for out of the
    * sender's 5 s receipt budget: a busy node looked, to every peer, exactly
    * like an unreachable one.
@@ -1080,7 +1156,7 @@ export class QianmoResident {
     context: InboundContext,
   ): Promise<void> {
     // Ahead of everything with a side effect: no task route is registered, no
-    // mailbox line is written, no ACP turn is opened for a message the routing
+    // mailbox line is written, no omp RPC turn is opened for a message the routing
     // layer refuses (rule L-1 — a refused message must not eat the recipient's
     // inbox quota).
     const routed = this.#router.inbound(message)
@@ -1089,12 +1165,80 @@ export class QianmoResident {
       throw new ResidentDeliveryError(routed.code, routed.reason)
     }
 
+    if (
+      this.#options.tenantGate !== undefined &&
+      !this.#options.tenantGate(context.channel.authenticatedPeerNode ?? null)
+    ) {
+      const code = ProtocolErrorCode.E_UNKNOWN_AGENT
+      const reason = 'recipient is unavailable'
+      context.channel.send(errorReply(message, code, reason))
+      throw new ResidentDeliveryError(code, reason)
+    }
+
+    if (
+      message.type === MessageType.AuthzDecision ||
+      message.type === MessageType.AuthzRevoke
+    ) {
+      const payload = message.payload as Record<string, unknown> | null
+      const accepted =
+        payload !== null &&
+        typeof payload === 'object' &&
+        Object.keys(payload).length === 1 &&
+        (message.type === MessageType.AuthzDecision
+          ? this.#authorization?.decision(payload.decision)
+          : this.#authorization?.revoke(payload.revoke))
+      if (accepted !== true)
+        throw new ResidentDeliveryError(
+          ProtocolErrorCode.E_CAP_INSUFFICIENT,
+          'authorization decision refused',
+        )
+      return
+    }
+    if (message.type === MessageType.AuthzRequest) {
+      const peer = context.channel.authenticatedPeerNode
+      const payload = message.payload as Record<string, unknown> | null
+      if (
+        !peer ||
+        !this.#options.authorization?.approvers.has(peer) ||
+        !payload ||
+        Object.keys(payload).length !== 1 ||
+        payload.subscribe !== true ||
+        !context.channel.supports(MessageType.AuthzRequest)
+      )
+        throw new ResidentDeliveryError(
+          ProtocolErrorCode.E_CAP_INSUFFICIENT,
+          'approval subscription refused',
+        )
+      this.#approvalChannels.set(peer, context.channel)
+      for (const request of this.#authorization?.pendingFor(peer) ?? [])
+        this.#sendAuthz(
+          context.channel,
+          request,
+          this.#authorization!.signed(request),
+        )
+      return
+    }
+
     // Contact from this peer is the only moment a redelivery can leave, so it
     // is taken here — before the refusals below, which are about *this*
     // message and say nothing about the answers already owed for earlier ones.
     // Fire and forget: an obligation from a previous life must not delay the
     // envelope that just arrived.
-    const peerNode = parseAddress(message.from)?.node
+    const peerNode =
+      this.#options.tenantGate === undefined
+        ? parseAddress(message.from)?.node
+        : (context.channel.authenticatedPeerNode ?? undefined)
+    if (
+      peerNode !== undefined &&
+      context.channel.supports(MessageType.AuthzRequest)
+    ) {
+      for (const request of this.#authorization?.pendingFor(peerNode) ?? [])
+        this.#sendAuthz(
+          context.channel,
+          request,
+          this.#authorization!.signed(request),
+        )
+    }
     this.#redeliverOwed(context.channel, peerNode)
     // The other half of the same rule (H-2). A notification produced while the
     // hub was away has been sitting in its ledger; this contact is the only
@@ -1144,6 +1288,7 @@ export class QianmoResident {
     // the verdict this channel produced, before the mailbox write the turn is
     // later assembled from (`residentLocalCommand.ts`).
     if (task !== undefined) {
+      task.trust = routed.trust
       const command = residentLocalCommand(
         message,
         routed,
@@ -1243,6 +1388,182 @@ export class QianmoResident {
     return task
   }
 
+  #sendAuthz(
+    channel: TransportChannel,
+    request: import('@qianmo/capability').AuthzRequest,
+    wire: string,
+  ): void {
+    const peer =
+      request.origin.from === null
+        ? undefined
+        : parseAddress(request.origin.from)?.node
+    channel =
+      (peer === undefined ? undefined : this.#approvalChannels.get(peer)) ??
+      channel
+    if (
+      !channel.supports(MessageType.AuthzRequest) ||
+      request.origin.from === null
+    )
+      return
+    const routed = this.#router.outbound(
+      createMessage({
+        from: request.sub,
+        to: request.origin.from,
+        type: MessageType.AuthzRequest,
+        contextId: request.contextId,
+        payload: { request: wire },
+      }),
+    )
+    if (routed.ok) channel.send(routed.message)
+  }
+
+  async #writeMemory(
+    sessionId: string,
+    raw: unknown,
+  ): Promise<{ ok: boolean; text: string }> {
+    const denied = {
+      ok: false,
+      text: 'Memory write was not approved for this running context',
+    }
+    const input = this.#turn.activeInput(sessionId)
+    const task = input === undefined ? undefined : this.#taskFor(input)
+    if (
+      task === undefined ||
+      task.settled ||
+      this.#authorization === undefined ||
+      input?.agent === undefined
+    )
+      return denied
+    const proposal = parseMemoryWrite(raw)
+    const contextId = task.envelope.contextId ?? 'default'
+    let requestId: string | undefined
+    const deadline =
+      Date.now() +
+      taskExpiresAt(task.envelope) -
+      this.#deadlineClock.nowFor(task.envelope.createdAt)
+    const approved = await this.#authorization.request(
+      {
+        toolName: 'qianmo_memory_write',
+        input: proposal,
+        agent: input.agent,
+        contextId,
+      },
+      {
+        from: task.envelope.from,
+        taskId: task.envelope.taskId,
+        traceId: task.envelope.traceId,
+        trust: task.trust ?? 'untrusted',
+      },
+      deadline,
+      this.#turn.inactivityRemaining(sessionId),
+      (request, wire) => {
+        requestId = request.requestId
+        this.#sendAuthz(task.channel, request, wire)
+      },
+    )
+    if (
+      !approved ||
+      requestId === undefined ||
+      task.settled ||
+      this.#turn.activeInput(sessionId) !== input
+    )
+      return denied
+    if (
+      this.#options.tenantGate !== undefined &&
+      !this.#options.tenantGate(task.channel.authenticatedPeerNode ?? null)
+    )
+      return denied
+    const entry = writeResidentMemory(
+      new FileMemoryStore({ root: this.#memoryRoot }),
+      {
+        ...proposal,
+        agent: input.agent,
+        contextId,
+        source: { kind: 'agent', id: requestId },
+      },
+    )
+    return {
+      ok: true,
+      text: `Memory ${entry.id} was written for this context with approval ${requestId}. It can be recalled by subsequent turns.`,
+    }
+  }
+
+  async #requestPermission(sessionId: string, raw: unknown): Promise<boolean> {
+    const input = this.#turn.activeInput(sessionId)
+    const task = input === undefined ? undefined : this.#taskFor(input)
+    if (
+      task === undefined ||
+      task.settled ||
+      this.#authorization === undefined ||
+      input?.agent === undefined ||
+      !raw ||
+      typeof raw !== 'object' ||
+      Array.isArray(raw)
+    )
+      return false
+    const call = raw as Record<string, unknown>
+    if (
+      Object.keys(call).length !== 2 ||
+      typeof call.toolName !== 'string' ||
+      !call.input ||
+      typeof call.input !== 'object' ||
+      Array.isArray(call.input)
+    )
+      return false
+    const agent = this.#options.agents.find(
+      agent => agent.agent === input.agent,
+    )
+    if (agent === undefined) return false
+    const tool = {
+      toolName: call.toolName,
+      input: call.input as Readonly<Record<string, unknown>>,
+    }
+    const verdict = residentToolVerdict(
+      tool,
+      {
+        v: 1,
+        agent: agent.agent,
+        workspace: agent.cwd,
+        edits: this.#options.allowWorkspaceEdits ? 'workspace' : 'none',
+        protectedRoots: [
+          this.#memoryRoot,
+          ...(this.#options.protectedRoots ?? []),
+        ],
+        hostTools: [],
+        approvals: true,
+      },
+      { agentKind: 'main' },
+    )
+    if (verdict?.approvalEligible !== true) return false
+    const boundInput = residentApprovalInput(tool, agent.cwd)
+    if (
+      JSON.stringify(boundInput.__qianmoResolvedTargets) !==
+      JSON.stringify(tool.input.__qianmoResolvedTargets)
+    )
+      return false
+    const deadline =
+      Date.now() +
+      taskExpiresAt(task.envelope) -
+      this.#deadlineClock.nowFor(task.envelope.createdAt)
+    return await this.#authorization.request(
+      {
+        ...tool,
+        input: boundInput,
+        agent: agent.agent,
+        contextId: task.envelope.contextId ?? 'default',
+      },
+      {
+        from: task.envelope.from,
+        taskId: task.envelope.taskId,
+        traceId: task.envelope.traceId,
+        trust: task.trust ?? 'untrusted',
+      },
+      deadline,
+      this.#turn.inactivityRemaining(sessionId),
+      (request, wire) => this.#sendAuthz(task.channel, request, wire),
+    )
+  }
+
   /**
    * Assemble the user message one turn runs on.
    *
@@ -1255,7 +1576,7 @@ export class QianmoResident {
   #assemblePrompt(
     messages: readonly ResidentMailboxMessage[],
     scope: ResidentPromptScope,
-  ): string | Promise<ResidentAssembledPrompt> {
+  ): string | ResidentAssembledPrompt | Promise<ResidentAssembledPrompt> {
     // A console's local command runs as itself: no teammate block, no memory
     // sidecar. The mailbox entry only names the task; the text comes from the
     // envelope the verdict was reached on (`residentLocalCommand.ts`).
@@ -1268,14 +1589,20 @@ export class QianmoResident {
     if (this.#options.semanticRecall !== undefined) {
       return this.#assembleTwoStage(messages, scope)
     }
-    return assembleResidentPrompt({
+    let memoryIds: readonly string[] = []
+    const prompt = assembleResidentPrompt({
       messages,
       // The batch text doubles as the ranking question. It never filters — a
       // watch job that words things differently from the entry it needs still
       // sees that entry, which is the point of full injection.
-      renderMemory: base => this.#memory.render(scope, base),
+      renderMemory: base => {
+        const memory = this.#memory.renderFrozen(scope, base)
+        memoryIds = memory.memoryIds ?? []
+        return memory.block
+      },
       onFinding: error => this.#options.onError?.(error),
     })
+    return { prompt, memoryIds }
   }
 
   /**
@@ -1289,17 +1616,30 @@ export class QianmoResident {
     messages: readonly ResidentMailboxMessage[],
     scope: ResidentPromptScope,
   ): Promise<ResidentAssembledPrompt> {
+    try {
+      this.#memoryIndex?.prune(
+        new FileMemoryStore({ root: this.#memoryRoot, readOnly: true }),
+      )
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
     let retrieval: RetrievalMode | undefined
+    let memoryIds: readonly string[] = []
     const prompt = await assembleResidentPromptAsync({
       messages,
       renderMemory: async base => {
         const memory = await this.#memory.renderHybrid(scope, base)
         retrieval = memory.retrieval
+        memoryIds = memory.memoryIds ?? []
         return memory.block
       },
       onFinding: error => this.#options.onError?.(error),
     })
-    return retrieval === undefined ? { prompt } : { prompt, retrieval }
+    return {
+      prompt,
+      memoryIds,
+      ...(retrieval === undefined ? {} : { retrieval }),
+    }
   }
 
   /**
@@ -1466,6 +1806,7 @@ export class QianmoResident {
   ): Promise<void> {
     if (task.settled) return
     task.settled = true
+    this.#options.usageEndAudit?.(task.envelope.taskId, task.envelope.traceId)
     if (task.timeout !== null) clearTimeout(task.timeout)
     task.timeout = null
     this.#tasksByMessage.delete(task.envelope.msgId)
@@ -1603,7 +1944,7 @@ export class QianmoResident {
   }
 
   /**
-   * Answer `qianmo/notify` from the ACP child (design §4.1⑤, §2 end to end).
+   * Answer `qianmo/notify` from the omp RPC child (design §4.1⑤, §2 end to end).
    *
    * The agent supplies **what** to say and nothing else. Who hears it is
    * derived here, from the task whose turn is running: the announcer is the
@@ -1637,7 +1978,17 @@ export class QianmoResident {
         'the task behind this turn has already been answered',
       )
     }
-    const peerNode = parseAddress(task.envelope.from)?.node
+    const peerNode =
+      this.#options.tenantGate === undefined
+        ? parseAddress(task.envelope.from)?.node
+        : (task.channel.authenticatedPeerNode ?? undefined)
+    if (
+      this.#options.tenantGate !== undefined &&
+      (peerNode === undefined ||
+        !this.#options.tenantGate(peerNode) ||
+        parseAddress(task.envelope.from)?.node !== peerNode)
+    )
+      return this.#notifyRefusal('requester connection is no longer authorized')
     if (peerNode === undefined) {
       return this.#notifyRefusal('the requesting peer has no parseable address')
     }
@@ -1704,7 +2055,17 @@ export class QianmoResident {
   async #pushProgress(progress: ResidentTurnProgress): Promise<void> {
     const task = this.#tasksByMessage.get(progress.networkMsgId)
     if (task === undefined || task.settled) return
-    const peerNode = parseAddress(task.envelope.from)?.node
+    const peerNode =
+      this.#options.tenantGate === undefined
+        ? parseAddress(task.envelope.from)?.node
+        : (task.channel.authenticatedPeerNode ?? undefined)
+    if (
+      this.#options.tenantGate !== undefined &&
+      (peerNode === undefined ||
+        !this.#options.tenantGate(peerNode) ||
+        parseAddress(task.envelope.from)?.node !== peerNode)
+    )
+      return
     if (peerNode === undefined) return
     const payload = {
       kind: 'task',
@@ -1786,7 +2147,7 @@ export class QianmoResident {
         // Failing it here answers the sender `task.result{failed}` for a turn
         // that then goes on to run and succeed on the new generation, and the
         // real answer is dropped because the task left both maps. This window
-        // only exists because the listener now outlives the ACP child: before
+        // only exists because the listener now outlives the omp RPC child: before
         // that, nothing could arrive between the death and the restart.
         .filter(task => !task.delivering)
         .map(task =>
@@ -1849,8 +2210,14 @@ export class QianmoResident {
   }
 
   stop(): void {
+    this.#authorization?.close()
+    this.#memoryIndex?.close()
+    this.#approvalChannels.clear()
     if (this.#stopping) return
     this.#stopping = true
+    this.#generationAbort.abort(
+      new Error('resident stopped during model initialization'),
+    )
     this.#stopProviderPoll()
     this.#poller?.stop()
     this.#poller = null
@@ -1865,7 +2232,7 @@ export class QianmoResident {
    * still coming up.
    *
    * The listener is bound for the node's whole life now, so a peer can arrive
-   * in two windows where it previously could not: while the first ACP child is
+   * in two windows where it previously could not: while the first omp RPC child is
    * still starting, and during the backoff between restarts. Refusing those
    * deliveries would trade one wrong answer for another — the node is not
    * broken, the agent is seconds away — so they wait.
@@ -1903,7 +2270,7 @@ export class QianmoResident {
   }
 
   /**
-   * Whether `#runtime` still has a live ACP child behind it.
+   * Whether `#runtime` still has a live omp RPC child behind it.
    *
    * `#runtime` is retired when the child's `closed` promise settles, but that
    * is an event-loop turn or more after the process actually dies — and with
@@ -1914,10 +2281,10 @@ export class QianmoResident {
    * synchronously, so asking is exact and free.
    */
   #runtimeIsLive(): boolean {
-    if (this.#runtime === null) return false
+    if (this.#runtime === null || this.#providerCommitting) return false
     const child = this.#runtimeChild
     if (child === null) return true
-    return !child.killed && child.exitCode === null && child.signalCode === null
+    return child.alive
   }
 
   /** Resolves when {@link stop} is called. */
@@ -2007,12 +2374,12 @@ export class QianmoResident {
   /**
    * Bind the inbound listener, once, for this node's whole life.
    *
-   * **It is deliberately not owned by the ACP child.** It used to be: the
-   * listener was created at the end of `#startAcp`, after `sessions.start()`,
+   * **It is deliberately not owned by the omp RPC child.** It used to be: the
+   * listener was created at the end of `#startRuntime`, after `sessions.start()`,
    * and torn down when that child stopped. Two consequences, both bad, both
    * invisible until this repository's CI was first able to run:
    *
-   *   · Every ACP restart dropped the listener. A peer dialling during the
+   *   · Every omp RPC restart dropped the listener. A peer dialling during the
    *     backoff found nobody, which reads as "the node is gone" rather than
    *     "the agent is restarting".
    *   · A child that could not start at all — an expired or missing model
@@ -2056,7 +2423,7 @@ export class QianmoResident {
         ? {}
         : { signing: this.#options.handshakeSigning }),
     })
-    // Reported here rather than at the end of `#startAcp`: reachability is a
+    // Reported here rather than at the end of `#startRuntime`: reachability is a
     // property of the listener, and the address is knowable the moment it
     // binds. A node whose agent has not come up yet is still addressable, and
     // saying so is the difference between "restarting" and "gone".
@@ -2075,11 +2442,21 @@ export class QianmoResident {
    * that reads settings next, and the switch never commits while a
    * generation is starting (`#inFlightWork`), so nothing changes in between.
    */
-  async #startAcp(): Promise<ResidentChildConnection> {
+  async #startRuntime(): Promise<ResidentChildConnection> {
     this.#generation += 1
-    this.#recordProviderGeneration()
     this.#generationStarting = true
     try {
+      // A commit can have begun during supervisor backoff. Holding starting
+      // prevents a later commit; joining this one prevents validating old config.
+      await this.#providerCommitFlight
+      this.#generationAbort.signal.throwIfAborted()
+      await this.#options.beforeModelGeneration?.({
+        generation: this.#generation,
+        signal: this.#generationAbort.signal,
+      })
+      if (this.#stopping)
+        throw new Error('resident stopped before model generation')
+      this.#recordProviderGeneration()
       return await this.#spawnGeneration()
     } finally {
       this.#generationStarting = false
@@ -2087,13 +2464,54 @@ export class QianmoResident {
   }
 
   async #spawnGeneration(): Promise<ResidentChildConnection> {
-    const child =
-      this.#options.spawnAcp?.() ?? defaultSpawnAcp(this.#memoryRoot)
-    const closed = childClosed(child)
+    const child = new ResidentOmpPool({
+      onLaunch: (sessionId, policy, configHash) =>
+        (this.#options.runtimeAudit ?? this.#options.authorization?.audit)?.({
+          kind: 'authz.posture',
+          detail: {
+            sessionId,
+            agent: policy.agent,
+            workspace: policy.workspace,
+            home: nodeHomeDir(),
+            configDir: qianmoConfigDir(),
+            qmcodeHome: qmcodeHome(),
+            stateRoots: JSON.stringify(protectedConfigRoots()),
+            edits: policy.edits,
+            roots: JSON.stringify(policy.protectedRoots),
+            hostTools: JSON.stringify(policy.hostTools),
+            approvalMode: policy.edits === 'workspace' ? 'write' : 'always-ask',
+            configHash,
+            policy: JSON.stringify(policy),
+          },
+        }),
+      protectedRoots: this.#options.protectedRoots,
+      agents: this.#options.agents,
+      memoryRoot: this.#memoryRoot,
+      allowWorkspaceEdits: this.#options.allowWorkspaceEdits,
+      spawn: this.#options.spawnOmp,
+      onActivity: this.#options.onActivity,
+      onError: this.#options.onError,
+      announce: params => this.#announce(params),
+      ...(this.#authorization === undefined
+        ? {}
+        : {
+            memoryWrite: (sessionId: string, args: unknown) =>
+              this.#writeMemory(sessionId, args),
+          }),
+      memoryAnswer: (sessionId, args) =>
+        this.#turn.memoryAnswer(sessionId, args),
+      ...(this.#authorization === undefined
+        ? {}
+        : {
+            requestPermission: (sessionId: string, call: unknown) =>
+              this.#requestPermission(sessionId, call),
+          }),
+    })
+    const closed = child.closed
     void closed.catch(() => {})
     // Retire the runtime the moment the child is gone, not when the supervisor
     // gets around to calling `stop()`. With the listener no longer dying with
-    // the child, a peer can deliver in that gap, and a runtime whose ACP
+    // the child, a peer can deliver in that gap, and a runtime whose omp RPC
     // connection is already dead would take the turn and fail it. Nulling here
     // sends that delivery down the same path as any other mid-restart arrival:
     // wait for the next generation (`#runtimeForDelivery`).
@@ -2113,63 +2531,44 @@ export class QianmoResident {
         if (this.#runtime === runtime) this.#runtime = null
         poller?.stop()
         if (this.#poller === poller) this.#poller = null
-        await this.#failActiveTasks('resident ACP connection closed')
-        // Both of these need the transport up. It is: the listener is owned by
-        // `run()` now, not by this child, so it outlives every ACP restart and
-        // every park. Before that change it was torn down here and rebuilt by
-        // the next `#startAcp`, which is why a child that could not start left
-        // the node with no listener at all.
-        await this.#drainReplyReceipts()
-        if (
-          !child.killed &&
-          child.exitCode === null &&
-          child.signalCode === null
-        ) {
-          child.kill('SIGTERM')
-        }
         try {
-          await closed
-        } catch {
-          // Exit status is reported through the supervisor's `closed` await.
-        }
-        try {
-          await this.#options.onActivity?.(false)
-        } catch (error) {
-          this.#options.onError?.(error)
+          await this.#failActiveTasks('resident omp RPC connection closed')
+          // Both of these need the transport up. It is: the listener is owned by
+          // `run()` now, not by this child, so it outlives every omp RPC restart and
+          // every park. Before that change it was torn down here and rebuilt by
+          // the next `#startRuntime`, which is why a child that could not start left
+          // the node with no listener at all.
+          await this.#drainReplyReceipts()
+        } finally {
+          // Audit/receipt failures must still reap every process before this
+          // memoized teardown can reject. Otherwise the supervisor catches
+          // that error and starts the next generation beside a live old one.
+          await child.stop()
+          try {
+            await closed
+          } catch {
+            // Exit status is reported through the supervisor's `closed` await.
+          }
+          try {
+            await this.#options.onActivity?.(false)
+          } catch (error) {
+            this.#options.onError?.(error)
+          }
         }
       })()
       return stopping
     }
 
     try {
-      const streams = webStreams(child)
-      const connection = new ResidentAcpConnection({
-        stream: createResidentAcpStream(streams.writable, streams.readable),
-        ...(this.#options.allowWorkspaceEdits === true
-          ? { permissionMode: 'acceptEdits' as const }
-          : {}),
-        onInputAccepted: async params => {
-          await this.#turn.handleInputAccepted(params)
-        },
-        onActivity: this.#options.onActivity,
-        onSessionUpdate: params => {
-          this.#turn.handleSessionUpdate(params)
-        },
-        // The ACP child is the only process on this node that talks to a model
-        // endpoint, so it is the only one that can see a refused credential.
-        // Without this the watchdog reports the resulting silence as "no
-        // activity" and every reader goes looking at the model (issue #37).
-        onUpstreamStatus: params => {
-          this.#turn.handleUpstreamStatus(params)
-        },
-        onExtMethod: async (method, params) =>
-          method === ACP_NOTIFY_METHOD
-            ? await this.#announce(params)
-            : undefined,
-      })
-      this.#turn.replaceConnection(connection)
+      const connection = child
+      this.#runtimeChild = child
 
       const sessions = new ResidentSessionManager({
+        onContextEnd: key => {
+          this.#authorization?.store.endContext(
+            contextOfSessionKey(key) ?? 'default',
+          )
+        },
         connection,
         store: this.#sessions,
         agents: this.#options.agents,
@@ -2185,7 +2584,8 @@ export class QianmoResident {
       await sessions.start()
       for (const agent of this.#options.agents) {
         this.#timings.record({
-          stage: 'acp_ready',
+          stage: 'runtime_ready',
+          generation: this.#generation,
           at: Date.now(),
           sessionId: sessions.sessionOf(agent.agent),
           agent: agent.agent,
@@ -2251,7 +2651,7 @@ export class QianmoResident {
         // entry into a turn, so skipping it here is what makes "no new work"
         // true at the source — including for mail that arrived before the
         // brake was pulled. Nothing running is touched.
-        paused: () => this.#estop.engaged(),
+        paused: () => this.#estop.engaged() || this.#providerCommitting,
         ...(this.#options.pollIntervalMs === undefined
           ? {}
           : { intervalMs: this.#options.pollIntervalMs }),
@@ -2300,7 +2700,7 @@ export class QianmoResident {
     let ledger = this.#ledgers.get(agent)
     if (ledger === undefined) {
       ledger = new FileAdmissionLedger(
-        occConfigPath('resident', agent, 'admission.ndjson'),
+        qianmoConfigPath('resident', agent, 'admission.ndjson'),
       )
       this.#ledgers.set(agent, ledger)
     }
@@ -2313,7 +2713,7 @@ export class QianmoResident {
 
   /**
    * Look for a pending provider configuration and, when the node is idle,
-   * commit it and recycle the ACP child.
+   * commit it and recycle the omp RPC child.
    *
    * Called by the 5 s poll, by the CLI on SIGHUP, and after each turn while an
    * intent is waiting. **Synchronous on purpose**: the idle check, the commit,
@@ -2330,6 +2730,10 @@ export class QianmoResident {
   checkProviderConfig(): void {
     const node = this.#options.providerNode
     if (node === undefined || !this.#providerReady || this.#stopping) return
+    if (this.#providerCommitting) {
+      this.#providerCheckQueued = true
+      return
+    }
     let pending: boolean
     try {
       pending = node.hasPendingProviderConfig()
@@ -2360,7 +2764,7 @@ export class QianmoResident {
       this.#raiseOnce(
         waiting,
         'parked',
-        'a provider configuration is pending, but the ACP child is parked and no generation will start to load it; it will be committed when this resident is restarted',
+        'a provider configuration is pending, but the omp RPC child is parked and no generation will start to load it; it will be committed when this resident is restarted',
       )
       this.#writeWaiting(waiting, this.#inFlightWork() ?? IDLE)
       return
@@ -2373,7 +2777,7 @@ export class QianmoResident {
         waiting.alertedAt = now
         this.#providerAlert(
           `provider configuration ${waiting.requestId ?? '(unknown request)'} has been waiting ` +
-            `${Math.round((now - waiting.since) / 60_000)} min for the ACP child to go idle ` +
+            `${Math.round((now - waiting.since) / 60_000)} min for the omp RPC child to go idle ` +
             `(${describeInFlight(inFlight)}). It is not forced: the switch happens when the ` +
             'work in flight ends.',
         )
@@ -2381,18 +2785,35 @@ export class QianmoResident {
       this.#writeWaiting(waiting, inFlight)
       return
     }
-    this.#commitAndRecycle(node, waiting)
+    this.#providerCommitting = true
+    const operation = this.#commitAndRecycle(node, waiting).finally(() => {
+      this.#providerCommitting = false
+      if (this.#providerCommitFlight === operation)
+        this.#providerCommitFlight = undefined
+      if (this.#providerCheckQueued) {
+        this.#providerCheckQueued = false
+        queueMicrotask(() => this.checkProviderConfig())
+      }
+      // A refused/no-op commit retains the generation: release held deliveries.
+      if (this.#runtimeIsLive()) {
+        const waiters = this.#runtimeWaiters
+        this.#runtimeWaiters = []
+        for (const wake of waiters) wake()
+      }
+    })
+    this.#providerCommitFlight = operation
+    void operation.catch(error => this.#options.onError?.(error))
   }
 
   /** The idle half of {@link checkProviderConfig}. */
-  #commitAndRecycle(
+  async #commitAndRecycle(
     node: ResidentProviderNode,
     waiting: ProviderWaiting,
-  ): void {
+  ): Promise<void> {
     const before = managedHashOf(node)
     let result: ResidentProviderCommit
     try {
-      result = node.commitPendingProviderConfig()
+      result = await node.commitPendingProviderConfig()
     } catch (error) {
       this.#afterFailedCommit(node, waiting, before, null, errorText(error))
       return
@@ -2475,7 +2896,7 @@ export class QianmoResident {
       'write-failed',
       `could not commit the pending provider configuration: ${detail}. ` +
         (changed
-          ? 'settings.json did change, so the ACP child is recycled anyway, with its sessions reset.'
+          ? 'settings.json did change, so the omp RPC child is recycled anyway, with its sessions reset.'
           : 'It stays pending and is retried on the next check.'),
     )
     this.#writeSwitchStatus({
@@ -2545,11 +2966,11 @@ export class QianmoResident {
    * map is reset, which is R-7's default. A node that is not managed has no
    * applied configuration and is left exactly as it was.
    */
-  #prepareProviderConfig(): void {
+  async #prepareProviderConfig(): Promise<void> {
     const node = this.#options.providerNode
     if (node === undefined) return
     try {
-      const result = node.commitPendingProviderConfig()
+      const result = await node.commitPendingProviderConfig()
       if (result.status === 'committed') {
         this.#providerCommitted(result, 'startup')
       } else if (
@@ -2599,6 +3020,9 @@ export class QianmoResident {
     if (policy !== 'reset') return
     try {
       for (const key of Object.keys(this.#sessions.entries())) {
+        this.#authorization?.store.endContext(
+          contextOfSessionKey(key) ?? 'default',
+        )
         this.#sessions.delete(key)
       }
     } catch (error) {
@@ -2624,7 +3048,7 @@ export class QianmoResident {
   }
 
   /**
-   * What stopping the ACP child now would cut off, or `null` when nothing.
+   * What stopping the omp RPC child now would cut off, or `null` when nothing.
    *
    * Wider than "a turn is running" on purpose: an admission poll can be
    * between reading the mailbox and submitting its turn, and a delivery can be
@@ -2764,7 +3188,10 @@ export class QianmoResident {
     if (this.#switchStatus !== undefined) return this.#switchStatus
     try {
       const parsed: unknown = JSON.parse(
-        readFileSync(occConfigPath('resident', PROVIDER_SWITCH_FILE), 'utf8'),
+        readFileSync(
+          qianmoConfigPath('resident', PROVIDER_SWITCH_FILE),
+          'utf8',
+        ),
       )
       if (
         typeof parsed === 'object' &&
@@ -2803,7 +3230,7 @@ export class QianmoResident {
           : (current?.reconciledRequestId ?? null),
     }
     try {
-      const path = occConfigPath('resident', PROVIDER_SWITCH_FILE)
+      const path = qianmoConfigPath('resident', PROVIDER_SWITCH_FILE)
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
       chmodSync(dirname(path), 0o700)
       writePrivateFileAtomicSync(path, `${JSON.stringify(next, null, 2)}\n`)

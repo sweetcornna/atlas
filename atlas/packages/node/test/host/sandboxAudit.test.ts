@@ -6,23 +6,25 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const savedConfigDir = process.env.OCC_CONFIG_DIR
+const savedConfigDir = process.env.QIANMO_CONFIG_DIR
 let directory: string
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'qianmo-sandbox-host-audit-'))
-  process.env.OCC_CONFIG_DIR = directory
+  process.env.QIANMO_CONFIG_DIR = directory
 })
 
 afterEach(() => {
-  if (savedConfigDir === undefined) delete process.env.OCC_CONFIG_DIR
-  else process.env.OCC_CONFIG_DIR = savedConfigDir
+  if (savedConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = savedConfigDir
   rmSync(directory, { recursive: true, force: true })
 })
 
 describe('sandbox audit host wiring', () => {
   test('derives the audit path from the identity-scoped config root', async () => {
-    const { defaultSandboxAuditPath } = await import('../sandboxAudit.js')
+    const { defaultSandboxAuditPath } = await import(
+      '../../src/host/sandboxAudit.js'
+    )
     expect(defaultSandboxAuditPath()).toBe(
       join(directory, 'sandbox', 'audit.ndjson'),
     )

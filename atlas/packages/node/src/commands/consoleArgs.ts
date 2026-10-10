@@ -22,16 +22,14 @@ import {
   MAX_SEGMENT_LENGTH,
 } from '@qianmo/protocol'
 import { PSK_ENV_VAR } from '@qianmo/transport'
-import { occConfigPath } from '../../config/paths.js'
-import { invokedBinName } from '../../constants/brand.js'
-import { IDENTITY_MODE, type IdentityMode } from '../../constants/identity.js'
-import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
+import { qianmoConfigPath } from '@qianmo/paths'
+import { auditTrailPath } from '../host/auditTrail.js'
 import {
   parseAuditWitnessSource,
   WITNESS_READ_TOKEN_ENV_VAR,
   type AuditWitnessSource,
-} from '../../services/qianmo/auditWitness.js'
-import { parseTrustedKey } from '../../services/qianmo/nodeIdentity.js'
+} from '../host/auditWitness.js'
+import { parseTrustedKey } from '../host/nodeIdentity.js'
 import {
   isProtocolNodeName,
   type ProviderNodeTarget,
@@ -210,12 +208,12 @@ export const DEFAULT_CONSOLE_CHAT_FROM = 'qianmo://console/operator'
 /**
  * 会话落盘的默认位置。
  *
- * 从 `occConfigPath()` 派生，和审计链、常驻会话表同一条规矩（CLAUDE.md §1.1②）：
- * 这里绝不出现拼好的家目录路径，`OCC_CONFIG_DIR` 因此对它同样有效——演示拓扑给
+ * 从 `qianmoConfigPath()` 派生，和审计链、常驻会话表同一条规矩（CLAUDE.md §1.1②）：
+ * 这里绝不出现拼好的家目录路径，`QIANMO_CONFIG_DIR` 因此对它同样有效——演示拓扑给
  * 每个进程一个配置根，控制台的转录也就跟着分家。
  */
 export function consoleChatStorePath(): string {
-  return occConfigPath('qianmo', 'console', 'chat.ndjson')
+  return qianmoConfigPath('qianmo', 'console', 'chat.ndjson')
 }
 
 /**
@@ -226,7 +224,7 @@ export function consoleChatStorePath(): string {
  * 转录是一条会话一路追加，备注是一台机器一行。
  */
 export function consoleServerNotesPath(): string {
-  return occConfigPath('qianmo', 'console', 'server-notes.ndjson')
+  return qianmoConfigPath('qianmo', 'console', 'server-notes.ndjson')
 }
 
 /**
@@ -238,7 +236,7 @@ export function consoleServerNotesPath(): string {
  * 那本来就不该续前一个的登记。
  */
 export function consoleRegistrationsPath(): string {
-  return occConfigPath('qianmo', 'console', 'registrations.json')
+  return qianmoConfigPath('qianmo', 'console', 'registrations.json')
 }
 
 /**
@@ -249,7 +247,7 @@ export function consoleRegistrationsPath(): string {
  * 才会被创建——一个不开账号的控制台不该在配置根里留下一本空账。
  */
 export function consoleAccountsPath(): string {
-  return occConfigPath('qianmo', 'console', 'accounts.ndjson')
+  return qianmoConfigPath('qianmo', 'console', 'accounts.ndjson')
 }
 
 /**
@@ -260,7 +258,7 @@ export function consoleAccountsPath(): string {
  * 吊销这类事上写；分开以后账号库不会被会话流水撑大，两本也各自成链、各自可查。
  */
 export function consoleSessionsPath(): string {
-  return occConfigPath('qianmo', 'console', 'sessions.ndjson')
+  return qianmoConfigPath('qianmo', 'console', 'sessions.ndjson')
 }
 
 /**
@@ -271,7 +269,7 @@ export function consoleSessionsPath(): string {
  * 它记的是「哪个人」，没有个人账号的控制台不该多出这本账。
  */
 export function consoleActionsPath(): string {
-  return occConfigPath('qianmo', 'console', 'actions.ndjson')
+  return qianmoConfigPath('qianmo', 'console', 'actions.ndjson')
 }
 
 /**
@@ -283,10 +281,10 @@ export function consoleActionsPath(): string {
  */
 function consoleProviderPaths(): ConsoleProvidersConfig {
   return {
-    storePath: occConfigPath('qianmo', 'console', 'providers.ndjson'),
-    secretsPath: occConfigPath('qianmo', 'console', 'provider-secrets.json'),
-    keyFile: occConfigPath('qianmo', 'console-keys', 'provider-master.key'),
-    knownHostsFile: occConfigPath(
+    storePath: qianmoConfigPath('qianmo', 'console', 'providers.ndjson'),
+    secretsPath: qianmoConfigPath('qianmo', 'console', 'provider-secrets.json'),
+    keyFile: qianmoConfigPath('qianmo', 'console-keys', 'provider-master.key'),
+    knownHostsFile: qianmoConfigPath(
       'qianmo',
       'console-keys',
       'provider_known_hosts',
@@ -445,6 +443,8 @@ export interface ConsoleCliConfig {
    * 对未信任的节点上失败了。这条子路径不起服务器、不读 token、不拨任何端点。
    */
   readonly printWakeIdentity?: boolean
+  readonly printApproverIdentity?: boolean
+  readonly approvals?: boolean
   /**
    * CA 根证书的绝对路径。**给了才有证书栏**（key-distribution.md §10.1）。
    *
@@ -504,6 +504,9 @@ export interface ConsoleCliConfig {
    * 控制台，逐字节不变。开了以后两枚旧 token 照旧可用（迁移期 M-1），另多出
    * 邀请开户这条路。
    */
+  readonly tenancyPath?: string
+  readonly usagePolicyPath?: string
+  readonly openRegistration?: { readonly maxAccounts: number }
   readonly accounts?: boolean
   /** 账号库的绝对路径；只在 {@link accounts} 打开时出现。 */
   readonly accountsStorePath?: string
@@ -570,10 +573,7 @@ function nonEmpty(value: string, flag: string): string {
   return trimmed
 }
 
-export function parseConsoleArgs(
-  args: readonly string[],
-  identity: IdentityMode = IDENTITY_MODE,
-): ConsoleCliConfig {
+export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let port = DEFAULT_CONSOLE_PORT
   let hostname = DEFAULT_CONSOLE_HOSTNAME
   let registryUrl = DEFAULT_CONSOLE_REGISTRY_URL
@@ -586,6 +586,8 @@ export function parseConsoleArgs(
   let signWakes = false
   let signChats = false
   let printWakeIdentity = false
+  let printApproverIdentity = false
+  let approvals = false
   let trustCa: string | undefined
   const trusted = new Map<string, string>()
   let registryTokenFile: string | undefined
@@ -601,6 +603,10 @@ export function parseConsoleArgs(
   const nodeServers: ConsoleNodeServer[] = []
   let serverNotesPath = consoleServerNotesPath()
   const managed: ConsoleManagedAddress[] = []
+  let tenancyPath: string | undefined
+  let usagePolicyPath: string | undefined
+  let openRegistration = false
+  let registrationMaxAccounts: number | undefined
   let accounts = false
   let accountsStorePath = consoleAccountsPath()
   let accountsStoreGiven = false
@@ -766,6 +772,10 @@ export function parseConsoleArgs(
       signWakes = true
     } else if (arg === '--chat-sign') {
       signChats = true
+    } else if (arg === '--approvals') {
+      approvals = true
+    } else if (arg === '--print-approver-identity') {
+      printApproverIdentity = true
     } else if (arg === '--print-wake-identity') {
       printWakeIdentity = true
     } else if (arg === '--label' || arg?.startsWith('--label=')) {
@@ -907,6 +917,37 @@ export function parseConsoleArgs(
         throw new Error('--server-notes must be an absolute path')
       }
       serverNotesPath = resolve(parsed.value)
+      index = parsed.next
+    } else if (
+      arg === '--tenancy' ||
+      arg?.startsWith('--tenancy=') ||
+      arg === '--usage-policy' ||
+      arg?.startsWith('--usage-policy=')
+    ) {
+      const flag = arg.startsWith('--tenancy') ? '--tenancy' : '--usage-policy'
+      const parsed = residentOptionValue(args, index, flag)
+      if (!isAbsolute(parsed.value))
+        throw new Error(`${flag} must be an absolute path`)
+      if (flag === '--tenancy') tenancyPath = resolve(parsed.value)
+      else usagePolicyPath = resolve(parsed.value)
+      index = parsed.next
+    } else if (arg === '--open-registration') {
+      openRegistration = true
+    } else if (
+      arg === '--registration-max-accounts' ||
+      arg?.startsWith('--registration-max-accounts=')
+    ) {
+      const parsed = residentOptionValue(
+        args,
+        index,
+        '--registration-max-accounts',
+      )
+      const value = Number(parsed.value)
+      if (!Number.isSafeInteger(value) || value < 1 || value > 100000)
+        throw new Error(
+          '--registration-max-accounts must be an integer from 1 to 100000',
+        )
+      registrationMaxAccounts = value
       index = parsed.next
     } else if (arg === '--accounts') {
       accounts = true
@@ -1124,13 +1165,9 @@ export function parseConsoleArgs(
       // 他没有任何地方可以去查那张表。
       throw new Error(
         `unknown console option ${String(arg)}` +
-          ` (run \`${invokedBinName()} console --help\` for the list)`,
+          ' (run `qm console --help` for the list)',
       )
     }
-  }
-
-  if (identity !== 'qianmo') {
-    throw new Error('console requires OCC_IDENTITY=qianmo')
   }
 
   if (auditTargets.length === 0) {
@@ -1154,6 +1191,49 @@ export function parseConsoleArgs(
 
   // 给了库路径却没开账号，多半是以为给路径就开了。静默照旧跑会让人以为账号已
   // 上线，而页面上什么都没变。
+  if (
+    approvals &&
+    (!accounts ||
+      !signChats ||
+      chatTargets.length === 0 ||
+      chatTargets.some(target => target.legacy || !trusted.has(target.node)))
+  )
+    throw new Error(
+      '--approvals needs --accounts, --chat-sign, named --chat-url and --trust for every chat node',
+    )
+  if (
+    (tenancyPath !== undefined ||
+      usagePolicyPath !== undefined ||
+      openRegistration) &&
+    !accounts
+  )
+    throw new Error(
+      '--tenancy, --usage-policy and --open-registration need --accounts',
+    )
+  if (
+    openRegistration &&
+    (tenancyPath === undefined || registrationMaxAccounts === undefined)
+  )
+    throw new Error(
+      '--open-registration needs --tenancy and --registration-max-accounts',
+    )
+  if (tenancyPath !== undefined) {
+    for (const [flag, targets, signed] of [
+      ['--chat-url', chatTargets, signChats],
+      ['--wake-url', wakeTargets, signWakes],
+    ] as const) {
+      if (targets.length === 0) continue
+      if (
+        !signed ||
+        targets.some(target => target.legacy || !trusted.has(target.node))
+      )
+        throw new Error(
+          `--tenancy needs ${flag === '--chat-url' ? '--chat-sign' : '--wake-sign'}, named ${flag} and --trust for every target node`,
+        )
+    }
+  }
+  if (!openRegistration && registrationMaxAccounts !== undefined)
+    throw new Error('--registration-max-accounts needs --open-registration')
   if (accountsStoreGiven && !accounts) {
     throw new Error('--accounts-store needs --accounts')
   }
@@ -1269,6 +1349,8 @@ export function parseConsoleArgs(
     ...(signWakes ? { signWakes } : {}),
     ...(signChats ? { signChats } : {}),
     ...(printWakeIdentity ? { printWakeIdentity } : {}),
+    ...(printApproverIdentity ? { printApproverIdentity } : {}),
+    ...(approvals ? { approvals } : {}),
     ...(trustCa === undefined ? {} : { trustCa }),
     label: label ?? `${hostname}:${port}`,
     ...(viewToken === undefined ? {} : { viewToken }),
@@ -1287,6 +1369,11 @@ export function parseConsoleArgs(
       ? {
           accounts,
           accountsStorePath,
+          ...(tenancyPath === undefined ? {} : { tenancyPath }),
+          ...(usagePolicyPath === undefined ? {} : { usagePolicyPath }),
+          ...(openRegistration
+            ? { openRegistration: { maxAccounts: registrationMaxAccounts! } }
+            : {}),
           sessionsStorePath,
           legacyViewToken,
           breakGlass,
@@ -1328,9 +1415,9 @@ export function isConsoleHelpRequest(args: readonly string[]): boolean {
  * 「给了才启用」的面、三个 token 入口的优先级与那条进程列表的暴露）都必须在
  * 这里说全。
  */
-export const CONSOLE_HELP_TEXT = `Usage: ${invokedBinName()} console [options]
+export const CONSOLE_HELP_TEXT = `Usage: qm console [options]
 
-Serve the Qianmo web console. Requires OCC_IDENTITY=qianmo and the Bun runtime.
+Serve the Qianmo web console. Requires the Bun runtime.
 Full documentation: docs/dev/console.md
 
 Options (each accepts both --name value and --name=value):
@@ -1453,6 +1540,13 @@ Options (each accepts both --name value and --name=value):
   --server-notes <abs path>
                            Where per-server notes land, absolute path.
                            Default <config root>/qianmo/console/server-notes.ndjson.
+  --approvals              Enable signed personal approvals over pinned chat links.
+  --print-approver-identity Print the separate approval public key and exit.
+  --tenancy <path>          Enable node-granular tenant policy (absolute JSON path).
+  --usage-policy <path>     Optional quota policy; default shadow without limits.
+  --open-registration      Enable member signup; requires --tenancy.
+  --registration-max-accounts <n>
+                           Required signup cap; includes revoked accounts.
   --accounts               Turn on personal accounts: invitation links, one
                            personal credential per person. Off by default,
                            and off is exactly the console without accounts.
@@ -1487,7 +1581,7 @@ Options (each accepts both --name value and --name=value):
                            verdict and exit: 1 when it is broken or cannot be
                            read, 0 otherwise (absent and empty are not
                            findings). Starts nothing and reads no token.
-                           ${invokedBinName()} audit --verify cannot read this
+                           qm audit --verify cannot read this
                            file: its lines are the account book's, not the
                            audit trail's.
   --providers              Turn on model services: provider profiles kept on
@@ -1539,7 +1633,7 @@ Options (each accepts both --name value and --name=value):
                            Turn on /v0/handoff, the hub side of the local-to-
                            cloud handoff. The directory holds one bare
                            repository per project (<root>/<project>.git),
-                           created by \`${invokedBinName()} handoff init\` on the
+                           created by \`qm handoff init\` on the
                            laptop and pushed to through the SSH gate
                            (demo/env/beta/ops/handoff-git-gate.sh) with the
                            same root. The ledger and its audit chain live
@@ -1547,7 +1641,7 @@ Options (each accepts both --name value and --name=value):
                            locked while this console runs, so a second console
                            on the same config root refuses to start.
   --handoff-node <node>=<ws url>
-                           A node bridge (\`${invokedBinName()} handoff node\`) to hand
+                           A node bridge (\`qm handoff node\`) to hand
                            accepted tasks to: one task per node at a time,
                            nodes tried in the order given. Repeatable. Needs
                            --handoff-root and a --handoff-node-git for the same
@@ -1598,8 +1692,6 @@ Credentials:
 
 Environment:
 
-  OCC_IDENTITY             Must be "qianmo". The console is part of the Qianmo
-                           node identity, it does not run under plain occ.
   ${PSK_ENV_VAR}     Legacy single-target wake and chat PSK. Environment only,
                            never a command-line option, for the reason under
                            entrance 3.
@@ -1613,13 +1705,14 @@ Environment:
                            The view and admin tokens, entrance 2 above.
   ${WITNESS_READ_TOKEN_ENV_VAR}
                            Read-only token for a remote --anchors endpoint.
-  OCC_CONFIG_DIR           Config root the default audit trail, transcript,
+  QIANMO_CONFIG_DIR        Config root (default ~/.qianmo) the default audit
+                           trail, transcript,
                            server-note and registration-ledger paths are
                            derived from. Agents registered on the page are
                            kept in that ledger and renewed by this console
                            until they are deregistered on the page; paused and
                            retired ones stay in it, and chat, wake and
-                           ${invokedBinName()} watch send them nothing.
+                           qm watch send them nothing.
 `
 
 /** 控制台跑在 `Bun.serve` 上，和常驻模式同一条运行时断言。 */

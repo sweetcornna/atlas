@@ -46,18 +46,18 @@ import {
   issueCertificate,
   refreshRevocationList,
   type CaInitResult,
-} from '../ca/operations.js'
-import { caKeyPairFromPem } from '../ca/caKeys.js'
-import { opensslVersion, runOpenssl } from '../ca/openssl.js'
-import { popMessage } from '../ca/pop.js'
-import { signRevocationList } from '../ca/revocationList.js'
+} from '../../src/ca/operations.js'
+import { caKeyPairFromPem } from '../../src/ca/caKeys.js'
+import { opensslVersion, runOpenssl } from '../../src/ca/openssl.js'
+import { popMessage } from '../../src/ca/pop.js'
+import { signRevocationList } from '../../src/ca/revocationList.js'
 import {
   CERTIFICATE_CREDENTIAL_SOURCE,
   EXPLICIT_CREDENTIAL_SOURCE,
   CertificateDirectory,
   assertOwnCertificateMatchesIdentity,
-} from '../certificateDirectory.js'
-import { buildHandshakeSigning } from '../../../cli/handlers/resident.js'
+} from '../../src/host/certificateDirectory.js'
+import { buildHandshakeSigning } from '../../src/commands/resident.js'
 
 const OPENSSL = opensslVersion()
 const itNeedsOpenssl = OPENSSL === null ? test.skip : test

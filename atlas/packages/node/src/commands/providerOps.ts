@@ -20,7 +20,7 @@
  *     Not for a node the hub does not manage whose resident started with
  *     provider keys in its environment (`inheritedProviderKeys`): its ACP
  *     child runs on that environment, while `effective` strips it and reads
- *     `settings.json` alone, so the block would describe a model the child
+ *     native model and config YAML alone, so the block would describe a model the child
  *     does not run. It is left out, with a warning line saying why.
  *   - `apply`: `stageProviderApply()`; then, if a resident is running, a
  *     SIGHUP through P18.3's `signalResidentProviderCheck()` (it switches at
@@ -29,7 +29,7 @@
  *     file or a `running` lifecycle stamp whose pid is alive — because the two
  *     mistakes cost differently: a wrong yes leaves the intent pending until
  *     the next resident start rolls it forward; a wrong no rewrites
- *     `settings.json` under a live ACP child (R-5). Residents older than
+ *     native configuration under a live omp child (R-5). Residents older than
  *     P18.3 write no pid file, hence the lifecycle stamp.
  *   - `probe`, `models`: `providerProbe.ts` and `providerCall.ts`.
  *   - `autocompact` (D-9): `qm provider autocompact --json` in a child of its
@@ -64,23 +64,20 @@ import {
   type ModelsRequest,
   type WireProfile,
 } from '@qianmo/providers'
-import { occConfigPath } from '../../config/paths.js'
-import { getModelCompatCapabilities } from '../../services/qianmo/modelCompat/capabilities.js'
+import { qianmoConfigPath } from '@qianmo/paths'
+import { getModelCompatCapabilities } from '../providers/capabilities.js'
 import {
   computeEffectiveInChild,
   type EffectiveOutcome,
   runOwnCliChild,
-} from '../../services/qianmo/providers/effectiveProcess.js'
+} from '../providers/effectiveProcess.js'
 import {
   commitPendingProviderConfig,
   readProviderState,
   stageProviderApply,
-} from '../../services/qianmo/providers/node.js'
-import {
-  isProcessAlive,
-  providerPaths,
-} from '../../services/qianmo/providers/store.js'
-import type { CliLaunchSpec } from '../../utils/process/cliLaunch.js'
+} from '../providers/node.js'
+import { isProcessAlive, providerPaths } from '../providers/store.js'
+import type { CliLaunchSpec } from '../providers/effectiveProcess.js'
 import type { AutocompactResult } from './providerAutocompact.js'
 import { probeCall } from './providerCall.js'
 import {
@@ -164,14 +161,14 @@ function readJson(path: string): Record<string, unknown> | null {
 }
 
 /**
- * `occConfigPath('resident', …)` files the resident writes. The names are
+ * `qianmoConfigPath('resident', …)` files the resident writes. The names are
  * spelled where the resident writes them too: `lifecycle.json` in
  * `services/qianmo/resident.ts` (the sentinel), `provider-switch.json` as
  * `PROVIDER_SWITCH_FILE` in the same file; a test pins the second.
  */
 const residentFiles = {
-  lifecycle: () => occConfigPath('resident', 'lifecycle.json'),
-  providerSwitch: () => occConfigPath('resident', 'provider-switch.json'),
+  lifecycle: () => qianmoConfigPath('resident', 'lifecycle.json'),
+  providerSwitch: () => qianmoConfigPath('resident', 'provider-switch.json'),
 }
 
 /** The live resident on this config root, if any (see the module header). */
@@ -358,7 +355,7 @@ async function apply(
     await signalResident(ctx)
     return done()
   }
-  const committed = commitPendingProviderConfig({ now })
+  const committed = await commitPendingProviderConfig({ now })
   switch (committed.status) {
     case 'committed':
     case 'none':
@@ -379,7 +376,7 @@ async function apply(
       return failure(
         staged.requestId,
         'write-failed',
-        `写入 settings.json 失败 · ${redact(committed.message, request.profile)}`,
+        `写入 omp 配置失败 · ${redact(committed.message, request.profile)}`,
         { state: currentProviderState() },
       )
     case 'bad-pending':

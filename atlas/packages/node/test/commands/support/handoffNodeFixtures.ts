@@ -19,12 +19,12 @@ import {
   shadowCommit,
   wipRef,
 } from '@qianmo/handoff'
-import { createConsoleWakeIssuer } from '../../consoleWakeIdentity.js'
+import { createConsoleWakeIssuer } from '../../../src/commands/consoleWakeIdentity.js'
 import {
   type HandoffNodeHandle,
   type HandoffNodeOptions,
   startHandoffNode,
-} from '../../handoffNode.js'
+} from '../../../src/commands/handoffNode.js'
 import {
   type FakeAppServer,
   type FakeAppServerOptions,

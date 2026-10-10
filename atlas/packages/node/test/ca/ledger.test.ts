@@ -37,17 +37,17 @@ import {
   appendIssuanceRecords,
   issuanceRecordOf,
   readIssuanceLedger,
-} from '../ledger.js'
-import { initCa, issueCertificate } from '../operations.js'
-import { opensslVersion, runOpenssl } from '../openssl.js'
+} from '../../src/ca/ledger.js'
+import { initCa, issueCertificate } from '../../src/ca/operations.js'
+import { opensslVersion, runOpenssl } from '../../src/ca/openssl.js'
 import {
   caKeyPath,
   caSerialPath,
   issuanceLedgerPath,
   issueLockPath,
   issuedCertPath,
-} from '../paths.js'
-import { popMessage } from '../pop.js'
+} from '../../src/ca/paths.js'
+import { popMessage } from '../../src/ca/pop.js'
 
 const OPENSSL = opensslVersion()
 const itNeedsOpenssl = OPENSSL === null ? test.skip : test

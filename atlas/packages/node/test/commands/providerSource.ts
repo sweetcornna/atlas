@@ -9,33 +9,11 @@
  */
 
 import { join } from 'node:path'
-import {
-  macroDefineArgs,
-  resolveBuildFeatures,
-} from '../../../../scripts/defines.js'
-import { inheritedProviderKeyNames } from '../../../services/qianmo/providers/whitelist.js'
-import type { CliLaunchSpec } from '../../../utils/process/cliLaunch.js'
-
-const CLI_ENTRYPOINT = join(
-  import.meta.dir,
-  '..',
-  '..',
-  '..',
-  'entrypoints',
-  'cli.tsx',
-)
-
-/** `bun run <defines> <features> src/entrypoints/cli.tsx <cliArgs>` */
-function sourceArgs(cliArgs: readonly string[]): string[] {
-  return [
-    'run',
-    ...macroDefineArgs(),
-    '-d',
-    `process.env.NODE_ENV:${JSON.stringify('production')}`,
-    ...[...resolveBuildFeatures()].flatMap(name => ['--feature', name]),
-    CLI_ENTRYPOINT,
-    ...cliArgs,
-  ]
+import { ompChildEnv } from '@qianmo/paths'
+import type { CliLaunchSpec } from '../../src/providers/effectiveProcess.js'
+import { inheritedProviderKeyNames } from '../../src/providers/whitelist.js'
+function sourceArgs(args: readonly string[]): string[] {
+  return [join(import.meta.dir, '..', '..', 'src', 'cli.ts'), ...args]
 }
 
 /** A launch for the code's own child processes, from source. */
@@ -85,10 +63,15 @@ export function childEnv(
   for (const [key, value] of Object.entries(withoutRunnerKeys(process.env))) {
     if (value !== undefined) env[key] = value
   }
-  delete env.OCC_CONFIG_DIR
+  delete env.QIANMO_CONFIG_DIR
   delete env.CLAUDE_CONFIG_DIR
   for (const key of inheritedProviderKeyNames(env)) delete env[key]
-  return { ...env, NODE_ENV: 'production', NO_COLOR: '1', ...overrides }
+  return ompChildEnv({
+    ...env,
+    NODE_ENV: 'production',
+    NO_COLOR: '1',
+    ...overrides,
+  })
 }
 
 export type SourceRun = { code: number; stdout: string; stderr: string }
@@ -109,8 +92,7 @@ export async function runQmProvider(input: {
     {
       cwd: input.cwd,
       env: childEnv({
-        CLAUDE_CONFIG_DIR: input.config,
-        HOME: input.cwd,
+        QIANMO_CONFIG_DIR: input.config,
         ...input.env,
       }),
       stdin: input.stdin === null ? 'ignore' : 'pipe',

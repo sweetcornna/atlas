@@ -28,14 +28,14 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
-import { secretFingerprint } from '@qianmo/providers'
+import { SqliteAuthCredentialStore } from '@oh-my-pi/pi-coding-agent/session/auth-storage'
 import {
   applyRequest,
   CANARY_KEY,
   CANARY_KEY_2,
   model,
-} from '../../../services/qianmo/providers/__tests__/helpers.js'
-import { readRequestLine } from '../provider.js'
+} from '../providers/helpers.js'
+import { readRequestLine } from '../../src/commands/provider.js'
 import { runQmProvider, type SourceRun } from './providerSource.js'
 
 const LIMIT = 64 * 1024
@@ -82,7 +82,7 @@ afterAll(() => {
 
 beforeEach(() => {
   rmSync(config, { recursive: true, force: true })
-  mkdirSync(config, { mode: 0o700 })
+  mkdirSync(join(config, 'omp', 'agent'), { mode: 0o700, recursive: true })
   chmodSync(config, 0o700)
 })
 
@@ -184,10 +184,10 @@ describe('qm provider from source', () => {
         requestId: request.requestId,
         state: { managed: true, pending: null },
       })
-      const settings = JSON.parse(
-        readFileSync(join(config, 'settings.json'), 'utf8'),
-      ) as { env: Record<string, string> }
-      expect(settings.env.ANTHROPIC_AUTH_TOKEN).toBe(CANARY_KEY)
+      const models = JSON.parse(
+        readFileSync(join(config, 'omp', 'agent', 'models.yml'), 'utf8'),
+      ) as { providers: Record<string, { apiKey: string }> }
+      expect(Object.values(models.providers)[0]?.apiKey).toBe(CANARY_KEY)
       expect(applied.stdout).not.toContain(CANARY_KEY)
       expect(applied.stderr).not.toContain(CANARY_KEY)
 
@@ -204,8 +204,8 @@ describe('qm provider from source', () => {
         ok: true,
         state: { managed: true },
         effective: {
-          apiProvider: 'firstParty',
-          wire: 'anthropic',
+          apiProvider: 'anthropic-messages',
+          wire: 'anthropic-messages',
           model: 'vendor-model-pro',
         },
       })
@@ -246,27 +246,26 @@ describe('qm provider from source', () => {
         `${JSON.stringify(request)}\n`,
       )
       expect(applied.code).toBe(0)
-      // A cooldown the call layer recorded, as it would after a 402.
-      writeFileSync(
-        join(config, 'qianmo', 'provider', 'key-pool-state.json'),
-        JSON.stringify({
-          v: 1,
-          marks: {
-            k2: {
-              fp: secretFingerprint(CANARY_KEY_2),
-              state: 'cooling',
-              until: '2099-01-01T00:00:00.000Z',
-              reason: 'billing',
-              status: 402,
-              at: '2026-10-04T08:00:00.000Z',
-            },
-          },
-          selections: {},
-          cursor: 0,
-          sessions: {},
-        }),
-        { mode: 0o600 },
+      const store = await SqliteAuthCredentialStore.open(
+        join(config, 'omp', 'agent', 'agent.db'),
       )
+      try {
+        const row = store
+          .listAuthCredentials()
+          .find(
+            r =>
+              r.credential.type === 'api_key' &&
+              r.credential.key === CANARY_KEY_2,
+          )!
+        await store.upsertCredentialBlock({
+          credentialId: row.id,
+          providerKey: `${row.provider}:api_key`,
+          blockScope: '',
+          blockedUntilMs: Date.parse('2099-01-01T00:00:00.000Z'),
+        })
+      } finally {
+        store.close()
+      }
       const status = await qmProvider(['status', '--node', 'beta-1'], null)
       expect(status.code).toBe(0)
       expect(responseOf(status)).toMatchObject({
@@ -279,7 +278,7 @@ describe('qm provider from source', () => {
               id: 'k2',
               state: 'cooling',
               until: '2099-01-01T00:00:00.000Z',
-              reason: 'billing',
+              reason: 'rate-limit',
             },
           ],
         },
@@ -311,7 +310,7 @@ describe('qm provider from source', () => {
         requestId: null,
       })
       expect(existsSync(join(config, 'qianmo'))).toBe(false)
-      expect(existsSync(join(config, 'settings.json'))).toBe(false)
+      expect(existsSync(join(config, 'omp', 'agent', 'config.yml'))).toBe(false)
     },
     CLI_TIMEOUT_MS,
   )
@@ -369,7 +368,7 @@ describe('qm provider from source', () => {
     'settings.json the node already had stays private after a commit through the CLI',
     async () => {
       writeFileSync(
-        join(config, 'settings.json'),
+        join(config, 'omp', 'agent', 'config.yml'),
         '{"env":{"MY_TOOL_FLAG":"on"}}\n',
         { mode: 0o644 },
       )
@@ -379,10 +378,13 @@ describe('qm provider from source', () => {
       )
       expect(run.code).toBe(0)
       const settings = JSON.parse(
-        readFileSync(join(config, 'settings.json'), 'utf8'),
+        readFileSync(join(config, 'omp', 'agent', 'config.yml'), 'utf8'),
       ) as { env: Record<string, string> }
       expect(settings.env.MY_TOOL_FLAG).toBe('on')
-      expect(settings.env.ANTHROPIC_AUTH_TOKEN).toBe(CANARY_KEY)
+      const models = JSON.parse(
+        readFileSync(join(config, 'omp', 'agent', 'models.yml'), 'utf8'),
+      ) as { providers: Record<string, { apiKey: string }> }
+      expect(Object.values(models.providers)[0]?.apiKey).toBe(CANARY_KEY)
     },
     CLI_TIMEOUT_MS,
   )

@@ -48,6 +48,7 @@ import {
   type Lane,
   LANES,
   parseProviderProfile,
+  migrateLegacyCompat,
   type ProviderProfile,
 } from '@qianmo/providers'
 import { isProtocolNodeName } from './consoleProvidersExec.js'
@@ -392,6 +393,18 @@ function fold(state: State, event: BookEvent, at: number): string | null {
       } catch {
         return '档案正文不是 JSON'
       }
+      if (
+        typeof raw === 'object' &&
+        raw !== null &&
+        'compat' in raw &&
+        typeof raw.compat === 'object' &&
+        raw.compat !== null &&
+        !Array.isArray(raw.compat)
+      )
+        raw = {
+          ...raw,
+          compat: migrateLegacyCompat(raw.compat as Record<string, unknown>),
+        }
       const parsed = parseProviderProfile(raw, { now: new Date(at) })
       if (!parsed.ok) return `档案正文不合法（${parsed.error.path}）`
       if (parsed.value.id !== event.id) return '档案 id 与正文不符'

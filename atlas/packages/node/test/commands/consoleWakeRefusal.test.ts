@@ -20,8 +20,11 @@ import { NodeCapabilities, StaticPublicKeyDirectory } from '@qianmo/capability'
 import { ProtocolErrorCode, errorReply } from '@qianmo/protocol'
 import { NodeRouter } from '@qianmo/router'
 import { startTransportServer } from '@qianmo/transport'
-import { createWakePort } from '../consolePorts.js'
-import { WakeRefusedError, executeResidentWake } from '../residentWake.js'
+import { createWakePort } from '../../src/commands/consolePorts.js'
+import {
+  WakeRefusedError,
+  executeResidentWake,
+} from '../../src/commands/residentWake.js'
 
 const PSK = 'console-wake-refusal-test-not-a-real-secret'
 const TARGET_NODE = 'beta-1'
@@ -186,4 +189,48 @@ describe('a node that really is not there', () => {
     expect(result.failure.code).toBe('unreachable')
     expect(result.failure.message).not.toContain('节点拒绝了这条唤醒')
   })
+})
+
+test('a delivered wake with a missing receipt reports unknown and binds before network execution', async () => {
+  let release!: () => void
+  const held = new Promise<void>(resolve => {
+    release = resolve
+  })
+  let bound = ''
+  let observed = ''
+  const server = startTransportServer({
+    psk: PSK,
+    port: 0,
+    hostname: '127.0.0.1',
+    onMessage: async message => {
+      observed = message.taskId
+      expect(bound).toBe(message.taskId)
+      await held
+    },
+  })
+  try {
+    const port = createWakePort({
+      url: server.url as string,
+      psk: PSK,
+      timeoutMs: 100,
+    })
+    const result = await port.send({
+      from: FROM,
+      to: TARGET,
+      prompt: 'one wake',
+      url: '',
+      onTaskCreated: (taskId, node) => {
+        bound = taskId
+        expect(node).toBe(TARGET_NODE)
+      },
+    })
+    expect(observed).not.toBe('')
+    expect(result).toMatchObject({
+      ok: false,
+      failure: { code: 'unreachable', deliveryUnknown: true },
+    })
+  } finally {
+    release()
+    await server.stop()
+  }
 })

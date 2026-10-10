@@ -19,14 +19,14 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { tryExclusiveLock } from '@qianmo/handoff'
-import { initHubRepository } from '../handoffHub.js'
+import { initHubRepository } from '../../src/commands/handoffHub.js'
 import {
   type HandoffProject,
   HandoffUserError,
   parseHub,
   stateDir,
   syncLogPath,
-} from '../handoffStore.js'
+} from '../../src/commands/handoffStore.js'
 import {
   drainPending,
   pendingCount,
@@ -37,11 +37,11 @@ import {
   takePending,
   writeLastSync,
   writePending,
-} from '../handoffSync.js'
+} from '../../src/commands/handoffSync.js'
 import { qmcodeRollout } from './support/handoffSamples.js'
 
 const roots: string[] = []
-const savedConfigDir = process.env.OCC_CONFIG_DIR
+const savedConfigDir = process.env.QIANMO_CONFIG_DIR
 
 function tempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'qianmo-handoff-sync-'))
@@ -50,12 +50,12 @@ function tempDir(): string {
 }
 
 beforeAll(() => {
-  process.env.OCC_CONFIG_DIR = tempDir()
+  process.env.QIANMO_CONFIG_DIR = tempDir()
 })
 
 afterAll(() => {
-  if (savedConfigDir === undefined) delete process.env.OCC_CONFIG_DIR
-  else process.env.OCC_CONFIG_DIR = savedConfigDir
+  if (savedConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = savedConfigDir
   for (const root of roots) rmSync(root, { recursive: true, force: true })
 })
 

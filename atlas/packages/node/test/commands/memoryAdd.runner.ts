@@ -13,7 +13,7 @@
  */
 
 import { existsSync } from 'node:fs'
-import { runQianmoMemory } from '../memory.js'
+import { runQianmoMemory } from '../../src/commands/memory.js'
 
 const [goFile, name, count] = process.argv.slice(2)
 if (goFile === undefined || name === undefined || count === undefined) {

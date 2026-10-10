@@ -55,12 +55,6 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
-import {
-  INACTIVITY_ABORT_MESSAGE,
-  INACTIVITY_ABORT_MESSAGE_FOR_TOOL_USE,
-  INTERRUPT_MESSAGE,
-  INTERRUPT_MESSAGE_FOR_TOOL_USE,
-} from '../../utils/messages/constants.js'
 import { HandoffUserError, sleep } from './handoffStore.js'
 
 // ─── Hook inputs ─────────────────────────────────────────────────────
@@ -315,9 +309,9 @@ export function claudeCodeTurnEnd(
  *
  * The longest prefix whose last main-chain `user`/`assistant` record ends a
  * turn: an assistant record with a `stop_reason` other than `tool_use` (the
- * rule {@link claudeCodeTurnEnd} applies to `Stop`), or the marker the base
- * writes when a turn is interrupted (`utils/messages/constants.ts`; a turn the
- * user stopped is over, like qmcode's `turn_aborted`). Records after that end
+ * rule {@link claudeCodeTurnEnd} applies to `Stop`), or the marker Claude
+ * Code writes when the user interrupts a turn (a turn the user stopped is
+ * over, like qmcode's `turn_aborted`). Records after that end
  * which are not main-chain `user`/`assistant` — `system`, sidechain,
  * `summary` — stay in, so a transcript whose last turn has ended is cut at its
  * last newline, exactly what the `Stop` hook pushed. Whatever follows the next
@@ -343,11 +337,10 @@ export function claudeCodeCompleteEnd(content: Buffer): number {
   return cut
 }
 
+/** The markers Claude Code writes into a transcript when the user interrupts a turn. */
 const INTERRUPT_MARKERS = new Set([
-  INTERRUPT_MESSAGE,
-  INTERRUPT_MESSAGE_FOR_TOOL_USE,
-  INACTIVITY_ABORT_MESSAGE,
-  INACTIVITY_ABORT_MESSAGE_FOR_TOOL_USE,
+  '[Request interrupted by user]',
+  '[Request interrupted by user for tool use]',
 ])
 
 function endsClaudeCodeTurn(record: Record<string, unknown>): boolean {

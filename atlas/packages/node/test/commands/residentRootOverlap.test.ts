@@ -48,21 +48,18 @@ import {
   initCa,
   issueCertificate,
   refreshRevocationList,
-} from '../../../services/qianmo/ca/operations.js'
-import {
-  opensslVersion,
-  runOpenssl,
-} from '../../../services/qianmo/ca/openssl.js'
-import { caCertPath } from '../../../services/qianmo/ca/paths.js'
-import { popMessage } from '../../../services/qianmo/ca/pop.js'
-import type { CertificateDirectory } from '../../../services/qianmo/certificateDirectory.js'
-import { createCertificatePort } from '../consolePorts.js'
+} from '../../src/ca/operations.js'
+import { opensslVersion, runOpenssl } from '../../src/ca/openssl.js'
+import { caCertPath } from '../../src/ca/paths.js'
+import { popMessage } from '../../src/ca/pop.js'
+import type { CertificateDirectory } from '../../src/host/certificateDirectory.js'
+import { createCertificatePort } from '../../src/commands/consolePorts.js'
 import {
   assertOwnCertificateAndKey,
   buildListenerTls,
   buildPublicKeyDirectory,
   type ResidentCliConfig,
-} from '../resident.js'
+} from '../../src/commands/resident.js'
 
 const OPENSSL = opensslVersion()
 const itNeedsOpenssl = OPENSSL === null ? test.skip : test
@@ -529,9 +526,10 @@ describe('a damaged --trust-ca refuses startup in every reader', () => {
       // with the dated default on the same UTC day. A leaf that carries no
       // authority key identifier then chains to whichever same-named root
       // Bun tries first, and the other root's leaves fail the signature
-      // check — while a signature-only directory would accept both. Pinned
-      // the way `mtls.test.ts` pins its limit: if a Bun upgrade turns this
-      // red, re-measure before relaxing the same-subject refusal.
+      // check — while a signature-only directory would accept both. PEM file
+      // order does not promise which candidate TLS tries first. Pin exactly
+      // one success, after proving both leaves work under their own root;
+      // re-measure before relaxing the production same-subject refusal.
       const twinDir = join(root, 'ca-twin')
       initCa({ directory: twinDir, commonName: 'qianmo-ca' })
       const noAki = (directory: string, node: string) => {
@@ -579,10 +577,44 @@ describe('a damaged --trust-ca refuses startup in every reader', () => {
       }
       const underFirst = noAki(oldDir, 'twin-a')
       const underSecond = noAki(twinDir, 'twin-b')
-      const ca =
-        readFileSync(caCertPath(oldDir), 'utf8') +
-        readFileSync(caCertPath(twinDir), 'utf8')
-      const outcome = async (leaf: { cert: string; key: string }) => {
+      const firstRootPem = readFileSync(caCertPath(oldDir), 'utf8')
+      const secondRootPem = readFileSync(caCertPath(twinDir), 'utf8')
+      const firstRoot = new X509Certificate(firstRootPem)
+      const secondRoot = new X509Certificate(secondRootPem)
+      expect(firstRoot.subject).toBe(secondRoot.subject)
+      expect(firstRoot.fingerprint256).not.toBe(secondRoot.fingerprint256)
+      for (const [leaf, ownRoot, otherRoot] of [
+        [underFirst, firstRoot, secondRoot],
+        [underSecond, secondRoot, firstRoot],
+      ] as const) {
+        const certificate = new X509Certificate(leaf.cert)
+        expect(certificate.issuer).toBe(ownRoot.subject)
+        expect(certificate.verify(ownRoot.publicKey)).toBe(true)
+        expect(certificate.verify(otherRoot.publicKey)).toBe(false)
+        expect(
+          runOpenssl(['x509', '-noout', '-text'], { input: leaf.cert }),
+        ).not.toContain('Authority Key Identifier')
+      }
+      const ca = firstRootPem + secondRootPem
+      const ambiguous = join(root, 'trust-same-subject.pem')
+      writeFileSync(ambiguous, ca)
+      const config = nodeConfig(newLeaf, ambiguous)
+      const refusal = /two roots share the subject CN=qianmo-ca/
+      expect(() => buildPublicKeyDirectory(config)).toThrow(refusal)
+      expect(() =>
+        assertOwnCertificateAndKey(config, newLeaf.keys.publicKey),
+      ).toThrow(refusal)
+      expect(() => buildListenerTls(config)).toThrow(refusal)
+      expect(() =>
+        createCertificatePort({
+          baseUrl: 'http://127.0.0.1:1',
+          caCertificatePem: ca,
+        }),
+      ).toThrow(refusal)
+      const outcome = async (
+        leaf: { cert: string; key: string },
+        trust = ca,
+      ) => {
         const server = Bun.serve({
           port: 0,
           hostname: '127.0.0.1',
@@ -591,7 +623,7 @@ describe('a damaged --trust-ca refuses startup in every reader', () => {
         })
         try {
           const response = await fetch(`https://127.0.0.1:${server.port}/`, {
-            tls: { ca },
+            tls: { ca: trust },
           })
           return response.status === 200 ? 'accepted' : 'refused'
         } catch {
@@ -600,10 +632,12 @@ describe('a damaged --trust-ca refuses startup in every reader', () => {
           server.stop(true)
         }
       }
-      expect([await outcome(underFirst), await outcome(underSecond)]).toEqual([
-        'accepted',
-        'refused',
-      ])
+      expect(await outcome(underFirst, firstRootPem)).toBe('accepted')
+      expect(await outcome(underSecond, secondRootPem)).toBe('accepted')
+      expect(await outcome(underFirst, secondRootPem)).toBe('refused')
+      expect(await outcome(underSecond, firstRootPem)).toBe('refused')
+      const outcomes = [await outcome(underFirst), await outcome(underSecond)]
+      expect(outcomes.sort()).toEqual(['accepted', 'refused'])
     },
   )
 

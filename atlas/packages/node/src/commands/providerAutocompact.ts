@@ -1,74 +1,30 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/**
- * `qm provider autocompact [auto|<tokens>] [--json]` — the node CLI entry of
- * D-9 (design `providers-console-m1.md` §0.1): show or set this node's
- * auto-compact window.
- *
- * It is the base `/autocompact` command, not a second one: parsing, the
- * refusal while `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set, the write to
- * `userSettings.autoCompactWindow` and the reply text all come from
- * `applyAutoCompactWindow`; the status panel is `formatAutoCompactWindowStatus`.
- * `userSettings` is `settings.json` under this process's config root, so
- * `OCC_CONFIG_DIR` picks the node.
- *
- * The value belongs to the node (D-9): it is not in any profile, not a managed
- * key, and an `apply` neither writes nor compares it.
- *
- * The protocol's `autocompact` op (`serve-stdin`, so the hub can reach it
- * through the sshd forced command) runs this same command as a child with
- * `--json` and wraps the line it prints ({@link AutocompactResult}) in the
- * response envelope — one implementation for both entries.
- *
- * The model whose window caps the value is the one the node's ACP child would
- * run: this process drops every provider-shaped key from its own environment
- * and replays the child's settings start-up (`computeEffectiveProviderState`),
- * the same way `status` computes `effective` in a stripped child — so the two
- * report the same window. Call it only in a process of its own.
- */
-
-import {
-  applyAutoCompactWindow,
-  formatAutoCompactWindowStatus,
-} from '../../commands/autocompact/autocompact.js'
-import { isAutoCompactEnabled } from '../../services/compact/autoCompact.js'
 import type { AutoCompactReport } from '@qianmo/providers'
+import { AUTO_COMPACT_LIMITS } from '@qianmo/providers'
+import { readYaml } from '../providers/node.js'
+import { computeEffectiveProviderState } from '../providers/effective.js'
 import {
-  type ResolvedAutoCompactWindow,
-  resolveActiveAutoCompactWindow,
-} from '../../services/compact/autoCompactWindow.js'
-import {
-  autoCompactSourceOf,
-  computeEffectiveProviderState,
-} from '../../services/qianmo/providers/effective.js'
-import { inheritedProviderKeyNames } from '../../services/qianmo/providers/whitelist.js'
-import { getMainLoopModelSettingsSlot } from '../../utils/model/model.js'
-
-type AutocompactArgs = { value: string | undefined; json: boolean }
-
-/** `[value] [--json]`; anything else is a usage error (thrown). */
-export function parseAutocompactArgs(args: readonly string[]): AutocompactArgs {
+  acquireApplyLock,
+  providerPaths,
+  writePrivateJson,
+} from '../providers/store.js'
+import { isRecord } from '../providers/managedView.js'
+export function parseAutocompactArgs(args: readonly string[]): {
+  value: string | undefined
+  json: boolean
+} {
   let value: string | undefined
   let json = false
   for (const arg of args) {
-    if (arg === '--json') {
-      json = true
-    } else if (arg.startsWith('-')) {
-      throw new Error(`unknown option ${arg}`)
-    } else if (value === undefined) {
-      value = arg
-    } else {
-      throw new Error('autocompact takes one value: auto or a token count')
-    }
+    if (arg === '--json') json = true
+    else if (arg.startsWith('-') || value !== undefined)
+      throw new Error('autocompact takes auto or one token count')
+    else value = arg
   }
   return { value, json }
 }
-
-/**
- * The `--json` line, and the `autocompact` op's response without its
- * envelope (`AutoCompactReport` plus `ok`, and `code` on a refusal).
- */
 export type AutocompactResult =
   | ({ ok: true } & AutoCompactReport)
   | ({
@@ -76,76 +32,82 @@ export type AutocompactResult =
       code: 'bad-value' | 'env-override' | 'write-failed'
       message: string
     } & AutoCompactReport)
-
-function windowOf(resolved: ResolvedAutoCompactWindow): AutoCompactReport {
-  return {
-    autoCompactWindow: resolved.window,
-    configured: resolved.configured,
-    source: autoCompactSourceOf(resolved.source),
+export async function runAutocompact(input: {
+  value: string | undefined
+  json: boolean
+}) {
+  const before = await computeEffectiveProviderState()
+  const existing = readYaml(providerPaths.config()).compaction
+  const configured =
+    isRecord(existing) &&
+    typeof existing.thresholdTokens === 'number' &&
+    existing.thresholdTokens > 0
+      ? existing.thresholdTokens
+      : before.autoCompactWindow
+  let result: AutocompactResult = {
+    ok: true,
+    autoCompactWindow: before.autoCompactWindow,
+    configured,
+    source: before.autoCompactSource,
   }
-}
-
-type AutocompactRun = {
-  exitCode: 0 | 1
-  stdout: string
-  stderr: string
-}
-
-/**
- * Show (no value) or set the window. `exitCode` 1 when the value was refused:
- * unparseable, `CLAUDE_CODE_AUTO_COMPACT_WINDOW` set, or the write failed.
- */
-export function runAutocompact({
-  value,
-  json,
-}: AutocompactArgs): AutocompactRun {
-  for (const key of inheritedProviderKeyNames(process.env)) {
-    delete process.env[key]
-  }
-  const { model, contextTokens } = computeEffectiveProviderState()
-  const slot = getMainLoopModelSettingsSlot(model)
-  const before = resolveActiveAutoCompactWindow(contextTokens)
-
-  if (value === undefined) {
-    const result: AutocompactResult = { ok: true, ...windowOf(before) }
-    return {
-      exitCode: 0,
-      stdout: json
-        ? `${JSON.stringify(result)}\n`
-        : `${formatAutoCompactWindowStatus(before, isAutoCompactEnabled())}\n`,
-      stderr: '',
-    }
-  }
-
-  let written = false
-  const message = applyAutoCompactWindow(value, model, slot, () => {
-    written = true
-  })
-  const after = windowOf(resolveActiveAutoCompactWindow(contextTokens))
-  // `applyAutoCompactWindow` reports a refusal as text only; which one it was
-  // is read from the state it checked, and from its own wording for the one
-  // failure that leaves no state behind.
-  const result: AutocompactResult = written
-    ? { ok: true, ...after, message }
-    : {
-        ok: false,
-        code:
-          before.source === 'env'
-            ? 'env-override'
-            : message.startsWith("Couldn't save setting")
-              ? 'write-failed'
-              : 'bad-value',
-        ...after,
-        message,
+  if (input.value !== undefined) {
+    const value =
+      input.value === 'auto'
+        ? -1
+        : /^\d+$/.test(input.value)
+          ? Number(input.value)
+          : NaN
+    const lock = acquireApplyLock()
+    try {
+      if (!lock) throw new Error('another configuration write is in progress')
+      if (
+        value !== -1 &&
+        (!Number.isSafeInteger(value) ||
+          value < AUTO_COMPACT_LIMITS.minTokens ||
+          value > AUTO_COMPACT_LIMITS.maxTokens)
+      )
+        result = {
+          ...result,
+          ok: false,
+          code: 'bad-value',
+          message: `tokens must be ${AUTO_COMPACT_LIMITS.minTokens}-${AUTO_COMPACT_LIMITS.maxTokens}, or auto`,
+        }
+      else {
+        const config = readYaml(providerPaths.config())
+        config.compaction = {
+          ...(isRecord(config.compaction) ? config.compaction : {}),
+          thresholdTokens: value,
+          thresholdPercent: -1,
+        }
+        writePrivateJson(providerPaths.config(), config)
+        const after = await computeEffectiveProviderState()
+        result = {
+          ok: true,
+          autoCompactWindow: after.autoCompactWindow,
+          configured: value > 0 ? value : after.autoCompactWindow,
+          source: after.autoCompactSource,
+          message:
+            'omp compaction token trigger updated; auto uses omp reserve-based threshold',
+        }
       }
-  if (json) {
-    return {
-      exitCode: result.ok ? 0 : 1,
-      stdout: `${JSON.stringify(result)}\n`,
-      stderr: '',
+    } catch {
+      result = {
+        ...result,
+        ok: false,
+        code: 'write-failed',
+        message: 'Could not save omp compaction threshold',
+      }
+    } finally {
+      lock?.release()
     }
   }
-  return result.ok
-    ? { exitCode: 0, stdout: `${message}\n`, stderr: '' }
-    : { exitCode: 1, stdout: '', stderr: `${message}\n` }
+  return {
+    exitCode: result.ok ? 0 : 1,
+    stdout: input.json
+      ? `${JSON.stringify(result)}\n`
+      : result.ok
+        ? `${result.message ?? `Auto compaction: ${result.autoCompactWindow} tokens (${result.source})`}\n`
+        : '',
+    stderr: !input.json && !result.ok ? `${result.message}\n` : '',
+  }
 }

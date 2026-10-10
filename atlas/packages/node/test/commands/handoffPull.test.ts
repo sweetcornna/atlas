@@ -34,9 +34,12 @@ import {
   taskBranch,
   wipRef,
 } from '@qianmo/handoff'
-import type { Output } from '../handoffNow.js'
-import { runPull } from '../handoffPull.js'
-import { HandoffUserError, saveProject } from '../handoffStore.js'
+import type { Output } from '../../src/commands/handoffNow.js'
+import { runPull } from '../../src/commands/handoffPull.js'
+import {
+  HandoffUserError,
+  saveProject,
+} from '../../src/commands/handoffStore.js'
 import { qmcodeRollout, qmcodeRolloutPath } from './support/handoffSamples.js'
 
 const THREAD = '0199a4c2-7c1e-7d32-9a5e-3b1f2c4d5e71'
@@ -45,7 +48,7 @@ const TURN_2 = '0199a4c2-8000-7000-8000-000000000202'
 const COPY_RULE = /[。，、！!]|\p{Extended_Pictographic}/u
 
 const saved = {
-  config: process.env.OCC_CONFIG_DIR,
+  config: process.env.QIANMO_CONFIG_DIR,
   qmcode: process.env.QMCODE_HOME,
 }
 const roots: string[] = []
@@ -91,7 +94,7 @@ function collector(): Output & { lines: string[] } {
 
 beforeAll(() => {
   base = tempDir()
-  process.env.OCC_CONFIG_DIR = join(base, 'config')
+  process.env.QIANMO_CONFIG_DIR = join(base, 'config')
   qmHome = join(base, 'qmcode-home')
   process.env.QMCODE_HOME = qmHome
   tokenFile = join(base, 'token')
@@ -139,8 +142,8 @@ beforeAll(() => {
 
 afterAll(() => {
   hub?.stop(true)
-  if (saved.config === undefined) delete process.env.OCC_CONFIG_DIR
-  else process.env.OCC_CONFIG_DIR = saved.config
+  if (saved.config === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = saved.config
   if (saved.qmcode === undefined) delete process.env.QMCODE_HOME
   else process.env.QMCODE_HOME = saved.qmcode
   for (const root of roots) rmSync(root, { recursive: true, force: true })

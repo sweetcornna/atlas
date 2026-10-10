@@ -34,13 +34,16 @@ import {
   sessionKeyOf,
   type ResidentMailboxMessage,
 } from '@qianmo/resident'
-import { parseFrontmatter } from '../../../utils/text/frontmatterParser.js'
-import { residentToolSurface } from '../../../services/qianmo/notifyTool.js'
+import { parseFrontmatter } from '@oh-my-pi/pi-utils/frontmatter'
+import { residentToolSurface } from '../../src/host/notifyTool.js'
 import {
   WITHHELD_REMOTE_TEXT,
   assembleResidentPrompt,
-} from '../../../services/qianmo/residentPrompt.js'
-import { QIANMO_MEMORY_HELP_TEXT, runQianmoMemory } from '../memory.js'
+} from '../../src/host/residentPrompt.js'
+import {
+  QIANMO_MEMORY_HELP_TEXT,
+  runQianmoMemory,
+} from '../../src/commands/memory.js'
 
 const ORIGINAL_EXIT_CODE = process.exitCode
 const ALICE = { agent: 'reviewer', contextId: 'alice' }
@@ -53,16 +56,16 @@ let previousRemoteMemoryDir: string | undefined
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'qianmo-memory-cli-'))
   configDir = join(root, 'config')
-  previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+  previousConfigDir = process.env.QIANMO_CONFIG_DIR
   previousRemoteMemoryDir = process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR
-  process.env.CLAUDE_CONFIG_DIR = configDir
+  process.env.QIANMO_CONFIG_DIR = configDir
   delete process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR
   process.exitCode = 0
 })
 
 afterEach(() => {
-  if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+  if (previousConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = previousConfigDir
   if (previousRemoteMemoryDir === undefined)
     delete process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR
   else process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR = previousRemoteMemoryDir
@@ -230,7 +233,9 @@ describe('qm memory add — where it writes and what it records', () => {
       scope.taskId,
       `${id}.md`,
     )
-    const parsed = parseFrontmatter(readFileSync(path, 'utf8'), path)
+    const parsed = parseFrontmatter(readFileSync(path, 'utf8'), {
+      source: path,
+    })
     expect(parsed.frontmatter.name).toBe('Runtime')
     expect(parsed.frontmatter.description).toBe('Bun is the runtime')
     expect(parsed.frontmatter.qm_source_kind).toBe('user')
@@ -251,7 +256,7 @@ describe('qm memory add — where it writes and what it records', () => {
       [
         '-e',
         `const { runQianmoMemory } = await import(${JSON.stringify(
-          join(import.meta.dir, '..', 'memory.ts'),
+          join(import.meta.dir, '..', '..', 'src', 'commands', 'memory.ts'),
         )}); runQianmoMemory(process.argv.slice(1))`,
         'add',
         '--agent',
@@ -265,7 +270,7 @@ describe('qm memory add — where it writes and what it records', () => {
       ],
       {
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+        env: { ...process.env, QIANMO_CONFIG_DIR: configDir },
       },
     )
     let stdout = ''
@@ -404,7 +409,7 @@ describe('qm memory — the agent has to run on this node', () => {
   otherOwner(
     'a write as another account than the node owner is refused',
     () => {
-      process.env.CLAUDE_CONFIG_DIR = '/usr'
+      process.env.QIANMO_CONFIG_DIR = '/usr'
       for (const write of [
         ['add', '--title', 't'],
         ['revoke', 'qm-mem-0123456789abcdef', '--reason', 'r'],
@@ -858,7 +863,7 @@ describe('qm memory — concurrent writers', () => {
         [RUNNER, goFile, name, String(PER_WRITER)],
         {
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+          env: { ...process.env, QIANMO_CONFIG_DIR: configDir },
         },
       )
       let stdout = ''
@@ -918,25 +923,29 @@ describe('qm memory — concurrent writers', () => {
   }, 60_000)
 })
 
-describe('before P14.4 no agent can reach the writer', () => {
-  test('the resident tool surface has no memory tool', () => {
-    const surface = residentToolSurface({
-      sessionId: 'session-1',
-      notify: async () => ({ status: 'sent' }),
-    } as unknown as Parameters<typeof residentToolSurface>[0])
-    expect(surface.map(tool => tool.name)).toEqual(['qianmo_notify'])
-    expect(surface.some(tool => /memor/i.test(tool.name))).toBe(false)
+describe('memory writer is absent by default and reachable only through the approval bridge', () => {
+  test('the resident tool surface has a citation validator but no memory writer', () => {
+    const surface = residentToolSurface()
+    expect(surface.map(tool => tool.name)).toEqual([
+      'qianmo_memory_answer',
+      'qianmo_notify',
+    ])
+    expect(
+      surface.some(tool =>
+        /memory_(?:write|add|revoke|invalidate|supersedes)/.test(tool.name),
+      ),
+    ).toBe(false)
   })
 
-  test('the only production caller of the resident writer is this command', async () => {
-    const repoRoot = join(import.meta.dir, '..', '..', '..', '..')
+  test('writer callers are the local command and the active-turn approval bridge only', async () => {
+    const repoRoot = join(import.meta.dir, '..', '..', '..', '..', '..')
     const callers: string[] = []
     const shapes = [
       /\bwriteResidentMemory\b/,
       /\brevokeResidentMemory\b/,
       /\binvalidateResidentMemory\b/,
     ]
-    for (const pattern of ['src/**/*.{ts,tsx}', 'packages/*/src/**/*.ts']) {
+    for (const pattern of ['atlas/packages/*/src/**/*.{ts,tsx}']) {
       for await (const file of new Bun.Glob(pattern).scan({ cwd: repoRoot })) {
         if (file.includes('__tests__') || file.endsWith('.test.ts')) continue
         if (file.includes('node_modules')) continue
@@ -945,11 +954,160 @@ describe('before P14.4 no agent can reach the writer', () => {
       }
     }
     // Positive control: the scan has to be able to see a caller at all.
-    expect(callers).toContain('src/cli/handlers/memory.ts')
+    expect(callers).toContain('atlas/packages/node/src/commands/memory.ts')
+    const host = readFileSync(
+      join(repoRoot, 'atlas/packages/node/src/host/resident.ts'),
+      'utf8',
+    )
+    const writeMethod = host.slice(
+      host.indexOf('async #writeMemory('),
+      host.indexOf('async #requestPermission('),
+    )
+    expect(writeMethod).toContain('this.#authorization === undefined')
+    expect(writeMethod).toContain('await this.#authorization.request(')
+    expect(writeMethod).toContain('!approved')
+    expect(writeMethod).toContain('this.#turn.activeInput(sessionId) !== input')
+    expect(writeMethod).toContain("source: { kind: 'agent', id: requestId }")
+    expect(
+      writeMethod.indexOf('await this.#authorization.request('),
+    ).toBeLessThan(writeMethod.indexOf('writeResidentMemory('))
     expect(callers.sort()).toEqual([
-      'packages/resident/src/index.ts',
-      'packages/resident/src/memory-writer.ts',
-      'src/cli/handlers/memory.ts',
+      'atlas/packages/node/src/commands/memory.ts',
+      'atlas/packages/node/src/host/resident.ts',
+      'atlas/packages/resident/src/index.ts',
+      'atlas/packages/resident/src/memory-writer.ts',
     ])
+  })
+})
+
+describe('memory governance CLI', () => {
+  test('local supersedes/undo uses the resident partition, preserves history and audit', () => {
+    residentHasRun(ALICE.agent)
+    const first = add(
+      ALICE,
+      '--title',
+      'Database policy',
+      '--body',
+      'Use Postgres',
+      '--tag',
+      'database',
+      '--valid-at',
+      '2026-01-01T00:00:00Z',
+    )
+    const next = add(
+      ALICE,
+      '--title',
+      'Database policy',
+      '--body',
+      'Use SQLite',
+      '--tag',
+      'database',
+      '--supersedes',
+      first,
+      '--valid-at',
+      '2026-02-01T00:00:00Z',
+    )
+    expect(store().getEntry(first)?.invalidAt).toBe('2026-02-01T00:00:00.000Z')
+    const foreign = run(
+      'undo-supersedes',
+      next,
+      '--agent',
+      ALICE.agent,
+      '--context',
+      'someone-else',
+      '--reason',
+      'wrong',
+    )
+    expect(foreign.exitCode).toBe(1)
+    expect(store().getEntry(first)?.invalidAt).not.toBeNull()
+    const undo = run(
+      'undo-supersedes',
+      next,
+      '--agent',
+      ALICE.agent,
+      '--context',
+      ALICE.contextId,
+      '--reason',
+      'operator reviewed the mistake',
+    )
+    expect(undo.exitCode).toBe(0)
+    expect(store().getEntry(first)?.invalidAt).toBeNull()
+    expect(store().getEntry(next)?.supersedesUndo).toMatchObject({
+      by: expectedSourceId(),
+      reason: 'operator reviewed the mistake',
+    })
+  })
+
+  test('review is deterministic, scoped and reads without creating a store or lock', () => {
+    const empty = run(
+      'review',
+      '--agent',
+      ALICE.agent,
+      '--context',
+      ALICE.contextId,
+      '--as-of',
+      '2027-01-01',
+      '--json',
+    )
+    expect(empty.exitCode).toBe(0)
+    expect(JSON.parse(empty.stdout).evaluated).toBe(0)
+    expect(existsSync(memoryRoot())).toBe(false)
+    residentHasRun(ALICE.agent)
+    add(
+      ALICE,
+      '--title',
+      'Database policy',
+      '--body',
+      'Use Postgres',
+      '--tag',
+      'database',
+    )
+    add(
+      ALICE,
+      '--title',
+      'Database policy',
+      '--body',
+      'Use SQLite',
+      '--tag',
+      'database',
+    )
+    add(
+      { ...ALICE, contextId: 'foreign' },
+      '--title',
+      'Database policy',
+      '--body',
+      'Use Oracle',
+      '--tag',
+      'database',
+    )
+    const args = [
+      'review',
+      '--agent',
+      ALICE.agent,
+      '--context',
+      ALICE.contextId,
+      '--as-of',
+      '2027-01-01',
+      '--stale-days',
+      '0',
+      '--json',
+    ]
+    const report = run(...args)
+    expect(report.exitCode).toBe(0)
+    expect(run(...args)).toEqual(report)
+    expect(JSON.parse(report.stdout)).toMatchObject({
+      evaluated: 2,
+      conflicts: [{ method: 'local-text' }],
+    })
+    const files = readdirSync(memoryRoot(), { recursive: true }).filter(name =>
+      String(name).endsWith('.md'),
+    )
+    const before = files.map(name =>
+      readFileSync(join(memoryRoot(), String(name)), 'hex'),
+    )
+    expect(run(...args).exitCode).toBe(0)
+    expect(
+      files.map(name => readFileSync(join(memoryRoot(), String(name)), 'hex')),
+    ).toEqual(before)
   })
 })

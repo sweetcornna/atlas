@@ -40,7 +40,7 @@ import {
 } from '@qianmo/protocol'
 import { NodeRouter } from '@qianmo/router'
 import { TransportClient } from '@qianmo/transport'
-import { createConsoleWakeIssuer } from '../consoleWakeIdentity.js'
+import { createConsoleWakeIssuer } from '../../src/commands/consoleWakeIdentity.js'
 import {
   APP_SERVER_ANON_LIMIT_KB,
   appServerMemory,
@@ -52,8 +52,8 @@ import {
   parseHandoffNodeArgs,
   recentClaudeCodeRounds,
   startHandoffNode,
-} from '../handoffNode.js'
-import { HandoffUserError } from '../handoffStore.js'
+} from '../../src/commands/handoffNode.js'
+import { HandoffUserError } from '../../src/commands/handoffStore.js'
 import {
   bwrapStub,
   CLAUDE_SESSION,

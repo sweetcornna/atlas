@@ -27,13 +27,10 @@ import {
   initCa,
   issueCertificate,
   refreshRevocationList,
-} from '../../../services/qianmo/ca/operations.js'
-import {
-  opensslVersion,
-  runOpenssl,
-} from '../../../services/qianmo/ca/openssl.js'
-import { popMessage } from '../../../services/qianmo/ca/pop.js'
-import { createCertificatePort } from '../consolePorts.js'
+} from '../../src/ca/operations.js'
+import { opensslVersion, runOpenssl } from '../../src/ca/openssl.js'
+import { popMessage } from '../../src/ca/pop.js'
+import { createCertificatePort } from '../../src/commands/consolePorts.js'
 
 const OPENSSL = opensslVersion()
 const itNeedsOpenssl = OPENSSL === null ? test.skip : test

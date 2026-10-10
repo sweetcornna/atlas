@@ -19,21 +19,21 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateNodeKeyPair, signBytes } from '@qianmo/capability'
-import { caKeyPairFromPem } from '../ca/caKeys.js'
+import { caKeyPairFromPem } from '../../src/ca/caKeys.js'
 import {
   initCa,
   issueCertificate,
   refreshRevocationList,
-} from '../ca/operations.js'
-import { opensslVersion, runOpenssl } from '../ca/openssl.js'
-import { caCertPath, caKeyPath } from '../ca/paths.js'
-import { popMessage } from '../ca/pop.js'
+} from '../../src/ca/operations.js'
+import { opensslVersion, runOpenssl } from '../../src/ca/openssl.js'
+import { caCertPath, caKeyPath } from '../../src/ca/paths.js'
+import { popMessage } from '../../src/ca/pop.js'
 import {
   anchoredValidity,
   parseTrustAnchors,
   readTrustAnchors,
   verifyRevocationListByAnchors,
-} from '../trustAnchors.js'
+} from '../../src/host/trustAnchors.js'
 
 const OPENSSL = opensslVersion()
 const itNeedsOpenssl = OPENSSL === null ? test.skip : test

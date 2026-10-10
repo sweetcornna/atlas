@@ -38,13 +38,13 @@ import {
   type ProviderProfileDraft,
 } from '@qianmo/console'
 import { parseWireProfile, type WireProfile } from '@qianmo/providers'
-import { MemoryActionStore } from '../../../../packages/console/test/actionStore.js'
-import { compileProfile } from '../../../services/qianmo/providers/compile.js'
+import { MemoryActionStore } from '../../../console/test/actionStore.js'
+import { compileProfile } from '../../src/providers/compile.js'
 import {
   type ConsoleProviders,
   openConsoleProviders,
   type ProviderScheduler,
-} from '../consoleProviders.js'
+} from '../../src/commands/consoleProviders.js'
 import { type FakeNode, fakeNode, fakeSsh } from './consoleProvidersFakeNode.js'
 
 const CANARY = 'sk-test-canary-port-Xv93KdQ1mB7zR4nW'
@@ -211,7 +211,10 @@ function compiledDefaultContext(wire: WireProfile): number | undefined {
     },
   })
   if (!compiled.ok) throw new Error(JSON.stringify(compiled.error))
-  return compiled.compiled.patch.modelSettings.default?.contextTokens
+  return compiled.compiled.models.providers[
+    compiled.compiled.providerId
+  ]?.models.find(model => model.id === compiled.compiled.selection.modelId)
+    ?.contextWindow
 }
 
 async function savedWithKey(h: Harness, extra: Record<string, unknown> = {}) {
@@ -594,8 +597,8 @@ describe('D-8: the context window', () => {
       }),
     )
     expect(preview.modelSettings.default?.contextTokens).toBe(500_000)
-    expect(preview.modelSettings.opus?.contextTokens).toBe(500_000)
-    expect(preview.modelSettings.haiku?.contextTokens).toBe(200_000)
+    expect(preview.modelSettings['main-model']?.contextTokens).toBe(500_000)
+    expect(preview.modelSettings.smol?.contextTokens).toBe(200_000)
     const refused = await h.port.setContextOverride(
       { node: 'beta-1', tokens: 10 },
       ops,

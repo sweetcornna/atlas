@@ -4,7 +4,7 @@
 /**
  * `qm resident` and the provider hot switch, end to end (design
  * `providers-console-m1.md` §2.7, P18.3): the shipped entrypoint from source,
- * its pid file, its SIGHUP handler, the 5 s poll, and the ACP child it
+ * its pid file, its SIGHUP handler, the 5 s poll, and the omp RPC child it
  * replaces — observed from outside, the way an operator or `qm provider apply`
  * (P18.7) would.
  *
@@ -29,71 +29,32 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import {
-  macroDefineArgs,
-  resolveBuildFeatures,
-} from '../../../../scripts/defines.js'
-import * as providerNode from '../../../services/qianmo/providers/node.js'
-import { applyRequest } from '../../../services/qianmo/providers/__tests__/helpers.js'
-import type { ResidentProviderSwitchEvent } from '../../../services/qianmo/resident.js'
-import { resetSettingsCache } from '../../../utils/settings/settingsCache.js'
-import { signalResidentProviderCheck } from '../resident.js'
+import * as providerNode from '../../src/providers/node.js'
+import { applyRequest } from '../providers/helpers.js'
+import type { ResidentProviderSwitchEvent } from '../../src/host/resident.js'
+import { fakeOpenAI } from '../providers/fake.js'
+import { ompChildEnv } from '@qianmo/paths'
+import { signalResidentProviderCheck } from '../../src/commands/resident.js'
 
 const PSK = 'resident-hot-switch-cli-not-a-real-secret'
-const CLI_ENTRYPOINT = join(
-  import.meta.dir,
-  '..',
-  '..',
-  '..',
-  'entrypoints',
-  'cli.tsx',
-)
+const CLI_ENTRYPOINT = join(import.meta.dir, '../../src/cli.ts')
 const BOOT_MS = 90_000
 const TEST_TIMEOUT_MS = 180_000
 const KEY_PROCESS = 'sk-test-canary-cli-process-env-4Fv1'
 const KEY_A = 'sk-test-canary-cli-hot-switch-a-8Tq6'
 const KEY_B = 'sk-test-canary-cli-hot-switch-b-2Mz0'
 
-interface Seen {
-  readonly path: string
-  readonly authorization: string
-}
-
-/** Answers everything 200 with the trivial Chat Completions shape. */
-function startDouble(): {
-  readonly baseUrl: string
-  readonly seen: Seen[]
-  stop(): Promise<void>
-} {
-  const seen: Seen[] = []
-  const server = Bun.serve({
-    port: 0,
-    hostname: '127.0.0.1',
-    fetch(request) {
-      seen.push({
-        path: new URL(request.url).pathname,
-        authorization: request.headers.get('authorization') ?? '',
-      })
-      return Response.json({
-        id: 'double',
-        object: 'chat.completion',
-        created: 1,
-        model: 'double',
-        choices: [
-          {
-            index: 0,
-            message: { role: 'assistant', content: 'ok' },
-            finish_reason: 'stop',
-          },
-        ],
-        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-      })
-    },
-  })
+function startDouble() {
+  const server = fakeOpenAI()
   return {
-    baseUrl: `http://127.0.0.1:${String(server.port)}/v1`,
-    seen,
-    stop: () => server.stop(true),
+    baseUrl: server.baseUrl,
+    get seen() {
+      return server.requests.map(r => ({
+        path: r.path,
+        authorization: r.headers.get('authorization') ?? '',
+      }))
+    },
+    stop: server.stop,
   }
 }
 
@@ -113,8 +74,8 @@ async function waitUntil(
   )
 }
 
-/** Live `--acp` children of `parent`, from the process table. */
-function acpChildrenOf(parent: number): number[] {
+/** Live `--mode rpc` children of `parent`, from the process table. */
+function ompChildrenOf(parent: number): number[] {
   const table = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,command='], {
     encoding: 'utf8',
   })
@@ -122,7 +83,10 @@ function acpChildrenOf(parent: number): number[] {
   for (const line of table.split('\n')) {
     const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)
     if (match === null) continue
-    if (Number(match[2]) === parent && (match[3] as string).includes('--acp')) {
+    if (
+      Number(match[2]) === parent &&
+      (match[3] as string).includes('--mode rpc')
+    ) {
       pids.push(Number(match[1]))
     }
   }
@@ -181,13 +145,12 @@ describe('qm resident: hot switch from the outside', () => {
   let output = ''
   let stdout = ''
   let residentPid = 0
-  let firstAcp = 0
+  let firstOmp = 0
   let processModel: ReturnType<typeof startDouble>
   let modelA: ReturnType<typeof startDouble>
   let modelB: ReturnType<typeof startDouble>
   const previous = {
-    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-    OCC_CONFIG_DIR: process.env.OCC_CONFIG_DIR,
+    QIANMO_CONFIG_DIR: process.env.QIANMO_CONFIG_DIR,
   }
 
   const diagnose = () => `resident output (tail):\n${output.slice(-4_000)}`
@@ -196,6 +159,7 @@ describe('qm resident: hot switch from the outside', () => {
       .split('\n')
       .filter(line => line.includes('"providerSwitch"'))
       .map(line => JSON.parse(line) as SwitchLine)
+      .filter(line => line.providerSwitch.via === 'switch')
   const generation = (): number =>
     (
       JSON.parse(
@@ -217,21 +181,21 @@ describe('qm resident: hot switch from the outside', () => {
     chmodSync(config, 0o700)
     mkdirSync(workspace)
     mkdirSync(home)
-    process.env.CLAUDE_CONFIG_DIR = config
-    delete process.env.OCC_CONFIG_DIR
-    resetSettingsCache()
+    process.env.QIANMO_CONFIG_DIR = config
     processModel = startDouble()
     modelA = startDouble()
     modelB = startDouble()
+    stage(chatProfile(processModel.baseUrl, 'initial-model', KEY_PROCESS, 0))
+    expect((await providerNode.commitPendingProviderConfig()).status).toBe(
+      'committed',
+    )
 
     resident = spawn(
       process.execPath,
       [
         'run',
-        ...macroDefineArgs(),
         '-d',
         `process.env.NODE_ENV:${JSON.stringify('production')}`,
-        ...[...resolveBuildFeatures()].flatMap(name => ['--feature', name]),
         CLI_ENTRYPOINT,
         'resident',
         '--node',
@@ -246,7 +210,7 @@ describe('qm resident: hot switch from the outside', () => {
       ],
       {
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
+        env: ompChildEnv({
           PATH: process.env.PATH,
           HOME: home,
           TMPDIR: tmpdir(),
@@ -254,15 +218,15 @@ describe('qm resident: hot switch from the outside', () => {
           NO_COLOR: '1',
           DISABLE_TELEMETRY: '1',
           DISABLE_AUTOUPDATER: '1',
-          OCC_IDENTITY: 'qianmo',
-          OCC_CONFIG_DIR: config,
+
+          QIANMO_CONFIG_DIR: config,
           QIANMO_TRANSPORT_PSK: PSK,
           CLAUDE_CODE_USE_OPENAI: '1',
           OPENAI_BASE_URL: processModel.baseUrl,
           OPENAI_API_KEY: KEY_PROCESS,
           OPENAI_MODEL: 'process-env-model',
           OPENAI_WIRE_API: 'chat',
-        },
+        }),
       },
     )
     resident.stdout?.on('data', chunk => {
@@ -281,12 +245,12 @@ describe('qm resident: hot switch from the outside', () => {
     )
     if (!residentAlive()) throw new Error(`resident exited\n${diagnose()}`)
     await waitUntil(
-      () => acpChildrenOf(residentPid).length === 1,
-      'the first ACP child',
+      () => ompChildrenOf(residentPid).length === 1,
+      'the first omp RPC child',
       BOOT_MS,
       diagnose,
     )
-    firstAcp = acpChildrenOf(residentPid)[0] as number
+    firstOmp = ompChildrenOf(residentPid)[0] as number
   }, BOOT_MS * 2)
 
   afterAll(async () => {
@@ -301,7 +265,6 @@ describe('qm resident: hot switch from the outside', () => {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
-    resetSettingsCache()
     rmSync(root, { recursive: true, force: true })
   }, 30_000)
 
@@ -331,19 +294,19 @@ describe('qm resident: hot switch from the outside', () => {
       await new Promise(resolve => setTimeout(resolve, 1_500))
 
       expect(residentAlive()).toBe(true)
-      expect(acpChildrenOf(residentPid)).toEqual([firstAcp])
+      expect(ompChildrenOf(residentPid)).toEqual([firstOmp])
       expect(switchLines()).toEqual([])
       expect(generation()).toBe(1)
-      expect(existsSync(join(config, 'settings.json'))).toBe(false)
+      expect(existsSync(join(config, 'omp', 'agent', 'models.yml'))).toBe(true)
       expect(existsSync(join(config, 'resident', 'provider-switch.json'))).toBe(
-        false,
+        true,
       )
     },
     TEST_TIMEOUT_MS,
   )
 
   test(
-    'SIGHUP with an intent staged: committed, ACP child replaced, resident pid unchanged',
+    'SIGHUP with an intent staged: committed, omp RPC child replaced, resident pid unchanged',
     async () => {
       const requestId = stage(
         chatProfile(modelA.baseUrl, 'cli-model-a', KEY_A, 1),
@@ -366,10 +329,10 @@ describe('qm resident: hot switch from the outside', () => {
       })
       await waitUntil(
         () => {
-          const now = acpChildrenOf(residentPid)
-          return now.length === 1 && now[0] !== firstAcp
+          const now = ompChildrenOf(residentPid)
+          return now.length === 1 && now[0] !== firstOmp
         },
-        'the replacement ACP child',
+        'the replacement omp RPC child',
         BOOT_MS,
         diagnose,
       )
@@ -392,7 +355,7 @@ describe('qm resident: hot switch from the outside', () => {
   test(
     'with no signal at all the 5 s poll finds the intent (the only path off Linux)',
     async () => {
-      const before = acpChildrenOf(residentPid)
+      const before = ompChildrenOf(residentPid)
       const requestId = stage(
         chatProfile(modelB.baseUrl, 'cli-model-b', KEY_B, 2),
       )
@@ -405,10 +368,10 @@ describe('qm resident: hot switch from the outside', () => {
       expect(switchLines()[1]?.providerSwitch.requestId).toBe(requestId)
       await waitUntil(
         () => {
-          const now = acpChildrenOf(residentPid)
+          const now = ompChildrenOf(residentPid)
           return now.length === 1 && now[0] !== before[0]
         },
-        'the third ACP child',
+        'the third omp RPC child',
         BOOT_MS,
         diagnose,
       )
@@ -436,7 +399,7 @@ describe('qm resident: hot switch from the outside', () => {
         diagnose,
       )
       expect(existsSync(join(config, 'resident', 'resident.pid'))).toBe(false)
-      expect(acpChildrenOf(residentPid)).toEqual([])
+      expect(ompChildrenOf(residentPid)).toEqual([])
     },
     TEST_TIMEOUT_MS,
   )

@@ -34,11 +34,11 @@ import {
   type ChatLink,
   type ConsoleChatEndpoint,
   type ConsoleChatHub,
-} from '../consoleChat.js'
+} from '../../src/commands/consoleChat.js'
 import type {
   WakeCapabilityBinding,
   WakeCapabilityIssuer,
-} from '../residentWake.js'
+} from '../../src/commands/residentWake.js'
 
 const TARGET = 'qianmo://node-b/reviewer'
 const ENDPOINT = 'ws://127.0.0.1:38612'

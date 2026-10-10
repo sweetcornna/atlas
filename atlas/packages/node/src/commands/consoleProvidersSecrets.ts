@@ -31,7 +31,7 @@
  * 两种情况下节点照用最后一次下发的配置，中枢什么都不发。主密钥只在第一次真正要写
  * 密钥、而且密文库是空的时候才生成。
  *
- * 路径不在这里拼：从 `consoleArgs.ts` 来，派生自 `occConfigPath()`。
+ * 路径不在这里拼：从 `consoleArgs.ts` 来，派生自 `qianmoConfigPath()`。
  */
 
 import {
@@ -49,7 +49,7 @@ import {
   secretSlotKey,
   type SecretRef,
 } from '@qianmo/providers'
-import { writePrivateFileAtomic } from '../../services/qianmo/providers/store.js'
+import { writePrivateFileAtomic } from '../providers/store.js'
 
 const ALGORITHM = 'aes-256-gcm'
 const KEY_BYTES = 32

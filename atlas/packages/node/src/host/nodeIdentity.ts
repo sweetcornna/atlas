@@ -35,7 +35,7 @@ import {
   isNodeKeyPair,
   type NodeKeyPair,
 } from '@qianmo/capability'
-import { occConfigPath } from '../../config/paths.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 
 /** On-disk shape. Versioned so a future format is a migration, not a surprise. */
 interface StoredIdentity {
@@ -48,7 +48,7 @@ interface StoredIdentity {
 
 /** Absolute path of `node`'s identity file, derived from the config root. */
 export function nodeIdentityPath(node: string): string {
-  return occConfigPath('qianmo', 'identity', `${node}.json`)
+  return qianmoConfigPath('qianmo', 'identity', `${node}.json`)
 }
 
 /**
@@ -62,12 +62,12 @@ export function nodeIdentityPath(node: string): string {
  * keeps that legible on disk rather than scattered across two trees.
  */
 export function nodeTlsKeyPath(node: string): string {
-  return occConfigPath('qianmo', 'identity', `${node}.tls.key`)
+  return qianmoConfigPath('qianmo', 'identity', `${node}.tls.key`)
 }
 
 /** Where `qm cert request` writes the CSR it generated, for handoff to the CA. */
 export function nodeTlsCsrPath(node: string): string {
-  return occConfigPath('qianmo', 'identity', `${node}.tls.csr`)
+  return qianmoConfigPath('qianmo', 'identity', `${node}.tls.csr`)
 }
 
 /**
@@ -77,7 +77,7 @@ export function nodeTlsCsrPath(node: string): string {
  * this path is where `--cert` points by convention when nothing else is given.
  */
 export function nodeTlsCertificatePath(node: string): string {
-  return occConfigPath('qianmo', 'identity', `${node}.tls.crt`)
+  return qianmoConfigPath('qianmo', 'identity', `${node}.tls.crt`)
 }
 
 function parseStored(raw: string, node: string): NodeKeyPair | null {

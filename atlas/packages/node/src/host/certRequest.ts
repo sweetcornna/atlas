@@ -36,7 +36,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { isValidSegment } from '@qianmo/protocol'
 import { signBytes, type NodeKeyPair } from '@qianmo/capability'
-import { popMessage } from './ca/pop.js'
+import { popMessage } from '../ca/pop.js'
 import {
   loadOrCreateNodeKeys,
   nodeTlsCsrPath,

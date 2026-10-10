@@ -16,22 +16,22 @@ import {
   loadOrCreateNodeKeys,
   nodeIdentityPath,
   parseTrustedKey,
-} from '../nodeIdentity.js'
+} from '../../src/host/nodeIdentity.js'
 
 let root: string
 let previousConfigDir: string | undefined
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'qianmo-identity-'))
-  // `CLAUDE_CONFIG_DIR`, not `OCC_CONFIG_DIR`: tests/preload.ts deletes the
+  // `QIANMO_CONFIG_DIR`, not `QIANMO_CONFIG_DIR`: tests/preload.ts deletes the
   // latter, and occConfigDir() memoizes on both.
-  previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+  previousConfigDir = process.env.QIANMO_CONFIG_DIR
+  process.env.QIANMO_CONFIG_DIR = join(root, 'config')
 })
 
 afterEach(() => {
-  if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+  if (previousConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = previousConfigDir
   rmSync(root, { recursive: true, force: true })
 })
 

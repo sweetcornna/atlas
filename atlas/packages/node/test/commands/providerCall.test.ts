@@ -1,306 +1,215 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/**
- * `probe` with `mode: call` (design `providers-console-m1.md` §5.5): one real
- * `-p` run of this CLI, from source, in a throwaway config root, against a
- * recording Chat Completions stub.
- *
- * The stub looks at the root while the request is in flight — that is the
- * only moment it exists — so the 0700 / 0600 modes and what the settings file
- * holds are checked where they matter; after the call the root is gone. The
- * key is an `sk-test-canary-…` string.
- */
-
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  test,
-} from 'bun:test'
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs'
-import { tmpdir } from 'node:os'
+import { expect, test } from 'bun:test'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import type { NodeCapabilities } from '@qianmo/providers'
-import { wireProfile } from '../../../services/qianmo/providers/__tests__/helpers.js'
-import { resetSettingsCache } from '../../../utils/settings/settingsCache.js'
-import { callProbeRoot, probeCall } from '../providerCall.js'
-import { profileTarget } from '../providerProbe.js'
-import { childEnv, sourceLaunch } from './providerSource.js'
-import { RecordingStub, refusedOrigin } from './providerStub.js'
-
-const KEY = 'sk-test-canary-call-probe-3Hs9Vw1'
-const OLD_KEY = 'sk-test-canary-call-node-old-6Pq2'
-const CAPABILITIES: NodeCapabilities = {
-  protocol: 1,
+import { compileProfile } from '../../src/providers/compile.js'
+import {
+  probeCall,
+  ProbeExitUnconfirmedError,
+} from '../../src/commands/providerCall.js'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { providerDir } from '../../src/providers/store.js'
+import { isolatedRoot, fakeOpenAI } from '../providers/fake.js'
+import { CANARY_KEY, wireProfile } from '../providers/helpers.js'
+const caps = {
+  protocol: 1 as const,
+  multiKey: true,
   chatEffortHonorsOverride: true,
-  replayFilter: false,
-  multiKey: false,
+  replayFilter: true,
 }
-const TEST_TIMEOUT_MS = 180_000
-const CALL_TIMEOUT_MS = 90_000
-
-let root: string
-let config: string
-let previousConfigDir: string | undefined
-let sequence = 0
-
-function chatProfile(baseUrl: string) {
-  return wireProfile(
-    {
-      id: 'call-probe',
-      lane: 'openai-chat',
-      baseUrl,
-      auth: { scheme: 'bearer', keys: [{ id: 'k1', value: KEY }] },
-      models: [
-        {
-          id: 'call-probe-model',
-          role: 'main',
-          tiers: ['opus', 'sonnet', 'haiku', 'fable'],
-          capabilities: { mode: 'family' },
-          effort: { send: 'auto' },
-        },
-      ],
-      compat: {},
-    },
-    CAPABILITIES,
+function compile(baseUrl: string) {
+  const result = compileProfile(
+    wireProfile({ lane: 'openai-chat', baseUrl, compat: {} }, caps),
+    { secret: CANARY_KEY, capabilities: caps },
   )
+  if (!result.ok) throw new Error(result.error.message)
+  return result.compiled
 }
-
-/** A streamed Chat Completions answer of one word. */
-function streamed(text: string): Response {
-  const frame = (delta: object, finish: string | null) =>
-    `data: ${JSON.stringify({
-      id: 'stub',
-      object: 'chat.completion.chunk',
-      created: 1,
-      model: 'stub',
-      choices: [{ index: 0, delta, finish_reason: finish }],
-    })}\n\n`
-  return new Response(
-    `${frame({ role: 'assistant', content: text }, null)}${frame({}, 'stop')}data: [DONE]\n\n`,
-    { headers: { 'content-type': 'text/event-stream' } },
-  )
-}
-
-async function call(
-  baseUrl: string,
-  requestId: string,
-  timeoutMs = CALL_TIMEOUT_MS,
-  launch = sourceLaunch,
-) {
-  const resolved = profileTarget(chatProfile(baseUrl), CAPABILITIES)
-  if (!resolved.ok) throw new Error(JSON.stringify(resolved.issue))
-  return probeCall({
-    requestId,
-    baseUrl: resolved.target.baseUrl,
-    compiled: resolved.compiled,
-    timeoutMs,
-    env: childEnv({ HOME: join(root, 'home'), TMPDIR: tmpdir() }),
-    launch,
-  })
-}
-
-function nextRequestId(): string {
-  sequence += 1
-  return `01JBCALL${String(sequence).padStart(18, '0')}`
-}
-
-beforeAll(() => {
-  root = realpathSync(mkdtempSync(join(tmpdir(), 'qianmo-provider-call-')))
-  config = join(root, 'config')
-  mkdirSync(config, { mode: 0o700 })
-  chmodSync(config, 0o700)
-  mkdirSync(join(root, 'home'))
-  previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = config
-  resetSettingsCache()
-})
-
-afterAll(() => {
-  if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
-  resetSettingsCache()
-  rmSync(root, { recursive: true, force: true })
-})
-
-beforeEach(() => {
-  // The node's own settings: an unrelated key of its operators, and the key
-  // of whatever it runs on now.
-  writeFileSync(
-    join(config, 'settings.json'),
-    `${JSON.stringify({
-      permissions: { allow: ['Bash(ls:*)'] },
-      modelType: 'openai',
-      env: { QM_NODE_FLAG: 'on', OPENAI_API_KEY: OLD_KEY },
-    })}\n`,
-    { mode: 0o600 },
-  )
-})
-
-describe('probe call', () => {
-  test(
-    'a real one-turn run in a private throwaway root, removed afterwards',
-    async () => {
-      const stub = new RecordingStub()
-      const requestId = nextRequestId()
-      const probeRoot = callProbeRoot(requestId)
-      const during: {
-        rootMode?: number
-        settingsMode?: number
-        settings?: { env?: Record<string, string>; permissions?: unknown }
-      } = {}
-      stub.on('POST /v1/chat/completions', async request => {
-        during.rootMode = statSync(probeRoot).mode & 0o777
-        const settingsPath = join(probeRoot, 'settings.json')
-        during.settingsMode = statSync(settingsPath).mode & 0o777
-        during.settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
-        const body = (await request.json()) as { stream?: unknown }
-        return body.stream === true
-          ? streamed('OK')
-          : Response.json({
-              id: 'stub',
-              object: 'chat.completion',
-              created: 1,
-              model: 'stub',
-              choices: [
-                {
-                  index: 0,
-                  message: { role: 'assistant', content: 'OK' },
-                  finish_reason: 'stop',
-                },
-              ],
-              usage: {
-                prompt_tokens: 1,
-                completion_tokens: 1,
-                total_tokens: 2,
-              },
-            })
+for (const status of [200, 401, 403, 402, 429, 400])
+  test(`real omp call ${status}: outcome redacts vendor body and removes private temporary root`, async () => {
+    const root = isolatedRoot()
+    const fake = fakeOpenAI(status)
+    try {
+      const outcome = await probeCall({
+        requestId: `probe-${status}`,
+        baseUrl: fake.baseUrl,
+        compiled: compile(fake.baseUrl),
+        timeoutMs: 10000,
       })
-      const outcome = await call(`${stub.origin}/v1`, requestId)
-      await stub.stop()
-
-      expect(outcome).toEqual({
-        ok: true,
-        reachable: true,
-        message: '可用 · 真实调用成功',
-      })
-      const turns = stub.requests.filter(
-        r => r.method === 'POST' && r.path === '/v1/chat/completions',
-      )
-      expect(turns.length).toBeGreaterThanOrEqual(1)
-      expect(turns[0]?.authorization).toBe(`Bearer ${KEY}`)
-      expect((turns[0]?.body as { model?: unknown }).model).toBe(
-        'call-probe-model',
-      )
-      // While it ran: private, and the node's settings with the candidate
-      // laid over them — its own key gone, its unrelated settings kept.
-      expect(during.rootMode).toBe(0o700)
-      expect(during.settingsMode).toBe(0o600)
-      expect(during.settings?.env?.OPENAI_API_KEY).toBe(KEY)
-      expect(during.settings?.env?.QM_NODE_FLAG).toBe('on')
-      expect(during.settings?.permissions).toEqual({ allow: ['Bash(ls:*)'] })
-      expect(JSON.stringify(during.settings)).not.toContain(OLD_KEY)
-      // Afterwards: gone.
-      expect(existsSync(probeRoot)).toBe(false)
-      expect(JSON.stringify(outcome)).not.toContain(KEY)
-    },
-    TEST_TIMEOUT_MS,
-  )
-
-  test(
-    'a rejected key: reachable, not ok, the vendor’s words not passed on; root removed',
-    async () => {
-      const stub = new RecordingStub()
-      const requestId = nextRequestId()
-      stub.on('POST /v1/chat/completions', () =>
-        Response.json(
-          {
-            error: {
-              message: `Incorrect API key provided: ${KEY}`,
-              type: 'invalid_request_error',
-              code: 'invalid_api_key',
-            },
-          },
-          { status: 401 },
-        ),
-      )
-      const outcome = await call(`${stub.origin}/v1`, requestId)
-      await stub.stop()
-      expect(outcome.ok).toBe(false)
+      expect(outcome.ok).toBe(status === 200)
       expect(outcome.reachable).toBe(true)
-      expect(outcome.message).toContain('凭据被拒')
-      expect(outcome.httpStatus).toBe(401)
-      expect(JSON.stringify(outcome)).not.toContain(KEY)
-      expect(JSON.stringify(outcome)).not.toContain('Incorrect API key')
-      expect(existsSync(callProbeRoot(requestId))).toBe(false)
-    },
-    TEST_TIMEOUT_MS,
-  )
-
-  test('an unreachable endpoint: nothing spawned, nothing spent, no root left', async () => {
-    const requestId = nextRequestId()
-    const outcome = await call(`${await refusedOrigin()}/v1`, requestId)
-    expect(outcome).toMatchObject({ ok: false, reachable: false })
-    expect(existsSync(callProbeRoot(requestId))).toBe(false)
-  })
-
-  test('a runtime that cannot be started: reported, root removed', async () => {
-    const stub = new RecordingStub()
-    const requestId = nextRequestId()
-    const outcome = await call(
-      `${stub.origin}/v1`,
-      requestId,
-      CALL_TIMEOUT_MS,
-      (_args, env) => ({
-        execPath: join(root, 'no-such-runtime'),
-        args: [],
-        env,
-        windowsHide: false,
-      }),
-    )
-    await stub.stop()
-    expect(outcome).toEqual({
-      ok: false,
-      reachable: true,
-      message: '节点没能启动真实调用',
+      if (status !== 200) expect(outcome.httpStatus).toBe(status)
+      expect(fake.requests[0]?.headers.get('authorization')).toBe(
+        `Bearer ${CANARY_KEY}`,
+      )
+      expect(JSON.stringify(outcome)).not.toContain('secret-do-not-echo')
+      expect(JSON.stringify(outcome)).not.toContain(CANARY_KEY)
+      expect(
+        readdirSync(providerDir()).filter(n => n.startsWith('probe-')),
+      ).toEqual([])
+    } finally {
+      fake.stop()
+      root.dispose()
+    }
+  }, 20000)
+test('call sandbox is 0700, native model key 0600, inherited secrets removed; launch failure cleaned', async () => {
+  const root = isolatedRoot()
+  const fake = fakeOpenAI()
+  try {
+    let inspected = false
+    const outcome = await probeCall({
+      requestId: 'private',
+      baseUrl: fake.baseUrl,
+      compiled: compile(fake.baseUrl),
+      timeoutMs: 1000,
+      env: { ...process.env, OPENAI_API_KEY: 'ambient-secret' },
+      launch: (_args, env) => {
+        inspected = true
+        const temp = env.QIANMO_CONFIG_DIR!
+        expect(statSync(temp).mode & 0o777).toBe(0o700)
+        const models = join(temp, 'omp', 'agent', 'models.yml')
+        expect(statSync(models).mode & 0o777).toBe(0o600)
+        expect(readFileSync(models, 'utf8')).toContain(CANARY_KEY)
+        expect(env.OPENAI_API_KEY).toBeUndefined()
+        return { execPath: '/definitely-missing-omp', args: [], env }
+      },
     })
-    expect(existsSync(callProbeRoot(requestId))).toBe(false)
-  })
-
-  test(
-    'a run that overruns its deadline is killed; root removed',
-    async () => {
-      const stub = new RecordingStub()
-      const requestId = nextRequestId()
-      let release = () => {}
-      const held = new Promise<void>(resolve => {
-        release = resolve
-      })
-      stub.on('POST /v1/chat/completions', async () => {
-        await held
-        return Response.json({}, { status: 500 })
-      })
-      const outcome = await call(`${stub.origin}/v1`, requestId, 8_000)
-      release()
-      await stub.stop()
-      expect(outcome.ok).toBe(false)
-      expect(outcome.reachable).toBe(true)
-      expect(outcome.message).toContain('超时')
-      expect(existsSync(callProbeRoot(requestId))).toBe(false)
-    },
-    TEST_TIMEOUT_MS,
-  )
+    expect(inspected).toBe(true)
+    expect(outcome.ok).toBe(false)
+    expect(
+      readdirSync(providerDir()).filter(n => n.startsWith('probe-')),
+    ).toEqual([])
+  } finally {
+    fake.stop()
+    root.dispose()
+  }
 })
+test('unreachable origin spends nothing and never launches; timeout is bounded', async () => {
+  const root = isolatedRoot()
+  const fake = fakeOpenAI()
+  const baseUrl = fake.baseUrl
+  fake.stop()
+  try {
+    let launched = false
+    const result = await probeCall({
+      requestId: 'offline',
+      baseUrl,
+      compiled: compile(baseUrl),
+      timeoutMs: 300,
+      launch: () => {
+        launched = true
+        throw new Error('must not launch')
+      },
+    })
+    expect(result.reachable).toBe(false)
+    expect(launched).toBe(false)
+    const online = fakeOpenAI()
+    try {
+      const start = Date.now()
+      const timeout = await probeCall({
+        requestId: 'timeout',
+        baseUrl: online.baseUrl,
+        compiled: compile(online.baseUrl),
+        timeoutMs: 300,
+        launch: (_args, env) => ({
+          execPath: process.execPath,
+          args: ['-e', 'setInterval(()=>{},1000)'],
+          env,
+        }),
+      })
+      expect(timeout.ok).toBe(false)
+      expect(Date.now() - start).toBeLessThan(4000)
+      expect(
+        readdirSync(providerDir()).filter(n => n.startsWith('probe-')),
+      ).toEqual([])
+    } finally {
+      online.stop()
+    }
+  } finally {
+    root.dispose()
+  }
+}, 10000)
+
+test('timeout returns only after the actual child close; cancellation also reaps', async () => {
+  const root = isolatedRoot(),
+    fake = fakeOpenAI()
+  try {
+    for (const abort of [false, true]) {
+      const controller = new AbortController()
+      let child: ChildProcess | undefined,
+        closed = false
+      const promise = probeCall({
+        requestId: `reap-${abort}`,
+        baseUrl: fake.baseUrl,
+        compiled: compile(fake.baseUrl),
+        timeoutMs: 50,
+        signal: controller.signal,
+        launch: (_args, env) => ({
+          execPath: process.execPath,
+          args: ['-e', 'setInterval(()=>{},1000)'],
+          env,
+        }),
+        spawn: (spec, options) => {
+          child = spawn(spec.execPath, spec.args, { ...options, env: spec.env })
+          child.once('close', () => {
+            closed = true
+          })
+          if (abort) setTimeout(() => controller.abort(), 30)
+          return child
+        },
+      })
+      if (abort) await expect(promise).rejects.toThrow()
+      else expect((await promise).ok).toBe(false)
+      expect(closed).toBe(true)
+      expect(child?.pid).toBeDefined()
+      expect(() => process.kill(child!.pid!, 0)).toThrow()
+    }
+  } finally {
+    fake.stop()
+    root.dispose()
+  }
+}, 10000)
+
+test('unknown exit is an error and preserves the private probe root', async () => {
+  const root = isolatedRoot(),
+    fake = fakeOpenAI()
+  let child: ChildProcess | undefined
+  try {
+    await expect(
+      probeCall({
+        requestId: 'unconfirmed',
+        baseUrl: fake.baseUrl,
+        compiled: compile(fake.baseUrl),
+        timeoutMs: 1,
+        exitConfirmationMs: 10,
+        spawn: (spec, options) => {
+          child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+            ...options,
+            env: spec.env,
+          })
+          // A real live PID, with only signal delivery failure injected.
+          child.kill = () => false
+          return child
+        },
+      }),
+    ).rejects.toBeInstanceOf(ProbeExitUnconfirmedError)
+    expect(child?.pid).toBeDefined()
+    expect(() => process.kill(child!.pid!, 0)).not.toThrow()
+    expect(
+      readdirSync(providerDir()).filter(n => n.startsWith('probe-unconfirmed-'))
+        .length,
+    ).toBe(1)
+  } finally {
+    if (child?.pid && child.exitCode === null && child.signalCode === null) {
+      const closed = new Promise<void>(resolve =>
+        child!.once('close', () => resolve()),
+      )
+      process.kill(child.pid, 'SIGKILL')
+      await closed
+    }
+    fake.stop()
+    root.dispose()
+  }
+}, 5000)

@@ -19,7 +19,7 @@ import {
   parseCaIssueArgs,
   parseCaRefreshArgs,
   runQianmoCa,
-} from '../ca.js'
+} from '../../src/commands/ca.js'
 
 const CA_DIR = '/tmp/qianmo-ca-arg-tests'
 const KEY = 'MrHp_KUVbldSTjSKV1ADV8ilbRRJxt-DRlltN54bGWY'

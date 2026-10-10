@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * `occ console` 的参数面与四个端口的生产实现。
+ * `qm console` 的参数面与四个端口的生产实现。
  *
  * **零 `mock.module`**：注册中心那一半跑的是真的 `startRegistryServer(0)`
  * （绑随机端口，测完 stop），审计那一半写的是真的审计链文件。仓库对内联
@@ -34,7 +34,7 @@ import {
   type RegistryServerHandle,
 } from '@qianmo/registry'
 import { RUNTIME_RATE } from '@qianmo/router'
-import { auditTrailPath } from '../../../services/qianmo/auditTrail.js'
+import { auditTrailPath } from '../../src/host/auditTrail.js'
 import {
   CONSOLE_HELP_TEXT,
   DEFAULT_CONSOLE_CHAT_FROM,
@@ -50,21 +50,21 @@ import {
   isConsoleHelpRequest,
   parseConsoleArgs,
   transportPskEnvVarForNode,
-} from '../consoleArgs.js'
+} from '../../src/commands/consoleArgs.js'
 import {
   ADMIN_TOKEN_ENV_VAR,
   VIEW_TOKEN_ENV_VAR,
-} from '../consoleTokenSources.js'
+} from '../../src/commands/consoleTokenSources.js'
 import {
   DEFAULT_AUDIT_LIMIT,
   consoleLimits,
   createAuditPort,
   createRegistryPort,
-} from '../consolePorts.js'
+} from '../../src/commands/consolePorts.js'
 
-describe('occ console argument parsing', () => {
+describe('qm console argument parsing', () => {
   test('runs on the loopback demo ports with no arguments at all', () => {
-    expect(parseConsoleArgs([], 'qianmo')).toEqual({
+    expect(parseConsoleArgs([])).toEqual({
       port: DEFAULT_CONSOLE_PORT,
       hostname: DEFAULT_CONSOLE_HOSTNAME,
       registryUrl: DEFAULT_CONSOLE_REGISTRY_URL,
@@ -83,11 +83,11 @@ describe('occ console argument parsing', () => {
   })
 
   test('derives the transcript path from the config root, never from $HOME', () => {
-    // CLAUDE.md §1.1②：身份相关路径只能从 `paths.ts` 派生，否则 OCC_CONFIG_DIR
+    // CLAUDE.md §1.1②：身份相关路径只能从 `paths.ts` 派生，否则 QIANMO_CONFIG_DIR
     // 对它无效——演示拓扑给每个进程一个配置根，转录也必须跟着分家。
     const path = consoleChatStorePath()
     expect(path.endsWith('/qianmo/console/chat.ndjson')).toBe(true)
-    expect(parseConsoleArgs([], 'qianmo').chatStorePath).toBe(path)
+    expect(parseConsoleArgs([]).chatStorePath).toBe(path)
   })
 
   test('keeps 38613 clear of the three ports demo-env.md §2.4 assigns', () => {
@@ -97,67 +97,61 @@ describe('occ console argument parsing', () => {
   })
 
   test('accepts every option in both --x value and --x=value form', () => {
-    const split = parseConsoleArgs(
-      [
-        '--port',
-        '39000',
-        '--hostname',
-        '0.0.0.0',
-        '--registry',
-        'http://10.0.0.2:38610',
-        '--audit',
-        '/tmp/qianmo/trail.ndjson',
-        '--anchors',
-        '/tmp/qianmo/witness',
-        '--trust',
-        'node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
-        '--registry-token-file',
-        '/tmp/qianmo/registry-token',
-        '--wake-url',
-        'ws://10.0.0.3:38611',
-        '--label',
-        'node-a 控制台',
-        '--view-token',
-        'view-token-long-enough',
-        '--admin-token',
-        'admin-token-long-enough',
-        '--chat-url',
-        'ws://10.0.0.3:38611',
-        '--chat-url',
-        'ws://10.0.0.4:38612',
-        '--chat-from',
-        'qianmo://ops/alice',
-        '--chat-store',
-        '/tmp/qianmo/chat.ndjson',
-        '--node-server',
-        'node-a=p11',
-        '--server-notes',
-        '/tmp/qianmo/server-notes.ndjson',
-      ],
-      'qianmo',
-    )
-    const joined = parseConsoleArgs(
-      [
-        '--port=39000',
-        '--hostname=0.0.0.0',
-        '--registry=http://10.0.0.2:38610',
-        '--audit=/tmp/qianmo/trail.ndjson',
-        '--anchors=/tmp/qianmo/witness',
-        '--trust=node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
-        '--registry-token-file=/tmp/qianmo/registry-token',
-        '--wake-url=ws://10.0.0.3:38611',
-        '--label=node-a 控制台',
-        '--view-token=view-token-long-enough',
-        '--admin-token=admin-token-long-enough',
-        '--chat-url=ws://10.0.0.3:38611',
-        '--chat-url=ws://10.0.0.4:38612',
-        '--chat-from=qianmo://ops/alice',
-        '--chat-store=/tmp/qianmo/chat.ndjson',
-        '--node-server=node-a=p11',
-        '--server-notes=/tmp/qianmo/server-notes.ndjson',
-      ],
-      'qianmo',
-    )
+    const split = parseConsoleArgs([
+      '--port',
+      '39000',
+      '--hostname',
+      '0.0.0.0',
+      '--registry',
+      'http://10.0.0.2:38610',
+      '--audit',
+      '/tmp/qianmo/trail.ndjson',
+      '--anchors',
+      '/tmp/qianmo/witness',
+      '--trust',
+      'node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+      '--registry-token-file',
+      '/tmp/qianmo/registry-token',
+      '--wake-url',
+      'ws://10.0.0.3:38611',
+      '--label',
+      'node-a 控制台',
+      '--view-token',
+      'view-token-long-enough',
+      '--admin-token',
+      'admin-token-long-enough',
+      '--chat-url',
+      'ws://10.0.0.3:38611',
+      '--chat-url',
+      'ws://10.0.0.4:38612',
+      '--chat-from',
+      'qianmo://ops/alice',
+      '--chat-store',
+      '/tmp/qianmo/chat.ndjson',
+      '--node-server',
+      'node-a=p11',
+      '--server-notes',
+      '/tmp/qianmo/server-notes.ndjson',
+    ])
+    const joined = parseConsoleArgs([
+      '--port=39000',
+      '--hostname=0.0.0.0',
+      '--registry=http://10.0.0.2:38610',
+      '--audit=/tmp/qianmo/trail.ndjson',
+      '--anchors=/tmp/qianmo/witness',
+      '--trust=node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+      '--registry-token-file=/tmp/qianmo/registry-token',
+      '--wake-url=ws://10.0.0.3:38611',
+      '--label=node-a 控制台',
+      '--view-token=view-token-long-enough',
+      '--admin-token=admin-token-long-enough',
+      '--chat-url=ws://10.0.0.3:38611',
+      '--chat-url=ws://10.0.0.4:38612',
+      '--chat-from=qianmo://ops/alice',
+      '--chat-store=/tmp/qianmo/chat.ndjson',
+      '--node-server=node-a=p11',
+      '--server-notes=/tmp/qianmo/server-notes.ndjson',
+    ])
 
     expect(split).toEqual(joined)
     expect(split).toEqual({
@@ -203,14 +197,11 @@ describe('occ console argument parsing', () => {
   test('takes --chat-url more than once and folds a repeat', () => {
     // 同一个端点给两次是复制粘贴，不是「建两条链路」。
     expect(
-      parseConsoleArgs(
-        [
-          '--chat-url=ws://127.0.0.1:38611',
-          '--chat-url=ws://127.0.0.1:38611/',
-          '--chat-url=ws://127.0.0.1:38612',
-        ],
-        'qianmo',
-      ).chatTargets,
+      parseConsoleArgs([
+        '--chat-url=ws://127.0.0.1:38611',
+        '--chat-url=ws://127.0.0.1:38611/',
+        '--chat-url=ws://127.0.0.1:38612',
+      ]).chatTargets,
     ).toEqual([
       {
         node: DEFAULT_CONSOLE_NODE,
@@ -227,15 +218,12 @@ describe('occ console argument parsing', () => {
 
   test('takes named chat targets and keeps them bound to their node', () => {
     expect(
-      parseConsoleArgs(
-        [
-          '--chat-url=beta-1=ws://127.0.0.1:38631',
-          '--chat-url=beta-2=ws://127.0.0.1:38632',
-          // 同一条给两遍仍然是复制粘贴。
-          '--chat-url=beta-2=ws://127.0.0.1:38632/',
-        ],
-        'qianmo',
-      ).chatTargets,
+      parseConsoleArgs([
+        '--chat-url=beta-1=ws://127.0.0.1:38631',
+        '--chat-url=beta-2=ws://127.0.0.1:38632',
+        // 同一条给两遍仍然是复制粘贴。
+        '--chat-url=beta-2=ws://127.0.0.1:38632/',
+      ]).chatTargets,
     ).toEqual([
       { node: 'beta-1', url: 'ws://127.0.0.1:38631/', legacy: false },
       { node: 'beta-2', url: 'ws://127.0.0.1:38632/', legacy: false },
@@ -246,44 +234,32 @@ describe('occ console argument parsing', () => {
     // 两种形式的 PSK 来源不同（共享的一把 vs 每节点一把），混着给意味着这台
     // 控制台一半绑了节点一半没绑——没有哪种读法是对的。
     expect(() =>
-      parseConsoleArgs(
-        [
-          '--chat-url=ws://127.0.0.1:38611',
-          '--chat-url=beta-1=ws://127.0.0.1:38631',
-        ],
-        'qianmo',
-      ),
+      parseConsoleArgs([
+        '--chat-url=ws://127.0.0.1:38611',
+        '--chat-url=beta-1=ws://127.0.0.1:38631',
+      ]),
     ).toThrow('--chat-url cannot mix legacy URLs with named values')
     expect(() =>
-      parseConsoleArgs(
-        [
-          '--chat-url=beta-1=ws://127.0.0.1:38631',
-          '--chat-url=ws://127.0.0.1:38611',
-        ],
-        'qianmo',
-      ),
+      parseConsoleArgs([
+        '--chat-url=beta-1=ws://127.0.0.1:38631',
+        '--chat-url=ws://127.0.0.1:38611',
+      ]),
     ).toThrow('--chat-url cannot mix legacy URLs with named values')
   })
 
   test('one node has one chat endpoint, and one endpoint has one node', () => {
     expect(() =>
-      parseConsoleArgs(
-        [
-          '--chat-url=beta-1=ws://127.0.0.1:38631',
-          '--chat-url=beta-1=ws://127.0.0.1:38632',
-        ],
-        'qianmo',
-      ),
+      parseConsoleArgs([
+        '--chat-url=beta-1=ws://127.0.0.1:38631',
+        '--chat-url=beta-1=ws://127.0.0.1:38632',
+      ]),
     ).toThrow('--chat-url repeats node beta-1')
     // 反过来也不行：PSK 按节点取，一个端点挂两个名字就没有唯一的钥匙。
     expect(() =>
-      parseConsoleArgs(
-        [
-          '--chat-url=beta-1=ws://127.0.0.1:38631',
-          '--chat-url=beta-2=ws://127.0.0.1:38631',
-        ],
-        'qianmo',
-      ),
+      parseConsoleArgs([
+        '--chat-url=beta-1=ws://127.0.0.1:38631',
+        '--chat-url=beta-2=ws://127.0.0.1:38631',
+      ]),
     ).toThrow(
       '--chat-url gives ws://127.0.0.1:38631/ to both beta-1 and beta-2',
     )
@@ -291,73 +267,62 @@ describe('occ console argument parsing', () => {
 
   test('rejects a chat endpoint that is not ws or wss', () => {
     expect(() =>
-      parseConsoleArgs(['--chat-url=http://127.0.0.1:38611'], 'qianmo'),
+      parseConsoleArgs(['--chat-url=http://127.0.0.1:38611']),
     ).toThrow('--chat-url must use ws or wss')
     expect(() =>
-      parseConsoleArgs(['--chat-url=beta-1=http://127.0.0.1:38631'], 'qianmo'),
+      parseConsoleArgs(['--chat-url=beta-1=http://127.0.0.1:38631']),
     ).toThrow('--chat-url must use ws or wss')
     expect(() =>
-      parseConsoleArgs(['--chat-store=relative/chat.ndjson'], 'qianmo'),
+      parseConsoleArgs(['--chat-store=relative/chat.ndjson']),
     ).toThrow('--chat-store must be an absolute path')
-    expect(() => parseConsoleArgs(['--chat-from=  '], 'qianmo')).toThrow(
+    expect(() => parseConsoleArgs(['--chat-from=  '])).toThrow(
       '--chat-from must not be empty',
     )
   })
 
   test('strips the trailing slash so /v0/agents never doubles up', () => {
     expect(
-      parseConsoleArgs(['--registry=http://127.0.0.1:38610/'], 'qianmo')
-        .registryUrl,
+      parseConsoleArgs(['--registry=http://127.0.0.1:38610/']).registryUrl,
     ).toBe('http://127.0.0.1:38610')
   })
 
   test('defaults the header label to the address it is bound to', () => {
     expect(
-      parseConsoleArgs(['--port=39001', '--hostname=127.0.0.5'], 'qianmo')
-        .label,
+      parseConsoleArgs(['--port=39001', '--hostname=127.0.0.5']).label,
     ).toBe('127.0.0.5:39001')
   })
 
-  test('requires the Qianmo identity', () => {
-    expect(() => parseConsoleArgs([], 'occ')).toThrow('OCC_IDENTITY=qianmo')
-  })
-
   test('takes the whole legal port range and nothing outside it', () => {
-    expect(parseConsoleArgs(['--port=0'], 'qianmo').port).toBe(0)
-    expect(parseConsoleArgs(['--port=65535'], 'qianmo').port).toBe(65_535)
+    expect(parseConsoleArgs(['--port=0']).port).toBe(0)
+    expect(parseConsoleArgs(['--port=65535']).port).toBe(65_535)
     for (const bad of ['-1', '65536', '1.5', 'abc', '']) {
-      expect(() => parseConsoleArgs([`--port=${bad}`], 'qianmo')).toThrow(
-        '--port',
-      )
+      expect(() => parseConsoleArgs([`--port=${bad}`])).toThrow('--port')
     }
   })
 
   test('rejects protocols that the two URL options cannot mean', () => {
+    expect(() => parseConsoleArgs(['--registry=ws://127.0.0.1:38610'])).toThrow(
+      '--registry must use http or https',
+    )
     expect(() =>
-      parseConsoleArgs(['--registry=ws://127.0.0.1:38610'], 'qianmo'),
-    ).toThrow('--registry must use http or https')
-    expect(() =>
-      parseConsoleArgs(['--wake-url=http://127.0.0.1:38611'], 'qianmo'),
+      parseConsoleArgs(['--wake-url=http://127.0.0.1:38611']),
     ).toThrow('--wake-url must use ws or wss')
-    expect(() => parseConsoleArgs(['--registry=not-a-url'], 'qianmo')).toThrow()
+    expect(() => parseConsoleArgs(['--registry=not-a-url'])).toThrow()
   })
 
   test('insists the trail path is absolute', () => {
-    expect(() =>
-      parseConsoleArgs(['--audit=relative/trail.ndjson'], 'qianmo'),
-    ).toThrow('--audit must be an absolute path')
+    expect(() => parseConsoleArgs(['--audit=relative/trail.ndjson'])).toThrow(
+      '--audit must be an absolute path',
+    )
   })
 
   test('accepts independent named audit sources and explicit mirror metadata', () => {
     expect(
-      parseConsoleArgs(
-        [
-          '--audit=beta-1=/var/lib/qianmo/beta-1/trail.ndjson',
-          '--audit=beta_2=/var/lib/qianmo/beta-2/trail.ndjson',
-          '--audit-mirror=beta_2=5',
-        ],
-        'qianmo',
-      ),
+      parseConsoleArgs([
+        '--audit=beta-1=/var/lib/qianmo/beta-1/trail.ndjson',
+        '--audit=beta_2=/var/lib/qianmo/beta-2/trail.ndjson',
+        '--audit-mirror=beta_2=5',
+      ]),
     ).toMatchObject({
       auditTargets: [
         { node: 'beta-1', path: '/var/lib/qianmo/beta-1/trail.ndjson' },
@@ -368,12 +333,12 @@ describe('occ console argument parsing', () => {
   })
 
   test('splits named audit paths once while preserving legacy paths with =', () => {
-    expect(
-      parseConsoleArgs(['--audit=/tmp/a=b'], 'qianmo').auditTargets,
-    ).toEqual([{ node: DEFAULT_CONSOLE_NODE, path: '/tmp/a=b' }])
-    expect(
-      parseConsoleArgs(['--audit=beta-1=/tmp/a=b'], 'qianmo').auditTargets,
-    ).toEqual([{ node: 'beta-1', path: '/tmp/a=b' }])
+    expect(parseConsoleArgs(['--audit=/tmp/a=b']).auditTargets).toEqual([
+      { node: DEFAULT_CONSOLE_NODE, path: '/tmp/a=b' },
+    ])
+    expect(parseConsoleArgs(['--audit=beta-1=/tmp/a=b']).auditTargets).toEqual([
+      { node: 'beta-1', path: '/tmp/a=b' },
+    ])
   })
 
   test('rejects ambiguous or malformed named audit inputs', () => {
@@ -386,7 +351,7 @@ describe('occ console argument parsing', () => {
       ['--audit-mirror=beta-2=5'],
       ['--audit=beta-2=/tmp/a', '--audit-mirror=beta-2=0'],
     ]) {
-      expect(() => parseConsoleArgs(args, 'qianmo')).toThrow('--audit')
+      expect(() => parseConsoleArgs(args)).toThrow('--audit')
     }
   })
 
@@ -395,16 +360,13 @@ describe('occ console argument parsing', () => {
       ['--audit=beta-1=/tmp/trail', '--audit=beta-2=/tmp/trail'],
       ['--audit=beta-1=/tmp/a/../trail', '--audit=beta-2=/tmp/trail'],
     ]) {
-      expect(() => parseConsoleArgs(args, 'qianmo')).toThrow(
-        '--audit repeats path',
-      )
+      expect(() => parseConsoleArgs(args)).toThrow('--audit repeats path')
     }
   })
 
   test('keeps legacy wake URL while accepting named wake allowlists', () => {
     expect(
-      parseConsoleArgs(['--wake-url=ws://127.0.0.1:38611'], 'qianmo')
-        .wakeTargets,
+      parseConsoleArgs(['--wake-url=ws://127.0.0.1:38611']).wakeTargets,
     ).toEqual([
       {
         node: DEFAULT_CONSOLE_NODE,
@@ -413,13 +375,10 @@ describe('occ console argument parsing', () => {
       },
     ])
     expect(
-      parseConsoleArgs(
-        [
-          '--wake-url=beta-1=ws://127.0.0.1:38611',
-          '--wake-url=beta_1=ws://127.0.0.1:38612',
-        ],
-        'qianmo',
-      ).wakeTargets,
+      parseConsoleArgs([
+        '--wake-url=beta-1=ws://127.0.0.1:38611',
+        '--wake-url=beta_1=ws://127.0.0.1:38612',
+      ]).wakeTargets,
     ).toEqual([
       { node: 'beta-1', url: 'ws://127.0.0.1:38611/', legacy: false },
       { node: 'beta_1', url: 'ws://127.0.0.1:38612/', legacy: false },
@@ -428,8 +387,7 @@ describe('occ console argument parsing', () => {
 
   test('splits named wake URLs once while preserving legacy URLs with =', () => {
     expect(
-      parseConsoleArgs(['--wake-url=ws://host/path?token=a=b'], 'qianmo')
-        .wakeTargets,
+      parseConsoleArgs(['--wake-url=ws://host/path?token=a=b']).wakeTargets,
     ).toEqual([
       {
         node: DEFAULT_CONSOLE_NODE,
@@ -438,7 +396,7 @@ describe('occ console argument parsing', () => {
       },
     ])
     expect(
-      parseConsoleArgs(['--wake-url=beta-1=ws://host/path?token=a=b'], 'qianmo')
+      parseConsoleArgs(['--wake-url=beta-1=ws://host/path?token=a=b'])
         .wakeTargets,
     ).toEqual([
       {
@@ -463,7 +421,7 @@ describe('occ console argument parsing', () => {
       ['--wake-url=beta-2='],
       ['--wake-url=beta-2=http://127.0.0.1:38611'],
     ]) {
-      expect(() => parseConsoleArgs(args, 'qianmo')).toThrow('--wake-url')
+      expect(() => parseConsoleArgs(args)).toThrow('--wake-url')
     }
   })
 
@@ -490,7 +448,7 @@ describe('occ console argument parsing', () => {
     const valid = 'a' + 'b'.repeat(MAX_SEGMENT_LENGTH - 2) + '9'
     expect(valid).toHaveLength(MAX_SEGMENT_LENGTH)
     expect(
-      parseConsoleArgs([`--audit=${valid}=/tmp/trail`], 'qianmo').auditTargets,
+      parseConsoleArgs([`--audit=${valid}=/tmp/trail`]).auditTargets,
     ).toEqual([{ node: valid, path: '/tmp/trail' }])
 
     for (const node of [
@@ -498,11 +456,11 @@ describe('occ console argument parsing', () => {
       'beta.1',
       'a' + 'b'.repeat(MAX_SEGMENT_LENGTH),
     ]) {
+      expect(() => parseConsoleArgs([`--audit=${node}=/tmp/trail`])).toThrow(
+        'protocol segment',
+      )
       expect(() =>
-        parseConsoleArgs([`--audit=${node}=/tmp/trail`], 'qianmo'),
-      ).toThrow('protocol segment')
-      expect(() =>
-        parseConsoleArgs([`--wake-url=${node}=ws://127.0.0.1:38611`], 'qianmo'),
+        parseConsoleArgs([`--wake-url=${node}=ws://127.0.0.1:38611`]),
       ).toThrow('protocol segment')
     }
   })
@@ -510,99 +468,85 @@ describe('occ console argument parsing', () => {
   test('accepts only an absolute anchor directory or HTTP(S) endpoint', () => {
     const trust = '--trust=node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo'
     expect(
-      parseConsoleArgs(['--anchors=/tmp/qianmo/witness', trust], 'qianmo'),
+      parseConsoleArgs(['--anchors=/tmp/qianmo/witness', trust]),
     ).toMatchObject({ anchors: { kind: 'path', value: '/tmp/qianmo/witness' } })
     expect(
-      parseConsoleArgs(
-        ['--anchors=https://witness.example/v0', trust],
-        'qianmo',
-      ),
+      parseConsoleArgs(['--anchors=https://witness.example/v0', trust]),
     ).toMatchObject({
       anchors: { kind: 'url', value: 'https://witness.example/v0' },
     })
     expect(() =>
-      parseConsoleArgs(['--anchors=relative/witness', trust], 'qianmo'),
+      parseConsoleArgs(['--anchors=relative/witness', trust]),
     ).toThrow('absolute path or http(s) URL')
   })
 
   test('--anchors needs a key source established on this side (K-11 F-3)', () => {
-    expect(() =>
-      parseConsoleArgs(['--anchors=/tmp/qianmo/witness'], 'qianmo'),
-    ).toThrow('--anchors needs --trust <node>=<publicKey> or --trust-ca')
+    expect(() => parseConsoleArgs(['--anchors=/tmp/qianmo/witness'])).toThrow(
+      '--anchors needs --trust <node>=<publicKey> or --trust-ca',
+    )
     expect(
-      parseConsoleArgs(
-        ['--anchors=/tmp/qianmo/witness', '--trust-ca=/etc/qianmo/ca.pem'],
-        'qianmo',
-      ),
+      parseConsoleArgs([
+        '--anchors=/tmp/qianmo/witness',
+        '--trust-ca=/etc/qianmo/ca.pem',
+      ]),
     ).toMatchObject({ trustCa: '/etc/qianmo/ca.pem' })
   })
 
   test('--trust folds a repeat and refuses two keys for one node', () => {
     const other = 'hgyY0il_MGCjP0JzlnLWG1PPOt7-09PGcvMg3AIbQR8'
     expect(
-      parseConsoleArgs(
-        [
-          '--trust',
-          'node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
-          '--trust=node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
-          '--trust',
-          `node-b=${other}`,
-        ],
-        'qianmo',
-      ).trusted,
+      parseConsoleArgs([
+        '--trust',
+        'node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+        '--trust=node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+        '--trust',
+        `node-b=${other}`,
+      ]).trusted,
     ).toEqual([
       ['node-a', '11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo'],
       ['node-b', other],
     ])
     expect(() =>
-      parseConsoleArgs(
-        [
-          '--trust',
-          'node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
-          '--trust',
-          `node-a=${other}`,
-        ],
-        'qianmo',
-      ),
+      parseConsoleArgs([
+        '--trust',
+        'node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+        '--trust',
+        `node-a=${other}`,
+      ]),
     ).toThrow('--trust gives node node-a two different keys')
-    expect(() =>
-      parseConsoleArgs(['--trust', 'node-a=nope'], 'qianmo'),
-    ).toThrow('valid Ed25519 key')
+    expect(() => parseConsoleArgs(['--trust', 'node-a=nope'])).toThrow(
+      'valid Ed25519 key',
+    )
   })
 
   test('--registry-token-file must be absolute, and neither new key appears unless given', () => {
-    expect(() =>
-      parseConsoleArgs(['--registry-token-file', 'token'], 'qianmo'),
-    ).toThrow('--registry-token-file must be an absolute path')
-    const plain = parseConsoleArgs([], 'qianmo')
+    expect(() => parseConsoleArgs(['--registry-token-file', 'token'])).toThrow(
+      '--registry-token-file must be an absolute path',
+    )
+    const plain = parseConsoleArgs([])
     expect('trusted' in plain).toBe(false)
     expect('registryTokenFile' in plain).toBe(false)
   })
 
   test('rejects blank and oversized labels and blank tokens', () => {
-    expect(() => parseConsoleArgs(['--label=   '], 'qianmo')).toThrow(
+    expect(() => parseConsoleArgs(['--label=   '])).toThrow(
       '--label must not be empty',
     )
     expect(() =>
-      parseConsoleArgs(
-        [`--label=${'x'.repeat(MAX_CONSOLE_LABEL_LENGTH + 1)}`],
-        'qianmo',
-      ),
+      parseConsoleArgs([`--label=${'x'.repeat(MAX_CONSOLE_LABEL_LENGTH + 1)}`]),
     ).toThrow('--label must be at most')
-    expect(() => parseConsoleArgs(['--view-token=  '], 'qianmo')).toThrow(
+    expect(() => parseConsoleArgs(['--view-token=  '])).toThrow(
       '--view-token must not be empty',
     )
   })
 
   test('names an unknown option rather than ignoring it', () => {
-    expect(() => parseConsoleArgs(['--registy=x'], 'qianmo')).toThrow(
+    expect(() => parseConsoleArgs(['--registy=x'])).toThrow(
       'unknown console option --registy=x',
     )
     // 走到这一支的人多半是拼错了选项名，所以顺手指一下那张表在哪。
-    expect(() => parseConsoleArgs(['--registy=x'], 'qianmo')).toThrow(
-      'console --help',
-    )
-    expect(() => parseConsoleArgs(['--port'], 'qianmo')).toThrow(
+    expect(() => parseConsoleArgs(['--registy=x'])).toThrow('console --help')
+    expect(() => parseConsoleArgs(['--port'])).toThrow(
       '--port requires a value',
     )
   })
@@ -615,23 +559,17 @@ describe('occ console argument parsing', () => {
   test('takes the two token files in both forms and keeps them absolute', () => {
     // 值本身由 `consoleTokenSources.ts` 读（那一步碰磁盘，所以不在纯解析里）；
     // 这里只钉住路径进得来、且和 `--audit` 同一条绝对路径规矩。
-    const split = parseConsoleArgs(
-      [
-        '--view-token-file',
-        '/run/qianmo/view.token',
-        '--admin-token-file',
-        '/run/qianmo/admin.token',
-      ],
-      'qianmo',
-    )
+    const split = parseConsoleArgs([
+      '--view-token-file',
+      '/run/qianmo/view.token',
+      '--admin-token-file',
+      '/run/qianmo/admin.token',
+    ])
     expect(split).toEqual(
-      parseConsoleArgs(
-        [
-          '--view-token-file=/run/qianmo/view.token',
-          '--admin-token-file=/run/qianmo/admin.token',
-        ],
-        'qianmo',
-      ),
+      parseConsoleArgs([
+        '--view-token-file=/run/qianmo/view.token',
+        '--admin-token-file=/run/qianmo/admin.token',
+      ]),
     )
     expect(split.viewTokenFile).toBe('/run/qianmo/view.token')
     expect(split.adminTokenFile).toBe('/run/qianmo/admin.token')
@@ -640,12 +578,10 @@ describe('occ console argument parsing', () => {
     expect(split.adminToken).toBeUndefined()
 
     for (const flag of ['--view-token-file', '--admin-token-file']) {
-      expect(() =>
-        parseConsoleArgs([`${flag}=relative/token`], 'qianmo'),
-      ).toThrow(`${flag} must be an absolute path`)
-      expect(() => parseConsoleArgs([flag], 'qianmo')).toThrow(
-        `${flag} requires a value`,
+      expect(() => parseConsoleArgs([`${flag}=relative/token`])).toThrow(
+        `${flag} must be an absolute path`,
       )
+      expect(() => parseConsoleArgs([flag])).toThrow(`${flag} requires a value`)
     }
   })
 
@@ -653,48 +589,43 @@ describe('occ console argument parsing', () => {
     // 两条分支的前缀长得几乎一样（`--view-token` / `--view-token-file`），一次
     // 顺序或写法上的疏忽就会让文件路径被当成 token 本身收下——那是把「明文不进
     // 命令行」这件事整个反过来。
-    const config = parseConsoleArgs(
-      ['--view-token-file=/run/qianmo/view.token'],
-      'qianmo',
-    )
+    const config = parseConsoleArgs([
+      '--view-token-file=/run/qianmo/view.token',
+    ])
     expect(config.viewToken).toBeUndefined()
     expect(config.viewTokenFile).toBe('/run/qianmo/view.token')
     expect(
-      parseConsoleArgs(['--admin-token-file=/run/qianmo/a.token'], 'qianmo')
-        .adminToken,
+      parseConsoleArgs(['--admin-token-file=/run/qianmo/a.token']).adminToken,
     ).toBeUndefined()
   })
 })
 
-describe('occ console --chat-sign', () => {
+describe('qm console --chat-sign', () => {
   test('两个签名开关互不牵连', () => {
     // 唤醒是「醒过来看一眼收件箱」，对话是「按这段文字去干活」——合成一个开关就是
     // 让打开前者的人顺手把后者也交出去。这条用例钉的就是它们没有被合并。
-    const chatOnly = parseConsoleArgs(['--chat-sign'], 'qianmo')
+    const chatOnly = parseConsoleArgs(['--chat-sign'])
     expect(chatOnly.signChats).toBe(true)
     expect(chatOnly.signWakes).toBeUndefined()
 
-    const wakeOnly = parseConsoleArgs(['--wake-sign'], 'qianmo')
+    const wakeOnly = parseConsoleArgs(['--wake-sign'])
     expect(wakeOnly.signWakes).toBe(true)
     expect(wakeOnly.signChats).toBeUndefined()
 
-    const both = parseConsoleArgs(['--wake-sign', '--chat-sign'], 'qianmo')
+    const both = parseConsoleArgs(['--wake-sign', '--chat-sign'])
     expect(both.signWakes).toBe(true)
     expect(both.signChats).toBe(true)
   })
 })
 
-describe('occ console --node-server (服务器归属)', () => {
+describe('qm console --node-server (服务器归属)', () => {
   test('takes one mapping per flag and keeps the order they were written', () => {
-    const config = parseConsoleArgs(
-      [
-        '--node-server=beta-1=p11',
-        '--node-server',
-        'beta-2=p11',
-        '--node-server=beta-3=p2',
-      ],
-      'qianmo',
-    )
+    const config = parseConsoleArgs([
+      '--node-server=beta-1=p11',
+      '--node-server',
+      'beta-2=p11',
+      '--node-server=beta-3=p2',
+    ])
     expect(config.nodeServers).toEqual([
       { node: 'beta-1', server: 'p11' },
       { node: 'beta-2', server: 'p11' },
@@ -708,25 +639,24 @@ describe('occ console --node-server (服务器归属)', () => {
     // 这四种取值与写入侧 `beta_assert_server_id` 的注释举的是同一批。
     for (const server of ['p11', '203.0.113.7', '2001:db8::5', 'ECS114873']) {
       expect(
-        parseConsoleArgs([`--node-server=beta-1=${server}`], 'qianmo')
-          .nodeServers,
+        parseConsoleArgs([`--node-server=beta-1=${server}`]).nodeServers,
       ).toEqual([{ node: 'beta-1', server }])
     }
   })
 
   test('is absent by default, so a console with no mapping shows none', () => {
-    expect(parseConsoleArgs([], 'qianmo').nodeServers).toEqual([])
+    expect(parseConsoleArgs([]).nodeServers).toEqual([])
   })
 
   test('refuses a value that is not <node>=<server>', () => {
-    expect(() => parseConsoleArgs(['--node-server=p11'], 'qianmo')).toThrow(
+    expect(() => parseConsoleArgs(['--node-server=p11'])).toThrow(
       '--node-server must be <node>=<value>',
     )
     // 等号在第一个字符上等于没有 node 段。
-    expect(() => parseConsoleArgs(['--node-server==p11'], 'qianmo')).toThrow(
+    expect(() => parseConsoleArgs(['--node-server==p11'])).toThrow(
       '--node-server must be <node>=<value>',
     )
-    expect(() => parseConsoleArgs(['--node-server=beta-1='], 'qianmo')).toThrow(
+    expect(() => parseConsoleArgs(['--node-server=beta-1='])).toThrow(
       '--node-server value must not be empty',
     )
   })
@@ -735,25 +665,22 @@ describe('occ console --node-server (服务器归属)', () => {
     // 判据与 `demo/env/beta/common.sh` 的 beta_assert_server_id 逐字对齐：一边
     // 放行一边拒收的症状是「peers.conf 明明写了，控制台就是不显示」。
     for (const bad of ['p 11', 'p11\tx', '香港一号', 'a/b', 'a,b', 'p11#1']) {
-      expect(() =>
-        parseConsoleArgs([`--node-server=beta-1=${bad}`], 'qianmo'),
-      ).toThrow('letters, digits, . _ : or -')
+      expect(() => parseConsoleArgs([`--node-server=beta-1=${bad}`])).toThrow(
+        'letters, digits, . _ : or -',
+      )
     }
   })
 
   test('refuses a server id past the ceiling, and takes the one at it', () => {
     const atCeiling = 'a'.repeat(MAX_CONSOLE_SERVER_ID_LENGTH)
     expect(
-      parseConsoleArgs([`--node-server=beta-1=${atCeiling}`], 'qianmo')
-        .nodeServers[0]?.server,
+      parseConsoleArgs([`--node-server=beta-1=${atCeiling}`]).nodeServers[0]
+        ?.server,
     ).toBe(atCeiling)
     expect(() =>
-      parseConsoleArgs(
-        [
-          `--node-server=beta-1=${'a'.repeat(MAX_CONSOLE_SERVER_ID_LENGTH + 1)}`,
-        ],
-        'qianmo',
-      ),
+      parseConsoleArgs([
+        `--node-server=beta-1=${'a'.repeat(MAX_CONSOLE_SERVER_ID_LENGTH + 1)}`,
+      ]),
     ).toThrow(`at most ${MAX_CONSOLE_SERVER_ID_LENGTH} characters`)
   })
 
@@ -761,31 +688,28 @@ describe('occ console --node-server (服务器归属)', () => {
     // 两条冲突的记录会让名册显示一条、备注面显示另一条，而那种不一致比一条
     // 启动错误难查得多。
     expect(() =>
-      parseConsoleArgs(
-        ['--node-server=beta-1=p11', '--node-server=beta-1=p2'],
-        'qianmo',
-      ),
+      parseConsoleArgs(['--node-server=beta-1=p11', '--node-server=beta-1=p2']),
     ).toThrow('--node-server repeats node beta-1')
   })
 
   test('holds the node half to the protocol segment rules', () => {
-    expect(() =>
-      parseConsoleArgs(['--node-server=Beta_1=p11'], 'qianmo'),
-    ).toThrow('--node-server node must be a lowercase protocol segment')
+    expect(() => parseConsoleArgs(['--node-server=Beta_1=p11'])).toThrow(
+      '--node-server node must be a lowercase protocol segment',
+    )
   })
 
   test('derives the note path from the config root, never from $HOME', () => {
-    // CLAUDE.md §1.1②，与转录同一条：OCC_CONFIG_DIR 必须对它有效。
+    // CLAUDE.md §1.1②，与转录同一条：QIANMO_CONFIG_DIR 必须对它有效。
     const path = consoleServerNotesPath()
     expect(path.endsWith('/qianmo/console/server-notes.ndjson')).toBe(true)
-    expect(parseConsoleArgs([], 'qianmo').serverNotesPath).toBe(path)
+    expect(parseConsoleArgs([]).serverNotesPath).toBe(path)
     expect(() =>
-      parseConsoleArgs(['--server-notes=relative/notes.ndjson'], 'qianmo'),
+      parseConsoleArgs(['--server-notes=relative/notes.ndjson']),
     ).toThrow('--server-notes must be an absolute path')
   })
 })
 
-describe('occ console --help', () => {
+describe('qm console --help', () => {
   test('answers --help and -h wherever they appear on the line', () => {
     // 「敲到一半发现忘了选项名」是人真会做的事，所以位置不限。
     expect(isConsoleHelpRequest(['--help'])).toBe(true)
@@ -801,7 +725,7 @@ describe('occ console --help', () => {
     // 反漂移：选项名的唯一出处是解析器的分派链，帮助文本是它的投影。新增一个
     // 选项却忘了写进帮助，这条会红——而不是等到内测用户问「还有别的参数吗」。
     const source = readFileSync(
-      new URL('../consoleArgs.ts', import.meta.url),
+      new URL('../../src/commands/consoleArgs.ts', import.meta.url),
       'utf8',
     )
     const dispatched = [...source.matchAll(/arg === '(--[a-z-]+)'/g)].map(
@@ -831,14 +755,6 @@ describe('occ console --help', () => {
     expect(CONSOLE_HELP_TEXT.indexOf(`2. $${VIEW_TOKEN_ENV_VAR}`)).toBeLessThan(
       CONSOLE_HELP_TEXT.indexOf('3. --view-token <token>'),
     )
-  })
-
-  test('names the identity the console refuses to run without', () => {
-    // 问「这个命令怎么用」的人恰恰是还没配好身份的那个人。
-    expect(CONSOLE_HELP_TEXT).toContain('OCC_IDENTITY')
-    expect(CONSOLE_HELP_TEXT).toContain('qianmo')
-    expect(CONSOLE_HELP_TEXT).toContain('docs/dev/console.md')
-    expect(CONSOLE_HELP_TEXT.endsWith('\n')).toBe(true)
   })
 })
 
@@ -960,7 +876,7 @@ describe('console audit port', () => {
     expect(all.value.issueCount).toBe(0)
     expect(all.value.records).toHaveLength(6)
 
-    // limit 取的是**尾部**，和 `occ audit --limit` 同一语义。
+    // limit 取的是**尾部**，和 `qm audit --limit` 同一语义。
     const tail = await port.read({ limit: 2 })
     if (!tail.ok) throw new Error('unreachable')
     expect(tail.value.records.map(record => record.seq)).toEqual([5, 6])
@@ -1231,7 +1147,7 @@ describe('console audit port', () => {
     expect(result.failure.message).toContain('timed out after 10 ms')
   })
 
-  test('defaults the tail to the same 200 as occ audit', () => {
+  test('defaults the tail to the same 200 as qm audit', () => {
     expect(DEFAULT_AUDIT_LIMIT).toBe(200)
   })
 })
@@ -1482,11 +1398,11 @@ describe('console registry port', () => {
  */
 describe('console --trust-ca (证书栏)', () => {
   test('不给就没有，给了必须是绝对路径', () => {
-    expect(parseConsoleArgs([], 'qianmo').trustCa).toBeUndefined()
-    expect(
-      parseConsoleArgs(['--trust-ca', '/etc/qianmo/ca.pem'], 'qianmo').trustCa,
-    ).toBe('/etc/qianmo/ca.pem')
-    expect(() => parseConsoleArgs(['--trust-ca', 'ca.pem'], 'qianmo')).toThrow(
+    expect(parseConsoleArgs([]).trustCa).toBeUndefined()
+    expect(parseConsoleArgs(['--trust-ca', '/etc/qianmo/ca.pem']).trustCa).toBe(
+      '/etc/qianmo/ca.pem',
+    )
+    expect(() => parseConsoleArgs(['--trust-ca', 'ca.pem'])).toThrow(
       'absolute path',
     )
   })

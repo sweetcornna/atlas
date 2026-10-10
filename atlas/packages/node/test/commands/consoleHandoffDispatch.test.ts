@@ -27,16 +27,19 @@ import {
   type QianmoMessage,
 } from '@qianmo/protocol'
 import { startTransportServer } from '@qianmo/transport'
-import { parseConsoleArgs, transportPskEnvVarForNode } from '../consoleArgs.js'
-import { openConsoleHandoff } from '../consoleHandoff.js'
+import {
+  parseConsoleArgs,
+  transportPskEnvVarForNode,
+} from '../../src/commands/consoleArgs.js'
+import { openConsoleHandoff } from '../../src/commands/consoleHandoff.js'
 import {
   type HandoffDispatchConfig,
   type HandoffNodeTarget,
   wireHandoffDispatch,
-} from '../consoleHandoffDispatch.js'
-import { createConsoleWakeIssuer } from '../consoleWakeIdentity.js'
-import { initHubRepository } from '../handoffHub.js'
-import { ensureNodeRepository } from '../handoffNode.js'
+} from '../../src/commands/consoleHandoffDispatch.js'
+import { createConsoleWakeIssuer } from '../../src/commands/consoleWakeIdentity.js'
+import { initHubRepository } from '../../src/commands/handoffHub.js'
+import { ensureNodeRepository } from '../../src/commands/handoffNode.js'
 import {
   git,
   type Laptop,
@@ -654,25 +657,22 @@ describe('restart and deadlines', () => {
 // ─── Wiring and arguments ────────────────────────────────────────────
 
 describe('wireHandoffDispatch', () => {
-  const nodes = parseConsoleArgs(
-    [
-      '--handoff-root',
-      '/srv/qianmo/handoff/repos',
-      '--handoff-node',
-      'cloud-a=wss://cloud-a.example:38630/',
-      '--handoff-node-git',
-      'cloud-a=qianmo@cloud-a.example:/srv/qianmo/handoff/repos',
-      '--handoff-node',
-      'cloud-b=ws://10.0.0.2:38630',
-      '--handoff-node-git',
-      'cloud-b=/srv/local/repos',
-      '--handoff-node-key',
-      '/etc/qianmo/handoff-node-key',
-      '--handoff-notify-url',
-      'https://api.day.app/SECRETDEVICEKEY/',
-    ],
-    'qianmo',
-  )
+  const nodes = parseConsoleArgs([
+    '--handoff-root',
+    '/srv/qianmo/handoff/repos',
+    '--handoff-node',
+    'cloud-a=wss://cloud-a.example:38630/',
+    '--handoff-node-git',
+    'cloud-a=qianmo@cloud-a.example:/srv/qianmo/handoff/repos',
+    '--handoff-node',
+    'cloud-b=ws://10.0.0.2:38630',
+    '--handoff-node-git',
+    'cloud-b=/srv/local/repos',
+    '--handoff-node-key',
+    '/etc/qianmo/handoff-node-key',
+    '--handoff-notify-url',
+    'https://api.day.app/SECRETDEVICEKEY/',
+  ])
 
   test('PSK per node from its derived variable; a node without one is left out; signed as the console', () => {
     let loaded = 0
@@ -720,7 +720,7 @@ describe('wireHandoffDispatch', () => {
     expect(loaded).toBe(0)
     expect(wiring.config).toBeUndefined()
     expect(wiring.status).toStartWith('disabled (')
-    expect(wireHandoffDispatch(parseConsoleArgs([], 'qianmo')).status).toBe(
+    expect(wireHandoffDispatch(parseConsoleArgs([])).status).toBe(
       'disabled (no --handoff-node)',
     )
   })
@@ -730,16 +730,13 @@ describe('--handoff-node and friends', () => {
   const root = ['--handoff-root', '/srv/qianmo/handoff/repos']
 
   test('parsed in pairs per node; the git root as the SSH gate reads it', () => {
-    const config = parseConsoleArgs(
-      [
-        ...root,
-        '--handoff-node=cloud-a=ws://127.0.0.1:38630',
-        '--handoff-node-git=cloud-a=qianmo@cloud-a:~/handoff/repos',
-        '--handoff-node-key=/k/gate',
-        '--handoff-notify-url=http://127.0.0.1:9000/hook',
-      ],
-      'qianmo',
-    )
+    const config = parseConsoleArgs([
+      ...root,
+      '--handoff-node=cloud-a=ws://127.0.0.1:38630',
+      '--handoff-node-git=cloud-a=qianmo@cloud-a:~/handoff/repos',
+      '--handoff-node-key=/k/gate',
+      '--handoff-notify-url=http://127.0.0.1:9000/hook',
+    ])
     expect(config.handoffNodes).toEqual([
       {
         node: 'cloud-a',
@@ -749,7 +746,7 @@ describe('--handoff-node and friends', () => {
     ])
     expect(config.handoffNodeKey).toBe('/k/gate')
     expect(config.handoffNotifyUrl).toBe('http://127.0.0.1:9000/hook')
-    const plain = parseConsoleArgs(root, 'qianmo')
+    const plain = parseConsoleArgs(root)
     expect(plain.handoffNodes).toBeUndefined()
     expect(plain.handoffNodeKey).toBeUndefined()
     expect(plain.handoffNotifyUrl).toBeUndefined()
@@ -818,7 +815,7 @@ describe('--handoff-node and friends', () => {
       [[...root, '--handoff-node', 'Cloud A=ws://h:1'], 'protocol segment'],
     ]
     for (const [args, message] of cases) {
-      expect(() => parseConsoleArgs(args, 'qianmo')).toThrow(message)
+      expect(() => parseConsoleArgs(args)).toThrow(message)
     }
   })
 })

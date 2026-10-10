@@ -29,6 +29,8 @@ type Json = Readonly<Record<string, unknown>>
 const HASH = /^sha256:[0-9a-f]{64}$/
 const ENV_KEY = /^[A-Z][A-Z0-9_]{0,63}$/
 const SLOT_KEY = /^modelSettings\.[a-z][a-z0-9-]{0,31}$/
+const OMP_PATH =
+  /^(?:models\.providers\.qm-[a-z0-9._-]+(?:\.[A-Za-z0-9_.-]+)*|config\.(?:modelRoles|defaultThinkingLevel|retry|providers)(?:\.[A-Za-z0-9_.-]+)*|credentials\.qm-[a-z0-9._-]+(?:\.[0-9]+)?)$/
 const NODE_CODE = /^[a-z][a-z0-9-]{0,39}$/
 const MAX_TEXT = 300
 
@@ -76,21 +78,19 @@ function keyNames(value: unknown): string[] {
   )
 }
 
-/**
- * Managed-key names a node reported as changed (`diffKeys` of a dry-run or a
- * `conflict`, `lastResult.diffKeys`). P18.7 names them by their place in
- * `settings.json` — `env.OPENAI_BASE_URL`, `modelType`,
- * `modelSettings.default`; the hub shows env keys bare (§2.5's
- * `["OPENAI_BASE_URL"]`) and the two non-env fields as they are. Anything
- * else is dropped.
- */
+/** Bounded native owned YAML paths and legacy node diff names, never values. */
 export function diffKeyNames(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   const names = new Set<string>()
   for (const item of value) {
     if (typeof item !== 'string') continue
     const name = item.startsWith('env.') ? item.slice(4) : item
-    if (ENV_KEY.test(name) || name === 'modelType' || SLOT_KEY.test(name)) {
+    if (
+      (name.length <= 300 && OMP_PATH.test(name)) ||
+      ENV_KEY.test(name) ||
+      name === 'modelType' ||
+      SLOT_KEY.test(name)
+    ) {
       names.add(name)
     }
   }

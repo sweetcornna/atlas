@@ -58,7 +58,7 @@
  *
  * ## 落盘，与读不出来时
  *
- * 路径由 `consoleArgs.ts` 从 `occConfigPath()` 派生；写入复用 `FileRegistryStore`
+ * 路径由 `consoleArgs.ts` 从 `qianmoConfigPath()` 派生；写入复用 `FileRegistryStore`
  * （同目录临时文件 `wx` 创建 + fsync + rename，P2.1）。文档形状见
  * `consoleRegistrationLedger.ts`。
  *
@@ -239,7 +239,15 @@ export function gateWakePort(
     send: async input => {
       const refused = gate(input.to)
       return refused === null
-        ? await port.send(input)
+        ? await port.send({
+            ...input,
+            beforeDispatch: () => {
+              const current = gate(input.to)
+              if (current !== null)
+                throw new Error(`E_WAKE_EXIT_REVOKED: ${current.message}`)
+              input.beforeDispatch?.()
+            },
+          })
         : { ok: false, failure: refused }
     },
   }

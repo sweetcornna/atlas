@@ -1,71 +1,27 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/**
- * The node's env whitelist (§2.6): which `settings.json` env keys a delivered
- * profile may own.
- *
- * Exactly the base's single list of provider keys (`ALL_PROFILE_ENV_KEYS`,
- * the same set `/provider` activation clears) plus the closed compat set from
- * `@qianmo/providers`. Everything else in `env` belongs to the node and its
- * operators and is never touched.
- *
- * userSettings `env` is applied to the whole process (`managedEnv.ts`), so this
- * check runs on the COMPILED patch as well, after the profile schema has
- * already been checked: a compiler bug must not be able to write `PATH` either.
- */
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { CONFIG_DIR_BASENAME } from '@qianmo/paths'
 
-import {
-  COMPAT_KEYS,
-  isForbiddenEnvKey,
-  type ProviderIssue,
-} from '@qianmo/providers'
-import { ALL_PROFILE_ENV_KEYS } from '../../providerProfiles/envKeys.js'
-
-export const MANAGED_ENV_KEYS: ReadonlySet<string> = new Set([
-  ...ALL_PROFILE_ENV_KEYS,
-  ...COMPAT_KEYS,
-])
-
-/**
- * Env keys whose values are credentials. Hashed by fingerprint, never named
- * with a value anywhere. Every entry is in `ALL_PROFILE_ENV_KEYS` (asserted by
- * the test suite), so a base rename cannot silently drop one.
- */
-export const SECRET_ENV_KEYS: readonly string[] = [
-  'ANTHROPIC_AUTH_TOKEN',
+/** Ambient credentials must not override node-managed custom providers. */
+const KEYS = new Set([
   'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
   'OPENAI_API_KEY',
   'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
   'GROK_API_KEY',
   'XAI_API_KEY',
-  'OPENCODE_API_KEY',
-]
-
-export function isManagedEnvKey(key: string): boolean {
-  return MANAGED_ENV_KEYS.has(key) && !isForbiddenEnvKey(key)
-}
-
-/** `null` when every key in `env` may be written by a profile. */
-export function checkEnvAgainstWhitelist(
-  env: Readonly<Record<string, unknown>>,
-): ProviderIssue | null {
-  for (const key of Object.keys(env)) {
-    if (!isManagedEnvKey(key)) {
-      return {
-        code: 'unknown-key',
-        path: `env.${key}`,
-        message: `${key} 不在节点白名单里`,
-      }
-    }
-  }
-  return null
-}
-
-/**
- * Provider-shaped keys present in an environment, by name only — what the
- * resident inherited at start (§2.4 `inheritedProviderKeys`, `env-residue`).
- */
+  'OPENROUTER_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'ANTHROPIC_BASE_URL',
+  'OPENAI_BASE_URL',
+  'GEMINI_BASE_URL',
+  'GROK_BASE_URL',
+])
 export function inheritedProviderKeyNames(
   env: Readonly<Record<string, string | undefined>>,
 ): string[] {
@@ -73,7 +29,80 @@ export function inheritedProviderKeyNames(
     .filter(
       key =>
         env[key] !== undefined &&
-        (MANAGED_ENV_KEYS.has(key) || key.startsWith('CLAUDE_CODE_USE_')),
+        (KEYS.has(key.toUpperCase()) ||
+          key.toUpperCase().startsWith('CLAUDE_CODE_')),
     )
     .sort()
+}
+
+/** These names must remain available for process and isolation invariants. */
+export function isRuntimeEnvironmentName(value: string): boolean {
+  const name = value.toUpperCase()
+  return (
+    /^(?:PI_|QIANMO_|OMP_|BUN_|NODE_|LD_|DYLD_)/.test(name) ||
+    new Set([
+      'PATH',
+      'PATHEXT',
+      'HOME',
+      'USERPROFILE',
+      'APPDATA',
+      'LOCALAPPDATA',
+      'SYSTEMROOT',
+      'SYSTEMDRIVE',
+      'TEMP',
+      'TMP',
+      'TMPDIR',
+    ]).has(name)
+  )
+}
+
+/** omp resolves config strings as env-variable names before treating them as literals.
+ * Remove colliding names so a profile cannot read an unrelated inherited credential.
+ * Case folding also protects Windows, where environment names are case insensitive.
+ */
+export function withoutModelConfigEnvironment<T extends NodeJS.ProcessEnv>(
+  parent: T,
+  models: unknown,
+): T {
+  const names = new Set<string>()
+  const record = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === 'object' && !Array.isArray(v)
+  const collect = (p: Record<string, unknown>) => {
+    if (typeof p.apiKey === 'string') names.add(p.apiKey.toUpperCase())
+    if (record(p.headers))
+      for (const value of Object.values(p.headers))
+        if (typeof value === 'string') names.add(value.toUpperCase())
+  }
+  if (record(models) && record(models.providers))
+    for (const [id, p] of Object.entries(models.providers)) {
+      if (!id.startsWith('qm-') || !record(p)) continue
+      collect(p)
+      if (Array.isArray(p.models))
+        for (const model of p.models) if (record(model)) collect(model)
+    }
+  const env = { ...parent }
+  for (const name of Object.keys(env))
+    if (names.has(name.toUpperCase())) delete env[name]
+  return env
+}
+
+/** A current-node wrapper for resident, standalone qm agent, and compiled entry. */
+export function withoutManagedConfigEnvironment<T extends NodeJS.ProcessEnv>(
+  parent: T,
+): T {
+  let models: unknown
+  const childHome = resolve(parent.HOME || parent.USERPROFILE || homedir())
+  const root = (
+    parent.QIANMO_CONFIG_DIR
+      ? resolve(parent.QIANMO_CONFIG_DIR)
+      : join(childHome, CONFIG_DIR_BASENAME)
+  ).normalize('NFC')
+  try {
+    models = Bun.YAML.parse(
+      readFileSync(join(root, 'omp', 'agent', 'models.yml'), 'utf8'),
+    )
+  } catch {
+    return { ...parent }
+  }
+  return withoutModelConfigEnvironment(parent, models)
 }

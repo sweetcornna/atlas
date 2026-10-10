@@ -49,12 +49,12 @@ import {
   AuditWitnessScheduler,
   remoteWitnessAnchorWriter,
 } from '@qianmo/witness'
-import { readMailbox } from '../../../utils/agents/teammateMailbox.js'
-import { createWakePort } from '../../../cli/handlers/consolePorts.js'
+import { readMailbox } from '@qianmo/mailbox'
+import { createWakePort } from '../../src/commands/consolePorts.js'
 import {
   WakeRefusedError,
   executeResidentWake,
-} from '../../../cli/handlers/residentWake.js'
+} from '../../src/commands/residentWake.js'
 import {
   residentRecallScope,
   type ResidentLifecycleRecord,
@@ -62,12 +62,11 @@ import {
   type ResidentTimingEvent,
 } from '@qianmo/resident'
 import { FileMemoryStore } from '@qianmo/memory'
+import { QianmoResident } from '../../src/host/resident.js'
 import {
-  macroDefineArgs,
-  resolveBuildFeatures,
-} from '../../../../scripts/defines.js'
-import { QianmoResident } from '../resident.js'
-import { openAuditTrail, residentNotifyTrailSink } from '../auditTrail.js'
+  openAuditTrail,
+  residentNotifyTrailSink,
+} from '../../src/host/auditTrail.js'
 
 const PSK = 'resident-integration-not-a-real-secret'
 const TEAM = 'nest'
@@ -77,16 +76,9 @@ const RECEIPT_BUDGET_MS = 5_000
 const ACP_FIXTURE = join(
   import.meta.dir,
   'fixtures',
-  'resident-acp-agent.runner.ts',
+  'resident-omp-agent.runner.ts',
 )
-const CLI_ENTRYPOINT = join(
-  import.meta.dir,
-  '..',
-  '..',
-  '..',
-  'entrypoints',
-  'cli.tsx',
-)
+const CLI_ENTRYPOINT = join(import.meta.dir, '../../src/cli.ts')
 
 const children: ChildProcess[] = []
 const clients: TransportClient[] = []
@@ -107,7 +99,13 @@ async function waitUntil(
   throw new Error(`condition not met within ${timeoutMs}ms`)
 }
 
-function spawnFixture(env: NodeJS.ProcessEnv = process.env): ChildProcess {
+function spawnFixture(
+  input:
+    | NodeJS.ProcessEnv
+    | import('../../src/host/residentOmp.js').ResidentOmpSpawn = process.env,
+): ChildProcess {
+  const env =
+    typeof input.env === 'object' ? input.env : (input as NodeJS.ProcessEnv)
   const child = spawn(process.execPath, [ACP_FIXTURE], {
     stdio: ['pipe', 'pipe', 'inherit'],
     env,
@@ -141,10 +139,8 @@ function spawnResidentCli(
     process.execPath,
     [
       'run',
-      ...macroDefineArgs(),
       '-d',
       `process.env.NODE_ENV:${JSON.stringify('production')}`,
-      ...[...resolveBuildFeatures()].flatMap(name => ['--feature', name]),
       CLI_ENTRYPOINT,
       'resident',
       ...args,
@@ -157,8 +153,8 @@ function spawnResidentCli(
         TMPDIR: tmpdir(),
         NODE_ENV: 'production',
         NO_COLOR: '1',
-        OCC_IDENTITY: 'qianmo',
-        OCC_CONFIG_DIR: configDir,
+
+        QIANMO_CONFIG_DIR: configDir,
         QIANMO_TRANSPORT_PSK: PSK,
       },
     },
@@ -192,9 +188,9 @@ afterEach(async () => {
       child.kill('SIGKILL')
   }
   if (previousConfigDir === undefined) {
-    delete process.env.CLAUDE_CONFIG_DIR
+    delete process.env.QIANMO_CONFIG_DIR
   } else {
-    process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+    process.env.QIANMO_CONFIG_DIR = previousConfigDir
   }
   if (root !== undefined) rmSync(root, { recursive: true, force: true })
   root = undefined
@@ -203,8 +199,8 @@ afterEach(async () => {
 describe('resident product integration', () => {
   test('transport delivery survives ACP restart and resumes the same session', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-integration-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const workspace = join(root, 'workspace')
     const ready: string[] = []
@@ -217,7 +213,7 @@ describe('resident product integration', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: spawnFixture,
+      spawnOmp: spawnFixture,
       onReady: address => {
         if (address.unix !== undefined) ready.push(address.unix)
       },
@@ -348,14 +344,14 @@ describe('resident product integration', () => {
     // receipt` and add a second entry here. See `#drainReplyReceipts` in
     // `resident.ts` for why that wait is now honoured instead.
     expect(errors.map(String)).toEqual([
-      'Error: resident ACP child exited code=null signal=SIGKILL',
+      'Error: omp RPC child exited code=null signal=SIGKILL',
     ])
   }, 15_000)
 
   test('a node whose agent never starts degrades instead of disappearing', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-degraded-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const ready: string[] = []
     const errors: unknown[] = []
@@ -369,7 +365,7 @@ describe('resident product integration', () => {
       // Every generation dies on the spot. This is the shape of an expired
       // credential, a missing binary or a broken build: not a crash mid-turn,
       // but an agent that cannot come up at all, ever.
-      spawnAcp: () => {
+      spawnOmp: () => {
         const child = spawn(process.execPath, ['-e', 'process.exit(3)'], {
           stdio: ['pipe', 'pipe', 'ignore'],
         })
@@ -378,7 +374,7 @@ describe('resident product integration', () => {
       },
       // The production ladder is 2s/4s/8s/16s before the fifth failure parks.
       // Nothing here depends on the wait itself, only on what parking does.
-      acpRestart: { initialBackoffMs: 10, maxRapidFailures: 2 },
+      ompRestart: { initialBackoffMs: 10, maxRapidFailures: 2 },
       onReady: address => {
         if (address.unix !== undefined) ready.push(address.unix)
       },
@@ -465,8 +461,8 @@ describe('resident product integration', () => {
 
   test('a never-settling witness tick does not block mailbox admission', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-witness-poll-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const ready: string[] = []
     const errors: unknown[] = []
@@ -490,7 +486,7 @@ describe('resident product integration', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: spawnFixture,
+      spawnOmp: spawnFixture,
       witness,
       onReady: address => {
         if (address.unix !== undefined) ready.push(address.unix)
@@ -530,8 +526,8 @@ describe('resident product integration', () => {
 
   test('stop aborts in-flight witness IO and settles even when fetch ignores the signal', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-witness-stop-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const trailPath = join(root, 'audit.ndjson')
     const trail = new AuditTrail(trailPath)
@@ -576,7 +572,7 @@ describe('resident product integration', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: spawnFixture,
+      spawnOmp: spawnFixture,
       witness,
       onError: error => errors.push(error),
     })
@@ -603,8 +599,8 @@ describe('resident product integration', () => {
 
   test('acks at the read flip and returns task.result over the same channel', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-task-result-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const ready: string[] = []
     const errors: unknown[] = []
@@ -615,7 +611,7 @@ describe('resident product integration', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: spawnFixture,
+      spawnOmp: spawnFixture,
       onReady: address => {
         if (address.unix !== undefined) ready.push(address.unix)
       },
@@ -678,8 +674,8 @@ describe('resident product integration', () => {
 
   test('a second request is receipted inside the budget while a turn holds the gate', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-receipt-decoupling-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const ready: string[] = []
     const resident = new QianmoResident({
@@ -691,7 +687,7 @@ describe('resident product integration', () => {
       listen: { unix: socket },
       // The first turn is admitted and then never ends, so the node turn gate
       // is held for the rest of the test.
-      spawnAcp: () =>
+      spawnOmp: () =>
         spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
       onReady: address => {
         if (address.unix !== undefined) ready.push(address.unix)
@@ -753,8 +749,8 @@ describe('resident product integration', () => {
 
   test('an ACP crash while busy comes back as a failed task.result', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-task-failed-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const ready: string[] = []
     const resident = new QianmoResident({
@@ -764,7 +760,7 @@ describe('resident product integration', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: () =>
+      spawnOmp: () =>
         spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
       onReady: address => {
         if (address.unix !== undefined) ready.push(address.unix)
@@ -829,8 +825,8 @@ describe('resident product integration', () => {
 
   test('a full turn queue refuses before the mailbox write, downgrading for old peers', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-queue-full-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const ready: string[] = []
     const resident = new QianmoResident({
@@ -842,7 +838,7 @@ describe('resident product integration', () => {
       pollIntervalMs: 10_000,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: spawnFixture,
+      spawnOmp: spawnFixture,
       onReady: address => {
         if (address.unix !== undefined) ready.push(address.unix)
       },
@@ -933,8 +929,8 @@ describe('resident product integration', () => {
 
   test('reports idle before restarting an ACP generation that crashes while busy', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-activity-crash-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const activity: boolean[] = []
     const ready: string[] = []
@@ -946,7 +942,7 @@ describe('resident product integration', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: () => {
+      spawnOmp: () => {
         generation++
         return spawnFixture(
           generation === 1
@@ -997,8 +993,8 @@ describe('resident product integration', () => {
 describe('authorization at the terminal node (P4.3)', () => {
   test('an unsigned task is refused before the mailbox, a signed one carries its issuer', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-capability-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const ready: string[] = []
     const errors: unknown[] = []
@@ -1016,7 +1012,7 @@ describe('authorization at the terminal node (P4.3)', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: spawnFixture,
+      spawnOmp: spawnFixture,
       capability: new NodeCapabilities({
         node: 'node-b',
         directory,
@@ -1115,8 +1111,8 @@ describe('the reliability kit (P13.5)', () => {
     // never came back reached `onError` and then existed nowhere: the peer
     // waited forever for something no part of this node remembered owing it.
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-redelivery-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
 
     // ---- first life --------------------------------------------------
@@ -1132,7 +1128,7 @@ describe('the reliability kit (P13.5)', () => {
       // The turn is admitted — so the peer gets its ack — and then never ends.
       // That is what makes the loss deterministic: the reply is not produced
       // until teardown, by which time the peer is already gone.
-      spawnAcp: () =>
+      spawnOmp: () =>
         spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
       onReady: address => {
         if (address.unix !== undefined) firstReady.push(address.unix)
@@ -1196,7 +1192,7 @@ describe('the reliability kit (P13.5)', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: spawnFixture,
+      spawnOmp: spawnFixture,
       onReady: address => {
         if (address.unix !== undefined) secondReady.push(address.unix)
       },
@@ -1269,8 +1265,8 @@ describe('the reliability kit (P13.5)', () => {
     // would degrade to the whole reply being refused as malformed, which is
     // the one outcome a redelivery must not produce.
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-redelivery-legacy-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
 
     const firstReady: string[] = []
@@ -1285,7 +1281,7 @@ describe('the reliability kit (P13.5)', () => {
       // The turn is admitted — so the peer gets its ack — and then never ends.
       // That is what makes the loss deterministic: the reply is not produced
       // until teardown, by which time the peer is already gone.
-      spawnAcp: () =>
+      spawnOmp: () =>
         spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
       onReady: address => {
         if (address.unix !== undefined) firstReady.push(address.unix)
@@ -1337,7 +1333,7 @@ describe('the reliability kit (P13.5)', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: spawnFixture,
+      spawnOmp: spawnFixture,
       onReady: address => {
         if (address.unix !== undefined) secondReady.push(address.unix)
       },
@@ -1389,8 +1385,8 @@ describe('the reliability kit (P13.5)', () => {
 
   test('ESTOP refuses new work with E_BUSY, never touches a running turn, and an empty file counts', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-estop-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const ready: string[] = []
     const resident = new QianmoResident({
@@ -1402,7 +1398,7 @@ describe('the reliability kit (P13.5)', () => {
       listen: { unix: socket },
       // The first turn is admitted and then never ends, so there is a real
       // in-flight turn for the brake to fail to kill.
-      spawnAcp: () =>
+      spawnOmp: () =>
         spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
       onReady: address => {
         if (address.unix !== undefined) ready.push(address.unix)
@@ -1480,8 +1476,8 @@ describe('the reliability kit (P13.5)', () => {
 
   test('a turn whose ACP side goes silent fails early, and says it was inactivity', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-inactivity-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const ready: string[] = []
     const resident = new QianmoResident({
@@ -1492,7 +1488,7 @@ describe('the reliability kit (P13.5)', () => {
       psk: PSK,
       listen: { unix: socket },
       // Admits the turn, sends one chunk, then never speaks again.
-      spawnAcp: () =>
+      spawnOmp: () =>
         spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
       inactivityMs: 400,
       onReady: address => {
@@ -1557,9 +1553,9 @@ describe('the reliability kit (P13.5)', () => {
     // passes whatever it likes and never saw it. So the life that gets killed
     // here is the real entrypoint: its wiring *is* the thing under test.
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-hardkill-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
     const configDir = join(root, 'config')
-    process.env.CLAUDE_CONFIG_DIR = configDir
+    process.env.QIANMO_CONFIG_DIR = configDir
     const workspace = join(root, 'workspace')
     mkdirSync(workspace, { recursive: true })
     const lifecycle = join(configDir, 'resident', 'lifecycle.json')
@@ -1629,7 +1625,7 @@ describe('the reliability kit (P13.5)', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: join(root, 'second.sock') },
-      spawnAcp: spawnFixture,
+      spawnOmp: spawnFixture,
       onPriorLife: prior => priors.push(prior),
       onReady: address => {
         if (address.unix !== undefined) ready.push(address.unix)
@@ -1749,6 +1745,12 @@ describe('the reliability kit (P13.5)', () => {
       },
     })
 
+    // HUP is configuration refresh, never omp standalone-CLI shutdown.
+    second.child.kill('SIGHUP')
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(second.child.exitCode).toBeNull()
+    expect(second.child.signalCode).toBeNull()
+
     // The shutdown path an operator's `beta-down.sh` takes.
     second.child.kill('SIGTERM')
     await exited(second.child)
@@ -1777,8 +1779,8 @@ describe('the reliability kit (P13.5)', () => {
 describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
   test('the production sender is answered by a transport receipt, and the wake still opens a turn', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-wake-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const ready: { url?: string }[] = []
     const resident = new QianmoResident({
       node: 'node-b',
@@ -1789,7 +1791,7 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
       // TCP rather than a unix socket: `executeResidentWake` takes a ws URL,
       // and running the real sender is the point of this test.
       listen: { port: 0, hostname: '127.0.0.1' },
-      spawnAcp: spawnFixture,
+      spawnOmp: spawnFixture,
       onReady: address => ready.push(address),
       onError: () => {},
     })
@@ -1833,8 +1835,8 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
     // ack machinery was broken that day": the same node, the same channel, the
     // same connected listener — one type is acked and the other is not.
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-wake-ack-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const ready: string[] = []
     const resident = new QianmoResident({
@@ -1844,7 +1846,7 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: spawnFixture,
+      spawnOmp: spawnFixture,
       onReady: address => {
         if (address.unix !== undefined) ready.push(address.unix)
       },
@@ -1923,8 +1925,8 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
     // 那一行字**：真 `QianmoResident`、真 `NodeRouter`、真握手、真回执、真
     // `createWakePort`。中间任何一环把原因弄丢，这里就红。
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-wake-undeliverable-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const ready: { url?: string }[] = []
     const resident = new QianmoResident({
       node: 'node-b',
@@ -1935,7 +1937,7 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
       // TCP for the same reason the first wake test uses it: the production
       // sender and the console wake port both take a ws URL.
       listen: { port: 0, hostname: '127.0.0.1' },
-      spawnAcp: spawnFixture,
+      spawnOmp: spawnFixture,
       onReady: address => ready.push(address),
       onError: () => {},
     })
@@ -2009,8 +2011,8 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
     // `qianmo/notify` ext request the real tool makes); everything after that
     // is production code.
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-notify-e2e-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const trailPath = join(root, 'trail.ndjson')
     const trail = openAuditTrail(trailPath)
@@ -2024,7 +2026,7 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
       psk: PSK,
       listen: { unix: socket },
       notifyAudit: residentNotifyTrailSink(trail, 'node-b'),
-      spawnAcp: () =>
+      spawnOmp: () =>
         spawnFixture({
           ...process.env,
           QIANMO_FIXTURE_NOTIFY: 'disk on node-b is at 91%',
@@ -2132,8 +2134,8 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
     // 这条里 fixture 只是跑了个工具，剩下的全是宿主自己做的。对话面看得到过程
     // 靠的正是这一条路。
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-progress-e2e-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const ready: string[] = []
     const errors: unknown[] = []
@@ -2144,10 +2146,11 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: () =>
+      spawnOmp: () =>
         spawnFixture({
           ...process.env,
-          QIANMO_FIXTURE_TOOL_CALL: 'packages/router/src/rate.ts',
+          QIANMO_FIXTURE_TOOL_CALL: 'read',
+          QIANMO_FIXTURE_TOOL_PATH: 'packages/router/src/rate.ts',
         }),
       onReady: address => {
         if (address.unix !== undefined) ready.push(address.unix)
@@ -2200,8 +2203,8 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
 
   test('a hub that never declared notify is told nothing at all (§2.7)', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-notify-legacy-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const ready: string[] = []
     const errors: unknown[] = []
@@ -2212,7 +2215,7 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: () =>
+      spawnOmp: () =>
         spawnFixture({
           ...process.env,
           QIANMO_FIXTURE_NOTIFY: 'nobody will hear this',
@@ -2321,8 +2324,8 @@ describe('issue #28: the woken agent actually does the work', () => {
     readonly type: MessageType.Wake | MessageType.TaskRequest
   }): Promise<RelayOutcome> {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-wake-effect-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const workLog = join(root, 'work.log')
     const ready: string[] = []
@@ -2342,7 +2345,7 @@ describe('issue #28: the woken agent actually does the work', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: () =>
+      spawnOmp: () =>
         spawnFixture({ ...process.env, QIANMO_FIXTURE_WORK_LOG: workLog }),
       capability: new NodeCapabilities({
         node: 'node-b',
@@ -2513,8 +2516,8 @@ describe('issue #28: the woken agent actually does the work', () => {
 describe('memory semantic overlay on the resident host (P16.6)', () => {
   test('switched on, a ranked turn is assembled in two stages and its retrieval is recorded', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-semantic-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const memoryRoot = join(root, 'memory')
 
@@ -2549,7 +2552,7 @@ describe('memory semantic overlay on the resident host (P16.6)', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: spawnFixture,
+      spawnOmp: spawnFixture,
       memoryRoot,
       semanticRecall: {
         embedder: {

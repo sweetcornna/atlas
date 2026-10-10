@@ -5,7 +5,7 @@
  * Provider hot switch (design `providers-console-m1.md` §2.7, P18.3) with the
  * real `--acp` child: `src/entrypoints/cli.tsx --acp` from source, with the
  * shipped defines and feature list and the environment
- * `residentAcpEnvironment()` builds, driven by an in-process
+ * `residentOmpEnvironment()` builds, driven by an in-process
  * {@link QianmoResident} through its own transport.
  *
  * ## What is real
@@ -49,12 +49,6 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Readable, Writable } from 'node:stream'
-import {
-  ClientSideConnection,
-  PROTOCOL_VERSION,
-  ndJsonStream,
-} from '@agentclientprotocol/sdk'
 import {
   MessageType,
   createMessage,
@@ -63,30 +57,17 @@ import {
 } from '@qianmo/protocol'
 import type { ResidentTimingEvent } from '@qianmo/resident'
 import { TransportClient } from '@qianmo/transport'
-import {
-  macroDefineArgs,
-  resolveBuildFeatures,
-} from '../../../../scripts/defines.js'
-import { resetSettingsCache } from '../../../utils/settings/settingsCache.js'
-import * as providerNode from '../providers/node.js'
-import { applyRequest } from '../providers/__tests__/helpers.js'
+import * as providerNode from '../../src/providers/node.js'
+import { applyRequest } from '../providers/helpers.js'
 import {
   QianmoResident,
   type ResidentProviderSwitchEvent,
-} from '../resident.js'
-import { residentAcpEnvironment } from '../residentAcpEnv.js'
+} from '../../src/host/resident.js'
+import { residentOmpEnvironment } from '../../src/host/residentOmpEnv.js'
 
 const PSK = 'resident-provider-switch-integration-not-a-secret'
 const TEAM = 'nest'
 const AGENT = 'reviewer'
-const CLI_ENTRYPOINT = join(
-  import.meta.dir,
-  '..',
-  '..',
-  '..',
-  'entrypoints',
-  'cli.tsx',
-)
 /** A cold boot of the entrypoint from source on a loaded machine. */
 const BOOT_MS = 90_000
 /** One model turn against a loopback double, including its result reply. */
@@ -315,12 +296,10 @@ function setUpRoot(prefix: string): NodeRoot {
   mkdirSync(workspace)
   mkdirSync(home)
   const previous = {
-    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-    OCC_CONFIG_DIR: process.env.OCC_CONFIG_DIR,
+    QIANMO_CONFIG_DIR: process.env.QIANMO_CONFIG_DIR,
   }
-  process.env.CLAUDE_CONFIG_DIR = config
-  delete process.env.OCC_CONFIG_DIR
-  resetSettingsCache()
+  process.env.QIANMO_CONFIG_DIR = config
+
   return {
     root,
     config,
@@ -332,7 +311,7 @@ function setUpRoot(prefix: string): NodeRoot {
         if (value === undefined) delete process.env[key]
         else process.env[key] = value
       }
-      resetSettingsCache()
+
       rmSync(root, { recursive: true, force: true })
     },
   }
@@ -344,44 +323,21 @@ function setUpRoot(prefix: string): NodeRoot {
  * keys must not reach it, and `HOME` is the root's own so nothing under the
  * real home directory is read.
  */
-function spawnRealAcp(
-  node: NodeRoot,
+function spawnRealOmp(
+  input: import('../../src/host/residentOmp.js').ResidentOmpSpawn,
   processEnvModel: ModelDouble,
   log: { text: string },
 ): ChildProcess {
-  const env = residentAcpEnvironment(
-    {
-      PATH: process.env.PATH,
-      HOME: node.home,
-      TMPDIR: tmpdir(),
-      NODE_ENV: 'production',
-      NO_COLOR: '1',
-      DISABLE_TELEMETRY: '1',
-      DISABLE_AUTOUPDATER: '1',
-      OCC_IDENTITY: 'qianmo',
-      OCC_CONFIG_DIR: node.config,
-      // The fleet's way of naming a model: in the process environment.
-      CLAUDE_CODE_USE_OPENAI: '1',
-      OPENAI_BASE_URL: processEnvModel.baseUrl,
-      OPENAI_API_KEY: KEY_PROCESS,
-      OPENAI_MODEL: 'process-env-model',
-      OPENAI_WIRE_API: 'chat',
-    },
-    { memoryRoot: node.memory },
-  )
-  const child = spawn(
-    process.execPath,
-    [
-      'run',
-      ...macroDefineArgs(),
-      '-d',
-      `process.env.NODE_ENV:${JSON.stringify('production')}`,
-      ...[...resolveBuildFeatures()].flatMap(name => ['--feature', name]),
-      CLI_ENTRYPOINT,
-      '--acp',
-    ],
-    { cwd: node.workspace, env, stdio: ['pipe', 'pipe', 'pipe'] },
-  )
+  const env = residentOmpEnvironment({
+    ...input.env,
+    OPENAI_BASE_URL: processEnvModel.baseUrl,
+    OPENAI_API_KEY: KEY_PROCESS,
+  })
+  const child = spawn(input.argv[0]!, input.argv.slice(1), {
+    cwd: input.cwd,
+    env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
   child.stderr?.on('data', chunk => {
     log.text = `${log.text}${String(chunk)}`.slice(-20_000)
   })
@@ -400,20 +356,7 @@ async function settle(child: ChildProcess | undefined): Promise<void> {
   await once(child, 'exit')
 }
 
-/**
- * What the resident does to a generation a switch retires: SIGTERM, then wait
- * for the exit. No grace: the child drains its transcript queue on SIGTERM
- * (`src/services/acp/exitFlush.ts`).
- */
-async function retireLikeASwitch(
-  child: ChildProcess | undefined,
-): Promise<void> {
-  if (child === undefined || !alive(child)) return
-  child.kill('SIGTERM')
-  await once(child, 'exit')
-}
-
-describe('resident hot switch against the real --acp child', () => {
+describe('resident hot switch against real omp RPC', () => {
   let node: NodeRoot
   let processEnvModel: ModelDouble
   let modelA: ModelDouble
@@ -432,7 +375,7 @@ describe('resident hot switch against the real --acp child', () => {
   let sessionAfterFirstTurn = ''
 
   const ready = () =>
-    timings.filter(event => event.stage === 'acp_ready').length
+    timings.filter(event => event.stage === 'runtime_ready').length
   const diagnose = () =>
     [
       `spawned=${spawned.length} ready=${ready()}`,
@@ -504,8 +447,8 @@ describe('resident hot switch against the real --acp child', () => {
       psk: PSK,
       listen: { unix: join(node.root, 'r.sock') },
       memoryRoot: node.memory,
-      spawnAcp: () => {
-        const child = spawnRealAcp(node, processEnvModel, childLog)
+      spawnOmp: input => {
+        const child = spawnRealOmp(input, processEnvModel, childLog)
         spawned.push(child)
         return child
       },
@@ -738,23 +681,19 @@ describe('resident hot switch against the real --acp child', () => {
   )
 })
 
-/**
- * The resident never pins a model (`ResidentAcpConnection` has no
- * `set_model`), so what `keep` resumes on is whatever the new child resolves.
- * This asks the stronger question directly over ACP: if some host *had*
- * pinned one with `session/set_model`, would a resume in a new child keep it?
- */
-describe('an explicit set_model does not outlive its ACP child', () => {
-  let node: NodeRoot
-  let processEnvModel: ModelDouble
-  let model: ModelDouble
-  const children: ChildProcess[] = []
-  const childLog = { text: '' }
-
-  beforeAll(() => {
-    node = setUpRoot('qm-hsm-')
-    processEnvModel = new ModelDouble('process-env')
-    model = new ModelDouble('d')
+test('an explicit model pin is replaced by committed selection on reopening the same transcript', async () => {
+  const node = setUpRoot('ResidentRuntime-pin-')
+  const model = new ModelDouble('pinned')
+  const { ResidentOmpPool } = await import('../../src/host/residentOmp.js')
+  const { OmpResidentTurnPort } = await import('@qianmo/resident')
+  const makePool = () =>
+    new ResidentOmpPool({
+      agents: [{ agent: AGENT, cwd: node.workspace }],
+      memoryRoot: node.memory,
+      announce: async () => ({ status: 'queued' }),
+    })
+  const pools: InstanceType<typeof ResidentOmpPool>[] = []
+  try {
     stage(
       chatProfile({
         baseUrl: model.baseUrl,
@@ -764,93 +703,48 @@ describe('an explicit set_model does not outlive its ACP child', () => {
       }),
       'keep',
     )
-    const committed = providerNode.commitPendingProviderConfig()
-    expect(committed.status).toBe('committed')
-  })
-
-  afterAll(async () => {
-    for (const child of children) await settle(child)
-    await Promise.all([processEnvModel, model].map(double => double?.stop()))
-    node?.restore()
-  }, 30_000)
-
-  async function connect(): Promise<ClientSideConnection> {
-    const child = spawnRealAcp(node, processEnvModel, childLog)
-    children.push(child)
-    const stream = ndJsonStream(
-      Writable.toWeb(child.stdin as NonNullable<typeof child.stdin>) as never,
-      Readable.toWeb(child.stdout as NonNullable<typeof child.stdout>) as never,
+    expect((await providerNode.commitPendingProviderConfig()).status).toBe(
+      'committed',
     )
-    const connection = new ClientSideConnection(
-      () => ({
-        async requestPermission() {
-          return { outcome: { outcome: 'cancelled' as const } }
-        },
-        async sessionUpdate() {},
-        async extNotification() {},
-        async extMethod(method: string) {
-          return { ok: true, method }
-        },
-      }),
-      stream,
-    )
-    await connection.initialize({
-      protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: {},
-      clientInfo: { name: 'qianmo-resident', version: '0' },
-      _meta: { qianmo: { resident: true } },
+    const first = makePool()
+    pools.push(first)
+    const sessionId = await first.newSession({
+      agent: AGENT,
+      cwd: node.workspace,
     })
-    return connection
+    const channel = await first.channelFor(sessionId)
+    await channel.request('set_model', providerNode.nodeModelSelection()!)
+    const one = await new OmpResidentTurnPort(first).execute(
+      { sessionId, messageId: 'pin-one', prompt: 'Marker HSM-ONE' },
+      async () => {},
+    )
+    expect(one.outcome).toBe('completed')
+    await first.stop()
+    stage(
+      chatProfile({
+        baseUrl: model.baseUrl,
+        model: 'hs-model-e',
+        key: KEY_D,
+        revision: 2,
+      }),
+      'keep',
+    )
+    expect((await providerNode.commitPendingProviderConfig()).status).toBe(
+      'committed',
+    )
+    const next = makePool()
+    pools.push(next)
+    const two = await new OmpResidentTurnPort(next).execute(
+      { sessionId, messageId: 'pin-two', prompt: 'Marker HSM-TWO' },
+      async () => {},
+    )
+    expect(two.outcome).toBe('completed')
+    const [turn] = model.turnsWith('HSM-TWO')
+    expect(turn?.text).toContain('HSM-ONE')
+    expect(turn?.model).toBe('hs-model-e')
+  } finally {
+    await Promise.all(pools.map(pool => pool.stop()))
+    await model.stop()
+    node.restore()
   }
-
-  const meta = {
-    permissionMode: 'dontAsk',
-    qianmo: { resident: true, agent: AGENT },
-  }
-
-  test(
-    'pinned in the first child, gone after a resume in the second',
-    async () => {
-      const first = await connect()
-      const { sessionId } = await first.newSession({
-        cwd: node.workspace,
-        mcpServers: [],
-        _meta: meta,
-      })
-      await first.unstable_setSessionModel({
-        sessionId,
-        modelId: 'explicitly-pinned-model',
-      })
-      await first.prompt({
-        sessionId,
-        prompt: [{ type: 'text', text: 'Marker HSM-ONE.' }],
-      })
-      // Positive control: the pin is real while its child lives.
-      expect(model.turnsWith('HSM-ONE').map(call => call.model)).toEqual([
-        'explicitly-pinned-model',
-      ])
-      await retireLikeASwitch(children[0])
-
-      const second = await connect()
-      await second.unstable_resumeSession({
-        sessionId,
-        cwd: node.workspace,
-        mcpServers: [],
-        _meta: meta,
-      })
-      await second.prompt({
-        sessionId,
-        prompt: [{ type: 'text', text: 'Marker HSM-TWO.' }],
-      })
-      const [turn] = model.turnsWith('HSM-TWO')
-      // The same conversation (positive control for the resume)…
-      expect(turn?.text).toContain('HSM-ONE')
-      expect(turn?.text).toContain('reply-from-d')
-      // …on the default model: the pin lived only in the first child's memory.
-      expect(turn?.model).toBe('hs-model-d')
-      expect(turn?.authorization).toBe(`Bearer ${KEY_D}`)
-      expect(processEnvModel.turns()).toEqual([])
-    },
-    TEST_TIMEOUT_MS,
-  )
-})
+}, 30_000)

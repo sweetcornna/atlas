@@ -30,13 +30,13 @@ import {
   type ConsoleDeps,
   type ConsoleServerHandle,
 } from '@qianmo/console'
-import { FileLedger } from '../consoleAccountsStore.js'
+import { FileLedger } from '../../src/commands/consoleAccountsStore.js'
 import {
   consoleAccountsPath,
   consoleSessionsPath,
   parseConsoleArgs,
-} from '../consoleArgs.js'
-import { consoleLimits } from '../consolePorts.js'
+} from '../../src/commands/consoleArgs.js'
+import { consoleLimits } from '../../src/commands/consolePorts.js'
 
 const roots: string[] = []
 const servers: ConsoleServerHandle[] = []
@@ -386,13 +386,13 @@ describe('an account used over HTTP only, against real files (P15.5)', () => {
 
 describe('--accounts', () => {
   test('is off by default and leaves the parsed config as it was', () => {
-    const config = parseConsoleArgs([], 'qianmo')
+    const config = parseConsoleArgs([])
     expect('accounts' in config).toBe(false)
     expect('accountsStorePath' in config).toBe(false)
   })
 
   test('turns on with the path derived from the config root', () => {
-    const config = parseConsoleArgs(['--accounts'], 'qianmo')
+    const config = parseConsoleArgs(['--accounts'])
     expect(config.accounts).toBe(true)
     expect(config.accountsStorePath).toBe(consoleAccountsPath())
     expect(
@@ -404,24 +404,19 @@ describe('--accounts', () => {
 
   test('takes an absolute store path, and only with --accounts', () => {
     expect(
-      parseConsoleArgs(
-        ['--accounts', '--accounts-store', '/tmp/a.ndjson'],
-        'qianmo',
-      ).accountsStorePath,
+      parseConsoleArgs(['--accounts', '--accounts-store', '/tmp/a.ndjson'])
+        .accountsStorePath,
     ).toBe('/tmp/a.ndjson')
     expect(() =>
-      parseConsoleArgs(
-        ['--accounts', '--accounts-store', 'rel.ndjson'],
-        'qianmo',
-      ),
+      parseConsoleArgs(['--accounts', '--accounts-store', 'rel.ndjson']),
     ).toThrow('absolute')
-    expect(() =>
-      parseConsoleArgs(['--accounts-store=/tmp/a.ndjson'], 'qianmo'),
-    ).toThrow('--accounts')
+    expect(() => parseConsoleArgs(['--accounts-store=/tmp/a.ndjson'])).toThrow(
+      '--accounts',
+    )
   })
 
   test('the migration switches need --accounts, and parse strictly', () => {
-    const on = parseConsoleArgs(['--accounts'], 'qianmo')
+    const on = parseConsoleArgs(['--accounts'])
     expect(on.sessionsStorePath).toBe(consoleSessionsPath())
     expect(
       consoleSessionsPath().endsWith(
@@ -430,16 +425,13 @@ describe('--accounts', () => {
     ).toBe(true)
     expect(on.legacyViewToken).toBe(true)
     expect(on.breakGlass).toBe(false)
-    const off = parseConsoleArgs(
-      [
-        '--accounts',
-        '--legacy-view-token',
-        'off',
-        '--break-glass',
-        '--sessions-store=/tmp/s.ndjson',
-      ],
-      'qianmo',
-    )
+    const off = parseConsoleArgs([
+      '--accounts',
+      '--legacy-view-token',
+      'off',
+      '--break-glass',
+      '--sessions-store=/tmp/s.ndjson',
+    ])
     expect(off.legacyViewToken).toBe(false)
     expect(off.breakGlass).toBe(true)
     expect(off.sessionsStorePath).toBe('/tmp/s.ndjson')
@@ -448,15 +440,15 @@ describe('--accounts', () => {
       ['--legacy-view-token', 'off'],
       ['--sessions-store', '/tmp/s.ndjson'],
     ]) {
-      expect(() => parseConsoleArgs(alone, 'qianmo')).toThrow('--accounts')
+      expect(() => parseConsoleArgs(alone)).toThrow('--accounts')
     }
     expect(() =>
-      parseConsoleArgs(['--accounts', '--legacy-view-token', 'no'], 'qianmo'),
+      parseConsoleArgs(['--accounts', '--legacy-view-token', 'no']),
     ).toThrow('on or off')
     expect(() =>
-      parseConsoleArgs(['--accounts', '--sessions-store', 'rel'], 'qianmo'),
+      parseConsoleArgs(['--accounts', '--sessions-store', 'rel']),
     ).toThrow('absolute')
-    const plain = parseConsoleArgs([], 'qianmo')
+    const plain = parseConsoleArgs([])
     for (const key of ['sessionsStorePath', 'legacyViewToken', 'breakGlass']) {
       expect(key in plain).toBe(false)
     }

@@ -7,7 +7,7 @@
  *
  * 节点就是 `--provider-local <node>=<命令>` 那条路：执行器起 `<命令> <节点名>`、只给最小
  * 环境、请求走 stdin。命令是一个小包装，它像内测的 `model-apply.sh` 一样自己设好
- * `OCC_IDENTITY=qianmo` 与 `OCC_CONFIG_DIR`，再从源码起 CLI（`providerSource.ts` 的
+ * `OCC_IDENTITY=qianmo` 与 `QIANMO_CONFIG_DIR`，再从源码起 CLI（`providerSource.ts` 的
  * `sourceLaunch`，与 P18.7 自己的用例同一种起法）。
  *
  * 三类操作各一条成功、一条节点侧拒绝：
@@ -44,12 +44,13 @@ import {
   type ProviderCaller,
   type ProviderProfileDraft,
 } from '@qianmo/console'
-import { MemoryActionStore } from '../../../../packages/console/test/actionStore.js'
+import { MemoryActionStore } from '../../../console/test/actionStore.js'
 import {
   type ConsoleProviders,
   openConsoleProviders,
   type ProviderScheduler,
-} from '../consoleProviders.js'
+} from '../../src/commands/consoleProviders.js'
+import { SqliteAuthCredentialStore } from '@oh-my-pi/pi-coding-agent/session/auth-storage'
 import { childEnv, sourceLaunch } from './providerSource.js'
 
 const CANARY = 'sk-test-canary-serve-stdin-Qw81Zt4LmB0x'
@@ -79,9 +80,7 @@ function writeNodeCommand(): string {
   const launch = sourceLaunch(
     ['provider', 'serve-stdin', '--node'],
     childEnv({
-      OCC_IDENTITY: 'qianmo',
-      OCC_CONFIG_DIR: config,
-      HOME: root,
+      QIANMO_CONFIG_DIR: config,
     }),
   )
   writeFileSync(
@@ -179,10 +178,15 @@ const DRAFT: ProviderProfileDraft = {
   evaluated: false,
 }
 
-function settings(): { env?: Record<string, string> } {
-  return JSON.parse(readFileSync(join(config, 'settings.json'), 'utf8')) as {
-    env?: Record<string, string>
-  }
+function settings(): {
+  providers: Record<string, { baseUrl: string; apiKey?: string }>
+} {
+  return JSON.parse(
+    readFileSync(join(config, 'omp', 'agent', 'models.yml'), 'utf8'),
+  )
+}
+function selected() {
+  return Object.values(settings().providers)[0]!
 }
 
 beforeAll(async () => {
@@ -251,7 +255,7 @@ describe('the hub against the real qm provider serve-stdin (local executor)', ()
       expect(view.lastStatus?.ok).toBe(true)
       expect(view.actual?.managed).toBe(false)
       expect(view.actual?.capabilities.protocol).toBe(1)
-      expect(typeof view.actual?.effective?.model).toBe('string')
+      expect(view.actual?.effective).toBeUndefined()
       expect(view.drift.map(item => item.kind)).toContain('unmanaged')
     },
     STEP_TIMEOUT_MS,
@@ -281,14 +285,15 @@ describe('the hub against the real qm provider serve-stdin (local executor)', ()
       )
       expect(dry?.outcome).toBe('ok')
       // P18.7 says `env.OPENAI_API_KEY`, `modelType`; the hub shows env keys bare.
-      expect(dry?.diffKeys ?? []).toContain('OPENAI_API_KEY')
-      expect(dry?.diffKeys ?? []).toContain('modelType')
-      expect(dry?.diffKeys ?? []).toContain('modelSettings.default')
+      expect(dry?.diffKeys?.some(k => k.endsWith('.apiKey'))).toBe(true)
+      expect(dry?.diffKeys ?? []).toContain('config.modelRoles.default')
       expect(
         (dry?.diffKeys ?? []).filter(key => key.startsWith('env.')),
       ).toEqual([])
       expect(JSON.stringify(dry)).not.toContain(CANARY)
-      expect(() => statSync(join(config, 'settings.json'))).toThrow()
+      expect(() =>
+        statSync(join(config, 'omp', 'agent', 'models.yml')),
+      ).toThrow()
 
       const [refused] = await steered('serve-as', 'beta-9', async () =>
         value(await port.apply({ nodes: [NODE], dryRun: true }, caller())),
@@ -308,8 +313,10 @@ describe('the hub against the real qm provider serve-stdin (local executor)', ()
     async () => {
       const [applied] = value(await port.apply({ nodes: [NODE] }, caller()))
       expect([applied?.outcome, applied?.pending]).toEqual(['ok', false])
-      expect(statSync(join(config, 'settings.json')).mode & 0o777).toBe(0o600)
-      expect(settings().env?.OPENAI_API_KEY).toBe(CANARY)
+      expect(
+        statSync(join(config, 'omp', 'agent', 'models.yml')).mode & 0o777,
+      ).toBe(0o600)
+      expect(selected().apiKey).toBe(CANARY)
 
       later()
       const view = value(await port.refreshNode(NODE))
@@ -325,15 +332,11 @@ describe('the hub against the real qm provider serve-stdin (local executor)', ()
 
       // Somebody edits a managed key on the node.
       const edited = settings()
+      Object.values(edited.providers)[0]!.baseUrl =
+        'https://elsewhere.example/v1'
       writeFileSync(
-        join(config, 'settings.json'),
-        JSON.stringify({
-          ...edited,
-          env: {
-            ...edited.env,
-            OPENAI_BASE_URL: 'https://elsewhere.example/v1',
-          },
-        }),
+        join(config, 'omp', 'agent', 'models.yml'),
+        JSON.stringify(edited),
         { mode: 0o600 },
       )
       const [conflict] = value(await port.apply({ nodes: [NODE] }, caller()))
@@ -341,17 +344,13 @@ describe('the hub against the real qm provider serve-stdin (local executor)', ()
         'refused',
         'conflict',
       ])
-      expect(settings().env?.OPENAI_BASE_URL).toBe(
-        'https://elsewhere.example/v1',
-      )
+      expect(selected().baseUrl).toBe('https://elsewhere.example/v1')
 
       const [forced] = value(
         await port.apply({ nodes: [NODE], force: true }, caller()),
       )
       expect(forced?.outcome).toBe('ok')
-      expect(settings().env?.OPENAI_BASE_URL).toBe(
-        'https://gateway.vendor.example/v1',
-      )
+      expect(selected().baseUrl).toBe('https://gateway.vendor.example/v1')
       expect(await recorded('provider.apply')).toEqual([
         ['provider.apply', 'ok', undefined],
         ['provider.apply', 'refused', 'conflict'],
@@ -362,7 +361,7 @@ describe('the hub against the real qm provider serve-stdin (local executor)', ()
   )
 
   test(
-    'autocompact: the node writes its own window; refused while its environment pins one',
+    'autocompact: native settings ignore the legacy environment override',
     async () => {
       const set = value(
         await port.autocompact({ node: NODE, value: 150_000 }, caller()),
@@ -372,19 +371,17 @@ describe('the hub against the real qm provider serve-stdin (local executor)', ()
         150_000,
         'settings',
       ])
-      const refused = await steered('env-override', '300000', () =>
+      const updated = await steered('env-override', '300000', () =>
         port.autocompact({ node: NODE, value: 120_000 }, caller()),
       )
-      expect(
-        refused.ok ? 'ok' : [refused.failure.code, refused.failure.nodeCode],
-      ).toEqual(['refused', 'env-override'])
+      expect(value(updated).configured).toBe(120000)
       // The refused write left the node's value alone.
       const read = value(await port.autocompact({ node: NODE }, caller()))
-      expect([read.configured, read.source]).toEqual([150_000, 'settings'])
+      expect([read.configured, read.source]).toEqual([120_000, 'settings'])
       // A read is not recorded.
       expect(await recorded('provider.autocompact')).toEqual([
         ['provider.autocompact', 'ok', undefined],
-        ['provider.autocompact', 'refused', 'env-override'],
+        ['provider.autocompact', 'ok', undefined],
       ])
     },
     STEP_TIMEOUT_MS,
@@ -416,20 +413,22 @@ describe('the hub against the real qm provider serve-stdin (local executor)', ()
         await port.apply({ nodes: [NODE], force: true }, caller()),
       )
       expect(applied?.outcome).toBe('ok')
-      // settings.json: the primary only.
-      expect(settings().env?.OPENAI_API_KEY).toBe(CANARY)
-      const poolPath = join(config, 'qianmo', 'provider', 'key-pool.json')
+      expect(selected().apiKey).toBeUndefined()
+      const poolPath = join(config, 'omp', 'agent', 'agent.db')
       expect(statSync(poolPath).mode & 0o777).toBe(0o600)
-      const pool = JSON.parse(readFileSync(poolPath, 'utf8')) as {
-        selection: string
-        keys: { id: string; value: string }[]
+      const store = await SqliteAuthCredentialStore.open(poolPath)
+      try {
+        expect(
+          store
+            .listAuthCredentials()
+            .map(r =>
+              r.credential.type === 'api_key' ? r.credential.key : undefined,
+            )
+            .sort(),
+        ).toEqual([CANARY, CANARY_2].sort())
+      } finally {
+        store.close()
       }
-      expect(pool.selection).toBe('least_used')
-      expect(pool.keys).toEqual([
-        { id: 'k1', value: CANARY },
-        { id: 'k2', value: CANARY_2 },
-      ])
-
       // The second key: in key-pool.json and on no other surface — the hub's
       // book, sealed store and ledger, the node's state files, the replies.
       const holders: string[] = []
@@ -443,7 +442,12 @@ describe('the hub against the real qm provider serve-stdin (local executor)', ()
         }
       }
       walk(root)
-      expect(holders).toEqual(['config/qianmo/provider/key-pool.json'])
+      expect(holders.length).toBeGreaterThan(0)
+      expect(
+        holders.every(p =>
+          /^config\/omp\/agent\/agent\.db(?:-wal|-shm)?$/.test(p),
+        ),
+      ).toBe(true)
       expect(ledgerText()).not.toContain(CANARY_2)
       expect(JSON.stringify([before, applied])).not.toContain(CANARY_2)
     },

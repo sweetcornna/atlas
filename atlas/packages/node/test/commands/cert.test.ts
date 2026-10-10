@@ -13,15 +13,15 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { opensslVersion } from '../../../services/qianmo/ca/openssl.js'
-import { verifyCsrPop } from '../../../services/qianmo/ca/pop.js'
-import { loadOrCreateNodeKeys } from '../../../services/qianmo/nodeIdentity.js'
+import { opensslVersion } from '../../src/ca/openssl.js'
+import { verifyCsrPop } from '../../src/ca/pop.js'
+import { loadOrCreateNodeKeys } from '../../src/host/nodeIdentity.js'
 import {
   QIANMO_CERT_HELP_TEXT,
   isQianmoCertHelpRequest,
   parseCertRequestArgs,
   runQianmoCert,
-} from '../cert.js'
+} from '../../src/commands/cert.js'
 
 const OPENSSL = opensslVersion()
 const itNeedsOpenssl = OPENSSL === null ? test.skip : test
@@ -123,13 +123,13 @@ describe('qm cert request, end to end', () => {
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-cert-cli-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
   })
 
   afterEach(() => {
-    if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-    else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+    if (previousConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+    else process.env.QIANMO_CONFIG_DIR = previousConfigDir
     rmSync(root, { recursive: true, force: true })
   })
 

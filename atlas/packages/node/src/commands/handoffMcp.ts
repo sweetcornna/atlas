@@ -77,6 +77,7 @@ import {
 } from './handoffNow.js'
 import { runPull } from './handoffPull.js'
 import { HandoffUserError, sleep } from './handoffStore.js'
+import { buildVersion } from '../provenance.js'
 
 /** How long a call in flight may keep the process after stdin ends. */
 const DRAIN_TIMEOUT_MS = 30_000
@@ -364,7 +365,7 @@ async function callTool(
 
 function buildServer(cwd: string, inFlight: Set<Promise<unknown>>): Server {
   const server = new Server(
-    { name: 'qianmo-handoff', version: MACRO.VERSION },
+    { name: 'qianmo-handoff', version: buildVersion() },
     { capabilities: { tools: {} } },
   )
   server.setRequestHandler(

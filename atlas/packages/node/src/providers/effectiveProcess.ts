@@ -1,41 +1,37 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/**
- * The production entry for §2.4 `effective`: `computeEffectiveProviderState()`
- * in a process of its own.
- *
- * It has to be its own process because the computation replays the ACP
- * child's startup onto `process.env` (see `effective.ts`), and it has to start
- * from the environment a managed node's ACP child starts from — the parent's
- * minus every provider-shaped key (`withoutProviderKeys`, the same function
- * `residentAcpEnvironment()` uses) — or the answer would describe the shell
- * `qm provider` happened to be started from instead of the node.
- *
- * Two halves:
- *
- *   - {@link computeEffectiveInChild}, in `qm provider status`: re-executes
- *     this same CLI (`buildCliLaunch`, the way the resident starts `--acp`) as
- *     `provider __effective`, with the stripped env and the node's private
- *     provider directory as cwd, so no project settings are picked up from
- *     wherever the caller stood. Waits for one marked line, with a deadline.
- *   - {@link printEffectiveProviderState}, in that child: computes and prints.
- *
- * The child's stderr is read and dropped, never relayed: it is the runtime's
- * own diagnostics, and nothing here vouches that they hold no values.
- *
- * {@link runOwnCliChild} is the spawning part on its own; `qm provider`'s
- * `autocompact` op (D-9) runs `provider autocompact --json` through it for
- * the same reason (its computation replays the same start-up).
- */
-
 import type { EffectiveState } from '@qianmo/providers'
-import {
-  buildCliLaunch,
-  type CliLaunchSpec,
-  spawnCli,
-} from '../../../utils/process/cliLaunch.js'
-import { withoutProviderKeys } from '../residentAcpEnv.js'
+import { spawn } from 'node:child_process'
+import { join } from 'node:path'
+import { ompChildEnv } from '@qianmo/paths'
+export type CliLaunchSpec = {
+  execPath: string
+  args: string[]
+  env: NodeJS.ProcessEnv
+  windowsHide?: boolean
+}
+function buildCliLaunch(
+  args: string[],
+  options: { env: NodeJS.ProcessEnv },
+): CliLaunchSpec {
+  return {
+    execPath: process.execPath,
+    args:
+      process.env.QIANMO_OMP_ENTRY === 'self'
+        ? args
+        : [join(import.meta.dir, '..', 'cli.ts'), ...args],
+    env: options.env,
+  }
+}
+function spawnCli(spec: CliLaunchSpec, options: Parameters<typeof spawn>[2]) {
+  return spawn(spec.execPath, spec.args, {
+    ...options,
+    env: spec.env,
+    windowsHide: spec.windowsHide,
+  })
+}
+import { withoutProviderKeys } from '../host/residentOmpEnv.js'
 import { computeEffectiveProviderState } from './effective.js'
 import { ensurePrivateDir, providerDir } from './store.js'
 
@@ -48,12 +44,12 @@ const MARKER = 'QIANMO_EFFECTIVE '
 const MAX_CHILD_OUTPUT_BYTES = 256 * 1024
 
 /** Child side: compute against this process and print one marked line. */
-export function printEffectiveProviderState(
+export async function printEffectiveProviderState(
   write: (text: string) => void = text => {
     process.stdout.write(text)
   },
-): void {
-  write(`${MARKER}${JSON.stringify(computeEffectiveProviderState())}\n`)
+): Promise<void> {
+  write(`${MARKER}${JSON.stringify(await computeEffectiveProviderState())}\n`)
 }
 
 type Launch = (cliArgs: string[], env: NodeJS.ProcessEnv) => CliLaunchSpec
@@ -119,7 +115,7 @@ export function runOwnCliChild(
     readonly launch?: Launch
   },
 ): Promise<OwnCliChildRun> {
-  const env = withoutProviderKeys(options.env ?? process.env)
+  const env = ompChildEnv(withoutProviderKeys(options.env ?? process.env))
   const launch: Launch =
     options.launch ??
     ((args, childEnv) => buildCliLaunch(args, { env: childEnv }))

@@ -31,7 +31,7 @@ import {
   StaticPublicKeyDirectory,
   type PublicKeyDirectory,
 } from '@qianmo/capability'
-import { CertificateDirectory } from '../../services/qianmo/certificateDirectory.js'
+import { CertificateDirectory } from '../host/certificateDirectory.js'
 import type { ConsoleCliConfig } from './consoleArgs.js'
 import { createAuditPort } from './consolePorts.js'
 

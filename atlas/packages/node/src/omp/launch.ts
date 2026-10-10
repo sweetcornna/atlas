@@ -16,6 +16,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { ompChildEnv } from '@qianmo/paths'
+import { withoutManagedConfigEnvironment } from '../providers/whitelist.js'
 
 const OMP_PACKAGE = '@oh-my-pi/pi-coding-agent'
 
@@ -28,11 +29,14 @@ function resolveWorkspaceOmpCli(): string {
         name?: string
         bin?: Record<string, string>
       }
-      if (pkg.name === OMP_PACKAGE && pkg.bin?.omp) return join(dir, pkg.bin.omp)
+      if (pkg.name === OMP_PACKAGE && pkg.bin?.omp)
+        return join(dir, pkg.bin.omp)
     }
     dir = dirname(dir)
   }
-  throw new Error(`cannot locate ${OMP_PACKAGE} bin.omp from ${import.meta.dir}`)
+  throw new Error(
+    `cannot locate ${OMP_PACKAGE} bin.omp from ${import.meta.dir}`,
+  )
 }
 
 /** argv that runs omp with `args`. `QIANMO_OMP_ENTRY` overrides the entry; `self` means the compiled qm binary. */
@@ -46,5 +50,7 @@ export function ompArgv(args: readonly string[]): string[] {
 export function ompSpawnEnv(
   extra: Record<string, string> = {},
 ): Record<string, string> {
-  return { ...ompChildEnv(process.env), ...extra }
+  return withoutManagedConfigEnvironment(
+    ompChildEnv({ ...process.env, ...extra }),
+  )
 }

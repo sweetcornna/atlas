@@ -15,8 +15,8 @@
  * - 读也带 `O_NOFOLLOW`：配置根里一个指向别处的符号链接，不该让控制台把别的
  *   文件当成账号库读进来。
  *
- * **路径不在这里拼**：它从 `consoleArgs.ts` 来，派生自 `occConfigPath()`
- * （CLAUDE.md §1.1②），`OCC_CONFIG_DIR` 因此对它同样有效。
+ * **路径不在这里拼**：它从 `consoleArgs.ts` 来，派生自 `qianmoConfigPath()`
+ * （CLAUDE.md §1.1②），`QIANMO_CONFIG_DIR` 因此对它同样有效。
  */
 
 import {

@@ -19,8 +19,11 @@ import {
   nextPrevious,
   readLedger,
 } from '@qianmo/console'
-import { MemoryActionStore } from '../../../../packages/console/test/actionStore.js'
-import { type BookEvent, ProviderBook } from '../consoleProvidersBook.js'
+import { MemoryActionStore } from '../../../console/test/actionStore.js'
+import {
+  type BookEvent,
+  ProviderBook,
+} from '../../src/commands/consoleProvidersBook.js'
 
 const FP = `fp1:${'a1'.repeat(16)}`
 const HASH = `sha256:${'b2'.repeat(32)}`
@@ -317,4 +320,38 @@ describe('a bad book closes the face (strict read)', () => {
     ).toBe(true)
     expect(book.problem).toBeNull()
   })
+})
+
+test('legacy stored compat replays into native fields; malformed old headers still fail closed', () => {
+  const valid = JSON.parse(body('legacy', 1))
+  valid.lane = 'anthropic'
+  valid.compat = {
+    CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS: '4096',
+    ANTHROPIC_CUSTOM_HEADERS: 'anthropic-workspace-id: workspace-1',
+  }
+  const { book, store } = open()
+  expect(
+    book.record({
+      kind: 'profile.saved',
+      id: 'legacy',
+      revision: 1,
+      body: JSON.stringify(valid),
+    }),
+  ).toBe(true)
+  expect(
+    open(new MemoryActionStore(store.text)).book.profile('legacy')?.compat,
+  ).toEqual({
+    disableStrictTools: 'true',
+    maxTokens: '4096',
+    'headers.anthropic-workspace-id': 'workspace-1',
+  })
+  const invalid = open()
+  valid.compat.ANTHROPIC_CUSTOM_HEADERS = 'Authorization: injected'
+  forge(invalid.store, 'profile.saved', {
+    id: 'legacy',
+    revision: 1,
+    body: JSON.stringify(valid),
+  })
+  expect(open(invalid.store).book.problem).not.toBeNull()
 })

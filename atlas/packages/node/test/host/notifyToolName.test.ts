@@ -18,7 +18,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { SELF_REPORTING_TOOL_TITLE } from '@qianmo/resident'
-import { QIANMO_NOTIFY_TOOL_NAME } from '../notifyTool.js'
+import { QIANMO_NOTIFY_TOOL_NAME } from '../../src/host/notifyTool.js'
 
 describe('通知工具的名字', () => {
   test('常驻侧那份字面量与宿主这个常量必须一致', () => {

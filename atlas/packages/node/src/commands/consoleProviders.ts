@@ -62,7 +62,6 @@ import {
 import {
   type AutoCompactReport,
   type AutocompactRequest,
-  isEffortLevel,
   type KeyRef,
   type NodeCapabilities,
   PRESET_GROUPS,
@@ -79,7 +78,7 @@ import {
   resolveBaseUrl,
   type WireProfile,
 } from '@qianmo/providers'
-import { compileProfile } from '../../services/qianmo/providers/compile.js'
+import { compileProfile } from '../providers/compile.js'
 import { FileActionLedger } from './consoleActionLedger.js'
 import { ProviderBook } from './consoleProvidersBook.js'
 import {
@@ -391,33 +390,37 @@ export class ConsoleProviders implements ProviderPort {
         nodeCode: compiled.error.code,
       })
     }
-    const { patch, route, effectiveLane, secretEnvKey } = compiled.compiled
-    const set: Record<string, string | null> = {}
-    const deleted: string[] = []
-    for (const [key, value] of Object.entries(patch.env)) {
-      if (value === undefined) deleted.push(key)
-      else set[key] = key === secretEnvKey ? null : value
+    const { providerId, models, config, route, effectiveLane } =
+      compiled.compiled
+    const prefix = `models.providers.${providerId}`
+    const provider = models.providers[providerId]!
+    const secretPath = `${prefix}.apiKey`
+    const set: Record<string, string | null> = {
+      [`${prefix}.api`]: provider.api,
+      [`${prefix}.baseUrl`]: provider.baseUrl,
+      [secretPath]: null,
+      'config.defaultThinkingLevel': config.defaultThinkingLevel,
+      'config.providers.cacheWarming': 'off',
+      'config.providers.cacheRetention': config.providers.cacheRetention,
     }
+    for (const [role, selector] of Object.entries(config.modelRoles))
+      set[`config.modelRoles.${role}`] = selector
     const modelSettings: Record<
       string,
       { effort?: ProviderEffortLevel; contextTokens?: number }
     > = {}
-    for (const [slot, value] of Object.entries(patch.modelSettings)) {
-      if (value === undefined || value === null) continue
-      modelSettings[slot] = {
-        ...(isEffortLevel(value.effort) ? { effort: value.effort } : {}),
-        ...(value.contextTokens === undefined
-          ? {}
-          : { contextTokens: value.contextTokens }),
-      }
-    }
+    for (const model of provider.models)
+      modelSettings[model.id] = { contextTokens: model.contextWindow }
+    modelSettings.default = modelSettings[compiled.compiled.selection.modelId]!
+    const fast = wire.models.find(model => model.role === 'fast')
+    if (fast) modelSettings.smol = modelSettings[fast.id]!
     return done({
-      modelType: patch.modelType,
+      modelType: provider.api,
       route,
       effectiveLane,
       set,
-      secretKeys: [secretEnvKey],
-      deleted: deleted.sort(),
+      secretKeys: [secretPath],
+      deleted: [],
       modelSettings,
       warnings: resolved.value.warnings,
     })

@@ -29,14 +29,14 @@
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { AlertAck } from '@qianmo/console'
-import { occConfigPath } from '../../config/paths.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 
 const DIR_MODE = 0o700
 const FILE_MODE = 0o600
 
 /** The default location, beside the console's other stores. */
 export function consoleAlertAcksPath(): string {
-  return occConfigPath('qianmo', 'console', 'alert-acks.ndjson')
+  return qianmoConfigPath('qianmo', 'console', 'alert-acks.ndjson')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

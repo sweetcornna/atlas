@@ -33,17 +33,17 @@ import {
   type QianmoMessage,
 } from '@qianmo/protocol'
 import { ReceiptStatus, startTransportServer } from '@qianmo/transport'
-import { wireConsoleWake } from '../console.js'
-import { parseConsoleArgs } from '../consoleArgs.js'
-import { createWakePort } from '../consolePorts.js'
+import { wireConsoleWake } from '../../src/commands/console.js'
+import { parseConsoleArgs } from '../../src/commands/consoleArgs.js'
+import { createWakePort } from '../../src/commands/consolePorts.js'
 import {
   CONSOLE_WAKE_CAPABILITY_BACKDATE_MS,
   CONSOLE_WAKE_CAPABILITY_TTL_MS,
   consoleWakeIdentityNode,
   createConsoleWakeIssuer,
   type ConsoleWakeIdentity,
-} from '../consoleWakeIdentity.js'
-import { executeResidentWake } from '../residentWake.js'
+} from '../../src/commands/consoleWakeIdentity.js'
+import { executeResidentWake } from '../../src/commands/residentWake.js'
 
 const PSK = 'console-wake-capability-test-not-a-real-secret'
 const CONSOLE_NODE = 'console'
@@ -397,10 +397,7 @@ describe('console wake signing wiring', () => {
     const created: Array<Record<string, unknown>> = []
     let loads = 0
     wireConsoleWake(
-      parseConsoleArgs(
-        [`--wake-url=${TARGET_NODE}=ws://127.0.0.1:38611`],
-        'qianmo',
-      ),
+      parseConsoleArgs([`--wake-url=${TARGET_NODE}=ws://127.0.0.1:38611`]),
       {
         pskFromEnv: () => PSK,
         createWakePort(options) {
@@ -429,14 +426,11 @@ describe('console wake signing wiring', () => {
     const keys = generateNodeKeyPair()
     const created: Array<Record<string, unknown>> = []
     const wiring = wireConsoleWake(
-      parseConsoleArgs(
-        [
-          `--wake-url=${TARGET_NODE}=ws://127.0.0.1:38611`,
-          '--wake-url=beta-2=ws://127.0.0.1:38612',
-          '--wake-sign',
-        ],
-        'qianmo',
-      ),
+      parseConsoleArgs([
+        `--wake-url=${TARGET_NODE}=ws://127.0.0.1:38611`,
+        '--wake-url=beta-2=ws://127.0.0.1:38612',
+        '--wake-sign',
+      ]),
       {
         pskFromEnv: () => PSK,
         createWakePort(options) {

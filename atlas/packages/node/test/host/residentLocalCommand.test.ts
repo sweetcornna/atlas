@@ -11,8 +11,8 @@ import {
   validateMessage,
   type QianmoMessage,
 } from '@qianmo/protocol'
-import { ACP_LOCAL_COMMANDS } from '../../acp/agent/localCommands.js'
-import { residentLocalCommand } from '../residentLocalCommand.js'
+import { RESIDENT_LOCAL_COMMANDS } from '../../src/host/residentLocalCommand.js'
+import { residentLocalCommand } from '../../src/host/residentLocalCommand.js'
 
 const CONSOLE = new Set(['console'])
 const SIGNED_BY_CONSOLE = {
@@ -137,6 +137,6 @@ describe('residentLocalCommand', () => {
 
   test('the console sends exactly the commands a node runs', () => {
     const sent: readonly string[] = CHAT_LOCAL_COMMANDS
-    expect([...sent]).toEqual([...ACP_LOCAL_COMMANDS])
+    expect([...sent]).toEqual([...RESIDENT_LOCAL_COMMANDS])
   })
 })

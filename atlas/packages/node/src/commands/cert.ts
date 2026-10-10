@@ -20,13 +20,12 @@
  * place the flags exist and therefore the only honest place for the help text.
  */
 
-import { invokedBinName } from '../../constants/brand.js'
 import {
   CERT_REQUEST_OPENSSL_BIN_ENV_VAR,
   generateNodeCertificateRequest,
   CertRequestOpensslError,
-} from '../../services/qianmo/certRequest.js'
-import { nodeTlsCertificatePath } from '../../services/qianmo/nodeIdentity.js'
+} from '../host/certRequest.js'
+import { nodeTlsCertificatePath } from '../host/nodeIdentity.js'
 import { residentOptionValue } from './residentArgs.js'
 
 /** `--help` anywhere means help, matching `ca`/`audit` (whole-token). */
@@ -34,7 +33,7 @@ export function isQianmoCertHelpRequest(args: readonly string[]): boolean {
   return args.some(arg => arg === '--help' || arg === '-h')
 }
 
-export const QIANMO_CERT_HELP_TEXT = `Usage: ${invokedBinName()} cert <command> [options]
+export const QIANMO_CERT_HELP_TEXT = `Usage: qm cert <command> [options]
 
 The node-side half of the certificate lifecycle: build a CSR for this node
 and prove it holds the Ed25519 identity the certificate should back (§4.3).
@@ -68,8 +67,8 @@ Environment:
 
   ${CERT_REQUEST_OPENSSL_BIN_ENV_VAR}   openssl executable, when the one on PATH is not
                             OpenSSL (macOS ships LibreSSL under that name).
-  OCC_CONFIG_DIR            Config root the node identity and the written
-                            CSR/key are derived from.
+  QIANMO_CONFIG_DIR         Config root the node identity and the written
+                            CSR/key are derived from (default ~/.qianmo).
 `
 
 interface RequestConfig {
@@ -80,7 +79,7 @@ interface RequestConfig {
 function unknownOption(command: string, arg: unknown): never {
   throw new Error(
     `unknown ${command} option ${String(arg)}` +
-      ` (run \`${invokedBinName()} cert --help\` for the list)`,
+      ' (run `qm cert --help` for the list)',
   )
 }
 
@@ -124,7 +123,7 @@ function runRequest(args: readonly string[]): void {
       `  CSR                               ${result.csrPath}\n` +
       `  node public key                   ${result.publicKey}\n\n` +
       'Hand the CSR to the CA operator, who runs (from the CA machine):\n\n' +
-      `  ${invokedBinName()} ca issue ${config.node} --csr ${result.csrPath} ` +
+      `  qm ca issue ${config.node} --csr ${result.csrPath} ` +
       `--pop ${result.popSignature} --nodekey ${result.publicKey} ${hostFlags}\n\n` +
       'The CSR file travels however is convenient (it is not secret); the ' +
       '--pop value above is the proof of possession this command computed ' +
@@ -162,9 +161,13 @@ export function runQianmoCert(args: readonly string[]): void {
       error instanceof CertRequestOpensslError || error instanceof Error
         ? error.message
         : String(error)
-    process.stderr.write(
-      `${invokedBinName()} cert ${String(command)}: ${message}\n`,
-    )
+    process.stderr.write(`qm cert ${String(command)}: ${message}\n`)
     process.exitCode = 1
   }
+}
+
+/** `qm cert`. */
+export async function run(argv: string[]): Promise<number> {
+  runQianmoCert(argv)
+  return Number(process.exitCode ?? 0)
 }

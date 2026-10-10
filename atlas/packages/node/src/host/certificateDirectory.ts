@@ -83,7 +83,7 @@ import type {
   HandshakeCredentialDirectory,
   ResolvedHandshakeCredential,
 } from '@qianmo/transport'
-import type { RevocationList } from './ca/revocationList.js'
+import type { RevocationList } from '../ca/revocationList.js'
 import {
   anchoredValidity,
   parseTrustAnchors,

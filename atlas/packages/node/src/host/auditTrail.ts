@@ -68,11 +68,11 @@ import type {
   CertificateDirectoryErrorEvent,
   CertificateDirectoryErrorSink,
 } from './certificateDirectory.js'
-import { occConfigPath } from '../../config/paths.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 
 /** Default location of this node's trail, derived from the config root. */
 export function auditTrailPath(): string {
-  return occConfigPath('qianmo', 'audit', 'trail.ndjson')
+  return qianmoConfigPath('qianmo', 'audit', 'trail.ndjson')
 }
 
 /**
@@ -348,7 +348,7 @@ function appendHandshakeRefusal(
   const peer = stringOf(event.detail, 'node') ?? ''
   const channelId = stringOf(event.detail, 'channelId') ?? ''
   const suppressed = meters[tier].admit(
-    `${rejection} ${peer} ${channelId}`,
+    `${rejection}\0${peer}\0${channelId}`,
     event.at,
   )
   if (suppressed === null) return

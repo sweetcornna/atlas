@@ -34,7 +34,7 @@ import {
   type TransportEventSink,
   type TransportServerHandle,
 } from '@qianmo/transport'
-import { transportTrailSink } from '../auditTrail.js'
+import { transportTrailSink } from '../../src/host/auditTrail.js'
 
 const NODE = 'node-b'
 const PSK = 'handshake-audit-psk-not-a-real-secret'

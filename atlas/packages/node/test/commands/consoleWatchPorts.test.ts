@@ -38,15 +38,18 @@ import {
   type SchedulerStatusJob,
 } from '@qianmo/scheduler'
 import { PSK_ENV_VAR } from '@qianmo/transport'
-import { AlertAcksStore, consoleAlertAcksPath } from '../consoleAlertAcks.js'
+import {
+  AlertAcksStore,
+  consoleAlertAcksPath,
+} from '../../src/commands/consoleAlertAcks.js'
 import {
   consoleLimits,
   consoleWatchDeps,
   createNotifyPort,
   createSchedulerPort,
-} from '../consolePorts.js'
-import { parseWatchArgs, runWatchJobs } from '../watch.js'
-import { openAuditTrail } from '../../../services/qianmo/auditTrail.js'
+} from '../../src/commands/consolePorts.js'
+import { parseWatchArgs, runWatchJobs } from '../../src/commands/watch.js'
+import { openAuditTrail } from '../../src/host/auditTrail.js'
 
 const roots: string[] = []
 
@@ -607,20 +610,22 @@ function consoleOnThisRoot() {
 
 describe('the production wiring', () => {
   test('reads exactly where qm watch writes, all derived from the config root', async () => {
-    const previous = process.env.CLAUDE_CONFIG_DIR
+    const previous = process.env.QIANMO_CONFIG_DIR
     const root = join(tempDir(), 'config')
-    process.env.CLAUDE_CONFIG_DIR = root
+    process.env.QIANMO_CONFIG_DIR = root
     try {
-      // CLAUDE.md §1.1②: OCC_CONFIG_DIR / CLAUDE_CONFIG_DIR must hold for it.
+      // CLAUDE.md §1.1②: QIANMO_CONFIG_DIR / QIANMO_CONFIG_DIR must hold for it.
       expect(consoleAlertAcksPath()).toBe(
         join(root, 'qianmo', 'console', 'alert-acks.ndjson'),
       )
       // What qm watch itself would use on this root: its default state
       // directory, its ESTOP and its trail (`openAuditTrail`).
-      const watch = parseWatchArgs(
-        ['--jobs', '/dev/null', '--from', 'qianmo://hub/console'],
-        'qianmo',
-      )
+      const watch = parseWatchArgs([
+        '--jobs',
+        '/dev/null',
+        '--from',
+        'qianmo://hub/console',
+      ])
       if (watch.mode !== 'run') throw new Error('unexpected mode')
       new SchedulerStore(watch.stateDir, { now: () => NOW }).recordFire(
         'disk-watch',
@@ -639,17 +644,17 @@ describe('the production wiring', () => {
       if (!notices.ok) throw new Error(notices.failure.message)
       expect(notices.value.notices.map(one => one.id)).toEqual(['n:from-watch'])
     } finally {
-      if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = previous
+      if (previous === undefined) delete process.env.QIANMO_CONFIG_DIR
+      else process.env.QIANMO_CONFIG_DIR = previous
     }
   })
 
   test('qm watch writes status.json every pass; the jobs page reads it, and says 未接入 again once it is gone', async () => {
-    const previousRoot = process.env.CLAUDE_CONFIG_DIR
+    const previousRoot = process.env.QIANMO_CONFIG_DIR
     const previousPsk = process.env[PSK_ENV_VAR]
     const dir = tempDir()
     const root = join(dir, 'config')
-    process.env.CLAUDE_CONFIG_DIR = root
+    process.env.QIANMO_CONFIG_DIR = root
     process.env[PSK_ENV_VAR] = 'qianmo-watch-status-test-psk-000000000000'
     try {
       // A job whose first slot is five minutes out: every pass plans it and
@@ -669,10 +674,13 @@ describe('the production wiring', () => {
       )
       // Parsed as the qianmo identity would parse it, so the state directory
       // is qm watch's own default on this root — the one the console reads.
-      const config = parseWatchArgs(
-        ['--jobs', jobsPath, '--from', 'qianmo://hub/console', '--once'],
-        'qianmo',
-      )
+      const config = parseWatchArgs([
+        '--jobs',
+        jobsPath,
+        '--from',
+        'qianmo://hub/console',
+        '--once',
+      ])
       if (config.mode !== 'run') throw new Error('unexpected mode')
       const statusPath = join(
         root,
@@ -729,8 +737,8 @@ describe('the production wiring', () => {
       )
       expect(gone).not.toContain('刚运行过')
     } finally {
-      if (previousRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = previousRoot
+      if (previousRoot === undefined) delete process.env.QIANMO_CONFIG_DIR
+      else process.env.QIANMO_CONFIG_DIR = previousRoot
       if (previousPsk === undefined) delete process.env[PSK_ENV_VAR]
       else process.env[PSK_ENV_VAR] = previousPsk
     }

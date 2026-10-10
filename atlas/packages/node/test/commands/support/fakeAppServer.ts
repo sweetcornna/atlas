@@ -26,7 +26,7 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { ServerWebSocket } from 'bun'
-import { findQmcodeRollout } from '../../handoffTranscript.js'
+import { findQmcodeRollout } from '../../../src/commands/handoffTranscript.js'
 
 export interface FakeTurn {
   readonly threadId: string

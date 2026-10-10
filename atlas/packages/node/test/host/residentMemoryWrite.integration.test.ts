@@ -29,12 +29,8 @@ import { join } from 'node:path'
 import { MessageType, createMessage } from '@qianmo/protocol'
 import { scanAssembledPrompt } from '@qianmo/resident'
 import { TransportClient } from '@qianmo/transport'
-import {
-  macroDefineArgs,
-  resolveBuildFeatures,
-} from '../../../../scripts/defines.js'
-import { QianmoResident } from '../resident.js'
-import { WITHHELD_REMOTE_TEXT } from '../residentPrompt.js'
+import { QianmoResident } from '../../src/host/resident.js'
+import { WITHHELD_REMOTE_TEXT } from '../../src/host/residentPrompt.js'
 
 const PSK = 'resident-memory-write-not-a-real-secret'
 const TEAM = 'nest'
@@ -43,16 +39,9 @@ const CONTEXT = 'job-memory-1'
 const ACP_FIXTURE = join(
   import.meta.dir,
   'fixtures',
-  'resident-acp-agent.runner.ts',
+  'resident-omp-agent.runner.ts',
 )
-const CLI_ENTRYPOINT = join(
-  import.meta.dir,
-  '..',
-  '..',
-  '..',
-  'entrypoints',
-  'cli.tsx',
-)
+const CLI_ENTRYPOINT = join(import.meta.dir, '../../src/cli.ts')
 
 const children: ChildProcess[] = []
 const clients: TransportClient[] = []
@@ -72,11 +61,11 @@ afterEach(async () => {
     if (child.exitCode === null && child.signalCode === null)
       child.kill('SIGKILL')
   }
-  if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+  if (previousConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = previousConfigDir
   if (previousRemoteMemoryDir === undefined)
-    delete process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR
-  else process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR = previousRemoteMemoryDir
+    delete process.env.QIANMO_MEMORY_DIR
+  else process.env.QIANMO_MEMORY_DIR = previousRemoteMemoryDir
   if (root !== undefined) rmSync(root, { recursive: true, force: true })
   root = undefined
 })
@@ -107,10 +96,8 @@ async function qm(
     process.execPath,
     [
       'run',
-      ...macroDefineArgs(),
       '-d',
       `process.env.NODE_ENV:${JSON.stringify('production')}`,
-      ...[...resolveBuildFeatures()].flatMap(name => ['--feature', name]),
       CLI_ENTRYPOINT,
       'memory',
       ...args,
@@ -123,8 +110,8 @@ async function qm(
         TMPDIR: tmpdir(),
         NODE_ENV: 'production',
         NO_COLOR: '1',
-        OCC_IDENTITY: 'qianmo',
-        OCC_CONFIG_DIR: configDir,
+
+        QIANMO_CONFIG_DIR: configDir,
       },
     },
   )
@@ -167,10 +154,10 @@ describe('qm memory add → the next resident turn', () => {
   test('the entry is in the prompt the agent receives, only in its context, and gone after revoke', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-memory-write-e2e-'))
     const configDir = join(root, 'config')
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    previousRemoteMemoryDir = process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR
-    process.env.CLAUDE_CONFIG_DIR = configDir
-    delete process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    previousRemoteMemoryDir = process.env.QIANMO_MEMORY_DIR
+    process.env.QIANMO_CONFIG_DIR = configDir
+    delete process.env.QIANMO_MEMORY_DIR
     const socket = join(root, 'resident.sock')
     const promptLog = join(root, 'prompts.ndjson')
     const ready: string[] = []
@@ -183,7 +170,7 @@ describe('qm memory add → the next resident turn', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: () => {
+      spawnOmp: () => {
         const child = spawn(process.execPath, [ACP_FIXTURE], {
           stdio: ['pipe', 'pipe', 'inherit'],
           env: { ...process.env, QIANMO_FIXTURE_PROMPT_LOG: promptLog },

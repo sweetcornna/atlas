@@ -34,11 +34,8 @@ import {
   secretFingerprint,
   type WireProfile,
 } from '@qianmo/providers'
-import {
-  presetProfile,
-  wireProfile,
-} from '../../../services/qianmo/providers/__tests__/helpers.js'
-import { resetSettingsCache } from '../../../utils/settings/settingsCache.js'
+import { presetProfile, wireProfile } from '../providers/helpers.js'
+import { providerPaths, writePrivateJson } from '../../src/providers/store.js'
 import {
   listModels,
   type ProbeOutcome,
@@ -46,7 +43,7 @@ import {
   probeAuth,
   probeLatency,
   profileTarget,
-} from '../providerProbe.js'
+} from '../../src/commands/providerProbe.js'
 import { RecordingStub, refusedOrigin } from './providerStub.js'
 
 const KEY = 'sk-test-canary-probe-key-5Rm8Qz2X'
@@ -106,20 +103,16 @@ beforeAll(() => {
   const config = join(root, 'config')
   mkdirSync(config, { mode: 0o700 })
   chmodSync(config, 0o700)
-  writeFileSync(
-    join(config, 'settings.json'),
-    `${JSON.stringify({ modelType: 'openai', env: { OPENAI_API_KEY: KEY } })}\n`,
-    { mode: 0o600 },
-  )
-  previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = config
-  resetSettingsCache()
+  previousConfigDir = process.env.QIANMO_CONFIG_DIR
+  process.env.QIANMO_CONFIG_DIR = config
+  writePrivateJson(providerPaths.models(), {
+    providers: { 'qm-probe': { apiKey: KEY } },
+  })
 })
 
 afterAll(() => {
-  if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
-  resetSettingsCache()
+  if (previousConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = previousConfigDir
   rmSync(root, { recursive: true, force: true })
   // The scan: no outcome of this file ever carried the key.
   expect(seen.length).toBeGreaterThan(10)
@@ -502,8 +495,8 @@ describe('which request a preset profile makes', () => {
     if (deepseek === undefined) throw new Error('no deepseek preset')
     const t = target(presetProfile(deepseek, KEY))
     expect(t.spec?.auth?.path).toBe('/user/balance')
-    // DeepSeek's mirror route: a bearer key, generic requests OpenAI-shaped.
-    expect(t.style).toBe('openai')
+    // omp uses the configured Anthropic endpoint directly.
+    expect(t.style).toBe('anthropic')
   })
 
   test('one URL shared by presets with the same requests still matches', () => {

@@ -36,9 +36,9 @@ import {
   type AttachCommands,
   type AttachOptions,
   runAttach,
-} from '../handoffAttach.js'
-import type { Output } from '../handoffNow.js'
-import { HandoffUserError } from '../handoffStore.js'
+} from '../../src/commands/handoffAttach.js'
+import type { Output } from '../../src/commands/handoffNow.js'
+import { HandoffUserError } from '../../src/commands/handoffStore.js'
 import {
   type AttachShims,
   alive,
@@ -139,7 +139,7 @@ async function attach(
 
 beforeAll(async () => {
   base = tempDir()
-  setEnv('OCC_CONFIG_DIR', join(base, 'config'))
+  setEnv('QIANMO_CONFIG_DIR', join(base, 'config'))
   consoleTokenFile = join(base, 'console.token')
   writeFileSync(consoleTokenFile, `${CONSOLE_TOKEN}\n`, { mode: 0o600 })
   shims = writeAttachShims(join(base, 'bin'))

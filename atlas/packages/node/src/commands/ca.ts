@@ -29,11 +29,7 @@
  */
 
 import { readFileSync } from 'node:fs'
-import { invokedBinName } from '../../constants/brand.js'
-import {
-  formatIssuanceRecord,
-  readIssuanceLedger,
-} from '../../services/qianmo/ca/ledger.js'
+import { formatIssuanceRecord, readIssuanceLedger } from '../ca/ledger.js'
 import {
   CA_ROOT_DAYS,
   NODE_CERT_DAYS,
@@ -41,17 +37,14 @@ import {
   issueCertificate,
   refreshRevocationList,
   type RevocationRequest,
-} from '../../services/qianmo/ca/operations.js'
-import {
-  OPENSSL_BIN_ENV_VAR,
-  OpensslError,
-} from '../../services/qianmo/ca/openssl.js'
+} from '../ca/operations.js'
+import { OPENSSL_BIN_ENV_VAR, OpensslError } from '../ca/openssl.js'
 import {
   CA_DIR_DEFAULT_DISPLAY,
   CA_DIR_ENV_VAR,
   caDirectory,
-} from '../../services/qianmo/ca/paths.js'
-import { REVOCATION_LIST_VALID_MS } from '../../services/qianmo/ca/revocationList.js'
+} from '../ca/paths.js'
+import { REVOCATION_LIST_VALID_MS } from '../ca/revocationList.js'
 import { residentOptionValue } from './residentArgs.js'
 
 const RL_VALID_DAYS = REVOCATION_LIST_VALID_MS / (24 * 60 * 60 * 1000)
@@ -61,7 +54,7 @@ export function isQianmoCaHelpRequest(args: readonly string[]): boolean {
   return args.some(arg => arg === '--help' || arg === '-h')
 }
 
-export const QIANMO_CA_HELP_TEXT = `Usage: ${invokedBinName()} ca <command> [options]
+export const QIANMO_CA_HELP_TEXT = `Usage: qm ca <command> [options]
 
 The offline certificate authority: one root, one certificate per node, one
 signed revocation list. Runs on the operator's machine, never on a node --
@@ -205,7 +198,7 @@ function positiveInteger(raw: string, flag: string): number {
 function unknownOption(command: string, arg: unknown): never {
   throw new Error(
     `unknown ${command} option ${String(arg)}` +
-      ` (run \`${invokedBinName()} ca --help\` for the list)`,
+      ' (run `qm ca --help` for the list)',
   )
 }
 
@@ -525,9 +518,13 @@ export function runQianmoCa(args: readonly string[]): void {
       error instanceof OpensslError || error instanceof Error
         ? error.message
         : String(error)
-    process.stderr.write(
-      `${invokedBinName()} ca ${String(command)}: ${message}\n`,
-    )
+    process.stderr.write(`qm ca ${String(command)}: ${message}\n`)
     process.exitCode = 1
   }
+}
+
+/** `qm ca`. */
+export async function run(argv: string[]): Promise<number> {
+  runQianmoCa(argv)
+  return Number(process.exitCode ?? 0)
 }

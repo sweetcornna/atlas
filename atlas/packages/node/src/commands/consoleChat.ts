@@ -67,7 +67,7 @@ import {
   type QianmoMessage,
 } from '@qianmo/protocol'
 import { NodeRouter } from '@qianmo/router'
-import { TransportClient } from '@qianmo/transport'
+import { TransportClient, type HandshakeIdentity } from '@qianmo/transport'
 import { ChatStore, type StoredChatSession } from './consoleChatStore.js'
 import type { WakeCapabilityIssuer } from './residentWake.js'
 
@@ -93,6 +93,7 @@ export interface ChatLink {
 
 /** 建链路。回复经 `onReply` 回来——它就是回程本身。 */
 export type ChatDialer = (input: {
+  readonly signing?: HandshakeIdentity
   readonly url: string
   readonly node: string
   readonly peerNode: string
@@ -136,6 +137,7 @@ function defaultDialer(input: Parameters<ChatDialer>[0]): ChatLink {
     peerNode: input.peerNode,
     psk: input.psk,
     supportedTypes: input.supportedTypes,
+    ...(input.signing === undefined ? {} : { signing: input.signing }),
     onMessage: message => {
       input.onReply(message)
     },
@@ -173,11 +175,13 @@ export interface ConsoleChatEndpoint {
 }
 
 interface ConsoleChatOptions {
+  readonly signing?: HandshakeIdentity
+  readonly usage?: import('@qianmo/console').UsagePort
   /** 控制台自己的地址，`qianmo://<node>/<agent>`。 */
   readonly from: string
   /** 允许拨号的端点与各自的钥匙。 */
   readonly endpoints: readonly ConsoleChatEndpoint[]
-  /** 会话落盘位置（绝对路径，由 `consoleArgs.ts` 从 `occConfigPath()` 派生）。 */
+  /** 会话落盘位置（绝对路径，由 `consoleArgs.ts` 从 `qianmoConfigPath()` 派生）。 */
   readonly storePath: string
   /** 复用控制台既有的注册中心端口——名册只有一个出处。 */
   readonly registry: RegistryPort
@@ -512,6 +516,7 @@ export function createConsoleChatPort(
   // --- reply path --------------------------------------------------------
 
   function settle(task: PendingTask): void {
+    options.usage?.finishTask(task.taskId)
     if (task.timer !== null) clearTimeout(task.timer)
     task.timer = null
     pending.delete(task.taskId)
@@ -642,6 +647,7 @@ export function createConsoleChatPort(
           at,
           text: payload.content,
           state: 'done',
+          remoteTerminal: true,
           taskId: message.taskId,
           traceId: message.traceId,
           elapsedMs: at - task.sentAt,
@@ -652,6 +658,9 @@ export function createConsoleChatPort(
       const failed = failureText(payload)
       patchTurn(task.turnId, {
         state: 'failed',
+        ...(isTaskResultPayload(payload)
+          ? { remoteTerminal: true as const }
+          : {}),
         ...(failed.code === undefined ? {} : { code: failed.code }),
       })
       addTurn({
@@ -661,6 +670,9 @@ export function createConsoleChatPort(
         at,
         text: failed.text,
         state: 'failed',
+        ...(isTaskResultPayload(payload)
+          ? { remoteTerminal: true as const }
+          : {}),
         ...(failed.code === undefined ? {} : { code: failed.code }),
         taskId: message.taskId,
         traceId: message.traceId,
@@ -714,6 +726,7 @@ export function createConsoleChatPort(
       peerNode,
       psk: endpoint.psk,
       supportedTypes: CONSOLE_SUPPORTED_TYPES,
+      ...(options.signing === undefined ? {} : { signing: options.signing }),
       onReply,
     })
     links.set(url, link)
@@ -914,6 +927,42 @@ export function createConsoleChatPort(
       const endpoint = await endpointFor(stored.target)
       if (!endpoint.ok) return endpoint
 
+      const continuationAllowed = (ownTaskId?: string): boolean => {
+        if (input.continuation === undefined) return true
+        const rows = (order.get(stored.id) ?? []).flatMap(id => {
+          const row = turns.get(id)
+          return row && row.variant !== 'notice' ? [row] : []
+        })
+        const completed = new Set(
+          rows
+            .filter(
+              row =>
+                row.author === 'agent' &&
+                (row.state === 'done' || row.state === 'failed'),
+            )
+            .map(row => row.taskId),
+        )
+        const terminal = rows.some(
+          row =>
+            row.taskId === input.continuation!.afterTaskId &&
+            row.author === 'agent' &&
+            row.remoteTerminal === true &&
+            (row.state === 'done' || row.state === 'failed'),
+        )
+        return (
+          input.continuation.authorized() &&
+          terminal &&
+          !rows.some(
+            row =>
+              ['pending', 'delivered', 'read'].includes(row.state) &&
+              !completed.has(row.taskId) &&
+              row.taskId !== ownTaskId,
+          )
+        )
+      }
+      if (!continuationAllowed())
+        return fail('refused', '原任务尚未结束、会话忙碌或审批权限已变化')
+
       let message: QianmoMessage
       try {
         // `taskId` 与 `createdAt` 在这里铸，不留给 `createMessage` 的默认值。
@@ -924,6 +973,8 @@ export function createConsoleChatPort(
         // 量起。`residentWake.ts` 的 `executeResidentWake` 里是同一段理由的第一
         // 个调用点。
         const taskId = newMessageId()
+        if (input.usageReservation !== undefined)
+          options.usage?.bindTask(input.usageReservation, taskId, stored.node)
         const createdAt = now()
         // 令牌在**连接之前**铸出来（下面 `linkFor` 可能要现拨一条链路），所以它
         // 的寿命必须盖得住一次连接：连接封顶 15 s，令牌 60 s，回执那 20 s 不算在
@@ -1005,8 +1056,23 @@ export function createConsoleChatPort(
       pending.set(task.taskId, task)
       armTimeout(task)
 
+      let attempted = false
       try {
         const link = await linkFor(endpoint.value, stored.node)
+        // Dialling yields; revocation or another turn may happen before bytes leave.
+        const exit = options.exitGate?.(stored.target) ?? null
+        if (
+          exit !== null ||
+          !pending.has(task.taskId) ||
+          !continuationAllowed(task.taskId)
+        ) {
+          settle(task)
+          patchTurn(turn.id, { state: 'failed', code: 'E_UNDELIVERABLE' })
+          return exit === null
+            ? fail('refused', '连接期间权限或任务状态已变化，任务未发送')
+            : { ok: false, failure: exit }
+        }
+        attempted = true
         const receipt = await link.sendAndWait(message, sendTimeoutMs)
         const patched = patchTurn(turn.id, {
           state: 'delivered',
@@ -1015,8 +1081,31 @@ export function createConsoleChatPort(
         })
         return { ok: true, value: patched ?? turn }
       } catch (error) {
+        if (
+          attempted &&
+          pending.has(task.taskId) &&
+          (input.continuation !== undefined ||
+            input.usageReservation !== undefined)
+        ) {
+          // A lost receipt does not prove the task was rejected. Retain the
+          // pending task and durable quota until its real result or TTL.
+          const patched = patchTurn(turn.id, { deliveryUnknown: true })
+          if (input.continuation === undefined)
+            return {
+              ok: false,
+              failure: {
+                code: 'unreachable',
+                deliveryUnknown: true,
+                message:
+                  '发送结果未知，任务可能已到达节点；在途配额保留至任务结束或期限届满，请勿重复发送。',
+              },
+            }
+          return {
+            ok: true,
+            value: patched ?? { ...turn, deliveryUnknown: true },
+          }
+        }
         settle(task)
-        // 原因落进这一轮：刷新之后页面仍能说出「未投递」，而不是只剩「失败」。
         patchTurn(turn.id, { state: 'failed', code: 'E_UNDELIVERABLE' })
         return fail('unreachable', messageOf(error))
       }

@@ -19,8 +19,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ServerNotesStore } from '../consoleServerNotes.js'
-import { createServerNotesPort } from '../consolePorts.js'
+import { ServerNotesStore } from '../../src/commands/consoleServerNotes.js'
+import { createServerNotesPort } from '../../src/commands/consolePorts.js'
 
 const roots: string[] = []
 

@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, test } from 'bun:test'
-import { parseConsoleArgs, transportPskEnvVarForNode } from '../consoleArgs.js'
-import { wireConsoleChat } from '../console.js'
-import type { ConsoleChatHub } from '../consoleChat.js'
+import {
+  parseConsoleArgs,
+  transportPskEnvVarForNode,
+} from '../../src/commands/consoleArgs.js'
+import { wireConsoleChat } from '../../src/commands/console.js'
+import type { ConsoleChatHub } from '../../src/commands/consoleChat.js'
 import type { RegistryPort } from '@qianmo/console'
 
 const GLOBAL_PSK = 'global-psk-that-must-not-enable-named-targets'
@@ -43,7 +46,7 @@ function wire(
   const identityFor: string[] = []
   let signed: unknown
   const wiring = wireConsoleChat(
-    parseConsoleArgs([...args, `--chat-store=${STORE}`], 'qianmo'),
+    parseConsoleArgs([...args, `--chat-store=${STORE}`]),
     registryPort(),
     {
       pskFromEnv(variable) {

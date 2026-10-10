@@ -2,223 +2,166 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * P0.3 identity isolation — proves the occ default, the Qianmo node, and (by
- * construction) the official Claude Code can share one machine without touching
- * each other's config, credentials, cache or CLI name.
+ * State isolation between qm and the oh-my-pi agent it runs as a child.
  *
- * Identity is fixed at module load (src/constants/identity.ts), so this suite
- * observes each identity in a FRESH subprocess (identityProbe.runner.ts) launched with
- * a different `OCC_IDENTITY` and a throwaway HOME. That is the only faithful
- * way to exercise the switch — importing paths.ts in-process would pin whatever
- * identity the test runner booted with.
+ * qm keeps everything under one config root (`QIANMO_CONFIG_DIR`, default
+ * `~/.qianmo`) and puts omp's own state at `<root>/omp`, so a node, the user's
+ * own omp installation and the official Claude Code can share a machine
+ * without touching each other's config, credentials or sessions. Path
+ * resolution reads HOME and the environment, so every observation is a fresh
+ * process (identityProbe.runner.ts) with a throwaway HOME.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, relative } from 'node:path'
 
 const PROBE = join(import.meta.dir, 'identityProbe.runner.ts')
+const QM = join(import.meta.dir, '..', '..', 'src', 'cli.ts')
 
-type Report = {
-  identity: string
-  binName: string
+type QmReport = {
   configDir: string
-  globalFile: string
-  cacheNamespace: string
-  xdgSubdir: string
-  projectDirName: string
-  resolvedCacheDir: string
-  resolvedXdgDataDir: string
-  resolvedXdgCacheDir: string
-  resolvedXdgStateDir: string
+  ompConfigRoot: string
+  ompAgentDir: string
+  caDir: string
+  memoryBaseDir: string
+  protectedRoots: string[]
 }
 
-type Protection = {
-  identity: string
-  protectedDirs: string[]
-  dangerousDirs: string[]
-  dangerousFiles: string[]
-}
-
-/** Project-config basename of every product that may share the machine. */
-const EVERY_IDENTITY_DIR = ['.occ', '.qianmo', '.claude'] as const
-
-const PROJECT_ROOT = '/proj'
+type OmpReport = { configRoot: string; agentDir: string }
 
 let home: string
+let elsewhere: string
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'qm-identity-'))
+  home = mkdtempSync(join(tmpdir(), 'qm-isolation-home-'))
+  elsewhere = mkdtempSync(join(tmpdir(), 'qm-isolation-root-'))
 })
 
 afterEach(() => {
   rmSync(home, { recursive: true, force: true })
+  rmSync(elsewhere, { recursive: true, force: true })
 })
 
-/** Run the probe in a fresh process under the given identity and throwaway HOME. */
-function runProbe(
-  identity: 'occ-default' | 'occ' | 'qianmo',
-  args: string[],
-): string {
+/** A clean environment: the inherited one minus every state-moving variable, with HOME thrown away. */
+function cleanEnv(extra: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {}
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined) env[k] = v
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue
+    if (/^(QIANMO_|QMCODE_|PI_|OMP_|XDG_)/.test(key)) continue
+    if (key === 'CLAUDE_CONFIG_DIR') continue
+    env[key] = value
   }
-  // Neutralize any explicit config-dir override so the identity's own basename
-  // under HOME is what resolves, and start from a known-clean identity signal.
-  delete env.OCC_CONFIG_DIR
-  delete env.CLAUDE_CONFIG_DIR
-  delete env.OCC_IDENTITY
   env.HOME = home
   env.USERPROFILE = home
-  if (identity !== 'occ-default') env.OCC_IDENTITY = identity
+  return { ...env, ...extra }
+}
 
-  const result = Bun.spawnSync([process.execPath, 'run', PROBE, ...args], {
+function spawn(cmd: string[], env: Record<string, string>) {
+  const result = Bun.spawnSync(cmd, {
     env,
-    stderr: 'pipe',
+    cwd: home,
     stdout: 'pipe',
+    stderr: 'pipe',
   })
   if (result.exitCode !== 0) {
     throw new Error(
-      `probe(${identity} ${args.join(' ')}) exited ${result.exitCode}: ${result.stderr.toString()}`,
+      `${cmd.join(' ')} exited ${result.exitCode}: ${result.stderr.toString()}`,
     )
   }
   return result.stdout.toString()
 }
 
-function report(identity: 'occ-default' | 'occ' | 'qianmo'): Report {
-  return JSON.parse(runProbe(identity, ['report'])) as Report
+function probe(command: 'qm', env: Record<string, string>): QmReport
+function probe(command: 'omp', env: Record<string, string>): OmpReport
+function probe(command: 'qm' | 'omp', env: Record<string, string>) {
+  return JSON.parse(spawn([process.execPath, 'run', PROBE, command], env))
 }
 
-function protection(identity: 'occ-default' | 'qianmo'): Protection {
-  return JSON.parse(
-    runProbe(identity, ['protection', PROJECT_ROOT]),
-  ) as Protection
-}
+describe('qm paths', () => {
+  test('default root is ~/.qianmo with omp nested at <root>/omp', () => {
+    const report = probe('qm', cleanEnv())
 
-describe('three-way identity coexistence', () => {
-  test('occ default resolves the occ namespace', () => {
-    const r = report('occ-default')
-    expect(r.identity).toBe('occ')
-    expect(r.binName).toBe('occ')
-    expect(r.configDir).toBe(join(home, '.occ'))
-    expect(r.globalFile).toBe(join(home, '.occ.json'))
-    expect(r.cacheNamespace).toBe('occ')
-    expect(r.xdgSubdir).toBe('occ')
-    expect(r.projectDirName).toBe('.occ')
+    expect(report.configDir).toBe(join(home, '.qianmo'))
+    expect(report.ompConfigRoot).toBe(join(home, '.qianmo', 'omp'))
+    expect(report.ompAgentDir).toBe(join(home, '.qianmo', 'omp', 'agent'))
+    expect(report.memoryBaseDir).toBe(join(home, '.qianmo'))
   })
 
-  test('OCC_IDENTITY=qianmo resolves the Qianmo node namespace', () => {
-    const r = report('qianmo')
-    expect(r.identity).toBe('qianmo')
-    expect(r.binName).toBe('qm')
-    expect(r.configDir).toBe(join(home, '.qianmo'))
-    expect(r.globalFile).toBe(join(home, '.qianmo.json'))
-    expect(r.cacheNamespace).toBe('qianmo')
-    expect(r.xdgSubdir).toBe('qianmo')
-    expect(r.projectDirName).toBe('.qianmo')
+  test('QIANMO_CONFIG_DIR moves the root and omp with it', () => {
+    const report = probe('qm', cleanEnv({ QIANMO_CONFIG_DIR: elsewhere }))
+
+    expect(report.configDir).toBe(elsewhere)
+    expect(report.ompAgentDir).toBe(join(elsewhere, 'omp', 'agent'))
   })
 
-  test('OCC_IDENTITY=occ is identical to the unset default', () => {
-    expect(report('occ')).toEqual(report('occ-default'))
+  test('CLAUDE_CONFIG_DIR does not relocate anything (no fallback)', () => {
+    const report = probe('qm', cleanEnv({ CLAUDE_CONFIG_DIR: elsewhere }))
+
+    expect(report.configDir).toBe(join(home, '.qianmo'))
   })
 
-  test('every isolation-bearing value differs between the two identities', () => {
-    const occ = report('occ-default')
-    const qm = report('qianmo')
-    expect(qm.binName).not.toBe(occ.binName)
-    expect(qm.configDir).not.toBe(occ.configDir)
-    expect(qm.globalFile).not.toBe(occ.globalFile)
-    expect(qm.cacheNamespace).not.toBe(occ.cacheNamespace)
-    expect(qm.xdgSubdir).not.toBe(occ.xdgSubdir)
-    expect(qm.projectDirName).not.toBe(occ.projectDirName)
-  })
+  test('the CA directory stays outside every config root', () => {
+    const report = probe('qm', cleanEnv())
 
-  /**
-   * Namespace strings differing is necessary but not sufficient: what lands on
-   * disk is the RESOLVED tree (env-paths cache root, XDG data/cache/state
-   * roots). Assert those are prefix-disjoint between identities — neither may
-   * contain the other, or a recursive delete/copy of one product's cache would
-   * eat the other's — and that each stays inside the throwaway HOME (per-user
-   * isolation; env-paths and the XDG helpers both honour $HOME here).
-   */
-  test('resolved cache and XDG trees are prefix-disjoint and HOME-scoped', () => {
-    const occ = report('occ-default')
-    const qm = report('qianmo')
-    const trees: readonly (keyof Report)[] = [
-      'resolvedCacheDir',
-      'resolvedXdgDataDir',
-      'resolvedXdgCacheDir',
-      'resolvedXdgStateDir',
-    ]
-    for (const key of trees) {
-      const a = occ[key]
-      const b = qm[key]
-      expect(a.startsWith(home)).toBe(true)
-      expect(b.startsWith(home)).toBe(true)
-      expect(a).not.toBe(b)
-      expect(b.startsWith(`${a}/`)).toBe(false)
-      expect(a.startsWith(`${b}/`)).toBe(false)
+    expect(report.caDir).toBe(join(home, '.qianmo-ca'))
+    for (const root of report.protectedRoots) {
+      expect(report.caDir === root || report.caDir.startsWith(`${root}/`)).toBe(
+        false,
+      )
     }
   })
-})
 
-/**
- * Coexistence is not symmetric with namespacing: a namespace answers "where do
- * I write", a protection list answers "what must I never touch". The second one
- * has to be the UNION of all three products, in BOTH identities. The regression
- * this guards is real and was shipped: the lists were built from
- * `PROJECT_DIR_NAME` (the active identity) plus the official `.claude`, so a
- * Qianmo node protected `.qianmo` and `.claude` but happily let a sandboxed
- * command rewrite `~/.occ/.credentials.json`, `<proj>/.occ/settings.json` and
- * `~/.occ.json` — and the occ default did the same to a node's `.qianmo`.
- */
-describe('write protection covers every identity, in every identity', () => {
-  for (const identity of ['occ-default', 'qianmo'] as const) {
-    test(`running as ${identity}, all three products stay protected`, () => {
-      const { protectedDirs, dangerousDirs, dangerousFiles } =
-        protection(identity)
+  test('every product that may share the machine is protected', () => {
+    const report = probe('qm', cleanEnv({ QIANMO_CONFIG_DIR: elsewhere }))
 
-      for (const dirName of EVERY_IDENTITY_DIR) {
-        // User-level config root (holds .credentials.json and settings.json).
-        expect(protectedDirs).toContain(join(home, dirName))
-        // Project-level config root (holds settings.json, hooks, agents).
-        expect(protectedDirs).toContain(join(PROJECT_ROOT, dirName))
-        // Same two roots, as seen by the auto-edit path segment check.
-        expect(dangerousDirs).toContain(dirName)
-        // Global state file: mcpServers, project state, OAuth account record.
-        expect(dangerousFiles).toContain(`${dirName}.json`)
-      }
-    })
-  }
-
-  test('the protected set does not depend on which identity is running', () => {
-    const occ = protection('occ-default')
-    const qm = protection('qianmo')
-    // Order differs (each identity lists its own config root first), so
-    // compare the sets. Membership is what the permission checks consult.
-    expect(new Set(qm.protectedDirs)).toEqual(new Set(occ.protectedDirs))
-    expect(qm.dangerousDirs).toEqual(occ.dangerousDirs)
-    expect(qm.dangerousFiles).toEqual(occ.dangerousFiles)
+    for (const dir of ['.qianmo', '.omp', '.claude', '.codex', '.qmcode']) {
+      expect(report.protectedRoots).toContain(join(home, dir))
+    }
+    expect(report.protectedRoots).toContain(elsewhere)
   })
 })
 
-describe('credentials do not cross identities', () => {
-  test('a qianmo login is invisible to occ and neither overwrites the other', () => {
-    // Qianmo logs in first.
-    const qmCredPath = runProbe('qianmo', ['write-cred', 'QIANMO-TOKEN'])
-    expect(qmCredPath).toBe(join(home, '.qianmo', '.credentials.json'))
+describe('omp child confinement', () => {
+  test('a hostile environment cannot move omp out of the qm root', () => {
+    const report = probe(
+      'omp',
+      cleanEnv({
+        QIANMO_CONFIG_DIR: elsewhere,
+        // Everything the guard has to scrub: profile, agent dir, XDG, Claude.
+        // The cleanEnv filter drops these, so set them on top of it.
+        OMP_PROFILE: 'work',
+        PI_CODING_AGENT_DIR: join(home, 'agent-elsewhere'),
+        XDG_DATA_HOME: join(home, 'xdg'),
+        XDG_STATE_HOME: join(home, 'xdg'),
+        XDG_CACHE_HOME: join(home, 'xdg'),
+        XDG_CONFIG_HOME: join(home, 'xdg'),
+        CLAUDE_CONFIG_DIR: join(home, 'claude'),
+      }),
+    )
 
-    // occ cannot see qianmo's credential file.
-    expect(runProbe('occ-default', ['read-cred'])).toBe('__MISSING__')
+    expect(report.configRoot).toBe(join(elsewhere, 'omp'))
+    expect(report.agentDir).toBe(join(elsewhere, 'omp', 'agent'))
+  })
 
-    // occ logs in; its write lands in .occ, not .qianmo.
-    const occCredPath = runProbe('occ-default', ['write-cred', 'OCC-TOKEN'])
-    expect(occCredPath).toBe(join(home, '.occ', '.credentials.json'))
+  test('the default root puts omp state under ~/.qianmo/omp', () => {
+    const report = probe('omp', cleanEnv())
 
-    // Each identity still reads back exactly its own token.
-    expect(runProbe('qianmo', ['read-cred'])).toBe('QIANMO-TOKEN')
-    expect(runProbe('occ-default', ['read-cred'])).toBe('OCC-TOKEN')
+    expect(relative(home, report.agentDir)).toBe(
+      join('.qianmo', 'omp', 'agent'),
+    )
+  })
+
+  test('`qm agent` writes only under the root; ~/.omp and ~/.claude stay absent', () => {
+    spawn(
+      [process.execPath, QM, 'agent', 'config', 'list'],
+      cleanEnv({ QIANMO_CONFIG_DIR: elsewhere }),
+    )
+
+    expect(existsSync(join(elsewhere, 'omp', 'agent', 'agent.db'))).toBe(true)
+    expect(existsSync(join(home, '.omp'))).toBe(false)
+    expect(existsSync(join(home, '.claude'))).toBe(false)
+    expect(existsSync(join(home, '.qianmo'))).toBe(false)
   })
 })

@@ -30,9 +30,7 @@ import { basename, isAbsolute, resolve } from 'node:path'
 import { statSync } from 'node:fs'
 import { isatty } from 'node:tty'
 import { isTaskId, sessionRef, type HandoffTool } from '@qianmo/handoff'
-import { qmcodeHome } from '../../config/paths.js'
-import { invokedBinName } from '../../constants/brand.js'
-import { IDENTITY_MODE } from '../../constants/identity.js'
+import { qmcodeHome } from '@qianmo/paths'
 import { gitTopLevel, initHubRepository } from './handoffHub.js'
 import {
   PROCESS_OUTPUT,
@@ -80,12 +78,12 @@ import {
 } from './handoffTranscript.js'
 import { residentOptionValue } from './residentArgs.js'
 
-const HANDOFF_HELP_TEXT = `Usage: ${invokedBinName()} handoff <command> [options]
+const HANDOFF_HELP_TEXT = `Usage: qm handoff <command> [options]
 
 Hand the work in this repository over to the cloud: the work tree (including
 uncommitted and untracked, not ignored files) and the current qmcode or Claude
 Code session go to your hub as git objects; the hub confirms they landed
-before you are told it is safe to shut down. Requires OCC_IDENTITY=qianmo.
+before you are told it is safe to shut down.
 
 Commands:
 
@@ -124,7 +122,7 @@ Commands:
                                "--hook", "qmcode"] in config.toml (a notify
                                of your own replaces it).
                              claude-code: reads the hook JSON on stdin. Add
-                               "${invokedBinName()} handoff sync --hook claude-code"
+                               "qm handoff sync --hook claude-code"
                                to ~/.claude/settings.json yourself — nothing
                                here writes to ~/.claude — as a Stop command
                                hook with "async": true, so the turn does not
@@ -153,7 +151,7 @@ Commands:
                            and session and registers the task, like now; the
                            turn that calls it is left out of the session) and
                            qianmo_task. Built into qmcode; for Claude Code:
-                             claude mcp add qianmo -- ${invokedBinName()} handoff mcp
+                             claude mcp add qianmo -- qm handoff mcp
 
   node --node <name> --root <abs> --trust <node>=<publicKey>
        --app-server ws://127.0.0.1:<port> --app-server-token-file <abs>
@@ -211,10 +209,7 @@ function isHelpRequest(args: readonly string[]): boolean {
 }
 
 function usage(message: string): never {
-  throw new HandoffUserError(
-    `${message}（${invokedBinName()} handoff --help 看用法）`,
-    2,
-  )
+  throw new HandoffUserError(`${message}（qm handoff --help 看用法）`, 2)
 }
 
 /** `--name value` / `--name=value` options, every one of them known. */
@@ -725,12 +720,6 @@ async function dispatchHandoff(
     output.out(HANDOFF_HELP_TEXT)
     return 0
   }
-  if (IDENTITY_MODE !== 'qianmo') {
-    throw new HandoffUserError(
-      'handoff 需要 OCC_IDENTITY=qianmo（或用 qm 运行）',
-      2,
-    )
-  }
   switch (command) {
     case 'init':
       return await runInit(rest, cwd, output)
@@ -771,7 +760,7 @@ function refusalHead(command: string | undefined): string {
   }
 }
 
-/** The fast-path entry (`cli.tsx`): runs, prints a refusal, sets the exit code. */
+/** Runs, prints a refusal, sets the exit code. */
 export async function runHandoff(args: readonly string[]): Promise<void> {
   const head = refusalHead(args[0])
   try {
@@ -787,4 +776,10 @@ export async function runHandoff(args: readonly string[]): Promise<void> {
     )
     process.exitCode = 1
   }
+}
+
+/** `qm handoff`. */
+export async function run(argv: string[]): Promise<number> {
+  await runHandoff(argv)
+  return Number(process.exitCode ?? 0)
 }

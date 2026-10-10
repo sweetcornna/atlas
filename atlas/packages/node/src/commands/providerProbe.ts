@@ -30,7 +30,7 @@
  * profile carries no preset id, so the node recognises the preset from its own
  * copy of the catalog rather than taking the hub's word. When several presets
  * share the URL and disagree, or the URL was edited, the generic request for
- * the lane is used: `{base}/models` (OpenAI lanes, Grok, DeepSeek's mirror),
+ * the lane is used: `{base}/models` (OpenAI lanes and Grok),
  * `{base}/v1/models` (Anthropic lane), `{base}/models` (Gemini). An auth
  * request the catalog marks as not free is not sent: `auth` and `latency`
  * must cost nothing (§5.5).
@@ -47,7 +47,6 @@
  * to a host nobody configured.
  */
 
-import { readFileSync } from 'node:fs'
 import {
   type AuthScheme,
   type HttpProbe,
@@ -58,20 +57,10 @@ import {
   type ProviderIssue,
   primaryKey,
   resolveBaseUrl,
-  secretFingerprint,
   type WireProfile,
 } from '@qianmo/providers'
-import {
-  type CompiledProfile,
-  compileProfile,
-} from '../../services/qianmo/providers/compile.js'
-import {
-  type ManagedView,
-  managedViewOf,
-} from '../../services/qianmo/providers/managedView.js'
-import { SECRET_ENV_KEYS } from '../../services/qianmo/providers/whitelist.js'
-import { isDeepSeekBaseURL } from '../../utils/model/deepseekHost.js'
-import { getSettingsFilePathForSource } from '../../utils/settings/settings.js'
+import { type CompiledProfile, compileProfile } from '../providers/compile.js'
+import { configuredProvider, resolveKeptSecret } from '../providers/node.js'
 
 /** One probe's answer, before it is wrapped into a protocol response. */
 export type ProbeOutcome = {
@@ -108,42 +97,6 @@ export type ProbeTarget = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** The node's `settings.json` as an object; `{}` when missing or unreadable. */
-export function nodeSettings(): Record<string, unknown> {
-  const path = getSettingsFilePathForSource('userSettings')
-  if (path === undefined) return {}
-  let text: string
-  try {
-    text = readFileSync(path, 'utf8')
-  } catch {
-    return {}
-  }
-  try {
-    const parsed: unknown = JSON.parse(text)
-    return isRecord(parsed) ? parsed : {}
-  } catch {
-    return {}
-  }
-}
-
-function nodeView(): ManagedView {
-  return managedViewOf(nodeSettings())
-}
-
-/** The value a `keep` fingerprint names, among the node's credential keys. */
-function keptSecret(
-  view: ManagedView,
-  fingerprint: string,
-): string | undefined {
-  for (const key of SECRET_ENV_KEYS) {
-    const value = view.env[key]
-    if (value !== undefined && secretFingerprint(value) === fingerprint) {
-      return value
-    }
-  }
-  return undefined
 }
 
 function trimSlash(url: string): string {
@@ -193,7 +146,7 @@ export function profileTarget(
   | { ok: true; target: ProbeTarget; compiled: CompiledProfile }
   | TargetFailure {
   const key = primaryKey(profile.auth.keys)
-  const secret = 'value' in key ? key.value : keptSecret(nodeView(), key.keep)
+  const secret = 'value' in key ? key.value : resolveKeptSecret(key.keep)
   if (secret === undefined) {
     return {
       ok: false,
@@ -217,7 +170,13 @@ export function profileTarget(
       },
     }
   }
-  const mirror = compiled.compiled.route === 'deepseek-mirror'
+  const candidate =
+    compiled.compiled.models.providers[compiled.compiled.providerId]!
+  if (!candidate.headers?.['X-Api-Key']) {
+    candidate.apiKey = secret
+    candidate.auth = 'apiKey'
+  }
+  const mirror = false
   return {
     ok: true,
     target: {
@@ -238,63 +197,26 @@ export function profileTarget(
  * base URL and the key, so nothing has to be guessed or defaulted.
  */
 export function appliedTarget(): TargetResult {
-  const view = nodeView()
-  const env = view.env
-  const missing = (message: string): TargetResult => ({
-    ok: false,
-    issue: { code: 'bad-request', path: 'profile', message },
-  })
-  let lane: Lane
-  let baseUrl: string | undefined
-  let secret: string | undefined
-  let scheme: AuthScheme = 'bearer'
-  switch (view.modelType) {
-    case 'anthropic':
-      lane = 'anthropic'
-      baseUrl = env.ANTHROPIC_BASE_URL
-      secret = env.ANTHROPIC_AUTH_TOKEN
-      if (secret === undefined && env.ANTHROPIC_API_KEY !== undefined) {
-        secret = env.ANTHROPIC_API_KEY
-        scheme = 'x-api-key'
-      }
-      break
-    case 'openai':
-      lane = env.OPENAI_WIRE_API === 'chat' ? 'openai-chat' : 'openai-responses'
-      baseUrl = env.OPENAI_BASE_URL
-      secret = env.OPENAI_API_KEY
-      break
-    case 'gemini':
-      lane = 'gemini'
-      baseUrl = env.GEMINI_BASE_URL
-      secret = env.GEMINI_API_KEY
-      break
-    case 'grok':
-      lane = 'grok'
-      baseUrl = env.GROK_BASE_URL
-      secret = env.GROK_API_KEY ?? env.XAI_API_KEY
-      break
-    default:
-      return missing('节点的 settings.json 里没有可用的模型服务 · 请带 profile')
-  }
-  if (baseUrl === undefined || secret === undefined) {
-    return missing('节点的 settings.json 里缺 Base URL 或密钥 · 请带 profile')
-  }
-  // §3.3: DeepSeek is written as OPENAI_* without a wire, and the runtime's
-  // mirror moves it onto DeepSeek's Anthropic endpoint unless opted out.
-  const mirror =
-    view.modelType === 'openai' &&
-    env.OPENAI_WIRE_API === undefined &&
-    isDeepSeekBaseURL(baseUrl) &&
-    env.CLAUDE_CODE_DEEPSEEK_ANTHROPIC_WIRE !== '0'
+  const provider = configuredProvider()
+  if (!provider?.secret)
+    return {
+      ok: false,
+      issue: {
+        code: 'bad-request',
+        path: 'profile',
+        message: '节点未配置可用的模型服务密钥',
+      },
+    }
+  const lane = provider.lane as Lane
   return {
     ok: true,
     target: {
       lane,
-      style: styleOf(lane, mirror),
-      baseUrl,
-      scheme,
-      secret,
-      spec: presetSpec(mirror ? 'anthropic' : lane, baseUrl),
+      style: styleOf(lane, false),
+      baseUrl: provider.baseUrl,
+      scheme: provider.scheme,
+      secret: provider.secret,
+      spec: presetSpec(lane, provider.baseUrl),
     },
   }
 }

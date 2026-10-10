@@ -28,8 +28,8 @@ import {
   pushToHub,
   remoteInitScript,
   updateLocalRefs,
-} from '../handoffHub.js'
-import { parseHub } from '../handoffStore.js'
+} from '../../src/commands/handoffHub.js'
+import { parseHub } from '../../src/commands/handoffStore.js'
 
 const roots: string[] = []
 

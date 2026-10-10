@@ -5,7 +5,7 @@
  * What `qm handoff` keeps on this machine, and the names it accepts
  * (P17.4 本地命令, P17.3 会话定位).
  *
- * Everything lives under `<config root>/qianmo/handoff/` (`occConfigPath`):
+ * Everything lives under `<config root>/qianmo/handoff/` (`qianmoConfigPath`):
  *
  * | File | Holds | Written by |
  * | --- | --- | --- |
@@ -45,7 +45,7 @@ import {
   type HandoffTool,
   tryExclusiveLock,
 } from '@qianmo/handoff'
-import { occConfigPath } from '../../config/paths.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 
 /** A mistake a person can fix; printed as is, exit code 1 (2 for usage). */
 export class HandoffUserError extends Error {
@@ -60,7 +60,7 @@ export class HandoffUserError extends Error {
 
 /** `<config root>/qianmo/handoff/<segments>`. */
 function handoffPath(...segments: string[]): string {
-  return occConfigPath('qianmo', 'handoff', ...segments)
+  return qianmoConfigPath('qianmo', 'handoff', ...segments)
 }
 
 const DIRECTORY_MODE = 0o700

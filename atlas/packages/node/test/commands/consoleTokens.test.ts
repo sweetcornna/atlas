@@ -25,19 +25,22 @@ import {
   isLoopbackHostname,
   resolveTokens,
 } from '@qianmo/console'
-import { newConsoleToken, runConsole } from '../console.js'
-import { CONSOLE_HELP_TEXT, parseConsoleArgs } from '../consoleArgs.js'
+import { newConsoleToken, runConsole } from '../../src/commands/console.js'
+import {
+  CONSOLE_HELP_TEXT,
+  parseConsoleArgs,
+} from '../../src/commands/consoleArgs.js'
 import {
   ADMIN_TOKEN_ENV_VAR,
   VIEW_TOKEN_ENV_VAR,
   resolveConsoleTokenSource,
-} from '../consoleTokenSources.js'
+} from '../../src/commands/consoleTokenSources.js'
 
 function tokensFor(
   args: readonly string[],
   env: Record<string, string | undefined> = {},
 ): ReturnType<typeof resolveTokens> {
-  const config = parseConsoleArgs(args, 'qianmo')
+  const config = parseConsoleArgs(args)
   // 与 `runConsole` 同一条链路：三个入口先收敛成一枚，再交给包里那条策略。
   const view = resolveConsoleTokenSource('view', config, env)
   const admin = resolveConsoleTokenSource('admin', config, env)
@@ -70,12 +73,10 @@ afterAll(() => {
   rmSync(directory, { recursive: true, force: true })
 })
 
-describe('occ console token wiring', () => {
+describe('qm console token wiring', () => {
   test('the zero-argument console lands on the generating branch', () => {
-    // 默认 hostname 必须是回环，否则 `occ console` 不带参数就起不来了。
-    expect(isLoopbackHostname(parseConsoleArgs([], 'qianmo').hostname)).toBe(
-      true,
-    )
+    // 默认 hostname 必须是回环，否则 `qm console` 不带参数就起不来了。
+    expect(isLoopbackHostname(parseConsoleArgs([]).hostname)).toBe(true)
     const tokens = tokensFor([])
     expect(tokens.view).not.toBe(tokens.admin)
     expect(tokens.view.length).toBeGreaterThanOrEqual(MIN_TOKEN_LENGTH)
@@ -180,7 +181,7 @@ describe('occ console token wiring', () => {
   })
 })
 
-describe('occ console --help through the real handler', () => {
+describe('qm console --help through the real handler', () => {
   /**
    * 把 stdout 借走一小会儿。
    *
@@ -212,12 +213,10 @@ describe('occ console --help through the real handler', () => {
     expect(await captureStdout(() => runConsole(['-h']))).toBe(
       CONSOLE_HELP_TEXT,
     )
-    // 帮助排在身份校验之前：问「怎么用」的人恰恰是还没配好 OCC_IDENTITY 的那个。
-    expect(output).not.toContain('console requires OCC_IDENTITY')
   })
 
   test('answers --help even when the rest of the line would not parse', async () => {
-    // `occ console --registy=x --help` 是拼错选项名之后最自然的下一步。
+    // `qm console --registy=x --help` 是拼错选项名之后最自然的下一步。
     expect(
       await captureStdout(() => runConsole(['--registy=x', '--help'])),
     ).toBe(CONSOLE_HELP_TEXT)

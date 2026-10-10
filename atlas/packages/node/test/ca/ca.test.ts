@@ -43,12 +43,16 @@ import {
   issueCertificate,
   refreshRevocationList,
   type CaInitResult,
-} from '../operations.js'
-import { opensslVersion, runOpenssl } from '../openssl.js'
-import { caCertPath, caKeyPath, revocationListPath } from '../paths.js'
-import { popMessage } from '../pop.js'
-import { verifyRevocationList } from '../revocationList.js'
-import { parseTrustAnchors } from '../../trustAnchors.js'
+} from '../../src/ca/operations.js'
+import { opensslVersion, runOpenssl } from '../../src/ca/openssl.js'
+import {
+  caCertPath,
+  caKeyPath,
+  revocationListPath,
+} from '../../src/ca/paths.js'
+import { popMessage } from '../../src/ca/pop.js'
+import { verifyRevocationList } from '../../src/ca/revocationList.js'
+import { parseTrustAnchors } from '../../src/host/trustAnchors.js'
 
 const OPENSSL = opensslVersion()
 if (OPENSSL === null) {

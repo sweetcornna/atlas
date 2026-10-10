@@ -132,9 +132,9 @@ import {
   startTransportServer,
   type TransportChannel,
 } from '@qianmo/transport'
-import { LEGACY_CONFIG_DIR_BASENAME, qmcodeHome } from '../../config/paths.js'
-import { buildVersion } from '../../constants/buildProvenance.js'
-import { parseTrustedKey } from '../../services/qianmo/nodeIdentity.js'
+import { qmcodeHome } from '@qianmo/paths'
+import { parseTrustedKey } from '../host/nodeIdentity.js'
+import { buildVersion } from '../provenance.js'
 import { PRE_RECEIVE_HOOK } from './handoffHub.js'
 import { HandoffUserError } from './handoffStore.js'
 import {
@@ -161,6 +161,11 @@ const DEFAULT_TURN_END_WAIT_MS = 10_000
 const RECENT_ROUNDS = 20
 /** Cap on the quoted rounds; the oldest are dropped first. */
 const RECENT_ROUNDS_MAX_BYTES = 96 * 1024
+/**
+ * The qmcode app-server's Claude Code directory under its `$HOME`: it imports
+ * Claude Code transcripts from `<this>/projects/` (`externalAgentConfig/import`).
+ */
+const APP_SERVER_CLAUDE_DIR = '.claude'
 /** Directory under the app-server's `$HOME/.claude/projects/`. */
 const IMPORT_PROJECT = 'qianmo-import'
 const BWRAP_PROBE_TIMEOUT_MS = 10_000
@@ -1123,7 +1128,7 @@ export async function startHandoffNode(
     const transcript = await readSessionText(repo, manifest.sessionCommit)
     const file = join(
       options.appServerHome,
-      LEGACY_CONFIG_DIR_BASENAME,
+      APP_SERVER_CLAUDE_DIR,
       'projects',
       IMPORT_PROJECT,
       `${manifest.sessionId}.jsonl`,
@@ -1288,7 +1293,7 @@ export async function startHandoffNode(
       const client = await AppServerClient.connect({
         url: options.appServerUrl,
         token,
-        clientVersion: buildVersion() ?? '0.0.0',
+        clientVersion: buildVersion(),
       })
       task.client = client
       const settings: AppServerThreadSettings = {

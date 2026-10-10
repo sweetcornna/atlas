@@ -184,9 +184,13 @@ describe('P14 code imports no registry client', () => {
     [`import { InMemoryRegistry } from '@qianmo/registry'`],
     [`import type { AgentRecord } from '@qianmo/registry'`],
     [`import { x } from '../../../packages/registry/src/http.js'`],
-    [`import { createRegistryPort } from '../../cli/handlers/consolePorts.js'`],
-    [`import { ConsoleRegistrations } from './consoleRegistrations.js'`],
-    [`import { CertificateDirectory } from '../certificateDirectory.js'`],
+    [`import { createRegistryPort } from '../../src/commands/consolePorts.js'`],
+    [
+      `import { ConsoleRegistrations } from '../../src/commands/consoleRegistrations.js'`,
+    ],
+    [
+      `import { CertificateDirectory } from '../../src/host/certificateDirectory.js'`,
+    ],
     [`const m = await import('@qianmo/registry')`],
     [`const response = await fetch(base + '/v0/agents/' + address)`],
     [`await fetch(url + '/v0/revocation-list')`],

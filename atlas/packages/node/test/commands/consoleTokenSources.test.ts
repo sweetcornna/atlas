@@ -16,14 +16,14 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseConsoleArgs } from '../consoleArgs.js'
+import { parseConsoleArgs } from '../../src/commands/consoleArgs.js'
 import {
   ADMIN_TOKEN_ENV_VAR,
   VIEW_TOKEN_ENV_VAR,
   readConsoleTokenFile,
   resolveConsoleTokenSource,
   TOKEN_FILE_FORBIDDEN_MODE_BITS,
-} from '../consoleTokenSources.js'
+} from '../../src/commands/consoleTokenSources.js'
 
 /** 真机上那两个文件的形状：48 个 hex 字符加一个换行（`printf '%s\n'`）。 */
 const FILE_TOKEN = 'a'.repeat(48)
@@ -174,7 +174,7 @@ describe('console token precedence', () => {
 
   test('says nothing at all when no entrance supplies one', () => {
     // `undefined` 不是「起不来」：环回绑定下 `resolveTokens` 会自己生成一枚，
-    // 那正是 `occ console` 不带参数就能起的原因。
+    // 那正是 `qm console` 不带参数就能起的原因。
     expect(resolveConsoleTokenSource('view', {}, {})).toBeUndefined()
     expect(resolveConsoleTokenSource('admin', {}, {})).toBeUndefined()
   })
@@ -223,10 +223,10 @@ describe('console token precedence', () => {
 
   test('reads what parseConsoleArgs actually produced, not a hand-built object', () => {
     const path = tokenFile('wired.token', `${FILE_TOKEN}\n`)
-    const config = parseConsoleArgs(
-      [`--view-token-file=${path}`, '--view-token=ignored-because-weaker'],
-      'qianmo',
-    )
+    const config = parseConsoleArgs([
+      `--view-token-file=${path}`,
+      '--view-token=ignored-because-weaker',
+    ])
     expect(resolveConsoleTokenSource('view', config, {})).toEqual({
       value: FILE_TOKEN,
       origin: 'file',

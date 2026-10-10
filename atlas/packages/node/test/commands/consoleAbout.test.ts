@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..', '..')
+const CLI = resolve(import.meta.dir, '..', '..', 'src', 'cli.ts')
 const roots: string[] = []
 
 afterAll(() => {
@@ -22,25 +22,14 @@ afterAll(() => {
 })
 
 function consoleChild(configRoot: string, args: readonly string[]) {
-  return Bun.spawn(
-    [
-      'bun',
-      '-e',
-      "const { runConsole } = await import('./src/cli/handlers/console.ts');" +
-        " await runConsole(JSON.parse(process.env.QM_TEST_ARGS ?? '[]'))",
-    ],
-    {
-      cwd: REPO_ROOT,
-      env: {
-        ...process.env,
-        OCC_IDENTITY: 'qianmo',
-        OCC_CONFIG_DIR: configRoot,
-        QM_TEST_ARGS: JSON.stringify(args),
-      },
-      stdout: 'pipe',
-      stderr: 'pipe',
+  return Bun.spawn(['bun', CLI, 'console', ...args], {
+    env: {
+      ...process.env,
+      QIANMO_CONFIG_DIR: configRoot,
     },
-  )
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
 }
 
 /** The banner as `name → value`, read up to its last line. */

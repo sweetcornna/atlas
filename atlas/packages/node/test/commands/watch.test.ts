@@ -36,7 +36,7 @@ import {
 } from '@qianmo/protocol'
 import { turnStepDedupKey } from '@qianmo/resident'
 import { assertJob } from '@qianmo/scheduler'
-import { createConsoleWakeIssuer } from '../consoleWakeIdentity.js'
+import { createConsoleWakeIssuer } from '../../src/commands/consoleWakeIdentity.js'
 import {
   WATCH_HELP_TEXT,
   buildWatchRequest,
@@ -47,7 +47,7 @@ import {
   parseWatchJobs,
   watchSigningNotice,
   type WatchConfig,
-} from '../watch.js'
+} from '../../src/commands/watch.js'
 
 const JOB = {
   id: 'disk-watch',
@@ -66,33 +66,22 @@ function jobsFile(...jobs: readonly unknown[]): string {
 
 /** The run-mode config, or a failed assertion saying which mode came back. */
 function runConfig(args: readonly string[]): WatchConfig {
-  const parsed = parseWatchArgs(args, 'qianmo')
+  const parsed = parseWatchArgs(args)
   if (parsed.mode !== 'run') throw new Error(`expected run, got ${parsed.mode}`)
   return parsed
 }
 
 describe('qm watch argument parsing', () => {
   test('requires both a jobs file and the hub address', () => {
-    expect(() => parseWatchArgs([], 'qianmo')).toThrow('requires --jobs')
-    expect(() => parseWatchArgs(['--jobs', 'a.json'], 'qianmo')).toThrow(
+    expect(() => parseWatchArgs([])).toThrow('requires --jobs')
+    expect(() => parseWatchArgs(['--jobs', 'a.json'])).toThrow(
       'requires --from',
     )
   })
 
-  test('refuses to run under any identity but the node one', () => {
-    // The same gate `resident-wake` has, for the same reason: dialling other
-    // people's nodes is part of the Qianmo identity, not of plain occ.
-    expect(() =>
-      parseWatchArgs(
-        ['--jobs', 'a.json', '--from', 'qianmo://hub/console'],
-        'occ',
-      ),
-    ).toThrow('OCC_IDENTITY=qianmo')
-  })
-
   test('rejects an address that is not a qianmo address', () => {
     expect(() =>
-      parseWatchArgs(['--jobs', 'a.json', '--from', 'hub'], 'qianmo'),
+      parseWatchArgs(['--jobs', 'a.json', '--from', 'hub']),
     ).toThrow()
   })
 
@@ -118,12 +107,9 @@ describe('qm watch argument parsing', () => {
 
   test('--print-identity needs only --from and refuses anything that would run jobs', () => {
     expect(
-      parseWatchArgs(
-        ['--print-identity', '--from', 'qianmo://hub/console'],
-        'qianmo',
-      ),
+      parseWatchArgs(['--print-identity', '--from', 'qianmo://hub/console']),
     ).toEqual({ mode: 'print-identity', from: 'qianmo://hub/console' })
-    expect(() => parseWatchArgs(['--print-identity'], 'qianmo')).toThrow(
+    expect(() => parseWatchArgs(['--print-identity'])).toThrow(
       '--print-identity requires --from',
     )
     for (const extra of [
@@ -133,20 +119,26 @@ describe('qm watch argument parsing', () => {
       ['--state-dir', '/tmp/x'],
     ]) {
       expect(() =>
-        parseWatchArgs(
-          ['--print-identity', '--from', 'qianmo://hub/console', ...extra],
-          'qianmo',
-        ),
+        parseWatchArgs([
+          '--print-identity',
+          '--from',
+          'qianmo://hub/console',
+          ...extra,
+        ]),
       ).toThrow('--print-identity takes only --from')
     }
   })
 
   test('points a mistyped option at the help instead of guessing', () => {
     expect(() =>
-      parseWatchArgs(
-        ['--jobs', 'a.json', '--from', 'qianmo://hub/console', '--evry', '5'],
-        'qianmo',
-      ),
+      parseWatchArgs([
+        '--jobs',
+        'a.json',
+        '--from',
+        'qianmo://hub/console',
+        '--evry',
+        '5',
+      ]),
     ).toThrow('watch --help')
   })
 
@@ -288,7 +280,10 @@ describe('qm watch --sign: the task.request a fire sends', () => {
     }
     // And the source says so structurally: the watch face names no level at
     // all, so there is no branch that could pick a higher one.
-    const source = readFileSync(join(import.meta.dir, '..', 'watch.ts'), 'utf8')
+    const source = readFileSync(
+      join(import.meta.dir, '..', '..', 'src', 'commands', 'watch.ts'),
+      'utf8',
+    )
     expect(source).not.toContain('UserConfirmed')
     expect(source).not.toContain("'user-confirmed'")
   })
@@ -383,8 +378,8 @@ describe('qm watch startup: signed or loudly not', () => {
   let previous: string | undefined
 
   afterEach(() => {
-    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR
-    else process.env.CLAUDE_CONFIG_DIR = previous
+    if (previous === undefined) delete process.env.QIANMO_CONFIG_DIR
+    else process.env.QIANMO_CONFIG_DIR = previous
     previous = undefined
     if (root !== undefined) rmSync(root, { recursive: true, force: true })
     root = undefined
@@ -417,8 +412,8 @@ describe('qm watch startup: signed or loudly not', () => {
 
   test('the identity is the --from node key under the config root, created once and reused', () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-watch-identity-'))
-    previous = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = root
+    previous = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = root
     const keyFile = join(root, 'qianmo', 'identity', 'hub.json')
     expect(existsSync(keyFile)).toBe(false)
 

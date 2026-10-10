@@ -27,7 +27,7 @@ import {
   qmcodeSnapshot,
   qmcodeTurnEnd,
   waitForTurnEnd,
-} from '../handoffTranscript.js'
+} from '../../src/commands/handoffTranscript.js'
 import {
   claudeCodeHookInput,
   claudeCodeMidTurnTranscript,

@@ -52,14 +52,11 @@ import {
   initCa,
   issueCertificate,
   refreshRevocationList,
-} from '../../../services/qianmo/ca/operations.js'
-import {
-  opensslVersion,
-  runOpenssl,
-} from '../../../services/qianmo/ca/openssl.js'
-import { popMessage } from '../../../services/qianmo/ca/pop.js'
-import { parseConsoleArgs } from '../consoleArgs.js'
-import { consoleAuditSources } from '../consoleAuditSources.js'
+} from '../../src/ca/operations.js'
+import { opensslVersion, runOpenssl } from '../../src/ca/openssl.js'
+import { popMessage } from '../../src/ca/pop.js'
+import { parseConsoleArgs } from '../../src/commands/consoleArgs.js'
+import { consoleAuditSources } from '../../src/commands/consoleAuditSources.js'
 
 const NODE = 'beta-2'
 const ADDRESS = `qianmo://${NODE}/planner`
@@ -150,10 +147,13 @@ async function readThrough(
   argv: readonly string[],
   caCertificatePem?: string,
 ): Promise<ConsoleResult<AuditPage>> {
-  const config = parseConsoleArgs(
-    ['--registry', server.url, '--anchors', anchorRoot, ...argv],
-    'qianmo',
-  )
+  const config = parseConsoleArgs([
+    '--registry',
+    server.url,
+    '--anchors',
+    anchorRoot,
+    ...argv,
+  ])
   const [source] = consoleAuditSources(config, caCertificatePem)
   if (source === undefined) throw new Error('setup: no audit source')
   return await source.audit.read({})
@@ -232,10 +232,12 @@ describe('K-11 F-3: a key swapped in the registry cannot vouch for a rewritten t
 
   test('--anchors with neither --trust nor --trust-ca refuses to start', () => {
     expect(() =>
-      parseConsoleArgs(
-        ['--anchors', anchorRoot, '--audit', `${NODE}=${trailPath}`],
-        'qianmo',
-      ),
+      parseConsoleArgs([
+        '--anchors',
+        anchorRoot,
+        '--audit',
+        `${NODE}=${trailPath}`,
+      ]),
     ).toThrow('--anchors needs --trust <node>=<publicKey> or --trust-ca')
   })
 })

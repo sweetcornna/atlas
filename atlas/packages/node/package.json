@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-or-later",
-  "description": "qm: the Qianmo node CLI — resident host, console hub, CA, model service and handoff, running the oh-my-pi agent as its child.",
+  "description": "qm: the Qianmo node CLI \u2014 resident host, console hub, CA, model service and handoff, running the oh-my-pi agent as its child.",
   "bin": {
     "qm": "src/cli.ts"
   },
@@ -18,7 +18,40 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
     "@oh-my-pi/pi-coding-agent": "workspace:*",
-    "@qianmo/paths": "workspace:*"
+    "@oh-my-pi/pi-utils": "workspace:*",
+    "@qianmo/paths": "workspace:*",
+    "zod": "4.3.6",
+    "@oh-my-pi/pi-agent-core": "workspace:*",
+    "@qianmo/activator": "workspace:*",
+    "@qianmo/adapter": "workspace:*",
+    "@qianmo/audit": "workspace:*",
+    "@qianmo/backup": "workspace:*",
+    "@qianmo/capability": "workspace:*",
+    "@qianmo/capacity": "workspace:*",
+    "@qianmo/console": "workspace:*",
+    "@qianmo/extension": "workspace:*",
+    "@qianmo/handoff": "workspace:*",
+    "@qianmo/mailbox": "workspace:*",
+    "@qianmo/memory": "workspace:*",
+    "@qianmo/negotiation": "workspace:*",
+    "@qianmo/protocol": "workspace:*",
+    "@qianmo/providers": "workspace:*",
+    "@qianmo/recall": "workspace:*",
+    "@qianmo/registry": "workspace:*",
+    "@qianmo/resident": "workspace:*",
+    "@qianmo/router": "workspace:*",
+    "@qianmo/scheduler": "workspace:*",
+    "@qianmo/transport": "workspace:*",
+    "@qianmo/tunnel": "workspace:*",
+    "@qianmo/witness": "workspace:*",
+    "@oh-my-pi/pi-catalog": "workspace:*",
+    "@qianmo/a2a": "workspace:*",
+    "@qianmo/elastic": "workspace:*"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/server-filesystem": "2026.7.10",
+    "@modelcontextprotocol/server-memory": "2026.7.4"
   }
 }

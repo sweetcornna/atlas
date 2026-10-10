@@ -53,7 +53,7 @@ import type { Subprocess } from 'bun'
 import { get } from 'node:http'
 import { createServer } from 'node:net'
 import { AppServerClient, isTaskId } from '@qianmo/handoff'
-import { buildVersion } from '../../constants/buildProvenance.js'
+import { buildVersion } from '../provenance.js'
 import { gitTopLevel, remoteRoot } from './handoffHub.js'
 import {
   type ConsoleAccess,
@@ -434,7 +434,7 @@ async function threadOnNode(
     url: `ws://127.0.0.1:${localPort}`,
     token,
     clientName: 'qianmo_handoff_attach',
-    clientVersion: buildVersion() ?? '0.0.0',
+    clientVersion: buildVersion(),
     requestTimeoutMs: 15_000,
   }).catch(() => {
     throw new HandoffUserError(

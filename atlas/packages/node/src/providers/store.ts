@@ -1,21 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/**
- * Node-side files of the provider write path (§3.7):
- * `occConfigPath('qianmo','provider', …)` — `apply.lock`, `pending.json`,
- * `state.json`, `generation.json`, `first-write/settings.json`. Directory
- * 0700, files 0600; `pending.json` carries keys, so it is held to the same bar
- * as `settings.json`. The key pool's two files (P18.18) sit in the same
- * directory under the same rules; their module is
- * `modelCompat/credentialPoolStore.ts`.
- *
- * Every write is tmp + fsync + rename, with the tmp file CREATED 0600 (not
- * chmodded afterwards). The rename goes through the repo's fs seam
- * (`getFsImplementation()`), the same one the base settings writer uses, so a
- * test can inspect each tmp file's mode at the last moment before it becomes
- * visible.
- */
+/** Private apply journal and omp config files; all writes are fsync + rename. */
 
 import { randomBytes } from 'node:crypto'
 import {
@@ -25,30 +11,34 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeSync,
 } from 'node:fs'
 import { dirname } from 'node:path'
-import { occConfigPath } from '../../../config/paths.js'
-import { getFsImplementation } from '../../../utils/filesystem/fsOperations.js'
+import { qianmoConfigPath, ompAgentDir } from '@qianmo/paths'
 
 export const PRIVATE_FILE_MODE = 0o600
 const PRIVATE_DIR_MODE = 0o700
 
 export function providerDir(): string {
-  return occConfigPath('qianmo', 'provider')
+  return qianmoConfigPath('qianmo', 'provider')
 }
 
 export const providerPaths = {
-  lock: () => occConfigPath('qianmo', 'provider', 'apply.lock'),
-  pending: () => occConfigPath('qianmo', 'provider', 'pending.json'),
-  state: () => occConfigPath('qianmo', 'provider', 'state.json'),
-  generation: () => occConfigPath('qianmo', 'provider', 'generation.json'),
+  models: () => `${ompAgentDir()}/models.yml`,
+  config: () => `${ompAgentDir()}/config.yml`,
+  auth: () => `${ompAgentDir()}/agent.db`,
+  pool: () => qianmoConfigPath('qianmo', 'provider', 'pool.json'),
+  lock: () => qianmoConfigPath('qianmo', 'provider', 'apply.lock'),
+  pending: () => qianmoConfigPath('qianmo', 'provider', 'pending.json'),
+  state: () => qianmoConfigPath('qianmo', 'provider', 'state.json'),
+  generation: () => qianmoConfigPath('qianmo', 'provider', 'generation.json'),
   firstWrite: () =>
-    occConfigPath('qianmo', 'provider', 'first-write', 'settings.json'),
+    qianmoConfigPath('qianmo', 'provider', 'first-write', 'config.json'),
   /** Written by the resident (P18.3, §2.7): `{pid, startedAt, nonce}`. */
-  residentPid: () => occConfigPath('resident', 'resident.pid'),
+  residentPid: () => qianmoConfigPath('resident', 'resident.pid'),
 }
 
 /** Create `dir` (and parents) and force it to 0700. */
@@ -86,7 +76,7 @@ export function writePrivateFileAtomic(path: string, content: string): void {
     closeSync(fd)
   }
   try {
-    getFsImplementation().renameSync(tmp, path)
+    renameSync(tmp, path)
   } catch (error) {
     try {
       unlinkSync(tmp)

@@ -25,7 +25,7 @@ import {
 } from '@qianmo/adapter/sanitize'
 import { scanAssembledPrompt } from '@qianmo/resident'
 import type { ResidentMailboxMessage } from '@qianmo/resident'
-import { formatTeammateMessages } from '../../utils/agents/teammateMailbox.js'
+import { formatTeammateMessages } from '@qianmo/mailbox'
 
 /**
  * What stands in for remote text that failed the assembled-prompt scan.

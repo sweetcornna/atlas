@@ -2,20 +2,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * `occ console --providers` 的参数面（P18.6）：纯解析，不碰磁盘。
+ * `qm console --providers` 的参数面（P18.6）：纯解析，不碰磁盘。
  *
  * 钉的是：给了 `--providers` 才有这一面、且要 `--accounts`；只在这一面有意义的选项
- * 单独给出时报错；四个文件的默认位置从 `occConfigPath` 派生；每台 ssh 节点要一把
+ * 单独给出时报错；四个文件的默认位置从 `qianmoConfigPath` 派生；每台 ssh 节点要一把
  * 自己的 key；交给 ssh 的路径里不许有会被 ssh 拆开或展开的字符。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { occConfigPath } from '../../../config/paths.js'
-import { CONSOLE_HELP_TEXT, parseConsoleArgs } from '../consoleArgs.js'
+import { qianmoConfigPath } from '@qianmo/paths'
+import {
+  CONSOLE_HELP_TEXT,
+  parseConsoleArgs,
+} from '../../src/commands/consoleArgs.js'
 
-const parse = (...args: string[]) => parseConsoleArgs(args, 'qianmo')
+const parse = (...args: string[]) => parseConsoleArgs(args)
 
-describe('occ console --providers', () => {
+describe('qm console --providers', () => {
   test('off by default: the config has no providers key at all', () => {
     expect('providers' in parse()).toBe(false)
     expect('providers' in parse('--accounts')).toBe(false)
@@ -28,10 +31,18 @@ describe('occ console --providers', () => {
   test('defaults derive from the config root', () => {
     const config = parse('--accounts', '--providers')
     expect(config.providers).toEqual({
-      storePath: occConfigPath('qianmo', 'console', 'providers.ndjson'),
-      secretsPath: occConfigPath('qianmo', 'console', 'provider-secrets.json'),
-      keyFile: occConfigPath('qianmo', 'console-keys', 'provider-master.key'),
-      knownHostsFile: occConfigPath(
+      storePath: qianmoConfigPath('qianmo', 'console', 'providers.ndjson'),
+      secretsPath: qianmoConfigPath(
+        'qianmo',
+        'console',
+        'provider-secrets.json',
+      ),
+      keyFile: qianmoConfigPath(
+        'qianmo',
+        'console-keys',
+        'provider-master.key',
+      ),
+      knownHostsFile: qianmoConfigPath(
         'qianmo',
         'console-keys',
         'provider_known_hosts',

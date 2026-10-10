@@ -11,7 +11,7 @@
  * sentence: the CA private key must not live in *any* identity's config root.
  * §3.3 lists the places it is forbidden to appear — a node's config root and
  * everything derived from it, `DEMO_ROOT`, the repository, CI secrets, and
- * anything the console process can reach — and "under `occConfigPath(...)`" is
+ * anything the console process can reach — and "under `qianmoConfigPath(...)`" is
  * the first of those. Deriving this path from `paths.ts` would put it there.
  *
  * So the exception is the point, not an oversight, and the guard below makes
@@ -30,8 +30,7 @@
 import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
-import { NODE_IDENTITY_MODE } from '../../../constants/identity.js'
-import { getProtectedUserConfigDirectories } from '../../../config/paths.js'
+import { IDENTITY, protectedConfigRoots } from '@qianmo/paths'
 
 /**
  * Override for the CA root.
@@ -51,7 +50,7 @@ export const CA_DIR_ENV_VAR = 'QIANMO_CA_DIR'
  * `~/.qianmo`, never a child: a child would be inside the node's config root,
  * which is precisely what §3.3 forbids.
  */
-const CA_DIR_BASENAME = `.${NODE_IDENTITY_MODE}-ca`
+const CA_DIR_BASENAME = `.${IDENTITY}-ca`
 
 /**
  * How the default is written in help text.
@@ -180,7 +179,7 @@ function protectedOperationalDirectories(candidate: string): string[] {
  * Throws when the resolved directory lands inside a protected config root
  * (§3.3). That check is cheap and it is the only mechanical defence against
  * the failure this module is built to prevent — a CA private key sitting
- * inside a directory that a node process, the console, or `occ migrate` walks.
+ * inside a directory that a node process or the console walks.
  */
 export function caDirectory(explicit?: string): string {
   const configured = explicit ?? process.env[CA_DIR_ENV_VAR]
@@ -190,7 +189,7 @@ export function caDirectory(explicit?: string): string {
       : configured,
   )
   const physicalDirectory = physicalPath(directory)
-  for (const protectedRoot of getProtectedUserConfigDirectories()) {
+  for (const protectedRoot of protectedConfigRoots()) {
     if (isPathInside(physicalDirectory, physicalPath(protectedRoot))) {
       throw new Error(
         `refusing a CA directory inside a config root: ${directory} is under ` +

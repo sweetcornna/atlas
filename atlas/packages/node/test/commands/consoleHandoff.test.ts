@@ -32,12 +32,12 @@ import {
   taskBranch,
   wipRef,
 } from '@qianmo/handoff'
-import { parseConsoleArgs } from '../consoleArgs.js'
+import { parseConsoleArgs } from '../../src/commands/consoleArgs.js'
 import {
   HANDOFF_AUDIT_KINDS,
   handoffLockRefusal,
   openConsoleHandoff,
-} from '../consoleHandoff.js'
+} from '../../src/commands/consoleHandoff.js'
 
 const roots: string[] = []
 
@@ -448,15 +448,13 @@ describe('openConsoleHandoff', () => {
 
 describe('--handoff-root', () => {
   test('absent by default, absolute only', () => {
-    expect(parseConsoleArgs([], 'qianmo').handoffRoot).toBeUndefined()
+    expect(parseConsoleArgs([]).handoffRoot).toBeUndefined()
     expect(
-      parseConsoleArgs(
-        ['--handoff-root', '/srv/qianmo/handoff/repos/'],
-        'qianmo',
-      ).handoffRoot,
+      parseConsoleArgs(['--handoff-root', '/srv/qianmo/handoff/repos/'])
+        .handoffRoot,
     ).toBe('/srv/qianmo/handoff/repos')
-    expect(() =>
-      parseConsoleArgs(['--handoff-root=relative/repos'], 'qianmo'),
-    ).toThrow('absolute')
+    expect(() => parseConsoleArgs(['--handoff-root=relative/repos'])).toThrow(
+      'absolute',
+    )
   })
 })

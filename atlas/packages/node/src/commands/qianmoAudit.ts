@@ -21,22 +21,26 @@
 
 import {
   formatChain,
+  AuditSource,
+  buildAuthorizationReport,
+  type AuthorizationAction,
   queryTrail,
   readTrail,
   reconstructChain,
   type AuditRecord,
 } from '@qianmo/audit'
 import { verifyAuditWitness, type WitnessEvidence } from '@qianmo/witness'
-import { invokedBinName } from '../../constants/brand.js'
-import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
+import { ActionLedger, verifyActionLedger } from '@qianmo/console'
+import { FileActionLedger } from './consoleActionLedger.js'
+import { auditTrailPath } from '../host/auditTrail.js'
 import {
   parseAuditWitnessSource,
   readAuditWitnessAnchors,
   WITNESS_READ_TOKEN_ENV_VAR,
   witnessNodeOf,
   type AuditWitnessSource,
-} from '../../services/qianmo/auditWitness.js'
-import { readNodePublicKey } from '../../services/qianmo/nodeIdentity.js'
+} from '../host/auditWitness.js'
+import { readNodePublicKey } from '../host/nodeIdentity.js'
 import { residentOptionValue } from './residentArgs.js'
 
 /**
@@ -55,6 +59,11 @@ interface QianmoAuditConfig {
   readonly task?: string
   readonly from?: number
   readonly to?: number
+  readonly source?: AuditSource
+  readonly outcome?: AuditRecord['outcome']
+  readonly kind?: string
+  readonly authzReport: boolean
+  readonly actions?: string
   readonly json: boolean
   readonly verify: boolean
   readonly witness?: AuditWitnessSource
@@ -102,7 +111,7 @@ export function isQianmoAuditHelpRequest(args: readonly string[]): boolean {
  * 会踩的事必须写在这里：**至少要给一个查询条件**（否则报错而不是打印整条链），
  * 以及 `--verify` 在链断或锚点不符时**退出码 1**——那正是它能进 cron 的原因。
  */
-export const QIANMO_AUDIT_HELP_TEXT = `Usage: ${invokedBinName()} audit [options]
+export const QIANMO_AUDIT_HELP_TEXT = `Usage: qm audit [options]
 
 Query this node's audit trail: what happened to one task, what an agent has
 been up to, and whether the chain is still intact. Message payloads are never
@@ -124,6 +133,11 @@ Options (each accepts both --name value and --name=value):
   --limit <n>              Keep at most this many records, counted from the
                            tail. A positive integer, default ${DEFAULT_AUDIT_LIMIT}; it does not
                            apply to --trace or --verify.
+  --source <source>       Filter by audit source.
+  --outcome <outcome>     ok, refused or dropped.
+  --kind <prefix>         Match the beginning of an event kind.
+  --authz-report          Verified authorization report; ignores --limit.
+  --actions <path>        Verify and join a console action ledger to the report.
   --json                   Print JSON instead of one line per record.
   --verify                 Report the chain's integrity and exit 1 when it is
                            broken or its witness disagrees, so the check can
@@ -140,11 +154,8 @@ edited, and not saying so, is the one failure this command must not have.
 
 Environment:
 
-  OCC_CONFIG_DIR           Config root the default trail path is derived from.
-  OCC_IDENTITY             Selects which identity owns that config root, so it
-                           also selects which trail the default path names.
-                           Unlike the other Qianmo commands this one does not
-                           require "qianmo".
+  QIANMO_CONFIG_DIR        Config root the default trail path is derived from
+                           (default ~/.qianmo).
   ${WITNESS_READ_TOKEN_ENV_VAR}
                            Read-only token for a remote --witness endpoint.
 `
@@ -158,6 +169,11 @@ export function parseQianmoAuditArgs(
   let task: string | undefined
   let from: number | undefined
   let to: number | undefined
+  let source: AuditSource | undefined
+  let outcome: AuditRecord['outcome'] | undefined
+  let kind: string | undefined
+  let authzReport = false
+  let actions: string | undefined
   let json = false
   let verify = false
   let witness: AuditWitnessSource | undefined
@@ -197,6 +213,28 @@ export function parseQianmoAuditArgs(
       }
       limit = value
       index = parsed.next
+    } else if (arg === '--authz-report') {
+      authzReport = true
+    } else if (arg === '--source' || arg?.startsWith('--source=')) {
+      const parsed = residentOptionValue(args, index, '--source')
+      if (!Object.values(AuditSource).includes(parsed.value as AuditSource))
+        throw new Error('invalid audit source')
+      source = parsed.value as AuditSource
+      index = parsed.next
+    } else if (arg === '--outcome' || arg?.startsWith('--outcome=')) {
+      const parsed = residentOptionValue(args, index, '--outcome')
+      if (!['ok', 'refused', 'dropped'].includes(parsed.value))
+        throw new Error('invalid audit outcome')
+      outcome = parsed.value as AuditRecord['outcome']
+      index = parsed.next
+    } else if (arg === '--kind' || arg?.startsWith('--kind=')) {
+      const parsed = residentOptionValue(args, index, '--kind')
+      kind = parsed.value
+      index = parsed.next
+    } else if (arg === '--actions' || arg?.startsWith('--actions=')) {
+      const parsed = residentOptionValue(args, index, '--actions')
+      actions = parsed.value
+      index = parsed.next
     } else if (arg === '--json') {
       json = true
     } else if (arg === '--verify') {
@@ -210,16 +248,32 @@ export function parseQianmoAuditArgs(
       // 他没有任何地方可以去查那张表。
       throw new Error(
         `unknown audit option ${String(arg)}` +
-          ` (run \`${invokedBinName()} audit --help\` for the list)`,
+          ' (run `qm audit --help` for the list)',
       )
     }
   }
 
+  if (actions !== undefined && !authzReport)
+    throw new Error('--actions requires --authz-report')
+  if (
+    authzReport &&
+    (source !== undefined ||
+      outcome !== undefined ||
+      kind !== undefined ||
+      trace !== undefined)
+  )
+    throw new Error(
+      '--authz-report cannot filter lifecycle events; use --from/--to/--agent/--task',
+    )
+  if (authzReport) verify = true
   if (witness !== undefined && !verify) {
     throw new Error('--witness requires --verify')
   }
   if (
     !verify &&
+    source === undefined &&
+    outcome === undefined &&
+    kind === undefined &&
     trace === undefined &&
     agent === undefined &&
     task === undefined &&
@@ -239,6 +293,11 @@ export function parseQianmoAuditArgs(
     ...(task === undefined ? {} : { task }),
     ...(from === undefined ? {} : { from }),
     ...(to === undefined ? {} : { to }),
+    ...(source === undefined ? {} : { source }),
+    ...(outcome === undefined ? {} : { outcome }),
+    ...(kind === undefined ? {} : { kind }),
+    ...(actions === undefined ? {} : { actions }),
+    authzReport,
     json,
     verify,
     ...(witness === undefined ? {} : { witness }),
@@ -301,6 +360,77 @@ export async function runQianmoAudit(
       issues,
       ...(witness === undefined ? {} : { witness }),
     }
+    if (config.authzReport) {
+      let actionIntegrity: ReturnType<typeof verifyActionLedger> | undefined
+      const actions: AuthorizationAction[] = []
+      if (config.actions !== undefined) {
+        const text = new FileActionLedger(config.actions).read()
+        actionIntegrity = verifyActionLedger(text)
+        if (actionIntegrity.chain === 'intact' && text !== null) {
+          // An immutable read snapshot: report generation never opens an append fd.
+          const ledger = new ActionLedger({
+            store: {
+              path: config.actions,
+              read: () => text,
+              append: () => {
+                throw new Error('read-only report')
+              },
+              stamp: () => 'snapshot',
+            },
+          })
+          let beforeSeq: number | undefined
+          do {
+            const page = await ledger.list({
+              actionPrefix: 'approval.',
+              limit: 500,
+              ...(beforeSeq === undefined ? {} : { beforeSeq }),
+            })
+            if (!page.ok) throw new Error('action ledger read failed')
+            actions.push(...page.value.entries)
+            beforeSeq = page.value.nextBeforeSeq ?? undefined
+          } while (beforeSeq !== undefined)
+        }
+      }
+      const report = buildAuthorizationReport(
+        queryTrail(records, {
+          ...(config.agent === undefined ? {} : { agent: config.agent }),
+          ...(config.task === undefined ? {} : { taskId: config.task }),
+          ...(config.from === undefined ? {} : { from: config.from }),
+          ...(config.to === undefined ? {} : { to: config.to }),
+        }),
+        actions,
+      )
+      const result = {
+        integrity: summary,
+        ...(actionIntegrity === undefined ? {} : { actionIntegrity }),
+        window: { from: config.from ?? null, to: config.to ?? null },
+        ...report,
+      }
+      process.exitCode =
+        intact &&
+        witness?.tampered !== true &&
+        (actionIntegrity === undefined ||
+          actionIntegrity.chain === 'intact' ||
+          actionIntegrity.chain === 'empty')
+          ? 0
+          : 1
+      if (config.json)
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+      else {
+        process.stdout.write(
+          `Authorization report — integrity: ${chain}${process.exitCode === 1 ? ' [FAILED]' : ''}\n`,
+        )
+        if (actionIntegrity)
+          process.stdout.write(
+            `Console action chain: ${actionIntegrity.chain}\n`,
+          )
+        for (const row of report.rows)
+          process.stdout.write(`${JSON.stringify(row)}\n`)
+        process.stdout.write(`Summary: ${JSON.stringify(report.summary)}\n`)
+        process.stdout.write(`Postures: ${JSON.stringify(report.postures)}\n`)
+      }
+      return
+    }
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`)
     // A broken chain is a finding, and a command that reported it with exit 0
     // would be a command nobody could put in a cron job.
@@ -337,6 +467,9 @@ export async function runQianmoAudit(
   }
 
   const matched = queryTrail(records, {
+    ...(config.source === undefined ? {} : { source: config.source }),
+    ...(config.outcome === undefined ? {} : { outcome: config.outcome }),
+    ...(config.kind === undefined ? {} : { kind: config.kind }),
     ...(config.agent === undefined ? {} : { agent: config.agent }),
     ...(config.task === undefined ? {} : { taskId: config.task }),
     ...(config.from === undefined ? {} : { from: config.from }),
@@ -352,6 +485,12 @@ export async function runQianmoAudit(
     return
   }
   process.stdout.write(`${matched.map(formatRecord).join('\n')}\n`)
+}
+
+/** `qm audit`. */
+export async function run(argv: string[]): Promise<number> {
+  await runQianmoAudit(argv)
+  return Number(process.exitCode ?? 0)
 }
 
 /** Verify only with an identity already established outside the anchor source. */

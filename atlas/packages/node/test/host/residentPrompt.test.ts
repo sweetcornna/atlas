@@ -28,7 +28,7 @@ import {
   WITHHELD_REMOTE_TEXT,
   assembleResidentPrompt,
   assembleResidentPromptAsync,
-} from '../residentPrompt.js'
+} from '../../src/host/residentPrompt.js'
 
 function message(
   overrides: Partial<ResidentMailboxMessage> = {},

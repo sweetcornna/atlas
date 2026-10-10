@@ -20,11 +20,12 @@
  *
  * ## Scope and exemptions, stated rather than implied
  *
- * Scanned: every `.ts` / `.tsx` under `src/` and `packages/`.
+ * Scanned: every `.ts` / `.tsx` under `atlas/packages` (qm itself is
+ * `atlas/packages/node`).
  *
  * Not scanned, on purpose:
- *   - `node_modules` and `packages/@ant/` — vendored and decompiled trees that
- *     are not ours to police (same exclusion as the session-key scan);
+ *   - `node_modules` — vendored trees that are not ours to police (same
+ *     exclusion as the session-key scan);
  *   - test files (`__tests__/`, `test/`, `*.test.ts`) — they assert against
  *     literals deliberately, exactly as `check-identity-paths.ts` reasons
  *     about `identityIsolation.test.ts`;
@@ -32,8 +33,11 @@
  *     explaining the layout.
  *
  * Allowlisted (this IS the CA tool, not node-side code):
- *   - `src/services/qianmo/ca/**`
- *   - `src/cli/handlers/ca.ts`
+ *   - `atlas/packages/node/src/ca/**`
+ *   - `atlas/packages/node/src/commands/ca.ts`
+ *   - `atlas/packages/paths/src/index.ts`, which owns the default CA location
+ *     (`caDir()`, base-switch-omp.md §3.1) precisely so that it sits beside
+ *     the config-root helpers it must stay outside of
  *
  * The reach rule below is narrower than the allowlist on purpose — see
  * {@link CA_REACH_PATTERN} for which two modules P12.2 may import, and why.
@@ -45,9 +49,13 @@ import { join, resolve } from 'node:path'
 const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..', '..', '..')
 
 const ALLOWLIST: readonly string[] = [
-  'src/services/qianmo/ca/',
-  'src/cli/handlers/ca.ts',
+  'atlas/packages/node/src/ca/',
+  'atlas/packages/node/src/commands/ca.ts',
+  'atlas/packages/paths/src/index.ts',
 ]
+
+/** qm's own package: the only one allowed to import the CA modules at all. */
+const NODE_PACKAGE = 'atlas/packages/node/'
 
 /**
  * Literals that name something inside the CA directory.
@@ -86,10 +94,10 @@ const CA_LITERALS: readonly { pattern: RegExp; label: string }[] = [
  * people to delete it.
  */
 const CA_REACH_PATTERN =
-  /from\s+['"][^'"]*qianmo\/ca\/(?:paths|openssl|operations)\.js['"]/
+  /from\s+['"][^'"]*\bca\/(?:paths|openssl|operations)\.js['"]/
 
 /** Anything at all under `ca/`. Used only for `packages/`, which is a leaf. */
-const ANY_CA_IMPORT_PATTERN = /from\s+['"][^'"]*qianmo\/ca\/[^'"]*['"]/
+const ANY_CA_IMPORT_PATTERN = /from\s+['"][^'"]*\bca\/[^'"]*['"]/
 
 /**
  * The openssl shell-out, which §6.1 keeps out of every runtime package.
@@ -169,13 +177,12 @@ interface ScannedFile {
 async function scan(): Promise<readonly ScannedFile[]> {
   const glob = new Bun.Glob('**/*.{ts,tsx}')
   const files: ScannedFile[] = []
-  for (const root of ['src', 'packages']) {
+  for (const root of ['atlas/packages']) {
     for await (const file of glob.scan({
       cwd: join(REPO_ROOT, root),
       absolute: true,
     })) {
       if (file.includes('/node_modules/')) continue
-      if (file.includes('/packages/@ant/')) continue
       const relative = file.slice(REPO_ROOT.length + 1)
       if (isTestFile(relative)) continue
       files.push({
@@ -204,16 +211,16 @@ describe('CA isolation scan (§10.3)', () => {
     }
     expect(
       CA_REACH_PATTERN.test(
-        "import { caDirectory } from '../qianmo/ca/paths.js'",
+        "import { caDirectory } from '../../src/ca/paths.js'",
       ),
     ).toBe(true)
     // …and the two modules P12.2 is meant to import must NOT trip it.
     expect(
-      CA_REACH_PATTERN.test("import { popMessage } from '../qianmo/ca/pop.js'"),
+      CA_REACH_PATTERN.test("import { popMessage } from '../../src/ca/pop.js'"),
     ).toBe(false)
     expect(
       ANY_CA_IMPORT_PATTERN.test(
-        "import { popMessage } from '../qianmo/ca/pop.js'",
+        "import { popMessage } from '../../src/ca/pop.js'",
       ),
     ).toBe(true)
     expect(callsOpenssl("runOpenssl(['x509'])")).toBe(true)
@@ -226,7 +233,7 @@ describe('CA isolation scan (§10.3)', () => {
 
   test('no CA directory literal outside the CA tool', async () => {
     const files = await scan()
-    expect(files.length).toBeGreaterThan(1_000)
+    expect(files.length).toBeGreaterThan(200)
 
     const offenders: string[] = []
     for (const file of files) {
@@ -250,15 +257,16 @@ describe('CA isolation scan (§10.3)', () => {
     expect(offenders).toEqual([])
   })
 
-  test('no @qianmo package mentions openssl or the CA (§6.1)', async () => {
+  test('no other @qianmo package mentions openssl or the CA (§6.1)', async () => {
     const files = await scan()
     const offenders = files
-      .filter(file => file.relative.startsWith('packages/'))
+      .filter(file => !file.relative.startsWith(NODE_PACKAGE))
+      .filter(file => !ALLOWLIST.includes(file.relative))
       .filter(
         file =>
           callsOpenssl(file.source) ||
-          // Whole folder here: a `packages/` leaf importing host `src/` at all
-          // is already wrong, whichever CA module it picked.
+          // Whole folder here: another package importing qm's `ca/` at all is
+          // already wrong, whichever CA module it picked.
           ANY_CA_IMPORT_PATTERN.test(file.source) ||
           CA_LITERALS.some(({ pattern }) => pattern.test(file.source)),
       )
@@ -272,7 +280,7 @@ describe('CA isolation scan (§10.3)', () => {
     const files = await scan()
     const offenders: string[] = []
     for (const file of files) {
-      if (!file.relative.startsWith('src/services/qianmo/ca/')) continue
+      if (!file.relative.startsWith('atlas/packages/node/src/ca/')) continue
       for (const match of file.source.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
         const specifier = match[1] ?? ''
         const allowed =
@@ -291,7 +299,7 @@ describe('CA isolation scan (§10.3)', () => {
       /export function caDirectory\b/.test(file.source),
     )
     expect(definitions.map(file => file.relative)).toEqual([
-      'src/services/qianmo/ca/paths.ts',
+      'atlas/packages/node/src/ca/paths.ts',
     ])
   })
 })

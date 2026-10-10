@@ -2,90 +2,75 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { buildTime, buildVersion, sourceCommit } from '../buildProvenance.js'
+import pkg from '../package.json' with { type: 'json' }
+import {
+  buildTime,
+  buildVersion,
+  ompVersion,
+  sourceCommit,
+  versionLine,
+} from '../src/provenance.js'
 
 /**
- * `MACRO` is a compile-time substitution, so under `bun test` it simply is not
- * a global. Both halves matter here, and the second is the one that has bitten
- * this repo before: the `typeof MACRO !== 'undefined'` idiom survives into the
- * bundle as a test that is *false* at runtime, so a define read that way is
- * silently lost in exactly the shipped artifact it was meant to stamp.
+ * A source run has no `src/generated/provenance.ts`, so the commit comes from
+ * `QIANMO_SOURCE_COMMIT`, then `git rev-parse HEAD`, then `unknown`. The
+ * generated file is the compiled build's half, covered by its own smoke test.
  */
-type MacroFields = {
-  SOURCE_COMMIT?: string
-  VERSION?: string
-  BUILD_TIME?: string
-}
-type MacroGlobal = { MACRO?: MacroFields }
-
-function setMacro(value: MacroFields | undefined): void {
-  const holder = globalThis as unknown as MacroGlobal
-  if (value === undefined) delete holder.MACRO
-  else holder.MACRO = value
-}
+const saved = process.env.QIANMO_SOURCE_COMMIT
 
 afterEach(() => {
-  // Process-global, like every other MACRO stub in the suite — leaving one
-  // behind would hand it to every file that runs after this one.
-  setMacro(undefined)
+  if (saved === undefined) delete process.env.QIANMO_SOURCE_COMMIT
+  else process.env.QIANMO_SOURCE_COMMIT = saved
 })
 
 describe('sourceCommit', () => {
-  test('reports the injected commit', () => {
-    setMacro({ SOURCE_COMMIT: 'a'.repeat(40) })
+  test('reports QIANMO_SOURCE_COMMIT when set', () => {
+    process.env.QIANMO_SOURCE_COMMIT = 'a'.repeat(40)
 
     expect(sourceCommit()).toBe('a'.repeat(40))
   })
 
   test('keeps the -dirty suffix intact', () => {
-    setMacro({ SOURCE_COMMIT: `${'b'.repeat(40)}-dirty` })
+    process.env.QIANMO_SOURCE_COMMIT = `${'b'.repeat(40)}-dirty`
 
     expect(sourceCommit()).toBe(`${'b'.repeat(40)}-dirty`)
   })
 
-  test('answers unknown when the define was never substituted', () => {
-    setMacro(undefined)
+  test('without the env falls back to git HEAD or a non-empty word', () => {
+    delete process.env.QIANMO_SOURCE_COMMIT
 
-    expect(sourceCommit()).toBe('unknown')
+    expect(sourceCommit()).toMatch(/^([0-9a-f]{40}|unknown)$/)
   })
 
-  test('answers unknown rather than an empty field', () => {
-    setMacro({ SOURCE_COMMIT: '' })
+  test('an empty env value is treated as unset', () => {
+    process.env.QIANMO_SOURCE_COMMIT = ''
 
-    expect(sourceCommit()).toBe('unknown')
+    expect(sourceCommit()).not.toBe('')
   })
 })
 
-describe('buildVersion', () => {
-  test('reports the injected version', () => {
-    setMacro({ VERSION: '2.46.0' })
-
-    expect(buildVersion()).toBe('2.46.0')
+describe('buildVersion and ompVersion', () => {
+  test('buildVersion is the @qianmo/node package version', () => {
+    expect(buildVersion()).toBe(pkg.version)
   })
 
-  test('answers undefined when the define was never substituted', () => {
-    setMacro(undefined)
-
-    expect(buildVersion()).toBeUndefined()
-  })
-
-  test('answers undefined rather than an empty version', () => {
-    setMacro({ VERSION: '' })
-
-    expect(buildVersion()).toBeUndefined()
+  test('ompVersion is a semver string', () => {
+    expect(ompVersion()).toMatch(/^\d+\.\d+\.\d+/)
   })
 })
 
 describe('buildTime', () => {
-  test('reports the injected timestamp', () => {
-    setMacro({ BUILD_TIME: '2026-08-25T00:00:00.000Z' })
-
-    expect(buildTime()).toBe('2026-08-25T00:00:00.000Z')
-  })
-
-  test('answers undefined when the define was never substituted', () => {
-    setMacro(undefined)
-
+  test('is undefined in a source run', () => {
     expect(buildTime()).toBeUndefined()
+  })
+})
+
+describe('versionLine', () => {
+  test('has the documented shape', () => {
+    process.env.QIANMO_SOURCE_COMMIT = 'c'.repeat(40)
+
+    expect(versionLine()).toBe(
+      `qm ${pkg.version} (omp ${ompVersion()}) ${'c'.repeat(40)}`,
+    )
   })
 })

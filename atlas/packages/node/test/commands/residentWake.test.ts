@@ -11,7 +11,7 @@ import {
   isResidentWakeHelpRequest,
   parseResidentWakeArgs,
   type ResidentWakeConfig,
-} from '../residentWake.js'
+} from '../../src/commands/residentWake.js'
 
 const PSK = 'resident-wake-test-not-a-real-secret'
 
@@ -24,7 +24,7 @@ const BASE = [
 
 describe('resident wake CLI configuration', () => {
   test('parses an immediate manual wake with explicit network identities', () => {
-    expect(parseResidentWakeArgs(BASE, 'qianmo')).toEqual({
+    expect(parseResidentWakeArgs(BASE)).toEqual({
       url: 'ws://host.internal:7330/',
       from: 'qianmo://node-a/operator',
       to: 'qianmo://node-b/reviewer',
@@ -37,42 +37,38 @@ describe('resident wake CLI configuration', () => {
 
   test('parses a delayed wake without changing its delivery budget', () => {
     expect(
-      parseResidentWakeArgs(
-        [...BASE, '--after-ms=60000', '--deliver-ttl-ms=120000'],
-        'qianmo',
-      ),
+      parseResidentWakeArgs([
+        ...BASE,
+        '--after-ms=60000',
+        '--deliver-ttl-ms=120000',
+      ]),
     ).toMatchObject({ afterMs: 60_000, deliverTtlMs: 120_000 })
   })
 
-  test('requires Qianmo identity and valid WebSocket and address inputs', () => {
-    expect(() => parseResidentWakeArgs(BASE, 'occ')).toThrow(
-      'OCC_IDENTITY=qianmo',
-    )
+  test('requires valid WebSocket and address inputs', () => {
     expect(() =>
       parseResidentWakeArgs(
         BASE.map(arg =>
           arg.startsWith('--url=') ? '--url=http://host.internal' : arg,
         ),
-        'qianmo',
       ),
     ).toThrow('must use ws or wss')
     expect(() =>
       parseResidentWakeArgs(
         BASE.map(arg => (arg.startsWith('--to=') ? '--to=reviewer' : arg)),
-        'qianmo',
       ),
     ).toThrow('not a qianmo:// address')
   })
 
   test('bounds timer, timeout and delivery values', () => {
+    expect(() => parseResidentWakeArgs([...BASE, '--after-ms=-1'])).toThrow(
+      '--after-ms',
+    )
+    expect(() => parseResidentWakeArgs([...BASE, '--timeout-ms=0'])).toThrow(
+      '--timeout-ms',
+    )
     expect(() =>
-      parseResidentWakeArgs([...BASE, '--after-ms=-1'], 'qianmo'),
-    ).toThrow('--after-ms')
-    expect(() =>
-      parseResidentWakeArgs([...BASE, '--timeout-ms=0'], 'qianmo'),
-    ).toThrow('--timeout-ms')
-    expect(() =>
-      parseResidentWakeArgs([...BASE, '--deliver-ttl-ms=0'], 'qianmo'),
+      parseResidentWakeArgs([...BASE, '--deliver-ttl-ms=0']),
     ).toThrow('--deliver-ttl-ms')
   })
 
@@ -131,7 +127,7 @@ describe('resident wake --help', () => {
     // 反漂移：选项名的唯一出处是解析器的分派链，帮助文本是它的投影。新增一个
     // 选项却忘了写进帮助，这条会红——而不是等到内测用户问「还有别的参数吗」。
     const source = readFileSync(
-      new URL('../residentWake.ts', import.meta.url),
+      new URL('../../src/commands/residentWake.ts', import.meta.url),
       'utf8',
     )
     const dispatched = [...source.matchAll(/arg === '(--[a-z-]+)'/g)].map(
@@ -158,10 +154,7 @@ describe('resident wake --help', () => {
   })
 
   test('quotes the defaults and the connect cap instead of copying numbers', () => {
-    const { timeoutMs, deliverTtlMs, afterMs } = parseResidentWakeArgs(
-      BASE,
-      'qianmo',
-    )
+    const { timeoutMs, deliverTtlMs, afterMs } = parseResidentWakeArgs(BASE)
     expect(RESIDENT_WAKE_HELP_TEXT).toContain(`Default ${timeoutMs}`)
     expect(RESIDENT_WAKE_HELP_TEXT).toContain(`Default ${deliverTtlMs}`)
     expect(RESIDENT_WAKE_HELP_TEXT).toContain(`Default ${afterMs}`)
@@ -169,22 +162,21 @@ describe('resident wake --help', () => {
     expect(RESIDENT_WAKE_HELP_TEXT).toContain('capped')
   })
 
-  test('names the identity and the key it refuses to run without', () => {
-    // 问「这个命令怎么用」的人恰恰是还没配好身份与 PSK 的那个人。
-    expect(RESIDENT_WAKE_HELP_TEXT).toContain('OCC_IDENTITY')
-    expect(RESIDENT_WAKE_HELP_TEXT).toContain('qianmo')
+  test('names the key it refuses to run without', () => {
+    // 问「这个命令怎么用」的人恰恰是还没配好 PSK 的那个人。
     expect(RESIDENT_WAKE_HELP_TEXT).toContain('QIANMO_TRANSPORT_PSK')
     expect(RESIDENT_WAKE_HELP_TEXT).toContain('process listing')
+    expect(RESIDENT_WAKE_HELP_TEXT).not.toContain('OCC_IDENTITY')
     expect(RESIDENT_WAKE_HELP_TEXT.endsWith('\n')).toBe(true)
   })
 
   test('the unknown-option error points at the help', () => {
     // 走到那一支的人多半是拼错了选项名，所以顺手指一下那张表在哪。
-    expect(() =>
-      parseResidentWakeArgs([...BASE, '--promt=x'], 'qianmo'),
-    ).toThrow('unknown resident wake option --promt=x')
-    expect(() =>
-      parseResidentWakeArgs([...BASE, '--promt=x'], 'qianmo'),
-    ).toThrow('resident-wake --help')
+    expect(() => parseResidentWakeArgs([...BASE, '--promt=x'])).toThrow(
+      'unknown resident wake option --promt=x',
+    )
+    expect(() => parseResidentWakeArgs([...BASE, '--promt=x'])).toThrow(
+      'resident-wake --help',
+    )
   })
 })

@@ -44,14 +44,17 @@ import {
   type ConsoleResult,
   type ConsoleServerHandle,
 } from '@qianmo/console'
-import { FileLedger } from '../consoleAccountsStore.js'
+import { FileLedger } from '../../src/commands/consoleAccountsStore.js'
 import {
   FileActionLedger,
   openConsoleActionLedger,
   runActionLedgerVerify,
-} from '../consoleActionLedger.js'
-import { consoleActionsPath, parseConsoleArgs } from '../consoleArgs.js'
-import { consoleLimits } from '../consolePorts.js'
+} from '../../src/commands/consoleActionLedger.js'
+import {
+  consoleActionsPath,
+  parseConsoleArgs,
+} from '../../src/commands/consoleArgs.js'
+import { consoleLimits } from '../../src/commands/consolePorts.js'
 
 const roots: string[] = []
 const servers: ConsoleServerHandle[] = []
@@ -276,33 +279,21 @@ describe('--verify-actions', () => {
 
 // --- `qm console` itself, in a child process -----------------------------------
 
-const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..', '..')
+const CLI = resolve(import.meta.dir, '..', '..', 'src', 'cli.ts')
 
 /**
- * `runConsole` with these arguments under the qianmo identity and a config
- * root of its own. The identity is fixed when the process starts
- * (`src/constants/identity.ts`), which is why this is a child and not a call.
+ * `qm console` with these arguments under a config
+ * root of its own, as a child process of the real qm entry.
  */
 function consoleChild(configRoot: string, args: readonly string[]) {
-  return Bun.spawn(
-    [
-      'bun',
-      '-e',
-      "const { runConsole } = await import('./src/cli/handlers/console.ts');" +
-        " await runConsole(JSON.parse(process.env.QM_TEST_ARGS ?? '[]'))",
-    ],
-    {
-      cwd: REPO_ROOT,
-      env: {
-        ...process.env,
-        OCC_IDENTITY: 'qianmo',
-        OCC_CONFIG_DIR: configRoot,
-        QM_TEST_ARGS: JSON.stringify(args),
-      },
-      stdout: 'pipe',
-      stderr: 'pipe',
+  return Bun.spawn(['bun', CLI, 'console', ...args], {
+    env: {
+      ...process.env,
+      QIANMO_CONFIG_DIR: configRoot,
     },
-  )
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
 }
 
 describe('qm console, end to end', () => {
@@ -379,13 +370,13 @@ describe('qm console, end to end', () => {
 
 describe('the flags', () => {
   test('off by default; the parsed config keeps its old shape', () => {
-    const config = parseConsoleArgs([], 'qianmo')
+    const config = parseConsoleArgs([])
     expect('actionsStorePath' in config).toBe(false)
     expect('verifyActions' in config).toBe(false)
   })
 
   test('on with --accounts, at a path derived from the config root', () => {
-    const config = parseConsoleArgs(['--accounts'], 'qianmo')
+    const config = parseConsoleArgs(['--accounts'])
     expect(config.actionsStorePath).toBe(consoleActionsPath())
     expect(
       consoleActionsPath().endsWith(
@@ -393,32 +384,25 @@ describe('the flags', () => {
       ),
     ).toBe(true)
     expect(
-      parseConsoleArgs(
-        ['--accounts', '--actions-store=/tmp/actions.ndjson'],
-        'qianmo',
-      ).actionsStorePath,
+      parseConsoleArgs(['--accounts', '--actions-store=/tmp/actions.ndjson'])
+        .actionsStorePath,
     ).toBe('/tmp/actions.ndjson')
   })
 
   test('--verify-actions stands alone; --actions-store needs one of the two', () => {
-    const verifyOnly = parseConsoleArgs(['--verify-actions'], 'qianmo')
+    const verifyOnly = parseConsoleArgs(['--verify-actions'])
     expect(verifyOnly.verifyActions).toBe(true)
     expect(verifyOnly.actionsStorePath).toBe(consoleActionsPath())
     expect('accounts' in verifyOnly).toBe(false)
     expect(
-      parseConsoleArgs(
-        ['--verify-actions', '--actions-store', '/tmp/a.ndjson'],
-        'qianmo',
-      ).actionsStorePath,
+      parseConsoleArgs(['--verify-actions', '--actions-store', '/tmp/a.ndjson'])
+        .actionsStorePath,
     ).toBe('/tmp/a.ndjson')
     expect(() =>
-      parseConsoleArgs(['--actions-store', '/tmp/a.ndjson'], 'qianmo'),
+      parseConsoleArgs(['--actions-store', '/tmp/a.ndjson']),
     ).toThrow('--actions-store needs --accounts or --verify-actions')
     expect(() =>
-      parseConsoleArgs(
-        ['--accounts', '--actions-store', 'rel.ndjson'],
-        'qianmo',
-      ),
+      parseConsoleArgs(['--accounts', '--actions-store', 'rel.ndjson']),
     ).toThrow('absolute')
   })
 })

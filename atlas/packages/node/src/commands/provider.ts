@@ -32,11 +32,11 @@ import {
   PROTOCOL_LIMITS,
   PROTOCOL_VERSION,
 } from '@qianmo/providers'
-import { invokedBinName } from '../../constants/brand.js'
+const invokedBinName = () => 'qm'
 import {
   EFFECTIVE_CHILD_SUBCOMMAND,
   printEffectiveProviderState,
-} from '../../services/qianmo/providers/effectiveProcess.js'
+} from '../providers/effectiveProcess.js'
 import { parseAutocompactArgs, runAutocompact } from './providerAutocompact.js'
 import { handleProviderLine, type NodeProviderResponse } from './providerOps.js'
 import { residentOptionValue } from './residentArgs.js'
@@ -66,8 +66,8 @@ Commands:
   autocompact [auto|<tokens>]
                              Show or set this node's auto-compact window (the
                              /autocompact setting: auto, or 100k-1M tokens).
-                             --json prints one JSON line. Refused while
-                             CLAUDE_CODE_AUTO_COMPACT_WINDOW is set.
+                             --json prints one JSON line. Maps to omp compaction.thresholdTokens; auto uses
+                             its reserve-based threshold.
 
 Options:
 
@@ -76,7 +76,7 @@ Options:
 
 Exit status: 0 for an ok response, 1 for a refusal, 2 when no response could
 be written. Run as the account the resident runs as, with the same
-OCC_CONFIG_DIR.
+QIANMO_CONFIG_DIR.
 `
 
 const OPS_FROM_STDIN = new Set(['probe', 'models', 'apply'])
@@ -197,7 +197,7 @@ export async function runProvider(args: readonly string[]): Promise<void> {
   }
   if (command === EFFECTIVE_CHILD_SUBCOMMAND) {
     let line = ''
-    printEffectiveProviderState(text => {
+    await printEffectiveProviderState(text => {
       line += text
     })
     await respondAndExit(0, line)
@@ -272,9 +272,9 @@ async function autocompact(args: readonly string[]): Promise<never> {
   } catch (error) {
     return usageError(error instanceof Error ? error.message : 'bad options')
   }
-  let run: ReturnType<typeof runAutocompact>
+  let run: Awaited<ReturnType<typeof runAutocompact>>
   try {
-    run = runAutocompact(parsed)
+    run = await runAutocompact(parsed)
   } catch (error) {
     process.stderr.write(
       `${invokedBinName()} provider: internal error (${error instanceof Error ? error.name : typeof error})\n`,
@@ -298,4 +298,9 @@ function opOf(line: string): unknown {
   } catch {
     return undefined
   }
+}
+
+export async function run(argv: string[]): Promise<number> {
+  await runProvider(argv)
+  return 0
 }

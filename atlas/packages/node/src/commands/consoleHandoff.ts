@@ -70,7 +70,7 @@ import {
   runGit,
   validateManifest,
 } from '@qianmo/handoff'
-import { occConfigPath } from '../../config/paths.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 import {
   createHandoffDispatcher,
   type HandoffDispatcher,
@@ -93,12 +93,12 @@ export const HANDOFF_AUDIT_KINDS = [
 
 /** The hub's ledger: `<config root>/qianmo/handoff/ledger.ndjson`. */
 function handoffLedgerPath(): string {
-  return occConfigPath('qianmo', 'handoff', 'ledger.ndjson')
+  return qianmoConfigPath('qianmo', 'handoff', 'ledger.ndjson')
 }
 
 /** The hub's own audit chain for handoff events. */
 function handoffAuditPath(): string {
-  return occConfigPath('qianmo', 'handoff', 'audit.ndjson')
+  return qianmoConfigPath('qianmo', 'handoff', 'audit.ndjson')
 }
 
 interface ConsoleHandoffOptions {

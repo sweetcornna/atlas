@@ -11,7 +11,11 @@
 
 import { describe, expect, test } from 'bun:test'
 import { generateNodeKeyPair, signBytes } from '@qianmo/capability'
-import { POP_DOMAIN_PREFIX, popMessage, verifyCsrPop } from '../pop.js'
+import {
+  POP_DOMAIN_PREFIX,
+  popMessage,
+  verifyCsrPop,
+} from '../../src/ca/pop.js'
 
 /** A real `openssl req` output for an EC key. Its contents do not matter here. */
 const CSR_PEM = `-----BEGIN CERTIFICATE REQUEST-----

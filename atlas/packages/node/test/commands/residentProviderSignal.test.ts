@@ -31,7 +31,7 @@ import {
   residentPidPath,
   signalResidentProviderCheck,
   writeResidentPidFile,
-} from '../resident.js'
+} from '../../src/commands/resident.js'
 
 const BTIME = 1_790_000_000
 
@@ -197,13 +197,13 @@ describe('the pid file', () => {
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-pid-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
   })
 
   afterEach(() => {
-    if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-    else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+    if (previousConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+    else process.env.QIANMO_CONFIG_DIR = previousConfigDir
     rmSync(root, { recursive: true, force: true })
   })
 

@@ -57,7 +57,7 @@ import { isNodePublicKey } from '@qianmo/protocol'
 import {
   verifyRevocationList,
   type RevocationList,
-} from './ca/revocationList.js'
+} from '../ca/revocationList.js'
 
 /** One root from the trust file, checked and ready to anchor a chain. */
 interface TrustAnchor {

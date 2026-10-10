@@ -23,7 +23,7 @@
  *
  * ## What is *not* here
  *
- * The path. It arrives from `consoleArgs.ts`, derived from `occConfigPath()`
+ * The path. It arrives from `consoleArgs.ts`, derived from `qianmoConfigPath()`
  * like every other identity-bearing path in this repository (CLAUDE.md §1.1②).
  * This module never joins a home directory to anything.
  *

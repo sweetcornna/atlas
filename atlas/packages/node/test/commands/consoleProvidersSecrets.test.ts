@@ -25,7 +25,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ProviderSecretStore } from '../consoleProvidersSecrets.js'
+import { ProviderSecretStore } from '../../src/commands/consoleProvidersSecrets.js'
 
 const CANARY = 'sk-test-canary-secrets-Zq81LmN0pW4xR7tY'
 const ROTATED = 'sk-test-canary-rotated-Hd02KsP9vQ3mZ6uE'

@@ -18,7 +18,7 @@ import {
   signRevocationList,
   verifyRevocationList,
   type RevocationList,
-} from '../revocationList.js'
+} from '../../src/ca/revocationList.js'
 
 const FINGERPRINT =
   '4B:3D:1D:92:68:FB:BF:5C:CB:86:22:CB:9D:89:90:F7:' +

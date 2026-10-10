@@ -6,6 +6,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AuditSource, AuditTrail, readTrail } from '@qianmo/audit'
+import { ActionLedger } from '@qianmo/console'
+import { FileActionLedger } from '../../src/commands/consoleActionLedger.js'
 import { StaticPublicKeyDirectory } from '@qianmo/capability'
 import { RouterEventType, type RouterAuditEvent } from '@qianmo/router'
 import { ActivatorEventType } from '@qianmo/activator'
@@ -25,7 +27,7 @@ import {
   isQianmoAuditHelpRequest,
   parseQianmoAuditArgs,
   runQianmoAudit,
-} from '../qianmoAudit.js'
+} from '../../src/commands/qianmoAudit.js'
 import {
   activatorTrailSink,
   auditTrailPath,
@@ -34,8 +36,8 @@ import {
   negotiationTrailSink,
   routerTrailSink,
   tunnelTrailSink,
-} from '../../../services/qianmo/auditTrail.js'
-import { loadOrCreateNodeKeys } from '../../../services/qianmo/nodeIdentity.js'
+} from '../../src/host/auditTrail.js'
+import { loadOrCreateNodeKeys } from '../../src/host/nodeIdentity.js'
 
 let root: string
 let previousConfigDir: string | undefined
@@ -61,15 +63,15 @@ async function captureStdout(run: () => Promise<void>): Promise<string> {
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'qianmo-audit-cli-'))
-  // `CLAUDE_CONFIG_DIR`, not `OCC_CONFIG_DIR`: tests/preload.ts deletes the
+  // `QIANMO_CONFIG_DIR`, not `QIANMO_CONFIG_DIR`: tests/preload.ts deletes the
   // latter, and occConfigDir() memoizes on both.
-  previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+  previousConfigDir = process.env.QIANMO_CONFIG_DIR
+  process.env.QIANMO_CONFIG_DIR = join(root, 'config')
 })
 
 afterEach(() => {
-  if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+  if (previousConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = previousConfigDir
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -570,7 +572,7 @@ describe('audit --help', () => {
     // 反漂移：选项名的唯一出处是解析器的分派链，帮助文本是它的投影。新增一个
     // 选项却忘了写进帮助，这条会红——而不是等到内测用户问「还有别的参数吗」。
     const source = readFileSync(
-      new URL('../qianmoAudit.ts', import.meta.url),
+      new URL('../../src/commands/qianmoAudit.ts', import.meta.url),
       'utf8',
     )
     const dispatched = [...source.matchAll(/arg === '(--[a-z-]+)'/g)].map(
@@ -615,3 +617,177 @@ describe('audit --help', () => {
     expect(() => parseQianmoAuditArgs(['--verfiy'])).toThrow('audit --help')
   })
 })
+
+describe('authorization reports', () => {
+  test('source/outcome/kind filters are available without an unrelated selector', () => {
+    expect(
+      parseQianmoAuditArgs([
+        '--source=capability',
+        '--outcome=refused',
+        '--kind=authz.',
+      ]),
+    ).toMatchObject({
+      source: 'capability',
+      outcome: 'refused',
+      kind: 'authz.',
+    })
+    expect(() => parseQianmoAuditArgs(['--source=bogus'])).toThrow('source')
+    expect(() => parseQianmoAuditArgs(['--outcome=failed'])).toThrow('outcome')
+    expect(() => parseQianmoAuditArgs(['--authz-report', '--kind=x'])).toThrow(
+      'lifecycle',
+    )
+    expect(() => parseQianmoAuditArgs(['--actions=x'])).toThrow(
+      '--authz-report',
+    )
+  })
+  test('report verifies the entire chain even when a time window hides the corrupt record', async () => {
+    const previous = process.exitCode
+    try {
+      const path = join(root, 'authz.ndjson')
+      const trail = new AuditTrail(path)
+      trail.append({
+        at: 100,
+        source: AuditSource.Capability,
+        kind: 'authz.requested',
+        node: 'node-a',
+        outcome: 'ok',
+        detail: {
+          requestId: 'request-1',
+          tool: 'bash',
+          digest: 'a'.repeat(64),
+        },
+      })
+      trail.append({
+        at: 120,
+        source: AuditSource.Capability,
+        kind: 'authz.grant_used',
+        node: 'node-a',
+        outcome: 'ok',
+        detail: { requestId: 'request-1' },
+      })
+      trail.close()
+      const good = JSON.parse(
+        await captureStdout(() =>
+          runQianmoAudit(['--authz-report', '--path', path, '--json']),
+        ),
+      )
+      expect(good.integrity.chain).toBe('intact')
+      expect(good.rows[0].status).toBe('used')
+      expect(process.exitCode).toBe(0)
+      writeFileSync(
+        path,
+        readFileSync(path, 'utf8').replace('"tool":"bash"', '"tool":"edit"'),
+      )
+      const bad = JSON.parse(
+        await captureStdout(() =>
+          runQianmoAudit([
+            '--authz-report',
+            '--path',
+            path,
+            '--from=110',
+            '--json',
+          ]),
+        ),
+      )
+      expect(bad.integrity.chain).toBe('broken')
+      expect(process.exitCode).toBe(1)
+    } finally {
+      process.exitCode = previous
+    }
+  })
+})
+
+test('real audit CLI joins verified action file by authorization target and exits 1 for a corrupted action chain', async () => {
+  const path = join(root, 'authz-actions.ndjson'),
+    actionsPath = join(root, 'console-actions.ndjson')
+  const trail = new AuditTrail(path)
+  trail.append({
+    at: 100,
+    source: AuditSource.Capability,
+    kind: 'authz.requested',
+    node: 'node-a',
+    outcome: 'ok',
+    detail: {
+      requestId: 'authz-request-1',
+      tool: 'write',
+      digest: 'a'.repeat(64),
+    },
+  })
+  trail.close()
+  const store = new FileActionLedger(actionsPath),
+    ledger = new ActionLedger({ store, now: () => 90 })
+  expect(
+    (
+      await ledger.record({
+        at: 110,
+        requestId: 'http-request-1',
+        subject: 'u:0123456789abcdef',
+        action: 'approval.decide',
+        target: 'authz-request-1',
+        outcome: 'ok',
+      })
+    ).ok,
+  ).toBe(true)
+  expect(
+    (
+      await ledger.record({
+        at: 111,
+        requestId: 'http-unrelated',
+        subject: 'u:0123456789abcdef',
+        action: 'chat.message.send',
+        target: 'different-context',
+        outcome: 'ok',
+      })
+    ).ok,
+  ).toBe(true)
+  store.close()
+  const run = async (actionFile = actionsPath) => {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        'atlas/packages/node/src/cli.ts',
+        'audit',
+        '--authz-report',
+        '--path',
+        path,
+        '--actions',
+        actionFile,
+        '--json',
+      ],
+      {
+        cwd: join(import.meta.dir, '../../../../..'),
+        env: { ...process.env },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    )
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ])
+    return { report: JSON.parse(stdout), stderr, exitCode }
+  }
+  const good = await run()
+  expect(good.exitCode).toBe(0)
+  expect(good.report.integrity.chain).toBe('intact')
+  expect(good.report.actionIntegrity).toEqual({ chain: 'intact', actions: 2 })
+  expect(good.report.rows[0].actions).toHaveLength(1)
+  expect(good.report.rows[0].actions[0]).toMatchObject({
+    requestId: 'http-request-1',
+    target: 'authz-request-1',
+    action: 'approval.decide',
+  })
+  expect(JSON.stringify(good.report)).not.toContain('http-unrelated')
+  const missing = await run(join(root, 'missing-actions.ndjson'))
+  expect(missing.exitCode).toBe(1)
+  expect(missing.report.actionIntegrity.chain).toBe('absent')
+  const raw = readFileSync(actionsPath, 'utf8')
+  writeFileSync(actionsPath, raw.replace('approval.decide', 'approval.revoke'))
+  const bad = await run()
+  expect(bad.exitCode).toBe(1)
+  expect(bad.report.integrity.chain).toBe('intact')
+  expect(bad.report.actionIntegrity.chain).toBe('broken')
+  expect(bad.report.actionIntegrity.issue.line).toBeGreaterThan(0)
+  expect(bad.report.rows[0].actions).toEqual([])
+}, 20000)

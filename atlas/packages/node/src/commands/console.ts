@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * `occ console` —— 阡陌控制面板的启动面（P11）。
+ * `qm console` —— 阡陌控制面板的启动面（P11）。
  *
- *   OCC_IDENTITY=qianmo occ console
- *   OCC_IDENTITY=qianmo occ console --registry http://127.0.0.1:38610 \
+ *   qm console
+ *   qm console --registry http://127.0.0.1:38610 \
  *     --wake-url ws://127.0.0.1:38611
  *
  * 这个文件只做三件事：解析参数（委给 `consoleArgs.ts`）、把五个端口的生产实现
@@ -19,8 +19,13 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { invokedBinName } from '../../constants/brand.js'
-import { sourceCommit } from '../../constants/buildProvenance.js'
+import { StaticPublicKeyDirectory } from '@qianmo/capability'
+import { qianmoConfigPath } from '@qianmo/paths'
+import { loadOrCreateNodeKeys } from '../host/nodeIdentity.js'
+import { ConsoleApprovals } from './consoleApprovals.js'
+import { loadConsoleApproverIdentity } from './consoleApproverIdentity.js'
+import { readTrustAnchors } from '../host/trustAnchors.js'
+import { sourceCommit } from '../provenance.js'
 import {
   AccountBook,
   resolveTokens,
@@ -34,7 +39,7 @@ import {
   type WakePort,
 } from '@qianmo/console'
 import { readRegistryWriteTokenFile } from '@qianmo/registry'
-import { pskFromEnv } from '@qianmo/transport'
+import { pskFromEnv, type HandshakeIdentity } from '@qianmo/transport'
 import {
   createConsoleChatPort,
   type ConsoleChatEndpoint,
@@ -61,7 +66,6 @@ import { ConsoleRegistrations, gateWakePort } from './consoleRegistrations.js'
 import { ServerNotesStore } from './consoleServerNotes.js'
 import { consoleAlertAcksPath } from './consoleAlertAcks.js'
 import { consoleAuditSources } from './consoleAuditSources.js'
-import { readTrustAnchors } from '../../services/qianmo/trustAnchors.js'
 import {
   loadConsoleWakeIdentity,
   type ConsoleWakeIdentity,
@@ -75,6 +79,8 @@ import {
 import { handoffLockRefusal, openConsoleHandoff } from './consoleHandoff.js'
 import { wireHandoffDispatch } from './consoleHandoffDispatch.js'
 import { openConsoleProviders } from './consoleProviders.js'
+import { openConsoleUsage, startUsageCollection } from './consoleUsage.js'
+import { FileTenantStore } from './consoleTenancy.js'
 
 /**
  * 32 个 base64url 字符，远在 `MIN_TOKEN_LENGTH`（16）之上。
@@ -99,6 +105,7 @@ function wireConsoleAccounts(config: {
   readonly sessionsStorePath: string
   readonly legacyViewToken: boolean
   readonly breakGlass: boolean
+  readonly openRegistration?: { readonly maxAccounts: number }
 }): ConsoleAccounts {
   const book = new AccountBook({
     accounts: new FileLedger(config.accountsStorePath),
@@ -109,6 +116,9 @@ function wireConsoleAccounts(config: {
   })
   return {
     book,
+    ...(config.openRegistration === undefined
+      ? {}
+      : { signup: config.openRegistration }),
     legacyView: config.legacyViewToken,
     breakGlass: config.breakGlass,
   }
@@ -139,12 +149,14 @@ interface ConsoleWakeDependencies {
     readonly url: string
     readonly psk: string
     readonly capability?: ConsoleWakeIdentity['issue']
+    readonly signing?: HandshakeIdentity
   }) => WakePort
   /**
    * 可注入，只为让接线用例不去碰真实配置根——**默认实现会在磁盘上创建一把私钥**，
    * 而那正是它只在 `--wake-sign` 打开时才被调用的原因。
    */
   readonly loadIdentity?: (chatFrom: string) => ConsoleWakeIdentity
+  readonly loadKeys?: typeof loadOrCreateNodeKeys
 }
 
 /**
@@ -156,7 +168,10 @@ interface ConsoleWakeDependencies {
  * 这台机器每一份进程列表里的密钥，和 `--backup-url` 那条同一个理由。
  */
 export function wireConsoleWake(
-  config: Pick<ConsoleCliConfig, 'wakeTargets' | 'signWakes' | 'chatFrom'>,
+  config: Pick<
+    ConsoleCliConfig,
+    'wakeTargets' | 'signWakes' | 'chatFrom' | 'tenancyPath' | 'trusted'
+  >,
   dependencies: ConsoleWakeDependencies = { pskFromEnv, createWakePort },
 ): ConsoleWakeWiring {
   if (config.wakeTargets.length === 0) {
@@ -168,6 +183,14 @@ export function wireConsoleWake(
   const identity =
     config.signWakes === true
       ? (dependencies.loadIdentity ?? loadConsoleWakeIdentity)(config.chatFrom)
+      : undefined
+  const signing: HandshakeIdentity | undefined =
+    identity !== undefined && config.tenancyPath !== undefined
+      ? {
+          keys: (dependencies.loadKeys ?? loadOrCreateNodeKeys)(identity.node),
+          directory: new StaticPublicKeyDirectory(config.trusted),
+          required: true,
+        }
       : undefined
 
   const targets: WakeTarget[] = config.wakeTargets.map(target => {
@@ -186,6 +209,7 @@ export function wireConsoleWake(
           url: target.url,
           psk,
           ...(identity === undefined ? {} : { capability: identity.issue }),
+          ...(signing === undefined ? {} : { signing }),
         }),
       }
     } catch {
@@ -237,6 +261,7 @@ interface ConsoleChatDependencies {
   readonly pskFromEnv: (variable?: string) => string
   readonly createChatPort: typeof createConsoleChatPort
   readonly loadIdentity?: typeof loadConsoleWakeIdentity
+  readonly loadKeys?: typeof loadOrCreateNodeKeys
 }
 
 /**
@@ -316,6 +341,18 @@ export function wireConsoleChat(
       storePath: config.chatStorePath,
       registry,
       ...(identity === undefined ? {} : { issueCapability: identity.issue }),
+      ...((config.approvals || config.tenancyPath !== undefined) &&
+      identity !== undefined
+        ? {
+            signing: {
+              keys: (dependencies.loadKeys ?? loadOrCreateNodeKeys)(
+                identity.node,
+              ),
+              directory: new StaticPublicKeyDirectory(config.trusted),
+              required: true,
+            },
+          }
+        : {}),
       onError: error => {
         // The console has no logger and its stdout is the banner. A chat-side
         // failure that nobody can see is worse than one line of noise.
@@ -349,9 +386,8 @@ function field(name: string, value: string): string {
 }
 
 export async function runConsole(args: readonly string[]): Promise<void> {
-  // 帮助排在最前面，**在身份校验与运行时断言之前**：问「这个命令怎么用」的人
-  // 恰恰是还没把 `OCC_IDENTITY=qianmo` 配对的那个人，让他先撞一条错误再去查文档
-  // 是把唯一的自助入口挡在门外。
+  // 帮助排在最前面，**在运行时断言之前**：问「这个命令怎么用」的人恰恰是还没
+  // 配好环境的那个人，让他先撞一条错误再去查文档是把唯一的自助入口挡在门外。
   if (isConsoleHelpRequest(args)) {
     process.stdout.write(CONSOLE_HELP_TEXT)
     return
@@ -362,6 +398,11 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // 在 token 解析**之前**：这条路径不起服务器、不拨端点、不读任何凭据，它唯一的
   // 作用是回答「该往每个节点的 --trust 里粘什么」。让它先于凭据一步，是为了在
   // 一台还没配好 token 的机器上也答得出来——那正是分发公钥的那一刻的状态。
+  if (config.printApproverIdentity === true) {
+    const identity = loadConsoleApproverIdentity(config.chatFrom)
+    process.stdout.write(`${identity.node}=${identity.keys.publicKey}\n`)
+    return
+  }
   if (config.printWakeIdentity === true) {
     const identity = loadConsoleWakeIdentity(config.chatFrom)
     process.stdout.write(`${identity.node}=${identity.publicKey}\n`)
@@ -431,6 +472,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           sessionsStorePath: config.sessionsStorePath,
           legacyViewToken: config.legacyViewToken !== false,
           breakGlass: config.breakGlass === true,
+          ...(config.openRegistration === undefined
+            ? {}
+            : { openRegistration: config.openRegistration }),
         })
       : undefined
 
@@ -500,10 +544,57 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // One registry port, shared: the chat face's target list and the roster are
   // the same question, and two ports would be two answers that can disagree.
   const registry = registrations.port
+  const usage =
+    accounts === undefined
+      ? undefined
+      : openConsoleUsage(config.usagePolicyPath)
+  const tenancy =
+    config.tenancyPath === undefined
+      ? undefined
+      : new FileTenantStore(config.tenancyPath)
   const chat = wireConsoleChat(config, registry, {
     pskFromEnv,
-    createChatPort: options => createConsoleChatPort({ ...options, exitGate }),
+    createChatPort: options =>
+      createConsoleChatPort({
+        ...options,
+        exitGate,
+        ...(usage === undefined ? {} : { usage }),
+      }),
   })
+  const approvalIdentity = config.approvals
+    ? loadConsoleApproverIdentity(config.chatFrom)
+    : undefined
+  const approvals =
+    approvalIdentity === undefined || accounts === undefined
+      ? undefined
+      : new ConsoleApprovals({
+          from: config.chatFrom,
+          accounts: accounts.book,
+          approvalKeys: approvalIdentity.keys,
+          commandKeys: loadOrCreateNodeKeys(approvalIdentity.node),
+          ledger: new FileLedger(
+            qianmoConfigPath('qianmo', 'console', 'approvals.ndjson'),
+          ),
+          ...(tenancy === undefined ? {} : { tenancy }),
+          ...(chat.hub === undefined ? {} : { chat: chat.hub }),
+          ...(usage === undefined ? {} : { usage }),
+          targets: config.chatTargets.map(target => {
+            const publicKey = new Map(config.trusted).get(target.node)
+            if (publicKey === undefined)
+              throw new Error('approval node needs an explicit trusted key')
+            return {
+              node: target.node,
+              url: target.url,
+              publicKey,
+              psk: pskFromEnv(
+                transportPskEnvVarForNode(target.node, '--chat-url'),
+              ),
+            }
+          }),
+          onError: error =>
+            process.stderr.write(`[approvals] ${String(error)}\n`),
+        })
+
   // The certificate column, or nothing at all (§10.1). Read at startup rather
   // than per request: the CA root is the one file this console needs and a
   // missing one is a configuration error the operator should hear about now,
@@ -545,6 +636,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
 
   const deps: ConsoleDeps = {
+    ...(approvals === undefined ? {} : { approvals }),
+    ...(usage === undefined ? {} : { usage }),
+    ...(tenancy === undefined ? {} : { tenancy }),
     registry,
     lifecycle: registrations.lifecycle,
     // `audit` remains the legacy facade for direct package callers. The page
@@ -583,9 +677,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(actions === undefined ? {} : { actions }),
     ...(handoff === undefined ? {} : { handoff: handoff.port }),
     ...(providers === undefined ? {} : { providers }),
-    // Spelled once, in the identity roster — never as a literal here
-    // (CLAUDE.md §2.3).
-    binName: invokedBinName(),
+    binName: 'qm',
     // 横幅里那几条身份与接线事实，原样交给「设置与关于」（A4）：页面答得出
     // 自己是哪一版、连着哪个注册中心、签不签名。只放横幅已经打出来的东西，没有
     // 任何秘密；路径只给能写的人看（`view/about.ts`）。
@@ -774,10 +866,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   }
   banner += field('label', config.label)
   // 这份产物是从哪个 commit 构建的（issue #70）。控制台和常驻节点一样是**部署到
-  // 舰队上的产物**：那棵树没有 `.git`，`dist/` 的几百个 chunk 里找不到 SHA，入口
-  // 里唯一的版本串是基座的发布线——本 fork 每个提交上都一模一样。所以在这一行
-  // 之前，一台机器上跑着的控制台答不出自己是哪一版。构建拿不到时是 `'unknown'`，
-  // 那是要照直打出来的事实，不是留给读者拿自己的 HEAD 去填的空。
+  // 舰队上的产物**：那棵树没有 `.git`，所以在这一行之前，一台机器上跑着的控制台
+  // 答不出自己是哪一版。拿不到时是 `'unknown'`，那是要照直打出来的事实，不是留给
+  // 读者拿自己的 HEAD 去填的空。
   //
   // 键名 `sourceCommit` 与值的形态（全 40 位 SHA / `-dirty` / `'unknown'`）跟
   // 常驻侧启动行**逐字对齐**，尽管这一面其他字段是 kebab-case：两处拼写一旦分叉，
@@ -786,9 +877,23 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // 排在 `label` 之后：banner 头上那几行（origin / open / token）是运维要复制粘贴
   // 的动作面，而「哪个部署、哪个构建」是同一类身份事实，放一起读。
   banner += field('sourceCommit', sourceCommit())
+  if (approvalIdentity)
+    banner += field(
+      'approver',
+      `${approvalIdentity.node}=${approvalIdentity.keys.publicKey}`,
+    )
   process.stdout.write(banner)
+  approvals?.start()
+  const usageCollection =
+    usage === undefined
+      ? undefined
+      : startUsageCollection(usage, audits, error =>
+          console.error(`[usage] ${String(error)}`),
+        )
 
   const stop = (): void => {
+    usageCollection?.stop()
+    void approvals?.close()
     // Leases already granted run out on their own; the ledger stays, so the
     // next start picks the same entries up again.
     registrations.stop()
@@ -797,11 +902,17 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     // Closing the hub drops the outbound links and the pending-task timers. A
     // console that exits without it leaves a WebSocket the far node keeps a
     // channel record for until its own idle timeout.
-    void chat.hub?.close()
+    void Promise.resolve(chat.hub?.close()).finally(() => usage?.close())
     // Gives the ledger lock back, so the next start does not have to wait for
     // the stale-pid check to reclaim it.
     handoff?.close()
   }
   process.once('SIGINT', stop)
   process.once('SIGTERM', stop)
+}
+
+/** `qm console`. */
+export async function run(argv: string[]): Promise<number> {
+  await runConsole(argv)
+  return Number(process.exitCode ?? 0)
 }

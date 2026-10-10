@@ -1,53 +1,25 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/**
- * `qm provider probe` with `mode: call`: one real, minimal model call with a
- * candidate configuration (design `providers-console-m1.md` §5.5). It costs
- * one small call, which the console confirms before sending; the point is to
- * go through the runtime's own request path — the lane, the model mapping and
- * the effort gate — rather than a hand-made request.
- *
- * How:
- *
- *   1. Ask the base URL's origin for anything at all, without the key. No HTTP
- *      answer means `reachable: false`, and nothing is spent.
- *   2. Build a throwaway config root at
- *      `occConfigPath('qianmo','provider','probe-<requestId>')` (0700) whose
- *      `settings.json` (0600) is the node's own settings with the candidate's
- *      compiled patch laid over it, exactly as a commit would lay it — so the
- *      node's other settings (a proxy in its `env`, say) still apply.
- *   3. Run this CLI once in it: `-p`, one turn, no tools, no session kept,
- *      safe mode (as the resident's ACP child runs), user settings only, and
- *      the environment with every provider-shaped key removed (the ACP child's
- *      managed-node env, `withoutProviderKeys`). Its output is read for the
- *      result's `is_error` and the assistant message's error category; the
- *      text itself — which may quote a vendor's error, and with it part of the
- *      key — is never passed on.
- *   4. Remove the root, whatever happened, in `finally`.
- */
-
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { occConfigPath } from '../../config/paths.js'
-import type { CompiledProfile } from '../../services/qianmo/providers/compile.js'
+import { spawn } from 'node:child_process'
+import { withoutModelConfigEnvironment } from '../providers/whitelist.js'
+import { ompChildEnv } from '@qianmo/paths'
+import type { CompiledProfile } from '../providers/compile.js'
 import {
   ensurePrivateDir,
   providerDir,
   writePrivateJson,
-} from '../../services/qianmo/providers/store.js'
-import { withoutProviderKeys } from '../../services/qianmo/residentAcpEnv.js'
-import { MODEL_SETTINGS_SLOTS } from '../../utils/model/modelTier.js'
-import {
-  buildCliLaunch,
-  type CliLaunchSpec,
-  spawnCli,
-} from '../../utils/process/cliLaunch.js'
-import {
-  nodeSettings,
-  originAnswers,
-  type ProbeOutcome,
-} from './providerProbe.js'
+} from '../providers/store.js'
+import { withoutProviderKeys } from '../host/residentOmpEnv.js'
+import { ompArgv } from '../omp/launch.js'
+import type { CliLaunchSpec } from '../providers/effectiveProcess.js'
+import { originAnswers, type ProbeOutcome } from './providerProbe.js'
+import { reuseProbeNativeCache } from './providerNativeCache.js'
+function spawnCli(spec: CliLaunchSpec, options: Parameters<typeof spawn>[2]) {
+  return spawn(spec.execPath, spec.args, { ...options, env: spec.env })
+}
 
 type Launch = (cliArgs: string[], env: NodeJS.ProcessEnv) => CliLaunchSpec
 
@@ -56,18 +28,15 @@ const PROMPT = 'Reply with the single word OK.'
 
 const CALL_ARGS = [
   '-p',
+  '--mode',
+  'json',
+  '--no-session',
+  '--no-tools',
+  '--no-extensions',
+  '--no-skills',
+  '--no-rules',
+  '--no-title',
   PROMPT,
-  '--output-format',
-  'stream-json',
-  '--verbose',
-  '--max-turns',
-  '1',
-  '--tools',
-  '',
-  '--no-session-persistence',
-  '--safe-mode',
-  '--setting-sources',
-  'user',
 ]
 
 /** The no-key reachability check before anything is spent. */
@@ -78,36 +47,11 @@ const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 
 /** The temporary config root for one `call`. */
 export function callProbeRoot(requestId: string): string {
-  return occConfigPath('qianmo', 'provider', `probe-${requestId}`)
+  return join(providerDir(), `probe-${requestId}`)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** `settings` with `patch` laid over it the way a commit lays it. */
-function withPatch(
-  settings: Record<string, unknown>,
-  patch: CompiledProfile['patch'],
-): Record<string, unknown> {
-  const env: Record<string, unknown> = isRecord(settings.env)
-    ? { ...settings.env }
-    : {}
-  for (const [key, value] of Object.entries(patch.env)) {
-    if (value === undefined) delete env[key]
-    else env[key] = value
-  }
-  const modelSettings: Record<string, unknown> = isRecord(
-    settings.modelSettings,
-  )
-    ? { ...settings.modelSettings }
-    : {}
-  for (const slot of MODEL_SETTINGS_SLOTS) {
-    const entry = patch.modelSettings[slot]
-    if (entry === undefined) delete modelSettings[slot]
-    else modelSettings[slot] = entry
-  }
-  return { ...settings, modelType: patch.modelType, env, modelSettings }
 }
 
 /** The SDK's assistant-message error categories, in our words. */
@@ -133,18 +77,22 @@ type CallRun =
   | { kind: 'timeout' }
   | { kind: 'spawn-failed' }
 
+/** A signal is not exit evidence. Callers must not start another model child. */
+export class ProbeExitUnconfirmedError extends Error {
+  constructor() {
+    super(
+      'native model probe exit could not be confirmed; generation remains unavailable',
+    )
+    this.name = 'ProbeExitUnconfirmedError'
+  }
+}
+
 /**
  * The HTTP status in the runtime's own error line (`describeAPIError`:
  * `… · status=401 · code=… · category=…`). Only the digits are taken — the
  * vendor's words before them are not — and the last match, since the metadata
  * follows the message.
  */
-function statusIn(text: string): number | null {
-  const matches = [...text.matchAll(/ · status=(\d{3})(?= · |$)/g)]
-  const last = matches.at(-1)?.[1]
-  return last === undefined ? null : Number(last)
-}
-
 /** The category the HTTP status itself names, when it names one plainly. */
 function statusCategory(status: number | null): string | null {
   if (status === 401 || status === 403) return 'authentication_failed'
@@ -154,33 +102,41 @@ function statusCategory(status: number | null): string | null {
 }
 
 function readStream(stdout: string): CallRun | null {
-  let category: string | null = null
-  let httpStatus: number | null = null
-  let result: { isError: boolean } | null = null
+  let result: CallRun | null = null
   for (const line of stdout.split('\n')) {
-    if (!line.startsWith('{')) continue
-    let message: unknown
+    let event: unknown
     try {
-      message = JSON.parse(line)
+      event = JSON.parse(line)
     } catch {
       continue
     }
-    if (!isRecord(message)) continue
-    if (message.type === 'assistant' && typeof message.error === 'string') {
-      category = message.error
-    }
-    if (message.type === 'result') {
-      result = {
-        isError: message.is_error === true || message.subtype !== 'success',
-      }
-      if (typeof message.result === 'string') {
-        httpStatus = statusIn(message.result)
-      }
+    if (
+      !isRecord(event) ||
+      event.type !== 'message_end' ||
+      !isRecord(event.message) ||
+      event.message.role !== 'assistant'
+    )
+      continue
+    const msg = event.message
+    const status = typeof msg.errorStatus === 'number' ? msg.errorStatus : null
+    result = {
+      kind: 'done',
+      isError:
+        msg.stopReason === 'error' ||
+        msg.stopReason === 'aborted' ||
+        !Array.isArray(msg.content) ||
+        !msg.content.some(
+          block =>
+            isRecord(block) &&
+            block.type === 'text' &&
+            typeof block.text === 'string' &&
+            block.text.trim().length > 0,
+        ),
+      category: statusCategory(status),
+      httpStatus: status,
     }
   }
-  return result === null
-    ? null
-    : { kind: 'done', ...result, category, httpStatus }
+  return result
 }
 
 function runOnce(
@@ -188,18 +144,29 @@ function runOnce(
   env: NodeJS.ProcessEnv,
   launch: Launch,
   timeoutMs: number,
+  options: {
+    signal?: AbortSignal
+    spawn?: typeof spawnCli
+    exitConfirmationMs?: number
+  } = {},
 ): Promise<CallRun> {
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
+    options.signal?.throwIfAborted()
     let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let exitTimer: ReturnType<typeof setTimeout> | undefined
+    let terminated = false
     const finish = (run: CallRun) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      clearTimeout(exitTimer)
+      options.signal?.removeEventListener('abort', terminate)
       resolve(run)
     }
     let child: ReturnType<typeof spawnCli>
     try {
-      child = spawnCli(launch([...CALL_ARGS], env), {
+      child = (options.spawn ?? spawnCli)(launch([...CALL_ARGS], env), {
         cwd: root,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
@@ -207,10 +174,25 @@ function runOnce(
       resolve({ kind: 'spawn-failed' })
       return
     }
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL')
-      finish({ kind: 'timeout' })
-    }, timeoutMs)
+    function terminate() {
+      if (settled || terminated) return
+      terminated = true
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        /* close remains the only evidence */
+      }
+      exitTimer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        options.signal?.removeEventListener('abort', terminate)
+        reject(new ProbeExitUnconfirmedError())
+      }, options.exitConfirmationMs ?? 2000)
+    }
+    timer = setTimeout(terminate, timeoutMs)
+    options.signal?.addEventListener('abort', terminate, { once: true })
+    if (options.signal?.aborted) terminate()
     let stdout = ''
     child.stdout?.on('data', (chunk: Buffer) => {
       if (stdout.length < MAX_OUTPUT_BYTES) stdout += chunk.toString()
@@ -218,9 +200,16 @@ function runOnce(
     child.stderr?.on('data', () => {
       // Drained so the pipe never fills; never relayed.
     })
-    child.on('error', () => finish({ kind: 'spawn-failed' }))
+    child.on('error', () => {
+      if (child.pid === undefined) finish({ kind: 'spawn-failed' })
+      else terminate()
+    })
     child.on('close', code => {
-      finish(readStream(stdout) ?? { kind: 'no-result', exitCode: code })
+      finish(
+        terminated
+          ? { kind: 'timeout' }
+          : (readStream(stdout) ?? { kind: 'no-result', exitCode: code }),
+      )
     })
   })
 }
@@ -267,7 +256,8 @@ function outcomeOf(run: CallRun, timeoutMs: number): ProbeOutcome {
   }
 }
 
-/** Run one `call` probe. Never throws; the root is gone when this returns. */
+/** Known-terminated failures return a diagnostic. Cancellation and unconfirmed
+ * exit throw; only unconfirmed exit retains its private root for diagnosis. */
 export async function probeCall(input: {
   readonly requestId: string
   readonly baseUrl: string
@@ -277,7 +267,12 @@ export async function probeCall(input: {
   readonly env?: NodeJS.ProcessEnv
   /** How to re-execute this CLI; tests run it from source. */
   readonly launch?: Launch
+  readonly signal?: AbortSignal
+  /** Trusted local test seam; never accepted from a provider or wire request. */
+  readonly spawn?: typeof spawnCli
+  readonly exitConfirmationMs?: number
 }): Promise<ProbeOutcome> {
+  input.signal?.throwIfAborted()
   const started = Date.now()
   const unreachable = await originAnswers(
     input.baseUrl,
@@ -285,35 +280,49 @@ export async function probeCall(input: {
   )
   if (unreachable !== null) return unreachable
 
-  const root = callProbeRoot(input.requestId)
+  ensurePrivateDir(providerDir())
+  const root = mkdtempSync(`${callProbeRoot(input.requestId)}-`)
+  let exitConfirmed = true
   try {
-    ensurePrivateDir(providerDir())
-    rmSync(root, { recursive: true, force: true })
-    mkdirSync(root, { mode: 0o700 })
     ensurePrivateDir(root)
-    writePrivateJson(
-      join(root, 'settings.json'),
-      withPatch(nodeSettings(), input.compiled.patch),
+    const agentDir = join(root, 'omp', 'agent')
+    writePrivateJson(join(agentDir, 'models.yml'), input.compiled.models)
+    writePrivateJson(join(agentDir, 'config.yml'), {
+      ...input.compiled.config,
+      retry: { enabled: false, maxRetries: 0, fallbackChains: {} },
+    })
+    const env = withoutModelConfigEnvironment(
+      ompChildEnv({
+        ...withoutProviderKeys(input.env ?? process.env),
+        QIANMO_CONFIG_DIR: root,
+      }),
+      input.compiled.models,
     )
-    const env: NodeJS.ProcessEnv = {
-      ...withoutProviderKeys(input.env ?? process.env),
-      OCC_CONFIG_DIR: root,
-      // Fewer side requests to the vendor than an interactive start makes.
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-    }
-    delete env.CLAUDE_CONFIG_DIR
+    reuseProbeNativeCache(input.env ?? process.env, env)
     const remaining = Math.max(1_000, input.timeoutMs - (Date.now() - started))
     const launch: Launch =
       input.launch ??
-      ((cliArgs, childEnv) => buildCliLaunch(cliArgs, { env: childEnv }))
-    return outcomeOf(await runOnce(root, env, launch, remaining), remaining)
-  } catch {
+      ((args, childEnv) => {
+        const argv = ompArgv(args)
+        return { execPath: argv[0]!, args: argv.slice(1), env: childEnv }
+      })
+    const run = await runOnce(root, env, launch, remaining, input)
+    input.signal?.throwIfAborted()
+    return outcomeOf(run, remaining)
+  } catch (error) {
+    if (error instanceof ProbeExitUnconfirmedError) {
+      exitConfirmed = false
+      throw error
+    }
+    input.signal?.throwIfAborted()
     return {
       ok: false,
       reachable: true,
       message: '节点没能准备真实调用的临时配置',
     }
   } finally {
-    rmSync(root, { recursive: true, force: true })
+    // An unconfirmed child may still read its private config. Preserve it for
+    // diagnosis; the caller is required to leave the generation unavailable.
+    if (exitConfirmed) rmSync(root, { recursive: true, force: true })
   }
 }

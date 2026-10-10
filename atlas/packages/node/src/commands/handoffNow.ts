@@ -50,7 +50,7 @@ import {
   sessionRef,
   shadowTree,
 } from '@qianmo/handoff'
-import { qmcodeHome } from '../../config/paths.js'
+import { qmcodeHome } from '@qianmo/paths'
 import { gitTopLevel, hubConnection, lsRemote } from './handoffHub.js'
 import {
   formatHub,

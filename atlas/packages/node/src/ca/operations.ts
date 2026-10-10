@@ -44,7 +44,7 @@ import {
   parseNodeCertificateBinding,
   type NodeCertificateBinding,
 } from '@qianmo/protocol'
-import { NODE_IDENTITY_MODE } from '../../../constants/identity.js'
+import { IDENTITY } from '@qianmo/paths'
 import {
   caKeyPairFromPem,
   caPublicKeyFromCertificate,
@@ -113,7 +113,7 @@ export const NODE_CERT_DAYS = 90
  */
 function defaultCaCommonName(now: number): string {
   const day = new Date(now).toISOString().slice(0, 10).replace(/-/g, '')
-  return `${NODE_IDENTITY_MODE}-ca-${day}`
+  return `${IDENTITY}-ca-${day}`
 }
 
 /** Split `--host` values into the two SAN classes openssl wants (§4.2). */
@@ -442,7 +442,7 @@ export function issueCertificate(options: {
       // dials outbound ones, and L0's mTLS (F-7) needs the client half too.
       'extendedKeyUsage=serverAuth,clientAuth\n'
 
-    const scratch = mkdtempSync(join(tmpdir(), `${NODE_IDENTITY_MODE}-ca-`))
+    const scratch = mkdtempSync(join(tmpdir(), `${IDENTITY}-ca-`))
     let certificatePem: string
     try {
       const extensionsPath = join(scratch, 'ext.cnf')

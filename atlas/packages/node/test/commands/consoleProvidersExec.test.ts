@@ -30,7 +30,7 @@ import {
   knownHostsHasEntry,
   ProviderExecutor,
   type ProviderNodeTarget,
-} from '../consoleProvidersExec.js'
+} from '../../src/commands/consoleProvidersExec.js'
 import { fakeNode, fakeSsh } from './consoleProvidersFakeNode.js'
 
 const CANARY = 'sk-test-canary-exec-Pq27WmX0vB5nL8cR'
@@ -363,7 +363,7 @@ describe('dial pacing (v2.47.2: nodes rate-limit new ssh connections)', () => {
   const REFUSED =
     'ssh: connect to host node-1.example.test port 22: Connection refused'
 
-  function setup(dialsPerWindow = 2) {
+  function setup(dialsPerWindow = 2, windowMs = WINDOW) {
     const root = tempRoot()
     const ssh = fakeSsh(join(root, 'ssh'))
     const node = fakeNode(join(root, 'node'))
@@ -373,7 +373,7 @@ describe('dial pacing (v2.47.2: nodes rate-limit new ssh connections)', () => {
     const executor = new ProviderExecutor([sshTarget(root)], {
       knownHostsFile: knownHosts,
       sshBinary: ssh.binary,
-      dialWindowMs: WINDOW,
+      dialWindowMs: windowMs,
       dialsPerWindow,
     })
     /** When each dial started (the fake ssh writes its argv first thing). */
@@ -411,7 +411,11 @@ describe('dial pacing (v2.47.2: nodes rate-limit new ssh connections)', () => {
   }, 30_000)
 
   test('a background run with the window full dials nothing and answers deferred', async () => {
-    const { ssh, executor } = setup(1)
+    // A wider window than the shared one: the first run alone can take longer
+    // than 1.5 s on a loaded machine, and the window must still be full when
+    // the background run asks.
+    const window = 6_000
+    const { ssh, executor } = setup(1, window)
     expect(
       (await executor.run('beta-1', applyRequest('beta-1'), 10_000)).ok,
     ).toBe(true)
@@ -427,7 +431,7 @@ describe('dial pacing (v2.47.2: nodes rate-limit new ssh connections)', () => {
     expect(deferred.ok ? 'ok' : deferred.reason).toBe('deferred')
     expect(ssh.invocations()).toHaveLength(1)
     // Positive control: once the window has room, the same run dials.
-    await new Promise(resolve => setTimeout(resolve, WINDOW + MARGIN + 100))
+    await new Promise(resolve => setTimeout(resolve, window + MARGIN + 100))
     const later = await executor.run('beta-1', status, 10_000, {
       background: true,
     })

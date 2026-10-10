@@ -24,6 +24,7 @@
  * `@qianmo/registry`。CLAUDE.md §2.2：协议级数值只允许有一个出处。
  */
 
+import type { HandshakeIdentity } from '@qianmo/transport'
 import {
   AuditSource,
   TrailReader,
@@ -73,7 +74,7 @@ import {
   anchoredValidity,
   parseTrustAnchors,
   verifyRevocationListByAnchors,
-} from '../../services/qianmo/trustAnchors.js'
+} from '../host/trustAnchors.js'
 import { LIMITS, assertAddress } from '@qianmo/protocol'
 import { DEFAULT_TTL_MS } from '@qianmo/registry'
 import { ResidentEstop } from '@qianmo/resident'
@@ -91,16 +92,17 @@ import {
   readAuditWitnessAnchors,
   witnessNodeOf,
   type AuditWitnessSource,
-} from '../../services/qianmo/auditWitness.js'
+} from '../host/auditWitness.js'
 import {
   WakeRefusedError,
+  WakeDeliveryUnknownError,
   executeResidentWake,
   type WakeCapabilityIssuer,
 } from './residentWake.js'
 import { ServerNotesStore } from './consoleServerNotes.js'
 import { AlertAcksStore, consoleAlertAcksPath } from './consoleAlertAcks.js'
-import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
-import { occConfigPath } from '../../config/paths.js'
+import { auditTrailPath } from '../host/auditTrail.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 
 function fail<T>(
   code: ConsoleFailure['code'],
@@ -852,6 +854,7 @@ const MAX_CONSOLE_WAKE_AFTER_MS = 60_000
 const DEFAULT_CONSOLE_WAKE_TIMEOUT_MS = 30_000
 
 interface WakePortOptions {
+  readonly signing?: HandshakeIdentity
   /** 唤醒目标（激活器）的 ws/wss 地址——这个端口只往这一个地方发。 */
   readonly url: string
   /** 传输层 PSK。**只从环境变量来**，不从命令行、更不从页面来。 */
@@ -964,6 +967,15 @@ export function createWakePort(options: WakePortOptions): WakePort {
             afterMs,
             timeoutMs,
             deliverTtlMs,
+            ...(input.beforeDispatch === undefined
+              ? {}
+              : { beforeDispatch: input.beforeDispatch }),
+            ...(options.signing === undefined
+              ? {}
+              : { signing: options.signing }),
+            ...(input.onTaskCreated === undefined
+              ? {}
+              : { onTaskCreated: input.onTaskCreated }),
             ...(options.capability === undefined
               ? {}
               : { issueCapability: options.capability }),
@@ -979,6 +991,15 @@ export function createWakePort(options: WakePortOptions): WakePort {
           },
         }
       } catch (error) {
+        if (error instanceof WakeDeliveryUnknownError)
+          return {
+            ok: false,
+            failure: {
+              code: 'unreachable',
+              message: error.message,
+              deliveryUnknown: true,
+            },
+          }
         return fail(classifyWakeError(error), wakeFailureMessage(error))
       }
     },
@@ -1090,6 +1111,9 @@ function toNotice(record: {
     kind: detailString(record.detail, 'kind') ?? 'watch',
     ...(record.peer === undefined ? {} : { from: record.peer }),
     ...(job === undefined ? {} : { job }),
+    ...(detailString(record.detail, 'connectionNode') === undefined
+      ? {}
+      : { node: detailString(record.detail, 'connectionNode') }),
     summary: detailString(record.detail, 'summary') ?? '',
     ...(record.detail?.['redelivered'] === true
       ? { redelivered: true as const }
@@ -1194,11 +1218,11 @@ function statusMissingReason(read: SchedulerStatusRead): string {
 
 interface SchedulerPortOptions {
   /**
-   * `qm watch --state-dir`，缺省 `occConfigPath('qianmo','scheduler')`：
+   * `qm watch --state-dir`，缺省 `qianmoConfigPath('qianmo','scheduler')`：
    * `state.json`、`status.json` 与认领文件都在这里。
    */
   readonly stateDir: string
-  /** 固定在 `occConfigPath('qianmo','scheduler','ESTOP')`，不随 `--state-dir`。 */
+  /** 固定在 `qianmoConfigPath('qianmo','scheduler','ESTOP')`，不随 `--state-dir`。 */
   readonly estopPath: string
   /** 中枢审计链：取 `watch_fire` 的目标与 `watch_result_received` 的结果。 */
   readonly trailPath: string
@@ -1443,8 +1467,8 @@ export function consoleWatchDeps(
       acks: new AlertAcksStore(options.acksPath ?? consoleAlertAcksPath()),
     }),
     scheduler: createSchedulerPort({
-      stateDir: occConfigPath('qianmo', 'scheduler'),
-      estopPath: occConfigPath('qianmo', 'scheduler', 'ESTOP'),
+      stateDir: qianmoConfigPath('qianmo', 'scheduler'),
+      estopPath: qianmoConfigPath('qianmo', 'scheduler', 'ESTOP'),
       trailPath,
     }),
   }

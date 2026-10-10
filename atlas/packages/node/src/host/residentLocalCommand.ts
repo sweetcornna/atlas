@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Which inbound `task.request` a resident hands to its ACP child as a local
+ * Which inbound `task.request` a resident hands to its omp RPC child as a local
  * command rather than as a message (P18.20, design `providers-console-m1.md`
  * D-9).
  *
@@ -26,7 +26,7 @@
  *    local command. With no `--local-commands-from` this function never
  *    answers, whatever arrives;
  * 3. the payload marks itself a local command, `command: { name }`, with a
- *    name from {@link ACP_LOCAL_COMMANDS};
+ *    name from {@link RESIDENT_LOCAL_COMMANDS};
  * 4. the payload's `prompt` is that command: `/<name>` then whitespace or the
  *    end. A marked payload whose text says something else is a message.
  *
@@ -52,10 +52,17 @@ import {
   type NoticeTrust,
   type QianmoMessage,
 } from '@qianmo/protocol'
-import { ACP_LOCAL_COMMANDS } from '../acp/agent/localCommands.js'
+export const RESIDENT_LOCAL_COMMANDS: readonly string[] = [
+  'autocompact',
+  'compact',
+  'context',
+  'model',
+  'thinking',
+  'effort',
+]
 
 /**
- * The text to hand the ACP child verbatim, or `undefined` for "assemble it as
+ * The text to hand the omp RPC child verbatim, or `undefined` for "assemble it as
  * a message, as always".
  *
  * `verdict` is `NodeRouter.inbound`'s finding for this message; `issuers` is
@@ -77,7 +84,7 @@ export function residentLocalCommand(
   if (typeof prompt !== 'string') return undefined
   if (typeof command !== 'object' || command === null) return undefined
   const name = (command as Record<string, unknown>).name
-  if (typeof name !== 'string' || !ACP_LOCAL_COMMANDS.includes(name)) {
+  if (typeof name !== 'string' || !RESIDENT_LOCAL_COMMANDS.includes(name)) {
     return undefined
   }
   const head = `/${name}`

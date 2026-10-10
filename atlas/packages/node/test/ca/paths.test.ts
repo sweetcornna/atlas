@@ -11,17 +11,17 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { getProtectedUserConfigDirectories } from '../../../../config/paths.js'
+import { protectedConfigRoots } from '@qianmo/paths'
 import {
   CA_DIR_DEFAULT_DISPLAY,
   CA_DIR_ENV_VAR,
   caDirectory,
   isPathInside,
   pathComparisonKey,
-} from '../paths.js'
+} from '../../src/ca/paths.js'
 
 const ORIGINAL_CA_DIR = process.env[CA_DIR_ENV_VAR]
-const ORIGINAL_CONFIG_DIR = process.env['OCC_CONFIG_DIR']
+const ORIGINAL_CONFIG_DIR = process.env['QIANMO_CONFIG_DIR']
 const ORIGINAL_DEMO_ROOT = process.env['QIANMO_DEMO_ROOT']
 const ORIGINAL_LEGACY_DEMO_ROOT = process.env['DEMO_ROOT']
 const ORIGINAL_GITHUB_WORKSPACE = process.env['GITHUB_WORKSPACE']
@@ -32,8 +32,8 @@ afterEach(() => {
   process.chdir(ORIGINAL_CWD)
   if (ORIGINAL_CA_DIR === undefined) delete process.env[CA_DIR_ENV_VAR]
   else process.env[CA_DIR_ENV_VAR] = ORIGINAL_CA_DIR
-  if (ORIGINAL_CONFIG_DIR === undefined) delete process.env['OCC_CONFIG_DIR']
-  else process.env['OCC_CONFIG_DIR'] = ORIGINAL_CONFIG_DIR
+  if (ORIGINAL_CONFIG_DIR === undefined) delete process.env['QIANMO_CONFIG_DIR']
+  else process.env['QIANMO_CONFIG_DIR'] = ORIGINAL_CONFIG_DIR
   if (ORIGINAL_DEMO_ROOT === undefined) delete process.env['QIANMO_DEMO_ROOT']
   else process.env['QIANMO_DEMO_ROOT'] = ORIGINAL_DEMO_ROOT
   if (ORIGINAL_LEGACY_DEMO_ROOT === undefined) delete process.env['DEMO_ROOT']
@@ -69,7 +69,7 @@ describe('CA directory (§3.3, §6.1)', () => {
     // The bug this guards: `~/.qianmo-ca` starts with `~/.qianmo` as a raw
     // string. A prefix test without the separator would call the default CA
     // directory a config root and refuse to run at all.
-    for (const root of getProtectedUserConfigDirectories()) {
+    for (const root of protectedConfigRoots()) {
       expect(directory).not.toBe(root)
     }
   })
@@ -90,8 +90,8 @@ describe('CA directory (§3.3, §6.1)', () => {
 
   test('refuses a directory inside a config root', () => {
     // The failure §6.1 says must not be possible: a CA private key sitting
-    // where a node process, the console, or `occ migrate` walks.
-    process.env['OCC_CONFIG_DIR'] = '/tmp/qianmo-config-root'
+    // where a node process, the console, or the console walks.
+    process.env['QIANMO_CONFIG_DIR'] = '/tmp/qianmo-config-root'
     expect(() => caDirectory('/tmp/qianmo-config-root/ca')).toThrow(
       /inside a config root/,
     )
@@ -105,8 +105,8 @@ describe('CA directory (§3.3, §6.1)', () => {
   })
 
   test('refuses the official CLI’s root too, not just ours', () => {
-    delete process.env['OCC_CONFIG_DIR']
-    for (const root of getProtectedUserConfigDirectories()) {
+    delete process.env['QIANMO_CONFIG_DIR']
+    for (const root of protectedConfigRoots()) {
       expect(() => caDirectory(join(root, 'ca'))).toThrow(
         /inside a config root/,
       )

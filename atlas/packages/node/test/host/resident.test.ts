@@ -6,48 +6,37 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 describe('Qianmo resident host boundary', () => {
-  test('derives every persistent path through occConfigPath', () => {
+  test('derives every persistent path through qianmoConfigPath', () => {
     const source = readFileSync(
-      join(import.meta.dir, '..', 'resident.ts'),
+      join(import.meta.dir, '../../src/host/resident.ts'),
       'utf8',
     )
 
-    expect(source).toContain("occConfigPath('resident', 'sessions.json')")
+    expect(source).toContain("qianmoConfigPath('resident', 'sessions.json')")
     expect(source).toContain(
-      "occConfigPath('resident', agent, 'admission.ndjson')",
+      "qianmoConfigPath('resident', agent, 'admission.ndjson')",
     )
     expect(source).not.toMatch(/homedir\(|\.qianmo['"`]/)
   })
 
-  test('spawns ACP with the Qianmo identity and no daemon credential surface', () => {
+  test('the process pool receives the host memory root and owns child environment isolation', () => {
     const source = readFileSync(
-      join(import.meta.dir, '..', 'resident.ts'),
+      join(import.meta.dir, '../../src/host/resident.ts'),
       'utf8',
     )
-    // The ACP child env now lives in its own module so the regression suite can
-    // boot a child with the exact production environment. resident.ts must build
-    // the spawn env through it rather than assembling one inline.
-    const env = readFileSync(
-      join(import.meta.dir, '..', 'residentAcpEnv.ts'),
+    const pool = readFileSync(
+      join(import.meta.dir, '../../src/host/residentOmp.ts'),
       'utf8',
     )
-
-    // 钉源码而不是钉行为：这条路径会真的 spawn 一个子进程，测行为要起进程。
-    // 钉的是「取自 identity.ts 的常量」而不是字面量——身份名只许在那一处拼写。
-    expect(source).toContain('residentAcpEnvironment(process.env, {')
-    // 子进程的 hardline 要护住宿主实际在用的记忆根，而不只是它自己推出来的缺省根。
-    expect(source).toContain('defaultSpawnAcp(this.#memoryRoot)')
-    expect(env).toContain('[IDENTITY_ENV_VAR]: NODE_IDENTITY_MODE')
-    expect(env).toContain("from '../../constants/identity.js'")
-    // 常驻 ACP 子进程默认安全模式：关掉用户/项目 hook 执行、agents、skills、plugins，
-    // 从加载端堵住 E-2/E-3/E-4（review-P14 D-8）。
-    expect(env).toContain("CLAUDE_CODE_SAFE_MODE: '1'")
+    expect(source).toContain('memoryRoot: this.#memoryRoot')
+    expect(pool).toContain('residentOmpEnvironment(')
+    expect(pool).toContain('cwd: owner.cwd')
     expect(source).not.toMatch(/DAEMON_TOKEN|destroySandbox|execCommand/)
   })
 
   test('reads the requester context off the envelope already in the mailbox entry', () => {
     const source = readFileSync(
-      join(import.meta.dir, '..', 'resident.ts'),
+      join(import.meta.dir, '../../src/host/resident.ts'),
       'utf8',
     )
 
@@ -64,7 +53,7 @@ describe('Qianmo resident host boundary', () => {
 
   test('receipts the durable write and does not await the turn behind it', () => {
     const source = readFileSync(
-      join(import.meta.dir, '..', 'resident.ts'),
+      join(import.meta.dir, '../../src/host/resident.ts'),
       'utf8',
     )
 
@@ -90,7 +79,7 @@ describe('Qianmo resident host boundary', () => {
 
   test('hands the transport its L0 and L1 materials, and nothing of its own', () => {
     const source = readFileSync(
-      join(import.meta.dir, '..', 'resident.ts'),
+      join(import.meta.dir, '../../src/host/resident.ts'),
       'utf8',
     )
 

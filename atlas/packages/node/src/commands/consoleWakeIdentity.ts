@@ -59,11 +59,11 @@
 
 import { issueCapability, type NodeKeyPair } from '@qianmo/capability'
 import { CapabilityLevel, assertAddress } from '@qianmo/protocol'
-import { loadOrCreateNodeKeys } from '../../services/qianmo/nodeIdentity.js'
+import { loadOrCreateNodeKeys } from '../host/nodeIdentity.js'
 import type {
   WakeCapabilityBinding,
   WakeCapabilityIssuer,
-} from './residentWake.js'
+} from './wakeCapability.js'
 
 /**
  * 令牌活多久。**下限由连接封顶决定，上限由「偷来还有没有用」决定。**

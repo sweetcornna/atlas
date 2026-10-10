@@ -18,18 +18,15 @@ import {
   signBytes,
   type NodeKeyPair,
 } from '@qianmo/capability'
-import { CertificateDirectory } from '../../../services/qianmo/certificateDirectory.js'
+import { CertificateDirectory } from '../../src/host/certificateDirectory.js'
 import {
   initCa,
   issueCertificate,
   refreshRevocationList,
-} from '../../../services/qianmo/ca/operations.js'
-import { caCertPath } from '../../../services/qianmo/ca/paths.js'
-import {
-  opensslVersion,
-  runOpenssl,
-} from '../../../services/qianmo/ca/openssl.js'
-import { popMessage } from '../../../services/qianmo/ca/pop.js'
+} from '../../src/ca/operations.js'
+import { caCertPath } from '../../src/ca/paths.js'
+import { opensslVersion, runOpenssl } from '../../src/ca/openssl.js'
+import { popMessage } from '../../src/ca/pop.js'
 import { StaticPublicKeyDirectory } from '@qianmo/capability'
 import {
   assertOwnCertificateAndKey,
@@ -37,7 +34,7 @@ import {
   buildListenerTls,
   buildPublicKeyDirectory,
   parseResidentArgs,
-} from '../resident.js'
+} from '../../src/commands/resident.js'
 
 const OPENSSL = opensslVersion()
 const itNeedsOpenssl = OPENSSL === null ? test.skip : test
@@ -57,60 +54,54 @@ const BASE = [
 
 describe('resident argument parsing: --trust-ca / --cert / --key', () => {
   test('parses absolute paths for all three', () => {
-    const parsed = parseResidentArgs(
-      [
-        ...BASE,
-        '--trust-ca',
-        '/tmp/ca.crt',
-        '--cert',
-        '/tmp/node-a.tls.crt',
-        '--key',
-        '/tmp/node-a.tls.key',
-      ],
-      'qianmo',
-    )
+    const parsed = parseResidentArgs([
+      ...BASE,
+      '--trust-ca',
+      '/tmp/ca.crt',
+      '--cert',
+      '/tmp/node-a.tls.crt',
+      '--key',
+      '/tmp/node-a.tls.key',
+    ])
     expect(parsed.trustCa).toBe('/tmp/ca.crt')
     expect(parsed.cert).toBe('/tmp/node-a.tls.crt')
     expect(parsed.key).toBe('/tmp/node-a.tls.key')
   })
 
   test('rejects relative paths for all three', () => {
+    expect(() => parseResidentArgs([...BASE, '--trust-ca', 'ca.crt'])).toThrow(
+      '--trust-ca must be an absolute path',
+    )
     expect(() =>
-      parseResidentArgs([...BASE, '--trust-ca', 'ca.crt'], 'qianmo'),
-    ).toThrow('--trust-ca must be an absolute path')
-    expect(() =>
-      parseResidentArgs(
-        [...BASE, '--cert', 'a.crt', '--key', '/tmp/a.key'],
-        'qianmo',
-      ),
+      parseResidentArgs([...BASE, '--cert', 'a.crt', '--key', '/tmp/a.key']),
     ).toThrow('--cert must be an absolute path')
     expect(() =>
-      parseResidentArgs(
-        [...BASE, '--cert', '/tmp/a.crt', '--key', 'a.key'],
-        'qianmo',
-      ),
+      parseResidentArgs([...BASE, '--cert', '/tmp/a.crt', '--key', 'a.key']),
     ).toThrow('--key must be an absolute path')
   })
 
   test('--cert and --key are required together', () => {
-    expect(() =>
-      parseResidentArgs([...BASE, '--cert', '/tmp/a.crt'], 'qianmo'),
-    ).toThrow('--cert requires --key')
-    expect(() =>
-      parseResidentArgs([...BASE, '--key', '/tmp/a.key'], 'qianmo'),
-    ).toThrow('--key requires --cert')
+    expect(() => parseResidentArgs([...BASE, '--cert', '/tmp/a.crt'])).toThrow(
+      '--cert requires --key',
+    )
+    expect(() => parseResidentArgs([...BASE, '--key', '/tmp/a.key'])).toThrow(
+      '--key requires --cert',
+    )
     // Together, or neither, is fine.
     expect(() =>
-      parseResidentArgs(
-        [...BASE, '--cert', '/tmp/a.crt', '--key', '/tmp/a.key'],
-        'qianmo',
-      ),
+      parseResidentArgs([
+        ...BASE,
+        '--cert',
+        '/tmp/a.crt',
+        '--key',
+        '/tmp/a.key',
+      ]),
     ).not.toThrow()
   })
 
   test('--trust-ca does not require --cert/--key, and vice versa', () => {
     expect(() =>
-      parseResidentArgs([...BASE, '--trust-ca', '/tmp/ca.crt'], 'qianmo'),
+      parseResidentArgs([...BASE, '--trust-ca', '/tmp/ca.crt']),
     ).not.toThrow()
   })
 })
@@ -339,55 +330,41 @@ describe('assertOwnCertificateAndKey (K-2, one of the four negative cases)', () 
  */
 describe('resident argument parsing: P12.3 switches', () => {
   test('--registry-url takes an http(s) URL and requires --trust-ca', () => {
-    const parsed = parseResidentArgs(
-      [
-        ...BASE,
-        '--trust-ca',
-        '/tmp/ca.crt',
-        '--registry-url',
-        'http://127.0.0.1:8787',
-      ],
-      'qianmo',
-    )
+    const parsed = parseResidentArgs([
+      ...BASE,
+      '--trust-ca',
+      '/tmp/ca.crt',
+      '--registry-url',
+      'http://127.0.0.1:8787',
+    ])
     expect(parsed.registryUrl).toBe('http://127.0.0.1:8787/')
     // Without a root there is nothing to check a published certificate
     // against, so polling would be a network call pretending to be a feature.
     expect(() =>
-      parseResidentArgs(
-        [...BASE, '--registry-url', 'http://127.0.0.1:1'],
-        'qianmo',
-      ),
+      parseResidentArgs([...BASE, '--registry-url', 'http://127.0.0.1:1']),
     ).toThrow('--registry-url requires --trust-ca')
     expect(() =>
-      parseResidentArgs(
-        [
-          ...BASE,
-          '--trust-ca',
-          '/tmp/ca.crt',
-          '--registry-url',
-          'ws://127.0.0.1:1',
-        ],
-        'qianmo',
-      ),
+      parseResidentArgs([
+        ...BASE,
+        '--trust-ca',
+        '/tmp/ca.crt',
+        '--registry-url',
+        'ws://127.0.0.1:1',
+      ]),
     ).toThrow('--registry-url must use http or https')
   })
 
   test('handshake signing is off unless asked for, and require implies sign', () => {
     // The default is the whole of "this package only makes it possible to
     // turn on" — an unflagged node behaves exactly as it did before P12.3.
-    const base = parseResidentArgs(BASE, 'qianmo')
+    const base = parseResidentArgs(BASE)
     expect(base.signHandshake).toBeUndefined()
     expect(base.requireSignedHandshake).toBeUndefined()
 
-    expect(
-      parseResidentArgs([...BASE, '--sign-handshake'], 'qianmo'),
-    ).toMatchObject({
+    expect(parseResidentArgs([...BASE, '--sign-handshake'])).toMatchObject({
       signHandshake: true,
     })
-    const strict = parseResidentArgs(
-      [...BASE, '--require-signed-handshake'],
-      'qianmo',
-    )
+    const strict = parseResidentArgs([...BASE, '--require-signed-handshake'])
     // Refusing unsigned peers while sending an unsigned frame yourself is a
     // configuration nobody means to write, and it would fail only against the
     // peers that had already upgraded.

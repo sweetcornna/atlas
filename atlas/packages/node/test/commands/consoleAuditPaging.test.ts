@@ -32,7 +32,10 @@ import {
   type AuditFilter,
   type AuditPage,
 } from '@qianmo/console'
-import { consoleLimits, createAuditPort } from '../consolePorts.js'
+import {
+  consoleLimits,
+  createAuditPort,
+} from '../../src/commands/consolePorts.js'
 
 const roots: string[] = []
 

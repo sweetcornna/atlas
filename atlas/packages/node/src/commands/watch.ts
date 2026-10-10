@@ -69,6 +69,12 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
+import { StaticPublicKeyDirectory } from '@qianmo/capability'
+import { FileTenantStore } from './consoleTenancy.js'
+import { WatchBoundary } from './watchBoundary.js'
+import { WatchUsage, watchUsageSnapshotPath } from './watchUsage.js'
+import { loadOrCreateNodeKeys, parseTrustedKey } from '../host/nodeIdentity.js'
 import { AuditSource, type AuditTrail } from '@qianmo/audit'
 import {
   MessageType,
@@ -95,10 +101,8 @@ import {
   type SchedulerDispatch,
 } from '@qianmo/scheduler'
 import { PSK_ENV_VAR, TransportClient, pskFromEnv } from '@qianmo/transport'
-import { invokedBinName } from '../../constants/brand.js'
-import { IDENTITY_MODE } from '../../constants/identity.js'
-import { occConfigPath } from '../../config/paths.js'
-import { openAuditTrail } from '../../services/qianmo/auditTrail.js'
+import { qianmoConfigPath } from '@qianmo/paths'
+import { openAuditTrail } from '../host/auditTrail.js'
 import { consoleRegistrationsPath } from './consoleArgs.js'
 import {
   readExitRefusal,
@@ -139,6 +143,10 @@ export interface WatchConfig {
    * `--trust <node>=<publicKey>`，再打开这个开关。公钥用 `--print-identity` 取。
    */
   readonly sign: boolean
+  readonly tenancyPath?: string
+  readonly trusted?: readonly (readonly [string, string])[]
+  readonly usagePolicyPath?: string
+  readonly usageAudits?: readonly (readonly [string, string])[]
 }
 
 /**
@@ -154,7 +162,10 @@ interface WatchPrintIdentityConfig {
   readonly from: string
 }
 
-type WatchCommand = WatchConfig | WatchPrintIdentityConfig
+type WatchCommand =
+  | WatchConfig
+  | WatchPrintIdentityConfig
+  | { readonly mode: 'usage-status' }
 
 /** 作业文件里那一项：调度器认识的部分 + 本文件认识的 `url`。 */
 interface WatchJobEntry {
@@ -162,28 +173,32 @@ interface WatchJobEntry {
   readonly url: string
 }
 
-export const WATCH_HELP_TEXT = `Usage: ${invokedBinName()} watch --jobs <file> --from <address> [options]
-       ${invokedBinName()} watch --print-identity --from <address>
+export const WATCH_HELP_TEXT = `Usage: qm watch --jobs <file> --from <address> [options]
+       qm watch --print-identity --from <address>
 
 Run the hub-side watch-job scheduler. Timing lives here so the nodes hold none:
 each job fires on a one-shot reservation, dials its target node, sends one
 task.request, and keeps the connection so the node can push notifications back
-down it. Requires OCC_IDENTITY=qianmo and a key in $${PSK_ENV_VAR} shared with
-every node named in the jobs file.
+down it. Requires a key in $${PSK_ENV_VAR} shared with every node named in
+the jobs file.
 
 Options (each accepts both --name value and --name=value):
 
   --jobs <file>        JSON array of job definitions. Required. Each entry is a
                        scheduler job plus a "url" naming the target node's
                        inbound WebSocket.
+  --tenancy <path>     M2 private tenant/job mapping; requires --sign and --trust.
+  --trust <node>=<key> Signed target identity (repeat for every target).
+  --usage-policy <path> Watch quota policy; default shadow without limits.
+  --usage-audit <node>=<path> Trusted local node audit copy for token accounting.
+  --usage-status       Read the latest watch usage snapshot, then exit (alone).
   --from <address>     This hub's address, qianmo://<node>/<agent>. Required —
                        it is the head of the audit chain and the address every
                        notification is addressed back to.
   --state-dir <dir>    Where claims, job state and status.json live. Defaults
                        to <config>/qianmo/scheduler, which is where the console
-                       reads status.json from. Two hubs pointed at one
-                       directory is a supported (and tested) arrangement: the
-                       claim files make it at-most-once.
+                       reads status.json from. Claims are at-most-once; the
+                       usage ledger permits one watch writer per config root.
   --once               Run whatever is due right now, then exit. For smoke
                        tests; a real watch job wants the process to stay up.
   --sign               Sign every job's task.request with this hub's own
@@ -208,7 +223,6 @@ Options (each accepts both --name value and --name=value):
 
 Environment:
 
-  OCC_IDENTITY         Must be "qianmo".
   ${PSK_ENV_VAR}   Transport pre-shared key, required. Environment only —
                        a key on a command line is a key in every process
                        listing on this machine.
@@ -233,16 +247,19 @@ export function isWatchHelpRequest(args: readonly string[]): boolean {
   return args.some(arg => arg === '--help' || arg === '-h')
 }
 
-export function parseWatchArgs(
-  args: readonly string[],
-  identity: string = IDENTITY_MODE,
-): WatchCommand {
+export function parseWatchArgs(args: readonly string[]): WatchCommand {
+  if (args.length === 1 && args[0] === '--usage-status')
+    return { mode: 'usage-status' }
   let jobsPath: string | undefined
   let from: string | undefined
   let stateDir: string | undefined
   let once = false
   let sign = false
   let printIdentity = false
+  let tenancyPath: string | undefined
+  const trusted: (readonly [string, string])[] = []
+  let usagePolicyPath: string | undefined
+  const usageAudits: (readonly [string, string])[] = []
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
@@ -259,6 +276,37 @@ export function parseWatchArgs(
       const parsed = residentOptionValue(args, index, '--state-dir')
       stateDir = parsed.value
       index = parsed.next
+    } else if (arg === '--tenancy' || arg?.startsWith('--tenancy=')) {
+      const parsed = residentOptionValue(args, index, '--tenancy')
+      if (!isAbsolute(parsed.value))
+        throw new Error('--tenancy must be absolute')
+      tenancyPath = parsed.value
+      index = parsed.next
+    } else if (arg === '--trust' || arg?.startsWith('--trust=')) {
+      const parsed = residentOptionValue(args, index, '--trust')
+      const row = parseTrustedKey(parsed.value)
+      if (trusted.some(([node]) => node === row[0]))
+        throw new Error('duplicate watch trust node')
+      trusted.push(row)
+      index = parsed.next
+    } else if (arg === '--usage-policy' || arg?.startsWith('--usage-policy=')) {
+      const parsed = residentOptionValue(args, index, '--usage-policy')
+      if (!isAbsolute(parsed.value))
+        throw new Error('--usage-policy must be absolute')
+      usagePolicyPath = parsed.value
+      index = parsed.next
+    } else if (arg === '--usage-audit' || arg?.startsWith('--usage-audit=')) {
+      const parsed = residentOptionValue(args, index, '--usage-audit')
+      const split = parsed.value.indexOf('=')
+      const node = parsed.value.slice(0, split)
+      const path = parsed.value.slice(split + 1)
+      if (split < 1 || !isAbsolute(path))
+        throw new Error('--usage-audit needs node=absolute-path')
+      assertAddress(`qianmo://${node}/audit`)
+      if (usageAudits.some(([name]) => name === node))
+        throw new Error('duplicate usage audit node')
+      usageAudits.push([node, path])
+      index = parsed.next
     } else if (arg === '--once') {
       once = true
     } else if (arg === '--sign') {
@@ -268,18 +316,24 @@ export function parseWatchArgs(
     } else {
       throw new Error(
         `unknown watch option ${String(arg)}` +
-          ` (run \`${invokedBinName()} watch --help\` for the list)`,
+          ' (run `qm watch --help` for the list)',
       )
     }
   }
 
-  if (identity !== 'qianmo') {
-    throw new Error('watch requires OCC_IDENTITY=qianmo')
-  }
   if (printIdentity) {
     // 这条路径只用 `--from`。带上会让调度器启动的选项就报错，而不是悄悄忽略：
     // 运维以为自己启动了值守，实际上它只打印了一行公钥就退出了。
-    if (jobsPath !== undefined || stateDir !== undefined || once || sign) {
+    if (
+      jobsPath !== undefined ||
+      stateDir !== undefined ||
+      once ||
+      sign ||
+      tenancyPath !== undefined ||
+      trusted.length ||
+      usagePolicyPath !== undefined ||
+      usageAudits.length
+    ) {
       throw new Error(
         '--print-identity takes only --from: it prints the key and exits, and runs no jobs',
       )
@@ -289,14 +343,23 @@ export function parseWatchArgs(
   }
   if (jobsPath === undefined) throw new Error('watch requires --jobs')
   if (from === undefined) throw new Error('watch requires --from')
+  if (tenancyPath !== undefined && (!sign || !trusted.length))
+    throw new Error(
+      '--tenancy requires --sign and explicit --trust for every target',
+    )
+  if (trusted.length && !sign) throw new Error('--trust requires --sign')
 
   return {
     mode: 'run',
     jobsPath,
     from,
-    stateDir: stateDir ?? occConfigPath('qianmo', 'scheduler'),
+    stateDir: stateDir ?? qianmoConfigPath('qianmo', 'scheduler'),
     once,
     sign,
+    ...(tenancyPath === undefined ? {} : { tenancyPath }),
+    ...(trusted.length ? { trusted } : {}),
+    ...(usagePolicyPath === undefined ? {} : { usagePolicyPath }),
+    ...(usageAudits.length ? { usageAudits } : {}),
   }
 }
 
@@ -342,7 +405,7 @@ export function watchSigningNotice(
       'default policy refuses them with E_CAP_INSUFFICIENT; a node under ' +
       '--open-policy runs them as untrusted messages, and the agent is told to ' +
       'treat their text as data, so it will not carry out the job. To sign: run ' +
-      `\`${invokedBinName()} watch --print-identity --from ${from}\`, add ` +
+      `\`qm watch --print-identity --from ${from}\`, add ` +
       '--trust <node>=<publicKey> to every target node, then restart this with --sign.',
   }
 }
@@ -485,6 +548,7 @@ function recordNotify(
   trail: AuditTrail,
   node: string,
   message: QianmoMessage,
+  connectionNode: string | null,
 ): void {
   const payload = message.payload
   if (!isNotifyPayload(payload)) return
@@ -509,6 +573,7 @@ function recordNotify(
       traceId: message.traceId,
       detail: detailOf({
         contextId: message.contextId,
+        connectionNode: connectionNode ?? undefined,
         kind: payload.kind,
         severity: payload.severity,
         summary: payload.summary,
@@ -611,6 +676,8 @@ interface WatchDispatchOptions {
   ) => Promise<Pick<TransportClient, 'sendAndWait'>>
   readonly trail: Pick<AuditTrail, 'append'>
   readonly issue?: WakeCapabilityIssuer
+  readonly boundary?: WatchBoundary
+  readonly usage?: WatchUsage
   /**
    * 出口检查（P15.2，`tenancy-m1.md` §3.6 D8）：拨号之前问一句目标能不能拨。
    * 作业按 URL 直拨，不经注册中心，所以暂停只能在这里拦。生产上是每次现读一遍
@@ -640,7 +707,13 @@ export function createWatchDispatch(
   return async fire => {
     const url = options.urls.get(fire.job.id)
     if (url === undefined) throw new Error(`job ${fire.job.id} has no url`)
-    const refusal = options.gate?.(fire.job.target) ?? null
+    const refusal =
+      options.boundary?.allows(fire.job) === false
+        ? {
+            reason: 'unreadable' as const,
+            message: 'watch tenant/job target denied',
+          }
+        : (options.gate?.(fire.job.target) ?? null)
     if (refusal !== null) {
       // 不拨号、不签令牌、不建信封。这一刻按 skipped 退休，不进退避：暂停是
       // 有意的，恢复之后下一刻照常触发。
@@ -669,34 +742,77 @@ export function createWatchDispatch(
     if (skipping.delete(fire.job.id)) {
       warn(`[watch] job ${fire.job.id} resumed: ${fire.job.target}`)
     }
-    const client = await options.linkTo(url)
-    // 令牌在连接建立之后才签：`linkTo` 最长可能等 30 s，放在它之前签，
-    // 慢连接就会把 60 s 的有效期用掉一半。
-    const message = buildWatchRequest({
-      from: options.from,
-      job: fire.job,
-      ...(options.issue === undefined ? {} : { issue: options.issue }),
-    })
-    options.trail.append({
-      at: Date.now(),
-      source: AuditSource.Scheduler,
-      kind: 'watch_fire',
-      outcome: 'ok',
-      node: options.hubNode,
-      peer: fire.job.target,
-      taskId: message.taskId,
-      msgId: message.msgId,
-      traceId: message.traceId,
-      detail: detailOf({
-        jobId: fire.job.id,
-        dedupKey: fire.dedupKey,
-        fireAtMs: fire.fireAtMs,
-        attempt: fire.attempt,
-        notifyPolicy: fire.job.notifyPolicy,
-        signed: message.cap !== undefined,
-      }),
-    })
-    await client.sendAndWait(message, DISPATCH_RECEIPT_TIMEOUT_MS)
+    const scope =
+      options.boundary?.scope(fire.job) ??
+      (options.boundary
+        ? undefined
+        : { kind: 'job' as const, subject: fire.job.id })
+    if (!scope) return 'skipped'
+    const admission = options.usage?.store.reserve(scope, { operation: 'wake' })
+    if (admission && !admission.ok) {
+      options.trail.append({
+        at: Date.now(),
+        source: AuditSource.Scheduler,
+        kind: 'watch_quota_refused',
+        outcome: 'refused',
+        node: options.hubNode,
+        peer: fire.job.target,
+        code: admission.reason,
+        detail: { jobId: fire.job.id },
+      })
+      warn(`[watch] job ${fire.job.id} usage refused: ${admission.reason}`)
+      return 'skipped'
+    }
+    let attempted = false
+    try {
+      const client = await options.linkTo(url)
+      if (
+        options.boundary?.allows(fire.job) === false ||
+        options.gate?.(fire.job.target)
+      )
+        throw new Error('watch target permission changed during connection')
+      if (
+        options.boundary &&
+        options.boundary.scope(fire.job)?.tenant !== scope.tenant
+      )
+        throw new Error('watch tenant changed during connection')
+      // 令牌在连接建立之后才签：`linkTo` 最长可能等 30 s，放在它之前签，
+      // 慢连接就会把 60 s 的有效期用掉一半。
+      const draft = buildWatchRequest({
+        from: options.from,
+        job: fire.job,
+        ...(options.issue === undefined ? {} : { issue: options.issue }),
+      })
+      const message = options.boundary?.outbound(draft) ?? draft
+      if (admission?.ok)
+        options.usage!.bind(admission.reservationId, message, scope)
+      options.trail.append({
+        at: Date.now(),
+        source: AuditSource.Scheduler,
+        kind: 'watch_fire',
+        outcome: 'ok',
+        node: options.hubNode,
+        peer: fire.job.target,
+        taskId: message.taskId,
+        msgId: message.msgId,
+        traceId: message.traceId,
+        detail: detailOf({
+          jobId: fire.job.id,
+          dedupKey: fire.dedupKey,
+          fireAtMs: fire.fireAtMs,
+          attempt: fire.attempt,
+          notifyPolicy: fire.job.notifyPolicy,
+          signed: message.cap !== undefined,
+        }),
+      })
+      attempted = true
+      await client.sendAndWait(message, DISPATCH_RECEIPT_TIMEOUT_MS)
+    } finally {
+      // No receipt is not proof of no remote task. Preserve attempted usage until
+      // an exact authenticated terminal (or the reservation TTL), even on error.
+      if (!attempted && admission?.ok)
+        options.usage!.store.finish(admission.reservationId)
+    }
   }
 }
 
@@ -706,6 +822,10 @@ export async function runWatch(args: readonly string[]): Promise<void> {
     return
   }
   const command = parseWatchArgs(args)
+  if (command.mode === 'usage-status') {
+    process.stdout.write(`${readFileSync(watchUsageSnapshotPath(), 'utf8')}\n`)
+    return
+  }
   // 排在 PSK 与作业文件之前：这条路径就是给「还没配好」的那一刻用的。
   if (command.mode === 'print-identity') {
     const identity = loadWatchSigningIdentity(command.from)
@@ -715,17 +835,56 @@ export async function runWatch(args: readonly string[]): Promise<void> {
   await runWatchJobs(command)
 }
 
+/** `qm watch`. */
+export async function run(argv: string[]): Promise<number> {
+  await runWatch(argv)
+  return 0
+}
+
 /**
  * 按解析好的配置跑起来：读作业文件与 PSK、接审计链、起调度器。
  *
- * 与参数解析分开，是为了让用例能在本进程里跑一遍真的 `qm watch --once`：
- * `parseWatchArgs` 要求进程身份是 qianmo，而身份在进程启动时就定了
- * （`constants/identity.ts`），用例进程不是。
+ * 与参数解析分开，是为了让用例能在本进程里直接用一份配置跑一遍真的
+ * `qm watch --once`，不经过命令行。
  */
 export async function runWatchJobs(config: WatchConfig): Promise<void> {
   const psk = pskFromEnv()
   const entries = parseWatchJobs(readFileSync(config.jobsPath, 'utf8'))
   const hub = assertAddress(config.from, '--from')
+  if (
+    config.tenancyPath !== undefined &&
+    (!config.sign || !config.trusted?.length)
+  )
+    throw new Error('M2 watch requires signing and explicit trust')
+  const tenancy =
+    config.tenancyPath === undefined
+      ? undefined
+      : new FileTenantStore(config.tenancyPath)
+  const boundary = new WatchBoundary(
+    config.from,
+    entries.map(row => row.job),
+    tenancy,
+  )
+  const targets = new Map<string, string>()
+  for (const entry of entries) {
+    const node = assertAddress(entry.job.target).node
+    if (targets.has(entry.url) && targets.get(entry.url) !== node)
+      throw new Error('watch URL is assigned to multiple node identities')
+    targets.set(entry.url, node)
+    if (
+      config.trusted?.length &&
+      !config.trusted.some(([name]) => name === node)
+    )
+      throw new Error(`watch target has no trusted key: ${node}`)
+  }
+  const signing = config.trusted?.length
+    ? {
+        node: hub.node,
+        keys: loadOrCreateNodeKeys(hub.node),
+        directory: new StaticPublicKeyDirectory(config.trusted),
+        required: true,
+      }
+    : undefined
   // 只在要签名时才读身份（首次运行会创建）。不签名的中枢不该在配置根里留下
   // 一把用不到的私钥。读不出来就让启动失败：运维明确要求了签名，照常启动却不签，
   // 正是这条路径上最难发现的失败。
@@ -733,6 +892,13 @@ export async function runWatchJobs(config: WatchConfig): Promise<void> {
     ? loadWatchSigningIdentity(config.from)
     : undefined
   const trail = openAuditTrail()
+  const usage = await WatchUsage.open(
+    boundary,
+    entries.map(row => row.job),
+    config.usagePolicyPath,
+    config.usageAudits,
+  )
+  await usage.snapshot()
 
   const urls = new Map(entries.map(entry => [entry.job.id, entry.url]))
   const links = new Map<string, NodeLink>()
@@ -744,18 +910,32 @@ export async function runWatchJobs(config: WatchConfig): Promise<void> {
       const client = new TransportClient({
         endpoint: { url },
         node: hub.node,
+        peerNode: targets.get(url)!,
+        ...(signing === undefined ? {} : { signing }),
         psk,
         // 声明全量类型，否则节点按能力发现（§2.7）会认定这个中枢不收 notify，
         // 一条都不发——而这正是本进程存在的理由。
         supportedTypes: [...Object.values(MessageType)],
-        onMessage: message => {
+        onMessage: (message, context) => {
+          const authenticatedPeer =
+            context.channel.authenticatedPeerNode ?? null
+          if (!boundary.inbound(message, targets.get(url)!, authenticatedPeer))
+            return
           if (message.type === MessageType.Notify) {
-            recordNotify(trail, hub.node, message)
+            recordNotify(trail, hub.node, message, authenticatedPeer)
           } else if (
             message.type === MessageType.TaskResult ||
             message.type === MessageType.Error
           ) {
+            usage.result(message)
             recordResult(trail, hub.node, message)
+            void usage
+              .snapshot()
+              .catch(error =>
+                process.stderr.write(
+                  `[watch] usage status: ${String(error)}\n`,
+                ),
+              )
           }
         },
       })
@@ -779,7 +959,7 @@ export async function runWatchJobs(config: WatchConfig): Promise<void> {
     },
   })
   const estop = new ResidentEstop({
-    path: occConfigPath('qianmo', 'scheduler', 'ESTOP'),
+    path: qianmoConfigPath('qianmo', 'scheduler', 'ESTOP'),
     onError: error => {
       process.stderr.write(`[watch] estop: ${String(error)}\n`)
     },
@@ -788,6 +968,13 @@ export async function runWatchJobs(config: WatchConfig): Promise<void> {
   const runner: SchedulerRunner = new SchedulerRunner({
     store,
     jobs: entries.map(entry => entry.job),
+    // The standalone watch command owns its lifetime. The library's default
+    // unref timer is suitable for an embedded scheduler, but would let this
+    // lightweight CLI exit before its first dispatch (or between jobs).
+    schedule: (delayMs, callback) => {
+      const timer = setTimeout(callback, delayMs)
+      return { cancel: () => clearTimeout(timer) }
+    },
     paused: () => estop.engaged(),
     onError: error => {
       process.stderr.write(`[watch] ${String(error)}\n`)
@@ -799,6 +986,11 @@ export async function runWatchJobs(config: WatchConfig): Promise<void> {
         config.stateDir,
         schedulerStatusOf(runner, process.pid),
       )
+      void usage
+        .snapshot()
+        .catch(error =>
+          process.stderr.write(`[watch] usage status: ${String(error)}\n`),
+        )
     },
     dispatch: createWatchDispatch({
       from: config.from,
@@ -806,6 +998,8 @@ export async function runWatchJobs(config: WatchConfig): Promise<void> {
       urls,
       linkTo,
       trail,
+      boundary,
+      usage,
       ...(identity === undefined ? {} : { issue: identity.issue }),
       // 每次派发前现读一遍控制台的登记簿（同一个配置根，与作业页读状态目录
       // 同一条约定，console.md §10.4）。
@@ -823,13 +1017,20 @@ export async function runWatchJobs(config: WatchConfig): Promise<void> {
       ? `[watch] no registration ledger at ${registrationsPath}: nothing is paused or retired as far as this process can see; run it on the console's config root\n`
       : `[watch] paused and retired agents are skipped, as ${registrationsPath} says\n`,
   )
-  const signing = watchSigningNotice(identity, config.from)
-  if (signing.stdout !== undefined) process.stdout.write(`${signing.stdout}\n`)
-  if (signing.stderr !== undefined) process.stderr.write(`${signing.stderr}\n`)
+  const signingNotice = watchSigningNotice(identity, config.from)
+  if (signingNotice.stdout !== undefined)
+    process.stdout.write(`${signingNotice.stdout}\n`)
+  if (signingNotice.stderr !== undefined)
+    process.stderr.write(`${signingNotice.stderr}\n`)
 
   if (config.once) {
-    await runner.runDue(Date.now())
-    for (const link of links.values()) await link.client.close()
+    try {
+      await runner.runDue(Date.now())
+      for (const link of links.values()) await link.client.close()
+      await usage.snapshot()
+    } finally {
+      usage.close()
+    }
     return
   }
 
@@ -838,6 +1039,8 @@ export async function runWatchJobs(config: WatchConfig): Promise<void> {
     runner.stop()
     void (async () => {
       for (const link of links.values()) await link.client.close()
+      await usage.snapshot()
+      usage.close()
     })()
   }
   process.once('SIGINT', stop)

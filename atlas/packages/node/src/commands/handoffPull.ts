@@ -75,7 +75,7 @@ import {
   taskBranch,
   taskRef,
 } from '@qianmo/handoff'
-import { qmcodeHome } from '../../config/paths.js'
+import { qmcodeHome } from '@qianmo/paths'
 import { fetchFromHub, hubConnection, localRef } from './handoffHub.js'
 import {
   consoleError,

@@ -4,7 +4,7 @@
 /**
  * Provider hot switch on a resident (design `providers-console-m1.md` §2.7,
  * P18.3), against real ACP child *processes* — the stub agent in
- * `fixtures/resident-acp-agent.runner.ts` — and the real P18.2 write path
+ * `fixtures/resident-omp-agent.runner.ts` — and the real P18.2 write path
  * (`providers/node.ts`) on a temporary config root.
  *
  * What the stub agent cannot say is which model a resumed session is pinned
@@ -34,14 +34,13 @@ import {
 } from '@qianmo/protocol'
 import type { ResidentTimingEvent } from '@qianmo/resident'
 import { TransportClient } from '@qianmo/transport'
-import { resetSettingsCache } from '../../../utils/settings/settingsCache.js'
-import * as providerNode from '../providers/node.js'
-import { applyRequest } from '../providers/__tests__/helpers.js'
+import * as providerNode from '../../src/providers/node.js'
+import { applyRequest } from '../providers/helpers.js'
 import {
   QianmoResident,
   type ResidentProviderSwitchEvent,
-} from '../resident.js'
-import { residentAcpEnvironment } from '../residentAcpEnv.js'
+} from '../../src/host/resident.js'
+import { residentOmpEnvironment } from '../../src/host/residentOmpEnv.js'
 
 const PSK = 'resident-provider-switch-not-a-real-secret'
 const TEAM = 'nest'
@@ -49,7 +48,7 @@ const AGENT = 'reviewer'
 const ACP_FIXTURE = join(
   import.meta.dir,
   'fixtures',
-  'resident-acp-agent.runner.ts',
+  'resident-omp-agent.runner.ts',
 )
 const TEST_TIMEOUT_MS = 30_000
 
@@ -78,9 +77,9 @@ afterEach(async () => {
     if (child.exitCode === null && child.signalCode === null)
       child.kill('SIGKILL')
   }
-  if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
-  resetSettingsCache()
+  if (previousConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = previousConfigDir
+
   if (root !== undefined) rmSync(root, { recursive: true, force: true })
   root = undefined
 })
@@ -112,9 +111,9 @@ function setUpNode(name: string): { config: string; socket: string } {
   const config = join(root, 'config')
   mkdirSync(config, { mode: 0o700 })
   chmodSync(config, 0o700)
-  previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = config
-  resetSettingsCache()
+  previousConfigDir = process.env.QIANMO_CONFIG_DIR
+  process.env.QIANMO_CONFIG_DIR = config
+
   return { config, socket: join(root, 'r.sock') }
 }
 
@@ -152,8 +151,15 @@ function startResident(
     readonly clock?: ManualClock
     readonly pollIntervalMs?: number
     readonly maxRapidFailures?: number
+    readonly initialBackoffMs?: number
+    readonly providerNode?: ConstructorParameters<
+      typeof QianmoResident
+    >[0]['providerNode']
     /** Mailbox poll interval. Default 20 ms. */
     readonly mailboxPollMs?: number
+    readonly beforeModelGeneration?: ConstructorParameters<
+      typeof QianmoResident
+    >[0]['beforeModelGeneration']
   } = {},
 ): Harness {
   const spawned: ChildProcess[] = []
@@ -172,18 +178,17 @@ function startResident(
     listen: { unix: socket },
     memoryRoot,
     inactivityMs: 0,
-    acpRestart: {
-      initialBackoffMs: 10,
+    beforeModelGeneration: options.beforeModelGeneration,
+    ompRestart: {
+      initialBackoffMs: options.initialBackoffMs ?? 10,
       ...(options.maxRapidFailures === undefined
         ? {}
         : { maxRapidFailures: options.maxRapidFailures }),
     },
-    spawnAcp: () => {
+    spawnOmp: () => {
       // The environment the production spawn (`defaultSpawnAcp`) would hand
       // this child, captured at the moment it would hand it.
-      spawnEnvs.push(
-        JSON.stringify(residentAcpEnvironment(process.env, { memoryRoot })),
-      )
+      spawnEnvs.push(JSON.stringify(residentOmpEnvironment(process.env)))
       const child = spawn(process.execPath, [ACP_FIXTURE], {
         stdio: ['pipe', 'pipe', 'inherit'],
         env:
@@ -195,7 +200,7 @@ function startResident(
       spawned.push(child)
       return child
     },
-    providerNode,
+    providerNode: options.providerNode ?? providerNode,
     providerSwitch: {
       pollIntervalMs: options.pollIntervalMs ?? 0,
       ...(options.clock === undefined ? {} : { now: options.clock.now }),
@@ -211,7 +216,8 @@ function startResident(
     resident,
     spawned,
     spawnEnvs,
-    ready: () => timings.filter(event => event.stage === 'acp_ready').length,
+    ready: () =>
+      timings.filter(event => event.stage === 'runtime_ready').length,
     alerts,
     errors,
     switches,
@@ -297,6 +303,139 @@ function defaultSessionId(config: string): string {
 
 describe('resident provider hot switch (P18.3)', () => {
   test(
+    'a generation joins a commit already begun during backoff before validating its configuration',
+    async () => {
+      const { socket } = setUpNode('commit-flight')
+      stage()
+      await providerNode.commitPendingProviderConfig()
+      let block = false,
+        entered = false,
+        release!: () => void
+      const barrier = new Promise<void>(resolve => {
+        release = resolve
+      })
+      const identities: Array<string | null> = []
+      const node = startResident(socket, {
+        initialBackoffMs: 200,
+        providerNode: {
+          ...providerNode,
+          commitPendingProviderConfig: async () => {
+            if (block) {
+              entered = true
+              await barrier
+            }
+            return providerNode.commitPendingProviderConfig()
+          },
+        },
+        beforeModelGeneration: async () => {
+          identities.push(
+            providerNode.readProviderState().applied?.requestId ?? null,
+          )
+          if (identities.length === 1)
+            throw new Error('fixture first generation failed')
+        },
+      })
+      try {
+        await waitUntil(() => node.errors.length > 0)
+        const first = identities[0]
+        block = true
+        const next = stage({ profile: { revision: 2 } })
+        node.resident.checkProviderConfig()
+        await waitUntil(() => entered)
+        await new Promise(resolve => setTimeout(resolve, 350))
+        expect(identities).toEqual([first])
+        expect(node.spawned).toHaveLength(0)
+        release()
+        await waitUntil(() => node.ready() === 1)
+        expect(identities).toEqual([first, next])
+        expect(node.spawned).toHaveLength(1)
+      } finally {
+        release()
+      }
+    },
+    TEST_TIMEOUT_MS,
+  )
+
+  test(
+    'generation validation follows recovered commit and actual prior child exit, with no managed switch during validation',
+    async () => {
+      const { socket } = setUpNode('serial-probe')
+      const firstId = stage()
+      const probes: ChildProcess[] = []
+      const identities: Array<string | null> = []
+      let node: Harness
+      node = startResident(socket, {
+        mailboxPollMs: ONE_POLL_PER_GENERATION_MS,
+        beforeModelGeneration: async ({ signal }) => {
+          identities.push(
+            providerNode.readProviderState().applied?.requestId ?? null,
+          )
+          for (const old of node?.spawned ?? []) {
+            expect(old.exitCode !== null || old.signalCode !== null).toBe(true)
+          }
+          const child = spawn(
+            process.execPath,
+            ['-e', 'setInterval(()=>{},1000)'],
+            { stdio: 'ignore' },
+          )
+          probes.push(child)
+          children.push(child)
+          const abort = () => child.kill('SIGKILL')
+          signal.addEventListener('abort', abort, { once: true })
+          await new Promise<void>(resolve =>
+            child.once('close', () => resolve()),
+          )
+          signal.removeEventListener('abort', abort)
+        },
+      })
+      await waitUntil(() => probes.length === 1)
+      const connected = await connect(socket)
+      expect(connected.client).toBeDefined()
+      expect(node.spawned).toHaveLength(0)
+      expect(identities).toEqual([firstId])
+      const secondId = stage({ profile: { revision: 2 } })
+      node.resident.checkProviderConfig()
+      expect(providerNode.readProviderState().applied?.requestId).toBe(firstId)
+      probes[0]!.kill('SIGTERM')
+      await waitUntil(() => node.ready() === 1)
+      expect(probes[0]!.signalCode).toBe('SIGTERM')
+      await checkUntil(node, () => probes.length === 2)
+      expect(identities).toEqual([firstId, secondId])
+      expect(node.spawned).toHaveLength(1)
+      expect(
+        node.spawned[0]!.exitCode !== null ||
+          node.spawned[0]!.signalCode !== null,
+      ).toBe(true)
+      probes[1]!.kill('SIGTERM')
+      await waitUntil(() => node.ready() === 2)
+      expect(node.spawned).toHaveLength(2)
+    },
+    TEST_TIMEOUT_MS,
+  )
+
+  test(
+    'stopping while the generation hook is pending never spawns a late RPC child',
+    async () => {
+      const { socket } = setUpNode('stop-probe')
+      let entered = false
+      const node = startResident(socket, {
+        beforeModelGeneration: async ({ signal }) => {
+          entered = true
+          await new Promise<void>(resolve =>
+            signal.addEventListener('abort', () => resolve(), { once: true }),
+          )
+        },
+      })
+      await waitUntil(() => entered)
+      node.resident.stop()
+      await activeRun
+      expect(node.spawned).toHaveLength(0)
+      expect(node.ready()).toBe(0)
+    },
+    TEST_TIMEOUT_MS,
+  )
+
+  test(
     'with no pending intent: no recycle, no env change, settings and sessions untouched',
     async () => {
       // The three fleet nodes have no pending file. This locks what they see
@@ -335,13 +474,9 @@ describe('resident provider hot switch (P18.3)', () => {
       expect(node.ready()).toBe(1)
       expect(JSON.stringify(process.env)).toBe(envBefore)
       expect(node.spawnEnvs).toHaveLength(1)
-      expect(
-        JSON.stringify(
-          residentAcpEnvironment(process.env, {
-            memoryRoot: join(root as string, 'memory'),
-          }),
-        ),
-      ).toBe(node.spawnEnvs[0] as string)
+      expect(JSON.stringify(residentOmpEnvironment(process.env))).toBe(
+        node.spawnEnvs[0] as string,
+      )
       expect(readFileSync(join(config, 'settings.json'), 'utf8')).toBe(
         settingsBytes,
       )
@@ -393,7 +528,7 @@ describe('resident provider hot switch (P18.3)', () => {
         },
       ])
       await waitUntil(() => !isAlive(firstChild))
-      expect(firstChild?.signalCode).toBe('SIGTERM')
+      expect(firstChild?.exitCode).toBe(0)
       const secondSession = defaultSessionId(config)
       expect(secondSession).not.toBe(firstSession)
 
@@ -534,7 +669,7 @@ describe('resident provider hot switch (P18.3)', () => {
       // `qm provider` with no resident running commits on its own (§2.6 step
       // 4); the session policy that came with it never reaches the resident.
       const requestId = stage({ recycle: { sessions: 'keep' } })
-      expect(providerNode.commitPendingProviderConfig().status).toBe(
+      expect((await providerNode.commitPendingProviderConfig()).status).toBe(
         'committed',
       )
 

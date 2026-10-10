@@ -3,7 +3,7 @@
 
 /**
  * What `qm handoff` keeps on this machine and the names it accepts (P17.4,
- * P17.3 会话定位). Files go to a throwaway `OCC_CONFIG_DIR`.
+ * P17.3 会话定位). Files go to a throwaway `QIANMO_CONFIG_DIR`.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -35,10 +35,10 @@ import {
   sessionFor,
   sessionsPath,
   stateDir,
-} from '../handoffStore.js'
+} from '../../src/commands/handoffStore.js'
 
 const roots: string[] = []
-const savedConfigDir = process.env.OCC_CONFIG_DIR
+const savedConfigDir = process.env.QIANMO_CONFIG_DIR
 let configDir = ''
 
 function tempDir(): string {
@@ -49,12 +49,12 @@ function tempDir(): string {
 
 beforeAll(() => {
   configDir = tempDir()
-  process.env.OCC_CONFIG_DIR = configDir
+  process.env.QIANMO_CONFIG_DIR = configDir
 })
 
 afterAll(() => {
-  if (savedConfigDir === undefined) delete process.env.OCC_CONFIG_DIR
-  else process.env.OCC_CONFIG_DIR = savedConfigDir
+  if (savedConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = savedConfigDir
   for (const root of roots) rmSync(root, { recursive: true, force: true })
 })
 

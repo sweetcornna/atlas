@@ -51,16 +51,19 @@ import {
   createConsoleChatPort,
   type ChatDialer,
   type ChatLink,
-} from '../consoleChat.js'
-import { parseConsoleArgs, transportPskEnvVarForNode } from '../consoleArgs.js'
-import { createRegistryPort } from '../consolePorts.js'
-import { readExitRefusal } from '../consoleRegistrationLedger.js'
+} from '../../src/commands/consoleChat.js'
+import {
+  parseConsoleArgs,
+  transportPskEnvVarForNode,
+} from '../../src/commands/consoleArgs.js'
+import { createRegistryPort } from '../../src/commands/consolePorts.js'
+import { readExitRefusal } from '../../src/commands/consoleRegistrationLedger.js'
 import {
   ConsoleRegistrations,
   REGISTRATION_LEDGER_VERSION,
   gateWakePort,
-} from '../consoleRegistrations.js'
-import { createWatchDispatch } from '../watch.js'
+} from '../../src/commands/consoleRegistrations.js'
+import { createWatchDispatch } from '../../src/commands/watch.js'
 
 const PLANNER = 'qianmo://node-a/planner'
 const PLANNER_EP = 'ws://127.0.0.1:38611'
@@ -919,46 +922,40 @@ describe('a paused agent is reached by none of the three exits (DoD ②)', () =>
 
 describe('--managed', () => {
   test('one address per flag, its endpoint after the first =, and absent means no list at all', () => {
-    const config = parseConsoleArgs(
-      [
-        '--managed',
-        `${PLANNER}=${PLANNER_EP}`,
-        `--managed=${REVIEWER}=${REVIEWER_EP}`,
-      ],
-      'qianmo',
-    )
+    const config = parseConsoleArgs([
+      '--managed',
+      `${PLANNER}=${PLANNER_EP}`,
+      `--managed=${REVIEWER}=${REVIEWER_EP}`,
+    ])
     expect(config.managed).toEqual([...MANAGED])
     // A console started without it keeps the shape it had before.
-    expect('managed' in parseConsoleArgs([], 'qianmo')).toBe(false)
+    expect('managed' in parseConsoleArgs([])).toBe(false)
   })
 
   test('a malformed line, a bad address or a repeated address stops the console from starting', () => {
-    expect(() => parseConsoleArgs(['--managed', PLANNER], 'qianmo')).toThrow(
+    expect(() => parseConsoleArgs(['--managed', PLANNER])).toThrow(
       '--managed must be <address>=<endpoint>',
     )
     expect(() =>
-      parseConsoleArgs(['--managed', `node-a/planner=${PLANNER_EP}`], 'qianmo'),
+      parseConsoleArgs(['--managed', `node-a/planner=${PLANNER_EP}`]),
     ).toThrow()
+    expect(() => parseConsoleArgs(['--managed', `${PLANNER}=`])).toThrow(
+      '--managed must not be empty',
+    )
     expect(() =>
-      parseConsoleArgs(['--managed', `${PLANNER}=`], 'qianmo'),
-    ).toThrow('--managed must not be empty')
-    expect(() =>
-      parseConsoleArgs(
-        [
-          '--managed',
-          `${PLANNER}=${PLANNER_EP}`,
-          '--managed',
-          `${PLANNER}=${REVIEWER_EP}`,
-        ],
-        'qianmo',
-      ),
+      parseConsoleArgs([
+        '--managed',
+        `${PLANNER}=${PLANNER_EP}`,
+        '--managed',
+        `${PLANNER}=${REVIEWER_EP}`,
+      ]),
     ).toThrow(`--managed repeats address ${PLANNER}`)
   })
 })
 
 // --- the real processes -------------------------------------------------------
 
-const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..', '..')
+const COMMANDS_DIR = resolve(import.meta.dir, '..', '..', 'src', 'commands')
 
 /** A port nothing listens on: a dial that gets this far fails, it does not hang on a stranger. */
 const DEAD_EP = 'ws://127.0.0.1:1'
@@ -974,11 +971,9 @@ function child(
   env: Record<string, string>,
 ) {
   return Bun.spawn(['bun', '-e', script], {
-    cwd: REPO_ROOT,
     env: {
       ...process.env,
-      OCC_IDENTITY: 'qianmo',
-      OCC_CONFIG_DIR: configRoot,
+      QIANMO_CONFIG_DIR: configRoot,
       ...env,
     },
     stdout: 'pipe',
@@ -1012,7 +1007,7 @@ async function watchOnce(root: string, anchorMs?: number) {
   )
   const run = child(
     root,
-    "const { runWatchJobs } = await import('./src/cli/handlers/watch.ts');" +
+    `const { runWatchJobs } = await import(${JSON.stringify(join(COMMANDS_DIR, 'watch.ts'))});` +
       ' await runWatchJobs(JSON.parse(process.env.QM_TEST_CONFIG))',
     {
       QIANMO_TRANSPORT_PSK: PSK,
@@ -1086,8 +1081,8 @@ describe('qm watch and qm console, end to end', () => {
     const target = 'qianmo://node-a/planner'
     const console_ = child(
       root,
-      "const { runConsole } = await import('./src/cli/handlers/console.ts');" +
-        ' await runConsole(JSON.parse(process.env.QM_TEST_ARGS))',
+      `const { run } = await import(${JSON.stringify(join(COMMANDS_DIR, 'console.ts'))});` +
+        ' await run(JSON.parse(process.env.QM_TEST_ARGS))',
       {
         [transportPskEnvVarForNode('node-a')]: PSK,
         QM_TEST_ARGS: JSON.stringify([

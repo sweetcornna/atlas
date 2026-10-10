@@ -15,14 +15,17 @@ import { X509Certificate } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { verifyCsrPop } from '../ca/pop.js'
-import { opensslVersion } from '../ca/openssl.js'
-import { initCa, issueCertificate } from '../ca/operations.js'
+import { verifyCsrPop } from '../../src/ca/pop.js'
+import { opensslVersion } from '../../src/ca/openssl.js'
+import { initCa, issueCertificate } from '../../src/ca/operations.js'
 import {
   CertRequestOpensslError,
   generateNodeCertificateRequest,
-} from '../certRequest.js'
-import { loadOrCreateNodeKeys, nodeIdentityPath } from '../nodeIdentity.js'
+} from '../../src/host/certRequest.js'
+import {
+  loadOrCreateNodeKeys,
+  nodeIdentityPath,
+} from '../../src/host/nodeIdentity.js'
 
 const OPENSSL = opensslVersion()
 const itNeedsOpenssl = OPENSSL === null ? test.skip : test
@@ -38,13 +41,13 @@ let previousConfigDir: string | undefined
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'qianmo-cert-request-'))
-  previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+  previousConfigDir = process.env.QIANMO_CONFIG_DIR
+  process.env.QIANMO_CONFIG_DIR = join(root, 'config')
 })
 
 afterEach(() => {
-  if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+  if (previousConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = previousConfigDir
   rmSync(root, { recursive: true, force: true })
 })
 
