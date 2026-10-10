@@ -5,7 +5,7 @@ import { describe, expect, test } from 'bun:test'
 import { ResidentTimingRecorder } from '../src/timings.js'
 
 const event = (at: number) => ({
-  stage: 'acp_ready' as const,
+  stage: 'runtime_ready' as const,
   at,
   sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
 })

@@ -7,11 +7,11 @@ import {
   NOTICE_TRUST_VERIFIED_CAPABILITY,
   TRUST_UNTRUSTED,
 } from '@qianmo/protocol'
-import type { TeammateMessage } from 'src/utils/agents/teammateMailbox.js'
 import {
+  type TeammateMessage,
   compactMailboxMessages,
   isStructuredProtocolMessage,
-} from 'src/utils/agents/teammateMailbox.js'
+} from '@qianmo/mailbox'
 
 import {
   BASE_RESERVED_MESSAGE_TYPES,

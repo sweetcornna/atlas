@@ -64,8 +64,8 @@ async function residentSources(): Promise<readonly string[]> {
   // The host half: the wiring that owns the transport server, the ledgers and
   // the notifier. A scan that stopped at the package boundary would miss the
   // one file most likely to grow a dialer.
-  files.push(resolve(REPO_ROOT, 'src/services/qianmo/resident.ts'))
-  files.push(resolve(REPO_ROOT, 'src/cli/handlers/resident.ts'))
+  files.push(resolve(REPO_ROOT, 'packages/node/src/host/resident.ts'))
+  files.push(resolve(REPO_ROOT, 'packages/node/src/commands/resident.ts'))
   return files
 }
 

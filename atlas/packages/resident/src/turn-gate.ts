@@ -19,7 +19,7 @@ export interface NodeTurnRequest {
    */
   readonly deadlineAt?: number
   /**
-   * Which ACP session the turn will run in. Carried so a queued turn can be
+   * Which omp RPC session the turn will run in. Carried so a queued turn can be
    * described without asking the reader that submitted it; `''` when the
    * caller has no session to name.
    */

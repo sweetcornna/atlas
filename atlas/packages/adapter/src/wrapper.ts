@@ -12,55 +12,49 @@ import {
 } from '@qianmo/protocol'
 
 /**
- * The object the inbound adapter serializes into a base mailbox entry's
+ * The object the inbound adapter serializes into a mailbox entry's
  * `text` (protocol.md §9.2 rules M-2 / M-4, §9.4).
  *
  * The shape is load-bearing in three separate ways.
  *
- * **1. Remote content never owns the top level (M-2).** The base dispatches
- * inbound mailbox entries on the *top-level* `type` of the parsed `text`
- * (`src/hooks/useInboxPoller.ts:382-414`), and every discriminator it uses
- * inspects only that top-level object — `isPermissionResponse`, for instance,
- * is just `parsed.type === 'permission_response'`
- * (`src/utils/agents/teammateMailbox.ts:895-907`). Writing a remote object in
- * as the top level would hand a remote node a way to post `shutdown_request`
- * or `permission_response` into this node's control channel. Nesting the
- * remote envelope under `envelope` makes those discriminators structurally
- * unreachable — not merely unlikely.
+ * **1. Remote content never owns the top level (M-2).** Mailbox consumers
+ * classify an entry by the *top-level* `type` of the parsed `text`
+ * (`@qianmo/mailbox`'s `isStructuredProtocolMessage` is a check on exactly
+ * that field). Writing a remote object in as the top level would hand a
+ * remote node a way to post `shutdown_request` or `permission_response` into
+ * this node's control channel. Nesting the remote envelope under `envelope`
+ * makes those discriminators structurally unreachable — not merely unlikely.
  *
  * **2. Carrying a top-level `type` at all is deliberate (M-4).** It buys two
  * things at once:
  *
- * - *the highest retention tier*: `shouldRetainUnreadAsProtocolMessage`
- *   (`teammateMailbox.ts:65-82`) first checks the base's reserved types, and
- *   failing that returns true for any JSON-like text with a top-level `type`.
- *   `qianmo.envelope` takes the second branch, so an unread Qianmo message is
- *   compacted under `MAX_UNREAD_PROTOCOL_MAILBOX_MESSAGES` rather than the
- *   lower `MAX_MAILBOX_MESSAGES` (`:185-189`, `:214-232`);
- * - *normal delivery to the agent*: the attachment path filters on
- *   `isStructuredProtocolMessage` (`src/utils/attachments/team.ts:96-98`),
- *   which is a closed whitelist that `qianmo.envelope` is not in, so the
- *   message is not swallowed on its way to the agent's context.
+ * - *the highest retention tier*: mailbox compaction keeps any unread
+ *   JSON-like text with a top-level `type` in its protocol lane, so an unread
+ *   Qianmo message is compacted under `MAX_UNREAD_PROTOCOL_MAILBOX_MESSAGES`
+ *   rather than the lower `MAX_MAILBOX_MESSAGES`;
+ * - *normal delivery to the agent*: the resident host skips only entries for
+ *   which `isStructuredProtocolMessage` holds, a closed whitelist that
+ *   `qianmo.envelope` is not in, so the message is not swallowed on its way
+ *   to the agent's context.
  *
  * Protocol-grade retention with an ordinary delivery path, from one field.
  *
- * **3. `notice` sits outside `envelope`, at the top (§9.4).** The attachment
- * path hands `text` to the model verbatim (`team.ts:135-147, 183-188`), and
- * T-7's acceptance bar is explicitly *not* "the model was convinced". The
- * provenance label therefore has to be somewhere a tool can read without
- * parsing business content — fixed, and shallow.
+ * **3. `notice` sits outside `envelope`, at the top (§9.4).** The mailbox
+ * batch reaches the model as `text`, and T-7's acceptance bar is explicitly
+ * *not* "the model was convinced". The provenance label therefore has to be
+ * somewhere a tool can read without parsing business content — fixed, and
+ * shallow.
  */
 export const QIANMO_WRAPPER_TYPE = 'qianmo.envelope'
 
 /**
- * The ten `text` types the base itself dispatches on
- * (`teammateMailbox.ts:1410-1432`).
+ * The ten control `text` types `@qianmo/mailbox`'s
+ * `isStructuredProtocolMessage` recognises.
  *
  * Listed so rule M-2 is checkable rather than remembered: a Qianmo wrapper
- * type that ever collides with one of these would be routed into the base's
+ * type that ever collides with one of these would be routed into the
  * control channel. {@link assertWrapperTypeIsNotReserved} asserts it, and the
- * package's tests assert it again against the base's own
- * `isStructuredProtocolMessage`.
+ * package's tests assert it again against `isStructuredProtocolMessage`.
  */
 export const BASE_RESERVED_MESSAGE_TYPES: readonly string[] = Object.freeze([
   'permission_request',

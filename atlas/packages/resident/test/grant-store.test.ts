@@ -630,3 +630,23 @@ describe('a damaged ledger fails closed', () => {
     })
   })
 })
+
+test('grant use rechecks commander overlap and approval-key rotation', () => {
+  const store = open()
+  const call = bash('echo approval-window')
+  const request = ask(store, call)
+  expect(
+    store.applyDecision(
+      decide(request, { decision: 'allow-window', windowMs: 30 * MINUTE }),
+    ).ok,
+  ).toBe(true)
+  expect(store.use(call).kind).toBe('hit')
+  commanders.push(hubKeys.publicKey)
+  expect(store.use(call).kind).not.toBe('hit')
+  commanders = [trustKeys.publicKey]
+  store.close()
+  const rotated = open({
+    approvers: new Map([['hub', strangerKeys.publicKey]]),
+  })
+  expect(rotated.use(call).kind).not.toBe('hit')
+})

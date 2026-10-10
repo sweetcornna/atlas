@@ -11,13 +11,13 @@ import {
   ProtocolErrorCode,
   TRUST_UNTRUSTED,
 } from '@qianmo/protocol'
-import { TEAM_LEAD_NAME } from 'src/utils/swarm/constants.js'
 import {
   MAX_MAILBOX_MESSAGE_TEXT_BYTES,
+  TEAM_LEAD_NAME,
   getInboxPath,
   readMailbox,
-} from 'src/utils/agents/teammateMailbox.js'
-import { sanitizePathComponent } from 'src/utils/task/tasks.js'
+  sanitizePathComponent,
+} from '@qianmo/mailbox'
 
 import { BlobStore, isBlobRef } from '../src/blob.js'
 import { InboundAdapter } from '../src/inbound.js'

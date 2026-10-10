@@ -73,7 +73,7 @@ export class ResidentSupervisor {
   /**
    * Stop the generation now running and let the loop start the next one
    * (design `providers-console-m1.md` §2.7: a new provider configuration is
-   * only loaded by a new ACP child).
+   * only loaded by a new omp RPC child).
    *
    * The stop is planned, so it is not a failure: it does not count towards
    * parking, however short-lived the generation was, and the child's exit on

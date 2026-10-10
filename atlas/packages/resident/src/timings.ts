@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 export type ResidentTimingStage =
-  | 'acp_ready'
+  | 'runtime_ready'
   | 'detected'
   /**
    * The turn was handed to the node turn gate.
@@ -26,6 +26,8 @@ export interface ResidentTimingEvent {
   readonly networkMsgId?: string
   readonly agent?: string
   readonly activityReconnectFactor?: number
+  /** The actual host generation, for matching fresh runtime-ready evidence. */
+  readonly generation?: number
   /**
    * The position this turn took in the queue when it was handed over — `1`
    * means it went straight to the front. Recorded with `queued`, absent

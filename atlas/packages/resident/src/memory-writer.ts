@@ -10,9 +10,9 @@
  * turn. There are two writers in M1 and both go through here:
  *
  *   1. `qm memory add / revoke / invalidate` — an operator on the node itself
- *      (`src/cli/handlers/memory.ts`), `source.kind = 'user'`;
+ *      (`node/src/commands/memory.ts`), `source.kind = 'user'`;
  *   2. an agent-side write tool — `source.kind = 'agent'`, one approval per
- *      write (P14). Not wired yet: it waits on P14.4 and the P16.5 bridge.
+ *      write (P14), enabled only with the signed approval bridge.
  *
  * WHY THE PARTITION IS COMPUTED HERE AND NOT BY THE CALLER
  *

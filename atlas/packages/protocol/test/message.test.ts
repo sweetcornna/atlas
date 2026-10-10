@@ -57,9 +57,13 @@ describe('message types', () => {
         'resource.release',
         // §14, added by P13.2. The only type an agent raises unprompted.
         'notify',
+        // P14. Approval exchanges require an explicit peer declaration.
+        'authz.request',
+        'authz.decision',
+        'authz.revoke',
       ].sort(),
     )
-    expect(MESSAGE_TYPES).toHaveLength(12)
+    expect(MESSAGE_TYPES).toHaveLength(15)
   })
 
   test('the legacy floor is the eleven types that predate notify', () => {
@@ -68,8 +72,23 @@ describe('message types', () => {
     // type, which is the assumption discovery exists to stop making.
     expect(LEGACY_MESSAGE_TYPES).toHaveLength(11)
     expect(LEGACY_MESSAGE_TYPES).not.toContain(MessageType.Notify)
-    expect([...LEGACY_MESSAGE_TYPES].sort()).toEqual(
-      MESSAGE_TYPES.filter(type => type !== MessageType.Notify).sort(),
+    expect(LEGACY_MESSAGE_TYPES).not.toContain(MessageType.AuthzRequest)
+    expect(LEGACY_MESSAGE_TYPES).not.toContain(MessageType.AuthzDecision)
+    expect(LEGACY_MESSAGE_TYPES).not.toContain(MessageType.AuthzRevoke)
+    expect([...LEGACY_MESSAGE_TYPES].sort() as string[]).toEqual(
+      [
+        'ack',
+        'error',
+        'ping',
+        'pong',
+        'task.request',
+        'task.result',
+        'wake',
+        'resource.request',
+        'resource.offer',
+        'resource.grant',
+        'resource.release',
+      ].sort(),
     )
   })
 

@@ -9,7 +9,7 @@ import { isValidSegment } from '@qianmo/protocol'
  * apart (design `resident-botization.md` §4.3, hermes C1).
  *
  * Why a single construction point is a hard rule and not a preference: the key
- * decides which ACP transcript a remote request lands in. A second place that
+ * decides which omp RPC transcript a remote request lands in. A second place that
  * spells the key even slightly differently does not fail loudly — it silently
  * routes one requester's turn into another requester's history, which is the
  * exact "cross-user history bleed" this module exists to prevent. A repo-wide

@@ -225,7 +225,7 @@ describe('resident mailbox admission', () => {
     }
 
     await expect(reader(mailbox, turn).poll()).rejects.toThrow(
-      `resident ACP turn ${MESSAGE_ID} completed before input admission`,
+      `resident omp RPC turn ${MESSAGE_ID} completed before input admission`,
     )
     expect(mailbox.messages[0]?.read).toBe(false)
     expect(ledger.query().pending[0]?.phase).toBe('detected')

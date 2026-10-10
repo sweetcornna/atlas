@@ -75,7 +75,7 @@ flowchart TD
 
 - **定性：自研**（charter §3.3 C-1「基座起点：自研」）。与基座既有单机信箱机制的整体关系定性为**上层封装**——P0.5 的结论，见 charter §5.5 与 roadmap 完成状态速查 P0.5 行。
 - 逐项缺口判定见 [`base-adoption.md`](../../docs/dev/base-adoption.md) §3.2「消息协议」行：基座有结构化协议消息类型，但**无信封、无 hop/trace/fingerprint 字段、无生命周期状态机、无错误码表**。
-- 代码层面：本包对基座 `src/` **零 import**，唯一的运行时依赖是 `node:crypto`。它是整个 `@qianmo/*` 图的叶子。
+- 代码层面：本包对对基座与其他包的 `src/` **零 import**，唯一的运行时依赖是 `node:crypto`。它是整个 `@qianmo/*` 图的叶子。
 - 历史：本包是旧洁净室三包之一，按负责人 2026-08-11 决议**原样复活**（charter §5.5 / roadmap v2.1），P1.1 在其上落地信封与两个时限。
 
 ## 5. 边界与已知未做

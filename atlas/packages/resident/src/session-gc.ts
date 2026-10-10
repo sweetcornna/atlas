@@ -14,7 +14,7 @@ import type { ResidentSessionRecord } from './session-store.js'
  * small VPSes. Every number here is an explicit constant.
  *
  * **What eviction means**: drop the `(agent, contextId) -> sessionId` mapping
- * and stop resuming it. The ACP-side transcript is NOT deleted — that data
+ * and stop resuming it. The omp RPC-side transcript is NOT deleted — that data
  * belongs to the base runtime and `--resume` still wants it.
  */
 export interface ResidentSessionGcPolicy {

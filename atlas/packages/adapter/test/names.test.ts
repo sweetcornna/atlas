@@ -3,8 +3,7 @@
 
 import { describe, expect, test } from 'bun:test'
 
-import { sanitizeName } from 'src/utils/swarm/teamHelpers.js'
-import { sanitizePathComponent } from 'src/utils/task/tasks.js'
+import { sanitizeName, sanitizePathComponent } from '@qianmo/mailbox'
 
 import {
   InvalidTeamNameError,

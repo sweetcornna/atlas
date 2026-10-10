@@ -2,21 +2,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { ProtocolErrorCode, TimeJumpGate } from '@qianmo/protocol'
-import type { TeammateMessage } from 'src/utils/agents/teammateMailbox.js'
-import { readMailbox } from 'src/utils/agents/teammateMailbox.js'
+import { type TeammateMessage, readMailbox } from '@qianmo/mailbox'
 
 /**
  * The `read`-flip observer (protocol.md §4.5).
  *
  * ## Why an ack may not be sent when the file write returns
  *
- * The base enforces its mailbox quota **by dropping messages, unread ones
- * included**. Every write compacts first
- * (`src/utils/agents/teammateMailbox.ts:271-279`), keeping in three tiers —
- * unread protocol, unread ordinary, read — and simply stops keeping once
- * `MAX_MAILBOX_RETAINED_BYTES` is reached (`:198-248`). Everything squeezed
- * out leaves a single `logError` behind (`:250-269`); the sender is told
- * nothing.
+ * The mailbox enforces its quota **by dropping messages, unread ones
+ * included**. Every write compacts (`compactMailboxMessages`), keeping in
+ * three tiers — unread protocol, unread ordinary, read — and simply stops
+ * keeping once `MAX_MAILBOX_RETAINED_BYTES` is reached. Everything squeezed
+ * out leaves a single log line behind; the sender is told nothing.
  *
  * An ack emitted at write time would therefore report an evicted message as
  * delivered, and the failure would surface to the sender as "the ack arrived,
@@ -24,49 +21,42 @@ import { readMailbox } from 'src/utils/agents/teammateMailbox.js'
  *
  * ## What the flip means
  *
- * `read` flipping to `true` is, in both of the base's delivery shapes, exactly
- * "the message has entered the target agent's input":
- *
- * - in-process teammate: `markMessageAsReadByIdentity`
- *   (`src/utils/swarm/inProcessRunner.ts:854-858`), immediately before
- *   `msg.text` is handed back to the agent loop as the next prompt (`:859-865`);
- * - attachment delivery: `markMessagesAsReadBySnapshot`
- *   (`src/utils/attachments/team.ts:192-197`), deliberately placed *after* the
- *   attachment is built so no step can lose the message (`:181-188`).
+ * `read` flipping to `true` means exactly "the message has entered the target
+ * agent's input": the resident host marks a batch read with
+ * `markMessagesAsReadBySnapshot` only after the turn carrying it was handed
+ * to the agent, so no step after the flip can lose the message.
  *
  * That is the A-class assertion, no more and no less.
  *
  * ## Mechanism
  *
- * Polling, not `fs.watch`: every mailbox write is a temp-file + `rename`
- * (`teammateMailbox.ts:166-169`) so a watcher *would* see each change, but
- * `fs.watch` behaviour under gVisor and across freeze/thaw is unverified
- * (protocol.md §12.3.2). The protocol therefore fixes the semantics and
- * leaves the mechanism open, with one constraint: the observation period must
- * not exceed the base's own polling period for the shape in use, or it merely
- * adds a base period of latency.
+ * Polling, not `fs.watch`: every mailbox write is a temp-file + `rename`, so a
+ * watcher *would* see each change, but `fs.watch` behaviour under gVisor and
+ * across freeze/thaw is unverified (protocol.md §12.3.2). The protocol
+ * therefore fixes the semantics and leaves the mechanism open, with one
+ * constraint: the observation period must not exceed the consumer's own
+ * polling period, or it merely adds a period of latency.
  */
 
-/** In-process teammate poll period (`inProcessRunner.ts:711`). */
+/** In-process consumer poll period: the tighter bound the observer must respect. */
 export const BASE_INPROCESS_POLL_INTERVAL_MS = 500
 
-/** Pane (tmux / terminal) inbox poll period (`src/hooks/useInboxPoller.ts:261`). */
+/** Out-of-process (pane / terminal) consumer poll period. */
 export const BASE_PANE_POLL_INTERVAL_MS = 1_000
 
 /**
  * Default observation period.
  *
- * Half of the tighter of the two base periods, so the observer never becomes
+ * Half of the tighter of the two consumer periods, so the observer never becomes
  * the dominant term in the ack budget (§4.4, row 5).
  */
 export const DEFAULT_POLL_INTERVAL_MS = 250
 
 /**
- * The base's identity for a mailbox entry: `[from, timestamp, text]`
- * (`teammateMailbox.ts:84-86`).
+ * The mailbox's identity for an entry: `[from, timestamp, text]`.
  *
  * The adapter keeps the triple it wrote, and that is how it finds its own
- * entry again — the base exposes no message ids.
+ * entry again — the mailbox has no message ids.
  */
 export interface MailboxEntryIdentity {
   readonly from: string
@@ -115,7 +105,7 @@ function sameEntry(
  * Locate one entry in a mailbox snapshot. Pure — the whole decision the
  * polling loop makes per tick, isolated so it can be tested without a clock.
  *
- * An entry appearing more than once (the base permits byte-identical
+ * An entry appearing more than once (the mailbox permits byte-identical
  * duplicates) counts as read as soon as *any* copy is read: the agent has the
  * text either way, which is all an A-class ack claims.
  */
@@ -175,8 +165,8 @@ function defaultSleep(ms: number): Promise<void> {
  * warm-up: warm-up happens on the target's side of the gate.
  *
  * Note that this function does not catch read failures. A mailbox holding an
- * oversized entry throws on *every* read (`teammateMailbox.ts:96-136`,
- * `:326-335`), and the rejection propagates rather than being folded into a
+ * oversized entry throws on *every* read (`readMailbox` validates each entry),
+ * and the rejection propagates rather than being folded into a
  * terminal state — the caller has to see a poisoned mailbox, not mistake it
  * for an eviction. The blob staging area exists so this node never creates
  * that condition itself.

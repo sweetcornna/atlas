@@ -4,19 +4,19 @@
 /**
  * Name normalization for the last hop (protocol.md §2.2 rule A-1, §2.3 A-2).
  *
- * The base runs team names through *two* sanitizers that disagree:
+ * Team names meet *two* sanitizers (both exported by `@qianmo/mailbox`) that
+ * disagree:
  *
- * - the roster directory goes through `sanitizeName`
- *   (`src/utils/swarm/teamHelpers.ts:102-104`): non-alphanumeric → `-`,
- *   lowercased, then `avoidReservedName`;
- * - the inbox directory goes through `sanitizePathComponent`
- *   (`src/utils/task/tasks.ts:311-313`): `[^a-zA-Z0-9_-]` → `-`, keeping `_`
- *   and case, and with no reserved-name handling at all.
+ * - a roster directory goes through `sanitizeName`: non-alphanumeric → `-`,
+ *   lowercased, and a Windows device stem prefixed with `_`;
+ * - the inbox directory goes through `sanitizePathComponent`:
+ *   `[^a-zA-Z0-9_-]` → `-`, keeping `_` and case, and with no reserved-name
+ *   handling at all.
  *
  * A team called `My_Team` therefore lands in roster `my-team` and inbox
  * `My_Team`; a team called `con` lands in roster `_con` and inbox `con`. Both
  * are directory forks, and both are avoided *at the source* rather than by
- * patching the base: if a name is lowercase, made only of `[a-z0-9-]`, and is
+ * patching a sanitizer: if a name is lowercase, made only of `[a-z0-9-]`, and is
  * not one of the 22 Windows device names, then **both** sanitizers are the
  * identity on it.
  *
@@ -31,10 +31,10 @@
  * The 22 device names Windows reserves at every directory level, with or
  * without an extension.
  *
- * Mirrors the base's own list (`src/utils/filesystem/reservedNames.ts:18-25`)
- * — but where the base *repairs* such a name by prefixing `_`, Qianmo
- * **forbids** it outright (rule A-1). Repair is what creates the fork in the
- * first place: only one of the two base sanitizers applies it.
+ * Same list `sanitizeName` uses — but where `sanitizeName` *repairs* such a
+ * name by prefixing `_`, Qianmo **forbids** it outright (rule A-1). Repair is
+ * what creates the fork in the first place: only one of the two sanitizers
+ * applies it.
  */
 export const RESERVED_DEVICE_NAMES: ReadonlySet<string> = new Set<string>([
   'con',

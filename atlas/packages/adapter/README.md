@@ -28,8 +28,8 @@ flowchart TD
   end
 
   subgraph base["基座（只调入，从不回调 —— 规则 M-6）"]
-    mailbox["src/utils/agents/teammateMailbox.ts<br/>writeToMailbox · readMailbox<br/>MAX_MAILBOX_MESSAGE_TEXT_BYTES"]
-    paths["src/config/paths.ts · occConfigPath()"]
+    mailbox["@qianmo/mailbox<br/>writeToMailbox · readMailbox<br/>MAX_MAILBOX_MESSAGE_TEXT_BYTES"]
+    paths["@qianmo/paths · qianmoConfigPath()"]
   end
 
   reply["回复：ack / error(E_EVICTED) / error(E_TTL_EXPIRED)"]
@@ -55,11 +55,11 @@ flowchart TD
 - **`deliverAndAck` / `DeliveryReply` / `DeliveryObserveOptions` / `ErrorReplyPayload`** —— 一次调用完成「投递 + 观察 + 生成回复」。`acked` / `dropped` / `expired` / `rejected` 四支，每支带上要发回去的信封。
 - **`InboundAdapter` / `InboundAdapterOptions` / `InboundDelivered` / `InboundRejection` / `InboundResult` / `InboundVerification`** —— 写信箱本体，返回观察器需要的身份三元组、归一化后的 team、扣除本地冻结重叠后的投递截止时刻，以及（若落盘了）`BlobRef`。`InboundVerification` 是路由层递进来的两项**已核实**结论（`capIss` 与 `trust`），本包只誊写不推导——它没有密钥、没有目录、没有信任集，缺省即最低档。
 - **`observeReadFlip` / `classifyMailboxEntry` / `ObserveOptions` / `DeliveryOutcome` / `MailboxEntryIdentity` / `MailboxEntryState`** 与三个周期常量 `DEFAULT_POLL_INTERVAL_MS` / `BASE_INPROCESS_POLL_INTERVAL_MS` / `BASE_PANE_POLL_INTERVAL_MS` —— 观察器。基座不给消息 id，所以身份是它自己写下的 `[from, timestamp, text]` 三元组。
-- **`BlobStore` / `BlobRef` / `isBlobRef` / `blobStoreDir` / `BLOB_DIR_SEGMENTS`** —— 暂存区，路径经 `occConfigPath()` 派生；取回时先核 sha256，取不到就是 `E_PAYLOAD_UNAVAILABLE`，绝不静默降级。
+- **`BlobStore` / `BlobRef` / `isBlobRef` / `blobStoreDir` / `BLOB_DIR_SEGMENTS`** —— 暂存区，路径经 `qianmoConfigPath()` 派生；取回时先核 sha256，取不到就是 `E_PAYLOAD_UNAVAILABLE`，绝不静默降级。
 - **`buildWrapper` / `buildNotice` / `serializeWrapper` / `QIANMO_WRAPPER_TYPE` / `BASE_RESERVED_MESSAGE_TYPES` / `isReservedBaseMessageType` / `assertWrapperTypeIsNotReserved` / `textBytes` / `QianmoWrapper` / `QianmoNotice`** —— 写进 `text` 的包装对象。`buildNotice(origin, trust)` 按档位选模板，两档各是一段完整文本而不是一段加从句；档位的定义与判据以 `docs/dev/protocol.md` §9.4 / §10.2 为准，本文不复制。
 - **`assertTeamName` / `normalizeTeamName` / `isNormalizedTeamName` / `isReservedDeviceName` / `RESERVED_DEVICE_NAMES` / `TEAM_NAME_PATTERN` / `MAX_TEAM_NAME_LENGTH` / `InvalidTeamNameError`** —— 名字归一化，避开基座两个互相矛盾的 sanitizer。
 
-体积阈值不在本包写死：它从基座常量 `MAX_MAILBOX_MESSAGE_TEXT_BYTES` import；协议级上限一律以 `@qianmo/protocol` 的 `LIMITS` 为唯一出处。
+体积阈值不在本包写死：它从 `@qianmo/mailbox` 的常量 `MAX_MAILBOX_MESSAGE_TEXT_BYTES` import；协议级上限一律以 `@qianmo/protocol` 的 `LIMITS` 为唯一出处。
 
 ## 3. 最容易被改坏的五条不变式
 
@@ -77,7 +77,7 @@ flowchart TD
 
 - **定性：上层封装。** charter §5.5 / P0.5 结论定死：跨节点这一段由阡陌协议层全程负责，消息到达目标节点后的**最后一跳复用基座既有的文件信箱，不另造、不改基座核心**；节点内同 team 的 teammate 消息原样走基座、不进阡陌协议层。
 - 逐项判定见 [`base-adoption.md`](../../docs/dev/base-adoption.md) §3.2「按名寻址」「消息协议」两行。
-- 代码层面本包**直接 import 基座两处**：`src/utils/agents/teammateMailbox.js`（`writeToMailbox` / `readMailbox` / `MAX_MAILBOX_MESSAGE_TEXT_BYTES` / `TeammateMessage`）与 `src/config/paths.js`（`occConfigPath`）。
+- 代码层面本包只 import 两个阡陌包：`@qianmo/mailbox`（`writeToMailbox` / `readMailbox` / `MAX_MAILBOX_MESSAGE_TEXT_BYTES` / `TeammateMessage`）与 `@qianmo/paths`（`qianmoConfigPath`）。
 - **规则 M-6：只写、无回调。** 阡陌 → 基座是单向调用导出函数，基座不反向调用本包任何东西。这既是「不改基座核心」的保证，也是循环依赖棘轮（`bun run check:cycles`）上的安全边界。
 - `protocol.md` §9.2 的六条硬规则（M-1 直调导出函数不取道 `SendMessageTool`、M-2 顶层类型、M-3 = E-1、M-4 顶层 `type` 同时买到最高保留档与正常投递路径、M-5 体积由测量决定、M-6 单向）**每一条都在这个包里**，且每条的基座出处都写在对应源文件的头注释里。
 
@@ -94,7 +94,7 @@ flowchart TD
 bun test packages/adapter
 ```
 
-实测：**76 pass / 0 fail，6 个测试文件**（`blob` / `delivery` / `inbound` / `names` / `observer` / `wrapper`），零 mock——用例直接读写真实的基座信箱文件。
+实测：**81 pass / 0 fail，6 个测试文件**（`blob` / `delivery` / `inbound` / `names` / `observer` / `wrapper`），零 mock——用例直接读写真实的基座信箱文件。
 
 ## 7. P9.3 双人签字
 

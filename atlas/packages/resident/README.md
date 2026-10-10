@@ -1,6 +1,34 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
+# @qianmo/resident — 常驻任务准入、会话与可靠性
+
+当前运行时使用 **oh-my-pi RPC**。本包保存与基座无关的信箱读者、准入账本、队列、会话索引、权限规则和出站回执；实际进程池位于 `@qianmo/node`，工具拦截位于 `@qianmo/extension`。切换契约见 [base-switch-omp.md](../../../docs/dev/base-switch-omp.md)。
+
+## 当前接线（2026-10-08）
+
+- `ResidentNodeRuntime` 将任务按智能体分给 `ResidentMailboxReader`，通过 `NodeTurnGate` 在节点内串行执行。`OmpResidentTurnPort` 对接 RPC 消息、错误归因、进度和终态。
+- `atlas/packages/node/src/host/residentOmp.ts` 的 `ResidentOmpPool` 为每个 `(agent, contextId)` 持有独立 omp 进程。源码模式直接启动 omp CLI，编译模式由同一二进制的 `qm agent --mode rpc` 启动；显式模型和隔离配置来自节点档案，`open_session` 恢复同一会话目录。
+- 准入不是只收到 RPC 事件就发 ACK。扩展写入带 `messageId`、`userEntryId` 的身份条目；宿主确认对应用户条目与身份条目已写入同一个 JSONL 后，才让 reader 记录 admitted、翻转 read 并发 ACK。重启按该身份查询，避免已受理输入再次执行。
+- `FileAdmissionLedger` 与 `FileDeliveryLedger` 分别持久化准入和结果投递；超时、无文本的空应答、上游凭据错误、进程退出都有失败归因。取消使用 RPC `abort`，`qianmo_notify` 通过 host tool 回到宿主。
+- 权限硬顶由扩展 `tool_call` 拦截执行，受保护配置根、工作区外写入和常驻禁用工具不能被项目中的 yolo 配置放行。该边界是应用层工具控制；操作系统沙箱仍由部署层提供。
+- 模型下发在节点空闲时提交并回收旧进程，随后以新配置重建。CLI 管理自身 `SIGHUP` 与 `SIGTERM` 生命周期，避免 omp 默认信号处理器提前退出。
+- 状态派生自 `@qianmo/paths`，omp 状态在 `<QIANMO_CONFIG_DIR>/omp`；旧 occ 会话不迁移。会话索引 v2 不会把旧 ACP 索引解释为新会话。
+
+## 当前检查入口
+
+```bash
+bun test --preload ./atlas/tests/preload.ts atlas/packages/resident
+bun test --preload ./atlas/tests/preload.ts atlas/packages/node/test/host
+bun run precheck
+```
+
+真实 omp 与本地脚本化模型已用于任务执行、硬顶拒绝、进程被杀后的准入恢复、两个独立 resident 的投递和模型热切换测试。本地端点验证协议与控制流程，不代表商业模型质量评估或内测集群验收。旧基座的云端冻结、24 小时运行和模型质量证据不能自动转为新基座成绩。
+
+## 历史设计记录：occ / ACP 阶段
+
+以下内容保留迁移前的实现解释、任务编号和验收线索。其中 ACP API、occ 核心钩子、旧目录、测试数量与“必须改核心”的结论均属于历史版本；当前实现、入口与验收以本页上半部分和基座切换文档为准。
+
 # @qianmo/resident —— 常驻 ACP 宿主的读者、账本与闸门
 
 **一句话定位**：给 ACP 宿主补上一个**在空闲时也会醒来的信箱读者**，并让「检测到 → 输入被受理 → 翻转 read → 一个 turn 打完」这四步落在一本可崩溃恢复的账本上；外加节点级 turn 串行、解冻感知的截止时钟、以及向宿主上报忙闲的活动通道。

@@ -301,3 +301,29 @@ describe('why the turn went quiet', () => {
     expect(health.last?.status).toBe(401)
   })
 })
+
+test('approval consumers see actual remaining silence budget, not the full configured duration', async () => {
+  let now = 0
+  const schedule = new ManualSchedule()
+  const watchdog = new ResidentInactivityWatchdog({
+    timeoutMs: 30_000,
+    now: () => now,
+    schedule: schedule.schedule,
+  })
+  let finish!: () => void
+  const guarded = watchdog.guard(
+    TURN,
+    () =>
+      new Promise<void>(resolve => {
+        finish = resolve
+      }),
+  )
+  expect(watchdog.remaining(TURN.sessionId)).toBe(30_000)
+  now = 15_000
+  expect(watchdog.remaining(TURN.sessionId)).toBe(15_000)
+  watchdog.touch(TURN.sessionId)
+  expect(watchdog.remaining(TURN.sessionId)).toBe(30_000)
+  finish()
+  await guarded
+  expect(watchdog.remaining(TURN.sessionId)).toBe(0)
+})

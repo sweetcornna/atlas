@@ -535,7 +535,7 @@ describe('resident memory sidecar — it never becomes a system prompt', () => {
     // The host half, where the assembled prompt is actually built. A scan that
     // stopped at the package boundary would miss the one file that could hand
     // the block to the base's prompt assembler.
-    files.push(resolve(repoRoot, 'src/services/qianmo/resident.ts'))
+    files.push(resolve(repoRoot, 'packages/node/src/host/resident.ts'))
     return files.filter(file => file !== SELF)
   }
 
@@ -676,7 +676,10 @@ describe('resident memory sidecar — the semantic overlay (P16.6)', () => {
 
     const turn = await off.renderHybrid(scope, 'what runtime?')
 
-    expect(turn).toEqual({ block: off.render(scope, 'what runtime?') })
+    expect(turn.block).toEqual(off.render(scope, 'what runtime?'))
+    expect(turn.memoryIds).toHaveLength(1)
+    expect(turn.block).toContain(turn.memoryIds![0]!)
+    expect(turn.retrieval).toBeUndefined()
   })
 
   test('full mode: the M0 block, byte for byte, and nothing is embedded', async () => {
@@ -865,4 +868,37 @@ describe('resident memory sidecar — the semantic overlay (P16.6)', () => {
       ledger.close()
     }
   })
+})
+
+test('host answer only renders frozen, live citations and strips raw citation ids', () => {
+  const scope = { agent: AGENT, contextId: 'strict-citations' }
+  const id = remember(scope, 'runtime source', 'Use Bun')
+  const side = sidecar()
+  const frozen = side.renderFrozen(scope)
+  expect(frozen.memoryIds).toContain(id)
+  expect(
+    side.answer(frozen.memoryIds ?? [], {
+      status: 'supported',
+      evidence: [{ id, quote: 'Use Bun' }],
+    }),
+  ).toMatchObject({ ok: true })
+  expect(
+    side.answer([], {
+      status: 'supported',
+      evidence: [{ id, quote: 'Use Bun' }],
+    }).ok,
+  ).toBe(false)
+  expect(
+    side.answer(frozen.memoryIds ?? [], {
+      status: 'supported',
+      evidence: [{ id: 'qm-mem-fabricated', quote: 'Use Bun' }],
+    }).ok,
+  ).toBe(false)
+  store.revoke(id, { reason: 'source withdrawn', by: 'operator' })
+  expect(
+    side.answer(frozen.memoryIds ?? [], {
+      status: 'supported',
+      evidence: [{ id, quote: 'Use Bun' }],
+    }).ok,
+  ).toBe(false)
 })

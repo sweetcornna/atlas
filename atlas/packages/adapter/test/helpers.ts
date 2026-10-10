@@ -4,10 +4,10 @@
 /**
  * Shared fixtures for the adapter tests.
  *
- * Everything here is real: a real temp directory, the base's real mailbox
+ * Everything here is real: a real temp directory, the real `@qianmo/mailbox`
  * functions, real envelopes from `@qianmo/protocol`. No module is mocked —
- * the behaviour under test *is* the interaction with the base, so replacing
- * the base with a double would test nothing.
+ * the behaviour under test *is* the interaction with the mailbox, so
+ * replacing it with a double would test nothing.
  */
 
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -17,33 +17,27 @@ import { join } from 'node:path'
 import type { QianmoMessage } from '@qianmo/protocol'
 import { MessageType, createMessage } from '@qianmo/protocol'
 
-/** A temp config root, wired in through the same env var the base reads. */
+/** A temp config root, wired in through `QIANMO_CONFIG_DIR`. */
 export interface TempConfig {
   readonly root: string
   readonly configDir: string
   restore(): void
 }
 
-/**
- * Point `occConfigDir()` at a throwaway directory.
- *
- * `CLAUDE_CONFIG_DIR` rather than `OCC_CONFIG_DIR` because `tests/preload.ts`
- * deletes the latter on purpose. `occConfigDir` memoizes on the value of both
- * vars, so a fresh directory per test really does produce a fresh root.
- */
+/** Point `qianmoConfigDir()` at a throwaway directory. */
 export function useTempConfig(prefix: string): TempConfig {
   const root = mkdtempSync(join(tmpdir(), prefix))
   const configDir = join(root, 'config')
-  const previous = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = configDir
+  const previous = process.env.QIANMO_CONFIG_DIR
+  process.env.QIANMO_CONFIG_DIR = configDir
   return {
     root,
     configDir,
     restore(): void {
       if (previous === undefined) {
-        delete process.env.CLAUDE_CONFIG_DIR
+        delete process.env.QIANMO_CONFIG_DIR
       } else {
-        process.env.CLAUDE_CONFIG_DIR = previous
+        process.env.QIANMO_CONFIG_DIR = previous
       }
       rmSync(root, { recursive: true, force: true })
     },

@@ -13,7 +13,7 @@ import {
   getInboxPath,
   markMessageAsReadByIdentity,
   readMailbox,
-} from 'src/utils/agents/teammateMailbox.js'
+} from '@qianmo/mailbox'
 
 import { BlobStore } from '../src/blob.js'
 import type { DeliveryReply } from '../src/delivery.js'

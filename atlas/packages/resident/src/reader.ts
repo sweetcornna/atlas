@@ -23,7 +23,7 @@ export interface ResidentMailboxReaderOptions {
   readonly agent: string
   readonly team: string
   /**
-   * Which ACP session this batch belongs to.
+   * Which omp RPC session this batch belongs to.
    *
    * A function rather than a fixed id because the answer depends on the batch:
    * a snapshot carrying a remote `contextId` belongs to that requester's
@@ -206,7 +206,7 @@ export class ResidentMailboxReader {
       return { detected: 0, recovered, read, abandoned }
 
     const formatted = await this.#options.formatPrompt(snapshot)
-    const { prompt, retrieval }: ResidentAssembledPrompt =
+    const { prompt, retrieval, memoryIds }: ResidentAssembledPrompt =
       typeof formatted === 'string' ? { prompt: formatted } : formatted
     if (prompt.length === 0) {
       throw new Error('resident mailbox formatter returned an empty prompt')
@@ -232,6 +232,7 @@ export class ResidentMailboxReader {
         readBefore: Object.fromEntries(readCountsByIdentity(mailbox)),
         snapshot,
         prompt,
+        ...(memoryIds === undefined ? {} : { memoryIds }),
         ...(networkMsgId === undefined ? {} : { networkMsgId }),
         ...(retrieval === undefined ? {} : { retrieval }),
       }
@@ -272,6 +273,9 @@ export class ResidentMailboxReader {
       sessionId: pending.sessionId,
       messageId: pending.messageId,
       prompt: pending.prompt,
+      ...(pending.memoryIds === undefined
+        ? {}
+        : { memoryIds: pending.memoryIds }),
       ...(pending.networkMsgId === undefined
         ? {}
         : { networkMsgId: pending.networkMsgId }),
@@ -414,7 +418,7 @@ export class ResidentMailboxReader {
           })
           if (!settled) {
             throw new Error(
-              `resident ACP turn ${pending.messageId} completed before input admission`,
+              `resident omp RPC turn ${pending.messageId} completed before input admission`,
             )
           }
           await this.#options.onTurnResult?.(input, result)

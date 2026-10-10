@@ -20,6 +20,7 @@ export interface ResidentAgentSession {
 }
 
 export interface ResidentSessionConnection {
+  closeSession?(sessionId: string): void
   initialize(): Promise<void>
   newSession(input: ResidentAgentSession): Promise<string>
   resumeSession(
@@ -75,10 +76,11 @@ export interface ResidentSessionManagerOptions {
    * for one that has them, so the resident host wires it.
    */
   readonly pendingSessionIds?: () => Iterable<string>
+  readonly onContextEnd?: (key: string) => void
 }
 
 /**
- * Maps `(agent, contextId)` onto ACP sessions (design §4.3).
+ * Maps `(agent, contextId)` onto omp sessions (design §4.3).
  *
  * `start()` only opens the `DEFAULT_CONTEXT` session of each agent — that is
  * the one every context-less request lands in, and it is the whole of today's
@@ -92,7 +94,8 @@ export class ResidentSessionManager implements ResidentSessionResolver {
   readonly #now: () => number
   readonly #policy: ResidentSessionGcPolicy
   readonly #pendingSessionIds: () => Iterable<string>
-  /** Keys whose ACP session this process has already opened or resumed. */
+  readonly #onContextEnd: ((key: string) => void) | undefined
+  /** Keys whose omp session this process has already opened or resumed. */
   readonly #live = new Set<string>()
   /** Unpersisted `lastUsedAt` touches; see {@link TOUCH_PERSIST_INTERVAL_MS}. */
   readonly #touched = new Map<string, number>()
@@ -117,6 +120,7 @@ export class ResidentSessionManager implements ResidentSessionResolver {
     this.#agents = agents
     this.#now = options.now ?? Date.now
     this.#pendingSessionIds = options.pendingSessionIds ?? (() => [])
+    this.#onContextEnd = options.onContextEnd
   }
 
   async start(): Promise<void> {
@@ -151,7 +155,7 @@ export class ResidentSessionManager implements ResidentSessionResolver {
     const key = sessionKeyOf(agent, contextId)
     const stored = this.#store.get(key)
     if (stored === undefined || !this.#live.has(key)) {
-      throw new Error(`resident agent ${agent} has no active ACP session`)
+      throw new Error(`resident agent ${agent} has no active omp session`)
     }
     return stored.sessionId
   }
@@ -189,9 +193,12 @@ export class ResidentSessionManager implements ResidentSessionResolver {
       pendingSessionIds: pending,
     })
     for (const key of evicted) {
-      // Dropping the mapping is the whole of eviction: the ACP-side transcript
+      this.#onContextEnd?.(key)
+      // Dropping the mapping is the whole of eviction: the omp-side transcript
       // stays where it is, because it is the base runtime's data and `--resume`
       // still wants it.
+      const sessionId = this.#store.get(key)?.sessionId
+      if (sessionId !== undefined) this.#connection.closeSession?.(sessionId)
       this.#store.delete(key)
       this.#live.delete(key)
       this.#touched.delete(key)

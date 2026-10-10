@@ -30,7 +30,7 @@ const HAND_ROLLED_KEY_PATTERNS: readonly RegExp[] = [
 async function repositorySources(): Promise<readonly string[]> {
   const glob = new Bun.Glob('**/*.{ts,tsx}')
   const files: string[] = []
-  for (const root of ['src', 'packages']) {
+  for (const root of ['packages']) {
     for await (const file of glob.scan({
       cwd: join(REPO_ROOT, root),
       absolute: true,
@@ -115,7 +115,12 @@ describe('resident session key', () => {
     }
 
     const files = await repositorySources()
-    expect(files.length).toBeGreaterThan(1_000)
+    expect(files).toContain(
+      join(REPO_ROOT, 'packages/resident/src/sessions.ts'),
+    )
+    expect(files).toContain(
+      join(REPO_ROOT, 'packages/node/src/host/resident.ts'),
+    )
 
     const offenders: string[] = []
     let definitions = 0

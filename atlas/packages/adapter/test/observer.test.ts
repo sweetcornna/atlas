@@ -7,13 +7,13 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 
 import { ProtocolErrorCode } from '@qianmo/protocol'
-import type { TeammateMessage } from 'src/utils/agents/teammateMailbox.js'
 import {
+  type TeammateMessage,
   compactMailboxMessages,
   getInboxPath,
   markMessageAsReadByIdentity,
   readMailbox,
-} from 'src/utils/agents/teammateMailbox.js'
+} from '@qianmo/mailbox'
 
 import { BlobStore } from '../src/blob.js'
 import { InboundAdapter } from '../src/inbound.js'

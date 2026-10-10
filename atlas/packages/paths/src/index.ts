@@ -27,6 +27,11 @@ function fromEnv(name: string, fallback: string): string {
   return (configured ? resolve(configured) : fallback).normalize('NFC')
 }
 
+/** OS home used by node policy and its immutable replay environment. */
+export function nodeHomeDir(): string {
+  return homedir().normalize('NFC')
+}
+
 /** The node's config root: `QIANMO_CONFIG_DIR`, else `~/.qianmo`. */
 export function qianmoConfigDir(): string {
   return fromEnv(CONFIG_DIR_ENV, join(homedir(), CONFIG_DIR_BASENAME))
@@ -54,6 +59,8 @@ export function ompAgentDir(): string {
  * reads `CLAUDE_CONFIG_DIR` as the Claude config directory.
  */
 export const OMP_ENV_SCRUB: Readonly<Record<string, true>> = {
+  PI_CONFIG_DIR: true,
+  PI_NATIVES_DIR: true,
   OMP_PROFILE: true,
   PI_PROFILE: true,
   PI_CODING_AGENT_DIR: true,
@@ -75,10 +82,20 @@ export function ompChildEnv(
 ): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && !OMP_ENV_SCRUB[key]) env[key] = value
+    if (value !== undefined && !OMP_ENV_SCRUB[key.toUpperCase()])
+      env[key] = value
   }
-  env.PI_CONFIG_DIR = relative(homedir(), ompConfigRoot())
-  env.PI_NATIVES_DIR = join(ompConfigRoot(), 'natives')
+  // Derive from the child environment, not the caller's process-global roots.
+  // Tests and hosts may give a child both a different HOME and config directory.
+  const childHome = resolve(base.HOME || base.USERPROFILE || homedir())
+  const configRoot = (
+    base[CONFIG_DIR_ENV]
+      ? resolve(base[CONFIG_DIR_ENV])
+      : join(childHome, CONFIG_DIR_BASENAME)
+  ).normalize('NFC')
+  const ompRoot = join(configRoot, 'omp')
+  env.PI_CONFIG_DIR = relative(childHome, ompRoot)
+  env.PI_NATIVES_DIR = join(ompRoot, 'natives')
   return env
 }
 
@@ -99,7 +116,7 @@ export function qmcodeHome(): string {
 
 /** User-level config roots that agents and sandboxed commands must never modify. */
 export function protectedConfigRoots(): string[] {
-  const home = homedir()
+  const home = nodeHomeDir()
   return [
     ...new Set(
       [

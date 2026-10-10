@@ -362,3 +362,27 @@ describe('resident session manager', () => {
     )
   })
 })
+
+test('ending a collected context revokes authority before dropping its session mapping', async () => {
+  let now = 1000
+  const store = new MemoryResidentSessionStore()
+  const ended: string[] = []
+  const sessions = manager(new RecordingConnection(), {
+    store,
+    now: () => now,
+    policy: { maxSessionsPerAgent: 8, idleTtlMs: 100, keepRecentPerAgent: 0 },
+    onContextEnd(key) {
+      expect(store.get(key)).toBeDefined()
+      ended.push(key)
+    },
+  })
+  await sessions.start()
+  const session = await sessions.sessionFor('reviewer', 'authority')
+  now += 200
+  sessions.collect()
+  expect(ended).not.toContain(sessionKeyOf('reviewer', 'authority'))
+  sessions.release(session)
+  sessions.collect()
+  expect(ended).toContain(sessionKeyOf('reviewer', 'authority'))
+  expect(store.get(sessionKeyOf('reviewer', 'authority'))).toBeUndefined()
+})

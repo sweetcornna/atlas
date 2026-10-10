@@ -9,28 +9,21 @@ export {
   type ResidentActivityPayload,
 } from './activity.js'
 export {
-  ACP_INPUT_ACCEPTED_METHOD,
-  ACP_INPUT_STATUS_METHOD,
-  ACP_SESSION_ACTIVITY_METHOD,
-  ACP_UPSTREAM_STATUS_METHOD,
-  AcpResidentTurnPort,
-  RESIDENT_INACTIVITY_CANCEL_META,
+  OmpResidentTurnPort,
   SELF_REPORTING_TOOL_TITLE,
   parseTurnStepDedupKey,
   turnFailureKind,
   turnStepDedupKey,
-  type AcpPromptConnection,
   type ResidentTurnProgress,
   type TurnStepKey,
   type TurnStepPhase,
-} from './acp-turn.js'
-export {
-  createResidentAcpStream,
-  ResidentAcpConnection,
-  type ResidentAcpClientOptions,
-  type ResidentPermissionMode,
-  type ResidentActivitySink,
-} from './acp-client.js'
+} from './omp-turn.js'
+export type {
+  OmpRpcFrame,
+  OmpRpcChannel,
+  OmpPromptAdmission,
+  OmpTurnRouter,
+} from './omp-rpc.js'
 export type {
   AbandonedAdmissionRecord,
   AdmissionIntegrityIssue,

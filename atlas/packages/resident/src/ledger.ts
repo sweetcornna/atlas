@@ -106,6 +106,7 @@ function isDetected(
       'prompt',
       ...(value.networkMsgId === undefined ? [] : ['networkMsgId']),
       ...(value.retrieval === undefined ? [] : ['retrieval']),
+      ...(value.memoryIds === undefined ? [] : ['memoryIds']),
     ]) &&
     value.kind === 'detected' &&
     typeof value.messageId === 'string' &&
@@ -129,6 +130,10 @@ function isDetected(
     value.snapshot.length > 0 &&
     value.snapshot.every(isMailboxMessage) &&
     typeof value.prompt === 'string' &&
+    (value.memoryIds === undefined ||
+      (Array.isArray(value.memoryIds) &&
+        value.memoryIds.every(id => typeof id === 'string') &&
+        new Set(value.memoryIds).size === value.memoryIds.length)) &&
     value.prompt.length > 0 &&
     (value.networkMsgId === undefined ||
       (typeof value.networkMsgId === 'string' &&

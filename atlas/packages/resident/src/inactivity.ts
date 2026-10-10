@@ -10,14 +10,14 @@
  *
  * Silence here means silence: every `session/update` counts, including
  * `agent_thought_chunk`, so a model that spends two minutes thinking out loud
- * keeps resetting it. What trips it is an ACP side that has stopped speaking.
+ * keeps resetting it. What trips it is an omp RPC side that has stopped speaking.
  */
 export const DEFAULT_RESIDENT_INACTIVITY_MS = 120_000
 
 /**
  * One HTTP status the agent's model endpoint answered with, and when.
  *
- * Reported by the ACP child over `qianmo/upstream-status`, because the status
+ * Reported by the omp RPC child over `qianmo/upstream-status`, because the status
  * is knowledge only that process has: the resident never speaks to a model
  * endpoint on a turn's behalf, it speaks to an agent that does.
  */
@@ -54,7 +54,7 @@ export function isCredentialHttpStatus(status: number): boolean {
  * two-hour hunt into a one-line answer.
  *
  * Records **failures only**, on purpose: a success notification per API call
- * would put a message on the ACP wire for every request a healthy node makes,
+ * would put a message on the omp RPC wire for every request a healthy node makes,
  * to answer a question nothing asks on a healthy node. The staleness rule in
  * {@link recent} does the same job for free — a status that predates the
  * silence being measured is not evidence about it.
@@ -108,7 +108,7 @@ function inactivityReason(
   idleMs: number,
   upstream: ResidentUpstreamStatus | undefined,
 ): string {
-  const silence = `resident ACP turn ${messageId} produced no activity for ${idleMs}ms`
+  const silence = `resident omp RPC turn ${messageId} produced no activity for ${idleMs}ms`
   if (upstream === undefined) {
     return `${silence} and was failed for inactivity; the task deadline itself has not expired, so retrying with a longer taskTtlMs is the sender's call`
   }
@@ -123,7 +123,7 @@ function inactivityReason(
 }
 
 /**
- * A turn was failed because its ACP side went silent, not because it failed.
+ * A turn was failed because its omp RPC side went silent, not because it failed.
  *
  * The distinction is the whole deliverable: `reason` has to say "inactivity"
  * so the sender can tell this apart from a refusal or a crash and act on it —
@@ -172,6 +172,7 @@ export interface ResidentInactivityTurn {
 }
 
 export interface ResidentInactivityOptions {
+  readonly now?: () => number
   /** `0` or negative disables the watchdog entirely. */
   readonly timeoutMs?: number
   readonly schedule?: (
@@ -181,7 +182,7 @@ export interface ResidentInactivityOptions {
   /**
    * Called once, on expiry, before the guarded promise rejects.
    *
-   * This is where a caller asks the ACP side to stop — see the class comment
+   * This is where a caller asks the omp RPC side to stop — see the class comment
    * for why the watchdog itself does not know how.
    */
   readonly onExpired?: (turn: ResidentInactivityTurn) => void
@@ -207,6 +208,7 @@ function defaultSchedule(
 }
 
 interface ArmedTurn {
+  deadline: number
   readonly turn: ResidentInactivityTurn
   timer: { cancel(): void } | null
   settled: boolean
@@ -227,20 +229,21 @@ interface ArmedTurn {
  * - **It does not extend anything.** There is no path here that makes a turn
  *   live longer than `taskTtlMs`. A node that quietly renewed a deadline the
  *   sender set would make every sender's timeout estimate a fiction.
- * - **It does not know what ACP is.** Expiry calls {@link
+ * - **It does not know what omp RPC is.** Expiry calls {@link
  *   ResidentInactivityOptions.onExpired} and rejects; asking the agent to stop
  *   is the caller's job, because "how to cancel" is a property of the transport
  *   this package is deliberately not coupled to.
  * - **It cannot un-run work already dispatched.** Rejecting the guarded promise
- *   frees the node's turn gate; the ACP side keeps going until it honours the
+ *   frees the node's turn gate; the omp RPC side keeps going until it honours the
  *   cancel. That residual window is the same one every mid-flight turn failure
- *   already has (an ACP protocol error rejects the prompt while the agent keeps
+ *   already has (an omp RPC protocol error rejects the prompt while the agent keeps
  *   working), so it introduces no new shape — but it is real, and the cancel is
  *   sent precisely to keep it short.
  * - **It writes nothing to disk**, so it is the one member of the reliability
  *   kit with no fail-open story to tell: there is nothing that can fail.
  */
 export class ResidentInactivityWatchdog {
+  readonly #now: () => number
   readonly #timeoutMs: number
   readonly #schedule: (
     delayMs: number,
@@ -251,6 +254,7 @@ export class ResidentInactivityWatchdog {
   readonly #armed = new Map<string, ArmedTurn>()
 
   constructor(options: ResidentInactivityOptions = {}) {
+    this.#now = options.now ?? (() => performance.now())
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_RESIDENT_INACTIVITY_MS
     this.#schedule = options.schedule ?? defaultSchedule
     this.#onExpired = options.onExpired
@@ -259,6 +263,14 @@ export class ResidentInactivityWatchdog {
 
   get timeoutMs(): number {
     return this.#timeoutMs
+  }
+
+  remaining(sessionId: string): number {
+    if (this.#timeoutMs <= 0) return Infinity
+    const armed = this.#armed.get(sessionId)
+    return armed === undefined || armed.settled
+      ? 0
+      : Math.max(0, armed.deadline - this.#now())
   }
 
   /** Turns currently being watched. Observation only. */
@@ -289,6 +301,7 @@ export class ResidentInactivityWatchdog {
     idle.catch(() => {})
 
     const armed: ArmedTurn = {
+      deadline: this.#now() + this.#timeoutMs,
       turn,
       timer: null,
       settled: false,
@@ -341,6 +354,7 @@ export class ResidentInactivityWatchdog {
   }
 
   #rearm(armed: ArmedTurn): void {
+    armed.deadline = this.#now() + this.#timeoutMs
     armed.timer?.cancel()
     armed.timer = this.#schedule(this.#timeoutMs, armed.fire)
   }

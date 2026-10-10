@@ -16,8 +16,7 @@ import {
   taskExpiresAt,
   validateMessage,
 } from '@qianmo/protocol'
-import { MAX_MAILBOX_MESSAGE_TEXT_BYTES } from 'src/utils/agents/teammateMailbox.js'
-import { writeToMailbox } from 'src/utils/agents/teammateMailbox.js'
+import { MAX_MAILBOX_MESSAGE_TEXT_BYTES, writeToMailbox } from '@qianmo/mailbox'
 
 import type { BlobRef } from './blob.js'
 import { BlobStore } from './blob.js'
@@ -36,35 +35,23 @@ import {
 /**
  * The inbound adapter: the last hop of a cross-node delivery (protocol.md §9).
  *
- * ## Rule M-1 — call the exported function, never the tool
+ * ## Rule M-1 — call the exported function, never an agent tool
  *
- * Delivery goes straight to `teammateMailbox.writeToMailbox`
- * (`src/utils/agents/teammateMailbox.ts:362-366`). Not through
- * `SendMessageTool`, and the reason is *not* that the tool would refuse a
- * `qianmo://` address. It would not: `to` is typed `z.string()` with no format
- * constraint (`SendMessageTool.ts:69-73`) and the only character check is
- * `input.to.includes('@')` (`:599-606`), which a `qianmo://` address passes.
- * It would then reach `getInboxPath` → `sanitizePathComponent`
- * (`teammateMailbox.ts:285-295`), whose regex rewrites
- * `qianmo://node-b/reviewer` into the filename `qianmo---node-b-reviewer`.
- *
- * The real consequence of routing through the tool is therefore not rejection
- * but a silent misdelivery into a local inbox nobody reads — strictly harder
- * to diagnose than an error.
+ * Delivery goes straight to `@qianmo/mailbox`'s `writeToMailbox`, never
+ * through an agent-facing messaging tool. Such a tool takes a bare teammate
+ * name, and the inbox path sanitizer (`sanitizePathComponent`) would rewrite
+ * `qianmo://node-b/reviewer` into the filename `qianmo---node-b-reviewer`: not
+ * a rejection but a silent misdelivery into a local inbox nobody reads —
+ * strictly harder to diagnose than an error.
  *
  * ## Rule E-1 — `from` is re-rendered, never copied
  *
- * The base decides identity by string-comparing `from` in several places:
- * `isLeaderIdentity` is `sender === security.leadAgentId || sender ===
- * security.leadName` (`src/hooks/useInboxPoller.ts:145-153`), gating
- * permission responses, plan approval and shutdown approval (`:324`, `:542`,
- * `:648`); the in-process runner jumps `m.from === TEAM_LEAD_NAME` ahead of
- * every peer message (`src/utils/swarm/inProcessRunner.ts:837`). A bare name
- * in `from` would let a remote node claim `team-lead` and get both. A full
- * address cannot collide: it contains `:` and `/`, and every local identity is
- * a bare name. So the adapter re-renders the address from its parse rather
- * than trusting the string it was handed, and rejects outright on failure —
- * no best-effort repair.
+ * Mailbox consumers decide identity by string-comparing `from`: an entry from
+ * `TEAM_LEAD_NAME` is the local leader. A bare name in `from` would let a
+ * remote node claim `team-lead`. A full address cannot collide: it contains
+ * `:` and `/`, and every local identity is a bare name. So the adapter
+ * re-renders the address from its parse rather than trusting the string it
+ * was handed, and rejects outright on failure — no best-effort repair.
  */
 
 /**
@@ -92,7 +79,7 @@ export interface InboundRejection {
 /** A message written into the target mailbox. */
 export interface InboundDelivered {
   readonly status: 'delivered'
-  /** Base agent name the entry was written under (`to`'s agent segment). */
+  /** Agent name the entry was written under (`to`'s agent segment). */
   readonly recipient: string
   /** Normalized team name used for the inbox path. */
   readonly team: string
@@ -114,14 +101,14 @@ export interface InboundAdapterOptions {
   readonly node: string
   /** Team whose inboxes this node writes into. Must satisfy rule A-2. */
   readonly team: string
-  /** Staging area. Defaults to one rooted at `occConfigPath()`. */
+  /** Staging area. Defaults to one rooted at `qianmoConfigPath()`. */
   readonly blobs?: BlobStore
   /** Injected wall clock for provenance and mailbox timestamps. */
   readonly now?: () => number
   /** Rule T-2 clock used only for envelope deadline validation. */
   readonly deadlineNow?: (createdAt: number) => number
   /**
-   * Mailbox `text` ceiling. Defaults to the base's own exported constant —
+   * Mailbox `text` ceiling. Defaults to `@qianmo/mailbox`'s exported constant —
    * production must never pass this, and must never copy the number (§9.3.3).
    */
   readonly maxTextBytes?: number
@@ -279,9 +266,8 @@ export class InboundAdapter {
       }
     }
 
-    // 5. Write. `color` is deliberately omitted: it is optional
-    //    (`teammateMailbox.ts:51-58`) and the adapter does not go anywhere
-    //    near `findTeammateColor`.
+    // 5. Write. `color` is deliberately omitted: it is optional on a mailbox
+    //    entry and carries no meaning for a remote sender.
     const identity: MailboxEntryIdentity = {
       from: renderedFrom,
       timestamp: new Date(receivedAt).toISOString(),

@@ -6,16 +6,16 @@
  *
  * Three parts, all of protocol.md §4.5 and §9:
  *
- * 1. the **inbound adapter**, which calls `teammateMailbox.writeToMailbox`
- *    directly and never routes through `SendMessageTool`;
+ * 1. the **inbound adapter**, which calls `@qianmo/mailbox`'s
+ *    `writeToMailbox` directly and never routes through an agent tool;
  * 2. the **`read`-flip observer**, which turns "the agent actually took the
  *    message in" into one of three terminal states, so an ack is never emitted
  *    merely because a file write returned;
  * 3. the **blob staging area**, which keeps an oversized payload out of the
- *    base mailbox's 64 KiB read/write invariant.
+ *    mailbox's 64 KiB read/write invariant.
  *
- * This package only ever calls *into* the base (rule M-6): nothing in the base
- * calls back, which is what keeps the dependency acyclic.
+ * This package only ever calls *into* `@qianmo/mailbox` (rule M-6): nothing
+ * there calls back, which is what keeps the dependency acyclic.
  */
 
 export {

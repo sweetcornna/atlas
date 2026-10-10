@@ -92,7 +92,7 @@ describe('resident hardline — the table itself', () => {
     // deployment whose config lives somewhere unusual, must not end up with no
     // ceiling at all.
     const rootless = new ResidentHardline()
-    expect(rootless.pathVerdict('/home/node/.occ/settings.json')).not.toBeNull()
+    expect(rootless.pathVerdict('/home/node/.omp/settings.json')).not.toBeNull()
     expect(
       rootless.pathVerdict('/anywhere/resident/reviewer/admission.ndjson'),
     ).not.toBeNull()
@@ -434,7 +434,7 @@ describe('the hardline is not read from session configuration', () => {
     const repoRoot = resolve(import.meta.dir, '..', '..', '..')
     const files = [
       resolve(import.meta.dir, '..', 'src', 'guard.ts'),
-      resolve(repoRoot, 'src/services/qianmo/residentGuard.ts'),
+      resolve(repoRoot, 'packages/extension/src/index.ts'),
     ]
 
     for (const file of files) {

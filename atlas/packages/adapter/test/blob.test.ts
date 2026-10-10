@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 
 import { ProtocolError, ProtocolErrorCode } from '@qianmo/protocol'
-import { occConfigPath } from 'src/config/paths.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 
 import {
   BLOB_DIR_SEGMENTS,
@@ -42,14 +42,13 @@ async function expectUnavailable(promise: Promise<unknown>): Promise<void> {
 }
 
 describe('the staging path is derived, never hand-built', () => {
-  // CLAUDE.md §1.1②: every path comes out of src/config/paths.ts. Qianmo layers
-  // a second identity on top of the base's isolation, and a literal `.occ`
-  // would punch straight through it.
-  test('blobStoreDir() is occConfigPath() of the segments', () => {
-    expect(blobStoreDir()).toBe(occConfigPath(...BLOB_DIR_SEGMENTS))
+  // CLAUDE.md §1.1②: every path comes out of `@qianmo/paths`; a literal
+  // `~/.qianmo` would ignore QIANMO_CONFIG_DIR and punch through isolation.
+  test('blobStoreDir() is qianmoConfigPath() of the segments', () => {
+    expect(blobStoreDir()).toBe(qianmoConfigPath(...BLOB_DIR_SEGMENTS))
   })
 
-  test('it follows the config root the base itself resolves', () => {
+  test('it follows the config root QIANMO_CONFIG_DIR selects', () => {
     expect(blobStoreDir().startsWith(config.configDir)).toBe(true)
   })
 

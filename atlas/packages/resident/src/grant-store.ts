@@ -20,6 +20,8 @@ import {
   parseApprover,
   parseAuthzDecision,
   verifyAuthzDecisionSignature,
+  parseAuthzRevoke,
+  verifyAuthzRevokeSignature,
   type AuthzDecisionKind,
   type AuthzOrigin,
   type AuthzRequest,
@@ -155,6 +157,12 @@ export interface FileGrantStoreOptions {
 
 type LedgerRecord =
   | {
+      readonly kind: 'request-revoked'
+      readonly at: number
+      readonly requestId: string
+      readonly nonce: string
+    }
+  | {
       readonly kind: 'requested'
       readonly at: number
       readonly request: AuthzRequest
@@ -167,6 +175,7 @@ type LedgerRecord =
       readonly approver: string
       readonly nonce: string
       readonly decisionRef: string
+      readonly approvalKey?: string
       readonly grantId: string | null
       readonly expiresAt: number | null
     }
@@ -190,6 +199,7 @@ type LedgerRecord =
   | { readonly kind: 'estop'; readonly at: number }
 
 const RECORD_KEYS: Readonly<Record<LedgerRecord['kind'], readonly string[]>> = {
+  'request-revoked': ['kind', 'at', 'requestId', 'nonce'],
   requested: ['kind', 'at', 'request'],
   decided: [
     'kind',
@@ -199,6 +209,7 @@ const RECORD_KEYS: Readonly<Record<LedgerRecord['kind'], readonly string[]>> = {
     'approver',
     'nonce',
     'decisionRef',
+    'approvalKey',
     'grantId',
     'expiresAt',
   ],
@@ -242,11 +253,23 @@ function parseRecord(value: unknown): LedgerRecord | undefined {
   if (!plainObject(value) || typeof value.kind !== 'string') return undefined
   if (!Object.hasOwn(RECORD_KEYS, value.kind)) return undefined
   const kind = value.kind as LedgerRecord['kind']
-  if (!exactKeys(value, RECORD_KEYS[kind]) || !isEpochMs(value.at)) {
+  if (
+    !exactKeys(
+      value,
+      RECORD_KEYS[kind].filter(
+        key => key !== 'approvalKey' || value.approvalKey !== undefined,
+      ),
+    ) ||
+    !isEpochMs(value.at)
+  ) {
     return undefined
   }
   const record = value as LedgerRecord & Record<string, unknown>
   switch (kind) {
+    case 'request-revoked':
+      return isHexId(record.requestId) && nonEmpty(record.nonce)
+        ? record
+        : undefined
     case 'requested':
       return isAuthzRequest(value.request) ? record : undefined
     case 'decided': {
@@ -254,6 +277,8 @@ function parseRecord(value: unknown): LedgerRecord | undefined {
         value.decision === 'allow-once' || value.decision === 'allow-window'
       if (!allow && value.decision !== 'deny') return undefined
       if (
+        (value.approvalKey !== undefined &&
+          !isNodePublicKey(value.approvalKey)) ||
         !isHexId(value.requestId) ||
         !nonEmpty(value.approver) ||
         !nonEmpty(value.nonce) ||
@@ -289,6 +314,7 @@ interface RequestState {
 }
 
 interface GrantState {
+  readonly approvalKey?: string
   readonly grantId: string
   readonly requestId: string
   readonly digest: string
@@ -560,6 +586,7 @@ export class FileGrantStore {
       requestId: decision.requestId,
       decision: decision.decision,
       approver: decision.approver,
+      approvalKey: key,
       nonce: decision.nonce,
       decisionRef: createHash('sha256')
         .update(String(wire), 'utf8')
@@ -628,6 +655,37 @@ export class FileGrantStore {
     return this.#append({ kind: 'revoked', at: now, grantId })
   }
 
+  applyRevoke(
+    wire: unknown,
+  ): { ok: true; requestId: string } | { ok: false; reason: AuthzRefusal } {
+    if (!this.#usable()) return { ok: false, reason: 'integrity' }
+    const parts = parseAuthzRevoke(wire)
+    if (parts === null) return { ok: false, reason: 'malformed' }
+    const revoke = parts.value
+    if (revoke.aud !== this.#node) return { ok: false, reason: 'aud' }
+    if (!this.#requests.has(revoke.requestId))
+      return { ok: false, reason: 'request' }
+    if (revoke.exp <= this.#now()) return { ok: false, reason: 'expired' }
+    if (revoke.nbf > this.#now()) return { ok: false, reason: 'clock' }
+    const who = parseApprover(revoke.approver)
+    const key = who.ok ? this.#approvers.get(who.console) : undefined
+    if (key === undefined || this.#isCommander(key))
+      return { ok: false, reason: 'approver' }
+    if (!verifyAuthzRevokeSignature(parts, key))
+      return { ok: false, reason: 'signature' }
+    if (this.#nonces.has(revoke.nonce)) return { ok: false, reason: 'replay' }
+    if (
+      !this.#append({
+        kind: 'request-revoked',
+        at: this.#now(),
+        requestId: revoke.requestId,
+        nonce: revoke.nonce,
+      })
+    )
+      return { ok: false, reason: 'integrity' }
+    return { ok: true, requestId: revoke.requestId }
+  }
+
   /**
    * Revoke everything an approver signed and refuse their future decisions.
    * Permanent, because P15 never reuses a subject.
@@ -694,7 +752,12 @@ export class FileGrantStore {
   }
 
   #isLive(grant: GrantState, now: number): boolean {
+    const approver = parseApprover(grant.approver)
+    const key = approver.ok ? this.#approvers.get(approver.console) : undefined
     return (
+      key !== undefined &&
+      key === grant.approvalKey &&
+      !this.#isCommander(key) &&
       grant.revokedAt === undefined &&
       grant.consumedAt === undefined &&
       grant.expiresAt > now
@@ -713,6 +776,16 @@ export class FileGrantStore {
   /** Fold one record into the state; `false` if it could not have happened. */
   #apply(record: LedgerRecord): boolean {
     switch (record.kind) {
+      case 'request-revoked': {
+        const request = this.#requests.get(record.requestId)
+        if (request === undefined || this.#nonces.has(record.nonce))
+          return false
+        this.#nonces.add(record.nonce)
+        request.status = 'expired'
+        for (const grant of this.#grants.values())
+          if (grant.requestId === record.requestId) grant.revokedAt = record.at
+        return true
+      }
       case 'requested': {
         if (this.#requests.has(record.request.requestId)) return false
         if (record.request.iss !== this.#node) return false
@@ -738,6 +811,9 @@ export class FileGrantStore {
           scope: record.decision === 'allow-once' ? 'once' : 'window',
           contextId: state.request.contextId,
           approver: record.approver,
+          ...(record.approvalKey === undefined
+            ? {}
+            : { approvalKey: record.approvalKey }),
           decisionRef: record.decisionRef,
           expiresAt: record.expiresAt,
         })

@@ -36,7 +36,7 @@
  *
  * WHY THE SCOPE IS `(agent, contextId)`
  *
- * The same key the ACP session is chosen by (§4.3). A watch job and a human
+ * The same key the omp RPC session is chosen by (§4.3). A watch job and a human
  * conversation with the same node are different contexts, so they are different
  * memory partitions — no configuration, no opt-in, and nothing to get wrong.
  */
@@ -56,6 +56,9 @@ import {
   recallHybrid,
   renderInjection,
   resolveHybridConfig,
+  injectedIds,
+  handleMemoryEvidenceAnswer,
+  memoryEvidenceContext,
 } from '@qianmo/recall'
 import type { ResidentPromptScope } from './contracts.js'
 import {
@@ -106,7 +109,7 @@ function memorySegment(value: string): string {
  *
  * The context half is taken from {@link sessionKeyOf}'s own normalization
  * rather than from the raw `contextId`, so the memory partition and the session
- * partition can never drift apart — a context that is one ACP session is one
+ * partition can never drift apart — a context that is one omp RPC session is one
  * memory directory, by construction.
  */
 export function residentRecallScope(scope: ResidentPromptScope): RecallScope {
@@ -125,7 +128,7 @@ export function residentRecallScope(scope: ResidentPromptScope): RecallScope {
  * The question F9 asks is "can dropping a directory into the working tree
  * quietly hijack this node's memory?". Today the root comes from the identity
  * config dir, so the answer is no — but only as long as it stays absolute. A
- * relative root (`CLAUDE_CODE_REMOTE_MEMORY_DIR=memory`, an option threaded
+ * relative root (`QIANMO_MEMORY_DIR=memory`, an option threaded
  * through by a future caller) is resolved against `process.cwd()`, and the cwd
  * of a resident turn is the project the agent was pointed at. At that moment a
  * `memory/` directory committed to a repository *becomes* the node's memory
@@ -177,6 +180,7 @@ export interface ResidentMemorySidecarOptions {
 
 /** One turn's memory block, and how it was retrieved when that is recorded. */
 interface ResidentMemoryBlock {
+  readonly memoryIds?: readonly string[]
   readonly block: string
   /** Set only while the semantic overlay is on. */
   readonly retrieval?: RetrievalMode
@@ -229,13 +233,25 @@ export class ResidentMemorySidecar {
    *   needs still sees that entry (that is the whole point of full injection).
    */
   render(scope: ResidentPromptScope, question?: string): string {
+    return this.renderFrozen(scope, question).block
+  }
+
+  renderFrozen(
+    scope: ResidentPromptScope,
+    question?: string,
+  ): ResidentMemoryBlock {
     try {
       const result = recall(this.#store, this.#request(scope, question))
-      if (result.entries.length === 0) return ''
-      return renderInjection(result)
+      return {
+        block:
+          result.entries.length === 0
+            ? ''
+            : memoryEvidenceContext(renderInjection(result)),
+        memoryIds: [...injectedIds(result)],
+      }
     } catch (error) {
       this.#onError?.(error)
-      return ''
+      return { block: '', memoryIds: [] }
     }
   }
 
@@ -254,7 +270,7 @@ export class ResidentMemorySidecar {
     question?: string,
   ): Promise<ResidentMemoryBlock> {
     const semantic = this.#semantic
-    if (semantic === undefined) return { block: this.render(scope, question) }
+    if (semantic === undefined) return this.renderFrozen(scope, question)
     try {
       const result = await recallHybrid(
         this.#store,
@@ -265,14 +281,50 @@ export class ResidentMemorySidecar {
         this.#onRetrievalEvent?.(event)
       }
       return {
-        block: result.entries.length === 0 ? '' : renderInjection(result),
+        block:
+          result.entries.length === 0
+            ? ''
+            : memoryEvidenceContext(renderInjection(result)),
         retrieval: result.retrieval,
+        memoryIds: [...injectedIds(result)],
       }
     } catch (error) {
       this.#onError?.(error)
-      return { block: '' }
+      return { block: '', memoryIds: [] }
     }
   }
+
+  answer(
+    memoryIds: readonly string[],
+    input: unknown,
+  ): { ok: boolean; text: string } {
+    try {
+      const answer = handleMemoryEvidenceAnswer(
+        this.#store,
+        new Set(memoryIds),
+        input,
+      )
+      return {
+        ok: answer.ok,
+        text: answer.ok
+          ? answer.answer
+          : (answer.rejection ?? 'Memory evidence unavailable.'),
+      }
+    } catch {
+      return {
+        ok: false,
+        text: 'Invalid memory answer. Use supported with complete source evidence, or insufficient with evidence: []. Do not supply free answer text.',
+      }
+    }
+  }
+}
+
+/** Unverified prose must never resemble a host-verified citation. */
+export function stripMemoryCitations(text: string): string {
+  return text.replace(
+    /qm-mem-[A-Za-z0-9._/-]+/g,
+    '[unverified memory reference]',
+  )
 }
 
 export { INJECTION_BUDGET }

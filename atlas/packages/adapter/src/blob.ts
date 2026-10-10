@@ -18,22 +18,20 @@ import {
   issue,
   newId,
 } from '@qianmo/protocol'
-import { occConfigPath } from 'src/config/paths.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 
 /**
  * The node-local blob staging area (protocol.md §9.3).
  *
  * ## Why it exists
  *
- * `LIMITS.maxMessageBytes` is 256 KiB, while one base mailbox entry's `text`
+ * `LIMITS.maxMessageBytes` is 256 KiB, while one mailbox entry's `text`
  * tops out at `MAX_MAILBOX_MESSAGE_TEXT_BYTES` (64 KiB). A protocol-legal
  * message between those two numbers would blow up on the last hop — and not
  * as a single rejected write. That 64 KiB is a **read/write invariant of the
- * whole mailbox**: `assertMailboxMessageSize` is reached through
- * `toMailboxMessage` (`src/utils/agents/teammateMailbox.ts:96-128`), which
- * both `parseMailboxMessages` on the read path (`:130-136`) and
- * `writeToMailbox` on the write path (`:401`) go through, and `writeToMailbox`
- * re-reads the entire mailbox under the lock before appending (`:399`). One
+ * whole mailbox**: `@qianmo/mailbox` validates every stored entry against it
+ * on the read path and on the write path, and `writeToMailbox` re-reads the
+ * entire inbox under the lock before appending. One
  * oversized entry on disk therefore makes every subsequent read *and* write of
  * that mailbox throw: the agent stays alive and goes permanently deaf. A
  * poison pill, not a bounced message.
@@ -45,18 +43,18 @@ import { occConfigPath } from 'src/config/paths.js'
  *
  * ## Where it lives
  *
- * Under {@link occConfigPath} — never a hand-built `~/.occ`. Qianmo derives a
- * second identity layer on top of the base's isolation, and a hardcoded path
- * is the one way that isolation fails (CLAUDE.md §1.1②).
+ * Under {@link qianmoConfigPath} — never a hand-built `~/.qianmo`. A hardcoded
+ * path ignores `QIANMO_CONFIG_DIR`, and that override is the node's isolation
+ * boundary (CLAUDE.md §1.1②).
  */
 export const BLOB_DIR_SEGMENTS: readonly string[] = Object.freeze([
   'qianmo',
   'blobs',
 ])
 
-/** Absolute path of the default staging area, derived from `paths.ts`. */
+/** Absolute path of the default staging area, derived from `@qianmo/paths`. */
 export function blobStoreDir(): string {
-  return occConfigPath(...BLOB_DIR_SEGMENTS)
+  return qianmoConfigPath(...BLOB_DIR_SEGMENTS)
 }
 
 /** What replaces an oversized `payload` inside the envelope (§9.3). */

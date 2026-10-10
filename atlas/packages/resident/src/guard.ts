@@ -3,33 +3,28 @@
 
 /**
  * The ceiling on what an unattended turn may do (design
- * `resident-botization.md` §4.5, hermes E2 / E3 / E5).
+ * `resident-botization.md` §4.5, hermes E2 / E3 / E5; on omp,
+ * `base-switch-omp.md` §3.4).
  *
  * WHAT THE RISK ACTUALLY IS
  *
- * The premise this batch inherited — "a resident node is a permanent yolo" —
- * is false, and the correction matters because it changes what has to be
- * built. A resident session runs with `permissionMode: 'dontAsk'`, whose base
- * semantics are *don't prompt, deny if not pre-approved*, and that conversion
- * is deliberately placed at the very end of the permission chain so an early
- * return cannot route around it. `requestPermission` is then hard-wired to
- * `cancelled` on top of that. Nothing is being waved through.
- *
- * What is missing is a **ceiling on pre-approval**. One `allow` rule in a
- * `settings.json` — or one `PreToolUse` hook that answers `allow` — can permit
- * anything at all, including editing that same `settings.json`, reading the
- * node's identity key, or truncating the audit trail that would have recorded
- * it. So the thing to build is not a brake on yolo; it is a list of targets no
- * pre-approval reaches, evaluated **before** any allow rule is consulted.
+ * A resident node runs its agent with nobody watching, on input that arrives
+ * from other nodes. The approval posture (`always-ask`, or `write` with
+ * `--allow-workspace-edits`, and no UI to answer a prompt) already refuses
+ * whatever is not pre-approved. What is missing is a **ceiling on
+ * pre-approval**: one `tools.approval.<tool>: allow` in a config layer, one
+ * project extension that answers `tool_call`, or one approved shell command
+ * can reach anything at all, including editing that same configuration,
+ * reading the node's identity key, or truncating the audit trail that would
+ * have recorded it. So the thing to build is a list of targets no
+ * pre-approval reaches, evaluated **before** any allow is consulted.
  *
  * TWO PROPERTIES, BOTH LOAD-BEARING
  *
- * **It is evaluated before allow.** The wrapper in
- * `src/services/qianmo/residentGuard.ts` runs this table inside each tool's
- * `checkPermissions`, which the base consults at step 1c — ahead of the
- * bypass-permissions mode (2a), ahead of the whole-tool allow rule (2b), and
- * ahead of the path where a `PreToolUse` hook already answered `allow` and only
- * rule-based objections still apply. A deny returned there is final.
+ * **It is evaluated before allow.** `@qianmo/extension` runs this table in
+ * omp's `tool_call` hook, which fires at argument-preparation time for every
+ * model-issued call — ahead of the approval gate — and a block there is
+ * final.
  *
  * **It is not read from session configuration.** The table below is a frozen
  * literal in this package. It has no settings reader, no environment lookup and
@@ -39,9 +34,11 @@
  *
  * ON THE SHELL HALF
  *
- * Blocking the file tools alone is what hermes calls unpaired theatre: `Bash`
+ * Blocking the file tools alone is what hermes calls unpaired theatre: a shell
  * can `cat`, `tee`, `sed -i` and `rm` every one of these targets. So the same
  * table is applied to command strings, over every path-shaped token in them.
+ * The resident posture gives a turn no shell at all; the table still covers
+ * the shell surface so that a posture change cannot quietly open it.
  *
  * The honest limit: a determined command can obscure a path from any lexical
  * matcher (`$(printf 'admission')`, a variable assembled at runtime, a copy
@@ -54,11 +51,17 @@
 
 import { isAbsolute, normalize, sep } from 'node:path'
 
-/** Config-directory basenames across every identity this build can run as. */
+/**
+ * Config-directory basenames of every agent runtime a node may find on disk:
+ * its own (`.qianmo`, which holds the omp agent state under `omp/`), omp's
+ * default (`.omp`), and the other agents' homes omp reads by default.
+ */
 const IDENTITY_DIRS: readonly string[] = Object.freeze([
-  '.occ',
   '.qianmo',
+  '.omp',
   '.claude',
+  '.codex',
+  '.qmcode',
 ])
 
 /** Directories under a config root that hold node-owned state. */
@@ -66,17 +69,18 @@ const NODE_STATE_DIRS: readonly string[] = Object.freeze(['resident', 'qianmo'])
 
 /**
  * Customization directories under a config root. A file in any of these is
- * *loaded* as behaviour — an agent definition sets a permission mode, a skill
- * injects allow rules, a plugin or hook runs code — so writing one is the same
- * class of self-authorization as editing `settings.json` (hermes E1/E3/E4).
+ * *loaded* as behaviour — an extension or hook runs code, an agent definition
+ * sets a model and tools, a skill, rule or prompt injects instructions — so
+ * writing one is the same class of self-authorization as editing the settings
+ * (hermes E1/E3/E4). The list is omp's discovery set
+ * (`docs/config-usage.md`) plus the Claude-compatible names it also reads.
  *
  * Matched under a known state root or spelled out under an identity directory,
- * exactly like `SETTINGS_FILES`: a `.claude/agents/esc.md` in the repository
- * the agent is working in carries a `permissionMode` for this very session, so
+ * exactly like `SETTINGS_FILES`: a `.omp/extensions/x.ts` in the repository
+ * the agent is working in is loaded by the next omp process started there, so
  * it is policy in the same sense as the global one. Reads are refused as well
- * as writes: a resident turn has no reason to read the node's own agent, skill
- * or plugin catalogue, and the loaders that legitimately consume them are
- * disabled outright under the resident child's safe mode.
+ * as writes: a resident turn has no reason to read the node's own agent,
+ * skill or extension catalogue.
  */
 const CONFIG_CUSTOMIZATION_DIRS: readonly string[] = Object.freeze([
   'agents',
@@ -84,12 +88,34 @@ const CONFIG_CUSTOMIZATION_DIRS: readonly string[] = Object.freeze([
   'plugins',
   'commands',
   'hooks',
+  'extensions',
+  'tools',
+  'rules',
+  'prompts',
 ])
 
-/** Files that *are* the security policy (hermes E3). */
+/** Files that *are* the security policy (hermes E3): omp's and Claude's. */
 const SETTINGS_FILES: readonly string[] = Object.freeze([
   'settings.json',
   'settings.local.json',
+  'config.yml',
+  'config.yaml',
+  'config.toml',
+  'mcp.json',
+  '.mcp.json',
+])
+
+/**
+ * The omp agent's model endpoints and credentials (`models.yml`, the
+ * `agent.db` credential pool). Matched like the settings files: inside a state
+ * root or an identity directory.
+ */
+const CREDENTIAL_FILES: readonly string[] = Object.freeze([
+  'models.yml',
+  'models.yaml',
+  'agent.db',
+  'agent.db-wal',
+  'agent.db-shm',
 ])
 
 /**
@@ -126,6 +152,12 @@ export const HARDLINE_TARGETS: readonly HardlineTarget[] = Object.freeze([
       'turn would grant itself everything else',
   }),
   Object.freeze({
+    id: 'credentials',
+    reason:
+      "the agent's model endpoints and credentials; a turn that can read or " +
+      "rewrite them can spend or leak the node's model access",
+  }),
+  Object.freeze({
     id: 'node-identity',
     reason:
       "the node's identity key and capability material; whoever holds it can " +
@@ -146,14 +178,15 @@ export const HARDLINE_TARGETS: readonly HardlineTarget[] = Object.freeze([
   Object.freeze({
     id: 'config-root',
     reason:
-      'the identity config root as a whole, which contains all of the above',
+      "a config root as a whole — the node's own, which contains all of the " +
+      "above and the agent's sessions, or another agent runtime's home",
   }),
   Object.freeze({
     id: 'config-customization',
     reason:
-      'agent, skill, plugin, command and hook definitions under a config root; ' +
-      'each is loaded as behaviour, so writing one grants a turn a new permission ' +
-      'mode, allow rule or code path',
+      'extension, hook, tool, agent, skill, rule, prompt, plugin and command ' +
+      'definitions under a config root; each is loaded as behaviour, so writing ' +
+      'one grants a turn a new approval, instruction or code path',
   }),
   Object.freeze({
     id: 'memory-root',
@@ -177,17 +210,21 @@ export interface HardlineDenial {
 
 export interface ResidentHardlineOptions {
   /**
-   * Absolute, node-owned roots (the identity config directory). Additive only:
-   * every lexical rule below applies whether or not this is provided, so an
-   * empty list weakens nothing. Non-absolute entries are ignored rather than
-   * resolved — a relative root would be interpreted against the agent's working
-   * tree, which is the F9 mistake in a different costume.
+   * Absolute config roots no resident turn may enter: the node's own
+   * (`QIANMO_CONFIG_DIR`, which also holds the omp agent's sessions and
+   * credentials) and the other agent homes (`protectedConfigRoots()` in
+   * `@qianmo/paths`). Refused whole; the per-name rules below still name the
+   * most specific target first. Additive only: every lexical rule applies
+   * whether or not this is provided, so an empty list weakens nothing.
+   * Non-absolute entries are ignored rather than resolved — a relative root
+   * would be interpreted against the agent's working tree, which is the F9
+   * mistake in a different costume.
    */
   readonly stateRoots?: readonly string[]
   /**
    * Absolute subtrees that are refused whole, without any per-name rule. The
    * node's memory store is the one the host supplies: it can sit outside the
-   * config root (`CLAUDE_CODE_REMOTE_MEMORY_DIR`), and a resident turn never
+   * config root (`QIANMO_MEMORY_DIR`), and a resident turn never
    * reaches it through the filesystem — the host reads and injects memory for
    * it — so the whole tree is off limits and a stray approval cannot poison a
    * later turn's evidence. Same absolute-only discipline as `stateRoots`.
@@ -289,6 +326,12 @@ export class ResidentHardline {
     if (SETTINGS_FILES.includes(basename) && (identityAt >= 0 || insideRoot)) {
       return deny('settings')
     }
+    if (
+      CREDENTIAL_FILES.includes(basename) &&
+      (identityAt >= 0 || insideRoot)
+    ) {
+      return deny('credentials')
+    }
 
     // Customization directories under a config root or identity directory —
     // same scoping test as settings, and the same reason: a definition loaded
@@ -321,9 +364,12 @@ export class ResidentHardline {
       return deny('node-state')
     }
 
-    // The config root itself, or an identity directory as a whole: deleting it
-    // destroys everything above without ever naming one of them.
+    // The config root itself, anything else inside it, or an identity
+    // directory as a whole: deleting one destroys everything above without
+    // ever naming one of them, and the rest of a root (the agent's sessions,
+    // its caches) is still the node's own state, not workspace.
     if (
+      insideRoot ||
       this.#stateRoots.some(root => withinRoot(root, rawPath)) ||
       (segments.length > 0 && IDENTITY_DIRS.includes(basename))
     ) {
@@ -337,7 +383,7 @@ export class ResidentHardline {
    * The hardline verdict for a shell command.
    *
    * Every path-shaped token is checked, including redirection targets and the
-   * right-hand side of assignments — `> ~/.occ/settings.json` names the file
+   * right-hand side of assignments — `> ~/.omp/agent/config.yml` names the file
    * just as plainly as `vi` does.
    */
   commandVerdict(command: string): HardlineDenial | null {

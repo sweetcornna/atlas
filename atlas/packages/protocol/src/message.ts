@@ -52,6 +52,9 @@ export enum MessageType {
    * of those is load-bearing rather than incidental.
    */
   Notify = 'notify',
+  AuthzRequest = 'authz.request',
+  AuthzDecision = 'authz.decision',
+  AuthzRevoke = 'authz.revoke',
 }
 
 /** All message types, in declaration order. */

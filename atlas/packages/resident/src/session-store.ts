@@ -133,7 +133,7 @@ function validateWrite(key: string, record: ResidentSessionRecord): void {
  *
  * The policy layer (`ResidentSessionManager`) evicts before it writes, so a
  * healthy node never reaches this. When it does, throwing is the only honest
- * answer: silently discarding a mapping here would strand a live ACP session
+ * answer: silently discarding a mapping here would strand a live omp RPC session
  * with nothing pointing at it, and nothing would ever report it.
  */
 function assertRoomFor(

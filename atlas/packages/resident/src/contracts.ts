@@ -27,6 +27,7 @@ export interface ResidentPromptScope {
 }
 
 export interface DetectedAdmissionRecord {
+  readonly memoryIds?: readonly string[]
   readonly kind: 'detected'
   readonly messageId: string
   readonly sessionId: string
@@ -53,6 +54,7 @@ export interface DetectedAdmissionRecord {
  * `formatPrompt` returns a bare string when there is nothing to record.
  */
 export interface ResidentAssembledPrompt {
+  readonly memoryIds?: readonly string[]
   readonly prompt: string
   readonly retrieval?: RetrievalMode
 }
@@ -168,6 +170,7 @@ export interface ResidentMailboxPort {
 }
 
 export interface ResidentTurnInput {
+  readonly memoryIds?: readonly string[]
   readonly sessionId: string
   readonly messageId: string
   readonly prompt: string
