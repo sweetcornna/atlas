@@ -1,7 +1,7 @@
 {
   "repository": "can1357/oh-my-pi",
-  "version": "18.8.4",
-  "commit": "40e9368ef0458fd9073329cdff4174895f91bc6b",
-  "tree": "c7d2ecac783e9aecd5799b6dff14547d5089e649",
-  "snapshot": "base-snapshot/omp-v18.8.4"
+  "version": "18.8.8",
+  "commit": "1ca13863a82825bdce02908b3db9713e9b084290",
+  "tree": "1b30d3c80bc6f5c4d722e10dc82ebb6d8c4125a3",
+  "snapshot": "base-snapshot/omp-v18.8.8"
 }

@@ -3,7 +3,7 @@
 
 # 对 omp 基座文件的改动清单
 
-> **定位**：章程 §5.6③ 与 §5.4 要求的登记处。凡快照 `base-snapshot/omp-v18.8.4` 里存在的路径被阡陌修改或删除，都在本文登记一行，写明改了什么、为什么扩展点不够用。新增的阡陌文件（不在快照里的路径）不登记。
+> **定位**：章程 §5.6③ 与 §5.4 要求的登记处。凡快照 `base-snapshot/omp-v18.8.8` 里存在的路径被阡陌修改或删除，都在本文登记一行，写明改了什么、为什么扩展点不够用。新增的阡陌文件（不在快照里的路径）不登记。
 >
 > occ 时代（2026-08-11 至 2026-10-07）的改造点记录在 [`base-modifications-occ.md`](./base-modifications-occ.md)，已被本文取代。
 
@@ -12,7 +12,7 @@
 基座文件的判据只看路径：路径在快照树里即为 omp 基座文件（MIT，不带 SPDX 头），不在即为阡陌文件。改动面用下面这条命令现算，只取修改（`M`）与删除（`D`）两类：
 
 ```sh
-git diff --name-status --no-renames base-snapshot/omp-v18.8.4 HEAD | awk '$1!="A"'
+git diff --name-status --no-renames base-snapshot/omp-v18.8.8 HEAD | awk '$1!="A"'
 ```
 
 `A` 类是阡陌新增的路径（例如 `.github/workflows/atlas.yml`、`.github/ISSUE_TEMPLATE/bug_report.md`、`LICENSE.base`、`atlas/` 下的全部文件），不在本文范围内。命令依赖 `base-snapshot/*` 标签，浅克隆取不到标签时先补拉：`git fetch --depth 1 origin 'refs/tags/base-snapshot/*:refs/tags/base-snapshot/*'`。

@@ -13,7 +13,7 @@
 | 项 | 内容 |
 | --- | --- |
 | 仓库性质 | **oh-my-pi（`omp`）v18.8.4 的下游 fork**：omp 树原样在仓库根，阡陌代码在 `atlas/`、`demo/`、`docs/dev/` |
-| 基座 | 上游 `can1357/oh-my-pi` 提交 `40e9368ef0458fd9073329cdff4174895f91bc6b`，MIT。零改动快照标签 `base-snapshot/omp-v18.8.4`（无父提交，树 `c7d2ecac…`），导入提交 `c9a87c8c`。现行机器 pin 见 `atlas/upstream/omp.json`，事件记录见 [BASE.md](BASE.md) |
+| 基座 | 上游 `can1357/oh-my-pi` 提交 `40e9368ef0458fd9073329cdff4174895f91bc6b`，MIT。零改动快照标签 `base-snapshot/omp-v18.8.8`（无父提交，树 `c7d2ecac…`），导入提交 `c9a87c8c`。现行机器 pin 见 `atlas/upstream/omp.json`，事件记录见 [BASE.md](BASE.md) |
 | 许可 | 双许可：阡陌自有代码 AGPL-3.0-or-later（根 `LICENSE`），基座 MIT（根 `LICENSE.base`）。判据是路径：`git cat-file -e <当前 snapshot>:<路径>` 成功即基座文件；当前 snapshot 取 `atlas/upstream/omp.json`。文件头只是标记，范围与豁免见 [NOTICE](NOTICE) 一、许可 |
 | 成果边界 | 工作面 `git diff <当前 snapshot>..HEAD`；基座边界 `git show --stat <当前 snapshot>`；工作记录 `git log 3380c88..HEAD`，其中 `d04a79dd`（occ 同步）与 `c9a87c8c`（基座切换导入）两笔是纯上游内容，举证时单独声明 |
 | 历史 | 2026-08-11 至 2026-10-07 的基座是 open-claude-code（occ）v2.38.3 → v2.46.0；`3380c88`、`d04a79dd`、`base-snapshot/v2.46.0` 作为历史记录保留。occ 时代的约定（`src/config/paths.ts`、`feature()`、ACP、`OCC_*` 环境变量、mock 卫生与宏卫生棘轮）全部随 occ 失效 |
