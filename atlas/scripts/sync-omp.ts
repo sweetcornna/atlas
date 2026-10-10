@@ -38,6 +38,8 @@ export interface CandidateResult {
   upstreamCommit?: string
   upstreamTree?: string
   changedPaths?: string[]
+  /** Upstream changed these base paths, which Atlas deleted; not applied. */
+  removedLocally?: string[]
 }
 const IDENTITY = {
   GIT_AUTHOR_NAME: 'Atlas upstream bot',
@@ -326,17 +328,46 @@ export function prepareCandidate(
     if (status === 'A' && git(candidate, ['ls-tree', 'HEAD', '--', path]))
       throw new Error(`Upstream addition collides with local path: ${path}`)
   }
+  // Base paths Atlas deleted on purpose (registered in
+  // docs/dev/base-modifications.md, enforced by check-omp-base-change). The
+  // deletion stands: upstream's delta for them is kept out of the applied patch
+  // and handed to review, where a change worth having (say, to upstream's CI)
+  // is ported by hand. Applying it would fail on the missing file.
+  const deleted = new Set(
+    git(candidate, [
+      'diff',
+      '--name-only',
+      '--no-renames',
+      '--diff-filter=D',
+      '-z',
+      old.snapshot,
+      'HEAD',
+    ])
+      .split('\0')
+      .filter(Boolean),
+  )
+  const removedLocally = paths.filter(path => deleted.has(path))
+  const literal = (path: string) => `:(literal)${path}`
   const patch = join(out, 'upstream.patch')
   // --output preserves exact binary bytes; stdout helpers must never trim a patch.
-  git(candidate, [
-    'diff',
-    '--binary',
-    '--full-index',
-    '--no-renames',
-    `--output=${patch}`,
-    old.snapshot,
-    next.snapshot,
-  ])
+  const diff = (output: string, pathspec: readonly string[]) =>
+    git(candidate, [
+      'diff',
+      '--binary',
+      '--full-index',
+      '--no-renames',
+      `--output=${output}`,
+      old.snapshot,
+      next.snapshot,
+      '--',
+      ...pathspec,
+    ])
+  diff(patch, ['.', ...removedLocally.map(path => `:(exclude,literal)${path}`)])
+  if (removedLocally.length > 0)
+    diff(
+      join(out, 'upstream-removed-locally.patch'),
+      removedLocally.map(literal),
+    )
   try {
     git(candidate, ['apply', '--3way', '--index', '--whitespace=nowarn', patch])
   } catch (error) {
@@ -371,11 +402,15 @@ export function prepareCandidate(
     upstreamCommit: next.commit,
     upstreamTree: next.tree,
     changedPaths: paths,
+    removedLocally,
   }
   writeJson(join(out, 'candidate.json'), result)
   writeFileSync(
     join(out, 'review.md'),
-    `Updates the omp base from v${old.version} to v${version}.\n\nUpstream: https://github.com/${UPSTREAM}/releases/tag/${tag}\n\nThe first commit applies the upstream delta; the second records the new parentless snapshot and license boundary. Existing snapshot tags and Atlas changes remain intact.\n\nCompatibility results: see the attached workflow artifact. This draft requires review before merge. It does not deploy or update any node.\n`,
+    `Updates the omp base from v${old.version} to v${version}.\n\nUpstream: https://github.com/${UPSTREAM}/releases/tag/${tag}\n\nThe first commit applies the upstream delta; the second records the new parentless snapshot and license boundary. Existing snapshot tags and Atlas changes remain intact.\n\nCompatibility results: see the attached workflow artifact. This draft requires review before merge. It does not deploy or update any node.\n` +
+      (removedLocally.length === 0
+        ? ''
+        : `\n## Upstream changes to base files Atlas deleted\n\nNot applied; the deletions are registered in docs/dev/base-modifications.md. Port anything still relevant by hand. The upstream delta is \`upstream-removed-locally.patch\` in the workflow artifact.\n\n${removedLocally.map(path => `- \`${path}\``).join('\n')}\n`),
   )
   return result
 }
