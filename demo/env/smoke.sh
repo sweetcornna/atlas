@@ -10,9 +10,9 @@
 #
 # 三步各自证什么：
 #   ① 按名解析 + 真拨号（demo/lib/p81-probe.ts）—— 注册中心、两个节点、PSK 都对；
-#   ② 每个节点的审计链完好（`occ audit --verify`，按配置根各查各的）；
+#   ② 每个节点的审计链完好（`qm audit --verify`，按配置根各查各的）；
 #   ③ `--with-task`：目标节点把消息收进输入并回 ack。
-#      **它不等 task.result** —— 结果要跑一个真 ACP turn，那需要模型凭据；
+#      **它不等 task.result** —— 结果要跑一个真 omp 回合，那需要模型凭据；
 #      演示环境的自检不该把「没配凭据」报成「拓扑坏了」。
 #
 # 退出码即结论。
@@ -38,7 +38,8 @@ done
 
 STARTED_AT="$(demo_now)"
 demo_require_marker
-demo_require_occ
+demo_require_bun
+demo_require_qm
 demo_export_common
 [ -n "${QIANMO_TRANSPORT_PSK:-}" ] || demo_die '缺 QIANMO_TRANSPORT_PSK —— 先跑 demo/env/seed.sh'
 cd "$REPO_DIR"
@@ -69,7 +70,7 @@ demo_head '② 审计链'
 verify_trail() {
   local node="$1" config_dir="$2"
   demo_say "--- $node ---"
-  if OCC_CONFIG_DIR="$config_dir" bun "$DEMO_OCC" audit --verify; then
+  if QIANMO_CONFIG_DIR="$config_dir" bun "$DEMO_QM" audit --verify; then
     demo_ok "$node 审计链完好"
   else
     demo_say "$node 审计链有问题"

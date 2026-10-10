@@ -8,13 +8,12 @@
  *   bun provider-acceptance-node.ts facts --tree <部署根> [--root <内测根>] [--nodes a,b] [--console]
  *   bun provider-acceptance-node.ts scan  [--root <内测根>] [--nodes a,b] [--console]   # stdin 见下
  *
- * **只用 node 内建模块**：舰队上的部署树只有 `dist/` 与 `demo/`（`beta-deploy.sh --only dist,demo`），
- * 没有 `src/`、没有 `node_modules`。于是 `SECRET_ENV_KEYS` 在这里抄一份，用例钉住它与
- * `src/services/qianmo/providers/whitelist.ts` 逐项一致。
+ * **只用 Bun / node 内建模块**：舰队部署树不需要源码包或 node_modules。
+ * models.yml 使用 Bun.YAML，agent.db 通过只读 bun:sqlite 查询；用例对真实 omp store 验证 schema。
  *
  * ## facts
  *
- * 一行 JSON：部署树里 `dist/cli-node.js` 的 sha256、inode 与 mtime（换过产物的痕迹）、控制台与各节点
+ * 一行 JSON：部署树里 `dist/qm-<target>` 的 sha256、inode 与 mtime（换过产物的痕迹）、控制台与各节点
  * 进程的 pid / 活着没有 / 启动时刻、启动横幅里**白名单**内的几项。控制台横幅的 `open`、
  * `view-token`、`admin-token` 行可能带 token 值，所以从不整段转述：只取 `chat`、`providers`、
  * `accounts`、`sourceCommit`。节点横幅（`logs/<节点>.out` 首行 JSON）只取 `node`、
@@ -24,24 +23,17 @@
  *
  * stdin 第一行 `{"canaries":[…],"psIntervalMs":100}`。针有两种：
  *   · 金丝雀：运维本机这一轮现生成的，经 ssh 的 stdin 送来，只在本进程内存里；
- *   · 本机真 key：这台机器上每个节点 `settings.json` 里 SECRET_ENV_KEYS 的值，加
- *     `qianmo/provider/key-pool.json` 的 `keys[].value`（P18.18）。**不跨机器传。**
- * 先自检（每根针在合成缓冲里恰好命中一次），打一行 `{"ready":true,…}`；然后每 `psIntervalMs`
- * 采样一次 `ps -ww -eo args`（不截断），直到 stdin 来一行 `stop`（或关掉）；最后扫文件，打一行结果。
- *
- * 扫的是内测根下的一切，除了：`secrets/`（本来就是密钥的家，整个不读）、`backups/`（归档）、
- * `workspaces/`（agent 的工作区，AC-P2 的清单里没有它），以及明文**持有点**——节点配置根的
- * `settings.json`、`qianmo/provider/pending.json`、`qianmo/provider/key-pool.json`，控制台
- * 配置根的 `qianmo/console/provider-secrets.json`（那是密文，排除是 §8.3 的原话）。持有点照样
- * 读，但命中记进 `holders` 而不是 `hits`：真 key 必须在持有点里命中，这是「针是对的」的正向对照。
- * 首次托管时原样复制的 `qianmo/provider/first-write/settings.json`（§2.6 第 2 步）只对**本机真 key**
- * 算持有点：迁移前 key 写在 `settings.json` 里的节点，这份副本里就有它；金丝雀永远进不了这份
- * 从不覆盖的副本，在那里出现照样算命中。
+ *   · 本机真 key：节点 omp/agent/models.yml 的 inline key 与 agent.db 内 api_key 记录。
+ * 针不跨机器传。先自检，再采样 ps，停止后扫文件。输出不含任何密钥值。
+ * secrets/、backups/、workspaces/ 不扫描。models.yml、agent.db（含 WAL）、pending.json
+ * 与控制台加密凭据文件是持有点；pool.json 只应有 fingerprint，出现明文仍算泄漏。
+ * 首次托管快照 first-write/config.json 只对既有真 key 算持有点，金丝雀落进去仍判红。
  * 不跟软链。
  *
  * **输出里永远没有针的值**：只有标签（`canary-1`、`real-<节点>-<序号>`）、路径与次数。
  */
 
+import { Database } from 'bun:sqlite'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
@@ -57,17 +49,6 @@ import {
 import { homedir } from 'node:os'
 import { join, relative } from 'node:path'
 
-/** `src/services/qianmo/providers/whitelist.ts` 的 SECRET_ENV_KEYS（用例钉住两边一致）。 */
-export const SECRET_ENV_KEYS: readonly string[] = [
-  'ANTHROPIC_AUTH_TOKEN',
-  'ANTHROPIC_API_KEY',
-  'OPENAI_API_KEY',
-  'GEMINI_API_KEY',
-  'GROK_API_KEY',
-  'XAI_API_KEY',
-  'OPENCODE_API_KEY',
-]
-
 /** 控制台横幅里允许转述的字段。其余（尤其 token 那几行）一律不碰。 */
 const CONSOLE_BANNER_FIELDS = ['chat', 'providers', 'accounts', 'sourceCommit']
 
@@ -76,7 +57,7 @@ export const EXCLUDED_TOP = ['secrets', 'backups', 'workspaces'] as const
 
 /**
  * 内测根与部署树的布局，照 `demo/env/beta/common.sh`（`beta_pidfile`、`beta_logfile`、
- * `BETA_NODES_DIR`、`BETA_CONFIG_CONSOLE`、`BETA_OCC`）。部署树里有 common.sh，但这个脚本
+ * `BETA_NODES_DIR`、`BETA_CONFIG_CONSOLE`、`BETA_QM_BIN`）。部署树里有 common.sh，但这个脚本
  * 不起 bash 去问它：用例 source 一次 common.sh，逐项钉住两边一致。
  */
 export const LAYOUT = {
@@ -85,21 +66,23 @@ export const LAYOUT = {
   nodeConfig: (root: string, node: string) =>
     join(root, 'nodes', node, 'config'),
   consoleConfig: (root: string) => join(root, 'nodes', 'console', 'config'),
-  cli: (tree: string) => join(tree, 'dist', 'cli-node.js'),
+  cli: (tree: string) =>
+    join(tree, 'dist', `qm-${process.platform}-${process.arch}`),
   /** `BETA_ROOT="${QIANMO_BETA_ROOT:-$HOME/qianmo-beta}"`。 */
   defaultRoot: (env: NodeJS.ProcessEnv, home: string) =>
     env.QIANMO_BETA_ROOT || join(home, 'qianmo-beta'),
 } as const
 
 /** 节点配置根里的明文持有点（相对配置根）。 */
-const NODE_HOLDERS = [
-  'settings.json',
+export const NODE_HOLDERS = [
+  'omp/agent/models.yml',
+  'omp/agent/agent.db',
+  'omp/agent/agent.db-wal',
   'qianmo/provider/pending.json',
-  'qianmo/provider/key-pool.json',
 ]
 const CONSOLE_HOLDERS = ['qianmo/console/provider-secrets.json']
-/** 只对本机真 key 算持有点（相对节点配置根）：首次托管时的 `settings.json` 原样副本。 */
-const NODE_REAL_KEY_HOLDERS = ['qianmo/provider/first-write/settings.json']
+/** Snapshot is an authorized holder only for credentials predating enrollment. */
+const NODE_REAL_KEY_HOLDERS = ['qianmo/provider/first-write/config.json']
 
 /** 单个文件超过它就跳过并计数（日志轮转之前不会到这个量级）。 */
 const MAX_FILE_BYTES = 512 * 1024 * 1024
@@ -128,7 +111,7 @@ export interface MachineFacts {
     readonly path: string
     readonly cliSha256: string | null
     /**
-     * inode 与 mtime，不用 ctime：CLI 起来时把 `dist/cli-node.js` 硬链进运行时目录，
+     * inode 与 mtime，不用 ctime：CLI 起来时把 `dist/qm-<target>` 硬链进运行时目录，
      * 链接数一变 ctime 就变（P18.13 B 段 R1 的 D1 假红）；换产物（解包、rsync、cp）
      * 换的是 inode 或 mtime。
      */
@@ -339,19 +322,45 @@ export function realKeyNeedles(
   for (const node of nodes) {
     const config = LAYOUT.nodeConfig(root, node)
     const values: string[] = []
-    const settings = readJson(join(config, 'settings.json'))
-    if (isRecord(settings) && isRecord(settings.env)) {
-      for (const key of SECRET_ENV_KEYS) {
-        const value = settings.env[key]
-        if (typeof value === 'string') values.push(value)
+    const modelsPath = join(config, 'omp/agent/models.yml')
+    if (existsSync(modelsPath)) {
+      const models = Bun.YAML.parse(readFileSync(modelsPath, 'utf8'))
+      if (isRecord(models) && isRecord(models.providers)) {
+        for (const provider of Object.values(models.providers)) {
+          if (!isRecord(provider)) continue
+          if (typeof provider.apiKey === 'string') values.push(provider.apiKey)
+          if (isRecord(provider.headers)) {
+            for (const [name, value] of Object.entries(provider.headers)) {
+              if (typeof value !== 'string') continue
+              if (name.toLowerCase() === 'x-api-key') values.push(value)
+              if (
+                name.toLowerCase() === 'authorization' &&
+                /^Bearer\s+/i.test(value)
+              )
+                values.push(value.replace(/^Bearer\s+/i, ''))
+            }
+          }
+        }
       }
     }
-    const pool = readJson(join(config, 'qianmo', 'provider', 'key-pool.json'))
-    if (isRecord(pool) && Array.isArray(pool.keys)) {
-      for (const entry of pool.keys) {
-        if (isRecord(entry) && typeof entry.value === 'string') {
-          values.push(entry.value)
+    // Read-only schema projection: the fleet payload has Bun but no node_modules.
+    // Include disabled credentials too: they remain secrets while retained on disk.
+    const dbPath = join(config, 'omp/agent/agent.db')
+    if (existsSync(dbPath)) {
+      const db = new Database(dbPath, { readonly: true })
+      try {
+        const rows = db
+          .query(
+            "SELECT data FROM auth_credentials WHERE credential_type = 'api_key'",
+          )
+          .all() as { data: string }[]
+        for (const row of rows) {
+          const credential = JSON.parse(row.data)
+          if (isRecord(credential) && typeof credential.key === 'string')
+            values.push(credential.key)
         }
+      } finally {
+        db.close()
       }
     }
     for (const value of values) {

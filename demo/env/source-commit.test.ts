@@ -4,19 +4,20 @@
 /**
  * 源 commit 怎么跟着代码上机（issue #70 剩下的那一半）。
  *
- * 前一半已经落地：`scripts/defines.ts` 把源 commit 注成 `MACRO.SOURCE_COMMIT`，
- * 常驻启动行与控制台 banner 都报它。但在**部署路径上**它一直是 `unknown`——送代码
- * 那一步不带 `.git`（仓库根下压着 `.claude` 与含凭据的 `.occ`，裸同步是事故），
- * 机器上 `bun run build` 时 git 无从问起。
+ * qm 报出的源 commit（`qm --version`、常驻启动行、控制台 banner）在源码直跑时依次取
+ * `QIANMO_SOURCE_COMMIT`、`git rev-parse HEAD`、`unknown`。在**部署路径上**它一直是
+ * `unknown`——送代码那一步不带 `.git`（仓库根下可能压着 `.claude` 与含凭据的配置根，
+ * 裸同步是事故），机器上 git 无从问起。
  *
  * 补法是两个脚本对半接：`demo/env/pack.sh` 在源端把 HEAD 封进包里的 `.source-commit`，
- * `demo/env/bootstrap.sh` 在机器上读回来经 `OCC_SOURCE_COMMIT` 交给 defines.ts。
+ * `demo/env/common.sh` 在机器上读回来经 `QIANMO_SOURCE_COMMIT` 交给 qm。
  *
  * 这里钉四组：
  *
- * ① **git 压过一切**。树本身就是仓库时，戳文件与环境变量都不许说话。这一条不是洁癖：
- *    上一轮 shell 里残留的一个 `export OCC_SOURCE_COMMIT` 会给开发机上每一次构建
- *    贴上一个陈旧的 SHA，而产物看上去完全正常。
+ * ① **git 压过一切**。树本身就是仓库时，戳文件与环境变量都不许说话——而且 qm 那一侧
+ *    环境变量排在 git 之前，所以 export 那一步必须**主动 unset** 一个继承来的值：
+ *    上一轮 shell 里残留的一个 `export QIANMO_SOURCE_COMMIT` 会给开发机上每一次启动
+ *    贴上一个陈旧的 SHA，而输出看上去完全正常。
  * ② **戳文件的形状要验**。它是从别的机器搬来的普通文件；一个截断了半截的值长得
  *    很像 commit，会一路流进产物、启动行和验收报告，没人会怀疑。
  * ③ **三种结局各有各的话**。「有戳」「本树就是仓库」「什么都没有」必须能被操作者
@@ -156,10 +157,10 @@ describe('demo_source_commit —— 判定与优先级', () => {
     const head = initGit(root)
 
     const result = runShell(root, ['demo_source_commit'], {
-      OCC_SOURCE_COMMIT: OTHER_SHA,
+      QIANMO_SOURCE_COMMIT: OTHER_SHA,
     })
 
-    // 空串 = 「不该由我们说」：defines.ts 会自己去问 git。这里顺带证明它问得到，
+    // 空串 = 「不该由我们说」：qm 会自己去问 git。这里顺带证明它问得到，
     // 否则「空串」也可能是因为 git 在用例环境里根本跑不起来。
     expect(result.stdout).toBe('')
     expect(head).toMatch(/^[0-9a-f]{40}$/)
@@ -179,7 +180,7 @@ describe('demo_source_commit —— 判定与优先级', () => {
     writeFileSync(join(root, '.source-commit'), `${SHA}\n`)
 
     const result = runShell(root, ['demo_source_commit'], {
-      OCC_SOURCE_COMMIT: OTHER_SHA,
+      QIANMO_SOURCE_COMMIT: OTHER_SHA,
     })
     expect(result.stdout).toBe(OTHER_SHA)
   })
@@ -225,13 +226,13 @@ describe('demo_export_source_commit —— 三种结局各说一句', () => {
     const result = runShell(root, [
       'demo_export_source_commit',
       // biome-ignore lint/suspicious/noTemplateCurlyInString: 这是 shell 的参数展开，不是 JS 模板串
-      'printf "exported=%s\\n" "${OCC_SOURCE_COMMIT:-<unset>}"',
+      'printf "exported=%s\\n" "${QIANMO_SOURCE_COMMIT:-<unset>}"',
     ])
     expect(result.stdout).toContain(`exported=${SHA}`)
     expect(result.stdout).toContain(SHA)
   })
 
-  test('本树就是仓库：报 git 的 HEAD，且**不**设 OCC_SOURCE_COMMIT', async () => {
+  test('本树就是仓库：报 git 的 HEAD，且**不**设 QIANMO_SOURCE_COMMIT', async () => {
     const root = tree()
     await place(root, 'demo/env/common.sh', COMMON_SOURCE)
     const head = initGit(root)
@@ -239,12 +240,31 @@ describe('demo_export_source_commit —— 三种结局各说一句', () => {
     const result = runShell(root, [
       'demo_export_source_commit',
       // biome-ignore lint/suspicious/noTemplateCurlyInString: 这是 shell 的参数展开，不是 JS 模板串
-      'printf "exported=%s\\n" "${OCC_SOURCE_COMMIT:-<unset>}"',
+      'printf "exported=%s\\n" "${QIANMO_SOURCE_COMMIT:-<unset>}"',
     ])
     expect(result.stdout).toContain(head)
-    // 设了就等于用环境变量覆盖 git —— defines.ts 那一侧会忽略它，但一个被设过的
-    // 变量会继续泄给这次构建之后的一切子进程。
+    // 设了就等于用环境变量覆盖 git —— qm 源码直跑时环境变量排在 git 之前，一个被设过的
+    // 变量会让之后起的每个 qm 都报它。
     expect(result.stdout).toContain('exported=<unset>')
+  })
+
+  test('本树就是仓库：外层继承来的 QIANMO_SOURCE_COMMIT 被 unset，不压过 git', async () => {
+    const root = tree()
+    await place(root, 'demo/env/common.sh', COMMON_SOURCE)
+    const head = initGit(root)
+
+    const result = runShell(
+      root,
+      [
+        'demo_export_source_commit',
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: 这是 shell 的参数展开，不是 JS 模板串
+        'printf "exported=%s\\n" "${QIANMO_SOURCE_COMMIT:-<unset>}"',
+      ],
+      { QIANMO_SOURCE_COMMIT: OTHER_SHA },
+    )
+    expect(result.stdout).toContain(head)
+    expect(result.stdout).toContain('exported=<unset>')
+    expect(result.stdout).not.toContain(OTHER_SHA)
   })
 
   test('什么都没有：显式 WARN，并指向 pack.sh', async () => {
@@ -301,14 +321,14 @@ describe('pack.sh —— 源端把 HEAD 封进包里', () => {
     await place(root, 'demo/env/pack.sh', PACK_SOURCE)
     // 两个「绝不该进包」的东西：凭据目录与依赖树。前者是 .gitignore 挡住的，
     // 后者是 git 压根不跟踪的 —— 用例要证明的正是「不靠排除表也不会漏」。
-    mkdirSync(join(root, '.occ'), { recursive: true })
+    mkdirSync(join(root, '.qianmo'), { recursive: true })
     writeFileSync(
-      join(root, '.occ/credentials.json'),
+      join(root, '.qianmo/credentials.json'),
       '{"token":"never-ship-me"}',
     )
     mkdirSync(join(root, 'node_modules/left-pad'), { recursive: true })
     writeFileSync(join(root, 'node_modules/left-pad/index.js'), '')
-    writeFileSync(join(root, '.gitignore'), '.occ\nnode_modules\ndist\n')
+    writeFileSync(join(root, '.gitignore'), '.qianmo\nnode_modules\ndist\n')
     const head = initGit(root)
     return { root, head }
   }
@@ -331,14 +351,14 @@ describe('pack.sh —— 源端把 HEAD 封进包里', () => {
     ).toBe(head)
   })
 
-  test('包里没有 .git / .occ / node_modules', async () => {
+  test('包里没有 .git / .qianmo / node_modules', async () => {
     const { root } = await packable()
     const output = join(root, 'out.tar.gz')
     expect(runPack(root, ['--output', output]).exitCode).toBe(0)
 
     const listed = entries(output)
     expect(listed.some(entry => entry.startsWith('.git/'))).toBe(false)
-    expect(listed.some(entry => entry.startsWith('.occ'))).toBe(false)
+    expect(listed.some(entry => entry.startsWith('.qianmo'))).toBe(false)
     expect(listed.some(entry => entry.startsWith('node_modules'))).toBe(false)
     // 正面对照：跟踪的文件确实在里面，否则上面三条空包也能全绿。
     expect(listed).toContain('demo/env/pack.sh')

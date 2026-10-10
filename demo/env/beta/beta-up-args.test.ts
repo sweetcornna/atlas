@@ -31,8 +31,10 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -75,7 +77,7 @@ const args = process.argv.slice(2)
 const fs = require('node:fs')
 fs.appendFileSync(
   process.env.FAKE_OCC_LOG,
-  JSON.stringify({ args, configDir: process.env.OCC_CONFIG_DIR ?? '' }) + '\\n',
+  JSON.stringify({ args, configDir: process.env.QIANMO_CONFIG_DIR ?? '' }) + '\\n',
 )
 if (args.includes('--print-wake-identity')) {
   process.stdout.write('console=fake-public-key-0123456789\\n')
@@ -205,8 +207,12 @@ function scratch(): Scratch {
       `// stub for ${entry}; beta-up-args 只断言命令行，不执行它\n`,
     )
   }
-  writeFileSync(join(repo, 'dist/cli-node.js'), FAKE_OCC)
-  chmodSync(join(repo, 'dist/cli-node.js'), 0o755)
+  writeFileSync(
+    join(repo, `dist/qm-${process.platform}-${process.arch}`),
+    `#!/usr/bin/env bun\n${FAKE_OCC.replace(/^#![^\n]*\n/, '')}`,
+    { mode: 0o755 },
+  )
+  chmodSync(join(repo, `dist/qm-${process.platform}-${process.arch}`), 0o755)
   // 单元模板：**真源在仓库**，所以整棵原样带进临时仓库，用例断言的就是它们派生出来
   // 的那份内容。
   const ops = join(beta, 'ops')
@@ -244,7 +250,10 @@ interface ShellResult {
 function runBetaUp(
   place: Scratch,
   args: readonly string[],
-  options: { readonly systemd?: boolean } = {},
+  options: {
+    readonly systemd?: boolean
+    readonly env?: Record<string, string>
+  } = {},
 ): ShellResult {
   // 默认带上假 systemctl；`systemd: false` 换成那个「--user 一律不通」的桩。
   const stubPath =
@@ -255,7 +264,7 @@ function runBetaUp(
       cwd: place.repo,
       env: {
         ...process.env,
-        // bun 要在 PATH 上（beta_require_occ 的解释器守卫，issue #40），git 要在 PATH 上
+        // bun 要在 PATH 上（beta_require_qm 的解释器守卫，issue #40），git 要在 PATH 上
         // （节点腿给每个 agent 建真工作区）。
         PATH: `${stubPath}${dirname(process.execPath)}:/usr/bin:/bin`,
         // 单元只许落在临时目录里。这一条不是整洁，是安全：BETA_SYSTEMD_USER_DIR 的
@@ -270,6 +279,10 @@ function runBetaUp(
         QIANMO_BETA_ROOT: place.root,
         BETA_ARGV_LOG: place.argvLog,
         FAKE_OCC_LOG: place.occLog,
+        QIANMO_BETA_STAGE: 'M1',
+        QIANMO_BETA_HUB_ROOT: '',
+        QIANMO_BETA_HUB_SSH_DIR: '',
+        ...options.env,
       },
       stdout: 'pipe',
       stderr: 'pipe',
@@ -329,9 +342,8 @@ describe('beta-up.sh forwards tail arguments to the underlying command', () => {
       stderr: result.stderr,
     })
     const args = argv ?? []
-    expect(args.slice(0, 3)).toEqual([
-      'bun',
-      join(place.repo, 'dist/cli-node.js'),
+    expect(args.slice(0, 2)).toEqual([
+      join(place.repo, `dist/qm-${process.platform}-${process.arch}`),
       'resident',
     ])
     // 原样落到命令行上：值里的等号不被拆开，参数也不被重排。
@@ -360,9 +372,8 @@ describe('beta-up.sh forwards tail arguments to the underlying command', () => {
       stderr: result.stderr,
     })
     const args = argv ?? []
-    expect(args.slice(0, 3)).toEqual([
-      'bun',
-      join(place.repo, 'dist/cli-node.js'),
+    expect(args.slice(0, 2)).toEqual([
+      join(place.repo, `dist/qm-${process.platform}-${process.arch}`),
       'console',
     ])
     expect(args[args.length - 1]).toBe('--wake-sign')
@@ -1009,5 +1020,113 @@ describe('beta-up.sh reports and drops the legacy console.conf schema', () => {
     writePeers(place, ['qianmo://beta-1/planner ws://127.0.0.1:38625'])
     const result = runBetaUp(place, ['--role', 'host'])
     expect(result.stdout).not.toContain('旧 schema')
+  })
+})
+
+describe('P14.9 hub isolation before resident startup', () => {
+  const node = ['--role', 'node', '--node', 'beta-1']
+  const approve = ['--', '--approver=console=public-key']
+  function colocated(place: Scratch) {
+    writePeers(place, [
+      'local-server hub',
+      'qianmo://beta-1/planner ws://127.0.0.1:38625',
+    ])
+  }
+  test('approval fails without explicit topology or complete roots and records no launch', () => {
+    const place = scratch()
+    let result = runBetaUp(place, [...node, ...approve])
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain('requires local-server')
+    colocated(place)
+    result = runBetaUp(place, [...node, ...approve])
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain('HUB_SSH_DIR')
+    expect(recorded(place).size).toBe(0)
+  })
+  test('actual same UID cannot claim independent hub roots', () => {
+    const place = scratch()
+    colocated(place)
+    const result = runBetaUp(place, [...node, ...approve], {
+      env: {
+        QIANMO_BETA_HUB_ROOT: place.root,
+        QIANMO_BETA_HUB_SSH_DIR: place.root,
+      },
+    })
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toMatch(/independent uids|non-privileged/)
+    expect(recorded(place).size).toBe(0)
+  })
+  test('M1 actual independent immutable roots are handed to the resident hardline', () => {
+    const place = scratch()
+    colocated(place)
+    // Read-only metadata probes of root-owned OS directories. They stand in for
+    // hub state/SSH roots; no contents are read or written and no resident starts.
+    const result = runBetaUp(place, [...node, ...approve], {
+      env: {
+        QIANMO_BETA_HUB_ROOT: '/etc',
+        QIANMO_BETA_HUB_SSH_DIR: '/usr/bin',
+      },
+    })
+    if (process.geteuid?.() === 0) {
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stderr).toContain('non-privileged')
+      return
+    }
+    expect(result.exitCode).toBe(0)
+    const args = recorded(place).get('beta-1')!
+    expect(args).toContain('--approver=console=public-key')
+    const roots = args.flatMap((arg, index) =>
+      arg === '--protected-root' ? [args[index + 1]] : [],
+    )
+    expect(roots).toEqual([realpathSync('/etc'), realpathSync('/usr/bin')])
+  })
+  test('a node-owned symlink to an immutable directory cannot certify the hub path', () => {
+    const place = scratch()
+    colocated(place)
+    const alias = join(place.root, 'hub-alias')
+    symlinkSync('/etc', alias)
+    const result = runBetaUp(place, [...node, ...approve], {
+      env: {
+        QIANMO_BETA_HUB_ROOT: alias,
+        QIANMO_BETA_HUB_SSH_DIR: '/usr/bin',
+      },
+    })
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toMatch(/secret symlink|non-privileged/)
+    expect(recorded(place).size).toBe(0)
+  })
+  test('M2 rejects colocation even without approver and tenancy cannot select M1', () => {
+    for (const args of [node, [...node, '--', '--tenancy=/tmp/tenants.json']]) {
+      const place = scratch()
+      colocated(place)
+      const result = runBetaUp(place, args, {
+        env: { QIANMO_BETA_STAGE: args === node ? 'M2' : 'M1' },
+      })
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stderr).toContain('M2 forbids')
+      expect(recorded(place).size).toBe(0)
+    }
+  })
+  test('persisted approver is checked again; passthrough cannot override checked node', () => {
+    const place = scratch()
+    colocated(place)
+    runBetaUp(place, [...node, ...approve])
+    const resumed = runBetaUp(place, node)
+    expect(resumed.exitCode).not.toBe(0)
+    expect(resumed.stderr).toContain('HUB_SSH_DIR')
+    const override = runBetaUp(place, [...node, '--', '--node=other'])
+    expect(override.exitCode).not.toBe(0)
+    expect(override.stderr).toContain('invalidate topology')
+    expect(recorded(place).size).toBe(0)
+  })
+  test('M2 separate-server node proceeds through the real argv builder', () => {
+    const place = scratch()
+    writePeers(place, [
+      'local-server hub',
+      'qianmo://beta-1/planner ws://node.example.test:38625',
+    ])
+    const result = runBetaUp(place, node, { env: { QIANMO_BETA_STAGE: 'M2' } })
+    expect(result.exitCode).toBe(0)
+    expect(recorded(place).get('beta-1')).toContain('resident')
   })
 })

@@ -45,6 +45,26 @@ const report = buildP41Report(values, {
   ackLimitMs,
   resultLimitMs,
 })
-const pass = report.pass && corrupt === 0
-emit({ ...report, corruptLines: corrupt, pass })
+const protocolPass = report.pass && corrupt === 0
+const ac2 = process.argv.includes('--ac2')
+const acceptanceLimits =
+  expectedRounds === 10 && ackLimitMs === 60000 && resultLimitMs === 300000
+const signed =
+  values.length > 0 && values.every(row => row.signedChannel === true)
+const pass = protocolPass && (!ac2 || (acceptanceLimits && signed))
+emit({
+  ...report,
+  corruptLines: corrupt,
+  pass,
+  protocolPass,
+  ...(ac2
+    ? {
+        ac2Passed: false,
+        strictSigned: signed,
+        acceptanceLimits,
+        scope:
+          'Ten frozen-state protocol rounds with ack/result timing. Dormice/gVisor resource-state evidence and independent review remain required for AC-2; this report never certifies them.',
+      }
+    : {}),
+})
 process.exit(pass ? 0 : 1)

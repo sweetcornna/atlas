@@ -14,7 +14,7 @@ import {
   parseDockerInspect,
   verifyBirthContract,
 } from '@qianmo/sandbox'
-import { defaultSandboxAuditPath } from '../../src/services/qianmo/sandboxAudit.js'
+import { defaultSandboxAuditPath } from '@qianmo/node/host/sandboxAudit.js'
 import { counter, unifiedCgroupDirectory } from './cgroup.js'
 
 const SANDBOX_ENV_VAR = 'QIANMO_P13_SANDBOX'

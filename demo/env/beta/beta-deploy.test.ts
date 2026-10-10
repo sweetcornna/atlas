@@ -38,6 +38,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -53,21 +54,21 @@ afterAll(() => {
 })
 
 const REAL_COMMIT = '0123456789abcdef0123456789abcdef01234567'
-/** 干扰项：真机那棵 dist 里有 4 个互不相同的裸 40 位十六进制。**排在真值前面**，
- *  这样「grep 裸十六进制取第一个」的写法会稳定地取到错的那个。 */
-const DECOY_HEX = '00000000000000000000000000000000000000aa'
 
-/** 编译产物里 SOURCE_COMMIT 的**形状** —— `defines.ts` 把它替换进返回位。 */
-function bundleJs(commit: string | null, extra = ''): string {
-  const shape =
-    commit === null
-      ? ''
-      : `function __src(){try{return\`${commit}\`}catch{return"unknown"}}\n`
-  return `const __chunkHash="${DECOY_HEX}"\n${shape}${extra}`
+/** 本机对应的产物名 —— 与 beta/common.sh 的 beta_host_target 同一个映射。 */
+const QM_NAME = `qm-${process.platform}-${process.arch === 'arm64' ? 'arm64' : 'x64'}`
+
+/** 一个假 qm：shell 脚本，`--version` 打出和真产物同形状的一行。 */
+function fakeQm(versionLine: string, exitCode = 0): string {
+  return `#!/bin/sh\nprintf '%s\\n' '${versionLine}'\nexit ${exitCode}\n`
+}
+
+function versionOf(commit: string): string {
+  return `qm 3.0.0-dev (omp 18.8.4) ${commit}`
 }
 
 /** 一个假 HOME，里面放一棵可装的「构建树」。 */
-function sandbox(opts: { readonly js?: string } = {}): {
+function sandbox(opts: { readonly qm?: string } = {}): {
   readonly home: string
   readonly build: string
 } {
@@ -76,10 +77,11 @@ function sandbox(opts: { readonly js?: string } = {}): {
   const build = join(home, 'build')
   mkdirSync(join(build, 'dist'), { recursive: true })
   mkdirSync(join(build, 'demo', 'env', 'beta'), { recursive: true })
-  // 校验那一步 grep 的就是它。
+  // 校验那一步会真的把它跑起来（`--version`）。
   writeFileSync(
-    join(build, 'dist', 'cli-node.js'),
-    opts.js ?? bundleJs(REAL_COMMIT),
+    join(build, 'dist', QM_NAME),
+    opts.qm ?? fakeQm(versionOf(REAL_COMMIT)),
+    { mode: 0o755 },
   )
   writeFileSync(join(build, 'demo', 'env', 'beta', 'beta-up.sh'), '#!/bin/sh\n')
   return { home, build }
@@ -118,7 +120,7 @@ describe('beta-deploy.sh 的保留策略（那次把控制台弄下线的事故�
     }
     // 旧脚本在这里会是 5 份、还在涨。
     expect(backups(home)).toHaveLength(2)
-    expect(existsSync(join(tree, 'dist', 'cli-node.js'))).toBe(true)
+    expect(existsSync(join(tree, 'dist', QM_NAME))).toBe(true)
   })
 
   test('--keep 0 一份都不留，但树本身照装', () => {
@@ -128,7 +130,7 @@ describe('beta-deploy.sh 的保留策略（那次把控制台弄下线的事故�
     const r = deploy(home, ['--tree', tree, '--from', build, '--keep', '0'])
     expect(r.code).toBe(0)
     expect(backups(home)).toHaveLength(0)
-    expect(existsSync(join(tree, 'dist', 'cli-node.js'))).toBe(true)
+    expect(existsSync(join(tree, 'dist', QM_NAME))).toBe(true)
   })
 
   test('同一秒里连着装两次不会把备份套进备份里', () => {
@@ -155,7 +157,7 @@ describe('beta-deploy.sh 的护栏', () => {
     const { home } = sandbox()
     const broken = join(home, 'broken')
     mkdirSync(join(broken, 'dist'), { recursive: true })
-    writeFileSync(join(broken, 'dist', 'cli-node.js'), 'x\n')
+    writeFileSync(join(broken, 'dist', QM_NAME), 'x\n', { mode: 0o755 })
     // 少了 demo/env/beta/beta-up.sh。
     const r = deploy(home, ['--tree', join(home, 'tree'), '--from', broken])
     expect(r.code).not.toBe(0)
@@ -167,7 +169,7 @@ describe('beta-deploy.sh 的护栏', () => {
     const { home, build } = sandbox()
     const tree = join(home, 'tree')
     expect(deploy(home, ['--tree', tree, '--from', build]).code).toBe(0)
-    const marker = join(tree, 'dist', 'cli-node.js')
+    const marker = join(tree, 'dist', QM_NAME)
     expect(existsSync(marker)).toBe(true)
 
     // 把「需要多少」撑到不可能满足：拿一棵巨大的构建树是不现实的，所以改用
@@ -230,36 +232,27 @@ describe('beta-deploy.sh 的护栏', () => {
     expect(dotdot.out).toContain('里有 ..')
   })
 
-  test('把产物的来源 commit 打出来 —— 那是它唯一能自证来源的东西（#70）', () => {
+  test('把产物自报的来源 commit 打出来（#70）', () => {
     const { home, build } = sandbox()
     const r = deploy(home, ['--tree', join(home, 'tree'), '--from', build])
     expect(r.code).toBe(0)
-    expect(r.out).toContain(REAL_COMMIT)
-    // **这一半才是这条用例的价值**：dist 里还躺着别的 40 位十六进制，认错一个
-    // 就是一个自信的错答案。第一版真机试跑报的正是那个干扰项。
-    expect(r.out).not.toContain(DECOY_HEX)
+    expect(r.out).toContain(`产物来源 commit：${REAL_COMMIT}`)
   })
 
-  test('读不出来源时说读不出，不拿旁边的十六进制凑数', () => {
-    // 只有干扰项、没有那个返回位形状 —— 旧写法会把 DECOY 当 commit 报出来。
-    const { home, build } = sandbox({ js: bundleJs(null) })
+  test('读不出来源时说读不出，不拦住部署', () => {
+    const { home, build } = sandbox({ qm: fakeQm(versionOf('unknown')) })
     const r = deploy(home, ['--tree', join(home, 'tree'), '--from', build])
     expect(r.code).toBe(0) // 装是装上了，这不是失败
-    expect(r.out).toContain('读不出 SOURCE_COMMIT')
-    expect(r.out).not.toContain(DECOY_HEX)
+    expect(r.out).toContain('产物读不出来源 commit')
   })
 
-  test('形状不再唯一时也不敢认 —— 宁可报「读出多个候选」', () => {
-    const other = 'fedcba9876543210fedcba9876543210fedcba98'
+  test('带 -dirty 的 commit 照样认', () => {
     const { home, build } = sandbox({
-      js: bundleJs(
-        REAL_COMMIT,
-        `function __b(){try{return\`${other}\`}catch{}}\n`,
-      ),
+      qm: fakeQm(versionOf(`${REAL_COMMIT}-dirty`)),
     })
     const r = deploy(home, ['--tree', join(home, 'tree'), '--from', build])
     expect(r.code).toBe(0)
-    expect(r.out).toContain('个候选')
+    expect(r.out).toContain(`${REAL_COMMIT}-dirty`)
   })
 })
 
@@ -269,7 +262,7 @@ describe('beta-deploy.sh 不许把树从活着的进程脚下抽走', () => {
    *
    * 守卫是按 `ps` 里的 argv 含不含树路径判定的（见 `beta-deploy.sh` 那段注释），
    * 所以固件要造的是「argv 里带着树里路径的活进程」。真机上的常驻正是这个形状：
-   * 解释器在树外，脚本在树里（`node <树>/dist/cli-node.js`）。
+   * 解释器在树外，脚本在树里（`bun <树>/atlas/packages/node/src/cli.ts`）。
    *
    * 这里栽过两次，两次都是固件造出来的进程不符合这个形状，不是守卫的问题：
    *
@@ -324,7 +317,7 @@ describe('beta-deploy.sh 不许把树从活着的进程脚下抽走', () => {
     const { home, build } = sandbox()
     const tree = join(home, 'tree')
     expect(deploy(home, ['--tree', tree, '--from', build]).code).toBe(0)
-    const marker = join(tree, 'dist', 'cli-node.js')
+    const marker = join(tree, 'dist', QM_NAME)
     const before = backups(home).length
 
     const pid = runFromTree(tree)
@@ -351,7 +344,7 @@ describe('beta-deploy.sh 不许把树从活着的进程脚下抽走', () => {
     const { home, build } = sandbox()
     const tree = join(home, 'tree')
     expect(deploy(home, ['--tree', tree, '--from', build]).code).toBe(0)
-    const marker = join(tree, 'dist', 'cli-node.js')
+    const marker = join(tree, 'dist', QM_NAME)
 
     // 一个什么都不输出的 ps —— 「这台机器的 ps 不认 -eo」在真机上就长这样，
     // 而脚本把它的 stderr 咽掉了。不特判的话 live 为空、守卫欢快放行：
@@ -435,7 +428,7 @@ describe('部署树不是一个形状 —— 整棵换会换掉树里本来就�
     expect(r.code).toBe(0)
     expect(existsSync(witness)).toBe(true)
     expect(existsSync(join(tree, 'src', 'cli.ts'))).toBe(true)
-    expect(existsSync(join(tree, 'dist', 'cli-node.js'))).toBe(true)
+    expect(existsSync(join(tree, 'dist', QM_NAME))).toBe(true)
     // 备份落在树里，按条目命名 —— 旧 node-deploy.sh 就是这个约定。
     expect(
       readdirSync(tree).filter(n => n.startsWith('dist.bak-')),
@@ -470,7 +463,7 @@ describe('部署树不是一个形状 —— 整棵换会换掉树里本来就�
     const { home, build } = sandbox()
     const tree = join(home, 'tree')
     expect(deploy(home, ['--tree', tree, '--from', build]).code).toBe(0)
-    const marker = join(tree, 'dist', 'cli-node.js')
+    const marker = join(tree, 'dist', QM_NAME)
     const r = deploy(home, [
       '--tree',
       tree,
@@ -538,60 +531,30 @@ describe('这一类坑不许再回来（静态检查脚本本身）', () => {
   })
 })
 
-describe('ripgrep 必须是这台机的架构（旧 node-deploy.sh 唯一比我们多做的一件事）', () => {
-  /** 本机在 dist/vendor/ripgrep 下对应的目录名。 */
-  function rgDirForHost(): string {
-    const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
-    return process.platform === 'darwin' ? `${arch}-darwin` : `${arch}-linux`
-  }
-
-  test('产物里没有本机架构的 rg 就当场红 —— 装错架构的树不算装好', () => {
+describe('qm 必须是这台机跑得起来的产物（装错架构的树不算装好）', () => {
+  test('产物里没有本机平台的 qm 就当场红', () => {
     const { home, build } = sandbox()
-    // 只放一个别的架构的 rg：文件在、但不是这台机能跑的那个。
-    const other = rgDirForHost().startsWith('arm64')
-      ? 'x64-linux'
-      : 'arm64-linux'
-    mkdirSync(join(build, 'dist', 'vendor', 'ripgrep', other), {
-      recursive: true,
-    })
-    writeFileSync(
-      join(build, 'dist', 'vendor', 'ripgrep', other, 'rg'),
-      'x\n',
-      {
-        mode: 0o755,
-      },
-    )
+    const other =
+      QM_NAME === 'qm-linux-arm64' ? 'qm-linux-x64' : 'qm-linux-arm64'
+    renameSync(join(build, 'dist', QM_NAME), join(build, 'dist', other))
     const r = deploy(home, ['--tree', join(home, 'tree'), '--from', build])
     expect(r.code).not.toBe(0)
-    expect(r.out).toContain('没有这台机能用的 ripgrep')
+    expect(r.out).toContain('装完少了')
   })
 
-  test('rg 在但跑不起来也要红 —— 只看文件在不在，架构不对照样「在」', () => {
-    const { home, build } = sandbox()
-    const dir = join(build, 'dist', 'vendor', 'ripgrep', rgDirForHost())
-    mkdirSync(dir, { recursive: true })
+  test('qm 在但跑不起来也要红 —— 只看文件在不在，架构不对照样「在」', () => {
     // 可执行位有、但一跑就非零 —— 架构不对时的形状就是这样（Exec format error）。
-    writeFileSync(join(dir, 'rg'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+    const { home, build } = sandbox({ qm: '#!/bin/sh\nexit 1\n' })
     const r = deploy(home, ['--tree', join(home, 'tree'), '--from', build])
     expect(r.code).not.toBe(0)
     expect(r.out).toContain('跑不起来')
   })
 
-  test('本机架构的 rg 跑得起来就放行', () => {
-    const { home, build } = sandbox()
-    const dir = join(build, 'dist', 'vendor', 'ripgrep', rgDirForHost())
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'rg'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  test('--version 打出的不像 qm 就红', () => {
+    const { home, build } = sandbox({ qm: fakeQm('hello world') })
     const r = deploy(home, ['--tree', join(home, 'tree'), '--from', build])
-    expect(r.code).toBe(0)
-    expect(r.out).toContain('ripgrep 可执行')
-  })
-
-  test('整个 vendor/ripgrep 都没有时只提醒，不拦住部署', () => {
-    const { home, build } = sandbox()
-    const r = deploy(home, ['--tree', join(home, 'tree'), '--from', build])
-    expect(r.code).toBe(0)
-    expect(r.out).toContain('没有 dist/vendor/ripgrep')
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain("没打出 'qm <版本>")
   })
 })
 
@@ -664,7 +627,7 @@ describe('--only qmcode：节点上 app-server 那份产物（P17.5）', () => {
     expect(r.out).toContain(`qmcode 跑得起来：qmcode 0.158.0（${NAME}）`)
     expect(r.code).toBe(0)
     expect(existsSync(join(r.tree, 'qmcode', HOST))).toBe(true)
-    expect(existsSync(join(r.tree, 'dist', 'cli-node.js'))).toBe(true)
+    expect(existsSync(join(r.tree, 'dist', QM_NAME))).toBe(true)
   }, 20_000)
 
   test('artifact 解压出来没有执行位：红，并说怎么办', () => {

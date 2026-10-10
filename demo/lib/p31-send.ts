@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { formatAddress } from '@qianmo/protocol'
-import { executeResidentWake } from '../../src/cli/handlers/residentWake.js'
+import { executeResidentWake } from '@qianmo/node/commands/residentWake.js'
 import { arg, emit, intArg } from './cli-args.js'
 import { activatorUrl, psk, targetAddress } from './ac2-env.js'
 

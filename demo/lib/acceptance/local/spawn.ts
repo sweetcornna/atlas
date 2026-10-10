@@ -4,57 +4,28 @@
 /**
  * 本地驱动 —— 从**源码**起一个真的 `qm` 进程。
  *
- * 为什么不走 `dist/cli-node.js`（`demo/env/*` 那套的做法）：那要求先跑一次
- * `demo/env/bootstrap.sh` 里的 vite 构建。验收套件的硬要求是「不许有手工
- * 步骤」，而一条「请先构建」就是手工步骤；把构建塞进套件又要在每次跑之前
- * 付几分钟。
+ * 为什么不跑编译产物 `dist/qm-<target>`（舰队腿的做法）：那要求先跑一次
+ * `bun atlas/scripts/build-qm.ts`。验收套件的硬要求是「不许有手工步骤」，而一条
+ * 「请先构建」就是手工步骤；把构建塞进套件又要在每次跑之前付几分钟。
  *
- * 所以这里复刻 `scripts/dev.ts` 的做法：把 `MACRO.*` defines 与 feature 列表
- * 用 `-d` / `--feature` 注进去，直接跑 `src/entrypoints/cli.tsx`。**defines 与
- * feature 列表从 `scripts/defines.ts` 取，与 dev / build 同源** —— 自己抄一份
- * 常量就会在下次改默认 feature 列表时静默漂移，而漂移的表现是「套件测的那个
- * 二进制和发出去的不是一个」。
+ * 源码模式就是 `@qianmo/node` 的 `bin`：Bun 直接执行
+ * `atlas/packages/node/src/cli.ts`，不需要任何转译期 defines。解释器取
+ * `process.execPath`（跑这套件的那个 Bun），不靠 PATH 上碰巧是哪一个。
  *
- * 与 `dev.ts` 的唯一区别：那边 `spawnSync` + `stdio: inherit`（人在看），
- * 这里 `spawn` + 全 pipe（机器在看，stdout 的 banner 与 stderr 的告警都是
- * 断言对象）。
+ * 子进程 stdout 的 banner 与 stderr 的告警都是断言对象，所以全 pipe。
  */
 
 import { join } from 'node:path'
-import {
-  getMacroDefines,
-  resolveBuildFeatures,
-} from '../../../../scripts/defines.js'
 
 /** 仓库根：本文件在 `<root>/demo/lib/acceptance/local/`。 */
 export const REPO_ROOT = join(import.meta.dir, '..', '..', '..', '..')
 
-const CLI_ENTRY = join(REPO_ROOT, 'src/entrypoints/cli.tsx')
+/** `qm` 的源码入口（`@qianmo/node` 的 `bin.qm`）。 */
+export const QM_ENTRY = join(REPO_ROOT, 'atlas/packages/node/src/cli.ts')
 
-let cachedPrefix: readonly string[] | undefined
-
-/**
- * `bun run -d… --feature… src/entrypoints/cli.tsx` 的前缀。
- *
- * 算一次缓存起来：`resolveBuildFeatures()` 会读 env 并遍历默认表，一个场景
- * 起三四个进程时重复算纯属浪费，而它在一次运行内不会变。
- */
-export function cliPrefix(): readonly string[] {
-  if (cachedPrefix !== undefined) return cachedPrefix
-  const defines = {
-    ...getMacroDefines(),
-    'process.env.NODE_ENV': JSON.stringify('production'),
-  }
-  const defineArgs = Object.entries(defines).flatMap(([k, v]) => [
-    '-d',
-    `${k}:${String(v)}`,
-  ])
-  const featureArgs = [...resolveBuildFeatures()].flatMap(name => [
-    '--feature',
-    name,
-  ])
-  cachedPrefix = ['bun', 'run', ...defineArgs, ...featureArgs, CLI_ENTRY]
-  return cachedPrefix
+/** Source invocation shared by acceptance subprocess fixtures. */
+export function cliPrefix(): string[] {
+  return [process.execPath, QM_ENTRY]
 }
 
 export interface SpawnedProcess {
@@ -70,19 +41,28 @@ export interface SpawnedProcess {
 
 export interface SpawnOptions {
   readonly argv: readonly string[]
+  /** 必须带 `QIANMO_CONFIG_DIR`：每个 `qm` 进程一个一次性配置根。 */
   readonly env: Readonly<Record<string, string>>
   readonly cwd?: string
 }
 
 /**
- * 起一个 `qm` 子进程并把两条流实时抽干。
+ * 起一个 `qm` 子进程（`[<bun>, atlas/packages/node/src/cli.ts, …argv]`）并把
+ * 两条流实时抽干。
  *
  * **必须实时抽干**，不能等进程结束再 `new Response(p.stdout).text()`：常驻
  * 节点是长跑进程，等它结束就是等到超时；而管道写满之后子进程会阻塞在
  * `write` 上，表现为「节点起来了但什么都不干」。
+ *
+ * 缺 `QIANMO_CONFIG_DIR` 直接抛：漏掉它的子进程会落回用户真实的 `~/.qianmo`。
  */
 export function spawnCli(options: SpawnOptions): SpawnedProcess {
-  const proc = Bun.spawn([...cliPrefix(), ...options.argv], {
+  if (!options.env.QIANMO_CONFIG_DIR) {
+    throw new Error(
+      `spawnCli: QIANMO_CONFIG_DIR is required (qm ${options.argv.join(' ')})`,
+    )
+  }
+  const proc = Bun.spawn([process.execPath, QM_ENTRY, ...options.argv], {
     cwd: options.cwd ?? REPO_ROOT,
     env: { ...process.env, ...options.env },
     stdin: 'ignore',

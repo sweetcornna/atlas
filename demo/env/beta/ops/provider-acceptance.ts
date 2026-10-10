@@ -1314,7 +1314,7 @@ class Round {
     for (const [name, f] of Object.entries(facts)) {
       if (f === null) problems.push(`${name}：取不到 facts`)
       else if (f.tree.cliSha256 === null)
-        problems.push(`${name}：部署树里没有 dist/cli-node.js`)
+        problems.push(`${name}：部署树里没有 dist/qm-<target>`)
     }
     const hub = facts[this.#cfg.hub]
     if (hub?.console == null || !hub.console.alive)

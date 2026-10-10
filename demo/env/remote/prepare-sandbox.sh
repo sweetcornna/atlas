@@ -14,7 +14,7 @@
 # 要求写成了可执行步骤，但没有在真沙箱里跑过。
 #
 # 为什么这一步必须在沙箱里手动做：activator 的能力面只有 acquire / list 两个动作，
-# **没有 exec**——这不是偷懒，正是 AC-6(c) 依赖的那条边界（见 packages/activator）。
+# **没有 exec**——这不是偷懒，正是 AC-6(c) 依赖的那条边界（见 atlas/packages/activator）。
 # 宿主永远不能替沙箱把进程拉起来。
 #
 # 起来之后，把下面两件事告诉宿主：
@@ -53,17 +53,17 @@ die()  { printf 'FAIL : %s\n' "$*" >&2; exit 1; }
 [ -n "${QIANMO_TRANSPORT_PSK:-}" ] || die '缺 QIANMO_TRANSPORT_PSK（必须与宿主那把逐字相同）'
 
 # 长度也要在这里判：短 PSK 过得了上面的「非空」，却会在 §4 起常驻时被
-# `assertUsablePsk` 抛 WeakSecretError 打死——那已经是 `bun install` + `bun run build`
+# `assertUsablePsk` 抛 WeakSecretError 打死——那已经是 `bun install` + `bun run build:native`
 # 之后的事了，真机实测（2026-08-16，burn-vm-01 沙箱内）白等约 70 s 才看到一段栈。
 # 前置检查存在的意义就是别让这种错拖到那么后面。
 # 数值不在本文件里另写一份：从 `assertUsablePsk` 的出处现读（CLAUDE.md §1.1⑧）。
 PSK_MIN="$(awk -F'[= ]+' '/^export const PSK_MIN_LENGTH/ { print $(NF); exit }' \
-  "$REPO_DIR/packages/transport/src/handshake.ts" 2>/dev/null || true)"
+  "$REPO_DIR/atlas/packages/transport/src/handshake.ts" 2>/dev/null || true)"
 case "$PSK_MIN" in
   '' | *[!0-9]*) : ;;  # 读不出来就不判，不拿猜的数拦人
   *)
     if [ "${#QIANMO_TRANSPORT_PSK}" -lt "$PSK_MIN" ]; then
-      die "QIANMO_TRANSPORT_PSK 只有 ${#QIANMO_TRANSPORT_PSK} 个字符，至少要 ${PSK_MIN}（出处：packages/transport/src/handshake.ts 的 PSK_MIN_LENGTH）"
+      die "QIANMO_TRANSPORT_PSK 只有 ${#QIANMO_TRANSPORT_PSK} 个字符，至少要 ${PSK_MIN}（出处：atlas/packages/transport/src/handshake.ts 的 PSK_MIN_LENGTH）"
     fi
     ;;
 esac
@@ -76,23 +76,38 @@ STATE_DIR="$SANDBOX_ROOT/state"
 
 head1 '1. 前置检查'
 command -v bun >/dev/null 2>&1 || die 'bun 不在 PATH 上。装法见 docs/dev/demo-env.md §2（沙箱镜像里通常要自己装）'
-say "bun  : $(bun --version)"
+BUN_HAVE="$(bun --version 2>/dev/null || true)"
+say "bun  : ${BUN_HAVE}"
+# 硬下限 1.4：omp 基座的 `packageManager: bun@>=1.4`（docs/dev/base-switch-omp.md §2）。
+# 判法与 demo/env/common.sh 的 demo_version_at_least 相同（本脚本在沙箱里独立跑，不 source 它）：
+# 点分前两段逐段按数字比，`-canary` 之类的后缀不计，读不出数字就判不满足。
+bun_at_least_1_4() {
+  local major minor rest
+  IFS=. read -r major minor rest <<<"${1%%[-+]*}"
+  [[ "${major:-}" =~ ^[0-9]+$ && "${minor:-}" =~ ^[0-9]+$ ]] || return 1
+  [ "$((10#$major))" -gt 1 ] || { [ "$((10#$major))" -eq 1 ] && [ "$((10#$minor))" -ge 4 ]; }
+}
+bun_at_least_1_4 "$BUN_HAVE" \
+  || die "bun ${BUN_HAVE:-<无版本输出>} 太旧：omp 基座要求 Bun ≥ 1.4.0（先 \`bun upgrade\`，或按 .tool-versions 装）"
 BUN_PIN="$(awk '$1 == "bun" { print $2 }' "$REPO_DIR/.tool-versions" 2>/dev/null || true)"
-if [ -n "$BUN_PIN" ] && [ "$(bun --version)" != "$BUN_PIN" ]; then
+if [ -n "$BUN_PIN" ] && [ "$BUN_HAVE" != "$BUN_PIN" ]; then
   say "WARN : bun 与 .tool-versions 的 $BUN_PIN 不一致 —— 跨架构沙箱里这很常见，记录进验收报告"
 fi
-[ -d "$REPO_DIR/packages/resident" ] || die "$REPO_DIR 看起来不是阡陌仓库"
+[ -d "$REPO_DIR/atlas/packages/resident" ] || die "$REPO_DIR 看起来不是阡陌仓库"
 
-head1 '2. 依赖与构建'
+head1 '2. 依赖与 omp 原生插件'
 cd "$REPO_DIR"
 bun install --frozen-lockfile
+# qm 在沙箱里源码直跑，不编译单文件产物；要构建的只有 omp 原生插件（cargo，nightly 见
+# rust-toolchain.toml）。沙箱镜像里没有 Rust 工具链时，放好预编译插件（npm 预编译叶包，
+# 或从同架构机器拷来的 `pi_natives.<平台>.node`）再加 --skip-build，效果相同。
 if [ "$SKIP_BUILD" = '1' ]; then
-  say '按 --skip-build 跳过构建'
+  say '按 --skip-build 跳过原生插件构建（预编译插件已就位）'
 else
-  bun run build
+  bun run build:native
 fi
-OCC="$REPO_DIR/dist/cli-node.js"
-[ -f "$OCC" ] || die "缺 $OCC"
+QM="$REPO_DIR/atlas/packages/node/src/cli.ts"
+[ -f "$QM" ] || die "缺 $QM"
 
 head1 '3. 目录'
 mkdir -p "$CONFIG_DIR" "$STATE_DIR" "$WORKSPACE"
@@ -124,14 +139,14 @@ else
   say 'WARN : 未给 QIANMO_REMOTE_ACTIVITY_URL —— 不上报活动，沙箱会照常冻结'
 fi
 
-say "命令 : occ $*"
+say "命令 : qm $*"
 if [ "$FOREGROUND" = '1' ]; then
-  exec env OCC_CONFIG_DIR="$CONFIG_DIR" OCC_IDENTITY=qianmo bun "$OCC" "$@"
+  exec env QIANMO_CONFIG_DIR="$CONFIG_DIR" bun "$QM" "$@"
 fi
 
 OUT="$STATE_DIR/resident.out"
 ERR="$STATE_DIR/resident.err"
-OCC_CONFIG_DIR="$CONFIG_DIR" OCC_IDENTITY=qianmo nohup bun "$OCC" "$@" >"$OUT" 2>"$ERR" &
+QIANMO_CONFIG_DIR="$CONFIG_DIR" nohup bun "$QM" "$@" >"$OUT" 2>"$ERR" &
 PID=$!
 printf '%s\n' "$PID" >"$STATE_DIR/resident.pid"
 sleep 3

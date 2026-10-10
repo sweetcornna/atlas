@@ -121,7 +121,7 @@ function scratch(): Scratch {
     writeFileSync(join(repo, `dist/demo/${entry}.js`), `// stub for ${entry}\n`)
   }
   writeFileSync(
-    join(repo, 'dist/cli-node.js'),
+    join(repo, `dist/qm-${process.platform}-${process.arch}`),
     '// stub; the recorder never runs it\n',
   )
   const root = join(base, 'beta-root')

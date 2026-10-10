@@ -68,7 +68,7 @@ export const IDLE_TIMEOUT_S = Math.min(
 
 /**
  * 请求体上限。控制台最大的请求体是一条聊天消息；登录表单自己只收 4 KiB。
- * 两层落点：`startFront` 的 `maxRequestBodySize`（只挡声明了长度的）与
+ * 两层落点：`startFront` 的 `maxRequestBodySize`（Bun 1.4 同时可挡 chunked）与
  * `readCappedBody` 的边读边数（chunked 也挡）。
  */
 export const MAX_BODY_BYTES = 1024 * 1024
@@ -389,7 +389,7 @@ export function startFront(
     idleTimeout: IDLE_TIMEOUT_S,
     // 只挡声明长度的请求（Bun 1.3.13 实测）：声明的 Content-Length 超限时在套接字层
     // 直接回 413，不进 handler，所以这类请求不出现在访问日志里。不带 Content-Length
-    // 的 chunked 请求它不管，照样进 handler，那一层靠 readCappedBody 边读边数。
+    // 的 chunked 请求在 Bun 1.4 也可提前拒绝；进入 handler 的流仍由 readCappedBody 限制。
     maxRequestBodySize: MAX_BODY_BYTES,
     tls: { cert: Bun.file(config.certFile), key: Bun.file(config.keyFile) },
     fetch: (request, bunServer) => handler(request, bunServer),

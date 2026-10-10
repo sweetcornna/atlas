@@ -270,7 +270,7 @@ export const auditMirrorScenarios: readonly Scenario[] = [
           `remote=${trail}`,
         ],
         {
-          env: { OCC_CONFIG_DIR: await host.mkdir('console-config-2') },
+          env: { QIANMO_CONFIG_DIR: await host.mkdir('console-config-2') },
           timeoutMs: 100_000,
         },
       )

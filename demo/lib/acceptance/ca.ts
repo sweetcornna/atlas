@@ -8,7 +8,7 @@
  *
  * 每个函数收的第一个参数都是一个 {@link ExecHost}：命令经它下发、文件经它
  * 读写。本地腿上那台机器就是 runner，真机腿上是舰队里的落机 —— 于是同一份
- * 夹具代码在真机上跑的是**部署好的那个 `dist/cli-node.js`**，而 `--trust-ca`
+ * 夹具代码在真机上跑的是**部署好的那个 `dist/qm-<target>`**，而 `--trust-ca`
  * / `--cert` 拿到的是**那台机器上**真实存在的路径。
  *
  * 这个文件此前在 `local/` 下并直接用 `node:fs` + `runCli`，于是整条证书维度
@@ -20,7 +20,7 @@
  * ① **CA 目录不许落在任何配置根、仓库或 demo 根里面**，`caDirectory()` 会
  *    当场抛（key-distribution.md §3.3，那是全仓唯一一处不从 `paths.ts` 派生
  *    路径的地方，且抛错就是它的实现方式）。所以这里把 CA 放在执行位的
- *    `workdir` 下，而跑 `qm ca` 时的 `OCC_CONFIG_DIR` 是执行位的 `configDir`
+ *    `workdir` 下，而跑 `qm ca` 时的 `QIANMO_CONFIG_DIR` 是执行位的 `configDir`
  *    —— 两者是**兄弟**目录，谁都不是谁的祖先。
  *
  * ② **没有 `qm ca revoke`。** 吊销是 `qm ca refresh-rl --revoke <node>=<指纹>`

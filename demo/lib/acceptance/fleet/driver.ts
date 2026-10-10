@@ -25,7 +25,7 @@
  *
  * 「一次性节点」不是「重起内测节点」的委婉说法 —— 那件事仍然禁止，
  * {@link FleetDriver.stopNode} 对附着句柄照旧抛。它跑的是**那台机器上部署好的
- * 那个 `dist/cli-node.js`**，在真机的内核与架构上，只是配置根、端口、PSK 全是
+ * 那个 `dist/qm-linux-x64`**，在真机的内核与架构上，只是配置根、端口、PSK 全是
  * 本场景自己的。于是：
  *
  *   · **正向拨号第一次成为可能**，而且**一把生产 PSK 都不需要读**。此前这条腿
@@ -46,13 +46,13 @@
  * `forNodeSpawn`（夹具位落在本场景的落机上）、`readFile`（产物回 runner）与
  * `run`（openssl），`NodeSpec.configRoot` 让「先签证书、再用同一个根起节点」
  * 这个顺序成立。于是离线 CA 那条链在真机上跑的是**部署好的那个
- * `dist/cli-node.js`** 的 `qm ca` / `qm cert`，证书文件也真的在节点那台机器上。
+ * `dist/qm-linux-x64`** 的 `qm ca` / `qm cert`，证书文件也真的在节点那台机器上。
  *
  * ## 一次性节点落在哪台机器上
  *
  * 轮转 {@link DEFAULT_SPAWN_MACHINES}：`cornna-p2` / `cornna-p3` / `cornna-p7`
  * （aarch64）+ `workbench-iap`（x86_64）。**承载 beta-4 的那台不在里面**，理由
- * 是内存：它一共 967 MB、可用约 380 MB，而一个常驻带上它的 ACP 子进程实测占
+ * 是内存：它一共 967 MB、可用约 380 MB，而一个常驻带上它的 omp 子进程实测占
  * **约 370 MB**。在它上面起第二个常驻，最可能的结局是 OOM killer 挑走
  * beta-4 —— 而「跑完舰队仍然是好的」是这条腿的前置条件，不是它的目标。
  * x86_64 的覆盖由 H 提供，架构面没有因此变窄。
@@ -72,8 +72,8 @@
  * `which bun` 也答不出来）—— 这正是 issue #40 那次事故的成因，所以每条远端命令
  * 都显式补 PATH。别把它「简化」掉。
  *
- * **一次性常驻用 `setsid` 起**，于是它和它的 ACP 子进程落在同一个进程组里，
- * `kill -- -<pid>` 一次收干净。实测不加这一步的话，杀掉常驻会把 ACP 子进程
+ * **一次性常驻用 `setsid` 起**，于是它和它的 omp 子进程落在同一个进程组里，
+ * `kill -- -<pid>` 一次收干净。实测不加这一步的话，杀掉常驻会把 omp 子进程
  * （约 250 MB）留在机器上，一轮下来能攒出几十个。
  *
  * ## SSH 连接复用：一台机器一次真握手（issue #100）
@@ -172,8 +172,8 @@ export interface FleetHost {
   readonly tunnelPort: number
   /** 节点配置根的**绝对路径**，如 `/home/cornna/qianmo-beta/nodes/beta-1/config`。 */
   readonly configRoot: string
-  /** `dist/cli-node.js` 的绝对路径。 */
-  readonly occPath: string
+  /** `dist/qm-linux-x64` 的绝对路径。 */
+  readonly qmPath: string
   /** 额外要补进 PATH 的目录（`~/.bun/bin`，非交互 SSH 解析不到它）。 */
   readonly extraPath?: string
 }
@@ -194,6 +194,7 @@ export interface SpawnMachine {
   readonly label: string
   /** 部署检出相对家目录的位置，如 `atlas-beta`。 */
   readonly repoRel: string
+  readonly target?: 'linux-x64' | 'linux-arm64'
 }
 
 export interface FleetConfig {
@@ -247,7 +248,7 @@ export interface FleetConfig {
  */
 export const DEFAULT_FLEET_HOSTS: readonly Omit<
   FleetHost,
-  'occPath' | 'endpoint'
+  'qmPath' | 'endpoint'
 >[] = [
   {
     ssh: 'cornna-p2',
@@ -282,12 +283,27 @@ export const DEFAULT_FLEET_HOSTS: readonly Omit<
  * 舰队默认的一次性进程承载机。
  *
  * 承载 beta-4 的那台（现别名 `cornna-p11`）**故意不在里面** —— 它一共 967 MB
- * 内存、可用约 380 MB，而一个常驻 + ACP 子进程实测约 370 MB。见文件头。
+ * 内存、可用约 380 MB，而一个常驻 + omp 子进程实测约 370 MB。见文件头。
  */
 export const DEFAULT_SPAWN_MACHINES: readonly SpawnMachine[] = [
-  { ssh: 'cornna-p2', label: 'cornna-p2 (aarch64)', repoRel: 'atlas-beta' },
-  { ssh: 'cornna-p3', label: 'cornna-p3 (aarch64)', repoRel: 'atlas-beta' },
-  { ssh: 'cornna-p7', label: 'cornna-p7 (aarch64)', repoRel: 'atlas-beta' },
+  {
+    ssh: 'cornna-p2',
+    label: 'cornna-p2 (aarch64)',
+    repoRel: 'atlas-beta',
+    target: 'linux-arm64',
+  },
+  {
+    ssh: 'cornna-p3',
+    label: 'cornna-p3 (aarch64)',
+    repoRel: 'atlas-beta',
+    target: 'linux-arm64',
+  },
+  {
+    ssh: 'cornna-p7',
+    label: 'cornna-p7 (aarch64)',
+    repoRel: 'atlas-beta',
+    target: 'linux-arm64',
+  },
   // 与 `DEFAULT_CONSOLE_HOST` 是同一台机器，但**写成字面量**：那个常量声明在
   // 本文件末尾，在这里引用会撞上 TDZ。两处同名不是巧合，是同一台 H。
   {
@@ -329,7 +345,7 @@ interface DisposableNode {
   readonly configRoot: string
   /** 节点在**它自己那台机器**上监听的端口。 */
   readonly remotePort: number
-  readonly occPath: string
+  readonly qmPath: string
   /**
    * runner 够到它的那条转发隧道。**存在这里是为了让就绪循环问得到它** ——
    * 隧道死掉与节点没起来在拨号方看来是同一个 `1006`，不问就会把一次套件侧的
@@ -341,8 +357,8 @@ interface DisposableNode {
 interface FleetNodeHandle extends NodeHandle {
   /** 这个句柄落在哪台机器上。 */
   readonly ssh: string
-  /** 那台机器上 `dist/cli-node.js` 的绝对路径。 */
-  readonly occPath: string
+  /** 那台机器上 `dist/qm-linux-x64` 的绝对路径。 */
+  readonly qmPath: string
   /**
    * 一次性节点专有。**附着来的内测节点上是 undefined**，而每一个会改动目标
    * 状态的方法（`stopNode` / `restartNode` / `killNode` / `writeNodeFile` /
@@ -619,7 +635,7 @@ export class FleetDriver implements AcceptanceDriver {
       name: host.node,
       spec,
       ssh: host.ssh,
-      occPath: host.occPath,
+      qmPath: host.qmPath,
       endpoint: host.endpoint,
       // 节点在自己机器上一律听 38625；那个值只有在那台机器上才有意义。
       hostEndpoint: 'ws://127.0.0.1:38625',
@@ -647,7 +663,7 @@ export class FleetDriver implements AcceptanceDriver {
    *
    * 三件事必须一起成立，缺一条这个方法就是假的：
    *
-   * ① **跑的是那台机器上部署好的 `dist/cli-node.js`**，不是把 runner 的源码
+   * ① **跑的是那台机器上部署好的 `dist/qm-linux-x64`**，不是把 runner 的源码
    *    推过去。被测对象是产物 + 那台机器，这条腿的全部价值在这里。
    * ② **runner 拨得到它。** 节点听在目标机的回环上，所以要现开一条
    *    `ssh -L`；隧道的生命周期挂在场景上（见 {@link FleetDriver.#tunnel}）。
@@ -660,7 +676,7 @@ export class FleetDriver implements AcceptanceDriver {
   async #spawn(ctx: ScenarioContext, spec: NodeSpec): Promise<NodeHandle> {
     const machine = await this.#machineFor(ctx)
     const home = await this.#homeOf(machine.ssh)
-    const occPath = `${home}/${machine.repoRel}/dist/cli-node.js`
+    const qmPath = `${home}/${machine.repoRel}/dist/qm-${machine.target ?? 'linux-x64'}`
     const root = await this.#scratch(ctx, machine.ssh)
     const remotePort = await this.#freePortOn(machine.ssh)
     // 隧道先于进程建：它一旦建好就在整条场景里有效，重启不必重建。
@@ -670,7 +686,7 @@ export class FleetDriver implements AcceptanceDriver {
       root,
       configRoot: spec.configRoot ?? `${root}/config`,
       remotePort,
-      occPath,
+      qmPath,
       tunnel,
     }
     const endpoint = `ws://127.0.0.1:${String(tunnel.localPort)}`
@@ -684,7 +700,7 @@ export class FleetDriver implements AcceptanceDriver {
     disposable: DisposableNode,
     endpoint: string,
   ): Promise<NodeHandle> {
-    const { machine, root, configRoot, remotePort, occPath } = disposable
+    const { machine, root, configRoot, remotePort, qmPath } = disposable
     const psk = spec.auth.mode === 'psk' ? spec.auth.psk : ACCEPTANCE_PSK
 
     const argv = [
@@ -724,8 +740,7 @@ export class FleetDriver implements AcceptanceDriver {
     argv.push(...(spec.extraArgs ?? []))
 
     const env: Record<string, string> = {
-      OCC_IDENTITY: 'qianmo',
-      OCC_CONFIG_DIR: configRoot,
+      QIANMO_CONFIG_DIR: configRoot,
       QIANMO_TRANSPORT_PSK: psk,
       ...spec.env,
     }
@@ -749,10 +764,10 @@ export class FleetDriver implements AcceptanceDriver {
         `mkdir -p '${shellQuote(configRoot)}' ${agentDirs.map(d => `'${shellQuote(d)}'`).join(' ')}`,
         `: > '${shellQuote(outLog)}'`,
         `: > '${shellQuote(errLog)}'`,
-        // `setsid` 让常驻成为新会话的组长，于是它和 ACP 子进程同组，停的时候
+        // `setsid` 让常驻成为新会话的组长，于是它和 omp 子进程同组，停的时候
         // `kill -- -<pid>` 一次收干净。实测非交互 shell 里 setsid 不会 fork，
         // 所以 `$!` 就是常驻自己的 pid，也就是那个组号。
-        `PATH="$HOME/.bun/bin:$PATH" ${envPrefix}setsid bun '${shellQuote(occPath)}' ${quoted} ` +
+        `PATH="$HOME/.bun/bin:$PATH" ${envPrefix}setsid '${shellQuote(qmPath)}' ${quoted} ` +
           `>'${shellQuote(outLog)}' 2>'${shellQuote(errLog)}' </dev/null &`,
         `p=$!`,
         `printf '%s\\n' "$p" > '${shellQuote(pidFile)}'`,
@@ -798,7 +813,7 @@ export class FleetDriver implements AcceptanceDriver {
       name: spec.name,
       spec,
       ssh: machine.ssh,
-      occPath,
+      qmPath,
       endpoint,
       hostEndpoint: `ws://127.0.0.1:${remotePort}`,
       configRoot,
@@ -885,7 +900,7 @@ export class FleetDriver implements AcceptanceDriver {
     // 第一版漏了这一条，于是一次跑完之后每台机器上都留着还活着的常驻：
     // 清理逆序跑，先拆隧道、再 `rm -rf`，而那个常驻活得好好的，转头就把
     // 配置目录**又建了回来** —— 现场是「目录删了又冒出来、里面只有 config/」，
-    // 而真正的问题是一个没人管的进程带着它的 ACP 子进程在内测机上驻留。
+    // 而真正的问题是一个没人管的进程带着它的 omp 子进程在内测机上驻留。
     // 登记在这里，逆序就成了「杀进程 → 拆隧道 → 删目录」。
     ctx.cleanup(async () => {
       await this.#killGroup(handle, disposable, 'TERM')
@@ -897,7 +912,7 @@ export class FleetDriver implements AcceptanceDriver {
   /**
    * 停一个**一次性**节点。附着来的那台照旧抛 —— 停了内测就断了。
    *
-   * 杀的是整个进程组：ACP 子进程与常驻同组，只杀常驻会把它（实测约 250 MB）
+   * 杀的是整个进程组：omp 子进程与常驻同组，只杀常驻会把它（实测约 250 MB）
    * 留在机器上。
    */
   async stopNode(node: NodeHandle): Promise<void> {
@@ -919,7 +934,7 @@ export class FleetDriver implements AcceptanceDriver {
     const pidFile = `${disposable.root}/node.pid`
     // **不重试**：`kill` 不幂等（pid 复用之后那一刀会打到别人头上），见
     // `#sshRetry` 的头注。这条要的是「判返回码」而不是「再打一次」——
-    // 丢掉返回码的后果是一次性常驻带着它的 ACP 子进程静默活在内测机上，
+    // 丢掉返回码的后果是一次性常驻带着它的 omp 子进程静默活在内测机上，
     // 而报告里一个字都没有（issue #98 ②）。
     const killed = await this.#once(
       node.ssh,
@@ -1115,8 +1130,8 @@ export class FleetDriver implements AcceptanceDriver {
     return await this.#once(
       fleetNode.ssh,
       [
-        `PATH="$HOME/.bun/bin:$PATH" OCC_IDENTITY=qianmo OCC_CONFIG_DIR='${shellQuote(node.configRoot)}' ` +
-          `bun '${shellQuote(fleetNode.occPath)}' ${quoted}`,
+        `PATH="$HOME/.bun/bin:$PATH" QIANMO_CONFIG_DIR='${shellQuote(node.configRoot)}' ` +
+          `'${shellQuote(fleetNode.qmPath)}' ${quoted}`,
       ],
       `在节点 ${node.name} 上跑 qm ${argv[0] ?? ''}`,
     )
@@ -1148,11 +1163,11 @@ export class FleetDriver implements AcceptanceDriver {
     // 落在哪台机器写进每条结果的证据里（`执行位置`），所以红了照样可归因。
     const named = where?.sameMachineAs as FleetNodeHandle | undefined
     let ssh: string
-    let occPath: string
+    let qmPath: string
     let describe: string
     if (named !== undefined) {
       ssh = named.ssh
-      occPath = named.occPath
+      qmPath = named.qmPath
       describe = `${named.ssh} (与节点 ${named.name} 同机)`
     } else if (where?.forNodeSpawn === true) {
       // 夹具位：落在本场景的**落机**上，与后面 `#spawn` 起的一次性节点同机。
@@ -1160,19 +1175,19 @@ export class FleetDriver implements AcceptanceDriver {
       const machine = await this.#machineFor(ctx)
       const home = await this.#homeOf(machine.ssh)
       ssh = machine.ssh
-      occPath = `${home}/${machine.repoRel}/dist/cli-node.js`
+      qmPath = `${home}/${machine.repoRel}/dist/qm-${machine.target ?? 'linux-x64'}`
       describe = `${machine.label} (节点夹具)`
     } else {
       const host =
         this.#config.hosts[this.#execHostCursor++ % this.#config.hosts.length]
       if (host === undefined) throw new Error('舰队配置里一台机器都没有')
       ssh = host.ssh
-      occPath = host.occPath
+      qmPath = host.qmPath
       describe = `${host.ssh} (${host.node})`
     }
 
     const root = await this.#scratch(ctx, ssh)
-    return this.#execHostOn(ssh, occPath, `${root}/config`, `${root}/work`, {
+    return this.#execHostOn(ssh, qmPath, `${root}/config`, `${root}/work`, {
       describe,
     })
   }
@@ -1180,7 +1195,7 @@ export class FleetDriver implements AcceptanceDriver {
   /** 把「在某台机器的某个配置根下跑 `qm`」包成一个 {@link ExecHost}。 */
   #execHostOn(
     ssh: string,
-    occPath: string,
+    qmPath: string,
     configDir: string,
     workdir: string,
     meta: { readonly describe: string },
@@ -1202,8 +1217,8 @@ export class FleetDriver implements AcceptanceDriver {
         return await this.#once(
           ssh,
           [
-            `PATH="$HOME/.bun/bin:$PATH" OCC_IDENTITY=qianmo OCC_CONFIG_DIR='${shellQuote(dir)}' ` +
-              `${env}bun '${shellQuote(occPath)}' ${quoted}`,
+            `PATH="$HOME/.bun/bin:$PATH" QIANMO_CONFIG_DIR='${shellQuote(dir)}' ` +
+              `${env}'${shellQuote(qmPath)}' ${quoted}`,
           ],
           `在 ${ssh} 上跑 qm ${argv[0] ?? ''}`,
           { timeoutMs: opts?.timeoutMs },
@@ -1290,7 +1305,7 @@ export class FleetDriver implements AcceptanceDriver {
    *
    * ## 那么真机腿的 `console/*` 到底测的是什么（不要含糊过去）
    *
-   * 测的是**部署机上那个 `dist/cli-node.js console`**：它的命令行、banner、
+   * 测的是**部署机上那个 `dist/qm-linux-x64 console`**：它的命令行、banner、
    * token 三个入口、鉴权矩阵、`/v0/limits` 报的常量、唤醒白名单与签名唤醒的
    * 整条链路，全部在真机的内核与架构上跑。注册中心那一半仍是套件进程里的
    * `@qianmo/registry`（与本地腿同一份代码，同一个提交），只是隔着一条隧道。
@@ -1325,24 +1340,24 @@ export class FleetDriver implements AcceptanceDriver {
   async consoleSlot(ctx: ScenarioContext): Promise<ConsoleSlot> {
     const machine = await this.#machineFor(ctx)
     const home = await this.#homeOf(machine.ssh)
-    const occPath = `${home}/${machine.repoRel}/dist/cli-node.js`
+    const qmPath = `${home}/${machine.repoRel}/dist/qm-${machine.target ?? 'linux-x64'}`
     const root = await this.#scratch(ctx, machine.ssh)
     const configDir = `${root}/config`
     const workdir = `${root}/work`
-    const base = this.#execHostOn(machine.ssh, occPath, configDir, workdir, {
+    const base = this.#execHostOn(machine.ssh, qmPath, configDir, workdir, {
       describe: `${machine.label} (一次性控制台)`,
     })
     return {
       ...base,
       start: async spec =>
-        await this.#startConsole(ctx, machine, occPath, root, spec),
+        await this.#startConsole(ctx, machine, qmPath, root, spec),
     }
   }
 
   async #startConsole(
     ctx: ScenarioContext,
     machine: SpawnMachine,
-    occPath: string,
+    qmPath: string,
     root: string,
     spec: ConsoleSpec,
   ): Promise<AcceptanceConsole> {
@@ -1350,8 +1365,7 @@ export class FleetDriver implements AcceptanceDriver {
     const remotePort = await this.#freePortOn(machine.ssh)
     const { argv, env: extraEnv } = consoleLaunch(spec, remotePort)
     const env: Record<string, string> = {
-      OCC_IDENTITY: 'qianmo',
-      OCC_CONFIG_DIR: configDir,
+      QIANMO_CONFIG_DIR: configDir,
       ...extraEnv,
     }
     const envPrefix = Object.entries(env)
@@ -1379,7 +1393,7 @@ export class FleetDriver implements AcceptanceDriver {
         `set -e`,
         `: > '${shellQuote(outLog)}'`,
         `: > '${shellQuote(errLog)}'`,
-        `PATH="$HOME/.bun/bin:$PATH" ${envPrefix}setsid bun '${shellQuote(occPath)}' ${quoted} ` +
+        `PATH="$HOME/.bun/bin:$PATH" ${envPrefix}setsid '${shellQuote(qmPath)}' ${quoted} ` +
           `>'${shellQuote(outLog)}' 2>'${shellQuote(errLog)}' </dev/null &`,
         `p=$!`,
         `printf '%s\\n' "$p" > '${shellQuote(pidFile)}'`,
@@ -2027,7 +2041,7 @@ export class FleetDriver implements AcceptanceDriver {
    * ## 为什么读的是**启动行**，不是部署树上的 `.source-commit` 戳
    *
    * 两者回答的不是同一个问题。戳文件是**构建的输入**（`bootstrap.sh` 读它、
-   * 经 `OCC_SOURCE_COMMIT` 交给 `defines.ts`）；启动行是**此刻跑着的那个进程
+   * 经 `QIANMO_SOURCE_COMMIT` 交给 `defines.ts`）；启动行是**此刻跑着的那个进程
    * 自己报出来的**。中间隔着「构建有没有真的重跑」「跑着的是不是新产物」两步，
    * 而真机腿要盖进报告的恰恰是后者 —— 一台戳着新 SHA、跑着旧进程的机器，读戳
    * 会给出一份和之前一样看着权威、实际证明不了的报告。
@@ -2173,7 +2187,7 @@ export class FleetDriver implements AcceptanceDriver {
         `ps -eo args | grep -oE -- '--(audit(-mirror)?|port) [^ ]+' | sort -u || true`,
         // 同一趟 ssh 里问一次健康。零额外往返，而它把「一条申报都没有」拆成
         // 「控制台活着但没配镜像」与「控制台没在跑」两件事。
-        `p="$(ps -eo args | grep -oE -- 'cli-node.js console .*--port [0-9]+' | grep -oE -- '--port [0-9]+' | head -1 | awk '{print $2}')"`,
+        `p="$(ps -eo args | grep -oE -- 'qm-linux-(x64|arm64) console .*--port [0-9]+' | grep -oE -- '--port [0-9]+' | head -1 | awk '{print $2}')"`,
         `printf 'console-port=%s\n' "$p"`,
         `if [ -n "$p" ]; then printf 'console-health=%s\n' "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:$p/v0/health" 2>/dev/null || echo 000)"; fi`,
       ],
@@ -2505,14 +2519,14 @@ export class FleetDriver implements AcceptanceDriver {
    * | # | 调用点 | 远端命令 | 幂等 | 丢了 rc 会怎么骗人 | 改成 |
    * | --- | --- | --- | --- | --- | --- |
    * | 1 | `#attach().alive` | `pgrep resident` | 纯读 | 答「节点死了」 | `#read` |
-   * | 2 | `#launchDisposable` 启动 | `setsid bun … resident` | **否**（起进程） | 后面 banner 读空 → 「节点没起来」 | `#once` |
+   * | 2 | `#launchDisposable` 启动 | `setsid qm … resident` | **否**（起进程） | 后面 banner 读空 → 「节点没起来」 | `#once` |
    * | 3 | `#launchDisposable` banner | `cat out.log` | 纯读 | 同上，且这条才是直接原因 | `#read` |
    * | 4 | `#launchDisposable` 诊断 | `cat err.log` | 纯读 | 诊断段静默变空 | `#diag`（外面那条错误已成立） |
    * | 5 | 一次性句柄 `stdout` | `cat out.log` | 纯读 | 证据栏静默变空 | `#read` |
    * | 6 | 一次性句柄 `stderr` | `cat err.log` | 纯读 | 同上 | `#read` |
    * | 7 | 一次性句柄 `alive` | 读 pid + `kill -0` | 纯读（`-0` 不发信号） | 答「节点死了」 | `#read` |
    * | 8 | 就绪超时诊断 | `cat err.log` | 纯读 | 诊断段静默变空 | `#diag` |
-   * | 9 | `#killGroup` | `kill -TERM/-KILL` | **否** | 常驻带 ACP 子进程静默存活，报告零线索 | `#once` + 判 rc 抛 |
+   * | 9 | `#killGroup` | `kill -TERM/-KILL` | **否** | 常驻带 omp 子进程静默存活，报告零线索 | `#once` + 判 rc 抛 |
    * | 10 | `readNodeFile` | `cat -- <配置根>/…` | 纯读 | 答「文件不存在」→ 直接进 `expect` | `#read` |
    * | 11 | `writeNodeFile` | `mkdir -p` + `cat >` | **否**（写） | rc 已判，但 255 说成「写不进去」 | `#once` |
    * | 12 | `setNodePathMode` | `chmod <固定位>` | 是 | 权限位没改成，后面以「产品没拦住」形态红 | `#read` + 判 rc 抛 |
@@ -2523,7 +2537,7 @@ export class FleetDriver implements AcceptanceDriver {
    * | 17 | `execHost.writeFile` | `mkdir -p` + `cat >` | **否**（写） | rc 已判，255 说成「写不进去」 | `#once` |
    * | 18 | `execHost.mkdir` | `mkdir -p --` | 是 | rc 全丢；目录没建成，红在后面往里写那一步 | `#read` + 判 rc 抛 |
    * | 19 | `execHost.readFile` | `cat -- … \|\| true` | 纯读 | 答「文件不存在」 | `#read` |
-   * | 20 | `#startConsole` 启动 | `setsid bun … console` | **否**（起进程） | rc 全丢；后面 banner 读空 → 「控制台没起来」 | `#once` |
+   * | 20 | `#startConsole` 启动 | `setsid qm … console` | **否**（起进程） | rc 全丢；后面 banner 读空 → 「控制台没起来」 | `#once` |
    * | 21 | `#startConsole` `readOut` | `cat console.out.log` | 纯读 | banner 读空 → 假的「没起来」，两枚 token 一起丢 | `#read` |
    * | 22 | `#startConsole` `readErr` | `cat console.err.log` | 纯读 | 证据栏静默变空 | `#read`（进错误消息的那份走 `#diag`） |
    * | 23 | `#killByPidFile` | `kill -TERM/-KILL` | **否** | 一次性控制台静默存活，报告零线索 | `#once` + 判 rc 抛 |
@@ -2783,7 +2797,7 @@ function envSuffix(node: string): string {
  * `QIANMO_TRANSPORT_PSK`。**PSK 只从环境取，不写进仓库**（它是四台机的入站
  * 凭据，进仓库就等于公开）。
  *
- * `occPath` 由各 host 的 `configRoot` 推出来，而不是拼一次再对某台机做字符串
+ * `qmPath` 由各 host 的 `configRoot` 推出来，而不是拼一次再对某台机做字符串
  * 替换 —— p12 那台的家目录是 `/root` 而不是 `/home/cornna`，替换写法在新增第
  * 五台机时会静默给出一条不存在的路径。
  *
@@ -2842,7 +2856,14 @@ export function fleetConfigFromEnv(repoDirOverride?: string): FleetConfig {
     // 一条读不通的节点，而现场看起来像那个节点坏了。这条 issue #61 的形状不该
     // 只能靠改代码来绕过。
     const ssh = process.env[`QIANMO_ACCEPTANCE_SSH_${suffix}`] ?? host.ssh
-    return { ...host, ssh, endpoint, occPath: `${repoDir}/dist/cli-node.js` }
+    return {
+      ...host,
+      ssh,
+      endpoint,
+      qmPath:
+        process.env[`QIANMO_ACCEPTANCE_QM_${suffix}`] ??
+        `${repoDir}/dist/qm-linux-${host.node === 'beta-4' ? 'x64' : 'arm64'}`,
+    }
   })
   // 一次性进程落在哪几台机器上：`QIANMO_ACCEPTANCE_SPAWN_HOSTS` 逗号分隔的
   // SSH 目标；置空 = 这一轮不起任何一次性进程（`spawn-node` 等能力随之消失，

@@ -71,8 +71,8 @@ const SCRIPT_SOURCES: Record<string, readonly string[]> = {
 }
 /** `--` 之后的尾参交给 resident / console。 */
 const TAIL_SOURCES = [
-  'src/cli/handlers/resident.ts',
-  'src/cli/handlers/consoleArgs.ts',
+  'atlas/packages/node/src/commands/resident.ts',
+  'atlas/packages/node/src/commands/consoleArgs.ts',
 ]
 
 /** 文档里的命令行：反引号里的一段，或代码块里的一行（`\` 续行并起来）。 */
@@ -242,9 +242,9 @@ describe('迁移与真机验收 runbook 的引用', () => {
   })
 
   test('首次下发写明「保留会话」，且中枢认 keep、首次缺省是重置', () => {
-    const route = read('packages/console/src/routes/providers.ts')
+    const route = read('atlas/packages/console/src/routes/providers.ts')
     expect(route).toContain("body.sessions === 'keep'")
-    const hub = read('src/cli/handlers/consoleProviders.ts')
+    const hub = read('atlas/packages/node/src/commands/consoleProviders.ts')
     expect(hub).toContain(
       "if (requested === undefined) return done(same ? 'keep' : 'reset')",
     )

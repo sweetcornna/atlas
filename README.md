@@ -1,314 +1,748 @@
-# 阡陌 AgentNest（Qianmo AgentNest）
+# 阡陌 AgentNest
 
-> 阡陌交通，鸡犬相闻。
+阡陌基于开源项目 oh-my-pi（MIT 许可）构建，在其上实现常驻化改造与智能体通信网络。
 
-**阡陌**是一个**云端常驻智能体交流网络**。智能体不再是一次性的对话进程，而是长期驻留在云端的个体：它拥有自己的地址、分层记忆与休眠/唤醒生命周期；当它需要别人时，沿着阡陌小径把消息递到另一个节点上的另一个智能体手里。田连阡陌，鸡犬相闻——这正是我们希望智能体之间形成的样子：各自安居，彼此可达。
+当前基座固定为 **omp v18.8.4**。迁移及 M1 / M2 本地开发候选已构建，逐项实现、验证和现场边界见 [交付清单](docs/dev/m1-m2-completion.md)；旧基座上的 M0 / M1 验收记录保留为历史证据。当前候选尚未部署，语义记忆增强因质量硬闸未过保持默认关闭。切换的接口和状态布局见 [设计契约](docs/dev/base-switch-omp.md)，部署配置与回退见 [审核清单](docs/dev/m1-m2-deployment-review.md)。
 
-两条产品线：
+- `atlas/`：阡陌的 `@qianmo/*` 包、脚本与测试；`demo/`：节点演示与验收；`docs/dev/`：章程、设计与证据。
+- 根 `packages/`、`crates/`、`scripts/` 等保留 omp 基座布局。编程智能体与多模型适配属于基座能力。
+- 节点入口是 `qm`，常驻宿主通过 omp RPC 与扩展运行智能体。`QIANMO_CONFIG_DIR` 指定节点根，omp 状态位于其下的 `omp/`。
 
-| 产品线 | 内容 | 在网络中的角色 |
-|---|---|---|
-| ① 云端常驻编程智能体 | 沙箱驻留、项目记忆、休眠唤醒、随叫随到、模型中立 | **节点** |
-| ② 智能体通信协作网络 | 注册发现、按名寻址、加密消息、权限分级、限流防循环、跨节点资源协同 | 连接节点的**网络** |
+## 开发入口
 
-当前阶段：**M1 开发期**。M0 原型验证已于 **2026-08-17 收口**（八条验收判据全部通过、零豁免，见 [`docs/dev/roadmap.md`](docs/dev/roadmap.md) v2.42 与 [`docs/dev/acceptance-m0.md`](docs/dev/acceptance-m0.md)）。范围与验收标准以 [`docs/dev/charter.md`](docs/dev/charter.md) 为唯一依据。
-
----
-
-## 基座说明
-
-本仓库是 **[open-claude-code](https://github.com/sweetcornna/open-claude-code)（CLI 名 `occ`，MIT 许可）的下游 fork**。基座由项目负责人自有并已在 npm 公开发布（`@sweetcornna/open-claude-code`），以零改动快照方式导入本仓库根目录。**导入 pin** 是上游提交 `848ad8c2c8daca9f5aa2410da555553e07700f5d`（= tag `v2.38.3`，历史锚点，不随同步变化）；**当前 pin** 是 `1128a3919a7f01298a6cbf5c468a839c6cf4ee6a`（= tag `v2.46.0`），2026-08-17 首次上游同步后跟进——两个 pin 的分工与完整同步记录见 [`BASE.md`](BASE.md)。阡陌的自有代码以 `@qianmo/*` workspace 包的形式加入，常驻化改造直接落在基座运行时上。
-
-**成果边界**：基座导入于**本仓库提交 `3380c88`**，其后的全部提交即阡陌团队的工作，唯一例外是纯上游同步提交 `d04a79dd`（2026-08-17，内容全部来自上游补丁，详见下文）——工作记录 `git log 3380c88..HEAD`，另加导入前的立项提交 `67f6081`、`74f7a22`。**2026-08-17 首次上游同步（v2.38.3 → v2.46.0）之后**，基座内容在历史里出现了第二次，因此工作面改用基座零改动快照标签举证：工作面 `git diff base-snapshot/v2.46.0..HEAD`、当前基座边界 `git show --stat base-snapshot/v2.46.0`；工作记录里 `d04a79dd` 一笔的内容全部来自上游，须单独声明（详见 [`BASE.md`](BASE.md)「上游同步记录」与章程 §5.5）。本仓库经零改动快照导入、**不含上游 git 历史**，故举证基线是导入提交 `3380c88`，而不是上游 pin `848ad8c2`（那是上游仓库的 SHA，在本仓库不是有效 git 对象）；上游溯源以 [`BASE.md`](BASE.md) 的记录与上游仓库比对为准。
-
-完整溯源与上游同步记录见 [`BASE.md`](BASE.md)；采用理由、能力盘点与风险见 [`docs/dev/base-adoption.md`](docs/dev/base-adoption.md)；许可与商标声明见 [`NOTICE`](NOTICE)。
-
-基座本体可独立安装试用（注意：这是基座的发布物，阡陌本仓库不发 npm 包）：
-
-```bash
-npm install -g @sweetcornna/open-claude-code
-```
-
----
-
-## 目录导览
-
-本仓库是 fork 布局：**基座目录结构原样保留在仓库根**，阡陌自己的东西挂在其中。
-
-```
-.
-├── BASE.md                  基座溯源记录（上游、pin、同步历史）—— 不随功能 PR 改动
-├── LICENSE                  AGPL-3.0（阡陌自有代码）
-├── LICENSE.base             MIT（基座原文，逐字保留）
-├── NOTICE                   许可范围、基座溯源、Anthropic 商标声明
-├── CLAUDE.md                本仓库对 AI 代理的工程约定（先读它）；下半部分附基座 CLAUDE.md 原文
-│
-├── src/                     ← 基座：CLI 主体（入口、REPL、命令、服务、工具）
-├── packages/                ← 基座 + 阡陌
-│   ├── @ant/                  基座：Ink UI 框架、model-provider 等
-│   ├── builtin-tools/         基座：内建工具
-│   ├── tool-runtime/          基座：host facade 接口层
-│   ├── workflow-engine/       基座：确定性工作流引擎
-│   ├── …                      基座其余包
-│   └── @qianmo/*              阡陌：自有 workspace 包（协议 / 注册 / 传输 / 记忆 …）
-├── scripts/                 ← 基座：构建、门禁、基准脚本
-├── tests/                   ← 基座：集成测试
-├── vendor/                  ← 基座：预编译原生二进制（**不是**隔离目录，见 CLAUDE.md）
-│
-└── docs/
-    ├── zh/ en/ ja/            ← 基座：基座自身的三语功能与内部文档
-    ├── README.md              阡陌：申报材料索引（计划书与申请书已移出仓库）
-    ├── dev/                   阡陌：立项文档（见下）
-    └── assets/                阡陌：品牌与图表素材（许可见 NOTICE 一、许可；大赛 logo 不授出）
-```
-
-### 立项文档（`docs/dev/`）
-
-| 文档 | 用途 |
-|---|---|
-| [`charter.md`](docs/dev/charter.md) | **立项章程** —— 定位、范围与非目标、验收标准 AC-1~AC-8、工程基座与法律边界、风险、分工。**M0 阶段的唯一范围依据** |
-| [`roadmap.md`](docs/dev/roadmap.md) | **路线图** —— 排期基础假设、关键路径、S0~S9 任务包与完成判据、M1/M2 规划 |
-| [`base-adoption.md`](docs/dev/base-adoption.md) | **基座采用报告** —— 基座是什么、为什么改路线（含放弃洁净室的代价）、两条产品线各自的能力与缺口、上游同步策略、风险 |
-
-### 申报材料（`docs/`）
-
-图表与品牌素材见 [`docs/README.md`](docs/README.md)。计划书与申请书含团队成员的个人信息，已于 2026-09-26 移出仓库，说明见同一文件。
-
----
-
-## 开发入门
-
-沿用基座的命令与门禁，不另起一套。
-
-**环境要求**：[Bun](https://bun.sh/) ≥ 1.3.11（版本偏低会遇到难以定位的问题，基座对此敏感）。
-
-```bash
-bun install          # 安装依赖，workspace 内部包自动链接
-
-bun run dev          # 开发模式启动
-bun run precheck     # typecheck + lint fix + test —— 任务完成后必须零错误通过
-```
-
-其他常用：
-
-```bash
-bun test <path>            # 跑单个测试文件
-bun run typecheck
-bun run check:cycles       # 循环依赖棘轮（双向严格：超预算与低于预算都 fail）
-bun run check:mock-hygiene # mock 卫生棘轮
-```
-
-完整脚本清单见 `package.json`。
-
-**开工前必读**：
-1. 本仓库的 [`CLAUDE.md`](CLAUDE.md) —— 阡陌自己的约定，以及基座硬规则中与阡陌开发直接相关的部分。
-2. [`CLAUDE.md`](CLAUDE.md) 的**基座原文部分**（分界注释以下的下半部分，即基座 CLAUDE.md 原文）—— 架构地图、路径与隔离不变式、测试与 mock 规范。**改任何路径相关代码前必须读它。**
-3. [`docs/dev/charter.md`](docs/dev/charter.md) §5 —— 工程基座与法律边界，强制条款。
-
-**提交规范**：Conventional Commits + 中文描述（`feat:` / `fix:` / `docs:` / `chore:` / `refactor:`），沿用基座约定。全部走 PR + 至少一人评审，不直推主干。
-
-**本仓库不发 npm 包、不跑基座的 release 流程**（章程 N-14）。
-
----
-
-## 许可
-
-**双许可仓库，两层各有各的许可，分界线就是成果边界本身。**
-
-| 哪一层 | 许可 | 正文 | 怎么认出来 |
-|---|---|---|---|
-| 阡陌自有代码 | **GNU AGPL-3.0-or-later** | [`LICENSE`](LICENSE) | 文件头带 `SPDX-License-Identifier: AGPL-3.0-or-later` |
-| 由基座导入的代码 | **MIT** | [`LICENSE.base`](LICENSE.base) | 文件在基座快照里：`git cat-file -e base-snapshot/v2.46.0:<路径>`。**不能用「不带 SPDX 头」反推**，见 [`NOTICE`](NOTICE) 一、许可 |
-
-```bash
-# 举出属于 AGPL 那一层的文件——作数的是这条命令，不是某个写死的数字
-# （每新增一个带该文件头的文件它就会变；带日期锚的实测值以根 NOTICE 一/1 为准）
-# 限定在文件头，所以不会把「正文里引用了这行字」的文档（NOTICE、本文件等）算进去
-git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" \
-  | awk -F: '$2<=5' | cut -d: -f1 | sort -u
-```
-
-选 AGPL 而不是 GPL，是因为阡陌的产品线②是**网络型产品**：最可能被无偿占用的方式
-是把它做成托管服务对外提供，而这正是 GPL-3.0 管不着、AGPL-3.0 §13 管得着的那一格。
-
-MIT 可并入 AGPL 作品，反向不成立——因此本仓库对基座那层的改动若要回贡上游（MIT），
-需要单独授权。本次变更**不可追溯**：此前按 MIT 取得副本者的授权不受影响。
-
-覆盖范围、`vendor/audio-capture/` 六个预编译二进制的来源与逐个的证据等级，详见 [`NOTICE`](NOTICE)。
-
-"Claude"、"Claude Code" 与 "Anthropic" 是 Anthropic, PBC 的商标。本项目与 Anthropic 无关联、未获其背书。
-
----
-
-## 附：基座 open-claude-code 原版 README（与上游同步保持逐字一致）
-
-> 以下是基座 open-claude-code 的 README 原文（导入点 `3380c88` 的逐字副本），保留在此是为了让上游同步的补丁干净落下（P10.3①，见 [`docs/dev/upstream-sync-drill.md`](docs/dev/upstream-sync-drill.md) §5②）。
-> **它描述的是基座本身，不是阡陌**；阡陌的介绍与对外口径见本文件上半部分。不要在这里就地改写——要改等上游同步带进来。
-
-# Open Claude Code (occ)
-
-[![GitHub Stars](https://img.shields.io/github/stars/sweetcornna/open-claude-code?style=flat-square&logo=github&color=yellow)](https://github.com/sweetcornna/open-claude-code/stargazers)
-[![GitHub Issues](https://img.shields.io/github/issues/sweetcornna/open-claude-code?style=flat-square&color=orange)](https://github.com/sweetcornna/open-claude-code/issues)
-[![Last Commit](https://img.shields.io/github/last-commit/sweetcornna/open-claude-code?style=flat-square&color=blue)](https://github.com/sweetcornna/open-claude-code/commits/main)
-[![Bun](https://img.shields.io/badge/runtime-Bun-black?style=flat-square&logo=bun)](https://bun.sh/)
-
-> An open-source terminal AI coding assistant that coexists with official Claude Code.
-
-**English** · [简体中文](./README.zh.md) · [日本語](./README.ja.md)
-
-**open-claude-code** (`occ`) is a full restoration of Anthropic's [Claude Code](https://docs.anthropic.com/en/docs/claude-code), extended with Goal-driven execution, multi-agent orchestration, Artifacts and ACP support — and **fully isolated from official Claude Code**, so both can be installed on the same machine without interfering.
-
-## Isolation from official Claude Code
-
-This is the main difference from other forks. Before isolation, the fork shared `~/.claude`, `~/.claude.json`, the cache tree — **and the same macOS keychain entry**, so signing in to either CLI overwrote the other's OAuth token. Now they are separate:
-
-| | open-claude-code | Official Claude Code |
-| --- | --- | --- |
-| User config | `~/.occ/` | `~/.claude/` |
-| Global state | `~/.occ.json` | `~/.claude.json` |
-| Project assets | `.occ/` | `.claude/` |
-| Cache | `~/.cache/occ-nodejs/` | `~/.cache/claude-cli-nodejs/` |
-| Credentials (macOS) | `Open Claude Code-credentials-<hash>` | `Claude Code-credentials` |
-| Enterprise policy | `/etc/occ`, `win.open-claude-code.occ` | `/etc/claude-code`, `com.anthropic.claudecode` |
-| Env override | `OCC_CONFIG_DIR` | `CLAUDE_CONFIG_DIR` (still honoured) |
-
-**Deliberately shared:** the `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` memory filenames are unchanged, because they are a cross-tool convention and renaming them would lose context in every existing repository. Child processes still receive `CLAUDECODE=1` (many user hook scripts gate on it) plus `OCC=1`. IDE lockfiles are searched in both roots, since the marketplace extension is Anthropic's and writes to `~/.claude/ide`.
-
-### Migrating from official Claude Code
+使用 `.tool-versions` 固定的 Bun 版本，并准备 omp 原生插件构建所需的 Rust 工具链：
 
 ```sh
-occ migrate --dry-run          # show what would be copied
-occ migrate                    # do it (secrets stripped)
-occ migrate --with-credentials # bring your login across too
-```
-
-Both modes copy the **same things**: settings, skills, agents, commands, output-styles, workflows, plugins, rules and MCP server definitions. They differ only in whether secrets ride along. The first-run wizard offers the same three choices.
-
-- **Default (no credentials):** strips the OAuth token, the API key, the secret half of `settings.env`, MCP `env`/`headers`, and the `apiKeyHelper` / `awsAuthRefresh` / `awsCredentialExport` / `gcpAuthRefresh` / `otelHeadersHelper` hooks that resolve credentials by running a command. **Routing config is kept**: `*_BASE_URL`, `*_MODEL`, `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_USE_*`, `*_AUTH_MODE` and certificate *paths* such as `CLAUDE_CODE_CLIENT_CERT` / `CLAUDE_CODE_CLIENT_KEY` (a path is not a secret, and the mTLS pair is useless split — only `..._PASSPHRASE` is stripped). Everything stripped is listed by name before anything is written.
-- **`--with-credentials`:** also copies the OAuth token, the legacy API key and the account keys in `~/.claude.json` (`primaryApiKey`, `oauthAccount`, `customApiKeyResponses`, `workspaceApiKey`), so occ works without a fresh `/login`. **Caveat:** the server rotates the OAuth refresh token and both CLIs now hold the same one, so whichever refreshes first invalidates the other — pick one for day-to-day use.
-- Changed your mind after the default run? `occ migrate --with-credentials` tops up the login *and* restores the `settings.json` secrets the first run stripped — filling only what is missing, never overwriting a value you have since changed on the occ side. The `.migrated` marker records which categories ran, so it will not lock you out.
-- `--skip-account-data` / `--no-account-data` are the pre-2.9 spellings and now mean the default mode.
-- Two places are copied verbatim and **named in the report** because nothing here can classify them: `settings.json`'s `pluginConfigs`, and the files inside `plugins/`. Fields a plugin declares `sensitive` live in secure storage, which this mode never touches — but that split is enforced by each plugin's own manifest, so the residue is yours to review.
-
-**Session history is never copied.** The credential copy is one-way and no-clobber: an existing occ login always wins, and the official keychain entry is never modified. `~/.claude` is read-only throughout: nothing is written, moved or deleted there.
-
-## Quick start (published package)
-
-```sh
-npm i -g @sweetcornna/open-claude-code
-
-occ           # run on Node.js
-occ-bun       # run on Bun
-occ update    # update to the latest version
-```
-
-> **The scope is required.** The unscoped `open-claude-code` name on npm is a squatted `0.0.0`
-> placeholder that is not this project: it has no `bin`, so `npm i -g open-claude-code` appears to
-> succeed (`added 1 package`) and leaves you with no `occ` command at all.
-
-> The pre-2.8 `ccb` / `ccb-bun` names have been removed — scripts still calling them must switch to `occ` / `occ-bun`.
-
-## Quick start (from source)
-
-### Requirements
-
-Use the latest Bun — older versions cause a lot of strange bugs.
-
-- [Bun](https://bun.sh/) >= 1.3.11
-
-```bash
-# Linux / macOS
-curl -fsSL https://bun.sh/install | bash
-
-# Windows (PowerShell)
-powershell -c "irm bun.sh/install.ps1 | iex"
-
-# Already installed
-bun upgrade
-```
-
-### Install and run
-
-```bash
-cd /path/to/open-claude-code
 bun install
-
-bun run dev      # development mode
-bun run build    # build
+bun run build:native
+bun run qm --help
+bun run precheck
+bun run verify
 ```
 
-The build uses code splitting; output lands in `dist/` and runs under both Bun and Node.js.
+贡献与检查见 [CONTRIBUTING.md](CONTRIBUTING.md)，范围与验收见 [章程](docs/dev/charter.md)，路径隔离见 [CLAUDE.full.md §2.3](CLAUDE.full.md#23-路径身份与-omp-子进程隔离)。本仓库不执行基座的发布流程。
 
-### First-time `/login`
+## 控制台
 
-Run `/login` in the REPL and pick **Anthropic Compatible** to use any third-party compatible service — no Anthropic account required. OpenAI, Gemini and Grok have their own sections.
+`qm console` 提供节点、对话、消息链、个人审批与用量页面。界面支持明暗及跟随系统主题、键盘搜索与导航、名册和审计版本更新通知、带权限复核的片段缓存与审计导出，并提供窄屏抽屉、可见焦点和辅助阅读提示。账号、租户范围及审批配置见 [控制台说明](docs/dev/console.md) 与 [M2 租户契约](docs/dev/tenancy-m2.md)；运行时行为与验收以对应测试和现场配置为准。
 
-| Field | Description | Example |
-| --- | --- | --- |
-| Base URL | API endpoint | `https://api.example.com/v1` |
-| API Key | Auth key | `sk-xxx` |
-| Haiku Model | Fast model ID | `claude-haiku-4-5-20251001` |
-| Sonnet Model | Balanced model ID | `claude-sonnet-5` |
-| Opus Model | High-capability model ID | `claude-opus-5` |
-| Fable Model | Top-tier model ID | `claude-fable-5` |
+## 来源与许可
 
-**Tab / Shift+Tab** moves between fields, **Enter** confirms; Enter on the last field saves.
+阡陌自有层适用 [AGPL-3.0-or-later](LICENSE)，omp 基座适用 [MIT](LICENSE.base)，文件归属和非代码资产规则见 [NOTICE](NOTICE)。溯源唯一出处是 [BASE.md](BASE.md)，基座改动登记在 [base-modifications.md](docs/dev/base-modifications.md)。2026-08-11 至 2026-10-07 基于 open-claude-code 的阶段保留在历史记录中。
 
-## Features
+下面保留 omp 上游 README 原文，其中安装、产品链接与发布命令描述的是 omp 上游。
 
-| Feature | Description | Docs |
-| --- | --- | --- |
-| **Goal-driven execution** | `/goal <objective>` drives the agent across turns until done, with a token budget, completion/blocked audit and `pause`/`resume`/`continue`/`clear` | [`src/commands/goal/`](./src/commands/goal/) |
-| **Ultracode multi-agent orchestration** | `/ultracode` plus the `Workflow` tool runs deterministic JS scripts (`agent`/`pipeline`/`parallel`/`phase`); `/workflows` gives a live panel, with journal replay and a concurrency cap | [docs](./docs/zh/features/workflow-scripts.md) |
-| **Artifacts** | The model renders HTML/dashboards/reports into standalone pages. Local `file://` output by default; opt in to a shared or self-hosted URL (Cloudflare Worker + R2, 7d/30d expiry) | [docs](./packages/cloud-artifacts/README.md) |
-| **ACP protocol** | Connect Zed, Cursor and other IDEs, with session resume, Skills and permission bridging | [docs](./docs/zh/features/acp-zed.md) |
-| **Remote Control** | `occ remote-control` hands the session to [Happy](https://github.com/slopus/happy) (phone / web / end-to-end encrypted) over occ's own ACP agent; the server is self-hostable | [docs](./docs/zh/features/remote-control-self-hosting.md) |
-| **Langfuse monitoring** | Inspect every agent loop in detail, export to a dataset in one click | [docs](./docs/zh/features/langfuse-monitoring.md) |
-| **Web search** | Built-in search via Bing / Brave | [docs](./docs/zh/features/web-browser-tool.md) |
-| **Poor mode** | Disables memory extraction and typing suggestions to cut concurrent requests | `/poor` |
-| **Channels** | MCP servers push external messages into the session (Feishu/Slack/Discord…) | [docs](./docs/zh/features/channels.md) |
-| **Custom providers** | OpenAI / Anthropic / Gemini / Grok compatible | [docs](./docs/zh/features/all-features-guide.md) |
-| Voice mode | Voice input, including Doubao (`/voice doubao`) | [docs](./docs/zh/features/voice-mode.md) |
-| Computer Use | Screenshots, keyboard and mouse control | [docs](./docs/zh/features/computer-use.md) |
-| Browser MCPs (user-configured) | Add any browser MCP through ordinary MCP configuration; names such as `chrome-devtools` and `mcp-chrome` are not reserved | [docs](./docs/zh/extensibility/mcp-configuration.mdx) |
-| `/dream` | Automatic memory consolidation | [docs](./docs/zh/features/auto-dream.md) |
+<!-- base: oh-my-pi v18.8.4 README.md, verbatim below -->
 
-## Feature flags
+<p align="center">
+  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
+</p>
 
-Enable with `FEATURE_<FLAG_NAME>=1`:
+<p align="center">
+  <strong>A coding agent with the IDE wired in.</strong>
+  <strong><a href="https://omp.sh">omp.sh</a></strong>
+</p>
 
-```bash
-FEATURE_FORK_SUBAGENT=1 bun run dev
+<p align="center">
+  <a href="https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent"><img src="https://img.shields.io/npm/v/@oh-my-pi/pi-coding-agent?style=flat&colorA=222222&colorB=CB3837" alt="npm version"></a>
+  <a href="https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-keep-E05735?style=flat&colorA=222222" alt="Changelog"></a>
+  <a href="https://github.com/can1357/oh-my-pi/actions"><img src="https://img.shields.io/github/actions/workflow/status/can1357/oh-my-pi/ci.yml?style=flat&colorA=222222&colorB=3FB950" alt="CI"></a>
+  <a href="https://github.com/can1357/oh-my-pi/blob/main/LICENSE"><img src="https://img.shields.io/github/license/can1357/oh-my-pi?style=flat&colorA=222222&colorB=58A6FF" alt="License"></a>
+  <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat&colorA=222222&logo=typescript&logoColor=white" alt="TypeScript"></a>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-DEA584?style=flat&colorA=222222&logo=rust&logoColor=white" alt="Rust"></a>
+  <a href="https://bun.sh"><img src="https://img.shields.io/badge/runtime-Bun-f472b6?style=flat&colorA=222222" alt="Bun"></a>
+  <a href="https://discord.gg/4NMW9cdXZa"><img src="https://img.shields.io/badge/Discord-5865F2?style=flat&colorA=222222&logo=discord&logoColor=white" alt="Discord"></a>
+</p>
+
+<p align="center">
+  Built by <a href="https://stencil.so">Stencil Labs</a> · Fork of <a href="https://github.com/badlogic/pi-mono">Pi</a> by <a href="https://github.com/mariozechner">@mariozechner</a>
+</p>
+
+The most capable agent surface that ships. Continuously tuned by real-world use — complete out of the box, open all the way down.
+
+**60+** providers · **31** built-in tools · **14** lsp ops · **28** dap ops · **~80k** lines of Rust core.
+
+> [!NOTE]
+> Pull requests are **temporarily open to everyone** as a trial. We previously
+> required a vouch before accepting PRs; that requirement is lifted for now
+> while we evaluate how open contributions go. Depending on the results, the
+> vouch system may return.
+
+## Install
+
+**macOS · Linux**
+
+```sh
+curl -fsSL https://omp.sh/install | sh
 ```
 
-The 33 flags on by default are in `DEFAULT_BUILD_FEATURES` in [`scripts/defines.ts`](./scripts/defines.ts); anything else needs the env var. Per-feature notes live in [`docs/zh/features/`](./docs/zh/features/).
+> **Alpine / musl:** the prebuilt musl binary links `libstdc++`/`libgcc` dynamically, which stock Alpine does not ship. Install them first: `apk add libstdc++ libgcc`.
 
-## Debugging in VS Code
+**Homebrew**
 
-TUI (REPL) mode needs a real terminal, so use **attach mode**:
-
-```bash
-bun run dev:inspect     # prints ws://localhost:8888/xxxx
+```sh
+brew install can1357/tap/omp
 ```
 
-Set breakpoints under `src/`, then F5 → **"Attach to Bun (TUI debug)"**.
+**Bun (recommended)**
+
+```sh
+bun install -g @oh-my-pi/pi-coding-agent
+```
+
+**Nix**
+
+```sh
+# Run without installing
+nix run github:can1357/oh-my-pi
+
+# Or install into the active profile
+nix profile install github:can1357/oh-my-pi
+```
+
+Flake consumers can use `packages.<system>.omp`, `overlays.default`, `nixosModules.default`, or `homeManagerModules.default`. A Home Manager configuration can install OMP and own its settings declaratively:
+
+```nix
+{
+  inputs.omp.url = "github:can1357/oh-my-pi";
+
+  # In your Home Manager module:
+  imports = [ inputs.omp.homeManagerModules.default ];
+  programs.omp = {
+    enable = true;
+    settings.startup.quiet = true;
+  };
+}
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://omp.sh/install.ps1 | iex
+```
+
+**Pinned versions (mise)**
+
+```sh
+mise use -g github:can1357/oh-my-pi
+```
+
+macOS · Linux · Windows · bun ≥ 1.3.14
+
+### Shell completions
+
+`omp` generates its own completion scripts for **bash**, **zsh**, and **fish** from the live command/flag metadata, so they never drift from the actual CLI. Subcommands, flags, and enum values complete statically; model names (`--model`, `--smol`, `--slow`, `--plan`) resolve against the bundled model catalog and `--resume` against your on-disk sessions.
+
+```sh
+# zsh — add to ~/.zshrc (or write the output into a file on your $fpath)
+eval "$(omp completions zsh)"
+
+# bash — add to ~/.bashrc
+eval "$(omp completions bash)"
+
+# fish
+omp completions fish > ~/.config/fish/completions/omp.fish
+```
+
+## Every tool, _benchmaxxed_.
+
+Edits that land on the first attempt. Reads that summarize files instead of dumping their content. Searches that return instantly. Pick any model — omp will get it right.
+
+| model            | metric       | what                                                                  |
+| ---------------- | ------------ | --------------------------------------------------------------------- |
+| Grok Code Fast 1 | 6.7% → 68.3% | Tenfold lift the moment the edit format stops eating the model alive. |
+| Gemini 3 Flash   | +5 pp        | Over str_replace — beats Google's own best attempt at the format.     |
+| Grok 4 Fast      | −61% tokens  | Output collapses once the retry loop on bad diffs disappears.         |
+| MiniMax          | 2.1×         | Pass rate more than doubles. Same weights, same prompt.               |
+
+- `read` : summarized snippets · ideal defaults · selector hit rate
+- `grep` : fastest in the west
+- `lsp` : everything your IDE knows, the agent knows
+- `prompts` : adjusted relentlessly for each model
+
+[Read the full post ↗](https://blog.can.ac/2026/02/12/the-harness-problem/)
+
+## The Pi _you love_, with **batteries included**.
+
+Originally built on [Mario Zechner](https://github.com/mariozechner)'s wonderful [Pi](https://github.com/badlogic/pi-mono), omp adds everything you're missing.
+
+### 01 · Code execution w/ tool-calling
+
+Most harnesses give the agent a Python sandbox and call it done. Ours runs persistent Python and a Bun worker, and either kernel can call back into the agent's own tools — read, search, task — over a loopback bridge. The agent loads a CSV with tool.read from inside Python, charts it from JavaScript, and never leaves the cell.
+
+![omp TUI running Python code and rendering a chart.](assets/python.webp)
+
+### 02 · LSP wired into every write
+
+Ask for a rename and you get a rename. The call goes through workspace/willRenameFiles, so re-exports, barrel files, and aliased imports update before the file moves. Everything your IDE knows, the agent knows.
+
+![omp TUI with TypeScript and Biome language servers active.](assets/lspv.webp)
+
+_[Read the LSP config docs](docs/lsp-config.md)_
+
+### 03 · Drives a real debugger
+
+A C binary segfaults: the agent attaches lldb, steps to the bad pointer, reads the frame. A Go service hangs: it attaches dlv and walks the goroutines. A Python process is wedged: debugpy, pause, inspect, evaluate. Most agents are still sprinkling print statements.
+
+![omp TUI: a live lldb-dap session against a native binary at /tmp/omp-native/demo. Adapter=lldb-dap, Status=stopped, Frame=xorshift32, Instruction pointer 0x10000055C, Location demo.c:6:10. Debug scopes and Debug variables cards show locals (x = 57351) and the agent confirms the math: x went from 7 → 57351 (= 7 ^ (7<<13)).](https://omp.sh/clips/dap-poster.webp)
+
+_[Watch the capture ↗](https://omp.sh/clips/dap.mp4)_
+
+### 04 · Time-traveling stream rules
+
+Your rules sit dormant until the model goes off-script. A regex match aborts the stream mid-token, injects the rule as a system reminder, and retries from the same point. You get course-correction without paying context tax on every turn. Injections survive compaction, so the fix sticks.
+
+![omp TUI: agent reading src.rs and about to write Box::leak when the request aborts (red `Error: Request was aborted`), an amber `⚠ Injecting rule: box-leak` card injects the rule body `Don't reach for Box::leak in production code paths`, and the agent then course-corrects by proposing `Arc<str>` and asking the user to confirm.](https://omp.sh/clips/ttsr-poster.webp)
+
+_[Watch the capture ↗](https://omp.sh/clips/ttsr.mp4)_
+
+### 05 · First-class subagents
+
+Split a job across workers and get typed results back. task fans out into isolated worktrees, each worker runs its own tool surface, and the final yield is a schema-validated object the parent reads directly. No prose to parse, no merge conflicts between siblings, no orphaned edits.
+
+![omp TUI showing `task` spawning two subagents `ComponentsExports` and `RoutesExports`, the constraints block requiring an IRC DM between peers, the per-subagent status cards with cost and duration, and a final Findings section listing both exports plus an honest 'IRC coordination note' about a one-sided handshake.](https://omp.sh/clips/irc-poster.webp)
+
+_[Watch the capture ↗](https://omp.sh/clips/irc.mp4)_
+
+Watch the fan-out while it runs: `Alt+A` opens [Agent Hub](docs/agent-hub.md), where the roster shows current activity and usage for every subagent. Open one to read its live transcript, type a steering message, revive a parked worker, or kill a stuck one without aborting the parent session.
+
+### 06 · A second model, watching every turn.
+
+Pair a reviewer model to the 'advisor' role and it reads every turn the main agent takes, injecting notes inline — a quiet aside, a concern, or a hard blocker. It runs on its own context and its own model, so it catches what the doer rushed past. The main agent sees the note and course-corrects, or tells you why it won't.
+
+![omp TUI: /advisor status shows the advisor running on openai-codex/gpt-5.5; after the main agent scopes a catch to ENOENT instead of swallowing every error, an amber 'Advisor 1 note (concern)' card warns the fix no longer matches the user's literal acceptance criterion.](https://omp.sh/clips/advisor-poster.webp)
+
+_[Watch the capture ↗](https://omp.sh/clips/advisor.mp4)_
+
+### 07 · Hand someone the link, they're in.
+
+/collab puts your live session on a relay and hands back a link — and a QR. A teammate joins from another terminal with omp join, or just opens it in a browser. Share read-write to pair on the same agent, or /collab view for a read-only link anyone can watch but no one can steer. Frames are sealed client-side; the relay never sees your keys.
+
+![omp TUI: /collab view prints 'Collab session started!' with an omp join command, a my.omp.sh browser link, the note 'Anyone with this link can watch the session but cannot prompt the agent', and a large scannable QR code.](https://omp.sh/clips/collab-poster.webp)
+
+_[Watch the capture ↗](https://omp.sh/clips/collab.mp4)_
+
+### 08 · Read a pdf on arxiv, why not?
+
+web_search chains twenty-three ranked providers and hands whatever URLs it finds straight to read. Arxiv PDFs, GitHub pages, Stack Overflow threads come back as structured markdown with anchors intact — the same tool surface you use on local files. Cite, follow, quote, never lose where you came from.
+
+![omp TUI: web_search returns 10 ranked Perplexity sources for inference-time compute scaling, the agent picks an arxiv paper, calls read https://arxiv.org/pdf/2604.10739v1, and summarizes the paper's headline result with real numbers.](https://omp.sh/clips/web-poster.webp)
+
+_[Watch the capture ↗](https://omp.sh/clips/web.mp4)_
+
+### 09 · Unapologetically native. Even on Windows.
+
+Other agents shell out to rg, grep, find, and bash. On many machines those binaries don't exist, and on the ones where they do, every call costs a fork-exec round-trip. omp links the real implementations into the process. ripgrep, glob, find: in-process. brush is the bash — with sessions that survive across calls, and 58 command-line utilities (ls, sed, sort, xargs, even jq) ported into the builtins crate and run in-process, zero fork/exec. The same omp binary runs on macOS, Linux, and Windows — no WSL bridge.
+
+### 10 · Code review with priorities and a verdict
+
+Get a clear verdict on whether the change ships, with every issue ranked P0 through P3 and scored for confidence. /review spawns dedicated reviewer subagents that sweep branches, single commits, or uncommitted work in parallel. You tackle what blocks release first; nothing important hides in a wall of prose.
+
+Want to steer the review yourself? `/annotate code-review` opens the diff so you can pin notes to lines before the reviewers run. `/annotate` also takes the latest reply, a session message, a file, or quoted text and pastes your notes into the prompt. See [`/annotate`](docs/slash-command-internals.md#12-bundled-command-note-annotate).
+
+### 11 · Hashline: edit by content hash
+
+Perfect edits, fewer tokens. The model points at anchors instead of retyping the lines it wants to change, so whitespace battles and string-not-found loops just stop happening. Edit a stale file and the anchors diverge — we reject the patch before it corrupts anything. Grok 4 Fast spends 61% fewer output tokens on the same work.
+
+### 12 · GitHub is just another filesystem
+
+Other harnesses bolt on gh_issue_view, gh_pr_view, gh_search — each with its own parameters the agent has to learn and you have to debug. We skipped that. read already handles paths; PRs are paths. One interface to teach the model, one surface to keep correct.
+
+### 13 · Memory the agent curates
+
+The agent remembers your codebase between sessions. It writes facts mid-run with retain, captures reusable lessons with learn, pulls them back with recall, and compresses each session into a mental model that loads on the first turn of the next one. Pick the engine with `memory.backend` — local, Hindsight, or Mnemopi. Project-scoped by default, so what it learns about this repo stays with this repo.
+
+### 14 · ACP: editor-drivable agent
+
+Run omp inside Zed and you get the same agent you drive from the terminal — reading the buffer you're actually looking at, writing through the editor's save path, spawning shells in the editor's terminal. Destructive tools pause for a permission prompt you can answer once and forget. No bridge, no plugin, no second brain to keep in sync.
+
+### 15 · Inherits what your other tools already wrote
+
+Every other agent ships an importer and expects you to convert. omp reads the eight formats already on disk in their native shape — Cursor MDC, Cline .clinerules, Codex AGENTS.md, Copilot applyTo, and the rest. No migration script, no YAML-to-TOML port, no "supported subset" footnotes. The config your team wrote last quarter still works tonight.
+
+### 16 · omp commit: atomic splits, validated messages
+
+omp reads the working tree through git_overview, git_file_diff, and git_hunk, then splits unrelated changes into atomic commits ordered by their dependencies. Cycles are rejected before anything is written. Source files score above tests, docs, and configs, so the headline commit is the one that matters. Lock files are excluded from analysis entirely.
+
+### 17 · Read PRs. _Walk skills._ Pull JSON out of subagents.
+
+Sixteen internal schemes — `pr://`, `issue://`, `agent://`, `skill://`, `ssh://`, and the rest — resolve transparently inside every FS-shaped tool the agent already calls. `read pr://1428` returns the same shape as `read src/foo.ts`. `grep` walks a diff like a directory. `agent://<id>/findings.0.path` pulls a field out of a subagent's output by path.
+
+### 18 · Conflict resolution, made easy.
+
+Each merge conflict becomes one URL. The agent writes `@theirs`, `@ours`, or `@base` to `conflict://N` and the file resolves cleanly. Bulk form: `conflict://*`.
+
+![omp TUI: ✓ Read src/session.ts (⚠ 1 conflict), then ✓ Write conflict://1 · 1 line with content @theirs, then a confirmation 'Resolved.'](https://omp.sh/clips/conflict-poster.webp)
+
+_[Watch the capture ↗](https://omp.sh/clips/conflict.mp4)_
+
+### 19 · Preview, then accept.
+
+`ast_edit` returns a _(proposed)_ card with the replacement count. The change is staged. The agent writes a one-line reason to `xd://resolve`; the TUI turns it into an **Accept** card and the disk move happens — atomic, all or nothing.
+
+![omp TUI: ✓ AST Edit: console.log($X) (proposed) 3 replacements · 1 file, then ✓ Accept: 3 replacements in 1 file (AST Edit), followed by 'Applied 3 replacements in src/auth.ts.'](https://omp.sh/clips/codemod-poster.webp)
+
+_[Watch the capture ↗](https://omp.sh/clips/codemod.mp4)_
+
+### 20 · Drives a _real browser_. _Or your Slack?_
+
+Eval's `browser.open(...)` returns a tab handle with direct navigation, inspection, interaction, and element helpers; `tab.run(...)` handles custom JavaScript. It drives Chromium or Electron in an isolated tab runtime. Stealth is on by default, while the browser relay can adopt Chrome tabs you already have open without stealing focus.
+
+### 21 · Hands on the desktop itself
+
+Eval's `computer` helpers — `computer.window(...)`, `win.screenshot()`, `win.ax()`, `el.press()`, plus `computer.run(fnOrCode, options)` for multi-step scripts — control the real host: enumerate windows and displays, capture screenshots, send native input, walk the OS accessibility tree, and use the clipboard. It exposes no browser DOM.
+
+## Whatever the task needs, _it's already in the box_.
+
+Core tools live in the same namespace as `read` and `bash`. Pin the active set with `--tools read,edit,bash,…`; rarely used discoverable tools stay behind `xd://` devices. `read xd://` lists them, and `write xd://<tool>` runs one when `tools.xdev` is enabled.
+
+**Files & search**
+
+- `read` — files, dirs, archives, SQLite, PDFs, notebooks, URLs, remote `ssh://` paths, and internal `://` schemes through one path.
+- `write` — create or overwrite a file, archive entry, or SQLite row.
+- `edit` — hashline patches with content-hash anchors and stale-anchor recovery.
+- `ast_edit` — structural rewrites previewed before apply, via ast-grep.
+- `ast_grep` — structural code queries over 50+ tree-sitter grammars.
+- `grep` — regex over files, globs, and internal URLs.
+- `glob` — glob-based path lookup; reach for `grep` when you need content matches.
+
+**Runtime**
+
+- `bash` — workspace shell with 46 in-process coreutils, optional PTY, and background-job dispatch.
+- `eval` — persistent Python and JavaScript cells with shared prelude and tool re-entry.
+
+**Code intelligence**
+
+- `lsp` — diagnostics, navigation, symbols, renames, code actions, raw requests.
+- `debug` — drive a DAP session — breakpoints, stepping, threads, stack, variables.
+- `security_scan` — plan and run native security reviews; drives Codex Security cloud scans.
+
+**Coordination**
+
+- `task` — fan out subagents in parallel, optionally workspace-isolated.
+- `wait` — block until the next background result, peer message, or steering interrupt; message peers and control jobs via `agent://` and `proc://`.
+- `todo` — ordered mutations over the session todo list with phase tracking.
+- `ask` — structured follow-up questions for interactive runs.
+
+**Desktop & web**
+
+- `browser` — Puppeteer tabs over headless Chromium, CDP-attached apps, or your own Chrome via the relay.
+- `computer` — persistent JS against the host desktop: windows, screenshots, native input, AX tree, clipboard.
+- `web_search` — one query across configured providers, returning answer plus citations.
+- `github` — GitHub CLI ops — repo, PR, issues, code search, Actions run-watch.
+- `generate_image` — generate or edit raster images via Gemini, GPT, or xAI Grok image models.
+- `tts` — text-to-speech via xAI Grok Voice — five built-in voices, WAV or MP3.
+
+**Memory & skills**
+
+- `checkpoint` — mark conversation state for a later collapse-and-report.
+- `rewind` — prune exploratory context, keep a concise report.
+- `retain` — queue durable facts into the active memory bank.
+- `recall` — search the memory bank for raw memories.
+- `reflect` — synthesize an answer over the bank.
+- `memory_edit` — update, forget, or invalidate stored memories by id.
+- `learn` — capture a reusable lesson; optionally promote it into a managed skill.
+- `manage_skill` — create, update, or delete an isolated managed skill.
+
+Setting-gated, off by default: `github`, `security_scan`, `generate_image`, `tts`, `checkpoint`, `rewind`, and the memory tools (`retain`/`recall`/`reflect`/`memory_edit`, per `memory.backend`).
+
+[Full reference →](https://omp.sh/docs/tools)
+
+### Prompt controls
+
+Three standalone, lowercase words opt a turn into specialized agent behavior:
+
+- `ultrathink` — request careful multi-step reasoning and the highest supported automatic thinking effort.
+- `orchestrate` — run substantial independent work through parallel subagents and verify each phase.
+- `workflowz` — build a deterministic multi-subagent workflow with the active `task` tool.
+
+They trigger only in prose, not inside code spans, fenced code blocks, XML/HTML sections, identifiers, or paths. See [Magic keywords](docs/magic-keywords.md) for exact matching rules and configuration.
+
+### Session controls
+
+Slash commands shift how a whole session runs:
+
+- `/vibe` — enter [Vibe mode](docs/vibe-mode.md): act as a director driving persistent `fast`/`good` worker sessions with a `read`-only toolset.
+- `/fresh` — reset the provider stream state (stale prompt cache, wedged stream) without changing the local transcript. See [Session operations](docs/session-operations-export-share-fork-resume.md#fresh).
+
+## Sixty-plus providers, a thousand models, _one /model away_.
+
+Nine roles route work by intent. `default` for normal turns. `smol` for cheap subagent fan-out. `slow` for deep reasoning. `plan` for plan mode. `commit` for changelogs. Plus `vision`, `task`, `advisor`, and `tiny` for their namesakes. Override at launch with `--smol`, `--slow`, or `--plan`; cycle through the configured models for the active role with `Ctrl+P`. Swap the active model mid-session with the `/model` slash command.
+
+Auth tags below: `oauth` signs in with your provider account, `plan` routes through a coding-plan subscription, `local` runs against a local server with the key optional.
+
+### Frontier APIs
+
+Direct APIs and gateways. Mix providers per role.
+
+Anthropic `oauth` · OpenAI · OpenAI Codex `oauth` · Google Gemini · Google Vertex · Google Antigravity `oauth` · xAI · SuperGrok `oauth` · DeepSeek · Mistral · Groq · Cerebras · Fireworks · Together · Baseten · DeepInfra · Hugging Face · NVIDIA · Meta · Amazon Bedrock · Azure OpenAI · SiliconFlow · GMI Cloud · CoreWeave · Sakana AI · Command Code · Charm Hyper · StepFun · Helmcode · OpenRouter · Synthetic · Vercel AI Gateway · Cloudflare AI Gateway · Wafer Serverless
+
+### Coding plans
+
+Subscription-routed. `/login` attaches the session.
+
+Cursor `oauth` · GitHub Copilot `oauth` · GitLab Duo · Devin `oauth` · Kimi Code `plan` · Moonshot · MiniMax Coding Plan `plan` · MiniMax Coding Plan CN `plan` · Alibaba Coding Plan `plan` · Qwen Portal `oauth` · Z.AI / GLM Coding Plan `plan` · Zhipu Coding Plan `plan` · Xiaomi MiMo · Qianfan · Umans `plan` · NanoGPT · Novita · Venice · Kilo · ZenMux · OpenCode Go · OpenCode Zen
+
+### Run it yourself
+
+OpenAI-compatible `/v1/models`. Local instances skip the key.
+
+Ollama `local` · Ollama Cloud · LM Studio `local` · llama.cpp `local` · vLLM `local` · LiteLLM
+
+### Custom OpenAI-compatible providers
+
+Define custom providers in `~/.omp/agent/models.yml`:
+
+```yaml
+providers:
+  spark:
+    baseUrl: http://192.168.10.223:8000/v1
+    api: openai-completions
+    apiKey: dummy
+    models:
+      - id: minimax-m3
+        name: MiniMax M3
+        contextWindow: 100000
+        maxTokens: 32000
+```
+
+Run `omp models spark` to verify discovery. Then run `omp setup` and choose the model in the default-model step, or open `/model` in a session and assign it to the `default` role.
+
+To preconfigure the default without the picker, add the selector to `~/.omp/agent/config.yml`:
+
+```yaml
+modelRoles:
+  default: spark/minimax-m3
+```
+
+### Four knobs that make routing useful
+
+- **Custom providers** — Declare anything that speaks `openai-completions`, `openai-responses`, `openai-codex-responses`, `azure-openai-responses`, `anthropic-messages`, `bedrock-converse-stream`, `google-generative-ai`, `google-gemini-cli`, `google-vertex`, `typesafe`, or `openrouter-decisions` (the two judge APIs) in `~/.omp/agent/models.yml`.
+- **Fallback chains** — Per-role or per-model chains under `retry.fallbackChains`. When the primary throws 429s or hits a quota wall, the next entry takes the rest of the turn — restored on cooldown.
+- **Path-scoped models** — Scope `enabledModels` and `disabledProviders` entries to a `path:` prefix to pin a different model set on one repo without touching the global config. Scoped entries cover the path and everything under it.
+- **Round-robin credentials** — Stack API keys per provider and the runtime rotates with session affinity and per-credential backoff. Useful when one key would burn its quota by lunch.
+
+Full provider & routing reference at [omp.sh/docs/providers](https://omp.sh/docs/providers).
+
+## Twenty-three backends. _One tool the agent already knows_.
+
+`web_search` is built in, not bolted on. `auto` walks a twenty-three-provider chain; pin one by name if you already pay for it. Behind every hit, site-aware extraction turns GitHub, registries, arXiv, Stack Overflow, and docs into structured markdown — anchors and link targets survive.
+
+### Search providers
+
+Twenty-three backends. Pin one, or let `auto` walk the chain in order.
+
+| provider     | auth                                      |
+| ------------ | ----------------------------------------- |
+| `auto`       | chain                                     |
+| `perplexity` | `PERPLEXITY_API_KEY` (anonymous fallback) |
+| `gemini`     | oauth                                     |
+| `anthropic`  | oauth                                     |
+| `codex`      | oauth                                     |
+| `xai`        | oauth or `XAI_API_KEY`                    |
+| `zai`        | `ZAI_API_KEY`                             |
+| `exa`        | `EXA_API_KEY` (or mcp)                    |
+| `tinyfish`   | `TINYFISH_API_KEY`                        |
+| `jina`       | `JINA_API_KEY`                            |
+| `kagi`       | `KAGI_API_KEY`                            |
+| `tavily`     | `TAVILY_API_KEY`                          |
+| `firecrawl`  | `FIRECRAWL_API_KEY` (keyless fallback)    |
+| `brave`      | `BRAVE_API_KEY`                           |
+| `kimi`       | `/login kimi-code` or search key          |
+| `parallel`   | `PARALLEL_API_KEY`                        |
+| `synthetic`  | `SYNTHETIC_API_KEY`                       |
+| `searxng`    | self-hosted                               |
+| `duckduckgo` | no key                                    |
+| `startpage`  | no key                                    |
+| `google`     | no key (browser)                          |
+| `ecosia`     | no key (browser)                          |
+| `mojeek`     | no key (browser)                          |
+| `public`     | no key (all of the above, consolidated)   |
+
+Exa also accepts a stored API key through `/login exa`; explicit keyless selection uses the public MCP fallback.
+
+### Specialised handlers
+
+The agent gets structured content, not stripped HTML.
+
+- **Code hosts** — github, gitlab
+- **Package registries** — npm, PyPI, crates.io, Hex, Hackage, NuGet, Maven, RubyGems, Packagist, pub.dev, Go packages
+- **Research sources** — arxiv, semantic scholar
+- **Forums** — stack overflow, reddit, hn
+- **Docs** — mdn, readthedocs, docs.rs
+
+Pages convert to markdown with link structure intact. The agent can cite, follow, and quote without losing anchors.
+
+### Security databases
+
+Vuln lookups answer with vendor data, not blog summaries.
+
+- **NVD** — national vulnerability database
+- **OSV** — open source vuln feed
+- **CISA KEV** — known exploited vulns
+
+[`web_search` reference ↗](https://omp.sh/docs/tools#web_search)
+
+## Roughly **~80,000** lines of Rust, doing the work other harnesses shell out for.
+
+Six crates, one platform-tagged N-API addon. Search, shell, AST, highlight, PTY, desktop control, image decode, BPE counting — all in-process on the libuv pool. No fork/exec on the hot path. Another ~80k lines ride along vendored: the brush bash fork, plus 58 command-line utilities — coreutils, findutils, sed, jq, ripgrep-backed grep, fd, diff, moreutils — ported into the builtins crate and compiled straight into the shell.
+
+- Crates: `pi-natives`, `pi-shell`, `pi-ast`, `pi-iso`, `pi-voice`, `pi-walker`
+- Platforms: `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, `win32-x64`, `win32-arm64` — x64 ships dual AVX2 and baseline binaries
+
+Per crate, code lines only:
+
+| Crate         | What it does                                                                           |   ~LoC |
+| ------------- | -------------------------------------------------------------------------------------- | -----: |
+| pi-shell      | Embedded bash engine · persistent sessions · in-process coreutils dispatch · minimizer | 38,000 |
+| pi-natives    | The N-API surface — every module in the table below                                    | 25,000 |
+| pi-walker     | Parallel ignore-aware walker + scan cache shared by grep · glob · workspace · shell    |  5,200 |
+| pi-iso        | Workspace isolation · apfs · btrfs · zfs · reflink · overlayfs · projfs · rcopy        |  3,300 |
+| pi-ast        | tree-sitter + ast-grep matching, block resolution, structural summaries                |  2,900 |
+| pi-voice      | Audio capture/playback · Opus · live WebRTC                                            |  1,000 |
+
+Inside `pi-natives`, the per-module breakdown (glue and tests omitted):
+
+| Module        | What it does                                                                      | Powered by                                |   ~LoC |
+| ------------- | --------------------------------------------------------------------------------- | ----------------------------------------- | -----: |
+| desktop       | Window/display enumeration · screenshot · native input · AX tree for `computer`   | xcap · enigo · OS AX FFI                  | 10,600 |
+| grep          | Regex search · parallel/sequential · glob & type filters · fuzzy find             | grep-regex · grep-searcher                |  3,280 |
+| text          | ANSI-aware width · truncation · column slicing · SGR-preserving wrap              | unicode-width · segmentation              |  2,070 |
+| snapcompact   | Bitmap-frame rasterization + PNG encode for context compression                   | image · png                               |  1,760 |
+| keys          | Kitty keyboard protocol with xterm fallback · PHF perfect-hash lookup             | phf                                       |  1,740 |
+| ast           | ast-grep pattern matching and structural rewrites                                 | ast-grep-core                             |  1,510 |
+| diff          | Structured file diffing for tools and previews                                    | in-tree                                   |  1,030 |
+| pty           | Native PTY allocation for sudo · ssh interactive prompts                          | portable-pty                              |    630 |
+| crash_handler | Native crash capture and reporting                                                | in-tree                                   |    610 |
+| highlight     | Syntax highlighting · 11 semantic categories · 30+ aliases                        | syntect                                   |    550 |
+| appearance    | Mode 2031 + native macOS dark/light via CoreFoundation FFI                        | core-foundation                           |    450 |
+| task          | Blocking work on libuv thread pool · cancellation · timeout · profiling           | tokio · napi                              |    440 |
+| glob          | Discovery with glob · type filters · mtime sort · gitignore respect               | ignore · globset                          |    430 |
+| fd            | Filesystem walker for find-tool replacement                                       | ignore                                    |    385 |
+| clipboard     | Text copy and image read from system clipboard · no xclip/pbcopy                  | arboard                                   |    370 |
+| workspace     | Workspace walker with gitignore + AGENTS.md discovery in one pass                 | ignore                                    |    275 |
+| power         | macOS power-assertion API for idle/system/display-sleep prevention                | IOKit FFI                                 |    270 |
+| prof          | Circular buffer profiler with folded-stack and SVG flamegraph output              | inferno                                   |    240 |
+| file_lock     | Cross-process advisory file locking                                               | in-tree                                   |    210 |
+| ps            | Cross-platform process-tree kill and descendant listing                           | libc · libproc · CreateToolhelp32Snapshot |    195 |
+| tokens        | O200k / Cl100k BPE token counting · both tables embedded                          | tiktoken-rs                               |     70 |
+| html          | HTML to Markdown with optional content cleaning                                   | html-to-markdown-rs                       |     60 |
+| sixel         | Terminal image rendering · decode PNG · JPEG · WebP · GIF · resize · SIXEL encode | icy_sixel · image                         |     55 |
+
+## Four entry points: _interactive_, _one-shot_, RPC, and ACP.
+
+Same engine, four wrappers. `omp` runs the TUI. `omp -p` answers a single prompt and exits. The Node SDK embeds the session in your process. `omp --mode rpc` and `omp acp` hand the wheel to another program over stdio.
+
+### Interactive — when in doubt, the agent asks
+
+The TUI is the default surface. Tool calls render as cards, edits preview before they land, and ambiguity routes through the `ask` tool — a structured option picker the agent can call mid-turn. The keyboard handles the rest.
+
+The same prompt cards surface over ACP, so editors get the picker without writing one.
+
+![omp TUI showing a multi-select question from the ask tool.](assets/ask.webp)
+
+### SDK — embed in Node
+
+`@oh-my-pi/pi-coding-agent`
+
+Node and TypeScript hosts pull the engine in directly. The package exposes `ModelRegistry`, `SessionManager`, `createAgentSession`, and `discoverAuthStorage`; the session emits typed events you subscribe to.
+
+```ts
+import {
+  ModelRegistry,
+  SessionManager,
+  createAgentSession,
+  discoverAuthStorage,
+} from "@oh-my-pi/pi-coding-agent";
+
+const auth = await discoverAuthStorage();
+const models = new ModelRegistry(auth);
+await models.refresh();
+
+const { session } = await createAgentSession({
+  sessionManager: SessionManager.inMemory(),
+  authStorage: auth,
+  modelRegistry: models,
+});
+await session.prompt("list .ts files");
+```
+
+### RPC — drive over stdio
+
+`omp --mode rpc`
+
+For non-Node embedders, or when you want process isolation. NDJSON commands in, response and event frames out; each prompt ends with its own `prompt_result`. `--mode rpc-ui` adds tool cards, selectors, and dialogs as `extension_ui_request` frames the host must answer; `--no-ui` keeps even extension dialogs off the wire for hosts with no UI.
+
+```
+$ omp --mode rpc --no-session
+> {"id":"r1","type":"prompt","message":"list .ts files"}
+< {"id":"r1","type":"response", ...}
+> {"id":"r2","type":"set_model","provider":"anthropic","modelId":"sonnet-4.5"}
+> {"id":"r3","type":"abort"}
+```
+
+### ACP — speak to editors
+
+`omp acp`
+
+The [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol) over JSON-RPC. When the editor advertises capabilities, tool I/O routes through it and writes are gated by `session/request_permission`.
+
+| omp tool     | ACP route                           |
+| ------------ | ----------------------------------- |
+| `bash`       | `terminal/create + terminal/output` |
+| `read`       | `fs/read_text_file`                 |
+| `write`      | `fs/write_text_file`                |
+| `edit, bash` | `session/request_permission`        |
+
+Full reference: [omp.sh/docs/sdk](https://omp.sh/docs/sdk).
+
+## A harness worth keeping is one you _don't_ outgrow.
+
+Pick it up at **[omp.sh](https://omp.sh)**.
+
+omp is a fork of [Pi](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner), rewritten as a coding-first surface: sessions, subagents, slash commands, extensions — all TypeScript, all MIT, all on [GitHub](https://github.com/can1357/oh-my-pi). Shape it from config, hook it from outside, or read the source when you need to.
+
+### Primitives
+
+An extension is a TypeScript module. Same tool API, same slash-command registry, same hotkey table, same TUI primitives the built-ins use. Nothing is reserved.
+
+### Discovery
+
+On first run omp inherits whatever is already on disk: rules, skills, and MCP servers from `.claude`, `.cursor`, `.windsurf`, `.gemini`, `.codex`, `.cline`, `.github/copilot`, and `.vscode`. No migration script.
+
+### Extensibility
+
+Ask omp to write the piece you're missing, then `/reload-plugins`. Keep it local, ship it in a `marketplace`, or publish it to npm.
+
+## Philosophy
+
+omp is a fork of [pi-mono](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner), extended with a batteries-included coding workflow.
+
+Key ideas:
+
+- Keep interactive terminal-first UX for real coding work
+- Include practical built-ins (tools, sessions, branching, subagents, extensibility)
+- Make advanced behavior configurable rather than hidden
+
+### Project inputs and trust
+
+Opening a repository loads its project inputs by design: settings, extensions, hooks, tools, commands, skills, rules, and project MCP configuration. To exclude project `.mcp.json` for one invocation, pass `--config <file>` pointing at a YAML overlay with nested keys (a flat `mcp.enableProjectConfig: false` line is ignored):
+
+```yaml
+mcp:
+  enableProjectConfig: false
+```
+
+Use `--no-extensions` to skip ambient extension discovery; or use `--trusted-extension /absolute/path/to/file.ts` for an exact extension allowlist. `--no-tools` disables built-in tools, but project tool modules remain a separate discovery surface. These flags narrow inputs without changing the repository-trust model.
+
+---
 
 ## Development
 
-```bash
-bun run precheck      # typecheck + lint fix + test — must pass with zero errors
-bun run typecheck
-bun run test
-bun run build:vite
+### Getting started from source
+
+Fresh clones need both workspace dependencies and the local Rust/N-API addon before the source CLI can start.
+
+```sh
+bun setup
+bun dev
 ```
 
-Architecture, the module map, the path/isolation invariants and the testing rules are in [`CLAUDE.md`](./CLAUDE.md) — **read it before touching any path-related code**.
+`bun setup` installs Bun workspaces and builds `@oh-my-pi/pi-natives`. Re-run `bun run build:native` after changing Rust crates or `packages/natives`.
 
-## Acknowledgements
+Nix users get the pinned Bun and Rust toolchains plus all native build dependencies:
 
-- [doubaoime-asr](https://github.com/starccy/doubaoime-asr) — Doubao ASR SDK, which gives Voice Mode a speech input path that needs no Anthropic OAuth
-- [free-search-mcp](https://github.com/sweetcornna/free-search-mcp) — local-first, no-API-key search MCP server. WebSearch's `free` source is a port of its keyless engine pool (DuckDuckGo / Mojeek / Bing), RRF fusion and SearXNG rescue pass
+```sh
+nix develop
+bun setup
+bun dev
+```
+
+Build and smoke-test the distributable Nix package with `nix build .#omp`. Wayland screencast support is off by default (linking libpipewire adds ~750 MB of runtime closure); enable it with `omp.override { withWaylandScreencast = true; }`. `nix/bun.nix` is generated only when `bun.lock` changes; releases regenerate it automatically. For dependency changes, run:
+
+```sh
+bun run gen:nix
+```
+
+The command uses `bun2nix` from `nix develop` when available, otherwise enters the development shell through Nix, then falls back to the pinned `bunx bun2nix@2.1.2`. Do not edit `nix/bun.nix` manually.
+
+For a non-interactive smoke check:
+
+```sh
+bun dev -- --version
+```
+
+### Debug Command
+
+`/debug` opens tools for debugging, reporting, and profiling.
+
+For architecture and contribution guidelines, see [packages/coding-agent/DEVELOPMENT.md](packages/coding-agent/DEVELOPMENT.md).
+
+---
+
+## Monorepo Packages
+
+| Package                                                                       | Description                                                                 |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| **[@oh-my-pi/collab-web](packages/collab-web)**                               | Browser guest client, mock host, and local relay for collab live sessions   |
+| **[@oh-my-pi/pi-ai](packages/ai)**                                            | Multi-provider LLM client with streaming and model/provider integration     |
+| **[@oh-my-pi/pi-catalog](packages/catalog)**                                  | Model catalog: bundled model database, provider descriptors, and identity   |
+| **[@oh-my-pi/pi-agent-core](packages/agent)**                                 | Agent runtime with tool calling and state management                        |
+| **[@oh-my-pi/pi-coding-agent](packages/coding-agent)**                        | Interactive coding agent CLI and SDK                                        |
+| **[@oh-my-pi/pi-tui](packages/tui)**                                          | Terminal UI library with differential rendering                             |
+| **[@oh-my-pi/pi-natives](packages/natives)**                                  | N-API bindings for grep, shell, image, text, syntax highlighting, and more  |
+| **[@oh-my-pi/omp-stats](packages/stats)**                                     | Local observability dashboard for AI usage statistics                       |
+| **[@oh-my-pi/omptype](packages/omptype)**                                     | ArkType-compatible schema validation with lazy JIT compilation              |
+| **[@oh-my-pi/pi-utils](packages/utils)**                                      | Shared utilities (logging, streams, dirs/env/process helpers)               |
+| **[@oh-my-pi/pi-wire](packages/wire)**                                        | Shared collab live-session protocol types and relay constants               |
+| **[@oh-my-pi/pi-mnemopi](packages/mnemopi)**                                  | Local SQLite memory engine for omp agents                                   |
+| **[@oh-my-pi/snapcompact](packages/snapcompact)**                             | Bitmap-frame context compression package and SQuAD eval suite               |
+| **[@oh-my-pi/browser-relay](packages/browser-relay)**                         | Chrome extension that lets the Eval browser API drive your existing tabs    |
+| **[@oh-my-pi/pi-metaharness](packages/metaharness)**                          | Unified benchmark runners, Harbor run storage, REST/SSE API, live dashboard |
+| **[@oh-my-pi/typescript-edit-benchmark](packages/typescript-edit-benchmark)** | Edit benchmark suite built on TypeScript source mutations                   |
+
+### Rust Crates
+
+| Crate                                              | Description                                                                                         |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| **[pi-natives](crates/pi-natives)**                | Core Rust native addon (N-API `cdylib`) used by `@oh-my-pi/pi-natives`; aggregates the crates below |
+| **[pi-shell](crates/pi-shell)**                    | Embedded shell / PTY / process management split out of `pi-natives` (wraps `brush-*`)               |
+| **[pi-ast](crates/pi-ast)**                        | tree-sitter-based code summarizer and AST utilities (50+ language grammars)                         |
+| **[pi-iso](crates/pi-iso)**                        | Task isolation backend resolver: APFS clones, btrfs/zfs reflinks, overlayfs, projfs, rcopy          |
+| **[pi-voice](crates/pi-voice)**                    | Audio capture/playback, Opus codecs, and live WebRTC streaming primitives                           |
+| **[pi-walker](crates/pi-walker)**                  | Parallel ignore-aware filesystem walker with the scan cache shared by grep, glob, and workspace     |
+| **[pi-edit](crates/pi-edit)**                      | Edit engine behind the `edit` tool: line-anchored patch/hashline modes, streaming previews, atomic apply |
+| **[brush-core](crates/vendor/brush-core)**         | Vendored fork of [brush-shell](https://github.com/reubeno/brush) for embedded bash execution        |
+| **[pi-builtins](crates/pi-builtins)**              | Bash builtins (cd, echo, test, printf, read, export, …) plus 67 in-process command-line utilities |
+
+## Contributing
+
+Issues and pull requests are open to everyone. Open PRs are currently a
+**trial** — the previous vouch requirement is lifted while we evaluate how it
+goes, and it may return. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for
+guidelines on contributing.
+
+---
 
 ## License
 
-The restoration and original work in this repository are released under the [MIT License](./LICENSE). "Claude", "Claude Code" and "Anthropic" are trademarks of [Anthropic](https://www.anthropic.com/); this project is not affiliated with, or endorsed by, Anthropic.
+OMP is licensed under the [MIT License](LICENSE).
+
+Third-party and vendored code, including `crates/vendor/brush-core` and the
+third-party portions identified in `crates/pi-builtins/LICENSE`, remains under
+its respective upstream license. See `THIRD-PARTY-NOTICES.txt` and
+component-local notices for attribution and additional terms.
+
+© 2025 Mario Zechner  
+© 2025-2026 Can Bölük  
+© 2026 [Stencil Labs, Inc.](https://stencil.so)
+
+_made for terminals that stay open_
+
+- [omp.sh](https://omp.sh)
+- [Stencil Labs](https://stencil.so)
+- [GitHub](https://github.com/can1357/oh-my-pi)
+- [Changelog](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/CHANGELOG.md)
+- [npm](https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent)
+- [Discord](https://discord.gg/4NMW9cdXZa)
+- [MIT](https://github.com/can1357/oh-my-pi/blob/main/LICENSE)

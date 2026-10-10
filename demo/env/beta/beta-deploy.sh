@@ -49,9 +49,8 @@
 #
 # ── 校验：装完要能证明装对了 ─────────────────────────────────────────────────
 #
-# 装完检查 `dist/cli-node.js` 与 `demo/env/beta/beta-up.sh` 在不在，并把产物里编译
-# 进去的 SOURCE_COMMIT 打出来（issue #70：那是产物里唯一能自证来源的东西，`grep`
-# 得到，不必把它跑起来）。装了一棵半截树却报成功，是这个脚本最该挡住的事。
+# 装完检查 `dist/qm-<平台>-<架构>` 与 `demo/env/beta/beta-up.sh` 在不在，并把二进制
+# 自报的来源 commit 打出来（issue #70：`qm --version` 的末字段，构建时写进二进制）。装了一棵半截树却报成功，是这个脚本最该挡住的事。
 # 这次装了顶层 `qmcode/`（P17.5 节点上的 app-server，`--only qmcode`）时另查三件：
 # 两个程序可执行且同目录、`.sha256` 逐行对得上、`qmcode --version` 真跑得起来。
 
@@ -414,7 +413,7 @@ fi
 # 装了一棵半截树却报成功，是这个脚本最该挡住的事。
 beta_head '校验'
 missing=''
-for f in dist/cli-node.js demo/env/beta/beta-up.sh; do
+for f in "dist/qm-$(beta_host_target)" demo/env/beta/beta-up.sh; do
   [ -e "$TREE/$f" ] || missing="$missing $f"
 done
 if [ -n "$missing" ]; then
@@ -504,63 +503,35 @@ if [ "$QM_DEPLOYED" = '1' ]; then
   esac
 fi
 
-# ── ripgrep 是不是这台机的架构 ────────────────────────────────────────────
+# ── 二进制是不是这台机的架构，来源 commit 是什么（issue #70）────────────────
 #
-# `dist/vendor/ripgrep/` 里按架构分目录，而**产物是在别的机器上建的**：给
-# aarch64 节点建的包滚到 x86_64 机器上，rg 会原地不动地躺在那里、一跑就
-# `Exec format error`。这支舰队真栽过 —— 有一份产物只带了 arm64，x86_64 那台
-# 的 rg 是后来手工补进去的（见 [部署的构建] 那节）。
+# `dist/qm-<平台>-<架构>` 是在别的机器（Linux 容器）上编出来的，里面还内嵌了 omp 的原生
+# 插件：给 aarch64 建的包滚到 x86_64 机器上，文件原地不动地躺着、一跑就
+# `Exec format error`。所以关键是**这一条 `--version` 真把它跑起来了**——只看文件在不在，
+# 架构不对照样"在"。在空环境（临时 HOME 与配置根）里跑，不借这台机现有的任何状态。
 #
-# 关键是**这一条 `--version` 真把它跑起来了**：只看文件在不在，架构不对照样"在"。
-# 旧的 node-deploy.sh 这一点是对的，别在换脚本的时候把它丢了。
-#
-# 没有 vendor/ripgrep 整个目录 → 只提醒（有的树本来就不带）；
-# 目录在、但这台机的架构缺了或跑不起来 → 当场红（那是一棵装错架构的树）。
-RG_ROOT="$TREE/dist/vendor/ripgrep"
-if [ -d "$RG_ROOT" ]; then
-  case "$(uname -s)/$(uname -m)" in
-    Linux/aarch64|Linux/arm64) RG_DIR='arm64-linux' ;;
-    Linux/x86_64)              RG_DIR='x64-linux' ;;
-    Darwin/arm64)              RG_DIR='arm64-darwin' ;;
-    Darwin/x86_64)             RG_DIR='x64-darwin' ;;
-    *)                         RG_DIR='' ;;
-  esac
-  if [ -z "$RG_DIR" ]; then
-    beta_warn "认不出这台机的架构（$(uname -s)/$(uname -m)），跳过 ripgrep 校验"
-  elif [ ! -x "$RG_ROOT/$RG_DIR/rg" ]; then
-    beta_die "产物里没有这台机能用的 ripgrep（缺 ${RG_DIR}）—— 这份产物是给别的架构建的。旧树还在备份里。"
-  elif ! "$RG_ROOT/$RG_DIR/rg" --version >/dev/null 2>&1; then
-    beta_die "ripgrep 在（${RG_DIR}）但跑不起来 —— 架构对不上。旧树还在备份里。"
-  else
-    beta_ok "ripgrep 可执行（${RG_DIR}）"
-  fi
-else
-  beta_warn '产物里没有 dist/vendor/ripgrep —— 若这台机要用搜索工具，它会在运行时才失败'
+# 同一行输出也是产物自证来源的地方：`qm <版本> (omp <版本>) <源提交>`，源提交是构建时写进
+# 二进制的（atlas/scripts/build-qm.ts），不用 grep 二进制、不必猜哪个 40 位十六进制是 commit。
+# 取最后一个字段，并要求它恰好是 40 位十六进制（可带 `-dirty`）；读出别的东西说明这份
+# 产物无法自证来源，只提醒不拦——装是装上了。
+QM_PATH="$TREE/dist/qm-$(beta_host_target)"
+if [ ! -f "$QM_PATH" ]; then
+  beta_die "产物里没有这台机的 qm（缺 dist/qm-$(beta_host_target)）—— 这份产物是给别的平台或架构建的。旧树还在备份里。"
 fi
-
-# ── 产物里编译进去的 SOURCE_COMMIT（issue #70）────────────────────────────
-#
-# 认的是**编译后的那个形状** `` return`<40 位十六进制>` `` ——`defines.ts` 把
-# SOURCE_COMMIT 替换进一个 try/catch 的返回位，产物里长这样。
-#
-# **不能拿「dist 里第一个 40 位十六进制」当答案。** 第一版就是那么写的，第一次
-# 在真机上跑就报了一个错的：那棵 dist 里有 4 个互不相同的 40 位十六进制（chunk
-# 完整性哈希之类），按字典序第一个根本不是 commit。`defines.ts` 的头注早写着这
-# 件事 ——「a confident, wrong answer, which is worse than unknown」，而部署脚本
-# 恰恰是最容易被人当真的地方。
-#
-# 所以判据是**恰好一个不同取值**：多于一个说明这个形状不再唯一（上游改了产物
-# 结构），那时候要的是「读不出」而不是随便挑一个。
-commits="$(grep -rhoE 'return`[0-9a-f]{40}(-dirty)?`' "$TREE/dist" 2>/dev/null \
-  | sed 's/^return`//; s/`$//' | sort -u || true)"
-commit_count=0
-[ -z "$commits" ] || commit_count="$(printf '%s\n' "$commits" | grep -c '^')"
-if [ "$commit_count" -eq 1 ]; then
-  beta_ok "产物来源 commit：$commits"
-elif [ "$commit_count" -eq 0 ]; then
-  beta_warn '产物里读不出 SOURCE_COMMIT —— 装是装上了，但这份产物无法自证来源（issue #70）'
+[ -x "$QM_PATH" ] || chmod +x "$QM_PATH" 2>/dev/null || true
+QM_TMP="$(mktemp -d)"
+QM_VERSION_LINE="$(env -i PATH="/usr/bin:/bin" HOME="$QM_TMP" QIANMO_CONFIG_DIR="$QM_TMP/config" "$QM_PATH" --version 2>&1 </dev/null)" \
+  || { rm -rf "$QM_TMP"; beta_die "qm 在（dist/qm-$(beta_host_target)）但跑不起来 —— 架构对不上或缺依赖：${QM_VERSION_LINE:-无输出}。旧树还在备份里。"; }
+rm -rf "$QM_TMP"
+case "$QM_VERSION_LINE" in
+  'qm '?*) beta_ok "qm 可执行：${QM_VERSION_LINE}" ;;
+  *) beta_die "qm --version 没打出 'qm <版本> …'（拿到的是：${QM_VERSION_LINE:-空}）—— 这不像一份 qm 产物。旧树还在备份里。" ;;
+esac
+commit="${QM_VERSION_LINE##* }"
+if printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}(-dirty)?$'; then
+  beta_ok "产物来源 commit：$commit"
 else
-  beta_warn "产物里读出 $commit_count 个候选，不敢认（形状可能变了）：$(printf '%s' "$commits" | tr '\n' ' ')"
+  beta_warn "产物读不出来源 commit（--version 末字段是「${commit}」）—— 装是装上了，但这份产物无法自证来源（issue #70）"
 fi
 
 beta_head '下一步'

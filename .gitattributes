@@ -1,69 +1,64 @@
-# Normalize line endings across all platforms.
-#
-# Rationale: this repo is developed on Windows/WSL (/mnt/d) as well as macOS and
-# Linux. Without these rules, git stored whatever the checkout produced, so the
-# same file would flip between CRLF and LF and show up as a whole-file diff.
-# `.editorconfig` already declares `end_of_line = lf`; this makes git enforce it.
-#
-# `text=auto eol=lf` means: detect text vs binary, and always store AND check out
-# text files with LF. Do not change `eol=lf` to `eol=native` — shell scripts,
-# the husky hook and the Bun shebang entrypoints break with CRLF.
+*.wasm filter=lfs diff=lfs merge=lfs -text linguist-vendored
+
+# Default: normalize text files, but do not force binary files as text.
 * text=auto eol=lf
 
-# Source
-*.ts    text eol=lf
-*.tsx   text eol=lf
-*.js    text eol=lf
-*.jsx   text eol=lf
-*.mjs   text eol=lf
-*.cjs   text eol=lf
-*.py    text eol=lf
+# Common binary assets and archives must never be line-ending normalized.
+*.png -text
+*.jpg -text
+*.jpeg -text
+*.gif -text
+*.webp -text
+*.ico -text
+*.pdf -text
+*.zip -text
+*.gz -text
+*.tar -text
+*.tgz -text
+*.7z -text
+*.ttf -text
+*.otf -text
+*.woff -text
+*.woff2 -text
+*.mp3 -text
+*.mp4 -text
+*.mov -text
+*.avi -text
+*.db -text
+*.sqlite -text
+*.exe -text
+*.dll -text
+*.so -text
+*.dylib -text
+*.class -text
+*.jar -text
 
-# Config / data
-*.json  text eol=lf
-*.jsonc text eol=lf
-*.yml   text eol=lf
-*.yaml  text eol=lf
-*.toml  text eol=lf
-*.lock  text eol=lf
+# Lock files are binary (machine-generated, should not be manually edited)
+*.lock -text
+Cargo.lock -text
+package-lock.json -text
+bun.lock -text
+bun.lockb -text
+yarn.lock -text
+pnpm-lock.yaml -text
+poetry.lock -text
 
-# Docs
-*.md    text eol=lf
-*.mdx   text eol=lf
-*.mmd   text eol=lf
-*.txt   text eol=lf
-*.html  text eol=lf
-*.css   text eol=lf
-*.svg   text eol=lf
+# Executed by Linux
+*.sh text eol=lf
+*.py text eol=lf
 
-# Scripts must be LF or they fail to execute
-*.sh            text eol=lf
-.husky/*        text eol=lf
-Dockerfile      text eol=lf
-*.example       text eol=lf
+# Windows-native scripts
+*.ps1 text eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
 
-# Binary — never touch, never diff
-*.png   binary
-*.jpg   binary
-*.jpeg  binary
-*.gif   binary
-*.ico   binary
-*.webp  binary
-*.node  binary
-*.wasm  binary
-*.woff  binary
-*.woff2 binary
-*.ttf   binary
-*.otf   binary
-*.zip   binary
-*.gz    binary
-*.pdf   binary
-*.dylib binary
-*.so    binary
-*.dll   binary
-*.exe   binary
-vendor/audio-capture/** binary
+# Changelogs are append-mostly; auto-merge by unioning both sides.
+packages/*/CHANGELOG.md merge=union
 
-# Generated files: keep out of diffs and language stats
-bun.lock         text eol=lf -diff linguist-generated
-contributors.svg text eol=lf -diff linguist-generated
+# Generated, minified catalog artifacts: regenerate instead of diffing/merging.
+packages/catalog/src/models.json binary
+packages/catalog/src/compat/rules.json binary
+
+# Generated tree-sitter parser: regenerate from grammar.js (see its README.md).
+crates/vendor/tree-sitter-go/src/parser.c linguist-generated
+

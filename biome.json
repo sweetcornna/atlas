@@ -7,11 +7,10 @@
   },
   "files": {
     "includes": [
-      "**",
-      "!!**/dist",
-      "!!**/dist-stable",
-      "!!**/.claude/workflows",
-      "!!**/*.workflow.mjs"
+      "atlas/**",
+      "demo/**",
+      "!!**/node_modules",
+      "!!**/dist"
     ]
   },
   "formatter": {
@@ -102,7 +101,9 @@
   },
   "overrides": [
     {
-      "includes": ["**/*.tsx"],
+      "includes": [
+        "**/*.tsx"
+      ],
       "javascript": {
         "formatter": {
           "semicolons": "always"

@@ -1,0 +1,332 @@
+# Copyright 2026 Qianmo AgentNest Team
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# 阡陌的 CI。基座是 oh-my-pi（根目录），阡陌代码在 atlas/ 与 demo/ 下；
+# omp 自带的 ci.yml / bun-cache-warm.yml / nix.yml 依赖它的自托管 runner，已在本仓库删除。
+# 静态与阡陌门禁和 `bun run verify` 相同；触及基座路径时追加 omp 测试。
+# 逐条列成步骤，让红灯指到具体一道门禁。
+name: CI
+
+on:
+  push:
+    branches: [main, "feature/*", "feat/*"]
+  # 不加分支过滤：每个 PR 都跑，不管基点是哪条分支。枚举基点分支每次换集成分支都要
+  # 重改，漏过一次（PR #2-#4 没有任何检查），"每个 PR" 不会过期。
+  # `push` 保留过滤，免得一次分支推送和它的 PR 各跑一遍。
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    # Base-changing PRs add the complete upstream TS suite after native build.
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        with:
+          # license-headers 的归属判据是「文件在不在 base-snapshot/omp-v18.8.4
+          # 快照树里」，没有这个标签就没有判据；action 默认 fetch-depth: 1 且不带
+          # 标签。门禁按设计不降级放行：浅克隆恰恰是最容易漏头的环境。
+          fetch-depth: 0
+          fetch-tags: true
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          # 版本取自 .tool-versions（>= 1.4），不跟 latest，免得 CI 悄悄漂离钉死的版本。
+          bun-version-file: .tool-versions
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # omp 的原生插件（Rust）。omp 子进程和 qm 编译都要加载它；toolchain 版本
+      # 取自 rust-toolchain.toml。x64 上出 build-qm 内嵌的 baseline 版（与舰队配方同一脚本）。
+      - name: Build the omp native addon
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build cmake bubblewrap postgresql
+          rustup toolchain install --profile minimal "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+          bash atlas/scripts/build-native-portable.sh
+
+      # Ubuntu 24.04 runners confine unprivileged user namespaces with AppArmor, so
+      # bubblewrap cannot configure the sandbox's loopback ("Failed RTM_NEWADDR:
+      # Operation not permitted"). The generated-code isolation tests need the
+      # same bwrap a fleet host runs; Debian hosts allow it by default.
+      - name: Allow unprivileged user namespaces for bubblewrap
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-all --die-with-parent --ro-bind / / true
+
+      - name: Lint and format check
+        run: bun run atlas:lint:ci
+
+      - name: Type check
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: bun run atlas:typecheck
+
+      - name: Verify shared registry with real PostgreSQL
+        run: bun run atlas:test:registry-ha
+
+      # 双向棘轮：新增环依赖会红，消除了环而没提交更低基线也会红。
+      - name: Check circular dependencies
+        run: bun run atlas:check:cycles
+
+      # 三方身份隔离全靠「每条身份路径都从 @qianmo/paths 派生」这一条不变式。
+      - name: Check identity-path bypasses
+        run: bun run atlas:check:identity-paths
+
+      # 双许可仓库的地板：阡陌自有代码 AGPL-3.0-or-later，omp 基座 MIT；
+      # 归属判据是路径（在不在快照树里），文件头只是标记。
+      - name: Check license headers
+        run: bun run atlas:check:license-headers
+
+      - name: Check pinned omp provenance
+        run: bun run atlas:check:omp-pin
+
+      - name: Check unused code
+        run: bun run atlas:check:unused
+
+      - name: Check SBOM is current
+        run: bun run atlas:sbom -- --check
+
+      # 证明阡陌没有碰坏基座：omp 自己的类型检查。
+      - name: Check the omp base
+        run: bun run check:ts
+
+      # Compare both sides of a rename and both snapshot versions during sync.
+      # A missing ref/tag fails the check; manual/new-branch runs test everything.
+      - name: Detect changes to omp snapshot paths
+        id: omp-change
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE_REF" ] && [ "$BASE_REF" != "0000000000000000000000000000000000000000" ]; then
+            bun atlas/scripts/check-omp-base-change.ts "$BASE_REF"
+          else
+            bun atlas/scripts/check-omp-base-change.ts --all
+          fi
+
+      - name: Test changed omp base
+        if: steps.omp-change.outputs.required == 'true'
+        run: bun run test:ts
+
+      # 每个阡陌包一个分片，分片之间互不泄漏 mock.module；任一分片失败即失败。
+      - name: Test (sharded per package)
+        run: bun run atlas:test
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1, 2026-04-10
+        with:
+          name: test-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Build qm
+        run: bun run atlas:build:qm
+
+      - name: Smoke the compiled qm
+        run: bun run atlas:check:qm-smoke
+
+  acceptance-local:
+    runs-on: ubuntu-latest
+    # **只手动跑。**托管 runner 上没有模型凭据。
+    #
+    # 曾经的头号原因——没有凭据会让**常驻进程整个死掉**（ACP `session/new` 被
+    # 拒 → supervisor 连试五次后 park → 退出 → 监听口再没绑上，连不需要模型的
+    # 纯传输场景也一起陪葬）——**已经不成立**：常驻现在降级而不退出，监听口在
+    # ACP 之前绑好并活过每一次重启与 park，起不来的只是 agent 能力，进来的
+    # `task.request` 拿到一份带原因的拒绝回执。见 `atlas/packages/resident` 的 `#startTransport` 与 `#runtimeForDelivery`。
+    #
+    # 留在手动上的是**另一条**理由，它没有被上面那个修复动到：
+    #
+    #   实测三轮（2026-08-29，公开仓库后 CI 才第一次真跑起来）：
+    #     · 无快速失败：22 条 / 每条等满 90 s / 30 min 被砍 / 无产物
+    #     · 有快速失败：60 条 / 每条 ~38 s / 30 min 被砍 / 有产物
+    #   115 条 × 38 s ≈ 73 min，**结构上就装不进任何合理的 job 预算**。
+    #
+    # 降级之后每条要多久是**未测的**——那三轮的 38 s 全花在等一个永远不会绑上
+    # 的监听口，这条路径已经没了。**在拿到一次 `workflow_dispatch` 的真实计时
+    # 之前，不要把它挂回 push / pull_request。**要跑就手动触发，并在那次运行里
+    # 给出凭据（届时把 secret 注入这一步的 env）。
+    if: github.event_name == 'workflow_dispatch'
+    # 实测（4 核 aarch64 Linux 容器，bun 1.3.13，非 root，2026-08-25）：
+    # 装依赖 154 s + 护栏 <1 s + 套件本体 709 s（11.8 min）= 全程约 15 min，
+    # 结果 113 pass / 0 fail / 2 skip / 0 error。
+    #
+    # 给到 30 是留一倍余量，而不是掐着实测数：GitHub 托管 runner 是 x86_64
+    # 共享机器，比这个容器慢多少事前不可知。**宁可宽**——job 级超时切下去拿到
+    # 的是「没有汇总表的红」，那种红查不动；真正的兜底是场景级超时，它至少会
+    # 指名是哪一条卡住了。
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          bun-version-file: .tool-versions
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # The local leg starts the resident host from source, and the host spawns
+      # omp children (`omp --mode rpc`), which load the native addon.
+      - name: Build the omp native addon
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build cmake bubblewrap
+          rustup toolchain install --profile minimal "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+          bun run build:native
+
+      # 这一步**故意**制造 issue #61 那个形状，然后要求套件因此变红。
+      #
+      # 构造方式不是打桩，是真事：`trust/notice-trust-has-two-values` 只
+      # `readFileSync` 一个仓库文件做静态断言，一次驱动都不调用。于是这一轮
+      # counts 全绿（pass=1 fail=0 error=0）而 targetTouches=0 —— 正是那个
+      # 「报 PASS 却什么都没做」的形状。
+      #
+      # 为什么值得单独占一步：`demo/lib/acceptance/__tests__/report-core.test.ts`
+      # 里那三条断言证明的是 `summarize()` **算得对**，证明不了两件下游的事：
+      #   ① `atlas/scripts/qianmo-acceptance.ts` 真的把 `run.pass` 变成了进程退出码；
+      #   ② 这个 workflow 的 `run:` 步骤真的会因为那个退出码变红。
+      # 而接线出错的经典形态全在这两处 —— `|| true`、吞掉退出码的管道、或者
+      # `EXIT=$?` 跟在管道后面（那拿到的是管道**最后一个**命令的退出码）。
+      # 换句话说：这一步测的是这个 YAML 自己，不是套件。
+      - name: Guard - a zero-driver-call run must fail this step
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP}/acceptance-guard"
+          log="${RUNNER_TEMP}/acceptance-guard.log"
+
+          # 没有管道：要的就是这条命令自己的退出码。
+          if bun atlas/scripts/qianmo-acceptance.ts \
+               --target local \
+               --only trust/notice-trust-has-two-values \
+               --out "$out" > "$log" 2>&1; then
+            echo "::error title=False-green guard is dead::一轮零驱动调用的运行返回了 exit 0。report-core.ts 的 targetTouches 判定或本入口的退出码被改坏了。"
+            cat "$log"
+            exit 1
+          fi
+
+          # 退出码非零还不够 —— 必须是因为**零触达**而不是因为这条场景自己红了。
+          # 后者会让这道护栏以「正确」的退出码通过，而完全没测到它要测的东西。
+          summary="$(tail -n 1 "$out/results.ndjson")"
+          echo "$summary" | jq .
+
+          # 产物是流式落盘的（issue #85）：末行是 summary **只有跑完了才成立**。
+          # 被打断的一轮会留下一份没有末行的文件，那时 `tail -n 1` 拿到的是一条
+          # scenario 行，它没有 `.counts` / `.pass` —— 下面每一条 `jq -e` 都会
+          # 因为 null 而失败，形态上没问题，但报出来的原因会全部指错方向。先把
+          # 「这份文件到底跑完没有」问清楚，是这道护栏读 NDJSON 的第一步。
+          echo "$summary" | jq -e '.kind == "summary"' > /dev/null || {
+            echo "::error title=Run did not finish::results.ndjson 末行不是 summary —— 这一轮没跑完（被打断/被杀），不是判定结果。首行 kind:start 里有 target/startedAt/planned。"
+            head -n 1 "$out/results.ndjson" | jq . || true
+            cat "$log"
+            exit 1
+          }
+
+          # 先证明「真的跑了一条并且它绿了」。少了这条，护栏会以最坏的方式退化：
+          # 那条场景一旦被改名或删掉，`--only` 匹配不到任何东西 → 零场景 → counts
+          # 全 0、targetTouches 也是 0 → 判定 FAIL → exit 1 → 上面的 `if` 照样满足，
+          # 于是这一步继续绿，而它实际上什么都没验。护栏自己变成假绿，正是它要挡的
+          # 那个形状。
+          echo "$summary" | jq -e '.counts.pass >= 1' > /dev/null || {
+            echo "::error title=Guard tested nothing::--only 没匹配到场景（改名或删了？）。护栏这一轮零场景，等于没验。"
+            cat "$log"
+            exit 1
+          }
+          echo "$summary" | jq -e '.counts.fail == 0 and .counts.error == 0' > /dev/null || {
+            echo "::error title=Guard tested nothing::护栏场景自己红了，这一步没有制造出「全绿但零触达」。"
+            cat "$log"
+            exit 1
+          }
+          echo "$summary" | jq -e '.targetTouches == 0' > /dev/null || {
+            echo "::error title=Guard tested nothing::护栏场景调用了驱动，构造出的不是零触达。换一条纯静态场景。"
+            exit 1
+          }
+          echo "$summary" | jq -e '.pass == false' > /dev/null || {
+            echo "::error title=False-green guard is dead::零触达的一轮被判成了 pass。"
+            exit 1
+          }
+
+          echo "OK：counts 全绿 + 零驱动调用 → 判定 FAIL → 非零退出码 → 本步骤变红。"
+
+      # 真跑。**没有管道、没有 `|| true`、没有 `continue-on-error`** —— 这一步的
+      # 红全靠这条命令的退出码，上一步刚刚证明过那条链路是通的。
+      #
+      # 不需要 tee：套件自己把人可读汇总打到 stdout（于是进 step log），把
+      # NDJSON 写进 --out（于是进下一步的 artifact）。加了管道反而会把退出码
+      # 换成管道末端那个命令的。
+      #
+      # --timeout-scale 3：场景里那 87 个自报的超时（30 s–300 s）是按开发机写的，
+      # 而 runner 是共享的虚拟机（2–4 核，且同宿主上还有别人）。不放大的话，一条只是慢了的场景会被记成
+      # `error`（「套件自己炸了」）而不是它本来要说的话 —— 那在 CI 上是纯噪声，
+      # 且是会被人当成「套件不稳」而加豁免的那种噪声。理由与 runner.ts 里
+      # `FLEET_TIMEOUT_SCALE` 逐字相同，只是慢的原因从「每步多一次 SSH 往返」
+      # 换成了「共享 runner」。倍率而不是统一大数：场景之间的相对预算是作者
+      # 定的，压平会让本该快的那些在挂死时也拖满。
+      - name: Acceptance suite (local leg)
+        run: |
+          bun atlas/scripts/qianmo-acceptance.ts \
+            --target local \
+            --timeout-scale 3 \
+            --out "${RUNNER_TEMP}/acceptance-local"
+
+      # 绿也要说清楚绿的是多少。
+      #
+      # 一个绿勾看不出这一轮到底验了多少。托管 runner 上没有模型凭据，要起常驻
+      # 节点的那 86 条场景起不来，`skip` / `error` 的占比会很高——而 GitHub 上
+      # 只剩一行结论。没有这条注解，「验收过了」会被当成「115 条都过了」。
+      #
+      # 它自己不判红：该不该因为跳得太多、错得太多而红，是套件的判定该管的事，
+      # 不是这里。
+      - name: Annotate acceptance coverage
+        if: always()
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP}/acceptance-local/results.ndjson"
+          [ -f "$out" ] || { echo "::warning title=No acceptance summary::没有 results.ndjson，这一轮没跑到落盘。"; exit 0; }
+          summary="$(tail -n 1 "$out")"
+          echo "$summary" | jq -e '.kind == "summary"' > /dev/null || {
+            echo "::warning title=Acceptance run did not finish::results.ndjson 末行不是 summary —— 这一轮被打断了。"
+            exit 0
+          }
+          pass="$(echo "$summary" | jq -r '.counts.pass')"
+          skip="$(echo "$summary" | jq -r '.counts.skip')"
+          fail="$(echo "$summary" | jq -r '.counts.fail')"
+          err="$(echo "$summary" | jq -r '.counts.error')"
+          echo "::notice title=Acceptance coverage::pass=${pass} skip=${skip} fail=${fail} error=${err} —— 跳过与失败的逐条理由在 artifact 的 SUMMARY.txt 里；判定本身由套件给出，这条只报比例。"
+
+      # `always()`：红的那次才最需要 NDJSON。这个项目的验收留档一向是
+      # 「机器可读产物 + 它的哈希」（见 docs/dev/acceptance-m0.md），CI 这轮
+      # 也按同一个形态留。产物里没有凭据：本地腿的 PSK 是写死在
+      # `demo/lib/acceptance/local/driver.ts` 里的固定串，无秘密可言。
+      - name: Upload acceptance artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1, 2026-04-10
+        with:
+          # 带上 run_attempt：artifact 名在 v4+ 是唯一键，重跑同一个 run 时
+          # 只用 run_id 会撞上上一次的产物并让上传失败 —— 而重跑恰恰是红了之后
+          # 最常做的动作。分开存也正好留住两次尝试各自的现场。
+          name: acceptance-local-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-local
+          if-no-files-found: warn
+          retention-days: 14

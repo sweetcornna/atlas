@@ -7,7 +7,7 @@
  *
  * 三条与既有 demo harness 一致的纪律（照抄理由，不是照抄代码）：
  *
- * ① **一个进程一个 `OCC_CONFIG_DIR`。** 审计链是「一个配置根一个文件」，两个
+ * ① **一个进程一个 `QIANMO_CONFIG_DIR`。** 审计链是「一个配置根一个文件」，两个
  *    常驻共用一个根 = 两条哈希链交织进同一个文件，`qm audit --verify` 会报
  *    `chain: broken` —— 一个拓扑错误看起来会像一次篡改。
  *
@@ -199,8 +199,7 @@ export class LocalDriver implements AcceptanceDriver {
     const proc = spawnCli({
       argv,
       env: {
-        OCC_IDENTITY: 'qianmo',
-        OCC_CONFIG_DIR: configRoot,
+        QIANMO_CONFIG_DIR: configRoot,
         QIANMO_TRANSPORT_PSK: psk,
         ...spec.env,
       },
@@ -375,8 +374,7 @@ export class LocalDriver implements AcceptanceDriver {
     return await runCli({
       argv,
       env: {
-        OCC_IDENTITY: 'qianmo',
-        OCC_CONFIG_DIR: node.configRoot,
+        QIANMO_CONFIG_DIR: node.configRoot,
         QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
       },
     })
@@ -416,14 +414,16 @@ export class LocalDriver implements AcceptanceDriver {
   /**
    * 本地的启动器位。
    *
-   * `repoDir` 是一棵**镜像仓库树**：`demo` 软链回真仓库、`dist/cli-node.js`
-   * 放一个占位文件。为什么需要它：`common.sh` 把产物路径写死成
-   * `$REPO_DIR/dist/cli-node.js` 且不认任何环境变量覆盖，而 `REPO_DIR` 是从
-   * `common.sh` 自己的 `BASH_SOURCE[0]` 往上三级推出来的 —— 于是「不先跑一次
-   * 真构建就碰不到这条路径」，那正好撞上「不许有手工步骤」。bash 的 `cd` 走
-   * 逻辑路径，`pwd` 因此答的是软链那一侧，`REPO_DIR` 就落在镜像上；**跑的仍是
-   * 仓库里那份真脚本**，只有它眼中的仓库根被换掉了。唯一被伪造的事实是
-   * 「产物存在」这一条。
+   * `repoDir` 是一棵**镜像仓库树**：`demo` 软链回真仓库，`dist/` 下只有一个
+   * 占位的 `qm`。bash 的 `cd` 走逻辑路径，`pwd` 因此答的是软链那一侧，
+   * `common.sh` 从自己的 `BASH_SOURCE[0]` 推出的 `REPO_DIR` 就落在镜像上；**跑的
+   * 仍是仓库里那份真脚本**，只有它眼中的仓库根被换掉了 —— 脚本往 `REPO_DIR`
+   * 下写什么都碰不到真仓库。
+   *
+   * `run` 缺省带 `BETA_QM=<占位>`（`common.sh` 认这个覆盖，缺省是
+   * `$REPO_DIR/dist/qm-linux-<arch>`）：本地没有编译产物，场景要截命令行时自己
+   * 用 `BETA_QM` 指向假 `qm`；忘了截的那条会撞上占位 —— 它只报错退出，不会
+   * 起任何东西。
    *
    * 真机腿不需要这一层 —— 那边 `dist/` 是真的（见 {@link LauncherHost}）。
    */
@@ -432,10 +432,14 @@ export class LocalDriver implements AcceptanceDriver {
     const repoDir = join(seat, 'repo-mirror')
     const betaRoot = join(seat, 'beta-root')
     const workdir = join(seat, 'work')
+    const placeholderQm = join(repoDir, 'dist', 'qm-placeholder')
     mkdirSync(join(repoDir, 'dist'), { recursive: true })
     writeFileSync(
-      join(repoDir, 'dist', 'cli-node.js'),
-      '// qianmo acceptance placeholder —— 只为让 beta_require_occ 通过\n',
+      placeholderQm,
+      '#!/bin/sh\n' +
+        "echo 'qianmo acceptance placeholder qm: this scenario did not stub BETA_QM' >&2\n" +
+        'exit 97\n',
+      { mode: 0o755 },
     )
     if (!existsSync(join(repoDir, 'demo'))) {
       symlinkSync(join(REPO_ROOT, 'demo'), join(repoDir, 'demo'))
@@ -478,7 +482,7 @@ export class LocalDriver implements AcceptanceDriver {
       run: async (argv, options) => {
         const child = Bun.spawn([...argv], {
           cwd: REPO_ROOT,
-          env: { ...process.env, ...options?.env },
+          env: { ...process.env, BETA_QM: placeholderQm, ...options?.env },
           stdin: 'ignore',
           stdout: 'pipe',
           stderr: 'pipe',
@@ -530,8 +534,7 @@ export class LocalDriver implements AcceptanceDriver {
         await runCli({
           argv,
           env: {
-            OCC_IDENTITY: 'qianmo',
-            OCC_CONFIG_DIR: opts?.configDir ?? configDir,
+            QIANMO_CONFIG_DIR: opts?.configDir ?? configDir,
             QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
             ...(opts?.env ?? {}),
           },

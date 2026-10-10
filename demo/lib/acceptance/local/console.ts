@@ -267,8 +267,7 @@ export async function startConsole(
   const port = await ctx.allocPort()
   const { argv, env: extraEnv } = consoleLaunch(spec, port)
   const env: Record<string, string> = {
-    OCC_IDENTITY: 'qianmo',
-    OCC_CONFIG_DIR: configRoot,
+    QIANMO_CONFIG_DIR: configRoot,
     ...extraEnv,
   }
 

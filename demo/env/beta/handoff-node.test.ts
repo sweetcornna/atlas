@@ -63,7 +63,7 @@ beta_start_process() {
     beta_die "$name 未能保持运行（录制桩）"
   fi
   mkdir -p "$config_dir"
-  OCC_CONFIG_DIR="$config_dir" "$@" >>"$FAKE_LOG_DIR/$name.out" 2>&1
+  QIANMO_CONFIG_DIR="$config_dir" "$@" >>"$FAKE_LOG_DIR/$name.out" 2>&1
   printf '%s\\n' 2147483646 >"$(beta_pidfile "$name")"
   beta_ok "$name 已启动（录制桩）"
 }
@@ -144,7 +144,11 @@ function scratch(
     join(repo, 'demo/lib/entry.sh'),
   )
   mkdirSync(join(repo, 'dist'), { recursive: true })
-  writeFileSync(join(repo, 'dist/cli-node.js'), FAKE_OCC)
+  writeFileSync(
+    join(repo, `dist/qm-${process.platform}-${process.arch}`),
+    `#!/usr/bin/env bun\n${FAKE_OCC.replace(/^#![^\n]*\n/, '')}`,
+    { mode: 0o755 },
+  )
 
   const root = join(base, 'beta-root')
   mkdirSync(join(root, 'secrets'), { recursive: true })
@@ -323,7 +327,7 @@ describe('handoff-node.sh start', () => {
 
     const node = bridge(place)
     expect(node.env.QIANMO_TRANSPORT_PSK).toBe(PSK)
-    expect(node.env.OCC_IDENTITY).toBe('qianmo')
+    expect(node.env.OCC_IDENTITY).toBeUndefined()
     // 运维 shell 里那把与 model-env 里的每个键都去掉了。
     expect(node.env.OPENAI_API_KEY).toBeUndefined()
     expect(node.env.ANTHROPIC_API_KEY).toBeUndefined()

@@ -8,7 +8,7 @@
 # 在同一条已认证连接上等 ack 与 task.result。judgement 三条：
 #   成功率 10/10、ack P95 ≤ 60 s、result 每轮 ≤ 5 min。
 #
-# 前提：常驻 occ 已经跑在目标沙箱里（--port 与 QIANMO_AC2_TARGET_URL 对应），
+# 前提：常驻 qm resident 已经跑在目标沙箱里（--port 与 QIANMO_AC2_TARGET_URL 对应），
 # 且它的 activity 上报指向本脚本起的 activity 端口。
 
 set -euo pipefail
@@ -48,6 +48,21 @@ FREEZE_WAIT_S="${P41_FREEZE_WAIT_S:-300}"
 ACK_LIMIT_MS="${P41_ACK_LIMIT_MS:-60000}"
 RESULT_LIMIT_MS="${P41_RESULT_LIMIT_MS:-300000}"
 FORWARD_TIMEOUT_MS="${P41_FORWARD_TIMEOUT_MS:-90000}"
+SIGNED="${QIANMO_P41_SIGN:-1}"
+host_sign=()
+send_sign=()
+if [ "$SIGNED" = 1 ]; then
+  : "${QIANMO_CONFIG_DIR:?strict run requires an isolated config root with prepared identities}"
+  : "${QIANMO_P41_SENDER_PUBLIC_KEY:?}" "${QIANMO_P41_HOST_PUBLIC_KEY:?}" "${QIANMO_P41_TARGET_PUBLIC_KEY:?}"
+  case "$QIANMO_CONFIG_DIR" in /*) ;; *) echo 'config root must be absolute' >&2; exit 2 ;; esac
+  sender="${QIANMO_P41_SENDER_NODE:-node-a}"
+  host_sign=(--sign --trust "$sender=$QIANMO_P41_SENDER_PUBLIC_KEY" --target-key "$QIANMO_P41_TARGET_PUBLIC_KEY")
+  send_sign=(--sign --host-key "$QIANMO_P41_HOST_PUBLIC_KEY" --from-node "$sender")
+  [ "$(bun run "$(demo_entry ac2-activator)" --print-identity)" = "${QIANMO_AC2_NODE:-node-b}-host=$QIANMO_P41_HOST_PUBLIC_KEY" ] || { echo 'host identity differs from prepared key' >&2; exit 2; }
+  [ "$(bun run "$(demo_entry p41-send)" --print-identity --from-node "$sender")" = "$sender=$QIANMO_P41_SENDER_PUBLIC_KEY" ] || { echo 'sender identity differs from prepared key' >&2; exit 2; }
+elif [ "$SIGNED" != 0 ]; then
+  echo 'QIANMO_P41_SIGN must be 1 (strict) or explicit 0 (legacy fixture)' >&2; exit 2
+fi
 KEEPALIVE_TIME_JUMP_FACTOR="${P41_KEEPALIVE_TIME_JUMP_FACTOR:-1.5}"
 ACTIVITY_HOST="${QIANMO_P41_ACTIVITY_HOST:-0.0.0.0}"
 
@@ -85,6 +100,7 @@ printf '目标：%s，轮数：%s，ack 上限：%sms，result 上限：%sms\n' 
   "$QIANMO_AC2_SANDBOX" "$ROUNDS" "$ACK_LIMIT_MS" "$RESULT_LIMIT_MS"
 
 bun run "$(demo_entry ac2-activator)" \
+  ${host_sign[@]+"${host_sign[@]}"} \
   --ready "$READY" \
   --timings "$ACTIVATOR_TIMINGS" \
   --audit "$AUDIT" \
@@ -142,8 +158,13 @@ for round in $(seq 1 "$ROUNDS"); do
     printf 'round %s: sandbox did not reach frozen\n' "$round" >&2
   fi
 
+  if [ "$frozen" != true ]; then
+    printf '{"round":%s,"verdict":"not-frozen","msgId":"","taskId":"","sentAt":0,"frozenBefore":false}\n' "$round" >>"$ROUNDS_FILE"
+    continue
+  fi
   set +e
   bun run "$(demo_entry p41-send)" \
+    ${send_sign[@]+"${send_sign[@]}"} \
     --round "$round" \
     --ack-timeout-ms "$ACK_LIMIT_MS" \
     --result-timeout-ms "$RESULT_LIMIT_MS" \
@@ -177,6 +198,7 @@ done
 
 set +e
 bun run "$(demo_entry p41-report)" \
+  --ac2 \
   --rounds-file "$ROUNDS_FILE" \
   --rounds "$ROUNDS" \
   --ack-limit-ms "$ACK_LIMIT_MS" \

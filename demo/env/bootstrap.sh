@@ -8,9 +8,13 @@
 #
 # 做四件事，每件打耗时，最后给总耗时（P8.1 的 DoD 是 30 min 内复现完整演示环境，
 # 这个数字就是用来对着看的）：
-#   ① 前置检查：bun（版本对着 .tool-versions 核）、git、node，可选 docker；
+#   ① 前置检查：bun（≥ 1.4 硬下限，版本再对着 .tool-versions 核）、git、node，可选 docker；
 #   ② `bun install --frozen-lockfile`；
-#   ③ `bun run build` —— 常驻节点是 `occ resident`，没有构建产物就没有节点；
+#   ③ `bun run build:native` —— 构建 omp 原生插件 `pi_natives.<平台>.node`（cargo，nightly
+#      见 rust-toolchain.toml）。常驻节点是 `qm resident`（源码直跑
+#      `bun atlas/packages/node/src/cli.ts`），节点智能体是 omp，缺原生插件 omp 起不来。
+#      已经放好预编译插件（npm 预编译叶包，或从别处拷来的 `.node`）的机器加 `--skip-build`，
+#      效果相同；
 #   ④ 自检：跑 demo/lib 的报告核心用例（CI 里的同一个分片），证明依赖装对了。
 #
 # **幂等**：重复跑不会坏事，②③ 会因为缓存与产物已在而快很多。
@@ -42,16 +46,16 @@ cd "$REPO_DIR"
 STEP_AT="$(demo_now)"
 demo_head '① 前置检查'
 
-command -v bun >/dev/null 2>&1 || demo_die 'bun 不在 PATH 上。装法见 docs/dev/demo-env.md §2'
+demo_require_bun
 command -v git >/dev/null 2>&1 || demo_die 'git 不在 PATH 上'
-# node 不是给 occ 用的，是 demo/lib/p61-worker.ts 真的会 spawn 它（AC-7 的 worker 子进程）。
-# 所以它是 **④ 自检**的前置，不是 ②③ 的：`bun install` 与 `bun run build` 全程不碰 node。
+# node 不是给 qm 用的，是 demo/lib/p61-worker.ts 真的会 spawn 它（AC-7 的 worker 子进程）。
+# 所以它是 **④ 自检**的前置，不是 ②③ 的：`bun install` 与 `bun run build:native` 全程不碰 node。
 #
 # 这条区分不是理论上的。2026-08-25 实查：内测舰队四台节点机（beta-1..4）上**一台都没有
 # node**——只有 `~/.bun/bin/bun`。而这里原先无条件 die，于是这条「装机 runbook」在真实
-# 部署机上从第一步就跑不起来，历史上那几次上机只能绕开本脚本手工 `bun run build`。绕开
-# 的代价现在具体了：本脚本 ③ 里那段源 commit 注入（issue #70）也一并被绕过，四台节点的
-# 产物因此报 `sourceCommit=unknown`。
+# 部署机上从第一步就跑不起来，历史上那几次上机只能绕开本脚本手工构建。绕开的代价
+# 具体是：本脚本里那段源 commit 注入（issue #70）也一并被绕过，四台节点因此报
+# `sourceCommit=unknown`。
 #
 # 缺 node 时**不自动跳过 ④**：静默降级会让「自检过了」与「自检压根没跑」在输出里长得
 # 一样。要操作者显式写 `--skip-selftest`——跳过一道检查得是一个明确的动作。
@@ -70,9 +74,8 @@ BUN_HAVE="$(bun --version)"
 if [ "$BUN_HAVE" = "$BUN_PIN" ]; then
   demo_ok "bun ${BUN_HAVE}（与 .tool-versions 一致）"
 else
-  # 不是硬拦：engines 只要求 >=1.3.11，而 pin 是 lockfile 与 CI 的口径。
-  # 但也不静默——lockfile 的解析字段是 bun 1.3.13 规范化过的（roadmap v2.31），
-  # 用别的版本 `bun install` 可能把它改回去，那是一次谁都没打算做的提交。
+  # 不是硬拦：硬下限（≥ 1.4）上面 demo_require_bun 已经拦过，而 pin 是 lockfile 与 CI 的口径。
+  # 但也不静默——用别的版本 `bun install` 可能把 lockfile 改写，那是一次谁都没打算做的提交。
   demo_warn "bun $BUN_HAVE ≠ .tool-versions 的 $BUN_PIN —— 允许继续，但 lockfile 若出现改动请勿提交"
 fi
 if command -v node >/dev/null 2>&1; then
@@ -94,27 +97,25 @@ demo_head '② bun install --frozen-lockfile'
 bun install --frozen-lockfile
 demo_say "耗时 : $(demo_elapsed "$STEP_AT")"
 
-# ── ③ 构建 occ ──────────────────────────────────────────────────────────────
+# ── ③ 构建 omp 原生插件 ─────────────────────────────────────────────────────
 STEP_AT="$(demo_now)"
-demo_head '③ bun run build'
+demo_head '③ bun run build:native'
 
-# 先让产物知道自己是从哪个 commit 来的（issue #70）。判定、优先级与三种结局的
-# 措辞都在 common.sh 的 demo_source_commit / demo_export_source_commit 里。
-#
-# 放在 `--skip-build` 判断**之前**：跳过构建时这一行照样有用——它回答的是「这棵树
-# 声称自己是哪一版」，而那正是操作者在一台不重新构建的机器上最想先确认的事。
+# 先说清这棵树声称自己是哪一版（issue #70）。判定、优先级与三种结局的措辞都在
+# common.sh 的 demo_source_commit / demo_export_source_commit 里。qm 是源码直跑，源
+# commit 在**运行时**才读，所以 up.sh 起节点前还会再走一遍同一个函数；这里先报，
+# 是因为它正是操作者在一台新机器上最想先确认的事。
 demo_export_source_commit
 
 if [ "$SKIP_BUILD" = '1' ]; then
-  demo_say '按 --skip-build 跳过'
+  demo_say '按 --skip-build 跳过（原生插件已就位：本机构建过，或用的是预编译件）'
 else
-  # 用 `bun run build`（Bun 打包器）而不是 `build:vite`：演示环境只需要一个能跑的
-  # `occ`，vite 那条是发布口径的产物流程（本仓库不发布，见 CLAUDE.md §0），
-  # 且慢得多。两者产出的 `dist/cli-node.js` 对常驻模式是等价的。
-  bun run build
+  # 只构建原生插件，不跑根工作区的 build 脚本：演示环境源码直跑 qm，不需要任何打包产物；
+  # 舰队用的单文件 `dist/qm-<平台>-<架构>` 由 atlas/scripts/build-qm.ts 另行编译。
+  bun run build:native
 fi
-demo_require_occ
-demo_ok "occ 产物就位：$DEMO_OCC"
+demo_require_qm
+demo_ok "qm 入口就位：$DEMO_QM"
 demo_say "耗时 : $(demo_elapsed "$STEP_AT")"
 
 # ── ④ 自检 ──────────────────────────────────────────────────────────────────

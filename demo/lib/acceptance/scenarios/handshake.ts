@@ -578,7 +578,7 @@ export const credentialChannelScenarios: readonly Scenario[] = [
       // 用一个手写的 HandshakeCredentialDirectory 覆盖，那里能在两次拨号之间
       // 换答案。这条场景负责的是**别让这个结论悄悄过期**。
       const source = readSource(
-        joinPath(REPO_ROOT, 'src/cli/handlers/resident.ts'),
+        joinPath(REPO_ROOT, 'atlas/packages/node/src/commands/resident.ts'),
         'utf8',
       )
       const pollConstant =

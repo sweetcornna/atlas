@@ -41,8 +41,9 @@ function sandbox(): { readonly home: string; readonly src: string } {
   mkdirSync(join(src, 'dist'), { recursive: true })
   mkdirSync(join(src, 'demo', 'env', 'beta'), { recursive: true })
   writeFileSync(
-    join(src, 'dist', 'cli-node.js'),
-    'function s(){try{return`0123456789abcdef0123456789abcdef01234567`}catch{}}\n',
+    join(src, 'dist', `qm-${process.platform}-${process.arch}`),
+    '#!/bin/sh\necho "qm 3.0.0-dev (omp 18.8.4) 0123456789abcdef0123456789abcdef01234567"\n',
+    { mode: 0o755 },
   )
   writeFileSync(join(src, 'demo', 'env', 'beta', 'beta-up.sh'), '#!/bin/sh\n')
   const shim = join(home, 'node-deploy.sh')

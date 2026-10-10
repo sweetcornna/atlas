@@ -55,7 +55,7 @@ export function checkP31Factors(
   expectedHostKeepalive: number,
 ): P31FactorCheck {
   const latestReady = residentEvents
-    .filter(event => event.stage === 'acp_ready')
+    .filter(event => event.stage === 'runtime_ready')
     .sort((left, right) => right.at - left.at)[0]
   const actualResidentReconnect = latestReady?.activityReconnectFactor ?? null
   return {

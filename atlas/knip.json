@@ -1,0 +1,22 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    "atlas/packages/*": {
+      "entry": [
+        "src/cli.ts",
+        "src/bin/*.ts",
+        "test/**/*.ts",
+        "eval/**/*.ts",
+        "scripts/**/*.ts"
+      ],
+      "project": [
+        "src/**/*.{ts,tsx}",
+        "test/**/*.ts",
+        "eval/**/*.ts",
+        "scripts/**/*.ts"
+      ],
+      "ignoreBinaries": ["tsgo"]
+    }
+  },
+  "ignoreWorkspaces": [".", "packages/**", "python/**"]
+}

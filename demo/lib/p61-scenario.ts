@@ -58,7 +58,7 @@ import {
   routerTrailSink,
   transportTrailSink,
   tunnelTrailSink,
-} from '../../src/services/qianmo/auditTrail.js'
+} from '@qianmo/node/host/auditTrail.js'
 import { arg, emit, intArg } from './cli-args.js'
 import {
   combineChunkResults,
