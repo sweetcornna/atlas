@@ -8,6 +8,7 @@ import * as path from 'node:path'
 import { AuditSource } from '@qianmo/audit'
 import { ActionLedger, type DirectionActor } from '@qianmo/console'
 import type { ProviderProfile } from '@qianmo/providers'
+import { acquirePrivateLock } from '../../src/providers/store.js'
 import { ConsoleRouting } from '../../src/commands/consoleRouting.js'
 import { routingFixture } from '../providers/routingFixtures.js'
 import { MemoryActionStore } from '../../../console/test/actionStore.js'
@@ -254,4 +255,64 @@ test('snapshot reads model.route from attached audit ports, keeps latest twenty 
   expect(snapshot.value.recent[0]?.at).toBe(24)
   expect(snapshot.value.recent[19]?.at).toBe(5)
   expect(JSON.stringify(snapshot.value)).not.toContain('must not')
+})
+
+test('a crashed lock holder is reclaimed, while a live holder rejects writes', async () => {
+  const { port, options } = setup()
+  fs.writeFileSync(
+    `${options.path}.lock`,
+    JSON.stringify({
+      pid: 2147483647,
+      nonce: 'dead',
+      at: new Date().toISOString(),
+    }),
+    { mode: 0o600 },
+  )
+  expect(
+    (
+      await port.save(
+        { node: null, auto: false, revision: 0, routes: [] },
+        actor,
+      )
+    ).ok,
+  ).toBe(true)
+  fs.writeFileSync(
+    `${options.path}.lock`,
+    JSON.stringify({
+      pid: process.pid,
+      nonce: 'live',
+      at: new Date().toISOString(),
+    }),
+    { mode: 0o600 },
+  )
+  expect(
+    (await new ConsoleRouting(options).clearNode('node-a', actor)).ok,
+  ).toBe(false)
+  expect(
+    JSON.parse(fs.readFileSync(`${options.path}.lock`, 'utf8')).nonce,
+  ).toBe('live')
+})
+
+test('expired live locks recover and releasing an old owner preserves the replacement lock', () => {
+  const { options } = setup()
+  const lockPath = `${options.path}.lock`
+  fs.writeFileSync(
+    lockPath,
+    JSON.stringify({
+      pid: process.pid,
+      nonce: 'expired',
+      at: new Date(0).toISOString(),
+    }),
+    { mode: 0o600 },
+  )
+  const lock = acquirePrivateLock(lockPath, { maxAgeMs: 5 * 60_000 })
+  if (!lock) throw new Error('expired lock was not reclaimed')
+  const other = JSON.stringify({
+    pid: process.pid,
+    nonce: 'other-owner',
+    at: new Date().toISOString(),
+  })
+  fs.writeFileSync(lockPath, other)
+  lock.release()
+  expect(fs.readFileSync(lockPath, 'utf8')).toBe(other)
 })

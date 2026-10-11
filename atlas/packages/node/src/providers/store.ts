@@ -13,6 +13,7 @@ import {
   readFileSync,
   renameSync,
   statSync,
+  lstatSync,
   unlinkSync,
   writeSync,
 } from 'node:fs'
@@ -130,8 +131,16 @@ type ApplyLock = { release(): void }
  * and reclaimed once; a live holder means `busy` (`null`).
  */
 export function acquireApplyLock(now: Date = new Date()): ApplyLock | null {
-  ensurePrivateDir(providerDir())
-  const path = providerPaths.lock()
+  return acquirePrivateLock(providerPaths.lock(), { now })
+}
+
+/** Shared PID/nonce lock. Expiry bounds recovery even after PID reuse. */
+export function acquirePrivateLock(
+  path: string,
+  options: { now?: Date; maxAgeMs?: number } = {},
+): ApplyLock | null {
+  ensurePrivateDir(dirname(path))
+  const now = options.now ?? new Date()
   const record: LockRecord = {
     pid: process.pid,
     at: now.toISOString(),
@@ -148,14 +157,24 @@ export function acquireApplyLock(now: Date = new Date()): ApplyLock | null {
       return {
         release() {
           const current = readTextIfExists(path)
-          if (current !== undefined && current.includes(record.nonce)) {
-            removeIfExists(path)
-          }
+          if (current === JSON.stringify(record)) removeIfExists(path)
         },
       }
     } catch (error) {
       if (!isErrno(error, 'EEXIST')) throw error
-      if (attempt > 0 || !isStaleLock(path)) return null
+      const before = lstatSync(path)
+      const stale = readTextIfExists(path)
+      if (attempt > 0 || !isStaleLock(path, now.getTime(), options.maxAgeMs))
+        return null
+      // Recheck identity and bytes before reclaiming a lock another writer may
+      // have replaced. The state directory is host-only, not agent-writable.
+      const after = lstatSync(path)
+      if (
+        before.ino !== after.ino ||
+        before.dev !== after.dev ||
+        readTextIfExists(path) !== stale
+      )
+        return null
       removeIfExists(path)
     }
   }
@@ -165,17 +184,25 @@ export function acquireApplyLock(now: Date = new Date()): ApplyLock | null {
 /** How long an unreadable lock is presumed to be a holder mid-write. */
 const TORN_LOCK_GRACE_MS = 10_000
 
-function isStaleLock(path: string): boolean {
+function isStaleLock(
+  path: string,
+  now: number,
+  maxAgeMs = Number.POSITIVE_INFINITY,
+): boolean {
   const text = readTextIfExists(path)
   if (text === undefined) return true
   try {
     const parsed = JSON.parse(text) as Partial<LockRecord>
-    return typeof parsed.pid !== 'number' || !isProcessAlive(parsed.pid)
+    return (
+      typeof parsed.pid !== 'number' ||
+      !isProcessAlive(parsed.pid) ||
+      (typeof parsed.at === 'string' && now - Date.parse(parsed.at) > maxAgeMs)
+    )
   } catch {
     // Unreadable: either a holder between open() and write(), or a torn
     // write from a crashed one. Only age tells them apart.
     try {
-      return Date.now() - statSync(path).mtimeMs > TORN_LOCK_GRACE_MS
+      return now - statSync(path).mtimeMs > TORN_LOCK_GRACE_MS
     } catch (error) {
       return isMissing(error)
     }
