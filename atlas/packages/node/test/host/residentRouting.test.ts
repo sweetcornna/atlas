@@ -176,6 +176,16 @@ test('manual choice persists for two turns, wins over auto and survives a reopen
       model: { provider: 'manual', id: 'X' },
       thinkingLevel: 'high',
     })
+    await router.prepare(rpc, { text: 'hello', hint: 'plan' })
+    await rpc.request('set_model', { provider: 'manual', modelId: 'Y' })
+    await rpc.request('set_thinking_level', { level: 'low' })
+    await router.remember(rpc)
+    await router.finish(rpc)
+    await new ResidentModelRouter(file).prepare(rpc, { text: 'hello' })
+    expect((await rpc.request('get_state')).data).toMatchObject({
+      model: { provider: 'manual', id: 'Y' },
+      thinkingLevel: 'low',
+    })
     router.clear()
     expect(
       (await new ResidentModelRouter(file).prepare(rpc, { text: 'hello' }))

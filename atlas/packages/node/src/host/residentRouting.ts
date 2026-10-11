@@ -169,6 +169,9 @@ export class ResidentModelRouter {
   }
   async remember(rpc: ResidentRoutingRpc): Promise<void> {
     this.#manual = await currentResidentSelection(rpc)
+    // A user can mutate the live RPC session while a hinted turn is running.
+    // Its completion must restore the newer choice, not the older baseline.
+    if (this.#restore) this.#restore = this.#manual
     if (this.#file) writePrivateJson(this.#file, { manual: this.#manual })
   }
   clear(): void {
