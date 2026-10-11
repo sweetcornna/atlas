@@ -27,6 +27,7 @@ import {
   createNotify,
   type QianmoMessage,
 } from '@qianmo/protocol'
+import { turnStepDedupKey } from '@qianmo/resident'
 import {
   createConsoleChatPort,
   normalizeChatEndpoint,
@@ -356,6 +357,39 @@ describe('chat send', () => {
     })
   })
 
+  test('schedule direction and deadline reach task.request, invalid hints never send', async () => {
+    const h = harness()
+    const opened = await h.hub.open(TARGET)
+    if (!opened.ok) throw new Error('open failed')
+    const sent = await h.hub.send({
+      sessionId: opened.value.id,
+      text: '规划',
+      direction: 'plan',
+      taskTtlMs: 3_600_000,
+    })
+    expect(sent.ok).toBe(true)
+    expect(h.dialer.last.sent[0]!.payload).toEqual({
+      prompt: '规划',
+      direction: 'plan',
+    })
+    expect(h.dialer.last.sent[0]!.taskTtlMs).toBe(3_600_000)
+    expect(
+      await h.hub.send({
+        sessionId: opened.value.id,
+        text: '坏方向',
+        direction: 'unknown' as 'chat',
+      }),
+    ).toMatchObject({ ok: false, failure: { code: 'invalid' } })
+    expect(
+      await h.hub.send({
+        sessionId: opened.value.id,
+        text: '坏期限',
+        taskTtlMs: -1,
+      }),
+    ).toMatchObject({ ok: false, failure: { code: 'invalid' } })
+    expect(h.dialer.last.sent).toHaveLength(1)
+  })
+
   test('refuses a target whose endpoint is off the allow list', async () => {
     const h = harness()
     const opened = await h.hub.open(OTHER)
@@ -578,6 +612,41 @@ describe('chat reply path', () => {
       state: 'delivered',
       taskId: request.taskId,
     })
+  })
+
+  test('automatic progress and explicit agent notices stay distinguishable after transcript replay', async () => {
+    const h = harness()
+    const { sessionId, request } = await openAndSend(h)
+    for (const automatic of [true, false]) {
+      h.dialer.last.reply(
+        createNotify({
+          from: TARGET,
+          to: FROM,
+          contextId: sessionId,
+          payload: {
+            kind: 'task',
+            severity: 'info',
+            summary: automatic ? '工具开始' : '需要决策',
+            observedAt: 1,
+            causeTaskId: request.taskId,
+            ...(automatic
+              ? { dedupKey: turnStepDedupKey(request.msgId, 'call-1', 'start') }
+              : { dedupKey: 'agent-choice' }),
+          },
+        }),
+      )
+    }
+    const recovered = harness({ storePath: h.storePath, idPrefix: 'replayed' })
+    const transcript = await recovered.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('transcript failed')
+    expect(
+      transcript.value.turns
+        .filter(turn => turn.variant === 'notice')
+        .map(turn => ({ source: turn.noticeSource, cause: turn.causeTaskId })),
+    ).toEqual([
+      { source: 'step', cause: request.taskId },
+      { source: 'agent', cause: request.taskId },
+    ])
   })
 
   test('a notice is not a turn, and not the rail preview', async () => {

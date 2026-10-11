@@ -267,3 +267,5 @@ export * from './governance.js'
 export * from './tenancy.js'
 
 export { FileUsageStore, usageDelta } from './usage.js'
+
+export * from './directionPorts.js'

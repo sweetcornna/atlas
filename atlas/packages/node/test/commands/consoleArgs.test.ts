@@ -12,6 +12,20 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+
+test('console schedules require the chat face and remain absent unless explicitly enabled', () => {
+  expect(parseConsoleArgs([]).schedules).toBeUndefined()
+  expect(() => parseConsoleArgs(['--schedules'])).toThrow(
+    '--schedules needs --chat-url',
+  )
+  expect(
+    parseConsoleArgs([
+      '--schedules',
+      '--chat-url',
+      'node-b=ws://127.0.0.1:1234',
+    ]).schedules,
+  ).toBe(true)
+})
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

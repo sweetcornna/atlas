@@ -2128,3 +2128,92 @@ id 不合法或不在列表而拒绝，都记一条动作账本 `alert.ack`；�
 
 只读令牌看得见备注但改不了：框留着、置 `readonly`、按钮换成一行说明。框不能消失——一个
 不见的框会让「你不能改」和「这里没有备注」长得一样。
+
+## §12 定时任务与通知渠道（P24）
+
+`qm console --schedules --chat-url <节点>=<ws地址>` 打开进程内的定时任务簿，要求对话面
+实际接通配置（含可用 PSK）；没给 `--schedules` 时 `ConsoleDeps.schedules` 缺席。
+API 处理器是 `routes/schedulesApi.ts` 导出的 `schedulesApi: HeadRoute`，由「主动执行」
+区域的主导集成者挂入路由表；本工作包不新增页面。原有 `qm watch`、`/jobs` 和其只读端口保持原样。
+
+### §12.1 存储与调度
+
+所有路径从 `qianmoConfigPath()` 派生，任务状态目录为 `<配置根>/qianmo/console/schedules/`：
+
+| 文件 | 内容 |
+|---|---|
+| `schedules.json` | 任务、渠道的公开字段、专属会话号与尚未结束的运行；临时文件 fsync 后原子 rename，0600，目录 0700 |
+| `channels.secret.json` | 渠道完整地址，仅保存在中枢；原子写、0600，页面/快照只给主机名 |
+| `runs.ndjson` | 每次结束/跳过的运行一行，0600；启动从文件尾读最近 500 行，快照返回最近 50 次，新记录在前 |
+
+每天与每周按 IANA 时区的挂钟时间计算，默认 `Asia/Shanghai`。星期为 1–7（周一到周日），
+必须非空且不重复。夏令时不存在的本地时间顺延到之后第一个有效分钟，重复时间只取第一次；
+`after` 恰好等于触发时刻时取下一次。间隔最短 15 分钟，锚点由宿主固定为任务创建时刻，
+修改间隔仍沿用该锚点，客户端不能移动它。
+
+控制台每 30 秒检查一次（计时器 `unref`）。磁盘上的 `nextRunAt` 在重启时原样恢复；
+错过多个时刻只补跑一次，运行的 `reason` 说明额外错过几次，再推进到当前时刻之后。
+停用期间不执行；重新启用从当前时刻之后继续，不补停用期间的时刻。修改标题/提示词不改
+计划时间，修改时间规则或时区重新计算。立即运行使用 `trigger: manual`，不改变 `nextRunAt`，
+允许对停用的任务执行一次。
+
+`<配置根>/qianmo/scheduler/ESTOP` 存在时，到点或立即运行均记 `skipped / 紧急停止`，
+不会发送；同一任务上一轮未结束时记 `skipped / 上一轮未结束`。停止文件检查异常按已停止
+处理。已经发送的任务不因 ESTOP 自动取消。控制台重启时尚未完成持久化的运行记
+`failed / 控制台重启`，不会重发请求或重推可能已经送出的通知。
+
+每个任务首次运行时用对话端口 `open` 建专属会话，保存会话号并持续复用；会话被删后重建，
+改变目标时另建会话。提示词经原有 `send` 链路发出，方向为可选
+`code|chat|plan|fast|vision|image|speech|video`（缺省 `chat`，明确 `null` 不带方向），
+经 `task.request.payload.direction` 传给节点，与 P22 同一字段。任务期限同时传到信封与
+对话端口本地超时；默认 10 分钟、最大 60 分钟。订阅对话更新并在调度检查时兜底读取转录，
+按 `taskId` 匹配终态，运行保留回复前 2000 个 Unicode 字符，全文仍在 `chat.ndjson`。
+
+模板为晨间简报、跟进待办、整理邮件、自定义（空预填内容）；整理邮件标明需要「邮件连接」。
+保存任务时提示词必须非空，目标必须在对话面的可拨允许名单内，发送时仍经过现有出口闸门。
+运行完成、失败或超时后推送选定渠道；跳过不推送。仅在智能体主动通知时推送的任务，使用
+本轮智能体显式通知 `notice` 的摘要，排除自动工具过程、其他任务、旧轮和观察时间早于
+本轮开始的延迟通知。对话端口保存 `noticeSource` 与 `causeTaskId`，避免把工具进度当作主动通知。运行完成但通知失败
+不改运行结果，失败落在 `pushed` 与渠道的 `lastError`。被任务或在途运行引用的渠道不能删除。
+
+任务的保存、启停、删除、立即运行及渠道保存、删除、测试，由宿主通过 `DirectionActor`
+记入动作账本；自动触发记 `schedule.run`，主体为 `system:schedules`，请求号为运行号。
+账本拒绝写入时不执行新的动作，渠道地址与回复正文不作为账本载荷。
+
+### §12.2 通知格式与未评估口径
+
+| 渠道 | 配置地址与 POST 格式 | 文档 |
+|---|---|---|
+| Webhook | 完整接收地址；JSON `{title, body, at, qianmo:{scheduleId, runId, outcome}}` | 阡陌通用格式，`at` 为 epoch 毫秒 |
+| Bark | `https://api.day.app/<设备key>` 或自建服务器同类地址；JSON `{title, body}` | [Bark 教程](https://github.com/Finb/Bark/blob/master/docs/en-us/tutorial.md) |
+| 企业微信 | 群机器人完整 webhook 地址；JSON `{msgtype:"text", text:{content:"标题\\n正文"}}` | [群机器人文档](https://developer.work.weixin.qq.com/document/path/91770) |
+| 飞书 | 自定义机器人完整 webhook 地址；JSON `{msg_type:"text", content:{text:"标题\\n正文"}}` | [自定义机器人指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot) |
+| ntfy | 含 topic 的完整地址；正文为文本、`Title` 请求头为标题，非 ASCII 标题用 RFC 2047 UTF-8 编码 | [发送消息文档](https://docs.ntfy.sh/publish/) |
+
+文档核对日期：2026-10-11；企业微信官网当日无法读取，其格式未获在线再次确认。
+所有渠道均标「未评估」：只按公开文档实现格式、用本机 `Bun.serve` 检查请求，
+没有向真实通知服务发请求，不代表已验证真实设备/群的送达。飞书的签名校验等额外配置
+不在这一版渠道字段内。
+
+地址只允许 HTTPS，回环地址允许 HTTP；拒绝 URL 用户名/密码与片段。不跟随重定向，
+每次尝试 10 秒超时（包含响应读取），响应只读前 4 KiB 后取消流，不把响应正文或网络异常
+原文写进日志。首次失败最多重试 3 次，间隔 2 秒、8 秒、30 秒（共最多 4 次尝试）。
+外部服务可能在成功后丢回执，重试无法承诺通知恰好送达一次。
+
+### §12.3 API
+
+写请求先检查角色和方法，再检查端口是否接入、调用 `admit`，由宿主验证 JSON 字段。
+角色拒绝不调用端口；cookie 凭据遵循既有控制台请求头保护。端口缺席返回 501；
+`invalid/rejected` 为 400、`refused` 为 403、`not_found` 为 404、`unreachable` 为 503。
+
+| 方法 | 路由 | 角色 | 返回 |
+|---|---|---|---|
+| GET | `/v0/schedules` | view 及以上 | `SchedulesSnapshot` |
+| POST | `/v0/schedules` | member/ops 或管理令牌 | 保存后的 `ScheduleView`，有 `id` 为修改 |
+| POST | `/v0/schedules/<id>/enable` | member/ops 或管理令牌 | `ScheduleView` |
+| POST | `/v0/schedules/<id>/disable` | member/ops 或管理令牌 | `ScheduleView` |
+| POST | `/v0/schedules/<id>/run` | member/ops 或管理令牌 | 新建的 `ScheduleRunView`（立即返回，在后台执行） |
+| DELETE | `/v0/schedules/<id>` | member/ops 或管理令牌 | 204 |
+| POST | `/v0/channels` | ops 或管理令牌 | `NotifyChannelView`；新建必须有 `url`，修改可省略以保留 |
+| DELETE | `/v0/channels/<id>` | ops 或管理令牌 | 204；被引用时拒绝 |
+| POST | `/v0/channels/<id>/test` | ops 或管理令牌 | 测试成功后的 `NotifyChannelView`；失败 503 |

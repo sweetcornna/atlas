@@ -23,6 +23,7 @@ import { StaticPublicKeyDirectory } from '@qianmo/capability'
 import { qianmoConfigPath } from '@qianmo/paths'
 import { loadOrCreateNodeKeys } from '../host/nodeIdentity.js'
 import { ConsoleApprovals } from './consoleApprovals.js'
+import { ConsoleSchedules } from './consoleSchedules.js'
 import { loadConsoleApproverIdentity } from './consoleApproverIdentity.js'
 import { readTrustAnchors } from '../host/trustAnchors.js'
 import { sourceCommit } from '../provenance.js'
@@ -564,6 +565,18 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   const approvalIdentity = config.approvals
     ? loadConsoleApproverIdentity(config.chatFrom)
     : undefined
+  if (config.schedules && chat.hub === undefined)
+    throw new Error('--schedules needs an active chat face with a usable PSK')
+  const schedules =
+    config.schedules && chat.hub
+      ? new ConsoleSchedules({
+          directory: qianmoConfigPath('qianmo', 'console', 'schedules'),
+          estopPath: qianmoConfigPath('qianmo', 'scheduler', 'ESTOP'),
+          chat: chat.hub,
+          ...(actions === undefined ? {} : { actions }),
+          onError: message => process.stderr.write(`[schedules] ${message}\n`),
+        })
+      : undefined
   const approvals =
     approvalIdentity === undefined || accounts === undefined
       ? undefined
@@ -636,6 +649,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
 
   const deps: ConsoleDeps = {
+    ...(schedules === undefined ? {} : { schedules }),
     ...(approvals === undefined ? {} : { approvals }),
     ...(usage === undefined ? {} : { usage }),
     ...(tenancy === undefined ? {} : { tenancy }),
@@ -731,6 +745,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   providers?.start()
   // And no task goes to a node from a console that never came up (P17.5).
   handoff?.start()
+  schedules?.start()
 
   const origin = httpOrigin(config.hostname, handle.port)
   // token 是自己生成的才回显：显式提供的那一个已经在操作者手里，把它再打进
@@ -792,6 +807,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     )
   }
   banner += field('chat', chat.status)
+  if (schedules)
+    banner += field('schedules', 'enabled (notification channels: unevaluated)')
   if (chat.hub !== undefined) {
     banner += field('chat-store', config.chatStorePath)
   }
@@ -892,6 +909,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         )
 
   const stop = (): void => {
+    schedules?.close()
     usageCollection?.stop()
     void approvals?.close()
     // Leases already granted run out on their own; the ledger stays, so the
