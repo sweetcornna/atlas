@@ -1298,6 +1298,20 @@ export class QianmoResident {
     }
 
     if (
+      message.type === MessageType.NodeControlResult ||
+      message.type === MessageType.HubCall
+    ) {
+      context.channel.send(
+        errorReply(
+          message,
+          ProtocolErrorCode.E_BAD_TYPE,
+          'control message direction refused',
+        ),
+      )
+      return
+    }
+
+    if (
       message.type === MessageType.NodeControl ||
       message.type === MessageType.HubSubscribe ||
       message.type === MessageType.HubCallResult
@@ -2585,7 +2599,6 @@ export class QianmoResident {
     const transport = startTransportServer({
       supportedTypes: [
         ...LEGACY_MESSAGE_TYPES,
-        MessageType.Notify,
         MessageType.AuthzRequest,
         MessageType.AuthzDecision,
         MessageType.AuthzRevoke,

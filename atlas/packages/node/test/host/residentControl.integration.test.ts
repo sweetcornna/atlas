@@ -19,6 +19,7 @@ import {
   type QianmoMessage,
 } from '@qianmo/protocol'
 import { TransportClient } from '@qianmo/transport'
+import { readMailbox } from '@qianmo/mailbox'
 import { ControlLinks } from '../../src/commands/consoleControl.js'
 import { QianmoResident } from '../../src/host/resident.js'
 import { ResidentOmpHarness } from '../../../../tests/integration/fixtures/resident-omp-harness.js'
@@ -268,6 +269,30 @@ test('signed hub and real resident complete control, upstream and appended omp t
         result.includes('Resident host could not complete this tool'),
       ),
     ).toBe(true)
+
+    for (const type of [MessageType.NodeControlResult, MessageType.HubCall]) {
+      const wrongDirection = createMessage({
+        from: 'qianmo://hub/operator',
+        to: 'qianmo://worker/main',
+        type,
+        payload:
+          type === MessageType.NodeControlResult
+            ? { ok: true, value: 'wrong-direction-no-mailbox' }
+            : {
+                callId: crypto.randomUUID(),
+                op: 'connector.read',
+                args: { marker: 'wrong-direction-no-mailbox' },
+              },
+      })
+      await raw.sendAndWait(wrongDirection, 5_000)
+      expect(
+        received.find(message => message.taskId === wrongDirection.taskId)
+          ?.payload,
+      ).toMatchObject({ code: ProtocolErrorCode.E_BAD_TYPE })
+    }
+    expect(JSON.stringify(readMailbox('nest', 'main'))).not.toContain(
+      'wrong-direction-no-mailbox',
+    )
 
     const outsider = new TransportClient({
       endpoint: { url: url! },

@@ -1135,7 +1135,7 @@ created ──> sent ──> delivered   （回执 Accepted / Duplicate）
 
 常驻节点新增 `--controller <中枢节点>=<公钥>`（可重复、同 `--trust` 的公钥格式），在 `qm resident --help` 的 Authorization 段说明。该选项自动开启必须签名的握手，仅向 L1 握手目录补充公钥；不加入 capability 目录或任务签发者信任集。重复 controller、本节点充当自己的 controller、与同名 trust 公钥冲突均拒绝启动。controllers、task trust、approvers 三个集合独立。
 
-节点在 authz 之后、邮箱之前截住控制面消息。授权用 `context.channel.authenticatedPeerNode`，同时要求 from 的节点段与握手身份一致、to 为本节点。不在 controllers 的对端得到 `error(E_CAP_INSUFFICIENT)`，不会打开模型轮次。该授权来自签名 channel 与显式 allowlist，因此不额外要求 capability token，也不改变 `OPEN_POLICY` / `SIGNED_TASK_POLICY` 的任务策略。
+节点在 authz 之后、邮箱之前截住控制面消息。授权用 `context.channel.authenticatedPeerNode`，同时要求 from 的节点段与握手身份一致、to 为本节点。不在 controllers 的对端得到 `error(E_CAP_INSUFFICIENT)`，不会打开模型轮次。发给节点的 `hub.call` / `node.control.result` 方向错误，回 `E_BAD_TYPE`，不进入邮箱。该授权来自签名 channel 与显式 allowlist，因此不额外要求 capability token，也不改变 `OPEN_POLICY` / `SIGNED_TASK_POLICY` 的任务策略。
 
 中枢上行处理器的 `{node, agent?}` 中，node 来自握手身份，agent 来自该身份所发信封的 from 智能体段；args 中的 node/agent 不构成身份。节点宿主默认从 `qianmo://<节点>/console` 发出（agent 缺席），功能宿主工具可用 `hubCall.call(op, args, {agent: ctx.agent})` 归属当前主智能体。常驻控制 handler 的可选 ctx.agent 来自明确寻址的本节点智能体；默认控制地址为 `/console`，功能参数中的 agent 由该模块验证。
 
