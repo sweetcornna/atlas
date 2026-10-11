@@ -13,6 +13,7 @@ import {
   readFileSync,
   renameSync,
   statSync,
+  lstatSync,
   unlinkSync,
   writeSync,
 } from 'node:fs'
@@ -132,15 +133,31 @@ export type PrivateInstanceLock = { owned(): boolean; release(): void }
 export function acquireApplyLock(
   now: Date = new Date(),
 ): PrivateInstanceLock | null {
-  return acquirePrivateInstanceLock(providerPaths.lock(), now)
+  return acquirePrivateLock(providerPaths.lock(), { now })
 }
 
-/** Same PID/nonce O_EXCL protocol for other private state directories. */
+/**
+ * A lock held for a process's lifetime (the schedules instance lock): a live
+ * PID/nonce never expires.
+ */
 export function acquirePrivateInstanceLock(
   path: string,
   now: Date = new Date(),
 ): PrivateInstanceLock | null {
+  return acquirePrivateLock(path, { now })
+}
+
+/**
+ * Shared PID/nonce `O_EXCL` lock for private state directories. `maxAgeMs`
+ * is for short operation locks (routing saves, video staging): expiry bounds
+ * recovery even after PID reuse.
+ */
+export function acquirePrivateLock(
+  path: string,
+  options: { now?: Date; maxAgeMs?: number } = {},
+): PrivateInstanceLock | null {
   ensurePrivateDir(dirname(path))
+  const now = options.now ?? new Date()
   const record: LockRecord = {
     pid: process.pid,
     at: now.toISOString(),
@@ -174,7 +191,19 @@ export function acquirePrivateInstanceLock(
       }
     } catch (error) {
       if (!isErrno(error, 'EEXIST')) throw error
-      if (attempt > 0 || !isStaleLock(path)) return null
+      const before = lstatSync(path)
+      const stale = readTextIfExists(path)
+      if (attempt > 0 || !isStaleLock(path, now.getTime(), options.maxAgeMs))
+        return null
+      // Recheck identity and bytes before reclaiming a lock another writer may
+      // have replaced. The state directory is host-only, not agent-writable.
+      const after = lstatSync(path)
+      if (
+        before.ino !== after.ino ||
+        before.dev !== after.dev ||
+        readTextIfExists(path) !== stale
+      )
+        return null
       removeIfExists(path)
     }
   }
@@ -184,12 +213,18 @@ export function acquirePrivateInstanceLock(
 /** How long an unreadable lock is presumed to be a holder mid-write. */
 const TORN_LOCK_GRACE_MS = 10_000
 
-function isStaleLock(path: string): boolean {
+function isStaleLock(
+  path: string,
+  now: number,
+  maxAgeMs = Number.POSITIVE_INFINITY,
+): boolean {
   const text = readTextIfExists(path)
   if (text === undefined) return true
   try {
     const parsed = JSON.parse(text) as Partial<LockRecord>
     if (typeof parsed.pid === 'number' && !isProcessAlive(parsed.pid))
+      return true
+    if (typeof parsed.at === 'string' && now - Date.parse(parsed.at) > maxAgeMs)
       return true
     if (
       typeof parsed.pid === 'number' &&
@@ -200,13 +235,14 @@ function isStaleLock(path: string): boolean {
     )
       return false
     // Missing/malformed identity may be a holder mid-write; reclaim only
-    // after the grace period. A valid live PID/nonce never expires.
+    // after the grace period. A valid live PID/nonce expires only past
+    // `maxAgeMs`, which instance locks leave infinite.
     return Date.now() - statSync(path).mtimeMs > TORN_LOCK_GRACE_MS
   } catch {
     // Unreadable: either a holder between open() and write(), or a torn
     // write from a crashed one. Only age tells them apart.
     try {
-      return Date.now() - statSync(path).mtimeMs > TORN_LOCK_GRACE_MS
+      return now - statSync(path).mtimeMs > TORN_LOCK_GRACE_MS
     } catch (error) {
       return isMissing(error)
     }

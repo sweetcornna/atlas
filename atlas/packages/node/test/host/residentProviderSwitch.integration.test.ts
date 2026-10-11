@@ -681,7 +681,7 @@ describe('resident hot switch against real omp RPC', () => {
   )
 })
 
-test('an explicit model pin is replaced by committed selection on reopening the same transcript', async () => {
+test('manual pins survive default changes, clear with model auto, and refuse a retired model', async () => {
   const node = setUpRoot('ResidentRuntime-pin-')
   const model = new ModelDouble('pinned')
   const { ResidentOmpPool } = await import('../../src/host/residentOmp.js')
@@ -720,15 +720,26 @@ test('an explicit model pin is replaced by committed selection on reopening the 
     )
     expect(one.outcome).toBe('completed')
     await first.stop()
-    stage(
-      chatProfile({
-        baseUrl: model.baseUrl,
-        model: 'hs-model-e',
-        key: KEY_D,
-        revision: 2,
-      }),
-      'keep',
-    )
+    const changed = chatProfile({
+      baseUrl: model.baseUrl,
+      model: 'hs-model-e',
+      key: KEY_D,
+      revision: 2,
+    })
+    // The default changed, but the manually chosen model remains available.
+    // Removing it is a separate provider retirement, not permission to erase
+    // the session's choice by changing the default.
+    changed.models = [
+      ...(changed.models as readonly Record<string, unknown>[]),
+      {
+        id: 'hs-model-d',
+        role: 'extra',
+        tiers: [],
+        capabilities: { mode: 'family' },
+        effort: { send: 'auto' },
+      },
+    ]
+    stage(changed, 'keep')
     expect((await providerNode.commitPendingProviderConfig()).status).toBe(
       'committed',
     )
@@ -741,7 +752,48 @@ test('an explicit model pin is replaced by committed selection on reopening the 
     expect(two.outcome).toBe('completed')
     const [turn] = model.turnsWith('HSM-TWO')
     expect(turn?.text).toContain('HSM-ONE')
-    expect(turn?.model).toBe('hs-model-e')
+    expect(turn?.model).toBe('hs-model-d')
+    await (await next.channelFor(sessionId)).prompt({
+      messageId: 'pin-auto',
+      text: '/model auto',
+    })
+    await next.stop()
+    const automatic = makePool()
+    pools.push(automatic)
+    const three = await new OmpResidentTurnPort(automatic).execute(
+      { sessionId, messageId: 'pin-three', prompt: 'Marker HSM-THREE' },
+      async () => {},
+    )
+    expect(three.outcome).toBe('completed')
+    const [automaticTurn] = model.turnsWith('HSM-THREE')
+    expect(automaticTurn?.model).toBe('hs-model-e')
+    expect(automaticTurn?.text).toContain('HSM-ONE')
+    expect(automaticTurn?.text).toContain('HSM-TWO')
+    await (await automatic.channelFor(sessionId)).request('set_model', {
+      provider: providerNode.nodeModelSelection()!.provider,
+      modelId: 'hs-model-d',
+    })
+    await automatic.stop()
+    stage(
+      chatProfile({
+        baseUrl: model.baseUrl,
+        model: 'hs-model-e',
+        key: KEY_D,
+        revision: 3,
+      }),
+      'keep',
+    )
+    expect((await providerNode.commitPendingProviderConfig()).status).toBe(
+      'committed',
+    )
+    const retired = makePool()
+    pools.push(retired)
+    // Keep the old repro (the pin disappears from the provider directory),
+    // but enforce the new contract: surface unavailability, never switch it
+    // to a different model without the user's explicit clearance.
+    await expect(retired.channelFor(sessionId)).rejects.toThrow(
+      'Model not found',
+    )
   } finally {
     await Promise.all(pools.map(pool => pool.stop()))
     await model.stop()

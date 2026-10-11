@@ -2340,7 +2340,7 @@ IPv4 映射/兼容 IPv6 按嵌入 IPv4 判断，IP 字面量同等处理。仅�
 | PUT `/v0/routing` | ops 或管理令牌 | `{node:null或节点名, auto, routes:[{direction,profileId,modelId}], revision}`；局部更新，revision 失配 rejected |
 | DELETE `/v0/routing/nodes/<node>` | ops 或管理令牌 | 清除节点覆盖并跟随默认 |
 
-写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
+写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。路由簿写锁记录 PID、随机 nonce 与时间：活持有者拒绝并发写入，PID 消失或超过 5 分钟时回收，释放只删除仍匹配自身令牌的锁。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
 
 
 ## 长期记忆（P23）

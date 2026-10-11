@@ -1,13 +1,23 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { expect, test } from 'bun:test'
+import { expect, test, spyOn } from 'bun:test'
+import * as fs from 'node:fs'
+import * as asyncFs from 'node:fs/promises'
+import * as path from 'node:path'
+import { isolatedRoot } from '../providers/fake.js'
+import { providerPaths, writePrivateJson } from '../../src/providers/store.js'
+import type { VideoLimits } from '../../src/host/videoSave.js'
 import type {
   VideoJob,
   VideoGenerationRequest,
   VideoContent,
 } from '@oh-my-pi/pi-ai/video'
-import { generateVideo, type VideoClient } from '../../src/host/videoTool.js'
+import {
+  generateVideo,
+  runVideoTool,
+  type VideoClient,
+} from '../../src/host/videoTool.js'
 function fake(
   statuses: VideoJob['status'][] = ['pending', 'processing', 'completed'],
 ) {
@@ -182,5 +192,277 @@ test('poll, download and write failures identify the failing phase and keep priv
             : '视频文件写入失败',
     })
     expect(f.saved).toEqual([])
+  }
+})
+
+const mp4 = new Uint8Array(96)
+mp4.set([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109])
+function videoSetup(limits: Partial<VideoLimits> = {}) {
+  const f = isolatedRoot()
+  const workspace = path.join(f.root, 'workspace')
+  const outside = path.join(f.root, 'outside')
+  fs.mkdirSync(workspace)
+  fs.mkdirSync(outside)
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch(request) {
+      if (new URL(request.url).pathname.endsWith('/content'))
+        return new Response(mp4, { headers: { 'content-type': 'video/mp4' } })
+      return Response.json({ id: 'video-job', status: 'completed' })
+    },
+  })
+  writePrivateJson(providerPaths.config(), {
+    modelRoles: { video: 'fake-video/video:off' },
+    qianmoVideoLimits: limits,
+  })
+  writePrivateJson(providerPaths.models(), {
+    providers: {
+      'fake-video': {
+        api: 'openrouter-video',
+        apiKey: 'test-no-secret',
+        baseUrl: `http://127.0.0.1:${server.port}`,
+        models: [{ id: 'video', api: 'openrouter-video' }],
+      },
+    },
+  })
+  return {
+    workspace,
+    outside,
+    staging: path.join(f.root, 'resident', 'video-staging'),
+    dispose: async () => {
+      await server.stop(true)
+      f.dispose()
+    },
+  }
+}
+test('production runVideoTool stages, validates and commits an MP4 through the real HTTP client', async () => {
+  const f = videoSetup()
+  try {
+    const result = await runVideoTool(f.workspace, { prompt: 'tree' })
+    if (!result.ok) throw new Error(result.error)
+    expect(
+      new Uint8Array(
+        await Bun.file(path.join(f.workspace, result.path)).arrayBuffer(),
+      ),
+    ).toEqual(mp4)
+    expect(fs.readdirSync(f.staging)).toEqual([])
+    expect(fs.statSync(path.join(f.workspace, result.path)).mode & 0o777).toBe(
+      0o600,
+    )
+  } finally {
+    await f.dispose()
+  }
+})
+for (const swapped of ['outputs', 'videos'])
+  test(`production runVideoTool rejects ${swapped} replaced by an outside symlink immediately before file open`, async () => {
+    const f = videoSetup()
+    if (swapped === 'outputs') fs.mkdirSync(path.join(f.outside, 'videos'))
+    const original = asyncFs.open
+    let attacked = false
+    const spy = spyOn(asyncFs, 'open').mockImplementation(
+      async (target, flags, mode) => {
+        if (!attacked && String(target).endsWith('.mp4')) {
+          attacked = true
+          const parent = path.join(
+            f.workspace,
+            'outputs',
+            ...(swapped === 'videos' ? ['videos'] : []),
+          )
+          fs.renameSync(parent, `${parent}-old`)
+          fs.symlinkSync(f.outside, parent)
+        }
+        return await original(target, flags, mode)
+      },
+    )
+    try {
+      const result = await runVideoTool(f.workspace, { prompt: 'tree' })
+      expect(attacked).toBe(true)
+      expect(result).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('视频输出'),
+      })
+      expect(
+        fs.readdirSync(
+          swapped === 'outputs' ? path.join(f.outside, 'videos') : f.outside,
+        ),
+      ).toEqual([])
+      expect(fs.readdirSync(f.staging)).toEqual([])
+      const old =
+        swapped === 'videos'
+          ? path.join(f.workspace, 'outputs', 'videos-old')
+          : path.join(f.workspace, 'outputs-old', 'videos')
+      expect(fs.readdirSync(old)).toEqual([])
+    } finally {
+      spy.mockRestore()
+      await f.dispose()
+    }
+  })
+test('production runVideoTool counts bytes rather than Content-Length, cancels an over-limit stream and removes its partial', async () => {
+  const f = videoSetup({ maxFileBytes: 64 })
+  let cancelled = false
+  let chunks = 0
+  const client: VideoClient = {
+    async submit() {
+      return { id: 'job', status: 'completed' }
+    },
+    async poll() {
+      throw new Error('must not poll')
+    },
+    async download() {
+      return {
+        contentType: 'video/mp4',
+        contentLength: 1,
+        body: new ReadableStream<Uint8Array>({
+          pull(controller) {
+            chunks++
+            controller.enqueue(mp4.subarray(0, 32))
+          },
+          cancel() {
+            cancelled = true
+          },
+        }),
+      }
+    },
+  }
+  try {
+    const result = await runVideoTool(
+      f.workspace,
+      { prompt: 'tree' },
+      undefined,
+      undefined,
+      { client },
+    )
+    expect(result).toEqual({
+      ok: false,
+      error: '视频下载超过单文件上限（64 字节）',
+    })
+    expect(cancelled).toBe(true)
+    expect(chunks).toBeLessThanOrEqual(4)
+    expect(fs.readdirSync(f.staging)).toEqual([])
+    expect(fs.existsSync(path.join(f.workspace, 'outputs'))).toBe(false)
+  } finally {
+    await f.dispose()
+  }
+})
+for (const [limits, label] of [
+  [{ maxCallBytes: 64 }, '单次调用'],
+  [{ maxStagingBytes: 100 }, '节点暂存总量'],
+] as const)
+  test(`production runVideoTool enforces ${label} budget and retains unrelated staged data`, async () => {
+    const f = videoSetup(limits)
+    try {
+      if (label === '节点暂存总量') {
+        fs.mkdirSync(f.staging, { recursive: true, mode: 0o700 })
+        fs.writeFileSync(
+          path.join(f.staging, 'orphan.part'),
+          new Uint8Array(16),
+        )
+      }
+      const result = await runVideoTool(f.workspace, { prompt: 'tree' })
+      expect(result).toMatchObject({
+        ok: false,
+        error: expect.stringContaining(`${label}上限`),
+      })
+      expect(fs.readdirSync(f.staging)).toEqual(
+        label === '节点暂存总量' ? ['orphan.part'] : [],
+      )
+      expect(fs.existsSync(path.join(f.workspace, 'outputs'))).toBe(false)
+    } finally {
+      await f.dispose()
+    }
+  })
+test('production runVideoTool rejects a fake MP4 header, invalid limits and pre-existing output symlinks', async () => {
+  const f = videoSetup()
+  const client: VideoClient = {
+    async submit() {
+      return { id: 'job', status: 'completed' }
+    },
+    async poll() {
+      throw new Error('must not poll')
+    },
+    async download() {
+      return {
+        contentType: 'video/mp4',
+        body: new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(new Uint8Array(16))
+            c.close()
+          },
+        }),
+      }
+    },
+  }
+  try {
+    expect(
+      await runVideoTool(
+        f.workspace,
+        { prompt: 'tree' },
+        undefined,
+        undefined,
+        { client },
+      ),
+    ).toEqual({ ok: false, error: '视频下载缺少有效 MP4 文件头' })
+    expect(fs.readdirSync(f.staging)).toEqual([])
+    fs.symlinkSync(f.outside, path.join(f.workspace, 'outputs'))
+    expect((await runVideoTool(f.workspace, { prompt: 'tree' })).ok).toBe(false)
+    expect(fs.readdirSync(f.outside)).toEqual([])
+    writePrivateJson(providerPaths.config(), {
+      modelRoles: { video: 'fake-video/video:off' },
+      qianmoVideoLimits: { maxFileBytes: -1 },
+    })
+    expect(await runVideoTool(f.workspace, { prompt: 'tree' })).toEqual({
+      ok: false,
+      error: '视频保存上限配置不合法',
+    })
+  } finally {
+    await f.dispose()
+  }
+})
+
+test('production runVideoTool rejects staging inside another configured agent workspace and cancels the admitted download', async () => {
+  const f = videoSetup()
+  let cancelled = false
+  const client: VideoClient = {
+    async submit() {
+      return { id: 'job', status: 'completed' }
+    },
+    async poll() {
+      throw new Error('must not poll')
+    },
+    async download() {
+      return {
+        contentType: 'video/mp4',
+        body: new ReadableStream<Uint8Array>({
+          pull(c) {
+            c.enqueue(mp4)
+          },
+          cancel() {
+            cancelled = true
+          },
+        }),
+      }
+    },
+  }
+  try {
+    const result = await runVideoTool(
+      f.workspace,
+      { prompt: 'tree' },
+      undefined,
+      undefined,
+      {
+        client,
+        workspaces: [f.workspace, path.dirname(path.dirname(f.staging))],
+      },
+    )
+    expect(result).toEqual({
+      ok: false,
+      error: '视频暂存目录不能位于智能体工作区内',
+    })
+    expect(cancelled).toBe(true)
+    expect(fs.readdirSync(f.staging)).toEqual([])
+    expect(fs.existsSync(path.join(f.workspace, 'outputs'))).toBe(false)
+  } finally {
+    await f.dispose()
   }
 })

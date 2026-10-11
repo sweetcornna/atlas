@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import * as fs from 'node:fs'
-import * as path from 'node:path'
 import type {
   ActionLedgerPort,
   ConsoleAuditSource,
@@ -22,7 +21,7 @@ import {
   type ProviderProfile,
 } from '@qianmo/providers'
 import {
-  ensurePrivateDir,
+  acquirePrivateLock,
   readTextIfExists,
   writePrivateJson,
 } from '../providers/store.js'
@@ -269,10 +268,12 @@ export class ConsoleRouting implements ModelRoutingPort {
     // writer as the 模型服务 book, a personal ops account.
     if (!(actor.role === 'ops' && actor.subject.startsWith('u:')))
       return rejected('需要运维角色的个人账号')
-    let fd: number | undefined
+    let lock: { release(): void } | null = null
     try {
-      ensurePrivateDir(path.dirname(this.#options.path))
-      fd = fs.openSync(`${this.#options.path}.lock`, 'wx', 0o600)
+      lock = acquirePrivateLock(`${this.#options.path}.lock`, {
+        maxAgeMs: 5 * 60_000,
+      })
+      if (!lock) throw new Error('routing book is busy')
       const fresh = this.#read()
       const result = change(fresh)
       if (result.ok) writePrivateJson(this.#options.path, fresh)
@@ -287,10 +288,7 @@ export class ConsoleRouting implements ModelRoutingPort {
       await this.#record(action, node ?? 'default', actor, 'failed')
       return rejected('路由簿写入失败或正被另一进程使用')
     } finally {
-      if (fd !== undefined) {
-        fs.closeSync(fd)
-        fs.unlinkSync(`${this.#options.path}.lock`)
-      }
+      lock?.release()
     }
   }
 }
