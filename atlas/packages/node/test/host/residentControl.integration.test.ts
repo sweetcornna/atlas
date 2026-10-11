@@ -21,6 +21,7 @@ import {
 import { TransportClient } from '@qianmo/transport'
 import { readMailbox } from '@qianmo/mailbox'
 import { ConsoleMemory } from '../../src/commands/consoleMemory.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 import { ControlLinks } from '../../src/commands/consoleControl.js'
 import { QianmoResident } from '../../src/host/resident.js'
 import { ResidentOmpHarness } from '../../../../tests/integration/fixtures/resident-omp-harness.js'
@@ -137,6 +138,18 @@ test('signed hub and real resident complete control, upstream and appended omp t
       },
     }
   })
+  let effects = 0
+  resident.control.register(
+    'effects',
+    async op => ({
+      ok: true,
+      value: op === 'effects.write' ? ++effects : effects,
+    }),
+    {
+      sideEffects: op => op === 'effects.write',
+      estopAllowed: ['effects.inspect'],
+    },
+  )
   const running = resident.run()
   const clients: TransportClient[] = []
   let hub: ControlLinks | undefined
@@ -215,6 +228,44 @@ test('signed hub and real resident complete control, upstream and appended omp t
         'legacy:admin',
       ),
     ).toMatchObject({ ok: false, code: 'invalid' })
+    const operationId = crypto.randomUUID()
+    expect(
+      await hub.request('worker', 'effects.write', { a: 1 }, 'admin', {
+        operationId,
+      }),
+    ).toEqual({ ok: true, value: 1 })
+    expect(
+      await hub.request('worker', 'effects.write', { a: 1 }, 'admin', {
+        operationId,
+      }),
+    ).toEqual({ ok: true, value: 1 })
+    expect(
+      await hub.request('worker', 'effects.write', { a: 2 }, 'admin', {
+        operationId,
+      }),
+    ).toMatchObject({ ok: false, code: 'invalid' })
+    const sentinel = qianmoConfigPath('resident', 'ESTOP')
+    fs.mkdirSync(path.dirname(sentinel), { recursive: true })
+    fs.writeFileSync(sentinel, 'fixture stop')
+    expect(
+      await hub.request('worker', 'effects.write', {}, 'admin'),
+    ).toMatchObject({ ok: false, code: ProtocolErrorCode.E_BUSY })
+    expect(await hub.request('worker', 'test.add', {}, 'admin')).toMatchObject({
+      ok: false,
+      code: ProtocolErrorCode.E_BUSY,
+    })
+    expect(effects).toBe(1)
+    expect(await hub.request('worker', 'effects.inspect', {}, 'admin')).toEqual(
+      { ok: true, value: 1 },
+    )
+    expect(await hub.request('worker', 'node.ping', {}, 'admin')).toMatchObject(
+      { ok: true },
+    )
+    fs.renameSync(sentinel, `${sentinel}.disabled`)
+    expect(await hub.request('worker', 'effects.write', {}, 'admin')).toEqual({
+      ok: true,
+      value: 2,
+    })
     const control = await hub.request(
       'worker',
       'test.add',
@@ -278,7 +329,7 @@ test('signed hub and real resident complete control, upstream and appended omp t
     ).toMatchObject({ ok: false, code: 'internal' })
     expect(
       await hub.request('worker', 'test.slow', {}, 'admin', { timeoutMs: 10 }),
-    ).toMatchObject({ ok: false, code: 'timeout' })
+    ).toMatchObject({ ok: false, code: 'unknown' })
     expect(
       await resident.hubCall.call(
         'connector.search',
@@ -286,7 +337,7 @@ test('signed hub and real resident complete control, upstream and appended omp t
         { agent: 'main' },
       ),
     ).toEqual({ ok: true, value: 'worker/main/hello' })
-    expect(calls[0]).toEqual({ node: 'worker', agent: 'main' })
+    expect(calls[0]).toMatchObject({ node: 'worker', agent: 'main' })
     expect(await resident.hubCall.call('files.request', {})).toMatchObject({
       ok: false,
       code: 'unsupported',
@@ -297,7 +348,7 @@ test('signed hub and real resident complete control, upstream and appended omp t
     })
     expect(
       await resident.hubCall.call('connector.slow', {}, { timeoutMs: 10 }),
-    ).toMatchObject({ ok: false, code: 'timeout' })
+    ).toMatchObject({ ok: false, code: 'unknown' })
 
     // Listener readiness is intentionally earlier than model-runtime readiness.
     // Control works during that gap; the host-tool turn waits for the real child.
@@ -485,7 +536,7 @@ test('signed hub and real resident complete control, upstream and appended omp t
     await hub.close()
     expect(await outstanding).toMatchObject({
       ok: false,
-      code: 'hub-unavailable',
+      code: 'unknown',
     })
     expect(
       await resident.hubCall.call('connector.search', {

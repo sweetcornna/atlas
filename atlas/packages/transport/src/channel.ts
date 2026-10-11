@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { MessageType, QianmoMessage } from '@qianmo/protocol'
-import type { SuccessfulReceiptStatus } from './outbox.js'
+import type { OnceDelivery, SuccessfulReceiptStatus } from './outbox.js'
 
 /** Send side of one authenticated logical transport channel. */
 export interface TransportChannel {
@@ -19,6 +19,9 @@ export interface TransportChannel {
    * dialer — so check the implementation before doing likewise.
    */
   readonly id: string
+  /** Fresh UUID at each successful authentication; null while disconnected.
+   * Optional for pre-control adapters, which cannot carry control calls. */
+  readonly connectionGeneration?: string | null
   /** Authenticated audit label when known; not an authorization identity. */
   readonly peerNode: string | null
   /** Name proven by a node-specific signing key; PSK claims are never identities. */
@@ -51,6 +54,7 @@ export interface TransportChannel {
   isReady(): boolean
   isClosed(): boolean
   send(message: QianmoMessage): void
+  sendOnce?(message: QianmoMessage, timeoutMs?: number): OnceDelivery
   sendAndWait(
     message: QianmoMessage,
     timeoutMs?: number,
@@ -65,6 +69,8 @@ export interface InboundContext {
   readonly peerNode: string | null
   readonly receivedAt: number
   readonly channel: TransportChannel
+  /** Snapshot of the physical connection, never read back from a rebound channel. */
+  readonly connectionGeneration?: string | null
 }
 
 /** Application handler on either endpoint of a bidirectional channel. */

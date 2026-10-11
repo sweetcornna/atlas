@@ -750,7 +750,10 @@ export class NodeFiles {
     return run
   }
   register(registry: ControlRegistry): void {
-    registry.register('files', (op, args, ctx) => this.handle(op, args, ctx))
+    // Under ESTOP only the abort that cleans staging may run (P20 §3.3).
+    registry.register('files', (op, args, ctx) => this.handle(op, args, ctx), {
+      estopAllowed: ['files.abort'],
+    })
   }
   tool(): HostToolDefinition {
     return {

@@ -13,13 +13,25 @@ export const CONTROL_MESSAGE_TYPES: readonly MessageType[] = Object.freeze([
   MessageType.HubCallResult,
 ])
 
+/** Capability token, not a message type. Legacy peers ignore unknown tokens. */
+export const CONTROL_OPERATION_ID_CAPABILITY = 'control.operation-id'
+
 export interface NodeControlPayload {
   readonly op: string
   readonly args: Record<string, unknown>
   readonly actor: string
+  readonly operationId?: string
+}
+
+/** The request may have executed: callers must retain the operation id and reconcile. */
+export interface ControlUnknownOutcome {
+  readonly ok: false
+  readonly code: 'unknown'
+  readonly message: string
 }
 
 export type ControlOutcome =
+  | ControlUnknownOutcome
   | { readonly ok: true; readonly value: unknown }
   | { readonly ok: false; readonly code: string; readonly message: string }
 
@@ -31,6 +43,7 @@ export interface HubCallPayload {
   readonly callId: string
   readonly op: string
   readonly args: Record<string, unknown>
+  readonly operationId?: string
 }
 
 export type HubCallResultPayload = ControlOutcome & { readonly callId: string }
@@ -38,6 +51,23 @@ export type HubCallResultPayload = ControlOutcome & { readonly callId: string }
 const OP_PATTERN = /^[a-z][a-z0-9]*(\.[a-z][a-z0-9-]*)+$/
 const UUID_PATTERN =
   /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
+
+export function isOperationId(value: unknown): value is string {
+  return typeof value === 'string' && UUID_PATTERN.test(value)
+}
+
+function requestKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+): boolean {
+  return (
+    keys(value, [
+      ...required,
+      ...(value.operationId === undefined ? [] : ['operationId']),
+    ]) &&
+    (value.operationId === undefined || isOperationId(value.operationId))
+  )
+}
 
 export function isControlOp(value: unknown): value is string {
   return (
@@ -67,7 +97,7 @@ export function isNodeControlPayload(
 ): value is NodeControlPayload {
   return (
     object(value) &&
-    keys(value, ['op', 'args', 'actor']) &&
+    requestKeys(value, ['op', 'args', 'actor']) &&
     isControlOp(value.op) &&
     object(value.args) &&
     typeof value.actor === 'string' &&
@@ -102,7 +132,7 @@ export function isHubSubscribePayload(
 export function isHubCallPayload(value: unknown): value is HubCallPayload {
   return (
     object(value) &&
-    keys(value, ['callId', 'op', 'args']) &&
+    requestKeys(value, ['callId', 'op', 'args']) &&
     typeof value.callId === 'string' &&
     UUID_PATTERN.test(value.callId) &&
     isControlOp(value.op) &&

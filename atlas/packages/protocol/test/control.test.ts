@@ -9,6 +9,7 @@ import {
   MessageType,
   createMessage,
   isControlOp,
+  isOperationId,
   isHubCallPayload,
   isHubCallResultPayload,
   isHubSubscribePayload,
@@ -49,6 +50,37 @@ const cases = [
 ] as const
 
 describe('control wire payloads (§15)', () => {
+  test('optional operation ids validate without breaking legacy request shapes', () => {
+    for (const payload of [
+      { op: 'files.write', args: {}, actor: 'admin' },
+      { callId, op: 'files.request', args: {} },
+    ]) {
+      const check = 'actor' in payload ? isNodeControlPayload : isHubCallPayload
+      expect(check(payload)).toBe(true)
+      expect(check({ ...payload, operationId: callId })).toBe(true)
+      expect(check({ ...payload, operationId: 'invalid' })).toBe(false)
+      expect(check({ ...payload, operationId: callId, unknown: true })).toBe(
+        false,
+      )
+    }
+    expect(isOperationId(callId)).toBe(true)
+    expect(isOperationId('')).toBe(false)
+    expect(
+      isNodeControlResultPayload({
+        ok: false,
+        code: 'unknown',
+        message: 'may have executed',
+      }),
+    ).toBe(true)
+    expect(
+      isHubCallResultPayload({
+        callId,
+        ok: false,
+        code: 'not-sent',
+        message: 'withdrawn',
+      }),
+    ).toBe(true)
+  })
   for (const row of cases) {
     test(`${row.type}: valid payload crosses validation; missing or unknown fields are refused`, () => {
       const envelope = (payload: unknown) =>

@@ -1111,7 +1111,7 @@ created ──> sent ──> delivered   （回执 Accepted / Duplicate）
 >
 > **「一条回复都没有」说的是被收下的 `wake`，不是被拒的（issue #34）。**被拒的 `wake` 现在回一条 `error` 信封，`#receive` 对**所有**非 task 类型都补（`error` 自身除外，理由是不给退信回退信）。这不是给 `wake` 补 ack：ack 断言的是「输入已进入模型输入」，而这条信封断言的恰恰是它**没有**进入——两者一个是 A 类回执一个是拒绝，`taskId` 后面依旧没有任务状态机。发送方那三件事因此一件都没提前发生：`executeResidentWake` 的 `onMessage` 只收 `error`（issue #29 补的），连接照旧在回执处关闭。
 
-## 15. 控制链路与上行调用（S0）
+## 15. 控制链路与上行调用（S0 / FX2）
 
 控制链路由中枢主动拨到常驻节点，控制请求与节点宿主的上行调用共用这一条双向 channel。节点不拨号（H-2）、不为上行请求建离线队列；JSON 信封仍受 `LIMITS.maxMessageBytes` 的 256 KiB 上限约束。本节包含 **5 个**枚举成员（两个请求/结果对与一个订阅），设计稿中的「四个类型」按这张完整表解释。
 
@@ -1119,15 +1119,17 @@ created ──> sent ──> delivered   （回执 Accepted / Duplicate）
 
 | 类型 | 谁发给谁 | 字段封闭的载荷 | reply |
 |---|---|---|---|
-| `node.control` | 已授权中枢 → 节点 | `{op: string, args: object, actor: string}` | 否 |
+| `node.control` | 已授权中枢 → 节点 | `{op: string, args: object, actor: string, operationId?: UUID}` | 否 |
 | `node.control.result` | 节点 → 原中枢，同一 channel | `{ok: true, value: unknown}` 或 `{ok: false, code: string, message: string}` | 是；沿用请求 taskId |
 | `hub.subscribe` | 已授权中枢 → 节点 | `{subscribe: true}` | 否 |
-| `hub.call` | 节点宿主 → 最近订阅的中枢 | `{callId: UUID, op: string, args: object}` | 否；每次全新 taskId |
+| `hub.call` | 节点宿主 → 最近订阅的中枢 | `{callId: UUID, op: string, args: object, operationId?: UUID}` | 否；每次全新 taskId |
 | `hub.call.result` | 中枢 → 原节点，同一 channel | `{callId: UUID, ok: true, value: unknown}` 或 `{callId: UUID, ok: false, code: string, message: string}` | 是；沿用请求 taskId 与 callId |
 
 所有未知顶层载荷字段、混合的成功/失败字段、数组或 null 形式的 args 均拒绝。`op` 匹配 `^[a-z][a-z0-9]*(\.[a-z][a-z0-9-]*)+$`，不超过 `LIMITS.maxControlOpLength`（64）；`actor` 不超过 `LIMITS.maxControlActorLength`（128）。args 的内部字段归各功能模块验证；value 必须能通过 JSON 传输。callId 为 UUID 文本，宿主生成全新 UUID 并同时用作 taskId。
 
 5 个类型全部在握手的 supportedTypes 中显式声明，不属于 legacy floor；每次发送新类型前检查 `channel.supports()`。订阅要求对端声明完整控制面，旧节点不会收到试探性的控制消息。两个结果通过 `isReplyType` 豁免请求环路判定；subscribe/control/call 仍受路由节流与环路约束。
+
+FX2 不升信封/帧版本。握手的 supportedTypes 可另外声明能力标记 `control.operation-id`（不是新消息类型）；只有声明此能力的对端才收到可选 operationId，未声明的 S0 对端继续收到原来封闭的载荷。需要重试的业务应在首次调用前生成并保留 operationId，重试传同一个号；call/request 省略时为新操作生成。callId/taskId 仍标识单次调用，不能代替跨连接的业务操作号。旧节点不提供 FX2 的持久化幂等保证。
 
 ### 15.2 身份与授权
 
@@ -1143,17 +1145,21 @@ created ──> sent ──> delivered   （回执 Accepted / Duplicate）
 
 ### 15.3 分发、审计与生命周期
 
-`resident.control.register(prefix, handler)` 按 op 第一段唯一注册；重复或非法 prefix 抛错。handler 收到 `{peer, actor, taskId, agent?}`，返回 ControlOutcome。抛错或不可传输的结果转成 `internal`，异常仅送本地 onError 日志，不向对端发送堆栈或异常正文。内置 `node.ping` 返回 `{node, agents: [名字], version, platform, now}`。
+`resident.control.register(prefix, handler, options?)` 按 op 第一段唯一注册；重复或非法 prefix 抛错。handler 收到 `{peer, actor, taskId, agent?, operationId?}`，返回 ControlOutcome。options 的 `estopAllowed` 只允许本前缀拥有的完整操作名，急停时在处理器与账本前检查，默认全部拒绝并返回 `E_BUSY`。内置 `node.ping` 放行，返回 `{node, agents: [名字], version, platform, now}`。两参数注册继续有效。
+
+`sideEffects(op)` 声明哪些操作需要幂等账本；未声明的查询不入账。节点将 operationId、规范化参数/身份摘要、结果写入 `qianmoConfigPath('resident', node, 'control-operations.sqlite')`，数据库 0600、新目录 0700。执行前持久化 unknown 预留；相同号同参数回放结果，不同参数或身份返回 invalid；异常、崩溃或结果持久化失败后保持 unknown，不再次执行。保留 24 小时、最多 1024 条、结果总量 16 MiB、数据库上限 32 MiB；满额拒绝新操作，过期后回收。副作用操作缺有效 operationId 时拒绝；其余处理器异常仍转 internal，不发送异常正文。
 
 每条有效 node.control 的处理/拒绝均写 `AuditSource.Control` 一行，kind 为 `control.<op>`，outcome 为 ok/refused，关联 taskId/msgId/traceId，detail 只带 actor，**不记录 args 或结果正文**。中枢 ControlLinks 只提供诊断日志；各功能端口记录请求的动作账本。
 
-`hub.subscribe` 每个 controller 保留一条 channel，新 channel 替换旧 channel；多个 controller 时选最近订阅的可用 channel。断连回调清掉失效订阅及该 channel 的所有等待者；替换旧 channel 也结束其等待者。上行应答须同时匹配 callId、taskId、channel 和收发地址，迟到/串线应答不影响其他请求。无通道时立即返回「中枢未连接」，不排队、不自动重试调用。正在传输的信封仍遵循传输层已有的 at-least-once/dedup 契约；超时或断连不能证明远端操作未执行。
+`hub.subscribe` 每个 controller 保留一条 channel；多个 controller 时选最近订阅的可用 channel。每次成功认证的 socket 有不可变 UUID 代次，入站上下文保留快照。物理断线、替换 channel 或同一 channel 换代均结束旧等待者。上行应答须同时匹配 callId、taskId、channel、代次和收发地址，下行也校验 channel 与代次，迟到/串线应答不影响其他请求。无通道时立即返回「中枢未连接」。控制请求通过 sendOnce 跟踪 socket 写入；超时/断线时，未写入的撤下并回 not-sent，已写入的回 unknown，两者都不重放。其他消息继续沿用传输层的 at-least-once/dedup 契约。
 
-中枢每节点一条 TransportClient，首次连接与重连均发订阅；10 秒检查未连接的链路。`ControlLinks.request(node, op, args, actor, {timeoutMs})` 按 taskId 等结果；`onHubCall(prefix, handler)` 唯一注册上行处理器；`status()` 返回 `{node, connected, lastConnectedAt, lastError}[]`（后两项初始 null，时间为 epoch ms）。默认超时 30 秒，超时与 close 清理等待者，迟到结果忽略。
+中枢每节点一条 TransportClient，首次连接与重连均发订阅；10 秒检查未连接的链路。`ControlLinks.request(node, op, args, actor, {timeoutMs, operationId})` 按 taskId 等结果；`onHubCall(prefix, handler)` 唯一注册上行处理器，其上下文附带可选 operationId；`status()` 返回 `{node, connected, lastConnectedAt, lastError}[]`（后两项初始 null，时间为 epoch ms）。默认超时 30 秒，超时与 close 清理等待者，迟到结果忽略。
 
 功能模块可在 QianmoResident 的 `extraHostTools` 追加 `{name, description, parameters: JSON schema, handler(input, {agent, sessionId})}`；handler 返回 `{ok, text, details?}`。名称不可与内置/其他工具冲突。工具定义同步进入 extension 的 hostTools 和 omp 的 set_host_tools，分发按名字查表，无须再修改 residentOmp.ts；原有「仅主智能体」策略同样适用。
 
 ### 15.4 错误码
+
+传输拒收回执可能在处理器发生副作用后产生，因此没有业务应答时仍按发送状态归类，不能把回执拒收当作明确的业务失败。
 
 | code | 含义 |
 |---|---|
@@ -1162,8 +1168,10 @@ created ──> sent ──> delivered   （回执 Accepted / Duplicate）
 | `unsupported` | 未注册的功能前缀/操作，或对端不支持对应消息 |
 | `internal` | 功能处理器异常或结果不能传输；无堆栈/异常正文 |
 | `invalid` | 本地调用的 op、actor、智能体等参数非法 |
-| `unreachable` | 中枢到节点链路未连接、断开或传输未确认 |
-| `hub-unavailable` | 节点没有可用订阅、订阅被替换或通道断开；message 为「中枢未连接」 |
-| `timeout` | 规定时间内未收到操作结果；清理等待者 |
+| `unreachable` | 中枢到节点链路未连接，调用尚未发送 |
+| `hub-unavailable` | 节点没有可用订阅，调用尚未发送；message 为「中枢未连接」 |
+| `not-sent` | 超时/断线时确认未写入 socket，已从队列撤下 |
+| `unknown` | 已写入 socket 但结果未确认，或副作用的执行/持久化结果未知；不能当作未执行 |
+| `E_BUSY` | 急停拒绝未精确放行的操作，或幂等账本满额拒绝新操作 |
 
 其他已存在的路由/协议错误（例如节流、环路与消息体积）维持各层自己的 code。功能模块可以在 ControlOutcome 中返回其领域错误码。
