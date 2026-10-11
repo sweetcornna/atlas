@@ -1453,10 +1453,62 @@ test('files are opt-in and require a pinned control link before startup', () => 
   expect(
     parseConsoleArgs([
       '--files',
+      '--files-exchange-repo',
+      'owner/exchange=/tmp/files.token',
       '--control',
       'alpha=ws://127.0.0.1:1234',
       '--trust',
       `alpha=${key}`,
     ]).files,
   ).toBe(true)
+})
+
+test('file exchange requires a repo, validates a single token-file mapping and parses retention', () => {
+  const key = generateNodeKeyPair().publicKey
+  const control = [
+    '--files',
+    '--control',
+    'alpha=ws://127.0.0.1:1234',
+    '--trust',
+    `alpha=${key}`,
+  ]
+  expect(() => parseConsoleArgs(control)).toThrow(
+    '--files needs --files-exchange-repo',
+  )
+  expect(
+    parseConsoleArgs([
+      ...control,
+      '--files-exchange-repo=owner/exchange=/tmp/exchange.token',
+      '--files-exchange-retain',
+      '30m',
+    ]),
+  ).toMatchObject({
+    filesExchangeRepo: ['owner/exchange', '/tmp/exchange.token'],
+    filesExchangeRetainMs: 1_800_000,
+  })
+  for (const repo of [
+    'owner/exchange=relative.token',
+    'https://github.com/owner/exchange=/tmp/token',
+    'owner=/tmp/token',
+  ])
+    expect(() =>
+      parseConsoleArgs([...control, '--files-exchange-repo', repo]),
+    ).toThrow('--files-exchange-repo')
+  expect(() =>
+    parseConsoleArgs([
+      ...control,
+      '--files-exchange-repo',
+      'owner/exchange=/tmp/token',
+      '--files-exchange-repo',
+      'owner/other=/tmp/token',
+    ]),
+  ).toThrow('重复')
+  expect(() =>
+    parseConsoleArgs([
+      ...control,
+      '--files-exchange-repo',
+      'owner/exchange=/tmp/token',
+      '--files-exchange-retain=-1h',
+    ]),
+  ).toThrow('--files-exchange-retain')
 })

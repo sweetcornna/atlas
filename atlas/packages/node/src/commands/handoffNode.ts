@@ -143,7 +143,7 @@ import {
   startTransportServer,
   type TransportChannel,
 } from '@qianmo/transport'
-import { githubGit, githubTokenEnv } from './handoffGithubGit.js'
+import { githubGit, githubTokenEnv } from './githubRepoGit.js'
 import { githubResultRef } from '@qianmo/handoff'
 import { qmcodeHome, qianmoConfigPath } from '@qianmo/paths'
 import { parseTrustedKey } from '../host/nodeIdentity.js'

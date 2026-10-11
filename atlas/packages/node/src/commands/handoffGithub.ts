@@ -15,7 +15,7 @@ import {
 import type { HandoffProject } from './handoffStore.js'
 import { HandoffUserError } from './handoffStore.js'
 import type { SessionSnapshot } from './handoffSyncTypes.js'
-import { githubGit, githubRemoteRefs } from './handoffGithubGit.js'
+import { githubGit, githubRemoteRefs } from './githubRepoGit.js'
 
 export type RepoVisibility = 'public' | 'private' | 'unknown'
 export interface GithubHandoffOptions {

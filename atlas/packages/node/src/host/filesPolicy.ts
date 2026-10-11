@@ -14,8 +14,6 @@ export const FILE_LIMITS = {
   maxFiles: 1000,
   maxTtlMs: 24 * 60 * 60_000,
 } as const
-export const FILE_CHUNK_BYTES = 128 * 1024
-export const FILE_PAGE_SIZE = 32
 export const refSchema = z.object({
   node: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/),
   agent: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/),

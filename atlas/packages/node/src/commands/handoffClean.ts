@@ -13,7 +13,7 @@ import {
 import { acquireExclusiveLock } from '@qianmo/handoff'
 import { repoAtOrigin } from './handoffGithub.js'
 import { handoffCodeStore } from './handoffConfig.js'
-import { deleteGithubTaskRefs } from './handoffGithubGit.js'
+import { deleteGithubTaskRefs } from './githubRepoGit.js'
 import { HandoffUserError } from './handoffStore.js'
 
 export async function runClean(

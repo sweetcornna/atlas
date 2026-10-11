@@ -74,7 +74,7 @@ import {
   resolveHandoffRepo,
   type HandoffRepoCredentials,
 } from './handoffRepoCredentials.js'
-import { githubRemoteRefs, tokenLinkAllowed } from './handoffGithubGit.js'
+import { githubRemoteRefs, tokenLinkAllowed } from './githubRepoGit.js'
 import { join } from 'node:path'
 import { AuditSource, type AuditTrail } from '@qianmo/audit'
 import {

@@ -75,7 +75,7 @@ import {
   resolveHandoffRepo,
   type HandoffRepoCredentials,
 } from './handoffRepoCredentials.js'
-import { githubRemoteRefs, deleteGithubTaskRefs } from './handoffGithubGit.js'
+import { githubRemoteRefs, deleteGithubTaskRefs } from './githubRepoGit.js'
 import { qianmoConfigPath } from '@qianmo/paths'
 import {
   createHandoffDispatcher,

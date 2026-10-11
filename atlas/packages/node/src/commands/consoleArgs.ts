@@ -38,6 +38,7 @@ import {
   ADMIN_TOKEN_ENV_VAR,
   VIEW_TOKEN_ENV_VAR,
 } from './consoleTokenSources.js'
+import { parseFilesExchangeRepo, filesRetention } from './filesExchangeRepo.js'
 import { parseHandoffRepo } from './handoffRepoCli.js'
 import { type HubLocation, parseHub } from './handoffStore.js'
 import { residentOptionValue } from './residentArgs.js'
@@ -489,6 +490,8 @@ export interface ConsoleCliConfig {
   readonly chatFrom: string
   /** 会话落盘的绝对路径。 */
   readonly chatStorePath: string
+  readonly filesExchangeRepo?: readonly [string, string]
+  readonly filesExchangeRetainMs?: number
   readonly files?: boolean
   readonly connectors?: boolean
   readonly desktop?: boolean
@@ -611,6 +614,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let legacyChat = false
   let chatFrom = DEFAULT_CONSOLE_CHAT_FROM
   let chatStorePath = consoleChatStorePath()
+  let filesExchangeRepo: readonly [string, string] | undefined
+  let filesExchangeRetainMs = 0
   let files = false
   let connectors = false
   let desktop = false
@@ -859,6 +864,21 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     } else if (arg === '--admin-token' || arg?.startsWith('--admin-token=')) {
       const parsed = residentOptionValue(args, index, '--admin-token')
       adminToken = nonEmpty(parsed.value, '--admin-token')
+      index = parsed.next
+    } else if (
+      arg === '--files-exchange-repo' ||
+      arg?.startsWith('--files-exchange-repo=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--files-exchange-repo')
+      if (filesExchangeRepo) throw new Error('--files-exchange-repo 重复')
+      filesExchangeRepo = parseFilesExchangeRepo(parsed.value)
+      index = parsed.next
+    } else if (
+      arg === '--files-exchange-retain' ||
+      arg?.startsWith('--files-exchange-retain=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--files-exchange-retain')
+      filesExchangeRetainMs = filesRetention(parsed.value)
       index = parsed.next
     } else if (arg === '--files') {
       files = true
@@ -1264,6 +1284,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     throw new Error('--connectors needs --accounts, --approvals and --control')
   if (desktop && controlTargets.length === 0)
     throw new Error('--desktop needs --control')
+  if (files && !filesExchangeRepo)
+    throw new Error('--files needs --files-exchange-repo')
   if (schedules && chatTargets.length === 0)
     throw new Error('--schedules needs --chat-url')
 
@@ -1455,6 +1477,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     ...(files ? { files: true } : {}),
     ...(connectors ? { connectors: true } : {}),
     ...(desktop ? { desktop: true } : {}),
+    ...(filesExchangeRepo ? { filesExchangeRepo, filesExchangeRetainMs } : {}),
     ...(schedules ? { schedules: true } : {}),
     nodeServers,
     serverNotesPath,
@@ -1655,8 +1678,13 @@ Options (each accepts both --name value and --name=value):
   --memory                 Account-scoped long memory. Requires --control.
                            Recall across chats also needs --chat-sign and the
                            resident --controller <console>=<publicKey>.
-  --files                  Enable file exchange; requires --control.
-                           State: <config root>/qianmo/console/files/.
+  --files                  Enable GitHub file exchange; requires --control
+                           and --files-exchange-repo. Hub stores only ledgers.
+  --files-exchange-repo <owner/name>=<abs token file>
+                           Private GitHub exchange repo, contents read/write.
+  --files-exchange-retain <duration>
+                           Branch retention (0 by default; e.g. 30m, 1h).
+                           Tokens require wss or loopback ws control links.
   --control <node>=<ws(s)://url>
                            Signed control link (repeatable). Requires --trust
                            for each node; uses the --print-wake-identity key.

@@ -30,6 +30,7 @@ import { qianmoConfigPath } from '@qianmo/paths'
 import { loadOrCreateNodeKeys } from '../host/nodeIdentity.js'
 import { ConsoleApprovals } from './consoleApprovals.js'
 import { notifyAllowlist } from './consoleNotifyDestination.js'
+import { cliFilesExchangeCredentials } from './filesExchangeRepo.js'
 import { ConsoleFiles } from './consoleFiles.js'
 import { tenantScope } from '@qianmo/console'
 import { ResidentEstop } from '@qianmo/resident'
@@ -665,6 +666,11 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     config.files && control
       ? new ConsoleFiles({
           directory: qianmoConfigPath('qianmo', 'console', 'files'),
+          exchangeRepo: config.filesExchangeRepo![0],
+          credentials: cliFilesExchangeCredentials([config.filesExchangeRepo!]),
+          retentionMs: config.filesExchangeRetainMs,
+          controlUrl: node =>
+            config.controlTargets?.find(one => one.node === node)?.url,
           control,
           agents: async () => {
             const rows = await registry.list()
@@ -715,6 +721,22 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       : undefined
   const desktop =
     config.desktop && control ? new ConsoleDesktop(control, actions) : undefined
+  if (files) {
+    // A repo that cannot be shown private (or a missing credential) stops
+    // file exchange, not the console: every publish and fetch checks again
+    // and fails closed, and the page says why.
+    try {
+      await files.initialize()
+    } catch (error) {
+      process.stderr.write(
+        `[files] ${
+          error instanceof Error && error.message === 'connection-revoked'
+            ? '交换仓库连接已撤销'
+            : '交换仓库必须是私有仓库'
+        }；文件互通暂停，其余功能照常\n`,
+      )
+    }
+  }
   const approvals =
     approvalIdentity === undefined || accounts === undefined
       ? undefined
