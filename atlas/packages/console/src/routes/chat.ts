@@ -1,7 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { reserveUsage, usageScopeOf } from '../quota.js'
+import { ChatDispatch } from '../chatDispatch.js'
 import type { TenantPort } from '../tenancy.js'
 
 /**
@@ -27,7 +27,6 @@ import type { TenantPort } from '../tenancy.js'
  * check, so an anonymous caller cannot probe which consoles have chat wired.
  */
 
-import type { ConsoleAccounts } from '../access.js'
 import {
   avatarFragmentRoute,
   avatarsApiRoute,
@@ -556,7 +555,6 @@ async function handleChatSessions(
   ctx: RouteContext,
   chat: ChatPort,
   scope: ChatScope,
-  accounts: ConsoleAccounts | undefined,
 ): Promise<Response> {
   const { request } = ctx
   if (request.method === 'GET') {
@@ -581,40 +579,18 @@ async function handleChatSessions(
     if (!target.ok) return fail(400, 'invalid', target.message)
     const blocked = await ctx.admit()
     if (blocked !== null) return blocked
-    const temporarySession = `pending:${ctx.requestId}`
-    const reservation = reserveUsage(ctx, {
-      sessionId: temporarySession,
-      newSession: true,
-      operation: 'session',
-    })
-    if (reservation instanceof Response) return reservation
-    let result: Awaited<ReturnType<ChatPort['open']>>
-    try {
-      result = await chat.open(target.value)
-      if (typeof reservation === 'string' && result.ok)
-        ctx.deps.usage?.adoptSession(reservation, result.value.id)
-    } catch (error) {
-      if (typeof reservation === 'string')
-        ctx.deps.usage?.closeSession(usageScopeOf(ctx), temporarySession)
-      throw error
-    } finally {
-      if (typeof reservation === 'string') ctx.deps.usage?.finish(reservation)
-    }
-    if (!result.ok && typeof reservation === 'string')
-      ctx.deps.usage?.closeSession(usageScopeOf(ctx), temporarySession)
-    await ctx.record('chat.session.open', target.value, ...outcomeOf(result))
+    const result = await new ChatDispatch(ctx).open(
+      target.value,
+      async result => {
+        await ctx.record(
+          'chat.session.open',
+          target.value,
+          ...outcomeOf(result),
+        )
+      },
+    )
+    if (result instanceof Response) return result
     if (!result.ok) return failureResponse(result.failure)
-    if (scope.opener !== null && accounts !== undefined) {
-      // The owner is written before the session is handed back: a session a
-      // person opened must never be seen without one. If the book cannot take
-      // it, the book is closed now and the caller's next request is a 503
-      // anyway; the session stays in the store, owned by nobody, which only
-      // ops and the admin token can see.
-      const owned = accounts.book.recordOwner(result.value.id, scope.opener)
-      if (!owned.ok) {
-        return fail(503, 'unavailable', owned.refusal.message)
-      }
-    }
     return json(result.value)
   }
   return methodNotAllowed(['GET', 'POST'])
@@ -657,7 +633,7 @@ async function dispatchChatApi(
 
   if (name === 'sessions') {
     if (rest.length === 1) {
-      return await handleChatSessions(ctx, chat, scope, accounts)
+      return await handleChatSessions(ctx, chat, scope)
     }
     const sessionId = decodeURIComponent(rest[1] ?? '')
     if (rest.length === 2) {
@@ -691,28 +667,12 @@ async function dispatchChatApi(
       }
       const blocked = await ctx.admit()
       if (blocked !== null) return blocked
-      const reservation = reserveUsage(ctx, { sessionId, operation: 'message' })
-      if (reservation instanceof Response) return reservation
-      let result: Awaited<ReturnType<ChatPort['send']>>
-      try {
-        result = await chat.send({
-          sessionId,
-          text: text.value,
-          ...(command === null ? {} : { command }),
-          ...(typeof reservation === 'string'
-            ? { usageReservation: reservation }
-            : {}),
-        })
-      } catch (error) {
-        if (typeof reservation === 'string') deps.usage?.finish(reservation)
-        throw error
-      }
-      if (
-        !result.ok &&
-        !result.failure.deliveryUnknown &&
-        typeof reservation === 'string'
-      )
-        deps.usage?.finish(reservation)
+      const result = await new ChatDispatch(ctx).send({
+        sessionId,
+        text: text.value,
+        ...(command === null ? {} : { command }),
+      })
+      if (result instanceof Response) return result
       await ctx.record(
         command === null ? 'chat.message.send' : `chat.command.${command}`,
         sessionId,

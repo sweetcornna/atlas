@@ -2192,8 +2192,37 @@ API 处理器是 `routes/schedulesApi.ts` 导出的 `schedulesApi: HeadRoute`，
 处理。已经发送的任务不因 ESTOP 自动取消。控制台重启时尚未完成持久化的运行记
 `failed / 控制台重启`，不会重发请求或重推可能已经送出的通知。
 
-每个任务首次运行时用对话端口 `open` 建专属会话，保存会话号并持续复用；会话被删后重建，
-改变目标时另建会话。提示词经原有 `send` 链路发出，方向为可选
+运行按 `(scheduleId, plannedAt)` 去重。`ConsoleSchedules.tick()` 在拨号前把推进后的
+`nextRunAt` 与在途运行一起原子持久化，串行队列隔离并发检查；恢复时不重算计划时间，
+在途运行只记失败。`#reserve()` 对已完成/在途的同一计划时刻直接返回原记录。手动运行
+保留独立的持久化高水位 `lastManualPlannedAt`，同一毫秒内连续点击时依次增加 1 ms，
+并避开当前自动计划时刻；该字段不出现在 API 快照中，编辑与重启都保留。
+`consoleSchedules.test.ts` 的 `same-clock manual slots stay unique...` 覆盖编辑、重启与并发
+tick 的唯一性；`missed slots catch up once after restart...` 证明停机错过多个时刻只补一次；
+`a pending run becomes failed after restart...` 与 `recovery deduplicates a finalized run...`
+证明重启不重发。`scheduleTime.test.ts` 的 New York spring gap / fall fold 用例证明春季
+02:30 顺延到 03:00、秋季 01:30 仅取第一次，第二次重复挂钟时间不会再触发。
+
+HTTP 开会话/发消息与定时任务共用控制台包的 `chatDispatch.ts`（`ChatDispatch`）。每次运行
+从 `createdBy` 读取账号簿里的当前账号与角色，先复核存在、活跃、成员/运维权限、当前租户
+目标范围及可拨白名单，再读取或创建专属会话；发送前再次复核，避免等待转录时权限已撤回。
+吊销、重置期间、降为只读、失去范围或目标不再可拨，这次记
+`skipped / 创建者已无权限：<具体原因>`，不自动停用、不重试、也不推通知；恢复权限后的
+下一次时刻照常运行。账号簿或租户配置不可用时也按不能证明权限跳过，注册中心故障记失败。
+`legacy:admin` 建的任务仍以该主体执行，租户/break-glass 的范围规则与 HTTP 相同。
+
+首次运行由服务调用 `open` 建专属会话，经 HTTP 原有的 `chatScopeOf` 与
+`AccountBook.recordOwner` 归到创建者名下；成员在对话会话列表与片段中只能看自己的会话。
+旧任务簿中已存在但无属主的专属会话也在授权通过后补记属主，不覆盖另一人的归属。
+保存会话号并持续复用；会话被删后重建，改变目标时另建会话。开会话与发消息均经同一个
+`reserveUsage`，用量计入创建者的个人范围与 HTTP 相同的租户范围；配额拒绝记
+`failed / quota: ...`，不发送。预留号随发送交给聊天端口，终态释放；明确未交付的失败
+与异常释放，交付不确定时保留预留。HTTP 保持原有检查和账本记录顺序、错误响应与
+延迟到发送时的端点白名单检查；开空会话本身不拨号。定时任务额外在开/复用会话之前
+通过同一服务预查可拨性。`consoleSchedules.authorization.test.ts` 覆盖成员会话可见性、
+吊销/只读/范围撤回/白名单撤回、转录 I/O 期间吊销、个人配额拒绝和创建者的租户用量归属。
+
+提示词经原有 `send` 链路发出，方向为可选
 `code|chat|plan|fast|vision|image|speech|video`（缺省 `chat`，明确 `null` 不带方向），
 经 `task.request.payload.direction` 传给节点，与 P22 同一字段。任务期限同时传到信封与
 对话端口本地超时；默认 10 分钟、最大 60 分钟。订阅对话更新并在调度检查时兜底读取转录，
@@ -2208,6 +2237,7 @@ API 处理器是 `routes/schedulesApi.ts` 导出的 `schedulesApi: HeadRoute`，
 
 任务的保存、启停、删除、立即运行及渠道保存、删除、测试，由宿主通过 `DirectionActor`
 记入动作账本；自动触发记 `schedule.run`，主体为 `system:schedules`，请求号为运行号。
+这里的主体标识自动触发来源；运行授权、会话归属与用量范围均取任务的 `createdBy`。
 账本拒绝写入时不执行新的动作，渠道地址与回复正文不作为账本载荷。
 
 ### §12.2 通知格式与未评估口径
