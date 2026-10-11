@@ -45,7 +45,7 @@ describe('文件互通', () => {
       '2 个来源 · 1 个完成',
       '摘要一致',
       'inbox/tokyo-1/2026-10',
-      '送达中',
+      '取回中',
       '摘要不一致',
       '收件方核对摘要不一致',
       '整个目录',
@@ -60,8 +60,39 @@ describe('文件互通', () => {
     expect(text.indexOf('传输')).toBeLessThan(text.indexOf('授权'))
     // A request that was already decided is not asked again.
     expect(html).not.toContain('data-id="fr-0"')
-    // Progress is the share of bytes delivered.
+    // Through the exchange repo bytes are known once delivered: the bar
+    // runs without a number while in flight.
+    expect(html).toContain('class="fx-bar fx-bar-busy"')
+    expect(html).not.toContain('aria-valuenow="36"')
+  })
+
+  test('bytes go through the private GitHub repo: the page names it, each commit, and cleaned branches', async () => {
+    const { handle } = wired()
+    const text = visibleText(await read(handle, '/files'))
+    expect(text).toContain('经 GitHub 交换仓库')
+    expect(text).toContain('cornna/qianmo-exchange')
+    expect(text).toContain('中枢不存文件')
+    expect(text).toMatch(/提交\s+5e2c9a1/)
+    expect(text).toContain('分支已清理')
+    expect(text).not.toContain('在中枢和收件方各核对')
+  })
+
+  test('a public exchange repo is called out; the old hub relay keeps its share-of-bytes bar', async () => {
+    const files = new FakeFiles(() => NOW)
+    files.exchange = { repo: 'cornna/open', private: false }
+    const { handle } = wired(files)
+    expect(visibleText(await read(handle, '/files'))).toContain(
+      '交换仓库 cornna/open 不是私有 · 已停用',
+    )
+    const legacy = new FakeFiles(() => NOW)
+    legacy.exchange = null
+    legacy.transfers = legacy.transfers.map(({ exchange: _, ...one }) => one)
+    const { handle: old } = wired(legacy)
+    const html = await read(old, '/files')
+    expect(visibleText(html)).toContain('每个文件在中枢和收件方各核对一次摘要')
+    expect(visibleText(html)).toContain('送达中')
     expect(html).toContain('aria-valuenow="36"')
+    expect(html).not.toContain('class="fx-bar fx-bar-busy"')
   })
 
   test('the admin token decides, starts, retries and revokes; a view token only reads', async () => {

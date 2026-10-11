@@ -156,6 +156,9 @@ function formSettings(
   preset: ConnectorPresetView,
   connector: ConnectorView | null,
 ): Readonly<Record<string, string | number | boolean>> {
+  // A repo's preset names its shape (`owner/name`), not a value to keep.
+  if (preset.kind === 'repo')
+    return { repo: '', exchange: false, ...connector?.settings }
   const fields: Record<string, string | number | boolean> =
     preset.kind === 'mail'
       ? {

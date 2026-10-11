@@ -71,7 +71,7 @@ export const CONNECT_PAGE_JS = `
     var boxes = form.querySelectorAll('input[name="agents"]:checked');
     for (var j = 0; j < boxes.length; j++) agents.push(boxes[j].value);
     var secret = form.elements.secret ? form.elements.secret.value : '';
-    if (!id && !secret) { qc.say(status, '口令或授权码必填', 'bad'); return; }
+    if (!id && !secret) { qc.say(status, '凭据必填', 'bad'); return; }
     var body = {
       name: name,
       kind: form.elements.kind ? form.elements.kind.value : 'mail',

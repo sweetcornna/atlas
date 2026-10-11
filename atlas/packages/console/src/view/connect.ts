@@ -78,6 +78,17 @@ export interface ConnectModel {
 const KIND_WORD: Readonly<Record<string, string>> = {
   mail: '邮件',
   calendar: '日历',
+  repo: 'GitHub 仓库',
+}
+
+const KIND_GLYPH: Readonly<Record<string, string>> = {
+  mail: 'mail',
+  calendar: 'calendar',
+  repo: 'git-branch',
+}
+
+function kindGlyph(kind: string): string {
+  return KIND_GLYPH[kind] ?? 'plug'
 }
 
 const OP_WORD: Readonly<Record<string, string>> = {
@@ -101,10 +112,19 @@ const SETTING_WORD: Readonly<Record<string, string>> = {
   smtpTls: '发信加密',
   caldavUrl: 'CalDAV 地址',
   host: '服务器',
+  repo: '仓库',
+  exchange: '用作文件交换仓库（必须私有）',
 }
 
 /** The settings that are the person's own, shown unfolded. */
-const ACCOUNT_KEYS: readonly string[] = ['username', 'user', 'account', 'email']
+const ACCOUNT_KEYS: readonly string[] = [
+  'username',
+  'user',
+  'account',
+  'email',
+  'repo',
+  'exchange',
+]
 
 function settingWord(key: string): string {
   return SETTING_WORD[key] ?? key
@@ -131,23 +151,54 @@ function probeLine(connector: ConnectorView, now: number): string {
   )
 }
 
+function fact(key: string, value: string): string {
+  return `<div class="con-fact"><span class="note">${escapeHtml(key)}</span><span>${value}</span></div>`
+}
+
+/** A GitHub repo: its name, what the last test found, and what it is for. */
+function repoFacts(repo: NonNullable<ConnectorView['repo']>): string {
+  const untested = '<span class="note">未测试</span>'
+  const visibility =
+    repo.private === null
+      ? untested
+      : repo.private
+        ? '私有'
+        : repo.exchange
+          ? state('bad', '公开 · 不能做文件交换')
+          : '公开'
+  const push =
+    repo.push === null ? untested : repo.push ? '可写' : state('bad', '只读')
+  return (
+    fact('仓库', `<span class="kit-mono">${escapeHtml(repo.name)}</span>`) +
+    fact('可见性', visibility) +
+    fact('写权限', push) +
+    fact('用途', repo.exchange ? '接力 · 文件交换' : '接力')
+  )
+}
+
 function connectorCard(connector: ConnectorView, model: ConnectModel): string {
-  const facts = Object.entries(connector.summary)
-    .map(
-      ([key, value]) =>
-        `<div class="con-fact"><span class="note">${escapeHtml(settingWord(key))}</span>` +
-        `<span class="kit-mono">${escapeHtml(value)}</span></div>`,
-    )
-    .join('')
-  const agents =
-    connector.agents.length === 0
-      ? `<span class="note">还没有授权给智能体</span>`
-      : connector.agents
-          .map(
-            one =>
-              `<span class="con-agent">${escapeHtml(agentName(one))}</span>`,
+  const facts =
+    connector.repo === undefined
+      ? Object.entries(connector.summary)
+          .map(([key, value]) =>
+            fact(
+              settingWord(key),
+              `<span class="kit-mono">${escapeHtml(value)}</span>`,
+            ),
           )
           .join('')
+      : repoFacts(connector.repo)
+  const agents =
+    connector.kind === 'repo'
+      ? `<span class="note">中枢自己用 · 不授权给智能体</span>`
+      : connector.agents.length === 0
+        ? `<span class="note">还没有授权给智能体</span>`
+        : connector.agents
+            .map(
+              one =>
+                `<span class="con-agent">${escapeHtml(agentName(one))}</span>`,
+            )
+            .join('')
   const acts = model.ops
     ? `<span class="kit-acts">` +
       actionButton('connector-probe', '测试', {
@@ -167,7 +218,7 @@ function connectorCard(connector: ConnectorView, model: ConnectModel): string {
   return (
     `<article class="card elev-sm con-card" data-key="${attr(connector.id)}">` +
     `<header class="con-head"><span class="con-glyph con-${attr(connector.kind)}">${icon(
-      connector.kind === 'mail' ? 'mail' : 'calendar',
+      kindGlyph(connector.kind),
     )}</span>` +
     `<div class="con-title"><b>${escapeHtml(connector.name)}</b>` +
     `<span class="note">${escapeHtml(KIND_WORD[connector.kind] ?? connector.kind)}` +
@@ -237,7 +288,7 @@ function connectorsSection(model: ConnectModel): string {
   if (side.kind === 'unwired') {
     body = unwiredCard(
       '应用连接',
-      '连上邮箱或日历后 · 智能体可以读信 看日程 · 发信和建日程每次都要你批准 · 凭据只存在中枢',
+      '连上邮箱或日历后 · 智能体可以读信 看日程 · 发信和建日程每次都要你批准 · 连上 GitHub 仓库后 · 接力的代码和节点间的文件都放在你自己的仓库 · 凭据只存在中枢',
       'qm console … --connectors',
     )
   } else if (side.kind === 'failed') {
@@ -245,7 +296,7 @@ function connectorsSection(model: ConnectModel): string {
   } else if (side.value.connectors.length === 0) {
     body = emptyState(
       '还没有连接',
-      '连上邮箱或日历后 · 智能体可以读信 看日程 · 发信和建日程每次都要你批准',
+      '连上邮箱或日历后 · 智能体可以读信 看日程 · 发信和建日程每次都要你批准 · 连上 GitHub 仓库后 · 接力的代码和节点间的文件都放在你自己的仓库',
       add,
     )
   } else {
@@ -371,10 +422,19 @@ function relaysBlock(model: ConnectModel): string {
     model.codeStore === 'github'
       ? '代码和结果放在你自己的 GitHub 仓库的 qianmo/* 分支 · 中枢只存台账 · 接回后分支删除'
       : '代码经中枢的仓库中转'
+  const repos =
+    model.connectors.kind === 'ok'
+      ? model.connectors.value.connectors.filter(one => one.kind === 'repo')
+          .length
+      : null
+  const missing =
+    model.codeStore === 'github' && repos === 0
+      ? `<p class="note">还没有 GitHub 仓库连接 · 在上面「应用连接」里添加 · 或启动时给 --handoff-repo</p>`
+      : ''
   if (side.value.length === 0)
     return (
       `<div class="relays"><h3 class="relays-h">最近接力</h3>` +
-      `<p class="note">还没有接力 · ${escapeHtml(where)}</p></div>`
+      `<p class="note">还没有接力 · ${escapeHtml(where)}</p>${missing}</div>`
     )
   const rows = [...side.value]
     .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -384,7 +444,7 @@ function relaysBlock(model: ConnectModel): string {
     .join('')
   return (
     `<div class="relays"><h3 class="relays-h">最近接力</h3>` +
-    `<p class="note">${escapeHtml(where)}</p>` +
+    `<p class="note">${escapeHtml(where)}</p>${missing}` +
     scroll(
       `<table class="trail relays-t"><caption class="sr-only">最近接力</caption>` +
         `<thead><tr>${head}</tr></thead><tbody>${rows
@@ -406,7 +466,7 @@ function devicesSection(model: ConnectModel): string {
     body = unwiredCard(
       '本机工具',
       '在 Claude Code 或 Codex 里装上阡陌插件 · 配对一次 · 本机和服务器上的智能体就能互相接力',
-      'qm console … --handoff-repo <owner/name>=<令牌文件>',
+      'qm console … --connectors（在「应用连接」添加 GitHub 仓库）或 --handoff-repo <owner/name>=<令牌文件>',
     )
   } else if (side.kind === 'failed') {
     body = failureBar(side.failure, '本机工具')
@@ -468,7 +528,7 @@ function presetChip(preset: ConnectorPresetView, chosen: string): string {
     `<label class="con-preset"><input type="radio" name="preset" value="${attr(preset.id)}"` +
     `${preset.id === chosen ? ' checked' : ''}>` +
     `<span class="con-glyph con-${attr(preset.kind)}">${icon(
-      preset.kind === 'mail' ? 'mail' : 'calendar',
+      kindGlyph(preset.kind),
       { small: true },
     )}</span><span>${escapeHtml(preset.name)}</span></label>`
   )
@@ -507,6 +567,9 @@ function settingField(
     type: numeric ? 'number' : 'text',
     mono: !numeric,
     wide,
+    ...(key === 'repo'
+      ? { placeholder: 'owner/name', required: true, maxLength: 140 }
+      : {}),
   }).replace(
     '<input ',
     `<input data-setting="${attr(key)}" data-number="${numeric ? '1' : '0'}" `,
@@ -550,19 +613,23 @@ export function renderConnectorForm(input: {
           .join('')}</div></details>`)
   // An ICS subscription's address carries its token: it is the secret.
   const subscription = /ics/i.test(input.preset.id)
+  const repo = input.preset.kind === 'repo'
   const secret = textField(
     'secret',
-    subscription ? '订阅地址' : '口令或授权码',
+    repo ? 'GitHub 令牌' : subscription ? '订阅地址' : '口令或授权码',
     {
       type: 'password',
       wide: true,
       required: !editing,
       placeholder: editing ? '不改就留空' : '',
-      help: '只存在中枢 · 加密保存 · 页面上不再显示',
+      help: repo
+        ? '细粒度令牌 · 只选这一个仓库 · Contents 读写 · 只存在中枢 · 加密保存'
+        : '只存在中枢 · 加密保存 · 页面上不再显示',
     },
   )
-  const agents =
-    input.agents.length === 0
+  const agents = repo
+    ? `<p class="note field-wide">中枢自己用 · 接力的代码和结果、节点间的文件经它交换 · 不授权给智能体</p>`
+    : input.agents.length === 0
       ? `<p class="note field-wide">还没有可以授权的智能体</p>`
       : checkGroup(
           'agents',
@@ -652,6 +719,7 @@ export const CONNECT_PAGE_CSS = `
 .con-title b { font-size: var(--text-14, 14px); overflow-wrap: anywhere; }
 .con-glyph { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: var(--color-accent-soft, var(--color-bg)); color: var(--color-accent); flex: none; }
 .con-glyph.con-calendar { background: var(--color-accent-2-soft, var(--color-bg)); color: var(--color-accent-2, var(--color-accent)); }
+.con-glyph.con-repo { background: var(--color-bg); color: var(--color-text); }
 .con-preset .con-glyph { width: 24px; height: 24px; border-radius: 8px; }
 .con-facts { display: flex; flex-direction: column; gap: 6px; }
 .con-fact { display: flex; justify-content: space-between; gap: var(--space-3); font-size: var(--text-13); min-width: 0; }

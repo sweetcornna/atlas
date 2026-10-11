@@ -280,3 +280,103 @@ describe('连接 · recent relays', () => {
     )
   })
 })
+
+describe('连接 · GitHub repo connections', () => {
+  test('a repo card shows its name, visibility, write access and use; agents never', async () => {
+    const { handle } = wired()
+    const html = await page(handle, '/connect', ADMIN)
+    const text = visibleText(html)
+    expect(text).toContain('代码与交换仓库')
+    expect(text).toContain('GitHub 仓库')
+    expect(text).toContain('cornna/qianmo-exchange')
+    expect(text).toContain('私有')
+    expect(text).toContain('可写')
+    expect(text).toContain('接力 · 文件交换')
+    expect(text).toContain('中枢自己用 · 不授权给智能体')
+  })
+
+  test('a public exchange repo and a read-only token read as faults; untested reads as untested', async () => {
+    const connectors = new FakeConnectors(() => NOW)
+    const repo = connectors.connectors.find(one => one.kind === 'repo')
+    if (repo === undefined) throw new Error('fake has no repo connection')
+    connectors.connectors = [
+      {
+        ...repo,
+        repo: {
+          name: 'cornna/open',
+          exchange: true,
+          private: false,
+          push: false,
+        },
+      },
+      {
+        ...repo,
+        id: 'con-3',
+        name: '新仓库',
+        repo: {
+          name: 'cornna/new',
+          exchange: false,
+          private: null,
+          push: null,
+        },
+        lastProbe: null,
+      },
+    ]
+    const { handle } = wired({ connectors })
+    const text = visibleText(await page(handle, '/connect', VIEW))
+    expect(text).toContain('公开 · 不能做文件交换')
+    expect(text).toContain('只读')
+    expect(text).toContain('未测试')
+  })
+
+  test('the repo form asks for owner/name, the exchange flag and a GitHub token, never agents', async () => {
+    const { handle } = wired()
+    const html = await page(
+      handle,
+      '/fragments/connect/form?preset=github-repo',
+      ADMIN,
+    )
+    expect(html).toContain('value="github-repo" checked')
+    expect(html).toContain('data-setting="repo"')
+    expect(html).toContain('placeholder="owner/name"')
+    // The preset's shape is a placeholder, not a value to save.
+    expect(html).not.toContain('value="owner/name"')
+    expect(html).toContain('data-setting="exchange"')
+    expect(visibleText(html)).toContain('GitHub 令牌')
+    expect(visibleText(html)).toContain('Contents 读写')
+    expect(html).not.toContain('name="agents"')
+    const edit = await page(handle, '/fragments/connect/form?id=con-2', ADMIN)
+    expect(edit).toContain('value="cornna/qianmo-exchange"')
+    expect(edit).toMatch(/data-setting="exchange" checked/)
+  })
+
+  test('relays kept on GitHub with no repo connection say where to add one', async () => {
+    const connectors = new FakeConnectors(() => NOW)
+    connectors.connectors = connectors.connectors.filter(
+      one => one.kind !== 'repo',
+    )
+    const deps = {
+      ...pageHarness({
+        ports: {
+          connectors,
+          handoffDevices: new FakeHandoffDevices(() => NOW),
+        },
+      }).deps,
+      handoff: relayPort([RELAY], 'github'),
+    }
+    const handle = createConsoleHandler(deps, { view: VIEW, admin: ADMIN })
+    expect(visibleText(await page(handle, '/connect', VIEW))).toContain(
+      '还没有 GitHub 仓库连接',
+    )
+    const withRepo = createConsoleHandler(
+      {
+        ...deps,
+        connectors: new FakeConnectors(() => NOW),
+      },
+      { view: VIEW, admin: ADMIN },
+    )
+    expect(visibleText(await page(withRepo, '/connect', VIEW))).not.toContain(
+      '还没有 GitHub 仓库连接',
+    )
+  })
+})

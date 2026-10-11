@@ -59,6 +59,18 @@ const TRANSFER_WORD: Readonly<
   failed: ['bad', '失败'],
 }
 
+/** Through the exchange repo the source pushes and the target fetches. */
+const EXCHANGE_WORD: Partial<Record<FileTransferState, string>> = {
+  reading: '上传中',
+  delivering: '取回中',
+}
+
+function stateWord(transfer: FileTransferView): readonly [Tone, string] {
+  const [tone, word] = TRANSFER_WORD[transfer.state]
+  if (transfer.exchange === undefined) return [tone, word]
+  return [tone, EXCHANGE_WORD[transfer.state] ?? word]
+}
+
 function addressOf(ref: AgentRef): string {
   return `qianmo://${ref.node}/${ref.agent}`
 }
@@ -144,6 +156,18 @@ function requestsSection(model: FilesModel): string {
 // ---------------------------------------------------------------------------
 
 function progress(transfer: FileTransferView): string {
+  // Through the exchange repo bytes are only known once delivered: while in
+  // flight the bar runs without a number.
+  if (
+    transfer.exchange !== undefined &&
+    transfer.state !== 'done' &&
+    transfer.state !== 'failed'
+  ) {
+    return (
+      `<div class="fx-bar fx-bar-busy" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="进行中">` +
+      `<span></span></div>`
+    )
+  }
   const total = Math.max(transfer.bytes, 1)
   const done =
     transfer.state === 'done' ? total : Math.min(transfer.doneBytes, total)
@@ -160,8 +184,22 @@ function verifiedTag(transfer: FileTransferView): string {
   return ''
 }
 
+/** Which commit carried it, and whether its branch is gone yet. */
+function exchangeNote(transfer: FileTransferView): string {
+  const exchange = transfer.exchange
+  if (exchange === undefined) return ''
+  const commit =
+    exchange.commit === null
+      ? ''
+      : ` · 提交 <span class="kit-mono">${escapeHtml(exchange.commit.slice(0, 7))}</span>`
+  return (
+    `<span class="note" title="${attr(exchange.ref)}">经 GitHub${commit}</span>` +
+    (exchange.cleaned ? tag('分支已清理') : '')
+  )
+}
+
 function transferRow(transfer: FileTransferView, model: FilesModel): string {
-  const [tone, word] = TRANSFER_WORD[transfer.state]
+  const [tone, word] = stateWord(transfer)
   const took =
     transfer.finishedAt === null
       ? ''
@@ -192,6 +230,7 @@ function transferRow(transfer: FileTransferView, model: FilesModel): string {
     `<span class="note">${escapeHtml(
       `${size}${took} · ${formatRelative(transfer.startedAt, model.now)}`,
     )}</span>` +
+    exchangeNote(transfer) +
     (transfer.reason === null
       ? ''
       : `<span class="note fx-why">${escapeHtml(transfer.reason)}</span>`) +
@@ -218,6 +257,19 @@ function groupBlock(
   )
 }
 
+/** Where the bytes go: the hub's own relay, or the person's private repo. */
+function carrierNote(snapshot: FilesSnapshot): string {
+  const exchange = snapshot.exchange
+  if (exchange === undefined)
+    return `<span class="note">每个文件在中枢和收件方各核对一次摘要</span>`
+  const repo = `<span class="kit-mono">${escapeHtml(exchange.repo)}</span>`
+  if (exchange.private === false)
+    return state('bad', `交换仓库 ${exchange.repo} 不是私有 · 已停用`)
+  return `<span class="note">经 GitHub 交换仓库 ${repo}${
+    exchange.private === null ? ' · 还没核对是否私有' : ''
+  } · 中枢不存文件 · 收件方逐个核对摘要</span>`
+}
+
 function transfersSection(model: FilesModel): string {
   const { transfers, groups } = model.snapshot
   const start = model.member
@@ -226,7 +278,10 @@ function transfersSection(model: FilesModel): string {
   if (transfers.length === 0) {
     return (
       `<section class="sec" aria-labelledby="h-fx-tr">` +
-      sectionHead('Transfers', '传输', { headingId: 'h-fx-tr' }) +
+      sectionHead('Transfers', '传输', {
+        headingId: 'h-fx-tr',
+        tail: carrierNote(model.snapshot),
+      }) +
       emptyState(
         '还没有传输',
         '把一个智能体工作区里的文件或目录 · 送进另一个智能体的收件箱 · 几个来源可以一次汇集到一处',
@@ -253,7 +308,7 @@ function transfersSection(model: FilesModel): string {
     `<section class="sec" aria-labelledby="h-fx-tr">` +
     sectionHead('Transfers', '传输', {
       headingId: 'h-fx-tr',
-      tail: `<div class="kit-row"><span class="note">每个文件在中枢和收件方各核对一次摘要</span>${start}</div>`,
+      tail: `<div class="kit-row">${carrierNote(model.snapshot)}${start}</div>`,
     }) +
     `<div class="fx-transfers">` +
     blocks +
@@ -451,7 +506,9 @@ export const FILES_PAGE_CSS = `
 .fx-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--color-accent); transition: width 400ms ease; }
 .fx-bar-done > span { background: var(--color-accent-2); }
 .fx-bar-failed > span { background: var(--color-critical); opacity: .6; }
-@media (prefers-reduced-motion: reduce) { .fx-bar > span { transition: none; } }
+.fx-bar-busy > span { width: 32%; animation: fx-run 1.6s ease-in-out infinite; }
+@keyframes fx-run { from { transform: translateX(-100%); } to { transform: translateX(320%); } }
+@media (prefers-reduced-motion: reduce) { .fx-bar > span { transition: none; } .fx-bar-busy > span { animation: none; width: 100%; opacity: .35; } }
 .fx-meta { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .fx-why { color: var(--color-critical); }
 .fx-dead { opacity: .55; }

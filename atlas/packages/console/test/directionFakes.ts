@@ -833,7 +833,31 @@ export const CONNECTOR_PRESETS: readonly ConnectorPresetView[] = [
     hint: '只读 · 订阅地址里通常带令牌 · 按秘密保存',
     evaluated: false,
   },
+  {
+    id: 'github-repo',
+    kind: 'repo',
+    name: 'GitHub 仓库',
+    defaults: { repo: 'owner/name', exchange: false },
+    hint: '只授权这一个仓库的 Contents 读写 · 用于接力的代码和结果；勾选「文件交换仓库」则用于节点间文件互通（必须私有）',
+    evaluated: false,
+  },
 ]
+
+/** The `repo` part of a view for a repo connection's settings. */
+function repoOf(
+  settings: ConnectorDraft['settings'],
+  probe: {
+    readonly private?: boolean | null
+    readonly push?: boolean | null
+  } | null,
+): ConnectorView['repo'] {
+  return {
+    name: String(settings.repo ?? ''),
+    exchange: settings.exchange === true,
+    private: probe?.private ?? null,
+    push: probe?.push ?? null,
+  }
+}
 
 /** A connections port with one mailbox in it and a few calls. */
 export class FakeConnectors implements ConnectorsPort {
@@ -875,6 +899,36 @@ export class FakeConnectors implements ConnectorsPort {
         revision: 1,
         lastProbe: { at: at - 3_600_000, ok: true, detail: '登录成功' },
         createdAt: at - 86_400_000 * 2,
+        createdBy: 'legacy:admin',
+      },
+      {
+        id: 'con-2',
+        name: '代码与交换仓库',
+        kind: 'repo',
+        preset: 'github-repo',
+        summary: {},
+        settings: { repo: 'cornna/qianmo-exchange', exchange: true },
+        readOnly: false,
+        secretSet: true,
+        secretSetAt: at - 86_400_000,
+        agents: [],
+        repo: {
+          name: 'cornna/qianmo-exchange',
+          exchange: true,
+          private: true,
+          push: true,
+        },
+        evaluated: false,
+        tenant: null,
+        revision: 1,
+        lastProbe: {
+          at: at - 7_200_000,
+          ok: true,
+          detail: '仓库可读写（未评估）',
+          private: true,
+          push: true,
+        },
+        createdAt: at - 86_400_000,
         createdBy: 'legacy:admin',
       },
     ]
@@ -950,6 +1004,9 @@ export class FakeConnectors implements ConnectorsPort {
           : {}),
       },
       settings: draft.settings,
+      ...(draft.kind === 'repo'
+        ? { repo: repoOf(draft.settings, old?.lastProbe ?? null) }
+        : {}),
       readOnly: draft.preset === 'ics',
       secretSet: true,
       secretSetAt: draft.secret === undefined ? (old?.secretSetAt ?? at) : at,
@@ -979,10 +1036,23 @@ export class FakeConnectors implements ConnectorsPort {
     const found = this.connectors.find(one => one.id === id)
     if (found === undefined)
       return failed<ConnectorView>('not_found', 'no such connector')
-    const view = {
-      ...found,
-      lastProbe: { at: this.now(), ok: true, detail: '登录成功' },
-    }
+    const view: ConnectorView =
+      found.kind === 'repo'
+        ? {
+            ...found,
+            repo: repoOf(found.settings ?? {}, { private: true, push: true }),
+            lastProbe: {
+              at: this.now(),
+              ok: true,
+              detail: '仓库可读写（未评估）',
+              private: true,
+              push: true,
+            },
+          }
+        : {
+            ...found,
+            lastProbe: { at: this.now(), ok: true, detail: '登录成功' },
+          }
     this.connectors = this.connectors.map(one => (one.id === id ? view : one))
     return ok(view)
   }
@@ -1281,6 +1351,11 @@ export class FakeDesktop implements DesktopPort {
  */
 export class FakeFiles implements FilesPort {
   readonly calls: string[] = []
+  /** The private exchange repo the bytes go through; null for the old relay. */
+  exchange: FilesSnapshot['exchange'] | null = {
+    repo: 'cornna/qianmo-exchange',
+    private: true,
+  }
   requests: FileRequestView[]
   grants: FileGrantView[]
   transfers: FileTransferView[]
@@ -1354,6 +1429,11 @@ export class FakeFiles implements FilesPort {
         bytes: 4_200_000,
         doneBytes: 4_200_000,
         manifestSha256: 'a'.repeat(64),
+        exchange: {
+          ref: 'refs/heads/qianmo/files/ft-1',
+          commit: '5e2c9a1'.padEnd(40, '0'),
+          cleaned: true,
+        },
         verified: true,
         state: 'done',
         reason: null,
@@ -1370,6 +1450,11 @@ export class FakeFiles implements FilesPort {
         bytes: 860_000,
         doneBytes: 310_000,
         manifestSha256: 'b'.repeat(64),
+        exchange: {
+          ref: 'refs/heads/qianmo/files/ft-2',
+          commit: '8d41f07'.padEnd(40, '0'),
+          cleaned: false,
+        },
         verified: null,
         state: 'delivering',
         reason: null,
@@ -1386,6 +1471,11 @@ export class FakeFiles implements FilesPort {
         bytes: 1_500_000,
         doneBytes: 1_500_000,
         manifestSha256: 'c'.repeat(64),
+        exchange: {
+          ref: 'refs/heads/qianmo/files/ft-3',
+          commit: 'c07ffee'.padEnd(40, '0'),
+          cleaned: true,
+        },
         verified: false,
         state: 'failed',
         reason: '收件方核对摘要不一致',
@@ -1409,6 +1499,7 @@ export class FakeFiles implements FilesPort {
     if (this.failSnapshot)
       return failed<FilesSnapshot>('unreachable', 'files down')
     return ok<FilesSnapshot>({
+      ...(this.exchange === null ? {} : { exchange: this.exchange }),
       requests: this.requests,
       grants: this.grants,
       transfers: this.transfers,

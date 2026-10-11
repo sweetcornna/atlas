@@ -164,10 +164,16 @@ export interface FileTransferView {
   readonly target: AgentRef & { readonly path: string | null }
   readonly files: number
   readonly bytes: number
+  /** 送达完成后才知道已交付字节数；没有分块进度。 */
   readonly doneBytes: number
   /** 清单摘要（按路径 UTF-16 码元序排序的 `[路径,字节数,sha256]` 紧凑 JSON 数组的 UTF-8 SHA-256）；读到清单前为 null。 */
   readonly manifestSha256: string | null
-  /** 中枢与目标两次核对都一致为 true；任何一次不一致为 false；没核对到为 null。 */
+  readonly exchange?: {
+    readonly ref: string
+    readonly commit: string | null
+    readonly cleaned: boolean
+  }
+  /** 目标逐文件核对清单，并核对清单摘要与中枢账本一致；失败为 false，未核对为 null。 */
   readonly verified: boolean | null
   readonly state: FileTransferState
   readonly reason: string | null
@@ -184,6 +190,10 @@ export interface FileGroupView {
 }
 
 export interface FilesSnapshot {
+  readonly exchange?: {
+    readonly repo: string
+    readonly private: boolean | null
+  }
   readonly requests: readonly FileRequestView[]
   readonly grants: readonly FileGrantView[]
   readonly transfers: readonly FileTransferView[]
@@ -700,7 +710,7 @@ export interface SchedulesPort {
 // P25 应用连接
 // ---------------------------------------------------------------------------
 
-export type ConnectorKind = 'mail' | 'calendar'
+export type ConnectorKind = 'mail' | 'calendar' | 'repo'
 
 export interface ConnectorPresetView {
   readonly evaluated: false
@@ -732,14 +742,23 @@ export interface ConnectorView {
   readonly readOnly: boolean
   readonly secretSet: boolean
   readonly secretSetAt: number | null
-  /** 能用这个连接的智能体地址。 */
+  /** 能用这个连接的智能体地址；repo 由中枢使用，必须为空。 */
   readonly agents: readonly string[]
+  /** GitHub 仓库的非秘密坐标和探测事实；null 表示尚未取得该事实。 */
+  readonly repo?: {
+    readonly name: string
+    readonly exchange: boolean
+    readonly private: boolean | null
+    readonly push: boolean | null
+  }
   /** 没有用真实账号验证过：一律 false。 */
   readonly evaluated: boolean
   readonly lastProbe: {
     readonly at: number
     readonly ok: boolean
     readonly detail: string
+    readonly private?: boolean | null
+    readonly push?: boolean | null
   } | null
   readonly createdAt: number
   readonly createdBy: string
@@ -765,7 +784,7 @@ export interface ConnectorDraft {
   readonly preset: string
   /** 服务器、端口、账号等非秘密字段。 */
   readonly settings: Readonly<Record<string, string | number | boolean>>
-  /** 口令或授权码；修改时不给就保留原值。 */
+  /** 口令、授权码或 GitHub fine-grained token；修改时不给就保留原值。 */
   readonly secret?: string
   readonly agents: readonly string[]
 }
@@ -785,7 +804,7 @@ export interface ConnectorsPort {
     actor: DirectionActor,
   ): Promise<ConsoleResult<ConnectorView>>
   remove(id: string, actor: DirectionActor): Promise<ConsoleResult<null>>
-  /** 用保存的凭据连一次（登录后立即退出），结果记在 `lastProbe`。 */
+  /** 用保存的凭据测连（repo 核对仓库可见性与写权限），结果记在 `lastProbe`。 */
   probe(
     id: string,
     actor: DirectionActor,
