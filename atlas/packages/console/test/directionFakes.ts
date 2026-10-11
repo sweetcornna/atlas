@@ -44,6 +44,7 @@ import {
   type NotifyChannelDraft,
   type NotifyChannelView,
   type ScheduleDraft,
+  type ScheduleReader,
   type ScheduleRunView,
   type SchedulesPort,
   type SchedulesSnapshot,
@@ -175,11 +176,23 @@ export class FakeSchedules implements SchedulesPort {
     ]
   }
 
-  async snapshot(): Promise<ConsoleResult<SchedulesSnapshot>> {
+  visible(id: string, actor: ScheduleReader): boolean {
+    const row = this.schedules.find(v => v.id === id)
+    return (
+      row !== undefined &&
+      (actor.role === 'ops' ||
+        (actor.role == null && actor.subject.startsWith('legacy:')) ||
+        row.createdBy === actor.subject)
+    )
+  }
+
+  async snapshot(
+    actor: ScheduleReader,
+  ): Promise<ConsoleResult<SchedulesSnapshot>> {
     this.calls.push('snapshot')
     return ok({
-      schedules: this.schedules,
-      runs: this.runs,
+      schedules: this.schedules.filter(v => this.visible(v.id, actor)),
+      runs: this.runs.filter(v => this.visible(v.scheduleId, actor)),
       channels: this.channels,
       templates: TEMPLATES,
       targets: this.targets,

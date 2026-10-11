@@ -29,7 +29,7 @@
  * convention: it is what refuses a `--actions-store` pointed at the account
  * book by mistake. Every later line's `kind` is the action's verb and its data
  * is exactly `requestId`, `subject`, `target`, `outcome`, and `code` /
- * `breakGlass` when present — nothing else is accepted on either side. The
+ * `breakGlass` / `createdBy` when present — nothing else is accepted on either side. The
  * port carries no payload to begin with (`deps.ts`, `ConsoleAction`); `target`
  * and `code` are in addition cleaned before they are written, because one of
  * them is a URL path and a token pasted into a path is the one way a secret
@@ -110,6 +110,7 @@ const DATA_KEYS: ReadonlySet<string> = new Set([
   ...REQUIRED_KEYS,
   'code',
   'breakGlass',
+  'createdBy',
 ])
 
 /**
@@ -250,6 +251,8 @@ function encodeAction(
   | string {
   if (!isActionName(entry.action)) return '动作名不合格'
   if (!SUBJECT.test(entry.subject)) return '主体不合格'
+  if (entry.createdBy !== undefined && !SUBJECT.test(entry.createdBy))
+    return '创建者不合格'
   if (!REQUEST_ID.test(entry.requestId)) return 'requestId 不合格'
   if (!isOutcome(entry.outcome)) return '结果不合格'
   const at = Math.floor(entry.at)
@@ -263,6 +266,7 @@ function encodeAction(
   const code = entry.code === undefined ? null : cleanCode(entry.code, secrets)
   if (code !== null) data['code'] = code
   if (entry.breakGlass === true) data['breakGlass'] = true
+  if (entry.createdBy !== undefined) data['createdBy'] = entry.createdBy
   return { kind: entry.action, at, data }
 }
 
@@ -289,7 +293,8 @@ function decodeAction(entry: LedgerEntry): ActionRecord | string {
   for (const key of REQUIRED_KEYS) {
     if (data[key] === undefined) return `缺字段 ${key}`
   }
-  const { requestId, subject, target, outcome, code, breakGlass } = data
+  const { requestId, subject, target, outcome, code, breakGlass, createdBy } =
+    data
   if (typeof requestId !== 'string' || !REQUEST_ID.test(requestId)) {
     return 'requestId 不对'
   }
@@ -307,6 +312,11 @@ function decodeAction(entry: LedgerEntry): ActionRecord | string {
     return 'code 不对'
   }
   if (breakGlass !== undefined && breakGlass !== true) return 'breakGlass 不对'
+  if (
+    createdBy !== undefined &&
+    (typeof createdBy !== 'string' || !SUBJECT.test(createdBy))
+  )
+    return 'createdBy 不对'
   return {
     seq: entry.seq - 1,
     at: entry.at,
@@ -317,6 +327,7 @@ function decodeAction(entry: LedgerEntry): ActionRecord | string {
     target,
     outcome,
     ...(code === undefined ? {} : { code }),
+    ...(createdBy === undefined ? {} : { createdBy }),
   }
 }
 

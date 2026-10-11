@@ -18,6 +18,7 @@ import {
   type NotifyChannelDraft,
   type NotifyChannelView,
   type ScheduleDraft,
+  type ScheduleReader,
   type ScheduleRunView,
   type SchedulesPort,
   type ScheduleTemplateView,
@@ -79,6 +80,7 @@ const channelDraftSchema = z.object({
 })
 const runSchema = z.object({
   runId: z.string(),
+  createdBy: z.string().optional(),
   scheduleId: z.string(),
   plannedAt: z.number(),
   startedAt: z.number(),
@@ -394,19 +396,46 @@ export class ConsoleSchedules implements SchedulesPort {
     }
   }
 
-  async snapshot() {
+  visible(id: string, actor: DirectionActor): boolean {
+    const schedule = this.#schedules.get(id)
+    return schedule !== undefined && this.#visible(schedule, actor)
+  }
+
+  #visible(schedule: StoredSchedule, actor: ScheduleReader): boolean {
+    return (
+      actor.role === 'ops' ||
+      (actor.role == null && actor.subject.startsWith('legacy:')) ||
+      schedule.createdBy === actor.subject
+    )
+  }
+
+  async snapshot(actor: ScheduleReader) {
     return this.#serial(async () => {
       const targets = await this.#options.chat.targets()
       if (!targets.ok) return targets
       return ok(
         this.#redact({
-          schedules: [...this.#schedules.values()].map(schedule =>
-            this.#view(schedule),
-          ),
+          schedules: [...this.#schedules.values()]
+            .filter(schedule => this.#visible(schedule, actor))
+            .map(schedule => this.#view(schedule)),
           runs: [
-            ...[...this.#active.values()].map(active => active.view),
-            ...[...this.#runs].reverse(),
+            ...new Map(
+              [
+                ...[...this.#active.values()].map(active => active.view),
+                ...[...this.#runs].reverse(),
+              ]
+                .map(run => [run.runId, run] as const)
+                .reverse(),
+            ).values(),
           ]
+            .filter(
+              run =>
+                actor.role === 'ops' ||
+                (actor.role == null && actor.subject.startsWith('legacy:')) ||
+                (run.createdBy ??
+                  this.#schedules.get(run.scheduleId)?.createdBy) ===
+                  actor.subject,
+            )
             .sort(
               (a, b) => b.startedAt - a.startedAt || b.plannedAt - a.plannedAt,
             )
@@ -431,6 +460,13 @@ export class ConsoleSchedules implements SchedulesPort {
   ): Promise<ConsoleResult<T>> {
     return this.#serial(async () => {
       if (this.#closed) return fail('unreachable', '定时任务簿已关闭')
+      const original = this.#schedules.get(target)
+      if (
+        action.startsWith('schedule.') &&
+        original &&
+        !this.#visible(original, actor)
+      )
+        return fail('not_found', '定时任务不存在')
       const allowed =
         actor.role === 'ops' ||
         (actor.role === null && actor.subject === 'legacy:admin') ||
@@ -455,6 +491,9 @@ export class ConsoleSchedules implements SchedulesPort {
           at: this.#now(),
           requestId: actor.requestId,
           subject: actor.subject,
+          ...(action.startsWith('schedule.')
+            ? { createdBy: original?.createdBy ?? actor.subject }
+            : {}),
           action,
           target: /^[sc]-[0-9a-f-]{36}$/.test(target) ? target : '-',
           outcome: result.ok
@@ -797,6 +836,7 @@ export class ConsoleSchedules implements SchedulesPort {
         : null
     const view: ScheduleRunView = {
       runId: crypto.randomUUID(),
+      createdBy: schedule.createdBy,
       scheduleId: schedule.id,
       plannedAt,
       startedAt: this.#now(),
@@ -1144,7 +1184,8 @@ export class ConsoleSchedules implements SchedulesPort {
           const recorded = await this.#options.actions?.record({
             at: now,
             requestId: run.runId,
-            subject: 'system:schedules',
+            subject: schedule.createdBy,
+            createdBy: schedule.createdBy,
             action: 'schedule.run',
             target: schedule.id,
             outcome: 'ok',

@@ -224,7 +224,7 @@ function open(): ConsoleSchedules {
   })
 }
 async function snapshot(): Promise<SchedulesSnapshot> {
-  return value(await book.snapshot())
+  return value(await book.snapshot({ subject: 'legacy:admin', role: null }))
 }
 beforeEach(() => {
   accounts = {
@@ -730,7 +730,7 @@ describe('execution through the conversation port', () => {
     }
     book.close()
     book = open()
-    const snapshot = await book.snapshot()
+    const snapshot = await book.snapshot({ subject: 'legacy:admin', role: null })
     expect(value(snapshot).runs).toHaveLength(50)
     expect(value(snapshot).runs[0]!.startedAt).toBe(now)
     expect(value(snapshot).runs[49]!.startedAt).toBe(now - 49)
@@ -810,7 +810,8 @@ describe('execution through the conversation port', () => {
     )
     expect(actions.at(-1)).toMatchObject({
       action: 'schedule.run',
-      subject: 'system:schedules',
+      subject: actor.subject,
+      createdBy: actor.subject,
       target: job.id,
     })
   })

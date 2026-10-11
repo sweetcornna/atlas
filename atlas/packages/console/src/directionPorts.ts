@@ -501,6 +501,8 @@ export type ScheduleRunOutcome =
 
 export interface ScheduleRunView {
   readonly runId: string
+  /** Creator is retained after deletion so history keeps its account scope. */
+  readonly createdBy?: string
   readonly scheduleId: string
   readonly plannedAt: number
   readonly startedAt: number
@@ -603,8 +605,15 @@ export interface NotifyChannelDraft {
   readonly url?: string
 }
 
+export interface ScheduleReader {
+  readonly subject: string
+  readonly role?: DirectionActor['role']
+}
+
 export interface SchedulesPort {
-  snapshot(): Promise<ConsoleResult<SchedulesSnapshot>>
+  /** In-memory ownership preflight; never reads a port or admits an action. */
+  visible(id: string, actor: DirectionActor): boolean
+  snapshot(actor: ScheduleReader): Promise<ConsoleResult<SchedulesSnapshot>>
   save(
     draft: ScheduleDraft,
     actor: DirectionActor,
