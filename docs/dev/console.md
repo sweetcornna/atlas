@@ -183,7 +183,9 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--chat-store <绝对路径>` | `occConfigPath('qianmo','console','chat.ndjson')` | 会话与转录的落盘位置（§6.5）。**必须是绝对路径**，理由同 `--audit` |
 | `--node-server <node>=<server>` | 无 | 这个节点跑在哪台机器上，**可重复**，一个节点一条，同一个节点不许给两次。**给了才有归属面**（§11）；也是备注的白名单。server 的形状：非空、≤64 字符、只收 `A-Za-z0-9 . _ : -`（主机名、IPv4、IPv6 的冒号、短名都在内） |
 | `--server-notes <绝对路径>` | `occConfigPath('qianmo','console','server-notes.ndjson')` | 服务器备注的落盘位置（§11）。**必须是绝对路径**，理由同 `--audit` |
-| `--handoff-root <绝对路径>` | 无 | 接力裸仓所在的目录（P17.4），`<目录>/<项目>.git` 由笔记本侧 `qm handoff init` 建。**给了才有 `/v0/handoff`**。台账在 `qianmoConfigPath('qianmo','handoff','ledger.ndjson')`，带独占锁：同一配置根上第二个控制台在这一步就起不来；接力的审计是单独一条链 `…/handoff/audit.ndjson` |
+| `--handoff-repo <owner/name>=<绝对令牌文件>` | 无 | GitHub 代码存储模式；可重复，令牌文件 0600、当前属主、非软链，地址固定 github.com。没有 `--handoff-root` 时只保留台账；节点不需要 `--handoff-node-git` |
+| `--handoff-retention-days <天数>` | 7 | GitHub 模式失败/过期分支的保留期；中枢每小时清理，逐项记审计，不取对象 |
+| `--handoff-root <绝对路径>` | 无 | 接力裸仓所在的目录（P17.4），`<目录>/<项目>.git` 由笔记本侧 `qm handoff init` 建。**给此参数或 `--handoff-repo` 才有 `/v0/handoff`**。台账在 `qianmoConfigPath('qianmo','handoff','ledger.ndjson')`，带独占锁：同一配置根上第二个控制台在这一步就起不来；接力的审计是单独一条链 `…/handoff/audit.ndjson` |
 | `--handoff-node <node>=<ws(s)://…>` | 无 | 节点桥（`qm handoff node`，P17.5）的入站端点，**可重复**，按给出的顺序挑空闲节点，一个节点同时只跑一个任务。要 `--handoff-root`，且同一节点要有一条 `--handoff-node-git`；PSK 与 `--chat-url` 同一个按节点派生的变量。节点桥地址固定为 `qianmo://<node>/handoff`。派发的 `task.request` **总是**用控制台的签名身份签（与 `--print-wake-identity` 同一把），节点桥要 `--trust` 它。用法见 `handoff-usage.md` §6 |
 | `--handoff-node-git <node>=<ssh 目标>:<根> \| <绝对路径>` | 无 | 那个节点的裸仓根（节点桥 `<root>/repos`），经节点上的 SSH 闸门推影子提交与会话提交、取回 `qianmo/<任务>` 与云端会话；给绝对路径就是本机上的节点 |
 | `--handoff-node-key <绝对路径>` | 无 | 中枢在节点闸门上的专用钥匙（`IdentitiesOnly`）。有 SSH 形式的 `--handoff-node-git` 时必给，没有时给了报错 |
@@ -660,12 +662,14 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/handoff/devices/pairing` | **成员** | `{pairing:{code,expiresAt,command}}`；12 位 base32，10 分钟、一次性，错误 5 次失效；管理令牌也可签发 |
 | DELETE | `/v0/handoff/devices/<设备 id>` | **成员** | 只可吊销自己签发的设备；ops / 管理令牌可以吊销任何设备；设备令牌不能管理配对与吊销 |
 | POST | `/v0/handoff/projects` | 设备 | `{project}` 在 `--handoff-root` 建裸仓、装钩子并登记账号属主，幂等；其他账号 403，已有无属主的 SSH 仓库继续走原接法 |
-| GET | `/v0/handoff/git/<项目>.git/info/refs` | 设备 | smart HTTP advertisement；查询 `service=git-upload-pack` 或 `git-receive-pack`；只允许访问自己账号的项目 |
-| POST | `/v0/handoff/git/<项目>.git/git-upload-pack`、`/v0/handoff/git/<项目>.git/git-receive-pack` | 设备 | smart HTTP RPC，支持 gzip 请求体与 Git-Protocol；receive-pack 只能写本设备的 wip / sessions 引用 |
-| POST | `/v0/handoff` | **成员** | 登记一次本地转交（P17.4，`qm handoff now` 调它）：请求体是转交清单 JSON。控制台在 `--handoff-root` 下的裸仓里自己用 `git cat-file` 核对代码提交、树与会话提交，核对通过才写台账：201 新建，200 同一份清单已登记过。没给 `--handoff-root` 时 501 |
+| GET | `/v0/handoff/git/<项目>.git/info/refs` | 设备 | 旧模式 smart HTTP advertisement（GitHub 模式 404）；查询 `service=git-upload-pack` 或 `git-receive-pack`；只允许访问自己账号的项目 |
+| POST | `/v0/handoff/git/<项目>.git/git-upload-pack`、`/v0/handoff/git/<项目>.git/git-receive-pack` | 设备 | 旧模式 smart HTTP RPC（GitHub 模式 404），支持 gzip 请求体与 Git-Protocol；receive-pack 只能写本设备的 wip / sessions 引用 |
+| GET | `/v0/handoff/config` | view / 设备 | `{codeStore:"github"或"hub"}`；设备可读，未接台账 501 |
+| POST | `/v0/handoff` | **成员** | 登记一次本地转交（P17.4，`qm handoff now` 调它）：请求体是转交清单 JSON。控制台在 `--handoff-root` 下的裸仓里自己用 `git cat-file` 核对代码提交、树与会话提交，核对通过才写台账：201 新建，200 同一份清单已登记过。GitHub 模式以认证设备号校验 code 引用，用仓库连接与 ls-remote 核对 tip 后登记；缺连接 400“中枢没有这个仓库的连接”。两种模式都未配时 501 |
 | GET | `/v0/handoff`、`/v0/handoff/<任务 id>` | view | 接力任务列表与单条（含清单、状态、ownerDevice / ownerSubject）；设备只看见自己账号的任务，其他账号的单条与操作都回 404 |
 | POST | `/v0/handoff/<任务 id>/send` | **成员** | 给云端那一侧追加一句话：写进台账（202），配了 `--handoff-node` 时按顺序转给正在跑这个任务的节点（P17.5），节点送进正在跑的回合 |
 | POST | `/v0/handoff/<任务 id>/attach` | **成员** | `qm handoff attach` 要接入的位置（P17.6）：`{ device? }` → `{ attach: { taskId, state, node, threadId, project, tool } }`，只给 `running` 的任务，其余状态 400 并说该用什么命令；记审计 `handoff.attach-requested`。只给位置：节点上 app-server 的令牌由使用者自己的 SSH 去读，不经控制台。Claude Code 会话在 `running` 时 `threadId` 为 `null` |
+| POST | `/v0/handoff/<任务 id>/clean` | **成员 / 设备** | 本机清理完成后记录 cleaned；仅本设备已失败/已接回任务，台账保留提交号，其他设备或账号 404 |
 | POST | `/v0/handoff/<任务 id>/return` | **成员** | `qm handoff pull` 接回后记 `returned`（P17.6）：`{ device?, mode? }`，`mode` 为 `fast-forward` 或 `branch`；只从 `done`、`failed` 转入，已是 `returned` 时 200 且 `changed: false`；记审计 `handoff.returned` |
 | GET | `/v0/providers`、`/v0/providers/profiles/<档案 id>`、`/v0/providers/nodes/<节点>` | view | 模型服务总览、一份档案、一个节点（§5.4）。不是写者时去掉密钥指纹、完整 Base URL、漂移键名与最近记录；节点报的逐把密钥状态（`actual.keys`，只有编号、状态、恢复时间与原因，P18.18）照给。没开 `--providers` 时 501 |
 | GET | `/v0/providers/catalog` | view | 预设目录 |

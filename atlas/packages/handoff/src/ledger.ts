@@ -1,6 +1,11 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {
+  type HandoffCode,
+  type HandoffCodeView,
+  validateHandoffCode,
+} from './code.js'
 import { isValidSegment } from '@qianmo/protocol'
 import {
   chmodSync,
@@ -130,6 +135,7 @@ const DIRECTORY_MODE = 0o700
 const FILE_MODE = 0o600
 
 export interface HandoffTask {
+  readonly code?: HandoffCodeView
   readonly taskId: string
   readonly ownerDevice?: string | null
   readonly ownerSubject?: string | null
@@ -164,6 +170,7 @@ type TransitionRecord = {
 } & (
   | {
       readonly state: 'accepted'
+      readonly code?: HandoffCode
       readonly manifest: HandoffManifest
       readonly ownerDevice?: string
       readonly ownerSubject?: string
@@ -172,7 +179,7 @@ type TransitionRecord = {
   | { readonly state: 'running' }
   | { readonly state: 'done'; readonly result: HandoffResult }
   | { readonly state: 'failed'; readonly reason: string }
-  | { readonly state: 'returned' }
+  | { readonly state: 'returned'; readonly cleaned?: boolean }
 )
 
 interface SendRecord {
@@ -182,7 +189,13 @@ interface SendRecord {
   readonly send: { readonly seq: number; readonly text: string }
 }
 
-type LedgerRecord = TransitionRecord | SendRecord
+interface CleanRecord {
+  readonly v: 1
+  readonly at: number
+  readonly taskId: string
+  readonly cleaned: true
+}
+type LedgerRecord = TransitionRecord | SendRecord | CleanRecord
 
 export type HandoffLedgerErrorCode =
   | 'unknown_task'
@@ -265,6 +278,18 @@ function parseRecord(line: string): LedgerRecord | string {
     return 'not JSON'
   }
   if (!isPlainObject(value)) return 'not an object'
+  if (Object.hasOwn(value, 'cleaned') && !Object.hasOwn(value, 'state')) {
+    if (
+      Object.keys(value).length !== 4 ||
+      value.v !== 1 ||
+      !isTaskId(value.taskId) ||
+      !Number.isSafeInteger(value.at) ||
+      Number(value.at) < 0 ||
+      value.cleaned !== true
+    )
+      return 'bad cleanup'
+    return { v: 1, at: Number(value.at), taskId: value.taskId, cleaned: true }
+  }
   if (Object.hasOwn(value, 'send')) return parseSendRecord(value)
   const state = value.state
   if (!(HANDOFF_STATES as readonly unknown[]).includes(state)) {
@@ -283,6 +308,11 @@ function parseRecord(line: string): LedgerRecord | string {
     )
       return 'bad owner'
     expected.push('ownerDevice', 'ownerSubject')
+  }
+  if (state === 'accepted' && value.code !== undefined) expected.push('code')
+  if (state === 'returned' && value.cleaned !== undefined) {
+    if (value.cleaned !== true) return 'bad cleanup'
+    expected.push('cleaned')
   }
   const keys = Object.keys(value)
   if (
@@ -307,9 +337,19 @@ function parseRecord(line: string): LedgerRecord | string {
     case 'accepted': {
       const manifest = validateManifest(value.manifest)
       if (!manifest.ok) return `bad manifest (${manifest.errors.join('; ')})`
+      const code =
+        value.code === undefined
+          ? manifest.value.code
+          : validateHandoffCode(value.code, manifest.value.device)
+      if (
+        code === null ||
+        JSON.stringify(code) !== JSON.stringify(manifest.value.code)
+      )
+        return 'bad code'
       return {
         ...base,
         state: 'accepted',
+        ...(code === undefined ? {} : { code }),
         manifest: manifest.value,
         ...(typeof value.ownerDevice === 'string' &&
         typeof value.ownerSubject === 'string'
@@ -336,7 +376,11 @@ function parseRecord(line: string): LedgerRecord | string {
         : (problem ?? 'bad failure reason')
     }
     case 'returned':
-      return { ...base, state: 'returned' }
+      return {
+        ...base,
+        state: 'returned',
+        ...(value.cleaned === true ? { cleaned: true } : {}),
+      }
   }
 }
 
@@ -459,6 +503,16 @@ function advance(
       taskId: record.taskId,
       state: 'accepted',
       manifest: record.manifest,
+      ...(record.code === undefined
+        ? {}
+        : {
+            code: {
+              ...record.code,
+              ...(record.code.reason === undefined
+                ? {}
+                : { sessionsReason: record.code.reason }),
+            },
+          }),
       ...(record.ownerDevice === undefined
         ? {}
         : {
@@ -502,9 +556,22 @@ function advance(
       return { ...next, node: record.node }
     }
     case 'done':
-      return { ...next, result: record.result }
+      return {
+        ...next,
+        result: record.result,
+        ...(current.code === undefined || record.result.result === undefined
+          ? {}
+          : { code: { ...current.code, result: record.result.result } }),
+      }
     case 'failed':
       return { ...next, reason: record.reason }
+    case 'returned':
+      return {
+        ...next,
+        ...(current.code === undefined || !record.cleaned
+          ? {}
+          : { code: { ...current.code, cleaned: true } }),
+      }
     default:
       return next
   }
@@ -532,7 +599,15 @@ export function replayLedger(content: Buffer | string): LedgerReplay {
       throw new HandoffLedgerError('corrupt', record, index + 1)
     }
     try {
-      if ('send' in record) {
+      if ('cleaned' in record && !('state' in record)) {
+        const task = tasks.get(record.taskId)
+        if (!task?.code || !['failed', 'returned'].includes(task.state))
+          throw new HandoffLedgerError('corrupt', 'cleanup of unfinished task')
+        tasks.set(task.taskId, {
+          ...task,
+          code: { ...task.code, cleaned: true },
+        })
+      } else if ('send' in record) {
         const send = admitSend(tasks, sends, record)
         sends.set(record.taskId, [...(sends.get(record.taskId) ?? []), send])
       } else {
@@ -671,6 +746,7 @@ export class HandoffLedger {
       taskId,
       state: 'accepted',
       manifest: checked.value,
+      ...(checked.value.code === undefined ? {} : { code: checked.value.code }),
       ...(owner === undefined
         ? {}
         : { ownerDevice: owner.deviceId, ownerSubject: owner.owner }),
@@ -728,12 +804,27 @@ export class HandoffLedger {
     })
   }
 
-  markReturned(taskId: string): HandoffTask {
+  markCleaned(taskId: string): HandoffTask {
+    const task = this.get(taskId)
+    if (!task?.code || !['failed', 'returned'].includes(task.state))
+      throw new HandoffLedgerError(
+        'illegal_transition',
+        'cleanup of unfinished task',
+      )
+    if (task.code.cleaned) return task
+    this.#append({ v: 1, at: this.#now(), taskId, cleaned: true })
+    const next = { ...task, code: { ...task.code, cleaned: true } }
+    this.#tasks.set(taskId, next)
+    return next
+  }
+
+  markReturned(taskId: string, cleaned = false): HandoffTask {
     return this.#record({
       v: LEDGER_VERSION,
       at: this.#now(),
       taskId,
       state: 'returned',
+      ...(cleaned ? { cleaned: true } : {}),
     })
   }
 

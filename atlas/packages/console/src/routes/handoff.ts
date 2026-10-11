@@ -247,6 +247,18 @@ function taskWrite(action: string): TaskWrite | undefined {
       return send
     case 'attach':
       return attach
+    case 'clean':
+      return async (ctx, taskId) => {
+        if (!ctx.deps.handoff?.markCleaned)
+          return fail(501, 'unsupported', HANDOFF_UNWIRED)
+        const blocked = await ctx.admit()
+        if (blocked) return blocked
+        const result = await ctx.deps.handoff.markCleaned(taskId, actorOf(ctx))
+        await ctx.record('handoff.return', taskId, ...outcomeOf(result))
+        return result.ok
+          ? json({ task: result.value })
+          : failureResponse(result.failure)
+      }
     case 'return':
       return markReturned
     default:
@@ -263,7 +275,14 @@ async function handleHandoffApi(
   const denied = guard(access.credential, 'view', 'guarded')
   if (denied !== null) return denied
 
+  if (rest[0] === 'config' && rest.length === 1) {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    if (!deps.handoff) return fail(501, 'unsupported', HANDOFF_UNWIRED)
+    return json({ codeStore: deps.handoff.codeStore ?? 'hub' })
+  }
   if (rest[0] === 'git' || rest[0] === 'projects') {
+    if (deps.handoff?.codeStore === 'github')
+      return notFound('GitHub 模式不托管 git 仓库')
     const projects = rest[0] === 'projects'
     const advertise =
       rest.length === 4 && rest[2] === 'info' && rest[3] === 'refs'

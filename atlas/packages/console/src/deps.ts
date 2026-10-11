@@ -1278,6 +1278,14 @@ export interface HandoffResultView {
 
 /** 台账里的一个任务。 */
 export interface HandoffTaskView {
+  readonly code?: {
+    readonly repo: string
+    readonly wip: { readonly ref: string; readonly commit: string }
+    readonly sessions: { readonly ref: string; readonly commit: string } | null
+    readonly sessionsReason?: string
+    readonly result?: { readonly ref: string; readonly commit: string }
+    readonly cleaned?: boolean
+  }
   readonly taskId: string
   readonly state: HandoffTaskState
   readonly manifest: HandoffManifestView
@@ -1378,6 +1386,11 @@ export interface HandoffGitPort {
 }
 
 export interface HandoffPort {
+  readonly codeStore?: 'github' | 'hub'
+  markCleaned?(
+    taskId: string,
+    actor?: HandoffRequestActor,
+  ): Promise<ConsoleResult<HandoffTaskView>>
   /** `body` 是请求体解出来的 JSON，校验在宿主做。 */
   accept(
     body: unknown,

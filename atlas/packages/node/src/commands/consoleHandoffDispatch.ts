@@ -55,6 +55,13 @@
  * at deadline + 10 min without a result — the node interrupts the turn at the
  * deadline itself, so the grace is for committing and replying.
  *
+ * GitHub mode sends coordinates instead of pushing objects or using SSH.
+ * Its GitHub token is resolved afresh for every request and travels only over
+ * wss:// or ws:// on 127.0.0.1, ::1 or localhost (a local tunnel). The transport
+ * authenticates but does not encrypt ws://: any other link fails the task with
+ * 「令牌只经加密链路下发」 before opening a link or sending a payload.
+ * The hub checks result refs with ls-remote and never fetches objects.
+ *
  * ## Secrets
  *
  * The PSK and the signing key never leave the transport and the issuer; the
@@ -63,6 +70,11 @@
  * in the app-server's environment alone.
  */
 
+import {
+  resolveHandoffRepo,
+  type HandoffRepoCredentials,
+} from './handoffRepoCredentials.js'
+import { githubRemoteRefs, tokenLinkAllowed } from './handoffGithubGit.js'
 import { join } from 'node:path'
 import { AuditSource, type AuditTrail } from '@qianmo/audit'
 import {
@@ -139,11 +151,12 @@ export interface HandoffNodeTarget {
   /** Transport key for that node; never printed. */
   readonly psk: string
   /** The node's repository root (`<root>/repos` of the bridge), as git reaches it. */
-  readonly git: HubLocation
+  readonly git?: HubLocation
 }
 
 /** What the console's arguments decide; `consoleHandoff.ts` adds the ledger. */
 export interface HandoffDispatchConfig {
+  readonly credentials?: HandoffRepoCredentials
   readonly nodes: readonly HandoffNodeTarget[]
   /** The console's own address (`--chat-from`), the `from` of every request. */
   readonly from: string
@@ -541,7 +554,7 @@ export function createHandoffDispatcher(
 
   const connectionTo = (state: NodeState, project: string) => {
     const conn = hubConnection({
-      hub: state.target.git,
+      hub: state.target.git as HubLocation,
       project,
       ...(options.sshKey === undefined ? {} : { key: options.sshKey }),
     })
@@ -559,6 +572,7 @@ export function createHandoffDispatcher(
     task: HandoffTask,
     state: NodeState,
   ): Promise<void> => {
+    if (task.code) return
     const { manifest } = task
     await pushToHub(
       connectionTo(state, manifest.project),
@@ -576,6 +590,23 @@ export function createHandoffDispatcher(
     state: NodeState,
     result: HandoffResult,
   ): Promise<void> => {
+    if (task.code) {
+      const credential = await resolveHandoffRepo(
+        options.credentials,
+        task.code.repo,
+      )
+      if (!credential) throw new Error('仓库连接已撤销')
+      if (!result.result) throw new Error('结果缺 GitHub 坐标')
+      const refs = await githubRemoteRefs(
+        options.root,
+        credential.remoteUrl,
+        [result.result.ref],
+        credential,
+      )
+      if (refs.get(result.result.ref) !== result.head)
+        throw new Error('结果引用与声明的提交不一致')
+      return
+    }
     const conn = connectionTo(state, task.manifest.project)
     const repo = hubRepository(task)
     const branch = taskRef(task.taskId)
@@ -614,6 +645,7 @@ export function createHandoffDispatcher(
     task: HandoffTask,
     state: NodeState,
     createdAt: number,
+    credential?: { kind: 'github-token'; token: string },
   ): QianmoMessage =>
     createMessage({
       from: options.from,
@@ -625,7 +657,10 @@ export function createHandoffDispatcher(
       // Rule 6 of 2026-10-03: the deadline stays in the manifest and becomes
       // the envelope's task deadline here.
       taskTtlMs: Math.max(1, deadlineOf(task) - createdAt),
-      payload: task.manifest,
+      payload:
+        credential === undefined
+          ? task.manifest
+          : { ...task.manifest, credential },
       cap: options.issueCapability({
         aud: state.target.node,
         sub: state.address,
@@ -647,12 +682,30 @@ export function createHandoffDispatcher(
       ) {
         return
       }
+      let credential: { kind: 'github-token'; token: string } | undefined
+      if (task.code) {
+        if (!tokenLinkAllowed(state.target.url)) {
+          fail(taskId, '令牌只经加密链路下发')
+          return
+        }
+        const resolved = await resolveHandoffRepo(
+          options.credentials,
+          task.code.repo,
+        )
+        if (!resolved) {
+          fail(taskId, '仓库连接已撤销')
+          return
+        }
+        credential = { kind: 'github-token', token: resolved.token }
+      }
       if (task.state === 'dispatched' && !memo.pushed) {
         await pushObjects(task, state)
         memo.pushed = true
       }
       memo.lastRequestAt = now()
-      await deliver(state, createdAt => requestMessage(task, state, createdAt))
+      await deliver(state, createdAt =>
+        requestMessage(task, state, createdAt, credential),
+      )
       memo.requestLanded = true
       say(`task ${taskId} 请求已送到 ${state.target.node}`)
     } catch (error) {
@@ -825,6 +878,17 @@ export function createHandoffDispatcher(
     try {
       await fetchBack(task, state, result)
     } catch (error) {
+      if (
+        task.code &&
+        [
+          '仓库连接已撤销',
+          '结果缺 GitHub 坐标',
+          '结果引用与声明的提交不一致',
+        ].includes(messageOf(error))
+      ) {
+        fail(taskId, messageOf(error))
+        return
+      }
       memo.pendingFetch = { result, error: messageOf(error) }
       say(
         `task ${taskId} 结果到了，但从 ${state.target.node} 取回失败（${messageOf(error)}），下个周期再取`,
@@ -945,7 +1009,9 @@ export function createHandoffDispatcher(
       project: task.manifest.project,
       wip: task.manifest.wip,
       sessionCommit: task.manifest.sessionCommit,
-      git: formatHub(state.target.git),
+      git: task.code
+        ? `github:${task.code.repo}`
+        : formatHub(state.target.git as HubLocation),
     })
     void track(request(task.taskId, state))
     return true
@@ -1136,7 +1202,9 @@ export function wireHandoffDispatch(
         transportPskEnvVarForNode(entry.node, '--handoff-node'),
       )
       nodes.push({ node: entry.node, url: entry.url, psk, git: entry.git })
-      notes.push(`${entry.node} -> ${entry.url} (git ${formatHub(entry.git)})`)
+      notes.push(
+        `${entry.node} -> ${entry.url}${entry.git === undefined ? ' (GitHub)' : ` (git ${formatHub(entry.git)})`}`,
+      )
     } catch {
       // The variable's content belongs to the secret boundary: no message.
       notes.push(`${entry.node} disabled (PSK unavailable)`)

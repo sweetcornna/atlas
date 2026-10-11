@@ -51,7 +51,7 @@
 
 import { randomBytes } from 'node:crypto'
 import { statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { type AuditInput, AuditSource, AuditTrail } from '@qianmo/audit'
 import type {
   ConsoleResult,
@@ -71,6 +71,11 @@ import {
   runGit,
   validateManifest,
 } from '@qianmo/handoff'
+import {
+  resolveHandoffRepo,
+  type HandoffRepoCredentials,
+} from './handoffRepoCredentials.js'
+import { githubRemoteRefs, deleteGithubTaskRefs } from './handoffGithubGit.js'
 import { qianmoConfigPath } from '@qianmo/paths'
 import {
   createHandoffDispatcher,
@@ -79,9 +84,10 @@ import {
 } from './consoleHandoffDispatch.js'
 
 /**
- * Every audit kind the hub writes under `AuditSource.Handoff`
+ * Original transition audit kinds under `AuditSource.Handoff`
  * (`handoff-p17-plan.md` P17.4「审计」行). P17.4 writes the first; the rest
- * belong to dispatch (P17.5) and to attach / pull (P17.6).
+ * belong to dispatch (P17.5) and to attach / pull (P17.6). GitHub janitor
+ * cleanup additionally writes `handoff.cleaned`.
  */
 export const HANDOFF_AUDIT_KINDS = [
   'handoff.accepted',
@@ -104,7 +110,10 @@ function handoffAuditPath(): string {
 
 interface ConsoleHandoffOptions {
   /** Directory holding `<project>.git`; the `--handoff-root` value. */
-  readonly root: string
+  readonly root?: string
+  readonly credentials?: HandoffRepoCredentials
+  readonly retentionMs?: number
+  readonly janitorIntervalMs?: number
   readonly ledgerPath?: string
   readonly auditPath?: string
   readonly ownsProject?: (project: string, owner: string) => boolean
@@ -129,6 +138,7 @@ interface ConsoleHandoff {
   readonly dispatchStatus: string
   /** Start dispatching; called once the console's port is bound. */
   start(): void
+  janitor(): Promise<void>
   /** Close the ledger (releasing its lock) and the audit chain. */
   close(): void
 }
@@ -267,6 +277,9 @@ export function handoffLockRefusal(error: unknown): string | null {
 export function openConsoleHandoff(
   options: ConsoleHandoffOptions,
 ): ConsoleHandoff {
+  const github = options.root === undefined
+  if (github && options.credentials === undefined)
+    throw new Error('GitHub 接力需要仓库凭据端口')
   const now = options.now ?? Date.now
   const ledgerPath = options.ledgerPath ?? handoffLedgerPath()
   const auditPath = options.auditPath ?? handoffAuditPath()
@@ -311,7 +324,8 @@ export function openConsoleHandoff(
       ? undefined
       : createHandoffDispatcher({
           ...dispatchConfig,
-          root: options.root,
+          root: options.root ?? dirname(ledgerPath),
+          ...(github ? { credentials: options.credentials } : {}),
           ledger,
           trail,
           now,
@@ -327,7 +341,66 @@ export function openConsoleHandoff(
       ? task
       : undefined
   }
+  let janitorTimer: ReturnType<typeof setInterval> | undefined
+  let janitorPending: Promise<void> | undefined
+  let closed = false
+  const janitor = (): Promise<void> => {
+    if (!github || closed) return Promise.resolve()
+    if (janitorPending) return janitorPending
+    janitorPending = (async () => {
+      for (const task of ledger.list()) {
+        if (closed) return
+        if (
+          task.state !== 'failed' ||
+          !task.code ||
+          task.code.cleaned ||
+          now() - task.updatedAt <= (options.retentionMs ?? 7 * 86400_000)
+        )
+          continue
+        try {
+          const credential = await resolveHandoffRepo(
+            options.credentials,
+            task.code.repo,
+          )
+          if (!credential) continue
+          await deleteGithubTaskRefs(
+            dirname(ledgerPath),
+            credential.remoteUrl,
+            task.code,
+            task.taskId,
+            credential,
+          )
+          if (closed) return
+          ledger.markCleaned(task.taskId)
+          appendAudit({
+            at: now(),
+            source: AuditSource.Handoff,
+            kind: 'handoff.cleaned',
+            taskId: task.taskId,
+            outcome: 'ok',
+            detail: { repo: task.code.repo },
+          })
+        } catch {
+          onError(`接力清理失败：${task.taskId}`)
+        }
+      }
+    })().finally(() => {
+      janitorPending = undefined
+    })
+    return janitorPending
+  }
   const port: HandoffPort = {
+    codeStore: github ? 'github' : 'hub',
+    async markCleaned(taskId, actor) {
+      const task = visible(taskId, actor)
+      if (!task || (actor !== undefined && task.ownerDevice !== actor.deviceId))
+        return failure('not_found', `台账里没有任务 ${taskId}`)
+      try {
+        return { ok: true, value: ledger.markCleaned(taskId) }
+      } catch {
+        return failure('rejected', '只能清理已失败或已接回的任务')
+      }
+    },
     async accept(body, actor): Promise<ConsoleResult<HandoffAcceptance>> {
       const checked = validateManifest(body)
       if (!checked.ok) {
@@ -340,16 +413,43 @@ export function openConsoleHandoff(
       if (
         actor !== undefined &&
         (manifest.device !== actor.deviceId ||
-          options.ownsProject?.(manifest.project, actor.owner) !== true)
+          (!github &&
+            options.ownsProject?.(manifest.project, actor.owner) !== true))
       )
         return failure('rejected', '设备号或项目属主不匹配')
       let problem: string | null
       try {
-        problem = await landingProblem(options.root, manifest)
+        if (github) {
+          if (!actor || !manifest.code)
+            return failure('rejected', 'GitHub 接力需要设备令牌和代码坐标')
+          const credential = await resolveHandoffRepo(
+            options.credentials,
+            manifest.code.repo,
+          )
+          if (!credential) return failure('rejected', '中枢没有这个仓库的连接')
+          const refs = [
+            manifest.code.wip,
+            ...(manifest.code.sessions === null
+              ? []
+              : [manifest.code.sessions]),
+          ]
+          const remote = await githubRemoteRefs(
+            dirname(ledgerPath),
+            credential.remoteUrl,
+            refs.map(ref => ref.ref),
+            credential,
+          )
+          problem = refs.every(ref => remote.get(ref.ref) === ref.commit)
+            ? null
+            : '仓库引用与声明的提交不一致'
+        } else {
+          if (manifest.code) return failure('rejected', '此中枢使用旧裸仓模式')
+          problem = await landingProblem(options.root as string, manifest)
+        }
       } catch (error) {
         return failure(
           'unreachable',
-          `核对中枢裸仓失败：${error instanceof Error ? error.message : String(error)}`,
+          `${github ? '核对仓库引用失败' : '核对中枢裸仓失败'}：${error instanceof Error ? error.message : String(error)}`,
         )
       }
       if (problem !== null) return failure('rejected', problem)
@@ -369,7 +469,14 @@ export function openConsoleHandoff(
 
       let task: HandoffTaskView
       try {
-        task = ledger.accept(newTaskId(), manifest, actor)
+        const id = manifest.code?.wip.ref.split('/').at(-1) ?? newTaskId()
+        const existing = ledger.get(id)
+        if (existing)
+          return existing.ownerSubject === actor?.owner &&
+            sameManifest(existing.manifest, manifest)
+            ? { ok: true, value: { task: existing, created: false } }
+            : failure('rejected', '任务号已被使用')
+        task = ledger.accept(id, manifest, actor)
       } catch (error) {
         return failure(
           'unreachable',
@@ -472,7 +579,11 @@ export function openConsoleHandoff(
       }
       const threadId =
         task.result?.threadId ??
-        (task.manifest.tool !== 'claude-code' ? task.manifest.sessionId : null)
+        (task.code?.sessions === null
+          ? null
+          : task.manifest.tool !== 'claude-code'
+            ? task.manifest.sessionId
+            : null)
       appendAudit({
         at: now(),
         source: AuditSource.Handoff,
@@ -516,7 +627,7 @@ export function openConsoleHandoff(
       }
       let returned: HandoffTaskView
       try {
-        returned = ledger.markReturned(taskId)
+        returned = ledger.markReturned(taskId, task.code !== undefined)
       } catch (error) {
         return Promise.resolve(
           failure(
@@ -547,17 +658,26 @@ export function openConsoleHandoff(
 
   return {
     port,
-    root: options.root,
+    root: options.root ?? 'GitHub (ledger only)',
     ledgerPath,
     auditPath,
     taskCount: deviceId =>
       ledger.list().filter(task => task.ownerDevice === deviceId).length,
     replayed: ledger.list().length,
     dispatchStatus: options.dispatch?.status ?? 'disabled (no --handoff-node)',
+    janitor,
     start() {
       dispatcher?.start()
+      if (github && !janitorTimer) {
+        janitorTimer = setInterval(() => {
+          void janitor()
+        }, options.janitorIntervalMs ?? 3600_000)
+        void janitor()
+      }
     },
     close() {
+      closed = true
+      clearInterval(janitorTimer)
       // Stops the clock at once; links close on their own time, and anything
       // still in flight checks for a closed dispatcher before it writes.
       void dispatcher?.close()

@@ -1,6 +1,12 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {
+  validateHandoffCode,
+  isHandoffCodeRef,
+  type HandoffCode,
+  type HandoffCodeRef,
+} from './code.js'
 import { formatAddress, LIMITS } from '@qianmo/protocol'
 
 /**
@@ -92,6 +98,7 @@ export interface HandoffBrief {
 }
 
 export interface HandoffManifest {
+  readonly code?: HandoffCode
   readonly kind: typeof MANIFEST_KIND
   /** Bare repository name on the hub (`<project>.git`). */
   readonly project: string
@@ -120,6 +127,7 @@ export type HandoffResultStatus = (typeof RESULT_STATUSES)[number]
 
 /** What `task.result.content` carries, JSON-encoded. */
 export interface HandoffResult {
+  readonly result?: HandoffCodeRef
   readonly status: HandoffResultStatus
   /** `qianmo/<taskId>`. */
   readonly branch: string
@@ -403,7 +411,24 @@ export function validateManifest(
     return { ok: false, errors: ['manifest: must be an object'] }
   }
   const errors: string[] = []
-  checkKeys(value, MANIFEST_KEYS, '', errors)
+  checkKeys(
+    Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'code')),
+    MANIFEST_KEYS,
+    '',
+    errors,
+  )
+  const code =
+    value.code === undefined
+      ? undefined
+      : validateHandoffCode(value.code, String(value.device))
+  if (
+    code === null ||
+    (code &&
+      (code.wip.commit !== value.wip ||
+        (code.sessions !== null &&
+          code.sessions.commit !== value.sessionCommit)))
+  )
+    errors.push('code: invalid coordinates')
 
   if (Object.hasOwn(value, 'kind') && value.kind !== MANIFEST_KIND) {
     errors.push(`kind: must be "${MANIFEST_KIND}"`)
@@ -492,6 +517,7 @@ export function validateManifest(
   const raw = value as unknown as HandoffManifest
   const manifest: HandoffManifest = {
     kind: MANIFEST_KIND,
+    ...(code === undefined || code === null ? {} : { code }),
     project: raw.project,
     device: raw.device,
     branch: raw.branch,
@@ -532,7 +558,23 @@ export function validateResult(
     return { ok: false, errors: ['result: must be an object'] }
   }
   const errors: string[] = []
-  checkKeys(value, RESULT_KEYS, '', errors)
+  checkKeys(
+    Object.fromEntries(
+      Object.entries(value).filter(([key]) => key !== 'result'),
+    ),
+    RESULT_KEYS,
+    '',
+    errors,
+  )
+  if (
+    value.result !== undefined &&
+    (!isHandoffCodeRef(value.result) ||
+      !value.result.ref.startsWith('refs/heads/qianmo/result/') ||
+      value.result.commit !== value.head ||
+      value.result.ref !==
+        `refs/heads/qianmo/result/${String(value.branch).slice('qianmo/'.length)}`)
+  )
+    errors.push('result: invalid coordinates')
   if (
     Object.hasOwn(value, 'status') &&
     !(RESULT_STATUSES as readonly unknown[]).includes(value.status)
@@ -562,6 +604,7 @@ export function validateResult(
   return {
     ok: true,
     value: {
+      ...(raw.result === undefined ? {} : { result: { ...raw.result } }),
       status: raw.status,
       branch: raw.branch,
       head: raw.head,

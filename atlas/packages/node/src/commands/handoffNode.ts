@@ -36,6 +36,15 @@
  * `task.request`: it becomes `turn/start` on the task's thread, which the
  * app-server steers into the turn when one is running.
  *
+ * GitHub mode uses a disposable non-bare checkout at
+ * qianmoConfigPath('qianmo', 'handoff', 'work', taskId). It shallow-fetches
+ * named refs, verifies each tip and the workspace tree, resumes the session
+ * (or opens a new thread when sessions is null), and pushes only the result
+ * branch. Git credentials exist only in the git child's config environment;
+ * neither the stored request nor its result/delivery ledger contains them.
+ * A confirmed result receipt removes the checkout; failures remove it too.
+ * Start new deployments without --project: no bare repository is needed.
+ *
  * ## What is refused
  *
  * Every `task.request` must carry a capability token from an issuer named
@@ -72,6 +81,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
@@ -89,6 +99,7 @@ import {
   type AppServerTurn,
   CLOUD_DEVICE,
   encodeResultContent,
+  decodeResultContent,
   FIELD_MAX_BYTES,
   HANDOFF_AGENT,
   HANDOFF_SEND_KIND,
@@ -132,7 +143,9 @@ import {
   startTransportServer,
   type TransportChannel,
 } from '@qianmo/transport'
-import { qmcodeHome } from '@qianmo/paths'
+import { githubGit, githubTokenEnv } from './handoffGithubGit.js'
+import { githubResultRef } from '@qianmo/handoff'
+import { qmcodeHome, qianmoConfigPath } from '@qianmo/paths'
 import { parseTrustedKey } from '../host/nodeIdentity.js'
 import { buildVersion } from '../provenance.js'
 import { PRE_RECEIVE_HOOK } from './handoffHub.js'
@@ -793,6 +806,8 @@ function truncateBytes(text: string, max: number): string {
 
 export interface HandoffNodeOptions extends HandoffNodeConfig {
   readonly psk: string
+  /** Test-only remote substitution; production always uses github.com. */
+  readonly githubRemote?: (repo: string) => string
   /** Where `PATH` comes from for the bwrap check. */
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly log?: (line: string) => void
@@ -834,6 +849,7 @@ interface ActiveTask {
   channel: TransportChannel
   releaseChannel: () => void
   readonly worktree: string
+  readonly credential?: { remoteUrl: string; token: string }
   client: AppServerClient | null
   threadId: string | null
   turnId: string | null
@@ -917,6 +933,24 @@ export async function startHandoffNode(
     return promise
   }
 
+  const githubWork = (taskId: string): string =>
+    qianmoConfigPath('qianmo', 'handoff', 'work', taskId)
+  const cleanupGithub = (taskId: string): void => {
+    // Only GitHub tasks have a work directory here. Old bare-repo worktrees
+    // keep their existing lifecycle and location.
+    rmSync(githubWork(taskId), { recursive: true, force: true })
+  }
+
+  const cleanupReply = (reply: QianmoMessage): void => {
+    if (
+      !isTaskResultPayload(reply.payload) ||
+      reply.payload.outcome !== 'completed'
+    )
+      return
+    const decoded = decodeResultContent(reply.payload.content)
+    if (decoded.ok && decoded.value.result) cleanupGithub(reply.taskId)
+  }
+
   // ── replies ──
 
   const resultPath = (taskId: string): string =>
@@ -972,6 +1006,7 @@ export async function startHandoffNode(
     try {
       await channel.sendAndWait(reply, receiptTimeoutMs)
       if (deliveryId !== undefined) deliveries.settle(deliveryId, 'delivered')
+      cleanupReply(reply)
       say(`task ${reply.taskId} 结果已送达`)
     } catch (error) {
       say(
@@ -1029,6 +1064,7 @@ export async function startHandoffNode(
           try {
             await channel.sendAndWait(reply, receiptTimeoutMs)
             deliveries.settle(entry.deliveryId, 'delivered')
+            cleanupReply(reply)
             say(`task ${entry.taskId} 结果补投送达`)
           } catch (error) {
             say(`task ${entry.taskId} 结果补投仍没回执：${messageOf(error)}`)
@@ -1299,26 +1335,77 @@ export async function startHandoffNode(
 
   const runTask = async (task: ActiveTask): Promise<void> => {
     const { manifest, taskId } = task
-    const repo = repositoryOf(options.root, manifest.project)
+    const repo = task.credential
+      ? join(task.worktree, '.git')
+      : repositoryOf(options.root, manifest.project)
+    const hideCredential = (text: string): string =>
+      task.credential
+        ? text
+            .replaceAll(task.credential.token, '[REDACTED]')
+            .replaceAll(
+              Buffer.from(`x-access-token:${task.credential.token}`).toString(
+                'base64',
+              ),
+              '[REDACTED]',
+            )
+        : text
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined
     let reply: TaskResultInput
     try {
       // ②
-      mkdirSync(join(options.root, 'work'), { recursive: true, mode: 0o700 })
-      await runGit(
-        [
-          '--git-dir',
-          repo,
-          'worktree',
-          'add',
-          '--quiet',
-          '-b',
-          taskBranch(taskId),
-          task.worktree,
-          manifest.wip,
-        ],
-        { cwd: options.root },
-      )
+      if (task.credential && manifest.code) {
+        mkdirSync(task.worktree, { recursive: true, mode: 0o700 })
+        await githubGit(['init', '-q', '-b', taskBranch(taskId)], task.worktree)
+        for (const coordinate of [
+          manifest.code.wip,
+          ...(manifest.code.sessions === null ? [] : [manifest.code.sessions]),
+        ]) {
+          await githubGit(
+            [
+              'fetch',
+              '--depth=1',
+              '--no-tags',
+              '--no-write-fetch-head',
+              task.credential.remoteUrl,
+              `+${coordinate.ref}:${coordinate.ref}`,
+            ],
+            task.worktree,
+            task.credential,
+          )
+          const tip = (
+            await runGit(['rev-parse', coordinate.ref], { cwd: task.worktree })
+          ).stdout
+            .toString('utf8')
+            .trim()
+          if (tip !== coordinate.commit)
+            throw new Error('浅取引用与台账提交不一致')
+        }
+        const tree = (
+          await runGit(['rev-parse', `${manifest.wip}^{tree}`], {
+            cwd: task.worktree,
+          })
+        ).stdout
+          .toString('utf8')
+          .trim()
+        if (tree !== manifest.tree) throw new Error('影子提交的树与清单不一致')
+        await runGit(['reset', '--hard', manifest.wip], { cwd: task.worktree })
+      } else {
+        mkdirSync(join(options.root, 'work'), { recursive: true, mode: 0o700 })
+        await runGit(
+          [
+            '--git-dir',
+            repo,
+            'worktree',
+            'add',
+            '--quiet',
+            '-b',
+            taskBranch(taskId),
+            task.worktree,
+            manifest.wip,
+          ],
+          { cwd: options.root },
+        )
+      }
       say(
         `task ${taskId} 工作树 ${task.worktree}（${taskBranch(taskId)} ← ${manifest.wip}）`,
       )
@@ -1339,7 +1426,12 @@ export async function startHandoffNode(
       const brief = handoffBrief(manifest, taskId, task.worktree)
       let thread: AppServerThread
       let firstText = brief
-      if (manifest.tool !== 'claude-code') {
+      if (manifest.code?.sessions === null) {
+        task.notes.push(
+          `无会话记录：${manifest.code.reason ?? '会话未推送'}；以代码快照和接力说明开始新线程`,
+        )
+        thread = await client.threadStart(settings)
+      } else if (manifest.tool !== 'claude-code') {
         await placeQmcodeSession(task, repo)
         // ④
         thread = await client.threadResume(manifest.sessionId, settings)
@@ -1421,38 +1513,49 @@ export async function startHandoffNode(
         bytes = landed.content.subarray(0, landed.end)
       }
       const head = await commitWorkTree(task)
-      const cloudRef = sessionRef(CLOUD_DEVICE, thread.id)
-      const previous = await runGit(
-        [
-          '--git-dir',
-          repo,
-          'rev-parse',
-          '-q',
-          '--verify',
-          `${cloudRef}^{commit}`,
-        ],
-        {
-          cwd: repo,
-          okExitCodes: [1, 128],
-        },
-      )
-      const parent = previous.stdout.toString('utf8').trim()
-      const session = await sessionCommit({
-        cwd: task.worktree,
-        file: rollout,
-        content: bytes,
-        redact: true,
-        ...(previous.exitCode === 0 && parent !== '' ? { parent } : {}),
-        message: `阡陌云端：任务 ${taskId} 的会话`,
-      })
-      await runGit(
-        ['--git-dir', repo, 'update-ref', cloudRef, session.commit],
-        { cwd: repo },
-      )
-      say(
-        `task ${taskId} 提交：分支 ${head}，会话 ${cloudRef} → ${session.commit}（脱敏 ${session.redactions?.count ?? 0} 处）`,
-      )
-
+      if (task.credential) {
+        await githubGit(
+          [
+            'push',
+            task.credential.remoteUrl,
+            `${head}:${githubResultRef(taskId)}`,
+          ],
+          task.worktree,
+          task.credential,
+        )
+      } else {
+        const cloudRef = sessionRef(CLOUD_DEVICE, thread.id)
+        const previous = await runGit(
+          [
+            '--git-dir',
+            repo,
+            'rev-parse',
+            '-q',
+            '--verify',
+            `${cloudRef}^{commit}`,
+          ],
+          {
+            cwd: repo,
+            okExitCodes: [1, 128],
+          },
+        )
+        const parent = previous.stdout.toString('utf8').trim()
+        const session = await sessionCommit({
+          cwd: task.worktree,
+          file: rollout,
+          content: bytes,
+          redact: true,
+          ...(previous.exitCode === 0 && parent !== '' ? { parent } : {}),
+          message: `阡陌云端：任务 ${taskId} 的会话`,
+        })
+        await runGit(
+          ['--git-dir', repo, 'update-ref', cloudRef, session.commit],
+          { cwd: repo },
+        )
+        say(
+          `task ${taskId} 提交：分支 ${head}，会话 ${cloudRef} → ${session.commit}（脱敏 ${session.redactions?.count ?? 0} 处）`,
+        )
+      }
       const said =
         lastAgentMessageOf(bytes, turn.id) ??
         client.lastAgentMessage(turn.id) ??
@@ -1460,13 +1563,18 @@ export async function startHandoffNode(
       if (task.expired) task.notes.push('到截止时间，回合被中断')
       const summary = truncateBytes(
         redactHandoffText(
-          [said, ...task.notes.map(note => `〔节点〕${note}`)]
-            .filter(Boolean)
-            .join('\n\n'),
+          hideCredential(
+            [said, ...task.notes.map(note => `〔节点〕${note}`)]
+              .filter(Boolean)
+              .join('\n\n'),
+          ),
         ).text,
         FIELD_MAX_BYTES.summary,
       )
       const result: HandoffResult = {
+        ...(task.credential
+          ? { result: { ref: githubResultRef(taskId), commit: head } }
+          : {}),
         status: turn.status === 'inProgress' ? 'failed' : turn.status,
         branch: taskBranch(taskId),
         head,
@@ -1490,7 +1598,11 @@ export async function startHandoffNode(
       } else {
         reason = `节点上续跑失败：${messageOf(error)}`
       }
-      reason = truncateBytes(redactHandoffText(reason).text, 2000)
+      reason = truncateBytes(
+        redactHandoffText(hideCredential(reason)).text,
+        2000,
+      )
+      if (task.credential) cleanupGithub(taskId)
       say(`task ${taskId} 失败：${reason}`)
       reply = {
         outcome: 'failed',
@@ -1524,7 +1636,9 @@ export async function startHandoffNode(
     message: QianmoMessage,
     context: InboundContext,
   ): Promise<void> => {
-    const checked = validateManifest(message.payload)
+    const payload = isRecord(message.payload) ? message.payload : {}
+    const { credential: rawCredential, ...rawManifest } = payload
+    const checked = validateManifest(rawManifest)
     if (!checked.ok) {
       refuse(
         context,
@@ -1536,6 +1650,48 @@ export async function startHandoffNode(
     }
     const manifest = checked.value
     const taskId = message.taskId
+    let credential: { remoteUrl: string; token: string } | undefined
+    if (manifest.code) {
+      if (
+        !isRecord(rawCredential) ||
+        rawCredential.kind !== 'github-token' ||
+        typeof rawCredential.token !== 'string' ||
+        manifest.code.wip.ref.split('/').at(-1) !== taskId
+      ) {
+        refuse(
+          context,
+          message,
+          ProtocolErrorCode.E_BAD_ENVELOPE,
+          'GitHub 接力缺仓库令牌或任务号不匹配',
+        )
+        return
+      }
+      credential = {
+        remoteUrl:
+          options.githubRemote?.(manifest.code.repo) ??
+          `https://github.com/${manifest.code.repo}.git`,
+        token: rawCredential.token,
+      }
+      try {
+        githubTokenEnv(credential.remoteUrl, credential.token)
+      } catch {
+        refuse(
+          context,
+          message,
+          ProtocolErrorCode.E_BAD_ENVELOPE,
+          '仓库凭据不合法',
+        )
+        return
+      }
+    } else if (rawCredential !== undefined) {
+      refuse(
+        context,
+        message,
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        '旧模式不接受仓库令牌',
+      )
+      return
+    }
     if (!isTaskId(taskId)) {
       refuse(
         context,
@@ -1550,7 +1706,7 @@ export async function startHandoffNode(
       active.releaseChannel()
       active.channel = context.channel
       active.releaseChannel = context.channel.hold()
-      active.envelope = message
+      active.envelope = { ...message, payload: manifest }
       context.channel.send(createAck(message, address, now()))
       say(`task ${taskId} 重复的请求：仍在跑，再回一次 ack`)
       return
@@ -1606,67 +1762,81 @@ export async function startHandoffNode(
         }
       }
     }
-    const repo = repositoryOf(options.root, manifest.project)
-    if (!existsSync(join(repo, 'HEAD'))) {
-      refuse(
-        context,
-        message,
-        ProtocolErrorCode.E_TASK_FAILED,
-        `节点上没有项目 ${manifest.project} 的裸仓：用 --project ${manifest.project} 重启节点桥`,
-      )
-      return
-    }
-    const branch = await runGit(
-      ['--git-dir', repo, 'rev-parse', '-q', '--verify', taskRef(taskId)],
-      {
-        cwd: repo,
-        okExitCodes: [1, 128],
-      },
-    )
-    if (branch.exitCode === 0) {
-      refuse(
-        context,
-        message,
-        ProtocolErrorCode.E_TASK_FAILED,
-        `任务 ${taskId} 在本节点上跑过（分支 ${taskBranch(taskId)} 已在），没有留档的结果`,
-      )
-      return
-    }
-    for (const [what, sha] of [
-      ['影子提交', manifest.wip],
-      ['会话提交', manifest.sessionCommit],
-    ] as const) {
-      const probe = await runGit(
-        ['--git-dir', repo, 'cat-file', '-e', `${sha}^{commit}`],
+    if (!credential) {
+      const repo = repositoryOf(options.root, manifest.project)
+      if (!existsSync(join(repo, 'HEAD'))) {
+        refuse(
+          context,
+          message,
+          ProtocolErrorCode.E_TASK_FAILED,
+          `节点上没有项目 ${manifest.project} 的裸仓：用 --project ${manifest.project} 重启节点桥`,
+        )
+        return
+      }
+      const branch = await runGit(
+        ['--git-dir', repo, 'rev-parse', '-q', '--verify', taskRef(taskId)],
         {
           cwd: repo,
           okExitCodes: [1, 128],
         },
       )
-      if (probe.exitCode !== 0) {
+      if (branch.exitCode === 0) {
         refuse(
           context,
           message,
           ProtocolErrorCode.E_TASK_FAILED,
-          `${what} ${sha} 不在节点仓里：中枢没有推过来`,
+          `任务 ${taskId} 在本节点上跑过（分支 ${taskBranch(taskId)} 已在），没有留档的结果`,
         )
         return
       }
-    }
-    // AC-H1: the work tree the node starts from is the one the laptop had.
-    const wipTree = (
-      await runGit(['--git-dir', repo, 'rev-parse', `${manifest.wip}^{tree}`], {
-        cwd: repo,
-      })
-    ).stdout
-      .toString('utf8')
-      .trim()
-    if (wipTree !== manifest.tree) {
+      for (const [what, sha] of [
+        ['影子提交', manifest.wip],
+        ['会话提交', manifest.sessionCommit],
+      ] as const) {
+        const probe = await runGit(
+          ['--git-dir', repo, 'cat-file', '-e', `${sha}^{commit}`],
+          {
+            cwd: repo,
+            okExitCodes: [1, 128],
+          },
+        )
+        if (probe.exitCode !== 0) {
+          refuse(
+            context,
+            message,
+            ProtocolErrorCode.E_TASK_FAILED,
+            `${what} ${sha} 不在节点仓里：中枢没有推过来`,
+          )
+          return
+        }
+      }
+      // AC-H1: the work tree the node starts from is the one the laptop had.
+      const wipTree = (
+        await runGit(
+          ['--git-dir', repo, 'rev-parse', `${manifest.wip}^{tree}`],
+          {
+            cwd: repo,
+          },
+        )
+      ).stdout
+        .toString('utf8')
+        .trim()
+      if (wipTree !== manifest.tree) {
+        refuse(
+          context,
+          message,
+          ProtocolErrorCode.E_TASK_FAILED,
+          `影子提交 ${manifest.wip} 的树 ${wipTree} 与清单里的 ${manifest.tree} 不一致`,
+        )
+        return
+      }
+    } else if (existsSync(githubWork(taskId))) {
+      cleanupGithub(taskId)
       refuse(
         context,
         message,
         ProtocolErrorCode.E_TASK_FAILED,
-        `影子提交 ${manifest.wip} 的树 ${wipTree} 与清单里的 ${manifest.tree} 不一致`,
+        '节点重启丢失了运行中的 GitHub 接力任务',
       )
       return
     }
@@ -1675,10 +1845,13 @@ export async function startHandoffNode(
     const task: ActiveTask = {
       taskId,
       manifest,
-      envelope: message,
+      envelope: { ...message, payload: manifest },
+      ...(credential ? { credential } : {}),
       channel: context.channel,
       releaseChannel: context.channel.hold(),
-      worktree: join(options.root, 'work', taskId),
+      worktree: credential
+        ? githubWork(taskId)
+        : join(options.root, 'work', taskId),
       client: null,
       threadId: null,
       turnId: null,

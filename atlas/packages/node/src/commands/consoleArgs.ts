@@ -38,6 +38,7 @@ import {
   ADMIN_TOKEN_ENV_VAR,
   VIEW_TOKEN_ENV_VAR,
 } from './consoleTokenSources.js'
+import { parseHandoffRepo } from './handoffRepoCli.js'
 import { type HubLocation, parseHub } from './handoffStore.js'
 import { residentOptionValue } from './residentArgs.js'
 
@@ -107,7 +108,7 @@ export interface ConsoleHandoffNode {
   /** `ws(s)://` endpoint of `qm handoff node` on that node. */
   readonly url: string
   /** Its repository root as git reaches it (`--handoff-node-git`). */
-  readonly git: HubLocation
+  readonly git?: HubLocation
 }
 
 /** One node and the machine it runs on, as `--node-server` pinned it. */
@@ -548,6 +549,8 @@ export interface ConsoleCliConfig {
    * 闸门（同一个根）推拉。台账与审计链在配置根下
    * （`consoleHandoff.ts`），这里只有根目录这一个选择。
    */
+  readonly handoffRepos?: readonly (readonly [string, string])[]
+  readonly handoffRetentionMs?: number
   readonly handoffRoot?: string
   /**
    * 接力任务派给哪些节点桥（P17.5）。**给了才派发**，要 `--handoff-root`；每个
@@ -632,6 +635,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   const providerKeys = new Map<string, string>()
   // 只认 `--providers` 才有意义的几项，同 `needsAccounts`。
   const needsProviders: string[] = []
+  const handoffRepos = new Map<string, string>()
+  let handoffRetentionMs: number | undefined
   let handoffRoot: string | undefined
   const handoffNodeUrls = new Map<string, string>()
   const handoffNodeGits = new Map<string, HubLocation>()
@@ -1117,6 +1122,26 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       )
       needsProviders.push('--provider-ssh-key')
       index = parsed.next
+    } else if (arg === '--handoff-repo' || arg?.startsWith('--handoff-repo=')) {
+      const parsed = residentOptionValue(args, index, '--handoff-repo')
+      const [repo, file] = parseHandoffRepo(parsed.value)
+      if (handoffRepos.has(repo)) throw new Error('--handoff-repo 仓库重复')
+      handoffRepos.set(repo, file)
+      index = parsed.next
+    } else if (
+      arg === '--handoff-retention-days' ||
+      arg?.startsWith('--handoff-retention-days=')
+    ) {
+      const parsed = residentOptionValue(
+        args,
+        index,
+        '--handoff-retention-days',
+      )
+      const days = Number(parsed.value)
+      if (!Number.isFinite(days) || days < 0 || days > 3650)
+        throw new Error('--handoff-retention-days 要 0–3650')
+      handoffRetentionMs = days * 86400_000
+      index = parsed.next
     } else if (arg === '--handoff-root' || arg?.startsWith('--handoff-root=')) {
       const parsed = residentOptionValue(args, index, '--handoff-root')
       if (!isAbsolute(parsed.value)) {
@@ -1326,19 +1351,25 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     })),
   ].sort((a, b) => (a.node < b.node ? -1 : 1))
 
-  // 派发（P17.5）只在中枢上有意义：没有 `--handoff-root` 就没有台账可派。端点与
-  // 裸仓根按节点成对给，缺一半的节点要么拨不通、要么推不进，起来只会一直失败。
+  // 派发需要台账：旧裸仓模式的端点与 git 根成对给；GitHub 模式只需要端点。
   const handoffGiven = [
     ...(handoffNodeUrls.size > 0 ? ['--handoff-node'] : []),
     ...(handoffNodeGits.size > 0 ? ['--handoff-node-git'] : []),
     ...(handoffNodeKey === undefined ? [] : ['--handoff-node-key']),
     ...(handoffNotifyUrl === undefined ? [] : ['--handoff-notify-url']),
   ]
-  if (handoffGiven[0] !== undefined && handoffRoot === undefined) {
-    throw new Error(`${handoffGiven[0]} needs --handoff-root`)
+  if (
+    handoffGiven[0] !== undefined &&
+    handoffRoot === undefined &&
+    handoffRepos.size === 0
+  ) {
+    throw new Error(`${handoffGiven[0]} needs --handoff-root or --handoff-repo`)
   }
   for (const node of handoffNodeUrls.keys()) {
-    if (!handoffNodeGits.has(node)) {
+    if (
+      !handoffNodeGits.has(node) &&
+      (handoffRoot !== undefined || handoffRepos.size === 0)
+    ) {
       throw new Error(
         `--handoff-node ${node} needs --handoff-node-git ${node}=<ssh target>:<root>`,
       )
@@ -1368,7 +1399,9 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     ([node, url]) => ({
       node,
       url,
-      git: handoffNodeGits.get(node) as HubLocation,
+      ...(handoffNodeGits.has(node)
+        ? { git: handoffNodeGits.get(node) as HubLocation }
+        : {}),
     }),
   )
 
@@ -1426,6 +1459,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     ...(providers
       ? { providers: { ...providerPaths, nodes: providerNodes } }
       : {}),
+    ...(handoffRepos.size === 0 ? {} : { handoffRepos: [...handoffRepos] }),
+    ...(handoffRetentionMs === undefined ? {} : { handoffRetentionMs }),
     ...(handoffRoot === undefined ? {} : { handoffRoot }),
     ...(handoffNodes.length === 0 ? {} : { handoffNodes }),
     ...(handoffNodeKey === undefined ? {} : { handoffNodeKey }),
@@ -1684,6 +1719,12 @@ Options (each accepts both --name value and --name=value):
                            an entry is refused before ssh starts. Default
                            <config root>/qianmo/console-keys/provider_known_hosts.
                            No whitespace or %. Only with --providers.
+  --handoff-repo <owner/name>=<abs token file>
+                           GitHub code store (default for new deployments).
+                           Repeat for each repo; 0600 token, contents read/write.
+                           No --handoff-root or --handoff-node-git needed.
+  --handoff-retention-days <days>
+                           Clean failed/expired GitHub refs after 7 days by default.
   --handoff-root <abs path>
                            Turn on /v0/handoff, the hub side of the local-to-
                            cloud handoff. The directory holds one bare

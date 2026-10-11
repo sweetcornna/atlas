@@ -64,6 +64,7 @@ import type {
   ListToolsResult,
   Tool,
 } from '@modelcontextprotocol/server'
+import type { GithubHandoffOptions } from './handoffGithub.js'
 import { Server } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import { FIELD_MAX_BYTES, isIsoInstant, isTaskId } from '@qianmo/handoff'
@@ -108,7 +109,8 @@ const TOOLS: Tool[] = [
     name: 'qianmo_handoff',
     title: '转交云端',
     description:
-      '把当前工作转交给云端继续。有副作用：把工作区（含未提交、未跟踪且未被忽略的文件）的影子提交和当前会话记录推送到中枢，并在中枢登记一个接力任务；不改本地分支、暂存区和文件。' +
+      '把当前工作转交给云端继续。有副作用：把工作区（含未提交、未跟踪且未被忽略的文件）的影子提交和当前会话记录推送到配置的代码仓库，并在中枢登记一个接力任务；不改本地分支、暂存区和文件。' +
+      '旧裸仓模式推送到中枢；GitHub 模式推送到 origin，公开仓库或可见性未知时不推送会话记录，结果说明原因。' +
       '会话截到最后一个完整回合，调用本工具的这个回合不在其中，所以目标、已完成、剩余要写全。' +
       '中枢确认数据已落地并登记后才返回「已落地，可以关机」和任务号；否则返回失败原因，此时不能关机。' +
       '只在用户要求把工作交给云端时调用。',
@@ -274,6 +276,7 @@ async function handOff(
   args: Arguments,
   caller: HandoffCaller,
   output: Output,
+  githubOptions: GithubHandoffOptions = {},
 ): Promise<void> {
   const goal = briefText(args, 'goal', true)
   const done = briefText(args, 'done', false)
@@ -293,16 +296,17 @@ async function handOff(
       ...(deadline === undefined ? {} : { deadline }),
     },
     output,
-    { whileRunning: 'cut', caller },
+    { ...githubOptions, whileRunning: 'cut', caller },
   )
 }
 
 /** One `tools/call`, answered in the lines `qm handoff` prints. */
-async function callTool(
+export async function callHandoffTool(
   cwd: string,
   name: string,
   args: Arguments,
   meta: unknown,
+  githubOptions: GithubHandoffOptions = {},
 ): Promise<CallToolResult> {
   const lines: string[] = []
   const output: Output = {
@@ -353,7 +357,7 @@ async function callTool(
         }
         return answer(lines)
       case 'qianmo_handoff':
-        await handOff(cwd, args, caller, output)
+        await handOff(cwd, args, caller, output, githubOptions)
         return answer(lines)
       case 'qianmo_task': {
         const taskId = args.taskId
@@ -380,6 +384,7 @@ async function callTool(
         const code = await runPull(
           cwd,
           {
+            repo: githubOptions.repo,
             ...(taskId === undefined ? {} : { taskId }),
             ...(caller.thread === undefined
               ? {}
@@ -411,7 +416,7 @@ function buildServer(cwd: string, inFlight: Set<Promise<unknown>>): Server {
     async (): Promise<ListToolsResult> => ({ tools: TOOLS }),
   )
   server.setRequestHandler('tools/call', ({ params }) => {
-    const call = callTool(
+    const call = callHandoffTool(
       cwd,
       params.name,
       params.arguments ?? {},

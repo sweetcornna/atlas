@@ -840,7 +840,7 @@ describe('qm handoff mcp end to end', () => {
       })
       expect(answer).toEqual({
         isError: true,
-        text: '转交没有完成：找不到这个目录的会话记录：先在 qmcode 或 Claude Code 里跑完一个回合（hook 会记下会话）',
+        text: '转交没有完成：找不到这个目录的会话记录：先在 Codex、qmcode 或 Claude Code 里跑完一个回合（hook 会记下会话）',
       })
       expect(await hubTasks()).toEqual(before)
       // Bad arguments are refused before anything happens.

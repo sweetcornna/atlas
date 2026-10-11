@@ -52,6 +52,9 @@
  * the same lock (`now.lock`), so two do not interleave.
  */
 
+import { repoAtOrigin } from './handoffGithub.js'
+import { githubGit, deleteGithubTaskRefs } from './handoffGithubGit.js'
+import { validateHandoffCode, type HandoffCode } from '@qianmo/handoff'
 import {
   copyFileSync,
   existsSync,
@@ -93,6 +96,8 @@ import { findQmcodeRollout } from './handoffTranscript.js'
 type ReturnMode = 'fast-forward' | 'branch'
 
 interface PullOptions {
+  /** Test-only origin name override. */
+  readonly repo?: string
   readonly taskId?: string
   /**
    * The qmcode thread this runs in (`CODEX_THREAD_ID` for `/pull`, the MCP
@@ -104,6 +109,7 @@ interface PullOptions {
 
 /** What the hub says about one task, as far as pulling goes. */
 interface PullableTask {
+  readonly code?: HandoffCode
   readonly taskId: string
   readonly state: string
   readonly project: string
@@ -165,7 +171,13 @@ async function pullableTask(
   if (state !== 'done' && state !== 'returned') {
     throw new HandoffUserError(`任务 ${taskId} 的状态 ${state || '?'} 不认识`)
   }
+  const code =
+    manifest.code === undefined
+      ? undefined
+      : validateHandoffCode(manifest.code, text(manifest.device))
+  if (code === null) throw new HandoffUserError('中枢代码坐标不合法')
   const pulled: PullableTask = {
+    ...(code === undefined ? {} : { code }),
     taskId,
     state,
     project: text(manifest.project),
@@ -412,7 +424,12 @@ async function pull(
 ): Promise<number> {
   const taskId = options.taskId ?? (await latestDone(project))
   const task = await pullableTask(project, taskId)
-  const qmcodeSession = task.tool !== 'claude-code'
+  if (
+    task.code &&
+    (await repoAtOrigin(project.root, options.repo)) !== task.code.repo
+  )
+    throw new HandoffUserError('origin 与任务仓库不匹配，不接回')
+  const qmcodeSession = task.code === undefined && task.tool !== 'claude-code'
   const hooks = mkdtempSync(join(tmpdir(), 'qianmo-handoff-pull-'))
   const git = quietGit(project.root, hooks)
   const pulledHead = `refs/qianmo/pull/${taskId}/head`
@@ -420,12 +437,33 @@ async function pull(
   let mode: ReturnMode = 'branch'
   try {
     try {
-      await fetchFromHub(hubConnection(project), project.root, [
-        `+${taskRef(taskId)}:${pulledHead}`,
-        ...(qmcodeSession
-          ? [`+${sessionRef(CLOUD_DEVICE, task.threadId)}:${pulledSession}`]
-          : []),
-      ])
+      if (task.code) {
+        const existing = await localRef(
+          project.root,
+          `refs/heads/${taskBranch(taskId)}-return`,
+        )
+        const head = await localRef(project.root, 'HEAD')
+        if (head === task.head || existing === task.head) {
+          await git(['update-ref', pulledHead, task.head])
+        } else {
+          await githubGit(
+            [
+              'fetch',
+              '--no-tags',
+              'origin',
+              `+refs/heads/qianmo/result/${taskId}:${pulledHead}`,
+            ],
+            project.root,
+          )
+        }
+      } else {
+        await fetchFromHub(hubConnection(project), project.root, [
+          `+${taskRef(taskId)}:${pulledHead}`,
+          ...(qmcodeSession
+            ? [`+${sessionRef(CLOUD_DEVICE, task.threadId)}:${pulledSession}`]
+            : []),
+        ])
+      }
     } catch (error) {
       throw new HandoffUserError(
         `从中枢取回 ${taskBranch(taskId)} 失败：${error instanceof Error ? error.message.split('\n')[0] : String(error)}`,
@@ -559,6 +597,12 @@ async function pull(
           ? `        这个线程正开着 · 退出 ${task.tool === 'codex' ? 'codex' : 'qmcode'} 后运行 ${task.tool === 'codex' ? 'codex' : 'qmcode'} resume ${task.threadId} 才看得到云端的回合`
           : `        ${task.tool === 'codex' ? 'codex' : 'qmcode'} resume ${task.threadId} 接着聊`,
       )
+    } else if (task.code) {
+      output.out(
+        task.code.sessions === null
+          ? `  会话  无会话记录：${task.code.reason}`
+          : '  会话  云端线程留在节点；代码结果已接回',
+      )
     } else {
       output.out(
         `  会话  Claude Code 会话在云端续成了 Codex 兼容线程 ${task.threadId} · 留在中枢 ${sessionRef(CLOUD_DEVICE, task.threadId)} · 没有放到本机`,
@@ -571,6 +615,10 @@ async function pull(
     rmSync(hooks, { recursive: true, force: true })
   }
 
+  if (task.code) {
+    await deleteGithubTaskRefs(project.root, 'origin', task.code, taskId)
+    output.out('  清理  远端接力分支已删除；台账保留提交号')
+  }
   if (task.state === 'returned') {
     output.out('  台账  已是 returned')
     return 0
