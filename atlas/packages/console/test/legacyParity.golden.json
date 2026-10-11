@@ -719,7 +719,7 @@
       ["cross-origin-resource-policy", "same-origin"],
       [
         "etag",
-        "W/\"6fc43a8d19ad2bef40d3fed7cf91d8b038bc6c6af6a1408be0db75ca9f3fb741\""
+        "W/\"934d5d8233dadee7bc4c484be6b83bec23bf9688b7f3fefcbc8d261e73ddde9f\""
       ],
       [
         "permissions-policy",
@@ -730,8 +730,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 5153,
-    "sha256": "6fc43a8d19ad2bef40d3fed7cf91d8b038bc6c6af6a1408be0db75ca9f3fb741"
+    "length": 5193,
+    "sha256": "934d5d8233dadee7bc4c484be6b83bec23bf9688b7f3fefcbc8d261e73ddde9f"
   },
   {
     "probe": "GET /fragments/limits as view-bearer",
@@ -1305,8 +1305,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 108020,
-    "sha256": "ed6caa097f8d234f930731a8157231d6bf9e71fd6f97df8e0bac16ecb29d5a1a"
+    "length": 108060,
+    "sha256": "c9125b6372843b8ca06bc96c5f399b7a12cde17b09ad912340fd490430039530"
   },
   {
     "probe": "GET /audit/trace/4bf92f3577b34da6a3ce929d0e0e4736 as view-bearer",

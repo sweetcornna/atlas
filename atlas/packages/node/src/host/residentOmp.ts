@@ -35,7 +35,11 @@ import type {
 import { ompArgv, ompSpawnEnv } from '../omp/launch.js'
 import { nodeModelSelection } from '../providers/node.js'
 import { residentOmpEnvironment } from './residentOmpEnv.js'
-import { residentToolSurface, verdictText } from './notifyTool.js'
+import {
+  residentToolSurface,
+  verdictText,
+  type HostToolDefinition,
+} from './notifyTool.js'
 import { parseNotifyVerdict } from './notifyWire.js'
 import { residentExtensionPath } from './residentExtension.js'
 
@@ -288,6 +292,7 @@ export class OmpRpcProcess implements OmpRpcChannel {
 }
 
 interface PoolOptions {
+  readonly extraHostTools?: readonly HostToolDefinition[]
   readonly onLaunch?: (
     sessionId: string,
     policy: ResidentExtensionConfig,
@@ -435,6 +440,7 @@ export class ResidentOmpPool
       ],
       hostTools: residentToolSurface(
         this.#options.memoryWrite !== undefined,
+        this.#options.extraHostTools,
       ).map(tool => tool.name),
       ...(this.#options.requestPermission === undefined
         ? {}
@@ -534,6 +540,26 @@ export class ResidentOmpPool
       }
       if (frame.type === 'host_tool_call') {
         void (async () => {
+          const extra = this.#options.extraHostTools?.find(
+            tool => tool.name === frame.toolName,
+          )
+          if (extra) {
+            const result = await extra.handler(frame.arguments, {
+              agent: owner.agent,
+              sessionId,
+            })
+            if (child.alive)
+              child.send({
+                type: 'host_tool_result',
+                id: frame.id,
+                isError: !result.ok,
+                result: {
+                  content: [{ type: 'text', text: result.text }],
+                  details: result.details,
+                },
+              })
+            return
+          }
           if (frame.toolName === 'qianmo_memory_write') {
             const result = (await this.#options.memoryWrite?.(
               sessionId,
@@ -618,7 +644,10 @@ export class ResidentOmpPool
           : {}),
       })
       await child.request('set_host_tools', {
-        tools: residentToolSurface(this.#options.memoryWrite !== undefined),
+        tools: residentToolSurface(
+          this.#options.memoryWrite !== undefined,
+          this.#options.extraHostTools,
+        ),
       })
       return child
     } catch (error) {

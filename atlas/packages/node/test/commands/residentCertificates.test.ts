@@ -29,6 +29,15 @@ import { opensslVersion, runOpenssl } from '../../src/ca/openssl.js'
 import { popMessage } from '../../src/ca/pop.js'
 import { StaticPublicKeyDirectory } from '@qianmo/capability'
 import {
+  authCredentialProofInput,
+  authSigningInput,
+  computeMac,
+  newChannelId,
+  newNonce,
+  verifyAuthAttempt,
+  HandshakeRejection,
+} from '@qianmo/transport'
+import {
   assertOwnCertificateAndKey,
   buildHandshakeSigning,
   buildListenerTls,
@@ -148,6 +157,79 @@ describe('buildPublicKeyDirectory', () => {
       })
       expect(directory).toBeInstanceOf(CertificateDirectory)
       expect(directory.publicKeyOf('node-b')).toBe(peer)
+    },
+  )
+
+  itNeedsOpenssl(
+    'a CA credential cannot authenticate a controller under a different pinned command key',
+    () => {
+      const caDir = join(root, 'ca')
+      initCa({ directory: caDir })
+      const peer = generateNodeKeyPair(),
+        own = generateNodeKeyPair()
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(caCertPath(caDir), 'utf8'),
+        trusted: [['node-b', peer.publicKey]],
+      })
+      const nonce = newNonce(),
+        clientNonce = newNonce(),
+        channelId = newChannelId()
+      const psk = 'controller-credential-fixture-psk'
+      const attempt = {
+        node: 'node-b',
+        nonce,
+        clientNonce,
+        channelId,
+        mac: computeMac(psk, nonce, clientNonce, 'node-b', channelId),
+        sig: signBytes(
+          peer,
+          authSigningInput(nonce, clientNonce, 'node-b', channelId),
+        ),
+        credential: 'node-b',
+        credentialProof: signBytes(
+          peer,
+          authCredentialProofInput(
+            nonce,
+            clientNonce,
+            'node-b',
+            channelId,
+            'node-b',
+            'explicit',
+            'node-b',
+          ),
+        ),
+      }
+      const options = {
+        node: 'node-a',
+        team: 'atlas',
+        agents: [],
+        trusted: [],
+        requireSignedTasks: true,
+        auditSignedTasks: false,
+        signHandshake: true,
+        requireSignedHandshake: true,
+      }
+      const matching = buildHandshakeSigning(
+        { ...options, controllers: [['node-b', peer.publicKey]] },
+        own,
+        directory,
+      )!
+      expect(verifyAuthAttempt(psk, matching, nonce, attempt)).toMatchObject({
+        ok: true,
+        authentication: 'credential_signature',
+      })
+      const mismatched = buildHandshakeSigning(
+        {
+          ...options,
+          controllers: [['node-b', generateNodeKeyPair().publicKey]],
+        },
+        own,
+        directory,
+      )!
+      expect(verifyAuthAttempt(psk, mismatched, nonce, attempt)).toMatchObject({
+        ok: false,
+        rejection: HandshakeRejection.UnknownSigner,
+      })
     },
   )
 })

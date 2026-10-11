@@ -36,6 +36,7 @@ export enum AuditSource {
   Activator = 'activator',
   Adapter = 'adapter',
   Resident = 'resident',
+  Control = 'control',
   Negotiation = 'negotiation',
   Tunnel = 'tunnel',
   Backup = 'backup',

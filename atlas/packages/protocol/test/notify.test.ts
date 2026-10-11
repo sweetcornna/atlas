@@ -342,9 +342,9 @@ describe('LIMITS — the three numbers P13.2 added', () => {
     expect(LIMITS.ratePerMinute).toBe(600)
   })
 
-  test('there are exactly eight of them', () => {
-    // charter §3.3 C-4 enumerates them; a ninth would need a charter amendment,
-    // which is why `NotifyPayload.summary` has no ceiling of its own.
-    expect(Object.keys(LIMITS)).toHaveLength(8)
+  test('the eight resource limits plus S0 operation/actor bounds are the complete set', () => {
+    // S0 adds two wire string bounds; the eight C-4 resource budgets above
+    // retain their exact values. New bounds require an explicit wire contract.
+    expect(Object.keys(LIMITS)).toHaveLength(10)
   })
 })

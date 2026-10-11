@@ -1111,3 +1111,59 @@ created ──> sent ──> delivered   （回执 Accepted / Duplicate）
 >
 > **「一条回复都没有」说的是被收下的 `wake`，不是被拒的（issue #34）。**被拒的 `wake` 现在回一条 `error` 信封，`#receive` 对**所有**非 task 类型都补（`error` 自身除外，理由是不给退信回退信）。这不是给 `wake` 补 ack：ack 断言的是「输入已进入模型输入」，而这条信封断言的恰恰是它**没有**进入——两者一个是 A 类回执一个是拒绝，`taskId` 后面依旧没有任务状态机。发送方那三件事因此一件都没提前发生：`executeResidentWake` 的 `onMessage` 只收 `error`（issue #29 补的），连接照旧在回执处关闭。
 
+## 15. 控制链路与上行调用（S0）
+
+控制链路由中枢主动拨到常驻节点，控制请求与节点宿主的上行调用共用这一条双向 channel。节点不拨号（H-2）、不为上行请求建离线队列；JSON 信封仍受 `LIMITS.maxMessageBytes` 的 256 KiB 上限约束。本节包含 **5 个**枚举成员（两个请求/结果对与一个订阅），设计稿中的「四个类型」按这张完整表解释。
+
+### 15.1 消息与载荷
+
+| 类型 | 谁发给谁 | 字段封闭的载荷 | reply |
+|---|---|---|---|
+| `node.control` | 已授权中枢 → 节点 | `{op: string, args: object, actor: string}` | 否 |
+| `node.control.result` | 节点 → 原中枢，同一 channel | `{ok: true, value: unknown}` 或 `{ok: false, code: string, message: string}` | 是；沿用请求 taskId |
+| `hub.subscribe` | 已授权中枢 → 节点 | `{subscribe: true}` | 否 |
+| `hub.call` | 节点宿主 → 最近订阅的中枢 | `{callId: UUID, op: string, args: object}` | 否；每次全新 taskId |
+| `hub.call.result` | 中枢 → 原节点，同一 channel | `{callId: UUID, ok: true, value: unknown}` 或 `{callId: UUID, ok: false, code: string, message: string}` | 是；沿用请求 taskId 与 callId |
+
+所有未知顶层载荷字段、混合的成功/失败字段、数组或 null 形式的 args 均拒绝。`op` 匹配 `^[a-z][a-z0-9]*(\.[a-z][a-z0-9-]*)+$`，不超过 `LIMITS.maxControlOpLength`（64）；`actor` 不超过 `LIMITS.maxControlActorLength`（128）。args 的内部字段归各功能模块验证；value 必须能通过 JSON 传输。callId 为 UUID 文本，宿主生成全新 UUID 并同时用作 taskId。
+
+5 个类型全部在握手的 supportedTypes 中显式声明，不属于 legacy floor；每次发送新类型前检查 `channel.supports()`。订阅要求对端声明完整控制面，旧节点不会收到试探性的控制消息。两个结果通过 `isReplyType` 豁免请求环路判定；subscribe/control/call 仍受路由节流与环路约束。
+
+### 15.2 身份与授权
+
+`qm console --control <节点>=<ws(s)://地址>` 可重复；只接收命名端点，不接收裸 URL、重复节点/端点或 URL 凭据。中枢身份来自 `--chat-from` 的节点段，用 `consoleWakeIdentity.ts` 的命令签名钥（`--print-wake-identity`），不使用独立审批钥。目标节点公钥复用审批链路的 **显式 `--trust <节点>=<公钥>` 来源**，PSK 复用 `transportPskEnvVarForNode(node)` 派生变量。控制端点表独立于 chat 表，因此不要求打开账号、审批或对话面。
+
+常驻节点新增 `--controller <中枢节点>=<公钥>`（可重复、同 `--trust` 的公钥格式），在 `qm resident --help` 的 Authorization 段说明。该选项自动开启必须签名的握手，仅向 L1 握手目录补充公钥；不加入 capability 目录或任务签发者信任集。重复 controller、本节点充当自己的 controller、与同名 trust 公钥冲突均拒绝启动。controllers、task trust、approvers 三个集合独立。
+
+节点在 authz 之后、邮箱之前截住控制面消息。授权用 `context.channel.authenticatedPeerNode`，同时要求 from 的节点段与握手身份一致、to 为本节点。不在 controllers 的对端得到 `error(E_CAP_INSUFFICIENT)`，不会打开模型轮次。该授权来自签名 channel 与显式 allowlist，因此不额外要求 capability token，也不改变 `OPEN_POLICY` / `SIGNED_TASK_POLICY` 的任务策略。
+
+中枢上行处理器的 `{node, agent?}` 中，node 来自握手身份，agent 来自该身份所发信封的 from 智能体段；args 中的 node/agent 不构成身份。节点宿主默认从 `qianmo://<节点>/console` 发出（agent 缺席），功能宿主工具可用 `hubCall.call(op, args, {agent: ctx.agent})` 归属当前主智能体。常驻控制 handler 的可选 ctx.agent 来自明确寻址的本节点智能体；默认控制地址为 `/console`，功能参数中的 agent 由该模块验证。
+
+既有 CA 部署的 exact-credential-proof 要求继续保留，凭据解析出的公钥也必须等于该 controller 的固定公钥；CA 目录里的其他公钥不能替代这个 pin。本链路与审批样板一样只配置命令钥握手，未为该部署姿态增加证书凭据或 mTLS 客户端选项。
+
+### 15.3 分发、审计与生命周期
+
+`resident.control.register(prefix, handler)` 按 op 第一段唯一注册；重复或非法 prefix 抛错。handler 收到 `{peer, actor, taskId, agent?}`，返回 ControlOutcome。抛错或不可传输的结果转成 `internal`，异常仅送本地 onError 日志，不向对端发送堆栈或异常正文。内置 `node.ping` 返回 `{node, agents: [名字], version, platform, now}`。
+
+每条有效 node.control 的处理/拒绝均写 `AuditSource.Control` 一行，kind 为 `control.<op>`，outcome 为 ok/refused，关联 taskId/msgId/traceId，detail 只带 actor，**不记录 args 或结果正文**。中枢 ControlLinks 只提供诊断日志；各功能端口记录请求的动作账本。
+
+`hub.subscribe` 每个 controller 保留一条 channel，新 channel 替换旧 channel；多个 controller 时选最近订阅的可用 channel。断连回调清掉失效订阅及该 channel 的所有等待者；替换旧 channel 也结束其等待者。上行应答须同时匹配 callId、taskId、channel 和收发地址，迟到/串线应答不影响其他请求。无通道时立即返回「中枢未连接」，不排队、不自动重试调用。正在传输的信封仍遵循传输层已有的 at-least-once/dedup 契约；超时或断连不能证明远端操作未执行。
+
+中枢每节点一条 TransportClient，首次连接与重连均发订阅；10 秒检查未连接的链路。`ControlLinks.request(node, op, args, actor, {timeoutMs})` 按 taskId 等结果；`onHubCall(prefix, handler)` 唯一注册上行处理器；`status()` 返回 `{node, connected, lastConnectedAt, lastError}[]`（后两项初始 null，时间为 epoch ms）。默认超时 30 秒，超时与 close 清理等待者，迟到结果忽略。
+
+功能模块可在 QianmoResident 的 `extraHostTools` 追加 `{name, description, parameters: JSON schema, handler(input, {agent, sessionId})}`；handler 返回 `{ok, text, details?}`。名称不可与内置/其他工具冲突。工具定义同步进入 extension 的 hostTools 和 omp 的 set_host_tools，分发按名字查表，无须再修改 residentOmp.ts；原有「仅主智能体」策略同样适用。
+
+### 15.4 错误码
+
+| code | 含义 |
+|---|---|
+| `E_CAP_INSUFFICIENT` | 签名 peer 不在 controllers 或信封身份不匹配；用 error 信封拒绝 |
+| `E_BAD_ENVELOPE` / `E_BAD_TYPE` | 载荷非法或未协商完整控制面；协议/传输拒绝 |
+| `unsupported` | 未注册的功能前缀/操作，或对端不支持对应消息 |
+| `internal` | 功能处理器异常或结果不能传输；无堆栈/异常正文 |
+| `invalid` | 本地调用的 op、actor、智能体等参数非法 |
+| `unreachable` | 中枢到节点链路未连接、断开或传输未确认 |
+| `hub-unavailable` | 节点没有可用订阅、订阅被替换或通道断开；message 为「中枢未连接」 |
+| `timeout` | 规定时间内未收到操作结果；清理等待者 |
+
+其他已存在的路由/协议错误（例如节流、环路与消息体积）维持各层自己的 code。功能模块可以在 ControlOutcome 中返回其领域错误码。

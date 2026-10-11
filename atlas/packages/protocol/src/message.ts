@@ -46,7 +46,7 @@ export enum MessageType {
    * Node-originated announcement: the handling node telling a peer it already
    * has a channel with that something happened (protocol.md §14).
    *
-   * The only type an agent raises on its own initiative. It is not a reply, it
+   * An announcement an agent raises on its own initiative. It is not a reply, it
    * opens no turn on the receiver, it carries a **fresh** `taskId` every time,
    * and it asks for no protocol `ack` — see {@link createNotify} for why each
    * of those is load-bearing rather than incidental.
@@ -55,6 +55,16 @@ export enum MessageType {
   AuthzRequest = 'authz.request',
   AuthzDecision = 'authz.decision',
   AuthzRevoke = 'authz.revoke',
+  /** Controller command handled by the resident host, without a model turn. */
+  NodeControl = 'node.control',
+  /** Control outcome, under the original request's taskId. */
+  NodeControlResult = 'node.control.result',
+  /** Register the controller's inbound channel for host service calls. */
+  HubSubscribe = 'hub.subscribe',
+  /** Host service call sent on the reverse direction of a subscribed channel. */
+  HubCall = 'hub.call',
+  /** Host service outcome, correlated by both taskId and callId. */
+  HubCallResult = 'hub.call.result',
 }
 
 /** All message types, in declaration order. */
@@ -122,6 +132,8 @@ export function isReplyType(type: MessageType): boolean {
     type === MessageType.TaskResult ||
     type === MessageType.Error ||
     type === MessageType.Pong ||
+    type === MessageType.NodeControlResult ||
+    type === MessageType.HubCallResult ||
     // A negotiation runs both ways over one task id by design (§13), so every
     // message after the opening request answers the one before it. Treating
     // them as requests would make the second leg of every negotiation look
