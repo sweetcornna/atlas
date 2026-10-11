@@ -326,6 +326,8 @@ export class HubCallClient {
       readonly agent?: string
       readonly peer?: string
       readonly operationId?: string
+      /** Caller-chosen call id, so a retried hub call keeps its identity. */
+      readonly callId?: string
     } = {},
   ): Promise<ControlOutcome> {
     const timeoutMs = controlTimeout(options.timeoutMs)
@@ -348,7 +350,7 @@ export class HubCallClient {
       !subscription.channel.supports(MessageType.HubCallResult)
     )
       return { ok: false, code: 'unsupported', message: '中枢不支持上行调用' }
-    const callId = newId()
+    const callId = options.callId ?? newId()
     const operationId = options.operationId ?? newId()
     const payload = {
       callId,

@@ -36,6 +36,7 @@ import {
 } from '../view/connect.js'
 import { CONNECT_PAGE_JS } from '../view/connectScript.js'
 import { KIT_CSS } from '../view/kit.js'
+import { connectorsApi } from './connectorsApi.js'
 import { canMember, canOps, guardRead } from './directionShared.js'
 import { failureResponse } from './shared.js'
 import type { RouteContext, RouteModule } from './types.js'
@@ -127,6 +128,7 @@ async function formFragment(ctx: RouteContext): Promise<Response> {
       : (presets.find(one => one.id === connector.preset) ?? {
           id: connector.preset,
           kind: connector.kind,
+          evaluated: false,
           name: connector.name,
           defaults: {},
           hint: '',
@@ -140,9 +142,34 @@ async function formFragment(ctx: RouteContext): Promise<Response> {
       agents,
       preset,
       connector,
-      settings: connector?.settings ?? preset.defaults,
+      settings: formSettings(preset, connector),
     }),
   )
+}
+
+/**
+ * The fields a connection of this kind needs, in reading order: a preset
+ * fills what it knows (it may leave an unconfirmed host blank), a saved
+ * connection what it has.
+ */
+function formSettings(
+  preset: ConnectorPresetView,
+  connector: ConnectorView | null,
+): Readonly<Record<string, string | number | boolean>> {
+  const fields: Record<string, string | number | boolean> =
+    preset.kind === 'mail'
+      ? {
+          username: '',
+          imapHost: '',
+          imapPort: 993,
+          smtpHost: '',
+          smtpPort: 465,
+          smtpTls: 'smtps',
+        }
+      : /ics/i.test(preset.id)
+        ? {}
+        : { username: '', caldavUrl: '' }
+  return { ...fields, ...preset.defaults, ...connector?.settings }
 }
 
 async function connectFragment(
@@ -184,6 +211,7 @@ export const connectRoute: RouteModule = {
     css: KIT_CSS + CONNECT_PAGE_CSS,
     script: CONNECT_PAGE_JS,
   },
+  api: connectorsApi,
   fragments: {
     heads: ['connect'],
     handle: (ctx, _head, rest) => connectFragment(ctx, rest),

@@ -167,7 +167,7 @@ test('signed hub and real resident complete control, upstream and appended omp t
       targets: [target],
       onError: error => errors.push(error),
     })
-    const calls: { node: string; agent?: string }[] = []
+    const calls: { node: string; agent?: string; callId: string }[] = []
     hub.onHubCall('connector', async (op, args, ctx) => {
       calls.push(ctx)
       if (op === 'connector.throw') throw new Error('private hub stack')
@@ -337,7 +337,11 @@ test('signed hub and real resident complete control, upstream and appended omp t
         { agent: 'main' },
       ),
     ).toEqual({ ok: true, value: 'worker/main/hello' })
-    expect(calls[0]).toMatchObject({ node: 'worker', agent: 'main' })
+    expect(calls[0]).toMatchObject({
+      node: 'worker',
+      agent: 'main',
+      callId: expect.any(String),
+    })
     expect(await resident.hubCall.call('files.request', {})).toMatchObject({
       ok: false,
       code: 'unsupported',

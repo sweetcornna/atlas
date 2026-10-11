@@ -32,6 +32,8 @@ import { notifyAllowlist } from './consoleNotifyDestination.js'
 import { ConsoleFiles } from './consoleFiles.js'
 import { tenantScope } from '@qianmo/console'
 import { ResidentEstop } from '@qianmo/resident'
+import { ConsoleConnectors } from './consoleConnectors.js'
+import { loadOutboundPolicy } from './outboundPolicy.js'
 import { ConsoleSchedules } from './consoleSchedules.js'
 import { loadConsoleApproverIdentity } from './consoleApproverIdentity.js'
 import { readTrustAnchors } from '../host/trustAnchors.js'
@@ -609,6 +611,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     : undefined
   if (config.schedules && chat.hub === undefined)
     throw new Error('--schedules needs an active chat face with a usable PSK')
+  const outboundPolicy = loadOutboundPolicy(
+    qianmoConfigPath('qianmo', 'console', 'outbound-policy.json'),
+  )
   const schedules =
     config.schedules && chat.hub
       ? new ConsoleSchedules({
@@ -737,6 +742,22 @@ export async function runConsole(args: readonly string[]): Promise<void> {
             process.stderr.write(`[approvals] ${String(error)}\n`),
         })
 
+  const connectors =
+    config.connectors && control && approvals
+      ? new ConsoleConnectors({
+          directory: qianmoConfigPath('qianmo', 'console', 'connectors'),
+          policy: outboundPolicy,
+          agents: async () => {
+            const listed = await registry.list()
+            if (!listed.ok) throw new Error('registry unavailable')
+            return listed.value.map(row => row.address)
+          },
+          ...(tenancy === undefined ? {} : { tenancy }),
+          approvals,
+        })
+      : undefined
+  if (connectors) control!.onHubCall('connector', connectors.handle)
+
   // The certificate column, or nothing at all (§10.1). Read at startup rather
   // than per request: the CA root is the one file this console needs and a
   // missing one is a configuration error the operator should hear about now,
@@ -799,6 +820,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(memory === undefined ? {} : { memory }),
     ...(files === undefined ? {} : { files }),
     ...(schedules === undefined ? {} : { schedules }),
+    ...(connectors === undefined ? {} : { connectors }),
     ...(approvals === undefined ? {} : { approvals }),
     ...(usage === undefined ? {} : { usage }),
     ...(tenancy === undefined ? {} : { tenancy }),
@@ -960,6 +982,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   }
   banner += field('chat', chat.status)
   if (files) banner += field('files', 'enabled (control links)')
+  if (connectors)
+    banner += field('connectors', 'enabled (all presets unevaluated)')
   if (schedules)
     banner += field('schedules', 'enabled (notification channels: unevaluated)')
   if (chat.hub !== undefined) {
@@ -1066,6 +1090,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   const stop = (): void => {
     files?.close()
     schedules?.close()
+    connectors?.close()
     usageCollection?.stop()
     void approvals?.close()
     void control?.close()

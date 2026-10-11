@@ -47,6 +47,7 @@ export type HubCallHandler = (
   ctx: {
     readonly node: string
     readonly agent?: string
+    readonly callId: string
     readonly operationId?: string
   },
 ) => Promise<ControlOutcome>
@@ -419,6 +420,7 @@ export class ControlLinks {
           () =>
             handler(payload.op, payload.args, {
               node,
+              callId: payload.callId,
               ...(agent === 'console' ? {} : { agent }),
               ...(payload.operationId === undefined
                 ? {}

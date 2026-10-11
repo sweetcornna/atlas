@@ -16,6 +16,14 @@ import {
 } from '@qianmo/capability'
 import { qianmoConfigPath, protectedConfigRoots } from '@qianmo/paths'
 
+export function freshApprovalTool(name: string): boolean {
+  return [
+    'qianmo_memory_write',
+    'qianmo_mail_send',
+    'qianmo_calendar_create',
+  ].includes(name)
+}
+
 /** Keep ten seconds for the model/tool response to unwind before watchdog expiry. */
 export function approvalWaitBudget(
   taskRemainingMs: number,
@@ -127,10 +135,9 @@ export class ResidentAuthorization {
       })
       return false
     }
-    const used =
-      call.toolName === 'qianmo_memory_write'
-        ? { kind: 'miss' as const }
-        : this.store.use(call)
+    const used = freshApprovalTool(call.toolName)
+      ? { kind: 'miss' as const }
+      : this.store.use(call)
     if (used.kind === 'hit') {
       this.#audit('authz.grant_used', undefined, {
         requestId: used.grant.requestId,
@@ -170,13 +177,21 @@ export class ResidentAuthorization {
         clearTimeout(timer)
         this.#waiters.delete(asked.request.requestId)
         const result = approved ? this.store.use(call) : undefined
-        if (result?.kind === 'hit')
+        if (
+          result?.kind === 'hit' &&
+          result.grant.requestId === asked.request.requestId
+        )
           this.#audit('authz.grant_used', asked.request, {
             scope: result.grant.scope,
             approver: result.grant.approver,
             expiresAt: result.grant.expiresAt,
           })
-        resolve(result?.kind === 'hit')
+        resolve(
+          result?.kind === 'hit' &&
+            (!freshApprovalTool(call.toolName) ||
+              (result.grant.requestId === asked.request.requestId &&
+                result.grant.scope === 'once')),
+        )
       }
       const timer = setTimeout(() => finish(false), waitMs)
       this.#waiters.set(asked.request.requestId, finish)
@@ -196,11 +211,11 @@ export class ResidentAuthorization {
         .some(
           request =>
             request.requestId === parsed.value.requestId &&
-            request.toolName === 'qianmo_memory_write',
+            freshApprovalTool(request.toolName),
         )
     ) {
       this.#audit('authz.refused', undefined, {
-        status: 'memory-write-requires-once',
+        status: 'tool-requires-once',
       })
       return false
     }

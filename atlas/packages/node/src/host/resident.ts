@@ -13,6 +13,7 @@ import {
 } from './control.js'
 import { MemoryControl } from './memoryControl.js'
 import { verifiedTaskOwner } from '@qianmo/capability'
+import { connectorTools, type ConnectorToolContext } from './connectorTools.js'
 import { residentToolSurface, type HostToolDefinition } from './notifyTool.js'
 import { buildVersion } from '../provenance.js'
 import {
@@ -697,6 +698,7 @@ const RUNTIME_WAIT_MS = 3_000
 
 export class QianmoResident {
   readonly control: ControlRegistry
+  readonly #connectorHostTools: readonly HostToolDefinition[]
   readonly hubCall: HubCallClient
   readonly #options: QianmoResidentOptions
   /** `options.localCommandIssuers`, as the set it is looked up in. */
@@ -822,10 +824,14 @@ export class QianmoResident {
         extraHostTools: [...(options.extraHostTools ?? []), files.tool()],
       }
     this.#options = options
-    residentToolSurface(
-      options.authorization !== undefined,
-      options.extraHostTools,
-    )
+    this.#connectorHostTools = connectorTools({
+      call: (op, args, callOptions) => this.hubCall.call(op, args, callOptions),
+      approve: (ctx, tool, args) => this.#approveConnector(ctx, tool, args),
+    })
+    residentToolSurface(options.authorization !== undefined, [
+      ...this.#connectorHostTools,
+      ...(options.extraHostTools ?? []),
+    ])
     this.control = new ControlRegistry({
       onError: options.onError,
       estopEngaged: () => this.#estop.engaged(),
@@ -1781,6 +1787,51 @@ export class QianmoResident {
       }),
     )
     if (routed.ok) channel.send(routed.message)
+  }
+
+  async #approveConnector(
+    ctx: ConnectorToolContext,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<{ contextId: string; requestId: string } | null> {
+    const input = this.#turn.activeInput(ctx.sessionId)
+    const task = input === undefined ? undefined : this.#taskFor(input)
+    if (
+      !task ||
+      task.settled ||
+      !this.#authorization ||
+      input?.agent !== ctx.agent
+    )
+      return null
+    const contextId = task.envelope.contextId ?? 'default'
+    let requestId: string | undefined
+    const approved = await this.#authorization.request(
+      { toolName, input: args, agent: ctx.agent, contextId },
+      {
+        from: task.envelope.from,
+        taskId: task.envelope.taskId,
+        traceId: task.envelope.traceId,
+        trust: task.trust ?? 'untrusted',
+      },
+      Date.now() +
+        taskExpiresAt(task.envelope) -
+        this.#deadlineClock.nowFor(task.envelope.createdAt),
+      this.#turn.inactivityRemaining(ctx.sessionId),
+      (request, wire) => {
+        requestId = request.requestId
+        this.#sendAuthz(task.channel, request, wire)
+      },
+    )
+    if (
+      !approved ||
+      !requestId ||
+      task.settled ||
+      this.#turn.activeInput(ctx.sessionId) !== input ||
+      (this.#options.tenantGate &&
+        !this.#options.tenantGate(task.channel.authenticatedPeerNode ?? null))
+    )
+      return null
+    return { contextId, requestId }
   }
 
   async #writeMemory(
@@ -2851,7 +2902,10 @@ export class QianmoResident {
 
   async #spawnGeneration(): Promise<ResidentChildConnection> {
     const child = new ResidentOmpPool({
-      extraHostTools: this.#options.extraHostTools,
+      extraHostTools: [
+        ...this.#connectorHostTools,
+        ...(this.#options.extraHostTools ?? []),
+      ],
       onLaunch: (sessionId, policy, configHash) =>
         (this.#options.runtimeAudit ?? this.#options.authorization?.audit)?.({
           kind: 'authz.posture',

@@ -88,6 +88,7 @@ function fixture() {
           call: (op, args, options) =>
             handler(op, args, {
               node,
+              callId: crypto.randomUUID(),
               ...(options?.agent ? { agent: options.agent } : {}),
             }),
         },
@@ -215,7 +216,7 @@ async function rawRequest(
   const request = await f.handler(
     'files.request',
     { from: 'qianmo://alpha/main', path: file, reason: 'needed' },
-    { node: 'beta', agent: 'main' },
+    { node: 'beta', agent: 'main', callId: crypto.randomUUID() },
   )
   if (!request.ok) throw new Error('request rejected')
   const id = (request.value as { requestId: string }).requestId
@@ -504,7 +505,11 @@ test('persistent operation ids deduplicate write/commit/abort; ESTOP admits only
         stopped: () => false,
         hub: {
           call: (verb, input, options) =>
-            f.handler(verb, input, { node, agent: options?.agent }),
+            f.handler(verb, input, {
+              node,
+              callId: crypto.randomUUID(),
+              agent: options?.agent,
+            }),
         },
       })
       const repeated = await restarted.handle(op, args, ctx)

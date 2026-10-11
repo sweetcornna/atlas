@@ -490,6 +490,7 @@ export interface ConsoleCliConfig {
   /** 会话落盘的绝对路径。 */
   readonly chatStorePath: string
   readonly files?: boolean
+  readonly connectors?: boolean
   readonly schedules?: boolean
   /**
    * 每个节点跑在哪台服务器上。**给了才有归属面**，一个都没给就整个不显示。
@@ -610,6 +611,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let chatFrom = DEFAULT_CONSOLE_CHAT_FROM
   let chatStorePath = consoleChatStorePath()
   let files = false
+  let connectors = false
   let schedules = false
   const nodeServers: ConsoleNodeServer[] = []
   let serverNotesPath = consoleServerNotesPath()
@@ -858,6 +860,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       index = parsed.next
     } else if (arg === '--files') {
       files = true
+    } else if (arg === '--connectors') {
+      connectors = true
     } else if (arg === '--schedules') {
       schedules = true
     } else if (arg === '--chat-url' || arg?.startsWith('--chat-url=')) {
@@ -1252,6 +1256,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
 
   if (files && controlTargets.length === 0)
     throw new Error('--files needs --control')
+  if (connectors && (!accounts || !approvals || controlTargets.length === 0))
+    throw new Error('--connectors needs --accounts, --approvals and --control')
   if (schedules && chatTargets.length === 0)
     throw new Error('--schedules needs --chat-url')
 
@@ -1441,6 +1447,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     chatFrom,
     chatStorePath,
     ...(files ? { files: true } : {}),
+    ...(connectors ? { connectors: true } : {}),
     ...(schedules ? { schedules: true } : {}),
     nodeServers,
     serverNotesPath,
@@ -1600,6 +1607,10 @@ Options (each accepts both --name value and --name=value):
                            Default ${DEFAULT_CONSOLE_CHAT_FROM}.
   --chat-store <abs path>  Where sessions and transcripts land, absolute path.
                            Default <config root>/qianmo/console/chat.ndjson.
+  --connectors             Enable mail/calendar APIs and connector hub calls.
+                           Needs --accounts, --approvals and --control.
+                           Secrets remain on this hub; all presets unevaluated.
+                           Outbound exceptions: <config root>/qianmo/console/outbound-policy.json.
   --schedules             Enable console schedules; requires an active chat face.
                            Runs every 30 seconds; missed slots catch up once.
                            State: <config root>/qianmo/console/schedules/.

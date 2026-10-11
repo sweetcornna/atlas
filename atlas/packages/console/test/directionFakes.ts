@@ -794,33 +794,36 @@ export const CONNECTOR_PRESETS: readonly ConnectorPresetView[] = [
     kind: 'mail',
     name: 'QQ 邮箱',
     defaults: {
-      user: '',
+      username: '',
       imapHost: 'imap.qq.com',
       imapPort: 993,
       smtpHost: 'smtp.qq.com',
       smtpPort: 465,
     },
     hint: '在 QQ 邮箱设置里开启 IMAP/SMTP 并生成授权码 · 这里填授权码',
+    evaluated: false,
   },
   {
     id: 'gmail',
     kind: 'mail',
     name: 'Gmail',
     defaults: {
-      user: '',
+      username: '',
       imapHost: 'imap.gmail.com',
       imapPort: 993,
       smtpHost: 'smtp.gmail.com',
       smtpPort: 465,
     },
     hint: '开启两步验证后生成应用专用密码 · 这里填应用专用密码',
+    evaluated: false,
   },
   {
     id: 'icloud-calendar',
     kind: 'calendar',
     name: 'iCloud 日历',
-    defaults: { user: '', caldavUrl: 'https://caldav.icloud.com/' },
+    defaults: { username: '', caldavUrl: 'https://caldav.icloud.com/' },
     hint: '在 Apple 账户里生成 App 专用密码',
+    evaluated: false,
   },
   {
     id: 'ics',
@@ -828,6 +831,7 @@ export const CONNECTOR_PRESETS: readonly ConnectorPresetView[] = [
     name: 'ICS 订阅',
     defaults: {},
     hint: '只读 · 订阅地址里通常带令牌 · 按秘密保存',
+    evaluated: false,
   },
 ]
 
@@ -854,9 +858,9 @@ export class FakeConnectors implements ConnectorsPort {
         name: '工作邮箱',
         kind: 'mail',
         preset: 'qq-mail',
-        summary: { user: 'ch***@qq.com', imapHost: 'imap.qq.com' },
+        summary: { account: 'ch***@qq.com', imapHost: 'imap.qq.com' },
         settings: {
-          user: 'chen@qq.com',
+          username: 'chen@qq.com',
           imapHost: 'imap.qq.com',
           imapPort: 993,
           smtpHost: 'smtp.qq.com',
@@ -867,6 +871,8 @@ export class FakeConnectors implements ConnectorsPort {
         secretSetAt: at - 86_400_000 * 2,
         agents: ['qianmo://tokyo-1/planner'],
         evaluated: false,
+        tenant: null,
+        revision: 1,
         lastProbe: { at: at - 3_600_000, ok: true, detail: '登录成功' },
         createdAt: at - 86_400_000 * 2,
         createdBy: 'legacy:admin',
@@ -925,8 +931,10 @@ export class FakeConnectors implements ConnectorsPort {
     this.#seq += 1
     const at = this.now()
     const user =
-      typeof draft.settings.user === 'string' ? draft.settings.user : ''
+      typeof draft.settings.username === 'string' ? draft.settings.username : ''
     const view: ConnectorView = {
+      tenant: old?.tenant ?? null,
+      revision: (old?.revision ?? 0) + 1,
       id: old?.id ?? `con-${this.#seq}`,
       name: draft.name,
       kind: draft.kind,
@@ -935,7 +943,7 @@ export class FakeConnectors implements ConnectorsPort {
         ...(user === ''
           ? {}
           : {
-              user: `${user.slice(0, 2)}***${user.includes('@') ? user.slice(user.indexOf('@')) : ''}`,
+              account: `${user.slice(0, 2)}***${user.includes('@') ? user.slice(user.indexOf('@')) : ''}`,
             }),
         ...(typeof draft.settings.imapHost === 'string'
           ? { imapHost: draft.settings.imapHost }

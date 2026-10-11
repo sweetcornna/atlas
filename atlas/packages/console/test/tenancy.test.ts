@@ -492,7 +492,7 @@ describe('M2 request scopes', () => {
         (await h.handle(asBearer('GET', path, h.alice.credential))).status,
       ).toBe(403)
   })
-  test('memory and files are tenant-scoped before admission; the remaining 2026-10 ports stay unwired', async () => {
+  test('memory, files and connectors are tenant-scoped before admission; the remaining 2026-10 ports stay unwired', async () => {
     const h = fixture()
     const allowed = await h.handle(
       asBearer('GET', '/v0/memory', h.alice.credential),
@@ -579,18 +579,17 @@ describe('M2 request scopes', () => {
     const page = await (
       await h.handle(asBearer('GET', '/overview', h.alice.credential))
     ).text()
-    for (const href of ['/desktop', '/connect'])
-      expect(page).not.toContain(`href="${href}"`)
-    for (const path of ['/desktop', '/connect'])
-      expect(
-        (await h.handle(asBearer('GET', path, h.alice.credential))).status,
-      ).toBe(404)
-    // 文件互通 has its tenant wrapper (P20, `filesScope.ts`): the page shows.
+    expect(page).not.toContain('href="/desktop"')
+    expect(
+      (await h.handle(asBearer('GET', '/desktop', h.alice.credential))).status,
+    ).toBe(404)
+    // 文件互通 (P20, `filesScope.ts`) and 连接 (P25) have tenant wrappers: their
+    // pages show.
     expect(page).toContain('href="/files"')
+    expect(page).toContain('href="/connect"')
     for (const port of [
       h.schedules,
       h.desktop,
-      h.connectors,
       h.routing,
       h.handoffDevices,
       h.avatars,

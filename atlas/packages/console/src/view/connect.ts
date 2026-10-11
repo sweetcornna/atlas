@@ -90,6 +90,7 @@ const OP_WORD: Readonly<Record<string, string>> = {
 
 /** The non-secret settings a person recognises, in the order they read them. */
 const SETTING_WORD: Readonly<Record<string, string>> = {
+  username: '账号',
   user: '账号',
   account: '账号',
   email: '邮箱',
@@ -97,12 +98,13 @@ const SETTING_WORD: Readonly<Record<string, string>> = {
   imapPort: '收信端口',
   smtpHost: '发信服务器',
   smtpPort: '发信端口',
+  smtpTls: '发信加密',
   caldavUrl: 'CalDAV 地址',
   host: '服务器',
 }
 
 /** The settings that are the person's own, shown unfolded. */
-const ACCOUNT_KEYS: readonly string[] = ['user', 'account', 'email']
+const ACCOUNT_KEYS: readonly string[] = ['username', 'user', 'account', 'email']
 
 function settingWord(key: string): string {
   return SETTING_WORD[key] ?? key
@@ -482,6 +484,21 @@ function settingField(
       `<label class="chk field-wide"><input type="checkbox" name="s-${attr(key)}" data-setting="${attr(key)}"` +
       `${value ? ' checked' : ''}><span class="bx">${icon('check', { small: true })}</span>` +
       `${escapeHtml(settingWord(key))}</label>`
+    )
+  }
+  if (key === 'smtpTls') {
+    const options = [
+      ['smtps', 'SMTPS（通常 465）'],
+      ['starttls', 'STARTTLS（通常 587）'],
+    ] as const
+    return (
+      `<label class="field"><span class="flabel">${escapeHtml(settingWord(key))}</span>` +
+      `<span class="sel"><select class="input" name="s-${attr(key)}" data-setting="${attr(key)}" data-number="0">${options
+        .map(
+          ([id, word]) =>
+            `<option value="${id}"${value === id ? ' selected' : ''}>${escapeHtml(word)}</option>`,
+        )
+        .join('')}</select>${chevron()}</span></label>`
     )
   }
   const numeric = typeof value === 'number'

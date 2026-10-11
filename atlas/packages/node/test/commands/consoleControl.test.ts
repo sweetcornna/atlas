@@ -220,7 +220,7 @@ test('ControlLinks reconnects and resubscribes; only correlated replies and auth
       },
     ],
   })
-  const calls: { node: string; agent?: string }[] = []
+  const calls: { node: string; agent?: string; callId: string }[] = []
   hub.onHubCall('connector', async (_op, _args, ctx) => {
     calls.push(ctx)
     return { ok: true, value: ctx.node }
@@ -252,7 +252,9 @@ test('ControlLinks reconnects and resubscribes; only correlated replies and auth
     })
     await context!.channel.sendAndWait(request)
     await until(() => held.includes(request.taskId))
-    expect(calls).toEqual([{ node: 'worker', agent: 'main' }])
+    expect(calls).toEqual([
+      { node: 'worker', agent: 'main', callId: request.payload.callId },
+    ])
     const forged = createMessage({
       from: 'qianmo://other/main',
       to: request.to,
