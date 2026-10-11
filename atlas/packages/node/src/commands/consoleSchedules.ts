@@ -35,7 +35,10 @@ import {
   type ChannelPushResult,
   type ScheduleNotification,
 } from './consoleNotifyChannels.js'
-import { notifyDestination, NotifyDestinationError } from './consoleNotifyDestination.js'
+import {
+  notifyDestination,
+  NotifyDestinationError,
+} from './consoleNotifyDestination.js'
 import { nextRunAt, validateScheduleWhen } from './scheduleTime.js'
 
 const MINUTE = 60_000
@@ -86,6 +89,9 @@ const runSchema = z.object({
   startedAt: z.number(),
   finishedAt: z.number().nullable(),
   outcome: z.enum(['running', 'completed', 'failed', 'timeout', 'skipped']),
+  state: z
+    .enum(['running', 'completed', 'failed', 'timeout', 'skipped', 'unknown'])
+    .optional(),
   taskId: z.string().nullable(),
   sessionId: z.string().nullable(),
   excerpt: z.string().nullable(),
@@ -118,7 +124,14 @@ const channelSchema = channelDraftSchema.omit({ url: true }).extend({
 const bookSchema = z.object({
   schedules: z.array(storedSchema),
   channels: z.array(channelSchema),
-  running: z.array(runSchema),
+  running: z.array(
+    runSchema.extend({
+      schedule: storedSchema.optional(),
+      baseline: z.array(z.string()).optional(),
+      attempted: z.boolean().optional(),
+      notices: z.array(z.string()).optional(),
+    }),
+  ),
 })
 
 type StoredSchedule = z.infer<typeof storedSchema>
@@ -128,6 +141,7 @@ interface ActiveRun {
   baseline: Set<string>
   notices: string[]
   phase: 'sending' | 'waiting' | 'pushing'
+  attempted: boolean
 }
 
 const TEMPLATES: readonly ScheduleTemplateView[] = [
@@ -251,7 +265,10 @@ export class ConsoleSchedules implements SchedulesPort {
           .record(z.string(), z.string())
           .parse(JSON.parse(secret))
         for (const [id, value] of Object.entries(values)) {
-          this.#secrets.set(id, notifyChannelUrl(value, options.pushOptions).toString())
+          this.#secrets.set(
+            id,
+            notifyChannelUrl(value, options.pushOptions).toString(),
+          )
           this.#redactions.add(value)
         }
       }
@@ -282,14 +299,34 @@ export class ConsoleSchedules implements SchedulesPort {
             host: notifyChannelUrl(url, options.pushOptions).hostname,
           })
         }
-        for (const run of book.running) {
-          if (this.#runs.some(previous => previous.runId === run.runId))
+        for (const checkpoint of book.running) {
+          const {
+            schedule: savedSchedule,
+            baseline,
+            attempted,
+            notices,
+            ...run
+          } = checkpoint
+          if (
+            this.#runs.some(
+              previous =>
+                previous.runId === run.runId && previous.state !== 'unknown',
+            )
+          )
             continue
-          this.#append({
-            ...run,
-            outcome: 'failed',
-            finishedAt: this.#now(),
-            reason: '控制台重启',
+          if (run.outcome !== 'running') {
+            this.#append({ ...run, reason: '通知结果未知，未重复推送' })
+            continue
+          }
+          const schedule = savedSchedule ?? this.#schedules.get(run.scheduleId)
+          if (!schedule) throw new Error('missing occupied schedule')
+          this.#active.set(run.scheduleId, {
+            view: { ...run, outcome: 'running', state: 'unknown', finishedAt: null, reason: '上一次结果未知，等待确认' },
+            schedule: structuredClone(schedule),
+            baseline: new Set(baseline),
+            notices: notices ?? [],
+            phase: 'waiting',
+            attempted: attempted ?? true,
           })
         }
         this.#persist()
@@ -354,7 +391,13 @@ export class ConsoleSchedules implements SchedulesPort {
       this.#redact({
         schedules: [...this.#schedules.values()],
         channels: [...this.#channels.values()],
-        running: [...this.#active.values()].map(active => active.view),
+        running: [...this.#active.values()].map(active => ({
+          ...active.view,
+          schedule: active.schedule,
+          baseline: [...active.baseline],
+          attempted: active.attempted,
+          notices: active.notices,
+        })),
       }),
     )
   }
@@ -623,6 +666,8 @@ export class ConsoleSchedules implements SchedulesPort {
     return this.#write('schedule.remove', id, actor, async () => {
       const schedule = this.#schedules.get(id)
       if (!schedule) return fail('not_found', '定时任务不存在')
+      if (this.#active.has(id))
+        return fail('rejected', '上一轮仍占用，结束或确认结果后才能删除')
       this.#schedules.delete(id)
       try {
         this.#persist()
@@ -642,6 +687,51 @@ export class ConsoleSchedules implements SchedulesPort {
       const schedule = this.#schedules.get(id)
       if (!schedule) return fail('not_found', '定时任务不存在')
       return ok(this.#reserve(schedule, this.#now(), 'manual', null))
+    })
+  }
+
+  #markUnknown(active: ActiveRun): void {
+    if (active.phase === 'pushing' || active.view.state === 'unknown') return
+    active.view = {
+      ...active.view,
+      outcome: 'running',
+      state: 'unknown',
+      finishedAt: null,
+      reason: '上一次结果未知，等待确认',
+    }
+    active.phase = 'waiting'
+    // Occupancy remains in the book; append a diagnostic transition once.
+    this.#persist()
+    this.#append(active.view)
+  }
+
+  resolve(
+    id: string,
+    runId: string,
+    outcome: 'ok' | 'failed',
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<ScheduleRunView>> {
+    return this.#write('schedule.resolve', id, actor, async () => {
+      if (!this.visible(id, actor)) return fail('not_found', '定时任务不存在')
+      if (outcome !== 'ok' && outcome !== 'failed')
+        return fail('invalid', '结果必须是 ok 或 failed')
+      const active = this.#active.get(id)
+      if (!active || active.view.runId !== runId)
+        return fail('not_found', '运行记录不存在')
+      if (active.view.state !== 'unknown')
+        return fail('rejected', '仅可确认结果未知的运行')
+      const view: ScheduleRunView = {
+        ...active.view,
+        outcome: outcome === 'ok' ? 'completed' : 'failed',
+        state: outcome === 'ok' ? 'completed' : 'failed',
+        finishedAt: this.#now(),
+        reason: '人工确认结果',
+      }
+      active.phase = 'pushing'
+      this.#append(view)
+      this.#active.delete(id)
+      this.#persist()
+      return ok(this.#redact(view))
     })
   }
 
@@ -832,7 +922,9 @@ export class ConsoleSchedules implements SchedulesPort {
     const reason = this.#estop()
       ? '紧急停止'
       : this.#active.has(schedule.id)
-        ? '上一轮未结束'
+        ? this.#active.get(schedule.id)?.view.state === 'unknown'
+          ? '上一次结果未知，等待确认'
+          : '上一轮未结束'
         : null
     const view: ScheduleRunView = {
       runId: crypto.randomUUID(),
@@ -842,6 +934,7 @@ export class ConsoleSchedules implements SchedulesPort {
       startedAt: this.#now(),
       finishedAt: reason ? this.#now() : null,
       outcome: reason ? 'skipped' : 'running',
+      state: reason ? 'skipped' : 'running',
       taskId: null,
       sessionId: schedule.sessionId,
       excerpt: null,
@@ -860,6 +953,7 @@ export class ConsoleSchedules implements SchedulesPort {
       baseline: new Set(),
       notices: [],
       phase: 'sending',
+      attempted: false,
     }
     this.#active.set(schedule.id, active)
     try {
@@ -942,7 +1036,8 @@ export class ConsoleSchedules implements SchedulesPort {
           this.#schedules.set(schedule.id, { ...schedule, sessionId })
         this.#persist()
       })
-      if (this.#closed || active.phase !== 'sending') return
+      if (this.#closed || active.phase !== 'sending')
+        return
       // ESTOP can engage during open/transcript I/O, before bytes leave.
       if (this.#estop()) {
         await this.#serial(async () => {
@@ -950,6 +1045,7 @@ export class ConsoleSchedules implements SchedulesPort {
         })
         return
       }
+      active.attempted = true
       const sent = await dispatch.send(
         {
           sessionId,
@@ -966,20 +1062,24 @@ export class ConsoleSchedules implements SchedulesPort {
         return
       }
       await this.#serial(async () => {
-        if (this.#closed || active.phase !== 'sending') return
+        if (this.#closed || active.phase === 'pushing') return
         if (!sent.ok) {
-          this.#finish(active, 'failed', null, '对话发送失败')
+          if (sent.failure.deliveryUnknown) this.#markUnknown(active)
+          else this.#finish(active, 'failed', null, '对话发送失败')
           return
         }
         active.view = { ...active.view, taskId: sent.value.taskId ?? null }
+        if (sent.value.deliveryUnknown) this.#markUnknown(active)
         active.phase = 'waiting'
         this.#persist()
         await this.#inspect(active)
       })
     } catch {
       await this.#serial(async () => {
-        if (!this.#closed && active.phase !== 'pushing')
-          this.#finish(active, 'failed', null, '对话执行失败')
+        if (!this.#closed && active.phase !== 'pushing') {
+          if (active.attempted) this.#markUnknown(active)
+          else this.#finish(active, 'failed', null, '对话执行失败')
+        }
       })
     }
   }
@@ -1018,10 +1118,19 @@ export class ConsoleSchedules implements SchedulesPort {
     const transcript = await this.#options.chat.transcript(
       active.view.sessionId,
     )
-    if (!transcript.ok) {
-      if (transcript.failure.code === 'not_found')
-        this.#finish(active, 'failed', null, '专属对话会话已删除')
-      return
+    if (!transcript.ok) return // A missing/local session is not a remote terminal.
+    if (active.view.taskId === null && active.view.state === 'unknown') {
+      const sent = transcript.value.turns.filter(
+        turn =>
+          turn.author === 'operator' &&
+          turn.at >= active.view.startedAt &&
+          turn.text === active.schedule.prompt &&
+          turn.taskId,
+      )
+      if (sent.length === 1) {
+        active.view = { ...active.view, taskId: sent[0]!.taskId! }
+        this.#persist()
+      }
     }
     const turns = transcript.value.turns.filter(
       turn => !active.baseline.has(turn.id),
@@ -1042,7 +1151,11 @@ export class ConsoleSchedules implements SchedulesPort {
         turn.author === 'agent' &&
         turn.variant !== 'notice' &&
         turn.taskId === active.view.taskId &&
-        (turn.state === 'done' || turn.state === 'failed'),
+        (turn.state === 'done' || turn.state === 'failed') &&
+        // ConsoleChat also persists local timeout pseudo-replies. Only its
+        // remoteTerminal marker proves those failures ended on the node.
+        !turn.deliveryUnknown &&
+        (turn.code !== 'E_TASK_TIMEOUT' || turn.remoteTerminal === true),
     )
     if (reply) {
       this.#finish(
@@ -1073,6 +1186,7 @@ export class ConsoleSchedules implements SchedulesPort {
     const view: ScheduleRunView = this.#redact({
       ...active.view,
       outcome,
+      state: outcome,
       finishedAt: this.#now(),
       excerpt: reply ? [...reply.text].slice(0, 2000).join('') : null,
       reason: [reason, active.view.reason].filter(Boolean).join('；') || null,
@@ -1083,9 +1197,10 @@ export class ConsoleSchedules implements SchedulesPort {
       this.#persist()
       return
     }
-    // Until the notification result is durable this is still an unfinished run.
-    // A restart records it as failed instead of silently retrying an external push.
-    active.view = { ...view, outcome: 'running', finishedAt: null }
+    // Occupancy stays until the notification checkpoint is durable. Preserve
+    // the proven terminal result: recovery finalizes it without retrying a
+    // push that may already have reached the external service.
+    active.view = view
     this.#persist()
     this.#launch(
       (async () => {
@@ -1148,6 +1263,13 @@ export class ConsoleSchedules implements SchedulesPort {
       } catch {
         admitted = false
       }
+      for (const active of this.#active.values()) {
+        if (
+          active.phase !== 'pushing' &&
+          now - active.view.startedAt >= active.schedule.timeoutMs
+        )
+          this.#markUnknown(active)
+      }
       // Decide overdue runs before settling old ones: a still-running prior turn skips this slot.
       for (const schedule of this.#schedules.values()) {
         if (
@@ -1204,14 +1326,7 @@ export class ConsoleSchedules implements SchedulesPort {
           this.#options.onError?.('定时任务动作账本记录失败')
         }
       }
-      for (const active of this.#active.values()) {
-        await this.#inspect(active)
-        if (
-          active.phase !== 'pushing' &&
-          now - active.view.startedAt >= active.schedule.timeoutMs
-        )
-          this.#finish(active, 'timeout', null, '任务超时')
-      }
+      for (const active of this.#active.values()) await this.#inspect(active)
     })
   }
 

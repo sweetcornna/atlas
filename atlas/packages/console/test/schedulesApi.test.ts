@@ -89,7 +89,12 @@ function result<T>(value: T): ConsoleResult<T> {
     : { ok: true, value }
 }
 const port: SchedulesPort = {
-  visible() { return true },
+  visible() {
+    return true
+  },
+  async resolve() {
+    return result(run)
+  },
   async snapshot() {
     calls.push({ verb: 'snapshot', input: null })
     return result(empty)

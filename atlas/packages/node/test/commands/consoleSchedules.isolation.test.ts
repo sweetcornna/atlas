@@ -208,6 +208,11 @@ test('foreign details, histories and all writes return 404 before admission or b
     portCalls++
     return originalRun(id, actor)
   }
+  const originalResolve = f.book.resolve.bind(f.book)
+  f.book.resolve = async (id, runId, outcome, actor) => {
+    portCalls++
+    return originalResolve(id, runId, outcome, actor)
+  }
   const ledgerBefore = f.ledgerStore.read()
   for (const credential of [f.b.credential, f.viewer.credential]) {
     for (const [method, suffix, body] of [
@@ -217,6 +222,7 @@ test('foreign details, histories and all writes return 404 before admission or b
       ['POST', '/enable', undefined],
       ['POST', '/disable', undefined],
       ['POST', '/run', undefined],
+      ['POST', '/runs/hidden/resolve', { outcome: 'ok' }],
       ['DELETE', '', undefined],
     ] as const) {
       const response = await f.handle(
@@ -312,3 +318,46 @@ test('shared channels remain selectable by members and never return a URL to vie
   expect(legacy.schedules).toHaveLength(3)
 })
 
+test('the creator confirms unknown results through the API and only unknown runs can be resolved', async () => {
+  const f = await fixture()
+  const run = value(await f.book.runNow(f.own.id, f.actor(f.a.credential)))
+  await f.book.idle()
+  const route = `/v0/schedules/${f.own.id}/runs/${run.runId}/resolve`
+  expect(
+    (await f.handle(asBearer('POST', route, f.a.credential, { outcome: 'ok' })))
+      .status,
+  ).toBe(400)
+  f.h.clock.advance(draft.timeoutMs)
+  await f.book.tick()
+  await f.book.idle()
+  expect(
+    (
+      await f.handle(
+        asBearer('POST', route, f.a.credential, { outcome: 'timeout' }),
+      )
+    ).status,
+  ).toBe(400)
+  const confirmed = await f.handle(
+    asBearer('POST', route, f.a.credential, { outcome: 'ok' }),
+  )
+  expect(confirmed.status).toBe(200)
+  expect(await confirmed.json()).toMatchObject({
+    state: 'completed',
+    outcome: 'completed',
+    runId: run.runId,
+  })
+  expect(value(await f.actions.list({})).entries[0]).toMatchObject({
+    action: 'schedule.resolve',
+    subject: f.own.createdBy,
+    createdBy: f.own.createdBy,
+  })
+  expect(
+    (
+      await f.handle(
+        asBearer('POST', `/v0/schedules/${f.own.id}/run`, f.a.credential),
+      )
+    ).status,
+  ).toBe(200)
+  await f.book.idle()
+  expect(f.h.chat.sends).toBe(2)
+})

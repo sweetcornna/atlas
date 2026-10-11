@@ -186,6 +186,18 @@ export class FakeSchedules implements SchedulesPort {
     )
   }
 
+  async resolve(
+    id: string,
+    runId: string,
+    outcome: 'ok' | 'failed',
+    _actor: DirectionActor,
+  ): Promise<ConsoleResult<ScheduleRunView>> {
+    this.calls.push(`resolve ${id} ${runId}`)
+    const run = this.runs.find(v => v.runId === runId && v.scheduleId === id)
+    if (!run) return failed('not_found', 'no run')
+    return ok({ ...run, outcome: outcome === 'ok' ? 'completed' : 'failed' })
+  }
+
   async snapshot(
     actor: ScheduleReader,
   ): Promise<ConsoleResult<SchedulesSnapshot>> {

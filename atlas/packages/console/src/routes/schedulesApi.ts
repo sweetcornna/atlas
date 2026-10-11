@@ -54,7 +54,12 @@ export const schedulesApi: HeadRoute = {
               : ['POST']
             : head === 'schedules' && verb === 'runs' && rest.length === 3
               ? ['GET']
-              : null
+              : head === 'schedules' &&
+                  verb === 'runs' &&
+                  rest.length === 4 &&
+                  rest[3] === 'resolve'
+                ? ['POST']
+                : null
     if (!allowed) return notFound(`unknown path: ${ctx.url.pathname}`)
     if (!allowed.includes(request.method)) return methodNotAllowed(allowed)
     // Ownership comes from the book's in-memory index, before admission or
@@ -130,6 +135,15 @@ export const schedulesApi: HeadRoute = {
     if (id === null) return fail(400, 'invalid', '标识编码无效')
     const admitted = await ctx.admit()
     if (admitted) return admitted
+    if (rest.length === 4) {
+      const runId = safeDecode(rest[2]!)
+      if (runId === null) return fail(400, 'invalid', '标识编码无效')
+      const body = await readJsonObject(request)
+      if (!body || (body.outcome !== 'ok' && body.outcome !== 'failed'))
+        return fail(400, 'invalid', '结果必须是 ok 或 failed')
+      const result = await port.resolve(id, runId, body.outcome, actor)
+      return result.ok ? json(result.value) : failureResponse(result.failure)
+    }
     if (request.method === 'DELETE') {
       const result =
         head === 'schedules'
