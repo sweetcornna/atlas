@@ -573,6 +573,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           directory: qianmoConfigPath('qianmo', 'console', 'schedules'),
           estopPath: qianmoConfigPath('qianmo', 'scheduler', 'ESTOP'),
           chat: chat.hub,
+          ...(accounts === undefined ? {} : { accounts }),
+          ...(usage === undefined ? {} : { usage }),
+          ...(tenancy === undefined ? {} : { tenancy }),
           ...(actions === undefined ? {} : { actions }),
           onError: message => process.stderr.write(`[schedules] ${message}\n`),
         })

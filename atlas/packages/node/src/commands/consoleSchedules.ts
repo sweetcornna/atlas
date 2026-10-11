@@ -7,9 +7,11 @@ import { z } from 'zod'
 import {
   MODEL_DIRECTIONS,
   SCHEDULE_TEMPLATES,
+  ChatDispatch,
   type ActionLedgerPort,
   type ChatPort,
   type ChatTurn,
+  type ConsoleAccounts,
   type ConsoleFailure,
   type ConsoleResult,
   type DirectionActor,
@@ -20,6 +22,8 @@ import {
   type SchedulesPort,
   type ScheduleTemplateView,
   type ScheduleView,
+  type TenantPort,
+  type UsagePort,
 } from '@qianmo/console'
 import { readTextIfExists, writePrivateJson } from '../providers/store.js'
 import { FileLedger } from './consoleAccountsStore.js'
@@ -99,6 +103,7 @@ const storedSchema = draftSchema.extend({
   updatedAt: z.number(),
   nextRunAt: z.number().nullable(),
   sessionId: z.string().nullable(),
+  lastManualPlannedAt: z.number().optional(),
 })
 const channelSchema = channelDraftSchema.omit({ url: true }).extend({
   id: z.string(),
@@ -151,6 +156,9 @@ export interface ConsoleSchedulesOptions {
   readonly directory: string
   readonly estopPath: string
   readonly chat: ChatPort
+  readonly accounts?: ConsoleAccounts
+  readonly usage?: UsagePort
+  readonly tenancy?: TenantPort
   readonly actions?: ActionLedgerPort
   readonly now?: () => number
   readonly push?: (
@@ -360,7 +368,11 @@ export class ConsoleSchedules implements SchedulesPort {
   }
 
   #view(schedule: StoredSchedule): ScheduleView {
-    const { sessionId: _sessionId, ...fields } = schedule
+    const {
+      sessionId: _sessionId,
+      lastManualPlannedAt: _manualAt,
+      ...fields
+    } = schedule
     const lastRun =
       [...this.#runs].reverse().find(run => run.scheduleId === schedule.id) ??
       null
@@ -516,6 +528,9 @@ export class ConsoleSchedules implements SchedulesPort {
             : next,
         sessionId:
           existing?.target === value.target ? existing.sessionId : null,
+        ...(existing?.lastManualPlannedAt === undefined
+          ? {}
+          : { lastManualPlannedAt: existing.lastManualPlannedAt }),
       }
       this.#schedules.set(id, schedule)
       try {
@@ -728,6 +743,37 @@ export class ConsoleSchedules implements SchedulesPort {
     trigger: ScheduleRunView['trigger'],
     note: string | null,
   ): ScheduleRunView {
+    if (trigger === 'schedule') {
+      const previous =
+        this.#runs.find(
+          run => run.scheduleId === schedule.id && run.plannedAt === plannedAt,
+        ) ??
+        (this.#active.get(schedule.id)?.view.plannedAt === plannedAt
+          ? this.#active.get(schedule.id)!.view
+          : undefined)
+      if (previous) {
+        this.#persist()
+        return this.#redact(previous)
+      }
+    }
+    // Scheduled slots are consumed durably by nextRunAt. Manual clicks each
+    // need a distinct slot even when the host clock has not advanced.
+    if (trigger === 'manual') {
+      plannedAt = Math.max(
+        plannedAt,
+        (schedule.lastManualPlannedAt ?? -Infinity) + 1,
+      )
+      while (
+        plannedAt === schedule.nextRunAt ||
+        this.#runs.some(
+          run => run.scheduleId === schedule.id && run.plannedAt === plannedAt,
+        ) ||
+        this.#active.get(schedule.id)?.view.plannedAt === plannedAt
+      )
+        plannedAt++
+      schedule = { ...schedule, lastManualPlannedAt: plannedAt }
+      this.#schedules.set(schedule.id, schedule)
+    }
     const reason = this.#estop()
       ? '紧急停止'
       : this.#active.has(schedule.id)
@@ -749,6 +795,7 @@ export class ConsoleSchedules implements SchedulesPort {
     }
     if (reason) {
       this.#append(view)
+      this.#persist()
       return this.#redact(view)
     }
     const active: ActiveRun = {
@@ -771,6 +818,21 @@ export class ConsoleSchedules implements SchedulesPort {
 
   async #execute(active: ActiveRun): Promise<void> {
     try {
+      const dispatch = ChatDispatch.forSubject(active.schedule.createdBy, {
+        deps: this.#options,
+        accounts: this.#options.accounts,
+        now: this.#now(),
+        requestId: active.view.runId,
+      })
+      if (dispatch instanceof Response) {
+        await this.#dispatchDenied(active, dispatch, true)
+        return
+      }
+      const denied = await dispatch.authorizeTarget(active.schedule.target)
+      if (denied !== null) {
+        await this.#dispatchDenied(active, denied, true)
+        return
+      }
       let sessionId = active.schedule.sessionId
       let transcript =
         sessionId === null
@@ -787,12 +849,26 @@ export class ConsoleSchedules implements SchedulesPort {
         !transcript?.ok ||
         transcript.value.session.target !== active.schedule.target
       ) {
-        const opened = await this.#options.chat.open(active.schedule.target)
-        if (!opened.ok) throw new Error('open failed')
+        const opened = await dispatch.open(active.schedule.target)
+        if (opened instanceof Response) {
+          await this.#dispatchDenied(active, opened)
+          return
+        }
+        if (!opened.ok) {
+          await this.#serial(async () =>
+            this.#finish(active, 'failed', null, '对话执行失败'),
+          )
+          return
+        }
         sessionId = opened.value.id
         transcript = await this.#options.chat.transcript(sessionId)
       }
       if (!transcript?.ok) throw new Error('transcript unavailable')
+      const ownership = dispatch.claimSession(sessionId)
+      if (ownership !== null) {
+        await this.#dispatchDenied(active, ownership, true)
+        return
+      }
       active.baseline = new Set(transcript.value.turns.map(turn => turn.id))
       await this.#serial(async () => {
         if (this.#closed || active.phase !== 'sending') return
@@ -810,14 +886,21 @@ export class ConsoleSchedules implements SchedulesPort {
         })
         return
       }
-      const sent = await this.#options.chat.send({
-        sessionId,
-        text: active.schedule.prompt,
-        ...(active.schedule.direction === null
-          ? {}
-          : { direction: active.schedule.direction }),
-        taskTtlMs: active.schedule.timeoutMs,
-      })
+      const sent = await dispatch.send(
+        {
+          sessionId,
+          text: active.schedule.prompt,
+          ...(active.schedule.direction === null
+            ? {}
+            : { direction: active.schedule.direction }),
+          taskTtlMs: active.schedule.timeoutMs,
+        },
+        active.schedule.target,
+      )
+      if (sent instanceof Response) {
+        await this.#dispatchDenied(active, sent)
+        return
+      }
       await this.#serial(async () => {
         if (this.#closed || active.phase !== 'sending') return
         if (!sent.ok) {
@@ -837,10 +920,34 @@ export class ConsoleSchedules implements SchedulesPort {
     }
   }
 
+  async #dispatchDenied(
+    active: ActiveRun,
+    response: Response,
+    authorization = false,
+  ): Promise<void> {
+    const body = (await response.json()) as {
+      error: { code: string; message: string }
+    }
+    const skipped =
+      (authorization && body.error.code === 'unavailable') ||
+      [401, 403, 404].includes(response.status)
+    await this.#serial(async () => {
+      if (!this.#closed && active.phase !== 'pushing')
+        this.#finish(
+          active,
+          skipped ? 'skipped' : 'failed',
+          null,
+          `${skipped ? '创建者已无权限：' : ''}${body.error.code}: ${body.error.message}`,
+        )
+    })
+  }
+
   async #inspect(active: ActiveRun): Promise<void> {
     if (
       this.#closed ||
-      active.phase === 'pushing' ||
+      // A reserved run has not proven its creator's authority yet. Early
+      // replies are picked up by the inspection immediately after send.
+      active.phase !== 'waiting' ||
       active.view.sessionId === null
     )
       return
@@ -866,7 +973,6 @@ export class ConsoleSchedules implements SchedulesPort {
           turn.at >= active.view.startedAt,
       )
       .map(turn => turn.text)
-    if (active.phase !== 'waiting') return
     const reply = turns.find(
       turn =>
         turn.author === 'agent' &&

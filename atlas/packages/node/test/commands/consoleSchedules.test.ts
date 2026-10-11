@@ -19,13 +19,15 @@ import type {
   ScheduleDraft,
   SchedulesSnapshot,
 } from '@qianmo/console'
+import { AccountBook } from '@qianmo/console'
+import { MemoryLedger } from '../../../console/test/accountsHarness.js'
 import { ConsoleSchedules } from '../../src/commands/consoleSchedules.js'
 import type { ScheduleNotification } from '../../src/commands/consoleNotifyChannels.js'
 
 const TARGET = 'qianmo://node-b/helper'
 const START = Date.parse('2026-10-11T00:07:00Z')
 const STEP = 15 * 60_000
-const actor: DirectionActor = {
+let actor: DirectionActor = {
   subject: 'u:0123456789abcdef',
   role: 'ops',
   requestId: 'request-1',
@@ -180,6 +182,7 @@ class FakeChat implements ChatPort {
   }
 }
 
+let accounts: { book: AccountBook }
 let root: string
 let now: number
 let chat: FakeChat
@@ -207,6 +210,7 @@ function open(): ConsoleSchedules {
     directory: path.join(root, 'schedules'),
     estopPath: path.join(root, 'ESTOP'),
     chat,
+    accounts,
     actions: ledger,
     now: () => now,
     onError: message => {
@@ -222,6 +226,24 @@ async function snapshot(): Promise<SchedulesSnapshot> {
   return value(await book.snapshot())
 }
 beforeEach(() => {
+  accounts = {
+    book: new AccountBook({
+      accounts: new MemoryLedger(),
+      sessions: new MemoryLedger(),
+    }),
+  }
+  const invite = accounts.book.issueInvite({
+    role: 'ops',
+    issuedBy: 'legacy:admin',
+  })
+  if (!invite.ok) throw new Error(invite.refusal.message)
+  const accepted = accounts.book.acceptInvite(invite.value.token)
+  if (!accepted.ok) throw new Error(accepted.refusal.message)
+  actor = {
+    subject: accepted.value.subject,
+    role: 'ops',
+    requestId: 'request-1',
+  }
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'console-schedules-'))
   now = START
   chat = new FakeChat()
@@ -419,6 +441,33 @@ describe('schedule book and secret boundary', () => {
 })
 
 describe('execution through the conversation port', () => {
+  test('same-clock manual slots stay unique after editing and restarting; repeated due ticks never resend', async () => {
+    let job = value(await book.save(draft(), actor))
+    chat.autoReply = '完成'
+    value(await book.runNow(job.id, actor))
+    await book.idle()
+    value(await book.runNow(job.id, actor))
+    await book.idle()
+    job = value(await book.save(draft({ id: job.id, title: '改名' }), actor))
+    book.close()
+    book = open()
+    value(await book.runNow(job.id, actor))
+    await book.idle()
+    now += STEP
+    await Promise.all([book.tick(), book.tick(), book.tick()])
+    await book.idle()
+    book.close()
+    book = open()
+    await book.tick()
+    await book.idle()
+    const runs = (await snapshot()).runs
+    expect(chat.sent).toHaveLength(4)
+    expect(runs).toHaveLength(4)
+    expect(
+      new Set(runs.map(run => `${run.scheduleId}/${run.plannedAt}`)).size,
+    ).toBe(4)
+    expect(runs.filter(run => run.trigger === 'schedule')).toHaveLength(1)
+  })
   test('due sends carry direction/deadline, race-safe replies are saved and pushed once', async () => {
     const channel = value(
       await book.saveChannel(
@@ -693,6 +742,7 @@ describe('execution through the conversation port', () => {
       directory: path.join(root, 'schedules'),
       estopPath: path.join(root, 'ESTOP'),
       chat,
+      accounts,
       now: () => now,
       push: async () => {
         throw new Error('https://example.test/device-secret')
