@@ -25,6 +25,8 @@ import { StaticPublicKeyDirectory } from '@qianmo/capability'
 import { qianmoConfigPath } from '@qianmo/paths'
 import { loadOrCreateNodeKeys } from '../host/nodeIdentity.js'
 import { ConsoleApprovals } from './consoleApprovals.js'
+import { ConsoleConnectors } from './consoleConnectors.js'
+import { loadOutboundPolicy } from './outboundPolicy.js'
 import { ConsoleSchedules } from './consoleSchedules.js'
 import { loadConsoleApproverIdentity } from './consoleApproverIdentity.js'
 import { readTrustAnchors } from '../host/trustAnchors.js'
@@ -570,11 +572,15 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     : undefined
   if (config.schedules && chat.hub === undefined)
     throw new Error('--schedules needs an active chat face with a usable PSK')
+  const outboundPolicy = loadOutboundPolicy(
+    qianmoConfigPath('qianmo', 'console', 'outbound-policy.json'),
+  )
   const schedules =
     config.schedules && chat.hub
       ? new ConsoleSchedules({
           directory: qianmoConfigPath('qianmo', 'console', 'schedules'),
           estopPath: qianmoConfigPath('qianmo', 'scheduler', 'ESTOP'),
+          pushOptions: { policy: outboundPolicy },
           chat: chat.hub,
           ...(actions === undefined ? {} : { actions }),
           onError: message => process.stderr.write(`[schedules] ${message}\n`),
@@ -632,6 +638,22 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           onError: error =>
             process.stderr.write(`[approvals] ${String(error)}\n`),
         })
+
+  const connectors =
+    config.connectors && control && approvals
+      ? new ConsoleConnectors({
+          directory: qianmoConfigPath('qianmo', 'console', 'connectors'),
+          policy: outboundPolicy,
+          agents: async () => {
+            const listed = await registry.list()
+            if (!listed.ok) throw new Error('registry unavailable')
+            return listed.value.map(row => row.address)
+          },
+          ...(tenancy === undefined ? {} : { tenancy }),
+          approvals,
+        })
+      : undefined
+  if (connectors) control!.onHubCall('connector', connectors.handle)
 
   // The certificate column, or nothing at all (§10.1). Read at startup rather
   // than per request: the CA root is the one file this console needs and a
@@ -692,6 +714,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
 
   const deps: ConsoleDeps = {
     ...(schedules === undefined ? {} : { schedules }),
+    ...(connectors === undefined ? {} : { connectors }),
     ...(approvals === undefined ? {} : { approvals }),
     ...(usage === undefined ? {} : { usage }),
     ...(tenancy === undefined ? {} : { tenancy }),
@@ -850,6 +873,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     )
   }
   banner += field('chat', chat.status)
+  if (connectors)
+    banner += field('connectors', 'enabled (all presets unevaluated)')
   if (schedules)
     banner += field('schedules', 'enabled (notification channels: unevaluated)')
   if (chat.hub !== undefined) {
@@ -954,6 +979,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
 
   const stop = (): void => {
     schedules?.close()
+    connectors?.close()
     usageCollection?.stop()
     void approvals?.close()
     void control?.close()

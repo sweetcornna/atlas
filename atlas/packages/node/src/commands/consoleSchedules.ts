@@ -23,6 +23,7 @@ import {
 } from '@qianmo/console'
 import { readTextIfExists, writePrivateJson } from '../providers/store.js'
 import { FileLedger } from './consoleAccountsStore.js'
+import { OutboundPolicy } from './outboundPolicy.js'
 import {
   notifyChannelUrl,
   pushNotifyChannel,
@@ -609,8 +610,14 @@ export class ConsoleSchedules implements SchedulesPort {
       let url: URL
       try {
         url = notifyChannelUrl(raw)
+        const policy = this.#options.pushOptions?.policy ?? new OutboundPolicy()
+        await policy.resolve(
+          url.protocol === 'https:' ? 'https' : 'http',
+          url.hostname,
+          Number(url.port || (url.protocol === 'https:' ? 443 : 80)),
+        )
       } catch {
-        return fail('invalid', '渠道地址无效，只允许 HTTPS（回环允许 HTTP）')
+        return fail('invalid', '渠道地址或出站策略无效')
       }
       const channel: NotifyChannelView = {
         id,

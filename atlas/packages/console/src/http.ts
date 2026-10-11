@@ -239,6 +239,7 @@ import {
   readForm,
   seeOther,
 } from './respond.js'
+import { connectorsApi } from './routes/connectorsApi.js'
 import { CHAT_STREAM_HEARTBEAT_MS } from './routes/chat.js'
 import {
   ROUTES,
@@ -788,10 +789,12 @@ async function errorPage(
 // --- dispatch ------------------------------------------------------------
 
 /** `/v0/<head>` heads, one module each; built once, refused if claimed twice. */
-const API_HEADS = headIndex(ROUTES, module => module.api, [
-  'accounts',
-  'health',
-])
+const API_HEADS = new Map(
+  headIndex(ROUTES, module => module.api, ['accounts', 'health']),
+)
+// P25 ships its API before the separately owned connect page. A future area
+// module can claim the head normally; this fallback never overrides it.
+if (!API_HEADS.has('connectors')) API_HEADS.set('connectors', connectorsApi)
 
 /** `/fragments/<head>` heads, one module each. */
 const FRAGMENT_HEADS = headIndex(ROUTES, module => module.fragments)

@@ -98,13 +98,90 @@ export function scopedConsoleDeps(
     memory: _memory,
     files: _files,
     desktop: _desktop,
-    connectors: _connectors,
     routing: _routing,
     handoffDevices: _handoffDevices,
     ...base
   } = deps
   const result: ConsoleDeps = {
     ...base,
+    ...(deps.connectors === undefined
+      ? {}
+      : {
+          connectors: {
+            async snapshot() {
+              const value = await deps.connectors!.snapshot()
+              if (!current()) return hidden()
+              if (!value.ok) return value
+              const connectors = value.value.connectors.filter(
+                v => v.tenant === scope.tenant && v.agents.every(address),
+              )
+              const ids = new Set(connectors.map(v => v.id))
+              return {
+                ok: true as const,
+                value: {
+                  ...value.value,
+                  connectors,
+                  agents: value.value.agents.filter(address),
+                  recent: value.value.recent.filter(
+                    v => ids.has(v.connectorId) && address(v.agent),
+                  ),
+                },
+              }
+            },
+            async save(draft, actor) {
+              if (
+                !current() ||
+                scope.tenant === null ||
+                (draft.tenant !== undefined && draft.tenant !== scope.tenant) ||
+                !Array.isArray(draft.agents) ||
+                draft.agents.some(v => !address(v))
+              )
+                return hidden()
+              if (draft.id !== undefined) {
+                const value = await deps.connectors!.snapshot()
+                if (
+                  !value.ok ||
+                  !value.value.connectors.some(
+                    v => v.id === draft.id && v.tenant === scope.tenant,
+                  ) ||
+                  !current()
+                )
+                  return hidden()
+              }
+              return deps.connectors!.save(
+                { ...draft, tenant: scope.tenant },
+                actor,
+              )
+            },
+            async remove(id, actor) {
+              const value = await deps.connectors!.snapshot()
+              if (
+                !value.ok ||
+                !value.value.connectors.some(
+                  v => v.id === id && v.tenant === scope.tenant,
+                ) ||
+                !current()
+              )
+                return hidden()
+              return deps.connectors!.remove(id, actor)
+            },
+            async probe(id, actor) {
+              const value = await deps.connectors!.snapshot()
+              if (
+                !value.ok ||
+                !value.value.connectors.some(
+                  v =>
+                    v.id === id &&
+                    v.tenant === scope.tenant &&
+                    v.agents.every(address),
+                ) ||
+                !current()
+              )
+                return hidden()
+              return deps.connectors!.probe(id, actor)
+            },
+          },
+        }),
     registry: {
       async list() {
         return filtered(await deps.registry.list(), v => address(v.address))
@@ -517,6 +594,35 @@ export async function tenantRequestDenial(
     !scope.address(pieces[2])
   )
     return fail(404, 'not_found', '资源不存在')
+  if (head === 'connectors' && !['GET', 'HEAD'].includes(request.method)) {
+    const listing = await deps.connectors?.snapshot()
+    if (!listing?.ok || scope.tenant === null)
+      return fail(404, 'not_found', '资源不存在')
+    if (
+      pieces[2] !== undefined &&
+      !listing.value.connectors.some(v => v.id === pieces[2])
+    )
+      return fail(404, 'not_found', '资源不存在')
+    if (pieces.length === 2 && request.method === 'POST') {
+      let body: unknown
+      try {
+        body = await request.clone().json()
+      } catch {
+        return null
+      }
+      if (body && typeof body === 'object' && !Array.isArray(body)) {
+        const row = body as Record<string, unknown>
+        if (
+          (row['id'] !== undefined &&
+            !listing.value.connectors.some(v => v.id === row['id'])) ||
+          (row['tenant'] !== undefined && row['tenant'] !== scope.tenant) ||
+          (Array.isArray(row['agents']) &&
+            row['agents'].some(v => typeof v !== 'string' || !scope.address(v)))
+        )
+          return fail(404, 'not_found', '资源不存在')
+      }
+    }
+  }
   if (head === 'chat') {
     const id =
       pieces[0] === 'v0' && pieces[2] === 'sessions'

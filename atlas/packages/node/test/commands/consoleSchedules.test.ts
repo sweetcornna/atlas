@@ -19,6 +19,7 @@ import type {
   ScheduleDraft,
   SchedulesSnapshot,
 } from '@qianmo/console'
+import { OutboundPolicy } from '../../src/commands/outboundPolicy.js'
 import { ConsoleSchedules } from '../../src/commands/consoleSchedules.js'
 import type { ScheduleNotification } from '../../src/commands/consoleNotifyChannels.js'
 
@@ -204,6 +205,11 @@ const ledger: ActionLedgerPort = {
 }
 function open(): ConsoleSchedules {
   return new ConsoleSchedules({
+    pushOptions: {
+      policy: new OutboundPolicy({
+        lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+      }),
+    },
     directory: path.join(root, 'schedules'),
     estopPath: path.join(root, 'ESTOP'),
     chat,
@@ -377,6 +383,18 @@ describe('schedule book and secret boundary', () => {
         actor,
       ),
     ).toMatchObject({ ok: false, failure: { code: 'invalid' } })
+    expect(
+      (
+        await book.saveChannel(
+          {
+            name: 'Forbidden private destination',
+            kind: 'webhook',
+            url: 'https://169.254.169.254/credential',
+          },
+          actor,
+        )
+      ).ok,
+    ).toBe(false)
     expect(
       await book.saveChannel({ name: '缺少 URL', kind: 'webhook' }, actor),
     ).toMatchObject({ ok: false, failure: { code: 'invalid' } })
@@ -690,6 +708,11 @@ describe('execution through the conversation port', () => {
   test('notification failure records pushed=false without changing the completed agent outcome', async () => {
     book.close()
     book = new ConsoleSchedules({
+      pushOptions: {
+        policy: new OutboundPolicy({
+          lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+        }),
+      },
       directory: path.join(root, 'schedules'),
       estopPath: path.join(root, 'ESTOP'),
       chat,

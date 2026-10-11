@@ -638,6 +638,7 @@ export interface SchedulesPort {
 export type ConnectorKind = 'mail' | 'calendar'
 
 export interface ConnectorPresetView {
+  readonly evaluated: false
   readonly id: string
   readonly kind: ConnectorKind
   readonly name: string
@@ -648,6 +649,9 @@ export interface ConnectorPresetView {
 }
 
 export interface ConnectorView {
+  /** Owner tenant, null only when tenancy is disabled. */
+  readonly tenant: string | null
+  readonly revision: number
   readonly id: string
   readonly name: string
   readonly kind: ConnectorKind
@@ -683,6 +687,8 @@ export interface ConnectorCallView {
 }
 
 export interface ConnectorDraft {
+  /** Platform ops may select a tenant; scoped routes set it themselves. */
+  readonly tenant?: string
   readonly id?: string
   readonly name: string
   readonly kind: ConnectorKind

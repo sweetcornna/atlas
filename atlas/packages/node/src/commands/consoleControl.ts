@@ -37,7 +37,11 @@ export interface ControlEndpoint {
 export type HubCallHandler = (
   op: string,
   args: Record<string, unknown>,
-  ctx: { readonly node: string; readonly agent?: string },
+  ctx: {
+    readonly node: string
+    readonly agent?: string
+    readonly callId: string
+  },
 ) => Promise<ControlOutcome>
 
 export interface ControlLinkStatus {
@@ -332,6 +336,7 @@ export class ControlLinks {
           () =>
             handler(payload.op, payload.args, {
               node,
+              callId: payload.callId,
               ...(agent === 'console' ? {} : { agent }),
             }),
           error => this.#log(error),

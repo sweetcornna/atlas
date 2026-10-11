@@ -185,7 +185,11 @@ export class HubCallClient {
   async call(
     op: string,
     args: Record<string, unknown>,
-    options: { readonly timeoutMs?: number; readonly agent?: string } = {},
+    options: {
+      readonly timeoutMs?: number
+      readonly agent?: string
+      readonly callId?: string
+    } = {},
   ): Promise<ControlOutcome> {
     const timeoutMs = controlTimeout(options.timeoutMs)
     if (
@@ -201,7 +205,7 @@ export class HubCallClient {
       !subscription.channel.supports(MessageType.HubCallResult)
     )
       return { ok: false, code: 'unsupported', message: '中枢不支持上行调用' }
-    const callId = newId()
+    const callId = options.callId ?? newId()
     if (!isHubCallPayload({ callId, op, args }))
       return { ok: false, code: 'invalid', message: '上行请求参数必须是对象' }
     const request = createMessage({

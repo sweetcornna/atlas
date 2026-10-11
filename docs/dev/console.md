@@ -590,6 +590,10 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/settings` | view | 设置与关于：实例标签、控制台身份、命令名；启动横幅里的构建（`sourceCommit`）、注册中心、审计链来源、唤醒与对话及其签名状态；各端口此刻是否可达；数据路径只给能写的人；以及协议与运行时上限（A4） |
 | GET | `/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
 | GET | `/jobs` | view | 主动执行：定时任务、最近运行、通知渠道（P24，`docs/dev/directions-2026-10.md` §7），其下是原来的值守作业：上次与下次触发、急停、调度器心跳（§10.4） |
+| GET | `/v0/connectors` | view | 连接、预设、最近调用与可授权智能体；只显示主机和打码账号，不显示凭据或 ICS URL。租户范围内过滤；未接端口时 501 |
+| POST | `/v0/connectors` | **个人 ops** | 新建或带 `id` 修改连接；拒绝共用令牌与 break-glass；先动作账本 admission |
+| DELETE | `/v0/connectors/<连接 id>` | **个人 ops** | 删除连接及其秘密槽；成功 204 |
+| POST | `/v0/connectors/<连接 id>/probe` | **个人 ops** | 用已保存凭据登录后退出；记录 `lastProbe`，不发送邮件或创建事件 |
 | GET | `/v0/schedules` | view | 定时任务快照：任务、最近运行、通知渠道（只给名字、类型与主机，不给地址）、模板、可选目标、急停。没接定时任务端口时 501 |
 | POST | `/v0/schedules` | **成员** | 新建或保存一个定时任务（带 `id` 是保存）；目标须在对话白名单内 |
 | DELETE | `/v0/schedules/<任务 id>` | **成员** | 删除 |
@@ -599,7 +603,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/memory` | **成员** | 记一条：`{ agent, kind, title, summary, body }`，`kind` 只能是四类之一，一句话 ≤120 字、摘要 ≤400 字、细节 ≤4000 字。记 `memory.add` |
 | PUT | `/v0/memory/<记忆 id>` | **成员** | 改一条：写一条新的并替换旧的（旧的留在历史里，带「含已忘记」能看到）。记 `memory.edit` |
 | POST | `/v0/memory/<记忆 id>/<forget\|invalidate>` | **成员** | 忘记（`{ agent, reason }`，原因进审计）或标记过期。别人的记忆对端口来说不存在，答 404。记 `memory.forget` / `memory.invalidate` |
-| POST | `/v0/channels` | **ops** | 添加通知渠道：`{ name, kind, url }`，`kind` 是 `webhook` / `bark` / `wecom` / `feishu` / `ntfy`，地址只收 https（本机环回可用 http），存下后任何接口不再回地址 |
+| POST | `/v0/channels` | **ops** | 添加通知渠道：`{ name, kind, url }`，`kind` 是 `webhook` / `bark` / `wecom` / `feishu` / `ntfy`，默认只允许 HTTPS 443 与公网地址；本机环回 HTTP 也必须由运维显式配置出站例外（见应用连接 P25 一节），存下后任何接口不再回地址 |
 | DELETE | `/v0/channels/<渠道 id>` | **ops** | 删除通知渠道 |
 | POST | `/v0/channels/<渠道 id>/test` | **ops** | 向这个渠道发一条测试通知 |
 | GET | `/access`、`/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
@@ -2252,3 +2256,146 @@ API 处理器是 `routes/schedulesApi.ts` 导出的 `schedulesApi: HeadRoute`，
 | DELETE `/v0/routing/nodes/<node>` | ops 或管理令牌 | 清除节点覆盖并跟随默认 |
 
 写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
+
+
+## 应用连接（P25）
+
+这是 API 与节点宿主工具实现；控制台页面由前端工作包提供。所有预设
+`evaluated: false`，只用进程内 TLS/HTTPS 夹具验证，没有连接真实邮箱、
+日历或通知服务。本轮不做附件下载、邮件规则、自动回信或日历邀请回复。
+
+### 开启与权限
+
+在原有注册中心、审计源、账号和签名对话配置上加 `--connectors`：
+
+```bash
+bun run qm -- console --accounts --approvals --chat-sign --connectors \
+  --chat-url worker=wss://worker.example:38611 \
+  --control worker=wss://worker.example:38611 \
+  --trust worker=<节点公钥>
+```
+
+PSK 从对应的 `QIANMO_TRANSPORT_PSK_NODE_<节点 UTF-8 大写十六进制>` 环境
+变量读取；沿用现有审批部署方式给节点配置控制台的 commander 与独立
+approver 公钥。`--connectors` 要求 `--accounts`、`--approvals`、`--control`；
+审批本身还要求命名 `--chat-url`、`--chat-sign` 和显式信任的节点公钥。
+写连接/秘密/授权表和测连与模型服务 `providerWriter` 同级：仅个人 ops，
+共用管理令牌和 break-glass 只能查看。写 API 先 `admit` 再访问端口。
+
+连接属于一个租户（未开启租户时为 null），可授权智能体必须在注册中心
+且同属此租户；租户 ops 新建时自动指定自己的租户，平台 ops 可通过
+`ConnectorDraft.tenant` 指定。列表、最近调用、可授权智能体经过租户
+包装，跨租户的 id/agent 写请求在 admission 和出站之前拒绝，策略修订
+变化使旧请求范围失效。中枢工具调用还会按认证节点、智能体和当前租户
+归属再次核对授权表。
+
+邮件设置为 `imapHost/imapPort/smtpHost/smtpPort/smtpTls/username`，
+`smtpTls` 为 `smtps` 或 `starttls`；CalDAV 为 `caldavUrl/username`。
+新连接必须传 `secret`。修改时 `settings` 只需给变化的字段（空对象保留
+原设置），省略 `secret` 会保留秘密并按新修订重封；
+改变种类或预设须新建连接。ICS 的 `settings` 为空，完整订阅 URL 放在
+`secret`，包括路径和查询令牌。节点的 `qianmo_connectors {}` 只返回当前
+智能体可用连接的 id、名字和种类；五个业务工具都明确要求 `connectorId`。
+
+### 凭据保管和资源句柄
+
+连接簿 `<配置根>/qianmo/console/connectors/connectors.json` 将非秘密设置、
+授权表、修订、密文秘密槽和已预留 operationId 放在同一原子快照：0600
+临时文件、fsync 后 rename，目录 0700；复用现有独占锁，第二个进程不能
+打开同一连接簿。逻辑秘密库与元数据一同提交，避免两份文件在崩溃时
+出现不匹配修订。删除或轮换后原文件不保留旧密文。
+
+主密钥在该目录的 `keys/connector-master.key`（0600、目录 0700），仅
+空库首次写入时生成；文件过宽、非本用户、符号链接、密文不符或有密文
+但缺密钥时拒绝启动，绝不重生成。每个槽随机数据密钥，两层 AES-256-GCM
+信封的 AAD 都绑定独立域 `qianmo/connector/{secret,wrap}/v1`、连接 id、
+秘密槽（`password`/`ics-url`）和修订。与模型服务密钥域独立。主密钥与
+密文同机不抵御中枢失陷；备份须保存二者且保留权限。
+
+邮件句柄经独立域 HMAC 验证，绑定连接 id、修订、账号摘要、folder、
+UIDVALIDITY 和 UID；改连接或邮箱重建后旧句柄拒绝。IMAP 只用只读 EXAMINE
+和 BODY.PEEK；先 BODYSTRUCTURE 找纯文本部分，再只取前 64 KiB 的传输
+字节并解码（因此 base64 编码邮件可能得到少于 64 KiB 的文本），附件
+只列名称与大小。协议字面量超过请求上限立即断开，绝不先下载再裁剪。
+邮件头、账号、文件夹和检索字符串拒绝 CR/LF/NUL；SMTP 对 Unicode
+Subject 做 RFC 2047 编码、正文 base64 和点转义，不允许未加密认证。
+
+### 共享出站策略（D21）
+
+`commands/outboundPolicy.ts` 同时服务 P25 与 P24 通知渠道。默认允许
+IMAPS 993、SMTPS 465、STARTTLS 587、HTTPS 443。HTTPS 使用 Node 内置
+HTTPS（TLS）流式请求；连接前解析全部 DNS 结果，拒绝回环、私网、链路
+本地、云元数据、组播、保留地址及非公网 IPv6。实际 TLS/HTTP 拨号固定
+到已复核的地址并验证原主机的证书，避免第二次 DNS 解析造成重绑定。
+
+运维例外来自 `<配置根>/qianmo/console/outbound-policy.json`，只读启动
+配置，必须普通文件、0600、归本进程用户所有。它不能由智能体参数或
+连接草稿提供。例如本机夹具才需要如下例外（端口必须换成实际值）：
+
+```json
+{
+  "allowAddresses": ["127.0.0.1"],
+  "allowPorts": [{"protocol": "https", "port": 8443}]
+}
+```
+
+地址例外必须写具体 IP，不能写主机通配符；端口例外按协议指定，可用
+`imaps`、`smtps`、`starttls`、`https`、`http`。公共部署不要照抄夹具例外。
+每个 HTTP 重定向逐跳重新查 DNS，最多五跳；跨源 GET 删除认证与 Cookie，
+跨源写入一律拒绝。CalDAV 发现出的 href 也要求同源。P24 推送继续不跟随
+重定向，且保存渠道时也执行共享 DNS/端口复核，原有隐式环回豁免已移除。
+
+协议行/HTTP 响应头最多 8 KiB，响应体最多 2 MiB，IMAP 纯文本最多
+64 KiB，控制链路结果另有 192 KiB 预算。协议连接总时长、HTTPS 请求
+最多 15 秒。所有对外错误是固定句子，不输出上游响应、秘密 URL、口令
+或完整账号；日志也不能记录这些值。
+
+### 一次性动作记录（D22、D03）
+
+中枢本身是现有 P14 审批方，因此无需另发批准凭据。节点宿主先向中枢
+读连接修订，生成新的 operationId，拿工具的全部参数、connectorId、
+修订和 operationId 发 P14 签名请求；审批摘要还绑定节点、智能体、
+contextId 和工具名。`qianmo_mail_send`、`qianmo_calendar_create` 在节点
+与中枢都禁止窗口授权，节点也禁止旧批准的快速命中。
+
+只有新鲜单次批准被节点消费后，宿主才发 `hub.call`，携带 approvalId、
+contextId、revision、operationId。传输 `callId` 等于 operationId，来自
+认证控制通道，不能用参数伪造调用号。中枢执行点核对认证节点、智能体、
+上下文、操作、连接与修订和重新计算的完整参数摘要，并检查批准账号
+仍活跃、租户/会话权限有效、60 秒执行期限未过，先 fsync
+`approvals.ndjson` 的 `connector-consumed` 行，再原子持久化 operationId
+意图，之后才登录外部服务。第二次消费同一批准或 operationId 一律拒绝。
+网络等待后再次检查连接与授权；SMTP 收到 DATA 接受后、发正文前也复核，
+CalDAV PUT 在 DNS 解析完成后、发请求前也复核。
+
+P14 审批账本保留供批准所需的完整工具参数（包括邮件正文），沿用它的
+0600 文件与会话审批权限；下面的 connector 审计与这份审批账本分开。
+
+批准消费与连接簿不是同一事务：若在两步之间崩溃，动作会损失而不会
+重发，这是本轮选择的安全方向。已预留 operationId 长期保留；最近
+调用仅在内存保留 100 条，不把幂等历史跟着 ring buffer 淘汰。超时、
+断线、崩溃或收到 DATA/PUT 后结果未知均不自动重试，用户须核对服务端。
+审批重启沿用 P14 的撤销逻辑，未完成的旧批准也不能再次执行。
+
+业务调用审计为 `connector.mail.search/read/send` 与
+`connector.calendar.events/create`，持久化在 `connector-audit.ndjson`
+哈希链，只记连接名、结果、条数和收件人域名，不记正文、完整收件人
+或凭据。API 管理动作另记现有控制台动作账本。
+
+### 预设出处与实现边界
+
+核实日期均为 **2026-10-11**，没有用真实账号评估：
+
+| 预设 | 确认来源与裁定 |
+|---|---|
+| Gmail | [Google IMAP/SMTP 官方说明](https://developers.google.com/workspace/gmail/imap/imap-smtp)：imap.gmail.com 993，smtp.gmail.com 465/587；[应用专用密码](https://support.google.com/accounts/answer/185833)须两步验证，部分账号不可用。本轮预填 465 SMTPS |
+| Outlook | [Microsoft 官方设置](https://support.microsoft.com/en-us/outlook/pop-imap-and-smtp-settings-for-outlook-com)：outlook.office365.com 993、smtp-mail.outlook.com 587 STARTTLS；官方要求 OAuth2，本轮 IMAP LOGIN、SMTP PLAIN/LOGIN 口令客户端不能直接支持 Outlook.com，该限制写在 hint |
+| QQ 邮箱 | [官方帮助入口](https://service.mail.qq.com/detail/0/339)可打开但未取得服务器/端口正文；不从第三方填值，服务器与端口留空，提示开启 IMAP 和授权码后手填 |
+| 163 邮箱 | [官方帮助入口](https://help.mail.163.com/faq.do?m=list&categoryID=197)本次不可访问；服务器与端口留空，提示手填 |
+| iCloud 日历 | [Apple 应用专用密码官方说明](https://support.apple.com/en-us/102654)明确可用于日历；未在官方资料确认统一 CalDAV URL，因此不预填地址 |
+| 自定义邮件 / CalDAV / ICS | 不声称特定服务器事实；HTTPS CalDAV 支持 principal/home-set/collection 发现、时间段 REPORT 与 If-None-Match PUT；ICS 只读 GET |
+
+ICS 与 CalDAV 返回的 RRULE 本轮均**不展开**，结果显式带 warning，原始
+事件在窗口外但其重复实例在窗口内时可能缺失；TZID 本地时间无法解析
+时省略并提示，浮动时间按 UTC 显示并提示。没有实现 OAuth2、复杂时区、
+附件下载或完整 MIME/日历标准覆盖，夹具通过不能据此宣称真实服务已评估。

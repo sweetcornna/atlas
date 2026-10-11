@@ -5,9 +5,32 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import type { NotifyChannelKind } from '@qianmo/console'
 import {
   notifyChannelUrl,
-  pushNotifyChannel,
+  pushNotifyChannel as realPushNotifyChannel,
+  type ChannelPushOptions,
   type ScheduleNotification,
 } from '../../src/commands/consoleNotifyChannels.js'
+
+import { OutboundPolicy } from '../../src/commands/outboundPolicy.js'
+
+// Explicit fixture exceptions replace the former implicit loopback production exemption.
+function pushNotifyChannel(
+  kind: NotifyChannelKind,
+  url: string,
+  notice: ScheduleNotification,
+  options: ChannelPushOptions = {},
+) {
+  let port = 443
+  try {
+    const parsed = new URL(url)
+    port = Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80))
+  } catch {}
+  const policy = new OutboundPolicy({
+    allowAddresses: ['127.0.0.1', '::1'],
+    allowPorts: [{ protocol: 'http', port }],
+    lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+  })
+  return realPushNotifyChannel(kind, url, notice, { ...options, policy })
+}
 
 const servers: { stop(closeActiveConnections?: boolean): void }[] = []
 afterEach(() => {

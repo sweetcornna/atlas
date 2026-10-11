@@ -1,6 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { OutboundPolicy } from './outboundPolicy.js'
 import {
   isLoopbackHostname,
   type NotifyChannelKind,
@@ -25,6 +26,7 @@ export interface ChannelPushResult {
 }
 
 export interface ChannelPushOptions {
+  readonly policy?: OutboundPolicy
   readonly fetch?: (url: string, init: RequestInit) => Promise<Response>
   readonly delay?: (ms: number) => Promise<void>
   readonly timeoutMs?: number
@@ -148,11 +150,17 @@ export async function pushNotifyChannel(
     if (attempt > 0) await (options.delay ?? Bun.sleep)(delays[attempt - 1]!)
     const signal = AbortSignal.timeout(options.timeoutMs ?? 10_000)
     try {
-      const response = await (options.fetch ?? fetch)(url.toString(), {
-        ...requestFor(kind, notice),
-        redirect: 'manual',
-        signal,
-      })
+      const response = await (options.policy ?? new OutboundPolicy())
+        .withFetch(options.fetch)
+        .request(
+          url.toString(),
+          {
+            ...requestFor(kind, notice),
+            redirect: 'manual',
+            signal,
+          },
+          false,
+        )
       const prefix = await responsePrefix(response)
       const failure = response.ok
         ? serviceError(kind, prefix)
