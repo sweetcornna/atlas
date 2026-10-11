@@ -53,12 +53,16 @@ export const overviewRoute: RouteModule = {
   area: {
     id: 'overview',
     label: '总览',
-    group: 'run',
-    href: '/',
+    group: 'manage',
+    href: '/overview',
     icon: 'layout-dashboard',
   },
   page: {
-    match: segments => (segments.length === 0 ? [] : null),
+    match: segments =>
+      segments.length === 0 ||
+      (segments.length === 1 && segments[0] === 'overview')
+        ? []
+        : null,
     guard: 'view',
     async render(ctx) {
       const { deps, now } = ctx

@@ -64,6 +64,8 @@ import {
   type Tone,
   timeAttrs,
 } from './bits.js'
+import type { AvatarSpec, AvatarState } from '../avatar.js'
+import { avatarSvg, avatarWords } from './avatar.js'
 import { attr, escapeHtml } from './escape.js'
 import { renderRichText } from './richText.js'
 import { formatClock, formatRelative, formatShortDuration } from './format.js'
@@ -357,7 +359,61 @@ function renderCommandOutput(turn: ChatTurn, command: string): string {
   )
 }
 
-function renderTurn(turn: ChatTurn, agent: string): string {
+/**
+ * The figures a chat view draws (形象, `../avatar.ts`), already looked up by
+ * the route: the view never reads a store.
+ */
+export interface ChatFaces {
+  /** The figure an agent wears, by its address. */
+  agent(address: string): AvatarSpec
+  /** The reader's own figure. */
+  readonly self: AvatarSpec
+  readonly selfKey: string
+  /** Whether this reader may change figures on this console. */
+  readonly editable: boolean
+}
+
+/** A turn's avatar cell: the figure when there are faces, the letters if not. */
+function turnFace(
+  turn: ChatTurn,
+  who: string,
+  address: string,
+  faces: ChatFaces | undefined,
+): string {
+  if (faces === undefined) {
+    return `<span class="turn-av" aria-hidden="true">${escapeHtml(
+      avatarText(who),
+    )}</span>`
+  }
+  const spec = turn.author === 'operator' ? faces.self : faces.agent(address)
+  const state = turn.state === 'failed' ? 'error' : 'idle'
+  return (
+    `<span class="turn-av turn-av-face" aria-hidden="true">` +
+    `${avatarSvg(spec, { size: 34, state })}</span>`
+  )
+}
+
+/** The button that opens the 形象 editor for one figure. */
+export function avatarEditButton(
+  key: string,
+  name: string,
+  inner: string,
+  cls: string,
+  label: string,
+): string {
+  return (
+    `<button type="button" class="${cls}" data-action="avatar-edit" ` +
+    `data-key="${attr(key)}" data-name="${attr(name)}" aria-label="${attr(label)}">` +
+    `${inner}</button>`
+  )
+}
+
+function renderTurn(
+  turn: ChatTurn,
+  agent: string,
+  address = '',
+  faces?: ChatFaces,
+): string {
   if (turn.variant === 'notice') return renderNotice(turn)
   if (turn.author === 'agent' && turn.command !== undefined) {
     return renderCommandOutput(turn, turn.command)
@@ -366,9 +422,7 @@ function renderTurn(turn: ChatTurn, agent: string): string {
   const failed = turn.state === 'failed' ? ' turn-failed' : ''
   return (
     `<article class="turn ${AUTHOR_CLASS[turn.author]}${failed}">` +
-    `<span class="turn-av" aria-hidden="true">${escapeHtml(
-      avatarText(who),
-    )}</span>` +
+    turnFace(turn, who, address, faces) +
     `<div class="turn-body">` +
     `<header class="turn-head">` +
     `<span class="turn-who">${escapeHtml(who)}</span>` +
@@ -426,6 +480,57 @@ const NOTHING_OPEN =
   `<path d="M78 68h44a10 10 0 0 1 10 10v26a10 10 0 0 1-10 10H96l-18 14V78a10 10 0 0 1 10-10z"/>` +
   `</g></svg></div>`
 
+/** Who greets an empty page: the first agent the picker offers. */
+export interface ChatGreeter {
+  readonly agent: string
+  readonly address: string
+  /** Whether a first message can open a conversation with it from here. */
+  readonly dialable?: boolean
+}
+
+/**
+ * The nothing-open state with faces: the agent the picker would open a
+ * conversation with stands there, breathing, and says what to do. Without
+ * faces (no greeter, or a view built without them) it is {@link NOTHING_OPEN}.
+ */
+function nothingOpen(
+  faces: ChatFaces | undefined,
+  greeter: ChatGreeter | undefined,
+): string {
+  if (faces === undefined || greeter === undefined) return NOTHING_OPEN
+  const spec = faces.agent(greeter.address)
+  const figure = avatarSvg(spec, {
+    size: 184,
+    uid: 'av-greet',
+    live: true,
+    label: `${greeter.agent} · ${avatarWords(spec)}`,
+  })
+  const stage = faces.editable
+    ? avatarEditButton(
+        `agent:${greeter.address}`,
+        greeter.agent,
+        figure,
+        'chat-greet-figure',
+        `换形象 · ${greeter.agent}`,
+      )
+    : `<span class="chat-greet-figure">${figure}</span>`
+  return (
+    `<div class="chat-greet">` +
+    stage +
+    `<div class="stack gap-3 chat-greet-text">` +
+    `<h3 class="chat-greet-title">你好 · 我是 ${escapeHtml(greeter.agent)}</h3>` +
+    `<p class="empty-note">${
+      greeter.dialable === true
+        ? '直接在下面写要做的事 · 回车就开始一条新会话 · 定时让我做的事放在主动执行'
+        : '在左边开一条新会话 · 或者打开一条旧的接着聊 · 定时让我做的事放在主动执行'
+    }</p>` +
+    (faces.editable
+      ? `<p class="note">点我可以换形象 · 形态 颜色 眼睛 配饰都能挑</p>`
+      : '') +
+    `</div></div>`
+  )
+}
+
 /**
  * The tail that says a turn is still running.
  *
@@ -469,12 +574,86 @@ function runningTail(turns: readonly ChatTurn[], now: number): string {
 
 export interface ChatThreadModel {
   readonly transcript: ChatTranscript | null
+  /** The figures to draw; absent draws the letters the page always had. */
+  readonly faces?: ChatFaces
+  /** Who greets the nothing-open state. */
+  readonly greeter?: ChatGreeter
   readonly failure: ConsoleFailure | null
   /** The registry's current view of this session's target, when it has one. */
   readonly target: ChatTarget | null
   /** True when the roster lookup itself failed, which is not "absent". */
   readonly registryDown?: boolean
   readonly now: number
+}
+
+/**
+ * The figure in the thread header. Rich but still: the thread is redrawn on
+ * every new turn, and a figure that restarted its breath each time would
+ * twitch.
+ */
+/** How long after a reply the figure still looks pleased with itself. */
+const HAPPY_MS = 20_000
+
+/**
+ * What the agent's figure is doing, read off the same facts the header
+ * states: an agent the roster says is not there sleeps; a message on its way
+ * is being listened to; one it has read is being thought about; a failure
+ * shows; a reply that just landed is a small celebration. A roster nobody
+ * could read says nothing either way, so the figure just waits.
+ */
+export function faceState(
+  turns: readonly ChatTurn[],
+  target: ChatTarget | null,
+  registryDown: boolean,
+  now: number,
+): AvatarState {
+  if (!registryDown) {
+    if (target === null || !target.dialable || target.status !== 'online') {
+      return 'sleep'
+    }
+  }
+  let last: ChatTurn | undefined
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index]
+    if (turn !== undefined && turn.variant !== 'notice') {
+      last = turn
+      break
+    }
+  }
+  if (last === undefined) return 'idle'
+  if (last.state === 'failed') return 'error'
+  if (last.author === 'operator') {
+    return last.state === 'read' ? 'thinking' : 'listening'
+  }
+  return now - last.at < HAPPY_MS ? 'happy' : 'idle'
+}
+
+function headFace(
+  agent: string,
+  address: string,
+  faces: ChatFaces | undefined,
+  state: AvatarState,
+): string {
+  if (faces === undefined) return ''
+  const spec = faces.agent(address)
+  // Live, and kept across redraws by the page script (`assets/chatClient.ts`)
+  // so a new turn changes what it does rather than restarting it.
+  const figure = avatarSvg(spec, {
+    size: 56,
+    uid: 'av-head',
+    live: true,
+    state,
+    label: `${agent} · ${avatarWords(spec)}`,
+  })
+  return faces.editable
+    ? avatarEditButton(
+        `agent:${address}`,
+        agent,
+        figure,
+        'chat-head-face',
+        `换形象 · ${agent}`,
+      )
+    : `<span class="chat-head-face">${figure}</span>`
 }
 
 /**
@@ -497,8 +676,11 @@ export function renderChatThread(model: ChatThreadModel): string {
   if (model.transcript === null) {
     return (
       `<div class="thread thread-empty" id="${CHAT_THREAD_MOUNT}" ` +
-      `data-target="" data-state="选一条会话" data-tone="muted">` +
-      NOTHING_OPEN +
+      (model.greeter?.dialable === true && model.faces !== undefined
+        ? `data-target="${attr(model.greeter.address)}" data-state="回车开始新会话" ` +
+          `data-tone="ok" data-start="1">`
+        : `data-target="" data-state="选一条会话" data-tone="muted">`) +
+      nothingOpen(model.faces, model.greeter) +
       `</div>`
     )
   }
@@ -508,8 +690,11 @@ export function renderChatThread(model: ChatThreadModel): string {
   const body =
     turns.length === 0
       ? hint('这条会话还没有内容 · 在下面写第一句')
-      : turns.map(turn => renderTurn(turn, session.agent)).join('') +
-        runningTail(turns, model.now)
+      : turns
+          .map(turn =>
+            renderTurn(turn, session.agent, session.target, model.faces),
+          )
+          .join('') + runningTail(turns, model.now)
 
   return (
     `<div class="thread" id="${CHAT_THREAD_MOUNT}" ` +
@@ -517,6 +702,12 @@ export function renderChatThread(model: ChatThreadModel): string {
     `data-state="${attr(status.text)}" data-tone="${attr(status.tone)}" ` +
     `data-session="${attr(session.id)}">` +
     `<header class="chat-head">` +
+    headFace(
+      session.agent,
+      session.target,
+      model.faces,
+      faceState(turns, model.target, model.registryDown === true, model.now),
+    ) +
     // h2: the page's one h1 is the shell's 对话 (F1).
     `<h2 class="chat-name">${escapeHtml(session.agent)}</h2>` +
     address(session.target) +
@@ -530,6 +721,8 @@ export function renderChatThread(model: ChatThreadModel): string {
 }
 
 export interface ChatSessionsModel {
+  /** The figures to draw beside each target; absent draws none. */
+  readonly faces?: ChatFaces
   readonly sessions: readonly ChatSession[]
   readonly targets: readonly ChatTarget[]
   readonly failure: ConsoleFailure | null
@@ -638,6 +831,15 @@ export function renderChatSessions(model: ChatSessionsModel): string {
               group =>
                 `<div class="chat-group">` +
                 `<p class="chat-group-name">` +
+                (model.faces === undefined
+                  ? ''
+                  : avatarSvg(model.faces.agent(group.target), {
+                      size: 26,
+                      state:
+                        groupTone(model.targets, group.target) === 'ok'
+                          ? 'idle'
+                          : 'sleep',
+                    })) +
                 state(groupTone(model.targets, group.target), group.agent) +
                 `</p>` +
                 `<p class="chat-group-node mono">${escapeHtml(group.node)}</p>` +
@@ -654,9 +856,19 @@ export function renderChatSessions(model: ChatSessionsModel): string {
             )
             .join('')
 
+  const me =
+    model.faces?.editable === true
+      ? avatarEditButton(
+          model.faces.selfKey,
+          '我',
+          `${avatarSvg(model.faces.self, { size: 26 })}<span>我的形象</span>`,
+          'btn btn-ghost btn-small chat-me',
+          '换我的形象',
+        )
+      : ''
   return (
     `<div class="chat-rail" id="${CHAT_SESSIONS_MOUNT}">${picker}` +
-    `<div class="chat-groups">${body}</div></div>`
+    `<div class="chat-groups">${body}</div>${me}</div>`
   )
 }
 

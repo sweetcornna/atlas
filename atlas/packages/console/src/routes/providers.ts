@@ -1208,7 +1208,7 @@ async function boardPage(
       })
     : renderBoardFailure(overview.failure)
   return {
-    title: '模型服务',
+    title: '模型',
     ...(reader.writer ? { actions: boardActions() } : frame(ctx)),
     poll: true,
     body:
@@ -1415,7 +1415,7 @@ async function providersPage(
 ): Promise<PageRender | Response> {
   const port = ctx.deps.providers
   if (port === undefined) {
-    return { title: '模型服务', body: renderProvidersOff() }
+    return { title: '模型', body: renderProvidersOff() }
   }
   const [first, second] = rest
   if (rest.length === 0) return await boardPage(ctx, port)
@@ -1436,8 +1436,8 @@ async function providersPage(
 export const providersRoute: RouteModule = {
   area: {
     id: 'providers',
-    label: '模型服务',
-    group: 'config',
+    label: '模型',
+    group: 'main',
     href: '/providers',
     icon: 'cpu',
   },

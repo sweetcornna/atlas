@@ -80,7 +80,7 @@ export const settingsRoute: RouteModule = {
   area: {
     id: 'settings',
     label: '设置与关于',
-    group: 'admin',
+    group: 'manage',
     href: '/settings',
     icon: 'settings',
   },

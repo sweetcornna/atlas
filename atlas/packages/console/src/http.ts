@@ -245,6 +245,7 @@ import {
   areaDocument,
   errorDocument,
   headIndex,
+  homePage,
   pageOf,
   type PageMatch,
 } from './routes/index.js'
@@ -1080,9 +1081,20 @@ async function routeAs(
     const exchanged =
       accounts === undefined ? tokenInAddressBar(request, url, tokens) : null
     if (exchanged !== null) return exchanged
+    const ctx = routeContext(
+      request,
+      url,
+      deps,
+      access,
+      accounts,
+      now(),
+      viewer,
+      ledger,
+    )
+    // `/` is the home page, and whose home it is decides which page that is.
     return await servePage(
-      routeContext(request, url, deps, access, accounts, now(), viewer, ledger),
-      page,
+      ctx,
+      segments.length === 0 ? homePage(ctx, page) : page,
       denial,
     )
   }

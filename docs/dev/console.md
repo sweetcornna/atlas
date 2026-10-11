@@ -580,14 +580,22 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 
 | 方法 | 路径 | 角色 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/` | view | 总览：会变的卡（智能体总数与在线、滞后、过期；消息链记录数与完整性；近 1 小时拒绝与丢弃；第四张是证书，没接证书源而接了对话时是近 1 小时会话，两样都没有就只有三张）与每个节点一行（A2）。原先的两项协议常量卡移到设置页 |
+| GET | `/` | view | 首页：能在这台控制台对话的人（对话页的守卫放行、且接了对话通道）是对话页，其余人是总览；与侧栏同一条判法，首页从不是侧栏藏起来的那一页 |
+| GET | `/overview` | view | 总览：会变的卡（智能体总数与在线、滞后、过期；消息链记录数与完整性；近 1 小时拒绝与丢弃；第四张是证书，没接证书源而接了对话时是近 1 小时会话，两样都没有就只有三张）与每个节点一行（A2）。原先的两项协议常量卡移到设置页 |
 | GET | `/nodes?q=&state=&server=` | view | 节点名册。`q` 按地址或端点搜（不分大小写），`state` 是 `live` / `stale` / `expired`（与行上的判法同一个函数），`server` 按 `--node-server` 归属；原生 GET 表单，轮询的 `/fragments/roster` 带同样的查询串，计数「筛选后 n · 共 m」在片段里随刷新重算（D6）。接了登记簿时名册下另列「名册上没有的节点」：登记簿或托管清单里有、名册上没有的节点，链到它的生命周期页签（§5.5） |
 | GET | `/nodes/<节点>`、`/nodes/<节点>/{agents,lifecycle,models}` | view | 节点详情四个页签：概览、智能体、生命周期、模型（§5.5）。名册、登记簿、托管清单、`--node-server`、唤醒目标、审计源都没提到这个节点就是 404 页；不认识的页签名同样 404 |
 | GET | `/audit?…`、`/audit/trace/<traceId>` | view | 消息链：最新 50 条、新的在上，表尾「加载更早」；查询参数同 `/v0/audit`，另有 `node=`（多链时收窄到一条，翻页要它）（§5.6）。单条消息链一页，轨迹里没有就是 404 页 |
 | GET | `/servers` | view | 服务器归属与备注（§11） |
 | GET | `/settings` | view | 设置与关于：实例标签、控制台身份、命令名；启动横幅里的构建（`sourceCommit`）、注册中心、审计链来源、唤醒与对话及其签名状态；各端口此刻是否可达；数据路径只给能写的人；以及协议与运行时上限（A4） |
 | GET | `/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
-| GET | `/jobs` | view | 值守作业：上次与下次触发、急停、调度器心跳（§10.4） |
+| GET | `/jobs` | view | 主动执行：定时任务、最近运行、通知渠道（P24，`docs/dev/directions-2026-10.md` §7），其下是原来的值守作业：上次与下次触发、急停、调度器心跳（§10.4） |
+| GET | `/v0/schedules` | view | 定时任务快照：任务、最近运行、通知渠道（只给名字、类型与主机，不给地址）、模板、可选目标、急停。没接定时任务端口时 501 |
+| POST | `/v0/schedules` | **成员** | 新建或保存一个定时任务（带 `id` 是保存）；目标须在对话白名单内 |
+| DELETE | `/v0/schedules/<任务 id>` | **成员** | 删除 |
+| POST | `/v0/schedules/<任务 id>/<enable\|disable\|run>` | **成员** | 启用、停用、立即运行一次（运行结果进最近运行） |
+| POST | `/v0/channels` | **ops** | 添加通知渠道：`{ name, kind, url }`，`kind` 是 `webhook` / `bark` / `wecom` / `feishu` / `ntfy`，地址只收 https（本机环回可用 http），存下后任何接口不再回地址 |
+| DELETE | `/v0/channels/<渠道 id>` | **ops** | 删除通知渠道 |
+| POST | `/v0/channels/<渠道 id>/test` | **ops** | 向这个渠道发一条测试通知 |
 | GET | `/access`、`/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
 | GET | `/providers`、`/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
 | GET | `/providers/new?q=`、`/providers/new?preset=<预设>&site=<站点>` | view | 预设卡片（`q` 是 GET 搜索）；带 `preset` 时是从这份预设新建的表单 |
@@ -656,7 +664,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/providers/import/preview`、`/v0/providers/import` | **ops 个人账号** | 导入预览、导入（撞 id 的用 `renames` 另存）；有目录不认识的键整份拒绝 |
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段。`/fragments/audit` 带 `since` 时只回表头与自载入以来的新行（§5.6） |
 | GET | `/fragments/lifecycle/<节点>` | view | HTML 片段：生命周期页签被轮询的那一块（§5.5） |
-| GET | `/fragments/alerts?level=&state=`、`/fragments/jobs` | view | HTML 片段 |
+| GET | `/fragments/alerts?level=&state=`、`/fragments/jobs`、`/fragments/schedules` | view | HTML 片段 |
 | GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | HTML 片段，`/access` 三个被轮询的页签 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |
 | GET | `/fragments/providers/board?node=`、`/fragments/providers/profiles/<档案 id>/nodes` | view | HTML 片段，模型服务的节点矩阵与档案页的在用节点 |
@@ -671,6 +679,10 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/chat/stream` | **admin** | SSE，事件只有 `{sessionId, revision}`（§6.6） |
 | GET | `/fragments/chat/sessions?active=<会话 id>` | **admin** | HTML 片段 |
 | GET | `/fragments/chat/thread/<会话 id>` | **admin** | HTML 片段 |
+| GET | `/fragments/chat/greet?target=<地址>` | **admin** | HTML 片段：没打开会话时的问候（那个智能体的形象与一句提示）；首页在会话选择框换人时取它。没打开会话且有可拨号的智能体时，首页的输入框是开着的，第一句话先开一条会话再发出 |
+| GET | `/v0/avatars?key=<键>`（可重复） | view | 形象（`packages/console/src/avatar.ts`）：每个键的 `{ spec, saved, updatedAt }` 与 `editable`。键是 `agent:<地址>` 或 `user:<主体>`；没存过的给按地址或主体算出的默认形象。没接形象存储时也答，全是默认、`editable: false` |
+| PUT、DELETE | `/v0/avatars/<键>` | **成员** | 保存一个形象（七项都必须在固定清单里，否则 400），`DELETE` 回到默认；`user:` 键只能改自己的，ops 可以改任何人的。记 `avatar.save`。没接形象存储时 501 |
+| GET | `/fragments/avatar?key=<键>&spec=<草稿>&default=1` | view | HTML 片段：形象编辑器的正文（舞台、七种状态试看、每个选项一枚小图）。`spec` 是 JSON 草稿，不在清单里就当没给；`default=1` 画默认形象 |
 
 对话那九行**一律 admin，只读的也是**——理由见 §4.5；这台控制台没接对话通道时它们的
 两种缺席答案（404 与 501）见 §6.7。

@@ -49,16 +49,20 @@ import type {
 } from './types.js'
 import { usageRoute } from './usage.js'
 
-/** Every area of §6.1, in the order the sidebar draws them. */
+/**
+ * Every area, in the order the sidebar draws them: what a person uses every
+ * day first (对话 is also the home page), then the operator's areas under
+ * 管理. The page matcher walks the same order.
+ */
 export const ROUTES: readonly RouteModule[] = [
+  chatRoute,
+  jobsRoute,
+  providersRoute,
   overviewRoute,
   nodesRoute,
-  chatRoute,
   auditRoute,
   alertsRoute,
-  jobsRoute,
   approvalsRoute,
-  providersRoute,
   serversRoute,
   accessRoute,
   usageRoute,
@@ -122,12 +126,11 @@ export function pageOf(
 }
 
 const GROUP_LABELS: Readonly<Record<AreaGroup, string>> = {
-  run: '运行',
-  config: '配置',
-  admin: '管理',
+  main: '',
+  manage: '管理',
 }
 
-const GROUP_ORDER: readonly AreaGroup[] = ['run', 'config', 'admin']
+const GROUP_ORDER: readonly AreaGroup[] = ['main', 'manage']
 
 /**
  * Whether this caller sees an area in the sidebar at all.
@@ -165,6 +168,7 @@ function navFor(
 ): readonly ShellNavGroup[] {
   return GROUP_ORDER.map(group => ({
     label: GROUP_LABELS[group],
+    ...(group === 'manage' ? { folded: true } : {}),
     items: modules
       .filter(module => module.area.group === group && visibleTo(module, ctx))
       .map(module => {
@@ -194,17 +198,32 @@ function healthOf(
   return [{ label: listed.ok ? '注册中心' : '注册中心不可达', tone }]
 }
 
-/** The breadcrumb: the group, the area, then whatever the page adds. */
+/**
+ * The breadcrumb: the group when it has a name, the area, then whatever the
+ * page adds.
+ */
 function crumbsOf(module: RouteModule, render: PageRender): readonly Crumb[] {
-  const group: Crumb = { label: GROUP_LABELS[module.area.group] }
+  const label = GROUP_LABELS[module.area.group]
+  const group: readonly Crumb[] = label === '' ? [] : [{ label }]
   if (render.crumbs === undefined || render.crumbs.length === 0) {
-    return [group, { label: module.area.label }]
+    return [...group, { label: module.area.label }]
   }
   return [
-    group,
+    ...group,
     { label: module.area.label, href: module.area.href },
     ...render.crumbs,
   ]
+}
+
+/**
+ * What `/` is for this caller: 对话 for whoever may hold a conversation here,
+ * 总览 (the page that matched) for everybody else. Decided by the same rule
+ * as the sidebar, so the home page is never a link the sidebar hides.
+ */
+export function homePage(ctx: RouteContext, matched: PageMatch): PageMatch {
+  const chat = ROUTES.find(module => module.area.id === 'chat')
+  if (chat?.page === undefined || !visibleTo(chat, ctx)) return matched
+  return { module: chat, page: chat.page, rest: [] }
 }
 
 /** One page, drawn in the shell. */
@@ -251,7 +270,7 @@ export async function errorDocument(
     body:
       `<section class="card elev-sm stub" aria-labelledby="page-title">` +
       `<p class="note">${escapeHtml(line)}</p>` +
-      `<p><a class="jump" href="/" data-nav>回到总览</a></p>` +
+      `<p><a class="jump" href="/" data-nav>回到首页</a></p>` +
       `</section>`,
     health: healthOf(listed),
     relogin: loginHref(ctx.url),

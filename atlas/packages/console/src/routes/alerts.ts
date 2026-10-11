@@ -257,7 +257,7 @@ export const alertsRoute: RouteModule = {
   area: {
     id: 'alerts',
     label: '告警',
-    group: 'run',
+    group: 'manage',
     href: '/alerts',
     icon: 'bell',
   },

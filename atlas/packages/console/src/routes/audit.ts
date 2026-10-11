@@ -743,7 +743,7 @@ export const auditRoute: RouteModule = {
   area: {
     id: 'audit',
     label: '消息链',
-    group: 'run',
+    group: 'manage',
     href: '/audit',
     icon: 'activity',
   },

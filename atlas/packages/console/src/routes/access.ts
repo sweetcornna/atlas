@@ -748,7 +748,7 @@ export const accessRoute: RouteModule = {
   area: {
     id: 'access',
     label: '账号与访问',
-    group: 'admin',
+    group: 'manage',
     href: '/access',
     icon: 'users',
   },

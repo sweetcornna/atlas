@@ -96,16 +96,63 @@ function chatScript(): string {
     var url = ROUTES.thread + encodeURIComponent(active) + (opening ? '?open=1' : '');
     return qc.loadHtml(url).then(function (html) {
       var previous = mount.querySelectorAll('.turn-agent').length;
+      var figure = headFigure();
       mount.innerHTML = html;
+      keepFigure(figure);
       var replies = mount.querySelectorAll('.turn-agent');
       if (!opening && replies.length > previous) {
         var announcement = byId('reply-announcement');
         var reply = replies[replies.length - 1].querySelector('.bubble, .command-output');
         if (announcement) announcement.textContent = '收到新回复 · ' + (reply ? reply.textContent.slice(0, 240) : '请查看对话');
+        replied();
       }
       paintComposer();
       if (stick) mount.scrollTop = mount.scrollHeight;
     });
+  }
+
+  /* ---------------- the figure in the thread header (形象) ---------------- */
+
+  // The server says what the figure is doing (view/chat.ts, faceState); the
+  // page only fills the moments between two redraws: somebody typing, a
+  // message just sent, a reply just landed.
+  var settle = null;
+
+  function headFigure() {
+    var mount = byId('thread-mount');
+    return mount ? mount.querySelector('.chat-head-face .avatar') : null;
+  }
+
+  // A redraw of the same figure keeps the one already moving, with the new
+  // state: a new turn changes what it does instead of restarting it.
+  function keepFigure(before) {
+    var after = headFigure();
+    if (!before || !after) return;
+    if (before.getAttribute('data-face') !== after.getAttribute('data-face')) return;
+    before.setAttribute('data-state', after.getAttribute('data-state') || 'idle');
+    after.replaceWith(before);
+  }
+
+  // A short scripted run of states: [[state, ms], …], the last one stays.
+  function play(steps) {
+    if (settle) { clearTimeout(settle); settle = null; }
+    var figure = headFigure();
+    if (!figure || steps.length === 0) return;
+    figure.setAttribute('data-state', steps[0][0]);
+    if (steps.length > 1) {
+      settle = setTimeout(function () { play(steps.slice(1)); }, steps[0][1]);
+    }
+  }
+
+  function replied() { play([['speaking', 2400], ['happy', 5000], ['idle', 0]]); }
+
+  // Somebody typing to an agent that is not busy is being listened to.
+  function typing(box) {
+    var figure = headFigure();
+    if (!figure) return;
+    var now = figure.getAttribute('data-state');
+    if (box.value.trim() && (now === 'idle' || now === 'happy')) play([['listening', 0]]);
+    else if (!box.value.trim() && now === 'listening') play([['idle', 0]]);
   }
 
   function refreshSessions() {
@@ -135,6 +182,10 @@ function chatScript(): string {
   function refreshAll(keepScroll, opening) {
     return Promise.all([refreshThread(keepScroll, opening), refreshSessions()]);
   }
+
+  // A figure changed in the 形象 editor (view/avatarScript.ts): redraw both
+  // panes, which is where every figure on this page lives.
+  document.addEventListener('qianmo:faces', function () { refreshAll(); });
 
   /* ---------------- actions ---------------- */
 
@@ -186,23 +237,55 @@ function chatScript(): string {
     });
   }
 
+  // The home page with nothing open: the composer is on, and the first
+  // message opens a conversation with the agent the picker shows.
+  function starting() {
+    var form = byId('composer');
+    return !active && !!form && form.getAttribute('data-start') === '1';
+  }
+
+  function ensureSession() {
+    if (active) return Promise.resolve({ id: active, fresh: false });
+    var picker = byId('chat-target');
+    var target = picker ? picker.value : '';
+    if (!target) return Promise.reject({ human: '先选一个智能体' });
+    return qc.sendJson('POST', ROUTES.create, { target: target }).then(function (data) {
+      if (!data || !data.id) throw { human: '没能开出会话' };
+      active = String(data.id);
+      try {
+        history.replaceState(null, '', '/chat?session=' + encodeURIComponent(active));
+      } catch (e) { /* the address bar is cosmetic */ }
+      var form = byId('composer');
+      if (form) form.removeAttribute('data-start');
+      var box = byId('chat-text');
+      if (box) box.setAttribute('placeholder', '写下要让这个智能体做的事 · Enter 发送 · Shift Enter 换行');
+      return { id: active, fresh: true };
+    });
+  }
+
   function send() {
     var box = byId('chat-text');
     var status = byId('chat-status');
     if (!box || busy) return;
     var text = box.value.trim();
     if (!text) return;
-    if (!active) { say(status, '先选一条会话', 'bad'); return; }
+    if (!active && !starting()) { say(status, '先选一条会话', 'bad'); return; }
     busy = true;
     box.disabled = true;
-    say(status, '发送中…', 'muted');
-    qc.sendJson('POST', ROUTES.create + '/' + encodeURIComponent(active) + '/messages',
-      { text: text }
-    ).then(function () {
+    say(status, active ? '发送中…' : '开始新会话…', 'muted');
+    play([['thinking', 0]]);
+    var fresh = false;
+    ensureSession().then(function (session) {
+      fresh = session.fresh;
+      return qc.sendJson('POST', ROUTES.create + '/' + encodeURIComponent(session.id) + '/messages',
+        { text: text });
+    }).then(function () {
       box.value = '';
       autosize();
       say(status, '', 'muted');
-      return refreshAll(false);
+      // A conversation that just began is opened, not refreshed: the
+      // reading goes on the ledger like any other opening (P15.9).
+      return refreshAll(false, fresh);
     }).catch(function (err) {
       say(status, qc.failLine('发送', err), qc.failTone(err));
       qc.toast(qc.failLine('发送', err), qc.failTone(err));
@@ -286,6 +369,18 @@ function chatScript(): string {
 
   qc.onAction('chat-open', function (el) { openSession(el.getAttribute('data-session') || ''); });
   qc.onAction('chat-new', function () { newSession(); });
+
+  // On the empty page the greeting is the agent the picker shows.
+  document.addEventListener('change', function (event) {
+    if (!event.target || event.target.id !== 'chat-target' || active) return;
+    var mount = byId('thread-mount');
+    if (!mount) return;
+    qc.loadHtml('/fragments/chat/greet?target=' + encodeURIComponent(event.target.value)).then(function (html) {
+      if (active) return;
+      mount.innerHTML = html;
+      paintComposer();
+    }).catch(function () { /* the greeting is a courtesy */ });
+  });
   qc.onSubmit('composer', function () { send(); });
 
   document.addEventListener('keydown', function (event) {
@@ -298,7 +393,10 @@ function chatScript(): string {
   });
 
   document.addEventListener('input', function (event) {
-    if (event.target && event.target.id === 'chat-text') autosize();
+    if (event.target && event.target.id === 'chat-text') {
+      autosize();
+      typing(event.target);
+    }
   });
 
   document.addEventListener('visibilitychange', function () {
@@ -311,8 +409,8 @@ function chatScript(): string {
     autosize();
     // The server already decided this on the first render; re-asserting it here
     // keeps one rule ("a session is open") rather than two that can disagree.
-    setComposerEnabled(byId('chat-thread') !== null &&
-      byId('chat-thread').getAttribute('data-session') !== null);
+    setComposerEnabled(starting() || (byId('chat-thread') !== null &&
+      byId('chat-thread').getAttribute('data-session') !== null));
     var mount = byId('thread-mount');
     if (mount) mount.scrollTop = mount.scrollHeight;
     var box = byId('chat-text');

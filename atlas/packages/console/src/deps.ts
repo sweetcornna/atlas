@@ -26,6 +26,7 @@ import type {
   ModelRoutingPort,
   SchedulesPort,
 } from './directionPorts.js'
+import type { AvatarsPort } from './avatar.js'
 import type { ConsoleFailure, ConsoleResult } from './contracts.js'
 
 import type { AuditRecord, MessageChain } from '@qianmo/audit'
@@ -1157,6 +1158,8 @@ export const CONSOLE_ACTIONS = [
   'connector.save',
   'connector.remove',
   'connector.probe',
+  // 形象（`avatar.ts`）：target 是 `agent:<地址>` 或 `user:<主体>`。
+  'avatar.save',
 ] as const
 
 /** 账本里的一条，带上账本给它的序号（递增，从 1 开始）。 */
@@ -2170,4 +2173,6 @@ export interface ConsoleDeps {
   readonly schedules?: SchedulesPort
   /** 应用连接（P25）。 */
   readonly connectors?: ConnectorsPort
+  /** 形象（`avatar.ts`）。缺席时人人用按地址或主体算出的默认形象，不能改。 */
+  readonly avatars?: AvatarsPort
 }

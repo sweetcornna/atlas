@@ -29,6 +29,12 @@ import type { TenantPort } from '../tenancy.js'
 
 import type { ConsoleAccounts } from '../access.js'
 import {
+  avatarFragmentRoute,
+  avatarsApiRoute,
+  type Faces,
+  facesFor,
+} from './avatars.js'
+import {
   chatScopeOf,
   streamScopeOf,
   type ChatScope,
@@ -51,7 +57,9 @@ import {
   notFound,
   readJsonObject,
 } from '../respond.js'
+import { agentAvatarKey, type AvatarKey } from '../avatar.js'
 import {
+  type ChatFaces,
   chatPreview,
   MAX_CHAT_TEXT_LENGTH,
   renderChatSessions,
@@ -152,17 +160,40 @@ async function chatTargets(
   return result.ok ? result.value : null
 }
 
+/** Looks up the figures one render draws (`routes/avatars.ts`). */
+type FaceLookup = (keys: readonly AvatarKey[]) => Promise<Faces>
+
+function chatFaces(faces: Faces): ChatFaces {
+  return {
+    agent: address => faces.spec(agentAvatarKey(address)),
+    self: faces.spec(faces.self),
+    selfKey: faces.self,
+    editable: faces.editable,
+  }
+}
+
+function lookFaces(ctx: RouteContext): FaceLookup {
+  return keys => facesFor(ctx, keys)
+}
+
 async function chatSessionsFragment(
   chat: ChatPort,
   activeId: string | null,
   now: number,
   scope: ChatScope,
+  look: FaceLookup,
 ): Promise<string> {
   const [sessions, targets] = await Promise.all([
     chat.sessions(),
     chatTargets(chat),
   ])
+  const faces = await look(
+    sessions.ok
+      ? [...new Set(sessions.value.map(one => one.target))].map(agentAvatarKey)
+      : [],
+  )
   return renderChatSessions({
+    faces: chatFaces(faces),
     // Fetched whole and filtered here: the port has no notion of an owner,
     // and the ownership record lives beside it in the account book.
     sessions: sessions.ok
@@ -180,6 +211,11 @@ interface ChatThreadRender {
   readonly html: string
   /** True when a session really opened — what enables the composer. */
   readonly open: boolean
+  /**
+   * Nothing is open but there is an agent to talk to: the composer is on,
+   * and the first message opens the conversation (`assets/chatClient.ts`).
+   */
+  readonly startable?: boolean
 }
 
 // --- readings (P15.9, D6) ----------------------------------------------------
@@ -308,16 +344,39 @@ async function chatThreadFragment(
   sessionId: string | null,
   now: number,
   scope: ChatScope,
+  look: FaceLookup,
+  greet?: string,
 ): Promise<ChatThreadRender> {
   if (sessionId === null || sessionId === '') {
+    // Nothing open: the agent picked (`greet`), or the first the picker
+    // offers, says hello.
+    const targets = await chatTargets(chat)
+    const first =
+      targets?.find(target => target.address === greet) ??
+      targets?.find(target => target.dialable) ??
+      targets?.[0]
+    const faces = await look(
+      first === undefined ? [] : [agentAvatarKey(first.address)],
+    )
     return {
       html: renderChatThread({
         transcript: null,
         failure: null,
         target: null,
         now,
+        faces: chatFaces(faces),
+        ...(first === undefined
+          ? {}
+          : {
+              greeter: {
+                agent: first.agent,
+                address: first.address,
+                dialable: first.dialable,
+              },
+            }),
       }),
       open: false,
+      startable: first?.dialable === true,
     }
   }
   if (!scope.visible(sessionId)) {
@@ -336,8 +395,10 @@ async function chatThreadFragment(
     chatTargets(chat),
   ])
   const address = transcript.ok ? transcript.value.session.target : ''
+  const faces = await look(address === '' ? [] : [agentAvatarKey(address)])
   return {
     html: renderChatThread({
+      faces: chatFaces(faces),
       transcript: valueOf(transcript),
       failure: failureOf(transcript),
       target: targets?.find(target => target.address === address) ?? null,
@@ -679,7 +740,22 @@ async function dispatchChatFragment(
   const scope = chatScopeOf(access, accounts)
   if (rest[0] === 'sessions' && rest.length === 1) {
     const active = textParam(url.searchParams, 'active') ?? null
-    return html(await chatSessionsFragment(chat, active, now, scope))
+    return html(
+      await chatSessionsFragment(chat, active, now, scope, lookFaces(ctx)),
+    )
+  }
+  // The empty page's greeting, for the agent just picked.
+  if (rest[0] === 'greet' && rest.length === 1) {
+    const target = textParam(url.searchParams, 'target') ?? undefined
+    const thread = await chatThreadFragment(
+      chat,
+      null,
+      now,
+      scope,
+      lookFaces(ctx),
+      target,
+    )
+    return html(thread.html)
   }
   if (rest[0] === 'thread' && rest.length === 2) {
     const sessionId = decodeURIComponent(rest[1] ?? '')
@@ -700,7 +776,13 @@ async function dispatchChatFragment(
       }
       reading = noted
     }
-    const thread = await chatThreadFragment(chat, sessionId, now, scope)
+    const thread = await chatThreadFragment(
+      chat,
+      sessionId,
+      now,
+      scope,
+      lookFaces(ctx),
+    )
     await reading?.done(thread.open)
     return html(thread.html)
   }
@@ -711,7 +793,7 @@ export const chatRoute: RouteModule = {
   area: {
     id: 'chat',
     label: '对话',
-    group: 'run',
+    group: 'main',
     href: '/chat',
     icon: 'messages-square',
   },
@@ -739,10 +821,10 @@ export const chatRoute: RouteModule = {
         else reading = noted
       }
       const [sessions, thread] = await Promise.all([
-        chatSessionsFragment(chat, sessionId, now, scope),
+        chatSessionsFragment(chat, sessionId, now, scope, lookFaces(ctx)),
         closed
           ? ledgerClosedThread(now)
-          : chatThreadFragment(chat, sessionId, now, scope),
+          : chatThreadFragment(chat, sessionId, now, scope, lookFaces(ctx)),
       ])
       await reading?.done(thread.open)
       return {
@@ -750,7 +832,8 @@ export const chatRoute: RouteModule = {
         body: chatPageBody({
           sessions,
           thread: thread.html,
-          composerEnabled: thread.open,
+          composerEnabled: thread.open || thread.startable === true,
+          starting: !thread.open && thread.startable === true,
         }),
         ...(closed ? { status: 503 } : {}),
       }
@@ -758,12 +841,20 @@ export const chatRoute: RouteModule = {
     css: CHAT_PAGE_CSS,
     script: CHAT_PAGE_SCRIPT,
   },
+  // 形象 lives with 对话, the page that draws and edits figures
+  // (`routes/avatars.ts`); its heads guard themselves.
   api: {
-    heads: ['chat'],
-    handle: (ctx, _head, rest) => dispatchChatApi(ctx, rest),
+    heads: ['chat', ...avatarsApiRoute.heads],
+    handle: (ctx, head, rest) =>
+      head === 'chat'
+        ? dispatchChatApi(ctx, rest)
+        : avatarsApiRoute.handle(ctx, head, rest),
   },
   fragments: {
-    heads: ['chat'],
-    handle: (ctx, _head, rest) => dispatchChatFragment(ctx, rest),
+    heads: ['chat', ...avatarFragmentRoute.heads],
+    handle: (ctx, head, rest) =>
+      head === 'chat'
+        ? dispatchChatFragment(ctx, rest)
+        : avatarFragmentRoute.handle(ctx, head, rest),
   },
 }

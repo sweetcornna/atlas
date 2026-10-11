@@ -22,7 +22,7 @@ function module(id: string, heads: readonly string[]): RouteModule {
     area: {
       id: 'alerts',
       label: id,
-      group: 'run',
+      group: 'manage',
       href: `/${id}`,
       icon: 'info',
     },
@@ -64,20 +64,20 @@ describe('the route table', () => {
 })
 
 describe('the pages', () => {
-  /** Every area of `providers-console-m1.md` §6.1, with its path and group. */
+  /** Every area, with its path and group, in sidebar order. */
   const AREAS: readonly (readonly [AreaId, string, string, boolean])[] = [
-    ['overview', '/', 'run', false],
-    ['nodes', '/nodes', 'run', false],
-    ['chat', '/chat', 'run', false],
-    ['audit', '/audit', 'run', false],
-    ['alerts', '/alerts', 'run', false],
-    ['jobs', '/jobs', 'run', false],
-    ['approvals', '/approvals', 'run', false],
-    ['providers', '/providers', 'config', false],
-    ['servers', '/servers', 'config', false],
-    ['access', '/access', 'admin', false],
-    ['usage', '/usage', 'admin', false],
-    ['settings', '/settings', 'admin', false],
+    ['chat', '/chat', 'main', false],
+    ['jobs', '/jobs', 'main', false],
+    ['providers', '/providers', 'main', false],
+    ['overview', '/overview', 'manage', false],
+    ['nodes', '/nodes', 'manage', false],
+    ['audit', '/audit', 'manage', false],
+    ['alerts', '/alerts', 'manage', false],
+    ['approvals', '/approvals', 'manage', false],
+    ['servers', '/servers', 'manage', false],
+    ['access', '/access', 'manage', false],
+    ['usage', '/usage', 'manage', false],
+    ['settings', '/settings', 'manage', false],
   ]
 
   test('every area has a module, in sidebar order, with a page at its href', () => {
@@ -85,7 +85,7 @@ describe('the pages', () => {
     for (const [id, href, group, pending] of AREAS) {
       const module = ROUTES.find(m => m.area.id === id)
       expect(module?.area.href).toBe(href)
-      expect(module?.area.group).toBe(group as 'run')
+      expect(module?.area.group).toBe(group as 'main')
       expect(`${id} ${module?.area.pending === true}`).toBe(`${id} ${pending}`)
       const segments = href.split('/').filter(part => part !== '')
       expect(pageOf(ROUTES, segments)?.module.area.id).toBe(id)
@@ -112,7 +112,13 @@ describe('the pages', () => {
 
   test('no page can answer a reserved first segment', () => {
     const greedy: RouteModule = {
-      area: { id: 'alerts', label: 'x', group: 'run', href: '/', icon: 'info' },
+      area: {
+        id: 'alerts',
+        label: 'x',
+        group: 'manage',
+        href: '/',
+        icon: 'info',
+      },
       page: {
         match: segments => segments,
         guard: 'view',

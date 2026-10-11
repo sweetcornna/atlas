@@ -147,8 +147,15 @@ export interface ShellNavItem {
 }
 
 export interface ShellNavGroup {
+  /** The group's heading; empty draws the items with no heading at all. */
   readonly label: string
   readonly items: readonly ShellNavItem[]
+  /**
+   * Folded away behind its heading until somebody opens it, or until the
+   * current page is one of its items: the everyday areas stay in view, the
+   * operator's ones are one click off.
+   */
+  readonly folded?: boolean
 }
 
 /** One badge in the top bar's health strip. */
@@ -307,13 +314,28 @@ function navItem(item: ShellNavItem, active: string | undefined): string {
 function sidebar(model: ShellModel): string {
   const groups = model.nav
     .filter(group => group.items.length > 0)
-    .map(
-      group =>
+    .map(group => {
+      const items = group.items
+        .map(item => navItem(item, model.active))
+        .join('')
+      if (group.folded === true) {
+        const open = group.items.some(item => item.id === model.active)
+        return (
+          `<details class="nav-fold"${open ? ' open' : ''}>` +
+          `<summary class="nav-group-name">${escapeHtml(group.label)}${chevron()}</summary>` +
+          `<div class="nav-group">${items}</div>` +
+          `</details>`
+        )
+      }
+      return (
         `<div class="nav-group">` +
-        `<p class="nav-group-name">${escapeHtml(group.label)}</p>` +
-        group.items.map(item => navItem(item, model.active)).join('') +
-        `</div>`,
-    )
+        (group.label === ''
+          ? ''
+          : `<p class="nav-group-name">${escapeHtml(group.label)}</p>`) +
+        items +
+        `</div>`
+      )
+    })
     .join('')
   // Below 1000px the panel is a drawer (E1): a native popover the top bar's
   // menu button opens, with no script — the UA gives it the top layer, Esc

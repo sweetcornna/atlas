@@ -44,7 +44,7 @@ interface PageRow {
 
 const PAGES: readonly PageRow[] = [
   {
-    path: '/',
+    path: '/overview',
     title: '总览',
     active: 'overview',
     reads: [
@@ -76,6 +76,13 @@ const PAGES: readonly PageRow[] = [
     active: 'chat',
     reads: ['会话', 'id="composer"'],
   },
+  // The home page is 对话 for whoever may hold a conversation.
+  {
+    path: '/',
+    title: '对话',
+    active: 'chat',
+    reads: ['会话', 'id="composer"'],
+  },
   {
     path: '/audit',
     title: '消息链',
@@ -96,7 +103,7 @@ const PAGES: readonly PageRow[] = [
   },
   {
     path: '/jobs',
-    title: '值守作业',
+    title: '主动执行',
     active: 'jobs',
     reads: ['调度器', '调度器心跳未接入', '急停'],
   },
@@ -108,7 +115,7 @@ const PAGES: readonly PageRow[] = [
   },
   {
     path: '/providers',
-    title: '模型服务',
+    title: '模型',
     active: 'providers',
     reads: ['模型服务未开启'],
   },
@@ -158,6 +165,14 @@ describe('every page', () => {
     for (const module of ROUTES) {
       expect(PAGES.some(row => row.path === module.area.href)).toBe(true)
     }
+  })
+
+  test('the home page is 对话 for whoever may chat, 总览 for a view token', async () => {
+    const chat = await read('/')
+    expect(chat).toContain('<h1 class="page-title" id="page-title">对话</h1>')
+    const view = await read('/', VIEW)
+    expect(view).toContain('<h1 class="page-title" id="page-title">总览</h1>')
+    expect(view).not.toContain('id="nav-chat"')
   })
 
   test('is a whole document rendered by the server, the area marked current', async () => {
@@ -235,7 +250,7 @@ describe('every page', () => {
     const nodes = await read('/nodes')
     const audit = await read('/audit')
     const servers = await read('/servers')
-    const overview = await read('/')
+    const overview = await read('/overview')
     expect(nodes).toContain("qc.onSubmit('register-form', onRegister)")
     expect(audit).not.toContain("qc.onSubmit('register-form'")
     expect(audit).toContain("qc.onAction('chain', openChain)")
@@ -245,7 +260,7 @@ describe('every page', () => {
 
   test('every section is a stacked header over its own body', async () => {
     for (const [path, headings] of [
-      ['/', ['运行概况', '节点']],
+      ['/overview', ['运行概况', '节点']],
       ['/nodes', ['名册']],
       ['/audit', ['消息链']],
       ['/settings', ['实例', '限额']],
@@ -311,7 +326,8 @@ describe('the doors in front of the pages', () => {
     const { handle } = harness()
     for (const row of PAGES) {
       const response = await handle(browse(row.path, VIEW))
-      const expected = row.active === 'chat' ? 403 : 200
+      // `/` is that caller's home, 总览 for a view token (above).
+      const expected = row.active === 'chat' && row.path !== '/' ? 403 : 200
       expect(`${row.path} ${response.status}`).toBe(`${row.path} ${expected}`)
     }
   })
@@ -424,7 +440,7 @@ describe('the shell around every page', () => {
     // Three agents on two machines. The overview's 智能体 card says 3; the
     // sidebar item named 节点 says 2.
     const h = harness()
-    const html = await (await h.handle(browse('/', ADMIN))).text()
+    const html = await (await h.handle(browse('/overview', ADMIN))).text()
     expect(html).toContain(
       '<span class="nav-label">节点</span><span class="cnt">2</span>',
     )
@@ -528,7 +544,7 @@ describe('errors a browser navigates into are pages (C3)', () => {
       '<h1 class="page-title" id="page-title">页面不存在</h1>',
     )
     expect(html).toContain('class="nav-item"')
-    expect(html).toContain('<a class="jump" href="/" data-nav>回到总览</a>')
+    expect(html).toContain('<a class="jump" href="/" data-nav>回到首页</a>')
     // No area is marked current on a page that is no area's.
     expect(
       html.slice(html.indexOf('<body>'), html.indexOf('<script>')),
