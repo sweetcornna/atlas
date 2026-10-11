@@ -2,11 +2,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import * as path from 'node:path'
-// Like build-qm's compileCodingAgent, this is a pinned build helper, never a
-// runtime import into qm. The reused executors reach the legacy registry.
-import { createLegacyPiVirtualModulePlugin } from '../../packages/coding-agent/scripts/legacy-pi-virtual-module.ts'
+// Build helper only: the binary's legacy loader serves these exact keys.
+import { collectBundledPiEntries } from '../../packages/coding-agent/scripts/legacy-pi-virtual-module.ts'
+import { assertResidentExtensionBudget } from './residentExtensionBudget.js'
+
+const HOST_MODULES = [
+  '@oh-my-pi/pi-coding-agent/config/settings',
+  '@oh-my-pi/pi-coding-agent/tools/browser',
+  '@oh-my-pi/pi-coding-agent/tools/computer',
+]
 
 export async function residentExtensionSource(): Promise<string> {
+  const hostKeys = new Set(
+    (await collectBundledPiEntries()).map(entry => entry.key),
+  )
+  for (const key of HOST_MODULES)
+    if (!hostKeys.has(key))
+      throw new Error(
+        `Resident extension host module is not registered: ${key}`,
+      )
   const result = await Bun.build({
     entrypoints: [
       path.join(import.meta.dir, '../packages/extension/src/index.ts'),
@@ -14,8 +28,10 @@ export async function residentExtensionSource(): Promise<string> {
     target: 'bun',
     format: 'esm',
     packages: 'bundle',
+    // Keep canonical imports for the host's legacy mapping. worker-host is
+    // absent from that registry and stays bundled; type-only imports disappear.
+    external: HOST_MODULES,
     splitting: false,
-    plugins: [await createLegacyPiVirtualModulePlugin()],
   })
   const entries = result.outputs.filter(output => output.kind === 'entry-point')
   if (!result.success || entries.length !== 1)
@@ -51,5 +67,7 @@ for (const [name, data] of ${JSON.stringify(assets)}) {
   }
 }
 `
-  return bootstrap + source
+  const bundled = bootstrap + source
+  assertResidentExtensionBudget(bundled)
+  return bundled
 }
