@@ -438,6 +438,8 @@ export interface MemoryQueryInput extends AgentRef {
   readonly text?: string
   /** 带上已忘记、已过期、已被替换的。 */
   readonly includeRetired?: boolean
+  /** Offset into the filtered list; nextOffset accounts for the wire byte ceiling. */
+  readonly offset?: number
   readonly limit?: number
 }
 
@@ -460,6 +462,7 @@ export interface MemoryPort {
     ConsoleResult<{
       readonly entries: readonly MemoryEntryView[]
       readonly total: number
+      readonly nextOffset?: number | null
       /** 按类别的活条目数（长期分区）。 */
       readonly counts: Readonly<Record<MemoryKind, number>>
     }>

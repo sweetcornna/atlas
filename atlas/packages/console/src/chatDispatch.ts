@@ -1,7 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { type Access, type ConsoleAccounts } from './access.js'
+import { type Access, type ConsoleAccounts, subjectOf } from './access.js'
 import { chatScopeOf } from './accountsHttp.js'
 import type {
   ChatSendInput,
@@ -230,6 +230,9 @@ export class ChatDispatch {
     try {
       result = await ctx.deps.chat!.send({
         ...input,
+        // Whom the turn is for, from the authenticated access (the schedule's
+        // creator when a schedule sends): long-term memory is kept per person.
+        onBehalfOf: input.onBehalfOf ?? subjectOf(ctx.access),
         ...(typeof reservation === 'string'
           ? { usageReservation: reservation }
           : {}),

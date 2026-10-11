@@ -20,6 +20,8 @@ import type { NodeRouter } from '@qianmo/router'
 export type { ControlOutcome } from '@qianmo/protocol'
 
 export interface ControlContext {
+  /** Exact final UTF-8 response envelope byte check, supplied by the host. */
+  readonly resultFits?: (outcome: ControlOutcome) => boolean
   readonly peer: string
   readonly actor: string
   readonly taskId: string

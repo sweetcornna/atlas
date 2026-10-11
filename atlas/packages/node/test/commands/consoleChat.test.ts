@@ -27,6 +27,11 @@ import {
   createNotify,
   type QianmoMessage,
 } from '@qianmo/protocol'
+import {
+  generateNodeKeyPair,
+  verifiedTaskOwner,
+  type NodeKeyPair,
+} from '@qianmo/capability'
 import { turnStepDedupKey } from '@qianmo/resident'
 import {
   createConsoleChatPort,
@@ -181,6 +186,7 @@ function harness(
      * 于是新写的一轮会覆盖掉重放回来的那一轮。生产用的是 `randomUUID`，不会。
      */
     readonly idPrefix?: string
+    readonly ownerSigningKeys?: NodeKeyPair
     readonly issueCapability?: WakeCapabilityIssuer
   } = {},
 ): Harness {
@@ -193,6 +199,9 @@ function harness(
 
   const hub = createConsoleChatPort({
     from: FROM,
+    ...(options.ownerSigningKeys === undefined
+      ? {}
+      : { ownerSigningKeys: options.ownerSigningKeys }),
     endpoints: (options.endpoints ?? [ENDPOINT]).map(one =>
       typeof one === 'string' ? { url: one, psk: PSK } : one,
     ),
@@ -1252,4 +1261,31 @@ describe('chat local commands (P18.20)', () => {
     })
     expect(transcript.value.turns.at(-1)?.command).toBeUndefined()
   })
+})
+
+test('the console signs its authenticated requester assertion, binding the actual chat text and context', async () => {
+  const keys = generateNodeKeyPair()
+  const h = harness({ ownerSigningKeys: keys })
+  const opened = await h.hub.open(TARGET)
+  if (!opened.ok) throw new Error('open')
+  const subject = 'u:0123456789abcdef'
+  expect(
+    (
+      await h.hub.send({
+        sessionId: opened.value.id,
+        text: '偏好',
+        onBehalfOf: subject,
+      })
+    ).ok,
+  ).toBe(true)
+  const request = h.dialer.last.sent[0]!
+  expect(
+    verifiedTaskOwner(request, new Map([['console', keys.publicKey]])),
+  ).toBe(subject)
+  expect(
+    verifiedTaskOwner(
+      { ...request, contextId: 'foreign-chat' },
+      new Map([['console', keys.publicKey]]),
+    ),
+  ).toBeUndefined()
 })

@@ -238,7 +238,7 @@ export function renderMemoryUnavailable(
   return unwiredCard(
     '长期记忆',
     '节点打开记忆后 · 智能体会记住你的偏好 计划 项目和日常 · 你可以在这里查看 修改和让它忘记',
-    'qm console --chat-url <节点>=<地址> --memory',
+    'qm console --memory --control <节点>=<地址> --trust <节点>=<公钥>',
   )
 }
 

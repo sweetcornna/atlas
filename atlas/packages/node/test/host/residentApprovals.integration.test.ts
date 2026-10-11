@@ -17,10 +17,11 @@ import { AuditTrail, AuditSource } from '@qianmo/audit'
 import type { ResidentAuthzEvent } from '../../src/host/residentAuthorization.js'
 import { rejudgeNode } from '../../../../scripts/authz-rejudge/node.js'
 import { FileMemoryStore } from '@qianmo/memory'
-import { residentMemoryScope } from '@qianmo/resident'
+import { residentMemoryScope, resolveMemoryPartition } from '@qianmo/resident'
 import { AccountBook, type ApprovalItem } from '@qianmo/console'
 import {
   generateNodeKeyPair,
+  signTaskOwner,
   issueCapability,
   NodeCapabilities,
   StaticPublicKeyDirectory,
@@ -93,6 +94,8 @@ test('real omp outside write waits for personal approval on a separate signed co
   }
   const resident = new QianmoResident({
     node: 'worker',
+    memoryControllers: new Map([['hub', commandKeys.publicKey]]),
+    controllers: new Set(['hub']),
     team: 'nest',
     agents: [{ agent: 'reviewer', cwd: workspace }],
     allowWorkspaceEdits: true,
@@ -157,7 +160,7 @@ test('real omp outside write waits for personal approval on a separate signed co
       },
     })
     await client.connect()
-    const send = async () => {
+    const send = async (owner?: string, contextId = 'approval-chat') => {
       const taskId = randomUUID(),
         now = Date.now()
       const cap = issueCapability('hub', commandKeys, {
@@ -168,18 +171,22 @@ test('real omp outside write waits for personal approval on a separate signed co
         nbf: now - 100,
         exp: now + 60_000,
       })
+      const request = createMessage({
+        type: MessageType.TaskRequest,
+        from: 'qianmo://hub/console',
+        to: 'qianmo://worker/reviewer',
+        contextId,
+        payload: {
+          prompt: 'Execute the scripted file operation.',
+          ...(owner === undefined ? {} : { onBehalfOf: owner }),
+        },
+        taskId,
+        cap,
+        createdAt: now,
+        hops: ['hub'],
+      })
       await client!.sendAndWait(
-        createMessage({
-          type: MessageType.TaskRequest,
-          from: 'qianmo://hub/console',
-          to: 'qianmo://worker/reviewer',
-          contextId: 'approval-chat',
-          payload: { prompt: 'Execute the scripted file operation.' },
-          taskId,
-          cap,
-          createdAt: now,
-          hops: ['hub'],
-        }),
+        owner === undefined ? request : signTaskOwner(request, commandKeys),
       )
       return taskId
     }
@@ -350,6 +357,156 @@ test('real omp outside write waits for personal approval on a separate signed co
       ),
     )
     expect(memory.query()).toHaveLength(1)
+    // P23: a long proposal is bound to the host-verified account in the approval itself.
+    const longProposal = {
+      ...proposal,
+      scope: 'long',
+      kind: 'preference',
+      summary: '先给结论再说原因',
+    }
+    harness.script([{ name: 'qianmo_memory_write', input: longProposal }])
+    const longTask = await send(account.value.subject)
+    let longRequest: ApprovalItem | undefined
+    await until(async () => {
+      const list = await hub!.list(login.value)
+      longRequest = list.ok
+        ? list.value.find(
+            row =>
+              row.status === 'pending' &&
+              row.toolName === 'qianmo_memory_write',
+          )
+        : undefined
+      return longRequest !== undefined
+    })
+    expect(longRequest!.input).toMatchObject({
+      owner: account.value.subject,
+      destination: `写进 ${account.value.subject} 的长期记忆`,
+      scope: 'long',
+      kind: 'preference',
+    })
+    expect(
+      (
+        await hub.decide(login.value, {
+          requestId: longRequest!.requestId,
+          digest: longRequest!.digest,
+          decision: 'allow-window',
+          windowMs: 60000,
+        })
+      ).ok,
+    ).toBe(false)
+    expect(
+      (
+        await hub.decide(login.value, {
+          requestId: longRequest!.requestId,
+          digest: longRequest!.digest,
+          decision: 'allow-once',
+        })
+      ).ok,
+    ).toBe(true)
+    await until(() =>
+      received.some(
+        row => row.type === MessageType.TaskResult && row.taskId === longTask,
+      ),
+    )
+    const longEntry = memory
+      .query()
+      .find(row => row.source.id === longRequest!.requestId)!
+    expect(longEntry.scope).toEqual(
+      resolveMemoryPartition({
+        scope: 'long',
+        agent: 'reviewer',
+        owner: account.value.subject,
+      }),
+    )
+    expect(longEntry.tags).toContain('kind:preference')
+    const frozen = (taskId: string): string => {
+      const log = readFileSync(
+        join(root, 'config', 'resident', 'reviewer', 'admission.ndjson'),
+        'utf8',
+      )
+      const records = log
+        .split('\n')
+        .filter(Boolean)
+        .map(
+          line =>
+            JSON.parse(line) as {
+              kind: string
+              prompt?: string
+              snapshot?: { text: string }[]
+            },
+        )
+      return (
+        records.find(
+          row =>
+            row.kind === 'detected' &&
+            row.snapshot?.some(mail => mail.text.includes(taskId)),
+        )?.prompt ?? ''
+      )
+    }
+    // The writing turn was already frozen before the proposal executed.
+    expect(frozen(longTask)).not.toContain(`entry_id: ${longEntry.id}`)
+    for (const [owner, context, recalled] of [
+      [account.value.subject, 'second-chat', true],
+      ['u:abcdef0123456789', 'second-chat', false],
+      [undefined, 'second-chat', false],
+    ] as const) {
+      harness.script([])
+      const taskId = await send(owner, context)
+      await until(() =>
+        received.some(
+          row => row.type === MessageType.TaskResult && row.taskId === taskId,
+        ),
+      )
+      expect(frozen(taskId).includes(`entry_id: ${longEntry.id}`)).toBe(
+        recalled,
+      )
+    }
+    // A missing identity is rejected before approval and before any long entry can be written.
+    harness.script([{ name: 'qianmo_memory_write', input: longProposal }])
+    const anonymousWrite = await send()
+    await until(() =>
+      received.some(
+        row =>
+          row.type === MessageType.TaskResult && row.taskId === anonymousWrite,
+      ),
+    )
+    expect(memory.query({ includeRetired: true })).toHaveLength(2)
+    const noPending = await hub.list(login.value)
+    expect(
+      noPending.ok && noPending.value.filter(row => row.status === 'pending'),
+    ).toEqual([])
+    // Even identical long proposals need a separate personal decision.
+    harness.script([{ name: 'qianmo_memory_write', input: longProposal }])
+    const deniedLongTask = await send(account.value.subject)
+    let deniedLong: ApprovalItem | undefined
+    await until(async () => {
+      const list = await hub!.list(login.value)
+      deniedLong = list.ok
+        ? list.value.find(
+            row =>
+              row.status === 'pending' &&
+              row.toolName === 'qianmo_memory_write',
+          )
+        : undefined
+      return deniedLong !== undefined
+    })
+    expect(deniedLong!.requestId).not.toBe(longRequest!.requestId)
+    expect(
+      (
+        await hub.decide(login.value, {
+          requestId: deniedLong!.requestId,
+          digest: deniedLong!.digest,
+          decision: 'deny',
+        })
+      ).ok,
+    ).toBe(true)
+    await until(() =>
+      received.some(
+        row =>
+          row.type === MessageType.TaskResult && row.taskId === deniedLongTask,
+      ),
+    )
+    expect(memory.query({ includeRetired: true })).toHaveLength(2)
     expect(errors).toEqual([])
   } finally {
     await hub?.close()

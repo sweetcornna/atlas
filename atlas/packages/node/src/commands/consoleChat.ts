@@ -43,6 +43,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { signTaskOwner, type NodeKeyPair } from '@qianmo/capability'
 import { MODEL_DIRECTIONS } from '@qianmo/console'
 import { parseTurnStepDedupKey } from '@qianmo/resident'
 import type {
@@ -177,6 +178,7 @@ export interface ConsoleChatEndpoint {
 }
 
 interface ConsoleChatOptions {
+  readonly ownerSigningKeys?: NodeKeyPair
   readonly signing?: HandshakeIdentity
   readonly usage?: import('@qianmo/console').UsagePort
   /** 控制台自己的地址，`qianmo://<node>/<agent>`。 */
@@ -1012,7 +1014,7 @@ export function createConsoleChatPort(
           taskId,
           createdAt,
         })
-        const draft = createMessage({
+        let draft: QianmoMessage = createMessage({
           from: options.from,
           to: stored.target,
           type: MessageType.TaskRequest,
@@ -1034,6 +1036,9 @@ export function createConsoleChatPort(
           // 当一句话——`task.request` 的 payload 本来就不设字段表。
           payload: {
             prompt: text,
+            ...(input.onBehalfOf === undefined
+              ? {}
+              : { onBehalfOf: input.onBehalfOf }),
             ...(input.direction === undefined
               ? {}
               : { direction: input.direction }),
@@ -1050,6 +1055,11 @@ export function createConsoleChatPort(
         // protocol.md §6.3 call site 1 — the origin stamps itself into
         // `hops[0]` before the envelope reaches a transport, and the same call
         // runs the runtime throttle every other sender goes through.
+        if (
+          input.onBehalfOf !== undefined &&
+          options.ownerSigningKeys !== undefined
+        )
+          draft = signTaskOwner(draft, options.ownerSigningKeys)
         const routed = router.outbound(draft)
         if (!routed.ok) {
           return fail('rejected', `${routed.code}: ${routed.reason}`)

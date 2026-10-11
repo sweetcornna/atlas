@@ -28,6 +28,9 @@ export const TASK_DIRECTIONS = [
 ] as const
 export type TaskDirection = (typeof TASK_DIRECTIONS)[number]
 export interface TaskRequestPayload {
+  /** Console account assertion, authenticated by a task-owner signature. */
+  readonly onBehalfOf?: string
+  readonly ownerProof?: string
   readonly prompt: string
   readonly direction?: TaskDirection
   readonly command?: { readonly name: string }

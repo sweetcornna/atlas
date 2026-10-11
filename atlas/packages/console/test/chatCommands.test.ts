@@ -49,6 +49,12 @@ async function openAs(h: AccountsHarness, who: Person): Promise<string> {
   return ((await response.json()) as { id: string }).id
 }
 
+function subjectOf(h: AccountsHarness, who: Person): string {
+  const authenticated = h.book.bearerPrincipal(who.credential)
+  if (!authenticated.ok) throw new Error('test account authentication failed')
+  return authenticated.value.subject
+}
+
 function say(who: Person, sessionId: string, text: string): Request {
   return asSession('POST', `/v0/chat/sessions/${sessionId}/messages`, who.sid, {
     body: { text },
@@ -73,7 +79,12 @@ describe('local commands on the chat page (P18.20)', () => {
 
     expect(response.status).toBe(200)
     expect(h.chat.sent).toEqual([
-      { sessionId: sid, text: '/autocompact 150k', command: 'autocompact' },
+      {
+        sessionId: sid,
+        text: '/autocompact 150k',
+        command: 'autocompact',
+        onBehalfOf: subjectOf(h, ops),
+      },
     ])
     expect(chatLines(ledger)).toEqual([`chat.command.autocompact ${sid} ok`])
   })
@@ -134,11 +145,17 @@ describe('local commands on the chat page (P18.20)', () => {
     ).toBe(200)
 
     expect(h.chat.sent).toEqual([
-      { sessionId: sid, text: '/context', command: 'context' },
+      {
+        sessionId: sid,
+        text: '/context',
+        command: 'context',
+        onBehalfOf: subjectOf(h, member),
+      },
       {
         sessionId: sid,
         text: '/compact keep the API notes',
         command: 'compact',
+        onBehalfOf: subjectOf(h, member),
       },
     ])
     expect(chatLines(ledger)).toEqual([
@@ -156,7 +173,12 @@ describe('local commands on the chat page (P18.20)', () => {
       ['effort', '/effort low'],
     ] as const) {
       expect((await h.handle(say(member, sid, text))).status).toBe(200)
-      expect(h.chat.sent.at(-1)).toEqual({ sessionId: sid, text, command })
+      expect(h.chat.sent.at(-1)).toEqual({
+        sessionId: sid,
+        text,
+        command,
+        onBehalfOf: subjectOf(h, member),
+      })
       expect(chatLines(ledger).at(-1)).toBe(`chat.command.${command} ${sid} ok`)
     }
   })

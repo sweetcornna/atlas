@@ -14,6 +14,8 @@ import {
   HubCallClient,
   type ControlOutcome,
 } from './control.js'
+import { MemoryControl } from './memoryControl.js'
+import { verifiedTaskOwner } from '@qianmo/capability'
 import { residentToolSurface, type HostToolDefinition } from './notifyTool.js'
 import { buildVersion } from '../provenance.js'
 import {
@@ -59,6 +61,7 @@ import {
 } from '@qianmo/adapter/inbound'
 import {
   MessageType,
+  LIMITS,
   CONTROL_MESSAGE_TYPES,
   LEGACY_MESSAGE_TYPES,
   ProtocolErrorCode,
@@ -263,6 +266,7 @@ const DEFAULT_PROVIDER_MAX_WAIT_MS = 30 * 60_000
 interface QianmoResidentOptions {
   /** Handshake identities allowed to control this node, independently of task issuers. */
   readonly controllers?: ReadonlySet<string>
+  readonly memoryControllers?: ReadonlyMap<string, string>
   readonly controlAudit?: (event: AuditInput) => void
   readonly extraHostTools?: readonly HostToolDefinition[]
   readonly node: string
@@ -578,6 +582,7 @@ const TASK_REPLY_RECEIPT_TIMEOUT_MS = 5_000
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
 interface ActiveResidentTask {
+  owner?: string
   trust?: 'untrusted' | 'verified-capability'
   readonly envelope: QianmoMessage
   readonly channel: TransportChannel
@@ -832,6 +837,14 @@ export class QianmoResident {
         : { audit: options.notifyAudit }),
     })
     this.#memoryRoot = options.memoryRoot ?? defaultMemoryRoot()
+    new MemoryControl({
+      node: options.node,
+      agents: options.agents.map(agent => agent.agent),
+      root: this.#memoryRoot,
+      ledgerPath: qianmoConfigPath('resident', 'memory-operations.sqlite'),
+      estop: this.#estop,
+      onError: options.onError,
+    }).register(this.control)
     this.#authorization =
       options.authorization === undefined
         ? undefined
@@ -1438,6 +1451,14 @@ export class QianmoResident {
       // Keep the logical reply channel alive while the handler runs. A dropped
       // socket must not turn an executed action into a failed receipt/re-execution.
       const release = context.channel.hold()
+      const response = createMessage({
+        from: message.to,
+        to: message.from,
+        type: MessageType.NodeControlResult,
+        payload: { ok: true, value: null },
+        taskId: message.taskId,
+        traceId: message.traceId,
+      })
       try {
         const result = await this.control.handle(
           message.payload.op,
@@ -1445,6 +1466,15 @@ export class QianmoResident {
           {
             peer,
             actor: message.payload.actor,
+            resultFits: outcome =>
+              Buffer.byteLength(
+                JSON.stringify({
+                  ...response,
+                  hops: [this.#options.node],
+                  payload: outcome,
+                }),
+                'utf8',
+              ) <= LIMITS.maxMessageBytes,
             taskId: message.taskId,
             ...(this.#options.agents.some(row => row.agent === agent)
               ? { agent }
@@ -1452,16 +1482,7 @@ export class QianmoResident {
           },
         )
         this.#auditControl(message, context, result)
-        const reply = this.#router.outbound(
-          createMessage({
-            from: message.to,
-            to: message.from,
-            type: MessageType.NodeControlResult,
-            payload: result,
-            taskId: message.taskId,
-            traceId: message.traceId,
-          }),
-        )
+        const reply = this.#router.outbound({ ...response, payload: result })
         if (reply.ok) {
           try {
             context.channel.send(reply.message)
@@ -1545,6 +1566,10 @@ export class QianmoResident {
     // later assembled from (`residentLocalCommand.ts`).
     if (task !== undefined) {
       task.trust = routed.trust
+      task.owner = verifiedTaskOwner(
+        message,
+        this.#options.memoryControllers ?? new Map(),
+      )
       const command = residentLocalCommand(
         message,
         routed,
@@ -1691,7 +1716,14 @@ export class QianmoResident {
     )
       return denied
     const proposal = parseMemoryWrite(raw)
+    if (proposal.scope === 'long' && task.owner === undefined) return denied
     const contextId = task.envelope.contextId ?? 'default'
+    const approvalInput = {
+      ...proposal,
+      ...(proposal.scope === 'long'
+        ? { owner: task.owner, destination: `写进 ${task.owner} 的长期记忆` }
+        : {}),
+    }
     let requestId: string | undefined
     const deadline =
       Date.now() +
@@ -1700,7 +1732,7 @@ export class QianmoResident {
     const approved = await this.#authorization.request(
       {
         toolName: 'qianmo_memory_write',
-        input: proposal,
+        input: approvalInput,
         agent: input.agent,
         contextId,
       },
@@ -1729,10 +1761,12 @@ export class QianmoResident {
       !this.#options.tenantGate(task.channel.authenticatedPeerNode ?? null)
     )
       return denied
+    if (this.#estop.engaged()) return denied
     const entry = writeResidentMemory(
       new FileMemoryStore({ root: this.#memoryRoot }),
       {
         ...proposal,
+        ...(task.owner === undefined ? {} : { owner: task.owner }),
         agent: input.agent,
         contextId,
         source: { kind: 'agent', id: requestId },
@@ -1740,7 +1774,7 @@ export class QianmoResident {
     )
     return {
       ok: true,
-      text: `Memory ${entry.id} was written for this context with approval ${requestId}. It can be recalled by subsequent turns.`,
+      text: `Memory ${entry.id} was written ${proposal.scope === 'long' ? `for account ${task.owner}` : 'for this context'} with approval ${requestId}. It can be recalled by subsequent turns.`,
     }
   }
 
@@ -2874,6 +2908,12 @@ export class QianmoResident {
         selectSnapshot: selectResidentSnapshot,
         correlationId: networkMessageId,
         contextId: networkContextId,
+        owner: messages => {
+          const id = networkMessageId(messages)
+          return id === undefined
+            ? undefined
+            : this.#tasksByMessage.get(id)?.owner
+        },
         deadlineOf: message => this.#taskDeadlineOf(message),
         sessions,
         timings: this.#timings,

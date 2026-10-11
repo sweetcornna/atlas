@@ -37,7 +37,7 @@ export interface ResidentSessionResolver {
    * Resolves — creating or resuming as needed — the session for this
    * `(agent, contextId)` and marks it in flight until {@link release}.
    */
-  sessionFor(agent: string, contextId?: string): Promise<string>
+  sessionFor(agent: string, contextId?: string, owner?: string): Promise<string>
   /** Ends the in-flight marking a {@link sessionFor} call started. */
   release(sessionId: string): void
 }
@@ -130,12 +130,16 @@ export class ResidentSessionManager implements ResidentSessionResolver {
     }
   }
 
-  async sessionFor(agent: string, contextId?: string): Promise<string> {
+  async sessionFor(
+    agent: string,
+    contextId?: string,
+    owner?: string,
+  ): Promise<string> {
     const configured = this.#agents.get(agent)
     if (configured === undefined) {
       throw new Error(`resident agent ${agent} is not configured`)
     }
-    const key = sessionKeyOf(agent, contextId)
+    const key = sessionKeyOf(agent, contextId, owner)
     // Collect before resolving: the room a new context needs has to exist
     // before it is written, never after (G-6).
     this.collect()
@@ -151,8 +155,8 @@ export class ResidentSessionManager implements ResidentSessionResolver {
     else this.#inFlight.set(sessionId, outstanding - 1)
   }
 
-  sessionOf(agent: string, contextId?: string): string {
-    const key = sessionKeyOf(agent, contextId)
+  sessionOf(agent: string, contextId?: string, owner?: string): string {
+    const key = sessionKeyOf(agent, contextId, owner)
     const stored = this.#store.get(key)
     if (stored === undefined || !this.#live.has(key)) {
       throw new Error(`resident agent ${agent} has no active omp session`)
