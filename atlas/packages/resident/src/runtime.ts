@@ -70,6 +70,10 @@ export class ResidentNodeRuntime {
     readonly correlationId?: (
       messages: readonly ResidentMailboxMessage[],
     ) => string | undefined
+    /** Host-verified account, used for both RPC history and memory partitions. */
+    readonly owner?: (
+      messages: readonly ResidentMailboxMessage[],
+    ) => string | undefined
     /**
      * The requester's context for this batch, in the same shape as
      * `correlationId` and read from the same place — the envelope the adapter
@@ -141,6 +145,7 @@ export class ResidentNodeRuntime {
                   sessions.sessionFor(
                     binding.agent,
                     options.contextId?.(messages),
+                    options.owner?.(messages),
                   ),
           ...(sessions === undefined
             ? {}
@@ -152,11 +157,14 @@ export class ResidentNodeRuntime {
           mailbox: this.#mailbox,
           turn: this.#turn,
           ledger: binding.ledger,
-          formatPrompt: messages =>
-            this.#formatPrompt(messages, {
+          formatPrompt: messages => {
+            const owner = options.owner?.(messages)
+            return this.#formatPrompt(messages, {
               agent: binding.agent,
               contextId: options.contextId?.(messages),
-            }),
+              ...(owner === undefined ? {} : { owner }),
+            })
+          },
           ...(options.accepts === undefined
             ? {}
             : { accepts: options.accepts }),

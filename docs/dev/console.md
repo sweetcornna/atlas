@@ -2252,3 +2252,95 @@ API 处理器是 `routes/schedulesApi.ts` 导出的 `schedulesApi: HeadRoute`，
 | DELETE `/v0/routing/nodes/<node>` | ops 或管理令牌 | 清除节点覆盖并跟随默认 |
 
 写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
+
+
+## 长期记忆（P23）
+
+长期记忆按本节点的「智能体 × 已验证控制台账号」分区，个人主体为
+`u:` 加 16 位小写十六进制，旧管理令牌主体为 `legacy:admin`。
+控制台写入立即生效，来源是 `{ kind: 'user', id: 'user:console:<主体>' }`；
+智能体来源为 `{ kind: 'agent', id: '<单次审批号>' }`。存储治理禁止智能体
+替换高信任的用户记录，用户修改则以运维写者身份新增并 supersede 原记录。
+
+启用命令（端口、节点名、公钥和凭据文件换成部署实际值，PSK 沿用 `--control`
+的节点环境变量契约）：
+
+```sh
+qm console --memory --control worker=ws://127.0.0.1:38611 \
+  --trust worker=<节点公钥> --chat-url worker=ws://127.0.0.1:38611 \
+  --chat-sign --chat-from qianmo://hub/console --admin-token-file <管理令牌文件>
+```
+
+`--memory` 必须同时指定至少一个 `--control`；每个控制节点必须有显式 `--trust`。
+节点侧配置 `qm resident … --controller hub=<控制台命令公钥> --trust hub=<同一公钥>`。
+智能体写入还需要原有 P14 的个人账号与审批配置（控制台 `--accounts --approvals`，
+节点配置对应 approver 公钥），长期写入每条只接受单次批准。
+控制台页面未接入卡片可以用 `qm console --memory --control <node>=<ws(s)://url> --trust <node>=<publicKey>`
+作为最短接入命令；跨对话召回另需上面的签名对话配置。
+
+### 身份字段与校验点
+
+HTTP 对话路由只从认证结果填入宿主 `ChatSendInput.onBehalfOf`，不采信 JSON
+请求体中的同名字段。定时任务传入持久化的创建者 `createdBy`，编辑任务不改变创建者。
+中枢把主体写入 `task.request.payload.onBehalfOf`，并在 `--chat-sign` 下生成
+`payload.ownerProof`。独立 Ed25519 签名的域为 `qianmo.task-owner.v1`，覆盖
+规范化 JSON 中的发件人、收件人、消息类型、消息号、任务号、上下文号、创建时间、
+两种期限，以及除 `ownerProof` 外的全部载荷。原有 capability token 只绑定授权任务，
+不能作为账号/正文签名使用。路由可变的 hops 和 trace parent 不进入这个证明。
+
+节点在 `QianmoResident.#receive` 处，按信封 `from` 的节点名查
+`--controller` 钉住的公钥，调用 `verifiedTaskOwner` 验证原始请求；验证失败、
+主体不合规、来自普通受信 peer、或没有证明，都按无身份处理。后续召回和写入
+使用活动任务中保存的验证结果，不从邮箱文本里读回账号断言。P14 写入审批的 input
+另绑定 `owner` 与 `destination: "写进 <账号> 的长期记忆"`，操作者能看到实际目的地。
+
+RPC 对话历史也按账号隔离：宿主把已验证 owner 独立交给会话解析器，
+`sessionKeyOf(agent, contextId, owner)` 使用 `!<账号 id>-<上下文摘要>` 作为
+账号会话命名空间。`!` 不可能由原始 contextId 的规范化生成，无身份请求即使
+复用这个名字也会重新散列到匿名分区，无法进入账号的 RPC 历史。
+P14 对外审批与通知仍使用原始 contextId，以便中枢关联会话。
+无身份会话的本地工作记忆和 RPC 默认会话保留兼容性；已有账号对话首次带上
+已验证身份时使用新的隔离会话，不迁移旧 RPC 历史。
+
+### 分区、召回与留痕
+
+统一 API 为 `@qianmo/resident` 的 `resolveMemoryPartition`、
+`parseMemoryPartition` 与 `requireMemoryPartition`，会话写者和控制处理器共用它们。
+磁盘为 `<memoryRoot>/working/<agentKey>/<taskId>/`；agentKey 沿用 `v-<原文>`
+或 `d-<32 位摘要>`。会话 taskId 只能是 `v-` / `d-`，长期 taskId 是
+`l-<账号的 16 位 id>` 或 `l-admin`；即便远端会话号写成长期目录名，仍会加会话标签，
+不能相撞。账号对话的工作记忆使用上述账号会话键派生，长期记忆独立于上下文。
+
+每轮一次冻结召回，先排长期分区，再排本会话分区，共享既有的 50 条 / 2 万字预算，
+并把召回正文与条目号持久化进 admission ledger。批准后的写入只影响后续轮次。
+无已验证账号只召回本会话。长期组合召回使用确定性路径；语义检索默认关闭。
+类别使用 `kind:preference|plan|project|daily` 标签，不改记忆记录格式。
+
+修改通过 `FileMemoryStore.write(..., 'operator')` 写新条目及 supersedes 链；
+忘记用 revoke，事实过期用 invalidate，全部保留原记录与痕迹。
+`MemoryEntryView.supersedes` 展示前驱数组中 createdAt 最新的条目（同时间按 id 升序），
+原数组完整留在存储里。列表只读当前主体的长期分区；`scope=all` 同样返回长期条目，
+`scope=conversation` 返回空集合：本轮没有经过验证的账号到历史会话分区的索引，
+因此不会开放会话目录扫描。租户包装按 `scope.address` 过滤名册，列表和写入的
+范围外目标在准入和拨号前返回 404，策略版本改变后也不返回旧范围的结果。
+
+### 幂等、急停和字节上限
+
+控制操作为 `memory.agents|list|add|edit|forget|invalidate`。
+中枢为每次写操作生成 UUID `operationId`；节点在
+`qianmoConfigPath('resident', 'memory-operations.sqlite')` 中持久化
+`operationId + SHA-256(规范化的操作名、参数、actor、peer) → 结果`。
+同号同摘要原样返回持久化结果，同号异摘要拒绝。SQLite 事务串行化操作；执行前先
+持久化固定时间的意图，新增/修改的条目号由 operationId 派生。崩溃后复用同条目号，
+supersedes 中断通过存储已有的修复机制收敛，忘记/过期按意图时间和留痕恢复。
+操作超时或连接丢失在中枢映射为 `unreachable`，提示「结果未知」，不声称未执行。
+
+ESTOP 下只允许读取、忘记和标为过期；新增、修改拒绝。已执行操作的结果重放属于
+读取，仍返回原结果。智能体获批后真正写入前再次检查 ESTOP。
+
+`memory.list` 和 `memory.agents` 支持 offset / limit（每页最多 200 条），并返回
+nextOffset；记忆页每页请求 60 条，API `GET /v0/memory?offset=N` 返回续页位置。
+节点按最终 NodeControlResult 信封（含实际地址、id、traceId、时间和 outbound hop）的
+UTF-8 JSON 字节量裁剪，遵守协议 `LIMITS.maxMessageBytes`；不按字符串字符数估算。
+total / counts 是筛选全集与长期活条目的计数，裁剪不会缩小它们。单条超限明确拒绝，
+不返回一个无法继续的空页。控制台页面、view/assets 未改动。

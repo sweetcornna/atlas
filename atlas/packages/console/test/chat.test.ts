@@ -757,7 +757,9 @@ describe('chat routes', () => {
       post(`/v0/chat/sessions/${SESSION.id}/messages`, { text: '你好' }),
     )
     expect(sent.status).toBe(200)
-    expect(chat.sent).toEqual([{ sessionId: SESSION.id, text: '你好' }])
+    expect(chat.sent).toEqual([
+      { sessionId: SESSION.id, text: '你好', onBehalfOf: 'legacy:admin' },
+    ])
     expect(await sent.json()).toMatchObject({ id: ASK.id, state: 'read' })
   })
 

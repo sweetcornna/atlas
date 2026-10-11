@@ -101,6 +101,7 @@ interface Listed {
   readonly agents: readonly (AgentRef & { readonly reachable: boolean })[]
   readonly entries: readonly MemoryEntryView[]
   readonly total: number
+  readonly nextOffset?: number | null
   readonly counts: Readonly<Record<MemoryKind, number>>
 }
 
@@ -117,6 +118,9 @@ async function listed(
       value: { filter, agents: [], entries: [], total: 0, counts: NO_COUNTS },
     }
   }
+  const offset = Number(ctx.url.searchParams.get('offset') ?? 0)
+  if (!Number.isSafeInteger(offset) || offset < 0)
+    return { ok: false, failure: { code: 'invalid', message: '记忆分页无效' } }
   const result = await port.list(
     {
       node: filter.agent.node,
@@ -126,6 +130,7 @@ async function listed(
       ...(filter.text === '' ? {} : { text: filter.text }),
       includeRetired: filter.retired,
       limit: LIST_LIMIT,
+      offset,
     },
     actorOf(ctx),
   )
@@ -180,6 +185,9 @@ async function memoryApi(
       agent: result.value.filter.agent,
       entries: result.value.entries,
       total: result.value.total,
+      ...(result.value.nextOffset === undefined
+        ? {}
+        : { nextOffset: result.value.nextOffset }),
       counts: result.value.counts,
     })
   }

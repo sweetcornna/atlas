@@ -20,6 +20,7 @@ import {
 } from '@qianmo/protocol'
 import { TransportClient } from '@qianmo/transport'
 import { readMailbox } from '@qianmo/mailbox'
+import { ConsoleMemory } from '../../src/commands/consoleMemory.js'
 import { ControlLinks } from '../../src/commands/consoleControl.js'
 import { QianmoResident } from '../../src/host/resident.js'
 import { ResidentOmpHarness } from '../../../../tests/integration/fixtures/resident-omp-harness.js'
@@ -195,8 +196,53 @@ test('signed hub and real resident complete control, upstream and appended omp t
       value: { sum: 5, actor: 'u:alice', peer: 'hub' },
     })
     expect(
-      await hub.request('worker', 'memory.list', {}, 'admin'),
+      await hub.request('worker', 'unsupported.list', {}, 'admin'),
     ).toMatchObject({ ok: false, code: 'unsupported' })
+    const memory = new ConsoleMemory({ links: hub })
+    const actor = {
+      subject: 'u:0123456789abcdef',
+      role: 'member' as const,
+      requestId: 'memory-e2e',
+    }
+    expect(await memory.agents()).toMatchObject({
+      ok: true,
+      value: [{ node: 'worker', agent: 'main', reachable: true }],
+    })
+    const added = await memory.add(
+      { node: 'worker', agent: 'main' },
+      {
+        kind: 'plan',
+        title: '控制链路计划',
+        summary: '经签名控制链路保存',
+        body: '',
+      },
+      actor,
+    )
+    expect(added.ok).toBe(true)
+    if (!added.ok) throw new Error(added.failure.message)
+    expect(
+      await memory.list({ node: 'worker', agent: 'main' }, actor),
+    ).toMatchObject({
+      ok: true,
+      value: {
+        total: 1,
+        entries: [{ id: added.value.id, owner: actor.subject }],
+      },
+    })
+    expect(
+      await memory.forget(
+        { node: 'worker', agent: 'main' },
+        added.value.id,
+        '完成',
+        actor,
+      ),
+    ).toMatchObject({
+      ok: true,
+      value: { retired: { kind: 'revoked', reason: '完成' } },
+    })
+    expect(
+      await memory.list({ node: 'worker', agent: 'main' }, actor),
+    ).toMatchObject({ ok: true, value: { total: 0, entries: [] } })
     expect(
       await hub.request('worker', 'test.throw', {}, 'admin'),
     ).toMatchObject({ ok: false, code: 'internal' })

@@ -2131,6 +2131,7 @@ export async function runResident(args: readonly string[]): Promise<void> {
     team: config.team,
     agents: config.agents,
     controllers: new Set(config.controllers?.map(([node]) => node)),
+    memoryControllers: new Map(config.controllers),
     controlAudit: event => trail.append(event),
     ...(config.allowWorkspaceEdits === true
       ? { allowWorkspaceEdits: true }

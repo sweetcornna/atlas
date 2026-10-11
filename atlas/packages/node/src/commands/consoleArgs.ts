@@ -445,6 +445,7 @@ export interface ConsoleCliConfig {
   readonly printWakeIdentity?: boolean
   readonly printApproverIdentity?: boolean
   readonly approvals?: boolean
+  readonly memory?: boolean
   readonly controlTargets?: readonly ConsoleNodeTarget[]
   /**
    * CA 根证书的绝对路径。**给了才有证书栏**（key-distribution.md §10.1）。
@@ -590,6 +591,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let printWakeIdentity = false
   let printApproverIdentity = false
   let approvals = false
+  let memory = false
   const controlTargets: ConsoleNodeTarget[] = []
   let trustCa: string | undefined
   const trusted = new Map<string, string>()
@@ -776,6 +778,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       signWakes = true
     } else if (arg === '--chat-sign') {
       signChats = true
+    } else if (arg === '--memory') {
+      memory = true
     } else if (arg === '--control' || arg?.startsWith('--control=')) {
       const parsed = residentOptionValue(args, index, '--control')
       const named = parseNamedValue(parsed.value, '--control')
@@ -1222,6 +1226,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
 
   // 给了库路径却没开账号，多半是以为给路径就开了。静默照旧跑会让人以为账号已
   // 上线，而页面上什么都没变。
+  if (memory && controlTargets.length === 0)
+    throw new Error('--memory needs --control')
   if (controlTargets.some(target => !trusted.has(target.node)))
     throw new Error('--control needs explicit --trust for every control node')
   if (
@@ -1384,6 +1390,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     ...(printWakeIdentity ? { printWakeIdentity } : {}),
     ...(printApproverIdentity ? { printApproverIdentity } : {}),
     ...(approvals ? { approvals } : {}),
+    ...(memory ? { memory: true } : {}),
     ...(controlTargets.length === 0 ? {} : { controlTargets }),
     ...(trustCa === undefined ? {} : { trustCa }),
     label: label ?? `${hostname}:${port}`,
@@ -1581,6 +1588,9 @@ Options (each accepts both --name value and --name=value):
                            Where per-server notes land, absolute path.
                            Default <config root>/qianmo/console/server-notes.ndjson.
   --approvals              Enable signed personal approvals over pinned chat links.
+  --memory                 Account-scoped long memory. Requires --control.
+                           Recall across chats also needs --chat-sign and the
+                           resident --controller <console>=<publicKey>.
   --control <node>=<ws(s)://url>
                            Signed control link (repeatable). Requires --trust
                            for each node; uses the --print-wake-identity key.

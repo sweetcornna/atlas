@@ -1,6 +1,8 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type { MemoryPort, AgentRef } from './directionPorts.js'
+import { agentRefOf } from './routes/directionShared.js'
 import type { Access } from './access.js'
 import type { ConsoleDeps, ConsoleResult, ChatPort, WakePort } from './deps.js'
 import { fail } from './respond.js'
@@ -15,6 +17,33 @@ const filtered = <T>(
   allowed: (item: T) => boolean,
 ): ConsoleResult<readonly T[]> =>
   result.ok ? { ok: true, value: result.value.filter(allowed) } : result
+function scopedMemory(
+  port: MemoryPort,
+  allowed: (ref: AgentRef) => boolean,
+): MemoryPort {
+  const guard = async <T>(
+    ref: AgentRef,
+    effect: () => Promise<ConsoleResult<T>>,
+  ): Promise<ConsoleResult<T>> => {
+    if (!allowed(ref)) return hidden()
+    const result = await effect()
+    return allowed(ref) ? result : hidden()
+  }
+  return {
+    async agents() {
+      return filtered(await port.agents(), allowed)
+    },
+    list: (input, actor) => guard(input, () => port.list(input, actor)),
+    add: (ref, draft, actor) => guard(ref, () => port.add(ref, draft, actor)),
+    edit: (ref, id, draft, actor) =>
+      guard(ref, () => port.edit(ref, id, draft, actor)),
+    forget: (ref, id, reason, actor) =>
+      guard(ref, () => port.forget(ref, id, reason, actor)),
+    invalidate: (ref, id, actor) =>
+      guard(ref, () => port.invalidate(ref, id, actor)),
+  }
+}
+
 const emptyAudit: ConsoleDeps['audit'] = {
   async read() {
     return {
@@ -69,6 +98,9 @@ export function scopedConsoleDeps(
       scope,
       deps: {
         ...deps,
+        ...(deps.memory === undefined
+          ? {}
+          : { memory: scopedMemory(deps.memory, () => current()) }),
         ...(deps.wake === undefined ? {} : { wake: guarded(deps.wake) }),
         ...(deps.wakeTargets === undefined
           ? {}
@@ -95,7 +127,6 @@ export function scopedConsoleDeps(
     handoff: _handoff,
     wake: _wake,
     schedules: _schedules,
-    memory: _memory,
     files: _files,
     desktop: _desktop,
     connectors: _connectors,
@@ -105,6 +136,13 @@ export function scopedConsoleDeps(
   } = deps
   const result: ConsoleDeps = {
     ...base,
+    ...(deps.memory === undefined
+      ? {}
+      : {
+          memory: scopedMemory(deps.memory, ref =>
+            address(`qianmo://${ref.node}/${ref.agent}`),
+          ),
+        }),
     registry: {
       async list() {
         return filtered(await deps.registry.list(), v => address(v.address))
@@ -517,6 +555,22 @@ export async function tenantRequestDenial(
     !scope.address(pieces[2])
   )
     return fail(404, 'not_found', '资源不存在')
+  if (head === 'memory') {
+    const raw =
+      request.method === 'GET' ? url.searchParams.get('agent') : undefined
+    let asked: unknown = raw
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      try {
+        asked = ((await request.clone().json()) as Record<string, unknown>)
+          .agent
+      } catch {
+        /* Route returns malformed input. */
+      }
+    }
+    const ref = agentRefOf(asked)
+    if (ref && !scope.address(`qianmo://${ref.node}/${ref.agent}`))
+      return fail(404, 'not_found', '资源不存在')
+  }
   if (head === 'chat') {
     const id =
       pieces[0] === 'v0' && pieces[2] === 'sessions'

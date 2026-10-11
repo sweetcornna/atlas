@@ -813,6 +813,7 @@ export class ConsoleSchedules implements SchedulesPort {
       const sent = await this.#options.chat.send({
         sessionId,
         text: active.schedule.prompt,
+        onBehalfOf: active.schedule.createdBy,
         ...(active.schedule.direction === null
           ? {}
           : { direction: active.schedule.direction }),

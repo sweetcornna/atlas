@@ -443,6 +443,7 @@ describe('execution through the conversation port', () => {
     expect(chat.sent).toHaveLength(1)
     expect(chat.sent[0]).toMatchObject({
       text: job.prompt,
+      onBehalfOf: actor.subject,
       direction: 'plan',
       taskTtlMs: job.timeoutMs,
     })

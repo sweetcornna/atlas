@@ -193,3 +193,5 @@ export {
   type PromptScanExpectation,
   type ResidentHardlineOptions,
 } from './guard.js'
+
+export * from './memory-partition.js'

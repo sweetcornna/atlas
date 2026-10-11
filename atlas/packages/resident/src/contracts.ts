@@ -21,6 +21,8 @@ export interface ResidentMailboxMessage {
  * the joined form would be a second such place by the back door.
  */
 export interface ResidentPromptScope {
+  /** Host-verified console principal, never copied directly from remote payload. */
+  readonly owner?: string
   readonly agent: string
   /** Absent means the requester sent none; it falls back to `DEFAULT_CONTEXT`. */
   readonly contextId: string | undefined

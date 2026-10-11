@@ -64,6 +64,8 @@ export type RecallRequest = {
   /** Tags to reward in ranking. Not required to be present on an entry. */
   readonly tags?: readonly string[]
   readonly scope?: RecallScope
+  /** Ordered, disjoint scopes sharing ONE injection budget (long memory first). */
+  readonly priorityScopes?: readonly RecallScope[]
   /** Validity point and decay origin. Defaults to the store's clock via `now`. */
   readonly asOf?: Date
   readonly halfLifeMs?: number
@@ -137,23 +139,26 @@ export function rankForRecall(
   // store answered from its clock while ranking measured age against another,
   // an entry could be admitted as current and aged as stale in the same call.
   const asOf = request.asOf ?? new Date()
-  const { value: candidates, events } = captureEvents(store, () =>
-    store.query({
-      layers: scope.layers,
-      projectKey: scope.projectKey,
-      taskId: scope.taskId,
-      period: scope.period,
-      asOf,
-    }),
+  const scopes = request.priorityScopes ?? [scope]
+  const { value: groups, events } = captureEvents(store, () =>
+    scopes.map(one => store.query({ ...one, asOf })),
   )
-
   const tokens = tokensOf(request.question)
-  const ranked = rankEntries(candidates, {
-    tags: request.tags,
-    tokens,
-    asOf,
-    halfLifeMs: request.halfLifeMs,
-  })
+  const seen = new Set<string>()
+  const ranked = groups
+    .flatMap(group =>
+      rankEntries(group, {
+        tags: request.tags,
+        tokens,
+        asOf,
+        halfLifeMs: request.halfLifeMs,
+      }),
+    )
+    .filter(candidate => {
+      if (seen.has(candidate.entry.id)) return false
+      seen.add(candidate.entry.id)
+      return true
+    })
 
   const budget: InjectionBudget = {
     maxEntries: request.budget?.maxEntries ?? INJECTION_BUDGET.maxEntries,
@@ -166,7 +171,7 @@ export function rankForRecall(
       asOf: asOf.toISOString(),
       mode: selection.mode,
       entries: selection.chosen,
-      candidateCount: candidates.length,
+      candidateCount: ranked.length,
       omittedCount: selection.omittedCount,
       tokens,
       events,

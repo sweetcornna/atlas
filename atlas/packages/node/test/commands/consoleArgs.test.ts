@@ -1426,3 +1426,22 @@ describe('console --trust-ca (证书栏)', () => {
     expect(CONSOLE_HELP_TEXT).toContain('verifies, never signs')
   })
 })
+
+test('memory opt-in requires a pinned control endpoint', () => {
+  expect(() => parseConsoleArgs(['--memory'])).toThrow(
+    '--memory needs --control',
+  )
+  const key = generateNodeKeyPair().publicKey
+  expect(() =>
+    parseConsoleArgs(['--memory', '--control', 'worker=ws://127.0.0.1:1234']),
+  ).toThrow('--trust')
+  expect(
+    parseConsoleArgs([
+      '--memory',
+      '--control',
+      'worker=ws://127.0.0.1:1234',
+      '--trust',
+      `worker=${key}`,
+    ]).memory,
+  ).toBe(true)
+})

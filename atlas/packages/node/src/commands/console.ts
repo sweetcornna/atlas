@@ -1,6 +1,8 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { ConsoleMemory } from './consoleMemory.js'
+
 /**
  * `qm console` —— 阡陌控制面板的启动面（P11）。
  *
@@ -344,7 +346,14 @@ export function wireConsoleChat(
       endpoints,
       storePath: config.chatStorePath,
       registry,
-      ...(identity === undefined ? {} : { issueCapability: identity.issue }),
+      ...(identity === undefined
+        ? {}
+        : {
+            issueCapability: identity.issue,
+            ownerSigningKeys: (dependencies.loadKeys ?? loadOrCreateNodeKeys)(
+              identity.node,
+            ),
+          }),
       ...((config.approvals || config.tenancyPath !== undefined) &&
       identity !== undefined
         ? {
@@ -602,6 +611,10 @@ export async function runConsole(args: readonly string[]): Promise<void> {
               `[control] ${error instanceof Error ? error.name : 'error'}\n`,
             ),
         })
+  const memory =
+    config.memory && control
+      ? new ConsoleMemory({ links: control, registry })
+      : undefined
   const approvals =
     approvalIdentity === undefined || accounts === undefined
       ? undefined
@@ -691,6 +704,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
 
   const deps: ConsoleDeps = {
+    ...(memory === undefined ? {} : { memory }),
     ...(schedules === undefined ? {} : { schedules }),
     ...(approvals === undefined ? {} : { approvals }),
     ...(usage === undefined ? {} : { usage }),

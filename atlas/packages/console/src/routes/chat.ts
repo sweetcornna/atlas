@@ -1,6 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { actorOf } from './directionShared.js'
 import { reserveUsage, usageScopeOf } from '../quota.js'
 import type { TenantPort } from '../tenancy.js'
 
@@ -696,6 +697,7 @@ async function dispatchChatApi(
       let result: Awaited<ReturnType<ChatPort['send']>>
       try {
         result = await chat.send({
+          onBehalfOf: actorOf(ctx).subject,
           sessionId,
           text: text.value,
           ...(command === null ? {} : { command }),

@@ -457,15 +457,71 @@ describe('M2 request scopes', () => {
         (await h.handle(asBearer('GET', path, h.alice.credential))).status,
       ).toBe(403)
   })
-  test('the 2026-10 ports are not offered to a scoped caller until they carry a tenant wrapper', async () => {
+  test('memory is tenant-scoped before admission; the remaining 2026-10 ports stay unwired', async () => {
     const h = fixture()
-    for (const path of ['/v0/memory', '/v0/schedules']) {
-      expect(
-        (await h.handle(asBearer('GET', path, h.alice.credential))).status,
-      ).toBe(501)
-    }
-    expect(h.memory.calls).toEqual([])
+    const allowed = await h.handle(
+      asBearer('GET', '/v0/memory', h.alice.credential),
+    )
+    expect(allowed.status).toBe(200)
+    expect(h.memory.calls).toEqual([`list tokyo-1/planner ${h.alice.subject}`])
+    expect(
+      (await h.handle(asBearer('GET', '/v0/schedules', h.alice.credential)))
+        .status,
+    ).toBe(501)
     expect(h.schedules.calls).toEqual([])
+    h.memory.calls.length = 0
+    for (const [method, suffix] of [
+      ['POST', ''],
+      ['PUT', '/mem-11'],
+      ['POST', '/mem-11/forget'],
+      ['POST', '/mem-11/invalidate'],
+    ] as const) {
+      const result = await h.handle(
+        asBearer(method, `/v0/memory${suffix}`, h.alice.credential, {
+          agent: 'qianmo://berlin-1/planner',
+          kind: 'plan',
+          title: 'x',
+          summary: 'x',
+          body: '',
+          reason: 'x',
+        }),
+      )
+      expect(result.status).toBe(404)
+    }
+    expect(
+      (
+        await h.handle(
+          asBearer(
+            'GET',
+            '/v0/memory?agent=qianmo%3A%2F%2Fberlin-1%2Fplanner',
+            h.alice.credential,
+          ),
+        )
+      ).status,
+    ).toBe(404)
+    expect(h.memory.calls).toEqual([])
+    expect(h.counts()).toMatchObject({ effects: 0, admission: 0 })
+    const made = await h.handle(
+      asBearer('POST', '/v0/memory', h.alice.credential, {
+        agent: 'qianmo://tokyo-1/planner',
+        kind: 'plan',
+        title: 'x',
+        summary: 'x',
+        body: '',
+      }),
+    )
+    expect(made.status).toBe(200)
+    expect(await made.json()).toMatchObject({
+      owner: h.alice.subject,
+      node: 'tokyo-1',
+    })
+    h.memory.calls.length = 0
+    h.change()
+    expect(
+      (await h.handle(asBearer('GET', '/v0/memory', h.alice.credential)))
+        .status,
+    ).toBe(200)
+    expect(h.memory.calls).toEqual([])
   })
   test('audit source selectors and server notes cannot reach an external tenant', async () => {
     const h = fixture()

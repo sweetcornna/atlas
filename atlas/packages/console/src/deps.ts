@@ -562,6 +562,8 @@ export interface ChatTranscript {
 }
 
 export interface ChatSendInput {
+  /** Host-authenticated requester; never accepted from HTTP JSON. */
+  readonly onBehalfOf?: string
   readonly direction?: ModelDirection
   /** 宿主定时任务的期限；缺省沿用对话面的期限。 */
   readonly taskTtlMs?: number
