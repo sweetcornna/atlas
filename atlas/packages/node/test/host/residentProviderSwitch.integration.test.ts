@@ -681,7 +681,7 @@ describe('resident hot switch against real omp RPC', () => {
   )
 })
 
-test('an explicit model pin survives a committed default change; model auto resumes the new default on reopening', async () => {
+test('manual pins survive default changes, clear with model auto, and refuse a retired model', async () => {
   const node = setUpRoot('ResidentRuntime-pin-')
   const model = new ModelDouble('pinned')
   const { ResidentOmpPool } = await import('../../src/host/residentOmp.js')
@@ -769,6 +769,31 @@ test('an explicit model pin survives a committed default change; model auto resu
     expect(automaticTurn?.model).toBe('hs-model-e')
     expect(automaticTurn?.text).toContain('HSM-ONE')
     expect(automaticTurn?.text).toContain('HSM-TWO')
+    await (await automatic.channelFor(sessionId)).request('set_model', {
+      provider: providerNode.nodeModelSelection()!.provider,
+      modelId: 'hs-model-d',
+    })
+    await automatic.stop()
+    stage(
+      chatProfile({
+        baseUrl: model.baseUrl,
+        model: 'hs-model-e',
+        key: KEY_D,
+        revision: 3,
+      }),
+      'keep',
+    )
+    expect((await providerNode.commitPendingProviderConfig()).status).toBe(
+      'committed',
+    )
+    const retired = makePool()
+    pools.push(retired)
+    // Keep the old repro (the pin disappears from the provider directory),
+    // but enforce the new contract: surface unavailability, never switch it
+    // to a different model without the user's explicit clearance.
+    await expect(retired.channelFor(sessionId)).rejects.toThrow(
+      'Model not found',
+    )
   } finally {
     await Promise.all(pools.map(pool => pool.stop()))
     await model.stop()
