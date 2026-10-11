@@ -5,6 +5,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileUsageStore } from '../src/usage.js'
+import { FakeMemory, FakeSchedules } from './directionFakes.js'
 import { describe, expect, test } from 'bun:test'
 import { AccountBook, type AccountRole } from '../src/accounts.js'
 import {
@@ -254,12 +255,17 @@ function fixture() {
       },
     },
   }
-  const handle = createConsoleHandler(deps, TOKENS, {
+  // The 2026-10 ports, which carry no tenant wrapper yet (review D01).
+  const memory = new FakeMemory(() => 1)
+  const schedules = new FakeSchedules(() => 1)
+  const handle = createConsoleHandler({ ...deps, memory, schedules }, TOKENS, {
     book,
     signup: { maxAccounts: 7, attemptsPerHour: 5 },
   })
   return {
     handle,
+    memory,
+    schedules,
     alice,
     bob,
     outsider,
@@ -450,6 +456,16 @@ describe('M2 request scopes', () => {
       expect(
         (await h.handle(asBearer('GET', path, h.alice.credential))).status,
       ).toBe(403)
+  })
+  test('the 2026-10 ports are not offered to a scoped caller until they carry a tenant wrapper', async () => {
+    const h = fixture()
+    for (const path of ['/v0/memory', '/v0/schedules']) {
+      expect(
+        (await h.handle(asBearer('GET', path, h.alice.credential))).status,
+      ).toBe(501)
+    }
+    expect(h.memory.calls).toEqual([])
+    expect(h.schedules.calls).toEqual([])
   })
   test('audit source selectors and server notes cannot reach an external tenant', async () => {
     const h = fixture()

@@ -86,11 +86,21 @@ export function scopedConsoleDeps(
   const node = (id: string) => current() && scope.node(id)
   const address = (id: string) => current() && scope.address(id)
   const server = (id: string) => current() && scope.server(id)
+  // The 2026-10 ports (design review D01) carry no tenant wrapper yet: a
+  // scoped caller is not offered them at all until each gets one — list
+  // filtered, detail 404, write refused before admission and dialling.
   const {
     providers: _providers,
     about: _about,
     handoff: _handoff,
     wake: _wake,
+    schedules: _schedules,
+    memory: _memory,
+    files: _files,
+    desktop: _desktop,
+    connectors: _connectors,
+    routing: _routing,
+    handoffDevices: _handoffDevices,
     ...base
   } = deps
   const result: ConsoleDeps = {
