@@ -83,6 +83,7 @@ import { handoffLockRefusal, openConsoleHandoff } from './consoleHandoff.js'
 import { wireHandoffDispatch } from './consoleHandoffDispatch.js'
 import { openConsoleProviders } from './consoleProviders.js'
 import { openConsoleUsage, startUsageCollection } from './consoleUsage.js'
+import { ControlLinks } from './consoleControl.js'
 import { FileTenantStore } from './consoleTenancy.js'
 
 /**
@@ -579,6 +580,28 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           onError: message => process.stderr.write(`[schedules] ${message}\n`),
         })
       : undefined
+  const controlIdentity = config.controlTargets?.length
+    ? loadConsoleWakeIdentity(config.chatFrom)
+    : undefined
+  const control =
+    controlIdentity === undefined
+      ? undefined
+      : new ControlLinks({
+          from: config.chatFrom,
+          commandKeys: loadOrCreateNodeKeys(controlIdentity.node),
+          targets: (config.controlTargets ?? []).map(target => ({
+            node: target.node,
+            url: target.url,
+            publicKey: new Map(config.trusted).get(target.node)!,
+            psk: pskFromEnv(
+              transportPskEnvVarForNode(target.node, '--control'),
+            ),
+          })),
+          onError: error =>
+            process.stderr.write(
+              `[control] ${error instanceof Error ? error.name : 'error'}\n`,
+            ),
+        })
   const approvals =
     approvalIdentity === undefined || accounts === undefined
       ? undefined
@@ -921,6 +944,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     )
   process.stdout.write(banner)
   approvals?.start()
+  control?.start()
   const usageCollection =
     usage === undefined
       ? undefined
@@ -932,6 +956,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     schedules?.close()
     usageCollection?.stop()
     void approvals?.close()
+    void control?.close()
     // Leases already granted run out on their own; the ledger stays, so the
     // next start picks the same entries up again.
     registrations.stop()

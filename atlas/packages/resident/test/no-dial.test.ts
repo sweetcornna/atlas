@@ -65,6 +65,7 @@ async function residentSources(): Promise<readonly string[]> {
   // the notifier. A scan that stopped at the package boundary would miss the
   // one file most likely to grow a dialer.
   files.push(resolve(REPO_ROOT, 'packages/node/src/host/resident.ts'))
+  files.push(resolve(REPO_ROOT, 'packages/node/src/host/control.ts'))
   files.push(resolve(REPO_ROOT, 'packages/node/src/commands/resident.ts'))
   return files
 }

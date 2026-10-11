@@ -445,6 +445,7 @@ export interface ConsoleCliConfig {
   readonly printWakeIdentity?: boolean
   readonly printApproverIdentity?: boolean
   readonly approvals?: boolean
+  readonly controlTargets?: readonly ConsoleNodeTarget[]
   /**
    * CA 根证书的绝对路径。**给了才有证书栏**（key-distribution.md §10.1）。
    *
@@ -589,6 +590,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let printWakeIdentity = false
   let printApproverIdentity = false
   let approvals = false
+  const controlTargets: ConsoleNodeTarget[] = []
   let trustCa: string | undefined
   const trusted = new Map<string, string>()
   let registryTokenFile: string | undefined
@@ -774,6 +776,28 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       signWakes = true
     } else if (arg === '--chat-sign') {
       signChats = true
+    } else if (arg === '--control' || arg?.startsWith('--control=')) {
+      const parsed = residentOptionValue(args, index, '--control')
+      const named = parseNamedValue(parsed.value, '--control')
+      const url = new URL(named.value)
+      if (
+        !['ws:', 'wss:'].includes(url.protocol) ||
+        url.username ||
+        url.password
+      )
+        throw new Error('--control must use ws(s) without URL credentials')
+      if (
+        controlTargets.some(
+          target => target.node === named.node || target.url === url.toString(),
+        )
+      )
+        throw new Error('--control repeats a node or endpoint')
+      controlTargets.push({
+        node: named.node,
+        url: url.toString(),
+        legacy: false,
+      })
+      index = parsed.next
     } else if (arg === '--approvals') {
       approvals = true
     } else if (arg === '--print-approver-identity') {
@@ -1198,6 +1222,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
 
   // 给了库路径却没开账号，多半是以为给路径就开了。静默照旧跑会让人以为账号已
   // 上线，而页面上什么都没变。
+  if (controlTargets.some(target => !trusted.has(target.node)))
+    throw new Error('--control needs explicit --trust for every control node')
   if (
     approvals &&
     (!accounts ||
@@ -1358,6 +1384,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     ...(printWakeIdentity ? { printWakeIdentity } : {}),
     ...(printApproverIdentity ? { printApproverIdentity } : {}),
     ...(approvals ? { approvals } : {}),
+    ...(controlTargets.length === 0 ? {} : { controlTargets }),
     ...(trustCa === undefined ? {} : { trustCa }),
     label: label ?? `${hostname}:${port}`,
     ...(viewToken === undefined ? {} : { viewToken }),
@@ -1554,6 +1581,9 @@ Options (each accepts both --name value and --name=value):
                            Where per-server notes land, absolute path.
                            Default <config root>/qianmo/console/server-notes.ndjson.
   --approvals              Enable signed personal approvals over pinned chat links.
+  --control <node>=<ws(s)://url>
+                           Signed control link (repeatable). Requires --trust
+                           for each node; uses the --print-wake-identity key.
   --print-approver-identity Print the separate approval public key and exit.
   --tenancy <path>          Enable node-granular tenant policy (absolute JSON path).
   --usage-policy <path>     Optional quota policy; default shadow without limits.

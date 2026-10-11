@@ -37,7 +37,11 @@ import { residentMediaRoutes } from './residentRouting.js'
 import { VIDEO_TOOL, runVideoTool, type VideoToolResult } from './videoTool.js'
 import { nodeModelSelection } from '../providers/node.js'
 import { residentOmpEnvironment } from './residentOmpEnv.js'
-import { residentToolSurface, verdictText } from './notifyTool.js'
+import {
+  residentToolSurface,
+  verdictText,
+  type HostToolDefinition,
+} from './notifyTool.js'
 import { parseNotifyVerdict } from './notifyWire.js'
 import { residentExtensionPath } from './residentExtension.js'
 
@@ -290,6 +294,7 @@ export class OmpRpcProcess implements OmpRpcChannel {
 }
 
 interface PoolOptions {
+  readonly extraHostTools?: readonly HostToolDefinition[]
   readonly onLaunch?: (
     sessionId: string,
     policy: ResidentExtensionConfig,
@@ -428,7 +433,10 @@ export class ResidentOmpPool
     mkdirSync(sessionDir, { recursive: true, mode: 0o700 })
     const media = residentMediaRoutes()
     const tools = [
-      ...residentToolSurface(this.#options.memoryWrite !== undefined),
+      ...residentToolSurface(
+        this.#options.memoryWrite !== undefined,
+        this.#options.extraHostTools,
+      ),
       ...(media.video ? [VIDEO_TOOL] : []),
     ]
     const config: ResidentExtensionConfig = {
@@ -588,6 +596,26 @@ export class ResidentOmpPool
                 content: [{ type: 'text', text: JSON.stringify(result) }],
               },
             })
+            return
+          }
+          const extra = this.#options.extraHostTools?.find(
+            tool => tool.name === frame.toolName,
+          )
+          if (extra) {
+            const result = await extra.handler(frame.arguments, {
+              agent: owner.agent,
+              sessionId,
+            })
+            if (child.alive)
+              child.send({
+                type: 'host_tool_result',
+                id: frame.id,
+                isError: !result.ok,
+                result: {
+                  content: [{ type: 'text', text: result.text }],
+                  details: result.details,
+                },
+              })
             return
           }
           if (frame.toolName === 'qianmo_memory_write') {

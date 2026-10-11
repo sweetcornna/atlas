@@ -5,6 +5,9 @@
 export const LIMITS = {
   /** Maximum size of one serialized envelope, in bytes (256 KiB). */
   maxMessageBytes: 256 * 1024,
+  /** Control operation and console actor lengths (§15). */
+  maxControlOpLength: 64,
+  maxControlActorLength: 128,
   /** Maximum number of nodes a message may traverse. */
   maxHops: 8,
   /**

@@ -61,9 +61,15 @@ describe('message types', () => {
         'authz.request',
         'authz.decision',
         'authz.revoke',
+        // §15: signed control and reverse-direction hub calls.
+        'node.control',
+        'node.control.result',
+        'hub.subscribe',
+        'hub.call',
+        'hub.call.result',
       ].sort(),
     )
-    expect(MESSAGE_TYPES).toHaveLength(15)
+    expect(MESSAGE_TYPES).toHaveLength(20)
   })
 
   test('the legacy floor is the eleven types that predate notify', () => {
@@ -220,6 +226,8 @@ describe('createMessage', () => {
       MessageType.ResourceOffer,
       MessageType.ResourceGrant,
       MessageType.ResourceRelease,
+      MessageType.NodeControlResult,
+      MessageType.HubCallResult,
     ])
   })
 

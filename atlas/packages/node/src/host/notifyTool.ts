@@ -6,6 +6,28 @@ import { MEMORY_EVIDENCE_TOOL } from '@qianmo/recall'
 import { MEMORY_WRITE_TOOL } from './residentMemoryWrite.js'
 import type { QianmoNotifyVerdict } from './notifyWire.js'
 export const QIANMO_NOTIFY_TOOL_NAME = 'qianmo_notify'
+
+/** Feature tools use the same schema surface and dispatch as built-in host tools. */
+export interface HostToolDefinition {
+  readonly name: string
+  readonly description: string
+  readonly parameters: Record<string, unknown>
+  readonly handler: (
+    input: unknown,
+    ctx: { readonly agent: string; readonly sessionId: string },
+  ) => Promise<{
+    readonly ok: boolean
+    readonly text: string
+    readonly details?: unknown
+  }>
+}
+
+interface HostToolSurface {
+  readonly name: string
+  readonly description: string
+  readonly loadMode: 'essential'
+  readonly parameters: Record<string, unknown>
+}
 const DESCRIPTION =
   'Send one short notification to the operator who runs this node. Use it only when a human needs to know something now; routine findings belong in the answer to the task, which is recorded either way.'
 
@@ -55,8 +77,11 @@ export function verdictText(verdict: QianmoNotifyVerdict): string {
 }
 
 /** Host notification tool; citation and approved memory writing share this surface. */
-export function residentToolSurface(memoryWrite = false) {
-  return [
+export function residentToolSurface(
+  memoryWrite = false,
+  extraHostTools: readonly HostToolDefinition[] = [],
+): HostToolSurface[] {
+  const tools: HostToolSurface[] = [
     ...(memoryWrite ? [MEMORY_WRITE_TOOL] : []),
     {
       name: MEMORY_EVIDENCE_TOOL.name,
@@ -82,4 +107,20 @@ export function residentToolSurface(memoryWrite = false) {
       },
     },
   ]
+  const names = new Set([
+    ...tools.map(tool => tool.name),
+    MEMORY_WRITE_TOOL.name,
+  ])
+  for (const tool of extraHostTools) {
+    if (!/^[A-Za-z0-9_-]+$/.test(tool.name) || names.has(tool.name))
+      throw new Error(`invalid or duplicate resident host tool: ${tool.name}`)
+    names.add(tool.name)
+    tools.push({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+      loadMode: 'essential',
+    })
+  }
+  return tools
 }

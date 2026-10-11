@@ -1388,7 +1388,7 @@
    ],
    [
     "etag",
-    "W/\"6fc43a8d19ad2bef40d3fed7cf91d8b038bc6c6af6a1408be0db75ca9f3fb741\""
+    "W/\"934d5d8233dadee7bc4c484be6b83bec23bf9688b7f3fefcbc8d261e73ddde9f\""
    ],
    [
     "permissions-policy",
@@ -1411,8 +1411,8 @@
     "DENY"
    ]
   ],
-  "length": 5153,
-  "sha256": "6fc43a8d19ad2bef40d3fed7cf91d8b038bc6c6af6a1408be0db75ca9f3fb741"
+  "length": 5193,
+  "sha256": "934d5d8233dadee7bc4c484be6b83bec23bf9688b7f3fefcbc8d261e73ddde9f"
  },
  {
   "probe": "GET /fragments/limits as view-bearer",
@@ -2535,8 +2535,8 @@
     "DENY"
    ]
   ],
-  "length": 108701,
-  "sha256": "3c4e2eb36c1ab303619db819863251003dd87ef1f38810ec9328f55f15bbf23c"
+  "length": 108741,
+  "sha256": "55151af4f08ef53c60d1badf2aa7e1dd2d18e008be920d3c55a3fd2dcd533c75"
  },
  {
   "probe": "GET /audit/trace/4bf92f3577b34da6a3ce929d0e0e4736 as view-bearer",

@@ -62,6 +62,7 @@ export {
 } from './fingerprint.js'
 
 export { LIMITS, type Limits } from './limits.js'
+export * from './control.js'
 
 export {
   RELEASE_REASONS,

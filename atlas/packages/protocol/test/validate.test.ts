@@ -127,6 +127,20 @@ describe('validateMessage — accepts', () => {
         summary: 'disk usage crossed 80%',
         observedAt: NOW,
       },
+      [MessageType.NodeControl]: { op: 'node.ping', args: {}, actor: 'admin' },
+      [MessageType.NodeControlResult]: { ok: true, value: null },
+      [MessageType.HubSubscribe]: { subscribe: true },
+      [MessageType.HubCall]: {
+        callId: '12345678-1234-4123-8123-123456789abc',
+        op: 'files.request',
+        args: {},
+      },
+      [MessageType.HubCallResult]: {
+        callId: '12345678-1234-4123-8123-123456789abc',
+        ok: false,
+        code: 'unsupported',
+        message: 'unknown operation',
+      },
     }
     for (const type of Object.values(MessageType)) {
       const payload = CLOSED_PAYLOADS[type] ?? { goal: 'summarise' }

@@ -7,6 +7,15 @@ import {
 } from './residentRouting.js'
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import type { AuditInput } from '@qianmo/audit'
+import { AuditSource } from '@qianmo/audit'
+import {
+  ControlRegistry,
+  HubCallClient,
+  type ControlOutcome,
+} from './control.js'
+import { residentToolSurface, type HostToolDefinition } from './notifyTool.js'
+import { buildVersion } from '../provenance.js'
 import {
   OmpResidentTurnPort,
   DEFAULT_RESIDENT_INACTIVITY_MS,
@@ -50,6 +59,8 @@ import {
 } from '@qianmo/adapter/inbound'
 import {
   MessageType,
+  CONTROL_MESSAGE_TYPES,
+  LEGACY_MESSAGE_TYPES,
   ProtocolErrorCode,
   createAck,
   createMessage,
@@ -58,6 +69,8 @@ import {
   errorReply,
   isNotifyPayload,
   isTaskResultPayload,
+  isNodeControlPayload,
+  isHubSubscribePayload,
   parseAddress,
   peerIsPostLegacy,
   taskExpiresAt,
@@ -248,6 +261,10 @@ const DEFAULT_PROVIDER_POLL_INTERVAL_MS = 5_000
 const DEFAULT_PROVIDER_MAX_WAIT_MS = 30 * 60_000
 
 interface QianmoResidentOptions {
+  /** Handshake identities allowed to control this node, independently of task issuers. */
+  readonly controllers?: ReadonlySet<string>
+  readonly controlAudit?: (event: AuditInput) => void
+  readonly extraHostTools?: readonly HostToolDefinition[]
   readonly node: string
   readonly team: string
   readonly agents: readonly QianmoResidentAgentConfig[]
@@ -672,6 +689,8 @@ const RESIDENT_AGENT_RESTARTING =
 const RUNTIME_WAIT_MS = 3_000
 
 export class QianmoResident {
+  readonly control: ControlRegistry
+  readonly hubCall: HubCallClient
   readonly #options: QianmoResidentOptions
   /** `options.localCommandIssuers`, as the set it is looked up in. */
   readonly #localCommandIssuers: ReadonlySet<string>
@@ -765,6 +784,25 @@ export class QianmoResident {
 
   constructor(options: QianmoResidentOptions) {
     this.#options = options
+    residentToolSurface(
+      options.authorization !== undefined,
+      options.extraHostTools,
+    )
+    this.control = new ControlRegistry({ onError: options.onError })
+    this.control.register('node', async op =>
+      op === 'node.ping'
+        ? {
+            ok: true,
+            value: {
+              node: options.node,
+              agents: options.agents.map(agent => agent.agent),
+              version: buildVersion(),
+              platform: process.platform,
+              now: Date.now(),
+            },
+          }
+        : { ok: false, code: 'unsupported', message: '不支持此节点操作' },
+    )
     this.#localCommandIssuers = new Set(options.localCommandIssuers ?? [])
     this.#timings = new ResidentTimingRecorder(event => {
       options.onTiming?.(event)
@@ -984,6 +1022,11 @@ export class QianmoResident {
       ...(options.auditSink === undefined
         ? {}
         : { auditSink: options.auditSink }),
+    })
+    this.hubCall = new HubCallClient({
+      from: `qianmo://${options.node}/console`,
+      router: this.#router,
+      onError: options.onError,
     })
     const backup = options.backup
     if (backup !== undefined) {
@@ -1209,6 +1252,35 @@ export class QianmoResident {
     return this.#gate
   }
 
+  #auditControl(
+    message: QianmoMessage,
+    context: InboundContext,
+    outcome: ControlOutcome,
+  ): void {
+    if (
+      message.type !== MessageType.NodeControl ||
+      !isNodeControlPayload(message.payload)
+    )
+      return
+    try {
+      this.#options.controlAudit?.({
+        at: Date.now(),
+        source: AuditSource.Control,
+        node: this.#options.node,
+        peer: context.channel.authenticatedPeerNode ?? '',
+        kind: `control.${message.payload.op}`,
+        outcome: outcome.ok ? 'ok' : 'refused',
+        taskId: message.taskId,
+        msgId: message.msgId,
+        traceId: message.traceId,
+        ...(outcome.ok ? {} : { code: outcome.code }),
+        detail: { actor: message.payload.actor },
+      })
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
+  }
+
   async #receive(
     message: QianmoMessage,
     context: InboundContext,
@@ -1219,6 +1291,11 @@ export class QianmoResident {
     // inbox quota).
     const routed = this.#router.inbound(message)
     if (!routed.ok) {
+      this.#auditControl(message, context, {
+        ok: false,
+        code: routed.code,
+        message: routed.reason,
+      })
       context.channel.send(errorReply(message, routed.code, routed.reason))
       throw new ResidentDeliveryError(routed.code, routed.reason)
     }
@@ -1229,6 +1306,7 @@ export class QianmoResident {
     ) {
       const code = ProtocolErrorCode.E_UNKNOWN_AGENT
       const reason = 'recipient is unavailable'
+      this.#auditControl(message, context, { ok: false, code, message: reason })
       context.channel.send(errorReply(message, code, reason))
       throw new ResidentDeliveryError(code, reason)
     }
@@ -1274,6 +1352,126 @@ export class QianmoResident {
           request,
           this.#authorization!.signed(request),
         )
+      return
+    }
+
+    if (
+      message.type === MessageType.NodeControlResult ||
+      message.type === MessageType.HubCall
+    ) {
+      context.channel.send(
+        errorReply(
+          message,
+          ProtocolErrorCode.E_BAD_TYPE,
+          'control message direction refused',
+        ),
+      )
+      return
+    }
+
+    if (
+      message.type === MessageType.NodeControl ||
+      message.type === MessageType.HubSubscribe ||
+      message.type === MessageType.HubCallResult
+    ) {
+      const peer = context.channel.authenticatedPeerNode
+      if (
+        !peer ||
+        !this.#options.controllers?.has(peer) ||
+        parseAddress(message.from)?.node !== peer ||
+        parseAddress(message.to)?.node !== this.#options.node
+      ) {
+        const outcome: ControlOutcome = {
+          ok: false,
+          code: ProtocolErrorCode.E_CAP_INSUFFICIENT,
+          message: 'controller is not authorized',
+        }
+        this.#auditControl(message, context, outcome)
+        context.channel.send(
+          errorReply(
+            message,
+            ProtocolErrorCode.E_CAP_INSUFFICIENT,
+            outcome.message,
+          ),
+        )
+        if (message.type === MessageType.HubSubscribe)
+          throw new ResidentDeliveryError(
+            ProtocolErrorCode.E_CAP_INSUFFICIENT,
+            outcome.message,
+          )
+        return
+      }
+      if (message.type === MessageType.HubCallResult) {
+        this.hubCall.receive(message, context.channel)
+        return
+      }
+      if (message.type === MessageType.HubSubscribe) {
+        if (
+          !isHubSubscribePayload(message.payload) ||
+          !CONTROL_MESSAGE_TYPES.every(type => context.channel.supports(type))
+        )
+          throw new ResidentDeliveryError(
+            ProtocolErrorCode.E_BAD_TYPE,
+            'control subscription requires the complete control surface',
+          )
+        this.hubCall.subscribe(peer, message.from, context.channel)
+        return
+      }
+      if (!isNodeControlPayload(message.payload))
+        throw new ResidentDeliveryError(
+          ProtocolErrorCode.E_BAD_ENVELOPE,
+          'invalid control payload',
+        )
+      if (!context.channel.supports(MessageType.NodeControlResult)) {
+        const outcome: ControlOutcome = {
+          ok: false,
+          code: ProtocolErrorCode.E_BAD_TYPE,
+          message: 'controller cannot receive control results',
+        }
+        this.#auditControl(message, context, outcome)
+        context.channel.send(
+          errorReply(message, ProtocolErrorCode.E_BAD_TYPE, outcome.message),
+        )
+        return
+      }
+      const agent = parseAddress(message.to)?.agent
+      // Keep the logical reply channel alive while the handler runs. A dropped
+      // socket must not turn an executed action into a failed receipt/re-execution.
+      const release = context.channel.hold()
+      try {
+        const result = await this.control.handle(
+          message.payload.op,
+          message.payload.args,
+          {
+            peer,
+            actor: message.payload.actor,
+            taskId: message.taskId,
+            ...(this.#options.agents.some(row => row.agent === agent)
+              ? { agent }
+              : {}),
+          },
+        )
+        this.#auditControl(message, context, result)
+        const reply = this.#router.outbound(
+          createMessage({
+            from: message.to,
+            to: message.from,
+            type: MessageType.NodeControlResult,
+            payload: result,
+            taskId: message.taskId,
+            traceId: message.traceId,
+          }),
+        )
+        if (reply.ok) {
+          try {
+            context.channel.send(reply.message)
+          } catch (error) {
+            this.#options.onError?.(error)
+          }
+        }
+      } finally {
+        release()
+      }
       return
     }
 
@@ -2268,6 +2466,7 @@ export class QianmoResident {
   }
 
   stop(): void {
+    this.hubCall.close()
     this.#authorization?.close()
     this.#memoryIndex?.close()
     this.#approvalChannels.clear()
@@ -2456,6 +2655,14 @@ export class QianmoResident {
    */
   #startTransport(): TransportServerHandle {
     const transport = startTransportServer({
+      supportedTypes: [
+        ...LEGACY_MESSAGE_TYPES,
+        MessageType.AuthzRequest,
+        MessageType.AuthzDecision,
+        MessageType.AuthzRevoke,
+        ...CONTROL_MESSAGE_TYPES,
+      ],
+      onPeerDisconnect: () => this.hubCall.disconnected(),
       psk: this.#options.psk,
       deadlineNow: this.#deadlineClock.nowFor,
       ...(this.#options.transportEvents === undefined
@@ -2523,6 +2730,7 @@ export class QianmoResident {
 
   async #spawnGeneration(): Promise<ResidentChildConnection> {
     const child = new ResidentOmpPool({
+      extraHostTools: this.#options.extraHostTools,
       onLaunch: (sessionId, policy, configHash) =>
         (this.#options.runtimeAudit ?? this.#options.authorization?.audit)?.({
           kind: 'authz.posture',
