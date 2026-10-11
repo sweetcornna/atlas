@@ -1,8 +1,6 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import * as fs from 'node:fs/promises'
-import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { buildModel } from '@oh-my-pi/pi-catalog/build'
 import {
@@ -13,7 +11,14 @@ import {
   type VideoGenerationRequest,
   type VideoContent,
 } from '@oh-my-pi/pi-ai/video'
-import { configuredProvider } from '../providers/node.js'
+import { configuredProvider, readYaml } from '../providers/node.js'
+import { providerPaths } from '../providers/store.js'
+import {
+  videoLimits,
+  videoSaver,
+  VideoSaveError,
+  type VideoLimits,
+} from './videoSave.js'
 
 export const DEFAULT_VIDEO_SECONDS = 8
 export const VIDEO_TOOL = {
@@ -173,7 +178,9 @@ export async function generateVideo(
       path: relative,
       seconds,
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof VideoSaveError)
+      return { ok: false, error: error.message }
     return {
       ok: false,
       error:
@@ -189,6 +196,7 @@ export async function runVideoTool(
   args: unknown,
   signal?: AbortSignal,
   progress?: VideoToolDeps['progress'],
+  options: { client?: VideoClient; limits?: VideoLimits } = {},
 ): Promise<VideoToolResult> {
   const provider = configuredProvider('video')
   if (!provider || provider.api !== 'openrouter-video' || !provider.secret)
@@ -206,10 +214,18 @@ export async function runVideoTool(
     maxTokens: 16384,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   })
+  let limits: VideoLimits
+  try {
+    limits =
+      options.limits ??
+      videoLimits(readYaml(providerPaths.config()).qianmoVideoLimits)
+  } catch {
+    return { ok: false, error: '视频保存上限配置不合法' }
+  }
   return generateVideo(args, {
     signal,
     progress,
-    client: {
+    client: options.client ?? {
       submit: (request, signal) =>
         submitVideo(model, request, { apiKey: provider.secret!, signal }),
       poll: (id, signal) =>
@@ -217,44 +233,6 @@ export async function runVideoTool(
       download: (id, signal) =>
         downloadVideo(model, id, { apiKey: provider.secret!, signal }),
     },
-    async save(relative, content, signal) {
-      // Do not follow an outputs/ or videos/ symlink out of the workspace.
-      const root = await fs.realpath(workspace)
-      let parent = root
-      for (const name of ['outputs', 'videos']) {
-        parent = path.join(parent, name)
-        await fs.mkdir(parent, { recursive: true })
-        const stat = await fs.lstat(parent)
-        if (!stat.isDirectory() || stat.isSymbolicLink())
-          throw new Error('unsafe video output directory')
-      }
-      const target = path.join(parent, path.basename(relative))
-      const file = await fs.open(target, 'wx', 0o600)
-      let complete = false
-      try {
-        await content.body.pipeTo(
-          new WritableStream<Uint8Array>({
-            async write(chunk) {
-              let offset = 0
-              while (offset < chunk.byteLength) {
-                signal.throwIfAborted()
-                const { bytesWritten } = await file.write(
-                  chunk.subarray(offset),
-                )
-                if (bytesWritten === 0)
-                  throw new Error('video write made no progress')
-                offset += bytesWritten
-              }
-            },
-          }),
-          { signal },
-        )
-        await file.sync()
-        complete = true
-      } finally {
-        await file.close()
-        if (!complete) await fs.unlink(target)
-      }
-    },
+    save: videoSaver(workspace, limits),
   })
 }
