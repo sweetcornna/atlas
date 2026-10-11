@@ -593,6 +593,11 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/schedules` | **成员** | 新建或保存一个定时任务（带 `id` 是保存）；目标须在对话白名单内 |
 | DELETE | `/v0/schedules/<任务 id>` | **成员** | 删除 |
 | POST | `/v0/schedules/<任务 id>/<enable\|disable\|run>` | **成员** | 启用、停用、立即运行一次（运行结果进最近运行） |
+| GET | `/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 记忆（P23，`docs/dev/directions-2026-10.md`）：这个人在某个智能体那里的长期记忆，按偏好、计划、项目、日常分类，能找、改、忘记。长期记忆按「智能体 × 账号」分开（复核 D18），只给读者自己的，所以只读令牌没有这一页（403）；没接记忆端口时侧栏不出现、页面 404 |
+| GET | `/v0/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 同一份列表的 JSON：`{ agent, entries, total, counts }`。没接记忆端口时 501 |
+| POST | `/v0/memory` | **成员** | 记一条：`{ agent, kind, title, summary, body }`，`kind` 只能是四类之一，一句话 ≤120 字、摘要 ≤400 字、细节 ≤4000 字。记 `memory.add` |
+| PUT | `/v0/memory/<记忆 id>` | **成员** | 改一条：写一条新的并替换旧的（旧的留在历史里，带「含已忘记」能看到）。记 `memory.edit` |
+| POST | `/v0/memory/<记忆 id>/<forget\|invalidate>` | **成员** | 忘记（`{ agent, reason }`，原因进审计）或标记过期。别人的记忆对端口来说不存在，答 404。记 `memory.forget` / `memory.invalidate` |
 | POST | `/v0/channels` | **ops** | 添加通知渠道：`{ name, kind, url }`，`kind` 是 `webhook` / `bark` / `wecom` / `feishu` / `ntfy`，地址只收 https（本机环回可用 http），存下后任何接口不再回地址 |
 | DELETE | `/v0/channels/<渠道 id>` | **ops** | 删除通知渠道 |
 | POST | `/v0/channels/<渠道 id>/test` | **ops** | 向这个渠道发一条测试通知 |
@@ -665,6 +670,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段。`/fragments/audit` 带 `since` 时只回表头与自载入以来的新行（§5.6） |
 | GET | `/fragments/lifecycle/<节点>` | view | HTML 片段：生命周期页签被轮询的那一块（§5.5） |
 | GET | `/fragments/alerts?level=&state=`、`/fragments/jobs`、`/fragments/schedules` | view | HTML 片段 |
+| GET | `/fragments/memory?…` | **成员** | HTML 片段：记忆页被轮询的列表（`#memory-list`），附带筛选条上各类别的新计数；页面只换这几块，不动搜索框 |
 | GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | HTML 片段，`/access` 三个被轮询的页签 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |
 | GET | `/fragments/providers/board?node=`、`/fragments/providers/profiles/<档案 id>/nodes` | view | HTML 片段，模型服务的节点矩阵与档案页的在用节点 |

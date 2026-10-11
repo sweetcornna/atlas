@@ -68,6 +68,7 @@ describe('the pages', () => {
   const AREAS: readonly (readonly [AreaId, string, string, boolean])[] = [
     ['chat', '/chat', 'main', false],
     ['jobs', '/jobs', 'main', false],
+    ['memory', '/memory', 'main', false],
     ['providers', '/providers', 'main', false],
     ['overview', '/overview', 'manage', false],
     ['nodes', '/nodes', 'manage', false],

@@ -23,9 +23,11 @@ import {
   inlineScripts,
 } from '../src/respond.js'
 import { ROUTES } from '../src/routes/index.js'
+import { FakeMemory } from './directionFakes.js'
 import {
   ADMIN,
   LABEL,
+  NOW,
   TRACE,
   VIEW,
   browse,
@@ -102,6 +104,12 @@ const PAGES: readonly PageRow[] = [
     reads: ['收件箱', 'id="alerts-filter"', 'id="alerts-unread"', '来源'],
   },
   {
+    path: '/memory',
+    title: '记忆',
+    active: 'memory',
+    reads: ['简报控制在 300 字以内', 'id="memory-filter"', 'id="memory-n-all"'],
+  },
+  {
     path: '/jobs',
     title: '主动执行',
     active: 'jobs',
@@ -147,6 +155,7 @@ const PAGES: readonly PageRow[] = [
 function harness() {
   return pageHarness({
     chat: true,
+    memory: new FakeMemory(() => NOW),
     nodeServers: [
       { node: 'tokyo-1', server: 'p11' },
       { node: 'osaka-1', server: 'p12' },
@@ -322,12 +331,13 @@ describe('the doors in front of the pages', () => {
     }
   })
 
-  test('a view token reads every page except the conversation', async () => {
+  test('a view token reads every page except the conversation and memory', async () => {
     const { handle } = harness()
     for (const row of PAGES) {
       const response = await handle(browse(row.path, VIEW))
       // `/` is that caller's home, 总览 for a view token (above).
-      const expected = row.active === 'chat' && row.path !== '/' ? 403 : 200
+      const personal = row.active === 'chat' || row.active === 'memory'
+      const expected = personal && row.path !== '/' ? 403 : 200
       expect(`${row.path} ${response.status}`).toBe(`${row.path} ${expected}`)
     }
   })

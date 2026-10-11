@@ -31,6 +31,7 @@ import type { RouteModule } from '../src/routes/types.js'
 import { CONSOLE_HEADER, accountsHarness, person } from './accountsHarness.js'
 import { PLANNER, StatefulLifecycle } from './lifecycleFake.js'
 import { MemoryActionLedger } from './memoryActions.js'
+import { FakeMemory } from './directionFakes.js'
 import { PageAudit, PageRegistry, TRACE } from './pageHarness.js'
 import { FakeProviders } from './providersFake.js'
 import { MemoryNotify } from './watchFakes.js'
@@ -143,6 +144,7 @@ async function wired(): Promise<{
       actions: new MemoryActionLedger(),
       notify: new MemoryNotify([]),
       providers: new FakeProviders(),
+      memory: new FakeMemory(() => 1_700_000_000_000),
       nodeServers: [{ node: 'tokyo-1', server: 'p11' }],
     },
   })

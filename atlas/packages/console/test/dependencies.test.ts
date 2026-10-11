@@ -16,7 +16,8 @@ import { describe, expect, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
 import { ROUTES } from '../src/routes/index.js'
-import { ADMIN, browse, pageHarness } from './pageHarness.js'
+import { FakeMemory } from './directionFakes.js'
+import { ADMIN, browse, NOW, pageHarness } from './pageHarness.js'
 
 const ROOT = resolve(import.meta.dir, '..')
 
@@ -106,7 +107,7 @@ describe('dependencies', () => {
 
 describe('assets', () => {
   test('every page loads its script and style inline, from nowhere else', async () => {
-    const h = pageHarness({ chat: true })
+    const h = pageHarness({ chat: true, memory: new FakeMemory(() => NOW) })
     // The login door is read signed out: signed in, it sends you on.
     const paths = [...ROUTES.map(module => module.area.href), '/login']
     for (const path of paths) {

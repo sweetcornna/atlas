@@ -379,6 +379,11 @@ export type MemoryKind = (typeof MEMORY_KINDS)[number]
 
 export interface MemoryEntryView extends AgentRef {
   readonly id: string
+  /**
+   * 这条长期记忆属于谁（账号主体）。长期分区按「智能体 × 已验证账号」分开
+   * （设计复核 D18）：A 的偏好不会在 B 的会话里被召回。对话分区为 null。
+   */
+  readonly owner: string | null
   /** `long`：长期分区；`conversation`：某次对话或某个作业的分区。 */
   readonly scope: 'long' | 'conversation'
   /** 对话分区的会话号；长期分区为 null。 */
@@ -423,7 +428,11 @@ export interface MemoryPort {
   agents(): Promise<
     ConsoleResult<readonly (AgentRef & { readonly reachable: boolean })[]>
   >
-  list(input: MemoryQueryInput): Promise<
+  /** 只列 `actor` 自己的长期记忆与他能看到的会话里的记忆。 */
+  list(
+    input: MemoryQueryInput,
+    actor: DirectionActor,
+  ): Promise<
     ConsoleResult<{
       readonly entries: readonly MemoryEntryView[]
       readonly total: number

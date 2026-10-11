@@ -14,16 +14,23 @@ import type {
   AvatarsPort,
 } from '../src/avatar.js'
 import type { ConsoleFailure, ConsoleResult } from '../src/contracts.js'
-import type {
-  DirectionActor,
-  NotifyChannelDraft,
-  NotifyChannelView,
-  ScheduleDraft,
-  ScheduleRunView,
-  SchedulesPort,
-  SchedulesSnapshot,
-  ScheduleTemplateView,
-  ScheduleView,
+import {
+  MEMORY_KINDS,
+  type AgentRef,
+  type DirectionActor,
+  type MemoryDraft,
+  type MemoryEntryView,
+  type MemoryKind,
+  type MemoryPort,
+  type MemoryQueryInput,
+  type NotifyChannelDraft,
+  type NotifyChannelView,
+  type ScheduleDraft,
+  type ScheduleRunView,
+  type SchedulesPort,
+  type SchedulesSnapshot,
+  type ScheduleTemplateView,
+  type ScheduleView,
 } from '../src/directionPorts.js'
 
 export function ok<T>(value: T): ConsoleResult<T> {
@@ -325,10 +332,235 @@ export class FakeAvatars implements AvatarsPort {
   }
 }
 
+/**
+ * A memory port that keeps each person's long-term memory apart (D18): a
+ * long entry belongs to the subject that wrote it, and `list` answers only
+ * the caller's own. `owner` seeds the believable entries for one subject.
+ */
+export class FakeMemory implements MemoryPort {
+  readonly calls: string[] = []
+  entries: MemoryEntryView[] = []
+  failList = false
+  readonly roster: readonly (AgentRef & { readonly reachable: boolean })[]
+  #seq = 10
+
+  constructor(
+    private readonly now: () => number,
+    owner = 'legacy:admin',
+    roster: readonly (AgentRef & { readonly reachable: boolean })[] = [
+      { node: 'tokyo-1', agent: 'planner', reachable: true },
+      { node: 'osaka-1', agent: 'writer', reachable: false },
+    ],
+  ) {
+    this.roster = roster
+    const at = now()
+    const seed: [MemoryKind, string, string, string, number, string][] = [
+      [
+        'preference',
+        '简报控制在 300 字以内',
+        '每天的简报不超过 300 字 · 最后列三件最重要的事',
+        '',
+        6,
+        'user',
+      ],
+      [
+        'preference',
+        '回复先给结论',
+        '先说结论再说理由 · 不要客套开场',
+        '',
+        30,
+        'session',
+      ],
+      [
+        'plan',
+        '本周把接力插件交评审',
+        '周五前交接力插件的配对流程 · 评审人是负责人',
+        '配对码 15 分钟有效 · 设备令牌只给一次\n评审前先在 tokyo-1 上跑一遍完整配对',
+        50,
+        'agent',
+      ],
+      [
+        'project',
+        '阡陌控制台改版',
+        '对话为首页 · 侧栏精简成对话 主动执行 记忆 连接 云端电脑 模型',
+        '',
+        200,
+        'session',
+      ],
+      [
+        'daily',
+        '周三下午不排会',
+        '周三 14:00 以后留给写作 · 有会议就往后挪',
+        '',
+        400,
+        'user',
+      ],
+    ]
+    for (const [kind, title, summary, body, ago, source] of seed) {
+      this.entries.push(
+        this.entry(
+          { node: 'tokyo-1', agent: 'planner' },
+          owner,
+          { kind, title, summary, body },
+          source,
+          at - ago * 3_600_000,
+        ),
+      )
+    }
+  }
+
+  private entry(
+    ref: AgentRef,
+    owner: string,
+    draft: MemoryDraft,
+    source: string,
+    at: number,
+  ): MemoryEntryView {
+    this.#seq += 1
+    return {
+      node: ref.node,
+      agent: ref.agent,
+      id: `mem-${this.#seq}`,
+      owner,
+      scope: 'long',
+      contextId: null,
+      kind: draft.kind,
+      title: draft.title,
+      summary: draft.summary,
+      body: draft.body,
+      tags: [],
+      source: { kind: source, id: owner },
+      createdAt: at,
+      validAt: at,
+      invalidAt: null,
+      retired: null,
+      supersedes: null,
+      supersededBy: null,
+    }
+  }
+
+  private mine(ref: AgentRef, actor: DirectionActor): MemoryEntryView[] {
+    return this.entries.filter(
+      one =>
+        one.node === ref.node &&
+        one.agent === ref.agent &&
+        one.owner === actor.subject,
+    )
+  }
+
+  private find(
+    ref: AgentRef,
+    id: string,
+    actor: DirectionActor,
+  ): MemoryEntryView | null {
+    return this.mine(ref, actor).find(one => one.id === id) ?? null
+  }
+
+  private replace(next: MemoryEntryView): void {
+    this.entries = this.entries.map(one => (one.id === next.id ? next : one))
+  }
+
+  async agents(): Promise<
+    ConsoleResult<readonly (AgentRef & { readonly reachable: boolean })[]>
+  > {
+    return ok(this.roster)
+  }
+
+  async list(input: MemoryQueryInput, actor: DirectionActor) {
+    this.calls.push(`list ${input.node}/${input.agent} ${actor.subject}`)
+    if (this.failList) return failed<never>('unreachable', 'memory store down')
+    const live = (one: MemoryEntryView) =>
+      one.retired === null &&
+      one.invalidAt === null &&
+      one.supersededBy === null
+    const own = this.mine(input, actor)
+    const counts = Object.fromEntries(
+      MEMORY_KINDS.map(kind => [
+        kind,
+        own.filter(one => live(one) && one.kind === kind).length,
+      ]),
+    ) as Record<MemoryKind, number>
+    const text = (input.text ?? '').toLowerCase()
+    const matched = own
+      .filter(one => input.includeRetired === true || live(one))
+      .filter(one => input.kind === undefined || one.kind === input.kind)
+      .filter(
+        one =>
+          text === '' ||
+          `${one.title} ${one.summary} ${one.body}`
+            .toLowerCase()
+            .includes(text),
+      )
+      .sort((a, b) => b.createdAt - a.createdAt)
+    return ok({
+      entries: matched.slice(0, input.limit ?? 60),
+      total: matched.length,
+      counts,
+    })
+  }
+
+  async add(ref: AgentRef, draft: MemoryDraft, actor: DirectionActor) {
+    this.calls.push(`add ${ref.node}/${ref.agent} ${draft.title}`)
+    if (
+      !this.roster.some(one => one.node === ref.node && one.agent === ref.agent)
+    ) {
+      return failed<never>('not_found', 'no such agent')
+    }
+    const made = this.entry(ref, actor.subject, draft, 'user', this.now())
+    this.entries.push(made)
+    return ok(made)
+  }
+
+  async edit(
+    ref: AgentRef,
+    id: string,
+    draft: MemoryDraft,
+    actor: DirectionActor,
+  ) {
+    this.calls.push(`edit ${id}`)
+    const old = this.find(ref, id, actor)
+    if (old === null) return failed<never>('not_found', 'no such memory')
+    const made = {
+      ...this.entry(ref, actor.subject, draft, 'user', this.now()),
+      supersedes: id,
+    }
+    this.replace({ ...old, supersededBy: made.id, invalidAt: this.now() })
+    this.entries.push(made)
+    return ok(made)
+  }
+
+  async forget(
+    ref: AgentRef,
+    id: string,
+    reason: string,
+    actor: DirectionActor,
+  ) {
+    this.calls.push(`forget ${id} ${reason}`)
+    const old = this.find(ref, id, actor)
+    if (old === null) return failed<never>('not_found', 'no such memory')
+    const next: MemoryEntryView = {
+      ...old,
+      retired: { kind: 'revoked', reason, by: actor.subject },
+    }
+    this.replace(next)
+    return ok(next)
+  }
+
+  async invalidate(ref: AgentRef, id: string, actor: DirectionActor) {
+    this.calls.push(`invalidate ${id}`)
+    const old = this.find(ref, id, actor)
+    if (old === null) return failed<never>('not_found', 'no such memory')
+    const next = { ...old, invalidAt: this.now() }
+    this.replace(next)
+    return ok(next)
+  }
+}
+
 /** What `test/preview.ts`-style harnesses wire: one fake per port. */
 export const PREVIEW_PORTS: Readonly<
   Record<string, (now: () => number) => unknown>
 > = {
   schedules: now => new FakeSchedules(now),
   avatars: now => new FakeAvatars(now),
+  memory: now => new FakeMemory(now),
 }
