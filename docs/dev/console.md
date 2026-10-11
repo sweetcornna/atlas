@@ -595,6 +595,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | DELETE | `/v0/schedules/<任务 id>` | **成员** | 删除 |
 | POST | `/v0/schedules/<任务 id>/<enable\|disable\|run>` | **成员** | 启用、停用、立即运行一次（运行结果进最近运行） |
 | GET | `/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 记忆（P23，`docs/dev/directions-2026-10.md`）：这个人在某个智能体那里的长期记忆，按偏好、计划、项目、日常分类，能找、改、忘记。长期记忆按「智能体 × 账号」分开（复核 D18），只给读者自己的，所以只读令牌没有这一页（403）；没接记忆端口时侧栏不出现、页面 404 |
+| GET | `/connect` | view | 连接：应用连接（P25，邮箱与日历；凭据只在中枢，页面只给主机名、打码的账号与「已设置」）与本机工具（P19，配对的设备与接力插件）。两边都没接时侧栏不出现、页面 404；接了一边时另一边写「未接入」 |
 | GET | `/v0/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 同一份列表的 JSON：`{ agent, entries, total, counts }`。没接记忆端口时 501 |
 | POST | `/v0/memory` | **成员** | 记一条：`{ agent, kind, title, summary, body }`，`kind` 只能是四类之一，一句话 ≤120 字、摘要 ≤400 字、细节 ≤4000 字。记 `memory.add` |
 | PUT | `/v0/memory/<记忆 id>` | **成员** | 改一条：写一条新的并替换旧的（旧的留在历史里，带「含已忘记」能看到）。记 `memory.edit` |
@@ -674,6 +675,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段。`/fragments/audit` 带 `since` 时只回表头与自载入以来的新行（§5.6） |
 | GET | `/fragments/lifecycle/<节点>` | view | HTML 片段：生命周期页签被轮询的那一块（§5.5） |
 | GET | `/fragments/alerts?level=&state=`、`/fragments/jobs`、`/fragments/schedules` | view | HTML 片段 |
+| GET | `/fragments/connect` | view | HTML 片段：连接页被轮询的两半 |
+| GET | `/fragments/connect/form?preset=<预设>&id=<连接 id>` | **ops / admin** | HTML 片段：添加或编辑连接对话框的正文。`preset` 换服务（不认识的当作第一个），`id` 填这条连接自己的非秘密设置与授权的智能体（秘密永不回显）；没有这条连接 404 |
 | GET | `/fragments/routing?node=<节点>` | view | HTML 片段：模型页的任务分工卡片，`node` 换成那个节点的范围（模型服务不认识的节点当作所有节点）；没接路由簿时为空 |
 | GET | `/fragments/memory?…` | **成员** | HTML 片段：记忆页被轮询的列表（`#memory-list`），附带筛选条上各类别的新计数；页面只换这几块，不动搜索框 |
 | GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | HTML 片段，`/access` 三个被轮询的页签 |

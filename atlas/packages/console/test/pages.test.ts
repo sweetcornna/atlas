@@ -23,7 +23,11 @@ import {
   inlineScripts,
 } from '../src/respond.js'
 import { ROUTES } from '../src/routes/index.js'
-import { FakeMemory } from './directionFakes.js'
+import {
+  FakeConnectors,
+  FakeHandoffDevices,
+  FakeMemory,
+} from './directionFakes.js'
 import {
   ADMIN,
   LABEL,
@@ -110,6 +114,12 @@ const PAGES: readonly PageRow[] = [
     reads: ['简报控制在 300 字以内', 'id="memory-filter"', 'id="memory-n-all"'],
   },
   {
+    path: '/connect',
+    title: '连接',
+    active: 'connect',
+    reads: ['工作邮箱', 'imap.qq.com', '我的 MacBook', 'id="connect"'],
+  },
+  {
     path: '/jobs',
     title: '主动执行',
     active: 'jobs',
@@ -156,6 +166,10 @@ function harness() {
   return pageHarness({
     chat: true,
     memory: new FakeMemory(() => NOW),
+    ports: {
+      connectors: new FakeConnectors(() => NOW),
+      handoffDevices: new FakeHandoffDevices(() => NOW),
+    },
     nodeServers: [
       { node: 'tokyo-1', server: 'p11' },
       { node: 'osaka-1', server: 'p12' },

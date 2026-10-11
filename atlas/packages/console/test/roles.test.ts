@@ -16,7 +16,11 @@
 import { describe, expect, test } from 'bun:test'
 import { ROUTES } from '../src/routes/index.js'
 import { accountsHarness, asSession, person } from './accountsHarness.js'
-import { FakeMemory } from './directionFakes.js'
+import {
+  FakeConnectors,
+  FakeHandoffDevices,
+  FakeMemory,
+} from './directionFakes.js'
 import {
   ADMIN,
   NOW,
@@ -77,6 +81,10 @@ function harness() {
   return pageHarness({
     chat: true,
     memory: new FakeMemory(() => NOW),
+    ports: {
+      connectors: new FakeConnectors(() => NOW),
+      handoffDevices: new FakeHandoffDevices(() => NOW),
+    },
     nodeServers: [{ node: 'tokyo-1', server: 'p11' }],
     serverNotes: new PageNotes(),
   })

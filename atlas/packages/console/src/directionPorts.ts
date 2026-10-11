@@ -654,6 +654,11 @@ export interface ConnectorView {
   readonly preset: string
   /** 只给主机名与账号的打码形式（`ab***@qq.com`）。 */
   readonly summary: Readonly<Record<string, string>>
+  /**
+   * 非秘密设置的原值（服务器、端口、账号），给编辑表单预填；只在运维级读者
+   * 面前出现，路由对其他人去掉这一项。秘密（口令、带令牌的订阅地址）永不在此。
+   */
+  readonly settings?: Readonly<Record<string, string | number | boolean>>
   /** ICS 订阅为 true：只能读。 */
   readonly readOnly: boolean
   readonly secretSet: boolean

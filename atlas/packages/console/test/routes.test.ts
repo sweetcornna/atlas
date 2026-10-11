@@ -69,6 +69,7 @@ describe('the pages', () => {
     ['chat', '/chat', 'main', false],
     ['jobs', '/jobs', 'main', false],
     ['memory', '/memory', 'main', false],
+    ['connect', '/connect', 'main', false],
     ['providers', '/providers', 'main', false],
     ['overview', '/overview', 'manage', false],
     ['nodes', '/nodes', 'manage', false],

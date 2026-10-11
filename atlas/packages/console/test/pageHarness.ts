@@ -180,6 +180,8 @@ export function pageHarness(
     readonly actions?: ActionLedgerPort
     readonly serverNotes?: ServerNotesPort
     readonly memory?: MemoryPort
+    /** Any further ports, e.g. the 2026-10 fakes from `directionFakes.ts`. */
+    readonly ports?: Partial<ConsoleDeps>
   } = {},
 ): PageHarness {
   const registry = new PageRegistry()
@@ -203,6 +205,7 @@ export function pageHarness(
       ? {}
       : { serverNotes: options.serverNotes }),
     ...(options.memory === undefined ? {} : { memory: options.memory }),
+    ...options.ports,
   }
   return {
     registry,

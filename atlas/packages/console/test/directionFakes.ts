@@ -18,6 +18,14 @@ import {
   MEMORY_KINDS,
   MODEL_DIRECTIONS,
   type AgentRef,
+  type ConnectorDraft,
+  type ConnectorPresetView,
+  type ConnectorsPort,
+  type ConnectorsSnapshot,
+  type ConnectorView,
+  type HandoffDevicesPort,
+  type HandoffDeviceView,
+  type HandoffPairingCode,
   type DirectionActor,
   type MemoryDraft,
   type MemoryEntryView,
@@ -719,6 +727,272 @@ export class FakeRouting implements ModelRoutingPort {
   }
 }
 
+export const CONNECTOR_PRESETS: readonly ConnectorPresetView[] = [
+  {
+    id: 'qq-mail',
+    kind: 'mail',
+    name: 'QQ 邮箱',
+    defaults: {
+      user: '',
+      imapHost: 'imap.qq.com',
+      imapPort: 993,
+      smtpHost: 'smtp.qq.com',
+      smtpPort: 465,
+    },
+    hint: '在 QQ 邮箱设置里开启 IMAP/SMTP 并生成授权码 · 这里填授权码',
+  },
+  {
+    id: 'gmail',
+    kind: 'mail',
+    name: 'Gmail',
+    defaults: {
+      user: '',
+      imapHost: 'imap.gmail.com',
+      imapPort: 993,
+      smtpHost: 'smtp.gmail.com',
+      smtpPort: 465,
+    },
+    hint: '开启两步验证后生成应用专用密码 · 这里填应用专用密码',
+  },
+  {
+    id: 'icloud-calendar',
+    kind: 'calendar',
+    name: 'iCloud 日历',
+    defaults: { user: '', caldavUrl: 'https://caldav.icloud.com/' },
+    hint: '在 Apple 账户里生成 App 专用密码',
+  },
+  {
+    id: 'ics',
+    kind: 'calendar',
+    name: 'ICS 订阅',
+    defaults: {},
+    hint: '只读 · 订阅地址里通常带令牌 · 按秘密保存',
+  },
+]
+
+/** A connections port with one mailbox in it and a few calls. */
+export class FakeConnectors implements ConnectorsPort {
+  readonly calls: string[] = []
+  connectors: ConnectorView[]
+  failSnapshot = false
+  readonly agents: readonly string[]
+  #seq = 10
+
+  constructor(
+    private readonly now: () => number,
+    agents: readonly string[] = [
+      'qianmo://tokyo-1/planner',
+      'qianmo://osaka-1/writer',
+    ],
+  ) {
+    this.agents = agents
+    const at = now()
+    this.connectors = [
+      {
+        id: 'con-1',
+        name: '工作邮箱',
+        kind: 'mail',
+        preset: 'qq-mail',
+        summary: { user: 'ch***@qq.com', imapHost: 'imap.qq.com' },
+        settings: {
+          user: 'chen@qq.com',
+          imapHost: 'imap.qq.com',
+          imapPort: 993,
+          smtpHost: 'smtp.qq.com',
+          smtpPort: 465,
+        },
+        readOnly: false,
+        secretSet: true,
+        secretSetAt: at - 86_400_000 * 2,
+        agents: ['qianmo://tokyo-1/planner'],
+        evaluated: false,
+        lastProbe: { at: at - 3_600_000, ok: true, detail: '登录成功' },
+        createdAt: at - 86_400_000 * 2,
+        createdBy: 'legacy:admin',
+      },
+    ]
+  }
+
+  async snapshot() {
+    this.calls.push('snapshot')
+    if (this.failSnapshot) {
+      return failed<ConnectorsSnapshot>('unreachable', 'connector book down')
+    }
+    const at = this.now()
+    return ok<ConnectorsSnapshot>({
+      connectors: this.connectors,
+      presets: CONNECTOR_PRESETS,
+      agents: this.agents,
+      recent: [
+        {
+          at: at - 600_000,
+          connectorId: 'con-1',
+          agent: 'qianmo://tokyo-1/planner',
+          op: 'mail.search',
+          outcome: 'ok',
+          count: 12,
+          detail: null,
+        },
+        {
+          at: at - 1_800_000,
+          connectorId: 'con-1',
+          agent: 'qianmo://tokyo-1/planner',
+          op: 'mail.send',
+          outcome: 'refused',
+          count: null,
+          detail: '用户没有批准',
+        },
+      ],
+    })
+  }
+
+  async save(draft: ConnectorDraft, actor: DirectionActor) {
+    this.calls.push(`save ${draft.id ?? 'new'} ${draft.name}`)
+    const preset = CONNECTOR_PRESETS.find(one => one.id === draft.preset)
+    if (preset === undefined)
+      return failed<ConnectorView>('invalid', 'no such preset')
+    const old =
+      draft.id === undefined
+        ? undefined
+        : this.connectors.find(one => one.id === draft.id)
+    if (draft.id !== undefined && old === undefined) {
+      return failed<ConnectorView>('not_found', 'no such connector')
+    }
+    if (old === undefined && (draft.secret ?? '') === '') {
+      return failed<ConnectorView>('invalid', 'secret required')
+    }
+    this.#seq += 1
+    const at = this.now()
+    const user =
+      typeof draft.settings.user === 'string' ? draft.settings.user : ''
+    const view: ConnectorView = {
+      id: old?.id ?? `con-${this.#seq}`,
+      name: draft.name,
+      kind: draft.kind,
+      preset: draft.preset,
+      summary: {
+        ...(user === ''
+          ? {}
+          : {
+              user: `${user.slice(0, 2)}***${user.includes('@') ? user.slice(user.indexOf('@')) : ''}`,
+            }),
+        ...(typeof draft.settings.imapHost === 'string'
+          ? { imapHost: draft.settings.imapHost }
+          : {}),
+      },
+      settings: draft.settings,
+      readOnly: draft.preset === 'ics',
+      secretSet: true,
+      secretSetAt: draft.secret === undefined ? (old?.secretSetAt ?? at) : at,
+      agents: draft.agents,
+      evaluated: false,
+      lastProbe: old?.lastProbe ?? null,
+      createdAt: old?.createdAt ?? at,
+      createdBy: old?.createdBy ?? actor.subject,
+    }
+    this.connectors =
+      old === undefined
+        ? [...this.connectors, view]
+        : this.connectors.map(one => (one.id === view.id ? view : one))
+    return ok(view)
+  }
+
+  async remove(id: string, _actor: DirectionActor) {
+    this.calls.push(`remove ${id}`)
+    if (!this.connectors.some(one => one.id === id))
+      return failed<null>('not_found', 'no such connector')
+    this.connectors = this.connectors.filter(one => one.id !== id)
+    return ok(null)
+  }
+
+  async probe(id: string, _actor: DirectionActor) {
+    this.calls.push(`probe ${id}`)
+    const found = this.connectors.find(one => one.id === id)
+    if (found === undefined)
+      return failed<ConnectorView>('not_found', 'no such connector')
+    const view = {
+      ...found,
+      lastProbe: { at: this.now(), ok: true, detail: '登录成功' },
+    }
+    this.connectors = this.connectors.map(one => (one.id === id ? view : one))
+    return ok(view)
+  }
+}
+
+/** Paired laptops: two in use, one revoked. */
+export class FakeHandoffDevices implements HandoffDevicesPort {
+  readonly calls: string[] = []
+  devices: HandoffDeviceView[]
+  #seq = 0
+
+  constructor(
+    private readonly now: () => number,
+    owner = 'legacy:admin',
+  ) {
+    const at = now()
+    this.devices = [
+      {
+        deviceId: 'd-aaaaaaaaaaaa',
+        name: '我的 MacBook',
+        platform: 'darwin-arm64',
+        owner,
+        createdAt: at - 86_400_000 * 6,
+        lastSeenAt: at - 300_000,
+        revokedAt: null,
+        tasks: 14,
+      },
+      {
+        deviceId: 'd-bbbbbbbbbbbb',
+        name: '实验室工作站',
+        platform: 'linux-x64',
+        owner,
+        createdAt: at - 86_400_000 * 3,
+        lastSeenAt: at - 86_400_000,
+        revokedAt: null,
+        tasks: 3,
+      },
+      {
+        deviceId: 'd-cccccccccccc',
+        name: '旧笔记本',
+        platform: 'win32-x64',
+        owner,
+        createdAt: at - 86_400_000 * 40,
+        lastSeenAt: at - 86_400_000 * 30,
+        revokedAt: at - 86_400_000 * 20,
+        tasks: 7,
+      },
+    ]
+  }
+
+  async listDevices() {
+    this.calls.push('list')
+    return ok<readonly HandoffDeviceView[]>(this.devices)
+  }
+
+  async issuePairing(actor: DirectionActor) {
+    this.calls.push(`pair ${actor.subject}`)
+    this.#seq += 1
+    const code = `QM${this.#seq}A-7K2P-X9WD`
+    return ok<HandoffPairingCode>({
+      code,
+      expiresAt: this.now() + 15 * 60_000,
+      command: `qm handoff login https://console.example --code ${code}`,
+    })
+  }
+
+  async revokeDevice(deviceId: string, actor: DirectionActor) {
+    this.calls.push(`revoke ${deviceId} ${actor.subject}`)
+    const found = this.devices.find(one => one.deviceId === deviceId)
+    if (found === undefined)
+      return failed<HandoffDeviceView>('not_found', 'no such device')
+    const view = { ...found, revokedAt: this.now() }
+    this.devices = this.devices.map(one =>
+      one.deviceId === deviceId ? view : one,
+    )
+    return ok(view)
+  }
+}
+
 /** What `test/preview.ts`-style harnesses wire: one fake per port. */
 export const PREVIEW_PORTS: Readonly<
   Record<string, (now: () => number) => unknown>
@@ -727,4 +1001,6 @@ export const PREVIEW_PORTS: Readonly<
   avatars: now => new FakeAvatars(now),
   memory: now => new FakeMemory(now),
   routing: now => new FakeRouting(now),
+  connectors: now => new FakeConnectors(now),
+  handoffDevices: now => new FakeHandoffDevices(now),
 }
