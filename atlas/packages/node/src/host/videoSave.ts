@@ -61,7 +61,11 @@ async function writeAll(
 }
 
 /** A budget belongs to one invocation, even if it later saves multiple clips. */
-export function videoSaver(workspace: string, limits: VideoLimits) {
+export function videoSaver(
+  workspace: string,
+  limits: VideoLimits,
+  workspaces: readonly string[] = [workspace],
+) {
   let callBytes = 0
   return async (
     relative: string,
@@ -72,8 +76,10 @@ export function videoSaver(workspace: string, limits: VideoLimits) {
     const staging = qianmoConfigPath('resident', 'video-staging')
     ensurePrivateDir(staging)
     const stageRoot = await fs.realpath(staging)
-    if (within(root, stageRoot))
-      throw new VideoSaveError('视频暂存目录不能位于智能体工作区内')
+    for (const candidate of new Set([workspace, ...workspaces])) {
+      if (within(await fs.realpath(candidate), stageRoot))
+        throw new VideoSaveError('视频暂存目录不能位于智能体工作区内')
+    }
     // Shared by all host processes; counts orphaned partials as well. Serialize
     // downloads so a concurrent invocation cannot overspend the node quota.
     const lock = acquirePrivateLock(`${stageRoot}.lock`, {

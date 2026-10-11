@@ -419,3 +419,50 @@ test('production runVideoTool rejects a fake MP4 header, invalid limits and pre-
     await f.dispose()
   }
 })
+
+test('production runVideoTool rejects staging inside another configured agent workspace and cancels the admitted download', async () => {
+  const f = videoSetup()
+  let cancelled = false
+  const client: VideoClient = {
+    async submit() {
+      return { id: 'job', status: 'completed' }
+    },
+    async poll() {
+      throw new Error('must not poll')
+    },
+    async download() {
+      return {
+        contentType: 'video/mp4',
+        body: new ReadableStream<Uint8Array>({
+          pull(c) {
+            c.enqueue(mp4)
+          },
+          cancel() {
+            cancelled = true
+          },
+        }),
+      }
+    },
+  }
+  try {
+    const result = await runVideoTool(
+      f.workspace,
+      { prompt: 'tree' },
+      undefined,
+      undefined,
+      {
+        client,
+        workspaces: [f.workspace, path.dirname(path.dirname(f.staging))],
+      },
+    )
+    expect(result).toEqual({
+      ok: false,
+      error: '视频暂存目录不能位于智能体工作区内',
+    })
+    expect(cancelled).toBe(true)
+    expect(fs.readdirSync(f.staging)).toEqual([])
+    expect(fs.existsSync(path.join(f.workspace, 'outputs'))).toBe(false)
+  } finally {
+    await f.dispose()
+  }
+})

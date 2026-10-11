@@ -127,6 +127,7 @@ export async function generateVideo(
       signal.removeEventListener('abort', cancel)
     }
   }
+  let downloaded: VideoContent | undefined
   try {
     let job = await bounded(() =>
       deps.client.submit(
@@ -163,11 +164,14 @@ export async function generateVideo(
     }
     phase = '下载'
     const content = await bounded(() => deps.client.download(job.id, signal))
+    downloaded = content
     if (
       content.contentType !== 'video/mp4' &&
       content.contentType !== 'application/octet-stream'
-    )
+    ) {
+      void content.body.cancel().catch(() => {})
       return { ok: false, error: '视频下载不是 MP4' }
+    }
     const relative = `outputs/videos/${now()}-${(deps.id ?? randomUUID)()
       .replace(/[^a-zA-Z0-9]/g, '')
       .slice(0, 8)}.mp4`
@@ -179,6 +183,10 @@ export async function generateVideo(
       seconds,
     }
   } catch (error) {
+    // Admission failures (unsafe staging, busy quota lock) happen before
+    // pipeTo owns the stream; cancel those downloads too.
+    if (downloaded && !downloaded.body.locked)
+      void downloaded.body.cancel().catch(() => {})
     if (error instanceof VideoSaveError)
       return { ok: false, error: error.message }
     return {
@@ -196,7 +204,11 @@ export async function runVideoTool(
   args: unknown,
   signal?: AbortSignal,
   progress?: VideoToolDeps['progress'],
-  options: { client?: VideoClient; limits?: VideoLimits } = {},
+  options: {
+    client?: VideoClient
+    limits?: VideoLimits
+    workspaces?: readonly string[]
+  } = {},
 ): Promise<VideoToolResult> {
   const provider = configuredProvider('video')
   if (!provider || provider.api !== 'openrouter-video' || !provider.secret)
@@ -233,6 +245,6 @@ export async function runVideoTool(
       download: (id, signal) =>
         downloadVideo(model, id, { apiKey: provider.secret!, signal }),
     },
-    save: videoSaver(workspace, limits),
+    save: videoSaver(workspace, limits, options.workspaces),
   })
 }

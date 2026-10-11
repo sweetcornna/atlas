@@ -230,7 +230,7 @@ MCP 工具沿用 P17 的五个（`qianmo_status`、`qianmo_handoff`、`qianmo_ta
 
 实现：会话人工选择持久化、本轮显式方向结束后恢复、路由簿 PID/nonce/时间锁与回收、节点受保护暂存和 MP4 校验/限额提交；vision 路由档案无输入模态数据，未收紧（FX3）。
 
-视频保存上限在节点配置 `qianmoVideoLimits` 中指定正整数字节数：`maxFileBytes` 和 `maxCallBytes` 默认各 512 MiB，`maxStagingBytes` 默认 2 GiB。短视频通常远小于单文件上限；暂存总量为四份默认短片留余量且包含崩溃残留。暂存在 `qianmoConfigPath('resident', 'video-staging')`，并发下载共用节点锁，按实际收到字节计数，超限取消流并清理当前部分文件。Linux 经 `O_DIRECTORY|O_NOFOLLOW` 目录句柄和 `/proc/self/fd` 提交；macOS 逐级打开并在复制前后核对 inode 和 realpath。Linux 仍有已打开目录被重命名的窗口，macOS 另有父路径在检查与打开/复制之间被替换的窗口；复核和尽力删除降低风险，不能宣称完全消除竞态。
+视频保存上限在节点配置 `qianmoVideoLimits` 中指定正整数字节数：`maxFileBytes` 和 `maxCallBytes` 默认各 512 MiB，`maxStagingBytes` 默认 2 GiB。短视频通常远小于单文件上限；暂存总量为四份默认短片留余量且包含崩溃残留。暂存在 `qianmoConfigPath('resident', 'video-staging')`，保存前核对不在节点任何已配置的智能体工作区内；拒绝暂存或下载时取消内容流。并发下载共用节点锁，按实际收到字节计数，超限取消流并清理当前部分文件。Linux 经 `O_DIRECTORY|O_NOFOLLOW` 目录句柄和 `/proc/self/fd` 提交；macOS 逐级打开并在复制前后核对 inode 和 realpath。Linux 仍有已打开目录被重命名的窗口，macOS 另有父路径在检查与打开/复制之间被替换的窗口；复核和尽力删除降低风险，不能宣称完全消除竞态。
 
 ### 5.3 预设与口径
 

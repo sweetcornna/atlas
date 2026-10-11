@@ -644,6 +644,9 @@ export class ResidentOmpPool
                           },
                         })
                     },
+                    {
+                      workspaces: this.#options.agents.map(agent => agent.cwd),
+                    },
                   )
                 : { ok: false as const, error: '视频路由未开启' }
             } finally {
