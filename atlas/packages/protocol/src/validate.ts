@@ -23,6 +23,7 @@ import {
   isMessageType,
   isNotifyPayload,
   isTaskResultPayload,
+  isTaskDirection,
   messageBytes,
   MessageType,
   type QianmoMessage,
@@ -254,6 +255,20 @@ export function validateMessage(
         ProtocolErrorCode.E_BAD_ENVELOPE,
         'payload',
         'payload field is required',
+      ),
+    )
+  } else if (
+    raw['type'] === MessageType.TaskRequest &&
+    typeof raw['payload'] === 'object' &&
+    raw['payload'] !== null &&
+    'direction' in raw['payload'] &&
+    !isTaskDirection(raw['payload'].direction)
+  ) {
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'payload.direction',
+        'task.request direction must be a supported task direction',
       ),
     )
   } else if (raw['type'] === MessageType.Ack && !isAckPayload(raw['payload'])) {

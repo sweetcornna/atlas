@@ -15,6 +15,31 @@ import { LIMITS } from './limits.js'
 /** Envelope version currently spoken on the network. */
 export const ENVELOPE_VERSION = 0
 
+/** Optional task.request hint shared with P22 model routing. Other payload fields stay open. */
+export const TASK_DIRECTIONS = [
+  'code',
+  'chat',
+  'plan',
+  'fast',
+  'vision',
+  'image',
+  'speech',
+  'video',
+] as const
+export type TaskDirection = (typeof TASK_DIRECTIONS)[number]
+export interface TaskRequestPayload {
+  readonly prompt: string
+  readonly direction?: TaskDirection
+  readonly command?: { readonly name: string }
+}
+
+export function isTaskDirection(value: unknown): value is TaskDirection {
+  return (
+    typeof value === 'string' &&
+    TASK_DIRECTIONS.some(direction => direction === value)
+  )
+}
+
 /** Every message kind the v0 protocol carries. */
 export enum MessageType {
   /** Ask an agent to perform work. */

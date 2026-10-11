@@ -486,6 +486,7 @@ export interface ConsoleCliConfig {
   readonly chatFrom: string
   /** 会话落盘的绝对路径。 */
   readonly chatStorePath: string
+  readonly schedules?: boolean
   /**
    * 每个节点跑在哪台服务器上。**给了才有归属面**，一个都没给就整个不显示。
    *
@@ -600,6 +601,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let legacyChat = false
   let chatFrom = DEFAULT_CONSOLE_CHAT_FROM
   let chatStorePath = consoleChatStorePath()
+  let schedules = false
   const nodeServers: ConsoleNodeServer[] = []
   let serverNotesPath = consoleServerNotesPath()
   const managed: ConsoleManagedAddress[] = []
@@ -819,6 +821,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       const parsed = residentOptionValue(args, index, '--admin-token')
       adminToken = nonEmpty(parsed.value, '--admin-token')
       index = parsed.next
+    } else if (arg === '--schedules') {
+      schedules = true
     } else if (arg === '--chat-url' || arg?.startsWith('--chat-url=')) {
       const parsed = residentOptionValue(args, index, '--chat-url')
       // A complete URL is legacy even when its query contains `=`. Only
@@ -1189,6 +1193,9 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     )
   }
 
+  if (schedules && chatTargets.length === 0)
+    throw new Error('--schedules needs --chat-url')
+
   // 给了库路径却没开账号，多半是以为给路径就开了。静默照旧跑会让人以为账号已
   // 上线，而页面上什么都没变。
   if (
@@ -1360,6 +1367,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     chatTargets,
     chatFrom,
     chatStorePath,
+    ...(schedules ? { schedules: true } : {}),
     nodeServers,
     serverNotesPath,
     ...(managed.length === 0 ? {} : { managed }),
@@ -1514,6 +1522,11 @@ Options (each accepts both --name value and --name=value):
                            Default ${DEFAULT_CONSOLE_CHAT_FROM}.
   --chat-store <abs path>  Where sessions and transcripts land, absolute path.
                            Default <config root>/qianmo/console/chat.ndjson.
+  --schedules             Enable console schedules; requires an active chat face.
+                           Runs every 30 seconds; missed slots catch up once.
+                           State: <config root>/qianmo/console/schedules/.
+                           ESTOP: <config root>/qianmo/scheduler/ESTOP.
+                           Notification formats are unevaluated.
   --node-server <node>=<server>
                            Which machine a node runs on. Repeatable, one node
                            per flag, and a node may not be named twice. The

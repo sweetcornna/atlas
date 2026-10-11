@@ -24,6 +24,7 @@ import type {
   HandoffDevicesPort,
   MemoryPort,
   ModelRoutingPort,
+  ModelDirection,
   SchedulesPort,
 } from './directionPorts.js'
 import type { AvatarsPort } from './avatar.js'
@@ -495,6 +496,10 @@ export interface ChatTurn {
   readonly code?: string
   /** 缺省为 `message`；`notice` 是任务跑到一半推过来的一条过程。 */
   readonly variant?: ChatTurnVariant
+  /** 宿主区分智能体显式通知与自动工具过程；旧转录不带此字段。 */
+  readonly noticeSource?: 'agent' | 'step'
+  /** 通知所由的任务（通知信封自己的 taskId 不是这个任务号）。 */
+  readonly causeTaskId?: string
   /** 只有 `notice` 有：这条过程的分量。 */
   readonly severity?: ChatNoticeSeverity
   /** 只有 `notice` 有：`notify` 的 `detail`，页面折起来给愿意看的人。 */
@@ -557,6 +562,9 @@ export interface ChatTranscript {
 }
 
 export interface ChatSendInput {
+  readonly direction?: ModelDirection
+  /** 宿主定时任务的期限；缺省沿用对话面的期限。 */
+  readonly taskTtlMs?: number
   /** Host-only conditional send; rechecked after endpoint resolution, never read from HTTP JSON. */
   readonly continuation?: {
     readonly afterTaskId: string

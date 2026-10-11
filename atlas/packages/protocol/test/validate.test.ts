@@ -54,6 +54,32 @@ function codesOf(input: unknown, node?: string): readonly ProtocolErrorCode[] {
 }
 
 describe('validateMessage — accepts', () => {
+  test('task.request accepts all P22/P24 hints while keeping other fields open', () => {
+    for (const direction of [
+      'code',
+      'chat',
+      'plan',
+      'fast',
+      'vision',
+      'image',
+      'speech',
+      'video',
+    ]) {
+      const result = validateMessage(
+        sample({ payload: { prompt: 'work', direction, extension: true } }),
+        { now: NOW },
+      )
+      expect(result.ok).toBe(true)
+    }
+    for (const direction of ['unknown', null, 1, false]) {
+      const result = validateMessage(
+        sample({ payload: { prompt: 'work', direction } }),
+        { now: NOW },
+      )
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.issues[0]!.field).toBe('payload.direction')
+    }
+  })
   test('a freshly created message', () => {
     const result = validateMessage(sample(), { now: NOW })
     expect(result.ok).toBe(true)

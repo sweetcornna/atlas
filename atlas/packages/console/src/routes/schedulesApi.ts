@@ -1,145 +1,97 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/**
- * `/v0/schedules` and `/v0/channels` — the JSON half of 主动执行 (P24).
- *
- * | Route | Who |
- * |---|---|
- * | `GET /v0/schedules` | view and up |
- * | `POST /v0/schedules` (create or update) | member and up |
- * | `POST /v0/schedules/<id>/enable\|disable\|run` | member and up |
- * | `DELETE /v0/schedules/<id>` | member and up |
- * | `POST /v0/channels`, `DELETE /v0/channels/<id>`, `POST /v0/channels/<id>/test` | ops |
- *
- * The body is validated by the port: this layer parses JSON, checks the
- * role, asks the ledger, calls the port and records the line.
- */
-
-import type { NotifyChannelDraft, ScheduleDraft } from '../directionPorts.js'
-import { methodNotAllowed, notFound } from '../respond.js'
+import type {
+  DirectionActor,
+  NotifyChannelDraft,
+  ScheduleDraft,
+} from '../directionPorts.js'
 import {
-  actorOf,
-  answer,
-  bodyOf,
-  guardMemberWrite,
-  guardOpsWrite,
-  guardRead,
-  segment,
-  unwired,
-  write,
-} from './directionShared.js'
+  fail,
+  json,
+  methodNotAllowed,
+  notFound,
+  readJsonObject,
+} from '../respond.js'
+import { failureResponse, guard, guardChat, safeDecode } from './shared.js'
 import type { HeadRoute, RouteContext } from './types.js'
 
-const UNWIRED = '定时任务'
-
-async function schedules(
-  ctx: RouteContext,
-  rest: readonly string[],
-): Promise<Response> {
-  const port = ctx.deps.schedules
-  const method = ctx.request.method
-  if (rest.length === 0) {
-    if (method === 'GET') {
-      const denied = guardRead(ctx)
-      if (denied !== null) return denied
-      if (port === undefined) return unwired(UNWIRED)
-      return answer(await port.snapshot())
-    }
-    if (method !== 'POST') return methodNotAllowed(['GET', 'POST'])
-    const denied = guardMemberWrite(ctx)
-    if (denied !== null) return denied
-    if (port === undefined) return unwired(UNWIRED)
-    const body = await bodyOf(ctx)
-    if (body instanceof Response) return body
-    const draft = body as unknown as ScheduleDraft
-    const target = typeof body.id === 'string' ? body.id : 'new'
-    return await write(ctx, 'schedule.save', target, () =>
-      port.save(draft, actorOf(ctx)),
-    )
+function actorOf(ctx: RouteContext): DirectionActor {
+  const principal = ctx.access.principal
+  return {
+    subject:
+      principal?.subject ??
+      (ctx.access.credential.role === 'admin' ? 'legacy:admin' : 'legacy:view'),
+    role: principal?.kind === 'user' ? principal.role : null,
+    requestId: ctx.requestId,
   }
-  const id = segment(rest[0])
-  if (id === null || rest.length > 2) {
-    return notFound(`unknown path: ${ctx.url.pathname}`)
-  }
-  const verb = rest[1]
-  if (verb === undefined) {
-    if (method !== 'DELETE') return methodNotAllowed(['DELETE'])
-    const denied = guardMemberWrite(ctx)
-    if (denied !== null) return denied
-    if (port === undefined) return unwired(UNWIRED)
-    return await write(ctx, 'schedule.remove', id, () =>
-      port.remove(id, actorOf(ctx)),
-    )
-  }
-  if (verb !== 'enable' && verb !== 'disable' && verb !== 'run') {
-    return notFound(`unknown path: ${ctx.url.pathname}`)
-  }
-  if (method !== 'POST') return methodNotAllowed(['POST'])
-  const denied = guardMemberWrite(ctx)
-  if (denied !== null) return denied
-  if (port === undefined) return unwired(UNWIRED)
-  if (verb === 'run') {
-    return await write(ctx, 'schedule.run', id, () =>
-      port.runNow(id, actorOf(ctx)),
-    )
-  }
-  return await write(
-    ctx,
-    verb === 'enable' ? 'schedule.enable' : 'schedule.disable',
-    id,
-    () => port.setEnabled(id, verb === 'enable', actorOf(ctx)),
-  )
 }
 
-async function channels(
-  ctx: RouteContext,
-  rest: readonly string[],
-): Promise<Response> {
-  const port = ctx.deps.schedules
-  const method = ctx.request.method
-  if (rest.length === 0) {
-    if (method !== 'POST') return methodNotAllowed(['POST'])
-    const denied = guardOpsWrite(ctx)
-    if (denied !== null) return denied
-    if (port === undefined) return unwired(UNWIRED)
-    const body = await bodyOf(ctx)
-    if (body instanceof Response) return body
-    const draft = body as unknown as NotifyChannelDraft
-    const target = typeof body.id === 'string' ? body.id : 'new'
-    return await write(ctx, 'channel.save', target, () =>
-      port.saveChannel(draft, actorOf(ctx)),
-    )
-  }
-  const id = segment(rest[0])
-  if (id === null || rest.length > 2) {
-    return notFound(`unknown path: ${ctx.url.pathname}`)
-  }
-  const verb = rest[1]
-  if (verb === undefined) {
-    if (method !== 'DELETE') return methodNotAllowed(['DELETE'])
-    const denied = guardOpsWrite(ctx)
-    if (denied !== null) return denied
-    if (port === undefined) return unwired(UNWIRED)
-    return await write(ctx, 'channel.remove', id, () =>
-      port.removeChannel(id, actorOf(ctx)),
-    )
-  }
-  if (verb !== 'test') return notFound(`unknown path: ${ctx.url.pathname}`)
-  if (method !== 'POST') return methodNotAllowed(['POST'])
-  const denied = guardOpsWrite(ctx)
-  if (denied !== null) return denied
-  if (port === undefined) return unwired(UNWIRED)
-  return await write(ctx, 'channel.test', id, () =>
-    port.testChannel(id, actorOf(ctx)),
-  )
-}
-
+/** API only. The 主动执行 area owns attaching this head route to its module. */
 export const schedulesApi: HeadRoute = {
   heads: ['schedules', 'channels'],
   async handle(ctx, head, rest) {
-    return head === 'schedules'
-      ? await schedules(ctx, rest)
-      : await channels(ctx, rest)
+    const { request, deps, access } = ctx
+    const read =
+      head === 'schedules' && rest.length === 0 && request.method === 'GET'
+    const denied = read
+      ? guard(access.credential, 'view', 'guarded')
+      : head === 'channels'
+        ? guard(access.credential, 'admin', 'guarded')
+        : guardChat(access, 'guarded')
+    if (denied) return denied
+    const verb = rest[1]
+    const allowed =
+      rest.length === 0
+        ? head === 'schedules'
+          ? ['GET', 'POST']
+          : ['POST']
+        : rest.length === 1
+          ? ['DELETE']
+          : rest.length === 2 &&
+              (head === 'schedules'
+                ? ['enable', 'disable', 'run'].includes(verb!)
+                : verb === 'test')
+            ? ['POST']
+            : null
+    if (!allowed) return notFound(`unknown path: ${ctx.url.pathname}`)
+    if (!allowed.includes(request.method)) return methodNotAllowed(allowed)
+    const port = deps.schedules
+    if (!port) return fail(501, 'unsupported', '定时任务与通知渠道未接入')
+    if (read) {
+      const result = await port.snapshot()
+      return result.ok ? json(result.value) : failureResponse(result.failure)
+    }
+    const admitted = await ctx.admit()
+    if (admitted) return admitted
+    const actor = actorOf(ctx)
+    if (rest.length === 0) {
+      const body = await readJsonObject(request)
+      if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
+      // The host validates all fields; these casts assert no validity at the boundary.
+      const result =
+        head === 'schedules'
+          ? await port.save(body as unknown as ScheduleDraft, actor)
+          : await port.saveChannel(body as unknown as NotifyChannelDraft, actor)
+      return result.ok ? json(result.value) : failureResponse(result.failure)
+    }
+    const id = safeDecode(rest[0]!)
+    if (id === null) return fail(400, 'invalid', '标识编码无效')
+    if (request.method === 'DELETE') {
+      const result =
+        head === 'schedules'
+          ? await port.remove(id, actor)
+          : await port.removeChannel(id, actor)
+      return result.ok
+        ? new Response(null, { status: 204 })
+        : failureResponse(result.failure)
+    }
+    const result =
+      head === 'channels'
+        ? await port.testChannel(id, actor)
+        : verb === 'run'
+          ? await port.runNow(id, actor)
+          : await port.setEnabled(id, verb === 'enable', actor)
+    return result.ok ? json(result.value) : failureResponse(result.failure)
   },
 }

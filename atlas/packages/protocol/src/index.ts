@@ -82,6 +82,10 @@ export {
 
 export {
   ENVELOPE_VERSION,
+  TASK_DIRECTIONS,
+  type TaskDirection,
+  type TaskRequestPayload,
+  isTaskDirection,
   LEGACY_MESSAGE_TYPES,
   MESSAGE_TYPES,
   MessageType,

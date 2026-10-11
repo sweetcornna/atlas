@@ -468,7 +468,12 @@ export type ScheduleWhen =
       readonly days: readonly number[]
       readonly time: string
     }
-  | { readonly kind: 'interval'; readonly everyMinutes: number }
+  | {
+      readonly kind: 'interval'
+      readonly everyMinutes: number
+      /** 宿主存入任务创建时刻；旧值未带锚点时按 Unix epoch 计算。 */
+      readonly anchorMs?: number
+    }
 
 export const SCHEDULE_TEMPLATES = [
   'briefing',
