@@ -34,6 +34,7 @@ import {
   type ChannelPushResult,
   type ScheduleNotification,
 } from './consoleNotifyChannels.js'
+import { notifyDestination, NotifyDestinationError } from './consoleNotifyDestination.js'
 import { nextRunAt, validateScheduleWhen } from './scheduleTime.js'
 
 const MINUTE = 60_000
@@ -248,7 +249,7 @@ export class ConsoleSchedules implements SchedulesPort {
           .record(z.string(), z.string())
           .parse(JSON.parse(secret))
         for (const [id, value] of Object.entries(values)) {
-          this.#secrets.set(id, notifyChannelUrl(value).toString())
+          this.#secrets.set(id, notifyChannelUrl(value, options.pushOptions).toString())
           this.#redactions.add(value)
         }
       }
@@ -276,7 +277,7 @@ export class ConsoleSchedules implements SchedulesPort {
           if (!url) throw new Error('missing secret')
           this.#channels.set(channel.id, {
             ...channel,
-            host: notifyChannelUrl(url).hostname,
+            host: notifyChannelUrl(url, options.pushOptions).hostname,
           })
         }
         for (const run of book.running) {
@@ -623,9 +624,14 @@ export class ConsoleSchedules implements SchedulesPort {
       if (!raw) return fail('invalid', '新通知渠道必须设置地址')
       let url: URL
       try {
-        url = notifyChannelUrl(raw)
-      } catch {
-        return fail('invalid', '渠道地址无效，只允许 HTTPS（回环允许 HTTP）')
+        url = (await notifyDestination(raw, this.#options.pushOptions)).url
+      } catch (error) {
+        return fail(
+          'invalid',
+          error instanceof NotifyDestinationError
+            ? error.message
+            : '目的地址验证失败',
+        )
       }
       const channel: NotifyChannelView = {
         id,
@@ -692,6 +698,7 @@ export class ConsoleSchedules implements SchedulesPort {
     const url = this.#secrets.get(channel.id)
     if (!url) return { ok: false, error: '渠道地址未设置', attempts: 0 }
     try {
+      await notifyDestination(url, this.#options.pushOptions)
       const result = this.#options.push
         ? await this.#options.push(channel.kind, url, notice)
         : await pushNotifyChannel(
@@ -700,10 +707,19 @@ export class ConsoleSchedules implements SchedulesPort {
             notice,
             this.#options.pushOptions,
           )
-      // Injected transports get the same secret boundary as production fetch.
-      return { ...result, error: result.ok ? null : '通知推送失败' }
-    } catch {
-      return { ok: false, error: '通知推送失败', attempts: 1 }
+      // Injected transports may echo secrets; production errors are closed messages.
+      return this.#options.push
+        ? { ...result, error: result.ok ? null : '通知推送失败' }
+        : result
+    } catch (error) {
+      return {
+        ok: false,
+        error:
+          error instanceof NotifyDestinationError
+            ? error.message
+            : '通知推送失败',
+        attempts: 0,
+      }
     }
   }
 
@@ -733,7 +749,7 @@ export class ConsoleSchedules implements SchedulesPort {
       this.#persist()
       return result.ok
         ? ok(this.#redact(next))
-        : fail('unreachable', '通知推送失败')
+        : fail('unreachable', result.error ?? '通知推送失败')
     })
   }
 

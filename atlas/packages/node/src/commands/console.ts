@@ -26,6 +26,7 @@ import { StaticPublicKeyDirectory } from '@qianmo/capability'
 import { qianmoConfigPath } from '@qianmo/paths'
 import { loadOrCreateNodeKeys } from '../host/nodeIdentity.js'
 import { ConsoleApprovals } from './consoleApprovals.js'
+import { notifyAllowlist } from './consoleNotifyDestination.js'
 import { ConsoleSchedules } from './consoleSchedules.js'
 import { loadConsoleApproverIdentity } from './consoleApproverIdentity.js'
 import { readTrustAnchors } from '../host/trustAnchors.js'
@@ -577,6 +578,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           directory: qianmoConfigPath('qianmo', 'console', 'schedules'),
           estopPath: qianmoConfigPath('qianmo', 'scheduler', 'ESTOP'),
           chat: chat.hub,
+          pushOptions: {
+            allowlist: notifyAllowlist(process.env.QIANMO_NOTIFY_ALLOWLIST),
+          },
           ...(accounts === undefined ? {} : { accounts }),
           ...(usage === undefined ? {} : { usage }),
           ...(tenancy === undefined ? {} : { tenancy }),

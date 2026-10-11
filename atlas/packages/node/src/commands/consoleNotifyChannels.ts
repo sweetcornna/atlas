@@ -2,10 +2,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import {
-  isLoopbackHostname,
   type NotifyChannelKind,
   type ScheduleRunOutcome,
 } from '@qianmo/console'
+
+import * as http from 'node:http'
+import * as https from 'node:https'
+import { checkServerIdentity, type PeerCertificate } from 'node:tls'
+import {
+  notifyDestination,
+  NotifyDestinationError,
+  type NotifyAddress,
+  type NotifyDestinationOptions,
+} from './consoleNotifyDestination.js'
+export { notifyChannelUrl } from './consoleNotifyDestination.js'
 
 export interface ScheduleNotification {
   readonly title: string
@@ -24,27 +34,11 @@ export interface ChannelPushResult {
   readonly attempts: number
 }
 
-export interface ChannelPushOptions {
+export interface ChannelPushOptions extends NotifyDestinationOptions {
+  /** Test-only response fixture; production uses the pinned socket transport. */
   readonly fetch?: (url: string, init: RequestInit) => Promise<Response>
   readonly delay?: (ms: number) => Promise<void>
   readonly timeoutMs?: number
-}
-
-export function notifyChannelUrl(raw: string): URL {
-  let url: URL
-  try {
-    url = new URL(raw)
-  } catch {
-    throw new Error('渠道地址必须是完整 URL')
-  }
-  if (
-    url.protocol !== 'https:' &&
-    !(url.protocol === 'http:' && isLoopbackHostname(url.hostname))
-  )
-    throw new Error('渠道只允许 HTTPS；回环地址允许 HTTP')
-  if (url.username || url.password || url.hash)
-    throw new Error('渠道地址不能带用户名、密码或片段')
-  return url
 }
 
 /** Sources checked 2026-10-11; formats only, no real-service evaluation.
@@ -129,6 +123,72 @@ function serviceError(kind: NotifyChannelKind, prefix: string): string | null {
   return code === (kind === 'bark' ? 200 : 0) ? null : `渠道拒绝（${code}）`
 }
 
+/** Pin by connecting to the checked IP literal, with the original Host and TLS
+ * identity. This needs no second DNS lookup (including under Bun); proxy env
+ * variables and pooled sockets cannot substitute a different destination. */
+async function pinnedPost(
+  url: URL,
+  address: NotifyAddress,
+  init: RequestInit,
+): Promise<{ status: number; prefix: string }> {
+  const pending = Promise.withResolvers<{ status: number; prefix: string }>()
+  const host = url.hostname.replace(/^\[|\]$/g, '')
+  const transport = url.protocol === 'https:' ? https : http
+  const request = transport.request(
+    {
+      protocol: url.protocol,
+      hostname: address.address,
+      family: address.family,
+      port: Number(url.port || (url.protocol === 'https:' ? 443 : 80)),
+      path: `${url.pathname}${url.search}`,
+      method: 'POST',
+      headers: {
+        ...Object.fromEntries(new Headers(init.headers)),
+        Host: url.host,
+      },
+      agent: false,
+      signal: init.signal ?? undefined,
+      ...(url.protocol === 'https:'
+        ? {
+            servername: host,
+            checkServerIdentity: (_name: string, cert: PeerCertificate) =>
+              checkServerIdentity(host, cert),
+          }
+        : {}),
+    },
+    response => {
+      const pieces: Buffer[] = []
+      let remaining = 4096
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        pending.resolve({
+          status: response.statusCode ?? 0,
+          prefix: Buffer.concat(pieces).toString('utf8'),
+        })
+      }
+      response.on('data', (chunk: Buffer) => {
+        const piece = chunk.subarray(0, remaining)
+        pieces.push(piece)
+        remaining -= piece.length
+        if (remaining === 0) {
+          finish()
+          response.destroy()
+        }
+      })
+      response.on('end', finish)
+      response.on('error', pending.reject)
+      response.on('aborted', () =>
+        pending.reject(new Error('response interrupted')),
+      )
+    },
+  )
+  request.on('error', pending.reject)
+  request.end(typeof init.body === 'string' ? init.body : '')
+  return pending.promise
+}
+
 /** One initial attempt plus at most three retries (2s, 8s, 30s). */
 export async function pushNotifyChannel(
   kind: NotifyChannelKind,
@@ -136,27 +196,40 @@ export async function pushNotifyChannel(
   notice: ScheduleNotification,
   options: ChannelPushOptions = {},
 ): Promise<ChannelPushResult> {
-  let url: URL
-  try {
-    url = notifyChannelUrl(rawUrl)
-  } catch {
-    return { ok: false, error: '渠道地址无效', attempts: 0 }
-  }
   const delays = [2000, 8000, 30000]
   let error = '渠道发送失败'
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     if (attempt > 0) await (options.delay ?? Bun.sleep)(delays[attempt - 1]!)
+    let destination: { url: URL; address: NotifyAddress }
+    try {
+      destination = await notifyDestination(rawUrl, options)
+    } catch (failure) {
+      return {
+        ok: false,
+        error:
+          failure instanceof NotifyDestinationError
+            ? failure.message
+            : '目的地址验证失败',
+        attempts: attempt,
+      }
+    }
     const signal = AbortSignal.timeout(options.timeoutMs ?? 10_000)
     try {
-      const response = await (options.fetch ?? fetch)(url.toString(), {
+      const init = {
         ...requestFor(kind, notice),
-        redirect: 'manual',
+        redirect: 'manual' as const,
         signal,
-      })
-      const prefix = await responsePrefix(response)
-      const failure = response.ok
-        ? serviceError(kind, prefix)
-        : `HTTP ${response.status}`
+      }
+      const response = options.fetch
+        ? await options.fetch(destination.url.toString(), init)
+        : null
+      const { status, prefix } = response
+        ? { status: response.status, prefix: await responsePrefix(response) }
+        : await pinnedPost(destination.url, destination.address, init)
+      const failure =
+        status >= 200 && status < 300
+          ? serviceError(kind, prefix)
+          : `HTTP ${status}`
       if (failure === null)
         return { ok: true, error: null, attempts: attempt + 1 }
       error = failure

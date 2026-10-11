@@ -58,6 +58,7 @@ describe('notification wire formats (loopback fixtures only)', () => {
         kind,
         `http://127.0.0.1:${server.port}/private-key?key=secret`,
         notice,
+        { allowlist: [`127.0.0.1:${server.port}`] },
       )
       expect(result).toEqual({ ok: true, error: null, attempts: 1 })
       expect(requests).toHaveLength(1)
@@ -113,12 +114,7 @@ describe('notification wire formats (loopback fixtures only)', () => {
       expect(result.ok).toBe(false)
     }
     expect(calls).toBe(0)
-    for (const url of [
-      'https://example.com/secret',
-      'http://localhost/path',
-      'http://127.0.0.2/path',
-      'http://[::1]/path',
-    ])
+    for (const url of ['https://example.com/secret'])
       expect(notifyChannelUrl(url).protocol).toBe(
         url.startsWith('https') ? 'https:' : 'http:',
       )
@@ -132,6 +128,7 @@ describe('notification wire formats (loopback fixtures only)', () => {
       'https://example.com/private-key',
       notice,
       {
+        resolve: async () => [{ address: '93.184.216.34', family: 4 }],
         delay: async ms => {
           delays.push(ms)
         },
@@ -163,6 +160,7 @@ describe('notification wire formats (loopback fixtures only)', () => {
         'https://example.com/private-key',
         notice,
         {
+          resolve: async () => [{ address: '93.184.216.34', family: 4 }],
           delay: async ms => {
             delays.push(ms)
           },
@@ -202,7 +200,7 @@ describe('notification wire formats (loopback fixtures only)', () => {
       'webhook',
       `http://127.0.0.1:${redirect.port}`,
       notice,
-      { delay: async () => {} },
+      { delay: async () => {}, allowlist: [`127.0.0.1:${redirect.port}`] },
     )
     expect(result).toEqual({ ok: false, error: 'HTTP 302', attempts: 4 })
     expect(destinationCalls).toBe(0)
@@ -216,6 +214,7 @@ describe('notification wire formats (loopback fixtures only)', () => {
       'https://example.com/private-key',
       notice,
       {
+        resolve: async () => [{ address: '93.184.216.34', family: 4 }],
         fetch: async () =>
           new Response(
             new ReadableStream(
@@ -245,6 +244,7 @@ describe('notification wire formats (loopback fixtures only)', () => {
       'https://example.com/private-key',
       notice,
       {
+        resolve: async () => [{ address: '93.184.216.34', family: 4 }],
         timeoutMs: 1,
         delay: async () => {},
         fetch: async (_url, init) => {
@@ -274,6 +274,7 @@ describe('notification wire formats (loopback fixtures only)', () => {
       notice,
       {
         delay: async () => {},
+        resolve: async () => [{ address: '93.184.216.34', family: 4 }],
         fetch: async () => new Response('private-key'),
       },
     )

@@ -210,6 +210,7 @@ function open(): ConsoleSchedules {
     directory: path.join(root, 'schedules'),
     estopPath: path.join(root, 'ESTOP'),
     chat,
+    pushOptions: { resolve: async () => [{ address: '93.184.216.34', family: 4 }] },
     accounts,
     actions: ledger,
     now: () => now,
@@ -742,6 +743,7 @@ describe('execution through the conversation port', () => {
       directory: path.join(root, 'schedules'),
       estopPath: path.join(root, 'ESTOP'),
       chat,
+      pushOptions: { resolve: async () => [{ address: '93.184.216.34', family: 4 }] },
       accounts,
       now: () => now,
       push: async () => {
