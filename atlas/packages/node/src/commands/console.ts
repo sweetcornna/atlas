@@ -468,16 +468,34 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     config.handoffRoot === undefined
       ? undefined
       : openConsoleHandoffGit(config.handoffRoot)
+  let connectors: ConsoleConnectors | undefined
+  const fallbackRepoCredentials =
+    config.handoffRepos === undefined
+      ? undefined
+      : cliHandoffRepoCredentials(config.handoffRepos)
   let handoff: ReturnType<typeof openConsoleHandoff> | undefined
   try {
     handoff =
-      config.handoffRoot === undefined && config.handoffRepos === undefined
+      config.handoffRoot === undefined &&
+      config.handoffRepos === undefined &&
+      !config.connectors
         ? undefined
         : openConsoleHandoff({
             root: config.handoffRoot,
             ...(config.handoffRoot === undefined &&
-            config.handoffRepos !== undefined
-              ? { credentials: cliHandoffRepoCredentials(config.handoffRepos) }
+            (config.connectors || fallbackRepoCredentials !== undefined)
+              ? {
+                  credentials: {
+                    async resolve(repo, scope) {
+                      return config.connectors
+                        ? ((await connectors?.resolve(repo, scope)) ?? null)
+                        : ((await fallbackRepoCredentials?.resolve(
+                            repo,
+                            scope,
+                          )) ?? null)
+                    },
+                  },
+                }
               : {}),
             retentionMs: config.handoffRetentionMs,
             ownsProject: (project, owner) =>
@@ -742,11 +760,14 @@ export async function runConsole(args: readonly string[]): Promise<void> {
             process.stderr.write(`[approvals] ${String(error)}\n`),
         })
 
-  const connectors =
+  connectors =
     config.connectors && control && approvals
       ? new ConsoleConnectors({
           directory: qianmoConfigPath('qianmo', 'console', 'connectors'),
           policy: outboundPolicy,
+          ...(fallbackRepoCredentials === undefined
+            ? {}
+            : { fallbackRepoCredentials }),
           agents: async () => {
             const listed = await registry.list()
             if (!listed.ok) throw new Error('registry unavailable')
@@ -1004,7 +1025,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   banner += field(
     'handoff',
     handoff === undefined
-      ? 'disabled (no --handoff-root or --handoff-repo)'
+      ? 'disabled (no --handoff-root, --handoff-repo or --connectors)'
       : `enabled -> ${handoff.root} (ledger ${handoff.ledgerPath}, ` +
           `${String(handoff.replayed)} tasks; audit ${handoff.auditPath})`,
   )

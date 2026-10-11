@@ -6,6 +6,13 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
+import { githubHandoffRef, type HandoffManifest } from '@qianmo/handoff'
+import { generateNodeKeyPair } from '@qianmo/capability'
+import type { TenantPort } from '@qianmo/console'
+import { ConsoleConnectors } from '../../packages/node/src/commands/consoleConnectors.js'
+import { OutboundPolicy } from '../../packages/node/src/commands/outboundPolicy.js'
+import { transportPskEnvVarForNode } from '../../packages/node/src/commands/consoleArgs.js'
+import type { HandoffRepoCredentials } from '../../packages/node/src/commands/handoffRepoCredentials.js'
 import { accountsHarness } from '../../packages/console/test/accountsHarness.js'
 import { openConsoleHandoff } from '../../packages/node/src/commands/consoleHandoff.js'
 import { openConsoleHandoffDevices } from '../../packages/node/src/commands/consoleHandoffDevices.js'
@@ -22,6 +29,7 @@ import {
 import { type RepoVisibility } from '../../packages/node/src/commands/handoffGithub.js'
 import {
   git,
+  laptop,
   startTestNode,
 } from '../../packages/node/test/commands/support/handoffNodeFixtures.js'
 import {
@@ -36,6 +44,11 @@ import {
 } from './fixtures/handoff-processes.js'
 
 const TOKEN = 'p26-repo-token-canary-0123456789'
+const REPO_ACTOR = {
+  subject: 'u:0123456789abcdef',
+  role: 'ops' as const,
+  requestId: 'p26c-integration',
+}
 const THREAD = '0199e7c2-4a51-7d30-9a1e-5b0c2f7d8e14'
 const cleanups: (() => unknown)[] = []
 afterEach(async () => {
@@ -141,15 +154,45 @@ for (const visibility of ['private', 'public', 'unknown'] as const) {
     })
     const hubRoot = path.join(root, 'hub-state')
     const hubLogs: string[] = []
+    const connections = new ConsoleConnectors({
+      directory: path.join(hubRoot, 'connections'),
+      agents: async () => [],
+      policy: new OutboundPolicy({
+        lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+      }),
+      repoFetch: async () =>
+        Response.json({
+          private: visibility === 'private',
+          permissions: { push: true },
+        }),
+    })
+    cleanups.push(() => connections.close())
+    const saved = await connections.save(
+      {
+        name: 'Relay repository',
+        kind: 'repo',
+        preset: 'github-repo',
+        settings: { repo: 'test/demo', exchange: false },
+        secret: TOKEN,
+        agents: [],
+      },
+      REPO_ACTOR,
+    )
+    if (!saved.ok) throw new Error('connection save failed')
+    if (visibility !== 'unknown') {
+      const probed = await connections.probe(saved.value.id, REPO_ACTOR)
+      expect(probed.ok && probed.value.lastProbe?.ok).toBe(true)
+    }
     const hub = openConsoleHandoff({
       onError: line => hubLogs.push(line),
       ledgerPath: path.join(hubRoot, 'ledger.ndjson'),
       auditPath: path.join(hubRoot, 'audit.ndjson'),
       credentials: {
-        async resolve(repo) {
+        async resolve(repo, scope) {
           resolved++
-          return repo === 'test/demo'
-            ? { remoteUrl: `file://${remote}`, token: TOKEN }
+          const credential = await connections.resolve(repo, scope)
+          return credential
+            ? { ...credential, remoteUrl: `file://${remote}` }
             : null
         },
       },
@@ -335,79 +378,308 @@ for (const visibility of ['private', 'public', 'unknown'] as const) {
   }, 30_000)
 }
 
-test('production console CLI chooses GitHub without handoff-root, advertises mode and never creates a bare repo', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p26-cli-'))
-  const configRoot = path.join(root, 'config')
-  const repoToken = path.join(root, 'repo.token')
-  const adminToken = path.join(root, 'admin.token')
-  const viewToken = path.join(root, 'view.token')
-  fs.writeFileSync(repoToken, TOKEN, { mode: 0o600 })
-  fs.writeFileSync(adminToken, 'p26-admin-token-0123456789', { mode: 0o600 })
-  fs.writeFileSync(viewToken, 'p26-view-token-0123456789', { mode: 0o600 })
-  const childEnv: Record<string, string> = {}
-  for (const [key, value] of Object.entries(process.env))
-    if (value !== undefined) childEnv[key] = value
-  for (const key of INHERITED_KEYS_TO_DROP) delete childEnv[key]
-  childEnv.QIANMO_CONFIG_DIR = configRoot
-  childEnv.HOME = path.join(root, 'home')
-  const port = await freePort()
-  const child = Bun.spawn(
-    [
-      process.execPath,
-      ...cliPrefix(),
-      'console',
-      '--port',
-      String(port),
-      '--accounts',
-      '--admin-token-file',
-      adminToken,
-      '--view-token-file',
-      viewToken,
-      '--handoff-repo',
-      `test/demo=${repoToken}`,
-    ],
-    { cwd: root, env: childEnv, stdout: 'pipe', stderr: 'pipe' },
-  )
-  const stdout = new Response(child.stdout).text()
-  const stderr = new Response(child.stderr).text()
-  try {
-    const url = `http://127.0.0.1:${port}`
-    const headers = { authorization: 'Bearer p26-admin-token-0123456789' }
-    await until(async () => {
-      try {
-        return (
-          (await fetch(`${url}/v0/handoff/config`, { headers })).status === 200
-        )
-      } catch {
-        return false
-      }
-    })
-    expect(
-      await (await fetch(`${url}/v0/handoff/config`, { headers })).json(),
-    ).toEqual({ codeStore: 'github' })
-    expect(
-      (
-        await fetch(
-          `${url}/v0/handoff/git/demo.git/info/refs?service=git-upload-pack`,
-          { headers },
-        )
-      ).status,
-    ).toBe(404)
-    expect(
-      files(configRoot).filter(
-        file =>
-          path.basename(file) === 'objects' ||
-          file.endsWith('.pack') ||
-          file.endsWith('.git'),
-      ),
-    ).toEqual([])
-  } finally {
-    child.kill('SIGTERM')
-    const timer = setTimeout(() => child.kill('SIGKILL'), 3000)
-    await child.exited
-    clearTimeout(timer)
-    const printed = `${await stdout}\n${await stderr}`
-    expect(printed).not.toContain(TOKEN)
-    fs.rmSync(root, { recursive: true, force: true })
+for (const mode of ['cli', 'connections'] as const) {
+  test(`production console CLI (${mode}) chooses GitHub without handoff-root, advertises mode and never creates a bare repo`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p26-cli-'))
+    const configRoot = path.join(root, 'config')
+    const repoToken = path.join(root, 'repo.token')
+    const adminToken = path.join(root, 'admin.token')
+    const viewToken = path.join(root, 'view.token')
+    fs.writeFileSync(repoToken, TOKEN, { mode: 0o600 })
+    fs.writeFileSync(adminToken, 'p26-admin-token-0123456789', { mode: 0o600 })
+    fs.writeFileSync(viewToken, 'p26-view-token-0123456789', { mode: 0o600 })
+    const childEnv: Record<string, string> = {}
+    for (const [key, value] of Object.entries(process.env))
+      if (value !== undefined) childEnv[key] = value
+    for (const key of INHERITED_KEYS_TO_DROP) delete childEnv[key]
+    childEnv.QIANMO_CONFIG_DIR = configRoot
+    childEnv.HOME = path.join(root, 'home')
+    const publicKey = generateNodeKeyPair().publicKey
+    const peer = `worker=ws://127.0.0.1:${await freePort()}`
+    childEnv[transportPskEnvVarForNode('worker', '--chat-url')] =
+      'p26c-control-psk-01234567890123456789'
+    if (mode === 'connections') {
+      const book = new ConsoleConnectors({
+        directory: path.join(configRoot, 'qianmo', 'console', 'connectors'),
+        agents: async () => [],
+      })
+      const saved = await book.save(
+        {
+          name: 'Relay',
+          kind: 'repo',
+          preset: 'github-repo',
+          settings: { repo: 'test/demo', exchange: false },
+          secret: TOKEN,
+          agents: [],
+        },
+        REPO_ACTOR,
+      )
+      book.close()
+      if (!saved.ok) throw new Error('seed failed')
+    }
+    const port = await freePort()
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        ...cliPrefix(),
+        'console',
+        '--port',
+        String(port),
+        '--accounts',
+        '--admin-token-file',
+        adminToken,
+        '--view-token-file',
+        viewToken,
+        ...(mode === 'cli'
+          ? ['--handoff-repo', `test/demo=${repoToken}`]
+          : [
+              '--connectors',
+              '--approvals',
+              '--chat-sign',
+              '--chat-url',
+              peer,
+              '--control',
+              peer,
+              '--trust',
+              `worker=${publicKey}`,
+              '--handoff-node',
+              peer,
+            ]),
+      ],
+      { cwd: root, env: childEnv, stdout: 'pipe', stderr: 'pipe' },
+    )
+    const stdout = new Response(child.stdout).text()
+    const stderr = new Response(child.stderr).text()
+    try {
+      const url = `http://127.0.0.1:${port}`
+      const headers = { authorization: 'Bearer p26-admin-token-0123456789' }
+      await until(async () => {
+        try {
+          return (
+            (await fetch(`${url}/v0/handoff/config`, { headers })).status ===
+            200
+          )
+        } catch {
+          return false
+        }
+      })
+      expect(
+        await (await fetch(`${url}/v0/handoff/config`, { headers })).json(),
+      ).toEqual({ codeStore: 'github' })
+      expect(
+        (
+          await fetch(
+            `${url}/v0/handoff/git/demo.git/info/refs?service=git-upload-pack`,
+            { headers },
+          )
+        ).status,
+      ).toBe(404)
+      expect(
+        files(configRoot).filter(
+          file =>
+            path.basename(file) === 'objects' ||
+            file.endsWith('.pack') ||
+            file.endsWith('.git'),
+        ),
+      ).toEqual([])
+    } finally {
+      child.kill('SIGTERM')
+      const timer = setTimeout(() => child.kill('SIGKILL'), 3000)
+      await child.exited
+      clearTimeout(timer)
+      const printed = `${await stdout}\n${await stderr}`
+      expect(printed).not.toContain(TOKEN)
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }, 20_000)
+}
+
+async function connectionTask(tenancy?: TenantPort) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p26c-relay-'))
+  cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }))
+  const from = await laptop(root, { device: 'd-aaaaaaaaaaaa' })
+  const remote = path.join(root, 'remote.git')
+  git(root, 'init', '--bare', '-q', remote)
+  const taskId = 'connection-task'
+  const manifest: HandoffManifest = {
+    ...from.manifest,
+    code: {
+      repo: 'test/demo',
+      wip: {
+        ref: githubHandoffRef('wip', from.manifest.device, taskId),
+        commit: from.manifest.wip,
+      },
+      sessions: null,
+      reason: 'test omits sessions',
+    },
   }
+  git(
+    from.work,
+    'push',
+    '-q',
+    remote,
+    `${manifest.wip}:${manifest.code!.wip.ref}`,
+  )
+  const book = new ConsoleConnectors({
+    directory: path.join(root, 'connections'),
+    agents: async () => [],
+    ...(tenancy ? { tenancy } : {}),
+  })
+  cleanups.push(() => book.close())
+  let remoteReads = 0
+  const credentials: HandoffRepoCredentials = {
+    async resolve(repo, scope) {
+      const credential = await book.resolve(repo, scope)
+      if (!credential) return null
+      remoteReads++
+      return { ...credential, remoteUrl: `file://${remote}` }
+    },
+  }
+  const options = {
+    ledgerPath: path.join(root, 'hub', 'ledger.ndjson'),
+    auditPath: path.join(root, 'hub', 'audit.ndjson'),
+    credentials,
+  }
+  const save = (actor = REPO_ACTOR) =>
+    book.save(
+      {
+        name: 'Relay',
+        kind: 'repo',
+        preset: 'github-repo',
+        settings: { repo: 'test/demo', exchange: false },
+        secret: TOKEN,
+        agents: [],
+      },
+      actor,
+    )
+  return {
+    root,
+    book,
+    options,
+    manifest,
+    save,
+    taskId,
+    reads: () => remoteReads,
+  }
+}
+
+test('connection-book revocation after acceptance survives hub restart and fails dispatch before token delivery', async () => {
+  const f = await connectionTask()
+  const saved = await f.save()
+  if (!saved.ok) throw new Error('save failed')
+  const actor = { owner: REPO_ACTOR.subject, deviceId: f.manifest.device }
+  const acceptedHub = openConsoleHandoff(f.options)
+  cleanups.push(() => acceptedHub.close())
+  expect((await acceptedHub.port.accept(f.manifest, actor)).ok).toBe(true)
+  acceptedHub.close()
+  expect((await f.book.remove(saved.value.id, REPO_ACTOR)).ok).toBe(true)
+  const reads = f.reads()
+  const hub = openConsoleHandoff({
+    ...f.options,
+    dispatch: {
+      status: 'test',
+      config: {
+        nodes: [
+          {
+            node: 'worker',
+            url: 'ws://127.0.0.1:1',
+            psk: 'p26c-test-psk-01234567890123456789',
+          },
+        ],
+        from: 'qianmo://hub/console',
+        issueCapability: () => {
+          throw new Error('must not deliver')
+        },
+        pingIntervalMs: 25,
+      },
+    },
+  })
+  cleanups.push(() => hub.close())
+  hub.start()
+  await until(async () => {
+    const task = await hub.port.get(f.taskId, actor)
+    return task.ok && task.value.state === 'failed'
+  })
+  expect(await hub.port.get(f.taskId, actor)).toMatchObject({
+    ok: true,
+    value: { state: 'failed', reason: '仓库连接已撤销' },
+  })
+  expect(f.reads()).toBe(reads)
+  expect(
+    files(f.root)
+      .filter(file => fs.statSync(file).isFile())
+      .map(file => fs.readFileSync(file, 'utf8'))
+      .join('\n'),
+  ).not.toContain(TOKEN)
+}, 20_000)
+
+test('task owner cannot borrow a different tenant repo connection at acceptance or resumed dispatch', async () => {
+  const foreign = { ...REPO_ACTOR, subject: 'u:fedcba9876543210' }
+  const tenancy: TenantPort = {
+    read: () => ({
+      revision: '1',
+      config: {
+        version: 1,
+        hubServer: 'hub',
+        tenants: [{ id: 'a' }, { id: 'b' }],
+        subjects: [
+          { subject: REPO_ACTOR.subject, tenant: 'a' },
+          { subject: foreign.subject, tenant: 'b' },
+        ],
+        platformSubjects: [],
+        nodes: [],
+        jobs: [],
+      },
+    }),
+    subscribe: () => () => {},
+  }
+  const f = await connectionTask(tenancy)
+  expect((await f.save(foreign)).ok).toBe(true)
+  const actor = { owner: REPO_ACTOR.subject, deviceId: f.manifest.device }
+  const acceptedHub = openConsoleHandoff(f.options)
+  cleanups.push(() => acceptedHub.close())
+  expect(await acceptedHub.port.accept(f.manifest, actor)).toMatchObject({
+    ok: false,
+    failure: { message: '中枢没有这个仓库的连接' },
+  })
+  expect(f.reads()).toBe(0)
+  const own = await f.save()
+  if (!own.ok) throw new Error('save failed')
+  expect((await acceptedHub.port.accept(f.manifest, actor)).ok).toBe(true)
+  acceptedHub.close()
+  expect((await f.book.remove(own.value.id, REPO_ACTOR)).ok).toBe(true)
+  const hub = openConsoleHandoff({
+    ...f.options,
+    dispatch: {
+      status: 'test',
+      config: {
+        nodes: [
+          {
+            node: 'worker',
+            url: 'ws://127.0.0.1:1',
+            psk: 'p26c-test-psk-01234567890123456789',
+          },
+        ],
+        from: 'qianmo://hub/console',
+        issueCapability: () => {
+          throw new Error('must not deliver')
+        },
+        pingIntervalMs: 25,
+      },
+    },
+  })
+  cleanups.push(() => hub.close())
+  hub.start()
+  await until(async () => {
+    const task = await hub.port.get(f.taskId, actor)
+    return task.ok && task.value.state === 'failed'
+  })
+  expect(await hub.port.get(f.taskId, actor)).toMatchObject({
+    ok: true,
+    value: { reason: '仓库连接已撤销' },
+  })
+  expect(f.reads()).toBe(1)
+  expect(
+    await f.book.resolve('test/demo', { ownerSubject: foreign.subject }),
+  ).toMatchObject({ token: TOKEN })
 }, 20_000)

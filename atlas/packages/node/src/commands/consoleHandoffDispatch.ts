@@ -594,6 +594,7 @@ export function createHandoffDispatcher(
       const credential = await resolveHandoffRepo(
         options.credentials,
         task.code.repo,
+        { ownerSubject: task.ownerSubject },
       )
       if (!credential) throw new Error('仓库连接已撤销')
       if (!result.result) throw new Error('结果缺 GitHub 坐标')
@@ -691,6 +692,7 @@ export function createHandoffDispatcher(
         const resolved = await resolveHandoffRepo(
           options.credentials,
           task.code.repo,
+          { ownerSubject: task.ownerSubject },
         )
         if (!resolved) {
           fail(taskId, '仓库连接已撤销')
