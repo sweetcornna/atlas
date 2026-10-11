@@ -591,6 +591,9 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
 | GET | `/jobs` | view | 主动执行：定时任务、最近运行、通知渠道（P24，`docs/dev/directions-2026-10.md` §7），其下是原来的值守作业：上次与下次触发、急停、调度器心跳（§10.4） |
 | GET | `/v0/schedules` | view | 定时任务快照：任务、最近运行、通知渠道（只给名字、类型与主机，不给地址）、模板、可选目标、急停。没接定时任务端口时 501 |
+| GET | `/v0/schedules/<任务 id>` | view | 仅自己的任务；ops 和旧令牌可读全部，越权 404 |
+| GET | `/v0/schedules/<任务 id>/runs`、`/v0/schedules/<任务 id>/runs/<运行 id>` | view | 该任务最近的运行记录或单次记录（含回复摘要），同一归属过滤 |
+| POST | `/v0/schedules/<任务 id>/runs/<运行 id>/resolve` | **成员** | 创建者或 ops 确认未知结果，`{ outcome: 'ok'或'failed' }`；写入动作账本后解除占用 |
 | POST | `/v0/schedules` | **成员** | 新建或保存一个定时任务（带 `id` 是保存）；目标须在对话白名单内 |
 | DELETE | `/v0/schedules/<任务 id>` | **成员** | 删除 |
 | POST | `/v0/schedules/<任务 id>/<enable\|disable\|run>` | **成员** | 启用、停用、立即运行一次（运行结果进最近运行） |
@@ -601,7 +604,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/memory` | **成员** | 记一条：`{ agent, kind, title, summary, body }`，`kind` 只能是四类之一，一句话 ≤120 字、摘要 ≤400 字、细节 ≤4000 字。记 `memory.add` |
 | PUT | `/v0/memory/<记忆 id>` | **成员** | 改一条：写一条新的并替换旧的（旧的留在历史里，带「含已忘记」能看到）。记 `memory.edit` |
 | POST | `/v0/memory/<记忆 id>/<forget\|invalidate>` | **成员** | 忘记（`{ agent, reason }`，原因进审计）或标记过期。别人的记忆对端口来说不存在，答 404。记 `memory.forget` / `memory.invalidate` |
-| POST | `/v0/channels` | **ops** | 添加通知渠道：`{ name, kind, url }`，`kind` 是 `webhook` / `bark` / `wecom` / `feishu` / `ntfy`，地址只收 https（本机环回可用 http），存下后任何接口不再回地址 |
+| POST | `/v0/channels` | **ops** | 添加通知渠道：`{ name, kind, url }`，`kind` 是 `webhook` / `bark` / `wecom` / `feishu` / `ntfy`，地址默认只收 https；http 与受保护网段须由运维按主机（可带端口）放行（§12.2），存下后任何接口不再回地址 |
 | DELETE | `/v0/channels/<渠道 id>` | **ops** | 删除通知渠道 |
 | POST | `/v0/channels/<渠道 id>/test` | **ops** | 向这个渠道发一条测试通知 |
 | GET | `/access`、`/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
@@ -2174,7 +2177,9 @@ API 处理器是 `routes/schedulesApi.ts` 导出的 `schedulesApi: HeadRoute`，
 |---|---|
 | `schedules.json` | 任务、渠道的公开字段、专属会话号与尚未结束的运行；临时文件 fsync 后原子 rename，0600，目录 0700 |
 | `channels.secret.json` | 渠道完整地址，仅保存在中枢；原子写、0600，页面/快照只给主机名 |
-| `runs.ndjson` | 每次结束/跳过的运行一行，0600；启动从文件尾读最近 500 行，快照返回最近 50 次，新记录在前 |
+| `runs.ndjson` | 结束、跳过与 unknown 转换各一行，0600；启动从文件尾读最近 500 行，按 runId 合并最新状态后返回最近 50 次 |
+| `instance.lock` | O_EXCL 实例锁：PID、随机 nonce 与开始时间；只由持有该 nonce 的进程释放 |
+| `claims/<任务 id>.<计划时刻>.json` | O_EXCL + fsync 的持久化 `(scheduleId, plannedAt)` 占位；不自动删除，防止状态回滚后重复投递 |
 
 每天与每周按 IANA 时区的挂钟时间计算，默认 `Asia/Shanghai`。星期为 1–7（周一到周日），
 必须非空且不重复。夏令时不存在的本地时间顺延到之后第一个有效分钟，重复时间只取第一次；
@@ -2189,19 +2194,42 @@ API 处理器是 `routes/schedulesApi.ts` 导出的 `schedulesApi: HeadRoute`，
 
 `<配置根>/qianmo/scheduler/ESTOP` 存在时，到点或立即运行均记 `skipped / 紧急停止`，
 不会发送；同一任务上一轮未结束时记 `skipped / 上一轮未结束`。停止文件检查异常按已停止
-处理。已经发送的任务不因 ESTOP 自动取消。控制台重启时尚未完成持久化的运行记
-`failed / 控制台重启`，不会重发请求或重推可能已经送出的通知。
+处理。已经发送的任务不因 ESTOP 自动取消。本地超时以及重启后仍未观察到终态的运行记
+`state: unknown / 上一次结果未知，等待确认`，`outcome` 保持 `running`、`finishedAt` 保持 null，
+继续占用该任务；自动时刻和立即运行均记 `skipped / 上一次结果未知，等待确认`，不会再次发送。
+终态通知阶段崩溃会保留已证明的运行结果，不重复可能已发出的通知。
 
 运行按 `(scheduleId, plannedAt)` 去重。`ConsoleSchedules.tick()` 在拨号前把推进后的
 `nextRunAt` 与在途运行一起原子持久化，串行队列隔离并发检查；恢复时不重算计划时间，
-在途运行只记失败。`#reserve()` 对已完成/在途的同一计划时刻直接返回原记录。手动运行
+未获终态的在途运行保留 unknown 占用。`#reserve()` 对已完成/在途的同一计划时刻直接返回原记录。手动运行
 保留独立的持久化高水位 `lastManualPlannedAt`，同一毫秒内连续点击时依次增加 1 ms，
 并避开当前自动计划时刻；该字段不出现在 API 快照中，编辑与重启都保留。
 `consoleSchedules.test.ts` 的 `same-clock manual slots stay unique...` 覆盖编辑、重启与并发
 tick 的唯一性；`missed slots catch up once after restart...` 证明停机错过多个时刻只补一次；
-`a pending run becomes failed after restart...` 与 `recovery deduplicates a finalized run...`
+`a pending run remains unknown after restart...` 与 `recovery deduplicates a finalized run...`
 证明重启不重发。`scheduleTime.test.ts` 的 New York spring gap / fall fold 用例证明春季
 02:30 顺延到 03:00、秋季 01:30 仅取第一次，第二次重复挂钟时间不会再触发。
+
+实例锁在读任务簿前取得。PID 已不存在时回收旧锁；身份字段残缺或 nonce 无效的锁在
+10 秒写入宽限期后才可回收，合法且存活的持有者不会仅因运行时间长而被抢占。第二实例
+只记录一次明确诊断，不启动定时器、tick 不执行、写 API 返回 503；HTTP 读侧刷新磁盘数据。
+另有每个计划时刻的排他占位，即使两个任务簿位于同一进程，或恢复到更旧的任务检查点，
+也不能重复领取同一 `(scheduleId, plannedAt)`。
+
+`ChatPort.transcript` 提供按 taskId 关联的回合终态；订阅与 tick 都会对账 unknown 运行。
+迟到的 done 或远端失败回复确认后更新为 completed/failed/timeout 并解除占用；聊天端口
+本地产生的 `E_TASK_TIMEOUT` 不是证明，只有带 `remoteTerminal` 的远端超时才是终态。
+恢复检查点同时保留本轮原始任务、转录基线与 taskId，避免编辑任务后对错轮。
+无可确认回复时，创建者（成员权限）或 ops 可用 §12.3 的 resolve API 人工确认 ok/failed，
+记 `schedule.resolve`，不补发通知；结果未确认前拒绝删除仍被占用的任务。
+
+未开租户隔离而开了个人账号时，成员与只读账号只看到 `createdBy` 为自己的任务、运行
+记录与摘要；只读账号保留只读权限。跨账号的详情、改动、启停、删除、立即运行与确认
+均返回 404，先查内存归属索引，不调用业务端口或账本 admission。共享宿主 snapshot 也
+执行同一过滤，主动执行页的两个读取点传入当前主体。ops 可代管全部，编辑不改变创建者；
+账本的 subject 是实际操作者，createdBy 是原创建者。无账号模式的旧令牌保持全部可见。
+渠道仍是 ops 维护的共享资源，成员可选择，任何读者都拿不到完整地址。
+启用租户时，尚无租户包装的八个 D01 端口（包括 avatars）对租户范围调用者全部关闭。
 
 HTTP 开会话/发消息与定时任务共用控制台包的 `chatDispatch.ts`（`ChatDispatch`）。每次运行
 从 `createdBy` 读取账号簿里的当前账号与角色，先复核存在、活跃、成员/运维权限、当前租户
@@ -2216,7 +2244,7 @@ HTTP 开会话/发消息与定时任务共用控制台包的 `chatDispatch.ts`�
 旧任务簿中已存在但无属主的专属会话也在授权通过后补记属主，不覆盖另一人的归属。
 保存会话号并持续复用；会话被删后重建，改变目标时另建会话。开会话与发消息均经同一个
 `reserveUsage`，用量计入创建者的个人范围与 HTTP 相同的租户范围；配额拒绝记
-`failed / quota: ...`，不发送。预留号随发送交给聊天端口，终态释放；明确未交付的失败
+`skipped / quota: ...`，在配额预检查时不调用聊天端口；发送前仍原子预留复核。预留号随发送交给聊天端口，终态释放；明确未交付的失败
 与异常释放，交付不确定时保留预留。HTTP 保持原有检查和账本记录顺序、错误响应与
 延迟到发送时的端点白名单检查；开空会话本身不拨号。定时任务额外在开/复用会话之前
 通过同一服务预查可拨性。`consoleSchedules.authorization.test.ts` 覆盖成员会话可见性、
@@ -2236,8 +2264,8 @@ HTTP 开会话/发消息与定时任务共用控制台包的 `chatDispatch.ts`�
 不改运行结果，失败落在 `pushed` 与渠道的 `lastError`。被任务或在途运行引用的渠道不能删除。
 
 任务的保存、启停、删除、立即运行及渠道保存、删除、测试，由宿主通过 `DirectionActor`
-记入动作账本；自动触发记 `schedule.run`，主体为 `system:schedules`，请求号为运行号。
-这里的主体标识自动触发来源；运行授权、会话归属与用量范围均取任务的 `createdBy`。
+记入动作账本；自动触发记 `schedule.run`，主体为任务创建者，createdBy 同时保留，请求号为运行号。
+运行记录的 trigger 区分自动与手动；运行授权、会话归属与用量范围均取任务的 `createdBy`。
 账本拒绝写入时不执行新的动作，渠道地址与回复正文不作为账本载荷。
 
 ### §12.2 通知格式与未评估口径
@@ -2255,7 +2283,19 @@ HTTP 开会话/发消息与定时任务共用控制台包的 `chatDispatch.ts`�
 没有向真实通知服务发请求，不代表已验证真实设备/群的送达。飞书的签名校验等额外配置
 不在这一版渠道字段内。
 
-地址只允许 HTTPS，回环地址允许 HTTP；拒绝 URL 用户名/密码与片段。不跟随重定向，
+地址默认只允许 HTTPS；HTTP 的主机也必须在运维名单内。保存与每次发送/重试都解析 DNS，
+任一答案落入回环、私网、链路本地、CGNAT、0/8、多播/广播、IPv6 ULA 或未指定地址即拒绝；
+IPv4 映射/兼容 IPv6 按嵌入 IPv4 判断，IP 字面量同等处理。仅显式放行的主机/端口可以使用
+这些受保护地址。连接直接使用通过验证的 IP 字面量，同时保留原 Host、TLS SNI 和原主机名
+证书校验；关闭连接池与代理环境继承，不做第二次 DNS，防止解析结果重绑定。
+
+`qm console` 从 `QIANMO_NOTIFY_ALLOWLIST` 读取逗号分隔的精确主机名单，默认空。例如：
+`QIANMO_NOTIFY_ALLOWLIST='notify.internal:8443,127.0.0.1:9000,[::1]:9000'`。
+带端口只开放该端口，不带端口开放该主机的任意端口；不接受通配符、URL 路径或凭据，
+不能通过控制台成员编辑。放行内网不关闭 TLS 证书验证。旧任务簿含 HTTP 渠道时，需先
+按此配置其主机/端口，再启动；新配置与发送时仍复核。策略错误只报命中规则，不回显完整 URL。
+
+拒绝 URL 用户名/密码与片段。不跟随重定向，
 每次尝试 10 秒超时（包含响应读取），响应只读前 4 KiB 后取消流，不把响应正文或网络异常
 原文写进日志。首次失败最多重试 3 次，间隔 2 秒、8 秒、30 秒（共最多 4 次尝试）。
 外部服务可能在成功后丢回执，重试无法承诺通知恰好送达一次。
@@ -2270,6 +2310,9 @@ HTTP 开会话/发消息与定时任务共用控制台包的 `chatDispatch.ts`�
 |---|---|---|---|
 | GET | `/v0/schedules` | view 及以上 | `SchedulesSnapshot` |
 | POST | `/v0/schedules` | member/ops 或管理令牌 | 保存后的 `ScheduleView`，有 `id` 为修改 |
+| GET | `/v0/schedules/<id>` | view 及以上 | 本人或代管范围内的 `ScheduleView` |
+| GET | `/v0/schedules/<id>/runs`、`/v0/schedules/<id>/runs/<runId>` | view 及以上 | 本人或代管范围内的运行与摘要 |
+| POST | `/v0/schedules/<id>/runs/<runId>/resolve` | 创建者成员/ops 或管理令牌 | `{outcome:'ok'|'failed'}`；未知运行人工确认后解除占用 |
 | POST | `/v0/schedules/<id>/enable` | member/ops 或管理令牌 | `ScheduleView` |
 | POST | `/v0/schedules/<id>/disable` | member/ops 或管理令牌 | `ScheduleView` |
 | POST | `/v0/schedules/<id>/run` | member/ops 或管理令牌 | 新建的 `ScheduleRunView`（立即返回，在后台执行） |
