@@ -54,8 +54,11 @@ export function registerDesktopTools(
   file: string,
   cwd: string,
 ): void {
-  // Bundled extensions have their own utils module instance. Re-enter the
-  // actual omp CLI for workers instead of resolving unshipped worker files.
+  // From source this shares omp's utils instance and points workers at the
+  // omp CLI. The compiled extension bundles its own copy of worker-host (the
+  // host registry does not serve it); its browser/computer tools are host
+  // modules, and the host CLI declares their worker entry itself, so here the
+  // call only touches the extension's private copy.
   declareWorkerHostEntry()
   const Type = pi.typebox.Type
   const originalCalls = new Map<string, { name: string; args: unknown }>()
