@@ -84,6 +84,168 @@ describe('resident ACP supervisor', () => {
     ])
   })
 
+  test('counts every slow start failure and parks with exponential backoff', async () => {
+    let clock = 0
+    let starts = 0
+    const waits: number[] = []
+    const errors: unknown[] = []
+    const onParked = mock((_failures: number) => {})
+    const supervisor = new ResidentSupervisor({
+      start: async () => {
+        // Bound the regression: the old loop would restart forever.
+        if (++starts > 3) supervisor.stop()
+        clock += 30_000
+        throw new Error('omp RPC ready timed out')
+      },
+      stableAfterMs: 10_000,
+      maxRapidFailures: 3,
+      initialBackoffMs: 2_000,
+      now: () => clock,
+      wait: async delay => {
+        waits.push(delay)
+      },
+      onError: error => errors.push(error),
+      onParked,
+    })
+
+    await supervisor.run()
+
+    expect(starts).toBe(3)
+    expect(errors).toHaveLength(3)
+    expect(waits).toEqual([2_000, 4_000])
+    expect(supervisor.parked).toBe(true)
+    expect(onParked).toHaveBeenCalledWith(3)
+  })
+
+  test('slow startup and cleanup do not make a short ready generation stable', async () => {
+    let clock = 0
+    let starts = 0
+    const waits: number[] = []
+    const onParked = mock((_failures: number) => {})
+    const supervisor = new ResidentSupervisor({
+      start: async () => {
+        if (++starts > 2) {
+          supervisor.stop()
+          throw new Error('unexpected extra generation')
+        }
+        clock += 30_000
+        return {
+          closed: Promise.reject(new Error('crash immediately after ready')),
+          stop: async () => {
+            clock += 20_000
+          },
+        }
+      },
+      stableAfterMs: 10_000,
+      maxRapidFailures: 2,
+      initialBackoffMs: 10,
+      now: () => clock,
+      wait: async delay => {
+        waits.push(delay)
+      },
+      onParked,
+    })
+
+    await supervisor.run()
+
+    expect(starts).toBe(2)
+    expect(waits).toEqual([10])
+    expect(supervisor.parked).toBe(true)
+    expect(onParked).toHaveBeenCalledWith(2)
+  })
+
+  test('a failed start after a ready generation keeps its failure count and cannot recycle the old child', async () => {
+    const closed = Promise.withResolvers<void>()
+    const ready = Promise.withResolvers<void>()
+    const failure = new Error('next generation failed to start')
+    const errors: unknown[] = []
+    const waits: number[] = []
+    const parked: number[] = []
+    const stop = mock(() => {})
+    let starts = 0
+    const supervisor = new ResidentSupervisor({
+      start: async () => {
+        if (++starts === 1) return { closed: closed.promise, stop }
+        expect(supervisor.recycle()).toBe(false)
+        if (starts > 2) supervisor.stop()
+        throw failure
+      },
+      now: () => {
+        ready.resolve()
+        return 0
+      },
+      initialBackoffMs: 10,
+      maxRapidFailures: 2,
+      wait: async delay => {
+        waits.push(delay)
+      },
+      onError: error => errors.push(error),
+      onParked: failures => parked.push(failures),
+    })
+    const running = supervisor.run()
+    const crash = new Error('ready generation crashed')
+    try {
+      await ready.promise
+      closed.reject(crash)
+      await running
+
+      expect(starts).toBe(2)
+      expect(stop).toHaveBeenCalledTimes(1)
+      expect(errors).toEqual([crash, failure])
+      expect(waits).toEqual([10])
+      expect(parked).toEqual([2])
+      expect(supervisor.parked).toBe(true)
+    } finally {
+      closed.resolve()
+      supervisor.stop()
+      await running
+    }
+  })
+
+  test('abort during backoff cancels the wait without restarting or parking', async () => {
+    const waiting = Promise.withResolvers<AbortSignal>()
+    const errors: unknown[] = []
+    const waits: number[] = []
+    const parked: number[] = []
+    const failure = new Error('start failed')
+    let starts = 0
+    const supervisor = new ResidentSupervisor({
+      start: async () => {
+        starts++
+        throw failure
+      },
+      initialBackoffMs: 10,
+      maxRapidFailures: 2,
+      wait: (delay, signal) => {
+        waits.push(delay)
+        const finished = Promise.withResolvers<void>()
+        signal.addEventListener('abort', () => finished.reject(signal.reason), {
+          once: true,
+        })
+        waiting.resolve(signal)
+        return finished.promise
+      },
+      onError: error => errors.push(error),
+      onParked: failures => parked.push(failures),
+    })
+    const running = supervisor.run()
+    try {
+      const signal = await waiting.promise
+      supervisor.stop()
+      await running
+
+      expect(signal.aborted).toBe(true)
+      expect(starts).toBe(1)
+      expect(waits).toEqual([10])
+      expect(errors).toEqual([failure])
+      expect(parked).toEqual([])
+      expect(supervisor.parked).toBe(false)
+    } finally {
+      supervisor.stop()
+      await running
+    }
+  })
+
   describe('recycle (providers-console-m1 §2.7)', () => {
     /**
      * Children that stay up until stopped and then exit the way a real one does
@@ -136,6 +298,167 @@ describe('resident ACP supervisor', () => {
       }
       expect(predicate()).toBe(true)
     }
+
+    test('a short recycle with slow cleanup preserves failures and backoff from its first request', async () => {
+      const closed = Promise.withResolvers<void>()
+      const reaped = Promise.withResolvers<void>()
+      const cleanupStarted = Promise.withResolvers<void>()
+      const failures = [
+        new Error('first start failed'),
+        new Error('third start failed'),
+      ]
+      const errors: unknown[] = []
+      const waits: number[] = []
+      const parked: number[] = []
+      let starts = 0
+      let clock = 0
+      const supervisor = new ResidentSupervisor({
+        start: async () => {
+          if (++starts === 2)
+            return {
+              closed: closed.promise,
+              stop: () => {
+                cleanupStarted.resolve()
+                return reaped.promise
+              },
+            }
+          if (starts > 3) supervisor.stop()
+          throw failures[starts === 1 ? 0 : 1]
+        },
+        stableAfterMs: 100,
+        maxRapidFailures: 2,
+        initialBackoffMs: 10,
+        now: () => clock,
+        wait: async delay => {
+          waits.push(delay)
+        },
+        onError: error => errors.push(error),
+        onParked: count => parked.push(count),
+      })
+      const running = supervisor.run()
+      try {
+        await until(() => starts === 2)
+        clock += 1
+        expect(supervisor.recycle()).toBe(true)
+        await cleanupStarted.promise
+        clock += 200
+        // A repeat request must not replace the original end of runtime.
+        expect(supervisor.recycle()).toBe(true)
+        closed.reject(new Error('planned SIGTERM exit'))
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(starts).toBe(2)
+        expect(waits).toEqual([10])
+        reaped.resolve()
+        await running
+
+        expect(starts).toBe(3)
+        expect(waits).toEqual([10, 20])
+        expect(errors).toEqual(failures)
+        expect(parked).toEqual([2])
+        expect(supervisor.parked).toBe(true)
+      } finally {
+        closed.resolve()
+        reaped.resolve()
+        supervisor.stop()
+        await running
+      }
+    })
+
+    test('abort during recycle cleanup waits for reaping without restarting or parking', async () => {
+      const closed = Promise.withResolvers<void>()
+      const reaped = Promise.withResolvers<void>()
+      const cleanupStarted = Promise.withResolvers<void>()
+      const errors: unknown[] = []
+      const waits: number[] = []
+      const parked: number[] = []
+      let starts = 0
+      let finished = false
+      const supervisor = new ResidentSupervisor({
+        start: async () => {
+          starts++
+          return {
+            closed: closed.promise,
+            stop: () => {
+              cleanupStarted.resolve()
+              return reaped.promise
+            },
+          }
+        },
+        maxRapidFailures: 1,
+        now: () => 0,
+        wait: async delay => {
+          waits.push(delay)
+        },
+        onError: error => errors.push(error),
+        onParked: failures => parked.push(failures),
+      })
+      const running = supervisor.run().then(() => {
+        finished = true
+      })
+      try {
+        await until(() => starts === 1)
+        expect(supervisor.recycle()).toBe(true)
+        await cleanupStarted.promise
+        supervisor.stop()
+        closed.reject(new Error('planned SIGTERM exit'))
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(finished).toBe(false)
+        reaped.resolve()
+        await running
+
+        expect(starts).toBe(1)
+        expect(waits).toEqual([])
+        expect(errors).toEqual([])
+        expect(parked).toEqual([])
+        expect(supervisor.parked).toBe(false)
+      } finally {
+        closed.resolve()
+        reaped.resolve()
+        supervisor.stop()
+        await running
+      }
+    })
+
+    test('a stable ready generation resets previous failures and backoff', async () => {
+      let clock = 0
+      const waits: number[] = []
+      const children = generations()
+      const onParked = mock((_failures: number) => {})
+      const supervisor = new ResidentSupervisor({
+        start: children.start,
+        initialBackoffMs: 10,
+        stableAfterMs: 100,
+        maxRapidFailures: 2,
+        now: () => clock,
+        wait: async delay => {
+          waits.push(delay)
+        },
+        onParked,
+      })
+      const running = supervisor.run()
+      try {
+        await until(() => children.started === 1)
+        children.crash()
+        await until(() => children.started === 2)
+        clock += 101
+        children.crash()
+        await until(() => children.started === 3)
+        children.crash()
+        await until(() => children.started === 4)
+        children.crash()
+        await running
+
+        expect(children.started).toBe(4)
+        expect(waits).toEqual([10, 10, 20])
+        expect(supervisor.parked).toBe(true)
+        expect(onParked).toHaveBeenCalledWith(2)
+      } finally {
+        supervisor.stop()
+        await running
+      }
+    })
 
     test('two recycles in a row never park, however short the generations', async () => {
       // maxRapidFailures 2 and a frozen clock: two *crashes* like these park

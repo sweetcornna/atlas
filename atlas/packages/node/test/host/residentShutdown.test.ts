@@ -9,6 +9,124 @@ import { TransportClient } from '@qianmo/transport'
 import { QianmoResident } from '../../src/host/resident.js'
 import { isolatedRoot } from '../providers/fake.js'
 
+test('resident abort during model startup prevents spawning, restarting and parking alerts', async () => {
+  const root = isolatedRoot()
+  const initializing = Promise.withResolvers<AbortSignal>()
+  const errors: string[] = []
+  let generations = 0
+  let spawns = 0
+  let ready = 0
+  const resident = new QianmoResident({
+    node: 'node-b',
+    team: 'nest',
+    agents: [{ agent: 'reviewer', cwd: root.root }],
+    memoryRoot: join(root.root, 'memory'),
+    psk: 'initialization-shutdown-test-local-psk',
+    listen: { unix: join(root.root, 'r.sock') },
+    inactivityMs: 0,
+    ompRestart: { initialBackoffMs: 10, maxRapidFailures: 1 },
+    beforeModelGeneration: ({ signal }) => {
+      generations++
+      const finished = Promise.withResolvers<void>()
+      signal.addEventListener('abort', () => finished.reject(signal.reason), {
+        once: true,
+      })
+      initializing.resolve(signal)
+      return finished.promise
+    },
+    spawnOmp: () => {
+      spawns++
+      throw new Error('stopped model startup must not spawn')
+    },
+    onTiming: event => {
+      if (event.stage === 'runtime_ready') ready++
+    },
+    onError: error => errors.push(String(error)),
+  })
+  const running = resident.run()
+  void running.catch(() => {})
+  try {
+    const signal = await initializing.promise
+    resident.stop()
+    await running
+
+    expect(signal.aborted).toBe(true)
+    expect(generations).toBe(1)
+    expect(spawns).toBe(0)
+    expect(ready).toBe(0)
+    expect(errors).toEqual([])
+  } finally {
+    resident.stop()
+    await running
+    root.dispose()
+  }
+}, 5_000)
+
+test('resident stop during RPC startup terminates and reaps the never-ready child promptly', async () => {
+  const root = isolatedRoot()
+  const started = Promise.withResolvers<void>()
+  const children: ChildProcess[] = []
+  const signals: (NodeJS.Signals | number | undefined)[] = []
+  const errors: string[] = []
+  let ready = 0
+  const resident = new QianmoResident({
+    node: 'node-b',
+    team: 'nest',
+    agents: [{ agent: 'reviewer', cwd: root.root }],
+    memoryRoot: join(root.root, 'memory'),
+    psk: 'startup-shutdown-test-local-psk',
+    listen: { unix: join(root.root, 'r.sock') },
+    inactivityMs: 0,
+    spawnOmp: input => {
+      const child = spawn(
+        process.execPath,
+        ['-e', 'process.stdin.resume(); setInterval(() => {}, 1000)'],
+        { cwd: input.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'] },
+      )
+      const kill = child.kill.bind(child)
+      child.kill = signal => {
+        signals.push(signal)
+        return kill(signal)
+      }
+      children.push(child)
+      started.resolve()
+      return child
+    },
+    onTiming: event => {
+      if (event.stage === 'runtime_ready') ready++
+    },
+    onError: error => errors.push(String(error)),
+  })
+  const running = resident.run()
+  void running.catch(() => {})
+  let deadline: Timer | undefined
+  try {
+    await started.promise
+    resident.stop()
+    expect(signals).toContain('SIGTERM')
+    await Promise.race([
+      running,
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(
+          () => reject(new Error('resident stop waited for ready timeout')),
+          1_000,
+        )
+      }),
+    ])
+    expect(ready).toBe(0)
+    expect(errors).toEqual([])
+    expect(children).toHaveLength(1)
+    expect(children[0]!.signalCode).toBe('SIGTERM')
+    expect(isAlive(children[0]!)).toBe(false)
+  } finally {
+    clearTimeout(deadline)
+    resident.stop()
+    for (const child of children) child.kill('SIGKILL')
+    await running
+    root.dispose()
+  }
+}, 5_000)
+
 function isAlive(child: ChildProcess): boolean {
   try {
     process.kill(child.pid!, 0)

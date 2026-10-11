@@ -48,8 +48,8 @@ export class ResidentSupervisor {
   #running: Promise<void> | null = null
   #child: ResidentChildConnection | null = null
   #parked = false
-  /** The generation now running was stopped by {@link recycle}. */
-  #recycling = false
+  /** End of runtime at the first {@link recycle} request, before cleanup. */
+  #recycleRequestedAt: number | null = null
 
   constructor(options: ResidentSupervisorOptions) {
     this.#options = options
@@ -93,7 +93,7 @@ export class ResidentSupervisor {
     if (this.#controller.signal.aborted || this.#parked) return false
     const child = this.#child
     if (child === null) return false
-    this.#recycling = true
+    this.#recycleRequestedAt ??= (this.#options.now ?? Date.now)()
     const report = (error: unknown): void => {
       if (!this.#controller.signal.aborted) this.#options.onError?.(error)
     }
@@ -118,19 +118,30 @@ export class ResidentSupervisor {
     let rapidFailures = 0
 
     while (!this.#controller.signal.aborted) {
-      const startedAt = now()
-      this.#recycling = false
+      let started = false
+      let duration = 0
+      this.#recycleRequestedAt = null
       try {
         this.#child = await this.#options.start()
-        if (this.#controller.signal.aborted) {
-          await this.#child.stop()
-        } else {
-          await this.#child.closed
+        started = true
+        const startedAt = now()
+        try {
+          if (this.#controller.signal.aborted) {
+            await this.#child.stop()
+          } else {
+            await this.#child.closed
+          }
+        } finally {
+          // Startup and teardown are not evidence of a stable running child.
+          duration = (this.#recycleRequestedAt ?? now()) - startedAt
         }
       } catch (error) {
         // A recycled child exits because it was told to; its exit status is
         // not news.
-        if (!this.#controller.signal.aborted && !this.#recycling) {
+        if (
+          !this.#controller.signal.aborted &&
+          this.#recycleRequestedAt === null
+        ) {
           this.#options.onError?.(error)
         }
       } finally {
@@ -143,14 +154,13 @@ export class ResidentSupervisor {
       }
       if (this.#controller.signal.aborted) return
 
-      const duration = now() - startedAt
-      if (this.#recycling) {
+      if (this.#recycleRequestedAt !== null) {
         // Planned: neither a rapid failure nor proof of a healthy child.
         if (duration >= stableAfter) {
           rapidFailures = 0
           backoff = initialBackoff
         }
-      } else if (duration < stableAfter) {
+      } else if (!started || duration < stableAfter) {
         rapidFailures += 1
         if (rapidFailures >= maxRapidFailures) {
           this.#parked = true
