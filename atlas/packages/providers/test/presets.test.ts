@@ -38,6 +38,11 @@ const DESIGN_IDS = [
   'mistral',
   'openrouter',
   'azure',
+  'openai-images',
+  'gemini-images',
+  'openrouter-images',
+  'openai-speech',
+  'openrouter-video',
   // §4.3
   'zhipu-coding',
   'qwen-coding',

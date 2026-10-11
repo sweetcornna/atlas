@@ -124,6 +124,8 @@ export {
   LANES,
   type Lane,
   MAX_KEYS_PER_PROFILE,
+  MODEL_KINDS,
+  type ModelKind,
   MODEL_ROLES,
   MODEL_TIERS,
   type ModelCapabilities,
@@ -153,3 +155,5 @@ export {
   type Validated,
   type ValidateOptions,
 } from './validate.js'
+
+export * from './directions.js'

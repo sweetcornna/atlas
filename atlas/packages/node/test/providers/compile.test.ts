@@ -10,7 +10,7 @@ import {
   AuthStorage,
   SqliteAuthCredentialStore,
 } from '@oh-my-pi/pi-coding-agent/session/auth-storage'
-import { PRESETS } from '@qianmo/providers'
+import { LANE_KINDS, PRESETS } from '@qianmo/providers'
 import { compileProfile, LANE_API } from '../../src/providers/compile.js'
 import { getModelCompatCapabilities } from '../../src/providers/capabilities.js'
 import { writePrivateJson } from '../../src/providers/store.js'
@@ -18,7 +18,9 @@ import { wireProfile, presetProfile, CANARY_KEY } from './helpers.js'
 import { isolatedRoot } from './fake.js'
 const capabilities = { protocol: 1 as const, ...getModelCompatCapabilities() }
 describe('omp compiler', () => {
-  for (const lane of Object.keys(LANE_API) as (keyof typeof LANE_API)[])
+  for (const lane of (
+    Object.keys(LANE_API) as (keyof typeof LANE_API)[]
+  ).filter(lane => LANE_KINDS[lane] === 'chat'))
     test(`loads ${lane} with omp public loaders`, async () => {
       const fixture = isolatedRoot()
       const store = new SqliteAuthCredentialStore(new Database(':memory:'))
@@ -103,6 +105,7 @@ describe('omp compiler', () => {
       const result = compileProfile(presetProfile(preset), {
         secret: CANARY_KEY,
         capabilities,
+        auxiliary: LANE_KINDS[preset.lane] !== 'chat',
       })
       expect(result.ok).toBe(true)
       expect(preset.evaluated).toBe(false)

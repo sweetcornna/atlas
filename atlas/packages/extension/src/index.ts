@@ -69,7 +69,7 @@ const extension: ExtensionFactory = pi => {
     await pi.setActiveTools(
       config === undefined
         ? []
-        : residentActiveTools(config.edits, config.hostTools),
+        : residentActiveTools(config.edits, config.hostTools, config.media),
     )
   })
   pi.on('tool_call', async (event, ctx) => {

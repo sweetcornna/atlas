@@ -1010,3 +1010,24 @@ export function errorCodeForPeer(
   if (isLegacyErrorCode(code)) return code
   return peerIsPostLegacy(declared) ? code : downgradeErrorCode(code)
 }
+
+/**
+ * A task.request carrying a P22 routing hint. The payload stays open like
+ * every task.request payload (a local command rides beside it as
+ * `command`, P18.20); only the hint's own value is checked.
+ */
+export interface DirectedTaskRequestPayload extends TaskRequestPayload {
+  readonly direction: TaskDirection
+}
+
+export function isDirectedTaskRequestPayload(
+  value: unknown,
+): value is DirectedTaskRequestPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const raw = value as Record<string, unknown>
+  return (
+    typeof raw.prompt === 'string' &&
+    raw.prompt.length > 0 &&
+    isTaskDirection(raw.direction)
+  )
+}

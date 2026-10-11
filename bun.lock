@@ -148,6 +148,7 @@
       "dependencies": {
         "@modelcontextprotocol/server": "2.0.0",
         "@oh-my-pi/pi-agent-core": "workspace:*",
+        "@oh-my-pi/pi-ai": "workspace:*",
         "@oh-my-pi/pi-catalog": "workspace:*",
         "@oh-my-pi/pi-coding-agent": "workspace:*",
         "@oh-my-pi/pi-utils": "workspace:*",

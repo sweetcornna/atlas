@@ -146,3 +146,8 @@ export {
   type ValidateOptions,
   type ValidationResult,
 } from './validate.js'
+
+export {
+  type DirectedTaskRequestPayload,
+  isDirectedTaskRequestPayload,
+} from './message.js'

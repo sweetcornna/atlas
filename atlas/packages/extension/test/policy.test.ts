@@ -213,3 +213,54 @@ test('an approval digest binds the canonical target of a mutable path alias', ()
     join(realpathSync(second), 'out.txt'),
   ])
 })
+
+test('media tools require matching routes and main agent; their paths cannot escape workspace or access protected roots', () => {
+  const f = fixture('none')
+  const main = { agentKind: 'main' as const }
+  const call = { toolName: 'generate_image', input: { subject: 'cat' } }
+  expect(residentActiveTools('none')).not.toContain('generate_image')
+  expect(residentToolVerdict(call, f.config, main)?.block).toBe(true)
+  const config = { ...f.config, media: { image: true, speech: true } }
+  expect(residentActiveTools('none', [], config.media)).toContain(
+    'generate_image',
+  )
+  expect(residentActiveTools('none', [], config.media)).toContain('tts')
+  expect(residentToolVerdict(call, config, main)).toBeUndefined()
+  expect(residentToolVerdict(call, config, { agentKind: 'sub' })?.block).toBe(
+    true,
+  )
+  expect(
+    residentToolVerdict(
+      { toolName: 'tts', input: { output_path: 'outputs/voice.mp3' } },
+      config,
+      main,
+    ),
+  ).toBeUndefined()
+  expect(
+    residentToolVerdict(
+      { toolName: 'tts', input: { output_path: '../outside.mp3' } },
+      config,
+      main,
+    )?.block,
+  ).toBe(true)
+  expect(
+    residentToolVerdict(
+      {
+        toolName: 'generate_image',
+        input: { subject: 'cat', input: [{ path: '../private/key' }] },
+      },
+      config,
+      main,
+    )?.block,
+  ).toBe(true)
+  expect(
+    residentToolVerdict(
+      {
+        toolName: 'generate_image',
+        input: { subject: 'cat', model: 'other/model' },
+      },
+      config,
+      main,
+    )?.block,
+  ).toBe(true)
+})

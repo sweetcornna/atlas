@@ -1407,6 +1407,11 @@ type ProviderLane =
   | 'openai-responses'
   | 'gemini'
   | 'grok'
+  | 'openai-images'
+  | 'openrouter-images'
+  | 'gemini-images'
+  | 'openai-speech'
+  | 'openrouter-video'
 type ProviderPlan = 'paygo' | 'plan' | 'local' | 'custom'
 export type ProviderEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 type ProviderModelTier = 'opus' | 'sonnet' | 'haiku' | 'fable'
@@ -1415,6 +1420,7 @@ type ProviderModelTier = 'opus' | 'sonnet' | 'haiku' | 'fable'
 interface ProviderModelView {
   readonly id: string
   readonly role: 'main' | 'fast' | 'extra'
+  readonly kind?: 'chat' | 'image' | 'speech' | 'video'
   readonly tiers: readonly ProviderModelTier[]
   readonly capabilities:
     | { readonly mode: 'family' }

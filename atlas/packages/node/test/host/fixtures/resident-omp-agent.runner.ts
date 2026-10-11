@@ -12,6 +12,8 @@ import {
 const emit = (frame: Record<string, unknown>) =>
   process.stdout.write(`${JSON.stringify(frame)}\n`)
 let sessionDir = ''
+let model = { provider: 'fixture', id: 'fixture' }
+let thinkingLevel = 'off'
 let current: string | undefined
 const pendingTools = new Map<string, (value: Record<string, unknown>) => void>()
 async function prompt(frame: Record<string, unknown>) {
@@ -33,6 +35,8 @@ async function prompt(frame: Record<string, unknown>) {
     success: true,
     data: { agentInvoked: true },
   })
+  // A real model responds on a later tick, after durable input admission.
+  await Bun.sleep(0)
   let text = 'fixture response'
   const title = process.env.QIANMO_FIXTURE_TOOL_CALL
   if (title)
@@ -114,6 +118,13 @@ lines.on('line', line => {
     return
   }
   if (frame.type === 'open_session') sessionDir = String(frame.sessionDir)
+  if (
+    (frame.type === 'open_session' || frame.type === 'set_model') &&
+    typeof frame.provider === 'string' &&
+    typeof frame.modelId === 'string'
+  )
+    model = { provider: frame.provider, id: frame.modelId }
+  if (frame.type === 'set_thinking_level') thinkingLevel = String(frame.level)
   if (frame.type === 'abort' && current) {
     emit({
       type: 'prompt_result',
@@ -128,7 +139,7 @@ lines.on('line', line => {
     command: frame.type,
     id: frame.id,
     success: true,
-    data: {},
+    data: frame.type === 'get_state' ? { model, thinkingLevel } : {},
   })
 })
 emit({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2] })

@@ -1,0 +1,78 @@
+{
+  "ok": true,
+  "compiled": {
+    "models": {
+      "providers": {
+        "qm-vendor-paygo-87b56013": {
+          "baseUrl": "https://api.vendor.example/anthropic",
+          "api": "anthropic-messages",
+          "auth": "apiKey",
+          "apiKey": "sk-test-canary-7Hq2Zp9LmV4xR8sT1wYc",
+          "authHeader": true,
+          "disableStrictTools": true,
+          "headers": {},
+          "models": [
+            {
+              "id": "vendor-model-pro",
+              "name": "vendor-model-pro",
+              "reasoning": true,
+              "thinking": {
+                "mode": "budget",
+                "efforts": ["low", "high", "max"]
+              },
+              "compat": {
+                "statefulResponses": false
+              },
+              "contextWindow": 200000,
+              "maxTokens": 32000
+            },
+            {
+              "id": "vendor-model-flash",
+              "name": "vendor-model-flash",
+              "reasoning": true,
+              "thinking": {
+                "mode": "budget",
+                "efforts": ["low", "high", "max"]
+              },
+              "compat": {
+                "statefulResponses": false
+              },
+              "contextWindow": 200000,
+              "maxTokens": 32000
+            }
+          ]
+        }
+      }
+    },
+    "config": {
+      "modelRoles": {
+        "default": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
+        "smol": "qm-vendor-paygo-87b56013/vendor-model-flash:max",
+        "plan": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
+        "slow": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
+        "commit": "qm-vendor-paygo-87b56013/vendor-model-flash:max"
+      },
+      "defaultThinkingLevel": "max",
+      "providers": {
+        "cacheRetention": "auto",
+        "cacheWarming": "off"
+      },
+      "retry": {
+        "enabled": true,
+        "maxRetries": 3,
+        "baseDelayMs": 500,
+        "maxDelayMs": 60000,
+        "fallbackChains": {}
+      }
+    },
+    "providerId": "qm-vendor-paygo-87b56013",
+    "selection": {
+      "provider": "qm-vendor-paygo-87b56013",
+      "modelId": "vendor-model-pro",
+      "thinkingLevel": "max"
+    },
+    "route": "direct",
+    "effectiveLane": "anthropic",
+    "keyId": "k1"
+  }
+}

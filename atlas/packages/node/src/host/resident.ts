@@ -1,6 +1,10 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {
+  residentRouteSelection,
+  applyResidentModelRoute,
+} from './residentRouting.js'
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
@@ -860,7 +864,61 @@ export class QianmoResident {
         channelFor: async sessionId => {
           if (this.#runtimeChild === null)
             throw new Error('resident omp pool is not ready')
-          return await this.#runtimeChild.channelFor(sessionId)
+          const child = await this.#runtimeChild.channelFor(sessionId)
+          const active = this.#turn.activeInput(sessionId)
+          if (active) {
+            const pending = active.agent
+              ? this.#ledger(active.agent)
+                  .query()
+                  .pending.find(p => p.messageId === active.messageId)
+              : undefined
+            const envelope =
+              pending?.snapshot.length === 1
+                ? networkEnvelope(pending.snapshot[0])
+                : undefined
+            const payload = envelope?.payload
+            const raw =
+              payload && typeof payload === 'object' && !Array.isArray(payload)
+                ? (payload as Record<string, unknown>)
+                : undefined
+            const text =
+              typeof raw?.prompt === 'string'
+                ? raw.prompt
+                : typeof raw?.text === 'string'
+                  ? raw.text
+                  : typeof raw?.goal === 'string'
+                    ? raw.goal
+                    : (pending?.snapshot.map(m => m.text).join('\n') ??
+                      active.prompt)
+            const route = residentRouteSelection({ text, hint: raw?.direction })
+            if (route.selection) {
+              const selection = route.selection
+              const actual = await applyResidentModelRoute(child, selection)
+              this.#options.runtimeAudit?.({
+                kind: 'model.route',
+                ...(typeof envelope?.taskId === 'string'
+                  ? { taskId: envelope.taskId }
+                  : {}),
+                ...(typeof envelope?.traceId === 'string'
+                  ? { traceId: envelope.traceId }
+                  : {}),
+                detail: {
+                  agent: active.agent ?? '',
+                  direction: route.direction,
+                  source: route.source,
+                  rule: route.rule,
+                  model: actual.model,
+                  thinkingLevel: actual.thinkingLevel,
+                  ...(route.mediaModel
+                    ? {
+                        mediaModel: `${route.mediaModel.provider}/${route.mediaModel.modelId}`,
+                      }
+                    : {}),
+                },
+              })
+            }
+          }
+          return child
         },
         isAccepted: async (sessionId, messageId) => {
           if (this.#runtimeChild === null)

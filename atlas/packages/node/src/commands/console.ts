@@ -18,6 +18,8 @@
  * 文档见 `docs/dev/console.md`。
  */
 
+import * as routingPath from 'node:path'
+import { ConsoleRouting, routingWire } from './consoleRouting.js'
 import { randomBytes } from 'node:crypto'
 import { StaticPublicKeyDirectory } from '@qianmo/capability'
 import { qianmoConfigPath } from '@qianmo/paths'
@@ -633,6 +635,23 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     config,
     caCertificatePem,
   )
+  const routing =
+    providers === undefined || config.providers === undefined
+      ? undefined
+      : new ConsoleRouting({
+          path: routingPath.join(
+            routingPath.dirname(config.providers.storePath),
+            'routing.json',
+          ),
+          profiles: () => providers.routingProfiles(),
+          actions,
+          audits,
+        })
+  if (routing)
+    providers!.configureRouting(node => {
+      const view = routing.effective(node)
+      return view.updatedAt === null ? undefined : routingWire(view)
+    })
   const firstAudit = audits[0]
   if (firstAudit === undefined) {
     throw new Error('console requires at least one audit source')
@@ -691,6 +710,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(actions === undefined ? {} : { actions }),
     ...(handoff === undefined ? {} : { handoff: handoff.port }),
     ...(providers === undefined ? {} : { providers }),
+    ...(routing === undefined ? {} : { routing }),
     binName: 'qm',
     // 横幅里那几条身份与接线事实，原样交给「设置与关于」（A4）：页面答得出
     // 自己是哪一版、连着哪个注册中心、签不签名。只放横幅已经打出来的东西，没有

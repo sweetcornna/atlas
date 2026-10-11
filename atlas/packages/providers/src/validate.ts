@@ -15,6 +15,7 @@
  * `warnings` (§6.3.2 point 7: soft problems do not block a save).
  */
 
+import { LANE_KINDS } from './directions.js'
 import {
   checkCompatValue,
   ANTHROPIC_ONLY_COMPAT_KEYS,
@@ -47,6 +48,7 @@ import {
   LANES,
   type Lane,
   MAX_KEYS_PER_PROFILE,
+  MODEL_KINDS,
   MODEL_ROLES,
   MODEL_TIERS,
   type ModelCapabilities,
@@ -339,6 +341,7 @@ function parseModel(value: unknown, path: string): ProviderModel {
     [
       'id',
       'role',
+      'kind',
       'tiers',
       'capabilities',
       'effort',
@@ -375,6 +378,10 @@ function parseModel(value: unknown, path: string): ProviderModel {
     capabilities: parseCapabilities(raw.capabilities, `${path}.capabilities`),
     effort: parseEffort(raw.effort, `${path}.effort`),
   }
+  if (raw.kind !== undefined)
+    model.kind = oneOf(raw.kind, MODEL_KINDS, `${path}.kind`)
+  if ((model.kind ?? 'chat') !== 'chat' && model.role !== 'extra')
+    refuse('bad-value', `${path}.role`, '非 chat 模型只能是 extra')
   if (raw.contextTokens !== undefined) {
     model.contextTokens = integer(raw.contextTokens, `${path}.contextTokens`, {
       min: 1_000,
@@ -535,8 +542,12 @@ function parseCore(
     parseModel(entry, at(`models.${index}`)),
   )
   const mains = models.filter(model => model.role === 'main')
-  if (mains.length !== 1) {
-    refuse('bad-value', at('models'), 'role 为 main 的模型必须恰好一个')
+  if (mains.length !== (LANE_KINDS[lane] === 'chat' ? 1 : 0)) {
+    refuse(
+      'bad-value',
+      at('models'),
+      'chat 档案必须恰好一个 main；媒体档案不能有 main',
+    )
   }
   if (mains[0] !== undefined && mains[0].tiers.length === 0) {
     refuse('bad-value', at('models'), '主模型至少要占一个档位')
@@ -544,6 +555,14 @@ function parseCore(
   const seenIds = new Set<string>()
   const owner = new Map<ModelTier, number>()
   models.forEach((model, index) => {
+    if ((model.kind ?? 'chat') !== LANE_KINDS[lane])
+      refuse('bad-value', at(`models.${index}.kind`), 'kind 与 lane 不相容')
+    if ((model.kind ?? 'chat') !== 'chat' && model.effort.send !== 'never')
+      refuse(
+        'bad-value',
+        at(`models.${index}.effort`),
+        '媒体模型 effort 必须是 never',
+      )
     if (seenIds.has(model.id)) {
       refuse('bad-value', at(`models.${index}.id`), `模型 ${model.id} 重复`)
     }

@@ -2235,3 +2235,15 @@ API 处理器是 `routes/schedulesApi.ts` 导出的 `schedulesApi: HeadRoute`，
 | POST | `/v0/channels` | ops 或管理令牌 | `NotifyChannelView`；新建必须有 `url`，修改可省略以保留 |
 | DELETE | `/v0/channels/<id>` | ops 或管理令牌 | 204；被引用时拒绝 |
 | POST | `/v0/channels/<id>/test` | ops 或管理令牌 | 测试成功后的 `NotifyChannelView`；失败 503 |
+
+## §13 任务分工 API（P22）
+
+模型服务开启时 `ConsoleDeps.routing` 接路由簿；API-only `routingApi` 是导出的 HeadRoute，由模型服务区域挂入 API heads（不另建页面模块）。
+
+| 方法与路径 | 权限 | 作用 |
+|---|---|---|
+| GET `/v0/routing` | view 及以上 | 默认、节点覆盖、模型列表及最近 20 条归类 |
+| PUT `/v0/routing` | ops 或管理令牌 | `{node:null或节点名, auto, routes:[{direction,profileId,modelId}], revision}`；局部更新，revision 失配 rejected |
+| DELETE `/v0/routing/nodes/<node>` | ops 或管理令牌 | 清除节点覆盖并跟随默认 |
+
+写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
