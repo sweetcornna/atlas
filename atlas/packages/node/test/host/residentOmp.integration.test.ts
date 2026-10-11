@@ -1,7 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, expect, test, spyOn } from 'bun:test'
 import {
   mkdtempSync,
   mkdirSync,
@@ -22,6 +22,8 @@ import {
 } from '@qianmo/protocol'
 import { qianmoConfigPath } from '@qianmo/paths'
 import { OmpResidentTurnPort } from '@qianmo/resident'
+import { readYaml } from '../../src/providers/node.js'
+import { providerPaths, writePrivateJson } from '../../src/providers/store.js'
 import { ResidentOmpPool } from '../../src/host/residentOmp.js'
 import { QianmoResident } from '../../src/host/resident.js'
 import { ResidentOmpHarness } from '../../../../tests/integration/fixtures/resident-omp-harness.js'
@@ -279,4 +281,107 @@ test('read admission is durable while the model is paused, and survives SIGKILL'
     }) + '\n',
   )
   expect(await restored.isAccepted(sessionId, 'orphan')).toBe(false)
+}, 30_000)
+
+test('real RPC manual model/effort choices persist across turns and child recycling; hints restore and model auto clears precedence', async () => {
+  const { workspace, harness } = setup()
+  const models = readYaml(providerPaths.models())
+  const providers = models.providers as Record<
+    string,
+    { models: Record<string, unknown>[] }
+  >
+  providers.fake!.models[0]!.reasoning = true
+  providers.fake!.models.push({
+    ...providers.fake!.models[0],
+    id: 'fake-alt',
+    name: 'Alternate',
+  })
+  writePrivateJson(providerPaths.models(), models)
+  const first = await harness.run(workspace, [])
+  let channel = await first.pool.channelFor(first.sessionId)
+  await channel.prompt({
+    messageId: 'manual-model',
+    text: '/model fake/fake-model',
+  })
+  await channel.prompt({ messageId: 'manual-effort', text: '/thinking low' })
+  const state = (await channel.request('get_state')).data as {
+    model: unknown
+    thinkingLevel: string
+  }
+  const baseline = { model: state.model, thinkingLevel: state.thinkingLevel }
+  const turn = new OmpResidentTurnPort({
+    channelFor: async () => channel,
+    isAccepted: (sessionId, messageId) =>
+      first.pool.isAccepted(sessionId, messageId),
+  })
+  for (const auto of [false, true]) {
+    writePrivateJson(providerPaths.config(), {
+      modelRoles: {
+        default: 'fake/fake-model',
+        chat: 'fake/fake-alt:off',
+        plan: 'fake/fake-alt:off',
+      },
+      qianmoRouting: { auto },
+      retry: { enabled: false },
+    })
+    for (let round = 0; round < 2; round++) {
+      await channel.prepareRoute({ text: 'hello' })
+      expect(
+        (
+          await turn.execute(
+            {
+              sessionId: first.sessionId,
+              messageId: `manual-${auto}-${round}`,
+              prompt: 'hello',
+            },
+            async () => {},
+          )
+        ).outcome,
+      ).toBe('completed')
+      expect((await channel.request('get_state')).data).toMatchObject(
+        baseline as Record<string, unknown>,
+      )
+    }
+  }
+  const routed = await channel.prepareRoute({ text: 'hello', hint: 'plan' })
+  expect(routed?.actual.model).toBe('fake/fake-alt')
+  await turn.execute(
+    { sessionId: first.sessionId, messageId: 'hint-turn', prompt: 'hello' },
+    async () => {},
+  )
+  await channel.prepareRoute({ text: 'hello' })
+  expect((await channel.request('get_state')).data).toMatchObject(
+    baseline as Record<string, unknown>,
+  )
+  first.pool.closeSession(first.sessionId)
+  channel = await first.pool.channelFor(first.sessionId)
+  await channel.prepareRoute({ text: 'hello' })
+  expect((await channel.request('get_state')).data).toMatchObject(
+    baseline as Record<string, unknown>,
+  )
+  const calls: string[] = []
+  const request = channel.request.bind(channel)
+  const spy = spyOn(channel, 'request').mockImplementation(
+    async (type, input, timeout, routed) => {
+      calls.push(type)
+      return await request(type, input, timeout, routed)
+    },
+  )
+  try {
+    for (const command of ['/model', '/thinking', '/effort', '/context']) {
+      await channel.prepareRoute({
+        text: command,
+        localCommand: command,
+        hint: 'plan',
+      })
+      await channel.prompt({ messageId: command, text: command })
+    }
+    expect(calls.filter(c => c.startsWith('set_'))).toEqual([])
+  } finally {
+    spy.mockRestore()
+  }
+  await channel.prompt({ messageId: 'clear-manual', text: '/model auto' })
+  expect((await channel.prepareRoute({ text: 'hello' }))?.actual.model).toBe(
+    'fake/fake-alt',
+  )
 }, 30_000)

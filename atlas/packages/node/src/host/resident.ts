@@ -1,10 +1,6 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import {
-  residentRouteSelection,
-  applyResidentModelRoute,
-} from './residentRouting.js'
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { AuditInput } from '@qianmo/audit'
@@ -130,7 +126,10 @@ import {
 } from './residentPrompt.js'
 import { ResidentOmpPool, type ResidentOmpSpawn } from './residentOmp.js'
 import type { ChildProcess } from 'node:child_process'
-import { residentLocalCommand } from './residentLocalCommand.js'
+import {
+  residentLocalCommand,
+  parseResidentOmpLocalCommand,
+} from './residentLocalCommand.js'
 import type { QianmoNotifyVerdict } from './notifyWire.js'
 
 interface QianmoResidentAgentConfig {
@@ -928,10 +927,20 @@ export class QianmoResident {
                     ? raw.goal
                     : (pending?.snapshot.map(m => m.text).join('\n') ??
                       active.prompt)
-            const route = residentRouteSelection({ text, hint: raw?.direction })
-            if (route.selection) {
-              const selection = route.selection
-              const actual = await applyResidentModelRoute(child, selection)
+            // Recovered admissions retain the authorized frozen prompt even
+            // when their original transport task is no longer in memory.
+            const localCommand =
+              this.#taskFor(active)?.localCommand ??
+              (parseResidentOmpLocalCommand(active.prompt)
+                ? active.prompt
+                : undefined)
+            const route = await child.prepareRoute({
+              text,
+              hint: raw?.direction,
+              localCommand,
+            })
+            if (route) {
+              const actual = route.actual
               this.#options.runtimeAudit?.({
                 kind: 'model.route',
                 ...(typeof envelope?.taskId === 'string'

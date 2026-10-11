@@ -92,3 +92,14 @@ export function residentLocalCommand(
   const next = prompt.charAt(head.length)
   return next === '' || /\s/.test(next) ? prompt : undefined
 }
+
+/** Parse only the already-authorized, frozen prompt passed to the RPC child. */
+export function parseResidentOmpLocalCommand(
+  text: string,
+): { name: string; argument?: string } | undefined {
+  const match =
+    /^\/(compact|context|model|thinking|effort|autocompact)(?:\s+(.*))?\s*$/s.exec(
+      text,
+    )
+  return match ? { name: match[1]!, argument: match[2]?.trim() } : undefined
+}

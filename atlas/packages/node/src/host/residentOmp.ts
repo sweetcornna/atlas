@@ -33,10 +33,15 @@ import type {
   ResidentSessionConnection,
 } from '@qianmo/resident'
 import { ompArgv, ompSpawnEnv } from '../omp/launch.js'
-import { residentMediaRoutes } from './residentRouting.js'
+import {
+  residentMediaRoutes,
+  ResidentModelRouter,
+  readResidentManualSelection,
+} from './residentRouting.js'
 import { VIDEO_TOOL, runVideoTool, type VideoToolResult } from './videoTool.js'
 import { nodeModelSelection } from '../providers/node.js'
 import { residentOmpEnvironment } from './residentOmpEnv.js'
+import { parseResidentOmpLocalCommand } from './residentLocalCommand.js'
 import {
   residentToolSurface,
   verdictText,
@@ -71,7 +76,10 @@ export class OmpRpcProcess implements OmpRpcChannel {
   #sequence = 0
   #alive = true
 
-  constructor(child: ChildProcess) {
+  readonly #routing: ResidentModelRouter
+  #routeCompletion: Promise<void> = Promise.resolve()
+  constructor(child: ChildProcess, manualPath?: string) {
+    this.#routing = new ResidentModelRouter(manualPath)
     this.child = child
     if (child.stdin === null || child.stdout === null)
       throw new Error('omp RPC requires piped stdin/stdout')
@@ -132,6 +140,16 @@ export class OmpRpcProcess implements OmpRpcChannel {
               )
             else pending?.resolve(frame)
           }
+          if (
+            (frame.type === 'prompt_result' &&
+              frame.sessionSettled !== false) ||
+            frame.type === 'session_settled'
+          ) {
+            this.#routeCompletion = this.#routeCompletion.then(() =>
+              this.#routing.finish(this.#routeRpc),
+            )
+            void this.#routeCompletion.catch(() => {})
+          }
           for (const listener of this.#listeners) listener(frame)
         } catch (error) {
           finish(error instanceof Error ? error : new Error(String(error)))
@@ -171,7 +189,10 @@ export class OmpRpcProcess implements OmpRpcChannel {
     type: string,
     input: Record<string, unknown> = {},
     timeoutMs = 30_000,
+    routed = false,
   ): Promise<OmpRpcFrame> {
+    if (!routed && (type === 'set_model' || type === 'set_thinking_level'))
+      await this.#routeCompletion
     const id = `resident-${++this.#sequence}`
     const response = new Promise<OmpRpcFrame>((resolve, reject) => {
       const timer =
@@ -203,55 +224,93 @@ export class OmpRpcProcess implements OmpRpcChannel {
         reject(error)
       }
     })
-    return await response
+    const frame = await response
+    if (!routed && (type === 'set_model' || type === 'set_thinking_level'))
+      await this.#routing.remember(this.#routeRpc)
+    return frame
+  }
+  get #routeRpc() {
+    return {
+      request: (type: string, input?: Record<string, unknown>) =>
+        this.request(type, input, 30_000, true),
+    }
+  }
+  async prepareRoute(input: {
+    text: string
+    hint?: unknown
+    localCommand?: string
+  }) {
+    await this.#routeCompletion
+    try {
+      return await this.#routing.prepare(this.#routeRpc, input)
+    } catch (error) {
+      await this.#routing.finish(this.#routeRpc)
+      throw error
+    }
   }
   async prompt(input: {
     messageId: string
     text: string
   }): Promise<OmpPromptAdmission> {
-    const local =
-      /^\/(compact|context|model|thinking|effort|autocompact)(?:\s+(.*))?\s*$/s.exec(
-        input.text,
-      )
-    if (local !== null) {
-      const argument = local[2]?.trim()
-      const command = local[1]
-      let output: unknown
-      if (command === 'autocompact')
-        output =
-          '/autocompact is unsupported by this omp resident; use the node compaction configuration.'
-      else if (command === 'compact')
-        output = (
-          await this.request(
-            'compact',
-            argument ? { customInstructions: argument } : {},
-            0, // Compaction is a model operation; the turn watchdog owns it.
-          )
-        ).data
-      else if ((command === 'thinking' || command === 'effort') && argument)
-        output =
-          (await this.request('set_thinking_level', { level: argument }))
-            .data ?? `Thinking level: ${argument}`
-      else if (command === 'model' && argument) {
-        const slash = argument.indexOf('/')
-        if (slash <= 0) throw new Error('/model requires provider/modelId')
-        output = (
-          await this.request('set_model', {
-            provider: argument.slice(0, slash),
-            modelId: argument.slice(slash + 1),
-          })
-        ).data
-      } else output = (await this.request('get_state')).data
-      return {
-        requestId: randomUUID(),
-        agentInvoked: false,
-        output:
-          typeof output === 'string' ? output : JSON.stringify(output ?? {}),
+    const local = parseResidentOmpLocalCommand(input.text)
+    if (local) {
+      try {
+        const argument = local.argument
+        const command = local.name
+        let output: unknown
+        if (command === 'autocompact')
+          output =
+            '/autocompact is unsupported by this omp resident; use the node compaction configuration.'
+        else if (command === 'compact')
+          output = (
+            await this.request(
+              'compact',
+              argument ? { customInstructions: argument } : {},
+              0, // Compaction is a model operation; the turn watchdog owns it.
+            )
+          ).data
+        else if ((command === 'thinking' || command === 'effort') && argument)
+          output =
+            (await this.request('set_thinking_level', { level: argument }))
+              .data ?? `Thinking level: ${argument}`
+        else if (command === 'model' && argument === 'auto') {
+          this.#routing.clear()
+          output =
+            'Manual model selection cleared; automatic routing follows node configuration.'
+        } else if (command === 'model' && argument) {
+          const slash = argument.indexOf('/')
+          if (slash <= 0) throw new Error('/model requires provider/modelId')
+          output = (
+            await this.request('set_model', {
+              provider: argument.slice(0, slash),
+              modelId: argument.slice(slash + 1),
+            })
+          ).data
+        } else output = (await this.request('get_state')).data
+        return {
+          requestId: randomUUID(),
+          agentInvoked: false,
+          output:
+            typeof output === 'string' ? output : JSON.stringify(output ?? {}),
+        }
+      } finally {
+        await this.#routing.finish(this.#routeRpc)
       }
     }
-    const response = await this.request('prompt', {
-      message: markResidentInput(input.messageId, input.text),
-    })
+    let response: OmpRpcFrame
+    try {
+      response = await this.request('prompt', {
+        message: markResidentInput(input.messageId, input.text),
+      })
+      if (
+        (response.data as { agentInvoked?: boolean } | undefined)
+          ?.agentInvoked === false
+      )
+        await this.#routing.finish(this.#routeRpc)
+    } catch (error) {
+      await this.#routing.finish(this.#routeRpc)
+      throw error
+    }
     const data = response.data as { agentInvoked?: boolean } | undefined
     return {
       requestId: String(response.id),
@@ -463,7 +522,9 @@ export class ResidentOmpPool
     const overlay = join(sessionDir, 'resident-config.yml')
     writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 })
     writeFileSync(overlay, residentConfigOverlay(config), { mode: 0o600 })
-    const selection = nodeModelSelection()
+    const manualPath = join(sessionDir, 'manual-model.json')
+    const selection =
+      readResidentManualSelection(manualPath) ?? nodeModelSelection()
     const argv = ompArgv([
       '--mode',
       'rpc',
@@ -503,6 +564,7 @@ export class ResidentOmpPool
           env,
           stdio: ['pipe', 'pipe', 'inherit'],
         }),
+      manualPath,
     )
     this.#children.set(sessionId, child)
     const videoCalls = new Map<string, AbortController>()
