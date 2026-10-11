@@ -14,6 +14,10 @@
  *   qm resident --help  a lazily loaded command module bundled into the binary
  *   qm agent --smoke-test  omp's worker round trip (re-entry into compiled.ts)
  *
+ * Then a real resident turn proves the extension's positive/negative guards,
+ * and a fresh RPC child checks the extracted artifact's size and desktop tool
+ * registration through the host's legacy loader.
+ *
  * A failure prints the invocation, exit code and both streams; a bundling
  * regression (a command that cannot load, a native addon that cannot be
  * extracted) shows up here and not on the first node that runs it.
@@ -26,6 +30,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { checkResidentCompiled } from './check-resident-compiled.js'
+import { checkResidentExtensionCompiled } from './check-resident-extension-compiled.js'
 
 const REPO_ROOT = join(import.meta.dir, '..', '..')
 
@@ -96,7 +101,11 @@ async function main(): Promise<number> {
   if (failed > 0) return 1
   const resident = await checkResidentCompiled(binary)
   console.log(`[qm-smoke] ok    real resident extension: ${resident.root}`)
-  console.log(`[qm-smoke] OK ${PROBES.length + 1} probes on ${binary}`)
+  const extension = await checkResidentExtensionCompiled(binary, resident.root)
+  console.log(
+    `[qm-smoke] ok    extension RPC ready, budget ${extension.bytes} bytes, registered tools: ${extension.toolNames.join(', ')}`,
+  )
+  console.log(`[qm-smoke] OK ${PROBES.length + 2} probes on ${binary}`)
   return 0
 }
 
