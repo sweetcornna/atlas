@@ -8,6 +8,50 @@ import { ResidentSupervisor } from '@qianmo/resident'
 import { OmpRpcProcess, ResidentOmpPool } from '../../src/host/residentOmp.js'
 import { isolatedRoot } from '../providers/fake.js'
 
+test('stop can escalate a graceful shutdown immediately while sharing the promise until real close', async () => {
+  const child = spawn(
+    process.execPath,
+    [
+      '-e',
+      `
+      process.stdin.on('data', () => {});
+      process.stdin.on('end', () => {});
+      setInterval(() => {}, 1000);
+      process.stdout.write(JSON.stringify({type:'ready'}) + '\\n');
+      `,
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  )
+  const signals: (NodeJS.Signals | number | undefined)[] = []
+  const kill = child.kill.bind(child)
+  child.kill = signal => {
+    signals.push(signal)
+    return kill(signal)
+  }
+  let actualClose = false
+  child.once('close', () => {
+    actualClose = true
+  })
+  const channel = new OmpRpcProcess(child)
+  try {
+    await channel.initialize()
+    const graceful = channel.stop(false)
+    expect(signals).toEqual([])
+    const immediate = channel.stop(true)
+    expect(signals).toEqual(['SIGTERM'])
+    expect(immediate).toBe(graceful)
+    expect(actualClose).toBe(false)
+    await Promise.all([graceful, immediate])
+
+    expect(actualClose).toBe(true)
+    expect(child.signalCode).toBe('SIGTERM')
+    expect(() => process.kill(child.pid!, 0)).toThrow()
+  } finally {
+    kill('SIGKILL')
+    await channel.stop()
+  }
+}, 5_000)
+
 test('never-ready children time out, are reaped and park after every slow startup is counted', async () => {
   const root = isolatedRoot()
   const children: ChildProcess[] = []

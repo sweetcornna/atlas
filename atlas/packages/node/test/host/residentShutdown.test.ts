@@ -9,6 +9,59 @@ import { TransportClient } from '@qianmo/transport'
 import { QianmoResident } from '../../src/host/resident.js'
 import { isolatedRoot } from '../providers/fake.js'
 
+test('resident abort during model startup prevents spawning, restarting and parking alerts', async () => {
+  const root = isolatedRoot()
+  const initializing = Promise.withResolvers<AbortSignal>()
+  const errors: string[] = []
+  let generations = 0
+  let spawns = 0
+  let ready = 0
+  const resident = new QianmoResident({
+    node: 'node-b',
+    team: 'nest',
+    agents: [{ agent: 'reviewer', cwd: root.root }],
+    memoryRoot: join(root.root, 'memory'),
+    psk: 'initialization-shutdown-test-local-psk',
+    listen: { unix: join(root.root, 'r.sock') },
+    inactivityMs: 0,
+    ompRestart: { initialBackoffMs: 10, maxRapidFailures: 1 },
+    beforeModelGeneration: ({ signal }) => {
+      generations++
+      const finished = Promise.withResolvers<void>()
+      signal.addEventListener('abort', () => finished.reject(signal.reason), {
+        once: true,
+      })
+      initializing.resolve(signal)
+      return finished.promise
+    },
+    spawnOmp: () => {
+      spawns++
+      throw new Error('stopped model startup must not spawn')
+    },
+    onTiming: event => {
+      if (event.stage === 'runtime_ready') ready++
+    },
+    onError: error => errors.push(String(error)),
+  })
+  const running = resident.run()
+  void running.catch(() => {})
+  try {
+    const signal = await initializing.promise
+    resident.stop()
+    await running
+
+    expect(signal.aborted).toBe(true)
+    expect(generations).toBe(1)
+    expect(spawns).toBe(0)
+    expect(ready).toBe(0)
+    expect(errors).toEqual([])
+  } finally {
+    resident.stop()
+    await running
+    root.dispose()
+  }
+}, 5_000)
+
 test('resident stop during RPC startup terminates and reaps the never-ready child promptly', async () => {
   const root = isolatedRoot()
   const started = Promise.withResolvers<void>()
