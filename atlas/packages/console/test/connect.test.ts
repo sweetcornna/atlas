@@ -7,6 +7,8 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import type { HandoffPort, HandoffTaskView } from '../src/deps.js'
+import { createConsoleHandler } from '../src/index.js'
 import { accountsHarness, asSession, person } from './accountsHarness.js'
 import { FakeConnectors, FakeHandoffDevices } from './directionFakes.js'
 import {
@@ -184,5 +186,97 @@ describe('/fragments/connect/form', () => {
     const html = await page(handle, '/fragments/connect/form?preset=ics', ADMIN)
     expect(visibleText(html)).toContain('订阅地址')
     expect(html).not.toContain('服务器设置')
+  })
+})
+
+const RELAY: HandoffTaskView = {
+  taskId: 'h-7f3a',
+  state: 'done',
+  manifest: {
+    kind: 'handoff',
+    project: 'atlas',
+    device: 'dev-1',
+    branch: 'main',
+    wip: 'a'.repeat(40),
+    tree: 'b'.repeat(40),
+    tool: 'codex',
+    sessionId: 'no-session',
+    sessionRef: 'no-session',
+    sessionCommit: 'a'.repeat(40),
+    cwd: '/work/atlas',
+    brief: { goal: '把登录页的测试补齐', done: '', remaining: '全部' },
+    deadline: '2026-11-20T02:00:00Z',
+  },
+  node: 'cloud',
+  result: null,
+  reason: null,
+  code: {
+    repo: 'cornna/atlas',
+    wip: { ref: 'refs/heads/qianmo/wip/dev-1/h-7f3a', commit: 'a'.repeat(40) },
+    sessions: null,
+    sessionsReason: '公开仓库不推会话记录',
+    result: {
+      ref: 'refs/heads/qianmo/result/h-7f3a',
+      commit: '1234567'.padEnd(40, 'f'),
+    },
+  },
+  acceptedAt: NOW - 600_000,
+  updatedAt: NOW - 60_000,
+}
+
+function relayPort(
+  tasks: readonly HandoffTaskView[],
+  codeStore: 'github' | 'hub',
+): HandoffPort {
+  const refused = () =>
+    Promise.resolve({
+      ok: false as const,
+      failure: { code: 'unsupported' as const, message: 'test' },
+    })
+  return {
+    codeStore,
+    accept: refused,
+    list: () => Promise.resolve({ ok: true as const, value: tasks }),
+    get: refused,
+    send: refused,
+    attach: refused,
+    markReturned: refused,
+  }
+}
+
+describe('连接 · recent relays', () => {
+  test('a GitHub relay shows its repo, start and result commits, and why it carried no session', async () => {
+    const deps = {
+      ...pageHarness({
+        ports: { handoffDevices: new FakeHandoffDevices(() => NOW) },
+      }).deps,
+      handoff: relayPort([RELAY], 'github'),
+    }
+    const handle = createConsoleHandler(deps, { view: VIEW, admin: ADMIN })
+    const text = visibleText(await page(handle, '/connect', VIEW))
+    expect(text).toContain('最近接力')
+    expect(text).toContain('中枢只存台账')
+    expect(text).toContain('把登录页的测试补齐')
+    expect(text).toContain('cornna/atlas')
+    expect(text).toContain('1234567')
+    expect(text).toContain('无会话记录')
+    expect(text).toContain('已完成')
+  })
+
+  test('no relay yet says where code will go; no handoff port, no block', async () => {
+    const deps = {
+      ...pageHarness({
+        ports: { handoffDevices: new FakeHandoffDevices(() => NOW) },
+      }).deps,
+      handoff: relayPort([], 'github'),
+    }
+    const handle = createConsoleHandler(deps, { view: VIEW, admin: ADMIN })
+    const text = visibleText(await page(handle, '/connect', VIEW))
+    expect(text).toContain('还没有接力')
+    expect(text).toContain('GitHub')
+    const { handle: bare } = wired()
+    expect(visibleText(await page(bare, '/connect', VIEW))).not.toContain(
+      '最近接力',
+    )
   })
 })

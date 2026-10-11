@@ -16,6 +16,7 @@
  */
 
 import type { ConsoleResult } from '../contracts.js'
+import type { HandoffTaskView } from '../deps.js'
 import type {
   ConnectorPresetView,
   ConnectorsSnapshot,
@@ -66,11 +67,15 @@ function forReader(
 async function modelOf(ctx: RouteContext): Promise<ConnectModel> {
   const connectors = ctx.deps.connectors
   const devices = ctx.deps.handoffDevices
+  const handoff = ctx.deps.handoff
   const ops = canOps(ctx)
-  const [connectorSide, deviceSide] = await Promise.all([
+  const [connectorSide, deviceSide, relaySide] = await Promise.all([
     sideOf(connectors === undefined ? null : () => connectors.snapshot()),
     sideOf<readonly HandoffDeviceView[]>(
       devices === undefined ? null : () => devices.listDevices(),
+    ),
+    sideOf<readonly HandoffTaskView[]>(
+      handoff === undefined ? null : () => handoff.list(),
     ),
   ])
   return {
@@ -79,6 +84,8 @@ async function modelOf(ctx: RouteContext): Promise<ConnectModel> {
         ? { kind: 'ok', value: forReader(connectorSide.value, ops) }
         : connectorSide,
     devices: deviceSide,
+    relays: relaySide,
+    codeStore: handoff === undefined ? null : (handoff.codeStore ?? 'hub'),
     now: ctx.now,
     ops,
     member: canMember(ctx),

@@ -18,7 +18,11 @@
  * account and "已设置", never a secret.
  */
 
-import type { ConsoleFailure } from '../deps.js'
+import type {
+  ConsoleFailure,
+  HandoffTaskState,
+  HandoffTaskView,
+} from '../deps.js'
 import type {
   ConnectorCallView,
   ConnectorPresetView,
@@ -58,6 +62,10 @@ export type Side<T> =
 export interface ConnectModel {
   readonly connectors: Side<ConnectorsSnapshot>
   readonly devices: Side<readonly HandoffDeviceView[]>
+  /** The relay ledger, newest first; unwired when the hub has no handoff. */
+  readonly relays: Side<readonly HandoffTaskView[]>
+  /** Where relayed code lives: the user's GitHub repo, or the hub (legacy). */
+  readonly codeStore: 'github' | 'hub' | null
   readonly now: number
   /** May add, change, test and remove connections (ops level). */
   readonly ops: boolean
@@ -301,6 +309,90 @@ function deviceRow(device: HandoffDeviceView, model: ConnectModel): string {
   )
 }
 
+const RELAY_STATE: Readonly<
+  Record<HandoffTaskState, readonly ['ok' | 'warn' | 'bad' | 'muted', string]>
+> = {
+  accepted: ['muted', '已登记'],
+  dispatched: ['warn', '已派发'],
+  running: ['warn', '进行中'],
+  done: ['ok', '已完成'],
+  failed: ['bad', '失败'],
+  returned: ['ok', '已接回'],
+}
+
+/** How many relays the page lists; the rest stay in the ledger. */
+const RELAY_ROWS = 8
+
+function shortCommit(commit: string): string {
+  return commit.slice(0, 7)
+}
+
+function relayCode(task: HandoffTaskView): string {
+  const code = task.code
+  if (code === undefined) return '<span class="note">中枢</span>'
+  const result =
+    code.result === undefined
+      ? ''
+      : ` · 结果 <span class="kit-mono">${escapeHtml(shortCommit(code.result.commit))}</span>`
+  const sessions =
+    code.sessions === null
+      ? ` ${tag('无会话记录', 'muted', code.sessionsReason)}`
+      : ''
+  const cleaned = code.cleaned === true ? ` ${tag('分支已清理')}` : ''
+  return (
+    `<span class="kit-mono">${escapeHtml(code.repo)}</span>` +
+    `<span class="note"> · 起点 <span class="kit-mono">${escapeHtml(shortCommit(code.wip.commit))}</span>${result}</span>` +
+    sessions +
+    cleaned
+  )
+}
+
+function relayRow(task: HandoffTaskView, model: ConnectModel): string {
+  const [tone, word] = RELAY_STATE[task.state]
+  const goal = task.manifest.brief.goal.trim()
+  return (
+    `<tr data-key="${attr(task.taskId)}">` +
+    `<td><b>${goal === '' ? escapeHtml(task.taskId) : escapeHtml(goal.length > 40 ? `${goal.slice(0, 40)}…` : goal)}</b>` +
+    `<div class="note kit-mono">${escapeHtml(task.manifest.project)}</div></td>` +
+    `<td>${task.node === null ? absent() : `<span class="kit-mono">${escapeHtml(task.node)}</span>`}</td>` +
+    `<td>${relayCode(task)}</td>` +
+    `<td>${task.state === 'failed' && task.reason !== null ? state(tone, `${word} · ${task.reason}`) : state(tone, word)}</td>` +
+    `<td class="when"><span class="note">${escapeHtml(formatRelative(task.updatedAt, model.now))}</span></td></tr>`
+  )
+}
+
+function relaysBlock(model: ConnectModel): string {
+  const side = model.relays
+  if (side.kind === 'unwired') return ''
+  if (side.kind === 'failed') return failureBar(side.failure, '接力')
+  const where =
+    model.codeStore === 'github'
+      ? '代码和结果放在你自己的 GitHub 仓库的 qianmo/* 分支 · 中枢只存台账 · 接回后分支删除'
+      : '代码经中枢的仓库中转'
+  if (side.value.length === 0)
+    return (
+      `<div class="relays"><h3 class="relays-h">最近接力</h3>` +
+      `<p class="note">还没有接力 · ${escapeHtml(where)}</p></div>`
+    )
+  const rows = [...side.value]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, RELAY_ROWS)
+  const head = ['任务', '节点', '代码', '状态', '更新']
+    .map(name => `<th scope="col">${escapeHtml(name)}</th>`)
+    .join('')
+  return (
+    `<div class="relays"><h3 class="relays-h">最近接力</h3>` +
+    `<p class="note">${escapeHtml(where)}</p>` +
+    scroll(
+      `<table class="trail relays-t"><caption class="sr-only">最近接力</caption>` +
+        `<thead><tr>${head}</tr></thead><tbody>${rows
+          .map(one => relayRow(one, model))
+          .join('')}</tbody></table>`,
+    ) +
+    `</div>`
+  )
+}
+
 function devicesSection(model: ConnectModel): string {
   const side = model.devices
   const pair =
@@ -312,7 +404,7 @@ function devicesSection(model: ConnectModel): string {
     body = unwiredCard(
       '本机工具',
       '在 Claude Code 或 Codex 里装上阡陌插件 · 配对一次 · 本机和服务器上的智能体就能互相接力',
-      'qm console … --handoff-root <目录>',
+      'qm console … --handoff-repo <owner/name>=<令牌文件>',
     )
   } else if (side.kind === 'failed') {
     body = failureBar(side.failure, '本机工具')
@@ -342,6 +434,7 @@ function devicesSection(model: ConnectModel): string {
       }</div>`,
     }) +
     body +
+    (side.kind === 'unwired' ? '' : relaysBlock(model)) +
     `</section>`
   )
 }
@@ -569,10 +662,19 @@ export const CONNECT_PAGE_CSS = `
 .con-dialog .dialog-body { max-height: min(70vh, 640px); overflow: auto; }
 .dev-glyph { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 9px; background: var(--color-bg); color: var(--color-muted); }
 .dev-revoked { opacity: .55; }
+.trail.devices { min-width: 640px; }
+.trail.devices td:first-child { min-width: 9em; }
 .pair-steps { margin: var(--space-3) 0 0; padding: 0; list-style: none; counter-reset: step; display: flex; flex-direction: column; gap: var(--space-3); }
 .pair-steps li { counter-increment: step; display: flex; flex-direction: column; gap: 4px; position: relative; padding-left: 34px; }
 .pair-steps li::before { content: counter(step); position: absolute; left: 0; top: 0; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: var(--text-12); font-weight: 600; background: var(--color-accent); color: var(--color-on-accent, #fff); }
 .pair-cmd { display: block; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--color-bg); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-12); }
 .pair-code { font-family: var(--font-mono); font-size: 24px; letter-spacing: .14em; text-align: center; padding: var(--space-4) var(--space-3); border-radius: var(--radius-md); background: var(--color-bg); margin: 0; }
 .pair-code:empty { display: none; }
+.relays { margin-top: var(--space-6); display: flex; flex-direction: column; gap: var(--space-2); }
+.relays-h { margin: 0; font-size: var(--text-13); font-weight: 600; }
+.relays-t { min-width: 600px; }
+.relays-t td { vertical-align: top; }
+.relays-t td:first-child { min-width: 10em; }
+.relays-t td:nth-child(2), .relays-t td:nth-child(5) { white-space: nowrap; }
+.relays-t td:nth-child(3) { overflow-wrap: anywhere; }
 `
