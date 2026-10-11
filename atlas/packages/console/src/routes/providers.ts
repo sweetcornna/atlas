@@ -145,6 +145,14 @@ import {
 } from '../view/providersForm.js'
 import { renderNodePanel, renderNodePage } from '../view/providersNode.js'
 import { PROVIDERS_PAGE_JS } from '../view/providersScript.js'
+import {
+  ROUTING_CSS,
+  renderRoutingCard,
+  renderRoutingFailure,
+} from '../view/routing.js'
+import { ROUTING_PAGE_JS } from '../view/routingScript.js'
+import { guardRead } from './directionShared.js'
+import { routingApi, routingWriter } from './routingApi.js'
 import { guard, safeDecode, underPath } from './shared.js'
 import type { PageRender, RouteContext, RouteModule } from './types.js'
 
@@ -1188,6 +1196,53 @@ function missing(title: string, line: string, crumbs: string): PageRender {
   }
 }
 
+const NODE_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+/**
+ * 任务分工 (P22): the card at the top of the board, for `?routing=<node>`
+ * or every node. Empty when the routing book is not wired.
+ */
+async function routingCard(
+  ctx: RouteContext,
+  nodes: readonly string[],
+  asked: string | null,
+): Promise<string> {
+  const routing = ctx.deps.routing
+  if (routing === undefined) return ''
+  const snapshot = await routing.snapshot()
+  if (!snapshot.ok) return renderRoutingFailure(snapshot.failure)
+  const node =
+    asked !== null && NODE_NAME.test(asked) && nodes.includes(asked)
+      ? asked
+      : null
+  return renderRoutingCard({
+    snapshot: snapshot.value,
+    node,
+    nodes,
+    writer: routingWriter(ctx),
+    now: ctx.now,
+  })
+}
+
+async function routingNodes(port: ProviderPort | undefined): Promise<string[]> {
+  if (port === undefined) return []
+  const overview = await port.overview()
+  return overview.ok ? overview.value.nodes.map(one => one.node) : []
+}
+
+/** `/fragments/routing?node=`: the card for another scope. */
+async function routingFragment(
+  ctx: RouteContext,
+  rest: readonly string[],
+): Promise<Response> {
+  if (rest.length !== 0) return notFound(`unknown path: ${ctx.url.pathname}`)
+  if (ctx.request.method !== 'GET') return methodNotAllowed(['GET'])
+  const denied = guardRead(ctx)
+  if (denied !== null) return denied
+  const nodes = await routingNodes(ctx.deps.providers)
+  return html(await routingCard(ctx, nodes, ctx.url.searchParams.get('node')))
+}
+
 async function boardPage(
   ctx: RouteContext,
   port: ProviderPort,
@@ -1213,6 +1268,13 @@ async function boardPage(
     poll: true,
     body:
       (reader.writer ? noScriptNote() + progressPanel() : '') +
+      (only === ''
+        ? await routingCard(
+            ctx,
+            overview.ok ? overview.value.nodes.map(one => one.node) : [],
+            ctx.url.searchParams.get('routing'),
+          )
+        : '') +
       `<div class="prov-board" id="prov-board" data-poll="${escapeHtml(
         poll,
       )}">${board}</div>` +
@@ -1447,19 +1509,23 @@ export const providersRoute: RouteModule = {
     async render(ctx, rest) {
       return await providersPage(ctx, rest)
     },
-    css: PROVIDERS_PAGE_CSS,
-    script: PROVIDERS_PAGE_JS,
+    css: PROVIDERS_PAGE_CSS + ROUTING_CSS,
+    script: PROVIDERS_PAGE_JS + ROUTING_PAGE_JS,
   },
   api: {
-    heads: ['providers'],
-    async handle(ctx, _head, rest) {
-      return await handleApi(ctx, rest)
+    heads: ['providers', ...routingApi.heads],
+    async handle(ctx, head, rest) {
+      return head === 'providers'
+        ? await handleApi(ctx, rest)
+        : await routingApi.handle(ctx, head, rest)
     },
   },
   fragments: {
-    heads: ['providers'],
-    async handle(ctx, _head, rest) {
-      return await handleFragment(ctx, rest)
+    heads: ['providers', 'routing'],
+    async handle(ctx, head, rest) {
+      return head === 'providers'
+        ? await handleFragment(ctx, rest)
+        : await routingFragment(ctx, rest)
     },
   },
 }

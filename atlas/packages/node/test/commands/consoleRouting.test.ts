@@ -186,6 +186,8 @@ test('invalid references, kinds, half-null references, duplicate directions and 
     (await port.clearNode('node-a', { ...actor, role: 'viewer' })).ok,
   ).toBe(false)
   expect(fs.existsSync(options.path)).toBe(false)
+  // The shared admin token is not a routing writer: a route ships another
+  // service's credentials to the nodes (the 模型服务 rule).
   expect(
     (
       await port.save(
@@ -193,7 +195,7 @@ test('invalid references, kinds, half-null references, duplicate directions and 
         { ...actor, subject: 'legacy:admin', role: null },
       )
     ).ok,
-  ).toBe(true)
+  ).toBe(false)
 })
 test('corrupt or non-private routing books fail closed', async () => {
   const { port, options } = setup()

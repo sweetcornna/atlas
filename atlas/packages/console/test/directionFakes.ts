@@ -16,6 +16,7 @@ import type {
 import type { ConsoleFailure, ConsoleResult } from '../src/contracts.js'
 import {
   MEMORY_KINDS,
+  MODEL_DIRECTIONS,
   type AgentRef,
   type DirectionActor,
   type MemoryDraft,
@@ -23,6 +24,10 @@ import {
   type MemoryKind,
   type MemoryPort,
   type MemoryQueryInput,
+  type ModelRouteView,
+  type ModelRoutingPort,
+  type ModelRoutingSnapshot,
+  type ModelRoutingView,
   type NotifyChannelDraft,
   type NotifyChannelView,
   type ScheduleDraft,
@@ -556,6 +561,164 @@ export class FakeMemory implements MemoryPort {
   }
 }
 
+/**
+ * A routing book: defaults plus node overrides under one revision, the
+ * models two chat services and two media services offer, and a few
+ * decisions the nodes reported.
+ */
+export class FakeRouting implements ModelRoutingPort {
+  readonly calls: string[] = []
+  revision = 3
+  defaults: ModelRoutingView
+  nodes: ModelRoutingView[] = []
+  failSnapshot = false
+
+  constructor(private readonly now: () => number) {
+    const at = now()
+    this.defaults = {
+      node: null,
+      auto: true,
+      routes: MODEL_DIRECTIONS.map(direction =>
+        direction === 'code'
+          ? { direction, profileId: 'deepseek', modelId: 'deepseek-coder' }
+          : direction === 'image'
+            ? { direction, profileId: 'images', modelId: 'gpt-image-1' }
+            : { direction, profileId: null, modelId: null },
+      ),
+      revision: this.revision,
+      updatedAt: at - 3_600_000 * 5,
+      updatedBy: 'u:ops-1',
+    }
+  }
+
+  async snapshot() {
+    this.calls.push('snapshot')
+    if (this.failSnapshot) {
+      return failed<ModelRoutingSnapshot>('unreachable', 'routing book down')
+    }
+    const at = this.now()
+    return ok<ModelRoutingSnapshot>({
+      defaults: { ...this.defaults, revision: this.revision },
+      nodes: this.nodes.map(one => ({ ...one, revision: this.revision })),
+      models: [
+        {
+          profileId: 'deepseek',
+          profileName: 'DeepSeek',
+          modelId: 'deepseek-coder',
+          kind: 'chat',
+          evaluated: true,
+        },
+        {
+          profileId: 'deepseek',
+          profileName: 'DeepSeek',
+          modelId: 'deepseek-chat',
+          kind: 'chat',
+          evaluated: true,
+        },
+        {
+          profileId: 'chat-svc',
+          profileName: '团队网关',
+          modelId: 'gpt-6-luna',
+          kind: 'chat',
+          evaluated: true,
+        },
+        {
+          profileId: 'images',
+          profileName: 'OpenAI Images',
+          modelId: 'gpt-image-1',
+          kind: 'image',
+          evaluated: false,
+        },
+        {
+          profileId: 'video',
+          profileName: 'OpenRouter 视频',
+          modelId: 'video-preview',
+          kind: 'video',
+          evaluated: false,
+        },
+      ],
+      recent: [
+        {
+          node: 'node-a',
+          agent: 'planner',
+          at: at - 120_000,
+          direction: 'code',
+          source: 'auto',
+          model: 'qm-deepseek/deepseek-coder',
+        },
+        {
+          node: 'node-b',
+          agent: 'writer',
+          at: at - 900_000,
+          direction: 'image',
+          source: 'hint',
+          model: 'qm-images/gpt-image-1',
+        },
+        {
+          node: 'node-a',
+          agent: 'planner',
+          at: at - 3_600_000,
+          direction: 'chat',
+          source: 'default',
+          model: 'qm-deepseek/deepseek-chat',
+        },
+      ],
+    })
+  }
+
+  async save(
+    input: {
+      readonly node: string | null
+      readonly auto: boolean
+      readonly routes: readonly ModelRouteView[]
+      readonly revision: number
+    },
+    actor: DirectionActor,
+  ) {
+    this.calls.push(`save ${input.node ?? 'default'} ${actor.subject}`)
+    if (input.revision !== this.revision) {
+      return failed<ModelRoutingView>(
+        'rejected',
+        'revision 不符 · 请刷新后重试',
+      )
+    }
+    const current =
+      input.node === null
+        ? this.defaults
+        : (this.nodes.find(one => one.node === input.node) ?? {
+            ...this.defaults,
+            node: input.node,
+          })
+    this.revision += 1
+    const view: ModelRoutingView = {
+      ...current,
+      auto: input.auto,
+      routes: current.routes.map(
+        one =>
+          input.routes.find(patch => patch.direction === one.direction) ?? one,
+      ),
+      revision: this.revision,
+      updatedAt: this.now(),
+      updatedBy: actor.subject,
+    }
+    if (input.node === null) this.defaults = view
+    else
+      this.nodes = [...this.nodes.filter(one => one.node !== input.node), view]
+    return ok(view)
+  }
+
+  async clearNode(node: string, actor: DirectionActor) {
+    this.calls.push(`clear ${node} ${actor.subject}`)
+    this.nodes = this.nodes.filter(one => one.node !== node)
+    this.revision += 1
+    return ok<ModelRoutingView>({
+      ...this.defaults,
+      node,
+      revision: this.revision,
+    })
+  }
+}
+
 /** What `test/preview.ts`-style harnesses wire: one fake per port. */
 export const PREVIEW_PORTS: Readonly<
   Record<string, (now: () => number) => unknown>
@@ -563,4 +726,5 @@ export const PREVIEW_PORTS: Readonly<
   schedules: now => new FakeSchedules(now),
   avatars: now => new FakeAvatars(now),
   memory: now => new FakeMemory(now),
+  routing: now => new FakeRouting(now),
 }

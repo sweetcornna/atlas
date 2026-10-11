@@ -127,18 +127,27 @@ test('viewers and members can read, but cannot save or clear; legacy view also r
   }
   expect(h.calls).toEqual(['read', 'read', 'read'])
 })
-test('ops and management token writes admit first and pass DirectionActor to the port', async () => {
+test('a personal ops account writes, admitted first, as itself; the shared admin token only reads', async () => {
   const h = await setup()
-  expect((await h.send('PUT', h.users.ops.credential, input)).status).toBe(200)
+  const ops = h.users.ops.credential
+  expect((await h.send('PUT', ops, input)).status).toBe(200)
   expect(
-    (await h.send('DELETE', ADMIN, undefined, ['nodes', 'node-a'])).status,
+    (await h.send('DELETE', ops, undefined, ['nodes', 'node-a'])).status,
   ).toBe(200)
   expect(h.calls).toEqual(['admit', 'save', 'admit', 'clear'])
   expect(h.actors[0]).toMatchObject({ role: 'ops', requestId: 'request-test' })
-  expect(h.actors[1]?.subject).toBe('legacy:admin')
+  // A route ships another service's credentials to the nodes: the 模型服务
+  // rule, not the admin token.
+  expect((await h.send('GET', ADMIN)).status).toBe(200)
+  expect((await h.send('PUT', ADMIN, input)).status).toBe(403)
+  expect(
+    (await h.send('DELETE', ADMIN, undefined, ['nodes', 'node-a'])).status,
+  ).toBe(403)
+  expect(h.calls).toEqual(['admit', 'save', 'admit', 'clear', 'read'])
 })
 test('ledger refusal prevents mutation, unwired port is 501 and fields remain closed', async () => {
   const h = await setup()
+  const ADMIN = h.users.ops.credential
   expect((await h.send('PUT', ADMIN, input, [], false)).status).toBe(503)
   expect(h.calls).toEqual(['admit'])
   expect((await h.send('GET', VIEW, undefined, [], true, false)).status).toBe(

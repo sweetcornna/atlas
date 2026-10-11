@@ -1,114 +1,163 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+/**
+ * 任务分工 (P22): `/v0/routing`, mounted on the 模型 area.
+ *
+ * | Route | Who |
+ * |---|---|
+ * | `GET /v0/routing` | view and up |
+ * | `PUT /v0/routing` | a personal ops account |
+ * | `DELETE /v0/routing/nodes/<node>` | a personal ops account |
+ *
+ * A route makes the hub ship another service's credentials to the nodes, so
+ * a write follows the 模型服务 rule ({@link routingWriter}): a personal `ops`
+ * account, not a shared token and not break-glass. The routing book records its
+ * own `routing.save` / `routing.clear` line in the action ledger; this route
+ * therefore never calls `ctx.record`.
+ */
+
+import { MODEL_DIRECTIONS, type ModelRouteView } from '../directionPorts.js'
+import { fail, methodNotAllowed, notFound } from '../respond.js'
 import {
-  MODEL_DIRECTIONS,
-  type ModelRouteView,
-  type DirectionActor,
-} from '../directionPorts.js'
-import { fail, json } from '../respond.js'
-import { failureResponse, guard } from './shared.js'
+  actorOf,
+  answer,
+  bodyOf,
+  guardOpsWrite,
+  guardRead,
+  segment,
+  unwired,
+} from './directionShared.js'
 import type { HeadRoute, RouteContext } from './types.js'
 
-function actor(ctx: RouteContext): DirectionActor {
-  const p = ctx.access.principal
+const NODE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+const FIELDS = ['node', 'auto', 'routes', 'revision']
+const ROUTE_FIELDS = ['direction', 'profileId', 'modelId']
+
+/** May this caller change the split? The same test as the 模型服务 writes. */
+export function routingWriter(ctx: RouteContext): boolean {
+  const principal = ctx.access.principal
+  return (
+    principal?.kind === 'user' &&
+    principal.role === 'ops' &&
+    !ctx.access.breakGlass
+  )
+}
+
+interface RoutingInput {
+  readonly node: string | null
+  readonly auto: boolean
+  readonly routes: readonly ModelRouteView[]
+  readonly revision: number
+}
+
+function routeOf(entry: unknown): ModelRouteView | null {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    return null
+  }
+  const raw = entry as Record<string, unknown>
+  if (Object.keys(raw).some(key => !ROUTE_FIELDS.includes(key))) return null
+  if (!(MODEL_DIRECTIONS as readonly unknown[]).includes(raw.direction)) {
+    return null
+  }
+  const follows = raw.profileId === null && raw.modelId === null
+  const picked =
+    typeof raw.profileId === 'string' &&
+    raw.profileId !== '' &&
+    typeof raw.modelId === 'string' &&
+    raw.modelId !== ''
+  if (!follows && !picked) return null
+  return raw as unknown as ModelRouteView
+}
+
+function inputOf(raw: Record<string, unknown>): RoutingInput | Response {
+  if (Object.keys(raw).some(key => !FIELDS.includes(key))) {
+    return fail(400, 'invalid', '路由输入只认 node auto routes revision')
+  }
+  if (
+    !(
+      raw.node === null ||
+      (typeof raw.node === 'string' && NODE.test(raw.node))
+    )
+  ) {
+    return fail(400, 'invalid', 'node 是 null 或节点名')
+  }
+  if (typeof raw.auto !== 'boolean' || !Number.isSafeInteger(raw.revision)) {
+    return fail(400, 'invalid', 'auto 是布尔值 · revision 是整数')
+  }
+  if (
+    !Array.isArray(raw.routes) ||
+    raw.routes.length > MODEL_DIRECTIONS.length
+  ) {
+    return fail(400, 'invalid', 'routes 是方向与模型引用的列表')
+  }
+  const routes: ModelRouteView[] = []
+  for (const entry of raw.routes) {
+    const route = routeOf(entry)
+    if (route === null) return fail(400, 'invalid', '方向或模型引用不合法')
+    routes.push(route)
+  }
   return {
-    subject: p?.subject ?? 'anonymous',
-    role: p?.kind === 'user' ? p.role : null,
-    requestId: ctx.requestId,
+    node: raw.node,
+    auto: raw.auto,
+    routes,
+    revision: raw.revision as number,
   }
 }
-/** API only. The providers area can add this head without a second page module. */
+
+async function routingHandle(
+  ctx: RouteContext,
+  rest: readonly string[],
+): Promise<Response> {
+  const root = rest.length === 0
+  const node =
+    rest.length === 2 && rest[0] === 'nodes' ? segment(rest[1]) : undefined
+  if (!root && node === undefined) {
+    return notFound(`unknown path: ${ctx.url.pathname}`)
+  }
+  if (node === null || (node !== undefined && !NODE.test(node))) {
+    return fail(400, 'invalid', '节点名不合法')
+  }
+  const method = ctx.request.method
+  const allowed = root ? ['GET', 'PUT'] : ['DELETE']
+  if (!allowed.includes(method)) return methodNotAllowed(allowed)
+  const port = ctx.deps.routing
+  if (method === 'GET') {
+    const denied = guardRead(ctx)
+    if (denied !== null) return denied
+    if (port === undefined) return unwired('任务分工')
+    return answer(await port.snapshot())
+  }
+  const denied = guardOpsWrite(ctx)
+  if (denied !== null) return denied
+  if (!routingWriter(ctx)) {
+    return fail(
+      403,
+      'forbidden',
+      '任务分工的写操作需要运维角色的个人账号 · 共用令牌与 break-glass 只能查看',
+    )
+  }
+  if (port === undefined) return unwired('任务分工')
+  let input: RoutingInput | null = null
+  if (method === 'PUT') {
+    const body = await bodyOf(ctx)
+    if (body instanceof Response) return body
+    const parsed = inputOf(body)
+    if (parsed instanceof Response) return parsed
+    input = parsed
+  }
+  const busy = await ctx.admit()
+  if (busy !== null) return busy
+  const actor = actorOf(ctx)
+  return answer(
+    input === null
+      ? await port.clearNode(node ?? '', actor)
+      : await port.save(input, actor),
+  )
+}
+
+/** API only; the 模型 area claims this head beside its own. */
 export const routingApi: HeadRoute = {
   heads: ['routing'],
-  async handle(ctx, _head, rest) {
-    const denied = guard(ctx.access.credential, 'view', 'guarded')
-    if (denied) return denied
-    const root = rest.length === 0
-    const node = rest.length === 2 && rest[0] === 'nodes' ? rest[1] : undefined
-    if (!root && node === undefined)
-      return fail(404, 'not_found', '没有这个路由')
-    const method = ctx.request.method
-    if (
-      (root && method !== 'GET' && method !== 'PUT') ||
-      (node !== undefined && method !== 'DELETE')
-    )
-      return fail(405, 'method_not_allowed', '方法不允许')
-    if (method !== 'GET') {
-      const denied = guard(ctx.access.credential, 'admin', 'guarded')
-      if (denied) return denied
-      const who = actor(ctx)
-      if (who.role !== 'ops' && who.subject !== 'legacy:admin')
-        return fail(403, 'forbidden', '需要 ops 或管理令牌')
-    }
-    const port = ctx.deps.routing
-    if (!port) return fail(501, 'unsupported', '任务分工未接入')
-    if (method === 'GET') {
-      const result = await port.snapshot()
-      return result.ok ? json(result.value) : failureResponse(result.failure)
-    }
-    let input:
-      | {
-          node: string | null
-          auto: boolean
-          routes: ModelRouteView[]
-          revision: number
-        }
-      | undefined
-    if (method === 'PUT') {
-      let body: unknown
-      try {
-        body = await ctx.request.json()
-      } catch {
-        return fail(400, 'invalid', '必须是 JSON 对象')
-      }
-      if (!body || typeof body !== 'object' || Array.isArray(body))
-        return fail(400, 'invalid', '必须是 JSON 对象')
-      const raw = body as Record<string, unknown>
-      if (
-        Object.keys(raw).some(
-          k => !['node', 'auto', 'routes', 'revision'].includes(k),
-        ) ||
-        !(
-          raw.node === null ||
-          (typeof raw.node === 'string' && /^[a-z0-9-]{1,32}$/.test(raw.node))
-        ) ||
-        typeof raw.auto !== 'boolean' ||
-        !Number.isSafeInteger(raw.revision) ||
-        !Array.isArray(raw.routes)
-      )
-        return fail(400, 'invalid', '路由输入不合法')
-      const routes: ModelRouteView[] = []
-      for (const entry of raw.routes) {
-        if (
-          !entry ||
-          typeof entry !== 'object' ||
-          Array.isArray(entry) ||
-          Object.keys(entry).some(
-            k => !['direction', 'profileId', 'modelId'].includes(k),
-          ) ||
-          !MODEL_DIRECTIONS.includes(entry.direction) ||
-          !(
-            (entry.profileId === null && entry.modelId === null) ||
-            (typeof entry.profileId === 'string' &&
-              typeof entry.modelId === 'string')
-          )
-        )
-          return fail(400, 'invalid', '方向或模型引用不合法')
-        routes.push(entry as ModelRouteView)
-      }
-      input = {
-        node: raw.node,
-        auto: raw.auto,
-        routes,
-        revision: raw.revision as number,
-      }
-    }
-    const closed = await ctx.admit()
-    if (closed) return closed
-    const result = input
-      ? await port.save(input, actor(ctx))
-      : await port.clearNode(node!, actor(ctx))
-    return result.ok ? json(result.value) : failureResponse(result.failure)
-  },
+  handle: (ctx, _head, rest) => routingHandle(ctx, rest),
 }

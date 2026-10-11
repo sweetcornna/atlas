@@ -667,9 +667,13 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/providers/probe`、`/v0/providers/models`、`/v0/providers/preview` | **ops 个人账号** | 测连 / 测速 / 真实调用；拉模型列表；编译预览。可以带表单上未保存的档案与密钥，密钥不落盘 |
 | GET | `/v0/providers/export?id=<档案 id>…` | **ops 个人账号** | 导出文件（附件，`document` 级，链接可下），不含密钥与指纹 |
 | POST | `/v0/providers/import/preview`、`/v0/providers/import` | **ops 个人账号** | 导入预览、导入（撞 id 的用 `renames` 另存）；有目录不认识的键整份拒绝 |
+| GET | `/v0/routing` | view | 任务分工（P22，§13）：默认分工、各节点单独的分工、可选的模型（按对话 生图 语音 视频分类，带是否评估过）与最近 20 次分派。没接路由簿时 501 |
+| PUT | `/v0/routing` | **ops 个人账号** | `{ node, auto, routes, revision }` 改默认（`node: null`）或某个节点的分工；只给要改的方向，两个引用都为 null 是跟随主模型（生图 语音 视频为不开）。路由会让中枢把被引用服务的凭据也下发到节点，所以和模型服务的写操作同一条规矩：共用令牌与 break-glass 只能查看。revision 不符（有人先改了）400 |
+| DELETE | `/v0/routing/nodes/<节点>` | **ops 个人账号** | 去掉这个节点单独的分工，回到默认 |
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段。`/fragments/audit` 带 `since` 时只回表头与自载入以来的新行（§5.6） |
 | GET | `/fragments/lifecycle/<节点>` | view | HTML 片段：生命周期页签被轮询的那一块（§5.5） |
 | GET | `/fragments/alerts?level=&state=`、`/fragments/jobs`、`/fragments/schedules` | view | HTML 片段 |
+| GET | `/fragments/routing?node=<节点>` | view | HTML 片段：模型页的任务分工卡片，`node` 换成那个节点的范围（模型服务不认识的节点当作所有节点）；没接路由簿时为空 |
 | GET | `/fragments/memory?…` | **成员** | HTML 片段：记忆页被轮询的列表（`#memory-list`），附带筛选条上各类别的新计数；页面只换这几块，不动搜索框 |
 | GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | HTML 片段，`/access` 三个被轮询的页签 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |

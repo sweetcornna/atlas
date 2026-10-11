@@ -62,7 +62,7 @@ function empty(node: string | null = null, revision = 0): ModelRoutingView {
 function validView(raw: ModelRoutingView): boolean {
   return (
     !!raw &&
-    (raw.node === null || /^[a-z0-9-]{1,32}$/.test(raw.node)) &&
+    (raw.node === null || /^[a-z0-9][a-z0-9_-]{0,63}$/.test(raw.node)) &&
     typeof raw.auto === 'boolean' &&
     Number.isSafeInteger(raw.revision) &&
     raw.revision >= 0 &&
@@ -207,7 +207,8 @@ export class ConsoleRouting implements ModelRoutingPort {
   ): Promise<ConsoleResult<ModelRoutingView>> {
     return this.#mutate(input.node, actor, 'routing.save', state => {
       if (
-        (input.node !== null && !/^[a-z0-9-]{1,32}$/.test(input.node)) ||
+        (input.node !== null &&
+          !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(input.node)) ||
         typeof input.auto !== 'boolean' ||
         !Number.isSafeInteger(input.revision) ||
         !Array.isArray(input.routes) ||
@@ -251,7 +252,8 @@ export class ConsoleRouting implements ModelRoutingPort {
     actor: DirectionActor,
   ): Promise<ConsoleResult<ModelRoutingView>> {
     return this.#mutate(node, actor, 'routing.clear', state => {
-      if (!/^[a-z0-9-]{1,32}$/.test(node)) return rejected('节点名不合法')
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(node))
+        return rejected('节点名不合法')
       state.nodes = state.nodes.filter(n => n.node !== node)
       state.revision++
       return ok({ ...state.defaults, node, revision: state.revision })
@@ -263,11 +265,10 @@ export class ConsoleRouting implements ModelRoutingPort {
     action: 'routing.save' | 'routing.clear',
     change: (state: State) => ConsoleResult<ModelRoutingView>,
   ): Promise<ConsoleResult<ModelRoutingView>> {
-    if (
-      !(actor.role === 'ops' && actor.subject.startsWith('u:')) &&
-      actor.subject !== 'legacy:admin'
-    )
-      return rejected('需要 ops 或管理令牌')
+    // A route ships another service's credentials to the nodes: the same
+    // writer as the 模型服务 book, a personal ops account.
+    if (!(actor.role === 'ops' && actor.subject.startsWith('u:')))
+      return rejected('需要运维角色的个人账号')
     let fd: number | undefined
     try {
       ensurePrivateDir(path.dirname(this.#options.path))
