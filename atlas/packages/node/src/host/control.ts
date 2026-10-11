@@ -3,27 +3,29 @@
 
 import {
   assertAddress,
+  CONTROL_OPERATION_ID_CAPABILITY,
   createMessage,
   isControlOp,
   isHubCallPayload,
   isHubCallResultPayload,
   isNodeControlResultPayload,
   isValidSegment,
+  isOperationId,
   MessageType,
+  ProtocolErrorCode,
   newId,
   type ControlOutcome,
   type QianmoMessage,
 } from '@qianmo/protocol'
-import type { TransportChannel } from '@qianmo/transport'
+import type { OnceDelivery, TransportChannel } from '@qianmo/transport'
 import type { NodeRouter } from '@qianmo/router'
+import { qianmoConfigPath } from '@qianmo/paths'
+import { ControlLedger, type ControlOperationContext } from './controlLedger.js'
 
 export type { ControlOutcome } from '@qianmo/protocol'
 
-export interface ControlContext {
-  readonly peer: string
-  readonly actor: string
+export interface ControlContext extends ControlOperationContext {
   readonly taskId: string
-  readonly agent?: string
 }
 
 export type ControlHandler = (
@@ -31,6 +33,21 @@ export type ControlHandler = (
   args: Record<string, unknown>,
   ctx: ControlContext,
 ) => Promise<ControlOutcome>
+
+export interface ControlRegistrationOptions {
+  readonly estopAllowed?: readonly string[]
+  readonly sideEffects?: (op: string) => boolean
+}
+
+export function interruptedControl(delivery: OnceDelivery): ControlOutcome {
+  return delivery.cancel() === 'unknown'
+    ? {
+        ok: false,
+        code: 'unknown',
+        message: '请求已写入连接，执行结果未知；请使用原 operationId 核对',
+      }
+    : { ok: false, code: 'not-sent', message: '请求未发送，已从发送队列撤下' }
+}
 
 export function assertControlPrefix(prefix: string): void {
   if (!/^[a-z][a-z0-9]*$/.test(prefix) || !isControlOp(`${prefix}.x`))
@@ -51,6 +68,11 @@ export function controlTimeout(timeoutMs = 30_000): number {
 export async function runControlHandler(
   invoke: () => Promise<ControlOutcome>,
   onError?: (error: unknown) => void,
+  failure: ControlOutcome = {
+    ok: false,
+    code: 'internal',
+    message: '控制处理器执行失败',
+  },
 ): Promise<ControlOutcome> {
   try {
     const result: unknown = JSON.parse(JSON.stringify(await invoke()))
@@ -59,24 +81,57 @@ export async function runControlHandler(
     return result
   } catch (error) {
     onError?.(error)
-    return { ok: false, code: 'internal', message: '控制处理器执行失败' }
+    return failure
   }
 }
 
 /** Prefixes are owned by one feature module; accidental replacement is an error. */
 export class ControlRegistry {
-  readonly #handlers = new Map<string, ControlHandler>()
+  readonly #handlers = new Map<
+    string,
+    { handler: ControlHandler; options: ControlRegistrationOptions }
+  >()
   readonly #onError: ((error: unknown) => void) | undefined
+  readonly #estopEngaged: () => boolean
+  readonly #ledger: ControlLedger
 
-  constructor(options: { readonly onError?: (error: unknown) => void } = {}) {
+  constructor(
+    options: {
+      readonly onError?: (error: unknown) => void
+      readonly estopEngaged?: () => boolean
+      readonly ledgerPath?: string
+    } = {},
+  ) {
     this.#onError = options.onError
+    this.#estopEngaged = options.estopEngaged ?? (() => false)
+    this.#ledger = new ControlLedger({
+      file:
+        options.ledgerPath ??
+        qianmoConfigPath('resident', 'control-operations.sqlite'),
+      onError: options.onError,
+    })
   }
 
-  register(prefix: string, handler: ControlHandler): void {
+  register(
+    prefix: string,
+    handler: ControlHandler,
+    options: ControlRegistrationOptions = {},
+  ): void {
     assertControlPrefix(prefix)
     if (this.#handlers.has(prefix))
       throw new Error(`duplicate control prefix: ${prefix}`)
-    this.#handlers.set(prefix, handler)
+    if (
+      options.estopAllowed?.some(
+        op => !isControlOp(op) || op.split('.')[0] !== prefix,
+      )
+    )
+      throw new Error(
+        'ESTOP allowlist must contain full operations owned by the prefix',
+      )
+    this.#handlers.set(prefix, {
+      handler,
+      options: { ...options, estopAllowed: [...(options.estopAllowed ?? [])] },
+    })
   }
 
   async handle(
@@ -86,10 +141,47 @@ export class ControlRegistry {
   ): Promise<ControlOutcome> {
     if (!isControlOp(op))
       return { ok: false, code: 'invalid', message: '控制操作名无效' }
-    const handler = this.#handlers.get(op.split('.')[0]!)
-    if (!handler)
+    const registration = this.#handlers.get(op.split('.')[0]!)
+    if (
+      this.#estopEngaged() &&
+      !registration?.options.estopAllowed?.includes(op)
+    )
+      return {
+        ok: false,
+        code: ProtocolErrorCode.E_BUSY,
+        message: 'resident is halted by its ESTOP sentinel',
+      }
+    if (!registration)
       return { ok: false, code: 'unsupported', message: '不支持此控制操作' }
-    return runControlHandler(() => handler(op, args, ctx), this.#onError)
+    if (!registration.options.sideEffects?.(op))
+      return runControlHandler(
+        () => registration.handler(op, args, ctx),
+        this.#onError,
+      )
+    try {
+      return await this.#ledger.execute(op, args, ctx, () =>
+        runControlHandler(
+          () => registration.handler(op, args, ctx),
+          this.#onError,
+          {
+            ok: false,
+            code: 'unknown',
+            message: '控制处理器异常，操作结果未知；请使用原 operationId 核对',
+          },
+        ),
+      )
+    } catch (error) {
+      this.#onError?.(error)
+      return {
+        ok: false,
+        code: 'internal',
+        message: '控制幂等账本不可用，操作未执行',
+      }
+    }
+  }
+
+  close(): Promise<void> {
+    return this.#ledger.close()
   }
 }
 
@@ -97,11 +189,14 @@ interface HubSubscription {
   readonly peer: string
   readonly address: string
   readonly channel: TransportChannel
+  readonly generation: string
 }
 
 interface HubPending {
   readonly subscription: HubSubscription
   readonly request: QianmoMessage
+  readonly delivery: OnceDelivery
+  readonly generation: string
   readonly resolve: (outcome: ControlOutcome) => void
   readonly timer: Timer
 }
@@ -131,13 +226,40 @@ export class HubCallClient {
     this.#node = assertAddress(options.from).node
   }
 
-  subscribe(peer: string, address: string, channel: TransportChannel): void {
+  subscribe(
+    peer: string,
+    address: string,
+    channel: TransportChannel,
+    generation = channel.connectionGeneration,
+  ): void {
     if (this.#closed) return
+    if (
+      !generation ||
+      generation !== channel.connectionGeneration ||
+      !channel.sendOnce
+    )
+      return
     const previous = this.#subscriptions.get(peer)
-    if (previous && previous.channel !== channel) this.#drop(previous)
+    if (
+      previous &&
+      (previous.channel !== channel ||
+        previous.generation !== generation ||
+        previous.address !== address)
+    )
+      this.#drop(previous)
+    if (
+      previous &&
+      previous.channel === channel &&
+      previous.generation === generation &&
+      previous.address === address
+    ) {
+      this.#subscriptions.delete(peer)
+      this.#subscriptions.set(peer, previous)
+      return
+    }
     // Map insertion order is subscription order, including repeat subscriptions.
     this.#subscriptions.delete(peer)
-    this.#subscriptions.set(peer, { peer, address, channel })
+    this.#subscriptions.set(peer, { peer, address, channel, generation })
   }
 
   #finish(callId: string, result: ControlOutcome): void {
@@ -145,6 +267,7 @@ export class HubCallClient {
     if (!pending) return
     this.#pending.delete(callId)
     clearTimeout(pending.timer)
+    pending.delivery.cancel()
     pending.resolve(result)
   }
 
@@ -152,17 +275,26 @@ export class HubCallClient {
     if (this.#subscriptions.get(subscription.peer) === subscription)
       this.#subscriptions.delete(subscription.peer)
     for (const [id, pending] of this.#pending)
-      if (pending.subscription.channel === subscription.channel)
-        this.#finish(id, unavailable)
+      if (pending.subscription === subscription)
+        this.#finish(id, interruptedControl(pending.delivery))
   }
 
   /** Called by the listener's physical disconnect callback, even with other links alive. */
   disconnected(): void {
     for (const subscription of this.#subscriptions.values())
-      if (!subscription.channel.isReady()) this.#drop(subscription)
+      if (
+        !subscription.channel.isReady() ||
+        subscription.generation !== subscription.channel.connectionGeneration
+      )
+        this.#drop(subscription)
   }
 
-  receive(message: QianmoMessage, channel: TransportChannel): void {
+  receive(
+    message: QianmoMessage,
+    channel: TransportChannel,
+    generation = channel.connectionGeneration,
+  ): void {
+    this.disconnected()
     if (
       message.type !== MessageType.HubCallResult ||
       !isHubCallResultPayload(message.payload)
@@ -173,6 +305,8 @@ export class HubCallClient {
     if (
       !pending ||
       pending.subscription.channel !== channel ||
+      pending.generation !== generation ||
+      generation !== channel.connectionGeneration ||
       channel.authenticatedPeerNode !== pending.subscription.peer ||
       message.taskId !== pending.request.taskId ||
       message.from !== pending.request.to ||
@@ -185,12 +319,17 @@ export class HubCallClient {
   async call(
     op: string,
     args: Record<string, unknown>,
-    options: { readonly timeoutMs?: number; readonly agent?: string } = {},
+    options: {
+      readonly timeoutMs?: number
+      readonly agent?: string
+      readonly operationId?: string
+    } = {},
   ): Promise<ControlOutcome> {
     const timeoutMs = controlTimeout(options.timeoutMs)
     if (
       !isControlOp(op) ||
-      (options.agent !== undefined && !isValidSegment(options.agent))
+      (options.agent !== undefined && !isValidSegment(options.agent)) ||
+      (options.operationId !== undefined && !isOperationId(options.operationId))
     )
       return { ok: false, code: 'invalid', message: '上行操作或智能体无效' }
     this.disconnected()
@@ -202,7 +341,18 @@ export class HubCallClient {
     )
       return { ok: false, code: 'unsupported', message: '中枢不支持上行调用' }
     const callId = newId()
-    if (!isHubCallPayload({ callId, op, args }))
+    const operationId = options.operationId ?? newId()
+    const payload = {
+      callId,
+      op,
+      args,
+      ...(subscription.channel.peerSupportedTypes?.includes(
+        CONTROL_OPERATION_ID_CAPABILITY,
+      )
+        ? { operationId }
+        : {}),
+    }
+    if (!isHubCallPayload(payload))
       return { ok: false, code: 'invalid', message: '上行请求参数必须是对象' }
     const request = createMessage({
       from:
@@ -212,7 +362,7 @@ export class HubCallClient {
       to: subscription.address,
       type: MessageType.HubCall,
       taskId: callId,
-      payload: { callId, op, args },
+      payload,
       deliverTtlMs: timeoutMs,
       taskTtlMs: timeoutMs,
     })
@@ -220,28 +370,30 @@ export class HubCallClient {
     if (!routed.ok)
       return { ok: false, code: routed.code, message: routed.reason }
     const { promise, resolve } = Promise.withResolvers<ControlOutcome>()
+    const delivery = subscription.channel.sendOnce!(routed.message, timeoutMs)
     const timer = setTimeout(
-      () =>
-        this.#finish(callId, {
-          ok: false,
-          code: 'timeout',
-          message: '中枢调用超时',
-        }),
+      () => this.#finish(callId, interruptedControl(delivery)),
       timeoutMs,
     )
-    this.#pending.set(callId, { subscription, request, resolve, timer })
-    void subscription.channel
-      .sendAndWait(routed.message, timeoutMs)
-      .catch(error => {
-        this.#options.onError?.(error)
-        this.#finish(callId, unavailable)
-      })
+    this.#pending.set(callId, {
+      subscription,
+      generation: subscription.generation,
+      request,
+      delivery,
+      resolve,
+      timer,
+    })
+    void delivery.receipt.catch(() => {
+      if (!this.#pending.has(callId)) return
+      this.#finish(callId, interruptedControl(delivery))
+    })
     return promise
   }
 
   close(): void {
     this.#closed = true
     this.#subscriptions.clear()
-    for (const id of this.#pending.keys()) this.#finish(id, unavailable)
+    for (const [id, pending] of this.#pending)
+      this.#finish(id, interruptedControl(pending.delivery))
   }
 }

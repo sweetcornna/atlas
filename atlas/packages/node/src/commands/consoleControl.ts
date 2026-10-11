@@ -5,6 +5,7 @@ import { StaticPublicKeyDirectory, type NodeKeyPair } from '@qianmo/capability'
 import {
   assertAddress,
   CONTROL_MESSAGE_TYPES,
+  CONTROL_OPERATION_ID_CAPABILITY,
   LEGACY_MESSAGE_TYPES,
   createMessage,
   isHubCallPayload,
@@ -12,6 +13,8 @@ import {
   isNodeControlResultPayload,
   MessageType,
   parseAddress,
+  newId,
+  isOperationId,
   type ControlOutcome,
   type QianmoMessage,
 } from '@qianmo/protocol'
@@ -19,12 +22,14 @@ import { NodeRouter } from '@qianmo/router'
 import {
   TransportClient,
   TransportEventType,
+  type OnceDelivery,
   type InboundContext,
 } from '@qianmo/transport'
 import {
   assertControlPrefix,
   controlTimeout,
   runControlHandler,
+  interruptedControl,
 } from '../host/control.js'
 
 export interface ControlEndpoint {
@@ -37,7 +42,11 @@ export interface ControlEndpoint {
 export type HubCallHandler = (
   op: string,
   args: Record<string, unknown>,
-  ctx: { readonly node: string; readonly agent?: string },
+  ctx: {
+    readonly node: string
+    readonly agent?: string
+    readonly operationId?: string
+  },
 ) => Promise<ControlOutcome>
 
 export interface ControlLinkStatus {
@@ -52,6 +61,7 @@ interface LinkState {
   link?: TransportClient
   connecting?: Promise<void>
   subscribed: boolean
+  generation?: string
   lastConnectedAt: number | null
   lastError: string | null
 }
@@ -59,6 +69,9 @@ interface LinkState {
 interface ControlPending {
   readonly state: LinkState
   readonly request: QianmoMessage
+  readonly link: TransportClient
+  readonly generation: string
+  readonly delivery: OnceDelivery
   readonly resolve: (result: ControlOutcome) => void
   readonly timer: Timer
 }
@@ -125,14 +138,17 @@ export class ControlLinks {
     if (!pending) return
     this.#pending.delete(taskId)
     clearTimeout(pending.timer)
+    pending.delivery.cancel()
     pending.resolve(result)
   }
 
   #lost(state: LinkState): void {
     state.subscribed = false
+    state.generation = undefined
     state.lastError = '控制链路已断开'
     for (const [taskId, pending] of this.#pending)
-      if (pending.state === state) this.#finish(taskId, unreachable)
+      if (pending.state === state)
+        this.#finish(taskId, interruptedControl(pending.delivery))
   }
 
   #log(error: unknown): void {
@@ -141,6 +157,9 @@ export class ControlLinks {
 
   async #subscribe(state: LinkState, link: TransportClient): Promise<void> {
     if (this.#closed || state.link !== link || !link.isReady()) return
+    const generation = link.connectionGeneration
+    if (!generation) return
+    if (state.generation !== generation) this.#lost(state)
     if (
       link.authenticatedPeerNode !== state.target.node ||
       !CONTROL_MESSAGE_TYPES.every(type => link.supports(type))
@@ -155,9 +174,16 @@ export class ControlLinks {
       }),
     )
     if (!request.ok) throw new Error('control subscription refused by router')
-    await link.sendAndWait(request.message, 5_000)
-    if (this.#closed || state.link !== link || !link.isReady()) return
+    await link.sendOnce(request.message, 5_000).receipt
+    if (
+      this.#closed ||
+      state.link !== link ||
+      !link.isReady() ||
+      link.connectionGeneration !== generation
+    )
+      return
     state.subscribed = true
+    state.generation = generation
     state.lastConnectedAt = Date.now()
     state.lastError = null
   }
@@ -166,7 +192,9 @@ export class ControlLinks {
     if (
       this.#closed ||
       state.connecting ||
-      (state.link?.isReady() && state.subscribed)
+      (state.link?.isReady() &&
+        state.subscribed &&
+        state.generation === state.link.connectionGeneration)
     )
       return state.connecting
     state.connecting = (async () => {
@@ -177,7 +205,11 @@ export class ControlLinks {
             node: this.#node,
             peerNode: state.target.node,
             psk: state.target.psk,
-            supportedTypes: [...LEGACY_MESSAGE_TYPES, ...CONTROL_MESSAGE_TYPES],
+            supportedTypes: [
+              ...LEGACY_MESSAGE_TYPES,
+              ...CONTROL_MESSAGE_TYPES,
+              CONTROL_OPERATION_ID_CAPABILITY,
+            ],
             signing: {
               keys: this.#options.commandKeys,
               directory: new StaticPublicKeyDirectory([
@@ -188,7 +220,7 @@ export class ControlLinks {
             onMessage: (message, context) =>
               this.#receive(state, message, context),
             onReady: () => {
-              state.subscribed = false
+              this.#lost(state)
               if (!state.connecting) void this.#connect(state)
             },
             events: event => {
@@ -229,14 +261,38 @@ export class ControlLinks {
     op: string,
     args: Record<string, unknown>,
     actor: string,
-    options: { readonly timeoutMs?: number } = {},
+    options: {
+      readonly timeoutMs?: number
+      readonly operationId?: string
+    } = {},
   ): Promise<ControlOutcome> {
     const timeoutMs = controlTimeout(options.timeoutMs)
     const state = this.#states.get(node),
       link = state?.link
-    if (!state || !state.subscribed || !link?.isReady() || this.#closed)
+    if (state && state.generation !== link?.connectionGeneration)
+      this.#lost(state)
+    if (
+      !state ||
+      !state.subscribed ||
+      !link?.isReady() ||
+      !state.generation ||
+      this.#closed
+    )
       return unreachable
-    const payload = { op, args, actor }
+    if (
+      options.operationId !== undefined &&
+      !isOperationId(options.operationId)
+    )
+      return { ok: false, code: 'invalid', message: 'operationId 必须为 UUID' }
+    const operationId = options.operationId ?? newId()
+    const payload = {
+      op,
+      args,
+      actor,
+      ...(link.peerSupportedTypes?.includes(CONTROL_OPERATION_ID_CAPABILITY)
+        ? { operationId }
+        : {}),
+    }
     if (!isNodeControlPayload(payload))
       return { ok: false, code: 'invalid', message: '控制请求无效' }
     if (
@@ -256,19 +312,25 @@ export class ControlLinks {
     if (!routed.ok)
       return { ok: false, code: routed.code, message: routed.reason }
     const { promise, resolve } = Promise.withResolvers<ControlOutcome>()
+    const delivery = link.sendOnce(routed.message, timeoutMs)
     const timer = setTimeout(
-      () =>
-        this.#finish(request.taskId, {
-          ok: false,
-          code: 'timeout',
-          message: '节点控制请求超时',
-        }),
+      () => this.#finish(request.taskId, interruptedControl(delivery)),
       timeoutMs,
     )
-    this.#pending.set(request.taskId, { state, request, resolve, timer })
-    void link.sendAndWait(routed.message, timeoutMs).catch(error => {
-      this.#log(error)
-      this.#finish(request.taskId, unreachable)
+    this.#pending.set(request.taskId, {
+      state,
+      link,
+      generation: state.generation,
+      request,
+      delivery,
+      resolve,
+      timer,
+    })
+    void delivery.receipt.catch(() => {
+      if (!this.#pending.has(request.taskId)) return
+      // A transport rejection can follow a handler's side effect. Only a
+      // correlated business response can declare the operation's outcome.
+      this.#finish(request.taskId, interruptedControl(delivery))
     })
     return promise
   }
@@ -279,6 +341,8 @@ export class ControlLinks {
     context: InboundContext,
   ): Promise<void> {
     const node = context.channel.authenticatedPeerNode
+    const generation =
+      context.connectionGeneration ?? context.channel.connectionGeneration
     if (
       this.#closed ||
       state.link !== context.channel ||
@@ -287,6 +351,8 @@ export class ControlLinks {
       message.to !== this.#options.from
     )
       throw new Error('control message identity mismatch')
+    if (!generation || generation !== context.channel.connectionGeneration)
+      return
     const routed = this.#router.inbound(message)
     if (!routed.ok) throw new Error('control message refused by router')
     if (
@@ -297,6 +363,8 @@ export class ControlLinks {
       if (
         !pending ||
         pending.state !== state ||
+        pending.link !== context.channel ||
+        pending.generation !== generation ||
         message.from !== pending.request.to
       )
         return
@@ -333,6 +401,9 @@ export class ControlLinks {
             handler(payload.op, payload.args, {
               node,
               ...(agent === 'console' ? {} : { agent }),
+              ...(payload.operationId === undefined
+                ? {}
+                : { operationId: payload.operationId }),
             }),
           error => this.#log(error),
         )
@@ -340,6 +411,7 @@ export class ControlLinks {
     if (
       this.#closed ||
       !context.channel.isReady() ||
+      context.channel.connectionGeneration !== generation ||
       !context.channel.supports(MessageType.HubCallResult)
     )
       return
@@ -353,14 +425,20 @@ export class ControlLinks {
         traceId: message.traceId,
       }),
     )
-    if (reply.ok) context.channel.send(reply.message)
+    if (reply.ok)
+      void context.channel
+        .sendOnce?.(reply.message)
+        .receipt.catch(error => this.#log(error))
   }
 
   status(): ControlLinkStatus[] {
     return [...this.#states.values()].map(state => ({
       node: state.target.node,
       connected:
-        !this.#closed && state.subscribed && state.link?.isReady() === true,
+        !this.#closed &&
+        state.subscribed &&
+        state.link?.isReady() === true &&
+        state.generation === state.link.connectionGeneration,
       lastConnectedAt: state.lastConnectedAt,
       lastError: state.lastError,
     }))

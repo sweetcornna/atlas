@@ -4,6 +4,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   createMessage,
+  CONTROL_OPERATION_ID_CAPABILITY,
   MessageType,
   type QianmoMessage,
 } from '@qianmo/protocol'
@@ -11,6 +12,7 @@ import { NodeRouter } from '@qianmo/router'
 import {
   ReceiptStatus,
   type SuccessfulReceiptStatus,
+  type OnceDelivery,
   type TransportChannel,
 } from '@qianmo/transport'
 import { ControlRegistry, HubCallClient } from '../../src/host/control.js'
@@ -19,11 +21,13 @@ import { residentToolVerdict } from '@qianmo/extension/policy'
 
 class HubChannel implements TransportChannel {
   readonly id = crypto.randomUUID()
+  connectionGeneration = crypto.randomUUID()
   readonly pending = 0
-  readonly peerSupportedTypes = undefined
+  peerSupportedTypes: readonly string[] | undefined = undefined
   readonly sent: QianmoMessage[] = []
   ready = true
   supported = true
+  writable = true
   constructor(readonly peerNode: string) {}
   get authenticatedPeerNode() {
     return this.peerNode
@@ -43,6 +47,14 @@ class HubChannel implements TransportChannel {
   async sendAndWait(message: QianmoMessage): Promise<SuccessfulReceiptStatus> {
     this.send(message)
     return ReceiptStatus.Accepted
+  }
+  sendOnce(message: QianmoMessage): OnceDelivery {
+    const written = this.ready && this.writable
+    if (written) this.send(message)
+    return {
+      receipt: Promise.resolve(ReceiptStatus.Accepted),
+      cancel: () => (written ? ('unknown' as const) : ('not-sent' as const)),
+    }
   }
   async waitForDrain(): Promise<void> {}
   hold(): () => void {
@@ -117,6 +129,55 @@ describe('ControlRegistry', () => {
 })
 
 describe('HubCallClient', () => {
+  test('a queued but unwritten call reports not-sent, and negotiated ids preserve caller identity', async () => {
+    const hub = client(),
+      channel = new HubChannel('hub')
+    channel.peerSupportedTypes = [CONTROL_OPERATION_ID_CAPABILITY]
+    hub.subscribe('hub', 'qianmo://hub/console', channel)
+    channel.writable = false
+    expect(await hub.call('files.request', {}, { timeoutMs: 5 })).toMatchObject(
+      { ok: false, code: 'not-sent' },
+    )
+    expect(channel.sent).toEqual([])
+    const disconnected = hub.call('files.request', {})
+    channel.ready = false
+    hub.disconnected()
+    expect(await disconnected).toMatchObject({ ok: false, code: 'not-sent' })
+    channel.ready = channel.writable = true
+    hub.subscribe('hub', 'qianmo://hub/console', channel)
+    const operationId = crypto.randomUUID()
+    const current = hub.call('files.request', {}, { operationId })
+    expect(channel.sent[0]!.payload).toMatchObject({ operationId })
+    hub.receive(reply(channel.sent[0]!, 'done'), channel)
+    expect(await current).toEqual({ ok: true, value: 'done' })
+    expect(
+      await hub.call('files.request', {}, { operationId: 'invalid' }),
+    ).toMatchObject({ ok: false, code: 'invalid' })
+    hub.close()
+  })
+  test('rebinding the same logical channel retires old calls and rejects old-generation replies', async () => {
+    const hub = client(),
+      channel = new HubChannel('hub')
+    hub.subscribe('hub', 'qianmo://hub/console', channel)
+    const generation = channel.connectionGeneration
+    const old = hub.call('files.request', {})
+    const oldRequest = channel.sent[0]!
+    channel.connectionGeneration = crypto.randomUUID()
+    hub.subscribe('hub', 'qianmo://hub/console', channel)
+    expect(await old).toMatchObject({ ok: false, code: 'unknown' })
+    const current = hub.call('files.request', {})
+    const currentRequest = channel.sent[1]!
+    hub.subscribe('hub', 'qianmo://hub/console', channel, generation)
+    hub.receive(reply(oldRequest, 'stale'), channel, generation)
+    hub.receive(reply(currentRequest, 'wrong generation'), channel, generation)
+    hub.receive(
+      reply(currentRequest, 'new'),
+      channel,
+      channel.connectionGeneration,
+    )
+    expect(await current).toEqual({ ok: true, value: 'new' })
+    hub.close()
+  })
   test('no subscribed hub returns immediately without dialing or queuing', async () => {
     const hub = client()
     expect(await hub.call('files.request', {})).toEqual({
@@ -170,13 +231,13 @@ describe('HubCallClient', () => {
     hub.subscribe('hub', 'qianmo://hub/console', old)
     const replaced = hub.call('connector.read', {})
     hub.subscribe('hub', 'qianmo://hub/console', current)
-    expect(await replaced).toMatchObject({ ok: false, code: 'hub-unavailable' })
+    expect(await replaced).toMatchObject({ ok: false, code: 'unknown' })
     const disconnected = hub.call('connector.read', {})
     current.ready = false
     hub.disconnected()
     expect(await disconnected).toMatchObject({
       ok: false,
-      code: 'hub-unavailable',
+      code: 'unknown',
     })
     expect(await hub.call('connector.read', {})).toMatchObject({
       ok: false,
@@ -192,7 +253,7 @@ describe('HubCallClient', () => {
     try {
       expect(
         await hub.call('connector.read', {}, { timeoutMs: 10 }),
-      ).toMatchObject({ ok: false, code: 'timeout' })
+      ).toMatchObject({ ok: false, code: 'unknown' })
       const second = hub.call('connector.read', {})
       hub.receive(reply(channel.sent[0]!, 'late'), channel)
       hub.receive(reply(channel.sent[1]!, 'new'), channel)

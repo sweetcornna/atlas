@@ -90,6 +90,8 @@ export {
   DEFAULT_MAX_QUEUED,
   OutboxFullError,
   TransportReceiptError,
+  type DeliveryState,
+  type OnceDelivery,
   type SuccessfulReceiptStatus,
 } from './outbox.js'
 

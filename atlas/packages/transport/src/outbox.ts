@@ -34,6 +34,14 @@ export type SuccessfulReceiptStatus =
   | ReceiptStatus.Accepted
   | ReceiptStatus.Duplicate
 
+export type DeliveryState = 'not-sent' | 'unknown'
+
+/** A control envelope is never replayed; cancellation also withdraws its queue entry. */
+export interface OnceDelivery {
+  readonly receipt: Promise<SuccessfulReceiptStatus>
+  cancel(): DeliveryState
+}
+
 type ReceiptWaiter = {
   readonly resolve: (status: SuccessfulReceiptStatus) => void
   readonly reject: (error: Error) => void
@@ -43,13 +51,17 @@ type ReceiptWaiter = {
 interface EnvelopeOutboxOptions {
   readonly maxQueued?: number
   readonly canWrite: () => boolean
-  readonly write: (message: QianmoMessage) => void
+  readonly write: (message: QianmoMessage) => boolean
   readonly isClosed: () => boolean
   readonly onReceipt?: (frame: ReceiptFrame, known: boolean) => void
 }
 
 /** Receipt-driven at-least-once queue shared by both directions of a channel. */
 export class EnvelopeOutbox {
+  readonly #once = new Map<
+    string,
+    { written: boolean; cancel: () => DeliveryState }
+  >()
   readonly #messages = new Map<string, QianmoMessage>()
   readonly #receiptWaiters = new Map<string, ReceiptWaiter>()
   readonly #drainWaiters = new Set<{
@@ -77,7 +89,54 @@ export class EnvelopeOutbox {
       throw new OutboxFullError(this.#messages.size)
     }
     this.#messages.set(message.msgId, message)
-    if (this.#options.canWrite()) this.#options.write(message)
+    if (this.#options.canWrite()) this.#write(message)
+  }
+
+  #write(message: QianmoMessage): void {
+    const once = this.#once.get(message.msgId)
+    // Once a socket write is attempted, an exception cannot prove non-delivery.
+    if (once) once.written = true
+    const written = this.#options.write(message)
+    if (once && written === false) once.written = false
+  }
+
+  sendOnce(message: QianmoMessage, timeoutMs = 5_000): OnceDelivery {
+    if (
+      this.#messages.has(message.msgId) ||
+      this.#receiptWaiters.has(message.msgId)
+    )
+      return {
+        receipt: Promise.reject(new Error('message is already queued')),
+        cancel: () => 'not-sent',
+      }
+    const once = {
+      written: false,
+      cancel: (): DeliveryState => {
+        if (this.#once.get(message.msgId) === once) {
+          this.#once.delete(message.msgId)
+          this.#messages.delete(message.msgId)
+          const waiter = this.#receiptWaiters.get(message.msgId)
+          if (waiter) {
+            this.#receiptWaiters.delete(message.msgId)
+            clearTimeout(waiter.timer)
+            waiter.reject(new Error('once-only delivery withdrawn'))
+          }
+          this.#drained()
+        }
+        return once.written ? 'unknown' : 'not-sent'
+      },
+    }
+    this.#once.set(message.msgId, once)
+    const receipt = this.sendAndWait(message, timeoutMs).catch(error => {
+      once.cancel()
+      throw error
+    })
+    return { receipt, cancel: once.cancel }
+  }
+
+  /** Physical connection loss only retires non-replayable envelopes. */
+  disconnect(): void {
+    for (const once of [...this.#once.values()]) once.cancel()
   }
 
   sendAndWait(
@@ -140,11 +199,15 @@ export class EnvelopeOutbox {
 
   replay(): void {
     if (!this.#options.canWrite()) return
-    for (const message of this.#messages.values()) this.#options.write(message)
+    for (const message of this.#messages.values()) {
+      if (this.#once.get(message.msgId)?.written) continue
+      this.#write(message)
+    }
   }
 
   receive(frame: ReceiptFrame): void {
     const known = this.#messages.delete(frame.msgId)
+    this.#once.delete(frame.msgId)
     const waiter = this.#receiptWaiters.get(frame.msgId)
     if (waiter !== undefined) {
       this.#receiptWaiters.delete(frame.msgId)
@@ -158,6 +221,10 @@ export class EnvelopeOutbox {
       waiter?.resolve(frame.status)
     }
 
+    this.#drained()
+  }
+
+  #drained(): void {
     if (this.#messages.size === 0) {
       const waiters = [...this.#drainWaiters]
       this.#drainWaiters.clear()
@@ -180,5 +247,6 @@ export class EnvelopeOutbox {
     // Nothing here can ever be receipted now; keeping the envelopes would make
     // `pending` report a queue that no longer exists.
     this.#messages.clear()
+    this.#once.clear()
   }
 }

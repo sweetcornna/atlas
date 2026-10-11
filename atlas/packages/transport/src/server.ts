@@ -78,6 +78,7 @@ interface ConnectionState {
   node: string | null
   channel: ServerTransportChannel | null
   authed: boolean
+  generation: string | null
   credential: AuthenticatedCredential | null
 }
 
@@ -239,6 +240,9 @@ class ServerTransportChannel implements TransportChannel {
   readonly #record: (type: TransportEventType, detail: EventDetail) => void
   readonly #retentionMs: number
   #socket: ServerWebSocket<ConnectionState> | null = null
+  get connectionGeneration(): string | null {
+    return this.#socket?.data.generation ?? null
+  }
   #holds = 0
   #closed = false
   #reclaim: ReturnType<typeof setTimeout> | null = null
@@ -272,13 +276,15 @@ class ServerTransportChannel implements TransportChannel {
       isClosed: () => this.#closed,
       write: message => {
         const socket = this.#socket
-        if (socket === null) return
-        socket.send(
-          serializeFrame({
-            t: FrameType.Envelope,
-            v: FRAME_VERSION,
-            envelope: message,
-          }),
+        if (socket === null || socket.readyState !== 1) return false
+        return (
+          socket.send(
+            serializeFrame({
+              t: FrameType.Envelope,
+              v: FRAME_VERSION,
+              envelope: message,
+            }),
+          ) !== 0
         )
       },
       onReceipt: (frame, known) => this.#recordReceipt(frame, known),
@@ -344,6 +350,10 @@ class ServerTransportChannel implements TransportChannel {
     return this.#outbox.sendAndWait(message, timeoutMs)
   }
 
+  sendOnce(message: QianmoMessage, timeoutMs = 5_000) {
+    return this.#outbox.sendOnce(message, timeoutMs)
+  }
+
   waitForDrain(timeoutMs = 5_000): Promise<void> {
     return this.#outbox.waitForDrain(timeoutMs)
   }
@@ -370,6 +380,7 @@ class ServerTransportChannel implements TransportChannel {
     // carrying the old union forward would keep sending it types it dropped.
     this.#peerTypes = supportedTypes
     const previous = this.#socket
+    this.#outbox.disconnect()
     this.#socket = socket
     if (previous !== null && previous !== socket) {
       previous.close(CLOSE_REPLACED, 'logical channel reconnected')
@@ -381,7 +392,10 @@ class ServerTransportChannel implements TransportChannel {
   }
 
   unbind(socket: ServerWebSocket<ConnectionState>): void {
-    if (this.#socket === socket) this.#socket = null
+    if (this.#socket === socket) {
+      this.#socket = null
+      this.#outbox.disconnect()
+    }
     this.#removeIfIdle()
   }
 
@@ -771,6 +785,7 @@ export function startTransportServer(
         }
 
         ws.data.authed = true
+        ws.data.generation = crypto.randomUUID()
         ws.data.node = result.node
         ws.data.credential = result.credential ?? null
         ws.data.channel = channel
@@ -819,6 +834,9 @@ export function startTransportServer(
         refuse(ws, HandshakeRejection.UnexpectedFrame, CLOSE_PROTOCOL_ERROR)
         return
       }
+      // Replaced sockets may still have callbacks queued. They own neither
+      // current receipts nor the authority to enqueue another request.
+      if (ws.data.generation !== channel.connectionGeneration) return
       switch (frame.t) {
         case FrameType.KeepAlive:
           return
@@ -827,6 +845,7 @@ export function startTransportServer(
             peerNode: channel.peerNode,
             receivedAt: now(),
             channel,
+            connectionGeneration: ws.data.generation,
           }
           const reply = await receiveEnvelope(frame.envelope, context, {
             onMessage: options.onMessage,
@@ -857,6 +876,7 @@ export function startTransportServer(
       node: null,
       channel: null,
       authed: false,
+      generation: null,
       credential: null,
     }
     if (server.upgrade(request, { data })) return undefined

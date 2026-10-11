@@ -60,6 +60,7 @@ import {
 import {
   MessageType,
   CONTROL_MESSAGE_TYPES,
+  CONTROL_OPERATION_ID_CAPABILITY,
   LEGACY_MESSAGE_TYPES,
   ProtocolErrorCode,
   createAck,
@@ -788,20 +789,31 @@ export class QianmoResident {
       options.authorization !== undefined,
       options.extraHostTools,
     )
-    this.control = new ControlRegistry({ onError: options.onError })
-    this.control.register('node', async op =>
-      op === 'node.ping'
-        ? {
-            ok: true,
-            value: {
-              node: options.node,
-              agents: options.agents.map(agent => agent.agent),
-              version: buildVersion(),
-              platform: process.platform,
-              now: Date.now(),
-            },
-          }
-        : { ok: false, code: 'unsupported', message: '不支持此节点操作' },
+    this.control = new ControlRegistry({
+      onError: options.onError,
+      estopEngaged: () => this.#estop.engaged(),
+      ledgerPath: qianmoConfigPath(
+        'resident',
+        options.node,
+        'control-operations.sqlite',
+      ),
+    })
+    this.control.register(
+      'node',
+      async op =>
+        op === 'node.ping'
+          ? {
+              ok: true,
+              value: {
+                node: options.node,
+                agents: options.agents.map(agent => agent.agent),
+                version: buildVersion(),
+                platform: process.platform,
+                now: Date.now(),
+              },
+            }
+          : { ok: false, code: 'unsupported', message: '不支持此节点操作' },
+      { estopAllowed: ['node.ping'] },
     )
     this.#localCommandIssuers = new Set(options.localCommandIssuers ?? [])
     this.#timings = new ResidentTimingRecorder(event => {
@@ -1402,7 +1414,11 @@ export class QianmoResident {
         return
       }
       if (message.type === MessageType.HubCallResult) {
-        this.hubCall.receive(message, context.channel)
+        this.hubCall.receive(
+          message,
+          context.channel,
+          context.connectionGeneration,
+        )
         return
       }
       if (message.type === MessageType.HubSubscribe) {
@@ -1414,7 +1430,12 @@ export class QianmoResident {
             ProtocolErrorCode.E_BAD_TYPE,
             'control subscription requires the complete control surface',
           )
-        this.hubCall.subscribe(peer, message.from, context.channel)
+        this.hubCall.subscribe(
+          peer,
+          message.from,
+          context.channel,
+          context.connectionGeneration,
+        )
         return
       }
       if (!isNodeControlPayload(message.payload))
@@ -1446,6 +1467,9 @@ export class QianmoResident {
             peer,
             actor: message.payload.actor,
             taskId: message.taskId,
+            ...(message.payload.operationId === undefined
+              ? {}
+              : { operationId: message.payload.operationId }),
             ...(this.#options.agents.some(row => row.agent === agent)
               ? { agent }
               : {}),
@@ -1462,9 +1486,16 @@ export class QianmoResident {
             traceId: message.traceId,
           }),
         )
-        if (reply.ok) {
+        if (
+          reply.ok &&
+          context.connectionGeneration ===
+            context.channel.connectionGeneration &&
+          context.channel.isReady()
+        ) {
           try {
-            context.channel.send(reply.message)
+            void context.channel
+              .sendOnce?.(reply.message)
+              .receipt.catch(error => this.#options.onError?.(error))
           } catch (error) {
             this.#options.onError?.(error)
           }
@@ -2560,6 +2591,7 @@ export class QianmoResident {
     this.#transport = null
     try {
       await transport?.stop()
+      await this.control.close()
     } catch (error) {
       this.#options.onError?.(error)
     }
@@ -2661,6 +2693,7 @@ export class QianmoResident {
         MessageType.AuthzDecision,
         MessageType.AuthzRevoke,
         ...CONTROL_MESSAGE_TYPES,
+        CONTROL_OPERATION_ID_CAPABILITY,
       ],
       onPeerDisconnect: () => this.hubCall.disconnected(),
       psk: this.#options.psk,

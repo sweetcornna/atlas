@@ -12,6 +12,7 @@ import {
   CONTROL_MESSAGE_TYPES,
   LEGACY_MESSAGE_TYPES,
   createMessage,
+  type QianmoMessage,
   MessageType,
   ProtocolErrorCode,
 } from '@qianmo/protocol'
@@ -173,6 +174,11 @@ test('ControlLinks reconnects and resubscribes; only correlated replies and auth
           return
         }
         if (message.type !== MessageType.NodeControl) return
+        // This peer predates operation-id negotiation and still requires the
+        // exact legacy request keys.
+        expect(
+          Object.keys(message.payload as Record<string, unknown>).sort(),
+        ).toEqual(['actor', 'args', 'op'])
         if ((message.payload as { op: string }).op === 'test.timeout') return
         const reply = createMessage({
           from: message.to,
@@ -233,7 +239,7 @@ test('ControlLinks reconnects and resubscribes; only correlated replies and auth
       await hub.request('worker', 'test.timeout', {}, 'admin', {
         timeoutMs: 20,
       }),
-    ).toMatchObject({ ok: false, code: 'timeout' })
+    ).toMatchObject({ ok: false, code: 'unknown' })
     const request = createMessage({
       from: 'qianmo://worker/main',
       to: 'qianmo://hub/operator',
@@ -258,7 +264,7 @@ test('ControlLinks reconnects and resubscribes; only correlated replies and auth
     const firstConnected = hub.status()[0]!.lastConnectedAt!
     const pending = hub.request('worker', 'test.timeout', {}, 'admin')
     await listener.stop()
-    expect(await pending).toMatchObject({ ok: false, code: 'unreachable' })
+    expect(await pending).toMatchObject({ ok: false, code: 'unknown' })
     expect(hub.status()[0]).toMatchObject({
       connected: false,
       lastConnectedAt: firstConnected,
@@ -319,3 +325,144 @@ test('a peer advertising only legacy types never receives control traffic', asyn
     await listener.stop()
   }
 })
+
+test('a rejected transport receipt after an effect cannot claim the business operation failed', async () => {
+  const nodeKeys = generateNodeKeyPair(),
+    hubKeys = generateNodeKeyPair()
+  const directory = new StaticPublicKeyDirectory([
+    ['hub', hubKeys.publicKey],
+    ['worker', nodeKeys.publicKey],
+  ])
+  const psk = 'fx2-rejected-receipt-psk-000000'
+  let effects = 0
+  const listener = startTransportServer({
+    psk,
+    port: 0,
+    supportedTypes: [...LEGACY_MESSAGE_TYPES, ...CONTROL_MESSAGE_TYPES],
+    signing: { node: 'worker', keys: nodeKeys, directory, required: true },
+    onMessage: (message, ctx) => {
+      if (message.type !== MessageType.NodeControl) return
+      if ((message.payload as { op: string }).op === 'test.write') {
+        effects++
+        throw new Error('fixture transport handler failed after effect')
+      }
+      ctx.channel.send(
+        createMessage({
+          from: message.to,
+          to: message.from,
+          taskId: message.taskId,
+          type: MessageType.NodeControlResult,
+          payload: { ok: true, value: effects },
+        }),
+      )
+    },
+  })
+  const hub = new ControlLinks({
+    from: 'qianmo://hub/operator',
+    commandKeys: hubKeys,
+    targets: [
+      {
+        node: 'worker',
+        url: listener.url!,
+        psk,
+        publicKey: nodeKeys.publicKey,
+      },
+    ],
+  })
+  try {
+    hub.start()
+    await until(() => hub.status()[0]?.connected === true)
+    expect(
+      await hub.request('worker', 'test.write', {}, 'admin'),
+    ).toMatchObject({ ok: false, code: 'unknown' })
+    expect(await hub.request('worker', 'test.read', {}, 'admin')).toEqual({
+      ok: true,
+      value: 1,
+    })
+  } finally {
+    await hub.close()
+    await listener.stop()
+  }
+})
+
+test('a written but unreceipted control call becomes unknown and is not replayed to a restarted receiver', async () => {
+  const nodeKeys = generateNodeKeyPair(),
+    hubKeys = generateNodeKeyPair()
+  const directory = new StaticPublicKeyDirectory([
+    ['hub', hubKeys.publicKey],
+    ['worker', nodeKeys.publicKey],
+  ])
+  const psk = 'fx2-no-replay-loopback-psk-00000'
+  const blocked = Promise.withResolvers<void>()
+  let writes = 0,
+    oldRequest: QianmoMessage | undefined
+  const createServer = (port: number) =>
+    startTransportServer({
+      psk,
+      hostname: '127.0.0.1',
+      port,
+      supportedTypes: [...LEGACY_MESSAGE_TYPES, ...CONTROL_MESSAGE_TYPES],
+      signing: { node: 'worker', keys: nodeKeys, directory, required: true },
+      onMessage: async (message, ctx) => {
+        if (message.type !== MessageType.NodeControl) return
+        if ((message.payload as { op: string }).op === 'test.write') {
+          writes++
+          oldRequest = message
+          await blocked.promise
+          return
+        }
+        if (oldRequest)
+          ctx.channel.send(
+            createMessage({
+              from: oldRequest.to,
+              to: oldRequest.from,
+              taskId: oldRequest.taskId,
+              type: MessageType.NodeControlResult,
+              payload: { ok: true, value: 'stale' },
+            }),
+          )
+        ctx.channel.send(
+          createMessage({
+            from: message.to,
+            to: message.from,
+            taskId: message.taskId,
+            type: MessageType.NodeControlResult,
+            payload: { ok: true, value: 'new' },
+          }),
+        )
+      },
+    })
+  let listener = createServer(0)
+  const port = listener.port!
+  const hub = new ControlLinks({
+    from: 'qianmo://hub/operator',
+    commandKeys: hubKeys,
+    targets: [
+      {
+        node: 'worker',
+        url: listener.url!,
+        psk,
+        publicKey: nodeKeys.publicKey,
+      },
+    ],
+  })
+  try {
+    hub.start()
+    await until(() => hub.status()[0]?.connected === true)
+    const pending = hub.request('worker', 'test.write', {}, 'admin')
+    await until(() => writes === 1)
+    await listener.stop()
+    expect(await pending).toMatchObject({ ok: false, code: 'unknown' })
+    listener = createServer(port)
+    await until(() => hub.status()[0]?.connected === true)
+    expect(await hub.request('worker', 'test.read', {}, 'admin')).toEqual({
+      ok: true,
+      value: 'new',
+    })
+    expect(writes).toBe(1)
+  } finally {
+    blocked.resolve()
+    await hub.close()
+    await listener.stop()
+  }
+}, 20_000)
