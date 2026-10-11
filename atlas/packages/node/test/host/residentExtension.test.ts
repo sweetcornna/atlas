@@ -2,14 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { ompChildEnv } from '@qianmo/paths'
-import * as pathModule from 'node:path'
 import { afterEach, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import {
   mkdtempSync,
-  mkdirSync,
-  copyFileSync,
-  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -32,7 +28,7 @@ function temporary() {
   return root
 }
 
-test('resident extension asset is bundled, private and loadable without a package tree', async () => {
+test('resident extension asset is private and source omp loads it without extension-local peers', async () => {
   const source = await residentExtensionSource()
   const root = temporary()
   const path = writeResidentExtensionAsset(root, source)
@@ -44,25 +40,18 @@ test('resident extension asset is bundled, private and loadable without a packag
     PATH: process.env.PATH,
     HOME: root,
     QIANMO_CONFIG_DIR: root,
-    PI_COMPILED: 'true',
   })
-  const nativeDir = pathModule.dirname(
-    Bun.resolveSync('@oh-my-pi/pi-natives', import.meta.dir),
+  // Canonical externals are served by omp's loader, in source mode as well as
+  // compiled mode. A bare import would bypass the actual extension contract.
+  const loader = Bun.resolveSync(
+    '@oh-my-pi/pi-coding-agent/extensibility/extensions',
+    import.meta.dir,
   )
-  const version = JSON.parse(
-    readFileSync(pathModule.join(nativeDir, '../package.json'), 'utf8'),
-  ).version as string
-  const cache = pathModule.join(env.PI_NATIVES_DIR!, version)
-  mkdirSync(cache, { recursive: true, mode: 0o700 })
-  for (const file of readdirSync(nativeDir).filter(name =>
-    name.endsWith('.node'),
-  ))
-    copyFileSync(pathModule.join(nativeDir, file), pathModule.join(cache, file))
   const child = Bun.spawn(
     [
       process.execPath,
       '-e',
-      `const m = await import(${JSON.stringify(path)}); if (typeof m.default !== 'function') process.exit(4); const hooks = new Map(); m.default({on:(name,fn)=>hooks.set(name,fn)}); const verdict = await hooks.get('tool_call')({toolName:'write',input:{path:'any'}},{}); if (!verdict?.block) process.exit(5);`,
+      `const {loadExtensions} = await import(${JSON.stringify(loader)}); const loaded = await loadExtensions([${JSON.stringify(path)}], process.cwd()); if (loaded.errors.length) throw new Error(JSON.stringify(loaded.errors)); const hook = loaded.extensions[0]?.handlers.get('tool_call')?.[0]; if (!hook) process.exit(4); const verdict = await hook({toolName:'write',input:{path:'any'}},{}); if (!verdict?.block) process.exit(5);`,
     ],
     {
       cwd: root,
