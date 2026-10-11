@@ -34,6 +34,7 @@ import { MemoryActionLedger } from './memoryActions.js'
 import {
   FakeConnectors,
   FakeDesktop,
+  FakeFiles,
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
@@ -153,6 +154,7 @@ async function wired(): Promise<{
       connectors: new FakeConnectors(() => 1_700_000_000_000),
       handoffDevices: new FakeHandoffDevices(() => 1_700_000_000_000),
       desktop: new FakeDesktop(() => 1_700_000_000_000),
+      files: new FakeFiles(() => 1_700_000_000_000),
       nodeServers: [{ node: 'tokyo-1', server: 'p11' }],
     },
   })

@@ -26,6 +26,7 @@ import { ROUTES } from '../src/routes/index.js'
 import {
   FakeConnectors,
   FakeDesktop,
+  FakeFiles,
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
@@ -127,6 +128,12 @@ const PAGES: readonly PageRow[] = [
     reads: ['planner', '运行中', 'id="desktop"'],
   },
   {
+    path: '/files',
+    title: '文件互通',
+    active: 'files',
+    reads: ['reports/2026-10/weekly.md', '汇集到', 'id="files"'],
+  },
+  {
     path: '/jobs',
     title: '主动执行',
     active: 'jobs',
@@ -177,6 +184,7 @@ function harness() {
       connectors: new FakeConnectors(() => NOW),
       handoffDevices: new FakeHandoffDevices(() => NOW),
       desktop: new FakeDesktop(() => NOW),
+      files: new FakeFiles(() => NOW),
     },
     nodeServers: [
       { node: 'tokyo-1', server: 'p11' },

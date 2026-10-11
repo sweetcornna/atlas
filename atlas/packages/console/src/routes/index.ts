@@ -34,6 +34,7 @@ import { auditRoute } from './audit.js'
 import { chatRoute } from './chat.js'
 import { connectRoute } from './connect.js'
 import { desktopRoute } from './desktop.js'
+import { filesRoute } from './files.js'
 import { jobsRoute } from './jobs.js'
 import { memoryRoute } from './memory.js'
 import { nodesRoute } from './nodes.js'
@@ -66,6 +67,7 @@ export const ROUTES: readonly RouteModule[] = [
   providersRoute,
   overviewRoute,
   nodesRoute,
+  filesRoute,
   auditRoute,
   alertsRoute,
   approvalsRoute,

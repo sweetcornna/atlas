@@ -27,6 +27,14 @@ import {
   type DesktopConfirm,
   type DesktopNodeView,
   type DesktopPort,
+  type FileEntryView,
+  type FileGrantView,
+  type FileGroupView,
+  type FileRequestView,
+  type FileScope,
+  type FilesPort,
+  type FilesSnapshot,
+  type FileTransferView,
   type HandoffDevicesPort,
   type HandoffDeviceView,
   type HandoffPairingCode,
@@ -1209,6 +1217,314 @@ export class FakeDesktop implements DesktopPort {
   }
 }
 
+/**
+ * 文件互通 between three agents: one request waiting, one grant live and one
+ * revoked, a gathering of two sources (one done, one still delivering) and a
+ * single transfer that failed its digest check.
+ */
+export class FakeFiles implements FilesPort {
+  readonly calls: string[] = []
+  requests: FileRequestView[]
+  grants: FileGrantView[]
+  transfers: FileTransferView[]
+  groups: FileGroupView[]
+  failSnapshot = false
+  private serial = 0
+
+  constructor(private readonly now: () => number) {
+    const at = now()
+    const planner = { node: 'tokyo-1', agent: 'planner' }
+    const writer = { node: 'osaka-1', agent: 'writer' }
+    const helper = { node: 'berlin-1', agent: 'helper' }
+    this.requests = [
+      {
+        requestId: 'fr-1',
+        source: planner,
+        target: writer,
+        path: 'reports/2026-10/weekly.md',
+        reason: '写周报需要上周的会议纪要',
+        requestedBy: 'agent',
+        at: at - 120_000,
+        state: 'pending',
+        grantId: null,
+        note: null,
+      },
+      {
+        requestId: 'fr-0',
+        source: helper,
+        target: writer,
+        path: 'drafts/plan.md',
+        reason: '',
+        requestedBy: 'agent',
+        at: at - 7_200_000,
+        state: 'granted',
+        grantId: 'fg-1',
+        note: null,
+      },
+    ]
+    this.grants = [
+      {
+        grantId: 'fg-1',
+        requestId: 'fr-0',
+        source: helper,
+        target: writer,
+        scope: { kind: 'dir', path: 'drafts' },
+        grantedBy: 'u:chen',
+        grantedAt: at - 7_000_000,
+        expiresAt: at + 1_800_000,
+        revokedAt: null,
+      },
+      {
+        grantId: 'fg-0',
+        requestId: null,
+        source: planner,
+        target: helper,
+        scope: { kind: 'file', path: 'notes/todo.md' },
+        grantedBy: 'u:chen',
+        grantedAt: at - 90_000_000,
+        expiresAt: at - 86_400_000,
+        revokedAt: at - 88_000_000,
+      },
+    ]
+    this.transfers = [
+      {
+        transferId: 'ft-1',
+        grantId: 'fg-2',
+        groupId: 'fgp-1',
+        source: { ...planner, path: 'reports/2026-10' },
+        target: { ...helper, path: 'inbox/tokyo-1/2026-10' },
+        files: 12,
+        bytes: 4_200_000,
+        doneBytes: 4_200_000,
+        manifestSha256: 'a'.repeat(64),
+        verified: true,
+        state: 'done',
+        reason: null,
+        startedAt: at - 600_000,
+        finishedAt: at - 560_000,
+      },
+      {
+        transferId: 'ft-2',
+        grantId: 'fg-3',
+        groupId: 'fgp-1',
+        source: { ...writer, path: 'drafts' },
+        target: { ...helper, path: null },
+        files: 3,
+        bytes: 860_000,
+        doneBytes: 310_000,
+        manifestSha256: 'b'.repeat(64),
+        verified: null,
+        state: 'delivering',
+        reason: null,
+        startedAt: at - 30_000,
+        finishedAt: null,
+      },
+      {
+        transferId: 'ft-3',
+        grantId: 'fg-4',
+        groupId: null,
+        source: { ...helper, path: 'data/export.csv' },
+        target: { ...planner, path: null },
+        files: 1,
+        bytes: 1_500_000,
+        doneBytes: 1_500_000,
+        manifestSha256: 'c'.repeat(64),
+        verified: false,
+        state: 'failed',
+        reason: '收件方核对摘要不一致',
+        startedAt: at - 3_600_000,
+        finishedAt: at - 3_590_000,
+      },
+    ]
+    this.groups = [
+      {
+        groupId: 'fgp-1',
+        target: helper,
+        transfers: ['ft-1', 'ft-2'],
+        createdBy: 'u:chen',
+        createdAt: at - 600_000,
+      },
+    ]
+  }
+
+  async snapshot() {
+    this.calls.push('snapshot')
+    if (this.failSnapshot)
+      return failed<FilesSnapshot>('unreachable', 'files down')
+    return ok<FilesSnapshot>({
+      requests: this.requests,
+      grants: this.grants,
+      transfers: this.transfers,
+      groups: this.groups,
+      agents: [
+        { node: 'tokyo-1', agent: 'planner', reachable: true },
+        { node: 'osaka-1', agent: 'writer', reachable: true },
+        { node: 'berlin-1', agent: 'helper', reachable: false },
+      ],
+      limits: {
+        maxFileBytes: 64 * 1024 * 1024,
+        maxTransferBytes: 256 * 1024 * 1024,
+        maxFiles: 500,
+        maxTtlMs: 86_400_000,
+      },
+    })
+  }
+
+  async decide(
+    requestId: string,
+    decision: {
+      readonly approve: boolean
+      readonly scope?: FileScope
+      readonly ttlMs?: number
+      readonly note?: string
+    },
+    actor: DirectionActor,
+  ) {
+    this.calls.push(
+      `decide ${requestId} ${JSON.stringify(decision)} ${actor.subject}`,
+    )
+    const found = this.requests.find(one => one.requestId === requestId)
+    if (found === undefined)
+      return failed<FileRequestView>('not_found', 'no such request')
+    if (found.state !== 'pending')
+      return failed<FileRequestView>('rejected', 'already decided')
+    if ((decision.ttlMs ?? 3_600_000) > 86_400_000)
+      return failed<FileRequestView>('rejected', 'ttl too long')
+    const at = this.now()
+    if (!decision.approve) {
+      const view: FileRequestView = {
+        ...found,
+        state: 'denied',
+        note: decision.note ?? null,
+      }
+      this.requests = this.requests.map(one => (one === found ? view : one))
+      return ok(view)
+    }
+    this.serial += 1
+    const grantId = `fg-new-${this.serial}`
+    this.grants = [
+      {
+        grantId,
+        requestId,
+        source: found.source,
+        target: found.target,
+        scope: decision.scope ?? { kind: 'file', path: found.path },
+        grantedBy: actor.subject,
+        grantedAt: at,
+        expiresAt: at + (decision.ttlMs ?? 3_600_000),
+        revokedAt: null,
+      },
+      ...this.grants,
+    ]
+    const view: FileRequestView = { ...found, state: 'granted', grantId }
+    this.requests = this.requests.map(one => (one === found ? view : one))
+    return ok(view)
+  }
+
+  async revokeGrant(grantId: string, actor: DirectionActor) {
+    this.calls.push(`revoke ${grantId} ${actor.subject}`)
+    const found = this.grants.find(one => one.grantId === grantId)
+    if (found === undefined)
+      return failed<FileGrantView>('not_found', 'no such grant')
+    const view = { ...found, revokedAt: this.now() }
+    this.grants = this.grants.map(one => (one === found ? view : one))
+    return ok(view)
+  }
+
+  async transfer(
+    input: {
+      readonly sources: readonly (AgentRef & { readonly path: string })[]
+      readonly target: AgentRef
+    },
+    actor: DirectionActor,
+  ) {
+    this.calls.push(`transfer ${JSON.stringify(input)} ${actor.subject}`)
+    const at = this.now()
+    this.serial += 1
+    const groupId = `fgp-new-${this.serial}`
+    const made = input.sources.map((source, index) => ({
+      transferId: `ft-new-${this.serial}-${index}`,
+      grantId: `fg-direct-${this.serial}-${index}`,
+      groupId: input.sources.length > 1 ? groupId : null,
+      source,
+      target: { ...input.target, path: null },
+      files: 0,
+      bytes: 0,
+      doneBytes: 0,
+      manifestSha256: null,
+      verified: null,
+      state: 'queued' as const,
+      reason: null,
+      startedAt: at,
+      finishedAt: null,
+    }))
+    this.transfers = [...made, ...this.transfers]
+    const group: FileGroupView = {
+      groupId,
+      target: input.target,
+      transfers: made.map(one => one.transferId),
+      createdBy: actor.subject,
+      createdAt: at,
+    }
+    if (input.sources.length > 1) this.groups = [group, ...this.groups]
+    return ok(group)
+  }
+
+  async retry(transferId: string, actor: DirectionActor) {
+    this.calls.push(`retry ${transferId} ${actor.subject}`)
+    const found = this.transfers.find(one => one.transferId === transferId)
+    if (found === undefined)
+      return failed<FileTransferView>('not_found', 'no such transfer')
+    if (found.state !== 'failed')
+      return failed<FileTransferView>('rejected', 'not failed')
+    const view: FileTransferView = {
+      ...found,
+      state: 'queued',
+      doneBytes: 0,
+      verified: null,
+      reason: null,
+      startedAt: this.now(),
+      finishedAt: null,
+    }
+    this.transfers = this.transfers.map(one => (one === found ? view : one))
+    return ok(view)
+  }
+
+  async browse(ref: AgentRef, path: string) {
+    this.calls.push(`browse ${ref.node}/${ref.agent} ${path}`)
+    const at = this.now()
+    const tree: Record<string, readonly FileEntryView[]> = {
+      '': [
+        { name: 'reports', kind: 'dir', size: null, mtime: at - 3_600_000 },
+        { name: 'notes', kind: 'dir', size: null, mtime: at - 86_400_000 },
+        { name: 'README.md', kind: 'file', size: 2_310, mtime: at - 5_000 },
+      ],
+      reports: [
+        { name: '2026-10', kind: 'dir', size: null, mtime: at - 3_600_000 },
+      ],
+      'reports/2026-10': [
+        {
+          name: 'weekly.md',
+          kind: 'file',
+          size: 18_400,
+          mtime: at - 3_600_000,
+        },
+        {
+          name: 'metrics.csv',
+          kind: 'file',
+          size: 402_000,
+          mtime: at - 7_200_000,
+        },
+      ],
+      notes: [],
+    }
+    const entries = tree[path]
+    if (entries === undefined)
+      return failed<readonly FileEntryView[]>('not_found', 'no such directory')
+    return ok(entries)
+  }
+}
+
 /** What `test/preview.ts`-style harnesses wire: one fake per port. */
 export const PREVIEW_PORTS: Readonly<
   Record<string, (now: () => number) => unknown>
@@ -1220,4 +1536,5 @@ export const PREVIEW_PORTS: Readonly<
   connectors: now => new FakeConnectors(now),
   handoffDevices: now => new FakeHandoffDevices(now),
   desktop: now => new FakeDesktop(now),
+  files: now => new FakeFiles(now),
 }

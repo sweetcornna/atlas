@@ -74,6 +74,7 @@ describe('the pages', () => {
     ['providers', '/providers', 'main', false],
     ['overview', '/overview', 'manage', false],
     ['nodes', '/nodes', 'manage', false],
+    ['files', '/files', 'manage', false],
     ['audit', '/audit', 'manage', false],
     ['alerts', '/alerts', 'manage', false],
     ['approvals', '/approvals', 'manage', false],

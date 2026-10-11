@@ -19,6 +19,7 @@ import { ROUTES } from '../src/routes/index.js'
 import {
   FakeConnectors,
   FakeDesktop,
+  FakeFiles,
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
@@ -119,6 +120,7 @@ describe('assets', () => {
         connectors: new FakeConnectors(() => NOW),
         handoffDevices: new FakeHandoffDevices(() => NOW),
         desktop: new FakeDesktop(() => NOW),
+        files: new FakeFiles(() => NOW),
       },
     })
     // The login door is read signed out: signed in, it sends you on.

@@ -19,6 +19,7 @@ import { accountsHarness, asSession, person } from './accountsHarness.js'
 import {
   FakeConnectors,
   FakeDesktop,
+  FakeFiles,
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
@@ -86,6 +87,7 @@ function harness() {
       connectors: new FakeConnectors(() => NOW),
       handoffDevices: new FakeHandoffDevices(() => NOW),
       desktop: new FakeDesktop(() => NOW),
+      files: new FakeFiles(() => NOW),
     },
     nodeServers: [{ node: 'tokyo-1', server: 'p11' }],
     serverNotes: new PageNotes(),
