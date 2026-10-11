@@ -18,6 +18,7 @@ import {
   MEMORY_KINDS,
   MODEL_DIRECTIONS,
   type AgentRef,
+  type FilesPort,
   type ConnectorDraft,
   type ConnectorPresetView,
   type ConnectorsPort,
@@ -1206,6 +1207,47 @@ export class FakeDesktop implements DesktopPort {
       },
     ]
     return ok<readonly DesktopActionView[]>(all.slice(0, limit))
+  }
+}
+
+/** Files currently have no console HTTP entry point; keep a real counting port. */
+export class FakeFiles implements FilesPort {
+  readonly calls: string[] = []
+  async snapshot() {
+    this.calls.push('snapshot')
+    return ok({
+      requests: [],
+      grants: [],
+      transfers: [],
+      groups: [],
+      agents: [],
+      limits: {
+        maxFileBytes: 64 * 1024 * 1024,
+        maxTransferBytes: 256 * 1024 * 1024,
+        maxFiles: 1000,
+        maxTtlMs: 86_400_000,
+      },
+    })
+  }
+  async decide() {
+    this.calls.push('decide')
+    return failed<never>('not_found', 'no request')
+  }
+  async revokeGrant() {
+    this.calls.push('revoke')
+    return failed<never>('not_found', 'no grant')
+  }
+  async transfer() {
+    this.calls.push('transfer')
+    return failed<never>('unsupported', 'no control link')
+  }
+  async retry() {
+    this.calls.push('retry')
+    return failed<never>('not_found', 'no transfer')
+  }
+  async browse() {
+    this.calls.push('browse')
+    return failed<never>('not_found', 'no agent')
   }
 }
 

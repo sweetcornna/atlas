@@ -30,6 +30,7 @@ import {
   parseAvatarKey,
   userAvatarKey,
 } from '../avatar.js'
+import { chatScopeOf } from '../accountsHttp.js'
 import { fail, html, json, methodNotAllowed, notFound } from '../respond.js'
 import { renderAvatarEditor } from '../view/avatar.js'
 import {
@@ -83,9 +84,34 @@ export function avatarOwnerName(key: AvatarKey, self: AvatarKey): string {
 }
 
 /** A person changes their own figure; ops may change anybody's. */
-function mayWrite(ctx: RouteContext, key: AvatarKey): boolean {
-  if (!key.startsWith('user:')) return true
-  return key === userAvatarKey(actorOf(ctx).subject) || canOps(ctx)
+async function writeDenial(
+  ctx: RouteContext,
+  key: AvatarKey,
+): Promise<Response | null> {
+  if (key.startsWith('user:'))
+    return key === userAvatarKey(actorOf(ctx).subject) || canOps(ctx)
+      ? null
+      : fail(403, 'forbidden', '只能修改自己的形象')
+  const address = key.slice('agent:'.length)
+  const roster = await ctx.roster()
+  if (!roster.ok || !roster.value.some(row => row.address === address))
+    return fail(404, 'not_found', '资源不存在')
+  const chat = ctx.deps.chat
+  if (!chat) return fail(404, 'not_found', '资源不存在')
+  const targets = await chat.targets()
+  if (!targets.ok || !targets.value.some(row => row.address === address))
+    return fail(404, 'not_found', '资源不存在')
+  // Roster targets are available to start a conversation (the greet picker).
+  // Existing sessions remain subject-scoped; never authorize via a foreign one.
+  const scope = chatScopeOf(ctx.access, ctx.accounts)
+  if (ctx.access.principal?.kind === 'user' && !canOps(ctx)) {
+    const sessions = await chat.sessions()
+    if (!sessions.ok) return answer(sessions)
+    const matching = sessions.value.filter(row => row.target === address)
+    if (matching.length && !matching.some(row => scope.visible(row.id)))
+      return fail(404, 'not_found', '资源不存在')
+  }
+  return null
 }
 
 async function avatarsApi(
@@ -98,6 +124,8 @@ async function avatarsApi(
     if (method !== 'GET') return methodNotAllowed(['GET'])
     const denied = guardRead(ctx)
     if (denied !== null) return denied
+    if (port === undefined && ctx.deps.tenancy !== undefined)
+      return unwired('形象存储')
     const keys: AvatarKey[] = []
     for (const raw of ctx.url.searchParams.getAll('key').slice(0, 200)) {
       const key = parseAvatarKey(raw)
@@ -137,9 +165,8 @@ async function avatarsApi(
   const denied = guardMemberWrite(ctx)
   if (denied !== null) return denied
   if (port === undefined) return unwired('形象存储')
-  if (!mayWrite(ctx, key)) {
-    return fail(403, 'forbidden', '只能修改自己的形象')
-  }
+  const scopeDenied = await writeDenial(ctx, key)
+  if (scopeDenied !== null) return scopeDenied
   if (method === 'DELETE') {
     return await write(ctx, 'avatar.save', key, () =>
       port.save(key, null, actorOf(ctx)),

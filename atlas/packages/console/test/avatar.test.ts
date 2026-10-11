@@ -46,6 +46,7 @@ import {
   call,
   NOW,
   pageHarness,
+  agentAt,
   TOKENS,
   VIEW,
 } from './pageHarness.js'
@@ -438,7 +439,11 @@ describe('/v0/avatars and /fragments/avatar', () => {
 
   test('a member changes their own figure and nobody else’s', async () => {
     const avatars = new FakeAvatars(() => NOW)
-    const h = accountsHarness({ deps: { avatars } })
+    const base = pageHarness({ chat: true })
+    base.registry.listResult = { ok: true, value: [agentAt(ADDRESS)] }
+    const h = accountsHarness({
+      deps: { avatars, registry: base.deps.registry },
+    })
     const member = await person(h.handle, 'member')
     const other = encodeURIComponent('user:u:somebody-else')
     const refused = await h.handle(
@@ -450,6 +455,50 @@ describe('/v0/avatars and /fragments/avatar', () => {
     )
     expect(mine.editable).toBe(true)
     expect(avatars.saved.size).toBe(0)
+  })
+
+  test('an agent outside the roster or held only in a foreign chat scope cannot be changed', async () => {
+    const avatars = new FakeAvatars(() => NOW)
+    const base = pageHarness({ chat: true })
+    base.registry.listResult = { ok: true, value: [agentAt(ADDRESS)] }
+    const h = accountsHarness({
+      deps: { avatars, registry: base.deps.registry },
+    })
+    const member = await person(h.handle, 'member')
+    const other = await person(h.handle, 'member')
+    const session = await h.chat.open(ADDRESS)
+    if (!session.ok) throw new Error('no session')
+    const principal = h.book.bearerPrincipal(other.credential)
+    if (!principal.ok || principal.value.kind !== 'user') throw new Error('no principal')
+    expect(
+      h.book.recordOwner(session.value.id, principal.value.subject).ok,
+    ).toBe(true)
+    for (const key of [`agent:qianmo://foreign/hidden`, KEY]) {
+      for (const method of ['PUT', 'DELETE']) {
+        const response = await h.handle(
+          asSession(
+            method,
+            `/v0/avatars/${encodeURIComponent(key)}`,
+            member.sid,
+            { body: SPEC },
+          ),
+        )
+        expect(response.status).toBe(404)
+      }
+    }
+    expect(avatars.calls).toEqual([])
+    const owner = h.book.bearerPrincipal(member.credential)
+    if (!owner.ok || owner.value.kind !== 'user') throw new Error('no owner')
+    const ownSession = await h.chat.open(ADDRESS)
+    if (!ownSession.ok) throw new Error('no session')
+    expect(
+      h.book.recordOwner(ownSession.value.id, owner.value.subject).ok,
+    ).toBe(true)
+    expect(
+      (await h.handle(asSession('PUT', PATH, member.sid, { body: SPEC })))
+        .status,
+    ).toBe(200)
+    expect(avatars.calls).toHaveLength(1)
   })
 
   test('the fragment draws the editor for the saved figure, a draft, or the default', async () => {
