@@ -1,6 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { isMemoryOwner } from '@qianmo/capability'
 import { createHash } from 'node:crypto'
 import { isValidSegment } from '@qianmo/protocol'
 
@@ -78,13 +79,27 @@ function normalizeContext(contextId: string | undefined): string {
 }
 
 function isNormalizedContext(value: string): boolean {
-  return SAFE_CONTEXT_PATTERN.test(value) || DIGEST_PATTERN.test(value)
+  return (
+    SAFE_CONTEXT_PATTERN.test(value) ||
+    DIGEST_PATTERN.test(value) ||
+    /^!(?:admin|[0-9a-f]{16})-[0-9a-f]{32}$/.test(value)
+  )
 }
 
 /** Builds the session key for `(agent, contextId)`. The only such place. */
-export function sessionKeyOf(agent: string, contextId?: string): string {
+export function sessionKeyOf(
+  agent: string,
+  contextId?: string,
+  owner?: string,
+): string {
   if (!isValidSegment(agent)) throw new Error('agent is invalid')
-  return `${agent}${SESSION_KEY_SEPARATOR}${normalizeContext(contextId)}`
+  let context = normalizeContext(contextId)
+  if (owner !== undefined) {
+    if (!isMemoryOwner(owner)) throw new Error('session owner is invalid')
+    // ! cannot be returned by normalizeContext. A raw peer context spelling this key is hashed instead.
+    context = `!${owner === 'legacy:admin' ? 'admin' : owner.slice(2)}-${createHash('sha256').update(context, 'utf8').digest('hex').slice(0, DIGEST_LENGTH)}`
+  }
+  return `${agent}${SESSION_KEY_SEPARATOR}${context}`
 }
 
 /** True when `value` could have been produced by {@link sessionKeyOf}. */

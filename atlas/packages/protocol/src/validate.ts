@@ -17,22 +17,51 @@ import {
 } from './negotiation.js'
 import { LIMITS } from './limits.js'
 import {
+  isNodeControlPayload,
+  isNodeControlResultPayload,
+  isHubSubscribePayload,
+  isHubCallPayload,
+  isHubCallResultPayload,
+} from './control.js'
+import {
   deliveryExpiresAt,
   ENVELOPE_VERSION,
   isAckPayload,
   isMessageType,
   isNotifyPayload,
   isTaskResultPayload,
+  isTaskDirection,
   messageBytes,
   MessageType,
   type QianmoMessage,
   TRUST_UNTRUSTED,
 } from './message.js'
 
-/** Payload checks for the negotiation message types (§13). */
-const NEGOTIATION_PAYLOADS: Partial<
+/** Field-closed payloads for negotiation (§13) and control (§15). */
+const CLOSED_PAYLOADS: Partial<
   Record<MessageType, { check: (value: unknown) => boolean; reason: string }>
 > = {
+  [MessageType.NodeControl]: {
+    check: isNodeControlPayload,
+    reason: 'node.control payload must be exactly { op, args, actor }',
+  },
+  [MessageType.NodeControlResult]: {
+    check: isNodeControlResultPayload,
+    reason: 'node.control.result payload must be a closed control outcome',
+  },
+  [MessageType.HubSubscribe]: {
+    check: isHubSubscribePayload,
+    reason: 'hub.subscribe payload must be exactly { subscribe: true }',
+  },
+  [MessageType.HubCall]: {
+    check: isHubCallPayload,
+    reason: 'hub.call payload must be exactly { callId, op, args }',
+  },
+  [MessageType.HubCallResult]: {
+    check: isHubCallResultPayload,
+    reason:
+      'hub.call.result payload must be a closed outcome with a UUID callId',
+  },
   [MessageType.ResourceRequest]: {
     check: isResourceRequestPayload,
     reason: 'resource.request payload must be exactly { need, purpose }',
@@ -256,6 +285,20 @@ export function validateMessage(
         'payload field is required',
       ),
     )
+  } else if (
+    raw['type'] === MessageType.TaskRequest &&
+    typeof raw['payload'] === 'object' &&
+    raw['payload'] !== null &&
+    'direction' in raw['payload'] &&
+    !isTaskDirection(raw['payload'].direction)
+  ) {
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'payload.direction',
+        'task.request direction must be a supported task direction',
+      ),
+    )
   } else if (raw['type'] === MessageType.Ack && !isAckPayload(raw['payload'])) {
     issues.push(
       issue(
@@ -290,13 +333,12 @@ export function validateMessage(
       ),
     )
   } else if (isMessageType(raw['type'])) {
-    // The four negotiation payloads are field-closed for the same reason the
-    // ack is: a lease is an authorization to spend somebody's machine, and a
-    // field this version does not understand is one nobody verified.
-    const negotiation = NEGOTIATION_PAYLOADS[raw['type']]
-    if (negotiation !== undefined && !negotiation.check(raw['payload'])) {
+    // Negotiation and control are field-closed: an unknown authorization
+    // field is something nobody verified.
+    const payloadCheck = CLOSED_PAYLOADS[raw['type']]
+    if (payloadCheck !== undefined && !payloadCheck.check(raw['payload'])) {
       issues.push(
-        issue(ProtocolErrorCode.E_BAD_ENVELOPE, 'payload', negotiation.reason),
+        issue(ProtocolErrorCode.E_BAD_ENVELOPE, 'payload', payloadCheck.reason),
       )
     }
   }

@@ -952,7 +952,7 @@ export const nodesRoute: RouteModule = {
   area: {
     id: 'nodes',
     label: '节点',
-    group: 'run',
+    group: 'manage',
     href: '/nodes',
     icon: 'server',
   },

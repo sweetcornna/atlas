@@ -20,6 +20,7 @@
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
     "@oh-my-pi/pi-coding-agent": "workspace:*",
+    "@oh-my-pi/pi-ai": "workspace:*",
     "@oh-my-pi/pi-utils": "workspace:*",
     "@qianmo/paths": "workspace:*",
     "zod": "4.3.6",
@@ -48,7 +49,8 @@
     "@qianmo/witness": "workspace:*",
     "@oh-my-pi/pi-catalog": "workspace:*",
     "@qianmo/a2a": "workspace:*",
-    "@qianmo/elastic": "workspace:*"
+    "@qianmo/elastic": "workspace:*",
+    "@oh-my-pi/pi-natives": "workspace:*"
   },
   "devDependencies": {
     "@modelcontextprotocol/server-filesystem": "2026.7.10",

@@ -29,6 +29,7 @@ import { createHash } from 'node:crypto'
 import {
   appendFileSync,
   closeSync,
+  constants,
   fstatSync,
   mkdirSync,
   openSync,
@@ -59,7 +60,7 @@ export class HandoffUserError extends Error {
 }
 
 /** `<config root>/qianmo/handoff/<segments>`. */
-function handoffPath(...segments: string[]): string {
+export function handoffPath(...segments: string[]): string {
   return qianmoConfigPath('qianmo', 'handoff', ...segments)
 }
 
@@ -120,6 +121,7 @@ export function defaultDeviceName(host: string = hostname()): string | null {
 
 /** Where the hub's bare repositories are: over SSH, or a local directory (tests). */
 export type HubLocation =
+  | { readonly kind: 'https'; readonly root: string }
   | { readonly kind: 'local'; readonly root: string }
   | { readonly kind: 'ssh'; readonly target: string; readonly root: string }
 
@@ -155,6 +157,8 @@ export function isRemotePath(path: string): boolean {
  * gate would refuse is refused here, at `init`, rather than on every push.
  */
 export function parseHub(raw: string): HubLocation {
+  if (/^https?:\/\//.test(raw))
+    return { kind: 'https', root: parseConsoleUrl(raw) }
   if (raw.startsWith('/')) {
     return { kind: 'local', root: resolve(raw) }
   }
@@ -178,11 +182,12 @@ export function parseHub(raw: string): HubLocation {
 
 /** The form {@link parseHub} reads back. */
 export function formatHub(hub: HubLocation): string {
-  return hub.kind === 'local' ? hub.root : `${hub.target}:${hub.root}`
+  return hub.kind === 'ssh' ? `${hub.target}:${hub.root}` : hub.root
 }
 
 /** The git URL of one project's bare repository on the hub. */
 export function hubRepoUrl(hub: HubLocation, project: string): string {
+  if (hub.kind === 'https') return `${hub.root}/${project}.git`
   return hub.kind === 'local'
     ? join(hub.root, `${project}.git`)
     : `${hub.target}:${hub.root}/${project}.git`
@@ -211,7 +216,12 @@ export function parseConsoleUrl(raw: string): string {
       2,
     )
   }
-  if (url.username !== '' || url.password !== '' || url.search !== '') {
+  if (
+    url.username !== '' ||
+    url.password !== '' ||
+    url.search !== '' ||
+    url.hash !== ''
+  ) {
     throw new HandoffUserError('--console 里不能带用户名、密码或查询串', 2)
   }
   return url.toString().replace(/\/+$/, '')
@@ -225,7 +235,7 @@ export function parseConsoleUrl(raw: string): string {
 export function readTokenFile(path: string): string {
   let fd: number
   try {
-    fd = openSync(path, 'r')
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
   } catch (error) {
     throw new HandoffUserError(
       `读不了控制台凭据文件 ${path}：${(error as NodeJS.ErrnoException).code ?? String(error)}`,
@@ -236,6 +246,12 @@ export function readTokenFile(path: string): string {
     if (!stat.isFile()) {
       throw new HandoffUserError(`控制台凭据 ${path} 不是普通文件`)
     }
+    if (
+      process.platform !== 'win32' &&
+      process.getuid !== undefined &&
+      stat.uid !== process.getuid()
+    )
+      throw new HandoffUserError(`控制台凭据 ${path} 不属当前用户`)
     const mode = stat.mode & 0o777
     if (process.platform !== 'win32' && (mode & 0o077) !== 0) {
       throw new HandoffUserError(
@@ -450,7 +466,9 @@ function sessionsTable(): Record<string, SessionLocation> {
   for (const [cwd, raw] of Object.entries(file.sessions)) {
     if (
       isRecord(raw) &&
-      (raw.tool === 'qmcode' || raw.tool === 'claude-code') &&
+      (raw.tool === 'qmcode' ||
+        raw.tool === 'claude-code' ||
+        raw.tool === 'codex') &&
       typeof raw.sessionId === 'string' &&
       typeof raw.file === 'string' &&
       typeof raw.at === 'number'
@@ -489,7 +507,7 @@ export async function recordSession(location: SessionLocation): Promise<void> {
   })
 }
 
-function within(root: string, path: string): boolean {
+export function within(root: string, path: string): boolean {
   const rel = relative(root, path)
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }

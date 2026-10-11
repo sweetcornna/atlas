@@ -11,6 +11,8 @@
  * (`deps.ts`), injected by the `qm console` handler.
  */
 
+export * from './avatar.js'
+
 export type {
   AuditChainState,
   AuditFilter,
@@ -267,3 +269,10 @@ export * from './governance.js'
 export * from './tenancy.js'
 
 export { FileUsageStore, usageDelta } from './usage.js'
+
+export * from './directionPorts.js'
+export * from './routes/routingApi.js'
+export * from './chatDispatch.js'
+export type { HandoffGitPort, HandoffRequestActor } from './deps.js'
+
+export * from './routes/filesApi.js'

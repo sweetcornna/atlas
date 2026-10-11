@@ -42,6 +42,7 @@
  * care whose something is.
  */
 
+import type { HandoffDevicesPort } from './directionPorts.js'
 import {
   CONSOLE_HEADER,
   SESSION_COOKIE,
@@ -319,7 +320,72 @@ export function resolveAccess(
   tokens: ConsoleTokens,
   accounts: ConsoleAccounts | undefined,
   touch = true,
+  devices?: HandoffDevicesPort,
 ): Access {
+  const url = new URL(request.url)
+  const query = url.searchParams.get(TOKEN_QUERY_PARAM) ?? ''
+  const token = bearerOf(request)
+  if (query.startsWith('qmd_') || token.startsWith('qmd_')) {
+    const none: Access = {
+      credential: {
+        role: 'none',
+        source: 'none',
+        header: request.headers.has(CONSOLE_HEADER),
+        crossOrigin: isCrossOriginRequest(request),
+      },
+      principal: null,
+      sid: null,
+      refusal: null,
+      breakGlass: false,
+    }
+    const personalQuery = accounts !== undefined && isPersonalCredential(query)
+    if (query.startsWith('qmd_') || personalQuery)
+      return {
+        ...none,
+        refusal: {
+          status: 400,
+          code: 'invalid',
+          message: personalQuery
+            ? PERSONAL_IN_QUERY
+            : '设备令牌不能放进链接，请使用 Authorization: Bearer',
+          line: personalQuery ? PERSONAL_IN_QUERY_LINE : '设备令牌不能放进链接',
+        },
+      }
+    if (
+      url.pathname !== '/v0/handoff' &&
+      !url.pathname.startsWith('/v0/handoff/')
+    )
+      return {
+        ...none,
+        refusal: {
+          status: 403,
+          code: 'forbidden',
+          message: '设备令牌只能访问接力接口',
+          line: '设备令牌只能访问接力接口',
+        },
+      }
+    const identity = devices?.authenticate?.(token)
+    if (!identity) return none
+    return {
+      ...none,
+      credential: { ...none.credential, role: 'view', source: 'bearer' },
+      principal: {
+        kind: 'device',
+        deviceId: identity.deviceId,
+        owner: identity.owner,
+        subject: identity.owner,
+        role: 'member',
+        credential: 'bearer',
+      },
+      current: () => {
+        const fresh = devices?.authenticate?.(token)
+        return (
+          fresh?.deviceId === identity.deviceId &&
+          fresh.owner === identity.owner
+        )
+      },
+    }
+  }
   const access = resolveAccessOnce(request, tokens, accounts, touch)
   const principal = access.principal
   if (principal?.kind !== 'user') return access

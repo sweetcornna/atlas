@@ -9,7 +9,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./policy": "./src/policy.ts"
+    "./policy": "./src/policy.ts",
+    "./desktopPolicy": "./src/desktopPolicy.ts"
   },
   "files": [
     "src"
@@ -20,6 +21,8 @@
   "dependencies": {
     "@oh-my-pi/pi-coding-agent": "workspace:*",
     "@qianmo/paths": "workspace:*",
-    "@qianmo/resident": "workspace:*"
+    "@qianmo/resident": "workspace:*",
+    "@oh-my-pi/omptype": "workspace:*",
+    "@oh-my-pi/pi-utils": "workspace:*"
   }
 }

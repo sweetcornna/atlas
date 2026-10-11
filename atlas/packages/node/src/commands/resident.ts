@@ -263,6 +263,7 @@ export const DEFAULT_RESIDENT_MEM_INTERVAL_MS = 60_000
 export const DEFAULT_REGISTRY_POLL_INTERVAL_MS = 3_600_000
 
 export interface ResidentCliConfig {
+  readonly controllers?: readonly (readonly [string, string])[]
   readonly approvers?: readonly (readonly [string, string])[]
   readonly protectedRoots?: readonly string[]
   readonly tenancyPath?: string
@@ -389,6 +390,7 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
   let tenancyPath: string | undefined
   const tenantHubPeers: string[] = []
   const approvers: (readonly [string, string])[] = []
+  const controllers: (readonly [string, string])[] = []
   const protectedRoots: string[] = []
   let enforceRequested = false
   let auditSignedTasks = false
@@ -527,6 +529,12 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
       requireSignedTasks = false
     } else if (arg === '--audit-signed-tasks') {
       auditSignedTasks = true
+    } else if (arg === '--controller' || arg?.startsWith('--controller=')) {
+      const parsed = residentOptionValue(args, index, '--controller')
+      controllers.push(parseTrustedKey(parsed.value))
+      signHandshake = true
+      requireSignedHandshake = true
+      index = parsed.next
     } else if (arg === '--approver' || arg?.startsWith('--approver=')) {
       const parsed = residentOptionValue(args, index, '--approver')
       approvers.push(parseTrustedKey(parsed.value))
@@ -740,6 +748,14 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
     )
   if (new Set(approvers.map(([name]) => name)).size !== approvers.length)
     throw new Error('duplicate approver')
+  if (new Set(controllers.map(([name]) => name)).size !== controllers.length)
+    throw new Error('duplicate controller')
+  for (const [name, key] of controllers) {
+    if (name === node)
+      throw new Error('controller must have a separate node identity')
+    if (trusted.some(([peer, publicKey]) => peer === name && publicKey !== key))
+      throw new Error('controller and trust keys disagree for the same node')
+  }
   for (const [name, key] of approvers) {
     if (!trusted.some(([peer]) => peer === name))
       throw new Error(
@@ -754,6 +770,7 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
     agents,
     ...(tenancyPath === undefined ? {} : { tenancyPath, tenantHubPeers }),
     ...(approvers.length === 0 ? {} : { approvers }),
+    ...(controllers.length === 0 ? {} : { controllers }),
     ...(protectedRoots.length === 0 ? {} : { protectedRoots }),
     ...(allowWorkspaceEdits ? { allowWorkspaceEdits } : {}),
     ...(port === undefined ? {} : { port }),
@@ -865,6 +882,10 @@ Listener, exactly one of --port and --unix:
 
 Authorization:
 
+  --controller <node>=<publicKey>
+                           Command identity allowed to control this node.
+                           Repeatable; enables required signed handshakes.
+                           Independent of task --trust and --approver.
   --approver <node>=<publicKey>
                            Separate approval key for an explicitly trusted
                            console; requires --allow-workspace-edits and
@@ -1502,10 +1523,34 @@ export function buildHandshakeSigning(
           }
         })()
       : undefined
+  // L1-only pins: controllers do not become capability-token issuers. Preserve
+  // certificate-directory checks for deployments that require exact credentials.
+  const controllers = new Map(config.controllers)
+  const lookup = (node: string) =>
+    controllers.get(node) ?? directory.publicKeyOf(node)
+  const signingDirectory =
+    controllers.size === 0
+      ? directory
+      : directory instanceof CertificateDirectory
+        ? {
+            publicKeyOf: lookup,
+            handshakeCredentialOf: (
+              node: string,
+              selector: string | undefined,
+            ) => {
+              const resolved = directory.handshakeCredentialOf(node, selector)
+              const pin = controllers.get(node)
+              return resolved &&
+                (pin === undefined || resolved.publicKey === pin)
+                ? resolved
+                : null
+            },
+          }
+        : { publicKeyOf: lookup }
   return {
     node: config.node,
     keys,
-    directory,
+    directory: signingDirectory,
     ...(credential === undefined ? {} : { credential }),
     ...(config.requireSignedHandshake === true ? { required: true } : {}),
     ...(config.requireSignedHandshake === true &&
@@ -2085,6 +2130,9 @@ export async function runResident(args: readonly string[]): Promise<void> {
     node: config.node,
     team: config.team,
     agents: config.agents,
+    controllers: new Set(config.controllers?.map(([node]) => node)),
+    memoryControllers: new Map(config.controllers),
+    controlAudit: event => trail.append(event),
     ...(config.allowWorkspaceEdits === true
       ? { allowWorkspaceEdits: true }
       : {}),

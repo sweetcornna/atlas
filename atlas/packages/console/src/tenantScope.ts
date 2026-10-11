@@ -1,6 +1,9 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type { MemoryPort, DesktopPort, AgentRef } from './directionPorts.js'
+import { scopedFiles } from './filesScope.js'
+import { agentRefOf } from './routes/directionShared.js'
 import type { Access } from './access.js'
 import type { ConsoleDeps, ConsoleResult, ChatPort, WakePort } from './deps.js'
 import { fail } from './respond.js'
@@ -15,6 +18,33 @@ const filtered = <T>(
   allowed: (item: T) => boolean,
 ): ConsoleResult<readonly T[]> =>
   result.ok ? { ok: true, value: result.value.filter(allowed) } : result
+function scopedMemory(
+  port: MemoryPort,
+  allowed: (ref: AgentRef) => boolean,
+): MemoryPort {
+  const guard = async <T>(
+    ref: AgentRef,
+    effect: () => Promise<ConsoleResult<T>>,
+  ): Promise<ConsoleResult<T>> => {
+    if (!allowed(ref)) return hidden()
+    const result = await effect()
+    return allowed(ref) ? result : hidden()
+  }
+  return {
+    async agents() {
+      return filtered(await port.agents(), allowed)
+    },
+    list: (input, actor) => guard(input, () => port.list(input, actor)),
+    add: (ref, draft, actor) => guard(ref, () => port.add(ref, draft, actor)),
+    edit: (ref, id, draft, actor) =>
+      guard(ref, () => port.edit(ref, id, draft, actor)),
+    forget: (ref, id, reason, actor) =>
+      guard(ref, () => port.forget(ref, id, reason, actor)),
+    invalidate: (ref, id, actor) =>
+      guard(ref, () => port.invalidate(ref, id, actor)),
+  }
+}
+
 const emptyAudit: ConsoleDeps['audit'] = {
   async read() {
     return {
@@ -50,6 +80,45 @@ export function scopedConsoleDeps(
       return false
     }
   }
+  const guardedDesktop = (
+    desktop: DesktopPort,
+    allowed: (ref: AgentRef) => boolean,
+  ): DesktopPort => {
+    const assert = (ref: AgentRef) => {
+      if (!allowed(ref)) throw new Error('E_AUTH_REVOKED: 资源不存在')
+    }
+    return {
+      async list() {
+        return filtered(await desktop.list(), allowed)
+      },
+      async actions(ref, limit) {
+        if (ref && !allowed(ref)) return hidden()
+        return filtered(await desktop.actions(ref, limit), allowed)
+      },
+      async set(ref, change, actor) {
+        if (!allowed(ref)) return hidden()
+        const r = await desktop.set(ref, change, {
+          ...actor,
+          beforeDispatch: () => {
+            assert(ref)
+            actor.beforeDispatch?.()
+          },
+        })
+        return allowed(ref) ? r : hidden()
+      },
+      async recycle(ref, actor) {
+        if (!allowed(ref)) return hidden()
+        const r = await desktop.recycle(ref, {
+          ...actor,
+          beforeDispatch: () => {
+            assert(ref)
+            actor.beforeDispatch?.()
+          },
+        })
+        return allowed(ref) ? r : hidden()
+      },
+    }
+  }
   // Platform membership can be withdrawn while the wake timer/handshake waits.
   // Preserve its broad scope only for the exact policy revision that granted it.
   if (scope.platform) {
@@ -69,7 +138,21 @@ export function scopedConsoleDeps(
       scope,
       deps: {
         ...deps,
+        ...(deps.memory === undefined
+          ? {}
+          : { memory: scopedMemory(deps.memory, () => current()) }),
+        ...(deps.desktop
+          ? { desktop: guardedDesktop(deps.desktop, () => current()) }
+          : {}),
         ...(deps.wake === undefined ? {} : { wake: guarded(deps.wake) }),
+        ...(deps.files === undefined
+          ? {}
+          : {
+              files: scopedFiles(
+                deps.files,
+                ref => current() && scope.node(ref.node),
+              ),
+            }),
         ...(deps.wakeTargets === undefined
           ? {}
           : {
@@ -86,15 +169,125 @@ export function scopedConsoleDeps(
   const node = (id: string) => current() && scope.node(id)
   const address = (id: string) => current() && scope.address(id)
   const server = (id: string) => current() && scope.server(id)
+  // The 2026-10 ports (design review D01) carry no tenant wrapper yet: a
+  // scoped caller is not offered them at all until each gets one — list
+  // filtered, detail 404, write refused before admission and dialling.
   const {
     providers: _providers,
     about: _about,
     handoff: _handoff,
     wake: _wake,
+    schedules: _schedules,
+    routing: _routing,
+    handoffDevices: _handoffDevices,
+    avatars: _avatars,
     ...base
   } = deps
   const result: ConsoleDeps = {
     ...base,
+    ...(deps.memory === undefined
+      ? {}
+      : {
+          memory: scopedMemory(deps.memory, ref =>
+            address(`qianmo://${ref.node}/${ref.agent}`),
+          ),
+        }),
+    ...(deps.files === undefined
+      ? {}
+      : {
+          files: scopedFiles(
+            deps.files,
+            ref =>
+              node(ref.node) && address(`qianmo://${ref.node}/${ref.agent}`),
+          ),
+        }),
+    ...(deps.connectors === undefined
+      ? {}
+      : {
+          connectors: {
+            async snapshot() {
+              const value = await deps.connectors!.snapshot()
+              if (!current()) return hidden()
+              if (!value.ok) return value
+              const connectors = value.value.connectors
+                .filter(v => v.tenant === scope.tenant)
+                .map(v => ({ ...v, agents: v.agents.filter(address) }))
+              const ids = new Set(connectors.map(v => v.id))
+              return {
+                ok: true as const,
+                value: {
+                  ...value.value,
+                  connectors,
+                  agents: value.value.agents.filter(address),
+                  recent: value.value.recent.filter(
+                    v => ids.has(v.connectorId) && address(v.agent),
+                  ),
+                },
+              }
+            },
+            async save(draft, actor) {
+              if (
+                !current() ||
+                scope.tenant === null ||
+                (draft.tenant !== undefined && draft.tenant !== scope.tenant) ||
+                !Array.isArray(draft.agents) ||
+                draft.agents.some(v => !address(v))
+              )
+                return hidden()
+              if (draft.id !== undefined) {
+                const value = await deps.connectors!.snapshot()
+                if (
+                  !value.ok ||
+                  !value.value.connectors.some(
+                    v => v.id === draft.id && v.tenant === scope.tenant,
+                  ) ||
+                  !current()
+                )
+                  return hidden()
+              }
+              return deps.connectors!.save(
+                { ...draft, tenant: scope.tenant },
+                actor,
+              )
+            },
+            async remove(id, actor) {
+              const value = await deps.connectors!.snapshot()
+              if (
+                !value.ok ||
+                !value.value.connectors.some(
+                  v => v.id === id && v.tenant === scope.tenant,
+                ) ||
+                !current()
+              )
+                return hidden()
+              return deps.connectors!.remove(id, actor)
+            },
+            async probe(id, actor) {
+              const value = await deps.connectors!.snapshot()
+              if (
+                !value.ok ||
+                !value.value.connectors.some(
+                  v =>
+                    v.id === id &&
+                    v.tenant === scope.tenant &&
+                    v.agents.every(address),
+                ) ||
+                !current()
+              )
+                return hidden()
+              return deps.connectors!.probe(id, actor)
+            },
+          },
+        }),
+    ...(deps.desktop
+      ? {
+          desktop: guardedDesktop(
+            deps.desktop,
+            ref =>
+              node(ref.node) && address(`qianmo://${ref.node}/${ref.agent}`),
+          ),
+        }
+      : {}),
     registry: {
       async list() {
         return filtered(await deps.registry.list(), v => address(v.address))
@@ -507,6 +700,107 @@ export async function tenantRequestDenial(
     !scope.address(pieces[2])
   )
     return fail(404, 'not_found', '资源不存在')
+  if (head === 'memory') {
+    const raw =
+      request.method === 'GET' ? url.searchParams.get('agent') : undefined
+    let asked: unknown = raw
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      try {
+        asked = ((await request.clone().json()) as Record<string, unknown>)
+          .agent
+      } catch {
+        /* Route returns malformed input. */
+      }
+    }
+    const ref = agentRefOf(asked)
+    if (ref && !scope.address(`qianmo://${ref.node}/${ref.agent}`))
+      return fail(404, 'not_found', '资源不存在')
+  }
+  if (head === 'files') {
+    if (pieces[2] === 'browse') {
+      const agent = url.searchParams.get('agent')
+      if (agent !== null && !scope.address(agent))
+        return fail(404, 'not_found', '资源不存在')
+    }
+    if (request.method === 'POST') {
+      if (pieces[2] === 'transfers' && pieces.length === 3) {
+        try {
+          const body: unknown = await request.clone().json()
+          if (
+            body &&
+            typeof body === 'object' &&
+            'target' in body &&
+            'sources' in body
+          ) {
+            if (typeof body.target === 'string' && !scope.address(body.target))
+              return fail(404, 'not_found', '资源不存在')
+            if (
+              Array.isArray(body.sources) &&
+              body.sources.some(
+                one =>
+                  one &&
+                  typeof one === 'object' &&
+                  typeof one.agent === 'string' &&
+                  !scope.address(one.agent),
+              )
+            )
+              return fail(404, 'not_found', '资源不存在')
+          }
+        } catch {
+          return null
+        }
+      } else if (pieces[3] !== undefined) {
+        const rows = await deps.files?.snapshot()
+        const visible =
+          rows?.ok &&
+          (pieces[2] === 'requests'
+            ? rows.value.requests.some(one => one.requestId === pieces[3])
+            : pieces[2] === 'grants'
+              ? rows.value.grants.some(one => one.grantId === pieces[3])
+              : rows.value.transfers.some(one => one.transferId === pieces[3]))
+        if (!visible) return fail(404, 'not_found', '资源不存在')
+      }
+    }
+  }
+  if (head === 'connectors' && !['GET', 'HEAD'].includes(request.method)) {
+    const listing = await deps.connectors?.snapshot()
+    if (!listing?.ok || scope.tenant === null)
+      return fail(404, 'not_found', '资源不存在')
+    if (
+      pieces[2] !== undefined &&
+      !listing.value.connectors.some(v => v.id === pieces[2])
+    )
+      return fail(404, 'not_found', '资源不存在')
+    if (pieces.length === 2 && request.method === 'POST') {
+      let body: unknown
+      try {
+        body = await request.clone().json()
+      } catch {
+        return null
+      }
+      if (body && typeof body === 'object' && !Array.isArray(body)) {
+        const row = body as Record<string, unknown>
+        if (
+          (row['id'] !== undefined &&
+            !listing.value.connectors.some(v => v.id === row['id'])) ||
+          (row['tenant'] !== undefined && row['tenant'] !== scope.tenant) ||
+          (Array.isArray(row['agents']) &&
+            row['agents'].some(v => typeof v !== 'string' || !scope.address(v)))
+        )
+          return fail(404, 'not_found', '资源不存在')
+      }
+    }
+  }
+  if (head === 'desktop' && pieces[0] === 'v0') {
+    const target =
+      pieces[2] === 'actions'
+        ? url.searchParams.get('agent')
+        : pieces[2] && pieces[3]
+          ? `qianmo://${pieces[2]}/${pieces[3]}`
+          : null
+    if (target && !scope.address(target))
+      return fail(404, 'not_found', '资源不存在')
+  }
   if (head === 'chat') {
     const id =
       pieces[0] === 'v0' && pieces[2] === 'sessions'

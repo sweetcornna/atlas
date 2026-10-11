@@ -41,7 +41,6 @@
  * memory partitions — no configuration, no opt-in, and nothing to get wrong.
  */
 
-import { createHash } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 import type { FileMemoryStore } from '@qianmo/memory'
 import {
@@ -61,65 +60,15 @@ import {
   memoryEvidenceContext,
 } from '@qianmo/recall'
 import type { ResidentPromptScope } from './contracts.js'
-import {
-  DEFAULT_CONTEXT,
-  contextOfSessionKey,
-  sessionKeyOf,
-} from './session-key.js'
+import { resolveMemoryPartition } from './memory-partition.js'
 
-/**
- * A `@qianmo/memory` key segment: `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
- *
- * Bounded at 62 rather than 63 so the two-character tag below still fits.
- */
-const MEMORY_SEGMENT_BODY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,61}$/
-
-const DIGEST_LENGTH = 32
-
-/**
- * Map one session-key half onto a memory key segment, injectively.
- *
- * `contextId` arrives from the wire and `@qianmo/memory` turns key segments
- * into **directory names**, so the mapping has to be total (a remote may send
- * anything) and injective (two contexts sharing a directory is exactly the
- * cross-requester bleed §4.3 exists to prevent).
- *
- * The two branches are told apart by their tag, not by their shape: `v-` is
- * always a verbatim value and `d-` is always a digest, so no verbatim segment
- * can ever be spelled the way a digest is. Tagging is what makes the claim
- * "injective" checkable instead of merely likely — without it a caller could
- * send the literal text of somebody else's digest and land in their directory.
- */
-function memorySegment(value: string): string {
-  if (MEMORY_SEGMENT_BODY.test(value)) return `v-${value}`
-  return `d-${createHash('sha256')
-    .update(value, 'utf8')
-    .digest('hex')
-    .slice(0, DIGEST_LENGTH)}`
-}
-
-/**
- * The recall scope for one `(agent, contextId)` pair.
- *
- * **Working layer only, on purpose.** The `project` and `baseline` layers are
- * shared across every context of an agent, so including them would make one
- * requester's memory visible to another — the exact thing the partition is for.
- * Promotion out of a context stays an explicit act (`archiveWorkingMemory`),
- * not a side effect of being recalled.
- *
- * The context half is taken from {@link sessionKeyOf}'s own normalization
- * rather than from the raw `contextId`, so the memory partition and the session
- * partition can never drift apart — a context that is one omp RPC session is one
- * memory directory, by construction.
- */
+/** Conversation scope retains the existing namespace and normalization. */
 export function residentRecallScope(scope: ResidentPromptScope): RecallScope {
-  const key = sessionKeyOf(scope.agent, scope.contextId)
-  const context = contextOfSessionKey(key) ?? DEFAULT_CONTEXT
-  return {
-    layers: ['working'],
-    projectKey: memorySegment(scope.agent),
-    taskId: memorySegment(context),
-  }
+  const { projectKey, taskId } = resolveMemoryPartition({
+    ...scope,
+    scope: 'conversation',
+  })
+  return { layers: ['working'], projectKey, taskId }
 }
 
 /**
@@ -218,6 +167,21 @@ export class ResidentMemorySidecar {
   #request(scope: ResidentPromptScope, question?: string): RecallRequest {
     return {
       scope: residentRecallScope(scope),
+      ...(scope.owner === undefined
+        ? {}
+        : {
+            priorityScopes: [
+              {
+                layers: ['working' as const],
+                ...resolveMemoryPartition({
+                  scope: 'long',
+                  agent: scope.agent,
+                  owner: scope.owner,
+                }),
+              },
+              residentRecallScope(scope),
+            ],
+          }),
       ...(question === undefined ? {} : { question }),
       ...(this.#budget === undefined ? {} : { budget: this.#budget }),
       ...(this.#now === undefined ? {} : { asOf: this.#now() }),
@@ -270,7 +234,8 @@ export class ResidentMemorySidecar {
     question?: string,
   ): Promise<ResidentMemoryBlock> {
     const semantic = this.#semantic
-    if (semantic === undefined) return this.renderFrozen(scope, question)
+    if (semantic === undefined || scope.owner !== undefined)
+      return this.renderFrozen(scope, question)
     try {
       const result = await recallHybrid(
         this.#store,

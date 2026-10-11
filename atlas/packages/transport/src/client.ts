@@ -285,6 +285,10 @@ export class TransportClient implements TransportChannel {
   private declaredPeerTypes: readonly string[] | undefined
   /** Proof that admitted the current socket; `null` while disconnected. */
   private peerAuthentication: HandshakeAuthentication | null = null
+  #generation: string | null = null
+  get connectionGeneration(): string | null {
+    return this.#generation
+  }
   /** Credential metadata proven by the peer's signed ready frame. */
   private peerCredential: AuthenticatedCredential | null = null
   /**
@@ -498,6 +502,10 @@ export class TransportClient implements TransportChannel {
     return this.outbox.sendAndWait(message, timeoutMs)
   }
 
+  sendOnce(message: QianmoMessage, timeoutMs = 5_000) {
+    return this.outbox.sendOnce(message, timeoutMs)
+  }
+
   /** Resolve once every queued envelope has been receipted. */
   waitForDrain(timeoutMs = 5_000): Promise<void> {
     return this.outbox.waitForDrain(timeoutMs)
@@ -508,6 +516,7 @@ export class TransportClient implements TransportChannel {
     this.state = 'closed'
     this.clearTimers()
     this.peerAuthentication = null
+    this.#generation = null
     this.peerCredential = null
     const socket = this.socket
     this.socket = null
@@ -575,6 +584,7 @@ export class TransportClient implements TransportChannel {
   }
 
   private async onFrame(socket: WebSocket, raw: string): Promise<void> {
+    if (this.socket !== socket || this.state === 'closed') return
     const frame = parseFrame(raw)
     if (frame === null) return
     switch (frame.t) {
@@ -647,6 +657,7 @@ export class TransportClient implements TransportChannel {
         return
       }
       case FrameType.Ready: {
+        if (this.state === 'ready') return
         const accepted = this.acceptReady(socket, frame)
         if (accepted === null) return
         // Replaced, not merged: a peer that came back on an older build
@@ -654,6 +665,7 @@ export class TransportClient implements TransportChannel {
         // client sending types the peer no longer handles.
         this.declaredPeerTypes = frame.supportedTypes
         this.peerAuthentication = accepted.authentication
+        this.#generation = crypto.randomUUID()
         this.peerCredential = accepted.credential ?? null
         this.record(TransportEventType.AuthAccepted, {
           node: this.peerNode ?? '',
@@ -669,13 +681,16 @@ export class TransportClient implements TransportChannel {
         return
       }
       case FrameType.Receipt:
+        if (this.state !== 'ready') return
         this.outbox.receive(frame)
         return
       case FrameType.Envelope: {
+        if (this.state !== 'ready') return
         const context: InboundContext = {
           peerNode: this.peerNode,
           receivedAt: this.now(),
           channel: this,
+          connectionGeneration: this.#generation,
         }
         const reply = await receiveEnvelope(frame.envelope, context, {
           onMessage: this.options.onMessage,
@@ -813,6 +828,8 @@ export class TransportClient implements TransportChannel {
     socket.on('error', () => {})
     this.socket = null
     this.peerAuthentication = null
+    this.#generation = null
+    this.outbox.disconnect()
     this.peerCredential = null
     // The nonce pair belonged to that socket. Carrying it to the next one
     // would let a ready frame be checked against a challenge it never answered.
@@ -973,14 +990,15 @@ export class TransportClient implements TransportChannel {
     socket.send(serializeFrame(frame))
   }
 
-  private writeEnvelope(message: QianmoMessage): void {
+  private writeEnvelope(message: QianmoMessage): boolean {
     const socket = this.socket
-    if (socket === null) return
+    if (socket === null || socket.readyState !== WebSocket.OPEN) return false
     this.write(socket, {
       t: FrameType.Envelope,
       v: FRAME_VERSION,
       envelope: message,
     })
+    return true
   }
 
   private startKeepAlive(): void {

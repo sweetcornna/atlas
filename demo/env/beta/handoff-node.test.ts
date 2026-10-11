@@ -258,6 +258,40 @@ function everythingWritten(place: Scratch): string {
 }
 
 describe('handoff-node.sh start', () => {
+  test('官方 Codex 无需 qmcode 邻接 helper，使用 CODEX_HOME 并禁用插件和 hooks', () => {
+    const place = scratch()
+    const official = join(STUB_HOME, 'codex')
+    if (!existsSync(official)) {
+      copyFileSync(QMCODE_REAL, official)
+      chmodSync(official, 0o755)
+    }
+    const result = run(place, START, {
+      QIANMO_QMCODE_BIN: '',
+      QIANMO_APP_SERVER_BIN: official,
+    })
+    expect(result.exitCode).toBe(0)
+    const args = readFileSync(
+      join(place.logs, 'app-server.argv'),
+      'utf8',
+    ).split('\n')
+    expect(args.slice(7, -1)).toEqual([
+      '--disable',
+      'plugins',
+      '--disable',
+      'hooks',
+      '-c',
+      'mcp_servers={}',
+      '-c',
+      'notify=[]',
+    ])
+    expect(appServerEnv(place).get('CODEX_HOME')).toBe(
+      join(place.root, 'handoff', 'qmcode-home'),
+    )
+    expect(appServerEnv(place).has('QMCODE_HOME')).toBe(false)
+    expect(bridge(place).args).toContain('CODEX_HOME')
+    expect(bridge(place).env.OPENAI_API_KEY).toBeUndefined()
+  }, 20_000)
+
   test('先起节点桥、后起 app-server；app-server 带着那两个 -c（完成标准 5）', () => {
     const place = scratch()
     const r = run(place, START)
@@ -305,6 +339,10 @@ describe('handoff-node.sh start', () => {
       join(handoff, 'home'),
       '--qmcode-home',
       join(handoff, 'qmcode-home'),
+      '--app-server-bin',
+      QMCODE_REAL,
+      '--app-server-home-env',
+      'QMCODE_HOME',
       '--app-server-pid-file',
       join(place.root, 'run', 'handoff-app-server.pid'),
       '--trust',
@@ -445,7 +483,7 @@ describe('handoff-node.sh start 拒绝的情形', () => {
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'qmcode-x'), '#!/bin/sh\n', { mode: 0o755 })
     symlinkSync('qmcode-x', join(dir, 'qmcode'))
-    const r = run(place, START, { QIANMO_QMCODE_BIN: '' })
+    const r = run(place, START, { QIANMO_QMCODE_BIN: join(dir, 'qmcode') })
     expect(r.exitCode).not.toBe(0)
     expect(r.output).toContain('旁边没有可执行的 codex-code-mode-host')
     expect(existsSync(join(place.logs, 'order'))).toBe(false)

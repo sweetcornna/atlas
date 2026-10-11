@@ -1,10 +1,15 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { ompChildEnv } from '@qianmo/paths'
+import * as pathModule from 'node:path'
 import { afterEach, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import {
   mkdtempSync,
+  mkdirSync,
+  copyFileSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -13,6 +18,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { residentExtensionSource } from '../../../../scripts/residentExtensionBundle.js'
 import { writeResidentExtensionAsset } from '../../src/host/residentExtension.js'
 
 const roots: string[] = []
@@ -27,22 +33,31 @@ function temporary() {
 }
 
 test('resident extension asset is bundled, private and loadable without a package tree', async () => {
-  const result = await Bun.build({
-    entrypoints: [Bun.resolveSync('@qianmo/extension', import.meta.dir)],
-    target: 'bun',
-    format: 'esm',
-    packages: 'bundle',
-    splitting: false,
-  })
-  expect(result.success).toBe(true)
-  expect(result.outputs).toHaveLength(1)
-  const source = await result.outputs[0]!.text()
+  const source = await residentExtensionSource()
   const root = temporary()
   const path = writeResidentExtensionAsset(root, source)
   expect(readFileSync(path, 'utf8')).toBe(source)
   expect(writeResidentExtensionAsset(root, source)).toBe(path)
   if (process.platform !== 'win32')
     expect(statSync(path).mode & 0o777).toBe(0o600)
+  const env = ompChildEnv({
+    PATH: process.env.PATH,
+    HOME: root,
+    QIANMO_CONFIG_DIR: root,
+    PI_COMPILED: 'true',
+  })
+  const nativeDir = pathModule.dirname(
+    Bun.resolveSync('@oh-my-pi/pi-natives', import.meta.dir),
+  )
+  const version = JSON.parse(
+    readFileSync(pathModule.join(nativeDir, '../package.json'), 'utf8'),
+  ).version as string
+  const cache = pathModule.join(env.PI_NATIVES_DIR!, version)
+  mkdirSync(cache, { recursive: true, mode: 0o700 })
+  for (const file of readdirSync(nativeDir).filter(name =>
+    name.endsWith('.node'),
+  ))
+    copyFileSync(pathModule.join(nativeDir, file), pathModule.join(cache, file))
   const child = Bun.spawn(
     [
       process.execPath,
@@ -51,7 +66,7 @@ test('resident extension asset is bundled, private and loadable without a packag
     ],
     {
       cwd: root,
-      env: { PATH: process.env.PATH, HOME: root, QIANMO_CONFIG_DIR: root },
+      env,
       stdout: 'pipe',
       stderr: 'pipe',
     },

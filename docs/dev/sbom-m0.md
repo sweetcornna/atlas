@@ -5,7 +5,7 @@
 
 > **本文件由 `bun run atlas:sbom` 生成，不要手改。**改判据请改 `atlas/scripts/sbom.ts`。
 >
-> 输入：`bun.lock`（SHA-256 `c98ac7881fc98b65…`）+ `node_modules` 的 `license` 字段。机器可读版本见同目录 [`sbom-m0.json`](./sbom-m0.json)（CycloneDX 1.5 形状）。
+> 输入：`bun.lock`（SHA-256 `5ad18602f2802712…`）+ `node_modules` 的 `license` 字段。机器可读版本见同目录 [`sbom-m0.json`](./sbom-m0.json)（CycloneDX 1.5 形状）。
 
 对应 roadmap **P8.4** 交付物①，章程 §5 与风险 L-2 的证据链见 [`license-chain-m0.md`](./license-chain-m0.md)。
 
@@ -147,27 +147,27 @@
 | `@qianmo/adapter` | `atlas/packages/adapter` | AGPL-3.0-or-later | 是 | 15/15 |
 | `@qianmo/audit` | `atlas/packages/audit` | AGPL-3.0-or-later | 是 | 10/10 |
 | `@qianmo/backup` | `atlas/packages/backup` | AGPL-3.0-or-later | 是 | 13/13 |
-| `@qianmo/capability` | `atlas/packages/capability` | AGPL-3.0-or-later | 是 | 15/15 |
+| `@qianmo/capability` | `atlas/packages/capability` | AGPL-3.0-or-later | 是 | 17/17 |
 | `@qianmo/capacity` | `atlas/packages/capacity` | AGPL-3.0-or-later | 是 | 13/13 |
-| `@qianmo/console` | `atlas/packages/console` | AGPL-3.0-or-later | 是 | 125/125 |
+| `@qianmo/console` | `atlas/packages/console` | AGPL-3.0-or-later | 是 | 170/170 |
 | `@qianmo/diagnosis` | `atlas/packages/diagnosis` | AGPL-3.0-or-later | 是 | 6/6 |
 | `@qianmo/elastic` | `atlas/packages/elastic` | AGPL-3.0-or-later | 是 | 4/4 |
-| `@qianmo/extension` | `atlas/packages/extension` | AGPL-3.0-or-later | 是 | 3/3 |
-| `@qianmo/handoff` | `atlas/packages/handoff` | AGPL-3.0-or-later | 是 | 19/19 |
+| `@qianmo/extension` | `atlas/packages/extension` | AGPL-3.0-or-later | 是 | 6/6 |
+| `@qianmo/handoff` | `atlas/packages/handoff` | AGPL-3.0-or-later | 是 | 20/20 |
 | `@qianmo/mailbox` | `atlas/packages/mailbox` | AGPL-3.0-or-later | 是 | 4/4 |
 | `@qianmo/memory` | `atlas/packages/memory` | AGPL-3.0-or-later | 是 | 23/23 |
 | `@qianmo/negotiation` | `atlas/packages/negotiation` | AGPL-3.0-or-later | 是 | 7/7 |
-| `@qianmo/node` | `atlas/packages/node` | AGPL-3.0-or-later | 是 | 223/223 |
+| `@qianmo/node` | `atlas/packages/node` | AGPL-3.0-or-later | 是 | 303/303 |
 | `@qianmo/paths` | `atlas/packages/paths` | AGPL-3.0-or-later | 是 | 3/3 |
-| `@qianmo/protocol` | `atlas/packages/protocol` | AGPL-3.0-or-later | 是 | 17/17 |
-| `@qianmo/providers` | `atlas/packages/providers` | AGPL-3.0-or-later | 是 | 16/16 |
+| `@qianmo/protocol` | `atlas/packages/protocol` | AGPL-3.0-or-later | 是 | 20/20 |
+| `@qianmo/providers` | `atlas/packages/providers` | AGPL-3.0-or-later | 是 | 18/18 |
 | `@qianmo/recall` | `atlas/packages/recall` | AGPL-3.0-or-later | 是 | 65/65 |
 | `@qianmo/registry` | `atlas/packages/registry` | AGPL-3.0-or-later | 是 | 16/16 |
-| `@qianmo/resident` | `atlas/packages/resident` | AGPL-3.0-or-later | 是 | 52/52 |
+| `@qianmo/resident` | `atlas/packages/resident` | AGPL-3.0-or-later | 是 | 54/54 |
 | `@qianmo/router` | `atlas/packages/router` | AGPL-3.0-or-later | 是 | 10/10 |
 | `@qianmo/sandbox` | `atlas/packages/sandbox` | AGPL-3.0-or-later | 是 | 7/7 |
 | `@qianmo/scheduler` | `atlas/packages/scheduler` | AGPL-3.0-or-later | 是 | 14/14 |
-| `@qianmo/transport` | `atlas/packages/transport` | AGPL-3.0-or-later | 是 | 29/29 |
+| `@qianmo/transport` | `atlas/packages/transport` | AGPL-3.0-or-later | 是 | 30/30 |
 | `@qianmo/tunnel` | `atlas/packages/tunnel` | AGPL-3.0-or-later | 是 | 5/5 |
 | `@qianmo/witness` | `atlas/packages/witness` | AGPL-3.0-or-later | 是 | 7/7 |
 

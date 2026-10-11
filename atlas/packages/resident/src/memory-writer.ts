@@ -16,8 +16,8 @@
  *
  * WHY THE PARTITION IS COMPUTED HERE AND NOT BY THE CALLER
  *
- * The directory an entry lands in is `residentRecallScope(agent, contextId)` —
- * the function the sidecar reads with. Writing through the same function is
+ * The directory an entry lands in is `resolveMemoryPartition(target)` —
+ * the same typed resolver the sidecar reads with. Writing through the same function is
  * what makes "the operator wrote it, the next turn of that context sees it" a
  * property of the code rather than of two call sites agreeing. A caller that
  * built its own `{ projectKey, taskId }` could put a memory in a directory no
@@ -32,10 +32,16 @@
  */
 
 import type { FileMemoryStore, MemoryEntry, WorkingScope } from '@qianmo/memory'
-import { residentRecallScope } from './memory-sidecar.js'
+import {
+  resolveMemoryPartition,
+  requireMemoryPartition,
+  type ResidentMemoryKind,
+  MemoryPartitionError,
+} from './memory-partition.js'
 
 /** Which partition: one agent of this node, one requester context. */
 export interface ResidentMemoryTarget {
+  readonly owner?: string
   readonly agent: string
   /**
    * Required and non-empty. `sessionKeyOf` folds an empty context into
@@ -57,10 +63,11 @@ export interface ResidentMemorySource {
 }
 
 /**
- * Not exported: reachable as `Parameters<typeof writeResidentMemory>[1]` for
- * the one other caller that will build one (the agent-side tool, P16.W row 2).
+ * Host-owned memory write. Long writes require the verified owner supplied by the host.
  */
 interface ResidentMemoryWrite extends ResidentMemoryTarget {
+  readonly scope?: 'long'
+  readonly kind?: ResidentMemoryKind
   readonly title: string
   readonly summary: string
   readonly body: string
@@ -93,13 +100,7 @@ export function residentMemoryScope(
       'a memory write needs an explicit context; an empty one is not "default"',
     )
   }
-  const { projectKey, taskId } = residentRecallScope(target)
-  if (projectKey === undefined || taskId === undefined) {
-    throw new ResidentMemoryWriteError(
-      'the resident recall scope named no working partition',
-    )
-  }
-  return { layer: 'working', projectKey, taskId }
+  return resolveMemoryPartition({ ...target, scope: 'conversation' })
 }
 
 const RESIDENT_SOURCE_KINDS: ReadonlySet<string> = new Set(['user', 'agent'])
@@ -117,45 +118,28 @@ export function writeResidentMemory(
     )
   }
   return store.write({
-    scope: residentMemoryScope(write),
+    scope:
+      write.scope === 'long'
+        ? resolveMemoryPartition({
+            scope: 'long',
+            agent: write.agent,
+            owner: write.owner ?? '',
+          })
+        : residentMemoryScope(write),
     title: write.title,
     summary: write.summary,
     body: write.body,
     source: { kind: write.source.kind, id: write.source.id },
-    ...(write.tags === undefined ? {} : { tags: write.tags }),
+    tags: [
+      ...(write.tags ?? []).filter(
+        tag =>
+          write.kind === undefined || !tag.toLowerCase().startsWith('kind:'),
+      ),
+      ...(write.kind === undefined ? [] : [`kind:${write.kind}`]),
+    ],
     ...(write.validAt === undefined ? {} : { validAt: write.validAt }),
     ...(write.invalidAt === undefined ? {} : { invalidAt: write.invalidAt }),
   })
-}
-
-function sameScope(a: MemoryEntry['scope'], b: WorkingScope): boolean {
-  return (
-    a.layer === 'working' &&
-    a.projectKey === b.projectKey &&
-    a.taskId === b.taskId
-  )
-}
-
-/**
- * Confirm `id` lives in the target's partition before anything changes it.
- *
- * "No such entry" and "that entry is in another partition" get the same
- * message on purpose: a writer confined to one partition — the agent tool, in
- * particular — must not be able to learn which ids exist elsewhere by the shape
- * of a refusal (memory-m1 §6.3 gap 1).
- */
-function requireInPartition(
-  store: FileMemoryStore,
-  target: ResidentMemoryTarget,
-  id: string,
-): void {
-  const scope = residentMemoryScope(target)
-  const entry = store.getEntry(id)
-  if (entry === null || !sameScope(entry.scope, scope)) {
-    throw new ResidentMemoryWriteError(
-      `no memory entry ${id} in this agent and context`,
-    )
-  }
 }
 
 /**
@@ -171,7 +155,18 @@ export function revokeResidentMemory(
     readonly by: string
   },
 ): MemoryEntry {
-  requireInPartition(store, request, request.id)
+  try {
+    requireMemoryPartition(
+      store,
+      { ...request, scope: 'conversation' },
+      request.id,
+    )
+  } catch (error) {
+    if (!(error instanceof MemoryPartitionError)) throw error
+    throw new ResidentMemoryWriteError(
+      `no memory entry ${request.id} in this agent and context`,
+    )
+  }
   return store.revoke(request.id, { reason: request.reason, by: request.by })
 }
 
@@ -183,6 +178,17 @@ export function invalidateResidentMemory(
   store: FileMemoryStore,
   request: ResidentMemoryTarget & { readonly id: string; readonly at?: Date },
 ): MemoryEntry {
-  requireInPartition(store, request, request.id)
+  try {
+    requireMemoryPartition(
+      store,
+      { ...request, scope: 'conversation' },
+      request.id,
+    )
+  } catch (error) {
+    if (!(error instanceof MemoryPartitionError)) throw error
+    throw new ResidentMemoryWriteError(
+      `no memory entry ${request.id} in this agent and context`,
+    )
+  }
   return store.invalidate(request.id, request.at)
 }

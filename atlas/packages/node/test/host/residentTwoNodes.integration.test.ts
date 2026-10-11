@@ -82,6 +82,7 @@ test('two isolated qm resident CLI nodes complete real omp turns and cleanly sto
       const workspace = join(root, name, 'workspace')
       const agentDir = join(config, 'omp/agent')
       const socket = join(root, `${name}.sock`)
+      const timings = join(root, `${name}-timings.ndjson`)
       mkdirSync(agentDir, { recursive: true })
       mkdirSync(workspace, { recursive: true })
       writeFileSync(
@@ -106,6 +107,8 @@ test('two isolated qm resident CLI nodes complete real omp turns and cleanly sto
           '--unix',
           socket,
           '--open-policy',
+          '--timings',
+          timings,
         ],
         {
           cwd: workspace,
@@ -129,13 +132,28 @@ test('two isolated qm resident CLI nodes complete real omp turns and cleanly sto
         name,
         config,
         socket,
+        timings,
         child,
         output: () => output,
         messages: [] as QianmoMessage[],
       }
     })
     await Promise.all(
-      nodes.map(node => until(() => existsSync(node.socket), node.output)),
+      nodes.map(node =>
+        until(() => {
+          // A listening transport intentionally precedes the cold RPC child.
+          // Wait for the actual runtime before asking it to complete a turn.
+          if (!existsSync(node.socket) || !existsSync(node.timings))
+            return false
+          return Bun.JSONL.parse(readFileSync(node.timings, 'utf8')).some(
+            event =>
+              event !== null &&
+              typeof event === 'object' &&
+              'stage' in event &&
+              event.stage === 'runtime_ready',
+          )
+        }, node.output),
+      ),
     )
     // Send the first node's result to the second node, using fresh peer links.
     let prompt = 'say pong'

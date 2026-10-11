@@ -33,7 +33,7 @@ export const usageRoute: RouteModule = {
   area: {
     id: 'usage',
     label: '用量',
-    group: 'admin',
+    group: 'manage',
     href: '/usage',
     icon: 'chart-column',
   },

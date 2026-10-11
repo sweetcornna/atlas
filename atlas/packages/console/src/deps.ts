@@ -17,6 +17,17 @@
  * worse than one that renders "注册中心不可达" next to the rest of the page.
  */
 
+import type {
+  ConnectorsPort,
+  DesktopPort,
+  FilesPort,
+  HandoffDevicesPort,
+  MemoryPort,
+  ModelRoutingPort,
+  ModelDirection,
+  SchedulesPort,
+} from './directionPorts.js'
+import type { AvatarsPort } from './avatar.js'
 import type { ConsoleFailure, ConsoleResult } from './contracts.js'
 
 import type { AuditRecord, MessageChain } from '@qianmo/audit'
@@ -485,6 +496,10 @@ export interface ChatTurn {
   readonly code?: string
   /** 缺省为 `message`；`notice` 是任务跑到一半推过来的一条过程。 */
   readonly variant?: ChatTurnVariant
+  /** 宿主区分智能体显式通知与自动工具过程；旧转录不带此字段。 */
+  readonly noticeSource?: 'agent' | 'step'
+  /** 通知所由的任务（通知信封自己的 taskId 不是这个任务号）。 */
+  readonly causeTaskId?: string
   /** 只有 `notice` 有：这条过程的分量。 */
   readonly severity?: ChatNoticeSeverity
   /** 只有 `notice` 有：`notify` 的 `detail`，页面折起来给愿意看的人。 */
@@ -547,6 +562,11 @@ export interface ChatTranscript {
 }
 
 export interface ChatSendInput {
+  /** Host-authenticated requester; never accepted from HTTP JSON. */
+  readonly onBehalfOf?: string
+  readonly direction?: ModelDirection
+  /** 宿主定时任务的期限；缺省沿用对话面的期限。 */
+  readonly taskTtlMs?: number
   /** Host-only conditional send; rechecked after endpoint resolution, never read from HTTP JSON. */
   readonly continuation?: {
     readonly afterTaskId: string
@@ -1033,6 +1053,8 @@ export interface ConsoleAction {
   readonly subject: string
   /** admin 令牌以 break-glass 方式使用时为 `true`（`tenancy-m1.md` §3.4）。 */
   readonly breakGlass?: true
+  /** Original schedule creator, retained for delegated administration. */
+  readonly createdBy?: string
   /**
    * 点分动词，见 {@link CONSOLE_ACTIONS}。前缀可筛：`agent.`、`chat.`。
    */
@@ -1115,6 +1137,41 @@ export const CONSOLE_ACTIONS = [
   'approval.decide',
   'approval.revoke',
   'approval.continue',
+  // 2026-10 新方向（`directionPorts.ts`）。target 一律是 id、节点名或智能体地址。
+  /** 接力设备（P19）：签发配对码、吊销设备，target 是设备号；签发时是签发人。 */
+  'handoff.device.pair',
+  'handoff.device.revoke',
+  /** 文件互通（P20），target 是申请、授权、传输或汇集组的 id。 */
+  'files.decide',
+  'files.grant.revoke',
+  'files.transfer',
+  'files.retry',
+  /** 云端电脑（P21），target 是智能体地址。 */
+  'desktop.set',
+  'desktop.recycle',
+  /** 任务分工（P22），target 是节点名，默认为 `*`。 */
+  'routing.save',
+  'routing.clear',
+  /** 长期记忆（P23），target 是条目 id；新增时是智能体地址。 */
+  'memory.add',
+  'memory.edit',
+  'memory.forget',
+  'memory.invalidate',
+  /** 主动执行（P24），target 是定时任务或通知渠道的 id。 */
+  'schedule.save',
+  'schedule.enable',
+  'schedule.disable',
+  'schedule.remove',
+  'schedule.run',
+  'channel.save',
+  'channel.remove',
+  'channel.test',
+  /** 应用连接（P25），target 是连接 id。 */
+  'connector.save',
+  'connector.remove',
+  'connector.probe',
+  // 形象（`avatar.ts`）：target 是 `agent:<地址>` 或 `user:<主体>`。
+  'avatar.save',
 ] as const
 
 /** 账本里的一条，带上账本给它的序号（递增，从 1 开始）。 */
@@ -1197,7 +1254,7 @@ export interface HandoffManifestView {
   readonly branch: string
   readonly wip: string
   readonly tree: string
-  readonly tool: 'qmcode' | 'claude-code'
+  readonly tool: 'qmcode' | 'claude-code' | 'codex'
   readonly sessionId: string
   readonly sessionRef: string
   readonly sessionCommit: string
@@ -1221,6 +1278,14 @@ export interface HandoffResultView {
 
 /** 台账里的一个任务。 */
 export interface HandoffTaskView {
+  readonly code?: {
+    readonly repo: string
+    readonly wip: { readonly ref: string; readonly commit: string }
+    readonly sessions: { readonly ref: string; readonly commit: string } | null
+    readonly sessionsReason?: string
+    readonly result?: { readonly ref: string; readonly commit: string }
+    readonly cleaned?: boolean
+  }
   readonly taskId: string
   readonly state: HandoffTaskState
   readonly manifest: HandoffManifestView
@@ -1228,6 +1293,9 @@ export interface HandoffTaskView {
   readonly node: string | null
   readonly result: HandoffResultView | null
   readonly reason: string | null
+  /** 经设备令牌登记的任务（P19）：设备号与它所属的主体；旧式登记为 null。 */
+  readonly ownerDevice?: string | null
+  readonly ownerSubject?: string | null
   /** epoch 毫秒。 */
   readonly acceptedAt: number
   readonly updatedAt: number
@@ -1301,17 +1369,50 @@ export interface HandoffAcceptance {
  *
  * 可选：缺席时 `/v0/handoff` 回 501，与其余可选面同一条规矩。
  */
+export interface HandoffRequestActor {
+  readonly deviceId: string
+  readonly owner: string
+}
+
+export interface HandoffGitPort {
+  createProject(project: string, actor: HandoffRequestActor): Promise<Response>
+  handle(
+    request: Request,
+    project: string,
+    service: 'upload-pack' | 'receive-pack',
+    advertise: boolean,
+    actor: HandoffRequestActor,
+  ): Promise<Response>
+}
+
 export interface HandoffPort {
+  readonly codeStore?: 'github' | 'hub'
+  markCleaned?(
+    taskId: string,
+    actor?: HandoffRequestActor,
+  ): Promise<ConsoleResult<HandoffTaskView>>
   /** `body` 是请求体解出来的 JSON，校验在宿主做。 */
-  accept(body: unknown): Promise<ConsoleResult<HandoffAcceptance>>
+  accept(
+    body: unknown,
+    actor?: HandoffRequestActor,
+  ): Promise<ConsoleResult<HandoffAcceptance>>
   /** 全部任务，按登记先后。 */
-  list(): Promise<ConsoleResult<readonly HandoffTaskView[]>>
-  get(taskId: string): Promise<ConsoleResult<HandoffTaskView>>
+  list(
+    actor?: HandoffRequestActor,
+  ): Promise<ConsoleResult<readonly HandoffTaskView[]>>
+  get(
+    taskId: string,
+    actor?: HandoffRequestActor,
+  ): Promise<ConsoleResult<HandoffTaskView>>
   /**
    * 记下一句给云端的话；配了 `--handoff-node` 的中枢在任务 running 后把它转给
    * 节点（P17.5）。任务已结束（done / failed / returned）时 `rejected`。
    */
-  send(taskId: string, text: string): Promise<ConsoleResult<HandoffSendView>>
+  send(
+    taskId: string,
+    text: string,
+    actor?: HandoffRequestActor,
+  ): Promise<ConsoleResult<HandoffSendView>>
   /**
    * 运行中任务的接入定位（P17.6），并记审计 `handoff.attach-requested`。只给
    * running 的任务；其余状态 `rejected`，文案说现在是什么状态、该用什么命令。
@@ -1319,6 +1420,7 @@ export interface HandoffPort {
   attach(
     taskId: string,
     request: HandoffAttachRequest,
+    actor?: HandoffRequestActor,
   ): Promise<ConsoleResult<HandoffAttachView>>
   /**
    * 任务已接回本机（P17.6）：done / failed → returned，记审计 `handoff.returned`。
@@ -1327,6 +1429,7 @@ export interface HandoffPort {
   markReturned(
     taskId: string,
     request: HandoffReturnRequest,
+    actor?: HandoffRequestActor,
   ): Promise<ConsoleResult<HandoffReturnView>>
 }
 
@@ -1351,6 +1454,11 @@ type ProviderLane =
   | 'openai-responses'
   | 'gemini'
   | 'grok'
+  | 'openai-images'
+  | 'openrouter-images'
+  | 'gemini-images'
+  | 'openai-speech'
+  | 'openrouter-video'
 type ProviderPlan = 'paygo' | 'plan' | 'local' | 'custom'
 export type ProviderEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 type ProviderModelTier = 'opus' | 'sonnet' | 'haiku' | 'fable'
@@ -1359,6 +1467,7 @@ type ProviderModelTier = 'opus' | 'sonnet' | 'haiku' | 'fable'
 interface ProviderModelView {
   readonly id: string
   readonly role: 'main' | 'fast' | 'extra'
+  readonly kind?: 'chat' | 'image' | 'speech' | 'video'
   readonly tiers: readonly ProviderModelTier[]
   readonly capabilities:
     | { readonly mode: 'family' }
@@ -2105,9 +2214,27 @@ export interface ConsoleDeps {
   /** 值守作业的只读面（J6）。缺席时作业页写「未接入」。 */
   readonly scheduler?: SchedulerPort
   /** 接力台账（P17.4）。缺席时 `/v0/handoff` 回 501。 */
+  readonly handoffGit?: HandoffGitPort
   readonly handoff?: HandoffPort
   /**
    * 模型服务（P18.6）。只在 `--providers` 打开时接；缺席时页面说明未开启。
    */
   readonly providers?: ProviderPort
+  // 2026-10 新方向（`directionPorts.ts`）。缺席时对应页面写「未接入」，API 回 501。
+  /** 接力设备的配对与吊销（P19）。 */
+  readonly handoffDevices?: HandoffDevicesPort
+  /** 节点间文件互通（P20）。 */
+  readonly files?: FilesPort
+  /** 云端电脑（P21）。 */
+  readonly desktop?: DesktopPort
+  /** 任务分工（P22）；只在模型服务打开时接。 */
+  readonly routing?: ModelRoutingPort
+  /** 长期记忆（P23）。 */
+  readonly memory?: MemoryPort
+  /** 定时任务与通知渠道（P24）。 */
+  readonly schedules?: SchedulesPort
+  /** 应用连接（P25）。 */
+  readonly connectors?: ConnectorsPort
+  /** 形象（`avatar.ts`）。缺席时人人用按地址或主体算出的默认形象，不能改。 */
+  readonly avatars?: AvatarsPort
 }

@@ -56,7 +56,9 @@ export function ompAgentDir(): string {
  * Variables that would move omp's state out of the Qianmo root: a named
  * profile overrides the agent dir, the XDG variables redirect it on darwin and
  * linux, `PI_CODING_AGENT_DIR` splits it from user-config discovery, and omp
- * reads `CLAUDE_CONFIG_DIR` as the Claude config directory.
+ * reads `CLAUDE_CONFIG_DIR` as the Claude config directory. Bun's runtime
+ * transpiler cache would otherwise land in the OS cache under the home
+ * directory when omp loads the resident extension from disk.
  */
 export const OMP_ENV_SCRUB: Readonly<Record<string, true>> = {
   PI_CONFIG_DIR: true,
@@ -69,6 +71,7 @@ export const OMP_ENV_SCRUB: Readonly<Record<string, true>> = {
   XDG_CACHE_HOME: true,
   XDG_CONFIG_HOME: true,
   CLAUDE_CONFIG_DIR: true,
+  BUN_RUNTIME_TRANSPILER_CACHE_PATH: true,
 }
 
 /**
@@ -96,6 +99,7 @@ export function ompChildEnv(
   const ompRoot = join(configRoot, 'omp')
   env.PI_CONFIG_DIR = relative(childHome, ompRoot)
   env.PI_NATIVES_DIR = join(ompRoot, 'natives')
+  env.BUN_RUNTIME_TRANSPILER_CACHE_PATH = join(ompRoot, 'cache', 'bun')
   return env
 }
 
@@ -114,6 +118,19 @@ export function qmcodeHome(): string {
   return fromEnv('QMCODE_HOME', join(homedir(), '.qmcode'))
 }
 
+/** Official Codex session root; reads are allowed, writes require an isolated home. */
+export function codexHome(): string {
+  return fromEnv('CODEX_HOME', join(homedir(), '.codex'))
+}
+
+/** Claude Code hook transcripts, respecting its isolated configuration root. */
+export function claudeProjectsDir(): string {
+  return join(
+    fromEnv('CLAUDE_CONFIG_DIR', join(homedir(), '.claude')),
+    'projects',
+  )
+}
+
 /** User-level config roots that agents and sandboxed commands must never modify. */
 export function protectedConfigRoots(): string[] {
   const home = nodeHomeDir()
@@ -126,6 +143,7 @@ export function protectedConfigRoots(): string[] {
         join(home, '.claude'),
         join(home, '.codex'),
         qmcodeHome(),
+        codexHome(),
       ].map(p => p.normalize('NFC')),
     ),
   ]

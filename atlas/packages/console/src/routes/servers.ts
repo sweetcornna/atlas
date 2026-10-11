@@ -164,7 +164,7 @@ export const serversRoute: RouteModule = {
   area: {
     id: 'servers',
     label: '服务器',
-    group: 'config',
+    group: 'manage',
     href: '/servers',
     icon: 'hard-drive',
   },

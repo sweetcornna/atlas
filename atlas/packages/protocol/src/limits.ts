@@ -5,6 +5,18 @@
 export const LIMITS = {
   /** Maximum size of one serialized envelope, in bytes (256 KiB). */
   maxMessageBytes: 256 * 1024,
+  /** P25 / P24 outbound protocol budgets. */
+  connectorLineBytes: 8192,
+  connectorResultBytes: 192 * 1024,
+  connectorResponseBytes: 2 * 1024 * 1024,
+  connectorTextBytes: 64 * 1024,
+  connectorTimeoutMs: 15_000,
+  connectorRedirects: 5,
+  connectorResults: 50,
+  connectorRecentCalls: 100,
+  /** Control operation and console actor lengths (§15). */
+  maxControlOpLength: 64,
+  maxControlActorLength: 128,
   /** Maximum number of nodes a message may traverse. */
   maxHops: 8,
   /**

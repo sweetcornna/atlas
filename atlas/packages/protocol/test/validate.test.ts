@@ -54,6 +54,32 @@ function codesOf(input: unknown, node?: string): readonly ProtocolErrorCode[] {
 }
 
 describe('validateMessage — accepts', () => {
+  test('task.request accepts all P22/P24 hints while keeping other fields open', () => {
+    for (const direction of [
+      'code',
+      'chat',
+      'plan',
+      'fast',
+      'vision',
+      'image',
+      'speech',
+      'video',
+    ]) {
+      const result = validateMessage(
+        sample({ payload: { prompt: 'work', direction, extension: true } }),
+        { now: NOW },
+      )
+      expect(result.ok).toBe(true)
+    }
+    for (const direction of ['unknown', null, 1, false]) {
+      const result = validateMessage(
+        sample({ payload: { prompt: 'work', direction } }),
+        { now: NOW },
+      )
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.issues[0]!.field).toBe('payload.direction')
+    }
+  })
   test('a freshly created message', () => {
     const result = validateMessage(sample(), { now: NOW })
     expect(result.ok).toBe(true)
@@ -100,6 +126,20 @@ describe('validateMessage — accepts', () => {
         severity: 'info',
         summary: 'disk usage crossed 80%',
         observedAt: NOW,
+      },
+      [MessageType.NodeControl]: { op: 'node.ping', args: {}, actor: 'admin' },
+      [MessageType.NodeControlResult]: { ok: true, value: null },
+      [MessageType.HubSubscribe]: { subscribe: true },
+      [MessageType.HubCall]: {
+        callId: '12345678-1234-4123-8123-123456789abc',
+        op: 'files.request',
+        args: {},
+      },
+      [MessageType.HubCallResult]: {
+        callId: '12345678-1234-4123-8123-123456789abc',
+        ok: false,
+        code: 'unsupported',
+        message: 'unknown operation',
       },
     }
     for (const type of Object.values(MessageType)) {

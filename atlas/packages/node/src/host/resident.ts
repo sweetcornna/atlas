@@ -1,8 +1,23 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { NodeDesktop } from './desktop.js'
+import { isDesktopTool } from '@qianmo/extension/desktopPolicy'
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { NodeFiles } from './files.js'
+import type { AuditInput } from '@qianmo/audit'
+import { AuditSource } from '@qianmo/audit'
+import {
+  ControlRegistry,
+  HubCallClient,
+  type ControlOutcome,
+} from './control.js'
+import { MemoryControl } from './memoryControl.js'
+import { verifiedTaskOwner } from '@qianmo/capability'
+import { connectorTools, type ConnectorToolContext } from './connectorTools.js'
+import { residentToolSurface, type HostToolDefinition } from './notifyTool.js'
+import { buildVersion } from '../provenance.js'
 import {
   OmpResidentTurnPort,
   DEFAULT_RESIDENT_INACTIVITY_MS,
@@ -45,7 +60,12 @@ import {
   type InboundVerification,
 } from '@qianmo/adapter/inbound'
 import {
+  LIMITS,
+  messageBytes,
   MessageType,
+  CONTROL_MESSAGE_TYPES,
+  CONTROL_OPERATION_ID_CAPABILITY,
+  LEGACY_MESSAGE_TYPES,
   ProtocolErrorCode,
   createAck,
   createMessage,
@@ -54,6 +74,8 @@ import {
   errorReply,
   isNotifyPayload,
   isTaskResultPayload,
+  isNodeControlPayload,
+  isHubSubscribePayload,
   parseAddress,
   peerIsPostLegacy,
   taskExpiresAt,
@@ -113,7 +135,10 @@ import {
 } from './residentPrompt.js'
 import { ResidentOmpPool, type ResidentOmpSpawn } from './residentOmp.js'
 import type { ChildProcess } from 'node:child_process'
-import { residentLocalCommand } from './residentLocalCommand.js'
+import {
+  residentLocalCommand,
+  parseResidentOmpLocalCommand,
+} from './residentLocalCommand.js'
 import type { QianmoNotifyVerdict } from './notifyWire.js'
 
 interface QianmoResidentAgentConfig {
@@ -244,6 +269,11 @@ const DEFAULT_PROVIDER_POLL_INTERVAL_MS = 5_000
 const DEFAULT_PROVIDER_MAX_WAIT_MS = 30 * 60_000
 
 interface QianmoResidentOptions {
+  /** Handshake identities allowed to control this node, independently of task issuers. */
+  readonly controllers?: ReadonlySet<string>
+  readonly memoryControllers?: ReadonlyMap<string, string>
+  readonly controlAudit?: (event: AuditInput) => void
+  readonly extraHostTools?: readonly HostToolDefinition[]
   readonly node: string
   readonly team: string
   readonly agents: readonly QianmoResidentAgentConfig[]
@@ -557,6 +587,7 @@ const TASK_REPLY_RECEIPT_TIMEOUT_MS = 5_000
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
 interface ActiveResidentTask {
+  owner?: string
   trust?: 'untrusted' | 'verified-capability'
   readonly envelope: QianmoMessage
   readonly channel: TransportChannel
@@ -668,6 +699,10 @@ const RESIDENT_AGENT_RESTARTING =
 const RUNTIME_WAIT_MS = 3_000
 
 export class QianmoResident {
+  readonly desktop: NodeDesktop
+  readonly control: ControlRegistry
+  readonly #connectorHostTools: readonly HostToolDefinition[]
+  readonly hubCall: HubCallClient
   readonly #options: QianmoResidentOptions
   /** `options.localCommandIssuers`, as the set it is looked up in. */
   readonly #localCommandIssuers: ReadonlySet<string>
@@ -760,7 +795,93 @@ export class QianmoResident {
   #switchStatus: ResidentProviderSwitchStatus | undefined
 
   constructor(options: QianmoResidentOptions) {
+    const files =
+      options.controllers?.size &&
+      (process.platform === 'darwin' || process.platform === 'linux')
+        ? new NodeFiles({
+            node: options.node,
+            agents: () => options.agents,
+            directory: qianmoConfigPath('qianmo', 'files', options.node),
+            stopped: () => this.#estop.engaged(),
+            hub: {
+              call: (op, args, callOptions) =>
+                this.hubCall.call(op, args, callOptions),
+            },
+            audit: (kind, detail) =>
+              options.controlAudit?.({
+                at: Date.now(),
+                source: AuditSource.Control,
+                node: options.node,
+                kind,
+                outcome:
+                  kind === 'files.rejected' || kind === 'files.denied'
+                    ? 'refused'
+                    : 'ok',
+                detail,
+              }),
+          })
+        : undefined
+    if (files)
+      options = {
+        ...options,
+        extraHostTools: [...(options.extraHostTools ?? []), files.tool()],
+      }
     this.#options = options
+    this.#connectorHostTools = connectorTools({
+      call: (op, args, callOptions) => this.hubCall.call(op, args, callOptions),
+      approve: (ctx, tool, args) => this.#approveConnector(ctx, tool, args),
+    })
+    residentToolSurface(options.authorization !== undefined, [
+      ...this.#connectorHostTools,
+      ...(options.extraHostTools ?? []),
+    ])
+    this.control = new ControlRegistry({
+      onError: options.onError,
+      estopEngaged: () => this.#estop.engaged(),
+      ledgerPath: qianmoConfigPath(
+        'resident',
+        options.node,
+        'control-operations.sqlite',
+      ),
+    })
+    files?.register(this.control)
+    this.desktop = new NodeDesktop({
+      node: options.node,
+      agents: options.agents.map(a => a.agent),
+      estop: () => this.#estop.engaged(),
+      audit: options.runtimeAudit ?? options.authorization?.audit,
+      invalidated: agent => this.#authorization?.cancelDesktop(agent),
+      changed: async agent => {
+        await this.#runtimeChild?.invalidateAgent(agent)
+      },
+    })
+    // Under ESTOP the cloud computer can still be read, switched off and
+    // recycled; enabling it and acting through it wait (P21 §4.2).
+    this.control.register('desktop', this.desktop.control, {
+      estopAllowed: [
+        'desktop.status',
+        'desktop.actions',
+        'desktop.disable',
+        'desktop.recycle',
+      ],
+    })
+    this.control.register(
+      'node',
+      async op =>
+        op === 'node.ping'
+          ? {
+              ok: true,
+              value: {
+                node: options.node,
+                agents: options.agents.map(agent => agent.agent),
+                version: buildVersion(),
+                platform: process.platform,
+                now: Date.now(),
+              },
+            }
+          : { ok: false, code: 'unsupported', message: '不支持此节点操作' },
+      { estopAllowed: ['node.ping'] },
+    )
     this.#localCommandIssuers = new Set(options.localCommandIssuers ?? [])
     this.#timings = new ResidentTimingRecorder(event => {
       options.onTiming?.(event)
@@ -790,6 +911,14 @@ export class QianmoResident {
         : { audit: options.notifyAudit }),
     })
     this.#memoryRoot = options.memoryRoot ?? defaultMemoryRoot()
+    new MemoryControl({
+      node: options.node,
+      agents: options.agents.map(agent => agent.agent),
+      root: this.#memoryRoot,
+      ledgerPath: qianmoConfigPath('resident', 'memory-operations.sqlite'),
+      estop: this.#estop,
+      onError: options.onError,
+    }).register(this.control)
     this.#authorization =
       options.authorization === undefined
         ? undefined
@@ -860,7 +989,71 @@ export class QianmoResident {
         channelFor: async sessionId => {
           if (this.#runtimeChild === null)
             throw new Error('resident omp pool is not ready')
-          return await this.#runtimeChild.channelFor(sessionId)
+          const child = await this.#runtimeChild.channelFor(sessionId)
+          const active = this.#turn.activeInput(sessionId)
+          if (active) {
+            const pending = active.agent
+              ? this.#ledger(active.agent)
+                  .query()
+                  .pending.find(p => p.messageId === active.messageId)
+              : undefined
+            const envelope =
+              pending?.snapshot.length === 1
+                ? networkEnvelope(pending.snapshot[0])
+                : undefined
+            const payload = envelope?.payload
+            const raw =
+              payload && typeof payload === 'object' && !Array.isArray(payload)
+                ? (payload as Record<string, unknown>)
+                : undefined
+            const text =
+              typeof raw?.prompt === 'string'
+                ? raw.prompt
+                : typeof raw?.text === 'string'
+                  ? raw.text
+                  : typeof raw?.goal === 'string'
+                    ? raw.goal
+                    : (pending?.snapshot.map(m => m.text).join('\n') ??
+                      active.prompt)
+            // Recovered admissions retain the authorized frozen prompt even
+            // when their original transport task is no longer in memory.
+            const localCommand =
+              this.#taskFor(active)?.localCommand ??
+              (parseResidentOmpLocalCommand(active.prompt)
+                ? active.prompt
+                : undefined)
+            const route = await child.prepareRoute({
+              text,
+              hint: raw?.direction,
+              localCommand,
+            })
+            if (route) {
+              const actual = route.actual
+              this.#options.runtimeAudit?.({
+                kind: 'model.route',
+                ...(typeof envelope?.taskId === 'string'
+                  ? { taskId: envelope.taskId }
+                  : {}),
+                ...(typeof envelope?.traceId === 'string'
+                  ? { traceId: envelope.traceId }
+                  : {}),
+                detail: {
+                  agent: active.agent ?? '',
+                  direction: route.direction,
+                  source: route.source,
+                  rule: route.rule,
+                  model: actual.model,
+                  thinkingLevel: actual.thinkingLevel,
+                  ...(route.mediaModel
+                    ? {
+                        mediaModel: `${route.mediaModel.provider}/${route.mediaModel.modelId}`,
+                      }
+                    : {}),
+                },
+              })
+            }
+          }
+          return child
         },
         isAccepted: async (sessionId, messageId) => {
           if (this.#runtimeChild === null)
@@ -926,6 +1119,11 @@ export class QianmoResident {
       ...(options.auditSink === undefined
         ? {}
         : { auditSink: options.auditSink }),
+    })
+    this.hubCall = new HubCallClient({
+      from: `qianmo://${options.node}/console`,
+      router: this.#router,
+      onError: options.onError,
     })
     const backup = options.backup
     if (backup !== undefined) {
@@ -1015,6 +1213,7 @@ export class QianmoResident {
         await this.#awaitStop()
       }
     } finally {
+      await this.desktop.close()
       this.#stopping = true
       this.#stopProviderPoll()
       // Before the listener goes, not after. The last generation's own
@@ -1151,6 +1350,35 @@ export class QianmoResident {
     return this.#gate
   }
 
+  #auditControl(
+    message: QianmoMessage,
+    context: InboundContext,
+    outcome: ControlOutcome,
+  ): void {
+    if (
+      message.type !== MessageType.NodeControl ||
+      !isNodeControlPayload(message.payload)
+    )
+      return
+    try {
+      this.#options.controlAudit?.({
+        at: Date.now(),
+        source: AuditSource.Control,
+        node: this.#options.node,
+        peer: context.channel.authenticatedPeerNode ?? '',
+        kind: `control.${message.payload.op}`,
+        outcome: outcome.ok ? 'ok' : 'refused',
+        taskId: message.taskId,
+        msgId: message.msgId,
+        traceId: message.traceId,
+        ...(outcome.ok ? {} : { code: outcome.code }),
+        detail: { actor: message.payload.actor },
+      })
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
+  }
+
   async #receive(
     message: QianmoMessage,
     context: InboundContext,
@@ -1161,6 +1389,11 @@ export class QianmoResident {
     // inbox quota).
     const routed = this.#router.inbound(message)
     if (!routed.ok) {
+      this.#auditControl(message, context, {
+        ok: false,
+        code: routed.code,
+        message: routed.reason,
+      })
       context.channel.send(errorReply(message, routed.code, routed.reason))
       throw new ResidentDeliveryError(routed.code, routed.reason)
     }
@@ -1171,6 +1404,7 @@ export class QianmoResident {
     ) {
       const code = ProtocolErrorCode.E_UNKNOWN_AGENT
       const reason = 'recipient is unavailable'
+      this.#auditControl(message, context, { ok: false, code, message: reason })
       context.channel.send(errorReply(message, code, reason))
       throw new ResidentDeliveryError(code, reason)
     }
@@ -1216,6 +1450,164 @@ export class QianmoResident {
           request,
           this.#authorization!.signed(request),
         )
+      return
+    }
+
+    if (
+      message.type === MessageType.NodeControlResult ||
+      message.type === MessageType.HubCall
+    ) {
+      context.channel.send(
+        errorReply(
+          message,
+          ProtocolErrorCode.E_BAD_TYPE,
+          'control message direction refused',
+        ),
+      )
+      return
+    }
+
+    if (
+      message.type === MessageType.NodeControl ||
+      message.type === MessageType.HubSubscribe ||
+      message.type === MessageType.HubCallResult
+    ) {
+      const peer = context.channel.authenticatedPeerNode
+      if (
+        !peer ||
+        !this.#options.controllers?.has(peer) ||
+        parseAddress(message.from)?.node !== peer ||
+        parseAddress(message.to)?.node !== this.#options.node
+      ) {
+        const outcome: ControlOutcome = {
+          ok: false,
+          code: ProtocolErrorCode.E_CAP_INSUFFICIENT,
+          message: 'controller is not authorized',
+        }
+        this.#auditControl(message, context, outcome)
+        context.channel.send(
+          errorReply(
+            message,
+            ProtocolErrorCode.E_CAP_INSUFFICIENT,
+            outcome.message,
+          ),
+        )
+        if (message.type === MessageType.HubSubscribe)
+          throw new ResidentDeliveryError(
+            ProtocolErrorCode.E_CAP_INSUFFICIENT,
+            outcome.message,
+          )
+        return
+      }
+      if (message.type === MessageType.HubCallResult) {
+        this.hubCall.receive(
+          message,
+          context.channel,
+          context.connectionGeneration,
+        )
+        return
+      }
+      if (message.type === MessageType.HubSubscribe) {
+        if (
+          !isHubSubscribePayload(message.payload) ||
+          !CONTROL_MESSAGE_TYPES.every(type => context.channel.supports(type))
+        )
+          throw new ResidentDeliveryError(
+            ProtocolErrorCode.E_BAD_TYPE,
+            'control subscription requires the complete control surface',
+          )
+        this.hubCall.subscribe(
+          peer,
+          message.from,
+          context.channel,
+          context.connectionGeneration,
+        )
+        return
+      }
+      if (!isNodeControlPayload(message.payload))
+        throw new ResidentDeliveryError(
+          ProtocolErrorCode.E_BAD_ENVELOPE,
+          'invalid control payload',
+        )
+      if (!context.channel.supports(MessageType.NodeControlResult)) {
+        const outcome: ControlOutcome = {
+          ok: false,
+          code: ProtocolErrorCode.E_BAD_TYPE,
+          message: 'controller cannot receive control results',
+        }
+        this.#auditControl(message, context, outcome)
+        context.channel.send(
+          errorReply(message, ProtocolErrorCode.E_BAD_TYPE, outcome.message),
+        )
+        return
+      }
+      const agent = parseAddress(message.to)?.agent
+      // Keep the logical reply channel alive while the handler runs. A dropped
+      // socket must not turn an executed action into a failed receipt/re-execution.
+      const release = context.channel.hold()
+      const response = createMessage({
+        from: message.to,
+        to: message.from,
+        type: MessageType.NodeControlResult,
+        payload: { ok: true, value: null },
+        taskId: message.taskId,
+        traceId: message.traceId,
+      })
+      try {
+        const result = await this.control.handle(
+          message.payload.op,
+          message.payload.args,
+          {
+            peer,
+            actor: message.payload.actor,
+            resultFits: outcome =>
+              Buffer.byteLength(
+                JSON.stringify({
+                  ...response,
+                  hops: [this.#options.node],
+                  payload: outcome,
+                }),
+                'utf8',
+              ) <= LIMITS.maxMessageBytes,
+            taskId: message.taskId,
+            ...(message.payload.operationId === undefined
+              ? {}
+              : { operationId: message.payload.operationId }),
+            ...(this.#options.agents.some(row => row.agent === agent)
+              ? { agent }
+              : {}),
+          },
+        )
+        this.#auditControl(message, context, result)
+        const reply = this.#router.outbound({ ...response, payload: result })
+        if (
+          reply.ok &&
+          context.connectionGeneration ===
+            context.channel.connectionGeneration &&
+          context.channel.isReady()
+        ) {
+          try {
+            const outgoing =
+              messageBytes(reply.message) <= LIMITS.maxMessageBytes
+                ? reply.message
+                : {
+                    ...reply.message,
+                    payload: {
+                      ok: false,
+                      code: 'invalid',
+                      message: '控制回执超过 UTF-8 字节上限',
+                    },
+                  }
+            void context.channel
+              .sendOnce?.(outgoing)
+              .receipt.catch(error => this.#options.onError?.(error))
+          } catch (error) {
+            this.#options.onError?.(error)
+          }
+        }
+      } finally {
+        release()
+      }
       return
     }
 
@@ -1289,6 +1681,10 @@ export class QianmoResident {
     // later assembled from (`residentLocalCommand.ts`).
     if (task !== undefined) {
       task.trust = routed.trust
+      task.owner = verifiedTaskOwner(
+        message,
+        this.#options.memoryControllers ?? new Map(),
+      )
       const command = residentLocalCommand(
         message,
         routed,
@@ -1417,6 +1813,51 @@ export class QianmoResident {
     if (routed.ok) channel.send(routed.message)
   }
 
+  async #approveConnector(
+    ctx: ConnectorToolContext,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<{ contextId: string; requestId: string } | null> {
+    const input = this.#turn.activeInput(ctx.sessionId)
+    const task = input === undefined ? undefined : this.#taskFor(input)
+    if (
+      !task ||
+      task.settled ||
+      !this.#authorization ||
+      input?.agent !== ctx.agent
+    )
+      return null
+    const contextId = task.envelope.contextId ?? 'default'
+    let requestId: string | undefined
+    const approved = await this.#authorization.request(
+      { toolName, input: args, agent: ctx.agent, contextId },
+      {
+        from: task.envelope.from,
+        taskId: task.envelope.taskId,
+        traceId: task.envelope.traceId,
+        trust: task.trust ?? 'untrusted',
+      },
+      Date.now() +
+        taskExpiresAt(task.envelope) -
+        this.#deadlineClock.nowFor(task.envelope.createdAt),
+      this.#turn.inactivityRemaining(ctx.sessionId),
+      (request, wire) => {
+        requestId = request.requestId
+        this.#sendAuthz(task.channel, request, wire)
+      },
+    )
+    if (
+      !approved ||
+      !requestId ||
+      task.settled ||
+      this.#turn.activeInput(ctx.sessionId) !== input ||
+      (this.#options.tenantGate &&
+        !this.#options.tenantGate(task.channel.authenticatedPeerNode ?? null))
+    )
+      return null
+    return { contextId, requestId }
+  }
+
   async #writeMemory(
     sessionId: string,
     raw: unknown,
@@ -1435,7 +1876,14 @@ export class QianmoResident {
     )
       return denied
     const proposal = parseMemoryWrite(raw)
+    if (proposal.scope === 'long' && task.owner === undefined) return denied
     const contextId = task.envelope.contextId ?? 'default'
+    const approvalInput = {
+      ...proposal,
+      ...(proposal.scope === 'long'
+        ? { owner: task.owner, destination: `写进 ${task.owner} 的长期记忆` }
+        : {}),
+    }
     let requestId: string | undefined
     const deadline =
       Date.now() +
@@ -1444,7 +1892,7 @@ export class QianmoResident {
     const approved = await this.#authorization.request(
       {
         toolName: 'qianmo_memory_write',
-        input: proposal,
+        input: approvalInput,
         agent: input.agent,
         contextId,
       },
@@ -1473,10 +1921,12 @@ export class QianmoResident {
       !this.#options.tenantGate(task.channel.authenticatedPeerNode ?? null)
     )
       return denied
+    if (this.#estop.engaged()) return denied
     const entry = writeResidentMemory(
       new FileMemoryStore({ root: this.#memoryRoot }),
       {
         ...proposal,
+        ...(task.owner === undefined ? {} : { owner: task.owner }),
         agent: input.agent,
         contextId,
         source: { kind: 'agent', id: requestId },
@@ -1484,7 +1934,7 @@ export class QianmoResident {
     )
     return {
       ok: true,
-      text: `Memory ${entry.id} was written for this context with approval ${requestId}. It can be recalled by subsequent turns.`,
+      text: `Memory ${entry.id} was written ${proposal.scope === 'long' ? `for account ${task.owner}` : 'for this context'} with approval ${requestId}. It can be recalled by subsequent turns.`,
     }
   }
 
@@ -1494,7 +1944,6 @@ export class QianmoResident {
     if (
       task === undefined ||
       task.settled ||
-      this.#authorization === undefined ||
       input?.agent === undefined ||
       !raw ||
       typeof raw !== 'object' ||
@@ -1510,6 +1959,43 @@ export class QianmoResident {
       Array.isArray(call.input)
     )
       return false
+    if (isDesktopTool(call.toolName)) {
+      const live = () =>
+        this.#turn.activeInput(sessionId) === input &&
+        !task.settled &&
+        !this.#stopping &&
+        this.#deadlineClock.nowFor(task.envelope.createdAt) <
+          taskExpiresAt(task.envelope)
+      const deadline =
+        Date.now() +
+        taskExpiresAt(task.envelope) -
+        this.#deadlineClock.nowFor(task.envelope.createdAt)
+      return this.desktop.gate(
+        input.agent,
+        sessionId,
+        task.envelope.taskId,
+        task.envelope.contextId ?? 'default',
+        raw,
+        live,
+        async (bound, beforeConsume) =>
+          this.#authorization === undefined
+            ? false
+            : this.#authorization.request(
+                bound,
+                {
+                  from: task.envelope.from,
+                  taskId: task.envelope.taskId,
+                  traceId: task.envelope.traceId,
+                  trust: task.trust ?? 'untrusted',
+                },
+                deadline,
+                this.#turn.inactivityRemaining(sessionId),
+                (request, wire) => this.#sendAuthz(task.channel, request, wire),
+                beforeConsume,
+              ),
+      )
+    }
+    if (this.#authorization === undefined) return false
     const agent = this.#options.agents.find(
       agent => agent.agent === input.agent,
     )
@@ -2210,6 +2696,8 @@ export class QianmoResident {
   }
 
   stop(): void {
+    this.hubCall.close()
+    void this.desktop.close().catch(error => this.#options.onError?.(error))
     this.#authorization?.close()
     this.#memoryIndex?.close()
     this.#approvalChannels.clear()
@@ -2303,6 +2791,7 @@ export class QianmoResident {
     this.#transport = null
     try {
       await transport?.stop()
+      await this.control.close()
     } catch (error) {
       this.#options.onError?.(error)
     }
@@ -2398,6 +2887,15 @@ export class QianmoResident {
    */
   #startTransport(): TransportServerHandle {
     const transport = startTransportServer({
+      supportedTypes: [
+        ...LEGACY_MESSAGE_TYPES,
+        MessageType.AuthzRequest,
+        MessageType.AuthzDecision,
+        MessageType.AuthzRevoke,
+        ...CONTROL_MESSAGE_TYPES,
+        CONTROL_OPERATION_ID_CAPABILITY,
+      ],
+      onPeerDisconnect: () => this.hubCall.disconnected(),
       psk: this.#options.psk,
       deadlineNow: this.#deadlineClock.nowFor,
       ...(this.#options.transportEvents === undefined
@@ -2465,6 +2963,11 @@ export class QianmoResident {
 
   async #spawnGeneration(): Promise<ResidentChildConnection> {
     const child = new ResidentOmpPool({
+      desktop: this.desktop,
+      extraHostTools: [
+        ...this.#connectorHostTools,
+        ...(this.#options.extraHostTools ?? []),
+      ],
       onLaunch: (sessionId, policy, configHash) =>
         (this.#options.runtimeAudit ?? this.#options.authorization?.audit)?.({
           kind: 'authz.posture',
@@ -2500,12 +3003,8 @@ export class QianmoResident {
           }),
       memoryAnswer: (sessionId, args) =>
         this.#turn.memoryAnswer(sessionId, args),
-      ...(this.#authorization === undefined
-        ? {}
-        : {
-            requestPermission: (sessionId: string, call: unknown) =>
-              this.#requestPermission(sessionId, call),
-          }),
+      requestPermission: (sessionId: string, call: unknown) =>
+        this.#requestPermission(sessionId, call),
     })
     const closed = child.closed
     void closed.catch(() => {})
@@ -2608,6 +3107,12 @@ export class QianmoResident {
         selectSnapshot: selectResidentSnapshot,
         correlationId: networkMessageId,
         contextId: networkContextId,
+        owner: messages => {
+          const id = networkMessageId(messages)
+          return id === undefined
+            ? undefined
+            : this.#tasksByMessage.get(id)?.owner
+        },
         deadlineOf: message => this.#taskDeadlineOf(message),
         sessions,
         timings: this.#timings,

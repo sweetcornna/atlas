@@ -176,13 +176,16 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--wake-url <node>=<ws://…>` | 无 | 唤醒目标白名单，**可重复**。页面选择节点，服务端只会拨该节点启动时给定的 URL；每个节点各读自己的 PSK（§4.4）。旧的单个 `<ws://…>` 仅能单独使用，兼容地读全局 PSK |
 | `--wake-sign` | 关 | 唤醒是否带 capability token（§4.6）。**默认关，且打开的顺序不能反**：一枚对面解析不出签发方公钥的令牌在两种策略下**同样**被拒，所以每个目标节点先要有 `--trust <控制台节点>=<公钥>` |
 | `--print-wake-identity` | — | 打印控制台的唤醒签名身份 `<node>=<publicKey>` 并退出（首次运行会创建密钥）。输出就是节点侧 `--trust` 后面那一整段。**不起服务器、不读 token、不拨任何端点** |
+| `--control <节点>=<ws(s)://地址>` | 无 | 签名控制链路，**可重复**；每节点须显式 `--trust` 公钥与按节点派生的 PSK。复用 `--print-wake-identity` 命令钥；节点用独立 `--controller <中枢节点>=<公钥>` 授权，自动开启必须签名的握手。无需 accounts、approvals 或 chat-sign；连接后订阅上行调用，10 秒检查重连。载荷、宿主接口与错误码见 [protocol.md §15](protocol.md#15-控制链路与上行调用s0) |
 | `--chat-url <node>=<ws://…>` | 无 | 对话拨号白名单，**可重复**，一次一个。**给了才启用对话面**，且那个节点还要有 PSK（§6.7）。命名形式把授权绑到「**这个**节点在**这个**端点上」，PSK 与唤醒面同一个变量按节点取；旧的裸 `<ws://…>` 仍然收，那种条目不绑节点、共用全局 PSK，两种形式不能混着给。同一条给两遍会被去重——那是复制粘贴，不是要两条链路；一个节点两个端点、或一个端点两个节点，都当场报错 |
 | `--chat-from <地址>` | `qianmo://console/operator` | 控制台自己在网络上的地址。它**不是**一个注册进注册中心的节点（§6.2）；用处是让对面知道这条 `task.request` 是谁发的——`InboundAdapter` 把它渲染进 provenance，并写成收件箱里那条消息的 `from` |
 | `--chat-sign` | 关 | 对话的每一条 `task.request` 是否带 capability token（§6.7.1）。与 `--wake-sign` 分开，因为两者授权的是两件事；**打开的顺序同样不能反**，前提与 §4.6 那三步逐字相同 |
 | `--chat-store <绝对路径>` | `occConfigPath('qianmo','console','chat.ndjson')` | 会话与转录的落盘位置（§6.5）。**必须是绝对路径**，理由同 `--audit` |
 | `--node-server <node>=<server>` | 无 | 这个节点跑在哪台机器上，**可重复**，一个节点一条，同一个节点不许给两次。**给了才有归属面**（§11）；也是备注的白名单。server 的形状：非空、≤64 字符、只收 `A-Za-z0-9 . _ : -`（主机名、IPv4、IPv6 的冒号、短名都在内） |
 | `--server-notes <绝对路径>` | `occConfigPath('qianmo','console','server-notes.ndjson')` | 服务器备注的落盘位置（§11）。**必须是绝对路径**，理由同 `--audit` |
-| `--handoff-root <绝对路径>` | 无 | 接力裸仓所在的目录（P17.4），`<目录>/<项目>.git` 由笔记本侧 `qm handoff init` 建。**给了才有 `/v0/handoff`**。台账在 `occConfigPath('qianmo','handoff','ledger.ndjson')`，带独占锁：同一配置根上第二个控制台在这一步就起不来；接力的审计是单独一条链 `…/handoff/audit.ndjson` |
+| `--handoff-repo <owner/name>=<绝对令牌文件>` | 无 | GitHub 接力备用凭据；连接簿优先，连接模式启用租户时不使用无属主的备用文件。可重复，令牌文件 0600、当前属主、非软链，地址固定 github.com。没有 `--handoff-root` 时只保留台账；节点不需要 `--handoff-node-git` |
+| `--handoff-retention-days <天数>` | 7 | GitHub 模式失败/过期分支的保留期；中枢每小时清理，逐项记审计，不取对象 |
+| `--handoff-root <绝对路径>` | 无 | 接力裸仓所在的目录（P17.4），`<目录>/<项目>.git` 由笔记本侧 `qm handoff init` 建。**给此参数、`--handoff-repo` 或 `--connectors` 即有 `/v0/handoff`**。台账在 `qianmoConfigPath('qianmo','handoff','ledger.ndjson')`，带独占锁：同一配置根上第二个控制台在这一步就起不来；接力的审计是单独一条链 `…/handoff/audit.ndjson` |
 | `--handoff-node <node>=<ws(s)://…>` | 无 | 节点桥（`qm handoff node`，P17.5）的入站端点，**可重复**，按给出的顺序挑空闲节点，一个节点同时只跑一个任务。要 `--handoff-root`，且同一节点要有一条 `--handoff-node-git`；PSK 与 `--chat-url` 同一个按节点派生的变量。节点桥地址固定为 `qianmo://<node>/handoff`。派发的 `task.request` **总是**用控制台的签名身份签（与 `--print-wake-identity` 同一把），节点桥要 `--trust` 它。用法见 `handoff-usage.md` §6 |
 | `--handoff-node-git <node>=<ssh 目标>:<根> \| <绝对路径>` | 无 | 那个节点的裸仓根（节点桥 `<root>/repos`），经节点上的 SSH 闸门推影子提交与会话提交、取回 `qianmo/<任务>` 与云端会话；给绝对路径就是本机上的节点 |
 | `--handoff-node-key <绝对路径>` | 无 | 中枢在节点闸门上的专用钥匙（`IdentitiesOnly`）。有 SSH 形式的 `--handoff-node-git` 时必给，没有时给了报错 |
@@ -571,7 +574,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 
 `v0` 是 API，`fragments` 是页面局部刷新用的 HTML 片段，两者数据同源。整页按区域分开，
 每个区域一个模块（`packages/console/src/routes/`，约定见 §5.2）；下表的页面行就是那张
-路由表的十二个区域。
+路由表的十六个区域。
 
 下表每一个页面行（`GET`，`Accept` 含 `text/html`）在未开 `--accounts` 时都多一条行为：
 地址带 `?token=` 且令牌有效时，先答 **303**，`Set-Cookie` 下发会话，`Location` 是去掉
@@ -580,14 +583,41 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 
 | 方法 | 路径 | 角色 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/` | view | 总览：会变的卡（智能体总数与在线、滞后、过期；消息链记录数与完整性；近 1 小时拒绝与丢弃；第四张是证书，没接证书源而接了对话时是近 1 小时会话，两样都没有就只有三张）与每个节点一行（A2）。原先的两项协议常量卡移到设置页 |
+| GET | `/` | view | 首页：能在这台控制台对话的人（对话页的守卫放行、且接了对话通道）是对话页，其余人是总览；与侧栏同一条判法，首页从不是侧栏藏起来的那一页 |
+| GET | `/overview` | view | 总览：会变的卡（智能体总数与在线、滞后、过期；消息链记录数与完整性；近 1 小时拒绝与丢弃；第四张是证书，没接证书源而接了对话时是近 1 小时会话，两样都没有就只有三张）与每个节点一行（A2）。原先的两项协议常量卡移到设置页 |
 | GET | `/nodes?q=&state=&server=` | view | 节点名册。`q` 按地址或端点搜（不分大小写），`state` 是 `live` / `stale` / `expired`（与行上的判法同一个函数），`server` 按 `--node-server` 归属；原生 GET 表单，轮询的 `/fragments/roster` 带同样的查询串，计数「筛选后 n · 共 m」在片段里随刷新重算（D6）。接了登记簿时名册下另列「名册上没有的节点」：登记簿或托管清单里有、名册上没有的节点，链到它的生命周期页签（§5.5） |
 | GET | `/nodes/<节点>`、`/nodes/<节点>/{agents,lifecycle,models}` | view | 节点详情四个页签：概览、智能体、生命周期、模型（§5.5）。名册、登记簿、托管清单、`--node-server`、唤醒目标、审计源都没提到这个节点就是 404 页；不认识的页签名同样 404 |
 | GET | `/audit?…`、`/audit/trace/<traceId>` | view | 消息链：最新 50 条、新的在上，表尾「加载更早」；查询参数同 `/v0/audit`，另有 `node=`（多链时收窄到一条，翻页要它）（§5.6）。单条消息链一页，轨迹里没有就是 404 页 |
 | GET | `/servers` | view | 服务器归属与备注（§11） |
 | GET | `/settings` | view | 设置与关于：实例标签、控制台身份、命令名；启动横幅里的构建（`sourceCommit`）、注册中心、审计链来源、唤醒与对话及其签名状态；各端口此刻是否可达；数据路径只给能写的人；以及协议与运行时上限（A4） |
 | GET | `/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
-| GET | `/jobs` | view | 值守作业：上次与下次触发、急停、调度器心跳（§10.4） |
+| GET | `/jobs` | view | 主动执行：定时任务、最近运行、通知渠道（P24，`docs/dev/directions-2026-10.md` §7），其下是原来的值守作业：上次与下次触发、急停、调度器心跳（§10.4） |
+| GET | `/v0/connectors` | view | 连接、预设、最近调用与可授权智能体；只显示主机和打码账号，不显示凭据或 ICS URL。租户范围内过滤；未接端口时 501 |
+| POST | `/v0/connectors` | **个人 ops** | 新建或带 `id` 修改连接；拒绝共用令牌与 break-glass；先动作账本 admission |
+| DELETE | `/v0/connectors/<连接 id>` | **个人 ops** | 删除连接及其秘密槽；成功 204 |
+| POST | `/v0/connectors/<连接 id>/probe` | **个人 ops** | 用已保存凭据登录后退出；记录 `lastProbe`，不发送邮件或创建事件 |
+| GET | `/v0/schedules` | view | 定时任务快照：任务、最近运行、通知渠道（只给名字、类型与主机，不给地址）、模板、可选目标、急停。没接定时任务端口时 501 |
+| GET | `/v0/schedules/<任务 id>` | view | 仅自己的任务；ops 和旧令牌可读全部，越权 404 |
+| GET | `/v0/schedules/<任务 id>/runs`、`/v0/schedules/<任务 id>/runs/<运行 id>` | view | 该任务最近的运行记录或单次记录（含回复摘要），同一归属过滤 |
+| POST | `/v0/schedules/<任务 id>/runs/<运行 id>/resolve` | **成员** | 创建者或 ops 确认未知结果，`{ outcome: 'ok'或'failed' }`；写入动作账本后解除占用 |
+| POST | `/v0/schedules` | **成员** | 新建或保存一个定时任务（带 `id` 是保存）；目标须在对话白名单内 |
+| DELETE | `/v0/schedules/<任务 id>` | **成员** | 删除 |
+| POST | `/v0/schedules/<任务 id>/<enable\|disable\|run>` | **成员** | 启用、停用、立即运行一次（运行结果进最近运行） |
+| GET | `/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 记忆（P23，`docs/dev/directions-2026-10.md`）：这个人在某个智能体那里的长期记忆，按偏好、计划、项目、日常分类，能找、改、忘记。长期记忆按「智能体 × 账号」分开（复核 D18），只给读者自己的，所以只读令牌没有这一页（403）；没接记忆端口时侧栏不出现、页面 404 |
+| GET | `/desktop` | view | 云端电脑（P21）：每个节点主智能体的专属浏览器与电脑——开关、确认方式（只看自动其余逐次确认 / 每一步都确认）、运行状态、清空回收，与最近的操作（只记类别与主机名）。浏览与操作能力来自基座，阡陌管分配、授权与回收。没接端口时侧栏不出现、页面 404 |
+| GET | `/files` | view | 文件互通（P20，管理组）：等人批准的取文件申请（可放宽到目录、选有效期）、传输与汇集（状态、目标摘要核对、失败可重试）、授权（有效期内可再取、可撤销）。发起传输时每个来源可以经 `/v0/files/browse` 浏览来源工作区。路径都是工作区内的相对路径，文件内容不上页面。没接端口时侧栏不出现、页面 404 |
+| GET | `/connect` | view | 连接：应用连接（P25，邮箱与日历；凭据只在中枢，页面只给主机名、打码的账号与「已设置」）与本机工具（P19，配对的设备与接力插件）。两边都没接时侧栏不出现、页面 404；接了一边时另一边写「未接入」 |
+| GET | `/v0/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 同一份列表的 JSON：`{ agent, entries, total, counts }`。没接记忆端口时 501 |
+| POST | `/v0/memory` | **成员** | 记一条：`{ agent, kind, title, summary, body }`，`kind` 只能是四类之一，一句话 ≤120 字、摘要 ≤400 字、细节 ≤4000 字。记 `memory.add` |
+| PUT | `/v0/memory/<记忆 id>` | **成员** | 改一条：写一条新的并替换旧的（旧的留在历史里，带「含已忘记」能看到）。记 `memory.edit` |
+| POST | `/v0/memory/<记忆 id>/<forget\|invalidate>` | **成员** | 忘记（`{ agent, reason }`，原因进审计）或标记过期。别人的记忆对端口来说不存在，答 404。记 `memory.forget` / `memory.invalidate` |
+| POST | `/v0/channels` | **ops** | 添加通知渠道：`{ name, kind, url }`，`kind` 是 `webhook` / `bark` / `wecom` / `feishu` / `ntfy`，地址默认只收 https；http 与受保护网段须由运维按主机（可带端口）放行（§12.2），存下后任何接口不再回地址 |
+| DELETE | `/v0/channels/<渠道 id>` | **ops** | 删除通知渠道 |
+| POST | `/v0/channels/<渠道 id>/test` | **ops** | 向这个渠道发一条测试通知 |
+| GET | `/v0/desktop` | view | `DesktopNodeView[]`，启用状态、可达性、资源大小与最近操作计数 |
+| GET | `/v0/desktop/actions?agent=<地址>&limit=50` | view | `DesktopActionView[]`，agent 可省，limit 1–200，按租户过滤 |
+| PUT | `/v0/desktop/<节点>/<智能体>` | **ops** | `{ browser?, computer?, confirm? }`，先 admit，再经签名控制链路，记 `desktop.set` |
+| POST | `/v0/desktop/<节点>/<智能体>/recycle` | **ops** | 停止并删除该智能体资料；先 admit，记 `desktop.recycle` |
 | GET | `/access`、`/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
 | GET | `/providers`、`/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
 | GET | `/providers/new?q=`、`/providers/new?preset=<预设>&site=<站点>` | view | 预设卡片（`q` 是 GET 搜索）；带 `preset` 时是从这份预设新建的表单 |
@@ -635,10 +665,19 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/accounts/<subject>/logout` | **ops / admin** | 强制下线：`{ subject, sessions, streams }`，关掉这个人的全部会话、断开全部事件流，账号与凭据不动（§5.3） |
 | GET | `/v0/actions?subject=&action=&target=&before=&limit=` | 个人账号、admin | 动作账本（§5.3）。`viewer`、`member` 只拿到自己做的；view 令牌 403 |
 | GET | `/v0/actions/reads?session=` | 个人账号、admin | 谁读过我的对话（§5.3）；view 令牌 403 |
-| POST | `/v0/handoff` | **成员** | 登记一次本地转交（P17.4，`qm handoff now` 调它）：请求体是转交清单 JSON。控制台在 `--handoff-root` 下的裸仓里自己用 `git cat-file` 核对代码提交、树与会话提交，核对通过才写台账：201 新建，200 同一份清单已登记过。没给 `--handoff-root` 时 501 |
-| GET | `/v0/handoff`、`/v0/handoff/<任务 id>` | view | 接力任务列表与单条（含清单与状态） |
+| POST | `/v0/handoff/pair` | 公开 | `{code,name,platform?}` 换一次性设备令牌；来源地址每分钟 10 次，超限 429，配对码无效 400。只有这一个接力路径免登录 |
+| GET | `/v0/handoff/devices` | view | `{devices}`，名称、属主、平台、最近使用、吊销时间与任务数；无令牌和哈希 |
+| POST | `/v0/handoff/devices/pairing` | **成员** | `{pairing:{code,expiresAt,command}}`；12 位 base32，10 分钟、一次性，错误 5 次失效；管理令牌也可签发 |
+| DELETE | `/v0/handoff/devices/<设备 id>` | **成员** | 只可吊销自己签发的设备；ops / 管理令牌可以吊销任何设备；设备令牌不能管理配对与吊销 |
+| POST | `/v0/handoff/projects` | 设备 | `{project}` 在 `--handoff-root` 建裸仓、装钩子并登记账号属主，幂等；其他账号 403，已有无属主的 SSH 仓库继续走原接法 |
+| GET | `/v0/handoff/git/<项目>.git/info/refs` | 设备 | 旧模式 smart HTTP advertisement（GitHub 模式 404）；查询 `service=git-upload-pack` 或 `git-receive-pack`；只允许访问自己账号的项目 |
+| POST | `/v0/handoff/git/<项目>.git/git-upload-pack`、`/v0/handoff/git/<项目>.git/git-receive-pack` | 设备 | 旧模式 smart HTTP RPC（GitHub 模式 404），支持 gzip 请求体与 Git-Protocol；receive-pack 只能写本设备的 wip / sessions 引用 |
+| GET | `/v0/handoff/config` | view / 设备 | `{codeStore:"github"或"hub"}`；设备可读，未接台账 501 |
+| POST | `/v0/handoff` | **成员** | 登记一次本地转交（P17.4，`qm handoff now` 调它）：请求体是转交清单 JSON。控制台在 `--handoff-root` 下的裸仓里自己用 `git cat-file` 核对代码提交、树与会话提交，核对通过才写台账：201 新建，200 同一份清单已登记过。GitHub 模式以认证设备号校验 code 引用，用仓库连接与 ls-remote 核对 tip 后登记；缺连接 400“中枢没有这个仓库的连接”。两种模式都未配时 501 |
+| GET | `/v0/handoff`、`/v0/handoff/<任务 id>` | view | 接力任务列表与单条（含清单、状态、ownerDevice / ownerSubject）；设备只看见自己账号的任务，其他账号的单条与操作都回 404 |
 | POST | `/v0/handoff/<任务 id>/send` | **成员** | 给云端那一侧追加一句话：写进台账（202），配了 `--handoff-node` 时按顺序转给正在跑这个任务的节点（P17.5），节点送进正在跑的回合 |
 | POST | `/v0/handoff/<任务 id>/attach` | **成员** | `qm handoff attach` 要接入的位置（P17.6）：`{ device? }` → `{ attach: { taskId, state, node, threadId, project, tool } }`，只给 `running` 的任务，其余状态 400 并说该用什么命令；记审计 `handoff.attach-requested`。只给位置：节点上 app-server 的令牌由使用者自己的 SSH 去读，不经控制台。Claude Code 会话在 `running` 时 `threadId` 为 `null` |
+| POST | `/v0/handoff/<任务 id>/clean` | **成员 / 设备** | 本机清理完成后记录 cleaned；仅本设备已失败/已接回任务，台账保留提交号，其他设备或账号 404 |
 | POST | `/v0/handoff/<任务 id>/return` | **成员** | `qm handoff pull` 接回后记 `returned`（P17.6）：`{ device?, mode? }`，`mode` 为 `fast-forward` 或 `branch`；只从 `done`、`failed` 转入，已是 `returned` 时 200 且 `changed: false`；记审计 `handoff.returned` |
 | GET | `/v0/providers`、`/v0/providers/profiles/<档案 id>`、`/v0/providers/nodes/<节点>` | view | 模型服务总览、一份档案、一个节点（§5.4）。不是写者时去掉密钥指纹、完整 Base URL、漂移键名与最近记录；节点报的逐把密钥状态（`actual.keys`，只有编号、状态、恢复时间与原因，P18.18）照给。没开 `--providers` 时 501 |
 | GET | `/v0/providers/catalog` | view | 预设目录 |
@@ -654,9 +693,18 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/providers/probe`、`/v0/providers/models`、`/v0/providers/preview` | **ops 个人账号** | 测连 / 测速 / 真实调用；拉模型列表；编译预览。可以带表单上未保存的档案与密钥，密钥不落盘 |
 | GET | `/v0/providers/export?id=<档案 id>…` | **ops 个人账号** | 导出文件（附件，`document` 级，链接可下），不含密钥与指纹 |
 | POST | `/v0/providers/import/preview`、`/v0/providers/import` | **ops 个人账号** | 导入预览、导入（撞 id 的用 `renames` 另存）；有目录不认识的键整份拒绝 |
+| GET | `/v0/routing` | view | 任务分工（P22，§13）：默认分工、各节点单独的分工、可选的模型（按对话 生图 语音 视频分类，带是否评估过）与最近 20 次分派。没接路由簿时 501 |
+| PUT | `/v0/routing` | **ops 个人账号** | `{ node, auto, routes, revision }` 改默认（`node: null`）或某个节点的分工；只给要改的方向，两个引用都为 null 是跟随主模型（生图 语音 视频为不开）。路由会让中枢把被引用服务的凭据也下发到节点，所以和模型服务的写操作同一条规矩：共用令牌与 break-glass 只能查看。revision 不符（有人先改了）400 |
+| DELETE | `/v0/routing/nodes/<节点>` | **ops 个人账号** | 去掉这个节点单独的分工，回到默认 |
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段。`/fragments/audit` 带 `since` 时只回表头与自载入以来的新行（§5.6） |
 | GET | `/fragments/lifecycle/<节点>` | view | HTML 片段：生命周期页签被轮询的那一块（§5.5） |
-| GET | `/fragments/alerts?level=&state=`、`/fragments/jobs` | view | HTML 片段 |
+| GET | `/fragments/alerts?level=&state=`、`/fragments/jobs`、`/fragments/schedules` | view | HTML 片段 |
+| GET | `/fragments/desktop` | view | HTML 片段：云端电脑页被轮询的卡片与操作记录 |
+| GET | `/fragments/files` | view | HTML 片段：文件互通页被轮询的申请、传输与授权 |
+| GET | `/fragments/connect` | view | HTML 片段：连接页被轮询的两半 |
+| GET | `/fragments/connect/form?preset=<预设>&id=<连接 id>` | **ops / admin** | HTML 片段：添加或编辑连接对话框的正文。`preset` 换服务（不认识的当作第一个），`id` 填这条连接自己的非秘密设置与授权的智能体（秘密永不回显）；没有这条连接 404 |
+| GET | `/fragments/routing?node=<节点>` | view | HTML 片段：模型页的任务分工卡片，`node` 换成那个节点的范围（模型服务不认识的节点当作所有节点）；没接路由簿时为空 |
+| GET | `/fragments/memory?…` | **成员** | HTML 片段：记忆页被轮询的列表（`#memory-list`），附带筛选条上各类别的新计数；页面只换这几块，不动搜索框 |
 | GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | HTML 片段，`/access` 三个被轮询的页签 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |
 | GET | `/fragments/providers/board?node=`、`/fragments/providers/profiles/<档案 id>/nodes` | view | HTML 片段，模型服务的节点矩阵与档案页的在用节点 |
@@ -671,6 +719,12 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/chat/stream` | **admin** | SSE，事件只有 `{sessionId, revision}`（§6.6） |
 | GET | `/fragments/chat/sessions?active=<会话 id>` | **admin** | HTML 片段 |
 | GET | `/fragments/chat/thread/<会话 id>` | **admin** | HTML 片段 |
+| GET | `/fragments/chat/greet?target=<地址>` | **admin** | HTML 片段：没打开会话时的问候（那个智能体的形象与一句提示）；首页在会话选择框换人时取它。没打开会话且有可拨号的智能体时，首页的输入框是开着的，第一句话先开一条会话再发出 |
+| GET | `/v0/avatars?key=<键>`（可重复） | view | 形象（`packages/console/src/avatar.ts`）：每个键的 `{ spec, saved, updatedAt }` 与 `editable`。键是 `agent:<地址>` 或 `user:<主体>`；没存过的给按地址或主体算出的默认形象。没接形象存储时也答，全是默认、`editable: false` |
+| PUT、DELETE | `/v0/avatars/<键>` | **成员** | 保存一个形象（七项都必须在固定清单里，否则 400），`DELETE` 回到默认；`user:` 键只能改自己的，ops 可以改任何人的。记 `avatar.save`。没接形象存储时 501 |
+| GET | `/fragments/avatar?key=<键>&spec=<草稿>&default=1` | view | HTML 片段：形象编辑器的正文（舞台、七种状态试看、每个选项一枚小图）。`spec` 是 JSON 草稿，不在清单里就当没给；`default=1` 画默认形象 |
+
+`qm console` 默认把形象存入 `<配置根>/qianmo/console/avatars.json`（文件 0600、父目录 0700）；文件损坏或权限不是 0600 时读写失败关闭，不覆盖原文件，页面照常显示默认形象。
 
 对话那九行**一律 admin，只读的也是**——理由见 §4.5；这台控制台没接对话通道时它们的
 两种缺席答案（404 与 501）见 §6.7。
@@ -700,6 +754,12 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 用的 `before`，已到最早是 `null`）；顺着 `earlier` 翻，每条匹配恰好出现一次，翻页途中追加的
 行不会挪动后面的页。两个游标不是非负整数时原样丢弃，与 `window` 同理。多链的控制台用
 `node=<节点>` 选一条链；不给 `node` 时回 `{ audits }`，每条链一份。
+| GET | `/v0/files` | view 及以上；互通账本与上限；未接端口 501 |
+| GET | `/v0/files/browse?agent=<地址>&path=<相对路径>` | member 及以上；来源工作区目录 |
+| POST | `/v0/files/requests/<id>/decide` | member 及以上；批准或拒绝申请 |
+| POST | `/v0/files/grants/<id>/revoke` | member 及以上；撤销授权 |
+| POST | `/v0/files/transfers` | member 及以上；单来源传输或多来源汇集 |
+| POST | `/v0/files/transfers/<id>/retry` | member 及以上；以新传输号重试失败项 |
 
 ### 5.1 三个保护等级：一枚 cookie 能单独打开哪些路由
 
@@ -726,8 +786,8 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 ### 5.2 页面外壳与区域模块
 
 **一个区域一个模块。**`packages/console/src/routes/index.ts` 的 `ROUTES` 按侧栏顺序列出
-十二个区域（运行：总览、节点、对话、消息链、告警、值守作业、审批；配置：模型服务、
-服务器；管理：账号与访问、用量、设置与关于），每个模块是 `routes/types.ts` 的 `RouteModule`：
+十六个区域（日常：对话、主动执行、记忆、连接、云端电脑、模型；管理：总览、节点、
+文件互通、消息链、告警、审批、服务器、账号与访问、用量、设置与关于；对话是首页），每个模块是 `routes/types.ts` 的 `RouteModule`：
 
 | 字段 | 是什么 |
 | --- | --- |
@@ -2128,3 +2188,509 @@ id 不合法或不在列表而拒绝，都记一条动作账本 `alert.ack`；�
 
 只读令牌看得见备注但改不了：框留着、置 `readonly`、按钮换成一行说明。框不能消失——一个
 不见的框会让「你不能改」和「这里没有备注」长得一样。
+
+## §12 定时任务与通知渠道（P24）
+
+`qm console --schedules --chat-url <节点>=<ws地址>` 打开进程内的定时任务簿，要求对话面
+实际接通配置（含可用 PSK）；没给 `--schedules` 时 `ConsoleDeps.schedules` 缺席。
+API 处理器是 `routes/schedulesApi.ts` 导出的 `schedulesApi: HeadRoute`，由「主动执行」
+区域的主导集成者挂入路由表；本工作包不新增页面。原有 `qm watch`、`/jobs` 和其只读端口保持原样。
+
+### §12.1 存储与调度
+
+所有路径从 `qianmoConfigPath()` 派生，任务状态目录为 `<配置根>/qianmo/console/schedules/`：
+
+| 文件 | 内容 |
+|---|---|
+| `schedules.json` | 任务、渠道的公开字段、专属会话号与尚未结束的运行；临时文件 fsync 后原子 rename，0600，目录 0700 |
+| `channels.secret.json` | 渠道完整地址，仅保存在中枢；原子写、0600，页面/快照只给主机名 |
+| `runs.ndjson` | 结束、跳过与 unknown 转换各一行，0600；启动从文件尾读最近 500 行，按 runId 合并最新状态后返回最近 50 次 |
+| `instance.lock` | O_EXCL 实例锁：PID、随机 nonce 与开始时间；只由持有该 nonce 的进程释放 |
+| `claims/<任务 id>.<计划时刻>.json` | O_EXCL + fsync 的持久化 `(scheduleId, plannedAt)` 占位；不自动删除，防止状态回滚后重复投递 |
+
+每天与每周按 IANA 时区的挂钟时间计算，默认 `Asia/Shanghai`。星期为 1–7（周一到周日），
+必须非空且不重复。夏令时不存在的本地时间顺延到之后第一个有效分钟，重复时间只取第一次；
+`after` 恰好等于触发时刻时取下一次。间隔最短 15 分钟，锚点由宿主固定为任务创建时刻，
+修改间隔仍沿用该锚点，客户端不能移动它。
+
+控制台每 30 秒检查一次（计时器 `unref`）。磁盘上的 `nextRunAt` 在重启时原样恢复；
+错过多个时刻只补跑一次，运行的 `reason` 说明额外错过几次，再推进到当前时刻之后。
+停用期间不执行；重新启用从当前时刻之后继续，不补停用期间的时刻。修改标题/提示词不改
+计划时间，修改时间规则或时区重新计算。立即运行使用 `trigger: manual`，不改变 `nextRunAt`，
+允许对停用的任务执行一次。
+
+`<配置根>/qianmo/scheduler/ESTOP` 存在时，到点或立即运行均记 `skipped / 紧急停止`，
+不会发送；同一任务上一轮未结束时记 `skipped / 上一轮未结束`。停止文件检查异常按已停止
+处理。已经发送的任务不因 ESTOP 自动取消。本地超时以及重启后仍未观察到终态的运行记
+`state: unknown / 上一次结果未知，等待确认`，`outcome` 保持 `running`、`finishedAt` 保持 null，
+继续占用该任务；自动时刻和立即运行均记 `skipped / 上一次结果未知，等待确认`，不会再次发送。
+终态通知阶段崩溃会保留已证明的运行结果，不重复可能已发出的通知。
+
+运行按 `(scheduleId, plannedAt)` 去重。`ConsoleSchedules.tick()` 在拨号前把推进后的
+`nextRunAt` 与在途运行一起原子持久化，串行队列隔离并发检查；恢复时不重算计划时间，
+未获终态的在途运行保留 unknown 占用。`#reserve()` 对已完成/在途的同一计划时刻直接返回原记录。手动运行
+保留独立的持久化高水位 `lastManualPlannedAt`，同一毫秒内连续点击时依次增加 1 ms，
+并避开当前自动计划时刻；该字段不出现在 API 快照中，编辑与重启都保留。
+`consoleSchedules.test.ts` 的 `same-clock manual slots stay unique...` 覆盖编辑、重启与并发
+tick 的唯一性；`missed slots catch up once after restart...` 证明停机错过多个时刻只补一次；
+`a pending run remains unknown after restart...` 与 `recovery deduplicates a finalized run...`
+证明重启不重发。`scheduleTime.test.ts` 的 New York spring gap / fall fold 用例证明春季
+02:30 顺延到 03:00、秋季 01:30 仅取第一次，第二次重复挂钟时间不会再触发。
+
+实例锁在读任务簿前取得。PID 已不存在时回收旧锁；身份字段残缺或 nonce 无效的锁在
+10 秒写入宽限期后才可回收，合法且存活的持有者不会仅因运行时间长而被抢占。第二实例
+只记录一次明确诊断，不启动定时器、tick 不执行、写 API 返回 503；HTTP 读侧刷新磁盘数据。
+另有每个计划时刻的排他占位，即使两个任务簿位于同一进程，或恢复到更旧的任务检查点，
+也不能重复领取同一 `(scheduleId, plannedAt)`。
+
+`ChatPort.transcript` 提供按 taskId 关联的回合终态；订阅与 tick 都会对账 unknown 运行。
+迟到的 done 或远端失败回复确认后更新为 completed/failed/timeout 并解除占用；聊天端口
+本地产生的 `E_TASK_TIMEOUT` 不是证明，只有带 `remoteTerminal` 的远端超时才是终态。
+恢复检查点同时保留本轮原始任务、转录基线与 taskId，避免编辑任务后对错轮。
+无可确认回复时，创建者（成员权限）或 ops 可用 §12.3 的 resolve API 人工确认 ok/failed，
+记 `schedule.resolve`，同时释放本轮持久化的用量预留，不补发通知；结果未确认前拒绝删除仍被占用的任务。
+
+未开租户隔离而开了个人账号时，成员与只读账号只看到 `createdBy` 为自己的任务、运行
+记录与摘要；只读账号保留只读权限。跨账号的详情、改动、启停、删除、立即运行与确认
+均返回 404，先查内存归属索引，不调用业务端口或账本 admission。共享宿主 snapshot 也
+执行同一过滤，主动执行页的两个读取点传入当前主体。ops 可代管全部，编辑不改变创建者；
+账本的 subject 是实际操作者，createdBy 是原创建者。无账号模式的旧令牌保持全部可见。
+渠道仍是 ops 维护的共享资源，成员可选择，任何读者都拿不到完整地址。
+启用租户时，尚无租户包装的八个 D01 端口（包括 avatars）对租户范围调用者全部关闭。
+
+HTTP 开会话/发消息与定时任务共用控制台包的 `chatDispatch.ts`（`ChatDispatch`）。每次运行
+从 `createdBy` 读取账号簿里的当前账号与角色，先复核存在、活跃、成员/运维权限、当前租户
+目标范围及可拨白名单，再读取或创建专属会话；发送前再次复核，避免等待转录时权限已撤回。
+吊销、重置期间、降为只读、失去范围或目标不再可拨，这次记
+`skipped / 创建者已无权限：<具体原因>`，不自动停用、不重试、也不推通知；恢复权限后的
+下一次时刻照常运行。账号簿或租户配置不可用时也按不能证明权限跳过，注册中心故障记失败。
+`legacy:admin` 建的任务仍以该主体执行，租户/break-glass 的范围规则与 HTTP 相同。
+
+首次运行由服务调用 `open` 建专属会话，经 HTTP 原有的 `chatScopeOf` 与
+`AccountBook.recordOwner` 归到创建者名下；成员在对话会话列表与片段中只能看自己的会话。
+旧任务簿中已存在但无属主的专属会话也在授权通过后补记属主，不覆盖另一人的归属。
+保存会话号并持续复用；会话被删后重建，改变目标时另建会话。开会话与发消息均经同一个
+`reserveUsage`，用量计入创建者的个人范围与 HTTP 相同的租户范围；配额拒绝记
+`skipped / quota: ...`，在配额预检查时不调用聊天端口；发送前仍原子预留复核。预留号随发送交给聊天端口，终态释放；明确未交付的失败
+与异常释放，交付不确定时保留预留。HTTP 保持原有检查和账本记录顺序、错误响应与
+延迟到发送时的端点白名单检查；开空会话本身不拨号。定时任务额外在开/复用会话之前
+通过同一服务预查可拨性。`consoleSchedules.authorization.test.ts` 覆盖成员会话可见性、
+吊销/只读/范围撤回/白名单撤回、转录 I/O 期间吊销、个人配额拒绝和创建者的租户用量归属。
+
+提示词经原有 `send` 链路发出，方向为可选
+`code|chat|plan|fast|vision|image|speech|video`（缺省 `chat`，明确 `null` 不带方向），
+经 `task.request.payload.direction` 传给节点，与 P22 同一字段。任务期限同时传到信封与
+对话端口本地超时；默认 10 分钟、最大 60 分钟。订阅对话更新并在调度检查时兜底读取转录，
+按 `taskId` 匹配终态，运行保留回复前 2000 个 Unicode 字符，全文仍在 `chat.ndjson`。
+
+模板为晨间简报、跟进待办、整理邮件、自定义（空预填内容）；整理邮件标明需要「邮件连接」。
+保存任务时提示词必须非空，目标必须在对话面的可拨允许名单内，发送时仍经过现有出口闸门。
+运行完成、失败或超时后推送选定渠道；跳过不推送。仅在智能体主动通知时推送的任务，使用
+本轮智能体显式通知 `notice` 的摘要，排除自动工具过程、其他任务、旧轮和观察时间早于
+本轮开始的延迟通知。对话端口保存 `noticeSource` 与 `causeTaskId`，避免把工具进度当作主动通知。运行完成但通知失败
+不改运行结果，失败落在 `pushed` 与渠道的 `lastError`。被任务或在途运行引用的渠道不能删除。
+
+任务的保存、启停、删除、立即运行及渠道保存、删除、测试，由宿主通过 `DirectionActor`
+记入动作账本；自动触发记 `schedule.run`，主体为任务创建者，createdBy 同时保留，请求号为运行号。
+运行记录的 trigger 区分自动与手动；运行授权、会话归属与用量范围均取任务的 `createdBy`。
+账本拒绝写入时不执行新的动作，渠道地址与回复正文不作为账本载荷。
+
+### §12.2 通知格式与未评估口径
+
+| 渠道 | 配置地址与 POST 格式 | 文档 |
+|---|---|---|
+| Webhook | 完整接收地址；JSON `{title, body, at, qianmo:{scheduleId, runId, outcome}}` | 阡陌通用格式，`at` 为 epoch 毫秒 |
+| Bark | `https://api.day.app/<设备key>` 或自建服务器同类地址；JSON `{title, body}` | [Bark 教程](https://github.com/Finb/Bark/blob/master/docs/en-us/tutorial.md) |
+| 企业微信 | 群机器人完整 webhook 地址；JSON `{msgtype:"text", text:{content:"标题\\n正文"}}` | [群机器人文档](https://developer.work.weixin.qq.com/document/path/91770) |
+| 飞书 | 自定义机器人完整 webhook 地址；JSON `{msg_type:"text", content:{text:"标题\\n正文"}}` | [自定义机器人指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot) |
+| ntfy | 含 topic 的完整地址；正文为文本、`Title` 请求头为标题，非 ASCII 标题用 RFC 2047 UTF-8 编码 | [发送消息文档](https://docs.ntfy.sh/publish/) |
+
+文档核对日期：2026-10-11；企业微信官网当日无法读取，其格式未获在线再次确认。
+所有渠道均标「未评估」：只按公开文档实现格式、用本机 `Bun.serve` 检查请求，
+没有向真实通知服务发请求，不代表已验证真实设备/群的送达。飞书的签名校验等额外配置
+不在这一版渠道字段内。
+
+地址默认只允许 HTTPS；HTTP 的主机也必须在运维名单内。保存与每次发送/重试都解析 DNS，
+任一答案落入回环、私网、链路本地、CGNAT、0/8、多播/广播、IPv6 ULA 或未指定地址即拒绝；
+IPv4 映射/兼容 IPv6 按嵌入 IPv4 判断，IP 字面量同等处理。仅显式放行的主机/端口可以使用
+这些受保护地址。连接直接使用通过验证的 IP 字面量，同时保留原 Host、TLS SNI 和原主机名
+证书校验；关闭连接池与代理环境继承，不做第二次 DNS，防止解析结果重绑定。
+
+`qm console` 从 `QIANMO_NOTIFY_ALLOWLIST` 读取逗号分隔的精确主机名单，默认空。例如：
+`QIANMO_NOTIFY_ALLOWLIST='notify.internal:8443,127.0.0.1:9000,[::1]:9000'`。
+带端口只开放该端口，不带端口开放该主机的任意端口；不接受通配符、URL 路径或凭据，
+不能通过控制台成员编辑。放行内网不关闭 TLS 证书验证。旧任务簿含 HTTP 渠道时，需先
+按此配置其主机/端口，再启动；新配置与发送时仍复核。策略错误只报命中规则，不回显完整 URL。
+
+拒绝 URL 用户名/密码与片段。不跟随重定向，
+每次尝试 10 秒超时（包含响应读取），响应只读前 4 KiB 后取消流，不把响应正文或网络异常
+原文写进日志。首次失败最多重试 3 次，间隔 2 秒、8 秒、30 秒（共最多 4 次尝试）。
+外部服务可能在成功后丢回执，重试无法承诺通知恰好送达一次。
+
+### §12.3 API
+
+写请求先检查角色和方法，再检查端口是否接入、调用 `admit`，由宿主验证 JSON 字段。
+角色拒绝不调用端口；cookie 凭据遵循既有控制台请求头保护。端口缺席返回 501；
+`invalid/rejected` 为 400、`refused` 为 403、`not_found` 为 404、`unreachable` 为 503。
+
+| 方法 | 路由 | 角色 | 返回 |
+|---|---|---|---|
+| GET | `/v0/schedules` | view 及以上 | `SchedulesSnapshot` |
+| POST | `/v0/schedules` | member/ops 或管理令牌 | 保存后的 `ScheduleView`，有 `id` 为修改 |
+| GET | `/v0/schedules/<id>` | view 及以上 | 本人或代管范围内的 `ScheduleView` |
+| GET | `/v0/schedules/<id>/runs`、`/v0/schedules/<id>/runs/<runId>` | view 及以上 | 本人或代管范围内的运行与摘要 |
+| POST | `/v0/schedules/<id>/runs/<runId>/resolve` | 创建者成员/ops 或管理令牌 | `{outcome:'ok'|'failed'}`；未知运行人工确认后解除占用 |
+| POST | `/v0/schedules/<id>/enable` | member/ops 或管理令牌 | `ScheduleView` |
+| POST | `/v0/schedules/<id>/disable` | member/ops 或管理令牌 | `ScheduleView` |
+| POST | `/v0/schedules/<id>/run` | member/ops 或管理令牌 | 新建的 `ScheduleRunView`（立即返回，在后台执行） |
+| DELETE | `/v0/schedules/<id>` | member/ops 或管理令牌 | 204 |
+| POST | `/v0/channels` | ops 或管理令牌 | `NotifyChannelView`；新建必须有 `url`，修改可省略以保留 |
+| DELETE | `/v0/channels/<id>` | ops 或管理令牌 | 204；被引用时拒绝 |
+| POST | `/v0/channels/<id>/test` | ops 或管理令牌 | 测试成功后的 `NotifyChannelView`；失败 503 |
+
+## §13 任务分工 API（P22）
+
+模型服务开启时 `ConsoleDeps.routing` 接路由簿；API-only `routingApi` 是导出的 HeadRoute，由模型服务区域挂入 API heads（不另建页面模块）。
+
+| 方法与路径 | 权限 | 作用 |
+|---|---|---|
+| GET `/v0/routing` | view 及以上 | 默认、节点覆盖、模型列表及最近 20 条归类 |
+| PUT `/v0/routing` | ops 个人账号（共用管理令牌只读） | `{node:null或节点名, auto, routes:[{direction,profileId,modelId}], revision}`；局部更新，revision 失配 rejected |
+| DELETE `/v0/routing/nodes/<node>` | ops 个人账号（共用管理令牌只读） | 清除节点覆盖并跟随默认 |
+
+写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。路由簿写锁记录 PID、随机 nonce 与时间：活持有者拒绝并发写入，PID 消失或超过 5 分钟时回收，释放只删除仍匹配自身令牌的锁。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
+
+
+## 长期记忆（P23）
+
+长期记忆按本节点的「智能体 × 已验证控制台账号」分区，个人主体为
+`u:` 加 16 位小写十六进制，旧管理令牌主体为 `legacy:admin`。
+控制台写入立即生效，来源是 `{ kind: 'user', id: 'user:console:<主体>' }`；
+智能体来源为 `{ kind: 'agent', id: '<单次审批号>' }`。存储治理禁止智能体
+替换高信任的用户记录，用户修改则以运维写者身份新增并 supersede 原记录。
+
+启用命令（端口、节点名、公钥和凭据文件换成部署实际值，PSK 沿用 `--control`
+的节点环境变量契约）：
+
+```sh
+qm console --memory --control worker=ws://127.0.0.1:38611 \
+  --trust worker=<节点公钥> --chat-url worker=ws://127.0.0.1:38611 \
+  --chat-sign --chat-from qianmo://hub/console --admin-token-file <管理令牌文件>
+```
+
+`--memory` 必须同时指定至少一个 `--control`；每个控制节点必须有显式 `--trust`。
+节点侧配置 `qm resident … --controller hub=<控制台命令公钥> --trust hub=<同一公钥>`。
+智能体写入还需要原有 P14 的个人账号与审批配置（控制台 `--accounts --approvals`，
+节点配置对应 approver 公钥），长期写入每条只接受单次批准。
+控制台页面未接入卡片可以用 `qm console --memory --control <node>=<ws(s)://url> --trust <node>=<publicKey>`
+作为最短接入命令；跨对话召回另需上面的签名对话配置。
+
+### 身份字段与校验点
+
+HTTP 对话路由只从认证结果填入宿主 `ChatSendInput.onBehalfOf`，不采信 JSON
+请求体中的同名字段。定时任务传入持久化的创建者 `createdBy`，编辑任务不改变创建者。
+中枢把主体写入 `task.request.payload.onBehalfOf`，并在 `--chat-sign` 下生成
+`payload.ownerProof`。独立 Ed25519 签名的域为 `qianmo.task-owner.v1`，覆盖
+规范化 JSON 中的发件人、收件人、消息类型、消息号、任务号、上下文号、创建时间、
+两种期限，以及除 `ownerProof` 外的全部载荷。原有 capability token 只绑定授权任务，
+不能作为账号/正文签名使用。路由可变的 hops 和 trace parent 不进入这个证明。
+
+节点在 `QianmoResident.#receive` 处，按信封 `from` 的节点名查
+`--controller` 钉住的公钥，调用 `verifiedTaskOwner` 验证原始请求；验证失败、
+主体不合规、来自普通受信 peer、或没有证明，都按无身份处理。后续召回和写入
+使用活动任务中保存的验证结果，不从邮箱文本里读回账号断言。P14 写入审批的 input
+另绑定 `owner` 与 `destination: "写进 <账号> 的长期记忆"`，操作者能看到实际目的地。
+
+RPC 对话历史也按账号隔离：宿主把已验证 owner 独立交给会话解析器，
+`sessionKeyOf(agent, contextId, owner)` 使用 `!<账号 id>-<上下文摘要>` 作为
+账号会话命名空间。`!` 不可能由原始 contextId 的规范化生成，无身份请求即使
+复用这个名字也会重新散列到匿名分区，无法进入账号的 RPC 历史。
+P14 对外审批与通知仍使用原始 contextId，以便中枢关联会话。
+无身份会话的本地工作记忆和 RPC 默认会话保留兼容性；已有账号对话首次带上
+已验证身份时使用新的隔离会话，不迁移旧 RPC 历史。
+
+### 分区、召回与留痕
+
+统一 API 为 `@qianmo/resident` 的 `resolveMemoryPartition`、
+`parseMemoryPartition` 与 `requireMemoryPartition`，会话写者和控制处理器共用它们。
+磁盘为 `<memoryRoot>/working/<agentKey>/<taskId>/`；agentKey 沿用 `v-<原文>`
+或 `d-<32 位摘要>`。会话 taskId 只能是 `v-` / `d-`，长期 taskId 是
+`l-<账号的 16 位 id>` 或 `l-admin`；即便远端会话号写成长期目录名，仍会加会话标签，
+不能相撞。账号对话的工作记忆使用上述账号会话键派生，长期记忆独立于上下文。
+
+每轮一次冻结召回，先排长期分区，再排本会话分区，共享既有的 50 条 / 2 万字预算，
+并把召回正文与条目号持久化进 admission ledger。批准后的写入只影响后续轮次。
+无已验证账号只召回本会话。长期组合召回使用确定性路径；语义检索默认关闭。
+类别使用 `kind:preference|plan|project|daily` 标签，不改记忆记录格式。
+
+修改通过 `FileMemoryStore.write(..., 'operator')` 写新条目及 supersedes 链；
+忘记用 revoke，事实过期用 invalidate，全部保留原记录与痕迹。
+`MemoryEntryView.supersedes` 展示前驱数组中 createdAt 最新的条目（同时间按 id 升序），
+原数组完整留在存储里。列表只读当前主体的长期分区；`scope=all` 同样返回长期条目，
+`scope=conversation` 返回空集合：本轮没有经过验证的账号到历史会话分区的索引，
+因此不会开放会话目录扫描。租户包装按 `scope.address` 过滤名册，列表和写入的
+范围外目标在准入和拨号前返回 404，策略版本改变后也不返回旧范围的结果。
+
+### 幂等、急停和字节上限
+
+控制操作为 `memory.agents|list|add|edit|forget|invalidate`。
+中枢为每次写操作生成 UUID `operationId`；节点在
+`qianmoConfigPath('resident', 'memory-operations.sqlite')` 中持久化
+`operationId + SHA-256(规范化的操作名、参数、actor、peer) → 结果`。
+同号同摘要原样返回持久化结果，同号异摘要拒绝。SQLite 事务串行化操作；执行前先
+持久化固定时间的意图，新增/修改的条目号由 operationId 派生。崩溃后复用同条目号，
+supersedes 中断通过存储已有的修复机制收敛，忘记/过期按意图时间和留痕恢复。
+操作超时或连接丢失在中枢映射为 `unreachable`，提示「结果未知」，不声称未执行。
+
+ESTOP 下只允许读取、忘记和标为过期；新增、修改拒绝。已执行操作的结果重放属于
+读取，仍返回原结果。智能体获批后真正写入前再次检查 ESTOP。
+
+`memory.list` 和 `memory.agents` 支持 offset / limit（每页最多 200 条），并返回
+nextOffset；记忆页每页请求 60 条，API `GET /v0/memory?offset=N` 返回续页位置。
+节点按最终 NodeControlResult 信封（含实际地址、id、traceId、时间和 outbound hop）的
+UTF-8 JSON 字节量裁剪，遵守协议 `LIMITS.maxMessageBytes`；不按字符串字符数估算。
+total / counts 是筛选全集与长期活条目的计数，裁剪不会缩小它们。单条超限明确拒绝，
+不返回一个无法继续的空页。控制台页面、view/assets 未改动。
+
+## 文件互通（P20）
+
+文件经私有 GitHub 交换仓库在节点之间传递。中枢只认证、复核授权并记账，不读取、存储或转发文件字节，也不创建文件暂存或对象仓库。启动示例：
+
+```bash
+qm console --files \
+  --files-exchange-repo owner/exchange=/absolute/path/exchange.token \
+  --files-exchange-retain 0 \
+  --control alpha=wss://alpha.example/control \
+  --control beta=wss://beta.example/control \
+  --trust 'alpha=<节点公钥>' --trust 'beta=<节点公钥>' \
+  --chat-from qianmo://hub/console
+```
+
+`--files` 必须配 `--control`，交换仓库二选一：开了 `--connectors` 时用「连接」页里标为文件交换仓库的 GitHub 仓库连接（[P26c](#github-仓库连接p26c)，优先），否则用 `--files-exchange-repo`。仓库在控制台启动时选定，换仓库要重启；令牌每次使用时现读，连接删除或改名后传输立即以「交换仓库连接已撤销」失败。开启租户时只用 `--files-exchange-repo`（平台的仓库），不让某个租户的仓库承载别的租户的文件。两者都没有时文件互通不开启，启动日志说明原因。`--files-exchange-repo` 只能登记一个 `owner/name=<令牌文件绝对路径>`；远端固定为 `https://github.com/owner/name.git`。令牌文件沿用接力凭据检查：非软链、当前用户所有、权限受限，不能把令牌直接写进参数。控制链路 PSK 与中枢身份沿用 [控制链路设计](directions-2026-10.md#11-控制链路中枢--节点)，节点以 `qm resident --controller hub=<中枢公钥>` 接受中枢。智能体名单经 `node.ping` 发现，注册中心不可用时仍可互通。
+
+在 GitHub 创建专用**私有**交换仓库，在 Settings → Developer settings → Personal access tokens → Fine-grained tokens 创建令牌：选择仓库所属账号，仅选择这一个交换仓库，Repository permissions 的 **Contents** 设为 **Read and write**（Metadata 的读取由 GitHub 自动要求）。将令牌保存到宿主私有文件。中枢启动、创建传输及下发发布/取回前，通过带令牌的 `GET https://api.github.com/repos/<owner>/<name>` 检查 `private: true`；公开、未知、接口错误和限流都以「交换仓库必须是私有仓库」拒绝。后续 P26c 的仓库连接将替换当前 `resolve(repo)` 凭据适配器。
+
+主智能体调 `qianmo_file_request {from:"qianmo://alpha/main",path:"reports/result.txt",reason:"…"}`，经 `hub.call files.request` 写入申请。宿主工具只给主智能体，子智能体由常驻扩展拒绝。来源所有者批准或拒绝均留账；批准默认单文件、1 小时，最长 24 小时，目录申请须显式填写目录范围。同时有两端权限的人直接发起传输时自动签发授权。汇集每个来源使用独立传输号和分支，各项失败与重试互不影响。
+
+授权绑定两端节点/智能体、NFC 路径范围、签发人和两端工作区代次。每次发布、取回及目标原子提交前都复核过期、撤销、签发账号成员权限、当前租户和工作区代次。目录按路径段比较，`a/b` 不包含 `a/bc`。个人账号开启后旧管理令牌不能代替文件所有者授权；未开账号和租户时管理令牌可操作。租户越界请求在动作准入和节点调用前拒绝。
+
+来源逐段以目录描述符和 `openat + O_NOFOLLOW` 打开文件，拒绝软链、硬链、特殊文件、穿越、控制字符、危险设备名及 NFKC/大小写名称冲突。系统根目录别名只在注册工作区可信锚点解析一次。来源在智能体不可访问的宿主配置根内形成 0400 不可变快照，扫描完整快照并计算清单摘要；在临时 git 仓库中创建**一个无父提交**，树固定为 `MANIFEST.json` 和 `files/<原相对路径>`，推到 `refs/heads/qianmo/files/<传输号>`。发布后立即删除节点临时仓库和快照。
+
+目标 `git init` 后按分支 `git fetch --depth=1`，确认 `FETCH_HEAD` 与账本提交号相同，**不 checkout**。先用 `git ls-tree -r -z` 检查全部条目，仅允许 `100644` / `100755` 的普通 blob 和固定布局；软链 `120000`、gitlink `160000`、额外路径、清单以外的文件均拒绝。再逐 blob 读取、按清单核对路径、大小和 SHA-256，核对清单摘要与中枢账本一致。全部验证通过并再次复核授权后，沿用 P20 的 `O_EXCL` 创建和不覆盖原子 rename，落到 `inbox/<来源节点>/<原相对路径>`；同名另存 `<名>.<传输号前8位>`，备用名字仍冲突则拒绝。目标临时仓库和快照在成功、失败后删除。
+
+秘密策略沿用接力规则并增加 `id_*`、`credentials*` 和阡陌 `qmd_` / `qmu_` / `qmi_` / `qms_` 凭据；`.env*`、密钥文件、`.npmrc`、`.pypirc` 等拒绝。`.git`、`.qianmo`、`.omp`、`.ssh`、`inbox/` 在任何深度都不导出。文本扫描完整 UTF-8 快照；二进制、非法 UTF-8 和归档只检查文件名，不解压，不宣称检测过内容秘密，审计标 `filename-only`，不记录正文或秘密。
+
+单文件最大 **64 MiB**（低于 GitHub 单文件 100 MB 上限），单传输 **256 MiB / 1000 文件**。清单摘要保持 P20 定义：按路径 UTF-16 码元序排序的 `[路径,字节数,sha256]` 紧凑 JSON 数组的 UTF-8 SHA-256。控制信封只载坐标、计数、摘要及短暂凭据，不载 base64 内容，仍遵守最终 UTF-8 信封 256 KiB 上限。取消 128 KiB 分块、清单分页和每节点 1200 ms 的搬运节流；`doneBytes` 只在送达完成后记录，不再提供分块进度。`verified` 表示目标逐文件核对清单及清单摘要与账本一致。端口提供交换仓库名称、私有性，以及每项传输的 ref、commit、cleaned，页面由主导者接入。
+
+令牌只通过 `wss://` 或回环地址的 `ws://` 控制链路下发，否则以「令牌只经加密链路下发」失败。每次发布和取回都重新 `resolve(repo)`，撤销后以「交换仓库连接已撤销」失败。节点令牌只进入 git 子进程的 `GIT_CONFIG_*` 环境，禁止进入 argv、`.git/config`、账本、操作记录和审计；操作参数摘要排除令牌。`files.publish`、`files.fetch`、`files.abort` / `files.clean` 保留持久化 `operationId`，同号同参数回放回执，同号异参数拒绝。崩溃或超时的未完成操作标「结果未知」，不会自动重发；中枢重启把在途传输标失败，可人工重试，新传输号和新分支重新发布。
+
+中枢业务账本位于 `<配置根>/qianmo/console/files/files.json`，只记申请、授权、汇集和传输元数据（含提交号与清单摘要），0600、fsync 后原子写入；清理审计为同目录 `files.ndjson`。升级启动会丢弃旧 P20 的中枢暂存目录，不读取其中内容。节点暂存为 `<节点配置根>/qianmo/files/<节点>/<传输号>/`，0700，受常驻工具保护。成功、失败或中止后中枢删除分支：`--files-exchange-retain` 默认 `0` 立即删，支持 `ms`、`s`、`m`、`h`、`d`（例如 `30m`）。中枢用 `ls-remote` 读引用，再用外部临时空仓库只删引用，绝不 fetch 对象。janitor 每 5 秒扫终态残留分支及未知孤儿分支（无账本时间的孤儿从首次发现开始计保留期）；撤销连接或 git 不可用时保留待清理状态，恢复后继续，迟到的发布也会扫掉。每次实际删除记录 `files.cleaned`，账本保留 commit 与摘要；保留期也适用于发布成功而取回失败的分支。分支删除不承诺立即物理清除 GitHub 的不可达对象。
+
+急停仅允许 abort / clean 和分支清理，拒绝其他文件操作。节点使用 `<配置根>/resident/ESTOP`，中枢文件面使用 `<配置根>/qianmo/console/files/ESTOP`。abort 还清理目标未发布的 `.files-<传输号>`，保留已送达文件。动作账本记录决定、撤销、传输、重试；节点记录申请、授权、秘密策略拒绝、发布、验证和送达。
+
+## 应用连接（P25）
+
+这是 API 与节点宿主工具实现；控制台页面由前端工作包提供。所有预设
+`evaluated: false`，只用进程内 TLS/HTTPS 夹具验证，没有连接真实邮箱、
+日历或通知服务。本轮不做附件下载、邮件规则、自动回信或日历邀请回复。
+
+### 开启与权限
+
+在原有注册中心、审计源、账号和签名对话配置上加 `--connectors`：
+
+```bash
+bun run qm -- console --accounts --approvals --chat-sign --connectors \
+  --chat-url worker=wss://worker.example:38611 \
+  --control worker=wss://worker.example:38611 \
+  --trust worker=<节点公钥>
+```
+
+PSK 从对应的 `QIANMO_TRANSPORT_PSK_NODE_<节点 UTF-8 大写十六进制>` 环境
+变量读取；沿用现有审批部署方式给节点配置控制台的 commander 与独立
+approver 公钥。`--connectors` 要求 `--accounts`、`--approvals`、`--control`；
+审批本身还要求命名 `--chat-url`、`--chat-sign` 和显式信任的节点公钥。
+写连接/秘密/授权表和测连与模型服务 `providerWriter` 同级：仅个人 ops，
+共用管理令牌和 break-glass 只能查看。写 API 先 `admit` 再访问端口。
+
+连接属于一个租户（未开启租户时为 null），可授权智能体必须在注册中心
+且同属此租户；租户 ops 新建时自动指定自己的租户，平台 ops 可通过
+`ConnectorDraft.tenant` 指定。列表、最近调用、可授权智能体经过租户
+包装，跨租户的 id/agent 写请求在 admission 和出站之前拒绝，策略修订
+变化使旧请求范围失效。中枢工具调用还会按认证节点、智能体和当前租户
+归属再次核对授权表。
+
+邮件设置为 `imapHost/imapPort/smtpHost/smtpPort/smtpTls/username`，
+`smtpTls` 为 `smtps` 或 `starttls`；CalDAV 为 `caldavUrl/username`。
+新连接必须传 `secret`。修改时 `settings` 只需给变化的字段（空对象保留
+原设置），省略 `secret` 会保留秘密并按新修订重封；
+改变种类或预设须新建连接。ICS 的 `settings` 为空，完整订阅 URL 放在
+`secret`，包括路径和查询令牌。节点的 `qianmo_connectors {}` 只返回当前
+智能体可用连接的 id、名字和种类；五个业务工具都明确要求 `connectorId`。
+
+### 凭据保管和资源句柄
+
+连接簿 `<配置根>/qianmo/console/connectors/connectors.json` 将非秘密设置、
+授权表、修订、密文秘密槽和已预留 operationId 放在同一原子快照：0600
+临时文件、fsync 后 rename，目录 0700；复用现有独占锁，第二个进程不能
+打开同一连接簿。逻辑秘密库与元数据一同提交，避免两份文件在崩溃时
+出现不匹配修订。删除或轮换后原文件不保留旧密文。
+
+主密钥在该目录的 `keys/connector-master.key`（0600、目录 0700），仅
+空库首次写入时生成；文件过宽、非本用户、符号链接、密文不符或有密文
+但缺密钥时拒绝启动，绝不重生成。每个槽随机数据密钥，两层 AES-256-GCM
+信封的 AAD 都绑定独立域 `qianmo/connector/{secret,wrap}/v1`、连接 id、
+秘密槽（`password`/`ics-url`）和修订。与模型服务密钥域独立。主密钥与
+密文同机不抵御中枢失陷；备份须保存二者且保留权限。
+
+邮件句柄经独立域 HMAC 验证，绑定连接 id、修订、账号摘要、folder、
+UIDVALIDITY 和 UID；改连接或邮箱重建后旧句柄拒绝。IMAP 只用只读 EXAMINE
+和 BODY.PEEK；先 BODYSTRUCTURE 找纯文本部分，再只取前 64 KiB 的传输
+字节并解码（因此 base64 编码邮件可能得到少于 64 KiB 的文本），附件
+只列名称与大小。协议字面量超过请求上限立即断开，绝不先下载再裁剪。
+邮件头、账号、文件夹和检索字符串拒绝 CR/LF/NUL；SMTP 对 Unicode
+Subject 做 RFC 2047 编码、正文 base64 和点转义，不允许未加密认证。
+
+### 共享出站策略（D21）
+
+`commands/outboundPolicy.ts` 服务 P25 的邮件与日历及 P26c 仓库探测。P24 通知渠道用
+`consoleNotifyDestination.ts`（§12.2：只收 HTTPS，HTTP 与受保护网段须经
+`QIANMO_NOTIFY_ALLOWLIST` 按主机放行，同样先解析全部 DNS 结果、固定到已复核的
+地址拨号）；两处规则一致，配置分开。默认允许
+IMAPS 993、SMTPS 465、STARTTLS 587、HTTPS 443。HTTPS 使用 Node 内置
+HTTPS（TLS）流式请求；连接前解析全部 DNS 结果，拒绝回环、私网、链路
+本地、云元数据、组播、保留地址及非公网 IPv6。实际 TLS/HTTP 拨号固定
+到已复核的地址并验证原主机的证书，避免第二次 DNS 解析造成重绑定。
+
+运维例外来自 `<配置根>/qianmo/console/outbound-policy.json`，只读启动
+配置，必须普通文件、0600、归本进程用户所有。它不能由智能体参数或
+连接草稿提供。例如本机夹具才需要如下例外（端口必须换成实际值）：
+
+```json
+{
+  "allowAddresses": ["127.0.0.1"],
+  "allowPorts": [{"protocol": "https", "port": 8443}]
+}
+```
+
+地址例外必须写具体 IP，不能写主机通配符；端口例外按协议指定，可用
+`imaps`、`smtps`、`starttls`、`https`、`http`。HTTP 例外仅供夹具；
+CalDAV/ICS 客户端始终要求 HTTPS。公共部署不要照抄夹具例外。
+每个 HTTP 重定向逐跳重新查 DNS，最多五跳；跨源 GET 删除认证与 Cookie，
+跨源写入一律拒绝，HTTPS 重定向不允许降级到 HTTP。CalDAV 发现出的 href 也要求同源。P24 推送不跟随
+重定向。
+
+协议行、HTTP 请求行及请求/响应头最多 8 KiB，响应体最多 2 MiB，IMAP 纯文本最多
+64 KiB，控制链路结果另有 192 KiB 预算。连接、TLS 升级与协议会话各阶段使用 15 秒上限，HTTPS 请求
+以 15 秒 signal 覆盖请求与响应体。所有对外错误是固定句子，不输出上游响应、秘密 URL、口令
+或完整账号；日志也不能记录这些值。
+
+### 一次性动作记录（D22、D03）
+
+中枢本身是现有 P14 审批方，因此无需另发批准凭据。节点宿主先向中枢
+读连接修订，生成新的 operationId，拿工具的全部参数、connectorId、
+修订和 operationId 发 P14 签名请求；审批摘要还绑定节点、智能体、
+contextId 和工具名。`qianmo_mail_send`、`qianmo_calendar_create` 在节点
+与中枢都禁止窗口授权，节点也禁止旧批准的快速命中。
+
+只有新鲜单次批准被节点消费后，宿主才发 `hub.call`，携带 approvalId、
+contextId、revision、operationId。传输 `callId` 等于 operationId，来自
+认证控制通道，不能用参数伪造调用号。中枢执行点核对认证节点、智能体、
+上下文、操作、连接与修订和重新计算的完整参数摘要，并检查批准账号
+仍活跃、租户/会话权限有效、60 秒执行期限未过，先 fsync
+`approvals.ndjson` 的 `connector-consumed` 行，再原子持久化 operationId
+意图，之后才登录外部服务。第二次消费同一批准或 operationId 一律拒绝。
+网络等待后再次检查连接与授权；SMTP 收到 DATA 接受后、发正文前也复核，
+CalDAV PUT 在 DNS 解析完成后、发请求前也复核。
+
+P14 审批账本保留供批准所需的完整工具参数（包括邮件正文），沿用它的
+0600 文件与会话审批权限；下面的 connector 审计与这份审批账本分开。
+
+批准消费与连接簿不是同一事务：若在两步之间崩溃，动作会损失而不会
+重发，这是本轮选择的安全方向。已预留 operationId 长期保留；最近
+调用仅在内存保留 100 条，不把幂等历史跟着 ring buffer 淘汰。超时、
+断线、崩溃或收到 DATA/PUT 后结果未知均不自动重试，用户须核对服务端。
+审批重启沿用 P14 的撤销逻辑，未完成的旧批准也不能再次执行。
+
+业务调用审计为 `connector.mail.search/read/send` 与
+`connector.calendar.events/create`，持久化在 `connector-audit.ndjson`
+哈希链，只记连接名、结果、条数和收件人域名，不记正文、完整收件人
+或凭据。API 管理动作另记现有控制台动作账本。
+
+### 预设出处与实现边界
+
+核实日期均为 **2026-10-11**，没有用真实账号评估：
+
+| 预设 | 确认来源与裁定 |
+|---|---|
+| Gmail | [Google IMAP/SMTP 官方说明](https://developers.google.com/workspace/gmail/imap/imap-smtp)：imap.gmail.com 993，smtp.gmail.com 465/587；[应用专用密码](https://support.google.com/accounts/answer/185833)须两步验证，部分账号不可用。本轮预填 465 SMTPS |
+| Outlook | [Microsoft 官方设置](https://support.microsoft.com/en-us/outlook/pop-imap-and-smtp-settings-for-outlook-com)：outlook.office365.com 993、smtp-mail.outlook.com 587 STARTTLS；官方要求 OAuth2，本轮 IMAP LOGIN、SMTP PLAIN/LOGIN 口令客户端不能直接支持 Outlook.com，该限制写在 hint |
+| QQ 邮箱 | [官方帮助入口](https://service.mail.qq.com/detail/0/339)可打开但未取得服务器/端口正文；不从第三方填值，服务器与端口留空，提示开启 IMAP 和授权码后手填 |
+| 163 邮箱 | [官方帮助入口](https://help.mail.163.com/faq.do?m=list&categoryID=197)本次不可访问；服务器与端口留空，提示手填 |
+| iCloud 日历 | [Apple 应用专用密码官方说明](https://support.apple.com/en-us/102654)明确可用于日历；未在官方资料确认统一 CalDAV URL，因此不预填地址 |
+| 自定义邮件 / CalDAV / ICS | 不声称特定服务器事实；HTTPS CalDAV 支持 principal/home-set/collection 发现、时间段 REPORT 与 If-None-Match PUT；ICS 只读 GET |
+
+ICS 与 CalDAV 返回的 RRULE 本轮均**不展开**，结果显式带 warning，原始
+事件在窗口外但其重复实例在窗口内时可能缺失；TZID 本地时间无法解析
+时省略并提示，浮动时间按 UTC 显示并提示。没有实现 OAuth2、复杂时区、
+附件下载或完整 MIME/日历标准覆盖，夹具通过不能据此宣称真实服务已评估。
+
+## GitHub 仓库连接（P26c）
+
+`github-repo` 预设属于 `repo` 类，登记 `settings: { repo: 'owner/name', exchange: false }`，
+`secret` 是只授权这一个仓库、Contents 读写的 GitHub fine-grained token。
+仓库名沿用接力校验（禁止 `..` 与 `.git` 后缀），同一租户内不能重复
+（忽略大小写）；整个连接簿最多一个 `exchange: true`。标了交换的连接在
+未开租户时就是文件互通的交换仓库（见[文件互通](#文件互通p20)，启动时选定，
+优先于 `--files-exchange-repo`）。`agents` 必须为空：
+连接由中枢的接力与文件互通使用，`qianmo_connectors` 和五个邮件/日历
+宿主工具都不能取得或使用它。写入、删除和探测沿用 `/v0/connectors`，
+仅个人 ops 可执行；秘密省略则保留，令牌复用 P25 的信封加密库，视图、
+日志与审计不含令牌。
+
+探测对固定的 `https://api.github.com/repos/<owner>/<name>` 发认证 GET，
+通过 P25 出站策略限定 HTTPS 443、公网地址和 DNS 固定拨号，拒绝
+重定向。保存 `private` 与 `permissions.push`；缺写权限失败，交换
+仓库还必须私有。401/403 固定为“令牌无效或没有权限”，404 固定为
+“仓库不存在或令牌看不到它”，其余错误也只给固定句子，不回显上游。
+`ConnectorView.repo` 给仓库名、交换标记与事实，尚未取得事实时为 null。
+所有预设仍为“未评估”，测试使用注入 HTTP 和本机裸仓库，未访问真实 GitHub。
+
+没有 `--handoff-root` 时，`--connectors` 即启用 GitHub 接力，包括启动时
+尚无仓库连接的情况；运行中新增连接立即可用。显式 `--handoff-root`
+仍选择旧裸仓模式。每次接收、派发、核验结果及清理都按任务属主读取
+当前连接和秘密，不缓存令牌。开启租户时从任务 `ownerSubject` 的当前
+归属确定租户，只使用同租户连接；无有效属主或有效租户归属就拒绝。
+连接从未探测时可用，最近探测失败则不可用；保存修改后需重新探测，
+探测状态恢复为未知。删除即撤销，派发失败原因为“仓库连接已撤销”。
+
+连接优先于 `--handoff-repo`；只对从未由连接管理过的仓库使用 CLI 备用
+凭据，且在连接模式启用租户时关闭这类无属主的备用令牌。连接簿持久化
+非秘密的租户/仓库占用记录，因此删除或改名后、重启后都不会回退到
+旧 CLI 令牌；新建同仓库连接可以显式恢复使用。
+接力 `git ls-remote` 与删引用走 git 子进程，不经过 HTTP 出站策略；
+生产地址只可能是固定的 `https://github.com/<owner>/<name>.git`，不能
+配置其他主机或远端 URL。本地远端映射只在测试注入端口里存在。
+
+## 云端电脑（P21）
+
+页面「云端电脑」在侧栏常用一组。`--desktop` 同时启用动作账本，旧式 admin token 的资源变更也记账。中枢启用：
+
+```sh
+bun run qm -- console --desktop --control <node>=ws://<node-host>:<port> --trust <node>=<publicKey> --chat-from qianmo://<hub>/console
+```
+
+上述命令还须按本章配置控制台凭据和该节点 PSK；审批另启 `--accounts --approvals --chat-sign --chat-url <node>=<url>`，节点信任指挥公钥并配置独立审批公钥（P14）。节点常驻宿主已装配 desktop 控制处理器，资源默认关闭。只有运维身份可开关/回收；view 以上可读状态及脱敏操作，租户看不到范围外智能体，写操作在动作账本 admission 后下发，下发前重验租户权限，operationId 由请求号绑定并由节点去重。
+
+`sensitive` 默认仅截图、读页面、查元素、列 tab 自动放行；导航、点击、输入、按键与滚动逐次确认。`always` 连观察也确认。只认单次批准，正文可见于受保护审批材料，公共 `desktop.action` 不含正文，并关联审批 requestId。旧 tab 句柄、旧资源代次、已经消费的批准、结束的 turn 一律拒绝。`intent` 表示已持久化执行意图；`unknown` 表示结果未知，禁止自动重试。
+
+macOS 用 `/Applications/Google Chrome.app` 的无头 Chrome 提供**独立浏览器资料环境**，不提供电脑。资料目录 `<节点配置根>/qianmo/desktop/<agent>/browser`（0700），下载与截图目录独立；保留 Chromium 沙箱，内核分配 loopback CDP 端口。Linux 浏览器同样无头；电脑须 Xvfb+xauth（独立授权、1440×900×24、关闭 TCP），本机没有 Xvfb，完整原生电脑操作尚未验证，不能据此宣称 Linux 隔离已验收。
+
+tab 上限 4、下载 100 MiB、空闲 15 分钟自动停用，每 2 秒检查；超限关闭整个资源。内存 1–2 GiB 是待验证规划值，未配置 cgroup。回收先作废代次和待批、停整个进程树并确认退出，再删除资料；删除失败会报失败。disable 保留资料；部分停用保留另一单元的开关，急停时一律停用整个资源，状态与审计仍可读。重启验证持久化 PID 的资源标记并清查孤儿，不能确认时拒绝开启。并未实现独立 UID、容器、节点之间的文件/进程/网络隔离。
+
+P21 的本机真实回归在 `node/test/host/desktop.integration.test.ts`：源码模式默认在 macOS 起真 Chrome；编译版回归先 `bun run atlas:build:qm`，再运行：
+
+```sh
+QIANMO_TEST_COMPILED_QM="$PWD/dist/qm-darwin-arm64" bun test --preload ./atlas/tests/preload.ts ./atlas/packages/node/test/host/desktop.integration.test.ts
+```
+
+嵌入扩展复用基座虚拟模块构建插件，保留单文件交付；静态资源在受保护的会话目录内以 0600 解出并校验内容。原生插件使用节点配置根内已提取的版本缓存，工作线程重入实际 omp CLI。

@@ -6,6 +6,7 @@
 import { randomBytes } from 'node:crypto'
 import {
   chmodSync,
+  constants,
   closeSync,
   fsyncSync,
   mkdirSync,
@@ -13,6 +14,7 @@ import {
   readFileSync,
   renameSync,
   statSync,
+  lstatSync,
   unlinkSync,
   writeSync,
 } from 'node:fs'
@@ -65,7 +67,11 @@ function isMissing(error: unknown): boolean {
 }
 
 /** Atomic write with the tmp file created 0600 (`wx`: never reuse a path). */
-export function writePrivateFileAtomic(path: string, content: string): void {
+export function writePrivateFileAtomic(
+  path: string,
+  content: string,
+  options: { readonly syncDirectory?: boolean } = {},
+): void {
   ensurePrivateDir(dirname(path))
   const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`
   const fd = openSync(tmp, 'wx', PRIVATE_FILE_MODE)
@@ -77,6 +83,17 @@ export function writePrivateFileAtomic(path: string, content: string): void {
   }
   try {
     renameSync(tmp, path)
+    if (options.syncDirectory) {
+      const directory = openSync(
+        dirname(path),
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      )
+      try {
+        fsyncSync(directory)
+      } finally {
+        closeSync(directory)
+      }
+    }
   } catch (error) {
     try {
       unlinkSync(tmp)
@@ -87,8 +104,12 @@ export function writePrivateFileAtomic(path: string, content: string): void {
   }
 }
 
-export function writePrivateJson(path: string, value: unknown): void {
-  writePrivateFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`)
+export function writePrivateJson(
+  path: string,
+  value: unknown,
+  options: { readonly syncDirectory?: boolean } = {},
+): void {
+  writePrivateFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`, options)
 }
 
 /** `undefined` when the file does not exist; the raw text otherwise. */
@@ -123,15 +144,40 @@ export function isProcessAlive(pid: number): boolean {
 
 type LockRecord = { pid: number; at: string; nonce: string }
 
-type ApplyLock = { release(): void }
+export type PrivateInstanceLock = { owned(): boolean; release(): void }
 
 /**
  * `apply.lock` via `O_EXCL` (§2.6 step 1). A lock whose pid is gone is stale
  * and reclaimed once; a live holder means `busy` (`null`).
  */
-export function acquireApplyLock(now: Date = new Date()): ApplyLock | null {
-  ensurePrivateDir(providerDir())
-  const path = providerPaths.lock()
+export function acquireApplyLock(
+  now: Date = new Date(),
+): PrivateInstanceLock | null {
+  return acquirePrivateLock(providerPaths.lock(), { now })
+}
+
+/**
+ * A lock held for a process's lifetime (the schedules instance lock): a live
+ * PID/nonce never expires.
+ */
+export function acquirePrivateInstanceLock(
+  path: string,
+  now: Date = new Date(),
+): PrivateInstanceLock | null {
+  return acquirePrivateLock(path, { now })
+}
+
+/**
+ * Shared PID/nonce `O_EXCL` lock for private state directories. `maxAgeMs`
+ * is for short operation locks (routing saves, video staging): expiry bounds
+ * recovery even after PID reuse.
+ */
+export function acquirePrivateLock(
+  path: string,
+  options: { now?: Date; maxAgeMs?: number } = {},
+): PrivateInstanceLock | null {
+  ensurePrivateDir(dirname(path))
+  const now = options.now ?? new Date()
   const record: LockRecord = {
     pid: process.pid,
     at: now.toISOString(),
@@ -142,20 +188,42 @@ export function acquireApplyLock(now: Date = new Date()): ApplyLock | null {
       const fd = openSync(path, 'wx', PRIVATE_FILE_MODE)
       try {
         writeSync(fd, JSON.stringify(record))
+        fsyncSync(fd)
       } finally {
         closeSync(fd)
       }
       return {
-        release() {
+        owned() {
           const current = readTextIfExists(path)
-          if (current !== undefined && current.includes(record.nonce)) {
+          if (current === undefined) return false
+          try {
+            const value = JSON.parse(current) as Partial<LockRecord>
+            return value.pid === record.pid && value.nonce === record.nonce
+          } catch {
+            return false
+          }
+        },
+        release() {
+          if (this.owned()) {
             removeIfExists(path)
           }
         },
       }
     } catch (error) {
       if (!isErrno(error, 'EEXIST')) throw error
-      if (attempt > 0 || !isStaleLock(path)) return null
+      const before = lstatSync(path)
+      const stale = readTextIfExists(path)
+      if (attempt > 0 || !isStaleLock(path, now.getTime(), options.maxAgeMs))
+        return null
+      // Recheck identity and bytes before reclaiming a lock another writer may
+      // have replaced. The state directory is host-only, not agent-writable.
+      const after = lstatSync(path)
+      if (
+        before.ino !== after.ino ||
+        before.dev !== after.dev ||
+        readTextIfExists(path) !== stale
+      )
+        return null
       removeIfExists(path)
     }
   }
@@ -165,17 +233,36 @@ export function acquireApplyLock(now: Date = new Date()): ApplyLock | null {
 /** How long an unreadable lock is presumed to be a holder mid-write. */
 const TORN_LOCK_GRACE_MS = 10_000
 
-function isStaleLock(path: string): boolean {
+function isStaleLock(
+  path: string,
+  now: number,
+  maxAgeMs = Number.POSITIVE_INFINITY,
+): boolean {
   const text = readTextIfExists(path)
   if (text === undefined) return true
   try {
     const parsed = JSON.parse(text) as Partial<LockRecord>
-    return typeof parsed.pid !== 'number' || !isProcessAlive(parsed.pid)
+    if (typeof parsed.pid === 'number' && !isProcessAlive(parsed.pid))
+      return true
+    if (typeof parsed.at === 'string' && now - Date.parse(parsed.at) > maxAgeMs)
+      return true
+    if (
+      typeof parsed.pid === 'number' &&
+      typeof parsed.nonce === 'string' &&
+      /^[0-9a-f]{16}$/.test(parsed.nonce) &&
+      typeof parsed.at === 'string' &&
+      Number.isFinite(Date.parse(parsed.at))
+    )
+      return false
+    // Missing/malformed identity may be a holder mid-write; reclaim only
+    // after the grace period. A valid live PID/nonce expires only past
+    // `maxAgeMs`, which instance locks leave infinite.
+    return Date.now() - statSync(path).mtimeMs > TORN_LOCK_GRACE_MS
   } catch {
     // Unreadable: either a holder between open() and write(), or a torn
     // write from a crashed one. Only age tells them apart.
     try {
-      return Date.now() - statSync(path).mtimeMs > TORN_LOCK_GRACE_MS
+      return now - statSync(path).mtimeMs > TORN_LOCK_GRACE_MS
     } catch (error) {
       return isMissing(error)
     }

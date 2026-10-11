@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { ExtensionFactory } from '@oh-my-pi/pi-coding-agent/extensibility/extensions'
+import { registerDesktopTools, readDesktopResource } from './desktop.js'
+import { isDesktopTool } from './desktopPolicy.js'
 import { protectedConfigRoots } from '@qianmo/paths'
 import { ResidentHardline } from '@qianmo/resident/guard'
 import {
@@ -28,6 +30,24 @@ const extension: ExtensionFactory = pi => {
       ...protectedConfigRoots(),
       ...(config?.protectedRoots ?? []),
     ],
+  })
+  if (config?.desktopPath)
+    registerDesktopTools(pi, config.desktopPath, config.workspace)
+  const refreshDesktop = () => {
+    if (config?.desktopPath)
+      config = { ...config, desktop: readDesktopResource(config.desktopPath) }
+  }
+  pi.on('before_agent_start', async () => {
+    refreshDesktop()
+    if (config)
+      await pi.setActiveTools(
+        residentActiveTools(
+          config.edits,
+          config.hostTools,
+          config.media,
+          config.desktop,
+        ),
+      )
   })
   let pendingId: string | undefined
   pi.on('input', event => {
@@ -66,14 +86,31 @@ const extension: ExtensionFactory = pi => {
     throw new Error('Resident input did not reach the omp session transcript')
   })
   pi.on('session_start', async () => {
+    refreshDesktop()
     await pi.setActiveTools(
       config === undefined
         ? []
-        : residentActiveTools(config.edits, config.hostTools),
+        : residentActiveTools(
+            config.edits,
+            config.hostTools,
+            config.media,
+            config.desktop,
+          ),
     )
   })
   pi.on('tool_call', async (event, ctx) => {
     if (config === undefined) return { block: true, reason: failure }
+    if (isDesktopTool(event.toolName)) {
+      refreshDesktop()
+      return residentToolVerdict(
+        {
+          toolName: event.toolName,
+          input: event.input as Readonly<Record<string, unknown>>,
+        },
+        config,
+        { agentKind: ctx.agent.kind },
+      )
+    }
     const denial = hardline.verdict(event.toolName, event.input)
     if (denial !== null) return { block: true, reason: denial.target.reason }
     const verdict = residentToolVerdict(

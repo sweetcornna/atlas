@@ -75,7 +75,7 @@ class LongChat extends CountingChat {
 
 /** Every page there is, as the admin sees it. */
 const PAGES = [
-  '/',
+  '/overview',
   '/nodes',
   '/nodes/tokyo-1',
   '/chat?session=session-1',
@@ -247,7 +247,7 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
   test('the key state of the two busiest pages is on the first screen', async () => {
     const tab = await phone(browser)
     try {
-      await open(tab, served.base, '/')
+      await open(tab, served.base, '/overview')
       // The four health cards' first one, whole.
       const card = await tab.evaluate<{ top: number; bottom: number }>(
         `(() => { const r = document.querySelector('main .card').getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; })()`,

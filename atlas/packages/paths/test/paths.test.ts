@@ -33,10 +33,12 @@ describe('ompChildEnv', () => {
       Omp_Profile: 'unrelated',
       xdg_config_home: '/unrelated',
       Claude_Config_Dir: '/unrelated',
+      Bun_Runtime_Transpiler_Cache_Path: '/unrelated/bun',
       KEEP: '1',
     }
     const child = ompChildEnv(base)
     expect(Object.keys(child).sort()).toEqual([
+      'BUN_RUNTIME_TRANSPILER_CACHE_PATH',
       'HOME',
       'KEEP',
       'PI_CONFIG_DIR',
@@ -45,6 +47,10 @@ describe('ompChildEnv', () => {
     ])
     expect(join(base.HOME, child.PI_CONFIG_DIR!)).toBe('/srv/node-state/omp')
     expect(child.PI_NATIVES_DIR).toBe('/srv/node-state/omp/natives')
+    // Bun's transpiler cache stays under the omp root, not the OS cache in HOME.
+    expect(child.BUN_RUNTIME_TRANSPILER_CACHE_PATH).toBe(
+      '/srv/node-state/omp/cache/bun',
+    )
     expect(base.pi_config_dir).toBe('.unrelated')
   })
   test('PI_CONFIG_DIR joined onto homedir lands on the omp root, even outside home', () => {
@@ -66,6 +72,7 @@ describe('ompChildEnv', () => {
       KEEP: '1',
     })
     expect(Object.keys(env).sort()).toEqual([
+      'BUN_RUNTIME_TRANSPILER_CACHE_PATH',
       'KEEP',
       'PI_CONFIG_DIR',
       'PI_NATIVES_DIR',

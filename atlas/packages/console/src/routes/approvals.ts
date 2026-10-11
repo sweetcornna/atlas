@@ -60,7 +60,7 @@ export const approvalsRoute: RouteModule = {
   area: {
     id: 'approvals',
     label: '审批',
-    group: 'run',
+    group: 'manage',
     href: '/approvals',
     icon: 'list-checks',
   },

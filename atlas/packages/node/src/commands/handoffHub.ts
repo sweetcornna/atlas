@@ -52,13 +52,16 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  readFileSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runGit } from '@qianmo/handoff'
+import { deviceTokenPath } from './handoffDevice.js'
 import {
+  readTokenFile,
   type HandoffProject,
   HandoffUserError,
   type HubLocation,
@@ -87,6 +90,12 @@ while read -r old new ref; do
       fi
       ;;
   esac
+  if [ -n "$QIANMO_HANDOFF_DEVICE" ]; then
+    case "$ref" in
+      refs/qianmo/wip/"$QIANMO_HANDOFF_DEVICE"/* | refs/qianmo/sessions/"$QIANMO_HANDOFF_DEVICE"/*) ;;
+      *) ok=no ;;
+    esac
+  fi
   if [ "$ok" != yes ]; then
     printf '[qianmo handoff] refused %s: only refs/qianmo/wip/<device>/<branch> and refs/qianmo/sessions/<device>/<session> are accepted\\n' "$ref" >&2
     status=1
@@ -98,6 +107,11 @@ exit "$status"
 /** `'…'` for `sh`, for a value known to hold no single quote. */
 function quoted(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`
+}
+
+/** A copyable shell argument; quoted only when the shell would interpret it. */
+export function handoffShellArgument(value: string): string {
+  return /^[A-Za-z0-9_./:@%=-]+$/.test(value) ? value : quoted(value)
 }
 
 /**
@@ -158,6 +172,8 @@ export async function initHubRepository(
   hub: HubLocation,
   project: string,
 ): Promise<string> {
+  if (hub.kind === 'https')
+    throw new HandoffUserError('HTTPS 项目由控制台 API 创建')
   if (hub.kind === 'local') {
     const repo = join(hub.root, `${project}.git`)
     mkdirSync(hub.root, { recursive: true, mode: 0o700 })
@@ -170,7 +186,12 @@ export async function initHubRepository(
     }
     mkdirSync(join(repo, 'hooks'), { recursive: true })
     const hook = join(repo, 'hooks', 'pre-receive')
-    writeFileSync(hook, PRE_RECEIVE_HOOK, { mode: 0o755 })
+    let current = ''
+    try {
+      current = readFileSync(hook, 'utf8')
+    } catch {}
+    if (current !== PRE_RECEIVE_HOOK)
+      writeFileSync(hook, PRE_RECEIVE_HOOK, { mode: 0o755 })
     chmodSync(hook, 0o755)
     return repo
   }
@@ -206,6 +227,15 @@ export function hubConnection(
 ): HubConnection {
   const url = hubRepoUrl(project.hub, project.project)
   if (project.hub.kind === 'local') return { url, env: {} }
+  if (project.hub.kind === 'https')
+    return {
+      url,
+      env: {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'http.extraHeader',
+        GIT_CONFIG_VALUE_0: `Authorization: Bearer ${readTokenFile(deviceTokenPath())}`,
+      },
+    }
   if (project.key === undefined) {
     throw new HandoffUserError(
       'SSH 中枢没有登记专用钥匙：重新 qm handoff init --key <钥匙文件>',

@@ -6,7 +6,7 @@
  * (`handoff-p17-plan.md` §2 P17.4 本地命令; design `handoff-m1.md` v1.1).
  *
  *   qm handoff init --hub <ssh target>:<root> --console <https://…> [--key …] [--token-file …]
- *   qm handoff sync [--hook qmcode|claude-code]
+ *   qm handoff sync [--hook auto|codex|qmcode|claude-code]
  *   qm handoff now [--goal …] [--done …] [--remaining …] [--deadline …]
  *   qm handoff status [--wait] [--task <id>]
  *   qm handoff mcp                       (stdio MCP server, `handoffMcp.ts`)
@@ -26,11 +26,20 @@
  * `--help`.
  */
 
-import { basename, isAbsolute, resolve } from 'node:path'
+import { basename, isAbsolute, join, resolve } from 'node:path'
 import { statSync } from 'node:fs'
 import { isatty } from 'node:tty'
+import { handoffCodeStore } from './handoffConfig.js'
+import { runClean } from './handoffClean.js'
 import { isTaskId, sessionRef, type HandoffTool } from '@qianmo/handoff'
-import { qmcodeHome } from '@qianmo/paths'
+import { codexHome, claudeProjectsDir, qmcodeHome } from '@qianmo/paths'
+import {
+  loadDevice,
+  loginDevice,
+  logoutDevice,
+  pairedProject,
+} from './handoffDevice.js'
+import { handoffPluginPath, installHandoffPlugin } from './handoffPlugin.js'
 import { gitTopLevel, initHubRepository } from './handoffHub.js'
 import {
   PROCESS_OUTPUT,
@@ -42,6 +51,7 @@ import {
 } from './handoffNow.js'
 import {
   appendSyncLog,
+  canonicalPath,
   assertDeviceName,
   assertProjectName,
   defaultDeviceName,
@@ -53,6 +63,7 @@ import {
   readTokenFile,
   recordSession,
   saveProject,
+  within,
 } from './handoffStore.js'
 import {
   drainPending,
@@ -73,6 +84,7 @@ import {
   parseClaudeCodeHookInput,
   parseQmcodeNotify,
   qmcodeTurnEnd,
+  qmcodeSnapshot,
   readTranscript,
   waitForTurnEnd,
 } from './handoffTranscript.js'
@@ -81,11 +93,18 @@ import { residentOptionValue } from './residentArgs.js'
 const HANDOFF_HELP_TEXT = `Usage: qm handoff <command> [options]
 
 Hand the work in this repository over to the cloud: the work tree (including
-uncommitted and untracked, not ignored files) and the current qmcode or Claude
-Code session go to your hub as git objects; the hub confirms they landed
+uncommitted and untracked, not ignored files) and the current Codex, qmcode or
+Claude Code session go to your hub as git objects; the hub confirms they landed
 before you are told it is safe to shut down.
 
 Commands:
+
+  login <console> --code <XXXX-XXXX-XXXX> [--name <name>] [--force]
+                           Pair once; repositories register automatically via HTTPS git.
+  logout                   Remove local device files; revoke on the console.
+  whoami                   Device id, name and console; never prints its token.
+  plugin install --tool claude-code|codex|omp [--dry-run]
+  plugin path              Embedded plugin installation directory.
 
   init --hub <target>:<root> --console <url> [options]
                            Register this repository. Creates <root>/<project>.git
@@ -108,7 +127,7 @@ Commands:
                            Running init again keeps --project, --device,
                            --key and --token-file from last time unless given.
 
-  sync [--hook qmcode|claude-code]
+  sync [--hook auto|codex|qmcode|claude-code]
                            Push a shadow commit of the work tree and the
                            session transcript (secrets redacted) to the hub.
                            Without --hook: now, for the session last seen in
@@ -150,12 +169,14 @@ Commands:
                            qianmo_status, qianmo_handoff (pushes the work tree
                            and session and registers the task, like now; the
                            turn that calls it is left out of the session) and
-                           qianmo_task. Built into qmcode; for Claude Code:
+                           qianmo_task, qianmo_send, qianmo_pull and
+                           qianmo_login_status. Built into qmcode; for Claude Code:
                              claude mcp add qianmo -- qm handoff mcp
 
   node --node <name> --root <abs> --trust <node>=<publicKey>
        --app-server ws://127.0.0.1:<port> --app-server-token-file <abs>
-       --app-server-home <abs> [--project <name>]... [--qmcode-home <abs>]
+       --app-server-home <abs> [--app-server-bin codex] [--app-server-home-env CODEX_HOME]
+       [--start-app-server] [--project <name>]... [--qmcode-home <abs>]
        [--port 38630] [--bind 127.0.0.1] [--app-server-pid-file <abs>]
                            The cloud end, on a node: listens on
                            qianmo://<name>/handoff for the hub's signed
@@ -166,7 +187,7 @@ Commands:
                            Refuses to start without a working bwrap. Started by
                            demo/env/beta/handoff-node.sh, not by hand.
 
-  attach [<task>] [--ssh <target>] [--node-token-file <path>]
+  attach [<task>] [--client-bin codex] [--ssh <target>] [--node-token-file <path>]
          [--app-server-port 38631] [--local-port <port>]
          [--console <url> --token-file <file>]
                            Join a task running in the cloud from this machine:
@@ -199,6 +220,8 @@ Commands:
                            back into $QMCODE_HOME/sessions, so qmcode resume
                            <thread> continues it. The hub records "returned".
                            Without <task>: this project's latest finished one.
+
+  clean [--task <id>]      Delete GitHub branches of this device's failed/returned tasks.
 
 Files: <config root>/qianmo/handoff/{projects.json,sessions.json,sync.log,state/}.
 qmcode sessions are looked up under $QMCODE_HOME/sessions (default ~/.qmcode).
@@ -386,10 +409,14 @@ interface HookReport {
 }
 
 async function hookReport(
-  tool: HandoffTool,
+  tool: HandoffTool | 'auto',
   positional: readonly string[],
 ): Promise<HookReport | null> {
-  if (tool === 'qmcode') {
+  if (
+    tool === 'qmcode' ||
+    ((tool === 'auto' || tool === 'codex') &&
+      positional.at(-1)?.startsWith('{'))
+  ) {
     const payload = positional.at(-1)
     if (payload === undefined) {
       throw new HandoffUserError(
@@ -398,15 +425,35 @@ async function hookReport(
     }
     const notify = parseQmcodeNotify(payload)
     if (notify === null) return null
+    const detected = tool === 'auto' ? 'codex' : tool
     return {
-      tool,
+      tool: detected,
       sessionId: notify.threadId,
       cwd: notify.cwd,
-      file: findQmcodeRollout(qmcodeHome(), notify.threadId),
+      file: findQmcodeRollout(
+        detected === 'codex' ? codexHome() : qmcodeHome(),
+        notify.threadId,
+      ),
       judge: content => qmcodeTurnEnd(content, notify.turnId),
     }
   }
   const input = parseClaudeCodeHookInput(await readStdin())
+  if (tool === 'auto') {
+    const under = (root: string) =>
+      within(canonicalPath(root), canonicalPath(input.transcriptPath))
+    tool = under(claudeProjectsDir())
+      ? 'claude-code'
+      : /^rollout-.*\.jsonl$/.test(basename(input.transcriptPath)) &&
+          under(join(codexHome(), 'sessions'))
+        ? 'codex'
+        : under(qmcodeHome())
+          ? 'qmcode'
+          : 'auto'
+    if (tool === 'auto') {
+      appendSyncLog({ event: 'skip', reason: 'unknown hook transcript tool' })
+      return null
+    }
+  }
   return {
     tool,
     sessionId: input.sessionId,
@@ -415,7 +462,11 @@ async function hookReport(
       readTranscript(input.transcriptPath) === null
         ? null
         : input.transcriptPath,
-    judge: content => claudeCodeTurnEnd(content, input.event),
+    judge: content => {
+      if (tool === 'claude-code') return claudeCodeTurnEnd(content, input.event)
+      const snapshot = qmcodeSnapshot(content, false)
+      return snapshot.open ? null : snapshot.end
+    },
   }
 }
 
@@ -424,16 +475,18 @@ async function hookReport(
  * on disk, leave it pending and drain. Never throws; always 0.
  */
 async function runHookSync(
-  tool: HandoffTool,
+  tool: HandoffTool | 'auto',
   positional: readonly string[],
 ): Promise<number> {
   try {
     const report = await hookReport(tool, positional)
     if (report === null) return 0
+    tool = report.tool
+    appendSyncLog({ event: 'hook-seen', tool, sessionId: report.sessionId })
     const root = await gitTopLevel(report.cwd)
-    // A repository that never ran `init` is not a handoff project: nothing to
-    // do, and nothing worth a log line on every turn.
-    const project = root === null ? undefined : loadProject(root)
+    // Without explicit registration or local pairing there is no handoff
+    // project to sync.
+    const project = root === null ? undefined : await pairedProject(root)
     if (root === null || project === undefined) return 0
     if (report.file === null) {
       appendSyncLog({
@@ -477,7 +530,11 @@ async function runHookSync(
       file: report.file,
       length: landed.end,
     })
-    await drainPending(project, { trigger: `hook:${tool}` })
+    // GitHub has task-scoped refs, not a continuously mirrored repository.
+    // Hooks keep the checked prefix locally; explicit now/sync registers the
+    // task before a node may run it, so no untracked remote refs accumulate.
+    if ((await handoffCodeStore(project)) !== 'github')
+      await drainPending(project, { trigger: `hook:${tool}` })
   } catch (error) {
     appendSyncLog({
       event: 'hook-error',
@@ -490,6 +547,8 @@ async function runHookSync(
 
 async function runManualSync(cwd: string, output: Output): Promise<number> {
   const project = await projectAt(cwd)
+  if ((await handoffCodeStore(project)) === 'github')
+    return runNow(cwd, {}, output, { whileRunning: 'cut' })
   let snapshot: ReturnType<typeof sessionSnapshot> | null = null
   try {
     snapshot = sessionSnapshot(cwd, project.root, 'cut')
@@ -552,8 +611,13 @@ async function runSync(
     if (positional.length > 0) usage(`sync 不接受参数 ${positional[0]}`)
     return await runManualSync(cwd, output)
   }
-  if (hook !== 'qmcode' && hook !== 'claude-code') {
-    usage('--hook 只认 qmcode 或 claude-code')
+  if (
+    hook !== 'qmcode' &&
+    hook !== 'claude-code' &&
+    hook !== 'codex' &&
+    hook !== 'auto'
+  ) {
+    usage('--hook 只认 auto、codex、qmcode 或 claude-code')
   }
   return await runHookSync(hook, positional)
 }
@@ -669,6 +733,7 @@ async function runAttachCommand(
   output: Output,
 ): Promise<number> {
   const { values, positional } = parseOptions(args, [
+    '--client-bin',
     '--ssh',
     '--node-token-file',
     '--app-server-port',
@@ -691,6 +756,9 @@ async function runAttachCommand(
     cwd,
     {
       ...(taskId === undefined ? {} : { taskId }),
+      ...(values.get('--client-bin') === undefined
+        ? {}
+        : { clientBin: values.get('--client-bin') }),
       ...(sshTarget === undefined ? {} : { sshTarget }),
       ...(nodeTokenFile === undefined ? {} : { nodeTokenFile }),
       ...(appServerPort === undefined ? {} : { appServerPort }),
@@ -721,10 +789,68 @@ async function dispatchHandoff(
     return 0
   }
   switch (command) {
+    case 'login': {
+      const { values, flags, positional } = parseOptions(
+        rest,
+        ['--code', '--name'],
+        ['--force'],
+      )
+      if (positional.length !== 1 || !values.has('--code'))
+        usage('login 需要控制台地址与 --code')
+      const device = await loginDevice(
+        positional[0]!,
+        values.get('--code')!,
+        values.get('--name'),
+        flags.has('--force'),
+      )
+      output.out(
+        `已配对 ${device.deviceId}（${device.name}） ${device.console}`,
+      )
+      return 0
+    }
+    case 'logout':
+      if (rest.length) usage('logout 不接受参数')
+      logoutDevice()
+      output.out('本机已退出配对；中枢吊销请在控制台操作')
+      return 0
+    case 'whoami': {
+      if (rest.length) usage('whoami 不接受参数')
+      const device = loadDevice()
+      output.out(
+        device
+          ? `${device.deviceId}（${device.name}） ${device.console}`
+          : '本机尚未配对',
+      )
+      return 0
+    }
+    case 'plugin': {
+      if (rest[0] === 'path' && rest.length === 1) {
+        output.out(handoffPluginPath())
+        return 0
+      }
+      if (rest[0] !== 'install') usage('plugin 只认 install 或 path')
+      const { values, flags, positional } = parseOptions(
+        rest.slice(1),
+        ['--tool'],
+        ['--dry-run'],
+      )
+      const tool = values.get('--tool')
+      if (
+        positional.length ||
+        (tool !== 'codex' && tool !== 'claude-code' && tool !== 'omp')
+      )
+        usage('plugin install --tool claude-code|codex|omp')
+      return installHandoffPlugin(tool, flags.has('--dry-run'), output)
+    }
     case 'init':
       return await runInit(rest, cwd, output)
     case 'sync':
       return await runSync(rest, cwd, output)
+    case 'clean': {
+      const parsed = parseOptions(rest, ['--task'])
+      if (parsed.positional.length) usage('clean 不接受位置参数')
+      return runClean(cwd, { taskId: parsed.values.get('--task') }, output)
+    }
     case 'now':
       return await runNowCommand(rest, cwd, output)
     case 'status':

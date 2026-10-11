@@ -38,6 +38,8 @@ import {
   ADMIN_TOKEN_ENV_VAR,
   VIEW_TOKEN_ENV_VAR,
 } from './consoleTokenSources.js'
+import { parseFilesExchangeRepo, filesRetention } from './filesExchangeRepo.js'
+import { parseHandoffRepo } from './handoffRepoCli.js'
 import { type HubLocation, parseHub } from './handoffStore.js'
 import { residentOptionValue } from './residentArgs.js'
 
@@ -107,7 +109,7 @@ export interface ConsoleHandoffNode {
   /** `ws(s)://` endpoint of `qm handoff node` on that node. */
   readonly url: string
   /** Its repository root as git reaches it (`--handoff-node-git`). */
-  readonly git: HubLocation
+  readonly git?: HubLocation
 }
 
 /** One node and the machine it runs on, as `--node-server` pinned it. */
@@ -445,6 +447,8 @@ export interface ConsoleCliConfig {
   readonly printWakeIdentity?: boolean
   readonly printApproverIdentity?: boolean
   readonly approvals?: boolean
+  readonly memory?: boolean
+  readonly controlTargets?: readonly ConsoleNodeTarget[]
   /**
    * CA 根证书的绝对路径。**给了才有证书栏**（key-distribution.md §10.1）。
    *
@@ -486,6 +490,12 @@ export interface ConsoleCliConfig {
   readonly chatFrom: string
   /** 会话落盘的绝对路径。 */
   readonly chatStorePath: string
+  readonly filesExchangeRepo?: readonly [string, string]
+  readonly filesExchangeRetainMs?: number
+  readonly files?: boolean
+  readonly connectors?: boolean
+  readonly desktop?: boolean
+  readonly schedules?: boolean
   /**
    * 每个节点跑在哪台服务器上。**给了才有归属面**，一个都没给就整个不显示。
    *
@@ -525,7 +535,7 @@ export interface ConsoleCliConfig {
   /**
    * 动作账本的绝对路径（P15.9）。**跟着 {@link accounts} 走**：开了个人账号就有
    * 这本账，而且没有单独关掉它的开关——「每次打开转录都记账、当事人查得到」是
-   * 对真人的承诺（D6），不是一个可选项。另在 {@link verifyActions} 下出现。
+   * 对真人的承诺（D6），不是一个可选项。另在 {@link verifyActions} 或 desktop 下出现。
    */
   readonly actionsStorePath?: string
   /**
@@ -545,6 +555,8 @@ export interface ConsoleCliConfig {
    * 闸门（同一个根）推拉。台账与审计链在配置根下
    * （`consoleHandoff.ts`），这里只有根目录这一个选择。
    */
+  readonly handoffRepos?: readonly (readonly [string, string])[]
+  readonly handoffRetentionMs?: number
   readonly handoffRoot?: string
   /**
    * 接力任务派给哪些节点桥（P17.5）。**给了才派发**，要 `--handoff-root`；每个
@@ -588,6 +600,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let printWakeIdentity = false
   let printApproverIdentity = false
   let approvals = false
+  let memory = false
+  const controlTargets: ConsoleNodeTarget[] = []
   let trustCa: string | undefined
   const trusted = new Map<string, string>()
   let registryTokenFile: string | undefined
@@ -600,6 +614,12 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let legacyChat = false
   let chatFrom = DEFAULT_CONSOLE_CHAT_FROM
   let chatStorePath = consoleChatStorePath()
+  let filesExchangeRepo: readonly [string, string] | undefined
+  let filesExchangeRetainMs = 0
+  let files = false
+  let connectors = false
+  let desktop = false
+  let schedules = false
   const nodeServers: ConsoleNodeServer[] = []
   let serverNotesPath = consoleServerNotesPath()
   const managed: ConsoleManagedAddress[] = []
@@ -626,6 +646,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   const providerKeys = new Map<string, string>()
   // 只认 `--providers` 才有意义的几项，同 `needsAccounts`。
   const needsProviders: string[] = []
+  const handoffRepos = new Map<string, string>()
+  let handoffRetentionMs: number | undefined
   let handoffRoot: string | undefined
   const handoffNodeUrls = new Map<string, string>()
   const handoffNodeGits = new Map<string, HubLocation>()
@@ -772,6 +794,30 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       signWakes = true
     } else if (arg === '--chat-sign') {
       signChats = true
+    } else if (arg === '--memory') {
+      memory = true
+    } else if (arg === '--control' || arg?.startsWith('--control=')) {
+      const parsed = residentOptionValue(args, index, '--control')
+      const named = parseNamedValue(parsed.value, '--control')
+      const url = new URL(named.value)
+      if (
+        !['ws:', 'wss:'].includes(url.protocol) ||
+        url.username ||
+        url.password
+      )
+        throw new Error('--control must use ws(s) without URL credentials')
+      if (
+        controlTargets.some(
+          target => target.node === named.node || target.url === url.toString(),
+        )
+      )
+        throw new Error('--control repeats a node or endpoint')
+      controlTargets.push({
+        node: named.node,
+        url: url.toString(),
+        legacy: false,
+      })
+      index = parsed.next
     } else if (arg === '--approvals') {
       approvals = true
     } else if (arg === '--print-approver-identity') {
@@ -819,6 +865,29 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       const parsed = residentOptionValue(args, index, '--admin-token')
       adminToken = nonEmpty(parsed.value, '--admin-token')
       index = parsed.next
+    } else if (
+      arg === '--files-exchange-repo' ||
+      arg?.startsWith('--files-exchange-repo=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--files-exchange-repo')
+      if (filesExchangeRepo) throw new Error('--files-exchange-repo 重复')
+      filesExchangeRepo = parseFilesExchangeRepo(parsed.value)
+      index = parsed.next
+    } else if (
+      arg === '--files-exchange-retain' ||
+      arg?.startsWith('--files-exchange-retain=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--files-exchange-retain')
+      filesExchangeRetainMs = filesRetention(parsed.value)
+      index = parsed.next
+    } else if (arg === '--files') {
+      files = true
+    } else if (arg === '--connectors') {
+      connectors = true
+    } else if (arg === '--desktop') {
+      desktop = true
+    } else if (arg === '--schedules') {
+      schedules = true
     } else if (arg === '--chat-url' || arg?.startsWith('--chat-url=')) {
       const parsed = residentOptionValue(args, index, '--chat-url')
       // A complete URL is legacy even when its query contains `=`. Only
@@ -1085,6 +1154,26 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       )
       needsProviders.push('--provider-ssh-key')
       index = parsed.next
+    } else if (arg === '--handoff-repo' || arg?.startsWith('--handoff-repo=')) {
+      const parsed = residentOptionValue(args, index, '--handoff-repo')
+      const [repo, file] = parseHandoffRepo(parsed.value)
+      if (handoffRepos.has(repo)) throw new Error('--handoff-repo 仓库重复')
+      handoffRepos.set(repo, file)
+      index = parsed.next
+    } else if (
+      arg === '--handoff-retention-days' ||
+      arg?.startsWith('--handoff-retention-days=')
+    ) {
+      const parsed = residentOptionValue(
+        args,
+        index,
+        '--handoff-retention-days',
+      )
+      const days = Number(parsed.value)
+      if (!Number.isFinite(days) || days < 0 || days > 3650)
+        throw new Error('--handoff-retention-days 要 0–3650')
+      handoffRetentionMs = days * 86400_000
+      index = parsed.next
     } else if (arg === '--handoff-root' || arg?.startsWith('--handoff-root=')) {
       const parsed = residentOptionValue(args, index, '--handoff-root')
       if (!isAbsolute(parsed.value)) {
@@ -1189,8 +1278,23 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     )
   }
 
+  if (files && controlTargets.length === 0)
+    throw new Error('--files needs --control')
+  if (connectors && (!accounts || !approvals || controlTargets.length === 0))
+    throw new Error('--connectors needs --accounts, --approvals and --control')
+  if (desktop && controlTargets.length === 0)
+    throw new Error('--desktop needs --control')
+  if (files && !filesExchangeRepo && !connectors)
+    throw new Error('--files needs --files-exchange-repo or --connectors')
+  if (schedules && chatTargets.length === 0)
+    throw new Error('--schedules needs --chat-url')
+
   // 给了库路径却没开账号，多半是以为给路径就开了。静默照旧跑会让人以为账号已
   // 上线，而页面上什么都没变。
+  if (memory && controlTargets.length === 0)
+    throw new Error('--memory needs --control')
+  if (controlTargets.some(target => !trusted.has(target.node)))
+    throw new Error('--control needs explicit --trust for every control node')
   if (
     approvals &&
     (!accounts ||
@@ -1287,19 +1391,28 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     })),
   ].sort((a, b) => (a.node < b.node ? -1 : 1))
 
-  // 派发（P17.5）只在中枢上有意义：没有 `--handoff-root` 就没有台账可派。端点与
-  // 裸仓根按节点成对给，缺一半的节点要么拨不通、要么推不进，起来只会一直失败。
+  // 派发需要台账：旧裸仓模式的端点与 git 根成对给；GitHub 模式只需要端点。
   const handoffGiven = [
     ...(handoffNodeUrls.size > 0 ? ['--handoff-node'] : []),
     ...(handoffNodeGits.size > 0 ? ['--handoff-node-git'] : []),
     ...(handoffNodeKey === undefined ? [] : ['--handoff-node-key']),
     ...(handoffNotifyUrl === undefined ? [] : ['--handoff-notify-url']),
   ]
-  if (handoffGiven[0] !== undefined && handoffRoot === undefined) {
-    throw new Error(`${handoffGiven[0]} needs --handoff-root`)
+  if (
+    handoffGiven[0] !== undefined &&
+    handoffRoot === undefined &&
+    handoffRepos.size === 0 &&
+    !connectors
+  ) {
+    throw new Error(
+      `${handoffGiven[0]} needs --handoff-root, --handoff-repo or --connectors`,
+    )
   }
   for (const node of handoffNodeUrls.keys()) {
-    if (!handoffNodeGits.has(node)) {
+    if (
+      !handoffNodeGits.has(node) &&
+      (handoffRoot !== undefined || (handoffRepos.size === 0 && !connectors))
+    ) {
       throw new Error(
         `--handoff-node ${node} needs --handoff-node-git ${node}=<ssh target>:<root>`,
       )
@@ -1329,7 +1442,9 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     ([node, url]) => ({
       node,
       url,
-      git: handoffNodeGits.get(node) as HubLocation,
+      ...(handoffNodeGits.has(node)
+        ? { git: handoffNodeGits.get(node) as HubLocation }
+        : {}),
     }),
   )
 
@@ -1351,6 +1466,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     ...(printWakeIdentity ? { printWakeIdentity } : {}),
     ...(printApproverIdentity ? { printApproverIdentity } : {}),
     ...(approvals ? { approvals } : {}),
+    ...(memory ? { memory: true } : {}),
+    ...(controlTargets.length === 0 ? {} : { controlTargets }),
     ...(trustCa === undefined ? {} : { trustCa }),
     label: label ?? `${hostname}:${port}`,
     ...(viewToken === undefined ? {} : { viewToken }),
@@ -1360,6 +1477,11 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     chatTargets,
     chatFrom,
     chatStorePath,
+    ...(files ? { files: true } : {}),
+    ...(connectors ? { connectors: true } : {}),
+    ...(desktop ? { desktop: true } : {}),
+    ...(filesExchangeRepo ? { filesExchangeRepo, filesExchangeRetainMs } : {}),
+    ...(schedules ? { schedules: true } : {}),
     nodeServers,
     serverNotesPath,
     ...(managed.length === 0 ? {} : { managed }),
@@ -1379,11 +1501,13 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
           breakGlass,
         }
       : {}),
-    ...(accounts || verifyActions ? { actionsStorePath } : {}),
+    ...(accounts || verifyActions || desktop ? { actionsStorePath } : {}),
     ...(verifyActions ? { verifyActions } : {}),
     ...(providers
       ? { providers: { ...providerPaths, nodes: providerNodes } }
       : {}),
+    ...(handoffRepos.size === 0 ? {} : { handoffRepos: [...handoffRepos] }),
+    ...(handoffRetentionMs === undefined ? {} : { handoffRetentionMs }),
     ...(handoffRoot === undefined ? {} : { handoffRoot }),
     ...(handoffNodes.length === 0 ? {} : { handoffNodes }),
     ...(handoffNodeKey === undefined ? {} : { handoffNodeKey }),
@@ -1419,6 +1543,8 @@ export const CONSOLE_HELP_TEXT = `Usage: qm console [options]
 
 Serve the Qianmo web console. Requires the Bun runtime.
 Full documentation: docs/dev/console.md
+
+Avatars are saved automatically in <config root>/qianmo/console/avatars.json.
 
 Options (each accepts both --name value and --name=value):
 
@@ -1514,6 +1640,19 @@ Options (each accepts both --name value and --name=value):
                            Default ${DEFAULT_CONSOLE_CHAT_FROM}.
   --chat-store <abs path>  Where sessions and transcripts land, absolute path.
                            Default <config root>/qianmo/console/chat.ndjson.
+  --connectors             Enable mail/calendar and GitHub repo connections.
+                           Without --handoff-root, also enable GitHub relay;
+                           repo connections override --handoff-repo tokens.
+                           Needs --accounts, --approvals and --control.
+                           Secrets remain on this hub; all presets unevaluated.
+                           Outbound exceptions: <config root>/qianmo/console/outbound-policy.json.
+  --desktop                Enable the cloud computer (browser/desktop per main
+                           agent) and its action ledger; requires --control.
+  --schedules             Enable console schedules; requires an active chat face.
+                           Runs every 30 seconds; missed slots catch up once.
+                           State: <config root>/qianmo/console/schedules/.
+                           ESTOP: <config root>/qianmo/scheduler/ESTOP.
+                           Notification formats are unevaluated.
   --node-server <node>=<server>
                            Which machine a node runs on. Repeatable, one node
                            per flag, and a node may not be named twice. The
@@ -1541,6 +1680,22 @@ Options (each accepts both --name value and --name=value):
                            Where per-server notes land, absolute path.
                            Default <config root>/qianmo/console/server-notes.ndjson.
   --approvals              Enable signed personal approvals over pinned chat links.
+  --memory                 Account-scoped long memory. Requires --control.
+                           Recall across chats also needs --chat-sign and the
+                           resident --controller <console>=<publicKey>.
+  --files                  Enable GitHub file exchange; requires --control
+                           and --files-exchange-repo or --connectors (the
+                           repo connection marked for exchange wins; fixed at
+                           start). With tenancy only --files-exchange-repo.
+                           Hub stores only ledgers.
+  --files-exchange-repo <owner/name>=<abs token file>
+                           Private GitHub exchange repo, contents read/write.
+  --files-exchange-retain <duration>
+                           Branch retention (0 by default; e.g. 30m, 1h).
+                           Tokens require wss or loopback ws control links.
+  --control <node>=<ws(s)://url>
+                           Signed control link (repeatable). Requires --trust
+                           for each node; uses the --print-wake-identity key.
   --print-approver-identity Print the separate approval public key and exit.
   --tenancy <path>          Enable node-granular tenant policy (absolute JSON path).
   --usage-policy <path>     Optional quota policy; default shadow without limits.
@@ -1629,6 +1784,13 @@ Options (each accepts both --name value and --name=value):
                            an entry is refused before ssh starts. Default
                            <config root>/qianmo/console-keys/provider_known_hosts.
                            No whitespace or %. Only with --providers.
+  --handoff-repo <owner/name>=<abs token file>
+                           GitHub relay fallback when no repo connection has owned it.
+                           Repeat for each repo; 0600 token, Contents read/write.
+                           With --connectors: fallback only without tenancy.
+                           No --handoff-root or --handoff-node-git needed.
+  --handoff-retention-days <days>
+                           Clean failed/expired GitHub refs after 7 days by default.
   --handoff-root <abs path>
                            Turn on /v0/handoff, the hub side of the local-to-
                            cloud handoff. The directory holds one bare
@@ -1644,8 +1806,9 @@ Options (each accepts both --name value and --name=value):
                            A node bridge (\`qm handoff node\`) to hand
                            accepted tasks to: one task per node at a time,
                            nodes tried in the order given. Repeatable. Needs
-                           --handoff-root and a --handoff-node-git for the same
-                           node; the PSK is the node's derived variable, the
+                           --connectors or --handoff-repo for GitHub relay;
+                           legacy --handoff-root also needs --handoff-node-git.
+                           The PSK is the node's derived variable, the
                            one --chat-url reads. Requests are always signed
                            with this console's identity (--print-wake-identity);
                            the bridge must --trust it.

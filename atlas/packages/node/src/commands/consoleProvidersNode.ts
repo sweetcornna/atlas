@@ -30,7 +30,7 @@ const HASH = /^sha256:[0-9a-f]{64}$/
 const ENV_KEY = /^[A-Z][A-Z0-9_]{0,63}$/
 const SLOT_KEY = /^modelSettings\.[a-z][a-z0-9-]{0,31}$/
 const OMP_PATH =
-  /^(?:models\.providers\.qm-[a-z0-9._-]+(?:\.[A-Za-z0-9_.-]+)*|config\.(?:modelRoles|defaultThinkingLevel|retry|providers)(?:\.[A-Za-z0-9_.-]+)*|credentials\.qm-[a-z0-9._-]+(?:\.[0-9]+)?)$/
+  /^(?:models\.providers\.qm-[a-z0-9._-]+(?:\.[A-Za-z0-9_.-]+)*|config\.(?:modelRoles|defaultThinkingLevel|retry|providers|generate_image|speechgen|qianmoRouting)(?:\.[A-Za-z0-9_.-]+)*|credentials\.qm-[a-z0-9._-]+(?:\.[0-9]+)?)$/
 const NODE_CODE = /^[a-z][a-z0-9-]{0,39}$/
 const MAX_TEXT = 300
 

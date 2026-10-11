@@ -15,6 +15,34 @@ import { LIMITS } from './limits.js'
 /** Envelope version currently spoken on the network. */
 export const ENVELOPE_VERSION = 0
 
+/** Optional task.request hint shared with P22 model routing. Other payload fields stay open. */
+export const TASK_DIRECTIONS = [
+  'code',
+  'chat',
+  'plan',
+  'fast',
+  'vision',
+  'image',
+  'speech',
+  'video',
+] as const
+export type TaskDirection = (typeof TASK_DIRECTIONS)[number]
+export interface TaskRequestPayload {
+  /** Console account assertion, authenticated by a task-owner signature. */
+  readonly onBehalfOf?: string
+  readonly ownerProof?: string
+  readonly prompt: string
+  readonly direction?: TaskDirection
+  readonly command?: { readonly name: string }
+}
+
+export function isTaskDirection(value: unknown): value is TaskDirection {
+  return (
+    typeof value === 'string' &&
+    TASK_DIRECTIONS.some(direction => direction === value)
+  )
+}
+
 /** Every message kind the v0 protocol carries. */
 export enum MessageType {
   /** Ask an agent to perform work. */
@@ -46,7 +74,7 @@ export enum MessageType {
    * Node-originated announcement: the handling node telling a peer it already
    * has a channel with that something happened (protocol.md §14).
    *
-   * The only type an agent raises on its own initiative. It is not a reply, it
+   * An announcement an agent raises on its own initiative. It is not a reply, it
    * opens no turn on the receiver, it carries a **fresh** `taskId` every time,
    * and it asks for no protocol `ack` — see {@link createNotify} for why each
    * of those is load-bearing rather than incidental.
@@ -55,6 +83,16 @@ export enum MessageType {
   AuthzRequest = 'authz.request',
   AuthzDecision = 'authz.decision',
   AuthzRevoke = 'authz.revoke',
+  /** Controller command handled by the resident host, without a model turn. */
+  NodeControl = 'node.control',
+  /** Control outcome, under the original request's taskId. */
+  NodeControlResult = 'node.control.result',
+  /** Register the controller's inbound channel for host service calls. */
+  HubSubscribe = 'hub.subscribe',
+  /** Host service call sent on the reverse direction of a subscribed channel. */
+  HubCall = 'hub.call',
+  /** Host service outcome, correlated by both taskId and callId. */
+  HubCallResult = 'hub.call.result',
 }
 
 /** All message types, in declaration order. */
@@ -122,6 +160,8 @@ export function isReplyType(type: MessageType): boolean {
     type === MessageType.TaskResult ||
     type === MessageType.Error ||
     type === MessageType.Pong ||
+    type === MessageType.NodeControlResult ||
+    type === MessageType.HubCallResult ||
     // A negotiation runs both ways over one task id by design (§13), so every
     // message after the opening request answers the one before it. Treating
     // them as requests would make the second leg of every negotiation look
@@ -984,4 +1024,25 @@ export function errorCodeForPeer(
 ): ProtocolErrorCode {
   if (isLegacyErrorCode(code)) return code
   return peerIsPostLegacy(declared) ? code : downgradeErrorCode(code)
+}
+
+/**
+ * A task.request carrying a P22 routing hint. The payload stays open like
+ * every task.request payload (a local command rides beside it as
+ * `command`, P18.20); only the hint's own value is checked.
+ */
+export interface DirectedTaskRequestPayload extends TaskRequestPayload {
+  readonly direction: TaskDirection
+}
+
+export function isDirectedTaskRequestPayload(
+  value: unknown,
+): value is DirectedTaskRequestPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const raw = value as Record<string, unknown>
+  return (
+    typeof raw.prompt === 'string' &&
+    raw.prompt.length > 0 &&
+    isTaskDirection(raw.direction)
+  )
 }

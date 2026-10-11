@@ -35,6 +35,12 @@
  * 「已落地，可以关机」 on that answer and on nothing else.
  */
 
+import {
+  handoffDevicesApi,
+  handoffMember,
+  handoffBody,
+} from './handoffDevices.js'
+import type { HandoffRequestActor } from '../deps.js'
 import type { Access } from '../access.js'
 import { fail, json, methodNotAllowed, notFound } from '../respond.js'
 import { failureResponse, guard, outcomeOf, safeDecode } from './shared.js'
@@ -57,6 +63,8 @@ const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 
 function guardMember(access: Access): Response | null {
   const principal = access.principal
+  if (principal?.kind === 'device')
+    return guard(access.credential, 'view', 'guarded')
   if (principal?.kind !== 'user') {
     return guard(access.credential, 'admin', 'guarded')
   }
@@ -100,6 +108,13 @@ async function readBody(request: Request): Promise<Body> {
   return { ok: true, value: parsed as Record<string, unknown> }
 }
 
+function actorOf(ctx: RouteContext): HandoffRequestActor | undefined {
+  const principal = ctx.access.principal
+  return principal?.kind === 'device'
+    ? { deviceId: principal.deviceId, owner: principal.owner }
+    : undefined
+}
+
 async function accept(ctx: RouteContext): Promise<Response> {
   const port = ctx.deps.handoff
   if (port === undefined) return fail(501, 'unsupported', HANDOFF_UNWIRED)
@@ -114,7 +129,7 @@ async function accept(ctx: RouteContext): Promise<Response> {
     typeof body.value.project === 'string' && body.value.project.length <= 64
       ? body.value.project
       : '-'
-  const result = await port.accept(body.value)
+  const result = await port.accept(body.value, actorOf(ctx))
   if (!result.ok) {
     await ctx.record('handoff.accept', project, ...outcomeOf(result))
     return failureResponse(result.failure)
@@ -139,7 +154,7 @@ async function send(ctx: RouteContext, taskId: string): Promise<Response> {
     await ctx.record('handoff.send', taskId, 'refused', 'invalid')
     return fail(400, 'invalid', '字段 text 必须是非空字符串')
   }
-  const result = await port.send(taskId, text)
+  const result = await port.send(taskId, text, actorOf(ctx))
   await ctx.record('handoff.send', taskId, ...outcomeOf(result))
   if (!result.ok) return failureResponse(result.failure)
   return json({ send: result.value }, 202)
@@ -174,7 +189,7 @@ async function attach(ctx: RouteContext, taskId: string): Promise<Response> {
       ? fail(400, 'invalid', '字段 device 不是设备名')
       : body.response
   }
-  const result = await port.attach(taskId, { device })
+  const result = await port.attach(taskId, { device }, actorOf(ctx))
   await ctx.record('handoff.attach', taskId, ...outcomeOf(result))
   if (!result.ok) return failureResponse(result.failure)
   return json({ attach: result.value })
@@ -206,10 +221,14 @@ async function markReturned(
         )
       : body.response
   }
-  const result = await port.markReturned(taskId, {
-    device,
-    mode: mode === 'fast-forward' || mode === 'branch' ? mode : null,
-  })
+  const result = await port.markReturned(
+    taskId,
+    {
+      device,
+      mode: mode === 'fast-forward' || mode === 'branch' ? mode : null,
+    },
+    actorOf(ctx),
+  )
   await ctx.record('handoff.return', taskId, ...outcomeOf(result))
   if (!result.ok) return failureResponse(result.failure)
   return json(result.value)
@@ -228,6 +247,18 @@ function taskWrite(action: string): TaskWrite | undefined {
       return send
     case 'attach':
       return attach
+    case 'clean':
+      return async (ctx, taskId) => {
+        if (!ctx.deps.handoff?.markCleaned)
+          return fail(501, 'unsupported', HANDOFF_UNWIRED)
+        const blocked = await ctx.admit()
+        if (blocked) return blocked
+        const result = await ctx.deps.handoff.markCleaned(taskId, actorOf(ctx))
+        await ctx.record('handoff.return', taskId, ...outcomeOf(result))
+        return result.ok
+          ? json({ task: result.value })
+          : failureResponse(result.failure)
+      }
     case 'return':
       return markReturned
     default:
@@ -240,8 +271,65 @@ async function handleHandoffApi(
   rest: readonly string[],
 ): Promise<Response> {
   const { access, deps, request, url } = ctx
+  if (rest[0] === 'devices') return handoffDevicesApi(ctx, rest.slice(1))
   const denied = guard(access.credential, 'view', 'guarded')
   if (denied !== null) return denied
+
+  if (rest[0] === 'config' && rest.length === 1) {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    if (!deps.handoff) return fail(501, 'unsupported', HANDOFF_UNWIRED)
+    return json({ codeStore: deps.handoff.codeStore ?? 'hub' })
+  }
+  if (rest[0] === 'git' || rest[0] === 'projects') {
+    if (deps.handoff?.codeStore === 'github')
+      return notFound('GitHub 模式不托管 git 仓库')
+    const projects = rest[0] === 'projects'
+    const advertise =
+      rest.length === 4 && rest[2] === 'info' && rest[3] === 'refs'
+    const rpc = advertise
+      ? url.searchParams.get('service')
+      : rest.length === 3
+        ? rest[2]
+        : null
+    if (
+      projects
+        ? rest.length !== 1
+        : !advertise &&
+          !(
+            rest.length === 3 &&
+            (rpc === 'git-upload-pack' || rpc === 'git-receive-pack')
+          )
+    )
+      return notFound(`unknown path: ${url.pathname}`)
+    const verb = projects || !advertise ? 'POST' : 'GET'
+    if (request.method !== verb) return methodNotAllowed([verb])
+    const actor = actorOf(ctx)
+    if (!actor) return fail(403, 'forbidden', 'git 接力需要设备令牌')
+    const refused = handoffMember(ctx)
+    if (refused) return refused
+    const port = deps.handoffGit
+    if (!port) return fail(501, 'unsupported', HANDOFF_UNWIRED)
+    if (projects) {
+      const blocked = await ctx.admit()
+      if (blocked) return blocked
+      const body = await handoffBody(request)
+      if (typeof body?.project !== 'string')
+        return fail(400, 'invalid', '需要项目名')
+      return port.createProject(body.project, actor)
+    }
+    const repo = safeDecode(rest[1] ?? '')
+    if (!repo?.endsWith('.git'))
+      return fail(400, 'invalid', '项目名需要 .git 后缀')
+    if (rpc !== 'git-upload-pack' && rpc !== 'git-receive-pack')
+      return fail(400, 'invalid', 'git 服务不存在')
+    return port.handle(
+      request,
+      repo.slice(0, -4),
+      rpc === 'git-upload-pack' ? 'upload-pack' : 'receive-pack',
+      advertise,
+      actor,
+    )
+  }
 
   if (rest.length === 0) {
     if (request.method === 'POST') {
@@ -253,7 +341,7 @@ async function handleHandoffApi(
     if (deps.handoff === undefined) {
       return fail(501, 'unsupported', HANDOFF_UNWIRED)
     }
-    const listed = await deps.handoff.list()
+    const listed = await deps.handoff.list(actorOf(ctx))
     return listed.ok
       ? json({ tasks: listed.value })
       : failureResponse(listed.failure)
@@ -280,7 +368,7 @@ async function handleHandoffApi(
   if (deps.handoff === undefined) {
     return fail(501, 'unsupported', HANDOFF_UNWIRED)
   }
-  const found = await deps.handoff.get(taskId)
+  const found = await deps.handoff.get(taskId, actorOf(ctx))
   return found.ok ? json({ task: found.value }) : failureResponse(found.failure)
 }
 

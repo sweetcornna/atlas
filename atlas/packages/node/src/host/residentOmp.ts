@@ -1,6 +1,8 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type { NodeDesktop } from './desktop.js'
+
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import {
@@ -33,9 +35,20 @@ import type {
   ResidentSessionConnection,
 } from '@qianmo/resident'
 import { ompArgv, ompSpawnEnv } from '../omp/launch.js'
+import {
+  residentMediaRoutes,
+  ResidentModelRouter,
+  readResidentManualSelection,
+} from './residentRouting.js'
+import { VIDEO_TOOL, runVideoTool, type VideoToolResult } from './videoTool.js'
 import { nodeModelSelection } from '../providers/node.js'
 import { residentOmpEnvironment } from './residentOmpEnv.js'
-import { residentToolSurface, verdictText } from './notifyTool.js'
+import { parseResidentOmpLocalCommand } from './residentLocalCommand.js'
+import {
+  residentToolSurface,
+  verdictText,
+  type HostToolDefinition,
+} from './notifyTool.js'
 import { parseNotifyVerdict } from './notifyWire.js'
 import { residentExtensionPath } from './residentExtension.js'
 
@@ -65,7 +78,10 @@ export class OmpRpcProcess implements OmpRpcChannel {
   #sequence = 0
   #alive = true
 
-  constructor(child: ChildProcess) {
+  readonly #routing: ResidentModelRouter
+  #routeCompletion: Promise<void> = Promise.resolve()
+  constructor(child: ChildProcess, manualPath?: string) {
+    this.#routing = new ResidentModelRouter(manualPath)
     this.child = child
     if (child.stdin === null || child.stdout === null)
       throw new Error('omp RPC requires piped stdin/stdout')
@@ -126,6 +142,16 @@ export class OmpRpcProcess implements OmpRpcChannel {
               )
             else pending?.resolve(frame)
           }
+          if (
+            (frame.type === 'prompt_result' &&
+              frame.sessionSettled !== false) ||
+            frame.type === 'session_settled'
+          ) {
+            this.#routeCompletion = this.#routeCompletion.then(() =>
+              this.#routing.finish(this.#routeRpc),
+            )
+            void this.#routeCompletion.catch(() => {})
+          }
           for (const listener of this.#listeners) listener(frame)
         } catch (error) {
           finish(error instanceof Error ? error : new Error(String(error)))
@@ -165,7 +191,10 @@ export class OmpRpcProcess implements OmpRpcChannel {
     type: string,
     input: Record<string, unknown> = {},
     timeoutMs = 30_000,
+    routed = false,
   ): Promise<OmpRpcFrame> {
+    if (!routed && (type === 'set_model' || type === 'set_thinking_level'))
+      await this.#routeCompletion
     const id = `resident-${++this.#sequence}`
     const response = new Promise<OmpRpcFrame>((resolve, reject) => {
       const timer =
@@ -197,55 +226,93 @@ export class OmpRpcProcess implements OmpRpcChannel {
         reject(error)
       }
     })
-    return await response
+    const frame = await response
+    if (!routed && (type === 'set_model' || type === 'set_thinking_level'))
+      await this.#routing.remember(this.#routeRpc)
+    return frame
+  }
+  get #routeRpc() {
+    return {
+      request: (type: string, input?: Record<string, unknown>) =>
+        this.request(type, input, 30_000, true),
+    }
+  }
+  async prepareRoute(input: {
+    text: string
+    hint?: unknown
+    localCommand?: string
+  }) {
+    await this.#routeCompletion
+    try {
+      return await this.#routing.prepare(this.#routeRpc, input)
+    } catch (error) {
+      await this.#routing.finish(this.#routeRpc)
+      throw error
+    }
   }
   async prompt(input: {
     messageId: string
     text: string
   }): Promise<OmpPromptAdmission> {
-    const local =
-      /^\/(compact|context|model|thinking|effort|autocompact)(?:\s+(.*))?\s*$/s.exec(
-        input.text,
-      )
-    if (local !== null) {
-      const argument = local[2]?.trim()
-      const command = local[1]
-      let output: unknown
-      if (command === 'autocompact')
-        output =
-          '/autocompact is unsupported by this omp resident; use the node compaction configuration.'
-      else if (command === 'compact')
-        output = (
-          await this.request(
-            'compact',
-            argument ? { customInstructions: argument } : {},
-            0, // Compaction is a model operation; the turn watchdog owns it.
-          )
-        ).data
-      else if ((command === 'thinking' || command === 'effort') && argument)
-        output =
-          (await this.request('set_thinking_level', { level: argument }))
-            .data ?? `Thinking level: ${argument}`
-      else if (command === 'model' && argument) {
-        const slash = argument.indexOf('/')
-        if (slash <= 0) throw new Error('/model requires provider/modelId')
-        output = (
-          await this.request('set_model', {
-            provider: argument.slice(0, slash),
-            modelId: argument.slice(slash + 1),
-          })
-        ).data
-      } else output = (await this.request('get_state')).data
-      return {
-        requestId: randomUUID(),
-        agentInvoked: false,
-        output:
-          typeof output === 'string' ? output : JSON.stringify(output ?? {}),
+    const local = parseResidentOmpLocalCommand(input.text)
+    if (local) {
+      try {
+        const argument = local.argument
+        const command = local.name
+        let output: unknown
+        if (command === 'autocompact')
+          output =
+            '/autocompact is unsupported by this omp resident; use the node compaction configuration.'
+        else if (command === 'compact')
+          output = (
+            await this.request(
+              'compact',
+              argument ? { customInstructions: argument } : {},
+              0, // Compaction is a model operation; the turn watchdog owns it.
+            )
+          ).data
+        else if ((command === 'thinking' || command === 'effort') && argument)
+          output =
+            (await this.request('set_thinking_level', { level: argument }))
+              .data ?? `Thinking level: ${argument}`
+        else if (command === 'model' && argument === 'auto') {
+          this.#routing.clear()
+          output =
+            'Manual model selection cleared; automatic routing follows node configuration.'
+        } else if (command === 'model' && argument) {
+          const slash = argument.indexOf('/')
+          if (slash <= 0) throw new Error('/model requires provider/modelId')
+          output = (
+            await this.request('set_model', {
+              provider: argument.slice(0, slash),
+              modelId: argument.slice(slash + 1),
+            })
+          ).data
+        } else output = (await this.request('get_state')).data
+        return {
+          requestId: randomUUID(),
+          agentInvoked: false,
+          output:
+            typeof output === 'string' ? output : JSON.stringify(output ?? {}),
+        }
+      } finally {
+        await this.#routing.finish(this.#routeRpc)
       }
     }
-    const response = await this.request('prompt', {
-      message: markResidentInput(input.messageId, input.text),
-    })
+    let response: OmpRpcFrame
+    try {
+      response = await this.request('prompt', {
+        message: markResidentInput(input.messageId, input.text),
+      })
+      if (
+        (response.data as { agentInvoked?: boolean } | undefined)
+          ?.agentInvoked === false
+      )
+        await this.#routing.finish(this.#routeRpc)
+    } catch (error) {
+      await this.#routing.finish(this.#routeRpc)
+      throw error
+    }
     const data = response.data as { agentInvoked?: boolean } | undefined
     return {
       requestId: String(response.id),
@@ -288,6 +355,9 @@ export class OmpRpcProcess implements OmpRpcChannel {
 }
 
 interface PoolOptions {
+  readonly extensionPath?: string
+  readonly desktop?: NodeDesktop
+  readonly extraHostTools?: readonly HostToolDefinition[]
   readonly onLaunch?: (
     sessionId: string,
     policy: ResidentExtensionConfig,
@@ -395,6 +465,18 @@ export class ResidentOmpPool
     }
     throw new Error(`resident session ${sessionId} has no configured owner`)
   }
+  async invalidateAgent(agent: string): Promise<void> {
+    for (const [id, owner] of this.#owners) {
+      if (owner.agent !== agent) continue
+      const starting = this.#starting.get(id)
+      if (starting) await starting.catch(() => {})
+      const child = this.#children.get(id)
+      if (child) {
+        this.#children.delete(id)
+        await child.stop()
+      }
+    }
+  }
   async channelFor(sessionId: string): Promise<OmpRpcProcess> {
     // An idle session may be resumed while its previous process is still
     // retiring. It must not spawn a second writer for the same session.
@@ -424,6 +506,14 @@ export class ResidentOmpPool
       sessionId,
     )
     mkdirSync(sessionDir, { recursive: true, mode: 0o700 })
+    const media = residentMediaRoutes()
+    const tools = [
+      ...residentToolSurface(
+        this.#options.memoryWrite !== undefined,
+        this.#options.extraHostTools,
+      ),
+      ...(media.video ? [VIDEO_TOOL] : []),
+    ]
     const config: ResidentExtensionConfig = {
       v: 1,
       agent: owner.agent,
@@ -433,9 +523,14 @@ export class ResidentOmpPool
         this.#options.memoryRoot,
         ...(this.#options.protectedRoots ?? []),
       ],
-      hostTools: residentToolSurface(
-        this.#options.memoryWrite !== undefined,
-      ).map(tool => tool.name),
+      hostTools: tools.map(tool => tool.name),
+      media,
+      ...(this.#options.desktop
+        ? {
+            desktopPath: this.#options.desktop.resourcePath(owner.agent),
+            desktop: this.#options.desktop.resource(owner.agent),
+          }
+        : {}),
       ...(this.#options.requestPermission === undefined
         ? {}
         : { approvals: true }),
@@ -449,20 +544,24 @@ export class ResidentOmpPool
     const overlay = join(sessionDir, 'resident-config.yml')
     writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 })
     writeFileSync(overlay, residentConfigOverlay(config), { mode: 0o600 })
-    const selection = nodeModelSelection()
+    const manualPath = join(sessionDir, 'manual-model.json')
+    const selection =
+      readResidentManualSelection(manualPath) ?? nodeModelSelection()
     const argv = ompArgv([
       '--mode',
       'rpc',
       ...(this.#options.requestPermission === undefined ? ['--no-ui'] : []),
       '--no-extensions',
       '--extension',
-      residentExtensionPath(sessionDir),
+      this.#options.extensionPath ?? residentExtensionPath(sessionDir),
       '--config',
       overlay,
       '--approval-mode',
       config.edits === 'workspace' ? 'write' : 'always-ask',
       '--tools',
-      residentActiveTools(config.edits).join(','),
+      residentActiveTools(config.edits, [], config.media, config.desktop).join(
+        ',',
+      ),
       ...(selection
         ? ['--model', `${selection.provider}/${selection.modelId}`]
         : []),
@@ -474,6 +573,19 @@ export class ResidentOmpPool
       ...ompSpawnEnv(),
       [RESIDENT_EXTENSION_CONFIG_ENV]: configPath,
     })
+    if (env.QIANMO_OMP_ENTRY === 'self') env.PI_COMPILED = 'true'
+    if (config.desktop?.browser || config.desktop?.computer)
+      env.TMPDIR = join(config.desktop.downloads, '..', 'screenshots')
+    if (config.desktop?.computer) {
+      env.DISPLAY = config.desktop.display!
+      env.XAUTHORITY = config.desktop.xauthority!
+      delete env.WAYLAND_DISPLAY
+      delete env.DBUS_SESSION_BUS_ADDRESS
+    } else {
+      delete env.DISPLAY
+      delete env.XAUTHORITY
+      delete env.WAYLAND_DISPLAY
+    }
     const input: ResidentOmpSpawn = {
       argv,
       cwd: owner.cwd,
@@ -489,8 +601,15 @@ export class ResidentOmpPool
           env,
           stdio: ['pipe', 'pipe', 'inherit'],
         }),
+      manualPath,
     )
     this.#children.set(sessionId, child)
+    const videoCalls = new Map<string, AbortController>()
+    void child.closed
+      .finally(() => {
+        for (const controller of videoCalls.values()) controller.abort()
+      })
+      .catch(() => {})
     child.onFrame(frame => {
       this.#used.set(sessionId, Date.now())
       if (frame.type === 'extension_ui_request' && frame.method === 'confirm') {
@@ -532,8 +651,75 @@ export class ResidentOmpPool
           this.#options.onActivity?.(this.#busy.size > 0),
         ).catch(error => this.#options.onError?.(error))
       }
+      if (
+        frame.type === 'host_tool_cancel' &&
+        typeof frame.targetId === 'string'
+      )
+        videoCalls.get(frame.targetId)?.abort()
       if (frame.type === 'host_tool_call') {
         void (async () => {
+          if (frame.toolName === VIDEO_TOOL.name) {
+            const controller = new AbortController()
+            const id = String(frame.id)
+            videoCalls.set(id, controller)
+            let result: VideoToolResult
+            try {
+              result = media.video
+                ? await runVideoTool(
+                    owner.cwd,
+                    frame.arguments,
+                    controller.signal,
+                    status => {
+                      if (child.alive && !controller.signal.aborted)
+                        child.send({
+                          type: 'host_tool_update',
+                          id: frame.id,
+                          partialResult: {
+                            content: [
+                              { type: 'text', text: `视频生成状态：${status}` },
+                            ],
+                          },
+                        })
+                    },
+                    {
+                      workspaces: this.#options.agents.map(agent => agent.cwd),
+                    },
+                  )
+                : { ok: false as const, error: '视频路由未开启' }
+            } finally {
+              videoCalls.delete(id)
+            }
+            if (!child.alive || controller.signal.aborted) return
+            child.send({
+              type: 'host_tool_result',
+              id: frame.id,
+              isError: !result.ok,
+              result: {
+                content: [{ type: 'text', text: JSON.stringify(result) }],
+              },
+            })
+            return
+          }
+          const extra = this.#options.extraHostTools?.find(
+            tool => tool.name === frame.toolName,
+          )
+          if (extra) {
+            const result = await extra.handler(frame.arguments, {
+              agent: owner.agent,
+              sessionId,
+            })
+            if (child.alive)
+              child.send({
+                type: 'host_tool_result',
+                id: frame.id,
+                isError: !result.ok,
+                result: {
+                  content: [{ type: 'text', text: result.text }],
+                  details: result.details,
+                },
+              })
+            return
+          }
           if (frame.toolName === 'qianmo_memory_write') {
             const result = (await this.#options.memoryWrite?.(
               sessionId,
@@ -618,7 +804,7 @@ export class ResidentOmpPool
           : {}),
       })
       await child.request('set_host_tools', {
-        tools: residentToolSurface(this.#options.memoryWrite !== undefined),
+        tools,
       })
       return child
     } catch (error) {

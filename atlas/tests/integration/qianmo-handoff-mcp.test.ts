@@ -85,6 +85,7 @@ const TOOLS = [
   'qianmo_task',
   'qianmo_send',
   'qianmo_pull',
+  'qianmo_login_status',
 ]
 
 const BOOT_TIMEOUT_MS = 90_000
@@ -839,7 +840,7 @@ describe('qm handoff mcp end to end', () => {
       })
       expect(answer).toEqual({
         isError: true,
-        text: '转交没有完成：找不到这个目录的会话记录：先在 qmcode 或 Claude Code 里跑完一个回合（hook 会记下会话）',
+        text: '转交没有完成：找不到这个目录的会话记录：先在 Codex、qmcode 或 Claude Code 里跑完一个回合（hook 会记下会话）',
       })
       expect(await hubTasks()).toEqual(before)
       // Bad arguments are refused before anything happens.
@@ -964,3 +965,17 @@ describe('qm handoff mcp end to end', () => {
     STEP_TIMEOUT_MS,
   )
 })
+
+test(
+  'portable plugin MCP cwd: thread metadata selects its rollout repository',
+  async () => {
+    const server = await started(root)
+    const status = await server.call('qianmo_status', {}, { threadId: THREAD })
+    expect(status.isError).not.toBe(true)
+    expect(status.text).toContain(repo)
+    expect((await server.call('qianmo_login_status')).text).toContain(
+      '"paired":false',
+    )
+  },
+  STEP_TIMEOUT_MS,
+)

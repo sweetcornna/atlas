@@ -342,9 +342,30 @@ describe('LIMITS — the three numbers P13.2 added', () => {
     expect(LIMITS.ratePerMinute).toBe(600)
   })
 
-  test('there are exactly eight of them', () => {
-    // charter §3.3 C-4 enumerates them; a ninth would need a charter amendment,
-    // which is why `NotifyPayload.summary` has no ceiling of its own.
-    expect(Object.keys(LIMITS)).toHaveLength(8)
+  test('C-4 and S0 bounds plus P25 outbound budgets are the complete published set', () => {
+    // Preserve C-4/S0 and explicitly enumerate D21/D23's new outbound surface.
+    // Unknown or missing bounds still fail; behavior is exercised by TLS fixtures.
+    expect(Object.keys(LIMITS).sort()).toEqual(
+      [
+        'maxMessageBytes',
+        'maxControlOpLength',
+        'maxControlActorLength',
+        'maxHops',
+        'defaultTtlMs',
+        'defaultTaskTtlMs',
+        'ratePerMinute',
+        'defaultNotifyTtlMs',
+        'notifyRatePerMinute',
+        'maxQueuedTurns',
+        'connectorLineBytes',
+        'connectorResponseBytes',
+        'connectorTextBytes',
+        'connectorTimeoutMs',
+        'connectorRedirects',
+        'connectorResults',
+        'connectorRecentCalls',
+        'connectorResultBytes',
+      ].sort(),
+    )
   })
 })

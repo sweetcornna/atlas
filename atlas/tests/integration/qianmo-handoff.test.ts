@@ -886,7 +886,7 @@ describe('qm handoff end to end', () => {
       })
       expect(status.code).toBe(0)
       expect(status.stdout).toContain(
-        `会话    qmcode ${THREAD}（运行这条命令的 qmcode 线程）`,
+        `会话    qmcode ${THREAD}（运行这条命令的线程）`,
       )
       expect(
         (await qm(['handoff', 'status'], { cwd: join(repo, 'docs') })).stdout,

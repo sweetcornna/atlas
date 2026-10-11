@@ -6,18 +6,21 @@ import type { UsageScope, UsageAdmission } from './governance.js'
 import { json } from './respond.js'
 import type { RouteContext } from './routes/types.js'
 
-export function usageScopeOf(ctx: RouteContext): UsageScope {
+export function usageScopeOf(ctx: Pick<RouteContext, 'access'>): UsageScope {
   return { subject: subjectOf(ctx.access), kind: 'person' }
 }
 export function reserveUsage(
-  ctx: RouteContext,
+  ctx: Pick<RouteContext, 'access' | 'now'> & {
+    readonly deps: Pick<RouteContext['deps'], 'usage'>
+  },
   input?: {
     sessionId?: string
     newSession?: boolean
     operation?: 'message' | 'wake' | 'session'
   },
+  scope: UsageScope = usageScopeOf(ctx),
 ): string | Response | undefined {
-  const result = ctx.deps.usage?.reserve(usageScopeOf(ctx), input)
+  const result = ctx.deps.usage?.reserve(scope, input)
   if (result === undefined) return undefined
   if (result.ok) return result.reservationId
   return usageDenial(result, ctx.now)

@@ -32,6 +32,7 @@ import type {
   WakeOutcome,
   WakePort,
 } from '../src/deps.js'
+import type { MemoryPort } from '../src/directionPorts.js'
 import { createConsoleHandler } from '../src/http.js'
 import { CountingChat } from './accountsHarness.js'
 
@@ -178,6 +179,9 @@ export function pageHarness(
     readonly nodeServers?: readonly NodeServer[]
     readonly actions?: ActionLedgerPort
     readonly serverNotes?: ServerNotesPort
+    readonly memory?: MemoryPort
+    /** Any further ports, e.g. the 2026-10 fakes from `directionFakes.ts`. */
+    readonly ports?: Partial<ConsoleDeps>
   } = {},
 ): PageHarness {
   const registry = new PageRegistry()
@@ -200,6 +204,8 @@ export function pageHarness(
     ...(options.serverNotes === undefined
       ? {}
       : { serverNotes: options.serverNotes }),
+    ...(options.memory === undefined ? {} : { memory: options.memory }),
+    ...options.ports,
   }
   return {
     registry,

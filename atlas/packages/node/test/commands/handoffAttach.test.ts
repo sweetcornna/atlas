@@ -512,13 +512,13 @@ describe('qm handoff attach', () => {
       expect(tunnelPids()).toHaveLength(1)
     })
 
-    test('no qmcode on this machine', async () => {
+    test('configured attach client is absent on this machine', async () => {
       const error = await refused(
         { taskId: 't-run', appServerPort: appPort, ...access() },
         { ...commands, qmcode: join(base, 'bin', 'no-qmcode-here') },
       )
       expect(error.message).toBe(
-        `找不到 qmcode（${join(base, 'bin', 'no-qmcode-here')}）· 装上阡陌 Codex 并放进 PATH`,
+        `找不到接入客户端（${join(base, 'bin', 'no-qmcode-here')}）· 安装 Codex 或用 --client-bin 指定`,
       )
       expect(tunnelPids()).toHaveLength(1)
     })

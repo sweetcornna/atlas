@@ -5,6 +5,16 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileUsageStore } from '../src/usage.js'
+import {
+  FakeMemory,
+  FakeSchedules,
+  FakeFiles,
+  FakeDesktop,
+  FakeConnectors,
+  FakeRouting,
+  FakeHandoffDevices,
+  FakeAvatars,
+} from './directionFakes.js'
 import { describe, expect, test } from 'bun:test'
 import { AccountBook, type AccountRole } from '../src/accounts.js'
 import {
@@ -254,12 +264,43 @@ function fixture() {
       },
     },
   }
-  const handle = createConsoleHandler(deps, TOKENS, {
-    book,
-    signup: { maxAccounts: 7, attemptsPerHour: 5 },
-  })
+  // The 2026-10 ports, which carry no tenant wrapper yet (review D01).
+  const memory = new FakeMemory(() => 1)
+  const schedules = new FakeSchedules(() => 1)
+  const files = new FakeFiles(() => 1),
+    desktop = new FakeDesktop(() => 1),
+    connectors = new FakeConnectors(() => 1),
+    routing = new FakeRouting(() => 1),
+    handoffDevices = new FakeHandoffDevices(() => 1),
+    avatars = new FakeAvatars(() => 1)
+  const handle = createConsoleHandler(
+    {
+      ...deps,
+      memory,
+      schedules,
+      files,
+      desktop,
+      connectors,
+      routing,
+      handoffDevices,
+      avatars,
+    },
+    TOKENS,
+    {
+      book,
+      signup: { maxAccounts: 7, attemptsPerHour: 5 },
+    },
+  )
   return {
     handle,
+    memory,
+    schedules,
+    files,
+    desktop,
+    connectors,
+    routing,
+    handoffDevices,
+    avatars,
     alice,
     bob,
     outsider,
@@ -450,6 +491,100 @@ describe('M2 request scopes', () => {
       expect(
         (await h.handle(asBearer('GET', path, h.alice.credential))).status,
       ).toBe(403)
+  })
+  test('memory, files, connectors and the cloud computer are tenant-scoped before admission; the remaining 2026-10 ports stay unwired', async () => {
+    const h = fixture()
+    const allowed = await h.handle(
+      asBearer('GET', '/v0/memory', h.alice.credential),
+    )
+    expect(allowed.status).toBe(200)
+    expect(h.memory.calls).toEqual([`list tokyo-1/planner ${h.alice.subject}`])
+    expect(
+      (await h.handle(asBearer('GET', '/v0/schedules', h.alice.credential)))
+        .status,
+    ).toBe(501)
+    expect(h.schedules.calls).toEqual([])
+    h.memory.calls.length = 0
+    for (const [method, suffix] of [
+      ['POST', ''],
+      ['PUT', '/mem-11'],
+      ['POST', '/mem-11/forget'],
+      ['POST', '/mem-11/invalidate'],
+    ] as const) {
+      const result = await h.handle(
+        asBearer(method, `/v0/memory${suffix}`, h.alice.credential, {
+          agent: 'qianmo://berlin-1/planner',
+          kind: 'plan',
+          title: 'x',
+          summary: 'x',
+          body: '',
+          reason: 'x',
+        }),
+      )
+      expect(result.status).toBe(404)
+    }
+    expect(
+      (
+        await h.handle(
+          asBearer(
+            'GET',
+            '/v0/memory?agent=qianmo%3A%2F%2Fberlin-1%2Fplanner',
+            h.alice.credential,
+          ),
+        )
+      ).status,
+    ).toBe(404)
+    expect(h.memory.calls).toEqual([])
+    expect(h.counts()).toMatchObject({ effects: 0, admission: 0 })
+    const made = await h.handle(
+      asBearer('POST', '/v0/memory', h.alice.credential, {
+        agent: 'qianmo://tokyo-1/planner',
+        kind: 'plan',
+        title: 'x',
+        summary: 'x',
+        body: '',
+      }),
+    )
+    expect(made.status).toBe(200)
+    expect(await made.json()).toMatchObject({
+      owner: h.alice.subject,
+      node: 'tokyo-1',
+    })
+    h.memory.calls.length = 0
+    h.change()
+    expect(
+      (await h.handle(asBearer('GET', '/v0/memory', h.alice.credential)))
+        .status,
+    ).toBe(200)
+    expect(h.memory.calls).toEqual([])
+    for (const path of ['/v0/schedules', '/v0/routing', '/v0/avatars']) {
+      expect(
+        (await h.handle(asBearer('GET', path, h.alice.credential))).status,
+      ).toBe(501)
+    }
+    for (const key of [
+      'agent:qianmo://berlin-1/planner',
+      `user:${h.bob.subject}`,
+    ]) {
+      const response = await h.handle(
+        asBearer(
+          'PUT',
+          `/v0/avatars/${encodeURIComponent(key)}`,
+          h.alice.credential,
+          {},
+        ),
+      )
+      expect(response.status).toBe(501)
+    }
+    const page = await (
+      await h.handle(asBearer('GET', '/overview', h.alice.credential))
+    ).text()
+    // 文件互通 (P20, `filesScope.ts`), 连接 (P25) and 云端电脑 (P21) have tenant
+    // wrappers: their pages show.
+    for (const href of ['/files', '/connect', '/desktop'])
+      expect(page).toContain(`href="${href}"`)
+    for (const port of [h.schedules, h.routing, h.handoffDevices, h.avatars])
+      expect(port.calls).toEqual([])
   })
   test('audit source selectors and server notes cannot reach an external tenant', async () => {
     const h = fixture()

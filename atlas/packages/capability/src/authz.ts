@@ -488,7 +488,7 @@ export function parseApprover(value: unknown): ApproverIdentity {
  * fed parsed JSON (tool inputs) and the projections built below, so the
  * `JSON.stringify` rules for primitives are the rules.
  */
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
   if (plainObject(value)) {
     const keys = Object.keys(value)

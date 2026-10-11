@@ -17,7 +17,15 @@ import { describe, expect, test } from 'bun:test'
 import { ROUTES } from '../src/routes/index.js'
 import { accountsHarness, asSession, person } from './accountsHarness.js'
 import {
+  FakeConnectors,
+  FakeDesktop,
+  FakeFiles,
+  FakeHandoffDevices,
+  FakeMemory,
+} from './directionFakes.js'
+import {
   ADMIN,
+  NOW,
   PageNotes,
   TRACE,
   VIEW,
@@ -66,9 +74,21 @@ const READABLE = [
   `/fragments/chain/${TRACE}`,
 ]
 
+/** The pages that are a conversation-level right (`guard: 'chat'`). */
+const CHAT_ONLY = ROUTES.filter(module => module.page?.guard === 'chat').map(
+  module => module.area.href,
+)
+
 function harness() {
   return pageHarness({
     chat: true,
+    memory: new FakeMemory(() => NOW),
+    ports: {
+      connectors: new FakeConnectors(() => NOW),
+      handoffDevices: new FakeHandoffDevices(() => NOW),
+      desktop: new FakeDesktop(() => NOW),
+      files: new FakeFiles(() => NOW),
+    },
     nodeServers: [{ node: 'tokyo-1', server: 'p11' }],
     serverNotes: new PageNotes(),
   })
@@ -80,8 +100,9 @@ describe('a read-only token', () => {
     let read = 0
     for (const path of READABLE) {
       const response = await h.handle(browse(path, VIEW))
-      // The conversation is not readable at all with a view token.
-      if (path === '/chat') {
+      // The conversation, and what an agent remembers of a person, are not
+      // readable at all with a view token.
+      if (CHAT_ONLY.includes(path)) {
         expect(response.status).toBe(403)
         continue
       }
@@ -91,7 +112,7 @@ describe('a read-only token', () => {
       )
       read += 1
     }
-    expect(read).toBe(READABLE.length - 1)
+    expect(read).toBe(READABLE.length - CHAT_ONLY.length)
   })
 
   test('is told, once, in the top bar of the page that would have had them', async () => {

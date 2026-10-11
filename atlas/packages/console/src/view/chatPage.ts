@@ -33,6 +33,8 @@
 import { CONSOLE_CHAT_JS } from '../assets/chatClient.js'
 import type { ConsoleRole } from '../auth.js'
 import { icon, type PageViewer } from './bits.js'
+import { AVATAR_CSS, avatarDialog } from './avatar.js'
+import { AVATAR_PAGE_JS } from './avatarScript.js'
 import { MAX_CHAT_TEXT_LENGTH } from './chat.js'
 import { attr, escapeHtml } from './escape.js'
 import { renderShell, type ShellNavGroup } from './shell.js'
@@ -61,7 +63,8 @@ const COMPOSER_DISABLED_REASON = '先选一条会话 · 再发消息'
  * The page's own layout: the rail beside the conversation. Only this page
  * needs it, so it rides with the page rather than in the shared sheet.
  */
-export const CHAT_PAGE_CSS = `
+export const CHAT_PAGE_CSS =
+  `
 .chat-layout {
   display: grid; grid-template-columns: 280px minmax(0, 1fr);
   gap: var(--space-4); align-items: start;
@@ -109,6 +112,29 @@ export const CHAT_PAGE_CSS = `
     .frame { height: calc(100dvh - var(--space-4)); }
   }
 }
+/* 形象 (view/avatar.ts): the figure in place of the letters, in the thread
+   header, and greeting a page with nothing open. */
+.turn-av-face, .turn-operator .turn-av-face { background: none; width: 34px; height: 34px; }
+.chat-head-face, .chat-greet-figure {
+  display: inline-flex; padding: 0; border: 0; background: none; color: inherit;
+  border-radius: var(--radius-lg); min-height: 0;
+}
+button.chat-head-face, button.chat-greet-figure { cursor: pointer; transition: background-color 150ms ease; }
+button.chat-head-face:hover, button.chat-greet-figure:hover { background: color-mix(in srgb, var(--color-text) 5%, transparent); }
+button.chat-head-face:focus-visible, button.chat-greet-figure:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.chat-greet {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center;
+  gap: var(--space-6); padding: var(--space-8) var(--space-6); max-width: 760px; margin: 0 auto;
+}
+.chat-greet-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: var(--text-22); }
+.chat-me { align-self: flex-start; gap: var(--space-2); }
+.chat-group-name .avatar { margin-right: 2px; }
+@media (max-width: 700px) {
+  .chat-greet { grid-template-columns: minmax(0, 1fr); justify-items: center; text-align: center; padding: var(--space-6) var(--space-3); }
+}
+` +
+  AVATAR_CSS +
+  `
 `
 
 /**
@@ -212,7 +238,7 @@ const CHAT_MODEL_JS = `
 `
 
 /** The page's script. Runs after the shared runtime (`assets/client.ts`). */
-export const CHAT_PAGE_SCRIPT = CONSOLE_CHAT_JS + CHAT_MODEL_JS
+export const CHAT_PAGE_SCRIPT = CONSOLE_CHAT_JS + CHAT_MODEL_JS + AVATAR_PAGE_JS
 
 /**
  * The composer.
@@ -222,13 +248,16 @@ export const CHAT_PAGE_SCRIPT = CONSOLE_CHAT_JS + CHAT_MODEL_JS
  * round send button is the page's one filled control, matching the console's
  * rule that the accent marks the primary action and nothing else.
  */
-function composer(enabled: boolean): string {
+function composer(enabled: boolean, starting = false): string {
   const off = enabled ? '' : ' disabled'
+  const hint = starting
+    ? '直接说要做的事 · Enter 开始一条新会话 · Shift Enter 换行'
+    : '写下要让这个智能体做的事 · Enter 发送 · Shift Enter 换行'
   const box =
     `<textarea id="chat-text" rows="1" spellcheck="false" ` +
     `maxlength="${attr(String(MAX_CHAT_TEXT_LENGTH))}" ` +
     `aria-describedby="composer-why" aria-label="消息" ` +
-    `placeholder="写下要让这个智能体做的事 · Enter 发送 · Shift Enter 换行"${off}></textarea>`
+    `placeholder="${attr(hint)}"${off}></textarea>`
 
   const foot =
     `<div class="composer-foot">` +
@@ -242,7 +271,7 @@ function composer(enabled: boolean): string {
     `</button></div>`
 
   return (
-    `<form class="composer" id="composer" novalidate>` +
+    `<form class="composer" id="composer" novalidate${starting ? ' data-start="1"' : ''}>` +
     `<p class="note" id="composer-why"${enabled ? ' hidden' : ''}>` +
     `${escapeHtml(COMPOSER_DISABLED_REASON)}</p>` +
     box +
@@ -254,7 +283,10 @@ function composer(enabled: boolean): string {
 
 /** The page body the shell frames: the rail, the transcript, the composer. */
 export function chatPageBody(
-  model: Pick<ChatPageModel, 'sessions' | 'thread' | 'composerEnabled'>,
+  model: Pick<ChatPageModel, 'sessions' | 'thread' | 'composerEnabled'> & {
+    /** Nothing open, and the first message opens a conversation. */
+    readonly starting?: boolean
+  },
 ): string {
   return (
     `<div class="chat-layout">` +
@@ -275,8 +307,9 @@ export function chatPageBody(
     `</aside>` +
     `<div class="chat-pane">` +
     `<div class="thread-mount" id="thread-mount">${model.thread}</div>` +
-    composer(model.composerEnabled) +
-    `</div></div>`
+    composer(model.composerEnabled, model.starting === true) +
+    `</div></div>` +
+    avatarDialog()
   )
 }
 

@@ -64,6 +64,7 @@ import type {
   ListToolsResult,
   Tool,
 } from '@modelcontextprotocol/server'
+import type { GithubHandoffOptions } from './handoffGithub.js'
 import { Server } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import { FIELD_MAX_BYTES, isIsoInstant, isTaskId } from '@qianmo/handoff'
@@ -75,6 +76,12 @@ import {
   runStatus,
   runTask,
 } from './handoffNow.js'
+import { codexHome, qmcodeHome } from '@qianmo/paths'
+import {
+  findQmcodeRollout,
+  rolloutWorkingDirectory,
+} from './handoffTranscript.js'
+import { loadDevice } from './handoffDevice.js'
 import { runPull } from './handoffPull.js'
 import { HandoffUserError, sleep } from './handoffStore.js'
 import { buildVersion } from '../provenance.js'
@@ -102,7 +109,8 @@ const TOOLS: Tool[] = [
     name: 'qianmo_handoff',
     title: '转交云端',
     description:
-      '把当前工作转交给云端继续。有副作用：把工作区（含未提交、未跟踪且未被忽略的文件）的影子提交和当前会话记录推送到中枢，并在中枢登记一个接力任务；不改本地分支、暂存区和文件。' +
+      '把当前工作转交给云端继续。有副作用：把工作区（含未提交、未跟踪且未被忽略的文件）的影子提交和当前会话记录推送到配置的代码仓库，并在中枢登记一个接力任务；不改本地分支、暂存区和文件。' +
+      '旧裸仓模式推送到中枢；GitHub 模式推送到 origin，公开仓库或可见性未知时不推送会话记录，结果说明原因。' +
       '会话截到最后一个完整回合，调用本工具的这个回合不在其中，所以目标、已完成、剩余要写全。' +
       '中枢确认数据已落地并登记后才返回「已落地，可以关机」和任务号；否则返回失败原因，此时不能关机。' +
       '只在用户要求把工作交给云端时调用。',
@@ -212,6 +220,17 @@ const TOOLS: Tool[] = [
       openWorldHint: true,
     },
   },
+  {
+    name: 'qianmo_login_status',
+    description: '只读查看本机是否已配对、设备号、名称和控制台地址。',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
 ]
 
 function answer(lines: readonly string[], isError = false): CallToolResult {
@@ -257,6 +276,7 @@ async function handOff(
   args: Arguments,
   caller: HandoffCaller,
   output: Output,
+  githubOptions: GithubHandoffOptions = {},
 ): Promise<void> {
   const goal = briefText(args, 'goal', true)
   const done = briefText(args, 'done', false)
@@ -276,16 +296,17 @@ async function handOff(
       ...(deadline === undefined ? {} : { deadline }),
     },
     output,
-    { whileRunning: 'cut', caller },
+    { ...githubOptions, whileRunning: 'cut', caller },
   )
 }
 
 /** One `tools/call`, answered in the lines `qm handoff` prints. */
-async function callTool(
+export async function callHandoffTool(
   cwd: string,
   name: string,
   args: Arguments,
   meta: unknown,
+  githubOptions: GithubHandoffOptions = {},
 ): Promise<CallToolResult> {
   const lines: string[] = []
   const output: Output = {
@@ -302,7 +323,28 @@ async function callTool(
           ? '接回没有完成'
           : '查询没有完成'
   try {
+    if (caller.thread !== undefined) {
+      const file =
+        findQmcodeRollout(codexHome(), caller.thread) ??
+        findQmcodeRollout(qmcodeHome(), caller.thread)
+      if (file !== null) cwd = rolloutWorkingDirectory(file) ?? cwd
+    }
     switch (name) {
+      case 'qianmo_login_status': {
+        const device = loadDevice()
+        return answer([
+          JSON.stringify(
+            device === undefined
+              ? { paired: false }
+              : {
+                  paired: true,
+                  deviceId: device.deviceId,
+                  name: device.name,
+                  console: device.console,
+                },
+          ),
+        ])
+      }
       case 'qianmo_status':
         try {
           await runStatus(cwd, { wait: false }, output, caller)
@@ -315,7 +357,7 @@ async function callTool(
         }
         return answer(lines)
       case 'qianmo_handoff':
-        await handOff(cwd, args, caller, output)
+        await handOff(cwd, args, caller, output, githubOptions)
         return answer(lines)
       case 'qianmo_task': {
         const taskId = args.taskId
@@ -342,6 +384,7 @@ async function callTool(
         const code = await runPull(
           cwd,
           {
+            repo: githubOptions.repo,
             ...(taskId === undefined ? {} : { taskId }),
             ...(caller.thread === undefined
               ? {}
@@ -373,7 +416,7 @@ function buildServer(cwd: string, inFlight: Set<Promise<unknown>>): Server {
     async (): Promise<ListToolsResult> => ({ tools: TOOLS }),
   )
   server.setRequestHandler('tools/call', ({ params }) => {
-    const call = callTool(
+    const call = callHandoffTool(
       cwd,
       params.name,
       params.arguments ?? {},

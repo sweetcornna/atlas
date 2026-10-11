@@ -107,3 +107,6 @@ export {
   type LedgerReplay,
   type TornTail,
 } from './ledger.js'
+
+export * from './code.js'
+export * from './secrets.js'

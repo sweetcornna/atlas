@@ -40,9 +40,17 @@ describe('操作记录 names every verb in words', () => {
         outcome: 'ok',
       })
     }
-    const response = await h.handle(asBearer('GET', '/access/actions', ADMIN))
-    expect(response.status).toBe(200)
-    const found = rows(await response.text())
+    // More verbs than one page holds: follow 更早 until there is none.
+    const found: (readonly [string, string])[] = []
+    let path: string | null = '/access/actions'
+    while (path !== null) {
+      const response = await h.handle(asBearer('GET', path, ADMIN))
+      expect(response.status).toBe(200)
+      const html = await response.text()
+      found.push(...rows(html))
+      const older = /id="actions-older" href="([^"]+)"/.exec(html)?.[1]
+      path = older === undefined ? null : older.replaceAll('&amp;', '&')
+    }
     expect(found).toHaveLength(CONSOLE_ACTIONS.length)
     const raw = new Set(found.map(([, code]) => code))
     for (const action of CONSOLE_ACTIONS) {

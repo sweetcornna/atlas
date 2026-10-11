@@ -40,6 +40,8 @@
  * changes.
  */
 
+import { handoffCodeStore } from './handoffConfig.js'
+import type { GithubHandoffOptions } from './handoffGithub.js'
 import { join } from 'node:path'
 import {
   acquireExclusiveLock,
@@ -50,12 +52,15 @@ import {
   sessionRef,
   shadowTree,
 } from '@qianmo/handoff'
-import { qmcodeHome } from '@qianmo/paths'
+import { pairedProject } from './handoffDevice.js'
+import { codexHome, qmcodeHome } from '@qianmo/paths'
 import { gitTopLevel, hubConnection, lsRemote } from './handoffHub.js'
 import {
   formatHub,
   type HandoffProject,
   HandoffUserError,
+  canonicalPath,
+  within,
   loadProject,
   readTokenFile,
   sessionFor,
@@ -82,6 +87,7 @@ import {
   lastNewlineEnd,
   qmcodeSnapshot,
   readTranscript,
+  rolloutWorkingDirectory,
 } from './handoffTranscript.js'
 
 /** The sentence. Printed only after the hub answered `accepted`. */
@@ -107,7 +113,7 @@ export async function projectAt(cwd: string): Promise<HandoffProject> {
   if (root === null) {
     throw new HandoffUserError(`${cwd} 不在 git 工作区里`)
   }
-  const project = loadProject(root)
+  const project = await pairedProject(root)
   if (project === undefined) {
     throw new HandoffUserError(
       `${root} 还没有登记接力：先运行 qm handoff init --hub … --console …`,
@@ -226,9 +232,20 @@ function sessionToHandOver(
       readonly at?: number
     })
   | undefined {
+  const codex =
+    thread === undefined ? null : findQmcodeRollout(codexHome(), thread)
+  const belongs = (file: string): boolean => {
+    const directory = rolloutWorkingDirectory(file)
+    return (
+      directory !== null &&
+      within(canonicalPath(root), canonicalPath(directory))
+    )
+  }
+  if (thread !== undefined && codex !== null && belongs(codex))
+    return { tool: 'codex', sessionId: thread, file: codex }
   const own =
     thread === undefined ? null : findQmcodeRollout(qmcodeHome(), thread)
-  if (thread !== undefined && own !== null) {
+  if (thread !== undefined && own !== null && belongs(own)) {
     return { tool: 'qmcode', sessionId: thread, file: own }
   }
   return sessionFor(cwd, root)
@@ -272,7 +289,7 @@ export function sessionSnapshot(
   const location = sessionToHandOver(cwd, root, caller.thread)
   if (location === undefined) {
     throw new HandoffUserError(
-      '找不到这个目录的会话记录：先在 qmcode 或 Claude Code 里跑完一个回合（hook 会记下会话）',
+      '找不到这个目录的会话记录：先在 Codex、qmcode 或 Claude Code 里跑完一个回合（hook 会记下会话）',
     )
   }
   const content = readTranscript(location.file)
@@ -281,7 +298,7 @@ export function sessionSnapshot(
   }
   let end: number
   let omitted: OmittedTail | null = null
-  if (location.tool === 'qmcode') {
+  if (location.tool !== 'claude-code') {
     const snapshot = qmcodeSnapshot(
       content,
       caller.inThreadShell && location.sessionId === caller.thread,
@@ -332,7 +349,7 @@ function deadlineOf(raw: string | undefined): string {
 }
 
 /** How `now` was asked for, beyond the brief. */
-interface NowMode {
+interface NowMode extends GithubHandoffOptions {
   /** `'cut'`: called from inside a turn (the MCP tool); see {@link sessionSnapshot}. */
   readonly whileRunning?: 'refuse' | 'cut'
   readonly caller?: HandoffCaller
@@ -390,29 +407,38 @@ async function handOver(
   output: Output,
   mode: NowMode,
 ): Promise<number> {
-  const snapshot = sessionSnapshot(
-    cwd,
-    project.root,
-    mode.whileRunning,
-    mode.caller,
-  )
+  const github = (await handoffCodeStore(project)) === 'github'
+  let snapshot:
+    | (SessionSnapshot & { readonly omitted: OmittedTail | null })
+    | null = null
+  try {
+    snapshot = sessionSnapshot(
+      cwd,
+      project.root,
+      mode.whileRunning,
+      mode.caller,
+    )
+  } catch (error) {
+    if (!github || !(error instanceof HandoffUserError)) throw error
+  }
+  const sessionId = snapshot?.sessionId ?? 'no-session'
+  const tool = snapshot?.tool ?? 'codex'
   let thisSessionRef: string
   try {
-    thisSessionRef = sessionRef(project.device, snapshot.sessionId)
+    thisSessionRef = sessionRef(project.device, sessionId)
   } catch {
-    throw new HandoffUserError(
-      `会话 id ${snapshot.sessionId} 不能用作引用名，转交不了`,
-    )
+    throw new HandoffUserError(`会话 id ${sessionId} 不能用作引用名，转交不了`)
   }
 
   const lock = await waitForSyncLock(project.root)
   let manifest: HandoffManifest
   try {
     const taken = takePending(project.root)
-    const sessions = mergeSnapshots(snapshot, taken)
+    const sessions =
+      github && snapshot === null ? [] : mergeSnapshots(snapshot, taken)
     let result: Awaited<ReturnType<typeof syncOnce>>
     try {
-      result = await syncOnce(project, sessions)
+      result = await syncOnce(project, sessions, mode)
     } catch (error) {
       restorePending(project.root, taken)
       writeLastSync(project.root, {
@@ -425,21 +451,23 @@ async function handOver(
     }
     writeLastSync(project.root, { at: Date.now(), ok: true, wip: result.wip })
     logSync(project, 'now', result)
-    const session = result.sessions.find(s => s.ref === thisSessionRef)
-    if (session === undefined) {
+    const session = result.sessions.find(s => s.sessionId === sessionId)
+    if (result.code === undefined && session === undefined) {
       throw new HandoffUserError('同步结果里没有本会话的提交')
     }
 
-    const remote = await lsRemote(hubConnection(project), project.root)
-    for (const [ref, sha] of [
-      [result.wipRef, result.wip],
-      [session.ref, session.commit],
-    ] as const) {
-      const there = remote.get(ref)
-      if (there !== sha) {
-        throw new HandoffUserError(
-          `中枢上的 ${ref} 是 ${there ?? '（不存在）'}，不是刚推送的 ${sha}`,
-        )
+    if (result.code === undefined && session !== undefined) {
+      const remote = await lsRemote(hubConnection(project), project.root)
+      for (const [ref, sha] of [
+        [result.wipRef, result.wip],
+        [session.ref, session.commit],
+      ] as const) {
+        const there = remote.get(ref)
+        if (there !== sha) {
+          throw new HandoffUserError(
+            `中枢上的 ${ref} 是 ${there ?? '（不存在）'}，不是刚推送的 ${sha}`,
+          )
+        }
       }
     }
     const now = await shadowTree({ cwd: project.root })
@@ -450,15 +478,16 @@ async function handOver(
     }
     manifest = {
       kind: MANIFEST_KIND,
+      ...(result.code === undefined ? {} : { code: result.code }),
       project: project.project,
       device: project.device,
       branch: result.branch,
       wip: result.wip,
       tree: result.tree,
-      tool: snapshot.tool,
-      sessionId: snapshot.sessionId,
-      sessionRef: session.ref,
-      sessionCommit: session.commit,
+      tool,
+      sessionId,
+      sessionRef: thisSessionRef,
+      sessionCommit: session?.commit ?? result.wip,
       cwd: project.root,
       brief: {
         goal: options.goal ?? DEFAULT_GOAL,
@@ -485,10 +514,14 @@ async function handOver(
   output.out(SAFE_TO_SHUT_DOWN)
   output.out(`  任务  ${task.taskId}`)
   output.out(
-    `  代码  ${manifest.wip}（refs/qianmo/wip/${manifest.device}/${manifest.branch}）`,
+    `  代码  ${manifest.wip}（${manifest.code?.wip.ref ?? `refs/qianmo/wip/${manifest.device}/${manifest.branch}`}）`,
   )
-  output.out(`  会话  ${manifest.sessionCommit}（${manifest.sessionRef}）`)
-  if (snapshot.omitted !== null) {
+  output.out(
+    manifest.code?.sessions === null
+      ? `  会话  无会话记录：${manifest.code.reason}`
+      : `  会话  ${manifest.sessionCommit}（${manifest.code?.sessions?.ref ?? manifest.sessionRef}）`,
+  )
+  if (snapshot?.omitted !== null && snapshot?.omitted !== undefined) {
     const { turnId, lines } = snapshot.omitted
     output.out(
       turnId === null
@@ -501,7 +534,7 @@ async function handOver(
   }
 
   // Hooks that ran while this held the lock left their entries for it.
-  if (pendingCount(project.root) > 0) {
+  if (manifest.code === undefined && pendingCount(project.root) > 0) {
     await drainPending(project, { trigger: 'now' })
   }
   return 0
@@ -558,12 +591,14 @@ export async function hubTasks(where: ConsoleAccess): Promise<TaskLine[]> {
     .sort((a, b) => b.acceptedAt - a.acceptedAt)
 }
 
-/** This project's and this device's tasks on the hub, newest first. */
+/** Paired accounts see this project's tasks across devices; SSH keeps its old filter. */
 export async function projectTasks(
   project: HandoffProject,
 ): Promise<TaskLine[]> {
   return (await hubTasks(project)).filter(
-    task => task.project === project.project && task.device === project.device,
+    task =>
+      task.project === project.project &&
+      (project.hub.kind === 'https' || task.device === project.device),
   )
 }
 
@@ -587,8 +622,8 @@ export async function runStatus(
     output.out(`控制台  ${project.console}`)
     const session = sessionToHandOver(cwd, project.root, caller.thread)
     const own = caller.inThreadShell
-      ? '运行这条命令的 qmcode 线程'
-      : '调用这个工具的 qmcode 线程'
+      ? '运行这条命令的线程'
+      : '调用这个工具的线程'
     output.out(
       session === undefined
         ? '会话    （还没有 hook 报过）'

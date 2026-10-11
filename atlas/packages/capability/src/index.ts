@@ -93,3 +93,6 @@ export {
   type VerifyContext,
   type VerifyResult,
 } from './token.js'
+
+export { canonicalJson } from './authz.js'
+export * from './task-owner.js'

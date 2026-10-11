@@ -1,6 +1,8 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { ConsoleMemory } from './consoleMemory.js'
+
 /**
  * `qm console` —— 阡陌控制面板的启动面（P11）。
  *
@@ -18,11 +20,23 @@
  * 文档见 `docs/dev/console.md`。
  */
 
+import * as routingPath from 'node:path'
+import { ConsoleDesktop } from './consoleDesktop.js'
+import { ConsoleRouting, routingWire } from './consoleRouting.js'
+import { ConsoleAvatars } from './consoleAvatars.js'
 import { randomBytes } from 'node:crypto'
 import { StaticPublicKeyDirectory } from '@qianmo/capability'
 import { qianmoConfigPath } from '@qianmo/paths'
 import { loadOrCreateNodeKeys } from '../host/nodeIdentity.js'
 import { ConsoleApprovals } from './consoleApprovals.js'
+import { notifyAllowlist } from './consoleNotifyDestination.js'
+import { cliFilesExchangeCredentials } from './filesExchangeRepo.js'
+import { ConsoleFiles } from './consoleFiles.js'
+import { tenantScope } from '@qianmo/console'
+import { ResidentEstop } from '@qianmo/resident'
+import { ConsoleConnectors } from './consoleConnectors.js'
+import { loadOutboundPolicy } from './outboundPolicy.js'
+import { ConsoleSchedules } from './consoleSchedules.js'
 import { loadConsoleApproverIdentity } from './consoleApproverIdentity.js'
 import { readTrustAnchors } from '../host/trustAnchors.js'
 import { sourceCommit } from '../provenance.js'
@@ -76,10 +90,14 @@ import {
   openConsoleActionLedger,
   runActionLedgerVerify,
 } from './consoleActionLedger.js'
+import { cliHandoffRepoCredentials } from './handoffRepoCli.js'
+import { openConsoleHandoffDevices } from './consoleHandoffDevices.js'
+import { openConsoleHandoffGit } from './consoleHandoffGit.js'
 import { handoffLockRefusal, openConsoleHandoff } from './consoleHandoff.js'
 import { wireHandoffDispatch } from './consoleHandoffDispatch.js'
 import { openConsoleProviders } from './consoleProviders.js'
 import { openConsoleUsage, startUsageCollection } from './consoleUsage.js'
+import { ControlLinks } from './consoleControl.js'
 import { FileTenantStore } from './consoleTenancy.js'
 
 /**
@@ -340,7 +358,14 @@ export function wireConsoleChat(
       endpoints,
       storePath: config.chatStorePath,
       registry,
-      ...(identity === undefined ? {} : { issueCapability: identity.issue }),
+      ...(identity === undefined
+        ? {}
+        : {
+            issueCapability: identity.issue,
+            ownerSigningKeys: (dependencies.loadKeys ?? loadOrCreateNodeKeys)(
+              identity.node,
+            ),
+          }),
       ...((config.approvals || config.tenancyPath !== undefined) &&
       identity !== undefined
         ? {
@@ -441,13 +466,42 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // out: it is locked to one process, and a second console on this config
   // root must stop here — having opened nothing else — rather than become a
   // second writer. That refusal is one sentence, not a stack.
+  const handoffGit =
+    config.handoffRoot === undefined
+      ? undefined
+      : openConsoleHandoffGit(config.handoffRoot)
+  let connectors: ConsoleConnectors | undefined
+  const fallbackRepoCredentials =
+    config.handoffRepos === undefined
+      ? undefined
+      : cliHandoffRepoCredentials(config.handoffRepos)
   let handoff: ReturnType<typeof openConsoleHandoff> | undefined
   try {
     handoff =
-      config.handoffRoot === undefined
+      config.handoffRoot === undefined &&
+      config.handoffRepos === undefined &&
+      !config.connectors
         ? undefined
         : openConsoleHandoff({
             root: config.handoffRoot,
+            ...(config.handoffRoot === undefined &&
+            (config.connectors || fallbackRepoCredentials !== undefined)
+              ? {
+                  credentials: {
+                    async resolve(repo, scope) {
+                      return config.connectors
+                        ? ((await connectors?.resolve(repo, scope)) ?? null)
+                        : ((await fallbackRepoCredentials?.resolve(
+                            repo,
+                            scope,
+                          )) ?? null)
+                    },
+                  },
+                }
+              : {}),
+            retentionMs: config.handoffRetentionMs,
+            ownsProject: (project, owner) =>
+              handoffGit?.owns(project, owner) === true,
             // P17.5: node bridges and the signing identity, when
             // `--handoff-node` is given. Dispatch starts after the port binds.
             dispatch: wireHandoffDispatch(config),
@@ -478,13 +532,25 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
       : undefined
 
+  const handoffDevices =
+    handoff === undefined
+      ? undefined
+      : openConsoleHandoffDevices({
+          accounts: accounts?.book,
+          taskCount: handoff.taskCount,
+        })
+
   // 动作账本跟着个人账号走（P15.9）：记的是「哪个人」做了什么、读了谁的转录。
   // 坏了不阻止启动，理由同账号库；两枚 token 作为已知秘密交给它，万一出现在
   // 某条 URL 路径里，落盘的是 `***`。
   const actions =
-    accounts !== undefined && config.actionsStorePath !== undefined
+    ((accounts !== undefined || config.desktop) &&
+      config.actionsStorePath !== undefined) ||
+    config.files
       ? openConsoleActionLedger({
-          path: config.actionsStorePath,
+          path:
+            config.actionsStorePath ??
+            qianmoConfigPath('qianmo', 'console', 'actions.ndjson'),
           secrets: [tokens.view, tokens.admin],
         })
       : undefined
@@ -564,6 +630,53 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   const approvalIdentity = config.approvals
     ? loadConsoleApproverIdentity(config.chatFrom)
     : undefined
+  if (config.schedules && chat.hub === undefined)
+    throw new Error('--schedules needs an active chat face with a usable PSK')
+  const outboundPolicy = loadOutboundPolicy(
+    qianmoConfigPath('qianmo', 'console', 'outbound-policy.json'),
+  )
+  const schedules =
+    config.schedules && chat.hub
+      ? new ConsoleSchedules({
+          directory: qianmoConfigPath('qianmo', 'console', 'schedules'),
+          estopPath: qianmoConfigPath('qianmo', 'scheduler', 'ESTOP'),
+          chat: chat.hub,
+          pushOptions: {
+            allowlist: notifyAllowlist(process.env.QIANMO_NOTIFY_ALLOWLIST),
+          },
+          ...(accounts === undefined ? {} : { accounts }),
+          ...(usage === undefined ? {} : { usage }),
+          ...(tenancy === undefined ? {} : { tenancy }),
+          ...(actions === undefined ? {} : { actions }),
+          onError: message => process.stderr.write(`[schedules] ${message}\n`),
+        })
+      : undefined
+  const controlIdentity = config.controlTargets?.length
+    ? loadConsoleWakeIdentity(config.chatFrom)
+    : undefined
+  const control =
+    controlIdentity === undefined
+      ? undefined
+      : new ControlLinks({
+          from: config.chatFrom,
+          commandKeys: loadOrCreateNodeKeys(controlIdentity.node),
+          targets: (config.controlTargets ?? []).map(target => ({
+            node: target.node,
+            url: target.url,
+            publicKey: new Map(config.trusted).get(target.node)!,
+            psk: pskFromEnv(
+              transportPskEnvVarForNode(target.node, '--control'),
+            ),
+          })),
+          onError: error =>
+            process.stderr.write(
+              `[control] ${error instanceof Error ? error.name : 'error'}\n`,
+            ),
+        })
+  const memory =
+    config.memory && control
+      ? new ConsoleMemory({ links: control, registry })
+      : undefined
   const approvals =
     approvalIdentity === undefined || accounts === undefined
       ? undefined
@@ -595,6 +708,132 @@ export async function runConsole(args: readonly string[]): Promise<void> {
             process.stderr.write(`[approvals] ${String(error)}\n`),
         })
 
+  connectors =
+    config.connectors && control && approvals
+      ? new ConsoleConnectors({
+          directory: qianmoConfigPath('qianmo', 'console', 'connectors'),
+          policy: outboundPolicy,
+          ...(fallbackRepoCredentials === undefined
+            ? {}
+            : { fallbackRepoCredentials }),
+          agents: async () => {
+            const listed = await registry.list()
+            if (!listed.ok) throw new Error('registry unavailable')
+            return listed.value.map(row => row.address)
+          },
+          ...(tenancy === undefined ? {} : { tenancy }),
+          approvals,
+        })
+      : undefined
+  if (connectors) control!.onHubCall('connector', connectors.handle)
+
+  // File exchange goes through the repo connection marked for it, else the
+  // CLI repo: connections win, as for the relay. The repo is fixed for this
+  // process; its token is read on every use, so a removed or renamed
+  // connection stops transfers at once. With tenancy only the platform's CLI
+  // repo carries files, so no tenant's repo carries another tenant's files.
+  const exchangeConnection =
+    tenancy === undefined ? (connectors?.exchangeRepo() ?? null) : null
+  const exchange =
+    exchangeConnection !== null && connectors !== undefined
+      ? {
+          repo: exchangeConnection.repo,
+          credentials: {
+            resolve: (repo: string) =>
+              connectors.resolve(repo, { tenant: exchangeConnection.tenant }),
+          },
+        }
+      : config.filesExchangeRepo !== undefined
+        ? {
+            repo: config.filesExchangeRepo[0],
+            credentials: cliFilesExchangeCredentials([
+              config.filesExchangeRepo,
+            ]),
+          }
+        : undefined
+  if (config.files && control && exchange === undefined)
+    process.stderr.write(
+      '[files] 没有标为文件交换仓库的 GitHub 仓库连接，文件互通未开启；在「连接」页添加后重启控制台\n',
+    )
+  const fileStop = new ResidentEstop({
+    path: qianmoConfigPath('qianmo', 'console', 'files', 'ESTOP'),
+  })
+  const files =
+    config.files && control && exchange !== undefined
+      ? new ConsoleFiles({
+          directory: qianmoConfigPath('qianmo', 'console', 'files'),
+          exchangeRepo: exchange.repo,
+          credentials: exchange.credentials,
+          retentionMs: config.filesExchangeRetainMs,
+          controlUrl: node =>
+            config.controlTargets?.find(one => one.node === node)?.url,
+          control,
+          agents: async () => {
+            const rows = await registry.list()
+            const nodes = new Set(control.status().map(one => one.node))
+            return rows.ok
+              ? rows.value.flatMap(one => {
+                  const ref = /^qianmo:\/\/([^/]+)\/([^/]+)$/.exec(one.address)
+                  return ref && nodes.has(ref[1]!)
+                    ? [{ node: ref[1]!, agent: ref[2]! }]
+                    : []
+                })
+              : []
+          },
+          stopped: () => fileStop.engaged(),
+          requestAllowed: (source, target) => {
+            if (!tenancy) return true
+            const rows = tenancy.read().config.nodes
+            const a = rows.find(one => one.nodeId === source.node),
+              b = rows.find(one => one.nodeId === target.node)
+            return a !== undefined && b !== undefined && a.tenant === b.tenant
+          },
+          authorized: (subject, source, target) => {
+            if (subject === 'legacy:admin')
+              return accounts === undefined && tenancy === undefined
+            const rows = accounts?.book.list()
+            const person = rows?.ok
+              ? rows.value.accounts.find(
+                  one =>
+                    one.subject === subject &&
+                    one.state === 'active' &&
+                    (one.role === 'member' || one.role === 'ops'),
+                )
+              : undefined
+            if (!person) return false
+            if (!tenancy) return true
+            const scope = tenantScope(tenancy.read(), {
+              kind: 'user',
+              subject: person.subject,
+              role: person.role,
+              authenticatedAt: Date.now(),
+              credential: 'bearer',
+            })
+            return scope.node(source.node) && scope.node(target.node)
+          },
+          ...(actions === undefined ? {} : { actions }),
+          onError: message => process.stderr.write(`[files] ${message}\n`),
+        })
+      : undefined
+  const desktop =
+    config.desktop && control ? new ConsoleDesktop(control, actions) : undefined
+  if (files) {
+    // A repo that cannot be shown private (or a missing credential) stops
+    // file exchange, not the console: every publish and fetch checks again
+    // and fails closed, and the page says why.
+    try {
+      await files.initialize()
+    } catch (error) {
+      process.stderr.write(
+        `[files] ${
+          error instanceof Error && error.message === 'connection-revoked'
+            ? '交换仓库连接已撤销'
+            : '交换仓库必须是私有仓库'
+        }；文件互通暂停，其余功能照常\n`,
+      )
+    }
+  }
+
   // The certificate column, or nothing at all (§10.1). Read at startup rather
   // than per request: the CA root is the one file this console needs and a
   // missing one is a configuration error the operator should hear about now,
@@ -620,6 +859,23 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     config,
     caCertificatePem,
   )
+  const routing =
+    providers === undefined || config.providers === undefined
+      ? undefined
+      : new ConsoleRouting({
+          path: routingPath.join(
+            routingPath.dirname(config.providers.storePath),
+            'routing.json',
+          ),
+          profiles: () => providers.routingProfiles(),
+          actions,
+          audits,
+        })
+  if (routing)
+    providers!.configureRouting(node => {
+      const view = routing.effective(node)
+      return view.updatedAt === null ? undefined : routingWire(view)
+    })
   const firstAudit = audits[0]
   if (firstAudit === undefined) {
     throw new Error('console requires at least one audit source')
@@ -636,6 +892,11 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
 
   const deps: ConsoleDeps = {
+    avatars: new ConsoleAvatars(),
+    ...(memory === undefined ? {} : { memory }),
+    ...(files === undefined ? {} : { files }),
+    ...(schedules === undefined ? {} : { schedules }),
+    ...(connectors === undefined ? {} : { connectors }),
     ...(approvals === undefined ? {} : { approvals }),
     ...(usage === undefined ? {} : { usage }),
     ...(tenancy === undefined ? {} : { tenancy }),
@@ -676,7 +937,11 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(serverNotes === undefined ? {} : { serverNotes }),
     ...(actions === undefined ? {} : { actions }),
     ...(handoff === undefined ? {} : { handoff: handoff.port }),
+    ...(handoffDevices === undefined ? {} : { handoffDevices }),
+    ...(handoffGit === undefined ? {} : { handoffGit }),
     ...(providers === undefined ? {} : { providers }),
+    ...(desktop === undefined ? {} : { desktop }),
+    ...(routing === undefined ? {} : { routing }),
     binName: 'qm',
     // 横幅里那几条身份与接线事实，原样交给「设置与关于」（A4）：页面答得出
     // 自己是哪一版、连着哪个注册中心、签不签名。只放横幅已经打出来的东西，没有
@@ -731,6 +996,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   providers?.start()
   // And no task goes to a node from a console that never came up (P17.5).
   handoff?.start()
+  schedules?.start()
 
   const origin = httpOrigin(config.hostname, handle.port)
   // token 是自己生成的才回显：显式提供的那一个已经在操作者手里，把它再打进
@@ -792,6 +1058,11 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     )
   }
   banner += field('chat', chat.status)
+  if (files) banner += field('files', 'enabled (control links)')
+  if (connectors)
+    banner += field('connectors', 'enabled (all presets unevaluated)')
+  if (schedules)
+    banner += field('schedules', 'enabled (notification channels: unevaluated)')
   if (chat.hub !== undefined) {
     banner += field('chat-store', config.chatStorePath)
   }
@@ -810,7 +1081,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   banner += field(
     'handoff',
     handoff === undefined
-      ? 'disabled (no --handoff-root)'
+      ? 'disabled (no --handoff-root, --handoff-repo or --connectors)'
       : `enabled -> ${handoff.root} (ledger ${handoff.ledgerPath}, ` +
           `${String(handoff.replayed)} tasks; audit ${handoff.auditPath})`,
   )
@@ -884,6 +1155,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     )
   process.stdout.write(banner)
   approvals?.start()
+  control?.start()
+  files?.start()
   const usageCollection =
     usage === undefined
       ? undefined
@@ -892,8 +1165,12 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         )
 
   const stop = (): void => {
+    files?.close()
+    schedules?.close()
+    connectors?.close()
     usageCollection?.stop()
     void approvals?.close()
+    void control?.close()
     // Leases already granted run out on their own; the ledger stays, so the
     // next start picks the same entries up again.
     registrations.stop()
@@ -906,6 +1183,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     // Gives the ledger lock back, so the next start does not have to wait for
     // the stale-pid check to reclaim it.
     handoff?.close()
+    handoffDevices?.close()
+    handoffGit?.close()
   }
   process.once('SIGINT', stop)
   process.once('SIGTERM', stop)

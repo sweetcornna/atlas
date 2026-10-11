@@ -43,6 +43,9 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { signTaskOwner, type NodeKeyPair } from '@qianmo/capability'
+import { MODEL_DIRECTIONS } from '@qianmo/console'
+import { parseTurnStepDedupKey } from '@qianmo/resident'
 import type {
   ChatLocalCommand,
   ChatPort,
@@ -175,6 +178,7 @@ export interface ConsoleChatEndpoint {
 }
 
 interface ConsoleChatOptions {
+  readonly ownerSigningKeys?: NodeKeyPair
   readonly signing?: HandshakeIdentity
   readonly usage?: import('@qianmo/console').UsagePort
   /** 控制台自己的地址，`qianmo://<node>/<agent>`。 */
@@ -252,9 +256,11 @@ const CHAT_TIMEOUT_SLACK_MS = 15_000
 
 interface PendingTask {
   readonly taskId: string
+  readonly msgId: string
   readonly turnId: string
   readonly sessionId: string
   readonly sentAt: number
+  readonly taskTtlMs: number
   /** 这一轮是本地命令时，回复那一轮也记成命令输出。 */
   readonly command?: ChatLocalCommand
   timer: ReturnType<typeof setTimeout> | null
@@ -540,7 +546,7 @@ export function createConsoleChatPort(
         taskId: task.taskId,
         elapsedMs: now() - task.sentAt,
       })
-    }, taskTtlMs + Math.min(CHAT_TIMEOUT_SLACK_MS, taskTtlMs))
+    }, task.taskTtlMs + Math.min(CHAT_TIMEOUT_SLACK_MS, task.taskTtlMs))
     timer.unref?.()
     task.timer = timer
   }
@@ -587,6 +593,17 @@ export function createConsoleChatPort(
     if (counted >= MAX_NOTICES_PER_SESSION) return
     noticeCount.set(sessionId, counted + 1)
 
+    const step =
+      payload.kind === 'task' && payload.dedupKey !== undefined
+        ? parseTurnStepDedupKey(payload.dedupKey)
+        : undefined
+    const causingTask =
+      payload.causeTaskId === undefined
+        ? undefined
+        : pending.get(payload.causeTaskId)
+    const automatic =
+      step !== undefined && causingTask?.msgId === step.networkMsgId
+
     addTurn({
       id: newId(),
       sessionId,
@@ -601,6 +618,10 @@ export function createConsoleChatPort(
       // 的一条既成事实。`done` 是这条链上唯一诚实的落点。
       state: 'done',
       variant: 'notice',
+      noticeSource: automatic ? 'step' : 'agent',
+      ...(payload.causeTaskId === undefined
+        ? {}
+        : { causeTaskId: payload.causeTaskId }),
       severity: payload.severity,
       // 重发要看得见，不能悄悄变成第二条不同的过程（协议 §14.4）。
       ...(payload.redelivered === true ? { redelivered: true as const } : {}),
@@ -901,6 +922,14 @@ export function createConsoleChatPort(
     },
 
     async send(input: ChatSendInput): Promise<ConsoleResult<ChatTurn>> {
+      const sendTaskTtlMs = input.taskTtlMs ?? taskTtlMs
+      if (!Number.isFinite(sendTaskTtlMs) || sendTaskTtlMs <= 0)
+        return fail('invalid', '任务期限必须为正数')
+      if (
+        input.direction !== undefined &&
+        !MODEL_DIRECTIONS.includes(input.direction)
+      )
+        return fail('invalid', '任务方向无效')
       const stored = sessions.get(input.sessionId)
       if (stored === undefined) {
         return fail('not_found', '这条会话不在本控制台的记录里')
@@ -985,7 +1014,7 @@ export function createConsoleChatPort(
           taskId,
           createdAt,
         })
-        const draft = createMessage({
+        let draft: QianmoMessage = createMessage({
           from: options.from,
           to: stored.target,
           type: MessageType.TaskRequest,
@@ -1007,6 +1036,12 @@ export function createConsoleChatPort(
           // 当一句话——`task.request` 的 payload 本来就不设字段表。
           payload: {
             prompt: text,
+            ...(input.onBehalfOf === undefined
+              ? {}
+              : { onBehalfOf: input.onBehalfOf }),
+            ...(input.direction === undefined
+              ? {}
+              : { direction: input.direction }),
             ...(input.command === undefined
               ? {}
               : { command: { name: input.command } }),
@@ -1014,12 +1049,17 @@ export function createConsoleChatPort(
           taskId,
           createdAt,
           deliverTtlMs,
-          taskTtlMs,
+          taskTtlMs: sendTaskTtlMs,
           ...(cap === undefined ? {} : { cap }),
         })
         // protocol.md §6.3 call site 1 — the origin stamps itself into
         // `hops[0]` before the envelope reaches a transport, and the same call
         // runs the runtime throttle every other sender goes through.
+        if (
+          input.onBehalfOf !== undefined &&
+          options.ownerSigningKeys !== undefined
+        )
+          draft = signTaskOwner(draft, options.ownerSigningKeys)
         const routed = router.outbound(draft)
         if (!routed.ok) {
           return fail('rejected', `${routed.code}: ${routed.reason}`)
@@ -1044,9 +1084,11 @@ export function createConsoleChatPort(
 
       const task: PendingTask = {
         taskId: message.taskId,
+        msgId: message.msgId,
         turnId: turn.id,
         sessionId: stored.id,
         sentAt,
+        taskTtlMs: sendTaskTtlMs,
         ...(input.command === undefined ? {} : { command: input.command }),
         timer: null,
       }

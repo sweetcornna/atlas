@@ -50,6 +50,10 @@ export type AreaId =
   | 'overview'
   | 'nodes'
   | 'chat'
+  | 'memory'
+  | 'connect'
+  | 'desktop'
+  | 'files'
   | 'audit'
   | 'alerts'
   | 'jobs'
@@ -60,8 +64,11 @@ export type AreaId =
   | 'usage'
   | 'settings'
 
-/** The three sidebar groups, in the order the sidebar draws them. */
-export type AreaGroup = 'run' | 'config' | 'admin'
+/**
+ * The two sidebar groups, in the order the sidebar draws them: the everyday
+ * areas with no heading, then 管理, folded until opened.
+ */
+export type AreaGroup = 'main' | 'manage'
 
 /** An area as the sidebar and the breadcrumb name it. */
 export interface Area {

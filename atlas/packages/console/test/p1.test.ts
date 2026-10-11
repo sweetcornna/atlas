@@ -179,7 +179,7 @@ describe('A2 · every overview card is something that changes', () => {
         ...page,
       },
     }
-    return await (await h.handle(browse('/', ADMIN))).text()
+    return await (await h.handle(browse('/overview', ADMIN))).text()
   }
 
   test('the two protocol constants are gone, and the last hour is read instead', async () => {
@@ -613,7 +613,8 @@ describe('F1 · every document has one h1, a main, and a way past the sidebar', 
   }
 
   const AREAS: readonly (readonly [string, string])[] = [
-    ['/', 'overview'],
+    ['/', 'chat'],
+    ['/overview', 'overview'],
     ['/nodes', 'nodes'],
     ['/nodes/tokyo-1', 'nodes'],
     ['/chat', 'chat'],

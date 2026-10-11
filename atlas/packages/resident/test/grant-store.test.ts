@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import {
   generateNodeKeyPair,
   signAuthzDecision,
+  signAuthzRevoke,
   type AuthzDecision,
   type AuthzOrigin,
   type AuthzRequest,
@@ -649,4 +650,82 @@ test('grant use rechecks commander overlap and approval-key rotation', () => {
     approvers: new Map([['hub', strangerKeys.publicKey]]),
   })
   expect(rotated.use(call).kind).not.toBe('hit')
+})
+
+test('desktop grants reject windows, bind exact invocation and expire at the signed decision; consumed permits recheck revocation', () => {
+  const store = open()
+  const call: AuthzCall = {
+    agent: 'main',
+    contextId: 'ctx',
+    toolName: 'qianmo_browser_click',
+    input: {
+      node: NODE,
+      taskId: 'task',
+      invocationId: 'invoke',
+      resourceId: 'resource',
+      resourceEpoch: 1,
+      op: 'click',
+      canonicalArgsDigest: 'a'.repeat(64),
+      args: { selector: '#send', tab: 'resource:1:main' },
+    },
+  }
+  const request = ask(store, call)
+  expect(
+    store.applyDecision(
+      decide(request, { decision: 'allow-window', windowMs: MINUTE }),
+    ).ok,
+  ).toBe(false)
+  expect(store.applyDecision(decide(request, { exp: now + 1000 })).ok).toBe(
+    true,
+  )
+  expect(
+    store.use({ ...call, input: { ...call.input, invocationId: 'other' } })
+      .kind,
+  ).toBe('miss')
+  expect(
+    store.use({ ...call, input: { ...call.input, resourceEpoch: 2 } }).kind,
+  ).toBe('miss')
+  expect(store.use(call).kind).toBe('hit')
+  expect(store.use(call).kind).toBe('miss')
+  expect(store.consumedGrantValid(request.requestId)).toBe(true)
+  const revoke = signAuthzRevoke(hubKeys, {
+    v: 1,
+    requestId: request.requestId,
+    aud: NODE,
+    approver: APPROVER,
+    nbf: now,
+    exp: now + MINUTE,
+    nonce: randomBytes(16).toString('base64url'),
+  })
+  expect(store.applyRevoke(revoke).ok).toBe(true)
+  expect(store.consumedGrantValid(request.requestId)).toBe(false)
+  const second = ask(store, {
+    ...call,
+    input: { ...call.input, invocationId: 'expiry' },
+  })
+  expect(store.applyDecision(decide(second, { exp: now + 1000 })).ok).toBe(true)
+  now += 1000
+  expect(
+    store.use({ ...call, input: { ...call.input, invocationId: 'expiry' } })
+      .kind,
+  ).toBe('miss')
+  expect(store.consumedGrantValid(second.requestId)).toBe(false)
+})
+test('host resource cancellation survives restart and makes a later signed decision invalid', () => {
+  const store = open(),
+    call: AuthzCall = {
+      agent: 'main',
+      contextId: 'ctx',
+      toolName: 'qianmo_browser_click',
+      input: { invocationId: 'cancel' },
+    }
+  const request = ask(store, call)
+  store.cancelRequests([request.requestId])
+  store.close()
+  const reopened = open()
+  expect(reopened.pending()).toEqual([])
+  expect(reopened.applyDecision(decide(request))).toMatchObject({
+    ok: false,
+    reason: 'expired',
+  })
 })

@@ -62,6 +62,7 @@ export {
 } from './fingerprint.js'
 
 export { LIMITS, type Limits } from './limits.js'
+export * from './control.js'
 
 export {
   RELEASE_REASONS,
@@ -82,6 +83,10 @@ export {
 
 export {
   ENVELOPE_VERSION,
+  TASK_DIRECTIONS,
+  type TaskDirection,
+  type TaskRequestPayload,
+  isTaskDirection,
   LEGACY_MESSAGE_TYPES,
   MESSAGE_TYPES,
   MessageType,
@@ -142,3 +147,8 @@ export {
   type ValidateOptions,
   type ValidationResult,
 } from './validate.js'
+
+export {
+  type DirectedTaskRequestPayload,
+  isDirectedTaskRequestPayload,
+} from './message.js'

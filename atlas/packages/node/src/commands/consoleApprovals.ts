@@ -1,9 +1,11 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { freshApprovalTool } from '../host/residentAuthorization.js'
 import { randomBytes } from 'node:crypto'
 import {
   StaticPublicKeyDirectory,
+  authzDigest,
   MAX_AUTHZ_WINDOW_MS,
   parseAuthzDecision,
   signAuthzDecision,
@@ -53,6 +55,10 @@ interface CachedRequest {
   approver?: string
   revokePending?: boolean
   continuation?: 'reserved' | 'sent'
+  once?: boolean
+  allowedUntil?: number
+  approvedAt?: number
+  consumed?: boolean
 }
 export interface ConsoleApprovalsOptions {
   readonly from: string
@@ -142,6 +148,9 @@ export class ConsoleApprovals implements ApprovalPort {
           throw new Error('invalid approval decision ledger')
         cached.status = 'delivery-unknown'
         cached.approver = parts.value.approver
+        cached.once = parts.value.decision === 'allow-once'
+        cached.allowedUntil = parts.value.exp
+        cached.approvedAt = parts.value.nbf
       } else if (entry.kind === 'delivered') {
         const cached =
           typeof id === 'string' ? this.#requests.get(id) : undefined
@@ -152,6 +161,17 @@ export class ConsoleApprovals implements ApprovalPort {
         )
           throw new Error('invalid approval receipt ledger')
         cached.status = entry.data['status'] as 'allowed' | 'denied'
+      } else if (entry.kind === 'connector-consumed') {
+        const cached =
+          typeof id === 'string' ? this.#requests.get(id) : undefined
+        if (
+          !cached ||
+          cached.consumed ||
+          !cached.once ||
+          entry.data['digest'] !== cached.request.digest
+        )
+          throw new Error('invalid connector action ledger')
+        cached.consumed = true
       } else if (entry.kind === 'continuation' || entry.kind === 'continued') {
         const cached =
           typeof id === 'string' ? this.#requests.get(id) : undefined
@@ -439,10 +459,10 @@ export class ConsoleApprovals implements ApprovalPort {
       )
         return refusal('refused', '审批请求已变化或失效')
       if (
-        cached.request.toolName === 'qianmo_memory_write' &&
+        freshApprovalTool(cached.request.toolName) &&
         input.decision === 'allow-window'
       )
-        return refusal('invalid', '记忆写入必须逐次批准，不支持授权窗口')
+        return refusal('invalid', '此工具必须逐次批准，不支持授权窗口')
       const windowMs = input.windowMs ?? 0
       if (
         !['allow-once', 'allow-window', 'deny'].includes(input.decision) ||
@@ -470,6 +490,9 @@ export class ConsoleApprovals implements ApprovalPort {
       })
       this.#append('decision', { requestId: input.requestId, wire: decision })
       cached.approver = approver
+      cached.once = input.decision === 'allow-once'
+      cached.allowedUntil = Math.min(cached.request.exp, this.#now() + 60_000)
+      cached.approvedAt = this.#now()
       cached.status = 'delivery-unknown'
       await this.#send(
         cached,
@@ -495,6 +518,67 @@ export class ConsoleApprovals implements ApprovalPort {
     } finally {
       if (locked) this.#busy.delete(input.requestId)
       void this.#flushRevokes()
+    }
+  }
+
+  /** Hub is the P14 approver: consume its own durable record before any external mutation. */
+  consumeConnector(input: {
+    readonly requestId: string
+    readonly node: string
+    readonly agent: string
+    readonly contextId: string
+    readonly toolName: string
+    readonly input: Record<string, unknown>
+  }): boolean {
+    const cached = this.#requests.get(input.requestId)
+    if (
+      !cached ||
+      !cached.once ||
+      cached.consumed ||
+      cached.revokePending ||
+      !['allowed', 'delivery-unknown'].includes(cached.status) ||
+      (cached.allowedUntil ?? 0) <= this.#now() ||
+      cached.request.exp <= this.#now() ||
+      cached.request.iss !== input.node ||
+      cached.request.sub !== `qianmo://${input.node}/${input.agent}` ||
+      cached.request.contextId !== input.contextId ||
+      cached.request.toolName !== input.toolName
+    )
+      return false
+    if (
+      !['qianmo_mail_send', 'qianmo_calendar_create'].includes(input.toolName)
+    )
+      return false
+    const digest = authzDigest(input)
+    if (cached.request.digest !== digest) return false
+    const subject = cached.approver?.slice(this.#node.length + 1)
+    const accounts = this.#options.accounts.list()
+    const account = accounts.ok
+      ? accounts.value.accounts.find(
+          row => row.subject === subject && row.state === 'active',
+        )
+      : undefined
+    if (
+      !account ||
+      !this.#visible(
+        {
+          kind: 'user',
+          subject: account.subject,
+          role: account.role,
+          credential: 'approval-session',
+          authenticatedAt: cached.approvedAt ?? 0,
+        },
+        cached,
+        true,
+      )
+    )
+      return false
+    try {
+      this.#append('connector-consumed', { requestId: input.requestId, digest })
+      cached.consumed = true
+      return true
+    } catch {
+      return false
     }
   }
 

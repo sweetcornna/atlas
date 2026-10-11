@@ -465,7 +465,7 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible,
 }
 a.brand-cn:hover { color: var(--color-accent-700); }
 
-/* ---- nav: three groups, every area listed, unbuilt ones marked ---- */
+/* ---- nav: the everyday areas, then the operator's folded under 管理 ---- */
 .nav { display: flex; flex-direction: column; gap: var(--space-4); }
 .nav-group { display: flex; flex-direction: column; gap: 2px; }
 .nav-group-name {
@@ -473,6 +473,16 @@ a.brand-cn:hover { color: var(--color-accent-700); }
   font-size: var(--text-11); letter-spacing: .08em;
   color: var(--color-muted);
 }
+.nav-fold > summary {
+  display: flex; align-items: center; justify-content: space-between;
+  list-style: none; cursor: pointer; border-radius: var(--radius-pill);
+  padding-top: var(--space-1);
+}
+.nav-fold > summary::-webkit-details-marker { display: none; }
+.nav-fold > summary:hover { color: var(--color-text); }
+.nav-fold > summary svg { width: 14px; height: 14px; transition: transform 150ms ease; }
+.nav-fold[open] > summary svg { transform: rotate(180deg); }
+.nav-fold > .nav-group { padding-top: var(--space-1); }
 .nav-item {
   display: flex; align-items: center; gap: var(--space-2);
   padding: 7px var(--space-3); border-radius: var(--radius-pill);

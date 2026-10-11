@@ -31,6 +31,13 @@ import type { RouteModule } from '../src/routes/types.js'
 import { CONSOLE_HEADER, accountsHarness, person } from './accountsHarness.js'
 import { PLANNER, StatefulLifecycle } from './lifecycleFake.js'
 import { MemoryActionLedger } from './memoryActions.js'
+import {
+  FakeConnectors,
+  FakeDesktop,
+  FakeFiles,
+  FakeHandoffDevices,
+  FakeMemory,
+} from './directionFakes.js'
 import { PageAudit, PageRegistry, TRACE } from './pageHarness.js'
 import { FakeProviders } from './providersFake.js'
 import { MemoryNotify } from './watchFakes.js'
@@ -143,6 +150,11 @@ async function wired(): Promise<{
       actions: new MemoryActionLedger(),
       notify: new MemoryNotify([]),
       providers: new FakeProviders(),
+      memory: new FakeMemory(() => 1_700_000_000_000),
+      connectors: new FakeConnectors(() => 1_700_000_000_000),
+      handoffDevices: new FakeHandoffDevices(() => 1_700_000_000_000),
+      desktop: new FakeDesktop(() => 1_700_000_000_000),
+      files: new FakeFiles(() => 1_700_000_000_000),
       nodeServers: [{ node: 'tokyo-1', server: 'p11' }],
     },
   })
@@ -226,7 +238,8 @@ function filesOf(module: RouteModule | undefined): readonly string[] {
   if (module === undefined) {
     return ['../src/http.ts', '../src/accountsHttp.ts']
   }
-  const own = `../src/routes/${module.area.id}.ts`
+  // P20's API ships before the separately owned page module.
+  const own = `../src/routes/${module.area.id === 'files' && module.page === undefined ? 'filesApi' : module.area.id}.ts`
   const imports = [...source(own).matchAll(/from '\.\/(\w+)\.js'/g)]
     .map(match => match[1] ?? '')
     .filter(name => !['shared', 'types', 'index'].includes(name))

@@ -18,6 +18,7 @@ function outbox(options: { canWrite?: boolean } = {}): {
       isClosed: () => false,
       write: message => {
         written.push(message)
+        return true
       },
     }),
   }
@@ -48,4 +49,46 @@ describe('EnvelopeOutbox close', () => {
 
     expect(queue.pending).toBe(0)
   })
+})
+
+test('once-only written requests become unknown on disconnect and never replay', async () => {
+  const { outbox: queue, written } = outbox()
+  const delivery = queue.sendOnce(makeMessage(), 5_000)
+  const rejected = delivery.receipt.catch(error => error)
+  queue.disconnect()
+  expect(await rejected).toBeInstanceOf(Error)
+  expect(delivery.cancel()).toBe('unknown')
+  expect(queue.pending).toBe(0)
+  queue.replay()
+  expect(written).toHaveLength(1)
+})
+
+test('an unwritten request expires as not-sent and is withdrawn before reconnect', async () => {
+  const options = { canWrite: false }
+  const { outbox: queue, written } = outbox(options)
+  const delivery = queue.sendOnce(makeMessage(), 5)
+  await expect(delivery.receipt).rejects.toThrow()
+  expect(delivery.cancel()).toBe('not-sent')
+  expect(queue.pending).toBe(0)
+  options.canWrite = true
+  queue.replay()
+  expect(written).toEqual([])
+})
+
+test('a socket refusing a write reports not-sent and leaves nothing to replay', async () => {
+  let attempts = 0
+  const queue = new EnvelopeOutbox({
+    canWrite: () => true,
+    isClosed: () => false,
+    write: () => {
+      attempts++
+      return false
+    },
+  })
+  const delivery = queue.sendOnce(makeMessage(), 5)
+  await expect(delivery.receipt).rejects.toThrow()
+  expect(delivery.cancel()).toBe('not-sent')
+  expect(queue.pending).toBe(0)
+  queue.replay()
+  expect(attempts).toBe(1)
 })

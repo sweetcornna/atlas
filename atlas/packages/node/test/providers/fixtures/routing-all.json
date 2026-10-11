@@ -1,0 +1,196 @@
+{
+  "models": {
+    "providers": {
+      "qm-vendor-paygo-87b56013": {
+        "baseUrl": "https://api.vendor.example/anthropic",
+        "api": "anthropic-messages",
+        "auth": "apiKey",
+        "apiKey": "sk-test-canary-7Hq2Zp9LmV4xR8sT1wYc",
+        "authHeader": true,
+        "disableStrictTools": true,
+        "headers": {},
+        "models": [
+          {
+            "id": "vendor-model-pro",
+            "name": "vendor-model-pro",
+            "reasoning": true,
+            "thinking": {
+              "mode": "budget",
+              "efforts": ["low", "high", "max"]
+            },
+            "compat": {
+              "statefulResponses": false
+            },
+            "contextWindow": 200000,
+            "maxTokens": 32000
+          },
+          {
+            "id": "vendor-model-flash",
+            "name": "vendor-model-flash",
+            "reasoning": true,
+            "thinking": {
+              "mode": "budget",
+              "efforts": ["low", "high", "max"]
+            },
+            "compat": {
+              "statefulResponses": false
+            },
+            "contextWindow": 200000,
+            "maxTokens": 32000
+          }
+        ]
+      },
+      "qm-chat-f34ccf07": {
+        "baseUrl": "https://chat.example/v1",
+        "api": "anthropic-messages",
+        "auth": "apiKey",
+        "apiKey": "sk-test-canary-7Hq2Zp9LmV4xR8sT1wYc",
+        "authHeader": true,
+        "disableStrictTools": true,
+        "headers": {},
+        "models": [
+          {
+            "id": "vendor-model-pro",
+            "name": "vendor-model-pro",
+            "reasoning": true,
+            "thinking": {
+              "mode": "budget",
+              "efforts": ["low", "high", "max"]
+            },
+            "compat": {
+              "statefulResponses": false
+            },
+            "contextWindow": 200000,
+            "maxTokens": 32000
+          },
+          {
+            "id": "vendor-model-flash",
+            "name": "vendor-model-flash",
+            "reasoning": true,
+            "thinking": {
+              "mode": "budget",
+              "efforts": ["low", "high", "max"]
+            },
+            "compat": {
+              "statefulResponses": false
+            },
+            "contextWindow": 200000,
+            "maxTokens": 32000
+          }
+        ]
+      },
+      "qm-openai-images-d9617135": {
+        "baseUrl": "https://api.openai.com/v1",
+        "api": "openai-completions",
+        "auth": "apiKey",
+        "apiKey": "sk-test-canary-7Hq2Zp9LmV4xR8sT1wYc",
+        "headers": {},
+        "models": [
+          {
+            "id": "gpt-image-2",
+            "name": "gpt-image-2",
+            "api": "openai-images",
+            "kind": "image",
+            "input": ["text"],
+            "reasoning": false,
+            "compat": {
+              "statefulResponses": false
+            },
+            "contextWindow": 200000,
+            "maxTokens": 32000
+          }
+        ]
+      },
+      "qm-openai-speech-d9617135": {
+        "baseUrl": "https://api.openai.com/v1",
+        "api": "openai-completions",
+        "auth": "apiKey",
+        "apiKey": "sk-test-canary-7Hq2Zp9LmV4xR8sT1wYc",
+        "headers": {},
+        "models": [
+          {
+            "id": "gpt-4o-mini-tts",
+            "name": "gpt-4o-mini-tts",
+            "api": "openai-speech",
+            "kind": "tts",
+            "input": ["text"],
+            "reasoning": false,
+            "compat": {
+              "statefulResponses": false
+            },
+            "contextWindow": 200000,
+            "maxTokens": 32000
+          }
+        ]
+      },
+      "qm-openrouter-video-76ef4ad6": {
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "api": "openai-completions",
+        "auth": "apiKey",
+        "apiKey": "sk-test-canary-7Hq2Zp9LmV4xR8sT1wYc",
+        "headers": {},
+        "models": [
+          {
+            "id": "google/veo-3.1",
+            "name": "google/veo-3.1",
+            "api": "openrouter-video",
+            "kind": "video",
+            "input": ["text"],
+            "reasoning": false,
+            "compat": {
+              "statefulResponses": false
+            },
+            "contextWindow": 200000,
+            "maxTokens": 32000
+          }
+        ]
+      }
+    }
+  },
+  "config": {
+    "modelRoles": {
+      "default": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
+      "task": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
+      "chat": "qm-chat-f34ccf07/vendor-model-pro:max",
+      "plan": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
+      "slow": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
+      "smol": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
+      "commit": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
+      "tiny": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
+      "vision": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
+      "image": "qm-openai-images-d9617135/gpt-image-2:off",
+      "speech": "qm-openai-speech-d9617135/gpt-4o-mini-tts:off",
+      "video": "qm-openrouter-video-76ef4ad6/google/veo-3.1:off"
+    },
+    "defaultThinkingLevel": "max",
+    "providers": {
+      "cacheRetention": "auto",
+      "cacheWarming": "off"
+    },
+    "retry": {
+      "enabled": true,
+      "maxRetries": 3,
+      "baseDelayMs": 500,
+      "maxDelayMs": 60000,
+      "fallbackChains": {}
+    },
+    "generate_image": {
+      "enabled": true
+    },
+    "speechgen": {
+      "enabled": true
+    },
+    "qianmoRouting": {
+      "auto": true
+    }
+  },
+  "providerId": "qm-vendor-paygo-87b56013",
+  "selection": {
+    "provider": "qm-vendor-paygo-87b56013",
+    "modelId": "vendor-model-pro",
+    "thinkingLevel": "max"
+  },
+  "route": "direct",
+  "effectiveLane": "anthropic",
+  "keyId": "k1"
+}
