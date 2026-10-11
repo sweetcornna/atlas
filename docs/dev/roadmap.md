@@ -1023,7 +1023,7 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 | 文档 | 状态 | 产出任务包 |
 |---|---|---|
 | `docs/dev/charter.md` | ✅ v2.22 | — |
-| `docs/dev/roadmap.md` | ✅ v2.91 | — |
+| `docs/dev/roadmap.md` | ✅ v3.3 | — |
 | `docs/dev/selection-m0.md` | ✅ v1.0 | 产出：2026-08 五路调研 + 六个前置实验（**实测数据与决议记录的唯一真源**） |
 | `docs/dev/base-adoption.md` | ✅ v2.1 定稿（负责人决议 2026-08-17 评审通过，P0.2 关闭，v2.41①；含 `selection-m0.md` §2 的修正复核，见其 §8） | P0.2 |
 | `BASE.md`（仓库根） | ✅ 随基座导入建立 | 由负责人维护，见章程 §5.6 |
