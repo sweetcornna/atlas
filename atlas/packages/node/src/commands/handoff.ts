@@ -29,6 +29,8 @@
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import { statSync } from 'node:fs'
 import { isatty } from 'node:tty'
+import { handoffCodeStore } from './handoffConfig.js'
+import { runClean } from './handoffClean.js'
 import { isTaskId, sessionRef, type HandoffTool } from '@qianmo/handoff'
 import { codexHome, claudeProjectsDir, qmcodeHome } from '@qianmo/paths'
 import {
@@ -218,6 +220,8 @@ Commands:
                            back into $QMCODE_HOME/sessions, so qmcode resume
                            <thread> continues it. The hub records "returned".
                            Without <task>: this project's latest finished one.
+
+  clean [--task <id>]      Delete GitHub branches of this device's failed/returned tasks.
 
 Files: <config root>/qianmo/handoff/{projects.json,sessions.json,sync.log,state/}.
 qmcode sessions are looked up under $QMCODE_HOME/sessions (default ~/.qmcode).
@@ -526,7 +530,11 @@ async function runHookSync(
       file: report.file,
       length: landed.end,
     })
-    await drainPending(project, { trigger: `hook:${tool}` })
+    // GitHub has task-scoped refs, not a continuously mirrored repository.
+    // Hooks keep the checked prefix locally; explicit now/sync registers the
+    // task before a node may run it, so no untracked remote refs accumulate.
+    if ((await handoffCodeStore(project)) !== 'github')
+      await drainPending(project, { trigger: `hook:${tool}` })
   } catch (error) {
     appendSyncLog({
       event: 'hook-error',
@@ -539,6 +547,8 @@ async function runHookSync(
 
 async function runManualSync(cwd: string, output: Output): Promise<number> {
   const project = await projectAt(cwd)
+  if ((await handoffCodeStore(project)) === 'github')
+    return runNow(cwd, {}, output, { whileRunning: 'cut' })
   let snapshot: ReturnType<typeof sessionSnapshot> | null = null
   try {
     snapshot = sessionSnapshot(cwd, project.root, 'cut')
@@ -836,6 +846,11 @@ async function dispatchHandoff(
       return await runInit(rest, cwd, output)
     case 'sync':
       return await runSync(rest, cwd, output)
+    case 'clean': {
+      const parsed = parseOptions(rest, ['--task'])
+      if (parsed.positional.length) usage('clean 不接受位置参数')
+      return runClean(cwd, { taskId: parsed.values.get('--task') }, output)
+    }
     case 'now':
       return await runNowCommand(rest, cwd, output)
     case 'status':

@@ -57,7 +57,6 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import {
-  type HandoffTool,
   HandoffGitError,
   MAX_CHANGED_FILE_BYTES,
   OversizedFileError,
@@ -70,6 +69,9 @@ import {
   wipRef,
   type ExclusiveLock,
 } from '@qianmo/handoff'
+import { handoffCodeStore } from './handoffConfig.js'
+import { syncGithub, type GithubHandoffOptions } from './handoffGithub.js'
+import type { HandoffCode, HandoffTool } from '@qianmo/handoff'
 import {
   hubConnection,
   localRef,
@@ -87,16 +89,11 @@ import {
   writeJsonFile,
 } from './handoffStore.js'
 
+import type { SessionSnapshot } from './handoffSyncTypes.js'
+export type { SessionSnapshot } from './handoffSyncTypes.js'
+
 /** The plan card's 5 s. */
 const SYNC_DEBOUNCE_MS = 5_000
-
-/** A transcript prefix that has been checked complete. */
-export interface SessionSnapshot {
-  readonly tool: HandoffTool
-  readonly sessionId: string
-  readonly file: string
-  readonly content: Buffer
-}
 
 interface SyncedSession {
   readonly sessionId: string
@@ -107,6 +104,7 @@ interface SyncedSession {
 }
 
 interface SyncResult {
+  readonly code?: HandoffCode
   readonly branch: string
   readonly head: string | null
   readonly wip: string
@@ -149,7 +147,10 @@ export function syncFailureReason(error: unknown): string {
 export async function syncOnce(
   project: HandoffProject,
   sessions: readonly SessionSnapshot[],
+  githubOptions: GithubHandoffOptions = {},
 ): Promise<SyncResult> {
+  if ((await handoffCodeStore(project)) === 'github')
+    return syncGithub(project, sessions, githubOptions)
   const conn = hubConnection(project)
   const shadow = await shadowCommit({ cwd: project.root })
   if (shadow.branch === null) {

@@ -345,7 +345,7 @@ describe('qm handoff pull', () => {
     expect(await runPull(s.repo, { taskId: 't-cc' }, out)).toBe(0)
     expect(git(s.repo, 'rev-parse', 'HEAD')).toBe(s.head)
     expect(out.lines.join('\n')).toContain(
-      `会话  Claude Code 会话在云端续成了 qmcode 线程 ${THREAD} · 留在中枢 ${sessionRef('cloud', THREAD)} · 没有放到本机`,
+      `会话  Claude Code 会话在云端续成了 Codex 兼容线程 ${THREAD} · 留在中枢 ${sessionRef('cloud', THREAD)} · 没有放到本机`,
     )
     expect(existsSync(join(qmHome, 'sessions'))).toBe(false)
     // Only the branch was fetched: no session ref, temporary or not.

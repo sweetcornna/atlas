@@ -5,6 +5,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { acquireExclusiveLock } from '@qianmo/handoff'
+import { handoffCodeStore } from './handoffConfig.js'
 import { writePrivateFileAtomic } from '../providers/store.js'
 import {
   handoffPath,
@@ -156,6 +157,10 @@ export async function pairedProject(
     console: device.console,
     hub: { kind: 'https', root: `${device.console}/v0/handoff/git` },
     tokenFile: deviceTokenPath(),
+  }
+  if ((await handoffCodeStore(project)) === 'github') {
+    await saveProject(project)
+    return project
   }
   const response = await fetch(`${device.console}/v0/handoff/projects`, {
     method: 'POST',

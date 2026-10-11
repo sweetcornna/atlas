@@ -9,6 +9,34 @@
 | 适用 | `qm handoff`（P17.4）、`qm handoff mcp`（P17.3）、`qm handoff node` 与中枢派发（P17.5，§6）、`qm handoff attach` 与 `pull`（P17.6，§7）；工作包与判据见 [`handoff-p17-plan.md`](./handoff-p17-plan.md) |
 | 口径 | 接法按本仓库代码与 fork 的 `codex-rs/config/defaults.toml` 写。qmcode 一侧 2026-10-03 用本机 debug 构建（fork `34e0d210ed`）加假 Responses 服务实测过 `qianmo_handoff` 回合内调用与审批；Claude Code 一侧照基座的 hook 与 MCP 配置格式写，旧版手工 hook **未在官方 Claude Code 上实测**；P19 插件安装与 MCP 连接已用隔离配置实测（见下节）。§7 的接入 2026-10-04 用 fork 0.158.0 本机 release 构建的真 `qmcode` 终端对本机真 app-server 实测（只放回环）；ssh 是测试替身，**两台真机之间未实测**（P17.7 演练） |
 
+## GitHub 代码仓库模式（默认）
+
+新部署以用户已有 GitHub 仓库为代码存储。中枢只保留任务台账、设备登记与审计，不托管代码、不建裸仓；HTTPS git 接口在此模式回 404。本机先按下节配对，仓库的 `origin` 必须是 `https://github.com/owner/name[.git]` 或 `git@github.com:owner/name[.git]`。
+
+```sh
+qm console --handoff-repo owner/name=/绝对路径/github.token \
+  --handoff-node cloud=wss://node.example:38630 --chat-from qianmo://console/chat
+# 仓库可以重复 --handoff-repo；不传 --handoff-root 或 --handoff-node-git。
+# 节点需信任控制台签名身份，并照现有接法提供 app-server 与 transport PSK。
+# cloud 的中枢侧 PSK 环境变量为 QIANMO_TRANSPORT_PSK_NODE_636C6F7564。
+qm handoff now --goal '继续完成当前工作' --done '已完成部分' --remaining '剩余工作'
+qm handoff sync
+qm handoff pull
+qm handoff clean --task <任务号>
+```
+
+在 GitHub Settings → Developer settings → Personal access tokens → Fine-grained tokens 创建令牌：选所属账号或组织，Repository access 只选这一个仓库，Repository permissions 的 Contents 设为 Read and write。令牌写进当前用户拥有的普通文件，权限 0600，不使用软链。这里只给令牌文件路径；生产实现的仓库地址固定为 github.com，不能通过 CLI 替换。中枢每次发任务都重读令牌文件，轮换立即生效；文件丢失、读不了或连接撤销时任务失败。新部署不要传 `--handoff-root`；显式给它时仍使用旧模式。
+
+本机推送前匿名查 `api.github.com/repos/owner/name`：公开仓库不推会话；404 视为非公开；网络错误、限流、无法判明时也不推会话。代码快照仍可推送，命令、MCP 结果和任务视图都说明“无会话记录”及原因。没有完整会话时也可只转交代码和说明；节点新建线程。会话可推时只提交当前来源会话的完整前缀，沿用现有脱敏规则。
+
+分支为 `qianmo/wip/<设备号>/<任务号>`、`qianmo/sessions/<设备号>/<任务号>`，节点结果为 `qianmo/result/<任务号>`。本机推拉使用已有本地 git 凭据，不拿中枢的 GitHub 令牌。中枢以设备认证结果校验引用归属，用 `ls-remote` 核对提交号；节点按引用 depth=1 浅取并再核对 tip。令牌仅通过 `wss://` 或 `ws://127.0.0.1` / `ws://[::1]` / `ws://localhost`（本地隧道）下发。其他明文链路任务失败，原因“令牌只经加密链路下发”。令牌只进入 git 子进程环境，不进命令行、git 配置、台账或结果。
+
+显式 `sync` 与 `now` 都建立任务并登记；插件回合结束 hook 只在本机保留待同步前缀，显式转交时一次推送，避免产生无台账可清理的分支。节点完成后推结果分支，结果回执确认后删除临时工作目录；失败也删除。GitHub 模式不回传云端会话分支，接回保留本机会话，代码合并沿用 P19 的快进或新 return 分支逻辑。
+
+成功 `pull` 删除该任务现存的三类远端分支，再记 `returned`，台账保留全部提交号；重跑接回可使用已接回的本地结果。`clean [--task <id>]` 在当前 origin 仓库只清理本设备已失败、过期（既有台账用 failed 表示）或已接回任务的分支。中枢每小时清理失败/过期超过 7 天的分支，`--handoff-retention-days <天数>` 调整保留期，每个清理记审计；它只操作 refs，不取代码对象。Git 删除引用需要上下文，中枢在状态目录外创建临时空非裸仓，用完删除，不保存代码。
+
+旧 `--handoff-root` HTTPS 裸仓与 `--hub user@host:root` SSH 模式**保留给已有部署**，按下文原接法使用。本轮仅以本机 git 远端验证 GitHub 接力，没有连接真实 GitHub 或实测真实模型云端续跑。
+
 ## 插件安装与配对
 
 `qm` 与目标工具都要在 PATH 中。先安装一次插件，再从控制台「添加设备」取得配对码：
@@ -24,7 +52,7 @@ qm handoff whoami
 
 配对码 12 位大写 base32，显示为三组，10 分钟内只能换一次令牌。每个来源地址每分钟最多 10 次；能对应到同一码的单字符输入错误累计 5 次就失效；任意未知码只计来源限流，避免误吊销别人的码。设备令牌只存入配置根的 `qianmo/handoff/device.token`（0600、当前用户所有、拒绝软链），设备号、名称和控制台地址在同目录 `device.json`。已有本机设备时 login 需要 `--force`；`logout` 只移除本机文件，中枢吊销在控制台操作。设备号用于 git 引用，设备名称可以是中文。
 
-在已配对机器的仓库运行 sync / now / status / pull，或调用相应 MCP 工具时，会按规整后的仓库目录名隐式登记项目，通过控制台的 HTTPS 推拉，不需要 SSH 钥匙。目录同名视为同一个账号下的项目；不同仓库需要不同目录名或显式 init。项目第一次创建时登记账号属主，其他账号不可访问；旧 SSH 裸仓没有可信属主，不被配对设备认领。显式 init 的仓库继续使用原登记。中枢对设备请求只返回自己账号的任务；已配对的同项目可以在另一台设备查看并接回，重新 login --force 后也能接回先前设备的任务，其他账号的操作统一 404。签发人的账号被吊销或降为 viewer，设备令牌失效。
+在已配对机器的仓库运行 sync / now / status / pull，或调用相应 MCP 工具时，会按规整后的仓库目录名隐式登记项目，旧裸仓模式通过控制台的 HTTPS 推拉；新模式按上节推拉 GitHub，不需要 SSH 钥匙。目录同名视为同一个账号下的项目；不同仓库需要不同目录名或显式 init。项目第一次创建时登记账号属主，其他账号不可访问；旧 SSH 裸仓没有可信属主，不被配对设备认领。显式 init 的仓库继续使用原登记。中枢对设备请求只返回自己账号的任务；已配对的同项目可以在另一台设备查看并接回，重新 login --force 后也能接回先前设备的任务，其他账号的操作统一 404。签发人的账号被吊销或降为 viewer，设备令牌失效。
 
 Claude Code 可以用 `/qianmo:handoff`、`/qianmo:status`、`/qianmo:pull`、`/qianmo:login`；Codex 使用插件的 qianmo-handoff skill 或直接调用 MCP 工具。五个旧工具 `qianmo_status`、`qianmo_handoff`、`qianmo_task`、`qianmo_send`、`qianmo_pull` 保留，另有只读 `qianmo_login_status`。只有返回「已落地，可以关机」才可以关机。omp 能安装同包并调用工具，但不执行 Claude Code hooks，也不把自身会话作为转交来源。
 

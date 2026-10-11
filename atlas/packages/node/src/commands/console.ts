@@ -83,6 +83,7 @@ import {
   openConsoleActionLedger,
   runActionLedgerVerify,
 } from './consoleActionLedger.js'
+import { cliHandoffRepoCredentials } from './handoffRepoCli.js'
 import { openConsoleHandoffDevices } from './consoleHandoffDevices.js'
 import { openConsoleHandoffGit } from './consoleHandoffGit.js'
 import { handoffLockRefusal, openConsoleHandoff } from './consoleHandoff.js'
@@ -465,10 +466,15 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   let handoff: ReturnType<typeof openConsoleHandoff> | undefined
   try {
     handoff =
-      config.handoffRoot === undefined
+      config.handoffRoot === undefined && config.handoffRepos === undefined
         ? undefined
         : openConsoleHandoff({
             root: config.handoffRoot,
+            ...(config.handoffRoot === undefined &&
+            config.handoffRepos !== undefined
+              ? { credentials: cliHandoffRepoCredentials(config.handoffRepos) }
+              : {}),
+            retentionMs: config.handoffRetentionMs,
             ownsProject: (project, owner) =>
               handoffGit?.owns(project, owner) === true,
             // P17.5: node bridges and the signing identity, when
@@ -911,7 +917,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   banner += field(
     'handoff',
     handoff === undefined
-      ? 'disabled (no --handoff-root)'
+      ? 'disabled (no --handoff-root or --handoff-repo)'
       : `enabled -> ${handoff.root} (ledger ${handoff.ledgerPath}, ` +
           `${String(handoff.replayed)} tasks; audit ${handoff.auditPath})`,
   )
