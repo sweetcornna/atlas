@@ -190,12 +190,16 @@ export interface HandoffNodeConfig {
   readonly qmcodeHome: string
   /** The app-server's `HOME` (Claude Code imports go under it). */
   readonly appServerHome: string
+  readonly appServerBin?: string
+  readonly appServerHomeEnv?: string
+  readonly managedAppServer?: boolean
   readonly appServerPidFile?: string
 }
 
 const NODE_USAGE = `Usage: qm handoff node --node <name> --root <abs> --trust <node>=<publicKey>...
          --app-server ws://127.0.0.1:<port> --app-server-token-file <abs>
          --app-server-home <abs> [--qmcode-home <abs>] [--project <name>]...
+         [--app-server-bin codex] [--app-server-home-env CODEX_HOME] [--start-app-server]
          [--port ${DEFAULT_PORT}] [--bind ${DEFAULT_BIND}] [--app-server-pid-file <abs>]`
 
 const PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -220,6 +224,9 @@ export function parseHandoffNodeArgs(
   const projects: string[] = []
   let appServerUrl: string | undefined
   let appServerTokenFile: string | undefined
+  let appServerBin = 'codex'
+  let appServerHomeEnv = 'CODEX_HOME'
+  let managedAppServer = false
   let home: string | undefined
   let appServerHome: string | undefined
   let appServerPidFile: string | undefined
@@ -342,6 +349,26 @@ export function parseHandoffNodeArgs(
         index = parsed.next
         break
       }
+      case '--start-app-server':
+        managedAppServer = true
+        break
+      case '--app-server-bin': {
+        const parsed = value(index, flag)
+        appServerBin = parsed.value
+        index = parsed.next
+        break
+      }
+      case '--app-server-home-env': {
+        const parsed = value(index, flag)
+        if (
+          !/^[A-Z][A-Z0-9_]*$/.test(parsed.value) ||
+          ['HOME', 'USERPROFILE', 'QIANMO_CONFIG_DIR'].includes(parsed.value)
+        )
+          throw new HandoffUserError('--app-server-home-env 需要环境变量名', 2)
+        appServerHomeEnv = parsed.value
+        index = parsed.next
+        break
+      }
       case '--qmcode-home': {
         const parsed = value(index, flag)
         home = absolute(parsed.value, flag)
@@ -392,7 +419,15 @@ export function parseHandoffNodeArgs(
     projects,
     appServerUrl: appServerUrl as string,
     appServerTokenFile: appServerTokenFile as string,
-    qmcodeHome: home ?? defaults.qmcodeHome ?? qmcodeHome(),
+    qmcodeHome:
+      home ??
+      defaults.qmcodeHome ??
+      (appServerHomeEnv === 'QMCODE_HOME'
+        ? qmcodeHome()
+        : join(appServerHome as string, 'codex')),
+    appServerBin,
+    appServerHomeEnv,
+    managedAppServer,
     appServerHome: appServerHome as string,
     ...(appServerPidFile === undefined ? {} : { appServerPidFile }),
   }
@@ -1304,7 +1339,7 @@ export async function startHandoffNode(
       const brief = handoffBrief(manifest, taskId, task.worktree)
       let thread: AppServerThread
       let firstText = brief
-      if (manifest.tool === 'qmcode') {
+      if (manifest.tool !== 'claude-code') {
         await placeQmcodeSession(task, repo)
         // ④
         thread = await client.threadResume(manifest.sessionId, settings)
@@ -1816,12 +1851,32 @@ export async function runHandoffNode(args: readonly string[]): Promise<number> {
     process.stderr.write(`节点桥没有启动：${messageOf(error)}\n`)
     return exit
   }
+  let managed: Bun.Subprocess | undefined
   let handle: HandoffNodeHandle
   try {
     handle = await startHandoffNode({ ...config, psk })
   } catch (error) {
+    managed?.kill()
     process.stderr.write(`节点桥没有启动：${messageOf(error)}\n`)
     return 1
+  }
+  if (config.managedAppServer) {
+    const env = {
+      ...process.env,
+      HOME: config.appServerHome,
+      [config.appServerHomeEnv ?? 'CODEX_HOME']: config.qmcodeHome,
+    }
+    delete env.QIANMO_TRANSPORT_PSK
+    managed = Bun.spawn(handoffAppServerArgv(config), {
+      env,
+      stdin: 'ignore',
+      stdout: 'ignore',
+      stderr: 'inherit',
+    })
+    if (config.appServerPidFile)
+      writeFileSync(config.appServerPidFile, `${managed.pid}\n`, {
+        mode: 0o600,
+      })
   }
   const field = (name: string, value: string): string =>
     `${name.padEnd(14)}${value}\n`
@@ -1853,5 +1908,42 @@ export async function runHandoffNode(args: readonly string[]): Promise<number> {
   })
   // The work trees stay: a task cut short is still there to look at.
   await handle.stop()
+  managed?.kill()
+  if (managed) await managed.exited
   return 0
+}
+
+/** Official Codex keeps plugins and hooks disabled on the cloud continuation. */
+export function handoffAppServerArgv(config: HandoffNodeConfig): string[] {
+  const isolation =
+    config.appServerHomeEnv === 'QMCODE_HOME'
+      ? [
+          '-c',
+          'features.plugins=false',
+          '-c',
+          'mcp_servers.qianmo.enabled=false',
+          '-c',
+          'notify=[]',
+        ]
+      : [
+          '--disable',
+          'plugins',
+          '--disable',
+          'hooks',
+          '-c',
+          'notify=[]',
+          '-c',
+          'mcp_servers={}',
+        ]
+  return [
+    config.appServerBin ?? 'codex',
+    'app-server',
+    '--listen',
+    config.appServerUrl,
+    '--ws-auth',
+    'capability-token',
+    '--ws-token-file',
+    config.appServerTokenFile,
+    ...isolation,
+  ]
 }

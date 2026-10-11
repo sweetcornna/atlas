@@ -501,3 +501,24 @@ export async function waitForTurnEnd(
     await sleep(intervalMs)
   }
 }
+
+/** The caller's repository when a portable MCP server starts in its plugin root. */
+export function rolloutWorkingDirectory(file: string): string | null {
+  const content = readTranscript(file)
+  if (content === null) return null
+  const end = content.indexOf(0x0a)
+  if (end < 0) return null
+  try {
+    const record: unknown = JSON.parse(content.toString('utf8', 0, end))
+    if (
+      !isRecord(record) ||
+      record.type !== 'session_meta' ||
+      !isRecord(record.payload)
+    )
+      return null
+    const cwd = record.payload.cwd
+    return typeof cwd === 'string' && isAbsolute(cwd) ? cwd : null
+  } catch {
+    return null
+  }
+}

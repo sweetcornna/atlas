@@ -228,7 +228,13 @@ do_start() {
   local base_url="${QIANMO_HANDOFF_BASE_URL:-}"
   local model="${QIANMO_HANDOFF_MODEL:-gpt-6-luna}"
   local key_env="${QIANMO_HANDOFF_KEY_ENV:-OPENAI_API_KEY}"
-  local qmcode="${QIANMO_QMCODE_BIN:-$REPO_DIR/qmcode/qmcode}"
+  local qmcode="${QIANMO_APP_SERVER_BIN:-${QIANMO_QMCODE_BIN:-codex}}"
+  local home_env="${QIANMO_APP_SERVER_HOME_ENV:-CODEX_HOME}"
+  if [ -z "${QIANMO_APP_SERVER_BIN:-}" ] && [ -n "${QIANMO_QMCODE_BIN:-}" ] && [ -z "${QIANMO_APP_SERVER_HOME_ENV:-}" ]; then home_env=QMCODE_HOME; fi
+  local app_flags=(--disable plugins --disable hooks -c 'mcp_servers={}' -c 'notify=[]')
+  if [ "$home_env" = QMCODE_HOME ]; then
+    app_flags=(-c 'mcp_servers.qianmo.enabled=false' -c 'notify=[]')
+  fi
   [ -n "$base_url" ] || beta_die 'QIANMO_HANDOFF_BASE_URL 没给 —— 模型网关的 /v1 地址，按运维单页填，不进仓库'
   case "$base_url" in
     http://*|https://*) ;;
@@ -246,7 +252,12 @@ do_start() {
   beta_require_marker
   beta_require_qm
   local qmcode_real
-  qmcode_real="$(beta_qmcode_check "$qmcode")"
+  if [ "$home_env" = QMCODE_HOME ]; then
+    qmcode_real="$(beta_qmcode_check "$qmcode")"
+  else
+    qmcode_real="$(command -v "$qmcode")" || beta_die "找不到 Codex：${qmcode}"
+    [ -x "$qmcode_real" ] || beta_die "Codex 不可执行：${qmcode_real}"
+  fi
   handoff_pick_key_source "$key_env"
 
   mkdir -p "$BETA_RUN_DIR" "$BETA_LOG_DIR" "$HANDOFF_DIR" "$HANDOFF_NODE_ROOT" "$HANDOFF_APP_HOME"
@@ -292,6 +303,8 @@ EOF
     --app-server-token-file "$HANDOFF_TOKEN_FILE" \
     --app-server-home "$HANDOFF_APP_HOME" \
     --qmcode-home "$HANDOFF_QMCODE_HOME" \
+    --app-server-bin "$qmcode_real" \
+    --app-server-home-env "$home_env" \
     --app-server-pid-file "$(beta_pidfile "$HANDOFF_APP_PROC")" \
     ${pass[@]+"${pass[@]}"}
 
@@ -311,13 +324,12 @@ EOF
   if ! (beta_start_process "$HANDOFF_APP_PROC" "$HANDOFF_APP_HOME" \
     env -u QIANMO_TRANSPORT_PSK \
     HOME="$HANDOFF_APP_HOME" \
-    QMCODE_HOME="$HANDOFF_QMCODE_HOME" \
+    "$home_env=$HANDOFF_QMCODE_HOME" \
     "$qmcode_real" app-server \
     --listen "ws://127.0.0.1:${app_port}" \
     --ws-auth capability-token \
     --ws-token-file "$HANDOFF_TOKEN_FILE" \
-    -c 'mcp_servers.qianmo.enabled=false' \
-    -c 'notify=[]'); then
+    "${app_flags[@]}"); then
     beta_stop_one "$HANDOFF_NODE_PROC"
     beta_die 'app-server 没起来（原因在上面）。节点桥已停回去 —— 只剩一半的节点会接下任务再失败。'
   fi

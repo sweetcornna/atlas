@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "qianmo": {
+      "command": "qm",
+      "args": ["handoff", "mcp"],
+      "type": "stdio"
+    }
+  },
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+}

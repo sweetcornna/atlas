@@ -8,7 +8,7 @@ const dir = (name: string) => `'.${name}'`
 
 describe('findBypasses', () => {
   test('flags every identity dir literal, in any quote style', () => {
-    for (const name of ['qianmo', 'omp', 'claude', 'occ']) {
+    for (const name of ['qianmo', 'omp', 'claude', 'codex', 'qmcode', 'occ']) {
       expect(findBypasses('a.ts', `const d = ${dir(name)}\n`)).toHaveLength(1)
       expect(findBypasses('a.ts', `const d = ".${name}.json"\n`)).toHaveLength(
         1,
@@ -29,7 +29,7 @@ describe('findBypasses', () => {
     const source = [
       `// keeps ${dir('omp')} out`,
       `/* ${dir('claude')} */`,
-      `const codex = '.codex'`,
+      `const other = '.other-tool'`,
       `const ca = '.qianmo-ca'`,
       `const url = 'https://x/.omp/y'`,
     ].join('\n')

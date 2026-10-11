@@ -1,0 +1,11 @@
+{
+  "session_id": "01a12a63-aaf9-7ac2-9015-20f9e0074b9e",
+  "turn_id": "01a12a63-ab1e-7cf3-8e98-2e6915ad69b2",
+  "transcript_path": "/tmp/p19-probe/codex/sessions/2026/10/11/rollout-2026-10-11T02-55-37-01a12a63-aaf9-7ac2-9015-20f9e0074b9e.jsonl",
+  "cwd": "/tmp/p19-probe/work",
+  "hook_event_name": "Stop",
+  "model": "gpt-6-luna",
+  "permission_mode": "default",
+  "stop_hook_active": false,
+  "last_assistant_message": "OK"
+}

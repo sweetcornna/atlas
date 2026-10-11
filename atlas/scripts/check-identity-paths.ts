@@ -55,7 +55,7 @@ const ALLOWLIST: Record<string, true> = {
   'atlas/packages/node/src/commands/handoffNode.ts': true,
 }
 
-const IDENTITY_DIR = '(?:qianmo|omp|claude|occ)'
+const IDENTITY_DIR = '(?:qianmo|omp|claude|codex|qmcode|occ)'
 const FORBIDDEN: readonly { pattern: RegExp; label: string }[] = [
   {
     pattern: new RegExp(`['"\`]\\.${IDENTITY_DIR}(?:\\.json)?['"\`]`),

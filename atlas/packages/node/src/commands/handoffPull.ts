@@ -75,7 +75,7 @@ import {
   taskBranch,
   taskRef,
 } from '@qianmo/handoff'
-import { qmcodeHome } from '@qianmo/paths'
+import { codexHome, qmcodeHome } from '@qianmo/paths'
 import { fetchFromHub, hubConnection, localRef } from './handoffHub.js'
 import {
   consoleError,
@@ -325,6 +325,7 @@ async function placeSession(
   commit: string,
   threadId: string,
   taskId: string,
+  tool: string,
 ): Promise<PlacedSession> {
   const entries = (await git(['ls-tree', '-z', commit])).stdout
     .toString('utf8')
@@ -343,7 +344,7 @@ async function placeSession(
     )
   }
   const content = (await git(['cat-file', 'blob', blob])).stdout
-  const home = qmcodeHome()
+  const home = tool === 'codex' ? codexHome() : qmcodeHome()
   const existing = findQmcodeRollout(home, threadId)
   if (existing !== null) {
     if (readFileSync(existing).equals(content)) {
@@ -411,7 +412,7 @@ async function pull(
 ): Promise<number> {
   const taskId = options.taskId ?? (await latestDone(project))
   const task = await pullableTask(project, taskId)
-  const qmcodeSession = task.tool === 'qmcode'
+  const qmcodeSession = task.tool !== 'claude-code'
   const hooks = mkdtempSync(join(tmpdir(), 'qianmo-handoff-pull-'))
   const git = quietGit(project.root, hooks)
   const pulledHead = `refs/qianmo/pull/${taskId}/head`
@@ -540,7 +541,13 @@ async function pull(
           `中枢上没有云端会话 ${sessionRef(CLOUD_DEVICE, task.threadId)}`,
         )
       }
-      const placed = await placeSession(git, commit, task.threadId, taskId)
+      const placed = await placeSession(
+        git,
+        commit,
+        task.threadId,
+        taskId,
+        task.tool,
+      )
       output.out(
         `  会话  ${placed.path}${placed.status === 'same' ? '（已是云端那份）' : ''}`,
       )
@@ -549,12 +556,12 @@ async function pull(
       }
       output.out(
         options.callerThread === task.threadId
-          ? `        这个线程正开着 · 退出 qmcode 后运行 qmcode resume ${task.threadId} 才看得到云端的回合`
-          : `        qmcode resume ${task.threadId} 接着聊`,
+          ? `        这个线程正开着 · 退出 ${task.tool === 'codex' ? 'codex' : 'qmcode'} 后运行 ${task.tool === 'codex' ? 'codex' : 'qmcode'} resume ${task.threadId} 才看得到云端的回合`
+          : `        ${task.tool === 'codex' ? 'codex' : 'qmcode'} resume ${task.threadId} 接着聊`,
       )
     } else {
       output.out(
-        `  会话  Claude Code 会话在云端续成了 qmcode 线程 ${task.threadId} · 留在中枢 ${sessionRef(CLOUD_DEVICE, task.threadId)} · 没有放到本机`,
+        `  会话  Claude Code 会话在云端续成了 Codex 兼容线程 ${task.threadId} · 留在中枢 ${sessionRef(CLOUD_DEVICE, task.threadId)} · 没有放到本机`,
       )
     }
   } finally {

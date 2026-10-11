@@ -75,6 +75,12 @@ import {
   runStatus,
   runTask,
 } from './handoffNow.js'
+import { codexHome, qmcodeHome } from '@qianmo/paths'
+import {
+  findQmcodeRollout,
+  rolloutWorkingDirectory,
+} from './handoffTranscript.js'
+import { loadDevice } from './handoffDevice.js'
 import { runPull } from './handoffPull.js'
 import { HandoffUserError, sleep } from './handoffStore.js'
 import { buildVersion } from '../provenance.js'
@@ -212,6 +218,17 @@ const TOOLS: Tool[] = [
       openWorldHint: true,
     },
   },
+  {
+    name: 'qianmo_login_status',
+    description: '只读查看本机是否已配对、设备号、名称和控制台地址。',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
 ]
 
 function answer(lines: readonly string[], isError = false): CallToolResult {
@@ -302,7 +319,28 @@ async function callTool(
           ? '接回没有完成'
           : '查询没有完成'
   try {
+    if (caller.thread !== undefined) {
+      const file =
+        findQmcodeRollout(codexHome(), caller.thread) ??
+        findQmcodeRollout(qmcodeHome(), caller.thread)
+      if (file !== null) cwd = rolloutWorkingDirectory(file) ?? cwd
+    }
     switch (name) {
+      case 'qianmo_login_status': {
+        const device = loadDevice()
+        return answer([
+          JSON.stringify(
+            device === undefined
+              ? { paired: false }
+              : {
+                  paired: true,
+                  deviceId: device.deviceId,
+                  name: device.name,
+                  console: device.console,
+                },
+          ),
+        ])
+      }
       case 'qianmo_status':
         try {
           await runStatus(cwd, { wait: false }, output, caller)

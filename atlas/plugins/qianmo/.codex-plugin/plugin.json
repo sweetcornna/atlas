@@ -1,0 +1,12 @@
+{
+  "name": "qianmo",
+  "version": "3.0.0-dev",
+  "description": "把本机工作交给云端，查看进度并接回结果。",
+  "author": {
+    "name": "Qianmo AgentNest Team"
+  },
+  "license": "AGPL-3.0-or-later",
+  "mcpServers": "./.mcp.json",
+  "hooks": ["./hooks/hooks.json"],
+  "skills": "./skills/"
+}

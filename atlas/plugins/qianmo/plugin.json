@@ -1,0 +1,17 @@
+{
+  "name": "qianmo",
+  "version": "3.0.0-dev",
+  "description": "把本机工作交给云端，查看进度并接回结果。",
+  "author": {
+    "name": "Qianmo AgentNest Team"
+  },
+  "license": "AGPL-3.0-or-later",
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "extensions": {
+    "com.openai": {
+      "hooks": ["./hooks/hooks.json"],
+      "skills": "./skills/",
+      "mcpServers": "./.mcp.json"
+    }
+  }
+}

@@ -88,6 +88,7 @@ const QMCODE_STOP_GRACE_MS = 5_000
 const TOKEN = /^[\x21-\x7e]{8,4096}$/
 
 export interface AttachOptions {
+  readonly clientBin?: string
   readonly taskId?: string
   /** `--ssh`: how this machine reaches the node; default the node's name. */
   readonly sshTarget?: string
@@ -109,7 +110,7 @@ export interface AttachCommands {
 
 const SYSTEM_COMMANDS: AttachCommands = {
   ssh: 'ssh',
-  qmcode: 'qmcode',
+  qmcode: 'codex',
   sh: '/bin/sh',
 }
 
@@ -554,7 +555,7 @@ export async function runAttach(
     try {
       qmcode = Bun.spawn(
         [
-          commands.qmcode,
+          options.clientBin ?? commands.qmcode,
           'resume',
           '--remote',
           `ws://127.0.0.1:${localPort}`,
@@ -571,7 +572,7 @@ export async function runAttach(
       )
     } catch {
       throw new HandoffUserError(
-        `找不到 qmcode（${commands.qmcode}）· 装上阡陌 Codex 并放进 PATH`,
+        `找不到接入客户端（${options.clientBin ?? commands.qmcode}）· 安装 Codex 或用 --client-bin 指定`,
       )
     }
     const running = qmcode

@@ -76,6 +76,8 @@ import {
   openConsoleActionLedger,
   runActionLedgerVerify,
 } from './consoleActionLedger.js'
+import { openConsoleHandoffDevices } from './consoleHandoffDevices.js'
+import { openConsoleHandoffGit } from './consoleHandoffGit.js'
 import { handoffLockRefusal, openConsoleHandoff } from './consoleHandoff.js'
 import { wireHandoffDispatch } from './consoleHandoffDispatch.js'
 import { openConsoleProviders } from './consoleProviders.js'
@@ -441,6 +443,10 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // out: it is locked to one process, and a second console on this config
   // root must stop here — having opened nothing else — rather than become a
   // second writer. That refusal is one sentence, not a stack.
+  const handoffGit =
+    config.handoffRoot === undefined
+      ? undefined
+      : openConsoleHandoffGit(config.handoffRoot)
   let handoff: ReturnType<typeof openConsoleHandoff> | undefined
   try {
     handoff =
@@ -448,6 +454,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         ? undefined
         : openConsoleHandoff({
             root: config.handoffRoot,
+            ownsProject: (project, owner) =>
+              handoffGit?.owns(project, owner) === true,
             // P17.5: node bridges and the signing identity, when
             // `--handoff-node` is given. Dispatch starts after the port binds.
             dispatch: wireHandoffDispatch(config),
@@ -477,6 +485,14 @@ export async function runConsole(args: readonly string[]): Promise<void> {
             : { openRegistration: config.openRegistration }),
         })
       : undefined
+
+  const handoffDevices =
+    handoff === undefined
+      ? undefined
+      : openConsoleHandoffDevices({
+          accounts: accounts?.book,
+          taskCount: handoff.taskCount,
+        })
 
   // 动作账本跟着个人账号走（P15.9）：记的是「哪个人」做了什么、读了谁的转录。
   // 坏了不阻止启动，理由同账号库；两枚 token 作为已知秘密交给它，万一出现在
@@ -676,6 +692,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(serverNotes === undefined ? {} : { serverNotes }),
     ...(actions === undefined ? {} : { actions }),
     ...(handoff === undefined ? {} : { handoff: handoff.port }),
+    ...(handoffDevices === undefined ? {} : { handoffDevices }),
+    ...(handoffGit === undefined ? {} : { handoffGit }),
     ...(providers === undefined ? {} : { providers }),
     binName: 'qm',
     // 横幅里那几条身份与接线事实，原样交给「设置与关于」（A4）：页面答得出
@@ -906,6 +924,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     // Gives the ledger lock back, so the next start does not have to wait for
     // the stale-pid check to reclaim it.
     handoff?.close()
+    handoffDevices?.close()
+    handoffGit?.close()
   }
   process.once('SIGINT', stop)
   process.once('SIGTERM', stop)

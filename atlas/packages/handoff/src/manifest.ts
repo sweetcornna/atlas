@@ -48,7 +48,7 @@ export function handoffNodeAddress(node: string): string {
 }
 
 /** The two tools a handoff can start from. */
-export const HANDOFF_TOOLS = ['qmcode', 'claude-code'] as const
+export const HANDOFF_TOOLS = ['qmcode', 'claude-code', 'codex'] as const
 export type HandoffTool = (typeof HANDOFF_TOOLS)[number]
 
 /**

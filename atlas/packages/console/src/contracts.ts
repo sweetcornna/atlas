@@ -23,6 +23,14 @@ export type AccountSubject = `u:${string}`
  */
 export type ConsolePrincipal =
   | {
+      readonly kind: 'device'
+      readonly deviceId: string
+      readonly owner: string
+      readonly subject: string
+      readonly role: 'member'
+      readonly credential: 'bearer'
+    }
+  | {
       readonly kind: 'user'
       readonly subject: AccountSubject
       readonly role: AccountRole

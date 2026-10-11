@@ -205,7 +205,12 @@ export function tenantScope(
   breakGlass = false,
 ): TenantScope {
   const config = snapshot.config
-  const who = principal?.kind === 'user' ? principal.subject : null
+  const who =
+    principal?.kind === 'user'
+      ? principal.subject
+      : principal?.kind === 'device'
+        ? principal.owner
+        : null
   const platform =
     breakGlass || (who !== null && config.platformSubjects.includes(who))
   const tenant =

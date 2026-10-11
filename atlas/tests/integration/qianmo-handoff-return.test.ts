@@ -592,7 +592,14 @@ describe('qm handoff attach and pull end to end (P17.6)', () => {
       newShimLog()
       // No task id: this project's one running task.
       const ran = await qm(
-        ['handoff', 'attach', '--app-server-port', String(appPort)],
+        [
+          'handoff',
+          'attach',
+          '--client-bin',
+          'qmcode',
+          '--app-server-port',
+          String(appPort),
+        ],
         attachEnv(),
       )
       attachOutput.push(ran.stdout, ran.stderr)
@@ -699,6 +706,8 @@ describe('qm handoff attach and pull end to end (P17.6)', () => {
           ...cliPrefix(),
           'handoff',
           'attach',
+          '--client-bin',
+          'qmcode',
           attachTask,
           '--app-server-port',
           String(appPort),
@@ -745,6 +754,8 @@ describe('qm handoff attach and pull end to end (P17.6)', () => {
           ...cliPrefix(),
           'handoff',
           'attach',
+          '--client-bin',
+          'qmcode',
           attachTask,
           '--app-server-port',
           String(appPort),
