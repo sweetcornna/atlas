@@ -327,29 +327,29 @@ export class OmpRpcProcess implements OmpRpcChannel {
     await this.request('abort')
   }
   stop(terminateImmediately = false): Promise<void> {
-    this.#stopping ??= this.#stopAndReap(terminateImmediately)
+    this.#stopping ??= this.#stopAndReap()
+    // A later caller can escalate an existing graceful shutdown. Reaping is
+    // shared, but every immediate request must reach the OS synchronously.
+    if (terminateImmediately) this.#signal('SIGTERM')
     return this.#stopping
   }
-  async #stopAndReap(terminateImmediately: boolean): Promise<void> {
-    this.#intentional = true
-    const signal = (name: NodeJS.Signals) => {
-      try {
-        this.child.kill(name)
-      } catch {
-        // Failure to send a signal is not proof of exit. Keep waiting for
-        // close; an unknown process lifetime cannot open the next generation.
-      }
+  #signal(name: NodeJS.Signals): void {
+    try {
+      this.child.kill(name)
+    } catch {
+      // Failure to send a signal is not proof of exit. Keep waiting for
+      // close; an unknown process lifetime cannot open the next generation.
     }
+  }
+  async #stopAndReap(): Promise<void> {
+    this.#intentional = true
     try {
       this.child.stdin?.end()
     } catch {
-      signal('SIGTERM')
+      this.#signal('SIGTERM')
     }
-    // An initializing child may not read stdin yet. Do not wait for EOF or
-    // its ready/request timeout before asking the OS to terminate it.
-    if (terminateImmediately) signal('SIGTERM')
-    const terminate = setTimeout(() => signal('SIGTERM'), 1_000)
-    const kill = setTimeout(() => signal('SIGKILL'), 2_000)
+    const terminate = setTimeout(() => this.#signal('SIGTERM'), 1_000)
+    const kill = setTimeout(() => this.#signal('SIGKILL'), 2_000)
     terminate.unref()
     kill.unref()
     try {
