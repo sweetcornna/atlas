@@ -84,6 +84,76 @@ describe('resident ACP supervisor', () => {
     ])
   })
 
+  test('counts every slow start failure and parks with exponential backoff', async () => {
+    let clock = 0
+    let starts = 0
+    const waits: number[] = []
+    const errors: unknown[] = []
+    const onParked = mock((_failures: number) => {})
+    const supervisor = new ResidentSupervisor({
+      start: async () => {
+        // Bound the regression: the old loop would restart forever.
+        if (++starts > 3) supervisor.stop()
+        clock += 30_000
+        throw new Error('omp RPC ready timed out')
+      },
+      stableAfterMs: 10_000,
+      maxRapidFailures: 3,
+      initialBackoffMs: 2_000,
+      now: () => clock,
+      wait: async delay => {
+        waits.push(delay)
+      },
+      onError: error => errors.push(error),
+      onParked,
+    })
+
+    await supervisor.run()
+
+    expect(starts).toBe(3)
+    expect(errors).toHaveLength(3)
+    expect(waits).toEqual([2_000, 4_000])
+    expect(supervisor.parked).toBe(true)
+    expect(onParked).toHaveBeenCalledWith(3)
+  })
+
+  test('slow startup and cleanup do not make a short ready generation stable', async () => {
+    let clock = 0
+    let starts = 0
+    const waits: number[] = []
+    const onParked = mock((_failures: number) => {})
+    const supervisor = new ResidentSupervisor({
+      start: async () => {
+        if (++starts > 2) {
+          supervisor.stop()
+          throw new Error('unexpected extra generation')
+        }
+        clock += 30_000
+        return {
+          closed: Promise.reject(new Error('crash immediately after ready')),
+          stop: async () => {
+            clock += 20_000
+          },
+        }
+      },
+      stableAfterMs: 10_000,
+      maxRapidFailures: 2,
+      initialBackoffMs: 10,
+      now: () => clock,
+      wait: async delay => {
+        waits.push(delay)
+      },
+      onParked,
+    })
+
+    await supervisor.run()
+
+    expect(starts).toBe(2)
+    expect(waits).toEqual([10])
+    expect(supervisor.parked).toBe(true)
+    expect(onParked).toHaveBeenCalledWith(2)
+  })
+
   describe('recycle (providers-console-m1 §2.7)', () => {
     /**
      * Children that stay up until stopped and then exit the way a real one does
@@ -136,6 +206,45 @@ describe('resident ACP supervisor', () => {
       }
       expect(predicate()).toBe(true)
     }
+
+    test('a stable ready generation resets previous failures and backoff', async () => {
+      let clock = 0
+      const waits: number[] = []
+      const children = generations()
+      const onParked = mock((_failures: number) => {})
+      const supervisor = new ResidentSupervisor({
+        start: children.start,
+        initialBackoffMs: 10,
+        stableAfterMs: 100,
+        maxRapidFailures: 2,
+        now: () => clock,
+        wait: async delay => {
+          waits.push(delay)
+        },
+        onParked,
+      })
+      const running = supervisor.run()
+      try {
+        await until(() => children.started === 1)
+        children.crash()
+        await until(() => children.started === 2)
+        clock += 101
+        children.crash()
+        await until(() => children.started === 3)
+        children.crash()
+        await until(() => children.started === 4)
+        children.crash()
+        await running
+
+        expect(children.started).toBe(4)
+        expect(waits).toEqual([10, 10, 20])
+        expect(supervisor.parked).toBe(true)
+        expect(onParked).toHaveBeenCalledWith(2)
+      } finally {
+        supervisor.stop()
+        await running
+      }
+    })
 
     test('two recycles in a row never park, however short the generations', async () => {
       // maxRapidFailures 2 and a frozen clock: two *crashes* like these park

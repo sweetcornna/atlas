@@ -2706,6 +2706,12 @@ export class QianmoResident {
     this.#generationAbort.abort(
       new Error('resident stopped during model initialization'),
     )
+    // The supervisor only owns a generation after start() returns. The pool
+    // is already available while sessions are waiting for the RPC handshake.
+    if (this.#generationStarting)
+      void this.#runtimeChild
+        ?.stop()
+        .catch(error => this.#options.onError?.(error))
     this.#stopProviderPoll()
     this.#poller?.stop()
     this.#poller = null

@@ -80,7 +80,11 @@ export class OmpRpcProcess implements OmpRpcChannel {
 
   readonly #routing: ResidentModelRouter
   #routeCompletion: Promise<void> = Promise.resolve()
-  constructor(child: ChildProcess, manualPath?: string) {
+  constructor(
+    child: ChildProcess,
+    manualPath?: string,
+    readyTimeoutMs = 30_000,
+  ) {
     this.#routing = new ResidentModelRouter(manualPath)
     this.child = child
     if (child.stdin === null || child.stdout === null)
@@ -101,7 +105,7 @@ export class OmpRpcProcess implements OmpRpcChannel {
     const readyTimeout = setTimeout(() => {
       readyReject(new Error('omp RPC ready timed out'))
       child.kill('SIGTERM')
-    }, 30_000)
+    }, readyTimeoutMs)
     this.closed = new Promise<void>((resolve, reject) => {
       const finish = (error?: Error) => {
         if (!this.#alive) return
@@ -322,11 +326,11 @@ export class OmpRpcProcess implements OmpRpcChannel {
   async abort(): Promise<void> {
     await this.request('abort')
   }
-  stop(): Promise<void> {
-    this.#stopping ??= this.#stopAndReap()
+  stop(terminateImmediately = false): Promise<void> {
+    this.#stopping ??= this.#stopAndReap(terminateImmediately)
     return this.#stopping
   }
-  async #stopAndReap(): Promise<void> {
+  async #stopAndReap(terminateImmediately: boolean): Promise<void> {
     this.#intentional = true
     const signal = (name: NodeJS.Signals) => {
       try {
@@ -341,6 +345,9 @@ export class OmpRpcProcess implements OmpRpcChannel {
     } catch {
       signal('SIGTERM')
     }
+    // An initializing child may not read stdin yet. Do not wait for EOF or
+    // its ready/request timeout before asking the OS to terminate it.
+    if (terminateImmediately) signal('SIGTERM')
     const terminate = setTimeout(() => signal('SIGTERM'), 1_000)
     const kill = setTimeout(() => signal('SIGKILL'), 2_000)
     terminate.unref()
@@ -356,6 +363,8 @@ export class OmpRpcProcess implements OmpRpcChannel {
 
 interface PoolOptions {
   readonly extensionPath?: string
+  /** Internal startup budget; the production default remains 30 seconds. */
+  readonly readyTimeoutMs?: number
   readonly desktop?: NodeDesktop
   readonly extraHostTools?: readonly HostToolDefinition[]
   readonly onLaunch?: (
@@ -602,6 +611,7 @@ export class ResidentOmpPool
           stdio: ['pipe', 'pipe', 'inherit'],
         }),
       manualPath,
+      this.#options.readyTimeoutMs,
     )
     this.#children.set(sessionId, child)
     const videoCalls = new Map<string, AbortController>()
@@ -857,7 +867,7 @@ export class ResidentOmpPool
     this.#used.delete(sessionId)
     this.#busy.delete(sessionId)
     if (child) {
-      const retiring = child.stop().finally(() => {
+      const retiring = child.stop(this.#starting.has(sessionId)).finally(() => {
         if (this.#retiring.get(sessionId) === retiring)
           this.#retiring.delete(sessionId)
       })
@@ -872,8 +882,10 @@ export class ResidentOmpPool
   async #stopAndReap(): Promise<void> {
     this.#stopped = true
     clearInterval(this.#timer)
-    await Promise.allSettled([...this.#starting.values()])
+    // Children are registered before ready; terminate them before joining
+    // startup, otherwise stopping waits on the very handshake it must cancel.
     for (const sessionId of this.#children.keys()) this.closeSession(sessionId)
+    await Promise.allSettled([...this.#starting.values()])
     await Promise.allSettled([...this.#retiring.values()])
     this.#resolve()
   }
