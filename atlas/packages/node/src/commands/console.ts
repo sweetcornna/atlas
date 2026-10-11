@@ -20,6 +20,7 @@
 
 import * as routingPath from 'node:path'
 import { ConsoleRouting, routingWire } from './consoleRouting.js'
+import { ConsoleAvatars } from './consoleAvatars.js'
 import { randomBytes } from 'node:crypto'
 import { StaticPublicKeyDirectory } from '@qianmo/capability'
 import { qianmoConfigPath } from '@qianmo/paths'
@@ -691,6 +692,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
 
   const deps: ConsoleDeps = {
+    avatars: new ConsoleAvatars(),
     ...(schedules === undefined ? {} : { schedules }),
     ...(approvals === undefined ? {} : { approvals }),
     ...(usage === undefined ? {} : { usage }),

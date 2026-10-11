@@ -700,6 +700,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | PUT、DELETE | `/v0/avatars/<键>` | **成员** | 保存一个形象（七项都必须在固定清单里，否则 400），`DELETE` 回到默认；`user:` 键只能改自己的，ops 可以改任何人的。记 `avatar.save`。没接形象存储时 501 |
 | GET | `/fragments/avatar?key=<键>&spec=<草稿>&default=1` | view | HTML 片段：形象编辑器的正文（舞台、七种状态试看、每个选项一枚小图）。`spec` 是 JSON 草稿，不在清单里就当没给；`default=1` 画默认形象 |
 
+`qm console` 默认把形象存入 `<配置根>/qianmo/console/avatars.json`（文件 0600、父目录 0700）；文件损坏或权限不是 0600 时读写失败关闭，不覆盖原文件，页面照常显示默认形象。
+
 对话那九行**一律 admin，只读的也是**——理由见 §4.5；这台控制台没接对话通道时它们的
 两种缺席答案（404 与 501）见 §6.7。
 
