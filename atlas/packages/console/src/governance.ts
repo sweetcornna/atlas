@@ -68,6 +68,15 @@ export type UsageAdmission =
 
 /** Scope is chosen by the authenticated host, never by request JSON. */
 export interface UsagePort {
+  /** Read-only admission preflight; reserve still checks atomically before sending. */
+  check?(
+    scope: UsageScope,
+    input: {
+      sessionId?: string
+      newSession?: boolean
+      operation?: 'message' | 'wake' | 'session'
+    },
+  ): Extract<UsageAdmission, { ok: false }> | null
   read(subject?: string): Promise<UsageSnapshot>
   reserve(
     scope: UsageScope,

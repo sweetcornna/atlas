@@ -11,7 +11,7 @@ import type {
   ConsoleResult,
 } from './deps.js'
 import type { UsageScope } from './governance.js'
-import { reserveUsage, usageScopeOf } from './quota.js'
+import { reserveUsage, usageDenial, usageScopeOf } from './quota.js'
 import { fail } from './respond.js'
 import { failureResponse, guardChat } from './routes/shared.js'
 import { tenantScope } from './tenancy.js'
@@ -132,6 +132,19 @@ export class ChatDispatch {
     return targets.value.some(row => row.address === target && row.dialable)
       ? null
       : fail(403, 'forbidden', '目标已不在对话可拨允许名单内')
+  }
+
+  /** A schedule must reject exhausted quota before reading any chat port. */
+  preflightUsage(target: string, sessionId: string | null): Response | null {
+    const denied = this.authorize(target)
+    if (denied) return denied
+    const result = this.#ctx.deps.usage?.check?.(this.#usageScope(), {
+      operation: 'message',
+      ...(sessionId === null
+        ? { newSession: true, sessionId: `pending:${this.#ctx.requestId}` }
+        : { sessionId }),
+    })
+    return result ? usageDenial(result, this.#ctx.now) : null
   }
 
   #usageScope(): UsageScope {

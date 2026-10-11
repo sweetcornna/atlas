@@ -213,15 +213,26 @@ test('revoked creator skips both manual and due runs without any chat calls or d
   expect(h.chat.sends).toBe(0)
 })
 
-test('exhausted quota fails a scheduled run with the HTTP quota reason and sends nothing', async () => {
+test('exhausted quota skips a scheduled run with the HTTP quota reason and sends nothing', async () => {
   const { h, book, saved, actor } = await setup(0)
+  const targets = h.chat.targets.bind(h.chat)
+  let targetCalls = 0
+  h.chat.targets = () => {
+    targetCalls++
+    return targets()
+  }
   value(await book.runNow(saved.id, actor))
   await book.idle()
-  expect(value(await book.snapshot({ subject: 'legacy:admin', role: null })).runs[0]).toMatchObject({
-    outcome: 'failed',
+  expect(targetCalls).toBe(0)
+  expect(
+    value(await book.snapshot({ subject: 'legacy:admin', role: null })).runs[0],
+  ).toMatchObject({
+    outcome: 'skipped',
     reason: expect.stringContaining('quota'),
   })
   expect(h.chat.sends).toBe(0)
+  expect(h.chat.opened).toBe(0)
+  expect(h.chat.transcripts).toBe(0)
 })
 
 test('revoking a creator with an existing dedicated session makes due ticks call no chat methods', async () => {

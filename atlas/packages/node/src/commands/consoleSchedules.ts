@@ -884,6 +884,14 @@ export class ConsoleSchedules implements SchedulesPort {
         await this.#dispatchDenied(active, dispatch, true)
         return
       }
+      const quota = dispatch.preflightUsage(
+        active.schedule.target,
+        active.schedule.sessionId,
+      )
+      if (quota) {
+        await this.#dispatchDenied(active, quota, true)
+        return
+      }
       const denied = await dispatch.authorizeTarget(active.schedule.target)
       if (denied !== null) {
         await this.#dispatchDenied(active, denied, true)
@@ -986,7 +994,7 @@ export class ConsoleSchedules implements SchedulesPort {
     }
     const skipped =
       (authorization && body.error.code === 'unavailable') ||
-      [401, 403, 404].includes(response.status)
+      [401, 403, 404, 429].includes(response.status)
     await this.#serial(async () => {
       if (!this.#closed && active.phase !== 'pushing')
         this.#finish(
