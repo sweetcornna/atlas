@@ -31,6 +31,7 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { residentExtensionSource } from './residentExtensionBundle.ts'
 import { writeDemoBundles } from './demoBundles.ts'
 // The omp build helpers are scripts, not package exports; the path is pinned by
 // the base snapshot and the cross-target table below is omp's own.
@@ -100,19 +101,6 @@ function installedVersion(spec: string): string {
     throw new Error(`${spec} has no string version`)
   }
   return manifest.version
-}
-
-async function residentExtensionSource(): Promise<string> {
-  const result = await Bun.build({
-    entrypoints: [join(REPO_ROOT, 'atlas/packages/extension/src/index.ts')],
-    target: 'bun',
-    format: 'esm',
-    packages: 'bundle',
-    splitting: false,
-  })
-  if (!result.success || result.outputs.length !== 1)
-    throw new Error('Could not bundle the required resident extension')
-  return await result.outputs[0]!.text()
 }
 
 async function main(): Promise<void> {

@@ -189,13 +189,14 @@ MCP 工具沿用 P17 的五个（`qianmo_status`、`qianmo_handoff`、`qianmo_ta
 
 ### 4.2 授权与审计
 
-浏览器与电脑操作在 omp 里是 `eval` 的前导函数（`browser`、`computer`），扩展事件看不到单次操作。处理办法：
+P21 采用复核后的方案 D。本节取代 §4.1 中关于 eval、显示与隔离强度的旧口径：macOS 只称「独立浏览器资料环境」，不宣称进程或节点间隔离。浏览器与电脑执行能力复用 oh-my-pi，阡陌实现受限工具、身份绑定、审批与资源生命周期。
 
-1. 节点开了云端电脑时，主智能体的工具表放出 `eval`，覆盖层把 `tools.approval.browser`、`tools.approval.computer` 设为 `prompt`，每次操作都会向宿主请求批准。
-2. 宿主收到这类请求：读操作（截图、读页面、查元素）直接放行；会改变外部状态的操作（点击、输入、提交、下载）按节点的确认策略处理——「敏感操作要确认」（默认）时，命中账号、付款、发送类关键词或输入框是密码、卡号类的，转成 P14 审批请求，由用户在控制台或对话里批准；其余放行。「每次都要确认」时全部转审批。
-3. 每次操作都写审计 `desktop.action`（操作类别、目标网址的主机名、是否经过确认），不记输入的正文。
-
-为了让宿主看得到操作类别，基座的两个前导函数各补一个 `formatApprovalDetails`（只把参数里的操作名、选择器类型、主机名写进批准提示），登记在 `base-modifications.md`，理由是扩展接口拿不到前导函数的参数。`eval` 本身仍受工作区路径与沙箱约束。
+1. `eval`、原始 browser/computer 工具保持禁用。阡陌扩展只注册 `qianmo_browser_*`（截图、读页面、查元素、列 tab、导航、点击、输入、按键、滚动）和 `qianmo_computer_*`（截图、点击、输入、按键、滚动）。每项精确 schema，并保留原始工具调用校验，避免基座参数修复把未知字段删掉后执行；拒绝代码、函数标记、通用调用链、CDP 地址、程序/启动参数、Cookie/Storage 导出和文件路径参数。可信适配层构造公开 `createBrowserPrelude` / `createComputerPrelude` 的调用。
+2. 宿主从真实 RPC 子进程与活动 turn 确定 node、agent、contextId、taskId。资源单位为 `(node, agent, resourceEpoch)`；tab 句柄由宿主签发，旧代次及其他资源的句柄拒绝。宿主持有资源操作租约，审批期间不接受并行操作；绑定观察到的目标摘要，执行前再观察并复核。
+3. `sensitive` 默认仅截图、读页面、查元素、列 tab 免审批；导航、点击、输入、按键、滚动逐次确认（滚动事件也可能改变外部状态）。`always` 连观察也逐次确认。审批走现有 `QIANMO_AUTHZ_V1`、P14 与宿主授权账本，拒绝窗口 grant，只认绑定 `node/agent/contextId/taskId/invocationId/resourceId/resourceEpoch/op/canonicalArgsDigest/observedTargetDigest` 的单次批准。参数正文仅存在受保护的审批材料中。
+4. 执行前持久化一次性意图、原子消费批准，再检查活动 turn、资源代次、目标摘要与批准时效；提交只能一次。完成、失败、结果未知分别记录，未知不自动重试。每次操作记 `desktop.action`，关联 actionId、taskId、invocationId、resourceEpoch 与 digest；公共审计仅记操作类别、目标主机名、确认与结果，不记输入正文。
+5. Chrome 独立资料目录 0700，下载目录独立；保留 Chromium 沙箱，无头启动，`--remote-debugging-port=0` 后读取 `DevToolsActivePort`，CDP 绑定 127.0.0.1。Linux 电脑须有 Xvfb 与 xauth，使用动态显示号、`1440x900x24`、`-nolisten tcp`、独立 Xauthority，不用 `-ac`；控制子进程设置 DISPLAY/XAUTHORITY 并清除 WAYLAND_DISPLAY。Linux 路径只有假启动器测试，本机未实测。
+6. 停用/回收先停接动作、递增代次、撤销待批与在途，再终止整个进程树并确认退出；停用保留资料，回收删除资料、下载、截图和锁文件，失败显示失败。重启清查持久化 PID 并验证进程标记，不能确认的孤儿阻止开启。tab 上限 4、下载上限 100 MiB、空闲 15 分钟停用，由宿主每 2 秒看护。每资源 1–2 GiB 内存仅为待验证规划值，尚未实现 cgroup/内存限制或独立 UID/容器。
 
 ### 4.3 落点
 

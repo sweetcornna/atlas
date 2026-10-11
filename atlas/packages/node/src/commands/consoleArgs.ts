@@ -487,6 +487,7 @@ export interface ConsoleCliConfig {
   readonly chatFrom: string
   /** 会话落盘的绝对路径。 */
   readonly chatStorePath: string
+  readonly desktop?: boolean
   readonly schedules?: boolean
   /**
    * 每个节点跑在哪台服务器上。**给了才有归属面**，一个都没给就整个不显示。
@@ -527,7 +528,7 @@ export interface ConsoleCliConfig {
   /**
    * 动作账本的绝对路径（P15.9）。**跟着 {@link accounts} 走**：开了个人账号就有
    * 这本账，而且没有单独关掉它的开关——「每次打开转录都记账、当事人查得到」是
-   * 对真人的承诺（D6），不是一个可选项。另在 {@link verifyActions} 下出现。
+   * 对真人的承诺（D6），不是一个可选项。另在 {@link verifyActions} 或 desktop 下出现。
    */
   readonly actionsStorePath?: string
   /**
@@ -603,6 +604,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let legacyChat = false
   let chatFrom = DEFAULT_CONSOLE_CHAT_FROM
   let chatStorePath = consoleChatStorePath()
+  let desktop = false
   let schedules = false
   const nodeServers: ConsoleNodeServer[] = []
   let serverNotesPath = consoleServerNotesPath()
@@ -845,6 +847,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       const parsed = residentOptionValue(args, index, '--admin-token')
       adminToken = nonEmpty(parsed.value, '--admin-token')
       index = parsed.next
+    } else if (arg === '--desktop') {
+      desktop = true
     } else if (arg === '--schedules') {
       schedules = true
     } else if (arg === '--chat-url' || arg?.startsWith('--chat-url=')) {
@@ -1217,6 +1221,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     )
   }
 
+  if (desktop && controlTargets.length === 0)
+    throw new Error('--desktop needs --control')
   if (schedules && chatTargets.length === 0)
     throw new Error('--schedules needs --chat-url')
 
@@ -1394,6 +1400,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     chatTargets,
     chatFrom,
     chatStorePath,
+    ...(desktop ? { desktop: true } : {}),
     ...(schedules ? { schedules: true } : {}),
     nodeServers,
     serverNotesPath,
@@ -1414,7 +1421,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
           breakGlass,
         }
       : {}),
-    ...(accounts || verifyActions ? { actionsStorePath } : {}),
+    ...(accounts || verifyActions || desktop ? { actionsStorePath } : {}),
     ...(verifyActions ? { verifyActions } : {}),
     ...(providers
       ? { providers: { ...providerPaths, nodes: providerNodes } }
@@ -1549,6 +1556,7 @@ Options (each accepts both --name value and --name=value):
                            Default ${DEFAULT_CONSOLE_CHAT_FROM}.
   --chat-store <abs path>  Where sessions and transcripts land, absolute path.
                            Default <config root>/qianmo/console/chat.ndjson.
+  --desktop               Enable private desktop API and action ledger; requires --control.
   --schedules             Enable console schedules; requires an active chat face.
                            Runs every 30 seconds; missed slots catch up once.
                            State: <config root>/qianmo/console/schedules/.

@@ -19,6 +19,7 @@
  */
 
 import * as routingPath from 'node:path'
+import { ConsoleDesktop } from './consoleDesktop.js'
 import { ConsoleRouting, routingWire } from './consoleRouting.js'
 import { randomBytes } from 'node:crypto'
 import { StaticPublicKeyDirectory } from '@qianmo/capability'
@@ -486,7 +487,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // 坏了不阻止启动，理由同账号库；两枚 token 作为已知秘密交给它，万一出现在
   // 某条 URL 路径里，落盘的是 `***`。
   const actions =
-    accounts !== undefined && config.actionsStorePath !== undefined
+    (accounts !== undefined || config.desktop) &&
+    config.actionsStorePath !== undefined
       ? openConsoleActionLedger({
           path: config.actionsStorePath,
           secrets: [tokens.view, tokens.admin],
@@ -602,6 +604,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
               `[control] ${error instanceof Error ? error.name : 'error'}\n`,
             ),
         })
+  const desktop =
+    config.desktop && control ? new ConsoleDesktop(control, actions) : undefined
   const approvals =
     approvalIdentity === undefined || accounts === undefined
       ? undefined
@@ -733,6 +737,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(actions === undefined ? {} : { actions }),
     ...(handoff === undefined ? {} : { handoff: handoff.port }),
     ...(providers === undefined ? {} : { providers }),
+    ...(desktop === undefined ? {} : { desktop }),
     ...(routing === undefined ? {} : { routing }),
     binName: 'qm',
     // 横幅里那几条身份与接线事实，原样交给「设置与关于」（A4）：页面答得出

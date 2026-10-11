@@ -512,6 +512,14 @@ export class FileGrantStore {
     return { kind: 'pending', request, created: true }
   }
 
+  /** Host lifecycle cancellation, durably invalidating only named pending calls. */
+  cancelRequests(ids: readonly string[]): void {
+    if (!this.#usable()) return
+    for (const id of ids)
+      if (this.#requests.get(id)?.status === 'pending')
+        this.#append({ kind: 'expired', at: this.#now(), requestId: id })
+  }
+
   /** Requests still waiting, oldest first — what a reconnecting console drains. */
   pending(): readonly AuthzRequest[] {
     if (!this.#usable()) return []
@@ -572,6 +580,12 @@ export class FileGrantStore {
     if (this.#nonces.has(decision.nonce)) return { ok: false, reason: 'replay' }
     if (this.#estop.engaged()) return { ok: false, reason: 'estop' }
 
+    if (
+      decision.decision === 'allow-window' &&
+      (state.request.toolName.startsWith('qianmo_browser_') ||
+        state.request.toolName.startsWith('qianmo_computer_'))
+    )
+      return { ok: false, reason: 'malformed' }
     const allow = decision.decision !== 'deny'
     const grantId = allow ? newId() : null
     const expiresAt = !allow
@@ -592,7 +606,12 @@ export class FileGrantStore {
         .update(String(wire), 'utf8')
         .digest('hex'),
       grantId,
-      expiresAt,
+      expiresAt:
+        expiresAt !== null &&
+        (state.request.toolName.startsWith('qianmo_browser_') ||
+          state.request.toolName.startsWith('qianmo_computer_'))
+          ? Math.min(expiresAt, decision.exp, state.request.exp)
+          : expiresAt,
     })
     if (!recorded) return { ok: false, reason: 'integrity' }
     const grant = grantId === null ? undefined : this.#grants.get(grantId)
@@ -635,7 +654,12 @@ export class FileGrantStore {
     const matches = this.#live(now).filter(
       grant => grant.digest === digest && grant.contextId === call.contextId,
     )
-    const window = matches.find(grant => grant.scope === 'window')
+    const desktop =
+      call.toolName.startsWith('qianmo_browser_') ||
+      call.toolName.startsWith('qianmo_computer_')
+    const window = desktop
+      ? undefined
+      : matches.find(grant => grant.scope === 'window')
     if (window !== undefined) return { kind: 'hit', grant: snapshot(window) }
     const once = matches.find(grant => grant.scope === 'once')
     if (once === undefined) return { kind: 'miss' }
@@ -644,6 +668,29 @@ export class FileGrantStore {
       return { kind: 'refused', reason: 'integrity' }
     }
     return { kind: 'hit', grant: snapshot(once) }
+  }
+
+  /** Execute-time recheck for a consumed desktop permit; never permits reuse. */
+  consumedGrantValid(requestId: string): boolean {
+    if (!this.#usable() || this.#estop.engaged()) return false
+    const now = this.#now()
+    return [...this.#grants.values()].some(grant => {
+      const approver = parseApprover(grant.approver)
+      const key = approver.ok
+        ? this.#approvers.get(approver.console)
+        : undefined
+      return (
+        grant.requestId === requestId &&
+        grant.scope === 'once' &&
+        grant.consumedAt !== undefined &&
+        grant.revokedAt === undefined &&
+        grant.expiresAt > now &&
+        key !== undefined &&
+        key === grant.approvalKey &&
+        !this.#isCommander(key) &&
+        !this.#revokedApprovers.has(grant.approver)
+      )
+    })
   }
 
   /** Revoke one grant (`authz.revoke`). `false` when it was not live. */

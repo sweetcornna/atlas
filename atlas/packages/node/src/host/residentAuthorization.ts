@@ -49,7 +49,10 @@ export interface ResidentAuthorizationOptions {
 export class ResidentAuthorization {
   readonly store: FileGrantStore
   readonly #options: ResidentAuthorizationOptions
-  readonly #waiters = new Map<string, (approved: boolean) => void>()
+  readonly #waiters = new Map<
+    string,
+    (approved: boolean, expiresAt?: number) => void
+  >()
   readonly #now: () => number
   constructor(options: ResidentAuthorizationOptions) {
     this.#options = options
@@ -119,6 +122,11 @@ export class ResidentAuthorization {
     deadlineAt: number,
     watchdogRemainingMs: number,
     send: (request: AuthzRequest, wire: string) => void,
+    beforeConsume?: (
+      expiresAt?: number,
+      requestId?: string,
+      valid?: () => boolean,
+    ) => boolean,
   ): Promise<boolean> {
     if (origin.trust !== 'verified-capability') {
       this.#audit('authz.refused', undefined, {
@@ -128,7 +136,9 @@ export class ResidentAuthorization {
       return false
     }
     const used =
-      call.toolName === 'qianmo_memory_write'
+      call.toolName === 'qianmo_memory_write' ||
+      call.toolName.startsWith('qianmo_browser_') ||
+      call.toolName.startsWith('qianmo_computer_')
         ? { kind: 'miss' as const }
         : this.store.use(call)
     if (used.kind === 'hit') {
@@ -166,17 +176,31 @@ export class ResidentAuthorization {
     )
     if (waitMs === 0) return false
     return await new Promise<boolean>(resolve => {
-      const finish = (approved: boolean) => {
+      const finish = (approved: boolean, expiresAt?: number) => {
         clearTimeout(timer)
         this.#waiters.delete(asked.request.requestId)
-        const result = approved ? this.store.use(call) : undefined
-        if (result?.kind === 'hit')
-          this.#audit('authz.grant_used', asked.request, {
-            scope: result.grant.scope,
-            approver: result.grant.approver,
-            expiresAt: result.grant.expiresAt,
-          })
-        resolve(result?.kind === 'hit')
+        let allowed = false
+        try {
+          const result =
+            approved &&
+            (beforeConsume?.(expiresAt, asked.request.requestId, () =>
+              this.store.consumedGrantValid(asked.request.requestId),
+            ) ??
+              true)
+              ? this.store.use(call)
+              : undefined
+          if (result?.kind === 'hit') {
+            this.#audit('authz.grant_used', asked.request, {
+              scope: result.grant.scope,
+              approver: result.grant.approver,
+              expiresAt: result.grant.expiresAt,
+            })
+            allowed = true
+          }
+        } catch {
+          /* An intent/audit write failure denies even a signed permit. */
+        }
+        resolve(allowed)
       }
       const timer = setTimeout(() => finish(false), waitMs)
       this.#waiters.set(asked.request.requestId, finish)
@@ -196,11 +220,13 @@ export class ResidentAuthorization {
         .some(
           request =>
             request.requestId === parsed.value.requestId &&
-            request.toolName === 'qianmo_memory_write',
+            (request.toolName === 'qianmo_memory_write' ||
+              request.toolName.startsWith('qianmo_browser_') ||
+              request.toolName.startsWith('qianmo_computer_')),
         )
     ) {
       this.#audit('authz.refused', undefined, {
-        status: 'memory-write-requires-once',
+        status: 'tool-requires-once',
       })
       return false
     }
@@ -219,7 +245,10 @@ export class ResidentAuthorization {
             expiresAt: outcome.grant.expiresAt,
           }),
     })
-    this.#waiters.get(outcome.request.requestId)?.(outcome.grant !== null)
+    this.#waiters.get(outcome.request.requestId)?.(
+      outcome.grant !== null,
+      outcome.grant?.expiresAt,
+    )
     return true
   }
   revoke(wire: unknown): boolean {
@@ -234,6 +263,18 @@ export class ResidentAuthorization {
     })
     this.#waiters.get(outcome.requestId)?.(false)
     return true
+  }
+  cancelDesktop(agent: string): void {
+    const requests = this.store
+      .pending()
+      .filter(
+        r =>
+          r.sub === `qianmo://${this.#options.node}/${agent}` &&
+          (r.toolName.startsWith('qianmo_browser_') ||
+            r.toolName.startsWith('qianmo_computer_')),
+      )
+    this.store.cancelRequests(requests.map(r => r.requestId))
+    for (const r of requests) this.#waiters.get(r.requestId)?.(false)
   }
   close(): void {
     for (const resolve of [...this.#waiters.values()]) resolve(false)

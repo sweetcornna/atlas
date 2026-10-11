@@ -1,6 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { desktopApi } from './routes/desktopApi.js'
 import { decorateConsoleResponse } from './preferences.js'
 import { RegistrationThrottle, handleSignup } from './signup.js'
 import { scopedConsoleDeps, tenantRequestDenial } from './tenantScope.js'
@@ -788,10 +789,11 @@ async function errorPage(
 // --- dispatch ------------------------------------------------------------
 
 /** `/v0/<head>` heads, one module each; built once, refused if claimed twice. */
-const API_HEADS = headIndex(ROUTES, module => module.api, [
-  'accounts',
-  'health',
-])
+const API_HEADS = new Map(
+  headIndex(ROUTES, module => module.api, ['accounts', 'health']),
+)
+if (API_HEADS.has('desktop')) throw new Error('desktop API head claimed twice')
+API_HEADS.set('desktop', desktopApi)
 
 /** `/fragments/<head>` heads, one module each. */
 const FRAGMENT_HEADS = headIndex(ROUTES, module => module.fragments)

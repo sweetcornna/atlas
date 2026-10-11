@@ -24,6 +24,12 @@
  * whatever the settings say.
  */
 
+import {
+  desktopTools,
+  isDesktopTool,
+  type DesktopResource,
+} from './desktopPolicy.js'
+
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -52,6 +58,8 @@ export interface ResidentExtensionConfig {
   /** Host-owned tools registered with `set_host_tools` (`qianmo_notify`). */
   readonly hostTools: readonly string[]
   readonly media?: { readonly image: boolean; readonly speech: boolean }
+  readonly desktopPath?: string
+  readonly desktop?: DesktopResource
   readonly approvals?: boolean
 }
 
@@ -109,6 +117,9 @@ export function readResidentExtensionConfig(
             speech: (record.media as Record<string, unknown>).speech === true,
           },
         }
+      : {}),
+    ...(typeof record.desktopPath === 'string' && isAbsolute(record.desktopPath)
+      ? { desktopPath: record.desktopPath }
       : {}),
     ...(record.approvals === true ? { approvals: true } : {}),
   }
@@ -250,12 +261,14 @@ export function residentActiveTools(
   edits: ResidentExtensionConfig['edits'],
   hostTools: readonly string[] = [],
   media?: ResidentExtensionConfig['media'],
+  desktop?: ResidentExtensionConfig['desktop'],
 ): string[] {
   return [
     ...RESIDENT_READ_TOOLS,
     ...RESIDENT_SESSION_TOOLS,
     ...(edits === 'workspace' ? RESIDENT_WRITE_TOOLS : []),
     ...hostTools,
+    ...desktopTools(desktop),
     ...(media?.image ? ['generate_image'] : []),
     ...(media?.speech ? ['tts'] : []),
   ]
@@ -277,12 +290,16 @@ export function residentConfigOverlay(options: {
   readonly edits: ResidentExtensionConfig['edits']
   readonly hostTools?: readonly string[]
   readonly media?: ResidentExtensionConfig['media']
+  readonly desktop?: ResidentExtensionConfig['desktop']
 }): string {
   const approvals: [string, string][] = [
     ...(options.media?.image
       ? [['generate_image', 'allow'] as [string, string]]
       : []),
     ...(options.media?.speech ? [['tts', 'allow'] as [string, string]] : []),
+    ...desktopTools(options.desktop).map(
+      name => [name, 'allow'] as [string, string],
+    ),
     ...RESIDENT_DENIED_TOOLS.map(name => [name, 'deny'] as [string, string]),
     // A host tool has no approval tier, so omp treats it as `exec`, which
     // prompts — and fails — in both resident modes. The extension's allowlist
@@ -480,6 +497,11 @@ export function residentToolVerdict(
   context: ResidentCallContext,
 ): ResidentToolBlock | undefined {
   const { toolName, input } = call
+  if (isDesktopTool(toolName))
+    return context.agentKind === 'main' &&
+      desktopTools(config.desktop).includes(toolName)
+      ? undefined
+      : block('Desktop resource unavailable or caller is not main')
   if (config.hostTools.includes(toolName)) {
     // Host tools act through the host, which attributes them to the running
     // task; a subagent has no task of its own to attribute to.

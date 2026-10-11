@@ -1,6 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type { DesktopPort, AgentRef } from './directionPorts.js'
 import type { Access } from './access.js'
 import type { ConsoleDeps, ConsoleResult, ChatPort, WakePort } from './deps.js'
 import { fail } from './respond.js'
@@ -50,6 +51,45 @@ export function scopedConsoleDeps(
       return false
     }
   }
+  const guardedDesktop = (
+    desktop: DesktopPort,
+    allowed: (ref: AgentRef) => boolean,
+  ): DesktopPort => {
+    const assert = (ref: AgentRef) => {
+      if (!allowed(ref)) throw new Error('E_AUTH_REVOKED: 资源不存在')
+    }
+    return {
+      async list() {
+        return filtered(await desktop.list(), allowed)
+      },
+      async actions(ref, limit) {
+        if (ref && !allowed(ref)) return hidden()
+        return filtered(await desktop.actions(ref, limit), allowed)
+      },
+      async set(ref, change, actor) {
+        if (!allowed(ref)) return hidden()
+        const r = await desktop.set(ref, change, {
+          ...actor,
+          beforeDispatch: () => {
+            assert(ref)
+            actor.beforeDispatch?.()
+          },
+        })
+        return allowed(ref) ? r : hidden()
+      },
+      async recycle(ref, actor) {
+        if (!allowed(ref)) return hidden()
+        const r = await desktop.recycle(ref, {
+          ...actor,
+          beforeDispatch: () => {
+            assert(ref)
+            actor.beforeDispatch?.()
+          },
+        })
+        return allowed(ref) ? r : hidden()
+      },
+    }
+  }
   // Platform membership can be withdrawn while the wake timer/handshake waits.
   // Preserve its broad scope only for the exact policy revision that granted it.
   if (scope.platform) {
@@ -69,6 +109,9 @@ export function scopedConsoleDeps(
       scope,
       deps: {
         ...deps,
+        ...(deps.desktop
+          ? { desktop: guardedDesktop(deps.desktop, () => current()) }
+          : {}),
         ...(deps.wake === undefined ? {} : { wake: guarded(deps.wake) }),
         ...(deps.wakeTargets === undefined
           ? {}
@@ -97,7 +140,6 @@ export function scopedConsoleDeps(
     schedules: _schedules,
     memory: _memory,
     files: _files,
-    desktop: _desktop,
     connectors: _connectors,
     routing: _routing,
     handoffDevices: _handoffDevices,
@@ -105,6 +147,15 @@ export function scopedConsoleDeps(
   } = deps
   const result: ConsoleDeps = {
     ...base,
+    ...(deps.desktop
+      ? {
+          desktop: guardedDesktop(
+            deps.desktop,
+            ref =>
+              node(ref.node) && address(`qianmo://${ref.node}/${ref.agent}`),
+          ),
+        }
+      : {}),
     registry: {
       async list() {
         return filtered(await deps.registry.list(), v => address(v.address))
@@ -517,6 +568,16 @@ export async function tenantRequestDenial(
     !scope.address(pieces[2])
   )
     return fail(404, 'not_found', '资源不存在')
+  if (head === 'desktop' && pieces[0] === 'v0') {
+    const target =
+      pieces[2] === 'actions'
+        ? url.searchParams.get('agent')
+        : pieces[2] && pieces[3]
+          ? `qianmo://${pieces[2]}/${pieces[3]}`
+          : null
+    if (target && !scope.address(target))
+      return fail(404, 'not_found', '资源不存在')
+  }
   if (head === 'chat') {
     const id =
       pieces[0] === 'v0' && pieces[2] === 'sessions'

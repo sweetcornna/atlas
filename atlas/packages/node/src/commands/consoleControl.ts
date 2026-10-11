@@ -229,7 +229,10 @@ export class ControlLinks {
     op: string,
     args: Record<string, unknown>,
     actor: string,
-    options: { readonly timeoutMs?: number } = {},
+    options: {
+      readonly timeoutMs?: number
+      readonly beforeDispatch?: () => void
+    } = {},
   ): Promise<ControlOutcome> {
     const timeoutMs = controlTimeout(options.timeoutMs)
     const state = this.#states.get(node),
@@ -255,6 +258,11 @@ export class ControlLinks {
     const routed = this.#router.outbound(request)
     if (!routed.ok)
       return { ok: false, code: routed.code, message: routed.reason }
+    try {
+      options.beforeDispatch?.()
+    } catch {
+      return { ok: false, code: 'refused', message: '控制权限已撤销' }
+    }
     const { promise, resolve } = Promise.withResolvers<ControlOutcome>()
     const timer = setTimeout(
       () =>

@@ -99,7 +99,9 @@
       "name": "@qianmo/extension",
       "version": "0.0.0",
       "dependencies": {
+        "@oh-my-pi/omptype": "workspace:*",
         "@oh-my-pi/pi-coding-agent": "workspace:*",
+        "@oh-my-pi/pi-utils": "workspace:*",
         "@qianmo/paths": "workspace:*",
         "@qianmo/resident": "workspace:*",
       },
@@ -151,6 +153,7 @@
         "@oh-my-pi/pi-ai": "workspace:*",
         "@oh-my-pi/pi-catalog": "workspace:*",
         "@oh-my-pi/pi-coding-agent": "workspace:*",
+        "@oh-my-pi/pi-natives": "workspace:*",
         "@oh-my-pi/pi-utils": "workspace:*",
         "@qianmo/a2a": "workspace:*",
         "@qianmo/activator": "workspace:*",
