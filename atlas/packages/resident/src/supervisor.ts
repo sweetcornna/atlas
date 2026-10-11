@@ -118,14 +118,22 @@ export class ResidentSupervisor {
     let rapidFailures = 0
 
     while (!this.#controller.signal.aborted) {
-      const startedAt = now()
+      let started = false
+      let duration = 0
       this.#recycling = false
       try {
         this.#child = await this.#options.start()
-        if (this.#controller.signal.aborted) {
-          await this.#child.stop()
-        } else {
-          await this.#child.closed
+        started = true
+        const startedAt = now()
+        try {
+          if (this.#controller.signal.aborted) {
+            await this.#child.stop()
+          } else {
+            await this.#child.closed
+          }
+        } finally {
+          // Startup and teardown are not evidence of a stable running child.
+          duration = now() - startedAt
         }
       } catch (error) {
         // A recycled child exits because it was told to; its exit status is
@@ -143,14 +151,13 @@ export class ResidentSupervisor {
       }
       if (this.#controller.signal.aborted) return
 
-      const duration = now() - startedAt
       if (this.#recycling) {
         // Planned: neither a rapid failure nor proof of a healthy child.
         if (duration >= stableAfter) {
           rapidFailures = 0
           backoff = initialBackoff
         }
-      } else if (duration < stableAfter) {
+      } else if (!started || duration < stableAfter) {
         rapidFailures += 1
         if (rapidFailures >= maxRapidFailures) {
           this.#parked = true
