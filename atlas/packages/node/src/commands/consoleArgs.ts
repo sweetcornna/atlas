@@ -1455,6 +1455,8 @@ export const CONSOLE_HELP_TEXT = `Usage: qm console [options]
 Serve the Qianmo web console. Requires the Bun runtime.
 Full documentation: docs/dev/console.md
 
+Avatars are saved automatically in <config root>/qianmo/console/avatars.json.
+
 Options (each accepts both --name value and --name=value):
 
   --port <0-65535>         Port to listen on. Default ${DEFAULT_CONSOLE_PORT};

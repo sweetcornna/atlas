@@ -11,6 +11,8 @@
  * (`deps.ts`), injected by the `qm console` handler.
  */
 
+export * from './avatar.js'
+
 export type {
   AuditChainState,
   AuditFilter,
