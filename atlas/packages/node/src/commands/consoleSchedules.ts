@@ -26,7 +26,13 @@ import {
   type TenantPort,
   type UsagePort,
 } from '@qianmo/console'
-import { readTextIfExists, writePrivateJson } from '../providers/store.js'
+import {
+  acquirePrivateInstanceLock,
+  ensurePrivateDir,
+  type PrivateInstanceLock,
+  readTextIfExists,
+  writePrivateJson,
+} from '../providers/store.js'
 import { FileLedger } from './consoleAccountsStore.js'
 import {
   notifyChannelUrl,
@@ -237,6 +243,7 @@ export class ConsoleSchedules implements SchedulesPort {
   readonly #bookPath: string
   readonly #secretPath: string
   readonly #ledger: FileLedger
+  readonly #lock: PrivateInstanceLock | null
   readonly #now: () => number
   readonly #schedules = new Map<string, StoredSchedule>()
   readonly #channels = new Map<string, NotifyChannelView>()
@@ -257,6 +264,13 @@ export class ConsoleSchedules implements SchedulesPort {
     this.#now = options.now ?? Date.now
     this.#bookPath = path.join(options.directory, 'schedules.json')
     this.#secretPath = path.join(options.directory, 'channels.secret.json')
+    this.#lock = acquirePrivateInstanceLock(
+      path.join(options.directory, 'instance.lock'),
+    )
+    if (!this.#lock)
+      options.onError?.(
+        '定时任务目录已由另一实例持有；本实例只读，调度器未启动',
+      )
     this.#ledger = new FileLedger(path.join(options.directory, 'runs.ndjson'))
     try {
       const secret = readTextIfExists(this.#secretPath)
@@ -315,13 +329,22 @@ export class ConsoleSchedules implements SchedulesPort {
           )
             continue
           if (run.outcome !== 'running') {
-            this.#append({ ...run, reason: '通知结果未知，未重复推送' })
+            if (this.#lock)
+              this.#append({ ...run, reason: '通知结果未知，未重复推送' })
             continue
           }
           const schedule = savedSchedule ?? this.#schedules.get(run.scheduleId)
           if (!schedule) throw new Error('missing occupied schedule')
           this.#active.set(run.scheduleId, {
-            view: { ...run, outcome: 'running', state: 'unknown', finishedAt: null, reason: '上一次结果未知，等待确认' },
+            view: this.#lock
+              ? {
+                  ...run,
+                  outcome: 'running',
+                  state: 'unknown',
+                  finishedAt: null,
+                  reason: '上一次结果未知，等待确认',
+                }
+              : run,
             schedule: structuredClone(schedule),
             baseline: new Set(baseline),
             notices: notices ?? [],
@@ -329,13 +352,15 @@ export class ConsoleSchedules implements SchedulesPort {
             attempted: attempted ?? true,
           })
         }
-        this.#persist()
+        if (this.#lock) this.#persist()
       }
     } catch {
       this.#ledger.close()
+      this.#lock?.release()
       throw new Error('定时任务簿无法恢复，请检查状态文件')
     }
     this.#unsubscribe = options.chat.subscribe(update => {
+      if (!this.#lock?.owned()) return
       this.#launch(
         this.#serial(async () => {
           for (const active of this.#active.values()) {
@@ -386,6 +411,7 @@ export class ConsoleSchedules implements SchedulesPort {
   }
 
   #persist(): void {
+    if (!this.#lock?.owned()) throw new Error('schedule lock lost')
     writePrivateJson(
       this.#bookPath,
       this.#redact({
@@ -439,6 +465,42 @@ export class ConsoleSchedules implements SchedulesPort {
     }
   }
 
+  #refreshReadonly(): void {
+    const raw = readTextIfExists(this.#bookPath)
+    if (!raw) return
+    const book = bookSchema.parse(JSON.parse(raw))
+    this.#schedules.clear()
+    this.#channels.clear()
+    this.#active.clear()
+    this.#runs.length = 0
+    for (const row of book.schedules) this.#schedules.set(row.id, row)
+    for (const row of book.channels) this.#channels.set(row.id, row)
+    for (const line of recentLines(this.#ledger.path).lines) {
+      try {
+        this.#runs.push(runSchema.parse(JSON.parse(line)))
+      } catch {}
+    }
+    for (const checkpoint of book.running) {
+      const {
+        schedule: savedSchedule,
+        baseline,
+        attempted,
+        notices,
+        ...run
+      } = checkpoint
+      const schedule = savedSchedule ?? this.#schedules.get(run.scheduleId)
+      if (schedule)
+        this.#active.set(run.scheduleId, {
+          view: run,
+          schedule,
+          phase: 'waiting',
+          attempted: attempted ?? true,
+          baseline: new Set(baseline),
+          notices: notices ?? [],
+        })
+    }
+  }
+
   visible(id: string, actor: DirectionActor): boolean {
     const schedule = this.#schedules.get(id)
     return schedule !== undefined && this.#visible(schedule, actor)
@@ -454,6 +516,7 @@ export class ConsoleSchedules implements SchedulesPort {
 
   async snapshot(actor: ScheduleReader) {
     return this.#serial(async () => {
+      if (!this.#lock?.owned()) this.#refreshReadonly()
       const targets = await this.#options.chat.targets()
       if (!targets.ok) return targets
       return ok(
@@ -503,6 +566,8 @@ export class ConsoleSchedules implements SchedulesPort {
   ): Promise<ConsoleResult<T>> {
     return this.#serial(async () => {
       if (this.#closed) return fail('unreachable', '定时任务簿已关闭')
+      if (!this.#lock?.owned())
+        return fail('unreachable', '另一实例持有定时任务目录，本实例只读')
       const original = this.#schedules.get(target)
       if (
         action.startsWith('schedule.') &&
@@ -947,6 +1012,34 @@ export class ConsoleSchedules implements SchedulesPort {
       this.#persist()
       return this.#redact(view)
     }
+    // Durable defense in depth: even a second book cannot claim this pair.
+    const claims = path.join(this.#options.directory, 'claims')
+    ensurePrivateDir(claims)
+    const marker = path.join(
+      claims,
+      `${encodeURIComponent(schedule.id)}.${plannedAt}.json`,
+    )
+    let fd: number
+    try {
+      fd = fs.openSync(marker, 'wx', 0o600)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      const skipped = {
+        ...view,
+        outcome: 'skipped' as const,
+        finishedAt: this.#now(),
+        reason: '计划时刻已被认领',
+      }
+      this.#append(skipped)
+      this.#persist()
+      return this.#redact(skipped)
+    }
+    try {
+      fs.writeSync(fd, JSON.stringify(view))
+      fs.fsyncSync(fd)
+    } finally {
+      fs.closeSync(fd)
+    }
     const active: ActiveRun = {
       view,
       schedule: structuredClone(schedule),
@@ -1036,7 +1129,7 @@ export class ConsoleSchedules implements SchedulesPort {
           this.#schedules.set(schedule.id, { ...schedule, sessionId })
         this.#persist()
       })
-      if (this.#closed || active.phase !== 'sending')
+      if (this.#closed || !this.#lock?.owned() || active.phase !== 'sending')
         return
       // ESTOP can engage during open/transcript I/O, before bytes leave.
       if (this.#estop()) {
@@ -1253,7 +1346,7 @@ export class ConsoleSchedules implements SchedulesPort {
 
   async tick(): Promise<void> {
     await this.#serial(async () => {
-      if (this.#closed) return
+      if (this.#closed || !this.#lock?.owned()) return
       const now = this.#now()
       this.#tickAt = now
       let admitted = true
@@ -1331,7 +1424,7 @@ export class ConsoleSchedules implements SchedulesPort {
   }
 
   start(): void {
-    if (this.#timer || this.#closed) return
+    if (this.#timer || this.#closed || !this.#lock?.owned()) return
     this.#launch(this.tick())
     this.#timer = setInterval(() => {
       this.#launch(this.tick())
@@ -1346,5 +1439,6 @@ export class ConsoleSchedules implements SchedulesPort {
     this.#unsubscribe?.()
     this.#unsubscribe = null
     this.#ledger.close()
+    this.#lock?.release()
   }
 }
