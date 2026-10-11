@@ -242,6 +242,7 @@ import {
 import { CHAT_STREAM_HEARTBEAT_MS } from './routes/chat.js'
 import {
   ROUTES,
+  API_ONLY_ROUTES,
   areaDocument,
   errorDocument,
   headIndex,
@@ -788,10 +789,11 @@ async function errorPage(
 // --- dispatch ------------------------------------------------------------
 
 /** `/v0/<head>` heads, one module each; built once, refused if claimed twice. */
-const API_HEADS = headIndex(ROUTES, module => module.api, [
-  'accounts',
-  'health',
-])
+const API_HEADS = headIndex(
+  [...ROUTES, ...API_ONLY_ROUTES],
+  module => module.api,
+  ['accounts', 'health'],
+)
 
 /** `/fragments/<head>` heads, one module each. */
 const FRAGMENT_HEADS = headIndex(ROUTES, module => module.fragments)

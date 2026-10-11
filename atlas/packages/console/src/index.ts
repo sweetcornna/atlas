@@ -270,3 +270,5 @@ export { FileUsageStore, usageDelta } from './usage.js'
 
 export * from './directionPorts.js'
 export * from './routes/routingApi.js'
+
+export * from './routes/filesApi.js'

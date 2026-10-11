@@ -26,7 +26,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { ROUTES } from '../src/routes/index.js'
+import { ROUTES, API_ONLY_ROUTES } from '../src/routes/index.js'
 import type { RouteModule } from '../src/routes/types.js'
 import { CONSOLE_HEADER, accountsHarness, person } from './accountsHarness.js'
 import { PLANNER, StatefulLifecycle } from './lifecycleFake.js'
@@ -228,7 +228,8 @@ function filesOf(module: RouteModule | undefined): readonly string[] {
   if (module === undefined) {
     return ['../src/http.ts', '../src/accountsHttp.ts']
   }
-  const own = `../src/routes/${module.area.id}.ts`
+  // P20's API ships before the separately owned page module.
+  const own = `../src/routes/${module.area.id === 'files' && module.page === undefined ? 'filesApi' : module.area.id}.ts`
   const imports = [...source(own).matchAll(/from '\.\/(\w+)\.js'/g)]
     .map(match => match[1] ?? '')
     .filter(name => !['shared', 'types', 'index'].includes(name))
@@ -262,7 +263,7 @@ function roots(rows: readonly Row[]): readonly Root[] {
     ])
     out.push({ prefix, vocabulary: [...vocabulary] })
   }
-  for (const module of ROUTES) {
+  for (const module of [...ROUTES, ...API_ONLY_ROUTES]) {
     for (const head of module.api?.heads ?? []) add(['v0', head], module)
     for (const head of module.fragments?.heads ?? []) {
       add(['fragments', head], module)

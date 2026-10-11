@@ -163,6 +163,37 @@ describe('HubCallClient', () => {
     }
   })
 
+  test('grant callbacks use the originating hub and never fall back to another issuer', async () => {
+    const hub = client(),
+      first = new HubChannel('hub-a'),
+      latest = new HubChannel('hub-b')
+    hub.subscribe('hub-a', 'qianmo://hub-a/operator', first)
+    hub.subscribe('hub-b', 'qianmo://hub-b/operator', latest)
+    try {
+      const pending = hub.call(
+        'files.validate',
+        {},
+        { agent: 'main', peer: 'hub-a' },
+      )
+      const request = first.sent[0]!
+      expect(latest.sent).toHaveLength(0)
+      hub.receive(reply(request, 'wrong issuer'), latest)
+      hub.receive(reply(request, { grantedBy: 'u:owner' }), first)
+      expect(await pending).toEqual({
+        ok: true,
+        value: { grantedBy: 'u:owner' },
+      })
+      first.ready = false
+      hub.disconnected()
+      expect(
+        await hub.call('files.validate', {}, { peer: 'hub-a' }),
+      ).toMatchObject({ ok: false, code: 'hub-unavailable' })
+      expect(latest.sent).toHaveLength(0)
+    } finally {
+      hub.close()
+    }
+  })
+
   test('subscription replacement and disconnect settle outstanding callers immediately', async () => {
     const hub = client(),
       old = new HubChannel('hub'),

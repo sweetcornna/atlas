@@ -6,6 +6,7 @@
 import { randomBytes } from 'node:crypto'
 import {
   chmodSync,
+  constants,
   closeSync,
   fsyncSync,
   mkdirSync,
@@ -65,7 +66,11 @@ function isMissing(error: unknown): boolean {
 }
 
 /** Atomic write with the tmp file created 0600 (`wx`: never reuse a path). */
-export function writePrivateFileAtomic(path: string, content: string): void {
+export function writePrivateFileAtomic(
+  path: string,
+  content: string,
+  options: { readonly syncDirectory?: boolean } = {},
+): void {
   ensurePrivateDir(dirname(path))
   const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`
   const fd = openSync(tmp, 'wx', PRIVATE_FILE_MODE)
@@ -77,6 +82,17 @@ export function writePrivateFileAtomic(path: string, content: string): void {
   }
   try {
     renameSync(tmp, path)
+    if (options.syncDirectory) {
+      const directory = openSync(
+        dirname(path),
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      )
+      try {
+        fsyncSync(directory)
+      } finally {
+        closeSync(directory)
+      }
+    }
   } catch (error) {
     try {
       unlinkSync(tmp)
@@ -87,8 +103,12 @@ export function writePrivateFileAtomic(path: string, content: string): void {
   }
 }
 
-export function writePrivateJson(path: string, value: unknown): void {
-  writePrivateFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`)
+export function writePrivateJson(
+  path: string,
+  value: unknown,
+  options: { readonly syncDirectory?: boolean } = {},
+): void {
+  writePrivateFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`, options)
 }
 
 /** `undefined` when the file does not exist; the raw text otherwise. */

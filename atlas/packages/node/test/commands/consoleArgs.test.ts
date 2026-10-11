@@ -1426,3 +1426,18 @@ describe('console --trust-ca (证书栏)', () => {
     expect(CONSOLE_HELP_TEXT).toContain('verifies, never signs')
   })
 })
+
+test('files are opt-in and require a pinned control link before startup', () => {
+  expect(parseConsoleArgs([]).files).toBeUndefined()
+  expect(() => parseConsoleArgs(['--files'])).toThrow('--files needs --control')
+  const key = generateNodeKeyPair().publicKey
+  expect(
+    parseConsoleArgs([
+      '--files',
+      '--control',
+      'alpha=ws://127.0.0.1:1234',
+      '--trust',
+      `alpha=${key}`,
+    ]).files,
+  ).toBe(true)
+})

@@ -32,6 +32,7 @@ import { alertsRoute } from './alerts.js'
 import { approvalsRoute } from './approvals.js'
 import { auditRoute } from './audit.js'
 import { chatRoute } from './chat.js'
+import { filesApi } from './filesApi.js'
 import { jobsRoute } from './jobs.js'
 import { memoryRoute } from './memory.js'
 import { nodesRoute } from './nodes.js'
@@ -69,6 +70,20 @@ export const ROUTES: readonly RouteModule[] = [
   accessRoute,
   usageRoute,
   settingsRoute,
+]
+
+/** API-only work packages stay out of the page/sidebar inventory until their page ships. */
+export const API_ONLY_ROUTES: readonly RouteModule[] = [
+  {
+    area: {
+      id: 'files',
+      label: '文件互通',
+      group: 'main',
+      href: '/files',
+      icon: 'files',
+    },
+    api: filesApi,
+  },
 ]
 
 /** Index the heads of one kind, refusing a head that two modules claim. */

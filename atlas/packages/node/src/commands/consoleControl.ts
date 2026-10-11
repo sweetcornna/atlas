@@ -6,6 +6,8 @@ import {
   assertAddress,
   CONTROL_MESSAGE_TYPES,
   LEGACY_MESSAGE_TYPES,
+  LIMITS,
+  messageBytes,
   createMessage,
   isHubCallPayload,
   isNodeControlPayload,
@@ -255,6 +257,12 @@ export class ControlLinks {
     const routed = this.#router.outbound(request)
     if (!routed.ok)
       return { ok: false, code: routed.code, message: routed.reason }
+    if (messageBytes(routed.message) > LIMITS.maxMessageBytes)
+      return {
+        ok: false,
+        code: 'invalid',
+        message: '控制信封超过 UTF-8 字节上限',
+      }
     const { promise, resolve } = Promise.withResolvers<ControlOutcome>()
     const timer = setTimeout(
       () =>

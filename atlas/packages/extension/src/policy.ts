@@ -528,6 +528,11 @@ export function residentToolVerdict(
       if (typeof entry !== 'string' || SCHEME.test(entry))
         return block('media paths must be local workspace paths')
       const target = realPath(lexicalPath(entry, workspace))
+      if (
+        toolName === 'tts' &&
+        target.split(/[\\/]/).some(part => part.startsWith('.files-'))
+      )
+        return block('file transfer staging is host-owned')
       const denial = hardline.pathVerdict(target)
       if (denial !== null) return block(denial.target.reason)
       if (
@@ -585,6 +590,9 @@ export function residentToolVerdict(
         return block(`${toolName} may only write local files, not ${entry}`)
       }
       const target = realPath(lexicalPath(globBase(entry), workspace))
+      // Publication is assembled by the host and must stay immutable until rename.
+      if (target.split(/[\\/]/).some(part => part.startsWith('.files-')))
+        return block('file transfer staging is host-owned')
       const denial = hardline.pathVerdict(target)
       if (denial !== null) return block(denial.target.reason)
       if (!inside(target, workspace)) {

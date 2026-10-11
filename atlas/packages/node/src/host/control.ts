@@ -185,16 +185,25 @@ export class HubCallClient {
   async call(
     op: string,
     args: Record<string, unknown>,
-    options: { readonly timeoutMs?: number; readonly agent?: string } = {},
+    options: {
+      readonly timeoutMs?: number
+      readonly agent?: string
+      readonly peer?: string
+    } = {},
   ): Promise<ControlOutcome> {
     const timeoutMs = controlTimeout(options.timeoutMs)
     if (
       !isControlOp(op) ||
-      (options.agent !== undefined && !isValidSegment(options.agent))
+      (options.agent !== undefined && !isValidSegment(options.agent)) ||
+      (options.peer !== undefined && !isValidSegment(options.peer))
     )
       return { ok: false, code: 'invalid', message: '上行操作或智能体无效' }
     this.disconnected()
-    const subscription = [...this.#subscriptions.values()].at(-1)
+    // Grant checks must return to the controller that issued this control call.
+    const subscription =
+      options.peer === undefined
+        ? [...this.#subscriptions.values()].at(-1)
+        : this.#subscriptions.get(options.peer)
     if (!subscription || this.#closed) return unavailable
     if (
       !subscription.channel.supports(MessageType.HubCall) ||
