@@ -469,7 +469,8 @@ describe('/v0/avatars and /fragments/avatar', () => {
     const session = await h.chat.open(ADDRESS)
     if (!session.ok) throw new Error('no session')
     const principal = h.book.bearerPrincipal(other.credential)
-    if (!principal.ok || principal.value.kind !== 'user') throw new Error('no principal')
+    if (!principal.ok || principal.value.kind !== 'user')
+      throw new Error('no principal')
     expect(
       h.book.recordOwner(session.value.id, principal.value.subject).ok,
     ).toBe(true)
