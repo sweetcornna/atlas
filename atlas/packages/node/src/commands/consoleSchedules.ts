@@ -136,6 +136,7 @@ const bookSchema = z.object({
       baseline: z.array(z.string()).optional(),
       attempted: z.boolean().optional(),
       notices: z.array(z.string()).optional(),
+      reservationId: z.string().nullable().optional(),
     }),
   ),
 })
@@ -148,6 +149,7 @@ interface ActiveRun {
   notices: string[]
   phase: 'sending' | 'waiting' | 'pushing'
   attempted: boolean
+  reservationId: string | null
 }
 
 const TEMPLATES: readonly ScheduleTemplateView[] = [
@@ -319,6 +321,7 @@ export class ConsoleSchedules implements SchedulesPort {
             baseline,
             attempted,
             notices,
+            reservationId,
             ...run
           } = checkpoint
           if (
@@ -350,6 +353,7 @@ export class ConsoleSchedules implements SchedulesPort {
             notices: notices ?? [],
             phase: 'waiting',
             attempted: attempted ?? true,
+            reservationId: reservationId ?? null,
           })
         }
         if (this.#lock) this.#persist()
@@ -423,6 +427,7 @@ export class ConsoleSchedules implements SchedulesPort {
           baseline: [...active.baseline],
           attempted: active.attempted,
           notices: active.notices,
+          reservationId: active.reservationId,
         })),
       }),
     )
@@ -486,6 +491,7 @@ export class ConsoleSchedules implements SchedulesPort {
         baseline,
         attempted,
         notices,
+        reservationId,
         ...run
       } = checkpoint
       const schedule = savedSchedule ?? this.#schedules.get(run.scheduleId)
@@ -495,6 +501,7 @@ export class ConsoleSchedules implements SchedulesPort {
           schedule,
           phase: 'waiting',
           attempted: attempted ?? true,
+          reservationId: reservationId ?? null,
           baseline: new Set(baseline),
           notices: notices ?? [],
         })
@@ -792,6 +799,15 @@ export class ConsoleSchedules implements SchedulesPort {
         finishedAt: this.#now(),
         reason: '人工确认结果',
       }
+      // Manual confirmation settles the same host-owned admission as a remote
+      // terminal. Keep its ID in the recovery checkpoint, never the public view.
+      if (active.reservationId !== null)
+        this.#options.usage?.finish(active.reservationId)
+      if (active.view.taskId !== null)
+        this.#options.usage?.finishTask(
+          active.view.taskId,
+          new URL(active.schedule.target).hostname,
+        )
       active.phase = 'pushing'
       this.#append(view)
       this.#active.delete(id)
@@ -1047,6 +1063,7 @@ export class ConsoleSchedules implements SchedulesPort {
       notices: [],
       phase: 'sending',
       attempted: false,
+      reservationId: null,
     }
     this.#active.set(schedule.id, active)
     try {
@@ -1162,6 +1179,7 @@ export class ConsoleSchedules implements SchedulesPort {
           return
         }
         active.view = { ...active.view, taskId: sent.value.taskId ?? null }
+        active.reservationId = sent.value.usageReservation ?? null
         if (sent.value.deliveryUnknown) this.#markUnknown(active)
         active.phase = 'waiting'
         this.#persist()

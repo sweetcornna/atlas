@@ -2221,7 +2221,7 @@ tick 的唯一性；`missed slots catch up once after restart...` 证明停机�
 本地产生的 `E_TASK_TIMEOUT` 不是证明，只有带 `remoteTerminal` 的远端超时才是终态。
 恢复检查点同时保留本轮原始任务、转录基线与 taskId，避免编辑任务后对错轮。
 无可确认回复时，创建者（成员权限）或 ops 可用 §12.3 的 resolve API 人工确认 ok/failed，
-记 `schedule.resolve`，不补发通知；结果未确认前拒绝删除仍被占用的任务。
+记 `schedule.resolve`，同时释放本轮持久化的用量预留，不补发通知；结果未确认前拒绝删除仍被占用的任务。
 
 未开租户隔离而开了个人账号时，成员与只读账号只看到 `createdBy` 为自己的任务、运行
 记录与摘要；只读账号保留只读权限。跨账号的详情、改动、启停、删除、立即运行与确认

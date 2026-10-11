@@ -7,6 +7,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import {
   ActionLedger,
+  FileUsageStore,
   createConsoleHandler,
   type ConsoleResult,
   type DirectionActor,
@@ -30,6 +31,7 @@ class MemoryActionStore extends MemoryLedger {
   }
 }
 
+const stores: FileUsageStore[] = []
 const roots: string[] = [],
   books: ConsoleSchedules[] = []
 afterEach(async () => {
@@ -37,6 +39,7 @@ afterEach(async () => {
     await book.idle()
     book.close()
   }
+  for (const store of stores.splice(0)) store.close()
   for (const root of roots.splice(0))
     fs.rmSync(root, { recursive: true, force: true })
 })
@@ -58,7 +61,7 @@ const draft: ScheduleDraft = {
   timeoutMs: 1000,
 }
 
-async function fixture() {
+async function fixture(withUsage = false) {
   const h = accountsHarness()
   const a = await person(h.handle),
     b = await person(h.handle),
@@ -66,6 +69,35 @@ async function fixture() {
     ops = await person(h.handle, 'ops')
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'schedule-isolation-'))
   roots.push(root)
+  const usage = withUsage
+    ? new FileUsageStore({
+        path: path.join(root, 'usage.ndjson'),
+        now: h.clock.now,
+        monotonic: h.clock.now,
+        policy: {
+          mode: 'enforce',
+          person: { inFlight: 1, messages: 10 },
+          job: {},
+          global: {},
+        },
+      })
+    : undefined
+  if (usage) {
+    stores.push(usage)
+    const send = h.chat.send.bind(h.chat)
+    h.chat.send = async input => {
+      const result = await send(input)
+      return result.ok
+        ? {
+            ok: true,
+            value: {
+              ...result.value,
+              usageReservation: input.usageReservation,
+            },
+          }
+        : result
+    }
+  }
   const ledgerStore = new MemoryActionStore()
   const actions = new ActionLedger({ store: ledgerStore, now: h.clock.now })
   const book = new ConsoleSchedules({
@@ -73,6 +105,7 @@ async function fixture() {
     estopPath: path.join(root, 'ESTOP'),
     chat: h.chat,
     accounts: { book: h.book },
+    ...(usage ? { usage } : {}),
     actions,
     now: h.clock.now,
     pushOptions: {
@@ -129,6 +162,8 @@ async function fixture() {
     actor,
     actions,
     ledgerStore,
+    usage,
+    root,
   }
 }
 
@@ -137,12 +172,33 @@ test('members and viewers read only their own prompts, run records and excerpts 
   const send = f.h.chat.send.bind(f.h.chat)
   f.h.chat.send = async input => {
     const result = await send(input)
-    return result.ok ? { ok: true, value: { ...result.value, taskId: 'isolation-task' } } : result
+    return result.ok
+      ? { ok: true, value: { ...result.value, taskId: 'isolation-task' } }
+      : result
   }
   const transcript = f.h.chat.transcript.bind(f.h.chat)
   f.h.chat.transcript = async id => {
     const result = await transcript(id)
-    return result.ok && f.h.chat.sends > 0 ? { ok: true, value: { ...result.value, turns: [{ id: 'private-reply', sessionId: id, taskId: 'isolation-task', author: 'agent', at: f.h.clock.now(), text: 'private reply excerpt', state: 'done', remoteTerminal: true }] } } : result
+    return result.ok && f.h.chat.sends > 0
+      ? {
+          ok: true,
+          value: {
+            ...result.value,
+            turns: [
+              {
+                id: 'private-reply',
+                sessionId: id,
+                taskId: 'isolation-task',
+                author: 'agent',
+                at: f.h.clock.now(),
+                text: 'private reply excerpt',
+                state: 'done',
+                remoteTerminal: true,
+              },
+            ],
+          },
+        }
+      : result
   }
   value(await f.book.runNow(f.own.id, f.actor(f.a.credential)))
   await f.book.idle()
@@ -159,8 +215,11 @@ test('members and viewers read only their own prompts, run records and excerpts 
     expect(snapshot.schedules.map(v => v.id)).toEqual(
       expected === undefined ? [] : [expected],
     )
-    expect(snapshot.runs.map(v => v.scheduleId)).toEqual(credential === f.a.credential ? [f.own.id] : [])
-    if (credential === f.a.credential) expect(snapshot.runs[0]!.excerpt).toBe('private reply excerpt')
+    expect(snapshot.runs.map(v => v.scheduleId)).toEqual(
+      credential === f.a.credential ? [f.own.id] : [],
+    )
+    if (credential === f.a.credential)
+      expect(snapshot.runs[0]!.excerpt).toBe('private reply excerpt')
     const page = await (
       await f.handle(asBearer('GET', '/fragments/schedules', credential))
     ).text()
@@ -360,4 +419,38 @@ test('the creator confirms unknown results through the API and only unknown runs
   ).toBe(200)
   await f.book.idle()
   expect(f.h.chat.sends).toBe(2)
+})
+
+test('manual confirmation after restart releases its recorded usage reservation so in-flight quota permits another run', async () => {
+  const f = await fixture(true)
+  const run = value(await f.book.runNow(f.own.id, f.actor(f.a.credential)))
+  await f.book.idle()
+  f.h.clock.advance(draft.timeoutMs)
+  await f.book.tick()
+  await f.book.idle()
+  expect((await f.usage!.read(f.own.createdBy)).rows[0]!.inFlight).toBe(1)
+  f.book.close()
+  const recovered = new ConsoleSchedules({
+    directory: path.join(f.root, 'schedules'),
+    estopPath: path.join(f.root, 'ESTOP'),
+    chat: f.h.chat,
+    accounts: { book: f.h.book },
+    usage: f.usage,
+    actions: f.actions,
+    now: f.h.clock.now,
+  })
+  books.push(recovered)
+  value(
+    await recovered.resolve(
+      f.own.id,
+      run.runId,
+      'failed',
+      f.actor(f.a.credential),
+    ),
+  )
+  expect((await f.usage!.read(f.own.createdBy)).rows[0]!.inFlight).toBe(0)
+  value(await recovered.runNow(f.own.id, f.actor(f.a.credential)))
+  await recovered.idle()
+  expect(f.h.chat.sends).toBe(2)
+  expect((await f.usage!.read(f.own.createdBy)).rows[0]!.inFlight).toBe(1)
 })
