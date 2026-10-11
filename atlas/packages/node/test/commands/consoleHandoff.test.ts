@@ -458,3 +458,58 @@ describe('--handoff-root', () => {
     )
   })
 })
+
+test('device task ownership survives replay and hides other owners across every operation', async () => {
+  const data = await landed()
+  const actor = { deviceId: 'd-abcdefghijkl', owner: 'u:1111111111111111' }
+  const stranger = { deviceId: 'd-mnopqrstuvwx', owner: 'u:2222222222222222' }
+  const manifest = {
+    ...data.manifest,
+    device: actor.deviceId,
+    sessionRef: sessionRef(actor.deviceId, SESSION),
+  }
+  const dir = tempDir()
+  const options = {
+    root: data.hubRoot,
+    ledgerPath: join(dir, 'ledger.ndjson'),
+    auditPath: join(dir, 'audit.ndjson'),
+    ownsProject: (_project: string, owner: string) => owner === actor.owner,
+  }
+  let hub = openConsoleHandoff(options)
+  try {
+    expect((await hub.port.accept(manifest, stranger)).ok).toBe(false)
+    const accepted = await hub.port.accept(manifest, actor)
+    if (!accepted.ok) throw new Error('accept failed')
+    const taskId = accepted.value.task.taskId
+    expect(accepted.value.task).toMatchObject({
+      ownerDevice: actor.deviceId,
+      ownerSubject: actor.owner,
+    })
+    expect(await hub.port.list(stranger)).toEqual({ ok: true, value: [] })
+    for (const result of [
+      await hub.port.get(taskId, stranger),
+      await hub.port.send(taskId, 'hello', stranger),
+      await hub.port.attach(taskId, { device: stranger.deviceId }, stranger),
+      await hub.port.markReturned(
+        taskId,
+        { device: stranger.deviceId, mode: null },
+        stranger,
+      ),
+    ]) {
+      expect(result).toMatchObject({
+        ok: false,
+        failure: { code: 'not_found' },
+      })
+    }
+    expect((await hub.port.send(taskId, 'hello', actor)).ok).toBe(true)
+    hub.close()
+    hub = openConsoleHandoff(options)
+    expect(await hub.port.get(taskId, actor)).toMatchObject({
+      ok: true,
+      value: { ownerDevice: actor.deviceId, ownerSubject: actor.owner },
+    })
+    expect((await hub.port.get(taskId)).ok).toBe(true)
+  } finally {
+    hub.close()
+  }
+})

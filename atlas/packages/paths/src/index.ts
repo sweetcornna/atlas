@@ -114,6 +114,19 @@ export function qmcodeHome(): string {
   return fromEnv('QMCODE_HOME', join(homedir(), '.qmcode'))
 }
 
+/** Official Codex session root; reads are allowed, writes require an isolated home. */
+export function codexHome(): string {
+  return fromEnv('CODEX_HOME', join(homedir(), '.codex'))
+}
+
+/** Claude Code hook transcripts, respecting its isolated configuration root. */
+export function claudeProjectsDir(): string {
+  return join(
+    fromEnv('CLAUDE_CONFIG_DIR', join(homedir(), '.claude')),
+    'projects',
+  )
+}
+
 /** User-level config roots that agents and sandboxed commands must never modify. */
 export function protectedConfigRoots(): string[] {
   const home = nodeHomeDir()
@@ -126,6 +139,7 @@ export function protectedConfigRoots(): string[] {
         join(home, '.claude'),
         join(home, '.codex'),
         qmcodeHome(),
+        codexHome(),
       ].map(p => p.normalize('NFC')),
     ),
   ]

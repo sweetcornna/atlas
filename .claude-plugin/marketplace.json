@@ -1,0 +1,12 @@
+{
+  "name": "qianmo",
+  "owner": {
+    "name": "Qianmo AgentNest Team"
+  },
+  "plugins": [
+    {
+      "name": "qianmo",
+      "source": "./atlas/plugins/qianmo"
+    }
+  ]
+}

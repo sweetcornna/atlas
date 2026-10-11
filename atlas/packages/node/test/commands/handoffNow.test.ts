@@ -172,6 +172,24 @@ describe('sessionSnapshot while a turn runs', () => {
     expect(fallback.sessionId).toBe(CC_SESSION)
   })
 
+  test('an inherited caller from another repository cannot hand over its transcript', () => {
+    writeRollout(
+      OTHER_THREAD,
+      qmcodeRollout(OTHER_THREAD, tempDir(), [
+        {
+          turnId: TURN_1,
+          user: 'foreign repository private work',
+          assistant: 'done',
+        },
+      ]),
+    )
+    const snapshot = sessionSnapshot(repo, repo, 'cut', fromTool(OTHER_THREAD))
+    expect(snapshot.sessionId).toBe(CC_SESSION)
+    expect(snapshot.content.toString('utf8')).not.toContain(
+      'foreign repository private work',
+    )
+  })
+
   test('from a subdirectory: the latest report in the repository', () => {
     const deep = join(repo, 'packages', 'deep')
     const cut = sessionSnapshot(deep, repo, 'cut', fromTool())

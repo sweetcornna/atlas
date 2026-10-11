@@ -324,6 +324,8 @@ async function startAttach(
         ...cliPrefix(),
         'handoff',
         'attach',
+        '--client-bin',
+        'qmcode',
         TASK,
         '--console',
         `http://127.0.0.1:${hub?.port}`,

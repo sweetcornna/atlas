@@ -131,6 +131,8 @@ const FILE_MODE = 0o600
 
 export interface HandoffTask {
   readonly taskId: string
+  readonly ownerDevice?: string | null
+  readonly ownerSubject?: string | null
   readonly state: HandoffState
   readonly manifest: HandoffManifest
   /** Set from `dispatched` on; kept after the node is released. */
@@ -160,7 +162,12 @@ type TransitionRecord = {
   readonly at: number
   readonly taskId: string
 } & (
-  | { readonly state: 'accepted'; readonly manifest: HandoffManifest }
+  | {
+      readonly state: 'accepted'
+      readonly manifest: HandoffManifest
+      readonly ownerDevice?: string
+      readonly ownerSubject?: string
+    }
   | { readonly state: 'dispatched'; readonly node: string }
   | { readonly state: 'running' }
   | { readonly state: 'done'; readonly result: HandoffResult }
@@ -264,6 +271,19 @@ function parseRecord(line: string): LedgerRecord | string {
     return 'unknown state'
   }
   const expected = [...BASE_KEYS, ...STATE_KEYS[state as HandoffState]]
+  if (
+    state === 'accepted' &&
+    ('ownerDevice' in value || 'ownerSubject' in value)
+  ) {
+    if (
+      typeof value.ownerDevice !== 'string' ||
+      !/^d-[a-z2-7]{12}$/.test(value.ownerDevice) ||
+      typeof value.ownerSubject !== 'string' ||
+      !value.ownerSubject
+    )
+      return 'bad owner'
+    expected.push('ownerDevice', 'ownerSubject')
+  }
   const keys = Object.keys(value)
   if (
     keys.length !== expected.length ||
@@ -287,7 +307,15 @@ function parseRecord(line: string): LedgerRecord | string {
     case 'accepted': {
       const manifest = validateManifest(value.manifest)
       if (!manifest.ok) return `bad manifest (${manifest.errors.join('; ')})`
-      return { ...base, state: 'accepted', manifest: manifest.value }
+      return {
+        ...base,
+        state: 'accepted',
+        manifest: manifest.value,
+        ...(typeof value.ownerDevice === 'string' &&
+        typeof value.ownerSubject === 'string'
+          ? { ownerDevice: value.ownerDevice, ownerSubject: value.ownerSubject }
+          : {}),
+      }
     }
     case 'dispatched':
       return isValidSegment(value.node)
@@ -431,6 +459,12 @@ function advance(
       taskId: record.taskId,
       state: 'accepted',
       manifest: record.manifest,
+      ...(record.ownerDevice === undefined
+        ? {}
+        : {
+            ownerDevice: record.ownerDevice,
+            ownerSubject: record.ownerSubject,
+          }),
       node: null,
       result: null,
       reason: null,
@@ -616,7 +650,11 @@ export class HandoffLedger {
   }
 
   /** Record a new task. The manifest is validated again here. */
-  accept(taskId: string, manifest: HandoffManifest): HandoffTask {
+  accept(
+    taskId: string,
+    manifest: HandoffManifest,
+    owner?: { readonly deviceId: string; readonly owner: string },
+  ): HandoffTask {
     if (!isTaskId(taskId)) {
       throw new HandoffLedgerError('invalid_input', `bad task id: ${taskId}`)
     }
@@ -633,6 +671,9 @@ export class HandoffLedger {
       taskId,
       state: 'accepted',
       manifest: checked.value,
+      ...(owner === undefined
+        ? {}
+        : { ownerDevice: owner.deviceId, ownerSubject: owner.owner }),
     })
   }
 

@@ -12,7 +12,7 @@
  * **谁在操作**一律用 {@link DirectionActor} 传进来：端口自己记审计和动作账本需要它，
  * 页面路由不替端口记。
  *
- * 任何方法都不返回密钥、令牌或带凭据的地址：只有「已设置」、设置时间、主机名。
+ * 除 P19 配对码与设备令牌的单次签发响应外，方法不返回密钥、令牌或带凭据的地址。
  */
 
 import type { ConsoleResult } from './contracts.js'
@@ -62,10 +62,34 @@ export interface HandoffPairingCode {
   readonly command: string
 }
 
+export interface HandoffDeviceIdentity {
+  readonly deviceId: string
+  readonly owner: string
+}
+
+export interface HandoffPairingResult extends HandoffDeviceIdentity {
+  readonly name: string
+  readonly token: string
+  readonly console: string
+}
+
 export interface HandoffDevicesPort {
+  authenticate?(token: string): HandoffDeviceIdentity | null
+  pair?(
+    input: {
+      readonly code: string
+      readonly name: string
+      readonly platform: string | null
+    },
+    remoteAddr: string,
+  ): Promise<
+    ConsoleResult<HandoffPairingResult> & { readonly retryAfter?: number }
+  >
+
   listDevices(): Promise<ConsoleResult<readonly HandoffDeviceView[]>>
   issuePairing(
     actor: DirectionActor,
+    consoleUrl?: string,
   ): Promise<ConsoleResult<HandoffPairingCode>>
   revokeDevice(
     deviceId: string,

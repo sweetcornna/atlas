@@ -1,6 +1,8 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { pairHandoffDevice } from './routes/handoffDevices.js'
+import { bearerOf } from './auth.js'
 import { decorateConsoleResponse } from './preferences.js'
 import { RegistrationThrottle, handleSignup } from './signup.js'
 import { scopedConsoleDeps, tenantRequestDenial } from './tenantScope.js'
@@ -880,7 +882,12 @@ async function route(
 
   // Public, and deliberately checked before any credential: see the module
   // note on why the two assets are not gated.
-  if (segments[0] === 'assets' && segments.length === 2) {
+  if (
+    segments[0] === 'assets' &&
+    segments.length === 2 &&
+    !bearerOf(request).startsWith('qmd_') &&
+    !url.searchParams.get('token')?.startsWith('qmd_')
+  ) {
     if (segments[1] !== 'app.css' && segments[1] !== 'app.js') {
       return notFound(`unknown path: ${url.pathname}`)
     }
@@ -896,8 +903,27 @@ async function route(
         )
   }
 
+  if (
+    url.pathname === '/v0/handoff/pair' &&
+    !url.searchParams.get('token')?.startsWith('qmd_')
+  ) {
+    return pairHandoffDevice(request, deps.handoffDevices, clientKey)
+  }
+
   // Without accounts this is `credentialOf` and nothing else (`access.ts`).
-  const access = resolveAccess(request, tokens, accounts)
+  const access = resolveAccess(
+    request,
+    tokens,
+    accounts,
+    true,
+    deps.handoffDevices,
+  )
+  if (
+    access.refusal !== null &&
+    (bearerOf(request).startsWith('qmd_') ||
+      url.searchParams.get('token')?.startsWith('qmd_'))
+  )
+    return accessRefused(request, access.refusal, deps, url)
   const tenancy = deps.tenancy
   let revision: string | undefined
   // Login/logout intentionally replace their own credential. Data responses must

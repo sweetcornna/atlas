@@ -282,7 +282,9 @@ function isPending(value: unknown): value is PendingSync {
   if (typeof value !== 'object' || value === null) return false
   const entry = value as Record<string, unknown>
   return (
-    (entry.tool === 'qmcode' || entry.tool === 'claude-code') &&
+    (entry.tool === 'qmcode' ||
+      entry.tool === 'claude-code' ||
+      entry.tool === 'codex') &&
     typeof entry.sessionId === 'string' &&
     typeof entry.file === 'string' &&
     typeof entry.length === 'number' &&

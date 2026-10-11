@@ -50,12 +50,15 @@ import {
   sessionRef,
   shadowTree,
 } from '@qianmo/handoff'
-import { qmcodeHome } from '@qianmo/paths'
+import { pairedProject } from './handoffDevice.js'
+import { codexHome, qmcodeHome } from '@qianmo/paths'
 import { gitTopLevel, hubConnection, lsRemote } from './handoffHub.js'
 import {
   formatHub,
   type HandoffProject,
   HandoffUserError,
+  canonicalPath,
+  within,
   loadProject,
   readTokenFile,
   sessionFor,
@@ -82,6 +85,7 @@ import {
   lastNewlineEnd,
   qmcodeSnapshot,
   readTranscript,
+  rolloutWorkingDirectory,
 } from './handoffTranscript.js'
 
 /** The sentence. Printed only after the hub answered `accepted`. */
@@ -107,7 +111,7 @@ export async function projectAt(cwd: string): Promise<HandoffProject> {
   if (root === null) {
     throw new HandoffUserError(`${cwd} 不在 git 工作区里`)
   }
-  const project = loadProject(root)
+  const project = await pairedProject(root)
   if (project === undefined) {
     throw new HandoffUserError(
       `${root} 还没有登记接力：先运行 qm handoff init --hub … --console …`,
@@ -226,9 +230,20 @@ function sessionToHandOver(
       readonly at?: number
     })
   | undefined {
+  const codex =
+    thread === undefined ? null : findQmcodeRollout(codexHome(), thread)
+  const belongs = (file: string): boolean => {
+    const directory = rolloutWorkingDirectory(file)
+    return (
+      directory !== null &&
+      within(canonicalPath(root), canonicalPath(directory))
+    )
+  }
+  if (thread !== undefined && codex !== null && belongs(codex))
+    return { tool: 'codex', sessionId: thread, file: codex }
   const own =
     thread === undefined ? null : findQmcodeRollout(qmcodeHome(), thread)
-  if (thread !== undefined && own !== null) {
+  if (thread !== undefined && own !== null && belongs(own)) {
     return { tool: 'qmcode', sessionId: thread, file: own }
   }
   return sessionFor(cwd, root)
@@ -272,7 +287,7 @@ export function sessionSnapshot(
   const location = sessionToHandOver(cwd, root, caller.thread)
   if (location === undefined) {
     throw new HandoffUserError(
-      '找不到这个目录的会话记录：先在 qmcode 或 Claude Code 里跑完一个回合（hook 会记下会话）',
+      '找不到这个目录的会话记录：先在 Codex、qmcode 或 Claude Code 里跑完一个回合（hook 会记下会话）',
     )
   }
   const content = readTranscript(location.file)
@@ -281,7 +296,7 @@ export function sessionSnapshot(
   }
   let end: number
   let omitted: OmittedTail | null = null
-  if (location.tool === 'qmcode') {
+  if (location.tool !== 'claude-code') {
     const snapshot = qmcodeSnapshot(
       content,
       caller.inThreadShell && location.sessionId === caller.thread,
@@ -558,12 +573,14 @@ export async function hubTasks(where: ConsoleAccess): Promise<TaskLine[]> {
     .sort((a, b) => b.acceptedAt - a.acceptedAt)
 }
 
-/** This project's and this device's tasks on the hub, newest first. */
+/** Paired accounts see this project's tasks across devices; SSH keeps its old filter. */
 export async function projectTasks(
   project: HandoffProject,
 ): Promise<TaskLine[]> {
   return (await hubTasks(project)).filter(
-    task => task.project === project.project && task.device === project.device,
+    task =>
+      task.project === project.project &&
+      (project.hub.kind === 'https' || task.device === project.device),
   )
 }
 
@@ -587,8 +604,8 @@ export async function runStatus(
     output.out(`控制台  ${project.console}`)
     const session = sessionToHandOver(cwd, project.root, caller.thread)
     const own = caller.inThreadShell
-      ? '运行这条命令的 qmcode 线程'
-      : '调用这个工具的 qmcode 线程'
+      ? '运行这条命令的线程'
+      : '调用这个工具的线程'
     output.out(
       session === undefined
         ? '会话    （还没有 hook 报过）'

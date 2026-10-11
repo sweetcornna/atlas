@@ -120,7 +120,7 @@ describe('validateManifest', () => {
   })
 
   test('rejects tools outside the enum and a wrong kind', () => {
-    expect(errorsOf(manifest({ tool: 'codex' }))[0]).toStartWith('tool:')
+    expect(errorsOf(manifest({ tool: 'omp' }))[0]).toStartWith('tool:')
     expect(errorsOf(manifest({ kind: 'handoff.send' }))[0]).toStartWith('kind:')
   })
 

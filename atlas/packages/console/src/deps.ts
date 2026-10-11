@@ -1357,17 +1357,45 @@ export interface HandoffAcceptance {
  *
  * 可选：缺席时 `/v0/handoff` 回 501，与其余可选面同一条规矩。
  */
+export interface HandoffRequestActor {
+  readonly deviceId: string
+  readonly owner: string
+}
+
+export interface HandoffGitPort {
+  createProject(project: string, actor: HandoffRequestActor): Promise<Response>
+  handle(
+    request: Request,
+    project: string,
+    service: 'upload-pack' | 'receive-pack',
+    advertise: boolean,
+    actor: HandoffRequestActor,
+  ): Promise<Response>
+}
+
 export interface HandoffPort {
   /** `body` 是请求体解出来的 JSON，校验在宿主做。 */
-  accept(body: unknown): Promise<ConsoleResult<HandoffAcceptance>>
+  accept(
+    body: unknown,
+    actor?: HandoffRequestActor,
+  ): Promise<ConsoleResult<HandoffAcceptance>>
   /** 全部任务，按登记先后。 */
-  list(): Promise<ConsoleResult<readonly HandoffTaskView[]>>
-  get(taskId: string): Promise<ConsoleResult<HandoffTaskView>>
+  list(
+    actor?: HandoffRequestActor,
+  ): Promise<ConsoleResult<readonly HandoffTaskView[]>>
+  get(
+    taskId: string,
+    actor?: HandoffRequestActor,
+  ): Promise<ConsoleResult<HandoffTaskView>>
   /**
    * 记下一句给云端的话；配了 `--handoff-node` 的中枢在任务 running 后把它转给
    * 节点（P17.5）。任务已结束（done / failed / returned）时 `rejected`。
    */
-  send(taskId: string, text: string): Promise<ConsoleResult<HandoffSendView>>
+  send(
+    taskId: string,
+    text: string,
+    actor?: HandoffRequestActor,
+  ): Promise<ConsoleResult<HandoffSendView>>
   /**
    * 运行中任务的接入定位（P17.6），并记审计 `handoff.attach-requested`。只给
    * running 的任务；其余状态 `rejected`，文案说现在是什么状态、该用什么命令。
@@ -1375,6 +1403,7 @@ export interface HandoffPort {
   attach(
     taskId: string,
     request: HandoffAttachRequest,
+    actor?: HandoffRequestActor,
   ): Promise<ConsoleResult<HandoffAttachView>>
   /**
    * 任务已接回本机（P17.6）：done / failed → returned，记审计 `handoff.returned`。
@@ -1383,6 +1412,7 @@ export interface HandoffPort {
   markReturned(
     taskId: string,
     request: HandoffReturnRequest,
+    actor?: HandoffRequestActor,
   ): Promise<ConsoleResult<HandoffReturnView>>
 }
 
@@ -2167,6 +2197,7 @@ export interface ConsoleDeps {
   /** 值守作业的只读面（J6）。缺席时作业页写「未接入」。 */
   readonly scheduler?: SchedulerPort
   /** 接力台账（P17.4）。缺席时 `/v0/handoff` 回 501。 */
+  readonly handoffGit?: HandoffGitPort
   readonly handoff?: HandoffPort
   /**
    * 模型服务（P18.6）。只在 `--providers` 打开时接；缺席时页面说明未开启。

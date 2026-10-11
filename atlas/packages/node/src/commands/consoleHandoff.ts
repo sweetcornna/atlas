@@ -58,6 +58,7 @@ import type {
   HandoffAcceptance,
   HandoffAttachView,
   HandoffPort,
+  HandoffRequestActor,
   HandoffReturnView,
   HandoffSendView,
   HandoffTaskView,
@@ -106,6 +107,7 @@ interface ConsoleHandoffOptions {
   readonly root: string
   readonly ledgerPath?: string
   readonly auditPath?: string
+  readonly ownsProject?: (project: string, owner: string) => boolean
   readonly now?: () => number
   /** For tests; defaults to `YYYYMMDD-HHMMSS-<6 hex>` in UTC. */
   readonly newTaskId?: () => string
@@ -121,6 +123,7 @@ interface ConsoleHandoff {
   readonly ledgerPath: string
   readonly auditPath: string
   /** Tasks in the ledger when it was opened. */
+  readonly taskCount: (deviceId: string) => number
   readonly replayed: number
   /** The banner's `handoff-node` line: where tasks go, or why nowhere. */
   readonly dispatchStatus: string
@@ -315,8 +318,17 @@ export function openConsoleHandoff(
           log: onError,
         })
 
+  const visible = (
+    taskId: string,
+    actor?: HandoffRequestActor,
+  ): HandoffTaskView | undefined => {
+    const task = ledger.get(taskId)
+    return actor === undefined || task?.ownerSubject === actor.owner
+      ? task
+      : undefined
+  }
   const port: HandoffPort = {
-    async accept(body): Promise<ConsoleResult<HandoffAcceptance>> {
+    async accept(body, actor): Promise<ConsoleResult<HandoffAcceptance>> {
       const checked = validateManifest(body)
       if (!checked.ok) {
         return failure(
@@ -325,6 +337,12 @@ export function openConsoleHandoff(
         )
       }
       const manifest = checked.value
+      if (
+        actor !== undefined &&
+        (manifest.device !== actor.deviceId ||
+          options.ownsProject?.(manifest.project, actor.owner) !== true)
+      )
+        return failure('rejected', '设备号或项目属主不匹配')
       let problem: string | null
       try {
         problem = await landingProblem(options.root, manifest)
@@ -342,14 +360,16 @@ export function openConsoleHandoff(
         .list()
         .find(
           task =>
-            task.state === 'accepted' && sameManifest(task.manifest, manifest),
+            task.state === 'accepted' &&
+            task.ownerSubject === actor?.owner &&
+            sameManifest(task.manifest, manifest),
         )
       if (same !== undefined)
         return { ok: true, value: { task: same, created: false } }
 
       let task: HandoffTaskView
       try {
-        task = ledger.accept(newTaskId(), manifest)
+        task = ledger.accept(newTaskId(), manifest, actor)
       } catch (error) {
         return failure(
           'unreachable',
@@ -386,12 +406,19 @@ export function openConsoleHandoff(
       return { ok: true, value: { task, created: true } }
     },
 
-    list(): Promise<ConsoleResult<readonly HandoffTaskView[]>> {
-      return Promise.resolve({ ok: true, value: ledger.list() })
+    list(actor): Promise<ConsoleResult<readonly HandoffTaskView[]>> {
+      return Promise.resolve({
+        ok: true,
+        value: ledger
+          .list()
+          .filter(
+            task => actor === undefined || task.ownerSubject === actor.owner,
+          ),
+      })
     },
 
-    get(taskId): Promise<ConsoleResult<HandoffTaskView>> {
-      const task = ledger.get(taskId)
+    get(taskId, actor): Promise<ConsoleResult<HandoffTaskView>> {
+      const task = visible(taskId, actor)
       return Promise.resolve(
         task === undefined
           ? failure('not_found', `台账里没有任务 ${taskId}`)
@@ -399,7 +426,9 @@ export function openConsoleHandoff(
       )
     },
 
-    send(taskId, text): Promise<ConsoleResult<HandoffSendView>> {
+    send(taskId, text, actor): Promise<ConsoleResult<HandoffSendView>> {
+      if (!visible(taskId, actor))
+        return Promise.resolve(failure('not_found', `台账里没有任务 ${taskId}`))
       try {
         const queued = ledger.queueSend(taskId, text)
         // Kept first, then forwarded: a running task hears it now, one that
@@ -433,8 +462,8 @@ export function openConsoleHandoff(
       }
     },
 
-    attach(taskId, request): Promise<ConsoleResult<HandoffAttachView>> {
-      const task = ledger.get(taskId)
+    attach(taskId, request, actor): Promise<ConsoleResult<HandoffAttachView>> {
+      const task = visible(taskId, actor)
       if (task === undefined) {
         return Promise.resolve(failure('not_found', `台账里没有任务 ${taskId}`))
       }
@@ -443,7 +472,7 @@ export function openConsoleHandoff(
       }
       const threadId =
         task.result?.threadId ??
-        (task.manifest.tool === 'qmcode' ? task.manifest.sessionId : null)
+        (task.manifest.tool !== 'claude-code' ? task.manifest.sessionId : null)
       appendAudit({
         at: now(),
         source: AuditSource.Handoff,
@@ -470,8 +499,12 @@ export function openConsoleHandoff(
       })
     },
 
-    markReturned(taskId, request): Promise<ConsoleResult<HandoffReturnView>> {
-      const task = ledger.get(taskId)
+    markReturned(
+      taskId,
+      request,
+      actor,
+    ): Promise<ConsoleResult<HandoffReturnView>> {
+      const task = visible(taskId, actor)
       if (task === undefined) {
         return Promise.resolve(failure('not_found', `台账里没有任务 ${taskId}`))
       }
@@ -517,6 +550,8 @@ export function openConsoleHandoff(
     root: options.root,
     ledgerPath,
     auditPath,
+    taskCount: deviceId =>
+      ledger.list().filter(task => task.ownerDevice === deviceId).length,
     replayed: ledger.list().length,
     dispatchStatus: options.dispatch?.status ?? 'disabled (no --handoff-node)',
     start() {

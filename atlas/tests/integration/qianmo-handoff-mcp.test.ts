@@ -85,6 +85,7 @@ const TOOLS = [
   'qianmo_task',
   'qianmo_send',
   'qianmo_pull',
+  'qianmo_login_status',
 ]
 
 const BOOT_TIMEOUT_MS = 90_000
@@ -964,3 +965,17 @@ describe('qm handoff mcp end to end', () => {
     STEP_TIMEOUT_MS,
   )
 })
+
+test(
+  'portable plugin MCP cwd: thread metadata selects its rollout repository',
+  async () => {
+    const server = await started(root)
+    const status = await server.call('qianmo_status', {}, { threadId: THREAD })
+    expect(status.isError).not.toBe(true)
+    expect(status.text).toContain(repo)
+    expect((await server.call('qianmo_login_status')).text).toContain(
+      '"paired":false',
+    )
+  },
+  STEP_TIMEOUT_MS,
+)
