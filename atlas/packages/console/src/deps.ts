@@ -17,6 +17,15 @@
  * worse than one that renders "注册中心不可达" next to the rest of the page.
  */
 
+import type {
+  ConnectorsPort,
+  DesktopPort,
+  FilesPort,
+  HandoffDevicesPort,
+  MemoryPort,
+  ModelRoutingPort,
+  SchedulesPort,
+} from './directionPorts.js'
 import type { ConsoleFailure, ConsoleResult } from './contracts.js'
 
 import type { AuditRecord, MessageChain } from '@qianmo/audit'
@@ -1115,6 +1124,39 @@ export const CONSOLE_ACTIONS = [
   'approval.decide',
   'approval.revoke',
   'approval.continue',
+  // 2026-10 新方向（`directionPorts.ts`）。target 一律是 id、节点名或智能体地址。
+  /** 接力设备（P19）：签发配对码、吊销设备，target 是设备号；签发时是签发人。 */
+  'handoff.device.pair',
+  'handoff.device.revoke',
+  /** 文件互通（P20），target 是申请、授权、传输或汇集组的 id。 */
+  'files.decide',
+  'files.grant.revoke',
+  'files.transfer',
+  'files.retry',
+  /** 云端电脑（P21），target 是智能体地址。 */
+  'desktop.set',
+  'desktop.recycle',
+  /** 任务分工（P22），target 是节点名，默认为 `*`。 */
+  'routing.save',
+  'routing.clear',
+  /** 长期记忆（P23），target 是条目 id；新增时是智能体地址。 */
+  'memory.add',
+  'memory.edit',
+  'memory.forget',
+  'memory.invalidate',
+  /** 主动执行（P24），target 是定时任务或通知渠道的 id。 */
+  'schedule.save',
+  'schedule.enable',
+  'schedule.disable',
+  'schedule.remove',
+  'schedule.run',
+  'channel.save',
+  'channel.remove',
+  'channel.test',
+  /** 应用连接（P25），target 是连接 id。 */
+  'connector.save',
+  'connector.remove',
+  'connector.probe',
 ] as const
 
 /** 账本里的一条，带上账本给它的序号（递增，从 1 开始）。 */
@@ -1197,7 +1239,7 @@ export interface HandoffManifestView {
   readonly branch: string
   readonly wip: string
   readonly tree: string
-  readonly tool: 'qmcode' | 'claude-code'
+  readonly tool: 'qmcode' | 'claude-code' | 'codex'
   readonly sessionId: string
   readonly sessionRef: string
   readonly sessionCommit: string
@@ -1228,6 +1270,9 @@ export interface HandoffTaskView {
   readonly node: string | null
   readonly result: HandoffResultView | null
   readonly reason: string | null
+  /** 经设备令牌登记的任务（P19）：设备号与它所属的主体；旧式登记为 null。 */
+  readonly ownerDevice?: string | null
+  readonly ownerSubject?: string | null
   /** epoch 毫秒。 */
   readonly acceptedAt: number
   readonly updatedAt: number
@@ -2110,4 +2155,19 @@ export interface ConsoleDeps {
    * 模型服务（P18.6）。只在 `--providers` 打开时接；缺席时页面说明未开启。
    */
   readonly providers?: ProviderPort
+  // 2026-10 新方向（`directionPorts.ts`）。缺席时对应页面写「未接入」，API 回 501。
+  /** 接力设备的配对与吊销（P19）。 */
+  readonly handoffDevices?: HandoffDevicesPort
+  /** 节点间文件互通（P20）。 */
+  readonly files?: FilesPort
+  /** 云端电脑（P21）。 */
+  readonly desktop?: DesktopPort
+  /** 任务分工（P22）；只在模型服务打开时接。 */
+  readonly routing?: ModelRoutingPort
+  /** 长期记忆（P23）。 */
+  readonly memory?: MemoryPort
+  /** 定时任务与通知渠道（P24）。 */
+  readonly schedules?: SchedulesPort
+  /** 应用连接（P25）。 */
+  readonly connectors?: ConnectorsPort
 }
