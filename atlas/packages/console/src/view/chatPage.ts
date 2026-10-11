@@ -130,7 +130,7 @@ button.chat-head-face:focus-visible, button.chat-greet-figure:focus-visible { ou
 .chat-me { align-self: flex-start; gap: var(--space-2); }
 .chat-group-name .avatar { margin-right: 2px; }
 @media (max-width: 700px) {
-  .chat-greet { grid-template-columns: minmax(0, 1fr); justify-items: center; text-align: center; padding: var(--space-5) var(--space-3); }
+  .chat-greet { grid-template-columns: minmax(0, 1fr); justify-items: center; text-align: center; padding: var(--space-6) var(--space-3); }
 }
 ` +
   AVATAR_CSS +

@@ -18,6 +18,7 @@ import { ROUTES } from '../src/routes/index.js'
 import { accountsHarness, asSession, person } from './accountsHarness.js'
 import {
   FakeConnectors,
+  FakeDesktop,
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
@@ -84,6 +85,7 @@ function harness() {
     ports: {
       connectors: new FakeConnectors(() => NOW),
       handoffDevices: new FakeHandoffDevices(() => NOW),
+      desktop: new FakeDesktop(() => NOW),
     },
     nodeServers: [{ node: 'tokyo-1', server: 'p11' }],
     serverNotes: new PageNotes(),

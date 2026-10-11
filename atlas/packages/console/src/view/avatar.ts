@@ -633,7 +633,7 @@ export const AVATAR_CSS = `
 .av-editor { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: var(--space-6); align-items: start; }
 .av-stage {
   position: sticky; top: 0; display: flex; flex-direction: column; align-items: center; gap: var(--space-3);
-  padding: var(--space-5) var(--space-3) var(--space-4); border-radius: var(--radius-xl);
+  padding: var(--space-6) var(--space-3) var(--space-4); border-radius: var(--radius-xl);
   background: var(--color-neutral-100);
 }
 .av-stage-name { font-family: var(--font-heading); font-size: var(--text-14); }

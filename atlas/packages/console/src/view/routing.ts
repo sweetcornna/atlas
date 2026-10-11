@@ -260,7 +260,7 @@ export function renderRoutingFailure(failure: ConsoleFailure): string {
 }
 
 export const ROUTING_CSS = `
-.route-card { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) var(--space-5); margin-bottom: var(--space-4); }
+.route-card { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) var(--space-6); margin-bottom: var(--space-4); }
 .route-head { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-3); flex-wrap: wrap; }
 .route-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: var(--text-16, 16px); margin-bottom: 2px; }
 .route-scope .sel { min-width: 180px; }

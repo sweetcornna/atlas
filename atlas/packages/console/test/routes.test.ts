@@ -70,6 +70,7 @@ describe('the pages', () => {
     ['jobs', '/jobs', 'main', false],
     ['memory', '/memory', 'main', false],
     ['connect', '/connect', 'main', false],
+    ['desktop', '/desktop', 'main', false],
     ['providers', '/providers', 'main', false],
     ['overview', '/overview', 'manage', false],
     ['nodes', '/nodes', 'manage', false],

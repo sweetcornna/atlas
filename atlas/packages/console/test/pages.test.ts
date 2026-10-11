@@ -25,6 +25,7 @@ import {
 import { ROUTES } from '../src/routes/index.js'
 import {
   FakeConnectors,
+  FakeDesktop,
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
@@ -120,6 +121,12 @@ const PAGES: readonly PageRow[] = [
     reads: ['工作邮箱', 'imap.qq.com', '我的 MacBook', 'id="connect"'],
   },
   {
+    path: '/desktop',
+    title: '云端电脑',
+    active: 'desktop',
+    reads: ['planner', '运行中', 'id="desktop"'],
+  },
+  {
     path: '/jobs',
     title: '主动执行',
     active: 'jobs',
@@ -169,6 +176,7 @@ function harness() {
     ports: {
       connectors: new FakeConnectors(() => NOW),
       handoffDevices: new FakeHandoffDevices(() => NOW),
+      desktop: new FakeDesktop(() => NOW),
     },
     nodeServers: [
       { node: 'tokyo-1', server: 'p11' },

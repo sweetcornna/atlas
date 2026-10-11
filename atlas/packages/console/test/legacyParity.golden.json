@@ -149,7 +149,7 @@
    ]
   ],
   "length": 146787,
-  "sha256": "6fe64ee724c0e1969f40adfc3627798b062fc1f4929caf2b398dc3f034b688f3"
+  "sha256": "8118d9bafe343d88105aa21c6e1656b5abb349f5e037ef04218f21324d338051"
  },
  {
   "probe": "GET / as view-query",
@@ -237,7 +237,7 @@
    ]
   ],
   "length": 146787,
-  "sha256": "6fe64ee724c0e1969f40adfc3627798b062fc1f4929caf2b398dc3f034b688f3"
+  "sha256": "8118d9bafe343d88105aa21c6e1656b5abb349f5e037ef04218f21324d338051"
  },
  {
   "probe": "GET / as view-cookie",
@@ -325,7 +325,7 @@
    ]
   ],
   "length": 146787,
-  "sha256": "6fe64ee724c0e1969f40adfc3627798b062fc1f4929caf2b398dc3f034b688f3"
+  "sha256": "8118d9bafe343d88105aa21c6e1656b5abb349f5e037ef04218f21324d338051"
  },
  {
   "probe": "GET / as wrong-bearer",
@@ -1672,7 +1672,7 @@
    ]
   ],
   "length": 146804,
-  "sha256": "5aa830e02f35d4082bd54559c560a94b2312b10ae6568efc6ea10fbf023e45c8"
+  "sha256": "1156d8093a2708c8da6bd65fdf09d0d30982420bbc9ac6639b83ead43b5bd885"
  },
  {
   "probe": "GET /chat?session=session-1 as admin-cookie",
@@ -1716,7 +1716,7 @@
    ]
   ],
   "length": 151115,
-  "sha256": "e0b9deacbc673265e8ed74cb7e9df589531ad4186b822879ba0999e6c4664ad5"
+  "sha256": "4a39d39e8e3af8616c8c8480d77e2aa48cdf11d46d06b01097568ca5ce3a43c5"
  },
  {
   "probe": "GET /v0/chat/targets as admin-bearer",
@@ -2756,7 +2756,7 @@
    ]
   ],
   "length": 156144,
-  "sha256": "9a6ae38b49433ac7df707012f237de4d1af0cb675864efdbf490fdb1f13fd450"
+  "sha256": "5551086c5d2e775b8a44fd56053fd3ea68155a74e0ab09d977d5060290840774"
  },
  {
   "probe": "GET /nope as admin-bearer (html)",

@@ -18,6 +18,7 @@ import { join, relative, resolve, sep } from 'node:path'
 import { ROUTES } from '../src/routes/index.js'
 import {
   FakeConnectors,
+  FakeDesktop,
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
@@ -117,6 +118,7 @@ describe('assets', () => {
       ports: {
         connectors: new FakeConnectors(() => NOW),
         handoffDevices: new FakeHandoffDevices(() => NOW),
+        desktop: new FakeDesktop(() => NOW),
       },
     })
     // The login door is read signed out: signed in, it sends you on.

@@ -23,6 +23,10 @@ import {
   type ConnectorsPort,
   type ConnectorsSnapshot,
   type ConnectorView,
+  type DesktopActionView,
+  type DesktopConfirm,
+  type DesktopNodeView,
+  type DesktopPort,
   type HandoffDevicesPort,
   type HandoffDeviceView,
   type HandoffPairingCode,
@@ -993,6 +997,218 @@ export class FakeHandoffDevices implements HandoffDevicesPort {
   }
 }
 
+/** Three agents' desktops: one running on Linux, one off on macOS, one away. */
+export class FakeDesktop implements DesktopPort {
+  readonly calls: string[] = []
+  units: DesktopNodeView[]
+  failList = false
+
+  constructor(private readonly now: () => number) {
+    const at = now()
+    this.units = [
+      {
+        node: 'tokyo-1',
+        agent: 'planner',
+        reachable: true,
+        platform: 'linux',
+        browser: {
+          enabled: true,
+          state: 'running',
+          profileBytes: 186_000_000,
+          startedAt: at - 3_600_000 * 3,
+          reason: null,
+        },
+        computer: {
+          enabled: true,
+          supported: true,
+          state: 'running',
+          display: ':12',
+          reason: null,
+        },
+        confirm: 'sensitive',
+        lastActionAt: at - 240_000,
+        actions24h: 37,
+        confirmed24h: 4,
+      },
+      {
+        node: 'osaka-1',
+        agent: 'writer',
+        reachable: true,
+        platform: 'darwin',
+        browser: {
+          enabled: false,
+          state: 'off',
+          profileBytes: null,
+          startedAt: null,
+          reason: null,
+        },
+        computer: {
+          enabled: false,
+          supported: false,
+          state: 'off',
+          display: null,
+          reason: null,
+        },
+        confirm: 'sensitive',
+        lastActionAt: null,
+        actions24h: 0,
+        confirmed24h: 0,
+      },
+      {
+        node: 'berlin-1',
+        agent: 'helper',
+        reachable: false,
+        platform: 'linux',
+        browser: {
+          enabled: true,
+          state: 'failed',
+          profileBytes: 52_000_000,
+          startedAt: null,
+          reason: 'Chromium 启动后 20 秒没有就绪',
+        },
+        computer: {
+          enabled: false,
+          supported: false,
+          state: 'off',
+          display: null,
+          reason: '这个节点没有 Xvfb',
+        },
+        confirm: 'always',
+        lastActionAt: at - 86_400_000,
+        actions24h: 0,
+        confirmed24h: 0,
+      },
+    ]
+  }
+
+  async list() {
+    this.calls.push('list')
+    if (this.failList)
+      return failed<readonly DesktopNodeView[]>('unreachable', 'desktop down')
+    return ok<readonly DesktopNodeView[]>(this.units)
+  }
+
+  async set(
+    ref: AgentRef,
+    change: {
+      readonly browser?: boolean
+      readonly computer?: boolean
+      readonly confirm?: DesktopConfirm
+    },
+    actor: DirectionActor,
+  ) {
+    this.calls.push(
+      `set ${ref.node}/${ref.agent} ${JSON.stringify(change)} ${actor.subject}`,
+    )
+    const found = this.units.find(
+      one => one.node === ref.node && one.agent === ref.agent,
+    )
+    if (found === undefined)
+      return failed<DesktopNodeView>('not_found', 'no such agent')
+    if (change.computer === true && !found.computer.supported) {
+      return failed<DesktopNodeView>('rejected', '这个节点不提供专属电脑')
+    }
+    const at = this.now()
+    const view: DesktopNodeView = {
+      ...found,
+      browser:
+        change.browser === undefined
+          ? found.browser
+          : {
+              ...found.browser,
+              enabled: change.browser,
+              state: change.browser ? 'running' : 'off',
+              startedAt: change.browser ? at : null,
+            },
+      computer:
+        change.computer === undefined
+          ? found.computer
+          : {
+              ...found.computer,
+              enabled: change.computer,
+              state: change.computer ? 'running' : 'off',
+              display: change.computer ? ':13' : null,
+            },
+      confirm: change.confirm ?? found.confirm,
+    }
+    this.units = this.units.map(one => (one === found ? view : one))
+    return ok(view)
+  }
+
+  async recycle(ref: AgentRef, actor: DirectionActor) {
+    this.calls.push(`recycle ${ref.node}/${ref.agent} ${actor.subject}`)
+    const found = this.units.find(
+      one => one.node === ref.node && one.agent === ref.agent,
+    )
+    if (found === undefined)
+      return failed<DesktopNodeView>('not_found', 'no such agent')
+    const view: DesktopNodeView = {
+      ...found,
+      browser: {
+        enabled: false,
+        state: 'off',
+        profileBytes: null,
+        startedAt: null,
+        reason: null,
+      },
+      computer: {
+        ...found.computer,
+        enabled: false,
+        state: 'off',
+        display: null,
+      },
+    }
+    this.units = this.units.map(one => (one === found ? view : one))
+    return ok(view)
+  }
+
+  async actions(ref: AgentRef | null, limit: number) {
+    this.calls.push(
+      `actions ${ref === null ? 'all' : `${ref.node}/${ref.agent}`} ${limit}`,
+    )
+    const at = this.now()
+    const all: DesktopActionView[] = [
+      {
+        at: at - 240_000,
+        node: 'tokyo-1',
+        agent: 'planner',
+        unit: 'browser',
+        op: 'click',
+        host: 'mail.example.com',
+        outcome: 'confirmed',
+      },
+      {
+        at: at - 260_000,
+        node: 'tokyo-1',
+        agent: 'planner',
+        unit: 'browser',
+        op: 'screenshot',
+        host: 'mail.example.com',
+        outcome: 'allowed',
+      },
+      {
+        at: at - 900_000,
+        node: 'tokyo-1',
+        agent: 'planner',
+        unit: 'browser',
+        op: 'type',
+        host: 'shop.example.com',
+        outcome: 'denied',
+      },
+      {
+        at: at - 1_800_000,
+        node: 'tokyo-1',
+        agent: 'planner',
+        unit: 'computer',
+        op: 'key',
+        host: null,
+        outcome: 'confirmed',
+      },
+    ]
+    return ok<readonly DesktopActionView[]>(all.slice(0, limit))
+  }
+}
+
 /** What `test/preview.ts`-style harnesses wire: one fake per port. */
 export const PREVIEW_PORTS: Readonly<
   Record<string, (now: () => number) => unknown>
@@ -1003,4 +1219,5 @@ export const PREVIEW_PORTS: Readonly<
   routing: now => new FakeRouting(now),
   connectors: now => new FakeConnectors(now),
   handoffDevices: now => new FakeHandoffDevices(now),
+  desktop: now => new FakeDesktop(now),
 }
