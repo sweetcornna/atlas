@@ -93,11 +93,14 @@ async function writeDenial(
       ? null
       : fail(403, 'forbidden', '只能修改自己的形象')
   const address = key.slice('agent:'.length)
+  // Ops of a console without tenants may dress any agent, reachable or not.
+  if (ctx.deps.tenancy === undefined && canOps(ctx)) return null
   const roster = await ctx.roster()
   if (!roster.ok || !roster.value.some(row => row.address === address))
     return fail(404, 'not_found', '资源不存在')
+  // Without a chat face the (tenant-scoped) roster is the whole answer.
   const chat = ctx.deps.chat
-  if (!chat) return fail(404, 'not_found', '资源不存在')
+  if (!chat) return null
   const targets = await chat.targets()
   if (!targets.ok || !targets.value.some(row => row.address === address))
     return fail(404, 'not_found', '资源不存在')
