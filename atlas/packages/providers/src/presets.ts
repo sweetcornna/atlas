@@ -1295,10 +1295,80 @@ const CUSTOM: readonly Preset[] = [
   }),
 ]
 
+/** Official model documentation read 2026-10-11; generation has not been evaluated. */
+const MEDIA: readonly Preset[] = (
+  [
+    [
+      'openai-images',
+      'OpenAI',
+      'OpenAI Images',
+      'https://api.openai.com/v1',
+      'gpt-image-2',
+      'image',
+      'https://developers.openai.com/api/docs/models/gpt-image-2',
+    ],
+    [
+      'gemini-images',
+      'Google',
+      'Gemini 图片',
+      'https://generativelanguage.googleapis.com/v1beta',
+      'gemini-2.5-flash-image',
+      'image',
+      'https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-image',
+    ],
+    [
+      'openrouter-images',
+      'OpenRouter',
+      'OpenRouter 图片',
+      'https://openrouter.ai/api/v1',
+      'openai/gpt-image-2',
+      'image',
+      'https://openrouter.ai/docs/guides/overview/multimodal/image-generation',
+    ],
+    [
+      'openai-speech',
+      'OpenAI',
+      'OpenAI Speech',
+      'https://api.openai.com/v1',
+      'gpt-4o-mini-tts',
+      'speech',
+      'https://developers.openai.com/api/docs/models/gpt-4o-mini-tts',
+    ],
+    [
+      'openrouter-video',
+      'OpenRouter',
+      'OpenRouter 视频',
+      'https://openrouter.ai/api/v1',
+      'google/veo-3.1',
+      'video',
+      'https://openrouter.ai/docs/guides/overview/multimodal/video-generation',
+    ],
+  ] as const
+).map(([id, vendor, name, baseUrl, modelId, kind, url]) =>
+  preset({
+    id,
+    vendor,
+    name,
+    lane: id,
+    baseUrl,
+    group: 'intl',
+    plan: 'paygo',
+    authScheme: 'bearer',
+    models: [{ ...model(modelId, 'extra', [], OPENAI_LANE_BITS, NEVER), kind }],
+    compat: {},
+    probe: NO_PROBE,
+    keyHint: null,
+    terms: null,
+    source: { url, verifiedAt: '2026-10-11' },
+    evaluated: false,
+    notes: ['未生成 / 未评估；仅核实官方模型 id 与协议'],
+  }),
+)
+
 /** Every preset, in display order: group order, then id order within a group. */
 export const PRESETS: readonly Preset[] = [
   ...CN_PAYGO,
-  ...INTL,
+  ...[...INTL, ...MEDIA].sort((a, b) => a.id.localeCompare(b.id)),
   ...PLAN,
   ...LOCAL,
   ...CUSTOM,

@@ -985,3 +985,33 @@ export function errorCodeForPeer(
   if (isLegacyErrorCode(code)) return code
   return peerIsPostLegacy(declared) ? code : downgradeErrorCode(code)
 }
+
+/** P22 directed tasks are closed; undirected legacy payloads retain their contract. */
+export const TASK_DIRECTIONS = [
+  'code',
+  'chat',
+  'plan',
+  'fast',
+  'vision',
+  'image',
+  'speech',
+  'video',
+] as const
+export type TaskDirection = (typeof TASK_DIRECTIONS)[number]
+export interface DirectedTaskRequestPayload {
+  readonly prompt: string
+  readonly direction: TaskDirection
+}
+export function isDirectedTaskRequestPayload(
+  value: unknown,
+): value is DirectedTaskRequestPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const raw = value as Record<string, unknown>
+  return (
+    Object.keys(raw).every(k => k === 'prompt' || k === 'direction') &&
+    typeof raw.prompt === 'string' &&
+    raw.prompt.length > 0 &&
+    typeof raw.direction === 'string' &&
+    (TASK_DIRECTIONS as readonly string[]).includes(raw.direction)
+  )
+}

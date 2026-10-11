@@ -1444,3 +1444,45 @@ describe('status refreshes respect the dial pacing (v2.47.2)', () => {
     expect(view.drift.map(d => d.kind)).not.toContain('unreachable')
   }, 30_000)
 })
+
+test('P22 apply sends routed profiles once with their own keys and reports an old-node field refusal explicitly', async () => {
+  const h = harness()
+  await savedWithKey(h)
+  value(
+    await h.port.saveProfile(
+      {
+        profile: draft({ id: 'chat-other' }),
+        ifMatch: null,
+        secrets: { k1: CANARY_2 },
+      },
+      h.caller(),
+    ),
+  )
+  value(await h.port.setDefault({ profileId: 'luna' }, h.caller()))
+  h.port.configureRouting(() => ({
+    auto: true,
+    routes: { chat: { profileId: 'chat-other', modelId: 'gpt-6-luna' } },
+  }))
+  h.nodes['beta-1'].set(
+    'reply-apply.json',
+    JSON.stringify({
+      v: 1,
+      requestId: 'x',
+      ok: false,
+      code: 'unknown-key',
+      message: 'apply 不接受字段 profiles',
+    }),
+  )
+  const results = value(await h.port.apply({ nodes: ['beta-1'] }, h.caller()))
+  expect(results[0]).toMatchObject({ outcome: 'refused', code: 'unknown-key' })
+  expect(results[0]?.message).toContain('P22')
+  const request = h.nodes['beta-1'].requests().find(r => r.op === 'apply')!
+  const profiles = request.profiles as WireProfile[]
+  expect(profiles.map(p => p.id)).toEqual(['chat-other'])
+  expect(profiles[0]?.auth.keys[0]).toEqual({ id: 'k1', value: CANARY_2 })
+  expect(request.routing).toEqual({
+    auto: true,
+    routes: { chat: { profileId: 'chat-other', modelId: 'gpt-6-luna' } },
+  })
+  expect(JSON.stringify(results)).not.toContain(CANARY_2)
+}, 30000)

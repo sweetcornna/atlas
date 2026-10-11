@@ -25,7 +25,11 @@ import {
   parseProviderRequest,
   secretFingerprint,
 } from '@qianmo/providers'
-import { compileProfile, type CompiledProfile, LANE_API } from './compile.js'
+import {
+  compileRoutingProfiles,
+  type CompiledProfile,
+  LANE_API,
+} from './compile.js'
 import { getModelCompatCapabilities } from './capabilities.js'
 import {
   diffKeyHashes,
@@ -54,7 +58,12 @@ const CAPABILITIES: NodeCapabilities = {
   protocol: 1,
   ...getModelCompatCapabilities(),
 }
-const CONFIG_FIELDS = ['modelRoles', 'defaultThinkingLevel', 'retry'] as const
+const CONFIG_FIELDS = [
+  'modelRoles',
+  'defaultThinkingLevel',
+  'retry',
+  'qianmoRouting',
+] as const
 const PROVIDER_FIELDS = ['cacheRetention', 'cacheWarming'] as const
 export function readYaml(path: string): Record<string, unknown> {
   const raw = readTextIfExists(path)
@@ -114,6 +123,14 @@ function ownView(
   const settingsProviders = isRecord(config.providers) ? config.providers : {}
   return {
     models: {
+      ...Object.fromEntries(
+        ['generate_image', 'speechgen']
+          .filter(k => isRecord(config[k]) && 'enabled' in config[k])
+          .map(k => [
+            k,
+            { enabled: (config[k] as Record<string, unknown>).enabled },
+          ]),
+      ),
       providers: Object.fromEntries(
         Object.entries(providers).filter(([key]) => key.startsWith('qm-')),
       ),
@@ -148,16 +165,17 @@ function readView(): ManagedView {
 export function currentManagedHash(): string {
   return hashManagedView(readView())
 }
-export function nodeModelSelection():
-  | { provider: string; modelId: string; thinkingLevel?: string }
-  | undefined {
+export function nodeModelSelection(
+  role = 'default',
+): { provider: string; modelId: string; thinkingLevel?: string } | undefined {
   const config = readYaml(providerPaths.config())
   const roles = isRecord(config.modelRoles) ? config.modelRoles : {}
-  if (typeof roles.default !== 'string') return undefined
-  const slash = roles.default.indexOf('/')
+  if (typeof roles[role] !== 'string') return undefined
+  const selector = roles[role] as string
+  const slash = selector.indexOf('/')
   if (slash < 1) return undefined
-  const provider = roles.default.slice(0, slash)
-  const tail = roles.default.slice(slash + 1)
+  const provider = selector.slice(0, slash)
+  const tail = selector.slice(slash + 1)
   const match = /:(off|minimal|low|medium|high|xhigh|max)$/.exec(tail)
   const modelId = match ? tail.slice(0, match.index) : tail
   const thinkingLevel =
@@ -189,8 +207,8 @@ export function resolveKeptSecret(fingerprint: string): string | undefined {
     return undefined
   })
 }
-export function configuredProvider() {
-  const selection = nodeModelSelection()
+export function configuredProvider(role = 'default') {
+  const selection = nodeModelSelection(role)
   if (!selection) return undefined
   const providers = readYaml(providerPaths.models()).providers
   const provider = isRecord(providers)
@@ -216,7 +234,22 @@ export function configuredProvider() {
   return {
     ...selection,
     baseUrl: provider.baseUrl,
-    api: provider.api,
+    api:
+      Array.isArray(provider.models) &&
+      provider.models.some(
+        m =>
+          isRecord(m) &&
+          m.id === selection.modelId &&
+          typeof m.api === 'string',
+      )
+        ? String(
+            (
+              provider.models.find(
+                m => isRecord(m) && m.id === selection.modelId,
+              ) as Record<string, unknown>
+            ).api,
+          )
+        : provider.api,
     secret,
     lane:
       Object.entries(LANE_API).find(([, api]) => api === provider.api)?.[0] ??
@@ -227,7 +260,7 @@ export function configuredProvider() {
         : ('bearer' as const),
   }
 }
-type PoolKey = { id: string; value: string }
+type PoolKey = { id: string; value: string; profileId?: string }
 type Pending = {
   v: 2
   request: ApplyRequest
@@ -294,21 +327,36 @@ function loadPending(text: string): Pending | null {
       !Number.isFinite(Date.parse(file.stagedAt))
     )
       return null
-    for (const key of parsed.request.profile.auth.keys) {
-      const resolved = file.keys.find(k => k.id === key.id)
-      if (
-        !resolved ||
-        ('value' in key
-          ? resolved.value !== key.value
-          : secretFingerprint(resolved.value) !== key.keep)
-      )
-        return null
-    }
-    if (file.keys.length !== parsed.request.profile.auth.keys.length)
+    const apply = parsed.request
+    const profiles = [apply.profile, ...(apply.profiles ?? [])]
+    for (const profile of profiles)
+      for (const key of profile.auth.keys) {
+        const resolved = file.keys.find(
+          k =>
+            k.id === key.id && (k.profileId ?? apply.profile.id) === profile.id,
+        )
+        if (
+          !resolved ||
+          ('value' in key
+            ? resolved.value !== key.value
+            : secretFingerprint(resolved.value) !== key.keep)
+        )
+          return null
+      }
+    if (
+      file.keys.length !== profiles.reduce((n, p) => n + p.auth.keys.length, 0)
+    )
       return null
-    const rebuilt = compileProfile(parsed.request.profile, {
-      secret: file.keys[0]!.value,
+    const rebuilt = compileRoutingProfiles(apply.profile, {
+      secret: file.keys.find(
+        k => (k.profileId ?? apply.profile.id) === apply.profile.id,
+      )!.value,
       capabilities: CAPABILITIES,
+      profiles: (apply.profiles ?? []).map(profile => ({
+        profile,
+        secret: file.keys.find(k => k.profileId === profile.id)!.value,
+      })),
+      routing: apply.routing,
     })
     if (
       !rebuilt.ok ||
@@ -336,17 +384,31 @@ function loadPending(text: string): Pending | null {
     return null
   }
 }
+function credentialPools(
+  compiled: CompiledProfile,
+  keys: PoolKey[],
+): Record<string, PoolKey[]> {
+  const pools: Record<string, PoolKey[]> = {}
+  for (const id of Object.keys(compiled.models.providers)) {
+    const group = keys.filter(k =>
+      k.profileId
+        ? id.slice(3, -9) === k.profileId
+        : id === compiled.providerId,
+    )
+    if (group.length > 1 || compiled.config.qianmoRouting) pools[id] = group
+  }
+  return pools
+}
 function targetView(compiled: CompiledProfile, keys: PoolKey[]): ManagedView {
   return ownView(
     compiled.models,
     compiled.config,
-    keys.length > 1
-      ? {
-          [compiled.providerId]: keys
-            .map(k => secretFingerprint(k.value))
-            .sort(),
-        }
-      : {},
+    Object.fromEntries(
+      Object.entries(credentialPools(compiled, keys)).map(([id, group]) => [
+        id,
+        group.map(k => secretFingerprint(k.value)).sort(),
+      ]),
+    ),
   )
 }
 type StageResult =
@@ -451,22 +513,32 @@ export function stageProviderApply(
         diffKeyHashes(state?.appliedKeyHashes ?? {}, before),
       )
     const keys: PoolKey[] = []
-    for (const key of [...request.profile.auth.keys].sort(
-      (a, b) => (b.priority ?? 0) - (a.priority ?? 0),
-    )) {
-      const value = 'value' in key ? key.value : resolveKeptSecret(key.keep)
-      if (value === undefined)
-        return fail(
-          'secret-mismatch',
-          '节点上没有指纹相符的密钥 · 需要重新填写',
-        )
-      if (value.startsWith('!'))
-        return fail('bad-value', '密钥不能使用 omp 命令求值语法')
-      keys.push({ id: key.id, value })
-    }
-    const result = compileProfile(request.profile, {
+    for (const profile of [request.profile, ...(request.profiles ?? [])])
+      for (const key of [...profile.auth.keys].sort(
+        (a, b) => (b.priority ?? 0) - (a.priority ?? 0),
+      )) {
+        const value = 'value' in key ? key.value : resolveKeptSecret(key.keep)
+        if (value === undefined)
+          return fail(
+            'secret-mismatch',
+            '节点上没有指纹相符的密钥 · 需要重新填写',
+          )
+        if (value.startsWith('!'))
+          return fail('bad-value', '密钥不能使用 omp 命令求值语法')
+        keys.push({
+          id: key.id,
+          value,
+          ...(request.routing ? { profileId: profile.id } : {}),
+        })
+      }
+    const result = compileRoutingProfiles(request.profile, {
       secret: keys[0]!.value,
       capabilities,
+      profiles: (request.profiles ?? []).map(profile => ({
+        profile,
+        secret: keys.find(k => k.profileId === profile.id)!.value,
+      })),
+      routing: request.routing,
     })
     if (!result.ok) return fail(result.error.code, result.error.message)
     const target = targetView(result.compiled, keys)
@@ -590,7 +662,20 @@ export async function commitPendingProviderConfig(
     writePrivateJson(providerPaths.models(), models)
     const config = readYaml(providerPaths.config())
     const providerConfig = isRecord(config.providers) ? config.providers : {}
-    Object.assign(config, pending.compiled.config)
+    const { generate_image, speechgen, ...owned } = pending.compiled.config
+    Object.assign(config, owned)
+    for (const [name, settings] of Object.entries({
+      generate_image,
+      speechgen,
+    })) {
+      if (settings)
+        config[name] = {
+          ...(isRecord(config[name]) ? config[name] : {}),
+          ...settings,
+        }
+      else if (isRecord(config[name])) delete config[name].enabled
+    }
+    if (!pending.compiled.config.qianmoRouting) delete config.qianmoRouting
     config.providers = {
       ...providerConfig,
       ...pending.compiled.config.providers,
@@ -606,21 +691,24 @@ export async function commitPendingProviderConfig(
           .filter(r => r.provider.startsWith('qm-'))
           .map(r => r.provider),
       )
-      active.add(pending.compiled.providerId)
+      const pools = credentialPools(pending.compiled, pending.keys)
+      for (const id of Object.keys(pools)) active.add(id)
       for (const id of active) {
-        const keys =
-          id === pending.compiled.providerId && pending.keys.length > 1
-            ? pending.keys.map(key => ({
-                type: 'api_key' as const,
-                key: key.value,
-              }))
-            : []
+        const keys = (pools[id] ?? []).map(key => ({
+          type: 'api_key' as const,
+          key: key.value,
+        }))
         await auth.credentials.set(id, keys)
       }
-      if (pending.keys.length > 1)
+      const mainKeys = pending.keys.filter(
+        k =>
+          !k.profileId ||
+          pending!.compiled.providerId.slice(3, -9) === k.profileId,
+      )
+      if (mainKeys.length > 1)
         writePrivateJson(providerPaths.pool(), {
           provider: pending.compiled.providerId,
-          keys: pending.keys.map(k => ({
+          keys: mainKeys.map(k => ({
             id: k.id,
             fingerprint: secretFingerprint(k.value),
           })),

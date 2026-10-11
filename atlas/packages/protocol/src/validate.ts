@@ -20,6 +20,7 @@ import {
   deliveryExpiresAt,
   ENVELOPE_VERSION,
   isAckPayload,
+  isDirectedTaskRequestPayload,
   isMessageType,
   isNotifyPayload,
   isTaskResultPayload,
@@ -254,6 +255,20 @@ export function validateMessage(
         ProtocolErrorCode.E_BAD_ENVELOPE,
         'payload',
         'payload field is required',
+      ),
+    )
+  } else if (
+    raw['type'] === MessageType.TaskRequest &&
+    raw.payload &&
+    typeof raw.payload === 'object' &&
+    'direction' in raw.payload &&
+    !isDirectedTaskRequestPayload(raw.payload)
+  ) {
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'payload',
+        'directed task.request must be exactly { prompt, direction }',
       ),
     )
   } else if (raw['type'] === MessageType.Ack && !isAckPayload(raw['payload'])) {

@@ -51,6 +51,7 @@ export interface ResidentExtensionConfig {
   readonly protectedRoots: readonly string[]
   /** Host-owned tools registered with `set_host_tools` (`qianmo_notify`). */
   readonly hostTools: readonly string[]
+  readonly media?: { readonly image: boolean; readonly speech: boolean }
   readonly approvals?: boolean
 }
 
@@ -99,6 +100,16 @@ export function readResidentExtensionConfig(
     edits: record.edits,
     protectedRoots: record.protectedRoots,
     hostTools: record.hostTools,
+    ...(record.media &&
+    typeof record.media === 'object' &&
+    !Array.isArray(record.media)
+      ? {
+          media: {
+            image: (record.media as Record<string, unknown>).image === true,
+            speech: (record.media as Record<string, unknown>).speech === true,
+          },
+        }
+      : {}),
     ...(record.approvals === true ? { approvals: true } : {}),
   }
 }
@@ -238,12 +249,15 @@ const READ_SCHEMES: ReadonlySet<string> = new Set([
 export function residentActiveTools(
   edits: ResidentExtensionConfig['edits'],
   hostTools: readonly string[] = [],
+  media?: ResidentExtensionConfig['media'],
 ): string[] {
   return [
     ...RESIDENT_READ_TOOLS,
     ...RESIDENT_SESSION_TOOLS,
     ...(edits === 'workspace' ? RESIDENT_WRITE_TOOLS : []),
     ...hostTools,
+    ...(media?.image ? ['generate_image'] : []),
+    ...(media?.speech ? ['tts'] : []),
   ]
 }
 
@@ -262,8 +276,13 @@ function yamlKey(key: string): string {
 export function residentConfigOverlay(options: {
   readonly edits: ResidentExtensionConfig['edits']
   readonly hostTools?: readonly string[]
+  readonly media?: ResidentExtensionConfig['media']
 }): string {
   const approvals: [string, string][] = [
+    ...(options.media?.image
+      ? [['generate_image', 'allow'] as [string, string]]
+      : []),
+    ...(options.media?.speech ? [['tts', 'allow'] as [string, string]] : []),
     ...RESIDENT_DENIED_TOOLS.map(name => [name, 'deny'] as [string, string]),
     // A host tool has no approval tier, so omp treats it as `exec`, which
     // prompts — and fails — in both resident modes. The extension's allowlist
@@ -279,6 +298,14 @@ export function residentConfigOverlay(options: {
     `  approvalMode: ${options.edits === 'workspace' ? 'write' : 'always-ask'}`,
     '  approval:',
     ...approvals.map(([name, policy]) => `    ${yamlKey(name)}: ${policy}`),
+    ...(options.media
+      ? [
+          'generate_image:',
+          `  enabled: ${options.media.image}`,
+          'speechgen:',
+          `  enabled: ${options.media.speech}`,
+        ]
+      : []),
     'edit:',
     '  mode: hashline',
     'mcp:',
@@ -470,6 +497,49 @@ export function residentToolVerdict(
     stateRoots: protectedRoots,
     protectedRoots,
   })
+  if (toolName === 'generate_image' || toolName === 'tts') {
+    if (context.agentKind !== 'main')
+      return block(`${toolName} is available to the main agent only`)
+    if (
+      !(toolName === 'generate_image'
+        ? config.media?.image
+        : config.media?.speech)
+    )
+      return block(`${toolName} requires a configured model route`)
+    if (toolName === 'generate_image' && input.model !== undefined)
+      return block(
+        'image model overrides are disabled; use the configured route',
+      )
+    const targets =
+      toolName === 'tts'
+        ? [input.output_path]
+        : Array.isArray(input.input)
+          ? input.input
+              .map(entry =>
+                entry && typeof entry === 'object'
+                  ? (entry as Record<string, unknown>).path
+                  : undefined,
+              )
+              .filter(v => v !== undefined)
+          : []
+    if (toolName === 'tts' && typeof input.output_path !== 'string')
+      return block('tts requires a workspace output path')
+    for (const entry of targets) {
+      if (typeof entry !== 'string' || SCHEME.test(entry))
+        return block('media paths must be local workspace paths')
+      const target = realPath(lexicalPath(entry, workspace))
+      const denial = hardline.pathVerdict(target)
+      if (denial !== null) return block(denial.target.reason)
+      if (
+        !inside(target, workspace) ||
+        target.split(/[\\/]/).some(part => WORKSPACE_POLICY_DIRS.includes(part))
+      )
+        return block(
+          'media paths must stay inside an unprotected workspace directory',
+        )
+    }
+    return undefined
+  }
   if (RESIDENT_SESSION_TOOLS.includes(toolName)) return undefined
   if (RESIDENT_READ_TOOLS.includes(toolName)) {
     // grep/glob default to cwd when no path is supplied. A directory/glob

@@ -142,3 +142,10 @@ export {
   type ValidateOptions,
   type ValidationResult,
 } from './validate.js'
+
+export {
+  TASK_DIRECTIONS,
+  type TaskDirection,
+  type DirectedTaskRequestPayload,
+  isDirectedTaskRequestPayload,
+} from './message.js'

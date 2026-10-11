@@ -1596,3 +1596,47 @@ v1.0 写成时这四点待定，负责人当天拍板，结果记为 §0.1 的 D
 | 基座目录里已有阡陌自有（AGPL 头）文件 | `packages/@ant/model-provider/src/shared/__tests__/emptyModelResponse.test.ts` |
 | 内测节点配置根 | `demo/env/beta/common.sh:1221`（`OCC_CONFIG_DIR=${root}/nodes/${node}/config`） |
 | P15.3、P15.5、P15.8 已在 main | `21b2dd3f`、`fb2ca677`、`d74e0c9f` |
+
+## 任务分工（P22）
+
+目录与确定性规则的真源是 `atlas/packages/providers/src/directions.ts`（从 `@qianmo/providers` 主入口导出），控制台契约仍在 `directionPorts.ts`。八个方向与 omp 角色如下：
+
+| 方向 | 角色 | 允许 kind |
+|---|---|---|
+| 编程 `code` | `default`、`task` | chat |
+| 对话与简报 `chat` | 自定义 `chat` | chat |
+| 规划与推理 `plan` | `plan`、`slow` | chat |
+| 快速小任务 `fast` | `smol`、`commit`、`tiny` | chat |
+| 看图 `vision` | `vision` | chat |
+| 生图 `image` | `image` | image |
+| 语音 `speech` | `speech` | speech（omp 写 tts） |
+| 视频 `video` | 自定义 `video` | video |
+
+`ProviderModel.kind` 缺省为 chat。为避免媒体传输被误用为对话，媒体使用独立 lane：`openai-images`、`openrouter-images`、`gemini-images`、`openai-speech`、`openrouter-video`。媒体档案只允许 extra，不要求 main；对话档案保留恰好一个 main。媒体模型带每模型 `api`、`kind`、`input`；omp 的 provider 级 api 只接受对话传输，因此媒体 provider 使用合法的占位传输，每模型 api 指向实际媒体客户端。
+
+自动归类按固定优先级首条匹配：视频 → 语音 → 看图 → 生图 → 规划 → 代码块 → 文件扩展名 → 报错栈 → 编程关键词 → 对话。关键词同时识别中英文，英文按词边界匹配；全部规则见目录包，不由模型猜测。多关键词时以该优先级为准。快速小任务没有文字推断规则，通过显式 direction 或角色路由使用。请求带 direction 优先于 auto；auto 关时走 default（审计 direction 为 code、source 为 default）。带 direction 的 task.request 载荷封闭为 `{prompt, direction}`；不带 direction 的历史载荷仍按旧协议处理。
+
+路由簿在 `providers.ndjson` 同目录的 `routing.json`，0600、原子替换、排他写锁。snapshot 提供默认、节点覆盖、模型 kind 与最近 20 条节点归类；revision 是整本的乐观并发号。save 的 routes 是局部补丁；首次建立节点覆盖从默认拷贝，其后为完整覆盖，清除覆盖重新跟随默认。节点清除也递增 revision，旧编辑不能复活已经清除的覆盖。`routing.save` / `routing.clear` 经 DirectionActor 记动作账本。保存修改期望状态；经现有模型服务 apply 动作下发后节点生效。
+
+apply 保持 v1 与原来的 64 KiB 限额；新请求在主 profile 外带：
+
+```json
+{
+  "profiles": ["其他被引用的 WireProfile（各自 auth.keys 为 value 或 keep）"],
+  "routing": {
+    "auto": true,
+    "routes": {
+      "code": {"profileId": "code-service", "modelId": "chat-model"},
+      "chat": {"profileId": "brief-service", "modelId": "chat-model"}
+    }
+  }
+}
+```
+
+仅引用过的附加档案生成 qm-* provider，密钥按各档案写入对应 provider 的凭据池。旧的仅单 profile 请求保持旧编译字节；新节点接受旧请求。旧节点的封闭 schema 会拒绝 profiles/routing；中枢明确提示 P22/节点版本，不会重试成只用主档案。超出 64 KiB 在中枢拒绝，不发送。未配置路由的对话方向跟随主模型；image/speech/video 不写角色、不开工具。
+
+常驻主智能体在这一轮前通过 RPC get_state / set_model / set_thinking_level 切换对话模型与档位，保留同一会话；omp 的 replayFilter 能力仍用于换端点的历史回放。媒体方向让主智能体继续用 default 对话模型，对应 runner 经角色选择媒体模型。image/speech 路由分别打开 generate_image / tts；扩展只对主智能体放行，并检查媒体文件路径及禁止生图临时模型覆盖。视频由独立宿主模块 `host/videoTool.ts` 的 `qianmo_generate_video {prompt, seconds?, aspect?}` 生成，输出到 `outputs/videos/<时间>-<短id>.mp4`；默认请求 8 秒视频、十分钟超时；返回 seconds 是请求时长（基座视频 API 不提供实际时长元数据），失败区分提交、轮询、下载、文件写入且不回显凭据。真实轮询状态经 host_tool_update 回给主智能体，避免等待正常异步任务时触发两分钟空闲看门狗；取消与子进程退出会中止客户端。当前通过 residentOmp 的宿主注册方式接入，供主导者迁入 S0 通用扩展点。
+
+每次归类写 `model.route`：agent、direction、source（hint/auto/default）、rule、实际模型引用及档位；媒体另记 mediaModel；不记提示正文。中枢读取已挂载的 `--audit <node>=<path>` 审计端口，无审计挂载时 recent 是空数组；损坏的审计链不展示归类。
+
+2026-10-11 仅核实官方 id：[OpenAI Images](https://developers.openai.com/api/docs/models/gpt-image-2) `gpt-image-2`、[Gemini 图片](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-image) `gemini-2.5-flash-image`、[OpenRouter 图片](https://openrouter.ai/docs/guides/overview/multimodal/image-generation) `openai/gpt-image-2`、[OpenAI Speech](https://developers.openai.com/api/docs/models/gpt-4o-mini-tts) `gpt-4o-mini-tts`、[OpenRouter 视频](https://openrouter.ai/docs/guides/overview/multimodal/video-generation) `google/veo-3.1`。全部 evaluated: false；生图、语音、视频均未使用真实密钥生成或评估。看图的 chat kind 是类型约束，不能代替模型输入能力评估。

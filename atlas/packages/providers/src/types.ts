@@ -17,6 +17,11 @@ export const LANES = [
   'openai-responses',
   'gemini',
   'grok',
+  'openai-images',
+  'openrouter-images',
+  'gemini-images',
+  'openai-speech',
+  'openrouter-video',
 ] as const
 export type Lane = (typeof LANES)[number]
 
@@ -85,11 +90,16 @@ export type ModelEffort = {
   levels?: readonly EffortLevel[]
 }
 
+export const MODEL_KINDS = ['chat', 'image', 'speech', 'video'] as const
+export type ModelKind = (typeof MODEL_KINDS)[number]
+
 /** §3.2. */
 export type ProviderModel = {
   /** Sent on the wire as-is. Never carries the client-only `[1m]` marker. */
   id: string
   role: ModelRole
+  /** Absent means chat for legacy profiles. */
+  kind?: ModelKind
   tiers: readonly ModelTier[]
   capabilities: ModelCapabilities
   effort: ModelEffort

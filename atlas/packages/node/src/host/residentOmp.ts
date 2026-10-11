@@ -33,6 +33,8 @@ import type {
   ResidentSessionConnection,
 } from '@qianmo/resident'
 import { ompArgv, ompSpawnEnv } from '../omp/launch.js'
+import { residentMediaRoutes } from './residentRouting.js'
+import { VIDEO_TOOL, runVideoTool, type VideoToolResult } from './videoTool.js'
 import { nodeModelSelection } from '../providers/node.js'
 import { residentOmpEnvironment } from './residentOmpEnv.js'
 import { residentToolSurface, verdictText } from './notifyTool.js'
@@ -424,6 +426,11 @@ export class ResidentOmpPool
       sessionId,
     )
     mkdirSync(sessionDir, { recursive: true, mode: 0o700 })
+    const media = residentMediaRoutes()
+    const tools = [
+      ...residentToolSurface(this.#options.memoryWrite !== undefined),
+      ...(media.video ? [VIDEO_TOOL] : []),
+    ]
     const config: ResidentExtensionConfig = {
       v: 1,
       agent: owner.agent,
@@ -433,9 +440,8 @@ export class ResidentOmpPool
         this.#options.memoryRoot,
         ...(this.#options.protectedRoots ?? []),
       ],
-      hostTools: residentToolSurface(
-        this.#options.memoryWrite !== undefined,
-      ).map(tool => tool.name),
+      hostTools: tools.map(tool => tool.name),
+      media,
       ...(this.#options.requestPermission === undefined
         ? {}
         : { approvals: true }),
@@ -462,7 +468,7 @@ export class ResidentOmpPool
       '--approval-mode',
       config.edits === 'workspace' ? 'write' : 'always-ask',
       '--tools',
-      residentActiveTools(config.edits).join(','),
+      residentActiveTools(config.edits, [], config.media).join(','),
       ...(selection
         ? ['--model', `${selection.provider}/${selection.modelId}`]
         : []),
@@ -491,6 +497,12 @@ export class ResidentOmpPool
         }),
     )
     this.#children.set(sessionId, child)
+    const videoCalls = new Map<string, AbortController>()
+    void child.closed
+      .finally(() => {
+        for (const controller of videoCalls.values()) controller.abort()
+      })
+      .catch(() => {})
     child.onFrame(frame => {
       this.#used.set(sessionId, Date.now())
       if (frame.type === 'extension_ui_request' && frame.method === 'confirm') {
@@ -532,8 +544,52 @@ export class ResidentOmpPool
           this.#options.onActivity?.(this.#busy.size > 0),
         ).catch(error => this.#options.onError?.(error))
       }
+      if (
+        frame.type === 'host_tool_cancel' &&
+        typeof frame.targetId === 'string'
+      )
+        videoCalls.get(frame.targetId)?.abort()
       if (frame.type === 'host_tool_call') {
         void (async () => {
+          if (frame.toolName === VIDEO_TOOL.name) {
+            const controller = new AbortController()
+            const id = String(frame.id)
+            videoCalls.set(id, controller)
+            let result: VideoToolResult
+            try {
+              result = media.video
+                ? await runVideoTool(
+                    owner.cwd,
+                    frame.arguments,
+                    controller.signal,
+                    status => {
+                      if (child.alive && !controller.signal.aborted)
+                        child.send({
+                          type: 'host_tool_update',
+                          id: frame.id,
+                          partialResult: {
+                            content: [
+                              { type: 'text', text: `视频生成状态：${status}` },
+                            ],
+                          },
+                        })
+                    },
+                  )
+                : { ok: false as const, error: '视频路由未开启' }
+            } finally {
+              videoCalls.delete(id)
+            }
+            if (!child.alive || controller.signal.aborted) return
+            child.send({
+              type: 'host_tool_result',
+              id: frame.id,
+              isError: !result.ok,
+              result: {
+                content: [{ type: 'text', text: JSON.stringify(result) }],
+              },
+            })
+            return
+          }
           if (frame.toolName === 'qianmo_memory_write') {
             const result = (await this.#options.memoryWrite?.(
               sessionId,
@@ -618,7 +674,7 @@ export class ResidentOmpPool
           : {}),
       })
       await child.request('set_host_tools', {
-        tools: residentToolSurface(this.#options.memoryWrite !== undefined),
+        tools,
       })
       return child
     } catch (error) {

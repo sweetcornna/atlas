@@ -78,6 +78,7 @@ import {
   resolveBaseUrl,
   type WireProfile,
 } from '@qianmo/providers'
+import type { ModelRouting } from '@qianmo/providers'
 import { compileProfile } from '../providers/compile.js'
 import { FileActionLedger } from './consoleActionLedger.js'
 import { ProviderBook } from './consoleProvidersBook.js'
@@ -235,6 +236,7 @@ export class ConsoleProviders implements ProviderPort {
   readonly #onAlarm: (line: string) => void
   readonly #cache = new Map<string, NodeCache>()
   readonly #follows = new Map<string, unknown>()
+  #routing: ((node: string) => ModelRouting | undefined) | undefined
   #background: unknown = null
   #changes = 0
 
@@ -245,6 +247,14 @@ export class ConsoleProviders implements ProviderPort {
     this.#now = options.now ?? Date.now
     this.#scheduler = options.scheduler ?? REAL_SCHEDULER
     this.#onAlarm = options.onAlarm ?? (() => {})
+  }
+
+  routingProfiles(): readonly ProviderProfile[] {
+    if (this.problem !== null) throw new Error('model service book unavailable')
+    return this.#book.profiles()
+  }
+  configureRouting(source: (node: string) => ModelRouting | undefined): void {
+    this.#routing = source
   }
 
   /** `null` while usable; otherwise why the providers face is closed. */
@@ -1639,6 +1649,25 @@ export class ConsoleProviders implements ProviderPort {
     if (!sessions.ok) return refuse('invalid', sessions.failure.message)
     const override = this.#book.contextOverride(node)
     const wire = this.#wire(profile, secret, override, others)
+    let routing: ModelRouting | undefined
+    try {
+      routing = this.#routing?.(node)
+    } catch {
+      return refuse('routing-unavailable', '路由簿不可用 · 拒绝下发')
+    }
+    const profiles: WireProfile[] = []
+    const routingSecrets: string[] = []
+    for (const id of new Set(
+      Object.values(routing?.routes ?? {}).map(ref => ref?.profileId),
+    )) {
+      if (!id || id === profile.id) continue
+      const extra = this.#book.profile(id)
+      if (!extra) return refuse('routing-invalid', '路由引用的档案不存在')
+      const keys = this.#keysOf(extra)
+      if (!keys.ok) return refuse('secret-missing', '路由档案未填写全部密钥')
+      profiles.push(this.#wire(extra, keys.secret, null, keys.others))
+      routingSecrets.push(keys.secret, ...Object.values(keys.others))
+    }
     const request = {
       v: 1,
       op: 'apply',
@@ -1646,10 +1675,16 @@ export class ConsoleProviders implements ProviderPort {
       node,
       expect: { ownedHash: this.#book.committed(node)?.appliedHash ?? null },
       profile: wire,
+      ...(routing ? { profiles, routing } : {}),
       recycle: { sessions: sessions.value },
       dryRun: options.dryRun,
       force: options.force,
     }
+    if (
+      Buffer.byteLength(JSON.stringify(request), 'utf8') >
+      PROTOCOL_LIMITS.maxRequestBytes
+    )
+      return refuse('rejected', '多档案请求超过 64 KiB · 减少路由引用或模型数')
     const checked = this.#check<void>(request, node)
     if (checked !== null && !checked.ok) {
       return refuse(
@@ -1661,9 +1696,19 @@ export class ConsoleProviders implements ProviderPort {
     const applied = this.#applyResult(node, requestId, result, [
       secret,
       ...Object.values(others),
+      ...routingSecrets,
     ])
     const base = {
       ...applied,
+      ...(routing &&
+      applied.outcome === 'refused' &&
+      ['unknown-key', 'bad-request', 'version-skew'].includes(
+        applied.code ?? '',
+      )
+        ? {
+            message: `节点不支持 P22 多档案路由或拒绝了其格式 · 请检查节点版本：${applied.message ?? applied.code}`,
+          }
+        : {}),
       sessions: sessions.value,
       profileId: profile.id,
       revision: profile.revision,

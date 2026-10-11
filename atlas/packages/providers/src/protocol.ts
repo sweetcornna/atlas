@@ -14,6 +14,11 @@
  */
 
 import {
+  parseModelRouting,
+  routingProblem,
+  type ModelRouting,
+} from './directions.js'
+import {
   isProviderErrorCode,
   type ProviderErrorCode,
   type ProviderIssue,
@@ -103,6 +108,8 @@ export type ApplyRequest = RequestBase & {
   /** `null`: the hub has never managed this node. */
   expect: { ownedHash: string | null }
   profile: WireProfile
+  profiles?: readonly WireProfile[]
+  routing?: ModelRouting
   recycle: { sessions: SessionPolicy }
   dryRun: boolean
   /** Skip the `expect` check; only after ops confirms an overwrite. */
@@ -158,6 +165,8 @@ const TOP_LEVEL: Record<ProviderOp, readonly string[]> = {
     'recycle',
     'dryRun',
     'force',
+    'profiles',
+    'routing',
   ],
   autocompact: ['v', 'op', 'requestId', 'node', 'value'],
 }
@@ -183,6 +192,12 @@ export function parseProviderRequest(
   }
   if (!isRecord(raw))
     return fail('bad-request', '', '请求必须是 JSON 对象', null)
+
+  if (
+    Buffer.byteLength(JSON.stringify(raw), 'utf8') >
+    PROTOCOL_LIMITS.maxRequestBytes
+  )
+    return fail('bad-request', '', '请求超过 64 KiB', null)
 
   const requestId =
     typeof raw.requestId === 'string' && REQUEST_ID.test(raw.requestId)
@@ -338,7 +353,44 @@ export function parseProviderRequest(
     }
   }
 
-  // apply
+  // apply: v1 stays closed on old nodes, which reject these new fields.
+  let profiles: WireProfile[] | undefined
+  let routing: ModelRouting | undefined
+  if (raw.profiles !== undefined || raw.routing !== undefined) {
+    const route = parseModelRouting(raw.routing)
+    if (!route || (raw.profiles !== undefined && !Array.isArray(raw.profiles)))
+      return fail(
+        'bad-request',
+        'routing',
+        '多档案 apply 必须带合法 routing 和 profiles 数组',
+        requestId,
+      )
+    routing = route
+    profiles = []
+    const ids = new Set([profile!.id])
+    for (const value of (raw.profiles ?? []) as unknown[]) {
+      const parsed = parseWireProfile(value, options)
+      if (!parsed.ok) return { ok: false, error: parsed.error, requestId }
+      if (ids.has(parsed.value.id))
+        return fail('bad-value', 'profiles', '档案 id 重复', requestId)
+      if (
+        options.capabilities &&
+        !options.capabilities.multiKey &&
+        parsed.value.auth.keys.length > 1
+      )
+        return fail(
+          'unsupported-multi-key',
+          'profiles.auth.keys',
+          '本节点一次只接受一把密钥',
+          requestId,
+        )
+      ids.add(parsed.value.id)
+      profiles.push(parsed.value)
+      warnings.push(...parsed.warnings)
+    }
+    const problem = routingProblem(routing, [profile!, ...profiles])
+    if (problem) return fail('bad-value', 'routing', problem, requestId)
+  }
   if (!isRecord(raw.expect)) {
     return fail('bad-request', 'expect', 'apply 必须带 expect', requestId)
   }
@@ -405,6 +457,7 @@ export function parseProviderRequest(
       op,
       expect: { ownedHash: ownedHash as string | null },
       profile: profile as WireProfile,
+      ...(routing ? { routing, profiles } : {}),
       recycle: { sessions },
       dryRun: raw.dryRun === true,
       force: raw.force === true,

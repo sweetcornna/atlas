@@ -2128,3 +2128,15 @@ id 不合法或不在列表而拒绝，都记一条动作账本 `alert.ack`；�
 
 只读令牌看得见备注但改不了：框留着、置 `readonly`、按钮换成一行说明。框不能消失——一个
 不见的框会让「你不能改」和「这里没有备注」长得一样。
+
+### 任务分工 API（P22）
+
+模型服务开启时 `ConsoleDeps.routing` 接路由簿；API-only `routingApi` 是导出的 HeadRoute，由模型服务区域挂入 API heads（不另建页面模块）。
+
+| 方法与路径 | 权限 | 作用 |
+|---|---|---|
+| GET `/v0/routing` | view 及以上 | 默认、节点覆盖、模型列表及最近 20 条归类 |
+| PUT `/v0/routing` | ops 或管理令牌 | `{node:null或节点名, auto, routes:[{direction,profileId,modelId}], revision}`；局部更新，revision 失配 rejected |
+| DELETE `/v0/routing/nodes/<node>` | ops 或管理令牌 | 清除节点覆盖并跟随默认 |
+
+写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
