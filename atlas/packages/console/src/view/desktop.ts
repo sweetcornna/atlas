@@ -47,7 +47,7 @@ const STATE_WORD: Readonly<Record<DesktopUnitState, readonly [Tone, string]>> =
     failed: ['bad', '出错'],
   }
 
-export const CONFIRM_WORD: Readonly<Record<DesktopConfirm, string>> = {
+const CONFIRM_WORD: Readonly<Record<DesktopConfirm, string>> = {
   sensitive: '只看自动 · 其余逐次确认',
   always: '每一步都确认',
 }

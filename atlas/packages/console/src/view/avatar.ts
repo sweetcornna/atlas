@@ -431,7 +431,7 @@ function overlays(body: Body, ink: string): string {
 // the figure
 // ---------------------------------------------------------------------------
 
-export interface AvatarDrawOptions {
+interface AvatarDrawOptions {
   /** Pixels on a side. */
   readonly size: number
   /**
@@ -453,7 +453,7 @@ export function avatarWords(spec: AvatarSpec): string {
 }
 
 /** Which figure this is, so a script can tell a redraw of the same one. */
-export function avatarFace(spec: AvatarSpec): string {
+function avatarFace(spec: AvatarSpec): string {
   return avatarHash(JSON.stringify(spec)).toString(36)
 }
 

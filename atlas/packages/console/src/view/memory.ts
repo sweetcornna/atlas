@@ -40,7 +40,7 @@ export interface MemoryFilter {
   readonly retired: boolean
 }
 
-export interface MemoryListModel {
+interface MemoryListModel {
   readonly filter: MemoryFilter
   readonly entries: readonly MemoryEntryView[]
   readonly total: number
@@ -49,7 +49,7 @@ export interface MemoryListModel {
   readonly writer: boolean
 }
 
-export function addressOf(ref: AgentRef): string {
+function addressOf(ref: AgentRef): string {
   return `qianmo://${ref.node}/${ref.agent}`
 }
 

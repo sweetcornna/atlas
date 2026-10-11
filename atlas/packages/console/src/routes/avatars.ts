@@ -76,7 +76,7 @@ export async function facesFor(
 }
 
 /** Who a key names, in the words the editor shows above the figure. */
-export function avatarOwnerName(key: AvatarKey, self: AvatarKey): string {
+function avatarOwnerName(key: AvatarKey, self: AvatarKey): string {
   if (key === self) return '我'
   if (key.startsWith('user:')) return key.slice('user:'.length)
   const address = key.slice('agent:'.length)

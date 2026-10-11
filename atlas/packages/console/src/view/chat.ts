@@ -394,7 +394,7 @@ function turnFace(
 }
 
 /** The button that opens the 形象 editor for one figure. */
-export function avatarEditButton(
+function avatarEditButton(
   key: string,
   name: string,
   inner: string,
@@ -481,7 +481,7 @@ const NOTHING_OPEN =
   `</g></svg></div>`
 
 /** Who greets an empty page: the first agent the picker offers. */
-export interface ChatGreeter {
+interface ChatGreeter {
   readonly agent: string
   readonly address: string
   /** Whether a first message can open a conversation with it from here. */

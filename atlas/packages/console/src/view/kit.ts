@@ -165,7 +165,7 @@ export function selectField(
 }
 
 /** A pill checkbox (`.chk`). Several sharing a name make a multi-choice. */
-export function checkPill(
+function checkPill(
   name: string,
   value: string,
   text: string,
@@ -285,30 +285,6 @@ export function unwiredCard(
     `<div class="rowx gap-2">${icon('info', { small: true })}` +
     `<b>${escapeHtml(what)}未接入</b></div>` +
     `<p class="note">${escapeHtml(how)}</p>${cmd}</div>`
-  )
-}
-
-/** A small button that opens a server-rendered dialog. */
-export function openButton(
-  dialog: string,
-  label: string,
-  options: {
-    readonly glyph?: string
-    readonly primary?: boolean
-    readonly small?: boolean
-    readonly data?: Readonly<Record<string, string>>
-  } = {},
-): string {
-  const cls =
-    `btn ${options.primary === true ? 'btn-primary' : 'btn-secondary'}` +
-    (options.small === true ? ' btn-small' : '')
-  const data = Object.entries(options.data ?? {})
-    .map(([key, value]) => ` data-${key}="${attr(value)}"`)
-    .join('')
-  return (
-    `<button type="button" class="${cls}" data-open-dialog="${attr(dialog)}"${data} data-write>` +
-    (options.glyph === undefined ? '' : icon(options.glyph, { small: true })) +
-    `${escapeHtml(label)}</button>`
   )
 }
 

@@ -41,7 +41,7 @@ import {
   textField,
 } from './kit.js'
 
-export interface FilesModel {
+interface FilesModel {
   readonly snapshot: FilesSnapshot
   readonly now: number
   /** May decide, revoke, start and retry (member level). */
@@ -59,7 +59,7 @@ const TRANSFER_WORD: Readonly<
   failed: ['bad', '失败'],
 }
 
-export function addressOf(ref: AgentRef): string {
+function addressOf(ref: AgentRef): string {
   return `qianmo://${ref.node}/${ref.agent}`
 }
 
@@ -411,7 +411,7 @@ export function filesDialogs(snapshot: FilesSnapshot): string {
 }
 
 /** One source line in the start dialog: agent, path, and a way to look. */
-export function sourceRow(
+function sourceRow(
   agents: readonly (readonly [string, string])[],
   index: number,
 ): string {

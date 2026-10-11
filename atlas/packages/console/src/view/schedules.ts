@@ -118,7 +118,7 @@ const ZONES = [
 ] as const
 
 /** `每天 08:00` / `每周一三五 09:30` / `每 2 小时` — one line, no zone. */
-export function whenText(when: ScheduleWhen): string {
+function whenText(when: ScheduleWhen): string {
   switch (when.kind) {
     case 'daily':
       return `每天 ${when.time}`

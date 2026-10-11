@@ -56,7 +56,7 @@ const SOURCE_WORD: Readonly<Record<RouteDecisionView['source'], string>> = {
   default: '主模型',
 }
 
-export interface RoutingCardModel {
+interface RoutingCardModel {
   readonly snapshot: ModelRoutingSnapshot
   /** The scope shown: `null` for every node, else one node's name. */
   readonly node: string | null
