@@ -42,6 +42,7 @@ let calls: string[],
   records: string[],
   blocked: boolean,
   failure: boolean
+let targets: string[]
 let deps: ConsoleDeps
 const port: ConnectorsPort = {
   async snapshot() {
@@ -82,6 +83,7 @@ beforeEach(() => {
   calls = []
   admits = 0
   records = []
+  targets = []
   blocked = false
   failure = false
   deps = {
@@ -161,8 +163,9 @@ function context(
       admits++
       return blocked ? new Response(null, { status: 503 }) : null
     },
-    record: async action => {
+    record: async (action, target) => {
       records.push(action)
+      targets.push(target)
       return true
     },
   }
@@ -385,4 +388,43 @@ test('tenant wrapper filters ownership, calls and agents; refuses foreign writes
       })
     ).ok,
   ).toBe(false)
+})
+
+test('malformed connector ids containing token URLs never enter the API action ledger', async () => {
+  const hostile = 'https://mail.example/?token=fixture-private-token'
+  expect(
+    (
+      await request(
+        'POST',
+        '/v0/connectors',
+        access('ops'),
+        JSON.stringify({ id: hostile, secret: 'hidden-password' }),
+      )
+    ).status,
+  ).toBe(200)
+  expect(
+    (
+      await request(
+        'DELETE',
+        `/v0/connectors/${encodeURIComponent(hostile)}`,
+        access('ops'),
+      )
+    ).status,
+  ).toBe(204)
+  expect(
+    (
+      await request(
+        'POST',
+        `/v0/connectors/${encodeURIComponent(hostile)}/probe`,
+        access('ops'),
+      )
+    ).status,
+  ).toBe(200)
+  expect(targets).toEqual(['-', '-', '-'])
+  const valid = 'c-11111111-1111-4111-8111-111111111111'
+  expect(
+    (await request('DELETE', `/v0/connectors/${valid}`, access('ops'))).status,
+  ).toBe(204)
+  expect(targets.at(-1)).toBe(valid)
+  expect(JSON.stringify(targets)).not.toContain('fixture-private-token')
 })
