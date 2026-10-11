@@ -276,3 +276,38 @@ test('CalDAV rechecks authorization after PUT DNS resolution and emits zero writ
   ).rejects.toThrow('revoked')
   expect(puts).toBe(0)
 })
+
+test('CalDAV and ICS refuse plaintext even when a notification HTTP exception exists', async () => {
+  let requests = 0
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch() {
+      requests++
+      return new Response('private')
+    },
+  })
+  cleanups.push(() => server.stop(true))
+  const policy = new OutboundPolicy({
+    allowAddresses: ['127.0.0.1'],
+    allowPorts: [{ protocol: 'http', port: server.port! }],
+  })
+  expect(
+    () =>
+      new CaldavClient(
+        policy,
+        server.url.toString(),
+        'account',
+        'private-password',
+      ),
+  ).toThrow('HTTPS')
+  await expect(
+    icsEvents(
+      policy,
+      new URL('/feed?token=private-token', server.url).toString(),
+      '2026-10-11T00:00:00Z',
+      '2026-10-12T00:00:00Z',
+    ),
+  ).rejects.toThrow('HTTPS')
+  expect(requests).toBe(0)
+})

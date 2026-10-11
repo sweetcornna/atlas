@@ -191,6 +191,25 @@ export class OutboundPolicy {
     init: RequestInit,
     beforeDispatch?: () => void,
   ): Promise<Response> {
+    let checkedHeaders: Headers
+    try {
+      checkedHeaders = new Headers(init.headers)
+    } catch {
+      throw new Error('出站请求头无效')
+    }
+    const method = init.method ?? 'GET'
+    if (
+      !/^[A-Za-z]+$/.test(method) ||
+      Buffer.byteLength(`${method} ${url.pathname}${url.search} HTTP/1.1`) >
+        LIMITS.connectorLineBytes
+    )
+      throw new Error('出站请求行超过上限或无效')
+    let headerBytes = 0
+    for (const [name, value] of checkedHeaders) {
+      headerBytes += Buffer.byteLength(`${name}: ${value}\r\n`)
+      if (headerBytes > LIMITS.connectorLineBytes)
+        throw new Error('出站请求头超过上限')
+    }
     const endpoint = await this.resolve(
       url.protocol === 'https:' ? 'https' : 'http',
       url.hostname,
@@ -200,10 +219,11 @@ export class OutboundPolicy {
     if (this.#options.fetch)
       return this.#options.fetch(url.toString(), {
         ...init,
+        headers: checkedHeaders,
         redirect: 'manual',
       })
     const { promise, resolve, reject } = Promise.withResolvers<Response>()
-    const headers = Object.fromEntries(new Headers(init.headers))
+    const headers = Object.fromEntries(checkedHeaders)
     // Pin the resolved address at the actual socket dial; a second DNS lookup cannot rebind.
     const request = (url.protocol === 'https:' ? https : http).request(
       url,
@@ -289,6 +309,8 @@ export class OutboundPolicy {
       } catch {
         throw new Error('出站重定向被策略拒绝')
       }
+      if (url.protocol === 'https:' && target.protocol !== 'https:')
+        throw new Error('HTTPS 重定向不允许降级')
       if (target.origin !== url.origin) {
         const headers = new Headers(next.headers)
         for (const name of ['authorization', 'proxy-authorization', 'cookie'])

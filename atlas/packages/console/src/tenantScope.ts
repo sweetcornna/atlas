@@ -112,9 +112,9 @@ export function scopedConsoleDeps(
               const value = await deps.connectors!.snapshot()
               if (!current()) return hidden()
               if (!value.ok) return value
-              const connectors = value.value.connectors.filter(
-                v => v.tenant === scope.tenant && v.agents.every(address),
-              )
+              const connectors = value.value.connectors
+                .filter(v => v.tenant === scope.tenant)
+                .map(v => ({ ...v, agents: v.agents.filter(address) }))
               const ids = new Set(connectors.map(v => v.id))
               return {
                 ok: true as const,

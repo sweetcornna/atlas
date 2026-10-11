@@ -25,6 +25,7 @@ import { SmtpClient, mailData } from '../connectors/smtp.js'
 import { mailbox, headerValue } from '../connectors/wire.js'
 import {
   CaldavClient,
+  calendarHttpsUrl,
   icsEvents,
   createIcs,
   range,
@@ -270,7 +271,7 @@ export class ConsoleConnectors implements ConnectorsPort {
     if (typeof row.settings['caldavUrl'] === 'string')
       summary['host'] = new URL(row.settings['caldavUrl']).hostname
     if (row.preset === 'ics')
-      summary['host'] = this.#policy.url(
+      summary['host'] = new URL(
         this.#vault.reveal(row.id, row.secret, row.revision),
       ).hostname
     if (typeof row.settings['username'] === 'string')
@@ -401,7 +402,7 @@ export class ConsoleConnectors implements ConnectorsPort {
       )
     } else if (draft.preset !== 'ics') {
       headerValue(settings['username'])
-      const url = this.#policy.url(String(settings['caldavUrl']))
+      const url = calendarHttpsUrl(this.#policy, String(settings['caldavUrl']))
       if (url.search) throw new Error('CalDAV URL 不接受令牌参数')
       settings['caldavUrl'] = url.toString()
     }
@@ -449,7 +450,7 @@ export class ConsoleConnectors implements ConnectorsPort {
           ? this.#vault.reveal(id, existing.secret, existing.revision)
           : undefined)
       if (!value) return fail('invalid', '新连接必须提供秘密字段')
-      if (draft.preset === 'ics') this.#policy.url(value)
+      if (draft.preset === 'ics') calendarHttpsUrl(this.#policy, value)
       else headerValue(value)
       const secret = this.#vault.seal(
         id,
@@ -540,6 +541,7 @@ export class ConsoleConnectors implements ConnectorsPort {
         )
         await smtp.quit()
       } else if (row.preset === 'ics') {
+        calendarHttpsUrl(this.#policy, secret)
         const response = await this.#policy.request(secret)
         if (!response.ok) throw new Error()
         await response.body?.cancel()

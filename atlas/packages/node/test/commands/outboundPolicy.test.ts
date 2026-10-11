@@ -191,3 +191,35 @@ test('authorization withdrawn during DNS resolution refuses dispatch before any 
   ).rejects.toThrow('permission revoked')
   expect(calls).toBe(0)
 })
+
+test('HTTPS redirects cannot downgrade through an HTTP notification exception; oversized request lines and headers never dispatch', async () => {
+  let calls = 0,
+    lookups = 0
+  const policy = new OutboundPolicy({
+    allowPorts: [{ protocol: 'http', port: 80 }],
+    lookup: async () => {
+      lookups++
+      return [{ address: '8.8.8.8', family: 4 }]
+    },
+    fetch: async () => {
+      calls++
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'http://second.example/private-token' },
+      })
+    },
+  })
+  await expect(policy.request('https://first.example')).rejects.toThrow('降级')
+  expect(calls).toBe(1)
+  lookups = 0
+  await expect(
+    policy.request(`https://first.example/${'x'.repeat(8192)}`),
+  ).rejects.toThrow('请求行')
+  await expect(
+    policy.request('https://first.example', {
+      headers: { Authorization: 'x'.repeat(8192) },
+    }),
+  ).rejects.toThrow('请求头')
+  expect(calls).toBe(1)
+  expect(lookups).toBe(0)
+})

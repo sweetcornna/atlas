@@ -678,3 +678,54 @@ test('connector CLI flag requires personal accounts, approval links and authenti
     ]).connectors,
   ).toBe(true)
 })
+
+test('policy changes preserve credential-safe metadata and removal while probes remain blocked', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p25-policy-view-'))
+  const agents = async () => ['qianmo://worker/main']
+  let book = new ConsoleConnectors({
+    directory: root,
+    agents,
+    policy: new OutboundPolicy({
+      allowPorts: [{ protocol: 'https', port: 8443 }],
+    }),
+  })
+  try {
+    const saved = value(
+      await book.save(
+        {
+          name: 'Blocked feed',
+          kind: 'calendar',
+          preset: 'ics',
+          settings: {},
+          secret: 'https://example.com:8443/feed?token=private-fixture-token',
+          agents: ['qianmo://worker/main'],
+        },
+        actor,
+      ),
+    )
+    book.close()
+    let lookups = 0
+    book = new ConsoleConnectors({
+      directory: root,
+      agents,
+      policy: new OutboundPolicy({
+        lookup: async () => {
+          lookups++
+          return [{ address: '8.8.8.8', family: 4 }]
+        },
+      }),
+    })
+    const snapshot = value(await book.snapshot())
+    expect(snapshot.connectors[0]?.summary['host']).toBe('example.com')
+    expect(JSON.stringify(snapshot)).not.toContain('private-fixture-token')
+    expect(value(await book.probe(saved.id, actor)).lastProbe?.ok).toBe(false)
+    expect(lookups).toBe(0)
+    value(await book.remove(saved.id, actor))
+    expect(
+      value(await book.snapshot()).connectors.some(row => row.id === saved.id),
+    ).toBe(false)
+  } finally {
+    book.close()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

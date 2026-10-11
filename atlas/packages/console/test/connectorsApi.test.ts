@@ -282,7 +282,7 @@ test('malformed bodies, methods, unavailable ports and failure shapes are mapped
 })
 test('tenant wrapper filters ownership, calls and agents; refuses foreign writes before admission and fails closed on revision change', async () => {
   let revision = '1'
-  const config: TenantConfig = {
+  let config: TenantConfig = {
     version: 1,
     hubServer: 'hub',
     tenants: [{ id: 'a' }, { id: 'b' }],
@@ -388,6 +388,40 @@ test('tenant wrapper filters ownership, calls and agents; refuses foreign writes
       })
     ).ok,
   ).toBe(false)
+  config = {
+    ...config,
+    nodes: config.nodes.map(row =>
+      row.nodeId === 'worker' ? { ...row, tenant: 'b' } : row,
+    ),
+  }
+  const fresh = scopedConsoleDeps(original, access('ops'))
+  const owned = await fresh.deps.connectors!.snapshot()
+  expect(
+    owned.ok &&
+      owned.value.connectors.map(row => ({ id: row.id, agents: row.agents })),
+  ).toEqual([{ id: 'one', agents: [] }])
+  const cleanup = context(
+    'POST',
+    '/v0/connectors',
+    access('ops'),
+    JSON.stringify({ id: 'one', agents: [] }),
+  )
+  expect(
+    await tenantRequestDenial(
+      cleanup.request,
+      cleanup.url,
+      fresh.deps,
+      fresh.scope,
+    ),
+  ).toBeNull()
+  expect(
+    (
+      await fresh.deps.connectors!.save(
+        { ...draft, id: 'one', agents: [] },
+        { subject: 'u:0123456789abcdef', role: 'ops', requestId: 'r' },
+      )
+    ).ok,
+  ).toBe(true)
 })
 
 test('malformed connector ids containing token URLs never enter the API action ledger', async () => {

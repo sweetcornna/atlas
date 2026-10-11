@@ -4,6 +4,13 @@
 import { LIMITS } from '@qianmo/protocol'
 import { OutboundPolicy, boundedText } from '../commands/outboundPolicy.js'
 
+/** Notification fixture exceptions cannot downgrade credentialed calendar protocols. */
+export function calendarHttpsUrl(policy: OutboundPolicy, raw: string): URL {
+  const url = policy.url(raw)
+  if (url.protocol !== 'https:') throw new Error('日历连接只允许 HTTPS')
+  return url
+}
+
 export interface CalendarEvent {
   readonly id: string
   readonly title: string
@@ -252,7 +259,7 @@ export class CaldavClient {
     password: string,
   ) {
     this.#policy = policy
-    this.#root = policy.url(raw)
+    this.#root = calendarHttpsUrl(policy, raw)
     this.#authorization = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`
   }
   #href(raw: string, base = this.#root): URL {
@@ -389,6 +396,7 @@ export async function icsEvents(
   to: string,
 ): Promise<CalendarResult> {
   range(from, to)
+  calendarHttpsUrl(policy, url)
   const response = await policy.request(url, {
     signal: AbortSignal.timeout(LIMITS.connectorTimeoutMs),
   })
