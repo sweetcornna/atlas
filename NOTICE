@@ -21,14 +21,14 @@ this repository.
     以及阡陌撰写的文档（`docs/dev/`、`docs/README.md`、根目录的 `CLAUDE.md`、
     `CLAUDE.full.md`、`SECURITY.md` 等）。
   * 由基座导入的代码：MIT License（根目录 `LICENSE.base`，即基座 oh-my-pi
-    上游 `LICENSE` 的逐字副本）。即位于仓库根的 oh-my-pi v18.8.4 树：
+    上游 `LICENSE` 的逐字副本）。即位于仓库根的 oh-my-pi v18.8.8 树：
     `packages/`、`crates/`、根 `scripts/`、`python/`、`sdk/`、`docs/*.md` 等。
 
-判据是路径：文件路径存在于零改动快照 `base-snapshot/omp-v18.8.4` 的树里，
+判据是路径：文件路径存在于零改动快照 `base-snapshot/omp-v18.8.8` 的树里，
 即属于基座层；不存在，即属于阡陌层。
 
     # 成功（退出码 0）表示该路径是基座路径
-    git cat-file -e base-snapshot/omp-v18.8.4:<路径>
+    git cat-file -e base-snapshot/omp-v18.8.8:<路径>
 
 文件头是这条判据的标记，不是判据本身。阡陌文件在前 5 行内按自身注释语法带两行
 头：`Copyright 2026 Qianmo AgentNest Team` 与
@@ -87,7 +87,7 @@ this repository.
 快照路径中被阡陌修改或删除的文件逐条登记在 `docs/dev/base-modifications.md`，
 现算命令：
 
-    git diff --name-status --no-renames base-snapshot/omp-v18.8.4 HEAD | awk '$1!="A"'
+    git diff --name-status --no-renames base-snapshot/omp-v18.8.8 HEAD | awk '$1!="A"'
 
 它们不加 SPDX 头：文件头只标来源层；在上游文件头部插入几行，还会在每次上游
 同步时与上游对文件头部的改动冲突。这些文件分发时按什么许可，逐类说明：
@@ -96,7 +96,7 @@ this repository.
     基金会（FSF）的 AGPL-3.0 正文，没有一行上游内容。它就是那份许可文本本身，
     著作权属 FSF，只许逐字复制。omp 的 MIT 正文逐字移到了 `LICENSE.base`。
   * `README.md`、`CONTRIBUTING.md`、`AGENTS.md`：上半部分是阡陌撰写的内容，
-    分界标记 `<!-- base: oh-my-pi v18.8.4 <文件名>, verbatim below -->` 以下
+    分界标记 `<!-- base: oh-my-pi v18.8.8 <文件名>, verbatim below -->` 以下
     是 omp 原文、逐字未改。标记以下的部分按 MIT（`LICENSE.base`），标记以上的
     部分是阡陌作品（AGPL-3.0-or-later）。
   * `package.json`、`bun.lock`、`.gitignore` 与 `.github/` 下被改的模板：在 omp
@@ -167,12 +167,12 @@ Corresponding Source。阡陌的控制台与常驻节点都落在这一格，包
   上游项目    oh-my-pi（CLI 名 omp），Pi（badlogic/pi-mono）的 fork，
               由 Stencil Labs 维护
   上游仓库    https://github.com/can1357/oh-my-pi
-  锁定提交    40e9368ef0458fd9073329cdff4174895f91bc6b，版本 v18.8.4
-  基座快照    base-snapshot/omp-v18.8.4
+  锁定提交    1ca13863a82825bdce02908b3db9713e9b084290，版本 v18.8.8
+  基座快照    base-snapshot/omp-v18.8.8
               本仓库内的标签，指向无父提交
               8eda291176c285be99039c019dd4a8b1cfeaf360，
-              树 c7d2ecac783e9aecd5799b6dff14547d5089e649，与上游锁定提交的树
-              逐字节一致。本仓库不含上游 git 历史，40e9368e 在本仓库不是有效
+              树 1b30d3c80bc6f5c4d722e10dc82ebb6d8c4125a3，与上游锁定提交的树
+              逐字节一致。本仓库不含上游 git 历史，1ca13863 在本仓库不是有效
               git 对象
   导入提交    c9a87c8c：删除仍在工作树里的 occ 基座文件，按快照逐字节写入
               omp 文件，阡陌文件原样保留
@@ -186,23 +186,23 @@ Corresponding Source。阡陌的控制台与常驻节点都落在这一格，包
 上游的 MIT 许可与版权声明予以保留，逐字存于根目录 `LICENSE.base`，它与快照里的
 `LICENSE` 逐字节相同：
 
-    git show base-snapshot/omp-v18.8.4:LICENSE | cmp - LICENSE.base
+    git show base-snapshot/omp-v18.8.8:LICENSE | cmp - LICENSE.base
 
 比对对象是快照里的 `LICENSE`。`LICENSE.base` 这条路径快照里没有，
-`git cat-file -e base-snapshot/omp-v18.8.4:LICENSE.base` 会报错。
+`git cat-file -e base-snapshot/omp-v18.8.8:LICENSE.base` 会报错。
 
 omp 自带的许可材料原样留在快照路径上：根目录 `THIRD-PARTY-NOTICES.txt`（omp
 发行物的第三方声明汇总）、`about.toml` 与 `deny.toml`（Rust 依赖的许可配置），
 以及各子包与 vendored crate 自带的 LICENSE 文件：
 
-    git ls-tree -r --name-only base-snapshot/omp-v18.8.4 | grep -E '(^|/)LICEN[CS]E[^/]*$'
+    git ls-tree -r --name-only base-snapshot/omp-v18.8.8 | grep -E '(^|/)LICEN[CS]E[^/]*$'
 
 本仓库对基座的修改不改变 MIT 对基座那一层的适用。
 
 成果边界。举证命令：
 
-  工作面            git diff base-snapshot/omp-v18.8.4..HEAD
-  当前基座贡献边界  git show --stat base-snapshot/omp-v18.8.4
+  工作面            git diff base-snapshot/omp-v18.8.8..HEAD
+  当前基座贡献边界  git show --stat base-snapshot/omp-v18.8.8
   工作记录          git log 3380c88..HEAD
 
 另加导入 occ 之前的两个立项提交 67f6081、74f7a22。工作记录里有两笔提交的内容全部
@@ -409,16 +409,16 @@ dividing line is the attribution boundary itself:
     Qianmo team (`docs/dev/`, `docs/README.md`, and root files such as
     `CLAUDE.md`, `CLAUDE.full.md`, `SECURITY.md`).
   * Code imported from the base: MIT License (root `LICENSE.base`, a verbatim
-    copy of the upstream oh-my-pi `LICENSE`). This is the oh-my-pi v18.8.4 tree
+    copy of the upstream oh-my-pi `LICENSE`). This is the oh-my-pi v18.8.8 tree
     at the repository root: `packages/`, `crates/`, root `scripts/`, `python/`,
     `sdk/`, `docs/*.md` and so on.
 
 The test is the path. A file whose path exists in the tree of the
-zero-modification snapshot `base-snapshot/omp-v18.8.4` belongs to the base
+zero-modification snapshot `base-snapshot/omp-v18.8.8` belongs to the base
 layer; any other file belongs to the Qianmo layer.
 
     # exit status 0 means the path is a base path
-    git cat-file -e base-snapshot/omp-v18.8.4:<path>
+    git cat-file -e base-snapshot/omp-v18.8.8:<path>
 
 The header marks this verdict; it is not the verdict. Qianmo files carry two
 lines within their first 5 lines, in their own comment syntax:
@@ -488,7 +488,7 @@ license is this file granted". Non-code assets are licensed by purpose; see
 Snapshot paths that Qianmo modified or deleted are registered in
 `docs/dev/base-modifications.md`. To list them:
 
-    git diff --name-status --no-renames base-snapshot/omp-v18.8.4 HEAD | awk '$1!="A"'
+    git diff --name-status --no-renames base-snapshot/omp-v18.8.8 HEAD | awk '$1!="A"'
 
 They carry no SPDX header: the header marks the layer of origin, and lines
 inserted at the top of an upstream file would conflict with upstream changes to
@@ -501,7 +501,7 @@ that region on every sync. How they are distributed:
     verbatim to `LICENSE.base`.
   * `README.md`, `CONTRIBUTING.md`, `AGENTS.md`: the upper part is written by
     Qianmo; below the marker
-    `<!-- base: oh-my-pi v18.8.4 <file name>, verbatim below -->` is omp's
+    `<!-- base: oh-my-pi v18.8.8 <file name>, verbatim below -->` is omp's
     original text, unchanged. The part below the marker is under MIT
     (`LICENSE.base`); the part above it is a Qianmo work under
     AGPL-3.0-or-later.
@@ -586,13 +586,13 @@ repository root as a zero-modification snapshot.
   Upstream project   oh-my-pi (CLI name omp), a fork of Pi (badlogic/pi-mono),
                      maintained by Stencil Labs
   Upstream repo      https://github.com/can1357/oh-my-pi
-  Pinned commit      40e9368ef0458fd9073329cdff4174895f91bc6b, version v18.8.4
-  Base snapshot      base-snapshot/omp-v18.8.4
+  Pinned commit      1ca13863a82825bdce02908b3db9713e9b084290, version v18.8.8
+  Base snapshot      base-snapshot/omp-v18.8.8
                      A tag in this repository pointing to the parentless commit
                      8eda291176c285be99039c019dd4a8b1cfeaf360, tree
-                     c7d2ecac783e9aecd5799b6dff14547d5089e649, byte-identical
+                     1b30d3c80bc6f5c4d722e10dc82ebb6d8c4125a3, byte-identical
                      to the tree of the pinned upstream commit. This repository
-                     holds no upstream git history, so 40e9368e is not a valid
+                     holds no upstream git history, so 1ca13863 is not a valid
                      git object here
   Import commit      c9a87c8c: deleted the occ base files still in the working
                      tree and wrote the omp files byte for byte from the
@@ -608,11 +608,11 @@ the repository root.
 The upstream MIT license and copyright notices are retained verbatim in the
 root `LICENSE.base`, which is byte-identical to the snapshot's `LICENSE`:
 
-    git show base-snapshot/omp-v18.8.4:LICENSE | cmp - LICENSE.base
+    git show base-snapshot/omp-v18.8.8:LICENSE | cmp - LICENSE.base
 
 The comparison is against the snapshot's `LICENSE`. The path `LICENSE.base`
 does not exist in the snapshot;
-`git cat-file -e base-snapshot/omp-v18.8.4:LICENSE.base` fails.
+`git cat-file -e base-snapshot/omp-v18.8.8:LICENSE.base` fails.
 
 omp's own licensing material stays on the snapshot paths: the root
 `THIRD-PARTY-NOTICES.txt` (the aggregate third-party notice for omp release
@@ -620,15 +620,15 @@ artifacts), `about.toml` and `deny.toml` (license configuration for Rust
 dependencies), and the LICENSE files shipped with its packages and vendored
 crates:
 
-    git ls-tree -r --name-only base-snapshot/omp-v18.8.4 | grep -E '(^|/)LICEN[CS]E[^/]*$'
+    git ls-tree -r --name-only base-snapshot/omp-v18.8.8 | grep -E '(^|/)LICEN[CS]E[^/]*$'
 
 Modifications made in this repository do not change the applicability of MIT
 to the base layer.
 
 Attribution boundary. Commands:
 
-  Work surface             git diff base-snapshot/omp-v18.8.4..HEAD
-  Current base boundary    git show --stat base-snapshot/omp-v18.8.4
+  Work surface             git diff base-snapshot/omp-v18.8.8..HEAD
+  Current base boundary    git show --stat base-snapshot/omp-v18.8.8
   Work record              git log 3380c88..HEAD
 
 plus the two project-initialisation commits 67f6081 and 74f7a22 that precede

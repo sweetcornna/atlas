@@ -23,7 +23,7 @@
 
 下文是 omp 原始贡献指南，描述向 omp 上游贡献的流程；阡陌本仓库的贡献使用上面的入口。
 
-<!-- base: oh-my-pi v18.8.4 CONTRIBUTING.md, verbatim below -->
+<!-- base: oh-my-pi v18.8.8 CONTRIBUTING.md, verbatim below -->
 
 # Contributing to omp
 

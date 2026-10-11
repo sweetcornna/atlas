@@ -272,6 +272,25 @@ export function updateProvenance(
         readFileSync(path, 'utf8').replaceAll(old.snapshot, next.snapshot),
       )
   }
+  // The other statements of the current base. In the three base files Atlas
+  // prefixes, only the Atlas preamble up to the "verbatim below" marker is
+  // touched; the upstream text after it stays byte-for-byte.
+  const bump = (text: string) =>
+    text.replaceAll(`v${old.version}`, `v${next.version}`)
+  const marker = 'verbatim below -->'
+  for (const file of ['README.md', 'AGENTS.md', 'CONTRIBUTING.md']) {
+    const path = join(candidate, file)
+    if (!existsSync(path)) continue
+    const text = readFileSync(path, 'utf8')
+    const at = text.indexOf(marker)
+    if (at === -1) continue
+    const end = at + marker.length
+    writeFileSync(path, bump(text.slice(0, end)) + text.slice(end))
+  }
+  for (const file of ['CLAUDE.full.md', 'docs/dev/base-modifications.md']) {
+    const path = join(candidate, file)
+    if (existsSync(path)) writeFileSync(path, bump(readFileSync(path, 'utf8')))
+  }
   // Preserve the original license verbatim even if upstream updates its notice.
   const license = Bun.spawnSync(['git', 'show', `${next.snapshot}:LICENSE`], {
     cwd: candidate,

@@ -1,12 +1,24 @@
 # 基座溯源
 
+<!-- omp-current:start -->
+## Current reviewed-candidate base
+
+- Repository: https://github.com/can1357/oh-my-pi
+- Version: v18.8.8
+- Commit: 1ca13863a82825bdce02908b3db9713e9b084290
+- Snapshot: `base-snapshot/omp-v18.8.8` (b832507a5f9cbdd8d2136f55f1e44c2daf384503, no parents)
+- Tree: 1b30d3c80bc6f5c4d722e10dc82ebb6d8c4125a3 (byte-identical to upstream)
+- Previous snapshot: `base-snapshot/omp-v18.8.4` (retained unchanged)
+- Status: candidate; compatibility checks are attached to the draft PR. Deployment requires review.
+<!-- omp-current:end -->
+
 本文件记录基座溯源事件；现行机器 pin 位于 `atlas/upstream/omp.json`，由 `atlas:check:omp-pin` 核对本文件、NOTICE 与快照一致。记录在「导入」与「上游同步」时更新并随候选接受审核（章程 §5.6①）。上半部分是现行基座 oh-my-pi 的记录；open-claude-code 时代（2026-08-11 至 2026-10-07）的全部记录保留在下方「历史基座」一节。
 
-## 现行基座：oh-my-pi（自 2026-10-07 起）
+## 初始导入基座：oh-my-pi（自 2026-10-07 起）
 
 - 基座：oh-my-pi（CLI 名 `omp`），Pi（badlogic/pi-mono，作者 Mario Zechner）的 fork，由 Stencil Labs 维护；原创开源项目，不是对任何商业产品的逆向复原
 - 上游仓库：https://github.com/can1357/oh-my-pi
-- 基座提交（**当前 pin**）：`40e9368ef0458fd9073329cdff4174895f91bc6b`（2026-10-08T05:02:28+02:00，`chore: bump version to 18.8.4`）
+- 基座提交（**导入 pin**）：`40e9368ef0458fd9073329cdff4174895f91bc6b`（2026-10-08T05:02:28+02:00，`chore: bump version to 18.8.4`）
 - 基座版本：**v18.8.4**
 - 许可：MIT，根目录 `LICENSE.base` 为上游 `LICENSE` 逐字副本（`git show base-snapshot/omp-v18.8.4:LICENSE | cmp - LICENSE.base` 无输出）。版权行三条：`Copyright (c) 2025 Mario Zechner`、`Copyright (c) 2025-2026 Can Bölük`、`Copyright (c) 2026 Stencil Labs, Inc.`；各子包与 vendored crate 自带的 LICENSE 文件以及上游 `THIRD-PARTY-NOTICES.txt` 原样保留在快照路径上
 - 零改动快照标签：`base-snapshot/omp-v18.8.4` → 提交 `8eda291176c285be99039c019dd4a8b1cfeaf360`（**无父提交**），树 `c7d2ecac783e9aecd5799b6dff14547d5089e649`，与上游 `40e9368e` 的树逐字节一致。上游 git 历史未进入本仓库（以 git 对象方式传入单棵树，与 `3380c88`、`base-snapshot/v2.46.0` 同一原则），因此 `40e9368e` 在本仓库不是有效对象；在上游克隆上 `git rev-parse 40e9368e^{tree}` 应输出上面的树 SHA

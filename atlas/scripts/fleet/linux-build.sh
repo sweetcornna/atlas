@@ -78,7 +78,9 @@ fi
 
 # ── 1. 取源：bundle 只读仓库对象，不动工作区与 HEAD ─────────────────────────
 # 快照标签一并进 bundle：license-headers 的判据要它（容器里的 clone 取标签，下面 stage2）。
-SNAPSHOT_TAG=base-snapshot/omp-v18.8.4
+# 标签取自被构建提交的 pin（atlas/upstream/omp.json），上游同步后自动跟上。
+SNAPSHOT_TAG="$(git -C "$REPO" show "$HEAD_SHA:atlas/upstream/omp.json" | sed -n 's/.*"snapshot": *"\([^"]*\)".*/\1/p')"
+[ -n "$SNAPSHOT_TAG" ] || { echo "no snapshot in atlas/upstream/omp.json at $HEAD_SHA" >&2; exit 5; }
 git -C "$REPO" bundle create "$OUT/in/atlas.bundle" "$BRANCH" "refs/tags/$SNAPSHOT_TAG" 2> "$OUT/bundle.log"
 git -C "$REPO" bundle verify "$OUT/in/atlas.bundle" >> "$OUT/bundle.log" 2>&1
 echo "bundle=$(du -h "$OUT/in/atlas.bundle" | cut -f1) commit=$HEAD_SHA branch=$BRANCH branch_head=$BRANCH_HEAD platform=$PLATFORM" | tee "$OUT/source.txt"
@@ -103,7 +105,7 @@ mkdir -p /home/builder/.bun/install/cache /home/builder/out
 chown -R builder:builder /home/builder
 install -o builder -g builder -m 0644 /in/atlas.bundle /home/builder/atlas.bundle
 # builder 只写自己的家目录；root 最后整体拷回 /out（绑定挂载的属主不归容器管）
-su builder -c "BRANCH='${BRANCH}' COMMIT='${COMMIT}' bash /in/stage2-builder.sh"
+su builder -c "BRANCH='${BRANCH}' COMMIT='${COMMIT}' SNAPSHOT_TAG='${SNAPSHOT_TAG}' bash /in/stage2-builder.sh"
 echo "STAGE2_EXIT=$?" >> /home/builder/out/rc.txt
 cp -a /home/builder/out/. /out/
 EOS
@@ -115,7 +117,7 @@ rc() { echo "$1=$2" >> $OUT/rc.txt; }
 rm -rf "$W"
 git clone -q --branch "$BRANCH" "$HOME/atlas.bundle" "$W" || { rc CLONE_RC failed; exit 20; }
 cd "$W"
-git fetch -q "$HOME/atlas.bundle" "refs/tags/base-snapshot/omp-v18.8.4:refs/tags/base-snapshot/omp-v18.8.4" || { rc FETCH_TAG_RC failed; exit 23; }
+git fetch -q "$HOME/atlas.bundle" "refs/tags/$SNAPSHOT_TAG:refs/tags/$SNAPSHOT_TAG" || { rc FETCH_TAG_RC failed; exit 23; }
 git checkout -q --detach "$COMMIT" || { rc CHECKOUT_RC failed; exit 22; }
 HEAD=$(git rev-parse HEAD)
 PINNED=$(tr -d '\r' < .tool-versions | awk '/^bun /{print $2}')
@@ -157,7 +159,7 @@ EOS
 : > "$OUT/rc.txt"
 START=$(date +%s)
 set +e
-docker --context "$DOCKER_CONTEXT" run --rm --platform "$PLATFORM" --dns "${BUILD_DNS:-1.1.1.1}" -e BRANCH="$BRANCH" -e COMMIT="$HEAD_SHA" \
+docker --context "$DOCKER_CONTEXT" run --rm --platform "$PLATFORM" --dns "${BUILD_DNS:-1.1.1.1}" -e BRANCH="$BRANCH" -e COMMIT="$HEAD_SHA" -e SNAPSHOT_TAG="$SNAPSHOT_TAG" \
   -v "$OUT/in:/in:ro" -v "$OUT:/out" \
   -v "atlas-fleet-bun-cache-${PLATFORM//\//-}:/home/builder/.bun/install/cache" \
   "$IMAGE" bash /in/stage1-root.sh > "$OUT/docker.log" 2>&1

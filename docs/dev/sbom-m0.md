@@ -5,7 +5,7 @@
 
 > **本文件由 `bun run atlas:sbom` 生成，不要手改。**改判据请改 `atlas/scripts/sbom.ts`。
 >
-> 输入：`bun.lock`（SHA-256 `edf236e38e1aefac…`）+ `node_modules` 的 `license` 字段。机器可读版本见同目录 [`sbom-m0.json`](./sbom-m0.json)（CycloneDX 1.5 形状）。
+> 输入：`bun.lock`（SHA-256 `c98ac7881fc98b65…`）+ `node_modules` 的 `license` 字段。机器可读版本见同目录 [`sbom-m0.json`](./sbom-m0.json)（CycloneDX 1.5 形状）。
 
 对应 roadmap **P8.4** 交付物①，章程 §5 与风险 L-2 的证据链见 [`license-chain-m0.md`](./license-chain-m0.md)。
 
@@ -130,7 +130,7 @@
 
 | 位置 | 内容 | 入库状态 | 目录内 LICENSE | 溯源 |
 |---|---|---|---|---|
-| `packages/natives/native/` | 1 个本机构建的 `pi_natives` N-API 插件（pi_natives.darwin-arm64.node） | 不入库（构建产物）；编译时嵌入 `dist/qm-<target>` | THIRD-PARTY-NOTICES.txt、about.toml、deny.toml（仓库根） | 由 Cargo workspace（`Cargo.lock` 1050 个 package）构建；Rust 第三方依赖的许可清单取 omp 的 `THIRD-PARTY-NOTICES.txt`，接受的许可表在 `about.toml`，由 cargo-deny 的 `deny.toml` 兜底 |
+| `packages/natives/native/` | 1 个本机构建的 `pi_natives` N-API 插件（pi_natives.darwin-arm64.node） | 不入库（构建产物）；编译时嵌入 `dist/qm-<target>` | THIRD-PARTY-NOTICES.txt、about.toml、deny.toml（仓库根） | 由 Cargo workspace（`Cargo.lock` 1067 个 package）构建；Rust 第三方依赖的许可清单取 omp 的 `THIRD-PARTY-NOTICES.txt`，接受的许可表在 `about.toml`，由 cargo-deny 的 `deny.toml` 兜底 |
 | `crates/vendor/` | 5 个就地打补丁的第三方 Rust crate（brush-core、brush-parser、cfg_aliases、napi、tree-sitter-go） | 入库（git 跟踪） | 5/5 个目录带 LICENSE/COPYING/NOTICE | 经 `[patch.crates-io]` 接入 Cargo workspace；各自许可正文收录在 THIRD-PARTY-NOTICES.txt 的「TRACKED VENDORED CODE」一节 |
 | `dist/qm-<target>` | qm 与 oh-my-pi CLI 编成的单个可执行文件（Bun --compile），内嵌上面的 `pi_natives` 插件 | 不入库（`atlas/scripts/build-qm.ts` 产物） | 随产物分发时附 LICENSE、LICENSE.base、NOTICE 与 THIRD-PARTY-NOTICES.txt | 源码为本仓库（阡陌层 AGPL-3.0-or-later，基座层 MIT）；JS 依赖由上面的 bun.lock 清单覆盖，Rust 依赖由 omp 的 THIRD-PARTY-NOTICES.txt 覆盖 |
 

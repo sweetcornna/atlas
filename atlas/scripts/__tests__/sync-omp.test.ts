@@ -214,6 +214,24 @@ describe('isolated omp candidate sync', () => {
       'omp-current:start',
     )
   })
+  test('current-base notes follow the new version; upstream text after the marker does not', () => {
+    const f = fixture()
+    write(
+      f.source,
+      'README.md',
+      '当前基座固定为 **omp v1.0.0**。\n<!-- base: oh-my-pi v1.0.0 README.md, verbatim below -->\nupstream mentions v1.0.0\n',
+    )
+    write(f.source, 'CLAUDE.full.md', '| 仓库性质 | omp v1.0.0 的下游 fork |\n')
+    commit(f.source, 'atlas notes')
+    next(f.upstream)
+    const result = prepareCandidate(f.source, f.upstream, 'v1.1.0', f.out)
+    expect(readFileSync(join(result.candidate!, 'README.md'), 'utf8')).toBe(
+      '当前基座固定为 **omp v1.1.0**。\n<!-- base: oh-my-pi v1.1.0 README.md, verbatim below -->\nupstream mentions v1.0.0\n',
+    )
+    expect(
+      readFileSync(join(result.candidate!, 'CLAUDE.full.md'), 'utf8'),
+    ).toBe('| 仓库性质 | omp v1.1.0 的下游 fork |\n')
+  })
   test('an existing matching candidate snapshot is reused without moving its tag', () => {
     const f = fixture()
     next(f.upstream)

@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { embeddedAddonFiles } from '../../../packages/natives/scripts/embed-native'
-import { extractEmbeddedAddonArchive } from '../../../packages/natives/native/loader-state.js'
+import { extractEmbeddedAddons } from '../../../packages/natives/native/loader-state.js'
 
 const version = '18.8.4'
 const baseline = 'baseline__piNativesV18_8_4\0'
@@ -26,26 +26,33 @@ test('portable x64 embeds and extracts only baseline even when modern is availab
       ...options,
       x64BaselineOnly: true,
     })
-    const archiveEntry = Object.entries(files).find(([path]) =>
-      path.endsWith('.tar.gz'),
-    )!
-    if (typeof archiveEntry[1] === 'string')
-      throw new Error('archive must be binary')
-    const archive = new Bun.Archive(archiveEntry[1])
-    const entries = await archive.files()
-    expect([...entries.keys()]).toEqual(['pi_natives.linux-x64-baseline.node'])
-    expect(await entries.values().next().value!.text()).toBe(baseline)
-    const archivePath = join(root, basename(archiveEntry[0]))
-    await Bun.write(archivePath, archiveEntry[1])
+    // One zstd frame per embedded addon, plus the manifest that lists them.
+    const frames = Object.entries(files).filter(([path]) =>
+      path.endsWith('.node.zst'),
+    )
+    expect(frames.map(([path]) => basename(path))).toEqual([
+      'pi_natives.linux-x64-baseline.node.zst',
+    ])
+    const manifest = Object.entries(files).find(([path]) =>
+      path.endsWith('embedded-addon.js'),
+    )![1]
+    expect(manifest).not.toContain('modern')
+    const [framePath, frame] = frames[0]!
+    if (typeof frame === 'string') throw new Error('frame must be binary')
+    expect(new TextDecoder().decode(Bun.zstdDecompressSync(frame))).toBe(
+      baseline,
+    )
+    const zstdPath = join(root, basename(framePath))
+    await Bun.write(zstdPath, frame)
     const targetDir = join(root, 'cache')
     await mkdir(targetDir)
-    const written = extractEmbeddedAddonArchive({
-      archivePath,
+    const written = extractEmbeddedAddons({
       files: [
         {
           variant: 'baseline',
           filename: 'pi_natives.linux-x64-baseline.node',
           size: baseline.length,
+          zstdPath,
         },
       ],
       targetDir,
@@ -57,16 +64,15 @@ test('portable x64 embeds and extracts only baseline even when modern is availab
       ).text(),
     ).toBe(baseline)
     const defaults = await embeddedAddonFiles(options)
-    const both = Object.entries(defaults).find(([path]) =>
-      path.endsWith('.tar.gz'),
-    )!
-    if (typeof both[1] === 'string') throw new Error('archive must be binary')
-    expect([...(await new Bun.Archive(both[1]).files()).keys()].sort()).toEqual(
-      [
-        'pi_natives.linux-x64-baseline.node',
-        'pi_natives.linux-x64-modern.node',
-      ],
-    )
+    expect(
+      Object.keys(defaults)
+        .filter(path => path.endsWith('.node.zst'))
+        .map(path => basename(path))
+        .sort(),
+    ).toEqual([
+      'pi_natives.linux-x64-baseline.node.zst',
+      'pi_natives.linux-x64-modern.node.zst',
+    ])
   } finally {
     await rm(root, { recursive: true, force: true })
   }

@@ -7,7 +7,7 @@
 |---|---|
 | 决议 | 负责人 2026-10-07：整仓换基座（章程 v3.0 基座路线变更） |
 | 新基座 | oh-my-pi（omp）v18.8.4，上游 `can1357/oh-my-pi` 提交 `40e9368ef0458fd9073329cdff4174895f91bc6b`，MIT |
-| 新度量基线 | 标签 `base-snapshot/omp-v18.8.4`（无父提交，树 `c7d2ecac…` 与上游逐字节一致） |
+| 新度量基线 | 标签 `base-snapshot/omp-v18.8.8`（无父提交，树 `c7d2ecac…` 与上游逐字节一致） |
 | 导入提交 | `c9a87c8c`：删除 occ 基座树 4033 文件，按快照写入 8798 文件，阡陌 1238 文件原样保留 |
 | 旧基座 | open-claude-code v2.46.0（`base-snapshot/v2.46.0` 保留，不移动、不删除） |
 
@@ -148,7 +148,7 @@ Fleet 载荷不带 `node_modules`，因此 `atlas:build:qm` 用 omp 的二进制
 | 门禁 | 处置 |
 |---|---|
 | prompt-purity、mock-hygiene、macro-guards、docs-i18n、shipped-features、vite 构建与 bundle 检查、windows 作业、ripgrep 安装、音频采集构建 | 随 occ 删除 |
-| license-headers | 快照标签改为 `base-snapshot/omp-v18.8.4`；判据不变：快照内路径为基座（无 SPDX 头），其余为阡陌（必须有 AGPL 头） |
+| license-headers | 快照标签改为 `base-snapshot/omp-v18.8.8`；判据不变：快照内路径为基座（无 SPDX 头），其余为阡陌（必须有 AGPL 头） |
 | identity-paths | 只扫描阡陌文件（git ls-files 减快照路径）；禁用字面量加入 `.omp`、`.claude` 之外的 occ 目录名 `.occ` |
 | sbom | 基座 pin 改为 omp v18.8.4；按 hoisted 布局与 `catalog:` 解析；Rust 依赖取 omp 的 `about.toml` / `THIRD-PARTY-NOTICES.txt` |
 | cycles、unused | 只覆盖 `atlas/`，预算重置 |

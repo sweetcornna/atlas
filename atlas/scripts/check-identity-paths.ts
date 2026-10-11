@@ -13,8 +13,8 @@
  * `~/.claude`.
  *
  * Scope: atlas-owned production code only — tracked or new files (git index
- * plus untracked, not ignored) that do not exist in the base snapshot
- * `base-snapshot/omp-v18.8.4`, with a `.ts` / `.tsx` extension, under `atlas/`
+ * plus untracked, not ignored) that do not exist in the pinned base snapshot
+ * (`atlas/upstream/omp.json`), with a `.ts` / `.tsx` extension, under `atlas/`
  * or `demo/`, excluding tests. omp's own files are never scanned: they keep
  * their `.omp` literals by design and `ompChildEnv()` redirects them.
  * Comments are stripped, so prose may mention the literals; tests are out of
@@ -31,9 +31,10 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import ompPin from '../upstream/omp.json'
 
 const REPO_ROOT = join(import.meta.dir, '..', '..')
-const SNAPSHOT_TAG = 'base-snapshot/omp-v18.8.4'
+const SNAPSHOT_TAG = ompPin.snapshot
 
 const ALLOWLIST: Record<string, true> = {
   // The derivation module itself.

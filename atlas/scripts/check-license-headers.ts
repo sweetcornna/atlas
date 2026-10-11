@@ -9,7 +9,7 @@
  * (root LICENSE), the code imported from the oh-my-pi (omp) base is MIT
  * (root LICENSE.base). The authoritative test for which layer a file belongs
  * to is its *path* — whether it exists in the zero-modification base snapshot
- * tree `base-snapshot/omp-v18.8.4` (CLAUDE.md, NOTICE 一、许可,
+ * tree pinned in `atlas/upstream/omp.json` (CLAUDE.md, NOTICE 一、许可,
  * docs/dev/base-switch-omp.md §6). The header is a *marker* of that verdict,
  * never the verdict itself: base files modified in place (recorded in
  * docs/dev/base-modifications.md) stay MIT and never carry the AGPL line.
