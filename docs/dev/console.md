@@ -2466,7 +2466,7 @@ qm console --files \
   --chat-from qianmo://hub/console
 ```
 
-`--files` 必须配 `--control` 和 `--files-exchange-repo`。后者只能登记一个 `owner/name=<令牌文件绝对路径>`；远端固定为 `https://github.com/owner/name.git`。令牌文件沿用接力凭据检查：非软链、当前用户所有、权限受限，不能把令牌直接写进参数。控制链路 PSK 与中枢身份沿用 [控制链路设计](directions-2026-10.md#11-控制链路中枢--节点)，节点以 `qm resident --controller hub=<中枢公钥>` 接受中枢。智能体名单经 `node.ping` 发现，注册中心不可用时仍可互通。
+`--files` 必须配 `--control`，交换仓库二选一：开了 `--connectors` 时用「连接」页里标为文件交换仓库的 GitHub 仓库连接（[P26c](#github-仓库连接p26c)，优先），否则用 `--files-exchange-repo`。仓库在控制台启动时选定，换仓库要重启；令牌每次使用时现读，连接删除或改名后传输立即以「交换仓库连接已撤销」失败。开启租户时只用 `--files-exchange-repo`（平台的仓库），不让某个租户的仓库承载别的租户的文件。两者都没有时文件互通不开启，启动日志说明原因。`--files-exchange-repo` 只能登记一个 `owner/name=<令牌文件绝对路径>`；远端固定为 `https://github.com/owner/name.git`。令牌文件沿用接力凭据检查：非软链、当前用户所有、权限受限，不能把令牌直接写进参数。控制链路 PSK 与中枢身份沿用 [控制链路设计](directions-2026-10.md#11-控制链路中枢--节点)，节点以 `qm resident --controller hub=<中枢公钥>` 接受中枢。智能体名单经 `node.ping` 发现，注册中心不可用时仍可互通。
 
 在 GitHub 创建专用**私有**交换仓库，在 Settings → Developer settings → Personal access tokens → Fine-grained tokens 创建令牌：选择仓库所属账号，仅选择这一个交换仓库，Repository permissions 的 **Contents** 设为 **Read and write**（Metadata 的读取由 GitHub 自动要求）。将令牌保存到宿主私有文件。中枢启动、创建传输及下发发布/取回前，通过带令牌的 `GET https://api.github.com/repos/<owner>/<name>` 检查 `private: true`；公开、未知、接口错误和限流都以「交换仓库必须是私有仓库」拒绝。后续 P26c 的仓库连接将替换当前 `resolve(repo)` 凭据适配器。
 
@@ -2639,8 +2639,9 @@ ICS 与 CalDAV 返回的 RRULE 本轮均**不展开**，结果显式带 warning�
 `github-repo` 预设属于 `repo` 类，登记 `settings: { repo: 'owner/name', exchange: false }`，
 `secret` 是只授权这一个仓库、Contents 读写的 GitHub fine-grained token。
 仓库名沿用接力校验（禁止 `..` 与 `.git` 后缀），同一租户内不能重复
-（忽略大小写）；整个连接簿最多一个 `exchange: true`。交换标记为后续
-文件互通提供连接选择，本工作包不接入文件交换实现。`agents` 必须为空：
+（忽略大小写）；整个连接簿最多一个 `exchange: true`。标了交换的连接在
+未开租户时就是文件互通的交换仓库（见[文件互通](#文件互通p20)，启动时选定，
+优先于 `--files-exchange-repo`）。`agents` 必须为空：
 连接由中枢的接力与文件互通使用，`qianmo_connectors` 和五个邮件/日历
 宿主工具都不能取得或使用它。写入、删除和探测沿用 `/v0/connectors`，
 仅个人 ops 可执行；秘密省略则保留，令牌复用 P25 的信封加密库，视图、

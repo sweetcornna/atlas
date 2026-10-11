@@ -203,6 +203,8 @@ MCP 工具沿用 P17 的五个（`qianmo_status`、`qianmo_handoff`、`qianmo_ta
 
 协议没有新消息类型，全部走 §1 的 `node.control`（`files.publish|fetch|clean|abort`）与 `hub.call`（`files.request`）。节点侧 `atlas/packages/node/src/host/files.ts`；中枢侧 `consoleFiles.ts`（申请、授权、传输三张账本，`files.ndjson`）；宿主工具 `qianmo_file_request` 只给主智能体。
 
+
+**实现（P26b）**：③ 来源节点在暂存里用 git 底层命令建一个无历史的提交（树固定为 `MANIFEST.json` 加 `files/<相对路径>`），推到 `refs/heads/qianmo/files/<传输号>`；④ 目标节点 `git fetch --depth=1` 后核对 `FETCH_HEAD` 等于台账提交号，不 checkout，先 `ls-tree -r -z` 查遍全树（只收 `100644`/`100755` 普通 blob 和固定布局），再逐个 `cat-file` 核对大小与 SHA-256、清单摘要与台账一致，才原子落进 `inbox/`。与上表不同的一处：⑤ 由中枢直接删分支（一个临时空仓库里 `push --delete`，不取对象），不经 B；失败遗留的孤儿分支从首次发现起算保留期，由清扫器删除。节点只接受 `https://github.com/<owner>/<name>.git` 这一种远端地址（测试用的本机远端要显式开关）。原 P20 的 `files.read|write|commit` 分块搬运与中枢暂存已删除。
 ---
 
 ## §4 P21 云端电脑（专属电脑与浏览器）
@@ -415,7 +417,7 @@ v1.1 按负责人 10-11「控制台不要太复杂，以对话界面为默认界
 
 | 编号 | 问题 | 裁定 | 落实 |
 |---|---|---|---|
-| D01 | 新端口没有租户包装 | 采纳 | 包装完成前，租户范围内不提供七类新端口与形象端口（控制台答 501） |
+| D01 | 新端口没有租户包装 | 采纳 | 记忆、文件互通、应用连接、云端电脑已有租户包装（`tenantScope.ts`，按智能体与连接归属过滤）；定时任务、按任务匹配模型、接力设备、形象在租户范围内仍不提供（控制台答 501） |
 | D02 | 控制链路身份 | 采纳 | S0：强制签名、公钥钉住、拒 PSK 与伪造 `from`；连接代次见 FX2 |
 | D03 | 幂等、急停、结果未知 | 采纳 | FX2：操作号账本、结果三分、急停放行表 |
 | D04 | 报文大小与分块 | 采纳 | 文件字节改经 GitHub（v1.2），不再走信封分块；清单、记忆列表、邮件结果仍分页 |

@@ -723,6 +723,19 @@ export class ConsoleConnectors
   #repoKey(repo: string, tenant: string | null): string {
     return JSON.stringify([tenant, repo.toLowerCase()])
   }
+  /** The repo connection marked for file exchange (at most one per book). */
+  exchangeRepo(): {
+    readonly repo: string
+    readonly tenant: string | null
+  } | null {
+    if (this.#closed) return null
+    const row = [...this.#rows.values()].find(
+      one => one.kind === 'repo' && one.settings['exchange'] === true,
+    )
+    return row === undefined
+      ? null
+      : { repo: String(row.settings['repo']), tenant: row.tenant }
+  }
   async resolve(
     repo: string,
     scope: HandoffRepoScope = {},

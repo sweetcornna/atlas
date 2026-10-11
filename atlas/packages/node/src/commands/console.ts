@@ -677,15 +677,93 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     config.memory && control
       ? new ConsoleMemory({ links: control, registry })
       : undefined
+  const approvals =
+    approvalIdentity === undefined || accounts === undefined
+      ? undefined
+      : new ConsoleApprovals({
+          from: config.chatFrom,
+          accounts: accounts.book,
+          approvalKeys: approvalIdentity.keys,
+          commandKeys: loadOrCreateNodeKeys(approvalIdentity.node),
+          ledger: new FileLedger(
+            qianmoConfigPath('qianmo', 'console', 'approvals.ndjson'),
+          ),
+          ...(tenancy === undefined ? {} : { tenancy }),
+          ...(chat.hub === undefined ? {} : { chat: chat.hub }),
+          ...(usage === undefined ? {} : { usage }),
+          targets: config.chatTargets.map(target => {
+            const publicKey = new Map(config.trusted).get(target.node)
+            if (publicKey === undefined)
+              throw new Error('approval node needs an explicit trusted key')
+            return {
+              node: target.node,
+              url: target.url,
+              publicKey,
+              psk: pskFromEnv(
+                transportPskEnvVarForNode(target.node, '--chat-url'),
+              ),
+            }
+          }),
+          onError: error =>
+            process.stderr.write(`[approvals] ${String(error)}\n`),
+        })
+
+  connectors =
+    config.connectors && control && approvals
+      ? new ConsoleConnectors({
+          directory: qianmoConfigPath('qianmo', 'console', 'connectors'),
+          policy: outboundPolicy,
+          ...(fallbackRepoCredentials === undefined
+            ? {}
+            : { fallbackRepoCredentials }),
+          agents: async () => {
+            const listed = await registry.list()
+            if (!listed.ok) throw new Error('registry unavailable')
+            return listed.value.map(row => row.address)
+          },
+          ...(tenancy === undefined ? {} : { tenancy }),
+          approvals,
+        })
+      : undefined
+  if (connectors) control!.onHubCall('connector', connectors.handle)
+
+  // File exchange goes through the repo connection marked for it, else the
+  // CLI repo: connections win, as for the relay. The repo is fixed for this
+  // process; its token is read on every use, so a removed or renamed
+  // connection stops transfers at once. With tenancy only the platform's CLI
+  // repo carries files, so no tenant's repo carries another tenant's files.
+  const exchangeConnection =
+    tenancy === undefined ? (connectors?.exchangeRepo() ?? null) : null
+  const exchange =
+    exchangeConnection !== null && connectors !== undefined
+      ? {
+          repo: exchangeConnection.repo,
+          credentials: {
+            resolve: (repo: string) =>
+              connectors.resolve(repo, { tenant: exchangeConnection.tenant }),
+          },
+        }
+      : config.filesExchangeRepo !== undefined
+        ? {
+            repo: config.filesExchangeRepo[0],
+            credentials: cliFilesExchangeCredentials([
+              config.filesExchangeRepo,
+            ]),
+          }
+        : undefined
+  if (config.files && control && exchange === undefined)
+    process.stderr.write(
+      '[files] 没有标为文件交换仓库的 GitHub 仓库连接，文件互通未开启；在「连接」页添加后重启控制台\n',
+    )
   const fileStop = new ResidentEstop({
     path: qianmoConfigPath('qianmo', 'console', 'files', 'ESTOP'),
   })
   const files =
-    config.files && control
+    config.files && control && exchange !== undefined
       ? new ConsoleFiles({
           directory: qianmoConfigPath('qianmo', 'console', 'files'),
-          exchangeRepo: config.filesExchangeRepo![0],
-          credentials: cliFilesExchangeCredentials([config.filesExchangeRepo!]),
+          exchangeRepo: exchange.repo,
+          credentials: exchange.credentials,
           retentionMs: config.filesExchangeRetainMs,
           controlUrl: node =>
             config.controlTargets?.find(one => one.node === node)?.url,
@@ -755,55 +833,6 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       )
     }
   }
-  const approvals =
-    approvalIdentity === undefined || accounts === undefined
-      ? undefined
-      : new ConsoleApprovals({
-          from: config.chatFrom,
-          accounts: accounts.book,
-          approvalKeys: approvalIdentity.keys,
-          commandKeys: loadOrCreateNodeKeys(approvalIdentity.node),
-          ledger: new FileLedger(
-            qianmoConfigPath('qianmo', 'console', 'approvals.ndjson'),
-          ),
-          ...(tenancy === undefined ? {} : { tenancy }),
-          ...(chat.hub === undefined ? {} : { chat: chat.hub }),
-          ...(usage === undefined ? {} : { usage }),
-          targets: config.chatTargets.map(target => {
-            const publicKey = new Map(config.trusted).get(target.node)
-            if (publicKey === undefined)
-              throw new Error('approval node needs an explicit trusted key')
-            return {
-              node: target.node,
-              url: target.url,
-              publicKey,
-              psk: pskFromEnv(
-                transportPskEnvVarForNode(target.node, '--chat-url'),
-              ),
-            }
-          }),
-          onError: error =>
-            process.stderr.write(`[approvals] ${String(error)}\n`),
-        })
-
-  connectors =
-    config.connectors && control && approvals
-      ? new ConsoleConnectors({
-          directory: qianmoConfigPath('qianmo', 'console', 'connectors'),
-          policy: outboundPolicy,
-          ...(fallbackRepoCredentials === undefined
-            ? {}
-            : { fallbackRepoCredentials }),
-          agents: async () => {
-            const listed = await registry.list()
-            if (!listed.ok) throw new Error('registry unavailable')
-            return listed.value.map(row => row.address)
-          },
-          ...(tenancy === undefined ? {} : { tenancy }),
-          approvals,
-        })
-      : undefined
-  if (connectors) control!.onHubCall('connector', connectors.handle)
 
   // The certificate column, or nothing at all (§10.1). Read at startup rather
   // than per request: the CA root is the one file this console needs and a

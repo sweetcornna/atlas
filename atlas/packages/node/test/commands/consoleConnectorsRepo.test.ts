@@ -713,3 +713,45 @@ test('tenantScope API lists only owned repos, preserves omitted secrets and refu
       ?.token,
   ).toBe('tenant-b-token')
 })
+
+test('file exchange finds the one repo connection marked for it, with --files taking --connectors in place of a CLI repo', async () => {
+  const { book } = fixture()
+  expect(book.exchangeRepo()).toBeNull()
+  const relay = value(await book.save(draft, actor))
+  expect(book.exchangeRepo()).toBeNull()
+  const exchange = value(
+    await book.save(
+      {
+        ...draft,
+        name: 'Exchange',
+        settings: { repo: 'owner/exchange', exchange: true },
+      },
+      actor,
+    ),
+  )
+  expect(book.exchangeRepo()).toEqual({ repo: 'owner/exchange', tenant: null })
+  const credential = await book.resolve('owner/exchange', { tenant: null })
+  expect(credential?.remoteUrl).toBe('https://github.com/owner/exchange.git')
+  // Removing the connection revokes it: no repo, and no token for the old one.
+  value(await book.remove(exchange.id, actor))
+  expect(book.exchangeRepo()).toBeNull()
+  expect(await book.resolve('owner/exchange', { tenant: null })).toBeNull()
+  value(await book.remove(relay.id, actor))
+
+  const key = generateNodeKeyPair().publicKey
+  const parsed = parseConsoleArgs([
+    '--files',
+    '--connectors',
+    '--accounts',
+    '--approvals',
+    '--chat-sign',
+    '--chat-url',
+    'worker=ws://127.0.0.1:12345',
+    '--control',
+    'worker=ws://127.0.0.1:12345',
+    '--trust',
+    `worker=${key}`,
+  ])
+  expect(parsed.files).toBe(true)
+  expect(parsed.filesExchangeRepo).toBeUndefined()
+})

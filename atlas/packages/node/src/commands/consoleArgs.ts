@@ -1284,8 +1284,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     throw new Error('--connectors needs --accounts, --approvals and --control')
   if (desktop && controlTargets.length === 0)
     throw new Error('--desktop needs --control')
-  if (files && !filesExchangeRepo)
-    throw new Error('--files needs --files-exchange-repo')
+  if (files && !filesExchangeRepo && !connectors)
+    throw new Error('--files needs --files-exchange-repo or --connectors')
   if (schedules && chatTargets.length === 0)
     throw new Error('--schedules needs --chat-url')
 
@@ -1684,7 +1684,10 @@ Options (each accepts both --name value and --name=value):
                            Recall across chats also needs --chat-sign and the
                            resident --controller <console>=<publicKey>.
   --files                  Enable GitHub file exchange; requires --control
-                           and --files-exchange-repo. Hub stores only ledgers.
+                           and --files-exchange-repo or --connectors (the
+                           repo connection marked for exchange wins; fixed at
+                           start). With tenancy only --files-exchange-repo.
+                           Hub stores only ledgers.
   --files-exchange-repo <owner/name>=<abs token file>
                            Private GitHub exchange repo, contents read/write.
   --files-exchange-retain <duration>
