@@ -1,6 +1,8 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type { NodeDesktop } from './desktop.js'
+
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import {
@@ -353,6 +355,8 @@ export class OmpRpcProcess implements OmpRpcChannel {
 }
 
 interface PoolOptions {
+  readonly extensionPath?: string
+  readonly desktop?: NodeDesktop
   readonly extraHostTools?: readonly HostToolDefinition[]
   readonly onLaunch?: (
     sessionId: string,
@@ -461,6 +465,18 @@ export class ResidentOmpPool
     }
     throw new Error(`resident session ${sessionId} has no configured owner`)
   }
+  async invalidateAgent(agent: string): Promise<void> {
+    for (const [id, owner] of this.#owners) {
+      if (owner.agent !== agent) continue
+      const starting = this.#starting.get(id)
+      if (starting) await starting.catch(() => {})
+      const child = this.#children.get(id)
+      if (child) {
+        this.#children.delete(id)
+        await child.stop()
+      }
+    }
+  }
   async channelFor(sessionId: string): Promise<OmpRpcProcess> {
     // An idle session may be resumed while its previous process is still
     // retiring. It must not spawn a second writer for the same session.
@@ -509,6 +525,12 @@ export class ResidentOmpPool
       ],
       hostTools: tools.map(tool => tool.name),
       media,
+      ...(this.#options.desktop
+        ? {
+            desktopPath: this.#options.desktop.resourcePath(owner.agent),
+            desktop: this.#options.desktop.resource(owner.agent),
+          }
+        : {}),
       ...(this.#options.requestPermission === undefined
         ? {}
         : { approvals: true }),
@@ -531,13 +553,15 @@ export class ResidentOmpPool
       ...(this.#options.requestPermission === undefined ? ['--no-ui'] : []),
       '--no-extensions',
       '--extension',
-      residentExtensionPath(sessionDir),
+      this.#options.extensionPath ?? residentExtensionPath(sessionDir),
       '--config',
       overlay,
       '--approval-mode',
       config.edits === 'workspace' ? 'write' : 'always-ask',
       '--tools',
-      residentActiveTools(config.edits, [], config.media).join(','),
+      residentActiveTools(config.edits, [], config.media, config.desktop).join(
+        ',',
+      ),
       ...(selection
         ? ['--model', `${selection.provider}/${selection.modelId}`]
         : []),
@@ -549,6 +573,19 @@ export class ResidentOmpPool
       ...ompSpawnEnv(),
       [RESIDENT_EXTENSION_CONFIG_ENV]: configPath,
     })
+    if (env.QIANMO_OMP_ENTRY === 'self') env.PI_COMPILED = 'true'
+    if (config.desktop?.browser || config.desktop?.computer)
+      env.TMPDIR = join(config.desktop.downloads, '..', 'screenshots')
+    if (config.desktop?.computer) {
+      env.DISPLAY = config.desktop.display!
+      env.XAUTHORITY = config.desktop.xauthority!
+      delete env.WAYLAND_DISPLAY
+      delete env.DBUS_SESSION_BUS_ADDRESS
+    } else {
+      delete env.DISPLAY
+      delete env.XAUTHORITY
+      delete env.WAYLAND_DISPLAY
+    }
     const input: ResidentOmpSpawn = {
       argv,
       cwd: owner.cwd,

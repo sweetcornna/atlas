@@ -65,6 +65,8 @@ const OUTCOME_WORD: Readonly<
   confirmed: ['ok', '你批准的'],
   denied: ['warn', '被拒'],
   failed: ['bad', '失败'],
+  intent: ['muted', '待执行'],
+  unknown: ['warn', '结果未知'],
 }
 
 const OP_WORD: Readonly<Record<string, string>> = {

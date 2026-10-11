@@ -492,7 +492,7 @@ describe('M2 request scopes', () => {
         (await h.handle(asBearer('GET', path, h.alice.credential))).status,
       ).toBe(403)
   })
-  test('memory, files and connectors are tenant-scoped before admission; the remaining 2026-10 ports stay unwired', async () => {
+  test('memory, files, connectors and the cloud computer are tenant-scoped before admission; the remaining 2026-10 ports stay unwired', async () => {
     const h = fixture()
     const allowed = await h.handle(
       asBearer('GET', '/v0/memory', h.alice.credential),
@@ -579,21 +579,11 @@ describe('M2 request scopes', () => {
     const page = await (
       await h.handle(asBearer('GET', '/overview', h.alice.credential))
     ).text()
-    expect(page).not.toContain('href="/desktop"')
-    expect(
-      (await h.handle(asBearer('GET', '/desktop', h.alice.credential))).status,
-    ).toBe(404)
-    // 文件互通 (P20, `filesScope.ts`) and 连接 (P25) have tenant wrappers: their
-    // pages show.
-    expect(page).toContain('href="/files"')
-    expect(page).toContain('href="/connect"')
-    for (const port of [
-      h.schedules,
-      h.desktop,
-      h.routing,
-      h.handoffDevices,
-      h.avatars,
-    ])
+    // 文件互通 (P20, `filesScope.ts`), 连接 (P25) and 云端电脑 (P21) have tenant
+    // wrappers: their pages show.
+    for (const href of ['/files', '/connect', '/desktop'])
+      expect(page).toContain(`href="${href}"`)
+    for (const port of [h.schedules, h.routing, h.handoffDevices, h.avatars])
       expect(port.calls).toEqual([])
   })
   test('audit source selectors and server notes cannot reach an external tenant', async () => {

@@ -614,6 +614,10 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/channels` | **ops** | 添加通知渠道：`{ name, kind, url }`，`kind` 是 `webhook` / `bark` / `wecom` / `feishu` / `ntfy`，地址默认只收 https；http 与受保护网段须由运维按主机（可带端口）放行（§12.2），存下后任何接口不再回地址 |
 | DELETE | `/v0/channels/<渠道 id>` | **ops** | 删除通知渠道 |
 | POST | `/v0/channels/<渠道 id>/test` | **ops** | 向这个渠道发一条测试通知 |
+| GET | `/v0/desktop` | view | `DesktopNodeView[]`，启用状态、可达性、资源大小与最近操作计数 |
+| GET | `/v0/desktop/actions?agent=<地址>&limit=50` | view | `DesktopActionView[]`，agent 可省，limit 1–200，按租户过滤 |
+| PUT | `/v0/desktop/<节点>/<智能体>` | **ops** | `{ browser?, computer?, confirm? }`，先 admit，再经签名控制链路，记 `desktop.set` |
+| POST | `/v0/desktop/<节点>/<智能体>/recycle` | **ops** | 停止并删除该智能体资料；先 admit，记 `desktop.recycle` |
 | GET | `/access`、`/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
 | GET | `/providers`、`/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
 | GET | `/providers/new?q=`、`/providers/new?preset=<预设>&site=<站点>` | view | 预设卡片（`q` 是 GET 搜索）；带 `preset` 时是从这份预设新建的表单 |
@@ -2613,3 +2617,27 @@ ICS 与 CalDAV 返回的 RRULE 本轮均**不展开**，结果显式带 warning�
 事件在窗口外但其重复实例在窗口内时可能缺失；TZID 本地时间无法解析
 时省略并提示，浮动时间按 UTC 显示并提示。没有实现 OAuth2、复杂时区、
 附件下载或完整 MIME/日历标准覆盖，夹具通过不能据此宣称真实服务已评估。
+
+## 云端电脑（P21）
+
+页面「云端电脑」在侧栏常用一组。`--desktop` 同时启用动作账本，旧式 admin token 的资源变更也记账。中枢启用：
+
+```sh
+bun run qm -- console --desktop --control <node>=ws://<node-host>:<port> --trust <node>=<publicKey> --chat-from qianmo://<hub>/console
+```
+
+上述命令还须按本章配置控制台凭据和该节点 PSK；审批另启 `--accounts --approvals --chat-sign --chat-url <node>=<url>`，节点信任指挥公钥并配置独立审批公钥（P14）。节点常驻宿主已装配 desktop 控制处理器，资源默认关闭。只有运维身份可开关/回收；view 以上可读状态及脱敏操作，租户看不到范围外智能体，写操作在动作账本 admission 后下发，下发前重验租户权限，operationId 由请求号绑定并由节点去重。
+
+`sensitive` 默认仅截图、读页面、查元素、列 tab 自动放行；导航、点击、输入、按键与滚动逐次确认。`always` 连观察也确认。只认单次批准，正文可见于受保护审批材料，公共 `desktop.action` 不含正文，并关联审批 requestId。旧 tab 句柄、旧资源代次、已经消费的批准、结束的 turn 一律拒绝。`intent` 表示已持久化执行意图；`unknown` 表示结果未知，禁止自动重试。
+
+macOS 用 `/Applications/Google Chrome.app` 的无头 Chrome 提供**独立浏览器资料环境**，不提供电脑。资料目录 `<节点配置根>/qianmo/desktop/<agent>/browser`（0700），下载与截图目录独立；保留 Chromium 沙箱，内核分配 loopback CDP 端口。Linux 浏览器同样无头；电脑须 Xvfb+xauth（独立授权、1440×900×24、关闭 TCP），本机没有 Xvfb，完整原生电脑操作尚未验证，不能据此宣称 Linux 隔离已验收。
+
+tab 上限 4、下载 100 MiB、空闲 15 分钟自动停用，每 2 秒检查；超限关闭整个资源。内存 1–2 GiB 是待验证规划值，未配置 cgroup。回收先作废代次和待批、停整个进程树并确认退出，再删除资料；删除失败会报失败。disable 保留资料；部分停用保留另一单元的开关，急停时一律停用整个资源，状态与审计仍可读。重启验证持久化 PID 的资源标记并清查孤儿，不能确认时拒绝开启。并未实现独立 UID、容器、节点之间的文件/进程/网络隔离。
+
+P21 的本机真实回归在 `node/test/host/desktop.integration.test.ts`：源码模式默认在 macOS 起真 Chrome；编译版回归先 `bun run atlas:build:qm`，再运行：
+
+```sh
+QIANMO_TEST_COMPILED_QM="$PWD/dist/qm-darwin-arm64" bun test --preload ./atlas/tests/preload.ts ./atlas/packages/node/test/host/desktop.integration.test.ts
+```
+
+嵌入扩展复用基座虚拟模块构建插件，保留单文件交付；静态资源在受保护的会话目录内以 0600 解出并校验内容。原生插件使用节点配置根内已提取的版本缓存，工作线程重入实际 omp CLI。

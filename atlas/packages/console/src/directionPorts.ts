@@ -246,7 +246,7 @@ export interface FilesPort {
 // P21 云端电脑
 // ---------------------------------------------------------------------------
 
-/** `sensitive`：只有账号、付款、发送类操作要确认；`always`：每次改变外部状态的操作都要确认。 */
+/** `sensitive`（默认）：仅截图、读页面、查元素、列 tab 自动放行；其余（含滚动）逐次确认。`always`：观察也逐次确认。只认单次批准。 */
 export type DesktopConfirm = 'sensitive' | 'always'
 
 export type DesktopUnitState = 'off' | 'starting' | 'running' | 'failed'
@@ -287,7 +287,26 @@ export interface DesktopActionView {
   readonly op: string
   /** 目标网址的主机名；电脑操作为 null。 */
   readonly host: string | null
-  readonly outcome: 'allowed' | 'confirmed' | 'denied' | 'failed'
+  readonly outcome:
+    | 'allowed'
+    | 'confirmed'
+    | 'denied'
+    | 'failed'
+    | 'intent'
+    | 'unknown'
+  readonly actionId?: string
+  readonly taskId?: string
+  readonly requestId?: string
+  readonly invocationId?: string
+  readonly resourceId?: string
+  readonly resourceEpoch?: number
+  readonly digest?: string
+  readonly confirmed?: boolean
+}
+
+/** 端口在实际下发前重验租户权限；此回调不进入控制消息。 */
+export interface DesktopActor extends DirectionActor {
+  readonly beforeDispatch?: () => void
 }
 
 export interface DesktopPort {
@@ -299,11 +318,11 @@ export interface DesktopPort {
       readonly computer?: boolean
       readonly confirm?: DesktopConfirm
     },
-    actor: DirectionActor,
+    actor: DesktopActor,
   ): Promise<ConsoleResult<DesktopNodeView>>
   recycle(
     ref: AgentRef,
-    actor: DirectionActor,
+    actor: DesktopActor,
   ): Promise<ConsoleResult<DesktopNodeView>>
   actions(
     ref: AgentRef | null,

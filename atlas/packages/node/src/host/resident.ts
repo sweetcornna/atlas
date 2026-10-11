@@ -1,6 +1,8 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { NodeDesktop } from './desktop.js'
+import { isDesktopTool } from '@qianmo/extension/desktopPolicy'
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { NodeFiles } from './files.js'
@@ -697,6 +699,7 @@ const RESIDENT_AGENT_RESTARTING =
 const RUNTIME_WAIT_MS = 3_000
 
 export class QianmoResident {
+  readonly desktop: NodeDesktop
   readonly control: ControlRegistry
   readonly #connectorHostTools: readonly HostToolDefinition[]
   readonly hubCall: HubCallClient
@@ -842,6 +845,26 @@ export class QianmoResident {
       ),
     })
     files?.register(this.control)
+    this.desktop = new NodeDesktop({
+      node: options.node,
+      agents: options.agents.map(a => a.agent),
+      estop: () => this.#estop.engaged(),
+      audit: options.runtimeAudit ?? options.authorization?.audit,
+      invalidated: agent => this.#authorization?.cancelDesktop(agent),
+      changed: async agent => {
+        await this.#runtimeChild?.invalidateAgent(agent)
+      },
+    })
+    // Under ESTOP the cloud computer can still be read, switched off and
+    // recycled; enabling it and acting through it wait (P21 §4.2).
+    this.control.register('desktop', this.desktop.control, {
+      estopAllowed: [
+        'desktop.status',
+        'desktop.actions',
+        'desktop.disable',
+        'desktop.recycle',
+      ],
+    })
     this.control.register(
       'node',
       async op =>
@@ -1190,6 +1213,7 @@ export class QianmoResident {
         await this.#awaitStop()
       }
     } finally {
+      await this.desktop.close()
       this.#stopping = true
       this.#stopProviderPoll()
       // Before the listener goes, not after. The last generation's own
@@ -1920,7 +1944,6 @@ export class QianmoResident {
     if (
       task === undefined ||
       task.settled ||
-      this.#authorization === undefined ||
       input?.agent === undefined ||
       !raw ||
       typeof raw !== 'object' ||
@@ -1936,6 +1959,43 @@ export class QianmoResident {
       Array.isArray(call.input)
     )
       return false
+    if (isDesktopTool(call.toolName)) {
+      const live = () =>
+        this.#turn.activeInput(sessionId) === input &&
+        !task.settled &&
+        !this.#stopping &&
+        this.#deadlineClock.nowFor(task.envelope.createdAt) <
+          taskExpiresAt(task.envelope)
+      const deadline =
+        Date.now() +
+        taskExpiresAt(task.envelope) -
+        this.#deadlineClock.nowFor(task.envelope.createdAt)
+      return this.desktop.gate(
+        input.agent,
+        sessionId,
+        task.envelope.taskId,
+        task.envelope.contextId ?? 'default',
+        raw,
+        live,
+        async (bound, beforeConsume) =>
+          this.#authorization === undefined
+            ? false
+            : this.#authorization.request(
+                bound,
+                {
+                  from: task.envelope.from,
+                  taskId: task.envelope.taskId,
+                  traceId: task.envelope.traceId,
+                  trust: task.trust ?? 'untrusted',
+                },
+                deadline,
+                this.#turn.inactivityRemaining(sessionId),
+                (request, wire) => this.#sendAuthz(task.channel, request, wire),
+                beforeConsume,
+              ),
+      )
+    }
+    if (this.#authorization === undefined) return false
     const agent = this.#options.agents.find(
       agent => agent.agent === input.agent,
     )
@@ -2637,6 +2697,7 @@ export class QianmoResident {
 
   stop(): void {
     this.hubCall.close()
+    void this.desktop.close().catch(error => this.#options.onError?.(error))
     this.#authorization?.close()
     this.#memoryIndex?.close()
     this.#approvalChannels.clear()
@@ -2902,6 +2963,7 @@ export class QianmoResident {
 
   async #spawnGeneration(): Promise<ResidentChildConnection> {
     const child = new ResidentOmpPool({
+      desktop: this.desktop,
       extraHostTools: [
         ...this.#connectorHostTools,
         ...(this.#options.extraHostTools ?? []),
@@ -2941,12 +3003,8 @@ export class QianmoResident {
           }),
       memoryAnswer: (sessionId, args) =>
         this.#turn.memoryAnswer(sessionId, args),
-      ...(this.#authorization === undefined
-        ? {}
-        : {
-            requestPermission: (sessionId: string, call: unknown) =>
-              this.#requestPermission(sessionId, call),
-          }),
+      requestPermission: (sessionId: string, call: unknown) =>
+        this.#requestPermission(sessionId, call),
     })
     const closed = child.closed
     void closed.catch(() => {})

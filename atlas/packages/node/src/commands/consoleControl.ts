@@ -278,6 +278,8 @@ export class ControlLinks {
     options: {
       readonly timeoutMs?: number
       readonly operationId?: string
+      /** Re-checks permission just before sending; throwing refuses the call. */
+      readonly beforeDispatch?: () => void
     } = {},
   ): Promise<ControlOutcome> {
     const timeoutMs = controlTimeout(options.timeoutMs)
@@ -331,6 +333,11 @@ export class ControlLinks {
         code: 'invalid',
         message: '控制信封超过 UTF-8 字节上限',
       }
+    try {
+      options.beforeDispatch?.()
+    } catch {
+      return { ok: false, code: 'refused', message: '控制权限已撤销' }
+    }
     const { promise, resolve } = Promise.withResolvers<ControlOutcome>()
     const delivery = link.sendOnce(routed.message, timeoutMs)
     const timer = setTimeout(

@@ -23,6 +23,7 @@ import {
 } from '../view/desktop.js'
 import { DESKTOP_PAGE_JS } from '../view/desktopScript.js'
 import { KIT_CSS } from '../view/kit.js'
+import { desktopApi } from './desktopApi.js'
 import { canOps, guardRead } from './directionShared.js'
 import type { RouteContext, RouteModule } from './types.js'
 
@@ -85,6 +86,7 @@ export const desktopRoute: RouteModule = {
     css: KIT_CSS + DESKTOP_PAGE_CSS,
     script: DESKTOP_PAGE_JS,
   },
+  api: desktopApi,
   fragments: {
     heads: ['desktop'],
     handle: (ctx, _head, rest) => desktopFragment(ctx, rest),
