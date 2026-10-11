@@ -29,6 +29,7 @@ import { qianmoConfigPath } from '@qianmo/paths'
 import { loadOrCreateNodeKeys } from '../host/nodeIdentity.js'
 import { ConsoleApprovals } from './consoleApprovals.js'
 import { notifyAllowlist } from './consoleNotifyDestination.js'
+import { cliFilesExchangeCredentials } from './filesExchangeRepo.js'
 import { ConsoleFiles } from './consoleFiles.js'
 import { tenantScope } from '@qianmo/console'
 import { ResidentEstop } from '@qianmo/resident'
@@ -658,6 +659,11 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     config.files && control
       ? new ConsoleFiles({
           directory: qianmoConfigPath('qianmo', 'console', 'files'),
+          exchangeRepo: config.filesExchangeRepo![0],
+          credentials: cliFilesExchangeCredentials([config.filesExchangeRepo!]),
+          retentionMs: config.filesExchangeRetainMs,
+          controlUrl: node =>
+            config.controlTargets?.find(one => one.node === node)?.url,
           control,
           agents: async () => {
             const rows = await registry.list()
@@ -706,6 +712,18 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           onError: message => process.stderr.write(`[files] ${message}\n`),
         })
       : undefined
+  if (files) {
+    try {
+      await files.initialize()
+    } catch (error) {
+      files.close()
+      throw new Error(
+        error instanceof Error && error.message === 'connection-revoked'
+          ? '交换仓库连接已撤销'
+          : '交换仓库必须是私有仓库',
+      )
+    }
+  }
   const approvals =
     approvalIdentity === undefined || accounts === undefined
       ? undefined

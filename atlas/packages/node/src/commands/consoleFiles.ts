@@ -20,7 +20,7 @@ import type {
   FilesSnapshot,
   FileTransferView,
 } from '@qianmo/console'
-import { LIMITS, parseAddress, type ControlOutcome } from '@qianmo/protocol'
+import { parseAddress, type ControlOutcome } from '@qianmo/protocol'
 import {
   readTextIfExists,
   writePrivateJson,
@@ -29,20 +29,26 @@ import {
 import {
   bindingSchema,
   filePathSchema,
-  FILE_CHUNK_BYTES,
   FILE_LIMITS,
-  FILE_PAGE_SIZE,
-  manifestEntrySchema,
-  manifestSha256,
   refSchema,
   scopeContains,
   scopeSchema,
-  sha256,
-  validateManifest,
   type FileBinding,
-  type FileManifestEntry,
 } from '../host/filesPolicy.js'
 import { FileFault, relativeFilePath } from '../host/filesSafeFs.js'
+import { isHandoffRepo } from '@qianmo/handoff'
+import { AuditSource, AuditTrail } from '@qianmo/audit'
+import { publishedSchema } from '../host/filesGithub.js'
+import {
+  githubRemoteRefs,
+  deleteGithubRefs,
+  tokenLinkAllowed,
+} from './githubRepoGit.js'
+import {
+  probePrivateFilesRepo,
+  type FilesExchangeCredentials,
+  type FilesRepoProbe,
+} from './filesExchangeRepo.js'
 import type { ControlLinks, HubCallHandler } from './consoleControl.js'
 
 interface StoredGrant extends FileGrantView {
@@ -57,6 +63,11 @@ interface FilesBook {
 }
 export interface ConsoleFilesOptions {
   readonly directory: string
+  readonly exchangeRepo?: string
+  readonly credentials?: FilesExchangeCredentials
+  readonly probe?: FilesRepoProbe
+  readonly retentionMs?: number
+  readonly controlUrl: (node: string) => string | undefined
   readonly control: Pick<ControlLinks, 'request' | 'status' | 'onHubCall'>
   readonly agents: () => Promise<readonly AgentRef[]>
   /** Always reads current account and tenant policy, including during a transfer. */
@@ -69,10 +80,6 @@ export interface ConsoleFilesOptions {
   readonly actions?: ActionLedgerPort
   readonly stopped?: () => boolean
   readonly now?: () => number
-  readonly pacing?: {
-    readonly now: () => number
-    readonly wait: (milliseconds: number) => Promise<void>
-  }
   readonly onError?: (message: string) => void
 }
 const ok = <T>(value: T): ConsoleResult<T> => ({ ok: true, value })
@@ -86,13 +93,6 @@ const idSchema = z.string().uuid()
 const inspectSchema = z.object({
   generation: z.string(),
   kind: z.enum(['file', 'dir']),
-})
-const pageSchema = z.object({
-  kind: z.enum(['file', 'dir']),
-  entries: z.array(manifestEntrySchema).max(FILE_PAGE_SIZE),
-  total: z.number().int().min(1).max(FILE_LIMITS.maxFiles),
-  manifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
-  generation: z.string(),
 })
 const decisionSchema = z
   .object({
@@ -110,21 +110,37 @@ export class ConsoleFiles implements FilesPort {
   readonly #book: FilesBook
   readonly #background = new Set<Promise<void>>()
   #execution: Promise<unknown> = Promise.resolve()
-  readonly #pace = new Map<string, Promise<unknown>>()
   readonly #discovered = new Map<
     string,
     { connectedAt: number | null; refs: readonly AgentRef[] }
   >()
-  readonly #nextCall = new Map<string, number>()
   #queue: Promise<unknown> = Promise.resolve()
+  readonly #trail: AuditTrail
+  #private: boolean | null = null
+  readonly #orphanSince = new Map<string, number>()
   #closed = false
   #cleanupTimer: NodeJS.Timeout | null = null
   readonly #cleanupPending = new Set<string>()
   #cleanupFlight = false
   constructor(options: ConsoleFilesOptions) {
+    if (
+      !options.exchangeRepo ||
+      !isHandoffRepo(options.exchangeRepo) ||
+      !options.credentials
+    )
+      throw new Error(
+        '--files needs --files-exchange-repo (or an injected credential port)',
+      )
+    if (
+      !Number.isSafeInteger(options.retentionMs ?? 0) ||
+      (options.retentionMs ?? 0) < 0
+    )
+      throw new Error('交换仓库保留期无效')
     this.#options = options
     this.#bookPath = path.join(options.directory, 'files.json')
     ensurePrivateDir(options.directory)
+    this.#trail = new AuditTrail(path.join(options.directory, 'files.ndjson'))
+    this.#trail.ensure()
     const text = readTextIfExists(this.#bookPath)
     this.#book = text
       ? (JSON.parse(text) as FilesBook)
@@ -132,6 +148,11 @@ export class ConsoleFiles implements FilesPort {
     for (let i = 0; i < this.#book.transfers.length; i++) {
       const transfer = this.#book.transfers[i]!
       idSchema.parse(transfer.transferId)
+      // Discard legacy P20 relay staging on upgrade; never read or recreate it.
+      fs.rmSync(path.join(options.directory, transfer.transferId), {
+        recursive: true,
+        force: true,
+      })
       if (transfer.state !== 'done')
         this.#cleanupPending.add(transfer.transferId)
       if (transfer.state !== 'done' && transfer.state !== 'failed') {
@@ -142,11 +163,6 @@ export class ConsoleFiles implements FilesPort {
           finishedAt: this.#now(),
         }
         this.#cleanupPending.add(transfer.transferId)
-        // Only local hub staging is safe to remove before the links are started.
-        fs.rmSync(this.#stage(transfer.transferId), {
-          recursive: true,
-          force: true,
-        })
       }
     }
     this.#persist()
@@ -158,8 +174,55 @@ export class ConsoleFiles implements FilesPort {
   #persist(): void {
     writePrivateJson(this.#bookPath, this.#book, { syncDirectory: true })
   }
-  #stage(id: string): string {
-    return path.join(this.#options.directory, id)
+  async #credential(): Promise<{ remoteUrl: string; token: string }> {
+    try {
+      const value = await this.#options.credentials!.resolve(
+        this.#options.exchangeRepo!,
+      )
+      if (value) return value
+    } catch {
+      /* Connection errors may contain secrets. */
+    }
+    throw new FileFault('connection-revoked')
+  }
+  async initialize(): Promise<void> {
+    const credential = await this.#credential()
+    try {
+      this.#private = await (this.#options.probe ?? probePrivateFilesRepo)(
+        this.#options.exchangeRepo!,
+        credential,
+      )
+    } catch {
+      this.#private = null
+    }
+    if (this.#private !== true) throw new FileFault('repo-private')
+  }
+  async #send(
+    ref: AgentRef,
+    op: string,
+    args: Record<string, unknown>,
+    grant: StoredGrant,
+  ): Promise<unknown> {
+    const url = this.#options.controlUrl(ref.node)
+    if (!url || !tokenLinkAllowed(url)) throw new FileFault('token-link')
+    await this.initialize()
+    await this.#valid(grant.grantId)
+    const credential = await this.#credential()
+    this.#grant(grant.grantId)
+    return this.#call(
+      ref.node,
+      op,
+      {
+        ...args,
+        exchange: {
+          remoteUrl: credential.remoteUrl,
+          ref: `refs/heads/qianmo/files/${args.transferId}`,
+        },
+        credential: { kind: 'github-token', token: credential.token },
+        operationId: crypto.randomUUID(),
+      },
+      grant.grantedBy,
+    )
   }
   #serial<T>(run: () => Promise<T>): Promise<T> {
     const flight = this.#queue.then(run)
@@ -188,37 +251,12 @@ export class ConsoleFiles implements FilesPort {
       throw new FileFault('grant-invalid')
     return grant
   }
-  // Window one, paced per node. Allow room for ACKs, grant callbacks, other
-  // control features, and heartbeat traffic under the 600-message limit.
   async #call(
     node: string,
     op: string,
     args: Record<string, unknown>,
     actor: string,
   ): Promise<unknown> {
-    const previous = this.#pace.get(node) ?? Promise.resolve()
-    const reservation = previous
-      .catch(() => {})
-      .then(async () => {
-        const now = this.#options.pacing?.now ?? Date.now
-        const delay = Math.max(0, (this.#nextCall.get(node) ?? 0) - now())
-        if (delay) {
-          if (this.#options.pacing) await this.#options.pacing.wait(delay)
-          else {
-            const pending = Promise.withResolvers<void>()
-            setTimeout(pending.resolve, delay)
-            await pending.promise
-          }
-        }
-        this.#nextCall.set(
-          node,
-          now() + Math.ceil(60_000 / (LIMITS.ratePerMinute / 12)),
-        )
-      })
-    // Reserve the rate slot, not the response. Grant callbacks must be able to
-    // inspect a node while a file handler there awaits that callback.
-    this.#pace.set(node, reservation)
-    await reservation
     if (this.#closed && op !== 'files.abort') throw new FileFault('closed')
     if (this.#options.stopped?.() && op !== 'files.abort')
       throw new FileFault('estop')
@@ -424,7 +462,9 @@ export class ConsoleFiles implements FilesPort {
             : 'rejected',
           error instanceof FileFault && error.code === 'result-unknown'
             ? '结果未知，不自动重发提交'
-            : '文件操作拒绝',
+            : error instanceof FileFault
+              ? this.#reason(error.code)
+              : '文件操作拒绝',
         )
       }
       const record = await this.#options.actions?.record({
@@ -468,6 +508,7 @@ export class ConsoleFiles implements FilesPort {
           reachable: statuses.get(ref.node) ?? false,
         })),
         limits: FILE_LIMITS,
+        exchange: { repo: this.#options.exchangeRepo!, private: this.#private },
       }),
     )
   }
@@ -635,8 +676,14 @@ export class ConsoleFiles implements FilesPort {
     file: string,
     groupId: string,
   ): FileTransferView {
+    const transferId = crypto.randomUUID()
     const transfer: FileTransferView = {
-      transferId: crypto.randomUUID(),
+      transferId,
+      exchange: {
+        ref: `refs/heads/qianmo/files/${transferId}`,
+        commit: null,
+        cleaned: false,
+      },
       grantId: grant.grantId,
       groupId,
       source: { ...grant.source, path: file },
@@ -677,6 +724,7 @@ export class ConsoleFiles implements FilesPort {
           })
           .safeParse(input)
         if (!parsed.success) return fail('invalid', '来源与目标无效')
+        await this.initialize()
         const { sources, target } = parsed.data
         if (
           sources.some(source => !this.#allowed(actor.subject, source, target))
@@ -779,6 +827,7 @@ export class ConsoleFiles implements FilesPort {
       if (!old || !this.#allowed(actor.subject, old.source, old.target))
         return fail('not_found', '资源不存在')
       if (old.state !== 'failed') return fail('rejected', '只能重试失败的传输')
+      await this.initialize()
       const previous = this.#book.grants.find(
         one => one.grantId === old.grantId,
       )
@@ -826,153 +875,61 @@ export class ConsoleFiles implements FilesPort {
     this.#background.add(task)
     void task.finally(() => this.#background.delete(task))
   }
+  #reason(code: string): string {
+    if (code === 'repo-private') return '交换仓库必须是私有仓库'
+    if (code === 'connection-revoked') return '交换仓库连接已撤销'
+    if (code === 'token-link') return '令牌只经加密链路下发'
+    if (code === 'result-unknown') return '结果未知，不自动重发提交，可人工重试'
+    return '文件传输拒绝或校验失败'
+  }
   async #execute(id: string): Promise<void> {
     const transfer = this.#book.transfers.find(one => one.transferId === id)!
-    let grant: StoredGrant | undefined
     try {
-      grant = await this.#valid(transfer.grantId)
-      const src = {
-        agent: grant.source.agent,
+      const grant = await this.#valid(transfer.grantId)
+      const args = {
         transferId: id,
         grantId: grant.grantId,
         path: transfer.source.path,
-      }
-      const dst = {
-        agent: grant.target.agent,
-        transferId: id,
-        grantId: grant.grantId,
-        path: transfer.source.path,
-      }
-      const call = async (
-        ref: AgentRef,
-        op: string,
-        args: Record<string, unknown>,
-      ) => {
-        this.#grant(grant!.grantId)
-        return this.#call(ref.node, op, args, grant!.grantedBy)
       }
       this.#update(id, { state: 'reading' })
-      const first = pageSchema.parse(
-          await call(grant.source, 'files.stat', { ...src, page: 0 }),
+      const published = publishedSchema.parse(
+        await this.#send(
+          grant.source,
+          'files.publish',
+          { ...args, agent: grant.source.agent },
+          grant,
         ),
-        entries = [...first.entries]
-      for (let page = 1; entries.length < first.total; page++) {
-        const next = pageSchema.parse(
-          await call(grant.source, 'files.stat', { ...src, page }),
-        )
-        if (
-          !next.entries.length ||
-          next.total !== first.total ||
-          next.manifestSha256 !== first.manifestSha256 ||
-          next.kind !== first.kind ||
-          next.generation !== grant.sourceGeneration
-        )
-          throw new FileFault('manifest-digest')
-        entries.push(...next.entries)
-      }
-      validateManifest(entries)
-      if (
-        entries.length !== first.total ||
-        first.generation !== grant.sourceGeneration ||
-        manifestSha256(entries) !== first.manifestSha256 ||
-        entries.some(one => !scopeContains(grant!.scope, one.path))
       )
-        throw new FileFault('manifest-digest')
       this.#update(id, {
-        files: entries.length,
-        bytes: entries.reduce((total, one) => total + one.size, 0),
-        manifestSha256: first.manifestSha256,
+        files: published.files,
+        bytes: published.bytes,
+        manifestSha256: published.manifestSha256,
+        exchange: {
+          ref: transfer.exchange!.ref,
+          commit: published.commit,
+          cleaned: false,
+        },
+        state: 'delivering',
       })
-      ensurePrivateDir(this.#stage(id))
-      let done = 0
-      for (const [index, entry] of entries.entries()) {
-        const local = path.join(this.#stage(id), `${index}`),
-          fd = fs.openSync(local, 'wx', 0o600)
-        try {
-          for (
-            let offset = 0;
-            offset < entry.size;
-            offset += FILE_CHUNK_BYTES
-          ) {
-            const result = z
-              .object({ data: z.string(), offset: z.number() })
-              .parse(
-                await call(grant.source, 'files.read', {
-                  ...src,
-                  index,
-                  offset,
-                }),
-              )
-            const bytes = Buffer.from(result.data, 'base64')
-            if (
-              result.offset !== offset ||
-              bytes.toString('base64') !== result.data ||
-              bytes.length !== Math.min(FILE_CHUNK_BYTES, entry.size - offset)
-            )
-              throw new FileFault('chunk-invalid')
-            fs.writeSync(fd, bytes)
-            done += bytes.length
-            this.#update(id, { doneBytes: done })
-          }
-          fs.fsyncSync(fd)
-        } finally {
-          fs.closeSync(fd)
-        }
-      }
-      this.#update(id, { state: 'verifying' })
-      for (const [index, entry] of entries.entries()) {
-        const bytes = await Bun.file(
-          path.join(this.#stage(id), `${index}`),
-        ).bytes()
-        if (bytes.length !== entry.size || sha256(bytes) !== entry.sha256)
-          throw new FileFault('content-digest')
-      }
-      this.#update(id, { state: 'delivering' })
-      for (let page = 0; page * FILE_PAGE_SIZE < entries.length; page++)
-        await call(grant.target, 'files.write', {
-          ...dst,
-          operationId: crypto.randomUUID(),
-          kind: first.kind,
-          page,
-          manifest: entries.slice(
-            page * FILE_PAGE_SIZE,
-            (page + 1) * FILE_PAGE_SIZE,
-          ),
-          last: (page + 1) * FILE_PAGE_SIZE >= entries.length,
-          manifestSha256: first.manifestSha256,
-        })
-      for (const [index, entry] of entries.entries()) {
-        const bytes = await Bun.file(
-          path.join(this.#stage(id), `${index}`),
-        ).bytes()
-        for (
-          let offset = 0;
-          offset < entry.size || (entry.size === 0 && offset === 0);
-          offset += FILE_CHUNK_BYTES
-        )
-          await call(grant.target, 'files.write', {
-            ...dst,
-            operationId: crypto.randomUUID(),
-            index,
-            offset,
-            data: Buffer.from(
-              bytes.subarray(offset, offset + FILE_CHUNK_BYTES),
-            ).toString('base64'),
-          })
-      }
-      await this.#valid(grant.grantId)
       const result = z
         .object({ path: z.string(), verified: z.literal(true) })
         .parse(
-          await call(grant.target, 'files.commit', {
-            ...dst,
-            operationId: crypto.randomUUID(),
-            manifestSha256: first.manifestSha256,
-          }),
+          await this.#send(
+            grant.target,
+            'files.fetch',
+            {
+              ...args,
+              agent: grant.target.agent,
+              commit: published.commit,
+              manifestSha256: published.manifestSha256,
+            },
+            grant,
+          ),
         )
       this.#update(id, {
         state: 'done',
         verified: true,
+        doneBytes: published.bytes,
         target: { ...transfer.target, path: result.path },
         finishedAt: this.#now(),
       })
@@ -980,35 +937,18 @@ export class ConsoleFiles implements FilesPort {
       this.#update(id, {
         state: 'failed',
         reason:
-          error instanceof FileFault && error.code === 'result-unknown'
-            ? '结果未知，不自动重发提交，可人工重试'
+          error instanceof FileFault
+            ? this.#reason(error.code)
             : '文件传输拒绝或校验失败',
         verified:
-          error instanceof FileFault && /digest|chunk/.test(error.code)
+          error instanceof FileFault && /digest|tree|branch/.test(error.code)
             ? false
             : null,
         finishedAt: this.#now(),
       })
     } finally {
-      fs.rmSync(this.#stage(id), { recursive: true, force: true })
-      const binding =
-        grant ?? this.#book.grants.find(one => one.grantId === transfer.grantId)
-      let cleaned = true
-      if (binding)
-        for (const ref of [binding.source, binding.target]) {
-          try {
-            await this.#call(
-              ref.node,
-              'files.abort',
-              { transferId: id, operationId: crypto.randomUUID() },
-              binding.grantedBy,
-            )
-          } catch {
-            cleaned = false
-            this.#options.onError?.('节点暂存清理结果未知')
-          }
-        }
-      if (!cleaned) this.#cleanupPending.add(id)
+      this.#cleanupPending.add(id)
+      await this.cleanup()
     }
   }
   async idle(): Promise<void> {
@@ -1019,36 +959,83 @@ export class ConsoleFiles implements FilesPort {
     if (this.#cleanupFlight) return
     this.#cleanupFlight = true
     try {
-      const connected = new Set(
-        this.#options.control
-          .status()
-          .filter(one => one.connected)
-          .map(one => one.node),
-      )
       for (const id of [...this.#cleanupPending]) {
         const transfer = this.#book.transfers.find(one => one.transferId === id)
         const grant = this.#book.grants.find(
           one => one.grantId === transfer?.grantId,
         )
+        let cleaned = true
+        if (grant)
+          for (const ref of [grant.source, grant.target]) {
+            try {
+              await this.#call(
+                ref.node,
+                'files.abort',
+                { transferId: id, operationId: crypto.randomUUID() },
+                grant.grantedBy,
+              )
+            } catch {
+              cleaned = false
+            }
+          }
+        if (cleaned) this.#cleanupPending.delete(id)
+      }
+      // Ref-only enumeration and deletion, including a late push after a timed-out call.
+      const credential = await this.#credential()
+      const refs = await githubRemoteRefs(
+        this.#options.directory,
+        credential.remoteUrl,
+        ['refs/heads/qianmo/files/*'],
+        credential,
+      )
+      const deleted = new Set<string>()
+      for (const [ref, commit] of refs) {
+        const id = ref.slice('refs/heads/qianmo/files/'.length)
+        if (!idSchema.safeParse(id).success) continue
+        const transfer = this.#book.transfers.find(one => one.transferId === id)
         if (
-          !grant ||
-          !connected.has(grant.source.node) ||
-          !connected.has(grant.target.node)
+          transfer &&
+          transfer.state !== 'done' &&
+          transfer.state !== 'failed'
         )
           continue
-        try {
-          for (const ref of [grant.source, grant.target])
-            await this.#call(
-              ref.node,
-              'files.abort',
-              { transferId: id, operationId: crypto.randomUUID() },
-              grant.grantedBy,
-            )
-          this.#cleanupPending.delete(id)
-        } catch {
-          this.#options.onError?.('节点暂存清理结果未知')
-        }
+        if (!transfer && !this.#orphanSince.has(id))
+          this.#orphanSince.set(id, this.#now())
+        const since =
+          transfer?.finishedAt ?? this.#orphanSince.get(id) ?? this.#now()
+        if (this.#now() - since < (this.#options.retentionMs ?? 0)) continue
+        await deleteGithubRefs(
+          this.#options.directory,
+          credential.remoteUrl,
+          [ref],
+          credential,
+        )
+        this.#trail.append({
+          at: this.#now(),
+          source: AuditSource.Control,
+          kind: 'files.cleaned',
+          outcome: 'ok',
+          taskId: id,
+          detail: { ref, commit },
+        })
+        deleted.add(ref)
+        this.#orphanSince.delete(id)
       }
+      for (const transfer of this.#book.transfers) {
+        if (
+          !transfer.exchange ||
+          (transfer.state !== 'done' && transfer.state !== 'failed')
+        )
+          continue
+        const cleaned =
+          !refs.has(transfer.exchange.ref) || deleted.has(transfer.exchange.ref)
+        if (transfer.exchange.cleaned !== cleaned)
+          this.#update(transfer.transferId, {
+            exchange: { ...transfer.exchange, cleaned },
+          })
+      }
+    } catch {
+      this.#options.onError?.('交换仓库或节点清理暂不可用')
     } finally {
       this.#cleanupFlight = false
     }

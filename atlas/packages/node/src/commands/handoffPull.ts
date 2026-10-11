@@ -53,7 +53,7 @@
  */
 
 import { repoAtOrigin } from './handoffGithub.js'
-import { githubGit, deleteGithubTaskRefs } from './handoffGithubGit.js'
+import { githubGit, deleteGithubTaskRefs } from './githubRepoGit.js'
 import { validateHandoffCode, type HandoffCode } from '@qianmo/handoff'
 import {
   copyFileSync,

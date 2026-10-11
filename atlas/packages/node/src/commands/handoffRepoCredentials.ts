@@ -1,7 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/** Replaceable by the repo-kind app connection (P26b). Never returns objects. */
+/** Replaceable by the repo-kind app connection (P26c). Never returns objects. */
 export interface HandoffRepoCredentials {
   resolve(repo: string): Promise<{ remoteUrl: string; token: string } | null>
 }

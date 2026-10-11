@@ -18,6 +18,7 @@ import type {
   HubCallClient,
 } from './control.js'
 import type { HostToolDefinition } from './notifyTool.js'
+import { publishSnapshot, fetchSnapshot } from './filesGithub.js'
 import {
   FileDirectory,
   FileFault,
@@ -28,10 +29,7 @@ import {
   bindingSchema,
   exportContentRules,
   exportPathRules,
-  FILE_CHUNK_BYTES,
   FILE_LIMITS,
-  FILE_PAGE_SIZE,
-  manifestEntrySchema,
   manifestSha256,
   scopeContains,
   sha256,
@@ -52,7 +50,6 @@ interface StoredTransfer {
   aborted: boolean
   delivered: string | null
   planned: string | null
-  offsets: Record<string, number>
 }
 interface FileOperation {
   readonly digest: string
@@ -78,8 +75,6 @@ export interface NodeFilesOptions {
   ) => void
 }
 const idSchema = z.string().uuid()
-const integer = (value: unknown, max: number) =>
-  z.number().int().min(0).max(max).parse(value)
 const rejected = (code: string): ControlOutcome => ({
   ok: false,
   code,
@@ -105,6 +100,13 @@ export class NodeFiles {
     // Pending mutations have no success receipt. Never execute them again.
     for (const op of Object.values(this.#book.operations))
       if (!op.outcome) op.outcome = rejected('result-unknown')
+    for (const key of Object.keys(this.#book.transfers)) {
+      idSchema.parse(key.split(':')[0])
+    }
+    // A crash can leave a snapshot before its transfer row was persisted.
+    for (const name of fs.readdirSync(this.#directory))
+      if (idSchema.safeParse(name).success)
+        fs.rmSync(this.#stage(name), { recursive: true, force: true })
     this.#persist()
   }
   #persist(): void {
@@ -176,22 +178,6 @@ export class NodeFiles {
     }
     if (this.#options.stopped()) throw new FileFault('estop')
     return grant
-  }
-  #assertTransfer(
-    args: Record<string, unknown>,
-    side: 'source' | 'target',
-  ): StoredTransfer {
-    const id = idSchema.parse(args.transferId),
-      transfer = this.#book.transfers[`${id}:${side}`]
-    if (
-      !transfer ||
-      transfer.side !== side ||
-      transfer.agent !== args.agent ||
-      transfer.grantId !== args.grantId ||
-      transfer.aborted
-    )
-      throw new FileFault('transfer-invalid')
-    return transfer
   }
   #readWorkspace(root: FileDirectory, relative: string): Buffer {
     const parts = relative.split('/'),
@@ -332,7 +318,6 @@ export class NodeFiles {
         aborted: false,
         delivered: null,
         planned: null,
-        offsets: {},
       }
       this.#book.transfers[`${id}:source`] = transfer
       this.#persist()
@@ -350,7 +335,7 @@ export class NodeFiles {
     args: Record<string, unknown>,
     ctx: ControlContext,
   ): Promise<ControlOutcome> {
-    if (op === 'files.abort') {
+    if (op === 'files.abort' || op === 'files.clean') {
       const id = idSchema.parse(args.transferId)
       for (const side of ['source', 'target']) {
         const transfer = this.#book.transfers[`${id}:${side}`]
@@ -450,187 +435,79 @@ export class NodeFiles {
         root.close()
       }
     }
-    if (
-      !['files.stat', 'files.read', 'files.write', 'files.commit'].includes(op)
-    )
+    if (op !== 'files.publish' && op !== 'files.fetch')
       return rejected('unsupported')
-    const side =
-      op === 'files.stat' || op === 'files.read' ? 'source' : 'target'
-    const grant = await this.#binding(args, side, ctx)
-    if (op === 'files.stat') {
-      const transfer = this.#snapshot(args, grant),
-        page = integer(args.page ?? 0, FILE_LIMITS.maxFiles)
-      return {
-        ok: true,
-        value: {
-          kind: transfer.kind,
-          entries: transfer.entries.slice(
-            page * FILE_PAGE_SIZE,
-            (page + 1) * FILE_PAGE_SIZE,
-          ),
-          total: transfer.entries.length,
-          manifestSha256: manifestSha256(transfer.entries),
-          generation: transfer.generation,
-        },
-      }
-    }
-    if (op === 'files.read') {
-      const transfer = this.#assertTransfer(args, 'source'),
-        index = integer(args.index, transfer.entries.length - 1)
-      const entry = transfer.entries[index]!,
-        offset = integer(args.offset, entry.size)
-      if (!scopeContains(grant.scope, entry.path))
-        throw new FileFault('scope-mismatch')
-      const stage = FileDirectory.root(
-        this.#stage(idSchema.parse(args.transferId), 'source'),
-      )
-      try {
-        const fd = stage.open(`${index}`)
-        try {
-          const bytes = Buffer.alloc(
-            Math.min(FILE_CHUNK_BYTES, entry.size - offset),
-          )
-          const count = fs.readSync(fd, bytes, 0, bytes.length, offset)
-          if (count !== bytes.length) throw new FileFault('snapshot-changed')
-          this.#audit('read', { path: entry.path, bytes: count })
-          return { ok: true, value: { data: bytes.toString('base64'), offset } }
-        } finally {
-          fs.closeSync(fd)
-        }
-      } finally {
-        stage.close()
-      }
-    }
+    const side = op === 'files.publish' ? 'source' : 'target'
     const id = idSchema.parse(args.transferId)
-    if (op === 'files.write' && args.manifest !== undefined) {
-      const entries = z
-          .array(manifestEntrySchema)
-          .max(FILE_PAGE_SIZE)
-          .parse(args.manifest),
-        relative = relativeFilePath(args.path)
-      const kind = z.enum(['file', 'dir']).parse(args.kind),
-        page = integer(args.page, FILE_LIMITS.maxFiles)
+    const grant = await this.#binding(args, side, ctx)
+    try {
+      if (this.#book.transfers[`${id}:${side}`])
+        throw new FileFault('transfer-invalid')
+      if (op === 'files.publish') {
+        const transfer = this.#snapshot(args, grant)
+        const result = await publishSnapshot(
+          path.join(this.#stage(id), 'repo'),
+          this.#stage(id, 'source'),
+          {
+            path: transfer.path,
+            kind: transfer.kind,
+            entries: transfer.entries,
+            manifestSha256: manifestSha256(transfer.entries),
+          },
+          args,
+          () => this.#binding(args, 'source', ctx),
+        )
+        this.#audit('published', {
+          transferId: id,
+          commit: result.commit,
+          manifestSha256: result.manifestSha256,
+        })
+        return { ok: true, value: result }
+      }
+      ensurePrivateDir(this.#stage(id, 'target'))
+      const manifest = await fetchSnapshot(
+        path.join(this.#stage(id), 'repo'),
+        this.#stage(id, 'target'),
+        args,
+      )
       if (
-        !scopeContains(grant.scope, relative) ||
-        entries.some(
+        !scopeContains(grant.scope, manifest.path) ||
+        manifest.entries.some(
           one =>
             !scopeContains(grant.scope, one.path) ||
-            (kind === 'file'
-              ? one.path !== relative
-              : !one.path.startsWith(`${relative}/`)),
-        )
+            (manifest.kind === 'file'
+              ? one.path !== manifest.path
+              : !one.path.startsWith(`${manifest.path}/`)),
+        ) ||
+        (manifest.kind === 'file' && manifest.entries.length !== 1)
       )
         throw new FileFault('scope-mismatch')
-      let transfer = this.#book.transfers[`${id}:target`]
-      if (!transfer) {
-        if (page !== 0) throw new FileFault('manifest-order')
-        ensurePrivateDir(this.#stage(id, 'target'))
-        transfer = {
-          grantId: grant.grantId,
-          agent: grant.target.agent,
-          generation: grant.targetGeneration,
-          side: 'target',
-          path: relative,
-          kind,
-          entries: [],
-          ready: false,
-          aborted: false,
-          delivered: null,
-          planned: null,
-          offsets: {},
-        }
-        this.#book.transfers[`${id}:target`] = transfer
+      const transfer: StoredTransfer = {
+        grantId: grant.grantId,
+        agent: grant.target.agent,
+        generation: grant.targetGeneration,
+        side: 'target',
+        path: manifest.path,
+        kind: manifest.kind,
+        entries: manifest.entries,
+        ready: true,
+        aborted: false,
+        delivered: null,
+        planned: null,
       }
-      this.#assertTransfer(args, 'target')
-      if (
-        transfer.ready ||
-        transfer.entries.length !== page * FILE_PAGE_SIZE ||
-        transfer.path !== relative ||
-        transfer.kind !== kind
-      )
-        throw new FileFault('manifest-order')
-      transfer.entries.push(...entries)
-      validateManifest(transfer.entries)
-      if (args.last === true) {
-        if (manifestSha256(transfer.entries) !== args.manifestSha256)
-          throw new FileFault('manifest-digest')
-        transfer.ready = true
-      }
+      this.#book.transfers[`${id}:target`] = transfer
       this.#persist()
-      return { ok: true, value: null }
-    }
-    const transfer = this.#assertTransfer(args, 'target')
-    if (!transfer.ready || transfer.generation !== grant.targetGeneration)
-      throw new FileFault('transfer-invalid')
-    if (op === 'files.write') {
-      if (transfer.delivered || transfer.planned)
-        throw new FileFault('already-committed')
-      const index = integer(args.index, transfer.entries.length - 1),
-        entry = transfer.entries[index]!
-      const offset = integer(args.offset, entry.size)
-      const data = z
-        .string()
-        .max(Math.ceil(FILE_CHUNK_BYTES / 3) * 4)
-        .parse(args.data)
-      if (
-        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-          data,
-        )
-      )
-        throw new FileFault('invalid-base64')
-      const bytes = Buffer.from(data, 'base64')
-      if (
-        bytes.toString('base64') !== data ||
-        bytes.length > FILE_CHUNK_BYTES ||
-        offset + bytes.length > entry.size ||
-        offset !== (transfer.offsets[index] ?? 0) ||
-        (!bytes.length && entry.size !== 0)
-      )
-        throw new FileFault('chunk-order')
-      const stage = FileDirectory.root(this.#stage(id, 'target'))
-      try {
-        // openat O_EXCL for the first chunk; subsequent chunks cannot follow links.
-        const fd =
-          offset === 0
-            ? stage.open(`${index}`, true)
-            : stage.openWrite(`${index}`)
-        try {
-          fs.writeSync(fd, bytes, 0, bytes.length, offset)
-          fs.fsyncSync(fd)
-        } finally {
-          fs.closeSync(fd)
-        }
-      } finally {
-        stage.close()
-      }
-      transfer.offsets[index] = offset + bytes.length
-      this.#persist()
-      return { ok: true, value: null }
-    }
-    if (transfer.delivered)
-      return { ok: true, value: { path: transfer.delivered, verified: true } }
-    if (transfer.planned) throw new FileFault('result-unknown')
-    const stage = FileDirectory.root(this.#stage(id, 'target'))
-    const payload: Buffer[] = []
-    try {
-      for (const [index, entry] of transfer.entries.entries()) {
-        if (transfer.offsets[index] !== entry.size)
-          throw new FileFault('incomplete-transfer')
-        const fd = stage.open(`${index}`)
-        try {
-          const bytes = fs.readFileSync(fd)
-          if (bytes.length !== entry.size || sha256(bytes) !== entry.sha256)
-            throw new FileFault('content-digest')
-          payload.push(bytes)
-        } finally {
-          fs.closeSync(fd)
-        }
-      }
+      const current = await this.#binding(args, 'target', ctx)
+      return this.#commit(id, transfer, current)
     } finally {
-      stage.close()
+      fs.rmSync(this.#stage(id), { recursive: true, force: true })
     }
-    if (manifestSha256(transfer.entries) !== args.manifestSha256)
-      throw new FileFault('manifest-digest')
+  }
+  #commit(
+    id: string,
+    transfer: StoredTransfer,
+    grant: FileBinding,
+  ): ControlOutcome {
     // No await between the last authorization check and the atomic publication.
     const { root, generation } = this.#workspace(grant.target.agent)
     if (generation !== grant.targetGeneration) {
@@ -639,9 +516,13 @@ export class NodeFiles {
     }
     const destination = `inbox/${grant.source.node}/${transfer.path}`
     const parts = destination.split('/'),
-      name = parts.pop()!,
+      name = parts.pop()!
+    let parent: FileDirectory
+    try {
       parent = root.walk(parts.join('/'), true)
-    root.close()
+    } finally {
+      root.close()
+    }
     try {
       const names = parent.names()
       if (
@@ -661,7 +542,7 @@ export class NodeFiles {
       if (transfer.kind === 'file') {
         const fd = parent.open(temporary, true)
         try {
-          fs.writeFileSync(fd, payload[0]!)
+          fs.writeFileSync(fd, this.#payload(id, 0, transfer.entries[0]!))
           fs.fsyncSync(fd)
         } finally {
           fs.closeSync(fd)
@@ -676,7 +557,7 @@ export class NodeFiles {
             try {
               const fd = nested.open(leaf, true)
               try {
-                fs.writeFileSync(fd, payload[index]!)
+                fs.writeFileSync(fd, this.#payload(id, index, entry))
                 fs.fsyncSync(fd)
               } finally {
                 fs.closeSync(fd)
@@ -700,23 +581,64 @@ export class NodeFiles {
       parent.close()
     }
   }
+  #payload(id: string, index: number, entry: FileManifestEntry): Buffer {
+    const stage = FileDirectory.root(this.#stage(id, 'target'))
+    try {
+      const fd = stage.open(String(index))
+      try {
+        const bytes = fs.readFileSync(fd)
+        if (bytes.length !== entry.size || sha256(bytes) !== entry.sha256)
+          throw new FileFault('content-digest')
+        return bytes
+      } finally {
+        fs.closeSync(fd)
+      }
+    } finally {
+      stage.close()
+    }
+  }
   handle(
     op: string,
     args: Record<string, unknown>,
     ctx: ControlContext,
   ): Promise<ControlOutcome> {
     const invoke = async (): Promise<ControlOutcome> => {
-      const mutation = ['files.write', 'files.commit', 'files.abort'].includes(
-        op,
-      )
+      const mutation = [
+        'files.publish',
+        'files.fetch',
+        'files.abort',
+        'files.clean',
+      ].includes(op)
       let operation: FileOperation | undefined
       try {
-        if (this.#options.stopped() && op !== 'files.abort')
+        if (
+          this.#options.stopped() &&
+          op !== 'files.abort' &&
+          op !== 'files.clean'
+        )
           throw new FileFault('estop')
         if (mutation) {
           const operationId = idSchema.parse(args.operationId)
           const key = `${ctx.peer}:${operationId}`,
-            digest = sha256(JSON.stringify([op, args, ctx.actor]))
+            digest = sha256(
+              JSON.stringify([
+                op,
+                {
+                  ...args,
+                  credential:
+                    args.credential !== null &&
+                    typeof args.credential === 'object' &&
+                    !Array.isArray(args.credential)
+                      ? Object.fromEntries(
+                          Object.entries(args.credential).filter(
+                            ([key]) => key !== 'token',
+                          ),
+                        )
+                      : args.credential,
+                },
+                ctx.actor,
+              ]),
+            )
           const old = this.#book.operations[key]
           if (old)
             return old.digest === digest

@@ -164,10 +164,16 @@ export interface FileTransferView {
   readonly target: AgentRef & { readonly path: string | null }
   readonly files: number
   readonly bytes: number
+  /** 送达完成后才知道已交付字节数；没有分块进度。 */
   readonly doneBytes: number
   /** 清单摘要（按路径 UTF-16 码元序排序的 `[路径,字节数,sha256]` 紧凑 JSON 数组的 UTF-8 SHA-256）；读到清单前为 null。 */
   readonly manifestSha256: string | null
-  /** 中枢与目标两次核对都一致为 true；任何一次不一致为 false；没核对到为 null。 */
+  readonly exchange?: {
+    readonly ref: string
+    readonly commit: string | null
+    readonly cleaned: boolean
+  }
+  /** 目标逐文件核对清单，并核对清单摘要与中枢账本一致；失败为 false，未核对为 null。 */
   readonly verified: boolean | null
   readonly state: FileTransferState
   readonly reason: string | null
@@ -184,6 +190,10 @@ export interface FileGroupView {
 }
 
 export interface FilesSnapshot {
+  readonly exchange?: {
+    readonly repo: string
+    readonly private: boolean | null
+  }
   readonly requests: readonly FileRequestView[]
   readonly grants: readonly FileGrantView[]
   readonly transfers: readonly FileTransferView[]
