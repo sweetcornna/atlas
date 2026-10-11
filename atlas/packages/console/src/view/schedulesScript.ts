@@ -201,6 +201,18 @@ export const SCHEDULES_PAGE_JS = `
     }).catch(function (err) { qc.toast(qc.failLine('运行', err), qc.failTone(err)); });
   });
 
+  // A run whose end never came back holds the schedule until a person says
+  // how it went; the answer settles the run and frees the schedule.
+  qc.onAction('run-resolve', function (button) {
+    var id = button.getAttribute('data-id') || '';
+    var run = button.getAttribute('data-run') || '';
+    var outcome = button.getAttribute('data-outcome') === 'ok' ? 'ok' : 'failed';
+    qc.sendJson('POST', '/v0/schedules/' + encodeURIComponent(id) + '/runs/' + encodeURIComponent(run) + '/resolve', { outcome: outcome }).then(function () {
+      qc.toast(outcome === 'ok' ? '已记为完成 · 任务恢复按时运行' : '已记为失败 · 任务恢复按时运行', 'ok');
+      return refresh();
+    }).catch(function (err) { qc.toast(qc.failLine('确认', err), qc.failTone(err)); });
+  });
+
   // The switch is a checkbox inside the polled table: a click flips it at
   // once, and the refresh after the answer puts it back if the write failed.
   document.addEventListener('change', function (event) {

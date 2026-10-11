@@ -146,6 +146,17 @@ function outcomeTag(outcome: ScheduleRunOutcome): string {
   return state(OUTCOME_TONE[outcome], OUTCOME_WORD[outcome])
 }
 
+/**
+ * A run whose end never came back (a local timeout, a restart mid-run) is
+ * `unknown`: the agent may still be working, so the schedule holds and the
+ * page says so instead of the `running` it keeps underneath.
+ */
+function runTag(run: ScheduleRunView): string {
+  return run.state === 'unknown'
+    ? state('warn', '结果未知 · 待确认')
+    : outcomeTag(run.outcome)
+}
+
 function scheduleName(schedule: ScheduleView): string {
   const direction =
     schedule.direction === null
@@ -177,7 +188,7 @@ function lastCell(schedule: ScheduleView, now: number): string {
   if (run === null)
     return `<td class="when"><span class="note">尚未运行</span></td>`
   return (
-    `<td class="when"><span class="sch-when">${outcomeTag(run.outcome)}` +
+    `<td class="when"><span class="sch-when">${runTag(run)}` +
     `<span class="note">${escapeHtml(formatRelative(run.startedAt, now))}</span></span></td>`
   )
 }
@@ -274,11 +285,28 @@ function pushedLine(
     .join('')}</span>`
 }
 
+function resolveActions(run: ScheduleRunView): string {
+  const data = { id: run.scheduleId, run: run.runId }
+  return (
+    `<div class="run-unknown"><p class="note">没有收到这一次的结果（本地等待超时或服务重启过）。智能体可能还在做；确认之前，这个任务不会再发。</p>` +
+    `<span class="kit-acts">` +
+    actionButton('run-resolve', '确认失败', {
+      tone: 'ghost',
+      data: { ...data, outcome: 'failed' },
+    }) +
+    actionButton('run-resolve', '确认已完成', {
+      data: { ...data, outcome: 'ok' },
+    }) +
+    `</span></div>`
+  )
+}
+
 function runCard(
   run: ScheduleRunView,
   titles: ReadonlyMap<string, string>,
   channels: readonly NotifyChannelView[],
   now: number,
+  member: boolean,
 ): string {
   const title = titles.get(run.scheduleId) ?? run.scheduleId
   const took =
@@ -293,28 +321,33 @@ function runCard(
   const body =
     run.excerpt !== null && run.excerpt !== ''
       ? `<p class="kit-excerpt">${escapeHtml(run.excerpt)}</p>`
-      : run.reason === null
+      : run.reason === null || run.state === 'unknown'
         ? ''
         : `<p class="note">${escapeHtml(run.reason)}</p>`
   return (
     `<article class="card elev-sm run-card" data-key="${attr(run.runId)}">` +
-    `<div class="run-head"><div class="kit-row"><b>${escapeHtml(title)}</b>${outcomeTag(run.outcome)}${manual}</div>` +
+    `<div class="run-head"><div class="kit-row"><b>${escapeHtml(title)}</b>${runTag(run)}${manual}</div>` +
     `<div class="note kit-row">${timeTag(run.startedAt, 'datetime')}` +
     `<span>${escapeHtml(formatRelative(run.startedAt, now))}</span>${took}</div></div>` +
     body +
+    (member && run.state === 'unknown' ? resolveActions(run) : '') +
     `<div class="run-foot">${pushedLine(run, channels)}${open}</div>` +
     `</article>`
   )
 }
 
-function runsSection(snapshot: SchedulesSnapshot, now: number): string {
+function runsSection(
+  snapshot: SchedulesSnapshot,
+  now: number,
+  member: boolean,
+): string {
   const titles = new Map(snapshot.schedules.map(one => [one.id, one.title]))
   const runs = snapshot.runs.slice(0, 12)
   const body =
     runs.length === 0
       ? hint('还没有运行记录')
       : `<div class="run-grid">${runs
-          .map(run => runCard(run, titles, snapshot.channels, now))
+          .map(run => runCard(run, titles, snapshot.channels, now, member))
           .join('')}</div>`
   return (
     `<section class="sec" aria-labelledby="h-runs">` +
@@ -476,7 +509,7 @@ export function renderSchedules(
     }) +
     table +
     `</section>` +
-    runsSection(snapshot, now) +
+    runsSection(snapshot, now, roles.member) +
     channelsSection(snapshot, now, roles.ops)
   )
 }
@@ -658,6 +691,7 @@ export const SCHEDULES_PAGE_CSS = `
 .run-grid { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
 .run-card { gap: var(--space-2); padding: var(--space-4); }
 .run-head { display: flex; flex-direction: column; gap: 4px; }
+.run-unknown { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--color-bg); }
 .run-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
 #schedule-form [data-when][hidden] { display: none; }
 .jobs-legacy { margin-top: var(--space-4); }

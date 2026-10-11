@@ -140,7 +140,24 @@ export class FakeSchedules implements SchedulesPort {
       pushed: [{ channelId: 'ch-1', ok: true, error: null }],
       trigger: 'schedule',
     }
-    this.runs = [brief]
+    // A manual run whose end never came back: it holds the schedule until a
+    // person confirms how it went.
+    const lost: ScheduleRunView = {
+      state: 'unknown',
+      runId: 'run-0',
+      scheduleId: 'sch-1',
+      plannedAt: at - 26 * 3_600_000,
+      startedAt: at - 26 * 3_600_000 + 300,
+      finishedAt: null,
+      outcome: 'running',
+      taskId: 'task-run-0',
+      sessionId: 'sess-lost',
+      excerpt: null,
+      reason: '本地等待超时，没有收到这一轮的结果',
+      pushed: [],
+      trigger: 'manual',
+    }
+    this.runs = [brief, lost]
     this.schedules = [
       {
         id: 'sch-1',
@@ -202,7 +219,14 @@ export class FakeSchedules implements SchedulesPort {
     this.calls.push(`resolve ${id} ${runId}`)
     const run = this.runs.find(v => v.runId === runId && v.scheduleId === id)
     if (!run) return failed('not_found', 'no run')
-    return ok({ ...run, outcome: outcome === 'ok' ? 'completed' : 'failed' })
+    const settled: ScheduleRunView = {
+      ...run,
+      state: outcome === 'ok' ? 'completed' : 'failed',
+      outcome: outcome === 'ok' ? 'completed' : 'failed',
+      finishedAt: this.now(),
+    }
+    this.runs = this.runs.map(v => (v === run ? settled : v))
+    return ok(settled)
   }
 
   async snapshot(
