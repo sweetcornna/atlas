@@ -125,15 +125,26 @@ async function setup(messages = 10, withTenancy = false) {
     enabled: true,
     timeoutMs: 600_000,
   }
-  const response = await handle(
-    asBearer('POST', '/v0/schedules', creator.credential, draft),
-  )
-  expect(response.status).toBe(200)
-  const saved = (await response.json()) as ScheduleView
   const actor = {
     subject: principal.value.subject,
     role: 'member' as const,
     requestId: 'manual',
+  }
+  // D01 deliberately closes the tenant HTTP schedules face. Seed the stored
+  // pre-existing job through its host port, preserving the dispatch assertion.
+  let saved: ScheduleView
+  if (withTenancy) {
+    const response = await handle(
+      asBearer('POST', '/v0/schedules', creator.credential, draft),
+    )
+    expect(response.status).toBe(501)
+    saved = value(await book.save(draft, actor))
+  } else {
+    const response = await handle(
+      asBearer('POST', '/v0/schedules', creator.credential, draft),
+    )
+    expect(response.status).toBe(200)
+    saved = (await response.json()) as ScheduleView
   }
   return {
     h,
@@ -165,7 +176,9 @@ test('member-created schedule sessions appear only on that member’s chat rail 
   )
   expect(response.status).toBe(200)
   await book.idle()
-  const run = value(await book.snapshot()).runs[0]!
+  const run = value(
+    await book.snapshot({ subject: 'legacy:admin', role: null }),
+  ).runs[0]!
   expect(run.outcome).toBe('running')
   expect(h.book.ownerOf(run.sessionId!)).toBe(actor.subject)
   const own = await handle(
@@ -200,7 +213,9 @@ test('revoked creator skips both manual and due runs without any chat calls or d
     }),
   )
   await book.idle()
-  const result = value(await book.snapshot())
+  const result = value(
+    await book.snapshot({ subject: 'legacy:admin', role: null }),
+  )
   expect(result.runs).toHaveLength(2)
   for (const run of result.runs)
     expect(run).toMatchObject({
@@ -213,15 +228,26 @@ test('revoked creator skips both manual and due runs without any chat calls or d
   expect(h.chat.sends).toBe(0)
 })
 
-test('exhausted quota fails a scheduled run with the HTTP quota reason and sends nothing', async () => {
+test('exhausted quota skips a scheduled run with the HTTP quota reason and sends nothing', async () => {
   const { h, book, saved, actor } = await setup(0)
+  const targets = h.chat.targets.bind(h.chat)
+  let targetCalls = 0
+  h.chat.targets = () => {
+    targetCalls++
+    return targets()
+  }
   value(await book.runNow(saved.id, actor))
   await book.idle()
-  expect(value(await book.snapshot()).runs[0]).toMatchObject({
-    outcome: 'failed',
+  expect(targetCalls).toBe(0)
+  expect(
+    value(await book.snapshot({ subject: 'legacy:admin', role: null })).runs[0],
+  ).toMatchObject({
+    outcome: 'skipped',
     reason: expect.stringContaining('quota'),
   })
   expect(h.chat.sends).toBe(0)
+  expect(h.chat.opened).toBe(0)
+  expect(h.chat.transcripts).toBe(0)
 })
 
 test('revoking a creator with an existing dedicated session makes due ticks call no chat methods', async () => {
@@ -231,6 +257,10 @@ test('revoking a creator with an existing dedicated session makes due ticks call
   h.clock.advance(saved.timeoutMs)
   await book.tick()
   await book.idle()
+  const pending = value(
+    await book.snapshot({ subject: 'legacy:admin', role: null }),
+  ).runs.find(run => run.state === 'unknown')!
+  value(await book.resolve(saved.id, pending.runId, 'failed', actor))
   const reads = h.chat.transcripts
   expect(h.book.revoke(actor.subject, 'legacy:admin').ok).toBe(true)
   const targets = h.chat.targets.bind(h.chat)
@@ -246,7 +276,9 @@ test('revoking a creator with an existing dedicated session makes due ticks call
   expect(h.chat.transcripts).toBe(reads)
   expect(h.chat.opened).toBe(1)
   expect(h.chat.sends).toBe(1)
-  expect(value(await book.snapshot()).runs[0]).toMatchObject({
+  expect(
+    value(await book.snapshot({ subject: 'legacy:admin', role: null })).runs[0],
+  ).toMatchObject({
     outcome: 'skipped',
     reason: expect.stringContaining('创建者已无权限'),
   })
@@ -275,7 +307,9 @@ test('a creator whose current role is viewer skips with zero chat effects', asyn
   }
   value(await book.runNow(saved.id, actor))
   await book.idle()
-  expect(value(await book.snapshot()).runs[0]).toMatchObject({
+  expect(
+    value(await book.snapshot({ subject: 'legacy:admin', role: null })).runs[0],
+  ).toMatchObject({
     outcome: 'skipped',
     reason: expect.stringContaining('只读账号'),
   })
@@ -293,7 +327,9 @@ test('revocation during transcript I/O is rechecked before quota and send', asyn
   }
   value(await book.runNow(saved.id, actor))
   await book.idle()
-  expect(value(await book.snapshot()).runs[0]).toMatchObject({
+  expect(
+    value(await book.snapshot({ subject: 'legacy:admin', role: null })).runs[0],
+  ).toMatchObject({
     outcome: 'skipped',
     reason: expect.stringContaining('创建者已无权限'),
   })
@@ -310,7 +346,9 @@ test('removing the creator’s tenant scope skips before opening or reading a ch
   moveTenant()
   value(await book.runNow(saved.id, actor))
   await book.idle()
-  expect(value(await book.snapshot()).runs[0]).toMatchObject({
+  expect(
+    value(await book.snapshot({ subject: 'legacy:admin', role: null })).runs[0],
+  ).toMatchObject({
     outcome: 'skipped',
     reason: expect.stringContaining('资源不存在'),
   })
@@ -326,6 +364,10 @@ test('an endpoint removed from the dialable list skips a reused session, then a 
   h.clock.advance(saved.timeoutMs)
   await book.tick()
   await book.idle()
+  const pending = value(
+    await book.snapshot({ subject: 'legacy:admin', role: null }),
+  ).runs.find(run => run.state === 'unknown')!
+  value(await book.resolve(saved.id, pending.runId, 'failed', actor))
   const original = h.chat.targets.bind(h.chat)
   h.chat.targets = async () => {
     const result = await original()
@@ -339,7 +381,9 @@ test('an endpoint removed from the dialable list skips a reused session, then a 
   const reads = h.chat.transcripts
   value(await book.runNow(saved.id, actor))
   await book.idle()
-  expect(value(await book.snapshot()).runs[0]).toMatchObject({
+  expect(
+    value(await book.snapshot({ subject: 'legacy:admin', role: null })).runs[0],
+  ).toMatchObject({
     outcome: 'skipped',
     reason: expect.stringContaining('允许名单'),
   })
@@ -349,7 +393,9 @@ test('an endpoint removed from the dialable list skips a reused session, then a 
   h.clock.advance(1)
   value(await book.runNow(saved.id, actor))
   await book.idle()
-  expect(value(await book.snapshot()).runs[0]).toMatchObject({
+  expect(
+    value(await book.snapshot({ subject: 'legacy:admin', role: null })).runs[0],
+  ).toMatchObject({
     outcome: 'running',
   })
   expect(h.chat.sends).toBe(2)
@@ -417,7 +463,9 @@ for (const foreignOwner of [false, true]) {
       books.push(recovered)
       value(await recovered.runNow(saved.id, actor))
       await recovered.idle()
-      const run = value(await recovered.snapshot()).runs[0]!
+      const run = value(
+        await recovered.snapshot({ subject: 'legacy:admin', role: null }),
+      ).runs[0]!
       if (foreignOwner) {
         expect(run).toMatchObject({
           outcome: 'skipped',

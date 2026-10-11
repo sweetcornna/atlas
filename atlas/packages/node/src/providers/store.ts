@@ -123,15 +123,24 @@ export function isProcessAlive(pid: number): boolean {
 
 type LockRecord = { pid: number; at: string; nonce: string }
 
-type ApplyLock = { release(): void }
+export type PrivateInstanceLock = { owned(): boolean; release(): void }
 
 /**
  * `apply.lock` via `O_EXCL` (§2.6 step 1). A lock whose pid is gone is stale
  * and reclaimed once; a live holder means `busy` (`null`).
  */
-export function acquireApplyLock(now: Date = new Date()): ApplyLock | null {
-  ensurePrivateDir(providerDir())
-  const path = providerPaths.lock()
+export function acquireApplyLock(
+  now: Date = new Date(),
+): PrivateInstanceLock | null {
+  return acquirePrivateInstanceLock(providerPaths.lock(), now)
+}
+
+/** Same PID/nonce O_EXCL protocol for other private state directories. */
+export function acquirePrivateInstanceLock(
+  path: string,
+  now: Date = new Date(),
+): PrivateInstanceLock | null {
+  ensurePrivateDir(dirname(path))
   const record: LockRecord = {
     pid: process.pid,
     at: now.toISOString(),
@@ -142,13 +151,23 @@ export function acquireApplyLock(now: Date = new Date()): ApplyLock | null {
       const fd = openSync(path, 'wx', PRIVATE_FILE_MODE)
       try {
         writeSync(fd, JSON.stringify(record))
+        fsyncSync(fd)
       } finally {
         closeSync(fd)
       }
       return {
-        release() {
+        owned() {
           const current = readTextIfExists(path)
-          if (current !== undefined && current.includes(record.nonce)) {
+          if (current === undefined) return false
+          try {
+            const value = JSON.parse(current) as Partial<LockRecord>
+            return value.pid === record.pid && value.nonce === record.nonce
+          } catch {
+            return false
+          }
+        },
+        release() {
+          if (this.owned()) {
             removeIfExists(path)
           }
         },
@@ -170,7 +189,19 @@ function isStaleLock(path: string): boolean {
   if (text === undefined) return true
   try {
     const parsed = JSON.parse(text) as Partial<LockRecord>
-    return typeof parsed.pid !== 'number' || !isProcessAlive(parsed.pid)
+    if (typeof parsed.pid === 'number' && !isProcessAlive(parsed.pid))
+      return true
+    if (
+      typeof parsed.pid === 'number' &&
+      typeof parsed.nonce === 'string' &&
+      /^[0-9a-f]{16}$/.test(parsed.nonce) &&
+      typeof parsed.at === 'string' &&
+      Number.isFinite(Date.parse(parsed.at))
+    )
+      return false
+    // Missing/malformed identity may be a holder mid-write; reclaim only
+    // after the grace period. A valid live PID/nonce never expires.
+    return Date.now() - statSync(path).mtimeMs > TORN_LOCK_GRACE_MS
   } catch {
     // Unreadable: either a holder between open() and write(), or a torn
     // write from a crashed one. Only age tells them apart.

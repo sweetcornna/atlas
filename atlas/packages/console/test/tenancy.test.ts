@@ -5,7 +5,16 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileUsageStore } from '../src/usage.js'
-import { FakeMemory, FakeSchedules } from './directionFakes.js'
+import {
+  FakeMemory,
+  FakeSchedules,
+  FakeFiles,
+  FakeDesktop,
+  FakeConnectors,
+  FakeRouting,
+  FakeHandoffDevices,
+  FakeAvatars,
+} from './directionFakes.js'
 import { describe, expect, test } from 'bun:test'
 import { AccountBook, type AccountRole } from '../src/accounts.js'
 import {
@@ -258,14 +267,40 @@ function fixture() {
   // The 2026-10 ports, which carry no tenant wrapper yet (review D01).
   const memory = new FakeMemory(() => 1)
   const schedules = new FakeSchedules(() => 1)
-  const handle = createConsoleHandler({ ...deps, memory, schedules }, TOKENS, {
-    book,
-    signup: { maxAccounts: 7, attemptsPerHour: 5 },
-  })
+  const files = new FakeFiles(() => 1),
+    desktop = new FakeDesktop(() => 1),
+    connectors = new FakeConnectors(() => 1),
+    routing = new FakeRouting(() => 1),
+    handoffDevices = new FakeHandoffDevices(() => 1),
+    avatars = new FakeAvatars(() => 1)
+  const handle = createConsoleHandler(
+    {
+      ...deps,
+      memory,
+      schedules,
+      files,
+      desktop,
+      connectors,
+      routing,
+      handoffDevices,
+      avatars,
+    },
+    TOKENS,
+    {
+      book,
+      signup: { maxAccounts: 7, attemptsPerHour: 5 },
+    },
+  )
   return {
     handle,
     memory,
     schedules,
+    files,
+    desktop,
+    connectors,
+    routing,
+    handoffDevices,
+    avatars,
     alice,
     bob,
     outsider,
@@ -522,6 +557,44 @@ describe('M2 request scopes', () => {
         .status,
     ).toBe(200)
     expect(h.memory.calls).toEqual([])
+    for (const path of ['/v0/schedules', '/v0/routing', '/v0/avatars']) {
+      expect(
+        (await h.handle(asBearer('GET', path, h.alice.credential))).status,
+      ).toBe(501)
+    }
+    for (const key of [
+      'agent:qianmo://berlin-1/planner',
+      `user:${h.bob.subject}`,
+    ]) {
+      const response = await h.handle(
+        asBearer(
+          'PUT',
+          `/v0/avatars/${encodeURIComponent(key)}`,
+          h.alice.credential,
+          {},
+        ),
+      )
+      expect(response.status).toBe(501)
+    }
+    const page = await (
+      await h.handle(asBearer('GET', '/overview', h.alice.credential))
+    ).text()
+    for (const href of ['/files', '/desktop', '/connect'])
+      expect(page).not.toContain(`href="${href}"`)
+    for (const path of ['/files', '/desktop', '/connect'])
+      expect(
+        (await h.handle(asBearer('GET', path, h.alice.credential))).status,
+      ).toBe(404)
+    for (const port of [
+      h.schedules,
+      h.files,
+      h.desktop,
+      h.connectors,
+      h.routing,
+      h.handoffDevices,
+      h.avatars,
+    ])
+      expect(port.calls).toEqual([])
   })
   test('audit source selectors and server notes cannot reach an external tenant', async () => {
     const h = fixture()

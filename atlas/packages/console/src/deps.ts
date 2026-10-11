@@ -1053,6 +1053,8 @@ export interface ConsoleAction {
   readonly subject: string
   /** admin 令牌以 break-glass 方式使用时为 `true`（`tenancy-m1.md` §3.4）。 */
   readonly breakGlass?: true
+  /** Original schedule creator, retained for delegated administration. */
+  readonly createdBy?: string
   /**
    * 点分动词，见 {@link CONSOLE_ACTIONS}。前缀可筛：`agent.`、`chat.`。
    */

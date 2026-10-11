@@ -210,6 +210,9 @@ function open(): ConsoleSchedules {
     directory: path.join(root, 'schedules'),
     estopPath: path.join(root, 'ESTOP'),
     chat,
+    pushOptions: {
+      resolve: async () => [{ address: '93.184.216.34', family: 4 }],
+    },
     accounts,
     actions: ledger,
     now: () => now,
@@ -223,7 +226,7 @@ function open(): ConsoleSchedules {
   })
 }
 async function snapshot(): Promise<SchedulesSnapshot> {
-  return value(await book.snapshot())
+  return value(await book.snapshot({ subject: 'legacy:admin', role: null }))
 }
 beforeEach(() => {
   accounts = {
@@ -545,7 +548,7 @@ describe('execution through the conversation port', () => {
     expect(chat.sent[3]!.sessionId).toBe(chat.sent[2]!.sessionId)
   })
 
-  test('timeouts use the injected clock, push a terminal outcome and ignore late replies', async () => {
+  test('local timeouts retain unknown occupancy and late replies reconcile it', async () => {
     const channel = value(
       await book.saveChannel(
         { name: '推送', kind: 'webhook', url: 'https://example.test/secret' },
@@ -563,14 +566,27 @@ describe('execution through the conversation port', () => {
     await book.tick()
     await book.idle()
     expect((await snapshot()).runs[0]!).toMatchObject({
-      outcome: 'timeout',
-      reason: '任务超时',
+      outcome: 'running',
+      state: 'unknown',
+      reason: '上一次结果未知，等待确认',
+      finishedAt: null,
     })
-    expect(notices[0]!.qianmo.outcome).toBe('timeout')
+    expect(notices).toHaveLength(0)
+    expect(value(await book.runNow(job.id, actor))).toMatchObject({
+      outcome: 'skipped',
+      reason: '上一次结果未知，等待确认',
+    })
+    expect(chat.sent).toHaveLength(1)
     chat.reply(chat.sent[0]!.sessionId, '迟到的回复')
     await book.idle()
-    expect((await snapshot()).runs).toHaveLength(1)
+    expect((await snapshot()).runs).toHaveLength(2)
+    expect(
+      (await snapshot()).runs.find(run => run.state === 'completed'),
+    ).toMatchObject({ excerpt: '迟到的回复' })
     expect(notices).toHaveLength(1)
+    value(await book.runNow(job.id, actor))
+    await book.idle()
+    expect(chat.sent).toHaveLength(2)
   })
 
   test('overlapping slots skip; ESTOP skips both scheduled and manual work without sends', async () => {
@@ -619,7 +635,7 @@ describe('execution through the conversation port', () => {
     expect(result.schedules[0]!.nextRunAt).toBe(START + 6 * STEP)
   })
 
-  test('a pending run becomes failed after restart without sending it again', async () => {
+  test('a pending run remains unknown after restart until its creator confirms it', async () => {
     const job = value(await book.save(draft(), actor))
     value(await book.runNow(job.id, actor))
     await book.idle()
@@ -628,14 +644,125 @@ describe('execution through the conversation port', () => {
     book = open()
     const run = (await snapshot()).runs[0]!
     expect(run).toMatchObject({
-      outcome: 'failed',
-      reason: '控制台重启',
-      finishedAt: now,
+      outcome: 'running',
+      state: 'unknown',
+      reason: '上一次结果未知，等待确认',
+      finishedAt: null,
     })
     expect(chat.sent).toHaveLength(1)
     book.close()
     book = open()
     expect((await snapshot()).runs).toHaveLength(1)
+    expect(value(await book.runNow(job.id, actor)).reason).toBe(
+      '上一次结果未知，等待确认',
+    )
+    expect(chat.sent).toHaveLength(1)
+    expect(
+      value(await book.resolve(job.id, run.runId, 'failed', actor)).outcome,
+    ).toBe('failed')
+    expect(actions.at(-1)).toMatchObject({
+      action: 'schedule.resolve',
+      subject: actor.subject,
+      createdBy: actor.subject,
+    })
+    value(await book.runNow(job.id, actor))
+    await book.idle()
+    expect(chat.sent).toHaveLength(2)
+  })
+
+  test('a local chat timeout row cannot release unknown occupancy, but a remote terminal can', async () => {
+    const job = value(await book.save(draft(), actor))
+    value(await book.runNow(job.id, actor))
+    await book.idle()
+    const session = chat.sent[0]!.sessionId
+    chat.reply(session, 'local timeout', 'failed', 'E_TASK_TIMEOUT')
+    now += job.timeoutMs
+    await book.tick()
+    await book.idle()
+    expect((await snapshot()).runs[0]).toMatchObject({
+      state: 'unknown',
+      outcome: 'running',
+    })
+    now += STEP
+    await book.tick()
+    await book.idle()
+    expect((await snapshot()).runs[0]).toMatchObject({
+      outcome: 'skipped',
+      reason: '上一次结果未知，等待确认',
+    })
+    expect(chat.sent).toHaveLength(1)
+    const record = chat.records.get(session)!
+    const local = record.turns.find(turn => turn.author === 'agent')!
+    chat.records.set(session, {
+      ...record,
+      turns: record.turns.map(turn =>
+        turn.id === local.id ? { ...turn, remoteTerminal: true } : turn,
+      ),
+    })
+    book.close()
+    book = open()
+    await book.tick()
+    await book.idle()
+    expect(
+      (await snapshot()).runs.find(run => run.trigger === 'manual'),
+    ).toMatchObject({ outcome: 'timeout', state: 'timeout' })
+    value(await book.runNow(job.id, actor))
+    await book.idle()
+    expect(chat.sent).toHaveLength(2)
+  })
+
+  test('restart keeps a proven terminal result without retrying a possibly delivered notification', async () => {
+    book.close()
+    const pending = Promise.withResolvers<{
+      ok: boolean
+      error: null
+      attempts: number
+    }>()
+    let pushes = 0
+    book = new ConsoleSchedules({
+      directory: path.join(root, 'schedules'),
+      estopPath: path.join(root, 'ESTOP'),
+      chat,
+      accounts,
+      now: () => now,
+      pushOptions: {
+        resolve: async () => [{ address: '93.184.216.34', family: 4 }],
+      },
+      push: async () => {
+        pushes++
+        return pending.promise
+      },
+    })
+    const channel = value(
+      await book.saveChannel(
+        {
+          name: 'fixture',
+          kind: 'webhook',
+          url: 'https://example.test/secret',
+        },
+        actor,
+      ),
+    )
+    const job = value(await book.save(draft({ channels: [channel.id] }), actor))
+    chat.autoReply = 'proven reply'
+    value(await book.runNow(job.id, actor))
+    // The pending notification would keep idle() waiting; watch its durable checkpoint.
+    for (let attempt = 0; attempt < 100 && pushes === 0; attempt++)
+      await Promise.resolve()
+    expect(pushes).toBe(1)
+    const old = book
+    old.close()
+    book = open()
+    expect((await snapshot()).runs[0]).toMatchObject({
+      outcome: 'completed',
+      state: 'completed',
+      reason: '通知结果未知，未重复推送',
+    })
+    pending.resolve({ ok: true, error: null, attempts: 1 })
+    await old.idle()
+    await book.idle()
+    expect(pushes).toBe(1)
+    expect(notices).toHaveLength(0)
   })
 
   test('agent notices select this run only; stale notices do not enable a later push', async () => {
@@ -730,7 +857,10 @@ describe('execution through the conversation port', () => {
     }
     book.close()
     book = open()
-    const snapshot = await book.snapshot()
+    const snapshot = await book.snapshot({
+      subject: 'legacy:admin',
+      role: null,
+    })
     expect(value(snapshot).runs).toHaveLength(50)
     expect(value(snapshot).runs[0]!.startedAt).toBe(now)
     expect(value(snapshot).runs[49]!.startedAt).toBe(now - 49)
@@ -743,6 +873,9 @@ describe('execution through the conversation port', () => {
       directory: path.join(root, 'schedules'),
       estopPath: path.join(root, 'ESTOP'),
       chat,
+      pushOptions: {
+        resolve: async () => [{ address: '93.184.216.34', family: 4 }],
+      },
       accounts,
       now: () => now,
       push: async () => {
@@ -809,7 +942,8 @@ describe('execution through the conversation port', () => {
     )
     expect(actions.at(-1)).toMatchObject({
       action: 'schedule.run',
-      subject: 'system:schedules',
+      subject: actor.subject,
+      createdBy: actor.subject,
       target: job.id,
     })
   })

@@ -526,8 +526,14 @@ export type ScheduleRunOutcome =
   | 'timeout'
   | 'skipped'
 
+export type ScheduleRunState = ScheduleRunOutcome | 'unknown'
+
 export interface ScheduleRunView {
+  /** Lifecycle state; absent on older records. Unknown retains running occupancy. */
+  readonly state?: ScheduleRunState
   readonly runId: string
+  /** Creator is retained after deletion so history keeps its account scope. */
+  readonly createdBy?: string
   readonly scheduleId: string
   readonly plannedAt: number
   readonly startedAt: number
@@ -630,8 +636,15 @@ export interface NotifyChannelDraft {
   readonly url?: string
 }
 
+export interface ScheduleReader {
+  readonly subject: string
+  readonly role?: DirectionActor['role']
+}
+
 export interface SchedulesPort {
-  snapshot(): Promise<ConsoleResult<SchedulesSnapshot>>
+  /** In-memory ownership preflight; never reads a port or admits an action. */
+  visible(id: string, actor: DirectionActor): boolean
+  snapshot(actor: ScheduleReader): Promise<ConsoleResult<SchedulesSnapshot>>
   save(
     draft: ScheduleDraft,
     actor: DirectionActor,
@@ -644,6 +657,12 @@ export interface SchedulesPort {
   remove(id: string, actor: DirectionActor): Promise<ConsoleResult<null>>
   runNow(
     id: string,
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<ScheduleRunView>>
+  resolve(
+    id: string,
+    runId: string,
+    outcome: 'ok' | 'failed',
     actor: DirectionActor,
   ): Promise<ConsoleResult<ScheduleRunView>>
   saveChannel(

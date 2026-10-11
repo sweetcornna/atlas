@@ -59,7 +59,7 @@ async function jobsFragment(ctx: RouteContext): Promise<string> {
 async function schedulesFragment(ctx: RouteContext): Promise<string> {
   const port = ctx.deps.schedules
   if (port === undefined) return renderSchedulesUnavailable(null)
-  const result = await port.snapshot()
+  const result = await port.snapshot(ctx.access.principal!)
   return result.ok
     ? renderSchedules(result.value, ctx.now, {
         member: canMember(ctx),
@@ -107,7 +107,7 @@ const API: Readonly<Record<string, HeadHandler>> = {
 async function dialogs(ctx: RouteContext): Promise<string> {
   const port = ctx.deps.schedules
   if (port === undefined || !canMember(ctx)) return ''
-  const result = await port.snapshot()
+  const result = await port.snapshot(ctx.access.principal!)
   const snapshot = result.ok
     ? result.value
     : { targets: [], channels: [], templates: [] }

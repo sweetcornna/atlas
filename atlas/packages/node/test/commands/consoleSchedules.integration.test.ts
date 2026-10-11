@@ -232,13 +232,15 @@ test(
       now = Date.now()
       const manual = value(await schedules.runNow(saved.id, actor))
       await until(async () =>
-        value(await schedules!.snapshot()).runs.some(
+        value(
+          await schedules!.snapshot({ subject: 'legacy:admin', role: null }),
+        ).runs.some(
           run => run.runId === manual.runId && run.outcome !== 'running',
         ),
       )
-      const completed = value(await schedules.snapshot()).runs.find(
-        run => run.runId === manual.runId,
-      )!
+      const completed = value(
+        await schedules.snapshot({ subject: 'legacy:admin', role: null }),
+      ).runs.find(run => run.runId === manual.runId)!
       expect(completed.outcome).toBe('completed')
       expect(completed.excerpt).toBe('真实回复正文：今天最重要的三件事')
       expect(
@@ -246,9 +248,10 @@ test(
           turn => turn.author === 'agent' && turn.text === completed.excerpt,
         ),
       ).toBe(true)
-      expect(value(await schedules.snapshot()).schedules[0]!.nextRunAt).toBe(
-        saved.nextRunAt,
-      )
+      expect(
+        value(await schedules.snapshot({ subject: 'legacy:admin', role: null }))
+          .schedules[0]!.nextRunAt,
+      ).toBe(saved.nextRunAt)
       schedules.close()
       await chat.close()
       fs.writeFileSync(

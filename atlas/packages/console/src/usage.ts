@@ -481,14 +481,16 @@ export class FileUsageStore implements UsagePort {
     return this.#snapshot(subject)
   }
 
-  reserve(
+  #check(
     scope: UsageScope,
     input: {
       readonly sessionId?: string
       readonly newSession?: boolean
       readonly operation?: 'message' | 'wake' | 'session'
     } = {},
-  ): UsageAdmission {
+  ):
+    | { readonly ok: true; readonly exceeded: string[] }
+    | Extract<UsageAdmission, { ok: false }> {
     if (
       !validScope(scope) ||
       (input.newSession && !input.sessionId) ||
@@ -529,6 +531,33 @@ export class FileUsageStore implements UsagePort {
         reason: this.#problem === null ? 'quota' : 'unavailable',
         snapshot: this.#snapshot(scope.subject),
       }
+    return { ok: true, exceeded }
+  }
+
+  check(
+    scope: UsageScope,
+    input: {
+      sessionId?: string
+      newSession?: boolean
+      operation?: 'message' | 'wake' | 'session'
+    } = {},
+  ): Extract<UsageAdmission, { ok: false }> | null {
+    const verdict = this.#check(scope, input)
+    return verdict.ok ? null : verdict
+  }
+
+  reserve(
+    scope: UsageScope,
+    input: {
+      sessionId?: string
+      newSession?: boolean
+      operation?: 'message' | 'wake' | 'session'
+    } = {},
+  ): UsageAdmission {
+    const verdict = this.#check(scope, input)
+    if (!verdict.ok) return verdict
+    const now = this.#clock()
+    const exceeded = verdict.exceeded
     const id = randomUUID()
     if (
       !this.#append({
