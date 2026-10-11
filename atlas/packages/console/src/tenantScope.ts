@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { MemoryPort, AgentRef } from './directionPorts.js'
+import { scopedFiles } from './filesScope.js'
 import { agentRefOf } from './routes/directionShared.js'
 import type { Access } from './access.js'
 import type { ConsoleDeps, ConsoleResult, ChatPort, WakePort } from './deps.js'
@@ -102,6 +103,14 @@ export function scopedConsoleDeps(
           ? {}
           : { memory: scopedMemory(deps.memory, () => current()) }),
         ...(deps.wake === undefined ? {} : { wake: guarded(deps.wake) }),
+        ...(deps.files === undefined
+          ? {}
+          : {
+              files: scopedFiles(
+                deps.files,
+                ref => current() && scope.node(ref.node),
+              ),
+            }),
         ...(deps.wakeTargets === undefined
           ? {}
           : {
@@ -127,7 +136,6 @@ export function scopedConsoleDeps(
     handoff: _handoff,
     wake: _wake,
     schedules: _schedules,
-    files: _files,
     desktop: _desktop,
     connectors: _connectors,
     routing: _routing,
@@ -142,6 +150,15 @@ export function scopedConsoleDeps(
       : {
           memory: scopedMemory(deps.memory, ref =>
             address(`qianmo://${ref.node}/${ref.agent}`),
+          ),
+        }),
+    ...(deps.files === undefined
+      ? {}
+      : {
+          files: scopedFiles(
+            deps.files,
+            ref =>
+              node(ref.node) && address(`qianmo://${ref.node}/${ref.agent}`),
           ),
         }),
     registry: {
@@ -571,6 +588,52 @@ export async function tenantRequestDenial(
     const ref = agentRefOf(asked)
     if (ref && !scope.address(`qianmo://${ref.node}/${ref.agent}`))
       return fail(404, 'not_found', '资源不存在')
+  }
+  if (head === 'files') {
+    if (pieces[2] === 'browse') {
+      const agent = url.searchParams.get('agent')
+      if (agent !== null && !scope.address(agent))
+        return fail(404, 'not_found', '资源不存在')
+    }
+    if (request.method === 'POST') {
+      if (pieces[2] === 'transfers' && pieces.length === 3) {
+        try {
+          const body: unknown = await request.clone().json()
+          if (
+            body &&
+            typeof body === 'object' &&
+            'target' in body &&
+            'sources' in body
+          ) {
+            if (typeof body.target === 'string' && !scope.address(body.target))
+              return fail(404, 'not_found', '资源不存在')
+            if (
+              Array.isArray(body.sources) &&
+              body.sources.some(
+                one =>
+                  one &&
+                  typeof one === 'object' &&
+                  typeof one.agent === 'string' &&
+                  !scope.address(one.agent),
+              )
+            )
+              return fail(404, 'not_found', '资源不存在')
+          }
+        } catch {
+          return null
+        }
+      } else if (pieces[3] !== undefined) {
+        const rows = await deps.files?.snapshot()
+        const visible =
+          rows?.ok &&
+          (pieces[2] === 'requests'
+            ? rows.value.requests.some(one => one.requestId === pieces[3])
+            : pieces[2] === 'grants'
+              ? rows.value.grants.some(one => one.grantId === pieces[3])
+              : rows.value.transfers.some(one => one.transferId === pieces[3]))
+        if (!visible) return fail(404, 'not_found', '资源不存在')
+      }
+    }
   }
   if (head === 'chat') {
     const id =

@@ -24,6 +24,7 @@ import {
 import { FILES_PAGE_JS } from '../view/filesScript.js'
 import { KIT_CSS } from '../view/kit.js'
 import { canMember, guardRead } from './directionShared.js'
+import { filesApi } from './filesApi.js'
 import type { RouteContext, RouteModule } from './types.js'
 
 function body(
@@ -84,6 +85,7 @@ export const filesRoute: RouteModule = {
     css: KIT_CSS + FILES_PAGE_CSS,
     script: FILES_PAGE_JS,
   },
+  api: filesApi,
   fragments: {
     heads: ['files'],
     handle: (ctx, _head, rest) => filesFragment(ctx, rest),

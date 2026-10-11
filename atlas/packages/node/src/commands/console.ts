@@ -29,6 +29,9 @@ import { qianmoConfigPath } from '@qianmo/paths'
 import { loadOrCreateNodeKeys } from '../host/nodeIdentity.js'
 import { ConsoleApprovals } from './consoleApprovals.js'
 import { notifyAllowlist } from './consoleNotifyDestination.js'
+import { ConsoleFiles } from './consoleFiles.js'
+import { tenantScope } from '@qianmo/console'
+import { ResidentEstop } from '@qianmo/resident'
 import { ConsoleSchedules } from './consoleSchedules.js'
 import { loadConsoleApproverIdentity } from './consoleApproverIdentity.js'
 import { readTrustAnchors } from '../host/trustAnchors.js'
@@ -519,9 +522,12 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // 坏了不阻止启动，理由同账号库；两枚 token 作为已知秘密交给它，万一出现在
   // 某条 URL 路径里，落盘的是 `***`。
   const actions =
-    accounts !== undefined && config.actionsStorePath !== undefined
+    (accounts !== undefined && config.actionsStorePath !== undefined) ||
+    config.files
       ? openConsoleActionLedger({
-          path: config.actionsStorePath,
+          path:
+            config.actionsStorePath ??
+            qianmoConfigPath('qianmo', 'console', 'actions.ndjson'),
           secrets: [tokens.view, tokens.admin],
         })
       : undefined
@@ -645,6 +651,61 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     config.memory && control
       ? new ConsoleMemory({ links: control, registry })
       : undefined
+  const fileStop = new ResidentEstop({
+    path: qianmoConfigPath('qianmo', 'console', 'files', 'ESTOP'),
+  })
+  const files =
+    config.files && control
+      ? new ConsoleFiles({
+          directory: qianmoConfigPath('qianmo', 'console', 'files'),
+          control,
+          agents: async () => {
+            const rows = await registry.list()
+            const nodes = new Set(control.status().map(one => one.node))
+            return rows.ok
+              ? rows.value.flatMap(one => {
+                  const ref = /^qianmo:\/\/([^/]+)\/([^/]+)$/.exec(one.address)
+                  return ref && nodes.has(ref[1]!)
+                    ? [{ node: ref[1]!, agent: ref[2]! }]
+                    : []
+                })
+              : []
+          },
+          stopped: () => fileStop.engaged(),
+          requestAllowed: (source, target) => {
+            if (!tenancy) return true
+            const rows = tenancy.read().config.nodes
+            const a = rows.find(one => one.nodeId === source.node),
+              b = rows.find(one => one.nodeId === target.node)
+            return a !== undefined && b !== undefined && a.tenant === b.tenant
+          },
+          authorized: (subject, source, target) => {
+            if (subject === 'legacy:admin')
+              return accounts === undefined && tenancy === undefined
+            const rows = accounts?.book.list()
+            const person = rows?.ok
+              ? rows.value.accounts.find(
+                  one =>
+                    one.subject === subject &&
+                    one.state === 'active' &&
+                    (one.role === 'member' || one.role === 'ops'),
+                )
+              : undefined
+            if (!person) return false
+            if (!tenancy) return true
+            const scope = tenantScope(tenancy.read(), {
+              kind: 'user',
+              subject: person.subject,
+              role: person.role,
+              authenticatedAt: Date.now(),
+              credential: 'bearer',
+            })
+            return scope.node(source.node) && scope.node(target.node)
+          },
+          ...(actions === undefined ? {} : { actions }),
+          onError: message => process.stderr.write(`[files] ${message}\n`),
+        })
+      : undefined
   const approvals =
     approvalIdentity === undefined || accounts === undefined
       ? undefined
@@ -736,6 +797,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   const deps: ConsoleDeps = {
     avatars: new ConsoleAvatars(),
     ...(memory === undefined ? {} : { memory }),
+    ...(files === undefined ? {} : { files }),
     ...(schedules === undefined ? {} : { schedules }),
     ...(approvals === undefined ? {} : { approvals }),
     ...(usage === undefined ? {} : { usage }),
@@ -897,6 +959,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     )
   }
   banner += field('chat', chat.status)
+  if (files) banner += field('files', 'enabled (control links)')
   if (schedules)
     banner += field('schedules', 'enabled (notification channels: unevaluated)')
   if (chat.hub !== undefined) {
@@ -992,6 +1055,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   process.stdout.write(banner)
   approvals?.start()
   control?.start()
+  files?.start()
   const usageCollection =
     usage === undefined
       ? undefined
@@ -1000,6 +1064,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         )
 
   const stop = (): void => {
+    files?.close()
     schedules?.close()
     usageCollection?.stop()
     void approvals?.close()

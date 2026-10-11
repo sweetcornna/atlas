@@ -238,7 +238,8 @@ function filesOf(module: RouteModule | undefined): readonly string[] {
   if (module === undefined) {
     return ['../src/http.ts', '../src/accountsHttp.ts']
   }
-  const own = `../src/routes/${module.area.id}.ts`
+  // P20's API ships before the separately owned page module.
+  const own = `../src/routes/${module.area.id === 'files' && module.page === undefined ? 'filesApi' : module.area.id}.ts`
   const imports = [...source(own).matchAll(/from '\.\/(\w+)\.js'/g)]
     .map(match => match[1] ?? '')
     .filter(name => !['shared', 'types', 'index'].includes(name))

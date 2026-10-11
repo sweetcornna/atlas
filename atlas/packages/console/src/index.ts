@@ -274,3 +274,5 @@ export * from './directionPorts.js'
 export * from './routes/routingApi.js'
 export * from './chatDispatch.js'
 export type { HandoffGitPort, HandoffRequestActor } from './deps.js'
+
+export * from './routes/filesApi.js'

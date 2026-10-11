@@ -746,6 +746,12 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 用的 `before`，已到最早是 `null`）；顺着 `earlier` 翻，每条匹配恰好出现一次，翻页途中追加的
 行不会挪动后面的页。两个游标不是非负整数时原样丢弃，与 `window` 同理。多链的控制台用
 `node=<节点>` 选一条链；不给 `node` 时回 `{ audits }`，每条链一份。
+| GET | `/v0/files` | view 及以上；互通账本与上限；未接端口 501 |
+| GET | `/v0/files/browse?agent=<地址>&path=<相对路径>` | member 及以上；来源工作区目录 |
+| POST | `/v0/files/requests/<id>/decide` | member 及以上；批准或拒绝申请 |
+| POST | `/v0/files/grants/<id>/revoke` | member 及以上；撤销授权 |
+| POST | `/v0/files/transfers` | member 及以上；单来源传输或多来源汇集 |
+| POST | `/v0/files/transfers/<id>/retry` | member 及以上；以新传输号重试失败项 |
 
 ### 5.1 三个保护等级：一枚 cookie 能单独打开哪些路由
 
@@ -2437,3 +2443,23 @@ nextOffset；记忆页每页请求 60 条，API `GET /v0/memory?offset=N` 返回
 UTF-8 JSON 字节量裁剪，遵守协议 `LIMITS.maxMessageBytes`；不按字符串字符数估算。
 total / counts 是筛选全集与长期活条目的计数，裁剪不会缩小它们。单条超限明确拒绝，
 不返回一个无法继续的空页。控制台页面、view/assets 未改动。
+
+## 文件互通（P20）
+
+控制台以 `qm console --files --control alpha=ws://… --control beta=ws://… --trust alpha=<节点公钥> --trust beta=<节点公钥> --chat-from qianmo://hub/console` 启用文件端口。控制链路的 PSK 和中枢身份沿用 [控制链路设计](directions-2026-10.md#11-控制链路中枢--节点) 的设置（参数说明以 `qm console --help` 为准）；节点以 `qm resident --controller hub=<中枢公钥>` 接受该中枢，自动挂载文件处理器与 `qianmo_file_request`。智能体名单由控制链路的 `node.ping` 发现，注册中心不可用时仍可互通。宿主工具只给主智能体，子智能体由常驻扩展拒绝。页面「文件互通」在侧栏「管理」组，没接文件端口时不显示。
+
+主智能体调用 `qianmo_file_request {from:"qianmo://alpha/main",path:"reports/result.txt",reason:"…"}`，经 `hub.call files.request` 写入申请。来源所有者批准后得到授权；拒绝也留账。批准缺省授权申请的单文件路径，默认 1 小时，最长 24 小时；目录申请须显式填写 `{kind:"dir",path:"reports"}`。同时有两端权限的人可以直接发起传输，自动签发本次授权。多个来源组成汇集组，各项独立完成、失败并可单独重试。
+
+授权绑定来源、目标、NFC 规范化范围、签发人及两端工作区代次。每次创建传输、读取和提交均复核：未过期、未撤销、签发账号仍活跃且为成员及以上、当前租户仍包含两端、两端工作区目录与 inode 未变。目录范围按路径段比较，`a/b` 不包含 `a/bc`。个人账号开启后旧管理令牌不能代替文件所有者授权；未开账号和租户时管理令牌可操作。清单与详情都过滤两端，租户越界的写请求在动作账本准入与节点请求之前回 404。
+
+来源由工作区根的目录描述符逐段 `openat + O_NOFOLLOW` 打开，复核 inode、设备和类型。软链、普通文件硬链、特殊文件、穿越、控制字符、危险设备名以及 NFKC/大小写相撞的名字拒绝。注册的工作区根作为可信锚点先解析系统目录别名（如 macOS 的 `/var`）；用户提供的相对路径始终逐段打开。文件先复制到宿主配置根内的 0400 不可变快照，再扫描、计算摘要和读取分块；常驻扩展禁止智能体读取或改写受保护配置根，也禁止执行 shell/代码。改换源文件为软链不能影响已形成的快照。Linux 和 macOS 提供此受限文件接口；其他平台拒绝启动文件访问。
+
+文件导出有独立秘密策略，复用接力的文件名和内容规则，并增加 `id_*`、`credentials*`、阡陌 `qmd_` / `qmu_` / `qmi_` / `qms_` 凭据。`.env*`、密钥文件、`.npmrc`、`.pypirc` 等拒绝。文本按完整 UTF-8 快照扫描，因此密钥跨 128 KiB 块边界仍能发现。二进制、非法 UTF-8 与归档**仅按文件名规则判断**，不做解压或内容秘密检测；节点审计以 `filename-only` 标明。审计只保存受控路径、规则编号、主体及计数，不保存命中文字或文件正文。`.git`、`.qianmo`、`.omp`、`.ssh` 与 `inbox/` 在任何深度都不导出。
+
+单文件最大 64 MiB，每次最大 256 MiB / 1000 文件。控制信封使用 base64，块原文最大 128 KiB；传输层按最终 UTF-8 JSON 信封字节上限 256 KiB 验证。清单每页 32 项。清单摘要为按路径 UTF-16 码元序排序的 `[路径,字节数,sha256]` 数组的紧凑 JSON UTF-8 SHA-256，避免 TSV 的分隔歧义。中枢搬运窗口为一，逐块等待；每节点的控制请求至少间隔 1200 ms，为 ACK、上行授权复核和其他控制消息预留 600 条/分钟预算。大批量传输可能需要较长授权有效期。
+
+中枢先逐文件核对，再向目标写入并由目标再次核对。目标只落在 `inbox/<来源节点>/<原相对路径>`；先 `O_EXCL` 创建临时文件/目录，再用不覆盖的原子 rename 发布，已有名字另存为 `<名>.<传输号前8位>`，备用名字仍相撞时拒绝。重用授权始终创建新传输号、新快照；重试也创建新号，保留旧失败记录和组内关联。
+
+中枢账本位于 `<配置根>/qianmo/console/files/files.json`，三本业务账和汇集组统一 0600、fsync 后原子写入；中枢暂存位于该目录下 `<传输号>/`。节点账本/快照位于 `<节点配置根>/qianmo/files/<节点>/<传输号>/{source,target}/`，目录 0700，智能体工具不可访问。终态清理两端暂存及中枢暂存；节点断线后，中枢在重连后继续仅发送清理。目标工作区的未发布 `.files-<传输号>` 也由 abort 清理，已送达文件保留。
+
+`files.write`、`files.commit`、`files.abort` 带持久化 `operationId`。重复请求只返回已保存回执；同号不同参数拒绝。执行前持久化意图，崩溃留下的未完成意图标结果未知，不重放。中枢重启把在途记录标失败，允许人工重试；提交超时只记“结果未知”，不会自动重发 commit。急停后只有 abort/清理可执行：节点沿用 `<配置根>/resident/ESTOP`，中枢文件面使用 `<配置根>/qianmo/console/files/ESTOP`。开启 `--files` 同时接入动作账本（未开个人账号时也记），由端口一次记录 `files.decide`、`files.grant.revoke`、`files.transfer`、`files.retry`；节点记录 `files.requested/granted/denied/read/verified/rejected/delivered`。

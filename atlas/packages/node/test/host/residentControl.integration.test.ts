@@ -185,6 +185,36 @@ test('signed hub and real resident complete control, upstream and appended omp t
       },
     })
     if (ping.ok) expect((ping.value as { now: number }).now).toBeGreaterThan(0)
+    fs.writeFileSync(path.join(workspace, 'wire-probe.txt'), 'probe')
+    fs.mkdirSync(path.join(workspace, '.ssh'))
+    fs.writeFileSync(path.join(workspace, '.ssh', 'fixture'), 'private fixture')
+    const browsing = await hub.request(
+      'worker',
+      'files.browse',
+      { agent: 'main', path: '' },
+      'legacy:admin',
+    )
+    expect(browsing.ok).toBe(true)
+    if (browsing.ok) {
+      const entries = browsing.value as {
+        name: string
+        kind: string
+        size: number
+      }[]
+      expect(entries.find(one => one.name === 'wire-probe.txt')).toMatchObject({
+        kind: 'file',
+        size: 5,
+      })
+      expect(entries.some(one => one.name === '.ssh')).toBe(false)
+    }
+    expect(
+      await hub.request(
+        'worker',
+        'test.add',
+        { padding: '中'.repeat(100_000) },
+        'legacy:admin',
+      ),
+    ).toMatchObject({ ok: false, code: 'invalid' })
     const control = await hub.request(
       'worker',
       'test.add',

@@ -3,6 +3,7 @@
 
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { NodeFiles } from './files.js'
 import type { AuditInput } from '@qianmo/audit'
 import { AuditSource } from '@qianmo/audit'
 import {
@@ -56,8 +57,9 @@ import {
   type InboundVerification,
 } from '@qianmo/adapter/inbound'
 import {
-  MessageType,
   LIMITS,
+  messageBytes,
+  MessageType,
   CONTROL_MESSAGE_TYPES,
   LEGACY_MESSAGE_TYPES,
   ProtocolErrorCode,
@@ -787,12 +789,44 @@ export class QianmoResident {
   #switchStatus: ResidentProviderSwitchStatus | undefined
 
   constructor(options: QianmoResidentOptions) {
+    const files =
+      options.controllers?.size &&
+      (process.platform === 'darwin' || process.platform === 'linux')
+        ? new NodeFiles({
+            node: options.node,
+            agents: () => options.agents,
+            directory: qianmoConfigPath('qianmo', 'files', options.node),
+            stopped: () => this.#estop.engaged(),
+            hub: {
+              call: (op, args, callOptions) =>
+                this.hubCall.call(op, args, callOptions),
+            },
+            audit: (kind, detail) =>
+              options.controlAudit?.({
+                at: Date.now(),
+                source: AuditSource.Control,
+                node: options.node,
+                kind,
+                outcome:
+                  kind === 'files.rejected' || kind === 'files.denied'
+                    ? 'refused'
+                    : 'ok',
+                detail,
+              }),
+          })
+        : undefined
+    if (files)
+      options = {
+        ...options,
+        extraHostTools: [...(options.extraHostTools ?? []), files.tool()],
+      }
     this.#options = options
     residentToolSurface(
       options.authorization !== undefined,
       options.extraHostTools,
     )
     this.control = new ControlRegistry({ onError: options.onError })
+    files?.register(this.control)
     this.control.register('node', async op =>
       op === 'node.ping'
         ? {
@@ -1494,7 +1528,18 @@ export class QianmoResident {
         const reply = this.#router.outbound({ ...response, payload: result })
         if (reply.ok) {
           try {
-            context.channel.send(reply.message)
+            const outgoing =
+              messageBytes(reply.message) <= LIMITS.maxMessageBytes
+                ? reply.message
+                : {
+                    ...reply.message,
+                    payload: {
+                      ok: false,
+                      code: 'invalid',
+                      message: '控制回执超过 UTF-8 字节上限',
+                    },
+                  }
+            context.channel.send(outgoing)
           } catch (error) {
             this.#options.onError?.(error)
           }

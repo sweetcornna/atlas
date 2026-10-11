@@ -165,7 +165,7 @@ export interface FileTransferView {
   readonly files: number
   readonly bytes: number
   readonly doneBytes: number
-  /** 清单摘要（各文件 `路径\tsha256` 按路径排序后的 SHA-256）；读到清单前为 null。 */
+  /** 清单摘要（按路径 UTF-16 码元序排序的 `[路径,字节数,sha256]` 紧凑 JSON 数组的 UTF-8 SHA-256）；读到清单前为 null。 */
   readonly manifestSha256: string | null
   /** 中枢与目标两次核对都一致为 true；任何一次不一致为 false；没核对到为 null。 */
   readonly verified: boolean | null

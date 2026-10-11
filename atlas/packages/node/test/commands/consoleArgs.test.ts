@@ -1445,3 +1445,18 @@ test('memory opt-in requires a pinned control endpoint', () => {
     ]).memory,
   ).toBe(true)
 })
+
+test('files are opt-in and require a pinned control link before startup', () => {
+  expect(parseConsoleArgs([]).files).toBeUndefined()
+  expect(() => parseConsoleArgs(['--files'])).toThrow('--files needs --control')
+  const key = generateNodeKeyPair().publicKey
+  expect(
+    parseConsoleArgs([
+      '--files',
+      '--control',
+      'alpha=ws://127.0.0.1:1234',
+      '--trust',
+      `alpha=${key}`,
+    ]).files,
+  ).toBe(true)
+})

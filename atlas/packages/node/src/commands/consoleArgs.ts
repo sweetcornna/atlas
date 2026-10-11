@@ -489,6 +489,7 @@ export interface ConsoleCliConfig {
   readonly chatFrom: string
   /** 会话落盘的绝对路径。 */
   readonly chatStorePath: string
+  readonly files?: boolean
   readonly schedules?: boolean
   /**
    * 每个节点跑在哪台服务器上。**给了才有归属面**，一个都没给就整个不显示。
@@ -608,6 +609,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let legacyChat = false
   let chatFrom = DEFAULT_CONSOLE_CHAT_FROM
   let chatStorePath = consoleChatStorePath()
+  let files = false
   let schedules = false
   const nodeServers: ConsoleNodeServer[] = []
   let serverNotesPath = consoleServerNotesPath()
@@ -854,6 +856,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       const parsed = residentOptionValue(args, index, '--admin-token')
       adminToken = nonEmpty(parsed.value, '--admin-token')
       index = parsed.next
+    } else if (arg === '--files') {
+      files = true
     } else if (arg === '--schedules') {
       schedules = true
     } else if (arg === '--chat-url' || arg?.startsWith('--chat-url=')) {
@@ -1246,6 +1250,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     )
   }
 
+  if (files && controlTargets.length === 0)
+    throw new Error('--files needs --control')
   if (schedules && chatTargets.length === 0)
     throw new Error('--schedules needs --chat-url')
 
@@ -1434,6 +1440,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     chatTargets,
     chatFrom,
     chatStorePath,
+    ...(files ? { files: true } : {}),
     ...(schedules ? { schedules: true } : {}),
     nodeServers,
     serverNotesPath,
@@ -1628,6 +1635,8 @@ Options (each accepts both --name value and --name=value):
   --memory                 Account-scoped long memory. Requires --control.
                            Recall across chats also needs --chat-sign and the
                            resident --controller <console>=<publicKey>.
+  --files                  Enable file exchange; requires --control.
+                           State: <config root>/qianmo/console/files/.
   --control <node>=<ws(s)://url>
                            Signed control link (repeatable). Requires --trust
                            for each node; uses the --print-wake-identity key.
