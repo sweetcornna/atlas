@@ -183,9 +183,9 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--chat-store <绝对路径>` | `occConfigPath('qianmo','console','chat.ndjson')` | 会话与转录的落盘位置（§6.5）。**必须是绝对路径**，理由同 `--audit` |
 | `--node-server <node>=<server>` | 无 | 这个节点跑在哪台机器上，**可重复**，一个节点一条，同一个节点不许给两次。**给了才有归属面**（§11）；也是备注的白名单。server 的形状：非空、≤64 字符、只收 `A-Za-z0-9 . _ : -`（主机名、IPv4、IPv6 的冒号、短名都在内） |
 | `--server-notes <绝对路径>` | `occConfigPath('qianmo','console','server-notes.ndjson')` | 服务器备注的落盘位置（§11）。**必须是绝对路径**，理由同 `--audit` |
-| `--handoff-repo <owner/name>=<绝对令牌文件>` | 无 | GitHub 代码存储模式；可重复，令牌文件 0600、当前属主、非软链，地址固定 github.com。没有 `--handoff-root` 时只保留台账；节点不需要 `--handoff-node-git` |
+| `--handoff-repo <owner/name>=<绝对令牌文件>` | 无 | GitHub 接力备用凭据；连接簿优先，连接模式启用租户时不使用无属主的备用文件。可重复，令牌文件 0600、当前属主、非软链，地址固定 github.com。没有 `--handoff-root` 时只保留台账；节点不需要 `--handoff-node-git` |
 | `--handoff-retention-days <天数>` | 7 | GitHub 模式失败/过期分支的保留期；中枢每小时清理，逐项记审计，不取对象 |
-| `--handoff-root <绝对路径>` | 无 | 接力裸仓所在的目录（P17.4），`<目录>/<项目>.git` 由笔记本侧 `qm handoff init` 建。**给此参数或 `--handoff-repo` 才有 `/v0/handoff`**。台账在 `qianmoConfigPath('qianmo','handoff','ledger.ndjson')`，带独占锁：同一配置根上第二个控制台在这一步就起不来；接力的审计是单独一条链 `…/handoff/audit.ndjson` |
+| `--handoff-root <绝对路径>` | 无 | 接力裸仓所在的目录（P17.4），`<目录>/<项目>.git` 由笔记本侧 `qm handoff init` 建。**给此参数、`--handoff-repo` 或 `--connectors` 即有 `/v0/handoff`**。台账在 `qianmoConfigPath('qianmo','handoff','ledger.ndjson')`，带独占锁：同一配置根上第二个控制台在这一步就起不来；接力的审计是单独一条链 `…/handoff/audit.ndjson` |
 | `--handoff-node <node>=<ws(s)://…>` | 无 | 节点桥（`qm handoff node`，P17.5）的入站端点，**可重复**，按给出的顺序挑空闲节点，一个节点同时只跑一个任务。要 `--handoff-root`，且同一节点要有一条 `--handoff-node-git`；PSK 与 `--chat-url` 同一个按节点派生的变量。节点桥地址固定为 `qianmo://<node>/handoff`。派发的 `task.request` **总是**用控制台的签名身份签（与 `--print-wake-identity` 同一把），节点桥要 `--trust` 它。用法见 `handoff-usage.md` §6 |
 | `--handoff-node-git <node>=<ssh 目标>:<根> \| <绝对路径>` | 无 | 那个节点的裸仓根（节点桥 `<root>/repos`），经节点上的 SSH 闸门推影子提交与会话提交、取回 `qianmo/<任务>` 与云端会话；给绝对路径就是本机上的节点 |
 | `--handoff-node-key <绝对路径>` | 无 | 中枢在节点闸门上的专用钥匙（`IdentitiesOnly`）。有 SSH 形式的 `--handoff-node-git` 时必给，没有时给了报错 |
@@ -2552,7 +2552,7 @@ Subject 做 RFC 2047 编码、正文 base64 和点转义，不允许未加密认
 
 ### 共享出站策略（D21）
 
-`commands/outboundPolicy.ts` 服务 P25 的邮件与日历。P24 通知渠道用
+`commands/outboundPolicy.ts` 服务 P25 的邮件与日历及 P26c 仓库探测。P24 通知渠道用
 `consoleNotifyDestination.ts`（§12.2：只收 HTTPS，HTTP 与受保护网段须经
 `QIANMO_NOTIFY_ALLOWLIST` 按主机放行，同样先解析全部 DNS 结果、固定到已复核的
 地址拨号）；两处规则一致，配置分开。默认允许
@@ -2633,6 +2633,42 @@ ICS 与 CalDAV 返回的 RRULE 本轮均**不展开**，结果显式带 warning�
 事件在窗口外但其重复实例在窗口内时可能缺失；TZID 本地时间无法解析
 时省略并提示，浮动时间按 UTC 显示并提示。没有实现 OAuth2、复杂时区、
 附件下载或完整 MIME/日历标准覆盖，夹具通过不能据此宣称真实服务已评估。
+
+## GitHub 仓库连接（P26c）
+
+`github-repo` 预设属于 `repo` 类，登记 `settings: { repo: 'owner/name', exchange: false }`，
+`secret` 是只授权这一个仓库、Contents 读写的 GitHub fine-grained token。
+仓库名沿用接力校验（禁止 `..` 与 `.git` 后缀），同一租户内不能重复
+（忽略大小写）；整个连接簿最多一个 `exchange: true`。交换标记为后续
+文件互通提供连接选择，本工作包不接入文件交换实现。`agents` 必须为空：
+连接由中枢的接力与文件互通使用，`qianmo_connectors` 和五个邮件/日历
+宿主工具都不能取得或使用它。写入、删除和探测沿用 `/v0/connectors`，
+仅个人 ops 可执行；秘密省略则保留，令牌复用 P25 的信封加密库，视图、
+日志与审计不含令牌。
+
+探测对固定的 `https://api.github.com/repos/<owner>/<name>` 发认证 GET，
+通过 P25 出站策略限定 HTTPS 443、公网地址和 DNS 固定拨号，拒绝
+重定向。保存 `private` 与 `permissions.push`；缺写权限失败，交换
+仓库还必须私有。401/403 固定为“令牌无效或没有权限”，404 固定为
+“仓库不存在或令牌看不到它”，其余错误也只给固定句子，不回显上游。
+`ConnectorView.repo` 给仓库名、交换标记与事实，尚未取得事实时为 null。
+所有预设仍为“未评估”，测试使用注入 HTTP 和本机裸仓库，未访问真实 GitHub。
+
+没有 `--handoff-root` 时，`--connectors` 即启用 GitHub 接力，包括启动时
+尚无仓库连接的情况；运行中新增连接立即可用。显式 `--handoff-root`
+仍选择旧裸仓模式。每次接收、派发、核验结果及清理都按任务属主读取
+当前连接和秘密，不缓存令牌。开启租户时从任务 `ownerSubject` 的当前
+归属确定租户，只使用同租户连接；无有效属主或有效租户归属就拒绝。
+连接从未探测时可用，最近探测失败则不可用；保存修改后需重新探测，
+探测状态恢复为未知。删除即撤销，派发失败原因为“仓库连接已撤销”。
+
+连接优先于 `--handoff-repo`；只对从未由连接管理过的仓库使用 CLI 备用
+凭据，且在连接模式启用租户时关闭这类无属主的备用令牌。连接簿持久化
+非秘密的租户/仓库占用记录，因此删除或改名后、重启后都不会回退到
+旧 CLI 令牌；新建同仓库连接可以显式恢复使用。
+接力 `git ls-remote` 与删引用走 git 子进程，不经过 HTTP 出站策略；
+生产地址只可能是固定的 `https://github.com/<owner>/<name>.git`，不能
+配置其他主机或远端 URL。本地远端映射只在测试注入端口里存在。
 
 ## 云端电脑（P21）
 

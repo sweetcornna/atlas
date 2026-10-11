@@ -734,7 +734,7 @@ export interface ConnectorView {
   /** 只给主机名与账号的打码形式（`ab***@qq.com`）。 */
   readonly summary: Readonly<Record<string, string>>
   /**
-   * 非秘密设置的原值（服务器、端口、账号），给编辑表单预填；只在运维级读者
+   * 非秘密设置的原值（服务器、端口、账号、仓库坐标），给编辑表单预填；只在运维级读者
    * 面前出现，路由对其他人去掉这一项。秘密（口令、带令牌的订阅地址）永不在此。
    */
   readonly settings?: Readonly<Record<string, string | number | boolean>>
@@ -782,7 +782,7 @@ export interface ConnectorDraft {
   readonly name: string
   readonly kind: ConnectorKind
   readonly preset: string
-  /** 服务器、端口、账号等非秘密字段。 */
+  /** 服务器、端口、账号、repo、exchange 等非秘密字段。 */
   readonly settings: Readonly<Record<string, string | number | boolean>>
   /** 口令、授权码或 GitHub fine-grained token；修改时不给就保留原值。 */
   readonly secret?: string

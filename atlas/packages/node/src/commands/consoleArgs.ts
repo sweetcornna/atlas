@@ -1401,14 +1401,17 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   if (
     handoffGiven[0] !== undefined &&
     handoffRoot === undefined &&
-    handoffRepos.size === 0
+    handoffRepos.size === 0 &&
+    !connectors
   ) {
-    throw new Error(`${handoffGiven[0]} needs --handoff-root or --handoff-repo`)
+    throw new Error(
+      `${handoffGiven[0]} needs --handoff-root, --handoff-repo or --connectors`,
+    )
   }
   for (const node of handoffNodeUrls.keys()) {
     if (
       !handoffNodeGits.has(node) &&
-      (handoffRoot !== undefined || handoffRepos.size === 0)
+      (handoffRoot !== undefined || (handoffRepos.size === 0 && !connectors))
     ) {
       throw new Error(
         `--handoff-node ${node} needs --handoff-node-git ${node}=<ssh target>:<root>`,
@@ -1637,7 +1640,9 @@ Options (each accepts both --name value and --name=value):
                            Default ${DEFAULT_CONSOLE_CHAT_FROM}.
   --chat-store <abs path>  Where sessions and transcripts land, absolute path.
                            Default <config root>/qianmo/console/chat.ndjson.
-  --connectors             Enable mail/calendar APIs and connector hub calls.
+  --connectors             Enable mail/calendar and GitHub repo connections.
+                           Without --handoff-root, also enable GitHub relay;
+                           repo connections override --handoff-repo tokens.
                            Needs --accounts, --approvals and --control.
                            Secrets remain on this hub; all presets unevaluated.
                            Outbound exceptions: <config root>/qianmo/console/outbound-policy.json.
@@ -1777,8 +1782,9 @@ Options (each accepts both --name value and --name=value):
                            <config root>/qianmo/console-keys/provider_known_hosts.
                            No whitespace or %. Only with --providers.
   --handoff-repo <owner/name>=<abs token file>
-                           GitHub code store (default for new deployments).
-                           Repeat for each repo; 0600 token, contents read/write.
+                           GitHub relay fallback when no repo connection has owned it.
+                           Repeat for each repo; 0600 token, Contents read/write.
+                           With --connectors: fallback only without tenancy.
                            No --handoff-root or --handoff-node-git needed.
   --handoff-retention-days <days>
                            Clean failed/expired GitHub refs after 7 days by default.
@@ -1797,8 +1803,9 @@ Options (each accepts both --name value and --name=value):
                            A node bridge (\`qm handoff node\`) to hand
                            accepted tasks to: one task per node at a time,
                            nodes tried in the order given. Repeatable. Needs
-                           --handoff-root and a --handoff-node-git for the same
-                           node; the PSK is the node's derived variable, the
+                           --connectors or --handoff-repo for GitHub relay;
+                           legacy --handoff-root also needs --handoff-node-git.
+                           The PSK is the node's derived variable, the
                            one --chat-url reads. Requests are always signed
                            with this console's identity (--print-wake-identity);
                            the bridge must --trust it.

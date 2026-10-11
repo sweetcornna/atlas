@@ -361,6 +361,7 @@ export function openConsoleHandoff(
           const credential = await resolveHandoffRepo(
             options.credentials,
             task.code.repo,
+            { ownerSubject: task.ownerSubject },
           )
           if (!credential) continue
           await deleteGithubTaskRefs(
@@ -425,6 +426,7 @@ export function openConsoleHandoff(
           const credential = await resolveHandoffRepo(
             options.credentials,
             manifest.code.repo,
+            { ownerSubject: actor.owner },
           )
           if (!credential) return failure('rejected', '中枢没有这个仓库的连接')
           const refs = [

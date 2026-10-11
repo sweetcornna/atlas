@@ -5,7 +5,11 @@ import * as path from 'node:path'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { AuditTrail, AuditSource } from '@qianmo/audit'
-import { acquireExclusiveLock, type ExclusiveLock } from '@qianmo/handoff'
+import {
+  acquireExclusiveLock,
+  isHandoffRepo,
+  type ExclusiveLock,
+} from '@qianmo/handoff'
 import { LIMITS, parseAddress, type ControlOutcome } from '@qianmo/protocol'
 import type {
   ConnectorDraft,
@@ -32,10 +36,23 @@ import {
   type EventDraft,
 } from '../connectors/calendar.js'
 import { OutboundPolicy } from './outboundPolicy.js'
+import { probeGithubRepo, type RepoProbe } from '../connectors/githubRepo.js'
+import type {
+  HandoffRepoCredentials,
+  HandoffRepoScope,
+} from './handoffRepoCredentials.js'
 import type { HubCallHandler } from './consoleControl.js'
 
 /** Only confirmed official values are prefilled. See console.md for dated sources. */
 export const CONNECTOR_PRESETS: readonly ConnectorPresetView[] = [
+  {
+    id: 'github-repo',
+    kind: 'repo',
+    name: 'GitHub 仓库',
+    defaults: { repo: 'owner/name', exchange: false },
+    hint: '只授权这一个仓库的 Contents 读写 · 用于接力的代码和结果；勾选「文件交换仓库」则用于节点间文件互通（必须私有）',
+    evaluated: false,
+  },
   {
     id: 'qq',
     kind: 'mail',
@@ -130,7 +147,7 @@ const recordSchema = z
   .object({
     id: z.string(),
     name: z.string(),
-    kind: z.enum(['mail', 'calendar']),
+    kind: z.enum(['mail', 'calendar', 'repo']),
     preset: z.string(),
     settings: settingsSchema,
     agents: z.array(z.string()),
@@ -139,7 +156,13 @@ const recordSchema = z
     createdAt: z.number(),
     createdBy: z.string(),
     lastProbe: z
-      .object({ at: z.number(), ok: z.boolean(), detail: z.string() })
+      .object({
+        at: z.number(),
+        ok: z.boolean(),
+        detail: z.string(),
+        private: z.boolean().nullable().optional(),
+        push: z.boolean().nullable().optional(),
+      })
       .nullable(),
     secret: secretSchema,
   })
@@ -155,7 +178,7 @@ const draftSchema = z
       .min(1)
       .max(80)
       .refine(v => ![...v].some(char => char.charCodeAt(0) < 32)),
-    kind: z.enum(['mail', 'calendar']),
+    kind: z.enum(['mail', 'calendar', 'repo']),
     preset: z.string(),
     settings: settingsSchema,
     secret: z.string().min(1).max(8192).optional(),
@@ -167,6 +190,10 @@ const bookSchema = z
     v: z.literal(1),
     connectors: z.array(recordSchema),
     operations: z.array(z.string()),
+    // Preserve connection precedence after deletion and across restarts.
+    repoBindings: z
+      .array(z.object({ repo: z.string(), tenant: z.string().nullable() }))
+      .default([]),
   })
   .strict()
 export interface ConnectorApprovalCall {
@@ -186,6 +213,8 @@ export interface ConsoleConnectorsOptions {
     consumeConnector(input: ConnectorApprovalCall): boolean
   }
   readonly now?: () => number
+  readonly repoFetch?: (url: string, init: RequestInit) => Promise<Response>
+  readonly fallbackRepoCredentials?: HandoffRepoCredentials
 }
 const fail = <T>(
   code: 'invalid' | 'not_found' | 'refused' | 'unreachable',
@@ -209,7 +238,9 @@ function toolName(op: string): string {
   return op === 'mail.send' ? 'qianmo_mail_send' : 'qianmo_calendar_create'
 }
 
-export class ConsoleConnectors implements ConnectorsPort {
+export class ConsoleConnectors
+  implements ConnectorsPort, HandoffRepoCredentials
+{
   readonly #options: ConsoleConnectorsOptions
   readonly #path: string
   readonly #policy: OutboundPolicy
@@ -218,6 +249,10 @@ export class ConsoleConnectors implements ConnectorsPort {
   readonly #lock: ExclusiveLock
   readonly #rows = new Map<string, ConnectorRecord>()
   readonly #operations = new Set<string>()
+  readonly #repoBindings = new Map<
+    string,
+    { repo: string; tenant: string | null }
+  >()
   readonly #recent: ConnectorCallView[] = []
   #closed = false
   readonly #now: () => number
@@ -237,6 +272,38 @@ export class ConsoleConnectors implements ConnectorsPort {
           this.#rows.set(row.id, row)
         }
         for (const op of book.operations) this.#operations.add(op)
+        for (const binding of book.repoBindings)
+          this.#repoBindings.set(
+            this.#repoKey(binding.repo, binding.tenant),
+            binding,
+          )
+        for (const row of this.#rows.values()) {
+          if (row.kind !== 'repo') continue
+          if (
+            !isHandoffRepo(row.settings['repo']) ||
+            row.agents.length ||
+            typeof row.settings['exchange'] !== 'boolean'
+          )
+            throw new Error('仓库连接无效')
+          if (
+            [...this.#rows.values()].some(
+              other =>
+                other.id !== row.id &&
+                other.kind === 'repo' &&
+                ((other.tenant === row.tenant &&
+                  String(other.settings['repo']).toLowerCase() ===
+                    String(row.settings['repo']).toLowerCase()) ||
+                  (other.settings['exchange'] === true &&
+                    row.settings['exchange'] === true)),
+            )
+          )
+            throw new Error('仓库连接重复')
+          const repo = String(row.settings['repo'])
+          this.#repoBindings.set(this.#repoKey(repo, row.tenant), {
+            repo,
+            tenant: row.tenant,
+          })
+        }
       }
       this.#vault = new ConnectorVault(
         path.join(options.directory, 'keys', 'connector-master.key'),
@@ -253,13 +320,18 @@ export class ConsoleConnectors implements ConnectorsPort {
       throw new Error('应用连接存储不可用')
     }
   }
-  #persist(rows = this.#rows, operations = this.#operations): void {
+  #persist(
+    rows = this.#rows,
+    operations = this.#operations,
+    repoBindings = this.#repoBindings,
+  ): void {
     writePrivateFileAtomic(
       this.#path,
       JSON.stringify({
         v: 1,
         connectors: [...rows.values()],
         operations: [...operations],
+        repoBindings: [...repoBindings.values()],
       }),
     )
   }
@@ -288,6 +360,16 @@ export class ConsoleConnectors implements ConnectorsPort {
       secretSet: true,
       secretSetAt: row.secret.at,
       agents: row.agents,
+      ...(row.kind === 'repo'
+        ? {
+            repo: {
+              name: String(row.settings['repo']),
+              exchange: row.settings['exchange'] === true,
+              private: row.lastProbe?.private ?? null,
+              push: row.lastProbe?.push ?? null,
+            },
+          }
+        : {}),
       evaluated: false,
       lastProbe: row.lastProbe,
       createdAt: row.createdAt,
@@ -370,21 +452,29 @@ export class ConsoleConnectors implements ConnectorsPort {
       ...draft.settings,
     }
     const keys =
-      draft.kind === 'mail'
-        ? [
-            'imapHost',
-            'imapPort',
-            'smtpHost',
-            'smtpPort',
-            'smtpTls',
-            'username',
-          ]
-        : draft.preset === 'ics'
-          ? []
-          : ['caldavUrl', 'username']
+      draft.kind === 'repo'
+        ? ['repo', 'exchange']
+        : draft.kind === 'mail'
+          ? [
+              'imapHost',
+              'imapPort',
+              'smtpHost',
+              'smtpPort',
+              'smtpTls',
+              'username',
+            ]
+          : draft.preset === 'ics'
+            ? []
+            : ['caldavUrl', 'username']
     if (Object.keys(settings).some(v => !keys.includes(v)))
       throw new Error('非秘密设置字段无效')
-    if (draft.kind === 'mail') {
+    if (draft.kind === 'repo') {
+      if (
+        !isHandoffRepo(settings['repo']) ||
+        typeof settings['exchange'] !== 'boolean'
+      )
+        throw new Error('仓库设置无效')
+    } else if (draft.kind === 'mail') {
       for (const key of ['imapHost', 'smtpHost', 'username'])
         headerValue(settings[key])
       mailbox(settings['username'])
@@ -419,6 +509,8 @@ export class ConsoleConnectors implements ConnectorsPort {
       const parsed = draftSchema.safeParse(raw)
       if (!parsed.success) return fail('invalid', '连接字段无效')
       const draft = parsed.data
+      if (draft.kind === 'repo' && draft.agents.length)
+        return fail('invalid', '仓库连接由中枢使用，不能授权智能体')
       const existing =
         draft.id === undefined ? undefined : this.#rows.get(draft.id)
       if (
@@ -444,6 +536,22 @@ export class ConsoleConnectors implements ConnectorsPort {
       if (existing && this.#rows.get(existing.id) !== existing)
         return fail('refused', '连接已变化，请重新保存')
       const settings = this.#settings(draft, existing)
+      if (draft.kind === 'repo') {
+        for (const row of this.#rows.values()) {
+          if (row.id === existing?.id || row.kind !== 'repo') continue
+          if (
+            row.tenant === tenant &&
+            String(row.settings['repo']).toLowerCase() ===
+              String(settings['repo']).toLowerCase()
+          )
+            return fail('invalid', '同一租户的仓库已有连接')
+          if (
+            row.settings['exchange'] === true &&
+            settings['exchange'] === true
+          )
+            return fail('invalid', '只能有一个文件交换仓库')
+        }
+      }
       const id = existing?.id ?? `c-${crypto.randomUUID()}`,
         revision = (existing?.revision ?? 0) + 1
       const value =
@@ -479,7 +587,14 @@ export class ConsoleConnectors implements ConnectorsPort {
       }
       const next = new Map(this.#rows)
       next.set(id, row)
-      this.#persist(next)
+      const bindings = new Map(this.#repoBindings)
+      if (row.kind === 'repo') {
+        const repo = String(settings['repo'])
+        bindings.set(this.#repoKey(repo, tenant), { repo, tenant })
+      }
+      this.#persist(next, this.#operations, bindings)
+      for (const [key, binding] of bindings)
+        this.#repoBindings.set(key, binding)
       this.#rows.set(id, row)
       return { ok: true, value: this.#view(row) }
     } catch {
@@ -525,9 +640,22 @@ export class ConsoleConnectors implements ConnectorsPort {
     if (!row || !this.#writer(actor, row))
       return fail('not_found', '连接不存在')
     let success = false
+    let repoProbe: RepoProbe | undefined
     try {
       const secret = this.#vault.reveal(id, row.secret, row.revision)
-      if (row.kind === 'mail') {
+      if (row.kind === 'repo') {
+        repoProbe = await probeGithubRepo(
+          this.#policy.withFetch(this.#options.repoFetch),
+          String(row.settings['repo']),
+          row.settings['exchange'] === true,
+          secret,
+          () => {
+            if (this.#rows.get(id) !== row || !this.#writer(actor, row))
+              throw new Error()
+          },
+        )
+        success = repoProbe.ok
+      } else if (row.kind === 'mail') {
         const imap = await ImapClient.login(
           this.#policy,
           this.#mail(row),
@@ -548,7 +676,7 @@ export class ConsoleConnectors implements ConnectorsPort {
         if (!response.ok) throw new Error()
         await response.body?.cancel()
       } else await this.#caldav(row).discover()
-      success = true
+      if (row.kind !== 'repo') success = true
     } catch {
       success = false
     }
@@ -560,9 +688,14 @@ export class ConsoleConnectors implements ConnectorsPort {
         lastProbe: {
           at: this.#now(),
           ok: success,
-          detail: success
-            ? '夹具或服务登录成功（未评估）'
-            : '连接失败；请核对地址、出站策略与凭据',
+          ...(repoProbe
+            ? { private: repoProbe.private, push: repoProbe.push }
+            : {}),
+          detail:
+            repoProbe?.detail ??
+            (success
+              ? '夹具或服务登录成功（未评估）'
+              : '连接失败；请核对地址、出站策略与凭据'),
         },
       }
       const next = new Map(this.#rows)
@@ -577,6 +710,7 @@ export class ConsoleConnectors implements ConnectorsPort {
   #allowed(row: ConnectorRecord, node: string, agent: string): boolean {
     if (
       this.#closed ||
+      row.kind === 'repo' ||
       this.#rows.get(row.id) !== row ||
       !row.agents.includes(`qianmo://${node}/${agent}`)
     )
@@ -585,6 +719,51 @@ export class ConsoleConnectors implements ConnectorsPort {
     return this.#options.tenancy
       .read()
       .config.nodes.some(v => v.nodeId === node && v.tenant === row.tenant)
+  }
+  #repoKey(repo: string, tenant: string | null): string {
+    return JSON.stringify([tenant, repo.toLowerCase()])
+  }
+  async resolve(
+    repo: string,
+    scope: HandoffRepoScope = {},
+  ): Promise<{ remoteUrl: string; token: string } | null> {
+    if (this.#closed || !isHandoffRepo(repo)) return null
+    let tenant: string | null = null
+    if (this.#options.tenancy) {
+      const config = this.#options.tenancy.read().config
+      const owned = config.subjects.find(
+        row => row.subject === scope.ownerSubject,
+      )?.tenant
+      tenant = scope.tenant ?? owned ?? null
+      if (
+        !tenant ||
+        !config.tenants.some(row => row.id === tenant) ||
+        (scope.ownerSubject !== undefined && owned !== tenant)
+      )
+        return null
+    } else if (scope.tenant != null) return null
+    const row = [...this.#rows.values()].find(
+      row =>
+        row.kind === 'repo' &&
+        row.tenant === tenant &&
+        this.#repoKey(String(row.settings['repo']), tenant) ===
+          this.#repoKey(repo, tenant),
+    )
+    if (row) {
+      if (row.lastProbe?.ok === false) return null
+      return {
+        remoteUrl: `https://github.com/${String(row.settings['repo'])}.git`,
+        token: this.#vault.reveal(row.id, row.secret, row.revision),
+      }
+    }
+    // CLI tokens have no tenant owner. Never let them cross a tenant boundary,
+    // or resurrect a connection that was removed, renamed or failed its probe.
+    if (
+      this.#options.tenancy ||
+      this.#repoBindings.has(this.#repoKey(repo, tenant))
+    )
+      return null
+    return this.#options.fallbackRepoCredentials?.resolve(repo, scope) ?? null
   }
   async #record(
     row: Pick<ConnectorRecord, 'id' | 'name'>,
