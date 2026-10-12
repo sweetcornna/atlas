@@ -9,7 +9,7 @@
  * 这里各跑一遍，因为它们**不保证按顺序到**，而那正是这个模块唯一难写对的地方。
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,7 +18,12 @@ import type {
   ConsoleResult,
   RegisterAgentInput,
   RegistryPort,
+  ChatTurn,
 } from '@qianmo/console'
+import {
+  ChatStore,
+  type StoredChatSession,
+} from '../../src/commands/consoleChatStore.js'
 import {
   LEGACY_MESSAGE_TYPES,
   MessageType,
@@ -1291,6 +1296,78 @@ test('the console signs its authenticated requester assertion, binding the actua
 })
 
 describe('front session summaries', () => {
+  test('with two tasks in flight, A completing leaves the real host running until B completes', async () => {
+    const sessions: StoredChatSession[] = []
+    const turns = new Map<string, ChatTurn>()
+    const load = spyOn(ChatStore.prototype, 'load').mockImplementation(() => ({
+      sessions,
+      turns: [...turns.values()],
+    }))
+    const appendSession = spyOn(
+      ChatStore.prototype,
+      'appendSession',
+    ).mockImplementation(session => {
+      sessions.push(session)
+    })
+    const appendTurn = spyOn(
+      ChatStore.prototype,
+      'appendTurn',
+    ).mockImplementation(turn => {
+      turns.set(turn.id, turn)
+    })
+    try {
+      const h = harness()
+      const { sessionId, request: a } = await openAndSend(h, '任务 A')
+      const sent = await h.hub.send({ sessionId, text: '任务 B' })
+      if (!sent.ok) throw new Error(sent.failure.message)
+      const b = h.dialer.last.sent[1]
+      if (b === undefined) throw new Error('B never sent')
+      expect(b.taskId).not.toBe(a.taskId)
+      const running = async () => {
+        const list = await h.hub.sessions()
+        const transcript = await h.hub.transcript(sessionId)
+        if (!list.ok || !transcript.ok) throw new Error('session unavailable')
+        expect(Boolean(list.value[0]?.running)).toBe(
+          Boolean(transcript.value.session.running),
+        )
+        return Boolean(list.value[0]?.running)
+      }
+      expect(await running()).toBe(true)
+      h.dialer.last.reply(
+        taskResult(a, {
+          outcome: 'completed',
+          content: 'A 已完成',
+          completedAt: 2,
+        }),
+      )
+      const halfway = await h.hub.transcript(sessionId)
+      if (!halfway.ok) throw new Error(halfway.failure.message)
+      expect(
+        halfway.value.turns.find(
+          turn => turn.taskId === b.taskId && turn.author === 'operator',
+        )?.state,
+      ).toBe('delivered')
+      expect(await running()).toBe(true)
+      h.dialer.last.reply(
+        taskResult(b, {
+          outcome: 'completed',
+          content: 'B 已完成',
+          completedAt: 3,
+        }),
+      )
+      expect(await running()).toBe(false)
+      expect(
+        [...turns.values()]
+          .filter(turn => turn.author === 'agent')
+          .map(turn => turn.text),
+      ).toEqual(['A 已完成', 'B 已完成'])
+    } finally {
+      load.mockRestore()
+      appendSession.mockRestore()
+      appendTurn.mockRestore()
+    }
+  })
+
   test('notices do not replace the title or end running; an answer ends it and the first question survives later questions', async () => {
     const h = harness()
     const { sessionId, request } = await openAndSend(h, '第一句问题')

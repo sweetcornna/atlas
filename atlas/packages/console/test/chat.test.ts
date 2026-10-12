@@ -777,6 +777,28 @@ describe('chat routes', () => {
     expect(JSON.stringify(sessions)).not.toContain(long.slice(60))
   })
 
+  test('the session list cuts the first operator title like the preview without leaking its trailing marker', async () => {
+    const chat = new FakeChat()
+    const marker = 'TITLE-END-42'
+    const first = { ...ASK, text: `${'问'.repeat(300)}${marker}` }
+    chat.sessionsResult = ok([
+      { ...SESSION, title: first.text, preview: first.text },
+      { ...SESSION, id: 'short', title: '简短问题', preview: '简短问题' },
+    ])
+    const handler = createConsoleHandler(depsWith(chat), TOKENS)
+    const response = await handler(get('/v0/chat/sessions'))
+    expect(response.status).toBe(200)
+    const { sessions } = (await response.json()) as {
+      sessions: { title: string; preview: string }[]
+    }
+    const [cut, short] = sessions
+    expect(cut?.title).toBe(cut?.preview)
+    expect(cut?.title.length).toBeLessThanOrEqual(46)
+    expect(cut?.title.endsWith('…')).toBe(true)
+    expect(JSON.stringify(sessions)).not.toContain(marker)
+    expect(short?.title).toBe('简短问题')
+  })
+
   test('answers the two fragments with markup the poller can adopt', async () => {
     const chat = new FakeChat()
     const handler = createConsoleHandler(depsWith(chat), TOKENS)

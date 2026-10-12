@@ -384,6 +384,34 @@ describe('M2 authoritative deployment policy', () => {
 })
 
 describe('M2 request scopes', () => {
+  test('tenant ops cannot bypass the platform access guard through admin, API or fragment routes', async () => {
+    const h = fixture()
+    // Positive reads prove these are live entry points containing Bob's identifier.
+    for (const path of [
+      '/admin/access',
+      '/v0/accounts',
+      '/fragments/access/members',
+    ]) {
+      const platform = await h.handle(
+        asBearer('GET', path, h.platform.credential),
+      )
+      expect(platform.status).toBe(200)
+      expect(await platform.text()).toContain(h.bob.subject)
+    }
+    for (const path of [
+      '/access',
+      '/admin/access',
+      '/v0/accounts',
+      '/fragments/access/members',
+    ]) {
+      const response = await h.handle(asBearer('GET', path, h.alice.credential))
+      const body = await response.text()
+      expect(body).not.toContain(h.bob.subject)
+      expect(response.status).toBe(403)
+      expect(body).toContain('此功能需要平台管理身份')
+    }
+  })
+
   test.each([
     'a',
     'b',

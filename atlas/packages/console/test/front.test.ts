@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, test } from 'bun:test'
-import type { ChatTarget, ChatTranscript, ConsoleResult } from '../src/deps.js'
+import { SUBAGENT_STEP_LABEL } from '../src/index.js'
+import type {
+  ChatTarget,
+  ChatTranscript,
+  ChatTurn,
+  ConsoleResult,
+} from '../src/deps.js'
 import { createConsoleHandler } from '../src/http.js'
 import { documentCspFor, inlineScripts } from '../src/respond.js'
 import {
@@ -39,6 +45,7 @@ const WRITER: ChatTarget = {
 class FrontChat extends CountingChat {
   roster: readonly ChatTarget[] = [MAIN, REVIEWER, WRITER]
   body = ''
+  transcriptTurns: readonly ChatTurn[] | undefined
   override async targets(): Promise<ConsoleResult<readonly ChatTarget[]>> {
     return { ok: true, value: this.roster }
   }
@@ -46,12 +53,13 @@ class FrontChat extends CountingChat {
     id: string,
   ): Promise<ConsoleResult<ChatTranscript>> {
     const result = await super.transcript(id)
-    if (!result.ok || this.body === '') return result
+    if (!result.ok || (this.body === '' && this.transcriptTurns === undefined))
+      return result
     return {
       ok: true,
       value: {
         ...result.value,
-        turns: [
+        turns: this.transcriptTurns ?? [
           {
             id: 'reply',
             sessionId: id,
@@ -238,12 +246,13 @@ describe('agents and session history', () => {
     }
   })
 
-  test('sub-agents group by node and never repeat the main agent', async () => {
+  test('node agents group by node and never repeat the main agent', async () => {
     const h = front()
     const fragment = await (
       await h.handle(browse('/fragments/chat/front/side', ADMIN))
     ).text()
     const agents = region(fragment, 'fx-agents', '</section>')
+    expect(agents).toContain('节点智能体')
     expect(agents.match(/class="fx-agent-row/g)).toHaveLength(3)
     expect(agents.match(/class="fx-agent-row fx-agent-main/g)).toHaveLength(1)
     expect(agents.match(/class="fx-server"/g)).toHaveLength(2)
@@ -310,6 +319,122 @@ describe('agents and session history', () => {
     }
     expect(history).toContain('data-scope="agent" aria-pressed="true"')
     expect(historyTag(history, 'other')).toContain(' hidden')
+  })
+})
+
+describe('front process steps', () => {
+  const ask: ChatTurn = {
+    id: 'ask-a',
+    sessionId: 'work',
+    author: 'operator',
+    at: NOW - 3_000,
+    text: '任务 A',
+    state: 'delivered',
+    taskId: 'task-a',
+  }
+  const answer: ChatTurn = {
+    ...ask,
+    id: 'answer-a',
+    author: 'agent',
+    at: NOW - 1_000,
+    text: 'A 已完成',
+    state: 'done',
+  }
+  const step: ChatTurn = {
+    ...answer,
+    id: 'step',
+    variant: 'notice',
+    severity: 'info',
+    text: '读取资料',
+  }
+  async function render(turns: readonly ChatTurn[]): Promise<string> {
+    const h = front()
+    h.chat.seed('work', MAIN)
+    h.chat.transcriptTurns = turns
+    const response = await h.handle(
+      browse('/fragments/chat/front/view/work?open=1', ADMIN),
+    )
+    expect(response.status).toBe(200)
+    return response.text()
+  }
+
+  test('after task A answers, task B keeps both the waiting hint and trailing process group running', async () => {
+    const b = {
+      ...ask,
+      id: 'ask-b',
+      taskId: 'task-b',
+      text: '任务 B',
+      at: NOW - 2_000,
+    }
+    const turns = [ask, b, answer, { ...step, taskId: 'task-b' }]
+    const running = await render(turns)
+    expect(running).toContain('fx-pending')
+    expect(running).toContain('planner 正在处理')
+    expect(running).toContain('fx-steps-muted is-running')
+    expect(running).toContain('执行中 · 1 步')
+    const done = await render([
+      ...turns,
+      { ...answer, id: 'answer-b', taskId: 'task-b', text: 'B 已完成' },
+    ])
+    expect(done).not.toContain('fx-pending')
+    expect(done).not.toContain('is-running')
+    expect(done).toContain('执行过程 · 1 步')
+  })
+
+  test('a delegated sub-agent has an escaped name and a folded task detail', async () => {
+    const who = 'explore · memory <script>alert("name")</script>'
+    const detail = '<script>alert("task")</script>'
+    const html = await render([
+      ask,
+      { ...step, text: `${SUBAGENT_STEP_LABEL}：${who}`, detail },
+      answer,
+    ])
+    expect(html).toContain('class="fx-step fx-step-sub"')
+    expect(html).toContain('class="fx-sub-tag">子智能体</span>')
+    expect(html).toContain(
+      'explore · memory &lt;script&gt;alert(&quot;name&quot;)&lt;/script&gt;',
+    )
+    const task =
+      html.match(
+        /<details class="fx-step-detail"[^>]*>[\s\S]*?<\/details>/,
+      )?.[0] ?? ''
+    expect(task).toMatch(/<summary>[\s\S]*?任务<\/summary>/)
+    expect(task).not.toMatch(/<details[^>]*\bopen\b/)
+    expect(task).toContain(
+      '&lt;script&gt;alert(&quot;task&quot;)&lt;/script&gt;',
+    )
+    expect(html).not.toContain(who)
+    expect(html).not.toContain(detail)
+  })
+
+  test('a batch delegation labels and counts all three sub-agents in the group summary', async () => {
+    const html = await render([
+      ask,
+      {
+        ...step,
+        text: `${SUBAGENT_STEP_LABEL} × 3：explore · memory · review`,
+      },
+      answer,
+    ])
+    expect(html).toContain('class="fx-sub-tag">子智能体 × 3</span>')
+    expect(html).toContain('执行过程 · 1 步 · 子智能体 3')
+  })
+
+  test('a failed delegation stays an ordinary warning process line and counts no sub-agents', async () => {
+    const text = `${SUBAGENT_STEP_LABEL} — 失败`
+    const html = await render([
+      ask,
+      { ...step, text, severity: 'warn', detail: '拨号失败' },
+      answer,
+    ])
+    expect(html).toContain('class="fx-steps fx-steps-warn"')
+    expect(html).toContain('class="fx-step"')
+    expect(html).toContain('class="dot dot-warn"')
+    expect(html).toContain(text)
+    expect(html).toMatch(/<summary>[\s\S]*?详情<\/summary>/)
+    expect(html).not.toContain('fx-step-sub')
+    expect(html).not.toContain('fx-sub-tag')
+    expect(html).not.toMatch(/ · 子智能体 \d/)
   })
 })
 
