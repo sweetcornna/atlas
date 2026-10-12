@@ -101,9 +101,10 @@ async function prompt(frame: Record<string, unknown>) {
   emit({
     type: 'prompt_result',
     id: frame.id,
-    status: 'completed',
-    sessionSettled: true,
+    status: process.env.QIANMO_FIXTURE_RESULT_STATUS ?? 'completed',
+    sessionSettled: process.env.QIANMO_FIXTURE_DEFER_SETTLED !== '1',
   })
+  if (process.env.QIANMO_FIXTURE_DEFER_SETTLED === '1') return
   emit({ type: 'session_settled' })
 }
 const lines = createInterface({ input: process.stdin })
@@ -146,6 +147,7 @@ lines.on('line', line => {
   )
     model = { provider: frame.provider, id: frame.modelId }
   if (frame.type === 'set_thinking_level') thinkingLevel = String(frame.level)
+  if (frame.type === 'fixture_settle') emit({ type: 'session_settled' })
   if (frame.type === 'abort' && current) {
     emit({
       type: 'prompt_result',

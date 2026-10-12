@@ -63,6 +63,59 @@ export interface ResidentOmpSpawn {
   readonly agent: string
 }
 
+const STARTUP_STDERR_LIMIT = 2_048
+
+/** Only the bounded tail is retained; ambiguous boundary secrets are discarded. */
+function startupDiagnostic(stderr: Buffer, truncated: boolean): string {
+  // Normalize terminal escapes before matching keys, tokens or PEM lines.
+  let tail = sanitizeText(stderr.toString('utf8'))
+  let omitted = false
+  if (truncated) {
+    const newline = tail.indexOf('\n')
+    tail = newline === -1 ? '' : tail.slice(newline + 1)
+    omitted = tail.trim() === ''
+    // The PEM header may already be gone. Mask every base64-style line at
+    // the cut boundary, including short final lines, until a non-base64 line.
+    tail = tail.replace(
+      /^(?:[ \t]*[A-Za-z0-9+/=_-]+[ \t]*(?:\r?\n|$))+/,
+      block => block.replace(/[^\r\n]+/g, '[REDACTED]'),
+    )
+  }
+  tail = tail
+    .replace(
+      /-----BEGIN[^\r\n]*-----[\s\S]*?(?:-----END[^\r\n]*-----|$)/gi,
+      '[REDACTED]',
+    )
+    .replace(/^[^\r\n]*-----END[^\r\n]*-----[^\r\n]*$/gim, '[REDACTED]')
+    // Startup diagnostics are less valuable than secrets. Mask the remainder
+    // of a credential field's line, even for unquoted YAML/env or complex values.
+    .replace(
+      /(\b(?:api[-_]?key|token|password|secret|authorization)\b(?:\\?["'])?[ \t]*[:=][ \t]*)[^\r\n]+/gi,
+      '$1[REDACTED]',
+    )
+    .replace(
+      /(\bBearer[ \t]+)(?:\\?["'][^\r\n]*|[^\s"'\\,;]+)/gi,
+      '$1[REDACTED]',
+    )
+  tail = redactHandoffText(tail)
+    .text.replace(/\bsk[-_][A-Za-z0-9_-]+/gi, '[REDACTED]')
+    .replace(/[A-Za-z0-9_+/=-]{32,}/g, '[REDACTED]')
+    .trim()
+  const clean = Buffer.from(tail)
+  const marker =
+    truncated || clean.length > STARTUP_STDERR_LIMIT
+      ? `[startup output truncated]${omitted ? '\n[startup line omitted]' : ''}`
+      : ''
+  // Redaction can expand short keys. Include markers inside the byte budget,
+  // and never start the returned tail inside a UTF-8 codepoint.
+  const budget =
+    STARTUP_STDERR_LIMIT - (marker ? Buffer.byteLength(marker) + 1 : 0)
+  let offset = Math.max(0, clean.length - budget)
+  while (offset < clean.length && (clean[offset]! & 0xc0) === 0x80) offset++
+  tail = clean.subarray(offset).toString('utf8')
+  return marker ? `${marker}${tail ? `\n${tail}` : ''}` : tail
+}
+
 /** One JSONL transport. Command responses and asynchronous events are distinct. */
 export class OmpRpcProcess implements OmpRpcChannel {
   readonly child: ChildProcess
@@ -81,6 +134,7 @@ export class OmpRpcProcess implements OmpRpcChannel {
   #alive = true
   #readyAt: number | undefined
   #endedAt: number | undefined
+  #stderrDrain: (() => void) | undefined
 
   readonly #routing: ResidentModelRouter
   #routeCompletion: Promise<void> = Promise.resolve()
@@ -97,7 +151,12 @@ export class OmpRpcProcess implements OmpRpcChannel {
     // A parse/pipe error makes the RPC channel unusable, but is not exit
     // evidence. Never release a generation's teardown until `close` confirms
     // the actual process and its stdio are gone, including failed spawns.
-    this.#reaped = new Promise(resolve => child.once('close', () => resolve()))
+    this.#reaped = new Promise(resolve =>
+      child.once('close', () => {
+        this.#releaseStderr()
+        resolve()
+      }),
+    )
     let readyResolve!: (frame: OmpRpcFrame) => void
     let readyReject!: (error: Error) => void
     this.#ready = new Promise((resolve, reject) => {
@@ -107,37 +166,22 @@ export class OmpRpcProcess implements OmpRpcChannel {
     void this.#ready.catch(() => {})
     const decoder = new RpcFrameDecoder()
     const lines = createInterface({ input: child.stdout, crlfDelay: Infinity })
-    // Keep only a bounded startup tail. On overflow drop its first partial
-    // line before redaction, so truncation cannot expose a token's suffix.
-    const stderrLimit = 2_048
+    // Retain a bounded raw tail; redaction also handles truncated PEM residue.
     let stderr = Buffer.alloc(0)
     let stderrTruncated = false
     child.stderr?.on('data', (chunk: Buffer) => {
       if (this.#readyAt !== undefined) {
-        if (forwardStderr) process.stderr.write(chunk)
+        if (forwardStderr) this.#writeStderr(chunk)
         return
       }
       stderr = Buffer.concat([stderr, chunk])
-      if (stderr.length > stderrLimit) {
+      if (stderr.length > STARTUP_STDERR_LIMIT) {
         stderrTruncated = true
-        stderr = Buffer.from(stderr.subarray(-stderrLimit))
+        stderr = Buffer.from(stderr.subarray(-STARTUP_STDERR_LIMIT))
       }
     })
     const startupReason = (error: Error): Error => {
-      let tail = stderr.toString('utf8')
-      if (stderrTruncated) tail = tail.slice(tail.indexOf('\n') + 1)
-      if (stderrTruncated && !stderr.includes(10)) tail = ''
-      tail = redactHandoffText(sanitizeText(tail))
-        .text.replace(/\bsk[-_][A-Za-z0-9_-]+/gi, '[REDACTED]')
-        .replace(/(\bBearer\s+)[^\s"'\\,;]+/gi, '$1[REDACTED]')
-        .replace(/[A-Za-z0-9_+/=-]{32,}/g, '[REDACTED]')
-        .trim()
-      // Masks can be longer than short keys. Bound the redacted UTF-8 too,
-      // advancing past any partial leading codepoint.
-      const clean = Buffer.from(tail)
-      let offset = Math.max(0, clean.length - stderrLimit)
-      while (offset < clean.length && (clean[offset]! & 0xc0) === 0x80) offset++
-      tail = clean.subarray(offset).toString('utf8')
+      const tail = startupDiagnostic(stderr, stderrTruncated)
       return tail
         ? new Error(`${error.message}; startup stderr: ${tail}`)
         : error
@@ -157,7 +201,7 @@ export class OmpRpcProcess implements OmpRpcChannel {
         // frames (or an unread piped stderr) cannot suppress ChildProcess close
         // after exit and strand the real-process reaping promise.
         child.stdout?.resume()
-        child.stderr?.resume()
+        this.#releaseStderr()
         const failure =
           this.#readyAt === undefined
             ? startupReason(
@@ -192,7 +236,11 @@ export class OmpRpcProcess implements OmpRpcChannel {
           const frame = decoded as OmpRpcFrame
           if (frame.type === 'ready') {
             this.#readyAt ??= Date.now()
+            const diagnostic = startupDiagnostic(stderr, stderrTruncated)
+            if (forwardStderr && diagnostic)
+              this.#writeStderr(`${diagnostic}\n`)
             stderr = Buffer.alloc(0)
+            stderrTruncated = false
             clearTimeout(readyTimeout)
             readyResolve(frame)
           }
@@ -223,6 +271,24 @@ export class OmpRpcProcess implements OmpRpcChannel {
       })
     })
     void this.closed.catch(() => {})
+  }
+
+  #writeStderr(chunk: string | Buffer): void {
+    if (process.stderr.write(chunk) || !this.#alive || this.#intentional) return
+    this.child.stderr?.pause()
+    if (this.#stderrDrain) return
+    this.#stderrDrain = () => {
+      this.#stderrDrain = undefined
+      this.child.stderr?.resume()
+    }
+    process.stderr.once('drain', this.#stderrDrain)
+  }
+  #releaseStderr(): void {
+    if (this.#stderrDrain) process.stderr.off('drain', this.#stderrDrain)
+    this.#stderrDrain = undefined
+    // Shutdown must drain child pipes to real close even if the host writer
+    // never drains. Already accepted writes remain owned by the host stream.
+    this.child.stderr?.resume()
   }
 
   get alive(): boolean {
@@ -409,6 +475,7 @@ export class OmpRpcProcess implements OmpRpcChannel {
   async #stopAndReap(): Promise<void> {
     this.#intentional = true
     this.#endedAt ??= Date.now()
+    this.#releaseStderr()
     try {
       this.child.stdin?.end()
     } catch {
@@ -937,6 +1004,7 @@ export class ResidentOmpPool
     )
     this.#children.set(sessionId, child)
     const videoCalls = new Map<string, AbortController>()
+    let completedAwaitingSettlement = false
     void child.closed
       .finally(() => {
         for (const controller of videoCalls.values()) controller.abort()
@@ -969,13 +1037,18 @@ export class ResidentOmpPool
             })
         })()
       }
-      if (frame.type === 'agent_start') this.#busy.add(sessionId)
-      else if (
+      if (frame.type === 'agent_start') {
+        completedAwaitingSettlement = false
+        this.#busy.add(sessionId)
+      }
+      if (frame.type === 'prompt_result')
+        completedAwaitingSettlement = frame.status === 'completed'
+      if (
         frame.type === 'session_settled' ||
         (frame.type === 'prompt_result' && frame.sessionSettled === true)
       ) {
-        if (frame.type === 'prompt_result' && frame.status === 'completed')
-          this.#completedTurn = true
+        if (completedAwaitingSettlement) this.#completedTurn = true
+        completedAwaitingSettlement = false
         this.#busy.delete(sessionId)
         this.#drainCapacity()
       }

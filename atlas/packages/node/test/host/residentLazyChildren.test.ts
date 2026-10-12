@@ -584,6 +584,70 @@ test('pool health counts actual ready runtime and completed rounds, retaining ev
   expect(pool.isStable(10_000)).toBe(true)
 })
 
+test('timer idle reaping retains ready-runtime health and completed-round health, while a new generation starts cold', async () => {
+  const { pool, agent } = setup({ idleChildMs: 60 })
+  const id = await pool.newSession(agent)
+  await pool.channelFor(id)
+  await until(() => reaped.has(children[0]!))
+  expect(pool.isStable(30)).toBe(true)
+  expect(pool.isStable(60_000)).toBe(false)
+  await turn(pool, id, 'healthy-before-timer')
+  await until(() => reaped.has(children[1]!))
+  expect(pool.isStable(60_000)).toBe(true)
+  await pool.stop()
+  const next = setup().pool
+  await next.resumeSession({ ...agent, sessionId: id })
+  expect(next.isStable(30)).toBe(false)
+  expect(next.isStable(60_000)).toBe(false)
+})
+
+test('LRU reaping retains ready-runtime and completed-round health without transferring it to a new generation', async () => {
+  const { pool, agent } = setup({ maxChildren: 1 })
+  const a = await pool.newSession(agent),
+    b = await pool.newSession(agent)
+  await pool.channelFor(a)
+  await Bun.sleep(550)
+  const replacement = await pool.channelFor(b)
+  expect(reaped.has(children[0]!)).toBe(true)
+  // Exclude the replacement's own ready time as a possible health source.
+  expect(replacement.readyRuntimeMs).toBeLessThan(500)
+  expect(pool.isStable(500)).toBe(true)
+  expect(pool.isStable(60_000)).toBe(false)
+  await turn(pool, b, 'healthy-before-lru')
+  await pool.channelFor(a)
+  expect(reaped.has(children[1]!)).toBe(true)
+  expect(pool.isStable(60_000)).toBe(true)
+  await pool.stop()
+  const next = setup({ maxChildren: 1 }).pool
+  await next.resumeSession({ ...agent, sessionId: b })
+  expect(next.isStable(30)).toBe(false)
+  expect(next.isStable(60_000)).toBe(false)
+})
+
+test.each([
+  'completed',
+  'failed',
+  'aborted',
+])('a %s result with sessionSettled:false grants health only after a successful round truly settles', async status => {
+  const { pool, agent } = setup({
+    env: {
+      QIANMO_FIXTURE_DEFER_SETTLED: '1',
+      QIANMO_FIXTURE_RESULT_STATUS: status,
+    },
+  })
+  const id = await pool.newSession(agent)
+  const channel = await pool.channelFor(id)
+  let result = false
+  channel.onFrame(frame => {
+    if (frame.type === 'prompt_result') result = true
+  })
+  await channel.prompt({ messageId: `deferred-${status}`, text: 'hello' })
+  await until(() => result)
+  expect(pool.isStable(60_000)).toBe(false)
+  await channel.request('fixture_settle')
+  expect(pool.isStable(60_000)).toBe(status === 'completed')
+})
+
 test('invalidateAgent cancels an in-progress handshake and joins real exit without parking', async () => {
   const { pool, agent } = setup({
     maxStartFailures: 1,
