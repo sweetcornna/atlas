@@ -281,7 +281,7 @@ describe('agents and session history', () => {
     ).text()
     expect(region(side, 'fx-agents', '</section>')).toContain('1 执行中')
     const stack = side.slice(side.indexOf('id="fx-stack"'))
-    expect(stack).toContain('子智能体执行中 · 1')
+    expect(stack).toContain('其他会话执行中 · 1')
     expect(stack).toContain('data-session="sub-work"')
     expect(stack).not.toContain('data-session="current"')
     expect(stack).not.toContain('data-session="finished"')

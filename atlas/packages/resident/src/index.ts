@@ -11,6 +11,7 @@ export {
 export {
   OmpResidentTurnPort,
   SELF_REPORTING_TOOL_TITLE,
+  SUBAGENT_STEP_LABEL,
   parseTurnStepDedupKey,
   turnFailureKind,
   turnStepDedupKey,

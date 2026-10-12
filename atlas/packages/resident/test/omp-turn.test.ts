@@ -5,6 +5,7 @@ import { describe, expect, mock, test } from 'bun:test'
 import {
   OmpResidentTurnPort,
   parseTurnStepDedupKey,
+  SUBAGENT_STEP_LABEL,
   turnFailureKind,
   type ResidentTurnProgress,
 } from '../src/omp-turn.js'
@@ -261,6 +262,55 @@ describe('omp resident turns', () => {
     expect(new Set(progress.map(p => p.dedupKey)).size).toBe(progress.length)
     for (const p of progress)
       expect(parseTurnStepDedupKey(p.dedupKey)?.networkMsgId).toBe('network-1')
+  })
+  test('a sub-agent spawn is reported as one, naming each spawn and its task', async () => {
+    const progress: ResidentTurnProgress[] = []
+    const f = fixture({ onProgress: value => progress.push(value) })
+    const result = f.port.execute(input, async () => {})
+    await started(f)
+    f.emit({
+      type: 'tool_execution_start',
+      toolName: 'task',
+      toolCallId: 'one',
+      args: { agent: 'explore', name: 'memory', task: 'read\n/proc/meminfo' },
+    })
+    f.emit({
+      type: 'tool_execution_start',
+      toolName: 'task',
+      toolCallId: 'batch',
+      args: {
+        context: 'shared',
+        tasks: [
+          { agent: 'task', name: 'a', task: 'first' },
+          { name: 'b' },
+          { task: 'third' },
+        ],
+      },
+    })
+    f.emit({ type: 'tool_execution_start', toolName: 'task', toolCallId: 'bare' })
+    f.emit({
+      type: 'tool_execution_end',
+      toolName: 'task',
+      toolCallId: 'one',
+      isError: true,
+    })
+    f.emit(complete)
+    f.admit()
+    await result
+    expect(
+      progress.map(p => ({ summary: p.summary, detail: p.detail })),
+    ).toEqual([
+      {
+        summary: `${SUBAGENT_STEP_LABEL}：explore · memory`,
+        detail: 'explore · memory：read /proc/meminfo',
+      },
+      {
+        summary: `${SUBAGENT_STEP_LABEL} × 3：task · a / b`,
+        detail: 'task · a：first\nthird',
+      },
+      { summary: SUBAGENT_STEP_LABEL, detail: undefined },
+      { summary: `${SUBAGENT_STEP_LABEL} — 失败`, detail: undefined },
+    ])
   })
 })
 

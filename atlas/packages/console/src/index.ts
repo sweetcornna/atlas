@@ -239,6 +239,7 @@ export {
   renderFrontDocument,
   renderFrontSide,
   renderFrontView,
+  SUBAGENT_STEP_LABEL,
   type FrontDocumentModel,
   type FrontSideModel,
   type FrontViewModel,

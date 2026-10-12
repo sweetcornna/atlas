@@ -92,6 +92,20 @@ function modelFailure(message: unknown): {
 export const SELF_REPORTING_TOOL_TITLE = 'qianmo_notify'
 
 /**
+ * What every step reporting a sub-agent spawn (omp's `task` tool) starts
+ * with. The conversation front draws those steps as sub-agents rather than as
+ * tool calls; it keeps its own copy of this text (`@qianmo/console`,
+ * `view/front.ts`), pinned equal by `test/host/subagentStepLabel.test.ts`.
+ */
+export const SUBAGENT_STEP_LABEL = '委派子智能体'
+
+/** omp's sub-agent tool: one spawn, or a `tasks` batch of them. */
+const SUBAGENT_TOOL = 'task'
+
+/** Most spawns of one batch a step names. */
+const MAX_SUBAGENTS_PER_STEP = 8
+
+/**
  * One step of a turn, on its way to whoever asked for the turn.
  *
  * The port raises these; **wiring them to the network is the host's job** —
@@ -219,10 +233,7 @@ function stepSubject(
   for (const field of TOOL_SUBJECT_FIELDS) {
     const value = text(args[field])
     if (value === undefined) continue
-    const flat = value.replace(/\s+/g, ' ')
-    return flat.length > MAX_STEP_DETAIL
-      ? `${flat.slice(0, MAX_STEP_DETAIL - 1)}…`
-      : flat
+    return excerpt(value, MAX_STEP_DETAIL)
   }
   return undefined
 }
@@ -239,6 +250,56 @@ function stepLocations(args: Record<string, unknown> | undefined): string[] {
     }
   }
   return paths.slice(0, MAX_LOCATIONS_PER_STEP)
+}
+
+/** `text`, flattened to one line and cut to `limit`. */
+function excerpt(value: string, limit: number): string {
+  const flat = value.replace(/\s+/g, ' ')
+  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat
+}
+
+/**
+ * The spawns one `task` call asks for: the `tasks` batch when it has any,
+ * else the call itself. Each is named by its agent and its own name, and
+ * carries its instructions as the detail.
+ */
+function subagentSpawns(
+  args: Record<string, unknown> | undefined,
+): { readonly label: string; readonly task?: string }[] {
+  if (args === undefined) return []
+  const batch = Array.isArray(args['tasks']) ? args['tasks'] : []
+  const items = batch.length > 0 ? batch.map(recordOf) : [args]
+  return items.slice(0, MAX_SUBAGENTS_PER_STEP).map(item => {
+    const label = [text(item?.['agent']), text(item?.['name'])]
+      .filter(part => part !== undefined)
+      .join(' · ')
+    const task = text(item?.['task'])
+    return task === undefined ? { label } : { label, task }
+  })
+}
+
+/** Summary and detail of a sub-agent spawn step. */
+function subagentStep(args: Record<string, unknown> | undefined): {
+  readonly summary: string
+  readonly detail?: string
+} {
+  const spawns = subagentSpawns(args)
+  const labels = spawns.map(spawn => spawn.label).filter(label => label !== '')
+  const count = spawns.length > 1 ? ` × ${spawns.length}` : ''
+  const summary =
+    labels.length === 0
+      ? `${SUBAGENT_STEP_LABEL}${count}`
+      : `${SUBAGENT_STEP_LABEL}${count}：${excerpt(labels.join(' / '), MAX_STEP_DETAIL)}`
+  const detail = spawns
+    .filter(spawn => spawn.task !== undefined)
+    .map(spawn =>
+      excerpt(
+        spawn.label === '' ? (spawn.task ?? '') : `${spawn.label}：${spawn.task ?? ''}`,
+        MAX_STEP_DETAIL,
+      ),
+    )
+    .join('\n')
+  return detail === '' ? { summary } : { summary, detail }
 }
 
 /** Text blocks of an RPC message, joined. */
@@ -778,23 +839,34 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
       return
     }
     const args = recordOf(frame.args)
+    // 派生子智能体单独成一类：前台把它画成子智能体，不是一行工具调用。
+    const spawn = toolName === SUBAGENT_TOOL ? subagentStep(args) : undefined
     const subject = stepSubject(args)
     const verb =
       toolName !== undefined && Object.hasOwn(TOOL_VERBS, toolName)
         ? TOOL_VERBS[toolName]
         : undefined
     const summary =
-      toolName === undefined
-        ? failed
-          ? '一个工具失败了'
-          : '开始跑一个工具'
-        : verb !== undefined
-          ? `${verb}：${subject ?? toolName}`
-          : subject === undefined
-            ? toolName
-            : `${toolName}：${subject}`
+      spawn !== undefined
+        ? spawn.summary
+        : toolName === undefined
+          ? failed
+            ? '一个工具失败了'
+            : '开始跑一个工具'
+          : verb !== undefined
+            ? `${verb}：${subject ?? toolName}`
+            : subject === undefined
+              ? toolName
+              : `${toolName}：${subject}`
     // 工具参数里点名了哪些文件就带上哪些——不猜，也不解析模型说了什么。
-    const locations = stepLocations(args)
+    // 子智能体那一行带的是各自领到的任务。
+    const locations = spawn === undefined ? stepLocations(args) : []
+    const detail =
+      spawn !== undefined
+        ? spawn.detail
+        : locations.length === 0
+          ? undefined
+          : locations.join('\n')
     if (failed) active.failureCount += 1
     else active.progressCount += 1
     active.announcedTools.add(toolCallId)
@@ -809,7 +881,7 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
         toolCallId,
         failed ? 'failed' : 'start',
       ),
-      ...(locations.length === 0 ? {} : { detail: locations.join('\n') }),
+      ...(detail === undefined ? {} : { detail }),
     })
   }
 }
