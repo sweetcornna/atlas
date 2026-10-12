@@ -482,7 +482,7 @@ describe('renderRoster', () => {
   test('an empty registry names the next action instead of going blank', () => {
     const html = renderRoster([], null, NOW, TTL, undefined, undefined, WRITER)
     expect(html).toContain('还没有智能体 · ')
-    // The register form moved into a dialog on the same page (`/nodes`), so
+    // The register form moved into a dialog on the same page (`/admin/nodes`), so
     // the next action opens it; the anchor is kept so the link still names
     // its target without script.
     expect(html).toContain(
@@ -612,7 +612,7 @@ describe('renderRoster', () => {
     expect(html).toContain('qianmo://node-a/<b>one</b>')
     // The name is the way to the node's own page (A3).
     expect(html).toContain(
-      '<span class="grp-name"><a href="/nodes/node-a" data-nav>node-a</a></span>',
+      '<span class="grp-name"><a href="/admin/nodes/node-a" data-nav>node-a</a></span>',
     )
     // Native disclosure, so a row opens with the script disabled.
     expect(html).toContain('<summary>')
@@ -1209,7 +1209,7 @@ describe('renderAudit', () => {
       renderAudit(empty, null, NO_FILTER),
       renderAudit(empty, null, NO_FILTER, undefined, {
         ...paged,
-        wake: '/nodes',
+        wake: '/admin/nodes',
       }),
     ]) {
       expect(html).toContain('还没有业务消息经过这条链')
@@ -1233,7 +1233,7 @@ describe('renderAudit', () => {
     ]) {
       const html = renderAudit(unsound, null, NO_FILTER, undefined, {
         ...paged,
-        wake: '/nodes',
+        wake: '/admin/nodes',
       })
       expect(html).toContain('这条链还没有记录')
       expect(html).not.toContain('去节点页唤醒')
@@ -1241,10 +1241,10 @@ describe('renderAudit', () => {
     // Sound, writable, wakeable: the one invitation, to the page that wakes.
     const offered = renderAudit(empty, null, NO_FILTER, undefined, {
       ...paged,
-      wake: '/nodes',
+      wake: '/admin/nodes',
     })
     expect(offered).toContain('唤醒一个智能体后这里会出现第一条投递轨迹')
-    expect(offered).toContain('href="/nodes" data-nav data-write')
+    expect(offered).toContain('href="/admin/nodes" data-nav data-write')
   })
 
   test('a chain that exists and is empty is intact, and says so', () => {
@@ -1620,14 +1620,14 @@ describe('the shell', () => {
         {
           id: 'nodes',
           label: '节点',
-          href: '/nodes',
+          href: '/admin/nodes',
           icon: 'server',
           count: 2,
         },
         {
           id: 'alerts',
           label: '告警',
-          href: '/alerts',
+          href: '/admin/alerts',
           icon: 'bell',
           pending: true,
         },
@@ -1640,7 +1640,7 @@ describe('the shell', () => {
         {
           id: 'settings',
           label: '设置与关于',
-          href: '/settings',
+          href: '/admin/settings',
           icon: 'settings',
         },
       ],
@@ -1769,7 +1769,7 @@ describe('the shell', () => {
     // Every item is a plain link the browser follows without script, and one
     // the runtime may sign with the stored token (`data-nav`).
     expect(html).toContain(
-      '<a class="nav-item" id="nav-nodes" href="/nodes" data-nav aria-current="page">',
+      '<a class="nav-item" id="nav-nodes" href="/admin/nodes" data-nav aria-current="page">',
     )
     expect(html).toContain(
       '<a class="nav-item" id="nav-overview" href="/" data-nav>',
@@ -1791,7 +1791,7 @@ describe('the shell', () => {
     const html = build({
       crumbs: [
         { label: '运行' },
-        { label: '节点', href: '/nodes' },
+        { label: '节点', href: '/admin/nodes' },
         { label: 'tokyo-1' },
       ],
       title: 'tokyo-1',
@@ -1800,7 +1800,7 @@ describe('the shell', () => {
     })
     expect(html).toContain('<nav aria-label="位置"><ol class="crumbs">')
     expect(html).toContain('<li>运行</li>')
-    expect(html).toContain('<li><a href="/nodes" data-nav>节点</a></li>')
+    expect(html).toContain('<li><a href="/admin/nodes" data-nav>节点</a></li>')
     expect(html).toContain('<li aria-current="page">tokyo-1</li>')
     expect(html).toContain(
       '<h1 class="page-title" id="page-title">tokyo-1</h1>',
@@ -2034,14 +2034,14 @@ describe('the overview', () => {
     )
     expect(html.match(/class="node-line"/g)).toHaveLength(2)
     expect(html).toContain(
-      '<a class="node-link" href="/nodes/node-a" data-nav>node-a</a>',
+      '<a class="node-link" href="/admin/nodes/node-a" data-nav>node-a</a>',
     )
     expect(html).toContain('<span class="note">2 个智能体</span>')
     expect(html).toContain(
-      '<a class="node-link" href="/nodes/node-b" data-nav>node-b</a>',
+      '<a class="node-link" href="/admin/nodes/node-b" data-nav>node-b</a>',
     )
     expect(html).toContain('整节点不可拨')
-    expect(html).toContain('href="/nodes" data-nav>查看名册</a>')
+    expect(html).toContain('href="/admin/nodes" data-nav>查看名册</a>')
   })
 
   test('a node line escapes a hostile node name in the link and the text', () => {
@@ -2052,7 +2052,7 @@ describe('the overview', () => {
       TTL,
     )
     expect(html).not.toContain('" onload="')
-    expect(html).toContain('href="/nodes/%22%20onload%3D%22alert(1)"')
+    expect(html).toContain('href="/admin/nodes/%22%20onload%3D%22alert(1)"')
   })
 
   test('the node lines say what they could not read, and an empty network', () => {
@@ -2524,7 +2524,7 @@ describe('copy discipline', () => {
     nav: [
       {
         label: '运行',
-        items: [{ id: 'nodes', label: '节点', href: '/nodes', icon: 'server' }],
+        items: [{ id: 'nodes', label: '节点', href: '/admin/nodes', icon: 'server' }],
       },
     ],
     crumbs: [{ label: '运行' }, { label: '节点' }],

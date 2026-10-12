@@ -29,7 +29,7 @@ async function jobsPage(snapshot: SchedulerSnapshot | null): Promise<string> {
     snapshot === null
       ? watchConsole()
       : watchConsole({ scheduler: new FixedScheduler(snapshot) })
-  const response = await c.handle(browse('/jobs', ADMIN))
+  const response = await c.handle(browse('/admin/jobs', ADMIN))
   expect(response.status).toBe(200)
   return await response.text()
 }
@@ -236,7 +236,7 @@ describe('the scheduler heartbeat is never a blank', () => {
       failure: { code: 'unreachable', message: 'state unreadable' },
     } satisfies ConsoleResult<SchedulerSnapshot>
     const c = watchConsole({ scheduler })
-    const html = await (await c.handle(browse('/jobs', ADMIN))).text()
+    const html = await (await c.handle(browse('/admin/jobs', ADMIN))).text()
     expect(html).toContain('调度器状态不可达 · 无法连接')
     expect(html).toContain('<pre class="raw" data-raw>state unreadable</pre>')
     expect(html).toContain(UNWIRED_TICK)
@@ -259,7 +259,7 @@ describe('the JSON face and the fragment', () => {
   test('the page polls the fragment, and the fragment is the same card and table', async () => {
     const scheduler = new FixedScheduler(snapshotOf())
     const c = watchConsole({ scheduler })
-    const pageHtml = await (await c.handle(browse('/jobs', VIEW))).text()
+    const pageHtml = await (await c.handle(browse('/admin/jobs', VIEW))).text()
     expect(pageHtml).toContain('data-poll="/fragments/jobs"')
     const fragment = await (
       await c.handle(call('GET', '/fragments/jobs', VIEW))

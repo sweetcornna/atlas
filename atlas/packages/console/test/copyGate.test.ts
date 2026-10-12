@@ -168,18 +168,18 @@ describe('every document keeps the copy rules (I1)', () => {
         failure: { code: 'unsupported', message: '唤醒不可用，请检查配置。' },
       })
     const found: string[] = []
-    for (const path of ['/', '/nodes', '/nodes/tokyo-1', '/audit', '/alerts']) {
+    for (const path of ['/', '/admin/nodes', '/admin/nodes/tokyo-1', '/admin/audit', '/admin/alerts']) {
       const response = await h.handle(browse(path, ADMIN))
       const html = await response.text()
       found.push(...checkDocument(path, html))
       // The transport's own words are on the page — under 详情, not in the line.
-      if (path === '/nodes') {
+      if (path === '/admin/nodes') {
         expect(html).toContain('注册中心不可达 · 无法连接')
         expect(html).toContain(
           '<pre class="raw" data-raw>http://127.0.0.1:38798',
         )
       }
-      if (path === '/audit') expect(html).toContain('没有读写权限')
+      if (path === '/admin/audit') expect(html).toContain('没有读写权限')
     }
     expect(found).toEqual([])
   })
@@ -193,16 +193,16 @@ describe('every document keeps the copy rules (I1)', () => {
         message: '注册中心返回了错误，请稍后重试。',
       },
     }
-    const html = await (await h.handle(browse('/nodes', ADMIN))).text()
+    const html = await (await h.handle(browse('/admin/nodes', ADMIN))).text()
     // The original is on the page, folded; the line is the mapped one.
     expect(html).toContain('注册中心返回了错误，请稍后重试。')
-    expect(checkDocument('/nodes', html)).toEqual([])
+    expect(checkDocument('/admin/nodes', html)).toEqual([])
     // The same document with the fold opened into the sentence is caught.
     const unfolded = html.replace(
       /<pre class="raw" data-raw>([\s\S]*?)<\/pre>/g,
       '<span>$1</span>',
     )
-    expect(checkDocument('/nodes', unfolded).length).toBeGreaterThan(0)
+    expect(checkDocument('/admin/nodes', unfolded).length).toBeGreaterThan(0)
   })
 
   test('the doors, the error pages and the conversation page', async () => {
@@ -230,7 +230,7 @@ describe('every document keeps the copy rules (I1)', () => {
       ['spent invite', formPost('/invite', { invite: token })],
       [
         'access as ops',
-        asSession('GET', '/access', ops.sid, { header: false }),
+        asSession('GET', '/admin/access', ops.sid, { header: false }),
       ],
       ['break-glass', asBearer('GET', '/', ACCOUNTS_ADMIN)],
     ]
@@ -334,7 +334,7 @@ async function everythingShown(): Promise<[string, string][]> {
       )
     }
     h.registry.listResult = { ok: true, value: [] }
-    add('/nodes empty', await (await h.handle(browse('/nodes', token))).text())
+    add('/admin/nodes empty', await (await h.handle(browse('/admin/nodes', token))).text())
   }
   const h = pageHarness({ chat: true })
   for (const path of ['/login', '/nope']) {
@@ -350,7 +350,7 @@ async function everythingShown(): Promise<[string, string][]> {
   add(
     'access as ops',
     await (
-      await a.handle(asSession('GET', '/access', ops.sid, { header: false }))
+      await a.handle(asSession('GET', '/admin/access', ops.sid, { header: false }))
     ).text(),
   )
   // What the console's own code can say: every CJK literal in its source.
@@ -426,7 +426,7 @@ describe('one name for each thing (I2)', () => {
 
   test('a row never mixes the two duration spellings', async () => {
     const h = pageHarness()
-    const html = await (await h.handle(browse('/nodes', ADMIN))).text()
+    const html = await (await h.handle(browse('/admin/nodes', ADMIN))).text()
     const roster = readable(
       html.slice(
         html.indexOf('id="roster"'),

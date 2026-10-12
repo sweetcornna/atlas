@@ -1193,7 +1193,7 @@
     "sha256": "a5de691c2156b6bb7cf5d06bd6fd285d7e408cd0227e300738a856fff227db44"
   },
   {
-    "probe": "GET /nodes as view-bearer",
+    "probe": "GET /admin/nodes as view-bearer",
     "status": 200,
     "headers": [
       ["cache-control", "no-store"],
@@ -1216,7 +1216,7 @@
     "sha256": "687a1ffe5a83bd7d90dd9d24bca82d8bb11aae0d3f065d99d72a6c6f1faefe36"
   },
   {
-    "probe": "GET /nodes as none (html)",
+    "probe": "GET /admin/nodes as none (html)",
     "status": 303,
     "headers": [
       ["cache-control", "no-store"],
@@ -1227,7 +1227,7 @@
     "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   {
-    "probe": "POST /nodes as admin-bearer",
+    "probe": "POST /admin/nodes as admin-bearer",
     "status": 405,
     "headers": [
       ["allow", "GET"],
@@ -1240,7 +1240,7 @@
     "sha256": "22ba83a5297b161bd857ded3f443ffbe8b403b4e3d0c151e381a2492b67f19d1"
   },
   {
-    "probe": "GET /nodes/tokyo-1 as view-bearer",
+    "probe": "GET /admin/nodes/tokyo-1 as view-bearer",
     "status": 200,
     "headers": [
       ["cache-control", "no-store"],
@@ -1263,7 +1263,7 @@
     "sha256": "6ec89071cc9af332394a9b433c07ec73dfd0d0d85bd30dab92cdd3ae200a708c"
   },
   {
-    "probe": "GET /nodes/nowhere as admin-bearer (html)",
+    "probe": "GET /admin/nodes/nowhere as admin-bearer (html)",
     "status": 404,
     "headers": [
       ["cache-control", "no-store"],
@@ -1286,7 +1286,7 @@
     "sha256": "0ba80e3839b9e2f8d1a02cc49c07efa01634c7e5736a1bad8d5c4b35603a8839"
   },
   {
-    "probe": "GET /audit?window=24h as view-bearer",
+    "probe": "GET /admin/audit?window=24h as view-bearer",
     "status": 200,
     "headers": [
       ["cache-control", "no-store"],
@@ -1309,7 +1309,7 @@
     "sha256": "55151af4f08ef53c60d1badf2aa7e1dd2d18e008be920d3c55a3fd2dcd533c75"
   },
   {
-    "probe": "GET /audit/trace/4bf92f3577b34da6a3ce929d0e0e4736 as view-bearer",
+    "probe": "GET /admin/audit/trace/4bf92f3577b34da6a3ce929d0e0e4736 as view-bearer",
     "status": 200,
     "headers": [
       ["cache-control", "no-store"],
@@ -1332,7 +1332,7 @@
     "sha256": "7e1e110ba48e9c2830b44ceaf8faf64de315c437f43cf856da64803ef15b71e0"
   },
   {
-    "probe": "GET /servers as admin-bearer",
+    "probe": "GET /admin/servers as admin-bearer",
     "status": 200,
     "headers": [
       ["cache-control", "no-store"],
@@ -1355,7 +1355,7 @@
     "sha256": "3473a8f022bda76a4f30d3c4cb2f9c55aadc742a6b85f964472c1fa058b6535b"
   },
   {
-    "probe": "GET /servers as view-bearer",
+    "probe": "GET /admin/servers as view-bearer",
     "status": 200,
     "headers": [
       ["cache-control", "no-store"],
@@ -1378,7 +1378,7 @@
     "sha256": "f2e0fdbff4519420e0d7ea7205300a50d1fa683d065c42c6d484a28ffd6fe11f"
   },
   {
-    "probe": "GET /settings as view-bearer",
+    "probe": "GET /admin/settings as view-bearer",
     "status": 200,
     "headers": [
       ["cache-control", "no-store"],
@@ -1401,7 +1401,7 @@
     "sha256": "6572d7ab8eb6fed50357d7378d8e4d459f250ba3e51572917104579524167000"
   },
   {
-    "probe": "GET /providers as view-bearer",
+    "probe": "GET /admin/providers as view-bearer",
     "status": 200,
     "headers": [
       ["cache-control", "no-store"],

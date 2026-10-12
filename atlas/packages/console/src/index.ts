@@ -233,7 +233,16 @@ export {
   type ChatSessionsModel,
   type ChatThreadModel,
 } from './view/chat.js'
-export { renderChatPage, type ChatPageModel } from './view/chatPage.js'
+export {
+  frontSideParts,
+  frontViewParts,
+  renderFrontDocument,
+  renderFrontSide,
+  renderFrontView,
+  type FrontDocumentModel,
+  type FrontSideModel,
+  type FrontViewModel,
+} from './view/front.js'
 export { renderLimits } from './view/limits.js'
 // The lease the registry actually granted, read off its own records (C-1). The
 // host's renewer paces itself by it, so the page and the renewer cannot hold

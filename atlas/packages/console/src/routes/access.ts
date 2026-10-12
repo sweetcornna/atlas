@@ -2,17 +2,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * 账号与访问 (H3) and 操作记录 (H4): the `/access` page and its four tabs,
+ * 账号与访问 (H3) and 操作记录 (H4): the `/admin/access` page and its four tabs,
  * their polled fragments, and the action ledger's read API (P15.9).
  *
  * ## The page
  *
  * | Path | Tab | Who |
  * | --- | --- | --- |
- * | `/access` | 成员 for whoever may administer accounts, else 操作记录 | any credential |
- * | `/access/invites` | 邀请 | administers; anyone else a 403 page saying who may |
- * | `/access/sessions` | 会话 | administers; likewise |
- * | `/access/actions` | 操作记录, and 谁读了我的对话 for a person | any credential |
+ * | `/admin/access` | 成员 for whoever may administer accounts, else 操作记录 | any credential |
+ * | `/admin/access/invites` | 邀请 | administers; anyone else a 403 page saying who may |
+ * | `/admin/access/sessions` | 会话 | administers; likewise |
+ * | `/admin/access/actions` | 操作记录, and 谁读了我的对话 for a person | any credential |
  * | `/fragments/access/<members\|invites\|sessions>` | the polled regions | administers |
  *
  * "Administers" is {@link canWrite}: the admin token or a personal `ops`
@@ -336,7 +336,7 @@ type AdminTab = (typeof ADMIN_TABS)[number]
 
 const EVERY_TAB: readonly AccessTab[] = [...ADMIN_TABS, 'actions']
 
-/** The tab each `/access/<segment>` names. 成员 is `/access` itself. */
+/** The tab each `/admin/access/<segment>` names. 成员 is `/admin/access` itself. */
 const TAB_OF_SEGMENT: Readonly<Record<string, AccessTab>> = {
   invites: 'invites',
   sessions: 'sessions',
@@ -749,7 +749,7 @@ export const accessRoute: RouteModule = {
     id: 'access',
     label: '账号与访问',
     group: 'manage',
-    href: '/access',
+    href: '/admin/access',
     icon: 'users',
   },
   page: {

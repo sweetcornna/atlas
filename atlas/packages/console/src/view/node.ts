@@ -9,10 +9,10 @@
  *
  * | Path | Tab |
  * | --- | --- |
- * | `/nodes/<node>` | 概览: agents and their health, server, endpoint, certificate, the lifecycle in numbers, the latest trail lines |
- * | `/nodes/<node>/agents` | 智能体: the roster card, polled, with heartbeat and deregister |
- * | `/nodes/<node>/lifecycle` | 生命周期: every address of the node, its state, whether it can be reached and why not, and the four actions |
- * | `/nodes/<node>/models` | 模型: P18.9's fragment, loaded into the tab; a link to `/providers?node=<node>` without script |
+ * | `/admin/nodes/<node>` | 概览: agents and their health, server, endpoint, certificate, the lifecycle in numbers, the latest trail lines |
+ * | `/admin/nodes/<node>/agents` | 智能体: the roster card, polled, with heartbeat and deregister |
+ * | `/admin/nodes/<node>/lifecycle` | 生命周期: every address of the node, its state, whether it can be reached and why not, and the four actions |
+ * | `/admin/nodes/<node>/models` | 模型: P18.9's fragment, loaded into the tab; a link to `/admin/providers?node=<node>` without script |
  *
  * Plain links between them, so each reads without script and can be
  * bookmarked. The design's list for this page (`providers-console-m1.md`
@@ -105,7 +105,7 @@ function segment(node: string): string {
 
 /** Where a tab lives. 概览 is the node's own address. */
 export function nodeTabPath(node: string, tab: NodeTab): string {
-  const base = `/nodes/${segment(node)}`
+  const base = `/admin/nodes/${segment(node)}`
   return tab === 'overview' ? base : `${base}/${tab}`
 }
 
@@ -119,7 +119,7 @@ function nodeModelsFragment(node: string): string {
 
 /** Where the 「模型」 tab sends a reader with no script: the node's row in the matrix. */
 function nodeModelsLink(node: string): string {
-  return `/providers?node=${segment(node)}`
+  return `/admin/providers?node=${segment(node)}`
 }
 
 export function renderNodeTabs(node: string, current: NodeTab): string {

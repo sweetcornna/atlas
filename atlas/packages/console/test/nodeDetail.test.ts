@@ -8,7 +8,7 @@
  *   confirmation is what sends, and each send leaves exactly one line in the
  *   action ledger — the page itself none;
  * - the 「模型」 tab points at `/fragments/providers/node/<node>` and links to
- *   `/providers?node=<node>` for a reader with no script;
+ *   `/admin/providers?node=<node>` for a reader with no script;
  * - viewer, member, ops and the two legacy tokens: write controls only for
  *   the two that may write, and who changed an address only for them;
  * - every tab reads without script, and the copy keeps the console's rules.
@@ -49,10 +49,10 @@ import {
 import { FakeProviders } from './providersFake.js'
 
 const TABS = [
-  '/nodes/tokyo-1',
-  '/nodes/tokyo-1/agents',
-  '/nodes/tokyo-1/lifecycle',
-  '/nodes/tokyo-1/models',
+  '/admin/nodes/tokyo-1',
+  '/admin/nodes/tokyo-1/agents',
+  '/admin/nodes/tokyo-1/lifecycle',
+  '/admin/nodes/tokyo-1/models',
 ] as const
 
 function scene(extra: Partial<ConsoleDeps> = {}) {
@@ -126,7 +126,7 @@ function writeMarks(html: string): readonly string[] {
 describe('the lifecycle tab (J2)', () => {
   test('each address says its state, whether it can be reached, and why not', async () => {
     const { h } = scene()
-    const html = await page(h, '/nodes/tokyo-1/lifecycle')
+    const html = await page(h, '/admin/nodes/tokyo-1/lifecycle')
     const expectations: readonly (readonly [string, string])[] = [
       [PLANNER, '已发布 可拨 在名册上'],
       [REVIEWER, '未登记 可拨 在名册上'],
@@ -148,7 +148,7 @@ describe('the lifecycle tab (J2)', () => {
   test('a paused seed the registry host still renews: on the roster, and still not dialled', async () => {
     const { h, registry } = scene()
     registry.listResult = { ok: true, value: [...AGENTS, agentAt(SLEEPER)] }
-    const html = await page(h, '/nodes/tokyo-1/lifecycle')
+    const html = await page(h, '/admin/nodes/tokyo-1/lifecycle')
     expect(visibleText(rowOf(html, SLEEPER)).replace(/\s+/g, ' ')).toContain(
       ' 不可拨 已暂停 · 恢复之前不拨 · 名册上仍在是因为注册中心宿主替种子续租 ',
     )
@@ -157,7 +157,7 @@ describe('the lifecycle tab (J2)', () => {
 
   test('only the actions that will succeed are drawn (console.md §7.3.1)', async () => {
     const { h } = scene()
-    const html = await page(h, '/nodes/tokyo-1/lifecycle')
+    const html = await page(h, '/admin/nodes/tokyo-1/lifecycle')
     expect(verbsOn(html, PLANNER)).toEqual(['pause', 'retire'])
     // On the roster through the registry host: no publishing over it.
     expect(verbsOn(html, REVIEWER)).toEqual(['pause', 'retire'])
@@ -168,7 +168,7 @@ describe('the lifecycle tab (J2)', () => {
 
   test('every action is a button that opens its confirmation; only the confirmation sends', async () => {
     const { h } = scene()
-    const html = await page(h, '/nodes/tokyo-1/lifecycle')
+    const html = await page(h, '/admin/nodes/tokyo-1/lifecycle')
     const buttons =
       html.match(/<button[^>]*data-action="lifecycle"[^>]*>/g) ?? []
     expect(buttons.length).toBe(9)
@@ -223,7 +223,7 @@ describe('the lifecycle tab (J2)', () => {
     expect(lifecycle.calls).toHaveLength(4)
 
     // …and the page reads the new states back.
-    const after = await page(h, '/nodes/tokyo-1/lifecycle')
+    const after = await page(h, '/admin/nodes/tokyo-1/lifecycle')
     expect(visibleText(rowOf(after, PLANNER))).toContain('已暂停')
     expect(visibleText(rowOf(after, SLEEPER))).toContain('已发布')
     expect(verbsOn(after, REVIEWER)).toEqual([])
@@ -232,7 +232,7 @@ describe('the lifecycle tab (J2)', () => {
   test('a ledger that cannot be read: no action at all, and the reason on every row', async () => {
     const { h, lifecycle } = scene()
     lifecycle.problem = 'registrations.json 读不出来'
-    const html = await page(h, '/nodes/tokyo-1/lifecycle')
+    const html = await page(h, '/admin/nodes/tokyo-1/lifecycle')
     expect(html).toContain(
       '登记簿不可用 · registrations.json 读不出来 · 动作一律不收 · 出口一律不拨',
     )
@@ -242,7 +242,7 @@ describe('the lifecycle tab (J2)', () => {
         '登记簿不可用 · 修好之前出口一律不拨',
       )
     }
-    const overview = visibleText(await page(h, '/nodes/tokyo-1'))
+    const overview = visibleText(await page(h, '/admin/nodes/tokyo-1'))
     expect(overview).toContain('登记簿不可用 · 出口一律不拨')
   })
 
@@ -250,7 +250,7 @@ describe('the lifecycle tab (J2)', () => {
     const { h, lifecycle } = scene()
     lifecycle.problem = 'could not write registrations.json'
     lifecycle.problemKind = 'unwritable'
-    const html = await page(h, '/nodes/tokyo-1/lifecycle')
+    const html = await page(h, '/admin/nodes/tokyo-1/lifecycle')
     expect(html).toContain(
       '写不进去 · 发布与恢复已停止 · 暂停与退役照收但重启后会丢',
     )
@@ -262,7 +262,7 @@ describe('the lifecycle tab (J2)', () => {
     expect(verbsOn(html, PLANNER)).toEqual(['pause', 'retire'])
     expect(verbsOn(html, SCOUT)).toEqual(['pause', 'retire'])
     expect(verbsOn(html, SLEEPER)).toEqual(['retire'])
-    const overview = visibleText(await page(h, '/nodes/tokyo-1'))
+    const overview = visibleText(await page(h, '/admin/nodes/tokyo-1'))
     expect(overview).toContain('登记簿写不进去')
     expect(overview).not.toContain('出口一律不拨')
     // And the drawn buttons do succeed.
@@ -278,7 +278,7 @@ describe('the lifecycle tab (J2)', () => {
 
   test('a console without a lifecycle says so and draws no action', async () => {
     const { h } = scene({ lifecycle: undefined })
-    const html = await page(h, '/nodes/tokyo-1/lifecycle')
+    const html = await page(h, '/admin/nodes/tokyo-1/lifecycle')
     expect(html).toContain('该控制台没有接入登记簿 · 生命周期不可用')
     expect(html).not.toContain('data-action="lifecycle"')
     expect(html).not.toContain('id="confirm-pause"')
@@ -286,7 +286,7 @@ describe('the lifecycle tab (J2)', () => {
 
   test('the polled region is its own fragment', async () => {
     const { h } = scene()
-    const html = await page(h, '/nodes/tokyo-1/lifecycle')
+    const html = await page(h, '/admin/nodes/tokyo-1/lifecycle')
     expect(html).toContain('data-poll="/fragments/lifecycle/tokyo-1"')
     const fragment = await (
       await h.handle(asBearer('GET', '/fragments/lifecycle/tokyo-1', VIEW))
@@ -312,7 +312,7 @@ describe('the node page (A3)', () => {
 
   test('the overview: agents, server, lifecycle in numbers, the latest trail', async () => {
     const { h } = scene({ nodeServers: [{ node: 'tokyo-1', server: 'p11' }] })
-    const html = visibleText(await page(h, '/nodes/tokyo-1'))
+    const html = visibleText(await page(h, '/admin/nodes/tokyo-1'))
     expect(html).toContain('2 个')
     expect(html).toContain('p11')
     expect(html).toContain('已发布 1')
@@ -324,15 +324,15 @@ describe('the node page (A3)', () => {
 
   test('「模型」 points at the providers fragment, and links to the matrix without script', async () => {
     const { h } = scene()
-    const html = await page(h, '/nodes/tokyo-1/models')
+    const html = await page(h, '/admin/nodes/tokyo-1/models')
     expect(html).toContain(
       'id="node-models" data-fragment="/fragments/providers/node/tokyo-1"',
     )
-    expect(html).toContain('href="/providers?node=tokyo-1" data-nav')
+    expect(html).toContain('href="/admin/providers?node=tokyo-1" data-nav')
     // The node is one percent-encoded segment (console.md §5).
     const odd = await page(
       h,
-      `/nodes/${encodeURIComponent('odd node/名')}/models`,
+      `/admin/nodes/${encodeURIComponent('odd node/名')}/models`,
     )
     expect(odd).toContain(
       `data-fragment="/fragments/providers/node/${encodeURIComponent(
@@ -340,7 +340,7 @@ describe('the node page (A3)', () => {
       )}"`,
     )
     expect(odd).toContain(
-      `href="/providers?node=${encodeURIComponent('odd node/名')}"`,
+      `href="/admin/providers?node=${encodeURIComponent('odd node/名')}"`,
     )
     // The fragment is P18.9's. Without `--providers` it is that area's one
     // line, at 200; with a port that does not know the node it is a 404 —
@@ -363,11 +363,11 @@ describe('the node page (A3)', () => {
 
   test('a node only the ledger knows is a page; a node nobody knows is a 404', async () => {
     const { h } = scene()
-    const kyoto = await page(h, '/nodes/kyoto-1/lifecycle')
+    const kyoto = await page(h, '/admin/nodes/kyoto-1/lifecycle')
     expect(kyoto).toContain(`<tr data-key="${KYOTO}"`)
     // Not on the managed list: resume would be refused as unmanaged.
     expect(verbsOn(kyoto, KYOTO)).toEqual(['retire'])
-    for (const path of ['/nodes/nowhere', '/nodes/tokyo-1/bogus']) {
+    for (const path of ['/admin/nodes/nowhere', '/admin/nodes/tokyo-1/bogus']) {
       const response = await h.handle(asBearer('GET', path, ADMIN))
       expect(`${path} ${response.status}`).toBe(`${path} 404`)
     }
@@ -375,7 +375,7 @@ describe('the node page (A3)', () => {
 
   test('/nodes: 发布 replaces 注册节点 with a managed list, and lists what the roster does not show', async () => {
     const { h } = scene()
-    const html = await page(h, '/nodes')
+    const html = await page(h, '/admin/nodes')
     expect(html).toContain('data-open-dialog="publish-dialog"')
     expect(html).not.toContain('data-open-dialog="register-dialog"')
     const publish = html.slice(
@@ -388,20 +388,20 @@ describe('the node page (A3)', () => {
     ])
     expect(html).toContain('id="ledger-only"')
     expect(html).toContain(
-      'href="/nodes/kyoto-1/lifecycle" data-nav>kyoto-1</a>',
+      'href="/admin/nodes/kyoto-1/lifecycle" data-nav>kyoto-1</a>',
     )
     // Every roster card is a way to its node's page.
-    expect(html).toContain('<a href="/nodes/tokyo-1" data-nav>tokyo-1</a>')
+    expect(html).toContain('<a href="/admin/nodes/tokyo-1" data-nav>tokyo-1</a>')
 
     const { h: plain } = scene({ lifecycle: undefined })
-    const old = await page(plain, '/nodes')
+    const old = await page(plain, '/admin/nodes')
     expect(old).toContain('data-open-dialog="register-dialog"')
     expect(old).not.toContain('publish-dialog')
   })
 })
 
 describe('who sees what (viewer, member, ops, legacy tokens)', () => {
-  const PATHS = [...TABS, '/nodes', '/fragments/lifecycle/tokyo-1']
+  const PATHS = [...TABS, '/admin/nodes', '/fragments/lifecycle/tokyo-1']
 
   async function marks(
     h: ReturnType<typeof scene>['h'],
@@ -439,7 +439,7 @@ describe('who sees what (viewer, member, ops, legacy tokens)', () => {
         expect(`${who} ${path} ${list.join(',')}`).toBe(`${who} ${path} `)
       }
       const life = await (
-        await h.handle(request('/nodes/tokyo-1/lifecycle'))
+        await h.handle(request('/admin/nodes/tokyo-1/lifecycle'))
       ).text()
       expect(`${who} ${life.includes(OPS_SUBJECT)}`).toBe(`${who} false`)
       expect(life).toContain('id="read-only"')
@@ -460,13 +460,13 @@ describe('who sees what (viewer, member, ops, legacy tokens)', () => {
     for (const [who, request] of Object.entries(callers)) {
       const found = await marks(h, request)
       expect(
-        `${who} ${found['/nodes/tokyo-1/lifecycle']?.includes('data-action="lifecycle"')}`,
+        `${who} ${found['/admin/nodes/tokyo-1/lifecycle']?.includes('data-action="lifecycle"')}`,
       ).toBe(`${who} true`)
-      expect(found['/nodes/tokyo-1/lifecycle']).toContain('id="confirm-pause"')
+      expect(found['/admin/nodes/tokyo-1/lifecycle']).toContain('id="confirm-pause"')
       expect(found['/fragments/lifecycle/tokyo-1']).toContain('data-write')
-      expect(found['/nodes']).toContain('publish-dialog')
+      expect(found['/admin/nodes']).toContain('publish-dialog')
       const life = await (
-        await h.handle(request('/nodes/tokyo-1/lifecycle'))
+        await h.handle(request('/admin/nodes/tokyo-1/lifecycle'))
       ).text()
       expect(`${who} ${life.includes(OPS_SUBJECT)}`).toBe(`${who} true`)
       expect(life).not.toContain('id="read-only"')
@@ -477,18 +477,18 @@ describe('who sees what (viewer, member, ops, legacy tokens)', () => {
 describe('without script, and the copy', () => {
   test('every tab reads without script; the writer is told the actions need it', async () => {
     const { h } = scene()
-    const lifecycle = withoutScripts(await page(h, '/nodes/tokyo-1/lifecycle'))
+    const lifecycle = withoutScripts(await page(h, '/admin/nodes/tokyo-1/lifecycle'))
     expect(lifecycle).not.toContain('<script')
     for (const address of [PLANNER, REVIEWER, SCOUT, SLEEPER, OLD]) {
       expect(lifecycle).toContain(`<tr data-key="${address}"`)
     }
     expect(lifecycle).toContain('生命周期动作需要启用脚本 · 阅读不受影响')
-    const agents = withoutScripts(await page(h, '/nodes/tokyo-1/agents'))
+    const agents = withoutScripts(await page(h, '/admin/nodes/tokyo-1/agents'))
     expect(agents).toContain('qianmo://tokyo-1/<b>planner</b>')
-    const models = withoutScripts(await page(h, '/nodes/tokyo-1/models'))
-    expect(models).toContain('href="/providers?node=tokyo-1"')
-    const overview = withoutScripts(await page(h, '/nodes/tokyo-1'))
-    expect(overview).toContain('href="/nodes/tokyo-1/lifecycle" data-nav')
+    const models = withoutScripts(await page(h, '/admin/nodes/tokyo-1/models'))
+    expect(models).toContain('href="/admin/providers?node=tokyo-1"')
+    const overview = withoutScripts(await page(h, '/admin/nodes/tokyo-1'))
+    expect(overview).toContain('href="/admin/nodes/tokyo-1/lifecycle" data-nav')
   })
 
   test('no 。，、 no exclamation, no emoji, on any tab, for a reader or a writer, in any ledger state', async () => {
@@ -511,7 +511,7 @@ describe('without script, and the copy', () => {
           }),
         ],
       }
-      for (const path of [...TABS, '/nodes', '/nodes/kyoto-1/lifecycle']) {
+      for (const path of [...TABS, '/admin/nodes', '/admin/nodes/kyoto-1/lifecycle']) {
         for (const token of [ADMIN, VIEW]) {
           const visible = visibleText(await page(h, path, token))
           for (const banned of ['。', '，', '、', '！', '!']) {

@@ -71,7 +71,7 @@ describe.skipIf(SKIP !== null)('personal approvals in a real browser', () => {
     const tab = await browser.tab()
     try {
       await tab.goto(
-        `http://127.0.0.1:${server.port}/login?redirect=/approvals`,
+        `http://127.0.0.1:${server.port}/login?redirect=/admin/approvals`,
       )
       await tab.evaluate(
         `document.getElementById('token').value=${JSON.stringify(alice.credential)}; document.querySelector('form').requestSubmit()`,

@@ -335,6 +335,22 @@ export function seeOther(
 }
 
 /**
+ * A permanent move with no body. `308` so the method and the body stay what
+ * they were: an old bookmark or a script still pointed at a moved address
+ * lands on the new one doing the same thing.
+ */
+export function movedTo(location: string): Response {
+  return new Response(null, {
+    status: 308,
+    headers: {
+      location,
+      'cache-control': 'no-store',
+      'referrer-policy': 'no-referrer',
+    },
+  })
+}
+
+/**
  * Biggest form body this will read.
  *
  * The forms here have two short fields. Anything larger is not a submission,

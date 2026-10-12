@@ -34,7 +34,7 @@ async function read(
 describe('文件互通', () => {
   test('requests first, then transfers grouped by gathering, then grants', async () => {
     const { handle } = wired()
-    const html = await read(handle, '/files')
+    const html = await read(handle, '/admin/files')
     const text = visibleText(html)
     for (const word of [
       '等你批准',
@@ -68,7 +68,7 @@ describe('文件互通', () => {
 
   test('bytes go through the private GitHub repo: the page names it, each commit, and cleaned branches', async () => {
     const { handle } = wired()
-    const text = visibleText(await read(handle, '/files'))
+    const text = visibleText(await read(handle, '/admin/files'))
     expect(text).toContain('经 GitHub 交换仓库')
     expect(text).toContain('cornna/qianmo-exchange')
     expect(text).toContain('中枢不存文件')
@@ -81,14 +81,14 @@ describe('文件互通', () => {
     const files = new FakeFiles(() => NOW)
     files.exchange = { repo: 'cornna/open', private: false }
     const { handle } = wired(files)
-    expect(visibleText(await read(handle, '/files'))).toContain(
+    expect(visibleText(await read(handle, '/admin/files'))).toContain(
       '交换仓库 cornna/open 不是私有 · 已停用',
     )
     const legacy = new FakeFiles(() => NOW)
     legacy.exchange = null
     legacy.transfers = legacy.transfers.map(({ exchange: _, ...one }) => one)
     const { handle: old } = wired(legacy)
-    const html = await read(old, '/files')
+    const html = await read(old, '/admin/files')
     expect(visibleText(html)).toContain('每个文件在中枢和收件方各核对一次摘要')
     expect(visibleText(html)).toContain('送达中')
     expect(html).toContain('aria-valuenow="36"')
@@ -97,7 +97,7 @@ describe('文件互通', () => {
 
   test('the admin token decides, starts, retries and revokes; a view token only reads', async () => {
     const { handle } = wired()
-    const admin = withoutScripts(await read(handle, '/files'))
+    const admin = withoutScripts(await read(handle, '/admin/files'))
     for (const mark of [
       'data-action="files-approve"',
       'data-action="files-deny"',
@@ -114,7 +114,7 @@ describe('文件互通', () => {
     // Only the live grant can be revoked; only the failed transfer retried.
     expect(admin.match(/data-action="files-revoke"/g)?.length).toBe(1)
     expect(admin.match(/data-action="files-retry"/g)?.length).toBe(1)
-    const view = withoutScripts(await read(handle, '/files', VIEW))
+    const view = withoutScripts(await read(handle, '/admin/files', VIEW))
     for (const mark of [
       'files-approve',
       'files-deny',
@@ -132,7 +132,7 @@ describe('文件互通', () => {
     const h = accountsHarness({ deps: { files } })
     const member = await person(h.handle, 'member')
     const memberHtml = await (
-      await h.handle(asSession('GET', '/files', member.sid, { header: false }))
+      await h.handle(asSession('GET', '/admin/files', member.sid, { header: false }))
     ).text()
     expect(memberHtml).toContain('data-action="files-approve"')
     expect(memberHtml).toContain('data-action="files-new"')
@@ -140,7 +140,7 @@ describe('文件互通', () => {
     const viewerHtml = withoutScripts(
       await (
         await h.handle(
-          asSession('GET', '/files', viewer.sid, { header: false }),
+          asSession('GET', '/admin/files', viewer.sid, { header: false }),
         )
       ).text(),
     )
@@ -151,7 +151,7 @@ describe('文件互通', () => {
 
   test('the start dialog offers every agent, and says which are offline', async () => {
     const { handle } = wired()
-    const html = await read(handle, '/files')
+    const html = await read(handle, '/admin/files')
     expect(html).toContain('value="qianmo://tokyo-1/planner"')
     expect(html).toContain('helper · berlin-1（离线）')
     expect(html).toContain('data-action="files-browse"')
@@ -175,12 +175,12 @@ describe('文件互通', () => {
     const files = new FakeFiles(() => NOW)
     files.failSnapshot = true
     const { handle } = wired(files)
-    const html = await read(handle, '/files')
+    const html = await read(handle, '/admin/files')
     expect(html).toContain('role="alert"')
     expect(html).not.toContain('id="files-new-dialog"')
     const none = wired(null)
-    expect((await none.handle(browse('/files', ADMIN))).status).toBe(404)
-    expect(await read(none.handle, '/overview')).not.toContain('href="/files"')
+    expect((await none.handle(browse('/admin/files', ADMIN))).status).toBe(404)
+    expect(await read(none.handle, '/admin/overview')).not.toContain('href="/admin/files"')
     expect(
       (await none.handle(browse('/fragments/files/x', ADMIN))).status,
     ).toBe(404)

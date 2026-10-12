@@ -5,7 +5,7 @@
  * 告警 — the inbox (J5): notices from watch jobs and the conditions this
  * console can see, with an unread badge, a level filter and acknowledgement.
  *
- * Owns the `/alerts` page, `/v0/alerts`, `/v0/alerts/<id>/ack` and
+ * Owns the `/admin/alerts` page, `/v0/alerts`, `/v0/alerts/<id>/ack` and
  * `/fragments/alerts`. What goes into the inbox and why is `view/alerts.ts`;
  * this file reads the ports and enforces who may do what.
  *
@@ -258,7 +258,7 @@ export const alertsRoute: RouteModule = {
     id: 'alerts',
     label: '告警',
     group: 'manage',
-    href: '/alerts',
+    href: '/admin/alerts',
     icon: 'bell',
   },
   page: {

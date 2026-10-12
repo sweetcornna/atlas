@@ -76,7 +76,10 @@ export interface Area {
   /** The noun on the sidebar and at the head of the breadcrumb. */
   readonly label: string
   readonly group: AreaGroup
-  /** Where the sidebar item points. Always a path this module's page answers. */
+  /**
+   * Where the sidebar item points. A path this module's page answers under
+   * `/admin`, or `/` for the one area that is the conversation front.
+   */
   readonly href: string
   /** One of the inline Lucide shapes in `view/bits.ts`. */
   readonly icon: string
@@ -85,6 +88,12 @@ export interface Area {
    * says so in one line rather than pretending to be empty.
    */
   readonly pending?: true
+  /**
+   * The area is the conversation front at `/` (`routes/front.ts`), drawn
+   * outside the management shell: it has no page in the area table, and the
+   * sidebar offers it to whoever the front would admit.
+   */
+  readonly front?: true
 }
 
 /** Everything a handler is handed. Built once per request by `http.ts`. */

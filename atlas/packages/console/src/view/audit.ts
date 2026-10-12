@@ -165,10 +165,10 @@ function traceCell(
   const segment = traceIdSegment(traceId)
   if (segment === null || segment === '') return absent()
   // Off the trail page there is no inline chain panel to open: the trace is
-  // a link to its own page instead (`/audit/trace/<traceId>`).
+  // a link to its own page instead (`/admin/audit/trace/<traceId>`).
   if (asLink) {
     const href =
-      `/audit/trace/${encodeURIComponent(segment)}` +
+      `/admin/audit/trace/${encodeURIComponent(segment)}` +
       (auditNode === undefined ? '' : `?node=${encodeURIComponent(auditNode)}`)
     return (
       `<a class="linkish mono" href="${attr(href)}" data-nav ` +
@@ -229,7 +229,7 @@ const RECORD_HEADERS = ['时间', '来源', 'kind', '结果', 'trace', '节点',
  */
 export interface TrailPaging {
   /**
-   * The `/audit` query that reproduces this view with no cursor in it, and no
+   * The `/admin/audit` query that reproduces this view with no cursor in it, and no
    * leading `?`: what 加载更早 adds `before` to and 重新载入 goes back to.
    */
   readonly query: string
@@ -310,7 +310,7 @@ function moreLink(place: TrailPlace, auditNode: string | undefined): string {
   const query = params.toString()
   return (
     `<p class="trail-more" id="${attr(id)}">` +
-    `<a class="btn btn-secondary" href="/audit?${attr(query)}" data-nav ` +
+    `<a class="btn btn-secondary" href="/admin/audit?${attr(query)}" data-nav ` +
     `data-action="audit-earlier" data-fragment="/fragments/audit?${attr(
       query,
     )}"${place.slot === undefined ? '' : ` data-slot="${attr(String(place.slot))}"`}>` +

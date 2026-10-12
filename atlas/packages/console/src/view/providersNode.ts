@@ -7,8 +7,8 @@
  * last ten applies and probes, and the two settings a node page may change —
  * the context window (D-8) and the auto-compact window (D-9).
  *
- * It lives at `/providers/nodes/<node>` with its polled region at
- * `/fragments/providers/nodes/<node>`. `/nodes/<node>` is P18.11's page; the
+ * It lives at `/admin/providers/nodes/<node>` with its polled region at
+ * `/fragments/providers/nodes/<node>`. `/admin/nodes/<node>` is P18.11's page; the
  * fragment is what that page embeds or links to, so the tab is drawn in one
  * place whichever page shows it.
  *
@@ -65,7 +65,7 @@ function profileOf(model: NodePanelModel): ProviderProfileView | undefined {
 
 /** Where a write control of the tab leads when no script of this area is on the page. */
 function doHref(node: string, what: string): string {
-  return `/providers/nodes/${encodeURIComponent(node)}?do=${what}`
+  return `/admin/providers/nodes/${encodeURIComponent(node)}?do=${what}`
 }
 
 const AUTO_COMPACT_SOURCE_LINE: Readonly<Record<string, string>> = {
@@ -263,7 +263,7 @@ export function renderNodePanel(model: NodePanelModel): string {
 
 /**
  * The 「模型」 tab's fragment URL: `/fragments/providers/node/<node>`, the node
- * one percent-encoded path segment. The interface P18.11's `/nodes/<node>`
+ * one percent-encoded path segment. The interface P18.11's `/admin/nodes/<node>`
  * loads; this area's own node page polls the same URL.
  */
 function nodeTabFragment(node: string): string {
@@ -271,7 +271,7 @@ function nodeTabFragment(node: string): string {
 }
 
 /**
- * The few rules the tab needs, carried inside it: embedded in `/nodes/<node>`
+ * The few rules the tab needs, carried inside it: embedded in `/admin/nodes/<node>`
  * it arrives without this area's page sheet. Shared classes do the rest.
  */
 const NODE_TAB_CSS =
@@ -288,7 +288,7 @@ const NODE_TAB_CSS =
 export function renderNodePage(model: NodePanelModel): string {
   const name = model.node.node
   return (
-    `<p class="note"><a href="/providers?node=${attr(
+    `<p class="note"><a href="/admin/providers?node=${attr(
       encodeURIComponent(name),
     )}" data-nav>在节点矩阵里看这台节点</a></p>` +
     `<div class="prov-node" id="prov-node" data-poll="${attr(

@@ -65,8 +65,8 @@ function writeMarks(html: string): readonly string[] {
 /** Every path a caller can read: the pages, two sub-pages, the fragments. */
 const READABLE = [
   ...ROUTES.map(module => module.area.href),
-  '/nodes/tokyo-1',
-  `/audit/trace/${TRACE}`,
+  '/admin/nodes/tokyo-1',
+  `/admin/audit/trace/${TRACE}`,
   '/fragments/roster',
   '/fragments/roster?node=tokyo-1',
   '/fragments/audit',
@@ -117,7 +117,7 @@ describe('a read-only token', () => {
 
   test('is told, once, in the top bar of the page that would have had them', async () => {
     const h = harness()
-    const page = await (await h.handle(browse('/nodes', VIEW))).text()
+    const page = await (await h.handle(browse('/admin/nodes', VIEW))).text()
     expect(page).toContain(
       '<span class="note" id="read-only">只读 · 写操作需要管理令牌</span>',
     )
@@ -125,14 +125,14 @@ describe('a read-only token', () => {
     // And still sees everything there is to read.
     expect(page).toContain('qianmo://tokyo-1/')
     expect(page).toContain('<div class="row-panel">')
-    const servers = await (await h.handle(browse('/servers', VIEW))).text()
+    const servers = await (await h.handle(browse('/admin/servers', VIEW))).text()
     expect(servers).toContain('只读令牌不能改备注')
   })
 
   test('the admin token, scanned the same way, finds them — the scan is not blind', async () => {
     const h = harness()
     const nodes = writeMarks(
-      await (await h.handle(browse('/nodes', ADMIN))).text(),
+      await (await h.handle(browse('/admin/nodes', ADMIN))).text(),
     )
     for (const mark of [
       'data-write',
@@ -146,7 +146,7 @@ describe('a read-only token', () => {
       expect(nodes).toContain(mark)
     }
     const servers = writeMarks(
-      await (await h.handle(browse('/servers', ADMIN))).text(),
+      await (await h.handle(browse('/admin/servers', ADMIN))).text(),
     )
     expect(servers).toContain('server-note')
     const chat = writeMarks(
@@ -154,7 +154,7 @@ describe('a read-only token', () => {
     )
     expect(chat).toContain('chat-new')
     expect(chat).toContain('data-write')
-    const admin = await (await h.handle(browse('/nodes', ADMIN))).text()
+    const admin = await (await h.handle(browse('/admin/nodes', ADMIN))).text()
     expect(admin).not.toContain('id="read-only"')
   })
 })
@@ -195,14 +195,14 @@ describe('personal accounts', () => {
   test('the read-only line names the role that may write', async () => {
     const { h, who } = await scan('viewer')
     const page = await (
-      await h.handle(asSession('GET', '/nodes', who.sid, { header: false }))
+      await h.handle(asSession('GET', '/admin/nodes', who.sid, { header: false }))
     ).text()
     expect(page).toContain('只读 · 写操作需要运维角色')
   })
 
   test('an ops account gets the controls', async () => {
     const { marks } = await scan('ops')
-    expect(marks['/nodes']).toContain('register-dialog')
-    expect(marks['/nodes']).toContain('data-write')
+    expect(marks['/admin/nodes']).toContain('register-dialog')
+    expect(marks['/admin/nodes']).toContain('data-write')
   })
 })

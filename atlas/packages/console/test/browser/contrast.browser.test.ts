@@ -175,19 +175,19 @@ class TurnsChat extends CountingChat {
 /** Every page there is, as the admin sees it: the most controls on screen. */
 const PAGES = [
   '/',
-  '/nodes',
-  '/nodes/tokyo-1',
+  '/admin/nodes',
+  '/admin/nodes/tokyo-1',
   '/chat',
   '/chat?session=session-1',
-  '/audit',
-  '/alerts',
-  '/jobs',
-  '/approvals',
-  '/providers',
-  '/servers',
-  '/access',
-  '/usage',
-  '/settings',
+  '/admin/audit',
+  '/admin/alerts',
+  '/admin/jobs',
+  '/admin/approvals',
+  '/admin/providers',
+  '/admin/servers',
+  '/admin/access',
+  '/admin/usage',
+  '/admin/settings',
 ] as const
 
 function serve() {

@@ -603,7 +603,7 @@ describe('the console writing into it', () => {
       deps: { actions: ledger },
       accounts: { breakGlass: true },
     })
-    const paths = ['/v0/limits', '/v0/limits', '/fragments/roster', '/nodes']
+    const paths = ['/v0/limits', '/v0/limits', '/fragments/roster', '/admin/nodes']
     for (const path of paths) {
       await h.handle(asBearer('GET', path, ACCOUNTS_ADMIN))
     }
@@ -616,7 +616,7 @@ describe('the console writing into it', () => {
       'GET /v0/limits ok',
       'GET /v0/limits ok',
       'GET /fragments/roster ok',
-      'GET /nodes ok',
+      'GET /admin/nodes ok',
       'GET /v0/nope refused',
     ])
     for (const entry of glass.value.entries) {

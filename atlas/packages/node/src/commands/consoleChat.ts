@@ -784,6 +784,25 @@ export function createConsoleChatPort(
     // 就是活跃的那一条。「说了什么」与「有没有动静」是两个问题。
     const latest =
       ids.length === 0 ? undefined : turns.get(ids[ids.length - 1] ?? '')
+    // 标题是操作者的第一句（本地命令不算）：会话列表按它认出一条对话，
+    // 预览照旧是最后一句。
+    let title: string | undefined
+    for (const id of ids) {
+      const turn = turns.get(id)
+      if (
+        turn !== undefined &&
+        turn.variant !== 'notice' &&
+        turn.author === 'operator' &&
+        turn.command === undefined
+      ) {
+        title = turn.text
+        break
+      }
+    }
+    // 与页面「执行中」那条尾巴同一条判据：最后一句是操作者的、没有失败，
+    // 就是还没有回复。
+    const running =
+      last !== undefined && last.author === 'operator' && last.state !== 'failed'
     return {
       id: stored.id,
       target: stored.target,
@@ -793,6 +812,8 @@ export function createConsoleChatPort(
       updatedAt: latest?.at ?? stored.createdAt,
       turnCount: messageCount,
       preview: last?.text ?? '',
+      ...(title === undefined ? {} : { title }),
+      ...(running ? { running: true } : {}),
     }
   }
 

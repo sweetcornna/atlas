@@ -4,7 +4,7 @@
 /**
  * 服务器 — which machine each node runs on, and the operator's note on it.
  *
- * Owns the `/servers` page, `/v0/servers` and `/v0/servers/<id>/note`.
+ * Owns the `/admin/servers` page, `/v0/servers` and `/v0/servers/<id>/note`.
  *
  * ## A server id is chosen from the startup list, never supplied
  *
@@ -165,7 +165,7 @@ export const serversRoute: RouteModule = {
     id: 'servers',
     label: '服务器',
     group: 'manage',
-    href: '/servers',
+    href: '/admin/servers',
     icon: 'hard-drive',
   },
   page: {

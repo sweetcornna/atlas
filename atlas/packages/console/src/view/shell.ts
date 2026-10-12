@@ -65,8 +65,8 @@ import { zoneLabel } from './format.js'
  */
 export const BRAND = '阡陌控制台'
 
-const WORDMARK_CN = '阡陌'
-const WORDMARK_EN = 'AgentNest'
+export const WORDMARK_CN = '阡陌'
+export const WORDMARK_EN = 'AgentNest'
 
 /**
  * The tab mark: 阡 on a terracotta ground, as a data URI.
@@ -76,7 +76,7 @@ const WORDMARK_EN = 'AgentNest'
  * the document body an inline `<svg>` inherits the HTML parser's namespace,
  * but a standalone document has nothing to inherit from.
  */
-const FAVICON =
+export const FAVICON =
   'data:image/svg+xml,' +
   encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
@@ -349,7 +349,7 @@ function sidebar(model: ShellModel): string {
     `</button>` +
     `<div class="brand">` +
     `<div class="brand-en">${escapeHtml(WORDMARK_EN)}</div>` +
-    `<a class="brand-cn" href="/" data-nav>${escapeHtml(WORDMARK_CN)}</a>` +
+    `<a class="brand-cn" href="/admin" data-nav>${escapeHtml(WORDMARK_CN)}</a>` +
     `</div>` +
     `<nav class="nav" aria-label="导航">${groups}</nav>` +
     `<div class="side-foot">` +
@@ -430,7 +430,7 @@ function topBar(model: ShellModel): string {
  * the address bar's current path into it when it opens, since a page that
  * switches conversations in place has moved on from what the server drew.
  */
-function sessionExpired(relogin: string): string {
+export function sessionExpired(relogin: string): string {
   return (
     `<dialog class="dialog" id="session-expired" ` +
     `aria-labelledby="session-expired-title">` +

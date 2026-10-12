@@ -75,19 +75,19 @@ class LongChat extends CountingChat {
 
 /** Every page there is, as the admin sees it. */
 const PAGES = [
-  '/overview',
-  '/nodes',
-  '/nodes/tokyo-1',
+  '/admin/overview',
+  '/admin/nodes',
+  '/admin/nodes/tokyo-1',
   '/chat?session=session-1',
-  '/audit',
-  '/alerts',
-  '/jobs',
-  '/approvals',
-  '/providers',
-  '/servers',
-  '/access',
-  '/usage',
-  '/settings',
+  '/admin/audit',
+  '/admin/alerts',
+  '/admin/jobs',
+  '/admin/approvals',
+  '/admin/providers',
+  '/admin/servers',
+  '/admin/access',
+  '/admin/usage',
+  '/admin/settings',
 ] as const
 
 function serve() {
@@ -247,7 +247,7 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
   test('the key state of the two busiest pages is on the first screen', async () => {
     const tab = await phone(browser)
     try {
-      await open(tab, served.base, '/overview')
+      await open(tab, served.base, '/admin/overview')
       // The four health cards' first one, whole.
       const card = await tab.evaluate<{ top: number; bottom: number }>(
         `(() => { const r = document.querySelector('main .card').getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; })()`,
@@ -255,7 +255,7 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
       expect(card.top).toBeGreaterThanOrEqual(0)
       expect(card.bottom).toBeLessThanOrEqual(HEIGHT)
 
-      await open(tab, served.base, '/nodes')
+      await open(tab, served.base, '/admin/nodes')
       // The roster's head: how many agents, how many live.
       const head = await tab.evaluate<{
         bottom: number
@@ -273,7 +273,7 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
   test('the menu opens the navigation as a drawer, Esc closes it, and focus goes back to the menu', async () => {
     const tab = await phone(browser)
     try {
-      await open(tab, served.base, '/nodes')
+      await open(tab, served.base, '/admin/nodes')
       await tab.evaluate(`document.querySelector('.top .drawer-open').focus()`)
       await tab.evaluate(`document.querySelector('.top .drawer-open').click()`)
       await tab.waitFor(
@@ -329,7 +329,7 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
     const tab = await phone(browser)
     try {
       // Signed in first: the cookie is what a script-less page rides on.
-      await open(tab, served.base, '/nodes')
+      await open(tab, served.base, '/admin/nodes')
       await tab.send('Emulation.setScriptExecutionDisabled', { value: true })
       await tab.goto(`${served.base}/nodes`)
       expect(

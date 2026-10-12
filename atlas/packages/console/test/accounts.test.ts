@@ -511,7 +511,7 @@ describe('a personal credential never rides in a query string (invariant 4)', ()
     expect(chat.includes(CONSOLE_CLIENT_JS_ACCOUNTS)).toBe(true)
     expect(chat.includes(CONSOLE_CHAT_JS)).toBe(true)
     // And never the unguarded runtime, on any page.
-    for (const path of ['/', '/nodes', '/audit', '/settings']) {
+    for (const path of ['/', '/admin/nodes', '/admin/audit', '/admin/settings']) {
       const page = await (
         await h.handle(asSession('GET', path, a.sid, { header: false }))
       ).text()

@@ -5,7 +5,7 @@
  * 消息链 — the trail, one reconstructed chain out of it, and the filter that
  * drives both.
  *
- * Owns the `/audit` and `/audit/trace/<traceId>` pages, `/v0/audit`,
+ * Owns the `/admin/audit` and `/admin/audit/trace/<traceId>` pages, `/v0/audit`,
  * `/v0/audit/chain/<traceId>`, `/fragments/audit` and
  * `/fragments/chain/<traceId>`. The filter parser lives here rather than in
  * `http.ts` because the trail is the one area whose query string is a real
@@ -598,7 +598,7 @@ function auditQuery(filter: AuditFilter, node?: string): string {
 
 /** Where an empty trail may send this reader to wake an agent, if anywhere (C6). */
 function wakeEntry(ctx: RouteContext): string | undefined {
-  return canWrite(ctx.access) && wakeAvailable(ctx.deps) ? '/nodes' : undefined
+  return canWrite(ctx.access) && wakeAvailable(ctx.deps) ? '/admin/nodes' : undefined
 }
 
 /**
@@ -744,7 +744,7 @@ export const auditRoute: RouteModule = {
     id: 'audit',
     label: '消息链',
     group: 'manage',
-    href: '/audit',
+    href: '/admin/audit',
     icon: 'activity',
   },
   page: {

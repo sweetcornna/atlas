@@ -52,7 +52,7 @@ describe('C6 · an empty trail offers a wake only where one can happen', () => {
         total: 0,
       },
     }
-    const response = await h.handle(browse('/audit', token))
+    const response = await h.handle(browse('/admin/audit', token))
     expect(response.status).toBe(200)
     return await response.text()
   }
@@ -60,7 +60,7 @@ describe('C6 · an empty trail offers a wake only where one can happen', () => {
   test('a writer on a console that can wake is sent to the page that wakes', async () => {
     const html = await emptyTrail(ADMIN, true)
     expect(html).toContain('还没有业务消息经过这条链 · 唤醒一个智能体后')
-    expect(html).toContain('href="/nodes" data-nav data-write')
+    expect(html).toContain('href="/admin/nodes" data-nav data-write')
     expect(visibleText(html)).not.toContain('连通')
   })
 
@@ -77,7 +77,7 @@ describe('C6 · an empty trail offers a wake only where one can happen', () => {
 
   test('the nodes page says why waking is off, by its real cause', async () => {
     const h = pageHarness({ wake: false })
-    const html = await (await h.handle(browse('/nodes', ADMIN))).text()
+    const html = await (await h.handle(browse('/admin/nodes', ADMIN))).text()
     expect(html).toContain('唤醒不可用 · 启动时没有配置唤醒目标')
     expect(html).not.toContain('QIANMO_TRANSPORT_PSK')
   })
@@ -95,11 +95,11 @@ describe('H5 · a token in the address bar becomes a session, once', () => {
   test('a navigation with ?token= is answered with the cookie and the same address without it', async () => {
     const h = pageHarness()
     const response = await h.handle(
-      navigate(`/audit?source=router&token=${ADMIN}&limit=7`),
+      navigate(`/admin/audit?source=router&token=${ADMIN}&limit=7`),
     )
     expect(response.status).toBe(303)
     expect(response.headers.get('location')).toBe(
-      '/audit?source=router&limit=7',
+      '/admin/audit?source=router&limit=7',
     )
     expect(response.headers.get('cache-control')).toBe('no-store')
     expect(response.headers.get('referrer-policy')).toBe('no-referrer')
@@ -109,17 +109,17 @@ describe('H5 · a token in the address bar becomes a session, once', () => {
     )
     // Nothing rendered, nothing read: the page comes on the next request.
     expect(h.registry.listCalls).toBe(0)
-    const page = await h.handle(navigate('/audit?source=router&limit=7', ADMIN))
+    const page = await h.handle(navigate('/admin/audit?source=router&limit=7', ADMIN))
     expect(page.status).toBe(200)
   })
 
   test('a token that is not one of the pair is not exchanged, and a stale one beside a cookie changes nothing', async () => {
     const h = pageHarness()
-    const wrong = await h.handle(navigate('/nodes?token=not-a-token-at-all'))
+    const wrong = await h.handle(navigate('/admin/nodes?token=not-a-token-at-all'))
     expect(wrong.status).not.toBe(200)
     expect(wrong.headers.get('set-cookie')).toBeNull()
     const stale = await h.handle(
-      navigate('/nodes?token=not-a-token-at-all', VIEW),
+      navigate('/admin/nodes?token=not-a-token-at-all', VIEW),
     )
     expect(stale.status).toBe(200)
     expect(stale.headers.get('set-cookie')).toBeNull()
@@ -136,7 +136,7 @@ describe('H5 · a token in the address bar becomes a session, once', () => {
 
   test('the runtime signs no link, and the stream URL carries no token', async () => {
     const h = pageHarness({ chat: true })
-    for (const path of ['/nodes', '/chat']) {
+    for (const path of ['/admin/nodes', '/chat']) {
       const html = await (await h.handle(navigate(path, ADMIN))).text()
       const script = html.slice(html.indexOf('<script>'))
       // No URL is built with the token in it, anywhere in what the page runs.
@@ -179,7 +179,7 @@ describe('A2 · every overview card is something that changes', () => {
         ...page,
       },
     }
-    return await (await h.handle(browse('/overview', ADMIN))).text()
+    return await (await h.handle(browse('/admin/overview', ADMIN))).text()
   }
 
   test('the two protocol constants are gone, and the last hour is read instead', async () => {
@@ -205,7 +205,7 @@ describe('A2 · every overview card is something that changes', () => {
     expect(card).toContain('<div class="stat-num">2</div>')
     expect(card).toContain('<span class="tone-warn">丢弃 1</span>')
     expect(card).toContain(
-      'href="/audit?window=1h&amp;outcome=refused" data-nav>查看',
+      'href="/admin/audit?window=1h&amp;outcome=refused" data-nav>查看',
     )
   })
 
@@ -349,7 +349,7 @@ describe('A4 · the settings page says which console this is', () => {
     const h = pageHarness()
     const deps = about === undefined ? h.deps : { ...h.deps, about }
     const handle = createConsoleHandler(deps, TOKENS)
-    return await (await handle(browse('/settings', token))).text()
+    return await (await handle(browse('/admin/settings', token))).text()
   }
 
   test('the build, the registry, the trails and both signing states, from the host', async () => {
@@ -376,7 +376,7 @@ describe('A4 · the settings page says which console this is', () => {
       ok: false,
       failure: { code: 'unreachable', message: 'x' },
     }
-    const html = await (await h.handle(browse('/settings', ADMIN))).text()
+    const html = await (await h.handle(browse('/admin/settings', ADMIN))).text()
     const health = html.slice(html.indexOf('about-health'))
     expect(health).toMatch(
       /注册中心<\/dt><dd class="plain"><span class="tag[^"]*">不可达/,
@@ -541,12 +541,12 @@ describe('D6 · the roster can be searched and filtered, without a script', () =
 
   test('a search keeps the matching rows, counts what it hid, and the poll replays it', async () => {
     const h = pageHarness({ nodeServers: servers })
-    const html = await (await h.handle(browse('/nodes?q=OSAKA', ADMIN))).text()
+    const html = await (await h.handle(browse('/admin/nodes?q=OSAKA', ADMIN))).text()
     expect(rows(html)).toEqual(['qianmo://osaka-1/writer'])
     expect(html).toContain('筛选后 1 · 共 3')
     expect(html).toContain('data-poll="/fragments/roster?q=OSAKA"')
     expect(html).toContain(
-      '<form id="roster-filter" class="roster-filter" method="get" action="/nodes" role="search">',
+      '<form id="roster-filter" class="roster-filter" method="get" action="/admin/nodes" role="search">',
     )
     expect(html).toContain('value="OSAKA"')
     // The wake picker still offers every address: the filter is a view.
@@ -574,12 +574,12 @@ describe('D6 · the roster can be searched and filtered, without a script', () =
       ],
     }
     const expired = await (
-      await h.handle(browse('/nodes?state=expired', ADMIN))
+      await h.handle(browse('/admin/nodes?state=expired', ADMIN))
     ).text()
     expect(rows(expired)).toEqual(['qianmo://tokyo-1/gone'])
     expect(expired).toContain('<option value="expired" selected>过期</option>')
     const p12 = await (
-      await h.handle(browse('/nodes?server=p12', ADMIN))
+      await h.handle(browse('/admin/nodes?server=p12', ADMIN))
     ).text()
     expect(rows(p12)).toEqual(['qianmo://osaka-1/writer'])
     expect(p12).toContain('<option value="p12" selected>p12</option>')
@@ -588,14 +588,14 @@ describe('D6 · the roster can be searched and filtered, without a script', () =
   test('nothing matching says so and offers the way back; nonsense is ignored', async () => {
     const h = pageHarness()
     const none = await (
-      await h.handle(browse('/nodes?q=nowhere', ADMIN))
+      await h.handle(browse('/admin/nodes?q=nowhere', ADMIN))
     ).text()
     expect(rows(none)).toEqual([])
     expect(none).toContain('没有符合筛选的智能体 · 共 3 个')
-    expect(none).toContain('href="/nodes" data-nav>清除筛选')
+    expect(none).toContain('href="/admin/nodes" data-nav>清除筛选')
     expect(none).not.toContain('注册第一个')
     const odd = await (
-      await h.handle(browse('/nodes?state=sideways', ADMIN))
+      await h.handle(browse('/admin/nodes?state=sideways', ADMIN))
     ).text()
     expect(rows(odd)).toHaveLength(3)
     expect(odd).toContain('data-poll="/fragments/roster"')
@@ -614,19 +614,19 @@ describe('F1 · every document has one h1, a main, and a way past the sidebar', 
 
   const AREAS: readonly (readonly [string, string])[] = [
     ['/', 'chat'],
-    ['/overview', 'overview'],
-    ['/nodes', 'nodes'],
-    ['/nodes/tokyo-1', 'nodes'],
+    ['/admin/overview', 'overview'],
+    ['/admin/nodes', 'nodes'],
+    ['/admin/nodes/tokyo-1', 'nodes'],
     ['/chat', 'chat'],
     ['/chat?session=session-1', 'chat'],
-    ['/audit', 'audit'],
-    ['/alerts', 'alerts'],
-    ['/jobs', 'jobs'],
-    ['/approvals', 'approvals'],
-    ['/servers', 'servers'],
-    ['/access', 'access'],
-    ['/usage', 'usage'],
-    ['/settings', 'settings'],
+    ['/admin/audit', 'audit'],
+    ['/admin/alerts', 'alerts'],
+    ['/admin/jobs', 'jobs'],
+    ['/admin/approvals', 'approvals'],
+    ['/admin/servers', 'servers'],
+    ['/admin/access', 'access'],
+    ['/admin/usage', 'usage'],
+    ['/admin/settings', 'settings'],
   ]
 
   test('each area: one h1, the skip link first, its target there, and the sidebar marks this area alone', async () => {
@@ -704,8 +704,8 @@ describe('G1 · documents travel compressed, sheets without notes, assets revali
 
   test('a document asked for with gzip comes gzipped, and unpacks to the same page', async () => {
     const h = pageHarness()
-    const plain = await (await h.handle(withHeaders('/nodes', {}))).text()
-    const response = await h.handle(withHeaders('/nodes', GZIP))
+    const plain = await (await h.handle(withHeaders('/admin/nodes', {}))).text()
+    const response = await h.handle(withHeaders('/admin/nodes', GZIP))
     expect(response.status).toBe(200)
     expect(response.headers.get('content-encoding')).toBe('gzip')
     expect(response.headers.get('vary')).toBe('accept-encoding')
@@ -741,11 +741,11 @@ describe('G1 · documents travel compressed, sheets without notes, assets revali
     expect(health.headers.get('content-encoding')).toBeNull()
     expect(await health.json()).toEqual({ status: 'ok' })
     const refused = await h.handle(
-      withHeaders('/nodes', { 'accept-encoding': 'gzip;q=0, identity' }),
+      withHeaders('/admin/nodes', { 'accept-encoding': 'gzip;q=0, identity' }),
     )
     expect(refused.headers.get('content-encoding')).toBeNull()
     const starred = await h.handle(
-      withHeaders('/nodes', { 'accept-encoding': '*' }),
+      withHeaders('/admin/nodes', { 'accept-encoding': '*' }),
     )
     expect(starred.headers.get('content-encoding')).toBe('gzip')
     // A POST that answers with a page: the refused login, a whole document.
@@ -853,15 +853,15 @@ describe('H2 · scripts by hash, and the headers that were missing', () => {
     await h.chat.open('qianmo://tokyo-1/planner')
     for (const path of [
       '/',
-      '/nodes',
-      '/nodes/tokyo-1',
+      '/admin/nodes',
+      '/admin/nodes/tokyo-1',
       '/chat?session=session-1',
-      '/audit',
-      '/alerts',
-      '/jobs',
-      '/servers',
-      '/access',
-      '/settings',
+      '/admin/audit',
+      '/admin/alerts',
+      '/admin/jobs',
+      '/admin/servers',
+      '/admin/access',
+      '/admin/settings',
     ]) {
       const response = await h.handle(browse(path, ADMIN))
       const body = await response.text()
@@ -898,7 +898,7 @@ describe('H2 · scripts by hash, and the headers that were missing', () => {
 
   test('documents carry COOP, CORP and a Permissions-Policy; JSON and assets carry CORP', async () => {
     const h = pageHarness()
-    const page = await h.handle(browse('/nodes', ADMIN))
+    const page = await h.handle(browse('/admin/nodes', ADMIN))
     expect(page.headers.get('cross-origin-opener-policy')).toBe('same-origin')
     expect(page.headers.get('cross-origin-resource-policy')).toBe('same-origin')
     const permissions = page.headers.get('permissions-policy') ?? ''
@@ -927,7 +927,7 @@ describe('H2 · scripts by hash, and the headers that were missing', () => {
 
   test('HSTS on TLS, direct or behind a proxy that says so, and never on plain HTTP', async () => {
     const h = pageHarness()
-    const plain = await h.handle(browse('/nodes', ADMIN))
+    const plain = await h.handle(browse('/admin/nodes', ADMIN))
     expect(plain.headers.get('strict-transport-security')).toBeNull()
     const proxied = await h.handle(
       new Request('http://console.test/nodes', {
@@ -1001,14 +1001,14 @@ describe("时区 · every instant names its zone, and can be redrawn in the read
   })
 
   test("the trail's instant is a <time> with the instant in it, drawn in the server's zone, and the page says which", async () => {
-    const utc = await pageIn('UTC', '/audit')
+    const utc = await pageIn('UTC', '/admin/audit')
     expect(utc).toContain(
       `<time datetime="${ISO}" data-fmt="datetime">2023-11-14 22:13:15</time>`,
     )
     expect(utc).toContain(
       '<p class="note" id="tz-note">时间 · UTC · 服务器时区</p>',
     )
-    const shanghai = await pageIn('Asia/Shanghai', '/audit')
+    const shanghai = await pageIn('Asia/Shanghai', '/admin/audit')
     expect(shanghai).toContain(
       `<time datetime="${ISO}" data-fmt="datetime">2023-11-15 06:13:15</time>`,
     )
@@ -1019,8 +1019,8 @@ describe("时区 · every instant names its zone, and can be redrawn in the read
     const h = pageHarness({ chat: true })
     await h.chat.open('qianmo://tokyo-1/planner')
     const pages: readonly (readonly [string, RegExp])[] = [
-      ['/audit', /<time datetime="[^"]+Z" data-fmt="datetime">/],
-      ['/nodes', /<time class="mono" datetime="[^"]+Z" data-fmt="clock">/],
+      ['/admin/audit', /<time datetime="[^"]+Z" data-fmt="datetime">/],
+      ['/admin/nodes', /<time class="mono" datetime="[^"]+Z" data-fmt="clock">/],
       ['/chat?session=session-1', /<p class="note" id="tz-note">/],
     ]
     for (const [path, shape] of pages) {
@@ -1031,7 +1031,7 @@ describe("时区 · every instant names its zone, and can be redrawn in the read
 
   test('a custom range is an instant both ways: data-at out, epoch ms back in', async () => {
     const from = Date.UTC(2023, 10, 14, 10, 0)
-    const page = await pageIn('UTC', `/audit?from=${from}`)
+    const page = await pageIn('UTC', `/admin/audit?from=${from}`)
     expect(page).toContain(
       `name="from" value="2023-11-14T10:00" data-at="${from}">`,
     )

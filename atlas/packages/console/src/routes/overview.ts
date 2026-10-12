@@ -54,7 +54,7 @@ export const overviewRoute: RouteModule = {
     id: 'overview',
     label: '总览',
     group: 'manage',
-    href: '/overview',
+    href: '/admin/overview',
     icon: 'layout-dashboard',
   },
   page: {

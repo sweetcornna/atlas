@@ -256,11 +256,11 @@ describe('reads and polls record nothing', () => {
     const h = harness()
     for (const path of [
       '/',
-      '/nodes',
-      '/audit',
-      '/servers',
-      '/settings',
-      '/providers',
+      '/admin/nodes',
+      '/admin/audit',
+      '/admin/servers',
+      '/admin/settings',
+      '/admin/providers',
     ]) {
       await h.handle(browse(path, ADMIN))
       await h.handle(browse(path, VIEW))

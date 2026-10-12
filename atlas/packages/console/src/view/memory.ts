@@ -7,7 +7,7 @@
  *
  * Long-term memory is per agent and per account (design review D18), so this
  * page only ever shows the reader's own. The filter is a native GET form
- * (`/memory?agent=&kind=&q=&retired=`): it works without script, and the
+ * (`/admin/memory?agent=&kind=&q=&retired=`): it works without script, and the
  * polled list reads the same query.
  */
 
@@ -211,7 +211,7 @@ export function renderMemoryBar(
   const counts = countsOf(model.counts)
   const chosen = model.filter.kind ?? ''
   return (
-    `<form class="mem-bar" id="memory-filter" method="get" action="/memory">` +
+    `<form class="mem-bar" id="memory-filter" method="get" action="/admin/memory">` +
     `<label class="sr-only" for="memory-agent">智能体</label>` +
     `<span class="sel"><select class="input" id="memory-agent" name="agent">${options}</select>${chevron()}</span>` +
     `<div class="seg" role="radiogroup" aria-label="类别">${kinds

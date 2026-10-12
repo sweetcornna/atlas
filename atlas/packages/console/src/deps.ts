@@ -554,6 +554,10 @@ export interface ChatSession {
   readonly turnCount: number
   /** 最后一轮的原文，视图自己截断。 */
   readonly preview: string
+  /** 操作者的第一句原文（不含本地命令），视图自己截断；还没开口时没有。 */
+  readonly title?: string
+  /** 最后一句是操作者的且没有失败：还在等回复。 */
+  readonly running?: true
 }
 
 export interface ChatTranscript {
@@ -2154,6 +2158,11 @@ export interface ConsoleDeps {
   readonly wakeTargets?: readonly WakeTarget[]
   /** Absent removes the chat page and every `/v0/chat/*` route (§4.5). */
   readonly chat?: ChatPort
+  /**
+   * The main agent the conversation home page opens (`--chat-default`). Absent,
+   * or not in the roster, the home page opens the first dialable agent.
+   */
+  readonly chatDefault?: string
   /** Absent removes the certificate column entirely (§10.1). */
   readonly certificates?: CertificatePort
   /**

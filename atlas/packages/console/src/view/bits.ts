@@ -117,6 +117,20 @@ const ICON_PATHS: Readonly<Record<string, string>> = {
     '<path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
   laptop:
     '<path d="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16"/>',
+  'panel-left': '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  ellipsis:
+    '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+  copy:
+    '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>' +
+    '<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  'square-pen':
+    '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>' +
+    '<path d="M18.4 2.6a1 1 0 0 1 3 3l-9 9a2 2 0 0 1-.9.5l-2.9.8a.5.5 0 0 1-.6-.6l.8-2.9a2 2 0 0 1 .5-.8z"/>',
+  'arrow-down': '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+  bot:
+    '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/>' +
+    '<path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
   settings:
     '<path d="M21 4h-7"/><path d="M10 4H3"/><path d="M21 12h-9"/><path d="M8 12H3"/>' +
     '<path d="M21 20h-5"/><path d="M12 20H3"/><path d="M14 2v4"/><path d="M8 10v4"/><path d="M16 18v4"/>',
@@ -310,7 +324,7 @@ export function failureBar(failure: ConsoleFailure, subject: string): string {
  * A status dot and a word.
  *
  * The class names (`state`, `dot`, `dot-<tone>`) are a contract with
- * `assets/chatClient.ts`, which repaints the composer's dot by writing
+ * `assets/frontClient.ts`, which repaints the composer's dot by writing
  * `dot dot-<tone>` into `className`. The stylesheet gives each of the four a
  * different shape as well as a different colour.
  */

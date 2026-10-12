@@ -316,10 +316,10 @@ describe('the page', () => {
   })
 
   test('the audit filter on the page URL reaches the port', async () => {
-    // The trail moved to its own page (`/audit`); the filter moved with it.
+    // The trail moved to its own page (`/admin/audit`); the filter moved with it.
     // The overview reads the last hour, whatever its own URL says (A2).
     const { handle, audit } = setup()
-    await handle(get(`/audit?token=${VIEW}&source=router&limit=7`))
+    await handle(get(`/admin/audit?token=${VIEW}&source=router&limit=7`))
     expect(audit.filters[0]).toEqual({ source: 'router', limit: 7 })
     await handle(get(`/?token=${VIEW}&source=router&limit=7`))
     expect(audit.filters[1]).toEqual({ from: NOW - 3_600_000, limit: 500 })
@@ -346,10 +346,10 @@ describe('the page', () => {
       'unreachable',
       '见证端点 · connect ECONNREFUSED 127.0.0.1:1',
     )
-    for (const path of ['/', '/audit']) {
+    for (const path of ['/', '/admin/audit']) {
       const response = await handle(get(path, VIEW))
       expect(`${path} ${response.status}`).toBe(`${path} 200`)
-      if (path === '/audit') {
+      if (path === '/admin/audit') {
         // The port's message keeps only which half failed; the strip says
         // the line and folds the original (C5).
         const html = await response.text()
@@ -380,7 +380,7 @@ describe('the page', () => {
       },
     ])
 
-    const response = await handle(get('/audit', VIEW))
+    const response = await handle(get('/admin/audit', VIEW))
     const markup = await response.text()
     expect(response.status).toBe(200)
     expect(markup).toContain('data-audit-node="beta-1"')
@@ -750,16 +750,16 @@ describe('the registry lease on the page (C-1)', () => {
   }
 
   test('roster, limits strip and overview card all state the registry lease', async () => {
-    // Three pages now (`/nodes`, `/settings`, `/`), one claim: each states the
+    // Three pages now (`/admin/nodes`, `/admin/settings`, `/`), one claim: each states the
     // registry's lease, and each reads the registry once — the sidebar count,
     // the roster and the limits share the one read.
     const { handle, registry } = setup()
     registry.listResult = okResult([HOUR_AGENT])
-    const nodes = await (await handle(get('/nodes', VIEW))).text()
+    const nodes = await (await handle(get('/admin/nodes', VIEW))).text()
     expect(nodes).toContain('data-health="live"')
     expect(nodes).toContain('租约 1h')
     expect(registry.listCalls).toBe(1)
-    const settings = await (await handle(get('/settings', VIEW))).text()
+    const settings = await (await handle(get('/admin/settings', VIEW))).text()
     expect(settings).toContain('data-ttl-ms="3600000"')
     expect(registry.listCalls).toBe(2)
     const overview = await (await handle(get('/', VIEW))).text()
@@ -788,7 +788,7 @@ describe('the registry lease on the page (C-1)', () => {
     expect(await response.text()).toContain('data-ttl-ms="90000"')
 
     registry.listResult = okResult([])
-    const empty = await (await handle(get('/settings', VIEW))).text()
+    const empty = await (await handle(get('/admin/settings', VIEW))).text()
     expect(empty).toContain('data-ttl-ms="90000"')
   })
 
@@ -1320,12 +1320,12 @@ describe('servers', () => {
     // 判据要卡在 textarea 那个标签上：内联样式表里有 `input[readonly]` 选择器，
     // 整篇文档因此永远含有 readonly 这个词，光找它是一条永真的断言。
     const READONLY_BOX = 'spellcheck="false" readonly>'
-    const asAdmin = await (await handle(get('/servers', ADMIN))).text()
+    const asAdmin = await (await handle(get('/admin/servers', ADMIN))).text()
     expect(asAdmin).toContain('id="servers-section"')
     expect(asAdmin).toContain('data-action="server-note"')
     expect(asAdmin).not.toContain(READONLY_BOX)
 
-    const asView = await (await handle(get('/servers', VIEW))).text()
+    const asView = await (await handle(get('/admin/servers', VIEW))).text()
     expect(asView).toContain('id="servers-section"')
     expect(asView).not.toContain('data-action="server-note"')
     expect(asView).toContain(READONLY_BOX)
@@ -1333,18 +1333,18 @@ describe('servers', () => {
 
   test('leaves the section off the page when nothing was configured', async () => {
     const { handle } = setupServers({ nodeServers: [] })
-    const html = await (await handle(get('/servers', ADMIN))).text()
+    const html = await (await handle(get('/admin/servers', ADMIN))).text()
     expect(html).not.toContain('id="servers-section"')
     // 没配就说没配，并说清在哪儿配；不是一个空着的抬头。
     expect(html).toContain('未配置服务器归属 · 启动时用 --node-server 指定')
     // 名册照旧在——降级只该拿掉归属那一块。
-    const nodes = await (await handle(get('/nodes', ADMIN))).text()
+    const nodes = await (await handle(get('/admin/nodes', ADMIN))).text()
     expect(nodes).toContain('id="nodes-section"')
   })
 
   test('puts the attribution on the roster the page and the fragment share', async () => {
     const { handle } = setupServers()
-    for (const path of ['/nodes', '/fragments/roster']) {
+    for (const path of ['/admin/nodes', '/fragments/roster']) {
       const html = await (await handle(get(path, ADMIN))).text()
       expect(
         `${path} -> ${html.includes('服务器 <span class="mono">p11')}`,
@@ -1628,7 +1628,7 @@ describe('parseAuditFilter', () => {
     // resolved to: "the last 24 hours" has to keep meaning that on the next
     // poll rather than freezing at page load.
     const { handle } = setup()
-    const html = await (await handle(get('/audit?window=24h', ADMIN))).text()
+    const html = await (await handle(get('/admin/audit?window=24h', ADMIN))).text()
     expect(html).toContain('data-poll="/fragments/audit?window=24h"')
     expect(html).toContain('name="window" value="24h" checked')
   })

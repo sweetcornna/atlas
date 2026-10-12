@@ -638,7 +638,7 @@ export const PROVIDERS_PAGE_JS = `
       qc.sendJson('DELETE', '/v0/providers/profiles/' + enc(id), { ifMatch: Number(data(el, 'revision')) })
         .then(function () {
           qc.toast('已删除', 'ok');
-          if (qc.byId('prov-editor')) go('/providers');
+          if (qc.byId('prov-editor')) go('/admin/providers');
           else refreshAll();
         }).catch(function (err) { qc.toast('没有删除 · ' + qc.message(err), 'bad'); });
     });
@@ -859,7 +859,7 @@ export const PROVIDERS_PAGE_JS = `
     editor.setAttribute('data-revision', String(profile.revision));
     var id = qc.byId('prov-id');
     if (id) id.readOnly = true;
-    try { history.replaceState(null, '', '/providers/profiles/' + enc(profile.id)); } catch (e) { /* stays */ }
+    try { history.replaceState(null, '', '/admin/providers/profiles/' + enc(profile.id)); } catch (e) { /* stays */ }
   }
 
   function paintFamily(block) {
@@ -956,7 +956,7 @@ export const PROVIDERS_PAGE_JS = `
     qc.onAction('prov-save', function () {
       var creating = data(editor, 'mode') === 'create';
       save().then(function (profile) {
-        if (creating) go('/providers/profiles/' + enc(profile.id));
+        if (creating) go('/admin/providers/profiles/' + enc(profile.id));
         else go(window.location.pathname);
       }).catch(function () { /* said on the result line */ });
     });

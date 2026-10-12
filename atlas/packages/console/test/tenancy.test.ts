@@ -485,7 +485,7 @@ describe('M2 request scopes', () => {
     for (const path of [
       '/v0/accounts',
       '/v0/providers',
-      '/settings',
+      '/admin/settings',
       '/v0/handoff',
     ])
       expect(
@@ -577,11 +577,11 @@ describe('M2 request scopes', () => {
       expect(response.status).toBe(501)
     }
     const page = await (
-      await h.handle(asBearer('GET', '/overview', h.alice.credential))
+      await h.handle(asBearer('GET', '/admin/overview', h.alice.credential))
     ).text()
     // 文件互通 (P20, `filesScope.ts`), 连接 (P25) and 云端电脑 (P21) have tenant
     // wrappers: their pages show.
-    for (const href of ['/files', '/connect', '/desktop'])
+    for (const href of ['/admin/files', '/admin/connect', '/admin/desktop'])
       expect(page).toContain(`href="${href}"`)
     for (const port of [h.schedules, h.routing, h.handoffDevices, h.avatars])
       expect(port.calls).toEqual([])
@@ -612,7 +612,7 @@ describe('M2 request scopes', () => {
   test('notify scope trusts connection node, never sender labels', async () => {
     const h = fixture()
     const text = await (
-      await h.handle(asBearer('GET', '/alerts', h.alice.credential))
+      await h.handle(asBearer('GET', '/admin/alerts', h.alice.credential))
     ).text()
     expect(text).toContain('a-notice')
     expect(text).not.toContain('b-notice')

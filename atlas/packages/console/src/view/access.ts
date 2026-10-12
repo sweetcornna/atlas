@@ -7,7 +7,7 @@
  *
  * ## Four tabs, four addresses
  *
- * 成员 is `/access`, the other three are `/access/<tab>`: each tab is its own
+ * 成员 is `/admin/access`, the other three are `/admin/access/<tab>`: each tab is its own
  * server-rendered document, so a tab is a link, the browser's back button
  * works, and a reader with script off reads every one of them. The tab bar
  * is drawn only with more than one tab in it — a person who may not
@@ -87,10 +87,10 @@ export const TAB_LABEL: Readonly<Record<AccessTab, string>> = {
 
 /** Where each tab lives. 成员 is the area's own address. */
 const TAB_HREF: Readonly<Record<AccessTab, string>> = {
-  members: '/access',
-  invites: '/access/invites',
-  sessions: '/access/sessions',
-  actions: '/access/actions',
+  members: '/admin/access',
+  invites: '/admin/access/invites',
+  sessions: '/admin/access/sessions',
+  actions: '/admin/access/actions',
 }
 
 /** The tab bar: plain links, the current one marked. */
@@ -841,7 +841,7 @@ export interface ActionFilterView {
   readonly target?: string
 }
 
-/** The query string for `/access/actions` with these filters and cursors. */
+/** The query string for `/admin/access/actions` with these filters and cursors. */
 function actionsHref(
   filter: ActionFilterView,
   cursor: { readonly before?: number; readonly readsBefore?: number } = {},

@@ -65,25 +65,25 @@ describe('who sees what (one case per principal)', () => {
       scheduler: new FixedScheduler(snapshotOf()),
     })
 
-    const viewAlerts = await (await c.handle(browse('/alerts', VIEW))).text()
+    const viewAlerts = await (await c.handle(browse('/admin/alerts', VIEW))).text()
     expect(viewAlerts).toContain('根分区使用率 95%')
     expect(hasWriteControl(viewAlerts)).toBe(false)
     expect(viewAlerts).toContain(
       '<span class="note" id="read-only">只读 · 写操作需要管理令牌</span>',
     )
-    const viewJobs = await (await c.handle(browse('/jobs', VIEW))).text()
+    const viewJobs = await (await c.handle(browse('/admin/jobs', VIEW))).text()
     expect(viewJobs).toContain('<tr data-key="disk-watch">')
     expect(hasWriteControl(viewJobs)).toBe(false)
     expect((await c.handle(call('POST', ACK_PATH, VIEW))).status).toBe(403)
     expect(notify.ackCalls).toBe(0)
 
-    const adminAlerts = await (await c.handle(browse('/alerts', ADMIN))).text()
+    const adminAlerts = await (await c.handle(browse('/admin/alerts', ADMIN))).text()
     expect(hasWriteControl(adminAlerts)).toBe(true)
     expect(adminAlerts).toContain('data-action="alert-ack" data-alert="n:disk"')
     expect(adminAlerts).not.toContain('id="read-only"')
     // The jobs page has no write control for anyone, the admin token included.
     expect(
-      hasWriteControl(await (await c.handle(browse('/jobs', ADMIN))).text()),
+      hasWriteControl(await (await c.handle(browse('/admin/jobs', ADMIN))).text()),
     ).toBe(false)
     expect((await c.handle(call('POST', ACK_PATH, ADMIN))).status).toBe(200)
     expect(notify.stored.get('n:disk')?.by).toBe('legacy:admin')
@@ -107,32 +107,32 @@ describe('who sees what (one case per principal)', () => {
 
   test('a viewer reads both pages and is offered nothing to press', async () => {
     const { notify, read, ack } = await asPerson('viewer')
-    const alerts = await read('/alerts')
+    const alerts = await read('/admin/alerts')
     expect(alerts).toContain('根分区使用率 95%')
     expect(hasWriteControl(alerts)).toBe(false)
     expect(alerts).toContain('只读 · 写操作需要运维角色')
-    expect(hasWriteControl(await read('/jobs'))).toBe(false)
+    expect(hasWriteControl(await read('/admin/jobs'))).toBe(false)
     expect((await ack()).status).toBe(403)
     expect(notify.ackCalls).toBe(0)
   })
 
   test('a member reads both pages and, like a viewer, cannot acknowledge', async () => {
     const { notify, read, ack } = await asPerson('member')
-    const alerts = await read('/alerts')
+    const alerts = await read('/admin/alerts')
     expect(alerts).toContain('巡检完成')
     expect(hasWriteControl(alerts)).toBe(false)
     expect(alerts).toContain('只读 · 写操作需要运维角色')
-    expect((await read('/jobs')).includes('每十分钟看一次磁盘')).toBe(true)
+    expect((await read('/admin/jobs')).includes('每十分钟看一次磁盘')).toBe(true)
     expect((await ack()).status).toBe(403)
     expect(notify.ackCalls).toBe(0)
   })
 
   test('ops is offered the button, and the acknowledgement is recorded under the person', async () => {
     const { notify, read, ack } = await asPerson('ops')
-    const alerts = await read('/alerts')
+    const alerts = await read('/admin/alerts')
     expect(hasWriteControl(alerts)).toBe(true)
     expect(alerts).not.toContain('id="read-only"')
-    expect(hasWriteControl(await read('/jobs'))).toBe(false)
+    expect(hasWriteControl(await read('/admin/jobs'))).toBe(false)
     const response = await ack()
     expect(response.status).toBe(200)
     expect(notify.stored.get('n:disk')?.by).toMatch(/^u:[0-9a-f]{16}$/)
@@ -304,7 +304,7 @@ describe('the copy rules', () => {
     }
     assertCopy(
       'alerts registry down',
-      await (await down.handle(browse('/alerts', ADMIN))).text(),
+      await (await down.handle(browse('/admin/alerts', ADMIN))).text(),
     )
     expect(checked).toBe(32)
   })
@@ -325,7 +325,7 @@ describe('the copy rules', () => {
       const c = watchConsole(extra)
       assertCopy(
         `jobs#${index}`,
-        await (await c.handle(browse('/jobs', ADMIN))).text(),
+        await (await c.handle(browse('/admin/jobs', ADMIN))).text(),
       )
     }
   })
@@ -340,7 +340,7 @@ describe('with script off', () => {
     const c = watchConsole({ notify: freshNotify() })
     c.page.registry.listResult = ok([...AGENTS.slice(0, 2), LOST_OSAKA])
     const bare = withoutScripts(
-      await (await c.handle(browse('/alerts', ADMIN))).text(),
+      await (await c.handle(browse('/admin/alerts', ADMIN))).text(),
     )
     expect(bare).not.toContain('<script')
     expect(bare).toContain('根分区使用率 95%')
@@ -355,7 +355,7 @@ describe('with script off', () => {
     // What the form submits, as a browser with no script sends it.
     const filtered = withoutScripts(
       await (
-        await c.handle(browse('/alerts?level=info&state=all', ADMIN))
+        await c.handle(browse('/admin/alerts?level=info&state=all', ADMIN))
       ).text(),
     )
     expect(filtered).toContain('巡检完成')
@@ -365,18 +365,18 @@ describe('with script off', () => {
 
   test('a reader who cannot acknowledge is not told about script at all', async () => {
     const c = watchConsole({ notify: freshNotify() })
-    const html = await (await c.handle(browse('/alerts', VIEW))).text()
+    const html = await (await c.handle(browse('/admin/alerts', VIEW))).text()
     expect(html).not.toContain('<noscript>')
   })
 
   test('the jobs page is whole without script', async () => {
     const c = watchConsole({ scheduler: new FixedScheduler(snapshotOf()) })
     const bare = withoutScripts(
-      await (await c.handle(browse('/jobs', VIEW))).text(),
+      await (await c.handle(browse('/admin/jobs', VIEW))).text(),
     )
     expect(bare).toContain('<tr data-key="disk-watch">')
     expect(bare).toContain('刚运行过')
     expect(bare).toContain('id="sched-estop"')
-    expect(bare).toContain('id="nav-alerts" href="/alerts"')
+    expect(bare).toContain('id="nav-alerts" href="/admin/alerts"')
   })
 })

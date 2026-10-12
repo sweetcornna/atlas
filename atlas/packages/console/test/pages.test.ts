@@ -52,17 +52,17 @@ interface PageRow {
 
 const PAGES: readonly PageRow[] = [
   {
-    path: '/overview',
+    path: '/admin/overview',
     title: '总览',
     active: 'overview',
     reads: [
       '运行概况',
       '<div class="stat-num">3</div>',
-      'href="/nodes/tokyo-1"',
+      'href="/admin/nodes/tokyo-1"',
     ],
   },
   {
-    path: '/nodes',
+    path: '/admin/nodes',
     title: '节点',
     active: 'nodes',
     reads: [
@@ -73,7 +73,7 @@ const PAGES: readonly PageRow[] = [
     ],
   },
   {
-    path: '/nodes/tokyo-1',
+    path: '/admin/nodes/tokyo-1',
     title: 'tokyo-1',
     active: 'nodes',
     reads: ['名册', 'qianmo://tokyo-1/'],
@@ -92,84 +92,84 @@ const PAGES: readonly PageRow[] = [
     reads: ['会话', 'id="composer"'],
   },
   {
-    path: '/audit',
+    path: '/admin/audit',
     title: '消息链',
     active: 'audit',
     reads: ['消息链', 'id="audit-filter"', 'data-trace="4bf92f'],
   },
   {
-    path: `/audit/trace/${TRACE}`,
+    path: `/admin/audit/trace/${TRACE}`,
     title: '消息链详情',
     active: 'audit',
     reads: ['class="hops"'],
   },
   {
-    path: '/alerts',
+    path: '/admin/alerts',
     title: '告警',
     active: 'alerts',
     reads: ['收件箱', 'id="alerts-filter"', 'id="alerts-unread"', '来源'],
   },
   {
-    path: '/memory',
+    path: '/admin/memory',
     title: '记忆',
     active: 'memory',
     reads: ['简报控制在 300 字以内', 'id="memory-filter"', 'id="memory-n-all"'],
   },
   {
-    path: '/connect',
+    path: '/admin/connect',
     title: '连接',
     active: 'connect',
     reads: ['工作邮箱', 'imap.qq.com', '我的 MacBook', 'id="connect"'],
   },
   {
-    path: '/desktop',
+    path: '/admin/desktop',
     title: '云端电脑',
     active: 'desktop',
     reads: ['planner', '运行中', 'id="desktop"'],
   },
   {
-    path: '/files',
+    path: '/admin/files',
     title: '文件互通',
     active: 'files',
     reads: ['reports/2026-10/weekly.md', '汇集到', 'id="files"'],
   },
   {
-    path: '/jobs',
+    path: '/admin/jobs',
     title: '主动执行',
     active: 'jobs',
     reads: ['调度器', '调度器心跳未接入', '急停'],
   },
   {
-    path: '/approvals',
+    path: '/admin/approvals',
     title: '审批',
     active: 'approvals',
     reads: ['审批未接入'],
   },
   {
-    path: '/providers',
+    path: '/admin/providers',
     title: '模型',
     active: 'providers',
     reads: ['模型服务未开启'],
   },
   {
-    path: '/servers',
+    path: '/admin/servers',
     title: '服务器',
     active: 'servers',
     reads: ['p11', 'tokyo-1'],
   },
   {
-    path: '/access',
+    path: '/admin/access',
     title: '账号与访问',
     active: 'access',
     reads: [
       'id="tab-members"',
-      'href="/access/actions"',
+      'href="/admin/access/actions"',
       '这台控制台没有开启个人账号',
     ],
   },
-  { path: '/usage', title: '用量', active: 'usage', reads: ['用量未接入'] },
+  { path: '/admin/usage', title: '用量', active: 'usage', reads: ['用量未接入'] },
   {
-    path: '/settings',
+    path: '/admin/settings',
     title: '设置与关于',
     active: 'settings',
     reads: ['限额', 'id="limits"', LABEL, 'qianmo://tokyo-hub/console'],
@@ -286,10 +286,10 @@ describe('every page', () => {
   })
 
   test("the page script is the page's own: no page carries another's", async () => {
-    const nodes = await read('/nodes')
-    const audit = await read('/audit')
-    const servers = await read('/servers')
-    const overview = await read('/overview')
+    const nodes = await read('/admin/nodes')
+    const audit = await read('/admin/audit')
+    const servers = await read('/admin/servers')
+    const overview = await read('/admin/overview')
     expect(nodes).toContain("qc.onSubmit('register-form', onRegister)")
     expect(audit).not.toContain("qc.onSubmit('register-form'")
     expect(audit).toContain("qc.onAction('chain', openChain)")
@@ -299,10 +299,10 @@ describe('every page', () => {
 
   test('every section is a stacked header over its own body', async () => {
     for (const [path, headings] of [
-      ['/overview', ['运行概况', '节点']],
-      ['/nodes', ['名册']],
-      ['/audit', ['消息链']],
-      ['/settings', ['实例', '限额']],
+      ['/admin/overview', ['运行概况', '节点']],
+      ['/admin/nodes', ['名册']],
+      ['/admin/audit', ['消息链']],
+      ['/admin/settings', ['实例', '限额']],
     ] as const) {
       const html = await read(path)
       const body = html.slice(html.indexOf('<main'))
@@ -324,7 +324,7 @@ describe('completed governance routes', () => {
   })
   test('unknown child pages remain 404', async () => {
     const { handle } = harness()
-    expect((await handle(browse('/approvals/x', ADMIN))).status).toBe(404)
+    expect((await handle(browse('/admin/approvals/x', ADMIN))).status).toBe(404)
   })
 })
 
@@ -376,19 +376,19 @@ describe('the doors in front of the pages', () => {
 describe('one node, one trace', () => {
   test('a node page shows that node alone and polls that node alone', async () => {
     // 概览 is the node's own address (A3); its agents are the 智能体 tab.
-    const overview = await read('/nodes/tokyo-1')
-    expect(overview).toContain('<li><a href="/nodes" data-nav>节点</a></li>')
+    const overview = await read('/admin/nodes/tokyo-1')
+    expect(overview).toContain('<li><a href="/admin/nodes" data-nav>节点</a></li>')
     expect(overview).toContain('<li aria-current="page">tokyo-1</li>')
     expect(overview).toContain('2 个')
     expect(overview).not.toContain('qianmo://osaka-1/')
 
-    const html = await read('/nodes/tokyo-1/agents')
+    const html = await read('/admin/nodes/tokyo-1/agents')
     expect(html).toContain('qianmo://tokyo-1/')
     expect(html).not.toContain('qianmo://osaka-1/')
     expect(html).toContain('data-poll="/fragments/roster?node=tokyo-1"')
-    expect(html).toContain('<li><a href="/nodes" data-nav>节点</a></li>')
+    expect(html).toContain('<li><a href="/admin/nodes" data-nav>节点</a></li>')
     expect(html).toContain(
-      '<li><a href="/nodes/tokyo-1" data-nav>tokyo-1</a></li>',
+      '<li><a href="/admin/nodes/tokyo-1" data-nav>tokyo-1</a></li>',
     )
     expect(html).toContain('<li aria-current="page">智能体</li>')
 
@@ -402,8 +402,8 @@ describe('one node, one trace', () => {
 
   test('a node the registry does not list is a 404, a malformed one too', async () => {
     const { handle } = harness()
-    expect((await handle(browse('/nodes/nowhere', ADMIN))).status).toBe(404)
-    expect((await handle(browse('/nodes/%E0%A4%A', ADMIN))).status).toBe(404)
+    expect((await handle(browse('/admin/nodes/nowhere', ADMIN))).status).toBe(404)
+    expect((await handle(browse('/admin/nodes/%E0%A4%A', ADMIN))).status).toBe(404)
   })
 
   test("a registry that cannot be read is the roster's strip, not a 404", async () => {
@@ -412,17 +412,17 @@ describe('one node, one trace', () => {
       ok: false,
       failure: { code: 'unreachable', message: '连接被拒绝' },
     }
-    const response = await h.handle(browse('/nodes/tokyo-1', ADMIN))
+    const response = await h.handle(browse('/admin/nodes/tokyo-1', ADMIN))
     expect(response.status).toBe(200)
     expect(await response.text()).toContain('注册中心不可达 · 连接被拒绝')
   })
 
   test('a trace page is the chain, and a trace the trail does not hold is a 404', async () => {
-    const html = await read(`/audit/trace/${TRACE}`)
+    const html = await read(`/admin/audit/trace/${TRACE}`)
     expect(html).toContain('class="hops"')
-    expect(html).toContain('<li><a href="/audit" data-nav>消息链</a></li>')
+    expect(html).toContain('<li><a href="/admin/audit" data-nav>消息链</a></li>')
     const { handle } = harness()
-    const missing = await handle(browse('/audit/trace/ffff', ADMIN))
+    const missing = await handle(browse('/admin/audit/trace/ffff', ADMIN))
     expect(missing.status).toBe(404)
     expect(await missing.text()).toContain('未找到该 trace')
   })
@@ -431,7 +431,7 @@ describe('one node, one trace', () => {
 describe('the trail page', () => {
   test('the poller replays the current filter, escaped, as a query string', async () => {
     const html = await read(
-      `/audit?source=router&traceId=${encodeURIComponent('" onload="alert(1)')}&limit=25&from=1699996400000`,
+      `/admin/audit?source=router&traceId=${encodeURIComponent('" onload="alert(1)')}&limit=25&from=1699996400000`,
     )
     const poll = /id="audit" data-poll="([^"]*)"/.exec(html)?.[1] ?? ''
     expect(poll.startsWith('/fragments/audit?')).toBe(true)
@@ -443,19 +443,19 @@ describe('the trail page', () => {
   })
 
   test('an empty filter polls the bare fragment rather than a stray question mark', async () => {
-    const html = await read('/audit')
+    const html = await read('/admin/audit')
     expect(html).toContain('data-poll="/fragments/audit"')
   })
 
   test('the node filter offers the addresses the registry lists', async () => {
-    const html = await read('/audit')
+    const html = await read('/admin/audit')
     expect(html).toContain('<option value="qianmo://osaka-1/writer">')
   })
 })
 
 describe('the shell around every page', () => {
   test('one registry read serves the sidebar, the health strip and the page', async () => {
-    for (const path of ['/', '/nodes', '/audit', '/settings', '/alerts']) {
+    for (const path of ['/', '/admin/nodes', '/admin/audit', '/admin/settings', '/admin/alerts']) {
       const h = harness()
       await h.handle(browse(path, ADMIN))
       expect(`${path} ${h.registry.listCalls}`).toBe(`${path} 1`)
@@ -469,7 +469,7 @@ describe('the shell around every page', () => {
       failure: { code: 'unreachable', message: '连接被拒绝' },
     }
     for (const row of PAGES) {
-      if (row.path === '/nodes/tokyo-1') continue
+      if (row.path === '/admin/nodes/tokyo-1') continue
       const response = await h.handle(browse(row.path, ADMIN))
       expect(`${row.path} ${response.status}`).toBe(`${row.path} 200`)
       expect(await response.text()).toContain('注册中心不可达')
@@ -480,7 +480,7 @@ describe('the shell around every page', () => {
     // Three agents on two machines. The overview's 智能体 card says 3; the
     // sidebar item named 节点 says 2.
     const h = harness()
-    const html = await (await h.handle(browse('/overview', ADMIN))).text()
+    const html = await (await h.handle(browse('/admin/overview', ADMIN))).text()
     expect(html).toContain(
       '<span class="nav-label">节点</span><span class="cnt">2</span>',
     )
@@ -628,11 +628,11 @@ describe('errors a browser navigates into are pages (C3)', () => {
     expect(await chat.text()).toContain('页面不存在')
 
     const { handle } = harness()
-    const node = await handle(browse('/nodes/nowhere', ADMIN))
+    const node = await handle(browse('/admin/nodes/nowhere', ADMIN))
     expect(node.status).toBe(404)
     expect(await node.text()).toContain('页面不存在')
 
-    const head = await handle(browse('/nodes', ADMIN, 'HEAD'))
+    const head = await handle(browse('/admin/nodes', ADMIN, 'HEAD'))
     expect(head.status).toBe(405)
     expect(head.headers.get('allow')).toBe('GET')
     expect(head.headers.get('content-type')).toBe('text/html; charset=utf-8')
@@ -641,7 +641,7 @@ describe('errors a browser navigates into are pages (C3)', () => {
   test('a port that throws: a 500 page without the shell, the detail folded away', async () => {
     const h = pageHarness()
     h.registry.list = () => Promise.reject(new Error('registry exploded'))
-    const page = await h.handle(browse('/nodes', ADMIN))
+    const page = await h.handle(browse('/admin/nodes', ADMIN))
     expect(page.status).toBe(500)
     const html = await page.text()
     expect(html).toContain('控制台内部错误')
@@ -663,7 +663,7 @@ describe('errors a browser navigates into are pages (C3)', () => {
     for (const request of [
       browse('/nope', ADMIN),
       browse('/nope'),
-      browse('/nodes', ADMIN, 'HEAD'),
+      browse('/admin/nodes', ADMIN, 'HEAD'),
     ]) {
       const visible = text(await (await handle(request)).text())
       for (const banned of ['。', '，', '、', '！']) {
@@ -677,8 +677,8 @@ describe('a session that lapses under the page (C1)', () => {
   test('every page carries the expiry dialog, closed, with the way back to itself', async () => {
     for (const [path, back] of [
       ['/', '/login'],
-      ['/nodes', '/login?redirect=%2Fnodes'],
-      ['/audit?window=24h', '/login?redirect=%2Faudit%3Fwindow%3D24h'],
+      ['/admin/nodes', '/login?redirect=%2Fnodes'],
+      ['/admin/audit?window=24h', '/login?redirect=%2Faudit%3Fwindow%3D24h'],
     ] as const) {
       const html = await read(
         `${path}${path.includes('?') ? '&' : '?'}token=${ADMIN}`,

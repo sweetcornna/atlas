@@ -9,9 +9,9 @@ import { reserveUsage } from '../quota.js'
  * deregister, heartbeat, wake, and the lifecycle — pause, resume, retire
  * (P15.2, `tenancy-m1.md` §3.6).
  *
- * Owns the `/nodes` page and one node's four tabs — `/nodes/<node>` (概览),
- * `/nodes/<node>/agents`, `/nodes/<node>/lifecycle` and
- * `/nodes/<node>/models` (A3, J2; `view/node.ts`) — `/v0/agents/…`,
+ * Owns the `/admin/nodes` page and one node's four tabs — `/admin/nodes/<node>` (概览),
+ * `/admin/nodes/<node>/agents`, `/admin/nodes/<node>/lifecycle` and
+ * `/admin/nodes/<node>/models` (A3, J2; `view/node.ts`) — `/v0/agents/…`,
  * `/v0/registrations`, `/v0/wake`, `/fragments/roster` and
  * `/fragments/lifecycle/<node>`. The 「模型」 tab's content is the providers
  * area's (`/fragments/providers/node/<node>`); this module only gives it a
@@ -37,7 +37,7 @@ import { reserveUsage } from '../quota.js'
  *
  * ## The lifecycle page reads the ledger, and writes only through the routes
  *
- * `/nodes/<node>/lifecycle` is drawn from `GET /v0/registrations`'s source,
+ * `/admin/nodes/<node>/lifecycle` is drawn from `GET /v0/registrations`'s source,
  * the lifecycle port's snapshot, and the roster. Its four actions each open a
  * confirmation and then call the routes below, which ask the action ledger
  * and record exactly once; the page itself records nothing.
@@ -390,7 +390,7 @@ interface RosterRender {
  * The registry is read through `ctx.roster()`, the once-per-request read the
  * shell's sidebar count shares, so the count beside 节点 and the cards under it
  * come from one answer. `node` narrows the cards to one bare node name
- * (`/nodes/<node>`); the header counts then describe that node.
+ * (`/admin/nodes/<node>`); the header counts then describe that node.
  */
 async function rosterFragment(
   ctx: Pick<RouteContext, 'deps' | 'now' | 'roster' | 'access'>,
@@ -838,7 +838,7 @@ async function trailExcerpt(
       page: valueOf(result),
       failure: failureOf(result),
       html: renderAuditExcerpt(valueOf(result), failureOf(result), node),
-      href: `/audit?node=${enc}`,
+      href: `/admin/audit?node=${enc}`,
     }
   }
   const result = await deps.audit.read({ q: node, limit: 10 })
@@ -846,7 +846,7 @@ async function trailExcerpt(
     page: valueOf(result),
     failure: failureOf(result),
     html: renderAuditExcerpt(valueOf(result), failureOf(result)),
-    href: `/audit?q=${enc}`,
+    href: `/admin/audit?q=${enc}`,
   }
 }
 
@@ -953,12 +953,12 @@ export const nodesRoute: RouteModule = {
     id: 'nodes',
     label: '节点',
     group: 'manage',
-    href: '/nodes',
+    href: '/admin/nodes',
     icon: 'server',
   },
   page: {
-    // `/nodes`, `/nodes/<node>`, and `/nodes/<node>/<tab>` for the three
-    // named tabs; anything else under `/nodes` is nobody's page.
+    // `/admin/nodes`, `/admin/nodes/<node>`, and `/admin/nodes/<node>/<tab>` for the three
+    // named tabs; anything else under `/admin/nodes` is nobody's page.
     match(segments) {
       if (segments[0] !== 'nodes' || segments.length > 3) return null
       if (segments.length === 3 && tabOf(segments[2]) === null) return null

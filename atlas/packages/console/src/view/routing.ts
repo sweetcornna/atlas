@@ -176,7 +176,7 @@ function scopeOf(model: RoutingCardModel): string {
     }),
   ].join('')
   return (
-    `<form class="route-scope" method="get" action="/providers" id="routing-scope">` +
+    `<form class="route-scope" method="get" action="/admin/providers" id="routing-scope">` +
     `<label class="sr-only" for="routing-node">范围</label>` +
     `<span class="sel"><select class="input" id="routing-node" name="routing">${options}</select>${chevron()}</span>` +
     `<noscript><button type="submit" class="btn btn-secondary btn-small">切换</button></noscript>` +

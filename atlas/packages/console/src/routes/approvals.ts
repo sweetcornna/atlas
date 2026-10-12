@@ -61,7 +61,7 @@ export const approvalsRoute: RouteModule = {
     id: 'approvals',
     label: '审批',
     group: 'manage',
-    href: '/approvals',
+    href: '/admin/approvals',
     icon: 'list-checks',
   },
   page: {

@@ -296,7 +296,7 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
         ),
         served.base,
       )
-      expect(link.pathname).toBe('/providers')
+      expect(link.pathname).toBe('/admin/providers')
       expect(link.searchParams.get('node')).toBe('tokyo-1')
 
       // A refresh of the page after that (the runtime ticks when the tab

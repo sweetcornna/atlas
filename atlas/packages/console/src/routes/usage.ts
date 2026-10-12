@@ -34,7 +34,7 @@ export const usageRoute: RouteModule = {
     id: 'usage',
     label: '用量',
     group: 'manage',
-    href: '/usage',
+    href: '/admin/usage',
     icon: 'chart-column',
   },
   page: {

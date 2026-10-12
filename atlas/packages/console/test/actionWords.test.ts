@@ -42,7 +42,7 @@ describe('操作记录 names every verb in words', () => {
     }
     // More verbs than one page holds: follow 更早 until there is none.
     const found: (readonly [string, string])[] = []
-    let path: string | null = '/access/actions'
+    let path: string | null = '/admin/access/actions'
     while (path !== null) {
       const response = await h.handle(asBearer('GET', path, ADMIN))
       expect(response.status).toBe(200)
@@ -73,7 +73,7 @@ describe('操作记录 names every verb in words', () => {
   test('the verb filter offers 模型服务 and 接力 by name', async () => {
     const h = accountsHarness({ deps: { actions: new MemoryActionLedger() } })
     const html = await (
-      await h.handle(asBearer('GET', '/access/actions', ADMIN))
+      await h.handle(asBearer('GET', '/admin/access/actions', ADMIN))
     ).text()
     expect(html).toContain('<option value="provider.">模型服务</option>')
     expect(html).toContain('<option value="handoff.">接力</option>')

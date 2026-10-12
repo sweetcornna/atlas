@@ -252,7 +252,7 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
       await tab.evaluate(click('[data-action="prov-save-switch"]'))
       await tab.waitFor(`document.getElementById('prov-switch-dialog').open`)
       expect(await tab.evaluate<string>(`location.pathname`)).toBe(
-        '/providers/profiles/deepseek-2',
+        '/admin/providers/profiles/deepseek-2',
       )
       await tab.evaluate(
         `(function () {
@@ -542,7 +542,7 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
       await tab.waitFor('window.qianmoConsole !== undefined')
       expect(await tab.evaluate<string>(rows)).toBe('k1 k2 k3 k4')
       expect(await tab.evaluate<string>(`location.pathname`)).toBe(
-        '/providers/profiles/pool',
+        '/admin/providers/profiles/pool',
       )
       const add = served.providers.writes.at(-1)
       expect(add?.method).toBe('saveProfile')

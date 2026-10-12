@@ -132,11 +132,11 @@ describe('任务分工 · on the 模型 page', () => {
     const { h } = wired()
     const ops = await person(h.handle, 'ops')
     const mine = await (
-      await h.handle(asSession('GET', '/providers', ops.sid, { header: false }))
+      await h.handle(asSession('GET', '/admin/providers', ops.sid, { header: false }))
     ).text()
     expect(mine).toContain('id="routing-form"')
     for (const token of [ADMIN, VIEW]) {
-      const page = await (await h.handle(browse('/providers', token))).text()
+      const page = await (await h.handle(browse('/admin/providers', token))).text()
       expect(page).toContain('id="routing"')
       expect(page).not.toContain('id="routing-form"')
     }
@@ -145,12 +145,12 @@ describe('任务分工 · on the 模型 page', () => {
   test('the scope is the address, and the fragment answers the same card', async () => {
     const { h, routing } = wired()
     const page = await (
-      await h.handle(browse('/providers?routing=node-b', ADMIN))
+      await h.handle(browse('/admin/providers?routing=node-b', ADMIN))
     ).text()
     expect(page).toContain('node-b 现在跟随所有节点的分工')
     // A node the 模型 service does not know is every node.
     const stray = await (
-      await h.handle(browse('/providers?routing=nowhere', ADMIN))
+      await h.handle(browse('/admin/providers?routing=nowhere', ADMIN))
     ).text()
     expect(stray).toContain('不同方向的任务交给不同模型')
     const fragment = await h.handle(
@@ -176,7 +176,7 @@ describe('任务分工 · on the 模型 page', () => {
 
   test('without a routing book there is no card, and the API says 501', async () => {
     const h = accountsHarness({ deps: { providers: new FakeProviders() } })
-    const page = await (await h.handle(browse('/providers', ADMIN))).text()
+    const page = await (await h.handle(browse('/admin/providers', ADMIN))).text()
     expect(page).not.toContain('id="routing"')
     expect(
       await (await h.handle(browse('/fragments/routing', ADMIN))).text(),

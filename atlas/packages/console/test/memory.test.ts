@@ -62,7 +62,7 @@ describe('记忆 · the page', () => {
   test('lists the reader’s own memory, newest first, with the counts per kind', async () => {
     const memory = new FakeMemory(() => NOW)
     const { handle } = wired(memory)
-    const response = await handle(browse('/memory', ADMIN))
+    const response = await handle(browse('/admin/memory', ADMIN))
     expect(response.status).toBe(200)
     const page = await response.text()
     const text = visibleText(page)
@@ -84,24 +84,24 @@ describe('记忆 · the page', () => {
     const memory = new FakeMemory(() => NOW)
     const { handle } = wired(memory)
     const plans = visibleText(
-      await (await handle(browse('/memory?kind=plan', ADMIN))).text(),
+      await (await handle(browse('/admin/memory?kind=plan', ADMIN))).text(),
     )
     expect(plans).toContain('本周把接力插件交评审')
     expect(plans).not.toContain('简报控制在 300 字以内')
     const found = visibleText(
       await (
-        await handle(browse(`/memory?q=${encodeURIComponent('周三')}`, ADMIN))
+        await handle(browse(`/admin/memory?q=${encodeURIComponent('周三')}`, ADMIN))
       ).text(),
     )
     expect(found).toContain('周三下午不排会')
     expect(found).not.toContain('回复先给结论')
     const none = visibleText(
-      await (await handle(browse('/memory?q=nothing-here', ADMIN))).text(),
+      await (await handle(browse('/admin/memory?q=nothing-here', ADMIN))).text(),
     )
     expect(none).toContain('没有符合条件的记忆')
     // An agent that is not on the roster falls back to the first one.
     const fallback = await handle(
-      browse(`/memory?agent=${encodeURIComponent('qianmo://x/y')}`, ADMIN),
+      browse(`/admin/memory?agent=${encodeURIComponent('qianmo://x/y')}`, ADMIN),
     )
     expect(fallback.status).toBe(200)
   })
@@ -109,9 +109,9 @@ describe('记忆 · the page', () => {
   test('a view token has nobody’s memory: no area, no page, no API', async () => {
     const memory = new FakeMemory(() => NOW)
     const { handle } = wired(memory)
-    const home = await (await handle(browse('/overview', VIEW))).text()
-    expect(home).not.toContain('href="/memory"')
-    expect((await handle(browse('/memory', VIEW))).status).toBe(403)
+    const home = await (await handle(browse('/admin/overview', VIEW))).text()
+    expect(home).not.toContain('href="/admin/memory"')
+    expect((await handle(browse('/admin/memory', VIEW))).status).toBe(403)
     expect((await handle(call('GET', '/v0/memory', VIEW))).status).toBe(403)
     expect((await handle(call('POST', '/v0/memory', VIEW, DRAFT))).status).toBe(
       403,
@@ -121,9 +121,9 @@ describe('记忆 · the page', () => {
 
   test('without a memory port the area is not offered and writes answer 501', async () => {
     const { handle } = wired()
-    const home = await (await handle(browse('/overview', ADMIN))).text()
-    expect(home).not.toContain('href="/memory"')
-    expect((await handle(browse('/memory', ADMIN))).status).toBe(404)
+    const home = await (await handle(browse('/admin/overview', ADMIN))).text()
+    expect(home).not.toContain('href="/admin/memory"')
+    expect((await handle(browse('/admin/memory', ADMIN))).status).toBe(404)
     expect((await handle(call('GET', '/v0/memory', ADMIN))).status).toBe(501)
     expect(
       (await handle(call('POST', '/v0/memory', ADMIN, DRAFT))).status,

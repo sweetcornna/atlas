@@ -214,7 +214,7 @@ function agentsHint(roster: string): string {
 function recentCard(recent: RecentOutcomes | null): string {
   const floor = recent?.more === true ? '+' : ''
   const look =
-    `<a class="jump" href="${attr('/audit?window=1h&outcome=refused')}" ` +
+    `<a class="jump" href="${attr('/admin/audit?window=1h&outcome=refused')}" ` +
     `data-nav>查看</a>`
   return statCard({
     kicker: '近 1 小时拒绝',
