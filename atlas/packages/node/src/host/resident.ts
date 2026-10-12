@@ -2535,6 +2535,58 @@ export class QianmoResident {
   }
 
   /**
+   * Put one step of a running turn on its task's queue, synchronously, so a
+   * result that settles the task in the same batch of frames still finds the
+   * step there and hands it to the notifier first (see {@link #settleTask}).
+   * A step for a task already settling or gone, or past the turn's budget, is
+   * dropped in silence like any other undeliverable step.
+   */
+  #queueProgress(progress: ResidentTurnProgress): void {
+    const task = this.#tasksByMessage.get(progress.networkMsgId)
+    if (
+      task === undefined ||
+      task.settled ||
+      task.settling ||
+      task.progressQueue.length >= MAX_RESIDENT_TURN_PROGRESS
+    )
+      return
+    task.progressQueue.push(progress)
+    void this.#drainTaskProgress(task)
+  }
+
+  /**
+   * One FIFO per task; ledger writes always stay outside the RPC frame stack.
+   *
+   * Never rejects: {@link #settleTask} awaits this before the reply exists, so
+   * a row that throws on its way to the notifier is reported and skipped, and
+   * can never hold the task's result back.
+   */
+  #drainTaskProgress(task: ActiveResidentTask): Promise<void> {
+    if (task.progressDrain !== null) return task.progressDrain
+    if (task.progressQueue.length === 0) return Promise.resolve()
+    const drain = Promise.withResolvers<void>()
+    task.progressDrain = drain.promise
+    setImmediate(() => {
+      const send = async () => {
+        try {
+          let progress: ResidentTurnProgress | undefined
+          while ((progress = task.progressQueue.shift()) !== undefined) {
+            try {
+              await this.#pushProgress(progress)
+            } catch (error) {
+              this.#options.onError?.(error)
+            }
+          }
+        } finally {
+          task.progressDrain = null
+        }
+      }
+      void send().then(drain.resolve, drain.resolve)
+    })
+    return drain.promise
+  }
+
+  /**
    * Send one step of a running turn to whoever asked for that turn.
    *
    * The same road {@link #announce} takes, minus the parts that only make
@@ -2548,42 +2600,6 @@ export class QianmoResident {
    * not worth an error path of its own: it is decoration on an answer that is
    * already on its way by another route.
    */
-  #queueProgress(progress: ResidentTurnProgress): void {
-    const task = this.#tasksByMessage.get(progress.networkMsgId)
-    if (
-      task === undefined ||
-      task.settled ||
-      task.settling ||
-      task.progressQueue.length >= MAX_RESIDENT_TURN_PROGRESS
-    )
-      return
-    task.progressQueue.push(progress)
-    void this.#drainTaskProgress(task).catch(error => {
-      this.#options.onError?.(error)
-    })
-  }
-
-  /** One FIFO per task; ledger writes always stay outside the RPC frame stack. */
-  #drainTaskProgress(task: ActiveResidentTask): Promise<void> {
-    if (task.progressDrain !== null) return task.progressDrain
-    if (task.progressQueue.length === 0) return Promise.resolve()
-    const drain = Promise.withResolvers<void>()
-    task.progressDrain = drain.promise
-    setImmediate(() => {
-      const send = async () => {
-        try {
-          let progress: ResidentTurnProgress | undefined
-          while ((progress = task.progressQueue.shift()) !== undefined)
-            await this.#pushProgress(progress)
-        } finally {
-          task.progressDrain = null
-        }
-      }
-      void send().then(drain.resolve, drain.reject)
-    })
-    return drain.promise
-  }
-
   async #pushProgress(progress: ResidentTurnProgress): Promise<void> {
     const task = this.#tasksByMessage.get(progress.networkMsgId)
     if (task === undefined || task.settled) return
