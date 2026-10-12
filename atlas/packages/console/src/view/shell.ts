@@ -76,7 +76,7 @@ export const WORDMARK_EN = 'AgentNest'
  * the document body an inline `<svg>` inherits the HTML parser's namespace,
  * but a standalone document has nothing to inherit from.
  */
-export const FAVICON =
+const FAVICON =
   'data:image/svg+xml,' +
   encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +

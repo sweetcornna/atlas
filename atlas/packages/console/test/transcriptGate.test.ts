@@ -91,19 +91,19 @@ describe('a closed ledger: no transcript is opened', () => {
     expect(actions.entries.length).toBe(before)
   })
 
-  test('page: /chat?session= still draws the page, with the reason in place of the thread, as a 503', async () => {
+  test('page: /?session= still draws the page, with the reason in place of the thread, as a 503', async () => {
     const { h, actions, id, before } = await closedAfterOpening()
-    const response = await h.handle(browse(`/chat?session=${id}`, ADMIN))
+    const response = await h.handle(browse(`/?session=${id}`, ADMIN))
     expect(response.status).toBe(503)
     const page = await response.text()
     expect(page).toContain(CLOSED_TEXT)
     // The rest of the page is there: the conversation list with this one in it.
-    expect(page).toContain('id="chat-sessions"')
+    expect(page).toContain('id="fx-history"')
     expect(page).toContain(id)
     expect(h.chat.transcripts).toBe(0)
     expect(actions.entries.length).toBe(before)
     // Without a conversation named, nothing is opened and nothing is asked.
-    const plain = await h.handle(browse('/chat', ADMIN))
+    const plain = await h.handle(browse('/', ADMIN))
     expect(plain.status).toBe(200)
     expect(h.chat.transcripts).toBe(0)
   })
@@ -116,9 +116,7 @@ describe('a closed ledger: no transcript is opened', () => {
     )
     const { id } = (await opened.json()) as { id: string }
     const asked = actions.admitCalls
-    expect((await h.handle(browse(`/chat?session=${id}`, ADMIN))).status).toBe(
-      200,
-    )
+    expect((await h.handle(browse(`/?session=${id}`, ADMIN))).status).toBe(200)
     expect(
       (
         await h.handle(
@@ -166,7 +164,7 @@ describe('with personal accounts and the hash-chained ledger', () => {
       asSession('GET', `/fragments/chat/thread/${id}?open=1`, ops.sid),
     )
     const page = await h.handle(
-      asSession('GET', `/chat?session=${id}`, ops.sid, {
+      asSession('GET', `/?session=${id}`, ops.sid, {
         header: false,
         accept: 'text/html',
       }),

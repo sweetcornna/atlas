@@ -166,7 +166,7 @@ describe.skipIf(SKIP !== null)('the console in a browser', () => {
     async function framed(strip: readonly string[]): Promise<string | null> {
       const served = serveConsole()
       served.wrapper.strip = strip
-      const framer = serveFramer(`${served.base}/nodes?token=${ADMIN}`)
+      const framer = serveFramer(`${served.base}/admin/nodes?token=${ADMIN}`)
       const tab = await browser.tab()
       try {
         await tab.goto(framer.url)
@@ -240,7 +240,7 @@ describe.skipIf(SKIP !== null)('the console in a browser', () => {
         await tab.evaluate<string>(
           `document.getElementById('session-expired-login').getAttribute('href')`,
         ),
-      ).toBe('/login?redirect=%2Fnodes')
+      ).toBe('/login?redirect=%2Fadmin%2Fnodes')
       expect(
         await tab.evaluate<string>(
           `document.getElementById('refresh-state').textContent`,

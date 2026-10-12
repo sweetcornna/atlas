@@ -415,7 +415,7 @@ async function trailIncrement(
     : renderAuditSourcesRail(reads.map(({ read }) => read))
   return (
     rail +
-    renderAuditFresh(arrivals, `/audit${query === '' ? '' : `?${query}`}`)
+    renderAuditFresh(arrivals, `/admin/audit${query === '' ? '' : `?${query}`}`)
   )
 }
 
@@ -598,7 +598,9 @@ function auditQuery(filter: AuditFilter, node?: string): string {
 
 /** Where an empty trail may send this reader to wake an agent, if anywhere (C6). */
 function wakeEntry(ctx: RouteContext): string | undefined {
-  return canWrite(ctx.access) && wakeAvailable(ctx.deps) ? '/admin/nodes' : undefined
+  return canWrite(ctx.access) && wakeAvailable(ctx.deps)
+    ? '/admin/nodes'
+    : undefined
 }
 
 /**

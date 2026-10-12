@@ -29,10 +29,7 @@ import type { TenantPort } from '../tenancy.js'
  * anonymous caller cannot probe which consoles have chat wired.
  */
 
-import {
-  avatarFragmentRoute,
-  avatarsApiRoute,
-} from './avatars.js'
+import { avatarFragmentRoute, avatarsApiRoute } from './avatars.js'
 import {
   chatScopeOf,
   streamScopeOf,

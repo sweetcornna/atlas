@@ -1340,7 +1340,10 @@ async function newPage(
   }
   return {
     title: preset.name,
-    crumbs: [{ label: '新增', href: '/admin/providers/new' }, { label: preset.name }],
+    crumbs: [
+      { label: '新增', href: '/admin/providers/new' },
+      { label: preset.name },
+    ],
     body:
       noScriptNote() +
       (overview.ok ? '' : providerFailureBar(overview.failure)) +

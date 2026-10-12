@@ -256,12 +256,9 @@ describe('GET /login', () => {
   test('honours a safe redirect it was handed, and only a safe one', async () => {
     const { handle } = setup()
     const safe = await handle(
-      withCookie(
-        `/login?redirect=${encodeURIComponent('/chat?session=a')}`,
-        VIEW,
-      ),
+      withCookie(`/login?redirect=${encodeURIComponent('/?session=a')}`, VIEW),
     )
-    expect(safe.headers.get('location')).toBe('/chat?session=a')
+    expect(safe.headers.get('location')).toBe('/?session=a')
 
     const hostile = await handle(
       withCookie(
@@ -398,8 +395,8 @@ describe('POST /login', () => {
 describe('safeRedirect', () => {
   test.each([
     ['/', '/'],
-    ['/chat', '/chat'],
-    ['/chat?session=a%20b', '/chat?session=a%20b'],
+    ['/admin', '/admin'],
+    ['/?session=a%20b', '/?session=a%20b'],
   ])('keeps %s', (input, expected) => {
     expect(safeRedirect(input)).toBe(expected)
   })
@@ -646,9 +643,9 @@ describe('a cookie alone is not enough off the document routes', () => {
 
   test('documents accept the cookie alone — a navigation cannot send a header', async () => {
     const { handle } = setup()
-    const ledger = await handle(withCookie('/', ADMIN))
+    const ledger = await handle(withCookie('/admin', ADMIN))
     expect(ledger.status).toBe(200)
-    const chat = await handle(withCookie('/chat', ADMIN))
+    const chat = await handle(withCookie('/', ADMIN))
     expect(chat.status).toBe(200)
   })
 
@@ -730,7 +727,9 @@ describe('the older credentials are untouched', () => {
     const cookie = response.headers.get('set-cookie') ?? ''
     expect(cookie).toContain(`qianmo_console=${VIEW}`)
     expect(cookie).toContain('HttpOnly')
-    const page = await handle(withCookie('/', VIEW, { headers: HTML_ACCEPT }))
+    const page = await handle(
+      withCookie('/admin', VIEW, { headers: HTML_ACCEPT }),
+    )
     expect(page.status).toBe(200)
   })
 
@@ -771,11 +770,11 @@ describe('unauthenticated', () => {
   test('a browser navigation is sent to the door, with the way back', async () => {
     const { handle } = setup()
     const response = await handle(
-      new Request(`${BASE}/chat?session=abc`, { headers: HTML_ACCEPT }),
+      new Request(`${BASE}/?session=abc`, { headers: HTML_ACCEPT }),
     )
     expect(response.status).toBe(303)
     expect(response.headers.get('location')).toBe(
-      `/login?redirect=${encodeURIComponent('/chat?session=abc')}`,
+      `/login?redirect=${encodeURIComponent('/?session=abc')}`,
     )
   })
 
@@ -839,12 +838,12 @@ describe('unauthenticated', () => {
   test('a view token navigating to an admin page is shown the card in place', async () => {
     const { handle } = setup()
     const response = await handle(
-      withCookie('/chat', VIEW, { headers: HTML_ACCEPT }),
+      withCookie('/admin/memory', VIEW, { headers: HTML_ACCEPT }),
     )
     expect(response.status).toBe(403)
     const html = await response.text()
     expect(html).toContain('该页面需要管理令牌')
-    expect(html).toContain(`value="${'/chat'}"`)
+    expect(html).toContain('value="/admin/memory"')
   })
 
   test('a view token calling an admin API still gets JSON', async () => {
@@ -993,7 +992,7 @@ describe('POST /login is throttled', () => {
 // ---------------------------------------------------------------------------
 
 describe('the login document', () => {
-  const html = renderLoginPage({ label: 'node-a', redirect: '/chat' })
+  const html = renderLoginPage({ label: 'node-a', redirect: '/' })
 
   function visibleText(markup: string): string {
     return markup
@@ -1085,19 +1084,19 @@ describe('the sidebar says which credential this is', () => {
 
   test('admin and view are told apart, and both offer the way out', async () => {
     const { handle } = setup()
-    const asAdmin = await (await handle(withCookie('/', ADMIN))).text()
+    const asAdmin = await (await handle(withCookie('/admin', ADMIN))).text()
     expect(roleChip(asAdmin)).toBe('管理')
     expect(asAdmin).toContain('action="/logout"')
 
-    const asView = await (await handle(withCookie('/', VIEW))).text()
+    const asView = await (await handle(withCookie('/admin', VIEW))).text()
     expect(roleChip(asView)).toBe('只读')
     expect(asView).toContain('action="/logout"')
   })
 
   test('the chat page states it too', async () => {
     const { handle } = setup()
-    const html = await (await handle(withCookie('/chat', ADMIN))).text()
-    expect(roleChip(html)).toBe('管理')
+    const html = await (await handle(withCookie('/', ADMIN))).text()
+    expect(html).toContain('<b>我</b><span>管理</span>')
     expect(html).toContain('action="/logout"')
   })
 })

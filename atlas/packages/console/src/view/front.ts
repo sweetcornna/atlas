@@ -49,7 +49,10 @@
  * one by id out of a fetched fragment.
  */
 
-import { CONSOLE_CLIENT_JS, CONSOLE_CLIENT_JS_ACCOUNTS } from '../assets/client.js'
+import {
+  CONSOLE_CLIENT_JS,
+  CONSOLE_CLIENT_JS_ACCOUNTS,
+} from '../assets/client.js'
 import { FRONT_JS } from '../assets/frontClient.js'
 import type { ConsoleRole } from '../auth.js'
 import {
@@ -144,7 +147,9 @@ interface AgentLoad {
   readonly running: number
 }
 
-function loadsOf(sessions: readonly ChatSession[]): ReadonlyMap<string, AgentLoad> {
+function loadsOf(
+  sessions: readonly ChatSession[],
+): ReadonlyMap<string, AgentLoad> {
   const out = new Map<string, AgentLoad>()
   for (const session of sessions) {
     const was = out.get(session.target) ?? { sessions: 0, running: 0 }
@@ -218,7 +223,8 @@ function agentRow(
   const size = main ? 40 : 30
   const figure = avatarSvg(model.faces.agent(target.address), {
     size,
-    state: verdict.tone === 'ok' ? (running > 0 ? 'thinking' : 'idle') : 'sleep',
+    state:
+      verdict.tone === 'ok' ? (running > 0 ? 'thinking' : 'idle') : 'sleep',
     ...(main ? { uid: 'av-main', live: true } : {}),
   })
   const tail =
@@ -365,7 +371,9 @@ function historyItem(
     `${active ? ' aria-current="true"' : ''}${hidden ? ' hidden' : ''}>` +
     `<span class="fx-hitem-title">${escapeHtml(sessionTitle(session))}</span>` +
     `<span class="fx-hitem-meta">` +
-    (session.running === true ? `<span class="fx-pulse" aria-label="执行中"></span>` : '') +
+    (session.running === true
+      ? `<span class="fx-pulse" aria-label="执行中"></span>`
+      : '') +
     `<span class="fx-hitem-who">${escapeHtml(session.agent)}</span>` +
     `<span>${escapeHtml(formatRelative(session.updatedAt, model.now))}</span>` +
     `</span></button>`
@@ -383,7 +391,9 @@ function renderHistory(model: FrontSideModel): string {
     `<section class="fx-sec fx-history" id="fx-history" aria-label="会话列表" ` +
     `data-selected="${attr(model.selected ?? '')}">`
   if (model.sessionsFailure !== null) {
-    return open + head + failureBar(model.sessionsFailure, '会话列表') + `</section>`
+    return (
+      open + head + failureBar(model.sessionsFailure, '会话列表') + `</section>`
+    )
   }
   const ordered = [...model.sessions].sort((a, b) => b.updatedAt - a.updatedAt)
   let start = 0
@@ -433,7 +443,9 @@ function renderHistory(model: FrontSideModel): string {
  */
 function renderStack(model: FrontSideModel): string {
   const running = model.sessions
-    .filter(session => session.running === true && session.id !== model.activeId)
+    .filter(
+      session => session.running === true && session.id !== model.activeId,
+    )
     .sort((a, b) => b.updatedAt - a.updatedAt)
   if (running.length === 0) {
     return `<div class="fx-stack" id="fx-stack" hidden></div>`
@@ -447,10 +459,13 @@ function renderStack(model: FrontSideModel): string {
         `<button type="button" class="fx-stack-row" data-action="fx-open" data-session="${attr(
           session.id,
         )}">` +
-        `<span class="fx-stack-face">${avatarSvg(model.faces.agent(session.target), {
-          size: 22,
-          state: 'thinking',
-        })}</span>` +
+        `<span class="fx-stack-face">${avatarSvg(
+          model.faces.agent(session.target),
+          {
+            size: 22,
+            state: 'thinking',
+          },
+        )}</span>` +
         `<span class="fx-stack-who">${escapeHtml(session.agent)}</span>` +
         `<span class="fx-stack-node mono">${escapeHtml(session.node)}</span>` +
         `<span class="fx-stack-what">${escapeHtml(sessionTitle(session))}</span>` +
@@ -474,7 +489,7 @@ function renderStack(model: FrontSideModel): string {
 }
 
 /** The side's three mounts, apart: the document puts the strip in the dock. */
-export interface FrontSideParts {
+interface FrontSideParts {
   readonly agents: string
   readonly history: string
   readonly stack: string
@@ -522,7 +537,9 @@ function deliveryMark(turn: ChatTurn): string {
     '已发出',
     receipted
       ? `已投递 · 回执 ${turn.receipt ?? ''}${
-          turn.receiptMs === undefined ? '' : ` · ${formatLatency(turn.receiptMs)}`
+          turn.receiptMs === undefined
+            ? ''
+            : ` · ${formatLatency(turn.receiptMs)}`
         }`
       : turn.deliveryUnknown === true
         ? '回执未知'
@@ -610,7 +627,9 @@ function agentTurn(
     `<header class="fx-msg-head">${who}${clockTag(turn.at, 'fx-when')}</header>` +
     body +
     `<div class="fx-meta">` +
-    (failed ? `<span class="fx-fail">${escapeHtml(failureWords(turn.code))}</span>` : '') +
+    (failed
+      ? `<span class="fx-fail">${escapeHtml(failureWords(turn.code))}</span>`
+      : '') +
     (turn.elapsedMs === undefined
       ? ''
       : `<span>${escapeHtml(`用时 ${formatLatency(turn.elapsedMs)}`)}</span>`) +
@@ -686,10 +705,13 @@ function pendingTail(
 ): string {
   return (
     `<div class="fx-msg fx-msg-agent fx-pending" role="status">` +
-    `<span class="fx-msg-face" aria-hidden="true">${avatarSvg(faces.agent(address), {
-      size: 30,
-      state: 'thinking',
-    })}</span>` +
+    `<span class="fx-msg-face" aria-hidden="true">${avatarSvg(
+      faces.agent(address),
+      {
+        size: 30,
+        state: 'thinking',
+      },
+    )}</span>` +
     `<div class="fx-msg-body"><div class="fx-typing" data-elapsed="${attr(
       String(Math.max(0, now - since)),
     )}">` +
@@ -701,7 +723,10 @@ function pendingTail(
   )
 }
 
-function renderMessages(model: FrontViewModel, transcript: ChatTranscript): string {
+function renderMessages(
+  model: FrontViewModel,
+  transcript: ChatTranscript,
+): string {
   const { session, turns } = transcript
   if (turns.length === 0) {
     return `<div class="fx-msgs"><p class="fx-none fx-none-center">这条会话还没有内容 · 在下面写第一句</p></div>`
@@ -724,21 +749,36 @@ function renderMessages(model: FrontViewModel, transcript: ChatTranscript): stri
     out.push(
       turn.author === 'operator'
         ? userTurn(turn, model.admin)
-        : agentTurn(turn, session.agent, session.target, model.faces, model.admin),
+        : agentTurn(
+            turn,
+            session.agent,
+            session.target,
+            model.faces,
+            model.admin,
+          ),
     )
   }
   flush(true)
   const latest = unanswered[unanswered.length - 1]
   if (latest !== undefined) {
     out.push(
-      pendingTail(latest.at, session.agent, session.target, model.faces, model.now),
+      pendingTail(
+        latest.at,
+        session.agent,
+        session.target,
+        model.faces,
+        model.now,
+      ),
     )
   }
   return `<div class="fx-msgs">${out.join('')}</div>`
 }
 
 /** The two names an address carries, for an agent the roster no longer lists. */
-function namesOf(address: string): { readonly node: string; readonly agent: string } {
+function namesOf(address: string): {
+  readonly node: string
+  readonly agent: string
+} {
   const match = /^qianmo:\/\/([^/]+)\/(.+)$/.exec(address)
   return match === null
     ? { node: '', agent: address }
@@ -831,10 +871,12 @@ function headInfo(
   if (model.transcript !== null) {
     rows.push([
       '本会话',
-      escapeHtml(`${model.transcript.session.turnCount} 轮 · 开始于 ${formatRelative(
-        model.transcript.session.createdAt,
-        model.now,
-      )}`),
+      escapeHtml(
+        `${model.transcript.session.turnCount} 轮 · 开始于 ${formatRelative(
+          model.transcript.session.createdAt,
+          model.now,
+        )}`,
+      ),
     ])
   }
   const links = model.admin
@@ -875,7 +917,12 @@ function renderHead(model: FrontViewModel): string {
     size: 34,
     uid: 'av-head',
     live: true,
-    state: faceState(transcript?.turns ?? [], target, model.registryDown, model.now),
+    state: faceState(
+      transcript?.turns ?? [],
+      target,
+      model.registryDown,
+      model.now,
+    ),
     label: `${agent} · ${avatarWords(spec)}`,
   })
   const face = model.faces.editable
@@ -888,7 +935,9 @@ function renderHead(model: FrontViewModel): string {
     face +
     `<div class="fx-head-text">` +
     `<div class="fx-head-line"><span class="fx-head-name">${escapeHtml(agent)}</span>` +
-    (model.main ? `<span class="fx-tag">主智能体</span>` : `<span class="fx-tag fx-tag-quiet">子智能体</span>`) +
+    (model.main
+      ? `<span class="fx-tag">主智能体</span>`
+      : `<span class="fx-tag fx-tag-quiet">子智能体</span>`) +
     `</div>` +
     `<div class="fx-head-sub"><span class="mono">${escapeHtml(node)}</span>` +
     `${state(verdict.tone, verdict.text)}<span class="fx-model" id="fx-model"></span></div>` +
@@ -899,7 +948,7 @@ function renderHead(model: FrontViewModel): string {
 }
 
 /** The view's two mounts, apart: the document puts the head in the top bar. */
-export interface FrontViewParts {
+interface FrontViewParts {
   readonly head: string
   readonly thread: string
 }
@@ -1040,7 +1089,11 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     model.viewer === undefined ? CONSOLE_CLIENT_JS : CONSOLE_CLIENT_JS_ACCOUNTS
   const script = runtime + FRONT_JS + AVATAR_PAGE_JS
   return (
-    documentHead(`${WORDMARK_CN} · 对话 · ${model.label}`, FRONT_CSS + AVATAR_CSS, [script]) +
+    documentHead(
+      `${WORDMARK_CN} · 对话 · ${model.label}`,
+      FRONT_CSS + AVATAR_CSS,
+      [script],
+    ) +
     `<body class="fx-body">\n` +
     `<a class="skip-link" href="#fx-text">跳到输入框</a>\n` +
     `<h1 class="sr-only">${escapeHtml(`${WORDMARK_CN} · 对话`)}</h1>` +

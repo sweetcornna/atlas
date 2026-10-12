@@ -125,7 +125,7 @@ describe.skipIf(SKIP !== null)('personal approvals in a real browser', () => {
           ?.target,
       ).toBe('a'.repeat(32))
       status = 'pending'
-      await tab.goto(`http://127.0.0.1:${server.port}/approvals`)
+      await tab.goto(`http://127.0.0.1:${server.port}/admin/approvals`)
       await tab.waitFor(
         "document.querySelector('button[value=continue]') !== null",
       )

@@ -15,7 +15,7 @@ import {
   CONSOLE_CLIENT_JS_ACCOUNTS,
 } from '../src/assets/client.js'
 import { CONSOLE_CSS } from '../src/assets/css.js'
-import { CHAT_PAGE_CSS } from '../src/view/chatPage.js'
+import { FRONT_CSS } from '../src/view/frontStyle.js'
 import type {
   AuditPage,
   ConsoleAbout,
@@ -109,13 +109,17 @@ describe('H5 · a token in the address bar becomes a session, once', () => {
     )
     // Nothing rendered, nothing read: the page comes on the next request.
     expect(h.registry.listCalls).toBe(0)
-    const page = await h.handle(navigate('/admin/audit?source=router&limit=7', ADMIN))
+    const page = await h.handle(
+      navigate('/admin/audit?source=router&limit=7', ADMIN),
+    )
     expect(page.status).toBe(200)
   })
 
   test('a token that is not one of the pair is not exchanged, and a stale one beside a cookie changes nothing', async () => {
     const h = pageHarness()
-    const wrong = await h.handle(navigate('/admin/nodes?token=not-a-token-at-all'))
+    const wrong = await h.handle(
+      navigate('/admin/nodes?token=not-a-token-at-all'),
+    )
     expect(wrong.status).not.toBe(200)
     expect(wrong.headers.get('set-cookie')).toBeNull()
     const stale = await h.handle(
@@ -136,13 +140,13 @@ describe('H5 · a token in the address bar becomes a session, once', () => {
 
   test('the runtime signs no link, and the stream URL carries no token', async () => {
     const h = pageHarness({ chat: true })
-    for (const path of ['/admin/nodes', '/chat']) {
+    for (const path of ['/admin/nodes', '/']) {
       const html = await (await h.handle(navigate(path, ADMIN))).text()
       const script = html.slice(html.indexOf('<script>'))
       // No URL is built with the token in it, anywhere in what the page runs.
       expect(script).not.toMatch(/'\??token=' \+/)
       expect(script).not.toContain('paintLinks')
-      if (path === '/chat') {
+      if (path === '/') {
         expect(script).toContain('new EventSource(ROUTES.stream)')
       }
     }
@@ -225,7 +229,7 @@ describe('A2 · every overview card is something that changes', () => {
       ok: false,
       failure: { code: 'unreachable', message: 'x' },
     }
-    const html = await (await h.handle(browse('/', ADMIN))).text()
+    const html = await (await h.handle(browse('/admin', ADMIN))).text()
     const card = html.slice(html.indexOf('近 1 小时拒绝'))
     expect(card).toContain('<div class="stat-num">—</div>')
     expect(card).toContain('读不到审计链')
@@ -541,7 +545,9 @@ describe('D6 · the roster can be searched and filtered, without a script', () =
 
   test('a search keeps the matching rows, counts what it hid, and the poll replays it', async () => {
     const h = pageHarness({ nodeServers: servers })
-    const html = await (await h.handle(browse('/admin/nodes?q=OSAKA', ADMIN))).text()
+    const html = await (
+      await h.handle(browse('/admin/nodes?q=OSAKA', ADMIN))
+    ).text()
     expect(rows(html)).toEqual(['qianmo://osaka-1/writer'])
     expect(html).toContain('筛选后 1 · 共 3')
     expect(html).toContain('data-poll="/fragments/roster?q=OSAKA"')
@@ -607,18 +613,18 @@ describe('D6 · the roster can be searched and filtered, without a script', () =
 describe('F1 · every document has one h1, a main, and a way past the sidebar', () => {
   /** The markup between <body> and the first <script>: no stylesheet text. */
   function markup(html: string): string {
-    const start = html.indexOf('<body>')
+    const start = html.indexOf('<body')
     const end = html.indexOf('<script>', start)
     return html.slice(start, end < 0 ? undefined : end)
   }
 
   const AREAS: readonly (readonly [string, string])[] = [
-    ['/', 'chat'],
+    ['/admin', 'overview'],
     ['/admin/overview', 'overview'],
     ['/admin/nodes', 'nodes'],
     ['/admin/nodes/tokyo-1', 'nodes'],
-    ['/chat', 'chat'],
-    ['/chat?session=session-1', 'chat'],
+    ['/', 'chat'],
+    ['/?session=session-1', 'chat'],
     ['/admin/audit', 'audit'],
     ['/admin/alerts', 'alerts'],
     ['/admin/jobs', 'jobs'],
@@ -635,6 +641,15 @@ describe('F1 · every document has one h1, a main, and a way past the sidebar', 
     for (const [path, area] of AREAS) {
       const body = markup(await (await h.handle(browse(path, ADMIN))).text())
       expect([path, body.match(/<h1[\s>]/g)?.length]).toEqual([path, 1])
+      if (area === 'chat') {
+        expect(body).toContain(
+          '<a class="skip-link" href="#fx-text">跳到输入框</a>',
+        )
+        expect(body).toContain('id="fx-text"')
+        expect(body).toContain('id="fx-main"')
+        expect(body).toContain('id="fx-agents"')
+        continue
+      }
       expect([
         path,
         body.startsWith(
@@ -655,10 +670,10 @@ describe('F1 · every document has one h1, a main, and a way past the sidebar', 
     const h = pageHarness({ chat: true })
     await h.chat.open('qianmo://tokyo-1/planner')
     const body = markup(
-      await (await h.handle(browse('/chat?session=session-1', ADMIN))).text(),
+      await (await h.handle(browse('/?session=session-1', ADMIN))).text(),
     )
-    expect(body).toContain('<h1 class="page-title" id="page-title">对话</h1>')
-    expect(body).toContain('<h2 class="chat-name">planner</h2>')
+    expect(body).toContain('<h1 class="sr-only">阡陌 · 对话</h1>')
+    expect(body).toContain('<span class="fx-head-name">planner</span>')
   })
 
   test('the doors outside the shell: login, invite, credential', () => {
@@ -771,7 +786,7 @@ describe('G1 · documents travel compressed, sheets without notes, assets revali
   test('the sheets carry no comments, in the documents and the asset alike', async () => {
     expect(CONSOLE_CSS).not.toContain('/*')
     const h = pageHarness({ chat: true })
-    for (const path of ['/', '/chat']) {
+    for (const path of ['/', '/']) {
       const page = await (await h.handle(withHeaders(path, {}))).text()
       const style = page.slice(
         page.indexOf('<style>'),
@@ -781,7 +796,7 @@ describe('G1 · documents travel compressed, sheets without notes, assets revali
       expect(style).not.toContain('/*')
     }
     // The chat page's own sheet had notes too, and arrives without them.
-    expect(CHAT_PAGE_CSS).toContain('/*')
+    expect(FRONT_CSS).toContain('/*')
     const asset = await (
       await h.handle(withHeaders('/assets/app.css', {}))
     ).text()
@@ -855,7 +870,7 @@ describe('H2 · scripts by hash, and the headers that were missing', () => {
       '/',
       '/admin/nodes',
       '/admin/nodes/tokyo-1',
-      '/chat?session=session-1',
+      '/?session=session-1',
       '/admin/audit',
       '/admin/alerts',
       '/admin/jobs',
@@ -930,7 +945,7 @@ describe('H2 · scripts by hash, and the headers that were missing', () => {
     const plain = await h.handle(browse('/admin/nodes', ADMIN))
     expect(plain.headers.get('strict-transport-security')).toBeNull()
     const proxied = await h.handle(
-      new Request('http://console.test/nodes', {
+      new Request('http://console.test/admin/nodes', {
         headers: {
           authorization: `Bearer ${ADMIN}`,
           accept: 'text/html',
@@ -1020,8 +1035,11 @@ describe("时区 · every instant names its zone, and can be redrawn in the read
     await h.chat.open('qianmo://tokyo-1/planner')
     const pages: readonly (readonly [string, RegExp])[] = [
       ['/admin/audit', /<time datetime="[^"]+Z" data-fmt="datetime">/],
-      ['/admin/nodes', /<time class="mono" datetime="[^"]+Z" data-fmt="clock">/],
-      ['/chat?session=session-1', /<p class="note" id="tz-note">/],
+      [
+        '/admin/nodes',
+        /<time class="mono" datetime="[^"]+Z" data-fmt="clock">/,
+      ],
+      ['/?session=session-1', /id="fx-thread"/],
     ]
     for (const [path, shape] of pages) {
       const page = await (await h.handle(browse(path, ADMIN))).text()

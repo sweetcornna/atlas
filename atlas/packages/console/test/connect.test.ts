@@ -123,11 +123,15 @@ describe('连接 · the page', () => {
 
   test('a half that is not wired says how to wire it; with neither there is no area', async () => {
     const onlyDevices = wired({ connectors: null })
-    const text = visibleText(await page(onlyDevices.handle, '/admin/connect', ADMIN))
+    const text = visibleText(
+      await page(onlyDevices.handle, '/admin/connect', ADMIN),
+    )
     expect(text).toContain('应用连接未接入')
     expect(text).toContain('我的 MacBook')
     const neither = wired({ connectors: null, devices: null })
-    expect((await neither.handle(browse('/admin/connect', ADMIN))).status).toBe(404)
+    expect((await neither.handle(browse('/admin/connect', ADMIN))).status).toBe(
+      404,
+    )
     const home = await page(neither.handle, '/admin/overview', ADMIN)
     expect(home).not.toContain('href="/admin/connect"')
   })
@@ -375,8 +379,8 @@ describe('连接 · GitHub repo connections', () => {
       },
       { view: VIEW, admin: ADMIN },
     )
-    expect(visibleText(await page(withRepo, '/admin/connect', VIEW))).not.toContain(
-      '还没有 GitHub 仓库连接',
-    )
+    expect(
+      visibleText(await page(withRepo, '/admin/connect', VIEW)),
+    ).not.toContain('还没有 GitHub 仓库连接')
   })
 })

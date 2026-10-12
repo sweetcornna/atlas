@@ -151,7 +151,7 @@ type ConsolePrincipal =
 
 | 面 | 现在 | M1 做法 |
 |---|---|---|
-| 控制台整页 `GET /`、`GET /chat` | 服务端渲染里就有名册、审计、侧栏会话入口 | 按主体渲染：侧栏只列本人的会话（ops 全部） |
+| 控制台整页 `GET /`、`GET /admin` | 服务端渲染里就有名册、审计、侧栏会话入口 | 按主体渲染：侧栏只列本人的会话（ops 全部） |
 | 会话列表与转录（`/v0/chat/sessions`、`/v0/chat/sessions/<id>` 与片段） | 限 admin，看全部（`console.md` §4.5） | member 只见自己；ops 见全部，**每次打开转录**记一条动作账本，不按片段轮询记（D6） |
 | 发消息 | 限 admin | member 只能在自己的会话里发；以别人的会话 id 发回 404 |
 | SSE（`/v0/chat/stream`） | `chatStream(chat)` 不收凭据，`chat.subscribe` 对每个订阅者广播全部 `{sessionId, revision}`（`packages/console/src/http.ts:1548`、`:1629`） | **按主体过滤**；账号被吊销时**断开该主体的全部 SSE 连接** |
@@ -339,7 +339,7 @@ M1 判据（roadmap「按人计量与控制台上限」行）：**跨账号越�
 
 | # | 面 | 操作 | 期望 |
 |---|---|---|---|
-| X1 | 整页 `GET /`、`GET /chat` | 渲染 | 侧栏与会话入口里他人会话零条 |
+| X1 | 整页 `GET /`、`GET /admin` | 渲染 | 侧栏与会话入口里他人会话零条 |
 | X2 | 会话列表 | 列表 | 他人会话零条 |
 | X3 | 转录与片段 | 读他人会话 | 404 |
 | X4 | 发消息 | 往他人会话发 | 404，`ChatPort` 零调用 |

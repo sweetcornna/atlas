@@ -1289,3 +1289,92 @@ test('the console signs its authenticated requester assertion, binding the actua
     ),
   ).toBeUndefined()
 })
+
+describe('front session summaries', () => {
+  test('notices do not replace the title or end running; an answer ends it and the first question survives later questions', async () => {
+    const h = harness()
+    const { sessionId, request } = await openAndSend(h, '第一句问题')
+    h.dialer.last.reply(
+      createNotify({
+        from: TARGET,
+        to: FROM,
+        contextId: sessionId,
+        payload: {
+          kind: 'task',
+          severity: 'info',
+          summary: '读取资料',
+          observedAt: 1,
+        },
+      }),
+    )
+    let result = await h.hub.sessions()
+    if (!result.ok) throw new Error(result.failure.message)
+    expect(result.value[0]).toMatchObject({
+      title: '第一句问题',
+      running: true,
+      turnCount: 1,
+      preview: '第一句问题',
+    })
+    h.dialer.last.reply(
+      taskResult(request, {
+        outcome: 'completed',
+        content: '已回答',
+        completedAt: 2,
+      }),
+    )
+    result = await h.hub.sessions()
+    if (!result.ok) throw new Error(result.failure.message)
+    expect(result.value[0]?.title).toBe('第一句问题')
+    expect(result.value[0]?.running).toBeUndefined()
+    await h.hub.send({ sessionId, text: '第二句问题' })
+    result = await h.hub.sessions()
+    if (!result.ok) throw new Error(result.failure.message)
+    expect(result.value[0]).toMatchObject({
+      title: '第一句问题',
+      running: true,
+      preview: '第二句问题',
+    })
+  })
+
+  test('a local command is not a title; failure stops running; the next ordinary question provides the title', async () => {
+    const h = harness({
+      issueCapability: binding => `test-cap-${binding.taskId}`,
+    })
+    const opened = await h.hub.open(TARGET)
+    if (!opened.ok) throw new Error(opened.failure.message)
+    const sessionId = opened.value.id
+    let result = await h.hub.sessions()
+    if (!result.ok) throw new Error(result.failure.message)
+    expect(result.value[0]?.title).toBeUndefined()
+    expect(result.value[0]?.running).toBeUndefined()
+    await h.hub.send({ sessionId, text: '/compact', command: 'compact' })
+    result = await h.hub.sessions()
+    if (!result.ok) throw new Error(result.failure.message)
+    expect(result.value[0]?.title).toBeUndefined()
+    expect(result.value[0]?.running).toBe(true)
+    const request = h.dialer.last.sent[0]
+    if (request === undefined) throw new Error('command never sent')
+    h.dialer.last.reply(
+      taskResult(request, {
+        outcome: 'failed',
+        error: { code: ProtocolErrorCode.E_UNDELIVERABLE, message: '测试失败' },
+      }),
+    )
+    result = await h.hub.sessions()
+    if (!result.ok) throw new Error(result.failure.message)
+    expect(result.value[0]?.running).toBeUndefined()
+    expect(result.value[0]?.title).toBeUndefined()
+    h.dialer.last.sendError = new Error('send failed')
+    await h.hub.send({ sessionId, text: '真正的问题' })
+    result = await h.hub.sessions()
+    if (!result.ok) throw new Error(result.failure.message)
+    expect(result.value[0]?.title).toBe('真正的问题')
+    expect(result.value[0]?.running).toBeUndefined()
+    await h.hub.close()
+    const replay = harness({ storePath: h.storePath, idPrefix: 'replay' })
+    const restored = await replay.hub.sessions()
+    if (!restored.ok) throw new Error(restored.failure.message)
+    expect(restored.value[0]?.title).toBe('真正的问题')
+    expect(restored.value[0]?.running).toBeUndefined()
+  })
+})

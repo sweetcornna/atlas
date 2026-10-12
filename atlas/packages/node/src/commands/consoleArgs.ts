@@ -955,15 +955,14 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       // only has to be non-empty, so there is one copy of the address rules.
       chatFrom = nonEmpty(parsed.value, '--chat-from')
       index = parsed.next
-    } else if (
-      arg === '--chat-default' ||
-      arg?.startsWith('--chat-default=')
-    ) {
+    } else if (arg === '--chat-default' || arg?.startsWith('--chat-default=')) {
       const parsed = residentOptionValue(args, index, '--chat-default')
       try {
         assertAddress(parsed.value, '--chat-default')
       } catch {
-        throw new Error('--chat-default must be a qianmo://<node>/<agent> address')
+        throw new Error(
+          '--chat-default must be a qianmo://<node>/<agent> address',
+        )
       }
       chatDefault = parsed.value
       index = parsed.next

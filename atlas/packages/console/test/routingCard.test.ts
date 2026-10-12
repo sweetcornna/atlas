@@ -132,11 +132,15 @@ describe('任务分工 · on the 模型 page', () => {
     const { h } = wired()
     const ops = await person(h.handle, 'ops')
     const mine = await (
-      await h.handle(asSession('GET', '/admin/providers', ops.sid, { header: false }))
+      await h.handle(
+        asSession('GET', '/admin/providers', ops.sid, { header: false }),
+      )
     ).text()
     expect(mine).toContain('id="routing-form"')
     for (const token of [ADMIN, VIEW]) {
-      const page = await (await h.handle(browse('/admin/providers', token))).text()
+      const page = await (
+        await h.handle(browse('/admin/providers', token))
+      ).text()
       expect(page).toContain('id="routing"')
       expect(page).not.toContain('id="routing-form"')
     }
@@ -176,7 +180,9 @@ describe('任务分工 · on the 模型 page', () => {
 
   test('without a routing book there is no card, and the API says 501', async () => {
     const h = accountsHarness({ deps: { providers: new FakeProviders() } })
-    const page = await (await h.handle(browse('/admin/providers', ADMIN))).text()
+    const page = await (
+      await h.handle(browse('/admin/providers', ADMIN))
+    ).text()
     expect(page).not.toContain('id="routing"')
     expect(
       await (await h.handle(browse('/fragments/routing', ADMIN))).text(),

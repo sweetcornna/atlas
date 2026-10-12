@@ -43,7 +43,7 @@ import { providersRoute } from './providers.js'
 import { serversRoute } from './servers.js'
 import { settingsRoute } from './settings.js'
 import { frontAvailable } from './front.js'
-import { ADMIN_HOME, DEFAULT_LABEL, loginHref } from './shared.js'
+import { ADMIN_HOME, DEFAULT_LABEL, guardChat, loginHref } from './shared.js'
 import type {
   AreaGroup,
   HeadRoute,
@@ -157,6 +157,8 @@ function visibleTo(module: RouteModule, ctx: RouteContext): boolean {
   const page = module.page
   if (page === undefined) return false
   if (page.available?.(ctx) === false) return false
+  if (page.guard === 'chat' && guardChat(ctx.access, 'document') !== null)
+    return false
   return true
 }
 

@@ -62,7 +62,7 @@ describe.skipIf(SKIP !== null)('the alert inbox in a browser', () => {
     const served = serve()
     const tab = await browser.tab()
     try {
-      await tab.goto(`${served.base}/alerts?token=${ADMIN}`)
+      await tab.goto(`${served.base}/admin/alerts?token=${ADMIN}`)
       await tab.waitFor('window.qianmoConsole !== undefined')
       // The control: three unread before anything is pressed.
       expect(

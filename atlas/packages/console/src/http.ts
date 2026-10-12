@@ -593,7 +593,9 @@ async function serveFrontDoor(
       : documentDenial(request, chatDenied, deps, url, denial)
   }
   const rendered = await renderFront(ctx)
-  return rendered instanceof Response ? rendered : html(rendered.html, rendered.status)
+  return rendered instanceof Response
+    ? rendered
+    : html(rendered.html, rendered.status)
 }
 
 /**

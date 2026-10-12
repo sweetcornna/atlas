@@ -255,7 +255,10 @@ describe('the pages, for ops', () => {
 
   test('?node= narrows the matrix to one node', async () => {
     const s = await setup()
-    const html = await text(s.handle, page('/admin/providers?node=node-b', s.ops))
+    const html = await text(
+      s.handle,
+      page('/admin/providers?node=node-b', s.ops),
+    )
     expect(html).toContain('data-key="node:node-b"')
     expect(html).not.toContain('data-key="node:node-a"')
     expect(html).toContain('data-poll="/fragments/providers/board?node=node-b"')
@@ -269,7 +272,10 @@ describe('the pages, for ops', () => {
     }
     expect(html).toContain('<form class="prov-search" method="get"')
     expect(html).not.toContain('data-preset="azure"')
-    const searched = await text(s.handle, page('/admin/providers/new?q=kimi', s.ops))
+    const searched = await text(
+      s.handle,
+      page('/admin/providers/new?q=kimi', s.ops),
+    )
     expect(searched).toContain('data-preset="kimi"')
     expect(searched).toContain('data-preset="kimi-code"')
     expect(searched).not.toContain('data-preset="deepseek"')
@@ -308,14 +314,20 @@ describe('the pages, for ops', () => {
       '<p class="prov-result" id="prov-result" role="status" data-tone="muted"></p>',
     )
     // A pay-as-you-go preset knows the plan prefixes of its vendor.
-    const kimi = await text(s.handle, page('/admin/providers/new?preset=kimi', s.ops))
+    const kimi = await text(
+      s.handle,
+      page('/admin/providers/new?preset=kimi', s.ops),
+    )
     expect(kimi).toContain('data-plan-prefixes="[&quot;sk-kimi-&quot;]"')
     expect(kimi).toContain('data-base-url="https://api.moonshot.ai/anthropic"')
   })
 
   test('template variables are required fields, terms are said, local keys may be empty', async () => {
     const s = await setup()
-    const qwen = await text(s.handle, page('/admin/providers/new?preset=qwen', s.ops))
+    const qwen = await text(
+      s.handle,
+      page('/admin/providers/new?preset=qwen', s.ops),
+    )
     expect(qwen).toContain('data-template="WorkspaceId"')
     expect(qwen).toContain('data-template="region"')
     const plan = await text(
@@ -1316,7 +1328,10 @@ describe('what a line allows', () => {
   test('总是发送 on the OpenAI Chat line follows what the nodes reported', async () => {
     const s = await setup()
     // chat-svc is expected on node-b, which reports it cannot honour it.
-    let html = await text(s.handle, page('/admin/providers/profiles/chat-svc', s.ops))
+    let html = await text(
+      s.handle,
+      page('/admin/providers/profiles/chat-svc', s.ops),
+    )
     expect(html).toContain('data-chat-always="0"')
     expect(html).toMatch(
       /<option value="always" data-chat-gate data-explicit disabled>/,
@@ -1337,7 +1352,10 @@ describe('what a line allows', () => {
         },
       },
     })
-    html = await text(s.handle, page('/admin/providers/profiles/chat-svc', s.ops))
+    html = await text(
+      s.handle,
+      page('/admin/providers/profiles/chat-svc', s.ops),
+    )
     expect(html).toContain('data-chat-always="1"')
     expect(html).toMatch(/<option value="always" data-chat-gate data-explicit>/)
   })
@@ -1584,7 +1602,10 @@ describe('several keys', () => {
     )
 
     // The control: the same scan finds them on the ops page.
-    const form = await text(s.handle, page('/admin/providers/profiles/pool', s.ops))
+    const form = await text(
+      s.handle,
+      page('/admin/providers/profiles/pool', s.ops),
+    )
     expect(writeMarks(form)).toEqual(
       expect.arrayContaining([
         'data-action="prov-key-add"',
@@ -1658,7 +1679,10 @@ describe('several keys', () => {
         { ...pool.keys[2], priority: 5 },
       ].filter((key): key is NonNullable<typeof key> => key !== undefined),
     })
-    const form = await text(s.handle, page('/admin/providers/profiles/pool', s.ops))
+    const form = await text(
+      s.handle,
+      page('/admin/providers/profiles/pool', s.ops),
+    )
     const order = [...form.matchAll(/data-pool-key="(k\d)"/g)].map(
       match => match[1],
     )
@@ -1726,7 +1750,10 @@ describe('several keys', () => {
       auth: { scheme: 'x-api-key' },
       baseUrl: 'https://gateway.example/v1',
     })
-    const wrong = await text(s.handle, page('/admin/providers/profiles/pool', s.ops))
+    const wrong = await text(
+      s.handle,
+      page('/admin/providers/profiles/pool', s.ops),
+    )
     expect(wrong).not.toContain('data-action="prov-key-add"')
     expect(words(wrong)).toContain(
       '自定义 Anthropic 网关的 x-api-key 仅支持单钥',
@@ -1748,7 +1775,10 @@ describe('several keys', () => {
       },
     ]) {
       s.providers.profiles.set('pool', profile)
-      const html = await text(s.handle, page('/admin/providers/profiles/pool', s.ops))
+      const html = await text(
+        s.handle,
+        page('/admin/providers/profiles/pool', s.ops),
+      )
       expect(html).toContain('data-action="prov-key-add"')
       expect(words(html)).toContain('omp 按会话固定选钥')
     }
@@ -1758,7 +1788,10 @@ describe('several keys', () => {
       ...pool,
       keys: Array.from({ length: 8 }, (_, i) => ({ id: `k${i + 1}` })),
     })
-    const full = await text(s.handle, page('/admin/providers/profiles/pool', s.ops))
+    const full = await text(
+      s.handle,
+      page('/admin/providers/profiles/pool', s.ops),
+    )
     expect(full).not.toContain('data-action="prov-key-add"')
     expect(words(full)).toContain('最多 8 把')
   })
@@ -1827,11 +1860,17 @@ describe('the model service pages after P18.14 (时区, H5)', () => {
     // The three the pages draw: a key's set time, each pool key's, and a
     // cool-down's end.
     expect(times).toBeGreaterThan(0)
-    const form = await text(s.handle, page('/admin/providers/profiles/pool', s.ops))
+    const form = await text(
+      s.handle,
+      page('/admin/providers/profiles/pool', s.ops),
+    )
     expect(form).toContain(
       '设置于 <time datetime="2026-10-03T06:30:00.000Z" data-fmt="minute">2026-10-03 06:30</time>',
     )
-    const node = await text(s.handle, page('/admin/providers/nodes/node-d', s.ops))
+    const node = await text(
+      s.handle,
+      page('/admin/providers/nodes/node-d', s.ops),
+    )
     expect(node).toContain(
       `到 <time datetime="${POOL_COOLING_UNTIL}" data-fmt="minute">`,
     )

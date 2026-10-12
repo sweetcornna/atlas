@@ -40,7 +40,7 @@ const WRITE_ACTIONS = [
   'server-note',
   'confirm-deregister',
   'confirm-wake',
-  'chat-new',
+  'fx-new',
 ]
 
 /** Everything in a document that would let its reader change something. */
@@ -64,7 +64,10 @@ function writeMarks(html: string): readonly string[] {
 
 /** Every path a caller can read: the pages, two sub-pages, the fragments. */
 const READABLE = [
-  ...ROUTES.map(module => module.area.href),
+  ...ROUTES.filter(module => module.area.front !== true).map(
+    module => module.area.href,
+  ),
+  '/admin',
   '/admin/nodes/tokyo-1',
   `/admin/audit/trace/${TRACE}`,
   '/fragments/roster',
@@ -125,7 +128,9 @@ describe('a read-only token', () => {
     // And still sees everything there is to read.
     expect(page).toContain('qianmo://tokyo-1/')
     expect(page).toContain('<div class="row-panel">')
-    const servers = await (await h.handle(browse('/admin/servers', VIEW))).text()
+    const servers = await (
+      await h.handle(browse('/admin/servers', VIEW))
+    ).text()
     expect(servers).toContain('只读令牌不能改备注')
   })
 
@@ -149,10 +154,8 @@ describe('a read-only token', () => {
       await (await h.handle(browse('/admin/servers', ADMIN))).text(),
     )
     expect(servers).toContain('server-note')
-    const chat = writeMarks(
-      await (await h.handle(browse('/chat', ADMIN))).text(),
-    )
-    expect(chat).toContain('chat-new')
+    const chat = writeMarks(await (await h.handle(browse('/', ADMIN))).text())
+    expect(chat).toContain('fx-new')
     expect(chat).toContain('data-write')
     const admin = await (await h.handle(browse('/admin/nodes', ADMIN))).text()
     expect(admin).not.toContain('id="read-only"')
@@ -186,7 +189,7 @@ describe('personal accounts', () => {
       for (const [path, found] of Object.entries(marks)) {
         // The conversation is a member's own (`routes/chat.ts`); its
         // controls are theirs to use.
-        if (path === '/chat') continue
+        if (path === '/') continue
         expect(`${role} ${path} ${found.join(',')}`).toBe(`${role} ${path} `)
       }
     }
@@ -195,7 +198,9 @@ describe('personal accounts', () => {
   test('the read-only line names the role that may write', async () => {
     const { h, who } = await scan('viewer')
     const page = await (
-      await h.handle(asSession('GET', '/admin/nodes', who.sid, { header: false }))
+      await h.handle(
+        asSession('GET', '/admin/nodes', who.sid, { header: false }),
+      )
     ).text()
     expect(page).toContain('只读 · 写操作需要运维角色')
   })

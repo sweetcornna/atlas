@@ -115,9 +115,9 @@ describe('P18.16 quota and usage through HTTP', () => {
     const h = accountsHarness()
     expect((await h.handle(asAdmin('GET', '/v0/usage'))).status).toBe(501)
     expect((await h.handle(new Request(`${BASE}/v0/usage`))).status).toBe(401)
-    expect(await (await h.handle(asAdmin('GET', '/admin/usage'))).text()).toContain(
-      '用量未接入',
-    )
+    expect(
+      await (await h.handle(asAdmin('GET', '/admin/usage'))).text(),
+    ).toContain('用量未接入')
   })
 })
 

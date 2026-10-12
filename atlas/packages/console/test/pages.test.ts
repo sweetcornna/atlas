@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { CONSOLE_CHAT_JS } from '../src/assets/chatClient.js'
+import { FRONT_JS } from '../src/assets/frontClient.js'
 import { CONSOLE_CLIENT_JS } from '../src/assets/client.js'
 import {
   CSP,
@@ -78,18 +78,12 @@ const PAGES: readonly PageRow[] = [
     active: 'nodes',
     reads: ['名册', 'qianmo://tokyo-1/'],
   },
-  {
-    path: '/chat',
-    title: '对话',
-    active: 'chat',
-    reads: ['会话', 'id="composer"'],
-  },
   // The home page is 对话 for whoever may hold a conversation.
   {
     path: '/',
     title: '对话',
     active: 'chat',
-    reads: ['会话', 'id="composer"'],
+    reads: ['会话', 'id="fx-composer"'],
   },
   {
     path: '/admin/audit',
@@ -167,7 +161,12 @@ const PAGES: readonly PageRow[] = [
       '这台控制台没有开启个人账号',
     ],
   },
-  { path: '/admin/usage', title: '用量', active: 'usage', reads: ['用量未接入'] },
+  {
+    path: '/admin/usage',
+    title: '用量',
+    active: 'usage',
+    reads: ['用量未接入'],
+  },
   {
     path: '/admin/settings',
     title: '设置与关于',
@@ -206,10 +205,13 @@ describe('every page', () => {
     }
   })
 
-  test('the home page is 对话 for whoever may chat, 总览 for a view token', async () => {
+  test('the home page serves the front to chat callers and redirects readers to the management overview', async () => {
     const chat = await read('/')
-    expect(chat).toContain('<h1 class="page-title" id="page-title">对话</h1>')
-    const view = await read('/', VIEW)
+    expect(chat).toContain('<h1 class="sr-only">阡陌 · 对话</h1>')
+    const redirected = await harness().handle(browse('/', VIEW))
+    expect(redirected.status).toBe(303)
+    expect(redirected.headers.get('location')).toBe('/admin')
+    const view = await read('/admin', VIEW)
     expect(view).toContain('<h1 class="page-title" id="page-title">总览</h1>')
     expect(view).not.toContain('id="nav-chat"')
   })
@@ -223,6 +225,12 @@ describe('every page', () => {
       )
       const html = await response.text()
       expect(html.startsWith('<!DOCTYPE html>')).toBe(true)
+      if (row.active === 'chat') {
+        expect(html).toContain(`<title>阡陌 · 对话 · ${LABEL}</title>`)
+        expect(html).toContain('id="fx-agents"')
+        expect(html).toContain('aria-current="true"')
+        continue
+      }
       expect(html).toContain(
         `<title>阡陌控制台 · ${row.title} · ${LABEL}</title>`,
       )
@@ -248,6 +256,10 @@ describe('every page', () => {
         expect(`${row.path} ${bare.includes(text)} ${text}`).toBe(
           `${row.path} true ${text}`,
         )
+      }
+      if (row.active === 'chat') {
+        expect(bare).toContain('href="/admin" aria-label="管理后台"')
+        continue
       }
       // Every area is a plain link to its own path: navigation is the
       // browser's, not the script's.
@@ -365,9 +377,9 @@ describe('the doors in front of the pages', () => {
     const { handle } = harness()
     for (const row of PAGES) {
       const response = await handle(browse(row.path, VIEW))
-      // `/` is that caller's home, 总览 for a view token (above).
+      // The front redirects a read-only caller to the management overview.
       const personal = row.active === 'chat' || row.active === 'memory'
-      const expected = personal && row.path !== '/' ? 403 : 200
+      const expected = row.path === '/' ? 303 : personal ? 403 : 200
       expect(`${row.path} ${response.status}`).toBe(`${row.path} ${expected}`)
     }
   })
@@ -377,7 +389,9 @@ describe('one node, one trace', () => {
   test('a node page shows that node alone and polls that node alone', async () => {
     // 概览 is the node's own address (A3); its agents are the 智能体 tab.
     const overview = await read('/admin/nodes/tokyo-1')
-    expect(overview).toContain('<li><a href="/admin/nodes" data-nav>节点</a></li>')
+    expect(overview).toContain(
+      '<li><a href="/admin/nodes" data-nav>节点</a></li>',
+    )
     expect(overview).toContain('<li aria-current="page">tokyo-1</li>')
     expect(overview).toContain('2 个')
     expect(overview).not.toContain('qianmo://osaka-1/')
@@ -402,8 +416,12 @@ describe('one node, one trace', () => {
 
   test('a node the registry does not list is a 404, a malformed one too', async () => {
     const { handle } = harness()
-    expect((await handle(browse('/admin/nodes/nowhere', ADMIN))).status).toBe(404)
-    expect((await handle(browse('/admin/nodes/%E0%A4%A', ADMIN))).status).toBe(404)
+    expect((await handle(browse('/admin/nodes/nowhere', ADMIN))).status).toBe(
+      404,
+    )
+    expect((await handle(browse('/admin/nodes/%E0%A4%A', ADMIN))).status).toBe(
+      404,
+    )
   })
 
   test("a registry that cannot be read is the roster's strip, not a 404", async () => {
@@ -420,7 +438,9 @@ describe('one node, one trace', () => {
   test('a trace page is the chain, and a trace the trail does not hold is a 404', async () => {
     const html = await read(`/admin/audit/trace/${TRACE}`)
     expect(html).toContain('class="hops"')
-    expect(html).toContain('<li><a href="/admin/audit" data-nav>消息链</a></li>')
+    expect(html).toContain(
+      '<li><a href="/admin/audit" data-nav>消息链</a></li>',
+    )
     const { handle } = harness()
     const missing = await handle(browse('/admin/audit/trace/ffff', ADMIN))
     expect(missing.status).toBe(404)
@@ -455,7 +475,13 @@ describe('the trail page', () => {
 
 describe('the shell around every page', () => {
   test('one registry read serves the sidebar, the health strip and the page', async () => {
-    for (const path of ['/', '/admin/nodes', '/admin/audit', '/admin/settings', '/admin/alerts']) {
+    for (const path of [
+      '/admin',
+      '/admin/nodes',
+      '/admin/audit',
+      '/admin/settings',
+      '/admin/alerts',
+    ]) {
       const h = harness()
       await h.handle(browse(path, ADMIN))
       expect(`${path} ${h.registry.listCalls}`).toBe(`${path} 1`)
@@ -470,6 +496,12 @@ describe('the shell around every page', () => {
     }
     for (const row of PAGES) {
       if (row.path === '/admin/nodes/tokyo-1') continue
+      if (row.active === 'chat') {
+        expect(
+          await (await h.handle(browse(row.path, ADMIN))).text(),
+        ).toContain('id="fx-agents"')
+        continue
+      }
       const response = await h.handle(browse(row.path, ADMIN))
       expect(`${row.path} ${response.status}`).toBe(`${row.path} 200`)
       expect(await response.text()).toContain('注册中心不可达')
@@ -488,23 +520,23 @@ describe('the shell around every page', () => {
     expect(html).toContain('<div class="stat-num">3</div>')
     // An empty registry is 0; an unreadable one is no number at all.
     h.registry.listResult = { ok: true, value: [] }
-    expect(await (await h.handle(browse('/', ADMIN))).text()).toContain(
+    expect(await (await h.handle(browse('/admin', ADMIN))).text()).toContain(
       '<span class="nav-label">节点</span><span class="cnt">0</span>',
     )
     h.registry.listResult = {
       ok: false,
       failure: { code: 'unreachable', message: '连接被拒绝' },
     }
-    expect(await (await h.handle(browse('/', ADMIN))).text()).toContain(
+    expect(await (await h.handle(browse('/admin', ADMIN))).text()).toContain(
       '<span class="nav-label">节点</span></a>',
     )
   })
 
   test('the conversation is not offered to a token that may not open it', async () => {
     const h = harness()
-    const asView = await (await h.handle(browse('/', VIEW))).text()
+    const asView = await (await h.handle(browse('/admin', VIEW))).text()
     expect(asView).not.toContain('id="nav-chat"')
-    const asAdmin = await (await h.handle(browse('/', ADMIN))).text()
+    const asAdmin = await (await h.handle(browse('/admin', ADMIN))).text()
     expect(asAdmin).toContain('id="nav-chat"')
   })
 })
@@ -551,7 +583,7 @@ describe('framing (H1)', () => {
     for (const request of [
       browse('/login'),
       // A view token asking for the conversation: the login card, in place.
-      browse('/chat', VIEW),
+      browse('/admin/memory', VIEW),
     ]) {
       const response = await handle(request)
       expect(response.headers.get('content-type')).toBe(
@@ -584,7 +616,9 @@ describe('errors a browser navigates into are pages (C3)', () => {
       '<h1 class="page-title" id="page-title">页面不存在</h1>',
     )
     expect(html).toContain('class="nav-item"')
-    expect(html).toContain('<a class="jump" href="/" data-nav>回到首页</a>')
+    expect(html).toContain(
+      '<a class="jump" href="/admin" data-nav>回到总览</a>',
+    )
     // No area is marked current on a page that is no area's.
     expect(
       html.slice(html.indexOf('<body>'), html.indexOf('<script>')),
@@ -623,9 +657,9 @@ describe('errors a browser navigates into are pages (C3)', () => {
 
   test('a page this console does not have, a node that is not there, a HEAD', async () => {
     const noChat = pageHarness()
-    const chat = await noChat.handle(browse('/chat', ADMIN))
-    expect(chat.status).toBe(404)
-    expect(await chat.text()).toContain('页面不存在')
+    const chat = await noChat.handle(browse('/', ADMIN))
+    expect(chat.status).toBe(303)
+    expect(chat.headers.get('location')).toBe('/admin')
 
     const { handle } = harness()
     const node = await handle(browse('/admin/nodes/nowhere', ADMIN))
@@ -677,8 +711,11 @@ describe('a session that lapses under the page (C1)', () => {
   test('every page carries the expiry dialog, closed, with the way back to itself', async () => {
     for (const [path, back] of [
       ['/', '/login'],
-      ['/admin/nodes', '/login?redirect=%2Fnodes'],
-      ['/admin/audit?window=24h', '/login?redirect=%2Faudit%3Fwindow%3D24h'],
+      ['/admin/nodes', '/login?redirect=%2Fadmin%2Fnodes'],
+      [
+        '/admin/audit?window=24h',
+        '/login?redirect=%2Fadmin%2Faudit%3Fwindow%3D24h',
+      ],
     ] as const) {
       const html = await read(
         `${path}${path.includes('?') ? '&' : '?'}token=${ADMIN}`,
@@ -704,7 +741,7 @@ describe('a session that lapses under the page (C1)', () => {
     )
     expect(runtime).toContain("openDialog('session-expired', null)")
     // The chat page's stream and fallback poller stop with it.
-    expect(CONSOLE_CHAT_JS).toContain('qc.onExpire(function () {')
-    expect(CONSOLE_CHAT_JS).toContain('source.close()')
+    expect(FRONT_JS).toContain('qc.onExpire(function () {')
+    expect(FRONT_JS).toContain('source.close()')
   })
 })

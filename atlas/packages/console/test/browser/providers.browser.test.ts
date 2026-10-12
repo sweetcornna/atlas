@@ -34,7 +34,7 @@ import {
 } from '../accountsHarness.js'
 import { MemoryActionLedger } from '../memoryActions.js'
 import { FakeProviders, NOW } from '../providersFake.js'
-import { Browser, type Tab, skipReason } from './cdp.js'
+import { Browser, type Tab, observeChatStream, skipReason } from './cdp.js'
 
 const SKIP = skipReason()
 if (SKIP !== null) console.warn(`[providers browser tests] skipped: ${SKIP}`)
@@ -85,6 +85,7 @@ async function serve(options: { readonly pool?: boolean } = {}) {
   })
   return {
     h,
+    chat,
     actions,
     providers,
     ops,
@@ -135,7 +136,7 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
     const tab = await browser.tab()
     try {
       await signIn(tab, served.base, served.ops)
-      await tab.goto(`${served.base}/providers/new?preset=anthropic`)
+      await tab.goto(`${served.base}/admin/providers/new?preset=anthropic`)
       await tab.waitFor('window.qianmoConsole !== undefined')
       const model = `document.querySelector('#prov-models [data-model]')`
       expect(
@@ -186,7 +187,7 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
         mobile: false,
       })
       await signIn(tab, served.base, served.ops)
-      await tab.goto(`${served.base}/providers/new?preset=deepseek`)
+      await tab.goto(`${served.base}/admin/providers/new?preset=deepseek`)
       await tab.waitFor('window.qianmoConsole !== undefined')
       // The control: nothing has been asked of the port's writes yet.
       expect(served.providers.writes).toEqual([])
@@ -339,7 +340,7 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
     const tab = await browser.tab()
     try {
       await signIn(tab, served.base, served.ops)
-      await tab.goto(`${served.base}/providers/new?preset=deepseek`)
+      await tab.goto(`${served.base}/admin/providers/new?preset=deepseek`)
       await tab.waitFor('window.qianmoConsole !== undefined')
       await tab.evaluate(
         `document.getElementById('prov-key').value = 'sk-test-canary-browser-0002'`,
@@ -430,7 +431,7 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
         mobile: false,
       })
       await signIn(tab, served.base, served.ops)
-      await tab.goto(`${served.base}/providers`)
+      await tab.goto(`${served.base}/admin/providers`)
       await tab.waitFor('window.qianmoConsole !== undefined')
       await tab.evaluate(
         `document.querySelector('details[data-key="node:node-a"]').open = true`,
@@ -484,7 +485,9 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
     const tab = await browser.tab()
     try {
       await signIn(tab, served.base, served.ops)
-      await tab.goto(`${served.base}/providers/nodes/node-a?do=autocompact`)
+      await tab.goto(
+        `${served.base}/admin/providers/nodes/node-a?do=autocompact`,
+      )
       await tab.waitFor(
         `document.getElementById('prov-autocompact-dialog').open`,
       )
@@ -517,7 +520,7 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
     const CANARY = 'sk-test-canary-browser-pool-0004'
     try {
       await signIn(tab, served.base, served.ops)
-      await tab.goto(`${served.base}/providers/profiles/pool`)
+      await tab.goto(`${served.base}/admin/providers/profiles/pool`)
       await tab.waitFor('window.qianmoConsole !== undefined')
       const rows = `Array.prototype.map.call(document.querySelectorAll('#prov-pool [data-pool-key]'), function (li) { return li.getAttribute('data-pool-key'); }).join(' ')`
       expect(await tab.evaluate<string>(rows)).toBe('k1 k2 k3')
@@ -628,7 +631,9 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
     const tab = await browser.tab()
     try {
       await signIn(tab, served.base, served.ops)
-      await tab.goto(`${served.base}/chat?session=${id}`)
+      await observeChatStream(tab)
+      await tab.goto(`${served.base}/?session=${id}`)
+      await tab.waitFor(`window.__chatStreamOpen === true`)
       await tab.waitFor(`document.getElementById('prov-chat-label') !== null`)
       expect(
         await tab.evaluate<string>(
@@ -638,7 +643,7 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
       await tab.waitFor(`document.getElementById('prov-chat-divider') !== null`)
       // Between the second and the third turn: the switch was an hour ago.
       const order = await tab.evaluate<string[]>(
-        `Array.prototype.map.call(document.querySelectorAll('.transcript > *'), function (el) {
+        `Array.prototype.map.call(document.querySelectorAll('.fx-msgs > *'), function (el) {
           return el.id === 'prov-chat-divider' ? 'divider' : (el.querySelector('time') || {}).textContent || el.className;
         })`,
       )
@@ -648,16 +653,12 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
           `document.getElementById('prov-chat-divider').textContent`,
         ),
       ).toBe('已切换到 DeepSeek · deepseek-v4-pro')
-      // The chat script replaces the thread; the label and divider come back.
+      // A stream event replaces the view; the cached model label and divider return.
       await tab.evaluate(
-        `window.qianmoConsole.refreshRegion(document.getElementById('thread-mount'))`,
+        `window.__oldThread = document.getElementById('fx-thread')`,
       )
-      await tab.evaluate(
-        `(function () {
-          var mount = document.getElementById('thread-mount');
-          mount.innerHTML = mount.innerHTML;
-        })()`,
-      )
+      served.chat.emit(id)
+      await tab.waitFor(`!document.contains(window.__oldThread)`)
       await tab.waitFor(
         `document.querySelectorAll('#prov-chat-label').length === 1 &&
          document.querySelectorAll('#prov-chat-divider').length === 1`,

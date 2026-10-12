@@ -66,7 +66,7 @@ describe('the route table', () => {
 describe('the pages', () => {
   /** Every area, with its path and group, in sidebar order. */
   const AREAS: readonly (readonly [AreaId, string, string, boolean])[] = [
-    ['chat', '/chat', 'main', false],
+    ['chat', '/', 'main', false],
     ['jobs', '/admin/jobs', 'main', false],
     ['memory', '/admin/memory', 'main', false],
     ['connect', '/admin/connect', 'main', false],
@@ -92,7 +92,11 @@ describe('the pages', () => {
       expect(module?.area.group).toBe(group as 'main')
       expect(`${id} ${module?.area.pending === true}`).toBe(`${id} ${pending}`)
       const segments = href.split('/').filter(part => part !== '')
-      expect(pageOf(ROUTES, segments)?.module.area.id).toBe(id)
+      if (module?.area.front === true) {
+        expect(module.page).toBeUndefined()
+      } else {
+        expect(pageOf(ROUTES, segments.slice(1))?.module.area.id).toBe(id)
+      }
     }
   })
 
@@ -133,6 +137,7 @@ describe('the pages', () => {
       expect(pageOf([greedy], [head, 'x'])).toBeUndefined()
     }
     expect(RESERVED_PAGE_HEADS).toEqual([
+      'admin',
       'v0',
       'fragments',
       'assets',
@@ -143,7 +148,8 @@ describe('the pages', () => {
     // And no real module tries.
     for (const module of ROUTES) {
       for (const head of RESERVED_PAGE_HEADS) {
-        expect(module.page?.match([head])).toBeNull()
+        if (module.page !== undefined)
+          expect(module.page.match([head])).toBeNull()
       }
     }
   })

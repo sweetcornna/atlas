@@ -27,7 +27,7 @@ import {
   type AccountEnded,
   type ConsolePrincipal,
 } from '../src/accounts.js'
-import { CONSOLE_CHAT_JS } from '../src/assets/chatClient.js'
+import { FRONT_JS } from '../src/assets/frontClient.js'
 import {
   AUDIT_PAGE_JS,
   NODES_PAGE_JS,
@@ -428,7 +428,7 @@ describe('a personal credential never rides in a query string (invariant 4)', ()
     // page script reads the token through it and none touches storage, so
     // the guard below covers them all without a second copy.
     for (const page of [
-      CONSOLE_CHAT_JS,
+      // Front preferences are exercised with a personal login in front.browser.test.ts.
       NODES_PAGE_JS,
       AUDIT_PAGE_JS,
       SERVERS_PAGE_JS,
@@ -506,12 +506,17 @@ describe('a personal credential never rides in a query string (invariant 4)', ()
     ).text()
     expect(index.includes(CONSOLE_CLIENT_JS_ACCOUNTS)).toBe(true)
     const chat = await (
-      await h.handle(asSession('GET', '/chat', a.sid, { header: false }))
+      await h.handle(asSession('GET', '/', a.sid, { header: false }))
     ).text()
     expect(chat.includes(CONSOLE_CLIENT_JS_ACCOUNTS)).toBe(true)
-    expect(chat.includes(CONSOLE_CHAT_JS)).toBe(true)
+    expect(chat.includes(FRONT_JS)).toBe(true)
     // And never the unguarded runtime, on any page.
-    for (const path of ['/', '/admin/nodes', '/admin/audit', '/admin/settings']) {
+    for (const path of [
+      '/',
+      '/admin/nodes',
+      '/admin/audit',
+      '/admin/settings',
+    ]) {
       const page = await (
         await h.handle(asSession('GET', path, a.sid, { header: false }))
       ).text()
@@ -795,7 +800,7 @@ describe('break-glass (invariant 5)', () => {
 
   test('every page it opens carries the lit notice', async () => {
     const h = glass()
-    for (const path of ['/', '/chat']) {
+    for (const path of ['/admin', '/']) {
       const page = await h.handle(asBearer('GET', path, ADMIN))
       expect(page.status).toBe(200)
       const html = await page.text()
@@ -1073,14 +1078,14 @@ describe('every page the accounts add keeps to the console register', () => {
     await collect(h.handle(new Request(`${BASE}/invite`)))
     await collect(h.handle(formPost('/invite', { invite: token })))
     await collect(h.handle(formPost('/invite', { invite: token })))
-    await collect(h.handle(asSession('GET', '/', ops.sid, { header: false })))
     await collect(
-      h.handle(asSession('GET', '/chat', ops.sid, { header: false })),
+      h.handle(asSession('GET', '/admin', ops.sid, { header: false })),
     )
+    await collect(h.handle(asSession('GET', '/', ops.sid, { header: false })))
     await collect(h.handle(asBearer('GET', '/', ADMIN)))
     await collect(
       h.handle(
-        asSession('GET', '/chat', viewer.sid, {
+        asSession('GET', '/admin/memory', viewer.sid, {
           header: false,
           accept: 'text/html',
         }),

@@ -92,12 +92,12 @@ describe('who gets the chat face', () => {
     expect(api.status).toBe(403)
     expect((await api.text()).includes('对话需要成员或运维账号')).toBe(true)
     const page = await h.handle(
-      asSession('GET', '/chat', v.sid, { header: false, accept: 'text/html' }),
+      asSession('GET', '/', v.sid, { header: false, accept: 'text/html' }),
     )
-    expect(page.status).toBe(403)
-    expect((await page.text()).includes('该页面需要成员或运维账号')).toBe(true)
+    expect(page.status).toBe(303)
+    expect(page.headers.get('location')).toBe('/admin')
     const index = await (
-      await h.handle(asSession('GET', '/', v.sid, { header: false }))
+      await h.handle(asSession('GET', '/admin', v.sid, { header: false }))
     ).text()
     expect(index.includes('id="nav-chat"')).toBe(false)
     expect(index.includes('只读账号')).toBe(true)
@@ -110,7 +110,7 @@ describe('who gets the chat face', () => {
     const index = await (
       await h.handle(asSession('GET', '/', m.sid, { header: false }))
     ).text()
-    expect(index.includes('id="nav-chat"')).toBe(true)
+    expect(index.includes('id="fx-agents"')).toBe(true)
     expect(index.includes('成员账号')).toBe(true)
     for (const [method, path, body] of [
       ['POST', '/v0/agents', { address: ADDRESS, endpoint: 'ws://x' }],
@@ -161,8 +161,8 @@ describe('who gets the chat face', () => {
     const before = reads()
     const listeners = h.chat.listeners.size
     const paths = [
-      '/chat',
-      `/chat?session=${sa}`,
+      '/',
+      `/?session=${sa}`,
       '/v0/chat/targets',
       '/v0/chat/sessions',
       `/v0/chat/sessions/${sa}`,
@@ -185,7 +185,9 @@ describe('who gets the chat face', () => {
       ]
       for (const request of positions) {
         const response = await h.handle(request)
-        expect(response.status).toBe(403)
+        expect(response.status).toBe(
+          path.startsWith('/?') || path === '/' ? 303 : 403,
+        )
         expect((await response.text()).includes(sa)).toBe(false)
       }
     }
@@ -203,7 +205,7 @@ describe('who gets the chat face', () => {
     }
     expect(reads()).toBe(before)
     expect(h.chat.listeners.size).toBe(listeners)
-    const index = await (await h.handle(asBearer('GET', '/', VIEW))).text()
+    const index = await (await h.handle(asBearer('GET', '/admin', VIEW))).text()
     expect(index.includes('id="nav-chat"')).toBe(false)
     expect(index.includes('只读令牌')).toBe(true)
   })
@@ -274,7 +276,7 @@ describe('ownership', () => {
       threads.add(await thread.text())
       const page = await (
         await h.handle(
-          asSession('GET', `/chat?session=${encodeURIComponent(id)}`, a.sid, {
+          asSession('GET', `/?session=${encodeURIComponent(id)}`, a.sid, {
             header: false,
           }),
         )

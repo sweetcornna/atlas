@@ -90,18 +90,25 @@ describe('记忆 · the page', () => {
     expect(plans).not.toContain('简报控制在 300 字以内')
     const found = visibleText(
       await (
-        await handle(browse(`/admin/memory?q=${encodeURIComponent('周三')}`, ADMIN))
+        await handle(
+          browse(`/admin/memory?q=${encodeURIComponent('周三')}`, ADMIN),
+        )
       ).text(),
     )
     expect(found).toContain('周三下午不排会')
     expect(found).not.toContain('回复先给结论')
     const none = visibleText(
-      await (await handle(browse('/admin/memory?q=nothing-here', ADMIN))).text(),
+      await (
+        await handle(browse('/admin/memory?q=nothing-here', ADMIN))
+      ).text(),
     )
     expect(none).toContain('没有符合条件的记忆')
     // An agent that is not on the roster falls back to the first one.
     const fallback = await handle(
-      browse(`/admin/memory?agent=${encodeURIComponent('qianmo://x/y')}`, ADMIN),
+      browse(
+        `/admin/memory?agent=${encodeURIComponent('qianmo://x/y')}`,
+        ADMIN,
+      ),
     )
     expect(fallback.status).toBe(200)
   })

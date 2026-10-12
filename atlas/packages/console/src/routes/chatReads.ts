@@ -10,7 +10,12 @@
  * lookup. Kept apart from both route files so neither imports the other.
  */
 
-import type { ActionLedgerPort, ChatPort, ChatTarget, ConsoleFailure } from '../deps.js'
+import type {
+  ActionLedgerPort,
+  ChatPort,
+  ChatTarget,
+  ConsoleFailure,
+} from '../deps.js'
 import { agentAvatarKey, type AvatarKey } from '../avatar.js'
 import type { ChatFaces } from '../view/chat.js'
 import { type Faces, facesFor } from './avatars.js'
@@ -44,7 +49,6 @@ export const LEDGER_CLOSED_FAILURE: ConsoleFailure = {
   message: '动作账本停用，暂时不能打开对话；恢复动作账本之后再试。',
 }
 
-
 /**
  * The roster the chat views annotate themselves with.
  *
@@ -74,7 +78,6 @@ export function chatFaces(faces: Faces): ChatFaces {
 export function lookFaces(ctx: RouteContext): FaceLookup {
   return keys => facesFor(ctx, keys)
 }
-
 
 // --- readings (P15.9, D6) ----------------------------------------------------
 
@@ -180,4 +183,3 @@ export async function noteTranscriptRead(
     },
   }
 }
-

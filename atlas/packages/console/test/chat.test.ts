@@ -35,7 +35,6 @@ import {
   renderChatSessions,
   renderChatThread,
 } from '../src/view/chat.js'
-import { renderChatPage } from '../src/view/chatPage.js'
 
 const VIEW = 'view-token-000000000001'
 const ADMIN = 'admin-token-00000000001'
@@ -590,71 +589,35 @@ describe('chat session rail', () => {
   })
 })
 
-describe('chat page document', () => {
-  test('inlines everything and declares the strict policy', () => {
-    const html = renderChatPage({
-      label: '测试台',
-      now: NOW,
-      role: 'admin',
-      sessions: renderChatSessions({
-        sessions: [SESSION],
-        targets: TARGETS,
-        failure: null,
-        activeId: SESSION.id,
-        now: NOW,
-      }),
-      thread: renderChatThread({
-        transcript: { session: SESSION, turns: [ASK, ANSWER] },
-        failure: null,
-        target: TARGETS[0] ?? null,
-        now: NOW,
-      }),
-      composerEnabled: true,
-    })
-    // 只有 favicon 那一行 <link>：它是自包含的 data: URI，不是一个 host。
+describe('front document', () => {
+  test('inlines its resources and enables the composer for a loaded transcript', async () => {
+    const handler = createConsoleHandler(depsWith(new FakeChat()), TOKENS)
+    const html = await (await handler(get(`/?session=${SESSION.id}`))).text()
     const stripped = html.replace(/<link rel="icon"[^>]*>\n?/, '')
     expect(stripped).not.toBe(html)
     expect(stripped).not.toContain('<link')
     expect(stripped).not.toContain('src=')
     expect(html).toContain('default-src &#39;none&#39;')
-    // 流式面靠 connect-src，缺了它 EventSource 会被浏览器直接拒掉。
     expect(html).toContain('connect-src &#39;self&#39;')
     expect(html).toContain(`maxlength="${MAX_CHAT_TEXT_LENGTH}"`)
-    expect(html).toContain('type="submit"')
     expect(html).not.toContain('aria-label="发送" disabled')
   })
 
-  test('disables the composer, with the sentence, when no session is open', () => {
-    const html = renderChatPage({
-      label: '测试台',
-      now: NOW,
-      role: 'admin',
-      sessions: '',
-      thread: '',
-      composerEnabled: false,
-    })
-    // 文案纪律：可见文案不出现句读，原来那句里的逗号是违例。
-    expect(html).toContain('先选一条会话 · 再发消息')
+  test('a failed transcript leaves both composer controls disabled', async () => {
+    const chat = new FakeChat()
+    chat.transcriptResult = bad('not_found', '这条会话不在本控制台的记录里')
+    const handler = createConsoleHandler(depsWith(chat), TOKENS)
+    const html = await (await handler(get('/?session=gone'))).text()
+    expect(html).toContain('会话未找到')
     expect(html).toContain('Shift Enter 换行" disabled')
     expect(html).toContain('aria-label="发送" disabled')
-    // 和唤醒面不同：那里的缺席是配置状态，点了也没用；这里是「旁边点一下就好」
-    // 的临时状态，控件留着并由客户端就地启用（不导航，否则凭据会丢）。
     expect(html).not.toContain('<fieldset disabled')
   })
 
-  test('renders the cross-page links without a token in them', () => {
-    const html = renderChatPage({
-      label: '测试台',
-      now: NOW,
-      role: 'admin',
-      sessions: '',
-      thread: '',
-      composerEnabled: false,
-    })
-    // 顶层导航带不了 Authorization 头，靠的是会话 cookie（H5）：链接里从来
-    // 不带 token，客户端也不再往 href 里补。对话页回总览的那一条现在是外壳
-    // 的品牌字。
-    expect(html).toContain('class="brand-cn" href="/" data-nav')
+  test('its management links rely on the cookie and carry no token', async () => {
+    const handler = createConsoleHandler(depsWith(new FakeChat()), TOKENS)
+    const html = await (await handler(get('/'))).text()
+    expect(html).toContain('href="/admin" aria-label="管理后台"')
     expect(html.slice(0, html.indexOf('<script>'))).not.toContain('token=')
   })
 })
@@ -664,11 +627,10 @@ describe('chat page document', () => {
 // ---------------------------------------------------------------------------
 
 describe('chat routes', () => {
-  test('the whole chat face is admin-only, reads included', async () => {
+  test('the chat data face refuses anonymous and view credentials before reading', async () => {
     const chat = new FakeChat()
     const handler = createConsoleHandler(depsWith(chat), TOKENS)
     for (const path of [
-      '/chat',
       '/v0/chat/targets',
       '/v0/chat/sessions',
       '/v0/chat/sessions/session-1',
@@ -693,22 +655,24 @@ describe('chat routes', () => {
     // A view token must not be able to tell a chat-enabled console apart
     // from one with no channel at all — a visible link that 403s on click
     // would leak exactly the fact the admin-only routes are built to hide.
-    const viewerPage = await (await wired(get('/', VIEW))).text()
+    const viewerPage = await (await wired(get('/admin', VIEW))).text()
     expect(viewerPage).not.toContain('id="nav-chat"')
     expect(viewerPage).not.toContain('>对话<')
 
-    const adminPage = await (await wired(get('/', ADMIN))).text()
+    const adminPage = await (await wired(get('/admin', ADMIN))).text()
     expect(adminPage).toContain('id="nav-chat"')
 
     // Admin alone is not enough either: with no channel wired there is
     // nothing behind the link, so it stays hidden even for admin.
-    const adminNoChat = await (await unwired(get('/', ADMIN))).text()
+    const adminNoChat = await (await unwired(get('/admin', ADMIN))).text()
     expect(adminNoChat).not.toContain('id="nav-chat"')
   })
 
   test('hides the page and explains the API when there is no chat channel', async () => {
     const handler = createConsoleHandler(depsWith(), TOKENS)
-    expect((await handler(get('/chat'))).status).toBe(404)
+    const front = await handler(get('/'))
+    expect(front.status).toBe(303)
+    expect(front.headers.get('location')).toBe('/admin')
 
     const api = await handler(get('/v0/chat/sessions'))
     expect(api.status).toBe(501)
@@ -724,7 +688,7 @@ describe('chat routes', () => {
   test('serves the page for the session named in the query string', async () => {
     const chat = new FakeChat()
     const handler = createConsoleHandler(depsWith(chat), TOKENS)
-    const response = await handler(get(`/chat?session=${SESSION.id}`))
+    const response = await handler(get(`/?session=${SESSION.id}`))
 
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toContain('text/html')
@@ -738,10 +702,10 @@ describe('chat routes', () => {
     const chat = new FakeChat()
     chat.transcriptResult = bad('not_found', '这条会话不在本控制台的记录里')
     const handler = createConsoleHandler(depsWith(chat), TOKENS)
-    const html = await (await handler(get('/chat?session=ghost'))).text()
+    const html = await (await handler(get('/?session=ghost'))).text()
 
     // 书签里的旧 session id 不该在一条失败横幅底下放一个能按的发送钮。
-    expect(html).toContain('先选一条会话 · 再发消息')
+    expect(html).toContain('会话未找到')
     expect(html).toContain('aria-label="发送" disabled')
   })
 

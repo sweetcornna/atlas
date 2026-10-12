@@ -95,7 +95,9 @@ describe('云端电脑', () => {
     expect(text).toContain('云端电脑')
     expect(text).not.toContain('planner')
     const none = wired(null)
-    expect((await none.handle(browse('/admin/desktop', ADMIN))).status).toBe(404)
+    expect((await none.handle(browse('/admin/desktop', ADMIN))).status).toBe(
+      404,
+    )
     expect(await read(none.handle, '/admin/overview')).not.toContain(
       'href="/admin/desktop"',
     )

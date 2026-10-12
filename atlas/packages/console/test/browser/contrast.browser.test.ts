@@ -97,6 +97,7 @@ function probe(root: string): string {
     if (box.width <= 1 || box.height <= 1 || s.visibility === 'hidden') continue;
     if (el.closest('[hidden],dialog:not([open]),details:not([open]) > :not(summary)')) continue;
     if (el.closest(':disabled,[aria-disabled="true"]')) continue;
+    if (opacityOf(el) === 0) continue;
     total += 1;
     const bg = backdrop(el);
     const ink = parse(s.color);
@@ -174,11 +175,11 @@ class TurnsChat extends CountingChat {
 
 /** Every page there is, as the admin sees it: the most controls on screen. */
 const PAGES = [
-  '/',
+  '/admin',
   '/admin/nodes',
   '/admin/nodes/tokyo-1',
-  '/chat',
-  '/chat?session=session-1',
+  '/',
+  '/?session=session-1',
   '/admin/audit',
   '/admin/alerts',
   '/admin/jobs',
@@ -257,16 +258,22 @@ describe.skipIf(SKIP !== null)('WCAG AA contrast, light and dark (B1)', () => {
             // The conversation drew its turns: receipts, a notice, a failure.
             expect(
               await tab.evaluate<number>(
-                `document.querySelectorAll('#chat-thread .turn, #chat-thread .turn-notice').length`,
+                `document.querySelectorAll('#fx-thread .fx-msg, #fx-thread .fx-steps').length`,
               ),
             ).toBeGreaterThanOrEqual(4)
+          }
+          if (path.includes('session=')) {
+            await tab.evaluate(`document.querySelector('.fx-mini').focus()`)
+            await tab.waitFor(
+              `getComputedStyle(document.querySelector('.fx-mini')).opacity === '1'`,
+            )
           }
           const result = await tab.evaluate<Probe>(probe('document.body'))
           total += result.total
           for (const one of result.short) found.push({ ...one, page: path })
         }
         // The two dialogs a writer opens most, and a failure toast.
-        await tab.goto(`${served.base}/nodes`)
+        await tab.goto(`${served.base}/admin/nodes`)
         await tab.waitFor('window.qianmoConsole !== undefined')
         for (const id of ['register-dialog', 'wake-dialog']) {
           await tab.evaluate(`document.getElementById('${id}').showModal()`)

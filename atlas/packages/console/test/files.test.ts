@@ -132,7 +132,9 @@ describe('文件互通', () => {
     const h = accountsHarness({ deps: { files } })
     const member = await person(h.handle, 'member')
     const memberHtml = await (
-      await h.handle(asSession('GET', '/admin/files', member.sid, { header: false }))
+      await h.handle(
+        asSession('GET', '/admin/files', member.sid, { header: false }),
+      )
     ).text()
     expect(memberHtml).toContain('data-action="files-approve"')
     expect(memberHtml).toContain('data-action="files-new"')
@@ -180,7 +182,9 @@ describe('文件互通', () => {
     expect(html).not.toContain('id="files-new-dialog"')
     const none = wired(null)
     expect((await none.handle(browse('/admin/files', ADMIN))).status).toBe(404)
-    expect(await read(none.handle, '/admin/overview')).not.toContain('href="/admin/files"')
+    expect(await read(none.handle, '/admin/overview')).not.toContain(
+      'href="/admin/files"',
+    )
     expect(
       (await none.handle(browse('/fragments/files/x', ADMIN))).status,
     ).toBe(404)

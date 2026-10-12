@@ -26,7 +26,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { AuditSource, type AuditRecord, type MessageChain } from '@qianmo/audit'
-import { CONSOLE_CHAT_JS } from '../src/assets/chatClient.js'
+import { FRONT_JS } from '../src/assets/frontClient.js'
 import { CONSOLE_CLIENT_JS } from '../src/assets/client.js'
 import { CONSOLE_CSS } from '../src/assets/css.js'
 import {
@@ -2192,7 +2192,7 @@ describe('the client scripts', () => {
     NODES_PAGE_JS,
     AUDIT_PAGE_JS,
     SERVERS_PAGE_JS,
-    CONSOLE_CHAT_JS,
+    FRONT_JS,
   ]
 
   test('the client script never builds HTML out of a response body', () => {
@@ -2224,7 +2224,7 @@ describe('the client scripts', () => {
       NODES_PAGE_JS,
       AUDIT_PAGE_JS,
       SERVERS_PAGE_JS,
-      CONSOLE_CHAT_JS,
+      FRONT_JS,
     ]) {
       expect(script).toContain('var qc = window.qianmoConsole;')
       expect(script).not.toContain('fetch(')
@@ -2248,7 +2248,7 @@ describe('assets', () => {
       NODES_PAGE_JS,
       AUDIT_PAGE_JS,
       SERVERS_PAGE_JS,
-      CONSOLE_CHAT_JS,
+      FRONT_JS,
     ]) {
       expect(() => new Function(script)).not.toThrow()
     }
@@ -2291,7 +2291,7 @@ describe('assets', () => {
       NODES_PAGE_JS,
       AUDIT_PAGE_JS,
       SERVERS_PAGE_JS,
-      CONSOLE_CHAT_JS,
+      FRONT_JS,
     ]) {
       expect(asset).not.toContain('</script')
       expect(asset).not.toContain('</style')
@@ -2524,7 +2524,9 @@ describe('copy discipline', () => {
     nav: [
       {
         label: '运行',
-        items: [{ id: 'nodes', label: '节点', href: '/admin/nodes', icon: 'server' }],
+        items: [
+          { id: 'nodes', label: '节点', href: '/admin/nodes', icon: 'server' },
+        ],
       },
     ],
     crumbs: [{ label: '运行' }, { label: '节点' }],
@@ -2810,7 +2812,7 @@ describe('one place an action reports back (D2)', () => {
     expect(SERVERS_PAGE_JS).toContain(
       "qc.toast('备注已保存 · ' + server, 'ok')",
     )
-    expect(CONSOLE_CHAT_JS).toContain(
+    expect(FRONT_JS).toContain(
       "qc.toast(qc.failLine('发送', err), qc.failTone(err))",
     )
   })

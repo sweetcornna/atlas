@@ -82,7 +82,7 @@ function mayAdmin(ctx: RouteContext): boolean {
 }
 
 /** The main agent: `--chat-default` if listed, else the first dialable, else the first. */
-export function mainAgentOf(
+function mainAgentOf(
   targets: readonly ChatTarget[] | null,
   preferred: string | undefined,
 ): string | null {
@@ -128,7 +128,10 @@ async function frontData(
 }
 
 /** The agent asked for, when it is one this console knows of; else the main agent. */
-function pickedAgent(data: FrontData, asked: string | undefined): string | null {
+function pickedAgent(
+  data: FrontData,
+  asked: string | undefined,
+): string | null {
   if (
     asked !== undefined &&
     ((data.targets ?? []).some(target => target.address === asked) ||
@@ -269,7 +272,9 @@ async function viewFor(
     agent === null
       ? null
       : ((data.targets ?? []).find(one => one.address === agent) ?? null)
-  const faces = chatFaces(await look(agent === null ? [] : [agentAvatarKey(agent)]))
+  const faces = chatFaces(
+    await look(agent === null ? [] : [agentAvatarKey(agent)]),
+  )
   return {
     model: {
       ...base,
@@ -299,7 +304,16 @@ export async function renderFront(
   const sessionId = textParam(ctx.url.searchParams, 'session') ?? null
   const asked = textParam(ctx.url.searchParams, 'agent')
   // A page that opens with a conversation in it is one reading.
-  const view = await viewFor(ctx, chat, data, scope, sessionId, asked, true, look)
+  const view = await viewFor(
+    ctx,
+    chat,
+    data,
+    scope,
+    sessionId,
+    asked,
+    true,
+    look,
+  )
   const side = await sideModel(ctx, data, view.selected, sessionId, scope, look)
   await view.reading?.done(view.open)
   return {
@@ -339,7 +353,8 @@ export async function dispatchFrontFragment(
       active === null
         ? undefined
         : data.sessions.find(session => session.id === active)?.target
-    const selected = activeTarget ?? pickedAgent(data, textParam(params, 'agent'))
+    const selected =
+      activeTarget ?? pickedAgent(data, textParam(params, 'agent'))
     return html(
       renderFrontSide(
         await sideModel(ctx, data, selected, active, scope, look),

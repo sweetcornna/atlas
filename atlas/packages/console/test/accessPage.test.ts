@@ -189,7 +189,7 @@ async function scene(options: { readonly ledger?: ActionLedgerPort } = {}) {
   const sa = await converse(h, a)
   const sb = await converse(h, b)
   // ops opens A's conversation: the one reading A is owed an answer about.
-  await read(h, navigate(`/chat?session=${sa}`, ops))
+  await read(h, navigate(`/?session=${sa}`, ops))
   return { h, store, a, b, ops, viewer, sa, sb }
 }
 
@@ -533,7 +533,11 @@ describe('操作记录 (/admin/access/actions)', () => {
     expect(
       (await h.handle(asSession('GET', '/v0/actions', ops.sid))).status,
     ).toBe(503)
-    for (const path of ['/admin/access', '/admin/access/invites', '/admin/access/sessions']) {
+    for (const path of [
+      '/admin/access',
+      '/admin/access/invites',
+      '/admin/access/sessions',
+    ]) {
       const html = await read(h, navigate(path, ops))
       expect(html).toContain('账本停用 · 写操作已暂停')
       expect(`${path} ${writeMarks(html).join(',')}`).toBe(`${path} `)
@@ -542,7 +546,10 @@ describe('操作记录 (/admin/access/actions)', () => {
 
   test('a filter that is not one says so, rather than guessing', async () => {
     const { h, ops } = await scene()
-    const html = await read(h, navigate('/admin/access/actions?before=abc', ops))
+    const html = await read(
+      h,
+      navigate('/admin/access/actions?before=abc', ops),
+    )
     expect(html).toContain('筛选条件无效')
     expect(rowKeys(between(html, 'actions-body', 'reads-section'))).toEqual([])
   })
@@ -635,15 +642,15 @@ describe('four principals, four pages (§7.3)', () => {
     expect(admin).toContain('这台控制台没有开启个人账号')
     expect(admin).not.toContain('data-poll=')
     expect(writeMarks(admin)).toEqual([])
-    expect(await read(legacy, browse('/admin/access/actions', ADMIN))).toContain(
-      '这台控制台没有接动作账本',
-    )
+    expect(
+      await read(legacy, browse('/admin/access/actions', ADMIN)),
+    ).toContain('这台控制台没有接动作账本')
     const view = await read(legacy, browse('/admin/access', VIEW))
     expect(view).toContain('操作记录需要个人账号或管理令牌')
     expect(writeMarks(view)).toEqual([])
-    expect(await read(legacy, browse('/admin/access/invites', VIEW), 403)).toContain(
-      '这台控制台没有开启个人账号',
-    )
+    expect(
+      await read(legacy, browse('/admin/access/invites', VIEW), 403),
+    ).toContain('这台控制台没有开启个人账号')
     // And the fragments do not exist for it to poll.
     expect(
       (await legacy.handle(browse('/fragments/access/members', VIEW))).status,
@@ -711,7 +718,11 @@ describe('every state of the page keeps the console register', () => {
     // A console without accounts, and a book that does not verify.
     const legacy = pageHarness({ chat: true })
     for (const token of [ADMIN, VIEW]) {
-      for (const path of ['/admin/access', '/admin/access/invites', '/admin/access/actions']) {
+      for (const path of [
+        '/admin/access',
+        '/admin/access/invites',
+        '/admin/access/actions',
+      ]) {
         pages.push([
           `legacy ${path}`,
           await (await legacy.handle(browse(path, token))).text(),
@@ -759,14 +770,18 @@ describe('without script', () => {
           `${path} true ${text}`,
         )
       }
-      for (const href of ['/admin/access', '/admin/access/invites', '/admin/access/actions']) {
+      for (const href of [
+        '/admin/access',
+        '/admin/access/invites',
+        '/admin/access/actions',
+      ]) {
         if (who === ops) expect(bare).toContain(`href="${href}" data-nav`)
       }
     }
     // The filter is a GET form: it works with script off.
     const actions = await read(h, navigate('/admin/access/actions', ops))
     expect(actions).toMatch(
-      /<form id="actions-filter" class="actions-filter" method="get" action="\/access\/actions">/,
+      /<form id="actions-filter" class="actions-filter" method="get" action="\/admin\/access\/actions">/,
     )
   })
 
@@ -782,8 +797,12 @@ describe('without script', () => {
 describe('the area and its paths', () => {
   test('/admin/access/<anything else> is the console 404, and a fragment needs the console header', async () => {
     const { h, ops } = await scene()
-    expect((await h.handle(navigate('/admin/access/members', ops))).status).toBe(404)
-    expect((await h.handle(navigate('/admin/access/x/y', ops))).status).toBe(404)
+    expect(
+      (await h.handle(navigate('/admin/access/members', ops))).status,
+    ).toBe(404)
+    expect((await h.handle(navigate('/admin/access/x/y', ops))).status).toBe(
+      404,
+    )
     expect(
       (await h.handle(poll('/fragments/access/actions', ops))).status,
     ).toBe(404)

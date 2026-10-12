@@ -26,12 +26,14 @@ describe.skipIf(SKIP !== null)('P2 real browser', () => {
     })
     const tab = await browser.tab()
     try {
-      await tab.goto(`http://127.0.0.1:${server.port}/nodes?token=${ADMIN}`)
+      await tab.goto(
+        `http://127.0.0.1:${server.port}/admin/nodes?token=${ADMIN}`,
+      )
       await tab.waitFor('window.qianmoConsole !== undefined')
       await tab.evaluate(
         `(() => { const s = document.getElementById('theme-choice'); s.value = 'dark'; s.dispatchEvent(new Event('change')); })()`,
       )
-      await tab.goto(`http://127.0.0.1:${server.port}/audit`)
+      await tab.goto(`http://127.0.0.1:${server.port}/admin/audit`)
       await tab.waitFor('window.qianmoConsole !== undefined')
       expect(
         await tab.evaluate<string>(`document.documentElement.dataset.theme`),
@@ -93,7 +95,9 @@ describe.skipIf(SKIP !== null)('P2 real browser', () => {
     })
     const tab = await browser.tab()
     try {
-      await tab.goto(`http://127.0.0.1:${server.port}/nodes?token=${ADMIN}`)
+      await tab.goto(
+        `http://127.0.0.1:${server.port}/admin/nodes?token=${ADMIN}`,
+      )
       await tab.waitFor(
         `document.querySelector('#roster[data-refreshed]') !== null`,
       )

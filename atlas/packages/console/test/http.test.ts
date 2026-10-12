@@ -298,7 +298,7 @@ describe('public routes', () => {
 describe('the page', () => {
   test('renders for a view token', async () => {
     const { handle, registry, audit } = setup()
-    const response = await handle(get('/', VIEW))
+    const response = await handle(get('/admin', VIEW))
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toBe(
       'text/html; charset=utf-8',
@@ -311,7 +311,7 @@ describe('the page', () => {
 
   test('opens from a plain browser navigation with ?token=', async () => {
     const { handle } = setup()
-    const response = await handle(get(`/?token=${VIEW}`))
+    const response = await handle(get(`/admin?token=${VIEW}`))
     expect(response.status).toBe(200)
   })
 
@@ -321,14 +321,14 @@ describe('the page', () => {
     const { handle, audit } = setup()
     await handle(get(`/admin/audit?token=${VIEW}&source=router&limit=7`))
     expect(audit.filters[0]).toEqual({ source: 'router', limit: 7 })
-    await handle(get(`/?token=${VIEW}&source=router&limit=7`))
+    await handle(get(`/admin?token=${VIEW}&source=router&limit=7`))
     expect(audit.filters[1]).toEqual({ from: NOW - 3_600_000, limit: 500 })
   })
 
   test('still opens when the registry is unreachable', async () => {
     const { handle, registry } = setup()
     registry.listResult = failResult('unreachable', '注册中心不可达')
-    const response = await handle(get('/', VIEW))
+    const response = await handle(get('/admin', VIEW))
     expect(response.status).toBe(200)
     expect((await response.text()).length).toBeGreaterThan(0)
   })
@@ -337,7 +337,7 @@ describe('the page', () => {
     const { handle, registry, audit } = setup()
     registry.listResult = failResult('unreachable', '注册中心不可达')
     audit.readResult = failResult('unreachable', '审计文件读不到')
-    expect((await handle(get('/', VIEW))).status).toBe(200)
+    expect((await handle(get('/admin', VIEW))).status).toBe(200)
   })
 
   test('keeps the page open when the witness endpoint is unreachable', async () => {
@@ -346,7 +346,7 @@ describe('the page', () => {
       'unreachable',
       '见证端点 · connect ECONNREFUSED 127.0.0.1:1',
     )
-    for (const path of ['/', '/admin/audit']) {
+    for (const path of ['/admin', '/admin/audit']) {
       const response = await handle(get(path, VIEW))
       expect(`${path} ${response.status}`).toBe(`${path} 200`)
       if (path === '/admin/audit') {
@@ -762,7 +762,7 @@ describe('the registry lease on the page (C-1)', () => {
     const settings = await (await handle(get('/admin/settings', VIEW))).text()
     expect(settings).toContain('data-ttl-ms="3600000"')
     expect(registry.listCalls).toBe(2)
-    const overview = await (await handle(get('/', VIEW))).text()
+    const overview = await (await handle(get('/admin', VIEW))).text()
     // The lease is a constant: the overview no longer spends a card on it
     // (A2); the roster and the settings page still state it.
     expect(overview).not.toContain('注册租约')
@@ -1361,7 +1361,7 @@ describe('servers', () => {
 
 describe('the role matrix', () => {
   const viewRoutes: readonly (readonly [string, string])[] = [
-    ['GET', '/'],
+    ['GET', '/admin'],
     ['GET', '/v0/agents'],
     ['GET', '/v0/audit'],
     ['GET', `/v0/audit/chain/${TRACE}`],
@@ -1628,7 +1628,9 @@ describe('parseAuditFilter', () => {
     // resolved to: "the last 24 hours" has to keep meaning that on the next
     // poll rather than freezing at page load.
     const { handle } = setup()
-    const html = await (await handle(get('/admin/audit?window=24h', ADMIN))).text()
+    const html = await (
+      await handle(get('/admin/audit?window=24h', ADMIN))
+    ).text()
     expect(html).toContain('data-poll="/fragments/audit?window=24h"')
     expect(html).toContain('name="window" value="24h" checked')
   })

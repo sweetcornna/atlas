@@ -65,7 +65,9 @@ describe('who sees what (one case per principal)', () => {
       scheduler: new FixedScheduler(snapshotOf()),
     })
 
-    const viewAlerts = await (await c.handle(browse('/admin/alerts', VIEW))).text()
+    const viewAlerts = await (
+      await c.handle(browse('/admin/alerts', VIEW))
+    ).text()
     expect(viewAlerts).toContain('根分区使用率 95%')
     expect(hasWriteControl(viewAlerts)).toBe(false)
     expect(viewAlerts).toContain(
@@ -77,13 +79,17 @@ describe('who sees what (one case per principal)', () => {
     expect((await c.handle(call('POST', ACK_PATH, VIEW))).status).toBe(403)
     expect(notify.ackCalls).toBe(0)
 
-    const adminAlerts = await (await c.handle(browse('/admin/alerts', ADMIN))).text()
+    const adminAlerts = await (
+      await c.handle(browse('/admin/alerts', ADMIN))
+    ).text()
     expect(hasWriteControl(adminAlerts)).toBe(true)
     expect(adminAlerts).toContain('data-action="alert-ack" data-alert="n:disk"')
     expect(adminAlerts).not.toContain('id="read-only"')
     // The jobs page has no write control for anyone, the admin token included.
     expect(
-      hasWriteControl(await (await c.handle(browse('/admin/jobs', ADMIN))).text()),
+      hasWriteControl(
+        await (await c.handle(browse('/admin/jobs', ADMIN))).text(),
+      ),
     ).toBe(false)
     expect((await c.handle(call('POST', ACK_PATH, ADMIN))).status).toBe(200)
     expect(notify.stored.get('n:disk')?.by).toBe('legacy:admin')
@@ -122,7 +128,9 @@ describe('who sees what (one case per principal)', () => {
     expect(alerts).toContain('巡检完成')
     expect(hasWriteControl(alerts)).toBe(false)
     expect(alerts).toContain('只读 · 写操作需要运维角色')
-    expect((await read('/admin/jobs')).includes('每十分钟看一次磁盘')).toBe(true)
+    expect((await read('/admin/jobs')).includes('每十分钟看一次磁盘')).toBe(
+      true,
+    )
     expect((await ack()).status).toBe(403)
     expect(notify.ackCalls).toBe(0)
   })

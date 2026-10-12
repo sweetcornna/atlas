@@ -21,7 +21,7 @@ import {
   pageHarness,
   type PageHarness,
 } from '../pageHarness.js'
-import { Browser, skipReason, type Tab } from './cdp.js'
+import { Browser, observeChatStream, skipReason, type Tab } from './cdp.js'
 
 const SKIP = skipReason()
 if (SKIP !== null) console.warn(`[console P1 browser tests] skipped: ${SKIP}`)
@@ -688,7 +688,7 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await tab.goto(`${served.base}/nodes?token=${VIEW}`)
+        await tab.goto(`${served.base}/admin/nodes?token=${VIEW}`)
         await tab.waitFor('window.qianmoConsole !== undefined')
         expect(
           await tab.evaluate<number>(
@@ -707,7 +707,7 @@ describe.skipIf(SKIP !== null)(
         expect(await posted()).toBe(true)
         await pause(300)
         // A plain navigation now opens as the admin, on the cookie alone.
-        await tab.goto(`${served.base}/nodes`)
+        await tab.goto(`${served.base}/admin/nodes`)
         await tab.waitFor('window.qianmoConsole !== undefined')
         expect(
           await tab.evaluate<number>(
@@ -716,7 +716,8 @@ describe.skipIf(SKIP !== null)(
         ).toBeGreaterThan(0)
         expect(
           served.wrapper.seen.filter(
-            seen => seen.path !== '/admin/nodes' && seen.search.includes('token='),
+            seen =>
+              seen.path !== '/admin/nodes' && seen.search.includes('token='),
           ),
         ).toEqual([])
       } finally {
@@ -729,11 +730,9 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/chat')
-        await tab.waitFor(
-          `(document.getElementById('stream-state') || {}).textContent === '实时'`,
-          10_000,
-        )
+        await observeChatStream(tab)
+        await openConsole(tab, served, '/')
+        await tab.waitFor(`window.__chatStreamOpen === true`, 10_000)
         const streams = served.wrapper.seen.filter(
           seen => seen.path === '/v0/chat/stream',
         )

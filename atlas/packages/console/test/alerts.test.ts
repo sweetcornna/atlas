@@ -100,7 +100,9 @@ describe('the inbox', () => {
     // The checked radio is the filter in force, so the form reproduces it.
     expect(errors).toContain('name="level" value="error" checked')
     // An unknown level is a stale bookmark, not an error: the whole inbox.
-    expect(rowsOf(await page(handle, '/admin/alerts?level=loud'))).toHaveLength(3)
+    expect(rowsOf(await page(handle, '/admin/alerts?level=loud'))).toHaveLength(
+      3,
+    )
   })
 
   test('acknowledging one changes the badge, and moves it from 未确认 to 已确认', async () => {
@@ -125,7 +127,9 @@ describe('the inbox', () => {
     expect(rowsOf(acked)).toEqual(['n:disk'])
     expect(acked).toContain('已确认 <time')
     expect(acked).not.toContain('data-alert="n:disk"')
-    expect(rowsOf(await page(handle, '/admin/alerts?state=all'))).toHaveLength(3)
+    expect(rowsOf(await page(handle, '/admin/alerts?state=all'))).toHaveLength(
+      3,
+    )
   })
 
   test('acknowledging twice keeps the first one', async () => {

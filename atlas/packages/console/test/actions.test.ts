@@ -303,9 +303,7 @@ describe('reads and polls record nothing', () => {
     const before = h.actions.entries.length
 
     // The page opened with the conversation in it.
-    expect((await h.handle(browse(`/chat?session=${id}`, ADMIN))).status).toBe(
-      200,
-    )
+    expect((await h.handle(browse(`/?session=${id}`, ADMIN))).status).toBe(200)
     // A hundred refreshes of what is open: the poller and stream events.
     for (let i = 0; i < 100; i++) {
       await h.handle(call('GET', `/fragments/chat/thread/${id}`, ADMIN))
@@ -327,7 +325,7 @@ describe('reads and polls record nothing', () => {
 
   test('a transcript that did not load is not a reading', async () => {
     const h = harness()
-    await h.handle(browse('/chat?session=ghost', ADMIN))
+    await h.handle(browse('/?session=ghost', ADMIN))
     await h.handle(call('GET', '/fragments/chat/thread/ghost?open=1', ADMIN))
     expect(h.actions.entries).toHaveLength(0)
   })

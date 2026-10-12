@@ -391,7 +391,9 @@ describe('the node page (A3)', () => {
       'href="/admin/nodes/kyoto-1/lifecycle" data-nav>kyoto-1</a>',
     )
     // Every roster card is a way to its node's page.
-    expect(html).toContain('<a href="/admin/nodes/tokyo-1" data-nav>tokyo-1</a>')
+    expect(html).toContain(
+      '<a href="/admin/nodes/tokyo-1" data-nav>tokyo-1</a>',
+    )
 
     const { h: plain } = scene({ lifecycle: undefined })
     const old = await page(plain, '/admin/nodes')
@@ -462,7 +464,9 @@ describe('who sees what (viewer, member, ops, legacy tokens)', () => {
       expect(
         `${who} ${found['/admin/nodes/tokyo-1/lifecycle']?.includes('data-action="lifecycle"')}`,
       ).toBe(`${who} true`)
-      expect(found['/admin/nodes/tokyo-1/lifecycle']).toContain('id="confirm-pause"')
+      expect(found['/admin/nodes/tokyo-1/lifecycle']).toContain(
+        'id="confirm-pause"',
+      )
       expect(found['/fragments/lifecycle/tokyo-1']).toContain('data-write')
       expect(found['/admin/nodes']).toContain('publish-dialog')
       const life = await (
@@ -477,7 +481,9 @@ describe('who sees what (viewer, member, ops, legacy tokens)', () => {
 describe('without script, and the copy', () => {
   test('every tab reads without script; the writer is told the actions need it', async () => {
     const { h } = scene()
-    const lifecycle = withoutScripts(await page(h, '/admin/nodes/tokyo-1/lifecycle'))
+    const lifecycle = withoutScripts(
+      await page(h, '/admin/nodes/tokyo-1/lifecycle'),
+    )
     expect(lifecycle).not.toContain('<script')
     for (const address of [PLANNER, REVIEWER, SCOUT, SLEEPER, OLD]) {
       expect(lifecycle).toContain(`<tr data-key="${address}"`)
@@ -511,7 +517,11 @@ describe('without script, and the copy', () => {
           }),
         ],
       }
-      for (const path of [...TABS, '/admin/nodes', '/admin/nodes/kyoto-1/lifecycle']) {
+      for (const path of [
+        ...TABS,
+        '/admin/nodes',
+        '/admin/nodes/kyoto-1/lifecycle',
+      ]) {
         for (const token of [ADMIN, VIEW]) {
           const visible = visibleText(await page(h, path, token))
           for (const banned of ['。', '，', '、', '！', '!']) {
