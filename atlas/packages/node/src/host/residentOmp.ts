@@ -17,7 +17,7 @@ import {
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { RpcFrameDecoder } from '@oh-my-pi/pi-coding-agent/modes/rpc/rpc-frame'
-import { sanitizeText } from '@oh-my-pi/pi-utils'
+import { isRecord, sanitizeText } from '@oh-my-pi/pi-utils'
 import { qianmoConfigPath } from '@qianmo/paths'
 import { redactHandoffText } from '@qianmo/handoff'
 import {
@@ -1004,9 +1004,14 @@ export class ResidentOmpPool
     )
     this.#children.set(sessionId, child)
     const videoCalls = new Map<string, AbortController>()
+    // Evidence belongs to this child's unsettled activity stretch, not one
+    // agent run: ticketless background continuations may start after the
+    // completed prompt_result. Only explicit failure/abort, protocol failure,
+    // or this child's closure invalidates it before settlement confirms it.
     let completedAwaitingSettlement = false
     void child.closed
       .finally(() => {
+        completedAwaitingSettlement = false
         for (const controller of videoCalls.values()) controller.abort()
       })
       .catch(() => {})
@@ -1037,12 +1042,40 @@ export class ResidentOmpPool
             })
         })()
       }
-      if (frame.type === 'agent_start') {
-        completedAwaitingSettlement = false
-        this.#busy.add(sessionId)
+      if (frame.type === 'agent_start') this.#busy.add(sessionId)
+      if (frame.type === 'prompt_result') {
+        if (frame.status === 'completed') completedAwaitingSettlement = true
+        else if (
+          frame.status === 'error' ||
+          frame.status === 'failed' ||
+          frame.status === 'aborted'
+        )
+          completedAwaitingSettlement = false
       }
-      if (frame.type === 'prompt_result')
-        completedAwaitingSettlement = frame.status === 'completed'
+      // Background runs have no prompt ticket, so their failures must also be
+      // read from assistant events. agent_end can carry a final message that
+      // was never streamed; read the last assistant, as RpcPromptResults does.
+      const assistant =
+        frame.type === 'message_end'
+          ? frame.message
+          : frame.type === 'agent_end' &&
+              (frame.yielded ?? frame.isTerminal !== false) &&
+              Array.isArray(frame.messages)
+            ? (frame.messages as unknown[]).findLast(
+                message => isRecord(message) && message.role === 'assistant',
+              )
+            : undefined
+      if (
+        (isRecord(assistant) &&
+          assistant.role === 'assistant' &&
+          (assistant.stopReason === 'error' ||
+            assistant.stopReason === 'aborted')) ||
+        (frame.type === 'response' &&
+          frame.command === 'abort' &&
+          frame.success === true) ||
+        frame.type === 'rpc_frame_error'
+      )
+        completedAwaitingSettlement = false
       if (
         frame.type === 'session_settled' ||
         (frame.type === 'prompt_result' && frame.sessionSettled === true)
