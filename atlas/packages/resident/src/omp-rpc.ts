@@ -61,9 +61,10 @@ export interface OmpTurnRouter {
   /**
    * The live channel for `sessionId`, starting or resuming the child first if
    * this process has not opened that session yet (a recovered admission names
-   * a session from a previous life).
+   * a session from a previous life). A supplied signal cancels queued/startup
+   * work and pins the acquired child until the caller aborts it on turn end.
    */
-  channelFor(sessionId: string): Promise<OmpRpcChannel>
+  channelFor(sessionId: string, signal?: AbortSignal): Promise<OmpRpcChannel>
   /**
    * Crash recovery (§4.3 `input-status`): whether `messageId` reached the
    * session's transcript, read from the identity entries the extension writes

@@ -362,9 +362,8 @@ describe('resident product integration', () => {
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      // Every generation dies on the spot. This is the shape of an expired
-      // credential, a missing binary or a broken build: not a crash mid-turn,
-      // but an agent that cannot come up at all, ever.
+      // Each lazy startup dies on the spot: a missing binary or broken build,
+      // rather than a crash in an already admitted turn.
       spawnOmp: () => {
         const child = spawn(process.execPath, ['-e', 'process.exit(3)'], {
           stdio: ['pipe', 'pipe', 'ignore'],
@@ -372,8 +371,8 @@ describe('resident product integration', () => {
         children.push(child)
         return child
       },
-      // The production ladder is 2s/4s/8s/16s before the fifth failure parks.
-      // Nothing here depends on the wait itself, only on what parking does.
+      // Two consecutive lazy startup failures park the pool, independent of
+      // how long its generation was idle before the first delivery.
       ompRestart: { initialBackoffMs: 10, maxRapidFailures: 2 },
       onReady: address => {
         if (address.unix !== undefined) ready.push(address.unix)
@@ -384,13 +383,9 @@ describe('resident product integration', () => {
     activeResident = resident
     activeRun = running
 
-    // Bound before the agent, and never on the agent's behalf: no generation
-    // ever succeeded here, so under the old ownership this address would not
-    // exist at all.
+    // The listener and session registration are ready without any RPC child.
     await waitUntil(() => ready.length === 1)
-    await waitUntil(() =>
-      errors.some(error => String(error).includes('resident is degraded')),
-    )
+    expect(children).toHaveLength(0)
     expect(ready).toEqual([socket])
     // `run()` has not returned. Parking used to end it, taking the listener,
     // the ledger and the audit chain down with it.
@@ -422,6 +417,38 @@ describe('resident product integration', () => {
     // different facts, and this connection is what lets a peer tell them apart.
     await client.connect()
 
+    const initial = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { round: 'first-use' },
+    })
+    await client.sendAndWait(initial, RECEIPT_BUDGET_MS)
+    await waitUntil(() =>
+      errors.some(error =>
+        String(error).includes('parked after 2 consecutive startup failures'),
+      ),
+    )
+    await waitUntil(() =>
+      replies.some(
+        item =>
+          item.type === MessageType.TaskResult &&
+          item.taskId === initial.taskId,
+      ),
+    )
+    expect(
+      replies.find(
+        item =>
+          item.type === MessageType.TaskResult &&
+          item.taskId === initial.taskId,
+      )?.payload,
+    ).toMatchObject({
+      outcome: 'failed',
+      reason: expect.stringContaining('child exited code=3'),
+    })
+    expect(children).toHaveLength(2)
+    const mailboxBeforeRefusal = await readMailbox(AGENT, TEAM)
+
     const request = createMessage({
       from: 'qianmo://node-a/planner',
       to: 'qianmo://node-b/reviewer',
@@ -447,11 +474,12 @@ describe('resident product integration', () => {
     await waitUntil(() => replies.some(item => item.type === MessageType.Error))
     const refusal = replies.find(item => item.type === MessageType.Error)
     expect(String((refusal?.payload as { reason?: string })?.reason)).toContain(
-      'resident agent is unavailable',
+      'parked after 2 consecutive startup failures',
     )
     // Nothing was written: a turn that cannot run must not leave an inbox slot
     // spent behind it.
-    expect(await readMailbox(AGENT, TEAM)).toHaveLength(0)
+    expect(await readMailbox(AGENT, TEAM)).toEqual(mailboxBeforeRefusal)
+    expect(children).toHaveLength(2)
 
     // It is still a node, on purpose. `stop()` is the only thing that ends it.
     expect(client.isReady()).toBe(true)
@@ -935,6 +963,8 @@ describe('resident product integration', () => {
     const activity: boolean[] = []
     const ready: string[] = []
     let generation = 0
+    let runtimeReady = 0
+    const replies: QianmoMessage[] = []
     const resident = new QianmoResident({
       node: 'node-b',
       team: TEAM,
@@ -953,6 +983,9 @@ describe('resident product integration', () => {
       onActivity: active => {
         activity.push(active)
       },
+      onTiming: event => {
+        if (event.stage === 'runtime_ready') runtimeReady++
+      },
       onReady: address => {
         if (address.unix !== undefined) ready.push(address.unix)
       },
@@ -968,6 +1001,9 @@ describe('resident product integration', () => {
       psk: PSK,
       backoff: { baseDelayMs: 20, maxDelayMs: 100, jitterRatio: 0 },
       keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
     })
     clients.push(client)
     await client.connect()
@@ -985,8 +1021,31 @@ describe('resident product integration', () => {
 
     await waitUntil(() => activity.at(-1) === false)
     expect(activity).toEqual([true, false])
-    // Second ACP child, not a second `onReady` — see the note above.
-    await waitUntil(() => children.length === 2)
+    await waitUntil(() => runtimeReady === 2)
+    expect(children).toHaveLength(1)
+    const after = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { round: 'after-crash' },
+    })
+    await client.sendAndWait(after)
+    await waitUntil(() =>
+      replies.some(
+        reply =>
+          reply.type === MessageType.TaskResult &&
+          reply.taskId === after.taskId,
+      ),
+    )
+    expect(
+      replies.find(
+        reply =>
+          reply.type === MessageType.TaskResult &&
+          reply.taskId === after.taskId,
+      )?.payload,
+    ).toMatchObject({ outcome: 'completed' })
+    expect(children).toHaveLength(2)
+    expect(ready).toHaveLength(1)
   }, 15_000)
 })
 

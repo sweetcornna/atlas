@@ -997,3 +997,44 @@ test('protected roots and M2 identity flags remain explicit CLI inputs', () => {
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+describe('omp child resource flags', () => {
+  test('both value spellings work and a later override wins', () => {
+    const config = parseResidentArgs([
+      ...BASE,
+      '--omp-idle-ms',
+      '100',
+      '--omp-idle-ms=25',
+      '--omp-max-children=2',
+    ])
+    expect(config.ompIdleMs).toBe(25)
+    expect(config.ompMaxChildren).toBe(2)
+  })
+  test('invalid budgets and limits are refused before a node starts', () => {
+    for (const value of ['0', '-1', '1.5', 'NaN', '', '2147483648'])
+      expect(() =>
+        parseResidentArgs([...BASE, `--omp-idle-ms=${value}`]),
+      ).toThrow('--omp-idle-ms')
+    for (const value of ['0', '-1', '1.5', 'Infinity', '', '9007199254740992'])
+      expect(() =>
+        parseResidentArgs([...BASE, `--omp-max-children=${value}`]),
+      ).toThrow('--omp-max-children')
+    expect(() => parseResidentArgs([...BASE, '--omp-max-children'])).toThrow(
+      'requires a value',
+    )
+  })
+  test('help explains lazy startup, retained transcripts, capacity and queue bounds', () => {
+    expect(RESIDENT_HELP_TEXT).toContain('started on first delivery')
+    expect(RESIDENT_HELP_TEXT).toContain('--omp-idle-ms')
+    expect(RESIDENT_HELP_TEXT).toContain('--omp-max-children')
+    expect(RESIDENT_HELP_TEXT).toContain('omitted means unlimited')
+    expect(RESIDENT_HELP_TEXT).toContain('64 session starts queue')
+    expect(RESIDENT_HELP_TEXT).toContain('30000 ms')
+    expect(RESIDENT_HELP_TEXT).toContain('session mappings remain')
+    expect(RESIDENT_HELP_TEXT).toContain('32 waiting turns')
+    expect(RESIDENT_HELP_TEXT).toContain('session-start capacity queue')
+    expect(RESIDENT_HELP_TEXT).toContain('not when the task arrives')
+    expect(RESIDENT_HELP_TEXT).toContain('Small-memory nodes: use 60000')
+    expect(RESIDENT_HELP_TEXT).toContain('min(idle, 60000)')
+  })
+})

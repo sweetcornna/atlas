@@ -16,6 +16,7 @@ let model = { provider: 'fixture', id: 'fixture' }
 let thinkingLevel = 'off'
 let current: string | undefined
 const pendingTools = new Map<string, (value: Record<string, unknown>) => void>()
+let finishProgress: (() => void) | undefined
 async function prompt(frame: Record<string, unknown>) {
   const input = unmarkResidentInput(String(frame.message))
   if (!input) throw new Error('resident fixture requires input identity')
@@ -37,6 +38,59 @@ async function prompt(frame: Record<string, unknown>) {
   })
   // A real model responds on a later tick, after durable input admission.
   await Bun.sleep(0)
+  if (process.env.QIANMO_FIXTURE_CRASH_ON_PROMPT === '1') {
+    // Let the host durably admit the input, then die without a healthy round.
+    await Bun.sleep(10)
+    process.exit(7)
+  }
+  if (process.env.QIANMO_FIXTURE_PROGRESS_BATCH === '1') {
+    const finish = Promise.withResolvers<void>()
+    finishProgress = finish.resolve
+    for (const [toolCallId, toolName] of [
+      ['progress-1', 'read'],
+      ['progress-2', 'grep'],
+    ]) {
+      emit({ type: 'tool_execution_start', toolCallId, toolName, args: {} })
+      emit({ type: 'tool_execution_end', toolCallId, toolName, isError: false })
+    }
+    // The host waits for the first two rows to reach the notifier, then lets
+    // the last tool and prompt_result arrive in exactly one stdout write.
+    await finish.promise
+    process.stdout.write(
+      [
+        {
+          type: 'tool_execution_start',
+          toolCallId: 'progress-3',
+          toolName: 'find',
+          args: {},
+        },
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'progress-3',
+          toolName: 'find',
+          isError: false,
+        },
+        {
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'progress batch complete' }],
+            stopReason: 'stop',
+          },
+        },
+        {
+          type: 'prompt_result',
+          id: frame.id,
+          status: 'completed',
+          sessionSettled: true,
+        },
+        { type: 'session_settled' },
+      ]
+        .map(value => `${JSON.stringify(value)}\n`)
+        .join(''),
+    )
+    return
+  }
   let text = 'fixture response'
   const title = process.env.QIANMO_FIXTURE_TOOL_CALL
   if (title)
@@ -96,14 +150,20 @@ async function prompt(frame: Record<string, unknown>) {
   emit({
     type: 'prompt_result',
     id: frame.id,
-    status: 'completed',
-    sessionSettled: true,
+    status: process.env.QIANMO_FIXTURE_RESULT_STATUS ?? 'completed',
+    sessionSettled: process.env.QIANMO_FIXTURE_DEFER_SETTLED !== '1',
   })
+  if (process.env.QIANMO_FIXTURE_DEFER_SETTLED === '1') return
   emit({ type: 'session_settled' })
 }
 const lines = createInterface({ input: process.stdin })
 lines.on('line', line => {
   const frame = JSON.parse(line) as Record<string, unknown>
+  if (frame.type === 'fixture_finish_progress') {
+    finishProgress?.()
+    finishProgress = undefined
+    return
+  }
   if (frame.type === 'host_tool_result') {
     pendingTools.get(String(frame.id))?.(
       frame.result as Record<string, unknown>,
@@ -117,7 +177,23 @@ lines.on('line', line => {
     })
     return
   }
-  if (frame.type === 'open_session') sessionDir = String(frame.sessionDir)
+  if (frame.type === 'open_session') {
+    if (process.env.QIANMO_FIXTURE_OPEN_ERROR) {
+      emit({
+        type: 'response',
+        id: frame.id,
+        success: false,
+        error: process.env.QIANMO_FIXTURE_OPEN_ERROR,
+      })
+      return
+    }
+    sessionDir = String(frame.sessionDir)
+    if (process.env.QIANMO_FIXTURE_OPEN_LOG)
+      appendFileSync(
+        process.env.QIANMO_FIXTURE_OPEN_LOG,
+        `${JSON.stringify(frame)}\n`,
+      )
+  }
   if (
     (frame.type === 'open_session' || frame.type === 'set_model') &&
     typeof frame.provider === 'string' &&
@@ -125,6 +201,7 @@ lines.on('line', line => {
   )
     model = { provider: frame.provider, id: frame.modelId }
   if (frame.type === 'set_thinking_level') thinkingLevel = String(frame.level)
+  if (frame.type === 'fixture_settle') emit({ type: 'session_settled' })
   if (frame.type === 'abort' && current) {
     emit({
       type: 'prompt_result',
@@ -142,4 +219,6 @@ lines.on('line', line => {
     data: frame.type === 'get_state' ? { model, thinkingLevel } : {},
   })
 })
+if (process.env.QIANMO_FIXTURE_READY_DELAY_MS)
+  await Bun.sleep(Number(process.env.QIANMO_FIXTURE_READY_DELAY_MS))
 emit({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2] })
