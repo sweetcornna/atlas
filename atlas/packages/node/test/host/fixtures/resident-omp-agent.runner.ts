@@ -37,6 +37,11 @@ async function prompt(frame: Record<string, unknown>) {
   })
   // A real model responds on a later tick, after durable input admission.
   await Bun.sleep(0)
+  if (process.env.QIANMO_FIXTURE_CRASH_ON_PROMPT === '1') {
+    // Let the host durably admit the input, then die without a healthy round.
+    await Bun.sleep(10)
+    process.exit(7)
+  }
   let text = 'fixture response'
   const title = process.env.QIANMO_FIXTURE_TOOL_CALL
   if (title)

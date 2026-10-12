@@ -109,7 +109,8 @@ ACP 路线下 omp 的 `prompt` 丢弃 `messageId`、`cancel` 不读 `_meta`、`e
 ### 4.2 进程拓扑
 
 - 宿主维护 omp RPC 子进程池：**每个活跃会话键（agent + contextId）一个进程**。每代启动只登记 owner 与持久会话映射，首次实际投递才起子进程，`runtime_ready` 表示登记和恢复就绪。RPC `open_session` 传 `{sessionDir, provider?, modelId?}`，会话目录在 `qianmoConfigPath('resident', 'sessions', <agent>, <session UUID>)`；会话键到 UUID 的映射持久化。`--omp-idle-ms`（默认 600000）只回收进程，不删转录或映射；会话映射 GC 仍沿用 `session-gc`。
-- `--omp-max-children` 默认不限；计入启动中和等待退出的进程，满额时先回收最久未用的空闲进程，忙碌与投递中的进程不被容量回收。全忙最多排队 64 个会话启动请求，30 秒超时或队满以明确容量原因失败；停机、取消及 owner 失效会取消待启动请求并等待已启动子进程真正退出。
+- `--omp-max-children` 默认不限；计入启动中和等待退出的进程，满额时先回收最久未用的空闲进程，忙碌与投递中的进程不被容量回收。**池的启动队列**最多等待 64 个会话启动请求，满额等待 30 秒超时或队满以明确容量原因失败。其前还有**节点回合闸门**：所有 agent 共用串行执行，最多 32 个等待回合。普通任务先等前一回合，轮到它申请子进程且池满时才开始这条 30 秒容量计时，不是从入站时计时。停机、取消及 owner 失效会取消待启动请求并等待已启动子进程真正退出。
+- 小内存节点建议 `--omp-idle-ms 60000 --omp-max-children 1`；回收扫描间隔为 `min(idle, 60000)` 毫秒，超过空闲阈值后到下一次扫描才回收。稳定性采用实际 RPC 子进程从 ready 起的运行时长（默认 10 秒），或已完成一轮的健康证据；没有子进程的 generation 空闲时间不清零跨代快速崩溃计数。ready 前退出的启动错误附带最多 2 KiB、脱敏后的 stderr 尾部；修好配置后重启 resident 解除停车。
 - 按需启动连续失败在池内计数（默认 5 次，成功启动清零，空闲时间不清零；容量等待失败和取消不计）。停车后停止邮箱轮询，继续提供传输、回执和审计，拒绝新任务并说明最后一次启动错误；停车后需修正 provider 并重启 resident 才恢复；正常空闲时的 provider 换代保持原有行为。启动期缺少模型凭据的提示与代前凭据探针保留。
 - 启动参数包括 `--mode rpc --no-extensions --extension <节点扩展绝对路径> --config <节点覆盖层> --approval-mode <write|always-ask> --tools <显式工具表>`，以及模型与 thinking 参数。未接入宿主审批时另加 `--no-ui`；接入审批时保留 RPC confirm 帧，由宿主按精确请求处理。禁止从工作区自动发现扩展；`--allow-workspace-edits` 对应 write 模式及扩展工作区规则，其余为只读。
 - 环境经过 `residentOmpEnvironment(ompSpawnEnv())`：隔离 omp 根，清除 `PI_CONFIG_FILES`、`PI_EDIT_VARIANT` 和与模型字面配置碰撞的环境变量名。已托管（state v2）节点额外清除继承的 provider 凭据及 `CLAUDE_CODE_*`；未托管节点保留操作者显式配置的 provider 环境。

@@ -65,7 +65,7 @@ import {
   type ShadowRefusalSink,
 } from '@qianmo/capability'
 import type { TLSOptions } from 'bun'
-import { isValidSegment } from '@qianmo/protocol'
+import { isValidSegment, LIMITS } from '@qianmo/protocol'
 import {
   PSK_ENV_VAR,
   mutualTlsServerOptions,
@@ -915,10 +915,18 @@ omp child processes (started on first delivery, never prestarted):
   --omp-idle-ms <ms>       Reap idle processes after ${DEFAULT_OMP_IDLE_MS} ms by default.
                            Positive integer, at most 2147483647. Transcripts
                            and session mappings remain for the next delivery.
+                           Small-memory nodes: use 60000. Reaping scans every
+                           min(idle, 60000) ms; actual reclamation may be later.
   --omp-max-children <n>   Positive integer; omitted means unlimited. At capacity,
                            reap the least recently used idle child. Busy children
                            are protected; at most ${DEFAULT_OMP_QUEUE_LIMIT} session starts queue for
                            ${DEFAULT_OMP_QUEUE_TIMEOUT_MS} ms, then fail with a capacity reason.
+                           This is the pool's session-start capacity queue.
+
+  Node turns run serially, with at most ${LIMITS.maxQueuedTurns} waiting turns at the
+  shared turn gate. Ordinary tasks wait for the previous turn first; the
+  pool's ${DEFAULT_OMP_QUEUE_TIMEOUT_MS} ms capacity timer starts only when acquiring a child
+  at a full pool, not when the task arrives at the node.
 
 Authorization:
 

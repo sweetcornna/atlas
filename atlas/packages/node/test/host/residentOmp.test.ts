@@ -1,12 +1,47 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
 import { ResidentSupervisor } from '@qianmo/resident'
 import { OmpRpcProcess, ResidentOmpPool } from '../../src/host/residentOmp.js'
 import { isolatedRoot } from '../providers/fake.js'
+
+test('stderr after ready is forwarded unchanged and does not become a startup diagnostic', async () => {
+  const child = spawn(
+    process.execPath,
+    [
+      '-e',
+      `
+    process.stdout.write('{"type":"ready"}\\n');
+    process.stdin.once('data', () => process.stderr.write('runtime stderr Bearer fake-runtime-token\\n', () => process.exit(1)));
+  `,
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  )
+  const channel = new OmpRpcProcess(child, undefined, 30_000, true)
+  const chunks: string[] = []
+  const stderr = spyOn(process.stderr, 'write').mockImplementation(chunk => {
+    chunks.push(String(chunk))
+    return true
+  })
+  try {
+    await channel.initialize()
+    channel.send({ type: 'fail-after-ready' })
+    const failure = await channel.closed.catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toBe(
+      'omp RPC child exited code=1 signal=null',
+    )
+    await channel.stop()
+  } finally {
+    stderr.mockRestore()
+    child.kill('SIGKILL')
+    await channel.stop()
+  }
+  expect(chunks.join('')).toBe('runtime stderr Bearer fake-runtime-token\n')
+})
 
 test('stop can escalate a graceful shutdown immediately while sharing the promise until real close', async () => {
   const child = spawn(

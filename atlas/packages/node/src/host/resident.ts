@@ -3188,7 +3188,7 @@ export class QianmoResident {
       this.#poller = poller
       poller.start()
 
-      return { closed, stop }
+      return { closed, stop, isStable: ms => child.isStable(ms) }
     } catch (error) {
       await stop()
       throw error

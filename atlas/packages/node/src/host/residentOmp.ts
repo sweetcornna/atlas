@@ -17,7 +17,9 @@ import {
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { RpcFrameDecoder } from '@oh-my-pi/pi-coding-agent/modes/rpc/rpc-frame'
+import { sanitizeText } from '@oh-my-pi/pi-utils'
 import { qianmoConfigPath } from '@qianmo/paths'
+import { redactHandoffText } from '@qianmo/handoff'
 import {
   markResidentInput,
   residentActiveTools,
@@ -77,6 +79,8 @@ export class OmpRpcProcess implements OmpRpcChannel {
   #intentional = false
   #sequence = 0
   #alive = true
+  #readyAt: number | undefined
+  #endedAt: number | undefined
 
   readonly #routing: ResidentModelRouter
   #routeCompletion: Promise<void> = Promise.resolve()
@@ -84,6 +88,7 @@ export class OmpRpcProcess implements OmpRpcChannel {
     child: ChildProcess,
     manualPath?: string,
     readyTimeoutMs = 30_000,
+    forwardStderr = false,
   ) {
     this.#routing = new ResidentModelRouter(manualPath)
     this.child = child
@@ -102,6 +107,41 @@ export class OmpRpcProcess implements OmpRpcChannel {
     void this.#ready.catch(() => {})
     const decoder = new RpcFrameDecoder()
     const lines = createInterface({ input: child.stdout, crlfDelay: Infinity })
+    // Keep only a bounded startup tail. On overflow drop its first partial
+    // line before redaction, so truncation cannot expose a token's suffix.
+    const stderrLimit = 2_048
+    let stderr = Buffer.alloc(0)
+    let stderrTruncated = false
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (this.#readyAt !== undefined) {
+        if (forwardStderr) process.stderr.write(chunk)
+        return
+      }
+      stderr = Buffer.concat([stderr, chunk])
+      if (stderr.length > stderrLimit) {
+        stderrTruncated = true
+        stderr = Buffer.from(stderr.subarray(-stderrLimit))
+      }
+    })
+    const startupReason = (error: Error): Error => {
+      let tail = stderr.toString('utf8')
+      if (stderrTruncated) tail = tail.slice(tail.indexOf('\n') + 1)
+      if (stderrTruncated && !stderr.includes(10)) tail = ''
+      tail = redactHandoffText(sanitizeText(tail))
+        .text.replace(/\bsk[-_][A-Za-z0-9_-]+/gi, '[REDACTED]')
+        .replace(/(\bBearer\s+)[^\s"'\\,;]+/gi, '$1[REDACTED]')
+        .replace(/[A-Za-z0-9_+/=-]{32,}/g, '[REDACTED]')
+        .trim()
+      // Masks can be longer than short keys. Bound the redacted UTF-8 too,
+      // advancing past any partial leading codepoint.
+      const clean = Buffer.from(tail)
+      let offset = Math.max(0, clean.length - stderrLimit)
+      while (offset < clean.length && (clean[offset]! & 0xc0) === 0x80) offset++
+      tail = clean.subarray(offset).toString('utf8')
+      return tail
+        ? new Error(`${error.message}; startup stderr: ${tail}`)
+        : error
+    }
     const readyTimeout = setTimeout(() => {
       readyReject(new Error('omp RPC ready timed out'))
       child.kill('SIGTERM')
@@ -110,6 +150,7 @@ export class OmpRpcProcess implements OmpRpcChannel {
       const finish = (error?: Error) => {
         if (!this.#alive) return
         this.#alive = false
+        this.#endedAt ??= Date.now()
         clearTimeout(readyTimeout)
         lines.close()
         // readline.close() pauses stdout. Drain both pipes to EOF so buffered
@@ -117,21 +158,32 @@ export class OmpRpcProcess implements OmpRpcChannel {
         // after exit and strand the real-process reaping promise.
         child.stdout?.resume()
         child.stderr?.resume()
-        const reason = error ?? new Error('omp RPC child closed')
+        const failure =
+          this.#readyAt === undefined
+            ? startupReason(
+                error ?? new Error('omp RPC child closed before ready'),
+              )
+            : error
+        const reason = failure ?? new Error('omp RPC child closed')
         readyReject(reason)
         for (const pending of this.#pending.values()) pending.reject(reason)
         this.#pending.clear()
-        if (this.#intentional || error === undefined) resolve()
-        else reject(error)
+        if (this.#intentional || failure === undefined) resolve()
+        else reject(failure)
       }
       child.once('error', finish)
-      child.once('exit', (code, signal) =>
+      const exited = (code: number | null, signal: NodeJS.Signals | null) =>
         finish(
           code === 0
             ? undefined
             : new Error(`omp RPC child exited code=${code} signal=${signal}`),
-        ),
-      )
+        )
+      child.once('exit', (code, signal) => {
+        // Before ready, close also guarantees stderr has drained. After ready
+        // retain the existing immediate protocol failure on exit.
+        if (this.#readyAt !== undefined) exited(code, signal)
+      })
+      child.once('close', exited)
       child.stdin?.on('error', finish)
       lines.on('line', line => {
         try {
@@ -139,6 +191,8 @@ export class OmpRpcProcess implements OmpRpcChannel {
           if (decoded === undefined) return
           const frame = decoded as OmpRpcFrame
           if (frame.type === 'ready') {
+            this.#readyAt ??= Date.now()
+            stderr = Buffer.alloc(0)
             clearTimeout(readyTimeout)
             readyResolve(frame)
           }
@@ -178,6 +232,12 @@ export class OmpRpcProcess implements OmpRpcChannel {
       this.child.exitCode === null &&
       this.child.signalCode === null
     )
+  }
+  /** Frozen at protocol failure/stop, never extended by process reaping. */
+  get readyRuntimeMs(): number {
+    return this.#readyAt === undefined
+      ? 0
+      : (this.#endedAt ?? Date.now()) - this.#readyAt
   }
   async initialize(): Promise<void> {
     const ready = await this.#ready
@@ -348,6 +408,7 @@ export class OmpRpcProcess implements OmpRpcChannel {
   }
   async #stopAndReap(): Promise<void> {
     this.#intentional = true
+    this.#endedAt ??= Date.now()
     try {
       this.child.stdin?.end()
     } catch {
@@ -372,9 +433,15 @@ export const DEFAULT_OMP_QUEUE_TIMEOUT_MS = 30_000
 
 interface CapacityWaiter {
   readonly sessionId: string
+  readonly opening: OmpOpening
   readonly resolve: () => void
   readonly reject: (error: Error) => void
   readonly timer: Timer
+}
+
+interface OmpOpening {
+  readonly promise: Promise<OmpRpcProcess>
+  cancelled: boolean
 }
 
 interface PoolOptions {
@@ -427,7 +494,7 @@ export class ResidentOmpPool
   readonly #options: PoolOptions
   readonly #children = new Map<string, OmpRpcProcess>()
   readonly #retiring = new Map<string, Promise<void>>()
-  readonly #starting = new Map<string, Promise<OmpRpcProcess>>()
+  readonly #starting = new Map<string, OmpOpening>()
   readonly #owners = new Map<string, ResidentAgentSession>()
   readonly #busy = new Set<string>()
   readonly #used = new Map<string, number>()
@@ -435,11 +502,12 @@ export class ResidentOmpPool
   #useSequence = 0
   readonly #timer: Timer
   /** Includes reserved starts and retiring processes until actual close. */
-  readonly #slots = new Set<string>()
+  readonly #slots = new Map<string, OmpOpening>()
   readonly #queue: CapacityWaiter[] = []
   readonly #pins = new Map<string, Set<symbol>>()
-  readonly #cancelledStarts = new Set<string>()
   #startFailures = 0
+  #completedTurn = false
+  #longestReadyMs = 0
   #parkedReason: string | undefined
   #resolve!: () => void
   #reject!: (error: Error) => void
@@ -488,6 +556,15 @@ export class ResidentOmpPool
   }
   get parkedReason(): string | undefined {
     return this.#parkedReason
+  }
+  isStable(stableAfterMs: number): boolean {
+    return (
+      this.#completedTurn ||
+      this.#longestReadyMs >= stableAfterMs ||
+      [...this.#children.values()].some(
+        child => child.readyRuntimeMs >= stableAfterMs,
+      )
+    )
   }
   #assertAvailable(): void {
     if (this.#stopped || this.#failed)
@@ -541,7 +618,7 @@ export class ResidentOmpPool
     for (const [id] of ids) this.closeSession(id)
     await Promise.allSettled(
       ids.map(async ([id]) => {
-        await this.#starting.get(id)?.catch(() => {})
+        await this.#starting.get(id)?.promise.catch(() => {})
         await this.#retiring.get(id)
       }),
     )
@@ -577,9 +654,20 @@ export class ResidentOmpPool
     signal?.addEventListener('abort', abort, { once: true })
     let acquired = false
     try {
-      // A retiring process still owns the transcript and its capacity slot.
-      const retiring = this.#retiring.get(sessionId)
-      if (retiring) await Promise.race([retiring, cancelled.promise])
+      // A cancelled opening owns both cleanup and real reaping. Retirement
+      // alone can finish before #open's catch/finally. Never share its result.
+      for (;;) {
+        const previous = this.#starting.get(sessionId)
+        const retiring = this.#retiring.get(sessionId)
+        if (previous?.cancelled) {
+          await Promise.race([
+            previous.promise.catch(() => {}),
+            cancelled.promise,
+          ])
+        } else if (retiring) {
+          await Promise.race([retiring, cancelled.promise])
+        } else break
+      }
       this.#assertAvailable()
       signal?.throwIfAborted()
       this.#touch(sessionId)
@@ -596,17 +684,20 @@ export class ResidentOmpPool
           return existing
         }
         // Register before #open runs, even when configuration/spawn throws.
-        opening = Promise.resolve().then(() => this.#open(sessionId))
+        const result = Promise.withResolvers<OmpRpcProcess>()
+        opening = { promise: result.promise, cancelled: false }
         this.#starting.set(sessionId, opening)
-        void opening
+        const instance = opening
+        void Promise.resolve()
+          .then(() => this.#open(sessionId, instance))
           .finally(() => {
-            this.#starting.delete(sessionId)
-            this.#cancelledStarts.delete(sessionId)
+            if (this.#starting.get(sessionId) === instance)
+              this.#starting.delete(sessionId)
             this.#drainCapacity()
           })
-          .catch(() => {})
+          .then(result.resolve, result.reject)
       }
-      const child = await Promise.race([opening, cancelled.promise])
+      const child = await Promise.race([opening.promise, cancelled.promise])
       signal?.throwIfAborted()
       acquired = true
       return child
@@ -635,12 +726,11 @@ export class ResidentOmpPool
       !this.#pins.has(sessionId)
     )
   }
-  #claimCapacity(sessionId: string): Promise<void> {
+  #claimCapacity(sessionId: string, opening: OmpOpening): Promise<void> {
     this.#assertAvailable()
-    if (this.#cancelledStarts.has(sessionId))
-      throw new Error('resident omp startup cancelled')
+    if (opening.cancelled) throw new Error('resident omp startup cancelled')
     if (this.#slots.size < (this.#options.maxChildren ?? Infinity)) {
-      this.#slots.add(sessionId)
+      this.#slots.set(sessionId, opening)
       return Promise.resolve()
     }
     if (
@@ -659,7 +749,7 @@ export class ResidentOmpPool
       )
     }, timeout)
     timer.unref()
-    this.#queue.push({ sessionId, ...waiting, timer })
+    this.#queue.push({ sessionId, opening, ...waiting, timer })
     this.#drainCapacity()
     return waiting.promise
   }
@@ -684,7 +774,7 @@ export class ResidentOmpPool
       if (this.#slots.size < (this.#options.maxChildren ?? Infinity)) {
         const waiter = this.#queue.shift()!
         clearTimeout(waiter.timer)
-        this.#slots.add(waiter.sessionId)
+        this.#slots.set(waiter.sessionId, waiter.opening)
         waiter.resolve()
         continue
       }
@@ -700,25 +790,29 @@ export class ResidentOmpPool
       return
     }
   }
-  async #open(sessionId: string): Promise<OmpRpcProcess> {
+  async #open(sessionId: string, opening: OmpOpening): Promise<OmpRpcProcess> {
     try {
-      await this.#claimCapacity(sessionId)
+      await this.#claimCapacity(sessionId, opening)
       this.#assertAvailable()
-      if (this.#cancelledStarts.has(sessionId))
-        throw new Error('resident omp startup cancelled')
+      if (opening.cancelled) throw new Error('resident omp startup cancelled')
       const child = await this.#spawn(sessionId)
       this.#assertAvailable()
-      if (!child.alive || this.#cancelledStarts.has(sessionId))
+      if (!child.alive || opening.cancelled)
         throw new Error('resident omp startup cancelled or child closed')
       this.#startFailures = 0
       this.#touch(sessionId)
       return child
     } catch (error) {
-      const cancelled = this.#cancelledStarts.has(sessionId) || this.#stopped
-      const hadSlot = this.#slots.has(sessionId)
-      this.closeSession(sessionId)
+      const cancelled = opening.cancelled || this.#stopped
+      const hadSlot = this.#slots.get(sessionId) === opening
+      if (this.#starting.get(sessionId) === opening)
+        this.closeSession(sessionId)
       await this.#retiring.get(sessionId)
-      if (!this.#children.has(sessionId) && !this.#retiring.has(sessionId))
+      if (
+        !this.#children.has(sessionId) &&
+        !this.#retiring.has(sessionId) &&
+        this.#slots.get(sessionId) === opening
+      )
         this.#slots.delete(sessionId)
       // Queue pressure and user cancellation are not broken-model evidence.
       if (!cancelled && hadSlot && !this.#failed && !this.#parkedReason) {
@@ -835,10 +929,11 @@ export class ResidentOmpPool
         spawn(argv[0]!, argv.slice(1), {
           cwd: owner.cwd,
           env,
-          stdio: ['pipe', 'pipe', 'inherit'],
+          stdio: ['pipe', 'pipe', 'pipe'],
         }),
       manualPath,
       this.#options.readyTimeoutMs,
+      this.#options.spawn === undefined,
     )
     this.#children.set(sessionId, child)
     const videoCalls = new Map<string, AbortController>()
@@ -879,6 +974,8 @@ export class ResidentOmpPool
         frame.type === 'session_settled' ||
         (frame.type === 'prompt_result' && frame.sessionSettled === true)
       ) {
+        if (frame.type === 'prompt_result' && frame.status === 'completed')
+          this.#completedTurn = true
         this.#busy.delete(sessionId)
         this.#drainCapacity()
       }
@@ -1091,8 +1188,9 @@ export class ResidentOmpPool
     return false
   }
   closeSession(sessionId: string): void {
-    if (this.#starting.has(sessionId)) {
-      this.#cancelledStarts.add(sessionId)
+    const opening = this.#starting.get(sessionId)
+    if (opening) {
+      opening.cancelled = true
       this.#removeWaiter(sessionId, new Error('resident omp startup cancelled'))
     }
     const child = this.#children.get(sessionId)
@@ -1101,10 +1199,15 @@ export class ResidentOmpPool
     this.#recency.delete(sessionId)
     this.#busy.delete(sessionId)
     if (child) {
-      const retiring = child.stop(this.#starting.has(sessionId)).finally(() => {
+      this.#longestReadyMs = Math.max(
+        this.#longestReadyMs,
+        child.readyRuntimeMs,
+      )
+      const slot = this.#slots.get(sessionId)
+      const retiring = child.stop(opening !== undefined).finally(() => {
         if (this.#retiring.get(sessionId) === retiring)
           this.#retiring.delete(sessionId)
-        this.#slots.delete(sessionId)
+        if (this.#slots.get(sessionId) === slot) this.#slots.delete(sessionId)
         this.#drainCapacity()
       })
       this.#retiring.set(sessionId, retiring)
@@ -1123,7 +1226,9 @@ export class ResidentOmpPool
     // startup, otherwise stopping waits on the very handshake it must cancel.
     for (const sessionId of this.#children.keys()) this.closeSession(sessionId)
 
-    await Promise.allSettled([...this.#starting.values()])
+    await Promise.allSettled(
+      [...this.#starting.values()].map(opening => opening.promise),
+    )
     await Promise.allSettled([...this.#retiring.values()])
     this.#resolve()
   }

@@ -396,6 +396,194 @@ test('concurrent cold callers share one start; cancelling one leaves the other c
   second.abort()
 })
 
+test('after every caller cancels a handshake, an immediate same-session retry waits for real close and starts afresh', async () => {
+  const { pool, agent } = setup({
+    maxChildren: 1,
+    maxStartFailures: 1,
+    env: { QIANMO_FIXTURE_READY_DELAY_MS: '100' },
+  })
+  const id = await pool.newSession(agent)
+  const first = new AbortController(),
+    second = new AbortController()
+  const one = pool.channelFor(id, first.signal)
+  const two = pool.channelFor(id, second.signal)
+  void one.catch(() => {})
+  void two.catch(() => {})
+  await until(() => children.length === 1)
+  first.abort(new Error('first cancelled'))
+  second.abort(new Error('last cancelled'))
+  // No await between the last cancellation and retry: the old child still
+  // owns its slot and its opening has not finished unwinding.
+  expect(reaped.has(children[0]!)).toBe(false)
+  const retry = pool.channelFor(id)
+  void retry.catch(() => {})
+  await expect(one).rejects.toThrow('first cancelled')
+  await expect(two).rejects.toThrow('last cancelled')
+  expect((await retry).alive).toBe(true)
+  expect(children).toHaveLength(2)
+  expect(reaped.has(children[0]!)).toBe(true)
+  expect(pool.parkedReason).toBeUndefined()
+  expect((await turn(pool, id, 'retry')).outcome).toBe('completed')
+  expect(children).toHaveLength(2)
+})
+
+test('pre-ready stderr explains startup failure and parking without exposing keys or an unbounded log', async () => {
+  const secrets = [
+    'sk-short-fake-key',
+    'bearer-fake-value',
+    'ab'.repeat(40),
+    'QWxhZGRpbjpvcGVu'.repeat(6),
+  ]
+  const log = `old startup line\n${'noise '.repeat(800)}\n${'sk-x '.repeat(300)}\nmissing models.yml: configure a provider\nkey=${secrets[0]}\nBearer ${secrets[1]}\nhex=${secrets[2]}\nbase64=${secrets[3]}\n`
+  const { pool, agent } = setup({
+    maxStartFailures: 1,
+    spawn: input =>
+      spawn(
+        process.execPath,
+        [
+          '-e',
+          'process.stderr.write(process.env.FAKE_STARTUP_LOG, () => process.exit(1))',
+        ],
+        {
+          cwd: input.cwd,
+          env: { ...input.env, FAKE_STARTUP_LOG: log },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        },
+      ),
+  })
+  const id = await pool.newSession(agent)
+  const error = await turn(pool, id, 'stderr').catch((error: unknown) => error)
+  expect(error).toBeInstanceOf(Error)
+  const reason = (error as Error).message
+  expect(reason).toContain('missing models.yml: configure a provider')
+  expect(reason).toContain('child exited code=1')
+  expect(reason).not.toContain('old startup line')
+  expect(Buffer.byteLength(reason)).toBeLessThanOrEqual(2300)
+  expect(pool.parkedReason).toContain(
+    'missing models.yml: configure a provider',
+  )
+  for (const secret of secrets) {
+    expect(reason).not.toContain(secret)
+    expect(pool.parkedReason).not.toContain(secret)
+  }
+  await expect(pool.channelFor(id)).rejects.toThrow('missing models.yml')
+})
+
+test('the default five startup failures survive idle, cancelled handshakes, queue full and queue timeout', async () => {
+  let calls = 0
+  const { pool, agent } = setup({
+    maxChildren: 1,
+    queueLimit: 1,
+    queueTimeoutMs: 80,
+    spawn: input => {
+      calls++
+      return spawn(
+        process.execPath,
+        calls === 3
+          ? ['-e', 'process.stdin.resume(); setInterval(()=>{},1000)']
+          : [fixture],
+        {
+          cwd: input.cwd,
+          env: {
+            ...input.env,
+            QIANMO_FIXTURE_OPEN_ERROR: 'mixed bad model config',
+          },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        },
+      )
+    },
+  })
+  const id = await pool.newSession(agent)
+  const held = await pool.newSession(agent)
+  const queued = await pool.newSession(agent)
+  const overflow = await pool.newSession(agent)
+  for (let failure = 0; failure < 2; failure++)
+    await expect(pool.channelFor(id)).rejects.toThrow('mixed bad model config')
+  await Bun.sleep(30)
+  const controller = new AbortController()
+  const opening = pool.channelFor(held, controller.signal)
+  void opening.catch(() => {})
+  await until(() => children.length === 3)
+  const queuedController = new AbortController()
+  const waiting = pool.channelFor(queued, queuedController.signal)
+  void waiting.catch(() => {})
+  // One microtask starts the queued opening before the overflow request.
+  await Promise.resolve()
+  await expect(pool.channelFor(overflow)).rejects.toThrow(
+    'capacity queue is full',
+  )
+  queuedController.abort(new Error('queued caller cancelled'))
+  await expect(waiting).rejects.toThrow('queued caller cancelled')
+  await expect(pool.channelFor(queued)).rejects.toThrow(
+    'capacity wait timed out',
+  )
+  expect(children).toHaveLength(3)
+  expect(reaped.has(children[2]!)).toBe(false)
+  controller.abort(new Error('handshake caller cancelled'))
+  await expect(opening).rejects.toThrow('handshake caller cancelled')
+  await until(() => reaped.has(children[2]!))
+  for (let failure = 3; failure <= 5; failure++) {
+    await expect(pool.channelFor(id)).rejects.toThrow('mixed bad model config')
+    if (failure < 5) expect(pool.parkedReason).toBeUndefined()
+  }
+  expect(pool.parkedReason).toContain(
+    'parked after 5 consecutive startup failures',
+  )
+  await expect(pool.channelFor(overflow)).rejects.toThrow('parked after 5')
+  expect(calls).toBe(6) // Five real failures and one cancelled handshake.
+})
+
+test('a successful startup resets the default failure budget even before a round completes', async () => {
+  let calls = 0
+  const { pool, agent } = setup({
+    spawn: input => {
+      calls++
+      return spawn(process.execPath, [fixture], {
+        cwd: input.cwd,
+        env: {
+          ...input.env,
+          ...(calls === 5
+            ? {}
+            : { QIANMO_FIXTURE_OPEN_ERROR: 'reset bad config' }),
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+    },
+  })
+  const id = await pool.newSession(agent)
+  for (let i = 0; i < 4; i++)
+    await expect(pool.channelFor(id)).rejects.toThrow('reset bad config')
+  expect((await pool.channelFor(id)).alive).toBe(true)
+  await pool.invalidateAgent(agent.agent)
+  for (let i = 0; i < 4; i++) {
+    await expect(pool.channelFor(id)).rejects.toThrow('reset bad config')
+    expect(pool.parkedReason).toBeUndefined()
+  }
+  await expect(pool.channelFor(id)).rejects.toThrow('reset bad config')
+  expect(pool.parkedReason).toContain(
+    'parked after 5 consecutive startup failures',
+  )
+  expect(calls).toBe(10)
+})
+
+test('pool health counts actual ready runtime and completed rounds, retaining evidence across idle reaping', async () => {
+  const { pool, agent } = setup()
+  const id = await pool.newSession(agent)
+  await Bun.sleep(30)
+  expect(pool.isStable(20)).toBe(false)
+  await pool.channelFor(id)
+  expect(pool.isStable(10_000)).toBe(false)
+  await Bun.sleep(30)
+  expect(pool.isStable(20)).toBe(true)
+  await pool.invalidateAgent(agent.agent)
+  expect(pool.isStable(20)).toBe(true)
+  expect(pool.isStable(10_000)).toBe(false)
+  expect((await turn(pool, id, 'healthy-round')).outcome).toBe('completed')
+  expect(pool.isStable(10_000)).toBe(true)
+  await pool.invalidateAgent(agent.agent)
+  expect(pool.isStable(10_000)).toBe(true)
+})
+
 test('invalidateAgent cancels an in-progress handshake and joins real exit without parking', async () => {
   const { pool, agent } = setup({
     maxStartFailures: 1,
