@@ -82,6 +82,7 @@ import {
   MAX_CHAT_TEXT_LENGTH,
   targetState,
 } from './chat.js'
+import { unansweredTurns } from '../chatTurns.js'
 import { attr, escapeHtml } from './escape.js'
 import { formatClock, formatRelative } from './format.js'
 import { FRONT_CSS } from './frontStyle.js'
@@ -705,18 +706,8 @@ function renderMessages(model: FrontViewModel, transcript: ChatTranscript): stri
   if (turns.length === 0) {
     return `<div class="fx-msgs"><p class="fx-none fx-none-center">这条会话还没有内容 · 在下面写第一句</p></div>`
   }
-  let lastMessage: ChatTurn | undefined
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    const turn = turns[index]
-    if (turn !== undefined && turn.variant !== 'notice') {
-      lastMessage = turn
-      break
-    }
-  }
-  const waiting =
-    lastMessage !== undefined &&
-    lastMessage.author === 'operator' &&
-    lastMessage.state !== 'failed'
+  const unanswered = unansweredTurns(turns)
+  const waiting = unanswered.length > 0
   const out: string[] = []
   let steps: ChatTurn[] = []
   const flush = (trailing: boolean): void => {
@@ -737,9 +728,10 @@ function renderMessages(model: FrontViewModel, transcript: ChatTranscript): stri
     )
   }
   flush(true)
-  if (waiting && lastMessage !== undefined) {
+  const latest = unanswered[unanswered.length - 1]
+  if (latest !== undefined) {
     out.push(
-      pendingTail(lastMessage.at, session.agent, session.target, model.faces, model.now),
+      pendingTail(latest.at, session.agent, session.target, model.faces, model.now),
     )
   }
   return `<div class="fx-msgs">${out.join('')}</div>`
@@ -935,17 +927,7 @@ export function frontViewParts(model: FrontViewModel): FrontViewParts {
       `${startable ? ' data-start="1"' : ''} data-welcome="1"`
   } else {
     inner = renderMessages(model, transcript)
-    const turns = transcript.turns
-    let last: ChatTurn | undefined
-    for (let index = turns.length - 1; index >= 0; index -= 1) {
-      const turn = turns[index]
-      if (turn !== undefined && turn.variant !== 'notice') {
-        last = turn
-        break
-      }
-    }
-    const running =
-      last !== undefined && last.author === 'operator' && last.state !== 'failed'
+    const running = unansweredTurns(transcript.turns).length > 0
     attrs =
       `data-target="${attr(address)}" data-open="1" ` +
       `data-session="${attr(transcript.session.id)}"${running ? ' data-running="1"' : ''}`
@@ -992,7 +974,8 @@ function composer(enabled: boolean): string {
   const off = enabled ? '' : ' disabled'
   const commands = CHAT_LOCAL_COMMANDS.map(
     name =>
-      `<button type="button" class="fx-cmd" role="option" data-cmd="${attr(`/${name}`)}">` +
+      `<button type="button" class="fx-cmd" role="option" id="${attr(`fx-cmd-${name}`)}" ` +
+      `data-cmd="${attr(`/${name}`)}" tabindex="-1">` +
       `<code class="mono">/${escapeHtml(name)}</code><span>${escapeHtml(COMMAND_WORDS[name])}</span></button>`,
   ).join('')
   return (
@@ -1001,6 +984,7 @@ function composer(enabled: boolean): string {
     `<label class="sr-only" for="fx-text">消息</label>` +
     `<textarea id="fx-text" rows="1" spellcheck="false" ` +
     `maxlength="${attr(String(MAX_CHAT_TEXT_LENGTH))}" aria-describedby="fx-status" ` +
+    `aria-controls="fx-cmds" ` +
     `placeholder="写下要做的事 · Enter 发送 · Shift Enter 换行"${off}></textarea>` +
     `<div class="fx-composer-foot">` +
     `<span class="fx-target"><span class="dot dot-muted" id="fx-target-dot"></span>` +

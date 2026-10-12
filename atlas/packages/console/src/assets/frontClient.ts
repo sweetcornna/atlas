@@ -57,9 +57,15 @@ function frontScript(): string {
   var mainAgent = '';
   var pollTimer = null;
   var source = null;
+  var opened = false;
   var sideTimer = null;
   var viewSeq = 0;
   var sideSeq = 0;
+  // Bumped by every move to another conversation. A send pins the number it
+  // started under; an answer that arrives after a move updates only the
+  // session it belongs to, never what is on screen.
+  var nav = 0;
+  var switching = false;
   var choices = {};
   var model = { target: '', html: '', at: 0, asking: false };
 
@@ -123,13 +129,14 @@ function frontScript(): string {
   // opening marks the fetch that is somebody switching to a conversation: the
   // server writes a ledger line for it (P15.9), and never for a refresh.
   function refreshView(opening, toBottom) {
+    if (qc.isExpired()) return Promise.resolve();
     var seq = ++viewSeq;
     var scroller = byId('fx-scroll');
     var stick = toBottom === true || atBottom(scroller);
     var before = replyCount();
     var figure = figureIn('fx-head');
     return qc.loadHtml(viewUrl(opening)).then(function (html) {
-      if (seq !== viewSeq) return;
+      if (seq !== viewSeq || qc.isExpired()) return;
       adopt(html, ['fx-head', 'fx-thread']);
       keepFigure(figure);
       keepChoices(byId('fx-thread'));
@@ -146,6 +153,7 @@ function frontScript(): string {
   }
 
   function refreshSide() {
+    if (qc.isExpired()) return Promise.resolve();
     var seq = ++sideSeq;
     var query = [];
     if (state.agent) query.push('agent=' + encodeURIComponent(state.agent));
@@ -153,7 +161,7 @@ function frontScript(): string {
     var scroller = byId('fx-side-scroll');
     var top = scroller ? scroller.scrollTop : 0;
     return qc.loadHtml(ROUTES.side + (query.length ? '?' + query.join('&') : '')).then(function (html) {
-      if (seq !== sideSeq) return;
+      if (seq !== sideSeq || qc.isExpired()) return;
       // A menu somebody has open is not swapped out from under the pointer.
       var menuOpen = document.querySelector('#fx-agents .fx-more[open]');
       adopt(html, menuOpen ? ['fx-history', 'fx-stack'] : ['fx-agents', 'fx-history', 'fx-stack']);
@@ -166,7 +174,7 @@ function frontScript(): string {
   }
 
   function soonSide() {
-    if (sideTimer) return;
+    if (sideTimer || qc.isExpired()) return;
     sideTimer = setTimeout(function () { sideTimer = null; refreshSide(); }, 350);
   }
 
@@ -186,8 +194,9 @@ function frontScript(): string {
   function setComposer(on) {
     var box = byId('fx-text');
     var send = byId('fx-send');
-    if (box) box.disabled = !on;
-    if (send) send.disabled = !on || !box || !box.value.trim();
+    var live = on && !switching;
+    if (box) box.disabled = !live;
+    if (send) send.disabled = !live || !box || !box.value.trim();
   }
 
   function paint() {
@@ -333,6 +342,7 @@ function frontScript(): string {
     return m + 'm ' + (s % 60) + 's';
   }
   function stampTimers() {
+    if (qc.isExpired()) return;
     var lines = document.querySelectorAll('#fx-thread [data-elapsed]');
     var now = Date.now();
     for (var i = 0; i < lines.length; i++) lines[i].setAttribute('data-seen', String(now));
@@ -419,16 +429,54 @@ function frontScript(): string {
     for (var i = 0; i < open.length; i++) if (open[i] !== except) open[i].open = false;
   }
 
+  // The drawer takes focus when it opens and gives it back when it closes.
+  var drawerOpener = null;
   function setDrawer(on) {
     var root = byId('fx');
     if (!root) return;
-    if (on) root.setAttribute('data-drawer', 'open');
-    else root.removeAttribute('data-drawer');
+    var was = root.getAttribute('data-drawer') === 'open';
+    if (on) {
+      root.setAttribute('data-drawer', 'open');
+      if (!was) {
+        drawerOpener = document.activeElement;
+        var first = document.querySelector('#fx-side .fx-new');
+        if (first) first.focus();
+      }
+    } else {
+      root.removeAttribute('data-drawer');
+      if (was && drawerOpener && drawerOpener.focus && narrow()) drawerOpener.focus();
+      drawerOpener = null;
+    }
   }
 
   function focusBox() {
     var box = byId('fx-text');
     if (box && !box.disabled && !narrow()) box.focus();
+  }
+
+  // One move to another conversation: the composer is held until the view
+  // that move asked for is on screen, so a line can never be sent to a
+  // session other than the one shown.
+  function go(opening) {
+    nav++;
+    var mine = nav;
+    switching = true;
+    setComposer(false);
+    markCurrent();
+    applyHistory();
+    say(byId('fx-status'), '', 'muted');
+    soonSide();
+    return refreshView(opening, true).then(function () {
+      if (mine !== nav) return;
+      switching = false;
+      paint();
+      focusBox();
+    }, function (err) {
+      if (mine !== nav) return;
+      switching = false;
+      paint();
+      say(byId('fx-status'), qc.failLine('打开', err), qc.failTone(err));
+    });
   }
 
   function selectAgent(address) {
@@ -438,24 +486,17 @@ function frontScript(): string {
     state.active = '';
     state.agent = address;
     setAddress(false);
-    markCurrent();
-    applyHistory();
-    say(byId('fx-status'), '', 'muted');
-    refreshView(false, true).then(focusBox);
-    soonSide();
+    go(false);
   }
 
   function openSession(id) {
     setDrawer(false);
     closeMenus();
     if (!id) return;
-    if (id === state.active) { focusBox(); return; }
+    if (id === state.active && !switching) { focusBox(); return; }
     state.active = id;
     setAddress(false);
-    markCurrent();
-    say(byId('fx-status'), '', 'muted');
-    refreshView(true, true).then(function () { applyHistory(); focusBox(); });
-    soonSide();
+    go(true);
   }
 
   function newChat() {
@@ -463,10 +504,7 @@ function frontScript(): string {
     closeMenus();
     state.active = '';
     setAddress(false);
-    markCurrent();
-    say(byId('fx-status'), '', 'muted');
-    refreshView(false, true).then(focusBox);
-    soonSide();
+    go(false);
   }
 
   window.addEventListener('popstate', function (event) {
@@ -477,21 +515,26 @@ function frontScript(): string {
     }
     state.active = entry.active || '';
     state.agent = entry.agent || state.agent;
-    markCurrent();
-    refreshView(!!state.active, true);
-    soonSide();
+    go(!!state.active);
   });
 
   /* ---------------- sending ---------------- */
 
-  function ensureSession() {
-    if (state.active) return Promise.resolve({ id: state.active, fresh: false });
-    if (!state.agent) return Promise.reject({ human: '先选一个智能体' });
-    return qc.sendJson('POST', ROUTES.create, { target: state.agent }).then(function (data) {
+  // The session a send goes to, decided when the send starts: the open one,
+  // or a new one with the agent shown. A session opened for a send that the
+  // person has since moved away from becomes theirs in the list, not the
+  // conversation on screen.
+  function ensureSession(pin) {
+    if (pin.active) return Promise.resolve({ id: pin.active, fresh: false });
+    if (!pin.agent) return Promise.reject({ human: '先选一个智能体' });
+    return qc.sendJson('POST', ROUTES.create, { target: pin.agent }).then(function (data) {
       if (!data || !data.id) throw { human: '没能开出会话' };
-      state.active = String(data.id);
-      setAddress(false);
-      return { id: state.active, fresh: true };
+      var id = String(data.id);
+      if (pin.nav === nav) {
+        state.active = id;
+        setAddress(false);
+      }
+      return { id: id, fresh: true };
     });
   }
 
@@ -534,42 +577,65 @@ function frontScript(): string {
     var status = byId('fx-status');
     var form = byId('fx-composer');
     if (state.busy || !box) return;
+    if (switching) { say(status, '正在打开会话 · 稍后再发', 'muted'); return; }
     var text = (typeof given === 'string' ? given : box.value).trim();
     if (!text) return;
     var thread = byId('fx-thread');
     var ready = !!thread && (thread.getAttribute('data-open') === '1' || thread.getAttribute('data-start') === '1');
     if (!ready) { say(status, '这个智能体暂时不能对话', 'bad'); return; }
+    var pin = { nav: nav, agent: state.agent, active: state.active };
+    var welcome = !pin.active;
     hideCommands();
     state.busy = true;
     if (form) form.setAttribute('aria-busy', 'true');
     var kept = box.value;
     if (typeof given !== 'string') box.value = '';
     autosize();
-    setComposer(true);
     var ghost = paintSending(text);
     say(status, '', 'muted');
     play([['thinking', 0]]);
-    var fresh = false;
-    ensureSession().then(function (session) {
-      fresh = session.fresh;
+    var opened = null;
+    var sent = false;
+    ensureSession(pin).then(function (session) {
+      opened = session;
       return qc.sendJson('POST', ROUTES.create + '/' + encodeURIComponent(session.id) + '/messages', { text: text });
     }).then(function () {
-      // A conversation that just began is opened, not refreshed: the reading
-      // goes on the ledger like any other opening (P15.9).
-      return refreshView(fresh, true).then(soonSide);
-    }).catch(function (err) {
+      sent = true;
+    }, function (err) {
+      // The send itself failed: the line comes back out, the text goes back
+      // into the box, and a welcome that the line replaced is drawn again.
       if (ghost) ghost.remove();
-      if (typeof given !== 'string' && !box.value) box.value = kept;
-      autosize();
-      play([['error', 2400], ['idle', 0]]);
-      say(status, qc.failLine('发送', err), qc.failTone(err));
+      if (pin.nav === nav) {
+        if (typeof given !== 'string' && !box.value) box.value = kept;
+        autosize();
+        play([['error', 2400], ['idle', 0]]);
+        say(status, qc.failLine('发送', err), qc.failTone(err));
+        if (welcome && !state.active) refreshView(false, true);
+      }
       qc.toast(qc.failLine('发送', err), qc.failTone(err));
-      if (fresh || state.active) soonSide();
+      if (opened) soonSide();
     }).then(function () {
       state.busy = false;
       if (form) form.removeAttribute('aria-busy');
-      paint();
-      focusBox();
+      if (!sent) { paint(); return; }
+      soonSide();
+      if (pin.nav !== nav) return;
+      // Sent and on screen. A refresh that fails now is a refresh that
+      // failed, not a send: the line went, and the stream or the next poll
+      // brings the view up to date.
+      // A conversation that just began is opened, not refreshed: the
+      // reading goes on the ledger like any other opening (P15.9).
+      return refreshView(!!(opened && opened.fresh), true).then(function () {
+        paint();
+        focusBox();
+      }, function () {
+        if (ghost) {
+          var meta = ghost.querySelector('.fx-meta');
+          if (meta) meta.textContent = '已发送';
+        }
+        paint();
+        say(status, '已发送 · 页面刷新失败 · 稍后自动重试', 'warn');
+      });
     });
   }
 
@@ -663,8 +729,12 @@ function frontScript(): string {
     try { source = new EventSource(ROUTES.stream); }
     catch (e) { startPolling('轮询中'); return; }
     source.addEventListener('open', function () {
+      var resync = !!pollTimer || opened;
       stopPolling();
       say(byId('fx-live'), '', 'muted');
+      // A reconnect may have missed events while it was down: catch up once.
+      if (resync) refreshAll();
+      opened = true;
     });
     source.addEventListener('chat', function (event) {
       var payload = null;
@@ -683,6 +753,10 @@ function frontScript(): string {
     if (source) { source.close(); source = null; }
     stopPolling();
     if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+    if (sideTimer) { clearTimeout(sideTimer); sideTimer = null; }
+    if (settle) { clearTimeout(settle); settle = null; }
+    viewSeq++;
+    sideSeq++;
     say(byId('fx-live'), '已断开', 'muted');
   });
 
@@ -773,6 +847,8 @@ function frontScript(): string {
       return;
     }
     if (event.key === 'Escape') {
+      // The topmost surface owns Esc: an open dialog is the runtime's.
+      if (document.querySelector('dialog[open]')) return;
       if (document.querySelector('details.fx-more[open]')) { closeMenus(); return; }
       var root = byId('fx');
       if (root && root.getAttribute('data-drawer') === 'open') setDrawer(false);

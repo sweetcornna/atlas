@@ -282,6 +282,7 @@ export { FileUsageStore, usageDelta } from './usage.js'
 export * from './directionPorts.js'
 export * from './routes/routingApi.js'
 export * from './chatDispatch.js'
+export { unansweredTurns } from './chatTurns.js'
 export type { HandoffGitPort, HandoffRequestActor } from './deps.js'
 
 export * from './routes/filesApi.js'

@@ -44,7 +44,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { signTaskOwner, type NodeKeyPair } from '@qianmo/capability'
-import { MODEL_DIRECTIONS } from '@qianmo/console'
+import { MODEL_DIRECTIONS, unansweredTurns } from '@qianmo/console'
 import { parseTurnStepDedupKey } from '@qianmo/resident'
 import type {
   ChatLocalCommand,
@@ -799,10 +799,11 @@ export function createConsoleChatPort(
         break
       }
     }
-    // 与页面「执行中」那条尾巴同一条判据：最后一句是操作者的、没有失败，
-    // 就是还没有回复。
+    // 与前台「正在处理」同一条判据（`unansweredTurns`）：按 taskId 看操作者
+    // 的哪一句还没有等到回复，而不只看最后一句——连发两句、第一句先答完时，
+    // 第二句仍在路上。
     const running =
-      last !== undefined && last.author === 'operator' && last.state !== 'failed'
+      unansweredTurns(ids.flatMap(id => turns.get(id) ?? [])).length > 0
     return {
       id: stored.id,
       target: stored.target,
