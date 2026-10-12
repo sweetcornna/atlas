@@ -406,6 +406,11 @@ async function handleChatSessions(
             .map(session => ({
               ...session,
               preview: chatPreview(session.preview),
+              // The first line is cut like the last: the list stays a
+              // summary, and the transcript stays behind its own route.
+              ...(session.title === undefined
+                ? {}
+                : { title: chatPreview(session.title) }),
             })),
         })
       : failureResponse(result.failure)
