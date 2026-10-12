@@ -439,10 +439,13 @@ interface QianmoResidentOptions {
     readonly unix?: string
     readonly url?: string
   }) => void
+  readonly ompIdleMs?: number
+  readonly ompMaxChildren?: number
   readonly spawnOmp?: (input: ResidentOmpSpawn) => ChildProcess
   /**
-   * Restart policy for the omp RPC child; both fields default to the supervisor's
-   * own constants.
+   * Generation restart policy. Lazy starts use maxRapidFailures as a pool-level
+   * consecutive startup failure limit; idle time does not reset it. Backoff
+   * applies to generation failures, with the supervisor's existing defaults.
    *
    * Exposed because parking became *visible*. It used to end the process, so
    * how long it took to get there was an internal detail nobody could act on.
@@ -986,10 +989,10 @@ export class QianmoResident {
     })
     this.#turn = new OmpResidentTurnPort(
       {
-        channelFor: async sessionId => {
+        channelFor: async (sessionId, signal) => {
           if (this.#runtimeChild === null)
             throw new Error('resident omp pool is not ready')
-          const child = await this.#runtimeChild.channelFor(sessionId)
+          const child = await this.#runtimeChild.channelFor(sessionId, signal)
           const active = this.#turn.activeInput(sessionId)
           if (active) {
             const pending = active.agent
@@ -1318,6 +1321,7 @@ export class QianmoResident {
     // Counted until the poll has handed its turn to the gate, for the provider
     // switch's idle check (§2.7). Still not awaited.
     void this.#trackPoll(runtime.deliver(message)).catch(async error => {
+      if (this.#stopping) return
       const task = this.#tasksByMessage.get(message.msgId)
       if (task === undefined || task.settled) {
         this.#options.onError?.(error)
@@ -2707,7 +2711,7 @@ export class QianmoResident {
       new Error('resident stopped during model initialization'),
     )
     // The supervisor only owns a generation after start() returns. The pool
-    // is already available while sessions are waiting for the RPC handshake.
+    // is already available while the default sessions are being registered.
     if (this.#generationStarting)
       void this.#runtimeChild
         ?.stop()
@@ -2737,6 +2741,8 @@ export class QianmoResident {
    * gone". Same for a node already stopping.
    */
   async #runtimeForDelivery(): Promise<ResidentNodeRuntime> {
+    if (this.#runtimeChild?.parkedReason)
+      throw new Error(this.#runtimeChild.parkedReason)
     const ready = this.#runtimeIsLive() ? this.#runtime : null
     if (ready !== null) return ready
     if (this.#supervisor.parked || this.#stopping) {
@@ -2754,6 +2760,8 @@ export class QianmoResident {
       }
       this.#runtimeWaiters.push(wake)
     })
+    if (this.#runtimeChild?.parkedReason)
+      throw new Error(this.#runtimeChild.parkedReason)
     const runtime = this.#runtimeIsLive() ? this.#runtime : null
     if (runtime !== null) return runtime
     throw new Error(
@@ -2998,6 +3006,10 @@ export class QianmoResident {
       memoryRoot: this.#memoryRoot,
       allowWorkspaceEdits: this.#options.allowWorkspaceEdits,
       spawn: this.#options.spawnOmp,
+      idleChildMs: this.#options.ompIdleMs,
+      maxChildren: this.#options.ompMaxChildren,
+      maxStartFailures: this.#options.ompRestart?.maxRapidFailures,
+      onParked: () => this.#poller?.stop(),
       onActivity: this.#options.onActivity,
       onError: this.#options.onError,
       announce: params => this.#announce(params),
@@ -3036,6 +3048,7 @@ export class QianmoResident {
         if (this.#runtime === runtime) this.#runtime = null
         poller?.stop()
         if (this.#poller === poller) this.#poller = null
+        const reaping = child.stop()
         try {
           await this.#failActiveTasks('resident omp RPC connection closed')
           // Both of these need the transport up. It is: the listener is owned by
@@ -3048,7 +3061,7 @@ export class QianmoResident {
           // Audit/receipt failures must still reap every process before this
           // memoized teardown can reject. Otherwise the supervisor catches
           // that error and starts the next generation beside a live old one.
-          await child.stop()
+          await reaping
           try {
             await closed
           } catch {
@@ -3137,7 +3150,8 @@ export class QianmoResident {
           this.#checkProviderSoon()
         },
         onTurnError: async (error, input) => {
-          await this.#failTask(error, input)
+          if (stopping === null && !this.#stopping)
+            await this.#failTask(error, input)
           this.#checkProviderSoon()
         },
       })
@@ -3166,7 +3180,10 @@ export class QianmoResident {
         ...(this.#options.pollIntervalMs === undefined
           ? {}
           : { intervalMs: this.#options.pollIntervalMs }),
-        onError: error => this.#options.onError?.(error),
+        onError: error => {
+          if (stopping === null && !this.#stopping)
+            this.#options.onError?.(error)
+        },
       })
       this.#poller = poller
       poller.start()
@@ -3271,7 +3288,7 @@ export class QianmoResident {
       }
       this.#providerWaiting = waiting
     }
-    if (this.#supervisor.parked) {
+    if (this.#supervisor.parked || this.#runtimeChild?.parkedReason) {
       this.#raiseOnce(
         waiting,
         'parked',

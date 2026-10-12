@@ -81,6 +81,11 @@ import {
 } from '../host/certificateDirectory.js'
 import { loadOrCreateNodeKeys, parseTrustedKey } from '../host/nodeIdentity.js'
 import { anchoredValidity, readTrustAnchors } from '../host/trustAnchors.js'
+import {
+  DEFAULT_OMP_IDLE_MS,
+  DEFAULT_OMP_QUEUE_LIMIT,
+  DEFAULT_OMP_QUEUE_TIMEOUT_MS,
+} from '../host/residentOmp.js'
 import { residentOptionValue } from './residentArgs.js'
 import {
   createResidentModelProbeGate,
@@ -263,6 +268,8 @@ export const DEFAULT_RESIDENT_MEM_INTERVAL_MS = 60_000
 export const DEFAULT_REGISTRY_POLL_INTERVAL_MS = 3_600_000
 
 export interface ResidentCliConfig {
+  readonly ompIdleMs?: number
+  readonly ompMaxChildren?: number
   readonly controllers?: readonly (readonly [string, string])[]
   readonly approvers?: readonly (readonly [string, string])[]
   readonly protectedRoots?: readonly string[]
@@ -371,6 +378,8 @@ export interface ResidentCliConfig {
 }
 
 export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
+  let ompIdleMs: number | undefined
+  let ompMaxChildren: number | undefined
   let node: string | undefined
   let team: string | undefined
   let port: number | undefined
@@ -410,7 +419,26 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
 
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]
-    if (arg === '--node' || arg?.startsWith('--node=')) {
+    if (arg === '--omp-idle-ms' || arg?.startsWith('--omp-idle-ms=')) {
+      const parsed = residentOptionValue(args, index, '--omp-idle-ms')
+      ompIdleMs = Number(parsed.value)
+      if (
+        !Number.isSafeInteger(ompIdleMs) ||
+        ompIdleMs <= 0 ||
+        ompIdleMs > 2_147_483_647
+      )
+        throw new Error('--omp-idle-ms must be an integer in 1..2147483647')
+      index = parsed.next
+    } else if (
+      arg === '--omp-max-children' ||
+      arg?.startsWith('--omp-max-children=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--omp-max-children')
+      ompMaxChildren = Number(parsed.value)
+      if (!Number.isSafeInteger(ompMaxChildren) || ompMaxChildren <= 0)
+        throw new Error('--omp-max-children must be a positive integer')
+      index = parsed.next
+    } else if (arg === '--node' || arg?.startsWith('--node=')) {
       const parsed = residentOptionValue(args, index, '--node')
       node = parsed.value
       index = parsed.next
@@ -768,6 +796,8 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
     node,
     team,
     agents,
+    ...(ompIdleMs === undefined ? {} : { ompIdleMs }),
+    ...(ompMaxChildren === undefined ? {} : { ompMaxChildren }),
     ...(tenancyPath === undefined ? {} : { tenancyPath, tenantHubPeers }),
     ...(approvers.length === 0 ? {} : { approvers }),
     ...(controllers.length === 0 ? {} : { controllers }),
@@ -879,6 +909,16 @@ Listener, exactly one of --port and --unix:
   --hostname <host>        Address to bind, only valid with --port. Never
                            guessed: which interface a node answers on has to
                            be an explicit choice.
+
+omp child processes (started on first delivery, never prestarted):
+
+  --omp-idle-ms <ms>       Reap idle processes after ${DEFAULT_OMP_IDLE_MS} ms by default.
+                           Positive integer, at most 2147483647. Transcripts
+                           and session mappings remain for the next delivery.
+  --omp-max-children <n>   Positive integer; omitted means unlimited. At capacity,
+                           reap the least recently used idle child. Busy children
+                           are protected; at most ${DEFAULT_OMP_QUEUE_LIMIT} session starts queue for
+                           ${DEFAULT_OMP_QUEUE_TIMEOUT_MS} ms, then fail with a capacity reason.
 
 Authorization:
 
@@ -2130,6 +2170,8 @@ export async function runResident(args: readonly string[]): Promise<void> {
     node: config.node,
     team: config.team,
     agents: config.agents,
+    ompIdleMs: config.ompIdleMs,
+    ompMaxChildren: config.ompMaxChildren,
     controllers: new Set(config.controllers?.map(([node]) => node)),
     memoryControllers: new Map(config.controllers),
     controlAudit: event => trail.append(event),

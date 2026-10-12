@@ -117,7 +117,23 @@ lines.on('line', line => {
     })
     return
   }
-  if (frame.type === 'open_session') sessionDir = String(frame.sessionDir)
+  if (frame.type === 'open_session') {
+    if (process.env.QIANMO_FIXTURE_OPEN_ERROR) {
+      emit({
+        type: 'response',
+        id: frame.id,
+        success: false,
+        error: process.env.QIANMO_FIXTURE_OPEN_ERROR,
+      })
+      return
+    }
+    sessionDir = String(frame.sessionDir)
+    if (process.env.QIANMO_FIXTURE_OPEN_LOG)
+      appendFileSync(
+        process.env.QIANMO_FIXTURE_OPEN_LOG,
+        `${JSON.stringify(frame)}\n`,
+      )
+  }
   if (
     (frame.type === 'open_session' || frame.type === 'set_model') &&
     typeof frame.provider === 'string' &&
@@ -142,4 +158,6 @@ lines.on('line', line => {
     data: frame.type === 'get_state' ? { model, thinkingLevel } : {},
   })
 })
+if (process.env.QIANMO_FIXTURE_READY_DELAY_MS)
+  await Bun.sleep(Number(process.env.QIANMO_FIXTURE_READY_DELAY_MS))
 emit({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2] })

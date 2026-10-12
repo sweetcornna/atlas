@@ -35,6 +35,12 @@ import type { ResidentProviderSwitchEvent } from '../../src/host/resident.js'
 import { fakeOpenAI } from '../providers/fake.js'
 import { ompChildEnv } from '@qianmo/paths'
 import { signalResidentProviderCheck } from '../../src/commands/resident.js'
+import { TransportClient } from '@qianmo/transport'
+import {
+  createMessage,
+  MessageType,
+  type QianmoMessage,
+} from '@qianmo/protocol'
 
 const PSK = 'resident-hot-switch-cli-not-a-real-secret'
 const CLI_ENTRYPOINT = join(import.meta.dir, '../../src/cli.ts')
@@ -146,6 +152,47 @@ describe('qm resident: hot switch from the outside', () => {
   let stdout = ''
   let residentPid = 0
   let firstOmp = 0
+  let client: TransportClient
+  const replies: QianmoMessage[] = []
+  const runtimeReady = () => {
+    const path = join(root, 'timings.log')
+    return existsSync(path)
+      ? readFileSync(path, 'utf8')
+          .split('\n')
+          .filter(line => line.includes('"runtime_ready"')).length
+      : 0
+  }
+  const runTask = async (contextId: string) => {
+    const request = createMessage({
+      from: 'qianmo://hub/operator',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      contextId,
+      payload: { prompt: 'say OK' },
+    })
+    await client.sendAndWait(request)
+    await waitUntil(
+      () =>
+        replies.some(
+          reply =>
+            reply.type === MessageType.TaskResult &&
+            reply.taskId === request.taskId,
+        ),
+      'the task result',
+      30_000,
+      diagnose,
+    )
+    expect(
+      replies.find(
+        reply =>
+          reply.type === MessageType.TaskResult &&
+          reply.taskId === request.taskId,
+      )?.payload,
+    ).toMatchObject({ outcome: 'completed' })
+    const live = ompChildrenOf(residentPid)
+    expect(live).toHaveLength(1)
+    return live[0]!
+  }
   let processModel: ReturnType<typeof startDouble>
   let modelA: ReturnType<typeof startDouble>
   let modelB: ReturnType<typeof startDouble>
@@ -207,6 +254,12 @@ describe('qm resident: hot switch from the outside', () => {
         '--unix',
         join(root, 'r.sock'),
         '--open-policy',
+        '--omp-idle-ms',
+        '250',
+        '--omp-max-children',
+        '1',
+        '--timings',
+        join(root, 'timings.log'),
       ],
       {
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -245,15 +298,26 @@ describe('qm resident: hot switch from the outside', () => {
     )
     if (!residentAlive()) throw new Error(`resident exited\n${diagnose()}`)
     await waitUntil(
-      () => ompChildrenOf(residentPid).length === 1,
-      'the first omp RPC child',
+      () => runtimeReady() === 1,
+      'the first lazy generation',
       BOOT_MS,
       diagnose,
     )
-    firstOmp = ompChildrenOf(residentPid)[0] as number
+    expect(ompChildrenOf(residentPid)).toEqual([])
+    client = new TransportClient({
+      endpoint: { unix: join(root, 'r.sock') },
+      node: 'hub',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    await client.connect()
   }, BOOT_MS * 2)
 
   afterAll(async () => {
+    await client?.close()
     if (resident !== undefined && residentAlive()) {
       resident.kill('SIGKILL')
       await once(resident, 'exit')
@@ -294,7 +358,7 @@ describe('qm resident: hot switch from the outside', () => {
       await new Promise(resolve => setTimeout(resolve, 1_500))
 
       expect(residentAlive()).toBe(true)
-      expect(ompChildrenOf(residentPid)).toEqual([firstOmp])
+      expect(ompChildrenOf(residentPid)).toEqual([])
       expect(switchLines()).toEqual([])
       expect(generation()).toBe(1)
       expect(existsSync(join(config, 'omp', 'agent', 'models.yml'))).toBe(true)
@@ -306,8 +370,9 @@ describe('qm resident: hot switch from the outside', () => {
   )
 
   test(
-    'SIGHUP with an intent staged: committed, omp RPC child replaced, resident pid unchanged',
+    'SIGHUP with an intent staged: committed, child reaped, next delivery loads the new model',
     async () => {
+      firstOmp = await runTask('before-switch')
       const requestId = stage(
         chatProfile(modelA.baseUrl, 'cli-model-a', KEY_A, 1),
       )
@@ -330,9 +395,9 @@ describe('qm resident: hot switch from the outside', () => {
       await waitUntil(
         () => {
           const now = ompChildrenOf(residentPid)
-          return now.length === 1 && now[0] !== firstOmp
+          return runtimeReady() === 2 && now.length === 0
         },
-        'the replacement omp RPC child',
+        'the replacement lazy generation',
         BOOT_MS,
         diagnose,
       )
@@ -348,6 +413,8 @@ describe('qm resident: hot switch from the outside', () => {
         diagnose,
       )
       expect(modelA.seen[0]?.authorization).toBe(`Bearer ${KEY_A}`)
+      expect(await runTask('after-switch')).not.toBe(firstOmp)
+      expect(modelA.seen.at(-1)?.authorization).toBe(`Bearer ${KEY_A}`)
     },
     TEST_TIMEOUT_MS,
   )
@@ -355,7 +422,6 @@ describe('qm resident: hot switch from the outside', () => {
   test(
     'with no signal at all the 5 s poll finds the intent (the only path off Linux)',
     async () => {
-      const before = ompChildrenOf(residentPid)
       const requestId = stage(
         chatProfile(modelB.baseUrl, 'cli-model-b', KEY_B, 2),
       )
@@ -369,9 +435,9 @@ describe('qm resident: hot switch from the outside', () => {
       await waitUntil(
         () => {
           const now = ompChildrenOf(residentPid)
-          return now.length === 1 && now[0] !== before[0]
+          return runtimeReady() === 3 && now.length === 0
         },
-        'the third omp RPC child',
+        'the third lazy generation',
         BOOT_MS,
         diagnose,
       )
@@ -384,6 +450,35 @@ describe('qm resident: hot switch from the outside', () => {
       )
       expect(modelB.seen[0]?.authorization).toBe(`Bearer ${KEY_B}`)
       expect(residentAlive()).toBe(true)
+      await runTask('third-generation')
+    },
+    TEST_TIMEOUT_MS,
+  )
+
+  test(
+    'CLI idle and capacity flags bound real children and retain both session mappings',
+    async () => {
+      const first = await runTask('capacity-first')
+      const second = await runTask('capacity-second')
+      expect(second).not.toBe(first)
+      expect(ompChildrenOf(residentPid)).toEqual([second])
+      const before = readFileSync(
+        join(config, 'resident/sessions.json'),
+        'utf8',
+      )
+      await waitUntil(
+        () => ompChildrenOf(residentPid).length === 0,
+        'the configured 250 ms idle reap',
+        5_000,
+        diagnose,
+      )
+      expect(readFileSync(join(config, 'resident/sessions.json'), 'utf8')).toBe(
+        before,
+      )
+      expect(await runTask('capacity-first')).not.toBe(first)
+      expect(readFileSync(join(config, 'resident/sessions.json'), 'utf8')).toBe(
+        before,
+      )
     },
     TEST_TIMEOUT_MS,
   )

@@ -112,6 +112,11 @@ export class OmpRpcProcess implements OmpRpcChannel {
         this.#alive = false
         clearTimeout(readyTimeout)
         lines.close()
+        // readline.close() pauses stdout. Drain both pipes to EOF so buffered
+        // frames (or an unread piped stderr) cannot suppress ChildProcess close
+        // after exit and strand the real-process reaping promise.
+        child.stdout?.resume()
+        child.stderr?.resume()
         const reason = error ?? new Error('omp RPC child closed')
         readyReject(reason)
         for (const pending of this.#pending.values()) pending.reject(reason)
@@ -361,6 +366,17 @@ export class OmpRpcProcess implements OmpRpcChannel {
   }
 }
 
+export const DEFAULT_OMP_IDLE_MS = 600_000
+export const DEFAULT_OMP_QUEUE_LIMIT = 64
+export const DEFAULT_OMP_QUEUE_TIMEOUT_MS = 30_000
+
+interface CapacityWaiter {
+  readonly sessionId: string
+  readonly resolve: () => void
+  readonly reject: (error: Error) => void
+  readonly timer: Timer
+}
+
 interface PoolOptions {
   readonly extensionPath?: string
   /** Internal startup budget; the production default remains 30 seconds. */
@@ -383,6 +399,12 @@ interface PoolOptions {
     params: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>
   readonly idleChildMs?: number
+  readonly maxChildren?: number
+  readonly queueLimit?: number
+  readonly queueTimeoutMs?: number
+  /** Consecutive lazy startup failures, independent of time spent idle. */
+  readonly maxStartFailures?: number
+  readonly onParked?: (reason: string) => void
   readonly memoryWrite?: (
     sessionId: string,
     args: unknown,
@@ -397,7 +419,7 @@ interface PoolOptions {
   ) => Promise<boolean>
 }
 
-/** Every live (agent, context) session has its own isolated omp process. */
+/** Registered (agent, context) sessions acquire isolated omp processes on demand. */
 export class ResidentOmpPool
   implements ResidentSessionConnection, OmpTurnRouter
 {
@@ -409,7 +431,16 @@ export class ResidentOmpPool
   readonly #owners = new Map<string, ResidentAgentSession>()
   readonly #busy = new Set<string>()
   readonly #used = new Map<string, number>()
-  readonly #timer: ReturnType<typeof setInterval>
+  readonly #recency = new Map<string, number>()
+  #useSequence = 0
+  readonly #timer: Timer
+  /** Includes reserved starts and retiring processes until actual close. */
+  readonly #slots = new Set<string>()
+  readonly #queue: CapacityWaiter[] = []
+  readonly #pins = new Map<string, Set<symbol>>()
+  readonly #cancelledStarts = new Set<string>()
+  #startFailures = 0
+  #parkedReason: string | undefined
   #resolve!: () => void
   #reject!: (error: Error) => void
   #stopped = false
@@ -423,12 +454,24 @@ export class ResidentOmpPool
       this.#reject = reject
     })
     void this.closed.catch(() => {})
-    const idle = options.idleChildMs ?? 10 * 60_000
+    const idle = options.idleChildMs ?? DEFAULT_OMP_IDLE_MS
+    if (!Number.isSafeInteger(idle) || idle <= 0 || idle > 2_147_483_647)
+      throw new Error(
+        'omp idle milliseconds must be an integer in 1..2147483647',
+      )
+    for (const [name, value] of [
+      ['max children', options.maxChildren],
+      ['queue limit', options.queueLimit],
+      ['queue timeout', options.queueTimeoutMs],
+      ['max start failures', options.maxStartFailures],
+    ] as const) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
+        throw new Error(`omp ${name} must be a positive integer`)
+    }
     this.#timer = setInterval(
       () => {
         for (const [id, last] of this.#used) {
-          if (!this.#busy.has(id) && Date.now() - last >= idle)
-            this.closeSession(id)
+          if (this.#idle(id) && Date.now() - last >= idle) this.closeSession(id)
         }
       },
       Math.min(idle, 60_000),
@@ -439,10 +482,21 @@ export class ResidentOmpPool
     return (
       !this.#stopped &&
       !this.#failed &&
+      this.#parkedReason === undefined &&
       [...this.#children.values()].every(child => child.alive)
     )
   }
-  async initialize(): Promise<void> {}
+  get parkedReason(): string | undefined {
+    return this.#parkedReason
+  }
+  #assertAvailable(): void {
+    if (this.#stopped || this.#failed)
+      throw new Error('resident omp pool is closed')
+    if (this.#parkedReason) throw new Error(this.#parkedReason)
+  }
+  async initialize(): Promise<void> {
+    this.#assertAvailable()
+  }
   async newSession(input: ResidentAgentSession): Promise<string> {
     const sessionId = randomUUID()
     await this.resumeSession({ ...input, sessionId })
@@ -451,8 +505,15 @@ export class ResidentOmpPool
   async resumeSession(
     input: ResidentAgentSession & { sessionId: string },
   ): Promise<void> {
+    this.#assertAvailable()
+    if (!/^[a-zA-Z0-9_-]+$/.test(input.sessionId))
+      throw new Error('invalid resident session id')
     this.#owners.set(input.sessionId, input)
-    await this.channelFor(input.sessionId)
+    // Registration preserves ownership and recovery without loading omp.
+    mkdirSync(
+      qianmoConfigPath('resident', 'sessions', input.agent, input.sessionId),
+      { recursive: true, mode: 0o700 },
+    )
   }
   #owner(sessionId: string): ResidentAgentSession {
     if (!/^[a-zA-Z0-9_-]+$/.test(sessionId))
@@ -475,38 +536,204 @@ export class ResidentOmpPool
     throw new Error(`resident session ${sessionId} has no configured owner`)
   }
   async invalidateAgent(agent: string): Promise<void> {
-    for (const [id, owner] of this.#owners) {
-      if (owner.agent !== agent) continue
-      const starting = this.#starting.get(id)
-      if (starting) await starting.catch(() => {})
-      const child = this.#children.get(id)
-      if (child) {
-        this.#children.delete(id)
-        await child.stop()
+    const ids = [...this.#owners].filter(([, owner]) => owner.agent === agent)
+    // Cancel all starts before joining any handshake (including queued starts).
+    for (const [id] of ids) this.closeSession(id)
+    await Promise.allSettled(
+      ids.map(async ([id]) => {
+        await this.#starting.get(id)?.catch(() => {})
+        await this.#retiring.get(id)
+      }),
+    )
+  }
+  async channelFor(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<OmpRpcProcess> {
+    this.#assertAvailable()
+    signal?.throwIfAborted()
+    this.#owner(sessionId)
+    const pin = Symbol(sessionId)
+    const pins = this.#pins.get(sessionId) ?? new Set<symbol>()
+    pins.add(pin)
+    this.#pins.set(sessionId, pins)
+    const cancelled = Promise.withResolvers<never>()
+    void cancelled.promise.catch(() => {})
+    const release = () => {
+      pins.delete(pin)
+      if (pins.size === 0 && this.#pins.get(sessionId) === pins) {
+        this.#pins.delete(sessionId)
+        if (signal?.aborted && this.#starting.has(sessionId))
+          this.closeSession(sessionId)
+      }
+      this.#drainCapacity()
+    }
+    const abort = () => {
+      release()
+      cancelled.reject(
+        signal?.reason ?? new Error('resident omp startup aborted'),
+      )
+    }
+    signal?.addEventListener('abort', abort, { once: true })
+    let acquired = false
+    try {
+      // A retiring process still owns the transcript and its capacity slot.
+      const retiring = this.#retiring.get(sessionId)
+      if (retiring) await Promise.race([retiring, cancelled.promise])
+      this.#assertAvailable()
+      signal?.throwIfAborted()
+      this.#touch(sessionId)
+      let opening = this.#starting.get(sessionId)
+      if (!opening) {
+        const existing = this.#children.get(sessionId)
+        if (existing) {
+          if (!existing.alive) {
+            const error = new Error('resident omp child closed before reuse')
+            this.#fail(error)
+            throw error
+          }
+          acquired = true
+          return existing
+        }
+        // Register before #open runs, even when configuration/spawn throws.
+        opening = Promise.resolve().then(() => this.#open(sessionId))
+        this.#starting.set(sessionId, opening)
+        void opening
+          .finally(() => {
+            this.#starting.delete(sessionId)
+            this.#cancelledStarts.delete(sessionId)
+            this.#drainCapacity()
+          })
+          .catch(() => {})
+      }
+      const child = await Promise.race([opening, cancelled.promise])
+      signal?.throwIfAborted()
+      acquired = true
+      return child
+    } finally {
+      // A turn with a signal holds its pin through routing and execution;
+      // aborting that signal in the turn's finally releases the reservation.
+      if (!acquired || signal === undefined) {
+        signal?.removeEventListener('abort', abort)
+        release()
       }
     }
   }
-  async channelFor(sessionId: string): Promise<OmpRpcProcess> {
-    // An idle session may be resumed while its previous process is still
-    // retiring. It must not spawn a second writer for the same session.
-    const retiring = this.#retiring.get(sessionId)
-    if (retiring) await retiring
-    if (this.#stopped || this.#failed)
-      throw new Error('resident omp pool is closed')
+  #fail(error: Error): void {
+    this.#failed = true
+    this.#drainCapacity()
+    this.#reject(error)
+  }
+  #touch(sessionId: string): void {
     this.#used.set(sessionId, Date.now())
-    const existing = this.#children.get(sessionId)
-    if (existing?.alive) return existing
-    let opening = this.#starting.get(sessionId)
-    if (!opening) {
-      opening = this.#open(sessionId)
-      this.#starting.set(sessionId, opening)
-      void opening
-        .finally(() => this.#starting.delete(sessionId))
-        .catch(() => {})
+    this.#recency.set(sessionId, ++this.#useSequence)
+  }
+  #idle(sessionId: string): boolean {
+    return (
+      !this.#busy.has(sessionId) &&
+      !this.#starting.has(sessionId) &&
+      !this.#pins.has(sessionId)
+    )
+  }
+  #claimCapacity(sessionId: string): Promise<void> {
+    this.#assertAvailable()
+    if (this.#cancelledStarts.has(sessionId))
+      throw new Error('resident omp startup cancelled')
+    if (this.#slots.size < (this.#options.maxChildren ?? Infinity)) {
+      this.#slots.add(sessionId)
+      return Promise.resolve()
     }
-    return await opening
+    if (
+      this.#queue.length >=
+      (this.#options.queueLimit ?? DEFAULT_OMP_QUEUE_LIMIT)
+    )
+      throw new Error('resident omp child capacity queue is full')
+    const waiting = Promise.withResolvers<void>()
+    const timeout = this.#options.queueTimeoutMs ?? DEFAULT_OMP_QUEUE_TIMEOUT_MS
+    const timer = setTimeout(() => {
+      this.#removeWaiter(
+        sessionId,
+        new Error(
+          `resident omp child capacity wait timed out after ${timeout} ms (all slots occupied)`,
+        ),
+      )
+    }, timeout)
+    timer.unref()
+    this.#queue.push({ sessionId, ...waiting, timer })
+    this.#drainCapacity()
+    return waiting.promise
+  }
+  #removeWaiter(sessionId: string, error: Error): void {
+    const index = this.#queue.findIndex(
+      waiter => waiter.sessionId === sessionId,
+    )
+    if (index < 0) return
+    const [waiter] = this.#queue.splice(index, 1)
+    clearTimeout(waiter!.timer)
+    waiter!.reject(error)
+  }
+  #drainCapacity(): void {
+    while (this.#queue.length > 0) {
+      if (this.#stopped || this.#failed || this.#parkedReason) {
+        this.#removeWaiter(
+          this.#queue[0]!.sessionId,
+          new Error(this.#parkedReason ?? 'resident omp pool is closed'),
+        )
+        continue
+      }
+      if (this.#slots.size < (this.#options.maxChildren ?? Infinity)) {
+        const waiter = this.#queue.shift()!
+        clearTimeout(waiter.timer)
+        this.#slots.add(waiter.sessionId)
+        waiter.resolve()
+        continue
+      }
+      // Reap one idle LRU process before reserving its place. Processes that
+      // are starting, routing or running a turn are never capacity victims.
+      if (this.#retiring.size === 0) {
+        const idle = [...this.#children.keys()].filter(id => this.#idle(id))
+        idle.sort(
+          (a, b) => (this.#recency.get(a) ?? 0) - (this.#recency.get(b) ?? 0),
+        )
+        if (idle[0]) this.closeSession(idle[0])
+      }
+      return
+    }
   }
   async #open(sessionId: string): Promise<OmpRpcProcess> {
+    try {
+      await this.#claimCapacity(sessionId)
+      this.#assertAvailable()
+      if (this.#cancelledStarts.has(sessionId))
+        throw new Error('resident omp startup cancelled')
+      const child = await this.#spawn(sessionId)
+      this.#assertAvailable()
+      if (!child.alive || this.#cancelledStarts.has(sessionId))
+        throw new Error('resident omp startup cancelled or child closed')
+      this.#startFailures = 0
+      this.#touch(sessionId)
+      return child
+    } catch (error) {
+      const cancelled = this.#cancelledStarts.has(sessionId) || this.#stopped
+      const hadSlot = this.#slots.has(sessionId)
+      this.closeSession(sessionId)
+      await this.#retiring.get(sessionId)
+      if (!this.#children.has(sessionId) && !this.#retiring.has(sessionId))
+        this.#slots.delete(sessionId)
+      // Queue pressure and user cancellation are not broken-model evidence.
+      if (!cancelled && hadSlot && !this.#failed && !this.#parkedReason) {
+        this.#startFailures++
+        if (this.#startFailures >= (this.#options.maxStartFailures ?? 5)) {
+          this.#parkedReason = `resident omp RPC parked after ${this.#startFailures} consecutive startup failures: ${error instanceof Error ? error.message : String(error)}; correct the provider configuration and restart resident`
+          this.#options.onParked?.(this.#parkedReason)
+          this.#options.onError?.(new Error(this.#parkedReason))
+        }
+      }
+      this.#drainCapacity()
+      throw error
+    }
+  }
+  async #spawn(sessionId: string): Promise<OmpRpcProcess> {
     const owner = this.#owner(sessionId)
     const sessionDir = qianmoConfigPath(
       'resident',
@@ -621,7 +848,8 @@ export class ResidentOmpPool
       })
       .catch(() => {})
     child.onFrame(frame => {
-      this.#used.set(sessionId, Date.now())
+      if (this.#children.get(sessionId) !== child) return
+      this.#touch(sessionId)
       if (frame.type === 'extension_ui_request' && frame.method === 'confirm') {
         void (async () => {
           let confirmed = false
@@ -650,8 +878,10 @@ export class ResidentOmpPool
       else if (
         frame.type === 'session_settled' ||
         (frame.type === 'prompt_result' && frame.sessionSettled === true)
-      )
+      ) {
         this.#busy.delete(sessionId)
+        this.#drainCapacity()
+      }
       if (
         frame.type === 'agent_start' ||
         frame.type === 'session_settled' ||
@@ -796,31 +1026,30 @@ export class ResidentOmpPool
       }
     })
     const ended = (error?: unknown) => {
-      if (this.#stopped || this.#children.get(sessionId) !== child) return
-      this.#failed = true
-      this.#reject(
+      if (
+        this.#stopped ||
+        this.#starting.has(sessionId) ||
+        this.#children.get(sessionId) !== child
+      )
+        return
+      this.#fail(
         error instanceof Error
           ? error
           : new Error('resident omp child exited unexpectedly'),
       )
     }
     void child.closed.then(() => ended(), ended)
-    try {
-      await child.initialize()
-      await child.request('open_session', {
-        sessionDir,
-        ...(selection
-          ? { provider: selection.provider, modelId: selection.modelId }
-          : {}),
-      })
-      await child.request('set_host_tools', {
-        tools,
-      })
-      return child
-    } catch (error) {
-      this.closeSession(sessionId)
-      throw error
-    }
+    await child.initialize()
+    await child.request('open_session', {
+      sessionDir,
+      ...(selection
+        ? { provider: selection.provider, modelId: selection.modelId }
+        : {}),
+    })
+    await child.request('set_host_tools', {
+      tools,
+    })
+    return child
   }
   async isAccepted(sessionId: string, messageId: string): Promise<boolean> {
     const owner = this.#owner(sessionId)
@@ -862,14 +1091,21 @@ export class ResidentOmpPool
     return false
   }
   closeSession(sessionId: string): void {
+    if (this.#starting.has(sessionId)) {
+      this.#cancelledStarts.add(sessionId)
+      this.#removeWaiter(sessionId, new Error('resident omp startup cancelled'))
+    }
     const child = this.#children.get(sessionId)
     this.#children.delete(sessionId)
     this.#used.delete(sessionId)
+    this.#recency.delete(sessionId)
     this.#busy.delete(sessionId)
     if (child) {
       const retiring = child.stop(this.#starting.has(sessionId)).finally(() => {
         if (this.#retiring.get(sessionId) === retiring)
           this.#retiring.delete(sessionId)
+        this.#slots.delete(sessionId)
+        this.#drainCapacity()
       })
       this.#retiring.set(sessionId, retiring)
       void retiring.catch(error => this.#options.onError?.(error))
@@ -882,9 +1118,11 @@ export class ResidentOmpPool
   async #stopAndReap(): Promise<void> {
     this.#stopped = true
     clearInterval(this.#timer)
+    this.#drainCapacity()
     // Children are registered before ready; terminate them before joining
     // startup, otherwise stopping waits on the very handshake it must cancel.
     for (const sessionId of this.#children.keys()) this.closeSession(sessionId)
+
     await Promise.allSettled([...this.#starting.values()])
     await Promise.allSettled([...this.#retiring.values()])
     this.#resolve()

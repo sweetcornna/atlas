@@ -319,6 +319,7 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
   readonly #upstreamHealth: ResidentUpstreamHealth
   /** Channels of turns still running, for the watchdog's abort. */
   readonly #channels = new Map<string, OmpRpcChannel>()
+  readonly #acquisitions = new Map<string, AbortController>()
 
   constructor(
     router: OmpTurnRouter,
@@ -366,6 +367,9 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
             // reason (inactivity, and the upstream status behind it) is what
             // the watchdog's rejection carries into timings and task.result.
             onExpired: turn => {
+              this.#acquisitions
+                .get(turn.sessionId)
+                ?.abort(new Error(CANCELLED_REASON))
               void this.#channels
                 .get(turn.sessionId)
                 ?.abort()
@@ -477,11 +481,17 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
       announcedTools: new Set<string>(),
       lastStopReason: undefined,
     }
+    const acquisition = new AbortController()
+    this.#acquisitions.set(input.sessionId, acquisition)
     this.#active.set(input.sessionId, active)
     let unsubscribe: (() => void) | undefined
     try {
       const run = async (): Promise<ResidentTurnResult> => {
-        const channel = await this.#router.channelFor(input.sessionId)
+        const channel = await this.#router.channelFor(
+          input.sessionId,
+          acquisition.signal,
+        )
+        acquisition.signal.throwIfAborted()
         this.#channels.set(input.sessionId, channel)
         const outcome = this.#awaitOutcome(channel, active, accept)
         unsubscribe = outcome.unsubscribe
@@ -527,6 +537,9 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
       })
       throw error
     } finally {
+      acquisition.abort(new Error('resident turn finished'))
+      if (this.#acquisitions.get(input.sessionId) === acquisition)
+        this.#acquisitions.delete(input.sessionId)
       unsubscribe?.()
       if (this.#active.get(input.sessionId) === active) {
         this.#active.delete(input.sessionId)

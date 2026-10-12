@@ -80,7 +80,8 @@ test('never-ready children time out, are reaped and park after every slow startu
         },
       })
       try {
-        await pool.newSession({ agent: 'reviewer', cwd: root.root })
+        const id = await pool.newSession({ agent: 'reviewer', cwd: root.root })
+        await pool.channelFor(id)
         return pool
       } catch (error) {
         await pool.stop()
@@ -156,7 +157,8 @@ for (const phase of ['ready', 'open_session'] as const) {
         return child
       },
     })
-    const opening = pool.newSession({ agent: 'reviewer', cwd: root.root })
+    const session = await pool.newSession({ agent: 'reviewer', cwd: root.root })
+    const opening = pool.channelFor(session)
     void opening.catch(() => {})
     let deadline: Timer | undefined
     try {
@@ -264,7 +266,7 @@ test('protocol failure cannot start the next generation before the actual child 
 
 test('pool shutdown tracks a retired session, joins concurrent stops and blocks late reopening', async () => {
   const root = isolatedRoot()
-  const children: ReturnType<typeof spawn>[] = []
+  const children: ChildProcess[] = []
   let closed = 0
   const pool = new ResidentOmpPool({
     agents: [{ agent: 'reviewer', cwd: root.root }],
@@ -296,6 +298,7 @@ test('pool shutdown tracks a retired session, joins concurrent stops and blocks 
   })
   try {
     const session = await pool.newSession({ agent: 'reviewer', cwd: root.root })
+    await pool.channelFor(session)
     pool.closeSession(session)
     const reopening = pool.channelFor(session)
     void reopening.catch(() => {})
@@ -350,3 +353,48 @@ test('failed signals are not exit evidence, even after protocol liveness has fai
   expect(stopped).toBe(true)
   expect(() => process.kill(child.pid!, 0)).toThrow()
 }, 6_000)
+
+test('RPC exit drains a paused stdout tail so stop observes real close instead of hanging after exit', async () => {
+  const child = spawn(
+    process.execPath,
+    [
+      '-e',
+      `
+    process.stdout.write('{"type":"ready"}\\n');
+    process.stdin.resume();
+    process.stdin.on('end', () => {
+      process.stdout.write('{"type":"agent_end"}\\n'.repeat(2000));
+      process.exit(0);
+    });
+  `,
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  )
+  let closed = false
+  child.once('close', () => {
+    closed = true
+  })
+  const channel = new OmpRpcProcess(child)
+  let timer: Timer | undefined
+  let stopping: Promise<void> | undefined
+  try {
+    await channel.initialize()
+    child.stdout!.pause()
+    stopping = channel.stop()
+    const deadline = Promise.withResolvers<never>()
+    timer = setTimeout(
+      () => deadline.reject(new Error('RPC exit left its stdout pipe paused')),
+      500,
+    )
+    await Promise.race([stopping, deadline.promise])
+    expect(closed).toBe(true)
+    expect(child.exitCode).toBe(0)
+    expect(() => process.kill(child.pid!, 0)).toThrow()
+  } finally {
+    clearTimeout(timer)
+    child.stdout!.resume()
+    child.stderr!.resume()
+    child.kill('SIGKILL')
+    await stopping
+  }
+}, 5_000)

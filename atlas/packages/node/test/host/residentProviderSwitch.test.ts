@@ -348,7 +348,7 @@ describe('resident provider hot switch (P18.3)', () => {
         release()
         await waitUntil(() => node.ready() === 1)
         expect(identities).toEqual([first, next])
-        expect(node.spawned).toHaveLength(1)
+        expect(node.spawned).toHaveLength(0)
       } finally {
         release()
       }
@@ -399,6 +399,11 @@ describe('resident provider hot switch (P18.3)', () => {
       probes[0]!.kill('SIGTERM')
       await waitUntil(() => node.ready() === 1)
       expect(probes[0]!.signalCode).toBe('SIGTERM')
+      expect(node.spawned).toHaveLength(0)
+      const initial = task('before probe recycle')
+      await connected.client.sendAndWait(initial)
+      await waitUntil(() => resultFor(connected.replies, initial) !== undefined)
+      expect(node.spawned).toHaveLength(1)
       await checkUntil(node, () => probes.length === 2)
       expect(identities).toEqual([firstId, secondId])
       expect(node.spawned).toHaveLength(1)
@@ -408,6 +413,10 @@ describe('resident provider hot switch (P18.3)', () => {
       ).toBe(true)
       probes[1]!.kill('SIGTERM')
       await waitUntil(() => node.ready() === 2)
+      expect(node.spawned).toHaveLength(1)
+      const next = task('after probe recycle')
+      await connected.client.sendAndWait(next)
+      await waitUntil(() => resultFor(connected.replies, next) !== undefined)
       expect(node.spawned).toHaveLength(2)
     },
     TEST_TIMEOUT_MS,
@@ -512,6 +521,11 @@ describe('resident provider hot switch (P18.3)', () => {
         mailboxPollMs: ONE_POLL_PER_GENERATION_MS,
       })
       await waitUntil(() => node.ready() === 1)
+      expect(node.spawned).toHaveLength(0)
+      const { client, replies } = await connect(socket)
+      const before = task('before first recycle')
+      await client.sendAndWait(before)
+      await waitUntil(() => resultFor(replies, before) !== undefined)
       const firstSession = defaultSessionId(config)
       const firstChild = node.spawned[0]
 
@@ -531,6 +545,10 @@ describe('resident provider hot switch (P18.3)', () => {
       expect(firstChild?.exitCode).toBe(0)
       const secondSession = defaultSessionId(config)
       expect(secondSession).not.toBe(firstSession)
+      expect(node.spawned).toHaveLength(1)
+      const middle = task('after reset before keep')
+      await client.sendAndWait(middle)
+      await waitUntil(() => resultFor(replies, middle) !== undefined)
 
       const keep = stage({
         recycle: { sessions: 'keep' },
@@ -546,13 +564,14 @@ describe('resident provider hot switch (P18.3)', () => {
       })
       expect(defaultSessionId(config)).toBe(secondSession)
 
-      expect(node.spawned).toHaveLength(3)
-      expect(isAlive(node.spawned[2])).toBe(true)
+      expect(node.spawned).toHaveLength(2)
+      expect(node.spawned.every(child => !isAlive(child))).toBe(true)
       // Not parked: work is still taken, on the third generation.
-      const { client, replies } = await connect(socket)
       const after = task('after two recycles')
       await client.sendAndWait(after)
       await waitUntil(() => resultFor(replies, after) !== undefined)
+      expect(node.spawned).toHaveLength(3)
+      expect(isAlive(node.spawned[2])).toBe(true)
       const payload = resultFor(replies, after)?.payload
       expect(isTaskResultPayload(payload) ? payload.outcome : undefined).toBe(
         'completed',
@@ -648,6 +667,11 @@ describe('resident provider hot switch (P18.3)', () => {
       expect(state.pending).toBeNull()
       expect(state.applied?.requestId).toBe(requestId)
       expect(hashAtSpawn).toEqual([state.appliedHash as string])
+      expect(node.spawned).toHaveLength(0)
+      const { client, replies } = await connect(socket)
+      const initial = task('after crash recovery')
+      await client.sendAndWait(initial)
+      await waitUntil(() => resultFor(replies, initial) !== undefined)
       expect(node.spawned).toHaveLength(1)
       expect(node.switches).toEqual([
         { requestId, sessions: 'reset', recovered: false, via: 'startup' },
@@ -710,14 +734,19 @@ describe('resident provider hot switch (P18.3)', () => {
       expect(node.alerts).toHaveLength(1)
       expect(node.alerts[0]).toContain('0700')
       expect(providerNode.hasPendingProviderConfig()).toBe(true)
-      expect(node.spawned).toHaveLength(1)
-      expect(isAlive(node.spawned[0])).toBe(true)
+      expect(node.spawned).toHaveLength(0)
 
       // Fixed by the operator: the next check commits and recycles.
       chmodSync(config, 0o700)
       node.resident.checkProviderConfig()
       await waitUntil(() => node.ready() === 2)
       expect(providerNode.hasPendingProviderConfig()).toBe(false)
+      expect(node.spawned).toHaveLength(0)
+      const { client, replies } = await connect(socket)
+      const after = task('after correcting permissions')
+      await client.sendAndWait(after)
+      await waitUntil(() => resultFor(replies, after) !== undefined)
+      expect(node.spawned).toHaveLength(1)
     },
     TEST_TIMEOUT_MS,
   )

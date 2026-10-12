@@ -65,6 +65,7 @@ test('resident abort during model startup prevents spawning, restarting and park
 test('resident stop during RPC startup terminates and reaps the never-ready child promptly', async () => {
   const root = isolatedRoot()
   const started = Promise.withResolvers<void>()
+  const registered = Promise.withResolvers<void>()
   const children: ChildProcess[] = []
   const signals: (NodeJS.Signals | number | undefined)[] = []
   const errors: string[] = []
@@ -75,6 +76,7 @@ test('resident stop during RPC startup terminates and reaps the never-ready chil
     agents: [{ agent: 'reviewer', cwd: root.root }],
     memoryRoot: join(root.root, 'memory'),
     psk: 'startup-shutdown-test-local-psk',
+    pollIntervalMs: 5,
     listen: { unix: join(root.root, 'r.sock') },
     inactivityMs: 0,
     spawnOmp: input => {
@@ -93,14 +95,36 @@ test('resident stop during RPC startup terminates and reaps the never-ready chil
       return child
     },
     onTiming: event => {
-      if (event.stage === 'runtime_ready') ready++
+      if (event.stage === 'runtime_ready') {
+        ready++
+        registered.resolve()
+      }
     },
     onError: error => errors.push(String(error)),
   })
   const running = resident.run()
   void running.catch(() => {})
+  let client: TransportClient | undefined
   let deadline: Timer | undefined
   try {
+    await registered.promise
+    expect(children).toHaveLength(0)
+    client = new TransportClient({
+      endpoint: { unix: join(root.root, 'r.sock') },
+      node: 'node-a',
+      psk: 'startup-shutdown-test-local-psk',
+      keepAliveIntervalMs: 0,
+      onMessage: () => {},
+    })
+    await client.connect()
+    await client.sendAndWait(
+      createMessage({
+        from: 'qianmo://node-a/planner',
+        to: 'qianmo://node-b/reviewer',
+        type: MessageType.TaskRequest,
+        payload: { round: 'start' },
+      }),
+    )
     await started.promise
     resident.stop()
     expect(signals).toContain('SIGTERM')
@@ -113,7 +137,7 @@ test('resident stop during RPC startup terminates and reaps the never-ready chil
         )
       }),
     ])
-    expect(ready).toBe(0)
+    expect(ready).toBe(1)
     expect(errors).toEqual([])
     expect(children).toHaveLength(1)
     expect(children[0]!.signalCode).toBe('SIGTERM')
@@ -122,6 +146,7 @@ test('resident stop during RPC startup terminates and reaps the never-ready chil
     clearTimeout(deadline)
     resident.stop()
     for (const child of children) child.kill('SIGKILL')
+    await client?.close()
     await running
     root.dispose()
   }
@@ -236,8 +261,8 @@ for (const fault of ['audit', 'activity'] as const) {
       expect(faults).toBeGreaterThan(0)
       expect(errors.some(error => error.includes(failure.message))).toBe(true)
       expect(generationsAfterReap).toEqual([true])
-      expect(children).toHaveLength(2)
-      expect(children.map(isAlive)).toEqual([false, true])
+      expect(children).toHaveLength(1)
+      expect(children.map(isAlive)).toEqual([false])
       expect(children[0]!.signalCode).toBe('SIGKILL')
     } finally {
       resident.stop()

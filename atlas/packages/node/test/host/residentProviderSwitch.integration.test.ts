@@ -501,7 +501,7 @@ describe('resident hot switch against real omp RPC', () => {
           via: 'startup',
         },
       ])
-      expect(spawned).toHaveLength(1)
+      expect(spawned).toHaveLength(0)
       expect(providerNode.hasPendingProviderConfig()).toBe(false)
 
       const first = task('HS-ONE')
@@ -580,14 +580,13 @@ describe('resident hot switch against real omp RPC', () => {
         recovered: false,
         via: 'switch',
       })
-      expect(spawned).toHaveLength(2)
+      expect(spawned).toHaveLength(1)
       await waitUntil(
         () => !alive(spawned[0]),
         'the old child to exit',
         10_000,
         diagnose,
       )
-      expect(spawned[1]?.pid).not.toBe(spawned[0]?.pid)
       expect(providerNode.hasPendingProviderConfig()).toBe(false)
       expect(providerNode.readProviderState().applied?.requestId).toBe(keep)
       const generation = JSON.parse(
@@ -657,7 +656,8 @@ describe('resident hot switch against real omp RPC', () => {
         recovered: false,
         via: 'switch',
       })
-      expect(spawned).toHaveLength(3)
+      expect(spawned).toHaveLength(2)
+      expect(alive(spawned[1])).toBe(false)
 
       const fourth = task('HS-FOUR')
       await client.sendAndWait(fourth)
@@ -665,6 +665,8 @@ describe('resident hot switch against real omp RPC', () => {
         outcome: 'completed',
         content: expect.stringContaining('reply-from-b'),
       })
+      expect(spawned).toHaveLength(3)
+      expect(spawned[2]?.pid).not.toBe(spawned[1]?.pid)
       expect(storedSessionId()).not.toBe(sessionAfterFirstTurn)
       const [turn] = modelB.turnsWith('HS-FOUR')
       expect(turn?.model).toBe('hs-model-c')
