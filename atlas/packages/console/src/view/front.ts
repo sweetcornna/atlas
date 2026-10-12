@@ -22,22 +22,17 @@
  * column, and on an empty conversation the composer moves up to the middle
  * under the agent's greeting.
  *
- * ## 主智能体, 节点智能体 and 子智能体
+ * ## 主智能体 and 子智能体
  *
  * The **main agent** is the one the front opens by default: the console's
  * `--chat-default`, or the first agent the console may dial. Every other
- * agent in the roster is a **node agent** (节点智能体), listed under the
- * server (node) it runs on, and any of them can be talked to from here
- * directly: picking one starts a conversation with it, on whichever server
- * it lives. The panel says which agents are working right now (a session
- * with a task still unanswered), and the strip above the composer lists
- * those other conversations, so work left running elsewhere stays in view
+ * agent in the roster is a **sub-agent**, listed under the server (node) it
+ * runs on, and any of them can be talked to from here directly: picking one
+ * starts a conversation with it, on whichever server it lives. The panel
+ * says which agents are working right now (a session whose last line is the
+ * person's and has no answer yet), and the strip above the composer lists
+ * those other conversations, so work handed to a sub-agent stays in view
  * while the person talks to the main one.
- *
- * A **sub-agent** (子智能体) is what an agent spawns inside one turn to do
- * part of the work (omp's `task` tool). The node reports each spawn as a
- * process line starting with {@link SUBAGENT_STEP_LABEL}; the thread draws
- * those lines as sub-agents, and the step group's summary counts them.
  *
  * ## What did not change
  *
@@ -107,14 +102,6 @@ const ADMIN = '/admin'
 
 /** How much of a notice's summary one step line shows. */
 const STEP_LENGTH = 160
-
-/**
- * What a process line reporting a sub-agent spawn starts with. A copy of
- * the resident's `SUBAGENT_STEP_LABEL` (`@qianmo/resident`, `omp-turn.ts`):
- * the console does not depend on the resident, so the node package pins the
- * two equal (`test/host/subagentStepLabel.test.ts`).
- */
-export const SUBAGENT_STEP_LABEL = '委派子智能体'
 
 /** How much of a session's first line the history list shows. */
 const TITLE_LENGTH = 40
@@ -315,7 +302,7 @@ function renderAgents(model: FrontSideModel): string {
   const subs =
     servers.length === 0
       ? ''
-      : `<h2 class="fx-sec-title">节点智能体<span class="fx-count">${escapeHtml(
+      : `<h2 class="fx-sec-title">子智能体<span class="fx-count">${escapeHtml(
           String(subCount),
         )}</span></h2>` +
         servers
@@ -451,8 +438,8 @@ function renderHistory(model: FrontSideModel): string {
 
 /**
  * The strip above the composer: the other conversations still waiting for
- * an answer, so work left running with another agent stays in view while
- * the person talks to this one.
+ * an answer, so work handed to a sub-agent stays in view while the person
+ * talks to the main one.
  */
 function renderStack(model: FrontSideModel): string {
   const running = model.sessions
@@ -463,7 +450,8 @@ function renderStack(model: FrontSideModel): string {
   if (running.length === 0) {
     return `<div class="fx-stack" id="fx-stack" hidden></div>`
   }
-  const label = `其他会话执行中 · ${running.length}`
+  const subOnly = running.every(session => session.target !== model.main)
+  const label = `${subOnly ? '子智能体执行中' : '后台执行'} · ${running.length}`
   const rows = running
     .slice(0, STACK_ROWS)
     .map(
@@ -664,52 +652,10 @@ const STEP_TONE: Readonly<Record<string, Tone>> = {
  * running, folded once it has answered; the client keeps whichever way the
  * person left it across redraws (`data-key`).
  */
-/**
- * The spawn a process line reports, when it reports one: how many sub-agents
- * (a batch says `× N`) and who they are. A failed spawn's line is a step
- * like any other failure, and counts none.
- */
-function spawnOf(
-  step: ChatTurn,
-): { readonly count: number; readonly who: string } | null {
-  if (!step.text.startsWith(SUBAGENT_STEP_LABEL)) return null
-  if (step.severity === 'warn' || step.severity === 'error') return null
-  const rest = step.text.slice(SUBAGENT_STEP_LABEL.length)
-  const batch = /^ × (\d+)/.exec(rest)
-  const count = batch === null ? 1 : Number(batch[1])
-  const colon = rest.indexOf('：')
-  return {
-    count: Number.isSafeInteger(count) && count > 0 ? count : 1,
-    who: colon === -1 ? '' : rest.slice(colon + 1).trim(),
-  }
-}
-
-/** One sub-agent spawn, in place of a plain step line. */
-function spawnLine(step: ChatTurn, count: number, who: string): string {
-  const detail =
-    step.detail === undefined
-      ? ''
-      : `<details class="fx-step-detail"><summary>${chevron()}任务</summary>` +
-        `<pre class="fx-pre fx-pre-quiet">${escapeHtml(step.detail)}</pre></details>`
-  return (
-    `<li class="fx-step fx-step-sub">` +
-    `<span class="fx-step-mark" aria-hidden="true">${icon('bot', { small: true })}</span>` +
-    `<div class="fx-step-body"><div class="fx-step-line">` +
-    `<span class="fx-sub-tag">${escapeHtml(count > 1 ? `子智能体 × ${count}` : '子智能体')}</span>` +
-    (who === ''
-      ? ''
-      : `<span class="fx-step-text fx-sub-who">${escapeHtml(truncate(who, STEP_LENGTH))}</span>`) +
-    (step.redelivered === true ? `<span class="fx-id">重发</span>` : '') +
-    clockTag(step.at, 'fx-when') +
-    `</div>${detail}</div></li>`
-  )
-}
-
 function stepGroup(steps: readonly ChatTurn[], running: boolean): string {
   const first = steps[0]
   const last = steps[steps.length - 1]
   if (first === undefined || last === undefined) return ''
-  let spawned = 0
   const worst = steps.some(step => step.severity === 'error')
     ? 'bad'
     : steps.some(step => step.severity === 'warn')
@@ -717,11 +663,6 @@ function stepGroup(steps: readonly ChatTurn[], running: boolean): string {
       : 'muted'
   const lines = steps
     .map(step => {
-      const spawn = spawnOf(step)
-      if (spawn !== null) {
-        spawned += spawn.count
-        return spawnLine(step, spawn.count, spawn.who)
-      }
       const tone = STEP_TONE[step.severity ?? 'info'] ?? 'muted'
       const detail =
         step.detail === undefined
@@ -741,7 +682,6 @@ function stepGroup(steps: readonly ChatTurn[], running: boolean): string {
     .join('')
   const summary =
     `${running ? '执行中' : '执行过程'} · ${steps.length} 步` +
-    (spawned === 0 ? '' : ` · 子智能体 ${spawned}`) +
     (running ? '' : ` · ${truncate(last.text, 48)}`)
   return (
     `<details class="fx-steps fx-steps-${worst}${running ? ' is-running' : ''}" ` +
@@ -896,7 +836,7 @@ function welcome(model: FrontViewModel): string {
     `<div class="fx-welcome">${stage}` +
     `<h2 class="fx-welcome-title">${escapeHtml(`你好 · 我是 ${names.agent}`)}</h2>` +
     `<p class="fx-welcome-sub">${escapeHtml(
-      `${model.main ? '主智能体' : '节点智能体'} · ${names.node} · ${verdict.text}`,
+      `${model.main ? '主智能体' : '子智能体'} · ${names.node} · ${verdict.text}`,
     )}</p>` +
     `<p class="fx-welcome-note">${escapeHtml(note)}</p>` +
     chips +
@@ -997,7 +937,7 @@ function renderHead(model: FrontViewModel): string {
     `<div class="fx-head-line"><span class="fx-head-name">${escapeHtml(agent)}</span>` +
     (model.main
       ? `<span class="fx-tag">主智能体</span>`
-      : `<span class="fx-tag fx-tag-quiet">节点智能体</span>`) +
+      : `<span class="fx-tag fx-tag-quiet">子智能体</span>`) +
     `</div>` +
     `<div class="fx-head-sub"><span class="mono">${escapeHtml(node)}</span>` +
     `${state(verdict.tone, verdict.text)}<span class="fx-model" id="fx-model"></span></div>` +

@@ -310,10 +310,6 @@ a.fx-id:hover { color: var(--color-accent-700); text-decoration: underline; }
 .fx-step-list { list-style: none; margin: 8px 0 0 6px; padding: 0 0 0 14px; border-left: 1.5px solid var(--color-divider); display: flex; flex-direction: column; gap: 6px; }
 .fx-step { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 8px; align-items: start; font-size: var(--text-12-5); }
 .fx-step > .dot { margin-top: 6px; }
-.fx-step-sub { grid-template-columns: 16px minmax(0, 1fr); margin-left: -3px; }
-.fx-step-mark { display: inline-flex; color: var(--color-accent); margin-top: 1px; }
-.fx-sub-tag { flex: none; font-size: var(--text-11-5); font-weight: 600; color: var(--color-accent); padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
-.fx-sub-who { color: var(--color-text); }
 .fx-step-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .fx-step-text { min-width: 0; overflow-wrap: anywhere; color: var(--color-quiet); }
 .fx-step-line .fx-when { margin-left: auto; flex: none; }

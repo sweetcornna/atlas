@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, test } from 'bun:test'
-import { SUBAGENT_STEP_LABEL } from '../src/index.js'
 import type {
   ChatTarget,
   ChatTranscript,
@@ -246,13 +245,13 @@ describe('agents and session history', () => {
     }
   })
 
-  test('node agents group by node and never repeat the main agent', async () => {
+  test('sub-agents group by node and never repeat the main agent', async () => {
     const h = front()
     const fragment = await (
       await h.handle(browse('/fragments/chat/front/side', ADMIN))
     ).text()
     const agents = region(fragment, 'fx-agents', '</section>')
-    expect(agents).toContain('节点智能体')
+    expect(agents).toContain('子智能体')
     expect(agents.match(/class="fx-agent-row/g)).toHaveLength(3)
     expect(agents.match(/class="fx-agent-row fx-agent-main/g)).toHaveLength(1)
     expect(agents.match(/class="fx-server"/g)).toHaveLength(2)
@@ -290,7 +289,7 @@ describe('agents and session history', () => {
     ).text()
     expect(region(side, 'fx-agents', '</section>')).toContain('1 执行中')
     const stack = side.slice(side.indexOf('id="fx-stack"'))
-    expect(stack).toContain('其他会话执行中 · 1')
+    expect(stack).toContain('子智能体执行中 · 1')
     expect(stack).toContain('data-session="sub-work"')
     expect(stack).not.toContain('data-session="current"')
     expect(stack).not.toContain('data-session="finished"')
@@ -379,62 +378,6 @@ describe('front process steps', () => {
     expect(done).not.toContain('fx-pending')
     expect(done).not.toContain('is-running')
     expect(done).toContain('执行过程 · 1 步')
-  })
-
-  test('a delegated sub-agent has an escaped name and a folded task detail', async () => {
-    const who = 'explore · memory <script>alert("name")</script>'
-    const detail = '<script>alert("task")</script>'
-    const html = await render([
-      ask,
-      { ...step, text: `${SUBAGENT_STEP_LABEL}：${who}`, detail },
-      answer,
-    ])
-    expect(html).toContain('class="fx-step fx-step-sub"')
-    expect(html).toContain('class="fx-sub-tag">子智能体</span>')
-    expect(html).toContain(
-      'explore · memory &lt;script&gt;alert(&quot;name&quot;)&lt;/script&gt;',
-    )
-    const task =
-      html.match(
-        /<details class="fx-step-detail"[^>]*>[\s\S]*?<\/details>/,
-      )?.[0] ?? ''
-    expect(task).toMatch(/<summary>[\s\S]*?任务<\/summary>/)
-    expect(task).not.toMatch(/<details[^>]*\bopen\b/)
-    expect(task).toContain(
-      '&lt;script&gt;alert(&quot;task&quot;)&lt;/script&gt;',
-    )
-    expect(html).not.toContain(who)
-    expect(html).not.toContain(detail)
-  })
-
-  test('a batch delegation labels and counts all three sub-agents in the group summary', async () => {
-    const html = await render([
-      ask,
-      {
-        ...step,
-        text: `${SUBAGENT_STEP_LABEL} × 3：explore · memory · review`,
-      },
-      answer,
-    ])
-    expect(html).toContain('class="fx-sub-tag">子智能体 × 3</span>')
-    expect(html).toContain('执行过程 · 1 步 · 子智能体 3')
-  })
-
-  test('a failed delegation stays an ordinary warning process line and counts no sub-agents', async () => {
-    const text = `${SUBAGENT_STEP_LABEL} — 失败`
-    const html = await render([
-      ask,
-      { ...step, text, severity: 'warn', detail: '拨号失败' },
-      answer,
-    ])
-    expect(html).toContain('class="fx-steps fx-steps-warn"')
-    expect(html).toContain('class="fx-step"')
-    expect(html).toContain('class="dot dot-warn"')
-    expect(html).toContain(text)
-    expect(html).toMatch(/<summary>[\s\S]*?详情<\/summary>/)
-    expect(html).not.toContain('fx-step-sub')
-    expect(html).not.toContain('fx-sub-tag')
-    expect(html).not.toMatch(/ · 子智能体 \d/)
   })
 })
 

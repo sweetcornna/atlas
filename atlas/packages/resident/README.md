@@ -246,7 +246,6 @@ flowchart TD
 | 30 | **注入给 ACP 会话的工具面只有 `qianmo_notify` 一个，且节点侧根本不存在排程 API**（E4 是结构成立，不是配置成立） | 无人值守的轮次能给自己排更多无人值守的轮次——这条一旦破，节点的产出速率不再有任何上界 | `src/services/qianmo/__tests__/notifyTool.test.ts`「is exactly one tool, and it is qianmo_notify」「carries no scheduling capability, by name or by description」（含诱饵正向对照） |
 | 31 | **对端没声明 `notify` 就一条都不发，且不改写成别的类型** | 静默降级成 `task.request` ⇒ 在对端开一个它没要求的 turn，把「能力缺失」偷换成「行为变化」（hermes F3） | `test/notify.test.ts` 两条；`src/services/qianmo/__tests__/resident.integration.test.ts`「a hub that never declared notify is told nothing at all」 |
 | 41 | **过程行的 `dedupKey` 只由 `turnStepDedupKey` 拼、只由 `parseTurnStepDedupKey` 读** | `qm watch` 靠这个格式把过程行和 agent 自己发的通知分开（§4.1⑤ 产出默认静默，`docs/dev/console.md` §10.1.3）。另拼一种格式，中枢就会把每个工具步骤都当成给人的通知打印出来 | `test/acp-turn.test.ts`「every step key a turn raises parses back, and nothing else does」；`src/cli/handlers/__tests__/watch.test.ts`「a tool step the node raised is process data, including a failure」；`tests/integration/qianmo-watch-signed.test.ts` |
-| 44 | **派生子智能体（omp 的 `task` 工具）的过程行以 `SUBAGENT_STEP_LABEL` 开头**，批量写 `× N`，详情是各自的任务而不是文件位置 | 对话前台认这个开头把那一行画成子智能体；改了这边没改前台那份字面量，子智能体就退回成一行普通过程，没有报错 | `test/omp-turn.test.ts`「a sub-agent spawn is reported as one, naming each spawn and its task」；`atlas/packages/node/test/host/subagentStepLabel.test.ts` |
 
 三处容易误读：
 
