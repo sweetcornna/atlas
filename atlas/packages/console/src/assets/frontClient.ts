@@ -66,6 +66,10 @@ function frontScript(): string {
   // session it belongs to, never what is on screen.
   var nav = 0;
   var switching = false;
+  // A view refresh that failed after a send is tried again on its own, a
+  // little later each time, until one lands or the person moves on.
+  var retryTimer = null;
+  var retryDelay = 0;
   var choices = {};
   var model = { target: '', html: '', at: 0, asking: false };
 
@@ -136,8 +140,9 @@ function frontScript(): string {
     var before = replyCount();
     var figure = figureIn('fx-head');
     return qc.loadHtml(viewUrl(opening)).then(function (html) {
-      if (seq !== viewSeq || qc.isExpired()) return;
+      if (seq !== viewSeq || qc.isExpired()) return false;
       adopt(html, ['fx-head', 'fx-thread']);
+      stopRetry();
       keepFigure(figure);
       keepChoices(byId('fx-thread'));
       var thread = byId('fx-thread');
@@ -149,7 +154,28 @@ function frontScript(): string {
       if (stick && scroller) scroller.scrollTop = scroller.scrollHeight;
       updateJump();
       askModel();
+      return true;
     });
+  }
+
+  function stopRetry() {
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    retryDelay = 0;
+  }
+
+  function retryView(mine) {
+    if (retryTimer || qc.isExpired()) return;
+    retryDelay = Math.min(retryDelay ? retryDelay * 2 : 3000, 30000);
+    retryTimer = setTimeout(function () {
+      retryTimer = null;
+      if (mine !== nav || qc.isExpired()) return;
+      refreshView(false, true).then(function (drawn) {
+        if (!drawn || mine !== nav) return;
+        say(byId('fx-status'), '', 'muted');
+        paint();
+        focusBox();
+      }, function () { retryView(mine); });
+    }, retryDelay);
   }
 
   function refreshSide() {
@@ -179,7 +205,10 @@ function frontScript(): string {
   }
 
   function refreshAll() {
-    return Promise.all([state.active ? refreshView(false) : Promise.resolve(), refreshSide()]);
+    // Not while a first line is on its way: the welcome under it is about to
+    // become the conversation, and redrawing it would drop the line.
+    var view = state.busy && !state.active ? Promise.resolve() : refreshView(false);
+    return Promise.all([view, refreshSide()]);
   }
 
   document.addEventListener('qianmo:faces', function () { refreshView(false); refreshSide(); });
@@ -191,10 +220,19 @@ function frontScript(): string {
     return (thread && thread.getAttribute('data-agent')) || '';
   }
 
+  // Whether the thread on screen is the conversation the state points at. A
+  // send goes to state.active, so the composer is live only while that is
+  // the conversation the person is looking at: a failed or overtaken switch
+  // leaves the old thread up and the composer held.
+  function showsState() {
+    var thread = byId('fx-thread');
+    return !!thread && (thread.getAttribute('data-session') || '') === (state.active || '');
+  }
+
   function setComposer(on) {
     var box = byId('fx-text');
     var send = byId('fx-send');
-    var live = on && !switching;
+    var live = on && !switching && showsState();
     if (box) box.disabled = !live;
     if (send) send.disabled = !live || !box || !box.value.trim();
   }
@@ -316,6 +354,7 @@ function frontScript(): string {
 
   function play(steps) {
     if (settle) { clearTimeout(settle); settle = null; }
+    if (qc.isExpired()) return;
     var list = figures();
     if (!list.length || !steps.length) return;
     for (var i = 0; i < list.length; i++) list[i].setAttribute('data-state', steps[0][0]);
@@ -435,8 +474,10 @@ function frontScript(): string {
     var root = byId('fx');
     if (!root) return;
     var was = root.getAttribute('data-drawer') === 'open';
+    var main = byId('fx-main');
     if (on) {
       root.setAttribute('data-drawer', 'open');
+      if (main) main.inert = true;
       if (!was) {
         drawerOpener = document.activeElement;
         var first = document.querySelector('#fx-side .fx-new');
@@ -444,9 +485,24 @@ function frontScript(): string {
       }
     } else {
       root.removeAttribute('data-drawer');
-      if (was && drawerOpener && drawerOpener.focus && narrow()) drawerOpener.focus();
+      if (main) main.inert = false;
+      if (was && narrow()) {
+        var back = drawerOpener && drawerOpener.isConnected
+          ? drawerOpener
+          : document.querySelector('.fx-top [data-action="fx-side"]');
+        if (back && back.focus) back.focus();
+      }
       drawerOpener = null;
     }
+  }
+
+  // Widened past the drawer breakpoint with the drawer open: it closes, so
+  // the page it made inert comes back.
+  if (window.matchMedia) {
+    var wide = window.matchMedia('(max-width: 900px)');
+    var onWidth = function () { if (!wide.matches) setDrawer(false); };
+    if (wide.addEventListener) wide.addEventListener('change', onWidth);
+    else if (wide.addListener) wide.addListener(onWidth);
   }
 
   function focusBox() {
@@ -461,16 +517,20 @@ function frontScript(): string {
     nav++;
     var mine = nav;
     switching = true;
+    stopRetry();
     setComposer(false);
     markCurrent();
     applyHistory();
     say(byId('fx-status'), '', 'muted');
     soonSide();
+    // Unheld when this fetch settles, drawn or not; the composer itself waits
+    // for the thread on screen to be this conversation (showsState), which a
+    // fetch that was overtaken leaves to the one that overtook it.
     return refreshView(opening, true).then(function () {
       if (mine !== nav) return;
       switching = false;
       paint();
-      focusBox();
+      if (showsState()) focusBox();
     }, function (err) {
       if (mine !== nav) return;
       switching = false;
@@ -493,7 +553,7 @@ function frontScript(): string {
     setDrawer(false);
     closeMenus();
     if (!id) return;
-    if (id === state.active && !switching) { focusBox(); return; }
+    if (id === state.active && !switching && showsState()) { focusBox(); return; }
     state.active = id;
     setAddress(false);
     go(true);
@@ -577,7 +637,7 @@ function frontScript(): string {
     var status = byId('fx-status');
     var form = byId('fx-composer');
     if (state.busy || !box) return;
-    if (switching) { say(status, '正在打开会话 · 稍后再发', 'muted'); return; }
+    if (switching || !showsState()) { say(status, '正在打开会话 · 稍后再发', 'muted'); return; }
     var text = (typeof given === 'string' ? given : box.value).trim();
     if (!text) return;
     var thread = byId('fx-thread');
@@ -610,7 +670,9 @@ function frontScript(): string {
         autosize();
         play([['error', 2400], ['idle', 0]]);
         say(status, qc.failLine('发送', err), qc.failTone(err));
-        if (welcome && !state.active) refreshView(false, true);
+        // The welcome the line replaced comes back; a conversation opened for
+        // the line is shown instead, empty, with the text back in the box.
+        if (welcome) refreshView(!!(opened && opened.fresh), true).catch(function () {});
       }
       qc.toast(qc.failLine('发送', err), qc.failTone(err));
       if (opened) soonSide();
@@ -635,6 +697,7 @@ function frontScript(): string {
         }
         paint();
         say(status, '已发送 · 页面刷新失败 · 稍后自动重试', 'warn');
+        retryView(pin.nav);
       });
     });
   }
@@ -755,6 +818,7 @@ function frontScript(): string {
     if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
     if (sideTimer) { clearTimeout(sideTimer); sideTimer = null; }
     if (settle) { clearTimeout(settle); settle = null; }
+    stopRetry();
     viewSeq++;
     sideSeq++;
     say(byId('fx-live'), '已断开', 'muted');

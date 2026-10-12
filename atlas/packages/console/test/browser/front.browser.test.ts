@@ -129,6 +129,95 @@ describe.skipIf(SKIP !== null)(
       }
     }, 30_000)
 
+    test('a switch whose view fails leaves the shown conversation unsendable until the target is opened', async () => {
+      const h = accountsHarness()
+      const member = await person(h.handle, 'member')
+      const ids: string[] = []
+      for (let i = 0; i < 2; i++) {
+        const response = await h.handle(
+          asSession('POST', '/v0/chat/sessions', member.sid, {
+            body: { target: ADDRESS },
+          }),
+        )
+        expect(response.status).toBe(200)
+        ids.push(((await response.json()) as { id: string }).id)
+      }
+      const [a, b] = ids
+      let failB = false
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        async fetch(request) {
+          if (
+            failB &&
+            new URL(request.url).pathname === `/fragments/chat/front/view/${b}`
+          )
+            return new Response('测试打开失败', { status: 503 })
+          return h.handle(request)
+        },
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await observeChatStream(tab)
+        await tab.goto(`${base}/?session=${a}`)
+        await tab.waitFor(`window.__chatStreamOpen === true`)
+        failB = true
+        await tab.evaluate(
+          `document.querySelector('.fx-hitem[data-session="${b}"]').click()`,
+        )
+        await tab.waitFor(
+          `document.getElementById('fx-status').textContent.includes('打开')`,
+        )
+        expect(
+          await tab.evaluate<string>(
+            `document.getElementById('fx-thread').getAttribute('data-session')`,
+          ),
+        ).toBe(a)
+        expect(
+          await tab.evaluate<boolean>(
+            `document.getElementById('fx-text').disabled`,
+          ),
+        ).toBe(true)
+        await tab.evaluate(`(() => {
+          const box = document.getElementById('fx-text');
+          box.disabled = false;
+          box.value = '打开失败后的草稿';
+          document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        })()`)
+        await tab.waitFor(
+          `document.getElementById('fx-status').textContent.includes('稍后再发')`,
+        )
+        expect(h.chat.sent).toEqual([])
+        failB = false
+        await tab.evaluate(
+          `document.querySelector('.fx-hitem[data-session="${b}"]').click()`,
+        )
+        await tab.waitFor(
+          `document.getElementById('fx-thread').getAttribute('data-session') === '${b}' && !document.getElementById('fx-text').disabled`,
+        )
+        await tab.evaluate(
+          `document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))`,
+        )
+        await tab.waitFor(
+          `document.getElementById('fx-composer').getAttribute('aria-busy') === null && document.getElementById('fx-text').value === ''`,
+        )
+        expect(h.chat.sent.map(input => [input.sessionId, input.text])).toEqual(
+          [[b, '打开失败后的草稿']],
+        )
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
     test('a successful send followed by a failed refresh keeps the draft cleared and the message acknowledged', async () => {
       const h = accountsHarness()
       const member = await person(h.handle, 'member')
@@ -202,9 +291,14 @@ describe.skipIf(SKIP !== null)(
         await tab.evaluate(
           `window.__oldThread = document.getElementById('fx-thread')`,
         )
+        // No event arrives: the client tries the refresh again by itself.
         failRefresh = false
-        h.chat.emit('session-1')
         await tab.waitFor(`!document.contains(window.__oldThread)`)
+        expect(
+          await tab.evaluate<string>(
+            `document.getElementById('fx-status').textContent`,
+          ),
+        ).toBe('')
         expect(
           await tab.evaluate<string>(
             `document.getElementById('fx-text').value`,
