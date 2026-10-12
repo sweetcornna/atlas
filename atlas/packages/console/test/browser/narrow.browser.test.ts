@@ -426,6 +426,10 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
       await tab.waitFor(
         `document.getElementById('fx').getAttribute('data-drawer') !== 'open' && location.search === '?session=session-2'`,
       )
+      // The composer stays held until session-2 is the thread on screen.
+      await tab.waitFor(
+        `document.getElementById('fx-thread').getAttribute('data-session') === 'session-2' && !document.getElementById('fx-text').disabled`,
+      )
       // Mobile keeps the keyboard closed until the reader taps the input.
       await tab.evaluate(`document.getElementById('fx-text').focus()`)
       await tab.waitFor(`document.activeElement.id === 'fx-text'`)
