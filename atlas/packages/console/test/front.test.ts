@@ -267,9 +267,9 @@ describe('agents and session history', () => {
     const h = front(chat)
     const page = await (await h.handle(browse('/', ADMIN))).text()
     expect(page).toContain('is-off')
-    expect(page).toContain('端点不在允许名单')
+    expect(page).toContain('未接入')
     expect(page).not.toContain('data-action="fx-suggest"')
-    expect(page).toContain('Shift Enter 换行" disabled')
+    expect(page).toContain('placeholder="发消息" disabled')
     expect(page).toContain('aria-label="发送" disabled')
     const welcome = await (
       await h.handle(browse('/fragments/chat/front/view', ADMIN))
@@ -368,7 +368,7 @@ describe('front process steps', () => {
     const turns = [ask, b, answer, { ...step, taskId: 'task-b' }]
     const running = await render(turns)
     expect(running).toContain('fx-pending')
-    expect(running).toContain('planner 正在处理')
+    expect(running).toContain('aria-label="planner 处理中"')
     expect(running).toContain('fx-steps-muted is-running')
     expect(running).toContain('执行中 · 1 步')
     const done = await render([
@@ -377,7 +377,7 @@ describe('front process steps', () => {
     ])
     expect(done).not.toContain('fx-pending')
     expect(done).not.toContain('is-running')
-    expect(done).toContain('执行过程 · 1 步')
+    expect(done).toContain('已执行 · 1 步')
   })
 })
 

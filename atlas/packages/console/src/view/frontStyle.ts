@@ -245,7 +245,6 @@ button.fx-head-face:hover, button.fx-welcome-face:hover { background: color-mix(
 .fx-dock { flex: none; position: relative; padding: 4px 0 10px; }
 .fx-main.is-welcome .fx-scroll { flex: 1 1 0; display: flex; flex-direction: column; justify-content: flex-end; }
 .fx-main.is-welcome .fx-dock { flex: 1 1 0; }
-.fx-main.is-welcome .fx-fine { display: none; }
 
 .fx-msgs { display: flex; flex-direction: column; gap: 22px; padding: 18px 0 28px; }
 .fx-msg { min-width: 0; }
@@ -290,6 +289,9 @@ a.fx-id:hover { color: var(--color-accent-700); text-decoration: underline; }
   font: inherit; font-size: var(--text-11-5); opacity: 0; transition: opacity 120ms ease, background-color 120ms ease;
 }
 .fx-msg-agent:hover .fx-mini, .fx-mini:focus-visible { opacity: 1; }
+.fx-meta-more { display: inline-flex; align-items: center; gap: 10px; opacity: 0; transition: opacity 120ms ease; }
+.fx-msg:hover .fx-meta-more, .fx-msg:focus-within .fx-meta-more { opacity: 1; }
+@media (hover: none) { .fx-meta-more { display: none; } }
 .fx-mini:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); color: var(--color-text); }
 @media (hover: none) { .fx-mini { opacity: 1; } }
 
@@ -370,26 +372,20 @@ a.fx-id:hover { color: var(--color-accent-700); text-decoration: underline; }
 
 /* The composer. */
 .fx-composer {
-  position: relative; display: flex; flex-direction: column; gap: 4px;
-  padding: 12px 12px 10px 16px; border-radius: 24px;
+  position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 4px 10px;
+  padding: 10px 10px 10px 18px; border-radius: 24px;
   background: var(--color-surface); box-shadow: var(--shadow-sm);
   transition: box-shadow 150ms ease;
 }
 .fx-composer:focus-within { box-shadow: var(--shadow-md), 0 0 0 1.5px var(--color-accent-300); }
 .fx-composer textarea {
-  width: 100%; min-height: 26px; max-height: 240px; resize: none; border: 0; padding: 2px 0;
+  width: 100%; min-height: 26px; max-height: 240px; resize: none; border: 0; padding: 5px 0;
   background: none; color: var(--color-text); outline: none;
   font: inherit; font-size: var(--text-15, 15px); line-height: 1.6;
 }
 .fx-composer textarea::placeholder { color: var(--color-muted); }
 .fx-composer textarea:disabled { cursor: not-allowed; }
-.fx-composer-foot { display: flex; align-items: center; gap: 10px; }
-.fx-target {
-  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
-  background: var(--color-bg); font-size: var(--text-12); font-weight: 600; max-width: 50%;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.fx-composer-hint { flex: 1; min-width: 0; font-size: var(--text-11-5); color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-composer-foot { display: flex; align-items: center; }
 .fx-send {
   display: inline-grid; place-items: center; width: 36px; height: 36px; flex: none; margin-left: auto;
   border: 0; border-radius: 50%; cursor: pointer;
@@ -400,7 +396,7 @@ a.fx-id:hover { color: var(--color-accent-700); text-decoration: underline; }
 .fx-send:active:not(:disabled) { transform: scale(0.94); }
 .fx-send:disabled { opacity: 0.35; cursor: not-allowed; }
 .fx-composer[aria-busy="true"] .fx-send { opacity: 0.6; }
-.fx-status { margin: 0; font-size: var(--text-12); }
+.fx-status { grid-column: 1 / -1; margin: 0; font-size: var(--text-12); }
 .fx-status:empty { display: none; }
 .fx-cmds {
   position: absolute; left: 8px; right: 8px; bottom: calc(100% + 8px); z-index: var(--z-menu);
@@ -417,7 +413,6 @@ a.fx-id:hover { color: var(--color-accent-700); text-decoration: underline; }
 .fx-cmd span { color: var(--color-muted); font-size: var(--text-12); }
 .fx-cmd[aria-selected="true"], .fx-cmd:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 .fx-cmd[hidden] { display: none; }
-.fx-fine { margin: 8px 0 0; text-align: center; font-size: var(--text-11); color: var(--color-muted); }
 .fx-jump {
   position: absolute; left: 50%; top: -44px; transform: translateX(-50%);
   display: inline-grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 50%;
@@ -451,7 +446,7 @@ a.fx-id:hover { color: var(--color-accent-700); text-decoration: underline; }
   .fx-msg-user { max-width: 90%; }
   .fx-steps { margin-left: 0; }
   .fx-welcome-title { font-size: var(--text-22); }
-  .fx-live, .fx-composer-hint { display: none; }
+  .fx-live { display: none; }
   .fx-stack-row { grid-template-columns: 22px auto minmax(0, 1fr) 10px; }
   .fx-stack-node, .fx-stack-when { display: none; }
 }

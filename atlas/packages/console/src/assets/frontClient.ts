@@ -247,18 +247,8 @@ function frontScript(): string {
     var start = thread.getAttribute('data-start') === '1';
     var name = agentName();
     setComposer(open || start);
-    var who = byId('fx-target-name');
-    if (who) who.textContent = name || '—';
-    var dot = byId('fx-target-dot');
-    if (dot) dot.className = 'dot dot-' + (thread.getAttribute('data-tone') || 'muted');
     var box = byId('fx-text');
-    if (box) {
-      box.setAttribute('placeholder', open
-        ? '给 ' + name + ' 发消息 · Enter 发送 · Shift Enter 换行'
-        : start
-          ? '写下要让 ' + name + ' 做的事 · Enter 开始新会话'
-          : '这个智能体暂时不能对话');
-    }
+    if (box) box.setAttribute('placeholder', open || start ? '发消息给 ' + name : '暂不可对话');
     markCurrent();
   }
 
@@ -637,12 +627,12 @@ function frontScript(): string {
     var status = byId('fx-status');
     var form = byId('fx-composer');
     if (state.busy || !box) return;
-    if (switching || !showsState()) { say(status, '正在打开会话 · 稍后再发', 'muted'); return; }
+    if (switching || !showsState()) { say(status, '正在打开会话', 'muted'); return; }
     var text = (typeof given === 'string' ? given : box.value).trim();
     if (!text) return;
     var thread = byId('fx-thread');
     var ready = !!thread && (thread.getAttribute('data-open') === '1' || thread.getAttribute('data-start') === '1');
-    if (!ready) { say(status, '这个智能体暂时不能对话', 'bad'); return; }
+    if (!ready) { say(status, '暂不可对话', 'bad'); return; }
     var pin = { nav: nav, agent: state.agent, active: state.active };
     var welcome = !pin.active;
     hideCommands();
@@ -696,7 +686,7 @@ function frontScript(): string {
           if (meta) meta.textContent = '已发送';
         }
         paint();
-        say(status, '已发送 · 页面刷新失败 · 稍后自动重试', 'warn');
+        say(status, '已发送 · 刷新失败 · 自动重试中', 'warn');
         retryView(pin.nav);
       });
     });
@@ -806,7 +796,7 @@ function frontScript(): string {
       soonSide();
     });
     source.addEventListener('error', function () {
-      startPolling('实时连接中断 · 轮询中');
+      startPolling('轮询中');
     });
   }
 
@@ -852,7 +842,7 @@ function frontScript(): string {
     closeMenus();
     if (!text) return;
     var done = function () { qc.toast('已复制', 'ok'); };
-    var failed = function () { qc.toast('复制失败 · 浏览器没有允许写剪贴板', 'warn'); };
+    var failed = function () { qc.toast('复制失败', 'warn'); };
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, failed);
       else failed();

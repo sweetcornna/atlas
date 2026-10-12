@@ -93,7 +93,7 @@ describe.skipIf(SKIP !== null)(
           document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
         })()`)
         await tab.waitFor(
-          `document.getElementById('fx-status').textContent.includes('稍后再发') || window.__messagePosts.length > 0`,
+          `document.getElementById('fx-status').textContent.includes('正在打开会话') || window.__messagePosts.length > 0`,
         )
         expect(await tab.evaluate<string[]>(`window.__messagePosts`)).toEqual(
           [],
@@ -193,7 +193,7 @@ describe.skipIf(SKIP !== null)(
           document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
         })()`)
         await tab.waitFor(
-          `document.getElementById('fx-status').textContent.includes('稍后再发')`,
+          `document.getElementById('fx-status').textContent.includes('正在打开会话')`,
         )
         expect(h.chat.sent).toEqual([])
         failB = false

@@ -609,7 +609,7 @@ describe('front document', () => {
     const handler = createConsoleHandler(depsWith(chat), TOKENS)
     const html = await (await handler(get('/?session=gone'))).text()
     expect(html).toContain('会话未找到')
-    expect(html).toContain('Shift Enter 换行" disabled')
+    expect(html).toContain('placeholder="发消息" disabled')
     expect(html).toContain('aria-label="发送" disabled')
     expect(html).not.toContain('<fieldset disabled')
   })

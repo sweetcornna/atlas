@@ -123,20 +123,30 @@ function clockTag(at: number, cls: string): string {
 
 /** The opening lines the empty conversation offers, sent as written. */
 const SUGGESTIONS: readonly string[] = [
-  '检查各节点的运行状态',
-  '总结最近一天的审计记录',
-  '说明你能使用的工具',
-  '列出今天需要处理的事项',
+  '检查节点状态',
+  '总结今天的审计',
+  '你能做什么',
 ]
 
 /** What each local command does, as the composer's command list says it. */
 const COMMAND_WORDS: Readonly<Record<ChatLocalCommand, string>> = {
-  model: '查看或切换本会话的模型',
-  thinking: '打开或关闭本会话的思考',
-  effort: '查看或调整本会话的推理档位',
-  compact: '压缩本会话的上下文',
-  context: '查看本会话的上下文用量',
-  autocompact: '设置整台节点的自动压缩阈值 · 需要运维权限',
+  model: '切换模型',
+  thinking: '思考开关',
+  effort: '推理档位',
+  compact: '压缩上下文',
+  context: '上下文用量',
+  autocompact: '自动压缩阈值',
+}
+
+/** The roster's verdict on an agent, in the front's shorter words. */
+function stateOf(
+  target: ChatTarget | null,
+  registryDown: boolean,
+): { readonly tone: Tone; readonly text: string } {
+  const verdict = targetState(target, registryDown)
+  return target !== null && !registryDown && !target.dialable
+    ? { ...verdict, text: '未接入' }
+    : verdict
 }
 
 // --- who there is to talk to --------------------------------------------------
@@ -216,7 +226,7 @@ function agentRow(
   load: AgentLoad | undefined,
   main: boolean,
 ): string {
-  const verdict = targetState(target, false)
+  const verdict = stateOf(target, false)
   const current = target.address === model.selected
   const running = load?.running ?? 0
   const sessions = load?.sessions ?? 0
@@ -275,15 +285,13 @@ function renderAgents(model: FrontSideModel): string {
   const open = `<section class="fx-sec fx-agents" id="fx-agents" aria-label="智能体">`
   if (model.targets === null) {
     return (
-      open +
-      `<p class="fx-none">${escapeHtml('名册不可达 · 智能体列表暂时读不到 · 已有会话照常可开')}</p>` +
-      `</section>`
+      open + `<p class="fx-none">${escapeHtml('名册不可达')}</p>` + `</section>`
     )
   }
   if (model.targets.length === 0) {
     return (
       open +
-      `<p class="fx-none">${escapeHtml('注册中心里没有可对话的智能体')}</p>` +
+      `<p class="fx-none">${escapeHtml('暂无智能体')}</p>` +
       (model.admin
         ? `<a class="fx-side-link" href="${ADMIN}/nodes">${icon('server', { small: true })}管理节点</a>`
         : '') +
@@ -308,7 +316,7 @@ function renderAgents(model: FrontSideModel): string {
         servers
           .map(([node, agents]) => {
             const online = agents.filter(
-              target => targetState(target, false).tone === 'ok',
+              target => stateOf(target, false).tone === 'ok',
             ).length
             const busy = agents.reduce(
               (sum, target) => sum + (loads.get(target.address)?.running ?? 0),
@@ -331,15 +339,7 @@ function renderAgents(model: FrontSideModel): string {
             )
           })
           .join('')
-  return (
-    open +
-    mainBlock +
-    subs +
-    (model.admin
-      ? `<a class="fx-side-link" href="${ADMIN}/nodes">${icon('server', { small: true })}管理节点与智能体</a>`
-      : '') +
-    `</section>`
-  )
+  return open + mainBlock + subs + `</section>`
 }
 
 // --- what has been said ---------------------------------------------------------
@@ -429,9 +429,9 @@ function renderHistory(model: FrontSideModel): string {
     open +
     head +
     groups.join('') +
-    `<p class="fx-none" data-empty="agent"${mine ? ' hidden' : ''}>还没有和这个智能体的会话</p>` +
-    `<p class="fx-none" data-empty="all"${ordered.length === 0 ? '' : ' hidden'}>还没有会话</p>` +
-    `<p class="fx-none" data-empty="search" hidden>没有匹配的会话</p>` +
+    `<p class="fx-none" data-empty="agent"${mine ? ' hidden' : ''}>暂无会话</p>` +
+    `<p class="fx-none" data-empty="all"${ordered.length === 0 ? '' : ' hidden'}>暂无会话</p>` +
+    `<p class="fx-none" data-empty="search" hidden>无匹配</p>` +
     `</section>`
   )
 }
@@ -477,7 +477,7 @@ function renderStack(model: FrontSideModel): string {
     .join('')
   const more =
     running.length > STACK_ROWS
-      ? `<p class="fx-stack-more">${escapeHtml(`另有 ${running.length - STACK_ROWS} 条 · 在会话列表里`)}</p>`
+      ? `<p class="fx-stack-more">${escapeHtml(`另有 ${running.length - STACK_ROWS} 条`)}</p>`
       : ''
   return (
     `<div class="fx-stack" id="fx-stack">` +
@@ -589,8 +589,8 @@ function userTurn(turn: ChatTurn, admin: boolean): string {
   return (
     `<article class="fx-msg fx-msg-user${turn.state === 'failed' ? ' is-failed' : ''}">` +
     `<div class="fx-bubble">${renderRichText(turn.text)}</div>` +
-    `<div class="fx-meta">${clockTag(turn.at, 'fx-when')}${deliveryMark(turn)}` +
-    `${idMarks(turn, admin)}</div></article>`
+    `<div class="fx-meta">${deliveryMark(turn)}` +
+    `<span class="fx-meta-more">${clockTag(turn.at, 'fx-when')}${idMarks(turn, admin)}</span></div></article>`
   )
 }
 
@@ -624,18 +624,20 @@ function agentTurn(
     }">` +
     `<span class="fx-msg-face" aria-hidden="true">${face}</span>` +
     `<div class="fx-msg-body">` +
-    `<header class="fx-msg-head">${who}${clockTag(turn.at, 'fx-when')}</header>` +
+    `<header class="fx-msg-head">${who}</header>` +
     body +
     `<div class="fx-meta">` +
     (failed
       ? `<span class="fx-fail">${escapeHtml(failureWords(turn.code))}</span>`
       : '') +
+    `<span class="fx-meta-more">` +
     (turn.elapsedMs === undefined
       ? ''
-      : `<span>${escapeHtml(`用时 ${formatLatency(turn.elapsedMs)}`)}</span>`) +
+      : `<span>${escapeHtml(formatLatency(turn.elapsedMs))}</span>`) +
     idMarks(turn, admin) +
+    `</span>` +
     `<button type="button" class="fx-mini" data-action="fx-copy-turn" aria-label="复制这条回复">` +
-    `${icon('copy', { small: true })}<span>复制</span></button>` +
+    `${icon('copy', { small: true })}</button>` +
     `</div></div></article>`
   )
 }
@@ -680,9 +682,7 @@ function stepGroup(steps: readonly ChatTurn[], running: boolean): string {
       )
     })
     .join('')
-  const summary =
-    `${running ? '执行中' : '执行过程'} · ${steps.length} 步` +
-    (running ? '' : ` · ${truncate(last.text, 48)}`)
+  const summary = `${running ? '执行中' : '已执行'} · ${steps.length} 步`
   return (
     `<details class="fx-steps fx-steps-${worst}${running ? ' is-running' : ''}" ` +
     `data-key="${attr(`steps:${first.id}`)}"${running ? ' open' : ''}>` +
@@ -704,7 +704,7 @@ function pendingTail(
   now: number,
 ): string {
   return (
-    `<div class="fx-msg fx-msg-agent fx-pending" role="status">` +
+    `<div class="fx-msg fx-msg-agent fx-pending" role="status" aria-label="${attr(`${agent} 处理中`)}">` +
     `<span class="fx-msg-face" aria-hidden="true">${avatarSvg(
       faces.agent(address),
       {
@@ -716,7 +716,7 @@ function pendingTail(
       String(Math.max(0, now - since)),
     )}">` +
     `<span class="fx-dots" aria-hidden="true"><i></i><i></i><i></i></span>` +
-    `<span>${escapeHtml(`${agent} 正在处理 · `)}<span class="fx-typing-time">${escapeHtml(
+    `<span>${escapeHtml('处理中 · ')}<span class="fx-typing-time">${escapeHtml(
       formatLatency(Math.max(0, now - since)),
     )}</span></span>` +
     `</div></div></div>`
@@ -729,7 +729,7 @@ function renderMessages(
 ): string {
   const { session, turns } = transcript
   if (turns.length === 0) {
-    return `<div class="fx-msgs"><p class="fx-none fx-none-center">这条会话还没有内容 · 在下面写第一句</p></div>`
+    return `<div class="fx-msgs"></div>`
   }
   const unanswered = unansweredTurns(turns)
   const waiting = unanswered.length > 0
@@ -788,12 +788,10 @@ function namesOf(address: string): {
 function welcome(model: FrontViewModel): string {
   const address = model.agent
   if (address === null) {
-    const line = model.registryDown
-      ? '名册不可达 · 稍后刷新 · 已有会话在会话列表里'
-      : '注册中心里没有可对话的智能体'
     return (
-      `<div class="fx-welcome"><h2 class="fx-welcome-title">${escapeHtml('还没有可对话的智能体')}</h2>` +
-      `<p class="fx-welcome-note">${escapeHtml(line)}</p>` +
+      `<div class="fx-welcome"><h2 class="fx-welcome-title">${escapeHtml(
+        model.registryDown ? '名册不可达' : '暂无智能体',
+      )}</h2>` +
       (model.admin
         ? `<a class="btn btn-secondary btn-small" href="${ADMIN}/nodes">管理节点</a>`
         : '') +
@@ -803,7 +801,7 @@ function welcome(model: FrontViewModel): string {
   const target = model.target
   const names = target ?? namesOf(address)
   const dialable = target?.dialable === true
-  const verdict = targetState(target, model.registryDown)
+  const verdict = stateOf(target, model.registryDown)
   const spec = model.faces.agent(address)
   const figure = avatarSvg(spec, {
     size: 112,
@@ -818,7 +816,7 @@ function welcome(model: FrontViewModel): string {
       `aria-label="${attr(`换形象 · ${names.agent}`)}">${figure}</button>`
     : `<span class="fx-welcome-face">${figure}</span>`
   const chips = dialable
-    ? `<div class="fx-chips" role="group" aria-label="常用开场">${SUGGESTIONS.map(
+    ? `<div class="fx-chips" role="group" aria-label="开场">${SUGGESTIONS.map(
         text =>
           `<button type="button" class="fx-chip" data-action="fx-suggest" data-text="${attr(
             text,
@@ -826,19 +824,17 @@ function welcome(model: FrontViewModel): string {
       ).join('')}</div>`
     : ''
   const note = dialable
-    ? '直接写下要做的事 · Enter 开始一条新会话 · 会话里的过程与结果都会留在这里'
+    ? ''
     : target === null
       ? model.registryDown
-        ? '名册不可达 · 暂时不能确认这个智能体在不在 · 已有会话在会话列表里'
-        : '这个智能体已不在名册 · 已有会话仍可查看'
-      : '这个智能体没有接入对话 · 端点不在允许名单 · 需要在控制台启动参数里加上它的节点'
+        ? '名册不可达'
+        : '已不在名册'
+      : '未接入对话'
   return (
     `<div class="fx-welcome">${stage}` +
-    `<h2 class="fx-welcome-title">${escapeHtml(`你好 · 我是 ${names.agent}`)}</h2>` +
-    `<p class="fx-welcome-sub">${escapeHtml(
-      `${model.main ? '主智能体' : '子智能体'} · ${names.node} · ${verdict.text}`,
-    )}</p>` +
-    `<p class="fx-welcome-note">${escapeHtml(note)}</p>` +
+    `<h2 class="fx-welcome-title">${escapeHtml(names.agent)}</h2>` +
+    `<p class="fx-welcome-sub">${escapeHtml(`${names.node} · ${verdict.text}`)}</p>` +
+    (note === '' ? '' : `<p class="fx-welcome-note">${escapeHtml(note)}</p>`) +
     chips +
     `</div>`
   )
@@ -864,7 +860,7 @@ function headInfo(
             : '不在名册'
           : target.dialable
             ? '已接入'
-            : '端点不在允许名单',
+            : '未接入',
       ),
     ],
   ]
@@ -911,7 +907,7 @@ function renderHead(model: FrontViewModel): string {
   const names = target ?? namesOf(address)
   const agent = transcript?.session.agent ?? names.agent
   const node = transcript?.session.node ?? names.node
-  const verdict = targetState(target, model.registryDown)
+  const verdict = stateOf(target, model.registryDown)
   const spec = model.faces.agent(address)
   const figure = avatarSvg(spec, {
     size: 34,
@@ -935,9 +931,7 @@ function renderHead(model: FrontViewModel): string {
     face +
     `<div class="fx-head-text">` +
     `<div class="fx-head-line"><span class="fx-head-name">${escapeHtml(agent)}</span>` +
-    (model.main
-      ? `<span class="fx-tag">主智能体</span>`
-      : `<span class="fx-tag fx-tag-quiet">子智能体</span>`) +
+    (model.main ? `<span class="fx-tag">主智能体</span>` : '') +
     `</div>` +
     `<div class="fx-head-sub"><span class="mono">${escapeHtml(node)}</span>` +
     `${state(verdict.tone, verdict.text)}<span class="fx-model" id="fx-model"></span></div>` +
@@ -962,7 +956,7 @@ export function renderFrontView(model: FrontViewModel): string {
 export function frontViewParts(model: FrontViewModel): FrontViewParts {
   const transcript = model.transcript
   const address = transcript?.session.target ?? model.agent ?? ''
-  const verdict = targetState(model.target, model.registryDown)
+  const verdict = stateOf(model.target, model.registryDown)
   let inner: string
   let attrs: string
   if (model.failure !== null) {
@@ -1034,11 +1028,8 @@ function composer(enabled: boolean): string {
     `<textarea id="fx-text" rows="1" spellcheck="false" ` +
     `maxlength="${attr(String(MAX_CHAT_TEXT_LENGTH))}" aria-describedby="fx-status" ` +
     `aria-controls="fx-cmds" ` +
-    `placeholder="写下要做的事 · Enter 发送 · Shift Enter 换行"${off}></textarea>` +
+    `placeholder="发消息"${off}></textarea>` +
     `<div class="fx-composer-foot">` +
-    `<span class="fx-target"><span class="dot dot-muted" id="fx-target-dot"></span>` +
-    `<span id="fx-target-name">—</span></span>` +
-    `<span class="fx-composer-hint" id="fx-hint">输入 / 查看本地命令</span>` +
     `<button type="submit" class="fx-send" id="fx-send" aria-label="发送"${off}>` +
     `${icon('arrow-up')}</button></div>` +
     `<p class="fx-status" id="fx-status" role="status"></p>` +
@@ -1129,7 +1120,6 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `${icon('arrow-down', { small: true })}</button>` +
     model.side.stack +
     composer(model.composerEnabled) +
-    `<p class="fx-fine">回复由智能体生成 · 涉及变更的操作请先核对</p>` +
     `</div></div>` +
     `</main></div>\n` +
     sessionExpired(model.relogin) +
