@@ -57,7 +57,7 @@ async function page(
 describe('连接 · the page', () => {
   test('both halves: the mailbox with its masked account, the devices', async () => {
     const { handle } = wired()
-    const html = await page(handle, '/connect', ADMIN)
+    const html = await page(handle, '/admin/connect', ADMIN)
     const text = visibleText(html)
     expect(text).toContain('应用连接')
     expect(text).toContain('工作邮箱')
@@ -74,7 +74,7 @@ describe('连接 · the page', () => {
 
   test('the admin token manages connections and pairs devices; a view token only reads', async () => {
     const { handle } = wired()
-    const admin = withoutScripts(await page(handle, '/connect', ADMIN))
+    const admin = withoutScripts(await page(handle, '/admin/connect', ADMIN))
     for (const mark of [
       'data-action="connector-new"',
       'data-action="connector-probe"',
@@ -86,7 +86,7 @@ describe('连接 · the page', () => {
     ]) {
       expect(`${mark} ${admin.includes(mark)}`).toBe(`${mark} true`)
     }
-    const view = withoutScripts(await page(handle, '/connect', VIEW))
+    const view = withoutScripts(await page(handle, '/admin/connect', VIEW))
     for (const mark of [
       'connector-new',
       'connector-probe',
@@ -113,7 +113,7 @@ describe('连接 · the page', () => {
     const member = await person(h.handle, 'member')
     const html = await (
       await h.handle(
-        asSession('GET', '/connect', member.sid, { header: false }),
+        asSession('GET', '/admin/connect', member.sid, { header: false }),
       )
     ).text()
     expect(html).toContain('data-action="device-pair"')
@@ -123,13 +123,17 @@ describe('连接 · the page', () => {
 
   test('a half that is not wired says how to wire it; with neither there is no area', async () => {
     const onlyDevices = wired({ connectors: null })
-    const text = visibleText(await page(onlyDevices.handle, '/connect', ADMIN))
+    const text = visibleText(
+      await page(onlyDevices.handle, '/admin/connect', ADMIN),
+    )
     expect(text).toContain('应用连接未接入')
     expect(text).toContain('我的 MacBook')
     const neither = wired({ connectors: null, devices: null })
-    expect((await neither.handle(browse('/connect', ADMIN))).status).toBe(404)
-    const home = await page(neither.handle, '/overview', ADMIN)
-    expect(home).not.toContain('href="/connect"')
+    expect((await neither.handle(browse('/admin/connect', ADMIN))).status).toBe(
+      404,
+    )
+    const home = await page(neither.handle, '/admin/overview', ADMIN)
+    expect(home).not.toContain('href="/admin/connect"')
   })
 
   test('a failing connection book is a failure bar, the devices still show', async () => {
@@ -253,7 +257,7 @@ describe('连接 · recent relays', () => {
       handoff: relayPort([RELAY], 'github'),
     }
     const handle = createConsoleHandler(deps, { view: VIEW, admin: ADMIN })
-    const text = visibleText(await page(handle, '/connect', VIEW))
+    const text = visibleText(await page(handle, '/admin/connect', VIEW))
     expect(text).toContain('最近接力')
     expect(text).toContain('中枢只存台账')
     expect(text).toContain('把登录页的测试补齐')
@@ -271,11 +275,11 @@ describe('连接 · recent relays', () => {
       handoff: relayPort([], 'github'),
     }
     const handle = createConsoleHandler(deps, { view: VIEW, admin: ADMIN })
-    const text = visibleText(await page(handle, '/connect', VIEW))
+    const text = visibleText(await page(handle, '/admin/connect', VIEW))
     expect(text).toContain('还没有接力')
     expect(text).toContain('GitHub')
     const { handle: bare } = wired()
-    expect(visibleText(await page(bare, '/connect', VIEW))).not.toContain(
+    expect(visibleText(await page(bare, '/admin/connect', VIEW))).not.toContain(
       '最近接力',
     )
   })
@@ -284,7 +288,7 @@ describe('连接 · recent relays', () => {
 describe('连接 · GitHub repo connections', () => {
   test('a repo card shows its name, visibility, write access and use; agents never', async () => {
     const { handle } = wired()
-    const html = await page(handle, '/connect', ADMIN)
+    const html = await page(handle, '/admin/connect', ADMIN)
     const text = visibleText(html)
     expect(text).toContain('代码与交换仓库')
     expect(text).toContain('GitHub 仓库')
@@ -323,7 +327,7 @@ describe('连接 · GitHub repo connections', () => {
       },
     ]
     const { handle } = wired({ connectors })
-    const text = visibleText(await page(handle, '/connect', VIEW))
+    const text = visibleText(await page(handle, '/admin/connect', VIEW))
     expect(text).toContain('公开 · 不能做文件交换')
     expect(text).toContain('只读')
     expect(text).toContain('未测试')
@@ -365,7 +369,7 @@ describe('连接 · GitHub repo connections', () => {
       handoff: relayPort([RELAY], 'github'),
     }
     const handle = createConsoleHandler(deps, { view: VIEW, admin: ADMIN })
-    expect(visibleText(await page(handle, '/connect', VIEW))).toContain(
+    expect(visibleText(await page(handle, '/admin/connect', VIEW))).toContain(
       '还没有 GitHub 仓库连接',
     )
     const withRepo = createConsoleHandler(
@@ -375,8 +379,8 @@ describe('连接 · GitHub repo connections', () => {
       },
       { view: VIEW, admin: ADMIN },
     )
-    expect(visibleText(await page(withRepo, '/connect', VIEW))).not.toContain(
-      '还没有 GitHub 仓库连接',
-    )
+    expect(
+      visibleText(await page(withRepo, '/admin/connect', VIEW)),
+    ).not.toContain('还没有 GitHub 仓库连接')
   })
 })

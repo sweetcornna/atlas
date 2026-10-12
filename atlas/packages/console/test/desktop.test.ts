@@ -35,7 +35,7 @@ async function read(
 describe('云端电脑', () => {
   test('one card per agent: its switches, states, confirmation, activity', async () => {
     const { handle } = wired()
-    const html = await read(handle, '/desktop')
+    const html = await read(handle, '/admin/desktop')
     const text = visibleText(html)
     for (const word of [
       'planner',
@@ -65,7 +65,7 @@ describe('云端电脑', () => {
 
   test('a view token reads every state and changes none', async () => {
     const { handle } = wired()
-    const html = withoutScripts(await read(handle, '/desktop', VIEW))
+    const html = withoutScripts(await read(handle, '/admin/desktop', VIEW))
     expect(html).not.toContain('data-desktop-unit')
     expect(html).not.toContain('data-desktop-confirm')
     expect(html).not.toContain('desktop-recycle')
@@ -75,7 +75,7 @@ describe('云端电脑', () => {
 
   test('the admin token gets switches, the confirmation choice and recycling for what is on', async () => {
     const { handle } = wired()
-    const html = withoutScripts(await read(handle, '/desktop'))
+    const html = withoutScripts(await read(handle, '/admin/desktop'))
     expect(html).toContain('data-desktop-confirm')
     expect(html).toContain(
       'data-action="desktop-recycle" data-node="tokyo-1" data-agent="planner"',
@@ -95,9 +95,11 @@ describe('云端电脑', () => {
     expect(text).toContain('云端电脑')
     expect(text).not.toContain('planner')
     const none = wired(null)
-    expect((await none.handle(browse('/desktop', ADMIN))).status).toBe(404)
-    expect(await read(none.handle, '/overview')).not.toContain(
-      'href="/desktop"',
+    expect((await none.handle(browse('/admin/desktop', ADMIN))).status).toBe(
+      404,
+    )
+    expect(await read(none.handle, '/admin/overview')).not.toContain(
+      'href="/admin/desktop"',
     )
     expect(
       (await none.handle(browse('/fragments/desktop/x', ADMIN))).status,

@@ -420,7 +420,7 @@ function nodeCard(
   return (
     `<div class="card elev-sm grp">` +
     `<div class="grp-head">` +
-    `<span class="grp-name"><a href="/nodes/${attr(
+    `<span class="grp-name"><a href="/admin/nodes/${attr(
       encodeURIComponent(shown),
     )}" data-nav>${escapeHtml(shown)}</a></span>` +
     `<span class="addr">${escapeHtml(group.node)}</span>` +
@@ -552,7 +552,7 @@ export function renderRoster(
     body.push(
       options.filteredFrom !== undefined && options.filteredFrom > 0
         ? `<p class="hint">没有符合筛选的智能体 · 共 ${options.filteredFrom} 个 · ` +
-            `<a class="jump" href="/nodes" data-nav>清除筛选</a></p>`
+            `<a class="jump" href="/admin/nodes" data-nav>清除筛选</a></p>`
         : canWrite
           ? `<p class="hint">还没有智能体 · ` +
             `<a class="jump" href="#register-dialog" ` +
@@ -681,7 +681,7 @@ export function renderNodeSummary(
   ttlMs: number,
 ): string {
   const head = sectionHead('Nodes', '节点', {
-    tail: `<a class="jump" href="/nodes" data-nav>查看名册</a>`,
+    tail: `<a class="jump" href="/admin/nodes" data-nav>查看名册</a>`,
   })
   if (agents === null) {
     return (
@@ -698,7 +698,7 @@ export function renderNodeSummary(
       const shown = name === '' ? group.node : name
       return (
         `<li class="node-line">` +
-        `<a class="node-link" href="/nodes/${attr(
+        `<a class="node-link" href="/admin/nodes/${attr(
           encodeURIComponent(shown),
         )}" data-nav>${escapeHtml(shown)}</a>` +
         `<span class="note">${escapeHtml(
@@ -947,10 +947,10 @@ export function rosterFilterForm(
         servers.map(server => option(server, server, filter.server)).join('') +
         `</select>${chevron()}</span></div>`
   const clear = isRosterFiltered(filter)
-    ? `<a class="btn btn-ghost btn-small" href="/nodes" data-nav>清除筛选</a>`
+    ? `<a class="btn btn-ghost btn-small" href="/admin/nodes" data-nav>清除筛选</a>`
     : ''
   return (
-    `<form id="roster-filter" class="roster-filter" method="get" action="/nodes" role="search">` +
+    `<form id="roster-filter" class="roster-filter" method="get" action="/admin/nodes" role="search">` +
     `<div class="field roster-search"><label for="roster-q">搜索</label>` +
     `<input class="input" type="search" id="roster-q" name="q" value="${attr(
       filter.q ?? '',

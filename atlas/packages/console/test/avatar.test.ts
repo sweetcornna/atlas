@@ -536,7 +536,7 @@ describe('/v0/avatars and /fragments/avatar', () => {
     const avatars = new FakeAvatars(() => NOW)
     const { handle } = wired(avatars)
     const page = await (await handle(browse('/', ADMIN))).text()
-    expect(page).toContain('class="chat-greet"')
+    expect(page).toContain('class="fx-welcome"')
     expect(page).toContain('id="avatar-dialog"')
     expect(page).toContain("qc.onAction('avatar-edit'")
   })

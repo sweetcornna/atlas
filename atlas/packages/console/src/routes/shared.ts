@@ -33,6 +33,16 @@ import { fail } from '../respond.js'
 export const DEFAULT_LABEL = '阡陌控制台'
 
 /**
+ * The management side's first path segment. `/` is the conversation front
+ * (`routes/front.ts`); every area page lives under `/admin/…`, and the area
+ * table matches the segments after this one.
+ */
+export const ADMIN_SEGMENT = 'admin'
+
+/** The management side's home page: 总览. */
+export const ADMIN_HOME = `/${ADMIN_SEGMENT}`
+
+/**
  * The CLI name §10.2's copyable `ca issue` line is written under, when the
  * host did not say.
  *
@@ -256,9 +266,9 @@ export function singleLegacyAudit(deps: ConsoleDeps): boolean {
 
 /**
  * The usual {@link PageRoute.match}: the area's own top segment, and at most
- * `depth` segments under it. `/nodes` is `underPath('nodes', 1)` because
- * `/nodes/<node>` is a page too; a stub is `underPath('alerts')`, so
- * `/alerts/anything` is the console's ordinary 404 rather than the stub.
+ * `depth` segments under it. `/admin/nodes` is `underPath('nodes', 1)` because
+ * `/admin/nodes/<node>` is a page too; a stub is `underPath('alerts')`, so
+ * `/admin/alerts/anything` is the console's ordinary 404 rather than the stub.
  */
 export function underPath(
   head: string,

@@ -30,6 +30,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { FRONT_JS } from '../src/assets/frontClient.js'
 import { CONSOLE_CLIENT_JS } from '../src/assets/client.js'
 import { ROUTES } from '../src/routes/index.js'
 import {
@@ -116,12 +117,73 @@ function cjkLiterals(script: string): string[] {
   const out: string[] = []
   for (const match of script.matchAll(/'((?:[^'\\\n]|\\.)*)'/g)) {
     const value = match[1] ?? ''
-    if (/[㐀-鿿]/.test(value)) out.push(value)
+    if (/[㐀-鿿]|[。，、！!]|\p{Extended_Pictographic}/u.test(value))
+      out.push(value)
+  }
+  return out
+}
+
+/** Real front documents for the roles allowed to converse, welcome and loaded session. */
+async function frontDocuments(): Promise<[string, string][]> {
+  const out: [string, string][] = []
+  const h = accountsHarness()
+  for (const role of ['admin', 'member', 'ops'] as const) {
+    const who = role === 'admin' ? null : await person(h.handle, role)
+    const request = (path: string) =>
+      who === null
+        ? asBearer('GET', path, ACCOUNTS_ADMIN)
+        : asSession('GET', path, who.sid, { header: false })
+    const opening =
+      who === null
+        ? asBearer('POST', '/v0/chat/sessions', ACCOUNTS_ADMIN, {
+            target: 'qianmo://tokyo-1/planner',
+          })
+        : asSession('POST', '/v0/chat/sessions', who.sid, {
+            body: { target: 'qianmo://tokyo-1/planner' },
+          })
+    const opened = await h.handle(opening)
+    expect(opened.status).toBe(200)
+    const { id } = (await opened.json()) as { id: string }
+    const session = h.chat.sessionsById.get(id)
+    if (session === undefined) throw new Error('opening not stored')
+    h.chat.sessionsById.set(id, {
+      ...session,
+      title: '检查运行状态',
+      running: true,
+    })
+    for (const path of ['/', `/?session=${id}`]) {
+      const response = await h.handle(request(path))
+      expect(response.status).toBe(200)
+      const html = await response.text()
+      expect(html).toContain('id="fx-thread"')
+      out.push([`front ${role} ${path}`, html])
+    }
+  }
+  for (const role of ['viewer', 'read-token'] as const) {
+    const who = role === 'viewer' ? await person(h.handle, 'viewer') : null
+    const request = (path: string) =>
+      who === null
+        ? asBearer('GET', path, VIEW)
+        : asSession('GET', path, who.sid, { header: false })
+    const response = await h.handle(request('/'))
+    expect(response.status).toBe(303)
+    expect(response.headers.get('location')).toBe('/admin')
+    out.push([
+      `front redirect ${role}`,
+      await (await h.handle(request('/admin'))).text(),
+    ])
   }
   return out
 }
 
 describe('every document keeps the copy rules (I1)', () => {
+  test('front welcome, loaded session and redirected readers keep document and attribute copy clean', async () => {
+    const found: string[] = []
+    for (const [where, html] of await frontDocuments())
+      found.push(...checkDocument(where, html))
+    expect(found).toEqual([])
+  })
+
   test('every area page, for the admin and the view token', async () => {
     const found: string[] = []
     for (const token of [ADMIN, VIEW]) {
@@ -168,18 +230,24 @@ describe('every document keeps the copy rules (I1)', () => {
         failure: { code: 'unsupported', message: '唤醒不可用，请检查配置。' },
       })
     const found: string[] = []
-    for (const path of ['/', '/nodes', '/nodes/tokyo-1', '/audit', '/alerts']) {
+    for (const path of [
+      '/',
+      '/admin/nodes',
+      '/admin/nodes/tokyo-1',
+      '/admin/audit',
+      '/admin/alerts',
+    ]) {
       const response = await h.handle(browse(path, ADMIN))
       const html = await response.text()
       found.push(...checkDocument(path, html))
       // The transport's own words are on the page — under 详情, not in the line.
-      if (path === '/nodes') {
+      if (path === '/admin/nodes') {
         expect(html).toContain('注册中心不可达 · 无法连接')
         expect(html).toContain(
           '<pre class="raw" data-raw>http://127.0.0.1:38798',
         )
       }
-      if (path === '/audit') expect(html).toContain('没有读写权限')
+      if (path === '/admin/audit') expect(html).toContain('没有读写权限')
     }
     expect(found).toEqual([])
   })
@@ -193,16 +261,16 @@ describe('every document keeps the copy rules (I1)', () => {
         message: '注册中心返回了错误，请稍后重试。',
       },
     }
-    const html = await (await h.handle(browse('/nodes', ADMIN))).text()
+    const html = await (await h.handle(browse('/admin/nodes', ADMIN))).text()
     // The original is on the page, folded; the line is the mapped one.
     expect(html).toContain('注册中心返回了错误，请稍后重试。')
-    expect(checkDocument('/nodes', html)).toEqual([])
+    expect(checkDocument('/admin/nodes', html)).toEqual([])
     // The same document with the fold opened into the sentence is caught.
     const unfolded = html.replace(
       /<pre class="raw" data-raw>([\s\S]*?)<\/pre>/g,
       '<span>$1</span>',
     )
-    expect(checkDocument('/nodes', unfolded).length).toBeGreaterThan(0)
+    expect(checkDocument('/admin/nodes', unfolded).length).toBeGreaterThan(0)
   })
 
   test('the doors, the error pages and the conversation page', async () => {
@@ -212,8 +280,8 @@ describe('every document keeps the copy rules (I1)', () => {
       ['login', browse('/login')],
       ['404 signed in', browse('/nope', ADMIN)],
       ['404 signed out', browse('/nope')],
-      ['403 card', browse('/chat', VIEW)],
-      ['chat', browse('/chat', ADMIN)],
+      ['403 card', browse('/admin/memory', VIEW)],
+      ['chat', browse('/', ADMIN)],
     ]
     for (const [where, request] of pages) {
       const response = await h.handle(request)
@@ -230,7 +298,7 @@ describe('every document keeps the copy rules (I1)', () => {
       ['spent invite', formPost('/invite', { invite: token })],
       [
         'access as ops',
-        asSession('GET', '/access', ops.sid, { header: false }),
+        asSession('GET', '/admin/access', ops.sid, { header: false }),
       ],
       ['break-glass', asBearer('GET', '/', ACCOUNTS_ADMIN)],
     ]
@@ -243,6 +311,21 @@ describe('every document keeps the copy rules (I1)', () => {
 })
 
 describe('every string a page script writes keeps the copy rules (I1)', () => {
+  test('FRONT_JS visible strings obey punctuation, emoji and the glossary', () => {
+    const found: string[] = []
+    for (const literal of cjkLiterals(FRONT_JS)) {
+      found.push(...violations('FRONT_JS', literal))
+      for (const banned of bannedTerms()) {
+        if (banned.found(literal)) found.push(`FRONT_JS: ${banned.term}`)
+      }
+    }
+    expect(found).toEqual([])
+    expect(violations('control', '完成。你好，事项、提醒！! 🤖')).toHaveLength(
+      6,
+    )
+    expect(bannedTerms().some(banned => banned.found('在左边'))).toBe(true)
+  })
+
   test('the scripts each page serves', async () => {
     const h = pageHarness({ chat: true })
     const scripts = new Map<string, string>()
@@ -334,13 +417,16 @@ async function everythingShown(): Promise<[string, string][]> {
       )
     }
     h.registry.listResult = { ok: true, value: [] }
-    add('/nodes empty', await (await h.handle(browse('/nodes', token))).text())
+    add(
+      '/admin/nodes empty',
+      await (await h.handle(browse('/admin/nodes', token))).text(),
+    )
   }
   const h = pageHarness({ chat: true })
   for (const path of ['/login', '/nope']) {
     add(path, await (await h.handle(browse(path))).text())
   }
-  add('403 card', await (await h.handle(browse('/chat', VIEW))).text())
+  add('403 card', await (await h.handle(browse('/admin/memory', VIEW))).text())
   const a = accountsHarness({ accounts: { breakGlass: true } })
   const ops = await person(a.handle, 'ops')
   add(
@@ -350,9 +436,12 @@ async function everythingShown(): Promise<[string, string][]> {
   add(
     'access as ops',
     await (
-      await a.handle(asSession('GET', '/access', ops.sid, { header: false }))
+      await a.handle(
+        asSession('GET', '/admin/access', ops.sid, { header: false }),
+      )
     ).text(),
   )
+  for (const [where, html] of await frontDocuments()) add(where, html)
   // What the console's own code can say: every CJK literal in its source.
   for (const literal of messageCorpus(
     sourceFiles().filter(isConsoleSource),
@@ -426,7 +515,7 @@ describe('one name for each thing (I2)', () => {
 
   test('a row never mixes the two duration spellings', async () => {
     const h = pageHarness()
-    const html = await (await h.handle(browse('/nodes', ADMIN))).text()
+    const html = await (await h.handle(browse('/admin/nodes', ADMIN))).text()
     const roster = readable(
       html.slice(
         html.indexOf('id="roster"'),

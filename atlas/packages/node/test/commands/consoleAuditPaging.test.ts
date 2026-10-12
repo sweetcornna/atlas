@@ -296,7 +296,7 @@ describe('100 000 records: the first screen is bounded (D5, G2)', () => {
     const get = consoleOver(path, reader)
 
     // Cold: the one full read and check this console does for this file.
-    const cold = await get('/audit')
+    const cold = await get('/admin/audit')
     expect(cold.status).toBe(200)
     expect(rowCount(cold.body, 'audit-rows')).toBe(50)
     const afterCold = reader.stats
@@ -305,7 +305,7 @@ describe('100 000 records: the first screen is bounded (D5, G2)', () => {
 
     // Warm: a second tab's first screen. Nothing was written, so nothing is
     // read: the count is the bound, the clock only says so in milliseconds.
-    const warm = await get('/audit')
+    const warm = await get('/admin/audit')
     expect(rowCount(warm.body, 'audit-rows')).toBe(50)
     expect(reader.stats.linesChecked - afterCold.linesChecked).toBe(0)
     expect(reader.stats.bytesRead - afterCold.bytesRead).toBe(0)
@@ -330,13 +330,13 @@ describe('100 000 records: the first screen is bounded (D5, G2)', () => {
     expect(news.body.length).toBeLessThan(16_000)
 
     // A deep page: a cursor far back is found by seq, not by a walk.
-    const deep = await get('/audit?before=1234')
+    const deep = await get('/admin/audit?before=1234')
     expect(rowCount(deep.body, 'audit-rows')).toBe(50)
 
     // The bounds, in milliseconds, on whatever machine runs this. The count
     // assertions above are what the bound rests on; these are generous
     // enough for a loaded CI box and still an order below a full read.
-    const warmAgain = await get('/audit')
+    const warmAgain = await get('/admin/audit')
     console.log(
       `[audit 100k] generate ${generateMs.toFixed(0)} ms · cold first screen ` +
         `${cold.ms.toFixed(0)} ms · warm first screen ${warm.ms.toFixed(1)} ms / ` +
@@ -359,9 +359,9 @@ describe('100 000 records: the first screen is bounded (D5, G2)', () => {
     writeChain(path, BIG)
     const reader = new TrailReader(path, { recheckMs: 0 })
     const get = consoleOver(path, reader)
-    await get('/audit')
+    await get('/admin/audit')
     const before = reader.stats
-    const again = await get('/audit')
+    const again = await get('/admin/audit')
     expect(rowCount(again.body, 'audit-rows')).toBe(50)
     expect(reader.stats.linesChecked - before.linesChecked).toBe(BIG)
     console.log(

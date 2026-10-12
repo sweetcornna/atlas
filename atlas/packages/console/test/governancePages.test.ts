@@ -96,7 +96,7 @@ describe('P18.16 quota and usage through HTTP', () => {
         ).status,
       ).toBe(200)
       const text = await (
-        await h.handle(asBearer('GET', '/usage', alice.credential))
+        await h.handle(asBearer('GET', '/admin/usage', alice.credential))
       ).text()
       expect(text).toContain('东八区自然日')
       expect(text).toContain('缓存读取')
@@ -115,9 +115,9 @@ describe('P18.16 quota and usage through HTTP', () => {
     const h = accountsHarness()
     expect((await h.handle(asAdmin('GET', '/v0/usage'))).status).toBe(501)
     expect((await h.handle(new Request(`${BASE}/v0/usage`))).status).toBe(401)
-    expect(await (await h.handle(asAdmin('GET', '/usage'))).text()).toContain(
-      '用量未接入',
-    )
+    expect(
+      await (await h.handle(asAdmin('GET', '/admin/usage'))).text(),
+    ).toContain('用量未接入')
   })
 })
 
@@ -217,7 +217,7 @@ describe('P18.16 approval authentication and real HTTP decisions', () => {
     ).toBe(400)
     expect(calls).toHaveLength(2)
     const page = await (
-      await h.handle(asSession('GET', '/approvals', alice.sid))
+      await h.handle(asSession('GET', '/admin/approvals', alice.sid))
     ).text()
     expect(page).toContain('approval-auth')
     expect(page).toContain('&lt;unsafe&gt;')
@@ -225,7 +225,7 @@ describe('P18.16 approval authentication and real HTTP decisions', () => {
     expect(page).toContain('value="allow-window"')
     toolName = 'qianmo_memory_write'
     const memoryPage = await (
-      await h.handle(asSession('GET', '/approvals', alice.sid))
+      await h.handle(asSession('GET', '/admin/approvals', alice.sid))
     ).text()
     expect(memoryPage).not.toContain('value="allow-window"')
     expect(memoryPage).toContain('记忆写入每次单独审批')

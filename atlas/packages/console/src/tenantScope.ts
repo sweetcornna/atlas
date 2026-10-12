@@ -675,7 +675,9 @@ export async function tenantRequestDenial(
       }
     })
   const head =
-    pieces[0] === 'v0' || pieces[0] === 'fragments' ? pieces[1] : pieces[0]
+    pieces[0] === 'v0' || pieces[0] === 'fragments' || pieces[0] === 'admin'
+      ? pieces[1]
+      : pieces[0]
   if (
     [
       'accounts',

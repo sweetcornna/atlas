@@ -490,6 +490,11 @@ export interface ConsoleCliConfig {
   readonly chatFrom: string
   /** 会话落盘的绝对路径。 */
   readonly chatStorePath: string
+  /**
+   * 对话首页默认打开的主智能体（`--chat-default`）。不给时首页取名册里第一个
+   * 能拨的智能体；给了但不在名册里同样退回那一个，并且页面不把它标成主智能体。
+   */
+  readonly chatDefault?: string
   readonly filesExchangeRepo?: readonly [string, string]
   readonly filesExchangeRetainMs?: number
   readonly files?: boolean
@@ -614,6 +619,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let legacyChat = false
   let chatFrom = DEFAULT_CONSOLE_CHAT_FROM
   let chatStorePath = consoleChatStorePath()
+  let chatDefault: string | undefined
   let filesExchangeRepo: readonly [string, string] | undefined
   let filesExchangeRetainMs = 0
   let files = false
@@ -948,6 +954,17 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       // Shape is checked by `assertAddress` where the address is used; here it
       // only has to be non-empty, so there is one copy of the address rules.
       chatFrom = nonEmpty(parsed.value, '--chat-from')
+      index = parsed.next
+    } else if (arg === '--chat-default' || arg?.startsWith('--chat-default=')) {
+      const parsed = residentOptionValue(args, index, '--chat-default')
+      try {
+        assertAddress(parsed.value, '--chat-default')
+      } catch {
+        throw new Error(
+          '--chat-default must be a qianmo://<node>/<agent> address',
+        )
+      }
+      chatDefault = parsed.value
       index = parsed.next
     } else if (arg === '--chat-store' || arg?.startsWith('--chat-store=')) {
       const parsed = residentOptionValue(args, index, '--chat-store')
@@ -1477,6 +1494,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     chatTargets,
     chatFrom,
     chatStorePath,
+    ...(chatDefault === undefined ? {} : { chatDefault }),
     ...(files ? { files: true } : {}),
     ...(connectors ? { connectors: true } : {}),
     ...(desktop ? { desktop: true } : {}),
@@ -1640,6 +1658,9 @@ Options (each accepts both --name value and --name=value):
                            Default ${DEFAULT_CONSOLE_CHAT_FROM}.
   --chat-store <abs path>  Where sessions and transcripts land, absolute path.
                            Default <config root>/qianmo/console/chat.ndjson.
+  --chat-default <address> The main agent the conversation home page opens,
+                           as qianmo://<node>/<agent>. Default: the first
+                           dialable agent in the registry.
   --connectors             Enable mail/calendar and GitHub repo connections.
                            Without --handoff-root, also enable GitHub relay;
                            repo connections override --handoff-repo tokens.

@@ -450,17 +450,22 @@ const PROBES: readonly Probe[] = [
   { method: 'GET', path: '/nope', as: 'admin-bearer' },
   // The area pages (P18.4). Pinned from the commit that introduced them, so
   // every later change to a page's bytes is a regeneration with a reason.
-  { method: 'GET', path: '/nodes', as: 'view-bearer' },
-  { method: 'GET', path: '/nodes', as: 'none', html: true },
-  { method: 'POST', path: '/nodes', as: 'admin-bearer' },
-  { method: 'GET', path: '/nodes/tokyo-1', as: 'view-bearer' },
-  { method: 'GET', path: '/nodes/nowhere', as: 'admin-bearer', html: true },
-  { method: 'GET', path: '/audit?window=24h', as: 'view-bearer' },
-  { method: 'GET', path: `/audit/trace/${TRACE}`, as: 'view-bearer' },
-  { method: 'GET', path: '/servers', as: 'admin-bearer' },
-  { method: 'GET', path: '/servers', as: 'view-bearer' },
-  { method: 'GET', path: '/settings', as: 'view-bearer' },
-  { method: 'GET', path: '/providers', as: 'view-bearer' },
+  { method: 'GET', path: '/admin/nodes', as: 'view-bearer' },
+  { method: 'GET', path: '/admin/nodes', as: 'none', html: true },
+  { method: 'POST', path: '/admin/nodes', as: 'admin-bearer' },
+  { method: 'GET', path: '/admin/nodes/tokyo-1', as: 'view-bearer' },
+  {
+    method: 'GET',
+    path: '/admin/nodes/nowhere',
+    as: 'admin-bearer',
+    html: true,
+  },
+  { method: 'GET', path: '/admin/audit?window=24h', as: 'view-bearer' },
+  { method: 'GET', path: `/admin/audit/trace/${TRACE}`, as: 'view-bearer' },
+  { method: 'GET', path: '/admin/servers', as: 'admin-bearer' },
+  { method: 'GET', path: '/admin/servers', as: 'view-bearer' },
+  { method: 'GET', path: '/admin/settings', as: 'view-bearer' },
+  { method: 'GET', path: '/admin/providers', as: 'view-bearer' },
   { method: 'GET', path: '/nope', as: 'admin-bearer', html: true },
 ]
 
@@ -523,8 +528,9 @@ afterAll(() => {
   else process.env['TZ'] = previousTz
 })
 
+// Golden regenerated for the front/admin route split; legacy API and fragment contracts stay pinned.
 describe('a console without accounts', () => {
-  test('answers every probe byte for byte as it did before accounts existed', async () => {
+  test('pins legacy APIs and the approved front/admin split byte for byte', async () => {
     const shots = await shoot()
     if (process.env['CONSOLE_PARITY_UPDATE'] === '1') {
       writeFileSync(GOLDEN, `${JSON.stringify(shots, null, 1)}\n`)

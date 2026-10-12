@@ -6,7 +6,7 @@
  *
  * | Route | Who |
  * |---|---|
- * | `GET /memory?agent=&kind=&q=&retired=`, `GET /fragments/memory?…` | member and up |
+ * | `GET /admin/memory?agent=&kind=&q=&retired=`, `GET /fragments/memory?…` | member and up |
  * | `GET /v0/memory?…` | member and up |
  * | `POST /v0/memory` (add) | member and up |
  * | `PUT /v0/memory/<id>` (correct: a new entry supersedes the old) | member and up |
@@ -272,7 +272,7 @@ export const memoryRoute: RouteModule = {
     id: 'memory',
     label: '记忆',
     group: 'main',
-    href: '/memory',
+    href: '/admin/memory',
     icon: 'brain',
   },
   page: {

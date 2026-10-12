@@ -39,7 +39,10 @@ import { scopedConsoleDeps, tenantRequestDenial } from './tenantScope.js'
  * | POST | `/v0/wake` | admin | `WakeOutcome`, or 501 without a wake port |
  * | GET | `/fragments/{roster,audit,limits}` | view | `text/html` fragment |
  * | GET | `/fragments/chain/<enc traceId>` | view | `text/html` fragment |
- * | GET | `/chat?session=<id>` | **admin** | `text/html`, the chat page |
+ * | GET | `/`, `/?session=<id>`, `/?agent=<address>` | **chat** | `text/html`, the conversation front; 303 to `/admin` for a caller who may not chat |
+ * | GET | `/admin`, `/admin/<area>/…` | view | `text/html`, the management side |
+ * | GET | `/chat`, `/<area>/…` | — | 308 to `/` and `/admin/<area>/…` |
+ * | GET | `/fragments/chat/front/{side,view,view/<id>}` | **chat** | `text/html` fragment |
  * | GET | `/v0/chat/targets` | **admin** | `{ targets }` |
  * | GET | `/v0/chat/sessions` | **admin** | `{ sessions }` |
  * | POST | `/v0/chat/sessions` | **admin** | the opened `ChatSession` |
@@ -239,6 +242,7 @@ import {
   methodNotAllowed,
   notFound,
   readForm,
+  movedTo,
   seeOther,
 } from './respond.js'
 import { CHAT_STREAM_HEARTBEAT_MS } from './routes/chat.js'
@@ -247,11 +251,18 @@ import {
   areaDocument,
   errorDocument,
   headIndex,
-  homePage,
   pageOf,
   type PageMatch,
 } from './routes/index.js'
-import { DEFAULT_LABEL, guard, guardChat, loginHref } from './routes/shared.js'
+import { renderFront } from './routes/front.js'
+import {
+  ADMIN_HOME,
+  ADMIN_SEGMENT,
+  DEFAULT_LABEL,
+  guard,
+  guardChat,
+  loginHref,
+} from './routes/shared.js'
 import type { ConsoleActionName, RouteContext } from './routes/types.js'
 import type { PageViewer } from './view/bits.js'
 import { renderLoginPage } from './view/login.js'
@@ -550,6 +561,41 @@ async function servePage(
     await areaDocument(ctx, match.module, rendered),
     rendered.status ?? 200,
   )
+}
+
+/**
+ * `/`: the conversation front for whoever may hold a conversation here.
+ *
+ * Somebody signed in who may not — a view token, a viewer account — or a
+ * console with no chat channel sends its caller to the management side,
+ * which is theirs; somebody not signed in gets the login door, which comes
+ * back here. The front is decided by the same rule as the 对话 item in the
+ * management sidebar (`routes/front.ts`, `frontAvailable`).
+ */
+async function serveFrontDoor(
+  ctx: RouteContext,
+  denial: Access | undefined,
+): Promise<Response> {
+  const { request, deps, url, access } = ctx
+  const viewDenied = guard(access.credential, 'view', 'document')
+  const chatDenied =
+    deps.chat === undefined ? null : guardChat(access, 'document')
+  // Not signed in: the login door, which comes back here.
+  if (viewDenied !== null) {
+    return documentDenial(request, chatDenied ?? viewDenied, deps, url, denial)
+  }
+  // Signed in: `/` is a page whichever page it turns out to be.
+  if (request.method !== 'GET') return methodNotAllowed(['GET'])
+  if (deps.chat === undefined) return seeOther(ADMIN_HOME)
+  if (chatDenied !== null) {
+    return chatDenied.status === 403
+      ? seeOther(ADMIN_HOME)
+      : documentDenial(request, chatDenied, deps, url, denial)
+  }
+  const rendered = await renderFront(ctx)
+  return rendered instanceof Response
+    ? rendered
+    : html(rendered.html, rendered.status)
 }
 
 /**
@@ -1100,29 +1146,48 @@ async function routeAs(
   const viewer =
     accounts === undefined ? undefined : pageViewer(access, accounts, tokens)
 
-  // Every area page: `/`, `/nodes`, `/chat`, the placeholders. Reserved first
-  // segments (`v0`, `fragments`, the doors above) never reach a page.
-  const page = pageOf(ROUTES, segments)
-  if (page !== undefined) {
+  // `/` is the conversation front; every area page lives under `/admin`.
+  // Reserved first segments (`v0`, `fragments`, the doors above) never reach
+  // a page.
+  if (segments.length === 0) {
     const exchanged =
       accounts === undefined ? tokenInAddressBar(request, url, tokens) : null
     if (exchanged !== null) return exchanged
-    const ctx = routeContext(
-      request,
-      url,
-      deps,
-      access,
-      accounts,
-      now(),
-      viewer,
-      ledger,
-    )
-    // `/` is the home page, and whose home it is decides which page that is.
-    return await servePage(
-      ctx,
-      segments.length === 0 ? homePage(ctx, page) : page,
+    return await serveFrontDoor(
+      routeContext(request, url, deps, access, accounts, now(), viewer, ledger),
       denial,
     )
+  }
+  if (segments[0] === ADMIN_SEGMENT) {
+    const page = pageOf(ROUTES, segments.slice(1))
+    if (page !== undefined) {
+      const exchanged =
+        accounts === undefined ? tokenInAddressBar(request, url, tokens) : null
+      if (exchanged !== null) return exchanged
+      return await servePage(
+        routeContext(
+          request,
+          url,
+          deps,
+          access,
+          accounts,
+          now(),
+          viewer,
+          ledger,
+        ),
+        page,
+        denial,
+      )
+    }
+    return notFound(`unknown path: ${url.pathname}`)
+  }
+  // The addresses from before the split, moved for good: the old conversation
+  // page is the front, every other area page is the same page under `/admin`.
+  if (segments[0] === 'chat' && segments.length === 1) {
+    return movedTo(`/${url.search}`)
+  }
+  if (pageOf(ROUTES, segments) !== undefined) {
+    return movedTo(`${ADMIN_HOME}${url.pathname}${url.search}`)
   }
 
   if (segments[0] === 'v0') {

@@ -97,7 +97,7 @@ async function scene() {
   if (reader === undefined) throw new Error('no stream')
   await reader.read()
   const opened = await h.handle(
-    asSession('GET', `/chat?session=${sa}`, ops.sid, {
+    asSession('GET', `/?session=${sa}`, ops.sid, {
       header: false,
       accept: 'text/html',
     }),
@@ -224,7 +224,7 @@ describe('readers have names (reads only)', () => {
     const { id } = (await opened.json()) as { id: string }
     for (const reader of [ops, quiet]) {
       const page = await h.handle(
-        asSession('GET', `/chat?session=${id}`, reader.sid, {
+        asSession('GET', `/?session=${id}`, reader.sid, {
           header: false,
           accept: 'text/html',
         }),
@@ -459,7 +459,7 @@ describe('without personal accounts', () => {
       call('POST', '/v0/chat/sessions', ADMIN, { target: ADDRESS }),
     )
     const { id } = (await opened.json()) as { id: string }
-    await h.handle(browse(`/chat?session=${id}`, ADMIN))
+    await h.handle(browse(`/?session=${id}`, ADMIN))
     const all = await h.handle(call('GET', '/v0/actions', ADMIN))
     expect(
       ((await all.json()) as ActionPage).entries.map(e => e.action),

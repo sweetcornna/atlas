@@ -166,7 +166,7 @@ describe.skipIf(SKIP !== null)('the console in a browser', () => {
     async function framed(strip: readonly string[]): Promise<string | null> {
       const served = serveConsole()
       served.wrapper.strip = strip
-      const framer = serveFramer(`${served.base}/nodes?token=${ADMIN}`)
+      const framer = serveFramer(`${served.base}/admin/nodes?token=${ADMIN}`)
       const tab = await browser.tab()
       try {
         await tab.goto(framer.url)
@@ -213,7 +213,7 @@ describe.skipIf(SKIP !== null)('the console in a browser', () => {
     const served = serveConsole()
     const tab = await browser.tab()
     try {
-      await openConsole(tab, served, '/nodes')
+      await openConsole(tab, served, '/admin/nodes')
       await fastPolling(tab)
       // One refresh that works, so the timer is known to be running.
       await tab.waitFor(
@@ -240,7 +240,7 @@ describe.skipIf(SKIP !== null)('the console in a browser', () => {
         await tab.evaluate<string>(
           `document.getElementById('session-expired-login').getAttribute('href')`,
         ),
-      ).toBe('/login?redirect=%2Fnodes')
+      ).toBe('/login?redirect=%2Fadmin%2Fnodes')
       expect(
         await tab.evaluate<string>(
           `document.getElementById('refresh-state').textContent`,
@@ -276,7 +276,7 @@ describe.skipIf(SKIP !== null)('the console in a browser', () => {
     const tab = await browser.tab()
     const key = 'qianmo://tokyo-1/reviewer'
     try {
-      await openConsole(tab, served, '/nodes')
+      await openConsole(tab, served, '/admin/nodes')
       await tab.evaluate(`(() => {
           const row = document.querySelector('details[data-key="${key}"]');
           row.open = true;
@@ -336,7 +336,7 @@ describe.skipIf(SKIP !== null)('the console in a browser', () => {
     const served = serveConsole()
     const tab = await browser.tab()
     try {
-      await openConsole(tab, served, '/nodes')
+      await openConsole(tab, served, '/admin/nodes')
       await tab.evaluate(`(() => {
           const opener = document.querySelector('[data-open-dialog="register-dialog"]');
           opener.focus();

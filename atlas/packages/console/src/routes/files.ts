@@ -6,7 +6,7 @@
  *
  * | Route | Who |
  * |---|---|
- * | `GET /files`, `GET /fragments/files` | view and up |
+ * | `GET /admin/files`, `GET /fragments/files` | view and up |
  *
  * The buttons write through `/v0/files` (`routes/filesApi.ts`, member
  * level). Without a files port the area is not offered.
@@ -57,7 +57,7 @@ export const filesRoute: RouteModule = {
     id: 'files',
     label: '文件互通',
     group: 'manage',
-    href: '/files',
+    href: '/admin/files',
     icon: 'folders',
   },
   page: {

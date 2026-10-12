@@ -60,7 +60,7 @@ async function setup() {
       id: 'providers',
       label: 'Routing',
       group: 'main',
-      href: '/providers',
+      href: '/admin/providers',
       icon: 'info',
     },
     api: routingApi,

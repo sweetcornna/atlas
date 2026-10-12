@@ -70,7 +70,7 @@ async function page(
 describe('the inbox', () => {
   test('lists notices and conditions together, strongest first, with the unread badge', async () => {
     const { handle } = inbox()
-    const html = await page(handle, '/alerts')
+    const html = await page(handle, '/admin/alerts')
     expect(badgeOf(html)).toBe(3)
     // The two errors before the info; between them the newer first: the
     // notice came in 60 s ago, the lease lapsed 310 s ago.
@@ -86,26 +86,28 @@ describe('the inbox', () => {
 
   test('the level filter narrows the list and leaves the badge counting every unread alert', async () => {
     const { handle } = inbox()
-    const errors = await page(handle, '/alerts?level=error')
+    const errors = await page(handle, '/admin/alerts?level=error')
     expect(rowsOf(errors)).toEqual([
       'n:disk',
       `node-lost:osaka-1:${NOW - 400_000}`,
     ])
     expect(badgeOf(errors)).toBe(3)
-    const infos = await page(handle, '/alerts?level=info')
+    const infos = await page(handle, '/admin/alerts?level=info')
     expect(rowsOf(infos)).toEqual(['n:done'])
-    expect(await page(handle, '/alerts?level=warn')).toContain(
+    expect(await page(handle, '/admin/alerts?level=warn')).toContain(
       '没有未确认的警告级告警',
     )
     // The checked radio is the filter in force, so the form reproduces it.
     expect(errors).toContain('name="level" value="error" checked')
     // An unknown level is a stale bookmark, not an error: the whole inbox.
-    expect(rowsOf(await page(handle, '/alerts?level=loud'))).toHaveLength(3)
+    expect(rowsOf(await page(handle, '/admin/alerts?level=loud'))).toHaveLength(
+      3,
+    )
   })
 
   test('acknowledging one changes the badge, and moves it from 未确认 to 已确认', async () => {
     const { handle, notify } = inbox()
-    expect(badgeOf(await page(handle, '/alerts'))).toBe(3)
+    expect(badgeOf(await page(handle, '/admin/alerts'))).toBe(3)
 
     const response = await handle(
       call('POST', '/v0/alerts/n%3Adisk/ack', ADMIN),
@@ -118,14 +120,16 @@ describe('the inbox', () => {
     expect(body).toEqual({ ack: { id: 'n:disk', at: NOW }, unread: 2 })
     expect(notify.stored.get('n:disk')?.by).toBe('legacy:admin')
 
-    const after = await page(handle, '/alerts')
+    const after = await page(handle, '/admin/alerts')
     expect(badgeOf(after)).toBe(2)
     expect(rowsOf(after)).not.toContain('n:disk')
-    const acked = await page(handle, '/alerts?state=acked')
+    const acked = await page(handle, '/admin/alerts?state=acked')
     expect(rowsOf(acked)).toEqual(['n:disk'])
     expect(acked).toContain('已确认 <time')
     expect(acked).not.toContain('data-alert="n:disk"')
-    expect(rowsOf(await page(handle, '/alerts?state=all'))).toHaveLength(3)
+    expect(rowsOf(await page(handle, '/admin/alerts?state=all'))).toHaveLength(
+      3,
+    )
   })
 
   test('acknowledging twice keeps the first one', async () => {
@@ -167,7 +171,7 @@ describe('the inbox', () => {
     expect(html.startsWith('<div class="sec-head" id="alerts-head"')).toBe(true)
     expect(badgeOf(html)).toBe(3)
     expect(rowsOf(html)).toHaveLength(2)
-    const pageHtml = await page(handle, '/alerts?level=error')
+    const pageHtml = await page(handle, '/admin/alerts?level=error')
     expect(pageHtml).toContain('data-poll="/fragments/alerts?level=error"')
   })
 })
@@ -282,7 +286,7 @@ describe('without a notify port, and with one that fails', () => {
   test('the conditions are still listed, and the page says what is missing', async () => {
     const c = watchConsole()
     c.page.registry.listResult = ok([...AGENTS.slice(0, 2), LOST_OSAKA])
-    const html = await page(c.handle, '/alerts')
+    const html = await page(c.handle, '/admin/alerts')
     expect(rowsOf(html)).toEqual([`node-lost:osaka-1:${NOW - 400_000}`])
     expect(html).toContain('未接入 · 控制台没有读取值守进程的通知')
     expect(html).toContain('未接入 · 确认无处记录')
@@ -305,7 +309,7 @@ describe('without a notify port, and with one that fails', () => {
       ok: false,
       failure: { code: 'unreachable', message: 'acks unreadable' },
     }
-    const html = await page(handle, '/alerts')
+    const html = await page(handle, '/admin/alerts')
     expect(badgeOf(html)).toBe(3)
     expect(html).toContain('确认记录读不出来 · 全部按未确认显示')
     expect(html).not.toContain('data-action="alert-ack"')
@@ -322,7 +326,7 @@ describe('without a notify port, and with one that fails', () => {
       ok: false,
       failure: { code: 'unreachable', message: 'trail unreadable' },
     }
-    const html = await page(handle, '/alerts')
+    const html = await page(handle, '/admin/alerts')
     expect(rowsOf(html)).toEqual([`node-lost:osaka-1:${NOW - 400_000}`])
     expect(html).toContain(
       '<span class="k">通知</span><span class="tone-bad">读取失败</span>',
@@ -332,7 +336,7 @@ describe('without a notify port, and with one that fails', () => {
   test('a trail that does not verify still lists its notices, under a warning', async () => {
     const { handle, notify } = inbox()
     notify.intact = false
-    const html = await page(handle, '/alerts')
+    const html = await page(handle, '/admin/alerts')
     expect(rowsOf(html)).toContain('n:disk')
     expect(html).toContain('通知所在的中枢审计链校验不过')
   })
@@ -341,12 +345,12 @@ describe('without a notify port, and with one that fails', () => {
     const { handle, notify } = inbox()
     notify.list = []
     notify.present = false
-    const html = await page(handle, '/alerts')
+    const html = await page(handle, '/admin/alerts')
     expect(html).toContain(
       '已接入 · 中枢审计链尚未建立 · 值守进程没有在这个配置根上运行过',
     )
     notify.present = true
-    expect(await page(handle, '/alerts')).toContain(
+    expect(await page(handle, '/admin/alerts')).toContain(
       '<span class="k">通知</span><span class="tone-ok">已接入 · 0 条</span>',
     )
   })
@@ -357,7 +361,7 @@ describe('without a notify port, and with one that fails', () => {
       ok: false,
       failure: { code: 'unreachable', message: 'registry down' },
     }
-    const html = await page(handle, '/alerts')
+    const html = await page(handle, '/admin/alerts')
     // The port's own words are folded under 详情; the line is the mapped one (C5).
     expect(html).toContain('注册中心不可达 · 无法连接')
     expect(html).toContain('<pre class="raw" data-raw>registry down</pre>')
@@ -690,7 +694,7 @@ describe('the registration ledger as a source (P15.2, console.md §7.3.3)', () =
       actions,
       lifecycle: ledger('registrations.json: not JSON'),
     })
-    const html = await page(c.handle, '/alerts')
+    const html = await page(c.handle, '/admin/alerts')
     expect(rowsOf(html)).toEqual([
       'registrations:unreadable:registrations.json: not JSON',
     ])

@@ -18,7 +18,7 @@ import type { ChatTranscript, ChatTurn, ConsoleResult } from '../../src/deps.js'
 import { createConsoleHandler } from '../../src/http.js'
 import { CountingChat } from '../accountsHarness.js'
 import { ADMIN, NOW, TOKENS, pageHarness } from '../pageHarness.js'
-import { Browser, skipReason, type Tab } from './cdp.js'
+import { Browser, observeChatStream, skipReason, type Tab } from './cdp.js'
 
 const SKIP = skipReason()
 if (SKIP !== null) console.warn(`[console narrow tests] skipped: ${SKIP}`)
@@ -75,19 +75,19 @@ class LongChat extends CountingChat {
 
 /** Every page there is, as the admin sees it. */
 const PAGES = [
-  '/overview',
-  '/nodes',
-  '/nodes/tokyo-1',
-  '/chat?session=session-1',
-  '/audit',
-  '/alerts',
-  '/jobs',
-  '/approvals',
-  '/providers',
-  '/servers',
-  '/access',
-  '/usage',
-  '/settings',
+  '/admin/overview',
+  '/admin/nodes',
+  '/admin/nodes/tokyo-1',
+  '/?session=session-1',
+  '/admin/audit',
+  '/admin/alerts',
+  '/admin/jobs',
+  '/admin/approvals',
+  '/admin/providers',
+  '/admin/servers',
+  '/admin/access',
+  '/admin/usage',
+  '/admin/settings',
 ] as const
 
 function serve() {
@@ -139,6 +139,7 @@ interface Layout {
   readonly scrollWidth: number
   readonly clientWidth: number
   readonly titleBottom: number
+  readonly front: boolean
   readonly role: { top: number; bottom: number; right: number } | null
   readonly mainTop: number
   readonly sideShown: boolean
@@ -181,16 +182,17 @@ const LAYOUT = `(() => {
       scrollers.push(el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + '.' + el.className);
     }
   }
-  const role = document.getElementById('role');
+  const role = document.getElementById('role') || document.querySelector('.fx-me-text');
   const r = role ? rect(role) : null;
   return {
+    front: !!document.getElementById('fx'),
     scrollWidth: document.documentElement.scrollWidth,
     clientWidth: document.documentElement.clientWidth,
-    titleBottom: rect(document.getElementById('page-title')).bottom,
+    titleBottom: rect(document.getElementById('page-title') || document.getElementById('fx-head')).bottom,
     role: r ? { top: r.top, bottom: r.bottom, right: r.right } : null,
-    mainTop: rect(document.getElementById('main')).top,
-    sideShown: shown(document.getElementById('side')),
-    menuShown: shown(document.querySelector('.top .drawer-open')),
+    mainTop: rect(document.getElementById('main') || document.getElementById('fx-main')).top,
+    sideShown: shown(document.getElementById('side')) || (document.getElementById('fx') && document.getElementById('fx').getAttribute('data-drawer') === 'open'),
+    menuShown: shown(document.querySelector('.top .drawer-open, .fx-top .fx-side-open')),
     cut,
     scrollers,
   };
@@ -227,10 +229,11 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
         if (layout.titleBottom > HEIGHT / 4)
           say(`title at ${layout.titleBottom}`)
         if (
-          layout.role === null ||
-          layout.role.top < 0 ||
-          layout.role.bottom > HEIGHT / 3 ||
-          layout.role.right > WIDTH
+          !layout.front &&
+          (layout.role === null ||
+            layout.role.top < 0 ||
+            layout.role.bottom > HEIGHT / 3 ||
+            layout.role.right > WIDTH)
         ) {
           say(`role chip ${JSON.stringify(layout.role)}`)
         }
@@ -247,7 +250,7 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
   test('the key state of the two busiest pages is on the first screen', async () => {
     const tab = await phone(browser)
     try {
-      await open(tab, served.base, '/overview')
+      await open(tab, served.base, '/admin/overview')
       // The four health cards' first one, whole.
       const card = await tab.evaluate<{ top: number; bottom: number }>(
         `(() => { const r = document.querySelector('main .card').getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; })()`,
@@ -255,7 +258,7 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
       expect(card.top).toBeGreaterThanOrEqual(0)
       expect(card.bottom).toBeLessThanOrEqual(HEIGHT)
 
-      await open(tab, served.base, '/nodes')
+      await open(tab, served.base, '/admin/nodes')
       // The roster's head: how many agents, how many live.
       const head = await tab.evaluate<{
         bottom: number
@@ -273,7 +276,7 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
   test('the menu opens the navigation as a drawer, Esc closes it, and focus goes back to the menu', async () => {
     const tab = await phone(browser)
     try {
-      await open(tab, served.base, '/nodes')
+      await open(tab, served.base, '/admin/nodes')
       await tab.evaluate(`document.querySelector('.top .drawer-open').focus()`)
       await tab.evaluate(`document.querySelector('.top .drawer-open').click()`)
       await tab.waitFor(
@@ -329,9 +332,9 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
     const tab = await phone(browser)
     try {
       // Signed in first: the cookie is what a script-less page rides on.
-      await open(tab, served.base, '/nodes')
+      await open(tab, served.base, '/admin/nodes')
       await tab.send('Emulation.setScriptExecutionDisabled', { value: true })
-      await tab.goto(`${served.base}/nodes`)
+      await tab.goto(`${served.base}/admin/nodes`)
       expect(
         await tab.evaluate<boolean>(`window.qianmoConsole === undefined`),
       ).toBe(true)
@@ -359,11 +362,9 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
   test('the conversation: composer and connection on the first screen, the list in a drawer, and a message goes out', async () => {
     const tab = await phone(browser)
     try {
-      await open(tab, served.base, '/chat?session=session-1')
-      await tab.waitFor(
-        `(document.getElementById('stream-state') || {}).textContent === '实时'`,
-        10_000,
-      )
+      await observeChatStream(tab)
+      await open(tab, served.base, '/?session=session-1')
+      await tab.waitFor(`window.__chatStreamOpen === true`, 10_000)
       const first = await tab.evaluate<{
         composerTop: number
         composerBottom: number
@@ -373,12 +374,12 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
         lastTurnBottom: number
         threadBottom: number
       }>(`(() => {
-        const composer = document.getElementById('composer').getBoundingClientRect();
-        const mount = document.getElementById('thread-mount');
-        const turns = mount.querySelectorAll('article.turn');
+        const composer = document.getElementById('fx-composer').getBoundingClientRect();
+        const mount = document.getElementById('fx-scroll');
+        const turns = mount.querySelectorAll('article.fx-msg');
         return {
           composerTop: composer.top, composerBottom: composer.bottom,
-          stream: document.getElementById('stream-state').getBoundingClientRect().bottom,
+          stream: document.getElementById('fx-head').getBoundingClientRect().bottom,
           turns: turns.length,
           transcriptScrolls: mount.scrollHeight > mount.clientHeight,
           lastTurnBottom: turns[turns.length - 1].getBoundingClientRect().bottom,
@@ -397,30 +398,41 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
       ).toBeLessThanOrEqual(HEIGHT)
       // Every delivery chain fits the width.
       const chains = await tab.evaluate<number[]>(
-        `[...document.querySelectorAll('#thread-mount .chain')].map(c => c.getBoundingClientRect().right)`,
+        `[...document.querySelectorAll('#fx-thread .fx-chain')].map(c => c.getBoundingClientRect().right)`,
       )
       expect(chains.length).toBeGreaterThanOrEqual(6)
       expect(chains.filter(right => right > WIDTH)).toEqual([])
 
-      // The session list is a drawer; choosing in it closes it.
+      // The front's side panel is a drawer on a phone; choosing closes it.
       expect(
         await tab.evaluate<boolean>(
-          `getComputedStyle(document.getElementById('chat-rail-list')).display === 'none'`,
+          `document.getElementById('fx').getAttribute('data-drawer') === 'open'`,
         ),
-      ).toBe(true)
+      ).toBe(false)
       await tab.evaluate(
-        `document.querySelector('[popovertarget="chat-rail-list"].drawer-open').click()`,
+        `document.querySelector('.fx-top [data-action="fx-side"]').click()`,
       )
       await tab.waitFor(
-        `document.getElementById('chat-rail-list').matches(':popover-open')`,
+        `document.getElementById('fx').getAttribute('data-drawer') === 'open'`,
       )
+      expect(
+        await tab.evaluate<string>(
+          `document.querySelector('.fx-me-text').textContent`,
+        ),
+      ).toContain('管理')
       await tab.evaluate(
-        `document.querySelector('#chat-rail-list [data-session="session-2"]').click()`,
+        `document.querySelector('#fx-history [data-session="session-2"]').click()`,
       )
       await tab.waitFor(
-        `!document.getElementById('chat-rail-list').matches(':popover-open') && location.search === '?session=session-2'`,
+        `document.getElementById('fx').getAttribute('data-drawer') !== 'open' && location.search === '?session=session-2'`,
       )
-      await tab.waitFor(`document.activeElement.id === 'chat-text'`)
+      // The composer stays held until session-2 is the thread on screen.
+      await tab.waitFor(
+        `document.getElementById('fx-thread').getAttribute('data-session') === 'session-2' && !document.getElementById('fx-text').disabled`,
+      )
+      // Mobile keeps the keyboard closed until the reader taps the input.
+      await tab.evaluate(`document.getElementById('fx-text').focus()`)
+      await tab.waitFor(`document.activeElement.id === 'fx-text'`)
 
       // Typed and sent with Enter, as on a phone keyboard.
       await tab.send('Input.insertText', { text: '窄屏上发一条' })
@@ -432,7 +444,7 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
           windowsVirtualKeyCode: 13,
         })
       }
-      await tab.waitFor(`document.getElementById('chat-text').value === ''`)
+      await tab.waitFor(`document.getElementById('fx-text').value === ''`)
       expect(served.chat.sent.map(one => [one.sessionId, one.text])).toEqual([
         ['session-2', '窄屏上发一条'],
       ])

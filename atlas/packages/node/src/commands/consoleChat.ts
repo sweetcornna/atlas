@@ -44,7 +44,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { signTaskOwner, type NodeKeyPair } from '@qianmo/capability'
-import { MODEL_DIRECTIONS } from '@qianmo/console'
+import { MODEL_DIRECTIONS, unansweredTurns } from '@qianmo/console'
 import { parseTurnStepDedupKey } from '@qianmo/resident'
 import type {
   ChatLocalCommand,
@@ -784,6 +784,26 @@ export function createConsoleChatPort(
     // 就是活跃的那一条。「说了什么」与「有没有动静」是两个问题。
     const latest =
       ids.length === 0 ? undefined : turns.get(ids[ids.length - 1] ?? '')
+    // 标题是操作者的第一句（本地命令不算）：会话列表按它认出一条对话，
+    // 预览照旧是最后一句。
+    let title: string | undefined
+    for (const id of ids) {
+      const turn = turns.get(id)
+      if (
+        turn !== undefined &&
+        turn.variant !== 'notice' &&
+        turn.author === 'operator' &&
+        turn.command === undefined
+      ) {
+        title = turn.text
+        break
+      }
+    }
+    // 与前台「正在处理」同一条判据（`unansweredTurns`）：按 taskId 看操作者
+    // 的哪一句还没有等到回复，而不只看最后一句——连发两句、第一句先答完时，
+    // 第二句仍在路上。
+    const running =
+      unansweredTurns(ids.flatMap(id => turns.get(id) ?? [])).length > 0
     return {
       id: stored.id,
       target: stored.target,
@@ -793,6 +813,8 @@ export function createConsoleChatPort(
       updatedAt: latest?.at ?? stored.createdAt,
       turnCount: messageCount,
       preview: last?.text ?? '',
+      ...(title === undefined ? {} : { title }),
+      ...(running ? { running: true } : {}),
     }
   }
 

@@ -42,7 +42,8 @@ import { overviewRoute } from './overview.js'
 import { providersRoute } from './providers.js'
 import { serversRoute } from './servers.js'
 import { settingsRoute } from './settings.js'
-import { DEFAULT_LABEL, guardChat, loginHref } from './shared.js'
+import { frontAvailable } from './front.js'
+import { ADMIN_HOME, DEFAULT_LABEL, guardChat, loginHref } from './shared.js'
 import type {
   AreaGroup,
   HeadRoute,
@@ -55,8 +56,9 @@ import { usageRoute } from './usage.js'
 
 /**
  * Every area, in the order the sidebar draws them: what a person uses every
- * day first (对话 is also the home page), then the operator's areas under
- * 管理. The page matcher walks the same order.
+ * day first (对话 is the conversation front at `/`, the rest live under
+ * `/admin`), then the operator's areas under 管理. The page matcher walks the
+ * same order, on the segments after `/admin`.
  */
 export const ROUTES: readonly RouteModule[] = [
   chatRoute,
@@ -102,6 +104,7 @@ export function headIndex(
  * doors `http.ts` serves before any page is consulted.
  */
 export const RESERVED_PAGE_HEADS: readonly string[] = [
+  'admin',
   'v0',
   'fragments',
   'assets',
@@ -150,10 +153,12 @@ const GROUP_ORDER: readonly AreaGroup[] = ['main', 'manage']
  * (`routes/chat.ts`), and a link that 403s on click leaks exactly that.
  */
 function visibleTo(module: RouteModule, ctx: RouteContext): boolean {
+  if (module.area.front === true) return frontAvailable(ctx)
   const page = module.page
   if (page === undefined) return false
   if (page.available?.(ctx) === false) return false
-  if (page.guard === 'chat') return guardChat(ctx.access, 'document') === null
+  if (page.guard === 'chat' && guardChat(ctx.access, 'document') !== null)
+    return false
   return true
 }
 
@@ -223,17 +228,6 @@ function crumbsOf(module: RouteModule, render: PageRender): readonly Crumb[] {
   ]
 }
 
-/**
- * What `/` is for this caller: 对话 for whoever may hold a conversation here,
- * 总览 (the page that matched) for everybody else. Decided by the same rule
- * as the sidebar, so the home page is never a link the sidebar hides.
- */
-export function homePage(ctx: RouteContext, matched: PageMatch): PageMatch {
-  const chat = ROUTES.find(module => module.area.id === 'chat')
-  if (chat?.page === undefined || !visibleTo(chat, ctx)) return matched
-  return { module: chat, page: chat.page, rest: [] }
-}
-
 /** One page, drawn in the shell. */
 export async function areaDocument(
   ctx: RouteContext,
@@ -278,7 +272,7 @@ export async function errorDocument(
     body:
       `<section class="card elev-sm stub" aria-labelledby="page-title">` +
       `<p class="note">${escapeHtml(line)}</p>` +
-      `<p><a class="jump" href="/" data-nav>回到首页</a></p>` +
+      `<p><a class="jump" href="${ADMIN_HOME}" data-nav>回到总览</a></p>` +
       `</section>`,
     health: healthOf(listed),
     relogin: loginHref(ctx.url),

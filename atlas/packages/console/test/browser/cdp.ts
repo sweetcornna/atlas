@@ -343,3 +343,19 @@ export class Browser {
     rmSync(this.#profile, { recursive: true, force: true })
   }
 }
+
+/** Observe the browser's actual SSE open event, independent of status copy. */
+export async function observeChatStream(tab: Tab): Promise<void> {
+  await tab.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `
+    window.__chatStreamOpen = false;
+    const OriginalEventSource = window.EventSource;
+    window.EventSource = class extends OriginalEventSource {
+      constructor(url, options) {
+        super(url, options);
+        this.addEventListener('open', () => { window.__chatStreamOpen = true; });
+      }
+    };
+  `,
+  })
+}

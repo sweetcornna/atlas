@@ -8,14 +8,17 @@
 - **看**：在线节点名册（能力、心跳、租约到期）与每台节点的详情页（概览、智能体、生命周期、模型四个页签）、审计轨迹（最新的在上、游标翻页、一个搜索框、可按 trace / task / agent / 时间窗过滤，可按 `traceId` 还原完整消息链）、告警、值守作业、审批申请、用量与配额、协议与运行时的各项上限。
 - **做**：注册 / 注销一个节点、补一次心跳、发起一次唤醒，以及生命周期的发布、暂停、恢复、退役（每个都先过确认框）。页面上注册成功的条目由 host 侧的 `qm console` 记进登记簿并持续续租，直到在页面上注销或暂停（`docs/dev/console.md` §7.3）；本包只看到 `RegistryPort` 与 `LifecyclePort`。
 
-页面是服务端渲染的 HTML，每个区域一页、套同一个外壳，外加几个可局部刷新的片段；没有构建步骤、没有第三方依赖、不打包任何外部资源（`test/dependencies.test.ts` 钉住）。
+页面由服务端渲染。`/` 是对话前台，`/admin` 是管理后台，后台区域共用外壳，前台使用自己的智能体与会话侧栏。旧 `/chat` 与旧区域地址答 308 并保留查询串；API 与片段路径不变。没有构建步骤、没有第三方依赖、不打包外部资源（`test/dependencies.test.ts` 钉住）。
 
 ## 怎么起
 
 ```bash
 qm console                      # 绑 127.0.0.1，端口随机，token 自动生成
 qm console --port 8787          # 指定端口
+qm console --chat-url node-b=ws://127.0.0.1:38612 --chat-default qianmo://node-b/reviewer
 ```
+
+对话通道还要求对应节点的传输层 PSK。`--chat-default` 的主智能体选择与缺通道时的后台回跳见 `docs/dev/console.md` §6。
 
 启动后 CLI 会把**带 token 的 URL** 打到 stdout，直接点开即可。CLI 接线（参数、把三个端口接到真实的注册中心 / 审计文件 / 传输层）在 host 侧的 `qm console` 命令里，不在本包内——本包只认 `ConsoleDeps`（见 `src/deps.ts`），任何一个端口都可以用一个普通对象替换，这也是它的测试方式。
 

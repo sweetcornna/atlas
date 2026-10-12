@@ -81,7 +81,7 @@ export const settingsRoute: RouteModule = {
     id: 'settings',
     label: '设置与关于',
     group: 'manage',
-    href: '/settings',
+    href: '/admin/settings',
     icon: 'settings',
   },
   page: {

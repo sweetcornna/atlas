@@ -129,7 +129,9 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
     const served = serve()
     const tab = await browser.tab()
     try {
-      await tab.goto(`${served.base}/nodes/tokyo-1/lifecycle?token=${ADMIN}`)
+      await tab.goto(
+        `${served.base}/admin/nodes/tokyo-1/lifecycle?token=${ADMIN}`,
+      )
       await tab.waitFor('window.qianmoConsole !== undefined')
       expect(
         await tab.evaluate<string>(
@@ -225,7 +227,9 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
     const served = serve()
     const tab = await browser.tab()
     try {
-      await tab.goto(`${served.base}/nodes/tokyo-1/lifecycle?token=${ADMIN}`)
+      await tab.goto(
+        `${served.base}/admin/nodes/tokyo-1/lifecycle?token=${ADMIN}`,
+      )
       await tab.waitFor('window.qianmoConsole !== undefined')
       await tab.evaluate(`${button('pause', REVIEWER)}.click()`)
       await tab.waitFor(
@@ -273,7 +277,7 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
     const served = serve({ providers: new FakeProviders() })
     const tab = await browser.tab()
     try {
-      await tab.goto(`${served.base}/nodes/tokyo-1/models?token=${ADMIN}`)
+      await tab.goto(`${served.base}/admin/nodes/tokyo-1/models?token=${ADMIN}`)
       await tab.waitFor(
         `document.getElementById('node-models').getAttribute('data-state') === 'missing'`,
       )
@@ -296,7 +300,7 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
         ),
         served.base,
       )
-      expect(link.pathname).toBe('/providers')
+      expect(link.pathname).toBe('/admin/providers')
       expect(link.searchParams.get('node')).toBe('tokyo-1')
 
       // A refresh of the page after that (the runtime ticks when the tab
@@ -327,7 +331,7 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
     const served = serve({ providers: providersKnowingTokyo() })
     const tab = await browser.tab()
     try {
-      await tab.goto(`${served.base}/nodes/tokyo-1/models?token=${ADMIN}`)
+      await tab.goto(`${served.base}/admin/nodes/tokyo-1/models?token=${ADMIN}`)
       await tab.waitFor(
         `document.getElementById('node-models').getAttribute('data-state') === 'loaded'`,
       )
@@ -367,7 +371,7 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
     const served = serve()
     const tab = await browser.tab()
     try {
-      await tab.goto(`${served.base}/nodes/tokyo-1/models?token=${ADMIN}`)
+      await tab.goto(`${served.base}/admin/nodes/tokyo-1/models?token=${ADMIN}`)
       await tab.waitFor(
         `document.getElementById('node-models').getAttribute('data-state') === 'loaded'`,
       )

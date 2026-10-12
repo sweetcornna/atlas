@@ -47,11 +47,11 @@ test('fragment revalidation still checks authorization and changes on new conten
 test('theme is rendered before script and rejects arbitrary cookie content', async () => {
   const h = pageHarness()
   const dark = await h.handle(
-    api('/nodes', ADMIN, { cookie: 'qianmo_theme=dark' }),
+    api('/admin/nodes', ADMIN, { cookie: 'qianmo_theme=dark' }),
   )
   expect(await dark.text()).toContain('<html lang="zh-CN" data-theme="dark">')
   const invalid = await h.handle(
-    api('/nodes', ADMIN, { cookie: 'qianmo_theme=evil' }),
+    api('/admin/nodes', ADMIN, { cookie: 'qianmo_theme=evil' }),
   )
   expect(await invalid.text()).toContain('data-theme="system"')
 })
@@ -138,7 +138,7 @@ test('revision stream sends no records and ends on tenant policy change', async 
 test('audit page exports current filter without carrying URL credentials', async () => {
   const h = pageHarness()
   const html = await (
-    await h.handle(browse('/audit?q=test&token=do-not-export', ADMIN))
+    await h.handle(browse('/admin/audit?q=test&token=do-not-export', ADMIN))
   ).text()
   expect(html).toContain('data-action="audit-export"')
   expect(html).toContain('q=test')

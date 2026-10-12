@@ -66,22 +66,22 @@ describe('the route table', () => {
 describe('the pages', () => {
   /** Every area, with its path and group, in sidebar order. */
   const AREAS: readonly (readonly [AreaId, string, string, boolean])[] = [
-    ['chat', '/chat', 'main', false],
-    ['jobs', '/jobs', 'main', false],
-    ['memory', '/memory', 'main', false],
-    ['connect', '/connect', 'main', false],
-    ['desktop', '/desktop', 'main', false],
-    ['providers', '/providers', 'main', false],
-    ['overview', '/overview', 'manage', false],
-    ['nodes', '/nodes', 'manage', false],
-    ['files', '/files', 'manage', false],
-    ['audit', '/audit', 'manage', false],
-    ['alerts', '/alerts', 'manage', false],
-    ['approvals', '/approvals', 'manage', false],
-    ['servers', '/servers', 'manage', false],
-    ['access', '/access', 'manage', false],
-    ['usage', '/usage', 'manage', false],
-    ['settings', '/settings', 'manage', false],
+    ['chat', '/', 'main', false],
+    ['jobs', '/admin/jobs', 'main', false],
+    ['memory', '/admin/memory', 'main', false],
+    ['connect', '/admin/connect', 'main', false],
+    ['desktop', '/admin/desktop', 'main', false],
+    ['providers', '/admin/providers', 'main', false],
+    ['overview', '/admin/overview', 'manage', false],
+    ['nodes', '/admin/nodes', 'manage', false],
+    ['files', '/admin/files', 'manage', false],
+    ['audit', '/admin/audit', 'manage', false],
+    ['alerts', '/admin/alerts', 'manage', false],
+    ['approvals', '/admin/approvals', 'manage', false],
+    ['servers', '/admin/servers', 'manage', false],
+    ['access', '/admin/access', 'manage', false],
+    ['usage', '/admin/usage', 'manage', false],
+    ['settings', '/admin/settings', 'manage', false],
   ]
 
   test('every area has a module, in sidebar order, with a page at its href', () => {
@@ -92,7 +92,11 @@ describe('the pages', () => {
       expect(module?.area.group).toBe(group as 'main')
       expect(`${id} ${module?.area.pending === true}`).toBe(`${id} ${pending}`)
       const segments = href.split('/').filter(part => part !== '')
-      expect(pageOf(ROUTES, segments)?.module.area.id).toBe(id)
+      if (module?.area.front === true) {
+        expect(module.page).toBeUndefined()
+      } else {
+        expect(pageOf(ROUTES, segments.slice(1))?.module.area.id).toBe(id)
+      }
     }
   })
 
@@ -133,6 +137,7 @@ describe('the pages', () => {
       expect(pageOf([greedy], [head, 'x'])).toBeUndefined()
     }
     expect(RESERVED_PAGE_HEADS).toEqual([
+      'admin',
       'v0',
       'fragments',
       'assets',
@@ -143,7 +148,8 @@ describe('the pages', () => {
     // And no real module tries.
     for (const module of ROUTES) {
       for (const head of RESERVED_PAGE_HEADS) {
-        expect(module.page?.match([head])).toBeNull()
+        if (module.page !== undefined)
+          expect(module.page.match([head])).toBeNull()
       }
     }
   })

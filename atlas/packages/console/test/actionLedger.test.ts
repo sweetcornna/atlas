@@ -569,9 +569,7 @@ describe('the console writing into it', () => {
     if (reader === undefined) throw new Error('no stream body')
     await reader.read()
 
-    expect((await h.handle(browse(`/chat?session=${id}`, ADMIN))).status).toBe(
-      200,
-    )
+    expect((await h.handle(browse(`/?session=${id}`, ADMIN))).status).toBe(200)
     for (let i = 0; i < 100; i++) {
       h.chat.emit(id)
       await reader.read()
@@ -603,7 +601,12 @@ describe('the console writing into it', () => {
       deps: { actions: ledger },
       accounts: { breakGlass: true },
     })
-    const paths = ['/v0/limits', '/v0/limits', '/fragments/roster', '/nodes']
+    const paths = [
+      '/v0/limits',
+      '/v0/limits',
+      '/fragments/roster',
+      '/admin/nodes',
+    ]
     for (const path of paths) {
       await h.handle(asBearer('GET', path, ACCOUNTS_ADMIN))
     }
@@ -616,7 +619,7 @@ describe('the console writing into it', () => {
       'GET /v0/limits ok',
       'GET /v0/limits ok',
       'GET /fragments/roster ok',
-      'GET /nodes ok',
+      'GET /admin/nodes ok',
       'GET /v0/nope refused',
     ])
     for (const entry of glass.value.entries) {

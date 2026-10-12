@@ -534,7 +534,7 @@ export async function handleAccountsApi(
       )
     }
     if (action === 'logout') {
-      // 强制下线 (`/access`, 会话): every session and stream of the person
+      // 强制下线 (`/admin/access`, 会话): every session and stream of the person
       // ends, the credential stays. The ledger line is `http.ts`'s, like
       // every write on this API.
       return answer(book.endSessions(subject), ended =>

@@ -91,7 +91,7 @@ export const MAX_CHAT_TEXT_LENGTH = 8_000
 /**
  * Ids of the two regions the poller and the stream swap.
  *
- * Not exported: they are a contract with `assets/chatClient.ts`, which is a
+ * Not exported: they are a contract with `assets/frontClient.ts`, which is a
  * string constant in this same package rather than an importer, so an export
  * here would be a public symbol nothing can consume.
  */
@@ -129,7 +129,7 @@ function idTag(label: string, value: string, shown: string): string {
  * useless. Under a second this prints milliseconds; above it, the same compact
  * spelling the lease column uses.
  */
-function formatLatency(ms: number): string {
+export function formatLatency(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return formatShortDuration(ms)
   return ms < 1_000 ? `${Math.round(ms)}ms` : formatShortDuration(ms)
 }
@@ -211,7 +211,7 @@ const FAILURE_WORDS: Readonly<Record<string, string>> = {
 }
 
 /** 失败, then why, then the code: `失败 · 未投递 · E_UNDELIVERABLE`. */
-function failureWords(code: string | undefined): string {
+export function failureWords(code: string | undefined): string {
   if (code === undefined) return '失败'
   const words = Object.hasOwn(FAILURE_WORDS, code)
     ? FAILURE_WORDS[code]
@@ -444,7 +444,7 @@ function renderTurn(
  * work. Collapsing them into one grey dot is how an operator ends up
  * restarting a node that was never down.
  */
-function targetState(
+export function targetState(
   target: ChatTarget | null,
   registryDown: boolean,
 ): { readonly tone: Tone; readonly text: string } {
@@ -636,7 +636,7 @@ function headFace(
 ): string {
   if (faces === undefined) return ''
   const spec = faces.agent(address)
-  // Live, and kept across redraws by the page script (`assets/chatClient.ts`)
+  // Live, and kept across redraws by the page script (`assets/frontClient.ts`)
   // so a new turn changes what it does rather than restarting it.
   const figure = avatarSvg(spec, {
     size: 56,

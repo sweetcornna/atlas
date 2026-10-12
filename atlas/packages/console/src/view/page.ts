@@ -214,7 +214,7 @@ function agentsHint(roster: string): string {
 function recentCard(recent: RecentOutcomes | null): string {
   const floor = recent?.more === true ? '+' : ''
   const look =
-    `<a class="jump" href="${attr('/audit?window=1h&outcome=refused')}" ` +
+    `<a class="jump" href="${attr('/admin/audit?window=1h&outcome=refused')}" ` +
     `data-nav>查看</a>`
   return statCard({
     kicker: '近 1 小时拒绝',
@@ -278,7 +278,7 @@ function sessionsCard(
   return statCard({
     kicker: '近 1 小时会话',
     value: String(active),
-    hint: `共 ${sessions.length} 条 <span class="sep">·</span><a class="jump" href="/chat" data-nav>打开</a>`,
+    hint: `共 ${sessions.length} 条 <span class="sep">·</span><a class="jump" href="/" data-nav>打开</a>`,
     glyph: 'messages-square',
   })
 }

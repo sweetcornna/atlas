@@ -6,7 +6,7 @@
  *
  * | Route | Who |
  * |---|---|
- * | `GET /desktop`, `GET /fragments/desktop` | view and up |
+ * | `GET /admin/desktop`, `GET /fragments/desktop` | view and up |
  *
  * The switches write through `/v0/desktop` (`routes/desktopApi.ts`, ops
  * level: a desktop changes what a node runs and holds logins). Without a
@@ -62,7 +62,7 @@ export const desktopRoute: RouteModule = {
     id: 'desktop',
     label: '云端电脑',
     group: 'main',
-    href: '/desktop',
+    href: '/admin/desktop',
     icon: 'monitor',
   },
   page: {

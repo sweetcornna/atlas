@@ -1329,7 +1329,7 @@ function runtimeScript(guards: TokenGuards): string {
     } else if (event.key === '?') { event.preventDefault(); openDialog('keyboard-help', el); }
     else if (event.key === 'g') goAt = Date.now();
     else if (Date.now() - goAt < 1000 && (event.key === 'n' || event.key === 'a')) {
-      event.preventDefault(); location.href = event.key === 'n' ? '/nodes' : '/audit'; goAt = 0;
+      event.preventDefault(); location.href = event.key === 'n' ? '/admin/nodes' : '/admin/audit'; goAt = 0;
     } else goAt = 0;
   });
 
@@ -1382,7 +1382,7 @@ function runtimeScript(guards: TokenGuards): string {
  * such a line to be part of. Block comments stay: the humanize markers are
  * two of them, and `test/copyGate.test.ts` reads between them.
  */
-function stripJsLineComments(script: string): string {
+export function stripJsLineComments(script: string): string {
   return script
     .split('\n')
     .filter(line => !/^\s*\/\//.test(line))

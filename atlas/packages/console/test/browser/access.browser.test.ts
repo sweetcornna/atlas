@@ -63,7 +63,7 @@ describe.skipIf(SKIP !== null)('账号与访问 in a browser', () => {
     const served = serve()
     const tab = await browser.tab()
     try {
-      await tab.goto(`${served.base}/access/invites?token=${ADMIN}`)
+      await tab.goto(`${served.base}/admin/access/invites?token=${ADMIN}`)
       await tab.waitFor('window.qianmoConsole !== undefined')
       // The control: the panel is hidden and empty, nothing is listed yet.
       expect(
@@ -162,7 +162,7 @@ describe.skipIf(SKIP !== null)('账号与访问 in a browser', () => {
 
     const tab = await browser.tab()
     try {
-      await tab.goto(`${served.base}/access/sessions?token=${ADMIN}`)
+      await tab.goto(`${served.base}/admin/access/sessions?token=${ADMIN}`)
       await tab.waitFor('window.qianmoConsole !== undefined')
       await tab.evaluate(
         `document.querySelector('[data-action="account-logout"][data-subject="${subject}"]').click()`,

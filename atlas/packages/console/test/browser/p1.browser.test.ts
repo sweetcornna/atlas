@@ -21,7 +21,7 @@ import {
   pageHarness,
   type PageHarness,
 } from '../pageHarness.js'
-import { Browser, skipReason, type Tab } from './cdp.js'
+import { Browser, observeChatStream, skipReason, type Tab } from './cdp.js'
 
 const SKIP = skipReason()
 if (SKIP !== null) console.warn(`[console P1 browser tests] skipped: ${SKIP}`)
@@ -139,7 +139,7 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/nodes')
+        await openConsole(tab, served, '/admin/nodes')
         expect(
           await tab.evaluate<boolean>(`document.getElementById('conn').hidden`),
         ).toBe(true)
@@ -201,7 +201,7 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/nodes')
+        await openConsole(tab, served, '/admin/nodes')
         await tab.send('Network.enable')
         await tab.send('Network.emulateNetworkConditions', {
           offline: true,
@@ -242,7 +242,7 @@ describe.skipIf(SKIP !== null)(
         })
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/nodes')
+        await openConsole(tab, served, '/admin/nodes')
         await tab.evaluate(
           `document.querySelector('#roster button[data-action="heartbeat"]').click()`,
         )
@@ -291,7 +291,7 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/nodes')
+        await openConsole(tab, served, '/admin/nodes')
         await fastPolling(tab)
         served.wrapper.delay = { path: '/v0/agents/', ms: 3_000 }
         const address = 'qianmo://tokyo-1/planner'
@@ -358,7 +358,7 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/nodes')
+        await openConsole(tab, served, '/admin/nodes')
         served.wrapper.delay = { path: '/v0/wake', ms: 20_000 }
         await tab.evaluate(
           `document.querySelector('[data-open-dialog="wake-dialog"]').click()`,
@@ -449,7 +449,7 @@ describe.skipIf(SKIP !== null)(
       }
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/nodes')
+        await openConsole(tab, served, '/admin/nodes')
         await tab.evaluate(
           `document.querySelector('[data-open-dialog="register-dialog"]').click()`,
         )
@@ -540,7 +540,7 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/nodes')
+        await openConsole(tab, served, '/admin/nodes')
         await tab.evaluate(
           `document.querySelector('[data-open-dialog="wake-dialog"]').click()`,
         )
@@ -581,7 +581,7 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/nodes')
+        await openConsole(tab, served, '/admin/nodes')
         const address = 'qianmo://tokyo-1/planner'
         const opener = `document.querySelector('#roster button[data-action="deregister"][data-address="${address}"]')`
         await tab.evaluate(`(() => {
@@ -644,7 +644,7 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/nodes')
+        await openConsole(tab, served, '/admin/nodes')
         const first = served.wrapper.seen.length
         expect(
           await tab.evaluate<[string, string, string[]]>(`[
@@ -654,7 +654,7 @@ describe.skipIf(SKIP !== null)(
               .map(a => a.getAttribute('href'))
               .filter(href => href.includes('token=')),
           ]`),
-        ).toEqual(['/nodes', '', []])
+        ).toEqual(['/admin/nodes', '', []])
         // The page itself never held it: the server answered the link with
         // the cookie before anything rendered.
         expect(
@@ -664,10 +664,10 @@ describe.skipIf(SKIP !== null)(
         ).toBeNull()
 
         await tab.evaluate(
-          `document.querySelector('a[data-nav][href="/audit"]').click()`,
+          `document.querySelector('a[data-nav][href="/admin/audit"]').click()`,
         )
         await tab.waitFor(
-          `location.pathname === '/audit' && window.qianmoConsole !== undefined`,
+          `location.pathname === '/admin/audit' && window.qianmoConsole !== undefined`,
           10_000,
         )
         expect(
@@ -688,7 +688,7 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await tab.goto(`${served.base}/nodes?token=${VIEW}`)
+        await tab.goto(`${served.base}/admin/nodes?token=${VIEW}`)
         await tab.waitFor('window.qianmoConsole !== undefined')
         expect(
           await tab.evaluate<number>(
@@ -707,7 +707,7 @@ describe.skipIf(SKIP !== null)(
         expect(await posted()).toBe(true)
         await pause(300)
         // A plain navigation now opens as the admin, on the cookie alone.
-        await tab.goto(`${served.base}/nodes`)
+        await tab.goto(`${served.base}/admin/nodes`)
         await tab.waitFor('window.qianmoConsole !== undefined')
         expect(
           await tab.evaluate<number>(
@@ -716,7 +716,8 @@ describe.skipIf(SKIP !== null)(
         ).toBeGreaterThan(0)
         expect(
           served.wrapper.seen.filter(
-            seen => seen.path !== '/nodes' && seen.search.includes('token='),
+            seen =>
+              seen.path !== '/admin/nodes' && seen.search.includes('token='),
           ),
         ).toEqual([])
       } finally {
@@ -729,11 +730,9 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/chat')
-        await tab.waitFor(
-          `(document.getElementById('stream-state') || {}).textContent === '实时'`,
-          10_000,
-        )
+        await observeChatStream(tab)
+        await openConsole(tab, served, '/')
+        await tab.waitFor(`window.__chatStreamOpen === true`, 10_000)
         const streams = served.wrapper.seen.filter(
           seen => seen.path === '/v0/chat/stream',
         )
@@ -749,7 +748,7 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/nodes')
+        await openConsole(tab, served, '/admin/nodes')
         const sizes = await tab.evaluate<{ encoded: number; decoded: number }>(
           `(() => { const n = performance.getEntriesByType('navigation')[0]; return { encoded: n.encodedBodySize, decoded: n.decodedBodySize }; })()`,
         )
@@ -770,7 +769,7 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/nodes')
+        await openConsole(tab, served, '/admin/nodes')
         // The runtime ran: it is what defines qianmoConsole, and it painted.
         expect(
           await tab.evaluate<string>(`typeof window.qianmoConsole.sendJson`),
@@ -802,7 +801,7 @@ describe.skipIf(SKIP !== null)(
         await tab.send('Emulation.setTimezoneOverride', {
           timezoneId: 'Asia/Shanghai',
         })
-        await openConsole(tab, served, '/audit')
+        await openConsole(tab, served, '/admin/audit')
         const record = `document.querySelector('#audit time[data-fmt]')`
         // 2023-11-14T22:13:15Z, served as 22:13:15, read in Shanghai.
         await tab.waitFor(`${record}.textContent === '2023-11-15 06:13:15'`)
@@ -877,7 +876,7 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/nodes')
+        await openConsole(tab, served, '/admin/nodes')
         await tab.evaluate(
           `document.activeElement && document.activeElement.blur()`,
         )
@@ -913,7 +912,7 @@ describe.skipIf(SKIP !== null)(
       const served = serveConsole()
       const tab = await browser.tab()
       try {
-        await openConsole(tab, served, '/nodes')
+        await openConsole(tab, served, '/admin/nodes')
         await tab.evaluate(`(() => {
           const form = document.getElementById('roster-filter');
           form.querySelector('input[name="q"]').value = 'osaka';

@@ -159,7 +159,7 @@ describe('the trail page lists newest first, one page at a time (D5)', () => {
   test('the first screen is the newest 50, newest on top', async () => {
     const audit = new PagedAudit(500)
     const handle = console_(audit)
-    const html = await text(handle, '/audit')
+    const html = await text(handle, '/admin/audit')
     const seqs = seqsIn(html, 'audit-rows')
     expect(seqs).toHaveLength(50)
     expect(seqs[0]).toBe(500)
@@ -171,7 +171,7 @@ describe('the trail page lists newest first, one page at a time (D5)', () => {
   test('加载更早 walks every record exactly once, appends meanwhile shift nothing', async () => {
     const audit = new PagedAudit(173)
     const handle = console_(audit)
-    let path = '/audit'
+    let path = '/admin/audit'
     const seen: number[] = []
     for (let pages = 0; pages < 20; pages++) {
       const html = await text(handle, path)
@@ -185,7 +185,7 @@ describe('the trail page lists newest first, one page at a time (D5)', () => {
       }
       // The link and the fragment the script fetches are the same view.
       expect(attrOf(html, 'data-action="audit-earlier"', 'data-fragment')).toBe(
-        next.replace('/audit?', '/fragments/audit?'),
+        next.replace('/admin/audit?', '/fragments/audit?'),
       )
       path = next
     }
@@ -195,7 +195,7 @@ describe('the trail page lists newest first, one page at a time (D5)', () => {
   test('the script fetches the same page as a fragment, rows under the same ids', async () => {
     const audit = new PagedAudit(120)
     const handle = console_(audit)
-    const first = await text(handle, '/audit')
+    const first = await text(handle, '/admin/audit')
     const fragment = attrOf(
       first,
       'data-action="audit-earlier"',
@@ -213,7 +213,7 @@ describe('the trail page lists newest first, one page at a time (D5)', () => {
       Array.from({ length: 50 }, (_, index) => 70 - index),
     )
     expect(attrOf(more, 'data-action="audit-earlier"', 'href')).toBe(
-      '/audit?before=21',
+      '/admin/audit?before=21',
     )
     // An older page has no body for new rows: they belong on the newest one.
     expect(more).not.toContain('id="audit-fresh"')
@@ -222,7 +222,7 @@ describe('the trail page lists newest first, one page at a time (D5)', () => {
   test('one search box: it narrows the list, keeps its value, and rides along with the cursor', async () => {
     const audit = new PagedAudit(300)
     const handle = console_(audit)
-    const html = await text(handle, '/audit?q=NEEDLE')
+    const html = await text(handle, '/admin/audit?q=NEEDLE')
     const seqs = seqsIn(html, 'audit-rows')
     expect(seqs.length).toBe(30)
     expect(seqs.every(seq => seq % 10 === 0)).toBe(true)
@@ -239,9 +239,9 @@ describe('the trail page lists newest first, one page at a time (D5)', () => {
 
   test('the time segment says 全部 when there is no window, 自定义 only for a range', async () => {
     const handle = console_(new PagedAudit(3))
-    const open = await text(handle, '/audit')
+    const open = await text(handle, '/admin/audit')
     expect(open).toContain('name="window" value="" checked>全部')
-    const ranged = await text(handle, '/audit?from=1000&to=2000')
+    const ranged = await text(handle, '/admin/audit?from=1000&to=2000')
     expect(ranged).toContain('name="window" value="" checked>自定义')
   })
 })
@@ -250,7 +250,7 @@ describe('the poll carries what arrived, not the page again (G2)', () => {
   test('the page polls since its head and swaps only the header and the fresh rows', async () => {
     const audit = new PagedAudit(80)
     const handle = console_(audit)
-    const page = await text(handle, '/audit')
+    const page = await text(handle, '/admin/audit')
     expect(attrOf(page, 'id="audit" ', 'data-poll')).toBe(
       '/fragments/audit?since=80',
     )
@@ -291,7 +291,7 @@ describe('the poll carries what arrived, not the page again (G2)', () => {
     const burst = await text(handle, '/fragments/audit?q=k&since=10')
     expect(seqsIn(burst, 'audit-fresh')).toHaveLength(50)
     expect(burst).toContain(
-      '新记录超过一页 · <a href="/audit?q=k" data-nav>重新载入</a>',
+      '新记录超过一页 · <a href="/admin/audit?q=k" data-nav>重新载入</a>',
     )
 
     audit.records = audit.records.slice(0, 5)
@@ -302,7 +302,7 @@ describe('the poll carries what arrived, not the page again (G2)', () => {
 
   test('an older page polls its header only', async () => {
     const handle = console_(new PagedAudit(200))
-    const older = await text(handle, '/audit?before=100')
+    const older = await text(handle, '/admin/audit?before=100')
     expect(attrOf(older, 'id="audit" ', 'data-swap')).toBe('audit-rail')
     expect(older).not.toContain('id="audit-fresh"')
     expect(seqsIn(older, 'audit-rows')[0]).toBe(99)
@@ -311,7 +311,7 @@ describe('the poll carries what arrived, not the page again (G2)', () => {
   test('an empty trail keeps a hidden table for the first row to land in', async () => {
     const audit = new PagedAudit(0)
     const handle = console_(audit)
-    const page = await text(handle, '/audit')
+    const page = await text(handle, '/admin/audit')
     expect(page).toContain('这条链还没有记录')
     expect(page).toContain('<div class="scroll fresh-only">')
     expect(attrOf(page, 'id="audit" ', 'data-poll')).toBe(
@@ -326,7 +326,7 @@ describe('the poll carries what arrived, not the page again (G2)', () => {
     // `PageAudit` in the shared harness answers without `head`.
     const { pageHarness } = await import('./pageHarness.js')
     const h = pageHarness()
-    const page = await (await h.handle(browse('/audit', VIEW))).text()
+    const page = await (await h.handle(browse('/admin/audit', VIEW))).text()
     expect(attrOf(page, 'id="audit" ', 'data-poll')).toBe('/fragments/audit')
     expect(attrOf(page, 'id="audit" ', 'data-swap')).toBe(
       'audit-rail audit-results',
@@ -347,7 +347,7 @@ describe('several trails', () => {
 
   test('each trail polls since its own head, and pages back through node=', async () => {
     const { a, b, handle } = several()
-    const page = await text(handle, '/audit')
+    const page = await text(handle, '/admin/audit')
     expect(attrOf(page, 'id="audit" ', 'data-poll')).toBe(
       '/fragments/audit?since=tokyo-1%3A120&since=osaka.1%3A30',
     )
@@ -357,7 +357,7 @@ describe('several trails', () => {
     expect(seqsIn(page, 'audit-rows-0', 'a')[0]).toBe(120)
     expect(seqsIn(page, 'audit-rows-1', 'b')[0]).toBe(30)
     const more = attrOf(page, 'data-slot="0"', 'href')
-    expect(more).toBe('/audit?before=71&node=tokyo-1')
+    expect(more).toBe('/admin/audit?before=71&node=tokyo-1')
 
     a.append(2)
     b.append(1)
@@ -377,7 +377,7 @@ describe('several trails', () => {
 
   test('a node that is not configured is a 404 page, not an empty list', async () => {
     const { handle } = several()
-    const response = await handle(browse('/audit?node=nowhere', VIEW))
+    const response = await handle(browse('/admin/audit?node=nowhere', VIEW))
     expect(response.status).toBe(404)
     expect(await response.text()).toContain('未配置该审计节点')
   })
@@ -386,11 +386,11 @@ describe('several trails', () => {
 describe('reading without script, and the copy', () => {
   test('rows and 加载更早 are in the markup; the link is a link', async () => {
     const handle = console_(new PagedAudit(120))
-    const bare = withoutScripts(await text(handle, '/audit'))
+    const bare = withoutScripts(await text(handle, '/admin/audit'))
     expect(bare).not.toContain('<script')
     expect(seqsIn(bare, 'audit-rows')).toHaveLength(50)
     expect(bare).toContain(
-      '<a class="btn btn-secondary" href="/audit?before=71"',
+      '<a class="btn btn-secondary" href="/admin/audit?before=71"',
     )
     expect(bare).toContain('<form id="audit-filter" method="get">')
   })
@@ -400,12 +400,12 @@ describe('reading without script, and the copy', () => {
     const handle = console_(audit)
     audit.append(60)
     const pages = [
-      await text(handle, '/audit'),
-      await text(handle, '/audit?before=20'),
-      await text(handle, '/audit?q=nothing-matches-this'),
+      await text(handle, '/admin/audit'),
+      await text(handle, '/admin/audit?before=20'),
+      await text(handle, '/admin/audit?q=nothing-matches-this'),
       await text(handle, '/fragments/audit?since=70'),
       await text(handle, '/fragments/audit?since=500'),
-      await text(handle, '/audit', ADMIN),
+      await text(handle, '/admin/audit', ADMIN),
     ]
     for (const html of pages) {
       const visible = visibleText(html)

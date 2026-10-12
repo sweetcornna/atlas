@@ -722,7 +722,7 @@ describe('the production wiring', () => {
       expect(second.jobs[0]?.nextFireAt).toBe(start)
 
       const page = consoleOnThisRoot()
-      const live = await page('/jobs')
+      const live = await page('/admin/jobs')
       expect(live).toContain('刚运行过')
       expect(live).not.toContain('调度器心跳未接入')
       const row = live.slice(live.indexOf('<tr data-key="disk-watch">'))
@@ -731,7 +731,7 @@ describe('the production wiring', () => {
       expect(row).toContain('尚未触发')
 
       rmSync(statusPath)
-      const gone = await page('/jobs')
+      const gone = await page('/admin/jobs')
       expect(gone).toContain(
         '调度器心跳未接入 · qm watch 没有写出状态文件 · 无法判断调度器是否在运行',
       )

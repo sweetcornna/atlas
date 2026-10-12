@@ -6,7 +6,7 @@
  *
  * | Route | Who |
  * |---|---|
- * | `GET /connect`, `GET /fragments/connect` | view and up |
+ * | `GET /admin/connect`, `GET /fragments/connect` | view and up |
  * | `GET /fragments/connect/form?preset=&id=` | ops level (the add / edit dialog's body) |
  *
  * The JSON behind the buttons lives with its owners: `/v0/connectors`
@@ -192,7 +192,7 @@ export const connectRoute: RouteModule = {
     id: 'connect',
     label: '连接',
     group: 'main',
-    href: '/connect',
+    href: '/admin/connect',
     icon: 'plug',
   },
   page: {

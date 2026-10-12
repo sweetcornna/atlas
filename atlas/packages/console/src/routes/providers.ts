@@ -10,22 +10,22 @@
  *
  * | Path | What |
  * | --- | --- |
- * | `/providers` | the global default, the node matrix, the profile cards; `?node=` narrows the matrix to one node |
- * | `/providers/new` | the preset grid, five groups, searched by a plain `GET` form (`?q=`) |
- * | `/providers/new?preset=<id>[&site=<id>]` | the form a preset starts: the key, and the advanced half folded |
- * | `/providers/profiles/<id>` | one profile: the same form filled in, its key, the nodes on it |
- * | `/providers/nodes/<node>` | one node's 「模型」 tab (§6.3.8): expected, actual, drift, every `effective` field, the context window (D-8) and the auto-compact window (D-9) |
+ * | `/admin/providers` | the global default, the node matrix, the profile cards; `?node=` narrows the matrix to one node |
+ * | `/admin/providers/new` | the preset grid, five groups, searched by a plain `GET` form (`?q=`) |
+ * | `/admin/providers/new?preset=<id>[&site=<id>]` | the form a preset starts: the key, and the advanced half folded |
+ * | `/admin/providers/profiles/<id>` | one profile: the same form filled in, its key, the nodes on it |
+ * | `/admin/providers/nodes/<node>` | one node's 「模型」 tab (§6.3.8): expected, actual, drift, every `effective` field, the context window (D-8) and the auto-compact window (D-9) |
  *
  * The 「模型」 tab is also a fragment, `GET /fragments/providers/node/<node>`
  * (view; `<node>` one percent-encoded segment): the interface P18.11's
- * `/nodes/<node>` loads. Its write controls are links to
- * `/providers/nodes/<node>?do=…` that this area's script claims when it is on
+ * `/admin/nodes/<node>` loads. Its write controls are links to
+ * `/admin/providers/nodes/<node>?do=…` that this area's script claims when it is on
  * the page; on P18.11's page, which carries no script of this area, they take
  * the writer here. The other fragments are `board` (the matrix),
  * `profiles/<id>/nodes` and `chat?target=<address>` (the chat page's label).
- * | `/providers/import` | paste or pick an export, preview it whole, import |
+ * | `/admin/providers/import` | paste or pick an export, preview it whole, import |
  *
- * A profile lives under `profiles/` rather than straight under `/providers`:
+ * A profile lives under `profiles/` rather than straight under `/admin/providers`:
  * `new`, `import` and `nodes` are all ids a profile may have.
  *
  * ## Who may write (§7.3)
@@ -1305,7 +1305,7 @@ async function newPage(
     return {
       title: preset.name,
       crumbs: [
-        { label: '新增', href: '/providers/new' },
+        { label: '新增', href: '/admin/providers/new' },
         { label: preset.name },
       ],
       ...frame(ctx),
@@ -1322,7 +1322,7 @@ async function newPage(
     return {
       title: preset.name,
       crumbs: [
-        { label: '新增', href: '/providers/new' },
+        { label: '新增', href: '/admin/providers/new' },
         { label: preset.name },
       ],
       status: STATUS_OF[draft.failure.code],
@@ -1340,7 +1340,10 @@ async function newPage(
   }
   return {
     title: preset.name,
-    crumbs: [{ label: '新增', href: '/providers/new' }, { label: preset.name }],
+    crumbs: [
+      { label: '新增', href: '/admin/providers/new' },
+      { label: preset.name },
+    ],
     body:
       noScriptNote() +
       (overview.ok ? '' : providerFailureBar(overview.failure)) +
@@ -1500,7 +1503,7 @@ export const providersRoute: RouteModule = {
     id: 'providers',
     label: '模型',
     group: 'main',
-    href: '/providers',
+    href: '/admin/providers',
     icon: 'cpu',
   },
   page: {

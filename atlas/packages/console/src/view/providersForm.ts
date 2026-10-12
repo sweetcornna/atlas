@@ -188,7 +188,7 @@ function evaluatedTag(evaluated: ProviderPresetView['evaluated']): string {
 function presetCard(preset: ProviderPresetView): string {
   const main = preset.models.find(model => model.role === 'main')
   return (
-    `<a class="card elev-sm prov-preset" href="/providers/new?preset=${attr(
+    `<a class="card elev-sm prov-preset" href="/admin/providers/new?preset=${attr(
       encodeURIComponent(preset.id),
     )}" data-nav data-preset="${attr(preset.id)}">` +
     `<span class="prov-preset-name">${escapeHtml(preset.name)}</span>` +
@@ -203,7 +203,7 @@ function presetCard(preset: ProviderPresetView): string {
   )
 }
 
-/** `/providers/new`: the presets in their five groups, searched by `?q=`. */
+/** `/admin/providers/new`: the presets in their five groups, searched by `?q=`. */
 export function renderPresetGrid(
   catalog: ProviderCatalog,
   query: string,
@@ -213,7 +213,7 @@ export function renderPresetGrid(
     preset => preset.listed && matches(preset, q),
   )
   const search =
-    `<form class="prov-search" method="get" action="/providers/new" role="search">` +
+    `<form class="prov-search" method="get" action="/admin/providers/new" role="search">` +
     `<div class="field"><label for="prov-q">搜索预设</label>` +
     `<input class="input" type="search" id="prov-q" name="q" value="${attr(
       q,
@@ -221,7 +221,7 @@ export function renderPresetGrid(
     `<button type="submit" class="btn btn-secondary">搜索</button>` +
     (q === ''
       ? ''
-      : `<a class="btn btn-ghost" href="/providers/new" data-nav>清除</a>`) +
+      : `<a class="btn btn-ghost" href="/admin/providers/new" data-nav>清除</a>`) +
     `</form>`
   const groups = catalog.groups
     .map(group => {
@@ -856,7 +856,7 @@ export function renderProfileNodes(
             const status = nodeState(node, now)
             return (
               `<li data-node="${attr(node.node)}">` +
-              `<a class="mono" href="/providers/nodes/${attr(
+              `<a class="mono" href="/admin/providers/nodes/${attr(
                 encodeURIComponent(node.node),
               )}" data-nav>${escapeHtml(node.node)}</a>` +
               state(status.tone, status.word) +

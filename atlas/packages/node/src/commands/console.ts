@@ -923,6 +923,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(wake.legacy === undefined ? {} : { wake: wake.legacy.port }),
     ...(wake.targets === undefined ? {} : { wakeTargets: wake.targets }),
     ...(chat.hub === undefined ? {} : { chat: chat.hub }),
+    ...(chat.hub === undefined || config.chatDefault === undefined
+      ? {}
+      : { chatDefault: config.chatDefault }),
     ...(certificates === undefined ? {} : { certificates }),
     // 告警与值守作业两页（P18.15）：读本配置根下 `qm watch` 留在磁盘上的东西——
     // 审计链里的通知与触发、调度状态目录、ESTOP 文件。没在这里跑过 `qm watch`

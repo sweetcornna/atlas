@@ -640,7 +640,7 @@ export function providerFailureBar(failure: ProviderFailure): string {
 }
 
 // ---------------------------------------------------------------------------
-// The board (/providers)
+// The board (/admin/providers)
 // ---------------------------------------------------------------------------
 
 /** Profile id → display name, for the cells that name a profile. */
@@ -674,7 +674,7 @@ export function writeButton(
 
 /**
  * A write control that is a link when no script has claimed it: the node tab
- * is also embedded in `/nodes/<node>` (P18.11), whose page carries no script
+ * is also embedded in `/admin/nodes/<node>` (P18.11), whose page carries no script
  * of this area, so there the control takes the writer to the page that does
  * (`href`), and here the page script handles the click instead.
  */
@@ -843,7 +843,7 @@ function nodeRow(
           )}`,
     ) +
     `</div>` +
-    `<p class="note"><a href="/providers/nodes/${attr(
+    `<p class="note"><a href="/admin/providers/nodes/${attr(
       encodeURIComponent(node.node),
     )}" data-nav>节点详情</a></p>` +
     actions +
@@ -890,7 +890,7 @@ function matrix(
     only === undefined
       ? ''
       : `<p class="note">只看节点 ${escapeHtml(only)} · ` +
-        `<a href="/providers" data-nav>查看全部</a></p>`
+        `<a href="/admin/providers" data-nav>查看全部</a></p>`
   const body =
     nodes.length === 0
       ? hint(
@@ -964,7 +964,7 @@ function defaultCard(
     `<section class="card elev-sm prov-default" id="prov-default" ` +
     `data-profile="${attr(profile.id)}">` +
     `<div class="card-kicker">Default</div>` +
-    `<div class="rowx"><a class="prov-default-name" href="/providers/profiles/${attr(
+    `<div class="rowx"><a class="prov-default-name" href="/admin/providers/profiles/${attr(
       encodeURIComponent(profile.id),
     )}" data-nav>${escapeHtml(profile.name)}</a>` +
     tag('全局默认', 'ok') +
@@ -1043,7 +1043,7 @@ function profileCard(
   reader: ProvidersReader,
 ): string {
   const profile = summary.profile
-  const href = `/providers/profiles/${encodeURIComponent(profile.id)}`
+  const href = `/admin/providers/profiles/${encodeURIComponent(profile.id)}`
   const actions = reader.writer
     ? `<div class="rowx prov-card-acts">` +
       writeButton(
@@ -1109,7 +1109,7 @@ function profileCards(
       ? `<div class="prov-empty">` +
         hint('还没有模型服务 · 从预设开始') +
         (reader.writer
-          ? `<a class="btn btn-primary" href="/providers/new" data-nav data-write>${icon(
+          ? `<a class="btn btn-primary" href="/admin/providers/new" data-nav data-write>${icon(
               'plus',
               { small: true },
             )}新增模型服务</a>`
@@ -1170,10 +1170,10 @@ export function renderProvidersOff(): string {
 /** The top bar's actions on the board, for a writer. */
 export function boardActions(): string {
   return (
-    `<a class="btn btn-secondary" href="/providers/import" data-nav data-write>导入</a>` +
+    `<a class="btn btn-secondary" href="/admin/providers/import" data-nav data-write>导入</a>` +
     `<a class="btn btn-secondary" href="/v0/providers/export" download ` +
     `id="prov-export" data-action="prov-export" data-write title="导出不含密钥">导出 · 不含密钥</a>` +
-    `<a class="btn btn-primary" href="/providers/new" data-nav data-write>` +
+    `<a class="btn btn-primary" href="/admin/providers/new" data-nav data-write>` +
     icon('plus', { small: true }) +
     `新增模型服务</a>`
   )

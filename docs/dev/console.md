@@ -24,8 +24,8 @@
 
 ## §1 它是什么
 
-一个**单进程、零构建**的运维面板，服务端渲染出三份文档：主页 `/`（名册 / 审计 / 上限）、
-对话页 `/chat`（§6）、登录页 `/login`（§4.1）。
+一个单进程、零构建的控制台。服务端渲染对话前台 `/`（§6）、管理后台 `/admin`
+（§5）与登录页 `/login`（§4.1）。
 
 - **零构建**：没有前端工具链。HTML 在服务端拼字符串，CSS 与 JS 是两个常量
   （`packages/console/src/assets/`）。加一个 npm 依赖就是给内测环境加一条供应链，
@@ -178,6 +178,7 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--print-wake-identity` | — | 打印控制台的唤醒签名身份 `<node>=<publicKey>` 并退出（首次运行会创建密钥）。输出就是节点侧 `--trust` 后面那一整段。**不起服务器、不读 token、不拨任何端点** |
 | `--control <节点>=<ws(s)://地址>` | 无 | 签名控制链路，**可重复**；每节点须显式 `--trust` 公钥与按节点派生的 PSK。复用 `--print-wake-identity` 命令钥；节点用独立 `--controller <中枢节点>=<公钥>` 授权，自动开启必须签名的握手。无需 accounts、approvals 或 chat-sign；连接后订阅上行调用，10 秒检查重连。载荷、宿主接口与错误码见 [protocol.md §15](protocol.md#15-控制链路与上行调用s0) |
 | `--chat-url <node>=<ws://…>` | 无 | 对话拨号白名单，**可重复**，一次一个。**给了才启用对话面**，且那个节点还要有 PSK（§6.7）。命名形式把授权绑到「**这个**节点在**这个**端点上」，PSK 与唤醒面同一个变量按节点取；旧的裸 `<ws://…>` 仍然收，那种条目不绑节点、共用全局 PSK，两种形式不能混着给。同一条给两遍会被去重——那是复制粘贴，不是要两条链路；一个节点两个端点、或一个端点两个节点，都当场报错 |
+| `--chat-default <地址>` | 无 | 主智能体的 `qianmo://<node>/<agent>` 地址；名册里有它就选它，否则选第一个可拨智能体，再否则选名册第一项。仅在聊天通道已接入时传给前台 |
 | `--chat-from <地址>` | `qianmo://console/operator` | 控制台自己在网络上的地址。它**不是**一个注册进注册中心的节点（§6.2）；用处是让对面知道这条 `task.request` 是谁发的——`InboundAdapter` 把它渲染进 provenance，并写成收件箱里那条消息的 `from` |
 | `--chat-sign` | 关 | 对话的每一条 `task.request` 是否带 capability token（§6.7.1）。与 `--wake-sign` 分开，因为两者授权的是两件事；**打开的顺序同样不能反**，前提与 §4.6 那三步逐字相同 |
 | `--chat-store <绝对路径>` | `occConfigPath('qianmo','console','chat.ndjson')` | 会话与转录的落盘位置（§6.5）。**必须是绝对路径**，理由同 `--audit` |
@@ -201,7 +202,7 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--open-registration` | 关 | 开放 /signup；必须同时给 --tenancy 和 --registration-max-accounts |
 | `--registration-max-accounts <n>` | 无 | 必填注册容量，1–100000，包含已吊销账号；成功注册也消耗每来源每小时 5 次注册额度 |
 | `--usage-policy <绝对路径>` | 默认 shadow | 配额 JSON mode/person/job/global/tenants；accounts 打开时默认记录用量，未配置数值限制不强制拒绝 |
-| `--providers` | 关 | 模型服务（P18.6，§5.4）：档案存在这台控制台，密钥用主密钥封存，经第六类动作下发到节点。**要 `--accounts`**：只有 `ops` 个人账号能改，每一次改动记进动作账本。不给时 `/providers` 是一行「模型服务未开启」，`/v0/providers` 答 501。下面七个 `--provider*` 选项单独给（没有 `--providers`）会报错 |
+| `--providers` | 关 | 模型服务（P18.6，§5.4）：档案存在这台控制台，密钥用主密钥封存，经第六类动作下发到节点。**要 `--accounts`**：只有 `ops` 个人账号能改，每一次改动记进动作账本。不给时 `/admin/providers` 是一行「模型服务未开启」，`/v0/providers` 答 501。下面七个 `--provider*` 选项单独给（没有 `--providers`）会报错 |
 | `--providers-store <绝对路径>` | `occConfigPath('qianmo','console','providers.ndjson')` | 档案账本。有一行读不通，模型服务整体停用，直到把文件挪开 |
 | `--provider-secrets <绝对路径>` | `occConfigPath('qianmo','console','provider-secrets.json')` | 封存后的密钥（0600） |
 | `--provider-key-file <绝对路径>` | `occConfigPath('qianmo','console-keys','provider-master.key')` | 封存用的主密钥，第一次存密钥时创建。文件或所在目录对 group/other 可读，或者已有封存密钥而主密钥不在，模型服务都会停用，**主密钥从不重新生成**。放到配置根之外 |
@@ -386,22 +387,20 @@ URL（或页面留空）；多目标模式要求页面给出一个允许的节�
 HTTP 请求里被调用的——十分钟的定时唤醒等于一个挂十分钟的请求。真要排长定时器，用
 `occ resident-wake --after-ms`，那是个能自己活着的进程。
 
-### 4.5 对话面全部要 admin，只读路由也要
+### 4.5 对话面需要成员、ops 或管理令牌
 
-`/chat` 与 `/v0/chat/*`、`/fragments/chat/*` 的**每一条**都要 admin token，**包括只读
+`/` 前台与 `/v0/chat/*`、`/fragments/chat/*` 的**每一条**都要管理令牌或成员 / ops 账号，**包括只读
 的那几条**（`packages/console/src/http.ts` 模块注释）。两条理由，任何一条单独都够：
 
 1. **发消息花的是对面节点的模型预算。**只读凭据不该能替别人花这笔钱。
 2. **转录是这个控制台上唯一有自由文本的面。**其余每一栏都是 id 与计数（§7.2），
    而这一页是那条规则的例外。
 
-所以 view token 不是「能看不能发」，而是**连一条会话存在都看不见**：角色判定在读端口
-之前，它拿到的是 403，端口一次都没被问到。
-
-主页侧栏那个「对话」入口要**同时**满足两个条件才渲染：有通道，**并且**当前凭据是
-admin（`http.ts` 的 `handleIndex`，`view/page.ts` 的 `chatEnabled`，见 §6.7）。对只读
-凭据来说，一台接了聊天通道的控制台和一台没接的，主页看起来一样——和 API 侧「admin
-判定先于存在性判定」是同一条防线（本节开头）。
+只读令牌与 viewer 账号在 API 和片段上答 403，守卫先于端口读取。访问 `/` 的已登录
+读者若不能对话则答 303 到 `/admin`；匿名浏览器到登录门，脚本请求保留 401。
+后台侧栏的「对话」入口同时要求已接入聊天通道与聊天守卫放行
+（`routes/front.ts` 的 `frontAvailable`），与 `/` 的判定一致。成员只能看到自己创建的会话，
+ops 与管理令牌可查看全部；账本读取闸门对所有可读主体生效（§6.1）。
 
 ### 4.6 唤醒的 capability token（issue #14）
 
@@ -583,15 +582,16 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 
 | 方法 | 路径 | 角色 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/` | view | 首页：能在这台控制台对话的人（对话页的守卫放行、且接了对话通道）是对话页，其余人是总览；与侧栏同一条判法，首页从不是侧栏藏起来的那一页 |
-| GET | `/overview` | view | 总览：会变的卡（智能体总数与在线、滞后、过期；消息链记录数与完整性；近 1 小时拒绝与丢弃；第四张是证书，没接证书源而接了对话时是近 1 小时会话，两样都没有就只有三张）与每个节点一行（A2）。原先的两项协议常量卡移到设置页 |
-| GET | `/nodes?q=&state=&server=` | view | 节点名册。`q` 按地址或端点搜（不分大小写），`state` 是 `live` / `stale` / `expired`（与行上的判法同一个函数），`server` 按 `--node-server` 归属；原生 GET 表单，轮询的 `/fragments/roster` 带同样的查询串，计数「筛选后 n · 共 m」在片段里随刷新重算（D6）。接了登记簿时名册下另列「名册上没有的节点」：登记簿或托管清单里有、名册上没有的节点，链到它的生命周期页签（§5.5） |
-| GET | `/nodes/<节点>`、`/nodes/<节点>/{agents,lifecycle,models}` | view | 节点详情四个页签：概览、智能体、生命周期、模型（§5.5）。名册、登记簿、托管清单、`--node-server`、唤醒目标、审计源都没提到这个节点就是 404 页；不认识的页签名同样 404 |
-| GET | `/audit?…`、`/audit/trace/<traceId>` | view | 消息链：最新 50 条、新的在上，表尾「加载更早」；查询参数同 `/v0/audit`，另有 `node=`（多链时收窄到一条，翻页要它）（§5.6）。单条消息链一页，轨迹里没有就是 404 页 |
-| GET | `/servers` | view | 服务器归属与备注（§11） |
-| GET | `/settings` | view | 设置与关于：实例标签、控制台身份、命令名；启动横幅里的构建（`sourceCommit`）、注册中心、审计链来源、唤醒与对话及其签名状态；各端口此刻是否可达；数据路径只给能写的人；以及协议与运行时上限（A4） |
-| GET | `/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
-| GET | `/jobs` | view | 主动执行：定时任务、最近运行、通知渠道（P24，`docs/dev/directions-2026-10.md` §7），其下是原来的值守作业：上次与下次触发、急停、调度器心跳（§10.4） |
+| GET | `/` | 成员 / ops / 管理令牌 | 对话前台：默认主智能体欢迎页；`?agent=<地址>` 选智能体，`?session=<会话 id>` 打开会话。已登录但不能对话或未接聊天通道时答 303 到 `/admin`；匿名导航到登录门并回跳 `/`；已登录的非 GET 答 405 |
+| GET | `/admin` | view | 管理后台总览，区域页面都在 `/admin/…` |
+| GET | `/admin/overview` | view | 总览：会变的卡（智能体总数与在线、滞后、过期；消息链记录数与完整性；近 1 小时拒绝与丢弃；第四张是证书，没接证书源而接了对话时是近 1 小时会话，两样都没有就只有三张）与每个节点一行（A2）。原先的两项协议常量卡移到设置页 |
+| GET | `/admin/nodes?q=&state=&server=` | view | 节点名册。`q` 按地址或端点搜（不分大小写），`state` 是 `live` / `stale` / `expired`（与行上的判法同一个函数），`server` 按 `--node-server` 归属；原生 GET 表单，轮询的 `/fragments/roster` 带同样的查询串，计数「筛选后 n · 共 m」在片段里随刷新重算（D6）。接了登记簿时名册下另列「名册上没有的节点」：登记簿或托管清单里有、名册上没有的节点，链到它的生命周期页签（§5.5） |
+| GET | `/admin/nodes/<节点>`、`/admin/nodes/<节点>/{agents,lifecycle,models}` | view | 节点详情四个页签：概览、智能体、生命周期、模型（§5.5）。名册、登记簿、托管清单、`--node-server`、唤醒目标、审计源都没提到这个节点就是 404 页；不认识的页签名同样 404 |
+| GET | `/admin/audit?…`、`/admin/audit/trace/<traceId>` | view | 消息链：最新 50 条、新的在上，表尾「加载更早」；查询参数同 `/v0/audit`，另有 `node=`（多链时收窄到一条，翻页要它）（§5.6）。单条消息链一页，轨迹里没有就是 404 页 |
+| GET | `/admin/servers` | view | 服务器归属与备注（§11） |
+| GET | `/admin/settings` | view | 设置与关于：实例标签、控制台身份、命令名；启动横幅里的构建（`sourceCommit`）、注册中心、审计链来源、唤醒与对话及其签名状态；各端口此刻是否可达；数据路径只给能写的人；以及协议与运行时上限（A4） |
+| GET | `/admin/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
+| GET | `/admin/jobs` | view | 主动执行：定时任务、最近运行、通知渠道（P24，`docs/dev/directions-2026-10.md` §7），其下是原来的值守作业：上次与下次触发、急停、调度器心跳（§10.4） |
 | GET | `/v0/connectors` | view | 连接、预设、最近调用与可授权智能体；只显示主机和打码账号，不显示凭据或 ICS URL。租户范围内过滤；未接端口时 501 |
 | POST | `/v0/connectors` | **个人 ops** | 新建或带 `id` 修改连接；拒绝共用令牌与 break-glass；先动作账本 admission |
 | DELETE | `/v0/connectors/<连接 id>` | **个人 ops** | 删除连接及其秘密槽；成功 204 |
@@ -603,10 +603,10 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/schedules` | **成员** | 新建或保存一个定时任务（带 `id` 是保存）；目标须在对话白名单内 |
 | DELETE | `/v0/schedules/<任务 id>` | **成员** | 删除 |
 | POST | `/v0/schedules/<任务 id>/<enable\|disable\|run>` | **成员** | 启用、停用、立即运行一次（运行结果进最近运行） |
-| GET | `/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 记忆（P23，`docs/dev/directions-2026-10.md`）：这个人在某个智能体那里的长期记忆，按偏好、计划、项目、日常分类，能找、改、忘记。长期记忆按「智能体 × 账号」分开（复核 D18），只给读者自己的，所以只读令牌没有这一页（403）；没接记忆端口时侧栏不出现、页面 404 |
-| GET | `/desktop` | view | 云端电脑（P21）：每个节点主智能体的专属浏览器与电脑——开关、确认方式（只看自动其余逐次确认 / 每一步都确认）、运行状态、清空回收，与最近的操作（只记类别与主机名）。浏览与操作能力来自基座，阡陌管分配、授权与回收。没接端口时侧栏不出现、页面 404 |
-| GET | `/files` | view | 文件互通（P20，管理组）：等人批准的取文件申请（可放宽到目录、选有效期）、传输与汇集（状态、目标摘要核对、失败可重试）、授权（有效期内可再取、可撤销）。发起传输时每个来源可以经 `/v0/files/browse` 浏览来源工作区。路径都是工作区内的相对路径，文件内容不上页面。没接端口时侧栏不出现、页面 404 |
-| GET | `/connect` | view | 连接：应用连接（P25，邮箱与日历；凭据只在中枢，页面只给主机名、打码的账号与「已设置」）与本机工具（P19，配对的设备与接力插件）。两边都没接时侧栏不出现、页面 404；接了一边时另一边写「未接入」 |
+| GET | `/admin/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 记忆（P23，`docs/dev/directions-2026-10.md`）：这个人在某个智能体那里的长期记忆，按偏好、计划、项目、日常分类，能找、改、忘记。长期记忆按「智能体 × 账号」分开（复核 D18），只给读者自己的，所以只读令牌没有这一页（403）；没接记忆端口时侧栏不出现、页面 404 |
+| GET | `/admin/desktop` | view | 云端电脑（P21）：每个节点主智能体的专属浏览器与电脑——开关、确认方式（只看自动其余逐次确认 / 每一步都确认）、运行状态、清空回收，与最近的操作（只记类别与主机名）。浏览与操作能力来自基座，阡陌管分配、授权与回收。没接端口时侧栏不出现、页面 404 |
+| GET | `/admin/files` | view | 文件互通（P20，管理组）：等人批准的取文件申请（可放宽到目录、选有效期）、传输与汇集（状态、目标摘要核对、失败可重试）、授权（有效期内可再取、可撤销）。发起传输时每个来源可以经 `/v0/files/browse` 浏览来源工作区。路径都是工作区内的相对路径，文件内容不上页面。没接端口时侧栏不出现、页面 404 |
+| GET | `/admin/connect` | view | 连接：应用连接（P25，邮箱与日历；凭据只在中枢，页面只给主机名、打码的账号与「已设置」）与本机工具（P19，配对的设备与接力插件）。两边都没接时侧栏不出现、页面 404；接了一边时另一边写「未接入」 |
 | GET | `/v0/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 同一份列表的 JSON：`{ agent, entries, total, counts }`。没接记忆端口时 501 |
 | POST | `/v0/memory` | **成员** | 记一条：`{ agent, kind, title, summary, body }`，`kind` 只能是四类之一，一句话 ≤120 字、摘要 ≤400 字、细节 ≤4000 字。记 `memory.add` |
 | PUT | `/v0/memory/<记忆 id>` | **成员** | 改一条：写一条新的并替换旧的（旧的留在历史里，带「含已忘记」能看到）。记 `memory.edit` |
@@ -618,12 +618,12 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/desktop/actions?agent=<地址>&limit=50` | view | `DesktopActionView[]`，agent 可省，limit 1–200，按租户过滤 |
 | PUT | `/v0/desktop/<节点>/<智能体>` | **ops** | `{ browser?, computer?, confirm? }`，先 admit，再经签名控制链路，记 `desktop.set` |
 | POST | `/v0/desktop/<节点>/<智能体>/recycle` | **ops** | 停止并删除该智能体资料；先 admit，记 `desktop.recycle` |
-| GET | `/access`、`/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
-| GET | `/providers`、`/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
-| GET | `/providers/new?q=`、`/providers/new?preset=<预设>&site=<站点>` | view | 预设卡片（`q` 是 GET 搜索）；带 `preset` 时是从这份预设新建的表单 |
-| GET | `/providers/profiles/<档案 id>`、`/providers/nodes/<节点>?do=`、`/providers/import` | view | 一份档案（编辑、密钥三态或多把密钥逐把列表、在用节点）；节点「模型」页签（`do` 直接打开对应对话框）；导入 |
-| GET | `/approvals` | view | 审批队列；未接审批端口时明确显示未接入。个人成员仅看自己会话，运维仍受租户 scope 限制；批准前须验证当前账号个人凭据 |
-| GET | `/usage` | view | 东八区自然日用量；输入、输出、缓存写入、缓存读取四列，charged 排除 cacheRead；显示配额模式、在途、会话与可观测下界 |
+| GET | `/admin/access`、`/admin/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/admin/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
+| GET | `/admin/providers`、`/admin/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
+| GET | `/admin/providers/new?q=`、`/admin/providers/new?preset=<预设>&site=<站点>` | view | 预设卡片（`q` 是 GET 搜索）；带 `preset` 时是从这份预设新建的表单 |
+| GET | `/admin/providers/profiles/<档案 id>`、`/admin/providers/nodes/<节点>?do=`、`/admin/providers/import` | view | 一份档案（编辑、密钥三态或多把密钥逐把列表、在用节点）；节点「模型」页签（`do` 直接打开对应对话框）；导入 |
+| GET | `/admin/approvals` | view | 审批队列；未接审批端口时明确显示未接入。个人成员仅看自己会话，运维仍受租户 scope 限制；批准前须验证当前账号个人凭据 |
+| GET | `/admin/usage` | view | 东八区自然日用量；输入、输出、缓存写入、缓存读取四列，charged 排除 cacheRead；显示配额模式、在途、会话与可观测下界 |
 | GET | `/v0/usage` | view | 用量快照；普通个人账号只读自己，运维只能读取 tenant scope 内主体；未接入 501 |
 | GET | `/v0/approvals/report` | view | 最近每节点 500 条已验审计记录；附完整性与截断状态。viewer 仅聚合，member 仅本人会话，ops 沿当前租户范围 |
 | GET | `/v0/approvals` | member / ops | 可见审批列表 |
@@ -705,21 +705,24 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/fragments/connect/form?preset=<预设>&id=<连接 id>` | **ops / admin** | HTML 片段：添加或编辑连接对话框的正文。`preset` 换服务（不认识的当作第一个），`id` 填这条连接自己的非秘密设置与授权的智能体（秘密永不回显）；没有这条连接 404 |
 | GET | `/fragments/routing?node=<节点>` | view | HTML 片段：模型页的任务分工卡片，`node` 换成那个节点的范围（模型服务不认识的节点当作所有节点）；没接路由簿时为空 |
 | GET | `/fragments/memory?…` | **成员** | HTML 片段：记忆页被轮询的列表（`#memory-list`），附带筛选条上各类别的新计数；页面只换这几块，不动搜索框 |
-| GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | HTML 片段，`/access` 三个被轮询的页签 |
+| GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | HTML 片段，`/admin/access` 三个被轮询的页签 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |
 | GET | `/fragments/providers/board?node=`、`/fragments/providers/profiles/<档案 id>/nodes` | view | HTML 片段，模型服务的节点矩阵与档案页的在用节点 |
 | GET | `/fragments/providers/node/<节点>` | view | HTML 片段，节点「模型」页签的正文；节点详情页的「模型」页签加载它 |
 | GET | `/fragments/providers/chat?target=<地址>` | view | HTML 片段，对话页线程头的模型标签与切换分隔线；没开模型服务或这个节点不托管时为空 |
-| GET | `/chat?session=<会话 id>` | **admin** | 对话页整页（§6） |
-| GET | `/v0/chat/targets` | **admin** | 能聊的对象，含可不可拨（§6.3） |
-| GET | `/v0/chat/sessions` | **admin** | 会话列表 |
-| POST | `/v0/chat/sessions` | **admin** | 开一条会话 |
-| GET | `/v0/chat/sessions/<会话 id>` | **admin** | 转录 |
-| POST | `/v0/chat/sessions/<会话 id>/messages` | **admin** | 发一句话，返回**操作者那一轮**（§6.4） |
-| GET | `/v0/chat/stream` | **admin** | SSE，事件只有 `{sessionId, revision}`（§6.6） |
-| GET | `/fragments/chat/sessions?active=<会话 id>` | **admin** | HTML 片段 |
-| GET | `/fragments/chat/thread/<会话 id>` | **admin** | HTML 片段 |
-| GET | `/fragments/chat/greet?target=<地址>` | **admin** | HTML 片段：没打开会话时的问候（那个智能体的形象与一句提示）；首页在会话选择框换人时取它。没打开会话且有可拨号的智能体时，首页的输入框是开着的，第一句话先开一条会话再发出 |
+| GET/POST/PUT/DELETE | `/chat` | 无 | 旧对话地址答 308 到 `/`，原查询串完整保留，如 `/chat?session=x` → `/?session=x` |
+| GET | `/fragments/chat/front/side?agent=&active=` | **成员 / ops / 管理令牌** | 智能体、按时间分组的会话、其他执行中的会话 |
+| GET | `/fragments/chat/front/view?agent=<地址>` | **成员 / ops / 管理令牌** | 智能体抬头与欢迎页 |
+| GET | `/fragments/chat/front/view/<会话 id>?open=1` | **成员 / ops / 管理令牌** | 抬头与转录；`open=1` 表示显式打开，不带它是刷新 |
+| GET | `/v0/chat/targets` | **成员 / ops / 管理令牌** | 能聊的对象，含可不可拨（§6.3） |
+| GET | `/v0/chat/sessions` | **成员 / ops / 管理令牌** | 会话列表 |
+| POST | `/v0/chat/sessions` | **成员 / ops / 管理令牌** | 开一条会话 |
+| GET | `/v0/chat/sessions/<会话 id>` | **成员 / ops / 管理令牌** | 转录 |
+| POST | `/v0/chat/sessions/<会话 id>/messages` | **成员 / ops / 管理令牌** | 发一句话，返回**操作者那一轮**（§6.4） |
+| GET | `/v0/chat/stream` | **成员 / ops / 管理令牌** | SSE，事件只有 `{sessionId, revision}`（§6.6） |
+| GET | `/fragments/chat/sessions?active=<会话 id>` | **成员 / ops / 管理令牌** | HTML 片段 |
+| GET | `/fragments/chat/thread/<会话 id>` | **成员 / ops / 管理令牌** | HTML 片段 |
+| GET | `/fragments/chat/greet?target=<地址>` | **成员 / ops / 管理令牌** | 旧问候片段保持兼容；前台使用 `front/view` |
 | GET | `/v0/avatars?key=<键>`（可重复） | view | 形象（`packages/console/src/avatar.ts`）：每个键的 `{ spec, saved, updatedAt }` 与 `editable`。键是 `agent:<地址>` 或 `user:<主体>`；没存过的给按地址或主体算出的默认形象。没接形象存储时也答，全是默认、`editable: false` |
 | PUT、DELETE | `/v0/avatars/<键>` | **成员** | 保存一个形象（七项都必须在固定清单里，否则 400），`DELETE` 回到默认；`user:` 键只能改自己的，ops 可以改任何人的。记 `avatar.save`。没接形象存储时 501 |
 | GET | `/fragments/avatar?key=<键>&spec=<草稿>&default=1` | view | HTML 片段：形象编辑器的正文（舞台、七种状态试看、每个选项一枚小图）。`spec` 是 JSON 草稿，不在清单里就当没给；`default=1` 画默认形象 |
@@ -760,6 +763,24 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 | POST | `/v0/files/grants/<id>/revoke` | member 及以上；撤销授权 |
 | POST | `/v0/files/transfers` | member 及以上；单来源传输或多来源汇集 |
 | POST | `/v0/files/transfers/<id>/retry` | member 及以上；以新传输号重试失败项 |
+| GET/POST/PUT/DELETE | `/overview` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/nodes?q=&state=&server=` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/nodes/<节点>`、`/nodes/<节点>/{agents,lifecycle,models}` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/audit?…`、`/audit/trace/<traceId>` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/servers` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/settings` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/alerts?level=&state=` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/jobs` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/memory?agent=<地址>&kind=&q=&retired=1` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/desktop` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/files` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/connect` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/access`、`/access/{invites,sessions,actions}` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/providers`、`/providers?node=<节点>` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/providers/new?q=`、`/providers/new?preset=<预设>&site=<站点>` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/providers/profiles/<档案 id>`、`/providers/nodes/<节点>?do=`、`/providers/import` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/approvals` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/usage` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 
 ### 5.1 三个保护等级：一枚 cookie 能单独打开哪些路由
 
@@ -769,7 +790,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 
 | 等级 | 哪些路由 | cookie 单独够不够 |
 | --- | --- | --- |
-| `document` | 每个区域页：`GET /`、`/nodes`、`/audit`、`/chat`……（`routes/` 里各模块的 `page`） | **够。**顶层导航带不了自定义头；而外站页面就算逼浏览器导航过来，同源策略让它一个字节都读不到，渲染一张页面本身也不改变这台控制台或它背后的网络 |
+| `document` | 每个区域页：`GET /`、`/admin/nodes`、`/admin/audit`……（`routes/` 里各模块的 `page`） | **够。**顶层导航带不了自定义头；而外站页面就算逼浏览器导航过来，同源策略让它一个字节都读不到，渲染一张页面本身也不改变这台控制台或它背后的网络 |
 | `stream` | `GET /v0/chat/stream` | **够，除非 `Sec-Fetch-Site` 说调用者来自别的源。**`EventSource` 同样带不了头，所以它只能拿这个等级 |
 | `guarded` | **其余每一条要凭据的**：所有写、所有 JSON 读、所有 HTML 片段 | **不够**，必须同时带 `X-Qianmo-Console`。跨源调用者设不了它，因为那会触发一次本服务从不回答的预检 |
 
@@ -791,13 +812,13 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 
 | 字段 | 是什么 |
 | --- | --- |
-| `area` | 侧栏与面包屑里的名字、分组、`href`、图标；`pending: true` 表示占位 |
-| `page` | 文档：`match(segments)` 认领路径、`guard`（`view` 或 `chat`）、可选的 `available`、`render` 返回 `PageRender`（标题、面包屑、右上动作、正文、是否轮询、状态码），以及只属于这一页的 `css` 与 `script` |
+| `area` | 侧栏与面包屑里的名字、分组、`href`、图标；`front: true` 的对话项指向 `/`，没有后台 `page`；`pending: true` 表示占位 |
+| `page` | 后台文档：`match(segments)` 按 `/admin` 之后的段认领路径、`guard`（`view` 或 `chat`）、可选的 `available`、`render` 返回 `PageRender`（标题、面包屑、右上动作、正文、是否轮询、状态码），以及只属于这一页的 `css` 与 `script` |
 | `api` / `fragments` | 这个区域认领的 `/v0/<head>` 与 `/fragments/<head>` |
 
 `http.ts` 只留不属于任何区域的东西：凭据、登录与邀请两道门、账号 API、`/v0/health`、
 两个 assets、外壳、HTML 错误页和兜底 500。一个 head 只能被一个模块认领，页面不得认领
-`v0`、`fragments`、`assets`、`login`、`logout`、`invite`（`test/routes.test.ts` 钉住）。
+`admin`、`v0`、`fragments`、`assets`、`login`、`logout`、`invite`（`test/routes.test.ts` 钉住）。
 新区域的页面包只改自己的路由文件、视图文件和页面脚本，不碰 `http.ts` 与共享样式。
 
 **外壳**（`view/shell.ts`）：左侧三组导航、顶栏面包屑与页面动作、注册中心健康标记、
@@ -845,9 +866,9 @@ ETag，`If-None-Match` 命中答 304；不用 `immutable`，因为地址里没�
 | `data-open-dialog` | 打开某个原生 `<dialog>`（`showModal`） |
 | `<time datetime data-fmt>` | 一个瞬时。服务端按自己的时区写出文本，`datetime` 是 ISO 瞬时，`data-fmt` 是 `clock`（`HH:MM:SS`）或 `datetime`（日期加时刻）；运行时按浏览器时区重写文本，轮询换进来的区域也会重写（`view/bits.ts` 的 `timeTag`，时区） |
 | `input[type=datetime-local][data-at]` | 自定义时间段。运行时把值换成浏览器时区；原生提交时把它换成同名的毫秒时间戳隐藏字段，服务端不再按自己的时区去读一个墙钟字符串 |
-| `.drawer[popover]` | 窄屏（≤ 1000px）的抽屉：侧栏与对话页的会话列表。原生 popover，`popovertarget` 按钮打开，不靠脚本；Esc、点外面或关闭按钮关掉，焦点回到按钮；宽屏时就是原来那一栏（E1） |
+| `.drawer[popover]` | 后台窄屏（≤ 1000px）的导航抽屉；原生 popover，`popovertarget` 按钮打开，不靠脚本。前台侧栏在 ≤ 900px 时用 `data-drawer` 控制，选会话后关闭，输入框由使用者点按聚焦 |
 
-**页面结构**（F1）：每份文档一个 `h1`（外壳里是页标题，对话页里会话名是 `h2`），一个
+**页面结构**（F1）：每份文档一个 `h1`（后台是页标题，前台是屏幕阅读器标题），一个
 `main`；外壳第一个可聚焦元素是「跳到正文」，指向 `tabindex="-1"` 的 `#main`。登录、开通
 与个人凭据三扇门也有 `main` 与 `h1`。
 
@@ -894,7 +915,7 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
 单位变化），正文、设置与总览卡片用 `1 分 30 秒`。同一行不混用：名册头上的「租约」与每行的
 「剩余」都是紧凑写法（`test/view.test.ts` 的 registry lease 用例）。
 
-### 5.3 账号与访问 · 操作记录（`/access`）
+### 5.3 账号与访问 · 操作记录（`/admin/access`）
 
 `routes/access.ts` 与 `view/access.ts`，设计依据是 `providers-console-m1.md` 的 H3、H4。
 一份文档、四个页签；「能管账号」就是 `canWrite`——admin 令牌或 `ops` 个人账号，和
@@ -902,10 +923,10 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
 
 | 路径 | 页签 | 谁 |
 | --- | --- | --- |
-| `/access` | 能管账号的人看「成员」，其他人看「操作记录」 | 任何凭据 |
-| `/access/invites` | 邀请：签发表单、未兑现的邀请、撤回 | 能管账号的人；其他人拿 403 页，写明要什么角色（没开 `--accounts` 时写明这台控制台没有个人账号） |
-| `/access/sessions` | 会话：每个账号的活会话数、最近登录、最近活动、实时连接，强制下线 | 同上 |
-| `/access/actions?subject=&action=&target=&before=&readsBefore=` | 操作记录；个人账号另有「谁读了我的对话」 | 任何凭据；view 令牌只看到一句「需要个人账号或管理令牌」 |
+| `/admin/access` | 能管账号的人看「成员」，其他人看「操作记录」 | 任何凭据 |
+| `/admin/access/invites` | 邀请：签发表单、未兑现的邀请、撤回 | 能管账号的人；其他人拿 403 页，写明要什么角色（没开 `--accounts` 时写明这台控制台没有个人账号） |
+| `/admin/access/sessions` | 会话：每个账号的活会话数、最近登录、最近活动、实时连接，强制下线 | 同上 |
+| `/admin/access/actions?subject=&action=&target=&before=&readsBefore=` | 操作记录；个人账号另有「谁读了我的对话」 | 任何凭据；view 令牌只看到一句「需要个人账号或管理令牌」 |
 
 - **写控件**（签发、撤回、吊销、重置、强制下线）要三件事同时成立才画：能管账号、账号库
   可用、动作账本收得下写。缺一件就不画只会得到 503 的按钮，页签上写明原因。
@@ -921,12 +942,12 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
   操作记录不轮询：账本每次查询都要整本读一遍、验一遍，而且正读第 30 行时自己滚走的列表比
   等人点的更糟。它带一个刷新链接，翻页用 `before`，筛选是 `GET` 表单，关掉脚本也都能用。
 - **签出的链接只出现一次**：签发与重置的响应里带着它，页面脚本把它填进轮询区域之外的一块
-  面板，刷新吃不掉它；服务端此后只存哈希。`/access` 的每个页签与 `/invite` 一样带
+  面板，刷新吃不掉它；服务端此后只存哈希。`/admin/access` 的每个页签与 `/invite` 一样带
   `Referrer-Policy: no-referrer`。
 - **操作记录的可见范围**与 `/v0/actions` 一致：`ops` 与 admin 令牌看全部，`viewer`、`member`
   只看自己做的；页面与 API 走同一个查询，两边不会说法不一。
 
-### 5.4 模型服务（`/providers`）
+### 5.4 模型服务（`/admin/providers`）
 
 `routes/providers.ts` 与 `view/providers*.ts`，设计依据是 `providers-console-m1.md` §6.3、§7.3。
 数据全部经中枢的 `ProviderPort`（`deps.ts`，P18.6）；控制台不直接读写节点。没给
@@ -934,11 +955,11 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
 
 | 路径 | 是什么 |
 | --- | --- |
-| `/providers` | 全局默认卡、节点矩阵（期望 · 实际 · 状态 · 线路 · 模型 · effort · 上下文 · 最近测连）、档案卡片。矩阵被轮询；带输入框的操作都在对话框里 |
-| `/providers/new` | 预设卡片五组（国内按量 / 国际 / 套餐 / 本地 / 自定义），`?q=` 是 GET 搜索；`?preset=` 进表单，默认只露密钥，其余在「高级」里 |
-| `/providers/profiles/<档案 id>` | 同一个编辑器，密钥三态（未设置 / 设置于 / 指纹）、在用节点、保存并切换、设为全局默认、删除。两把以上密钥时是逐把列表（重新填写 / 清除 / 删除、主密钥标记）、选取策略与「加一把密钥」；在用节点每台一行带节点报的逐把状态（P18.18） |
-| `/providers/nodes/<节点>` | 节点「模型」页签：期望、实际、漂移、节点报的生效值、多 key 池逐把状态（可用 / 冷却中 / 已停用，P18.18）、上下文窗口（D-8）与自动压缩阈值（D-9），最近 10 次下发与测连 |
-| `/providers/import` | 粘贴或选文件，整份预览后导入 |
+| `/admin/providers` | 全局默认卡、节点矩阵（期望 · 实际 · 状态 · 线路 · 模型 · effort · 上下文 · 最近测连）、档案卡片。矩阵被轮询；带输入框的操作都在对话框里 |
+| `/admin/providers/new` | 预设卡片五组（国内按量 / 国际 / 套餐 / 本地 / 自定义），`?q=` 是 GET 搜索；`?preset=` 进表单，默认只露密钥，其余在「高级」里 |
+| `/admin/providers/profiles/<档案 id>` | 同一个编辑器，密钥三态（未设置 / 设置于 / 指纹）、在用节点、保存并切换、设为全局默认、删除。两把以上密钥时是逐把列表（重新填写 / 清除 / 删除、主密钥标记）、选取策略与「加一把密钥」；在用节点每台一行带节点报的逐把状态（P18.18） |
+| `/admin/providers/nodes/<节点>` | 节点「模型」页签：期望、实际、漂移、节点报的生效值、多 key 池逐把状态（可用 / 冷却中 / 已停用，P18.18）、上下文窗口（D-8）与自动压缩阈值（D-9），最近 10 次下发与测连 |
+| `/admin/providers/import` | 粘贴或选文件，整份预览后导入 |
 
 - **谁能写**：只有 `ops` 个人账号，且不在 break-glass（`routes/providers.ts` 的 `providerWriter`）。
   这条比 `canWrite` 严：admin 令牌、view 令牌、`viewer`、`member` 与 break-glass 在这里都只读，
@@ -957,22 +978,22 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
   「模型 · <模型>」放进线程头，并在节点最近一次切换处画分隔线。对话存储不读也不改。
 - **导出与导入**：导出不含密钥与指纹；导入时有目录不认识的键，预览与导入都整份拒绝。
 
-### 5.5 节点详情与生命周期（`/nodes/<节点>`）
+### 5.5 节点详情与生命周期（`/admin/nodes/<节点>`）
 
 `routes/nodes.ts` 与 `view/node.ts`，设计依据是 `providers-console-m1.md` 的 A3、J2（P18.11）。
 四个页签各有自己的 URL，互为普通链接，关掉脚本也能读、能收藏：
 
 | 路径 | 页签 | 内容 |
 | --- | --- | --- |
-| `/nodes/<节点>` | 概览 | 智能体数与健康、服务器（§11）、端点、证书（配了 `--trust-ca` 才有）、生命周期计数、最近 10 条消息链与「在消息链里查看全部」 |
-| `/nodes/<节点>/agents` | 智能体 | 原来的名册卡片，轮询 `/fragments/roster?node=<节点>`，心跳与注销照旧 |
-| `/nodes/<节点>/lifecycle` | 生命周期 | 这台节点在名册、登记簿、托管清单里出现过的每个地址：状态、能否拨号与原因、是否托管、最近一次改动、动作；轮询 `/fragments/lifecycle/<节点>` |
-| `/nodes/<节点>/models` | 模型 | 只装模型服务区（P18.9）的 `GET /fragments/providers/node/<节点>`；无脚本时是到 `/providers?node=<节点>` 的链接 |
+| `/admin/nodes/<节点>` | 概览 | 智能体数与健康、服务器（§11）、端点、证书（配了 `--trust-ca` 才有）、生命周期计数、最近 10 条消息链与「在消息链里查看全部」 |
+| `/admin/nodes/<节点>/agents` | 智能体 | 原来的名册卡片，轮询 `/fragments/roster?node=<节点>`，心跳与注销照旧 |
+| `/admin/nodes/<节点>/lifecycle` | 生命周期 | 这台节点在名册、登记簿、托管清单里出现过的每个地址：状态、能否拨号与原因、是否托管、最近一次改动、动作；轮询 `/fragments/lifecycle/<节点>` |
+| `/admin/nodes/<节点>/models` | 模型 | 只装模型服务区（P18.9）的 `GET /fragments/providers/node/<节点>`；无脚本时是到 `/admin/providers?node=<节点>` 的链接 |
 
 - **节点在不在**：名册、登记簿、托管清单、`--node-server`、唤醒目标、审计源任一处提到它就在；
   注册中心读不出来时不判 404。只在登记簿里的节点（全部暂停或退役后被摘牌的）也能打开，否则就
-  没地方恢复它；`/nodes` 名册下另列一段「名册上没有的节点」链过来。名册卡片的节点名链到
-  `/nodes/<节点>`。
+  没地方恢复它；`/admin/nodes` 名册下另列一段「名册上没有的节点」链过来。名册卡片的节点名链到
+  `/admin/nodes/<节点>`。
 - **能否拨号，按出口的判法**（§7.3.2）：登记簿读不出来 → 退役 → 暂停 → 不在名册上 → 租约过期 →
   可拨（租约过半标滞后）；注册中心读不出来时写「未知」。暂停的种子地址被注册中心宿主续回名册
   时，那一行补一句「名册上仍在是因为注册中心宿主替种子续租」（§7.3.3）。登记簿只是写不进去时，
@@ -980,7 +1001,7 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
   两种毛病靠 `problemKind` 分辨，没给 `problemKind` 的按读不出来说。
 - **只画会成功的动作**（§7.3.1）：读不出来时一个也不画；写不进去时只画暂停与退役；发布只给托管、
   未登记、不在名册上的地址（名册上已有的种子不必发布，发布了会和 `p81-registry` 来回改写，
-  §7.3.3）；恢复只给仍在托管清单里的暂停地址；退役以后什么都不画。有托管清单时 `/nodes` 的
+  §7.3.3）；恢复只给仍在托管清单里的暂停地址；退役以后什么都不画。有托管清单时 `/admin/nodes` 的
   「注册节点」换成「发布」，只列可发布的地址，端点取自清单。
 - **每个动作都是两步**：行上的按钮只打开确认框，确认框里的按钮才发请求。四个动作走 §7.3.1 的
   写路由，由路由各记一条动作账本（`agent.register` / `agent.pause` / `agent.resume` /
@@ -999,7 +1020,7 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
   操作历史。前三个并进概览；会话与操作历史各有自己的可见规矩（对话按会话属主，操作记录按主体，
   §5.3、§6），放进节点页就得重述或打破那些规矩，所以不设。
 
-### 5.6 消息链：倒序、翻页、搜索与增量轮询（`/audit`）
+### 5.6 消息链：倒序、翻页、搜索与增量轮询（`/admin/audit`）
 
 `routes/audit.ts` 与 `view/audit.ts`；读侧是 `@qianmo/audit` 的 `TrailReader` 与 `pageTrail`
 （P18.11，D5、G2）。
@@ -1027,64 +1048,38 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
 
 ## §6 对话面
 
-`/chat` 是控制台的**第二个页面**：操作者在浏览器里跟一个常驻 agent 说话，回复顺着
-控制台自己拨出去的那条已认证 WebSocket 回来。整个面只对 admin 开放（§4.5），且要两个
-启动条件同时成立才存在（§6.7）。
+### 6.1 前台、主智能体与会话
 
-### 6.1 三块：会话轨道、转录、composer
+`/` 是对话前台，`/admin` 是管理后台。管理侧栏的「对话」链接指向 `/`，只在聊天通道
+已接入且读者可对话时显示；后台品牌链接指向 `/admin`。旧 `/chat` 与旧区域地址答 308，
+保留查询串。前台与后台共用身份、转义和脚本哈希 CSP，布局各自独立。
 
-**为什么是第二个页面，不是主页的第六个区块。**主页是一列 `[rail][pane]` 行、整篇当
-一个文档滚；对话是相反的形状——两栏各自滚、composer 钉在其中一栏的底部、视口整体
-永远不滚。把它塞进主页，代价是主页交出自己的滚动模型（`view/chatPage.ts` 模块注释）。
-所以 `/chat` 是自己的一份文档：壳共用（同一套 CSS token、同一条转义纪律），身子不共用。
+主智能体按 `--chat-default`、名册第一个可拨智能体、名册第一项的顺序选择。配置地址只有
+在名册中才优先；其余智能体称为子智能体，按节点分组，不重复列出主智能体。这是前台的
+默认对象划分，不声称智能体之间存在委派关系。常驻节点不允许智能体在一轮里派生子会话
+（常驻扩展禁用 `task` 并拦截 `before_subagent_spawn`），所以前台的子智能体只指名册里
+主智能体以外的智能体。任一已接入的子智能体都可直接开始对话。
+不可拨对象标明原因，欢迎页不提供开场按钮，输入框禁用。
 
-**转录是账本的一列，不是一摞气泡**（`view/chat.ts` 模块注释）。每一轮左边一个 34px 圆形
-头像（`.turn-av`），头像上方是作者名与时间，正文在一块暖色圆角块（`.bubble`）里——和
-名册、审计链同一套视觉语法，也是一篇混着代码与地址的转录仍然读得下去的原因。操作者那
-一轮的块底色是陶土浅底（`--color-accent-100`），agent 是沙色的 `--color-surface`；头像
-同样按作者上色，区别到此为止——**没有左右对齐翻转**：两个作者永远贴着同一条左边线，
-翻转会把满是地址、id、代码的转录变成要连蒙带猜找起点的锯齿边。头像里放的是名字的后
-两个字符，末位是数字则保留原样（`beta-1` → `b1`）而不是硬取前两位，因为数字才是分辨
-同一节点上两个 agent 的那部分。（Organic 改版之前这里是一条发丝线、没有填充也没有头像
-——单侧对齐是唯一原样保留到现在的部分，`view/chat.ts` 模块注释。）会话标题取的是目标
-地址的 `agent` 段，页面不另发明一个显示名、也不留第二份副本——在注册中心改了名字，
-页面跟着改。
+侧栏会话按最近更新的滚动窗口分成 24 小时内、7 天内、30 天内、更早。初始只显示当前
+智能体的会话，可以切到全部或搜索。标题取操作者第一句非本地命令，预览仍取最后一句；
+过程通知不计轮次。还有未失败且未收到对应回复的操作者消息时标为执行中，按 `taskId` 对应，
+过程通知不结束等待。底部执行条列其他尚未结束的会话，排除当前会话。
 
-**正文渲染一个封闭的 markdown 子集**：围栏代码块、行内代码、无序列表、粗体、段落
-（`view/richText.ts`，`turnText` 只是它的一层壳）。
+操作者消息靠右，回复按正文列呈现，连续过程行折叠为步骤组。输入框固定在底部，欢迎页
+移到问候下；Enter 发送，Shift Enter 换行，`/` 打开本地命令选项。第一句先创建会话再发送。
+有转录且读取成功才启用会话输入框；失效书签与账本停用不会启用发送。
 
-此前这里是「一律 `<p>`，没有 markdown、没有围栏、没有自动链接」。那条规则**对危险的
-判断是对的、对办法的判断是错的**：一段满是路径与命令的回复渲染成一堵灰墙，是没人会读
-的一堵墙，而分不清命令与散文的操作者迟早会去跑那段散文。所以拒绝被换成了**一条更强的
-边界**，不是被撤销：
+前台片段是 `/fragments/chat/front/side?agent=&active=`、
+`/fragments/chat/front/view?agent=<地址>`、`/fragments/chat/front/view/<会话 id>[?open=1]`。
+前台文档的 `/?session=`、`view/<id>?open=1` 与 JSON 转录读取各记一次显式打开，
+不带 `open=1` 的刷新复用同一主体与会话的 30 分钟读取窗口。窗口外必须重新记账，
+账本停用时答 503 并显示原因，读取转录的端口不被调用。成员只能看自己创建的会话，
+侧栏先过滤，隐藏会话与不存在会话的视图答复相同。
 
-**边界是顺序，不是过滤器。**`escapeHtml` **先跑，整串跑完**；此后每一个结构判断面对的
-都是 `<`、`>`、`&`、`"`、`'` 已经变成实体的文本——于是没有任何分支能被诱导出一个标签，
-因为轮到它时已经没有 `<` 可用了。标签只来自那个文件里写死的字面量。
-
-这条值得单独写下来，因为写 markdown 渲染器**顺手的写法恰好是反过来的**：先解析源文本，
-再转义叶子节点。那个形状只有在「每一个叶子都被找到」时才成立，而缺口正是没人想到的那些
-叶子。**任何把工作挪到转义之前的改动都是一次安全改动**，不管它看起来像什么。
-
-出的那几样各有各的理由：**链接与自动链接**——链接是 markdown 里唯一以「把读者送到模型
-选的地方」为目的的特性，渲染它就把「agent 说了一个 URL」变成了「这台控制台给操作者递了
-一个 URL」；**图片**——同上，且它渲染即发起请求，而这个页面按设计不从任何地方加载东西；
-**原始 HTML 透传**——转义之后结构上就不可能，保持如此；**表格**——不是安全问题是范围问题。
-**围栏的语言标记既不渲染也不进 class**：这里没有语法高亮等着它，而一个由远端文本拼出来
-的属性值没人要。
-
-护栏是一份语料（`test/richText.test.ts`，20 条）。**判据是「除了白名单里那几个标签，没有
-任何标记逃出来」，不是按字面禁词判**——转义之后 `onerror`、`javascript:` 这些就是普通
-字符，本来就该原样显示，按禁词判会放过坏实现、判错好实现。
-
-**composer** 在没有会话打开时渲染成禁用并写明「先选一条会话，再发消息」，控件留着不撤。
-这和唤醒面的取舍相反（§4.4 那边直接不给提交按钮），因为两种缺席不是一回事：没有 PSK 是
-**配置**状态，点一万次也不会变；「还没打开会话」是**临时**状态，旁边点一下就好
-（`view/chatPage.ts` 的 `composer`）。启用与否看的是**转录真的读出来了**，不是查询串里
-写了个 session——书签里的旧 id 不该在一条失败横幅底下放一个能按的发送钮
-（`http.ts` 的 `chatThreadFragment`）。`Enter` 发送、`Shift+Enter` 换行；单条消息上限
-8000 字符（`MAX_CHAT_TEXT_LENGTH`），composer 的 `maxlength` 与服务端那个 400 用的是
-同一个常量。
+旧 `/fragments/chat/sessions|thread|greet` 与 `/v0/chat/*` 保持兼容。前台实现位于
+`routes/front.ts`、`view/front.ts`、`view/frontStyle.ts` 与 `assets/frontClient.ts`，
+转录记账共用 `routes/chatReads.ts`。
 
 ### 6.2 回程走的是既有那条链路，不是新发明的一条
 
@@ -1238,7 +1233,7 @@ PSK 与身份、把 `qianmo://<console>/<operator>` 注册进注册中心——�
 ——没有尾巴时它只是含糊，加了尾巴反而把含糊升级成了断言。判据是每条会话的最后一条消息行：
 它之后已经有 agent 那一轮的，早有归宿，不动（`consoleChat.ts` 的 `settleRestartOrphans`）。
 
-**「还在跑」那条尾巴读的是转录，不是计时器**（`view/chat.ts` 的 `runningTail`）。
+**「还在跑」那条尾巴读的是转录，不是计时器**（前台 `view/front.ts` 的 `pendingTail`，旧片段为 `view/chat.ts` 的 `runningTail`）。
 操作者那一轮停在 `read` 就不再前进——回答是**新的一轮**，不是旧那一轮的一个状态——
 所以「最后一条非过程行是操作者的、且它没失败」正好就是「还没人答」。找那一条时**跳过
 过程行**：一轮正在产出过程时是它最像在跑的时候，而一条在第一个工具启动时就消失的尾巴，
@@ -1331,7 +1326,7 @@ socket。
 订阅是一张只增不减的监听器表。
 
 **拿不到 SSE 就降级成轮询**：没有 `EventSource`、代理在缓冲、服务端把流掐了，页面就每
-2 s 取同样那两个片段，并在侧栏写明现在是轮询（`assets/chatClient.ts`）。这不是一个没人
+2.5 s 取前台侧栏与当前视图片段，并在侧栏写明现在是轮询（`assets/frontClient.ts`）。这不是一个没人
 测的降级模式——浏览器旧一点它就是唯一的路，`?stream=off` 正是为此提供的强制开关。页面
 在后台时轮询不发请求，切回前台立刻刷一次；别的会话有动静只刷会话轨道、不动当前转录，
 因为那条会话的预览和它的「3 分钟前」才是叫人去看一眼的东西。
@@ -1351,16 +1346,10 @@ socket。
 没分发到钥匙，是横幅该直接回答的问题。读取失败的原因本身不进横幅也不进页面：那句话属于
 秘密边界，与唤醒面同一条纪律。
 
-缺任何一个，`ConsoleDeps.chat` 就留空，而后果与唤醒面**不同**：不是渲染一个禁用的表单，
-而是**整个 `/chat` 页面不存在**，主页侧栏也不给入口。取舍不同是因为两者不是一种东西——
-唤醒是主页上的**一块**，藏起来会让人以为面板坏了；对话是**另一个页面**，一个打开就说
-「这里什么都没有」的页面不如不给入口（`deps.ts` 的 `ChatPort`、`view/page.ts` 的
-`chatEnabled`）。
-
-没有通道时两个答案是分开的：`/chat` 答 **404**（这个实例上没有这个页面），`/v0/chat/*`
-答 **501**（这条路由在这个版本里有，只是这台控制台后面没有通道）。浏览器拿到诚实的答案，
-脚本拿到能诊断的答案。**两者都在 admin 判定之后**——先判角色再判存在性，否则匿名调用者
-能靠比较 401 与 501 探出哪台控制台接了对话面（`http.ts` 的 `dispatchChatApi` 与 `route`）。
+缺任何一个，`ConsoleDeps.chat` 与 `chatDefault` 均不接入。已登录访问 `/` 时答 303 到
+`/admin`，后台侧栏不显示对话入口；`/v0/chat/*` 在通过聊天守卫后答 501。
+旧 `/chat` 仍答 308 到 `/`，再由入口判定是否转到后台。匿名与只读身份不能通过 API
+状态差异探测聊天通道。
 
 `--chat-from` 写坏了落在同一处：地址规则住在 `assertAddress`，参数解析不抄第二份，抛出来
 的原因被 `wireConsoleChat` 接住，控制台照常起来，只是没有对话面。stdout 的 `chat` 那一行说明是
@@ -1712,7 +1701,7 @@ reach no agent, until the ledger is repaired and this console restarts`），横
   SameSite=Strict`，TLS 前置后加 `Secure`）；登录必换新 id 并关掉带进来的旧 id，`/logout`
   删服务端那一份；闲置 2 h、绝对 12 h 失效。上面「没有服务端吊销」那几条对个人账号不再成立：
   吊销后下一个请求就是 401，这个人的 SSE 连接全部断开。只想让人重新登录、不动账号时用强制
-  下线（`POST /v0/accounts/<subject>/logout`，`/access/sessions` 上的按钮，§5.3）。
+  下线（`POST /v0/accounts/<subject>/logout`，`/admin/access/sessions` 上的按钮，§5.3）。
 - **个人凭据只从登录表单或 `Authorization: Bearer` 进来。**放在 `?token=` 里一律 400；账号版
   页面脚本拒绝把它写进 `localStorage`。
 - **角色**：`viewer` = 今天的 view；`member` = viewer + 对话，只见自己开的会话（别人的会话与
@@ -1836,8 +1825,8 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `packages/console/test/routeDocs.test.ts` | 本文 §5 路由表与实际路由的双向扫描：表里每行都有路由，路由出来的每个路径都在表里 |
 | `packages/console/src/accounts.ts`、`accountsHttp.ts` | 账号库与会话表（哈希链、严格重放、强制下线）与账号 API（§8.1.1） |
 | `packages/console/src/view/alerts.ts`、`jobs.ts` | 告警收件箱由哪些来源合成、各自的 id 与级别，作业页每一格的口径（§10.4） |
-| `packages/console/src/view/chat.ts`、`chatPage.ts` | 对话面的渲染：转录与会话轨道、`/chat` 那份文档（§6.1） |
-| `packages/console/src/assets/chatClient.ts` | 对话页的客户端常量：片段替换、SSE 与降级轮询，对话流在会话建立之后才打开（§6.6、§6.8） |
+| `packages/console/src/view/front.ts`、`frontStyle.ts`、`chat.ts` | 前台文档、智能体与会话、转录；旧片段兼容渲染（§6.1） |
+| `packages/console/src/assets/frontClient.ts` | 对话页的客户端常量：片段替换、SSE 与降级轮询，对话流在会话建立之后才打开（§6.6、§6.8） |
 | `src/cli/handlers/consoleArgs.ts` | 参数解析（纯函数）与 `--help` 全文，**不 import 控制台包** |
 | `scripts/entrypoints.ts` | 三个 `bin` 入口的生成处，含 `qm` 为什么把身份写死在文件里、以及那里的 `await import` 与 `??=` 各自在挡什么（§2.1） |
 | `src/cli/handlers/consoleTokenSources.ts` | 两枚 token 的三个入口与优先级、token 文件的权限检查（§3.1） |
@@ -2076,7 +2065,7 @@ ACP 会话只认 `_meta.permissionMode` 这一个开关（v2.61），settings �
 两页都是只读的，唯一的写是「确认一条告警」。数据只来自磁盘与已有端口；没有来源的格子写
 「未接入」并说明原因，不留空白，也不拿别的数字顶替。
 
-**告警收件箱**（`/alerts`）把几类来源合成一张表，按级别、再按时间倒序排：
+**告警收件箱**（`/admin/alerts`）把几类来源合成一张表，按级别、再按时间倒序排：
 
 | 来源 | 进收件箱的条件 | 级别 | 数据从哪来 |
 | --- | --- | --- | --- |
@@ -2100,7 +2089,7 @@ id 不合法或不在列表而拒绝，都记一条动作账本 `alert.ack`；�
 相同。未确认计数在收件箱标题旁，随收件箱一起轮询；侧栏不带这个数，因为侧栏每页都渲染，
 算这个数要把全部审计源读一遍。
 
-**值守作业页**（`/jobs`）每一格的来源：
+**值守作业页**（`/admin/jobs`）每一格的来源：
 
 | 格子 | 来源 | 缺席时 |
 | --- | --- | --- |
@@ -2194,7 +2183,7 @@ id 不合法或不在列表而拒绝，都记一条动作账本 `alert.ack`；�
 `qm console --schedules --chat-url <节点>=<ws地址>` 打开进程内的定时任务簿，要求对话面
 实际接通配置（含可用 PSK）；没给 `--schedules` 时 `ConsoleDeps.schedules` 缺席。
 API 处理器是 `routes/schedulesApi.ts` 导出的 `schedulesApi: HeadRoute`，由「主动执行」
-区域的主导集成者挂入路由表；本工作包不新增页面。原有 `qm watch`、`/jobs` 和其只读端口保持原样。
+区域的主导集成者挂入路由表；本工作包不新增页面。原有 `qm watch`、`/admin/jobs` 和其只读端口保持原样。
 
 ### §12.1 存储与调度
 

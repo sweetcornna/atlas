@@ -317,7 +317,7 @@ function runCard(
   const open =
     run.sessionId === null
       ? ''
-      : `<a class="jump" href="${attr(`/chat?session=${encodeURIComponent(run.sessionId)}`)}" data-nav>查看会话</a>`
+      : `<a class="jump" href="${attr(`/?session=${encodeURIComponent(run.sessionId)}`)}" data-nav>查看会话</a>`
   const body =
     run.excerpt !== null && run.excerpt !== ''
       ? `<p class="kit-excerpt">${escapeHtml(run.excerpt)}</p>`

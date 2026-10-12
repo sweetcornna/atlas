@@ -1,0 +1,391 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+/**
+ * 对话前台 — `/`, and its fragments under `/fragments/chat/front/…`.
+ *
+ * The page and its parts (`view/front.ts`):
+ *
+ * | Path | What |
+ * | --- | --- |
+ * | `GET /` | the whole front: the main agent's welcome, `?agent=<address>` another agent's, `?session=<id>` an open conversation |
+ * | `GET /fragments/chat/front/side?agent=&active=` | the side panel's agents, sessions and the running strip |
+ * | `GET /fragments/chat/front/view?agent=<address>` | the head and the welcome for one agent |
+ * | `GET /fragments/chat/front/view/<id>[?open=1]` | the head and one conversation |
+ *
+ * Everything else the front does goes through the chat routes it always went
+ * through (`routes/chat.ts`): `POST /v0/chat/sessions` to open a session,
+ * `POST /v0/chat/sessions/<id>/messages` to send, `GET /v0/chat/stream` to
+ * hear about changes. The guard is the chat guard in full, read-only parts
+ * included (`routes/chat.ts`, module note), and a member sees only the
+ * sessions that member opened.
+ *
+ * Who is the **main agent** is decided here, once: the console's
+ * `--chat-default` when the roster lists it, else the first agent this console
+ * may dial, else the first agent the roster lists. Every other agent is a
+ * sub-agent (`view/front.ts`, module note).
+ */
+
+import { chatScopeOf, type ChatScope } from '../accountsHttp.js'
+import { agentAvatarKey } from '../avatar.js'
+import type {
+  ChatPort,
+  ChatSession,
+  ChatTarget,
+  ConsoleFailure,
+} from '../deps.js'
+import { html, notFound } from '../respond.js'
+import {
+  frontSideParts,
+  frontViewParts,
+  renderFrontDocument,
+  renderFrontSide,
+  renderFrontView,
+  type FrontSideModel,
+  type FrontViewModel,
+} from '../view/front.js'
+import {
+  chatFaces,
+  chatTargets,
+  type FaceLookup,
+  HIDDEN_SESSION,
+  LEDGER_CLOSED_FAILURE,
+  lookFaces,
+  noteTranscriptRead,
+  type TranscriptReading,
+} from './chatReads.js'
+import {
+  DEFAULT_LABEL,
+  failureOf,
+  guard,
+  guardChat,
+  loginHref,
+  textParam,
+  valueOf,
+} from './shared.js'
+import type { RouteContext } from './types.js'
+
+/**
+ * Whether this caller gets the front: a chat channel is wired, and the
+ * caller may hold a conversation here. The 对话 item of the management
+ * sidebar is offered by the same rule (`routes/index.ts`).
+ */
+export function frontAvailable(ctx: RouteContext): boolean {
+  return (
+    ctx.deps.chat !== undefined && guardChat(ctx.access, 'document') === null
+  )
+}
+
+/** Whether the panel's links into the management side are worth drawing. */
+function mayAdmin(ctx: RouteContext): boolean {
+  return guard(ctx.access.credential, 'view', 'document') === null
+}
+
+/** The main agent: `--chat-default` if listed, else the first dialable, else the first. */
+function mainAgentOf(
+  targets: readonly ChatTarget[] | null,
+  preferred: string | undefined,
+): string | null {
+  if (targets === null) return preferred ?? null
+  if (
+    preferred !== undefined &&
+    targets.some(target => target.address === preferred)
+  ) {
+    return preferred
+  }
+  return (
+    (targets.find(target => target.dialable) ?? targets[0])?.address ?? null
+  )
+}
+
+/** What one render reads once and every part of it shares. */
+interface FrontData {
+  readonly targets: readonly ChatTarget[] | null
+  readonly sessions: readonly ChatSession[]
+  readonly sessionsFailure: ConsoleFailure | null
+  readonly main: string | null
+}
+
+async function frontData(
+  ctx: RouteContext,
+  chat: ChatPort,
+  scope: ChatScope,
+): Promise<FrontData> {
+  const [sessions, targets] = await Promise.all([
+    chat.sessions(),
+    chatTargets(chat),
+  ])
+  return {
+    targets,
+    // Fetched whole and filtered here, as on the legacy rail: the port has no
+    // notion of an owner.
+    sessions: (valueOf(sessions) ?? []).filter(session =>
+      scope.visible(session.id),
+    ),
+    sessionsFailure: failureOf(sessions),
+    main: mainAgentOf(targets, ctx.deps.chatDefault),
+  }
+}
+
+/** The agent asked for, when it is one this console knows of; else the main agent. */
+function pickedAgent(
+  data: FrontData,
+  asked: string | undefined,
+): string | null {
+  if (
+    asked !== undefined &&
+    ((data.targets ?? []).some(target => target.address === asked) ||
+      data.sessions.some(session => session.target === asked))
+  ) {
+    return asked
+  }
+  return data.main
+}
+
+async function sideModel(
+  ctx: RouteContext,
+  data: FrontData,
+  selected: string | null,
+  activeId: string | null,
+  scope: ChatScope,
+  look: FaceLookup,
+): Promise<FrontSideModel> {
+  const addresses = new Set<string>([
+    ...(data.targets ?? []).map(target => target.address),
+    ...data.sessions.map(session => session.target),
+  ])
+  const faces = await look([...addresses].map(agentAvatarKey))
+  return {
+    faces: chatFaces(faces),
+    targets: data.targets,
+    sessions: data.sessions,
+    sessionsFailure: data.sessionsFailure,
+    main: data.main,
+    selected,
+    activeId: activeId !== null && scope.visible(activeId) ? activeId : null,
+    admin: mayAdmin(ctx),
+    now: ctx.now,
+  }
+}
+
+/** One view, with what the page around it needs to know. */
+interface FrontViewRender {
+  readonly model: FrontViewModel
+  /** The agent in focus, for the side panel. */
+  readonly selected: string | null
+  /** A transcript really loaded: what enables the composer. */
+  readonly open: boolean
+  /** Nothing open and the agent can be dialled: the first line opens one. */
+  readonly startable: boolean
+  readonly welcome: boolean
+  readonly status?: number
+  readonly reading?: TranscriptReading
+}
+
+/**
+ * The view for `sessionId`, or the welcome of `asked` (or the main agent).
+ *
+ * A transcript is read only through the gate (`noteTranscriptRead`): refused,
+ * the view is the reason in place of the conversation, with a 503, and no
+ * transcript was read to draw it.
+ */
+async function viewFor(
+  ctx: RouteContext,
+  chat: ChatPort,
+  data: FrontData,
+  scope: ChatScope,
+  sessionId: string | null,
+  asked: string | undefined,
+  explicitOpen: boolean,
+  look: FaceLookup,
+): Promise<FrontViewRender> {
+  const admin = mayAdmin(ctx)
+  const registryDown = data.targets === null
+  const base = { admin, registryDown, now: ctx.now }
+  if (sessionId !== null && sessionId !== '') {
+    const faces = chatFaces(await look([]))
+    if (!scope.visible(sessionId)) {
+      return {
+        model: {
+          ...base,
+          faces,
+          transcript: null,
+          failure: HIDDEN_SESSION,
+          target: null,
+          agent: null,
+          main: false,
+        },
+        selected: data.main,
+        open: false,
+        startable: false,
+        welcome: false,
+      }
+    }
+    const noted = await noteTranscriptRead(ctx, sessionId, explicitOpen)
+    if (noted instanceof Response) {
+      return {
+        model: {
+          ...base,
+          faces,
+          transcript: null,
+          failure: LEDGER_CLOSED_FAILURE,
+          target: null,
+          agent: null,
+          main: false,
+        },
+        selected: data.main,
+        open: false,
+        startable: false,
+        welcome: false,
+        status: 503,
+      }
+    }
+    const transcript = await chat.transcript(sessionId)
+    const address = transcript.ok ? transcript.value.session.target : ''
+    const looked = chatFaces(
+      await look(address === '' ? [] : [agentAvatarKey(address)]),
+    )
+    return {
+      model: {
+        ...base,
+        faces: looked,
+        transcript: valueOf(transcript),
+        failure: failureOf(transcript),
+        target:
+          (data.targets ?? []).find(target => target.address === address) ??
+          null,
+        agent: address === '' ? null : address,
+        main: address !== '' && address === data.main,
+      },
+      selected: address === '' ? data.main : address,
+      // The composer is enabled by a transcript that actually loaded, not by
+      // the query naming one: a stale bookmark must not put a live send
+      // button under a failure strip.
+      open: transcript.ok,
+      startable: false,
+      welcome: false,
+      reading: noted,
+    }
+  }
+  const agent = pickedAgent(data, asked)
+  const target =
+    agent === null
+      ? null
+      : ((data.targets ?? []).find(one => one.address === agent) ?? null)
+  const faces = chatFaces(
+    await look(agent === null ? [] : [agentAvatarKey(agent)]),
+  )
+  return {
+    model: {
+      ...base,
+      faces,
+      transcript: null,
+      failure: null,
+      target,
+      agent,
+      main: agent !== null && agent === data.main,
+    },
+    selected: agent,
+    open: false,
+    startable: target?.dialable === true,
+    welcome: true,
+  }
+}
+
+/** `/`: the whole front. The caller has already applied the chat guard. */
+export async function renderFront(
+  ctx: RouteContext,
+): Promise<{ readonly html: string; readonly status: number } | Response> {
+  const chat = ctx.deps.chat
+  if (chat === undefined) return notFound(`unknown path: ${ctx.url.pathname}`)
+  const scope = chatScopeOf(ctx.access, ctx.accounts)
+  const look = lookFaces(ctx)
+  const data = await frontData(ctx, chat, scope)
+  const sessionId = textParam(ctx.url.searchParams, 'session') ?? null
+  const asked = textParam(ctx.url.searchParams, 'agent')
+  // A page that opens with a conversation in it is one reading.
+  const view = await viewFor(
+    ctx,
+    chat,
+    data,
+    scope,
+    sessionId,
+    asked,
+    true,
+    look,
+  )
+  const side = await sideModel(ctx, data, view.selected, sessionId, scope, look)
+  await view.reading?.done(view.open)
+  return {
+    html: renderFrontDocument({
+      label: ctx.deps.label ?? DEFAULT_LABEL,
+      role: ctx.access.credential.role,
+      ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
+      side: frontSideParts(side),
+      view: frontViewParts(view.model),
+      welcome: view.welcome,
+      composerEnabled: view.open || view.startable,
+      admin: side.admin,
+      faces: side.faces,
+      relogin: loginHref(ctx.url),
+    }),
+    status: view.status ?? 200,
+  }
+}
+
+/**
+ * `/fragments/chat/front/…`, reached through the chat fragment dispatch
+ * (`routes/chat.ts`), which has already applied the chat guard, checked the
+ * method and found the channel.
+ */
+export async function dispatchFrontFragment(
+  ctx: RouteContext,
+  chat: ChatPort,
+  scope: ChatScope,
+  rest: readonly string[],
+): Promise<Response> {
+  const look = lookFaces(ctx)
+  const params = ctx.url.searchParams
+  if (rest[0] === 'side' && rest.length === 1) {
+    const data = await frontData(ctx, chat, scope)
+    const active = textParam(params, 'active') ?? null
+    const activeTarget =
+      active === null
+        ? undefined
+        : data.sessions.find(session => session.id === active)?.target
+    const selected =
+      activeTarget ?? pickedAgent(data, textParam(params, 'agent'))
+    return html(
+      renderFrontSide(
+        await sideModel(ctx, data, selected, active, scope, look),
+      ),
+    )
+  }
+  if (rest[0] === 'view' && (rest.length === 1 || rest.length === 2)) {
+    const data = await frontData(ctx, chat, scope)
+    let sessionId: string | null = null
+    if (rest.length === 2) {
+      try {
+        sessionId = decodeURIComponent(rest[1] ?? '')
+      } catch {
+        return notFound(`unknown path: ${ctx.url.pathname}`)
+      }
+    }
+    // `?open=1` is the page switching to this conversation; without it the
+    // fetch refreshes what is already open, and is covered by the reading
+    // that opened it (`noteTranscriptRead`).
+    const view = await viewFor(
+      ctx,
+      chat,
+      data,
+      scope,
+      sessionId,
+      textParam(params, 'agent'),
+      params.get('open') === '1',
+      look,
+    )
+    await view.reading?.done(view.open)
+    return html(renderFrontView(view.model), view.status ?? 200)
+  }
+  return notFound(`unknown path: ${ctx.url.pathname}`)
+}

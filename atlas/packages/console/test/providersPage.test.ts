@@ -120,20 +120,20 @@ async function jsonOf(response: Response): Promise<Record<string, unknown>> {
 
 /** Every page and fragment of the area a reader can open. */
 const PAGES = [
-  '/providers',
-  '/providers?node=node-b',
-  '/providers/new',
-  '/providers/new?q=kimi',
-  '/providers/new?preset=deepseek',
-  '/providers/new?preset=kimi-code',
-  '/providers/new?preset=qwen',
-  '/providers/new?preset=ollama',
-  '/providers/profiles/deepseek',
-  '/providers/profiles/chat-svc',
-  '/providers/nodes/node-a',
-  '/providers/nodes/node-b',
-  '/providers/nodes/node-c',
-  '/providers/import',
+  '/admin/providers',
+  '/admin/providers?node=node-b',
+  '/admin/providers/new',
+  '/admin/providers/new?q=kimi',
+  '/admin/providers/new?preset=deepseek',
+  '/admin/providers/new?preset=kimi-code',
+  '/admin/providers/new?preset=qwen',
+  '/admin/providers/new?preset=ollama',
+  '/admin/providers/profiles/deepseek',
+  '/admin/providers/profiles/chat-svc',
+  '/admin/providers/nodes/node-a',
+  '/admin/providers/nodes/node-b',
+  '/admin/providers/nodes/node-c',
+  '/admin/providers/import',
 ]
 
 const FRAGMENTS = [
@@ -223,7 +223,7 @@ function cell(markup: string, name: string): string {
 describe('the pages, for ops', () => {
   test('the board: default card, node matrix, profile cards', async () => {
     const s = await setup()
-    const html = await text(s.handle, page('/providers', s.ops))
+    const html = await text(s.handle, page('/admin/providers', s.ops))
     expect(html).toContain('id="prov-default"')
     expect(html).toContain('id="prov-matrix"')
     expect(html).toContain('data-profile="deepseek"')
@@ -255,7 +255,10 @@ describe('the pages, for ops', () => {
 
   test('?node= narrows the matrix to one node', async () => {
     const s = await setup()
-    const html = await text(s.handle, page('/providers?node=node-b', s.ops))
+    const html = await text(
+      s.handle,
+      page('/admin/providers?node=node-b', s.ops),
+    )
     expect(html).toContain('data-key="node:node-b"')
     expect(html).not.toContain('data-key="node:node-a"')
     expect(html).toContain('data-poll="/fragments/providers/board?node=node-b"')
@@ -263,13 +266,16 @@ describe('the pages, for ops', () => {
 
   test('the preset grid: five groups, unlisted hidden, searched by GET', async () => {
     const s = await setup()
-    const html = await text(s.handle, page('/providers/new', s.ops))
+    const html = await text(s.handle, page('/admin/providers/new', s.ops))
     for (const group of ['国内按量', '国际', '套餐', '本地', '自定义']) {
       expect(html).toContain(`>${group}</h3>`)
     }
     expect(html).toContain('<form class="prov-search" method="get"')
     expect(html).not.toContain('data-preset="azure"')
-    const searched = await text(s.handle, page('/providers/new?q=kimi', s.ops))
+    const searched = await text(
+      s.handle,
+      page('/admin/providers/new?q=kimi', s.ops),
+    )
     expect(searched).toContain('data-preset="kimi"')
     expect(searched).toContain('data-preset="kimi-code"')
     expect(searched).not.toContain('data-preset="deepseek"')
@@ -279,7 +285,7 @@ describe('the pages, for ops', () => {
     const s = await setup()
     const html = await text(
       s.handle,
-      page('/providers/new?preset=deepseek', s.ops),
+      page('/admin/providers/new?preset=deepseek', s.ops),
     )
     expect(html).toContain('id="prov-editor" data-mode="create"')
     // §7.5: the key field is a password field nobody can submit.
@@ -308,26 +314,32 @@ describe('the pages, for ops', () => {
       '<p class="prov-result" id="prov-result" role="status" data-tone="muted"></p>',
     )
     // A pay-as-you-go preset knows the plan prefixes of its vendor.
-    const kimi = await text(s.handle, page('/providers/new?preset=kimi', s.ops))
+    const kimi = await text(
+      s.handle,
+      page('/admin/providers/new?preset=kimi', s.ops),
+    )
     expect(kimi).toContain('data-plan-prefixes="[&quot;sk-kimi-&quot;]"')
     expect(kimi).toContain('data-base-url="https://api.moonshot.ai/anthropic"')
   })
 
   test('template variables are required fields, terms are said, local keys may be empty', async () => {
     const s = await setup()
-    const qwen = await text(s.handle, page('/providers/new?preset=qwen', s.ops))
+    const qwen = await text(
+      s.handle,
+      page('/admin/providers/new?preset=qwen', s.ops),
+    )
     expect(qwen).toContain('data-template="WorkspaceId"')
     expect(qwen).toContain('data-template="region"')
     const plan = await text(
       s.handle,
-      page('/providers/new?preset=kimi-code', s.ops),
+      page('/admin/providers/new?preset=kimi-code', s.ops),
     )
     expect(plan).toContain('套餐条款多限定用于交互式编程工具')
     // The vendor's note, in the console's register.
     expect(plan).toContain('仅限编程工具使用 · 禁止转售')
     const local = await text(
       s.handle,
-      page('/providers/new?preset=ollama', s.ops),
+      page('/admin/providers/new?preset=ollama', s.ops),
     )
     expect(local).toContain('data-placeholder-key="ollama"')
     // No model in the preset: the advanced half is open.
@@ -338,7 +350,7 @@ describe('the pages, for ops', () => {
     const s = await setup()
     const html = await text(
       s.handle,
-      page('/providers/profiles/deepseek', s.ops),
+      page('/admin/providers/profiles/deepseek', s.ops),
     )
     expect(html).toContain('data-mode="edit"')
     expect(html).toContain('data-revision="3"')
@@ -356,16 +368,16 @@ describe('the pages, for ops', () => {
 
   test('a profile or node that is not there is a 404 page', async () => {
     const s = await setup()
-    await text(s.handle, page('/providers/profiles/nope', s.ops), 404)
-    await text(s.handle, page('/providers/nodes/nope', s.ops), 404)
-    await text(s.handle, page('/providers/new?preset=nope', s.ops), 404)
-    const deeper = await s.handle(page('/providers/a/b/c', s.ops))
+    await text(s.handle, page('/admin/providers/profiles/nope', s.ops), 404)
+    await text(s.handle, page('/admin/providers/nodes/nope', s.ops), 404)
+    await text(s.handle, page('/admin/providers/new?preset=nope', s.ops), 404)
+    const deeper = await s.handle(page('/admin/providers/a/b/c', s.ops))
     expect(deeper.status).toBe(404)
   })
 
   test('without a port the page says how to turn it on', async () => {
     const s = await setup({ wired: false })
-    const html = await text(s.handle, page('/providers', s.ops))
+    const html = await text(s.handle, page('/admin/providers', s.ops))
     expect(html).toContain('模型服务未开启')
     expect(html).not.toContain('data-poll=')
     const api = await s.handle(call('GET', '/v0/providers', s.ops))
@@ -382,12 +394,12 @@ describe('the pages, for ops', () => {
       code: 'unavailable',
       message: '模型服务已停用：主密钥缺失，已告警。',
     }
-    const html = await text(s.handle, page('/providers', s.ops))
+    const html = await text(s.handle, page('/admin/providers', s.ops))
     expect(html).toContain(
       '模型服务已停用 · 模型服务已停用 · 主密钥缺失 · 已告警',
     )
     expect(html).toContain('节点继续使用上次下发的配置')
-    assertCopy('/providers down', html)
+    assertCopy('/admin/providers down', html)
   })
 })
 
@@ -453,7 +465,7 @@ describe('who sees what', () => {
 
   test('the same scan, as ops, finds them — the scan is not blind', async () => {
     const s = await setup()
-    const board = await text(s.handle, page('/providers', s.ops))
+    const board = await text(s.handle, page('/admin/providers', s.ops))
     expect(writeMarks(board).length).toBeGreaterThan(5)
     expect(writerOnly(board)).toEqual(
       expect.arrayContaining([
@@ -475,7 +487,7 @@ describe('who sees what', () => {
 
   test('a base URL is its host for a reader, whole for ops', async () => {
     const s = await setup()
-    const viewer = await text(s.handle, page('/providers', s.viewer))
+    const viewer = await text(s.handle, page('/admin/providers', s.viewer))
     expect(viewer).toContain('chat.example.com')
     expect(viewer).not.toContain(CHAT_URL)
     const json = await jsonOf(
@@ -579,7 +591,7 @@ describe('the copy gate', () => {
 
   test('the script and the messages the API sends say things in the same register', async () => {
     const s = await setup()
-    const html = await text(s.handle, page('/providers', s.ops))
+    const html = await text(s.handle, page('/admin/providers', s.ops))
     const scripts = (html.match(/<script>[\s\S]*?<\/script>/g) ?? []).join('')
     // The area's own strings, the ones its script puts on the page.
     const area = scripts.slice(
@@ -614,11 +626,11 @@ describe('without script', () => {
   test('reading works and the write controls say why they do nothing', async () => {
     const s = await setup()
     for (const path of [
-      '/providers',
-      '/providers/profiles/deepseek',
-      '/providers/nodes/node-a',
-      '/providers/new?preset=deepseek',
-      '/providers/import',
+      '/admin/providers',
+      '/admin/providers/profiles/deepseek',
+      '/admin/providers/nodes/node-a',
+      '/admin/providers/new?preset=deepseek',
+      '/admin/providers/import',
     ]) {
       const html = withoutScripts(await text(s.handle, page(path, s.ops)))
       expect(
@@ -626,19 +638,19 @@ describe('without script', () => {
       ).toBe(`${path} true`)
     }
     const board = withoutScripts(
-      await text(s.handle, page('/providers', s.ops)),
+      await text(s.handle, page('/admin/providers', s.ops)),
     )
     expect(cell(row(board, 'node-a'), 'model')).toBe('deepseek-v4-pro')
     // The links still lead somewhere.
-    expect(board).toContain('href="/providers/nodes/node-a"')
-    expect(board).toContain('href="/providers/profiles/deepseek"')
+    expect(board).toContain('href="/admin/providers/nodes/node-a"')
+    expect(board).toContain('href="/admin/providers/profiles/deepseek"')
     // The tab's write controls are links to this area's node page.
     const tab = await text(
       s.handle,
       call('GET', '/fragments/providers/node/node-a', s.ops),
     )
-    expect(tab).toContain('href="/providers/nodes/node-a?do=context"')
-    expect(tab).toContain('href="/providers/nodes/node-a?do=autocompact"')
+    expect(tab).toContain('href="/admin/providers/nodes/node-a?do=context"')
+    expect(tab).toContain('href="/admin/providers/nodes/node-a?do=autocompact"')
   })
 })
 
@@ -728,7 +740,7 @@ describe('display = the node', () => {
 
   test('the matrix shows what the node computed, not what the hub asked for', async () => {
     const s = await setup()
-    let html = await text(s.handle, page('/providers', s.ops))
+    let html = await text(s.handle, page('/admin/providers', s.ops))
     // The profile asks for 500k; node-a reported 200k.
     expect(cell(row(html, 'node-a'), 'context')).toBe('200k')
     expect(row(html, 'node-a')).not.toContain('500k')
@@ -794,7 +806,7 @@ describe('D-8 the context window', () => {
     const s = await setup()
     const html = await text(
       s.handle,
-      page('/providers/profiles/deepseek', s.ops),
+      page('/admin/providers/profiles/deepseek', s.ops),
     )
     expect(html).toMatch(/data-f="context"[^>]*value="500000"/)
     const response = await s.handle(
@@ -838,7 +850,7 @@ describe('D-8 the context window', () => {
 
   test('the matrix row and the node tab both set and clear the node override', async () => {
     const s = await setup()
-    const board = await text(s.handle, page('/providers', s.ops))
+    const board = await text(s.handle, page('/admin/providers', s.ops))
     expect(row(board, 'node-a')).toContain('data-action="prov-context"')
     const tab = await text(
       s.handle,
@@ -1259,14 +1271,14 @@ describe('what a line allows', () => {
     const s = await setup()
     const html = await text(
       s.handle,
-      page('/providers/new?preset=anthropic', s.ops),
+      page('/admin/providers/new?preset=anthropic', s.ops),
     )
     expect(html).toContain(
       '<p class="note prov-hint field-wide" data-family-note>自动模式按 omp 原生模型目录推断能力 · 实际 effort 以节点报告为准</p>',
     )
     const other = await text(
       s.handle,
-      page('/providers/new?preset=deepseek', s.ops),
+      page('/admin/providers/new?preset=deepseek', s.ops),
     )
     expect(other).toContain('data-family-note hidden>')
     const profile = s.providers.profiles.get('deepseek')!
@@ -1280,7 +1292,7 @@ describe('what a line allows', () => {
     })
     const explicit = await text(
       s.handle,
-      page('/providers/profiles/deepseek', s.ops),
+      page('/admin/providers/profiles/deepseek', s.ops),
     )
     expect(explicit).toContain('data-family-note hidden>')
     expect(explicit).not.toContain('不受此设置控制')
@@ -1304,7 +1316,7 @@ describe('what a line allows', () => {
       })
       const html = await text(
         s.handle,
-        page('/providers/profiles/deepseek', s.ops),
+        page('/admin/providers/profiles/deepseek', s.ops),
       )
       expect(html).toContain(
         'value="always" data-chat-gate data-explicit disabled>',
@@ -1316,7 +1328,10 @@ describe('what a line allows', () => {
   test('总是发送 on the OpenAI Chat line follows what the nodes reported', async () => {
     const s = await setup()
     // chat-svc is expected on node-b, which reports it cannot honour it.
-    let html = await text(s.handle, page('/providers/profiles/chat-svc', s.ops))
+    let html = await text(
+      s.handle,
+      page('/admin/providers/profiles/chat-svc', s.ops),
+    )
     expect(html).toContain('data-chat-always="0"')
     expect(html).toMatch(
       /<option value="always" data-chat-gate data-explicit disabled>/,
@@ -1337,7 +1352,10 @@ describe('what a line allows', () => {
         },
       },
     })
-    html = await text(s.handle, page('/providers/profiles/chat-svc', s.ops))
+    html = await text(
+      s.handle,
+      page('/admin/providers/profiles/chat-svc', s.ops),
+    )
     expect(html).toContain('data-chat-always="1"')
     expect(html).toMatch(/<option value="always" data-chat-gate data-explicit>/)
   })
@@ -1486,9 +1504,9 @@ describe('several keys', () => {
   })
 
   const POOL_PAGES = [
-    '/providers',
-    '/providers/profiles/pool',
-    '/providers/nodes/node-d',
+    '/admin/providers',
+    '/admin/providers/profiles/pool',
+    '/admin/providers/nodes/node-d',
   ]
   const POOL_FRAGMENTS = [
     '/fragments/providers/board',
@@ -1584,7 +1602,10 @@ describe('several keys', () => {
     )
 
     // The control: the same scan finds them on the ops page.
-    const form = await text(s.handle, page('/providers/profiles/pool', s.ops))
+    const form = await text(
+      s.handle,
+      page('/admin/providers/profiles/pool', s.ops),
+    )
     expect(writeMarks(form)).toEqual(
       expect.arrayContaining([
         'data-action="prov-key-add"',
@@ -1658,7 +1679,10 @@ describe('several keys', () => {
         { ...pool.keys[2], priority: 5 },
       ].filter((key): key is NonNullable<typeof key> => key !== undefined),
     })
-    const form = await text(s.handle, page('/providers/profiles/pool', s.ops))
+    const form = await text(
+      s.handle,
+      page('/admin/providers/profiles/pool', s.ops),
+    )
     const order = [...form.matchAll(/data-pool-key="(k\d)"/g)].map(
       match => match[1],
     )
@@ -1687,11 +1711,11 @@ describe('several keys', () => {
     })
     const cleared = await text(
       s.handle,
-      page('/providers/profiles/pool', s.ops),
+      page('/admin/providers/profiles/pool', s.ops),
     )
     expect(cleared).not.toContain('data-action="prov-key-clear" data-key="k3"')
     expect(cleared).toContain('data-action="prov-key-remove" data-key="k3"')
-    const board = await text(s.handle, page('/providers', s.viewer))
+    const board = await text(s.handle, page('/admin/providers', s.viewer))
     expect(words(board)).toContain(
       '密钥 3 把 · 已设置 2 把 · 原策略：轮流 · omp 按会话选钥',
     )
@@ -1702,7 +1726,7 @@ describe('several keys', () => {
     // One key on the OpenAI Chat line: offered, with P18.9's controls as they were.
     const chat = await text(
       s.handle,
-      page('/providers/profiles/chat-svc', s.ops),
+      page('/admin/providers/profiles/chat-svc', s.ops),
     )
     expect(chat).toContain('data-action="prov-key-add"')
     expect(chat).toContain('id="prov-key"')
@@ -1710,7 +1734,7 @@ describe('several keys', () => {
     // Bearer Anthropic accepts a native pool.
     const deepseek = await text(
       s.handle,
-      page('/providers/profiles/deepseek', s.ops),
+      page('/admin/providers/profiles/deepseek', s.ops),
     )
     expect(deepseek).toContain('data-action="prov-key-add"')
     expect(words(deepseek)).toContain(
@@ -1726,7 +1750,10 @@ describe('several keys', () => {
       auth: { scheme: 'x-api-key' },
       baseUrl: 'https://gateway.example/v1',
     })
-    const wrong = await text(s.handle, page('/providers/profiles/pool', s.ops))
+    const wrong = await text(
+      s.handle,
+      page('/admin/providers/profiles/pool', s.ops),
+    )
     expect(wrong).not.toContain('data-action="prov-key-add"')
     expect(words(wrong)).toContain(
       '自定义 Anthropic 网关的 x-api-key 仅支持单钥',
@@ -1748,7 +1775,10 @@ describe('several keys', () => {
       },
     ]) {
       s.providers.profiles.set('pool', profile)
-      const html = await text(s.handle, page('/providers/profiles/pool', s.ops))
+      const html = await text(
+        s.handle,
+        page('/admin/providers/profiles/pool', s.ops),
+      )
       expect(html).toContain('data-action="prov-key-add"')
       expect(words(html)).toContain('omp 按会话固定选钥')
     }
@@ -1758,7 +1788,10 @@ describe('several keys', () => {
       ...pool,
       keys: Array.from({ length: 8 }, (_, i) => ({ id: `k${i + 1}` })),
     })
-    const full = await text(s.handle, page('/providers/profiles/pool', s.ops))
+    const full = await text(
+      s.handle,
+      page('/admin/providers/profiles/pool', s.ops),
+    )
     expect(full).not.toContain('data-action="prov-key-add"')
     expect(words(full)).toContain('最多 8 把')
   })
@@ -1812,8 +1845,8 @@ describe('the model service pages after P18.14 (时区, H5)', () => {
     let times = 0
     for (const path of [
       ...PAGES,
-      '/providers/profiles/pool',
-      '/providers/nodes/node-d',
+      '/admin/providers/profiles/pool',
+      '/admin/providers/nodes/node-d',
     ]) {
       const html = await text(s.handle, page(path, s.ops))
       expect([path, bareMinutes(html)]).toEqual([path, []])
@@ -1827,11 +1860,17 @@ describe('the model service pages after P18.14 (时区, H5)', () => {
     // The three the pages draw: a key's set time, each pool key's, and a
     // cool-down's end.
     expect(times).toBeGreaterThan(0)
-    const form = await text(s.handle, page('/providers/profiles/pool', s.ops))
+    const form = await text(
+      s.handle,
+      page('/admin/providers/profiles/pool', s.ops),
+    )
     expect(form).toContain(
       '设置于 <time datetime="2026-10-03T06:30:00.000Z" data-fmt="minute">2026-10-03 06:30</time>',
     )
-    const node = await text(s.handle, page('/providers/nodes/node-d', s.ops))
+    const node = await text(
+      s.handle,
+      page('/admin/providers/nodes/node-d', s.ops),
+    )
     expect(node).toContain(
       `到 <time datetime="${POOL_COOLING_UNTIL}" data-fmt="minute">`,
     )
@@ -1841,8 +1880,8 @@ describe('the model service pages after P18.14 (时区, H5)', () => {
     const s = await setup({ pool: true })
     for (const path of [
       ...PAGES,
-      '/providers/profiles/pool',
-      '/providers/nodes/node-d',
+      '/admin/providers/profiles/pool',
+      '/admin/providers/nodes/node-d',
     ]) {
       const html = await text(s.handle, page(path, s.ops))
       const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]

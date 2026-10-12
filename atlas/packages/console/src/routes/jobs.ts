@@ -6,7 +6,7 @@
  * up here (P24, `directions-2026-10.md` §7) and, under them, the watch jobs
  * the hub fires from `qm watch` (J6), which stay read-only.
  *
- * Owns the `/jobs` page, `/v0/jobs` and `/fragments/jobs` (the watch jobs),
+ * Owns the `/admin/jobs` page, `/v0/jobs` and `/fragments/jobs` (the watch jobs),
  * `/fragments/schedules` (the schedules, runs and channels) and, through
  * {@link schedulesApi} when the host wires it, `/v0/schedules` and
  * `/v0/channels`. The emergency stop is still pulled and released by creating
@@ -123,7 +123,7 @@ export const jobsRoute: RouteModule = {
     id: 'jobs',
     label: '主动执行',
     group: 'main',
-    href: '/jobs',
+    href: '/admin/jobs',
     icon: 'calendar-clock',
   },
   page: {
