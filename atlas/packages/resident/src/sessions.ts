@@ -82,7 +82,7 @@ export interface ResidentSessionManagerOptions {
 /**
  * Maps `(agent, contextId)` onto omp sessions (design §4.3).
  *
- * `start()` only opens the `DEFAULT_CONTEXT` session of each agent — that is
+ * `start()` registers the `DEFAULT_CONTEXT` session of each agent — that is
  * the one every context-less request lands in, and it is the whole of today's
  * behaviour. Every other context is created on first sight, so a node that
  * never sees a `contextId` behaves exactly as it did before this existed.
@@ -95,7 +95,7 @@ export class ResidentSessionManager implements ResidentSessionResolver {
   readonly #policy: ResidentSessionGcPolicy
   readonly #pendingSessionIds: () => Iterable<string>
   readonly #onContextEnd: ((key: string) => void) | undefined
-  /** Keys whose omp session this process has already opened or resumed. */
+  /** Keys whose session this generation has already registered or resumed. */
   readonly #live = new Set<string>()
   /** Unpersisted `lastUsedAt` touches; see {@link TOUCH_PERSIST_INTERVAL_MS}. */
   readonly #touched = new Map<string, number>()

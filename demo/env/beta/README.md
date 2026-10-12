@@ -56,6 +56,9 @@ H 腿会按 `peers.conf` 决定每个节点怎么拨：**没有 `node` 坐标行
 # node 腿 → resident
 ./demo/env/beta/beta-up.sh --role node --node <节点名> -- --trust <节点>=<公钥>
 
+# 小内存节点：首次投递才开 omp；空闲 60 秒回收，最多同时一个子进程
+./demo/env/beta/beta-up.sh --role node --node <节点名> -- --omp-idle-ms 60000 --omp-max-children 1
+
 # host 腿 → console
 ./demo/env/beta/beta-up.sh --role host -- --wake-sign
 ```

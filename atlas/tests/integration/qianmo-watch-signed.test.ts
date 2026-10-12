@@ -337,7 +337,32 @@ async function runJob(input: {
   const diagnose = (): string =>
     `--- watch stdout\n${hub.stdout()}\n--- watch stderr\n${hub.stderr()}` +
     `\n--- node stderr (tail)\n${node.stderr().slice(-4000)}` +
-    `\n--- model steps\n${JSON.stringify(model.steps().slice(stepsBefore))}`
+    `\n--- model steps\n${JSON.stringify(model.steps().slice(stepsBefore))}` +
+    `\n--- audit counts\n${JSON.stringify({
+      hub: {
+        steps: forJob(trail(hubConfig), 'watch_step_received', input.id).length,
+        notifications: forJob(
+          trail(hubConfig),
+          'watch_notify_received',
+          input.id,
+        ).length,
+        results: forJob(trail(hubConfig), 'watch_result_received', input.id)
+          .length,
+      },
+      node: Object.fromEntries(
+        [
+          'notify_sent',
+          'notify_delivered',
+          'notify_held',
+          'notify_suppressed',
+          'notify_unsupported',
+          'notify_abandoned',
+        ].map(kind => [
+          kind,
+          trail(nodeConfig).filter(record => record.kind === kind).length,
+        ]),
+      ),
+    })}`
   await waitFor(
     () => {
       if (hub.child.exitCode !== null || hub.child.signalCode !== null) {
@@ -595,6 +620,7 @@ describe('qm watch --sign against a real qm resident', () => {
       ).toHaveLength(0)
       expect(
         forJob(run.hub, 'watch_step_received', 'disk-quiet').length,
+        run.diagnostics,
       ).toBeGreaterThanOrEqual(3)
       const results = forJob(run.hub, 'watch_result_received', 'disk-quiet')
       expect(results.map(record => record.detail?.result)).toEqual([
@@ -625,6 +651,7 @@ describe('qm watch --sign against a real qm resident', () => {
       // The tool steps still reached the hub, as process data only.
       expect(
         forJob(run.hub, 'watch_step_received', 'disk-alert').length,
+        run.diagnostics,
       ).toBeGreaterThanOrEqual(3)
     },
     FILE_TIMEOUT_MS,

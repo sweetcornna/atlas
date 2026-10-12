@@ -3,6 +3,8 @@
 
 export interface ResidentChildConnection {
   readonly closed: Promise<void>
+  /** Lazy generations supply actual RPC health, excluding child-free idle. */
+  isStable?(stableAfterMs: number): boolean
   stop(): void | Promise<void>
 }
 
@@ -77,9 +79,8 @@ export class ResidentSupervisor {
    *
    * The stop is planned, so it is not a failure: it does not count towards
    * parking, however short-lived the generation was, and the child's exit on
-   * the way down is not reported through `onError`. A generation that lived
-   * past `stableAfterMs` still resets the backoff exactly as a stable one
-   * always has.
+   * the way down is not reported through `onError`. Actual child health still
+   * resets the backoff; child-free idle is never health evidence.
    *
    * Returns `false` when there is no generation to stop — the loop is between
    * generations, has parked, or was stopped. The caller decides what that
@@ -120,6 +121,7 @@ export class ResidentSupervisor {
     while (!this.#controller.signal.aborted) {
       let started = false
       let duration = 0
+      let stable = false
       this.#recycleRequestedAt = null
       try {
         this.#child = await this.#options.start()
@@ -134,6 +136,8 @@ export class ResidentSupervisor {
         } finally {
           // Startup and teardown are not evidence of a stable running child.
           duration = (this.#recycleRequestedAt ?? now()) - startedAt
+          stable =
+            this.#child.isStable?.(stableAfter) ?? duration >= stableAfter
         }
       } catch (error) {
         // A recycled child exits because it was told to; its exit status is
@@ -156,11 +160,11 @@ export class ResidentSupervisor {
 
       if (this.#recycleRequestedAt !== null) {
         // Planned: neither a rapid failure nor proof of a healthy child.
-        if (duration >= stableAfter) {
+        if (stable) {
           rapidFailures = 0
           backoff = initialBackoff
         }
-      } else if (!started || duration < stableAfter) {
+      } else if (!started || !stable) {
         rapidFailures += 1
         if (rapidFailures >= maxRapidFailures) {
           this.#parked = true

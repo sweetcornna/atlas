@@ -11,6 +11,7 @@
 - `atlas/packages/node/src/host/residentOmp.ts` 的 `ResidentOmpPool` 为每个 `(agent, contextId)` 持有独立 omp 进程。源码模式直接启动 omp CLI，编译模式由同一二进制的 `qm agent --mode rpc` 启动；显式模型和隔离配置来自节点档案，`open_session` 恢复同一会话目录。
 - 准入不是只收到 RPC 事件就发 ACK。扩展写入带 `messageId`、`userEntryId` 的身份条目；宿主确认对应用户条目与身份条目已写入同一个 JSONL 后，才让 reader 记录 admitted、翻转 read 并发 ACK。重启按该身份查询，避免已受理输入再次执行。
 - `FileAdmissionLedger` 与 `FileDeliveryLedger` 分别持久化准入和结果投递；超时、无文本的空应答、上游凭据错误、进程退出都有失败归因。取消使用 RPC `abort`，`qianmo_notify` 通过 host tool 回到宿主。
+- **一轮的过程行在其结果之前交给通知器。**宿主同步登记到任务的有界队列（工具开始与失败共用 omp 每轮的总预算），在 `setImmediate` 中按顺序发送。结算先关闭入口、排完已登记行的持久入账与首次发送／排队决定，再发送 `task.result`；不等待通知回执或其他任务的积压。超时与停机共享一次性结算权，队满或结算后到达的过程行仍静默丢弃。
 - 权限硬顶由扩展 `tool_call` 拦截执行，受保护配置根、工作区外写入和常驻禁用工具不能被项目中的 yolo 配置放行。该边界是应用层工具控制；操作系统沙箱仍由部署层提供。
 - 模型下发在节点空闲时提交并回收旧进程，随后以新配置重建。CLI 管理自身 `SIGHUP` 与 `SIGTERM` 生命周期，避免 omp 默认信号处理器提前退出。
 - 状态派生自 `@qianmo/paths`，omp 状态在 `<QIANMO_CONFIG_DIR>/omp`；旧 occ 会话不迁移。会话索引 v2 不会把旧 ACP 索引解释为新会话。

@@ -5,6 +5,40 @@ import { describe, expect, mock, test } from 'bun:test'
 import { ResidentSupervisor } from '../src/supervisor.js'
 
 describe('resident ACP supervisor', () => {
+  test('actual RPC health overrides generation age and a healthy round resets rapid crashes before cleanup', async () => {
+    let starts = 0
+    let clock = 0
+    const waits: number[] = []
+    const supervisor = new ResidentSupervisor({
+      start: async () => {
+        const generation = ++starts
+        let healthy = generation === 2
+        if (generation > 4) supervisor.stop()
+        return {
+          closed: Promise.reject(new Error('RPC crash')),
+          isStable: () => healthy,
+          stop: () => {
+            healthy = false
+            clock += 30_000
+          },
+        }
+      },
+      now: () => {
+        clock += 30_000
+        return clock
+      },
+      initialBackoffMs: 10,
+      maxRapidFailures: 2,
+      wait: async delay => {
+        waits.push(delay)
+      },
+    })
+    await supervisor.run()
+    expect(supervisor.parked).toBe(true)
+    expect(starts).toBe(4)
+    expect(waits).toEqual([10, 10, 20])
+  })
+
   test('restarts a crashed child with exponential backoff', async () => {
     let startCount = 0
     const waits: number[] = []
