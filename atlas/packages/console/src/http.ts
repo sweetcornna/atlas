@@ -39,7 +39,10 @@ import { scopedConsoleDeps, tenantRequestDenial } from './tenantScope.js'
  * | POST | `/v0/wake` | admin | `WakeOutcome`, or 501 without a wake port |
  * | GET | `/fragments/{roster,audit,limits}` | view | `text/html` fragment |
  * | GET | `/fragments/chain/<enc traceId>` | view | `text/html` fragment |
- * | GET | `/chat?session=<id>` | **admin** | `text/html`, the chat page |
+ * | GET | `/`, `/?session=<id>`, `/?agent=<address>` | **chat** | `text/html`, the conversation front; 303 to `/admin` for a caller who may not chat |
+ * | GET | `/admin`, `/admin/<area>/…` | view | `text/html`, the management side |
+ * | GET | `/chat`, `/<area>/…` | — | 308 to `/` and `/admin/<area>/…` |
+ * | GET | `/fragments/chat/front/{side,view,view/<id>}` | **chat** | `text/html` fragment |
  * | GET | `/v0/chat/targets` | **admin** | `{ targets }` |
  * | GET | `/v0/chat/sessions` | **admin** | `{ sessions }` |
  * | POST | `/v0/chat/sessions` | **admin** | the opened `ChatSession` |

@@ -278,7 +278,7 @@ function sessionsCard(
   return statCard({
     kicker: '近 1 小时会话',
     value: String(active),
-    hint: `共 ${sessions.length} 条 <span class="sep">·</span><a class="jump" href="/chat" data-nav>打开</a>`,
+    hint: `共 ${sessions.length} 条 <span class="sep">·</span><a class="jump" href="/" data-nav>打开</a>`,
     glyph: 'messages-square',
   })
 }
