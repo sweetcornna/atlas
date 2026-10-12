@@ -20,6 +20,7 @@ import { residentToolSurface, type HostToolDefinition } from './notifyTool.js'
 import { buildVersion } from '../provenance.js'
 import {
   OmpResidentTurnPort,
+  MAX_RESIDENT_TURN_PROGRESS,
   DEFAULT_RESIDENT_INACTIVITY_MS,
   FileAdmissionLedger,
   FileDeliveryLedger,
@@ -598,6 +599,10 @@ interface ActiveResidentTask {
   timeout: ReturnType<typeof setTimeout> | null
   acked: boolean
   settled: boolean
+  /** Claims terminal settlement and closes progress admission before any await. */
+  settling: boolean
+  readonly progressQueue: ResidentTurnProgress[]
+  progressDrain: Promise<void> | null
   /**
    * True between `#registerTask` and the end of `deliver()` — the window in
    * which this task belongs to no omp RPC generation yet. See `#failActiveTasks`.
@@ -761,7 +766,7 @@ export class QianmoResident {
   readonly #authorization: ResidentAuthorization | undefined
   readonly #approvalChannels = new Map<string, TransportChannel>()
   readonly #tasksByTask = new Map<string, ActiveResidentTask>()
-  /** Replies sent but not yet receipted. See {@link #drainReplyReceipts}. */
+  /** Progress handoffs and replies awaiting receipts. See {@link #drainReplyReceipts}. */
   readonly #settling = new Set<Promise<void>>()
   /** One scheduler per agent workspace; empty when backups are not configured. */
   readonly #backups = new Map<string, BackupScheduler>()
@@ -1080,12 +1085,9 @@ export class QianmoResident {
         // `#pushProgress` 一路下去是 `FileDeliveryLedger` 的三次同步 append 加
         // 一次全量积压排序，而调它的那条路以前只做一件事：戳一下存活看门狗。
         // 那条路同时喂着看门狗与首字时延，把每个工具调用都变成几次阻塞写盘，
-        // 就是拿 omp RPC 流的实时性换一条装饰行。顺序不受影响：setImmediate 是 FIFO。
-        onProgress: progress => {
-          setImmediate(() => {
-            void this.#pushProgress(progress)
-          })
-        },
+        // 就是拿 omp RPC 流的实时性换一条装饰行。先同步登记到本任务，
+        // 一轮的过程行在其结果之前交给通知器；交接仍在下一 tick 执行。
+        onProgress: progress => this.#queueProgress(progress),
         onUsage: (input, usage, sequence) => {
           const task =
             input.networkMsgId === undefined
@@ -1779,6 +1781,9 @@ export class QianmoResident {
       timeout: null,
       acked: false,
       settled: false,
+      settling: false,
+      progressQueue: [],
+      progressDrain: null,
       delivering: true,
     }
     this.#tasksByMessage.set(envelope.msgId, task)
@@ -2158,13 +2163,13 @@ export class QianmoResident {
   }
 
   #armTaskTimeout(task: ActiveResidentTask): void {
-    if (task.settled) return
+    if (task.settled || task.settling) return
     const now = this.#deadlineClock.nowFor(task.envelope.createdAt)
     const remaining = taskExpiresAt(task.envelope) - now
     task.timeout = setTimeout(
       () => {
         task.timeout = null
-        if (task.settled) return
+        if (task.settled || task.settling) return
         const adjustedNow = this.#deadlineClock.nowFor(task.envelope.createdAt)
         if (adjustedNow < taskExpiresAt(task.envelope)) {
           this.#armTaskTimeout(task)
@@ -2294,31 +2299,32 @@ export class QianmoResident {
     task: ActiveResidentTask,
     reply: QianmoMessage,
   ): Promise<void> {
-    if (task.settled) return
-    task.settled = true
-    this.#options.usageEndAudit?.(task.envelope.taskId, task.envelope.traceId)
+    if (task.settled || task.settling) return
+    // Claim once and close the queue synchronously. Success, timeout and
+    // teardown may race while the last notifier handoff is still pending.
+    task.settling = true
     if (task.timeout !== null) clearTimeout(task.timeout)
     task.timeout = null
-    this.#tasksByMessage.delete(task.envelope.msgId)
-    this.#tasksByTask.delete(task.envelope.taskId)
-    // Terminal state reached: the loop keys for this task have nothing left to
-    // protect (protocol.md §8.2 rows 19–20).
-    this.#router.release(task.envelope.taskId)
-    // Registered before the first await, because the two deletions above have
-    // just made this task invisible to {@link #failActiveTasks}: it is in
-    // neither map any more, yet its reply is on the wire with no receipt back.
-    // This set is the only remaining record that the transport still owes us
-    // something.
-    // Written down *before* it goes on the wire. The whole failure this ledger
-    // closes is "the reply left and its receipt never came back", and an entry
-    // opened after the send would be missing for exactly the crash window that
-    // matters.
-    const receipt = this.#awaitReceipt(task, reply, this.#openDelivery(reply))
-    // Tracked through a handle that cannot reject. The drain awaits these in
-    // bulk, and the only way `#awaitReceipt` rejects is a caller's `onError`
-    // sink throwing — which callers of *this* method still see, unchanged,
-    // through the await below.
+    const receipt = (async () => {
+      // Keep the task visible and unsettled until its registered rows have
+      // been handed to announce(): durable accounting and a sent/queued
+      // decision, never notify receipts or another task's backlog.
+      await this.#drainTaskProgress(task)
+      task.settled = true
+      this.#options.usageEndAudit?.(task.envelope.taskId, task.envelope.traceId)
+      this.#tasksByMessage.delete(task.envelope.msgId)
+      this.#tasksByTask.delete(task.envelope.taskId)
+      // Terminal state reached (protocol.md §8.2 rows 19–20).
+      this.#router.release(task.envelope.taskId)
+      // Written down before the reply goes on the wire so a lost receipt
+      // leaves an obligation the next generation can redeliver.
+      await this.#awaitReceipt(task, reply, this.#openDelivery(reply))
+    })()
+    // Teardown awaits a non-rejecting handle in bulk; failures still reach
+    // this method's caller through the await below.
     const tracked = receipt.catch(() => {})
+    // Registered before the first await in this method: teardown must also
+    // retain the transport during the progress drain, before any reply exists.
     this.#settling.add(tracked)
     try {
       await receipt
@@ -2542,6 +2548,42 @@ export class QianmoResident {
    * not worth an error path of its own: it is decoration on an answer that is
    * already on its way by another route.
    */
+  #queueProgress(progress: ResidentTurnProgress): void {
+    const task = this.#tasksByMessage.get(progress.networkMsgId)
+    if (
+      task === undefined ||
+      task.settled ||
+      task.settling ||
+      task.progressQueue.length >= MAX_RESIDENT_TURN_PROGRESS
+    )
+      return
+    task.progressQueue.push(progress)
+    void this.#drainTaskProgress(task).catch(error => {
+      this.#options.onError?.(error)
+    })
+  }
+
+  /** One FIFO per task; ledger writes always stay outside the RPC frame stack. */
+  #drainTaskProgress(task: ActiveResidentTask): Promise<void> {
+    if (task.progressDrain !== null) return task.progressDrain
+    if (task.progressQueue.length === 0) return Promise.resolve()
+    const drain = Promise.withResolvers<void>()
+    task.progressDrain = drain.promise
+    setImmediate(() => {
+      const send = async () => {
+        try {
+          let progress: ResidentTurnProgress | undefined
+          while ((progress = task.progressQueue.shift()) !== undefined)
+            await this.#pushProgress(progress)
+        } finally {
+          task.progressDrain = null
+        }
+      }
+      void send().then(drain.resolve, drain.reject)
+    })
+    return drain.promise
+  }
+
   async #pushProgress(progress: ResidentTurnProgress): Promise<void> {
     const task = this.#tasksByMessage.get(progress.networkMsgId)
     if (task === undefined || task.settled) return
@@ -2654,18 +2696,13 @@ export class QianmoResident {
   }
 
   /**
-   * Let replies already on the wire be receipted before the transport carrying
-   * them is torn down.
+   * Keep the transport alive through progress handoffs and reply receipts.
    *
-   * {@link #failActiveTasks} settles everything still *active*, and awaits each
-   * receipt as it goes. What it cannot reach is a task that entered
-   * {@link #settleTask} a moment earlier: that one leaves both maps before its
-   * first await, so the sweep walks straight past it, and `transport.stop()`
-   * then closes its channel and rejects the outstanding wait with `transport
-   * server closed before receipt`. The reply itself went to the socket long
-   * before that — only the confirmation is lost — so what reached `onError` was
-   * a fault that had not happened, on a schedule set by how fast the peer
-   * answered. On a loaded runner that is a coin flip.
+   * {@link #failActiveTasks} claims active tasks and awaits their receipts.
+   * A task already inside {@link #settleTask} cannot be claimed again: its
+   * progress may still be reaching the notifier, or its reply may already be
+   * awaiting a receipt after leaving both maps. `#settling` tracks both phases
+   * so `transport.stop()` cannot cut their channel out from under them.
    *
    * Bounded by the same budget one receipt already gets: teardown will not wait
    * longer for confirmations than a single confirmation is allowed to take. A

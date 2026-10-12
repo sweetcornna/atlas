@@ -125,6 +125,10 @@ const MAX_PROGRESS_PER_TURN = 24
  */
 const MAX_FAILURES_PER_TURN = 8
 
+/** Host queue bound, including the separate tool-failure budget. */
+export const MAX_RESIDENT_TURN_PROGRESS =
+  MAX_PROGRESS_PER_TURN + MAX_FAILURES_PER_TURN
+
 /** File paths carried with one step. */
 const MAX_LOCATIONS_PER_STEP = 8
 

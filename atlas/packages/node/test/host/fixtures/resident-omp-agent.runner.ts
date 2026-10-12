@@ -16,6 +16,7 @@ let model = { provider: 'fixture', id: 'fixture' }
 let thinkingLevel = 'off'
 let current: string | undefined
 const pendingTools = new Map<string, (value: Record<string, unknown>) => void>()
+let finishProgress: (() => void) | undefined
 async function prompt(frame: Record<string, unknown>) {
   const input = unmarkResidentInput(String(frame.message))
   if (!input) throw new Error('resident fixture requires input identity')
@@ -41,6 +42,54 @@ async function prompt(frame: Record<string, unknown>) {
     // Let the host durably admit the input, then die without a healthy round.
     await Bun.sleep(10)
     process.exit(7)
+  }
+  if (process.env.QIANMO_FIXTURE_PROGRESS_BATCH === '1') {
+    const finish = Promise.withResolvers<void>()
+    finishProgress = finish.resolve
+    for (const [toolCallId, toolName] of [
+      ['progress-1', 'read'],
+      ['progress-2', 'grep'],
+    ]) {
+      emit({ type: 'tool_execution_start', toolCallId, toolName, args: {} })
+      emit({ type: 'tool_execution_end', toolCallId, toolName, isError: false })
+    }
+    // The host waits for the first two rows to reach the notifier, then lets
+    // the last tool and prompt_result arrive in exactly one stdout write.
+    await finish.promise
+    process.stdout.write(
+      [
+        {
+          type: 'tool_execution_start',
+          toolCallId: 'progress-3',
+          toolName: 'find',
+          args: {},
+        },
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'progress-3',
+          toolName: 'find',
+          isError: false,
+        },
+        {
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'progress batch complete' }],
+            stopReason: 'stop',
+          },
+        },
+        {
+          type: 'prompt_result',
+          id: frame.id,
+          status: 'completed',
+          sessionSettled: true,
+        },
+        { type: 'session_settled' },
+      ]
+        .map(value => `${JSON.stringify(value)}\n`)
+        .join(''),
+    )
+    return
   }
   let text = 'fixture response'
   const title = process.env.QIANMO_FIXTURE_TOOL_CALL
@@ -110,6 +159,11 @@ async function prompt(frame: Record<string, unknown>) {
 const lines = createInterface({ input: process.stdin })
 lines.on('line', line => {
   const frame = JSON.parse(line) as Record<string, unknown>
+  if (frame.type === 'fixture_finish_progress') {
+    finishProgress?.()
+    finishProgress = undefined
+    return
+  }
   if (frame.type === 'host_tool_result') {
     pendingTools.get(String(frame.id))?.(
       frame.result as Record<string, unknown>,

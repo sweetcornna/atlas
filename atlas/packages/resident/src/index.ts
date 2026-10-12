@@ -10,6 +10,7 @@ export {
 } from './activity.js'
 export {
   OmpResidentTurnPort,
+  MAX_RESIDENT_TURN_PROGRESS,
   SELF_REPORTING_TOOL_TITLE,
   parseTurnStepDedupKey,
   turnFailureKind,
