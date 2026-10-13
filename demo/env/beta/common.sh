@@ -1570,6 +1570,25 @@ beta_stop_one() {
   unlink "$file"
   if [ -f "${file}.identity" ]; then unlink "${file}.identity"; fi
 }
+# argv alone, from cmdline, which the kernel leaves readable when it hides exe and
+# environ (non-dumpable processes such as sshd sessions or services that dropped
+# privileges to this UID). Words `resident` and the node name are necessary for
+# beta_snapshot_node to name $2, never sufficient: 1 means it cannot be that node,
+# 0 means the full identity must still be read. An empty or unreadable argv is 2.
+beta_proc_argv_may_name() {
+  local dir want="$2" word count=0 resident=0 named=0
+  dir="$(beta_proc_dir "$1")" || return 2
+  [ -r "$dir/cmdline" ] || return 2
+  # A last word without its NUL still counts here; the full snapshot rejects it.
+  while IFS= read -r -d '' word || [ -n "$word" ]; do
+    count=$((count + 1))
+    # Independent tests: a node may itself be named `resident`.
+    if [ "$word" = resident ]; then resident=1; fi
+    case "$word" in "$want"|"--node=$want") named=1 ;; esac
+  done 2>/dev/null <"$dir/cmdline" || [ "$count" -gt 0 ] || return 2
+  [ "$count" -gt 0 ] || return 2
+  [ "$resident" = 1 ] && [ "$named" = 1 ]
+}
 # procfs unavailable means unverified, not an empty process table.
 beta_node_pids() {
   local want="$1" dirs dir pid node rc
@@ -1582,6 +1601,9 @@ beta_node_pids() {
     beta_scan_proc_stat "$pid" >/dev/null || rc=$?
     [ "$rc" != 1 ] || continue
     [ "$rc" = 0 ] || return 2
+    rc=0
+    beta_proc_argv_may_name "$pid" "$want" || rc=$?
+    [ "$rc" != 1 ] || continue
     rc=0
     node="$(beta_proc_node "$pid")" || rc=$?
     if [ "$rc" = 2 ]; then
@@ -1659,9 +1681,12 @@ beta_describe_pid() {
 
 # Capture every stat tuple ONCE before following edges. A PID from an old ps PPID
 # list is never paired with a later process's start ticks. Confirm the whole ancestry
-# and each coherent proc snapshot again before authorizing the first signal.
+# again before authorizing the first signal. Lineage needs only stat, which one read
+# binds (PID, PPID, start); a descendant's exe/environ may be hidden (non-dumpable
+# helpers) and is never what authorizes its signal. Roots keep the full identity check.
 beta_collect_descendants() {
   local parent="$1" parent_start="$2" table="$3" depth="$4" pid ppid stamp state flags actual
+  local child_ppid child_stamp child_state child_flags
   [ "$depth" -lt 128 ] || return 1
   actual="$(beta_proc_stat "$parent")" || return 1
   read -r ppid stamp state flags <<<"$actual"
@@ -1670,8 +1695,10 @@ beta_collect_descendants() {
   while read -r pid ppid stamp state flags; do
     [ "$ppid" = "$parent" ] || continue
     case "$state" in Z|X|x) continue ;; esac
-    beta_proc_snapshot "$pid" || return 1
-    [ "$BETA_PROC_PPID" = "$parent" ] && [ "$BETA_PROC_START" = "$stamp" ] || return 1
+    actual="$(beta_proc_stat "$pid")" || return 1
+    read -r child_ppid child_stamp child_state child_flags <<<"$actual"
+    case "$child_state" in Z|X|x) return 1 ;; esac
+    [ "$child_ppid" = "$parent" ] && [ "$child_stamp" = "$stamp" ] || return 1
     printf '%s %s %s\n' "$pid" "$ppid" "$stamp"
     beta_collect_descendants "$pid" "$stamp" "$table" "$((depth + 1))" || return 1
   done <<<"$table"

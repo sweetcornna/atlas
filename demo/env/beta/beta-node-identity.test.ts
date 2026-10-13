@@ -36,10 +36,12 @@ reuse_child() {
   printf 'replacement\n' >"$FIXTURE/2147483002.start"
   printf '2147483002 (unrelated) S 99 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 9999\n' >"$FIXTURE/proc/2147483002/stat"
 }
-readlink() {
-  case "$1" in */proc/2147483002/exe) reuse_child ;; esac
-  command readlink "$@"
-}
+# Reuse the child's PID after enumeration captured its tuple and before lineage is
+# verified: wrap the verifier once, whichever copy of common.sh defined it.
+if ! declare -F beta_test_collect_descendants >/dev/null; then
+  eval "beta_test_collect_descendants$(declare -f beta_collect_descendants | sed 1s/^beta_collect_descendants//)"
+  beta_collect_descendants() { reuse_child; beta_test_collect_descendants "$@"; }
+fi
 ps() {
   local pid opts="$*" file
   for pid in "$@"; do :; done
@@ -307,6 +309,92 @@ for (const bash of testBashes()) {
       })
     }
 
+    // Linux hides exe/environ of non-dumpable processes (sshd sessions, services
+    // that dropped privileges to this UID) even from their own UID, while cmdline
+    // stays readable. GitHub's Linux runner always has one; so does any node an
+    // operator reaches over SSH.
+    function hiddenProcess(w: { dir: string; root: string }, argv: string) {
+      const hidden = unreadableProcess(w, 1000)
+      procStat(w, hidden, 0)
+      fs.writeFileSync(path.join(w.dir, `proc/${hidden}/cmdline`), argv)
+      return hidden
+    }
+
+    test('a non-dumpable same-UID process whose argv cannot name the node is skipped', () => {
+      for (const argv of [
+        'sshd: runner@notty\0',
+        '/usr/bin/bun\0qm\0resident\0--node\0rowan-2\0',
+        '/usr/bin/bun\0qm\0console\0--node\0rowan\0',
+      ]) {
+        const w = world()
+        processFixture(w, 2147483000, 'rowan')
+        procStatus(w, 2147483000, 1000)
+        const hidden = hiddenProcess(w, argv)
+        const copy = scanCommon(w, 1000)
+        expect(run(bash.path, w, 'beta_node_pids rowan', '', copy)).toEqual({
+          code: 0,
+          out: '2147483000\n',
+          err: '',
+        })
+        const stopped = run(bash.path, w, 'beta_stop_node rowan', '', copy)
+        expect({ code: stopped.code, err: stopped.err }).toEqual({
+          code: 0,
+          err: '',
+        })
+        expect(fs.readFileSync(path.join(w.dir, 'signals'), 'utf8')).toBe(
+          '-TERM 2147483000\n',
+        )
+        expect(
+          fs.readFileSync(path.join(w.dir, `${hidden}.stat`), 'utf8'),
+        ).toBe('S\n')
+      }
+    })
+
+    test('a non-dumpable process whose argv may name the node still aborts the scan', () => {
+      for (const argv of [
+        '/usr/bin/bun\0qm\0resident\0--node\0rowan\0',
+        '/usr/bin/bun\0qm\0resident\0--node=rowan\0',
+        // The last word lost its NUL: the prefilter still counts it.
+        '/usr/bin/bun\0qm\0resident\0--node\0rowan',
+      ]) {
+        const w = world()
+        processFixture(w, 2147483000, 'rowan')
+        procStatus(w, 2147483000, 1000)
+        const hidden = hiddenProcess(w, argv)
+        const copy = scanCommon(w, 1000)
+        const recovered = run(bash.path, w, 'beta_node_pids rowan', '', copy)
+        expect(recovered.code).toBe(2)
+        expect(recovered.err).toContain(`无法读取进程 ${hidden} 的身份`)
+        // The stop path refuses too: not even the readable resident is signalled.
+        const stopped = run(bash.path, w, 'beta_stop_node rowan', '', copy)
+        expect(stopped.code).toBe(3)
+        expect(stopped.err).toContain(`无法读取进程 ${hidden} 的身份`)
+        expect(fs.existsSync(path.join(w.dir, 'signals'))).toBe(false)
+      }
+    })
+
+    test('a node named resident is still found in both qm entry forms, duplicates included', () => {
+      for (const compiled of [false, true]) {
+        const w = world()
+        for (const pid of [2147483000, 2147483003]) {
+          processFixture(w, pid, 'resident')
+          if (!compiled) continue
+          const proc = path.join(w.dir, `proc/${pid}`)
+          fs.unlinkSync(path.join(proc, 'exe'))
+          fs.symlinkSync(common, path.join(proc, 'exe'))
+          fs.writeFileSync(
+            path.join(proc, 'cmdline'),
+            `${common}\0resident\0--node\0resident\0`,
+          )
+        }
+        expect(run(bash.path, w, 'beta_node_pids resident')).toEqual({
+          code: 0,
+          out: '2147483000\n2147483003\n',
+          err: '',
+        })
+      }
+    })
+
     test('an empty userspace cmdline is an identity error, never evidence of PF_KTHREAD', () => {
       const w = world()
       processFixture(w, 2147483000, 'rowan')
@@ -453,6 +541,29 @@ for (const bash of testBashes()) {
         expect(stopped.out).not.toContain('本来就没在跑')
         expect(fs.existsSync(path.join(w.dir, 'signals'))).toBe(false)
       }
+    })
+
+    test('a descendant whose exe and environ are hidden is still stopped through its stat lineage', () => {
+      const w = world()
+      processFixture(w, 2147483000, 'rowan')
+      processFixture(w, 2147483002, 'child')
+      fs.writeFileSync(path.join(w.dir, '2147483002.ppid'), '2147483000\n')
+      fs.writeFileSync(
+        path.join(w.dir, 'proc/2147483002/stat'),
+        '2147483002 (helper) S 2147483000 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 100\n',
+      )
+      fs.unlinkSync(path.join(w.dir, 'proc/2147483002/exe'))
+      fs.unlinkSync(path.join(w.dir, 'proc/2147483002/environ'))
+      fs.writeFileSync(path.join(w.root, 'run/rowan.pid'), '2147483000\n')
+      const stopped = run(bash.path, w, 'beta_stop_node rowan')
+      expect({ code: stopped.code, err: stopped.err }).toEqual({
+        code: 0,
+        err: '',
+      })
+      expect(
+        fs.readFileSync(path.join(w.dir, 'signals'), 'utf8').trim().split('\n'),
+      ).toEqual(['-TERM 2147483002', '-TERM 2147483000'])
+      expect(fs.existsSync(path.join(w.root, 'run/rowan.pid'))).toBe(false)
     })
 
     test('a live child with unreadable stat aborts descendant scanning before any signal', () => {
