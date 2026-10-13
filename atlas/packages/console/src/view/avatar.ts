@@ -257,7 +257,9 @@ export const AVATAR_CSS = `
 @keyframes av-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .78; } }
 @keyframes av-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-1px); } }
 @media (prefers-reduced-motion: reduce) {
-  .av-live .av-eyes-own, .av-live .av-body, .av-live .av-face { animation: none; }
+  /* As specific as the state rules above, and later, so it wins over them. */
+  .av-live .av-eyes-own, .av-live .av-body, .av-live .av-face,
+  .av-live[data-state] .av-eyes-own, .av-live[data-state] .av-body, .av-live[data-state] .av-face { animation: none; }
   .avatar .av-face, .avatar .av-eyes, .avatar .av-body { transition: none; }
 }
 

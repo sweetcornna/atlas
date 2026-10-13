@@ -8,6 +8,7 @@ import type {
   ChatTurn,
   ConsoleResult,
 } from '../src/deps.js'
+import { FRONT_JS } from '../src/assets/frontClient.js'
 import { createConsoleHandler } from '../src/http.js'
 import { documentCspFor, inlineScripts } from '../src/respond.js'
 import {
@@ -523,4 +524,60 @@ test('front document and fragments escape remote names, titles and body; CSP adm
       )
     }
   }
+})
+
+describe("the reader's own choices: theme colour and language", () => {
+  function withCookie(path: string, cookie: string): Request {
+    const plain = browse(path, ADMIN)
+    return new Request(plain.url, {
+      headers: { ...Object.fromEntries(plain.headers), cookie },
+    })
+  }
+  async function head(cookie: string): Promise<string> {
+    const page = await (await front().handle(withCookie('/', cookie))).text()
+    return /<html[^>]*>/.exec(page)?.[0] ?? ''
+  }
+
+  test('a picked colour carries a text colour that reads on it at 4.5:1 or better', async () => {
+    // Mid greys are where a fixed luminance cut-off picks white at 2.85:1.
+    expect(await head('qianmo_accent=%23999999')).toContain(
+      '--qm-accent-ink:#111110',
+    )
+    expect(await head('qianmo_accent=%23808080')).toContain(
+      '--qm-accent-ink:#111110',
+    )
+    // Between the two, neither the ink nor white reaches 4.5:1: pure black does.
+    expect(await head('qianmo_accent=%23787878')).toContain(
+      '--qm-accent-ink:#000000',
+    )
+    expect(await head('qianmo_accent=%23202020')).toContain(
+      '--qm-accent-ink:#ffffff',
+    )
+    expect(await head('qianmo_accent=sage')).toContain('data-accent="sage"')
+  })
+
+  test('anything off the lists is ignored, never written into the page', async () => {
+    for (const cookie of [
+      'qianmo_accent=%23zzzzzz',
+      'qianmo_accent=%22%3E%3Cscript%3E',
+      'qianmo_accent=neon',
+      'qianmo_lang=xx',
+      'qianmo_lang=%22%3E',
+    ]) {
+      const tag = await head(cookie)
+      expect(tag).toBe('<html lang="zh-CN" data-theme="system">')
+    }
+    expect(await head('qianmo_lang=en')).toStartWith('<html lang="en" ')
+    expect(await head('qianmo_lang=ja')).toStartWith('<html lang="ja" ')
+  })
+
+  test('voice input joins after whitespace, and typing ends the listening', () => {
+    // A template-literal script: the class must survive as \\s, not as "s".
+    expect(FRONT_JS).toContain('!/\\s$/.test(base)')
+    expect(FRONT_JS).not.toContain('!/s$/.test(base)')
+    expect(FRONT_JS).toContain('if (voice !== rec) return;')
+    expect(FRONT_JS).toContain(
+      "if (target.id === 'fx-text') { if (voice) stopVoice();",
+    )
+  })
 })

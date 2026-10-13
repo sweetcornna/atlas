@@ -179,6 +179,10 @@ describe('形象 · the figure', () => {
       AVATAR_CSS.indexOf('@media (prefers-reduced-motion: reduce)'),
     )
     expect(reduced).toContain('animation: none')
+    // The state rules are [data-state]-qualified; the reduced rule must be at
+    // least as specific or the thinking breath and speaking bob keep moving.
+    expect(reduced).toContain('.av-live[data-state] .av-body')
+    expect(reduced).toContain('.av-live[data-state] .av-face')
     expect(AVATAR_CSS).not.toContain('url(')
   })
 

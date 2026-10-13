@@ -82,13 +82,23 @@ const CUSTOM = /^#[0-9a-f]{6}$/
 
 /** The text colour that reads on `hex`: ink on a light colour, white on a dark one. */
 function accentInk(hex: string): string {
-  const channel = (at: number): number => {
-    const value = Number.parseInt(hex.slice(at, at + 2), 16) / 255
-    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  const luminance = (color: string): number => {
+    const channel = (at: number): number => {
+      const value = Number.parseInt(color.slice(at, at + 2), 16) / 255
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+    }
+    return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5)
   }
-  const luminance =
-    0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5)
-  return luminance > 0.36 ? '#111110' : '#ffffff'
+  const ground = luminance(hex)
+  const contrast = (ink: string): number => {
+    const other = luminance(ink)
+    return (Math.max(ground, other) + 0.05) / (Math.min(ground, other) + 0.05)
+  }
+  // The console's ink or white, whichever reads better; on the few mid tones
+  // where neither reaches 4.5:1, pure black does.
+  const best =
+    contrast('#111110') >= contrast('#ffffff') ? '#111110' : '#ffffff'
+  return contrast(best) >= 4.5 ? best : '#000000'
 }
 
 /**

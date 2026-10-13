@@ -374,18 +374,32 @@ function frontScript(): string {
   // An agent's row is unread when its agent spoke after this browser last
   // looked at it. A row seen for the first time is taken as read: the dot
   // is for what changed while the page was open or since the last visit,
-  // not for the whole roster on a first load.
+  // not for the whole roster on a first load. Only the conversation that
+  // spoke counts as looking: the agent's welcome or an older conversation of
+  // its does not. What this page has seen it remembers itself, so storage
+  // that refuses a write cannot bring a read dot back.
+  var seenHere = {};
+  function seenOf(key) {
+    if (Object.prototype.hasOwnProperty.call(seenHere, key)) return seenHere[key];
+    var kept = stored(key);
+    return kept === null ? null : Number(kept) || 0;
+  }
+  function markSeen(key, at) {
+    seenHere[key] = at;
+    keep(key, String(at));
+  }
   function markUnread() {
     var rows = document.querySelectorAll('#fx-agents .fx-agent-row');
     var count = 0;
     for (var i = 0; i < rows.length; i++) {
       var address = rows[i].getAttribute('data-address') || '';
       var updated = Number(rows[i].getAttribute('data-updated')) || 0;
+      var latest = rows[i].getAttribute('data-latest') || '';
       var key = 'seen.' + address;
-      var seen = Number(stored(key));
-      var here = address === state.agent && showsState() && !document.hidden;
-      if (updated && (here || stored(key) === null)) { keep(key, String(updated)); seen = updated; }
-      var unread = !!updated && updated > seen;
+      var seen = seenOf(key);
+      var here = !!latest && latest === state.active && showsState() && !document.hidden;
+      if (updated && (here || seen === null)) { markSeen(key, updated); seen = updated; }
+      var unread = !!updated && updated > (seen || 0);
       rows[i].classList.toggle('is-unread', unread);
       if (unread) count++;
     }
@@ -922,7 +936,8 @@ function frontScript(): string {
   }
 
   // What is heard goes into the box after what was there, to be read and
-  // sent by hand.
+  // sent by hand. Typing in the box ends the listening: from then on the
+  // words are the reader's, and a late result must not write over them.
   function startVoice() {
     var box = byId('fx-text');
     var mic = byId('fx-mic');
@@ -931,12 +946,13 @@ function frontScript(): string {
     var rec;
     try { rec = new Recognition(); } catch (e) { say(byId('fx-status'), tx('voiceUnavailable', '语音输入不可用'), 'muted'); return; }
     var base = box.value;
-    var join = base && !/s$/.test(base) ? ' ' : '';
+    var join = base && !/\\s$/.test(base) ? ' ' : '';
     rec.lang = tx('voiceLang', 'zh-CN');
     rec.interimResults = true;
     rec.continuous = false;
     if ('processLocally' in rec) { try { rec.processLocally = true; } catch (e) { /* the browser decides */ } }
     rec.onresult = function (event) {
+      if (voice !== rec) return;
       var heard = '';
       for (var i = 0; i < event.results.length; i++) heard += event.results[i][0].transcript;
       box.value = base + join + heard;
@@ -1080,12 +1096,23 @@ function frontScript(): string {
 
   // A preset by name or a picked #rrggbb: applied at once, kept in a cookie
   // the server draws the next page with (preferences.ts).
+  // The same choice as accentInk in view/accent.ts: the better of ink and
+  // white, or pure black where neither reaches 4.5:1.
   function accentInk(hex) {
-    var lin = function (at) {
-      var v = parseInt(hex.slice(at, at + 2), 16) / 255;
-      return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    var luminance = function (color) {
+      var lin = function (at) {
+        var v = parseInt(color.slice(at, at + 2), 16) / 255;
+        return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+      };
+      return 0.2126 * lin(1) + 0.7152 * lin(3) + 0.0722 * lin(5);
     };
-    return 0.2126 * lin(1) + 0.7152 * lin(3) + 0.0722 * lin(5) > 0.36 ? '#111110' : '#ffffff';
+    var ground = luminance(hex);
+    var contrast = function (ink) {
+      var other = luminance(ink);
+      return (Math.max(ground, other) + 0.05) / (Math.min(ground, other) + 0.05);
+    };
+    var best = contrast('#111110') >= contrast('#ffffff') ? '#111110' : '#ffffff';
+    return contrast(best) >= 4.5 ? best : '#000000';
   }
   function markAccent() {
     var root = document.documentElement;
@@ -1191,7 +1218,7 @@ function frontScript(): string {
   document.addEventListener('input', function (event) {
     var target = event.target;
     if (!target) return;
-    if (target.id === 'fx-text') { autosize(); typing(target); showCommands(target); }
+    if (target.id === 'fx-text') { if (voice) stopVoice(); autosize(); typing(target); showCommands(target); }
     else if (target.id === 'fx-search') { applyAgents(); applyHistory(); }
   });
 
