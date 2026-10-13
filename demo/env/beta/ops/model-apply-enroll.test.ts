@@ -188,6 +188,11 @@ const FAKE_BUN = `#!/bin/bash
 } >>"$HOME/serve-stdin.calls"
 IFS= read -r req
 printf 'REQ %s\\n' "$req" >>"$HOME/serve-stdin.calls"
+# These isolated root-routing tests use a protocol endpoint; existing integration cases keep real qm.
+if [ -f "$FAKE_NET/status-stub" ]; then
+  printf '{"v":1,"requestId":"enroll-verify","ok":true,"state":null}\\n'
+  exit 0
+fi
 exec ${[process.execPath, ...cliPrefix().slice(1)].map(shQuote).join(' ')} "$@" <<<"$req"
 `
 
@@ -853,6 +858,125 @@ for (const bash of BASHES) {
         expect(r2.code).toBe(1)
         expect(r2.stderr).toContain('不在或不可执行')
         expect(machines(bare)).toEqual(before2)
+      },
+      SLOW,
+    )
+
+    test(
+      'explicit non-default node root is checked, enrolled, verified and rolled back',
+      () => {
+        const w = makeWorld()
+        const root = join(w.nodeHome, 'other-beta-root')
+        writeFileSync(join(w.net, 'status-stub'), '')
+        const args = ['--node-root', root]
+        const before = machines(w)
+        const missing = enroll(bash, w, args)
+        expect(missing.code).toBe(1)
+        expect(missing.stderr).toContain('配置根')
+        expect(machines(w)).toEqual(before)
+        mkdirSync(join(root, 'nodes', NODE, 'config'), { recursive: true })
+        const ready = machines(w)
+        const dry = enroll(bash, w, [...args, '--dry-run'])
+        expect(dry.code).toBe(0)
+        expect(dry.stdout).toContain(`--root ${root}`)
+        expect(machines(w)).toEqual(ready)
+        const applied = enroll(bash, w, args)
+        expect({ code: applied.code, error: applied.stderr }).toMatchObject({
+          code: 0,
+        })
+        expect(applied.stdout).toContain('VERIFY ok')
+        expect(readFileSync(authorizedKeys(w), 'utf8')).toContain(
+          `--root ${root}`,
+        )
+        expect(
+          readFileSync(join(w.nodeHome, 'serve-stdin.calls'), 'utf8'),
+        ).toContain(`QIANMO_CONFIG_DIR=${root}/nodes/${NODE}/config`)
+        expect(enroll(bash, w, args).stdout).toContain('PRESENT：')
+
+        const rollback = makeWorld()
+        const undoRoot = join(rollback.nodeHome, 'other-beta-root')
+        mkdirSync(join(undoRoot, 'nodes', NODE, 'config'), { recursive: true })
+        const initial = machines(rollback)
+        const failed = run(
+          bash,
+          rollback,
+          enrollArgs(['--node-root', undoRoot]),
+          { env: { FAKE_FAIL: 'hub-known-host' } },
+        )
+        expect(failed.code).toBe(1)
+        expect(failed.stderr).toContain('已撤回 ① ③')
+        expect(machines(rollback)).toEqual(initial)
+      },
+      SLOW,
+    )
+
+    test(
+      'unsafe explicit target roots are rejected before any SSH call',
+      () => {
+        const w = makeWorld()
+        const before = machines(w)
+        for (const root of [
+          'relative/root',
+          `${w.nodeHome}/bad root`,
+          `${w.nodeHome}/beta/../elsewhere`,
+          '/',
+          `${w.nodeHome}/beta;echo-pwned`,
+        ]) {
+          const rejected = enroll(bash, w, ['--node-root', root])
+          expect(rejected.code).not.toBe(0)
+          expect(readFileSync(join(w.net, 'ssh.log'), 'utf8')).toBe('')
+          expect(machines(w)).toEqual(before)
+        }
+      },
+      SLOW,
+    )
+
+    test(
+      'uninstall with a different target root cannot remove an enrolled key',
+      () => {
+        const w = makeWorld()
+        const root = join(w.nodeHome, 'alternate-beta')
+        mkdirSync(join(root, 'nodes', NODE, 'config'), { recursive: true })
+        const installed = run(
+          bash,
+          w,
+          ['node-install', '--node', NODE, '--node-root', root],
+          { home: w.nodeHome, stdin: `PUBKEY ${NODE_HOSTKEY_PUB}\n` },
+        )
+        expect(installed.code).toBe(0)
+        const before = readFileSync(authorizedKeys(w), 'utf8')
+        const wrong = run(
+          bash,
+          w,
+          [
+            'node-uninstall',
+            '--node',
+            NODE,
+            '--backup',
+            '-',
+            '--node-root',
+            join(w.nodeHome, 'wrong-beta'),
+          ],
+          { home: w.nodeHome, stdin: `PUBKEY ${NODE_HOSTKEY_PUB}\n` },
+        )
+        expect(wrong.code).toBe(1)
+        expect(readFileSync(authorizedKeys(w), 'utf8')).toBe(before)
+        const undone = run(
+          bash,
+          w,
+          [
+            'node-uninstall',
+            '--node',
+            NODE,
+            '--backup',
+            '-',
+            '--node-root',
+            root,
+          ],
+          { home: w.nodeHome, stdin: `PUBKEY ${NODE_HOSTKEY_PUB}\n` },
+        )
+        expect(undone.code).toBe(0)
+        expect(existsSync(authorizedKeys(w))).toBe(false)
       },
       SLOW,
     )

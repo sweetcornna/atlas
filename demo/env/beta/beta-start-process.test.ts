@@ -25,9 +25,16 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { TestProcessTable } from './testProcessTable'
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..')
 const COMMON = join(REPOSITORY_ROOT, 'demo/env/beta/common.sh')
@@ -45,6 +52,7 @@ function root(): string {
   // 免得把「起进程」这件事和 beta_seed_root 的行为混在一个用例里。
   mkdirSync(join(value, 'run'), { recursive: true })
   mkdirSync(join(value, 'logs'), { recursive: true })
+  mkdirSync(join(value, 'home'))
   return value
 }
 
@@ -60,24 +68,36 @@ function runShell(
   lines: readonly string[],
   extraEnv: Readonly<Record<string, string>> = {},
 ): ShellResult {
+  let common = COMMON
+  if (process.platform === 'darwin') {
+    common = join(value, 'repo/demo/env/beta/common.sh')
+    mkdirSync(dirname(common), { recursive: true })
+    copyFileSync(COMMON, common)
+    new TestProcessTable(value).install(common)
+  }
   const child = Bun.spawnSync(
     [
       '/bin/bash',
       '-c',
       ['set -euo pipefail', '. "$1"', ...lines].join('\n'),
       'beta-start-process-test',
-      COMMON,
+      common,
     ],
     {
       cwd: REPOSITORY_ROOT,
       env: {
         ...process.env,
         PATH: '/usr/bin:/bin',
+        HOME: join(value, 'home'),
         // locale 故意不钉：继承开发机的 UTF-8。issue #49 之前这里钉着 `LC_ALL=C`，
         // 因为 macOS 自带 bash 3.2 会把 `"$pid，"` 里的全角逗号算进变量名（`set -u`
         // 下当场 unbound variable）。那 81 处已统一改成 `${var}`，所以 UTF-8 下再跑
         // 才是真实条件；钉成 C 等于把回归掩盖掉。
         QIANMO_BETA_ROOT: value,
+        QIANMO_QM_BINARY: join(
+          REPOSITORY_ROOT,
+          `dist/qm-${process.platform}-${process.arch}`,
+        ),
         ...extraEnv,
       },
       stdout: 'pipe',

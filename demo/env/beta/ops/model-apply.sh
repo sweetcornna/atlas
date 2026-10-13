@@ -4,7 +4,7 @@
 #
 # 阡陌内测 · 第六类动作在节点上的入口（`providers-console-m1.md` §2.5，P18.6）。
 #
-#   model-apply.sh <节点名>          # stdin 一行请求 JSON，stdout 一行响应 JSON
+#   model-apply.sh <节点名> [--root <绝对路径>] # stdin 一行请求 JSON，stdout 一行响应 JSON
 #
 # 它只在两处被调用，调用方式一样：
 #   · 节点 `~/.ssh/authorized_keys` 里中枢那把**模型服务专用 key** 的强制命令：
@@ -26,15 +26,14 @@
 #   0 / 1   子进程的退出码原样带出：协议响应 ok:true / ok:false。本脚本自己拒绝时也回
 #           一行 ok:false 的协议响应（requestId 为 null）并退 1，原因写在 message 里：
 #             bad-request  参数个数不对、节点名不合法、这个节点没有配置根；
-#             busy         同一节点上另一个模型服务操作还没结束（等锁超时）。
+#             busy         本机另一个模型服务操作还没结束（主机锁超时）。
 #   2       没有协议响应：bun 或构建产物不在。原因写 stderr，中枢只报「节点没有回协议
 #           响应」，不转述 stderr。
 #
-# ── 同一节点串行 ───────────────────────────────────────────────────────────────
-# 中枢对一个节点同一时刻只发一个操作；这里是第二道（两个控制台、运维手动跑），节点
-# 的 apply.lock 是第三道。锁在 <内测根>/run/model-apply.<节点>.lock：有 flock 用 flock，
-# 没有（macOS）用 mkdir 锁加 pid，持锁进程已经不在了就收回。本脚本一直是子进程的
-# 父进程、子进程不继承锁的 fd：serve-stdin 起的任何后代都不会把锁带走。
+# ── 同一主机串行 ───────────────────────────────────────────────────────────────
+# 同一服务账号的所有入口固定共享 $HOME/.qianmo-model-apply-host.lock。
+# 固定等待 20 秒，锁位置、等待时间与后端均不接受环境变量覆盖。
+# 从固定系统路径选 flock，没有（macOS）用 mkdir；后代不继承锁 fd。
 
 set -euo pipefail
 
@@ -47,8 +46,14 @@ reply_refused() {
   exit 1
 }
 
-if [ "$#" -ne 1 ]; then
-  reply_refused bad-request 'model-apply.sh 只收一个参数：节点名'
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
+  # Help prints the variable name literally.
+  # shellcheck disable=SC2016
+  printf '用法：model-apply.sh <节点名> [--root <绝对路径>]\n主机共享锁：$HOME/.qianmo-model-apply-host.lock（固定位置），固定等待 20 秒。\n'
+  exit 0
+fi
+if [ "$#" -ne 1 ] && { [ "$#" -ne 3 ] || [ "${2:-}" != --root ] || [ -z "${3:-}" ]; }; then
+  reply_refused bad-request 'model-apply.sh 收节点名和可选的 --root 绝对路径'
 fi
 node="$1"
 
@@ -67,10 +72,13 @@ fi
 # shellcheck source=demo/env/beta/common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/common.sh"
 
+if ! (beta_guard_root "$BETA_ROOT") >/dev/null 2>&1; then
+  reply_refused bad-request '内测根不合法或落在受保护目录'
+fi
 config_dir="$BETA_NODES_DIR/$node/config"
 # 节点的配置根由 beta-up.sh 的节点腿建出来；不在就说明这台机器上没有这个节点，
 # 不替它建一个空的——那会让 serve-stdin 在一个谁都不读的配置根里「成功」下发。
-if [ ! -d "$config_dir" ] || [ -L "$BETA_NODES_DIR/$node" ] || [ -L "$config_dir" ]; then
+if [ ! -d "$config_dir" ] || [ -L "$BETA_NODES_DIR" ] || [ -L "$BETA_NODES_DIR/$node" ] || [ -L "$config_dir" ]; then
   reply_refused bad-request '这台机器上没有这个节点的配置根'
 fi
 
@@ -92,54 +100,70 @@ fi
 qm_cmd=("${BETA_QM[@]}")
 if [ "${qm_cmd[0]}" = bun ]; then qm_cmd[0]="$bun_bin"; fi
 
-# 等锁的上限。中枢一侧最短的超时是 status 的 20 s，等锁要比它短，这样中枢收到的是一句
-# busy 而不是一次超时。
-lock_wait="${QIANMO_MODEL_APPLY_LOCK_WAIT_S:-10}"
-case "$lock_wait" in
-  '' | *[!0123456789]*) lock_wait=10 ;;
-esac
-mkdir -p "$BETA_RUN_DIR"
-chmod 700 "$BETA_RUN_DIR"
-lock="$BETA_RUN_DIR/model-apply.$node.lock"
-
-# 用哪种锁。`mkdir` 只为用例留的缝：让有 flock 的机器也能把另一条路跑一遍。
+# These choices must survive the console executor's environment allowlist. HOME is
+# the service account's login home at all three entrypoints; different roots share it.
+lock_wait=20
+lock="$HOME/.qianmo-model-apply-host.lock"
+[ ! -L "$lock" ] && [ ! -L "$lock.d" ] && [ ! -L "$lock.guard" ] || reply_refused bad-request '主机锁不能是软链'
+umask 077
+flock_bin="$(beta_model_flock)"
 lock_mode='mkdir'
-if [ "${QIANMO_MODEL_APPLY_LOCK:-}" != 'mkdir' ] && command -v flock >/dev/null 2>&1; then
-  lock_mode='flock'
-fi
+if [ -n "$flock_bin" ]; then lock_mode='flock'; fi
 
 if [ "$lock_mode" = flock ]; then
   exec 9>>"$lock"
-  if ! flock -w "$lock_wait" 9; then
-    reply_refused busy '同一节点上另一个模型服务操作还没结束'
+  if ! "$flock_bin" -w "$lock_wait" 9; then
+    reply_refused busy '本机另一个模型服务操作还没结束（主机锁超时）'
   fi
 else
   lock_dir="$lock.d"
+  guard_dir="$lock.guard"
   deadline=$(($(date +%s) + lock_wait))
-  while ! mkdir "$lock_dir" 2>/dev/null; do
-    holder="$(cat "$lock_dir/pid" 2>/dev/null || true)"
-    # 持锁进程已经不在：收回。pid 还没写进去（对方刚 mkdir）就当它在。
-    case "$holder" in
-      '' | *[!0123456789]*) ;;
-      *)
-        if ! kill -0 "$holder" 2>/dev/null; then
-          rm -f "$lock_dir/pid"
-          rmdir "$lock_dir" 2>/dev/null || true
-          continue
-        fi
-        ;;
-    esac
+  # Serialize mkdir acquisition, stale reclamation and release themselves. Without this
+  # guard, two reclaimers can unlink the new owner's pid after the old owner has exited.
+  while :; do
+    acquired=0
+    if mkdir "$guard_dir" 2>/dev/null; then
+      if mkdir "$lock_dir" 2>/dev/null; then
+        printf '%s\n' "$$" >"$lock_dir/pid"
+        acquired=1
+      else
+        holder="$(cat "$lock_dir/pid" 2>/dev/null || true)"
+        case "$holder" in
+          '' | *[!0123456789]*) ;;
+          *)
+            if ! kill -0 "$holder" 2>/dev/null; then
+              unlink "$lock_dir/pid" 2>/dev/null || true
+              if rmdir "$lock_dir" 2>/dev/null && mkdir "$lock_dir" 2>/dev/null; then
+                printf '%s\n' "$$" >"$lock_dir/pid"
+                acquired=1
+              fi
+            fi ;;
+        esac
+      fi
+      rmdir "$guard_dir"
+    fi
+    [ "$acquired" = 0 ] || break
     if [ "$(date +%s)" -ge "$deadline" ]; then
-      reply_refused busy '同一节点上另一个模型服务操作还没结束'
+      reply_refused busy '本机另一个模型服务操作还没结束（主机锁超时）'
     fi
     sleep 0.1
   done
-  printf '%s\n' "$$" >"$lock_dir/pid"
   # shellcheck disable=SC2329
   #   ↑ 由下面的 trap 调用。
   release() {
-    rm -f "$lock_dir/pid"
-    rmdir "$lock_dir" 2>/dev/null || true
+    # Never touch a replacement lock. A stuck guard fails closed and needs operator cleanup.
+    local until_time
+    until_time=$(($(date +%s) + lock_wait))
+    while ! mkdir "$guard_dir" 2>/dev/null; do
+      [ "$(date +%s)" -lt "$until_time" ] || return 0
+      sleep 0.1
+    done
+    if [ "$(cat "$lock_dir/pid" 2>/dev/null || true)" = "$$" ]; then
+      unlink "$lock_dir/pid" 2>/dev/null || true
+      rmdir "$lock_dir" 2>/dev/null || true
+    fi
+    rmdir "$guard_dir" 2>/dev/null || true
   }
   trap release EXIT
   trap 'exit 129' HUP

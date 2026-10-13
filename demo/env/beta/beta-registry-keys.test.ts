@@ -41,6 +41,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { TestProcessTable } from './testProcessTable'
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..')
 const BETA_DIR = join(REPOSITORY_ROOT, 'demo/env/beta')
@@ -126,6 +127,7 @@ interface Place {
   readonly repo: string
   readonly root: string
   readonly argvLog: string
+  readonly processTable?: TestProcessTable
 }
 
 function place(): Place {
@@ -152,7 +154,10 @@ function place(): Place {
   )
   const root = join(base, 'beta-root')
   mkdirSync(join(root, 'secrets'), { recursive: true })
-  return { repo, root, argvLog: join(base, 'argv.log') }
+  const processTable =
+    process.platform === 'darwin' ? new TestProcessTable(base) : undefined
+  processTable?.install(join(beta, 'common.sh'))
+  return { repo, root, argvLog: join(base, 'argv.log'), processTable }
 }
 
 function writePeers(at: Place, lines: readonly string[]): void {
@@ -184,6 +189,7 @@ function runHost(
       env: {
         ...process.env,
         PATH: `${NO_SYSTEMD_BIN}:${dirname(process.execPath)}:/usr/bin:/bin`,
+        HOME: dirname(at.root),
         QIANMO_BETA_ROOT: at.root,
         BETA_ARGV_LOG: at.argvLog,
         ...env,
@@ -325,10 +331,19 @@ describe('beta-up.sh --role host 把节点公钥交给注册中心', () => {
         String(port),
         'ws://127.0.0.1:38631',
       ],
-      { stdout: 'pipe' },
+      {
+        env: { PATH: '/usr/bin:/bin', HOME: dirname(at.root) },
+        stdout: 'pipe',
+      },
     )
     const stale = Number(spawned.stdout.toString().trim())
     strays.push(stale)
+    at.processTable?.record(stale, [
+      process.execPath,
+      STALE_REGISTRY_SCRIPT,
+      String(port),
+      'ws://127.0.0.1:38631',
+    ])
     for (let attempt = 0; attempt < 100; attempt++) {
       try {
         await fetch(`http://127.0.0.1:${port}/v0/agents/x`)
@@ -339,6 +354,31 @@ describe('beta-up.sh --role host 把节点公钥交给注册中心', () => {
     }
     mkdirSync(join(at.root, 'run'), { recursive: true })
     writeFileSync(join(at.root, 'run', 'registry.pid'), `${stale}\n`)
+    // Record the observed process identity, as a real launch does, before testing stop.
+    const identity = Bun.spawnSync(
+      [
+        '/bin/bash',
+        '-c',
+        '. "$1"; beta_record_pid_identity "$2" "$3"',
+        'record-stop-fixture',
+        join(at.repo, 'demo/env/beta/common.sh'),
+        'registry',
+        String(stale),
+      ],
+      {
+        env: {
+          PATH: '/usr/bin:/bin',
+          HOME: dirname(at.root),
+          QIANMO_BETA_ROOT: at.root,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    )
+    expect({
+      code: identity.exitCode,
+      error: identity.stderr.toString(),
+    }).toEqual({ code: 0, error: '' })
 
     const run = runHost(at, { QIANMO_BETA_REGISTRY_PORT: String(port) })
 

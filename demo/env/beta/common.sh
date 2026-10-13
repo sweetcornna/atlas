@@ -65,6 +65,18 @@ export REPO_DIR
 
 # 内测根目录。**长驻**，默认在家目录下而不是仓库里（见文件头第①条）。
 BETA_ROOT="${QIANMO_BETA_ROOT:-$HOME/qianmo-beta}"
+# Select the root before deriving any paths. Stop at -- so resident tail args cannot redirect it.
+_beta_root_next=0
+for _beta_arg in "$@"; do
+  if [ "$_beta_root_next" = 1 ]; then BETA_ROOT="$_beta_arg"; _beta_root_next=0; continue; fi
+  case "$_beta_arg" in
+    --root) _beta_root_next=1 ;;
+    --root=*) BETA_ROOT="${_beta_arg#--root=}" ;;
+    --) break ;;
+  esac
+done
+[ "$_beta_root_next" = 0 ] && [ -n "$BETA_ROOT" ] || { printf '缺 --root 绝对路径\n' >&2; exit 2; }
+unset _beta_root_next _beta_arg
 
 # ── 拓扑参数：改这些不用改脚本 ───────────────────────────────────────────────
 # 端口段 38620–38629，与演示环境的 38610–38613 不重叠——H 上可以同时留着演示拓扑
@@ -376,6 +388,11 @@ beta_guard_root() {
   fi
   return 0
 }
+
+# CLI --root overrides the inherited root for every child, including console executors.
+if (beta_guard_root "$BETA_ROOT") >/dev/null 2>&1; then
+  export QIANMO_BETA_ROOT="$BETA_ROOT"
+fi
 
 # ── 守卫②：标记文件首行 ─────────────────────────────────────────────────────
 #
@@ -1231,141 +1248,352 @@ beta_random_hex() {
   bun -e 'process.stdout.write(Buffer.from(crypto.getRandomValues(new Uint8Array(Number(process.argv[1])))).toString("hex")+"\n")' "$bytes"
 }
 
+# Node launch records are data, never sourced as shell code. The caller still selects a root;
+# a record cannot redirect up/down to another tree. Explicit port/bind/agent settings win.
+beta_validate_node_launch() {
+  local agent count=0
+  beta_assert_port "$BETA_NODE_PORT" port '节点启动元数据'
+  case "$BETA_ROOT$BETA_NODE_BIND$BETA_AGENTS" in *$'\n'*|*$'\r'*) beta_die '启动元数据不能含换行' ;; esac
+  case "$BETA_NODE_BIND" in ''|*[[:space:]]*) beta_die '启动绑定地址不合法' ;; esac
+  for agent in $BETA_AGENTS; do
+    beta_assert_node_name "$agent" '启动元数据里的 agent'
+    count=$((count + 1))
+  done
+  [ "$count" -gt 0 ] || beta_die '启动元数据没有 agent'
+}
+beta_node_launch_file() { printf '%s/%s.launch' "$BETA_STATE_DIR" "$1"; }
+beta_load_node_launch() {
+  local name="$1" file key value stored_root='' stored_port='' stored_bind='' stored_agents=''
+  beta_assert_node_name "$name" '启动元数据'
+  BETA_NODE_PORT="${QIANMO_BETA_NODE_PORT:-38625}"
+  BETA_NODE_BIND="${QIANMO_BETA_NODE_BIND:-0.0.0.0}"
+  file="$(beta_node_launch_file "$name")"
+  beta_assert_inside_root "$file"
+  [ ! -L "$file" ] || beta_die "启动元数据是软链：${file}"
+  if [ -f "$file" ]; then
+    while IFS='=' read -r key value; do
+      case "$key" in
+        root) stored_root="$value" ;;
+        port) stored_port="$value" ;;
+        bind) stored_bind="$value" ;;
+        agents) stored_agents="$value" ;;
+        *) beta_die "启动元数据含未知字段：${file}" ;;
+      esac
+    done <"$file"
+    [ "$stored_root" = "$BETA_ROOT" ] || beta_die "启动元数据根与当前根不符：${file}"
+    beta_assert_port "$stored_port" port "$file"
+    [ -n "$stored_bind" ] && [ -n "$stored_agents" ] || beta_die "启动元数据不完整：${file}"
+    if [ -z "${QIANMO_BETA_NODE_PORT:-}" ]; then BETA_NODE_PORT="$stored_port"; fi
+    if [ -z "${QIANMO_BETA_NODE_BIND:-}" ]; then BETA_NODE_BIND="$stored_bind"; fi
+    if [ -z "${QIANMO_BETA_AGENTS:-}" ]; then BETA_AGENTS="$stored_agents"; fi
+  fi
+  if [ -n "${BETA_NODE_PORT_GIVEN:-}" ]; then BETA_NODE_PORT="$BETA_NODE_PORT_GIVEN"; fi
+  beta_validate_node_launch
+}
+beta_save_node_launch() {
+  local name="$1" file tmp
+  file="$(beta_node_launch_file "$name")"
+  tmp="${file}.tmp.$$"
+  beta_assert_inside_root "$file"
+  beta_validate_node_launch
+  printf 'root=%s\nport=%s\nbind=%s\nagents=%s\n' "$BETA_ROOT" "$BETA_NODE_PORT" "$BETA_NODE_BIND" "$BETA_AGENTS" >"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$file"
+}
+
 # ── 进程 helper ──────────────────────────────────────────────────────────────
+
+# Fixed system paths make lock backend selection independent of caller env/PATH.
+beta_model_flock() {
+  if [ -x /usr/bin/flock ]; then printf '/usr/bin/flock\n'
+  elif [ -x /bin/flock ]; then printf '/bin/flock\n'; fi
+  return 0
+}
 
 beta_pidfile() { printf '%s/%s.pid' "$BETA_RUN_DIR" "$1"; }
 beta_logfile() { printf '%s/%s.%s' "$BETA_LOG_DIR" "$1" "$2"; }
 
-# beta_running <名字> —— pid 文件里的进程还活着吗。**幂等起停的全部依据。**
-beta_running() {
-  local file
-  file="$(beta_pidfile "$1")"
-  [ -f "$file" ] || return 1
-  local pid
-  pid="$(cat "$file" 2>/dev/null || true)"
-  [ -n "$pid" ] || return 1
-  kill -0 "$pid" 2>/dev/null
+# Linux procfs is the identity authority. Never split ps output into argv/env.
+# These two accessors also let tests supply a deterministic procfs, without a production
+# environment override that could redirect identity checks to caller-controlled data.
+beta_proc_dir() { printf '/proc/%s\n' "$1"; }
+beta_proc_dirs() {
+  [ -d /proc/self ] || return 1
+  printf '%s\n' /proc/[0123456789]*
 }
-
-# beta_stop_pid <名字> <pid> —— 先 TERM，10 s 不走再 KILL。已经不在的一个字都不打。
-beta_stop_pid() {
-  local name="$1" pid="$2" i
-  kill -0 "$pid" 2>/dev/null || return 0
-  kill -TERM "$pid" 2>/dev/null || true
-  i=0
-  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 10 ]; do
-    sleep 1
-    i=$((i + 1))
+beta_realpath() {
+  local target="$1" link n=0
+  case "$target" in *$'\n'*|*$'\r'*) return 1 ;; esac
+  while [ -L "$target" ]; do
+    [ "$n" -lt 40 ] || return 1
+    link="$(readlink "$target")" || return 1
+    case "$link" in /*) target="$link" ;; *) target="$(dirname "$target")/$link" ;; esac
+    n=$((n + 1))
   done
-  if kill -0 "$pid" 2>/dev/null; then
-    beta_warn "$name (pid $pid) 未响应 SIGTERM，改用 SIGKILL"
-    kill -KILL "$pid" 2>/dev/null || true
-  fi
-  beta_say "已停止 $name (pid $pid)"
+  [ -f "$target" ] || return 1
+  (cd "$(dirname "$target")" && printf '%s/%s\n' "$(pwd -P)" "$(basename "$target")")
 }
+# One stat read binds PID, PPID, start ticks and flags (fields 1, 4, 22, 9). comm may contain
+# spaces and ')' so remove through the LAST ') ', never split the whole line.
+beta_proc_stat() {
+  local pid="$1" dir line rest
+  case "$pid" in ''|*[!0123456789]*|0) return 1 ;; esac
+  dir="$(beta_proc_dir "$pid")" || return 1
+  [ -r "$dir/stat" ] || return 1
+  IFS= read -r line 2>/dev/null <"$dir/stat" || return 1
+  [ "${line%% *}" = "$pid" ] || return 1
+  rest="${line##*) }"
+  [ "$rest" != "$line" ] || return 1
+  local fields=()
+  read -r -a fields <<<"$rest"
+  [ "${#fields[@]}" -ge 20 ] || return 1
+  case "${fields[1]}:${fields[19]}:${fields[6]}" in *[!0123456789:]*|:*|*::*|*:) return 1 ;; esac
+  printf '%s %s %s %s\n' "${fields[1]}" "${fields[19]}" "${fields[0]}" "${fields[6]}"
+}
+# status Uid columns are real/effective/saved/filesystem. Only the effective UID
+# selects userspace candidates for a non-root observer; argv/env are not involved.
+beta_proc_euid() {
+  local dir label real effective saved filesystem extra
+  dir="$(beta_proc_dir "$1")" || return 1
+  [ -r "$dir/status" ] || return 1
+  while read -r label real effective saved filesystem extra; do
+    [ "$label" = Uid: ] || continue
+    [ -z "$extra" ] || return 1
+    case "$real:$effective:$saved:$filesystem" in *[!0123456789:]*|:*|*::*|*:) return 1 ;; esac
+    printf '%s\n' "$effective"
+    return 0
+  done 2>/dev/null <"$dir/status"
+  return 1
+}
+beta_proc_alive() {
+  case "$1" in ''|*[!0123456789]*|0|1) return 1 ;; esac
+  kill -0 "$1" 2>/dev/null || return 1
+  local stat ppid stamp state flags
+  stat="$(beta_proc_stat "$1")" || return 2
+  read -r ppid stamp state flags <<<"$stat"
+  case "$state" in Z|X|x) return 1 ;; esac
+}
+beta_proc_start() {
+  local stat ppid stamp state flags
+  stat="$(beta_proc_stat "$1")" || return 1
+  read -r ppid stamp state flags <<<"$stat"
+  printf '%s\n' "$stamp"
+}
+# Set a coherent snapshot in BETA_PROC_*. argv/env are read independently, as NUL
+# records. A missing field, truncated NUL record or changing identity fails closed.
+# Scheduling state is transient: compare PPID/start only, and reject dead states
+# independently on BOTH stat reads.
+beta_proc_snapshot() {
+  local pid="$1" dir before after ppid stamp state flags word value found=0
+  before="$(beta_proc_stat "$pid")" || return 1
+  read -r BETA_PROC_PPID BETA_PROC_START BETA_PROC_STATE flags <<<"$before"
+  case "$BETA_PROC_STATE" in Z|X|x) return 1 ;; esac
+  dir="$(beta_proc_dir "$pid")"
+  # A sentinel preserves a filename's trailing newline through command substitution.
+  BETA_PROC_EXE="$(readlink "$dir/exe" 2>/dev/null && printf '.')" || return 1
+  BETA_PROC_EXE="${BETA_PROC_EXE%.}"
+  BETA_PROC_EXE="${BETA_PROC_EXE%$'\n'}"
+  case "$BETA_PROC_EXE" in *$'\n'*|*$'\r'*) return 1 ;; esac
+  [ -n "$BETA_PROC_EXE" ] || return 1
+  [ -r "$dir/cmdline" ] && [ -r "$dir/environ" ] || return 1
+  BETA_PROC_ARGV=()
+  while :; do
+    word=''
+    if IFS= read -r -d '' word; then BETA_PROC_ARGV+=("$word")
+    else [ -z "$word" ] || return 1; break; fi
+  done 2>/dev/null <"$dir/cmdline" || return 1
+  [ "${#BETA_PROC_ARGV[@]}" -gt 0 ] || return 1
+  BETA_PROC_CONFIG=''
+  while :; do
+    value=''
+    if IFS= read -r -d '' value; then
+      case "$value" in
+        QIANMO_CONFIG_DIR=*) BETA_PROC_CONFIG="${value#QIANMO_CONFIG_DIR=}"; found=$((found + 1)) ;;
+      esac
+    else [ -z "$value" ] || return 1; break; fi
+  done 2>/dev/null <"$dir/environ" || return 1
+  [ "$found" -le 1 ] || return 1
+  after="$(beta_proc_stat "$pid")" || return 1
+  read -r ppid stamp state flags <<<"$after"
+  case "$state" in Z|X|x) return 1 ;; esac
+  [ "$BETA_PROC_PPID" = "$ppid" ] && [ "$BETA_PROC_START" = "$stamp" ] || return 1
+  BETA_PROC_STATE="$state"
+  BETA_PROC_PID="$pid"
+}
+# Prove the complete identity reader works before starting any command. On Linux
+# this reads this shell's real procfs; test copies supply its synthetic counterpart.
+# No environment variable can enable a provider in production.
+beta_proc_identity_available() { (beta_proc_snapshot "$$"); }
 
-# beta_stop_one <名字> —— 停 pid 文件里那一个，再删掉 pid 文件。
+# Filter candidates before reading full identities: root observes all userspace
+# processes; non-root observes only its effective UID. PF_KTHREAD (stat field 9)
+# excludes kernel threads, whose missing exe is normal, without guessing from argv.
+# Capture the stat tuple once so ancestry cannot combine different lifetimes.
+# Return 1 for excluded/gone/dead, 2 for live unreadable candidates or selectors.
+beta_scan_proc_stat() {
+  local pid="$1" tuple ppid stamp state flags uid="$EUID" effective
+  case "$pid" in ''|*[!0123456789]*|0) return 1 ;; esac
+  if [ "$uid" != 0 ]; then
+    if ! effective="$(beta_proc_euid "$pid")"; then
+      kill -0 "$pid" 2>/dev/null || return 1
+      beta_warn "无法读取进程 ${pid} 的 Uid，拒绝把扫描失败当成没有进程" >&2
+      return 2
+    fi
+    [ "$effective" = "$uid" ] || return 1
+  fi
+  if ! tuple="$(beta_proc_stat "$pid")"; then
+    kill -0 "$pid" 2>/dev/null || return 1
+    beta_warn "无法读取进程 ${pid} 的 stat，拒绝把扫描失败当成没有进程" >&2
+    return 2
+  fi
+  read -r ppid stamp state flags <<<"$tuple"
+  case "$state" in Z|X|x) return 1 ;; esac
+  [ "$((10#$flags & 0x00200000))" = 0 ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s\n' "$tuple"
+}
+beta_proc_args() {
+  beta_proc_snapshot "$1" || return 1
+  printf '%s ' "${BETA_PROC_ARGV[@]}"
+}
+# Identity files retain argv boundaries and only the config env, never model keys.
+beta_proc_identity_bytes() {
+  printf '%s\0' 'qianmo-beta-pid/v2' "$BETA_PROC_PID" "$BETA_PROC_START" "$BETA_PROC_EXE" "$BETA_PROC_CONFIG" "${BETA_PROC_ARGV[@]}"
+}
+beta_record_pid_identity() {
+  local name="$1" pid="$2" file tmp
+  file="$(beta_pidfile "$name").identity"
+  beta_assert_inside_root "$file"
+  beta_proc_snapshot "$pid" || return 3
+  tmp="${file}.tmp.$$"
+  beta_proc_identity_bytes >"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$file"
+}
+# Locate qm's actual subcommand: compiled qm argv[1], or the selected Bun executing
+# the exact qm source/bundle argv[2]. Similar words elsewhere cannot authorize signals.
+beta_snapshot_qm_command() {
+  local binary source bun_exe arg0 entry
+  binary="$(beta_realpath "$BETA_QM_BIN" || true)"
+  source="$(beta_realpath "$BETA_QM_SRC" || true)"
+  arg0="${BETA_PROC_ARGV[0]}"
+  case "$arg0" in /*) ;; *) arg0="$(command -v "$arg0" || true)" ;; esac
+  arg0="$(beta_realpath "$arg0" || true)"
+  [ -n "$arg0" ] && [ "$arg0" = "$BETA_PROC_EXE" ] || return 1
+  if [ -n "$binary" ] && [ "$BETA_PROC_EXE" = "$binary" ]; then
+    BETA_PROC_COMMAND_INDEX=1
+  else
+    bun_exe="$(command -v bun || true)"
+    bun_exe="$(beta_realpath "$bun_exe" || true)"
+    [ -n "$bun_exe" ] && [ "$BETA_PROC_EXE" = "$bun_exe" ] || return 1
+    [ "${#BETA_PROC_ARGV[@]}" -ge 3 ] || return 1
+    entry="$(beta_realpath "${BETA_PROC_ARGV[1]}" || true)"
+    [ -n "$entry" ] && { [ "$entry" = "$source" ] || [ "$entry" = "$binary" ]; } || return 1
+    BETA_PROC_COMMAND_INDEX=2
+  fi
+  [ "${#BETA_PROC_ARGV[@]}" -gt "$BETA_PROC_COMMAND_INDEX" ]
+}
+beta_snapshot_node() {
+  local node='' word i physical
+  beta_snapshot_qm_command || return 1
+  [ "${BETA_PROC_ARGV[$BETA_PROC_COMMAND_INDEX]}" = resident ] || return 1
+  for ((i=BETA_PROC_COMMAND_INDEX+1; i<${#BETA_PROC_ARGV[@]}; i++)); do
+    word="${BETA_PROC_ARGV[$i]}"
+    case "$word" in
+      --) break ;;
+      --node)
+        i=$((i + 1))
+        [ "$i" -lt "${#BETA_PROC_ARGV[@]}" ] || return 1
+        node="${BETA_PROC_ARGV[$i]}" ;;
+      --node=*) node="${word#--node=}" ;;
+    esac
+  done
+  case "$node" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) return 1 ;; esac
+  [ "${#node}" -le 64 ] || return 1
+  physical="$(cd "$BETA_ROOT" 2>/dev/null && pwd -P)" || return 1
+  [ "$BETA_PROC_CONFIG" = "$BETA_ROOT/nodes/$node/config" ] \
+    || [ "$BETA_PROC_CONFIG" = "$physical/nodes/$node/config" ] || return 1
+  printf '%s\n' "$node"
+}
+beta_proc_node() {
+  beta_proc_snapshot "$1" || return 2
+  beta_snapshot_node
+}
+beta_proc_config_matches() {
+  beta_proc_snapshot "$1" && [ "$BETA_PROC_CONFIG" = "$2" ]
+}
+beta_pid_identity() {
+  local name="$1" pid="$2" rc=0 file node
+  case "$pid" in ''|*[!0123456789]*|0|1) return 3 ;; esac
+  beta_proc_alive "$pid" || rc=$?
+  [ "$rc" != 2 ] || return 3
+  [ "$rc" = 0 ] || return 1
+  beta_proc_snapshot "$pid" || return 3
+  file="$(beta_pidfile "$name").identity"
+  if [ -f "$file" ]; then
+    [ ! -L "$file" ] || return 3
+    cmp -s "$file" <(beta_proc_identity_bytes) || return 3
+  fi
+  # Auxiliary processes can only use their exact launch identity. A resident always
+  # needs qm entry, node and config validation, including when there is no record.
+  case "$name" in
+    "$BETA_CONSOLE_PROC"|"$BETA_REGISTRY_PROC"|handoff-node|handoff-app-server)
+      [ -f "$file" ] && return 0
+      beta_snapshot_qm_command || return 3
+      [ "$name" = "$BETA_CONSOLE_PROC" ] && [ "${BETA_PROC_ARGV[$BETA_PROC_COMMAND_INDEX]}" = console ] \
+        && [ "$BETA_PROC_CONFIG" = "$BETA_CONFIG_CONSOLE" ] && return 0
+      return 3 ;;
+  esac
+  node="$(beta_snapshot_node || true)"
+  if [ -n "$node" ]; then [ "$node" = "$name" ] || return 3
+  else [ ! -d "$BETA_NODES_DIR/$name/config" ] && [ -f "$file" ] || return 3; fi
+}
+beta_running() {
+  local name="$1" file pid rc=0
+  file="$(beta_pidfile "$name")"
+  [ -f "$file" ] || return 1
+  pid="$(cat "$file" 2>/dev/null || true)"
+  beta_pid_identity "$name" "$pid" || rc=$?
+  if [ "$rc" = 3 ]; then beta_warn "${name} 的 PID ${pid} 身份不符，拒绝发信号或覆盖记录"; fi
+  return "$rc"
+}
+beta_stop_pid() {
+  beta_stop_verified_pid "$1" "$2" helper
+}
 beta_stop_one() {
   local name="$1" file pid
   file="$(beta_pidfile "$name")"
   beta_assert_inside_root "$file"
   [ -f "$file" ] || return 0
   pid="$(cat "$file" 2>/dev/null || true)"
-  if [ -n "$pid" ]; then beta_stop_pid "$name" "$pid"; fi
-  rm -f "$file"
+  if [ -n "$pid" ]; then beta_stop_pid "$name" "$pid" || return 3; fi
+  unlink "$file"
+  if [ -f "${file}.identity" ]; then unlink "${file}.identity"; fi
 }
-
-# ── pid 文件对不上时：按命令行与端口再认一遍 ──────────────────────────────────
-#
-# 2026-09-26 p1 上 beta-1 的现场：旧树留下的 run/beta-1.pid 写着 3012737，真在跑的是 2701919。
-# 只认 pid 文件的 beta-down 报「beta-1 本来就没在跑」，旧进程照跑、继续占着 38625；紧接着的
-# beta-up 起了一个注定 EADDRINUSE 的新进程，而就绪探测被旧进程的应答骗成了绿。
-#
-# pid 文件仍是第一判据，这里补的是第二判据：**命令行说它是本内测根下的这个节点**。三条同时成立
-# 才算，缺一条就不认——认错的代价是 kill 别人的进程：
-#   ① argv 里有 `resident` 这个词；
-#   ② argv 里有 `--node <名字>`（或 `--node=<名字>`）；
-#   ③ 它和**本内测根**绑在一起：某个参数形如 `<agent>=<本根>/workspaces/<名字>/…`（beta-up 给
-#      每个 agent 的工作区，自第一版起每一版都有），或者（Linux）它的环境里
-#      `QIANMO_CONFIG_DIR=<本根>/nodes/<名字>/config`——就是它的配置根。
-# 同名节点跑在**另一个**内测根下（同机的演示 / 另一套内测）过不了③，不会被误停。
-#
-# **端口只用来报不一致，从不用来挑人杀。**H 上 38625 是跑在 H 自己身上的那个节点在用，
-# 按端口找进程会把它当成别的节点的旧进程停掉。
-
-# beta_proc_node <pid> <argv 串> —— 这个进程是本内测根下哪个节点的 resident；不是就返回 1。
-beta_proc_node() {
-  local pid="$1" args="$2" word prev='' node='' resident=0 physical='' root env_text
-  local words=()
-  # read -a 只按空白切，不做路径展开：argv 里的 * ? 不会被 glob 成当前目录的文件名。
-  read -r -a words <<<"$args" || true
-  for word in ${words[@]+"${words[@]}"}; do
-    case "$word" in
-      resident) resident=1 ;;
-      --node=*) node="${word#--node=}" ;;
-    esac
-    if [ "$prev" = '--node' ]; then node="$word"; fi
-    prev="$word"
-  done
-  [ "$resident" = '1' ] && [ -n "$node" ] || return 1
-  # 两种拼法都比：argv 里存的是当初被怎么拼出来的那一个，与 pwd -P 解过符号链接的那个
-  # 在有符号链接时不相等（macOS 的 /var → /private/var；beta-deploy.sh 的守卫踩过同一个坑）。
-  physical="$(cd "$BETA_ROOT" 2>/dev/null && pwd -P || true)"
-  for root in "$BETA_ROOT" "$physical"; do
-    [ -n "$root" ] || continue
-    for word in ${words[@]+"${words[@]}"}; do
-      case "$word" in
-        *"=${root}/workspaces/${node}/"*)
-          printf '%s\n' "$node"
-          return 0
-          ;;
-      esac
-    done
-    # 先整份读进变量再比：`tr … | grep -q` 在 pipefail 下会因 tr 吃到 SIGPIPE 而判假。
-    if [ -r "/proc/$pid/environ" ]; then
-      env_text="$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null || true)"
-      case "
-${env_text}
-" in
-        *"
-QIANMO_CONFIG_DIR=${root}/nodes/${node}/config
-"*)
-          printf '%s\n' "$node"
-          return 0
-          ;;
-      esac
-    fi
-  done
-  return 1
-}
-
-# beta_node_pids <名字> —— 按命令行认出来的、本内测根下这个节点的全部进程，一行一个 pid。
-# 进程表数不出来时返回 2（那是「没法复核」，不是「没有」）。
-#
-# `ps` 而不是 `pgrep -af`：macOS 的 pgrep 收下 -a 却只打 PID（beta-deploy.sh 的守卫实测过）。
-# `-ww`：resident 的 argv 常有几百字节（每个 agent 一个工作区路径、--trust 公钥），被截断就
-# 认不出③。
+# procfs unavailable means unverified, not an empty process table.
 beta_node_pids() {
-  local want="$1" snapshot pid args
-  snapshot="$(ps -ww -eo pid=,args= 2>/dev/null || true)"
-  [ -n "$snapshot" ] || return 2
-  while read -r pid args; do
-    [ -n "$pid" ] || continue
+  local want="$1" dirs dir pid node rc
+  dirs="$(beta_proc_dirs)" || return 2
+  [ -n "$dirs" ] || return 2
+  while IFS= read -r dir; do
+    pid="${dir##*/}"
     [ "$pid" != "$$" ] || continue
-    # 先用便宜的字符串判断筛掉绝大多数行：下面那一步每行要开子 shell。
-    case " $args " in
-      *' resident '*) ;;
-      *) continue ;;
-    esac
-    case "$args" in
-      *"--node ${want}"*|*"--node=${want}"*) ;;
-      *) continue ;;
-    esac
-    if [ "$(beta_proc_node "$pid" "$args" || true)" = "$want" ]; then
-      printf '%s\n' "$pid"
+    rc=0
+    beta_scan_proc_stat "$pid" >/dev/null || rc=$?
+    [ "$rc" != 1 ] || continue
+    [ "$rc" = 0 ] || return 2
+    rc=0
+    node="$(beta_proc_node "$pid")" || rc=$?
+    if [ "$rc" = 2 ]; then
+      # Exiting during enumeration is ordinary; unreadable live identity is not.
+      rc=0
+      beta_scan_proc_stat "$pid" >/dev/null || rc=$?
+      [ "$rc" != 1 ] || continue
+      beta_warn "无法读取进程 ${pid} 的身份，拒绝把扫描失败当成没有节点" >&2
+      return 2
     fi
-  done <<<"$snapshot"
-  return 0
+    if [ "$rc" = 0 ] && [ "$node" = "$want" ]; then printf '%s\n' "$pid"; fi
+  done <<<"$dirs"
 }
 
 # beta_port_holders <端口> —— 在这个 TCP 端口上 LISTEN 的进程，一行一个 pid。
@@ -1429,10 +1657,152 @@ beta_describe_pid() {
   beta_say "  pid ${pid}：${args:-（命令行读不到）}"
 }
 
+# Capture every stat tuple ONCE before following edges. A PID from an old ps PPID
+# list is never paired with a later process's start ticks. Confirm the whole ancestry
+# and each coherent proc snapshot again before authorizing the first signal.
+beta_collect_descendants() {
+  local parent="$1" parent_start="$2" table="$3" depth="$4" pid ppid stamp state flags actual
+  [ "$depth" -lt 128 ] || return 1
+  actual="$(beta_proc_stat "$parent")" || return 1
+  read -r ppid stamp state flags <<<"$actual"
+  [ "$stamp" = "$parent_start" ] || return 1
+  case "$state" in Z|X|x) return 1 ;; esac
+  while read -r pid ppid stamp state flags; do
+    [ "$ppid" = "$parent" ] || continue
+    case "$state" in Z|X|x) continue ;; esac
+    beta_proc_snapshot "$pid" || return 1
+    [ "$BETA_PROC_PPID" = "$parent" ] && [ "$BETA_PROC_START" = "$stamp" ] || return 1
+    printf '%s %s %s\n' "$pid" "$ppid" "$stamp"
+    beta_collect_descendants "$pid" "$stamp" "$table" "$((depth + 1))" || return 1
+  done <<<"$table"
+}
+beta_descendants() {
+  local parent="$1" parent_start="$2" dirs dir pid tuple rc table=''
+  dirs="$(beta_proc_dirs)" || return 1
+  [ -n "$dirs" ] || return 1
+  while IFS= read -r dir; do
+    pid="${dir##*/}"
+    rc=0
+    tuple="$(beta_scan_proc_stat "$pid")" || rc=$?
+    [ "$rc" != 1 ] || continue
+    [ "$rc" = 0 ] || return 1
+    table="${table}${pid} ${tuple}"$'\n'
+  done <<<"$dirs"
+  beta_collect_descendants "$parent" "$parent_start" "$table" 0
+}
+# Validate a captured child's current parent chain against the same captured tuples.
+beta_child_owned() {
+  local pid="$1" parent="$2" stamp="$3" root_pid="$4" root_start="$5" table="$6"
+  local actual ppid started state flags next next_parent next_start found depth=0
+  while :; do
+    [ "$depth" -lt 128 ] || return 1
+    actual="$(beta_proc_stat "$pid")" || return 1
+    read -r ppid started state flags <<<"$actual"
+    [ "$ppid" = "$parent" ] && [ "$started" = "$stamp" ] || return 1
+    case "$state" in Z|X|x) return 1 ;; esac
+    if [ "$parent" = "$root_pid" ]; then
+      actual="$(beta_proc_stat "$root_pid")" || return 1
+      read -r ppid started state flags <<<"$actual"
+      [ "$started" = "$root_start" ] || return 1
+      case "$state" in Z|X|x) return 1 ;; esac
+      return 0
+    fi
+    found=0
+    while read -r next next_parent next_start; do
+      if [ "$next" = "$parent" ]; then
+        pid="$next" parent="$next_parent" stamp="$next_start" found=1
+        break
+      fi
+    done <<<"$table"
+    [ "$found" = 1 ] || return 1
+    depth=$((depth + 1))
+  done
+}
+beta_tracked_alive() {
+  local pid="$1" expected="$2" rc=0 actual
+  beta_proc_alive "$pid" || rc=$?
+  [ "$rc" != 1 ] || return 1
+  [ "$rc" != 2 ] || return 0
+  actual="$(beta_proc_start "$pid" || true)"
+  [ -n "$actual" ] && [ -n "$expected" ] || return 0
+  [ "$actual" = "$expected" ]
+}
+beta_stop_verified_pid() {
+  local name="$1" pid="$2" kind="$3" start kids child parent stamp i alive rc=0
+  local tracked=()
+  # Root scans include userspace init; observing it never authorizes signalling it.
+  case "$pid" in ''|*[!0123456789]*|0|1)
+    beta_warn "${name} 的 PID ${pid} 不合法或受保护，拒绝发信号"
+    return 3 ;;
+  esac
+  beta_proc_alive "$pid" || rc=$?
+  [ "$rc" != 1 ] || return 0
+  [ "$rc" = 0 ] || { beta_warn "${name} 的 PID ${pid} 身份不符，拒绝发信号"; return 3; }
+  # A recovered resident may not have a PID file; helpers always need a launch record.
+  if [ "$kind" = helper ] || [ "$(cat "$(beta_pidfile "$name")" 2>/dev/null || true)" = "$pid" ]; then
+    beta_pid_identity "$name" "$pid" || { beta_warn "${name} 的 PID ${pid} 身份不符，拒绝发信号"; return 3; }
+  fi
+  beta_proc_snapshot "$pid" || return 3
+  if [ "$kind" = resident ]; then
+    [ "$(beta_snapshot_node || true)" = "$name" ] || { beta_warn "${name} 的 PID ${pid} 身份不符，拒绝发信号"; return 3; }
+  fi
+  start="$BETA_PROC_START"
+  kids="$(beta_descendants "$pid" "$start")" || { beta_warn '无法核对子进程，拒绝停止'; return 3; }
+  if [ -n "$kids" ]; then
+    while read -r child parent stamp; do
+      beta_child_owned "$child" "$parent" "$stamp" "$pid" "$start" "$kids" || return 3
+      tracked+=("$child" "$parent" "$stamp")
+    done <<<"$kids"
+  fi
+  # Verify again after collection. Resident entry/root and helper record remain mandatory.
+  if [ "$kind" = helper ] || [ "$(cat "$(beta_pidfile "$name")" 2>/dev/null || true)" = "$pid" ]; then beta_pid_identity "$name" "$pid" || return 3; fi
+  beta_proc_snapshot "$pid" || return 3
+  [ "$BETA_PROC_START" = "$start" ] || return 3
+  if [ "$kind" = resident ]; then [ "$(beta_snapshot_node || true)" = "$name" ] || return 3; fi
+  # Leaf-first TERM keeps parent relationships provable until each child is signalled.
+  for ((i=${#tracked[@]}-3; i>=0; i-=3)); do
+    child="${tracked[$i]}" parent="${tracked[$((i+1))]}" stamp="${tracked[$((i+2))]}"
+    if beta_tracked_alive "$child" "$stamp"; then
+      beta_child_owned "$child" "$parent" "$stamp" "$pid" "$start" "$kids" || return 3
+      kill -TERM "$child" 2>/dev/null || true
+    fi
+  done
+  if [ "$kind" = helper ]; then beta_pid_identity "$name" "$pid" || return 3
+  else [ "$(beta_proc_node "$pid" || true)" = "$name" ] || return 3; fi
+  [ "$(beta_proc_start "$pid" || true)" = "$start" ] || return 3
+  kill -TERM "$pid" 2>/dev/null || true
+  for ((i=0; i<100; i++)); do
+    alive=0
+    if beta_tracked_alive "$pid" "$start"; then alive=1; fi
+    for ((child=0; child<${#tracked[@]}; child+=3)); do
+      if beta_tracked_alive "${tracked[$child]}" "${tracked[$((child+2))]}"; then alive=1; fi
+    done
+    [ "$alive" = 1 ] || { beta_say "已停止 $name (pid $pid)，子进程已退出"; return 0; }
+    if [ "$i" = 90 ]; then
+      if beta_proc_alive "$pid" && [ "$(beta_proc_start "$pid" || true)" = "$start" ]; then
+        if [ "$kind" = helper ]; then beta_pid_identity "$name" "$pid" || return 3
+        else [ "$(beta_proc_node "$pid" || true)" = "$name" ] || return 3; fi
+        kill -KILL "$pid" 2>/dev/null || true
+      fi
+      for ((child=0; child<${#tracked[@]}; child+=3)); do
+        # The first TERM already proved lineage. Reparenting after the parent exits
+        # is allowed only for that same captured lifetime, never a reused PID.
+        if beta_proc_alive "${tracked[$child]}" && [ "$(beta_proc_start "${tracked[$child]}" || true)" = "${tracked[$((child+2))]}" ]; then
+          kill -KILL "${tracked[$child]}" 2>/dev/null || true
+        fi
+      done
+    fi
+    sleep 0.1
+  done
+  beta_warn "${name} 或子进程仍在运行，保留 PID 记录"
+  return 3
+}
+beta_stop_node_pid() { beta_stop_verified_pid "$1" "$2" resident; }
+
 # beta_stop_node <节点名> —— 停一个常驻节点：pid 文件，再按命令行认一遍。
 #
 # 返回 0 = 停了，或者确实没在跑；返回 3 = 它的端口被**认不出**的进程占着——已如实报出，
-# **一个都没动**。端口按 BETA_NODE_PORT 查（一机一节点，beta-up 用的就是它）。
+# **一个都没动**。端口按该节点的启动元数据查，旧部署才回落到环境变量或默认端口。
 #
 # 端口那一步只在「pid 文件在、却指着一个不存在的进程、命令行也认不出任何一个」时才做：
 # 那是这个节点确实在本机跑过、而记录和现实对不上的唯一形状。H 上给一个只铺了链路的名字
@@ -1445,13 +1815,28 @@ beta_stop_node() {
     had_file=1
     recorded="$(cat "$file" 2>/dev/null || true)"
   fi
-  if beta_running "$name"; then was_running=1; fi
-  beta_stop_one "$name"
+  beta_load_node_launch "$name"
+  local identity_rc=0
+  beta_running "$name" || identity_rc=$?
+  if [ "$identity_rc" = 3 ]; then return 3; fi
+  if [ "$identity_rc" = 0 ]; then
+    # Any registered auxiliary launch with an exact identity can stop through the
+    # generic path; it has no resident launch metadata or port to recover from.
+    if [ -f "${file}.identity" ] && [ -z "$(beta_proc_node "$recorded" || true)" ]; then
+      beta_stop_one "$name"
+      return $?
+    fi
+    was_running=1
+    beta_stop_node_pid "$name" "$recorded" || return 3
+  fi
+  if [ -f "$file" ]; then unlink "$file"; fi
+  if [ -f "${file}.identity" ]; then unlink "${file}.identity"; fi
 
   local rc=0
   pids="$(beta_node_pids "$name")" || rc=$?
   if [ "$rc" != '0' ]; then
-    beta_warn "数不出进程表（ps -eo pid=,args= 没有输出）—— 没法按命令行复核 ${name} 还有没有别的进程在跑"
+    beta_warn "数不出可靠进程表（/proc 不可用或进程读取失败）—— 没法按命令行复核 ${name} 还有没有别的进程在跑"
+    return 3
   fi
   for pid in $pids; do
     if [ "$was_running" = '1' ]; then
@@ -1462,7 +1847,7 @@ beta_stop_node() {
       beta_warn "run/${name}.pid 不存在，但按命令行认出 ${name} 在跑："
     fi
     beta_describe_pid "$pid"
-    beta_stop_pid "$name" "$pid"
+    beta_stop_node_pid "$name" "$pid" || return 3
     found=1
   done
   if [ "$was_running" = '1' ] || [ "$found" = '1' ]; then return 0; fi
@@ -1475,7 +1860,7 @@ beta_stop_node() {
       while read -r pid; do
         other=''
         if [ "$pid" != '?' ]; then
-          other="$(beta_proc_node "$pid" "$(ps -ww -o args= -p "$pid" 2>/dev/null || true)" || true)"
+          other="$(beta_proc_node "$pid" || true)"
         fi
         if [ -n "$other" ]; then
           beta_say "端口 ${BETA_NODE_PORT} 上是本内测根的节点 ${other}（pid ${pid}），不是 ${name}。"
@@ -1547,10 +1932,17 @@ beta_start_process() {
     beta_ok "$name 已在运行（pid $(cat "$(beta_pidfile "$name")")），不重起"
     return 0
   fi
+  local identity_rc=0 existing
+  if [ -f "$(beta_pidfile "$name")" ]; then
+    existing="$(cat "$(beta_pidfile "$name")")"
+    beta_pid_identity "$name" "$existing" || identity_rc=$?
+    [ "$identity_rc" != 3 ] || beta_die "${name} 的 PID ${existing} 身份不符，拒绝覆盖记录或启动"
+  fi
   command -v "$1" >/dev/null 2>&1 || beta_die "$name 起不来：$1 跑不起来 —— 它既不在 PATH 上，也不是一个可执行文件。
 整套脚本硬依赖 bun（resident 与 console 两条腿都强制它）。非交互 SSH 下最常见的形状是
 bun 装在 ~/.bun/bin 而那个目录不在非登录 shell 的 PATH 里；显式补上再跑：
   PATH=\"\$HOME/.bun/bin:\$PATH\" demo/env/beta/beta-up.sh ..."
+  beta_proc_identity_available || beta_die "${name} 启动前无法可靠读取进程身份，拒绝执行命令或写入 PID（需要可读的 Linux /proc）"
   local out err
   out="$(beta_logfile "$name" out)"
   err="$(beta_logfile "$name" err)"
@@ -1561,6 +1953,9 @@ bun 装在 ~/.bun/bin 而那个目录不在非登录 shell 的 PATH 里；显式
   local pid=$!
   printf '%s\n' "$pid" >"$(beta_pidfile "$name")"
   sleep "$BETA_START_GRACE_S"
+  if kill -0 "$pid" 2>/dev/null; then
+    beta_record_pid_identity "$name" "$pid" || beta_die "${name} 起机后无法核对 PID 身份，保留记录"
+  fi
   beta_dump_if_dead "$name"
   beta_ok "$name 已启动（pid ${pid}，日志 ${out}）"
 }
@@ -1572,7 +1967,9 @@ bun 装在 ~/.bun/bin 而那个目录不在非登录 shell 的 PATH 里；显式
 # 留下一个会说谎的依据——幂等起停的全部判据就是它。
 beta_dump_if_dead() {
   local name="$1" file
-  beta_running "$name" && return 0
+  local identity_rc=0
+  beta_running "$name" && return 0 || identity_rc=$?
+  [ "$identity_rc" != 3 ] || beta_die "${name} PID 身份不符，保留记录"
   file="$(beta_pidfile "$name")"
   if [ -f "$file" ]; then
     beta_assert_inside_root "$file"

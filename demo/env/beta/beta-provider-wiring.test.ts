@@ -45,6 +45,9 @@ const BASHES = testBashes()
 
 /** 记命令行，再记两把缓存键此刻在环境里的样子（`<unset>` = 没有）。 */
 const RECORDER = `
+# This argv recorder never launches a resident: its process table is deliberately empty.
+beta_node_pids() { :; }
+
 beta_start_process() {
   local name="$1"
   shift 2

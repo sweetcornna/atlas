@@ -60,17 +60,19 @@ NODE_GIVEN=0
 ALLOW_MISSING_TRAILS=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --root) [ "$#" -ge 2 ] || beta_die "缺 --root 路径"; shift 2 ;;
+    --root=*) shift ;;
     --role)   ROLE="${2:-}"; shift 2 ;;
     --role=*) ROLE="${1#--role=}"; shift ;;
     --node)   BETA_NODE="${2:-}"; NODE_GIVEN=1; shift 2 ;;
     --node=*) BETA_NODE="${1#--node=}"; NODE_GIVEN=1; shift ;;
     # --port 只对 --role node 有意义（本机那个节点在哪个端口上）。与 beta-up.sh 的
     # 同名参数对齐：两个脚本对同一台机器要问同一个问题，参数名不一致会让人写错。
-    --port)   BETA_NODE_PORT="${2:-}"; shift 2 ;;
-    --port=*) BETA_NODE_PORT="${1#--port=}"; shift ;;
+    --port)   BETA_NODE_PORT_GIVEN="${2:-}"; BETA_NODE_PORT="$BETA_NODE_PORT_GIVEN"; shift 2 ;;
+    --port=*) BETA_NODE_PORT_GIVEN="${1#--port=}"; BETA_NODE_PORT="$BETA_NODE_PORT_GIVEN"; shift ;;
     --allow-missing-trails) ALLOW_MISSING_TRAILS=1; shift ;;
     -h|--help)
-      beta_say '用法：beta-smoke.sh [--role host|node] [--node <名字>] [--port <端口>] [--allow-missing-trails]'
+      beta_say '用法：beta-smoke.sh [--root <绝对路径>] [--role host|node] [--node <名字>] [--port <端口>] [--allow-missing-trails]'
       exit 0
       ;;
     *) beta_die "未知参数 $1" ;;
@@ -300,6 +302,7 @@ run_host() {
 }
 
 run_node() {
+  beta_load_node_launch "$BETA_NODE"
   if [ "$NODE_GIVEN" = '0' ]; then
     beta_warn "没给 --node，按默认节点名 $BETA_NODE 检查"
   fi
