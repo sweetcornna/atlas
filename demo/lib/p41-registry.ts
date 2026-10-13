@@ -14,7 +14,7 @@
  * 该做的事；不续租而把 TTL 调大，测的就不是同一件事了。
  */
 
-import { writeFileSync } from 'node:fs'
+import { renameSync, writeFileSync } from 'node:fs'
 import { AgentStatus, startRegistryServer } from '@qianmo/registry'
 import { arg, intArg } from './cli-args.js'
 import { targetAddress } from './ac2-env.js'
@@ -52,8 +52,11 @@ const heartbeat = setInterval(
 )
 heartbeat.unref?.()
 
+// Written aside and renamed into place: a reader that polls for the file sees
+// either nothing or the whole of it, never an empty or half-written one.
+const readyPending = `${readyFile}.${process.pid}.tmp`
 writeFileSync(
-  readyFile,
+  readyPending,
   `${JSON.stringify({
     url: server.url,
     port: server.port,
@@ -62,6 +65,7 @@ writeFileSync(
     pid: process.pid,
   })}\n`,
 )
+renameSync(readyPending, readyFile)
 process.stdout.write(`registry 就绪：${server.url}  ${address} → ${endpoint}\n`)
 
 let stopping = false

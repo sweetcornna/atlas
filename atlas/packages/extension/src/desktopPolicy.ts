@@ -51,6 +51,13 @@ export function desktopObservation(name: DesktopTool): boolean {
 export function desktopOp(name: DesktopTool): string {
   return name.replace(/^qianmo_(browser|computer)_/, '')
 }
+/**
+ * The base's intent tracing adds this field (`INTENT_FIELD` in pi-wire) to
+ * every tool schema, so the model sends it with each call. It is free text for
+ * the transcript, never an action argument: accept it only as a bounded string
+ * and leave it out of the canonical arguments the host authorizes.
+ */
+export const DESKTOP_INTENT_FIELD = 'i'
 export function desktopArgs(
   name: DesktopTool,
   raw: unknown,
@@ -58,7 +65,17 @@ export function desktopArgs(
   if (!raw || typeof raw !== 'object' || Array.isArray(raw))
     throw new Error('Desktop arguments must be an object')
   const fields: Readonly<Record<string, string>> = DESKTOP_FIELDS[name]
-  const input = raw as Record<string, unknown>
+  const input = { ...(raw as Record<string, unknown>) }
+  if (Object.hasOwn(input, DESKTOP_INTENT_FIELD)) {
+    const intent = input[DESKTOP_INTENT_FIELD]
+    if (
+      typeof intent !== 'string' ||
+      intent.length > 2000 ||
+      intent.includes('\0')
+    )
+      throw new Error('Invalid desktop argument')
+    delete input[DESKTOP_INTENT_FIELD]
+  }
   if (
     Object.keys(input).length !== Object.keys(fields).length ||
     Object.keys(input).some(key => !Object.hasOwn(fields, key))

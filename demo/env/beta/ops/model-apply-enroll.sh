@@ -5,7 +5,7 @@
 # 阡陌内测 · 第六类动作的专用 key 登记（`providers-console-m1.md` §2.9 第 2 步，P18.13）。
 #
 #   model-apply-enroll.sh enroll --node <节点> --hub <ssh 目标> --hub-tree <H 部署根> \
-#                                --node-ssh <ssh 目标> --node-tree <节点部署根> [--dry-run]
+#                                --node-ssh <ssh 目标> --node-tree <节点部署根> [--node-root <节点内测绝对根>] [--dry-run]
 #
 # 在**运维本机**跑（macOS bash 3.2 与 Linux bash 5 都行）。它经 ssh 调中枢与节点**部署树里
 # 的同一个脚本**的几个子命令，把一个远端节点接到中枢的模型服务执行器上：
@@ -86,7 +86,7 @@ refuse() {
 }
 usage_die() {
   printf '%s\n' "$*" >&2
-  printf '用法：model-apply-enroll.sh enroll --node <节点> --hub <ssh 目标> --hub-tree <H 部署根> --node-ssh <ssh 目标> --node-tree <节点部署根> [--dry-run]\n' >&2
+  printf '用法：model-apply-enroll.sh enroll --node <节点> --hub <ssh 目标> --hub-tree <H 部署根> --node-ssh <ssh 目标> --node-tree <节点部署根> [--node-root <节点内测绝对根>] [--dry-run]\n' >&2
   exit 2
 }
 
@@ -152,8 +152,21 @@ ends_with_newline() {
 
 # authorized_line <节点> —— 那一行（PUB_TYPE / PUB_BLOB 已解析好）。
 authorized_line() {
-  printf 'command="%s %s",restrict %s %s %s %s\n' \
-    "$MODEL_APPLY" "$1" "$PUB_TYPE" "$PUB_BLOB" "$KEY_COMMENT_PREFIX" "$1"
+  printf 'command="%s",restrict %s %s %s %s\n' \
+    "$(model_command "$1")" "$PUB_TYPE" "$PUB_BLOB" "$KEY_COMMENT_PREFIX" "$1"
+}
+
+# An explicit target is embedded in the forced command, including undo. Ambient ssh
+# session overrides alone are refused because sshd does not preserve them.
+NODE_ROOT=''
+node_root_option() {
+  assert_safe_abs '--node-root' "$NODE_ROOT"
+  beta_guard_root "$NODE_ROOT"
+  case "$NODE_ROOT" in */|*/./*|*//*) usage_die '--node-root 要规范绝对路径（无尾部 /、. 段或重复 /）' ;; esac
+}
+model_command() {
+  printf '%s %s' "$MODEL_APPLY" "$1"
+  if [ -n "$NODE_ROOT" ]; then printf ' --root %s' "$NODE_ROOT"; fi
 }
 
 # ── authorized-key --node <节点> --pubkey-file <文件|-> ──────────────────────────
@@ -162,6 +175,7 @@ cmd_authorized_key() {
   local node='' file='' line
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --node-root) NODE_ROOT="${2:-}"; [ -n "$NODE_ROOT" ] || usage_die "缺 --node-root 路径"; node_root_option; shift 2 ;;
       --node) node="${2:-}"; shift 2 ;;
       --pubkey-file) file="${2:-}"; shift 2 ;;
       *) usage_die "authorized-key 不认识的参数：$1" ;;
@@ -307,6 +321,7 @@ cmd_node_install() {
   local node='' dry=0 want_user='' me input line ak dir config default_root stale bak tmp dir_new
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --node-root) NODE_ROOT="${2:-}"; [ -n "$NODE_ROOT" ] || usage_die "缺 --node-root 路径"; node_root_option; shift 2 ;;
       --node) node="${2:-}"; shift 2 ;;
       --user) want_user="${2:-}"; shift 2 ;;
       --dry-run) dry=1; shift ;;
@@ -325,14 +340,16 @@ cmd_node_install() {
   assert_safe_abs '部署根下的 model-apply.sh 路径' "$MODEL_APPLY"
   [ -f "$MODEL_APPLY" ] && [ -x "$MODEL_APPLY" ] \
     || refuse "强制命令要指向的 ${MODEL_APPLY} 不在或不可执行 —— --node-tree 给的是这台机器上的部署根吗？"
-  # sshd 起强制命令时环境里没有 QIANMO_BETA_ROOT：model-apply.sh 只会看默认根。
+  # sshd 不保留会话的根覆盖：非默认根必须显式绑定进强制命令。
   default_root="${HOME}/qianmo-beta"
-  if [ -n "${QIANMO_BETA_ROOT:-}" ] && [ "$QIANMO_BETA_ROOT" != "$default_root" ]; then
+  if [ -z "$NODE_ROOT" ] && [ -n "${QIANMO_BETA_ROOT:-}" ] && [ "$QIANMO_BETA_ROOT" != "$default_root" ]; then
     refuse "这个会话设了 QIANMO_BETA_ROOT=${QIANMO_BETA_ROOT}，而 sshd 强制命令下 model-apply.sh 只看 ${default_root}。
-两者不一致时中枢的每一次操作都会回「这台机器上没有这个节点的配置根」。"
+请显式给 --node-root：它会贯穿强制命令、安装检查和撤回。"
   fi
+  default_root="${NODE_ROOT:-$default_root}"
+  beta_guard_root "$default_root"
   config="${default_root}/nodes/${node}/config"
-  if [ ! -d "$config" ] || [ -L "${default_root}/nodes/${node}" ] || [ -L "$config" ]; then
+  if [ ! -d "$config" ] || [ -L "${default_root}/nodes" ] || [ -L "${default_root}/nodes/${node}" ] || [ -L "$config" ]; then
     refuse "这台机器上没有 ${node} 的配置根 ${config}（节点腿 beta-up.sh --role node --node ${node} 建出来的；model-apply.sh 不认软链）"
   fi
 
@@ -345,7 +362,7 @@ cmd_node_install() {
     PUBKEY-ABSENT)
       [ "$dry" = '1' ] || refuse '没有收到公钥（PUBKEY-ABSENT 只在 --dry-run 里出现）'
       PUB_BLOB=''
-      line="command=\"${MODEL_APPLY} ${node}\",restrict ssh-ed25519 <H 上将生成的公钥> ${KEY_COMMENT_PREFIX} ${node}"
+      line="command=\"$(model_command "$node")\",restrict ssh-ed25519 <H 上将生成的公钥> ${KEY_COMMENT_PREFIX} ${node}"
       ;;
     'PUBKEY '*)
       parse_pubkey "${input#PUBKEY }" || refuse '收到的公钥不像一把 OpenSSH 公钥'
@@ -365,7 +382,7 @@ cmd_node_install() {
   # 走到这里：这把公钥不在文件里。同一节点还指着 model-apply.sh 的行就都是别的 key（换过 key）。
   stale=0
   if [ -f "$ak" ]; then
-    stale="$(grep -cF -- "/model-apply.sh ${node}\"" "$ak" || true)"
+    stale="$(grep -cE -- "/model-apply\.sh ${node}( |\")" "$ak" || true)"
   fi
   if [ "$stale" -gt 0 ]; then
     note "WARN : ${ak} 里还有 ${stale} 行别的 key 指向 ${node} 的 model-apply.sh（换过 key？）。本脚本不删，核对后手工删。"
@@ -410,6 +427,7 @@ cmd_node_uninstall() {
   local node='' backup='' with_dir=0 input line dir ak expect stamp
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --node-root) NODE_ROOT="${2:-}"; [ -n "$NODE_ROOT" ] || usage_die "缺 --node-root 路径"; node_root_option; shift 2 ;;
       --node) node="${2:-}"; shift 2 ;;
       --backup) backup="${2:-}"; shift 2 ;;
       --with-dir) with_dir=1; shift ;;
@@ -662,6 +680,7 @@ remote() {
 
 # 写的阶段里已经做下、失败时要撤回的东西（cmd_enroll 设，enroll_undo 读）。
 ENROLL_HUB='' ENROLL_HUB_TREE='' ENROLL_NODE_SSH='' ENROLL_NODE_TREE='' ENROLL_NODE=''
+ENROLL_ROOT_FLAG=''
 ENROLL_PUBKEY='' ENROLL_NEW_KEY='' ENROLL_INSTALLED=0 ENROLL_BACKUP='-' ENROLL_SSH_DIR_NEW=0
 
 # enroll_undo —— 按与写入相反的顺序撤回这一次写下的东西；撤不回的逐条说怎么手工回滚。
@@ -671,7 +690,7 @@ enroll_undo() {
     [ "$ENROLL_SSH_DIR_NEW" = '1' ] && ssh_dir_flag=' --with-dir'
     if printf '%s\n' "$ENROLL_PUBKEY" \
       | remote "$ENROLL_NODE_SSH" "$ENROLL_NODE_TREE" \
-        "node-uninstall --node ${ENROLL_NODE} --backup ${ENROLL_BACKUP}${ssh_dir_flag}" >/dev/null; then
+        "node-uninstall --node ${ENROLL_NODE}${ENROLL_ROOT_FLAG} --backup ${ENROLL_BACKUP}${ssh_dir_flag}" >/dev/null; then
       beta_ok "撤回：节点 authorized_keys 已复原"
     else
       ok=0
@@ -696,6 +715,7 @@ cmd_enroll() {
   local node='' hub='' hub_tree='' node_ssh='' node_tree='' dry=0 out pubkey hostkeys line coord coord_user
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --node-root) NODE_ROOT="${2:-}"; [ -n "$NODE_ROOT" ] || usage_die "缺 --node-root 路径"; node_root_option; shift 2 ;;
       --node) node="${2:-}"; shift 2 ;;
       --hub) hub="${2:-}"; shift 2 ;;
       --hub-tree) hub_tree="${2:-}"; shift 2 ;;
@@ -711,6 +731,7 @@ cmd_enroll() {
   assert_ssh_target '--node-ssh' "$node_ssh"
   assert_safe_abs '--hub-tree' "$hub_tree"
   assert_safe_abs '--node-tree' "$node_tree"
+  if [ -n "$NODE_ROOT" ]; then ENROLL_ROOT_FLAG=" --node-root ${NODE_ROOT}"; fi
   ENROLL_HUB="$hub" ENROLL_HUB_TREE="$hub_tree" ENROLL_NODE_SSH="$node_ssh" ENROLL_NODE_TREE="$node_tree" ENROLL_NODE="$node"
 
   if [ "$dry" = '1' ]; then
@@ -741,7 +762,7 @@ cmd_enroll() {
   [ -n "$pubkey" ] || beta_die '① H 没有回公钥行（什么都没改）'
 
   beta_say '③ 节点：前置与 authorized_keys 冲突（只看）'
-  out="$(printf '%s\n' "$pubkey" | remote "$node_ssh" "$node_tree" "node-install --node ${node} --user ${coord_user} --dry-run")" \
+  out="$(printf '%s\n' "$pubkey" | remote "$node_ssh" "$node_tree" "node-install --node ${node}${ENROLL_ROOT_FLAG} --user ${coord_user} --dry-run")" \
     || beta_die '③ 失败（节点上 node-install），什么都没改'
   line="$(printf '%s\n' "$out" | grep -E '^(PRESENT|WOULD-ADD) ' | head -n 1 || true)"
   [ -n "$line" ] || beta_die '③ 节点没有回结果行（什么都没改）'
@@ -776,7 +797,7 @@ cmd_enroll() {
   fi
 
   beta_say '③ 节点：authorized_keys 那一行'
-  if ! out="$(printf '%s\n' "$ENROLL_PUBKEY" | remote "$node_ssh" "$node_tree" "node-install --node ${node} --user ${coord_user}")"; then
+  if ! out="$(printf '%s\n' "$ENROLL_PUBKEY" | remote "$node_ssh" "$node_tree" "node-install --node ${node}${ENROLL_ROOT_FLAG} --user ${coord_user}")"; then
     enroll_undo || true
     beta_die '③ 失败（节点上 node-install），已撤回 ①'
   fi

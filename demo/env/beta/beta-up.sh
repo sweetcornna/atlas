@@ -104,6 +104,7 @@ usage() {
   beta_say '  --role host|node        起哪条腿。除 --print-wake-identity 外必给'
   beta_say '  --node <名字>           节点腿：这台机器上那一个节点的名字'
   beta_say '  --agent <名字>          节点腿：跑哪些 agent；可给多次，给了就把默认那份整体顶掉'
+  beta_say '  --root <绝对路径>       内测根（也可用 QIANMO_BETA_ROOT）；根由调用者显式选择'
   beta_say '  --port <端口>           节点腿：入站端口'
   beta_say '  --only links|registry|console'
   beta_say '                          host 腿：只起这一块；可给多次。不给 = 全套（默认）'
@@ -138,6 +139,8 @@ usage() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --root) [ "$#" -ge 2 ] || beta_die "缺 --root 路径"; shift 2 ;;
+    --root=*) shift ;;
     --role)   ROLE="${2:-}"; shift 2 ;;
     --role=*) ROLE="${1#--role=}"; shift ;;
     --node)   BETA_NODE="${2:-}"; NODE_GIVEN=1; shift 2 ;;
@@ -146,8 +149,8 @@ while [ "$#" -gt 0 ]; do
     # 而不是追加——否则「我只想跑一个 agent」会变成「跑了三个」。
     --agent)   AGENTS_GIVEN="$AGENTS_GIVEN ${2:-}"; shift 2 ;;
     --agent=*) AGENTS_GIVEN="$AGENTS_GIVEN ${1#--agent=}"; shift ;;
-    --port)   BETA_NODE_PORT="${2:-}"; shift 2 ;;
-    --port=*) BETA_NODE_PORT="${1#--port=}"; shift ;;
+    --port)   BETA_NODE_PORT_GIVEN="${2:-}"; BETA_NODE_PORT="$BETA_NODE_PORT_GIVEN"; shift 2 ;;
+    --port=*) BETA_NODE_PORT_GIVEN="${1#--port=}"; BETA_NODE_PORT="$BETA_NODE_PORT_GIVEN"; shift ;;
     # host 腿限定起哪几块（可给多次）。不给 = 全套。
     --only)   ONLY_GIVEN="$ONLY_GIVEN ${2:-}"; shift 2 ;;
     --only=*) ONLY_GIVEN="$ONLY_GIVEN ${1#--only=}"; shift ;;
@@ -1291,6 +1294,16 @@ assert_node_hub_isolation() {
 # node 腿：该机那一个常驻节点
 # ─────────────────────────────────────────────────────────────────────────────
 run_node() {
+  beta_load_node_launch "$BETA_NODE"
+  if [ -n "$AGENTS_GIVEN" ]; then BETA_AGENTS="${AGENTS_GIVEN# }"; fi
+  beta_validate_node_launch
+  local running_rc=0
+  beta_running "$BETA_NODE" || running_rc=$?
+  [ "$running_rc" != 3 ] || beta_die 'PID 身份不符，拒绝启动'
+  # Node/root/port/bind must not be silently replaced by persisted tail args.
+  local one
+  resolve_node_passthrough
+
   if [ "$NODE_GIVEN" = '0' ]; then
     # 四台机器上都用默认值 = 四个同名节点，而症状是注册表里互相覆盖、审计链张冠李戴。
     # 不硬拦（本机自验时默认值很方便），但要说一声。
@@ -1298,12 +1311,14 @@ run_node() {
   fi
   # PSK 由 H 生成后分发（§8.3）。**本机不生成**，理由见 common.sh 文件头第②条。
   beta_load_psk "$BETA_PSK_FILE" "本机节点的传输层 PSK"
-  # 尾参在这里定下来，早于任何一处用到 PASS_THROUGH 的地方（issue #111）。
-  resolve_node_passthrough
+  # 尾参已按逐行参数加载并通过启动元数据校验。
   # 从记录里读回来的那一份**再过一次那道门**：命令行给的那一份在解析期已经过了，
   # 而这一份是刚刚才进来的。
   assert_no_token_values_in_passthrough
   assert_node_hub_isolation
+  for one in ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}; do
+    case "$one" in --port|--port=*|--hostname|--hostname=*|--node|--node=*|--agent|--agent=*) beta_die "尾参不能覆盖节点启动元数据：${one}（端口请用 beta-up.sh --port）" ;; esac
+  done
 
   local config_dir="$BETA_NODES_DIR/$BETA_NODE/config"
   local ws_root="$BETA_WORKSPACE_DIR/$BETA_NODE"
@@ -1425,6 +1440,7 @@ run_node() {
     fi
   fi
   beta_start_process "$BETA_NODE" "$config_dir" "${args[@]}"
+  if [ "$running_rc" != 0 ]; then beta_save_node_launch "$BETA_NODE"; fi
 
   beta_head '③ 就绪探测'
   # 就绪的定义不是「端口上有人应答」，而是「**刚起的那个 pid** 在这个端口上应答」。

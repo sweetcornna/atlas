@@ -36,7 +36,7 @@
  * 调用，不经 HTTP，不需要 token。不给这个参数 = 与加它之前完全一样（零鉴权）。
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute } from 'node:path'
 import { parseAddress } from '@qianmo/protocol'
 import {
@@ -239,8 +239,11 @@ const heartbeat = setInterval(
 heartbeat.unref?.()
 
 mkdirSync(dirname(readyFile), { recursive: true })
+// Written aside and renamed into place: a reader that polls for the file sees
+// either nothing or the whole of it, never an empty or half-written one.
+const readyPending = `${readyFile}.${process.pid}.tmp`
 writeFileSync(
-  readyFile,
+  readyPending,
   `${JSON.stringify({
     url: server.url,
     port: server.port,
@@ -254,6 +257,7 @@ writeFileSync(
   })}\n`,
   { mode: 0o600 },
 )
+renameSync(readyPending, readyFile)
 process.stdout.write(
   `registry 就绪：${server.url}（${registrations.length} 条登记；写操作${
     writeToken === undefined ? '不鉴权' : '要 token'

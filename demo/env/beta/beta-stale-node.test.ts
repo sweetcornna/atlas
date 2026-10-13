@@ -39,6 +39,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { TestProcessTable } from './testProcessTable'
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..')
 const BETA_DIR = join(REPOSITORY_ROOT, 'demo/env/beta')
@@ -92,9 +93,23 @@ const RESIDENT_SCRIPT = join(FIXTURES, 'fake-resident.js')
 const LISTENER_SCRIPT = join(FIXTURES, 'fake-listener.js')
 writeFileSync(RESIDENT_SCRIPT, FAKE_RESIDENT)
 writeFileSync(LISTENER_SCRIPT, FAKE_LISTENER)
+mkdirSync(join(FIXTURES, 'home'))
+
+const PROCESS_TABLE =
+  process.platform === 'darwin' ? new TestProcessTable(FIXTURES) : undefined
+const DOWN_SCRIPT = PROCESS_TABLE
+  ? join(FIXTURES, 'repo/demo/env/beta/beta-down.sh')
+  : join(BETA_DIR, 'beta-down.sh')
+if (PROCESS_TABLE) {
+  mkdirSync(dirname(DOWN_SCRIPT), { recursive: true })
+  copyFileSync(join(BETA_DIR, 'beta-down.sh'), DOWN_SCRIPT)
+  const common = join(dirname(DOWN_SCRIPT), 'common.sh')
+  copyFileSync(join(BETA_DIR, 'common.sh'), common)
+  PROCESS_TABLE.install(common)
+}
 
 /** lsof 在 macOS 上住 /usr/sbin；ss 在有些发行版上也在 sbin。 */
-const SYSTEM_PATH = '/usr/bin:/bin:/usr/sbin:/sbin'
+const SYSTEM_PATH = `${dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`
 
 const scratches: string[] = []
 const strays: number[] = []
@@ -161,6 +176,15 @@ function spawnDetached(
   argv: readonly string[],
   env: Readonly<Record<string, string>> = {},
 ): number {
+  // Linux identity checks need the independently supplied config env, not argv hints.
+  const node = argv[argv.indexOf('--node') + 1]
+  const agent = argv[argv.indexOf('--agent') + 1]
+  const residentEnv =
+    argv[1] === RESIDENT_SCRIPT && node && agent
+      ? {
+          QIANMO_CONFIG_DIR: `${agent.slice(agent.indexOf('=') + 1).split('/workspaces/')[0]}/nodes/${node}/config`,
+        }
+      : {}
   const child = Bun.spawnSync(
     [
       '/bin/sh',
@@ -169,11 +193,25 @@ function spawnDetached(
       'detach',
       ...argv,
     ],
-    { env: { ...process.env, ...env }, stdout: 'pipe', stderr: 'pipe' },
+    {
+      env: {
+        ...process.env,
+        HOME: join(FIXTURES, 'home'),
+        ...residentEnv,
+        ...env,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
   )
   const pid = Number(child.stdout.toString().trim())
   expect(Number.isInteger(pid) && pid > 0).toBe(true)
   strays.push(pid)
+  PROCESS_TABLE?.record(
+    pid,
+    argv,
+    env.QIANMO_CONFIG_DIR ?? residentEnv.QIANMO_CONFIG_DIR ?? '',
+  )
   return pid
 }
 
@@ -205,10 +243,15 @@ function deadPid(): number {
 }
 
 /** 本内测根下节点 `node` 的常驻命令行（beta-up 起它时的形状：--agent 指向本根的工作区）。 */
-function residentArgv(root: string, node: string, port: number): string[] {
+function residentArgv(
+  root: string,
+  node: string,
+  port: number,
+  entry = RESIDENT_SCRIPT,
+): string[] {
   return [
     process.execPath,
-    RESIDENT_SCRIPT,
+    entry,
     'resident',
     '--node',
     node,
@@ -227,14 +270,18 @@ function runDown(
   root: string,
   port: number,
   args: readonly string[],
+  qmBinary = RESIDENT_SCRIPT,
 ): ShellResult {
   return result(
-    Bun.spawnSync(['/bin/bash', join(BETA_DIR, 'beta-down.sh'), ...args], {
+    Bun.spawnSync(['/bin/bash', DOWN_SCRIPT, ...args], {
       cwd: REPOSITORY_ROOT,
       env: {
         ...process.env,
         PATH: SYSTEM_PATH,
+        HOME: dirname(root),
+        XDG_CONFIG_HOME: join(root, 'xdg'),
         QIANMO_BETA_ROOT: root,
+        QIANMO_QM_BINARY: qmBinary,
         QIANMO_BETA_NODE_PORT: String(port),
       },
       stdout: 'pipe',
@@ -244,6 +291,28 @@ function runDown(
 }
 
 describe('beta-down.sh <节点>：pid 文件对不上时按命令行再认一遍', () => {
+  test('live PID belonging to another process or node is refused before any signal', async () => {
+    const root = betaRoot(scratchDir())
+    const port = await freePort()
+    for (const argv of [
+      [process.execPath, LISTENER_SCRIPT, String(port), '127.0.0.1'],
+      residentArgv(root, 'beta-4', port),
+      residentArgv(join(scratchDir(), 'other-root'), 'beta-1', port),
+    ]) {
+      const other = spawnDetached(argv)
+      await waitListening(port)
+      const file = join(root, 'run/beta-1.pid')
+      writeFileSync(file, `${other}\n`)
+      const down = runDown(root, port, ['beta-1'])
+      expect(down.exitCode).not.toBe(0)
+      expect(down.stdout + down.stderr).toContain('身份不符')
+      expect(alive(other)).toBe(true)
+      expect(readFileSync(file, 'utf8')).toBe(`${other}\n`)
+      process.kill(other, 'SIGKILL')
+      for (let i = 0; i < 100 && alive(other); i++) await Bun.sleep(20)
+    }
+  }, 20_000)
+
   test('pid 文件陈旧：认出本节点真正在跑的旧进程，按原流程停掉（p1 的现场）', async () => {
     const root = betaRoot(scratchDir())
     const port = await freePort()
@@ -339,9 +408,15 @@ function nodeRepo(base: string): string {
   const repo = join(base, 'repo')
   const beta = join(repo, 'demo/env/beta')
   mkdirSync(beta, { recursive: true })
-  for (const name of ['beta-up.sh', 'common.sh', 'beta-down.sh']) {
+  for (const name of [
+    'beta-up.sh',
+    'common.sh',
+    'beta-down.sh',
+    'beta-smoke.sh',
+  ]) {
     copyFileSync(join(BETA_DIR, name), join(beta, name))
   }
+  PROCESS_TABLE?.install(join(beta, 'common.sh'))
   mkdirSync(join(repo, 'demo/lib'), { recursive: true })
   copyFileSync(
     join(REPOSITORY_ROOT, 'demo/lib/entry.sh'),
@@ -380,6 +455,7 @@ async function nodeLeg(): Promise<NodeLeg> {
 function runUp(
   leg: NodeLeg,
   env: Readonly<Record<string, string>>,
+  args: readonly string[] = [],
 ): ShellResult {
   const run = result(
     Bun.spawnSync(
@@ -392,12 +468,15 @@ function runUp(
         'beta-1',
         '--agent',
         'planner',
+        ...args,
       ],
       {
         cwd: leg.repo,
         env: {
           ...process.env,
           PATH: `${dirname(process.execPath)}:${SYSTEM_PATH}`,
+          HOME: dirname(leg.root),
+          XDG_CONFIG_HOME: join(leg.root, 'xdg'),
           QIANMO_BETA_ROOT: leg.root,
           QIANMO_BETA_NODE_PORT: String(leg.port),
           QIANMO_BETA_NODE_BIND: '127.0.0.1',
@@ -427,7 +506,15 @@ const READY_LINE = 'OK   : beta-1 在 127.0.0.1:'
 describe('beta-up.sh --role node：就绪必须是刚起的那个 pid 在应答', () => {
   test('端口已被本节点的旧进程占着：不起新进程，指向 beta-down（p1 的现场）', async () => {
     const leg = await nodeLeg()
-    const old = spawnDetached(residentArgv(leg.root, 'beta-1', leg.port))
+    const old = spawnDetached(
+      residentArgv(
+        leg.root,
+        'beta-1',
+        leg.port,
+        join(leg.repo, `dist/qm-${process.platform}-${process.arch}`),
+      ),
+      { QIANMO_CONFIG_DIR: join(leg.root, 'nodes/beta-1/config') },
+    )
     await waitListening(leg.port)
     writeFileSync(join(leg.root, 'run', 'beta-1.pid'), `${deadPid()}\n`)
 
@@ -493,3 +580,73 @@ describe('beta-up.sh --role node：就绪必须是刚起的那个 pid 在应答'
     expect(up.stdout).toContain(`公钥     : ${PUBLIC_KEY}`)
   }, 30_000)
 })
+
+test('non-default port survives restart and is shared by down and smoke', async () => {
+  const leg = await nodeLeg()
+  const env = { HOME: dirname(leg.root), QIANMO_BETA_NODE_PORT: '' }
+  const qmBinary = join(leg.repo, `dist/qm-${process.platform}-${process.arch}`)
+  const first = runUp(leg, env, ['--port', String(leg.port)])
+  expect({ code: first.exitCode, error: first.stderr }).toEqual({
+    code: 0,
+    error: '',
+  })
+  const down = runDown(leg.root, leg.port, ['beta-1'], qmBinary)
+  expect(down.exitCode).toBe(0)
+  const second = runUp(leg, env)
+  expect({ code: second.exitCode, error: second.stderr }).toEqual({
+    code: 0,
+    error: '',
+  })
+  expect(second.stdout).toContain(`${leg.port} 上监听`)
+  const smoke = Bun.spawnSync(
+    [
+      '/bin/bash',
+      join(leg.repo, 'demo/env/beta/beta-smoke.sh'),
+      '--root',
+      leg.root,
+      '--role',
+      'node',
+      '--node',
+      'beta-1',
+      '--allow-missing-trails',
+    ],
+    {
+      env: {
+        HOME: dirname(leg.root),
+        PATH: `${dirname(process.execPath)}:${SYSTEM_PATH}`,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  )
+  expect({ code: smoke.exitCode, error: smoke.stderr.toString() }).toEqual({
+    code: 0,
+    error: '',
+  })
+  expect(smoke.stdout.toString()).toContain(`${leg.port} 收连接`)
+  // A stale PID plus an unknown listener must diagnose the recorded port, without an env override.
+  expect(runDown(leg.root, leg.port, ['beta-1'], qmBinary).exitCode).toBe(0)
+  const listener = spawnDetached([
+    process.execPath,
+    LISTENER_SCRIPT,
+    String(leg.port),
+    '127.0.0.1',
+  ])
+  await waitListening(leg.port)
+  writeFileSync(join(leg.root, 'run/beta-1.pid'), `${deadPid()}\n`)
+  const stale = Bun.spawnSync(
+    ['/bin/bash', DOWN_SCRIPT, '--root', leg.root, 'beta-1'],
+    {
+      env: {
+        HOME: dirname(leg.root),
+        PATH: SYSTEM_PATH,
+        QIANMO_QM_BINARY: RESIDENT_SCRIPT,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  )
+  expect(stale.exitCode).not.toBe(0)
+  expect(stale.stdout.toString()).toContain(`端口 ${leg.port} 被占着`)
+  expect(alive(listener)).toBe(true)
+}, 30_000)
