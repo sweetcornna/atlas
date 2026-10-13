@@ -30,11 +30,14 @@ import {
   AVATAR_SHAPES,
   AVATAR_STATES,
   AVATAR_WORDS,
+  type AvatarColor,
+  type AvatarEyes,
   type AvatarShape,
   type AvatarSpec,
   type AvatarState,
   avatarHash,
 } from '../avatar.js'
+import type { Lang } from '../i18n.js'
 import { icon } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { dialogTop } from './kit.js'
@@ -184,9 +187,179 @@ interface AvatarDrawOptions {
   readonly className?: string
 }
 
-/** A short name for a figure: 雾蓝方圆. */
-export function avatarWords(spec: AvatarSpec): string {
-  return `${AVATAR_WORDS.color[spec.color]}${AVATAR_WORDS.shape[spec.shape]}`
+/** The words for what the editor draws, in each language the front speaks. */
+interface DrawnWords {
+  readonly shape: Readonly<Record<AvatarShape, string>>
+  readonly color: Readonly<Record<AvatarColor, string>>
+  readonly eyes: Readonly<Record<AvatarEyes, string>>
+  readonly state: Readonly<Record<AvatarState, string>>
+  /** A figure's short name from its colour and shape. */
+  readonly name: (color: string, shape: string) => string
+}
+
+const DRAWN: Readonly<Record<Lang, DrawnWords>> = {
+  'zh-CN': { ...AVATAR_WORDS, name: (color, shape) => `${color}${shape}` },
+  en: {
+    shape: {
+      orb: 'Orb',
+      capsule: 'Capsule',
+      drop: 'Drop',
+      cloud: 'Cloud',
+      pebble: 'Pebble',
+      squircle: 'Squircle',
+    },
+    color: {
+      mist: 'Mist',
+      lake: 'Lake',
+      sage: 'Sage',
+      sand: 'Sand',
+      apricot: 'Apricot',
+      clay: 'Clay',
+      blush: 'Blush',
+      lilac: 'Lilac',
+      cloud: 'Chalk',
+      ink: 'Ink',
+    },
+    eyes: {
+      dot: 'Dot',
+      oval: 'Oval',
+      wide: 'Bright',
+      square: 'Square',
+      ring: 'Round',
+      spark: 'Spark',
+    },
+    state: {
+      idle: 'Idle',
+      listening: 'Listening',
+      thinking: 'Thinking',
+      speaking: 'Replying',
+      happy: 'Done',
+      error: 'Error',
+      sleep: 'Asleep',
+    },
+    name: (color, shape) => `${color} ${shape.toLowerCase()}`,
+  },
+  ja: {
+    shape: {
+      orb: '丸',
+      capsule: 'カプセル',
+      drop: 'しずく',
+      cloud: '雲',
+      pebble: '小石',
+      squircle: '角丸',
+    },
+    color: {
+      mist: '霧青',
+      lake: '湖水',
+      sage: 'セージ',
+      sand: '砂',
+      apricot: 'あんず',
+      clay: '土',
+      blush: '薄紅',
+      lilac: 'ライラック',
+      cloud: '白',
+      ink: '墨',
+    },
+    eyes: {
+      dot: '点',
+      oval: '楕円',
+      wide: 'ぱっちり',
+      square: '四角',
+      ring: '大丸',
+      spark: '星',
+    },
+    state: {
+      idle: '待機',
+      listening: '聞いている',
+      thinking: '考え中',
+      speaking: '返信中',
+      happy: '完了',
+      error: 'エラー',
+      sleep: 'スリープ',
+    },
+    name: (color, shape) => `${color}の${shape}`,
+  },
+}
+
+/** The editor's own words; `whose` keeps `{name}` for the script to fill. */
+const EDITOR_TEXT: Readonly<
+  Record<
+    Lang,
+    {
+      readonly title: string
+      readonly random: string
+      readonly reset: string
+      readonly cancel: string
+      readonly save: string
+      readonly tryStates: string
+      readonly shape: string
+      readonly color: string
+      readonly eyes: string
+      readonly client: Readonly<Record<string, string>>
+    }
+  >
+> = {
+  'zh-CN': {
+    title: '形象',
+    random: '随机',
+    reset: '恢复默认',
+    cancel: '取消',
+    save: '保存',
+    tryStates: '试一下状态',
+    shape: '形态',
+    color: '颜色',
+    eyes: '眼睛',
+    client: {
+      mine: '我的形象',
+      whose: '{name} 的形象',
+      saving: '保存中',
+      saved: '形象已更新',
+    },
+  },
+  en: {
+    title: 'Avatar',
+    random: 'Random',
+    reset: 'Reset',
+    cancel: 'Cancel',
+    save: 'Save',
+    tryStates: 'Try a state',
+    shape: 'Shape',
+    color: 'Color',
+    eyes: 'Eyes',
+    client: {
+      mine: 'My avatar',
+      whose: 'Avatar · {name}',
+      saving: 'Saving',
+      saved: 'Avatar updated',
+      loadFailed: 'Could not load the avatar',
+      saveFailed: 'Could not save',
+    },
+  },
+  ja: {
+    title: 'アバター',
+    random: 'ランダム',
+    reset: '既定に戻す',
+    cancel: 'キャンセル',
+    save: '保存',
+    tryStates: '状態を試す',
+    shape: '形',
+    color: '色',
+    eyes: '目',
+    client: {
+      mine: '自分のアバター',
+      whose: '{name} のアバター',
+      saving: '保存中',
+      saved: 'アバターを更新しました',
+      loadFailed: 'アバターを読み込めません',
+      saveFailed: '保存できません',
+    },
+  },
+}
+
+/** A short name for a figure: 雾蓝方圆, Mist squircle. */
+export function avatarWords(spec: AvatarSpec, lang: Lang = 'zh-CN'): string {
+  const words = DRAWN[lang]
+  return words.name(words.color[spec.color], words.shape[spec.shape])
 }
 
 /** Which figure this is, so a script can tell a redraw of the same one. */
@@ -371,18 +544,24 @@ function options<K extends 'shape' | 'eyes'>(
  * no longer shows are carried in `data-spec` and saved as they were.
  * Redrawn by the server on every pick (`/fragments/avatar`).
  */
-export function renderAvatarEditor(spec: AvatarSpec, name: string): string {
+export function renderAvatarEditor(
+  spec: AvatarSpec,
+  name: string,
+  lang: Lang = 'zh-CN',
+): string {
+  const words = DRAWN[lang]
+  const text = EDITOR_TEXT[lang]
   const swatches = AVATAR_COLORS.map(
     color =>
-      `<label class="av-choice" title="${attr(AVATAR_WORDS.color[color])}">` +
-      radio('color', color, spec.color === color, AVATAR_WORDS.color[color]) +
+      `<label class="av-choice" title="${attr(words.color[color])}">` +
+      radio('color', color, spec.color === color, words.color[color]) +
       `<span class="av-swatch" style="background:${AVATAR_HEX[color]}"></span></label>`,
   ).join('')
   const states = AVATAR_STATES.map(
     state =>
       `<button type="button" class="av-state" data-action="avatar-state" ` +
       `data-state="${state}" aria-pressed="${state === 'idle'}">` +
-      `${escapeHtml(AVATAR_WORDS.state[state])}</button>`,
+      `${escapeHtml(words.state[state])}</button>`,
   ).join('')
   return (
     `<div class="av-editor" data-spec="${attr(JSON.stringify(spec))}">` +
@@ -391,21 +570,21 @@ export function renderAvatarEditor(spec: AvatarSpec, name: string): string {
       size: 112,
       uid: 'av-edit',
       live: true,
-      label: `${name} · ${avatarWords(spec)}`,
+      label: `${name} · ${avatarWords(spec, lang)}`,
       className: 'av-stage-figure',
     }) +
-    `<span class="av-stage-name">${escapeHtml(avatarWords(spec))}</span>` +
-    `<div class="av-states" role="group" aria-label="试一下状态">${states}</div>` +
+    `<span class="av-stage-name">${escapeHtml(avatarWords(spec, lang))}</span>` +
+    `<div class="av-states" role="group" aria-label="${attr(text.tryStates)}">${states}</div>` +
     `</div>` +
     `<div class="av-groups">` +
     group(
-      '形态',
-      options('shape', AVATAR_SHAPES, AVATAR_WORDS.shape, spec, shapeGlyph),
+      text.shape,
+      options('shape', AVATAR_SHAPES, words.shape, spec, shapeGlyph),
     ) +
-    group('颜色', swatches) +
+    group(text.color, swatches) +
     group(
-      '眼睛',
-      options('eyes', AVATAR_EYES, AVATAR_WORDS.eyes, spec, eyesGlyph),
+      text.eyes,
+      options('eyes', AVATAR_EYES, words.eyes, spec, eyesGlyph),
     ) +
     `</div></div>`
   )
@@ -415,11 +594,13 @@ export function renderAvatarEditor(spec: AvatarSpec, name: string): string {
  * The editor dialog. Its body is empty until the page script fills it from
  * `/fragments/avatar` for the figure being edited.
  */
-export function avatarDialog(): string {
+export function avatarDialog(lang: Lang = 'zh-CN'): string {
+  const text = EDITOR_TEXT[lang]
   return (
-    `<dialog class="dialog" id="avatar-dialog" aria-labelledby="avatar-title">` +
+    `<dialog class="dialog" id="avatar-dialog" aria-labelledby="avatar-title" ` +
+    `data-lang="${lang}" data-text="${attr(JSON.stringify(text.client))}">` +
     `<form id="avatar-form" novalidate>` +
-    dialogTop('avatar-title', 'sparkles', '形象') +
+    dialogTop('avatar-title', 'sparkles', text.title) +
     `<div class="dialog-body">` +
     `<p class="note" id="avatar-who"></p>` +
     `<div id="avatar-editor"></div>` +
@@ -428,12 +609,12 @@ export function avatarDialog(): string {
     `<div class="dialog-actions av-foot">` +
     `<span class="kit-row">` +
     `<button type="button" class="btn btn-ghost btn-small" data-action="avatar-random">` +
-    `${icon('refresh-cw', { small: true })}随机</button>` +
-    `<button type="button" class="btn btn-ghost btn-small" data-action="avatar-default">恢复默认</button>` +
+    `${icon('refresh-cw', { small: true })}${escapeHtml(text.random)}</button>` +
+    `<button type="button" class="btn btn-ghost btn-small" data-action="avatar-default">${escapeHtml(text.reset)}</button>` +
     `</span>` +
     `<span class="kit-row">` +
-    `<button type="button" class="btn btn-secondary" data-action="confirm-cancel">取消</button>` +
-    `<button type="submit" class="btn btn-primary" data-write>${icon('check', { small: true })}保存</button>` +
+    `<button type="button" class="btn btn-secondary" data-action="confirm-cancel">${escapeHtml(text.cancel)}</button>` +
+    `<button type="submit" class="btn btn-primary" data-write>${icon('check', { small: true })}${escapeHtml(text.save)}</button>` +
     `</span></div>` +
     `</form></dialog>`
   )

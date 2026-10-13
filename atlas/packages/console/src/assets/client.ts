@@ -573,7 +573,12 @@ function runtimeScript(guards: TokenGuards): string {
 
   /* ---------------- session expiry ---------------- */
 
-  var EXPIRED = '会话已失效';
+  // The words are the server-drawn dialog's own title, so they come in the
+  // page's language; a page without the dialog says it in 简体中文.
+  function expiredText() {
+    var title = byId('session-expired-title');
+    return (title && title.textContent) || '会话已失效';
+  }
 
   function expire() {
     if (expired) return;
@@ -582,7 +587,7 @@ function runtimeScript(guards: TokenGuards): string {
     for (var i = 0; i < expireHooks.length; i++) {
       try { expireHooks[i](); } catch (e) { /* one hook must not keep the rest running */ }
     }
-    say(byId('refresh-state'), '已停止 · ' + EXPIRED, 'bad');
+    say(byId('refresh-state'), '已停止 · ' + expiredText(), 'bad');
     var link = byId('session-expired-login');
     if (link) {
       var here = window.location.pathname + window.location.search;
@@ -595,7 +600,7 @@ function runtimeScript(guards: TokenGuards): string {
 
   // The one place a response status is looked at before anything else.
   function checked(res) {
-    if (res.status === 401) { expire(); throw failure('unauthorized', 401, EXPIRED); }
+    if (res.status === 401) { expire(); throw failure('unauthorized', 401, expiredText()); }
     return res;
   }
 
@@ -606,7 +611,7 @@ function runtimeScript(guards: TokenGuards): string {
   // stopped: the next thing tried that would need the server brings it back.
   function refused() {
     openDialog('session-expired', null);
-    return Promise.reject(failure('unauthorized', 401, EXPIRED));
+    return Promise.reject(failure('unauthorized', 401, expiredText()));
   }
 
   /* ---------------- fields (D3) ---------------- */

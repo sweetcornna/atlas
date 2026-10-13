@@ -581,3 +581,54 @@ describe("the reader's own choices: theme colour and language", () => {
     )
   })
 })
+
+describe("the front in the reader's language reaches its shared pieces", () => {
+  function withLang(path: string, lang: string): Request {
+    const plain = browse(path, ADMIN)
+    return new Request(plain.url, {
+      headers: {
+        ...Object.fromEntries(plain.headers),
+        cookie: `qianmo_lang=${lang}`,
+      },
+    })
+  }
+
+  test('the expire dialog, the avatar dialog and the theme colours speak English', async () => {
+    const page = await (await front().handle(withLang('/', 'en'))).text()
+    const expired = region(page, 'session-expired', '</dialog>')
+    expect(expired).toContain('Session expired')
+    expect(expired).toContain('Sign in again')
+    expect(expired).not.toContain('会话已失效')
+    expect(page).toContain('data-lang="en"')
+    expect(page).toContain('>Avatar<')
+    expect(page).toContain('aria-label="Sage"')
+    expect(page).not.toContain('aria-label="青"')
+    // The head figure's name is in English too.
+    expect(page).toMatch(/aria-label="planner · [A-Z][a-z]+ [a-z]+"/)
+  })
+
+  test('the editor fragment follows ?lang=, and the management side keeps 简体中文', async () => {
+    const h = front()
+    const key = encodeURIComponent('agent:qianmo://tokyo-1/planner')
+    const en = await (
+      await h.handle(browse(`/fragments/avatar?key=${key}&lang=en`, ADMIN))
+    ).text()
+    expect(en).toContain('>Shape<')
+    expect(en).toContain('>Thinking<')
+    const ja = await (
+      await h.handle(browse(`/fragments/avatar?key=${key}&lang=ja`, ADMIN))
+    ).text()
+    expect(ja).toContain('>形<')
+    const plain = await (
+      await h.handle(browse(`/fragments/avatar?key=${key}`, ADMIN))
+    ).text()
+    expect(plain).toContain('>形态<')
+    const odd = await (
+      await h.handle(browse(`/fragments/avatar?key=${key}&lang=%22%3E`, ADMIN))
+    ).text()
+    expect(odd).toContain('>形态<')
+    // The admin document draws the dialog without a language: Chinese.
+    const admin = await (await h.handle(withLang('/admin', 'en'))).text()
+    expect(admin).not.toContain('Session expired')
+  })
+})

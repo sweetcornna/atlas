@@ -45,6 +45,7 @@ import {
 } from '../assets/client.js'
 import { CONSOLE_CSS, stripCssComments } from '../assets/css.js'
 import type { ConsoleRole } from '../auth.js'
+import type { Lang } from '../i18n.js'
 import { cspFor } from '../respond.js'
 import {
   chevron,
@@ -414,19 +415,43 @@ function topBar(model: ShellModel): string {
  * the address bar's current path into it when it opens, since a page that
  * switches conversations in place has moved on from what the server drew.
  */
-export function sessionExpired(relogin: string): string {
+const EXPIRED_TEXT: Readonly<
+  Record<
+    Lang,
+    { readonly title: string; readonly body: string; readonly login: string }
+  >
+> = {
+  'zh-CN': {
+    title: '会话已失效',
+    body: '凭据已过期或已被吊销 · 重新登录后回到这一页',
+    login: '重新登录',
+  },
+  en: {
+    title: 'Session expired',
+    body: 'The credential has expired or was revoked · sign in again to come back to this page',
+    login: 'Sign in again',
+  },
+  ja: {
+    title: 'セッションが切れました',
+    body: '資格情報の期限切れか失効です · もう一度ログインするとこのページに戻ります',
+    login: 'もう一度ログイン',
+  },
+}
+
+export function sessionExpired(relogin: string, lang: Lang = 'zh-CN'): string {
+  const text = EXPIRED_TEXT[lang]
   return (
     `<dialog class="dialog" id="session-expired" ` +
     `aria-labelledby="session-expired-title">` +
     `<div class="dlg-top"><span class="dlg-icon">` +
     icon('log-out') +
     `</span><div class="dialog-title" id="session-expired-title">` +
-    `会话已失效</div></div>` +
+    `${escapeHtml(text.title)}</div></div>` +
     `<div class="dialog-body">` +
-    `<p>凭据已过期或已被吊销 · 重新登录后回到这一页</p></div>` +
+    `<p>${escapeHtml(text.body)}</p></div>` +
     `<div class="dialog-actions">` +
     `<a class="btn btn-primary" id="session-expired-login" ` +
-    `href="${attr(relogin)}">重新登录</a>` +
+    `href="${attr(relogin)}">${escapeHtml(text.login)}</a>` +
     `</div></dialog>`
   )
 }

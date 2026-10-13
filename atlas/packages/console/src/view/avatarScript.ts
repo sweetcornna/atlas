@@ -20,6 +20,19 @@ export const AVATAR_PAGE_JS = `
   var form = byId('avatar-form');
   if (!form) return;
 
+  // The dialog says in which language it was drawn and carries the script's
+  // words for it (view/avatar.ts); without them, 简体中文.
+  var dialog = byId('avatar-dialog');
+  var lang = dialog ? dialog.getAttribute('data-lang') || 'zh-CN' : 'zh-CN';
+  var words = {};
+  try { words = JSON.parse(dialog ? dialog.getAttribute('data-text') || '{}' : '{}') || {}; } catch (e) { words = {}; }
+  function tx(key, fallback) { return typeof words[key] === 'string' ? words[key] : fallback; }
+  function failText(key, verb, err) {
+    if (typeof words[key] !== 'string') return qc.failLine(verb, err);
+    var detail = err && (err.human || err.message) ? String(err.human || err.message) : '';
+    return words[key] + (detail ? ' · ' + detail : '');
+  }
+
   var FIELDS = ['shape', 'color', 'material', 'eyes', 'mouth', 'accessory'];
   var editing = null;
   var seq = 0;
@@ -53,7 +66,7 @@ export const AVATAR_PAGE_JS = `
 
   function load(query, focusName) {
     var mine = ++seq;
-    var url = '/fragments/avatar?key=' + encodeURIComponent(editing.key) + query;
+    var url = '/fragments/avatar?key=' + encodeURIComponent(editing.key) + '&lang=' + encodeURIComponent(lang) + query;
     return qc.loadHtml(url).then(function (html) {
       if (mine !== seq) return;
       var editor = byId('avatar-editor');
@@ -68,7 +81,7 @@ export const AVATAR_PAGE_JS = `
         if (el) el.focus({ preventScroll: true });
       }
     }).catch(function (err) {
-      qc.say(byId('avatar-status'), qc.failLine('加载形象', err), qc.failTone(err));
+      qc.say(byId('avatar-status'), failText('loadFailed', '加载形象', err), qc.failTone(err));
     });
   }
 
@@ -83,7 +96,7 @@ export const AVATAR_PAGE_JS = `
     };
     backToDefault = false;
     previewState = 'idle';
-    qc.setText('avatar-who', editing.name === '我' ? '我的形象' : editing.name + ' 的形象');
+    qc.setText('avatar-who', editing.name === '我' ? tx('mine', '我的形象') : tx('whose', '{name} 的形象').replace('{name}', editing.name));
     qc.say(byId('avatar-status'), '', 'muted');
     load('', null).then(function () { qc.openDialog('avatar-dialog', null); });
   });
@@ -145,11 +158,11 @@ export const AVATAR_PAGE_JS = `
     if (!editing) return;
     var status = byId('avatar-status');
     var url = '/v0/avatars/' + encodeURIComponent(editing.key);
-    qc.say(status, '保存中', 'muted');
+    qc.say(status, tx('saving', '保存中'), 'muted');
     var sent = backToDefault ? qc.sendJson('DELETE', url) : qc.sendJson('PUT', url, specOf());
     sent.then(function () {
       qc.closeDialog(byId('avatar-dialog'));
-      qc.toast('形象已更新', 'ok');
+      qc.toast(tx('saved', '形象已更新'), 'ok');
       // The greeting on an empty page is outside every refreshed pane, and
       // a page with nothing open has no draft to lose.
       var empty = document.querySelector('.thread-empty');
@@ -159,7 +172,7 @@ export const AVATAR_PAGE_JS = `
       }
       document.dispatchEvent(new CustomEvent('qianmo:faces'));
     }).catch(function (err) {
-      qc.say(status, qc.failLine('保存', err), qc.failTone(err));
+      qc.say(status, failText('saveFailed', '保存', err), qc.failTone(err));
     });
   });
 })();

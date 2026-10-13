@@ -1005,7 +1005,7 @@ function welcome(model: FrontViewModel): string {
     uid: 'av-greet',
     live: true,
     state: verdict.tone === 'ok' || model.registryDown ? 'idle' : 'sleep',
-    label: `${names.agent} · ${avatarWords(spec)}`,
+    label: `${names.agent} · ${avatarWords(spec, model.lang)}`,
   })
   const stage = model.faces.editable
     ? `<button type="button" class="fx-welcome-face" data-action="avatar-edit" ` +
@@ -1109,7 +1109,7 @@ function renderHead(model: FrontViewModel): string {
       model.registryDown,
       model.now,
     ),
-    label: `${agent} · ${avatarWords(spec)}`,
+    label: `${agent} · ${avatarWords(spec, model.lang)}`,
   })
   const face = model.faces.editable
     ? `<button type="button" class="fx-head-face" data-action="avatar-edit" ` +
@@ -1239,8 +1239,8 @@ function accentField(t: FrontText): string {
     ACCENT_PRESETS.map(
       preset =>
         `<button type="button" class="fx-swatch" data-action="fx-accent" ` +
-        `data-accent="${attr(preset.name)}" aria-label="${attr(preset.label)}" ` +
-        `title="${attr(preset.label)}" aria-pressed="false"></button>`,
+        `data-accent="${attr(preset.name)}" aria-label="${attr(t.accentNames[preset.name] ?? preset.label)}" ` +
+        `title="${attr(t.accentNames[preset.name] ?? preset.label)}" aria-pressed="false"></button>`,
     ).join('') +
     `<label class="fx-swatch fx-swatch-custom" title="${attr(t.accentCustom)}">` +
     `<input type="color" id="fx-accent-custom" aria-label="${attr(t.accentCustomAria)}" value="#111110"></label>` +
@@ -1356,11 +1356,11 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     composer(model.composerEnabled, t) +
     `</div></div>` +
     `</main></div>\n` +
-    sessionExpired(model.relogin) +
+    sessionExpired(model.relogin, model.lang) +
     `<div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>\n` +
     `<p id="reply-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>` +
     keyboardHelp(t) +
-    avatarDialog() +
+    avatarDialog(model.lang) +
     `<script>${script}</script>\n` +
     `</body>\n</html>\n`
   )

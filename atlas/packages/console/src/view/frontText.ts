@@ -111,6 +111,8 @@ export interface FrontText {
   readonly themeDark: string
   readonly accent: string
   readonly accentCustom: string
+  /** The preset theme colours' names, by preset (`accent.ts`). */
+  readonly accentNames: Readonly<Record<string, string>>
   readonly accentCustomAria: string
   readonly language: string
   readonly signOut: string
@@ -266,6 +268,14 @@ const ZH: FrontText = {
   themeDark: '深色',
   accent: '主题色',
   accentCustom: '自定义',
+  accentNames: {
+    ink: '墨',
+    sage: '青',
+    indigo: '黛',
+    clay: '赭',
+    plum: '紫',
+    gold: '金',
+  },
   accentCustomAria: '自定义主题色',
   language: '语言 · Language',
   signOut: '退出',
@@ -387,6 +397,14 @@ const EN: FrontText = {
   themeDark: 'Dark',
   accent: 'Theme color',
   accentCustom: 'Custom',
+  accentNames: {
+    ink: 'Ink',
+    sage: 'Sage',
+    indigo: 'Indigo',
+    clay: 'Ochre',
+    plum: 'Plum',
+    gold: 'Gold',
+  },
   accentCustomAria: 'Custom theme color',
   language: 'Language · 语言',
   signOut: 'Sign out',
@@ -507,6 +525,14 @@ const JA: FrontText = {
   themeDark: 'ダーク',
   accent: 'テーマカラー',
   accentCustom: 'カスタム',
+  accentNames: {
+    ink: '墨',
+    sage: '青磁',
+    indigo: '藍',
+    clay: '赭',
+    plum: '紫',
+    gold: '金',
+  },
   accentCustomAria: 'カスタムテーマカラー',
   language: '言語 · Language',
   signOut: 'ログアウト',
