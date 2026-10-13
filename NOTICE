@@ -170,7 +170,7 @@ Corresponding Source。阡陌的控制台与常驻节点都落在这一格，包
   锁定提交    1ca13863a82825bdce02908b3db9713e9b084290，版本 v18.8.8
   基座快照    base-snapshot/omp-v18.8.8
               本仓库内的标签，指向无父提交
-              8eda291176c285be99039c019dd4a8b1cfeaf360，
+              b832507a5f9cbdd8d2136f55f1e44c2daf384503，
               树 1b30d3c80bc6f5c4d722e10dc82ebb6d8c4125a3，与上游锁定提交的树
               逐字节一致。本仓库不含上游 git 历史，1ca13863 在本仓库不是有效
               git 对象
