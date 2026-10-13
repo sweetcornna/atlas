@@ -35,6 +35,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { TestProcessTable } from './testProcessTable'
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..')
 const BETA_DIR = join(REPOSITORY_ROOT, 'demo/env/beta')
@@ -120,6 +121,7 @@ interface Scratch {
   readonly repo: string
   readonly root: string
   readonly logs: string
+  readonly processTable?: TestProcessTable
 }
 
 function scratch(
@@ -170,7 +172,10 @@ function scratch(
   }
   const logs = join(base, 'logs')
   mkdirSync(logs, { recursive: true })
-  return { repo, root, logs }
+  const processTable =
+    process.platform === 'darwin' ? new TestProcessTable(base) : undefined
+  processTable?.install(join(beta, 'common.sh'))
+  return { repo, root, logs, processTable }
 }
 
 interface ShellResult {
@@ -630,14 +635,14 @@ describe('handoff-node.sh 的 key 文件（secrets/handoff-model-env）', () => 
 
 describe('handoff-node.sh stop', () => {
   /** 一个已经脱离本进程的 sleep：死后由 init 收尸，`kill -0` 不会被僵尸骗住。 */
-  function orphan(): number {
-    const child = Bun.spawnSync([
-      '/bin/sh',
-      '-c',
-      'sleep 60 >/dev/null 2>&1 & echo $!',
-    ])
+  function orphan(place: Scratch): number {
+    const child = Bun.spawnSync(
+      ['/bin/sh', '-c', '/bin/sleep 60 >/dev/null 2>&1 & echo $!'],
+      { env: { PATH: '/usr/bin:/bin', HOME: dirname(place.root) } },
+    )
     const pid = Number(child.stdout.toString().trim())
     orphans.push(pid)
+    place.processTable?.record(pid, ['/bin/sleep', '60'])
     return pid
   }
 
@@ -656,9 +661,37 @@ describe('handoff-node.sh stop', () => {
     mkdirSync(runDir, { recursive: true })
     const data = join(place.root, 'handoff', 'node', 'repos')
     mkdirSync(data, { recursive: true })
-    const pids = { 'handoff-node': orphan(), 'handoff-app-server': orphan() }
+    const pids = {
+      'handoff-node': orphan(place),
+      'handoff-app-server': orphan(place),
+    }
     for (const [name, pid] of Object.entries(pids)) {
       writeFileSync(join(runDir, `${name}.pid`), `${pid}\n`)
+      // Record the observed process identity, as a real launch does, before testing stop.
+      const identity = Bun.spawnSync(
+        [
+          '/bin/bash',
+          '-c',
+          '. "$1"; beta_record_pid_identity "$2" "$3"',
+          'record-stop-fixture',
+          join(place.repo, 'demo/env/beta/common.sh'),
+          name,
+          String(pid),
+        ],
+        {
+          env: {
+            PATH: '/usr/bin:/bin',
+            HOME: dirname(place.root),
+            QIANMO_BETA_ROOT: place.root,
+          },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        },
+      )
+      expect({
+        code: identity.exitCode,
+        error: identity.stderr.toString(),
+      }).toEqual({ code: 0, error: '' })
     }
 
     const r = run(place, ['stop'])

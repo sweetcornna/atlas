@@ -67,6 +67,7 @@ beta_start_process() {
     printf '{}\\n' >"$ready"
     return 0
   fi
+  if [ -n "\${FAKE_PROVIDER_PROBE:-}" ]; then bun "$FAKE_PROVIDER_PROBE"; fi
   exit 0
 }
 `
@@ -79,6 +80,11 @@ fs.appendFileSync(
   process.env.FAKE_OCC_LOG,
   JSON.stringify({ args, configDir: process.env.QIANMO_CONFIG_DIR ?? '' }) + '\\n',
 )
+if (args.includes('serve-stdin')) {
+  let input = ''
+  for await (const chunk of process.stdin) input += chunk
+  process.stdout.write(JSON.stringify({ v: 1, requestId: JSON.parse(input).requestId, ok: true, state: null }) + '\\n')
+}
 if (args.includes('--print-wake-identity')) {
   process.stdout.write('console=fake-public-key-0123456789\\n')
 }
@@ -218,7 +224,11 @@ function scratch(): Scratch {
   const ops = join(beta, 'ops')
   mkdirSync(ops, { recursive: true })
   for (const name of readdirSync(join(BETA_DIR, 'ops'))) {
-    if (name.endsWith('.in') || name === 'mirror-pull.sh') {
+    if (
+      name.endsWith('.in') ||
+      name === 'mirror-pull.sh' ||
+      name === 'model-apply.sh'
+    ) {
       copyFileSync(join(BETA_DIR, 'ops', name), join(ops, name))
     }
   }
@@ -508,6 +518,52 @@ describe('beta-up.sh forwards tail arguments to the underlying command', () => {
  * 丢的是策略不是显示项：节点照常启动、照常在名册上在线、拨号照常 426，所有存活判据
  * 全绿，只有真去发一个签名唤醒任务时才失败。
  */
+test('node launch record selects its saved port and agent; explicit CLI port wins', () => {
+  const place = scratch()
+  mkdirSync(join(place.root, 'state'), { recursive: true })
+  writeFileSync(
+    join(place.root, 'state/beta-2.launch'),
+    `root=${place.root}\nport=40231\nbind=127.0.0.1\nagents=ops\n`,
+  )
+  const first = runBetaUp(place, ['--role', 'node', '--node', 'beta-2'], {
+    env: { QIANMO_BETA_NODE_PORT: '', QIANMO_BETA_AGENTS: '' },
+  })
+  expect({ code: first.exitCode, error: first.stderr }).toEqual({
+    code: 0,
+    error: '',
+  })
+  const old = recorded(place).get('beta-2') ?? []
+  expect(old[old.indexOf('--port') + 1]).toBe('40231')
+  expect(old[old.indexOf('--agent') + 1]).toBe(
+    `ops=${place.root}/workspaces/beta-2/ops`,
+  )
+  const next = runBetaUp(
+    place,
+    [
+      '--root',
+      place.root,
+      '--role',
+      'node',
+      '--node',
+      'beta-2',
+      '--port',
+      '40232',
+    ],
+    {
+      env: {
+        QIANMO_BETA_ROOT: join(place.root, 'wrong-root'),
+        QIANMO_BETA_NODE_PORT: '',
+      },
+    },
+  )
+  expect({ code: next.exitCode, error: next.stderr }).toEqual({
+    code: 0,
+    error: '',
+  })
+  const changed = recorded(place).get('beta-2') ?? []
+  expect(changed[changed.indexOf('--port') + 1]).toBe('40232')
+})
+
 describe('beta-up.sh 节点腿的尾参记录', () => {
   /** 把每次跑各自的临时路径抹掉，只留下形状。 */
   function shape(place: Scratch, node: string): string[] {
@@ -980,6 +1036,58 @@ describe('beta-up.sh --role host provisions systemd units for console and regist
  * console.conf 还整整齐齐写着它们。一份看着像配置、实际一个字都不生效的文件，会把下一个
  * 照着它配的人直接带沟里。
  */
+test('CLI root override reaches the real console local provider executor', () => {
+  const place = scratch()
+  writePeers(place, ['qianmo://beta-1/planner ws://127.0.0.1:38625'])
+  mkdirSync(join(place.root, 'nodes/beta-1/config'), { recursive: true })
+  writeFileSync(
+    join(place.repo, `dist/qm-${process.platform}-${process.arch}`),
+    FAKE_OCC.replace('process.env.FAKE_OCC_LOG', JSON.stringify(place.occLog)),
+  )
+  const probe = join(place.repo, 'provider-probe.ts')
+  const report = join(place.root, 'provider-result.json')
+  const command = join(place.repo, 'demo/env/beta/ops/model-apply.sh')
+  chmodSync(command, 0o755)
+  writeFileSync(
+    probe,
+    `
+import { ProviderExecutor } from ${JSON.stringify(join(REPOSITORY_ROOT, 'atlas/packages/node/src/commands/consoleProvidersExec.ts'))}
+const executor = new ProviderExecutor([{ kind: 'local', node: 'beta-1', command: ${JSON.stringify(command)} }], { knownHostsFile: '', env: process.env })
+const result = await executor.run('beta-1', { v: 1, op: 'status', node: 'beta-1', requestId: 'root-override-1' }, 5000)
+await Bun.write(${JSON.stringify(report)}, JSON.stringify(result))
+`,
+  )
+  const result = runBetaUp(
+    place,
+    ['--root', place.root, '--role', 'host', '--only', 'console'],
+    {
+      env: {
+        HOME: dirname(place.root),
+        QIANMO_BETA_ROOT: join(dirname(place.root), 'old-root'),
+        FAKE_PROVIDER_PROBE: probe,
+      },
+    },
+  )
+  expect({ code: result.exitCode, err: result.stderr }).toEqual({
+    code: 0,
+    err: '',
+  })
+  expect(JSON.parse(readFileSync(report, 'utf8'))).toMatchObject({
+    ok: true,
+    reply: { ok: true },
+  })
+  const calls = readFileSync(place.occLog, 'utf8')
+    .trim()
+    .split('\n')
+    .map(line => JSON.parse(line))
+  expect(
+    calls
+      .filter(call => call.args.includes('serve-stdin'))
+      .map(call => call.configDir),
+  ).toEqual([join(place.root, 'nodes/beta-1/config')])
+  expect(existsSync(join(dirname(place.root), 'old-root'))).toBe(false)
+}, 15_000)
+
 describe('beta-up.sh reports and drops the legacy console.conf schema', () => {
   test('读到旧键要报出来，并在回写时删掉', () => {
     const place = scratch()

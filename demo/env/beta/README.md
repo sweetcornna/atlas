@@ -15,7 +15,7 @@
 拓扑是「H 上一套 + 每台节点机一个节点」（beta-env.md §2.3）。所以只有两条命令，用 `--role` 区分。
 
 ```bash
-# ── 任一节点机上（一机一节点）────────────────────────────────────────────────
+# ── 任一节点机上（单节点；多节点见下节）────────────────────────────────────────────────
 # 前置：secrets/transport-psk 里已经有**这台机器这个节点**的那一把 PSK（由 H 生成后分发）
 ./demo/env/beta/beta-up.sh --role node --node <节点名> --agent <名字> --agent <名字>
 
@@ -46,6 +46,70 @@ H 腿会按 `peers.conf` 决定每个节点怎么拨：**没有 `node` 坐标行
 在 H 上给一个铺过链路的节点名，它的隧道与镜像 timer 也一起停），
 回到干净运行态 `./demo/env/beta/beta-reset.sh`（`--purge-links` 连链路与 H 腿的生成物一起删，
 并先取消那两个开机自启单元再删文件；下次 `beta-up.sh` 会照仓库重新铺出来；**`mirror/` 一条不动**）。
+
+## 一台机器多个常驻节点
+
+每个节点使用独立内测根和不同监听端口；节点名仍按现有小写字母、数字、`-` 规则填写。`--root` 与
+`QIANMO_BETA_ROOT` 都可选择根，命令行优先。先在每个根的 `secrets/transport-psk` 放该节点由 H 分发的
+0600 PSK；不要在节点机自动生成。根仍过公共层的保护检查，不能是家目录、仓库根或真实配置目录。
+
+```bash
+./demo/env/beta/beta-up.sh --root "$HOME/qianmo-beta-alder" --role node --node alder --agent planner --port 40231 -- --sign-handshake --trust '<控制台节点>=<公钥>'
+./demo/env/beta/beta-up.sh --root "$HOME/qianmo-beta-rowan" --role node --node rowan --agent ops --port 40232 -- --sign-handshake --trust '<控制台节点>=<公钥>'
+./demo/env/beta/beta-down.sh --root "$HOME/qianmo-beta-rowan" rowan
+# 重起无需抄端口、agent、绑定地址或尾参；仍明确选择根和节点
+./demo/env/beta/beta-up.sh --root "$HOME/qianmo-beta-rowan" --role node --node rowan
+./demo/env/beta/beta-smoke.sh --root "$HOME/qianmo-beta-rowan" --role node --node rowan --allow-missing-trails
+```
+
+启动元数据存于 `<根>/state/<节点>.launch`（0600，根、端口、绑定地址、agent 列表）；up、down、自检共同读取。
+文件只解析为数据，不执行 shell。根不匹配、字段损坏或软链会拒绝。选择根始终由调用方负责，脚本不扫描所有用户目录。
+无记录的旧部署仍用环境变量或默认值，首次升级须带原端口；这份元数据不能从旧 passthrough 自动恢复缺失的端口。
+显式 `--port` / 环境变量优先于记录，改变启动设置请先停节点再起；已在跑时不会回写启动元数据。
+尾参继续逐行保存于 `<根>/state/<节点>.passthrough`，不给 `--` 会沿用，空 `--` 会清空。端口、绑定地址、
+节点和 agent 不允许藏在尾参里覆盖元数据；端口用 `--port`，绑定地址用 `QIANMO_BETA_NODE_BIND`。
+
+CLI `--root` 通过保护检查后会同步导出 `QIANMO_BETA_ROOT`，覆盖原 shell 的旧根；控制台本机模型执行器
+继承这一根，因此 host 腿的 `--root` 与节点运维入口一致。
+
+起机前核对已记录 PID 的实际执行程序、qm 入口与子命令位置、节点、独立环境中的配置根和启动标识。
+Linux 用 `/proc/<pid>/exe`、NUL 分隔的 `cmdline` / `environ`、`stat` 第 22 列启动 ticks、第 4 列 PPID；
+参数中的相似单词或伪造的 `QIANMO_CONFIG_DIR=…` 不能作为环境证据。无法可靠读取身份时拒绝起机或发信号，保留记录。
+扫描在读取完整身份前按 `stat` 第 9 列 flags 的 `PF_KTHREAD`（`0x00200000`）排除内核线程，不把空 `cmdline` 当作内核线程证据。
+非 root 只扫描 `status` 的 `Uid` 行中有效 UID 与当前 shell 的有效 UID 相同的进程；root 扫描所有非内核线程。
+被排除进程的 `exe` / `environ` 不可读不影响全停与 PID 找回；候选进程身份或存活进程的筛选标识读取失败仍明确报错。
+PID 1 可被扫描，但仍受信号保护：即使命中节点身份，也拒绝停机并报告失败。
+macOS 开发机没有这份可靠信息时同样拒绝，不能用 `ps` 的空白拆词猜身份；生产起停身份须在 Linux 验收。
+旧 resident 只有 PID 文件时仍能凭同一套可靠信息找回，不按端口杀人；读取不到可靠进程表不确认停机成功。
+
+新起的进程写 0600 的 `run/<名字>.pid.identity`：v2 NUL 数据包含 PID、启动标识、可执行路径、配置根与完整 argv，
+不存整个环境或模型 key。旧版文本 identity 的参数边界与执行程序无法验证，会拒绝自动停机：先人工核对并停止旧进程，
+再通过脚本重起生成 v2 记录。`beta-down`（指定名字或全停）与 `handoff-node.sh stop` 都可停带有效记录的 handoff 辅助进程。
+辅助进程缺记录或身份改变时照样拒绝；全停继续处理其他进程，最终报告失败并保留不匹配的记录。
+
+停止前一次读取并绑定每个后代的 PID / PPID / 启动 ticks，再复核祖先链；按叶子到父进程的顺序发送 TERM，
+等该进程与全部已追踪后代退出。必要时升级为 KILL；只有初次信号前证明归属、且仍是同一启动标识的后代才可升级，
+允许已验证的后代在父进程退出后重新挂到其他父进程；PID 复用不发信号。同机其他节点不受影响。
+
+模型服务下发直接使用通用入口，不需要另装现场包装器：
+
+```bash
+# 请求 JSON 通过 stdin 输入，不放到 argv；强制命令中的根固定由登记者选择
+./demo/env/beta/ops/model-apply.sh rowan --root "$HOME/qianmo-beta-rowan" < <请求文件>
+```
+
+同一服务账号下所有节点、所有内测根固定共享 `$HOME/.qianmo-model-apply-host.lock`，固定等待 20 秒。
+直接调用、SSH 强制命令和控制台本机执行器必须使用同一服务账号与登录 HOME；多账号共同写同一宿主不在此入口的支持范围内。
+锁路径与等待时间不再接受 `QIANMO_MODEL_APPLY_LOCK_FILE` / `QIANMO_MODEL_APPLY_LOCK_WAIT_S` 覆盖，
+后端也不再接受 `QIANMO_MODEL_APPLY_LOCK` 覆盖；这些旧环境变量即使设置了也会被忽略。各入口从固定 `/usr/bin/flock` / `/bin/flock` 选择后端，
+均不可用时才用 mkdir；调用者 PATH 不参与选择，避免控制台的环境白名单把一台机器分成两把锁。
+超时回协议 `code:"busy"`、退出 1，不运行下发子进程。默认等待与控制台最短 status 超时同为 20 秒，
+繁忙时控制台可能先报超时；运维直接调用可拿到明确 busy。
+这些锁只串行模型操作，常驻节点的 RPC 任务仍可并行。
+
+登记与撤回的 `--node-root` 见「第六类动作专用 key」。同机每个节点仍各用一把模型服务专用 key，不能共用公钥：
+sshd 只认第一条匹配行。登记的目标根路径沿用安全字符校验（字母、数字、`.`、`_`、`/`、`-`；规范绝对路径），
+避免路径被远端 shell 或 `command=` 当作代码。
 
 ### 尾参透传：`--` 之后的一切交给底层命令
 
@@ -644,7 +708,7 @@ systemctl --user restart qianmo-console.service
 `model-apply.sh` 做的事只有一件：在该节点的配置根下跑 `qm provider serve-stdin --node <node>`，stdin、stdout 原样
 透传，自己不读 stdin（密钥在那一行里）。它**不读 `SSH_ORIGINAL_COMMAND`**：中枢发来的客户端命令是一个不存在的哨兵
 `qianmo-model-apply-v1`——`authorized_keys` 那一行丢了或被改写时，sshd 去执行哨兵、操作失败，而不是静默成功。
-节点名不合法、这台机器上没有这个节点的配置根时，它回一行 `bad-request`；同一节点上另一个操作没结束时等锁，超时回
+节点名不合法、这台机器上没有这个节点的配置根时，它回一行 `bad-request`；本机任一节点的模型操作没结束时等主机共享锁，超时回
 `busy`。**那一行仍是一道会静默失效的门**（§8.3）：被改写成别的命令之后哨兵帮不上忙，列进巡检项。
 
 ## 模型服务迁移与真机验收（P18.13）
@@ -687,9 +751,9 @@ ACP 子进程的 env 剥掉；起节点时横幅多一行 `缓存调参 : <名>=
 
 ```bash
 demo/env/beta/ops/model-apply-enroll.sh enroll --node <节点> \
-  --hub <H> --hub-tree <H 部署根> --node-ssh <节点 ssh> --node-tree <节点部署根> --dry-run
+  --hub <H> --hub-tree <H 部署根> --node-ssh <节点 ssh> --node-tree <节点部署根> --node-root <节点内测绝对根> --dry-run
 demo/env/beta/ops/model-apply-enroll.sh enroll --node <节点> \
-  --hub <H> --hub-tree <H 部署根> --node-ssh <节点 ssh> --node-tree <节点部署根>
+  --hub <H> --hub-tree <H 部署根> --node-ssh <节点 ssh> --node-tree <节点部署根> --node-root <节点内测绝对根>
 # 在 H 上重起控制台：它起来时才看专用 key 在不在。先看是哪种起法
 systemctl --user is-active qianmo-console.service
 #   active：单元起的 → 原样重起（ExecStop 是 beta-down.sh console，ExecStart 从 ops/console.env 取尾参）
@@ -714,13 +778,28 @@ systemctl --user restart qianmo-console.service
 | 撤回 `hub-key-discard` | H | 只给 `enroll` 用：写的阶段后面一步失败时，删掉这一次刚生成的那一对 key（公钥逐字相同才删） |
 | 撤回 `node-uninstall` | 节点 | 只给 `enroll` 用：authorized_keys 与「备份 + 那一行」逐字节相同时把备份换回原位；不同就拒绝、手工处理 |
 
+`--node-root` 是显式的节点目标根：同一值用于只读检查、写入 `command="…/model-apply.sh <节点> --root <根>"`、
+验证和失败撤回。省略仍登记 `~/qianmo-beta`；仅设置一个非默认 `QIANMO_BETA_ROOT` 而未给 `--node-root` 会拒绝。
+`authorized-key`、`node-install`、`node-uninstall` 也都接受 `--node-root`。安装幂等检查比较完整的强制命令，
+同一公钥已绑定别的根时拒绝，不能悄悄改指向。
+
+在节点上手工撤回这一次安装，使用同一目标根、公钥，以及输出的 `UNDO <备份|-> <ssh目录是否新建>`：
+
+```bash
+printf 'PUBKEY <公钥类型> <公钥内容>\n' | ./demo/env/beta/ops/model-apply-enroll.sh node-uninstall --node <节点> --node-root <节点内测绝对根> --backup <UNDO里的备份或->
+# 只有 UNDO 的第二个值为 1 时才追加 --with-dir；并只会移除空 .ssh 目录
+```
+
+撤回只在 authorized_keys 仍逐字等于「原备份 + 此次新行」时进行；有其他改动就拒绝。它只撤销 SSH 下发权限，
+已提交的模型配置、会话与审计链保持原状。H 上已有专用 key 不自动删；新 key 的自动失败撤回仍由 enroll 处理。
+
 **顺序：先全部检查，再写。**`enroll` 先只读地走一遍 ② ① ③ ④ ⑤（坐标、key、节点前置与 authorized_keys 冲突、
 主机钥比对、中枢 known_hosts 冲突），任何一项会拒绝都在第一次写入之前拒绝，三台机器零改动；全过之后才按
 ① ③ ⑤ 写，最后 ⑥。写的中途某一步失败（连接断了、盘满了），用上面两个撤回子命令把这一次写下的东西撤掉；
 撤不回就打印手工回滚的那几条。⑥ 失败时三处都已写好、彼此一致，不自动撤回（原因与回滚见输出）。
 `--dry-run` 只走检查那一遍，打印「将要」写的那一行与 known_hosts 那几行，不跑 ⑥。退出码：0 做完；1 拒绝或某步失败；
-2 用法错。前提：节点 sshd 至少出示一把 ed25519 / ecdsa / rsa 主机钥（读 `/etc/ssh/ssh_host_*_key.pub`，没有时问本机回环 22 口）、节点上部署根下 `demo/env/beta/ops/model-apply.sh` 可执行、`~/qianmo-beta/nodes/<节点>/config` 在
-（sshd 强制命令下没有 `QIANMO_BETA_ROOT`，所以节点必须用默认内测根）。跑在 H 自己身上的节点走 local，不需要登记。
+2 用法错。前提：节点 sshd 至少出示一把 ed25519 / ecdsa / rsa 主机钥（读 `/etc/ssh/ssh_host_*_key.pub`，没有时问本机回环 22 口）、节点上部署根下 `demo/env/beta/ops/model-apply.sh` 可执行、`<节点目标根>/nodes/<节点>/config` 在
+（目标根默认 `~/qianmo-beta`，非默认根须显式给 `--node-root`，强制命令不依赖 sshd 保留环境）。跑在 H 自己身上的节点走 local，不需要登记。
 
 ### 首次下发与清 `model-env`
 
@@ -869,7 +948,7 @@ demo/env/beta/handoff-node.sh stop
 | `QIANMO_BETA_PEERS_FILE` | `$QIANMO_BETA_ROOT/peers.conf` | 地址表（地址行 + 可选的 `node` 坐标行，见上一节）。**H 腿的必填项**，0600，不进仓库 |
 | `QIANMO_BETA_REGISTRY_PORT` | `38620` | 注册中心。**永不出回环**（它默认零鉴权；写 token 也只挡写不挡读，§9.2） |
 | `QIANMO_BETA_CONSOLE_PORT` | `38621` | 控制台。绑回环，对外那一面由反代做 TLS（§2.5） |
-| `QIANMO_BETA_NODE_PORT` | `38625` | 节点入站。一机一节点，四台用同一个号不用协调 |
+| `QIANMO_BETA_NODE_PORT` | `38625` | 节点入站。不同机器可同号；同机必须各用一个端口，首次启动会保存端口 |
 | `QIANMO_BETA_HOST_BIND` | `127.0.0.1` | 注册中心与控制台绑哪。**改成非回环等于同时废掉 §2.5 与 §9.2 两条硬规矩** |
 | `QIANMO_BETA_NODE_BIND` | `0.0.0.0` | 节点入站绑哪。默认全网是**有意的**：节点要被 H 拨到，而无 sudo 的 VPS 上没有包过滤，那个端口上唯一的门本来就是 PSK 握手（§2.6/§8.2）。改成 `127.0.0.1` 会得到一个「起得来、名册上在线、H 拨不通」的节点 |
 | `QIANMO_BETA_NODE` | `beta-1` | 节点名。**四台机器上必须各不相同**；没给 `--node` 时脚本会 WARN |
@@ -1064,3 +1143,31 @@ PSK 是每节点一把、由 H 生成后分发；在节点机上本地重新生�
   `disable=SC2034`——它是被 source 的公共层，shellcheck 看不到消费方向，`demo/env/common.sh`
   有同样的 12 条告警；**只在那一个文件禁用，四个消费脚本仍然全开**。
 - 不需要 `curl`：`beta_http_status` 有 bun 兜底（bun 本来就是硬依赖）。
+
+
+## 多节点运维回归检查
+
+执行 `bun test demo/env/beta` 与 `bunx biome check demo/env/beta`。部署前的 runbook 验收同时包括：
+
+- `ops/model-apply-enroll.test.ts`：`explicit non-default node root is checked, enrolled, verified and rolled back`。
+- `beta-node-identity.test.ts`：R→S / S→R 调度变化仍识别同一进程；快照前后拒绝僵尸 / 退出状态；节点与后代扫描读取失败明确报错且拒绝信号；macOS 无夹具启动不执行命令、不写 PID；相似 argv / 伪造环境拒绝信号；枚举到启动时间读取之间的 PID 复用；全停 resident 与 handoff；不同节点 / 根、不可读 procfs、后代退出与 KILL。
+- `beta-up-args.test.ts`：`CLI root override reaches the real console local provider executor`，覆盖 CLI 根到真实本机执行器的调用链。
+- `beta-stale-node.test.ts`：`non-default port survives restart and is shared by down and smoke`；保留真实进程与真实端口的起停路径验证。
+- `ops/model-apply.test.ts`：`real local executor, direct and SSH forced command share one lock despite conflicting environment overrides`；不同根串行、跨节点固定 20 秒超时回 busy，分别覆盖 mkdir 与可用时的 flock。
+
+测试只使用临时根与隔离 HOME，不连接服务器。`bun run precheck` 在 macOS 和 Linux 使用同一组行为断言：
+Linux 的真实起停用例直接读 `/proc`；macOS 的 `beta-start-process`、`beta-registry-keys`、`handoff-node`、
+`beta-stale-node` 用例由 `testProcessTable.ts` 在临时仓库的 `common.sh` 副本末尾替换两个 procfs 读取函数。
+夹具从已知测试启动参数分别写入 exe、NUL argv / config 环境、有效 UID、合成启动标识与 PPID；被测解析、身份匹配、
+真实 PID、信号、端口、就绪判断保持运行。启动包装器用 exec 保留 `$!`，退出的真实 PID 不再出现在有效进程表中。
+启动前先用完整身份读取器核对当前 shell：Linux 读真实 `/proc/<pid>`，临时测试副本读夹具登记的 shell。
+macOS 生产脚本没有夹具时在执行命令和写 PID 之前拒绝启动；扫描中读取存活进程失败会明确报错，不能据此宣称节点未运行。
+合成启动标识不作为 macOS 生产身份来源；PID 复用、祖先链和拒绝信号仍由 `beta-node-identity.test.ts`
+在两种平台用确定性进程表与信号桩覆盖，Linux CI 另验证真实 `/proc` 起停。
+其中 `root with kernel threads` / `non-root with foreign processes` 的找回与全停用例只在临时副本替换固定 proc 根与观察者 UID，
+macOS 和 Linux 都实际执行生产的 procfs 枚举、flags / Uid 解析、身份读取和停机逻辑，不按平台跳过。
+`unreadable userspace identity aborts recovery and all-stop` 与空 cmdline、无效 flags / Uid 用例守住读取失败必须报错的语义。
+生产脚本不导入该夹具，不接受任何启用夹具的环境变量；安装函数拒绝改写临时目录以外的文件。
+负向用例还验证调用者提供有效夹具路径时，原生产脚本依然拒绝信号并保留 PID 记录。
+沙箱若禁止 `ps`、临时目录或回环监听，部署 / 监听测试需在允许这些操作的本机补跑；
+没有 flock 的 macOS 会明确跳过 flock 分支，Linux 部署环境须补跑该分支。mkdir 锁的短暂 `.guard` 若被 SIGKILL 留下会保守地回 busy；确认没有下发进程后再手工移除空 guard。登记集成用例的真实 qm 路径还需要已构建的原生插件。

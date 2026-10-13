@@ -9,7 +9,7 @@
  * `qm`——它记下自己的 argv、环境、stdin 与忙碌的时段，再回一行协议响应。
  *
  * 钉 §9.2 P18.6 一格里的三条：忽略 `SSH_ORIGINAL_COMMAND`；节点名不合法时拒绝；同一
- * 节点的两次 apply 串行（带正向对照：不同节点确实会并行，说明这条测得出重叠）。另外
+ * 节点的两次 apply 串行，同机不同根的节点也串行。另外
  * 一条端到端：中枢执行器 → 假 sshd（强制命令就是这份脚本）→ 假 qm；强制命令那一行
  * 不在时，哨兵让操作失败。
  */
@@ -108,12 +108,22 @@ interface Tree {
 }
 
 let count = 0
-function tree(nodes: readonly string[] = ['beta-1', 'beta-2']): Tree {
+function tree(
+  nodes: readonly string[] = ['beta-1', 'beta-2'],
+  lockMode?: 'mkdir' | 'flock',
+): Tree {
   count += 1
   const dir = join(SHARED, `t${count}`)
   const beta = join(dir, 'repo/demo/env/beta')
   mkdirSync(join(beta, 'ops'), { recursive: true })
-  symlinkSync(join(REPO, 'demo/env/beta/common.sh'), join(beta, 'common.sh'))
+  if (lockMode === 'mkdir') {
+    writeFileSync(
+      join(beta, 'common.sh'),
+      readFileSync(join(REPO, 'demo/env/beta/common.sh'), 'utf8') +
+        '\nbeta_model_flock() { :; }\n',
+    )
+  } else
+    symlinkSync(join(REPO, 'demo/env/beta/common.sh'), join(beta, 'common.sh'))
   symlinkSync(SCRIPT, join(beta, 'ops/model-apply.sh'))
   mkdirSync(join(dir, 'repo/dist'), { recursive: true })
   writeFileSync(
@@ -317,9 +327,9 @@ describe('model-apply.sh', () => {
     readonly skip: boolean
   }[] = [
     {
-      name: 'mkdir lock (forced with QIANMO_MODEL_APPLY_LOCK=mkdir; runs everywhere)',
+      name: 'mkdir lock (fixture backend; runs everywhere)',
       kind: 'mkdir',
-      env: { QIANMO_MODEL_APPLY_LOCK: 'mkdir' },
+      env: {},
       skip: false,
     },
     {
@@ -330,13 +340,13 @@ describe('model-apply.sh', () => {
     },
   ]
   for (const mode of modes) {
-    const lockFile = (t: Tree) => join(t.root, 'run', 'model-apply.beta-1.lock')
+    const lockFile = (t: Tree) => join(t.home, '.qianmo-model-apply-host.lock')
     const lockDir = (t: Tree) => `${lockFile(t)}.d`
 
     test.skipIf(mode.skip)(
-      `${mode.name}: two applies on one node run one after the other; two nodes overlap`,
+      `${mode.name}: two nodes under different roots share the host lock and run serially`,
       async () => {
-        const t = tree()
+        const t = tree(undefined, mode.kind)
         writeFileSync(join(t.records, 'delay-ms'), '1200')
         const env = sshdEnv(t, mode.env)
         await Promise.all([run(t, ['beta-1'], env), run(t, ['beta-1'], env)])
@@ -348,11 +358,44 @@ describe('model-apply.sh', () => {
         expect(existsSync(lockFile(t))).toBe(mode.kind === 'flock')
         expect(existsSync(lockDir(t))).toBe(false)
 
-        // Positive control: different nodes do overlap, so the check above can fail.
+        // A second beta root under the same HOME must still use the very same lock.
         rmSync(join(t.records, 'spans.ndjson'))
-        await Promise.all([run(t, ['beta-1'], env), run(t, ['beta-2'], env)])
+        const otherRoot = join(t.home, 'other-beta-root')
+        mkdirSync(join(otherRoot, 'nodes/beta-2/config'), { recursive: true })
+        const results = await Promise.all([
+          run(t, ['beta-1'], env),
+          run(t, ['beta-2', '--root', otherRoot], env),
+        ])
+        expect(results.map(result => result.code)).toEqual([0, 0])
         const [c, d] = [...t.spans()].sort((x, y) => x.start - y.start)
-        expect((d?.start ?? Infinity) < (c?.end ?? 0)).toBe(true)
+        expect(t.spans()).toHaveLength(2)
+        expect((d?.start ?? 0) >= (c?.end ?? Infinity)).toBe(true)
+      },
+      30_000,
+    )
+
+    test.skipIf(mode.skip)(
+      `${mode.name}: conflicting lock overrides cannot split callers under the same service account`,
+      async () => {
+        const t = tree(undefined, mode.kind)
+        const otherHome = join(t.dir, 'other-home')
+        mkdirSync(otherHome)
+        writeFileSync(join(t.records, 'delay-ms'), '600')
+        const env = sshdEnv(t, {
+          ...mode.env,
+          QIANMO_MODEL_APPLY_LOCK_FILE: join(t.dir, 'shared/provider.lock'),
+        })
+        const results = await Promise.all([
+          run(t, ['beta-1'], env),
+          run(t, ['beta-2', '--root', t.root], {
+            ...env,
+            QIANMO_MODEL_APPLY_LOCK_FILE: join(otherHome, 'different.lock'),
+          }),
+        ])
+        expect(results.map(result => result.code)).toEqual([0, 0])
+        const spans = t.spans().sort((a, b) => a.start - b.start)
+        expect(spans).toHaveLength(2)
+        expect((spans[1]?.start ?? 0) >= (spans[0]?.end ?? Infinity)).toBe(true)
       },
       30_000,
     )
@@ -360,15 +403,25 @@ describe('model-apply.sh', () => {
     test.skipIf(mode.skip)(
       `${mode.name}: waiting past the limit answers busy instead of hanging`,
       async () => {
-        const t = tree()
-        writeFileSync(join(t.records, 'delay-ms'), '2500')
+        const t = tree(undefined, mode.kind)
+        writeFileSync(join(t.records, 'delay-ms'), '22000')
         const env = sshdEnv(t, {
           ...mode.env,
           QIANMO_MODEL_APPLY_LOCK_WAIT_S: '1',
         })
         const first = run(t, ['beta-1'], env)
-        await new Promise(resolve => setTimeout(resolve, 400))
-        const second = await run(t, ['beta-1'], env)
+        for (
+          let attempt = 0;
+          attempt < 100 && t.calls().length === 0;
+          attempt++
+        )
+          await Bun.sleep(50)
+        expect(t.calls()).toHaveLength(1)
+        const waiting = Date.now()
+        const second = await run(t, ['beta-2'], env)
+        // The deprecated one-second override cannot shorten the fixed 20 s wait.
+        // mkdir uses second-resolution date, so allow one second of rounding.
+        expect(Date.now() - waiting).toBeGreaterThanOrEqual(19_000)
         expect(second.code).toBe(1)
         expect(JSON.parse(second.stdout)).toMatchObject({
           v: 1,
@@ -383,13 +436,33 @@ describe('model-apply.sh', () => {
         expect((await first).code).toBe(0)
         expect(t.calls()).toHaveLength(1)
       },
-      30_000,
+      35_000,
     )
   }
 
+  test('mkdir stale reclamation with concurrent waiters preserves host serialization', async () => {
+    const t = tree(undefined, 'mkdir')
+    const lock = join(t.home, '.qianmo-model-apply-host.lock.d')
+    mkdirSync(lock, { recursive: true })
+    const gone = Bun.spawnSync(['true'])
+    writeFileSync(join(lock, 'pid'), `${gone.pid}\n`)
+    writeFileSync(join(t.records, 'delay-ms'), '150')
+    const env = sshdEnv(t, { QIANMO_MODEL_APPLY_LOCK: 'mkdir' })
+    const results = await Promise.all(
+      ['beta-1', 'beta-2', 'beta-1', 'beta-2'].map(node => run(t, [node], env)),
+    )
+    expect(results.map(result => result.code)).toEqual([0, 0, 0, 0])
+    const spans = t.spans().sort((a, b) => a.start - b.start)
+    expect(spans).toHaveLength(4)
+    for (let i = 1; i < spans.length; i++)
+      expect((spans[i]?.start ?? 0) >= (spans[i - 1]?.end ?? Infinity)).toBe(
+        true,
+      )
+  }, 30_000)
+
   test('mkdir lock: a lock left by a process that is gone is taken back', async () => {
-    const t = tree()
-    const lock = join(t.root, 'run', 'model-apply.beta-1.lock.d')
+    const t = tree(undefined, 'mkdir')
+    const lock = join(t.home, '.qianmo-model-apply-host.lock.d')
     mkdirSync(lock, { recursive: true })
     // A pid that is not running: a finished child's.
     const gone = Bun.spawnSync(['true'])
@@ -408,6 +481,74 @@ describe('model-apply.sh', () => {
 })
 
 describe('how sshd and the local executor start it', () => {
+  test('real local executor, direct and SSH forced command share one lock despite conflicting environment overrides', async () => {
+    const t = tree()
+    writeFileSync(join(t.records, 'delay-ms'), '350')
+    const otherRoot = join(t.home, 'other-beta')
+    mkdirSync(join(otherRoot, 'nodes/beta-2/config'), { recursive: true })
+    const customLock = join(t.dir, 'custom.lock')
+    const env = sshdEnv(t, {
+      QIANMO_MODEL_APPLY_LOCK_FILE: customLock,
+      QIANMO_MODEL_APPLY_LOCK_WAIT_S: '0',
+      QIANMO_MODEL_APPLY_LOCK: 'mkdir',
+      QIANMO_BETA_ROOT: otherRoot,
+    })
+    const local = new ProviderExecutor(
+      [{ kind: 'local', node: 'beta-2', command: t.script }],
+      { knownHostsFile: '', env },
+    )
+    const ssh = fakeSsh(join(t.dir, 'ssh'))
+    ssh.forcedCommand(`${BASH} ${t.script} beta-1 --root ${t.root}`)
+    const knownHosts = join(t.dir, 'known_hosts')
+    writeFileSync(knownHosts, 'node.example.net ssh-ed25519 AAAAFakeHostKey\n')
+    const remote = new ProviderExecutor(
+      [
+        {
+          kind: 'ssh',
+          node: 'beta-1',
+          host: 'node.example.net',
+          user: 'ops',
+          port: 22,
+          keyFile: join(t.dir, 'key'),
+        },
+      ],
+      { knownHostsFile: knownHosts, sshBinary: ssh.binary, env },
+    )
+    const request = {
+      v: 1,
+      op: 'status',
+      requestId: 'shared-entry-lock',
+      node: 'beta-2',
+    }
+    const results = await Promise.all([
+      local.run('beta-2', request, 5000),
+      run(t, ['beta-1', '--root', t.root], env),
+      remote.run('beta-1', { ...request, node: 'beta-1' }, 5000),
+    ])
+    expect(results[0]).toMatchObject({ ok: true })
+    expect(results[1]).toMatchObject({ code: 0 })
+    expect(results[2]).toMatchObject({ ok: true })
+    const spans = t.spans().sort((a, b) => a.start - b.start)
+    expect(spans).toHaveLength(3)
+    for (let i = 1; i < spans.length; i++)
+      expect((spans[i]?.start ?? 0) >= (spans[i - 1]?.end ?? Infinity)).toBe(
+        true,
+      )
+    expect(
+      t
+        .calls()
+        .map(call => call.env.QIANMO_CONFIG_DIR)
+        .sort(),
+    ).toEqual(
+      [
+        join(t.root, 'nodes/beta-1/config'),
+        join(t.root, 'nodes/beta-1/config'),
+        join(otherRoot, 'nodes/beta-2/config'),
+      ].sort(),
+    )
+    expect(existsSync(customLock) || existsSync(`${customLock}.d`)).toBe(false)
+  }, 15_000)
+
   test('it is 100755 in the git index: both exec the path directly', () => {
     // The cases above run it as `bash <script>`, which passes without the bit;
     // sshd and the hub's local executor exec the path and would get EACCES.
