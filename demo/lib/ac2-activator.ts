@@ -19,7 +19,12 @@
  * 收到 SIGINT / SIGTERM 时停监听、关链接、正常退出。
  */
 
-import { createWriteStream, writeFileSync, type WriteStream } from 'node:fs'
+import {
+  createWriteStream,
+  renameSync,
+  type WriteStream,
+  writeFileSync,
+} from 'node:fs'
 import {
   AuditLog,
   DEFAULT_RESIDENT_KEEPALIVE_TIME_JUMP_FACTOR,
@@ -199,8 +204,11 @@ try {
   throw error
 }
 
+// Written aside and renamed into place: a reader that polls for the file sees
+// either nothing or the whole of it, never an empty or half-written one.
+const readyPending = `${readyFile}.${process.pid}.tmp`
 writeFileSync(
-  readyFile,
+  readyPending,
   `${JSON.stringify({
     url: node.url ?? '',
     activityPort: activity?.port ?? null,
@@ -211,6 +219,7 @@ writeFileSync(
     pid: process.pid,
   })}\n`,
 )
+renameSync(readyPending, readyFile)
 
 process.stdout.write(
   `activator 就绪：${node.url ?? '(unix)'}  目标沙箱=${sandbox}\n`,
