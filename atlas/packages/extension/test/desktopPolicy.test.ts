@@ -3,6 +3,7 @@
 
 import { expect, test } from 'bun:test'
 import {
+  DESKTOP_INTENT_FIELD,
   desktopArgs,
   desktopTools,
   desktopObservation,
@@ -53,6 +54,49 @@ test('closed desktop arguments reject code, function markers, CDP, arbitrary fil
   expect(() =>
     desktopArgs('qianmo_computer_click', { x: Infinity, y: 0 }),
   ).toThrow()
+})
+test('the base intent field is accepted as bounded text and left out of the canonical arguments', async () => {
+  // Every tool call from the base carries the intent field; rejecting it made
+  // each browser and computer call fail with "Unknown or missing desktop argument".
+  expect(
+    desktopArgs('qianmo_browser_tabs', {
+      [DESKTOP_INTENT_FIELD]: '查看专属浏览器标签页',
+    }),
+  ).toEqual({})
+  expect(
+    desktopArgs('qianmo_browser_click', {
+      [DESKTOP_INTENT_FIELD]: '点击发送',
+      tab: 'minted',
+      selector: '#send',
+    }),
+  ).toEqual({ tab: 'minted', selector: '#send' })
+  const raw = { [DESKTOP_INTENT_FIELD]: 'scroll', x: 1, y: 2, dx: 0, dy: 3 }
+  desktopArgs('qianmo_computer_scroll', raw)
+  expect(raw[DESKTOP_INTENT_FIELD]).toBe('scroll')
+  for (const intent of [{ text: 'x' }, 7, 'x'.repeat(2001), 'a\0b'])
+    expect(() =>
+      desktopArgs('qianmo_browser_tabs', { [DESKTOP_INTENT_FIELD]: intent }),
+    ).toThrow('Invalid desktop argument')
+  // The intent field does not stand in for a missing argument or admit others.
+  expect(() =>
+    desktopArgs('qianmo_browser_click', {
+      [DESKTOP_INTENT_FIELD]: 'x',
+      tab: 'minted',
+    }),
+  ).toThrow('Unknown or missing desktop argument')
+  expect(() =>
+    desktopArgs('qianmo_browser_tabs', {
+      [DESKTOP_INTENT_FIELD]: 'x',
+      code: '1',
+    }),
+  ).toThrow('Unknown or missing desktop argument')
+  // Guard against the pinned base renaming the field.
+  const wire = await Bun.file(
+    new URL('../../../../packages/wire/src/index.ts', import.meta.url),
+  ).text()
+  expect(wire).toContain(
+    `export const INTENT_FIELD = "${DESKTOP_INTENT_FIELD}";`,
+  )
 })
 test('enabled resources activate only structured tools for main; eval remains denied', () => {
   const desktop = {
