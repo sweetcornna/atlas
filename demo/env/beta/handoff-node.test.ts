@@ -35,7 +35,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { TestProcessTable } from './testProcessTable'
+import { processAlive, TestProcessTable } from './testProcessTable'
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..')
 const BETA_DIR = join(REPOSITORY_ROOT, 'demo/env/beta')
@@ -646,14 +646,7 @@ describe('handoff-node.sh stop', () => {
     return pid
   }
 
-  function alive(pid: number): boolean {
-    try {
-      process.kill(pid, 0)
-      return true
-    } catch {
-      return false
-    }
-  }
+  const alive = processAlive
 
   test('两个都停、pid 文件收掉、数据一个不删；再停一次说本来就没在跑', () => {
     const place = scratch()
