@@ -32,6 +32,16 @@ import { fail } from '../respond.js'
 /** Header shown when the operator did not name this console. */
 export const DEFAULT_LABEL = '阡陌控制台'
 
+/** A signed console never signs or accepts another HTTP sender identity. */
+export function signedSenderRefusal(
+  deps: ConsoleDeps,
+  from: unknown,
+): Response | null {
+  return deps.signedFrom !== undefined && from !== deps.signedFrom
+    ? fail(403, 'E_SENDER_MISMATCH', `签名发送方必须为 ${deps.signedFrom}`)
+    : null
+}
+
 /**
  * The management side's first path segment. `/` is the conversation front
  * (`routes/front.ts`); every area page lives under `/admin/…`, and the area

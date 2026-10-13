@@ -25,7 +25,6 @@ import { ConsoleDesktop } from './consoleDesktop.js'
 import { ConsoleRouting, routingWire } from './consoleRouting.js'
 import { ConsoleAvatars } from './consoleAvatars.js'
 import { randomBytes } from 'node:crypto'
-import { StaticPublicKeyDirectory } from '@qianmo/capability'
 import { qianmoConfigPath } from '@qianmo/paths'
 import { loadOrCreateNodeKeys } from '../host/nodeIdentity.js'
 import { ConsoleApprovals } from './consoleApprovals.js'
@@ -99,6 +98,10 @@ import { openConsoleProviders } from './consoleProviders.js'
 import { openConsoleUsage, startUsageCollection } from './consoleUsage.js'
 import { ControlLinks } from './consoleControl.js'
 import { FileTenantStore } from './consoleTenancy.js'
+import {
+  consoleHandshakeSigning,
+  consoleHandshakeWarning,
+} from './consoleHandshake.js'
 
 /**
  * 32 个 base64url 字符，远在 `MIN_TOKEN_LENGTH`（16）之上。
@@ -158,6 +161,7 @@ interface ConsoleWakeWiring {
   readonly status: string
   /** 只有 `--wake-sign` 打开时才有；横幅要把公钥打出来。 */
   readonly identity?: ConsoleWakeIdentity
+  readonly handshakeSigning?: string
 }
 
 /** Narrow production seam for proving named target PSK selection. */
@@ -168,6 +172,7 @@ interface ConsoleWakeDependencies {
     readonly psk: string
     readonly capability?: ConsoleWakeIdentity['issue']
     readonly signing?: HandshakeIdentity
+    readonly from?: string
   }) => WakePort
   /**
    * 可注入，只为让接线用例不去碰真实配置根——**默认实现会在磁盘上创建一把私钥**，
@@ -175,6 +180,7 @@ interface ConsoleWakeDependencies {
    */
   readonly loadIdentity?: (chatFrom: string) => ConsoleWakeIdentity
   readonly loadKeys?: typeof loadOrCreateNodeKeys
+  readonly onWarning?: (message: string) => void
 }
 
 /**
@@ -202,16 +208,23 @@ export function wireConsoleWake(
     config.signWakes === true
       ? (dependencies.loadIdentity ?? loadConsoleWakeIdentity)(config.chatFrom)
       : undefined
-  const signing: HandshakeIdentity | undefined =
-    identity !== undefined && config.tenancyPath !== undefined
-      ? {
-          keys: (dependencies.loadKeys ?? loadOrCreateNodeKeys)(identity.node),
-          directory: new StaticPublicKeyDirectory(config.trusted),
-          required: true,
-        }
-      : undefined
+  const handshakeNotes: string[] = []
+  const trustedNodes = new Map(config.trusted)
 
   const targets: WakeTarget[] = config.wakeTargets.map(target => {
+    const signing = consoleHandshakeSigning(
+      identity,
+      target.legacy ? undefined : target.node,
+      config.trusted,
+      dependencies.loadKeys,
+    )
+    handshakeNotes.push(
+      `${target.node}: ${signing === undefined ? 'PSK' : 'signed (mutual)'}`,
+    )
+    if (!target.legacy && !trustedNodes.has(target.node))
+      (dependencies.onWarning ?? startupWarning)(
+        consoleHandshakeWarning(target.node),
+      )
     const variable = target.legacy
       ? undefined
       : transportPskEnvVarForNode(target.node)
@@ -226,7 +239,9 @@ export function wireConsoleWake(
         wake: dependencies.createWakePort({
           url: target.url,
           psk,
-          ...(identity === undefined ? {} : { capability: identity.issue }),
+          ...(identity === undefined
+            ? {}
+            : { capability: identity.issue, from: config.chatFrom }),
           ...(signing === undefined ? {} : { signing }),
         }),
       }
@@ -256,6 +271,7 @@ export function wireConsoleWake(
       legacy: { port: targets[0].wake, url: legacy.url },
       status: `enabled -> ${legacy.url}`,
       ...(identity === undefined ? {} : { identity }),
+      handshakeSigning: handshakeNotes.join(', '),
     }
   }
 
@@ -264,6 +280,7 @@ export function wireConsoleWake(
     status:
       enabled.length === 0 ? `disabled (${status})` : `enabled -> ${status}`,
     ...(identity === undefined ? {} : { identity }),
+    handshakeSigning: handshakeNotes.join(', '),
   }
 }
 
@@ -271,6 +288,8 @@ export function wireConsoleWake(
 interface ConsoleChatWiring {
   readonly hub?: ConsoleChatHub
   readonly status: string
+  readonly identity?: ConsoleWakeIdentity
+  readonly handshakeSigning?: string
 }
 
 /** 生产接线的窄缝，用途与 {@link ConsoleWakeDependencies} 完全一样：让用例证明
@@ -280,6 +299,7 @@ interface ConsoleChatDependencies {
   readonly createChatPort: typeof createConsoleChatPort
   readonly loadIdentity?: typeof loadConsoleWakeIdentity
   readonly loadKeys?: typeof loadOrCreateNodeKeys
+  readonly onWarning?: (message: string) => void
 }
 
 /**
@@ -314,7 +334,12 @@ export function wireConsoleChat(
   }
   const endpoints: ConsoleChatEndpoint[] = []
   const notes: string[] = []
+  const trustedNodes = new Map(config.trusted)
   for (const target of config.chatTargets) {
+    if (!target.legacy && !trustedNodes.has(target.node))
+      (dependencies.onWarning ?? startupWarning)(
+        consoleHandshakeWarning(target.node),
+      )
     try {
       const psk = target.legacy
         ? dependencies.pskFromEnv()
@@ -352,32 +377,33 @@ export function wireConsoleChat(
     config.signChats === true
       ? (dependencies.loadIdentity ?? loadConsoleWakeIdentity)(config.chatFrom)
       : undefined
+  // Construct outside the catch below: signing/key failures are startup
+  // failures, not a reason to silently use PSK or disable an otherwise valid face.
+  const signedEndpoints = endpoints.map(endpoint => {
+    const signing = consoleHandshakeSigning(
+      identity,
+      endpoint.node,
+      config.trusted,
+      dependencies.loadKeys,
+    )
+    return { ...endpoint, ...(signing === undefined ? {} : { signing }) }
+  })
+  const ownerSigningKeys =
+    identity === undefined
+      ? undefined
+      : (dependencies.loadKeys ?? loadOrCreateNodeKeys)(identity.node)
   try {
     const hub = dependencies.createChatPort({
       from: config.chatFrom,
-      endpoints,
+      endpoints: signedEndpoints,
       storePath: config.chatStorePath,
       registry,
       ...(identity === undefined
         ? {}
         : {
             issueCapability: identity.issue,
-            ownerSigningKeys: (dependencies.loadKeys ?? loadOrCreateNodeKeys)(
-              identity.node,
-            ),
+            ownerSigningKeys,
           }),
-      ...((config.approvals || config.tenancyPath !== undefined) &&
-      identity !== undefined
-        ? {
-            signing: {
-              keys: (dependencies.loadKeys ?? loadOrCreateNodeKeys)(
-                identity.node,
-              ),
-              directory: new StaticPublicKeyDirectory(config.trusted),
-              required: true,
-            },
-          }
-        : {}),
       onError: error => {
         // The console has no logger and its stdout is the banner. A chat-side
         // failure that nobody can see is worse than one line of noise.
@@ -388,6 +414,13 @@ export function wireConsoleChat(
     })
     return {
       hub,
+      ...(identity === undefined ? {} : { identity }),
+      handshakeSigning: signedEndpoints
+        .map(
+          endpoint =>
+            `${endpoint.node ?? endpoint.url}: ${endpoint.signing === undefined ? 'PSK' : 'signed (mutual)'}`,
+        )
+        .join(', '),
       // 签没签名进 banner，因为它是这张面「是问答还是控制」的那条界线，而两者
       // 在别处长得一模一样：不签名的会话照样投递、照样回执、照样拿到回复，只是
       // agent 会拒绝执行。运维只有在这里能一眼看出自己开的是哪一种。
@@ -407,7 +440,11 @@ export function wireConsoleChat(
 const FIELD_WIDTH = 13
 
 function field(name: string, value: string): string {
-  return `${name.padEnd(FIELD_WIDTH)}${value}\n`
+  return `${name.padEnd(Math.max(FIELD_WIDTH, name.length + 1))}${value}\n`
+}
+
+function startupWarning(message: string): void {
+  process.stderr.write(`${message}\n`)
 }
 
 export async function runConsole(args: readonly string[]): Promise<void> {
@@ -603,8 +640,15 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // a paused or retired agent — or every agent, while the ledger cannot be
   // read — is never reached from here.
   const exitGate = (address: string) => registrations.exitRefusal(address)
+  const warned = new Set<string>()
+  const onWarning = (message: string) => {
+    if (warned.has(message)) return
+    warned.add(message)
+    startupWarning(message)
+  }
   const wake = wireConsoleWake(config, {
     pskFromEnv,
+    onWarning,
     createWakePort: options => gateWakePort(createWakePort(options), exitGate),
   })
   // One registry port, shared: the chat face's target list and the roster are
@@ -620,6 +664,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       : new FileTenantStore(config.tenancyPath)
   const chat = wireConsoleChat(config, registry, {
     pskFromEnv,
+    onWarning,
     createChatPort: options =>
       createConsoleChatPort({
         ...options,
@@ -920,6 +965,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     // chatting and another when waking is a console whose audit trail has two
     // identities in it.
     identity: config.chatFrom,
+    ...(wake.identity === undefined && chat.identity === undefined
+      ? {}
+      : { signedFrom: config.chatFrom }),
     ...(wake.legacy === undefined ? {} : { wake: wake.legacy.port }),
     ...(wake.targets === undefined ? {} : { wakeTargets: wake.targets }),
     ...(chat.hub === undefined ? {} : { chat: chat.hub }),
@@ -1059,8 +1107,17 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       'wake-signing',
       `${wake.identity.node}=${wake.identity.publicKey}`,
     )
+    // 握手另起一行，按目标写 signed (mutual) / PSK：消息签名不等于握手签名。
+    banner += field('wake-handshake-signing', wake.handshakeSigning ?? 'PSK')
   }
   banner += field('chat', chat.status)
+  if (chat.identity !== undefined) {
+    banner += field(
+      'chat-signing',
+      `${chat.identity.node}=${chat.identity.publicKey}`,
+    )
+    banner += field('chat-handshake-signing', chat.handshakeSigning ?? 'PSK')
+  }
   if (files) banner += field('files', 'enabled (control links)')
   if (connectors)
     banner += field('connectors', 'enabled (all presets unevaluated)')

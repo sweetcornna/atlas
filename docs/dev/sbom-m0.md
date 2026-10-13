@@ -149,7 +149,7 @@
 | `@qianmo/backup` | `atlas/packages/backup` | AGPL-3.0-or-later | 是 | 13/13 |
 | `@qianmo/capability` | `atlas/packages/capability` | AGPL-3.0-or-later | 是 | 17/17 |
 | `@qianmo/capacity` | `atlas/packages/capacity` | AGPL-3.0-or-later | 是 | 13/13 |
-| `@qianmo/console` | `atlas/packages/console` | AGPL-3.0-or-later | 是 | 177/177 |
+| `@qianmo/console` | `atlas/packages/console` | AGPL-3.0-or-later | 是 | 178/178 |
 | `@qianmo/diagnosis` | `atlas/packages/diagnosis` | AGPL-3.0-or-later | 是 | 6/6 |
 | `@qianmo/elastic` | `atlas/packages/elastic` | AGPL-3.0-or-later | 是 | 4/4 |
 | `@qianmo/extension` | `atlas/packages/extension` | AGPL-3.0-or-later | 是 | 6/6 |
@@ -157,7 +157,7 @@
 | `@qianmo/mailbox` | `atlas/packages/mailbox` | AGPL-3.0-or-later | 是 | 4/4 |
 | `@qianmo/memory` | `atlas/packages/memory` | AGPL-3.0-or-later | 是 | 23/23 |
 | `@qianmo/negotiation` | `atlas/packages/negotiation` | AGPL-3.0-or-later | 是 | 7/7 |
-| `@qianmo/node` | `atlas/packages/node` | AGPL-3.0-or-later | 是 | 310/310 |
+| `@qianmo/node` | `atlas/packages/node` | AGPL-3.0-or-later | 是 | 312/312 |
 | `@qianmo/paths` | `atlas/packages/paths` | AGPL-3.0-or-later | 是 | 3/3 |
 | `@qianmo/protocol` | `atlas/packages/protocol` | AGPL-3.0-or-later | 是 | 20/20 |
 | `@qianmo/providers` | `atlas/packages/providers` | AGPL-3.0-or-later | 是 | 18/18 |

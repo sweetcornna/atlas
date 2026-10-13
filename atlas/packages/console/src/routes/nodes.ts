@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { assertAddress } from '@qianmo/protocol'
+import { signedSenderRefusal } from './shared.js'
 import { reserveUsage } from '../quota.js'
 
 /**
@@ -553,6 +554,8 @@ async function handleWake(ctx: RouteContext): Promise<Response> {
   if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
   const input = parseWakeInput(body)
   if (!input.ok) return fail(400, 'invalid', input.message)
+  const senderDenied = signedSenderRefusal(deps, input.value.from)
+  if (senderDenied !== null) return senderDenied
   const configuredTargets = deps.wakeTargets
   if (configuredTargets !== undefined) {
     if (input.value.node === undefined || input.value.node.trim() === '') {
