@@ -45,6 +45,7 @@ import {
 } from '../assets/client.js'
 import { CONSOLE_CSS, stripCssComments } from '../assets/css.js'
 import type { ConsoleRole } from '../auth.js'
+import type { Lang } from '../i18n.js'
 import { cspFor } from '../respond.js'
 import {
   chevron,
@@ -56,6 +57,7 @@ import {
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { zoneLabel } from './format.js'
+import { QIANMO_ICON_HREF, qianmoMark } from './mark.js'
 
 /**
  * The product mark. The instance name sits beside it, never merged into it.
@@ -66,24 +68,7 @@ import { zoneLabel } from './format.js'
 export const BRAND = '阡陌控制台'
 
 export const WORDMARK_CN = '阡陌'
-export const WORDMARK_EN = 'AgentNest'
-
-/**
- * The tab mark: 阡 on a terracotta ground, as a data URI.
- *
- * Written out rather than fetched, like everything else on this page. The
- * `xmlns` is mandatory for an SVG that arrives through a `data:` URI — inside
- * the document body an inline `<svg>` inherits the HTML parser's namespace,
- * but a standalone document has nothing to inherit from.
- */
-const FAVICON =
-  'data:image/svg+xml,' +
-  encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
-      '<rect width="32" height="32" rx="9" fill="#c67139"/>' +
-      '<text x="16" y="23" font-size="21" font-family="serif" ' +
-      'text-anchor="middle" fill="#f5ead8">阡</text></svg>',
-  )
+const WORDMARK_EN = 'AgentNest'
 
 /**
  * The `<head>` every document shares.
@@ -121,7 +106,7 @@ export function documentHead(
     `<meta name="color-scheme" content="light dark">\n` +
     `<meta name="referrer" content="no-referrer">\n` +
     `<meta http-equiv="Content-Security-Policy" content="${attr(cspFor(scripts))}">\n` +
-    `<link rel="icon" href="${attr(FAVICON)}">\n` +
+    `<link rel="icon" href="${attr(QIANMO_ICON_HREF)}">\n` +
     `<title>${escapeHtml(title)}</title>\n` +
     `<style>${CONSOLE_CSS}${pageSheet(pageCss)}</style>\n` +
     `</head>\n`
@@ -347,10 +332,10 @@ function sidebar(model: ShellModel): string {
     `popovertarget="side" popovertargetaction="hide" aria-label="关闭菜单">` +
     icon('x') +
     `</button>` +
-    `<div class="brand">` +
+    `<div class="brand">${qianmoMark(28)}<div class="brand-text">` +
     `<div class="brand-en">${escapeHtml(WORDMARK_EN)}</div>` +
     `<a class="brand-cn" href="/admin" data-nav>${escapeHtml(WORDMARK_CN)}</a>` +
-    `</div>` +
+    `</div></div>` +
     `<nav class="nav" aria-label="导航">${groups}</nav>` +
     `<div class="side-foot">` +
     `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
@@ -430,19 +415,43 @@ function topBar(model: ShellModel): string {
  * the address bar's current path into it when it opens, since a page that
  * switches conversations in place has moved on from what the server drew.
  */
-export function sessionExpired(relogin: string): string {
+const EXPIRED_TEXT: Readonly<
+  Record<
+    Lang,
+    { readonly title: string; readonly body: string; readonly login: string }
+  >
+> = {
+  'zh-CN': {
+    title: '会话已失效',
+    body: '凭据已过期或已被吊销 · 重新登录后回到这一页',
+    login: '重新登录',
+  },
+  en: {
+    title: 'Session expired',
+    body: 'The credential has expired or was revoked · sign in again to come back to this page',
+    login: 'Sign in again',
+  },
+  ja: {
+    title: 'セッションが切れました',
+    body: '資格情報の期限切れか失効です · もう一度ログインするとこのページに戻ります',
+    login: 'もう一度ログイン',
+  },
+}
+
+export function sessionExpired(relogin: string, lang: Lang = 'zh-CN'): string {
+  const text = EXPIRED_TEXT[lang]
   return (
     `<dialog class="dialog" id="session-expired" ` +
     `aria-labelledby="session-expired-title">` +
     `<div class="dlg-top"><span class="dlg-icon">` +
     icon('log-out') +
     `</span><div class="dialog-title" id="session-expired-title">` +
-    `会话已失效</div></div>` +
+    `${escapeHtml(text.title)}</div></div>` +
     `<div class="dialog-body">` +
-    `<p>凭据已过期或已被吊销 · 重新登录后回到这一页</p></div>` +
+    `<p>${escapeHtml(text.body)}</p></div>` +
     `<div class="dialog-actions">` +
     `<a class="btn btn-primary" id="session-expired-login" ` +
-    `href="${attr(relogin)}">重新登录</a>` +
+    `href="${attr(relogin)}">${escapeHtml(text.login)}</a>` +
     `</div></dialog>`
   )
 }
@@ -511,8 +520,8 @@ export function renderStandalone(model: StandaloneModel): string {
     documentHead(`${BRAND} · ${model.title} · ${model.label}`) +
     `<body>\n<div class="stage">\n` +
     `<main class="card elev-lg panel" aria-labelledby="page-title">` +
-    `<div class="brand"><div class="brand-en">${escapeHtml(WORDMARK_EN)}</div>` +
-    `<div class="brand-cn">${escapeHtml(WORDMARK_CN)}</div></div>` +
+    `<div class="brand">${qianmoMark(40)}<div class="brand-text"><div class="brand-en">${escapeHtml(WORDMARK_EN)}</div>` +
+    `<div class="brand-cn">${escapeHtml(WORDMARK_CN)}</div></div></div>` +
     `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
     `<h1 class="page-title" id="page-title">${escapeHtml(model.title)}</h1>` +
     `<p class="note">${escapeHtml(model.line)}</p>` +

@@ -8,6 +8,7 @@ import type {
   ChatTurn,
   ConsoleResult,
 } from '../src/deps.js'
+import { FRONT_JS } from '../src/assets/frontClient.js'
 import { createConsoleHandler } from '../src/http.js'
 import { documentCspFor, inlineScripts } from '../src/respond.js'
 import {
@@ -245,20 +246,23 @@ describe('agents and session history', () => {
     }
   })
 
-  test('sub-agents group by node and never repeat the main agent', async () => {
+  test('one list: the main agent first and once, every sub-agent after it', async () => {
     const h = front()
     const fragment = await (
       await h.handle(browse('/fragments/chat/front/side', ADMIN))
     ).text()
     const agents = region(fragment, 'fx-agents', '</section>')
-    expect(agents).toContain('子智能体')
     expect(agents.match(/class="fx-agent-row/g)).toHaveLength(3)
     expect(agents.match(/class="fx-agent-row fx-agent-main/g)).toHaveLength(1)
-    expect(agents.match(/class="fx-server"/g)).toHaveLength(2)
-    const subs = agents.slice(agents.indexOf('class="fx-server"'))
+    expect(/class="fx-agent-row[^"]*"/.exec(agents)?.[0]).toContain(
+      'fx-agent-main',
+    )
+    const subs = agents.slice(
+      agents.indexOf('class="fx-agent-row', agents.indexOf('fx-agent-main')),
+    )
     expect(subs).not.toContain(`data-address="${MAIN.address}"`)
-    expect(subs).toContain('data-key="server:tokyo-1"')
-    expect(subs).toContain('data-key="server:osaka-1"')
+    expect(subs).toContain(`data-address="${REVIEWER.address}"`)
+    expect(subs).toContain(`data-address="${WRITER.address}"`)
   })
 
   test('an undialable agent is marked and cannot start from the welcome', async () => {
@@ -287,7 +291,13 @@ describe('agents and session history', () => {
     const side = await (
       await h.handle(browse('/fragments/chat/front/side?active=current', ADMIN))
     ).text()
-    expect(region(side, 'fx-agents', '</section>')).toContain('1 执行中')
+    const agents = region(side, 'fx-agents', '</section>')
+    // Only the reviewer works out of sight: the open conversation and the
+    // finished one are not counted.
+    expect(agents.match(/ is-busy/g)).toHaveLength(1)
+    expect(agents).toMatch(
+      new RegExp(`is-busy"[^>]*data-address="${REVIEWER.address}"`),
+    )
     const stack = side.slice(side.indexOf('id="fx-stack"'))
     expect(stack).toContain('子智能体执行中 · 1')
     expect(stack).toContain('data-session="sub-work"')
@@ -368,9 +378,9 @@ describe('front process steps', () => {
     const turns = [ask, b, answer, { ...step, taskId: 'task-b' }]
     const running = await render(turns)
     expect(running).toContain('fx-pending')
-    expect(running).toContain('aria-label="planner 处理中"')
+    expect(running).toContain('aria-label="planner · 读取资料"')
     expect(running).toContain('fx-steps-muted is-running')
-    expect(running).toContain('执行中 · 1 步')
+    expect(running).toContain('进行中 · 1 步')
     const done = await render([
       ...turns,
       { ...answer, id: 'answer-b', taskId: 'task-b', text: 'B 已完成' },
@@ -514,4 +524,111 @@ test('front document and fragments escape remote names, titles and body; CSP adm
       )
     }
   }
+})
+
+describe("the reader's own choices: theme colour and language", () => {
+  function withCookie(path: string, cookie: string): Request {
+    const plain = browse(path, ADMIN)
+    return new Request(plain.url, {
+      headers: { ...Object.fromEntries(plain.headers), cookie },
+    })
+  }
+  async function head(cookie: string): Promise<string> {
+    const page = await (await front().handle(withCookie('/', cookie))).text()
+    return /<html[^>]*>/.exec(page)?.[0] ?? ''
+  }
+
+  test('a picked colour carries a text colour that reads on it at 4.5:1 or better', async () => {
+    // Mid greys are where a fixed luminance cut-off picks white at 2.85:1.
+    expect(await head('qianmo_accent=%23999999')).toContain(
+      '--qm-accent-ink:#111110',
+    )
+    expect(await head('qianmo_accent=%23808080')).toContain(
+      '--qm-accent-ink:#111110',
+    )
+    // Between the two, neither the ink nor white reaches 4.5:1: pure black does.
+    expect(await head('qianmo_accent=%23787878')).toContain(
+      '--qm-accent-ink:#000000',
+    )
+    expect(await head('qianmo_accent=%23202020')).toContain(
+      '--qm-accent-ink:#ffffff',
+    )
+    expect(await head('qianmo_accent=sage')).toContain('data-accent="sage"')
+  })
+
+  test('anything off the lists is ignored, never written into the page', async () => {
+    for (const cookie of [
+      'qianmo_accent=%23zzzzzz',
+      'qianmo_accent=%22%3E%3Cscript%3E',
+      'qianmo_accent=neon',
+      'qianmo_lang=xx',
+      'qianmo_lang=%22%3E',
+    ]) {
+      const tag = await head(cookie)
+      expect(tag).toBe('<html lang="zh-CN" data-theme="system">')
+    }
+    expect(await head('qianmo_lang=en')).toStartWith('<html lang="en" ')
+    expect(await head('qianmo_lang=ja')).toStartWith('<html lang="ja" ')
+  })
+
+  test('voice input joins after whitespace, and typing ends the listening', () => {
+    // A template-literal script: the class must survive as \\s, not as "s".
+    expect(FRONT_JS).toContain('!/\\s$/.test(base)')
+    expect(FRONT_JS).not.toContain('!/s$/.test(base)')
+    expect(FRONT_JS).toContain('if (voice !== rec) return;')
+    expect(FRONT_JS).toContain(
+      "if (target.id === 'fx-text') { if (voice) stopVoice();",
+    )
+  })
+})
+
+describe("the front in the reader's language reaches its shared pieces", () => {
+  function withLang(path: string, lang: string): Request {
+    const plain = browse(path, ADMIN)
+    return new Request(plain.url, {
+      headers: {
+        ...Object.fromEntries(plain.headers),
+        cookie: `qianmo_lang=${lang}`,
+      },
+    })
+  }
+
+  test('the expire dialog, the avatar dialog and the theme colours speak English', async () => {
+    const page = await (await front().handle(withLang('/', 'en'))).text()
+    const expired = region(page, 'session-expired', '</dialog>')
+    expect(expired).toContain('Session expired')
+    expect(expired).toContain('Sign in again')
+    expect(expired).not.toContain('会话已失效')
+    expect(page).toContain('data-lang="en"')
+    expect(page).toContain('>Avatar<')
+    expect(page).toContain('aria-label="Sage"')
+    expect(page).not.toContain('aria-label="青"')
+    // The head figure's name is in English too.
+    expect(page).toMatch(/aria-label="planner · [A-Z][a-z]+ [a-z]+"/)
+  })
+
+  test('the editor fragment follows ?lang=, and the management side keeps 简体中文', async () => {
+    const h = front()
+    const key = encodeURIComponent('agent:qianmo://tokyo-1/planner')
+    const en = await (
+      await h.handle(browse(`/fragments/avatar?key=${key}&lang=en`, ADMIN))
+    ).text()
+    expect(en).toContain('>Shape<')
+    expect(en).toContain('>Thinking<')
+    const ja = await (
+      await h.handle(browse(`/fragments/avatar?key=${key}&lang=ja`, ADMIN))
+    ).text()
+    expect(ja).toContain('>形<')
+    const plain = await (
+      await h.handle(browse(`/fragments/avatar?key=${key}`, ADMIN))
+    ).text()
+    expect(plain).toContain('>形态<')
+    const odd = await (
+      await h.handle(browse(`/fragments/avatar?key=${key}&lang=%22%3E`, ADMIN))
+    ).text()
+    expect(odd).toContain('>形态<')
+    // The admin document draws the dialog without a language: Chinese.
+    const admin = await (await h.handle(withLang('/admin', 'en'))).text()
+    expect(admin).not.toContain('Session expired')
+  })
 })

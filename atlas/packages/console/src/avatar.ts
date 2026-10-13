@@ -123,7 +123,7 @@ export const AVATAR_WORDS = {
     oval: '椭圆',
     wide: '亮眼',
     square: '方点',
-    ring: '圆环',
+    ring: '大圆',
     spark: '星点',
   },
   mouth: { none: '无', smile: '微笑', dot: '小点', cat: '猫嘴' },
@@ -156,20 +156,23 @@ export const AVATAR_WORDS = {
 }
 
 /**
- * Each colour's base. A muted set that sits on the console's warm paper
- * rather than shouting over it; the shading is worked out from these.
+ * Each colour's base: flat fills, one family. The eight hues share one
+ * lightness and one muted chroma (OKLCH, the yellow a step lighter so it
+ * does not go olive), so any two figures side by side sit together; `sage`
+ * is the logo's green and `ink` the logo's ink. The palest (`cloud`) carries
+ * ink eyes instead of white.
  */
 export const AVATAR_HEX: Readonly<Record<AvatarColor, string>> = {
-  mist: '#8ea9de',
-  lake: '#79b0b2',
-  sage: '#a3b58d',
-  sand: '#e2c48f',
-  apricot: '#eeaa86',
-  clay: '#d3825f',
-  blush: '#e3a9b5',
-  lilac: '#b2a3da',
-  cloud: '#ece6dc',
-  ink: '#46434b',
+  mist: '#668cb7',
+  lake: '#4c9799',
+  sage: '#639376',
+  sand: '#c6a66c',
+  apricot: '#cc8a60',
+  clay: '#b66859',
+  blush: '#c07b8f',
+  lilac: '#8475ab',
+  cloud: '#dcd9d3',
+  ink: '#222623',
 }
 
 /** FNV-1a over UTF-16 code units: small, stable, and the same in every runtime. */
@@ -187,19 +190,40 @@ function pick<T>(list: readonly T[], seed: number): T {
 }
 
 /**
+ * The eyes each shape wears well, for figures nobody chose: round eyes on
+ * round bodies, the square ones only on the squircle, the tilted ones only
+ * on the drop. Anyone choosing in the editor may still pair them freely.
+ */
+const EYES_FOR: Readonly<Record<AvatarShape, readonly AvatarEyes[]>> = {
+  orb: ['oval', 'dot', 'wide'],
+  squircle: ['oval', 'square', 'dot'],
+  capsule: ['oval', 'wide'],
+  drop: ['dot', 'oval', 'spark'],
+  pebble: ['oval', 'dot'],
+  cloud: ['dot', 'ring', 'oval'],
+}
+
+/** Colours a figure nobody chose may get: all but the pale one, which reads as off. */
+const DRAWN_COLORS: readonly AvatarColor[] = AVATAR_COLORS.filter(
+  color => color !== 'cloud',
+)
+
+/**
  * The figure somebody wears before they chose one: drawn from `seed` (an
  * agent's address, a person's subject), so it is random across people and
- * the same for one person on every page. A plain figure is likelier than a
+ * the same for one person on every page. The eyes are drawn to suit the
+ * shape ({@link EYES_FOR}) and the colour from the drawn palette. A plain figure is likelier than a
  * busy one: no mouth comes up half the time, no accessory two times in
  * three, cheeks one time in three.
  */
 export function defaultAvatar(seed: string): AvatarSpec {
   const roll = (salt: string) => avatarHash(`${salt}:${seed}`)
+  const shape = pick(AVATAR_SHAPES, roll('shape'))
   return {
-    shape: pick(AVATAR_SHAPES, roll('shape')),
-    color: pick(AVATAR_COLORS, roll('color')),
+    shape,
+    color: pick(DRAWN_COLORS, roll('color')),
     material: pick(AVATAR_MATERIALS, roll('material')),
-    eyes: pick(AVATAR_EYES, roll('eyes')),
+    eyes: pick(EYES_FOR[shape], roll('eyes')),
     mouth: roll('mouth') % 2 === 0 ? 'none' : pick(AVATAR_MOUTHS, roll('m2')),
     cheeks: roll('cheeks') % 3 === 0,
     accessory:

@@ -31,6 +31,7 @@
 import type { AccountRole } from '../accounts.js'
 import { icon } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
+import { qianmoMark } from './mark.js'
 import { BRAND, documentHead } from './page.js'
 
 /** How a role reads on these two cards. */
@@ -62,10 +63,10 @@ function errorLine(error: string | undefined): string {
 /** The panel's head: the mark, the instance, and the page's one h1 (F1). */
 function brand(label: string, title: string): string {
   return (
-    `<div class="brand">` +
+    `<div class="brand">${qianmoMark(40)}<div class="brand-text">` +
     `<div class="brand-en">AgentNest</div>` +
     `<div class="brand-cn">阡陌</div>` +
-    `</div>` +
+    `</div></div>` +
     `<p class="inst"><b>${escapeHtml(label)}</b></p>` +
     `<h1 class="page-title" id="page-title">${escapeHtml(title)}</h1>`
   )

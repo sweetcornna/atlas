@@ -2430,7 +2430,7 @@ describe('assets', () => {
     expect(CONSOLE_CSS).not.toContain('@keyframes')
   })
 
-  test('the palette is the Organic ramp set, and dark is a flip of the same names', () => {
+  test('the palette is one ramp set, and dark is a flip of the same names', () => {
     const dark = CONSOLE_CSS.slice(
       CONSOLE_CSS.indexOf('@media (prefers-color-scheme: dark)'),
     )
@@ -2458,17 +2458,17 @@ describe('assets', () => {
       // that only happens to look right in one scheme.
       expect(dark).toContain(`${token}:`)
     }
-    expect(CONSOLE_CSS).toContain('--color-bg: #f5ead8;')
-    expect(CONSOLE_CSS).toContain('--color-accent: #c67139;')
+    expect(CONSOLE_CSS).toContain('--color-bg: #fcfcfb;')
+    expect(CONSOLE_CSS).toContain('--color-accent: #c98a2e;')
     // The ramps reverse their semantic direction, which is what lets every
     // component class ("background 100, text 800") stay byte-identical.
-    expect(dark).toContain('--color-bg: #201e1d;')
-    expect(dark).toContain('--color-neutral-100: #2a2723;')
-    expect(dark).toContain('--color-neutral-900: #ece6da;')
+    expect(dark).toContain('--color-bg: #111111;')
+    expect(dark).toContain('--color-neutral-100: #1c1c1c;')
+    expect(dark).toContain('--color-neutral-900: #e6e6e3;')
     // …and the accent is lifted a step so it stays legible on the dark ground.
     // The previous sheet's dark --primary was oklch(0.424 …) on an
     // oklch(0.145 …) page, which is the defect this replaces.
-    expect(dark).toContain('--color-accent: #f6a06b;')
+    expect(dark).toContain('--color-accent: #e2a957;')
     expect(CONSOLE_CSS).toContain('color-scheme: light dark;')
   })
 
@@ -2482,10 +2482,10 @@ describe('assets', () => {
       CONSOLE_CSS.indexOf('@media (prefers-color-scheme: dark)'),
     )
     expect(ruleOf('dialog.dialog::backdrop')).toContain(
-      'var(--color-scrim, #2e2b25)',
+      'var(--color-scrim, #111110)',
     )
-    expect(CONSOLE_CSS).toContain('--color-scrim: #2e2b25;')
-    expect(dark).toContain('--color-scrim: #050403;')
+    expect(CONSOLE_CSS).toContain('--color-scrim: #111110;')
+    expect(dark).toContain('--color-scrim: #000000;')
   })
 })
 
@@ -2812,8 +2812,13 @@ describe('one place an action reports back (D2)', () => {
     expect(SERVERS_PAGE_JS).toContain(
       "qc.toast('备注已保存 · ' + server, 'ok')",
     )
+    // The front says its failures in the reader's language, and falls back
+    // to the shared line where its table has no word for one.
     expect(FRONT_JS).toContain(
-      "qc.toast(qc.failLine('发送', err), qc.failTone(err))",
+      "qc.toast(failText('send', err), qc.failTone(err))",
+    )
+    expect(FRONT_JS).toContain(
+      "qc.failLine(verb === 'open' ? '打开' : '发送', err)",
     )
   })
 })

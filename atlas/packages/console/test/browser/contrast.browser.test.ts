@@ -246,6 +246,7 @@ describe.skipIf(SKIP !== null)('WCAG AA contrast, light and dark (B1)', () => {
     test(`every page, ${theme}`, async () => {
       const found: (Shortfall & { page: string })[] = []
       let total = 0
+      const seen = new Map<string, number>()
       const tab = await browser.tab()
       try {
         await scheme(tab, theme)
@@ -270,6 +271,7 @@ describe.skipIf(SKIP !== null)('WCAG AA contrast, light and dark (B1)', () => {
           }
           const result = await tab.evaluate<Probe>(probe('document.body'))
           total += result.total
+          seen.set(path, result.total)
           for (const one of result.short) found.push({ ...one, page: path })
         }
         // The two dialogs a writer opens most, and a failure toast.
@@ -281,6 +283,7 @@ describe.skipIf(SKIP !== null)('WCAG AA contrast, light and dark (B1)', () => {
             probe(`document.getElementById('${id}')`),
           )
           total += result.total
+          seen.set(`#${id}`, result.total)
           for (const one of result.short) found.push({ ...one, page: `#${id}` })
           await tab.evaluate(`document.getElementById('${id}').close()`)
         }
@@ -293,6 +296,7 @@ describe.skipIf(SKIP !== null)('WCAG AA contrast, light and dark (B1)', () => {
           probe(`document.getElementById('toasts')`),
         )
         total += toasts.total
+        seen.set('toasts', toasts.total)
         for (const one of toasts.short) found.push({ ...one, page: 'toasts' })
 
         // Signed out: the login door.
@@ -302,6 +306,7 @@ describe.skipIf(SKIP !== null)('WCAG AA contrast, light and dark (B1)', () => {
           await door.goto(`${served.base}/login`)
           const result = await door.evaluate<Probe>(probe('document.body'))
           total += result.total
+          seen.set('/login', result.total)
           for (const one of result.short) found.push({ ...one, page: '/login' })
         } finally {
           await door.close()
@@ -309,8 +314,16 @@ describe.skipIf(SKIP !== null)('WCAG AA contrast, light and dark (B1)', () => {
       } finally {
         await tab.close()
       }
-      // The probe saw the pages: hundreds of texts, not a blank document.
-      expect(total).toBeGreaterThan(600)
+      // The probe saw every page, not a blank document: a floor per page
+      // rather than one total, so a page that drew nothing is named and a
+      // quieter design elsewhere cannot hide it (the front's `/` is about a
+      // dozen texts; the admin pages are dozens).
+      const thin = [...seen].filter(
+        ([where, count]) => count < (where.startsWith('/') ? 8 : 2),
+      )
+      expect(thin).toEqual([])
+      expect(seen.size).toBe(PAGES.length + 4)
+      expect(total).toBeGreaterThan(400)
       expect(report(found)).toEqual([])
     }, 120_000)
   }

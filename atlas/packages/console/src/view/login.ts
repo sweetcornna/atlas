@@ -45,6 +45,7 @@
 
 import { icon } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
+import { qianmoMark } from './mark.js'
 import { BRAND, documentHead } from './page.js'
 
 export interface LoginPageModel {
@@ -126,10 +127,10 @@ export function renderLoginPage(model: LoginPageModel): string {
     DECOR +
     `<form class="card elev-lg panel" method="post" action="/login">` +
     `<input type="hidden" name="redirect" value="${attr(model.redirect)}">` +
-    `<div class="brand">` +
+    `<div class="brand">${qianmoMark(40)}<div class="brand-text">` +
     `<div class="brand-en">AgentNest</div>` +
     `<div class="brand-cn">阡陌</div>` +
-    `</div>` +
+    `</div></div>` +
     `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
     `<h1 class="page-title" id="page-title">登录</h1>` +
     error +

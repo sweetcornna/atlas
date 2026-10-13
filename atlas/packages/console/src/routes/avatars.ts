@@ -31,6 +31,7 @@ import {
   userAvatarKey,
 } from '../avatar.js'
 import { chatScopeOf } from '../accountsHttp.js'
+import { parseLang } from '../i18n.js'
 import { fail, html, json, methodNotAllowed, notFound } from '../respond.js'
 import { renderAvatarEditor } from '../view/avatar.js'
 import {
@@ -210,7 +211,11 @@ async function avatarFragment(
       // A draft that is not JSON is no draft: the saved figure stands.
     }
   }
-  return html(renderAvatarEditor(spec, avatarOwnerName(key, faces.self)))
+  // `?lang=`: the front draws the editor in its reader's language; the
+  // management side asks for none and gets 简体中文.
+  const lang =
+    parseLang(ctx.url.searchParams.get('lang') ?? undefined) ?? 'zh-CN'
+  return html(renderAvatarEditor(spec, avatarOwnerName(key, faces.self), lang))
 }
 
 export const avatarsApiRoute: HeadRoute = {

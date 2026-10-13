@@ -19,15 +19,19 @@
  *
  * ## Where the token set comes from
  *
- * The palette is the **Organic** design system: a cream ground (`#f5ead8`), a
- * sand surface (`#ebddc5`), warm charcoal ink, terracotta as the accent and
- * sage as the second accent, each with a nine-step ramp generated on one shared
- * lightness scale. Radii are large (8 / 16 / 28px, and small controls go full
- * pill), spacing is a six-step scale, and elevation is two soft ink-tinted
- * shadows plus one for the dialog.
+ * The palette is the one the conversation front speaks, so the management side
+ * under `/admin` and the front read as one product: a near-white ground
+ * (`#fcfcfb`) and a surface one step off it (`#f6f6f5`), near-black ink,
+ * amber as the accent and the logo's sage (`#5e866c`) as the second accent,
+ * each with a nine-step ramp on one shared lightness scale. The filled
+ * controls take the reader's theme colour (`--color-accent-fill`, set from
+ * `view/accent.ts`), ink when they have not picked one. Radii are 8 / 12 / 18px
+ * and small controls go full pill; spacing is a six-step scale, and elevation
+ * is two soft shadows plus one for the dialog. The structure below came from
+ * the **Organic** design system, and keeps its rules:
  *
- * Three consequences of adopting it wholesale are worth stating, because each
- * replaced a rule the previous (shadcn-derived) sheet held:
+ * Three of those are worth stating, because each replaced a rule the
+ * previous (shadcn-derived) sheet held:
  *
  * **① Cards are a surface, not a bordered box.** `--color-surface` sits a step
  * off `--color-bg`, so a card is legible without a hairline around it. What is
@@ -46,7 +50,7 @@
  * of dimming it.
  *
  * **③ Colour still states a fact; shape carries it too.** The four roster
- * states are four different *shapes* — filled disc, hollow terracotta ring,
+ * states are four different *shapes* — filled disc, hollow accent ring,
  * neutral bar, hollow neutral ring — so the roster is readable without colour
  * vision. `--color-accent` is additionally spent on the primary action and on
  * the focus ring, which is the one deliberate exception, unchanged from the
@@ -74,6 +78,8 @@
  * URI, and both are ways for the sheet to stop being one self-contained string.
  */
 
+import { accentCss } from '../view/accent.js'
+
 /**
  * A stylesheet without its comments (G1).
  *
@@ -94,48 +100,48 @@ const SOURCE_CSS = `
 :root {
   color-scheme: light dark;
 
-  --color-bg: #f5ead8;
-  --color-surface: #ebddc5;
-  --color-text: #201e1d;
-  --color-accent: #c67139;
-  --color-accent-2: #7a8a5e;
-  --color-divider: color-mix(in srgb, #201e1d 16%, transparent);
+  --color-bg: #fcfcfb;
+  --color-surface: #f6f6f5;
+  --color-text: #111110;
+  --color-accent: #c98a2e;
+  --color-accent-2: #5e866c;
+  --color-divider: rgba(17, 17, 16, 0.1);
 
-  --color-neutral-100: #f9f4ed;
-  --color-neutral-200: #eee7db;
-  --color-neutral-300: #dcd3c4;
-  --color-neutral-400: #c0b6a5;
-  --color-neutral-500: #a19786;
-  --color-neutral-600: #82796a;
-  --color-neutral-700: #645c50;
-  --color-neutral-800: #474238;
-  --color-neutral-900: #2e2b25;
+  --color-neutral-100: #f7f7f6;
+  --color-neutral-200: #ededeb;
+  --color-neutral-300: #dddddb;
+  --color-neutral-400: #bfbfbc;
+  --color-neutral-500: #9d9d99;
+  --color-neutral-600: #7b7b77;
+  --color-neutral-700: #5d5d59;
+  --color-neutral-800: #40403d;
+  --color-neutral-900: #272725;
 
-  --color-accent-100: #fff2eb;
-  --color-accent-200: #ffe1d0;
-  --color-accent-300: #ffc6a5;
-  --color-accent-400: #f6a06b;
-  --color-accent-500: #d67f48;
-  --color-accent-600: #b2622d;
-  --color-accent-700: #8c491a;
-  --color-accent-800: #643312;
-  --color-accent-900: #402310;
+  --color-accent-100: #fcf3e4;
+  --color-accent-200: #f8e2bf;
+  --color-accent-300: #f0c88a;
+  --color-accent-400: #e3a756;
+  --color-accent-500: #c98a2e;
+  --color-accent-600: #a76f1d;
+  --color-accent-700: #825515;
+  --color-accent-800: #5e3d10;
+  --color-accent-900: #3d280b;
 
-  --color-accent-2-100: #f0fae1;
-  --color-accent-2-200: #e1eecc;
-  --color-accent-2-300: #ccdbb2;
-  --color-accent-2-400: #aebf92;
-  --color-accent-2-500: #8fa073;
-  --color-accent-2-600: #728157;
-  --color-accent-2-700: #56633f;
-  --color-accent-2-800: #3d472b;
-  --color-accent-2-900: #272e1b;
+  --color-accent-2-100: #edf3ef;
+  --color-accent-2-200: #d5e4da;
+  --color-accent-2-300: #b2ccbb;
+  --color-accent-2-400: #86ab93;
+  --color-accent-2-500: #5e866c;
+  --color-accent-2-600: #4b6f58;
+  --color-accent-2-700: #3b5845;
+  --color-accent-2-800: #2b4133;
+  --color-accent-2-900: #1c2b22;
 
-  --color-critical: #7e1d3f;
+  --color-critical: #b83a26;
 
   /* Dialog scrim. Not a ramp step: the ramps flip direction in dark, and a
      backdrop that flips with them stops being a backdrop. */
-  --color-scrim: #2e2b25;
+  --color-scrim: #111110;
 
   /* Secondary text. 68% is the least that keeps 4.5:1 on every ground the
      sheet paints, in both schemes - the tag pill over the surface is the
@@ -145,9 +151,11 @@ const SOURCE_CSS = `
   /* A fill with --color-bg text on it: the primary button, the current nav
      item, the checked segment. The brand accent itself is 3.0:1 under light
      text, so the fill is its 700 step in light and the accent in dark. */
-  --color-accent-fill: var(--color-accent-700);
-  --color-accent-fill-hover: var(--color-accent-800);
-  --color-accent-fill-active: var(--color-accent-900);
+  --color-accent-fill: var(--qm-accent, #111110);
+  --color-accent-fill-hover: color-mix(in srgb, var(--color-accent-fill) 86%, var(--color-bg));
+  --color-accent-fill-active: var(--color-accent-fill);
+  --color-on-accent-fill: var(--qm-accent-ink, #fafaf9);
+  --qm-ink: #222623;
 
   --text-10: 10px;
   --text-10-5: 10.5px;
@@ -188,116 +196,120 @@ const SOURCE_CSS = `
   --space-8: 35.2px;
 
   --radius-sm: 8px;
-  --radius-md: 16px;
-  --radius-lg: 28px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
 
-  --shadow-sm: 0 1px 2px color-mix(in srgb, #2e2b25 14%, transparent);
-  --shadow-md: 0 3px 10px color-mix(in srgb, #2e2b25 16%, transparent);
-  --shadow-lg: 0 12px 32px color-mix(in srgb, #2e2b25 22%, transparent);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.07), 0 0 0 0.5px rgba(0, 0, 0, 0.07);
+  --shadow-lg: 0 14px 40px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.09);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --color-bg: #201e1d;
-    --color-surface: #2e2b25;
-    --color-text: #f5ead8;
-    --color-accent: #f6a06b;
-    --color-accent-2: #aebf92;
-    --color-divider: color-mix(in srgb, #f5ead8 18%, transparent);
+    --color-bg: #111111;
+    --color-surface: #171717;
+    --color-text: #ececea;
+    --color-accent: #e2a957;
+    --color-accent-2: #86ad93;
+    --color-divider: rgba(255, 255, 255, 0.09);
 
-    --color-neutral-100: #2a2723;
-    --color-neutral-200: #383430;
-    --color-neutral-300: #4a453d;
-    --color-neutral-400: #625c51;
-    --color-neutral-500: #7d7568;
-    --color-neutral-600: #9a9184;
-    --color-neutral-700: #b8b0a2;
-    --color-neutral-800: #d5cec1;
-    --color-neutral-900: #ece6da;
+    --color-neutral-100: #1c1c1c;
+    --color-neutral-200: #252525;
+    --color-neutral-300: #323232;
+    --color-neutral-400: #474747;
+    --color-neutral-500: #666664;
+    --color-neutral-600: #878785;
+    --color-neutral-700: #a8a8a5;
+    --color-neutral-800: #cacac7;
+    --color-neutral-900: #e6e6e3;
 
-    --color-accent-100: #3a2113;
-    --color-accent-200: #5b3115;
-    --color-accent-300: #8c491a;
-    --color-accent-400: #b2622d;
-    --color-accent-500: #d67f48;
-    --color-accent-600: #ffb888;
-    --color-accent-700: #ffcfae;
-    --color-accent-800: #ffe4d2;
-    --color-accent-900: #fff2eb;
+    --color-accent-100: #2c200f;
+    --color-accent-200: #453118;
+    --color-accent-300: #694a21;
+    --color-accent-400: #93672b;
+    --color-accent-500: #c98a2e;
+    --color-accent-600: #e2a957;
+    --color-accent-700: #efc386;
+    --color-accent-800: #f7dcb6;
+    --color-accent-900: #fcefdc;
 
-    --color-accent-2-100: #1e2415;
-    --color-accent-2-200: #2e3a1f;
-    --color-accent-2-300: #46562e;
-    --color-accent-2-400: #63783f;
-    --color-accent-2-500: #8fa073;
-    --color-accent-2-600: #b8cc95;
-    --color-accent-2-700: #d2e2b4;
-    --color-accent-2-800: #e6f0d2;
-    --color-accent-2-900: #f3f9e6;
+    --color-accent-2-100: #142019;
+    --color-accent-2-200: #1d2f24;
+    --color-accent-2-300: #2b4535;
+    --color-accent-2-400: #3d604a;
+    --color-accent-2-500: #6a9479;
+    --color-accent-2-600: #86ad93;
+    --color-accent-2-700: #a8c5b2;
+    --color-accent-2-800: #cadccf;
+    --color-accent-2-900: #e7f0ea;
 
-    --color-critical: #ff9db9;
+    --color-critical: #ff8f7a;
 
-    --color-scrim: #050403;
+    --color-scrim: #000000;
 
-    --color-accent-fill: var(--color-accent);
-    --color-accent-fill-hover: var(--color-accent-600);
-    --color-accent-fill-active: var(--color-accent-700);
+    --color-accent-fill: var(--qm-accent, #ececea);
+    --color-accent-fill-hover: color-mix(in srgb, var(--color-accent-fill) 86%, var(--color-bg));
+    --color-accent-fill-active: var(--color-accent-fill);
+    --color-on-accent-fill: var(--qm-accent-ink, #111110);
+    --qm-ink: #e6ebe7;
 
-    --shadow-sm: 0 0 0 1px color-mix(in srgb, #f5ead8 10%, transparent);
-    --shadow-md: 0 0 0 1px color-mix(in srgb, #f5ead8 11%, transparent), 0 3px 12px color-mix(in srgb, #050403 45%, transparent);
-    --shadow-lg: 0 0 0 1px color-mix(in srgb, #f5ead8 13%, transparent), 0 16px 40px color-mix(in srgb, #050403 55%, transparent);
+    --shadow-sm: 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+    --shadow-md: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 6px 18px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 16px 44px rgba(0, 0, 0, 0.6);
   }
 }
 
 :root[data-theme="dark"] {
-    --color-bg: #201e1d;
-    --color-surface: #2e2b25;
-    --color-text: #f5ead8;
-    --color-accent: #f6a06b;
-    --color-accent-2: #aebf92;
-    --color-divider: color-mix(in srgb, #f5ead8 18%, transparent);
+    --color-bg: #111111;
+    --color-surface: #171717;
+    --color-text: #ececea;
+    --color-accent: #e2a957;
+    --color-accent-2: #86ad93;
+    --color-divider: rgba(255, 255, 255, 0.09);
 
-    --color-neutral-100: #2a2723;
-    --color-neutral-200: #383430;
-    --color-neutral-300: #4a453d;
-    --color-neutral-400: #625c51;
-    --color-neutral-500: #7d7568;
-    --color-neutral-600: #9a9184;
-    --color-neutral-700: #b8b0a2;
-    --color-neutral-800: #d5cec1;
-    --color-neutral-900: #ece6da;
+    --color-neutral-100: #1c1c1c;
+    --color-neutral-200: #252525;
+    --color-neutral-300: #323232;
+    --color-neutral-400: #474747;
+    --color-neutral-500: #666664;
+    --color-neutral-600: #878785;
+    --color-neutral-700: #a8a8a5;
+    --color-neutral-800: #cacac7;
+    --color-neutral-900: #e6e6e3;
 
-    --color-accent-100: #3a2113;
-    --color-accent-200: #5b3115;
-    --color-accent-300: #8c491a;
-    --color-accent-400: #b2622d;
-    --color-accent-500: #d67f48;
-    --color-accent-600: #ffb888;
-    --color-accent-700: #ffcfae;
-    --color-accent-800: #ffe4d2;
-    --color-accent-900: #fff2eb;
+    --color-accent-100: #2c200f;
+    --color-accent-200: #453118;
+    --color-accent-300: #694a21;
+    --color-accent-400: #93672b;
+    --color-accent-500: #c98a2e;
+    --color-accent-600: #e2a957;
+    --color-accent-700: #efc386;
+    --color-accent-800: #f7dcb6;
+    --color-accent-900: #fcefdc;
 
-    --color-accent-2-100: #1e2415;
-    --color-accent-2-200: #2e3a1f;
-    --color-accent-2-300: #46562e;
-    --color-accent-2-400: #63783f;
-    --color-accent-2-500: #8fa073;
-    --color-accent-2-600: #b8cc95;
-    --color-accent-2-700: #d2e2b4;
-    --color-accent-2-800: #e6f0d2;
-    --color-accent-2-900: #f3f9e6;
+    --color-accent-2-100: #142019;
+    --color-accent-2-200: #1d2f24;
+    --color-accent-2-300: #2b4535;
+    --color-accent-2-400: #3d604a;
+    --color-accent-2-500: #6a9479;
+    --color-accent-2-600: #86ad93;
+    --color-accent-2-700: #a8c5b2;
+    --color-accent-2-800: #cadccf;
+    --color-accent-2-900: #e7f0ea;
 
-    --color-critical: #ff9db9;
+    --color-critical: #ff8f7a;
 
-    --color-scrim: #050403;
+    --color-scrim: #000000;
 
-    --color-accent-fill: var(--color-accent);
-    --color-accent-fill-hover: var(--color-accent-600);
-    --color-accent-fill-active: var(--color-accent-700);
+    --color-accent-fill: var(--qm-accent, #ececea);
+    --color-accent-fill-hover: color-mix(in srgb, var(--color-accent-fill) 86%, var(--color-bg));
+    --color-accent-fill-active: var(--color-accent-fill);
+    --color-on-accent-fill: var(--qm-accent-ink, #111110);
+    --qm-ink: #e6ebe7;
 
-    --shadow-sm: 0 0 0 1px color-mix(in srgb, #f5ead8 10%, transparent);
-    --shadow-md: 0 0 0 1px color-mix(in srgb, #f5ead8 11%, transparent), 0 3px 12px color-mix(in srgb, #050403 45%, transparent);
-    --shadow-lg: 0 0 0 1px color-mix(in srgb, #f5ead8 13%, transparent), 0 16px 40px color-mix(in srgb, #050403 55%, transparent);
+    --shadow-sm: 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+    --shadow-md: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 6px 18px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 16px 44px rgba(0, 0, 0, 0.6);
   color-scheme: dark;
 }
 :root[data-theme="light"] { color-scheme: light; }
@@ -349,7 +361,7 @@ a { color: var(--color-accent); text-underline-offset: 3px; }
 .skip-link {
   position: absolute; left: var(--space-4); top: -120px; z-index: var(--z-skip);
   padding: var(--space-2) var(--space-4); border-radius: var(--radius-pill);
-  background: var(--color-accent-fill); color: var(--color-bg); text-decoration: none;
+  background: var(--color-accent-fill); color: var(--color-on-accent-fill); text-decoration: none;
 }
 .skip-link:focus { top: var(--space-2); }
 /* The skip link's target: focusable so the next Tab starts there, not ringed. */
@@ -389,14 +401,15 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible,
 /* ---- shell: a sand panel on the left, the ledger on the right ---- */
 .shell {
   display: grid; grid-template-columns: 264px minmax(0, 1fr);
-  gap: var(--space-4); padding: var(--space-4);
-  width: min(1320px, 100%); margin-inline: auto;
+  gap: 0; padding: 0; width: 100%;
   align-items: stretch; min-height: 100vh;
 }
+/* The side panel is the conversation front's: flush with the window's edge,
+   the surface colour, a hairline between it and the page. */
 .side {
   background: var(--color-surface);
-  border-radius: var(--radius-xl);
-  padding: var(--space-4);
+  border-radius: 0; border-right: 1px solid var(--color-divider);
+  padding: var(--space-3) var(--space-3) var(--space-4);
   display: flex; flex-direction: column; gap: var(--space-6);
   min-width: 0;
   /* Sticky and exactly one viewport tall. Stretching it to the document — the
@@ -404,15 +417,19 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible,
      nav two screens above the operator on a real ledger. Fixing the height to
      the viewport keeps the left column a full panel at every scroll position
      and keeps the nav where it can be reached. */
-  position: sticky; inset: auto; top: var(--space-4);
-  height: calc(100vh - var(--space-8));
+  position: sticky; inset: auto; top: 0;
+  height: 100vh;
   overflow-y: auto;
   /* It is a popover too (E1, drawers below): what the UA sheet gives one is
      undone here, so above 1000px it is the column above and nothing else. */
   margin: 0; border: 0; width: auto; color: inherit;
 }
 /* The right column: the top bar, the notice line when there is one, the page. */
-.frame { display: flex; flex-direction: column; gap: var(--space-6); min-width: 0; }
+.frame {
+  display: flex; flex-direction: column; gap: var(--space-6); min-width: 0;
+  width: min(1100px, 100%); margin-inline: auto; box-sizing: border-box;
+  padding: var(--space-4) var(--space-6) var(--space-8);
+}
 .main {
   display: flex; flex-direction: column; gap: calc(var(--space-8) * 1.2);
   padding: 0 var(--space-2) var(--space-8);
@@ -452,18 +469,21 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible,
   background: var(--color-surface); box-shadow: var(--shadow-lg);
 }
 
-/* ---- brand ---- */
-.brand { display: flex; flex-direction: column; gap: 1px; }
+/* ---- brand: the logo (view/mark.ts), the wordmark beside it ---- */
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .brand-en {
-  font-size: var(--text-11); letter-spacing: .2em; text-transform: uppercase;
-  color: var(--color-accent-700); font-weight: 600;
+  font-size: var(--text-10-5); letter-spacing: .16em; text-transform: uppercase;
+  color: var(--color-muted); font-weight: 600;
 }
 .brand-cn {
-  font-family: var(--font-heading); font-size: var(--text-29); font-weight: 700;
-  line-height: 1.1; letter-spacing: .02em;
+  font-family: var(--font-heading); font-size: var(--text-18); font-weight: 600;
+  line-height: 1.15; letter-spacing: .06em;
   color: var(--color-text); text-decoration: none;
 }
-a.brand-cn:hover { color: var(--color-accent-700); }
+a.brand-cn:hover { color: var(--color-quiet); }
+.qm-mark { display: block; flex: none; }
+.qm-mark .qm-ink { fill: var(--qm-ink); }
 
 /* ---- nav: the everyday areas, then the operator's folded under 管理 ---- */
 .nav { display: flex; flex-direction: column; gap: var(--space-4); }
@@ -490,7 +510,7 @@ a.brand-cn:hover { color: var(--color-accent-700); }
   transition: background-color 150ms ease, color 150ms ease;
 }
 .nav-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
-.nav-item[aria-current="page"] { background: var(--color-accent-fill); color: var(--color-bg); }
+.nav-item[aria-current="page"] { background: var(--color-accent-fill); color: var(--color-on-accent-fill); }
 .nav-item .cnt { margin-left: auto; font-size: var(--text-11); color: var(--color-muted); }
 .nav-item[aria-current="page"] .cnt { color: inherit; }
 .nav-tag {
@@ -787,7 +807,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 }
 .seg-opt input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
 .seg-opt + .seg-opt { border-left: 1px solid var(--color-divider); }
-.seg-opt:has(input:checked) { background: var(--color-accent-fill); color: var(--color-bg); }
+.seg-opt:has(input:checked) { background: var(--color-accent-fill); color: var(--color-on-accent-fill); }
 .seg-opt:not(:has(input:checked)):hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 .seg-opt:has(input:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: -2px; }
 
@@ -802,7 +822,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
   transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
 }
 .btn:disabled, .btn[disabled] { opacity: .45; cursor: not-allowed; }
-.btn-primary { background: var(--color-accent-fill); color: var(--color-bg); }
+.btn-primary { background: var(--color-accent-fill); color: var(--color-on-accent-fill); }
 .btn-primary:hover { background: var(--color-accent-fill-hover); }
 .btn-primary:active { background: var(--color-accent-fill-active); }
 .btn-secondary { border-color: var(--color-divider); }
@@ -1000,7 +1020,7 @@ dialog.dialog {
 }
 dialog.dialog[open] { display: flex; flex-direction: column; gap: var(--space-3); }
 dialog.dialog-wide { width: min(720px, calc(100% - var(--space-8))); }
-dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2b25) 55%, transparent); }
+dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #111110) 55%, transparent); }
 .dlg-top { display: flex; align-items: center; gap: var(--space-3); }
 .dlg-icon {
   width: 44px; height: 44px; border-radius: 50%; flex: none;
@@ -1160,8 +1180,9 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
   padding: var(--space-8); border-radius: calc(var(--radius-lg) * 1.4);
   display: flex; flex-direction: column; gap: var(--space-4);
 }
-.panel .brand-cn { font-size: var(--text-40); line-height: 1.05; }
-.panel .brand-en { font-size: var(--text-12); }
+.panel .brand { gap: 14px; }
+.panel .brand-cn { font-size: var(--text-28); line-height: 1.05; }
+.panel .brand-en { font-size: var(--text-11); }
 .tokline {
   display: flex; flex-direction: column; gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
@@ -1190,7 +1211,7 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
       border-radius: 0 calc(var(--radius-lg) * 1.15) calc(var(--radius-lg) * 1.15) 0;
       box-shadow: var(--shadow-lg);
     }
-    .drawer::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2b25) 45%, transparent); }
+    .drawer::backdrop { background: color-mix(in srgb, var(--color-scrim, #111110) 45%, transparent); }
     .drawer-open { display: inline-flex; }
     .drawer-close { display: inline-flex; align-self: flex-end; flex: none; }
     .top-lead { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--space-2); align-items: center; }
@@ -1201,7 +1222,10 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 /* ---- narrow ---- */
 @media (max-width: 1000px) {
   .shell { grid-template-columns: minmax(0, 1fr); }
-  .side { position: static; height: auto; gap: var(--space-4); }
+  .side {
+    position: static; height: auto; gap: var(--space-4);
+    border-right: 0; border-bottom: 1px solid var(--color-divider);
+  }
   .nav-group { flex-direction: row; flex-wrap: wrap; gap: var(--space-1); }
   .nav-group-name { width: 100%; }
   .g4, .g3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1211,7 +1235,8 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
   .empty-art { justify-self: start; }
 }
 @media (max-width: 620px) {
-  .shell { padding: var(--space-2); gap: var(--space-2); }
+  .shell { padding: 0; gap: 0; }
+  .frame { padding: var(--space-2) var(--space-3) var(--space-6); }
   .main { padding: var(--space-1); }
   .g4, .g3 { grid-template-columns: minmax(0, 1fr); }
   .turn { grid-template-columns: minmax(0, 1fr); }
@@ -1234,4 +1259,4 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 `
 
 /** The shared sheet every document inlines, without the notes (G1). */
-export const CONSOLE_CSS = stripCssComments(SOURCE_CSS)
+export const CONSOLE_CSS = stripCssComments(SOURCE_CSS) + accentCss()
