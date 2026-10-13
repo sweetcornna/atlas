@@ -69,8 +69,8 @@ export function protectedConfigRoots(): string[]     // ~/.qianmo、~/.omp、~/.
 独立重写（不拷贝 occ 代码），对外行为与旧 `teammateMailbox.ts` 一致：
 
 - 路径 `qianmoConfigPath('teams', <team>, 'inboxes', <agent>.json)`；文件是 JSON 数组；
-- 锁：`proper-lockfile`，锁文件 `<inbox>.lock`，重试 `{retries: 10, minTimeout: 5, maxTimeout: 100}`；
-- 上限：单条正文 64 KiB（`MAX_MAILBOX_MESSAGE_TEXT_BYTES`），文件 4 MiB，压缩后保留 2 MiB，三级压缩顺序与旧实现一致；写入走临时文件 + rename；
+- 锁：所有修改先按收件箱绝对路径在进程内排队，再用 `proper-lockfile` 的 `<inbox>.lock` 防跨进程并发；每 50 ms 重试，最多 100 次，等待预算 5 s，耗尽后报带路径与预算的 `ELOCKED` 错误。预算按突发 50 次写入、每次约 100 ms 留余量，低于压力测试的 15 s 传输回执等待时间，不是吞吐承诺；
+- 上限：单条正文 64 KiB（`MAX_MAILBOX_MESSAGE_TEXT_BYTES`），文件 4 MiB，压缩后保留 2 MiB，三级压缩顺序与旧实现一致；锁内重读，首次初始化和后续写入均走临时文件 + rename，读者只看到完整 JSON；
 - 导出：`writeToMailbox`、`readMailbox`、`markMessagesAsReadBySnapshot`（含 `readBefore` 参数与计数返回值）、`formatTeammateMessages`、`isStructuredProtocolMessage`、`TEAM_LEAD_NAME` 与适配器测试用到的 `sanitize*`。
 
 ### 3.3 `@qianmo/node`（`qm` 命令）

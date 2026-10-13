@@ -213,14 +213,19 @@ describe('readMailbox validation', () => {
 })
 
 describe('locking', () => {
-  // The retry budget ({retries: 10, maxTimeout: 100}) bounds how many
-  // in-flight writers one inbox absorbs; stay well inside it.
-  test('concurrent writers serialize: no message is lost', async () => {
-    await Promise.all(Array.from({ length: 8 }, (_, i) => send(`m-${i}`, i)))
-    const texts = (await readMailbox('worker', 'alpha')).map(m => m.text)
-    expect(texts.sort()).toEqual(
-      Array.from({ length: 8 }, (_, i) => `m-${i}`).sort(),
+  test('64 concurrent writers all succeed without losing or duplicating messages', async () => {
+    const results = await Promise.allSettled(
+      Array.from({ length: 64 }, (_, i) => send(`m-${i}`, i)),
     )
+    expect(results.filter(result => result.status === 'rejected')).toEqual([])
+    expect(await readMailbox('worker', 'alpha')).toEqual(
+      expect.arrayContaining(
+        Array.from({ length: 64 }, (_, i) =>
+          message(`m-${i}`, false, new Date(i).toISOString()),
+        ),
+      ),
+    )
+    expect(await readMailbox('worker', 'alpha')).toHaveLength(64)
   })
 
   test('writers wait on <inbox>.lock held by another party', async () => {
@@ -228,21 +233,84 @@ describe('locking', () => {
     const path = getInboxPath('worker', 'alpha')
     const release = await lock(path, { lockfilePath: `${path}.lock` })
     let done = false
-    const pending = send('second', 2).then(() => {
-      done = true
-    })
-    // Real delay on purpose: proper-lockfile retries on its own timers over a
-    // real lock directory; this lets several retries fail against the held lock.
-    await Bun.sleep(40)
-    expect(done).toBe(false)
-    expect((await readMailbox('worker', 'alpha')).map(m => m.text)).toEqual([
-      'first',
+    const pending = Promise.allSettled([
+      send('second', 2).finally(() => {
+        done = true
+      }),
     ])
-    await release()
-    await pending
+    try {
+      // Hold past the old 655 ms retry budget with a real independent holder.
+      await Bun.sleep(1_200)
+      expect(done).toBe(false)
+      expect((await readMailbox('worker', 'alpha')).map(m => m.text)).toEqual([
+        'first',
+      ])
+      // A blocked inbox must not block a different path's queue.
+      await writeToMailbox(
+        'other-worker',
+        message('independent', false),
+        'alpha',
+      )
+      expect((await readMailbox('other-worker', 'alpha'))[0]?.text).toBe(
+        'independent',
+      )
+    } finally {
+      await release()
+      await pending
+    }
+    expect(await pending).toEqual([{ status: 'fulfilled', value: undefined }])
     expect((await readMailbox('worker', 'alpha')).map(m => m.text)).toEqual([
       'first',
       'second',
+    ])
+  })
+
+  test('a held lock times out explicitly and queued writes recover after release', async () => {
+    await send('first')
+    const path = getInboxPath('worker', 'alpha')
+    const release = await lock(path, { lockfilePath: `${path}.lock` })
+    const started = performance.now()
+    const blocked = send('blocked', 2).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    const queued = Promise.allSettled([send('after-release', 3)])
+    try {
+      expect(await blocked).toMatchObject({
+        code: 'ELOCKED',
+        message: `Mailbox lock acquisition timed out after 5000 ms: ${path}`,
+        cause: { code: 'ELOCKED' },
+      })
+      expect(performance.now() - started).toBeGreaterThanOrEqual(4_900)
+      expect(performance.now() - started).toBeLessThan(8_000)
+      expect((await readMailbox('worker', 'alpha')).map(m => m.text)).toEqual([
+        'first',
+      ])
+    } finally {
+      await release()
+      await queued
+    }
+    expect(await queued).toEqual([{ status: 'fulfilled', value: undefined }])
+    expect((await readMailbox('worker', 'alpha')).map(m => m.text)).toEqual([
+      'first',
+      'after-release',
+    ])
+  }, 10_000)
+
+  test('a failed mutation does not poison the queue for the next write or read acknowledgement', async () => {
+    await send('first')
+    const [first] = await readMailbox('worker', 'alpha')
+    const results = await Promise.allSettled([
+      send('x'.repeat(MAX_MAILBOX_MESSAGE_TEXT_BYTES + 1)),
+      markMessageAsReadByIdentity('worker', 'alpha', first!),
+      send('second', 2),
+    ])
+    expect(results[0]).toMatchObject({ status: 'rejected' })
+    expect(results[1]).toEqual({ status: 'fulfilled', value: true })
+    expect(results[2]).toEqual({ status: 'fulfilled', value: undefined })
+    expect(await readMailbox('worker', 'alpha')).toEqual([
+      { ...first!, read: true },
+      message('second', false, new Date(2).toISOString()),
     ])
   })
 
