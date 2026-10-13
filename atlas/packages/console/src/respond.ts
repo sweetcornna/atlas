@@ -161,6 +161,7 @@ type ConsoleErrorCode =
   | 'internal'
   | 'unavailable'
   | 'limit'
+  | 'E_SENDER_MISMATCH'
 
 export function json(
   body: unknown,

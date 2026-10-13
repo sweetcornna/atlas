@@ -39,7 +39,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { TestProcessTable } from './testProcessTable'
+import { processAlive, TestProcessTable } from './testProcessTable'
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..')
 const BETA_DIR = join(REPOSITORY_ROOT, 'demo/env/beta')
@@ -227,14 +227,7 @@ async function waitListening(port: number): Promise<void> {
   throw new Error(`nothing listening on ${port}`)
 }
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
+const alive = processAlive
 
 /** 一个确定已经不在的 pid：`sh` 打完自己的 pid 就退了，spawnSync 顺手收了它。 */
 function deadPid(): number {

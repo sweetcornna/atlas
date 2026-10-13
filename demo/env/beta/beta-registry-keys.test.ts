@@ -41,7 +41,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { TestProcessTable } from './testProcessTable'
+import { processAlive, TestProcessTable } from './testProcessTable'
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..')
 const BETA_DIR = join(REPOSITORY_ROOT, 'demo/env/beta')
@@ -386,13 +386,7 @@ describe('beta-up.sh --role host 把节点公钥交给注册中心', () => {
     expect(run.out).toContain('的公钥是 （没有），而这一趟要发布的是')
     expect(run.out).toContain(`已停止 registry (pid ${stale})`)
     expect(publicKeyArgs(at)).toEqual([`beta-1=${KEY_1}`])
-    let gone = false
-    try {
-      process.kill(stale, 0)
-    } catch {
-      gone = true
-    }
-    expect(gone).toBe(true)
+    expect(processAlive(stale)).toBe(false)
   }, 30_000)
 })
 

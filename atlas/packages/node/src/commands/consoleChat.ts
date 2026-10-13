@@ -73,6 +73,7 @@ import { NodeRouter } from '@qianmo/router'
 import { TransportClient, type HandshakeIdentity } from '@qianmo/transport'
 import { ChatStore, type StoredChatSession } from './consoleChatStore.js'
 import type { WakeCapabilityIssuer } from './residentWake.js'
+import { consoleHandshakeFailureMessage } from './consoleHandshake.js'
 
 // ---------------------------------------------------------------------------
 // 可注入的那一层：一条链路
@@ -169,6 +170,8 @@ function defaultDialer(input: Parameters<ChatDialer>[0]): ChatLink {
  * 这个参数原本的形状，且单节点的部署里它仍然是最短的写法。
  */
 export interface ConsoleChatEndpoint {
+  /** Mutual signing for this locally pinned target; absent retains PSK. */
+  readonly signing?: HandshakeIdentity
   /** 入站端点，已归一（`new URL(...).toString()`）。 */
   readonly url: string
   /** 拨这个端点用的传输层 PSK。**只从环境变量来**，不从命令行、更不从页面来。 */
@@ -741,13 +744,14 @@ export function createConsoleChatPort(
         options.onError?.(error)
       }
     }
+    const signing = endpoint.signing ?? options.signing
     const link = dial({
       url,
       node: self.node,
       peerNode,
       psk: endpoint.psk,
       supportedTypes: CONSOLE_SUPPORTED_TYPES,
-      ...(options.signing === undefined ? {} : { signing: options.signing }),
+      ...(signing === undefined ? {} : { signing }),
       onReply,
     })
     links.set(url, link)
@@ -1171,7 +1175,13 @@ export function createConsoleChatPort(
         }
         settle(task)
         patchTurn(turn.id, { state: 'failed', code: 'E_UNDELIVERABLE' })
-        return fail('unreachable', messageOf(error))
+        return fail(
+          'unreachable',
+          consoleHandshakeFailureMessage(
+            messageOf(error),
+            endpoint.value.signing ?? options.signing,
+          ),
+        )
       }
     },
 

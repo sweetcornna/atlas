@@ -6,7 +6,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { testBashes } from './testBashes'
-import { TestProcessTable } from './testProcessTable'
+import { processAlive, TestProcessTable } from './testProcessTable'
 
 const common = path.join(import.meta.dir, 'common.sh')
 const roots: string[] = []
@@ -696,13 +696,7 @@ for (const bash of testBashes()) {
         ],
         { env, stdout: 'pipe', stderr: 'pipe' },
       )
-      let aliveAfter = false
-      if (startedPid > 1) {
-        try {
-          process.kill(startedPid, 0)
-          aliveAfter = true
-        } catch {}
-      }
+      const aliveAfter = startedPid > 1 && processAlive(startedPid)
       // Clean up our own known test process even if a regression aborts before stop.
       if (startedPid > 1 && aliveAfter) {
         try {

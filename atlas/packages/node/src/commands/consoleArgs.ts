@@ -393,9 +393,10 @@ export interface ConsoleCliConfig {
   /** 给了才读取机外锚点；目录或 HTTP(S) 端点。 */
   readonly anchors?: AuditWitnessSource
   /**
-   * `--trust <node>=<publicKey>`：见证锚点验签用的节点公钥（K-11 F-3）。
+   * `--trust <node>=<publicKey>`：见证锚点与命名目标握手验签用的节点公钥。
    *
-   * 与 {@link trustCa} 一起，是验签公钥**仅有的两个来源**：注册中心零鉴权（写 token
+   * 与 {@link trustCa} 一起，是见证验签公钥**仅有的两个来源**；握手只用显式 trust。
+   * 注册中心零鉴权（写 token
    * 之前）或至少不对公钥作任何背书，它名册上的 `publicKey` 字段不再被当成节点身份。
    * 同一个节点同一把钥给两次会被合并，两把不同的钥当场报错。没有条目时字段缺席，
    * 于是没用到它的配置与加它之前形状一致。
@@ -1614,9 +1615,11 @@ Options (each accepts both --name value and --name=value):
                            the copy ends: anchors past it read 未覆盖, not
                            锚点不符.
   --trust <node>=<publicKey>
-                           Node key for witness verification. Repeatable, one
-                           node per flag; the same argument a resident node
-                           takes. Wins over a CA-derived key for that node.
+                           Node key for witness and handshake verification.
+                           Repeatable, one node per flag; the same argument
+                           a resident node takes. Wins over a CA-derived key
+                           for witness verification; wake/chat handshakes
+                           use only explicit --trust keys.
   --wake-url <node>=<ws url>
                            Wake target allowlist. Repeatable; each named node
                            reads only its derived PSK environment variable.
@@ -1630,6 +1633,11 @@ Options (each accepts both --name value and --name=value):
                            this flag goes on. Turning it on is what keeps the
                            wake face working once a node stops running
                            --open-policy.
+                           With a named target and its --trust key on this
+                           console, also require a mutual signed handshake,
+                           independently of tenancy or approvals. Missing
+                           target keys warn at startup and retain PSK;
+                           signed-handshake failures never fall back to PSK.
   --print-wake-identity    Print this console's wake signing identity as
                            <node>=<publicKey> and exit, creating the key pair
                            on first run. The output is exactly the argument a
@@ -1654,8 +1662,14 @@ Options (each accepts both --name value and --name=value):
                            untrusted tier, whose notice tells the agent to treat
                            the text as data and never as instructions, so it
                            declines to act on it.
+                           Named targets with --trust use mutual signed
+                           handshakes, independently of tenancy or approvals.
+                           Unknown target keys warn and retain PSK, which
+                           cannot reach --require-signed-handshake nodes.
   --chat-from <address>    Address the console speaks as.
                            Default ${DEFAULT_CONSOLE_CHAT_FROM}.
+                           When a signing identity is loaded, HTTP wake/chat
+                           senders must match this address (E_SENDER_MISMATCH).
   --chat-store <abs path>  Where sessions and transcripts land, absolute path.
                            Default <config root>/qianmo/console/chat.ndjson.
   --chat-default <address> The main agent the conversation home page opens,
@@ -1833,6 +1847,8 @@ Options (each accepts both --name value and --name=value):
                            one --chat-url reads. Requests are always signed
                            with this console's identity (--print-wake-identity);
                            the bridge must --trust it.
+                           Bridge handshakes still use PSK; wake/chat mutual
+                           handshake signing does not apply to this path.
   --handoff-node-git <node>=<ssh target>:<root>
                            Where that node's bare repositories are
                            (<bridge root>/repos), reached through its SSH gate.

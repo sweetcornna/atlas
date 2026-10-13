@@ -2211,6 +2211,8 @@ export interface ConsoleDeps {
    * `发起方`. Absent leaves the field editable and empty.
    */
   readonly identity?: string
+  /** Host-owned sender binding when a console signing identity is loaded. */
+  readonly signedFrom?: string
   /**
    * 动作账本（P15.9）。缺席时什么都不记，其余行为不变。
    */

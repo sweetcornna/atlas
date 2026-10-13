@@ -18,6 +18,30 @@ function assertTemporary(file: string): void {
 }
 
 /**
+ * Whether a process still runs. `kill(pid, 0)` also succeeds on a zombie — an
+ * exited process its new parent (init, after a detached launch) has not reaped
+ * yet — so a test that checks right after a stop races the reaper. On Linux the
+ * /proc state decides, as common.sh's beta_proc_alive does; elsewhere the
+ * signal probe is all there is.
+ */
+export function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+  } catch {
+    return false
+  }
+  let stat: string
+  try {
+    stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
+  } catch {
+    // Gone between the two looks on Linux; no procfs elsewhere.
+    return process.platform !== 'linux'
+  }
+  const state = stat.charAt(stat.lastIndexOf(')') + 2)
+  return state !== 'Z' && state !== 'X' && state !== 'x'
+}
+
+/**
  * A synthetic procfs for macOS integration tests. Only copied common.sh files in
  * temporary repositories are patched; production has no flag, import or hook to
  * enable this provider. Linux callers leave their copies untouched and use /proc.

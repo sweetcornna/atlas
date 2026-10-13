@@ -103,6 +103,7 @@ import { ServerNotesStore } from './consoleServerNotes.js'
 import { AlertAcksStore, consoleAlertAcksPath } from './consoleAlertAcks.js'
 import { auditTrailPath } from '../host/auditTrail.js'
 import { qianmoConfigPath } from '@qianmo/paths'
+import { consoleHandshakeFailureMessage } from './consoleHandshake.js'
 
 function fail<T>(
   code: ConsoleFailure['code'],
@@ -854,6 +855,8 @@ const MAX_CONSOLE_WAKE_AFTER_MS = 60_000
 const DEFAULT_CONSOLE_WAKE_TIMEOUT_MS = 30_000
 
 interface WakePortOptions {
+  /** Signed console's configured sender address, including PSK migration peers. */
+  readonly from?: string
   readonly signing?: HandshakeIdentity
   /** 唤醒目标（激活器）的 ws/wss 地址——这个端口只往这一个地方发。 */
   readonly url: string
@@ -924,6 +927,11 @@ export function createWakePort(options: WakePortOptions): WakePort {
       } catch (error) {
         return fail('invalid', messageOf(error))
       }
+      if (options.from !== undefined && input.from !== options.from)
+        return fail(
+          'rejected',
+          `E_SENDER_MISMATCH: signed console sender must be ${options.from}`,
+        )
       if (input.prompt.trim() === '') {
         return fail('invalid', 'prompt 不能为空')
       }
@@ -1000,7 +1008,13 @@ export function createWakePort(options: WakePortOptions): WakePort {
               deliveryUnknown: true,
             },
           }
-        return fail(classifyWakeError(error), wakeFailureMessage(error))
+        return fail(
+          classifyWakeError(error),
+          consoleHandshakeFailureMessage(
+            wakeFailureMessage(error),
+            options.signing,
+          ),
+        )
       }
     },
   }

@@ -50,6 +50,7 @@ import {
   notFound,
   readJsonObject,
 } from '../respond.js'
+import { signedSenderRefusal } from './shared.js'
 import { agentAvatarKey } from '../avatar.js'
 import {
   chatPreview,
@@ -492,6 +493,10 @@ async function dispatchChatApi(
       if (!scope.visible(sessionId)) return failureResponse(HIDDEN_SESSION)
       const body = await readJsonObject(request)
       if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
+      if (Object.hasOwn(body, 'from')) {
+        const senderDenied = signedSenderRefusal(deps, body['from'])
+        if (senderDenied !== null) return senderDenied
+      }
       const text = parseChatText(body)
       if (!text.ok) return fail(400, 'invalid', text.message)
       // A role refusal is not sent and not recorded, like every other guard:
