@@ -5,10 +5,12 @@
  * File-backed teammate inbox.
  *
  * One inbox per agent per team, stored as a JSON array at
- * `<config root>/teams/<team>/inboxes/<agent>.json`. Every mutation runs under
- * a `proper-lockfile` lock on the inbox (`<inbox>.lock`), re-reads the file
- * inside the lock, compacts it to the size bounds below and replaces it with a
- * temp-file + rename, so a reader never sees a half-written array.
+ * `<config root>/teams/<team>/inboxes/<agent>.json`. Every mutation queues by
+ * inbox path in this process, then takes a `proper-lockfile` lock on the inbox
+ * (`<inbox>.lock`) for cross-process exclusion. It re-reads inside the lock,
+ * compacts to the size bounds below and replaces with a temp-file + rename.
+ * Initial creation uses the same atomic replacement, so a reader never sees
+ * a half-written array.
  *
  * The on-disk shape is shared with nodes that already hold inbox files, so the
  * field set, the identity tuple `[from, timestamp, text]`, the limits and the
@@ -47,7 +49,21 @@ export const MAX_MAILBOX_RETAINED_BYTES = 2 * 1024 * 1024
 /** Largest inbox file read or written. */
 export const MAX_MAILBOX_FILE_BYTES = 4 * 1024 * 1024
 
-const LOCK_RETRIES = { retries: 10, minTimeout: 5, maxTimeout: 100 }
+// Budget ~100 ms per write in a 50-write burst, below the 15-second transport
+// receipt wait. This is a contention allowance, not a throughput guarantee.
+// Local writers queue instead of spending it competing with each other.
+const LOCK_WAIT_MS = 5_000
+const LOCK_RETRY_MS = 50
+const LOCK_RETRIES = {
+  retries: LOCK_WAIT_MS / LOCK_RETRY_MS,
+  factor: 1,
+  minTimeout: LOCK_RETRY_MS,
+  maxTimeout: LOCK_RETRY_MS,
+  maxRetryTime: LOCK_WAIT_MS,
+}
+
+// Tails always resolve, even when a mutation fails, and idle paths are removed.
+const inboxMutationTails = new Map<string, Promise<void>>()
 
 const PROTOCOL_TYPES: Readonly<Record<string, true>> = {
   permission_request: true,
@@ -326,19 +342,52 @@ function reportUnreadEvictions(
   )
 }
 
-/** Run `fn` on the inbox's messages under the inbox lock. */
+/** Queue `fn` by inbox path, then re-read and mutate under the file lock. */
 async function withInboxLock<T>(
   path: string,
   fn: (messages: TeammateMessage[]) => Promise<T>,
+  createIfMissing = false,
 ): Promise<T> {
-  const release = await lock(path, {
-    lockfilePath: `${path}.lock`,
-    retries: LOCK_RETRIES,
-  })
+  const previous = inboxMutationTails.get(path)
+  const tail = Promise.withResolvers<void>()
+  inboxMutationTails.set(path, tail.promise)
   try {
-    return await fn(await loadInbox(path))
+    await previous
+    const release = await lock(path, {
+      lockfilePath: `${path}.lock`,
+      retries: LOCK_RETRIES,
+      // Appends can lock before the inbox exists. Read acknowledgements keep
+      // realpath's immediate ENOENT for a missing inbox (a no-op).
+      realpath: !createIfMissing,
+    }).catch((error: unknown) => {
+      if (errnoCode(error) === 'ELOCKED') {
+        throw Object.assign(
+          new Error(
+            `Mailbox lock acquisition timed out after ${LOCK_WAIT_MS} ms: ${path}`,
+            { cause: error },
+          ),
+          { code: 'ELOCKED' },
+        )
+      }
+      throw error
+    })
+    try {
+      const messages = await loadInbox(path).catch(async (error: unknown) => {
+        if (!createIfMissing || errnoCode(error) !== 'ENOENT') throw error
+        // Never publish a newly opened, still-empty file. Also preserve the
+        // empty inbox left behind when the first appended message is invalid.
+        await storeInbox(path, [], 'writeToMailbox')
+        return []
+      })
+      return await fn(messages)
+    } finally {
+      await release()
+    }
   } finally {
-    await release()
+    if (inboxMutationTails.get(path) === tail.promise) {
+      inboxMutationTails.delete(path)
+    }
+    tail.resolve()
   }
 }
 
@@ -378,18 +427,16 @@ export async function writeToMailbox(
   message: Omit<TeammateMessage, 'read'>,
   teamName?: string,
 ): Promise<void> {
-  await mkdir(inboxDir(teamName), { recursive: true })
   const path = getInboxPath(recipientName, teamName)
-  // proper-lockfile locks an existing file only.
-  try {
-    await writeFile(path, '[]', { encoding: 'utf-8', flag: 'wx' })
-  } catch (error) {
-    if (errnoCode(error) !== 'EEXIST') throw error
-  }
-  await withInboxLock(path, async messages => {
-    messages.push(validateMessage({ ...message, read: false }))
-    await storeInbox(path, messages, 'writeToMailbox')
-  })
+  await mkdir(inboxDir(teamName), { recursive: true })
+  await withInboxLock(
+    path,
+    async messages => {
+      messages.push(validateMessage({ ...message, read: false }))
+      await storeInbox(path, messages, 'writeToMailbox')
+    },
+    true,
+  )
 }
 
 /** Mark every message read. A missing inbox is a no-op. */
