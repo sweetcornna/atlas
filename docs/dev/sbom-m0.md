@@ -154,7 +154,7 @@
 | `@qianmo/elastic` | `atlas/packages/elastic` | AGPL-3.0-or-later | 是 | 4/4 |
 | `@qianmo/extension` | `atlas/packages/extension` | AGPL-3.0-or-later | 是 | 6/6 |
 | `@qianmo/handoff` | `atlas/packages/handoff` | AGPL-3.0-or-later | 是 | 20/20 |
-| `@qianmo/mailbox` | `atlas/packages/mailbox` | AGPL-3.0-or-later | 是 | 4/4 |
+| `@qianmo/mailbox` | `atlas/packages/mailbox` | AGPL-3.0-or-later | 是 | 5/5 |
 | `@qianmo/memory` | `atlas/packages/memory` | AGPL-3.0-or-later | 是 | 23/23 |
 | `@qianmo/negotiation` | `atlas/packages/negotiation` | AGPL-3.0-or-later | 是 | 7/7 |
 | `@qianmo/node` | `atlas/packages/node` | AGPL-3.0-or-later | 是 | 312/312 |
