@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, test } from 'bun:test'
-import { mkdir, readFile, readdir, stat } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, stat, utimes } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { lock } from 'proper-lockfile'
 
@@ -268,7 +268,16 @@ describe('locking', () => {
   test('a held lock times out explicitly and queued writes recover after release', async () => {
     await send('first')
     const path = getInboxPath('worker', 'alpha')
-    const release = await lock(path, { lockfilePath: `${path}.lock` })
+    // Hold <inbox>.lock the way another process does and keep its mtime fresh.
+    // A proper-lockfile holder refreshes only every 5 s, inside the very wait
+    // measured here: on a loaded machine the waiters then judged it stale,
+    // took it over and compromised the holder.
+    const lockDir = `${path}.lock`
+    await mkdir(lockDir)
+    const refresh = setInterval(() => {
+      const now = new Date()
+      utimes(lockDir, now, now).catch(() => {})
+    }, 250)
     const started = performance.now()
     const blocked = send('blocked', 2).then(
       () => undefined,
@@ -281,13 +290,15 @@ describe('locking', () => {
         message: `Mailbox lock acquisition timed out after 5000 ms: ${path}`,
         cause: { code: 'ELOCKED' },
       })
+      // The budget, not a hang: generous above for a loaded runner.
       expect(performance.now() - started).toBeGreaterThanOrEqual(4_900)
-      expect(performance.now() - started).toBeLessThan(8_000)
+      expect(performance.now() - started).toBeLessThan(15_000)
       expect((await readMailbox('worker', 'alpha')).map(m => m.text)).toEqual([
         'first',
       ])
     } finally {
-      await release()
+      clearInterval(refresh)
+      await rm(lockDir, { recursive: true, force: true })
       await queued
     }
     expect(await queued).toEqual([{ status: 'fulfilled', value: undefined }])
@@ -295,7 +306,7 @@ describe('locking', () => {
       'first',
       'after-release',
     ])
-  }, 10_000)
+  }, 30_000)
 
   test('a failed mutation does not poison the queue for the next write or read acknowledgement', async () => {
     await send('first')
