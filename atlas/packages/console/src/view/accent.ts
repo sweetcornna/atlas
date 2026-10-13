@@ -17,7 +17,7 @@
  * `--qm-accent` and `--qm-accent-ink`, defaulting to ink.
  */
 
-export interface AccentPreset {
+interface AccentPreset {
   readonly name: string
   readonly label: string
   readonly light: string
@@ -81,7 +81,7 @@ export const ACCENT_PRESETS: readonly AccentPreset[] = [
 const CUSTOM = /^#[0-9a-f]{6}$/
 
 /** The text colour that reads on `hex`: ink on a light colour, white on a dark one. */
-export function accentInk(hex: string): string {
+function accentInk(hex: string): string {
   const channel = (at: number): number => {
     const value = Number.parseInt(hex.slice(at, at + 2), 16) / 255
     return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4

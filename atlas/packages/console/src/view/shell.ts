@@ -67,7 +67,7 @@ import { QIANMO_ICON_HREF, qianmoMark } from './mark.js'
 export const BRAND = '阡陌控制台'
 
 export const WORDMARK_CN = '阡陌'
-export const WORDMARK_EN = 'AgentNest'
+const WORDMARK_EN = 'AgentNest'
 
 /**
  * The `<head>` every document shares.

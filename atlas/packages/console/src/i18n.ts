@@ -28,7 +28,7 @@ export const LANG_NAMES: Readonly<Record<Lang, string>> = {
 }
 
 /** The language a cookie value names, or `undefined` for anything else. */
-export function parseLang(value: string | undefined): Lang | undefined {
+function parseLang(value: string | undefined): Lang | undefined {
   return (LANGS as readonly string[]).includes(value ?? '')
     ? (value as Lang)
     : undefined

@@ -134,7 +134,7 @@ export interface FrontText {
 }
 
 /** What the page script says, sent with the page as data. */
-export interface FrontClientText {
+interface FrontClientText {
   readonly messageTo: string
   readonly unavailable: string
   readonly opening: string
