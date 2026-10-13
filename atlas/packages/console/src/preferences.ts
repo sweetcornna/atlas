@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { etagMatches } from './respond.js'
+import { accentAttrs } from './view/accent.js'
 
 /** Runs after authorization and before compression. A matching ETag never
- * bypasses the current principal/tenant checks. Theme is cosmetic only.
+ * bypasses the current principal/tenant checks. Theme and accent are
+ * cosmetic only, and each is drawn only from a value on its closed list.
  */
 export async function decorateConsoleResponse(
   request: Request,
@@ -33,10 +35,17 @@ export async function decorateConsoleResponse(
   const theme =
     /(?:^|;\s*)qianmo_theme=(light|dark|system)(?:;|$)/.exec(cookie)?.[1] ??
     'system'
+  const accent =
+    /(?:^|;\s*)qianmo_accent=([a-z]{2,8}|%23[0-9a-fA-F]{6})(?:;|$)/.exec(
+      cookie,
+    )?.[1]
   return new Response(
     body.replace(
-      '<html lang="zh-CN">',
-      `<html lang="zh-CN" data-theme="${theme}">`,
+      /<html lang="(zh-CN|en|ja)">/,
+      (_, lang: string) =>
+        `<html lang="${lang}" data-theme="${theme}"${accentAttrs(
+          accent?.replace('%23', '#'),
+        )}>`,
     ),
     { status: 200, headers },
   )

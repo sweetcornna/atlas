@@ -27,6 +27,7 @@
  */
 
 import { chatScopeOf, type ChatScope } from '../accountsHttp.js'
+import { langOf } from '../i18n.js'
 import { agentAvatarKey } from '../avatar.js'
 import type {
   ChatPort,
@@ -165,6 +166,7 @@ async function sideModel(
     activeId: activeId !== null && scope.visible(activeId) ? activeId : null,
     admin: mayAdmin(ctx),
     now: ctx.now,
+    lang: langOf(ctx.request),
   }
 }
 
@@ -201,7 +203,7 @@ async function viewFor(
 ): Promise<FrontViewRender> {
   const admin = mayAdmin(ctx)
   const registryDown = data.targets === null
-  const base = { admin, registryDown, now: ctx.now }
+  const base = { admin, registryDown, now: ctx.now, lang: langOf(ctx.request) }
   if (sessionId !== null && sessionId !== '') {
     const faces = chatFaces(await look([]))
     if (!scope.visible(sessionId)) {
@@ -328,6 +330,7 @@ export async function renderFront(
       admin: side.admin,
       faces: side.faces,
       relogin: loginHref(ctx.url),
+      lang: side.lang,
     }),
     status: view.status ?? 200,
   }

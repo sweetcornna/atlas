@@ -93,14 +93,19 @@ export function toDatetimeLocal(at: number): string {
 }
 
 /**
- * The shapes an instant is drawn in: `HH:MM:SS`, the date before it, or the
- * date and the minute (the model service page's settings and cool-downs).
+ * The shapes an instant is drawn in: `HH:MM:SS`, the date before it, the
+ * date and the minute (the model service page's settings and cool-downs), or
+ * `HH:MM` alone (the conversation's time dividers).
  */
-export type TimeFormat = 'clock' | 'datetime' | 'minute'
+export type TimeFormat = 'clock' | 'datetime' | 'minute' | 'hm'
 
-/** {@link formatClock}, {@link formatDateTime} or the minute, by shape. */
+/** {@link formatClock}, {@link formatDateTime}, the minute or `HH:MM`, by shape. */
 export function formatTime(at: number, fmt: TimeFormat): string {
   if (fmt === 'clock') return formatClock(at)
+  if (fmt === 'hm') {
+    const clock = formatClock(at)
+    return clock === NO_VALUE ? clock : clock.slice(0, 5)
+  }
   const full = formatDateTime(at)
   return fmt === 'minute' && full !== NO_VALUE ? full.slice(0, 16) : full
 }
