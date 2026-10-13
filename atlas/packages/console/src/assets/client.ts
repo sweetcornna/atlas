@@ -294,6 +294,7 @@ function runtimeScript(guards: TokenGuards): string {
       if (isNaN(d.getTime())) continue;
       var fmt = times[i].getAttribute('data-fmt');
       var text = fmt === 'clock' ? stamp(d) :
+        fmt === 'hm' ? pad(d.getHours()) + ':' + pad(d.getMinutes()) :
         fmt === 'minute' ? day(d) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) :
         day(d) + ' ' + stamp(d);
       if (times[i].textContent !== text) times[i].textContent = text;

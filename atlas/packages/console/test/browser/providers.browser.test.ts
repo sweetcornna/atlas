@@ -642,8 +642,9 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
       ).toBe('模型 · deepseek-v4-pro')
       await tab.waitFor(`document.getElementById('prov-chat-divider') !== null`)
       // Between the second and the third turn: the switch was an hour ago.
+      // (The pause's own time label is not a turn.)
       const order = await tab.evaluate<string[]>(
-        `Array.prototype.map.call(document.querySelectorAll('.fx-msgs > *'), function (el) {
+        `Array.prototype.map.call(document.querySelectorAll('.fx-msgs > :not(.fx-sep)'), function (el) {
           return el.id === 'prov-chat-divider' ? 'divider' : (el.querySelector('time') || {}).textContent || el.className;
         })`,
       )

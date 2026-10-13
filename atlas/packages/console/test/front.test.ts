@@ -245,20 +245,23 @@ describe('agents and session history', () => {
     }
   })
 
-  test('sub-agents group by node and never repeat the main agent', async () => {
+  test('one list: the main agent first and once, every sub-agent after it', async () => {
     const h = front()
     const fragment = await (
       await h.handle(browse('/fragments/chat/front/side', ADMIN))
     ).text()
     const agents = region(fragment, 'fx-agents', '</section>')
-    expect(agents).toContain('子智能体')
     expect(agents.match(/class="fx-agent-row/g)).toHaveLength(3)
     expect(agents.match(/class="fx-agent-row fx-agent-main/g)).toHaveLength(1)
-    expect(agents.match(/class="fx-server"/g)).toHaveLength(2)
-    const subs = agents.slice(agents.indexOf('class="fx-server"'))
+    expect(/class="fx-agent-row[^"]*"/.exec(agents)?.[0]).toContain(
+      'fx-agent-main',
+    )
+    const subs = agents.slice(
+      agents.indexOf('class="fx-agent-row', agents.indexOf('fx-agent-main')),
+    )
     expect(subs).not.toContain(`data-address="${MAIN.address}"`)
-    expect(subs).toContain('data-key="server:tokyo-1"')
-    expect(subs).toContain('data-key="server:osaka-1"')
+    expect(subs).toContain(`data-address="${REVIEWER.address}"`)
+    expect(subs).toContain(`data-address="${WRITER.address}"`)
   })
 
   test('an undialable agent is marked and cannot start from the welcome', async () => {
@@ -287,7 +290,13 @@ describe('agents and session history', () => {
     const side = await (
       await h.handle(browse('/fragments/chat/front/side?active=current', ADMIN))
     ).text()
-    expect(region(side, 'fx-agents', '</section>')).toContain('1 执行中')
+    const agents = region(side, 'fx-agents', '</section>')
+    // Only the reviewer works out of sight: the open conversation and the
+    // finished one are not counted.
+    expect(agents.match(/ is-busy/g)).toHaveLength(1)
+    expect(agents).toMatch(
+      new RegExp(`is-busy"[^>]*data-address="${REVIEWER.address}"`),
+    )
     const stack = side.slice(side.indexOf('id="fx-stack"'))
     expect(stack).toContain('子智能体执行中 · 1')
     expect(stack).toContain('data-session="sub-work"')
@@ -368,9 +377,9 @@ describe('front process steps', () => {
     const turns = [ask, b, answer, { ...step, taskId: 'task-b' }]
     const running = await render(turns)
     expect(running).toContain('fx-pending')
-    expect(running).toContain('aria-label="planner 处理中"')
+    expect(running).toContain('aria-label="planner · 读取资料"')
     expect(running).toContain('fx-steps-muted is-running')
-    expect(running).toContain('执行中 · 1 步')
+    expect(running).toContain('进行中 · 1 步')
     const done = await render([
       ...turns,
       { ...answer, id: 'answer-b', taskId: 'task-b', text: 'B 已完成' },

@@ -1,0 +1,615 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+/**
+ * Everything the conversation front says, in each language it speaks
+ * (`i18n.ts`).
+ *
+ * One interface, one table per language, so a key missing from a language
+ * is a type error rather than a blank on the page. What the agents and the
+ * people write is never translated; neither are names, addresses, model ids,
+ * task and trace ids, or the brand.
+ *
+ * The page script's own words travel to the browser with the page
+ * ({@link frontClientText}); the rest is drawn on the server.
+ */
+
+import type { Lang } from '../i18n.js'
+
+/** What a step's verb or tool is called, by kind of work (`front.ts`). */
+interface ActivityWords {
+  readonly thinking: string
+  readonly read: string
+  readonly search: string
+  readonly edit: string
+  readonly run: string
+  readonly fetch: string
+  readonly computer: string
+  readonly browser: string
+  readonly mail: string
+  readonly calendar: string
+  readonly connectors: string
+  readonly file: string
+  readonly generate: string
+  readonly memory: string
+  /** Between the words and what they act on. */
+  readonly colon: string
+  readonly failed: string
+}
+
+export interface FrontText {
+  readonly agents: string
+  readonly rosterDown: string
+  readonly noAgents: string
+  readonly manageNodes: string
+  readonly working: string
+  readonly mainTag: string
+  readonly noMatch: string
+  readonly online: string
+  readonly notConnected: string
+  readonly notInRoster: string
+  readonly noLongerListed: string
+  readonly notConnectedForChat: string
+  readonly newChat: string
+  readonly changeLook: string
+  changeLookOf(name: string): string
+  readonly copyAddress: string
+  readonly nodeDetails: string
+  readonly modelSettings: string
+  readonly messageChain: string
+  actionsFor(name: string): string
+
+  readonly chats: string
+  readonly chatScope: string
+  readonly thisAgent: string
+  readonly all: string
+  readonly chatList: string
+  readonly historyWindows: readonly [string, string, string, string]
+  readonly noChats: string
+  readonly chatHistory: string
+
+  subAgentsWorking(count: number): string
+  workingInBackground(count: number): string
+  more(count: number): string
+
+  readonly sent: string
+  readonly delivered: string
+  receipt(id: string): string
+  readonly receiptUnknown: string
+  readonly awaitingDelivery: string
+  readonly read: string
+  readonly unread: string
+  readonly failed: string
+  readonly trace: string
+  readonly copyReply: string
+
+  stepsDone(count: number): string
+  stepsRunning(count: number): string
+  readonly details: string
+  readonly resent: string
+  readonly activity: ActivityWords
+
+  readonly agentInfo: string
+  readonly address: string
+  readonly node: string
+  readonly status: string
+  readonly chatChannel: string
+  readonly connected: string
+  readonly thisChat: string
+  chatStats(turns: number, started: string): string
+  readonly chat: string
+
+  readonly roleAdmin: string
+  readonly roleView: string
+  readonly me: string
+  readonly adminConsole: string
+  readonly accountMenu: string
+  readonly changeMyLook: string
+  readonly appearance: string
+  readonly themeSystem: string
+  readonly themeLight: string
+  readonly themeDark: string
+  readonly accent: string
+  readonly accentCustom: string
+  readonly accentCustomAria: string
+  readonly language: string
+  readonly signOut: string
+  readonly skipToBox: string
+  readonly collapseSide: string
+  readonly expandSide: string
+  readonly closeSide: string
+  readonly search: string
+  readonly jumpToLatest: string
+  readonly message: string
+  readonly placeholder: string
+  readonly localCommands: string
+  readonly commands: string
+  readonly voiceInput: string
+  readonly send: string
+  readonly commandWords: Readonly<Record<string, string>>
+  readonly keyboardTitle: string
+  readonly keyboardHelp: string
+  readonly close: string
+  ago(at: number, now: number): string
+}
+
+/** What the page script says, sent with the page as data. */
+export interface FrontClientText {
+  readonly messageTo: string
+  readonly unavailable: string
+  readonly opening: string
+  readonly pickAgent: string
+  readonly noSession: string
+  readonly sending: string
+  readonly sent: string
+  readonly sentRetrying: string
+  readonly newReply: string
+  readonly seeChat: string
+  readonly polling: string
+  readonly disconnected: string
+  readonly copied: string
+  readonly copyFailed: string
+  readonly voiceUnavailable: string
+  /** Leads of a failed open and send; Chinese uses the runtime's own line. */
+  readonly openFailed?: string
+  readonly sendFailed?: string
+  readonly voiceLang: string
+}
+
+const SECOND = 1000
+const MINUTE = 60 * SECOND
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+
+/** A gap in whole units, and whether it is ahead (a node's clock running fast). */
+function gap(
+  at: number,
+  now: number,
+): {
+  readonly unit: 's' | 'm' | 'h' | 'd' | 'now'
+  readonly n: number
+  readonly ahead: boolean
+} {
+  const delta = now - at
+  const size = Math.abs(delta)
+  const ahead = delta < 0
+  if (!Number.isFinite(size) || size < SECOND)
+    return { unit: 'now', n: 0, ahead }
+  if (size < MINUTE) return { unit: 's', n: Math.floor(size / SECOND), ahead }
+  if (size < HOUR) return { unit: 'm', n: Math.floor(size / MINUTE), ahead }
+  if (size < DAY) return { unit: 'h', n: Math.floor(size / HOUR), ahead }
+  return { unit: 'd', n: Math.floor(size / DAY), ahead }
+}
+
+const ZH: FrontText = {
+  agents: '智能体',
+  rosterDown: '名册不可达',
+  noAgents: '暂无智能体',
+  manageNodes: '管理节点',
+  working: '执行中',
+  mainTag: '主',
+  noMatch: '无匹配',
+  online: '在线',
+  notConnected: '未接入',
+  notInRoster: '不在名册',
+  noLongerListed: '已不在名册',
+  notConnectedForChat: '未接入对话',
+  newChat: '新对话',
+  changeLook: '换形象',
+  changeLookOf: name => `换形象 · ${name}`,
+  copyAddress: '复制地址',
+  nodeDetails: '节点详情',
+  modelSettings: '模型设置',
+  messageChain: '消息链',
+  actionsFor: name => `${name} 的操作`,
+  chats: '会话',
+  chatScope: '会话范围',
+  thisAgent: '当前智能体',
+  all: '全部',
+  chatList: '会话列表',
+  historyWindows: ['24 小时内', '7 天内', '30 天内', '更早'],
+  noChats: '暂无会话',
+  chatHistory: '会话记录',
+  subAgentsWorking: n => `子智能体执行中 · ${n}`,
+  workingInBackground: n => `后台执行 · ${n}`,
+  more: n => `另有 ${n} 条`,
+  sent: '已发出',
+  delivered: '已投递',
+  receipt: id => `回执 ${id}`,
+  receiptUnknown: '回执未知',
+  awaitingDelivery: '待投递',
+  read: '已读',
+  unread: '未读',
+  failed: '失败',
+  trace: '链',
+  copyReply: '复制这条回复',
+  stepsDone: n => `已执行 · ${n} 步`,
+  stepsRunning: n => `进行中 · ${n} 步`,
+  details: '详情',
+  resent: '重发',
+  activity: {
+    thinking: '思考中',
+    read: '读',
+    search: '搜',
+    edit: '改',
+    run: '执行',
+    fetch: '取',
+    computer: '操作电脑',
+    browser: '操作浏览器',
+    mail: '邮件',
+    calendar: '日程',
+    connectors: '连接器',
+    file: '传文件',
+    generate: '生成',
+    memory: '记忆',
+    colon: '：',
+    failed: '失败',
+  },
+  agentInfo: '智能体信息',
+  address: '地址',
+  node: '节点',
+  status: '状态',
+  chatChannel: '对话通道',
+  connected: '已接入',
+  thisChat: '本会话',
+  chatStats: (turns, started) => `${turns} 轮 · 开始于 ${started}`,
+  chat: '对话',
+  roleAdmin: '管理',
+  roleView: '只读',
+  me: '我',
+  adminConsole: '管理后台',
+  accountMenu: '账号与外观',
+  changeMyLook: '换我的形象',
+  appearance: '外观',
+  themeSystem: '跟随系统',
+  themeLight: '浅色',
+  themeDark: '深色',
+  accent: '主题色',
+  accentCustom: '自定义',
+  accentCustomAria: '自定义主题色',
+  language: '语言 · Language',
+  signOut: '退出',
+  skipToBox: '跳到输入框',
+  collapseSide: '收起侧栏',
+  expandSide: '展开侧栏',
+  closeSide: '关闭侧栏',
+  search: '搜索',
+  jumpToLatest: '回到最新',
+  message: '消息',
+  placeholder: '发消息',
+  localCommands: '本地命令',
+  commands: '命令',
+  voiceInput: '语音输入',
+  send: '发送',
+  commandWords: {
+    model: '切换模型',
+    thinking: '思考开关',
+    effort: '推理档位',
+    compact: '压缩上下文',
+    context: '上下文用量',
+    autocompact: '自动压缩阈值',
+  },
+  keyboardTitle: '快捷键',
+  keyboardHelp:
+    'Enter 发送 · Shift Enter 换行 · / 搜索 · Ctrl Shift O 新对话 · Esc 关闭菜单 · ? 帮助',
+  close: '关闭',
+  ago: (at, now) => {
+    const { unit, n, ahead } = gap(at, now)
+    const tail = ahead ? '后' : '前'
+    if (unit === 'now') return '刚刚'
+    const words = { s: '秒', m: '分钟', h: '小时', d: '天' }[unit]
+    return `${n} ${words}${tail}`
+  },
+}
+
+const EN: FrontText = {
+  agents: 'Agents',
+  rosterDown: 'Roster unreachable',
+  noAgents: 'No agents yet',
+  manageNodes: 'Manage nodes',
+  working: 'Working',
+  mainTag: 'Main',
+  noMatch: 'No matches',
+  online: 'Online',
+  notConnected: 'Not connected',
+  notInRoster: 'Not in roster',
+  noLongerListed: 'No longer in the roster',
+  notConnectedForChat: 'Not connected for chat',
+  newChat: 'New chat',
+  changeLook: 'Change look',
+  changeLookOf: name => `Change look · ${name}`,
+  copyAddress: 'Copy address',
+  nodeDetails: 'Node details',
+  modelSettings: 'Model settings',
+  messageChain: 'Message chain',
+  actionsFor: name => `Actions for ${name}`,
+  chats: 'Chats',
+  chatScope: 'Which chats',
+  thisAgent: 'This agent',
+  all: 'All',
+  chatList: 'Chat list',
+  historyWindows: ['Last 24 hours', 'Last 7 days', 'Last 30 days', 'Older'],
+  noChats: 'No chats yet',
+  chatHistory: 'Chat history',
+  subAgentsWorking: n => `Sub-agents working · ${n}`,
+  workingInBackground: n => `Working in background · ${n}`,
+  more: n => `${n} more`,
+  sent: 'Sent',
+  delivered: 'Delivered',
+  receipt: id => `receipt ${id}`,
+  receiptUnknown: 'Receipt unknown',
+  awaitingDelivery: 'Awaiting delivery',
+  read: 'Read',
+  unread: 'Unread',
+  failed: 'Failed',
+  trace: 'trace',
+  copyReply: 'Copy reply',
+  stepsDone: n => `Done · ${n} ${n === 1 ? 'step' : 'steps'}`,
+  stepsRunning: n => `In progress · ${n} ${n === 1 ? 'step' : 'steps'}`,
+  details: 'Details',
+  resent: 'Resent',
+  activity: {
+    thinking: 'Thinking',
+    read: 'Reading',
+    search: 'Searching',
+    edit: 'Editing',
+    run: 'Running',
+    fetch: 'Fetching',
+    computer: 'Using the computer',
+    browser: 'Using the browser',
+    mail: 'Mail',
+    calendar: 'Calendar',
+    connectors: 'Connectors',
+    file: 'Sending a file',
+    generate: 'Generating',
+    memory: 'Memory',
+    colon: ': ',
+    failed: 'failed',
+  },
+  agentInfo: 'Agent info',
+  address: 'Address',
+  node: 'Node',
+  status: 'Status',
+  chatChannel: 'Chat channel',
+  connected: 'Connected',
+  thisChat: 'This chat',
+  chatStats: (turns, started) => `${turns} turns · started ${started}`,
+  chat: 'Chat',
+  roleAdmin: 'Admin',
+  roleView: 'Read-only',
+  me: 'Me',
+  adminConsole: 'Admin console',
+  accountMenu: 'Account and appearance',
+  changeMyLook: 'Change my look',
+  appearance: 'Appearance',
+  themeSystem: 'System',
+  themeLight: 'Light',
+  themeDark: 'Dark',
+  accent: 'Theme color',
+  accentCustom: 'Custom',
+  accentCustomAria: 'Custom theme color',
+  language: 'Language · 语言',
+  signOut: 'Sign out',
+  skipToBox: 'Skip to message box',
+  collapseSide: 'Collapse sidebar',
+  expandSide: 'Expand sidebar',
+  closeSide: 'Close sidebar',
+  search: 'Search',
+  jumpToLatest: 'Jump to latest',
+  message: 'Message',
+  placeholder: 'Message',
+  localCommands: 'Local commands',
+  commands: 'Commands',
+  voiceInput: 'Voice input',
+  send: 'Send',
+  commandWords: {
+    model: 'Switch model',
+    thinking: 'Toggle thinking',
+    effort: 'Reasoning effort',
+    compact: 'Compact context',
+    context: 'Context usage',
+    autocompact: 'Auto-compact threshold',
+  },
+  keyboardTitle: 'Keyboard shortcuts',
+  keyboardHelp:
+    'Enter send · Shift Enter new line · / search · Ctrl Shift O new chat · Esc close menu · ? help',
+  close: 'Close',
+  ago: (at, now) => {
+    const { unit, n, ahead } = gap(at, now)
+    if (unit === 'now') return 'just now'
+    const words = { s: 's', m: 'm', h: 'h', d: 'd' }[unit]
+    return ahead ? `in ${n}${words}` : `${n}${words} ago`
+  },
+}
+
+const JA: FrontText = {
+  agents: 'エージェント',
+  rosterDown: '名簿に接続できません',
+  noAgents: 'エージェントはまだいません',
+  manageNodes: 'ノードを管理',
+  working: '実行中',
+  mainTag: 'メイン',
+  noMatch: '一致なし',
+  online: 'オンライン',
+  notConnected: '未接続',
+  notInRoster: '名簿にありません',
+  noLongerListed: '名簿から外れました',
+  notConnectedForChat: 'チャット未接続',
+  newChat: '新しいチャット',
+  changeLook: '見た目を変更',
+  changeLookOf: name => `見た目を変更 · ${name}`,
+  copyAddress: 'アドレスをコピー',
+  nodeDetails: 'ノード詳細',
+  modelSettings: 'モデル設定',
+  messageChain: 'メッセージ経路',
+  actionsFor: name => `${name} の操作`,
+  chats: 'チャット',
+  chatScope: '表示範囲',
+  thisAgent: 'このエージェント',
+  all: 'すべて',
+  chatList: 'チャット一覧',
+  historyWindows: ['24時間以内', '7日以内', '30日以内', 'それ以前'],
+  noChats: 'チャットはまだありません',
+  chatHistory: 'チャット履歴',
+  subAgentsWorking: n => `サブエージェント実行中 · ${n}`,
+  workingInBackground: n => `バックグラウンド実行中 · ${n}`,
+  more: n => `ほか ${n} 件`,
+  sent: '送信済み',
+  delivered: '配信済み',
+  receipt: id => `受領 ${id}`,
+  receiptUnknown: '受領不明',
+  awaitingDelivery: '配信待ち',
+  read: '既読',
+  unread: '未読',
+  failed: '失敗',
+  trace: 'トレース',
+  copyReply: '返信をコピー',
+  stepsDone: n => `完了 · ${n} ステップ`,
+  stepsRunning: n => `進行中 · ${n} ステップ`,
+  details: '詳細',
+  resent: '再送',
+  activity: {
+    thinking: '考え中',
+    read: '読込',
+    search: '検索',
+    edit: '編集',
+    run: '実行',
+    fetch: '取得',
+    computer: 'パソコンを操作',
+    browser: 'ブラウザを操作',
+    mail: 'メール',
+    calendar: '予定',
+    connectors: 'コネクタ',
+    file: 'ファイル送信',
+    generate: '生成',
+    memory: '記憶',
+    colon: '：',
+    failed: '失敗',
+  },
+  agentInfo: 'エージェント情報',
+  address: 'アドレス',
+  node: 'ノード',
+  status: '状態',
+  chatChannel: 'チャット経路',
+  connected: '接続済み',
+  thisChat: 'このチャット',
+  chatStats: (turns, started) => `${turns} ターン · ${started}に開始`,
+  chat: 'チャット',
+  roleAdmin: '管理者',
+  roleView: '閲覧のみ',
+  me: '自分',
+  adminConsole: '管理画面',
+  accountMenu: 'アカウントと外観',
+  changeMyLook: '自分の見た目を変更',
+  appearance: '外観',
+  themeSystem: 'システム',
+  themeLight: 'ライト',
+  themeDark: 'ダーク',
+  accent: 'テーマカラー',
+  accentCustom: 'カスタム',
+  accentCustomAria: 'カスタムテーマカラー',
+  language: '言語 · Language',
+  signOut: 'ログアウト',
+  skipToBox: '入力欄へ移動',
+  collapseSide: 'サイドバーを閉じる',
+  expandSide: 'サイドバーを開く',
+  closeSide: 'サイドバーを閉じる',
+  search: '検索',
+  jumpToLatest: '最新へ移動',
+  message: 'メッセージ',
+  placeholder: 'メッセージ',
+  localCommands: 'ローカルコマンド',
+  commands: 'コマンド',
+  voiceInput: '音声入力',
+  send: '送信',
+  commandWords: {
+    model: 'モデル切替',
+    thinking: '思考の切替',
+    effort: '推論レベル',
+    compact: 'コンテキスト圧縮',
+    context: 'コンテキスト使用量',
+    autocompact: '自動圧縮のしきい値',
+  },
+  keyboardTitle: 'キーボードショートカット',
+  keyboardHelp:
+    'Enter 送信 · Shift Enter 改行 · / 検索 · Ctrl Shift O 新しいチャット · Esc メニューを閉じる · ? ヘルプ',
+  close: '閉じる',
+  ago: (at, now) => {
+    const { unit, n, ahead } = gap(at, now)
+    if (unit === 'now') return 'たった今'
+    const words = { s: '秒', m: '分', h: '時間', d: '日' }[unit]
+    return `${n}${words}${ahead ? '後' : '前'}`
+  },
+}
+
+export const FRONT_TEXT: Readonly<Record<Lang, FrontText>> = {
+  'zh-CN': ZH,
+  en: EN,
+  ja: JA,
+}
+
+const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
+  'zh-CN': {
+    messageTo: '发消息给 ',
+    unavailable: '暂不可对话',
+    opening: '正在打开会话',
+    pickAgent: '先选一个智能体',
+    noSession: '没能开出会话',
+    sending: '发送中',
+    sent: '已发送',
+    sentRetrying: '已发送 · 刷新失败 · 自动重试中',
+    newReply: '收到新回复 · ',
+    seeChat: '请查看对话',
+    polling: '轮询中',
+    disconnected: '已断开',
+    copied: '已复制',
+    copyFailed: '复制失败',
+    voiceUnavailable: '语音输入不可用',
+    voiceLang: 'zh-CN',
+  },
+  en: {
+    messageTo: 'Message ',
+    unavailable: 'Chat unavailable',
+    opening: 'Opening the chat',
+    pickAgent: 'Pick an agent first',
+    noSession: "Couldn't open a chat",
+    sending: 'Sending',
+    sent: 'Sent',
+    sentRetrying: 'Sent · refresh failed · retrying',
+    newReply: 'New reply · ',
+    seeChat: 'see the chat',
+    polling: 'Polling',
+    disconnected: 'Disconnected',
+    copied: 'Copied',
+    copyFailed: 'Copy failed',
+    voiceUnavailable: 'Voice input unavailable',
+    openFailed: "Couldn't open",
+    sendFailed: 'Send failed',
+    voiceLang: 'en-US',
+  },
+  ja: {
+    messageTo: 'メッセージ：',
+    unavailable: 'チャットできません',
+    opening: 'チャットを開いています',
+    pickAgent: '先にエージェントを選んでください',
+    noSession: 'チャットを開けませんでした',
+    sending: '送信中',
+    sent: '送信済み',
+    sentRetrying: '送信済み · 更新失敗 · 再試行中',
+    newReply: '新しい返信 · ',
+    seeChat: 'チャットを確認してください',
+    polling: 'ポーリング中',
+    disconnected: '切断されました',
+    copied: 'コピーしました',
+    copyFailed: 'コピーに失敗しました',
+    voiceUnavailable: '音声入力は使えません',
+    openFailed: '開けませんでした',
+    sendFailed: '送信に失敗しました',
+    voiceLang: 'ja-JP',
+  },
+}
+
+/** The page script's words, as JSON for a data attribute. */
+export function frontClientText(lang: Lang): string {
+  return JSON.stringify(CLIENT[lang])
+}

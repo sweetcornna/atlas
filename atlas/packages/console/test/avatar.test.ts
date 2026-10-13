@@ -149,26 +149,22 @@ describe('形象 · the figure', () => {
     }
   })
 
-  test('flat has no definitions to collide; rich names its own after uid', () => {
+  test('flat colour, no definitions: nothing to collide, nothing fetched', () => {
     const flat = avatarSvg(SPEC, { size: 30 })
     expect(flat).not.toContain('url(')
     expect(flat).not.toContain(' id="')
     expect(flat).not.toContain('av-live')
+    // The large live figure is the same flat drawing, only allowed to move.
     const rich = avatarSvg(SPEC, { size: 160, uid: 'g7', live: true })
-    expect(rich).toContain('id="g7-b"')
-    expect(rich).toContain('url(#g7-b)')
-    expect(rich).toContain('feTurbulence')
     expect(rich).toContain('class="avatar av-live"')
-    // Nothing is fetched: every reference points into the figure itself.
-    for (const match of rich.matchAll(/url\(([^)]*)\)/g)) {
-      expect(match[1]?.startsWith('#g7-')).toBe(true)
+    expect(rich).not.toContain('url(')
+    expect(rich).not.toContain(' id="')
+    for (const material of AVATAR_MATERIALS) {
+      const figure = avatarSvg({ ...SPEC, material }, { size: 160, uid: 'g8' })
+      expect(figure).not.toContain('<filter')
+      expect(figure).not.toContain('Gradient')
+      expect(figure).not.toContain('av-live')
     }
-    const matte = avatarSvg(
-      { ...SPEC, material: 'matte' },
-      { size: 160, uid: 'g8' },
-    )
-    expect(matte).not.toContain('feTurbulence')
-    expect(matte).not.toContain('av-live')
   })
 
   test('a named figure is an image with an escaped name; an unnamed one is hidden', () => {
@@ -195,16 +191,12 @@ describe('形象 · the figure', () => {
     expect(html.match(/name="color"/g)?.length).toBe(AVATAR_COLORS.length)
     // One live figure on the stage; every choice is a small chip.
     expect(html.match(/class="avatar av-live/g)?.length).toBe(1)
+    // A figure is a shape, a colour and a pair of eyes: those are the choices.
     expect(html.match(/class="av-opt"/g)?.length).toBe(
-      AVATAR_SHAPES.length +
-        AVATAR_MATERIALS.length +
-        AVATAR_EYES.length +
-        AVATAR_MOUTHS.length +
-        2 +
-        AVATAR_ACCESSORIES.length,
+      AVATAR_SHAPES.length + AVATAR_EYES.length,
     )
     expect(html).toContain('name="shape" value="cloud" checked')
-    expect(html).toContain('name="cheeks" value="off" checked')
+    expect(html).not.toContain('name="cheeks"')
     expect(html).toContain('雾蓝云')
     // Every state can be tried on the stage.
     for (const state of AVATAR_STATES) {
@@ -326,20 +318,16 @@ describe('形象 · in 对话', () => {
       state: 'thinking',
     })
     expect(rich).toContain('data-state="thinking"')
+    // The face says the state with its eyes alone, solid like the rest of it.
     for (const part of [
       'av-eyes-own',
       'av-eyes-happy',
       'av-eyes-closed',
       'av-eyes-low',
-      'av-talk',
-      'av-think',
-      'av-sparks',
-      'av-zzz',
     ]) {
-      expect(rich).toContain(
-        `class="${part === 'av-talk' || part === 'av-think' || part === 'av-sparks' || part === 'av-zzz' ? part : `av-eyes ${part}`}"`,
-      )
+      expect(rich).toContain(`class="av-eyes ${part}"`)
     }
+    expect(rich).not.toContain('stroke=')
     for (const state of AVATAR_STATES) {
       if (state === 'idle') continue
       expect(AVATAR_CSS).toContain(`[data-state="${state}"]`)
