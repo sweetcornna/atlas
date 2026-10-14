@@ -8,6 +8,7 @@ import {
   MODEL_DIRECTIONS,
   SCHEDULE_TEMPLATES,
   ChatDispatch,
+  addressNode,
   type ActionLedgerPort,
   type ChatPort,
   type ChatTurn,
@@ -23,6 +24,7 @@ import {
   type SchedulesPort,
   type ScheduleTemplateView,
   type ScheduleView,
+  type TenantConfig,
   type TenantPort,
   type UsagePort,
 } from '@qianmo/console'
@@ -82,6 +84,7 @@ const draftSchema = z.object({
     .default(DEFAULT_TIMEOUT),
 })
 const channelDraftSchema = z.object({
+  tenant: z.string().optional(),
   id: z.string().optional(),
   name: z.string().trim().min(1).max(120),
   kind: z.enum(['webhook', 'bark', 'wecom', 'feishu', 'ntfy']),
@@ -90,6 +93,7 @@ const channelDraftSchema = z.object({
 const runSchema = z.object({
   runId: z.string(),
   createdBy: z.string().optional(),
+  target: z.string().optional(),
   scheduleId: z.string(),
   plannedAt: z.number(),
   startedAt: z.number(),
@@ -123,6 +127,7 @@ const storedSchema = draftSchema.extend({
 const channelSchema = channelDraftSchema.omit({ url: true }).extend({
   id: z.string(),
   host: z.string(),
+  tenant: z.string().nullable().optional(),
   createdAt: z.number(),
   lastUsedAt: z.number().nullable(),
   lastError: z.string().nullable(),
@@ -521,6 +526,91 @@ export class ConsoleSchedules implements SchedulesPort {
     )
   }
 
+  targetOf(id: string): string | undefined {
+    return this.#schedules.get(id)?.target
+  }
+
+  channelTenant(id: string): string | null | undefined {
+    const channel = this.#channels.get(id)
+    return channel === undefined ? undefined : (channel.tenant ?? null)
+  }
+
+  /** Null when tenancy is off; throws when the policy cannot be read. */
+  #tenants(): TenantConfig | null {
+    return this.#options.tenancy?.read().config ?? null
+  }
+
+  /** Break-glass reaches the book as legacy:admin; scoped routes gate it. */
+  #platform(actor: DirectionActor, config: TenantConfig): boolean {
+    return (
+      actor.subject === 'legacy:admin' ||
+      config.platformSubjects.includes(actor.subject)
+    )
+  }
+
+  #targetTenant(target: string, config: TenantConfig): string | null {
+    const node = addressNode(target)
+    return config.nodes.find(row => row.nodeId === node)?.tenant ?? null
+  }
+
+  /** A tenant's channel carries results of that tenant's agents only. */
+  #pushRefusal(channel: NotifyChannelView, target: string): string | null {
+    const owner = channel.tenant ?? null
+    if (owner === null) return null
+    try {
+      const config = this.#tenants()
+      return config === null || this.#targetTenant(target, config) === owner
+        ? null
+        : '通知渠道不属于任务所在租户'
+    } catch {
+      return '租户配置不可用，未推送'
+    }
+  }
+
+  #ownsChannel(channel: NotifyChannelView, actor: DirectionActor): boolean {
+    const config = this.#tenants()
+    return (
+      config === null ||
+      this.#platform(actor, config) ||
+      config.subjects.some(
+        row =>
+          row.subject === actor.subject &&
+          row.tenant === (channel.tenant ?? null),
+      )
+    )
+  }
+
+  /** Set at creation and never moved: platform may pick, a tenant gets its own. */
+  #channelOwner(
+    asked: string | undefined,
+    actor: DirectionActor,
+    existing: NotifyChannelView | undefined,
+  ): ConsoleResult<string | null> {
+    const current =
+      existing === undefined ? undefined : (existing.tenant ?? null)
+    const config = this.#tenants()
+    if (config === null)
+      return asked === undefined
+        ? ok(current ?? null)
+        : fail('invalid', '未启用租户时渠道不能指定租户')
+    if (asked !== undefined && current !== undefined && asked !== current)
+      return fail('invalid', '渠道所属租户不能修改')
+    if (this.#platform(actor, config)) {
+      const owner = current !== undefined ? current : (asked ?? null)
+      return owner === null || config.tenants.some(row => row.id === owner)
+        ? ok(owner)
+        : fail('invalid', '租户不存在')
+    }
+    const own = config.subjects.find(row => row.subject === actor.subject)
+    if (own === undefined)
+      return fail('refused', '账号不属于任何租户，不能管理通知渠道')
+    if (current !== undefined && current !== own.tenant)
+      return fail('not_found', '通知渠道不存在')
+    if (asked !== undefined && asked !== own.tenant)
+      return fail('invalid', '渠道只能属于自己的租户')
+    return ok(own.tenant)
+  }
+
   async snapshot(actor: ScheduleReader) {
     return this.#serial(async () => {
       if (!this.#lock?.owned()) this.#refreshReadonly()
@@ -647,6 +737,18 @@ export class ConsoleSchedules implements SchedulesPort {
         value.channels.some(one => !this.#channels.has(one))
       )
         return fail('invalid', '通知渠道不存在或重复')
+      const tenants = this.#tenants()
+      if (tenants !== null) {
+        const platform = this.#platform(actor, tenants)
+        const owner = this.#targetTenant(value.target, tenants)
+        if (
+          value.channels.some(one => {
+            const tenant = this.#channels.get(one)!.tenant ?? null
+            return tenant === null ? !platform : tenant !== owner
+          })
+        )
+          return fail('invalid', '通知渠道与目标不在同一租户')
+      }
       const targets = await this.#options.chat.targets()
       if (!targets.ok) return targets
       if (
@@ -830,6 +932,8 @@ export class ConsoleSchedules implements SchedulesPort {
         value.id === undefined ? undefined : this.#channels.get(value.id)
       if (value.id !== undefined && !existing)
         return fail('not_found', '通知渠道不存在')
+      const tenant = this.#channelOwner(value.tenant, actor, existing)
+      if (!tenant.ok) return tenant
       const raw = value.url ?? this.#secrets.get(id)
       if (!raw) return fail('invalid', '新通知渠道必须设置地址')
       let url: URL
@@ -848,6 +952,7 @@ export class ConsoleSchedules implements SchedulesPort {
         name: value.name,
         kind: value.kind,
         host: url.hostname,
+        tenant: tenant.value,
         createdAt: existing?.createdAt ?? this.#now(),
         lastUsedAt: existing?.lastUsedAt ?? null,
         lastError: null,
@@ -878,7 +983,8 @@ export class ConsoleSchedules implements SchedulesPort {
   ): Promise<ConsoleResult<null>> {
     return this.#write('channel.remove', id, actor, async () => {
       const channel = this.#channels.get(id)
-      if (!channel) return fail('not_found', '通知渠道不存在')
+      if (!channel || !this.#ownsChannel(channel, actor))
+        return fail('not_found', '通知渠道不存在')
       if (
         [...this.#schedules.values()].some(schedule =>
           schedule.channels.includes(id),
@@ -939,7 +1045,8 @@ export class ConsoleSchedules implements SchedulesPort {
   ): Promise<ConsoleResult<NotifyChannelView>> {
     return this.#write('channel.test', id, actor, async () => {
       const channel = this.#channels.get(id)
-      if (!channel) return fail('not_found', '通知渠道不存在')
+      if (!channel || !this.#ownsChannel(channel, actor))
+        return fail('not_found', '通知渠道不存在')
       const result = await this.#push(channel, {
         title: '阡陌通知测试',
         body: '这是一条测试通知。',
@@ -1010,6 +1117,7 @@ export class ConsoleSchedules implements SchedulesPort {
     const view: ScheduleRunView = {
       runId: crypto.randomUUID(),
       createdBy: schedule.createdBy,
+      target: schedule.target,
       scheduleId: schedule.id,
       plannedAt,
       startedAt: this.#now(),
@@ -1328,18 +1436,22 @@ export class ConsoleSchedules implements SchedulesPort {
           )
           for (const id of active.schedule.channels) {
             const channel = this.#channels.get(id)
-            const result = channel
-              ? await this.#push(channel, {
-                  title: this.#redact(active.schedule.title),
-                  body,
-                  at: view.finishedAt!,
-                  qianmo: {
-                    scheduleId: view.scheduleId,
-                    runId: view.runId,
-                    outcome,
-                  },
-                })
-              : { ok: false, error: '通知渠道不存在' }
+            const refusal =
+              channel && this.#pushRefusal(channel, active.schedule.target)
+            const result = refusal
+              ? { ok: false, error: refusal }
+              : channel
+                ? await this.#push(channel, {
+                    title: this.#redact(active.schedule.title),
+                    body,
+                    at: view.finishedAt!,
+                    qianmo: {
+                      scheduleId: view.scheduleId,
+                      runId: view.runId,
+                      outcome,
+                    },
+                  })
+                : { ok: false, error: '通知渠道不存在' }
             pushed.push({ channelId: id, ok: result.ok, error: result.error })
             await this.#serial(async () => {
               const current = this.#channels.get(id)
