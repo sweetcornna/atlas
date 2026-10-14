@@ -7,7 +7,10 @@ import * as path from 'node:path'
 import { readFileSync } from 'node:fs'
 import type { EvalPreludeDefinition } from '@oh-my-pi/pi-coding-agent/eval/preludes'
 import type { TSchema } from '@oh-my-pi/omptype/typebox'
-import type { ExtensionAPI } from '@oh-my-pi/pi-coding-agent/extensibility/extensions'
+import type {
+  ExtensionAPI,
+  ToolDefinition,
+} from '@oh-my-pi/pi-coding-agent/extensibility/extensions'
 import { Settings } from '@oh-my-pi/pi-coding-agent/config/settings'
 import { createBrowserPrelude } from '@oh-my-pi/pi-coding-agent/tools/browser'
 import { createComputerPrelude } from '@oh-my-pi/pi-coding-agent/tools/computer'
@@ -92,6 +95,18 @@ export function registerDesktopTools(
   const browserExecutor = () => (browser ??= createBrowserPrelude(session))
   let computer: EvalPreludeDefinition | undefined
   let attached: string | undefined
+  // The host grants one lease per resource at a time, and omp runs the tool
+  // calls of one message concurrently. Run this child's desktop calls one
+  // after another, so a parallel read is not refused for the lease the
+  // navigation before it still holds.
+  let queue: Promise<unknown> = Promise.resolve()
+  const serially =
+    (run: ToolDefinition['execute']): ToolDefinition['execute'] =>
+    (...args) => {
+      const result = queue.then(() => run(...args))
+      queue = result.catch(() => {})
+      return result
+    }
   pi.on('session_shutdown', async () => {
     await browser
       ?.invoke(
@@ -119,7 +134,8 @@ export function registerDesktopTools(
       approval: 'read',
       loadMode: 'essential',
       defaultInactive: true,
-      async execute(invocationId, raw, signal, _update, ctx) {
+      execute: serially(async (invocationId, raw, signal, _update, ctx) => {
+        signal?.throwIfAborted()
         const original = originalCalls.get(invocationId)
         originalCalls.delete(invocationId)
         const r = readDesktopResource(file)
@@ -353,7 +369,7 @@ export function registerDesktopTools(
           await gate(executed ? 'unknown' : 'failed').catch(() => false)
           throw error
         }
-      },
+      }),
     })
   }
 }

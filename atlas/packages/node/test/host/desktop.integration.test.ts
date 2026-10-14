@@ -522,3 +522,27 @@ test('real omp RPC: a Responses call id is leased, and a refused lease reaches t
     ['held-elsewhere', 'failed'],
   ])
 }, 60000)
+
+test('real omp RPC: desktop calls a model sends in parallel take turns at the lease instead of refusing each other', async () => {
+  const run = await leaseRun([
+    [
+      { name: 'qianmo_browser_tabs', input: {} },
+      { name: 'qianmo_browser_tabs', input: {} },
+    ],
+  ])
+  expect(run.outcome).toBe('completed')
+  expect(run.reserves.map(a => a.invocationId)).toEqual([
+    responsesId(1, 0),
+    responsesId(1, 1),
+  ])
+  expect(run.reserves.map(a => a.answer)).toEqual([{ ok: true }, { ok: true }])
+  expect(run.toolResults).toHaveLength(2)
+  for (const text of run.toolResults)
+    expect(text).not.toContain('Desktop lease refused')
+  expect(run.actions).toEqual(
+    [
+      [responsesId(1, 0), 'failed'],
+      [responsesId(1, 1), 'failed'],
+    ].sort(),
+  )
+}, 60000)
