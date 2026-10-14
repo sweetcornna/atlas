@@ -898,6 +898,8 @@ systemctl --user start qianmo-probe-minute.timer qianmo-probe-handshake.timer qi
   内测舰队上没有沙箱冻结，量的是常驻节点空闲态的唤醒。两个数不能直接比，也不能写成 AC-2 口径。
 - 唤醒走控制台而不是 `resident-wake`：那是用户真实走的路；控制台带 `--wake-sign` 时唤醒是
   verified-capability 档，不会在节点链上留 `capability_shadow_refusal`。握手那一档不带 `--task` 也是同一个理由。
+- 唤醒的发起方 `--from` 缺省 `qianmo://console/operator`，与控制台 `--chat-from` 的缺省一致：签名控制台
+  （v3.0.1 起）只收自己身份的 `from`，别的地址回 403 `E_SENDER_MISMATCH`。控制台改过 `--chat-from` 的，install 时带同一个 `--from`。
 - 失败的样本照记，不剔除；P95 按 nearest-rank 算，失败按 +∞ 留在样本里。
 - `MemAvailable` 低于 `PROBE_MIN_AVAILABLE_MB`（默认 150）时只记一行 `skipped:low-mem`：H 上的量具不能成为
   压垮它的那一个进程。单元带 `OOMScoreAdjust=900`。
