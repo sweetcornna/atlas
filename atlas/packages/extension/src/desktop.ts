@@ -14,10 +14,12 @@ import { createComputerPrelude } from '@oh-my-pi/pi-coding-agent/tools/computer'
 import type { ToolSession } from '@oh-my-pi/pi-coding-agent/tools/index'
 import {
   DESKTOP_FIELDS,
+  DESKTOP_LEASE_REFUSED,
   isDesktopTool,
   desktopArgs,
-  desktopTools,
+  desktopLeaseAnswer,
   desktopOp,
+  desktopUnavailable,
   type DesktopResource,
   type DesktopTool,
 } from './desktopPolicy.js'
@@ -128,14 +130,15 @@ export function registerDesktopTools(
           args = desktopArgs(name, original.args)
           if (digest(desktopArgs(name, raw)) !== digest(args))
             throw new Error('Desktop arguments changed before execution')
-          if (
-            !r ||
-            !desktopTools(r).includes(name) ||
-            ctx.agent.kind !== 'main'
-          )
-            throw new Error('Desktop unavailable')
+          const unavailable = desktopUnavailable(name, r, ctx.agent.kind)
+          if (!r || unavailable !== undefined)
+            throw new Error(
+              `Desktop unavailable: ${unavailable ?? '节点没有为这个智能体发放专属浏览器或专属电脑'}`,
+            )
           if (args.tab !== undefined && args.tab !== r.tab)
-            throw new Error('Stale or foreign tab handle')
+            throw new Error(
+              'Stale or foreign tab handle: 专属浏览器已重启或回收，先调用 qianmo_browser_tabs 取当前的标签句柄',
+            )
         } catch (error) {
           await ctx.ui
             .confirm(
@@ -178,7 +181,21 @@ export function registerDesktopTools(
             }),
             { timeout: 60_000 },
           )
-        if (!(await gate('reserve'))) throw new Error('Desktop lease refused')
+        // The reservation is answered as text, so a refusal says why: no
+        // running resource, ESTOP, another operation holding the lease, an
+        // ended task. Every later phase is a plain yes/no confirmation.
+        const lease = desktopLeaseAnswer(
+          await ctx.ui.input(
+            'QIANMO_AUTHZ_V1',
+            JSON.stringify({
+              toolName: name,
+              input: { ...binding, phase: 'reserve' },
+            }),
+            { timeout: 60_000 },
+          ),
+        )
+        if (!lease.ok)
+          throw new Error(`${DESKTOP_LEASE_REFUSED}: ${lease.reason}`)
         let executed = false
         try {
           const context = { session, toolCallId: invocationId, signal }

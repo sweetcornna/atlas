@@ -433,3 +433,92 @@ test('RPC exit drains a paused stdout tail so stop observes real close instead o
     await stopping
   }
 }, 5_000)
+
+test('authorization requests: confirm answers yes/no, the text request carries the refusal reason', async () => {
+  const root = isolatedRoot()
+  const children: ChildProcess[] = []
+  // The fake child asks once per entry after `ask`, and reports each answer
+  // it receives back as an `answered` frame.
+  const asks = [
+    { id: 'c1', method: 'confirm', message: { answer: 'refuse' } },
+    { id: 'i1', method: 'input', placeholder: { answer: 'refuse' } },
+    { id: 'i2', method: 'input', placeholder: { answer: 'grant' } },
+    { id: 'i3', method: 'input', placeholder: { answer: 'no' } },
+    { id: 'i4', method: 'input', placeholder: 'not json' },
+  ].map(ask => ({
+    type: 'extension_ui_request',
+    title: 'QIANMO_AUTHZ_V1',
+    ...ask,
+    ...('message' in ask ? { message: JSON.stringify(ask.message) } : {}),
+    ...('placeholder' in ask && typeof ask.placeholder === 'object'
+      ? { placeholder: JSON.stringify(ask.placeholder) }
+      : {}),
+  }))
+  const pool = new ResidentOmpPool({
+    agents: [{ agent: 'reviewer', cwd: root.root }],
+    memoryRoot: join(root.root, 'memory'),
+    announce: async () => ({ status: 'queued' }),
+    requestPermission: async (_sessionId, call) => {
+      const answer = (call as { answer: string }).answer
+      return answer === 'grant'
+        ? true
+        : answer === 'refuse'
+          ? { ok: false, reason: '急停已开启' }
+          : false
+    },
+    spawn: () => {
+      const child = spawn(
+        process.execPath,
+        [
+          '-e',
+          `
+          const {createInterface} = require('node:readline');
+          const asks = ${JSON.stringify(asks)};
+          setInterval(() => {}, 1000);
+          createInterface({input:process.stdin}).on('line', line => {
+            const frame = JSON.parse(line);
+            if (frame.type === 'ask')
+              for (const ask of asks) process.stdout.write(JSON.stringify(ask)+'\\n');
+            else if (frame.type === 'extension_ui_response')
+              process.stdout.write(JSON.stringify({type:'answered',frame})+'\\n');
+            else if (frame.id !== undefined)
+              process.stdout.write(JSON.stringify({type:'response',id:frame.id,success:true})+'\\n');
+          });
+          process.stdout.write(JSON.stringify({type:'ready'})+'\\n');
+          `,
+        ],
+        { stdio: ['pipe', 'pipe', 'pipe'] },
+      )
+      children.push(child)
+      return child
+    },
+  })
+  try {
+    const session = await pool.newSession({ agent: 'reviewer', cwd: root.root })
+    const channel = await pool.channelFor(session)
+    const answered = new Map<string, Record<string, unknown>>()
+    const all = Promise.withResolvers<void>()
+    channel.onFrame(frame => {
+      if (frame.type !== 'answered') return
+      const reply = frame.frame as Record<string, unknown>
+      answered.set(String(reply.id), reply)
+      if (answered.size === asks.length) all.resolve()
+    })
+    channel.send({ type: 'ask' })
+    await all.promise
+    expect(answered.get('c1')).toEqual({
+      type: 'extension_ui_response',
+      id: 'c1',
+      confirmed: false,
+    })
+    const value = (id: string) => JSON.parse(String(answered.get(id)?.value))
+    expect(value('i1')).toEqual({ ok: false, reason: '急停已开启' })
+    expect(value('i2')).toEqual({ ok: true })
+    expect(value('i3')).toEqual({ ok: false, reason: '宿主拒绝了这次请求' })
+    expect(value('i4')).toEqual({ ok: false, reason: '宿主授权检查出错' })
+  } finally {
+    for (const child of children) child.kill('SIGKILL')
+    await pool.stop()
+    root.dispose()
+  }
+}, 6_000)

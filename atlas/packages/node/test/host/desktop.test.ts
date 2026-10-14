@@ -688,7 +688,25 @@ test('revocation of a consumed permit before commit prevents the external action
 /** What OpenAI Responses models mint (`call_id|item_id`), as omp hands it on. */
 const RESPONSES_ID =
   'call_6pS1yWQ8pV3x0VnF1Qy9ZJbM|fc_68ee0f3c9a0c8190a6b8f3e2c1d4e5f60a1b2c3d4e5f6a7b'
-test('provider tool-call ids get a lease; unprintable ones do not', async () => {
+function decider(
+  node: NodeDesktop,
+  call: ReturnType<typeof callOf>,
+  session = 's',
+  task = 't',
+  live: () => boolean = () => true,
+) {
+  return (phase: string, extra: Record<string, unknown> = {}) =>
+    node.decide(
+      'main',
+      session,
+      task,
+      'c',
+      { ...call, input: { ...call.input, phase, ...extra } },
+      live,
+      async (_call, before) => before(undefined, 'fixture-request', () => true),
+    )
+}
+test('provider tool-call ids get a lease, and a released lease lets the next call reserve', async () => {
   const f = await fixture()
   try {
     await f.enable()
@@ -701,28 +719,18 @@ test('provider tool-call ids get a lease; unprintable ones do not', async () => 
       'functions.qianmo_browser_screenshot:0',
       'qianmo_browser_screenshot_1760400000000_1',
     ]) {
-      const call = callOf(f.node, 'qianmo_browser_screenshot', { tab }, id)
-      const gate = (phase: string) =>
-        f.node.gate(
-          'main',
-          's',
-          't',
-          'c',
-          {
-            ...call,
-            input: {
-              ...call.input,
-              phase,
-              observedTargetDigest: 'a'.repeat(64),
-            },
-          },
-          () => true,
-          async (_call, before) => before(undefined, 'request', () => true),
-        )
-      expect(await gate('reserve')).toBe(true)
-      expect(await gate('authorize')).toBe(true)
-      expect(await gate('commit')).toBe(true)
-      expect(await gate('completed')).toBe(true)
+      const step = decider(
+        f.node,
+        callOf(f.node, 'qianmo_browser_screenshot', { tab }, id),
+      )
+      expect(await step('reserve')).toEqual({ ok: true })
+      expect(
+        await step('authorize', { observedTargetDigest: 'a'.repeat(64) }),
+      ).toEqual({ ok: true })
+      expect(
+        await step('commit', { observedTargetDigest: 'a'.repeat(64) }),
+      ).toEqual({ ok: true })
+      expect(await step('completed')).toEqual({ ok: true })
     }
     const rows = (await f.node.control('desktop.actions', {}, ctx)) as {
       value: DesktopActionView[]
@@ -734,18 +742,127 @@ test('provider tool-call ids get a lease; unprintable ones do not', async () => 
       'allowed',
     ])
     expect(rows.value.at(-1)?.invocationId).toBe(RESPONSES_ID)
-    for (const id of ['has space', 'x'.repeat(513)])
-      expect(
-        await f.node.gate(
-          'main',
-          's',
-          't',
-          'c',
-          callOf(f.node, 'qianmo_browser_screenshot', { tab }, id),
-          () => true,
-          async () => true,
-        ),
-      ).toBe(false)
+
+    // One lease per resource: a second call waits for the first to finish,
+    // whichever way it finishes, and then reserves normally.
+    const first = decider(
+      f.node,
+      callOf(f.node, 'qianmo_browser_read_page', { tab }, 'first'),
+    )
+    const second = decider(
+      f.node,
+      callOf(f.node, 'qianmo_browser_screenshot', { tab }, 'second'),
+    )
+    expect(await first('reserve')).toEqual({ ok: true })
+    const busy = await second('reserve')
+    expect(busy.ok).toBe(false)
+    expect(!busy.ok && busy.reason).toContain('read_page')
+    expect(!busy.ok && busy.reason).toContain('还没结束')
+    expect(await first('failed')).toMatchObject({ ok: false })
+    expect(await second('reserve')).toEqual({ ok: true })
+    expect(await second('failed')).toMatchObject({ ok: false })
+    const third = decider(
+      f.node,
+      callOf(f.node, 'qianmo_browser_screenshot', { tab }, 'third'),
+    )
+    expect(await third('reserve')).toEqual({ ok: true })
+    // The boolean view used by older callers agrees with the decision.
+    expect(
+      await f.node.gate(
+        'main',
+        's',
+        't',
+        'c',
+        {
+          ...callOf(f.node, 'qianmo_browser_screenshot', { tab }, 'fourth'),
+        },
+        () => true,
+        async () => true,
+      ),
+    ).toBe(false)
+  } finally {
+    await f.cleanup()
+  }
+})
+test('a refused lease says why and how to switch the resource on', async () => {
+  const reason = async (pending: Promise<{ ok: boolean; reason?: string }>) => {
+    const answer = await pending
+    expect(answer.ok).toBe(false)
+    return answer.reason ?? ''
+  }
+  const f = await fixture()
+  try {
+    const off = callOf(f.node, 'qianmo_browser_screenshot', { tab: 'x' })
+    expect(await reason(decider(f.node, off)('reserve'))).toContain(
+      '控制台「云端电脑」页为 main 打开专属浏览器',
+    )
+    const computer = callOf(f.node, 'qianmo_computer_screenshot', {})
+    expect(await reason(decider(f.node, computer)('reserve'))).toContain(
+      '需要 Linux 节点并装有 Xvfb 与 xauth',
+    )
+    expect(
+      await reason(
+        decider(
+          f.node,
+          callOf(f.node, 'qianmo_browser_tabs', {}, 'has space'),
+        )('reserve'),
+      ),
+    ).toContain('工具调用编号')
+    expect(
+      await reason(
+        decider(
+          f.node,
+          callOf(f.node, 'qianmo_browser_tabs', {}, 'x'.repeat(513)),
+        )('reserve'),
+      ),
+    ).toContain('工具调用编号')
+
+    await f.enable()
+    const tab = () => f.node.resource('main')!.tab
+    const ended = callOf(f.node, 'qianmo_browser_screenshot', { tab: tab() })
+    expect(
+      await reason(decider(f.node, ended, 's', 't', () => false)('reserve')),
+    ).toContain('任务已经结束')
+
+    const done = callOf(
+      f.node,
+      'qianmo_browser_screenshot',
+      { tab: tab() },
+      'done',
+    )
+    const step = decider(f.node, done)
+    expect(await step('reserve')).toEqual({ ok: true })
+    expect(await step('failed')).toMatchObject({ ok: false })
+    expect(await reason(step('reserve'))).toContain('不会重复执行')
+
+    const stale = callOf(
+      f.node,
+      'qianmo_browser_screenshot',
+      { tab: tab() },
+      'old',
+    )
+    await f.node.control(
+      'desktop.disable',
+      { agent: 'main', operationId: 'restart-off' },
+      ctx,
+    )
+    await f.enable('restart-on')
+    expect(await reason(decider(f.node, stale)('reserve'))).toContain(
+      'qianmo_browser_tabs',
+    )
+
+    f.setEstop()
+    const fresh = callOf(
+      f.node,
+      'qianmo_browser_screenshot',
+      { tab: tab() },
+      'estop',
+    )
+    expect(await reason(decider(f.node, fresh)('reserve'))).toContain('急停')
+    await f.node.sweep()
+    expect(await reason(decider(f.node, fresh)('reserve'))).toContain(
+      '急停，已停用',
+    )
   } finally {
     await f.cleanup()
   }

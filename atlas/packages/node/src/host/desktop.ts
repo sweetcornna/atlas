@@ -18,6 +18,7 @@ import {
   desktopOp,
   isDesktopInvocationId,
   isDesktopTool,
+  type DesktopDecision,
   type DesktopResource,
   type DesktopTool,
 } from '@qianmo/extension/desktopPolicy'
@@ -187,6 +188,13 @@ interface Options {
 }
 const hash = (input: unknown) =>
   createHash('sha256').update(JSON.stringify(input)).digest('hex')
+const GRANTED: DesktopDecision = { ok: true }
+const refuse = (reason: string): DesktopDecision => ({ ok: false, reason })
+const UNIT = { browser: '专属浏览器', computer: '专属电脑' } as const
+const stale = (unit: 'browser' | 'computer') =>
+  unit === 'browser'
+    ? '专属浏览器已重启或回收，资源代次变了：先调用 qianmo_browser_tabs 取当前的标签句柄再重试'
+    : '专属电脑已重启或回收，资源代次变了：请重试'
 function directoryBytes(dir: string): number {
   let total = 0
   try {
@@ -762,8 +770,16 @@ export class NodeDesktop {
       },
     })
   }
-  /** All attribution is supplied by the actual active RPC turn, never the model. */
-  async gate(
+  /** The yes/no view of {@link decide}, for callers that need no reason. */
+  async gate(...params: Parameters<NodeDesktop['decide']>): Promise<boolean> {
+    return (await this.decide(...params)).ok
+  }
+  /**
+   * Answer one gate phase. All attribution is supplied by the actual active
+   * RPC turn, never the model. A refusal says why in words the model and the
+   * operator can act on; it never echoes argument text.
+   */
+  async decide(
     agent: string,
     sessionId: string,
     taskId: string,
@@ -778,9 +794,10 @@ export class NodeDesktop {
         valid?: () => boolean,
       ) => boolean,
     ) => Promise<boolean>,
-  ): Promise<boolean> {
+  ): Promise<DesktopDecision> {
     await this.#ready
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false
+    const malformed = refuse('租约请求格式不合法')
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return malformed
     const call = raw as { toolName?: unknown; input?: unknown }
     if (
       !isDesktopTool(String(call.toolName)) ||
@@ -788,7 +805,7 @@ export class NodeDesktop {
       typeof call.input !== 'object' ||
       Array.isArray(call.input)
     )
-      return false
+      return malformed
     const tool = call.toolName as DesktopTool,
       input = call.input as Record<string, unknown>
     if (
@@ -804,10 +821,11 @@ export class NodeDesktop {
             'host',
             'observedTargetDigest',
           ].includes(k),
-      ) ||
-      !isDesktopInvocationId(input.invocationId)
+      )
     )
-      return false
+      return malformed
+    if (!isDesktopInvocationId(input.invocationId))
+      return refuse('工具调用编号不可用：需要 1–512 个可见 ASCII 字符')
     if (input.phase === 'refused') {
       const state = this.#states.get(agent)
       if (
@@ -815,7 +833,7 @@ export class NodeDesktop {
         typeof input.canonicalArgsDigest !== 'string' ||
         !/^[a-f0-9]{64}$/.test(input.canonicalArgsDigest)
       )
-        return false
+        return malformed
       const row: DesktopActionView = {
         at: this.#now(),
         node: this.#options.node,
@@ -839,45 +857,57 @@ export class NodeDesktop {
         taskId,
         detail: { ...row, host: '', confirmed: false },
       })
-      return true
+      return GRANTED
     }
     let args: Record<string, string | number>
     try {
       args = desktopArgs(tool, input.args)
     } catch {
-      return false
+      return refuse('参数不合法')
     }
     const s = this.#states.get(agent),
       unit = tool.startsWith('qianmo_browser_') ? 'browser' : 'computer'
+    if (!s) return refuse(`节点没有为智能体 ${agent} 配置云端电脑资源`)
+    if (s.state !== 'running' || !s[unit]) return refuse(this.#off(s, unit))
     if (
-      !s ||
-      s.state !== 'running' ||
-      !s[unit] ||
       s.resourceId !== input.resourceId ||
       s.resourceEpoch !== input.resourceEpoch ||
-      input.canonicalArgsDigest !== hash(args) ||
       ('tab' in args && args.tab !== this.resource(agent)?.tab)
     )
-      return false
+      return refuse(stale(unit))
+    if (input.canonicalArgsDigest !== hash(args))
+      return refuse('参数摘要与参数不一致')
     const invocationId = input.invocationId
     let lease = [...this.#leases.values()].find(
       l => l.sessionId === sessionId && l.invocationId === invocationId,
     )
     if (input.phase === 'reserve') {
       await this.#queue
-      if (s.state !== 'running' || s.resourceEpoch !== input.resourceEpoch)
-        return false
+      if (s.state !== 'running') return refuse(this.#off(s, unit))
+      if (s.resourceEpoch !== input.resourceEpoch) return refuse(stale(unit))
+      if (this.#closed) return refuse('节点正在停止，不再发放租约')
+      if (this.#options.estop())
+        return refuse(
+          '急停已开启：解除急停之前，专属浏览器和专属电脑都不发放租约',
+        )
+      if (!active())
+        return refuse(
+          '发起这次调用的任务已经结束、超时，或已不是这个会话的当前回合',
+        )
+      if (lease) return refuse('这次调用已经持有租约')
+      const holder = [...this.#leases.values()].find(l => l.resource === s)
+      if (holder)
+        return refuse(
+          `这台${UNIT[unit]}上一项操作（${desktopOp(holder.tool)}）还没结束：同一时间只发放一个租约，请等它结束后再试`,
+        )
       if (
-        this.#closed ||
-        this.#options.estop() ||
-        !active() ||
-        lease ||
-        [...this.#leases.values()].some(l => l.resource === s) ||
         this.#actions.some(
           a => a.invocationId === invocationId && a.taskId === taskId,
         )
       )
-        return false
+        return refuse(
+          '这次调用已经执行过或被拒绝过，不会重复执行；需要再做请发起新的调用',
+        )
       lease = {
         actionId: randomUUID(),
         resource: s,
@@ -916,7 +946,7 @@ export class NodeDesktop {
         },
       }
       this.#leases.set(lease.actionId, lease)
-      return true
+      return GRANTED
     }
     if (
       !lease ||
@@ -924,7 +954,7 @@ export class NodeDesktop {
       lease.taskId !== taskId ||
       lease.argsDigest !== hash(args)
     )
-      return false
+      return refuse('没有与这次调用对应的租约')
     const valid = () =>
       active() &&
       !this.#closed &&
@@ -934,6 +964,9 @@ export class NodeDesktop {
       this.#now() < lease!.expiresAt &&
       this.#leases.has(lease!.actionId) &&
       (!lease!.confirmed || lease!.approvalValid())
+    const lapsed = refuse(
+      '租约已失效：超时、急停、任务结束、资源重启或批准被撤销',
+    )
     if (
       input.phase === 'completed' ||
       input.phase === 'unknown' ||
@@ -951,11 +984,11 @@ export class NodeDesktop {
             ? 'unknown'
             : 'failed',
       )
-      return completed
+      return completed ? GRANTED : lapsed
     }
     if (!valid()) {
       this.#finish(lease, lease.committed ? 'unknown' : 'denied')
-      return false
+      return lapsed
     }
     if (input.phase === 'authorize') {
       if (
@@ -964,7 +997,7 @@ export class NodeDesktop {
         typeof input.observedTargetDigest !== 'string' ||
         !/^[a-f0-9]{64}$/.test(input.observedTargetDigest)
       )
-        return false
+        return refuse('这次调用已经在审批或已经批准')
       lease.authorizing = true
       lease.observedTargetDigest = input.observedTargetDigest
       if (
@@ -1000,10 +1033,10 @@ export class NodeDesktop {
       lease.confirmed = needs
       if (!approved || !valid()) {
         this.#finish(lease, 'denied')
-        return false
+        return refuse('操作员没有批准，或批准到达时租约已失效')
       }
       lease.authorized = true
-      return true
+      return GRANTED
     }
     if (input.phase === 'commit') {
       if (
@@ -1011,12 +1044,22 @@ export class NodeDesktop {
         lease.committed ||
         lease.observedTargetDigest !== input.observedTargetDigest
       )
-        return false
+        return refuse('提交与批准时观察到的目标不一致，或已经提交过')
       lease.committed = true
       this.#finish(lease, 'intent')
-      return true
+      return GRANTED
     }
-    return false
+    return malformed
+  }
+  /** Why a unit that is not running cannot be leased, and how to open it. */
+  #off(s: ResourceState, unit: 'browser' | 'computer'): string {
+    const label = UNIT[unit]
+    if (unit === 'computer' && !this.#supported())
+      return `${label}需要 Linux 节点并装有 Xvfb 与 xauth，本节点不支持；只能开专属浏览器`
+    if (s.state === 'starting') return `${label}正在启动，请稍后重试`
+    if (s.state === 'failed')
+      return `${label}处于故障状态（${s.reason ?? '原因未记录'}）：请在控制台「云端电脑」页停用后重新打开`
+    return `${label}没有开启${s.reason ? `（${s.reason}）` : ''}：请在控制台「云端电脑」页为 ${s.agent} 打开${label}后重试`
   }
   async sweep(): Promise<void> {
     await this.#ready
