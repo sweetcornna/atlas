@@ -3,6 +3,7 @@
 
 import type { MemoryPort, DesktopPort, AgentRef } from './directionPorts.js'
 import { scopedFiles } from './filesScope.js'
+import { scopedSchedules } from './schedulesScope.js'
 import { agentRefOf } from './routes/directionShared.js'
 import type { Access } from './access.js'
 import type { ConsoleDeps, ConsoleResult, ChatPort, WakePort } from './deps.js'
@@ -145,6 +146,16 @@ export function scopedConsoleDeps(
           ? { desktop: guardedDesktop(deps.desktop, () => current()) }
           : {}),
         ...(deps.wake === undefined ? {} : { wake: guarded(deps.wake) }),
+        ...(deps.schedules === undefined
+          ? {}
+          : {
+              schedules: scopedSchedules(deps.schedules, {
+                current,
+                address: () => true,
+                platform: true,
+                tenant: scope.tenant,
+              }),
+            }),
         ...(deps.files === undefined
           ? {}
           : {
@@ -169,7 +180,7 @@ export function scopedConsoleDeps(
   const node = (id: string) => current() && scope.node(id)
   const address = (id: string) => current() && scope.address(id)
   const server = (id: string) => current() && scope.server(id)
-  // The 2026-10 ports (design review D01) carry no tenant wrapper yet: a
+  // The 2026-10 ports (design review D01) that carry no tenant wrapper yet: a
   // scoped caller is not offered them at all until each gets one — list
   // filtered, detail 404, write refused before admission and dialling.
   const {
@@ -177,7 +188,6 @@ export function scopedConsoleDeps(
     about: _about,
     handoff: _handoff,
     wake: _wake,
-    schedules: _schedules,
     routing: _routing,
     handoffDevices: _handoffDevices,
     avatars: _avatars,
@@ -200,6 +210,16 @@ export function scopedConsoleDeps(
             ref =>
               node(ref.node) && address(`qianmo://${ref.node}/${ref.agent}`),
           ),
+        }),
+    ...(deps.schedules === undefined
+      ? {}
+      : {
+          schedules: scopedSchedules(deps.schedules, {
+            current,
+            address,
+            platform: false,
+            tenant: scope.tenant,
+          }),
         }),
     ...(deps.connectors === undefined
       ? {}
@@ -788,6 +808,50 @@ export async function tenantRequestDenial(
           (row['tenant'] !== undefined && row['tenant'] !== scope.tenant) ||
           (Array.isArray(row['agents']) &&
             row['agents'].some(v => typeof v !== 'string' || !scope.address(v)))
+        )
+          return fail(404, 'not_found', '资源不存在')
+      }
+    }
+  }
+  if (
+    (head === 'schedules' || head === 'channels') &&
+    pieces[0] === 'v0' &&
+    deps.schedules !== undefined
+  ) {
+    // The scoped port answers only in-tenant ids, from memory.
+    const port = deps.schedules
+    if (
+      pieces[2] !== undefined &&
+      (head === 'schedules'
+        ? port.targetOf(pieces[2])
+        : port.channelTenant(pieces[2])) === undefined
+    )
+      return fail(404, 'not_found', '资源不存在')
+    if (pieces.length === 2 && request.method === 'POST') {
+      let body: unknown
+      try {
+        body = await request.clone().json()
+      } catch {
+        return null
+      }
+      if (body && typeof body === 'object' && !Array.isArray(body)) {
+        const row = body as Record<string, unknown>
+        if (
+          (typeof row['id'] === 'string' &&
+            (head === 'schedules'
+              ? port.targetOf(row['id'])
+              : port.channelTenant(row['id'])) === undefined) ||
+          (head === 'schedules' &&
+            typeof row['target'] === 'string' &&
+            !scope.address(row['target'])) ||
+          (head === 'schedules' &&
+            Array.isArray(row['channels']) &&
+            row['channels'].some(
+              v => typeof v !== 'string' || port.channelTenant(v) === undefined,
+            )) ||
+          (head === 'channels' &&
+            row['tenant'] !== undefined &&
+            row['tenant'] !== scope.tenant)
         )
           return fail(404, 'not_found', '资源不存在')
       }

@@ -617,7 +617,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/connectors` | **个人 ops** | 新建或带 `id` 修改连接；拒绝共用令牌与 break-glass；先动作账本 admission |
 | DELETE | `/v0/connectors/<连接 id>` | **个人 ops** | 删除连接及其秘密槽；成功 204 |
 | POST | `/v0/connectors/<连接 id>/probe` | **个人 ops** | 用已保存凭据登录后退出；记录 `lastProbe`，不发送邮件或创建事件 |
-| GET | `/v0/schedules` | view | 定时任务快照：任务、最近运行、通知渠道（只给名字、类型与主机，不给地址）、模板、可选目标、急停。没接定时任务端口时 501 |
+| GET | `/v0/schedules` | view | 定时任务快照：任务、最近运行、通知渠道（只给名字、类型、主机与所属租户，不给地址）、模板、可选目标、急停。租户范围内按目标智能体与渠道租户过滤（§12.1）；没接定时任务端口时 501 |
 | GET | `/v0/schedules/<任务 id>` | view | 仅自己的任务；ops 和旧令牌可读全部，越权 404 |
 | GET | `/v0/schedules/<任务 id>/runs`、`/v0/schedules/<任务 id>/runs/<运行 id>` | view | 该任务最近的运行记录或单次记录（含回复摘要），同一归属过滤 |
 | POST | `/v0/schedules/<任务 id>/runs/<运行 id>/resolve` | **成员** | 创建者或 ops 确认未知结果，`{ outcome: 'ok'或'failed' }`；写入动作账本后解除占用 |
@@ -632,7 +632,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/memory` | **成员** | 记一条：`{ agent, kind, title, summary, body }`，`kind` 只能是四类之一，一句话 ≤120 字、摘要 ≤400 字、细节 ≤4000 字。记 `memory.add` |
 | PUT | `/v0/memory/<记忆 id>` | **成员** | 改一条：写一条新的并替换旧的（旧的留在历史里，带「含已忘记」能看到）。记 `memory.edit` |
 | POST | `/v0/memory/<记忆 id>/<forget\|invalidate>` | **成员** | 忘记（`{ agent, reason }`，原因进审计）或标记过期。别人的记忆对端口来说不存在，答 404。记 `memory.forget` / `memory.invalidate` |
-| POST | `/v0/channels` | **ops** | 添加通知渠道：`{ name, kind, url }`，`kind` 是 `webhook` / `bark` / `wecom` / `feishu` / `ntfy`，地址默认只收 https；http 与受保护网段须由运维按主机（可带端口）放行（§12.2），存下后任何接口不再回地址 |
+| POST | `/v0/channels` | **ops** | 添加通知渠道：`{ name, kind, url, tenant? }`，`tenant` 只有平台可选、租户内由控制台自动填为本租户；`kind` 是 `webhook` / `bark` / `wecom` / `feishu` / `ntfy`，地址默认只收 https；http 与受保护网段须由运维按主机（可带端口）放行（§12.2），存下后任何接口不再回地址 |
 | DELETE | `/v0/channels/<渠道 id>` | **ops** | 删除通知渠道 |
 | POST | `/v0/channels/<渠道 id>/test` | **ops** | 向这个渠道发一条测试通知 |
 | GET | `/v0/desktop` | view | `DesktopNodeView[]`，启用状态、可达性、资源大小与最近操作计数 |
@@ -2267,7 +2267,25 @@ tick 的唯一性；`missed slots catch up once after restart...` 证明停机�
 执行同一过滤，主动执行页的两个读取点传入当前主体。ops 可代管全部，编辑不改变创建者；
 账本的 subject 是实际操作者，createdBy 是原创建者。无账号模式的旧令牌保持全部可见。
 渠道仍是 ops 维护的共享资源，成员可选择，任何读者都拿不到完整地址。
-启用租户时，尚无租户包装的八个 D01 端口（包括 avatars）对租户范围调用者全部关闭。
+启用租户时，定时任务端口按当前请求的租户范围包装（复核 D01，`schedulesScope.ts`）：
+任务按目标智能体归属，运行按这次实际发往的智能体（运行记录的 `target`；旧记录没有时按
+所属任务的目标），渠道按所属租户 `tenant`。租户内的人只看到、改得了、运行得了目标在本租户的任务，
+最近运行只列发往本租户智能体的那些；任务改到别的租户后，原租户留下发往自己智能体的
+运行，新租户看到的任务不带原租户的最近一次运行。跨租户的任务或渠道、目标在外租户的新建、
+引用外租户渠道或平台渠道的保存，都在路由的动作账本 admission 和任何业务端口调用之前答 404，
+与不存在同一回答；请求进行中租户配置换代时，端口结果不交给调用方。平台主体与 break-glass 不受过滤。
+
+通知渠道在创建时定下所属租户、此后不能改：租户内的 ops 建的渠道归本租户；平台可指定一个
+已登记的租户，不指定就是只给平台用的渠道（`tenant: null`，未开租户前建的渠道也是这样）。
+宿主另行复核三处：租户内的 ops 只能改、删、测本租户的渠道；保存任务时，带租户的渠道必须
+与目标智能体同一租户，平台渠道只有平台能挂；推送前再按当前租户配置核对一次，渠道与
+目标智能体已不同租户（例如节点改了归属）时这一路不推送，`pushed` 记
+「通知渠道不属于任务所在租户」，租户配置读不出时记「租户配置不可用，未推送」，运行结果不变。
+运行时的授权仍由 `ChatDispatch` 按创建者当前的租户范围逐次复核（见下）。
+`consoleSchedules.tenancy.test.ts` 覆盖同租户正控、跨租户读写与运行、admission 计数为零、
+目标改租户后的运行归属、渠道租户与推送时的拒绝；控制台包的 `tenancy.test.ts` 覆盖页面与撤出租户后清空。
+启用租户时，尚无租户包装的其余 D01 端口（模型服务、关于、接力、唤醒、任务分工、接力设备、
+形象）对租户范围调用者全部关闭。
 
 HTTP 开会话/发消息与定时任务共用控制台包的 `chatDispatch.ts`（`ChatDispatch`）。每次运行
 从 `createdBy` 读取账号簿里的当前账号与角色，先复核存在、活跃、成员/运维权限、当前租户

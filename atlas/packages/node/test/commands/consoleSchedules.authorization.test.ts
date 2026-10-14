@@ -130,22 +130,12 @@ async function setup(messages = 10, withTenancy = false) {
     role: 'member' as const,
     requestId: 'manual',
   }
-  // D01 deliberately closes the tenant HTTP schedules face. Seed the stored
-  // pre-existing job through its host port, preserving the dispatch assertion.
-  let saved: ScheduleView
-  if (withTenancy) {
-    const response = await handle(
-      asBearer('POST', '/v0/schedules', creator.credential, draft),
-    )
-    expect(response.status).toBe(501)
-    saved = value(await book.save(draft, actor))
-  } else {
-    const response = await handle(
-      asBearer('POST', '/v0/schedules', creator.credential, draft),
-    )
-    expect(response.status).toBe(200)
-    saved = (await response.json()) as ScheduleView
-  }
+  // With tenancy the member reaches the book through the tenant wrapper (D01).
+  const response = await handle(
+    asBearer('POST', '/v0/schedules', creator.credential, draft),
+  )
+  expect(response.status).toBe(200)
+  const saved = (await response.json()) as ScheduleView
   return {
     h,
     creator,

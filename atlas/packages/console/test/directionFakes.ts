@@ -210,6 +210,15 @@ export class FakeSchedules implements SchedulesPort {
     )
   }
 
+  targetOf(id: string): string | undefined {
+    return this.schedules.find(v => v.id === id)?.target
+  }
+
+  channelTenant(id: string): string | null | undefined {
+    const row = this.channels.find(v => v.id === id)
+    return row === undefined ? undefined : (row.tenant ?? null)
+  }
+
   async resolve(
     id: string,
     runId: string,
@@ -345,6 +354,7 @@ export class FakeSchedules implements SchedulesPort {
       name: draft.name,
       kind: draft.kind,
       host,
+      ...(draft.tenant === undefined ? {} : { tenant: draft.tenant }),
       createdAt: this.now(),
       lastUsedAt: null,
       lastError: null,
