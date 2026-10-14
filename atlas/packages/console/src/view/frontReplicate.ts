@@ -100,7 +100,7 @@ export function frontReplicateCard(mode: FrontReplicateMode): string {
     `<label class="field"><span class="flabel">服务器名</span><input class="input mono" name="rp-server" maxlength="64" autocomplete="off" spellcheck="false"></label>` +
     `</div>` +
     `<ol class="rp-steps" data-role="steps" hidden>${steps}</ol>` +
-    `<p class="bar bar-ok" data-role="done" hidden></p>` +
+    `<p class="bar" data-role="done" hidden></p>` +
     `<p class="bar bar-bad" data-role="failed" hidden></p>` +
     `<div class="fx-rp-acts" data-role="acts" hidden>` +
     `<button type="button" class="btn btn-primary btn-small" data-action="fx-rp-deploy">部署</button>` +

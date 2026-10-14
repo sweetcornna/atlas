@@ -4,8 +4,8 @@
 /**
  * Drawing a 形象 (`../avatar.ts`) as inline SVG, and the editor that picks one.
  *
- * One flat shape that fills its square, in one muted colour, with two small
- * solid eyes — nothing else, and no outline anywhere. The squircle is the house shape, a seal's outline;
+ * One flat shape that fills its square, in one muted colour, with two solid
+ * black eyes set low — nothing else, and no outline anywhere. The squircle is the house shape, a seal's outline;
  * the others are there so a roster of agents is not a row of twins. Mouth,
  * material, cheeks and accessory stay in the saved figure for compatibility
  * and are not drawn.
@@ -15,12 +15,14 @@
  *
  * | state | 待机 idle | 倾听 listening | 思考 thinking | 回复 speaking | 完成 happy | 出错 error | 休眠 sleep |
  * |---|---|---|---|---|---|---|---|
- * | eyes | its own, blink | wider | look up and aside | its own, bob | crescents | low dots | closed |
+ * | eyes | its own, blinks, glances | wider | look up and aside | its own, hop | crescents | low dots | closed |
  * | body | — | — | breathes | — | — | greys | dims |
  *
  * Every expression is in the markup at once and CSS shows the one the state
  * asks for, so a state change is an attribute flip — no redraw. Only a figure
- * drawn `live` moves, and nothing moves under `prefers-reduced-motion`.
+ * drawn `live` moves: it blinks on two overlapping rhythms (now and then
+ * twice), and its eyes turn toward the half of it the pointer is over.
+ * Nothing moves under `prefers-reduced-motion`.
  */
 
 import {
@@ -75,59 +77,70 @@ interface Body {
 }
 
 const BODIES: Readonly<Record<AvatarShape, Body>> = {
-  orb: { d: 'M20 0a20 20 0 1 1 0 40a20 20 0 1 1 0-40Z', eyeY: 19, eyeDX: 5.4 },
-  squircle: { d: superellipse(0.3), eyeY: 19, eyeDX: 5.6 },
+  orb: { d: 'M20 0a20 20 0 1 1 0 40a20 20 0 1 1 0-40Z', eyeY: 21, eyeDX: 6.7 },
+  squircle: { d: superellipse(0.3), eyeY: 21, eyeDX: 6.9 },
   capsule: {
     d: 'M20 0a14 14 0 0 1 14 14v12a14 14 0 0 1-28 0v-12a14 14 0 0 1 14-14Z',
-    eyeY: 17,
-    eyeDX: 4.8,
+    eyeY: 19,
+    eyeDX: 6,
   },
   drop: {
     d: 'M3 3h17a17 17 0 0 1 17 17v0a17 17 0 0 1-17 17h0a17 17 0 0 1-17-17Z',
-    eyeY: 21,
-    eyeDX: 5.2,
+    eyeY: 23,
+    eyeDX: 6.5,
   },
-  pebble: { d: superellipse(0.62, -0.16), eyeY: 19.5, eyeDX: 5.2 },
+  pebble: { d: superellipse(0.62, -0.16), eyeY: 21.5, eyeDX: 6.5 },
   cloud: {
     d: 'M3 23a9 9 0 0 1 8-10a10 10 0 0 1 18 0a9 9 0 0 1 8 10v6a9 9 0 0 1-9 9h-16a9 9 0 0 1-9-9Z',
-    eyeY: 24,
-    eyeDX: 5.4,
+    eyeY: 25,
+    eyeDX: 6.7,
   },
 }
 
-/** The eyes are white on every colour but the palest, where they are ink. */
+/** The eyes are black on every colour but the darkest, where they are white. */
 function inkOn(spec: AvatarSpec): string {
-  return spec.color === 'cloud' ? '#1c1b1f' : '#ffffff'
+  return spec.color === 'ink' ? '#ffffff' : '#1c1b1f'
 }
 
 // ---------------------------------------------------------------------------
 // eyes
 // ---------------------------------------------------------------------------
 
+/** Each kind of eye as half its width and half its height. */
+const EYE_SIZE: Readonly<Record<AvatarEyes, readonly [number, number]>> = {
+  dot: [3.6, 3.6],
+  oval: [3.1, 4.1],
+  wide: [3.4, 5],
+  square: [3.1, 3.1],
+  ring: [4.3, 4.3],
+  spark: [2.8, 4.2],
+}
+
 function eye(
-  kind: AvatarSpec['eyes'],
+  kind: AvatarEyes,
   x: number,
   y: number,
   ink: string,
   side: -1 | 1,
 ): string {
+  const [w, h] = EYE_SIZE[kind]
   switch (kind) {
     case 'dot':
-      return `<circle cx="${num(x)}" cy="${num(y)}" r="2.5" fill="${ink}"/>`
-    case 'wide':
-      return `<ellipse cx="${num(x)}" cy="${num(y)}" rx="2.3" ry="3.7" fill="${ink}"/>`
-    case 'square':
-      return `<rect x="${num(x - 2.2)}" y="${num(y - 2.2)}" width="4.4" height="4.4" rx="1.1" fill="${ink}"/>`
     case 'ring':
-      // Kept for figures saved with it; drawn solid, a size up from the dot.
-      return `<circle cx="${num(x)}" cy="${num(y)}" r="3.1" fill="${ink}"/>`
+      // 'ring' is kept for figures saved with it: drawn solid, a size up from the dot.
+      return `<circle cx="${num(x)}" cy="${num(y)}" r="${num(w)}" fill="${ink}"/>`
+    case 'square':
+      return (
+        `<rect x="${num(x - w)}" y="${num(y - h)}" width="${num(2 * w)}" ` +
+        `height="${num(2 * h)}" rx="1.5" fill="${ink}"/>`
+      )
     case 'spark':
       return (
-        `<ellipse cx="${num(x)}" cy="${num(y)}" rx="1.8" ry="3.1" fill="${ink}" ` +
+        `<ellipse cx="${num(x)}" cy="${num(y)}" rx="${num(w)}" ry="${num(h)}" fill="${ink}" ` +
         `transform="rotate(${side * 14} ${num(x)} ${num(y)})"/>`
       )
     default:
-      return `<ellipse cx="${num(x)}" cy="${num(y)}" rx="1.8" ry="3.1" fill="${ink}"/>`
+      return `<ellipse cx="${num(x)}" cy="${num(y)}" rx="${num(w)}" ry="${num(h)}" fill="${ink}"/>`
   }
 }
 
@@ -145,23 +158,25 @@ function solid(d: string, ink: string): string {
 }
 
 function expressions(spec: AvatarSpec, body: Body, ink: string): string {
+  // The glance, then two lids nested so the two blink rhythms multiply
+  // instead of replacing each other.
   return (
-    `<g class="av-eyes av-eyes-own">${pair(body, (x, y, side) => eye(spec.eyes, x, y, ink, side))}</g>` +
+    `<g class="av-eyes av-eyes-own"><g class="av-gaze"><g class="av-lid"><g class="av-lid-2">${pair(
+      body,
+      (x, y, side) => eye(spec.eyes, x, y, ink, side),
+    )}</g></g></g></g>` +
     `<g class="av-eyes av-eyes-happy">${pair(body, (x, y) =>
-      solid(
-        `M${num(x - 2.6)} ${num(y + 1.4)}q2.6-4.6 5.2 0q-2.6-2.2-5.2 0z`,
-        ink,
-      ),
+      solid(`M${num(x - 3.5)} ${num(y + 1.9)}q3.5-6.2 7 0q-3.5-3-7 0z`, ink),
     )}</g>` +
     `<g class="av-eyes av-eyes-closed">${pair(
       body,
       (x, y) =>
-        `<rect x="${num(x - 2.5)}" y="${num(y - 0.3)}" width="5" height="1.9" rx="0.95" fill="${ink}"/>`,
+        `<rect x="${num(x - 3.4)}" y="${num(y - 0.4)}" width="6.8" height="2.4" rx="1.2" fill="${ink}"/>`,
     )}</g>` +
     `<g class="av-eyes av-eyes-low">${pair(
       body,
       (x, y) =>
-        `<circle cx="${num(x)}" cy="${num(y + 2)}" r="1.6" fill="${ink}"/>`,
+        `<circle cx="${num(x)}" cy="${num(y + 2.4)}" r="2.2" fill="${ink}"/>`,
     )}</g>`
   )
 }
@@ -179,7 +194,7 @@ interface AvatarDrawOptions {
    * definitions to name.
    */
   readonly uid?: string
-  /** Blinks and plays its state. */
+  /** Blinks, plays its state and looks toward the pointer. */
   readonly live?: boolean
   readonly state?: AvatarState
   /** The accessible name; absent marks the figure decorative. */
@@ -386,10 +401,24 @@ export function avatarSvg(
     options.label === undefined
       ? ' aria-hidden="true"'
       : ` role="img" aria-label="${attr(options.label)}"`
+  const live = options.live === true
+  // Where the eyes blink about; a live figure also starts its blink at a
+  // point of its own, so two on a page do not blink as one.
+  const vars =
+    `--av-ey:${num(body.eyeY)}px` +
+    (live
+      ? `;--av-d:-${num((avatarHash(JSON.stringify(spec)) % 40) / 10)}s`
+      : '')
+  // The two halves a live figure's eyes turn toward on hover, under the face.
+  const look = live
+    ? '<rect class="av-look av-look-l" width="20" height="40" fill="transparent"/>' +
+      '<rect class="av-look av-look-r" x="20" width="20" height="40" fill="transparent"/>'
+    : ''
   return (
     `<svg class="${classes}" width="${options.size}" height="${options.size}" ` +
-    `viewBox="0 0 40 40" data-state="${state}" data-face="${avatarFace(spec)}"${a11y}>` +
+    `viewBox="0 0 40 40" data-state="${state}" data-face="${avatarFace(spec)}" style="${vars}"${a11y}>` +
     `<path class="av-body" d="${body.d}" fill="${AVATAR_HEX[spec.color]}"/>` +
+    look +
     `<g class="av-face">${expressions(spec, body, ink)}</g>` +
     `</svg>`
   )
@@ -402,14 +431,17 @@ export function avatarSvg(
  */
 export const AVATAR_CSS = `
 .avatar { display: block; flex: none; overflow: visible; }
-.avatar .av-body, .avatar .av-face, .avatar .av-eyes { transform-box: view-box; transform-origin: 20px 20px; }
+.avatar .av-body, .avatar .av-face { transform-box: view-box; transform-origin: 20px 20px; }
+.avatar .av-eyes, .avatar .av-gaze, .avatar .av-lid, .avatar .av-lid-2 { transform-box: view-box; transform-origin: 20px var(--av-ey, 20px); }
+.avatar .av-gaze { transition: translate 200ms ease-out; }
 .avatar .av-body { transition: opacity 240ms ease, filter 240ms ease; }
 .avatar .av-face { transition: transform 300ms cubic-bezier(.3, .7, .3, 1); }
 .avatar .av-eyes { transition: opacity 180ms ease, transform 220ms ease; }
 .avatar .av-eyes-happy, .avatar .av-eyes-closed, .avatar .av-eyes-low { opacity: 0; }
+.av-live .av-face { pointer-events: none; }
 
-.avatar[data-state="listening"] .av-eyes-own { transform: scale(1.1); }
-.avatar[data-state="thinking"] .av-face { transform: translate(1.6px, -1.6px); }
+.avatar[data-state="listening"] .av-eyes-own { transform: scale(1.12); }
+.avatar[data-state="thinking"] .av-face { transform: translate(1.6px, -1.8px); }
 .avatar[data-state="happy"] .av-eyes-own { opacity: 0; }
 .avatar[data-state="happy"] .av-eyes-happy { opacity: 1; }
 .avatar[data-state="error"] .av-eyes-own { opacity: 0; }
@@ -420,20 +452,30 @@ export const AVATAR_CSS = `
 .avatar[data-state="sleep"] .av-body { opacity: .42; }
 .avatar[data-state="speaking"] .av-face { transform: translate(0, -.6px); }
 
-.av-live .av-eyes-own { animation: av-blink 5.6s ease-in-out infinite; }
+/* Two blink rhythms on nested lids: one plain, one now and then twice. */
+.av-live .av-lid { animation: av-blink 5.2s ease-in-out var(--av-d, 0s) infinite; }
+.av-live .av-lid-2 { animation: av-blink-2 8.3s ease-in-out var(--av-d, 0s) infinite; }
+.av-live[data-state="idle"] .av-gaze { animation: av-glance 11s ease-in-out var(--av-d, 0s) infinite; }
 .av-live[data-state="thinking"] .av-body { animation: av-breathe 1.8s ease-in-out infinite; }
-.av-live[data-state="thinking"] .av-eyes-own { animation: none; }
-.av-live[data-state="speaking"] .av-face { animation: av-bob .8s ease-in-out infinite; }
-.av-live[data-state="sleep"] .av-eyes-own { animation: none; }
+.av-live[data-state="thinking"] .av-lid, .av-live[data-state="thinking"] .av-lid-2 { animation: none; }
+.av-live[data-state="speaking"] .av-face { animation: av-hop .9s cubic-bezier(.3, .7, .4, 1) infinite; }
+.av-live[data-state="sleep"] .av-lid, .av-live[data-state="sleep"] .av-lid-2 { animation: none; }
+/* The eyes turn toward the half the pointer is over, unless it is thinking. */
+.av-live:not([data-state="thinking"]) .av-look-l:hover ~ .av-face .av-gaze { translate: -1px .2px; }
+.av-live:not([data-state="thinking"]) .av-look-r:hover ~ .av-face .av-gaze { translate: 1px .2px; }
 
-@keyframes av-blink { 0%, 94%, 100% { transform: scaleY(1); } 96.5% { transform: scaleY(.12); } }
+@keyframes av-blink { 0%, 93%, 100% { transform: scaleY(1); } 95.5% { transform: scaleY(.1); } }
+@keyframes av-blink-2 { 0%, 54%, 57.6%, 61.2%, 100% { transform: scaleY(1); } 55.8%, 59.4% { transform: scaleY(.1); } }
+@keyframes av-glance { 0%, 40%, 58%, 100% { transform: translate(0, 0); } 44%, 54% { transform: translate(-.9px, -.3px); } }
 @keyframes av-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .78; } }
-@keyframes av-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-1px); } }
+@keyframes av-hop { 0%, 55%, 100% { transform: translateY(0); } 25% { transform: translateY(-1.1px); } }
 @media (prefers-reduced-motion: reduce) {
   /* As specific as the state rules above, and later, so it wins over them. */
-  .av-live .av-eyes-own, .av-live .av-body, .av-live .av-face,
-  .av-live[data-state] .av-eyes-own, .av-live[data-state] .av-body, .av-live[data-state] .av-face { animation: none; }
-  .avatar .av-face, .avatar .av-eyes, .avatar .av-body { transition: none; }
+  .av-live .av-gaze, .av-live .av-lid, .av-live .av-lid-2, .av-live .av-body, .av-live .av-face,
+  .av-live[data-state] .av-gaze, .av-live[data-state] .av-lid, .av-live[data-state] .av-lid-2,
+  .av-live[data-state] .av-body, .av-live[data-state] .av-face { animation: none; }
+  .avatar .av-face, .avatar .av-eyes, .avatar .av-gaze, .avatar .av-body { transition: none; }
+  .av-look { display: none; }
 }
 
 .av-editor { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: var(--space-6); align-items: start; }

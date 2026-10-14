@@ -1734,8 +1734,11 @@ describe('the shell', () => {
   test('the sidebar carries the brand, the label and the refresh switch — and no clock', () => {
     const html = build()
     expect(html).toContain('阡陌控制台')
-    expect(html).toContain('class="brand-en"')
-    expect(html).toContain('class="brand-cn"')
+    // The front's brand row: the mark and 阡陌, no English line over it.
+    expect(html).toContain(
+      '<a class="brand-cn" href="/admin" data-nav>阡陌</a>',
+    )
+    expect(html.slice(html.indexOf('<body>'))).not.toContain('class="brand-en"')
     expect(html).toContain('node-a 本机')
     expect(html).toContain('id="auto-refresh"')
     expect(html).toContain('id="refresh-interval"')
@@ -1822,7 +1825,7 @@ describe('the shell', () => {
     const html = build()
     // Still one click from "look at this console as the other role"; no longer
     // a password field whose everyday function is to be ignored.
-    const menu = html.indexOf('<details class="usermenu">')
+    const menu = html.indexOf('<details class="fx-more usermenu">')
     expect(menu).toBeGreaterThan(-1)
     const summary = html.indexOf('换令牌')
     expect(summary).toBeGreaterThan(menu)
@@ -2303,14 +2306,15 @@ describe('assets', () => {
   })
 
   /**
-   * Colour is spent on two things that are not facts — the primary action and
-   * the focus ring — and on nothing else. What this checks is that the
-   * exception is a *token*: no brand hex is hardcoded anywhere, and the focus
-   * machinery resolves through `var(--color-accent)`.
+   * Colour is spent on facts, and on the primary action in the reader's theme
+   * colour. The focus ring is ink, as on the front (`view/frontStyle.ts`).
+   * What this checks is that both are *tokens*: no brand hex is hardcoded
+   * anywhere, and the focus machinery resolves through `var(--color-text)`.
    */
   test('focus rings and the primary action are driven by tokens, not a hardcoded hex', () => {
     expect(CONSOLE_CSS).not.toContain('#D77757')
-    expect(CONSOLE_CSS).toContain('outline: 2px solid var(--color-accent);')
+    expect(CONSOLE_CSS).toContain('outline: 2px solid var(--color-text);')
+    expect(CONSOLE_CSS).not.toContain('outline: 2px solid var(--color-accent)')
     const primary = ruleOf('.btn-primary')
     // The fill token: accent-700 in light, the accent in dark, so its light
     // label keeps 4.5:1 (B1, contrast.browser.test.ts).
@@ -2320,9 +2324,10 @@ describe('assets', () => {
   test('the danger action is terracotta, never a pure red, and never a resting state', () => {
     // The one irreversible action. It is the confirm button of a dialog or a
     // ghost link inside an expanded row — the plain button carries no accent
-    // token at all.
+    // token at all. Its colour is the critical token (#b83a26), the one the
+    // sheet already spends on a fact that cannot be undone.
     const danger = ruleOf('.btn-danger')
-    expect(danger).toContain('var(--color-accent-700)')
+    expect(danger).toContain('var(--color-critical)')
     // There is no separate destructive hue left to reach for — the whole
     // palette is the two accents plus neutral.
     expect(CONSOLE_CSS).not.toContain('--destructive')
@@ -2383,12 +2388,12 @@ describe('assets', () => {
     expect(ruleOf('.trail')).toContain('font-size: var(--text-13-5)')
   })
 
-  test('a section kicker is a small uppercase accent label, not a headline', () => {
+  test('a section kicker is a small muted label, not a headline', () => {
     const kicker = ruleOf('.kicker')
-    expect(kicker).toContain('font-size: var(--text-10)')
+    expect(kicker).toContain('font-size: var(--text-12)')
     expect(kicker).toContain('text-transform: uppercase')
-    // The 700 step: the accent itself is 3.0:1 on the light ground (B1).
-    expect(kicker).toContain('color: var(--color-accent-700)')
+    // Muted ink, as the front labels things: amber is kept for a warning.
+    expect(kicker).toContain('color: var(--color-muted)')
   })
 
   test('a closed dialog stays closed: display is only ever set on [open]', () => {
@@ -2402,7 +2407,7 @@ describe('assets', () => {
 
   test('the shell is two columns that collapse, and wide content scrolls in its own box', () => {
     expect(ruleOf('.shell')).toContain(
-      'grid-template-columns: 264px minmax(0, 1fr)',
+      'grid-template-columns: 272px minmax(0, 1fr)',
     )
     // No --rail: the noun column it sized is gone.
     expect(CONSOLE_CSS).not.toContain('--rail')

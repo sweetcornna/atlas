@@ -219,7 +219,7 @@ export function renderReplicate(model: ReplicateModel): string {
     `<div class="rp-progress-head"><b data-role="title"></b>` +
     `<span class="note mono" data-role="job"></span></div>` +
     stepsSkeleton() +
-    `<p class="bar bar-ok" data-role="done" hidden></p>` +
+    `<p class="bar" data-role="done" hidden></p>` +
     `<p class="bar bar-bad" data-role="failed" hidden></p>` +
     `<div class="row-acts" data-role="after" hidden>` +
     `<a class="btn btn-secondary btn-small" data-role="chat" href="/">去对话</a>` +

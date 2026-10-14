@@ -186,6 +186,42 @@ describe('形象 · the figure', () => {
     expect(AVATAR_CSS).not.toContain('url(')
   })
 
+  test('the eyes are black, white only on the darkest colour', () => {
+    const fills = (markup: string): string[] => {
+      const own = markup.slice(
+        markup.indexOf('av-eyes-own'),
+        markup.indexOf('av-eyes-happy'),
+      )
+      return [...own.matchAll(/fill="([^"]+)"/g)].map(match => match[1] ?? '')
+    }
+    for (const color of AVATAR_COLORS) {
+      const want = color === 'ink' ? '#ffffff' : '#1c1b1f'
+      const got = fills(avatarSvg({ ...SPEC, color }, { size: 40 }))
+      expect(`${color} ${got.join(' ')}`).toBe(`${color} ${want} ${want}`)
+    }
+  })
+
+  test('a live figure blinks on two rhythms of its own and looks toward the pointer', () => {
+    const live = avatarSvg(SPEC, { size: 72, uid: 'g9', live: true })
+    expect(live).toContain('class="av-lid"')
+    expect(live).toContain('class="av-lid-2"')
+    expect(live).toMatch(/style="--av-ey:\d+(\.\d+)?px;--av-d:-\d+(\.\d+)?s"/)
+    expect(live).toContain('class="av-look av-look-l"')
+    expect(live).toContain('class="av-look av-look-r"')
+    // A figure that does not move has nothing to hover and no blink phase.
+    const still = avatarSvg(SPEC, { size: 28 })
+    expect(still).not.toContain('av-look')
+    expect(still).not.toContain('--av-d')
+    expect(AVATAR_CSS).toContain('@keyframes av-blink-2')
+    expect(AVATAR_CSS).toContain('.av-look-l:hover ~ .av-face .av-gaze')
+    const reduced = AVATAR_CSS.slice(
+      AVATAR_CSS.indexOf('@media (prefers-reduced-motion: reduce)'),
+    )
+    expect(reduced).toContain('.av-live[data-state] .av-lid-2')
+    expect(reduced).toContain('.av-live[data-state] .av-gaze')
+    expect(reduced).toContain('.av-look { display: none; }')
+  })
+
   test('the editor draws every choice as the figure it would make', () => {
     const html = renderAvatarEditor(SPEC, 'planner')
     expect(html).toContain(
@@ -332,6 +368,8 @@ describe('形象 · in 对话', () => {
       expect(rich).toContain(`class="av-eyes ${part}"`)
     }
     expect(rich).not.toContain('stroke=')
+    expect(rich).not.toContain('av-mouth')
+    expect(rich).not.toContain('av-cheeks')
     for (const state of AVATAR_STATES) {
       if (state === 'idle') continue
       expect(AVATAR_CSS).toContain(`[data-state="${state}"]`)
