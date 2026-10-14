@@ -449,17 +449,34 @@ describe('操作记录 (/admin/access/actions)', () => {
       'actions-body',
       'reads-section',
     )
-    expect(rowKeys(byFamily).length).toBeGreaterThanOrEqual(3)
+    expect(rowKeys(byFamily).length).toBeGreaterThanOrEqual(2)
     expect(byFamily).not.toContain('签发邀请')
-    expect(byFamily).toContain('打开转录')
+    // A transcript opening is a read event: on record, not in the default list.
+    expect(byFamily).not.toContain('<span>打开转录</span>')
+    expect(byFamily).toContain('只读事件默认不列')
+    const withReads = between(
+      await read(
+        h,
+        navigate('/admin/access/actions?action=chat.&kind=all', ops),
+      ),
+      'actions-body',
+      'reads-section',
+    )
+    expect(rowKeys(withReads).length).toBe(rowKeys(byFamily).length + 1)
+    expect(withReads).toContain('<span>打开转录</span>')
+    expect(withReads).not.toContain('只读事件默认不列')
     const byTarget = between(
-      await read(h, navigate(`/admin/access/actions?target=${sa}`, ops)),
+      await read(
+        h,
+        navigate(`/admin/access/actions?target=${sa}&kind=read`, ops),
+      ),
       'actions-body',
       'reads-section',
     )
     // ops' reading of it: the opening that has the conversation as its target.
     expect(rowKeys(byTarget)).toHaveLength(1)
     expect(byTarget).toContain('打开转录')
+    expect(byTarget).toContain('只读')
     const accounts = between(
       await read(h, navigate('/admin/access/actions?action=accounts.', ops)),
       'actions-body',
@@ -467,6 +484,57 @@ describe('操作记录 (/admin/access/actions)', () => {
     )
     expect(accounts).toContain('签发邀请')
     expect(accounts).toContain('accounts.post')
+  })
+
+  test('类别: writes unless asked, read events by name, and 更早 keeps it', async () => {
+    const actions = new MemoryActionLedger()
+    const h = accountsHarness({ deps: { actions } })
+    for (let i = 0; i < 60; i++) {
+      await actions.record({
+        at: h.clock.now() + i,
+        requestId: `req-${i}`,
+        subject: 'legacy:admin',
+        action: 'chat.transcript.open',
+        target: `s-${i}`,
+        outcome: 'ok',
+      })
+    }
+    await actions.record({
+      at: h.clock.now() + 60,
+      requestId: 'req-pause',
+      subject: 'legacy:admin',
+      action: 'agent.pause',
+      target: 'qianmo://tokyo-1/planner',
+      outcome: 'ok',
+    })
+    // Sixty openings do not bury the one thing that was changed.
+    const plain = await read(h, asBearer('GET', '/admin/access/actions', ADMIN))
+    const writes = between(plain, 'actions-body')
+    expect(rowKeys(writes)).toEqual(['61'])
+    expect(writes).toContain('暂停智能体')
+    expect(writes).toContain('只读事件默认不列')
+    expect(plain).toContain('<option value="" selected>写操作</option>')
+    expect(plain).toContain('<option value="read">只读事件</option>')
+
+    const reads = await read(
+      h,
+      asBearer('GET', '/admin/access/actions?kind=read', ADMIN),
+    )
+    expect(reads).toContain('<option value="read" selected>只读事件</option>')
+    const readRows = between(reads, 'actions-body')
+    expect(rowKeys(readRows)).toHaveLength(50)
+    expect(readRows).not.toContain('暂停智能体')
+    expect(readRows).toContain('只读')
+    const older = /id="actions-older" href="([^"]+)"/.exec(reads)?.[1]
+    expect(older?.replaceAll('&amp;', '&')).toBe(
+      '/admin/access/actions?kind=read&before=11',
+    )
+
+    const bad = await read(
+      h,
+      asBearer('GET', '/admin/access/actions?kind=reads', ADMIN),
+    )
+    expect(between(bad, 'actions-body')).toContain('筛选条件无效')
   })
 
   test('pages with before=nextBeforeSeq: no entry twice, none missed', async () => {
@@ -760,7 +828,11 @@ describe('without script', () => {
       ['/admin/access', ops, ['甲', '乙', '旁观', '你本人', '最近登录']],
       ['/admin/access/invites', ops, ['剩余次数', '已开通']],
       ['/admin/access/sessions', ops, ['实时连接', '甲']],
-      ['/admin/access/actions', ops, ['打开转录', sa, 'id="actions-refresh"']],
+      [
+        '/admin/access/actions?kind=all',
+        ops,
+        ['打开转录', sa, 'id="actions-refresh"'],
+      ],
       ['/admin/access/actions', a, ['谁读了我的对话', '值班']],
     ] as const) {
       const bare = withoutScripts(await read(h, navigate(path, who)))

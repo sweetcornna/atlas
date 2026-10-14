@@ -1178,6 +1178,19 @@ export const CONSOLE_ACTIONS = [
   'avatar.save',
 ] as const
 
+/**
+ * 只读事件：看了什么，不是动了什么。照样进账本——「谁读了我的对话」（D6，
+ * `/v0/actions/reads`）就是从它们查的——但「操作记录」默认只列写操作，类别选
+ * 「只读事件」或「全部」才列（{@link ActionQuery.kind}）。新增只读动作时在这里补一行。
+ */
+export const CONSOLE_READ_ACTIONS: readonly (typeof CONSOLE_ACTIONS)[number][] =
+  ['chat.transcript.open']
+
+/** 这个动作名是不是只读事件（{@link CONSOLE_READ_ACTIONS}）。 */
+export function isReadAction(action: string): boolean {
+  return (CONSOLE_READ_ACTIONS as readonly string[]).includes(action)
+}
+
 /** 账本里的一条，带上账本给它的序号（递增，从 1 开始）。 */
 export interface ActionRecord extends ConsoleAction {
   readonly seq: number
@@ -1194,6 +1207,11 @@ export interface ActionQuery {
   readonly targets?: readonly string[]
   /** 动作名前缀，例如 `chat.`。 */
   readonly actionPrefix?: string
+  /**
+   * `write` 只要写操作，`read` 只要只读事件（{@link CONSOLE_READ_ACTIONS}）；
+   * 缺省两样都要。
+   */
+  readonly kind?: 'write' | 'read'
   /** 游标：只要序号小于它的（更早的）。 */
   readonly beforeSeq?: number
   /** 每页条数；实现自定上限。 */

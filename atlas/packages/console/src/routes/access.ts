@@ -32,7 +32,10 @@
  *
  * - `GET /v0/actions` — what was done. `ops` and the admin token see every
  *   entry and may filter by `subject`, `action` (a prefix), `target`
- *   (repeatable), `before` (a sequence number, for the next page) and `limit`.
+ *   (repeatable), `kind` (`write`, `read` or `all`, the default), `before`
+ *   (a sequence number, for the next page) and `limit`. The 操作记录 tab
+ *   asks for `write` unless its 类别 says otherwise: a transcript opening is
+ *   recorded (D6 needs it) but is not something anybody changed.
  *   A `member` or `viewer` sees only what they did themselves: their filters
  *   are intersected with their own subject, so somebody else's entries are
  *   simply not in the list (`tenancy-m1.md` §5.1, 列表).
@@ -112,11 +115,22 @@ const LEDGER_UNWIRED =
 const LEDGER_UNREADABLE =
   '操作记录暂时读不出来：动作账本校验没有通过，已告警运维。'
 
+/**
+ * Which entries by kind: writes, read events (`CONSOLE_READ_ACTIONS`, today
+ * the transcript openings), or both. `/v0/actions` answers both unless asked;
+ * the 操作记录 tab lists writes unless asked, so a reader paging through the
+ * console's openings does not bury what was changed.
+ */
+type ActionKind = 'write' | 'read' | 'all'
+
+const ACTION_KINDS: readonly ActionKind[] = ['write', 'read', 'all']
+
 /** The filters both routes share, and those only `/v0/actions` takes. */
 interface ActionFilters {
   readonly subject?: string
   readonly action?: string
   readonly targets?: readonly string[]
+  readonly kind?: ActionKind
   readonly beforeSeq?: number
   readonly limit?: number
   readonly session?: string
@@ -161,6 +175,10 @@ function parseFilters(params: URLSearchParams): Parsed<ActionFilters> {
   if (!action.ok) return action
   const session = boundedText(params.get('session'), 'session')
   if (!session.ok) return session
+  const kind = params.get('kind')
+  if (kind !== null && !(ACTION_KINDS as readonly string[]).includes(kind)) {
+    return { ok: false, message: 'kind 只能是 write read 或 all' }
+  }
   const targets = params.getAll('target')
   if (targets.length > MAX_TARGETS) {
     return { ok: false, message: `target 最多 ${MAX_TARGETS} 个` }
@@ -175,6 +193,7 @@ function parseFilters(params: URLSearchParams): Parsed<ActionFilters> {
       ...(subject.value === undefined ? {} : { subject: subject.value }),
       ...(action.value === undefined ? {} : { action: action.value }),
       ...(targets.length === 0 ? {} : { targets }),
+      ...(kind === null ? {} : { kind: kind as ActionKind }),
       ...(before.value === undefined ? {} : { beforeSeq: before.value }),
       ...(limit.value === undefined ? {} : { limit: limit.value }),
       ...(session.value === undefined ? {} : { session: session.value }),
@@ -215,6 +234,9 @@ function everyQuery(
     ...(subject === undefined ? {} : { subject }),
     ...(filters.action === undefined ? {} : { actionPrefix: filters.action }),
     ...(filters.targets === undefined ? {} : { targets: filters.targets }),
+    ...(filters.kind === undefined || filters.kind === 'all'
+      ? {}
+      : { kind: filters.kind }),
     ...paging(filters),
   }
 }
@@ -494,6 +516,9 @@ async function actionsBody(ctx: RouteContext): Promise<string> {
     ...(params.get('target') === null
       ? {}
       : { target: params.get('target') ?? '' }),
+    ...(params.get('kind') === 'read' || params.get('kind') === 'all'
+      ? { kind: params.get('kind') as 'read' | 'all' }
+      : {}),
   }
   const seesAll =
     principal.kind === 'legacy' ||
@@ -507,7 +532,12 @@ async function actionsBody(ctx: RouteContext): Promise<string> {
   if (!parsed.ok) {
     main = { kind: 'invalid', message: parsed.message }
   } else {
-    const query = everyQuery(ctx, { ...parsed.value, limit: PAGE_LIMIT })
+    // Writes unless the reader asked for read events too.
+    const query = everyQuery(ctx, {
+      ...parsed.value,
+      kind: parsed.value.kind ?? 'write',
+      limit: PAGE_LIMIT,
+    })
     // Somebody else's subject asked for by a member: nothing can match, and
     // the ledger is still read, so a closed one says so here too.
     main = shownOf(await ledger.list(query ?? { targets: [] }))

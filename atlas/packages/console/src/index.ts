@@ -136,6 +136,8 @@ export { CHAT_LOCAL_COMMANDS } from './deps.js'
 // hash-chained store the host puts behind it.
 export {
   CONSOLE_ACTIONS,
+  CONSOLE_READ_ACTIONS,
+  isReadAction,
   type ActionLedgerPort,
   type ActionOutcome,
   type ActionPage,
