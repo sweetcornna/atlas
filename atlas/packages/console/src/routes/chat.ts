@@ -350,8 +350,18 @@ function parseChatText(body: Record<string, unknown>): Parsed<string> {
       message: `消息最长 ${MAX_CHAT_TEXT_LENGTH} 个字符，这条有 ${text.value.length} 个`,
     }
   }
+  // A private key never goes to a model, whatever page sent it. The front
+  // takes one out before sending (添加服务器); this is the line behind it.
+  if (PRIVATE_KEY_BLOCK.test(text.value)) {
+    return {
+      ok: false,
+      message: '消息里有私钥 · 没有发出 · 部署新服务器请用「添加服务器」',
+    }
+  }
   return text
 }
+
+const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/
 
 // --- local commands (P18.20, D-9) -------------------------------------------
 

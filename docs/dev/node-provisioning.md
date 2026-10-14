@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v0.1-draft**（待负责人评审。评审通过后的修订直接改本文并升版本号） |
+| 文档版本 | **v0.2**（2026-10-14：新增 §14 自我复制，它在 §14.0 列出的几处取代前文；§1–§13 其余部分仍是 v0.1 的设计草案） |
 | 日期 | 2026-08-17 |
 | 本文范围 | **只有设计**。本包不改一行代码，不改任何其他文档，不提交。落地任务包草案在 §11 |
 | 要解决的事 | 运维在控制台上填一台服务器的 SSH 凭证，控制台把常驻 agent 装上去、起起来、接进网络。今天这件事是**一页 runbook + 五步人工**（`demo/env/beta/README.md`「首次装机的完整顺序」） |
@@ -613,6 +613,81 @@ provision  与两者都不可比：admin ⊉ provision，provision ⊉ view
 | `scripts/postinstall.cjs` / `scripts/post-build.ts` | ripgrep 按平台下载与整目录复制进 `dist/`——P-2 的出处，§6 的全部依据 |
 | `packages/transport/src/handshake.ts` | PSK 握手的自陈缺陷。§5.3 的 PSK 时序为什么是硬的，理由在它的模块注释里 |
 | `src/services/qianmo/nodeIdentity.ts` | `parseTrustedKey` 的反 TOFU 表述，§3.6 引的就是它 |
+
+---
+
+## §14 自我复制：用一次性登录信息把中枢复制到新服务器（v0.2，2026-10-14）
+
+### 14.0 和前面十三节的关系
+
+前面十三节设计的是一整套装机面：凭据持久化、`provision` token、五类动作。那一套没有落地。2026-10-14 负责人要的是更简单的一件事：把一台新服务器的 SSH 登录信息交给主智能体（对话里发），或者在后台「服务器」页填进去，中枢就把自己复制过去，起一个节点、接进网络。本节就是这件事的定案，它在以下几处取代前文：
+
+| 前文 | 本节 |
+|---|---|
+| §3.1 只存私钥、§3.3 信封加密存储 | **什么都不存。**口令或私钥只用来建立这一次的 SSH 主连接，作业结束就没了（14.2） |
+| §3.6 指纹必填 | 指纹由「检查」这一步扫出来给操作者看，点「部署」就是确认这一把；作业开始时再扫一次，必须逐字相同。全程 `StrictHostKeyChecking=yes` |
+| P-4「口令在非交互 SSH 下用不了」 | 用 P-5 那条路：`SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force`，口令从环境变量进一个只活几秒的助手脚本，不进 argv、不落盘 |
+| §6 交付物是源码 tar、目标机自建 | 交付物是**中枢自己正在跑的部署树**（`dist/` + `demo/`，与舰队载荷同形）。目标机必须与中枢同系统同架构 |
+| §8 单独一枚 `provision` token | 控制台启动开关 `--replicate <内测根>` + 运维权限（ops 账号或管理令牌）+ 每次确认指纹 + 动作账本两条（`server.replicate.inspect` / `server.replicate.start`） |
+
+### 14.1 两个入口，一组接口
+
+- **后台**：`/admin/servers` 顶部「添加服务器」：地址、端口、用户名、口令或私钥 → 检查 → 看指纹、系统、内存、磁盘，改节点名、智能体名、服务器名 → 部署 → 一步一行的进度。
+- **前台对话**：发给主智能体的一句话里有「`user@host` + 密码/口令/password」或一整段私钥，页面在发送之前就把它拿下来，不交给模型，改在输入框上方打开同一张卡片。只有口令、旁边没有服务器地址的一句话照常发送（多半是在聊口令）；有私钥没地址时不发，提示补地址。服务端另有一道：聊天消息里出现私钥块一律 400（`routes/chat.ts`）。
+
+两处都走 `/v0/replicate/inspect|start|jobs`（`console.md` §5 路由表）。只读令牌能看作业进度，不能检查也不能部署。
+
+### 14.2 凭据去了哪里
+
+| 位置 | 有没有 | 多久 |
+|---|---|---|
+| 浏览器 | 检查请求发出的同一刻从输入框清掉 | — |
+| `POST /v0/replicate/inspect` 请求体 | 有 | 一次请求 |
+| 控制台进程内存（检查票） | 有 | 至多 15 分钟；开始部署时取出即删；同时至多 8 张 |
+| `qm replicate inspect` 子进程 | stdin 进 | 几秒 |
+| 作业请求文件 | 有 | `$XDG_RUNTIME_DIR`（tmpfs）下 0600、`O_EXCL` 建；作业读完立刻删 |
+| SSH 主连接 | 口令走 askpass 环境变量；私钥 `ssh-add -` 进一次性 agent，主连接建好 agent 就杀掉 | 主连接建立的那几秒 |
+| 回包、片段、进度日志、动作账本 | **没有** | — |
+
+作业结束后中枢上留下的只有它为新节点**自己生成**的两把 key：链路 key（`restrict,port-forwarding,permitopen="127.0.0.1:38625",command="cat -- <审计链>"`，隧道与审计镜像用）与模型下发 key（强制命令 `model-apply.sh`，§5.1 的同一套闭合）。登录用的口令或私钥不再被使用。
+
+### 14.3 作业的十一步
+
+作业是 `qm replicate run`，由控制台用 `systemd-run --user --collect` 起成独立的临时单元（没有 systemd 时脱离本进程起）：倒数第二步要重启控制台本身。进度一行一条写进 `<内测根>/state/replicate/<作业>.ndjson`，页面轮询它。同一时间只跑一个作业。
+
+| 步 | 做什么 | 失败时撤回 |
+|---|---|---|
+| 核对主机指纹 | 再扫一次，与确认的那把逐字相同才写进本次的 known_hosts | — |
+| 登录 | 建 ControlMaster 主连接，之后每一步复用它 | — |
+| 检查环境 | 系统、架构、glibc、tar/gzip、内存 ≥ 700 MB、家目录可用 ≥ 1 GB、账号下没有已有部署 | — |
+| 生成密钥 | 中枢上 `replicate-hub.sh prepare`：节点 PSK（0600）、链路 key、挑一个空回环口 | `discard` |
+| 复制部署树 | `tar dist demo` 经主连接流过去，解到临时目录再改名为 `~/atlas-beta`；目标机没有 bun 就把中枢那份带过去；两边 `qm --version` 必须一致 | 部署树改名 `.failed-<UTC>` |
+| 写入密钥 | PSK 写到 `~/qianmo-beta/secrets/transport-psk`；链路 key 那一行进 `authorized_keys` | 删那一行；停节点，内测根改名 `.failed-<UTC>` |
+| 启动节点 | `beta-up.sh --role node`，`QIANMO_BETA_NODE_BIND=127.0.0.1`（入站只经隧道），尾参见 14.4；读出节点公钥 | 同上 |
+| 登记到中枢 | `replicate-hub.sh add`：peers.conf 加坐标行与地址行，console.env 加 `--chat-url`；确认过的主机公钥写进中枢的 `~/.ssh/known_hosts`（隧道单元用 `accept-new`，预先写好就不会信任别的钥） | 撤回这几行 |
+| 接入模型下发 | `model-apply-enroll.sh` 的 hub-key / node-install / node-hostkey / hub-known-host 四步，与运维手工登记同一套 | 撤回 key 与 known_hosts 行 |
+| 重启中枢 | 起新节点的隧道与镜像，重启注册中心与控制台。**从这一步起失败只报告不撤回**：节点已经接进网络 | — |
+| 等待就绪 | 等隧道回环口通；控制台回来后用管理令牌下发一次模型档案（失败只提示，可在模型页再下发） | — |
+
+撤回只删本次建的东西（`state/replicate/<节点>.created` 里记过的），目标机上的目录一律改名不删。
+
+### 14.4 新节点长什么样
+
+- 入站只绑 `127.0.0.1:38625`，中枢经 SSH 隧道 `127.0.0.1:<回环口>` 到它；节点之间直投不经中枢的那条规矩（§7.2）不受影响，需要直投的节点由运维另开端口。
+- 尾参：`--trust <控制台签名身份> --local-commands-from <控制台> --sign-handshake --omp-max-children=1 --omp-idle-ms=60000`，再加 `ops/replicate-node.args` 里的（一行一个，例如探针公钥）。
+- 智能体名默认取主智能体的名字（`--chat-default` 的最后一段），节点名默认取 IPv4 的后两段（`n113-7`）或主机名的第一段，避开 peers.conf 里已有的名字。
+
+### 14.5 开关与运维
+
+- 打开：中枢腿的控制台尾参加 `--replicate <内测根>`（写进 `ops/console.env`）。只在部署树里跑的控制台上生效；源码检出里起的控制台横幅写 `UNAVAILABLE`。
+- 中枢上那半步可以单独跑：`demo/env/beta/ops/replicate-hub.sh prepare|add|restart|discard`，用法见脚本头注。
+- 进度与失败原因在 `<内测根>/state/replicate/*.ndjson`；中途失败留下的 `~/atlas-beta.failed-*`、`~/qianmo-beta.failed-*` 由运维看过再删。
+
+### 14.6 没做的
+
+- **开机自启**：节点由 `beta-up.sh` 用 `nohup` 起，目标机重启后不会自己回来，与现网手工装的节点一样。要自启需要 `loginctl enable-linger`（root），不在一次性凭据的范围内。
+- **sudo 与系统包**：作业不提权、不装系统包。缺 tar/gzip 或不是 glibc 的机器在检查这一步就被拒。
+- **异构架构**：中枢是 x86_64 就只能复制到 x86_64。要支持别的架构，需要中枢同时持有那个架构的载荷。
 
 ---
 

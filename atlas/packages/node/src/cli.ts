@@ -95,6 +95,10 @@ const COMMANDS: Record<
     summary: 'hand a coding session between laptop and node',
     load: () => import('./commands/handoff.js'),
   },
+  replicate: {
+    summary: 'copy this hub onto a new server over SSH',
+    load: () => import('./commands/replicate.js'),
+  },
 }
 
 const HELP_TEXT = `Usage: qm <command> [options]

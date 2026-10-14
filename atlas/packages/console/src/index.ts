@@ -60,6 +60,14 @@ export type {
   RegistryPort,
   ServerNote,
   ServerNotesPort,
+  ReplicateAuthInput,
+  ReplicateInspection,
+  ReplicateJob,
+  ReplicateJobEvent,
+  ReplicateJobState,
+  ReplicatePort,
+  ReplicateStartInput,
+  ReplicateTargetInput,
   WakeInput,
   WakeOutcome,
   WakePort,
@@ -286,3 +294,5 @@ export { unansweredTurns } from './chatTurns.js'
 export type { HandoffGitPort, HandoffRequestActor } from './deps.js'
 
 export * from './routes/filesApi.js'
+// 添加服务器：每一步的名字与说法，宿主的执行器用同一组（`qm replicate run`）。
+export { REPLICATE_STEPS } from './view/replicate.js'

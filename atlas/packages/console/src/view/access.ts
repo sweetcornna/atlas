@@ -715,6 +715,8 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'agent.retire': '退役智能体',
   'wake.send': '唤醒',
   'server.note.set': '写服务器备注',
+  'server.replicate.inspect': '检查新服务器',
+  'server.replicate.start': '复制到新服务器',
   'chat.session.open': '新建对话',
   'chat.message.send': '发送消息',
   'chat.command.autocompact': '设置自动压缩',
