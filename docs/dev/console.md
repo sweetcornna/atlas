@@ -2719,6 +2719,37 @@ bun run qm -- console --desktop --control <node>=ws://<node-host>:<port> --trust
 
 macOS 用 `/Applications/Google Chrome.app` 的无头 Chrome 提供**独立浏览器资料环境**，不提供电脑。资料目录 `<节点配置根>/qianmo/desktop/<agent>/browser`（0700），下载与截图目录独立；保留 Chromium 沙箱，内核分配 loopback CDP 端口。Linux 浏览器同样无头；电脑须 Xvfb+xauth（独立授权、1440×900×24、关闭 TCP），本机没有 Xvfb，完整原生电脑操作尚未验证，不能据此宣称 Linux 隔离已验收。
 
+### 支持的平台
+
+| 节点平台 | 专属浏览器 | 专属电脑 | 需要 |
+|---|---|---|---|
+| macOS | 支持（无头 Chrome，独立资料环境） | **不支持**：没有独立显示服务，不操作真实桌面 | `/Applications/Google Chrome.app` |
+| Linux | 支持（无头 Chromium/Chrome） | 支持 | 浏览器：`PATH` 上有 `google-chrome` 或 `chromium`；电脑：另装 `Xvfb` 与 `xauth` |
+| 其他（Windows 等） | 不支持 | 不支持 | — |
+
+两项默认都关，由运维身份在「云端电脑」页为某个节点的主智能体打开。只有主智能体能调用 `qianmo_browser_*` / `qianmo_computer_*`，子智能体不能。
+
+### 工具报错怎么读
+
+智能体调用这些工具被拒时，报错前缀是固定的英文标记，冒号后面是原因和处理办法：
+
+| 报错 | 意思 | 怎么办 |
+|---|---|---|
+| `Desktop unavailable: 专属浏览器没有开启或已停用…` | 节点没为这个智能体开浏览器，或已因空闲、配额、急停停用 | 「云端电脑」页打开专属浏览器 |
+| `Desktop unavailable: 专属电脑只在 Linux 节点上提供…` | macOS 等平台没有专属电脑 | 改用专属浏览器，或换 Linux 节点 |
+| `Desktop unavailable: 只有节点的主智能体能用…` | 子智能体调用 | 由主智能体调用 |
+| `Desktop lease refused: 这台专属浏览器上一项操作（…）还没结束…` | 同一资源同一时间只发一个租约；另一会话或另一回合的操作还没结束 | 等它结束再试。同一回合里并行的多个调用由扩展自动排队，不会互相拒绝 |
+| `Desktop lease refused: 急停已开启…` | ESTOP 期间不发租约 | 解除急停 |
+| `Desktop lease refused: 发起这次调用的任务已经结束、超时…` | 任务已结算或超过期限 | 重新派发任务 |
+| `Desktop lease refused: 专属浏览器已重启或回收，资源代次变了…` | 资源在调用前被重启或回收，旧标签句柄作废 | 先调 `qianmo_browser_tabs` 取新句柄 |
+| `Desktop lease refused: 专属浏览器正在启动 / 处于故障状态…` | 资源未就绪或启动失败 | 稍后重试；故障时先停用再打开 |
+| `Desktop lease refused: 节点没有应答租约请求…` | 宿主 60 秒内没有应答：节点正忙于开关、回收等控制操作，或 omp 子进程没有接上宿主的授权通道 | 看「云端电脑」页的节点状态后重试 |
+| `Operator approval denied` | 拿到了租约，但导航、点击、输入等需要逐次批准的操作没被批准；节点没配审批（中枢 `--approvals`、节点的审批公钥，见上）时一律如此 | 按上文配置审批，在审批页批准 |
+
+被拒的调用不会执行，也不会自动重试。
+
+缺陷记录（2026-10-14）：OpenAI Responses 协议的模型（OpenAI、Azure、xAI 预设）发出的工具调用编号形如 `call_…|fc_…`，宿主原先只接受 `[A-Za-z0-9._:-]`，每次调用在发放租约前就被拒，报错只有一句没有原因的 `Desktop lease refused`。本机用真实 omp RPC、真实 Chromium 和说 Responses 协议的模型替身复现并确认。现在编号只要求 1–512 个可见 ASCII 字符，拒绝时带原因。
+
 tab 上限 4、下载 100 MiB、空闲 15 分钟自动停用，每 2 秒检查；超限关闭整个资源。内存 1–2 GiB 是待验证规划值，未配置 cgroup。回收先作废代次和待批、停整个进程树并确认退出，再删除资料；删除失败会报失败。disable 保留资料；部分停用保留另一单元的开关，急停时一律停用整个资源，状态与审计仍可读。重启验证持久化 PID 的资源标记并清查孤儿，不能确认时拒绝开启。并未实现独立 UID、容器、节点之间的文件/进程/网络隔离。
 
 P21 的本机真实回归在 `node/test/host/desktop.integration.test.ts`：源码模式默认在 macOS 起真 Chrome；编译版回归先 `bun run atlas:build:qm`，再运行：

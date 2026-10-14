@@ -26,6 +26,7 @@
 
 import {
   desktopTools,
+  desktopUnavailable,
   isDesktopTool,
   type DesktopResource,
 } from './desktopPolicy.js'
@@ -497,11 +498,16 @@ export function residentToolVerdict(
   context: ResidentCallContext,
 ): ResidentToolBlock | undefined {
   const { toolName, input } = call
-  if (isDesktopTool(toolName))
-    return context.agentKind === 'main' &&
-      desktopTools(config.desktop).includes(toolName)
+  if (isDesktopTool(toolName)) {
+    const unavailable = desktopUnavailable(
+      toolName,
+      config.desktop,
+      context.agentKind,
+    )
+    return unavailable === undefined
       ? undefined
-      : block('Desktop resource unavailable or caller is not main')
+      : block(`Desktop unavailable: ${unavailable}`)
+  }
   if (config.hostTools.includes(toolName)) {
     // Host tools act through the host, which attributes them to the running
     // task; a subagent has no task of its own to attribute to.

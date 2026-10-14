@@ -550,8 +550,17 @@ interface PoolOptions {
   readonly requestPermission?: (
     sessionId: string,
     call: unknown,
-  ) => Promise<boolean>
+  ) => Promise<ResidentPermission>
 }
+
+/**
+ * The host's answer to one `QIANMO_AUTHZ_V1` request: `true` grants, and so
+ * does `{ ok: true }`; anything else refuses. A refusal object's reason
+ * reaches the extension only through the text-answered (`input`) request.
+ */
+export type ResidentPermission =
+  | boolean
+  | { readonly ok: boolean; readonly reason?: string }
 
 /** Registered (agent, context) sessions acquire isolated omp processes on demand. */
 export class ResidentOmpPool
@@ -1018,28 +1027,56 @@ export class ResidentOmpPool
     child.onFrame(frame => {
       if (this.#children.get(sessionId) !== child) return
       this.#touch(sessionId)
-      if (frame.type === 'extension_ui_request' && frame.method === 'confirm') {
+      // `confirm` answers yes/no. `input` carries the same request and is
+      // answered with `{ ok, reason }`, so a refused desktop lease can say why.
+      const authzInput =
+        frame.type === 'extension_ui_request' &&
+        frame.method === 'input' &&
+        frame.title === 'QIANMO_AUTHZ_V1'
+      if (
+        (frame.type === 'extension_ui_request' && frame.method === 'confirm') ||
+        authzInput
+      ) {
         void (async () => {
-          let confirmed = false
+          let answer: ResidentPermission = false
+          const request = authzInput ? frame.placeholder : frame.message
           try {
             if (
               frame.title === 'QIANMO_AUTHZ_V1' &&
-              typeof frame.message === 'string'
+              typeof request === 'string'
             )
-              confirmed =
-                (await this.#options.requestPermission?.(
-                  sessionId,
-                  JSON.parse(frame.message),
-                )) ?? false
+              answer = (await this.#options.requestPermission?.(
+                sessionId,
+                JSON.parse(request),
+              )) ?? { ok: false, reason: '宿主没有接入授权通道' }
           } catch {
             /* Any missing, stale, malformed or unavailable authorization denies. */
+            answer = { ok: false, reason: '宿主授权检查出错' }
           }
-          if (child.alive)
-            child.send({
-              type: 'extension_ui_response',
-              id: frame.id,
-              confirmed,
-            })
+          if (!child.alive) return
+          const decision =
+            typeof answer === 'object' && answer !== null ? answer : undefined
+          const granted = answer === true || decision?.ok === true
+          child.send(
+            authzInput
+              ? {
+                  type: 'extension_ui_response',
+                  id: frame.id,
+                  value: JSON.stringify(
+                    granted
+                      ? { ok: true }
+                      : {
+                          ok: false,
+                          reason: decision?.reason || '宿主拒绝了这次请求',
+                        },
+                  ),
+                }
+              : {
+                  type: 'extension_ui_response',
+                  id: frame.id,
+                  confirmed: granted,
+                },
+          )
         })()
       }
       if (frame.type === 'agent_start') this.#busy.add(sessionId)

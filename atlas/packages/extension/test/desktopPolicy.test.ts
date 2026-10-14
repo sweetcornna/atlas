@@ -5,8 +5,11 @@ import { expect, test } from 'bun:test'
 import {
   DESKTOP_INTENT_FIELD,
   desktopArgs,
+  desktopLeaseAnswer,
   desktopTools,
   desktopObservation,
+  desktopUnavailable,
+  isDesktopInvocationId,
 } from '../src/desktopPolicy.js'
 import {
   residentActiveTools,
@@ -156,4 +159,67 @@ test('enabled resources activate only structured tools for main; eval remains de
   expect(overlay.tools.approval.eval).toBe('deny')
   expect(desktopObservation('qianmo_browser_read_page')).toBe(true)
   expect(desktopObservation('qianmo_browser_scroll')).toBe(false)
+})
+test('provider tool-call ids are accepted as lease keys; unprintable or unbounded ones are not', () => {
+  for (const id of [
+    // OpenAI Responses (also Azure, xAI): omp joins call_id and item id with `|`.
+    'call_6pS1yWQ8pV3x0VnF1Qy9ZJbM|fc_68ee0f3c9a0c8190a6b8f3e2c1d4e5f60a1b2c3d4e5f6a7b',
+    'toolu_01A09q90qw90lq917835lq9',
+    'functions.qianmo_browser_navigate:0',
+    'ptc_mgq2x1k3_1f',
+    'x'.repeat(512),
+  ])
+    expect(isDesktopInvocationId(id)).toBe(true)
+  for (const id of ['', 'a b', 'a\nb', 'a\0b', 'é', 'x'.repeat(513), 7, null])
+    expect(isDesktopInvocationId(id)).toBe(false)
+})
+test('lease answers: only an explicit grant proceeds, and a refusal keeps its reason', () => {
+  expect(desktopLeaseAnswer('{"ok":true}')).toEqual({ ok: true })
+  expect(
+    desktopLeaseAnswer(JSON.stringify({ ok: false, reason: '急停已开启' })),
+  ).toEqual({ ok: false, reason: '急停已开启' })
+  const silent = desktopLeaseAnswer(undefined)
+  expect(!silent.ok && silent.reason).toContain('没有应答')
+  for (const value of ['', 'true', '{"ok":"true"}', '{"ok":false}', '[1]'])
+    expect(desktopLeaseAnswer(value)).toEqual({
+      ok: false,
+      reason: '节点返回的租约应答无法识别',
+    })
+  const long = desktopLeaseAnswer(
+    JSON.stringify({ ok: false, reason: 'x'.repeat(900) }),
+  )
+  expect(!long.ok && long.reason.length).toBe(500)
+})
+test('an unavailable desktop tool explains itself: caller, unit switched off, platform', () => {
+  const browserOnly = { browser: true, computer: false }
+  expect(
+    desktopUnavailable('qianmo_browser_click', browserOnly, 'main', 'darwin'),
+  ).toBeUndefined()
+  expect(
+    desktopUnavailable('qianmo_browser_click', browserOnly, 'sub', 'darwin'),
+  ).toContain('主智能体')
+  expect(
+    desktopUnavailable('qianmo_browser_click', undefined, 'main', 'darwin'),
+  ).toContain('打开「专属浏览器」')
+  expect(
+    desktopUnavailable('qianmo_computer_click', browserOnly, 'main', 'darwin'),
+  ).toContain('只在 Linux 节点上提供')
+  expect(
+    desktopUnavailable('qianmo_computer_click', browserOnly, 'main', 'linux'),
+  ).toContain('打开「专属电脑」')
+  const config: ResidentExtensionConfig = {
+    v: 1,
+    agent: 'main',
+    workspace: '/tmp/work',
+    edits: 'none',
+    protectedRoots: [],
+    hostTools: [],
+  }
+  expect(
+    residentToolVerdict(
+      { toolName: 'qianmo_browser_tabs', input: {} },
+      config,
+      { agentKind: 'main' },
+    )?.reason,
+  ).toContain('Desktop unavailable: 专属浏览器没有开启')
 })

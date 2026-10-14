@@ -134,7 +134,11 @@ import {
   assembleResidentPrompt,
   assembleResidentPromptAsync,
 } from './residentPrompt.js'
-import { ResidentOmpPool, type ResidentOmpSpawn } from './residentOmp.js'
+import {
+  ResidentOmpPool,
+  type ResidentOmpSpawn,
+  type ResidentPermission,
+} from './residentOmp.js'
 import type { ChildProcess } from 'node:child_process'
 import {
   residentLocalCommand,
@@ -1947,18 +1951,19 @@ export class QianmoResident {
     }
   }
 
-  async #requestPermission(sessionId: string, raw: unknown): Promise<boolean> {
+  async #requestPermission(
+    sessionId: string,
+    raw: unknown,
+  ): Promise<ResidentPermission> {
     const input = this.#turn.activeInput(sessionId)
     const task = input === undefined ? undefined : this.#taskFor(input)
-    if (
-      task === undefined ||
-      task.settled ||
-      input?.agent === undefined ||
-      !raw ||
-      typeof raw !== 'object' ||
-      Array.isArray(raw)
-    )
-      return false
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false
+    if (task === undefined || task.settled || input?.agent === undefined)
+      return {
+        ok: false,
+        reason:
+          '找不到这次调用所属的进行中任务：任务已经结束，或这一回合不是由派发的任务发起的',
+      }
     const call = raw as Record<string, unknown>
     if (
       Object.keys(call).length !== 2 ||
@@ -1979,7 +1984,7 @@ export class QianmoResident {
         Date.now() +
         taskExpiresAt(task.envelope) -
         this.#deadlineClock.nowFor(task.envelope.createdAt)
-      return this.desktop.gate(
+      return this.desktop.decide(
         input.agent,
         sessionId,
         task.envelope.taskId,

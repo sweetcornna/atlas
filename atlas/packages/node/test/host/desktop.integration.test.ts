@@ -9,24 +9,38 @@ import { expect, test } from 'bun:test'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   generateNodeKeyPair,
   signAuthzDecision,
   type AuthzRequest,
 } from '@qianmo/capability'
 import { ResidentEstop, OmpResidentTurnPort } from '@qianmo/resident'
-import { NodeDesktop } from '../../src/host/desktop.js'
+import { NodeDesktop, type DesktopLauncher } from '../../src/host/desktop.js'
 import { ResidentAuthorization } from '../../src/host/residentAuthorization.js'
 import { ResidentOmpPool } from '../../src/host/residentOmp.js'
-import { ResidentOmpHarness } from '../../../../tests/integration/fixtures/resident-omp-harness.js'
+import {
+  ResidentOmpHarness,
+  responsesCallIds,
+  type HarnessApi,
+  type ScriptedStep,
+} from '../../../../tests/integration/fixtures/resident-omp-harness.js'
+import type { DesktopDecision } from '@qianmo/extension/desktopPolicy'
 
 const compiledBinary = process.env.QIANMO_TEST_COMPILED_QM
 
-/** Real Chrome + real omp RPC, deterministic local provider and signed approver. */
-for (const bundled of [false, true]) {
+/**
+ * Real Chrome + real omp RPC, deterministic local provider and signed
+ * approver. The provider speaks both wires: OpenAI Responses tool-call ids
+ * (`call_…|fc_…`) were refused at the lease before any of this could run.
+ */
+for (const [bundled, api] of [
+  [false, 'openai-completions'],
+  [false, 'openai-responses'],
+  [true, 'openai-completions'],
+] as const satisfies readonly (readonly [boolean, HarnessApi])[]) {
   test.skipIf(process.platform !== 'darwin' || (bundled && !compiledBinary))(
-    `real private Chrome (${bundled ? 'embedded extension' : 'source extension'}): screenshot/read auto-allow, click denial has zero side effects, once approval executes, recycle reaps`,
+    `real private Chrome (${bundled ? 'embedded extension' : 'source extension'}, ${api}): screenshot/read auto-allow, click denial has zero side effects, once approval executes, recycle reaps`,
     async () => {
       const old = process.env.QIANMO_CONFIG_DIR
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p21-chrome-'))
@@ -48,7 +62,7 @@ for (const bundled of [false, true]) {
           )
         },
       })
-      const harness = new ResidentOmpHarness()
+      const harness = new ResidentOmpHarness({ api })
       const nodeKeys = generateNodeKeyPair(),
         keys = generateNodeKeyPair()
       const authz = new ResidentAuthorization({
@@ -147,7 +161,7 @@ for (const bundled of [false, true]) {
           requestPermission: async (sessionId, raw) => {
             const active = turn?.activeInput(sessionId)
             if (!active) return false
-            return node.gate(
+            return node.decide(
               'reviewer',
               sessionId,
               active.messageId,
@@ -310,3 +324,225 @@ for (const bundled of [false, true]) {
     120000,
   )
 }
+
+interface LeaseAnswer {
+  readonly phase: unknown
+  readonly invocationId: unknown
+  readonly answer: DesktopDecision
+}
+/**
+ * The lease path a real OpenAI Responses model takes, on any platform: real
+ * omp RPC and the real extension, a fake Chrome whose discovery answers but
+ * has no websocket, so every granted call fails at attach afterwards. That
+ * is enough: these tests are about who gets a lease, and what a refusal says.
+ */
+async function leaseRun(
+  steps: readonly ScriptedStep[],
+  hooks: {
+    readonly before?: (node: NodeDesktop) => Promise<void>
+    readonly after?: (node: NodeDesktop, answer: LeaseAnswer) => Promise<void>
+  } = {},
+) {
+  const old = process.env.QIANMO_CONFIG_DIR
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p21-lease-'))
+  process.env.QIANMO_CONFIG_DIR = path.join(root, 'config')
+  const workspace = path.join(root, 'workspace')
+  fs.mkdirSync(workspace)
+  const cdp = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch: req =>
+      new URL(req.url).pathname === '/json/list'
+        ? Response.json([{ type: 'page' }])
+        : Response.json({ Browser: 'fixture' }),
+  })
+  const launcher: DesktopLauncher = {
+    available: () => true,
+    run: async () => 0,
+    async start(_program, argv) {
+      const profile = argv
+        .find(a => a.startsWith('--user-data-dir='))
+        ?.slice('--user-data-dir='.length)
+      if (profile)
+        fs.writeFileSync(
+          path.join(profile, 'DevToolsActivePort'),
+          `${cdp.port}\n/ws\n`,
+        )
+      let running = true
+      return {
+        pid: 2_000_000_000,
+        alive: () => running,
+        async stop() {
+          running = false
+        },
+      }
+    },
+    async reap() {},
+  }
+  const harness = new ResidentOmpHarness({ api: 'openai-responses' })
+  const node = new NodeDesktop({
+    node: 'worker',
+    agents: ['reviewer'],
+    estop: () => false,
+    launcher,
+  })
+  let turn: OmpResidentTurnPort | undefined
+  const answers: LeaseAnswer[] = []
+  try {
+    const enabled = await node.control(
+      'desktop.enable',
+      { agent: 'reviewer', browser: true, operationId: 'on' },
+      { peer: 'hub', actor: 'ops', taskId: 'on' },
+    )
+    expect(enabled.ok).toBe(true)
+    await hooks.before?.(node)
+    harness.script(steps)
+    const pool = new ResidentOmpPool({
+      desktop: node,
+      agents: [{ agent: 'reviewer', cwd: workspace }],
+      memoryRoot: path.join(root, 'memory'),
+      announce: async () => ({ status: 'queued' }),
+      requestPermission: async (sessionId, raw) => {
+        const active = turn?.activeInput(sessionId)
+        if (!active) return false
+        const answer = await node.decide(
+          'reviewer',
+          sessionId,
+          active.messageId,
+          'ctx',
+          raw,
+          () => turn?.activeInput(sessionId) === active,
+          async (_call, before) => before(undefined, 'fixture', () => true),
+        )
+        const input = (raw as { input: Record<string, unknown> }).input
+        const seen = {
+          phase: input.phase,
+          invocationId: input.invocationId,
+          answer,
+        }
+        answers.push(seen)
+        await hooks.after?.(node, seen)
+        return answer
+      },
+    })
+    harness.pools.push(pool)
+    const sessionId = await pool.newSession({
+      agent: 'reviewer',
+      cwd: workspace,
+    })
+    await pool.channelFor(sessionId)
+    turn = new OmpResidentTurnPort(pool, { inactivity: { timeoutMs: 60000 } })
+    const result = await turn.execute(
+      { sessionId, messageId: 'lease-task', prompt: '打开网页' },
+      async () => {},
+    )
+    const actions = await node.control(
+      'desktop.actions',
+      {},
+      { peer: 'hub', actor: 'ops', taskId: 'read' },
+    )
+    return {
+      outcome: result.outcome,
+      reserves: answers.filter(a => a.phase === 'reserve'),
+      toolResults: [...harness.toolResults],
+      actions: actions.ok
+        ? (actions.value as { invocationId: string; outcome: string }[])
+            .map(a => [a.invocationId, a.outcome])
+            .sort()
+        : [],
+    }
+  } finally {
+    await harness.stop()
+    await node.close()
+    await cdp.stop(true)
+    process.env.QIANMO_CONFIG_DIR = old
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+}
+const responsesId = (step: number, call = 0) => {
+  const { callId, itemId } = responsesCallIds(step, call)
+  return `${callId}|${itemId}`
+}
+
+test('real omp RPC: a Responses call id is leased, and a refused lease reaches the model with its reason', async () => {
+  // Another session of the same agent holds the one lease until this turn's
+  // first call has been turned away.
+  let held: ((phase: string) => Promise<DesktopDecision>) | undefined
+  const run = await leaseRun(
+    [
+      { name: 'qianmo_browser_tabs', input: {} },
+      { name: 'qianmo_browser_tabs', input: {} },
+    ],
+    {
+      async before(node) {
+        const r = node.resource('reviewer')!
+        held = phase =>
+          node.decide(
+            'reviewer',
+            'elsewhere',
+            'other-task',
+            'ctx',
+            {
+              toolName: 'qianmo_browser_read_page',
+              input: {
+                phase,
+                invocationId: 'held-elsewhere',
+                resourceId: r.resourceId,
+                resourceEpoch: r.resourceEpoch,
+                args: { tab: r.tab },
+                canonicalArgsDigest: createHash('sha256')
+                  .update(JSON.stringify({ tab: r.tab }))
+                  .digest('hex'),
+              },
+            },
+            () => true,
+            async () => true,
+          )
+        expect(await held('reserve')).toEqual({ ok: true })
+      },
+      async after(_node, seen) {
+        if (seen.phase === 'reserve' && !seen.answer.ok) await held?.('failed')
+      },
+    },
+  )
+  expect(run.outcome).toBe('completed')
+  expect(run.reserves.map(a => a.invocationId)).toEqual([
+    responsesId(1),
+    responsesId(2),
+  ])
+  const [refused, granted] = run.reserves
+  expect(refused!.answer.ok).toBe(false)
+  expect(!refused!.answer.ok && refused!.answer.reason).toContain('还没结束')
+  expect(granted!.answer).toEqual({ ok: true })
+  expect(run.toolResults[0]).toContain('Desktop lease refused: ')
+  expect(run.toolResults[0]).toContain('read_page')
+  expect(run.toolResults[1]).not.toContain('Desktop lease refused')
+  expect(run.actions).toEqual([
+    [responsesId(2), 'failed'],
+    ['held-elsewhere', 'failed'],
+  ])
+}, 60000)
+
+test('real omp RPC: desktop calls a model sends in parallel take turns at the lease instead of refusing each other', async () => {
+  const run = await leaseRun([
+    [
+      { name: 'qianmo_browser_tabs', input: {} },
+      { name: 'qianmo_browser_tabs', input: {} },
+    ],
+  ])
+  expect(run.outcome).toBe('completed')
+  expect(run.reserves.map(a => a.invocationId)).toEqual([
+    responsesId(1, 0),
+    responsesId(1, 1),
+  ])
+  expect(run.reserves.map(a => a.answer)).toEqual([{ ok: true }, { ok: true }])
+  expect(run.toolResults).toHaveLength(2)
+  for (const text of run.toolResults)
+    expect(text).not.toContain('Desktop lease refused')
+  expect(run.actions).toEqual(
+    [
+      [responsesId(1, 0), 'failed'],
+      [responsesId(1, 1), 'failed'],
+    ].sort(),
+  )
+}, 60000)
