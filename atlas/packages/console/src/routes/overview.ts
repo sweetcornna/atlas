@@ -37,7 +37,7 @@ const OVERVIEW_CSS = `
 }
 .node-line:last-child { border-bottom: 0; }
 .node-link { font-weight: 600; color: var(--color-text); text-decoration: none; }
-.node-link:hover { color: var(--color-accent-700); }
+.node-link:hover { color: var(--color-text); text-decoration: underline; }
 .node-line .tag { margin-left: auto; }
 `
 

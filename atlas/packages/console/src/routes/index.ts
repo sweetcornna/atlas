@@ -19,6 +19,7 @@
 
 import type { ConsoleAgent, ConsoleResult } from '../deps.js'
 import { nodeCount } from '../view/agents.js'
+import type { AvatarSpec } from '../avatar.js'
 import type { Tone } from '../view/bits.js'
 import { escapeHtml } from '../view/escape.js'
 import {
@@ -29,6 +30,7 @@ import {
 } from '../view/shell.js'
 import { accessRoute } from './access.js'
 import { alertsRoute } from './alerts.js'
+import { facesFor } from './avatars.js'
 import { approvalsRoute } from './approvals.js'
 import { auditRoute } from './audit.js'
 import { chatRoute } from './chat.js'
@@ -228,6 +230,12 @@ function crumbsOf(module: RouteModule, render: PageRender): readonly Crumb[] {
   ]
 }
 
+/** The reader's own figure, the one the front draws beside 我. */
+async function selfFace(ctx: RouteContext): Promise<AvatarSpec> {
+  const faces = await facesFor(ctx, [])
+  return faces.spec(faces.self)
+}
+
 /** One page, drawn in the shell. */
 export async function areaDocument(
   ctx: RouteContext,
@@ -239,6 +247,7 @@ export async function areaDocument(
     label: ctx.deps.label ?? DEFAULT_LABEL,
     role: ctx.access.credential.role,
     ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
+    self: await selfFace(ctx),
     nav: navFor(ctx, listed),
     active: render.active ?? module.area.id,
     crumbs: crumbsOf(module, render),
@@ -266,6 +275,7 @@ export async function errorDocument(
     label: ctx.deps.label ?? DEFAULT_LABEL,
     role: ctx.access.credential.role,
     ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
+    self: await selfFace(ctx),
     nav: navFor(ctx, listed),
     crumbs: [{ label: title }],
     title,

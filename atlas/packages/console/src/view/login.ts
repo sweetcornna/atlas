@@ -23,10 +23,9 @@
  *
  * ## The shape
  *
- * A panel floating on the cream ground, with two soft blobs behind it. The
- * blobs are inline `<svg>` circles filled from the palette's own tokens, which
- * is the only way this page gets a decorative element at all: there is no build
- * step, no image route, and the CSP allows no host to supply one.
+ * One panel on the plain ground, with the front's brand row — the mark and
+ * 阡陌 — over the field. Nothing decorative: the conversation front and the
+ * management side draw none either, and the door should look like the house.
  *
  * The two-role legend under the button is new and is the one thing on this page
  * that is not chrome. Both tokens land on the same field, the console has no
@@ -74,17 +73,6 @@ export interface LoginPageModel {
 const FIELD_LABEL = '令牌'
 const SUBMIT_LABEL = '进入'
 
-/** The two decorative blobs. Circles from the palette, no image, no gradient. */
-const DECOR =
-  `<svg class="deco-a" width="420" height="420" viewBox="0 0 200 200" ` +
-  `fill="none" aria-hidden="true">` +
-  `<circle cx="80" cy="70" r="76" fill="var(--color-accent-200)"/>` +
-  `<circle cx="140" cy="128" r="40" fill="var(--color-accent-2-200)"/></svg>` +
-  `<svg class="deco-b" width="460" height="460" viewBox="0 0 200 200" ` +
-  `fill="none" aria-hidden="true">` +
-  `<circle cx="120" cy="120" r="80" fill="var(--color-accent-2-200)"/>` +
-  `<circle cx="58" cy="62" r="34" fill="var(--color-accent-300)"/></svg>`
-
 /** The legend under the button: the two tokens, or credential and tokens. */
 function legend(accounts: boolean): string {
   if (!accounts) {
@@ -92,7 +80,7 @@ function legend(accounts: boolean): string {
       `<div class="tokline">` +
       `<div class="tokrow"><span class="tag tag-neutral mono">view</span>` +
       `只读访问 · 看名册与消息链 · 不能唤醒与注销</div>` +
-      `<div class="tokrow"><span class="tag tag-accent mono">admin</span>` +
+      `<div class="tokrow"><span class="tag tag-neutral mono">admin</span>` +
       `可操作 · 注册 唤醒 注销 全部开放</div>` +
       `</div>` +
       `<p class="foot">令牌由环境负责人发放 · 存在浏览器本地 · 退出即清除</p>`
@@ -100,7 +88,7 @@ function legend(accounts: boolean): string {
   }
   return (
     `<div class="tokline">` +
-    `<div class="tokrow"><span class="tag tag-accent mono">个人</span>` +
+    `<div class="tokrow"><span class="tag tag-neutral mono">个人</span>` +
     `个人凭据 · 按账号角色开放 · 浏览器只保留会话</div>` +
     `<div class="tokrow"><span class="tag tag-neutral mono">共享</span>` +
     `只读令牌与管理令牌 · 迁移期保留</div>` +
@@ -124,13 +112,9 @@ export function renderLoginPage(model: LoginPageModel): string {
     documentHead(title) +
     // A main landmark and an h1, like every other document (F1).
     `<body>\n<main class="stage" aria-labelledby="page-title">\n` +
-    DECOR +
     `<form class="card elev-lg panel" method="post" action="/login">` +
     `<input type="hidden" name="redirect" value="${attr(model.redirect)}">` +
-    `<div class="brand">${qianmoMark(40)}<div class="brand-text">` +
-    `<div class="brand-en">AgentNest</div>` +
-    `<div class="brand-cn">阡陌</div>` +
-    `</div></div>` +
+    `<div class="brand">${qianmoMark(28)}<div class="brand-cn">阡陌</div></div>` +
     `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
     `<h1 class="page-title" id="page-title">登录</h1>` +
     error +
