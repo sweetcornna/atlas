@@ -65,6 +65,7 @@ export type {
   ReplicateJob,
   ReplicateJobEvent,
   ReplicateJobState,
+  ReplicateModelsClaim,
   ReplicatePort,
   ReplicateStartInput,
   ReplicateTargetInput,

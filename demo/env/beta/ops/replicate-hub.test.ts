@@ -2,17 +2,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * `replicate-hub.sh`：自我复制在中枢上的三步（prepare / add / discard）。临时 HOME、
- * 临时内测根，真的 ssh-keygen 与真的 awk；`restart` 要 systemd，这里不跑。
+ * `replicate-hub.sh`：自我复制在中枢上的几步（prepare / add / discard / restart）。临时
+ * HOME、临时内测根，真的 ssh-keygen 与真的 awk。
  *
  * 钉住：prepare 先查后写、生成的两样都是 0600；add 写进 peers.conf 的两行与 console.env
  * 的那一条 `--chat-url` 逐字对；discard 之后两个文件回到 add 之前、PSK 与 key 都不在、
  * 记录也不在，再 discard 一次是 NOTHING。
+ *
+ * `restart` 要 systemd：把真的 replicate-hub.sh 与 common.sh 拷进一棵临时树，旁边放
+ * 只管 pid 文件的 beta-up.sh / beta-down.sh 替身，PATH 上放一个按 oneshot 单元行事的
+ * 假 systemctl（restart = ExecStop 若 active，再 ExecStart；ExecStart 见进程在跑就不
+ * 重起，与真的 beta-up.sh 一样）。钉住：手工起的中枢腿（单元不是 active）也真的重起、
+ * 由单元接管；单元管着的照旧一条 restart；重起没生效（pid 没换）就失败、不报 RESTARTED。
  */
 
 import { afterAll, describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
 import {
+  chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -190,5 +198,152 @@ describe('replicate-hub.sh', () => {
     )
     expect(added.code).toBe(1)
     expect(added.stderr).toContain('38631')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// restart
+
+/** Only the pid files: what decides whether the real beta-up.sh restarts. */
+const STUB_UP = `#!/usr/bin/env bash
+printf 'beta-up %s\\n' "$*" >>"$FAKE_LOG"
+proc=''
+case " $* " in
+  *' --only console '*) proc=console ;;
+  *' --only registry '*) proc=registry ;;
+esac
+[ -n "$proc" ] || exit 0
+file="$QIANMO_BETA_ROOT/run/$proc.pid"
+if [ -f "$file" ]; then printf '%s 已在运行，不重起\\n' "$proc"; exit 0; fi
+mkdir -p "$QIANMO_BETA_ROOT/run"
+n=$(cat "$FAKE_SEQ" 2>/dev/null || echo 5000); n=$((n + 1)); printf '%s' "$n" >"$FAKE_SEQ"
+printf '%s\\n' "$n" >"$file"
+`
+
+const STUB_DOWN = `#!/usr/bin/env bash
+printf 'beta-down %s\\n' "$*" >>"$FAKE_LOG"
+[ "\${FAKE_DOWN:-}" = noop ] || rm -f "$QIANMO_BETA_ROOT/run/$1.pid"
+`
+
+/** A oneshot unit: restart runs ExecStop when active, then ExecStart. */
+const FAKE_SYSTEMCTL = `#!/usr/bin/env bash
+[ "$1" = --user ] && shift
+cmd="$1"; shift
+state() { cat "$FAKE_UNITS/$1" 2>/dev/null || printf 'inactive'; }
+case "$cmd" in
+  show-environment|cat|daemon-reload) exit 0 ;;
+  is-active) s="$(state "$1")"; printf '%s\\n' "$s"; [ "$s" = active ] ;;
+  restart)
+    printf 'systemctl restart %s\\n' "$*" >>"$FAKE_LOG"
+    for unit in "$@"; do
+      proc=console; [ "$unit" = qianmo-registry.service ] && proc=registry
+      if [ "$(state "$unit")" = active ]; then "$FAKE_BETA/beta-down.sh" "$proc"; fi
+      "$FAKE_BETA/beta-up.sh" --role host --only "$proc"
+      printf 'active' >"$FAKE_UNITS/$unit"
+    done ;;
+  *) exit 0 ;;
+esac
+`
+
+function restartFixture(units: 'active' | 'inactive') {
+  const { home, root } = fixture()
+  const beta = join(home, 'tree', 'demo', 'env', 'beta')
+  mkdirSync(join(beta, 'ops'), { recursive: true })
+  copyFileSync(SCRIPT, join(beta, 'ops', 'replicate-hub.sh'))
+  copyFileSync(
+    resolve(import.meta.dir, '..', 'common.sh'),
+    join(beta, 'common.sh'),
+  )
+  const bin = join(home, 'bin')
+  mkdirSync(bin)
+  for (const [path, text] of [
+    [join(beta, 'beta-up.sh'), STUB_UP],
+    [join(beta, 'beta-down.sh'), STUB_DOWN],
+    [join(bin, 'systemctl'), FAKE_SYSTEMCTL],
+  ] as const) {
+    writeFileSync(path, text)
+    chmodSync(path, 0o755)
+  }
+  const unitsDir = join(home, 'units')
+  mkdirSync(unitsDir)
+  for (const unit of ['qianmo-console.service', 'qianmo-registry.service'])
+    writeFileSync(join(unitsDir, unit), units)
+  // What is running now: started by hand, or by the units.
+  mkdirSync(join(root, 'run'))
+  writeFileSync(join(root, 'run', 'console.pid'), '4242\n')
+  writeFileSync(join(root, 'run', 'registry.pid'), '4141\n')
+  const log = join(home, 'calls.log')
+  const run = (extra: Record<string, string> = {}) => {
+    const ran = spawnSync(
+      'bash',
+      [join(beta, 'ops', 'replicate-hub.sh'), 'restart'],
+      {
+        env: {
+          HOME: home,
+          PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`,
+          LANG: 'C',
+          QIANMO_BETA_ROOT: root,
+          FAKE_LOG: log,
+          FAKE_SEQ: join(home, 'seq'),
+          FAKE_UNITS: unitsDir,
+          FAKE_BETA: beta,
+          ...extra,
+        },
+        encoding: 'utf8',
+      },
+    )
+    return { code: ran.status ?? 1, stdout: ran.stdout, stderr: ran.stderr }
+  }
+  const calls = () =>
+    existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : []
+  const pid = () =>
+    readFileSync(join(root, 'run', 'console.pid'), 'utf8').trim()
+  const unit = (name: string) => readFileSync(join(unitsDir, name), 'utf8')
+  return { run, calls, pid, unit }
+}
+
+describe('replicate-hub.sh restart', () => {
+  test('a hub leg started by hand: the old processes go, the units start new ones', () => {
+    const h = restartFixture('inactive')
+    const ran = h.run()
+    expect(ran.stderr).toContain('qianmo-console.service 不是 active')
+    expect(ran.code).toBe(0)
+    expect(ran.stdout).toBe('RESTARTED\n')
+    expect(h.calls()).toEqual([
+      'beta-up --role host --only links',
+      'beta-down console',
+      'beta-down registry',
+      'systemctl restart qianmo-registry.service qianmo-console.service',
+      'beta-up --role host --only registry',
+      'beta-up --role host --only console',
+    ])
+    expect(h.pid()).not.toBe('4242')
+    expect(h.unit('qianmo-console.service')).toBe('active')
+  })
+
+  test('units that own the processes: one restart, nothing stopped beside it', () => {
+    const h = restartFixture('active')
+    const ran = h.run()
+    expect(ran.code).toBe(0)
+    expect(ran.stdout).toBe('RESTARTED\n')
+    expect(h.calls()).toEqual([
+      'beta-up --role host --only links',
+      'systemctl restart qianmo-registry.service qianmo-console.service',
+      'beta-down registry',
+      'beta-up --role host --only registry',
+      'beta-down console',
+      'beta-up --role host --only console',
+    ])
+    expect(h.pid()).not.toBe('4242')
+  })
+
+  test('a restart that left the old console running fails, and says so', () => {
+    // The 2026-10-14 shape: the old process survives, ExecStart keeps it.
+    const h = restartFixture('inactive')
+    const ran = h.run({ FAKE_DOWN: 'noop' })
+    expect(ran.code).toBe(1)
+    expect(ran.stdout).not.toContain('RESTARTED')
+    expect(ran.stderr).toContain('控制台没有重起（run/console.pid 仍是 4242）')
+    expect(h.pid()).toBe('4242')
   })
 })

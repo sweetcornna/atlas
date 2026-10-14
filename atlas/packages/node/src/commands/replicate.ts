@@ -16,6 +16,14 @@
  * `port-forwarding` + `permitopen`，强制命令只读审计链）与模型下发 key（强制命令
  * `model-apply.sh`）。
  *
+ * ## 模型档案以发起人的名义下发
+ *
+ * 作业不拿控制台的管理令牌：模型服务的写操作只认运维个人账号，共用令牌与
+ * break-glass 只能查看。请求里的 `models` 是控制台在「部署」那一刻、发起人是运维
+ * 个人账号时给的单次授权；最后一步把它交回 `POST /v0/replicate/jobs/<作业>/models`，
+ * 由控制台以发起人的名义给这一个节点下发（`consoleReplicate.ts`、`routes/servers.ts`）。
+ * 没有这张授权时只提示去模型页下发。
+ *
  * ## 主机身份
  *
  * `inspect` 用 ssh-keyscan 读出主机公钥并给出指纹；控制台把指纹给操作者看，操作者点
@@ -98,6 +106,11 @@ export interface RunRequest {
   readonly tree: string
   /** The console's own address, for the last step's model-profile apply. */
   readonly consoleUrl: string
+  /**
+   * The one-time grant the console gave this job when the person who started
+   * it may write model services; absent otherwise (the module note).
+   */
+  readonly models?: string
 }
 
 export interface HostKeyView {
@@ -136,6 +149,7 @@ const HOST = /^[A-Za-z0-9][A-Za-z0-9.:_-]{0,252}$/
 const SERVER_ID = /^[A-Za-z0-9._:-]{1,64}$/
 const JOB_ID = /^[a-z0-9-]{6,64}$/
 const FINGERPRINT = /^SHA256:[A-Za-z0-9+/]{43}$/
+const MODELS_GRANT = /^[A-Za-z0-9_-]{43}$/
 const SAFE_PATH = /^\/[A-Za-z0-9._/-]+$/
 /** A private key or a password is short; anything this long is not one. */
 const MAX_SECRET = 16 * 1024
@@ -226,7 +240,7 @@ export function parseRunRequest(value: unknown): Parsed<RunRequest> {
   if (!target.ok) return target
   const auth = parseAuth(body.auth)
   if (!auth.ok) return auth
-  const { job, hostKey, node, agent, server, consoleUrl } = body
+  const { job, hostKey, node, agent, server, consoleUrl, models } = body
   if (typeof job !== 'string' || !JOB_ID.test(job))
     return refuse('bad-request', '作业号不合法')
   if (typeof hostKey !== 'string' || !FINGERPRINT.test(hostKey))
@@ -245,6 +259,11 @@ export function parseRunRequest(value: unknown): Parsed<RunRequest> {
     !/^http:\/\/127\.0\.0\.1:[0-9]{1,5}$/.test(consoleUrl)
   )
     return refuse('bad-request', '控制台地址应是本机回环')
+  if (
+    models !== undefined &&
+    (typeof models !== 'string' || !MODELS_GRANT.test(models))
+  )
+    return refuse('bad-request', '下发授权不合法')
   const root = parsePath(body.root, '内测根路径')
   if (!root.ok) return root
   const tree = parsePath(body.tree, '部署树路径')
@@ -264,6 +283,7 @@ export function parseRunRequest(value: unknown): Parsed<RunRequest> {
       root: root.value,
       tree: tree.value,
       consoleUrl,
+      ...(typeof models === 'string' ? { models } : {}),
     },
   }
 }
@@ -909,6 +929,11 @@ export function jobLogDir(root: string): string {
   return join(root, 'state', 'replicate')
 }
 
+/** Where the console keeps the digest of a job's model grant (`consoleReplicate.ts`). */
+export function modelsGrantFile(root: string, job: string): string {
+  return join(jobLogDir(root), `${job}.models`)
+}
+
 type Undo = { readonly what: string; run(): Promise<void> }
 
 class Job {
@@ -1396,28 +1421,7 @@ export async function runJob(request: RunRequest): Promise<number> {
       // The node is up and wired either way; the profile can be applied later.
       if (!consoleUp)
         job.emit('ready', 'info', '控制台还没回来 · 模型档案请稍后在模型页下发')
-      const token = consoleUp ? readAdminToken(request.root) : null
-      if (token !== null) {
-        const applied = await fetch(
-          `${request.consoleUrl}/v0/providers/apply`,
-          {
-            method: 'POST',
-            headers: {
-              authorization: `Bearer ${token}`,
-              'content-type': 'application/json',
-              'x-qianmo-console': '1',
-            },
-            body: JSON.stringify({ nodes: [request.node] }),
-          },
-        ).catch(() => null)
-        job.emit(
-          'ready',
-          'info',
-          applied?.ok === true
-            ? '模型档案已下发'
-            : '模型档案没有下发成功 · 可在模型页再下发一次',
-        )
-      }
+      else job.emit('ready', 'info', await shipModels(request))
     })
     const address = `qianmo://${request.node}/${request.agent}`
     job.emit('done', 'ok', undefined, {
@@ -1438,8 +1442,61 @@ export async function runJob(request: RunRequest): Promise<number> {
     await job.rollback()
     return 1
   } finally {
+    // An unspent grant dies with the job that held it.
+    rmSync(modelsGrantFile(request.root, request.job), { force: true })
     await session.close()
   }
+}
+
+const MODELS_RETRY = '可在模型页再下发一次'
+
+/**
+ * The last step's apply: hand the grant back to the console, which ships the
+ * node's profile as the operator who started the job. The line it returns is
+ * what the card shows under 等待就绪.
+ */
+export async function shipModels(
+  request: Pick<RunRequest, 'consoleUrl' | 'job' | 'node' | 'models'>,
+  fetcher: typeof fetch = fetch,
+): Promise<string> {
+  if (request.models === undefined)
+    return '这次部署不是运维个人账号发起的 · 模型档案请运维在模型页下发'
+  let response: Response
+  try {
+    response = await fetcher(
+      `${request.consoleUrl}/v0/replicate/jobs/${encodeURIComponent(request.job)}/models`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ grant: request.models }),
+        signal: AbortSignal.timeout(120_000),
+      },
+    )
+  } catch {
+    return `模型档案没有下发成功 · 控制台没有回应 · ${MODELS_RETRY}`
+  }
+  let body: unknown = null
+  try {
+    body = await response.json()
+  } catch {}
+  const answer = object(body)
+  if (!response.ok) {
+    const message = object(answer?.error)?.message
+    return `模型档案没有下发成功 · ${
+      typeof message === 'string' && message !== ''
+        ? message.slice(0, 200)
+        : `控制台回了 ${response.status}`
+    } · ${MODELS_RETRY}`
+  }
+  const results = Array.isArray(answer?.results) ? answer.results : []
+  const mine = results.map(object).find(one => one?.node === request.node)
+  if (mine?.outcome === 'ok') return '模型档案已下发'
+  const message = mine?.message
+  return `模型档案没有下发成功 · ${
+    typeof message === 'string' && message !== ''
+      ? message.slice(0, 200)
+      : '节点没有回报结果'
+  } · ${MODELS_RETRY}`
 }
 
 /** The node's inbound port: beta-up's default, which the replicated node keeps. */
@@ -1457,18 +1514,6 @@ function stamp(): string {
     .toISOString()
     .replace(/[-:]/g, '')
     .replace(/\.\d+Z$/, 'Z')
-}
-
-function readAdminToken(root: string): string | null {
-  try {
-    const token = readFileSync(
-      join(root, 'secrets', 'console-admin-token'),
-      'utf8',
-    ).trim()
-    return token === '' ? null : token
-  } catch {
-    return null
-  }
 }
 
 /** A fresh job id: time-sortable, unguessable enough for a file name. */

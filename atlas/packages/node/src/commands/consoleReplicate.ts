@@ -10,12 +10,21 @@
  *   请求写成一份 0600 文件交给后台作业（`systemd-run --user`，没有就脱离本进程起），
  *   随即返回。作业读完那份文件就删掉它。
  * - `jobs` / `job`：读 `<内测根>/state/replicate/<作业>.ndjson`，按事件折出状态。
+ * - `claimModels`：作业最后一步交回的下发授权（见下）。
  *
  * 作业要脱离控制台跑：它的倒数第二步是重启控制台本身。
+ *
+ * ## 下发授权
+ *
+ * 发起人能写模型服务时（路由给了 `modelsBy`），`start` 生成 32 字节随机数交给作业
+ * （随请求文件走，与 SSH 凭据同一条路），盘上只在 `<作业>.models` 里留它的 SHA-256、
+ * 节点名、发起人与过期时间（0600）。控制台重启之后靠这份文件认它。`claimModels`
+ * 核对摘要、作业号、过期时间，以及作业此刻还在跑、正停在「等待就绪」，然后删掉
+ * 文件：每张授权只换一次下发。作业失败退出时自己删掉它。
  */
 
 import { spawn } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import {
   closeSync,
   existsSync,
@@ -24,6 +33,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  unlinkSync,
   writeSync,
 } from 'node:fs'
 import { isIP } from 'node:net'
@@ -33,6 +43,7 @@ import type {
   ReplicateInspection,
   ReplicateJob,
   ReplicateJobEvent,
+  ReplicateModelsClaim,
   ReplicatePort,
   ReplicateStartInput,
   ReplicateTargetInput,
@@ -41,6 +52,7 @@ import {
   hubBinaryName,
   type InspectReport,
   jobLogDir,
+  modelsGrantFile,
   newJobId,
   parseInspectRequest,
   parseRunRequest,
@@ -69,6 +81,10 @@ const MAX_TICKETS = 8
 /** A running job that has said nothing for this long has died. */
 const STALE_MS = 40 * 60_000
 const JOB_ID = /^[a-z0-9-]{6,64}$/
+/** A model grant outlives any job that could still use it (`STALE_MS` of silence ends one). */
+const GRANT_TTL_MS = 2 * 60 * 60_000
+const PERSONAL_SUBJECT = /^u:[0-9a-f]{16}$/
+const GRANT_REFUSED = '复制的下发授权不对 · 已用过或已过期'
 
 interface Ticket {
   readonly target: ReplicateTargetInput
@@ -353,6 +369,39 @@ export function foldJob(
   }
 }
 
+/** What `<job>.models` holds: never the grant itself. */
+interface StoredGrant {
+  readonly node: string
+  readonly subject: string
+  readonly digest: string
+  readonly expiresAt: number
+}
+
+function digestOf(grant: string): string {
+  return createHash('sha256').update(grant, 'utf8').digest('hex')
+}
+
+function readGrant(file: string): StoredGrant | null {
+  try {
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<
+      string,
+      unknown
+    >
+    const { node, subject, digest, expiresAt } = raw
+    if (
+      typeof node !== 'string' ||
+      typeof subject !== 'string' ||
+      typeof digest !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(digest) ||
+      typeof expiresAt !== 'number'
+    )
+      return null
+    return { node, subject, digest, expiresAt }
+  } catch {
+    return null
+  }
+}
+
 function writeExclusive(file: string, text: string): void {
   const fd = openSync(file, 'wx', 0o600)
   try {
@@ -520,6 +569,24 @@ export function openConsoleReplicate(
       // The ticket is spent whatever happens next.
       tickets.delete(input.ticket)
       mkdirSync(logDir, { recursive: true, mode: 0o700 })
+      // The person who may ship this node's profile: the route says who, the
+      // grant carries it across the console restart the job is about to do.
+      const grant =
+        input.modelsBy !== undefined && PERSONAL_SUBJECT.test(input.modelsBy)
+          ? randomBytes(32).toString('base64url')
+          : null
+      if (grant !== null && input.modelsBy !== undefined) {
+        writeExclusive(
+          modelsGrantFile(config.root, job),
+          JSON.stringify({
+            v: 1,
+            node: input.node,
+            subject: input.modelsBy,
+            digest: digestOf(grant),
+            expiresAt: now() + GRANT_TTL_MS,
+          }),
+        )
+      }
       const queued = {
         at: new Date(now()).toISOString(),
         job,
@@ -537,7 +604,12 @@ export function openConsoleReplicate(
       const spool =
         runtime !== undefined && existsSync(runtime) ? runtime : logDir
       const file = join(spool, `qianmo-replicate-${job}.json`)
-      writeExclusive(file, JSON.stringify(request))
+      writeExclusive(
+        file,
+        JSON.stringify(
+          grant === null ? request : { ...request, models: grant },
+        ),
+      )
       await launcher.launch(job, file)
       const view = readJob(job)
       return view === null
@@ -555,6 +627,45 @@ export function openConsoleReplicate(
       return view === null
         ? failure('not_found', '没有这个作业')
         : { ok: true, value: view }
+    },
+
+    async claimModels(
+      id: string,
+      grant: string,
+    ): Promise<ConsoleResult<ReplicateModelsClaim>> {
+      if (!JOB_ID.test(id)) return failure('rejected', GRANT_REFUSED)
+      const file = modelsGrantFile(config.root, id)
+      const stored = readGrant(file)
+      if (stored === null) return failure('rejected', GRANT_REFUSED)
+      const expected = Buffer.from(stored.digest, 'hex')
+      const presented = Buffer.from(digestOf(grant), 'hex')
+      if (
+        expected.length !== presented.length ||
+        !timingSafeEqual(expected, presented)
+      )
+        return failure('rejected', GRANT_REFUSED)
+      if (stored.expiresAt <= now()) {
+        rmSync(file, { force: true })
+        return failure('rejected', GRANT_REFUSED)
+      }
+      const view = readJob(id)
+      if (
+        view === null ||
+        view.state !== 'running' ||
+        view.step !== 'ready' ||
+        view.node !== stored.node
+      )
+        return failure('rejected', '作业不在等待就绪这一步 · 授权没有用掉')
+      // Spent before anything is shipped: one grant, one apply.
+      try {
+        unlinkSync(file)
+      } catch {
+        return failure('rejected', GRANT_REFUSED)
+      }
+      return {
+        ok: true,
+        value: { job: id, node: stored.node, subject: stored.subject },
+      }
     },
   }
 }

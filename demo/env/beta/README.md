@@ -868,7 +868,8 @@ demo/env/beta/beta-up.sh --role host -- --replicate "$HOME/qianmo-beta" <原有�
 - 目标机：与中枢同系统同架构、glibc、有 tar、gzip 与 git、内存 ≥ 700 MB、家目录可用 ≥ 1 GB、账号下没有 `~/qianmo-beta` 或 `~/atlas-beta`。没有 bun 时带中枢那份过去。
 - 新节点入站只绑回环，经隧道接中枢；尾参在 `ops/replicate-node.args` 里可以追加（一行一个）。
 - 进度与失败原因：`<内测根>/state/replicate/<作业>.ndjson`。中途失败时目标机上的目录改名为 `*.failed-<UTC>`，中枢上本次写下的东西已撤回。
-- 中枢上的那半步可以单独跑：`ops/replicate-hub.sh prepare|add|restart|discard`。
+- 中枢上的那半步可以单独跑：`ops/replicate-hub.sh prepare|add|restart|discard`。`restart` 对不是 active 的那个单元（中枢腿是手工起的）先 `beta-down.sh` 停掉手工起的进程、再交给单元起，最后核对 `run/console.pid` 换了，没换就失败。
+- 最后一步给新节点下发模型档案，以点「部署」的那个运维个人账号的名义做（账本里记在他名下）。用共用管理令牌发起的复制不下发，进度里会写「模型档案请运维在模型页下发」，到模型页下发一次即可。
 - 节点由 `nohup` 起，目标机重启后要运维重起一次（与手工装的节点相同）。
 - 复制会往 `ops/console.env` 追加 `--chat-url <节点>=ws://127.0.0.1:<端口>`。之后再跑中枢腿时，把 `console.env` 里 `CONSOLE_EXTRA_ARGS` 的现有尾参原样带上，少带一个，那个节点在对话里就拨不通了。
 

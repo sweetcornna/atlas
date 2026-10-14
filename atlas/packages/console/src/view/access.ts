@@ -718,6 +718,7 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'server.note.set': '写服务器备注',
   'server.replicate.inspect': '检查新服务器',
   'server.replicate.start': '复制到新服务器',
+  'server.replicate.models': '复制后下发模型档案',
   'chat.session.open': '新建对话',
   'chat.message.send': '发送消息',
   'chat.command.autocompact': '设置自动压缩',
