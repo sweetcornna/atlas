@@ -2,7 +2,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, test } from 'bun:test'
-import { mkdir, readFile, readdir, rm, stat, utimes } from 'node:fs/promises'
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { lock } from 'proper-lockfile'
 
@@ -307,6 +315,60 @@ describe('locking', () => {
       'after-release',
     ])
   }, 30_000)
+
+  test('concurrent writes from one process land in call order behind a held lock', async () => {
+    await send('first')
+    const path = getInboxPath('worker', 'alpha')
+    const release = await lock(path, { lockfilePath: `${path}.lock` })
+    const texts = Array.from({ length: 8 }, (_, i) => `queued-${i}`)
+    const pending = Promise.allSettled(
+      texts.map((text, i) => send(text, 2 + i)),
+    )
+    try {
+      // All eight wait while it is held, so the queue alone decides the order.
+      await Bun.sleep(500)
+      expect((await readMailbox('worker', 'alpha')).map(m => m.text)).toEqual([
+        'first',
+      ])
+    } finally {
+      await release()
+    }
+    expect((await pending).filter(r => r.status === 'rejected')).toEqual([])
+    expect((await readMailbox('worker', 'alpha')).map(m => m.text)).toEqual([
+      'first',
+      ...texts,
+    ])
+  })
+
+  test('a burst of 30 concurrent writes from one process lands in call order', async () => {
+    const texts = Array.from({ length: 30 }, (_, i) => `burst-${i}`)
+    await Promise.all(texts.map((text, i) => send(text, i)))
+    expect((await readMailbox('worker', 'alpha')).map(m => m.text)).toEqual(
+      texts,
+    )
+  })
+
+  test('a failed inbox directory creation does not poison the queue', async () => {
+    const dir = dirname(getInboxPath('worker', 'alpha'))
+    await mkdir(dirname(dir), { recursive: true })
+    await writeFile(dir, 'not a directory')
+    const results = await Promise.allSettled([
+      send('doomed-1'),
+      send('doomed-2', 2),
+      send('doomed-3', 3),
+    ])
+    for (const result of results) {
+      expect(result).toMatchObject({
+        status: 'rejected',
+        reason: { syscall: 'mkdir' },
+      })
+    }
+    await rm(dir)
+    await send('recovered', 4)
+    expect((await readMailbox('worker', 'alpha')).map(m => m.text)).toEqual([
+      'recovered',
+    ])
+  })
 
   test('a failed mutation does not poison the queue for the next write or read acknowledgement', async () => {
     await send('first')

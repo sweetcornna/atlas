@@ -6,9 +6,10 @@
  *
  * One inbox per agent per team, stored as a JSON array at
  * `<config root>/teams/<team>/inboxes/<agent>.json`. Every mutation queues by
- * inbox path in this process, then takes a `proper-lockfile` lock on the inbox
- * (`<inbox>.lock`) for cross-process exclusion. It re-reads inside the lock,
- * compacts to the size bounds below and replaces with a temp-file + rename.
+ * inbox path in this process, in call order, then takes a `proper-lockfile`
+ * lock on the inbox (`<inbox>.lock`) for cross-process exclusion. It re-reads
+ * inside the lock, compacts to the size bounds below and replaces with a
+ * temp-file + rename.
  * Initial creation uses the same atomic replacement, so a reader never sees
  * a half-written array.
  *
@@ -26,7 +27,7 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
 import { lock } from 'proper-lockfile'
 
@@ -342,7 +343,13 @@ function reportUnreadEvictions(
   )
 }
 
-/** Queue `fn` by inbox path, then re-read and mutate under the file lock. */
+/**
+ * Queue `fn` by inbox path, then re-read and mutate under the file lock.
+ *
+ * The call joins the queue synchronously, so mutations from this process run in
+ * call order. Callers must not await anything before calling it; any setup
+ * (such as creating the inbox directory) belongs inside the queued section.
+ */
 async function withInboxLock<T>(
   path: string,
   fn: (messages: TeammateMessage[]) => Promise<T>,
@@ -353,6 +360,7 @@ async function withInboxLock<T>(
   inboxMutationTails.set(path, tail.promise)
   try {
     await previous
+    if (createIfMissing) await mkdir(dirname(path), { recursive: true })
     const release = await lock(path, {
       lockfilePath: `${path}.lock`,
       retries: LOCK_RETRIES,
@@ -428,7 +436,6 @@ export async function writeToMailbox(
   teamName?: string,
 ): Promise<void> {
   const path = getInboxPath(recipientName, teamName)
-  await mkdir(inboxDir(teamName), { recursive: true })
   await withInboxLock(
     path,
     async messages => {
