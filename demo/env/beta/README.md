@@ -865,7 +865,7 @@ demo/env/beta/beta-up.sh --role host -- --replicate "$HOME/qianmo-beta" <原有�
 
 之后两个入口：后台「服务器」页顶部的「添加服务器」，或在对话里把 `root@<地址> 密码 <口令>` 发给主智能体（这一句不会发给模型）。都要运维权限。
 
-- 目标机：与中枢同系统同架构、glibc、有 tar 与 gzip、内存 ≥ 700 MB、家目录可用 ≥ 1 GB、账号下没有 `~/qianmo-beta` 或 `~/atlas-beta`。没有 bun 时带中枢那份过去。
+- 目标机：与中枢同系统同架构、glibc、有 tar、gzip 与 git、内存 ≥ 700 MB、家目录可用 ≥ 1 GB、账号下没有 `~/qianmo-beta` 或 `~/atlas-beta`。没有 bun 时带中枢那份过去。
 - 新节点入站只绑回环，经隧道接中枢；尾参在 `ops/replicate-node.args` 里可以追加（一行一个）。
 - 进度与失败原因：`<内测根>/state/replicate/<作业>.ndjson`。中途失败时目标机上的目录改名为 `*.failed-<UTC>`，中枢上本次写下的东西已撤回。
 - 中枢上的那半步可以单独跑：`ops/replicate-hub.sh prepare|add|restart|discard`。

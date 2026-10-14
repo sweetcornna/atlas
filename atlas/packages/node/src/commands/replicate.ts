@@ -707,7 +707,7 @@ if [ -r /proc/meminfo ]; then
   awk '/^MemTotal:/{printf "mem_kb=%s\\n",$2} /^MemAvailable:/{printf "avail_kb=%s\\n",$2}' /proc/meminfo
 fi
 df -Pk "$HOME" 2>/dev/null | awk 'NR==2{printf "disk_kb=%s\\n",$4}'
-for t in tar gzip ssh-keygen; do command -v "$t" >/dev/null 2>&1 && printf 'has_%s=1\\n' "$t"; done
+for t in tar gzip git ssh-keygen; do command -v "$t" >/dev/null 2>&1 && printf 'has_%s=1\\n' "$t"; done
 if command -v bun >/dev/null 2>&1 || [ -x "$HOME/.bun/bin/bun" ]; then printf 'has_bun=1\\n'; fi
 if getconf GNU_LIBC_VERSION >/dev/null 2>&1; then printf 'libc=glibc\\n'; fi
 [ -e "$HOME/qianmo-beta" ] && printf 'root=1\\n'
@@ -748,7 +748,7 @@ function parseProbe(stdout: string): Probe {
     diskMb: kb('disk_kb'),
     libc: values.get('libc') ?? '',
     tools: new Set(
-      ['tar', 'gzip', 'ssh-keygen', 'bun'].filter(
+      ['tar', 'gzip', 'git', 'ssh-keygen', 'bun'].filter(
         tool => values.get(`has_${tool}`) === '1',
       ),
     ),
@@ -803,7 +803,8 @@ function verdict(probe: Probe, hubBun: string | null): string | null {
     return `目标架构是 ${probe.arch || '未知'} · 中枢的部署树是 ${hubMachine()}`
   if (probe.os === 'Linux' && probe.libc !== 'glibc')
     return '目标不是 glibc 系统'
-  for (const tool of ['tar', 'gzip']) {
+  // git: the node leg makes each agent's workspace a git repository.
+  for (const tool of ['tar', 'gzip', 'git']) {
     if (!probe.tools.has(tool)) return `目标机缺 ${tool}`
   }
   if (!probe.tools.has('bun') && hubBun === null)

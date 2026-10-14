@@ -659,7 +659,7 @@ provision  与两者都不可比：admin ⊉ provision，provision ⊉ view
 |---|---|---|
 | 核对主机指纹 | 再扫一次，与确认的那把逐字相同才写进本次的 known_hosts | — |
 | 登录 | 建 ControlMaster 主连接，之后每一步复用它 | — |
-| 检查环境 | 系统、架构、glibc、tar/gzip、内存 ≥ 700 MB、家目录可用 ≥ 1 GB、账号下没有已有部署 | — |
+| 检查环境 | 系统、架构、glibc、tar/gzip/git、内存 ≥ 700 MB、家目录可用 ≥ 1 GB、账号下没有已有部署 | — |
 | 生成密钥 | 中枢上 `replicate-hub.sh prepare`：节点 PSK（0600）、链路 key、挑一个空回环口 | `discard` |
 | 复制部署树 | `tar dist demo` 经主连接流过去，解到临时目录再改名为 `~/atlas-beta`；目标机没有 bun 就把中枢那份带过去；两边 `qm --version` 必须一致 | 部署树改名 `.failed-<UTC>` |
 | 写入密钥 | PSK 写到 `~/qianmo-beta/secrets/transport-psk`；链路 key 那一行进 `authorized_keys` | 删那一行；停节点，内测根改名 `.failed-<UTC>` |
@@ -686,7 +686,7 @@ provision  与两者都不可比：admin ⊉ provision，provision ⊉ view
 ### 14.6 没做的
 
 - **开机自启**：节点由 `beta-up.sh` 用 `nohup` 起，目标机重启后不会自己回来，与现网手工装的节点一样。要自启需要 `loginctl enable-linger`（root），不在一次性凭据的范围内。
-- **sudo 与系统包**：作业不提权、不装系统包。缺 tar/gzip 或不是 glibc 的机器在检查这一步就被拒。
+- **sudo 与系统包**：作业不提权、不装系统包。缺 tar、gzip、git 或不是 glibc 的机器在检查这一步就被拒。
 - **异构架构**：中枢是 x86_64 就只能复制到 x86_64。要支持别的架构，需要中枢同时持有那个架构的载荷。
 
 ---
