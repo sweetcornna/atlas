@@ -45,6 +45,14 @@ export function desktopTools(
     name.startsWith('qianmo_browser_') ? resource?.browser : resource?.computer,
   )
 }
+/**
+ * The tool-call id is minted by the provider, not by us: OpenAI Responses
+ * gives `call_…|fc_…`, Anthropic `toolu_…`, chat-completions gateways their
+ * own. The host only needs a bounded printable key to bind a lease to.
+ */
+export function isDesktopInvocationId(id: unknown): id is string {
+  return typeof id === 'string' && /^[\x21-\x7e]{1,512}$/.test(id)
+}
 export function desktopObservation(name: DesktopTool): boolean {
   return ['tabs', 'screenshot', 'read_page', 'find'].includes(desktopOp(name))
 }

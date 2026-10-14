@@ -19,14 +19,25 @@ import { ResidentEstop, OmpResidentTurnPort } from '@qianmo/resident'
 import { NodeDesktop } from '../../src/host/desktop.js'
 import { ResidentAuthorization } from '../../src/host/residentAuthorization.js'
 import { ResidentOmpPool } from '../../src/host/residentOmp.js'
-import { ResidentOmpHarness } from '../../../../tests/integration/fixtures/resident-omp-harness.js'
+import {
+  ResidentOmpHarness,
+  type HarnessApi,
+} from '../../../../tests/integration/fixtures/resident-omp-harness.js'
 
 const compiledBinary = process.env.QIANMO_TEST_COMPILED_QM
 
-/** Real Chrome + real omp RPC, deterministic local provider and signed approver. */
-for (const bundled of [false, true]) {
+/**
+ * Real Chrome + real omp RPC, deterministic local provider and signed
+ * approver. The provider speaks both wires: OpenAI Responses tool-call ids
+ * (`call_…|fc_…`) were refused at the lease before any of this could run.
+ */
+for (const [bundled, api] of [
+  [false, 'openai-completions'],
+  [false, 'openai-responses'],
+  [true, 'openai-completions'],
+] as const satisfies readonly (readonly [boolean, HarnessApi])[]) {
   test.skipIf(process.platform !== 'darwin' || (bundled && !compiledBinary))(
-    `real private Chrome (${bundled ? 'embedded extension' : 'source extension'}): screenshot/read auto-allow, click denial has zero side effects, once approval executes, recycle reaps`,
+    `real private Chrome (${bundled ? 'embedded extension' : 'source extension'}, ${api}): screenshot/read auto-allow, click denial has zero side effects, once approval executes, recycle reaps`,
     async () => {
       const old = process.env.QIANMO_CONFIG_DIR
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p21-chrome-'))
@@ -48,7 +59,7 @@ for (const bundled of [false, true]) {
           )
         },
       })
-      const harness = new ResidentOmpHarness()
+      const harness = new ResidentOmpHarness({ api })
       const nodeKeys = generateNodeKeyPair(),
         keys = generateNodeKeyPair()
       const authz = new ResidentAuthorization({

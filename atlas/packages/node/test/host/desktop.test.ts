@@ -685,3 +685,68 @@ test('revocation of a consumed permit before commit prevents the external action
     await f.cleanup()
   }
 })
+/** What OpenAI Responses models mint (`call_id|item_id`), as omp hands it on. */
+const RESPONSES_ID =
+  'call_6pS1yWQ8pV3x0VnF1Qy9ZJbM|fc_68ee0f3c9a0c8190a6b8f3e2c1d4e5f60a1b2c3d4e5f6a7b'
+test('provider tool-call ids get a lease; unprintable ones do not', async () => {
+  const f = await fixture()
+  try {
+    await f.enable()
+    const tab = f.node.resource('main')!.tab
+    // The regression: `|` in every OpenAI Responses call id was refused before
+    // any lease existed, so the browser never opened for those models.
+    for (const id of [
+      RESPONSES_ID,
+      'toolu_01A09q90qw90lq917835lq9',
+      'functions.qianmo_browser_screenshot:0',
+      'qianmo_browser_screenshot_1760400000000_1',
+    ]) {
+      const call = callOf(f.node, 'qianmo_browser_screenshot', { tab }, id)
+      const gate = (phase: string) =>
+        f.node.gate(
+          'main',
+          's',
+          't',
+          'c',
+          {
+            ...call,
+            input: {
+              ...call.input,
+              phase,
+              observedTargetDigest: 'a'.repeat(64),
+            },
+          },
+          () => true,
+          async (_call, before) => before(undefined, 'request', () => true),
+        )
+      expect(await gate('reserve')).toBe(true)
+      expect(await gate('authorize')).toBe(true)
+      expect(await gate('commit')).toBe(true)
+      expect(await gate('completed')).toBe(true)
+    }
+    const rows = (await f.node.control('desktop.actions', {}, ctx)) as {
+      value: DesktopActionView[]
+    }
+    expect(rows.value.map(row => row.outcome)).toEqual([
+      'allowed',
+      'allowed',
+      'allowed',
+      'allowed',
+    ])
+    expect(rows.value.at(-1)?.invocationId).toBe(RESPONSES_ID)
+    for (const id of ['has space', 'x'.repeat(513)])
+      expect(
+        await f.node.gate(
+          'main',
+          's',
+          't',
+          'c',
+          callOf(f.node, 'qianmo_browser_screenshot', { tab }, id),
+          () => true,
+          async () => true,
+        ),
+      ).toBe(false)
+  } finally {
+    await f.cleanup()
+  }
+})

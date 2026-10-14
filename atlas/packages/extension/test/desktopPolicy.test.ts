@@ -7,6 +7,7 @@ import {
   desktopArgs,
   desktopTools,
   desktopObservation,
+  isDesktopInvocationId,
 } from '../src/desktopPolicy.js'
 import {
   residentActiveTools,
@@ -156,4 +157,17 @@ test('enabled resources activate only structured tools for main; eval remains de
   expect(overlay.tools.approval.eval).toBe('deny')
   expect(desktopObservation('qianmo_browser_read_page')).toBe(true)
   expect(desktopObservation('qianmo_browser_scroll')).toBe(false)
+})
+test('provider tool-call ids are accepted as lease keys; unprintable or unbounded ones are not', () => {
+  for (const id of [
+    // OpenAI Responses (also Azure, xAI): omp joins call_id and item id with `|`.
+    'call_6pS1yWQ8pV3x0VnF1Qy9ZJbM|fc_68ee0f3c9a0c8190a6b8f3e2c1d4e5f60a1b2c3d4e5f6a7b',
+    'toolu_01A09q90qw90lq917835lq9',
+    'functions.qianmo_browser_navigate:0',
+    'ptc_mgq2x1k3_1f',
+    'x'.repeat(512),
+  ])
+    expect(isDesktopInvocationId(id)).toBe(true)
+  for (const id of ['', 'a b', 'a\nb', 'a\0b', 'é', 'x'.repeat(513), 7, null])
+    expect(isDesktopInvocationId(id)).toBe(false)
 })

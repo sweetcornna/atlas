@@ -16,6 +16,7 @@ import {
   desktopArgs,
   desktopObservation,
   desktopOp,
+  isDesktopInvocationId,
   isDesktopTool,
   type DesktopResource,
   type DesktopTool,
@@ -804,8 +805,7 @@ export class NodeDesktop {
             'observedTargetDigest',
           ].includes(k),
       ) ||
-      typeof input.invocationId !== 'string' ||
-      !/^[A-Za-z0-9._:-]{1,200}$/.test(input.invocationId)
+      !isDesktopInvocationId(input.invocationId)
     )
       return false
     if (input.phase === 'refused') {
