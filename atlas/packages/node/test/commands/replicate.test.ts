@@ -290,6 +290,26 @@ describe('the console port', () => {
     )
   })
 
+  test('the machine names itself when it can', async () => {
+    const port = openConsoleReplicate(
+      {
+        root: tempRoot(),
+        tree: '/srv/atlas-beta',
+        consoleUrl: 'http://127.0.0.1:38600',
+        mainAgent: 'qianmo://hub/planner',
+      },
+      { launcher: fakeLauncher({ ...REPORT, hostname: 'gpu-box-2' }) },
+    )
+    const found = await port.inspect(TARGET)
+    expect(found.ok).toBe(true)
+    if (!found.ok) return
+    expect(found.value.suggested).toEqual({
+      node: 'gpu-box-2',
+      agent: 'planner',
+      server: 'gpu-box-2',
+    })
+  })
+
   test('start: the confirmed fingerprint, a 0600 request, the ticket spent', async () => {
     const root = tempRoot()
     const launcher = fakeLauncher()

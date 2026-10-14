@@ -117,6 +117,7 @@ export const REPLICATE_PAGE_JS = `
     qc.say(status, '正在开始', 'muted');
     return qc.sendJson('POST', '/v0/replicate/start', body).then(function (job) {
       form.elements.ticket.value = '';
+      qc.say(status, '', 'muted');
       show(form, false);
       follow(job);
     }).catch(function (err) {

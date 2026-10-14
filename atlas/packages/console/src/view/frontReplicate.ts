@@ -318,7 +318,11 @@ export const FRONT_REPLICATE_JS = `
         return 'keep';
       }
       if (busy || timer) { line('上一台还在进行', 'warn'); return 'keep'; }
-      inspect(intent);
+      // Started outside the composer's submit: a request begun inside it
+      // belongs to the send button (client.ts C4), which would come back
+      // enabled over an empty box once the check answers.
+      busy = true;
+      setTimeout(function () { inspect(intent); }, 0);
       return 'taken';
     }
   };

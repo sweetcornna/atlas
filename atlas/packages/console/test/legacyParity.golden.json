@@ -1265,7 +1265,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-36mmsyWJA2nnRhJTTq5Qmr+YiDNQXGbH56zFZ1dZdHg='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-76ontjxT6yvm5nhZmEdyhHXXKeasiKyLIm9Z9LE3SP8='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -1278,8 +1278,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 118087,
-    "sha256": "8d4dfae1c446a1111c0b91e2bc537dce47939fcdaa72d7fe7323cb582d79e2f9"
+    "length": 118208,
+    "sha256": "4995e6e4d72969895f6c81b8845e496da29cfc86c04b2d5ecd9d8a59e2343cd9"
   },
   {
     "probe": "GET /admin/servers as view-bearer",
@@ -1288,7 +1288,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-36mmsyWJA2nnRhJTTq5Qmr+YiDNQXGbH56zFZ1dZdHg='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-76ontjxT6yvm5nhZmEdyhHXXKeasiKyLIm9Z9LE3SP8='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -1301,8 +1301,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 117636,
-    "sha256": "97ad3f79c88cf2cf6e89d7e23a45560ea70977eb50d358c67696a2b0c2382f71"
+    "length": 117757,
+    "sha256": "79eb430e28e5a6a4529a4c14bb4a890ed8608c605282fa4e1c37fc276cb48332"
   },
   {
     "probe": "GET /admin/settings as view-bearer",

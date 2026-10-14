@@ -675,7 +675,7 @@ provision  与两者都不可比：admin ⊉ provision，provision ⊉ view
 
 - 入站只绑 `127.0.0.1:38625`，中枢经 SSH 隧道 `127.0.0.1:<回环口>` 到它；节点之间直投不经中枢的那条规矩（§7.2）不受影响，需要直投的节点由运维另开端口。
 - 尾参：`--trust <控制台签名身份> --local-commands-from <控制台> --sign-handshake --omp-max-children=1 --omp-idle-ms=60000`，再加 `ops/replicate-node.args` 里的（一行一个，例如探针公钥）。
-- 智能体名默认取主智能体的名字（`--chat-default` 的最后一段），节点名默认取 IPv4 的后两段（`n113-7`）或主机名的第一段，避开 peers.conf 里已有的名字。
+- 智能体名默认取主智能体的名字（`--chat-default` 的最后一段）。节点名与服务器名默认取目标机自己的主机名（`uname -n`，`localhost` 不算）；取不到时节点名用 IPv4 的后两段（`n113-7`）或填写地址的第一段，服务器名用填写的地址。节点名避开 peers.conf 里已有的名字。
 
 ### 14.5 开关与运维
 

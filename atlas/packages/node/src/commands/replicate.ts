@@ -111,6 +111,8 @@ export interface InspectReport {
   readonly os: string
   readonly arch: string
   readonly kernel: string
+  /** The target's own name (`uname -n`), when it can stand as a server name. */
+  readonly hostname?: string
   readonly memMb: number
   readonly availMb: number
   readonly diskMb: number
@@ -701,6 +703,7 @@ const PROBE_SCRIPT = `
 printf 'os=%s\\n' "$(uname -s 2>/dev/null)"
 printf 'arch=%s\\n' "$(uname -m 2>/dev/null)"
 printf 'kernel=%s\\n' "$(uname -r 2>/dev/null)"
+printf 'hostname=%s\\n' "$(uname -n 2>/dev/null)"
 printf 'home=%s\\n' "$HOME"
 printf 'user=%s\\n' "$(id -un 2>/dev/null)"
 if [ -r /proc/meminfo ]; then
@@ -719,6 +722,7 @@ interface Probe {
   readonly os: string
   readonly arch: string
   readonly kernel: string
+  readonly hostname: string
   readonly home: string
   readonly user: string
   readonly memMb: number
@@ -727,6 +731,14 @@ interface Probe {
   readonly libc: string
   readonly tools: ReadonlySet<string>
   readonly existing: boolean
+}
+
+/** A name a person would recognise the machine by; `localhost` is not one. */
+function usableHostname(raw: string): string {
+  return /^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/.test(raw) &&
+    !/^localhost(\.|$)/i.test(raw)
+    ? raw
+    : ''
 }
 
 function parseProbe(stdout: string): Probe {
@@ -741,6 +753,7 @@ function parseProbe(stdout: string): Probe {
     os: values.get('os') ?? '',
     arch: values.get('arch') ?? '',
     kernel: values.get('kernel') ?? '',
+    hostname: usableHostname(values.get('hostname') ?? ''),
     home: values.get('home') ?? '',
     user: values.get('user') ?? '',
     memMb: kb('mem_kb'),
@@ -844,6 +857,7 @@ export async function inspect(
       os: probe.os,
       arch: probe.arch,
       kernel: probe.kernel,
+      ...(probe.hostname === '' ? {} : { hostname: probe.hostname }),
       memMb: probe.memMb,
       availMb: probe.availMb,
       diskMb: probe.diskMb,

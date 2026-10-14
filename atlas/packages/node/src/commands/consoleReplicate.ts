@@ -444,6 +444,8 @@ export function openConsoleReplicate(
       }
       const ticket = randomBytes(18).toString('base64url')
       const expiresAt = now() + TICKET_TTL_MS
+      // The machine's own name reads better in the server list than an address.
+      const named = report.hostname ?? target.host
       tickets.set(ticket, {
         target,
         fingerprints: report.hostKeys.map(key => key.fingerprint),
@@ -467,9 +469,9 @@ export function openConsoleReplicate(
           supported: report.supported,
           ...(report.reason === undefined ? {} : { reason: report.reason }),
           suggested: {
-            node: suggestNode(target.host, knownNodes(config.root)),
+            node: suggestNode(named, knownNodes(config.root)),
             agent: agentOf(config.mainAgent),
-            server: target.host,
+            server: named,
           },
           expiresAt,
         },
