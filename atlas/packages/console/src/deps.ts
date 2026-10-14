@@ -826,6 +826,21 @@ export interface ReplicateStartInput {
   readonly node: string
   readonly agent: string
   readonly server: string
+  /**
+   * 发起这次部署的人能写模型服务时（个人 ops 账号、不在 break-glass、在这台
+   * 控制台上看得到模型服务），他的主体 `u:…`。宿主据此给作业一张只对这个新节点
+   * 有效的单次下发授权（{@link ReplicatePort.claimModels}）；缺席时作业不下发，
+   * 最后一步说明要运维在模型页下发。
+   */
+  readonly modelsBy?: string
+}
+
+/** 作业交回的下发授权核对通过：给哪个节点下发、以谁的名义。 */
+export interface ReplicateModelsClaim {
+  readonly job: string
+  readonly node: string
+  /** 发起部署的运维账号；下发以它的名义做、记进账本。 */
+  readonly subject: string
 }
 
 export type ReplicateJobState = 'running' | 'done' | 'failed'
@@ -868,6 +883,16 @@ export interface ReplicatePort {
   start(input: ReplicateStartInput): Promise<ConsoleResult<ReplicateJob>>
   jobs(): Promise<ConsoleResult<readonly ReplicateJob[]>>
   job(id: string): Promise<ConsoleResult<ReplicateJob>>
+  /**
+   * 作业在最后一步交回 `start` 给它的下发授权。作业号对得上、授权没过期也没用过、
+   * 作业还在跑且已到「等待就绪」时，授权当场作废，回节点与发起人；否则 `rejected`。
+   * 授权本身不带任何权限：控制台拿到发起人之后再按模型服务的规则核对一遍才下发
+   * （`routes/servers.ts`）。
+   */
+  claimModels(
+    job: string,
+    grant: string,
+  ): Promise<ConsoleResult<ReplicateModelsClaim>>
 }
 
 // ---------------------------------------------------------------------------
@@ -1185,6 +1210,11 @@ export const CONSOLE_ACTIONS = [
   /** 复制到新服务器：检查一台、开始一次作业。target 是 `user@host:port`，从不带凭据。 */
   'server.replicate.inspect',
   'server.replicate.start',
+  /**
+   * 复制作业到了最后一步、交回下发授权：以发起部署的运维账号的名义给新节点下发
+   * 默认档案。target 是节点名；同一请求里还有端口记的那条 `provider.apply`。
+   */
+  'server.replicate.models',
   'chat.session.open',
   'chat.message.send',
   /** 本地命令（P18.20）：取代那一句的 `chat.message.send`，target 是会话 id。 */

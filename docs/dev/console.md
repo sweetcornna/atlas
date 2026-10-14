@@ -679,6 +679,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/replicate/start` | **admin** | `{ ticket, fingerprint, node, agent, server }`：指纹必须是检查时扫到的那一把；票用一次就作废。202 回作业，作业在后台跑（`qm replicate run`），同一时间只跑一个 |
 | GET | `/v0/replicate/jobs` | view | `{ jobs }`：按 `<内测根>/state/replicate/*.ndjson` 折出的作业，新的在前 |
 | GET | `/v0/replicate/jobs/<作业>` | view | 一个作业：每一步的事件、状态（running / done / failed）、做成后的地址或失败那一句 |
+| POST | `/v0/replicate/jobs/<作业>/models` | **下发授权** | 作业最后一步：`{ grant }`。**不看控制台凭据**，凭据就是 `start` 时发给作业的单次授权（只在发起人是运维个人账号时才有）。授权核对通过就作废，再核一遍发起人仍是 ops（开了租户时还得是平台管理身份），然后以发起人的名义给该作业的那一个节点下发它该有的档案（不带 `force`、不指定档案）。回 `{ node, results }`；授权不对 403，缺 401，没接模型服务 501。账本记 `provider.apply` 与 `server.replicate.models`，都在发起人名下（`node-provisioning.md` §14.3） |
 | GET | `/v0/alerts?level=&state=` | view | `{ unread, total, alerts, sources }`（§10.4） |
 | POST | `/v0/alerts/<告警 id>/ack` | **admin** | 确认一条。**id 必须在当前收件箱里**，否则 404；没接告警存储时 501 |
 | GET | `/v0/jobs` | view | 调度器快照（§10.4）。没接调度器端口时 501 |

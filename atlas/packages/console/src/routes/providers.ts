@@ -163,8 +163,10 @@ import type { PageRender, RouteContext, RouteModule } from './types.js'
 /**
  * May this caller change model services: a personal `ops` account, not in
  * break-glass (§7.3). Everything a page draws for writing hangs off this.
+ * Also what decides whether a copy job may ship a profile when it is done
+ * (`routes/servers.ts`).
  */
-function providerWriter(ctx: RouteContext): boolean {
+export function providerWriter(ctx: RouteContext): boolean {
   const principal = ctx.access.principal
   return (
     principal?.kind === 'user' &&
@@ -219,7 +221,7 @@ const STATUS_OF: Readonly<Record<ProviderFailure['code'], number>> = {
  * A port failure as the JSON answer. The detail the hub attached is kept as
  * fields and, because the shared client only shows `message`, also said in it.
  */
-function providerFailureResponse(failure: ProviderFailure): Response {
+export function providerFailureResponse(failure: ProviderFailure): Response {
   let message = calm(failure.message)
   if (failure.code === 'conflict' && (failure.fields?.length ?? 0) > 0) {
     message += ` · 被改动的字段 ${(failure.fields ?? []).join(' ')}`
@@ -413,7 +415,7 @@ function trimOverview(overview: ProviderOverview, writer: boolean): unknown {
 }
 
 /** Node text in a result, in the console's register. */
-function calmApply(result: ProviderApplyResult): ProviderApplyResult {
+export function calmApply(result: ProviderApplyResult): ProviderApplyResult {
   return { ...result, message: calm(result.message) }
 }
 
