@@ -4,9 +4,11 @@
 /**
  * The frame every console page is drawn in.
  *
- * One sand panel down the left with the areas in three groups, a top bar over
- * the page with where you are, what the page is called, its main actions and
- * who you are, and the page itself under that. Everything a page does not own
+ * The conversation front's frame (`view/front.ts`), drawn for the management
+ * side: the same side panel — the brand row, quiet rows with the current one
+ * tinted, the reader's figure and role at the foot with the account menu
+ * behind ⋯ — and a one-line top bar with where you are, the page's title, its
+ * main actions and the registry's health. Everything a page does not own
  * lives here exactly once: the navigation, the role, the way out, the refresh
  * switch, the document head (`providers-console-m1.md` §6.1).
  *
@@ -24,7 +26,8 @@
  *
  * ## The role is always on screen
  *
- * The chip in the top bar states which credential this page was rendered for.
+ * The line under 我 at the foot of the side panel states which credential this
+ * page was rendered for.
  * The admin token is a strict superset of the view token, so without it an
  * operator holding the smaller one cannot tell "restricted" from "broken"
  * until a control they remember is not there (`console.md` §4.1).
@@ -55,6 +58,8 @@ import {
   type PageViewer,
   type Tone,
 } from './bits.js'
+import type { AvatarSpec } from '../avatar.js'
+import { AVATAR_CSS, avatarSvg } from './avatar.js'
 import { attr, escapeHtml } from './escape.js'
 import { zoneLabel } from './format.js'
 import { QIANMO_ICON_HREF, qianmoMark } from './mark.js'
@@ -68,7 +73,6 @@ import { QIANMO_ICON_HREF, qianmoMark } from './mark.js'
 export const BRAND = '阡陌控制台'
 
 export const WORDMARK_CN = '阡陌'
-const WORDMARK_EN = 'AgentNest'
 
 /**
  * The `<head>` every document shares.
@@ -160,6 +164,8 @@ export interface ShellModel {
    * (`assets/client.ts`).
    */
   readonly viewer?: PageViewer
+  /** The reader's figure, drawn beside 我 as on the front; absent draws none. */
+  readonly self?: AvatarSpec
   readonly nav: readonly ShellNavGroup[]
   /** The sidebar item to mark current; absent on a page that is no area's. */
   readonly active?: string
@@ -201,14 +207,12 @@ function refreshControl(): string {
       }>${escapeHtml(label)}</option>`,
   ).join('')
   return (
-    `<div class="stack gap-2">` +
-    `<div class="flabel">刷新</div>` +
-    `<div class="fblock">` +
+    `<div class="refresh-row">` +
     `<label class="sw"><input type="checkbox" id="auto-refresh" checked>` +
     `<span class="trk"></span>自动刷新</label>` +
     `<span class="sel"><select class="input btn-small" id="refresh-interval" ` +
     `aria-label="刷新间隔">${options}</select></span>` +
-    `</div><span id="refresh-state"></span></div>`
+    `<span id="refresh-state"></span></div>`
   )
 }
 
@@ -246,31 +250,47 @@ const ROLE_TEXT: Readonly<Record<ConsoleRole, string>> = {
 }
 
 /**
- * The role chip, and the menu behind it.
+ * The account row at the foot of the side panel, and the menu behind ⋯.
  *
- * The chip is the summary of a native `<details>`, so it is always visible and
- * the menu opens with script disabled. `退出` is a native `POST /logout` form
- * rather than a button the script wires up: it has to work on the same terms
- * as the login page it leads back to (`view/login.ts`).
+ * The front's own row (`view/front.ts`): the reader's figure, 我 and the role.
+ * The menu is a native `<details>`, so it opens with script disabled; it holds
+ * the instance and its time zone, 外观, the folded token box and `退出` — a
+ * native `POST /logout` form rather than a button the script wires up, since
+ * it has to work on the same terms as the login page it leads back to
+ * (`view/login.ts`).
  */
-function userMenu(role: ConsoleRole, viewer: PageViewer | undefined): string {
-  if (role === 'none') return ''
+function accountRow(model: ShellModel): string {
+  if (model.role === 'none') return ''
+  const role = model.viewer?.roleText ?? ROLE_TEXT[model.role]
+  const face =
+    model.self === undefined ? '' : avatarSvg(model.self, { size: 28 })
   return (
-    `<details class="usermenu">` +
-    `<summary aria-label="身份与退出">` +
-    `<span class="tag tag-accent" id="role">` +
-    icon('shield', { small: true }) +
-    `${escapeHtml(viewer?.roleText ?? ROLE_TEXT[role])}</span>` +
-    chevron() +
+    `<div class="fx-side-foot">` +
+    `<span class="fx-me">${face}<span class="fx-me-text"><b>我</b>` +
+    `<span id="role">${escapeHtml(role)}</span></span></span>` +
+    `<details class="fx-more usermenu">` +
+    `<summary class="fx-icon-btn" aria-label="身份与退出">` +
+    icon('ellipsis', { small: true }) +
     `</summary>` +
-    `<div class="usermenu-body">` +
+    `<div class="fx-menu fx-menu-up usermenu-body">` +
+    `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
+    // Which zone the page's times are in: the server's as drawn, the
+    // reader's once the runtime has redrawn them (时区).
+    `<p class="note" id="tz-note">时间 · ${escapeHtml(
+      zoneLabel(Date.now()),
+    )} · 服务器时区</p>` +
+    `<div class="fx-menu-sep"></div>` +
+    `<label class="fx-menu-item fx-menu-field">外观` +
+    `<select id="theme-choice" aria-label="外观">` +
+    `<option value="system">跟随系统</option><option value="light">浅色</option>` +
+    `<option value="dark">深色</option></select></label>` +
     tokenControl() +
-    `<div class="divider"></div>` +
-    `<form id="logout-form" method="post" action="/logout">` +
-    `<button type="submit" class="btn btn-ghost">` +
+    `<div class="fx-menu-sep"></div>` +
+    `<form id="logout-form" method="post" action="/logout" class="fx-menu-form">` +
+    `<button type="submit" class="fx-menu-item">` +
     icon('log-out', { small: true }) +
     `退出</button></form>` +
-    `</div></details>`
+    `</div></details></div>`
   )
 }
 
@@ -332,21 +352,13 @@ function sidebar(model: ShellModel): string {
     `popovertarget="side" popovertargetaction="hide" aria-label="关闭菜单">` +
     icon('x') +
     `</button>` +
-    `<div class="brand">${qianmoMark(28)}<div class="brand-text">` +
-    `<div class="brand-en">${escapeHtml(WORDMARK_EN)}</div>` +
+    `<div class="brand">${qianmoMark(22)}` +
     `<a class="brand-cn" href="/admin" data-nav>${escapeHtml(WORDMARK_CN)}</a>` +
-    `</div></div>` +
+    `</div>` +
     `<nav class="nav" aria-label="导航">${groups}</nav>` +
     `<div class="side-foot">` +
-    `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
-    // Which zone the page's times are in: the server's as drawn, the
-    // reader's once the runtime has redrawn them (时区).
-    `<p class="note" id="tz-note">时间 · ${escapeHtml(
-      zoneLabel(Date.now()),
-    )} · 服务器时区</p>` +
-    (model.poll === true
-      ? `<div class="divider"></div>${refreshControl()}`
-      : '') +
+    (model.poll === true ? refreshControl() : '') +
+    accountRow(model) +
     `</div></aside>`
   )
 }
@@ -397,9 +409,6 @@ function topBar(model: ShellModel): string {
       ? ''
       : `<div class="top-actions">${model.actions}</div>`) +
     healthStrip(model.health) +
-    `<label class="sw">外观 <select id="theme-choice" aria-label="外观">` +
-    `<option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>` +
-    userMenu(model.role, model.viewer) +
     `</div></header>`
   )
 }
@@ -462,9 +471,11 @@ export function renderShell(model: ShellModel): string {
     model.viewer === undefined ? CONSOLE_CLIENT_JS : CONSOLE_CLIENT_JS_ACCOUNTS
   const script = runtime + (model.pageScript ?? '')
   return (
-    documentHead(`${BRAND} · ${model.title} · ${model.label}`, model.pageCss, [
-      script,
-    ]) +
+    documentHead(
+      `${BRAND} · ${model.title} · ${model.label}`,
+      (model.self === undefined ? '' : AVATAR_CSS) + (model.pageCss ?? ''),
+      [script],
+    ) +
     `<body>\n` +
     // The first stop for a keyboard: past the sidebar to the page (F1).
     `<a class="skip-link" href="#main">跳到正文</a>\n` +
@@ -520,8 +531,7 @@ export function renderStandalone(model: StandaloneModel): string {
     documentHead(`${BRAND} · ${model.title} · ${model.label}`) +
     `<body>\n<div class="stage">\n` +
     `<main class="card elev-lg panel" aria-labelledby="page-title">` +
-    `<div class="brand">${qianmoMark(40)}<div class="brand-text"><div class="brand-en">${escapeHtml(WORDMARK_EN)}</div>` +
-    `<div class="brand-cn">${escapeHtml(WORDMARK_CN)}</div></div></div>` +
+    `<div class="brand">${qianmoMark(28)}<div class="brand-cn">${escapeHtml(WORDMARK_CN)}</div></div>` +
     `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
     `<h1 class="page-title" id="page-title">${escapeHtml(model.title)}</h1>` +
     `<p class="note">${escapeHtml(model.line)}</p>` +

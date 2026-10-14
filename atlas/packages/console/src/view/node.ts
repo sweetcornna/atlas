@@ -859,7 +859,7 @@ export const NODE_PAGE_CSS = `
   border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 600;
 }
 .node-tab:hover { color: var(--color-text); }
-.node-tab[aria-current="page"] { color: var(--color-text); border-bottom-color: var(--color-accent); }
+.node-tab[aria-current="page"] { color: var(--color-text); border-bottom-color: var(--color-text); }
 .node-facts { padding: var(--space-4); display: grid; gap: var(--space-2); }
 .node-facts .kv { display: flex; flex-direction: row; gap: var(--space-4); align-items: baseline; flex-wrap: wrap; }
 .node-facts .k { color: var(--color-muted); min-width: 5rem; font-size: 12px; }

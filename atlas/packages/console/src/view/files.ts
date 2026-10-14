@@ -503,7 +503,7 @@ export const FILES_PAGE_CSS = `
 .fx-transfer:first-child { border-top: 0; }
 .fx-line { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: var(--text-13); }
 .fx-bar { height: 6px; border-radius: 999px; background: var(--color-bg); overflow: hidden; }
-.fx-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--color-accent); transition: width 400ms ease; }
+.fx-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--color-accent-fill); transition: width 400ms ease; }
 .fx-bar-done > span { background: var(--color-accent-2); }
 .fx-bar-failed > span { background: var(--color-critical); opacity: .6; }
 .fx-bar-busy > span { width: 32%; animation: fx-run 1.6s ease-in-out infinite; }
