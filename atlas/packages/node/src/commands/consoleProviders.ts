@@ -146,6 +146,15 @@ interface NodeCache {
   lastStatus: { at: number; ok: boolean; message?: string } | null
 }
 
+/**
+ * P22: what the routing book says for one node — the book's revision, and
+ * the routing an apply ships, absent while nobody has saved one.
+ */
+export interface ProviderRouted {
+  readonly revision: number
+  readonly routing?: ModelRouting
+}
+
 interface ConsoleProvidersOptions {
   readonly book: ProviderBook
   readonly secrets: ProviderSecretStore
@@ -236,7 +245,7 @@ export class ConsoleProviders implements ProviderPort {
   readonly #onAlarm: (line: string) => void
   readonly #cache = new Map<string, NodeCache>()
   readonly #follows = new Map<string, unknown>()
-  #routing: ((node: string) => ModelRouting | undefined) | undefined
+  #routing: ((node: string) => ProviderRouted) | undefined
   #background: unknown = null
   #changes = 0
 
@@ -253,7 +262,7 @@ export class ConsoleProviders implements ProviderPort {
     if (this.problem !== null) throw new Error('model service book unavailable')
     return this.#book.profiles()
   }
-  configureRouting(source: (node: string) => ModelRouting | undefined): void {
+  configureRouting(source: (node: string) => ProviderRouted): void {
     this.#routing = source
   }
 
@@ -711,6 +720,7 @@ export class ConsoleProviders implements ProviderPort {
       readonly force?: boolean
       readonly sessions?: 'keep' | 'reset'
       readonly profileId?: string
+      readonly routingRevision?: number
     },
     caller: ProviderCaller,
   ): Promise<ProviderResult<readonly ProviderApplyResult[]>> {
@@ -749,6 +759,19 @@ export class ConsoleProviders implements ProviderPort {
     if (unknown.length > 0) {
       return fail('not_found', '没有这些节点', { nodes: unknown })
     }
+    // P22: the 任务分工 card ships the split it just saved. Somebody saved
+    // another since: nothing is sent, and each node's line says why.
+    if (
+      input.routingRevision !== undefined &&
+      nodes.some(node => this.#routingMoved(node, input.routingRevision))
+    ) {
+      if (!dryRun) {
+        for (const node of nodes) {
+          await caller.record(action, node, 'refused', 'conflict')
+        }
+      }
+      return fail('conflict', '任务分工在保存之后又被改过 · 刷新后再下发')
+    }
     const results: ProviderApplyResult[] = []
     for (const node of nodes) {
       const result = await this.#applyOne(node, {
@@ -758,6 +781,9 @@ export class ConsoleProviders implements ProviderPort {
         ...(input.profileId === undefined
           ? {}
           : { profileId: input.profileId }),
+        ...(input.routingRevision === undefined
+          ? {}
+          : { routingRevision: input.routingRevision }),
       })
       results.push(result)
       if (!dryRun) {
@@ -877,6 +903,19 @@ export class ConsoleProviders implements ProviderPort {
 
   #nodeTarget(node: string): string {
     return this.#executor.target(node) === undefined ? '-' : node
+  }
+
+  /**
+   * Is the routing book past `revision` for this node? A book that cannot be
+   * read is not "moved": `#applyOne` refuses that node on its own terms.
+   */
+  #routingMoved(node: string, revision: number | undefined): boolean {
+    if (revision === undefined) return false
+    try {
+      return this.#routing?.(node).revision !== revision
+    } catch {
+      return false
+    }
   }
 
   /** Record one book event; `unavailable` when the book will not take it. */
@@ -1618,6 +1657,7 @@ export class ConsoleProviders implements ProviderPort {
       readonly force: boolean
       readonly sessions?: 'keep' | 'reset'
       readonly profileId?: string
+      readonly routingRevision?: number
     },
   ): Promise<ProviderApplyResult> {
     const requestId = this.#requestId()
@@ -1649,12 +1689,24 @@ export class ConsoleProviders implements ProviderPort {
     if (!sessions.ok) return refuse('invalid', sessions.failure.message)
     const override = this.#book.contextOverride(node)
     const wire = this.#wire(profile, secret, override, others)
-    let routing: ModelRouting | undefined
+    let routed: ProviderRouted | undefined
     try {
-      routing = this.#routing?.(node)
+      routed = this.#routing?.(node)
     } catch {
       return refuse('routing-unavailable', '路由簿不可用 · 拒绝下发')
     }
+    // The check `apply` made up front, again at the read that is shipped: a
+    // save landing between two nodes is not sent under the older revision.
+    if (
+      options.routingRevision !== undefined &&
+      routed?.revision !== options.routingRevision
+    ) {
+      return refuse(
+        'routing-conflict',
+        '任务分工在下发途中又被改过 · 刷新后再下发',
+      )
+    }
+    const routing = routed?.routing
     const profiles: WireProfile[] = []
     const routingSecrets: string[] = []
     for (const id of new Set(

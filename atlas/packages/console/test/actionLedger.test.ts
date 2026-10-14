@@ -259,6 +259,24 @@ describe('list answers the way the port says', () => {
       const none = await ledger.list({ targets: [] })
       expect(none.ok && none.value.entries).toEqual([])
     })
+
+    test(`read events are on record but classed apart (${name})`, async () => {
+      // 1–3 are transcript openings, 4–5 heartbeats.
+      const { ledger } = await make()
+      const writes = await ledger.list({ kind: 'write' })
+      expect(writes.ok && writes.value.entries.map(e => e.seq)).toEqual([5, 4])
+      const reads = await ledger.list({ kind: 'read', limit: 2 })
+      expect(reads.ok && reads.value.entries.map(e => e.seq)).toEqual([3, 2])
+      expect(reads.ok && reads.value.nextBeforeSeq).toBe(2)
+      const older = await ledger.list({ kind: 'read', limit: 2, beforeSeq: 2 })
+      expect(older.ok && older.value.entries.map(e => e.seq)).toEqual([1])
+      expect(older.ok && older.value.nextBeforeSeq).toBeNull()
+      // Unasked, both: nothing was dropped from the ledger itself.
+      const both = await ledger.list({})
+      expect(both.ok && both.value.entries.map(e => e.seq)).toEqual([
+        5, 4, 3, 2, 1,
+      ])
+    })
   }
 
   test('the record comes back as it went in, numbered from 1', async () => {

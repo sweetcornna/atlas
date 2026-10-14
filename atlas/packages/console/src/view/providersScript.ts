@@ -167,6 +167,9 @@ export const PROVIDERS_PAGE_JS = `
   }
 
   function failureButtons(result) {
+    // The split was saved again mid-apply: a retry would ship the newer one
+    // unseen, so the card is redrawn instead (routingScript.ts).
+    if (result.code === 'routing-conflict') return [];
     if (result.code === 'conflict') {
       return [
         button('prov-force', '覆盖节点上的改动', { node: result.node, keys: (result.diffKeys || []).join(' ') }),
@@ -264,26 +267,46 @@ export const PROVIDERS_PAGE_JS = `
     if (panel) panel.hidden = true;
   });
 
+  // Settles with { results } as the hub answered, or { results: null,
+  // message } when the whole request was turned away; never rejects.
   function apply(nodes, options) {
     var body = { nodes: nodes };
     if (options && options.sessions) body.sessions = options.sessions;
     if (options && options.force) body.force = true;
+    var routed = !!options && typeof options.routingRevision === 'number';
+    if (routed) body.routingRevision = options.routingRevision;
     for (var i = 0; i < nodes.length; i++) paintRow(progressRow(nodes[i]), 'muted', '下发中', '');
     return qc.sendJson('POST', '/v0/providers/apply', body).then(function (data) {
-      report((data && data.results) || []);
+      var results = (data && data.results) || [];
+      report(results);
       refreshAll();
+      return { results: results };
     }).catch(function (err) {
+      // 409 under a routing revision: the split moved on since the card was
+      // drawn. No 重试 - that would ship the newer split unseen.
+      var moved = routed && err && err.status === 409;
       for (var j = 0; j < nodes.length; j++) {
         paintRow(progressRow(nodes[j]), 'bad', '没有成功', qc.message(err),
-          [button('prov-retry', '重试', { node: nodes[j] })]);
+          moved ? [] : [button('prov-retry', '重试', { node: nodes[j] })]);
       }
       qc.toast('下发失败 · ' + qc.message(err), 'bad');
+      return { results: null, message: qc.message(err) };
     });
   }
 
   qc.onAction('prov-retry', function (el) {
     el.disabled = true;
     apply([data(el, 'node')]);
+  });
+
+  // 任务分工's 下发 (view/routing.ts): the nodes the split reaches, under the
+  // revision the card was drawn with. The card hears how it went.
+  qc.onAction('prov-apply-routing', function (el) {
+    var nodes = data(el, 'nodes').split(' ').filter(function (n) { return n !== ''; });
+    if (nodes.length === 0) return;
+    apply(nodes, { routingRevision: Number(data(el, 'revision')) }).then(function (outcome) {
+      document.dispatchEvent(new CustomEvent('qianmo-routing-applied', { detail: outcome }));
+    });
   });
 
   /* ---------------- reading the hub ---------------- */

@@ -54,16 +54,17 @@
  * the file each time it is asked, which is also what makes every read strict.
  */
 
-import type {
-  ActionLedgerPort,
-  ActionOutcome,
-  ActionPage,
-  ActionQuery,
-  ActionRecord,
-  AuditChainState,
-  ConsoleAction,
-  ConsoleResult,
-  LedgerPort,
+import {
+  type ActionLedgerPort,
+  type ActionOutcome,
+  type ActionPage,
+  type ActionQuery,
+  type ActionRecord,
+  type AuditChainState,
+  type ConsoleAction,
+  type ConsoleResult,
+  isReadAction,
+  type LedgerPort,
 } from './deps.js'
 import {
   encodeLedgerEntry,
@@ -403,6 +404,12 @@ function pageOf(
     if (
       query.actionPrefix !== undefined &&
       !record.action.startsWith(query.actionPrefix)
+    ) {
+      continue
+    }
+    if (
+      query.kind !== undefined &&
+      isReadAction(record.action) !== (query.kind === 'read')
     ) {
       continue
     }

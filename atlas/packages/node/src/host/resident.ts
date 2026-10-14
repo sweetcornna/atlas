@@ -613,6 +613,13 @@ interface ActiveResidentTask {
    */
   delivering: boolean
   /**
+   * Written to the mailbox while a planned provider switch had no generation
+   * to hand it to (`#deliverDurably`). Like {@link delivering} it belongs to
+   * no omp RPC generation yet, so `#failActiveTasks` leaves it alone; the
+   * generation the switch starts admits it and clears this (`#adoptKept`).
+   */
+  kept: boolean
+  /**
    * The text this task's turn runs on verbatim, when the routing verdict made
    * it a console's local command (`residentLocalCommand.ts`). Read by
    * `#assemblePrompt`; absent for everything else.
@@ -798,6 +805,17 @@ export class QianmoResident {
   /** Set once startup has rolled a pending intent forward (§2.6 step 5). */
   #providerCheckQueued = false
   #providerCommitting = false
+  /**
+   * A provider switch has recycled the generation and the next one is not
+   * published yet. Old pool reaping, the supervisor's backoff and the model
+   * probe on the new configuration together routinely outlast
+   * {@link RUNTIME_WAIT_MS}, so a delivery in this window (or while the
+   * commit itself runs) is kept in the mailbox for the next generation
+   * instead of being turned away (`#deliverDurably`).
+   */
+  #switching = false
+  /** Something was kept that way and no generation has adopted it yet. */
+  #keptMail = false
   #providerCommitFlight: Promise<void> | undefined
   #providerReady = false
   #providerTimer: ReturnType<typeof setInterval> | null = null
@@ -1295,11 +1313,12 @@ export class QianmoResident {
     message: QianmoMessage,
     verified: InboundVerification,
   ): Promise<InboundDelivered> {
-    const runtime = await this.#runtimeForDelivery()
+    let runtime = await this.#runtimeForDelivery()
     // Ahead of the write, and synchronous: the poll below no longer reports
     // "this node hosts no such agent" back in time to stop the write.
     try {
-      runtime.assertDeliverable(message)
+      if (runtime === null) this.#assertHosted(message)
+      else runtime.assertDeliverable(message)
     } catch (error) {
       throw new ResidentDeliveryError(
         ProtocolErrorCode.E_UNKNOWN_AGENT,
@@ -1310,8 +1329,54 @@ export class QianmoResident {
     if (result.status === 'rejected') {
       throw new ResidentDeliveryError(result.code, result.reason)
     }
+    // A planned switch had no generation to give this to. The write is on
+    // disk; if the next generation was published while it landed, hand it
+    // over now (its first poll may already have run), else keep it for that
+    // generation's first poll. Either way the receipt means "kept" (H-3).
+    runtime ??= this.#runtimeIsLive() ? this.#runtime : null
+    if (runtime === null) {
+      this.#keep(message)
+      return result
+    }
     this.#startTurn(runtime, message)
     return result
+  }
+
+  /** {@link ResidentNodeRuntime.assertDeliverable} with no generation up. */
+  #assertHosted(message: QianmoMessage): void {
+    const address = parseAddress(message.to)
+    if (address === null || address.node !== this.#options.node) {
+      throw new Error(
+        `message is not addressed to resident node ${this.#options.node}`,
+      )
+    }
+    if (!this.#options.agents.some(agent => agent.agent === address.agent)) {
+      throw new Error(`resident agent ${address.agent} is not configured`)
+    }
+  }
+
+  /** Mark a message kept during a switch; see {@link #switching}. */
+  #keep(message: QianmoMessage): void {
+    this.#keptMail = true
+    const task = this.#tasksByMessage.get(message.msgId)
+    if (task !== undefined) task.kept = true
+  }
+
+  /**
+   * The generation now running takes over what was kept during a switch. A
+   * newly published one polls at once on its own; one the commit retained
+   * (`poll`) has its poll paused-then-periodic, so it is asked now.
+   */
+  #adoptKept(runtime: ResidentNodeRuntime, poll: boolean): void {
+    this.#switching = false
+    if (!this.#keptMail) return
+    this.#keptMail = false
+    for (const task of this.#tasksByTask.values()) task.kept = false
+    if (poll) {
+      void this.#trackPoll(runtime.pollAll()).catch(error =>
+        this.#options.onError?.(error),
+      )
+    }
   }
 
   /**
@@ -1789,6 +1854,7 @@ export class QianmoResident {
       progressQueue: [],
       progressDrain: null,
       delivering: true,
+      kept: false,
     }
     this.#tasksByMessage.set(envelope.msgId, task)
     this.#tasksByTask.set(envelope.taskId, task)
@@ -2701,8 +2767,10 @@ export class QianmoResident {
         // that then goes on to run and succeed on the new generation, and the
         // real answer is dropped because the task left both maps. This window
         // only exists because the listener now outlives the omp RPC child: before
-        // that, nothing could arrive between the death and the restart.
-        .filter(task => !task.delivering)
+        // that, nothing could arrive between the death and the restart. A task
+        // kept during a provider switch is in the same position: on disk,
+        // waiting for the next generation.
+        .filter(task => !task.delivering && !task.kept)
         .map(task =>
           this.#settleTask(
             task,
@@ -2797,8 +2865,14 @@ export class QianmoResident {
    * no amount of waiting produces a runtime. Answer immediately with the
    * reason, which is what lets a peer tell "agent unavailable" from "node
    * gone". Same for a node already stopping.
+   *
+   * **A planned provider switch does not wait either**, the other way: it
+   * answers `null`, "keep it for the next generation" ({@link #switching}).
+   * That generation can be further off than any wait a sender's receipt
+   * budget allows — the model probe alone may take longer — and the first
+   * message after an apply used to be turned away exactly there.
    */
-  async #runtimeForDelivery(): Promise<ResidentNodeRuntime> {
+  async #runtimeForDelivery(): Promise<ResidentNodeRuntime | null> {
     if (this.#runtimeChild?.parkedReason)
       throw new Error(this.#runtimeChild.parkedReason)
     const ready = this.#runtimeIsLive() ? this.#runtime : null
@@ -2806,6 +2880,7 @@ export class QianmoResident {
     if (this.#supervisor.parked || this.#stopping) {
       throw new Error(RESIDENT_AGENT_UNAVAILABLE)
     }
+    if (this.#providerCommitting || this.#switching) return null
     await new Promise<void>(resolve => {
       const timer = setTimeout(() => {
         this.#runtimeWaiters = this.#runtimeWaiters.filter(w => w !== wake)
@@ -2822,11 +2897,11 @@ export class QianmoResident {
       throw new Error(this.#runtimeChild.parkedReason)
     const runtime = this.#runtimeIsLive() ? this.#runtime : null
     if (runtime !== null) return runtime
-    throw new Error(
-      this.#supervisor.parked || this.#stopping
-        ? RESIDENT_AGENT_UNAVAILABLE
-        : RESIDENT_AGENT_RESTARTING,
-    )
+    if (this.#supervisor.parked || this.#stopping)
+      throw new Error(RESIDENT_AGENT_UNAVAILABLE)
+    // A switch that began while this delivery waited.
+    if (this.#providerCommitting || this.#switching) return null
+    throw new Error(RESIDENT_AGENT_RESTARTING)
   }
 
   /**
@@ -3218,6 +3293,9 @@ export class QianmoResident {
       const waiters = this.#runtimeWaiters
       this.#runtimeWaiters = []
       for (const wake of waiters) wake()
+      // Mail kept during a switch is this generation's now; the poller
+      // started below admits it on its first, immediate poll.
+      this.#adoptKept(runtime, false)
 
       poller = new ResidentPoller({
         poll: async () => {
@@ -3385,6 +3463,7 @@ export class QianmoResident {
         const waiters = this.#runtimeWaiters
         this.#runtimeWaiters = []
         for (const wake of waiters) wake()
+        if (this.#runtime !== null) this.#adoptKept(this.#runtime, true)
       }
     })
     this.#providerCommitFlight = operation
@@ -3452,7 +3531,12 @@ export class QianmoResident {
       ),
       reconciledRequestId: result.requestId,
     })
-    if (via === 'switch') this.#supervisor.recycle()
+    if (via === 'switch') {
+      // Before the recycle nulls the runtime: from here deliveries are kept
+      // for the next generation rather than turned away (`#switching`).
+      this.#switching = true
+      this.#supervisor.recycle()
+    }
     this.#announceSwitch({
       requestId: result.requestId,
       sessions: result.sessions,
@@ -3490,6 +3574,7 @@ export class QianmoResident {
     })
     if (changed) {
       this.#applySessionPolicy('reset')
+      this.#switching = true
       this.#supervisor.recycle()
     }
   }

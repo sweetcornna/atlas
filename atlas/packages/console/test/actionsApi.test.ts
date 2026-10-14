@@ -333,6 +333,36 @@ describe('what was done', () => {
     ])
   })
 
+  test('kind sets the read events apart: still on record, asked for or left out by name', async () => {
+    const { h, ops, sa } = await scene()
+    const all = await page(h, asSession('GET', '/v0/actions', ops.sid))
+    const asked = await page(
+      h,
+      asSession('GET', '/v0/actions?kind=all', ops.sid),
+    )
+    // Unasked is both, as before this filter existed.
+    expect(asked.entries).toEqual(all.entries)
+    expect(all.entries.map(e => e.action)).toContain('chat.transcript.open')
+    const writes = await page(
+      h,
+      asSession('GET', '/v0/actions?kind=write', ops.sid),
+    )
+    expect(writes.entries.length).toBeGreaterThan(0)
+    expect(writes.entries.map(e => e.action)).not.toContain(
+      'chat.transcript.open',
+    )
+    const reads = await page(
+      h,
+      asSession('GET', '/v0/actions?kind=read', ops.sid),
+    )
+    expect(lines(reads.entries)).toEqual([
+      `chat.transcript.open ${sa} ${subjectOf(h, ops)}`,
+    ])
+    expect(writes.entries.length + reads.entries.length).toBe(
+      all.entries.length,
+    )
+  })
+
   test('pages by sequence with before and limit', async () => {
     const { h, ops } = await scene()
     const all = await page(h, asSession('GET', '/v0/actions', ops.sid))
@@ -393,7 +423,14 @@ describe('the fence', () => {
       (await h.handle(asSession('GET', '/v0/actions/elsewhere', ops.sid)))
         .status,
     ).toBe(404)
-    for (const query of ['before=0', 'limit=abc', 'limit=-1', 'before=1.5']) {
+    for (const query of [
+      'before=0',
+      'limit=abc',
+      'limit=-1',
+      'before=1.5',
+      'kind=reads',
+      'kind=',
+    ]) {
       const response = await h.handle(
         asSession('GET', `/v0/actions?${query}`, ops.sid),
       )

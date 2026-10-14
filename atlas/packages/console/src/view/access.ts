@@ -37,6 +37,7 @@ import {
   CONSOLE_ACTIONS,
   type ActionRecord,
   type ConsoleFailure,
+  isReadAction,
 } from '../deps.js'
 import {
   absent,
@@ -841,7 +842,20 @@ export interface ActionFilterView {
   readonly subject?: string
   readonly action?: string
   readonly target?: string
+  /** 类别: absent lists writes only; read events are asked for. */
+  readonly kind?: 'read' | 'all'
 }
+
+/** The 类别 choices; `''` is the default, writes only. */
+const KIND_WORD: readonly (readonly [string, string])[] = [
+  ['', '写操作'],
+  ['read', '只读事件'],
+  ['all', '全部'],
+]
+
+/** Said under the list while read events are left out. */
+const READS_HIDDEN_LINE =
+  '打开转录这类只读事件默认不列 · 类别选只读事件或全部可以看到'
 
 /** The query string for `/admin/access/actions` with these filters and cursors. */
 function actionsHref(
@@ -852,6 +866,7 @@ function actionsHref(
   if (filter.subject !== undefined) params.set('subject', filter.subject)
   if (filter.action !== undefined) params.set('action', filter.action)
   if (filter.target !== undefined) params.set('target', filter.target)
+  if (filter.kind !== undefined) params.set('kind', filter.kind)
   if (cursor.before !== undefined) params.set('before', String(cursor.before))
   if (cursor.readsBefore !== undefined) {
     params.set('readsBefore', String(cursor.readsBefore))
@@ -894,6 +909,13 @@ export function renderActionFilter(
     `<div class="field"><label for="actions-action">动作</label>` +
     `<span class="sel"><select class="input" id="actions-action" name="action">` +
     `${options}${extra}</select>${chevron()}</span></div>` +
+    `<div class="field"><label for="actions-kind">类别</label>` +
+    `<span class="sel"><select class="input" id="actions-kind" name="kind">${KIND_WORD.map(
+      ([value, label]) =>
+        `<option value="${attr(value)}"${
+          value === (filter.kind ?? '') ? ' selected' : ''
+        }>${escapeHtml(label)}</option>`,
+    ).join('')}</select>${chevron()}</span></div>` +
     `<div class="field"><label for="actions-target">目标</label>` +
     `<input class="input mono" type="text" id="actions-target" name="target" ` +
     `value="${attr(filter.target ?? '')}" autocomplete="off" spellcheck="false" ` +
@@ -932,6 +954,7 @@ function actionRow(
     whoCell(entry.subject, names, self, entry.subjectName) +
     `<td class="act"><span>${escapeHtml(word)}</span>` +
     (entry.breakGlass === true ? ` ${tag('break-glass', 'warn')}` : '') +
+    (isReadAction(entry.action) ? ` ${tag('只读', 'muted')}` : '') +
     (word === entry.action
       ? ''
       : `<span class="note mono">${escapeHtml(entry.action)}</span>`) +
@@ -1006,7 +1029,8 @@ export function renderActionLog(model: {
   const filtered =
     filter.subject !== undefined ||
     filter.action !== undefined ||
-    filter.target !== undefined
+    filter.target !== undefined ||
+    filter.kind !== undefined
   const refresh = actionsHref(
     filter,
     model.readsBefore === undefined ? {} : { readsBefore: model.readsBefore },
@@ -1061,6 +1085,9 @@ export function renderActionLog(model: {
       tail,
     }) +
     `<div class="pane" id="actions-body">${body}${back}` +
+    (filter.kind === undefined
+      ? `<p class="note" id="actions-reads-hidden">${escapeHtml(READS_HIDDEN_LINE)}</p>`
+      : '') +
     `<p class="note">列表不自动刷新 · 点刷新读取最新</p></div>`
   )
 }

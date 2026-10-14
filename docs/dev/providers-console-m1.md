@@ -335,6 +335,8 @@ export function computeEffectiveProviderState(): EffectiveState              // 
 - 会话续上之后钉住的是哪个模型：P18.3 用真 `--acp` 子进程实测（`src/services/qianmo/__tests__/residentProviderSwitch.integration.test.ts`），钉住的是**新**配置的主模型，带新 key。子进程在 `session/resume` 时按当时的 settings 重新解析主循环模型（`createSession` 里的 `setModel(getMainLoopModel())`），会话记录里不存模型。resident 从不调 `session/set_model`，所以 `keep` 之后的下一轮一定跑在新档案的主模型上。就算某个宿主在会话里显式 `set_model` 过，这个选择也只存在于那一个子进程的内存里，换代 resume 之后回到默认模型（同一文件第二组；正对照：换代前的请求确实带着显式选的模型）。matrix §4.5「除非用户在会话里显式选过」这半句，对 resident 节点不成立。
 - `keep` 续上的历史要包含刚等完的那一轮的回答，旧子进程退出前得把会话记录写盘。P18.3 实测发现基座 ACP 的 SIGTERM 处理直接 `process.exit`，不排空 100 ms 一刷的写队列，当时用「回收前等 1 s」缓解。这个缺陷已在 ACP 侧修好（`src/services/acp/exitFlush.ts`：SIGTERM、SIGINT 和连接关闭都先刷写再退出，2 s 封顶），所以 resident 在切换触发的回收里把旧代从投递面摘下后直接发 SIGTERM，那 1 s 已删掉。
 
+**切换空窗里的投递**：提交开始到新一代发布之间（旧子进程回收、supervisor 退避至少 2 s、新配置的模型探测），节点没有可交付的一代，这段常比投递等待一代的 3 s（`RUNTIME_WAIT_MS`）长。以前这里到的消息等满 3 s 后以 `resident agent is restarting` 退回，表现为下发之后第一条消息失败、第二条正常。现在 `host/resident.ts` 在这段时间（`#providerCommitting` 或 `#switching`）不再等待：照常核对收件智能体，写进跨代共用的信箱、给回执，由新一代上来后的第一次轮询接手；旧一代退场时的 `#failActiveTasks` 跳过这些任务。提交没有换代（拒绝或无变化）时，留下的那一代立即轮询一次。非计划的重启（子进程崩溃）仍是原来的等 3 s。
+
 ### 2.8 中枢同机节点
 
 与 `authorization-m1.md` P14.9 的约束一致：中枢机上的节点不能读到中枢的密文库和主密钥。做法：同机节点的配置根和中枢配置根分开（内测里已经分开：`<根>/nodes/console/config` 和 `<根>/nodes/<节点>/config`）；resident 的 hardline 保护根里加入中枢的 `qianmo/console` 目录和主密钥所在目录，用 P14.9 的同一张表。走 `local` 时，执行器只把 JSON 写进子进程的 stdin，不经过任何文件。
@@ -1616,7 +1618,7 @@ v1.0 写成时这四点待定，负责人当天拍板，结果记为 §0.1 的 D
 
 自动归类按固定优先级首条匹配：视频 → 语音 → 看图 → 生图 → 规划 → 代码块 → 文件扩展名 → 报错栈 → 编程关键词 → 对话。关键词同时识别中英文，英文按词边界匹配；全部规则见目录包，不由模型猜测。多关键词时以该优先级为准。快速小任务没有文字推断规则，通过显式 direction 或角色路由使用。请求带 direction 优先于 auto；auto 关时走 default（审计 direction 为 code、source 为 default）。带 direction 的 task.request 载荷封闭为 `{prompt, direction}`；不带 direction 的历史载荷仍按旧协议处理。
 
-路由簿在 `providers.ndjson` 同目录的 `routing.json`，0600、原子替换、排他写锁。snapshot 提供默认、节点覆盖、模型 kind 与最近 20 条节点归类；revision 是整本的乐观并发号。save 的 routes 是局部补丁；首次建立节点覆盖从默认拷贝，其后为完整覆盖，清除覆盖重新跟随默认。节点清除也递增 revision，旧编辑不能复活已经清除的覆盖。`routing.save` / `routing.clear` 经 DirectionActor 记动作账本。保存修改期望状态；经现有模型服务 apply 动作下发后节点生效。
+路由簿在 `providers.ndjson` 同目录的 `routing.json`，0600、原子替换、排他写锁。snapshot 提供默认、节点覆盖、模型 kind 与最近 20 条节点归类；revision 是整本的乐观并发号。save 的 routes 是局部补丁；首次建立节点覆盖从默认拷贝，其后为完整覆盖，清除覆盖重新跟随默认。节点清除也递增 revision，旧编辑不能复活已经清除的覆盖。`routing.save` / `routing.clear` 经 DirectionActor 记动作账本。保存修改期望状态；经现有模型服务 apply 动作下发后节点生效。卡片在保存后明说「尚未下发」并给出下发按钮；按钮的 apply 带 `routingRevision`，中枢在发出前与逐节点读取时各核对一次，路由簿已前进就拒绝（整次 409 / 单台 `routing-conflict`），不会把操作者没看过的分工下发出去。
 
 apply 保持 v1 与原来的 64 KiB 限额；新请求在主 profile 外带：
 

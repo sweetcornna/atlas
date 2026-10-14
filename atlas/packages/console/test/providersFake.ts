@@ -610,6 +610,8 @@ export class FakeProviders implements ProviderPort {
   down: ProviderFailure | null = null
   /** What the next write answers instead of doing it. */
   nextFailure: ProviderFailure | null = null
+  /** The routing book's revision an apply's `routingRevision` must match (P22). */
+  routingRevision: () => number = () => 0
 
   constructor(options: { readonly pool?: boolean } = {}) {
     if (options.pool === true) {
@@ -1054,14 +1056,31 @@ export class FakeProviders implements ProviderPort {
       readonly force?: boolean
       readonly sessions?: 'keep' | 'reset'
       readonly profileId?: string
+      readonly routingRevision?: number
     },
     caller: ProviderCaller,
   ): Promise<ProviderResult<readonly ProviderApplyResult[]>> {
     this.calls.push(input.dryRun === true ? 'apply.dryRun' : 'apply')
     const denied = this.#deny<readonly ProviderApplyResult[]>(caller)
     if (denied !== null) return denied
-    this.writes.push({ method: 'apply', input })
     const names = input.nodes ?? [...this.nodes.keys()]
+    if (
+      input.routingRevision !== undefined &&
+      input.routingRevision !== this.routingRevision()
+    ) {
+      if (input.dryRun !== true) {
+        for (const name of names) {
+          await caller.record(
+            'provider.apply',
+            `node:${name}`,
+            'refused',
+            'conflict',
+          )
+        }
+      }
+      return failed('conflict', '任务分工在保存之后又被改过 · 刷新后再下发')
+    }
+    this.writes.push({ method: 'apply', input })
     const results: ProviderApplyResult[] = names.map(name => ({
       node: name,
       requestId: `req-${name}`,

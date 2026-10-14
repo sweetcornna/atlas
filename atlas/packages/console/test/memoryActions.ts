@@ -7,13 +7,14 @@
  * is expected to answer (`deps.ts`, `ActionLedgerPort`).
  */
 
-import type {
-  ActionLedgerPort,
-  ActionPage,
-  ActionQuery,
-  ActionRecord,
-  ConsoleAction,
-  ConsoleResult,
+import {
+  type ActionLedgerPort,
+  type ActionPage,
+  type ActionQuery,
+  type ActionRecord,
+  type ConsoleAction,
+  type ConsoleResult,
+  isReadAction,
 } from '../src/deps.js'
 
 const OK: ConsoleResult<void> = { ok: true, value: undefined }
@@ -54,6 +55,8 @@ export class MemoryActionLedger implements ActionLedgerPort {
             query.targets.includes(entry.target)) &&
           (query.actionPrefix === undefined ||
             entry.action.startsWith(query.actionPrefix)) &&
+          (query.kind === undefined ||
+            isReadAction(entry.action) === (query.kind === 'read')) &&
           (query.beforeSeq === undefined || entry.seq < query.beforeSeq),
       )
       .reverse()

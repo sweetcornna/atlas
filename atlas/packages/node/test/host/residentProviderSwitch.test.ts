@@ -588,6 +588,129 @@ describe('resident provider hot switch (P18.3)', () => {
   )
 
   test(
+    'a task sent while the switch is still bringing up the next generation is kept and answered, not turned away',
+    async () => {
+      // Production timing, not the 10 ms the other cases use: the old pool
+      // is reaped, the supervisor backs off and the new configuration's model
+      // probe runs, and together they outlast the 3 s a delivery used to wait
+      // for a generation. The first message after an apply landed in that gap
+      // and came back failed; the second, after it, worked.
+      const { socket } = setUpNode('switch-keeps')
+      let probe: Promise<void> | null = null
+      let probing = false
+      let releaseProbe!: () => void
+      const node = startResident(socket, {
+        mailboxPollMs: ONE_POLL_PER_GENERATION_MS,
+        beforeModelGeneration: async () => {
+          if (probe === null) return
+          probing = true
+          await probe
+        },
+      })
+      await waitUntil(() => node.ready() === 1)
+      const { client, replies } = await connect(socket)
+      const before = task('before the switch')
+      await client.sendAndWait(before)
+      await waitUntil(() => resultFor(replies, before) !== undefined)
+
+      probe = new Promise<void>(resolve => {
+        releaseProbe = resolve
+      })
+      try {
+        stage({ recycle: { sessions: 'keep' } })
+        await checkUntil(node, () => node.switches.length === 1)
+        await waitUntil(() => probing)
+
+        const during = task('right after the apply')
+        const sentAt = Date.now()
+        // Receipted at once: kept in the mailbox for the next generation.
+        await client.sendAndWait(during)
+        expect(Date.now() - sentAt).toBeLessThan(2_000)
+        // Hold the switch past the old 3 s wait; nothing is answered yet.
+        await new Promise(resolve => setTimeout(resolve, 3_500))
+        expect(resultFor(replies, during)).toBeUndefined()
+
+        releaseProbe()
+        await waitUntil(() => node.ready() === 2)
+        await waitUntil(() => resultFor(replies, during) !== undefined)
+        const results = replies.filter(
+          reply =>
+            reply.type === MessageType.TaskResult &&
+            reply.taskId === during.taskId,
+        )
+        expect(results).toHaveLength(1)
+        const payload = results[0]?.payload
+        expect(isTaskResultPayload(payload) ? payload.outcome : undefined).toBe(
+          'completed',
+        )
+        expect(node.errors).toEqual([])
+      } finally {
+        releaseProbe()
+      }
+    },
+    TEST_TIMEOUT_MS,
+  )
+
+  test(
+    'a task kept while the commit runs is not failed with the generation the commit recycles',
+    async () => {
+      const { socket } = setUpNode('commit-keeps')
+      let block = false
+      let entered = false
+      let release!: () => void
+      const barrier = new Promise<void>(resolve => {
+        release = resolve
+      })
+      const node = startResident(socket, {
+        mailboxPollMs: ONE_POLL_PER_GENERATION_MS,
+        providerNode: {
+          ...providerNode,
+          commitPendingProviderConfig: async () => {
+            if (block) {
+              entered = true
+              await barrier
+            }
+            return providerNode.commitPendingProviderConfig()
+          },
+        },
+      })
+      try {
+        await waitUntil(() => node.ready() === 1)
+        const { client, replies } = await connect(socket)
+        const before = task('before the commit')
+        await client.sendAndWait(before)
+        await waitUntil(() => resultFor(replies, before) !== undefined)
+
+        block = true
+        stage({ recycle: { sessions: 'keep' } })
+        await checkUntil(node, () => entered)
+        const during = task('while the commit runs')
+        await client.sendAndWait(during)
+        release()
+        await waitUntil(() => node.ready() === 2)
+        await waitUntil(() => resultFor(replies, during) !== undefined)
+        // Answered once, by the new generation; the recycled one did not
+        // claim it on its way out.
+        const results = replies.filter(
+          reply =>
+            reply.type === MessageType.TaskResult &&
+            reply.taskId === during.taskId,
+        )
+        expect(results).toHaveLength(1)
+        const payload = results[0]?.payload
+        expect(isTaskResultPayload(payload) ? payload.outcome : undefined).toBe(
+          'completed',
+        )
+        expect(node.switches).toHaveLength(1)
+        expect(node.errors).toEqual([])
+      } finally {
+        release()
+      }
+    },
+    TEST_TIMEOUT_MS,
+  )
+
+  test(
     'a turn that outlasts the 30 min limit is reported once and never killed',
     async () => {
       const { config, socket } = setUpNode('thirty-minutes')

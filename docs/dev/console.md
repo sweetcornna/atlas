@@ -688,7 +688,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/accounts/<subject>/revoke` | **ops / admin** | 吊销，204 |
 | POST | `/v0/accounts/<subject>/reset` | **ops / admin** | 重置凭据：`{ subject, inviteId, expiresAt, link }` |
 | POST | `/v0/accounts/<subject>/logout` | **ops / admin** | 强制下线：`{ subject, sessions, streams }`，关掉这个人的全部会话、断开全部事件流，账号与凭据不动（§5.3） |
-| GET | `/v0/actions?subject=&action=&target=&before=&limit=` | 个人账号、admin | 动作账本（§5.3）。`viewer`、`member` 只拿到自己做的；view 令牌 403 |
+| GET | `/v0/actions?subject=&action=&target=&kind=&before=&limit=` | 个人账号、admin | 动作账本（§5.3）。`viewer`、`member` 只拿到自己做的；view 令牌 403。`kind` 是 `write`、`read`（只读事件，今天是 `chat.transcript.open`）或 `all`，缺省 `all` |
 | GET | `/v0/actions/reads?session=` | 个人账号、admin | 谁读过我的对话（§5.3）；view 令牌 403 |
 | POST | `/v0/handoff/pair` | 公开 | `{code,name,platform?}` 换一次性设备令牌；来源地址每分钟 10 次，超限 429，配对码无效 400。只有这一个接力路径免登录 |
 | GET | `/v0/handoff/devices` | view | `{devices}`，名称、属主、平台、最近使用、吊销时间与任务数；无令牌和哈希 |
@@ -714,7 +714,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | PUT | `/v0/providers/nodes/<节点>/assignment`、`/v0/providers/nodes/<节点>/context` | **ops 个人账号** | 指派（继承 / 单独指定 / 不托管）；上下文窗口覆盖（D-8，随下一次下发生效） |
 | POST | `/v0/providers/nodes/<节点>/refresh` | **ops 个人账号** | 向节点要一次状态（中枢 5 秒内不重复问） |
 | GET、PUT | `/v0/providers/nodes/<节点>/autocompact` | **ops 个人账号** | 读、改自动压缩阈值（D-9，立即写到节点；节点环境变量钉住时 422） |
-| POST | `/v0/providers/apply` | **ops 个人账号** | `{ nodes?, dryRun?, force?, sessions?, profileId? }`，每个节点一条结果，部分失败也是 200；dry-run 不记账 |
+| POST | `/v0/providers/apply` | **ops 个人账号** | `{ nodes?, dryRun?, force?, sessions?, profileId?, routingRevision? }`，每个节点一条结果，部分失败也是 200；dry-run 不记账。带 `routingRevision`（任务分工卡片画出时的路由簿修订号）而路由簿已经不是这个修订号：整次 409 `conflict`、一个节点也不发，每个节点记一条 `provider.apply refused conflict`；逐节点下发途中被改的那台 `refused`、码 `routing-conflict` |
 | POST | `/v0/providers/probe`、`/v0/providers/models`、`/v0/providers/preview` | **ops 个人账号** | 测连 / 测速 / 真实调用；拉模型列表；编译预览。可以带表单上未保存的档案与密钥，密钥不落盘 |
 | GET | `/v0/providers/export?id=<档案 id>…` | **ops 个人账号** | 导出文件（附件，`document` 级，链接可下），不含密钥与指纹 |
 | POST | `/v0/providers/import/preview`、`/v0/providers/import` | **ops 个人账号** | 导入预览、导入（撞 id 的用 `renames` 另存）；有目录不认识的键整份拒绝 |
@@ -952,7 +952,7 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
 | `/admin/access` | 能管账号的人看「成员」，其他人看「操作记录」 | 任何凭据 |
 | `/admin/access/invites` | 邀请：签发表单、未兑现的邀请、撤回 | 能管账号的人；其他人拿 403 页，写明要什么角色（没开 `--accounts` 时写明这台控制台没有个人账号） |
 | `/admin/access/sessions` | 会话：每个账号的活会话数、最近登录、最近活动、实时连接，强制下线 | 同上 |
-| `/admin/access/actions?subject=&action=&target=&before=&readsBefore=` | 操作记录；个人账号另有「谁读了我的对话」 | 任何凭据；view 令牌只看到一句「需要个人账号或管理令牌」 |
+| `/admin/access/actions?subject=&action=&target=&kind=&before=&readsBefore=` | 操作记录；个人账号另有「谁读了我的对话」 | 任何凭据；view 令牌只看到一句「需要个人账号或管理令牌」 |
 
 - **写控件**（签发、撤回、吊销、重置、强制下线）要三件事同时成立才画：能管账号、账号库
   可用、动作账本收得下写。缺一件就不画只会得到 503 的按钮，页签上写明原因。
@@ -972,6 +972,10 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
   `Referrer-Policy: no-referrer`。
 - **操作记录的可见范围**与 `/v0/actions` 一致：`ops` 与 admin 令牌看全部，`viewer`、`member`
   只看自己做的；页面与 API 走同一个查询，两边不会说法不一。
+- **只读事件单独归类**：打开转录（`chat.transcript.open`，`deps.ts` 的 `CONSOLE_READ_ACTIONS`）
+  照样进动作账本——「谁读了我的对话」就靠它——但它是看，不是改。操作记录的「类别」缺省
+  「写操作」，选「只读事件」或「全部」才列它们，列出来时带「只读」标记；翻页带着类别。
+  `/v0/actions` 的缺省仍是两样都给（`kind=all`），要分开用 `kind=write` / `kind=read`。
 
 ### 5.4 模型服务（`/admin/providers`）
 
@@ -2392,7 +2396,7 @@ IPv4 映射/兼容 IPv6 按嵌入 IPv4 判断，IP 字面量同等处理。仅�
 | PUT `/v0/routing` | ops 个人账号（共用管理令牌只读） | `{node:null或节点名, auto, routes:[{direction,profileId,modelId}], revision}`；局部更新，revision 失配 rejected |
 | DELETE `/v0/routing/nodes/<node>` | ops 个人账号（共用管理令牌只读） | 清除节点覆盖并跟随默认 |
 
-写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。路由簿写锁记录 PID、随机 nonce 与时间：活持有者拒绝并发写入，PID 消失或超过 5 分钟时回收，释放只删除仍匹配自身令牌的锁。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
+写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。保存与清除只改中枢的路由簿，节点要等下一次模型服务下发才按新分工派活：卡片保存后写「已保存 · 尚未下发」，旁边是「下发到 N 台节点」按钮（范围内跟随这份分工、受托管的节点），它走 `POST /v0/providers/apply` 并带上卡片画出时的 `routingRevision`；这期间有人又存过就整次 409、不下发，卡片换成最新分工，不给「重试」。路由簿写锁记录 PID、随机 nonce 与时间：活持有者拒绝并发写入，PID 消失或超过 5 分钟时回收，释放只删除仍匹配自身令牌的锁。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
 
 
 ## 长期记忆（P23）

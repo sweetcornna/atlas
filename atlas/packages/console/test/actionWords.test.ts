@@ -40,9 +40,10 @@ describe('操作记录 names every verb in words', () => {
         outcome: 'ok',
       })
     }
-    // More verbs than one page holds: follow 更早 until there is none.
+    // More verbs than one page holds: follow 更早 until there is none. 全部,
+    // so the read events are on the pages too (and 更早 keeps the 类别).
     const found: (readonly [string, string])[] = []
-    let path: string | null = '/admin/access/actions'
+    let path: string | null = '/admin/access/actions?kind=all'
     while (path !== null) {
       const response = await h.handle(asBearer('GET', path, ADMIN))
       expect(response.status).toBe(200)
