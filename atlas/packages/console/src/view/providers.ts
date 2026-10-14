@@ -1466,12 +1466,12 @@ export const PROVIDERS_PAGE_CSS = `
 .prov-noscript { margin: 0; }
 .prov-tabs { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .prov-tab { padding: 6px 14px; border-radius: 999px; text-decoration: none; color: var(--color-text); border: 1px solid var(--color-divider); font-size: 13px; }
-.prov-tab[aria-current='page'] { background: var(--color-accent); color: var(--color-bg); border-color: transparent; }
+.prov-tab[aria-current='page'] { background: var(--color-accent-fill); color: var(--color-on-accent-fill); border-color: transparent; }
 .prov-search { display: flex; gap: var(--space-2); align-items: flex-end; flex-wrap: wrap; }
 .prov-search .input { min-width: 260px; }
 .prov-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--space-3); }
 .prov-preset { display: flex; flex-direction: column; gap: 6px; padding: var(--space-3) var(--space-4); text-decoration: none; color: var(--color-text); border: 1px solid transparent; }
-.prov-preset:hover, .prov-preset:focus-visible { border-color: var(--color-accent); }
+.prov-preset:hover, .prov-preset:focus-visible { border-color: var(--color-neutral-500); }
 .prov-preset-name { font-weight: 700; }
 .prov-editor { display: flex; flex-direction: column; gap: var(--space-4); }
 .prov-editor .card { padding: var(--space-4); gap: var(--space-3); }

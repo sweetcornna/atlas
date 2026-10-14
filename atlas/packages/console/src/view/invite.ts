@@ -63,10 +63,7 @@ function errorLine(error: string | undefined): string {
 /** The panel's head: the mark, the instance, and the page's one h1 (F1). */
 function brand(label: string, title: string): string {
   return (
-    `<div class="brand">${qianmoMark(40)}<div class="brand-text">` +
-    `<div class="brand-en">AgentNest</div>` +
-    `<div class="brand-cn">阡陌</div>` +
-    `</div></div>` +
+    `<div class="brand">${qianmoMark(28)}<div class="brand-cn">阡陌</div></div>` +
     `<p class="inst"><b>${escapeHtml(label)}</b></p>` +
     `<h1 class="page-title" id="page-title">${escapeHtml(title)}</h1>`
   )

@@ -288,7 +288,7 @@ export const DESKTOP_PAGE_CSS = `
 .dk-title { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
 .dk-title b { font-size: var(--text-14, 14px); }
 .dk-screen { position: relative; display: inline-grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: var(--color-bg); color: var(--color-muted); flex: none; }
-.dk-screen.dk-live { color: var(--color-accent); }
+.dk-screen.dk-live { color: var(--color-accent-2); }
 .dk-screen.dk-live::after { content: ''; position: absolute; right: 5px; top: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--color-ok, #6f8f5f); box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-ok, #6f8f5f) 60%, transparent); animation: dk-pulse 2.4s ease-out infinite; }
 @keyframes dk-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-ok, #6f8f5f) 55%, transparent); } 70%, 100% { box-shadow: 0 0 0 7px transparent; } }
 @media (prefers-reduced-motion: reduce) { .dk-screen.dk-live::after { animation: none; } }
