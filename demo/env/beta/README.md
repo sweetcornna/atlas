@@ -870,6 +870,7 @@ demo/env/beta/beta-up.sh --role host -- --replicate "$HOME/qianmo-beta" <原有�
 - 进度与失败原因：`<内测根>/state/replicate/<作业>.ndjson`。中途失败时目标机上的目录改名为 `*.failed-<UTC>`，中枢上本次写下的东西已撤回。
 - 中枢上的那半步可以单独跑：`ops/replicate-hub.sh prepare|add|restart|discard`。
 - 节点由 `nohup` 起，目标机重启后要运维重起一次（与手工装的节点相同）。
+- 复制会往 `ops/console.env` 追加 `--chat-url <节点>=ws://127.0.0.1:<端口>`。之后再跑中枢腿时，把 `console.env` 里 `CONSOLE_EXTRA_ARGS` 的现有尾参原样带上，少带一个，那个节点在对话里就拨不通了。
 
 ## 值守作业（`ops/watch-hub.sh`，`qm watch`）
 

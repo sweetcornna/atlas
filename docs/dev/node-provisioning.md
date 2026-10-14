@@ -681,6 +681,7 @@ provision  与两者都不可比：admin ⊉ provision，provision ⊉ view
 
 - 打开：中枢腿的控制台尾参加 `--replicate <内测根>`（写进 `ops/console.env`）。只在部署树里跑的控制台上生效；源码检出里起的控制台横幅写 `UNAVAILABLE`。
 - 中枢上那半步可以单独跑：`demo/env/beta/ops/replicate-hub.sh prepare|add|restart|discard`，用法见脚本头注。
+- 复制往 `ops/console.env` 追加的 `--chat-url` 只活到下一次中枢腿：重跑中枢腿时要把 `CONSOLE_EXTRA_ARGS` 的现有尾参原样带上（`demo/env/beta/README.md` 写着同一条），否则那个节点在对话里拨不通。
 - 进度与失败原因在 `<内测根>/state/replicate/*.ndjson`；中途失败留下的 `~/atlas-beta.failed-*`、`~/qianmo-beta.failed-*` 由运维看过再删。
 
 ### 14.6 没做的
