@@ -1460,8 +1460,11 @@ test('P22 apply sends routed profiles once with their own keys and reports an ol
   )
   value(await h.port.setDefault({ profileId: 'luna' }, h.caller()))
   h.port.configureRouting(() => ({
-    auto: true,
-    routes: { chat: { profileId: 'chat-other', modelId: 'gpt-6-luna' } },
+    revision: 1,
+    routing: {
+      auto: true,
+      routes: { chat: { profileId: 'chat-other', modelId: 'gpt-6-luna' } },
+    },
   }))
   h.nodes['beta-1'].set(
     'reply-apply.json',
@@ -1485,4 +1488,66 @@ test('P22 apply sends routed profiles once with their own keys and reports an ol
     routes: { chat: { profileId: 'chat-other', modelId: 'gpt-6-luna' } },
   })
   expect(JSON.stringify(results)).not.toContain(CANARY_2)
+}, 30000)
+
+test('P22 apply under a routing revision: a moved book is refused before any node is asked, a save mid-apply refuses the nodes after it', async () => {
+  const h = harness()
+  const ops = h.caller()
+  await savedWithKey(h)
+  value(await h.port.setDefault({ profileId: 'luna' }, ops))
+  const routing = { auto: true, routes: {} }
+  h.port.configureRouting(() => ({ revision: 4, routing }))
+  const applies = (node: 'beta-1' | 'beta-4') =>
+    h.nodes[node].requests().filter(request => request.op === 'apply')
+
+  // Saved at 3, the book is at 4: 409, nothing sent, one refusal per node.
+  const stale = await h.port.apply(
+    { nodes: ['beta-1', 'beta-4'], routingRevision: 3 },
+    ops,
+  )
+  expect(stale).toMatchObject({ ok: false, failure: { code: 'conflict' } })
+  expect(applies('beta-1')).toEqual([])
+  expect(applies('beta-4')).toEqual([])
+  const refused = (await entries(h)).filter(
+    record => record.action === 'provider.apply',
+  )
+  expect(refused.map(r => [r.target, r.outcome, r.code])).toEqual([
+    ['beta-1', 'refused', 'conflict'],
+    ['beta-4', 'refused', 'conflict'],
+  ])
+  // A dry run is refused the same way and writes nothing.
+  const dry = await h.port.apply(
+    { nodes: ['beta-1'], dryRun: true, routingRevision: 3 },
+    ops,
+  )
+  expect(dry).toMatchObject({ ok: false, failure: { code: 'conflict' } })
+  expect(
+    (await entries(h)).filter(record => record.action === 'provider.apply'),
+  ).toHaveLength(2)
+
+  // The revision the card saw: shipped, with that routing.
+  const shipped = value(
+    await h.port.apply({ nodes: ['beta-1'], routingRevision: 4 }, ops),
+  )
+  expect(shipped[0]?.outcome).toBe('ok')
+  expect(applies('beta-1').at(-1)?.routing).toEqual(routing)
+
+  // Somebody saves after the up-front check and after beta-1 was read:
+  // beta-4 is not sent the newer split under the older revision.
+  let reads = 0
+  h.port.configureRouting(() => {
+    reads += 1
+    return { revision: reads >= 4 ? 5 : 4, routing }
+  })
+  const raced = value(
+    await h.port.apply(
+      { nodes: ['beta-1', 'beta-4'], routingRevision: 4 },
+      ops,
+    ),
+  )
+  expect(raced.map(r => [r.node, r.outcome, r.code])).toEqual([
+    ['beta-1', 'ok', undefined],
+    ['beta-4', 'refused', 'routing-conflict'],
+  ])
+  expect(applies('beta-4')).toEqual([])
 }, 30000)

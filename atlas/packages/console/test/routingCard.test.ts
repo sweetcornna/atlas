@@ -17,6 +17,7 @@ import {
   VIEW,
 } from './accountsHarness.js'
 import { FakeRouting } from './directionFakes.js'
+import { MemoryActionLedger } from './memoryActions.js'
 import { browse, visibleText } from './pageHarness.js'
 import { FakeProviders } from './providersFake.js'
 
@@ -41,6 +42,7 @@ describe('任务分工 · the card', () => {
       snapshot: await snapshotOf(routing),
       node: null,
       nodes: ['node-a', 'node-b'],
+      managed: ['node-a', 'node-b'],
       writer: false,
       now: START,
     })
@@ -74,6 +76,7 @@ describe('任务分工 · the card', () => {
       snapshot: await snapshotOf(routing),
       node: null,
       nodes: [],
+      managed: [],
       writer: true,
       now: START,
     })
@@ -105,6 +108,7 @@ describe('任务分工 · the card', () => {
       snapshot: await snapshotOf(routing),
       node: 'node-a',
       nodes: ['node-a', 'node-b'],
+      managed: ['node-a', 'node-b'],
       writer: true,
       now: START,
     })
@@ -118,6 +122,7 @@ describe('任务分工 · the card', () => {
       snapshot: await snapshotOf(routing),
       node: 'node-a',
       nodes: ['node-a', 'node-b'],
+      managed: ['node-a', 'node-b'],
       writer: true,
       now: START,
     })
@@ -193,5 +198,172 @@ describe('任务分工 · on the 模型 page', () => {
       }),
     )
     expect(api.status).toBe(501)
+  })
+})
+
+describe('任务分工 · saved is not shipped', () => {
+  test('a writer gets 下发 for exactly the managed nodes the split reaches, under the revision drawn', async () => {
+    const routing = new FakeRouting(() => START)
+    await routing.save(
+      { node: 'node-b', auto: false, routes: [], revision: 3 },
+      { subject: 'u:ops', role: 'ops', requestId: 'r' },
+    )
+    const snapshot = await snapshotOf(routing)
+    const everyone = renderRoutingCard({
+      snapshot,
+      node: null,
+      nodes: ['node-a', 'node-b', 'node-c', 'node-d'],
+      // node-c is not managed; node-b has a split of its own.
+      managed: ['node-a', 'node-b', 'node-d'],
+      writer: true,
+      now: START,
+    })
+    expect(everyone).toContain('data-action="prov-apply-routing"')
+    expect(everyone).toContain('data-nodes="node-a node-d"')
+    expect(everyone).toContain('data-revision="4"')
+    const text = visibleText(everyone)
+    expect(text).toContain('下发到 2 台节点')
+    expect(text).toContain('保存只改中枢上的分工 · 下发之后节点才按它派活')
+    // The button's revision is the form's: what is shipped is what was saved.
+    expect(everyone).toContain(
+      '<form id="routing-form" novalidate data-revision="4">',
+    )
+
+    const own = renderRoutingCard({
+      snapshot,
+      node: 'node-b',
+      nodes: ['node-a', 'node-b', 'node-c'],
+      managed: ['node-a', 'node-b'],
+      writer: true,
+      now: START,
+    })
+    expect(own).toContain('data-nodes="node-b"')
+    expect(visibleText(own)).toContain('下发到 1 台节点')
+  })
+
+  test('nothing to ship says why instead of drawing a button', async () => {
+    const routing = new FakeRouting(() => START)
+    const snapshot = await snapshotOf(routing)
+    const unmanaged = renderRoutingCard({
+      snapshot,
+      node: 'node-c',
+      nodes: ['node-a', 'node-c'],
+      managed: ['node-a'],
+      writer: true,
+      now: START,
+    })
+    expect(unmanaged).not.toContain('prov-apply-routing')
+    expect(visibleText(unmanaged)).toContain(
+      'node-c 不受托管 · 先给它指派模型服务',
+    )
+    const none = renderRoutingCard({
+      snapshot,
+      node: null,
+      nodes: ['node-c'],
+      managed: [],
+      writer: true,
+      now: START,
+    })
+    expect(none).not.toContain('prov-apply-routing')
+    expect(visibleText(none)).toContain('没有跟随这份分工的托管节点 · 无需下发')
+  })
+
+  test('on the page the button names the managed nodes the 模型 service reports', async () => {
+    const { h } = wired()
+    const ops = await person(h.handle, 'ops')
+    const page = await (
+      await h.handle(
+        asSession('GET', '/admin/providers', ops.sid, { header: false }),
+      )
+    ).text()
+    // FakeProviders: node-a and node-b are managed, node-c is not.
+    expect(page).toContain('data-nodes="node-a node-b"')
+    expect(page).toContain('data-revision="3"')
+    const fragment = await (
+      await h.handle(
+        asSession('GET', '/fragments/routing?node=node-c', ops.sid),
+      )
+    ).text()
+    expect(fragment).not.toContain('prov-apply-routing')
+    expect(visibleText(fragment)).toContain('node-c 不受托管')
+  })
+})
+
+describe('任务分工 · 下发 under a routing revision', () => {
+  function shipping() {
+    const routing = new FakeRouting(() => START)
+    const providers = new FakeProviders()
+    providers.routingRevision = () => routing.revision
+    const actions = new MemoryActionLedger()
+    const h = accountsHarness({ deps: { providers, routing, actions } })
+    return { h, routing, providers, actions }
+  }
+
+  test('the revision the card was drawn with ships, to the nodes named', async () => {
+    const { h, providers } = shipping()
+    const ops = await person(h.handle, 'ops')
+    const response = await h.handle(
+      asSession('POST', '/v0/providers/apply', ops.sid, {
+        body: { nodes: ['node-a'], routingRevision: 3 },
+      }),
+    )
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as {
+      results: { node: string; outcome: string }[]
+    }
+    expect(body.results.map(r => [r.node, r.outcome])).toEqual([
+      ['node-a', 'ok'],
+    ])
+    expect(providers.writes).toEqual([
+      {
+        method: 'apply',
+        input: { nodes: ['node-a'], routingRevision: 3 },
+      },
+    ])
+  })
+
+  test('a split saved again since is refused whole: 409, nothing applied, a refusal per node on record', async () => {
+    const { h, routing, providers, actions } = shipping()
+    const ops = await person(h.handle, 'ops')
+    // Somebody else saves after this card was drawn at revision 3.
+    await routing.save(
+      { node: null, auto: false, routes: [], revision: 3 },
+      { subject: 'u:other', role: 'ops', requestId: 'r' },
+    )
+    const response = await h.handle(
+      asSession('POST', '/v0/providers/apply', ops.sid, {
+        body: { nodes: ['node-a', 'node-b'], routingRevision: 3 },
+      }),
+    )
+    expect(response.status).toBe(409)
+    const failure = (await response.json()) as {
+      error: { code: string; message: string }
+    }
+    expect(failure.error.code).toBe('conflict')
+    expect(failure.error.message).toContain('任务分工')
+    expect(providers.writes).toEqual([])
+    expect(
+      actions.lines().filter(line => line.startsWith('provider.apply')),
+    ).toEqual([
+      'provider.apply node:node-a refused conflict',
+      'provider.apply node:node-b refused conflict',
+    ])
+  })
+
+  test('a revision that is not a non-negative integer is a 400 before anything else', async () => {
+    const { h, providers, actions } = shipping()
+    const ops = await person(h.handle, 'ops')
+    for (const routingRevision of ['3', -1, 1.5, null]) {
+      const response = await h.handle(
+        asSession('POST', '/v0/providers/apply', ops.sid, {
+          body: { nodes: ['node-a'], routingRevision },
+        }),
+      )
+      expect(response.status).toBe(400)
+    }
+    expect(providers.writes).toEqual([])
+    expect(
+      actions.lines().filter(line => line.startsWith('provider.')),
+    ).toEqual([])
   })
 })

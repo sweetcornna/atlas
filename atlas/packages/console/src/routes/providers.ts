@@ -67,7 +67,7 @@
  * | `PUT /v0/providers/nodes/<node>/context` `{tokens}` | writer | `setContextOverride` |
  * | `POST /v0/providers/nodes/<node>/refresh` | writer | `refreshNode` |
  * | `GET\|PUT /v0/providers/nodes/<node>/autocompact` `{value}` | writer | `autocompact` |
- * | `POST /v0/providers/apply` `{nodes?, dryRun?, force?, sessions?, profileId?}` | writer | `apply` |
+ * | `POST /v0/providers/apply` `{nodes?, dryRun?, force?, sessions?, profileId?, routingRevision?}` | writer | `apply` |
  * | `POST /v0/providers/probe` `{node, mode, …candidate}` | writer | `probe` |
  * | `POST /v0/providers/models` `{node, …candidate}` | writer | `models` |
  * | `POST /v0/providers/preview` `{node?, …candidate}` | writer | `preview` |
@@ -741,6 +741,16 @@ function endpointsOf(
             return invalid('sessions 只能是 keep 或 reset')
           }
           const profileId = stringOf(body.profileId)
+          const routingRevision = body.routingRevision
+          if (
+            routingRevision !== undefined &&
+            !(
+              Number.isSafeInteger(routingRevision) &&
+              (routingRevision as number) >= 0
+            )
+          ) {
+            return invalid('routingRevision 必须是非负整数')
+          }
           if (!dryRun) {
             const blocked = await ctx.admit()
             if (blocked !== null) return blocked
@@ -752,6 +762,9 @@ function endpointsOf(
               ...(force ? { force } : {}),
               ...(sessions === undefined ? {} : { sessions }),
               ...(profileId === undefined ? {} : { profileId }),
+              ...(routingRevision === undefined
+                ? {}
+                : { routingRevision: routingRevision as number }),
             },
             callerOf(ctx),
           )
@@ -1204,13 +1217,14 @@ const NODE_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/
  */
 async function routingCard(
   ctx: RouteContext,
-  nodes: readonly string[],
+  views: readonly ProviderNodeView[],
   asked: string | null,
 ): Promise<string> {
   const routing = ctx.deps.routing
   if (routing === undefined) return ''
   const snapshot = await routing.snapshot()
   if (!snapshot.ok) return renderRoutingFailure(snapshot.failure)
+  const nodes = views.map(one => one.node)
   const node =
     asked !== null && NODE_NAME.test(asked) && nodes.includes(asked)
       ? asked
@@ -1219,15 +1233,20 @@ async function routingCard(
     snapshot: snapshot.value,
     node,
     nodes,
+    // A split reaches a node only inside an apply, and only a managed node
+    // takes one (`not-managed` otherwise).
+    managed: views.filter(one => one.expected !== null).map(one => one.node),
     writer: routingWriter(ctx),
     now: ctx.now,
   })
 }
 
-async function routingNodes(port: ProviderPort | undefined): Promise<string[]> {
+async function routingNodes(
+  port: ProviderPort | undefined,
+): Promise<readonly ProviderNodeView[]> {
   if (port === undefined) return []
   const overview = await port.overview()
-  return overview.ok ? overview.value.nodes.map(one => one.node) : []
+  return overview.ok ? overview.value.nodes : []
 }
 
 /** `/fragments/routing?node=`: the card for another scope. */
@@ -1271,7 +1290,7 @@ async function boardPage(
       (only === ''
         ? await routingCard(
             ctx,
-            overview.ok ? overview.value.nodes.map(one => one.node) : [],
+            overview.ok ? overview.value.nodes : [],
             ctx.url.searchParams.get('routing'),
           )
         : '') +

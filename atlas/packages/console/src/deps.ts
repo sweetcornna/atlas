@@ -2040,6 +2040,9 @@ export interface ProviderPort {
    * 部分失败时整体仍是 `ok: true`，逐节点看 {@link ProviderApplyResult.outcome}。
    * `profileId` 只用于 dry-run（「换成这份会变什么」）；真下发带它是 `invalid`，
    * 换档案要先 {@link ProviderPort.assign}。
+   * `routingRevision` 是任务分工页保存后拿到的路由簿修订号：路由簿此刻不是这个修订号
+   * （有人又改过）就整次 `conflict`（409），每个节点记一条 `refused`；逐节点下发时
+   * 再对一次，中途被改的那台 `refused`、码 `routing-conflict`。不带就照旧下发当前分工。
    */
   apply(
     input: {
@@ -2048,6 +2051,7 @@ export interface ProviderPort {
       readonly force?: boolean
       readonly sessions?: 'keep' | 'reset'
       readonly profileId?: string
+      readonly routingRevision?: number
     },
     caller: ProviderCaller,
   ): Promise<ProviderResult<readonly ProviderApplyResult[]>>

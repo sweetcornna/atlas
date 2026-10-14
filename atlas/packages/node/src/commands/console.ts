@@ -919,7 +919,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   if (routing)
     providers!.configureRouting(node => {
       const view = routing.effective(node)
-      return view.updatedAt === null ? undefined : routingWire(view)
+      return view.updatedAt === null
+        ? { revision: view.revision }
+        : { revision: view.revision, routing: routingWire(view) }
     })
   const firstAudit = audits[0]
   if (firstAudit === undefined) {

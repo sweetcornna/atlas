@@ -1421,6 +1421,9 @@ export function progressPanel(): string {
     `<div class="rowx"><span class="flabel" id="prov-progress-title">切换进度</span>` +
     `<button type="button" class="btn btn-ghost btn-small" data-action="prov-progress-close">收起</button></div>` +
     `<ul class="prov-plan" id="prov-progress-list"></ul>` +
+    // The node recycles its agent to switch, and a delivery waits only a few
+    // seconds for the next one (`host/resident.ts`, RUNTIME_WAIT_MS).
+    `<p class="note">切换时节点会重启智能体 · 显示已生效之前发给它的消息可能被退回 · 退回的消息重发即可</p>` +
     `</section>`
   )
 }

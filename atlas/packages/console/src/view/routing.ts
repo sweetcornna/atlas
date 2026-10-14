@@ -62,6 +62,8 @@ interface RoutingCardModel {
   readonly node: string | null
   /** Every node the 模型 service knows, for the scope select. */
   readonly nodes: readonly string[]
+  /** The nodes it manages: only those take an apply, and the split rides in one. */
+  readonly managed: readonly string[]
   readonly writer: boolean
   readonly now: number
 }
@@ -206,6 +208,42 @@ function recentOf(model: RoutingCardModel): string {
   )
 }
 
+/**
+ * The nodes this scope's split reaches on the next apply: the one node, or
+ * every managed node without a split of its own.
+ */
+function reachedOf(model: RoutingCardModel): readonly string[] {
+  if (model.node !== null) {
+    return model.managed.includes(model.node) ? [model.node] : []
+  }
+  return model.managed.filter(
+    name => !model.snapshot.nodes.some(one => one.node === name),
+  )
+}
+
+/**
+ * 下发: saving changes the hub's book only; a node takes the split inside an
+ * apply. The button carries the revision drawn, so the hub refuses it if the
+ * book has moved on since (`routingRevision`). The page script for the 模型
+ * area runs it and follows the switch in 切换进度.
+ */
+function shipOf(model: RoutingCardModel, view: ModelRoutingView): string {
+  const reached = reachedOf(model)
+  if (reached.length === 0) {
+    return `<span class="note">${escapeHtml(
+      model.node === null
+        ? '没有跟随这份分工的托管节点 · 无需下发'
+        : `${model.node} 不受托管 · 先给它指派模型服务`,
+    )}</span>`
+  }
+  return (
+    `<button type="button" class="btn btn-secondary btn-small" id="routing-ship" ` +
+    `data-action="prov-apply-routing" data-nodes="${attr(reached.join(' '))}" ` +
+    `data-revision="${attr(String(view.revision))}" data-write>` +
+    `${escapeHtml(`下发到 ${reached.length} 台节点`)}</button>`
+  )
+}
+
 /** The whole card; the fragment answers the same markup for another scope. */
 export function renderRoutingCard(model: RoutingCardModel): string {
   const { view, own } = viewOf(model)
@@ -234,9 +272,13 @@ export function renderRoutingCard(model: RoutingCardModel): string {
   const save = model.writer
     ? `<button type="submit" class="btn btn-primary btn-small" data-write>保存分工</button>`
     : ''
+  const ship = model.writer ? shipOf(model, view) : ''
   const body =
     `<div class="route-grid">${rows(model, view)}</div>` +
-    `<div class="route-foot">${auto}<span class="kit-acts">${clear}${save}</span></div>` +
+    `<div class="route-foot">${auto}<span class="kit-acts">${clear}${ship}${save}</span></div>` +
+    (model.writer
+      ? `<p class="note">保存只改中枢上的分工 · 下发之后节点才按它派活</p>`
+      : '') +
     `<p class="note route-status" id="routing-status" role="status"></p>`
   return (
     `<section class="card elev-sm route-card" id="routing" data-node="${attr(model.node ?? '')}">` +

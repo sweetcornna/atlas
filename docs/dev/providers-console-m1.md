@@ -1616,7 +1616,7 @@ v1.0 写成时这四点待定，负责人当天拍板，结果记为 §0.1 的 D
 
 自动归类按固定优先级首条匹配：视频 → 语音 → 看图 → 生图 → 规划 → 代码块 → 文件扩展名 → 报错栈 → 编程关键词 → 对话。关键词同时识别中英文，英文按词边界匹配；全部规则见目录包，不由模型猜测。多关键词时以该优先级为准。快速小任务没有文字推断规则，通过显式 direction 或角色路由使用。请求带 direction 优先于 auto；auto 关时走 default（审计 direction 为 code、source 为 default）。带 direction 的 task.request 载荷封闭为 `{prompt, direction}`；不带 direction 的历史载荷仍按旧协议处理。
 
-路由簿在 `providers.ndjson` 同目录的 `routing.json`，0600、原子替换、排他写锁。snapshot 提供默认、节点覆盖、模型 kind 与最近 20 条节点归类；revision 是整本的乐观并发号。save 的 routes 是局部补丁；首次建立节点覆盖从默认拷贝，其后为完整覆盖，清除覆盖重新跟随默认。节点清除也递增 revision，旧编辑不能复活已经清除的覆盖。`routing.save` / `routing.clear` 经 DirectionActor 记动作账本。保存修改期望状态；经现有模型服务 apply 动作下发后节点生效。
+路由簿在 `providers.ndjson` 同目录的 `routing.json`，0600、原子替换、排他写锁。snapshot 提供默认、节点覆盖、模型 kind 与最近 20 条节点归类；revision 是整本的乐观并发号。save 的 routes 是局部补丁；首次建立节点覆盖从默认拷贝，其后为完整覆盖，清除覆盖重新跟随默认。节点清除也递增 revision，旧编辑不能复活已经清除的覆盖。`routing.save` / `routing.clear` 经 DirectionActor 记动作账本。保存修改期望状态；经现有模型服务 apply 动作下发后节点生效。卡片在保存后明说「尚未下发」并给出下发按钮；按钮的 apply 带 `routingRevision`，中枢在发出前与逐节点读取时各核对一次，路由簿已前进就拒绝（整次 409 / 单台 `routing-conflict`），不会把操作者没看过的分工下发出去。
 
 apply 保持 v1 与原来的 64 KiB 限额；新请求在主 profile 外带：
 

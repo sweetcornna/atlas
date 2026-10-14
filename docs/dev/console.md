@@ -710,7 +710,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | PUT | `/v0/providers/nodes/<节点>/assignment`、`/v0/providers/nodes/<节点>/context` | **ops 个人账号** | 指派（继承 / 单独指定 / 不托管）；上下文窗口覆盖（D-8，随下一次下发生效） |
 | POST | `/v0/providers/nodes/<节点>/refresh` | **ops 个人账号** | 向节点要一次状态（中枢 5 秒内不重复问） |
 | GET、PUT | `/v0/providers/nodes/<节点>/autocompact` | **ops 个人账号** | 读、改自动压缩阈值（D-9，立即写到节点；节点环境变量钉住时 422） |
-| POST | `/v0/providers/apply` | **ops 个人账号** | `{ nodes?, dryRun?, force?, sessions?, profileId? }`，每个节点一条结果，部分失败也是 200；dry-run 不记账 |
+| POST | `/v0/providers/apply` | **ops 个人账号** | `{ nodes?, dryRun?, force?, sessions?, profileId?, routingRevision? }`，每个节点一条结果，部分失败也是 200；dry-run 不记账。带 `routingRevision`（任务分工卡片画出时的路由簿修订号）而路由簿已经不是这个修订号：整次 409 `conflict`、一个节点也不发，每个节点记一条 `provider.apply refused conflict`；逐节点下发途中被改的那台 `refused`、码 `routing-conflict` |
 | POST | `/v0/providers/probe`、`/v0/providers/models`、`/v0/providers/preview` | **ops 个人账号** | 测连 / 测速 / 真实调用；拉模型列表；编译预览。可以带表单上未保存的档案与密钥，密钥不落盘 |
 | GET | `/v0/providers/export?id=<档案 id>…` | **ops 个人账号** | 导出文件（附件，`document` 级，链接可下），不含密钥与指纹 |
 | POST | `/v0/providers/import/preview`、`/v0/providers/import` | **ops 个人账号** | 导入预览、导入（撞 id 的用 `renames` 另存）；有目录不认识的键整份拒绝 |
@@ -2387,7 +2387,7 @@ IPv4 映射/兼容 IPv6 按嵌入 IPv4 判断，IP 字面量同等处理。仅�
 | PUT `/v0/routing` | ops 个人账号（共用管理令牌只读） | `{node:null或节点名, auto, routes:[{direction,profileId,modelId}], revision}`；局部更新，revision 失配 rejected |
 | DELETE `/v0/routing/nodes/<node>` | ops 个人账号（共用管理令牌只读） | 清除节点覆盖并跟随默认 |
 
-写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。路由簿写锁记录 PID、随机 nonce 与时间：活持有者拒绝并发写入，PID 消失或超过 5 分钟时回收，释放只删除仍匹配自身令牌的锁。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
+写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。保存与清除只改中枢的路由簿，节点要等下一次模型服务下发才按新分工派活：卡片保存后写「已保存 · 尚未下发」，旁边是「下发到 N 台节点」按钮（范围内跟随这份分工、受托管的节点），它走 `POST /v0/providers/apply` 并带上卡片画出时的 `routingRevision`；这期间有人又存过就整次 409、不下发，卡片换成最新分工，不给「重试」。路由簿写锁记录 PID、随机 nonce 与时间：活持有者拒绝并发写入，PID 消失或超过 5 分钟时回收，释放只删除仍匹配自身令牌的锁。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
 
 
 ## 长期记忆（P23）
