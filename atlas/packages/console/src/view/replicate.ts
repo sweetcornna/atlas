@@ -44,7 +44,7 @@ export const REPLICATE_STEPS: readonly (readonly [
   ['ready', '等待就绪'],
 ]
 
-export const REPLICATE_HEADING_ID = 'h-replicate'
+const REPLICATE_HEADING_ID = 'h-replicate'
 
 function stepLabel(step: string): string {
   return REPLICATE_STEPS.find(([name]) => name === step)?.[1] ?? step
@@ -98,7 +98,7 @@ function stepsSkeleton(): string {
   )
 }
 
-export interface ReplicateModel {
+interface ReplicateModel {
   /** Ops may run it; anyone else sees the list and one line saying why not. */
   readonly writable: boolean
   readonly jobs: readonly ReplicateJob[]
