@@ -563,6 +563,8 @@ export interface ScheduleRunView {
   readonly runId: string
   /** Creator is retained after deletion so history keeps its account scope. */
   readonly createdBy?: string
+  /** 这次发往的智能体；任务删除或改目标后，租户范围仍按它过滤。旧记录没有。 */
+  readonly target?: string
   readonly scheduleId: string
   readonly plannedAt: number
   readonly startedAt: number
@@ -614,6 +616,8 @@ export interface NotifyChannelView {
   readonly kind: NotifyChannelKind
   /** 只有主机名：地址里常带密钥。 */
   readonly host: string
+  /** 所属租户；未开租户或只给平台用的渠道为 null，旧记录没有。 */
+  readonly tenant?: string | null
   readonly createdAt: number
   readonly lastUsedAt: number | null
   readonly lastError: string | null
@@ -658,6 +662,8 @@ export interface ScheduleDraft {
 }
 
 export interface NotifyChannelDraft {
+  /** Platform ops may select a tenant; scoped routes set it themselves. */
+  readonly tenant?: string
   readonly id?: string
   readonly name: string
   readonly kind: NotifyChannelKind
@@ -673,6 +679,10 @@ export interface ScheduleReader {
 export interface SchedulesPort {
   /** In-memory ownership preflight; never reads a port or admits an action. */
   visible(id: string, actor: DirectionActor): boolean
+  /** In-memory tenant preflight: the schedule's target, undefined if unknown. */
+  targetOf(id: string): string | undefined
+  /** In-memory tenant preflight: null is platform-only, undefined unknown. */
+  channelTenant(id: string): string | null | undefined
   snapshot(actor: ScheduleReader): Promise<ConsoleResult<SchedulesSnapshot>>
   save(
     draft: ScheduleDraft,

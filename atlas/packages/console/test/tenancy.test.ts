@@ -23,6 +23,7 @@ import {
   type TenantPort,
 } from '../src/tenancy.js'
 import { createConsoleHandler } from '../src/http.js'
+import type { SchedulesSnapshot } from '../src/directionPorts.js'
 import {
   type ConsoleAgent,
   type ConsoleDeps,
@@ -264,9 +265,21 @@ function fixture() {
       },
     },
   }
-  // The 2026-10 ports, which carry no tenant wrapper yet (review D01).
+  // The 2026-10 ports (review D01); only some carry a tenant wrapper yet.
   const memory = new FakeMemory(() => 1)
-  const schedules = new FakeSchedules(() => 1)
+  const schedules = new FakeSchedules(
+    () => 1,
+    [
+      'qianmo://tokyo-1/planner',
+      'qianmo://osaka-1/writer',
+      'qianmo://berlin-1/planner',
+    ],
+  )
+  schedules.channels = [
+    ...schedules.channels,
+    { ...schedules.channels[0]!, id: 'ch-a', name: 'a-channel', tenant: 'a' },
+    { ...schedules.channels[0]!, id: 'ch-b', name: 'b-channel', tenant: 'b' },
+  ]
   const files = new FakeFiles(() => 1),
     desktop = new FakeDesktop(() => 1),
     connectors = new FakeConnectors(() => 1),
@@ -520,17 +533,63 @@ describe('M2 request scopes', () => {
         (await h.handle(asBearer('GET', path, h.alice.credential))).status,
       ).toBe(403)
   })
-  test('memory, files, connectors and the cloud computer are tenant-scoped before admission; the remaining 2026-10 ports stay unwired', async () => {
+  test('memory, files, connectors, schedules and the cloud computer are tenant-scoped before admission; the remaining 2026-10 ports stay unwired', async () => {
     const h = fixture()
     const allowed = await h.handle(
       asBearer('GET', '/v0/memory', h.alice.credential),
     )
     expect(allowed.status).toBe(200)
     expect(h.memory.calls).toEqual([`list tokyo-1/planner ${h.alice.subject}`])
+    // Schedules by their target agent, channels by their owner tenant; the
+    // platform-only `ch-1` and tenant b's `ch-b` stay out of sight.
+    const listed = await h.handle(
+      asBearer('GET', '/v0/schedules', h.alice.credential),
+    )
+    expect(listed.status).toBe(200)
+    const snapshot = (await listed.json()) as SchedulesSnapshot
+    expect(snapshot.schedules.map(v => v.id)).toEqual(['sch-1'])
+    expect(snapshot.runs.map(v => v.scheduleId)).toEqual(['sch-1', 'sch-1'])
+    expect(snapshot.channels.map(v => v.id)).toEqual(['ch-a'])
+    expect(snapshot.targets).toEqual(['qianmo://tokyo-1/planner'])
     expect(
-      (await h.handle(asBearer('GET', '/v0/schedules', h.alice.credential)))
-        .status,
-    ).toBe(501)
+      (
+        await h
+          .handle(asBearer('GET', '/v0/schedules', h.platform.credential))
+          .then(r => r.json() as Promise<SchedulesSnapshot>)
+      ).channels.map(v => v.id),
+    ).toEqual(['ch-1', 'ch-a', 'ch-b'])
+    const jobs = await h.handle(
+      asBearer('GET', '/admin/jobs', h.alice.credential),
+    )
+    expect(jobs.status).toBe(200)
+    const html = await jobs.text()
+    expect(html).toContain('a-channel')
+    for (const foreign of ['b-channel', 'osaka-1', 'berlin-1'])
+      expect(html).not.toContain(foreign)
+    h.schedules.calls.length = 0
+    for (const [method, path, body] of [
+      ['GET', '/v0/schedules/sch-2', undefined],
+      ['POST', '/v0/schedules/sch-2/run', undefined],
+      ['DELETE', '/v0/schedules/sch-2', undefined],
+      [
+        'POST',
+        '/v0/schedules',
+        { title: 'x', target: 'qianmo://berlin-1/planner', channels: [] },
+      ],
+      [
+        'POST',
+        '/v0/schedules',
+        { title: 'x', target: 'qianmo://tokyo-1/planner', channels: ['ch-b'] },
+      ],
+      ['POST', '/v0/channels/ch-b/test', undefined],
+      ['DELETE', '/v0/channels/ch-1', undefined],
+      ['POST', '/v0/channels', { tenant: 'b', name: 'x', kind: 'bark' }],
+    ] as const) {
+      const result = await h.handle(
+        asBearer(method, path, h.alice.credential, body),
+      )
+      expect(result.status).toBe(404)
+    }
     expect(h.schedules.calls).toEqual([])
     h.memory.calls.length = 0
     for (const [method, suffix] of [
@@ -585,11 +644,20 @@ describe('M2 request scopes', () => {
         .status,
     ).toBe(200)
     expect(h.memory.calls).toEqual([])
-    for (const path of ['/v0/schedules', '/v0/routing', '/v0/avatars']) {
+    for (const path of ['/v0/routing', '/v0/avatars']) {
       expect(
         (await h.handle(asBearer('GET', path, h.alice.credential))).status,
       ).toBe(501)
     }
+    // Withdrawn from every tenant: the schedules page empties.
+    const withdrawn = (await (
+      await h.handle(asBearer('GET', '/v0/schedules', h.alice.credential))
+    ).json()) as SchedulesSnapshot
+    expect([withdrawn.schedules, withdrawn.runs, withdrawn.channels]).toEqual([
+      [],
+      [],
+      [],
+    ])
     for (const key of [
       'agent:qianmo://berlin-1/planner',
       `user:${h.bob.subject}`,
@@ -611,7 +679,7 @@ describe('M2 request scopes', () => {
     // wrappers: their pages show.
     for (const href of ['/admin/files', '/admin/connect', '/admin/desktop'])
       expect(page).toContain(`href="${href}"`)
-    for (const port of [h.schedules, h.routing, h.handoffDevices, h.avatars])
+    for (const port of [h.routing, h.handoffDevices, h.avatars])
       expect(port.calls).toEqual([])
   })
   test('audit source selectors and server notes cannot reach an external tenant', async () => {
