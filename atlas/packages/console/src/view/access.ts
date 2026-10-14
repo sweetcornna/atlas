@@ -1132,7 +1132,7 @@ export const ACCESS_PAGE_CSS = `
   border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 600;
 }
 .access-tab:hover { color: var(--color-text); }
-.access-tab[aria-current="page"] { color: var(--color-text); border-bottom-color: var(--color-accent); }
+.access-tab[aria-current="page"] { color: var(--color-text); border-bottom-color: var(--color-text); }
 .access-table td { vertical-align: top; }
 .access-table td.when { white-space: nowrap; }
 .access-table td.when time { display: block; font-family: var(--font-mono); font-size: 12px; }
