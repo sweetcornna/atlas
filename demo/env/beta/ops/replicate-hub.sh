@@ -32,6 +32,11 @@
 #   restart  起新节点的隧道与镜像（beta-up.sh --role host --only links），再重启注册中心与
 #            控制台的单元：两者的命令行都由 peers.conf 派生，新节点的地址、公钥、PSK 与
 #            模型执行器从这一刻起生效。控制台会断开约几秒，页面自己重连。
+#            中枢腿是手工 `beta-up.sh --role host` 起的时候，两个单元只是 enable 了、并不
+#            active：对它们 `systemctl --user restart` 只会 start，而 ExecStart 见进程在跑就
+#            不重起（README「控制台与注册中心的开机自启」），跑着的仍是旧命令行。所以不是
+#            active 的那个单元，先用 beta-down.sh 停掉手工起的进程，再交给单元起。最后核对
+#            run/console.pid 换了：没换就失败，不报 RESTARTED。stdout：RESTARTED。
 #   discard  撤回 prepare / add 写下的东西（只删本脚本这一次建的、并在
 #            state/replicate/<节点>.created 里记过的）。复制中途失败时由 `qm replicate run` 调。
 #
@@ -284,11 +289,35 @@ cmd_check() {
   printf 'READY\n'
 }
 
+# 控制台此刻的 pid 文件内容；没有就是空串。
+console_pid() {
+  local file
+  file="$(beta_pidfile "$BETA_CONSOLE_PROC")"
+  [ -f "$file" ] || return 0
+  tr -d ' \n' <"$file" 2>/dev/null || true
+}
+
 cmd_restart() {
+  local before after unit proc
   beta_require_marker
   "$QIANMO_BETA_ENV_DIR/beta-up.sh" --role host --only links >&2
+  before="$(console_pid)"
+  # 不是 active 的单元没有起过此刻在跑的那个进程（见头注）：先停掉手工起的那个。
+  # 控制台在前：它 Requires 注册中心。
+  for unit in "$BETA_CONSOLE_UNIT" "$BETA_REGISTRY_UNIT"; do
+    [ "$(systemctl --user is-active "$unit" 2>/dev/null || true)" != 'active' ] || continue
+    proc="$BETA_CONSOLE_PROC"
+    [ "$unit" = "$BETA_CONSOLE_UNIT" ] || proc="$BETA_REGISTRY_PROC"
+    note "${unit} 不是 active：先停掉手工起的 ${proc}，再交给单元起"
+    "$QIANMO_BETA_ENV_DIR/beta-down.sh" "$proc" >&2
+  done
   # 一条命令两个单元：控制台 Requires 注册中心，分两次会把控制台重启两遍。
   systemctl --user restart "$BETA_REGISTRY_UNIT" "$BETA_CONSOLE_UNIT"
+  after="$(console_pid)"
+  if [ -z "$after" ] || [ "$after" = "$before" ]; then
+    refuse "控制台没有重起（run/console.pid 仍是 ${before:-<空>}）：新节点还没接进控制台。
+看 journalctl --user -u ${BETA_CONSOLE_UNIT}，修好后跑 replicate-hub.sh restart"
+  fi
   printf 'RESTARTED\n'
 }
 
