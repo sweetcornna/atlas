@@ -649,6 +649,8 @@ a.brand-cn:hover { color: var(--color-quiet); }
 .sec-head h2, .sec-head h3 { margin: 0; }
 /* A polled fragment draws its own head over a block, not a flex column. */
 .sec-head + .pane { margin-top: var(--space-3); }
+:not(.sec) > .pane + .sec-head { margin-top: var(--space-8); }
+.pane > .bar + .bar, .pane > .bar + .card { margin-top: var(--space-2); }
 .cards { display: grid; gap: var(--space-3); }
 .g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1107,9 +1109,8 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #111
 .dlg-icon {
   width: 44px; height: 44px; border-radius: 50%; flex: none;
   display: grid; place-items: center;
-  background: var(--color-accent-200); color: var(--color-accent-800);
+  background: var(--ui-selected); color: var(--color-text);
 }
-.dlg-icon-2 { background: var(--color-accent-2-200); color: var(--color-accent-2-800); }
 .dialog-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: var(--text-20); }
 .dialog-body { font-size: var(--text-14); display: flex; flex-direction: column; gap: var(--space-3); }
 .recap {
