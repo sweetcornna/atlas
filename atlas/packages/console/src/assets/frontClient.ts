@@ -795,6 +795,13 @@ function frontScript(): string {
     if (switching || !showsState()) { say(status, tx('opening', '正在打开会话'), 'muted'); return; }
     var text = (typeof given === 'string' ? given : box.value).trim();
     if (!text) return;
+    // SSH credentials are never sent to a model: the 部署到新服务器 card takes
+    // them (view/frontReplicate.ts). 'keep' leaves the text in the box.
+    var taken = window.qianmoFrontReplicate ? window.qianmoFrontReplicate.take(text) : null;
+    if (taken) {
+      if (taken === 'taken' && typeof given !== 'string') { box.value = ''; autosize(); }
+      return;
+    }
     var thread = byId('fx-thread');
     var ready = !!thread && (thread.getAttribute('data-open') === '1' || thread.getAttribute('data-start') === '1');
     if (!ready) { say(status, tx('unavailable', '暂不可对话'), 'bad'); return; }

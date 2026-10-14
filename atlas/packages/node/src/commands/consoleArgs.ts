@@ -511,6 +511,11 @@ export interface ConsoleCliConfig {
   /** 服务器备注落盘的绝对路径。 */
   readonly serverNotesPath: string
   /**
+   * 添加服务器（`--replicate <内测根>`，`node-provisioning.md` §14）：中枢把自己复制
+   * 到一台新服务器。给了才开；值是中枢的内测根（`QIANMO_BETA_ROOT`）。
+   */
+  readonly replicateRoot?: string
+  /**
    * 托管清单（P15.2，`--managed`）：中枢 `peers.conf` 的地址行。给了，页面上的
    * 发布与恢复只认这里的地址、端点从这里取；不给就不查，横幅写明。
    */
@@ -644,6 +649,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let actionsStoreGiven = false
   let verifyActions = false
   let providers = false
+  let replicateRoot: string | undefined
   const providerPaths = { ...consoleProviderPaths() }
   const providerLocal = new Map<string, string>()
   const providerSsh = new Map<
@@ -1087,6 +1093,15 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       index = parsed.next
     } else if (arg === '--verify-actions') {
       verifyActions = true
+    } else if (arg === '--replicate' || arg?.startsWith('--replicate=')) {
+      const parsed = residentOptionValue(args, index, '--replicate')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error(
+          '--replicate must be the absolute path of the beta root',
+        )
+      }
+      replicateRoot = resolve(parsed.value)
+      index = parsed.next
     } else if (arg === '--providers') {
       providers = true
     } else if (
@@ -1503,6 +1518,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     ...(schedules ? { schedules: true } : {}),
     nodeServers,
     serverNotesPath,
+    ...(replicateRoot === undefined ? {} : { replicateRoot }),
     ...(managed.length === 0 ? {} : { managed }),
     // Every account key only when the feature is on: a config without accounts
     // has exactly the shape it had before accounts existed.
@@ -1774,6 +1790,10 @@ Options (each accepts both --name value and --name=value):
                            qm audit --verify cannot read this
                            file: its lines are the account book's, not the
                            audit trail's.
+  --replicate <abs path>   Turn on 添加服务器: copy this hub onto a new server
+                           over SSH (password or private key, used once and
+                           never stored). The value is the hub's beta root.
+                           Only from a deployment tree (dist/ + demo/).
   --providers              Turn on model services: provider profiles kept on
                            this console, keys sealed under a master key, and
                            applied to nodes over the sixth action. Off by

@@ -773,6 +773,104 @@ export interface ServerNotesPort {
 }
 
 // ---------------------------------------------------------------------------
+// ReplicatePort —— 把中枢复制到一台新服务器（`node-provisioning.md` §14）
+// ---------------------------------------------------------------------------
+
+/** 操作者给的登录方式：口令或整段私钥。只进 {@link ReplicatePort.inspect} 一次。 */
+export type ReplicateAuthInput =
+  | { readonly kind: 'password'; readonly secret: string }
+  | { readonly kind: 'key'; readonly secret: string }
+
+export interface ReplicateTargetInput {
+  readonly host: string
+  readonly port: number
+  readonly user: string
+  readonly auth: ReplicateAuthInput
+}
+
+/**
+ * 检查的结果。**不含凭据**：凭据留在宿主进程里，按 `ticket` 取，`start` 用掉
+ * 或过期（{@link ReplicateInspection.expiresAt}）就丢。
+ */
+export interface ReplicateInspection {
+  readonly ticket: string
+  readonly host: string
+  readonly port: number
+  readonly user: string
+  /** ed25519 在前；操作者确认的是第一把。 */
+  readonly hostKeys: readonly {
+    readonly type: string
+    readonly fingerprint: string
+  }[]
+  readonly os: string
+  readonly arch: string
+  readonly kernel: string
+  readonly memMb: number
+  readonly diskMb: number
+  readonly supported: boolean
+  /** `supported` 为假时，为什么。 */
+  readonly reason?: string
+  /** 建议的节点名、智能体名与服务器名，页面上可以改。 */
+  readonly suggested: {
+    readonly node: string
+    readonly agent: string
+    readonly server: string
+  }
+  readonly expiresAt: number
+}
+
+export interface ReplicateStartInput {
+  readonly ticket: string
+  /** 操作者看过、确认的那把主机公钥指纹。 */
+  readonly fingerprint: string
+  readonly node: string
+  readonly agent: string
+  readonly server: string
+}
+
+export type ReplicateJobState = 'running' | 'done' | 'failed'
+
+export interface ReplicateJobEvent {
+  readonly at: number
+  readonly step: string
+  readonly state: 'start' | 'ok' | 'fail' | 'info'
+  readonly detail?: string
+}
+
+/** 一次复制作业，按它自己的进度日志折出来。 */
+export interface ReplicateJob {
+  readonly job: string
+  readonly node: string
+  readonly agent: string
+  readonly host: string
+  readonly state: ReplicateJobState
+  /** 正在做或停在的那一步。 */
+  readonly step: string
+  readonly startedAt: number
+  readonly updatedAt: number
+  readonly events: readonly ReplicateJobEvent[]
+  /** 做成之后新智能体的地址。 */
+  readonly address?: string
+  /** 失败时那一句。 */
+  readonly error?: string
+}
+
+/**
+ * 复制面。宿主只在 `--replicate` 打开时接。
+ *
+ * 凭据的去向写死在这个形状里：`inspect` 收、宿主留在内存里，`start` 按票取出、
+ * 交给后台作业后丢掉；三个读方法与 HTTP 回包里都没有它。
+ */
+export interface ReplicatePort {
+  inspect(
+    target: ReplicateTargetInput,
+  ): Promise<ConsoleResult<ReplicateInspection>>
+  start(input: ReplicateStartInput): Promise<ConsoleResult<ReplicateJob>>
+  jobs(): Promise<ConsoleResult<readonly ReplicateJob[]>>
+  job(id: string): Promise<ConsoleResult<ReplicateJob>>
+}
+
+// ---------------------------------------------------------------------------
 // NotifyPort —— 告警收件箱（J5，P18.15）
 // ---------------------------------------------------------------------------
 
@@ -1084,6 +1182,9 @@ export const CONSOLE_ACTIONS = [
   'agent.retire',
   'wake.send',
   'server.note.set',
+  /** 复制到新服务器：检查一台、开始一次作业。target 是 `user@host:port`，从不带凭据。 */
+  'server.replicate.inspect',
+  'server.replicate.start',
   'chat.session.open',
   'chat.message.send',
   /** 本地命令（P18.20）：取代那一句的 `chat.message.send`，target 是会话 id。 */
@@ -2181,6 +2282,8 @@ export interface ConsoleDeps {
   readonly nodeServers?: readonly NodeServer[]
   /** 备注的落盘面。缺席时备注框只读并说明原因。 */
   readonly serverNotes?: ServerNotesPort
+  /** 复制到新服务器（`--replicate`）。缺席时服务器页没有「添加服务器」，API 回 501。 */
+  readonly replicate?: ReplicatePort
   /**
    * The CLI name the certificate column writes its copyable `qm ca issue`
    * line under. Read from the host's identity roster, never spelled here.

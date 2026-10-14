@@ -675,6 +675,10 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/wake` | **admin** | 唤醒 |
 | GET | `/v0/servers` | view | 每台服务器、它承载的节点、以及备注（§11）。没配 `--node-server` 时 501 |
 | PUT | `/v0/servers/<server id>/note` | **admin** | 写一台服务器的备注。**server id 必须在启动时那张白名单里**，否则 403 |
+| POST | `/v0/replicate/inspect` | **admin** | 添加服务器第一步：`{ host, port, user, auth: { kind: password\|key, secret } }`，登录一次、只读探查，回 `ReplicateInspection`（主机指纹、系统、内存、磁盘、建议的名字、一张 15 分钟的票）。**回包里没有凭据**，凭据留在宿主进程内存里按票取。没开 `--replicate` 时 501（`node-provisioning.md` §14） |
+| POST | `/v0/replicate/start` | **admin** | `{ ticket, fingerprint, node, agent, server }`：指纹必须是检查时扫到的那一把；票用一次就作废。202 回作业，作业在后台跑（`qm replicate run`），同一时间只跑一个 |
+| GET | `/v0/replicate/jobs` | view | `{ jobs }`：按 `<内测根>/state/replicate/*.ndjson` 折出的作业，新的在前 |
+| GET | `/v0/replicate/jobs/<作业>` | view | 一个作业：每一步的事件、状态（running / done / failed）、做成后的地址或失败那一句 |
 | GET | `/v0/alerts?level=&state=` | view | `{ unread, total, alerts, sources }`（§10.4） |
 | POST | `/v0/alerts/<告警 id>/ack` | **admin** | 确认一条。**id 必须在当前收件箱里**，否则 404；没接告警存储时 501 |
 | GET | `/v0/jobs` | view | 调度器快照（§10.4）。没接调度器端口时 501 |
@@ -722,6 +726,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/fragments/alerts?level=&state=`、`/fragments/jobs`、`/fragments/schedules` | view | HTML 片段 |
 | GET | `/fragments/desktop` | view | HTML 片段：云端电脑页被轮询的卡片与操作记录 |
 | GET | `/fragments/files` | view | HTML 片段：文件互通页被轮询的申请、传输与授权 |
+| GET | `/fragments/replicate/jobs` | view | HTML 片段：服务器页「添加服务器」下面的复制记录 |
 | GET | `/fragments/connect` | view | HTML 片段：连接页被轮询的两半 |
 | GET | `/fragments/connect/form?preset=<预设>&id=<连接 id>` | **ops / admin** | HTML 片段：添加或编辑连接对话框的正文。`preset` 换服务（不认识的当作第一个），`id` 填这条连接自己的非秘密设置与授权的智能体（秘密永不回显）；没有这条连接 404 |
 | GET | `/fragments/routing?node=<节点>` | view | HTML 片段：模型页的任务分工卡片，`node` 换成那个节点的范围（模型服务不认识的节点当作所有节点）；没接路由簿时为空 |

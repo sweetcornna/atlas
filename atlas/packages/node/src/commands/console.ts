@@ -95,6 +95,7 @@ import { openConsoleHandoffGit } from './consoleHandoffGit.js'
 import { handoffLockRefusal, openConsoleHandoff } from './consoleHandoff.js'
 import { wireHandoffDispatch } from './consoleHandoffDispatch.js'
 import { openConsoleProviders } from './consoleProviders.js'
+import { deploymentTree, openConsoleReplicate } from './consoleReplicate.js'
 import { openConsoleUsage, startUsageCollection } from './consoleUsage.js'
 import { ControlLinks } from './consoleControl.js'
 import { FileTenantStore } from './consoleTenancy.js'
@@ -936,6 +937,20 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           store: new ServerNotesStore(config.serverNotesPath),
         })
 
+  // 添加服务器（`--replicate`）：只在部署树里跑的中枢上开，复制的就是这棵树。
+  const replicateTree = deploymentTree()
+  const replicate =
+    config.replicateRoot === undefined || replicateTree === null
+      ? undefined
+      : openConsoleReplicate({
+          root: config.replicateRoot,
+          tree: replicateTree,
+          consoleUrl: `http://127.0.0.1:${config.port}`,
+          ...(config.chatDefault === undefined
+            ? {}
+            : { mainAgent: config.chatDefault }),
+        })
+
   const deps: ConsoleDeps = {
     avatars: new ConsoleAvatars(),
     ...(memory === undefined ? {} : { memory }),
@@ -986,6 +1001,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       ? {}
       : { nodeServers: config.nodeServers }),
     ...(serverNotes === undefined ? {} : { serverNotes }),
+    ...(replicate === undefined ? {} : { replicate }),
     ...(actions === undefined ? {} : { actions }),
     ...(handoff === undefined ? {} : { handoff: handoff.port }),
     ...(handoffDevices === undefined ? {} : { handoffDevices }),
@@ -1136,6 +1152,14 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   )
   if (serverNotes !== undefined) {
     banner += field('server-notes', config.serverNotesPath)
+  }
+  if (config.replicateRoot !== undefined) {
+    banner += field(
+      'replicate',
+      replicate === undefined
+        ? 'UNAVAILABLE (not running from a deployment tree)'
+        : `enabled -> ${config.replicateRoot} (tree ${replicateTree})`,
+    )
   }
   banner += field('alert-acks', consoleAlertAcksPath())
   banner += field(

@@ -88,6 +88,12 @@ import { unansweredTurns } from '../chatTurns.js'
 import { attr, escapeHtml } from './escape.js'
 import { formatTime, type TimeFormat } from './format.js'
 import { ACCENT_PRESETS } from './accent.js'
+import {
+  FRONT_REPLICATE_CSS,
+  FRONT_REPLICATE_JS,
+  type FrontReplicateMode,
+  frontReplicateCard,
+} from './frontReplicate.js'
 import { FRONT_CSS } from './frontStyle.js'
 import { FRONT_TEXT, frontClientText, type FrontText } from './frontText.js'
 import { qianmoMark } from './mark.js'
@@ -1202,6 +1208,8 @@ export interface FrontDocumentModel {
   readonly relogin: string
   /** The reader's language (`i18n.ts`). */
   readonly lang: Lang
+  /** 部署到新服务器 above the composer (`frontReplicate.ts`). Absent is `off`. */
+  readonly replicate?: FrontReplicateMode
 }
 
 function composer(enabled: boolean, t: FrontText): string {
@@ -1309,12 +1317,19 @@ function keyboardHelp(t: FrontText): string {
 export function renderFrontDocument(model: FrontDocumentModel): string {
   const runtime =
     model.viewer === undefined ? CONSOLE_CLIENT_JS : CONSOLE_CLIENT_JS_ACCOUNTS
-  const script = runtime + FRONT_JS + AVATAR_PAGE_JS
+  // 部署到新服务器 rides only on a console that has it: everyone else's page
+  // stays byte for byte what it was.
+  const replicate = model.replicate ?? 'off'
+  const script =
+    runtime +
+    FRONT_JS +
+    AVATAR_PAGE_JS +
+    (replicate === 'off' ? '' : FRONT_REPLICATE_JS)
   const t = FRONT_TEXT[model.lang]
   return (
     documentHead(
       `${WORDMARK_CN} · ${t.chat} · ${model.label}`,
-      FRONT_CSS + AVATAR_CSS,
+      FRONT_CSS + AVATAR_CSS + (replicate === 'off' ? '' : FRONT_REPLICATE_CSS),
       [script],
     ).replace('<html lang="zh-CN">', `<html lang="${attr(model.lang)}">`) +
     `<body class="fx-body">\n` +
@@ -1353,6 +1368,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `<button type="button" class="fx-jump" id="fx-jump" data-action="fx-jump" aria-label="${attr(t.jumpToLatest)}" hidden>` +
     `${icon('arrow-down', { small: true })}</button>` +
     model.side.stack +
+    (replicate === 'off' ? '' : frontReplicateCard(replicate)) +
     composer(model.composerEnabled, t) +
     `</div></div>` +
     `</main></div>\n` +

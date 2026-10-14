@@ -56,6 +56,7 @@ import {
   type TranscriptReading,
 } from './chatReads.js'
 import {
+  canWrite,
   DEFAULT_LABEL,
   failureOf,
   guard,
@@ -331,6 +332,12 @@ export async function renderFront(
       faces: side.faces,
       relogin: loginHref(ctx.url),
       lang: side.lang,
+      replicate:
+        ctx.deps.replicate === undefined
+          ? 'off'
+          : canWrite(ctx.access)
+            ? 'ops'
+            : 'view',
     }),
     status: view.status ?? 200,
   }
