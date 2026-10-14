@@ -1278,8 +1278,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 118208,
-    "sha256": "4995e6e4d72969895f6c81b8845e496da29cfc86c04b2d5ecd9d8a59e2343cd9"
+    "length": 118252,
+    "sha256": "2b509587fc1ccffcb9a8230bd75aabf8947599c27c6d5e45f9565a279d1a482b"
   },
   {
     "probe": "GET /admin/servers as view-bearer",
@@ -1301,8 +1301,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 117757,
-    "sha256": "79eb430e28e5a6a4529a4c14bb4a890ed8608c605282fa4e1c37fc276cb48332"
+    "length": 117801,
+    "sha256": "361870ead310ceadb6cb6add592ba2885537e63e95d7f1d4aa6fb8abd45109ff"
   },
   {
     "probe": "GET /admin/settings as view-bearer",

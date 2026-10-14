@@ -241,7 +241,7 @@ export function renderReplicate(model: ReplicateModel): string {
 export const REPLICATE_CSS = `
 #replicate-section [hidden] { display: none; }
 .rp-card { padding: var(--space-4); display: grid; gap: var(--space-3); }
-.rp-card .seg { justify-self: start; }
+.rp-card .seg { justify-self: start; align-self: flex-start; width: max-content; }
 .rp-grid .field-wide, .rp-auth { grid-column: 1 / -1; }
 .rp-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-2) var(--space-4); margin: 0; }
 .rp-facts dt { font-size: var(--text-12); color: var(--color-muted); }
