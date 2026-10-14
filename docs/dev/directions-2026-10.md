@@ -237,7 +237,7 @@ v1.0 的做法是给主智能体放出 `eval`、给基座两个前导函数补�
 **实现（P21）**：P21 采用复核后的方案 D。本节取代 §4.1 中关于 eval、显示与隔离强度的旧口径：macOS 只称「独立浏览器资料环境」，不宣称进程或节点间隔离。浏览器与电脑执行能力复用 oh-my-pi，阡陌实现受限工具、身份绑定、审批与资源生命周期。
 
 1. `eval`、原始 browser/computer 工具保持禁用。阡陌扩展只注册 `qianmo_browser_*`（截图、读页面、查元素、列 tab、导航、点击、输入、按键、滚动）和 `qianmo_computer_*`（截图、点击、输入、按键、滚动）。每项精确 schema，并保留原始工具调用校验，避免基座参数修复把未知字段删掉后执行；拒绝代码、函数标记、通用调用链、CDP 地址、程序/启动参数、Cookie/Storage 导出和文件路径参数。可信适配层构造公开 `createBrowserPrelude` / `createComputerPrelude` 的调用。
-2. 宿主从真实 RPC 子进程与活动 turn 确定 node、agent、contextId、taskId。资源单位为 `(node, agent, resourceEpoch)`；tab 句柄由宿主签发，旧代次及其他资源的句柄拒绝。宿主持有资源操作租约，审批期间不接受并行操作；绑定观察到的目标摘要，执行前再观察并复核。
+2. 宿主从真实 RPC 子进程与活动 turn 确定 node、agent、contextId、taskId。资源单位为 `(node, agent, resourceEpoch)`；tab 句柄由宿主签发，旧代次及其他资源的句柄拒绝。宿主持有资源操作租约，审批期间不接受并行操作；绑定观察到的目标摘要，执行前再观察并复核。租约绑定的调用编号由模型服务签发（OpenAI Responses 为 `call_…|fc_…`），宿主只要求 1–512 个可见 ASCII 字符；同一 omp 子进程里并行发出的调用由扩展排队、逐个申请租约。租约请求以文字应答，拒绝时把原因带回工具报错（`Desktop lease refused: <原因>`，原因表见 [console.md](./console.md#工具报错怎么读)）。
 3. `sensitive` 默认仅截图、读页面、查元素、列 tab 免审批；导航、点击、输入、按键、滚动逐次确认（滚动事件也可能改变外部状态）。`always` 连观察也逐次确认。审批走现有 `QIANMO_AUTHZ_V1`、P14 与宿主授权账本，拒绝窗口 grant，只认绑定 `node/agent/contextId/taskId/invocationId/resourceId/resourceEpoch/op/canonicalArgsDigest/observedTargetDigest` 的单次批准。参数正文仅存在受保护的审批材料中。
 4. 执行前持久化一次性意图、原子消费批准，再检查活动 turn、资源代次、目标摘要与批准时效；提交只能一次。完成、失败、结果未知分别记录，未知不自动重试。每次操作记 `desktop.action`，关联 actionId、taskId、invocationId、resourceEpoch 与 digest；公共审计仅记操作类别、目标主机名、确认与结果，不记输入正文。
 5. Chrome 独立资料目录 0700，下载目录独立；保留 Chromium 沙箱，无头启动，`--remote-debugging-port=0` 后读取 `DevToolsActivePort`，CDP 绑定 127.0.0.1。Linux 电脑须有 Xvfb 与 xauth，使用动态显示号、`1440x900x24`、`-nolisten tcp`、独立 Xauthority，不用 `-ac`；控制子进程设置 DISPLAY/XAUTHORITY 并清除 WAYLAND_DISPLAY。Linux 路径只有假启动器测试，本机未实测。
