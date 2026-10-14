@@ -34,6 +34,7 @@ let deadPort = 0
 let registryPort = 0
 let consolePort = 0
 let wakeAuth: string[] = []
+let wakeFrom: string[] = []
 let wakeStatus = 200
 
 beforeAll(async () => {
@@ -57,7 +58,12 @@ beforeAll(async () => {
         wakeAuth.push(request.headers.get('authorization') ?? '')
         if (wakeStatus !== 200)
           return new Response('denied', { status: wakeStatus })
-        const body = (await request.json()) as { to: string; node: string }
+        const body = (await request.json()) as {
+          to: string
+          node: string
+          from: string
+        }
+        wakeFrom.push(body.from)
         if (!body.to.startsWith(`qianmo://${body.node}/`)) {
           return new Response('bad', { status: 400 })
         }
@@ -260,6 +266,32 @@ describe('wake', () => {
     )
     expect(all).not.toContain(SESSION)
     expect(result.stdout + result.stderr).not.toContain(SESSION)
+  })
+
+  test('发起方缺省是控制台身份 qianmo://console/operator；--from 照写', async () => {
+    const f = fixture()
+    expect((await probe(f.env, 'install', '--rotation', 'beta-1')).code).toBe(0)
+    expect(
+      readFileSync(join(f.root, 'ops', 'fleet-probe.env'), 'utf8'),
+    ).toContain('PROBE_WAKE_FROM=qianmo://console/operator\n')
+    wakeFrom = []
+    expect((await probe(f.env, 'wake')).code).toBe(0)
+    expect(wakeFrom).toEqual(['qianmo://console/operator'])
+    expect(
+      (
+        await probe(
+          f.env,
+          'install',
+          '--rotation',
+          'beta-1',
+          '--from',
+          'qianmo://hub/console',
+        )
+      ).code,
+    ).toBe(0)
+    wakeFrom = []
+    expect((await probe(f.env, 'wake')).code).toBe(0)
+    expect(wakeFrom).toEqual(['qianmo://hub/console'])
   })
 
   test('轮转表的 - 格：这一轮不唤醒', async () => {

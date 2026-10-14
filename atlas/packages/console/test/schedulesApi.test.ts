@@ -92,6 +92,12 @@ const port: SchedulesPort = {
   visible() {
     return true
   },
+  targetOf() {
+    return schedule.target
+  },
+  channelTenant() {
+    return null
+  },
   async resolve() {
     return result(run)
   },
