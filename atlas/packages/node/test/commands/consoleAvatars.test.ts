@@ -579,12 +579,19 @@ test('default qm console wiring saves via HTTP, survives restart, deletes to def
     )
     expect(fragment.status).toBe(200)
     const html = await fragment.text()
-    for (const [field, choice] of Object.entries(
-      defaultAvatar('qianmo://node-a/main'),
-    )) {
-      if (field === 'cheeks') continue
-      expect(html).toContain(`name="${field}" value="${choice}" checked`)
+    const fallback = defaultAvatar('qianmo://node-a/main')
+    // The editor offers only what is drawn; the rest of the figure rides
+    // along in data-spec and is saved as it was.
+    for (const field of ['shape', 'color', 'eyes'] as const) {
+      expect(html).toContain(
+        `name="${field}" value="${fallback[field]}" checked`,
+      )
     }
+    const carried = /data-spec="([^"]*)"/
+      .exec(html)?.[1]
+      ?.replaceAll('&quot;', '"')
+      .replaceAll('&amp;', '&')
+    expect(JSON.parse(carried ?? 'null')).toEqual(fallback)
     const blocked = await fetch(`${running.origin}${mutation}`, {
       method: 'DELETE',
       headers: { authorization: `Bearer ${running.admin}` },

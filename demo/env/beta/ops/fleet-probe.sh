@@ -202,7 +202,9 @@ cmd_wake() {
 }
 
 cmd_install() {
-  local rotation='' agent='reviewer' from='qianmo://hub/console' auth_mode='account' credential_file=''
+  # 发起方缺省与控制台 `--chat-from` 的缺省（DEFAULT_CONSOLE_CHAT_FROM）一致：签名控制台只收自己身份的 from，
+  # 别的地址回 403 E_SENDER_MISMATCH。控制台改过 --chat-from 的，install 时显式带同一个 --from。
+  local rotation='' agent='reviewer' from='qianmo://console/operator' auth_mode='account' credential_file=''
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --rotation) rotation="${2:?}"; shift 2 ;;
