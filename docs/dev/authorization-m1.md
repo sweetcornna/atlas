@@ -38,6 +38,34 @@ qm audit --source capability --kind authz. --outcome refused --json
 
 控制台 `/v0/approvals/report` 的 viewer 仅见聚合，member 仅见自己的会话，ops 受租户边界约束；读取失败、链损坏和每节点最近 500 条的截断均显式显示。授权报表不是绕过证明。P14.7 的复判入口为 `atlas/scripts/authz-rejudge.ts`，覆盖真实 OMP 审批后的执行记录与冻结 JSONL 重放；复判缺历史姿态或执行结果时返回不完整。P14.9 的部署前提与保护根说明见 [`hub-node-isolation-p149.md`](./hub-node-isolation-p149.md)。当前本地验证不替代部署后全量复判或连续两轮现场验收。
 
+## 2026-10-15 常驻子进程的用户级与项目级定制（P14.0 在 omp 上）
+
+原基座靠 `CLAUDE_CODE_SAFE_MODE=1` 满足 P14.0（章程 C-5 v2.19 补注 ③）。换到 omp 后，扩展与 hooks（`--no-extensions`）、项目级 MCP（`mcp.enableProjectConfig: false`）、子 agent（`task` 拒绝）已另有措施，技能、规则、上下文文件与系统提示覆盖仍按 omp 的缺省发现加载。10-15 用真 omp RPC 子进程在家目录与工作区各放一份实测：
+
+- 服务账号家目录 `~/.agents/{skills,rules}`、节点 omp 目录下的 `skills/`、`rules/`、`AGENTS.md`，工作区 `.agents/`、`.agent/`、`.cursor/rules`、`.windsurf/rules`、`AGENTS.md`、`.omp/` 下的同类文件，都进了主回合的系统提示；
+- 工作区 `.agents/SYSTEM.md` 整个替换 omp 的系统提示；
+- 工作区 `.omp/tools/<名>/index.ts` 在会话启动时被 import 执行，不经扩展的 `tool_call` 拦截；
+- 每个技能让子进程多调一次 smol 模型压缩描述，花节点的 key（门禁的 `PI_TEST_RUNTIME=1` 下不发这次调用）。
+
+扩展的 `WORKSPACE_POLICY_DIRS` 只拦 `.omp`、`.claude`、`.codex`、`.gemini`、`.qianmo`、`.git`，`.agents/`、`.cursor/`、`.windsurf/` 和工作区根的 `AGENTS.md`、`CLAUDE.md` 是 agent 自己能写、下次会话就会加载的位置。omp 技能的 `allowed-tools` 只做格式校验、不授予权限，E-4 的放行旁路在 omp 上不成立；要堵的是提示注入的持久化和额外的模型调用。
+
+**取舍（已定）**：常驻子进程缺省不读任何用户级与项目级定制。它只加载 omp 内置内容、阡陌传入的扩展与覆盖层，以及阡陌写进节点 omp 目录的 `models.yml`、`config.yml`、`agent.db`（这三个不经发现来源）。
+
+| 措施 | 关掉什么 |
+|---|---|
+| `--no-skills` | 全部技能，含节点 omp 目录和插件里的；描述压缩调用随之消失 |
+| `--no-rules` | 全部规则；omp 自带的默认规则（Go、Rust 写法提示）一并关掉，常驻 agent 用不上 |
+| 覆盖层 `disabledProviders` | 除 `cursor` 外 omp 的全部发现来源（`policy.ts` 的 `RESIDENT_DISABLED_DISCOVERY`），含 `native`（节点 omp 目录与工作区 `.omp/`）：上下文文件、`SYSTEM.md` 替换、提示模板与命令、自定义工具、hooks |
+| `--append-system-prompt ""` | `APPEND_SYSTEM.md` 的查找。它不走发现来源；显式输入优先，空串不追加 |
+
+`cursor` 不进列表：omp 用同一个 `disabledProviders` 停用同名的模型 provider，`cursor` 也是 omp 内置 Cursor 模型的 provider id。它能提供的规则由 `--no-rules` 关掉，项目级 MCP 由 `mcp.enableProjectConfig: false` 关掉，用户级文件要显式开启。托管节点的模型 provider 名是 `qm-<档案>-<哈希>`，与发现来源的 id 不会撞。`atlas/packages/extension/test/residentCustomization.test.ts` 把列表对着 omp 的注册表核，上游同步新增的来源会让用例变红，不会静默加载。
+
+**运维开关**：`qm resident --allow-user-customization` 恢复 omp 的缺省发现，上表四项都不加，对应原设计预留的同名开关。它和 `--allow-workspace-edits` 一样是节点姿态，每启动一个子进程就记进 `authz.posture` 的 `safeMode`（缺省 `true`）。
+
+**判据**：§4 I-2 与 §6 P14.0 验收里「子进程环境带 `CLAUDE_CODE_SAFE_MODE=1`」一条，在 omp 上由 `atlas/packages/node/test/host/residentCustomization.integration.test.ts` 承担：真 `QianmoResident` 与 omp 子进程，家目录、节点 omp 目录和工作区各放技能、规则、`AGENTS.md`、`SYSTEM.md`、`APPEND_SYSTEM.md` 与一个自定义工具；缺省时主回合请求里都没有、工具未被加载、`safeMode` 为 `true`；打开开关时同一批文件全部出现。回退修复后缺省那条用例变红（已核对）。
+
+**仍未处理**：项目级设置层在 omp 绑定 `disabledProviders` 之前就已读完，工作区的 `.omp/config.yml`、`.claude/settings.json`、`.cursor/settings.json` 与 OpenCode 配置仍作为覆盖层之下的一层生效，其中 `.cursor/` 和 OpenCode 配置 agent 能写。覆盖层写明的键它改不了，工具面先由扩展白名单决定（`policy.ts` 头注释），所以它放宽不了工具，能动的是覆盖层没写的其他设置。另记后续。
+
 ## 0. 现状：测量结果
 
 M1 这一行的授权流**尚未开工**。下表是读代码与评审实验所得。行号以 `9770e8a7` 为准。

@@ -113,7 +113,7 @@ ACP 路线下 omp 的 `prompt` 丢弃 `messageId`、`cancel` 不读 `_meta`、`e
 - 小内存节点建议 `--omp-idle-ms 60000 --omp-max-children 1`；回收扫描间隔为 `min(idle, 60000)` 毫秒，超过空闲阈值后到下一次扫描才回收。稳定性采用实际 RPC 子进程从 ready 起的运行时长（默认 10 秒），或成功完成且会话已 settled 的健康证据；`completed + sessionSettled:false` 要等后续 `session_settled` 才计入。定时／LRU 回收保留健康证据，新 generation 清零；没有子进程的 generation 空闲时间不清零跨代快速崩溃计数。修好配置后重启 resident 解除停车。
 - ready 前退出的启动错误附带最多 2 KiB、脱敏后的 stderr 尾部，包含截断／整行省略标记；未加引号的凭据字段、带引号的 Bearer 和截断 PEM 残余也会遮盖。成功 ready 时，保留的启动诊断经同一套脱敏后转发到宿主 stderr 并清空；运行期 stderr 保持原样转发，慢管道通过暂停／drain 恢复处理背压，停机仍排空子进程管道并等待真实 close。
 - 按需启动连续失败在池内计数（默认 5 次，成功启动清零，空闲时间不清零；容量等待失败和取消不计）。停车后停止邮箱轮询，继续提供传输、回执和审计，拒绝新任务并说明最后一次启动错误；停车后需修正 provider 并重启 resident 才恢复；正常空闲时的 provider 换代保持原有行为。启动期缺少模型凭据的提示与代前凭据探针保留。
-- 启动参数包括 `--mode rpc --no-extensions --extension <节点扩展绝对路径> --config <节点覆盖层> --approval-mode <write|always-ask> --tools <显式工具表>`，以及模型与 thinking 参数。未接入宿主审批时另加 `--no-ui`；接入审批时保留 RPC confirm 帧，由宿主按精确请求处理。禁止从工作区自动发现扩展；`--allow-workspace-edits` 对应 write 模式及扩展工作区规则，其余为只读。
+- 启动参数包括 `--mode rpc --no-extensions --no-skills --no-rules --append-system-prompt "" --extension <节点扩展绝对路径> --config <节点覆盖层> --approval-mode <write|always-ask> --tools <显式工具表>`，以及模型与 thinking 参数。未接入宿主审批时另加 `--no-ui`；接入审批时保留 RPC confirm 帧，由宿主按精确请求处理。禁止从工作区自动发现扩展；`--allow-workspace-edits` 对应 write 模式及扩展工作区规则，其余为只读。覆盖层另以 `disabledProviders` 关掉 omp 的发现来源，子进程不从服务账号家目录、节点 omp 目录和工作区读技能、规则、上下文文件与系统提示覆盖；`--allow-user-customization` 时这几个参数和该列表都不加。取舍见 [`authorization-m1.md`](./authorization-m1.md)「2026-10-15」节。
 - 环境经过 `residentOmpEnvironment(ompSpawnEnv())`：隔离 omp 根，清除 `PI_CONFIG_FILES`、`PI_EDIT_VARIANT` 和与模型字面配置碰撞的环境变量名。已托管（state v2）节点额外清除继承的 provider 凭据及 `CLAUDE_CODE_*`；未托管节点保留操作者显式配置的 provider 环境。
 
 ### 4.3 信号映射
