@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
   CapabilityLevel,
   LIMITS,
@@ -123,7 +123,9 @@ function spawnFixture(
  *
  * The environment is built rather than inherited: no model credential from the
  * developer's shell may reach it, or its startup probe would dial a real
- * provider from a unit test.
+ * provider from a unit test. `HOME` is a directory next to the config root,
+ * not the developer's: omp children look there for skills, rules and context
+ * files when a node allows user customization.
  */
 function spawnResidentCli(
   configDir: string,
@@ -135,6 +137,8 @@ function spawnResidentCli(
   /** stdout alone: the banner and whatever else the node prints there. */
   readonly stdout: () => string
 } {
+  const home = join(dirname(configDir), 'home')
+  mkdirSync(home, { recursive: true })
   const child = spawn(
     process.execPath,
     [
@@ -149,7 +153,7 @@ function spawnResidentCli(
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         PATH: process.env.PATH,
-        HOME: process.env.HOME,
+        HOME: home,
         TMPDIR: tmpdir(),
         NODE_ENV: 'production',
         NO_COLOR: '1',

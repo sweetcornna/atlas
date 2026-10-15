@@ -19,13 +19,14 @@ import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { MessageType, createMessage } from '@qianmo/protocol'
 import { scanAssembledPrompt } from '@qianmo/resident'
 import { TransportClient } from '@qianmo/transport'
@@ -86,12 +87,15 @@ async function waitUntil(
  * `qm memory …` as an operator runs it: the source entrypoint with the build's
  * defines and default features, the identity pinned the way `cli-qianmo.js`
  * pins it, and a built environment — only the node's config root is shared
- * with the resident.
+ * with the resident. `HOME` is a directory next to that root, not the
+ * developer's.
  */
 async function qm(
   configDir: string,
   args: readonly string[],
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const home = join(dirname(configDir), 'home')
+  mkdirSync(home, { recursive: true })
   const child = spawn(
     process.execPath,
     [
@@ -106,7 +110,7 @@ async function qm(
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         PATH: process.env.PATH,
-        HOME: process.env.HOME,
+        HOME: home,
         TMPDIR: tmpdir(),
         NODE_ENV: 'production',
         NO_COLOR: '1',
