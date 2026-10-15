@@ -109,6 +109,13 @@ const FOLLOW_INTERVAL_MS = 5_000
 const FOLLOW_LIMIT_MS = 120_000
 /** §2.3 step 10: the background refresh. */
 const BACKGROUND_INTERVAL_MS = 10 * 60_000
+/**
+ * A background tick leaves out a node whose last status succeeded within
+ * this window (an explicit refresh, an apply's follow-up): asking again adds
+ * nothing and costs the node a status run. No status is then older than one
+ * and a half intervals.
+ */
+const BACKGROUND_FRESH_MS = BACKGROUND_INTERVAL_MS / 2
 /** Import documents are a handful of profiles; this is generous. */
 const MAX_IMPORT_BYTES = 1024 * 1024
 const MAX_IMPORT_PROFILES = 200
@@ -282,7 +289,12 @@ export class ConsoleProviders implements ProviderPort {
     const tick = () => {
       this.#background = this.#scheduler.set(tick, BACKGROUND_INTERVAL_MS)
       if (this.problem !== null) return
-      for (const node of this.#executor.nodes()) void this.#refresh(node)
+      for (const node of this.#executor.nodes()) {
+        const last = this.#cache.get(node)?.lastStatus
+        const age = last?.ok ? this.#now() - last.at : -1
+        if (age >= 0 && age < BACKGROUND_FRESH_MS) continue
+        void this.#refresh(node)
+      }
     }
     this.#background = this.#scheduler.set(tick, 0)
   }
