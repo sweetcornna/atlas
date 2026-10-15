@@ -1,7 +1,7 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# 阡陌 AgentNest — 路线图
+# 阡陌 Qmo — 路线图
 
 | 项 | 内容 |
 |---|---|

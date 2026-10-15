@@ -1,7 +1,7 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# 阡陌 AgentNest — 生产级加密与密钥分发设计（M1 · P11.2）
+# 阡陌 Qmo — 生产级加密与密钥分发设计（M1 · P11.2）
 
 | 项 | 内容 |
 |---|---|

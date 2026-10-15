@@ -1,7 +1,7 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# 阡陌 AgentNest — P17 本地—云端接力 · 工程实施计划
+# 阡陌 Qmo — P17 本地—云端接力 · 工程实施计划
 
 | 项 | 内容 |
 |---|---|

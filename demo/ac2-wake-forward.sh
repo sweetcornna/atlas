@@ -2,7 +2,7 @@
 # Copyright 2026 Qianmo AgentNest Team
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# 阡陌 AgentNest —— P2.5 DoD ①「跨节点唤醒转发闭环」一键复现（连续 10 次）。
+# 阡陌 Qmo —— P2.5 DoD ①「跨节点唤醒转发闭环」一键复现（连续 10 次）。
 #
 #   bash demo/ac2-wake-forward.sh
 #

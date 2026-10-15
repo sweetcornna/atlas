@@ -1,4 +1,4 @@
-# 贡献阡陌 AgentNest
+# 贡献阡陌 Qmo
 
 阡陌代码位于 `atlas/`、`demo/` 与 `docs/dev/`。先读 [CLAUDE.md](CLAUDE.md)，再按任务路由阅读详细约定；基座切换的接口以 [base-switch-omp.md](docs/dev/base-switch-omp.md) 为准。
 

@@ -1,7 +1,7 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# 阡陌 AgentNest — 控制台模型服务（provider）管理与商业级改造设计（M1 · P18）
+# 阡陌 Qmo — 控制台模型服务（provider）管理与商业级改造设计（M1 · P18）
 
 | 项 | 内容 |
 |---|---|

@@ -1,7 +1,7 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# 阡陌 AgentNest — 租户、账号与智能体生命周期设计（M1 · P15）
+# 阡陌 Qmo — 租户、账号与智能体生命周期设计（M1 · P15）
 
 | 项 | 内容 |
 |---|---|
