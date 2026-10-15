@@ -24,6 +24,7 @@ import {
   markResidentInput,
   residentActiveTools,
   residentConfigOverlay,
+  residentCustomizationArgs,
   residentInputIdentityOf,
   RESIDENT_EXTENSION_CONFIG_ENV,
   type ResidentExtensionConfig,
@@ -526,6 +527,12 @@ interface PoolOptions {
   readonly agents: readonly ResidentAgentSession[]
   readonly memoryRoot: string
   readonly allowWorkspaceEdits?: boolean
+  /**
+   * `qm resident --allow-user-customization`: the child discovers skills,
+   * rules, context files and prompt overrides the way omp does by default.
+   * Absent, it reads none of them (`residentCustomizationArgs`).
+   */
+  readonly allowUserCustomization?: boolean
   readonly spawn?: (input: ResidentOmpSpawn) => ChildProcess
   readonly onActivity?: (active: boolean) => void | Promise<void>
   readonly onError?: (error: unknown) => void
@@ -949,7 +956,12 @@ export class ResidentOmpPool
     const configPath = join(sessionDir, 'resident-extension.json')
     const overlay = join(sessionDir, 'resident-config.yml')
     writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 })
-    writeFileSync(overlay, residentConfigOverlay(config), { mode: 0o600 })
+    const customization = this.#options.allowUserCustomization === true
+    writeFileSync(
+      overlay,
+      residentConfigOverlay({ ...config, userCustomization: customization }),
+      { mode: 0o600 },
+    )
     const manualPath = join(sessionDir, 'manual-model.json')
     const selection =
       readResidentManualSelection(manualPath) ?? nodeModelSelection()
@@ -958,6 +970,7 @@ export class ResidentOmpPool
       'rpc',
       ...(this.#options.requestPermission === undefined ? ['--no-ui'] : []),
       '--no-extensions',
+      ...residentCustomizationArgs(customization),
       '--extension',
       this.#options.extensionPath ?? residentExtensionPath(sessionDir),
       '--config',

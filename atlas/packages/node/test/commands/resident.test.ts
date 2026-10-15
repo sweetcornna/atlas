@@ -301,6 +301,19 @@ describe('--allow-workspace-edits', () => {
   })
 })
 
+describe('--allow-user-customization', () => {
+  test('缺省不给：常驻子进程不读用户级与项目级定制（P14.0）', () => {
+    expect(parseResidentArgs(BASE).allowUserCustomization).toBeUndefined()
+  })
+
+  test('给了才有，且不牵动编辑放宽', () => {
+    const config = parseResidentArgs([...BASE, '--allow-user-customization'])
+
+    expect(config.allowUserCustomization).toBe(true)
+    expect(config.allowWorkspaceEdits).toBeUndefined()
+  })
+})
+
 describe('--local-commands-from (P18.20)', () => {
   const KEY = 'A'.repeat(43)
 

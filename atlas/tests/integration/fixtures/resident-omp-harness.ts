@@ -41,6 +41,8 @@ export class ResidentOmpHarness {
   #releaseResponse: (() => void) | undefined
   readonly offeredTools = new Set<string>()
   readonly toolResults: string[] = []
+  /** Every request body the fake model received, in order. */
+  readonly requests: Record<string, unknown>[] = []
   readonly frames: OmpRpcFrame[] = []
   readonly pools: ResidentOmpPool[] = []
   constructor(options: { readonly api?: HarnessApi } = {}) {
@@ -55,6 +57,7 @@ export class ResidentOmpHarness {
           messages: { role: string; content: unknown }[]
           tools?: { function: { name: string } }[]
         }
+        this.requests.push(data)
         for (const tool of data.tools ?? [])
           this.offeredTools.add(tool.function.name)
         const last = data.messages.at(-1)
@@ -132,6 +135,7 @@ export class ResidentOmpHarness {
       input?: Record<string, unknown>[]
       tools?: { name?: string }[]
     }
+    this.requests.push(data)
     for (const tool of data.tools ?? [])
       if (typeof tool.name === 'string') this.offeredTools.add(tool.name)
     // Parallel calls come back as a run of outputs at the end of the input.

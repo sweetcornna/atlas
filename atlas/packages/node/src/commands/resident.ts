@@ -283,6 +283,12 @@ export interface ResidentCliConfig {
    * Default is read-only. Hardline and protected configuration paths stay denied.
    */
   readonly allowWorkspaceEdits?: boolean
+  /**
+   * Let the omp child discover skills, rules, context files and prompt
+   * overrides from the service account's home and the workspace. Default is
+   * off (P14.0).
+   */
+  readonly allowUserCustomization?: boolean
   readonly port?: number
   readonly hostname?: string
   readonly unix?: string
@@ -396,6 +402,7 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
   let requireSignedTasks = true
   let openPolicy = false
   let allowWorkspaceEdits = false
+  let allowUserCustomization = false
   let tenancyPath: string | undefined
   const tenantHubPeers: string[] = []
   const approvers: (readonly [string, string])[] = []
@@ -590,6 +597,8 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
       index = parsed.next
     } else if (arg === '--allow-workspace-edits') {
       allowWorkspaceEdits = true
+    } else if (arg === '--allow-user-customization') {
+      allowUserCustomization = true
     } else if (arg === '--backup-url' || arg?.startsWith('--backup-url=')) {
       const parsed = residentOptionValue(args, index, '--backup-url')
       const url = new URL(parsed.value)
@@ -803,6 +812,7 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
     ...(controllers.length === 0 ? {} : { controllers }),
     ...(protectedRoots.length === 0 ? {} : { protectedRoots }),
     ...(allowWorkspaceEdits ? { allowWorkspaceEdits } : {}),
+    ...(allowUserCustomization ? { allowUserCustomization } : {}),
     ...(port === undefined ? {} : { port }),
     ...(hostname === undefined ? {} : { hostname }),
     ...(unix === undefined ? {} : { unix }),
@@ -1045,6 +1055,13 @@ Authorization:
                            configuration and writes outside the workspace stay
                            blocked. Shell and subagent tools stay unavailable.
                            Project settings cannot widen this policy.
+  --allow-user-customization
+                           Let the agent load skills, rules, context files
+                           (AGENTS.md, CLAUDE.md …) and system prompt overrides
+                           from the service account's home and the workspace,
+                           as omp does by default. Default is off: an agent
+                           that writes such a file in its workspace would
+                           otherwise have the next session load it.
   --audit-signed-tasks     Observation mode: record every message that
                            --require-signed-tasks would have refused, and
                            refuse nothing. Nothing about what this node
@@ -2185,6 +2202,9 @@ export async function runResident(args: readonly string[]): Promise<void> {
     controlAudit: event => trail.append(event),
     ...(config.allowWorkspaceEdits === true
       ? { allowWorkspaceEdits: true }
+      : {}),
+    ...(config.allowUserCustomization === true
+      ? { allowUserCustomization: true }
       : {}),
     psk,
     upstreamHealth,

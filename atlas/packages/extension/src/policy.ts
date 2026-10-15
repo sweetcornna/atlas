@@ -279,6 +279,67 @@ function yamlKey(key: string): string {
   return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(key) ? key : JSON.stringify(key)
 }
 
+// ---------------------------------------------------------------------------
+// User and project customization (P14.0)
+// ---------------------------------------------------------------------------
+
+/**
+ * omp's discovery sources a resident child does not read unless the operator
+ * passed `qm resident --allow-user-customization` (authorization-m1.md,
+ * 2026-10-15). They are where omp finds skills, rules, context files
+ * (`AGENTS.md`, `CLAUDE.md` …), `SYSTEM.md` replacements, prompt templates,
+ * hooks and custom tools, in the service account's home, in the node's own
+ * omp directory and up the workspace — including `.agents/` and `.cursor/`,
+ * which the agent may write and the next session would then load.
+ *
+ * Every provider omp registers is here except `cursor`: its id is also omp's
+ * built-in Cursor model provider, and `disabledProviders` disables both. What
+ * it can contribute is closed by other means — rules by `--no-rules`, a project
+ * MCP file by `mcp.enableProjectConfig: false`, and its user-level files are
+ * opt-in. `residentCustomization.test.ts` holds this list against omp's
+ * registry, so a provider an upstream sync adds fails the test instead of
+ * loading.
+ */
+export const RESIDENT_DISABLED_DISCOVERY: readonly string[] = Object.freeze([
+  'agent-plugins',
+  'agents',
+  'agents-md',
+  'builtin-defaults',
+  'claude',
+  'claude-md',
+  'claude-plugins',
+  'cline',
+  'codex',
+  'custom-context',
+  'gemini',
+  'github',
+  'mcp-json',
+  'native',
+  'omp-managed',
+  'omp-plugins',
+  'opencode',
+  'skillshare',
+  'ssh-json',
+  'vscode',
+  'windsurf',
+])
+
+/**
+ * Launch flags that keep user and project customization out of a resident
+ * child; none when the operator allowed it.
+ *
+ * `--no-skills` also drops the model call omp makes per skill to shorten its
+ * description, paid with the node's key. `--no-rules` drops omp's own default
+ * rules as well (Go and Rust idioms). `APPEND_SYSTEM.md` is looked up outside
+ * the discovery sources; an explicit append prompt replaces the lookup, and an
+ * empty one appends nothing.
+ */
+export function residentCustomizationArgs(allowed: boolean): string[] {
+  return allowed
+    ? []
+    : ['--no-skills', '--no-rules', '--append-system-prompt', '']
+}
+
 /**
  * YAML for the per-process `--config` overlay.
  *
@@ -292,6 +353,8 @@ export function residentConfigOverlay(options: {
   readonly hostTools?: readonly string[]
   readonly media?: ResidentExtensionConfig['media']
   readonly desktop?: ResidentExtensionConfig['desktop']
+  /** `--allow-user-customization`: omp's own discovery, nothing disabled. */
+  readonly userCustomization?: boolean
 }): string {
   const approvals: [string, string][] = [
     ...(options.media?.image
@@ -338,6 +401,12 @@ export function residentConfigOverlay(options: {
     '  enabled: false',
     'web_search:',
     '  enabled: false',
+    ...(options.userCustomization
+      ? []
+      : [
+          'disabledProviders:',
+          ...RESIDENT_DISABLED_DISCOVERY.map(id => `  - ${id}`),
+        ]),
     '',
   ].join('\n')
 }

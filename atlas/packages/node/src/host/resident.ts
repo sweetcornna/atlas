@@ -289,6 +289,14 @@ interface QianmoResidentOptions {
    * 是这台节点的权限姿态，不该由「跑的是哪一版产物」决定。
    */
   readonly allowWorkspaceEdits?: boolean
+  /**
+   * 允许 omp 子进程像缺省那样从服务账号家目录和工作区发现技能、规则、
+   * 上下文文件与系统提示覆盖（`--allow-user-customization`）。
+   *
+   * 缺省不给：常驻子进程不读这些用户级与项目级定制（P14.0）。这一项与
+   * 编辑放宽一样是这台节点的姿态，记进 `authz.posture` 的 `safeMode`。
+   */
+  readonly allowUserCustomization?: boolean
   readonly pollIntervalMs?: number
   readonly psk: string
   readonly listen: {
@@ -3130,6 +3138,7 @@ export class QianmoResident {
             roots: JSON.stringify(policy.protectedRoots),
             hostTools: JSON.stringify(policy.hostTools),
             approvalMode: policy.edits === 'workspace' ? 'write' : 'always-ask',
+            safeMode: this.#options.allowUserCustomization !== true,
             configHash,
             policy: JSON.stringify(policy),
           },
@@ -3138,6 +3147,7 @@ export class QianmoResident {
       agents: this.#options.agents,
       memoryRoot: this.#memoryRoot,
       allowWorkspaceEdits: this.#options.allowWorkspaceEdits,
+      allowUserCustomization: this.#options.allowUserCustomization,
       spawn: this.#options.spawnOmp,
       idleChildMs: this.#options.ompIdleMs,
       maxChildren: this.#options.ompMaxChildren,
