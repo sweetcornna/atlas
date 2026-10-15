@@ -16,12 +16,14 @@
  *   - `status`: §2.4. `readProviderState()`, completed from the resident's own
  *     files (`resident/resident.pid`, `resident/lifecycle.json`,
  *     `resident/provider-switch.json`) and the node's capabilities, plus
- *     `effective` computed in a process of its own (`effectiveProcess.ts`).
- *     Not for a node the hub does not manage whose resident started with
- *     provider keys in its environment (`inheritedProviderKeys`): its ACP
- *     child runs on that environment, while `effective` strips it and reads
- *     native model and config YAML alone, so the block would describe a model the child
- *     does not run. It is left out, with a warning line saying why.
+ *     `effective` computed in a process of its own (`effectiveProcess.ts`),
+ *     or reused from the last computation while its inputs are unchanged
+ *     (`effectiveCache.ts`). Not for a node the hub does not manage whose
+ *     resident started with provider keys in its environment
+ *     (`inheritedProviderKeys`): its ACP child runs on that environment,
+ *     while `effective` strips it and reads native model and config YAML
+ *     alone, so the block would describe a model the child does not run. It
+ *     is left out, with a warning line saying why.
  *   - `apply`: `stageProviderApply()`; then, if a resident is running, a
  *     SIGHUP through P18.3's `signalResidentProviderCheck()` (it switches at
  *     the next idle boundary, or at its 5 s poll if the signal is not sent);
@@ -76,6 +78,11 @@ import {
   readProviderState,
   stageProviderApply,
 } from '../providers/node.js'
+import {
+  effectiveInputsFingerprint,
+  readCachedEffective,
+  writeCachedEffective,
+} from '../providers/effectiveCache.js'
 import { isProcessAlive, providerPaths } from '../providers/store.js'
 import type { CliLaunchSpec } from '../providers/effectiveProcess.js'
 import type { AutocompactResult } from './providerAutocompact.js'
@@ -271,6 +278,7 @@ function currentProviderState(): ProviderNodeState {
 
 async function status(
   requestId: string,
+  now: Date,
   ctx: ProviderContext,
 ): Promise<NodeProviderResponse> {
   const state = currentProviderState()
@@ -281,6 +289,16 @@ async function status(
     )
     return { v: PROTOCOL_VERSION, requestId, ok: true, state }
   }
+  const fingerprint = effectiveInputsFingerprint(state)
+  const cached = readCachedEffective(fingerprint, now.getTime())
+  if (cached !== undefined)
+    return {
+      v: PROTOCOL_VERSION,
+      requestId,
+      ok: true,
+      state,
+      effective: cached,
+    }
   const outcome = await (
     ctx.effective ??
     (timeoutMs =>
@@ -289,7 +307,9 @@ async function status(
         ...(ctx.launch === undefined ? {} : { launch: ctx.launch }),
       }))
   )(EFFECTIVE_TIMEOUT_MS)
-  if (!outcome.ok) warnLine(ctx, `effective not computed: ${outcome.reason}`)
+  if (outcome.ok)
+    writeCachedEffective(fingerprint, outcome.effective, now.getTime())
+  else warnLine(ctx, `effective not computed: ${outcome.reason}`)
   return {
     v: PROTOCOL_VERSION,
     requestId,
@@ -567,7 +587,7 @@ export async function handleProviderLine(
   const { request } = parsed
   switch (request.op) {
     case 'status':
-      return status(request.requestId, ctx)
+      return status(request.requestId, now, ctx)
     case 'apply':
       return apply(request, capabilities, ctx)
     case 'probe':

@@ -37,6 +37,9 @@ export const providerPaths = {
   pending: () => qianmoConfigPath('qianmo', 'provider', 'pending.json'),
   state: () => qianmoConfigPath('qianmo', 'provider', 'state.json'),
   generation: () => qianmoConfigPath('qianmo', 'provider', 'generation.json'),
+  /** The last `status` effective and what it was computed from (`effectiveCache.ts`). */
+  effectiveCache: () =>
+    qianmoConfigPath('qianmo', 'provider', 'effective-cache.json'),
   firstWrite: () =>
     qianmoConfigPath('qianmo', 'provider', 'first-write', 'config.json'),
   /** Written by the resident (P18.3, §2.7): `{pid, startedAt, nonce}`. */

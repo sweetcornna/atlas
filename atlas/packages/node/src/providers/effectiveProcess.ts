@@ -58,7 +58,7 @@ export type EffectiveOutcome =
   | { ok: true; effective: EffectiveState }
   | { ok: false; reason: 'timeout' | 'spawn-failed' | 'no-result' }
 
-function isEffectiveState(value: unknown): value is EffectiveState {
+export function isEffectiveState(value: unknown): value is EffectiveState {
   if (typeof value !== 'object' || value === null) return false
   const state = value as Record<string, unknown>
   return (
