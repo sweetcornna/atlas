@@ -88,6 +88,12 @@ import {
 } from '../host/residentOmp.js'
 import { residentOptionValue } from './residentArgs.js'
 import {
+  EXTERNAL_RUNTIME_KINDS,
+  isExternalRuntimeKind,
+  type ExternalRuntimeKind,
+} from '../host/runtimes/channel.js'
+import type { ExternalAgent } from '../host/runtimes/pool.js'
+import {
   createResidentModelProbeGate,
   residentModelProbeFingerprint,
   probeResidentModel,
@@ -277,7 +283,15 @@ export interface ResidentCliConfig {
   readonly tenantHubPeers?: readonly string[]
   readonly node: string
   readonly team: string
-  readonly agents: readonly { agent: string; cwd: string }[]
+  readonly agents: readonly {
+    agent: string
+    cwd: string
+    runtime?: ExternalRuntimeKind
+    shell?: boolean
+  }[]
+  /** `--agent-model`: `<agent>` → `<profile>/<model>` for external runtimes. */
+  readonly agentModels?: readonly (readonly [string, string])[]
+  readonly runtimeBins?: Partial<Record<ExternalRuntimeKind, string>>
   /**
    * Explicitly grant the resident extension workspace-local write/edit tools.
    * Default is read-only. Hardline and protected configuration paths stay denied.
@@ -415,7 +429,22 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
   let witnessIntervalMs: number | undefined
   const trusted: Array<readonly [string, string]> = []
   const localCommandsFrom: string[] = []
-  const agents: Array<{ agent: string; cwd: string }> = []
+  const agents: Array<{
+    agent: string
+    cwd: string
+    runtime?: ExternalRuntimeKind
+    shell?: boolean
+  }> = []
+  const agentRuntimes = new Map<string, ExternalRuntimeKind | 'omp'>()
+  const agentModels = new Map<string, string>()
+  const agentShell = new Set<string>()
+  const runtimeBins: Partial<Record<ExternalRuntimeKind, string>> = {}
+  const agentPair = (flag: string, value: string): [string, string] => {
+    const separator = value.indexOf('=')
+    if (separator <= 0 || separator === value.length - 1)
+      throw new Error(`${flag} must be <agent>=<value>`)
+    return [value.slice(0, separator), value.slice(separator + 1)]
+  }
 
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]
@@ -460,6 +489,42 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
       if (!isAbsolute(cwd))
         throw new Error('resident agent cwd must be absolute')
       agents.push({ agent, cwd: resolve(cwd) })
+      index = parsed.next
+    } else if (
+      arg === '--agent-runtime' ||
+      arg?.startsWith('--agent-runtime=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--agent-runtime')
+      const [agent, runtime] = agentPair('--agent-runtime', parsed.value)
+      if (runtime !== 'omp' && !isExternalRuntimeKind(runtime))
+        throw new Error(
+          `--agent-runtime must be omp, ${EXTERNAL_RUNTIME_KINDS.join(' or ')}`,
+        )
+      agentRuntimes.set(agent, runtime)
+      index = parsed.next
+    } else if (arg === '--agent-model' || arg?.startsWith('--agent-model=')) {
+      const parsed = residentOptionValue(args, index, '--agent-model')
+      const [agent, model] = agentPair('--agent-model', parsed.value)
+      agentModels.set(agent, model)
+      index = parsed.next
+    } else if (arg === '--agent-shell' || arg?.startsWith('--agent-shell=')) {
+      const parsed = residentOptionValue(args, index, '--agent-shell')
+      agentShell.add(parsed.value)
+      index = parsed.next
+    } else if (
+      arg === '--claude-code-bin' ||
+      arg?.startsWith('--claude-code-bin=') ||
+      arg === '--codex-bin' ||
+      arg?.startsWith('--codex-bin=')
+    ) {
+      const flag = arg.startsWith('--codex-bin')
+        ? '--codex-bin'
+        : '--claude-code-bin'
+      const parsed = residentOptionValue(args, index, flag)
+      if (!isAbsolute(parsed.value) && parsed.value.includes('/'))
+        throw new Error(`${flag} must be a command name or an absolute path`)
+      runtimeBins[flag === '--codex-bin' ? 'codex' : 'claude-code'] =
+        parsed.value
       index = parsed.next
     } else if (arg === '--port' || arg?.startsWith('--port=')) {
       const parsed = residentOptionValue(args, index, '--port')
@@ -792,10 +857,36 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
     if (trusted.some(([, commander]) => commander === key))
       throw new Error('approval key must differ from every command key')
   }
+  for (const name of [
+    ...agentRuntimes.keys(),
+    ...agentModels.keys(),
+    ...agentShell,
+  ])
+    if (!agents.some(agent => agent.agent === name))
+      throw new Error(`no --agent named ${name}`)
+  for (const agent of agents) {
+    const runtime = agentRuntimes.get(agent.agent)
+    if (runtime !== undefined && runtime !== 'omp') {
+      agent.runtime = runtime
+      if (!agentModels.has(agent.agent))
+        throw new Error(
+          `${agent.agent} runs on ${runtime} and needs --agent-model ${agent.agent}=<profile>/<model>`,
+        )
+      if (agentShell.has(agent.agent)) agent.shell = true
+    } else if (agentShell.has(agent.agent))
+      throw new Error('--agent-shell applies to claude-code and codex agents')
+    else if (agentModels.has(agent.agent))
+      throw new Error(
+        '--agent-model applies to claude-code and codex agents; qianmopi agents follow the node model service',
+      )
+  }
+
   return {
     node,
     team,
     agents,
+    ...(agentModels.size === 0 ? {} : { agentModels: [...agentModels] }),
+    ...(Object.keys(runtimeBins).length === 0 ? {} : { runtimeBins }),
     ...(ompIdleMs === undefined ? {} : { ompIdleMs }),
     ...(ompMaxChildren === undefined ? {} : { ompMaxChildren }),
     ...(tenancyPath === undefined ? {} : { tenancyPath, tenantHubPeers }),
@@ -900,6 +991,23 @@ Identity and workspaces, all required:
                            directory it runs in. Repeatable, one agent per
                            flag; at least one is required and two agents may
                            not share a name.
+
+Runtimes (each agent runs on one; qianmopi unless told otherwise):
+
+  --agent-runtime <name>=<omp|claude-code|codex>
+                           Run this agent on Claude Code or Codex instead of
+                           qianmopi. Agents on different runtimes share the
+                           node; each keeps its own warm processes.
+  --agent-model <name>=<profile>/<model>
+                           Model for a claude-code or codex agent, from a
+                           model service profile applied to this node
+                           (Claude Code: Anthropic Messages; Codex:
+                           OpenAI Responses). Required for those agents.
+  --agent-shell <name>     Give a claude-code or codex agent a shell: Codex
+                           runs commands in its sandbox without network,
+                           Claude Code asks the operator for each command.
+  --claude-code-bin <cmd>  Claude Code executable (default: claude).
+  --codex-bin <cmd>        Codex executable (default: codex).
 
 Listener, exactly one of --port and --unix:
 
@@ -2178,6 +2286,22 @@ export async function runResident(args: readonly string[]): Promise<void> {
     node: config.node,
     team: config.team,
     agents: config.agents,
+    ...(config.agentModels === undefined
+      ? {}
+      : {
+          resolveRuntimeLaunch: (agent: ExternalAgent) => {
+            const spec = new Map(config.agentModels).get(agent.agent)
+            if (spec === undefined)
+              throw new Error(`${agent.agent} has no --agent-model`)
+            // Lazily, like the other provider reads in this handler.
+            const { runtimeModelCredential } =
+              require('../providers/node.js') as typeof import('../providers/node.js')
+            return runtimeModelCredential(spec, agent.runtime)
+          },
+        }),
+    ...(config.runtimeBins === undefined
+      ? {}
+      : { runtimeBins: config.runtimeBins }),
     ompIdleMs: config.ompIdleMs,
     ompMaxChildren: config.ompMaxChildren,
     controllers: new Set(config.controllers?.map(([node]) => node)),

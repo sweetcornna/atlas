@@ -139,6 +139,14 @@ import {
   type ResidentOmpSpawn,
   type ResidentPermission,
 } from './residentOmp.js'
+import type { ExternalRuntimeKind } from './runtimes/channel.js'
+import { ResidentRuntimePool } from './runtimes/composite.js'
+import {
+  ExternalRuntimePool,
+  type ExternalAgent,
+  type ExternalLaunch,
+  type ExternalRuntimeSpawn,
+} from './runtimes/pool.js'
 import type { ChildProcess } from 'node:child_process'
 import {
   residentLocalCommand,
@@ -149,6 +157,10 @@ import type { QianmoNotifyVerdict } from './notifyWire.js'
 interface QianmoResidentAgentConfig {
   readonly agent: string
   readonly cwd: string
+  /** Claude Code or Codex instead of qianmopi (`--agent-runtime`, P27). */
+  readonly runtime?: ExternalRuntimeKind
+  /** Shell access for an external runtime (`--agent-shell`). */
+  readonly shell?: boolean
 }
 
 /**
@@ -447,6 +459,15 @@ interface QianmoResidentOptions {
   readonly ompIdleMs?: number
   readonly ompMaxChildren?: number
   readonly spawnOmp?: (input: ResidentOmpSpawn) => ChildProcess
+  /**
+   * The model and credentials an external-runtime agent starts with. The CLI
+   * hands this over from the provider stack, which stays out of this module.
+   */
+  readonly resolveRuntimeLaunch?: (agent: ExternalAgent) => ExternalLaunch
+  readonly runtimeBins?: Partial<Record<ExternalRuntimeKind, string>>
+  readonly spawnRuntime?: (input: ExternalRuntimeSpawn) => ChildProcess
+  /** How an external runtime starts `qm runtime-mcp`; tests override it. */
+  readonly runtimeMcpArgv?: (args: readonly string[]) => string[]
   /**
    * Generation restart policy. Lazy starts use maxRapidFailures as a pool-level
    * consecutive startup failure limit; idle time does not reset it. Backoff
@@ -791,7 +812,7 @@ export class QianmoResident {
   /** Woken when `#runtime` becomes available; see `#runtimeForDelivery`. */
   #runtimeWaiters: Array<() => void> = []
   /** The omp RPC child backing `#runtime`; see `#runtimeIsLive`. */
-  #runtimeChild: ResidentOmpPool | null = null
+  #runtimeChild: ResidentRuntimePool | null = null
   #witnessClosed = false
   /** Generations this process has started (`generation.json`, §2.4). */
   #generation = 0
@@ -2084,29 +2105,39 @@ export class QianmoResident {
       toolName: call.toolName,
       input: call.input as Readonly<Record<string, unknown>>,
     }
-    const verdict = residentToolVerdict(
-      tool,
-      {
-        v: 1,
-        agent: agent.agent,
-        workspace: agent.cwd,
-        edits: this.#options.allowWorkspaceEdits ? 'workspace' : 'none',
-        protectedRoots: [
-          this.#memoryRoot,
-          ...(this.#options.protectedRoots ?? []),
-        ],
-        hostTools: [],
-        approvals: true,
-      },
-      { agentKind: 'main' },
-    )
-    if (verdict?.approvalEligible !== true) return false
-    const boundInput = residentApprovalInput(tool, agent.cwd)
-    if (
-      JSON.stringify(boundInput.__qianmoResolvedTargets) !==
-      JSON.stringify(tool.input.__qianmoResolvedTargets)
-    )
-      return false
+    // An external-runtime agent started with --agent-shell asks the operator
+    // for each shell command; qianmopi agents never get one (P27 §1.3).
+    const shellCall =
+      tool.toolName === 'bash' &&
+      agent.runtime !== undefined &&
+      agent.shell === true &&
+      typeof tool.input.command === 'string'
+    let boundInput: Readonly<Record<string, unknown>> = tool.input
+    if (!shellCall) {
+      const verdict = residentToolVerdict(
+        tool,
+        {
+          v: 1,
+          agent: agent.agent,
+          workspace: agent.cwd,
+          edits: this.#options.allowWorkspaceEdits ? 'workspace' : 'none',
+          protectedRoots: [
+            this.#memoryRoot,
+            ...(this.#options.protectedRoots ?? []),
+          ],
+          hostTools: [],
+          approvals: true,
+        },
+        { agentKind: 'main' },
+      )
+      if (verdict?.approvalEligible !== true) return false
+      boundInput = residentApprovalInput(tool, agent.cwd)
+      if (
+        JSON.stringify(boundInput.__qianmoResolvedTargets) !==
+        JSON.stringify(tool.input.__qianmoResolvedTargets)
+      )
+        return false
+    }
     const deadline =
       Date.now() +
       taskExpiresAt(task.envelope) -
@@ -3108,8 +3139,66 @@ export class QianmoResident {
     }
   }
 
+  /** The external-runtime half of a generation, or nothing (P27). */
+  #externalPool(): ExternalRuntimePool | undefined {
+    const agents = this.#options.agents.filter(
+      (agent): agent is ExternalAgent => agent.runtime !== undefined,
+    )
+    if (agents.length === 0) return undefined
+    const resolve = this.#options.resolveRuntimeLaunch
+    return new ExternalRuntimePool({
+      agents,
+      resolveLaunch: agent => {
+        if (resolve === undefined)
+          throw new Error(
+            `${agent.agent} runs on ${agent.runtime}, but this node has no model for it (--agent-model)`,
+          )
+        return resolve(agent)
+      },
+      ...(this.#options.runtimeBins === undefined
+        ? {}
+        : { bins: this.#options.runtimeBins }),
+      memoryRoot: this.#memoryRoot,
+      ...(this.#options.protectedRoots === undefined
+        ? {}
+        : { protectedRoots: this.#options.protectedRoots }),
+      allowWorkspaceEdits: this.#options.allowWorkspaceEdits === true,
+      hostTools: {
+        extraHostTools: [
+          ...this.#connectorHostTools,
+          ...(this.#options.extraHostTools ?? []),
+        ],
+        ...(this.#authorization === undefined
+          ? {}
+          : {
+              memoryWrite: (sessionId: string, args: unknown) =>
+                this.#writeMemory(sessionId, args),
+            }),
+        memoryAnswer: (sessionId, args) =>
+          this.#turn.memoryAnswer(sessionId, args),
+        announce: params => this.#announce(params),
+      },
+      requestPermission: (sessionId, call) =>
+        this.#requestPermission(sessionId, call),
+      ...(this.#options.spawnRuntime === undefined
+        ? {}
+        : { spawn: this.#options.spawnRuntime }),
+      ...(this.#options.runtimeMcpArgv === undefined
+        ? {}
+        : { mcpArgv: this.#options.runtimeMcpArgv }),
+      ...(this.#options.ompIdleMs === undefined
+        ? {}
+        : { idleChildMs: this.#options.ompIdleMs }),
+      ...(this.#options.ompMaxChildren === undefined
+        ? {}
+        : { maxChildren: this.#options.ompMaxChildren }),
+      onActivity: active => this.#options.onActivity?.(active),
+      onError: error => this.#options.onError?.(error),
+    })
+  }
+
   async #spawnGeneration(): Promise<ResidentChildConnection> {
-    const child = new ResidentOmpPool({
+    const ompPool = new ResidentOmpPool({
       desktop: this.desktop,
       extraHostTools: [
         ...this.#connectorHostTools,
@@ -3135,7 +3224,7 @@ export class QianmoResident {
           },
         }),
       protectedRoots: this.#options.protectedRoots,
-      agents: this.#options.agents,
+      agents: this.#options.agents.filter(agent => agent.runtime === undefined),
       memoryRoot: this.#memoryRoot,
       allowWorkspaceEdits: this.#options.allowWorkspaceEdits,
       spawn: this.#options.spawnOmp,
@@ -3157,6 +3246,7 @@ export class QianmoResident {
       requestPermission: (sessionId: string, call: unknown) =>
         this.#requestPermission(sessionId, call),
     })
+    const child = new ResidentRuntimePool(ompPool, this.#externalPool())
     const closed = child.closed
     void closed.catch(() => {})
     // Retire the runtime the moment the child is gone, not when the supervisor

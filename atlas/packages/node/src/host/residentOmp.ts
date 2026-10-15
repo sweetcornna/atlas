@@ -46,12 +46,8 @@ import { VIDEO_TOOL, runVideoTool, type VideoToolResult } from './videoTool.js'
 import { nodeModelSelection } from '../providers/node.js'
 import { residentOmpEnvironment } from './residentOmpEnv.js'
 import { parseResidentOmpLocalCommand } from './residentLocalCommand.js'
-import {
-  residentToolSurface,
-  verdictText,
-  type HostToolDefinition,
-} from './notifyTool.js'
-import { parseNotifyVerdict } from './notifyWire.js'
+import { residentToolSurface, type HostToolDefinition } from './notifyTool.js'
+import { dispatchHostTool } from './hostToolDispatch.js'
 import { residentExtensionPath } from './residentExtension.js'
 
 export interface ResidentOmpSpawn {
@@ -1180,72 +1176,24 @@ export class ResidentOmpPool
             })
             return
           }
-          const extra = this.#options.extraHostTools?.find(
-            tool => tool.name === frame.toolName,
+          const outcome = await dispatchHostTool(
+            this.#options,
+            { agent: owner.agent, sessionId },
+            String(frame.toolName),
+            frame.arguments,
           )
-          if (extra) {
-            const result = await extra.handler(frame.arguments, {
-              agent: owner.agent,
-              sessionId,
-            })
-            if (child.alive)
-              child.send({
-                type: 'host_tool_result',
-                id: frame.id,
-                isError: !result.ok,
-                result: {
-                  content: [{ type: 'text', text: result.text }],
-                  details: result.details,
-                },
-              })
-            return
-          }
-          if (frame.toolName === 'qianmo_memory_write') {
-            const result = (await this.#options.memoryWrite?.(
-              sessionId,
-              frame.arguments,
-            )) ?? { ok: false, text: 'Memory writer is not enabled' }
+          if (child.alive)
             child.send({
               type: 'host_tool_result',
               id: frame.id,
-              isError: !result.ok,
-              result: { content: [{ type: 'text', text: result.text }] },
+              ...(outcome.isError ? { isError: true } : {}),
+              result: {
+                content: [{ type: 'text', text: outcome.text }],
+                ...(outcome.details === undefined
+                  ? {}
+                  : { details: outcome.details }),
+              },
             })
-            return
-          }
-          if (frame.toolName === 'qianmo_memory_answer') {
-            const answer = this.#options.memoryAnswer?.(
-              sessionId,
-              frame.arguments,
-            ) ?? { ok: false, text: 'Memory answer host unavailable' }
-            child.send({
-              type: 'host_tool_result',
-              id: frame.id,
-              isError: !answer.ok,
-              result: { content: [{ type: 'text', text: answer.text }] },
-            })
-            return
-          }
-          const verdict =
-            frame.toolName === 'qianmo_notify'
-              ? parseNotifyVerdict(
-                  await this.#options.announce({
-                    ...(frame.arguments as Record<string, unknown>),
-                    sessionId,
-                  }),
-                )
-              : {
-                  status: 'rejected' as const,
-                  detail: 'unknown resident host tool',
-                }
-          child.send({
-            type: 'host_tool_result',
-            id: frame.id,
-            result: {
-              content: [{ type: 'text', text: verdictText(verdict) }],
-              details: verdict,
-            },
-          })
         })().catch(error => {
           this.#options.onError?.(error)
           if (child.alive)

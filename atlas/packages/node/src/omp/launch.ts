@@ -46,6 +46,13 @@ export function ompArgv(args: readonly string[]): string[] {
   return [process.execPath, entry || resolveWorkspaceOmpCli(), ...args]
 }
 
+/** argv that runs a qm command: the compiled binary itself, or `cli.ts` under Bun. */
+export function qmArgv(args: readonly string[]): string[] {
+  if (process.env.QIANMO_OMP_ENTRY === 'self')
+    return [process.execPath, ...args]
+  return [process.execPath, join(import.meta.dir, '..', 'cli.ts'), ...args]
+}
+
 /** Environment for an omp child: omp state confined to the Qianmo root, plus `extra`. */
 export function ompSpawnEnv(
   extra: Record<string, string> = {},
