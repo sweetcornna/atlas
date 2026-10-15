@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.7（生效）**。v1.7 回写 P18.13 收口：§5.11.8 补缓存窗口的结果（G-2 通过，G-1、G-3 未过，P18.19 的现网门槛转入跟进），§5.11.11 第 3、9 条改为已实测，§6.3.3 与 §9.2 补 P18.18 的两处实现差异。v1.6 回写 P18.13 B 段的真机验收结果：§8.4 补结果与在途 turn 的时长要求，§3.1 `evaluated` 一行补「已评估」的显示，§8.3 补明文持有点。v1.5 只补 §2.4 `effective` 一行：未托管且 resident 带着模型变量启动的节点不报生效值。v1.4 补了 §2.3 第 10 步与 §2.5 的拨号节奏（随 v2.47.2 实现）。负责人决定来自 2026-10-03 对话记录（§0.1 的 D-1 ~ D-9），其余裁定由主 agent 按 M1 委托作出（§1.2）。v1.0 的四个待决点负责人已于同日拍板，见 §13。§5.11（缓存命中，P18.19）是 v1.3 新增的，其中的行号在 `6d4440e8` 上核过 |
+| 文档版本 | **v1.8（生效）**。v1.8 给 `status` 减负：§2.3 第 10 步的后台刷新跳过 5 min 内已经成功拿到状态的节点，§2.4 `effective` 一行补上节点侧缓存。v1.7 回写 P18.13 收口：§5.11.8 补缓存窗口的结果（G-2 通过，G-1、G-3 未过，P18.19 的现网门槛转入跟进），§5.11.11 第 3、9 条改为已实测，§6.3.3 与 §9.2 补 P18.18 的两处实现差异。v1.6 回写 P18.13 B 段的真机验收结果：§8.4 补结果与在途 turn 的时长要求，§3.1 `evaluated` 一行补「已评估」的显示，§8.3 补明文持有点。v1.5 只补 §2.4 `effective` 一行：未托管且 resident 带着模型变量启动的节点不报生效值。v1.4 补了 §2.3 第 10 步与 §2.5 的拨号节奏（随 v2.47.2 实现）。负责人决定来自 2026-10-03 对话记录（§0.1 的 D-1 ~ D-9），其余裁定由主 agent 按 M1 委托作出（§1.2）。v1.0 的四个待决点负责人已于同日拍板，见 §13。§5.11（缓存命中，P18.19）是 v1.3 新增的，其中的行号在 `6d4440e8` 上核过 |
 | 日期 | 2026-10-03 |
 | 核对基点 | origin/main `33dc81bf`（PR #154 的合入提交）。**本文自己引用的行号**都在这个提交上核过，清单见附 B。**从 hermes 调研 §11 转引的阡陌行号**按该调研的基线 `e123b2ec` 记，本文没有逐条在 `33dc81bf` 上复核 |
 | 本文范围 | **只有设计，不改代码。**范围回写与本版同批完成，记为 P18.0：章程 v2.22、roadmap v2.80、`beta-env.md` v1.4 补注、`node-provisioning.md` 补注、`tenancy-m1.md` §6.1 补注 |
@@ -19,6 +19,7 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| **v1.8** | **2026-10-15** | **实现回写：`status` 减负。**内测里一台机器跑两个节点，中枢每 10 min 的后台刷新对每个节点跑一次 `status`。每次 `status` 都要另起一个 qm 进程算 `effective`，加上 `serve-stdin` 本身，一共两个 qm 进程，单次约占 300 MB。刷新正好赶上两个节点各有一个 agent 子进程时，主机可用内存跌破 400 MB。改两处：§2.3 第 10 步，后台刷新跳过最近一次状态成功、且不到 5 min 的节点；§2.4 `effective` 一行，节点按输入指纹缓存上次算出的值，输入没变、又不到 30 min 时直接复用，不再起进程。协议和中枢显示都不变 |
 | **v1.7** | **2026-10-07** | **实现回写：P18.13 收口（缓存窗口）。**§5.11.8 补「结果」：v2.47.2 上 38 h、380 次调用，G-2 第一次有样本并通过（7 次同构建替换后的首调用全部命中），G-1（35 次 UNEXPLAINED 没有诊断）与 G-3（0.883）未过；网关直测：`prompt_cache_options` 被收下但不回诊断，`24h` 已是缺省保留期，`prompt_cache_key` 按客户端的值分区。改前窗口在周末、改后在工作日，写进混杂因素。§5.11.11 第 3、9 条改为已实测。§6.3.3 补多 key 的「加一把密钥 / 删除」，§9.2 P18.18 一行注明 `retryClassification.ts` 实际没改（P18.18 审计转出） |
 | **v1.6** | **2026-10-05** | **实现回写：P18.13 B 段真机验收（AC-P6）。**v2.47.2 上两轮零红（§8.4 结果一条）；`custom-openai` 预设记为已评估，页面显示「已评估」（§3.1 `evaluated` 一行）；§8.4 补「在途 turn 要比拨号节奏长」；§8.3 补明文持有点（节点 `settings.json`、`pending.json`、`key-pool.json`，首次托管的备份只对真 key 算持有点） |
 | **v1.5** | **2026-10-05** | **实现回写：未托管节点的生效值。**P18.13 B 段 F 段发现：节点还没被托管、resident 又是带着 `secrets/model-env` 启动的时候，`status` 报的 `effective` 是 SSH 强制命令起的进程剥掉模型变量、只按 `settings.json` 算的，于是一台实际跑 gpt-6-luna / responses / max 的节点被报成 firstParty / claude-sonnet-5 / xhigh。§2.4 `effective` 一行补上：这种节点的节点侧不算，中枢不收旧节点照常发来的那一块，也不沿用缓存里的旧值；页面写「模型由 resident 的启动环境决定 · 托管后显示」 |
@@ -202,7 +203,7 @@
 7. resident 看到 pending：如果当前一代 ACP 子进程**没有在途 turn**，就停掉它（`supervisor.recycle()`，不计入快速失败），然后**提交 pending**（§2.6），再拉起新一代。有在途 turn 就继续等，新到的投递沿用现有「等下一代」的语义。等满 30 min 发告警，不强杀。
 8. 新一代子进程的 `createSession` 读到新的 `settings.json`；按会话策略，被重置的会话开新会话，保留的会话经 `unstable_resumeSession` 续上（§2.7）。
 9. resident 写 `generation.json`：代号、起始时间、这一代加载时受管键的哈希。
-10. 中枢在 apply 之后每 5 s 拉一次 `status`，最多拉 2 min；之后回到常规的 10 min 后台刷新。拉到 `loadedHash == appliedHash` 就显示「已生效」。这些刷新都是尽力而为（v1.4）：这台机器的拨号名额用完时（§2.5「拨号节奏」）这一次就不拨，页面沿用上一次的状态，不记成刷新失败。
+10. 中枢在 apply 之后每 5 s 拉一次 `status`，最多拉 2 min；之后回到常规的 10 min 后台刷新。拉到 `loadedHash == appliedHash` 就显示「已生效」。这些刷新都是尽力而为（v1.4）：这台机器的拨号名额用完时（§2.5「拨号节奏」）这一次就不拨，页面沿用上一次的状态，不记成刷新失败。后台刷新跳过最近一次 `status` 成功、且不到 5 min 的节点（例如刚手动刷新过，或刚做完 apply 的跟进轮询）（v1.8）。被跳过的节点下一轮照常刷新，所以中枢手里的状态最旧不超过 15 min；上一次失败的节点不跳过。
 11. 页面通过已有的 revision 推送机制拿到「状态变了」，只替换那一行（D1 保态）；toast 显示结果（D2）。
 12. 对话页按这次切换的时间点，在转录里画一条分隔线「已切换到 DeepSeek · deepseek-v4-pro · 新会话」（§6.3.8）。
 
@@ -221,7 +222,7 @@
 | `loadedHash` | 当前这一代 ACP 子进程加载的受管键哈希（来自 `generation.json`） |
 | `pending` | `{requestId, since, waitingTurns}` 或 `null` |
 | `resident` | `{running, generation, inFlight}` |
-| `effective` | 节点在**单独的进程**里，把 `settings.json` 应用到自己的 `process.env`（和 `createSession` 同一序列）之后，用真实函数算出的：`apiProvider`（`getAPIProvider()`）、`wire`（`resolveOpenAIWireProtocol()` 或线路固定值）、`model`、`effortOnWire`（`modelSupportsEffort()`，chat 线另按当时代码里的门控判断）、`effortLevel`、`contextTokens`。**未托管（`managed == false`）且 `inheritedProviderKeys` 非空的节点不报这一项（v1.5）**：它的 ACP 子进程按 resident 的启动环境跑模型，这里却是剥掉那些变量算的，两边输入不同。节点侧不起这个进程，`status` 带一行警告说明原因；中枢对旧节点发来的这一块也不收，缓存里的旧值不沿用；页面写「模型由 resident 的启动环境决定 · 托管后显示」。托管之后子进程同样剥掉这些变量，`effective` 恢复（判据只有一处：`@qianmo/console` 的 `modelFromStartupEnv`） |
+| `effective` | 节点在**单独的进程**里，把 `settings.json` 应用到自己的 `process.env`（和 `createSession` 同一序列）之后，用真实函数算出的：`apiProvider`（`getAPIProvider()`）、`wire`（`resolveOpenAIWireProtocol()` 或线路固定值）、`model`、`effortOnWire`（`modelSupportsEffort()`，chat 线另按当时代码里的门控判断）、`effortLevel`、`contextTokens`。**未托管（`managed == false`）且 `inheritedProviderKeys` 非空的节点不报这一项（v1.5）**：它的 ACP 子进程按 resident 的启动环境跑模型，这里却是剥掉那些变量算的，两边输入不同。节点侧不起这个进程，`status` 带一行警告说明原因；中枢对旧节点发来的这一块也不收，缓存里的旧值不沿用；页面写「模型由 resident 的启动环境决定 · 托管后显示」。托管之后子进程同样剥掉这些变量，`effective` 恢复（判据只有一处：`@qianmo/console` 的 `modelFromStartupEnv`）。**节点会缓存上次算出的值（v1.8）**：指纹包括 `models.yml`，omp 自己对该 agent 目录读取的各层设置文件（`config.yml` / `config.yaml`、`.omp/config.yml`、`.omp/settings.json`）的内容，`appliedHash` / `loadedHash` / `onDiskHash`，以及 qm 可执行文件本身。指纹不变且不到 30 min 时，直接在回复里带回缓存值，不再起计算进程。指纹看不到的输入（能力发现在该目录里找到的其他工具的设置文件、强制命令的环境）由 30 min 上限兜住。只缓存算成功的值；文件 0600，只写进已经存在的 provider 目录，只读查看不会建出私有状态（`effectiveCache.ts`） |
 | `inheritedProviderKeys` | resident 自身环境里出现的 provider 类键名（不含值），由 resident 启动时写入 |
 | `capabilities` | 节点代码支持的特性：`chatEffortHonorsOverride`（P18.5 已合入，已生效，为 true）、`replayFilter`（P18.8 已合入，已生效，为 true）、`protocol: 1`。前两项取自调用层的 `getModelCompatCapabilities()`，不写死：`qm provider` 自 P18.7 起就把它们合并进上报与校验，P18.12 又去掉了 `node.ts` 里两项都为 `false` 的残留默认值（直接调 `stageProviderApply` / `readProviderState` 时用的就是它） |
 

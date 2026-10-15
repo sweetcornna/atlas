@@ -26,6 +26,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -746,6 +747,180 @@ describe('status', () => {
       generation: null,
       inFlight: null,
     })
+  })
+})
+
+describe('status: the effective cache', () => {
+  const cacheFile = () =>
+    join(config, 'qianmo', 'provider', 'effective-cache.json')
+  const agentFile = (...parts: string[]) =>
+    join(config, 'omp', 'agent', ...parts)
+
+  /** An effective stand-in that counts the children it stands in for. */
+  function counting(
+    outcome: Awaited<ReturnType<NonNullable<ProviderContext['effective']>>> = {
+      ok: true,
+      effective: EFFECTIVE,
+    },
+  ) {
+    const counter = {
+      calls: 0,
+      effective: async () => {
+        counter.calls += 1
+        return outcome
+      },
+    }
+    return counter
+  }
+
+  const at = (ms: number) => () => new Date(NOW.getTime() + ms)
+
+  test('unchanged inputs: the next status reuses the effective, no second child', async () => {
+    await send(applyRequest())
+    const child = counting()
+    const first = await send(statusRequest(), { effective: child.effective })
+    const second = await send(statusRequest(), {
+      effective: child.effective,
+      now: at(10 * 60_000),
+    })
+    expect(child.calls).toBe(1)
+    expect(first.ok && first.effective).toEqual(EFFECTIVE)
+    expect(second.ok && second.effective).toEqual(EFFECTIVE)
+    expect(statSync(cacheFile()).mode & 0o777).toBe(0o600)
+    // The entry holds hashes and the effective block, never a key.
+    expect(readFileSync(cacheFile(), 'utf8')).not.toContain(CANARY_KEY)
+  })
+
+  test('a changed settings or models file, in any layer omp reads, computes again', async () => {
+    await send(applyRequest())
+    const child = counting()
+    await send(statusRequest(), { effective: child.effective })
+    const touches: [string, () => void][] = [
+      [
+        'config.yml',
+        () =>
+          writeFileSync(
+            settingsFile(),
+            `${readFileSync(settingsFile(), 'utf8')}\n# touched\n`,
+          ),
+      ],
+      [
+        'models.yml',
+        () =>
+          writeFileSync(
+            agentFile('models.yml'),
+            `${readFileSync(agentFile('models.yml'), 'utf8')}\n# touched\n`,
+          ),
+      ],
+      ['config.yaml', () => writeFileSync(agentFile('config.yaml'), '{}\n')],
+      [
+        '.omp/settings.json',
+        () => {
+          mkdirSync(agentFile('.omp'), { recursive: true })
+          writeFileSync(agentFile('.omp', 'settings.json'), '{}\n')
+        },
+      ],
+      [
+        '.omp/config.yml',
+        () => writeFileSync(agentFile('.omp', 'config.yml'), '{}\n'),
+      ],
+    ]
+    for (const [name, touch] of touches) {
+      const before = child.calls
+      touch()
+      await send(statusRequest(), { effective: child.effective })
+      expect({ name, computed: child.calls - before }).toEqual({
+        name,
+        computed: 1,
+      })
+      await send(statusRequest(), { effective: child.effective })
+      expect({ name, reused: child.calls - before }).toEqual({
+        name,
+        reused: 1,
+      })
+    }
+  })
+
+  test('a new apply computes again', async () => {
+    await send(applyRequest())
+    const child = counting()
+    await send(statusRequest(), { effective: child.effective })
+    const second = await send(
+      applyRequest({
+        force: true,
+        profile: { baseUrl: 'https://api.other.example/v1' },
+      }),
+    )
+    expect(second).toMatchObject({ ok: true })
+    await send(statusRequest(), { effective: child.effective })
+    expect(child.calls).toBe(2)
+  })
+
+  test('an entry is trusted for under 30 min, and not from the future', async () => {
+    await send(applyRequest())
+    const child = counting()
+    await send(statusRequest(), { effective: child.effective })
+    await send(statusRequest(), {
+      effective: child.effective,
+      now: at(30 * 60_000 - 1),
+    })
+    expect(child.calls).toBe(1)
+    await send(statusRequest(), {
+      effective: child.effective,
+      now: at(30 * 60_000),
+    })
+    expect(child.calls).toBe(2)
+    // The entry is now stamped NOW + 30 min; an earlier clock does not trust it.
+    await send(statusRequest(), { effective: child.effective })
+    expect(child.calls).toBe(3)
+  })
+
+  test('a computation that failed is not kept', async () => {
+    await send(applyRequest())
+    const failed = counting({ ok: false, reason: 'timeout' })
+    const response = await send(statusRequest(), {
+      effective: failed.effective,
+    })
+    expect(response.ok && 'effective' in response).toBe(false)
+    expect(existsSync(cacheFile())).toBe(false)
+    const child = counting()
+    const next = await send(statusRequest(), { effective: child.effective })
+    expect(child.calls).toBe(1)
+    expect(next.ok && next.effective).toEqual(EFFECTIVE)
+  })
+
+  test('an unreadable, foreign or malformed entry is a miss and is replaced', async () => {
+    await send(applyRequest())
+    const child = counting()
+    await send(statusRequest(), { effective: child.effective })
+    const valid = JSON.parse(readFileSync(cacheFile(), 'utf8'))
+    for (const entry of [
+      'not json',
+      JSON.stringify({ ...valid, v: 2 }),
+      JSON.stringify({ ...valid, fingerprint: 'f'.repeat(64) }),
+      JSON.stringify({ ...valid, computedAt: String(valid.computedAt) }),
+      JSON.stringify({
+        ...valid,
+        effective: { ...valid.effective, contextTokens: 'many' },
+      }),
+    ]) {
+      const before = child.calls
+      writeFileSync(cacheFile(), entry)
+      const response = await send(statusRequest(), {
+        effective: child.effective,
+      })
+      expect(child.calls - before).toBe(1)
+      expect(response.ok && response.effective).toEqual(EFFECTIVE)
+      expect(JSON.parse(readFileSync(cacheFile(), 'utf8'))).toEqual(valid)
+    }
+  })
+
+  test('looking at an untouched node computes each time and creates nothing', async () => {
+    const child = counting()
+    await send(statusRequest(), { effective: child.effective })
+    await send(statusRequest(), { effective: child.effective })
+    expect(child.calls).toBe(2)
+    expect(existsSync(join(config, 'qianmo'))).toBe(false)
   })
 })
 

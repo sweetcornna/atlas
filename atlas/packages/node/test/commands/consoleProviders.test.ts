@@ -76,7 +76,12 @@ interface Harness {
   reopen(): ConsoleProviders
 }
 
-function harness(options: { readonly now?: () => number } = {}): Harness {
+function harness(
+  options: {
+    readonly now?: () => number
+    readonly scheduler?: ProviderScheduler
+  } = {},
+): Harness {
   const root = mkdtempSync(join(tmpdir(), 'qianmo-providers-port-'))
   roots.push(root)
   const nodes = {
@@ -100,7 +105,7 @@ function harness(options: { readonly now?: () => number } = {}): Harness {
         { node: 'beta-4', kind: 'local', command: nodes['beta-4'].command },
       ],
       onAlarm: line => alarms.push(line),
-      scheduler: STILL,
+      scheduler: options.scheduler ?? STILL,
       ...(options.now === undefined ? {} : { now: options.now }),
     })
   const ledgerStore = new MemoryActionStore()
@@ -1551,3 +1556,92 @@ test('P22 apply under a routing revision: a moved book is refused before any nod
   ])
   expect(applies('beta-4')).toEqual([])
 }, 30000)
+
+describe('background refresh (§2.3 step 10)', () => {
+  /** Timers that only fire when the test says so. */
+  function manualScheduler() {
+    const pending: { run: () => void; ms: number }[] = []
+    const scheduler: ProviderScheduler = {
+      set(run, ms) {
+        const timer = { run, ms }
+        pending.push(timer)
+        return timer
+      },
+      clear(handle) {
+        const index = pending.indexOf(handle as (typeof pending)[number])
+        if (index >= 0) pending.splice(index, 1)
+      },
+    }
+    return {
+      scheduler,
+      /** Fire the one timer due, as the real scheduler would. */
+      fire(): number {
+        expect(pending).toHaveLength(1)
+        const [timer] = pending.splice(0, 1)
+        timer!.run()
+        return timer!.ms
+      },
+    }
+  }
+
+  const statuses = (node: FakeNode) =>
+    node.requests().filter(request => request.op === 'status').length
+
+  async function until(check: () => boolean | Promise<boolean>) {
+    for (let i = 0; i < 500; i++) {
+      if (await check()) return
+      await Bun.sleep(10)
+    }
+    throw new Error('timed out waiting for the background refresh')
+  }
+
+  test('a tick leaves out nodes whose last status succeeded within 5 min, and refreshes the rest', async () => {
+    let clock = Date.UTC(2026, 9, 15, 0, 35, 3)
+    const timers = manualScheduler()
+    const h = harness({ now: () => clock, scheduler: timers.scheduler })
+    const settled = async (node: 'beta-1' | 'beta-4', at: number) =>
+      value(await h.port.node(node)).lastStatus?.at === at
+    expect(h.port.problem).toBeNull()
+    h.port.start()
+
+    // Start-up: every node, at once.
+    expect(timers.fire()).toBe(0)
+    await until(
+      async () => (await settled('beta-1', clock)) && settled('beta-4', clock),
+    )
+    expect(statuses(h.nodes['beta-1'])).toBe(1)
+    expect(statuses(h.nodes['beta-4'])).toBe(1)
+
+    // 8 min later beta-1 is refreshed by hand (an acceptance check, a page);
+    // beta-4's refresh by hand fails.
+    clock += 8 * 60_000
+    value(await h.port.refreshNode('beta-1'))
+    h.nodes['beta-4'].set('raw-status', '1\n')
+    expect(value(await h.port.refreshNode('beta-4')).lastStatus).toMatchObject({
+      ok: false,
+      at: clock,
+    })
+    expect(statuses(h.nodes['beta-1'])).toBe(2)
+    expect(statuses(h.nodes['beta-4'])).toBe(2)
+
+    // The 10-min tick: beta-1 answered 2 min ago and is left out; beta-4's
+    // last status failed, so it is asked again however recent.
+    clock += 2 * 60_000
+    rmSync(join(h.nodes['beta-4'].dir, 'raw-status'))
+    expect(timers.fire()).toBe(10 * 60_000)
+    await until(() => settled('beta-4', clock))
+    await Bun.sleep(200)
+    expect(statuses(h.nodes['beta-1'])).toBe(2)
+    expect(statuses(h.nodes['beta-4'])).toBe(3)
+
+    // The next tick: beta-1's last status is 12 min old now.
+    clock += 10 * 60_000
+    expect(timers.fire()).toBe(10 * 60_000)
+    await until(
+      async () => (await settled('beta-1', clock)) && settled('beta-4', clock),
+    )
+    expect(statuses(h.nodes['beta-1'])).toBe(3)
+    expect(statuses(h.nodes['beta-4'])).toBe(4)
+    h.port.stop()
+  }, 30_000)
+})
