@@ -16,6 +16,9 @@ import {
 import { MemoryControl } from './memoryControl.js'
 import { verifiedTaskOwner } from '@qianmo/capability'
 import { connectorTools, type ConnectorToolContext } from './connectorTools.js'
+import { taskTools, type TaskToolOrigin } from './taskTools.js'
+import { runtimeControl } from './runtimeUpdate.js'
+import { SelfUpgrader, systemControl } from './selfUpgradeRunner.js'
 import { residentToolSurface, type HostToolDefinition } from './notifyTool.js'
 import { buildVersion } from '../provenance.js'
 import {
@@ -741,7 +744,8 @@ const RUNTIME_WAIT_MS = 3_000
 export class QianmoResident {
   readonly desktop: NodeDesktop
   readonly control: ControlRegistry
-  readonly #connectorHostTools: readonly HostToolDefinition[]
+  /** Host tools answered by the hub: connectors (P25) and background tasks (P29). */
+  readonly #hubHostTools: readonly HostToolDefinition[]
   readonly hubCall: HubCallClient
   readonly #options: QianmoResidentOptions
   /** `options.localCommandIssuers`, as the set it is looked up in. */
@@ -826,6 +830,8 @@ export class QianmoResident {
   /** Set once startup has rolled a pending intent forward (§2.6 step 5). */
   #providerCheckQueued = false
   #providerCommitting = false
+  /** Set while an in-place upgrade waits for in-flight work (P31 §5.2). */
+  #upgradeDraining = false
   /**
    * A provider switch has recycled the generation and the next one is not
    * published yet. Old pool reaping, the supervisor's backoff and the model
@@ -878,12 +884,20 @@ export class QianmoResident {
         extraHostTools: [...(options.extraHostTools ?? []), files.tool()],
       }
     this.#options = options
-    this.#connectorHostTools = connectorTools({
-      call: (op, args, callOptions) => this.hubCall.call(op, args, callOptions),
-      approve: (ctx, tool, args) => this.#approveConnector(ctx, tool, args),
-    })
+    this.#hubHostTools = [
+      ...connectorTools({
+        call: (op, args, callOptions) =>
+          this.hubCall.call(op, args, callOptions),
+        approve: (ctx, tool, args) => this.#approveConnector(ctx, tool, args),
+      }),
+      ...taskTools({
+        call: (op, args, callOptions) =>
+          this.hubCall.call(op, args, callOptions),
+        origin: ctx => this.#taskOrigin(ctx),
+      }),
+    ]
     residentToolSurface(options.authorization !== undefined, [
-      ...this.#connectorHostTools,
+      ...this.#hubHostTools,
       ...(options.extraHostTools ?? []),
     ])
     this.control = new ControlRegistry({
@@ -916,6 +930,58 @@ export class QianmoResident {
         'desktop.recycle',
       ],
     })
+    // `/stop` from a chat channel: the hub names the task it is waiting on.
+    this.control.register(
+      'turn',
+      async (op, args) => {
+        if (op !== 'turn.stop')
+          return { ok: false, code: 'unsupported', message: '不支持此回合操作' }
+        const task =
+          typeof args.taskId === 'string'
+            ? this.#tasksByTask.get(args.taskId)
+            : undefined
+        return {
+          ok: true,
+          value: {
+            stopped: task !== undefined && this.#turn.stop(task.envelope.msgId),
+          },
+        }
+      },
+      { estopAllowed: ['turn.stop'] },
+    )
+    // Claude Code / Codex versions and updates (P31); reading works under ESTOP.
+    this.control.register(
+      'runtime',
+      runtimeControl({
+        ...(options.runtimeBins === undefined
+          ? {}
+          : { bins: options.runtimeBins }),
+      }),
+      {
+        estopAllowed: ['runtime.versions'],
+        sideEffects: op => op === 'runtime.update',
+      },
+    )
+    // qianmo's own in-place upgrade (P31 §5.2): stage, drain, swap, restart.
+    this.control.register(
+      'system',
+      systemControl(
+        new SelfUpgrader({
+          drain: () => {
+            this.#upgradeDraining = true
+          },
+          resume: () => {
+            this.#upgradeDraining = false
+          },
+          idle: () => this.#inFlightWork() === null,
+          log: line => process.stderr.write(`${line}\n`),
+        }),
+      ),
+      {
+        estopAllowed: ['system.version'],
+        sideEffects: op => op !== 'system.version',
+      },
+    )
     this.control.register(
       'node',
       async op =>
@@ -1737,8 +1803,10 @@ export class QianmoResident {
     // as the queue check below: a refusal must not spend the recipient's inbox
     // quota. Pause-new-work only — nothing in flight is touched, because a turn
     // that has been admitted has a `task.result` owed to someone.
-    if (this.#estop.engaged()) {
-      const reason = 'resident is halted by its ESTOP sentinel'
+    if (this.#estop.engaged() || this.#upgradeDraining) {
+      const reason = this.#upgradeDraining
+        ? 'resident is restarting for an upgrade'
+        : 'resident is halted by its ESTOP sentinel'
       const code = errorCodeForPeer(
         ProtocolErrorCode.E_BUSY,
         context.channel.peerSupportedTypes,
@@ -1911,6 +1979,19 @@ export class QianmoResident {
       }),
     )
     if (routed.ok) channel.send(routed.message)
+  }
+
+  /** The console conversation and turn behind a task tool call (P29). */
+  #taskOrigin(ctx: {
+    readonly agent: string
+    readonly sessionId: string
+  }): TaskToolOrigin | null {
+    const input = this.#turn.activeInput(ctx.sessionId)
+    const task = input === undefined ? undefined : this.#taskFor(input)
+    if (!task || task.settled || input?.agent !== ctx.agent) return null
+    const contextId = task.envelope.contextId
+    if (typeof contextId !== 'string' || contextId === '') return null
+    return { contextId, taskId: task.envelope.taskId }
   }
 
   async #approveConnector(
@@ -3165,7 +3246,7 @@ export class QianmoResident {
       allowWorkspaceEdits: this.#options.allowWorkspaceEdits === true,
       hostTools: {
         extraHostTools: [
-          ...this.#connectorHostTools,
+          ...this.#hubHostTools,
           ...(this.#options.extraHostTools ?? []),
         ],
         ...(this.#authorization === undefined
@@ -3201,7 +3282,7 @@ export class QianmoResident {
     const ompPool = new ResidentOmpPool({
       desktop: this.desktop,
       extraHostTools: [
-        ...this.#connectorHostTools,
+        ...this.#hubHostTools,
         ...(this.#options.extraHostTools ?? []),
       ],
       onLaunch: (sessionId, policy, configHash) =>
@@ -3402,7 +3483,10 @@ export class QianmoResident {
         // entry into a turn, so skipping it here is what makes "no new work"
         // true at the source — including for mail that arrived before the
         // brake was pulled. Nothing running is touched.
-        paused: () => this.#estop.engaged() || this.#providerCommitting,
+        paused: () =>
+          this.#estop.engaged() ||
+          this.#providerCommitting ||
+          this.#upgradeDraining,
         ...(this.#options.pollIntervalMs === undefined
           ? {}
           : { intervalMs: this.#options.pollIntervalMs }),

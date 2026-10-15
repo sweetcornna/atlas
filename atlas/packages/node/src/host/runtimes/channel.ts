@@ -85,9 +85,7 @@ export abstract class RuntimeChannelBase implements ExternalRuntimeChannel {
     void this.closed.catch(() => {})
     this.#reaped = new Promise<void>(done => child.once('close', () => done()))
     child.stderr?.on('data', (chunk: Buffer | string) => {
-      this.#stderr = (this.#stderr + chunk.toString()).slice(
-        -STDERR_TAIL_BYTES,
-      )
+      this.#stderr = (this.#stderr + chunk.toString()).slice(-STDERR_TAIL_BYTES)
     })
     child.once('error', error => {
       this.#end()

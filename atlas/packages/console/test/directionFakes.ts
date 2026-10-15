@@ -18,6 +18,12 @@ import {
   MEMORY_KINDS,
   MODEL_DIRECTIONS,
   type AgentRef,
+  type ChannelDraft,
+  type ChannelLoginView,
+  type ChannelPlatformView,
+  type ChannelsPort,
+  type ChannelsSnapshot,
+  type ChannelView,
   type ConnectorDraft,
   type ConnectorPresetView,
   type ConnectorsPort,
@@ -57,6 +63,9 @@ import {
   type SchedulesSnapshot,
   type ScheduleTemplateView,
   type ScheduleView,
+  type UpdatesDraft,
+  type UpdatesPort,
+  type UpdatesSnapshot,
 } from '../src/directionPorts.js'
 
 export function ok<T>(value: T): ConsoleResult<T> {
@@ -1695,4 +1704,308 @@ export const PREVIEW_PORTS: Readonly<
   handoffDevices: now => new FakeHandoffDevices(now),
   desktop: now => new FakeDesktop(now),
   files: now => new FakeFiles(now),
+}
+
+export const CHANNEL_PLATFORMS: readonly ChannelPlatformView[] = [
+  {
+    id: 'qq',
+    name: 'QQ',
+    settings: [{ key: 'appId', label: 'AppID' }],
+    secrets: [{ key: 'appSecret', label: 'AppSecret' }],
+    qrLogin: false,
+    hint: 'QQ 开放平台机器人',
+    evaluated: false,
+  },
+  {
+    id: 'weixin',
+    name: '微信',
+    settings: [],
+    secrets: [],
+    qrLogin: true,
+    hint: '用微信扫码授权',
+    evaluated: false,
+  },
+  {
+    id: 'telegram',
+    name: 'Telegram',
+    settings: [],
+    secrets: [{ key: 'token', label: 'Bot Token' }],
+    qrLogin: false,
+    hint: '@BotFather 创建',
+    evaluated: false,
+  },
+]
+
+/** `ChannelsPort` over a list: one QQ channel, a WeChat login that confirms on the second poll. */
+export class FakeChannels implements ChannelsPort {
+  readonly calls: string[] = []
+  channels: ChannelView[]
+  readonly #logins = new Map<string, { draft: ChannelDraft; polls: number }>()
+  #seq = 10
+
+  constructor(private readonly now: () => number) {
+    const at = now()
+    this.channels = [
+      {
+        id: 'ch-1',
+        name: '工作 QQ',
+        platform: 'qq',
+        enabled: true,
+        target: 'qianmo://tokyo-1/planner',
+        memberTarget: 'qianmo://osaka-1/writer',
+        ownerIds: ['OWNER-OPENID'],
+        allowAll: false,
+        allowUsers: [],
+        allowGroups: ['GROUP-OPENID'],
+        groupTrigger: 'mention',
+        replyWindowMs: 0,
+        prompt: '',
+        settings: { appId: '102000001' },
+        secretSet: true,
+        health: { state: 'connected', since: at - 3_600_000 },
+        conversations: 3,
+        evaluated: false,
+        owner: 'legacy:admin',
+        createdAt: at - 86_400_000,
+        updatedAt: at - 3_600_000,
+      },
+    ]
+  }
+
+  async snapshot() {
+    this.calls.push('snapshot')
+    return ok<ChannelsSnapshot>({
+      channels: this.channels,
+      platforms: CHANNEL_PLATFORMS,
+      agents: ['qianmo://tokyo-1/planner', 'qianmo://osaka-1/writer'],
+    })
+  }
+
+  async save(draft: ChannelDraft, actor: DirectionActor) {
+    this.calls.push(`save ${draft.id ?? 'new'} ${draft.name}`)
+    const old =
+      draft.id === undefined
+        ? undefined
+        : this.channels.find(one => one.id === draft.id)
+    if (draft.id !== undefined && old === undefined)
+      return failed<ChannelView>('not_found', 'no such channel')
+    this.#seq += 1
+    const at = this.now()
+    const view: ChannelView = {
+      id: old?.id ?? `ch-${this.#seq}`,
+      name: draft.name,
+      platform: draft.platform,
+      enabled: draft.enabled ?? old?.enabled ?? true,
+      target: draft.target,
+      memberTarget: draft.memberTarget ?? old?.memberTarget ?? null,
+      ownerIds: draft.ownerIds ?? old?.ownerIds ?? [],
+      allowAll: draft.allowAll ?? old?.allowAll ?? false,
+      allowUsers: draft.allowUsers ?? old?.allowUsers ?? [],
+      allowGroups: draft.allowGroups ?? old?.allowGroups ?? [],
+      groupTrigger: draft.groupTrigger ?? old?.groupTrigger ?? 'mention',
+      replyWindowMs: draft.replyWindowMs ?? old?.replyWindowMs ?? 0,
+      prompt: draft.prompt ?? old?.prompt ?? '',
+      settings: { ...old?.settings, ...draft.settings },
+      secretSet:
+        old?.secretSet === true || Object.keys(draft.secrets ?? {}).length > 0,
+      health: { state: 'starting', since: at },
+      conversations: old?.conversations ?? 0,
+      evaluated: false,
+      owner: old?.owner ?? actor.subject,
+      createdAt: old?.createdAt ?? at,
+      updatedAt: at,
+    }
+    this.channels = [...this.channels.filter(one => one.id !== view.id), view]
+    return ok(view)
+  }
+
+  async remove(id: string) {
+    this.calls.push(`remove ${id}`)
+    if (!this.channels.some(one => one.id === id))
+      return failed<null>('not_found', 'no such channel')
+    this.channels = this.channels.filter(one => one.id !== id)
+    return ok(null)
+  }
+
+  async login(draft: ChannelDraft) {
+    this.calls.push(`login ${draft.name}`)
+    this.#seq += 1
+    const loginId = `login-${this.#seq}`
+    this.#logins.set(loginId, { draft, polls: 0 })
+    return ok<ChannelLoginView>({
+      loginId,
+      state: 'wait',
+      qr: `https://liteapp.weixin.qq.com/q/${loginId}`,
+    })
+  }
+
+  async loginStatus(loginId: string, actor: DirectionActor) {
+    const login = this.#logins.get(loginId)
+    if (login === undefined)
+      return failed<ChannelLoginView>('not_found', 'no such login')
+    login.polls += 1
+    const qr = `https://liteapp.weixin.qq.com/q/${loginId}`
+    if (login.polls < 2)
+      return ok<ChannelLoginView>({ loginId, state: 'scanned', qr })
+    const saved = await this.save(
+      { ...login.draft, ownerIds: ['wxid-owner'] },
+      actor,
+    )
+    if (!saved.ok)
+      return failed<ChannelLoginView>(saved.failure.code, saved.failure.message)
+    this.#logins.delete(loginId)
+    return ok<ChannelLoginView>({
+      loginId,
+      state: 'confirmed',
+      qr,
+      channelId: saved.value.id,
+    })
+  }
+
+  async loginQr(loginId: string) {
+    if (!this.#logins.has(loginId))
+      return failed<string>('not_found', 'no such login')
+    return ok(`https://liteapp.weixin.qq.com/q/${loginId}`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// UpdatesPort (P31)
+// ---------------------------------------------------------------------------
+
+export class FakeUpdates implements UpdatesPort {
+  readonly calls: string[] = []
+  value: UpdatesSnapshot
+
+  constructor(now: () => number) {
+    const at = now()
+    this.value = {
+      times: [{ kind: 'daily', time: '08:00' }],
+      timezone: 'Asia/Shanghai',
+      channels: ['nc-1'],
+      repo: 'qianmo-team/atlas',
+      sources: [
+        {
+          id: 'qianmopi',
+          name: 'qianmopi 上游',
+          current: '18.8.8',
+          latest: '18.11.0',
+          nodes: [],
+          action: 'notify',
+          autoAvailable: true,
+          checkedAt: at - 3_600_000,
+          error: null,
+        },
+        {
+          id: 'claude-code',
+          name: 'Claude Code',
+          current: null,
+          latest: '2.1.0',
+          nodes: [
+            { node: 'tokyo-1', version: '2.1.0', managed: true, pinned: false },
+          ],
+          action: 'auto',
+          autoAvailable: true,
+          checkedAt: at - 3_600_000,
+          error: null,
+        },
+        {
+          id: 'codex',
+          name: 'Codex',
+          current: null,
+          latest: null,
+          nodes: [],
+          action: 'notify',
+          autoAvailable: true,
+          checkedAt: at - 3_600_000,
+          error: 'npm 查询失败',
+        },
+        {
+          id: 'qianmo',
+          name: '阡陌',
+          current: '3.0.1',
+          latest: '3.0.1',
+          nodes: [],
+          action: 'notify',
+          autoAvailable: false,
+          checkedAt: at - 3_600_000,
+          error: null,
+        },
+      ],
+      history: [
+        {
+          at: at - 3_600_000,
+          source: 'qianmopi',
+          current: '18.8.8',
+          latest: '18.11.0',
+          outcome: 'available',
+          detail: '已推送 1 个通知渠道',
+          trigger: 'schedule',
+        },
+      ],
+      nextAt: at + 3_600_000,
+      running: false,
+      channelChoices: [{ id: 'nc-1', name: '值班群' }],
+      hub: { version: '3.0.1', upgradable: true, backup: '3.0.0' },
+      rollbackVersions: ['3.0.0', '2.47.2'],
+      upgrade: null,
+    }
+  }
+
+  async snapshot(): Promise<ConsoleResult<UpdatesSnapshot>> {
+    return { ok: true, value: this.value }
+  }
+
+  async save(draft: UpdatesDraft): Promise<ConsoleResult<UpdatesSnapshot>> {
+    this.calls.push(`save ${draft.times.length}`)
+    this.value = {
+      ...this.value,
+      times: draft.times,
+      timezone: draft.timezone,
+      channels: draft.channels,
+      repo: draft.repo,
+      sources: this.value.sources.map(one => ({
+        ...one,
+        action: one.autoAvailable
+          ? (draft.actions[one.id] ?? one.action)
+          : 'notify',
+      })),
+    }
+    return { ok: true, value: this.value }
+  }
+
+  async run(): Promise<ConsoleResult<UpdatesSnapshot>> {
+    this.calls.push('run')
+    this.value = { ...this.value, running: true }
+    return { ok: true, value: this.value }
+  }
+
+  async upgrade(input: {
+    version?: string
+  }): Promise<ConsoleResult<UpdatesSnapshot>> {
+    this.calls.push(`upgrade ${input.version ?? 'latest'}`)
+    this.value = {
+      ...this.value,
+      upgrade: {
+        kind: 'upgrade',
+        target: input.version ?? '3.0.2',
+        state: 'running',
+        steps: [
+          { node: 'tokyo-1', state: 'upgrading', detail: null },
+          { node: 'hub', state: 'pending', detail: null },
+        ],
+        startedAt: 1,
+        finishedAt: null,
+        trigger: 'manual',
+      },
+    }
+    return { ok: true, value: this.value }
+  }
+
+  async rollback(input: {
+    version?: string
+  }): Promise<ConsoleResult<UpdatesSnapshot>> {
+    this.calls.push(`rollback ${input.version ?? 'backup'}`)
+    return { ok: true, value: this.value }
+  }
 }

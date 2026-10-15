@@ -947,6 +947,28 @@ export function createConsoleChatPort(
       return { ok: true, value: { session: sessionView(stored), turns: list } }
     },
 
+    async note(
+      sessionId: string,
+      text: string,
+    ): Promise<ConsoleResult<ChatTurn>> {
+      if (!sessions.has(sessionId))
+        return fail('not_found', '这条会话不在本控制台的记录里')
+      return {
+        ok: true,
+        value: addTurn({
+          id: newId(),
+          sessionId,
+          author: 'agent',
+          at: now(),
+          text,
+          state: 'done',
+          variant: 'notice',
+          noticeSource: 'task',
+          severity: 'info',
+        }),
+      }
+    },
+
     async send(input: ChatSendInput): Promise<ConsoleResult<ChatTurn>> {
       const sendTaskTtlMs = input.taskTtlMs ?? taskTtlMs
       if (!Number.isFinite(sendTaskTtlMs) || sendTaskTtlMs <= 0)

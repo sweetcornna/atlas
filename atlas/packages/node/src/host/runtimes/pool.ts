@@ -44,6 +44,7 @@ import {
   type RuntimeToolSession,
   type RuntimeToolSpec,
 } from './toolHost.js'
+import { runtimeBin } from '../runtimeUpdate.js'
 import { runWorkspaceTool, WORKSPACE_TOOLS } from './workspaceTools.js'
 
 /** A resident agent that runs on Claude Code or Codex. */
@@ -386,9 +387,9 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     try {
       return readFileSync(path, 'utf8')
     } catch {
-      const text = (
-        this.#options.systemPrompt ?? defaultExternalSystemPrompt
-      )(agent)
+      const text = (this.#options.systemPrompt ?? defaultExternalSystemPrompt)(
+        agent,
+      )
       writeFileSync(path, text, { mode: 0o600 })
       return text
     }
@@ -448,7 +449,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         this.#saveRecord(dir, record)
       }
       argv = claudeCodeArgv({
-        bin: this.#options.bins?.['claude-code'] ?? 'claude',
+        bin: runtimeBin('claude-code', this.#options.bins),
         model: launch.model,
         sessionId: record.nativeId,
         resume: record.started === true,
@@ -474,7 +475,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       const home = qianmoConfigPath('runtimes', 'codex', agent.agent)
       mkdirSync(home, { recursive: true, mode: 0o700 })
       argv = codexArgv({
-        bin: this.#options.bins?.codex ?? 'codex',
+        bin: runtimeBin('codex', this.#options.bins),
         model: launch.model,
         baseUrl: launch.baseUrl,
         keyEnv: CODEX_KEY_ENV,
@@ -618,7 +619,8 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         ? this.#ask(sessionId, call)
         : {
             ok: false,
-            reason: 'this resident agent has no shell (start the node with --agent-shell to allow one)',
+            reason:
+              'this resident agent has no shell (start the node with --agent-shell to allow one)',
           }
     const verdict = residentToolVerdict(call, this.#policy(agent), {
       agentKind: 'main',

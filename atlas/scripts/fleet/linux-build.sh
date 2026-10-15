@@ -33,6 +33,8 @@ EXPECT=""
 PLATFORM=linux/amd64
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 OUT=""
+# 发行构建：标签版本（不带 v）写进二进制，`qm --version` 报它；在线升级按它核对（P31）。
+RELEASE=""
 # 专用 colima profile：default profile 的 docker 数据盘可能被别的项目占满，不去清别人的镜像。
 # 首次需要：colima start atlas-build --cpu 4 --memory 8 --disk 60 --vm-type vz --mount-type virtiofs
 COLIMA_PROFILE="${COLIMA_PROFILE:-atlas-build}"
@@ -47,10 +49,13 @@ while [ $# -gt 0 ]; do
     --platform) PLATFORM="$2"; shift 2;;
     --repo) REPO="$2"; shift 2;;
     --out) OUT="$2"; shift 2;;
+    --release) RELEASE="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
 
+[ -z "$RELEASE" ] || printf '%s' "$RELEASE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' \
+  || { echo "--release must be x.y.z: $RELEASE" >&2; exit 2; }
 [ -n "$BRANCH" ] || BRANCH="$(git -C "$REPO" symbolic-ref --short HEAD)"
 BRANCH_HEAD="$(git -C "$REPO" rev-parse --verify "refs/heads/$BRANCH^{commit}")"
 # 分支可能正被别的会话推进：构建钉在一个确定的提交上（缺省取此刻的分支头）
@@ -83,7 +88,7 @@ SNAPSHOT_TAG="$(git -C "$REPO" show "$HEAD_SHA:atlas/upstream/omp.json" | sed -n
 [ -n "$SNAPSHOT_TAG" ] || { echo "no snapshot in atlas/upstream/omp.json at $HEAD_SHA" >&2; exit 5; }
 git -C "$REPO" bundle create "$OUT/in/atlas.bundle" "$BRANCH" "refs/tags/$SNAPSHOT_TAG" 2> "$OUT/bundle.log"
 git -C "$REPO" bundle verify "$OUT/in/atlas.bundle" >> "$OUT/bundle.log" 2>&1
-echo "bundle=$(du -h "$OUT/in/atlas.bundle" | cut -f1) commit=$HEAD_SHA branch=$BRANCH branch_head=$BRANCH_HEAD platform=$PLATFORM" | tee "$OUT/source.txt"
+echo "bundle=$(du -h "$OUT/in/atlas.bundle" | cut -f1) commit=$HEAD_SHA branch=$BRANCH branch_head=$BRANCH_HEAD platform=$PLATFORM release=${RELEASE:-none}" | tee "$OUT/source.txt"
 
 # ── 2. 容器内脚本 ────────────────────────────────────────────────────────────
 cat > "$OUT/in/stage1-root.sh" <<'EOS'
@@ -105,7 +110,7 @@ mkdir -p /home/builder/.bun/install/cache /home/builder/out
 chown -R builder:builder /home/builder
 install -o builder -g builder -m 0644 /in/atlas.bundle /home/builder/atlas.bundle
 # builder 只写自己的家目录；root 最后整体拷回 /out（绑定挂载的属主不归容器管）
-su builder -c "BRANCH='${BRANCH}' COMMIT='${COMMIT}' SNAPSHOT_TAG='${SNAPSHOT_TAG}' bash /in/stage2-builder.sh"
+su builder -c "BRANCH='${BRANCH}' COMMIT='${COMMIT}' SNAPSHOT_TAG='${SNAPSHOT_TAG}' RELEASE_VERSION='${RELEASE_VERSION:-}' bash /in/stage2-builder.sh"
 echo "STAGE2_EXIT=$?" >> /home/builder/out/rc.txt
 cp -a /home/builder/out/. /out/
 EOS
@@ -138,7 +143,7 @@ bun install --frozen-lockfile > $OUT/install.log 2>&1; rc INSTALL_RC $?
 # x64: the baseline addon build-qm embeds (see the script's header).
 bash atlas/scripts/build-native-portable.sh > $OUT/build-native.log 2>&1; rc NATIVE_RC $?
 git status --porcelain > $OUT/porcelain-before-build.txt
-bun atlas/scripts/build-qm.ts > $OUT/build-qm.log 2>&1; rc BUILD_RC $?
+QIANMO_RELEASE_VERSION="${RELEASE_VERSION:-}" bun atlas/scripts/build-qm.ts > $OUT/build-qm.log 2>&1; rc BUILD_RC $?
 BIN=$(ls dist/qm-linux-* 2>/dev/null | head -n1)
 echo "binary=$BIN" >> $OUT/env.txt
 bun atlas/scripts/check-qm-smoke.ts "$BIN" > $OUT/qm-smoke.log 2>&1; rc SMOKE_RC $?
@@ -159,7 +164,7 @@ EOS
 : > "$OUT/rc.txt"
 START=$(date +%s)
 set +e
-docker --context "$DOCKER_CONTEXT" run --rm --platform "$PLATFORM" --dns "${BUILD_DNS:-1.1.1.1}" -e BRANCH="$BRANCH" -e COMMIT="$HEAD_SHA" -e SNAPSHOT_TAG="$SNAPSHOT_TAG" \
+docker --context "$DOCKER_CONTEXT" run --rm --platform "$PLATFORM" --dns "${BUILD_DNS:-1.1.1.1}" -e BRANCH="$BRANCH" -e COMMIT="$HEAD_SHA" -e SNAPSHOT_TAG="$SNAPSHOT_TAG" -e RELEASE_VERSION="$RELEASE" \
   -v "$OUT/in:/in:ro" -v "$OUT:/out" \
   -v "atlas-fleet-bun-cache-${PLATFORM//\//-}:/home/builder/.bun/install/cache" \
   "$IMAGE" bash /in/stage1-root.sh > "$OUT/docker.log" 2>&1

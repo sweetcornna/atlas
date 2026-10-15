@@ -182,6 +182,8 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--chat-from <地址>` | `qianmo://console/operator` | 控制台自己在网络上的地址。它**不是**一个注册进注册中心的节点（§6.2）；用处是让对面知道这条 `task.request` 是谁发的——`InboundAdapter` 把它渲染进 provenance，并写成收件箱里那条消息的 `from` |
 | `--chat-sign` | 关 | 对话的每一条 `task.request` 带 capability token；命名目标公钥已受信时同时要求双向签名握手（§4.6、§6.7.1）。与 `--wake-sign` 分开；**打开的顺序同样不能反**，前提与 §4.6 那三步逐字相同 |
 | `--chat-store <绝对路径>` | `occConfigPath('qianmo','console','chat.ndjson')` | 会话与转录的落盘位置（§6.5）。**必须是绝对路径**，理由同 `--audit` |
+| `--channels` | 关 | 聊天渠道（P28，`docs/dev/runtimes-channels.md` §2）：QQ、微信、Telegram、Discord、Slack 的消息由中枢收下，经对话面交给绑定的智能体，回复发回原平台。须同时给 `--chat-url`；渠道、密封的凭据与会话映射在 `qianmoConfigPath('qianmo','console','channels')`。各平台都没用真实账号跑过 |
+| `--updates` | 关 | 定时检查更新与阡陌在线升级（P31，`docs/dev/runtimes-channels.md` §5）：按设定时间查 qianmopi 上游发行、npm 上 Claude Code 与 Codex 的最新版、阡陌发行，有新版本时记录并推送到选定的通知渠道；设为自动处理时经仓库连接触发 `sync-omp.yml`（同步 PR 仍要评审合并），或经控制链路让节点装新版外部底层，或把阡陌逐台升级（节点先、中枢最后，复刻 sub2api 的做法，§5.2）。节点的版本与升级经控制链路，没有控制链路时只管中枢自身；设定与记录在 `qianmoConfigPath('qianmo','console','updates')`。出站经 `api.github.com`、`registry.npmjs.org` 与 GitHub 发行下载域；没有用真实发行跑过在线升级 |
 | `--node-server <node>=<server>` | 无 | 这个节点跑在哪台机器上，**可重复**，一个节点一条，同一个节点不许给两次。**给了才有归属面**（§11）；也是备注的白名单。server 的形状：非空、≤64 字符、只收 `A-Za-z0-9 . _ : -`（主机名、IPv4、IPv6 的冒号、短名都在内） |
 | `--server-notes <绝对路径>` | `occConfigPath('qianmo','console','server-notes.ndjson')` | 服务器备注的落盘位置（§11）。**必须是绝对路径**，理由同 `--audit` |
 | `--handoff-repo <owner/name>=<绝对令牌文件>` | 无 | GitHub 接力备用凭据；连接簿优先，连接模式启用租户时不使用无属主的备用文件。可重复，令牌文件 0600、当前属主、非软链，地址固定 github.com。没有 `--handoff-root` 时只保留台账；节点不需要 `--handoff-node-git` |
@@ -617,6 +619,16 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/connectors` | **个人 ops** | 新建或带 `id` 修改连接；拒绝共用令牌与 break-glass；先动作账本 admission |
 | DELETE | `/v0/connectors/<连接 id>` | **个人 ops** | 删除连接及其秘密槽；成功 204 |
 | POST | `/v0/connectors/<连接 id>/probe` | **个人 ops** | 用已保存凭据登录后退出；记录 `lastProbe`，不发送邮件或创建事件 |
+| GET | `/v0/im` | view | 聊天渠道（P28，`docs/dev/runtimes-channels.md` §2）：渠道、平台表单定义与可绑定的智能体。凭据只答「已设置」；不是运维时不给主人号、放行名单与平台设置。没接端口时 501 |
+| POST | `/v0/im` | **个人 ops** | 新建或带 `id` 修改渠道；秘密字段留空保留原值。拒绝共用令牌与 break-glass；先动作账本 admission，记 `im.save` |
+| DELETE | `/v0/im/<渠道 id>` | **个人 ops** | 停掉连接并删除渠道及其凭据；对话页里的会话保留。成功 204，记 `im.remove` |
+| POST | `/v0/im/login` | **个人 ops** | 开始微信扫码：中枢向官方接口取二维码并在后台轮询，扫码确认后把凭据封存进这条渠道、扫码人记为主人。记 `im.login` |
+| GET | `/v0/im/login/<登录 id>` | **个人 ops** | 这次扫码的状态：`wait` / `scanned` / `expired` / `confirmed` / `failed`；二维码过期会自动换新 |
+| GET | `/v0/updates` | view | 更新检查（P31，`docs/dev/runtimes-channels.md` §5）：检查时间与时区、每个来源（qianmopi、Claude Code、Codex、阡陌）的当前版本、最新版本、各节点版本与动作、最近 100 行记录、下次检查时刻；中枢自身的版本与本机备份、能回到的更旧发行、最近一次升级或回滚作业。不是运维时不给通知渠道。没接端口时 501 |
+| POST | `/v0/updates` | **个人 ops** | 保存设定：`{ times, timezone, actions, channels, repo }`；`times` 是 daily / weekly 规则，`actions` 每个来源 `notify` 或 `auto`（阡陌设为 `auto` 时，检查到新发行就逐台升级）。拒绝共用令牌与 break-glass；记 `updates.save` |
+| POST | `/v0/updates/run` | **个人 ops** | 立即检查一次，在后台进行，返回时 `running` 为 true；按各来源的动作处理。记 `updates.run` |
+| POST | `/v0/updates/upgrade` | **个人 ops** | 阡陌自身在线升级（P31 §5.2，按 sub2api 的做法）：`{ version? }`，缺省为仓库的最新发行。节点逐台进行、中枢最后：每台先在部署树旁下载本平台包并核对校验和与新程序自报的版本，再排空在途工作，改名替换（旧的留作备份），走原停机路径后在同一进程号里启动新程序；一台失败就停，不再往下推。在后台进行，`upgrade` 字段跟着进度。记 `updates.upgrade` |
+| POST | `/v0/updates/rollback` | **个人 ops** | `{ version? }`：不给版本时各台换回本机备份；给版本时装那个更旧的发行，须在 `rollbackVersions`（最近三个更旧的发行）里。同样逐台、中枢最后。记 `updates.rollback` |
 | GET | `/v0/schedules` | view | 定时任务快照：任务、最近运行、通知渠道（只给名字、类型、主机与所属租户，不给地址）、模板、可选目标、急停。租户范围内按目标智能体与渠道租户过滤（§12.1）；没接定时任务端口时 501 |
 | GET | `/v0/schedules/<任务 id>` | view | 仅自己的任务；ops 和旧令牌可读全部，越权 404 |
 | GET | `/v0/schedules/<任务 id>/runs`、`/v0/schedules/<任务 id>/runs/<运行 id>` | view | 该任务最近的运行记录或单次记录（含回复摘要），同一归属过滤 |
@@ -628,6 +640,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/admin/desktop` | view | 云端电脑（P21）：每个节点主智能体的专属浏览器与电脑——开关、确认方式（只看自动其余逐次确认 / 每一步都确认）、运行状态、清空回收，与最近的操作（只记类别与主机名）。浏览与操作能力来自基座，阡陌管分配、授权与回收。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/files` | view | 文件互通（P20，管理组）：等人批准的取文件申请（可放宽到目录、选有效期）、传输与汇集（状态、目标摘要核对、失败可重试）、授权（有效期内可再取、可撤销）。发起传输时每个来源可以经 `/v0/files/browse` 浏览来源工作区。路径都是工作区内的相对路径，文件内容不上页面。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/connect` | view | 连接：应用连接（P25，邮箱与日历；凭据只在中枢，页面只给主机名、打码的账号与「已设置」）与本机工具（P19，配对的设备与接力插件）。两边都没接时侧栏不出现、页面 404；接了一边时另一边写「未接入」 |
+| GET | `/admin/im` | view | 渠道（P28）：QQ、微信、Telegram、Discord、Slack 接到哪个智能体、在线状态与会话数；运维能添加、编辑、停用、删除，微信扫码接入。没接端口时侧栏不出现、页面 404 |
+| GET | `/admin/updates` | view | 更新（P31，管理组）：各来源的版本、状态与检查记录，阡陌一行列出中枢与各节点的版本；运维能改检查时间、各来源动作、通知渠道与阡陌仓库，能立即检查，能把阡陌逐台升级到新版或回滚。没接端口时侧栏不出现、页面 404 |
 | GET | `/v0/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 同一份列表的 JSON：`{ agent, entries, total, counts }`。没接记忆端口时 501 |
 | POST | `/v0/memory` | **成员** | 记一条：`{ agent, kind, title, summary, body }`，`kind` 只能是四类之一，一句话 ≤120 字、摘要 ≤400 字、细节 ≤4000 字。记 `memory.add` |
 | PUT | `/v0/memory/<记忆 id>` | **成员** | 改一条：写一条新的并替换旧的（旧的留在历史里，带「含已忘记」能看到）。记 `memory.edit` |
@@ -730,6 +744,12 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/fragments/replicate/jobs` | view | HTML 片段：服务器页「添加服务器」下面的复制记录 |
 | GET | `/fragments/connect` | view | HTML 片段：连接页被轮询的两半 |
 | GET | `/fragments/connect/form?preset=<预设>&id=<连接 id>` | **ops / admin** | HTML 片段：添加或编辑连接对话框的正文。`preset` 换服务（不认识的当作第一个），`id` 填这条连接自己的非秘密设置与授权的智能体（秘密永不回显）；没有这条连接 404 |
+| GET | `/fragments/im` | view | HTML 片段：渠道页被轮询的卡片 |
+| GET | `/fragments/im/form?platform=<平台>&id=<渠道 id>` | **ops / admin** | HTML 片段：添加或编辑渠道对话框的正文；秘密永不回显，没有这条渠道 404 |
+| GET | `/fragments/im/qr/<登录 id>` | **ops / admin** | HTML 片段：微信登录二维码，服务端画成内联 SVG |
+| GET | `/fragments/updates` | view | HTML 片段：更新页被轮询的版本表与记录 |
+| GET | `/fragments/updates/form` | **ops / admin** | HTML 片段：更新检查设定对话框的正文 |
+| GET | `/fragments/updates/rollback` | **ops / admin** | HTML 片段：回滚对话框的选项（本机备份与最近三个更旧的发行） |
 | GET | `/fragments/routing?node=<节点>` | view | HTML 片段：模型页的任务分工卡片，`node` 换成那个节点的范围（模型服务不认识的节点当作所有节点）；没接路由簿时为空 |
 | GET | `/fragments/memory?…` | **成员** | HTML 片段：记忆页被轮询的列表（`#memory-list`），附带筛选条上各类别的新计数；页面只换这几块，不动搜索框 |
 | GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | HTML 片段，`/admin/access` 三个被轮询的页签 |
@@ -802,6 +822,8 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 | GET/POST/PUT/DELETE | `/desktop` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/files` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/connect` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/im` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/updates` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/access`、`/access/{invites,sessions,actions}` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/providers`、`/providers?node=<节点>` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/providers/new?q=`、`/providers/new?preset=<预设>&site=<站点>` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |

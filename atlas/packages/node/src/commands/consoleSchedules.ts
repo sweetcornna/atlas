@@ -1039,6 +1039,51 @@ export class ConsoleSchedules implements SchedulesPort {
     }
   }
 
+  /** Platform channels (no tenant), for hub-level notices such as update checks (P31). */
+  platformChannels(): readonly { id: string; name: string }[] {
+    return [...this.#channels.values()]
+      .filter(channel => (channel.tenant ?? null) === null)
+      .map(channel => ({ id: channel.id, name: channel.name }))
+  }
+
+  /** Pushes one hub-level notice to platform channels; tenant channels are refused. */
+  async pushPlatform(
+    ids: readonly string[],
+    title: string,
+    body: string,
+  ): Promise<{ channelId: string; ok: boolean; error: string | null }[]> {
+    const out: { channelId: string; ok: boolean; error: string | null }[] = []
+    for (const id of ids) {
+      const channel = this.#channels.get(id)
+      if (channel === undefined || (channel.tenant ?? null) !== null) {
+        out.push({ channelId: id, ok: false, error: '通知渠道不存在' })
+        continue
+      }
+      const result = await this.#push(channel, {
+        title: this.#redact(title),
+        body: this.#redact(body),
+        at: this.#now(),
+        qianmo: {
+          scheduleId: 'updates',
+          runId: crypto.randomUUID(),
+          outcome: 'completed',
+        },
+      })
+      out.push({ channelId: id, ok: result.ok, error: result.error })
+      await this.#serial(async () => {
+        const current = this.#channels.get(id)
+        if (current === undefined || this.#closed) return
+        this.#channels.set(id, {
+          ...current,
+          lastUsedAt: this.#now(),
+          lastError: result.error,
+        })
+        this.#persist()
+      })
+    }
+    return out
+  }
+
   testChannel(
     id: string,
     actor: DirectionActor,

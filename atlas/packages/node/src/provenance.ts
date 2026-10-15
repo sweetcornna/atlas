@@ -24,7 +24,11 @@ import pkg from '../package.json' with { type: 'json' }
  */
 const UNKNOWN_SOURCE_COMMIT = 'unknown'
 
-type GeneratedProvenance = { SOURCE_COMMIT?: string; BUILD_TIME?: string }
+type GeneratedProvenance = {
+  SOURCE_COMMIT?: string
+  BUILD_TIME?: string
+  RELEASE_VERSION?: string
+}
 
 let generated: GeneratedProvenance | null | undefined
 let gitCommit: string | undefined
@@ -75,9 +79,9 @@ export function sourceCommit(): string {
   )
 }
 
-/** The `@qianmo/node` package version. */
+/** A release build's tag version, else the `@qianmo/node` package version. */
 export function buildVersion(): string {
-  return pkg.version
+  return generatedProvenance()?.RELEASE_VERSION || pkg.version
 }
 
 /** The oh-my-pi version qm runs as its agent. */

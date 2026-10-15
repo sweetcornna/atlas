@@ -73,7 +73,8 @@ export class ResidentRuntimePool
     else this.omp.closeSession(sessionId)
   }
   async invalidateAgent(agent: string): Promise<void> {
-    if (this.external?.hasAgent(agent)) await this.external.invalidateAgent(agent)
+    if (this.external?.hasAgent(agent))
+      await this.external.invalidateAgent(agent)
     else await this.omp.invalidateAgent(agent)
   }
   channelFor(

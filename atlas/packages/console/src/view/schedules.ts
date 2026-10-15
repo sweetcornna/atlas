@@ -71,7 +71,7 @@ import {
   unwiredCard,
 } from './kit.js'
 
-const WEEKDAY = ['一', '二', '三', '四', '五', '六', '日'] as const
+export const WEEKDAY = ['一', '二', '三', '四', '五', '六', '日'] as const
 
 const TEMPLATE_WORD: Readonly<Record<string, string>> = {
   briefing: '晨间简报',
@@ -526,7 +526,7 @@ export function renderSchedulesUnavailable(
   )
 }
 
-function zoneChoices(): readonly (readonly [string, string])[] {
+export function zoneChoices(): readonly (readonly [string, string])[] {
   return ZONES.map(zone => [zone, zoneNote(zone)] as const)
 }
 

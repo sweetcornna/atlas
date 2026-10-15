@@ -24,6 +24,8 @@ import {
 } from '../src/respond.js'
 import { ROUTES } from '../src/routes/index.js'
 import {
+  FakeChannels,
+  FakeUpdates,
   FakeConnectors,
   FakeDesktop,
   FakeFiles,
@@ -116,6 +118,19 @@ const PAGES: readonly PageRow[] = [
     reads: ['工作邮箱', 'imap.qq.com', '我的 MacBook', 'id="connect"'],
   },
   {
+    path: '/admin/im',
+    title: '渠道',
+    active: 'im',
+    reads: ['工作 QQ', '在线', 'planner · tokyo-1', 'id="channels"'],
+  },
+  {
+    path: '/admin/updates',
+    title: '更新',
+    active: 'updates',
+    reads: ['qianmopi 上游', '有新版本', '18.11.0', 'id="updates"'],
+  },
+
+  {
     path: '/admin/desktop',
     title: '云端电脑',
     active: 'desktop',
@@ -181,6 +196,8 @@ function harness() {
     memory: new FakeMemory(() => NOW),
     ports: {
       connectors: new FakeConnectors(() => NOW),
+      channels: new FakeChannels(() => NOW),
+      updates: new FakeUpdates(() => NOW),
       handoffDevices: new FakeHandoffDevices(() => NOW),
       desktop: new FakeDesktop(() => NOW),
       files: new FakeFiles(() => NOW),

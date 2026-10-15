@@ -820,3 +820,249 @@ export interface ConnectorsPort {
     actor: DirectionActor,
   ): Promise<ConsoleResult<ConnectorView>>
 }
+
+// ---------------------------------------------------------------------------
+// ChannelsPort —— 聊天渠道（P28，runtimes-channels.md §2）
+// ---------------------------------------------------------------------------
+
+export type ChannelPlatformId =
+  | 'qq'
+  | 'weixin'
+  | 'telegram'
+  | 'discord'
+  | 'slack'
+
+/** 一个平台要填什么。只列官方接口需要的字段。 */
+export interface ChannelPlatformView {
+  readonly id: ChannelPlatformId
+  readonly name: string
+  /** 非秘密字段（QQ 的 AppID）。 */
+  readonly settings: readonly { readonly key: string; readonly label: string }[]
+  /** 秘密字段；修改时留空就保留原值。 */
+  readonly secrets: readonly { readonly key: string; readonly label: string }[]
+  /** 凭据靠扫码取得（微信）。 */
+  readonly qrLogin: boolean
+  readonly hint: string
+  /** 没有用真实账号跑过：一律 false。 */
+  readonly evaluated: boolean
+}
+
+export interface ChannelView {
+  readonly id: string
+  readonly name: string
+  readonly platform: ChannelPlatformId
+  readonly enabled: boolean
+  /** 主人私聊对话的智能体。 */
+  readonly target: string
+  /** 群聊与其他人私聊对话的智能体；null 不回应主人以外的人。 */
+  readonly memberTarget: string | null
+  /** 主人在该平台上的用户号。 */
+  readonly ownerIds: readonly string[]
+  readonly allowAll: boolean
+  readonly allowUsers: readonly string[]
+  readonly allowGroups: readonly string[]
+  readonly groupTrigger: 'mention' | 'all'
+  readonly replyWindowMs: number
+  readonly prompt: string
+  readonly settings: Readonly<Record<string, string>>
+  readonly secretSet: boolean
+  readonly health: {
+    readonly state: 'stopped' | 'starting' | 'connected' | 'retrying' | 'failed'
+    readonly since: number
+    readonly detail?: string
+  }
+  readonly conversations: number
+  readonly evaluated: boolean
+  /** 对话以这个控制台账号的名义派发，记在它的会话与用量下。 */
+  readonly owner: string
+  readonly createdAt: number
+  readonly updatedAt: number
+}
+
+export interface ChannelDraft {
+  readonly id?: string
+  readonly name: string
+  readonly platform: ChannelPlatformId
+  readonly enabled?: boolean
+  readonly target: string
+  readonly memberTarget?: string | null
+  readonly ownerIds?: readonly string[]
+  readonly allowAll?: boolean
+  readonly allowUsers?: readonly string[]
+  readonly allowGroups?: readonly string[]
+  readonly groupTrigger?: 'mention' | 'all'
+  readonly replyWindowMs?: number
+  readonly prompt?: string
+  readonly settings?: Readonly<Record<string, string>>
+  readonly secrets?: Readonly<Record<string, string>>
+}
+
+export interface ChannelsSnapshot {
+  readonly channels: readonly ChannelView[]
+  readonly platforms: readonly ChannelPlatformView[]
+  /** 能绑定的智能体地址。 */
+  readonly agents: readonly string[]
+}
+
+/** 微信扫码登录的一次进行中状态。`qr` 是二维码内容，页面画成图。 */
+export interface ChannelLoginView {
+  readonly loginId: string
+  readonly state: 'wait' | 'scanned' | 'expired' | 'confirmed' | 'failed'
+  readonly qr: string
+  readonly channelId?: string
+  readonly detail?: string
+}
+
+export interface ChannelsPort {
+  snapshot(): Promise<ConsoleResult<ChannelsSnapshot>>
+  save(
+    draft: ChannelDraft,
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<ChannelView>>
+  remove(id: string, actor: DirectionActor): Promise<ConsoleResult<null>>
+  /** 开始微信扫码；确认后凭据写进 `draft` 描述的渠道（新建或更新）。 */
+  login(
+    draft: ChannelDraft,
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<ChannelLoginView>>
+  loginStatus(
+    loginId: string,
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<ChannelLoginView>>
+  /** 这次登录当前的二维码内容（过期后会换新）。 */
+  loginQr(
+    loginId: string,
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<string>>
+}
+
+// ---------------------------------------------------------------------------
+// UpdatesPort —— 定时检查更新（P31，runtimes-channels.md §5）
+// ---------------------------------------------------------------------------
+
+export const UPDATE_SOURCES = [
+  'qianmopi',
+  'claude-code',
+  'codex',
+  'qianmo',
+] as const
+export type UpdateSourceId = (typeof UPDATE_SOURCES)[number]
+
+/** `notify` 只通知；`auto` 触发上游同步工作流或在节点上装新版。 */
+export type UpdateAction = 'notify' | 'auto'
+
+export type UpdateTime = Extract<ScheduleWhen, { kind: 'daily' | 'weekly' }>
+
+/** 一个节点上外部底层的版本。 */
+export interface UpdateNodeVersion {
+  readonly node: string
+  readonly version: string | null
+  /** 外部底层：阡陌装的那一份（false 是机器上原有的）；阡陌自身：能在线升级。 */
+  readonly managed: boolean
+  /** 启动参数指定了程序路径：不由阡陌更新。 */
+  readonly pinned: boolean
+}
+
+export interface UpdateSourceView {
+  readonly id: UpdateSourceId
+  readonly name: string
+  /** 中枢上的版本；外部底层看 `nodes`。 */
+  readonly current: string | null
+  readonly latest: string | null
+  readonly nodes: readonly UpdateNodeVersion[]
+  readonly action: UpdateAction
+  /** 能不能设为自动处理。 */
+  readonly autoAvailable: boolean
+  readonly checkedAt: number | null
+  readonly error: string | null
+}
+
+export interface UpdateRunView {
+  readonly at: number
+  readonly source: UpdateSourceId
+  readonly current: string | null
+  readonly latest: string | null
+  /** `available`：有新版本，已按设定通知（或没有通知渠道）。 */
+  readonly outcome:
+    | 'current'
+    | 'available'
+    | 'dispatched'
+    | 'installed'
+    | 'failed'
+  readonly detail: string | null
+  readonly trigger: 'schedule' | 'manual'
+}
+
+/** 阡陌自身逐台升级或回滚的一次作业：节点逐台进行，中枢最后（P31 §5.2）。 */
+export interface UpgradeJobView {
+  readonly kind: 'upgrade' | 'rollback'
+  /** 目标版本；回到本机备份而版本未知时为 null。 */
+  readonly target: string | null
+  readonly state: 'running' | 'done' | 'failed'
+  readonly steps: readonly {
+    /** 节点名；中枢是 `hub`。 */
+    readonly node: string
+    readonly state: 'pending' | 'upgrading' | 'done' | 'skipped' | 'failed'
+    readonly detail: string | null
+  }[]
+  readonly startedAt: number
+  readonly finishedAt: number | null
+  readonly trigger: 'schedule' | 'manual'
+}
+
+export interface UpdatesSnapshot {
+  readonly times: readonly UpdateTime[]
+  /** IANA 时区名。 */
+  readonly timezone: string
+  /** 有新版本时推送的通知渠道（P24）。 */
+  readonly channels: readonly string[]
+  /** 阡陌所在的 GitHub 仓库：查阡陌发行、触发 `sync-omp.yml`；null 不查。 */
+  readonly repo: string | null
+  readonly sources: readonly UpdateSourceView[]
+  /** 最近 100 行，新的在前。 */
+  readonly history: readonly UpdateRunView[]
+  readonly nextAt: number | null
+  readonly running: boolean
+  readonly channelChoices: readonly {
+    readonly id: string
+    readonly name: string
+  }[]
+  /** 中枢自身：运行的版本、能否在线升级、本机备份里的版本。 */
+  readonly hub: {
+    readonly version: string
+    readonly upgradable: boolean
+    readonly backup: string | null
+  }
+  /** 能回到的更旧发行（最多三个，新的在前）。 */
+  readonly rollbackVersions: readonly string[]
+  /** 最近一次升级或回滚作业；进行中时页面跟着它刷新。 */
+  readonly upgrade: UpgradeJobView | null
+}
+
+export interface UpdatesDraft {
+  readonly times: readonly UpdateTime[]
+  readonly timezone: string
+  readonly actions: Readonly<Partial<Record<UpdateSourceId, UpdateAction>>>
+  readonly channels: readonly string[]
+  readonly repo: string | null
+}
+
+export interface UpdatesPort {
+  snapshot(): Promise<ConsoleResult<UpdatesSnapshot>>
+  save(
+    draft: UpdatesDraft,
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<UpdatesSnapshot>>
+  /** 立即检查一次，在后台进行；返回时 `running` 为 true。 */
+  run(actor: DirectionActor): Promise<ConsoleResult<UpdatesSnapshot>>
+  /** 把节点与中枢逐台升到 `version`（缺省为最新发行），在后台进行。 */
+  upgrade(
+    input: { readonly version?: string },
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<UpdatesSnapshot>>
+  /** 不给版本：各台换回本机备份；给版本：装那个更旧的发行（须在 `rollbackVersions` 里）。 */
+  rollback(
+    input: { readonly version?: string },
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<UpdatesSnapshot>>
+}

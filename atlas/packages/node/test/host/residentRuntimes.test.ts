@@ -185,8 +185,7 @@ test('Claude Code: failures, token ceilings and aborts map onto turn results', a
   await channel.abort()
   const aborted = await pending
   expect(aborted.outcome).toBe('failed')
-  if (aborted.outcome === 'failed')
-    expect(aborted.reason).toContain('aborted')
+  if (aborted.outcome === 'failed') expect(aborted.reason).toContain('aborted')
 })
 
 test('Codex: a thread is opened once, used for every turn and resumed after a restart', async () => {
@@ -317,9 +316,9 @@ test('resident flags pick a runtime and model per agent', () => {
   expect(() => parseResidentArgs([...base, '--agent-shell=main'])).toThrow(
     'applies to claude-code and codex',
   )
-  expect(() => parseResidentArgs([...base, '--agent-runtime=main=gpt'])).toThrow(
-    '--agent-runtime must be',
-  )
+  expect(() =>
+    parseResidentArgs([...base, '--agent-runtime=main=gpt']),
+  ).toThrow('--agent-runtime must be')
 })
 
 /** The `qm runtime-mcp` command line a runtime was told to start. */

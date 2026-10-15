@@ -36,6 +36,11 @@ import { ResidentEstop } from '@qianmo/resident'
 import { ConsoleConnectors } from './consoleConnectors.js'
 import { loadOutboundPolicy } from './outboundPolicy.js'
 import { ConsoleSchedules } from './consoleSchedules.js'
+import { ConsoleChannels } from './consoleChannels.js'
+import { ConsoleTasks } from './consoleTasks.js'
+import { ConsoleUpdates } from './consoleUpdates.js'
+import { SelfUpgrader } from '../host/selfUpgradeRunner.js'
+import { parseAddress } from '@qianmo/protocol'
 import { loadConsoleApproverIdentity } from './consoleApproverIdentity.js'
 import { readTrustAnchors } from '../host/trustAnchors.js'
 import { sourceCommit } from '../provenance.js'
@@ -697,6 +702,53 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           onError: message => process.stderr.write(`[schedules] ${message}\n`),
         })
       : undefined
+  if (config.channels && chat.hub === undefined)
+    throw new Error('--channels needs an active chat face with a usable PSK')
+  // `/stop` and task cancellation reach the node over the signed control link.
+  const stopTurn = async (target: string, taskId: string): Promise<boolean> => {
+    const node = parseAddress(target)?.node
+    if (control === undefined || node === undefined) return false
+    const outcome = await control.request(
+      node,
+      'turn.stop',
+      { taskId },
+      'channels',
+      { timeoutMs: 10_000 },
+    )
+    return (
+      outcome.ok && (outcome.value as { stopped?: unknown }).stopped === true
+    )
+  }
+  // Background tasks (P29) arrive as hub calls, so they need control links.
+  const tasks: ConsoleTasks | undefined =
+    chat.hub && config.controlTargets?.length
+      ? new ConsoleTasks({
+          directory: qianmoConfigPath('qianmo', 'console', 'tasks'),
+          chat: chat.hub,
+          ...(accounts === undefined ? {} : { accounts }),
+          ...(usage === undefined ? {} : { usage }),
+          ...(tenancy === undefined ? {} : { tenancy }),
+          stopTask: stopTurn,
+          foreground: (sessionId): boolean =>
+            channels?.foreground(sessionId) ?? true,
+          related: (sessionId): readonly string[] =>
+            channels?.related(sessionId) ?? [sessionId],
+          onError: message => process.stderr.write(`[tasks] ${message}\n`),
+        })
+      : undefined
+  const channels: ConsoleChannels | undefined =
+    config.channels && chat.hub
+      ? new ConsoleChannels({
+          directory: qianmoConfigPath('qianmo', 'console', 'channels'),
+          chat: chat.hub,
+          ...(accounts === undefined ? {} : { accounts }),
+          ...(usage === undefined ? {} : { usage }),
+          ...(tenancy === undefined ? {} : { tenancy }),
+          stopTask: stopTurn,
+          ...(tasks === undefined ? {} : { tasks }),
+          onError: message => process.stderr.write(`[channels] ${message}\n`),
+        })
+      : undefined
   const controlIdentity = config.controlTargets?.length
     ? loadConsoleWakeIdentity(config.chatFrom)
     : undefined
@@ -772,6 +824,25 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
       : undefined
   if (connectors) control!.onHubCall('connector', connectors.handle)
+  if (tasks) control!.onHubCall('tasks', tasks.handle)
+
+  // Update checks and qianmo's own rolling upgrade (P31): nodes over the
+  // control link, the hub itself in place (host/selfUpgrade.ts).
+  const updates = config.updates
+    ? new ConsoleUpdates({
+        directory: qianmoConfigPath('qianmo', 'console', 'updates'),
+        policy: outboundPolicy,
+        nodes: () => (config.controlTargets ?? []).map(target => target.node),
+        ...(control === undefined ? {} : { control }),
+        repoToken: async repo =>
+          (await connectors?.resolve(repo))?.token ?? null,
+        ...(schedules === undefined ? {} : { notify: schedules }),
+        self: new SelfUpgrader({
+          log: line => process.stderr.write(`${line}\n`),
+        }),
+        onError: message => process.stderr.write(`[updates] ${message}\n`),
+      })
+    : undefined
 
   // File exchange goes through the repo connection marked for it, else the
   // CLI repo: connections win, as for the relay. The repo is fixed for this
@@ -959,6 +1030,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(files === undefined ? {} : { files }),
     ...(schedules === undefined ? {} : { schedules }),
     ...(connectors === undefined ? {} : { connectors }),
+    ...(channels === undefined ? {} : { channels }),
+    ...(updates === undefined ? {} : { updates }),
     ...(approvals === undefined ? {} : { approvals }),
     ...(usage === undefined ? {} : { usage }),
     ...(tenancy === undefined ? {} : { tenancy }),
@@ -1066,6 +1139,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // And no task goes to a node from a console that never came up (P17.5).
   handoff?.start()
   schedules?.start()
+  tasks?.start()
+  channels?.start()
+  updates?.start()
 
   const origin = httpOrigin(config.hostname, handle.port)
   // token 是自己生成的才回显：显式提供的那一个已经在操作者手里，把它再打进
@@ -1141,6 +1217,14 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     banner += field('connectors', 'enabled (all presets unevaluated)')
   if (schedules)
     banner += field('schedules', 'enabled (notification channels: unevaluated)')
+  if (channels)
+    banner += field('channels', 'enabled (all platforms unevaluated)')
+  if (updates)
+    banner += field(
+      'updates',
+      'enabled (in-place upgrade unevaluated on real releases)',
+    )
+  if (tasks) banner += field('tasks', 'enabled (background sub-agents)')
   if (chat.hub !== undefined) {
     banner += field('chat-store', config.chatStorePath)
   }
@@ -1253,6 +1337,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   const stop = (): void => {
     files?.close()
     schedules?.close()
+    void channels?.close()
+    void tasks?.close()
+    void updates?.close()
     connectors?.close()
     usageCollection?.stop()
     void approvals?.close()
