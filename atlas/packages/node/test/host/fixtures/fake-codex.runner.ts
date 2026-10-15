@@ -90,6 +90,27 @@ async function run(turnId: string, text: string): Promise<void> {
     })
     suffix = ` decision=${String(decision.decision)}`
   }
+  if (text === 'mcp') {
+    // A tool call on an MCP server set to `prompt` (P32).
+    const id = ++serverSequence
+    const answer = await new Promise<Record<string, unknown>>(resolve => {
+      waiting.set(id, resolve)
+      send({
+        id,
+        method: 'mcpServer/elicitation/request',
+        params: {
+          threadId: thread,
+          turnId,
+          serverName: 'docs',
+          mode: 'form',
+          message: 'Allow docs to run search?',
+          requestedSchema: { type: 'object', properties: {} },
+          _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'search' },
+        },
+      })
+    })
+    suffix = ` action=${String(answer.action)}`
+  }
   const item = `cmd-${turns}`
   send({
     method: 'item/started',

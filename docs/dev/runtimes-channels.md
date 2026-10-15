@@ -1,15 +1,15 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# 阡陌 AgentNest — 多底层、聊天渠道与前台调度设计（P27 ~ P31）
+# 阡陌 AgentNest — 多底层、聊天渠道与前台调度设计（P27 ~ P32）
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.3（生效）**；v1.2 按 P28 落地回写 §2（QQ 改官方 WebSocket 网关、各平台格式与正在输入、控制台入口）；v1.3 按 P31 落地回写 §5，新增 §5.2 阡陌自身的优雅升级（复刻 sub2api） |
+| 文档版本 | **v1.4（生效）**；v1.4 新增 §9 P32 扩展（连接器、技能与插件由用户自配置）；v1.2 按 P28 落地回写 §2（QQ 改官方 WebSocket 网关、各平台格式与正在输入、控制台入口）；v1.3 按 P31 落地回写 §5，新增 §5.2 阡陌自身的优雅升级（复刻 sub2api） |
 | 日期 | 2026-10-15 |
 | 核对基点 | 本仓库 `be15f741`（main，#226 合并提交，基座 qianmopi v18.8.8）；本机 Claude Code 2.1.296、`codex-cli 0.162.0` |
-| 范围依据 | 负责人 2026-10-15 决定（对话记录）：① 参照格兰（Grantley）项目接入 QQ、微信、Telegram、Discord、Slack 等聊天软件；② 把专属电脑做完整；③ 底层不固定，默认 qianmopi，用户可为每个智能体选 Claude Code 或 Codex，多个底层可同时运行、各配各的模型并互相协作；④ 用户可设定时间检查更新、同步官方上游；⑤ 同日追加：把格兰的回复逻辑、主线程常驻、任务分派给子智能体、复用对话、加强缓存命中整套迁移过来；⑥ 同日追加：参照 sub2api 的优雅升级，把那套逻辑复刻到阡陌自身 |
-| 编号 | P27 ~ P31，另有 P21 补全；包表见 §8 |
+| 范围依据 | 负责人 2026-10-15 决定（对话记录）：① 参照格兰（Grantley）项目接入 QQ、微信、Telegram、Discord、Slack 等聊天软件；② 把专属电脑做完整；③ 底层不固定，默认 qianmopi，用户可为每个智能体选 Claude Code 或 Codex，多个底层可同时运行、各配各的模型并互相协作；④ 用户可设定时间检查更新、同步官方上游；⑤ 同日追加：把格兰的回复逻辑、主线程常驻、任务分派给子智能体、复用对话、加强缓存命中整套迁移过来；⑥ 同日追加：参照 sub2api 的优雅升级，把那套逻辑复刻到阡陌自身；⑦ 同日追加：让阡陌支持连接器的接入和技能、插件的加入，用户可自己配置，MCP 也自配置 |
+| 编号 | P27 ~ P32，另有 P21 补全；包表见 §8 |
 | 结论一句话 | 节点上的智能体按配置在三种底层之一上运行，三者对常驻宿主呈现同一组回合信号；中枢新增渠道网关与任务调度，把格兰的一套对话与派活逻辑放在中枢，智能体经上行调用发起和汇报后台任务 |
 
 由主 agent 按负责人 10-03 的常设委托（设计取舍自行裁定）定案。各节的「未评估」「未实测」是证据状态，不是授权门槛。
@@ -25,6 +25,7 @@
 | 前台常驻与后台子智能体 | P29 | 主人私聊的主会话只做短对话与调度，耗时工作经 `qianmo_task_start` 交给后台子智能体（同一智能体的新会话，或名册里的另一个智能体），完成后回报原聊天 |
 | 复用对话与缓存命中 | P30 | 一个聊天固定一条会话；外部底层保持热进程；系统提示按会话冻结；不常变的上下文块只在变化时重发；用量账本记录三种底层的缓存读写 |
 | 定时检查更新 | P31 | 控制台设定检查时间；检查 qianmopi 上游、Claude Code、Codex 与阡陌自身的新版本；可选自动触发上游同步工作流、在节点上升级外部底层 |
+| 扩展自配置 | P32 | 用户在控制台给智能体装 MCP 连接器、技能与插件；中枢封存秘密、钉住来源，节点按三种底层各自的原生方式加载 |
 | 专属电脑补全 | P21+ | 外部底层也能用专属浏览器 / 电脑工具；Linux 上加内存与进程数上限；在 Linux 容器里实测启动、操作与回收 |
 
 **口径**（章程 N-9、§5.2③、§5.8、§7.2 第 8 条）：
@@ -223,6 +224,7 @@ sub2api（`Wei-Shaw/sub2api`，2026-10-15 读其 `update_service.go`、`system_h
 - 不自动合并上游同步 PR，不自动升级 qianmopi 基座本身（那是一次需评审的上游同步）。
 - 不做微信个人号的逆向协议；企业微信与公众号本轮不做。
 - 渠道附件收发本轮只做文本（图片、语音、文件留待节点出盒与取回打通）。
+- 扩展不做市场与商店：只接 GitHub 公开仓库里的目录；不代管 MCP 服务的 OAuth 登录（要登录的远程服务用请求头里的令牌）。
 
 ## §8 工作包
 
@@ -236,4 +238,48 @@ sub2api（`Wei-Shaw/sub2api`，2026-10-15 读其 `update_service.go`、`system_h
 | P29 | 后台任务 | `consoleTasks.ts`、`chatTurn.ts`、`host/taskTools.ts` | 开任务、子任务多轮直到 completed、追加指示、取消、重启续跑、防空转、回报父会话与渠道 |
 | P30 | 复用与缓存 | 网关、外部底层池 | 粘性块只在变化时重发；热进程复用；冻结系统提示；用量带缓存字段 |
 | P31 | 定时检查更新与优雅升级 | `consoleUpdates.ts`、`host/runtimeUpdate.ts`、`host/selfUpgrade.ts`、`host/selfUpgradeRunner.ts`、`fleet-payload.yml`、控制台页 | 按时区算下次检查；四类版本比较与只处理一次；触发工作流的请求形状；节点安装命令的参数；升级包的校验和、成员名、链接、自报版本四道核对；排空超时取消；替换失败复原；逐台编排在第一台失败处停下；中枢重启后收尾 |
+| P32 | 扩展自配置 | `consoleExtensions.ts`、`host/extensions.ts`、`host/githubDir.ts`、`host/runtimes/{pool,claudeCode,codex}.ts`、`host/residentOmp.ts`、`extension/src/policy.ts`、控制台页 | 秘密封存且不回显；GitHub 来源钉提交号与目录摘要、摘要不符不用；每个节点只收自己智能体的条目、集合未变不重发；三种底层的落地形状；只回收集合变了的智能体；MCP 工具放行与逐次询问在三种底层上一致；真 qianmopi 子进程跑通 MCP 工具与技能读取 |
 | P21+ | 专属电脑补全 | `host/desktop*.ts` | 外部底层能调浏览器工具；Linux 资源上限参数；容器实测记录 |
+
+---
+
+## §9 P32 扩展：连接器（MCP）、技能与插件自配置
+
+负责人 2026-10-15：「让阡陌支持 connector 的接入和 skill、plugin 的加入，用户可自己配置」「MCP 也自配置」。按章程 §7.2 第 8 条，每种底层都用它自己的原生机制加载；阡陌只做对方没有的那一层：配置、分发、秘密保管、隔离与授权。
+
+### 9.1 三种条目
+
+| 条目 | 用户填什么 | 说明 |
+|---|---|---|
+| 连接器（MCP 服务器） | 本地：命令名、参数、环境变量；远程：地址（streamable HTTP 或 SSE）与请求头；调用方式（每次先问 / 直接运行） | 命令只写命令名，节点按 PATH 查找（Agent Plugins 的规则，三种底层都能照此启动）；远程服务要用 HTTPS（本机回环地址除外）；环境变量与请求头的值是秘密，用连接器保险箱封存在中枢，页面只列名称 |
+| 技能 | 直接写 `SKILL.md`（名称、用途、正文），或从 GitHub 公开仓库导入一个技能目录 | 导入的名称取 `SKILL.md` 的 `name`；名称规则与 Agent Skills 一致（小写字母、数字、连字符） |
+| 插件 | 从 GitHub 公开仓库导入一个插件目录 | 须带 Claude Code 格式（`.claude-plugin/plugin.json`）、Codex 格式（`.codex-plugin/plugin.json`）或 Agent Plugins 格式（根 `plugin.json`）之一；按原样加载，等于在智能体上装软件，页面提示只装信任的仓库 |
+
+每个条目可选给哪些智能体（不选就是全部）、可停用。GitHub 来源每次保存时由中枢把分支或标签解析成提交号，取一次该目录核对清单，并记下目录摘要（按文件路径与内容算，不依赖打包方式）；之后节点只认这个提交和这个摘要。只切换启用不重新解析。
+
+### 9.2 下发与落地
+
+| 项 | 定案 |
+|---|---|
+| 下发 | 中枢按节点算出该节点上各智能体的条目集，经控制链路 `extensions.apply` 下发（一条控制消息，合计上限 192 KiB）；技能正文与 MCP 定义（含秘密）随消息走，GitHub 来源只带仓库、提交号、目录与摘要，节点自己从 `codeload.github.com` 取那个提交的包，核对同 §5.2（成员名、链接与特殊文件、大小），摘要不符就不用 |
+| 对账 | 保存或删除后立即下发；每 10 分钟问一次各节点的集合摘要（`extensions.status`），不一致才重发 |
+| 落地位置 | `qianmoConfigPath('extensions')`，每个智能体一个目录：`plugins/qianmo/` 放该智能体的技能（三种清单齐备）；`plugins/<名称>/` 放导入的插件；`.agents/plugins/marketplace.json` 是给 Codex 的本地市场；`mcp/qianmo-mcp/` 放 qianmopi 用的 MCP 定义（`mcp.json` 0600）。新集合在旁边建好后整体换入 |
+| 秘密不扩散 | MCP 秘密只在三处：qianmopi 的 `mcp/qianmo-mcp/mcp.json`、Claude Code 会话目录里的 `--mcp-config` 文件、Codex 该智能体 `CODEX_HOME/config.toml`，都是 0600、都在常驻守卫保护的配置根下；智能体只能读技能目录（`plugins/` 与 Codex 的插件缓存），读不到这三处。Claude Code 启动的本地 MCP 服务拿不到智能体的模型密钥 |
+| 生效 | 只有集合变了的智能体回收空闲子进程，下一个会话用新集合；在途回合不打断 |
+| 状态 | 节点答每个条目的落地结果，页面按「条目 × 节点」显示已生效、失败原因或下发中 |
+
+### 9.3 各底层的原生加载
+
+| 底层 | 技能与插件 | MCP 服务器 | 调用授权 |
+|---|---|---|---|
+| qianmopi | 子进程加 `--plugin-dir`（技能插件、MCP 插件、Claude 或 Agent Plugins 格式的导入插件）；技能经 `skill://` 读取 | Agent Plugins 格式的 `mcp.json`；qianmopi 只启用 `--tools` 点名的工具，节点落地时用 qianmopi 自己的 MCP 客户端连一次服务器、按 qianmopi 的命名规则得到工具名（`mcp__qianmo_mcp_<服务器>_<工具>`），写进工具表与覆盖配置 | 扩展的工具裁决：直接运行的放行；每次先问的经节点审批（`QIANMO_AUTHZ_V1`），节点没有审批通道就拒绝；只给主智能体 |
+| Claude Code | `--safe-mode` 换成 `--bare`（同样不读用户与项目的设置、钩子、技能、CLAUDE.md，但加载 `--plugin-dir`）；放行 `Skill` | 并进已有的 `--mcp-config` 文件，保留 `--strict-mcp-config`；直接运行的服务器加进 `--allowedTools`（`mcp__<服务器>`） | 每次先问的经 `qianmo_permission` 问节点，同一套裁决 |
+| Codex | 原生本地市场：在该智能体的 `CODEX_HOME` 下执行 `codex plugin marketplace add` 与 `codex plugin add <插件>@qianmo` | 写进 `CODEX_HOME/config.toml` 的 `[mcp_servers.<名称>]`（`default_tools_approval_mode` 取 `approve` 或 `prompt`）；Codex 不支持 SSE，SSE 服务器在 Codex 智能体上标失败 | `prompt` 时 Codex 发 `mcpServer/elicitation/request`（`codex_approval_kind = mcp_tool_call`），节点按同一套裁决答 accept 或 decline；其他征询一律 decline |
+
+本机实测（2026-10-15）：qianmopi 子进程从生成的 MCP 插件注册并启用 `mcp__qianmo_mcp_docs_search`，在常驻回合里经脚本模型调用成功、带上封存的环境变量，并经 `skill://review` 读到技能正文；Claude Code 2.1.296 在 `--bare --plugin-dir` 下列出 `qianmo:review`；Codex 0.162.0 用生成的本地市场装上技能插件，`codex mcp list` 读出生成的服务器。
+
+证据状态：未评估（没有用真实 MCP 服务、真实插件仓库在真实模型上跑过整轮）。
+
+### 9.4 控制台
+
+「扩展」页（`/admin/extensions`，主组）：连接器、技能、插件三个分区；新建、编辑、停用、删除；每条显示适用的智能体、来源（钉住的提交）与各节点状态。接口 `/v0/extensions`（读：view 及以上，秘密只给名称，非运维不给命令、地址与技能正文；写：运维个人账号，记 `extension.save` / `extension.remove`）。中枢用 `qm console --extensions` 开启。

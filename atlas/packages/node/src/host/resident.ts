@@ -17,7 +17,8 @@ import { MemoryControl } from './memoryControl.js'
 import { verifiedTaskOwner } from '@qianmo/capability'
 import { connectorTools, type ConnectorToolContext } from './connectorTools.js'
 import { taskTools, type TaskToolOrigin } from './taskTools.js'
-import { runtimeControl } from './runtimeUpdate.js'
+import { NodeExtensions } from './extensions.js'
+import { runtimeBin, runtimeControl } from './runtimeUpdate.js'
 import { SelfUpgrader, systemControl } from './selfUpgradeRunner.js'
 import { residentToolSurface, type HostToolDefinition } from './notifyTool.js'
 import { buildVersion } from '../provenance.js'
@@ -743,6 +744,8 @@ const RUNTIME_WAIT_MS = 3_000
 
 export class QianmoResident {
   readonly desktop: NodeDesktop
+  /** Operator-configured MCP servers, skills and plugins (P32). */
+  readonly extensions: NodeExtensions
   readonly control: ControlRegistry
   /** Host tools answered by the hub: connectors (P25) and background tasks (P29). */
   readonly #hubHostTools: readonly HostToolDefinition[]
@@ -929,6 +932,26 @@ export class QianmoResident {
         'desktop.disable',
         'desktop.recycle',
       ],
+    })
+    // MCP servers, skills and plugins the operator configures on the console
+    // (P32): the hub sends the set, the node lays it out for each runtime.
+    // Under ESTOP the set can be read but not changed.
+    this.extensions = new NodeExtensions({
+      agents: options.agents.map(agent => ({
+        agent: agent.agent,
+        ...(agent.runtime === undefined ? {} : { runtime: agent.runtime }),
+      })),
+      ...(options.agents.some(agent => agent.runtime === 'codex')
+        ? { codexBin: runtimeBin('codex', options.runtimeBins) }
+        : {}),
+      changed: async agent => {
+        await this.#runtimeChild?.invalidateAgent(agent)
+      },
+      onError: message => process.stderr.write(`${message}\n`),
+    })
+    this.control.register('extensions', this.extensions.control, {
+      estopAllowed: ['extensions.status'],
+      sideEffects: op => op === 'extensions.apply',
     })
     // `/stop` from a chat channel: the hub names the task it is waiting on.
     this.control.register(
@@ -3244,6 +3267,7 @@ export class QianmoResident {
         ? {}
         : { protectedRoots: this.#options.protectedRoots }),
       allowWorkspaceEdits: this.#options.allowWorkspaceEdits === true,
+      extensions: agent => this.extensions.forAgent(agent),
       hostTools: {
         extraHostTools: [
           ...this.#hubHostTools,
@@ -3281,6 +3305,7 @@ export class QianmoResident {
   async #spawnGeneration(): Promise<ResidentChildConnection> {
     const ompPool = new ResidentOmpPool({
       desktop: this.desktop,
+      extensions: agent => this.extensions.forAgent(agent),
       extraHostTools: [
         ...this.#hubHostTools,
         ...(this.#options.extraHostTools ?? []),

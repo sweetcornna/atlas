@@ -14,6 +14,10 @@ import {
   type ExternalAgent,
   type ExternalRuntimeSpawn,
 } from '../../src/host/runtimes/pool.js'
+import type {
+  AgentExtensions,
+  AgentExtensionsSource,
+} from '../../src/host/extensions.js'
 import { claudeCodeArgv } from '../../src/host/runtimes/claudeCode.js'
 import { codexArgv } from '../../src/host/runtimes/codex.js'
 import { parseResidentArgs } from '../../src/commands/resident.js'
@@ -49,6 +53,7 @@ function setup(
     }) => boolean
     idleChildMs?: number
     allowWorkspaceEdits?: boolean
+    extensions?: AgentExtensionsSource
   } = {},
 ) {
   root ??= isolatedRoot()
@@ -81,6 +86,9 @@ function setup(
     ...(options.idleChildMs === undefined
       ? {}
       : { idleChildMs: options.idleChildMs }),
+    ...(options.extensions === undefined
+      ? {}
+      : { extensions: options.extensions }),
     spawn: input => {
       launches.push(input)
       const child = spawn(
@@ -246,6 +254,100 @@ test('Codex shell agents keep the shell and the sandbox decides', async () => {
   const session = await pool.newSession(agent)
   expect((await turn(pool, session, 's', 'go')).outcome).toBe('completed')
   expect(launches[0]!.argv).not.toContain('shell_tool')
+})
+
+const DOCS: AgentExtensions = {
+  ompPluginDirs: [],
+  claudePluginDirs: ['/ext/agents/coder/plugins/qianmo'],
+  mcp: [
+    {
+      name: 'docs',
+      transport: 'stdio',
+      command: 'docs-mcp',
+      env: { DOCS_TOKEN: 'secret-value' },
+      approval: 'allow',
+      tools: [],
+    },
+    {
+      name: 'crm',
+      transport: 'http',
+      url: 'https://crm.example/mcp',
+      headers: { Authorization: 'Bearer t' },
+      approval: 'ask',
+      tools: [],
+    },
+  ],
+  readableRoots: [],
+}
+
+test('Claude Code: operator extensions load through --bare, --plugin-dir and the MCP config (P32)', async () => {
+  const { pool, agent } = setup(
+    { runtime: 'claude-code' },
+    { extensions: name => (name === 'coder' ? DOCS : null) },
+  )
+  const session = await pool.newSession(agent)
+  expect((await turn(pool, session, 'p', 'hello')).outcome).toBe('completed')
+  const argv = launches[0]!.argv
+  expect(argv).toContain('--bare')
+  expect(argv).not.toContain('--safe-mode')
+  expect(argv[argv.indexOf('--plugin-dir') + 1]).toBe(
+    '/ext/agents/coder/plugins/qianmo',
+  )
+  const allowed = argv[argv.indexOf('--allowedTools') + 1]!.split(',')
+  expect(allowed).toContain('Skill')
+  expect(allowed).toContain('mcp__docs')
+  expect(allowed).not.toContain('mcp__crm')
+  const config = JSON.parse(
+    readFileSync(argv[argv.indexOf('--mcp-config') + 1]!, 'utf8'),
+  ).mcpServers
+  expect(config.docs).toEqual({
+    type: 'stdio',
+    command: 'docs-mcp',
+    args: [],
+    env: {
+      ANTHROPIC_API_KEY: '',
+      ANTHROPIC_CUSTOM_HEADERS: '',
+      DOCS_TOKEN: 'secret-value',
+    },
+  })
+  expect(config.crm).toEqual({
+    type: 'http',
+    url: 'https://crm.example/mcp',
+    headers: { Authorization: 'Bearer t' },
+  })
+  expect(config.qianmo.type).toBe('stdio')
+})
+
+test('Codex: a tool call on an MCP server set to ask goes to the operator (P32)', async () => {
+  const { pool, agent, asked } = setup(
+    { runtime: 'codex' },
+    {
+      extensions: () => ({
+        ...DOCS,
+        mcp: [{ ...DOCS.mcp[0]!, approval: 'ask' }],
+      }),
+      permission: call => call.toolName === 'mcp__docs__search',
+    },
+  )
+  const session = await pool.newSession(agent)
+  expect(await turn(pool, session, 'q', 'mcp')).toEqual({
+    outcome: 'completed',
+    content: 'codex(1): mcp action=accept',
+  })
+  expect(asked.map(call => call.toolName)).toEqual(['mcp__docs__search'])
+})
+
+test('Codex: an MCP elicitation for a server nobody configured is declined', async () => {
+  const { pool, agent, asked } = setup(
+    { runtime: 'codex' },
+    { permission: () => true },
+  )
+  const session = await pool.newSession(agent)
+  expect(await turn(pool, session, 'r', 'mcp')).toEqual({
+    outcome: 'completed',
+    content: 'codex(1): mcp action=decline',
+  })
+  expect(asked).toEqual([])
 })
 
 test('external runtime arguments are explicit and testable', () => {

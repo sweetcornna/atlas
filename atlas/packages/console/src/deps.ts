@@ -21,6 +21,7 @@ import type {
   ChannelsPort,
   ConnectorsPort,
   DesktopPort,
+  ExtensionsPort,
   FilesPort,
   HandoffDevicesPort,
   MemoryPort,
@@ -1321,6 +1322,9 @@ export const CONSOLE_ACTIONS = [
   'updates.run',
   'updates.upgrade',
   'updates.rollback',
+  /** 连接器、技能与插件（P32），target 是条目 id。 */
+  'extension.save',
+  'extension.remove',
   // 形象（`avatar.ts`）：target 是 `agent:<地址>` 或 `user:<主体>`。
   'avatar.save',
 ] as const
@@ -2421,6 +2425,8 @@ export interface ConsoleDeps {
   readonly channels?: ChannelsPort
   /** 定时检查更新（P31）。 */
   readonly updates?: UpdatesPort
+  /** 连接器、技能与插件（P32）。 */
+  readonly extensions?: ExtensionsPort
   /** 形象（`avatar.ts`）。缺席时人人用按地址或主体算出的默认形象，不能改。 */
   readonly avatars?: AvatarsPort
 }

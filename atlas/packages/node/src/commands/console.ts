@@ -38,6 +38,7 @@ import { loadOutboundPolicy } from './outboundPolicy.js'
 import { ConsoleSchedules } from './consoleSchedules.js'
 import { ConsoleChannels } from './consoleChannels.js'
 import { ConsoleTasks } from './consoleTasks.js'
+import { ConsoleExtensions } from './consoleExtensions.js'
 import { ConsoleUpdates } from './consoleUpdates.js'
 import { SelfUpgrader } from '../host/selfUpgradeRunner.js'
 import { parseAddress } from '@qianmo/protocol'
@@ -843,6 +844,21 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         onError: message => process.stderr.write(`[updates] ${message}\n`),
       })
     : undefined
+  const extensions = config.extensions
+    ? new ConsoleExtensions({
+        directory: qianmoConfigPath('qianmo', 'console', 'extensions'),
+        policy: outboundPolicy,
+        nodes: () => (config.controlTargets ?? []).map(target => target.node),
+        agents: async () => {
+          const listed = await registry.list()
+          return listed.ok ? listed.value.map(agent => agent.address) : []
+        },
+        ...(control === undefined ? {} : { control }),
+        repoToken: async repo =>
+          (await connectors?.resolve(repo))?.token ?? null,
+        onError: message => process.stderr.write(`[extensions] ${message}\n`),
+      })
+    : undefined
 
   // File exchange goes through the repo connection marked for it, else the
   // CLI repo: connections win, as for the relay. The repo is fixed for this
@@ -1032,6 +1048,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(connectors === undefined ? {} : { connectors }),
     ...(channels === undefined ? {} : { channels }),
     ...(updates === undefined ? {} : { updates }),
+    ...(extensions === undefined ? {} : { extensions }),
     ...(approvals === undefined ? {} : { approvals }),
     ...(usage === undefined ? {} : { usage }),
     ...(tenancy === undefined ? {} : { tenancy }),
@@ -1142,6 +1159,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   tasks?.start()
   channels?.start()
   updates?.start()
+  extensions?.start()
 
   const origin = httpOrigin(config.hostname, handle.port)
   // token 是自己生成的才回显：显式提供的那一个已经在操作者手里，把它再打进
@@ -1223,6 +1241,11 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     banner += field(
       'updates',
       'enabled (in-place upgrade unevaluated on real releases)',
+    )
+  if (extensions)
+    banner += field(
+      'extensions',
+      'enabled (MCP · skills · plugins; unevaluated on real servers)',
     )
   if (tasks) banner += field('tasks', 'enabled (background sub-agents)')
   if (chat.hub !== undefined) {
@@ -1340,6 +1363,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     void channels?.close()
     void tasks?.close()
     void updates?.close()
+    void extensions?.close()
     connectors?.close()
     usageCollection?.stop()
     void approvals?.close()

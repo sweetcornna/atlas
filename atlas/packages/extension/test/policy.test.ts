@@ -264,3 +264,107 @@ test('media tools require matching routes and main agent; their paths cannot esc
     )?.block,
   ).toBe(true)
 })
+
+describe('operator-configured extensions (P32)', () => {
+  test('MCP tools: allow runs, ask goes to the operator, sub-agents never', () => {
+    const { config } = fixture('none')
+    const withMcp: ResidentExtensionConfig = {
+      ...config,
+      approvals: true,
+      mcp: [
+        {
+          server: 'docs',
+          approval: 'allow',
+          tools: ['mcp__qianmo_docs_search'],
+        },
+        { server: 'crm', approval: 'ask', tools: [] },
+      ],
+    }
+    const verdict = (toolName: string, kind: 'main' | 'sub' = 'main') =>
+      residentToolVerdict({ toolName, input: {} }, withMcp, { agentKind: kind })
+    expect(verdict('mcp__qianmo_docs_search')).toBeUndefined()
+    expect(verdict('mcp__docs__search')).toBeUndefined()
+    expect(verdict('mcp__crm__update')?.approvalEligible).toBe(true)
+    expect(verdict('mcp__docs__search', 'sub')?.block).toBe(true)
+    expect(verdict('mcp__other__x')?.approvalEligible).toBeUndefined()
+    expect(verdict('mcp__other__x')?.block).toBe(true)
+    const noChannel = residentToolVerdict(
+      { toolName: 'mcp__crm__update', input: {} },
+      { ...withMcp, approvals: false },
+      { agentKind: 'main' },
+    )
+    expect(noChannel?.approvalEligible).toBeUndefined()
+    expect(noChannel?.reason).toContain('no approval channel')
+    expect(
+      residentApprovalInput(
+        { toolName: 'mcp__crm__update', input: { id: 7 } },
+        config.workspace,
+      ),
+    ).toEqual({ id: 7 })
+  })
+
+  test('MCP tools join the tool list and the overlay allows them', () => {
+    const mcp = [
+      {
+        server: 'docs',
+        approval: 'ask' as const,
+        tools: ['mcp__qianmo_docs_search'],
+      },
+    ]
+    expect(
+      residentActiveTools('none', [], undefined, undefined, mcp),
+    ).toContain('mcp__qianmo_docs_search')
+    const overlay = Bun.YAML.parse(
+      residentConfigOverlay({ edits: 'none', mcp }),
+    ) as { tools: { approval: Record<string, string> } }
+    expect(overlay.tools.approval['mcp__qianmo_docs_search']).toBe('allow')
+  })
+
+  test('installed skill directories are readable, the rest of the root is not', () => {
+    const { root, config } = fixture('none')
+    const skills = join(root, 'private', 'extensions', 'skills')
+    mkdirSync(join(skills, 'review'), { recursive: true })
+    writeFileSync(
+      join(skills, 'review', 'SKILL.md'),
+      '---\nname: review\n---\n',
+    )
+    writeFileSync(join(root, 'private', 'mcp.json'), '{}')
+    const withSkills = { ...config, readableRoots: [skills] }
+    const read = (path: string) =>
+      residentToolVerdict({ toolName: 'read', input: { path } }, withSkills, {
+        agentKind: 'main',
+      })
+    expect(read(join(skills, 'review', 'SKILL.md'))).toBeUndefined()
+    expect(read(join(root, 'private', 'mcp.json'))?.block).toBe(true)
+  })
+
+  test('the config file carries mcp and readable roots, and rejects bad servers', () => {
+    const { root, config } = fixture('none')
+    const file = join(root, 'config.json')
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...config,
+        mcp: [{ server: 'docs', approval: 'allow', tools: [] }],
+        readableRoots: ['/abs/skills', 'relative'],
+      }),
+    )
+    const parsed = readResidentExtensionConfig({
+      QIANMO_EXTENSION_CONFIG: file,
+    })
+    expect(parsed.mcp).toEqual([
+      { server: 'docs', approval: 'allow', tools: [] },
+    ])
+    expect(parsed.readableRoots).toEqual(['/abs/skills'])
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...config,
+        mcp: [{ server: 'Bad_Name', approval: 'allow', tools: [] }],
+      }),
+    )
+    expect(() =>
+      readResidentExtensionConfig({ QIANMO_EXTENSION_CONFIG: file }),
+    ).toThrow('invalid mcp server')
+  })
+})

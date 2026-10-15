@@ -786,6 +786,8 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'updates.run': '立即检查更新',
   'updates.upgrade': '升级阡陌',
   'updates.rollback': '回滚阡陌',
+  'extension.save': '保存扩展',
+  'extension.remove': '删除扩展',
   'avatar.save': '设置形象',
 }
 
@@ -827,6 +829,7 @@ const FAMILY_WORD: Readonly<Partial<Record<string, string>>> = {
   connector: '应用连接',
   im: '聊天渠道',
   updates: '更新',
+  extension: '扩展',
   avatar: '形象',
 }
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { NodeDesktop } from './desktop.js'
+import type { AgentExtensionsSource } from './extensions.js'
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -512,6 +513,8 @@ interface PoolOptions {
   /** Internal startup budget; the production default remains 30 seconds. */
   readonly readyTimeoutMs?: number
   readonly desktop?: NodeDesktop
+  /** Operator-configured MCP servers, skills and plugins (P32). */
+  readonly extensions?: AgentExtensionsSource
   readonly extraHostTools?: readonly HostToolDefinition[]
   readonly onLaunch?: (
     sessionId: string,
@@ -916,6 +919,7 @@ export class ResidentOmpPool
       ),
       ...(media.video ? [VIDEO_TOOL] : []),
     ]
+    const extensions = this.#options.extensions?.(owner.agent) ?? null
     const config: ResidentExtensionConfig = {
       v: 1,
       agent: owner.agent,
@@ -936,6 +940,16 @@ export class ResidentOmpPool
       ...(this.#options.requestPermission === undefined
         ? {}
         : { approvals: true }),
+      ...(extensions === null
+        ? {}
+        : {
+            mcp: extensions.mcp.map(server => ({
+              server: server.name,
+              approval: server.approval,
+              tools: server.tools,
+            })),
+            readableRoots: extensions.readableRoots,
+          }),
     }
     this.#options.onLaunch?.(
       sessionId,
@@ -960,10 +974,18 @@ export class ResidentOmpPool
       overlay,
       '--approval-mode',
       config.edits === 'workspace' ? 'write' : 'always-ask',
+      ...(extensions?.ompPluginDirs ?? []).flatMap(dir => [
+        '--plugin-dir',
+        dir,
+      ]),
       '--tools',
-      residentActiveTools(config.edits, [], config.media, config.desktop).join(
-        ',',
-      ),
+      residentActiveTools(
+        config.edits,
+        [],
+        config.media,
+        config.desktop,
+        config.mcp,
+      ).join(','),
       ...(selection
         ? ['--model', `${selection.provider}/${selection.modelId}`]
         : []),

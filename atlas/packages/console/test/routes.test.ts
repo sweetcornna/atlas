@@ -71,6 +71,7 @@ describe('the pages', () => {
     ['memory', '/admin/memory', 'main', false],
     ['connect', '/admin/connect', 'main', false],
     ['im', '/admin/im', 'main', false],
+    ['extensions', '/admin/extensions', 'main', false],
     ['desktop', '/admin/desktop', 'main', false],
     ['providers', '/admin/providers', 'main', false],
     ['overview', '/admin/overview', 'manage', false],

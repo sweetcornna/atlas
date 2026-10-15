@@ -25,6 +25,7 @@ import {
 import { ROUTES } from '../src/routes/index.js'
 import {
   FakeChannels,
+  FakeExtensions,
   FakeUpdates,
   FakeConnectors,
   FakeDesktop,
@@ -124,6 +125,18 @@ const PAGES: readonly PageRow[] = [
     reads: ['工作 QQ', '在线', 'planner · tokyo-1', 'id="channels"'],
   },
   {
+    path: '/admin/extensions',
+    title: '扩展',
+    active: 'extensions',
+    reads: [
+      '连接器',
+      'docs-mcp',
+      'osaka-2 失败',
+      'weekly-report',
+      'id="extensions"',
+    ],
+  },
+  {
     path: '/admin/updates',
     title: '更新',
     active: 'updates',
@@ -198,6 +211,7 @@ function harness() {
       connectors: new FakeConnectors(() => NOW),
       channels: new FakeChannels(() => NOW),
       updates: new FakeUpdates(() => NOW),
+      extensions: new FakeExtensions(),
       handoffDevices: new FakeHandoffDevices(() => NOW),
       desktop: new FakeDesktop(() => NOW),
       files: new FakeFiles(() => NOW),

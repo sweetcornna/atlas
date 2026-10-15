@@ -33,6 +33,10 @@ import {
   type DesktopConfirm,
   type DesktopNodeView,
   type DesktopPort,
+  type ExtensionDraft,
+  type ExtensionsPort,
+  type ExtensionsSnapshot,
+  type ExtensionView,
   type FileEntryView,
   type FileGrantView,
   type FileGroupView,
@@ -2007,5 +2011,107 @@ export class FakeUpdates implements UpdatesPort {
   }): Promise<ConsoleResult<UpdatesSnapshot>> {
     this.calls.push(`rollback ${input.version ?? 'backup'}`)
     return { ok: true, value: this.value }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ExtensionsPort (P32)
+// ---------------------------------------------------------------------------
+
+export class FakeExtensions implements ExtensionsPort {
+  readonly calls: string[] = []
+  readonly entries: ExtensionView[] = [
+    {
+      id: 'ext-00000000-0000-4000-8000-000000000001',
+      kind: 'mcp',
+      name: 'docs',
+      description: '',
+      enabled: true,
+      agents: [],
+      transport: 'stdio',
+      command: 'docs-mcp',
+      args: ['--stdio'],
+      url: null,
+      envKeys: ['DOCS_TOKEN'],
+      headerKeys: [],
+      approval: 'ask',
+      body: null,
+      source: null,
+      nodes: [
+        { node: 'tokyo-1', state: 'applied', detail: null, at: 1 },
+        { node: 'osaka-2', state: 'failed', detail: '命令找不到', at: 1 },
+      ],
+      updatedAt: 1,
+      updatedBy: 'u:ops',
+    },
+    {
+      id: 'ext-00000000-0000-4000-8000-000000000002',
+      kind: 'skill',
+      name: 'weekly-report',
+      description: '整理本周进展',
+      enabled: true,
+      agents: ['qianmo://tokyo-1/planner'],
+      transport: null,
+      command: null,
+      args: [],
+      url: null,
+      envKeys: [],
+      headerKeys: [],
+      approval: 'ask',
+      body: '按项目分组列出进展',
+      source: null,
+      nodes: [{ node: 'tokyo-1', state: 'applied', detail: null, at: 1 }],
+      updatedAt: 1,
+      updatedBy: 'u:ops',
+    },
+  ]
+
+  async snapshot(): Promise<ConsoleResult<ExtensionsSnapshot>> {
+    return ok({
+      extensions: this.entries,
+      agentChoices: ['qianmo://tokyo-1/planner', 'qianmo://osaka-2/coder'],
+      nodes: ['tokyo-1', 'osaka-2'],
+    })
+  }
+
+  async save(
+    draft: ExtensionDraft,
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<ExtensionView>> {
+    this.calls.push(`save ${draft.id ?? draft.name ?? '-'} ${actor.subject}`)
+    const found = this.entries.find(one => one.id === draft.id)
+    if (draft.id !== undefined && found === undefined)
+      return failed('not_found', '没有这个扩展')
+    if (found !== undefined && draft.kind === undefined) {
+      const next = { ...found, enabled: draft.enabled !== false }
+      this.entries.splice(this.entries.indexOf(found), 1, next)
+      return ok(next)
+    }
+    if (draft.kind === 'mcp' && !/^[a-z][a-z0-9-]*$/.test(draft.name ?? ''))
+      return failed('invalid', '名称只能用小写字母 · 数字与连字符')
+    const view: ExtensionView = {
+      ...this.entries[0]!,
+      id:
+        found?.id ??
+        `ext-00000000-0000-4000-8000-${String(this.entries.length + 1).padStart(12, '0')}`,
+      kind: draft.kind ?? 'mcp',
+      name: draft.name ?? 'new',
+      envKeys: Object.keys(draft.env ?? {}),
+      nodes: [],
+    }
+    if (found) this.entries.splice(this.entries.indexOf(found), 1, view)
+    else this.entries.push(view)
+    return ok(view)
+  }
+
+  async remove(
+    id: string,
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<void>> {
+    this.calls.push(`remove ${id} ${actor.subject}`)
+    const index = this.entries.findIndex(one => one.id === id)
+    if (index < 0) return failed('not_found', '没有这个扩展')
+    this.entries.splice(index, 1)
+    return ok(undefined)
   }
 }

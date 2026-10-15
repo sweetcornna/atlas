@@ -44,6 +44,7 @@ import {
   type RuntimeToolSession,
   type RuntimeToolSpec,
 } from './toolHost.js'
+import type { AgentExtensionsSource } from '../extensions.js'
 import { runtimeBin } from '../runtimeUpdate.js'
 import { runWorkspaceTool, WORKSPACE_TOOLS } from './workspaceTools.js'
 
@@ -99,6 +100,8 @@ export interface ExternalRuntimePoolOptions {
   readonly mcpArgv?: (args: readonly string[]) => string[]
   readonly idleChildMs?: number
   readonly maxChildren?: number
+  /** Operator-configured MCP servers, skills and plugins (P32). */
+  readonly extensions?: AgentExtensionsSource
   readonly onActivity?: (active: boolean) => void | Promise<void>
   readonly onError?: (error: unknown) => void
 }
@@ -426,6 +429,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       }
     }
     let argv: string[]
+    const extensions = this.#options.extensions?.(agent.agent) ?? null
     if (agent.runtime === 'claude-code') {
       const home = qianmoConfigPath('runtimes', 'claude-code', agent.agent)
       mkdirSync(home, { recursive: true, mode: 0o700 })
@@ -434,6 +438,29 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         mcpConfig,
         JSON.stringify({
           mcpServers: {
+            ...Object.fromEntries(
+              (extensions?.mcp ?? []).map(server => [
+                server.name,
+                server.transport === 'stdio'
+                  ? {
+                      type: 'stdio',
+                      command: server.command ?? '',
+                      args: server.args ?? [],
+                      // Claude Code passes its own environment on; the
+                      // agent's model key is not the server's business.
+                      env: {
+                        ANTHROPIC_API_KEY: '',
+                        ANTHROPIC_CUSTOM_HEADERS: '',
+                        ...server.env,
+                      },
+                    }
+                  : {
+                      type: server.transport,
+                      url: server.url ?? '',
+                      headers: server.headers ?? {},
+                    },
+              ]),
+            ),
             [RUNTIME_MCP_SERVER]: {
               type: 'stdio',
               command: mcp[0],
@@ -458,6 +485,14 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         allowWorkspaceEdits: this.#options.allowWorkspaceEdits === true,
         ...(agent.shell ? { shell: true } : {}),
         ...(launch.effort ? { effort: launch.effort } : {}),
+        ...(extensions === null
+          ? {}
+          : {
+              pluginDirs: extensions.claudePluginDirs,
+              allowedMcpServers: extensions.mcp
+                .filter(server => server.approval === 'allow')
+                .map(server => server.name),
+            }),
       })
       Object.assign(env, {
         CLAUDE_CONFIG_DIR: home,
@@ -592,6 +627,23 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       ],
       hostTools: [],
       approvals: this.#options.requestPermission !== undefined,
+      ...this.#extensionPolicy(agent.agent),
+    }
+  }
+
+  /** The posture's part for operator-configured extensions (P32). */
+  #extensionPolicy(
+    agent: string,
+  ): Pick<ResidentExtensionConfig, 'mcp' | 'readableRoots'> {
+    const extensions = this.#options.extensions?.(agent) ?? null
+    if (extensions === null) return {}
+    return {
+      mcp: extensions.mcp.map(server => ({
+        server: server.name,
+        approval: server.approval,
+        tools: server.tools,
+      })),
+      readableRoots: extensions.readableRoots,
     }
   }
 
@@ -648,6 +700,9 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     // sandbox is the boundary, so only an edit the verdict would ask about
     // goes to the operator.
     if (call.toolName === 'bash') return false
+    // An operator-configured MCP server set to ask (P32).
+    if (call.toolName.startsWith('mcp__'))
+      return (await this.#decide(agent, sessionId, call)).ok
     if (typeof call.input.path !== 'string') return false
     return (await this.#decide(agent, sessionId, call)).ok
   }

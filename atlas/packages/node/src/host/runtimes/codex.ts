@@ -13,7 +13,7 @@ import {
 import { RUNTIME_MCP_SERVER } from './claudeCode.js'
 
 /** A TOML literal for one `-c key=value` override. */
-function toml(value: unknown): string {
+export function toml(value: unknown): string {
   if (typeof value === 'string') return JSON.stringify(value)
   if (typeof value === 'number' || typeof value === 'boolean')
     return String(value)
@@ -448,9 +448,39 @@ export class CodexChannel extends RuntimeChannelBase {
         })
         return
       }
-      case 'mcpServer/elicitation/request':
+      case 'mcpServer/elicitation/request': {
+        // A tool call on an operator-configured MCP server set to ask
+        // (`default_tools_approval_mode = "prompt"`, P32): the node decides
+        // as it does for every other tool. Any other elicitation is declined.
+        const meta = toolArgs(params._meta)
+        const server = params.serverName
+        if (
+          meta.codex_approval_kind === 'mcp_tool_call' &&
+          typeof server === 'string'
+        ) {
+          const tool =
+            typeof meta.tool_name === 'string'
+              ? meta.tool_name
+              : typeof meta.tool_title === 'string'
+                ? meta.tool_title
+                : 'tool'
+          const granted = await ask(`mcp__${server}__${tool}`, {
+            server,
+            tool,
+            ...(typeof params.message === 'string'
+              ? { message: params.message }
+              : {}),
+          })
+          this.#reply(id, {
+            action: granted ? 'accept' : 'decline',
+            content: granted ? {} : null,
+            _meta: null,
+          })
+          return
+        }
         this.#reply(id, { action: 'decline', content: null, _meta: null })
         return
+      }
       default:
         try {
           this.write({

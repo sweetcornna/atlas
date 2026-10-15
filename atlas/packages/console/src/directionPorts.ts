@@ -1066,3 +1066,98 @@ export interface UpdatesPort {
     actor: DirectionActor,
   ): Promise<ConsoleResult<UpdatesSnapshot>>
 }
+
+// ---------------------------------------------------------------------------
+// ExtensionsPort —— 连接器（MCP）、技能与插件（P32，runtimes-channels.md §9）
+// ---------------------------------------------------------------------------
+
+export const EXTENSION_KINDS = ['mcp', 'skill', 'plugin'] as const
+export type ExtensionKind = (typeof EXTENSION_KINDS)[number]
+
+/** 一个条目在一个节点上的落地结果。 */
+export interface ExtensionNodeState {
+  readonly node: string
+  /** `pending`：还没送到，或节点还没答。 */
+  readonly state: 'applied' | 'failed' | 'pending'
+  readonly detail: string | null
+  readonly at: number | null
+}
+
+/** GitHub 公开仓库里的一个目录，钉在一个提交上。 */
+export interface ExtensionSourceView {
+  readonly repo: string
+  /** 填的分支、标签或提交。 */
+  readonly ref: string
+  readonly path: string
+  readonly commit: string
+}
+
+export interface ExtensionView {
+  readonly id: string
+  readonly kind: ExtensionKind
+  readonly name: string
+  readonly description: string
+  readonly enabled: boolean
+  /** 智能体地址；空表示全部智能体。 */
+  readonly agents: readonly string[]
+  /** MCP：传输方式；其他条目为 null。 */
+  readonly transport: 'stdio' | 'http' | 'sse' | null
+  readonly command: string | null
+  readonly args: readonly string[]
+  readonly url: string | null
+  /** 已设置的环境变量与请求头的名称；值封存在中枢，页面不回显。 */
+  readonly envKeys: readonly string[]
+  readonly headerKeys: readonly string[]
+  /** MCP：`ask` 每次调用先问运维。 */
+  readonly approval: 'allow' | 'ask'
+  /** 直接写的技能正文；导入的为 null。 */
+  readonly body: string | null
+  readonly source: ExtensionSourceView | null
+  readonly nodes: readonly ExtensionNodeState[]
+  readonly updatedAt: number
+  readonly updatedBy: string
+}
+
+export interface ExtensionsSnapshot {
+  readonly extensions: readonly ExtensionView[]
+  /** 可选的智能体地址。 */
+  readonly agentChoices: readonly string[]
+  /** 能下发的节点。 */
+  readonly nodes: readonly string[]
+}
+
+/** 新建与编辑给全部字段；只给 `id` 与 `enabled` 是只切换启用，不重新解析来源。 */
+export interface ExtensionDraft {
+  readonly id?: string
+  readonly kind?: ExtensionKind
+  /** MCP 与直接写的技能必填；导入的技能取 `SKILL.md` 里的名称，插件缺省取目录名。 */
+  readonly name?: string
+  readonly description?: string
+  readonly enabled?: boolean
+  readonly agents?: readonly string[]
+  readonly transport?: 'stdio' | 'http' | 'sse'
+  readonly command?: string
+  readonly args?: readonly string[]
+  readonly url?: string
+  /** 值为 null：沿用已存的值；没列出的名称删除。 */
+  readonly env?: Readonly<Record<string, string | null>>
+  readonly headers?: Readonly<Record<string, string | null>>
+  readonly approval?: 'allow' | 'ask'
+  readonly body?: string
+  /** 技能或插件从 GitHub 公开仓库导入；每次保存都重新解析引用。 */
+  readonly source?: {
+    readonly repo: string
+    readonly ref?: string
+    readonly path?: string
+  }
+}
+
+export interface ExtensionsPort {
+  snapshot(): Promise<ConsoleResult<ExtensionsSnapshot>>
+  /** 保存后在后台下发到各节点；`nodes` 先显示为 `pending`。 */
+  save(
+    draft: ExtensionDraft,
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<ExtensionView>>
+  remove(id: string, actor: DirectionActor): Promise<ConsoleResult<void>>
+}

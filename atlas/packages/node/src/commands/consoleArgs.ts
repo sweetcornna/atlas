@@ -506,6 +506,8 @@ export interface ConsoleCliConfig {
   readonly channels?: boolean
   /** 定时检查更新与阡陌自身在线升级（P31）。 */
   readonly updates?: boolean
+  /** 连接器（MCP）、技能与插件（P32）：经控制链路下发到节点。 */
+  readonly extensions?: boolean
   /**
    * 每个节点跑在哪台服务器上。**给了才有归属面**，一个都没给就整个不显示。
    *
@@ -638,6 +640,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let schedules = false
   let channels = false
   let updates = false
+  let extensions = false
   const nodeServers: ConsoleNodeServer[] = []
   let serverNotesPath = consoleServerNotesPath()
   const managed: ConsoleManagedAddress[] = []
@@ -911,6 +914,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       channels = true
     } else if (arg === '--updates') {
       updates = true
+    } else if (arg === '--extensions') {
+      extensions = true
     } else if (arg === '--chat-url' || arg?.startsWith('--chat-url=')) {
       const parsed = residentOptionValue(args, index, '--chat-url')
       // A complete URL is legacy even when its query contains `=`. Only
@@ -1530,6 +1535,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     ...(schedules ? { schedules: true } : {}),
     ...(channels ? { channels: true } : {}),
     ...(updates ? { updates: true } : {}),
+    ...(extensions ? { extensions: true } : {}),
     nodeServers,
     serverNotesPath,
     ...(replicateRoot === undefined ? {} : { replicateRoot }),
@@ -1728,6 +1734,12 @@ Options (each accepts both --name value and --name=value):
                            or update automatically. Upgrades qianmo in place,
                            nodes one at a time and this hub last.
                            State: <config root>/qianmo/console/updates/.
+  --extensions            MCP connectors, skills and plugins on the 扩展 page,
+                           sent to each node's agents over the control links
+                           and loaded natively by qianmopi, Claude Code and
+                           Codex. MCP secrets are sealed on this hub.
+                           State: <config root>/qianmo/console/extensions/.
+                           Unevaluated against real servers and plugins.
   --node-server <node>=<server>
                            Which machine a node runs on. Repeatable, one node
                            per flag, and a node may not be named twice. The

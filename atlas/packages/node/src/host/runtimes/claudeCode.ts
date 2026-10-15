@@ -59,11 +59,22 @@ export interface ClaudeCodeLaunch {
   /** `--agent-shell`: keep `Bash`, which then asks for every command. */
   readonly shell?: boolean
   readonly effort?: string
+  /** Plugins the operator installed for the agent (P32): `--plugin-dir`. */
+  readonly pluginDirs?: readonly string[]
+  /** Operator-configured MCP servers that run without asking (P32). */
+  readonly allowedMcpServers?: readonly string[]
 }
 
 /** The command line for one resident Claude Code process. */
 export function claudeCodeArgv(launch: ClaudeCodeLaunch): string[] {
-  const allowed = [...SESSION_TOOLS, `mcp__${RUNTIME_MCP_SERVER}`]
+  const plugins = launch.pluginDirs ?? []
+  const allowed = [
+    ...SESSION_TOOLS,
+    `mcp__${RUNTIME_MCP_SERVER}`,
+    // Loading a skill reads what the operator installed; nothing else.
+    ...(plugins.length > 0 ? ['Skill'] : []),
+    ...(launch.allowedMcpServers ?? []).map(name => `mcp__${name}`),
+  ]
   const denied = [
     ...DENIED_TOOLS,
     ...NETWORK_TOOLS,
@@ -79,8 +90,13 @@ export function claudeCodeArgv(launch: ClaudeCodeLaunch): string[] {
     'stream-json',
     '--verbose',
     // No user, project or plugin customization: the node's policy is the
-    // whole policy. Built-in tools and permissions work normally.
-    '--safe-mode',
+    // whole policy. Built-in tools and permissions work normally. With
+    // operator-installed plugins (P32), `--bare` instead: it, too, reads
+    // nothing from the user or the project, but loads `--plugin-dir`
+    // (`--safe-mode` skips their skills).
+    ...(plugins.length > 0
+      ? ['--bare', ...plugins.flatMap(dir => ['--plugin-dir', dir])]
+      : ['--safe-mode']),
     '--strict-mcp-config',
     '--mcp-config',
     launch.mcpConfigPath,

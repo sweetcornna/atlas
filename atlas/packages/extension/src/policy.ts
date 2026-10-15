@@ -62,6 +62,65 @@ export interface ResidentExtensionConfig {
   readonly desktopPath?: string
   readonly desktop?: DesktopResource
   readonly approvals?: boolean
+  /** MCP servers the operator configured for this agent (P32). */
+  readonly mcp?: readonly ResidentMcpServer[]
+  /**
+   * Skill directories the operator installed for this agent (P32): readable
+   * although they sit under the protected configuration root. Never the
+   * plugin roots themselves, which hold MCP definitions and their secrets.
+   */
+  readonly readableRoots?: readonly string[]
+}
+
+/** One operator-configured MCP server, as the posture sees it (P32). */
+export interface ResidentMcpServer {
+  /** The console name: lower-case letters, digits and hyphens. */
+  readonly server: string
+  /** `ask`: every call goes to the operator first. */
+  readonly approval: 'allow' | 'ask'
+  /** qianmopi's names for its tools (`mcp__…`), from the node's probe. */
+  readonly tools: readonly string[]
+}
+
+const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,39}$/
+
+function parseMcpServers(value: unknown): ResidentMcpServer[] {
+  if (!Array.isArray(value))
+    throw new Error('resident extension config: mcp must be a list')
+  return value.map(entry => {
+    const record =
+      entry && typeof entry === 'object'
+        ? (entry as Record<string, unknown>)
+        : {}
+    if (
+      typeof record.server !== 'string' ||
+      !MCP_SERVER_NAME.test(record.server) ||
+      (record.approval !== 'allow' && record.approval !== 'ask') ||
+      !isStringArray(record.tools)
+    )
+      throw new Error('resident extension config: invalid mcp server')
+    return {
+      server: record.server,
+      approval: record.approval,
+      tools: record.tools,
+    }
+  })
+}
+
+/**
+ * The configured server a tool belongs to: qianmopi's exact names from the
+ * probe, or `mcp__<server>__<tool>` as Claude Code and Codex name them.
+ * Server names have no underscore, so the double one cannot be ambiguous.
+ */
+export function residentMcpServer(
+  toolName: string,
+  servers: readonly ResidentMcpServer[] | undefined,
+): ResidentMcpServer | undefined {
+  return servers?.find(
+    server =>
+      server.tools.includes(toolName) ||
+      toolName.startsWith(`mcp__${server.server}__`),
+  )
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -123,6 +182,10 @@ export function readResidentExtensionConfig(
       ? { desktopPath: record.desktopPath }
       : {}),
     ...(record.approvals === true ? { approvals: true } : {}),
+    ...(record.mcp === undefined ? {} : { mcp: parseMcpServers(record.mcp) }),
+    ...(isStringArray(record.readableRoots)
+      ? { readableRoots: record.readableRoots.filter(isAbsolute) }
+      : {}),
   }
 }
 
@@ -263,6 +326,7 @@ export function residentActiveTools(
   hostTools: readonly string[] = [],
   media?: ResidentExtensionConfig['media'],
   desktop?: ResidentExtensionConfig['desktop'],
+  mcp?: ResidentExtensionConfig['mcp'],
 ): string[] {
   return [
     ...RESIDENT_READ_TOOLS,
@@ -272,6 +336,7 @@ export function residentActiveTools(
     ...desktopTools(desktop),
     ...(media?.image ? ['generate_image'] : []),
     ...(media?.speech ? ['tts'] : []),
+    ...(mcp ?? []).flatMap(server => server.tools),
   ]
 }
 
@@ -292,6 +357,7 @@ export function residentConfigOverlay(options: {
   readonly hostTools?: readonly string[]
   readonly media?: ResidentExtensionConfig['media']
   readonly desktop?: ResidentExtensionConfig['desktop']
+  readonly mcp?: ResidentExtensionConfig['mcp']
 }): string {
   const approvals: [string, string][] = [
     ...(options.media?.image
@@ -307,6 +373,11 @@ export function residentConfigOverlay(options: {
     // is what decides whether it runs.
     ...(options.hostTools ?? []).map(
       name => [name, 'allow'] as [string, string],
+    ),
+    // Operator-configured MCP tools: the extension's verdict decides, and
+    // asks the operator itself for a server set to `ask`.
+    ...(options.mcp ?? []).flatMap(server =>
+      server.tools.map(name => [name, 'allow'] as [string, string]),
     ),
   ]
   return [
@@ -508,6 +579,22 @@ export function residentToolVerdict(
       ? undefined
       : block(`Desktop unavailable: ${unavailable}`)
   }
+  const mcp = residentMcpServer(toolName, config.mcp)
+  if (mcp !== undefined) {
+    if (context.agentKind !== 'main')
+      return block(`${toolName} is available to the main agent only`)
+    if (mcp.approval === 'allow') return undefined
+    return config.approvals === true
+      ? {
+          ...block(
+            `MCP server ${mcp.server} asks the operator before each call`,
+          ),
+          approvalEligible: true,
+        }
+      : block(
+          `MCP server ${mcp.server} asks the operator before each call, and this node has no approval channel`,
+        )
+  }
   if (config.hostTools.includes(toolName)) {
     // Host tools act through the host, which attributes them to the running
     // task; a subagent has no task of its own to attribute to.
@@ -587,6 +674,13 @@ export function residentToolVerdict(
       }
       const local = scheme === 'file' ? entry.replace(SCHEME, '') : entry
       const target = realPath(lexicalPath(globBase(local), workspace))
+      // Installed skills are read-only material the operator chose (P32).
+      if (
+        (config.readableRoots ?? []).some(root =>
+          inside(target, realPath(root)),
+        )
+      )
+        continue
       const denial = hardline.pathVerdict(target)
       if (denial !== null) return block(denial.target.reason)
       if (protectedRoots.some(root => inside(root, target))) {
@@ -659,6 +753,8 @@ export function residentApprovalInput(
   call: ResidentToolCall,
   workspace: string,
 ): Readonly<Record<string, unknown>> {
+  // An operator-configured MCP tool (P32) is approved for its exact arguments.
+  if (call.toolName.startsWith('mcp__')) return { ...call.input }
   const targets = writeTargets(call.toolName, call.input)
   if (targets === undefined)
     throw new Error('approval has no concrete file target')

@@ -53,6 +53,7 @@ export type AreaId =
   | 'memory'
   | 'connect'
   | 'im'
+  | 'extensions'
   | 'desktop'
   | 'files'
   | 'audit'
