@@ -24,6 +24,7 @@ import type {
   ExtensionsPort,
   FilesPort,
   HandoffDevicesPort,
+  MagpiePort,
   MemoryPort,
   ModelRoutingPort,
   ModelDirection,
@@ -1325,6 +1326,19 @@ export const CONSOLE_ACTIONS = [
   /** 连接器、技能与插件（P32），target 是条目 id。 */
   'extension.save',
   'extension.remove',
+  /** 平台模型网关 magpie（P33/P34）：target 是绑定 `node:<id>` / `tenant:<id>`、上游或路由组 id。 */
+  'magpie.connect',
+  'magpie.check',
+  'magpie.provider.save',
+  'magpie.provider.toggle',
+  'magpie.provider.test',
+  'magpie.provider.remove',
+  'magpie.group.save',
+  'magpie.group.remove',
+  'magpie.key.issue',
+  'magpie.key.update',
+  'magpie.key.rotate',
+  'magpie.key.remove',
   // 形象（`avatar.ts`）：target 是 `agent:<地址>` 或 `user:<主体>`。
   'avatar.save',
 ] as const
@@ -2427,6 +2441,8 @@ export interface ConsoleDeps {
   readonly updates?: UpdatesPort
   /** 连接器、技能与插件（P32）。 */
   readonly extensions?: ExtensionsPort
+  /** 平台模型网关 magpie（P33/P34）；只在模型服务与个人账号都打开时接。 */
+  readonly magpie?: MagpiePort
   /** 形象（`avatar.ts`）。缺席时人人用按地址或主体算出的默认形象，不能改。 */
   readonly avatars?: AvatarsPort
 }

@@ -253,3 +253,15 @@ describe('qm console --providers', () => {
     expect(CONSOLE_HELP_TEXT).toContain('Needs --accounts')
   })
 })
+
+describe('qm console --magpie (P33/P34)', () => {
+  test('off by default, and only on top of the model service', () => {
+    expect('magpie' in parse('--accounts', '--providers')).toBe(false)
+    expect(() => parse('--magpie')).toThrow('--magpie needs --providers')
+    expect(() => parse('--accounts', '--magpie')).toThrow(
+      '--magpie needs --providers',
+    )
+    expect(parse('--accounts', '--providers', '--magpie').magpie).toBe(true)
+    expect(CONSOLE_HELP_TEXT).toContain('--magpie')
+  })
+})

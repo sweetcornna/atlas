@@ -40,6 +40,7 @@ import { desktopRoute } from './desktop.js'
 import { extensionsRoute } from './extensions.js'
 import { filesRoute } from './files.js'
 import { jobsRoute } from './jobs.js'
+import { magpieRoute } from './magpie.js'
 import { memoryRoute } from './memory.js'
 import { nodesRoute } from './nodes.js'
 import { overviewRoute } from './overview.js'
@@ -74,6 +75,7 @@ export const ROUTES: readonly RouteModule[] = [
   extensionsRoute,
   desktopRoute,
   providersRoute,
+  magpieRoute,
   overviewRoute,
   nodesRoute,
   filesRoute,

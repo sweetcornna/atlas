@@ -788,6 +788,18 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'updates.rollback': '回滚阡陌',
   'extension.save': '保存扩展',
   'extension.remove': '删除扩展',
+  'magpie.connect': '连接模型网关',
+  'magpie.check': '核对模型网关',
+  'magpie.provider.save': '添加网关上游',
+  'magpie.provider.toggle': '启停网关上游',
+  'magpie.provider.test': '测试网关上游',
+  'magpie.provider.remove': '删除网关上游',
+  'magpie.group.save': '保存路由组',
+  'magpie.group.remove': '删除路由组',
+  'magpie.key.issue': '签发网关密钥',
+  'magpie.key.update': '修改网关密钥',
+  'magpie.key.rotate': '轮换网关密钥',
+  'magpie.key.remove': '收回网关密钥',
   'avatar.save': '设置形象',
 }
 
@@ -830,6 +842,7 @@ const FAMILY_WORD: Readonly<Partial<Record<string, string>>> = {
   im: '聊天渠道',
   updates: '更新',
   extension: '扩展',
+  magpie: '网关',
   avatar: '形象',
 }
 

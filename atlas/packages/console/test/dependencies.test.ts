@@ -19,6 +19,7 @@ import { ROUTES } from '../src/routes/index.js'
 import {
   FakeChannels,
   FakeExtensions,
+  FakeMagpie,
   FakeUpdates,
   FakeConnectors,
   FakeDesktop,
@@ -124,6 +125,7 @@ describe('assets', () => {
         channels: new FakeChannels(() => NOW),
         updates: new FakeUpdates(() => NOW),
         extensions: new FakeExtensions(),
+        magpie: new FakeMagpie(),
         handoffDevices: new FakeHandoffDevices(() => NOW),
         desktop: new FakeDesktop(() => NOW),
         files: new FakeFiles(() => NOW),

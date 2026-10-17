@@ -54,6 +54,7 @@ export type AreaId =
   | 'connect'
   | 'im'
   | 'extensions'
+  | 'magpie'
   | 'desktop'
   | 'files'
   | 'audit'

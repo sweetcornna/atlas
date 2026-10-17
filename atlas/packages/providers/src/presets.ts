@@ -1293,6 +1293,32 @@ const CUSTOM: readonly Preset[] = [
     ),
     notes: ['没有预设能力 · effort 默认 auto · 能力默认 family'],
   }),
+  // The platform's magpie gateway (P33). The base URL is the gateway origin
+  // the platform runs; the key is one the hub issues per node or tenant.
+  preset({
+    id: 'magpie',
+    vendor: 'magpie',
+    name: 'magpie 网关',
+    group: 'custom',
+    plan: 'custom',
+    lane: 'anthropic',
+    baseUrl: '',
+    authScheme: 'bearer',
+    models: [],
+    compat: THIRD_PARTY_ANTHROPIC,
+    probe: { auth: get('/v1/models'), models: get('/v1/models') },
+    keyHint: null,
+    terms: null,
+    source: {
+      url: 'https://usemagpie.ai/docs/start',
+      verifiedAt: '2026-10-16',
+    },
+    notes: [
+      'Anthropic 线路填网关 origin · OpenAI 两条线路填 origin 加 /v1',
+      '模型 id 写 provider/model 或 group/路由组 id',
+      '网关密钥由中枢按节点或租户签发',
+    ],
+  }),
 ]
 
 /** Official model documentation read 2026-10-11; generation has not been evaluated. */

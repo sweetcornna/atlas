@@ -34,6 +34,7 @@ import { MemoryActionLedger } from './memoryActions.js'
 import {
   FakeChannels,
   FakeExtensions,
+  FakeMagpie,
   FakeUpdates,
   FakeConnectors,
   FakeDesktop,
@@ -158,6 +159,7 @@ async function wired(): Promise<{
       channels: new FakeChannels(() => 1_700_000_000_000),
       updates: new FakeUpdates(() => 1_700_000_000_000),
       extensions: new FakeExtensions(),
+      magpie: new FakeMagpie(),
       handoffDevices: new FakeHandoffDevices(() => 1_700_000_000_000),
       desktop: new FakeDesktop(() => 1_700_000_000_000),
       files: new FakeFiles(() => 1_700_000_000_000),

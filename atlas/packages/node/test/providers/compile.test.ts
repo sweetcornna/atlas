@@ -5,6 +5,7 @@ import { describe, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { join } from 'node:path'
 import { ModelRegistry } from '@oh-my-pi/pi-coding-agent/config/model-registry'
+import { parseModelPattern } from '@oh-my-pi/pi-coding-agent/config/model-resolver'
 import { Settings } from '@oh-my-pi/pi-coding-agent/config/settings'
 import {
   AuthStorage,
@@ -80,6 +81,82 @@ describe('omp compiler', () => {
         )
         expect(compiled.config.providers.cacheWarming).toBe('off')
         expect(compiled.config.retry.fallbackChains).toEqual({})
+      } finally {
+        store.close()
+        fixture.dispose()
+      }
+    })
+  // P33: a magpie gateway names models `provider/model` (with more slashes
+  // for a relay's) and routing groups `group/<id>`; omp must load them as
+  // literal ids and resolve `<provider>/<id>:<level>` selectors to them.
+  for (const [lane, baseUrl] of [
+    ['anthropic', 'https://gateway.example.test'],
+    ['openai-chat', 'https://gateway.example.test/v1'],
+    ['openai-responses', 'https://gateway.example.test/v1'],
+  ] as const)
+    test(`magpie ids with slashes load and resolve on ${lane}`, async () => {
+      const fixture = isolatedRoot()
+      const store = new SqliteAuthCredentialStore(new Database(':memory:'))
+      try {
+        const ids = ['openrouter/anthropic/claude-sonnet-5', 'group/fast']
+        const profile = wireProfile(
+          {
+            id: 'magpie-node-n1',
+            lane,
+            baseUrl,
+            auth: { scheme: 'bearer', keys: [{ id: 'gw', value: CANARY_KEY }] },
+            compat: lane === 'anthropic' ? { disableStrictTools: 'true' } : {},
+            models: [
+              {
+                id: ids[0] as string,
+                role: 'main',
+                tiers: ['opus', 'sonnet', 'fable'],
+                capabilities: { mode: 'family' },
+                effort: { send: 'auto' },
+              },
+              {
+                id: ids[1] as string,
+                role: 'fast',
+                tiers: ['haiku'],
+                capabilities: { mode: 'family' },
+                effort: { send: 'auto' },
+              },
+            ],
+          },
+          capabilities,
+        )
+        const result = compileProfile(profile, {
+          secret: CANARY_KEY,
+          capabilities,
+        })
+        if (!result.ok) throw new Error(result.error.message)
+        const { compiled } = result
+        writePrivateJson(join(fixture.root, 'models.yml'), compiled.models)
+        writePrivateJson(join(fixture.root, 'config.yml'), compiled.config)
+        const settings = await Settings.loadReadOnly({
+          agentDir: fixture.root,
+          cwd: fixture.root,
+        })
+        const registry = new ModelRegistry(
+          new AuthStorage(store),
+          join(fixture.root, 'models.yml'),
+          { settings },
+        )
+        expect(registry.getError()).toBeUndefined()
+        for (const id of ids) {
+          expect(registry.find(compiled.providerId, id)?.id).toBe(id)
+          const resolved = parseModelPattern(
+            `${compiled.providerId}/${id}:high`,
+            registry.getAll(),
+          )
+          expect(resolved.model?.id).toBe(id)
+          expect(resolved.model?.provider).toBe(compiled.providerId)
+        }
+        const selector = settings.getModelRole('default')
+        expect(selector).toBe(`${compiled.providerId}/${ids[0]}:medium`)
+        expect(
+          parseModelPattern(selector as string, registry.getAll()).model?.id,
+        ).toBe(ids[0])
       } finally {
         store.close()
         fixture.dispose()

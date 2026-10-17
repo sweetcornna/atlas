@@ -74,6 +74,7 @@ describe('the pages', () => {
     ['extensions', '/admin/extensions', 'main', false],
     ['desktop', '/admin/desktop', 'main', false],
     ['providers', '/admin/providers', 'main', false],
+    ['magpie', '/admin/magpie', 'main', false],
     ['overview', '/admin/overview', 'manage', false],
     ['nodes', '/admin/nodes', 'manage', false],
     ['files', '/admin/files', 'manage', false],
