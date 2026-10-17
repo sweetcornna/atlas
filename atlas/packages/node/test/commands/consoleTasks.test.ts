@@ -45,6 +45,8 @@ function tasks(
     related?: (id: string) => readonly string[]
     turnTtlMs?: number
     deliveryRetryMs?: (attempts: number) => number
+    deliveryTimeoutMs?: number
+    onError?: (message: string) => void
     stopTask?: (target: string, taskId: string) => Promise<boolean>
     now?: () => number
     scheduled?: (id: string) => boolean
@@ -2047,6 +2049,40 @@ describe('planned tasks (主动任务)', () => {
       status: 'scheduled',
       runsLeft: 2,
     })
+  })
+
+  test('a place that never answers a delivery is given up as unknown, and the next run still starts', async () => {
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const anchor = now
+    const errors: string[] = []
+    const book = tasks({
+      now: () => now,
+      deliveryTimeoutMs: 50,
+      onError: message => errors.push(message),
+      listeners: { stuck: () => new Promise(() => {}) },
+    })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        everyMinutes: 60,
+        times: 2,
+      }),
+    )
+    const worker = await workerTurn(1)
+    await finishRun(book, worker, '第一次正常')
+    await until(() => finished.length === 1)
+    await until(() => ledger().scheduled[0]?.['notification'] === 'unknown')
+    expect(ledger().scheduled[0]).toMatchObject({
+      deliveries: { note: 'sent', test: 'skipped', stuck: 'unknown' },
+    })
+    expect(errors).toEqual([
+      `后台任务 ${id} 的结果送到 stuck 超时没有回音，按不确定记下，不再重发`,
+    ])
+    now = anchor + 61 * MINUTE
+    book.tick()
+    await until(() => chat.sentTo(worker).length === 2)
   })
 
   test('the console list carries the next start and the runs left', async () => {

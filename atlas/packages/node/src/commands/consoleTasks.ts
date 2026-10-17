@@ -302,6 +302,11 @@ export interface ConsoleTasksOptions {
   readonly backoffMs?: (failures: number) => number
   /** How long to wait before delivering a result again; tests shorten it. */
   readonly deliveryRetryMs?: (attempts: number) => number
+  /**
+   * How long one place may take to take a result before it is given up as
+   * `unknown` (default {@link DELIVERY_TIMEOUT_MS}); tests shorten it.
+   */
+  readonly deliveryTimeoutMs?: number
   readonly onError?: (message: string) => void
 }
 
@@ -350,6 +355,14 @@ const MAX_FAILURES = 10
 const BRIEF_EVERY_TURNS = 10
 /** Delivery rounds for one result before a failed place is given up. */
 const MAX_DELIVERY_ATTEMPTS = 5
+/**
+ * One place's answer to a delivery. A channel's requests time out at 30 s
+ * each, but a long result goes in several, a rate limit waits, and a
+ * listener may be anything: past this the place is given up as `unknown`
+ * (it may have the result; it is not sent again), so a stuck place cannot
+ * hold a repeat's next run (see {@link ConsoleTasks.tick}) for ever.
+ */
+const DELIVERY_TIMEOUT_MS = 5 * 60_000
 /**
  * Refusals retrying cannot fix: the owner's account or role changed, the
  * target left the dial list or the tenant, the quota is spent. Same set the
@@ -486,6 +499,26 @@ function wallClock(at: number): string {
 }
 
 /** Seconds to wait after the n-th consecutive failure (grantley `_retry_wait`). */
+const LATE = Symbol('late')
+
+/** `work`'s value, or {@link LATE} when it takes longer than `ms`. */
+async function within<T>(
+  work: Promise<T>,
+  ms: number,
+): Promise<T | typeof LATE> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<typeof LATE>(resolve => {
+        timer = setTimeout(() => resolve(LATE), ms)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function defaultBackoff(failures: number): number {
   return Math.min(60_000, 2 ** Math.min(failures, 6) * 1_000)
 }
@@ -2285,9 +2318,22 @@ export class ConsoleTasks implements BackgroundTasksPort {
           return
         deliveries[key] = 'sending'
         this.#patch(id, { deliveries: { ...deliveries } })
-        const sent = await send().catch(() => false)
+        const sent = await within(
+          send().catch(() => false),
+          this.#options.deliveryTimeoutMs ?? DELIVERY_TIMEOUT_MS,
+        )
+        if (sent === LATE)
+          this.#options.onError?.(
+            `后台任务 ${id} 的结果送到 ${key} 超时没有回音，按不确定记下，不再重发`,
+          )
         deliveries[key] =
-          sent === true ? 'sent' : sent === false ? 'failed' : 'skipped'
+          sent === LATE
+            ? 'unknown'
+            : sent === true
+              ? 'sent'
+              : sent === false
+                ? 'failed'
+                : 'skipped'
         this.#patch(id, { deliveries: { ...deliveries } })
       }
       const note = this.#options.chat.note?.bind(this.#options.chat)
