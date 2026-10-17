@@ -174,7 +174,7 @@ export function defaultExternalSystemPrompt(agent: ExternalAgent): string {
       : agent.runtime === 'codex'
         ? 'You have no shell. Read the workspace with qianmo_read_file, qianmo_list_files and qianmo_search.'
         : 'You have no shell. Read the workspace with Read, Grep and Glob.',
-    'Tools named qianmo_* act through this node: notify the operator, remember, delegate background tasks to other agents, use authorized connections.',
+    'Tools named qianmo_* act through this node: notify the operator, remember, delegate background tasks to other agents, use authorized connections, and drive your private browser and computer when the operator has switched them on.',
   ].join('\n')
 }
 
