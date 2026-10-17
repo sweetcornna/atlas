@@ -34,6 +34,7 @@ import {
 } from '@qianmo/protocol'
 import {
   generateNodeKeyPair,
+  verifiedChain,
   verifiedTaskOwner,
   type NodeKeyPair,
 } from '@qianmo/capability'
@@ -1363,6 +1364,40 @@ test('the console signs its authenticated requester assertion, binding the actua
       { ...request, contextId: 'foreign-chat' },
       new Map([['console', keys.publicKey]]),
     ),
+  ).toBeUndefined()
+})
+
+test("an agent question's call chain rides under the owner proof (P36.6)", async () => {
+  const keys = generateNodeKeyPair()
+  const controllers = new Map([['console', keys.publicKey]])
+  const chain = [{ node: 'node-a', taskId: 'task-asker' }]
+  const signed = harness({ ownerSigningKeys: keys })
+  const opened = await signed.hub.open(TARGET)
+  if (!opened.ok) throw new Error('open')
+  await signed.hub.send({
+    sessionId: opened.value.id,
+    text: '来自 qianmo://node-a/main 的提问',
+    onBehalfOf: 'legacy:admin',
+    chain,
+  })
+  const request = signed.dialer.last.sent[0]!
+  expect(verifiedChain(request, controllers)).toEqual(chain)
+  // An ordinary line carries none.
+  await signed.hub.send({
+    sessionId: opened.value.id,
+    text: '再问一句',
+    onBehalfOf: 'legacy:admin',
+  })
+  const plain = signed.dialer.last.sent.at(-1)!
+  expect((plain.payload as Record<string, unknown>).chain).toBeUndefined()
+  expect(verifiedChain(plain, controllers)).toBeUndefined()
+  // A console that signs nothing sends the chain, and no node can trust it.
+  const unsigned = harness({ idPrefix: 'unsigned' })
+  const other = await unsigned.hub.open(TARGET)
+  if (!other.ok) throw new Error('open')
+  await unsigned.hub.send({ sessionId: other.value.id, text: '问', chain })
+  expect(
+    verifiedChain(unsigned.dialer.last.sent[0]!, controllers),
   ).toBeUndefined()
 })
 

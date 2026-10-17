@@ -599,6 +599,16 @@ export interface ChatSendInput {
    * the node lets interactive turns go first and stops it at its deadline.
    */
   readonly background?: true
+  /**
+   * Host-only: the call chain of a synchronous question between agents
+   * (P36.6) — the asking turns, outermost first, each its node and the
+   * `taskId` of its request. Signed into the request so a node whose running
+   * turn is one of them lets this turn in nested instead of queueing it.
+   */
+  readonly chain?: readonly {
+    readonly node: string
+    readonly taskId: string
+  }[]
 }
 
 /**
@@ -1326,6 +1336,11 @@ export const CONSOLE_ACTIONS = [
   'channel.test',
   /** 后台任务（P29）：在控制台取消一个，target 是任务 id。 */
   'task.cancel',
+  /**
+   * 智能体之间的同步问答（P36.6）：每个被问的智能体一条，主体是发问会话的主人，
+   * target 是 `发问方地址 → 被问方地址`；不记问题与回答的正文。
+   */
+  'peer.ask',
   /** 应用连接（P25），target 是连接 id。 */
   'connector.save',
   'connector.remove',
