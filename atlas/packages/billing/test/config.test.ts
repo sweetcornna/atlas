@@ -256,7 +256,7 @@ describe('parseBillingConfig', () => {
       { ...json, channels: without },
       /alipay\.sellerId：必须是非空字符串/,
     )
-    for (const sellerId of ['2021000122671080', '2088123', 2088000000000001]) {
+    for (const sellerId of ['2021009900000001', '2088123', 2088000000000001]) {
       const channels = structuredClone(json['channels']) as Record<
         string,
         Record<string, unknown>
@@ -279,7 +279,7 @@ describe('parseBillingConfig', () => {
       },
     })
     expect(seen).toHaveLength(5)
-    expect(config.channels.alipay?.appId).toBe('2021000122671080')
+    expect(config.channels.alipay?.appId).toBe('2021009900000001')
   })
 })
 

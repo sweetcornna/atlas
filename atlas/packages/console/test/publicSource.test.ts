@@ -14,7 +14,14 @@
 
 import { describe, expect, test } from 'bun:test'
 import { sourceFooter } from '../src/view/source.js'
-import { BASE, accountsHarness, formPost, invite } from './accountsHarness.js'
+import {
+  BASE,
+  accountsHarness,
+  asSession,
+  formPost,
+  invite,
+  person,
+} from './accountsHarness.js'
 import { publicConsole, type PublicPerson } from './billingFake.js'
 
 const SOURCE =
@@ -110,6 +117,21 @@ describe('every public-edition page carries the source link', () => {
     expect(html).toContain(LINK)
   })
 
+  test('the management side a subscriber lands on, and its error page', async () => {
+    const f = pinned()
+    for (const path of [
+      '/admin/overview',
+      '/admin/nodes',
+      '/admin/usage',
+      '/admin/nope',
+    ]) {
+      const response = await f.handle(page(path, f.paid))
+      const html = await response.text()
+      expect(`${path} ${html.includes('class="shell"')}`).toBe(`${path} true`)
+      expect(`${path} ${html.includes(LINK)}`).toBe(`${path} true`)
+    }
+  })
+
   test('the plans page and a standing card use the same footer', async () => {
     const f = pinned()
     for (const [path, who] of [
@@ -173,5 +195,16 @@ describe('the default edition is unchanged', () => {
       const html = await response.text()
       expect(html).not.toContain('data-source')
     }
+  })
+
+  test('its management side carries none either', async () => {
+    const h = accountsHarness()
+    const member = await person(h.handle, 'member')
+    const response = await h.handle(
+      asSession('GET', '/admin/overview', member.sid, { header: false }),
+    )
+    const html = await response.text()
+    expect(html).toContain('class="shell"')
+    expect(html).not.toContain('data-source')
   })
 })

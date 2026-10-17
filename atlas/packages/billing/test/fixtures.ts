@@ -65,7 +65,8 @@ export const MCHID = '1600000001'
 export const APPID = 'wx00000000qianmo01'
 export const SERIAL = '0A1B2C3D4E5F60718293A4B5C6D7E8F901234567'
 export const PUB_KEY_ID = 'PUB_KEY_ID_0116000000012026'
-export const ALIPAY_APP_ID = '2021000122671080'
+/** The Alipay app id, made up for the tests (the 2021 prefix, then filler). */
+export const ALIPAY_APP_ID = '2021009900000001'
 /** The merchant's Alipay user id (`seller_id`), made up for the tests. */
 export const ALIPAY_SELLER_ID = '2088000000000001'
 
