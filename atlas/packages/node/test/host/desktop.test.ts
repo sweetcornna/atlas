@@ -800,9 +800,10 @@ test('a refused lease says why and how to switch the resource on', async () => {
     expect(await reason(decider(f.node, off)('reserve'))).toContain(
       '控制台「云端电脑」页为 main 打开专属浏览器',
     )
+    // macOS offers its own desktop (§6.5): off, not unsupported.
     const computer = callOf(f.node, 'qianmo_computer_screenshot', {})
     expect(await reason(decider(f.node, computer)('reserve'))).toContain(
-      '需要 Linux 节点并装有 Xvfb 与 xauth',
+      '控制台「云端电脑」页为 main 打开专属电脑',
     )
     expect(
       await reason(
