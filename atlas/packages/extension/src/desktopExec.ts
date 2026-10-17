@@ -47,6 +47,33 @@ export function readDesktopResource(file: string): DesktopResource | undefined {
   }
 }
 
+/**
+ * The computer tools that send input. On a private display each takes the
+ * base's input control for the length of the call (see `#takeOver`).
+ */
+const TAKEOVER_TOOLS: ReadonlySet<string> = new Set([
+  'qianmo_computer_actions',
+  'qianmo_computer_click',
+  'qianmo_computer_type',
+  'qianmo_computer_key',
+  'qianmo_computer_scroll',
+  'qianmo_computer_focus',
+  'qianmo_computer_element',
+  'qianmo_computer_menu',
+])
+/** What the base says when another process on this account holds input. */
+const INPUT_BUSY = 'another desktop operation owns input'
+type PreludeContext = Parameters<DesktopPrelude['invoke']>[1]
+/**
+ * The tool context the base asks before it hands over input control. A
+ * private display has no one at it, so the answer is yes; the base reads
+ * nothing here but `ui.confirm`.
+ */
+const PRIVATE_DISPLAY_CONTROL = {
+  hasUI: true,
+  ui: { confirm: async () => true },
+} as unknown as NonNullable<PreludeContext['context']>
+
 /** The `value` a base computer call answered with, if any. */
 const valueOf = (result: DesktopResult): unknown => {
   const details = 'details' in result ? result.details : undefined
@@ -255,6 +282,8 @@ export class DesktopExecutor {
   #browser: DesktopPrelude | undefined
   #computer: DesktopPrelude | undefined
   #attached: string | undefined
+  /** The private display whose keyboard this executor has already used. */
+  #keyboard: string | undefined
   #queue: Promise<unknown> = Promise.resolve()
 
   constructor(
@@ -492,152 +521,173 @@ export class DesktopExecutor {
       if (!(await gate('commit', { observedTargetDigest })))
         throw new Error('Stale desktop approval')
       executed = true
-      let result: DesktopResult
-      switch (name) {
-        case 'qianmo_browser_tabs':
-          result = {
-            content: [{ type: 'text', text: JSON.stringify([{ tab: r.tab }]) }],
-          }
-          break
-        case 'qianmo_browser_screenshot':
-          result = await browserCall('screenshot')
-          break
-        case 'qianmo_browser_read_page':
-          result = await browserCall('text', ['body'])
-          break
-        case 'qianmo_browser_find':
-          result = await browserCall('count', [args.selector])
-          break
-        case 'qianmo_browser_navigate':
-          result = await browserCall('goto', [args.url])
-          break
-        case 'qianmo_browser_click':
-          result = await browserCall('click', [args.selector])
-          break
-        case 'qianmo_browser_type':
-          result = await browserCall('fill', [args.selector, args.text])
-          break
-        case 'qianmo_browser_press':
-          result = await browserCall('press', [
-            args.key,
-            { selector: args.selector },
-          ])
-          break
-        case 'qianmo_browser_scroll':
-          result = await browserCall('scroll', [args.x, args.y])
-          break
-        case 'qianmo_computer_screenshot':
-          result = await onTarget(step('screenshot'))
-          break
-        case 'qianmo_computer_zoom':
-          result = await onTarget(
-            step('zoom', {
-              x: args.x,
-              y: args.y,
-              width: args.width,
-              height: args.height,
-            }),
-          )
-          break
-        case 'qianmo_computer_windows':
-          result =
-            hostApps === undefined
-              ? await computerCall(step('windows'))
-              : await (async (): Promise<DesktopResult> => {
-                  const windows = await hostWindows()
-                  // The base lists the current Space only: a window behind
-                  // the owner's full-screen app is not there to be seen.
-                  return windows.length > 0
-                    ? { content: [], details: { value: windows } }
-                    : {
-                        content: [
-                          {
-                            type: 'text',
-                            text: '[] 当前桌面空间里没有允许应用的窗口：应用可能没开、窗口最小化了，或主人正在用全屏应用（本机桌面只能操作当前桌面空间里看得见的窗口）。可以先用 qianmo_computer_open_app 打开应用',
-                          },
-                        ],
-                      }
-                })()
-          break
-        case 'qianmo_computer_observe':
-          result = await onTarget(step('observe'))
-          break
-        case 'qianmo_computer_clipboard_read':
-          result = await computerCall(step('clipboard.read'))
-          break
-        case 'qianmo_computer_clipboard_write':
-          result = await computerCall(step('clipboard.write', args.text))
-          break
-        case 'qianmo_computer_click':
-          result = await onTarget(
-            actionStep({ ...args, type: 'click' }, hostApps !== undefined),
-          )
-          break
-        case 'qianmo_computer_type':
-          result = await onTarget(
-            actionStep(
-              { text: args.text!, type: 'type' },
+      let result!: DesktopResult
+      // A private display has no owner to keep the foreground for (§6.3):
+      // input goes there as a person's would, so toolkits that drop
+      // background events still get it. The grant lasts this one call.
+      const takeover =
+        !browser &&
+        hostApps === undefined &&
+        typeof r.display === 'string' &&
+        TAKEOVER_TOOLS.has(name)
+      if (takeover) await this.#takeOver(r.display!, context, signal)
+      try {
+        switch (name) {
+          case 'qianmo_browser_tabs':
+            result = {
+              content: [
+                { type: 'text', text: JSON.stringify([{ tab: r.tab }]) },
+              ],
+            }
+            break
+          case 'qianmo_browser_screenshot':
+            result = await browserCall('screenshot')
+            break
+          case 'qianmo_browser_read_page':
+            result = await browserCall('text', ['body'])
+            break
+          case 'qianmo_browser_find':
+            result = await browserCall('count', [args.selector])
+            break
+          case 'qianmo_browser_navigate':
+            result = await browserCall('goto', [args.url])
+            break
+          case 'qianmo_browser_click':
+            result = await browserCall('click', [args.selector])
+            break
+          case 'qianmo_browser_type':
+            result = await browserCall('fill', [args.selector, args.text])
+            break
+          case 'qianmo_browser_press':
+            result = await browserCall('press', [
+              args.key,
+              { selector: args.selector },
+            ])
+            break
+          case 'qianmo_browser_scroll':
+            result = await browserCall('scroll', [args.x, args.y])
+            break
+          case 'qianmo_computer_screenshot':
+            result = await onTarget(step('screenshot'))
+            break
+          case 'qianmo_computer_zoom':
+            result = await onTarget(
+              step('zoom', {
+                x: args.x,
+                y: args.y,
+                width: args.width,
+                height: args.height,
+              }),
+            )
+            break
+          case 'qianmo_computer_windows':
+            result =
+              hostApps === undefined
+                ? await computerCall(step('windows'))
+                : await (async (): Promise<DesktopResult> => {
+                    const windows = await hostWindows()
+                    // The base lists the current Space only: a window behind
+                    // the owner's full-screen app is not there to be seen.
+                    return windows.length > 0
+                      ? { content: [], details: { value: windows } }
+                      : {
+                          content: [
+                            {
+                              type: 'text',
+                              text: '[] 当前桌面空间里没有允许应用的窗口：应用可能没开、窗口最小化了，或主人正在用全屏应用（本机桌面只能操作当前桌面空间里看得见的窗口）。可以先用 qianmo_computer_open_app 打开应用',
+                            },
+                          ],
+                        }
+                  })()
+            break
+          case 'qianmo_computer_observe':
+            result = await onTarget(step('observe'))
+            break
+          case 'qianmo_computer_clipboard_read':
+            result = await computerCall(step('clipboard.read'))
+            break
+          case 'qianmo_computer_clipboard_write':
+            result = await computerCall(step('clipboard.write', args.text))
+            break
+          case 'qianmo_computer_click':
+            result = await onTarget(
+              actionStep({ ...args, type: 'click' }, hostApps !== undefined),
+            )
+            break
+          case 'qianmo_computer_type':
+            result = await onTarget(
+              actionStep(
+                { text: args.text!, type: 'type' },
+                hostApps !== undefined,
+              ),
+            )
+            break
+          case 'qianmo_computer_key':
+            result = await onTarget(
+              actionStep(
+                { keys: args.key!, type: 'keypress' },
+                hostApps !== undefined,
+              ),
+            )
+            break
+          case 'qianmo_computer_scroll':
+            result = await onTarget(
+              actionStep({ ...args, type: 'scroll' }, hostApps !== undefined),
+            )
+            break
+          case 'qianmo_computer_focus':
+            result = await onTarget(step('raise'))
+            break
+          case 'qianmo_computer_element':
+            result = await computerCall(
+              step('ref', args.ref),
+              args.action === 'set_value'
+                ? step('setValue', args.value)
+                : args.action === 'click' && hostApps !== undefined
+                  ? step('click', { takeover: false })
+                  : step(String(args.action)),
+            )
+            break
+          case 'qianmo_computer_menu':
+            result = await onTarget(step('menu.select', args.path))
+            break
+          case 'qianmo_computer_actions':
+            result = await this.#actions(
+              args,
+              onTarget,
+              signal,
               hostApps !== undefined,
-            ),
-          )
-          break
-        case 'qianmo_computer_key':
-          result = await onTarget(
-            actionStep(
-              { keys: args.key!, type: 'keypress' },
-              hostApps !== undefined,
-            ),
-          )
-          break
-        case 'qianmo_computer_scroll':
-          result = await onTarget(
-            actionStep({ ...args, type: 'scroll' }, hostApps !== undefined),
-          )
-          break
-        case 'qianmo_computer_focus':
-          result = await onTarget(step('raise'))
-          break
-        case 'qianmo_computer_element':
-          result = await computerCall(
-            step('ref', args.ref),
-            args.action === 'set_value'
-              ? step('setValue', args.value)
-              : args.action === 'click' && hostApps !== undefined
-                ? step('click', { takeover: false })
-                : step(String(args.action)),
-          )
-          break
-        case 'qianmo_computer_menu':
-          result = await onTarget(step('menu.select', args.path))
-          break
-        case 'qianmo_computer_actions':
-          result = await this.#actions(
-            args,
-            onTarget,
-            signal,
-            hostApps !== undefined,
-          )
-          break
-        case 'qianmo_computer_apps':
-        case 'qianmo_computer_open_app': {
-          // The host lists and launches desktop entries itself (§6.3); the
-          // model only ever names an id it was given.
-          const answer = await gateway.query({
-            toolName: name,
-            input: {
-              ...binding,
-              phase: name === 'qianmo_computer_apps' ? 'apps' : 'launch',
-            },
-          })
-          if (!answer.ok)
-            throw new Error(`${DESKTOP_LEASE_REFUSED}: ${answer.reason}`)
-          if (answer.value === undefined)
-            throw new Error('Desktop host answered without a result')
-          result = {
-            content: [{ type: 'text', text: answer.value.slice(0, 64000) }],
+            )
+            break
+          case 'qianmo_computer_apps':
+          case 'qianmo_computer_open_app': {
+            // The host lists and launches desktop entries itself (§6.3); the
+            // model only ever names an id it was given.
+            const answer = await gateway.query({
+              toolName: name,
+              input: {
+                ...binding,
+                phase: name === 'qianmo_computer_apps' ? 'apps' : 'launch',
+              },
+            })
+            if (!answer.ok)
+              throw new Error(`${DESKTOP_LEASE_REFUSED}: ${answer.reason}`)
+            if (answer.value === undefined)
+              throw new Error('Desktop host answered without a result')
+            result = {
+              content: [{ type: 'text', text: answer.value.slice(0, 64000) }],
+            }
+            break
           }
-          break
         }
+      } finally {
+        if (takeover)
+          await this.#computerPrelude()
+            .invoke(
+              { action: 'call', chain: [step('control.release')] },
+              { ...context, toolCallId: `${invocationId}:release` },
+            )
+            .catch(() => {})
       }
       if (!(await gate('completed')))
         throw new Error('Desktop completion receipt lost; do not retry')
@@ -664,6 +714,55 @@ export class DesktopExecutor {
     } catch (error) {
       await gate(executed ? 'unknown' : 'failed').catch(() => false)
       throw error
+    }
+  }
+
+  /**
+   * Take the base's input control on a private display for one call.
+   *
+   * The first key event an X server sees switches its keyboard source, and
+   * the base reads the resulting MappingNotify as a reason to cancel the
+   * input in flight; one shift press per display spends that first event
+   * before anything the agent asked for. The control lock is per account on
+   * the node, so another agent's call holding it is waited out briefly; the
+   * base sends nothing while it says busy.
+   */
+  async #takeOver(
+    display: string,
+    context: PreludeContext,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const call = (id: string, ...chain: ComputerStep[]) =>
+      this.#computerPrelude().invoke(
+        { action: 'call', chain },
+        { ...context, toolCallId: `${context.toolCallId}:${id}` },
+      )
+    if (this.#keyboard !== display) {
+      await call('warm', step('press', 'shift')).catch(() => {})
+      this.#keyboard = display
+    }
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.#computerPrelude().invoke(
+          {
+            action: 'call',
+            chain: [step('control.acquire', { reason: 'private display' })],
+          },
+          {
+            ...context,
+            toolCallId: `${context.toolCallId}:acquire`,
+            context: PRIVATE_DISPLAY_CONTROL,
+          },
+        )
+        return
+      } catch (error) {
+        if (
+          attempt >= 20 ||
+          !(error instanceof Error && error.message.includes(INPUT_BUSY))
+        )
+          throw error
+        await pause(100, signal)
+      }
     }
   }
 

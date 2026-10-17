@@ -260,7 +260,7 @@ const DESKTOP_SPECS = {
   },
   qianmo_computer_actions: {
     about:
-      'Run 1 to 20 input actions in order on the private desktop or one window, stop at the first that fails, then return one screenshot; coordinates refer to the latest full screenshot of the desktop or of that window; waits and holds together stay within 30 seconds.',
+      'Run 1 to 20 input actions in order on the private desktop or one window, stop at the first that fails, then return one screenshot; coordinates are pixels of the latest full screenshot of the desktop or of that window, so take one first; waits and holds together stay within 30 seconds.',
     fields: {
       actions: {
         kind: 'array',
@@ -273,7 +273,8 @@ const DESKTOP_SPECS = {
     },
   },
   qianmo_computer_click: {
-    about: 'Click at x, y on the private desktop or one window.',
+    about:
+      'Click at x, y on the private desktop or one window, in pixels of its latest screenshot (take one first).',
     fields: {
       ...XY,
       button: opt(BUTTON),

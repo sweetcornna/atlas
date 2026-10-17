@@ -68,15 +68,34 @@ function fakeComputer(
   opts: {
     windows?: () => unknown
     fail?: (chain: readonly Step[]) => Error | undefined
+    control?: (method: string) => Error | undefined
   } = {},
 ) {
   const chains: Step[][] = []
+  /** Input control around a private display's input, kept apart (see below). */
+  const controls: string[] = []
   let frame = 0
   const prelude: DesktopPrelude = {
     async invoke(parameters, context) {
       const p = parameters as { action: string; chain?: Step[] }
       if (p.action !== 'call') return { content: [] }
       const chain = p.chain!
+      const method = chain[0]!.method
+      if (
+        method.startsWith('control.') ||
+        context.toolCallId.endsWith(':warm')
+      ) {
+        controls.push(
+          method === 'control.acquire'
+            ? `acquire:${context.context?.ui ? 'ui' : 'headless'}`
+            : method.startsWith('control.')
+              ? method.slice('control.'.length)
+              : `warm:${JSON.stringify(chain)}`,
+        )
+        const error = opts.control?.(method)
+        if (error) throw error
+        return { content: [], details: { value: { active: true } } }
+      }
       chains.push(chain)
       context.signal?.throwIfAborted()
       const error = opts.fail?.(chain)
@@ -103,7 +122,7 @@ function fakeComputer(
       return { content: [], details: { screenshots: [] } }
     },
   }
-  return { prelude, chains, inputs: () => chains.filter(isInput) }
+  return { prelude, chains, controls, inputs: () => chains.filter(isInput) }
 }
 const isInput = (chain: readonly Step[]) =>
   !['windows', 'screenshot'].includes(chain.at(-1)!.method) || chain.length > 1
@@ -846,4 +865,74 @@ test("this Mac's own desktop: only the listed applications' windows, input in th
   await expect(
     run('qianmo_computer_focus', { window: '41' }, fakeGateway().gateway),
   ).rejects.toThrow('不切换主人的前台窗口')
+})
+
+test('a private display takes input control for each input call: the keyboard warmed once, released after, a busy lock waited out', async () => {
+  let busy = 2
+  const computer = fakeComputer({
+    control: method =>
+      method === 'control.acquire' && busy-- > 0
+        ? new Error(
+            'InputBusy: another desktop operation owns input/focus control; no input was sent',
+          )
+        : undefined,
+  })
+  const { run } = setup(computer)
+  await run('qianmo_computer_screenshot', {}, fakeGateway().gateway)
+  expect(computer.controls).toEqual([])
+  await run('qianmo_computer_type', { text: 'hi' }, fakeGateway().gateway)
+  await run(
+    'qianmo_computer_key',
+    { key: 'ctrl+s', window: '0x1' },
+    fakeGateway().gateway,
+  )
+  expect(computer.controls).toEqual([
+    `warm:${JSON.stringify([{ method: 'press', args: ['shift'] }])}`,
+    'acquire:ui',
+    'acquire:ui',
+    'acquire:ui',
+    'release',
+    'acquire:ui',
+    'release',
+  ])
+  // A failed call still gives control back.
+  computer.controls.length = 0
+  const failing = setup(
+    fakeComputer({
+      fail: chain =>
+        chain.at(-1)!.method === 'click' ? new Error('no click') : undefined,
+    }),
+  )
+  await expect(
+    failing.run('qianmo_computer_click', { x: 1, y: 2 }, fakeGateway().gateway),
+  ).rejects.toThrow('no click')
+  expect(failing.computer.controls.at(-1)).toBe('release')
+})
+
+test("this Mac's own desktop never takes input control", async () => {
+  const computer = fakeComputer({
+    windows: () => [{ ...WINDOWS[0]!, id: '41', app: 'TextEdit', pid: 70 }],
+  })
+  const base = computer.prelude
+  computer.prelude = {
+    invoke(parameters, context) {
+      const chain = (parameters as { chain?: Step[] }).chain
+      if (chain?.at(-1)?.method === 'apps.list')
+        return Promise.resolve({
+          content: [],
+          details: { value: [{ id: 'com.apple.TextEdit', pid: 70 }] },
+        })
+      return base.invoke(parameters, context)
+    },
+  }
+  const { run } = setup(computer, undefined, {
+    display: null,
+    hostApps: ['com.apple.TextEdit'],
+  })
+  await run(
+    'qianmo_computer_type',
+    { text: 'hi', window: '41' },
+    fakeGateway().gateway,
+  )
+  expect(computer.controls).toEqual([])
 })
