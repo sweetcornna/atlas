@@ -26,10 +26,10 @@
  * **That sentence stopped being the whole truth when progress rows arrived**
  * (`variant: 'notice'`): those are written by the node, not by a person, up to
  * a couple of dozen per turn. What keeps the assumption standing is a ceiling
- * on the other side rather than compaction on this one — `MAX_NOTICES_PER_SESSION`
- * in `consoleChat.ts`, whose note carries the arithmetic. Raising that number
- * without revisiting this paragraph is how a log with no compaction becomes a
- * log with no bound.
+ * on the other side rather than compaction on this one — `MAX_STEPS_PER_SESSION`
+ * and `MAX_AGENT_NOTICES_PER_SESSION` in `consoleChat.ts`, whose notes carry
+ * the arithmetic. Raising either number without revisiting this paragraph is
+ * how a log with no compaction becomes a log with no bound.
  *
  * ## What is *not* here
  *

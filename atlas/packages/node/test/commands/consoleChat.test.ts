@@ -759,44 +759,68 @@ describe('chat reply path', () => {
     })
   })
 
-  test('a session stops taking notices at its ceiling, and the ceiling survives a restart', async () => {
+  test("tool steps stop at their ceiling, the agent's own notices keep coming, and both ceilings survive a restart", async () => {
     const storePath = join(directory, 'flood.ndjson')
     const first = harness({ storePath })
-    const { sessionId } = await openAndSend(first)
-    const flood = (hub: Harness, count: number): void => {
+    const { sessionId, request } = await openAndSend(first)
+    const flood = (
+      hub: Harness,
+      count: number,
+      turn: QianmoMessage | null,
+    ): void => {
       for (let index = 0; index < count; index += 1) {
         hub.dialer.last.reply(
           createNotify({
             from: TARGET,
             to: FROM,
             contextId: sessionId,
-            payload: {
-              kind: 'task',
-              severity: 'info',
-              summary: `第 ${index} 条`,
-              observedAt: 1,
-            },
+            payload:
+              turn === null
+                ? {
+                    kind: 'watch',
+                    severity: 'info',
+                    summary: `agent ${index}`,
+                    observedAt: 1,
+                  }
+                : {
+                    kind: 'task',
+                    severity: 'info',
+                    summary: `step ${index}`,
+                    observedAt: 1,
+                    causeTaskId: turn.taskId,
+                    dedupKey: turnStepDedupKey(
+                      turn.msgId,
+                      `call-${index}`,
+                      'start',
+                    ),
+                  },
           }),
         )
       }
     }
-    flood(first, 260)
-    const before = await first.hub.transcript(sessionId)
-    if (!before.ok) throw new Error('unreachable')
-    // 200 条过程 + 操作者那一轮。
-    expect(before.value.turns).toHaveLength(201)
+    const count = async (hub: Harness, source: string): Promise<number> => {
+      const transcript = await hub.hub.transcript(sessionId)
+      if (!transcript.ok) throw new Error('unreachable')
+      return transcript.value.turns.filter(
+        turn => turn.variant === 'notice' && turn.noticeSource === source,
+      ).length
+    }
+    flood(first, 260, request)
+    expect(await count(first, 'step')).toBe(200)
+    // A long-lived channel session past its step ceiling still hears the
+    // agent: its notices are counted on their own.
+    flood(first, 5, null)
+    expect(await count(first, 'agent')).toBe(5)
     await first.hub.close()
 
     // 重启不是一次免费的额度重置：这个上限防的正是「一台被授权的机器一直写」。
     const second = harness({ storePath, idPrefix: 'second' })
-    const { sessionId: other } = await openAndSend(second)
-    expect(other).not.toBe(sessionId)
-    flood(second, 10)
-    const after = await second.hub.transcript(sessionId)
-    if (!after.ok) throw new Error('unreachable')
-    expect(
-      after.value.turns.filter(turn => turn.variant === 'notice'),
-    ).toHaveLength(200)
+    const sent = await second.hub.send({ sessionId, text: '下一轮' })
+    if (!sent.ok) throw new Error(sent.failure.message)
+    flood(second, 10, second.dialer.last.sent[0]!)
+    expect(await count(second, 'step')).toBe(200)
+    flood(second, 1_996, null)
+    expect(await count(second, 'agent')).toBe(2_000)
   })
 
   test('the port refuses one endpoint claimed by two nodes, as the parser does', () => {
