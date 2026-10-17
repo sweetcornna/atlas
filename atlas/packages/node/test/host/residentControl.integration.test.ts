@@ -585,3 +585,43 @@ test('signed hub and real resident complete control, upstream and appended omp t
     else process.env.QIANMO_CONFIG_DIR = previous
   }
 }, 90_000)
+
+test('node.ping names each agent’s runtime and an external one’s model, for the hub’s agent list', async () => {
+  const previous = process.env.QIANMO_CONFIG_DIR
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qm-control-ping-'))
+  process.env.QIANMO_CONFIG_DIR = path.join(root, 'config')
+  const workspace = path.join(root, 'workspace')
+  fs.mkdirSync(workspace)
+  const resident = new QianmoResident({
+    node: 'worker',
+    team: 'nest',
+    agents: [
+      { agent: 'main', cwd: workspace },
+      { agent: 'coder', cwd: workspace, runtime: 'codex', model: 'gpt-6-luna' },
+      { agent: 'reviewer', cwd: workspace, runtime: 'claude-code' },
+    ],
+    psk: 'control-e2e-fixture-psk-00000000',
+    listen: { hostname: '127.0.0.1', port: 0 },
+  })
+  try {
+    expect(
+      await resident.control.handle(
+        'node.ping',
+        {},
+        { peer: 'hub', actor: 'admin', taskId: 'ping-1' },
+      ),
+    ).toMatchObject({
+      ok: true,
+      value: {
+        agents: ['main', 'coder', 'reviewer'],
+        runtimes: { main: 'omp', coder: 'codex', reviewer: 'claude-code' },
+        models: { coder: 'gpt-6-luna' },
+      },
+    })
+  } finally {
+    resident.stop()
+    if (previous === undefined) delete process.env.QIANMO_CONFIG_DIR
+    else process.env.QIANMO_CONFIG_DIR = previous
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
