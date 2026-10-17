@@ -22,6 +22,7 @@ import {
   AgentProfiles,
   type AgentProfile,
   ConsoleTasks,
+  SUPERVISOR_RULES,
   type TaskFinished,
   WORKER_INSTRUCTIONS,
 } from '../../src/commands/consoleTasks.js'
@@ -1812,5 +1813,33 @@ describe('planned tasks (主动任务)', () => {
       },
     )
     expect(book.contextFor(parent)).toContain('"runsLeft":4')
+  })
+})
+
+describe('the coordination rules', () => {
+  test('the main session stays free: short work in place, long work to its own sub-session, simple slow work to another agent, and it plans ahead', () => {
+    expect(SUPERVISOR_RULES).toStartWith(
+      '[后台任务协调规则] 你是主会话，始终保持空闲，随时能接主人的下一句。',
+    )
+    // One paragraph: a worker's context drops it whole.
+    expect(SUPERVISOR_RULES).not.toMatch(/\n[ \t]*\n/)
+    for (const cue of [
+      '一两步能完成的（直接回答、澄清、查一项、一次简单的工具调用、读一个文件）当场做完，不开任务',
+      '大约超过一两分钟',
+      '立即用 qianmo_task_start 不带 agent 交给你自己的子会话',
+      '不在主会话里等它',
+      '可以带 agent 交给名册里的其他智能体',
+      '先用 qianmo_task_agents 看有谁、谁闲、用什么底层与模型，优先闲的、便宜的',
+      '分别开任务并行',
+      '主动判断下一步',
+      'after 或 at、everyMinutes 与 times',
+      '告诉主人安排了什么',
+      'qianmo_task_status 报告真实阶段',
+      '只有子智能体明确报告 completed 才能说完成',
+      '主人的新消息不会取消正在运行的后台任务',
+    ])
+      expect(SUPERVISOR_RULES).toContain(cue)
+    // The old rule sent even one simple tool call to the background.
+    expect(SUPERVISOR_RULES).not.toContain('需要工具执行')
   })
 })

@@ -145,3 +145,35 @@ test('a start can be planned: after or at, everyMinutes with times, passed on as
   )
   expect(calls[0]![1]).toMatchObject({ everyMinutes: 60, times: 3 })
 })
+
+test('the descriptions carry the coordination rules to a console conversation', () => {
+  const { byName } = tools(null)
+  const start = byName('qianmo_task_start').description
+  for (const cue of [
+    "Keep this conversation free for the owner's next message",
+    'never wait for it here',
+    'Do it yourself when one or two steps finish it',
+    'one simple tool call, reading one file',
+    'Start a task without agent, in your own sub-session',
+    'more than a minute or two',
+    'may go to another agent',
+    'qianmo_task_agents, preferring idle and cheaper ones',
+    'separate tasks that run in parallel',
+    'after (minutes, 1-10080) or at (an ISO time with its zone, at most 7 days ahead)',
+    'everyMinutes (30-10080) with times (1-100)',
+    'Tell the owner what you started or planned',
+  ])
+    expect(start).toContain(cue)
+  const status = byName('qianmo_task_status').description
+  expect(status).toContain(
+    'report the real phase; only a completed task is done',
+  )
+  expect(status).toContain('decide the next step yourself')
+  expect(byName('qianmo_task_send').description).toContain('cancels no task')
+  expect(byName('qianmo_task_agents').description).toContain(
+    'prefer idle and cheaper ones',
+  )
+  // The sub-agent's two tools still say they are not for the foreground.
+  for (const name of ['qianmo_task_report', 'qianmo_task_updates'])
+    expect(byName(name).description).toStartWith('Background sub-agent only.')
+})

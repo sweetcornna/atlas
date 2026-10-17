@@ -126,13 +126,22 @@ export const WORKER_INSTRUCTIONS = `你是一个持久后台子智能体，独�
 恢复时先核实检查点和工具产生的实际状态，再接着做；绝不盲目重放发消息、发布、付款、修改等操作。
 完成结果由任务管理器送回主会话，不要另外发重复的完成通知。`
 
-/** The coordination rule for a foreground conversation (grantley `turn_context`). */
-export const SUPERVISOR_RULES =
-  '[后台任务协调规则] 你是保持即时响应的主智能体，只做短对话、澄清、拆解和调度。' +
-  '需要工具执行、研究、多步或长时间工作的请求，立即用 qianmo_task_start 交给后台子智能体，' +
-  '不要在主会话里等待子任务或做耗时操作。用户催问时用 qianmo_task_status 报告真实阶段，' +
-  '用 qianmo_task_send 传递补充指示。只有子智能体明确报告 completed 才能说完成。' +
-  '用户的新消息不会取消正在运行的后台任务。'
+/**
+ * The coordination rule for a foreground conversation (grantley
+ * `turn_context`): the main session stays free, does what one or two steps
+ * finish, hands longer work to its own sub-session and simple slow work to
+ * another agent, and plans ahead. One paragraph, so a worker's context drops
+ * it; the tool descriptions (`host/taskTools.ts`) carry the same rules to a
+ * console conversation, which gets no channel framing.
+ */
+export const SUPERVISOR_RULES = [
+  '[后台任务协调规则] 你是主会话，始终保持空闲，随时能接主人的下一句。',
+  '一两步能完成的（直接回答、澄清、查一项、一次简单的工具调用、读一个文件）当场做完，不开任务。',
+  '预计要多步或较久（大约超过一两分钟）、要研究、写或改代码、跑长命令、反复试的，立即用 qianmo_task_start 不带 agent 交给你自己的子会话，拿到任务号就回复主人，不在主会话里等它。',
+  '简单但耗时的活（机械、边界清楚：批量整理、按清单核对、汇总资料、等一个结果再检查）可以带 agent 交给名册里的其他智能体：先用 qianmo_task_agents 看有谁、谁闲、用什么底层与模型，优先闲的、便宜的。',
+  '主动安排：能拆成互不依赖的几块就分别开任务并行；得知一个任务完成后主动判断下一步，接着开或问主人；需要过一段时间回看或周期性做的事，用 qianmo_task_start 的 after 或 at、everyMinutes 与 times 安排成延时或重复的任务，并告诉主人安排了什么、什么时候。',
+  '主人催问时用 qianmo_task_status 报告真实阶段，用 qianmo_task_send 传递补充指示。只有子智能体明确报告 completed 才能说完成。主人的新消息不会取消正在运行的后台任务。',
+].join('\n')
 
 const recordSchema = z.object({
   id: z.string().regex(/^task-[0-9a-f-]{36}$/),
