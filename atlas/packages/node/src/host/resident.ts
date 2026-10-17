@@ -19,7 +19,9 @@ import { connectorTools, type ConnectorToolContext } from './connectorTools.js'
 import { taskTools, type TaskToolOrigin } from './taskTools.js'
 import { askReentry, peerTools, type PeerToolOrigin } from './peerTools.js'
 import { NodeExtensions } from './extensions.js'
-import { runtimeBin, runtimeControl } from './runtimeUpdate.js'
+import { runtimeBin } from './runtimeUpdate.js'
+import { NodeRuntimes } from './runtimeConfig.js'
+import { RUNTIME_CATALOG_CAPABILITY, RUNTIME_OPS } from './runtimes/contract.js'
 import { SelfUpgrader, systemControl } from './selfUpgradeRunner.js'
 import { residentToolSurface, type HostToolDefinition } from './notifyTool.js'
 import { buildVersion } from '../provenance.js'
@@ -162,7 +164,10 @@ import type { QianmoNotifyVerdict } from './notifyWire.js'
 interface QianmoResidentAgentConfig {
   readonly agent: string
   readonly cwd: string
-  /** Claude Code or Codex instead of qianmopi (`--agent-runtime`, P27). */
+  /**
+   * The external runtime it is configured on at start (P27, P36); where it
+   * runs turn by turn is `runtimes`' answer.
+   */
   readonly runtime?: ExternalRuntimeKind
   /** Shell access for an external runtime (`--agent-shell`). */
   readonly shell?: boolean
@@ -472,6 +477,11 @@ interface QianmoResidentOptions {
    */
   readonly resolveRuntimeLaunch?: (agent: ExternalAgent) => ExternalLaunch
   readonly runtimeBins?: Partial<Record<ExternalRuntimeKind, string>>
+  /**
+   * Per-agent runtime and model, qianmopi fallback and default installs
+   * (P36); the CLI passes one. Absent: agents run where `runtime` says.
+   */
+  readonly runtimes?: NodeRuntimes
   readonly spawnRuntime?: (input: ExternalRuntimeSpawn) => ChildProcess
   /** How an external runtime starts `qm runtime-mcp`; tests override it. */
   readonly runtimeMcpArgv?: (args: readonly string[]) => string[]
@@ -769,6 +779,8 @@ export class QianmoResident {
   /** Operator-configured MCP servers, skills and plugins (P32). */
   readonly extensions: NodeExtensions
   readonly control: ControlRegistry
+  /** Where each agent runs and which runtimes are installed (P36). */
+  readonly runtimes: NodeRuntimes
   /** Host tools answered by the hub: connectors (P25) and background tasks (P29). */
   readonly #hubHostTools: readonly HostToolDefinition[]
   readonly hubCall: HubCallClient
@@ -1012,19 +1024,21 @@ export class QianmoResident {
       },
       { estopAllowed: ['turn.stop'] },
     )
-    // Claude Code / Codex versions and updates (P31); reading works under ESTOP.
-    this.control.register(
-      'runtime',
-      runtimeControl({
-        ...(options.runtimeBins === undefined
-          ? {}
-          : { bins: options.runtimeBins }),
-      }),
-      {
-        estopAllowed: ['runtime.versions'],
-        sideEffects: op => op === 'runtime.update',
-      },
-    )
+    // Runtimes, installs and per-agent configuration (P31, P36); reading
+    // works under ESTOP. A change of where an agent runs recycles it.
+    this.runtimes =
+      options.runtimes ??
+      NodeRuntimes.unmanaged(options.agents, options.runtimeBins)
+    this.runtimes.onChange(agent => {
+      void this.#runtimeChild
+        ?.invalidateAgent(agent)
+        .catch(error => this.#options.onError?.(error))
+    })
+    this.control.register('runtime', this.runtimes.control, {
+      estopAllowed: [RUNTIME_OPS.versions, RUNTIME_OPS.status],
+      sideEffects: op =>
+        op !== RUNTIME_OPS.versions && op !== RUNTIME_OPS.status,
+    })
     // qianmo's own in-place upgrade (P31 §5.2): stage, drain, swap, restart.
     this.control.register(
       'system',
@@ -1361,6 +1375,9 @@ export class QianmoResident {
     // Before the first omp RPC child: an intent a crash left behind is committed
     // now, while no child can be reading settings (§2.6 step 5).
     await this.#prepareProviderConfig()
+    // With the model service in place: where each agent runs, and the
+    // default installs, in the background (P36 §2).
+    void this.runtimes.start().catch(error => this.#options.onError?.(error))
     this.#startProviderPoll()
     // The last extension set, laid out again for this start's agents with
     // every MCP server probed anew (P32); in the background, like the hub's.
@@ -1393,6 +1410,7 @@ export class QianmoResident {
         await this.#awaitStop()
       }
     } finally {
+      this.runtimes.stop()
       await this.desktop.close()
       await this.extensions.close()
       this.#stopping = true
@@ -3274,6 +3292,7 @@ export class QianmoResident {
         MessageType.AuthzRevoke,
         ...CONTROL_MESSAGE_TYPES,
         CONTROL_OPERATION_ID_CAPABILITY,
+        RUNTIME_CATALOG_CAPABILITY,
       ],
       onPeerDisconnect: () => this.hubCall.disconnected(),
       psk: this.#options.psk,
@@ -3341,15 +3360,30 @@ export class QianmoResident {
     }
   }
 
-  /** The external-runtime half of a generation, or nothing (P27). */
-  #externalPool(): ExternalRuntimePool | undefined {
-    const agents = this.#options.agents.filter(
-      (agent): agent is ExternalAgent => agent.runtime !== undefined,
+  /**
+   * The external-runtime half of a generation (P27). It knows every agent:
+   * which runtime one runs on is read when its process starts (P36).
+   */
+  #externalPool(): ExternalRuntimePool {
+    const runtimes = this.runtimes
+    const agents = this.#options.agents.map(
+      (agent): ExternalAgent => ({
+        agent: agent.agent,
+        cwd: agent.cwd,
+        ...(agent.shell === undefined ? {} : { shell: agent.shell }),
+        get runtime() {
+          return runtimes.externalRuntimeOf(agent.agent)
+        },
+      }),
     )
-    if (agents.length === 0) return undefined
     const resolve = this.#options.resolveRuntimeLaunch
-    return new ExternalRuntimePool({
+    // `runtimeOf` is the pool's spawn-time hook (P36.2); the getter above
+    // gives the same answer to a pool without it.
+    const options: ConstructorParameters<typeof ExternalRuntimePool>[0] & {
+      readonly runtimeOf?: (agent: string) => string
+    } = {
       agents,
+      runtimeOf: agent => runtimes.externalRuntimeOf(agent),
       resolveLaunch: agent => {
         if (resolve === undefined)
           throw new Error(
@@ -3398,7 +3432,8 @@ export class QianmoResident {
         : { maxChildren: this.#options.ompMaxChildren }),
       onActivity: active => this.#options.onActivity?.(active),
       onError: error => this.#options.onError?.(error),
-    })
+    }
+    return new ExternalRuntimePool(options)
   }
 
   async #spawnGeneration(): Promise<ResidentChildConnection> {
@@ -3429,7 +3464,7 @@ export class QianmoResident {
           },
         }),
       protectedRoots: this.#options.protectedRoots,
-      agents: this.#options.agents.filter(agent => agent.runtime === undefined),
+      agents: this.#options.agents,
       memoryRoot: this.#memoryRoot,
       allowWorkspaceEdits: this.#options.allowWorkspaceEdits,
       spawn: this.#options.spawnOmp,
@@ -3451,7 +3486,10 @@ export class QianmoResident {
       requestPermission: (sessionId: string, call: unknown) =>
         this.#requestPermission(sessionId, call),
     })
-    const child = new ResidentRuntimePool(ompPool, this.#externalPool())
+    const child = new ResidentRuntimePool(ompPool, this.#externalPool(), {
+      runtimeOf: agent => this.runtimes.effectiveRuntime(agent),
+      onError: error => this.#options.onError?.(error),
+    })
     const closed = child.closed
     void closed.catch(() => {})
     // Retire the runtime the moment the child is gone, not when the supervisor
@@ -3839,6 +3877,8 @@ export class QianmoResident {
   ): void {
     this.#applySessionPolicy(result.sessions)
     this.#providerWaiting = null
+    // A model an external runtime needs may have come or gone (P36 §3.3).
+    this.runtimes.recompute()
     this.#writeSwitchStatus({
       waiting: null,
       last: this.#switchOutcome(

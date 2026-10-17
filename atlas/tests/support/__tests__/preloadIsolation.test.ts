@@ -34,6 +34,7 @@ test('preload isolated the shell', () => {
   expect(process.env.QIANMO_TEST_QMCODE_BIN).toBe('/test/bin/qmcode')
   expect(process.env.QIANMO_TEST_COMPILED_QM).toBe('/test/bin/qm')
   expect(process.env.PI_TEST_RUNTIME).toBe('1')
+  expect(process.env.QIANMO_RUNTIME_AUTOINSTALL).toBe('0')
   const root = process.env.QIANMO_CONFIG_DIR ?? ''
   expect(root.startsWith(tmpdir())).toBe(true)
   expect(root).toContain('qianmo-test-' + process.pid)

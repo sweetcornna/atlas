@@ -38,6 +38,7 @@ import {
 } from '@qianmo/console'
 import type { ControlOutcome } from '@qianmo/protocol'
 import { RUNTIME_PACKAGES } from '../host/runtimeUpdate.js'
+import type { RuntimeVersionRow } from '../host/runtimes/contract.js'
 import {
   compareVersions,
   latestRelease,
@@ -69,6 +70,38 @@ const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 /** How long one node may take to come back on the new version. */
 const NODE_UPGRADE_MS = 30 * 60_000
+
+/**
+ * One runtime of a node's `runtime.versions`: the catalog rows nodes answer
+ * since P36 (`RuntimeVersionsReply`), or the per-runtime map before it.
+ */
+function runtimeVersionFacts(
+  value: unknown,
+  id: string,
+): { version: string | null; managed: boolean; pinned: boolean } {
+  const reply = value as { runtimes?: unknown } | null | undefined
+  if (Array.isArray(reply?.runtimes)) {
+    const row = (
+      reply.runtimes as readonly (Partial<RuntimeVersionRow> | null)[]
+    ).find(one => one?.id === id)
+    return {
+      version: typeof row?.version === 'string' ? row.version : null,
+      managed: row?.source === 'prefix',
+      pinned: row?.source === 'flag',
+    }
+  }
+  const row = (
+    value as Record<
+      string,
+      { version?: unknown; managed?: unknown; pinned?: unknown }
+    > | null
+  )?.[id]
+  return {
+    version: typeof row?.version === 'string' ? row.version : null,
+    managed: row?.managed === true,
+    pinned: row?.pinned === true,
+  }
+}
 
 const timeSchema = z.union([
   z.object({ kind: z.literal('daily'), time: z.string() }),
@@ -537,19 +570,9 @@ export class ConsoleUpdates implements UpdatesPort {
     }
     if (id === 'claude-code' || id === 'codex') {
       const latest = await this.#npmLatest(id)
-      const nodes = await this.#nodeFacts('runtime.versions', value => {
-        const row = (
-          value as Record<
-            string,
-            { version?: unknown; managed?: unknown; pinned?: unknown }
-          >
-        )?.[id]
-        return {
-          version: typeof row?.version === 'string' ? row.version : null,
-          managed: row?.managed === true,
-          pinned: row?.pinned === true,
-        }
-      })
+      const nodes = await this.#nodeFacts('runtime.versions', value =>
+        runtimeVersionFacts(value, id),
+      )
       return {
         current: null,
         latest,

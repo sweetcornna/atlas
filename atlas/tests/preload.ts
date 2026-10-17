@@ -56,6 +56,8 @@ export function isolateTestEnv(env: NodeJS.ProcessEnv = process.env): string[] {
   env.QIANMO_CA_DIR = join(root, 'ca')
   env.QMCODE_HOME = join(root, 'qmcode')
   env.PI_TEST_RUNTIME = '1'
+  // A `qm resident` a test starts never downloads a runtime (P36 §2).
+  env.QIANMO_RUNTIME_AUTOINSTALL = '0'
   return cleared
 }
 
