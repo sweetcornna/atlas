@@ -237,7 +237,7 @@ function standingSection(
   const nodes = standing.active
     ? standing.nodesMapped === 0
       ? state('warn', '节点分配中')
-      : `节点 ${Math.min(standing.nodesMapped, standing.nodes)}/${standing.nodes}`
+      : `${Math.min(standing.nodesMapped, standing.nodes)}/${standing.nodes} 台`
     : absent()
   const over =
     standing.active && standing.nodesMapped > standing.nodes
@@ -625,7 +625,9 @@ function adminCodes(view: BillingAdminView, writer: boolean): string {
     }) +
     (view.channels.redeem ? '' : `<p class="note">配置里没有开兑换码</p>`) +
     (rows.length === 0
-      ? ''
+      ? view.channels.redeem
+        ? `<p class="note">还没有兑换码</p>`
+        : ''
       : table('兑换码', ['编号', '套餐与周期', '生成', '失效', '使用'], rows)) +
     `</section>`
   )

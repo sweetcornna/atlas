@@ -536,7 +536,7 @@ describe('/subscription', () => {
   test('subscribed: nodes n/N, the models section with the own-key form, usage, renew this plan', async () => {
     const f = publicConsole()
     const html = await (await f.handle(page('/subscription', f.paid))).text()
-    expect(html).toContain('节点 1/1')
+    expect(html).toContain('1/1 台')
     expect(html).toContain('id="h-bl-models">模型</h2>')
     expect(html).toContain(BYOK_LINE)
     expect(html).toContain('id="bl-model-form"')
@@ -555,7 +555,7 @@ describe('/subscription', () => {
     expect(waiting).toContain('节点分配中')
     f.billing.activate(f.paid.subject, { nodes: 1, nodesMapped: 2 })
     const over = await (await f.handle(page('/subscription', f.paid))).text()
-    expect(over).toContain('节点 1/1')
+    expect(over).toContain('1/1 台')
     expect(over).toContain('超出的 1 台不下发模型配置')
   })
 })
