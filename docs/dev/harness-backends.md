@@ -210,7 +210,52 @@
 
 ---
 
-## §7 证据
+## §7 原生扩展与官方前端（P36.7）
+
+负责人 2026-10-17 追加：插件、MCP、技能等由各底层原生安装与原生配置，用户自由选择接入哪些底层；最好直接进入对应 harness 的官方前端管理；连接器由阡陌前端按阡陌的方式安装。依据调研 `native-extensions.md`（同目录，2026-10-17，六个 harness 均在临时状态目录与假密钥下实测）。
+
+### 7.1 分工
+
+| 来源 | 谁装、怎么装 | 落在哪 | 常驻运行时怎么加载 |
+|---|---|---|---|
+| **连接器**（MCP 服务、应用连接） | 控制台（P32、P25），秘密由中枢封存 | 不写进 harness 的原生配置，走「钉住层」：Claude Code 的 `--mcp-config` 文件、Codex 的会话 `-c mcp_servers.qm-*`、dsh 补丁里的插入行、ACP harness 的 `session/new.mcpServers`；名字统一加 `qm-` 前缀 | 每次启动重新生成；用户在原生前端里删不掉，也遮不住原生同名项 |
+| **原生扩展**（各 harness 自己的插件 / 扩展、MCP 服务、技能、设置） | 用户在该 harness 的官方前端里装，或由控制台调用该 harness 自己的命令装（§7.3） | 该智能体的状态目录（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`DSH_HOME`、`GEMINI_CLI_HOME`、`QWEN_HOME`、opencode 的 `XDG_*_HOME` 与 `HOME`），即原生文件 | 原样加载（§7.4 的例外） |
+
+### 7.2 官方前端：`qm runtime open <智能体>`
+
+节点命令，用与常驻子进程**同一份**环境构造（状态目录、凭据、空的启动目录、钉住层）启动该 harness 的官方前端，保证用户在前端里配好、试过的，就是常驻智能体运行时的样子。运维经 SSH 在节点上运行；控制台每个智能体给出这条命令（网页前端另给 `ssh -L` 转发的写法）。
+
+| 底层 | 官方前端 | 做法 |
+|---|---|---|
+| Claude Code | 终端界面 `claude` | 预置 `.claude.json` 跳过首次引导；`--permission-mode default`（终端界面缺省是自动模式） |
+| Codex | 终端界面 `codex` | 模型供应商经 `-c` 传入，无需登录 |
+| dsh | 网页界面 `dsh web` | 在 **acp** 这个 profile 上启动（与常驻共用插件组合）；只绑回环，地址里带随机令牌，节点打印地址，不打开浏览器 |
+| Gemini CLI | 终端界面 `gemini` | 预置 `security.auth.selectedType: "gemini-api-key"`，不出现登录选择 |
+| Qwen Code | 终端界面 `qwen`；网页 `qwen serve` | 网页必须 `--require-auth` 加随机令牌 |
+| opencode | 终端界面 `opencode`；网页 `opencode serve` | 网页必须设 `OPENCODE_SERVER_PASSWORD`、显式端口 |
+
+前端里人就是审批者，所以前端不接节点的权限桥，其余钉住项照旧（钩子关、项目层不加载）。打开前端时取该智能体的底层锁：该智能体没有回合在跑才开，并先关掉它的空闲常驻子进程；前端退出后常驻按需重启。控制台不内嵌终端、不代理官方网页：前者要引入第三方终端组件（N-5 零依赖），后者要中枢到节点的 HTTP 隧道，本轮都不做。
+
+### 7.3 控制台调用原生命令
+
+控制链路 `runtime.ext.list` / `runtime.ext.install` / `runtime.ext.remove {agent, kind: plugin|mcp|skill, …}`：节点在该智能体的环境里、空的启动目录下、关掉标准输入并限时，执行该 harness **自己的**命令（调研 §2.2：如 `claude plugin install … -s user`、`codex plugin add … --json`、`dsh plugin --profile acp add`、`gemini extensions install … --consent`、`qwen extensions install … --consent`、`opencode plugin … -g`；MCP 用各自的 `mcp add/remove`；没有技能命令的按原生目录放 `skills/<名>/SKILL.md`）。每次操作后用原生的列表命令（有 JSON 的用 JSON）重读一遍，控制台「网关」页每个智能体显示「原生扩展」清单（插件、MCP、技能）与安装、卸载。安装来源只收 GitHub 仓库、npm 包名与该 harness 的官方市场名；只给运维个人账号，记 `runtime.ext.install` / `runtime.ext.remove`。会派生全部 MCP 服务的列表命令（Gemini、Qwen、opencode 的 `mcp list`）不用，改读它们的配置文件。
+
+### 7.4 钉住层：原生配置改不动的几条
+
+原生扩展是运维的信任决定，但下面几条由阡陌每次启动重新生成（命令行、环境变量或节点自有文件，从不写进原生文件），原生配置改不动：钩子关闭；会产生副作用的调用经节点裁决；不加载工作区里的项目级配置；不开 harness 自带的子代理。
+
+| 底层 | 钉住层 | 常驻侧的改动 |
+|---|---|---|
+| Claude Code | `--settings` 标志层（`disableAllHooks`、`permissions.ask`、`env`、`apiKeyHelper`）+ `--permission-mode default` + `--setting-sources user` | 去掉 `--strict-mcp-config`，让用户级与插件自带的 MCP 加载；权限桥对 `mcp__qianmo__*` 直接放行（它们在宿主侧自行授权） |
+| Codex | 会话 `-c`：工作区一律 `trust_level = "untrusted"`（必须写成内联表）、`project_doc_max_bytes=0`、仓库技能关闭、原生 MCP 工具逐个 `approval_mode="prompt"`；`thread/start` 带 `approvalsReviewer: "user"`；`--disable hooks` | **现网修复**：现在第一轮 `workspace-write` 会把工作区写成受信，之后工作区 `.codex/config.toml` 里的 MCP 服务不经询问就运行。另外 P32 的连接器改走 `-c`，不再整份重写 `config.toml` 与 `plugins/`（会抹掉原生安装与原生的授权记录） |
+| dsh | `--patch` 文件 + 闸门插件第二版（最先注册、`tools.guard()`、缺省征询） | 原生插件对执行前事件答「允许」会绕过第一版闸门，第二版堵上 |
+| Gemini CLI | `--admin-policy`（节点生成）+ `--allowed-mcp-server-names` + `--approval-mode default` | 工作区必须受信 MCP 才可用，于是项目层会被加载：项目 MCP 由策略挡住，项目 `GEMINI.md` 与项目技能仍会加载（没有开关），状态里写明。用户级 MCP 条目上的 `trust: true` 会跳过确认，节点每次启动前把它去掉——这是节点唯一改动原生配置的地方，控制台显示「已撤销预授权」 |
+| Qwen Code | 该智能体自己的系统设置文件（`QWEN_CODE_SYSTEM_SETTINGS_PATH`：`disableAllHooks`、`permissions.ask`、项目技能关闭）+ `--approval-mode default` + `--allowed-mcp-server-names` | 项目 `QWEN.md` / `AGENTS.md` 仍会加载，状态里写明 |
+| opencode | `OPENCODE_CONFIG_CONTENT`（每个代理的权限全部征询）+ `OPENCODE_PERMISSION` + `OPENCODE_DISABLE_PROJECT_CONFIG=1` + `OPENCODE_DISABLE_EXTERNAL_SKILLS=1` + `--pure` + 独立 `HOME` + 访问口令与显式端口 | 原生插件能在配置钩子里改掉权限、自带的工具从不征询，所以常驻运行时用 `--pure`：插件装得上、在前端里可用，常驻智能体不加载，控制台写明「常驻运行时不加载 opencode 插件」 |
+
+另：所有底层都用该智能体自己的 `HOME`（opencode、Gemini、Qwen 现在会读到节点账号的 `~/.claude/skills` 一类目录）。
+
+## §8 证据
 
 | 项 | 状态 |
 |---|---|
@@ -222,7 +267,7 @@
 
 ---
 
-## §8 工作包
+## §9 工作包
 
 | 包 | 内容 | 主要文件 | 完成标准 |
 |---|---|---|---|
@@ -233,10 +278,12 @@
 | P36.4 | 智能体配置、模型与退回 | `host/runtimeConfig.ts`、`providers/node.ts`、`commands/resident.ts` | 三级优先级；线路按偏好序取；六种退回原因与恢复；`runtime.status` |
 | P36.5 | 「网关」页按系列配模型 | `commands/consoleMagpie*.ts`、`console/src/{routes,view}/magpie*.ts` | 自动接入；系列排序；手选不被覆盖；写权限与审计；页面各门禁 |
 | P36.6 | 底层互通 | `host/peerTools.ts`、`commands/consolePeers.ts`、`resident/src/turn-gate.ts`、`capability` | 名册；单个与多个目标问答；同节点重入不死锁；环与超深链拒绝；便携记录与换底层前情 |
+| P36.7 | 原生扩展与官方前端 | `host/runtimes/{runtimeEnv,nativeExt}.ts`、`claudeCode.ts`、`codex.ts`、`extensions.ts`、`catalog.ts`、`commands/runtimeOpen.ts`、网关页 | 同一份环境构造三处共用；六种底层的钉住层逐条有用例（含 Codex 受信泄漏的回归用例）；连接器不进原生文件；原生命令的列出、安装、卸载；`qm runtime open` 取锁与网页前端带令牌 |
 
-## §9 不做
+## §10 不做
 
 - 不 fork、不改任何 harness；不读写用户自己的登录态目录；不用订阅登录。
+- 控制台不内嵌终端、不代理 harness 的官方网页（§7.2）。
 - 不收只能经第三方 ACP 适配器接入的 harness，不提供「任意命令当底层」（那等于让运维之外的人在节点上跑程序）。
 - 不替节点安装 Node.js、Python 等运行环境。
 - 不在中枢转发模型请求（N-5 不变）。
