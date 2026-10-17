@@ -176,11 +176,19 @@ export interface ProviderNodeScope {
   /** Whether the node may hold this profile. */
   readonly allows: (profileId: string) => boolean
   /**
-   * What the node is expected to run when its assignment gives it nothing
-   * it may hold (following a default, not managed, another's profile);
-   * `null`: nothing, so nothing is delivered.
+   * What the node is expected to run in place of a profile it may not hold
+   * (and, with {@link required}, in place of none at all); `null`: nothing,
+   * so nothing is delivered.
    */
   readonly fallback: string | null
+  /**
+   * Whether the node must run something: not managed and following no
+   * default give way to the fallback too (a subscriber's node would keep
+   * its last key). Otherwise those still mean nothing is sent, and only a
+   * profile it may not hold — named, or the default it follows — is
+   * replaced (a platform node handed back keeps no subscriber's key).
+   */
+  readonly required: boolean
   /** Whether its routing may bring profiles besides the one it runs. */
   readonly extras: boolean
 }
@@ -1532,7 +1540,10 @@ export class ConsoleProviders implements ProviderPort {
         : assignment.mode === 'inherit'
           ? this.#book.defaultProfileId
           : null
-    if (scope !== null && (profileId === null || !scope.allows(profileId)))
+    if (
+      scope !== null &&
+      (profileId === null ? scope.required : !scope.allows(profileId))
+    )
       profileId = scope.fallback
     if (profileId === null) return null
     const profile = this.#book.profile(profileId)

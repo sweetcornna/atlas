@@ -1065,6 +1065,51 @@ describe('the plan’s node count, kept by the node sync', () => {
   })
 })
 
+describe('a node handed back or moved gives the subscriber’s key back', () => {
+  function assigned(row: { assignment: { mode: string } }): string | null {
+    const assignment = row.assignment as { mode: string; profileId?: string }
+    return assignment.mode === 'profile' ? (assignment.profileId ?? null) : null
+  }
+
+  /** Ops give `tenant` exactly these nodes, taking it off any others. */
+  function setNodes(tenant: string, names: readonly string[]): void {
+    const current = config()
+    tenancy.replace({
+      ...current,
+      nodes: current.nodes.filter(row => row.tenant !== tenant),
+    })
+    mapNodes(tenant, names)
+  }
+
+  async function subscribed() {
+    const tenant = await pay(ALICE)
+    const added = await billing.addUpstream(ALICE, {
+      preset: 'openai',
+      key: 'sk-alice-own-0001',
+    })
+    if (!added.ok) throw new Error(added.failure.message)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    const own = magpieProfileId({ kind: 'tenant', id: tenant })
+    expect(deliveredProfile(0)?.id).toBe(own)
+    return { tenant, own, secret: tenantKey(tenant).secret }
+  }
+
+  test('a node handed back still assigned the subscriber’s profile is out of step, and deliver-all takes the key back', async () => {
+    const { tenant, own, secret } = await subscribed()
+    setNodes(tenant, [])
+    const row = await nodeRow('beta-1')
+    // Still assigned in the book, but not what a platform node may run.
+    expect(assigned(row)).toBe(own)
+    expect(row.expected?.profileId).toBe(NO_MODEL_PROFILE)
+    expect(row.drift.map(one => one.kind)).toContain('out-of-sync')
+    const applied = await providers.apply({}, ops())
+    expect(applied.ok).toBe(true)
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.key).not.toBe(secret)
+  })
+})
+
 describe('removing a subscriber’s upstream', () => {
   test('one that fails half way is still the subscriber’s, and asking again finishes it', async () => {
     const tenant = await pay(ALICE)
