@@ -85,6 +85,11 @@ export interface WechatPayConfig {
 
 export interface AlipayConfig {
   readonly appId: string
+  /**
+   * The merchant's Alipay user id (`2088…`, 16 digits): a notification's
+   * `seller_id` must equal it.
+   */
+  readonly sellerId: string
   readonly appPrivateKey: KeyObject
   readonly alipayPublicKey: KeyObject
   readonly notifyUrl: string
@@ -417,6 +422,7 @@ function alipay(
 ): AlipayConfig {
   const record = object(value, path, [
     'appId',
+    'sellerId',
     'appPrivateKeyFile',
     'alipayPublicKeyFile',
     'notifyUrl',
@@ -426,6 +432,10 @@ function alipay(
     appId: text(record['appId'], `${path}.appId`, {
       max: 32,
       pattern: /^[0-9]{8,32}$/,
+    }),
+    sellerId: text(record['sellerId'], `${path}.sellerId`, {
+      max: 16,
+      pattern: /^2088[0-9]{12}$/,
     }),
     appPrivateKey: secret(
       absolutePath(record['appPrivateKeyFile'], `${path}.appPrivateKeyFile`),

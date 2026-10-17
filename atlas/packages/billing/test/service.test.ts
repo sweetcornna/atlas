@@ -199,6 +199,22 @@ describe('orders and notifications', () => {
     expect(store.events().at(-1)?.data['field']).toBe('channel')
   })
 
+  test('an Alipay notification for another seller is a merchant mismatch', async () => {
+    const { service, store } = setup()
+    const order = await service.createOrder('alice', 'month', 'alipay')
+    const reply = await service.handleNotify('alipay', {
+      headers: {},
+      ...alipayNotify(keys, {
+        outTradeNo: order.outTradeNo,
+        totalAmount: '99.00',
+        sellerId: '2088999999999999',
+      }),
+    })
+    expect(reply).toMatchObject({ httpStatus: 400, body: 'fail' })
+    expect(store.events().at(-1)?.data['field']).toBe('merchant')
+    expect(service.entitlement('alice').active).toBe(false)
+  })
+
   test('unauthenticated garbage is rejected without touching the ledger', async () => {
     const { service, store, logs } = setup()
     const order = await service.createOrder('alice', 'month', 'wechatpay')

@@ -38,6 +38,7 @@
     },
     "alipay": {
       "appId": "2021000000000000",
+      "sellerId": "2088000000000000",
       "appPrivateKeyFile": "/etc/qianmo/billing/alipay/app_private_key.txt",
       "alipayPublicKeyFile": "/etc/qianmo/billing/alipay/alipay_public_key.txt",
       "notifyUrl": "https://qianmo.example.com/v0/billing/notify/alipay"

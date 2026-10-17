@@ -215,6 +215,30 @@ describe('parseBillingConfig', () => {
     expect(message).not.toContain(secret)
   })
 
+  test('Alipay needs the seller id the notifications are checked against', () => {
+    const { json } = setup()
+    const without = structuredClone(json['channels']) as Record<
+      string,
+      Record<string, unknown>
+    >
+    delete without['alipay']!['sellerId']
+    rejects(
+      { ...json, channels: without },
+      /alipay\.sellerId：必须是非空字符串/,
+    )
+    for (const sellerId of ['2021000122671080', '2088123', 2088000000000001]) {
+      const channels = structuredClone(json['channels']) as Record<
+        string,
+        Record<string, unknown>
+      >
+      channels['alipay']!['sellerId'] = sellerId
+      rejects({ ...json, channels }, /alipay\.sellerId/)
+    }
+    expect(parseBillingConfig(json).channels.alipay?.sellerId).toBe(
+      '2088000000000001',
+    )
+  })
+
   test('readSecret is injectable', () => {
     const { json } = setup()
     const seen: string[] = []

@@ -65,6 +65,8 @@ export const APPID = 'wxd678efh567hg6787'
 export const SERIAL = '408B07E79B8269FEC3D5D3E6AB8ED163A6A380DB'
 export const PUB_KEY_ID = 'PUB_KEY_ID_0119000072912024'
 export const ALIPAY_APP_ID = '2021000122671080'
+/** The merchant's Alipay user id (`seller_id`), made up for the tests. */
+export const ALIPAY_SELLER_ID = '2088000000000001'
 
 export function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'qm-billing-'))
@@ -147,6 +149,7 @@ export function configJson(
       },
       alipay: {
         appId: ALIPAY_APP_ID,
+        sellerId: ALIPAY_SELLER_ID,
         appPrivateKeyFile: files.appPrivateKeyFile,
         alipayPublicKeyFile: files.alipayPublicKeyFile,
         notifyUrl: 'https://hub.example.com/billing/notify/alipay',
@@ -381,6 +384,8 @@ export function alipayNotify(
     totalAmount: string
     tradeStatus?: string
     appId?: string
+    /** `null` leaves `seller_id` out. */
+    sellerId?: string | null
   },
 ): { rawBody: string; contentType: string } {
   const params: Record<string, string> = {
@@ -391,6 +396,9 @@ export function alipayNotify(
     version: '1.0',
     app_id: fields.appId ?? ALIPAY_APP_ID,
     auth_app_id: fields.appId ?? ALIPAY_APP_ID,
+    ...(fields.sellerId === null
+      ? {}
+      : { seller_id: fields.sellerId ?? ALIPAY_SELLER_ID }),
     trade_no: '2026101622001400000000000001',
     out_trade_no: fields.outTradeNo,
     trade_status: fields.tradeStatus ?? 'TRADE_SUCCESS',

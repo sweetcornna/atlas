@@ -23,7 +23,8 @@
 2. 装 magpie，按 `magpie.service` 起来；`/etc/qianmo/magpie.env`（0600）里写 `MAGPIE_WEB_KEY`
    与网关的地址、证书。
 3. 准备计费配置：复制 `billing.example.json` 到 `--billing` 指向的位置（0600），**把每个套餐的
-   `priceCents` 改成真实价格**，填商户号、应用号与密钥文件路径；密钥文件都要 0600。
+   `priceCents` 改成真实价格**，填商户号、应用号、支付宝的卖家 ID（`sellerId`，`2088` 开头，回调的
+   `seller_id` 要与它相同）与密钥文件路径；密钥文件都要 0600。
 4. 准备租户配置（`--tenancy`，0600）：`platformSubjects` 写平台运维的个人账号；订阅者的租户
    由中枢在开通时自动建，平台运维只需要把节点写进 `nodes`、分给对应的租户。
 5. 按 `qm-public-console.service` 起控制台；对外经 TLS 前置转发到 `127.0.0.1:38613`。两条支付
