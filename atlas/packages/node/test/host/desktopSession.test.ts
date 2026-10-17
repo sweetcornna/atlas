@@ -13,7 +13,9 @@ import { NodeDesktop, type DesktopLauncher } from '../../src/host/desktop.js'
 import type { CdpBridgeFactory } from '../../src/host/desktopCdp.js'
 import {
   DESKTOP_BWRAP_PROBE,
+  DESKTOP_WINDOW_MANAGERS,
   desktopScopeArgv,
+  OPENBOX_CONFIG,
 } from '../../src/host/desktopSandbox.js'
 import type { ScreenEncoder } from '../../src/host/desktopScreen.js'
 
@@ -68,12 +70,16 @@ async function session(
   const root = path.join(base, 'config')
   process.env.QIANMO_CONFIG_DIR = root
   const workspace = path.join(base, 'workspace')
+  // Inside this agent's workspace, so it is hidden by name (a sibling under
+  // /tmp would already be covered by the private /tmp on Linux).
+  const otherWorkspace = path.join(workspace, 'other')
   const protectedRoot = path.join(base, 'protected')
   const memoryRoot = path.join(base, 'memory')
   const appsDir = path.join(base, 'applications')
   for (const dir of [
     root,
     workspace,
+    otherWorkspace,
     path.join(workspace, 'vault'),
     protectedRoot,
     memoryRoot,
@@ -153,7 +159,12 @@ async function session(
       launcher,
       idleMs: 3_600_000,
       memoryBytes: LIMIT,
-      workspace: agent => (agent === 'main' ? workspace : undefined),
+      workspace: agent =>
+        agent === 'main'
+          ? workspace
+          : agent === 'other'
+            ? otherWorkspace
+            : undefined,
       workspaceWritable: opts.workspaceWritable === true,
       protectedRoots: [
         memoryRoot,
@@ -176,6 +187,7 @@ async function session(
     stops,
     reaped,
     workspace,
+    otherWorkspace,
     protectedRoot,
     memoryRoot,
     desktop,
@@ -226,6 +238,8 @@ function role(call: Call): string {
     return argv.includes('--headless=new') ? 'chrome-headless' : 'chrome-headed'
   if (argv.includes('dbus-daemon')) return 'bus'
   if (argv.includes(ATSPI)) return 'a11y'
+  const manager = DESKTOP_WINDOW_MANAGERS.find(wm => argv.includes(wm))
+  if (manager) return `app:${manager}`
   return `app:${argv.at(-1)}`
 }
 /** The command bubblewrap runs, and its own arguments. */
@@ -344,7 +358,20 @@ test('private desktop: Xvfb, bus, accessibility, first window manager, headed Ch
     `--address=${bus}`,
   ])
   expect(bwrapOf(f.calls[2]!).command).toEqual([ATSPI, '--launch-immediately'])
-  expect(bwrapOf(f.calls[3]!).command).toEqual(['openbox'])
+  // openbox with the node's configuration: no menu, no binding that runs
+  // a program, outside the private home and mounted read-only.
+  const openbox = path.join(f.desktop, 'openbox.xml')
+  expect(bwrapOf(f.calls[3]!).command).toEqual([
+    'openbox',
+    '--config-file',
+    openbox,
+  ])
+  expect(fs.readFileSync(openbox, 'utf8')).toBe(OPENBOX_CONFIG)
+  for (const launcher of ['ShowMenu', 'Execute', 'root-menu'])
+    expect(OPENBOX_CONFIG).not.toContain(launcher)
+  expect(bwrapOf(f.calls[3]!).args.join(' ')).toContain(
+    `--ro-bind ${real(openbox)} ${real(openbox)}`,
+  )
   const headed = bwrapOf(f.calls[4]!).command
   expect(headed).not.toContain('--headless=new')
   expect(headed).not.toContain('--no-sandbox')
@@ -436,6 +463,7 @@ test('bubblewrap hides the node home, config root and guarded roots, then mounts
     mountAt(args, '--bind', path.join(desktop, 'downloads')),
     mountAt(args, '--bind', path.join(desktop, 'browser')),
     mountAt(args, '--ro-bind', path.join(desktop, 'Xauthority')),
+    mountAt(args, '--ro-bind', path.join(desktop, 'openbox.xml')),
   ]
   for (const at of backs) expect(at).toBeGreaterThan(Math.max(...covering))
   // The workspace comes back read-only; a guarded root inside is hidden again.
@@ -446,6 +474,13 @@ test('bubblewrap hides the node home, config root and guarded roots, then mounts
   expect(
     args.findIndex(
       (a, i) => i > workspace && a === '--tmpfs' && args[i + 1] === vault,
+    ),
+  ).toBeGreaterThan(workspace)
+  // So is another agent's workspace: each desktop sees its own only.
+  const other = real(f.otherWorkspace)
+  expect(
+    args.findIndex(
+      (a, i) => i > workspace && a === '--tmpfs' && args[i + 1] === other,
     ),
   ).toBeGreaterThan(workspace)
   const env = setenv(args)
@@ -489,39 +524,21 @@ for (const [label, opts] of [
     { tools: ['bwrap', 'dbus-daemon', 'openbox'], exit: { bwrap: 1 } },
   ],
 ] as const) {
-  test(`${label}: the computer still opens unconfined, apps are refused, Chromium stays headless`, async () => {
+  test(`${label}: the computer still opens unconfined, without a window manager; apps are refused, Chromium stays headless`, async () => {
     const f = await session(opts)
     expect((await f.enable('on', { browser: true, computer: true })).ok).toBe(
       true,
     )
-    expect(f.calls.map(role)).toEqual([
-      'xvfb',
-      'app:openbox',
-      'chrome-headless',
-    ])
-    const wm = f.calls[1]!
-    expect(wm.program).toBe('/usr/bin/env')
-    expect(wm.argv[0]).toBe('-i')
-    expect(wm.argv).toContain(`HOME=${f.home}`)
-    expect(wm.argv).toContain('DISPLAY=:27')
-    expect(wm.argv.some(a => a.startsWith('QIANMO_'))).toBe(false)
-    // The shell stays the parent, so the home marker stays in the tree.
-    expect(wm.argv.slice(wm.argv.indexOf('/bin/sh'))).toEqual([
-      '/bin/sh',
-      '-c',
-      'shift; "$@"; exit $?',
-      'qianmo-desktop',
-      f.home,
-      'openbox',
-    ])
-    expect(f.pids()[1]).toEqual({ pid: wm.pid, marker: f.home })
-    expect(f.calls[2]!.program).toBe('chromium')
+    // Nothing starts outside the sandbox but Xvfb: a window manager there
+    // could start programs, and nothing would open on the display anyway.
+    expect(f.calls.map(role)).toEqual(['xvfb', 'chrome-headless'])
+    expect(f.calls[1]!.program).toBe('chromium')
     const view = await f.view()
     expect(view.computer).toMatchObject({
       state: 'running',
       confined: false,
       accessibility: false,
-      windowManager: 'openbox',
+      windowManager: null,
     })
     expect(view.computer.reason).toContain('需要 bubblewrap')
     expect(view.browser.reason).toContain('浏览器保持无头')
@@ -541,10 +558,17 @@ for (const [label, opts] of [
 }
 
 test('window manager: the first one installed in the documented order; none is fine', async () => {
-  const f = await session({ tools: ['bwrap', 'icewm', 'fluxbox'] })
+  const f = await session({
+    tools: ['bwrap', 'matchbox-window-manager', 'xfwm4'],
+  })
   expect((await f.enable('on', { computer: true })).ok).toBe(true)
-  expect(f.calls.map(role)).toEqual(['xvfb', 'app:fluxbox'])
-  expect((await f.view()).computer.windowManager).toBe('fluxbox')
+  expect(f.calls.map(role)).toEqual(['xvfb', 'app:xfwm4'])
+  expect(bwrapOf(f.calls[1]!).command).toEqual(['xfwm4'])
+  expect((await f.view()).computer.windowManager).toBe('xfwm4')
+  // fluxbox and icewm start a terminal from their menus: never used.
+  const launchers = await session({ tools: ['bwrap', 'icewm', 'fluxbox'] })
+  expect((await launchers.enable('on', { computer: true })).ok).toBe(true)
+  expect(launchers.calls.map(role)).toEqual(['xvfb'])
   const bare = await session({ tools: ['bwrap'] })
   expect((await bare.enable('on', { computer: true })).ok).toBe(true)
   expect(bare.calls.map(role)).toEqual(['xvfb'])
@@ -1100,12 +1124,19 @@ test.skipIf(!hostTools)(
     const resource = f.node.resource('main')!
     expect(resource.display).toBeNull()
     expect(resource.xauthority).toBeNull()
-    expect(resource.hostApps).toEqual([
-      'com.apple.TextEdit',
-      'com.apple.Terminal',
-    ])
+    // A listed terminal is not the agent's: its windows take no input.
+    expect(resource.hostApps).toEqual(['com.apple.TextEdit'])
+    // And it cannot be allowed here: the owner's shell, nothing around it.
+    const shell = await f.enable('shell', {
+      computer: true,
+      apps: ['com.apple.TextEdit', 'com.apple.Terminal'],
+      terminal: true,
+    })
+    expect(shell.ok).toBe(false)
+    expect(!shell.ok && shell.message).toContain('终端')
+    expect(f.node.resource('main')!.hostApps).toEqual(['com.apple.TextEdit'])
 
-    // The list holds the operator's ids; a terminal is withheld until allowed.
+    // The list holds the operator's ids; a terminal is withheld.
     const list = decider(f.node, 'qianmo_computer_apps', {}, 'apps-1')
     await committed(list)
     const listed = await list('apps')

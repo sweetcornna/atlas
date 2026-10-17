@@ -7,12 +7,14 @@
  *
  * Runs the binary the way a fleet node would meet it, in a closed environment:
  * an empty `HOME` and `QIANMO_CONFIG_DIR` under a fresh temp directory, a
- * minimal `PATH`, no credentials, no stdin. Four invocations must succeed:
+ * minimal `PATH`, no credentials, no stdin. Five invocations must succeed:
  *
  *   qm --version        qm's own entry: `qm <version> (omp <version>) <commit>`
  *   qm agent --version  the in-process route into the oh-my-pi CLI
  *   qm resident --help  a lazily loaded command module bundled into the binary
  *   qm agent --smoke-test  omp's worker round trip (re-entry into compiled.ts)
+ *   qm mcp-exec --keep … -- /usr/bin/env  an MCP server sees only the
+ *                       baseline environment and the variables it keeps
  *
  * Then a real resident turn proves the extension's positive/negative guards,
  * and a fresh RPC child checks the extracted artifact's size and desktop tool
@@ -37,6 +39,10 @@ const REPO_ROOT = join(import.meta.dir, '..', '..')
 interface Probe {
   args: string[]
   stdout: RegExp
+  /** Added to the closed environment for this invocation only. */
+  env?: Record<string, string>
+  /** Must not match stdout. */
+  absent?: RegExp
 }
 
 const PROBES: Probe[] = [
@@ -46,6 +52,15 @@ const PROBES: Probe[] = [
   // omp's own worker/broker round trip: proves worker re-entry reaches omp's
   // CLI from inside this binary (they re-enter Bun.main, which is compiled.ts).
   { args: ['agent', '--smoke-test'], stdout: /smoke-test: ok/ },
+  // An operator's MCP server starts with the baseline environment and the
+  // variables it keeps, never the node's credentials or settings: in place
+  // of qm where this binary's execve works, as its child where it fails.
+  {
+    args: ['mcp-exec', '--keep', 'QM_SMOKE_KEPT', '--', '/usr/bin/env'],
+    env: { QM_SMOKE_KEPT: 'kept', ANTHROPIC_API_KEY: 'sk-qm-smoke' },
+    stdout: /^QM_SMOKE_KEPT=kept$/m,
+    absent: /^(ANTHROPIC_API_KEY|QIANMO_CONFIG_DIR|NO_COLOR)=/m,
+  },
 ]
 
 async function main(): Promise<number> {
@@ -76,7 +91,7 @@ async function main(): Promise<number> {
       const label = `qm ${probe.args.join(' ')}`
       const result = Bun.spawnSync([binary, ...probe.args], {
         cwd: sandbox,
-        env,
+        env: { ...env, ...probe.env },
         stdin: 'ignore',
         stdout: 'pipe',
         stderr: 'pipe',
@@ -84,7 +99,11 @@ async function main(): Promise<number> {
       })
       const stdout = result.stdout.toString()
       const stderr = result.stderr.toString()
-      if (result.exitCode === 0 && probe.stdout.test(stdout)) {
+      if (
+        result.exitCode === 0 &&
+        probe.stdout.test(stdout) &&
+        !probe.absent?.test(stdout)
+      ) {
         console.log(
           `[qm-smoke] ok    ${label}: ${stdout.trim().split('\n')[0]}`,
         )

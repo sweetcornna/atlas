@@ -134,6 +134,10 @@ describe('云端电脑 · 像人一样操作 (§6)', () => {
     expect(visibleText(card(html, 'kyoto-1/designer'))).toContain(
       '自主 · 只确认有后果的操作',
     )
+    // A node from before §6 refuses `autonomous`: not offered there.
+    const old = card(html, 'osaka-1/writer')
+    expect(old).toContain('value="always" data-desktop-confirm')
+    expect(old).not.toContain('value="autonomous"')
     const view = withoutScripts(await read(handle, '/admin/desktop', VIEW))
     expect(visibleText(card(view, 'kyoto-1/designer'))).toContain(
       '自主 · 只确认有后果的操作',

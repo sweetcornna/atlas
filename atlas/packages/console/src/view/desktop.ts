@@ -207,15 +207,22 @@ function confirmPicker(unit: DesktopNodeView, ops: boolean): string {
     return `<span class="note">${escapeHtml(CONFIRM_WORD[unit.confirm] ?? unit.confirm)}</span>`
   }
   const name = `dk-confirm-${unit.node}-${unit.agent}`
+  // A node from before §6 reports no app policy and refuses `autonomous`.
+  const offered =
+    unit.computer.apps !== undefined || unit.confirm === 'autonomous'
+      ? CONFIRMS
+      : CONFIRMS.filter(value => value !== 'autonomous')
   return (
     `<div class="seg dk-confirm" role="radiogroup" aria-label="确认">` +
-    CONFIRMS.map(
-      value =>
-        `<label class="seg-opt"><input type="radio" name="${attr(name)}" value="${value}" ` +
-        `data-desktop-confirm data-node="${attr(unit.node)}" data-agent="${attr(unit.agent)}"` +
-        `${unit.confirm === value ? ' checked' : ''}${unit.reachable ? '' : ' disabled'} data-write>` +
-        `${escapeHtml(CONFIRM_WORD[value])}</label>`,
-    ).join('') +
+    offered
+      .map(
+        value =>
+          `<label class="seg-opt"><input type="radio" name="${attr(name)}" value="${value}" ` +
+          `data-desktop-confirm data-node="${attr(unit.node)}" data-agent="${attr(unit.agent)}"` +
+          `${unit.confirm === value ? ' checked' : ''}${unit.reachable ? '' : ' disabled'} data-write>` +
+          `${escapeHtml(CONFIRM_WORD[value])}</label>`,
+      )
+      .join('') +
     `</div>`
   )
 }

@@ -29,6 +29,7 @@ import {
   type ExtensionWireEntry,
   type McpProbeTarget,
   NodeExtensions,
+  withoutGrants,
 } from '../../src/host/extensions.js'
 import { treeDigest } from '../../src/host/githubDir.js'
 
@@ -664,13 +665,11 @@ test('an imported plugin brings its instructions, not the processes it bundles',
       expect(kept.hooks).toBeUndefined()
     }
   }
-  // qianmopi would import tools/ in-process; the others never run it.
-  expect(existsSync(path.join(base, 'writer', 'plugins', 'kit', 'tools'))).toBe(
-    false,
-  )
-  expect(existsSync(path.join(base, 'coder', 'plugins', 'kit', 'tools'))).toBe(
-    true,
-  )
+  // qianmopi would import tools/ in-process; no runtime gets it (P32 review 5).
+  for (const agent of ['writer', 'coder', 'helper'])
+    expect(existsSync(path.join(base, agent, 'plugins', 'kit', 'tools'))).toBe(
+      false,
+    )
 })
 
 test('Codex is installed beside its live home and swapped in whole (P32 audit 4)', async () => {
@@ -725,4 +724,340 @@ test('skill and plugin names may have 64 characters; MCP server names 40', () =>
   expect(
     extensionWireSchema.safeParse({ ...MCP, name: 'a'.repeat(41) }).success,
   ).toBe(false)
+})
+
+// -- P32 review (PR #232) -----------------------------------------------------
+
+/** `applied.json` as the P32 node before per-agent results wrote it (v1). */
+function writeV1(
+  entries: readonly ExtensionWireEntry[],
+  results: readonly { id: string; ok: boolean; detail: string | null }[],
+): string {
+  const digest = extensionsDigest(entries)
+  mkdirSync(path.join(root, 'extensions'), { recursive: true })
+  writeFileSync(
+    path.join(root, 'extensions', 'applied.json'),
+    JSON.stringify({
+      v: 1,
+      digest,
+      entries,
+      results,
+      tools: { [MCP.id]: ['mcp__qianmo_mcp_docs_search'] },
+      plugins: {},
+      agentDigests: Object.fromEntries(
+        AGENTS.map(({ agent }) => [agent, 'c'.repeat(64)]),
+      ),
+      at: 500,
+    }),
+  )
+  return digest
+}
+
+test('a set laid out before v2 is not used until it is laid out again (P32 review 1)', async () => {
+  const digest = writeV1(
+    [MCP, SKILL],
+    [
+      { id: MCP.id, ok: true, detail: null },
+      { id: SKILL.id, ok: true, detail: null },
+    ],
+  )
+  // What that node laid out: the server started directly, with no qm mcp-exec.
+  const old = path.join(root, 'extensions', 'agents', 'writer')
+  mkdirSync(path.join(old, 'mcp', 'qianmo-mcp'), { recursive: true })
+  writeFileSync(
+    path.join(old, 'mcp', 'qianmo-mcp', 'mcp.json'),
+    JSON.stringify({ mcpServers: { docs: { command: 'docs-mcp' } } }),
+  )
+  mkdirSync(path.join(old, 'plugins', 'qianmo'), { recursive: true })
+  let broken = true
+  const errors: string[] = []
+  const node = host({
+    mcpExec: args => {
+      if (broken) throw new Error('qm is missing')
+      return ['/opt/qm', ...args]
+    },
+    onError: message => errors.push(message),
+  })
+  // Agents started now run without extensions, as on a fresh node.
+  for (const { agent } of AGENTS) expect(node.forAgent(agent)).toBeNull()
+  expect(node.status().digest).toBeNull()
+
+  // The start's layout fails: still nothing, and the hub is told to resend.
+  await node.start()
+  expect(errors.join('\n')).toContain('扩展落地失败')
+  expect(node.forAgent('writer')).toBeNull()
+  expect(node.status().digest).toBeNull()
+
+  broken = false
+  changed = []
+  const resent = await node.control(
+    'extensions.apply',
+    { digest, entries: [MCP, SKILL] },
+    {} as never,
+  )
+  expect(resent.ok).toBe(true)
+  expect(node.status().digest).toBe(digest)
+  const writer = node.forAgent('writer')!
+  expect(writer.ompPluginDirs).toContain(path.join(old, 'mcp', 'qianmo-mcp'))
+  expect(
+    JSON.parse(
+      readFileSync(path.join(old, 'mcp', 'qianmo-mcp', 'mcp.json'), 'utf8'),
+    ).mcpServers.docs.command,
+  ).toBe('./bin/qm-mcp-exec')
+  expect(changed.sort()).toEqual(['coder', 'helper', 'writer'])
+})
+
+test('failures kept from before v2 are resent: they do not say retry (P32 review 2)', () => {
+  writeV1(
+    [MCP, SKILL],
+    [
+      { id: MCP.id, ok: true, detail: null },
+      { id: SKILL.id, ok: false, detail: 'Codex 安装失败：boom' },
+    ],
+  )
+  const failed = host()
+    .status()
+    .results.find(result => result.id === SKILL.id)!
+  expect(failed.ok).toBe(false)
+  expect(failed.retry).toBeUndefined()
+})
+
+test('a Codex install that only partly went in still recycles the agent (P32 review 3)', async () => {
+  let addFails = false
+  const node = host({
+    agents: [{ agent: 'helper', runtime: 'codex' }],
+    run: async argv => {
+      commands.push([...argv])
+      return addFails && argv[2] === 'add'
+        ? { code: 1, stdout: 'plugin add failed' }
+        : { code: 0, stdout: '' }
+    },
+  })
+  await node.apply([MCP, SKILL])
+  expect(changed).toEqual(['helper'])
+  changed = []
+  addFails = true
+  // The operator switches the server to ask; the skill plugin fails to add.
+  await node.apply([{ ...MCP, approval: 'ask' }, SKILL])
+  const config = readFileSync(
+    path.join(root, 'codex', 'helper', 'config.toml'),
+    'utf8',
+  )
+  expect(config).toContain('default_tools_approval_mode = "prompt"')
+  expect(
+    node.status().results.find(result => result.id === SKILL.id)!.retry,
+  ).toBe(true)
+  expect(changed).toEqual(['helper'])
+  // The same partial install again: the live home is as it was.
+  changed = []
+  await node.apply([{ ...MCP, approval: 'ask' }, SKILL])
+  expect(changed).toEqual([])
+  // Once it all goes in, the agent sees the plugin too.
+  addFails = false
+  await node.apply([{ ...MCP, approval: 'ask' }, SKILL])
+  expect(changed).toEqual(['helper'])
+})
+
+test('imported skills and plugins grant no tools and carry no hooks (P32 review 4)', async () => {
+  const files = {
+    'grants/.claude-plugin/plugin.json': '{"name":"grants"}',
+    'grants/skills/grants/SKILL.md':
+      '---\nname: grants\ndescription: Grants\nallowed-tools: Bash, Write\n---\n\nallowed-tools: Bash stays in the body\n',
+    'grants/commands/ship.md':
+      '---\ndescription: Ship it\nallowed-tools:\n  - Bash(git push:*)\n  - Write\nargument-hint: <branch>\n---\nPush $1.\n',
+    'grants/commands/list.md':
+      '---\r\nallowed_tools:\r\n- Bash\r\nhooks:\r\n  PreToolUse: []\r\ndescription: List\r\n---\r\nList.\r\n',
+    'grants/agents/helper.md':
+      '---\nname: helper\n"allowed-tools": Bash\ntools: Read\n---\nHelp.\n',
+    'grants/commands/sly.md':
+      '---\n{description: Sly, "allowed\\x2dtools": Bash}\n---\nSly.\n',
+    'grants/commands/plain.md': 'allowed-tools: Bash\nNo frontmatter.\n',
+  }
+  served.set(
+    `https://codeload.github.com/team/tools/tar.gz/${COMMIT}`,
+    tarball(files),
+  )
+  const github = (dir: string) => ({
+    repo: 'team/tools',
+    commit: COMMIT,
+    path: dir,
+    digest: digestOf(files, dir),
+  })
+  const node = host({ agents: [{ agent: 'coder', runtime: 'claude-code' }] })
+  await node.apply([
+    {
+      id: id(11),
+      kind: 'plugin',
+      name: 'grants',
+      agents: null,
+      github: github('grants'),
+    },
+    {
+      id: id(12),
+      kind: 'skill',
+      name: 'grants',
+      agents: null,
+      github: github('grants/skills/grants'),
+    },
+  ])
+  expect(node.status().results.every(result => result.ok)).toBe(true)
+  const plugins = path.join(root, 'extensions', 'agents', 'coder', 'plugins')
+  const read = (...parts: string[]) =>
+    readFileSync(path.join(plugins, ...parts), 'utf8')
+  const skill =
+    '---\nname: grants\ndescription: Grants\n---\n\nallowed-tools: Bash stays in the body\n'
+  expect(read('grants', 'skills', 'grants', 'SKILL.md')).toBe(skill)
+  expect(read('qianmo', 'skills', 'grants', 'SKILL.md')).toBe(skill)
+  expect(read('grants', 'commands', 'ship.md')).toBe(
+    '---\ndescription: Ship it\nargument-hint: <branch>\n---\nPush $1.\n',
+  )
+  expect(read('grants', 'commands', 'list.md')).toBe(
+    '---\r\ndescription: List\r\n---\r\nList.\r\n',
+  )
+  expect(read('grants', 'agents', 'helper.md')).toBe(
+    '---\nname: helper\ntools: Read\n---\nHelp.\n',
+  )
+  // A form no line edit sees: it is frontmatter no more.
+  const sly = read('grants', 'commands', 'sly.md')
+  expect(sly.startsWith('---')).toBe(false)
+  expect(sly).toEndWith('---\nSly.\n')
+  expect(read('grants', 'commands', 'plain.md')).toBe(
+    files['grants/commands/plain.md'],
+  )
+})
+
+test('frontmatter grants are found however the YAML spells them (P32 review 4)', () => {
+  // Nothing to take out: the file is left alone.
+  expect(withoutGrants('---\nname: a\ndescription: A\n---\nBody\n')).toBeNull()
+  expect(withoutGrants('# allowed-tools: Bash\n')).toBeNull()
+  expect(withoutGrants('\uFEFF---\nallowed-tools: Bash\n---\nBody\n')).toBe(
+    '\uFEFF---\n---\nBody\n',
+  )
+  // A merged key, and one Claude Code would read up to a `---` mid-line.
+  for (const front of [
+    'base: &base {allowed-tools: Bash}\n<<: *base\ndescription: x',
+    '"allowed\\x2dtools": Bash\ndescription: x---\n: : not yaml',
+  ]) {
+    const text = withoutGrants(`---\n${front}\n---\nBody\n`)!
+    expect(text.startsWith('---')).toBe(false)
+    expect(text).toEndWith('\n---\nBody\n')
+  }
+})
+
+test('an imported plugin keeps only instructions, docs and manifests (P32 review 5)', async () => {
+  const files = {
+    'kit/.claude-plugin/plugin.json': JSON.stringify({
+      name: 'kit',
+      version: '1.0.0',
+      description: 'Kit',
+      commands: './commands/',
+      skills: ['./skills/', './extra/'],
+      monitors: './monitors/monitors.json',
+      outputStyles: './styles/',
+      userConfig: { token: { type: 'string' } },
+    }),
+    'kit/.claude-plugin/marketplace.json': '{"plugins":[]}',
+    'kit/.codex-plugin/plugin.json': JSON.stringify({
+      name: 'kit',
+      skills: './skills/',
+      apps: './.app.json',
+      interface: { displayName: 'Kit', logo: './assets/logo.png' },
+    }),
+    'kit/.app.json': '{}',
+    'kit/monitors/monitors.json': '{"monitors":[]}',
+    'kit/monitors/watch.sh': '#!/bin/sh\n',
+    'kit/workflows/ship.yaml': 'steps: []\n',
+    'kit/lsp.json': '{}',
+    'kit/dap.yaml': 'adapters: {}\n',
+    'kit/settings.json': '{"agent":"kit"}',
+    'kit/bin/git': '#!/bin/sh\n',
+    'kit/scripts/run.sh': '#!/bin/sh\n',
+    'kit/styles/terse.md': 'Be terse.\n',
+    'kit/extra/SKILL.md': '---\nname: extra\ndescription: Extra\n---\n',
+    'kit/skills/kit/SKILL.md': '---\nname: kit\ndescription: Kit\n---\n',
+    'kit/commands/go.md': 'go',
+    'kit/agents/aide.md': '---\nname: aide\n---\nAid.\n',
+    'kit/rules/style.md': 'Style.\n',
+    'kit/prompts/start.md': 'Start.\n',
+    'kit/assets/logo.png': 'png',
+    'kit/README.md': 'Kit.\n',
+    'kit/LICENSE': 'MIT\n',
+  }
+  served.set(
+    `https://codeload.github.com/team/tools/tar.gz/${COMMIT}`,
+    tarball(files),
+  )
+  const node = host()
+  await node.apply([
+    {
+      id: id(13),
+      kind: 'plugin',
+      name: 'kit',
+      agents: null,
+      github: {
+        repo: 'team/tools',
+        commit: COMMIT,
+        path: 'kit',
+        digest: digestOf(files, 'kit'),
+      },
+    },
+  ])
+  expect(node.status().results[0]!.ok).toBe(true)
+  for (const { agent } of AGENTS) {
+    const dir = path.join(root, 'extensions', 'agents', agent, 'plugins', 'kit')
+    expect(readdirSync(dir).sort()).toEqual([
+      '.claude-plugin',
+      '.codex-plugin',
+      'LICENSE',
+      'README.md',
+      'agents',
+      'assets',
+      'commands',
+      'prompts',
+      'rules',
+      'skills',
+    ])
+    expect(readdirSync(path.join(dir, '.claude-plugin'))).toEqual([
+      'plugin.json',
+    ])
+    // A path outside what is kept: the runtime falls back to `skills/`.
+    expect(
+      JSON.parse(
+        readFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), 'utf8'),
+      ),
+    ).toEqual({
+      name: 'kit',
+      version: '1.0.0',
+      description: 'Kit',
+      commands: './commands/',
+    })
+    expect(
+      JSON.parse(
+        readFileSync(path.join(dir, '.codex-plugin', 'plugin.json'), 'utf8'),
+      ),
+    ).toEqual({
+      name: 'kit',
+      skills: './skills/',
+      interface: { displayName: 'Kit', logo: './assets/logo.png' },
+    })
+  }
+})
+
+test('an MCP probe runs in an empty scratch directory, not beside the secrets (P32 review 6)', async () => {
+  const seen: { cwd: string; files: string[] }[] = []
+  const probe = async (target: McpProbeTarget) => {
+    seen.push({ cwd: target.cwd, files: readdirSync(target.cwd) })
+    return [`mcp__qianmo_mcp_${target.name}_search`]
+  }
+  await host({ probe }).apply([MCP])
+  // On start applied.json, with every server's secrets, is in the root.
+  await host({ probe }).start()
+  const ext = path.join(root, 'extensions')
+  expect(seen).toHaveLength(2)
+  for (const { cwd, files } of seen) {
+    expect(cwd).not.toBe(ext)
+    expect(cwd.startsWith(`${ext}${path.sep}`)).toBe(true)
+    expect(files).toEqual([])
+    expect(existsSync(cwd)).toBe(false)
+  }
 })

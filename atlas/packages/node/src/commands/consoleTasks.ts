@@ -185,6 +185,12 @@ const recordSchema = z.object({
   ),
   createdAt: z.number(),
   updatedAt: z.number(),
+  /**
+   * When it completed or was cancelled; `updatedAt` moves on with delivery
+   * bookkeeping. A finished task in a ledger older than the field takes its
+   * `updatedAt` on load.
+   */
+  finishedAt: z.number().nullable().default(null),
 })
 type TaskRecord = z.infer<typeof recordSchema>
 
@@ -215,6 +221,8 @@ export interface TaskView {
   readonly lastError: string
   readonly turns: number
   readonly updatedAt: number
+  /** When it completed or was cancelled; null while unfinished. */
+  readonly finishedAt: number | null
 }
 
 /** A task finished or needs input; `text` is what the parent hears. */
@@ -253,6 +261,11 @@ export interface ConsoleTasksOptions {
 
 /** Unfinished tasks per conversation, not counting those waiting for input. */
 const MAX_ACTIVE_PER_PARENT = 8
+/**
+ * Tasks waiting for input per conversation. They are never pruned, so they
+ * get a cap of their own, well above what a person keeps track of.
+ */
+const MAX_WAITING_PER_PARENT = 32
 /** How long a finished task still answers a status question. */
 const RECENTLY_MS = 10 * 60_000
 /** Finished tasks stay in the ledger this long, and this many per owner. */
@@ -336,6 +349,14 @@ function spoken(text: string, length: number): string {
   return chars.length <= length ? said : `…${chars.slice(-length).join('')}`
 }
 
+/** When a finished task finished; set on every finished one once loaded. */
+function finishTime(task: {
+  readonly finishedAt: number | null
+  readonly updatedAt: number
+}): number {
+  return task.finishedAt ?? task.updatedAt
+}
+
 /** Seconds to wait after the n-th consecutive failure (grantley `_retry_wait`). */
 function defaultBackoff(failures: number): number {
   return Math.min(60_000, 2 ** Math.min(failures, 6) * 1_000)
@@ -396,7 +417,13 @@ export class ConsoleTasks implements BackgroundTasksPort {
     const raw = readTextIfExists(this.#path)
     if (raw !== undefined) {
       const book = bookSchema.parse(JSON.parse(raw))
-      for (const task of book.tasks) this.#tasks.set(task.id, task)
+      for (const task of book.tasks)
+        this.#tasks.set(
+          task.id,
+          task.finishedAt === null && TERMINAL.has(task.status)
+            ? { ...task, finishedAt: task.updatedAt }
+            : task,
+        )
       this.#updates = book.updates
       this.#nextUpdateId = book.nextUpdateId
     }
@@ -466,11 +493,16 @@ export class ConsoleTasks implements BackgroundTasksPort {
 
   /**
    * Delivers now the results whose last round failed somewhere, without
-   * waiting for the next round. Channels call it once an adapter is up.
+   * waiting for the next round; `only` keeps it to the conversations it names.
+   * Channels call it once an adapter is up, for that channel's chats: each
+   * round spends one of a result's few attempts.
    */
-  retryNotifications(): void {
+  retryNotifications(only?: (parentSession: string) => boolean): void {
     for (const task of this.#tasks.values())
-      if (this.#redeliverable(task)) {
+      if (
+        this.#redeliverable(task) &&
+        (only === undefined || only(task.parentSession))
+      ) {
         clearTimeout(this.#redeliveries.get(task.id))
         this.#redeliveries.delete(task.id)
         void this.#notify(task.id)
@@ -497,9 +529,10 @@ export class ConsoleTasks implements BackgroundTasksPort {
     const current = this.#tasks.get(id)
     if (current === undefined) throw new Error(`no task ${id}`)
     const next = { ...current, ...changes, updatedAt: this.#now() }
+    const finishing = TERMINAL.has(next.status) && !TERMINAL.has(current.status)
+    if (finishing) next.finishedAt = next.updatedAt
     this.#tasks.set(id, next)
-    if (TERMINAL.has(next.status) && !TERMINAL.has(current.status))
-      this.#prune()
+    if (finishing) this.#prune()
     this.#save()
     return next
   }
@@ -521,13 +554,13 @@ export class ConsoleTasks implements BackgroundTasksPort {
           !this.#redeliverable(task) &&
           !this.#delivering.has(task.id),
       )
-      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .sort((a, b) => finishTime(b) - finishTime(a))
     const kept = new Map<string, number>()
     for (const task of finished) {
       const count = (kept.get(task.owner) ?? 0) + 1
       kept.set(task.owner, count)
       if (
-        now - task.updatedAt > KEEP_FINISHED_MS ||
+        now - finishTime(task) > KEEP_FINISHED_MS ||
         count > KEEP_FINISHED_PER_OWNER
       )
         this.#tasks.delete(task.id)
@@ -561,6 +594,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       lastError: clip(task.lastError, 1_000),
       turns: task.turns,
       updatedAt: task.updatedAt,
+      finishedAt: task.finishedAt,
     }
   }
 
@@ -642,11 +676,13 @@ export class ConsoleTasks implements BackgroundTasksPort {
   contextFor(sessionId: string, since?: number): string | undefined {
     const tasks = this.forSession(sessionId)
     const current = tasks.filter(task => !TERMINAL.has(task.status))
-    const finished = tasks.filter(task => TERMINAL.has(task.status))
+    const finished = tasks
+      .filter(task => TERMINAL.has(task.status))
+      .sort((a, b) => finishTime(b) - finishTime(a))
     const recent =
       since === undefined
         ? finished.slice(0, 5)
-        : finished.filter(task => task.updatedAt > since)
+        : finished.filter(task => finishTime(task) > since)
     if (current.length + recent.length === 0) return undefined
     return `[当前会话的后台任务] ${JSON.stringify(
       [...current, ...recent].map(task => ({
@@ -676,7 +712,8 @@ export class ConsoleTasks implements BackgroundTasksPort {
         : options.busy
           ? []
           : tasks
-              .filter(task => this.#now() - task.updatedAt <= RECENTLY_MS)
+              .filter(task => this.#now() - finishTime(task) <= RECENTLY_MS)
+              .sort((a, b) => finishTime(b) - finishTime(a))
               .slice(0, 3)
     if (shown.length === 0) return undefined
     return shown
@@ -838,15 +875,18 @@ export class ConsoleTasks implements BackgroundTasksPort {
     if (parseAddress(target) === null)
       return refused('agent 不是有效的智能体地址')
     const family = this.#family(session.id)
-    // A task waiting for the owner's answer holds no place.
-    const active = [...this.#tasks.values()].filter(
-      task =>
-        family.has(task.parentSession) &&
-        !TERMINAL.has(task.status) &&
-        task.status !== 'needs_input',
+    const unfinished = [...this.#tasks.values()].filter(
+      task => family.has(task.parentSession) && !TERMINAL.has(task.status),
     )
-    if (active.length >= MAX_ACTIVE_PER_PARENT)
-      return refused(`这个会话已有 ${active.length} 个进行中的任务`)
+    // A task waiting for the owner's answer holds no place among the running.
+    const waiting = unfinished.filter(task => task.status === 'needs_input')
+    const active = unfinished.length - waiting.length
+    if (active >= MAX_ACTIVE_PER_PARENT)
+      return refused(`这个会话已有 ${active} 个进行中的任务`)
+    if (waiting.length >= MAX_WAITING_PER_PARENT)
+      return refused(
+        `这个会话已有 ${waiting.length} 个等待补充的任务；请先补充或取消一些`,
+      )
     const dispatch = this.#dispatch(caller.owner)
     if (typeof dispatch === 'string') return refused(dispatch)
     const denied = await dispatch.authorizeTarget(target)
@@ -890,6 +930,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
         .slice(-6),
       createdAt: now,
       updatedAt: now,
+      finishedAt: null,
     }
     this.#tasks.set(task.id, task)
     this.#save()
@@ -1230,6 +1271,15 @@ export class ConsoleTasks implements BackgroundTasksPort {
               await this.#options
                 .stopTask?.(task.target, task.nodeTaskId)
                 .catch(() => false)
+              // Stopping can take seconds: cancelled (the cancel stopped that
+              // turn too) or closed meanwhile, no new turn goes out.
+              task = this.#tasks.get(id)
+              if (
+                task === undefined ||
+                !RESUMABLE.has(task.status) ||
+                this.#closed
+              )
+                break
               task = this.#patch(id, { nodeTaskId: null })
             }
             task = this.#patch(id, {
@@ -1419,6 +1469,11 @@ export class ConsoleTasks implements BackgroundTasksPort {
    * place recorded on its own: a later round (a timer, a channel coming up,
    * a restart) goes only where the last one failed, never where it arrived
    * or may have arrived.
+   *
+   * A round holds the result while the ledger says `sending`. An added
+   * instruction or a newer result replaces that mark: the round then sends
+   * and records nothing more, and a newer result waiting for it goes out
+   * once it ends.
    */
   async #notify(id: string): Promise<void> {
     const task = this.#tasks.get(id)
@@ -1438,18 +1493,22 @@ export class ConsoleTasks implements BackgroundTasksPort {
         deliveries: { ...deliveries },
         deliveryAttempts: attempts,
       })
+      const holding = () => this.#tasks.get(id)?.notification === 'sending'
       const deliver = async (
         key: string,
         send: () => Promise<boolean | undefined>,
       ) => {
-        if (deliveries[key] !== undefined && deliveries[key] !== 'failed')
+        if (
+          !holding() ||
+          (deliveries[key] !== undefined && deliveries[key] !== 'failed')
+        )
           return
         deliveries[key] = 'sending'
         this.#patch(id, { deliveries: { ...deliveries } })
         const sent = await send().catch(() => false)
         deliveries[key] =
           sent === true ? 'sent' : sent === false ? 'failed' : 'skipped'
-        this.#patch(id, { deliveries: { ...deliveries } })
+        if (holding()) this.#patch(id, { deliveries: { ...deliveries } })
       }
       const note = this.#options.chat.note?.bind(this.#options.chat)
       if (note)
@@ -1461,6 +1520,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
         await deliver(key, () =>
           listener({ parentSession: task.parentSession, taskId: id, text }),
         )
+      if (!holding()) return
       const states = Object.values(deliveries)
       const next = this.#patch(id, {
         notification: states.includes('failed')
@@ -1475,6 +1535,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
         this.#redeliverLater(next)
     } finally {
       this.#delivering.delete(id)
+      if (this.#tasks.get(id)?.notification === 'pending') void this.#notify(id)
     }
   }
 }

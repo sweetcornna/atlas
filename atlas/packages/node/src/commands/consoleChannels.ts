@@ -235,7 +235,7 @@ export interface ChannelTasks {
     key?: string,
   ): () => void
   /** Delivers results that could not reach a chat before (it is up now). */
-  retryNotifications?(): void
+  retryNotifications?(only?: (parentSession: string) => boolean): void
 }
 
 function ok<T>(value: T): ConsoleResult<T> {
@@ -484,8 +484,13 @@ export class ConsoleChannels implements ChannelsPort {
         if (current === undefined || !current.enabled) return
         this.#gateway.handle(this.#rules(current), adapter, message)
       })
-      // Results that found this chat's channel down go out now.
-      .then(() => this.#options.tasks?.retryNotifications?.())
+      // Results that found this channel down go out now; other channels'
+      // results keep their attempts.
+      .then(() =>
+        this.#options.tasks?.retryNotifications?.(
+          session => this.#rowOf(session)?.channelId === channel.id,
+        ),
+      )
       .catch(() => this.#options.onError?.(`渠道 ${channel.id} 启动失败`))
   }
 

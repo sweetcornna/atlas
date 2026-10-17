@@ -25,6 +25,7 @@ import type {
   AgentExtensionsSource,
 } from '../../src/host/extensions.js'
 import { claudeCodeArgv } from '../../src/host/runtimes/claudeCode.js'
+import type { RuntimeDesktopSource } from '../../src/host/runtimes/desktopTools.js'
 import { codexArgv } from '../../src/host/runtimes/codex.js'
 import { parseResidentArgs } from '../../src/commands/resident.js'
 import { isolatedRoot } from '../providers/fake.js'
@@ -60,6 +61,8 @@ function setup(
     idleChildMs?: number
     allowWorkspaceEdits?: boolean
     extensions?: AgentExtensionsSource
+    desktop?: RuntimeDesktopSource
+    desktopArgv?: (args: readonly string[]) => string[]
   } = {},
 ) {
   root ??= isolatedRoot()
@@ -95,6 +98,10 @@ function setup(
     ...(options.extensions === undefined
       ? {}
       : { extensions: options.extensions }),
+    ...(options.desktop === undefined ? {} : { desktop: options.desktop }),
+    ...(options.desktopArgv === undefined
+      ? {}
+      : { desktopArgv: options.desktopArgv }),
     spawn: input => {
       launches.push(input)
       const child = spawn(
@@ -391,11 +398,117 @@ test('a new pool removes MCP configs left by processes that are gone (P32 audit 
   expect((await turn(pool, session, 's1', 'hello')).outcome).toBe('completed')
   const file = join(launches[0]!.sessionDir, 'runtime-mcp.json')
   expect(existsSync(file)).toBe(true)
-  // A crash leaves the file; the next generation's pool clears it.
+  // A pool that stops takes the file with it.
   await pool.stop()
+  expect(existsSync(file)).toBe(false)
+  // A crash leaves the file; the next generation's pool clears it.
   writeFileSync(file, '{"mcpServers":{}}')
   setup({ runtime: 'claude-code' })
   expect(existsSync(file)).toBe(false)
+})
+
+test('a Claude Code process that exits on its own leaves no MCP config behind', async () => {
+  const { pool, agent } = setup({ runtime: 'claude-code' })
+  const session = await pool.newSession(agent)
+  expect((await turn(pool, session, 'e1', 'hello')).outcome).toBe('completed')
+  const file = join(launches[0]!.sessionDir, 'runtime-mcp.json')
+  expect(existsSync(file)).toBe(true)
+  children[0]!.kill('SIGKILL')
+  const deadline = Date.now() + 3_000
+  while (existsSync(file) && Date.now() < deadline) await Bun.sleep(10)
+  expect(existsSync(file)).toBe(false)
+})
+
+test('a stale process replaced at the start of a turn is reaped once idle', async () => {
+  const { pool, agent } = setup({ runtime: 'claude-code' }, { idleChildMs: 50 })
+  const session = await pool.newSession(agent)
+  const stale = await pool.channelFor(session)
+  // Busy when the agent is invalidated, then idle with no turn holding it
+  // (a Codex turn/start that fails ends without a prompt_result): the next
+  // turn replaces it.
+  Object.defineProperty(stale, 'busy', { value: true, configurable: true })
+  await pool.invalidateAgent(agent.agent)
+  Reflect.deleteProperty(stale, 'busy')
+  const fresh = await pool.channelFor(session)
+  expect(fresh).not.toBe(stale)
+  expect(launches).toHaveLength(2)
+  const deadline = Date.now() + 3_000
+  while (children[1]!.exitCode === null && children[1]!.signalCode === null) {
+    if (Date.now() > deadline) throw new Error('replacement was not reaped')
+    await Bun.sleep(10)
+  }
+})
+
+/**
+ * A stand-in for `qm desktop-exec`: answers every call with its pid and,
+ * like the real one, exits once the host closes its stdin.
+ */
+const FAKE_DESKTOP_EXEC = `import { createInterface } from 'node:readline'
+const send = message => process.stdout.write(JSON.stringify(message) + '\\n')
+const lines = createInterface({ input: process.stdin })
+lines.on('line', line => {
+  const message = JSON.parse(line)
+  if (message.type === 'call')
+    send({ type: 'result', id: message.id, result: { content: [{ type: 'text', text: String(process.pid) }] } })
+})
+lines.on('close', () => process.exit(0))
+send({ type: 'ready' })
+`
+
+test('a runtime process that exits on its own closes its session’s desktop executor', async () => {
+  root ??= isolatedRoot()
+  const script = join(root.root, 'fake-desktop-exec.ts')
+  writeFileSync(script, FAKE_DESKTOP_EXEC)
+  const downloads = join(root.root, 'desktop', 'downloads')
+  mkdirSync(join(root.root, 'desktop', 'screenshots'), { recursive: true })
+  const { pool, agent } = setup(
+    { runtime: 'claude-code' },
+    {
+      desktop: {
+        resource: () => ({
+          resourceId: 'r-1',
+          resourceEpoch: 1,
+          browser: true,
+          computer: false,
+          cdpUrl: null,
+          cdpToken: null,
+          display: null,
+          xauthority: null,
+          downloads,
+          tab: 'tab-1',
+        }),
+        resourcePath: () => join(root!.root, 'desktop', 'resource.json'),
+      },
+      desktopArgv: args => [process.execPath, script, ...args],
+    },
+  )
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const session = await pool.newSession(agent)
+  expect((await turn(pool, session, 'd1', 'hello')).outcome).toBe('completed')
+  const first = mcpClient(bridgeOf(launches[0]!))
+  await first.open()
+  const tabs = await first.call('qianmo_browser_tabs', {})
+  expect(tabs.isError).toBe(false)
+  const executor = Number(tabs.text)
+  expect(alive(executor)).toBe(true)
+  children[0]!.kill('SIGKILL')
+  const deadline = Date.now() + 3_000
+  while (alive(executor) && Date.now() < deadline) await Bun.sleep(10)
+  expect(alive(executor)).toBe(false)
+  // The next process gets a new executor, with the resource as it is now.
+  expect((await turn(pool, session, 'd2', 'again')).outcome).toBe('completed')
+  const second = mcpClient(bridgeOf(launches[1]!))
+  await second.open()
+  const again = await second.call('qianmo_browser_tabs', {})
+  expect(again.isError).toBe(false)
+  expect(Number(again.text)).not.toBe(executor)
 })
 
 test('Codex: a tool call on an MCP server set to ask goes to the operator (P32)', async () => {

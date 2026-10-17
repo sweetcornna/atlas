@@ -26,7 +26,12 @@ import {
   type TenantPort,
 } from '../src/tenancy.js'
 import { createConsoleHandler } from '../src/http.js'
-import type { SchedulesSnapshot } from '../src/directionPorts.js'
+import type {
+  BackgroundTaskReader,
+  BackgroundTasksPort,
+  BackgroundTaskView,
+  SchedulesSnapshot,
+} from '../src/directionPorts.js'
 import {
   type ConsoleAgent,
   type ConsoleDeps,
@@ -291,7 +296,8 @@ function fixture() {
     avatars = new FakeAvatars(() => 1),
     extensions = new FakeExtensions(),
     updates = new FakeUpdates(() => 1),
-    channels = new FakeChannels(() => 1)
+    channels = new FakeChannels(() => 1),
+    tasks = new SeenTasks()
   const handle = createConsoleHandler(
     {
       ...deps,
@@ -306,6 +312,7 @@ function fixture() {
       extensions,
       updates,
       channels,
+      tasks,
     },
     TOKENS,
     {
@@ -326,6 +333,7 @@ function fixture() {
     extensions,
     updates,
     channels,
+    tasks,
     alice,
     bob,
     outsider,
@@ -750,6 +758,33 @@ describe('M2 request scopes', () => {
         (await h.handle(asBearer('GET', path, h.platform.credential))).status,
       ).toBe(200)
   })
+  test("background tasks and another tenant's desktop screen are out of a tenant account's reach", async () => {
+    const h = fixture()
+    // Tasks are platform-wide: ops in tenant a would otherwise see every
+    // tenant's tasks.
+    for (const [method, path] of [
+      ['GET', '/v0/tasks'],
+      ['POST', '/v0/tasks/task-1/cancel'],
+    ] as const) {
+      const response = await h.handle(
+        asBearer(method, path, h.alice.credential),
+      )
+      expect(response.status).toBe(501)
+    }
+    expect(h.tasks.calls).toEqual([])
+    expect(
+      (await h.handle(asBearer('GET', '/v0/tasks', h.platform.credential)))
+        .status,
+    ).toBe(200)
+    // berlin-1 is tenant b's node: its screen never reaches the port.
+    const foreign = await h.handle(
+      asBearer('GET', '/v0/desktop/berlin-1/helper/screen', h.alice.credential),
+    )
+    expect(foreign.status).not.toBe(200)
+    expect(h.desktop.calls.filter(call => call.includes('berlin-1'))).toEqual(
+      [],
+    )
+  })
   test('audit source selectors and server notes cannot reach an external tenant', async () => {
     const h = fixture()
     expect(
@@ -1056,3 +1091,20 @@ describe('wake authority across asynchronous dispatch', () => {
     })
   }
 })
+
+/** A tasks port that only records what reached it. */
+class SeenTasks implements BackgroundTasksPort {
+  readonly calls: string[] = []
+  list(actor: BackgroundTaskReader) {
+    this.calls.push(`list ${actor.subject}`)
+    return []
+  }
+  visible(id: string) {
+    this.calls.push(`visible ${id}`)
+    return false
+  }
+  async cancel(id: string): Promise<ConsoleResult<BackgroundTaskView>> {
+    this.calls.push(`cancel ${id}`)
+    return { ok: false, failure: { code: 'not_found', message: 'no task' } }
+  }
+}
