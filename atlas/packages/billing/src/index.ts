@@ -22,8 +22,10 @@
  *   precreate (`qr_code`), both official native APIs (charter §7.2 item 8);
  *   plus operator-issued **redeem codes** (SHA-256 stored, single use).
  *   QR orders are placed only with `live: true` in the config (default
- *   off, 未开通正式收款); its precondition is charter §8 M3's written
- *   conclusion on L-2.
+ *   off, 未开通正式收款); its precondition is every legal prerequisite in
+ *   public-edition.md §0 (charter §8 M3's written conclusion on L-2, the
+ *   generative-AI service filing or a no-filing opinion, a commercial ICP
+ *   licence, a published privacy policy).
  *   **Both payment channels are 未评估** — exercised only against local
  *   fakes, never against a real merchant account. Each adapter's header lists
  *   the protocol facts it relies on and where they come from.

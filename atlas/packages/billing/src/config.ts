@@ -105,8 +105,10 @@ export interface BillingConfig {
    * Pay or Alipay, whatever merchant numbers the channels carry; orders
    * placed while it was on are still queried, closed and settled. Turning it
    * on is the operator's explicit `"live": true`, and its precondition is
-   * the written conclusion on L-2 that charter §8 M3 requires before real
-   * money is taken.
+   * every legal prerequisite in public-edition.md §0: the written conclusion
+   * on L-2 that charter §8 M3 requires before real money is taken, the
+   * generative-AI service filing (or a written opinion that none is
+   * needed), a commercial ICP licence and a published privacy policy.
    */
   readonly live: boolean
   /** AGPL §13: where users of a public deployment get the Corresponding Source. */
