@@ -3268,6 +3268,7 @@ export class QianmoResident {
         : { protectedRoots: this.#options.protectedRoots }),
       allowWorkspaceEdits: this.#options.allowWorkspaceEdits === true,
       extensions: agent => this.extensions.forAgent(agent),
+      desktop: this.desktop,
       hostTools: {
         extraHostTools: [
           ...this.#hubHostTools,

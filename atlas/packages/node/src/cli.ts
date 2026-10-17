@@ -103,6 +103,11 @@ const COMMANDS: Record<
     summary: "host tools for a resident node's Claude Code or Codex agent",
     load: () => import('./commands/runtimeMcp.js'),
   },
+  'desktop-exec': {
+    summary:
+      "private browser and computer tools for a resident node's Claude Code or Codex session",
+    load: () => import('./commands/desktopExec.js'),
+  },
 }
 
 const HELP_TEXT = `Usage: qm <command> [options]

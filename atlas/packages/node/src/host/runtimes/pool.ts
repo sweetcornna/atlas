@@ -45,6 +45,10 @@ import {
   type RuntimeToolSpec,
 } from './toolHost.js'
 import type { AgentExtensionsSource } from '../extensions.js'
+import {
+  RuntimeDesktopTools,
+  type RuntimeDesktopSource,
+} from './desktopTools.js'
 import { runtimeBin } from '../runtimeUpdate.js'
 import { runWorkspaceTool, WORKSPACE_TOOLS } from './workspaceTools.js'
 
@@ -102,6 +106,10 @@ export interface ExternalRuntimePoolOptions {
   readonly maxChildren?: number
   /** Operator-configured MCP servers, skills and plugins (P32). */
   readonly extensions?: AgentExtensionsSource
+  /** The private browser and computer (P21+), when the node has them. */
+  readonly desktop?: RuntimeDesktopSource
+  /** How the host starts `qm desktop-exec`; tests point it elsewhere. */
+  readonly desktopArgv?: (args: readonly string[]) => string[]
   readonly onActivity?: (active: boolean) => void | Promise<void>
   readonly onError?: (error: unknown) => void
 }
@@ -230,6 +238,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
   readonly #tokens = new Map<string, string>()
   readonly #used = new Map<string, number>()
   readonly #toolHost: RuntimeToolHost
+  readonly #desktop: RuntimeDesktopTools | undefined
   readonly #timer: Timer
   #completedTurn = false
   #longestReadyMs = 0
@@ -244,6 +253,20 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       call: (session, name, args) => this.#callTool(session, name, args),
       onError: options.onError,
     })
+    this.#desktop =
+      options.desktop === undefined
+        ? undefined
+        : new RuntimeDesktopTools({
+            desktop: options.desktop,
+            permission: async (sessionId, call) =>
+              (await options.requestPermission?.(sessionId, call)) ?? false,
+            ...(options.desktopArgv === undefined
+              ? {}
+              : { argv: options.desktopArgv }),
+            ...(options.onError === undefined
+              ? {}
+              : { onError: options.onError }),
+          })
     const idle = options.idleChildMs ?? DEFAULT_IDLE_MS
     this.#timer = setInterval(
       () => {
@@ -720,6 +743,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       inputSchema: tool.parameters,
     }))
     if (codexReadsByHost(agent)) tools.push(...WORKSPACE_TOOLS)
+    if (this.#desktop) tools.push(...this.#desktop.specs(agent.agent))
     if (agent.runtime === 'claude-code')
       tools.push({
         name: PERMISSION_TOOL,
@@ -772,6 +796,8 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       const workspace = runWorkspaceTool(this.#policy(agent), name, args)
       if (workspace !== undefined) return workspace
     }
+    if (this.#desktop?.handles(name))
+      return await this.#desktop.call(session, agent.cwd, name, args)
     const outcome = await dispatchHostTool(
       this.#options.hostTools,
       { agent: agent.agent, sessionId: session.sessionId },
@@ -805,6 +831,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     const token = this.#tokens.get(sessionId)
     if (token !== undefined) this.#toolHost.revoke(token)
     this.#tokens.delete(sessionId)
+    this.#desktop?.close(sessionId)
     this.#channels.delete(sessionId)
     this.#used.delete(sessionId)
     if (channel !== undefined) {
@@ -837,6 +864,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     const channels = [...this.#channels.values()]
     this.#channels.clear()
     this.#tokens.clear()
+    this.#desktop?.stop()
     await Promise.allSettled(channels.map(channel => channel.stop()))
     await this.#toolHost.stop()
   }
