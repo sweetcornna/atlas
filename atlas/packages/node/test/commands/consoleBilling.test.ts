@@ -1109,6 +1109,30 @@ describe('a node handed back or moved gives the subscriber’s key back', () => 
     expect(deliveredProfile(0)?.key).not.toBe(secret)
   })
 
+  test('map, sync, hand the only node back, sync: it is on no model and delivered', async () => {
+    const { tenant, secret } = await subscribed()
+    setNodes(tenant, [])
+    // No tenant node is left at all; the sync still runs.
+    expect(config().nodes).toEqual([])
+    await billing.syncNodes()
+    expect(assigned(await nodeRow('beta-1'))).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.key).not.toBe(secret)
+    expect(ledger).toContain('system provider.apply beta-1 ok')
+  })
+
+  test('map, sync, move the tenant to another node, sync: the old one gives the key back, the new one gets it', async () => {
+    const { tenant, own, secret } = await subscribed()
+    setNodes(tenant, ['beta-2'])
+    await billing.syncNodes()
+    expect(assigned(await nodeRow('beta-1'))).toBe(NO_MODEL_PROFILE)
+    expect(assigned(await nodeRow('beta-2'))).toBe(own)
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.key).not.toBe(secret)
+    expect(deliveredProfile(1)?.id).toBe(own)
+    expect(deliveredProfile(1)?.key).toBe(secret)
+  })
+
   test('the plan counts only the nodes mapped to the tenant now', async () => {
     const { tenant, own } = await subscribed()
     setNodes(tenant, ['beta-2'])
@@ -1119,6 +1143,30 @@ describe('a node handed back or moved gives the subscriber’s key back', () => 
       ops(),
     )
     expect(moved.ok).toBe(true)
+  })
+
+  test('a node handed back that refuses the delivery is asked again at the next sweep', async () => {
+    const { tenant, secret } = await subscribed()
+    nodes[0]?.set(
+      'reply-apply.json',
+      JSON.stringify({
+        v: 1,
+        requestId: 'x',
+        ok: false,
+        code: 'write-failed',
+        message: 'busy',
+      }),
+    )
+    setNodes(tenant, [])
+    await billing.syncNodes()
+    expect(errors.some(line => line.includes('beta-1'))).toBe(true)
+    errors.length = 0
+    rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
+    await billing.tick()
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.key).not.toBe(secret)
+    const row = await nodeRow('beta-1')
+    expect(row.actual?.applied?.profileId).toBe(NO_MODEL_PROFILE)
   })
 })
 

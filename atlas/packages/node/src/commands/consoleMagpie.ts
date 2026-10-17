@@ -290,6 +290,11 @@ export function magpieProfileId(binding: MagpieBinding): string {
   return `${base.slice(0, 39).replace(/-+$/, '')}-${hash}`
 }
 
+/** Whether `id` is a subscriber's profile, `magpie-tenant-<tenant>` (P35). */
+export function isTenantProfile(id: string): boolean {
+  return id.startsWith('magpie-tenant-')
+}
+
 /** A gateway key value of ours: never magpie's `sk-magpie-` prefix. */
 function newSecret(): string {
   return `qm-gw-${randomBytes(32).toString('base64url')}`

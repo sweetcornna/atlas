@@ -31,11 +31,14 @@ import type {
   ProviderResult,
   TenantPort,
 } from '@qianmo/console'
-import { magpieProfileId, NO_MODEL_PROFILE } from './consoleMagpie.js'
+import {
+  isTenantProfile,
+  magpieProfileId,
+  NO_MODEL_PROFILE,
+} from './consoleMagpie.js'
 import type { ProviderNodeScope } from './consoleProviders.js'
 
 const MAGPIE_PRESET = 'magpie'
-const TENANT_PROFILE = /^magpie-tenant-/
 
 export interface PublicProvidersOptions {
   readonly tenancy: TenantPort
@@ -80,7 +83,7 @@ function candidateProfile(candidate: ProviderCandidate): string {
  * managed still means nothing is sent.
  */
 const PLATFORM_SCOPE: ProviderNodeScope = {
-  allows: id => !TENANT_PROFILE.test(id),
+  allows: id => !isTenantProfile(id),
   fallback: NO_MODEL_PROFILE,
   required: false,
   extras: true,
@@ -100,7 +103,7 @@ export function publicProviders(
   options: PublicProvidersOptions,
 ): ProviderPort {
   const subscriptionWrite = (profileId: string, caller: ProviderCaller) =>
-    (TENANT_PROFILE.test(profileId) || profileId === NO_MODEL_PROFILE) &&
+    (isTenantProfile(profileId) || profileId === NO_MODEL_PROFILE) &&
     !options.isSystem(caller)
   const draftRefused = (candidate: ProviderCandidate): boolean => {
     const preset = candidatePreset(candidate)
@@ -219,7 +222,7 @@ export function publicProviders(
     },
     async setDefault(input, caller) {
       const profileId = input.profileId
-      if (profileId !== null && TENANT_PROFILE.test(profileId))
+      if (profileId !== null && isTenantProfile(profileId))
         return refused('订阅者的网关档案不能设为默认')
       if (profileId !== null && profileId !== NO_MODEL_PROFILE) {
         let tenantNodes: number
@@ -248,7 +251,7 @@ export function publicProviders(
       const assignment: ProviderAssignment = input.assignment
       if (tenant === null) {
         return assignment.mode === 'profile' &&
-          TENANT_PROFILE.test(assignment.profileId)
+          isTenantProfile(assignment.profileId)
           ? refused('订阅者的网关档案只给它自己租户的节点')
           : inner.assign(input, caller)
       }

@@ -70,7 +70,7 @@ import type {
   TenantPort,
 } from '@qianmo/console'
 import type { MagpieLimit } from '@qianmo/magpie'
-import type { ConsoleMagpie } from './consoleMagpie.js'
+import { type ConsoleMagpie, isTenantProfile } from './consoleMagpie.js'
 
 const SWEEP_EVERY_MS = 60_000
 /** A delivery that failed twice running is tried again after this long. */
@@ -229,6 +229,16 @@ function behind(row: ProviderNodeView): boolean {
   const kinds = new Set(row.drift.map(one => one.kind))
   if (kinds.has('pending')) return false
   return kinds.has('out-of-sync') || kinds.has('unmanaged')
+}
+
+/**
+ * Whether a node may still run a subscriber's profile, as far as the hub
+ * knows: its last status said so, or it has never answered one.
+ */
+function stillSubscribed(row: ProviderNodeView): boolean {
+  if (row.actual === null) return true
+  const applied = row.actual.applied
+  return applied !== null && isTenantProfile(applied.profileId)
 }
 
 export class ConsoleBilling implements BillingPort, GatewayProvisioner {
@@ -431,10 +441,6 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
   async #syncNodes(sweep: boolean): Promise<void> {
     const { providers, caller, magpie } = this.#options
     const config = this.#options.tenancy.read().config
-    if (config.nodes.length === 0) {
-      this.#dirty.clear()
-      return
-    }
     const overview = await providers.overview()
     if (!overview.ok) return
     const rows = new Map(overview.value.nodes.map(row => [row.node, row]))
@@ -442,6 +448,41 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
     // Where a node beyond the plan goes: an apply of it replaces every key
     // the node held; "not managed" would leave the last delivery in place.
     const none = await magpie.noModelProfile()
+    // A node no longer mapped to any tenant (handed back to the platform, or
+    // its tenant moved to another) may still be assigned a subscriber's
+    // profile, and keeps its key until something else is delivered: it goes
+    // on no model too. This runs with no tenant node left at all; the sweep
+    // tries again while the node still runs a subscriber's profile.
+    const mapped = new Set(config.nodes.map(row => row.nodeId))
+    const reclaim: string[] = []
+    for (const row of overview.value.nodes) {
+      if (mapped.has(row.node)) continue
+      const current =
+        row.assignment.mode === 'profile' ? row.assignment.profileId : null
+      if (current === null) continue
+      if (isTenantProfile(current)) {
+        if (none === null) continue
+        const assigned = await providers.assign(
+          { node: row.node, assignment: { mode: 'profile', profileId: none } },
+          caller,
+        )
+        if (!assigned.ok) {
+          this.#options.onError?.(
+            `billing: ${row.node} 没能指派 ${none} · ${assigned.failure.message}`,
+          )
+          continue
+        }
+        reclaim.push(row.node)
+      } else if (
+        sweep &&
+        current === none &&
+        behind(row) &&
+        stillSubscribed(row) &&
+        (this.#retry.get(row.node)?.at ?? 0) <= now
+      )
+        reclaim.push(row.node)
+    }
+    await this.#deliver(reclaim, now)
     for (const { id: tenant } of config.tenants) {
       const dirty = this.#dirty.delete(tenant)
       const nodes = config.nodes
@@ -496,25 +537,31 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
         }
         deliver.push(node)
       }
-      if (deliver.length === 0) continue
-      const applied = await providers.apply({ nodes: deliver }, caller)
-      if (!applied.ok) {
-        this.#options.onError?.(
-          `billing: 下发到 ${deliver.join(' ')} 失败 · ${applied.failure.message}`,
-        )
-        for (const node of deliver) this.#failed(node, now)
+      await this.#deliver(deliver, now)
+    }
+  }
+
+  /** Deliver to `nodes`, noting what did not land for the sweep to try again. */
+  async #deliver(nodes: readonly string[], now: number): Promise<void> {
+    if (nodes.length === 0) return
+    const { providers, caller } = this.#options
+    const applied = await providers.apply({ nodes: [...nodes] }, caller)
+    if (!applied.ok) {
+      this.#options.onError?.(
+        `billing: 下发到 ${nodes.join(' ')} 失败 · ${applied.failure.message}`,
+      )
+      for (const node of nodes) this.#failed(node, now)
+      return
+    }
+    for (const result of applied.value) {
+      if (result.outcome === 'ok') {
+        this.#retry.delete(result.node)
         continue
       }
-      for (const result of applied.value) {
-        if (result.outcome === 'ok') {
-          this.#retry.delete(result.node)
-          continue
-        }
-        this.#failed(result.node, now)
-        this.#options.onError?.(
-          `billing: 下发到 ${result.node} 没成 · ${result.code ?? result.outcome} · ${result.message ?? ''}`,
-        )
-      }
+      this.#failed(result.node, now)
+      this.#options.onError?.(
+        `billing: 下发到 ${result.node} 没成 · ${result.code ?? result.outcome} · ${result.message ?? ''}`,
+      )
     }
   }
 
