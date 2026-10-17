@@ -687,6 +687,9 @@ export class ConsoleTasks implements BackgroundTasksPort {
       lastError: clip(task.lastError, 1_000),
       turns: task.turns,
       workerSession: task.workerSession,
+      nextAt: null,
+      everyMinutes: null,
+      runsLeft: null,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
     }
