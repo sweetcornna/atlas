@@ -7,6 +7,13 @@
  * with the catalog's runtimes, and whether new nodes join magpie on their
  * own. Writers get the selects and buttons, everyone else names and states;
  * failure text is folded under 详情 and only ever reaches writers.
+ *
+ * Under each agent on a node with the extension ops, a 「原生扩展」 panel
+ * (P36.7, §7.3): plugins, MCP servers and skills as the runtime's own list has
+ * them, the pin layer's notes, and the command that opens the runtime's own
+ * frontend on the node. The panel is drawn from the hub's cache; opening it
+ * asks the node when that is older than a minute (the page script). Installs
+ * go through the shared dialog, because a refresh would eat a form in here.
  */
 
 import type { ConsoleFailure } from '../deps.js'
@@ -15,6 +22,9 @@ import type {
   MagpieAgentsNodeView,
   MagpieAgentsSnapshot,
   MagpieAgentView,
+  MagpieExtensionItemView,
+  MagpieExtensionKind,
+  MagpieExtensionsView,
   MagpieRuntimeEntryView,
   MagpieRuntimeView,
 } from '../directionPorts.js'
@@ -29,7 +39,14 @@ import {
   tag,
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
-import { actionButton, emptyState, unwiredCard } from './kit.js'
+import {
+  actionButton,
+  emptyState,
+  selectField,
+  textArea,
+  textField,
+  unwiredCard,
+} from './kit.js'
 
 export type MagpieAgentsSide =
   | { readonly kind: 'ok'; readonly value: MagpieAgentsSnapshot }
@@ -245,6 +262,224 @@ function statusCell(
   return state('ok', '生效中')
 }
 
+const KIND_WORD: Readonly<Record<MagpieExtensionKind, string>> = {
+  plugin: '插件',
+  mcp: 'MCP',
+  skill: '技能',
+}
+
+/** The web frontend's port when the open command names one (`--port 8123`), else null. */
+function portOf(command: string): number | null {
+  const match = /(?:^|\s)--port(?:=|\s+)(\d{1,5})(?=\s|$)/.exec(command)
+  const port = match === null ? Number.NaN : Number(match[1])
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null
+}
+
+function copyButton(text: string): string {
+  return actionButton('magpie-ext-copy', '复制', {
+    tone: 'ghost',
+    data: { copy: text },
+    write: false,
+  })
+}
+
+function extensionItem(
+  view: MagpieExtensionsView,
+  item: MagpieExtensionItemView,
+  writer: boolean,
+  busy: boolean,
+): string {
+  const facts = [
+    item.version === null ? '' : `v${item.version}`,
+    item.source ?? '',
+  ].filter(Boolean)
+  const remove =
+    writer && !busy
+      ? actionButton('magpie-ext-remove', '卸载', {
+          tone: 'ghost',
+          data: {
+            node: view.node,
+            agent: view.agent,
+            kind: item.kind,
+            name: item.name,
+          },
+        })
+      : ''
+  return (
+    `<li class="mg-ext-item">${mono(item.name)} ` +
+    (item.enabled ? state('ok', '启用') : state('muted', '停用')) +
+    (facts.length === 0
+      ? ''
+      : ` <span class="note">${escapeHtml(facts.join(' · '))}</span>`) +
+    (item.notLoaded === null
+      ? ''
+      : ` <span class="note mg-ext-off">${escapeHtml(item.notLoaded)}</span>`) +
+    `${remove}</li>`
+  )
+}
+
+/** The job line: an install or removal in flight, or the last one that failed. */
+function extensionJob(view: MagpieExtensionsView, writer: boolean): string {
+  const job = view.job
+  if (job === null) return ''
+  const what = `${KIND_WORD[job.kind]} ${job.name}`
+  if (job.state === 'running')
+    return `<span data-busy>${state(
+      'warn',
+      `${job.op === 'install' ? '安装中' : '卸载中'} · ${what}`,
+    )}</span>`
+  return (
+    state(
+      'bad',
+      `${job.op === 'install' ? '安装失败' : '卸载失败'} · ${what}`,
+    ) + (writer && job.message !== null ? rawDetail(job.message) : '')
+  )
+}
+
+/** The open command and, for a web frontend on a port, the forwarding line. */
+function extensionOpen(node: string, command: string | null): string {
+  if (command === null) return ''
+  const port = portOf(command)
+  const forward =
+    port === null ? null : `ssh -L ${port}:127.0.0.1:${port} ${node}`
+  return (
+    `<div class="mg-ext-open"><code class="kit-mono">${escapeHtml(command)}</code>` +
+    `${copyButton(command)}<span class="note">在节点上运行 · 进入该底层的官方前端</span></div>` +
+    (forward === null
+      ? ''
+      : `<div class="mg-ext-open"><code class="kit-mono">${escapeHtml(forward)}</code>` +
+        `${copyButton(forward)}<span class="note">网页前端 · 先在本机转发这个端口 · 再打开节点打印的地址</span></div>`)
+  )
+}
+
+function extensionBody(view: MagpieExtensionsView, writer: boolean): string {
+  const busy = view.job?.state === 'running'
+  const install =
+    writer && !busy
+      ? actionButton('magpie-ext-new', '安装扩展', {
+          tone: 'ghost',
+          data: { node: view.node, agent: view.agent },
+        })
+      : ''
+  const job = extensionJob(view, writer)
+  const head =
+    job === '' && install === ''
+      ? ''
+      : `<div class="kit-row">${job}${install}</div>`
+  if (view.state === 'unread') return `${head}<p class="note">读取中</p>`
+  const failed =
+    view.state === 'failed'
+      ? `<p>${state('bad', '没读到列表')}${
+          writer && view.error !== null ? rawDetail(view.error) : ''
+        }</p>`
+      : ''
+  const groups = (['plugin', 'mcp', 'skill'] as const)
+    .map(kind => {
+      const items = view.items.filter(item => item.kind === kind)
+      return (
+        `<div class="mg-ext-group"><span class="note">${KIND_WORD[kind]}</span>` +
+        (items.length === 0
+          ? ` ${absent()}`
+          : `<ul>${items
+              .map(item => extensionItem(view, item, writer, busy))
+              .join('')}</ul>`) +
+        `</div>`
+      )
+    })
+    .join('')
+  const notes =
+    view.notes.length === 0
+      ? ''
+      : `<ul class="mg-ext-notes">${view.notes
+          .map(note => `<li class="note">${escapeHtml(note)}</li>`)
+          .join('')}</ul>`
+  return (
+    head +
+    failed +
+    (view.state === 'ok' || view.items.length > 0 ? groups : '') +
+    notes +
+    extensionOpen(view.node, view.openCommand)
+  )
+}
+
+/** The 原生扩展 row under an agent; nothing on a node without the ops. */
+function extensionsRow(agent: MagpieAgentView, writer: boolean): string {
+  const view = agent.extensions
+  if (view === null) return ''
+  const count =
+    view.state === 'ok'
+      ? ` <span class="note">${view.items.length} 项</span>`
+      : ''
+  const busy =
+    view.job?.state === 'running'
+      ? ` <span data-busy>${state('warn', view.job.op === 'install' ? '安装中' : '卸载中')}</span>`
+      : ''
+  return (
+    `<tr class="mg-ext-row"><td colspan="4">` +
+    `<details class="mg-ext" data-key="${attr(`ext:${view.node}/${view.agent}`)}" ` +
+    `data-node="${attr(view.node)}" data-agent="${attr(view.agent)}" ` +
+    `data-fresh="${view.fresh ? '1' : '0'}">` +
+    `<summary><span class="note">原生扩展</span>${count}${busy}</summary>` +
+    `<div class="mg-ext-body">${extensionBody(view, writer)}</div>` +
+    `</details></td></tr>`
+  )
+}
+
+/** The dialog body that installs one native extension for an agent. */
+export function renderMagpieExtensionForm(target: {
+  readonly node: string
+  readonly agent: string
+}): string {
+  return (
+    `<input type="hidden" name="form" value="ext">` +
+    `<input type="hidden" name="node" value="${attr(target.node)}">` +
+    `<input type="hidden" name="agent" value="${attr(target.agent)}">` +
+    `<p class="note">${escapeHtml(`${target.node} / ${target.agent}`)} · 由该底层自己的命令安装</p>` +
+    `<div class="form-grid">` +
+    selectField(
+      'extKind',
+      '种类',
+      [
+        ['plugin', '插件'],
+        ['mcp', 'MCP'],
+        ['skill', '技能'],
+      ],
+      { wide: true },
+    ) +
+    textField('source', '来源', {
+      wide: true,
+      mono: true,
+      maxLength: 300,
+      placeholder: 'owner/repo · @scope/name@1.2.3 · name@market',
+      help: '插件与技能填 · GitHub 仓库 · npm 包名 · 名字@市场',
+    }) +
+    textField('name', 'MCP 名字', {
+      mono: true,
+      maxLength: 64,
+      help: '仅 MCP · qm- 开头的留给连接器',
+    }) +
+    textField('command', 'MCP 命令', {
+      mono: true,
+      maxLength: 256,
+      placeholder: 'npx',
+      help: '仅 MCP · 与地址二选一',
+    }) +
+    textArea('args', 'MCP 参数', {
+      rows: 3,
+      help: '每行一个 · 密钥请用连接器',
+    }) +
+    textField('url', 'MCP 地址', {
+      type: 'url',
+      wide: true,
+      mono: true,
+      maxLength: 500,
+      placeholder: 'https://mcp.example.com/mcp',
+      help: '仅 MCP · https · 不带账号口令与查询参数',
+    }) +
+    `</div>`
+  )
+}
+
 function agentRow(
   node: MagpieAgentsNodeView,
   agent: MagpieAgentView,
@@ -261,7 +496,8 @@ function agentRow(
     `<td>${runtimeCell(node, agent, catalog, model.writer)}</td>` +
     `<td>${modelCell(node, agent, model.writer)}</td>` +
     `<td>${statusCell(agent, catalog, model.writer)}</td>` +
-    `</tr>`
+    `</tr>` +
+    extensionsRow(agent, model.writer)
   )
 }
 
@@ -368,4 +604,12 @@ export const MAGPIE_AGENTS_CSS = `
 .mg-rt { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-13); }
 .mg-sel { display: inline-block; min-width: 9rem; max-width: 18rem; }
 .mg-sel select { width: 100%; }
+.mg-ext-row td { padding-top: 0; }
+.mg-ext summary { cursor: pointer; display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-13); }
+.mg-ext-body { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2) 0 var(--space-2) var(--space-4); font-size: var(--text-13); }
+.mg-ext-group ul, .mg-ext-notes { margin: 0; padding-left: var(--space-4); }
+.mg-ext-item { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.mg-ext-off { font-style: italic; }
+.mg-ext-open { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.mg-ext-open code { overflow-wrap: anywhere; }
 `

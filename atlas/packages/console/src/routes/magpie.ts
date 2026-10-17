@@ -7,7 +7,7 @@
  * | Route | Who |
  * |---|---|
  * | `GET /admin/magpie`, `GET /fragments/magpie`, `GET /fragments/magpie/agents`, `GET /fragments/magpie/usage?period=` | view and up |
- * | `GET /fragments/magpie/form?kind=&id=` | gateway writers |
+ * | `GET /fragments/magpie/form?kind=&id=` | gateway writers (`kind=ext&id=<node>/<agent>`: an agent's native extension, P36.7) |
  *
  * The JSON behind the buttons is `/v0/magpie` (`routes/magpieApi.ts`).
  */
@@ -31,6 +31,7 @@ import {
   MAGPIE_AGENTS_CSS,
   type MagpieAgentsModel,
   renderMagpieAgents,
+  renderMagpieExtensionForm,
 } from '../view/magpieAgents.js'
 import { MAGPIE_PAGE_JS } from '../view/magpieScript.js'
 import { guardRead } from './directionShared.js'
@@ -101,10 +102,23 @@ async function formFragment(ctx: RouteContext): Promise<Response> {
   const port = ctx.deps.magpie
   if (port === undefined)
     return fail(501, 'unsupported', '该控制台没有接入模型网关')
-  const snapshot = await port.snapshot()
-  if (!snapshot.ok) return failureResponse(snapshot.failure)
   const kind = ctx.url.searchParams.get('kind') ?? ''
   const id = ctx.url.searchParams.get('id')
+  if (kind === 'ext') {
+    // An agent's native extension (P36.7): `id` is `<node>/<agent>`.
+    const match =
+      /^([a-z0-9][a-z0-9_-]{0,63})\/([a-z0-9][a-z0-9_-]{0,63})$/.exec(id ?? '')
+    if (match === null || port.agents === undefined)
+      return notFound('没有这个智能体')
+    return html(
+      renderMagpieExtensionForm({
+        node: match[1] ?? '',
+        agent: match[2] ?? '',
+      }),
+    )
+  }
+  const snapshot = await port.snapshot()
+  if (!snapshot.ok) return failureResponse(snapshot.failure)
   if (kind === 'connect' || kind === 'provider')
     return html(renderMagpieForm({ kind, snapshot: snapshot.value }))
   if (kind === 'group') {
