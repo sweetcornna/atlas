@@ -28,6 +28,7 @@ type GeneratedProvenance = {
   SOURCE_COMMIT?: string
   BUILD_TIME?: string
   RELEASE_VERSION?: string
+  EDITION?: string
 }
 
 let generated: GeneratedProvenance | null | undefined
@@ -87,6 +88,20 @@ export function buildVersion(): string {
 /** The oh-my-pi version qm runs as its agent. */
 export function ompVersion(): string {
   return OMP_VERSION
+}
+
+/** Deployment editions: the self-hosted default and the subscription-only public edition (public-edition.md §0). */
+export type Edition = 'default' | 'public'
+
+/**
+ * The edition this qm runs as. A public build (`build-qm.ts --edition public`)
+ * stamps `EDITION='public'` and cannot be switched back; any other build or a
+ * source run is `default` unless `QIANMO_EDITION=public` opts in (tests,
+ * operators trying the public console from source).
+ */
+export function buildEdition(): Edition {
+  if (generatedProvenance()?.EDITION === 'public') return 'public'
+  return process.env.QIANMO_EDITION === 'public' ? 'public' : 'default'
 }
 
 /** ISO-8601 timestamp of the compiled build, or `undefined` in a source run. */

@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import pkg from '../package.json' with { type: 'json' }
 import {
+  buildEdition,
   buildTime,
   buildVersion,
   ompVersion,
@@ -72,5 +73,32 @@ describe('versionLine', () => {
     expect(versionLine()).toBe(
       `qm ${pkg.version} (omp ${ompVersion()}) ${'c'.repeat(40)}`,
     )
+  })
+})
+
+describe('buildEdition', () => {
+  const savedEdition = process.env.QIANMO_EDITION
+
+  afterEach(() => {
+    if (savedEdition === undefined) delete process.env.QIANMO_EDITION
+    else process.env.QIANMO_EDITION = savedEdition
+  })
+
+  test('a source run is the default edition', () => {
+    delete process.env.QIANMO_EDITION
+
+    expect(buildEdition()).toBe('default')
+  })
+
+  test('QIANMO_EDITION=public opts a source run into the public edition', () => {
+    process.env.QIANMO_EDITION = 'public'
+
+    expect(buildEdition()).toBe('public')
+  })
+
+  test('any other QIANMO_EDITION value stays default', () => {
+    process.env.QIANMO_EDITION = 'PUBLIC'
+
+    expect(buildEdition()).toBe('default')
   })
 })

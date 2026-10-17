@@ -184,6 +184,7 @@
 		"atlas:sbom": "bun atlas/scripts/sbom.ts",
 		"atlas:report:beta": "bun atlas/scripts/beta-report.ts",
 		"atlas:build:qm": "bun atlas/scripts/build-qm.ts",
+		"atlas:build:public": "bun atlas/scripts/build-qm.ts --edition public",
 		"atlas:check:qm-smoke": "bun atlas/scripts/check-qm-smoke.ts",
 		"qm": "bun atlas/packages/node/src/cli.ts",
 		"qianmo:acceptance": "bun atlas/scripts/qianmo-acceptance.ts",
