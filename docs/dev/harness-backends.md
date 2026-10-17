@@ -57,7 +57,7 @@
 
 ### 1.3 目录定案
 
-依据 2026-10-17 两份调研（`dsh-acp-facts.md`：dsh `0.2.1-rc.2` 在假模型接口上实测整轮；`acp-harness-survey.md`：各 harness 当日版本在本机完成 ACP 握手与 `session/new`，并以 `provider/model` 形式的模型号向假网关发出请求）。「实测」一列由 P36.2 的测试回写。
+依据 2026-10-17 两份调研（`dsh-acp-facts.md`、`acp-harness-survey.md`）与 P36.2 的实测：下表四个 ACP 底层都在本机（macOS arm64）、临时配置根、假模型网关上经阡陌的 ACP 通道跑通整轮——取到宿主工具（经真实的 `qm runtime-mcp` 工具桥调用 `qianmo_notify`）、越界写入被拒且零副作用、新进程续上会话（`realDsh.smoke.test.ts`、`realAcpHarnesses.smoke.test.ts`，证据 `p36-2-real-dsh/`、`p36-2-real-acp/`）。未在 Linux 上实测；真实 harness 上的中止未实测。
 
 | id | 名称 | 包与钉住的版本 | 启动 | 凭据与状态目录 | 线路 | 系列 | 运行环境 |
 |---|---|---|---|---|---|---|---|
@@ -77,7 +77,11 @@
 - 续会话：dsh 没有 `session/load`，用 `session/resume`（模型侧历史恢复，不回放）。
 - 每个 stdio MCP 服务每个会话会被起两次（第一次是探测）；有启动副作用的连接器要能容忍。
 
-**其他 ACP harness 的共同约束**：qwen、opencode 缺省自动放行一切，目录项把权限改成征询；只有对方在 `initialize` 里声明支持时才交 http MCP 服务，SSE 一律不交；各自的遥测与自动更新开关按调研关掉。除 Gemini CLI 外都不在 ACP 里报每轮 token 用量，这些底层的用量记 0 并标「底层未报告」，计量以 magpie 网关侧为准（P33 §2.4）。
+**其他 ACP harness 的共同约束**：qwen、opencode 缺省自动放行一切，目录项把权限改成征询；只有对方在 `initialize` 里声明支持时才交 http MCP 服务，SSE 一律不交；各自的遥测与自动更新开关按调研关掉。用量：dsh 读会话日志，Gemini CLI 取 `session/prompt` 应答里的用量，Qwen Code 与 opencode 不报，记 0 并标「底层未报告」，计量以 magpie 网关侧为准（P33 §2.4）。
+
+- **拒绝之后**：opencode 设 `experimental.continue_loop_on_deny`，模型听到拒绝后接着做；Qwen Code 遇到任何被拒的调用都会结束本轮（它的设计，没有开关），常驻回合因此记为失败。
+- **Gemini CLI 的续会话**：`session/load` 先应答、再回放旧对话，通道等到回放停下 200 毫秒（至多 5 秒）再发下一轮。
+- **工具桥的位置**：qianmo 工具桥由启动配置挂上（dsh 补丁、Qwen 设置、opencode 配置、Gemini 用节点自己生成的一个扩展），`session/new` 只带运维配的连接器——ACP 的 `session/new` 不能给单个服务设超时，而 `qianmo_ask` 要等到 1800 秒，工具桥的调用超时统一放到 1900 秒。Claude Code 的 `MCP_TOOL_TIMEOUT` 与 Qwen 的空闲超时是全局的，连接器的超时随之变化。
 
 ---
 
@@ -167,7 +171,7 @@
 | 结束 | `session/prompt` 应答的 `stopReason`：`end_turn` → `completed`、`max_tokens` → `length`、`cancelled` → `aborted`、`refusal` 与错误 → `error` |
 | 中止 | `session/cancel`；5 秒内没有应答才关子进程 |
 | 权限 | `session/request_permission` 按常驻姿态裁决（与 Claude Code 的 `qianmo_permission` 同一套：工作区外读取、写入、shell；可批准的越界写入转 P14 审批），答 `allow_once` 或 `reject_once`，从不答 `allow_always` |
-| 宿主工具 | `session/new` 的 `mcpServers` 带 qianmo 工具桥（`qm runtime-mcp`，令牌文件同 P27 §1.3）与该智能体的运维 MCP 服务（P32） |
+| 宿主工具 | qianmo 工具桥（`qm runtime-mcp`，令牌文件同 P27 §1.3）由目录项在启动配置里挂上（§1.3）；`session/new` 的 `mcpServers` 带该智能体的运维连接器（P32） |
 
 每个 ACP harness 的差异（启动参数、凭据交法、状态目录、要关的东西）都在目录项的 `acp` 字段里，通道本身不分 harness。dsh 的具体做法见 §1.3 与调研记录。
 
