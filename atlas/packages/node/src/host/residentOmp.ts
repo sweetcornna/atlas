@@ -1005,8 +1005,8 @@ export class ResidentOmpPool
     if (env.QIANMO_OMP_ENTRY === 'self') env.PI_COMPILED = 'true'
     if (config.desktop?.browser || config.desktop?.computer)
       env.TMPDIR = join(config.desktop.downloads, '..', 'screenshots')
-    if (config.desktop?.computer) {
-      env.DISPLAY = config.desktop.display!
+    if (config.desktop?.computer && config.desktop.display) {
+      env.DISPLAY = config.desktop.display
       env.XAUTHORITY = config.desktop.xauthority!
       delete env.WAYLAND_DISPLAY
       // Only the private desktop's own bus, never the node user's.

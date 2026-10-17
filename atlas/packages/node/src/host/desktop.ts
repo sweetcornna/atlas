@@ -295,6 +295,23 @@ const SCREEN_TYPES: Readonly<Record<string, DesktopScreenView['mimeType']>> = {
 const NO_BWRAP =
   '打开应用需要 bubblewrap：本节点没装 bubblewrap，或它建不了用户命名空间（Ubuntu 24.04 等默认 kernel.apparmor_restrict_unprivileged_userns=1 时非特权 bwrap 会被拒），私有桌面没有隔离'
 const NOTE_NO_BWRAP = `${NO_BWRAP}；不许打开应用，浏览器保持无头`
+/**
+ * A bundle id the operator lists for this Mac's own desktop (§6.5); at most
+ * {@link HOST_APPS_MAX} of them.
+ */
+const BUNDLE_ID = /^[A-Za-z0-9][A-Za-z0-9-]*(\.[A-Za-z0-9-]+)+$/
+const HOST_APPS_MAX = 20
+/** Terminal applications on macOS: a shell on the owner's account. */
+const HOST_TERMINALS: ReadonlySet<string> = new Set([
+  'com.apple.Terminal',
+  'com.googlecode.iterm2',
+  'com.mitchellh.ghostty',
+  'dev.warp.Warp-Stable',
+  'io.alacritty',
+  'net.kovidgoyal.kitty',
+  'co.zeit.hyper',
+  'com.github.wez.wezterm',
+])
 const NOTE_HEADLESS =
   '需要 bubblewrap 才能在专属电脑的显示上有头运行：浏览器保持无头'
 const NOTE_HEADED_FAILED =
@@ -458,12 +475,16 @@ export class NodeDesktop {
       computer: s.computer && s.state === 'running',
       cdpUrl: s.cdpUrl,
       display: s.display,
-      xauthority: s.computer
-        ? path.join(this.#root(agent), 'Xauthority')
-        : null,
+      xauthority:
+        s.computer && !this.#hostDesktop()
+          ? path.join(this.#root(agent), 'Xauthority')
+          : null,
       downloads: path.join(this.#root(agent), 'downloads'),
       tab: `${s.resourceId}:${s.resourceEpoch}:main`,
       bus: s.computer && s.state === 'running' ? (s.bus ?? null) : null,
+      ...(this.#hostDesktop() && s.computer && Array.isArray(s.apps)
+        ? { hostApps: [...s.apps] }
+        : {}),
     }
   }
   /** Forget what the last session ran with; its processes are gone. */
@@ -512,10 +533,19 @@ export class NodeDesktop {
   }
   #supported(): boolean {
     return (
-      (this.#options.platform ?? process.platform) === 'linux' &&
-      this.#launcher.available('Xvfb') &&
-      this.#launcher.available('xauth')
+      this.#hostDesktop() ||
+      ((this.#options.platform ?? process.platform) === 'linux' &&
+        this.#launcher.available('Xvfb') &&
+        this.#launcher.available('xauth'))
     )
+  }
+  /**
+   * The computer is this Mac's own desktop, limited to the applications the
+   * operator lists (runtimes-channels.md §6.5): no private display, nothing
+   * started, nothing of the owner's stopped.
+   */
+  #hostDesktop(): boolean {
+    return (this.#options.platform ?? process.platform) === 'darwin'
   }
   #view(s: ResourceState): DesktopNodeView {
     const recent = this.#actions.filter(
@@ -546,7 +576,7 @@ export class NodeDesktop {
         state: s.computer ? s.state : s.state === 'failed' ? 'failed' : 'off',
         display: s.display,
         reason: !this.#supported()
-          ? '需要 Linux、Xvfb 和 xauth'
+          ? '需要 Linux（装有 Xvfb 和 xauth）或 macOS'
           : (s.reason ??
             s.notes?.computer ??
             this.#viewReasons.get(s.agent) ??
@@ -560,7 +590,9 @@ export class NodeDesktop {
               memoryBytes: s.memoryBytes ?? null,
               memoryLimitBytes: this.#memoryLimit,
             }
-          : {}),
+          : platform === 'darwin'
+            ? { mode: 'host' as const }
+            : {}),
         apps: s.apps,
         terminal: s.terminal,
       },
@@ -802,7 +834,8 @@ export class NodeDesktop {
       desktop: null,
     }
     this.#sessions.set(s.agent, session)
-    if (computer) {
+    // On this Mac the computer is its own desktop: nothing to start.
+    if (computer && platform === 'linux') {
       const auth = path.join(root, 'Xauthority')
       const displayFile = path.join(root, 'display')
       // xauth writes an independent credential. Xvfb chooses its display
@@ -995,7 +1028,7 @@ export class NodeDesktop {
           await this.#drop(s, headed)
           notes.browser = NOTE_HEADED_FAILED
         }
-      } else if (computer) notes.browser = NOTE_HEADLESS
+      } else if (computer && platform === 'linux') notes.browser = NOTE_HEADLESS
       if (!s.cdpUrl) {
         clear()
         const headless = await this.#spawn(
@@ -1132,6 +1165,27 @@ export class NodeDesktop {
           code: 'invalid',
           message: 'Recycle only accepts agent and operationId',
         }
+      // This Mac's own desktop opens only what the operator names (§6.5).
+      if (op === 'desktop.enable' && this.#hostDesktop()) {
+        const current = this.#states.get(agent)!
+        const computer =
+          typeof args.computer === 'boolean' ? args.computer : current.computer
+        const apps = args.apps === undefined ? current.apps : args.apps
+        if (
+          computer &&
+          !(
+            Array.isArray(apps) &&
+            apps.length > 0 &&
+            new Set(apps).size <= HOST_APPS_MAX &&
+            apps.every(id => typeof id === 'string' && BUNDLE_ID.test(id))
+          )
+        )
+          return {
+            ok: false,
+            code: 'rejected',
+            message: `macOS 本机桌面要列出允许的应用：1–${HOST_APPS_MAX} 个 bundle id（如 com.apple.TextEdit），不接受 all`,
+          }
+      }
       const id = args.operationId,
         digest = hash({ op, args, actor: ctx.actor, peer: ctx.peer })
       const previous = this.#operations.get(id)
@@ -1457,7 +1511,11 @@ export class NodeDesktop {
         return refuse(
           '参数里出现了节点受保护的路径（身份、凭据、配置、审计或记忆目录）：这次调用不执行',
         )
-      if (this.#hostCarried(tool) && s.confined !== true)
+      if (
+        this.#hostCarried(tool) &&
+        s.confined !== true &&
+        !this.#hostDesktop()
+      )
         return refuse(NO_BWRAP)
       // Refuse before anyone is asked to approve an app that cannot open.
       if (
@@ -1466,7 +1524,7 @@ export class NodeDesktop {
       )
         return refuse(
           !s.terminal &&
-            this.#catalog().some(app => app.id === args.app && app.terminal)
+            this.#catalog(s).some(app => app.id === args.app && app.terminal)
             ? '这台专属电脑没有开放终端类应用：请在控制台「云端电脑」页为它打开「终端」后再试'
             : '这个应用不在这台专属电脑允许打开的列表里：先调用 qianmo_computer_apps 取编号',
         )
@@ -1594,7 +1652,7 @@ export class NodeDesktop {
       const needs =
         desktopNeedsApproval(tool, args, s.confirm) ||
         (String(tool) === OPEN_APP_TOOL &&
-          this.#catalog().some(app => app.id === args.app && app.terminal))
+          this.#catalog(s).some(app => app.id === args.app && app.terminal))
       const beforeConsume = (
         expiresAt?: number,
         requestId?: string,
@@ -1638,7 +1696,7 @@ export class NodeDesktop {
           '宿主只在这次调用经过审批并提交之后执行一次：不能提前，也不能重复',
         )
       lease.carried = true
-      if (s.confined !== true) return refuse(NO_BWRAP)
+      if (s.confined !== true && !this.#hostDesktop()) return refuse(NO_BWRAP)
       if (input.phase === 'apps')
         return {
           ok: true,
@@ -1659,7 +1717,16 @@ export class NodeDesktop {
     return name === APPS_TOOL || name === OPEN_APP_TOOL
   }
   /** Every application installed on this node that it can start. */
-  #catalog(): DesktopApp[] {
+  #catalog(s: ResourceState): DesktopApp[] {
+    // This Mac: exactly the bundle ids the operator listed. `open -g` starts
+    // or reaches one without bringing it to the front.
+    if (this.#hostDesktop())
+      return (Array.isArray(s.apps) ? s.apps : []).map(id => ({
+        id,
+        name: id.split('.').at(-1) ?? id,
+        terminal: HOST_TERMINALS.has(id),
+        argv: ['open', '-g', '-b', id],
+      }))
     return desktopApplications(
       this.#options.applicationDirs ?? DESKTOP_APPLICATION_DIRS,
       program => this.#launcher.available(program),
@@ -1667,7 +1734,7 @@ export class NodeDesktop {
   }
   /** What this agent's policy lets it open. */
   #allowed(s: ResourceState): DesktopApp[] {
-    return allowedDesktopApps(this.#catalog(), s.apps, s.terminal)
+    return allowedDesktopApps(this.#catalog(s), s.apps, s.terminal)
   }
   /**
    * Open one allowed application in the sandbox, after the lease committed.
@@ -1690,6 +1757,13 @@ export class NodeDesktop {
         )
       if (app.terminal && !lease.confirmed)
         return refuse('打开终端类应用总要经过操作员批准')
+      if (this.#hostDesktop()) {
+        // The owner's application: opened, never tracked or stopped by us.
+        const [program, ...argv] = app.argv
+        return (await this.#launcher.run(program!, argv, process.env)) === 0
+          ? { ok: true, value: JSON.stringify({ app: app.id }) }
+          : refuse('应用没能打开：这台 Mac 上可能没装它')
+      }
       const open = (this.#processes.get(s.agent) ?? []).filter(
         m => m.app && m.proc.alive(),
       ).length
@@ -1723,7 +1797,7 @@ export class NodeDesktop {
   #off(s: ResourceState, unit: 'browser' | 'computer'): string {
     const label = UNIT[unit]
     if (unit === 'computer' && !this.#supported())
-      return `${label}需要 Linux 节点并装有 Xvfb 与 xauth，本节点不支持；只能开专属浏览器`
+      return `${label}需要 Linux 节点（装有 Xvfb 与 xauth）或 macOS 节点，本节点不支持；只能开专属浏览器`
     if (s.state === 'starting') return `${label}正在启动，请稍后重试`
     if (s.state === 'failed')
       return `${label}处于故障状态（${s.reason ?? '原因未记录'}）：请在控制台「云端电脑」页停用后重新打开`

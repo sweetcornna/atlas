@@ -543,7 +543,21 @@ export class DesktopExecutor {
           result =
             hostApps === undefined
               ? await computerCall(step('windows'))
-              : { content: [], details: { value: await hostWindows() } }
+              : await (async (): Promise<DesktopResult> => {
+                  const windows = await hostWindows()
+                  // The base lists the current Space only: a window behind
+                  // the owner's full-screen app is not there to be seen.
+                  return windows.length > 0
+                    ? { content: [], details: { value: windows } }
+                    : {
+                        content: [
+                          {
+                            type: 'text',
+                            text: '[] 当前桌面空间里没有允许应用的窗口：应用可能没开、窗口最小化了，或主人正在用全屏应用（本机桌面只能操作当前桌面空间里看得见的窗口）。可以先用 qianmo_computer_open_app 打开应用',
+                          },
+                        ],
+                      }
+                })()
           break
         case 'qianmo_computer_observe':
           result = await onTarget(step('observe'))

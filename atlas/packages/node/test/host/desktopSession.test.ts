@@ -57,6 +57,7 @@ async function session(
     entries?: Readonly<Record<string, string>>
     workspaceWritable?: boolean
     screenEncoders?: readonly ScreenEncoder[]
+    platform?: NodeJS.Platform
   } = {},
 ) {
   const previous = process.env.QIANMO_CONFIG_DIR
@@ -148,7 +149,7 @@ async function session(
       node: 'worker',
       agents: ['main', 'other'],
       estop: () => estop,
-      platform: 'linux',
+      platform: opts.platform ?? 'linux',
       launcher,
       idleMs: 3_600_000,
       memoryBytes: LIMIT,
@@ -1063,3 +1064,84 @@ test('a restarted host reaps every recorded session process by its marker before
     ]),
   )
 })
+
+test.skipIf(!hostTools)(
+  "this Mac's own desktop: listed bundle ids only, nothing started, apps opened in the background and never stopped",
+  async () => {
+    const f = await session({ platform: 'darwin' })
+    // A list is required, and it is short.
+    const all = await f.enable('all', { computer: true, apps: 'all' })
+    expect(all.ok).toBe(false)
+    expect(!all.ok && all.message).toContain('bundle id')
+    const many = Array.from({ length: 21 }, (_, i) => `com.example.app${i}`)
+    expect((await f.enable('many', { computer: true, apps: many })).ok).toBe(
+      false,
+    )
+    const on = await f.enable('on', {
+      computer: true,
+      apps: ['com.apple.TextEdit', 'com.apple.Terminal'],
+      confirm: 'autonomous',
+    })
+    expect(on.ok).toBe(true)
+    // No Xvfb, no window manager, no sandbox: the owner's desktop.
+    expect(f.calls).toEqual([])
+    const view = await f.view()
+    expect(view.computer.state).toBe('running')
+    expect(view.computer.mode).toBe('host')
+    expect(view.computer.supported).toBe(true)
+    const resource = f.node.resource('main')!
+    expect(resource.display).toBeNull()
+    expect(resource.xauthority).toBeNull()
+    expect(resource.hostApps).toEqual([
+      'com.apple.TextEdit',
+      'com.apple.Terminal',
+    ])
+
+    // The list holds the operator's ids; a terminal is withheld until allowed.
+    const list = decider(f.node, 'qianmo_computer_apps', {}, 'apps-1')
+    await committed(list)
+    const listed = await list('apps')
+    expect(listed.ok && JSON.parse(listed.value!)).toEqual([
+      { id: 'com.apple.TextEdit', name: 'TextEdit', terminal: false },
+    ])
+    await list('completed')
+
+    const term = decider(
+      f.node,
+      'qianmo_computer_open_app',
+      { app: 'com.apple.Terminal' },
+      'term-1',
+    )
+    const refused = await term('reserve')
+    expect(refused.ok).toBe(false)
+    expect(!refused.ok && refused.reason).toContain('终端')
+
+    // Opening goes through `open -g -b`, not a tracked process.
+    const open = decider(
+      f.node,
+      'qianmo_computer_open_app',
+      { app: 'com.apple.TextEdit' },
+      'open-1',
+    )
+    await committed(open)
+    expect(await open('launch')).toEqual({
+      ok: true,
+      value: JSON.stringify({ app: 'com.apple.TextEdit' }),
+    })
+    await open('completed')
+    expect(f.runs.filter(r => r.program === 'open').map(r => r.argv)).toEqual([
+      ['-g', '-b', 'com.apple.TextEdit'],
+    ])
+    expect(f.pids()).toEqual([])
+
+    // Recycling never stops the owner's applications.
+    const recycled = await f.node.control(
+      'desktop.recycle',
+      { agent: 'main', operationId: 'recycle' },
+      ctx,
+    )
+    expect(recycled.ok).toBe(true)
+    expect(f.stops).toEqual([])
+    expect(f.reaped).toEqual([])
+  },
+)
