@@ -1103,7 +1103,12 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(chat.hub === undefined
       ? {}
       : {
-          chat: tasks === undefined ? chat.hub : withTaskNotes(chat.hub, tasks),
+          chat:
+            tasks === undefined
+              ? chat.hub
+              : withTaskNotes(chat.hub, tasks, message =>
+                  process.stderr.write(`[tasks] ${message}\n`),
+                ),
         }),
     ...(chat.hub === undefined || config.chatDefault === undefined
       ? {}

@@ -560,7 +560,15 @@ export class ChannelGateway {
     const { conversation, inbound } = event
     const generation = this.#generations.get(conversation.key) ?? 0
     const session = this.#turns.sessionOf(conversation)
-    const extra = await this.#turns.context?.(conversation)
+    // A task note that cannot be had is left out: the owner's words still go.
+    let extra: ChannelTurnContext | undefined
+    try {
+      extra = await this.#turns.context?.(conversation)
+    } catch (error) {
+      this.#onError?.(
+        `渠道 ${rules.id} 后台任务附注失败：${String((error as Error)?.message ?? error)}`,
+      )
+    }
     const { texts, marks } = this.#sticky.filter(
       conversation.key,
       generation,

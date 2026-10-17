@@ -589,11 +589,13 @@ export function taskNote(
  * The console's chat port with the task note put ahead of each line a
  * person sends in a foreground conversation (`ChatSendInput.context`), the
  * note a channel turn carries. Background, command and continuation lines go
- * as they are.
+ * as they are; so does a line whose note cannot be had (`onError` hears
+ * why), so the person's words are never lost to it.
  */
 export function withTaskNotes(
   chat: ChatPort,
   tasks: Pick<ConsoleTasks, 'noteFor'>,
+  onError?: (message: string) => void,
 ): ChatPort {
   const note = chat.note?.bind(chat)
   return {
@@ -609,7 +611,15 @@ export function withTaskNotes(
         input.command !== undefined ||
         input.continuation !== undefined ||
         input.context !== undefined
-      const extra = plain ? undefined : await tasks.noteFor(input.sessionId)
+      let extra: TaskNote | undefined
+      if (!plain)
+        try {
+          extra = await tasks.noteFor(input.sessionId)
+        } catch (error) {
+          onError?.(
+            `后台任务附注失败：${String((error as Error)?.message ?? error)}`,
+          )
+        }
       const result = await chat.send(
         extra === undefined ? input : { ...input, context: extra.text },
       )

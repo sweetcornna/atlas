@@ -2150,6 +2150,28 @@ describe('the task note in a console conversation', () => {
   })
 })
 
+describe('the task note when the ledger fails', () => {
+  test('a note that cannot be had leaves the line as typed; the line still goes', async () => {
+    const errors: string[] = []
+    const web = withTaskNotes(
+      chat,
+      {
+        noteFor: async () => {
+          throw new Error('账本读不出来')
+        },
+      },
+      message => errors.push(message),
+    )
+    const opened = await web.open(MAIN)
+    if (!opened.ok) throw new Error('open')
+    const sent = await web.send({ sessionId: opened.value.id, text: '在吗' })
+    expect(sent.ok).toBe(true)
+    expect(chat.sent.at(-1)).toMatchObject({ text: '在吗' })
+    expect(chat.sent.at(-1)!.context).toBeUndefined()
+    expect(errors).toEqual(['后台任务附注失败：账本读不出来'])
+  })
+})
+
 describe('keeping the main session free', () => {
   /** A person's line through the console, and the note it carried. */
   async function line(
