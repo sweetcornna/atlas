@@ -177,6 +177,8 @@ test('Claude Code: a warm process answers consecutive turns, reports tools and c
   expect(env.ANTHROPIC_API_KEY).toBe('sk-test-runtime')
   expect(env.CLAUDE_CONFIG_DIR).toStartWith(root!.root)
   expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1')
+  // Host tools can wait for a person (`qianmo_ask`, up to 1800 s).
+  expect(env.MCP_TOOL_TIMEOUT).toBe('1900000')
 })
 
 test('Claude Code: an idle-reaped session resumes the same conversation', async () => {
@@ -265,9 +267,10 @@ test('Codex: a thread is opened once, used for every turn and resumed after a re
     'skill_mcp_dependency_install',
   ])
     expect(disabled).toContain(feature)
-  expect(argv.find(arg => arg.startsWith('mcp_servers.qianmo='))).toContain(
-    '"default_tools_approval_mode" = "approve"',
-  )
+  const bridge = argv.find(arg => arg.startsWith('mcp_servers.qianmo='))
+  expect(bridge).toContain('"default_tools_approval_mode" = "approve"')
+  // Host tools can wait for a person (`qianmo_ask`, up to 1800 s).
+  expect(bridge).toContain('"tool_timeout_sec" = 1900')
   expect(launches[0]!.env.QIANMO_RUNTIME_KEY).toBe('sk-test-runtime')
   expect(launches[0]!.env.CODEX_HOME).toStartWith(root!.root)
 })

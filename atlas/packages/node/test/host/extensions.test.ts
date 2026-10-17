@@ -232,6 +232,8 @@ test('lays out skills and MCP servers in each runtime’s native shape', async (
   expect(config).toContain('[mcp_servers."docs"]')
   expect(config).toContain('default_tools_approval_mode = "approve"')
   expect(config).toContain('"DOCS_TOKEN" = "secret-value"')
+  // Operator connectors keep Codex's own call timeout; only the bridge waits.
+  expect(config).not.toContain('tool_timeout_sec')
   expect(commands).toEqual([
     ['/opt/codex', 'plugin', 'marketplace', 'add', path.join(base, 'helper')],
     ['/opt/codex', 'plugin', 'add', 'qianmo@qianmo'],
@@ -1060,4 +1062,116 @@ test('an MCP probe runs in an empty scratch directory, not beside the secrets (P
     expect(files).toEqual([])
     expect(existsSync(cwd)).toBe(false)
   }
+})
+
+test('an ACP harness gets its skills in the node’s directory of its home, MCP in session/new, and no SSE (P36)', async () => {
+  const files = {
+    'plugins/lint/.claude-plugin/plugin.json': '{"name":"lint"}',
+    'plugins/lint/skills/lint/SKILL.md':
+      '---\nname: lint\ndescription: Lint\n---\nLINT-BODY\n',
+    'plugins/cmds/.claude-plugin/plugin.json': '{"name":"cmds"}',
+    'plugins/cmds/commands/go.md': 'go',
+  }
+  served.set(
+    `https://codeload.github.com/team/tools/tar.gz/${COMMIT}`,
+    tarball(files),
+  )
+  const github = (dir: string) => ({
+    repo: 'team/tools',
+    commit: COMMIT,
+    path: dir,
+    digest: digestOf(files, dir),
+  })
+  const lint: ExtensionWireEntry = {
+    id: id(20),
+    kind: 'plugin',
+    name: 'lint',
+    agents: null,
+    github: github('plugins/lint'),
+  }
+  const cmds: ExtensionWireEntry = {
+    id: id(21),
+    kind: 'plugin',
+    name: 'cmds',
+    agents: null,
+    github: github('plugins/cmds'),
+  }
+  const feed: ExtensionWireEntry = {
+    id: id(22),
+    kind: 'mcp',
+    name: 'feed',
+    agents: null,
+    transport: 'sse',
+    url: 'https://feed.example/sse',
+    approval: 'allow',
+  }
+  const homes = path.join(root, 'homes')
+  // The harness's own state in the agent's home stays as it is.
+  const native = path.join(homes, 'dsh', 'deep', 'skills', 'mine', 'SKILL.md')
+  mkdirSync(path.dirname(native), { recursive: true })
+  writeFileSync(native, '---\nname: mine\ndescription: native\n---\n')
+  const node = host({
+    agents: [{ agent: 'writer' }, { agent: 'deep', runtime: 'dsh' }],
+    runtimeHome: (runtime, agent) => path.join(homes, runtime, agent),
+  })
+  expect(
+    (await node.apply([MCP, { ...SKILL, agents: null }, lint, cmds, feed])).ok,
+  ).toBe(true)
+  const qmo = path.join(homes, 'dsh', 'deep', 'skills', 'qmo')
+  expect(readdirSync(qmo).sort()).toEqual(['lint--lint', 'review'])
+  expect(readFileSync(path.join(qmo, 'review', 'SKILL.md'), 'utf8')).toContain(
+    'name: review',
+  )
+  expect(
+    readFileSync(path.join(qmo, 'lint--lint', 'SKILL.md'), 'utf8'),
+  ).toContain('LINT-BODY')
+  expect(readFileSync(native, 'utf8')).toContain('native')
+  // MCP stays out of the harness's home; the pool hands it to session/new.
+  expect(
+    existsSync(path.join(root, 'extensions', 'agents', 'deep', 'mcp')),
+  ).toBe(false)
+  const deep = node.forAgent('deep')!
+  expect(deep.mcp.map(server => server.name)).toEqual(['docs'])
+  const results = new Map(node.status().results.map(one => [one.id, one]))
+  const on = (entry: string, agent: string) =>
+    results.get(entry)!.agents.find(one => one.agent === agent)!
+  expect(on(id(22), 'deep')).toEqual({
+    agent: 'deep',
+    ok: false,
+    detail: 'DeepSeek Harness 不支持 SSE 传输',
+    retry: false,
+  })
+  expect(on(id(22), 'writer').ok).toBe(true)
+  expect(on(id(21), 'deep')).toMatchObject({
+    ok: false,
+    detail: 'DeepSeek Harness 只加载插件里的技能，这个插件没有技能',
+    retry: false,
+  })
+  expect(on(id(20), 'deep').ok).toBe(true)
+  expect(changed.sort()).toEqual(['deep', 'writer'])
+
+  // Removed: the node's directory empties; the harness's own skill stays.
+  changed = []
+  await node.apply([MCP])
+  expect(readdirSync(qmo)).toEqual([])
+  expect(existsSync(native)).toBe(true)
+  expect(changed.sort()).toEqual(['deep', 'writer'])
+})
+
+test('an agent that leaves an ACP harness is taken out of its skills directory', async () => {
+  const homes = path.join(root, 'homes')
+  const before = host({
+    agents: [{ agent: 'deep', runtime: 'dsh' }],
+    runtimeHome: (runtime, agent) => path.join(homes, runtime, agent),
+  })
+  await before.apply([{ ...SKILL, agents: null }])
+  const qmo = path.join(homes, 'dsh', 'deep', 'skills', 'qmo')
+  expect(readdirSync(qmo)).toEqual(['review'])
+  const after = host({
+    agents: [{ agent: 'deep', runtime: 'claude-code' }],
+    runtimeHome: (runtime, agent) => path.join(homes, runtime, agent),
+  })
+  await after.apply([{ ...SKILL, agents: null }])
+  expect(existsSync(qmo)).toBe(false)
+  expect(existsSync(path.join(homes, 'dsh', 'deep', 'skills'))).toBe(true)
 })

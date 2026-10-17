@@ -26,9 +26,7 @@ export function isExternalRuntimeKind(
 ): value is ExternalRuntimeKind {
   return (
     typeof value === 'string' &&
-    RUNTIME_CATALOG.some(
-      spec => spec.id === value && spec.protocol !== 'omp',
-    )
+    RUNTIME_CATALOG.some(spec => spec.id === value && spec.protocol !== 'omp')
   )
 }
 

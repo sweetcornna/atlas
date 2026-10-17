@@ -15,15 +15,38 @@
  *   harness speaks the Agent Client Protocol and shares one channel (§5).
  */
 
-/** Wire protocols a runtime child is driven over. */
-export type RuntimeProtocol = 'omp' | 'claude-stream' | 'codex-app-server' | 'acp'
+import type { AcpRuntime, RuntimeLane } from './acpSpec.js'
+import {
+  DSH_QMO_SKILLS,
+  dshLaunch,
+  dshToolCall,
+  dshUsageReader,
+} from './dsh.js'
+import { GEMINI_QMO_SKILLS, geminiLaunch, geminiToolCall } from './gemini.js'
+import {
+  OPENCODE_QMO_SKILLS,
+  opencodeLaunch,
+  opencodeToolCall,
+} from './opencode.js'
+import { QWEN_QMO_SKILLS, qwenLaunch, qwenToolCall } from './qwen.js'
 
-/** Model lanes a runtime can call (a subset of `@qianmo/providers` lanes). */
-export type RuntimeLane =
-  | 'openai-chat'
-  | 'anthropic'
-  | 'openai-responses'
-  | 'gemini'
+export type {
+  AcpLaunch,
+  AcpLaunchInput,
+  AcpRuntime,
+  AcpToolCall,
+  AcpUsage,
+  AcpUsageReader,
+  AcpVerdictCall,
+  RuntimeLane,
+} from './acpSpec.js'
+
+/** Wire protocols a runtime child is driven over. */
+export type RuntimeProtocol =
+  | 'omp'
+  | 'claude-stream'
+  | 'codex-app-server'
+  | 'acp'
 
 /** A model family an agent defaults to on its runtime (§4.2). */
 export interface ModelFamily {
@@ -51,43 +74,6 @@ export interface NpmInstall {
 
 export type RuntimeInstall = { readonly kind: 'builtin' } | NpmInstall
 
-/** What an ACP runtime's launcher gets for one agent. */
-export interface AcpLaunchInput {
-  /** The executable to start (managed prefix, PATH, or a flag). */
-  readonly bin: string
-  readonly model: string
-  readonly lane: RuntimeLane
-  readonly baseUrl: string
-  readonly apiKey: string
-  readonly headers?: Readonly<Record<string, string>>
-  readonly effort?: string
-  /** This agent's private state directory for the harness (0700). */
-  readonly home: string
-  /** The agent's workspace (the child's cwd). */
-  readonly cwd: string
-}
-
-/** How to start one ACP runtime child. */
-export interface AcpLaunch {
-  readonly argv: readonly string[]
-  /** Added on top of the node's inherited allowlisted environment. */
-  readonly env: Readonly<Record<string, string>>
-  /** Config files the harness reads, written under `home` (0600) first. */
-  readonly files?: readonly {
-    readonly path: string
-    readonly content: string
-  }[]
-}
-
-export interface AcpRuntime {
-  readonly launch: (input: AcpLaunchInput) => AcpLaunch
-  /**
-   * Skills directory under `home` the harness loads natively, when it has
-   * one (P32 lands the agent's skills there); absent = no skills.
-   */
-  readonly skillsDir?: string
-}
-
 export interface RuntimeSpec {
   readonly id: string
   /** Display name. */
@@ -109,7 +95,12 @@ export const FAMILIES = {
   deepseek: {
     id: 'deepseek',
     label: 'DeepSeek',
-    tiers: [/^deepseek-v\d/, /^deepseek-chat/, /^deepseek-reasoner/, /deepseek/],
+    tiers: [
+      /^deepseek-v\d/,
+      /^deepseek-chat/,
+      /^deepseek-reasoner/,
+      /deepseek/,
+    ],
   },
   claude: {
     id: 'claude',
@@ -143,6 +134,51 @@ export const FAMILIES = {
   },
 } as const satisfies Record<string, ModelFamily>
 
+/** DeepSeek Harness over ACP (`dsh.ts`). */
+const DSH: AcpRuntime = {
+  launch: dshLaunch,
+  skillsDir: `skills/${DSH_QMO_SKILLS}`,
+  // dsh rejects SSE servers in `session/new`.
+  mcpTransports: ['stdio', 'http'],
+  // No `session/load`; `session/resume` restores the history model-side.
+  resume: 'session/resume',
+  effortOption: 'reasoning_effort',
+  // ACP carries no usage; the session log has the provider's.
+  usage: dshUsageReader,
+  toolCall: dshToolCall,
+}
+
+/** Gemini CLI over ACP (`gemini.ts`). */
+const GEMINI: AcpRuntime = {
+  launch: geminiLaunch,
+  skillsDir: GEMINI_QMO_SKILLS,
+  // Its permission request does not name an MCP tool's server: only the
+  // bridge runs (`gemini.ts`).
+  mcpTransports: [],
+  // `session/load` (advertised) replays the conversation, after its answer
+  // (the channel waits it out); usage comes in `PromptResponse.usage`.
+  toolCall: geminiToolCall,
+}
+
+/** Qwen Code over ACP (`qwen.ts`). */
+const QWEN: AcpRuntime = {
+  launch: qwenLaunch,
+  skillsDir: QWEN_QMO_SKILLS,
+  mcpTransports: ['stdio', 'http', 'sse'],
+  // Advertises `session/resume`; usage only as `usage_update` estimates.
+  toolCall: qwenToolCall,
+}
+
+/** opencode over ACP (`opencode.ts`). */
+const OPENCODE: AcpRuntime = {
+  launch: opencodeLaunch,
+  skillsDir: OPENCODE_QMO_SKILLS,
+  mcpTransports: ['stdio', 'http', 'sse'],
+  // Its `PromptResponse.usage` is the last model call's, not the turn's.
+  promptUsage: false,
+  toolCall: opencodeToolCall,
+}
+
 /**
  * The catalog. ACP entries beyond `dsh` are added by P36.2 from the survey
  * (`harness-backends.md` §1.3); only harnesses whose official release serves
@@ -157,14 +193,15 @@ export const RUNTIME_CATALOG: readonly RuntimeSpec[] = [
       kind: 'npm',
       package: '@deepseek-ai/dsh',
       command: 'dsh',
-      pin: '0.2.0-rc.2',
-      needsNode: '>=22',
+      pin: '0.2.1-rc.2',
+      needsNode: '^22.19.0 || >=24',
     },
     default: true,
     lanes: ['openai-chat', 'anthropic'],
     family: FAMILIES.deepseek,
-    // P36.2 fills `acp` from the dsh facts (`dsh --profile acp`).
-    verified: false,
+    acp: DSH,
+    // `realDsh.smoke.test.ts` on 0.2.1-rc.2 (macOS arm64, 2026-10-17).
+    verified: true,
   },
   {
     id: 'omp',
@@ -204,6 +241,59 @@ export const RUNTIME_CATALOG: readonly RuntimeSpec[] = [
     default: false,
     lanes: ['openai-responses'],
     family: FAMILIES.gpt,
+    verified: true,
+  },
+  {
+    id: 'gemini',
+    label: 'Gemini CLI',
+    protocol: 'acp',
+    install: {
+      kind: 'npm',
+      package: '@google/gemini-cli',
+      command: 'gemini',
+      pin: '0.64.0',
+      needsNode: '>=20',
+    },
+    default: false,
+    lanes: ['gemini'],
+    family: FAMILIES.gemini,
+    acp: GEMINI,
+    // `realAcpHarnesses.smoke.test.ts` on 0.64.0 (macOS arm64, 2026-10-17).
+    verified: true,
+  },
+  {
+    id: 'qwen',
+    label: 'Qwen Code',
+    protocol: 'acp',
+    install: {
+      kind: 'npm',
+      package: '@qwen-code/qwen-code',
+      command: 'qwen',
+      pin: '0.25.2',
+      needsNode: '>=22',
+    },
+    default: false,
+    lanes: ['openai-chat'],
+    family: FAMILIES.qwen,
+    acp: QWEN,
+    // `realAcpHarnesses.smoke.test.ts` on 0.25.2 (macOS arm64, 2026-10-17).
+    verified: true,
+  },
+  {
+    id: 'opencode',
+    label: 'opencode',
+    protocol: 'acp',
+    install: {
+      kind: 'npm',
+      package: 'opencode-ai',
+      command: 'opencode',
+      pin: '1.19.3',
+    },
+    default: false,
+    lanes: ['openai-chat', 'anthropic'],
+    family: null,
+    acp: OPENCODE,
+    // `realAcpHarnesses.smoke.test.ts` on 1.19.3 (macOS arm64, 2026-10-17).
     verified: true,
   },
 ]
@@ -252,8 +342,6 @@ export function rankFamilyModels(
     const tier = family.tiers.findIndex(pattern => pattern.test(name))
     if (tier >= 0) ranked.push({ id, tier, name })
   }
-  ranked.sort(
-    (a, b) => a.tier - b.tier || compareVersionsDesc(a.name, b.name),
-  )
+  ranked.sort((a, b) => a.tier - b.tier || compareVersionsDesc(a.name, b.name))
   return ranked.map(entry => entry.id)
 }

@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The compatibility check a new Claude Code or Codex version passes before a
- * node switches to it (P31 with P32, `runtimes-channels.md` §5, §9).
+ * The compatibility check a new runtime version passes before a node
+ * switches to it (P31 with P32, `runtimes-channels.md` §5, §9; P36
+ * `harness-backends.md` §2).
  *
  * The candidate binary starts exactly as a resident child would — the same
  * arguments, the same environment rules, the real `qm runtime-mcp` bridge —
@@ -14,7 +15,12 @@
  *   host tool, then the same tool on a server the rules leave open, which
  *   Claude Code must ask the host about (`qianmo_permission`) first;
  * - Codex: `app-server` starts with the node's overrides and lists the
- *   `qianmo` server with the host's tools.
+ *   `qianmo` server with the host's tools;
+ * - an ACP harness: it starts from its catalog launch (patch, environment,
+ *   launch directory), takes `initialize` and `session/new` with the bridge,
+ *   and runs one turn through the node's ACP channel against a stand-in for
+ *   its first model lane, whose request must list the host's tool and whose
+ *   call of it must reach the host.
  *
  * Nothing reaches a real model, and nothing of the user's own Claude Code or
  * Codex configuration is read: both get a scratch home under the qianmo root.
@@ -23,16 +29,21 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { qianmoConfigPath } from '@qianmo/paths'
+import type { OmpRpcFrame } from '@qianmo/resident'
 import { qmArgv } from '../../omp/launch.js'
+import { AcpChannel } from './acp.js'
+import type { RuntimeLane } from './acpSpec.js'
+import { type RuntimeSpec, runtimeSpec } from './catalog.js'
 import type { ExternalRuntimeKind } from './channel.js'
 import {
   CLAUDE_CODE_ENV,
   claudeCodeArgv,
   PERMISSION_TOOL,
   RUNTIME_MCP_SERVER,
+  RUNTIME_MCP_TIMEOUT_MS,
 } from './claudeCode.js'
 import { CODEX_KEY_ENV, codexArgv } from './codex.js'
 import { inheritedEnv } from './inheritedEnv.js'
@@ -105,7 +116,16 @@ export async function runtimeSmoke(
     const home = join(scratch, 'home')
     mkdirSync(workspace, { mode: 0o700 })
     mkdirSync(home, { mode: 0o700 })
-    const check = kind === 'claude-code' ? claudeSmoke : codexSmoke
+    const spec = runtimeSpec(kind)
+    const check =
+      spec?.protocol === 'claude-stream'
+        ? claudeSmoke
+        : spec?.protocol === 'codex-app-server'
+          ? codexSmoke
+          : spec?.protocol === 'acp'
+            ? (run: SmokeRun) => acpSmoke(run, spec)
+            : undefined
+    if (check === undefined) return `${kind} 不是可检查的外部底层`
     return await check({
       bin,
       mcp,
@@ -422,4 +442,256 @@ function codexSmoke(run: SmokeRun): Promise<string | null> {
       return null
     },
   )
+}
+
+/** The ACP smoke's stand-in model, on any lane: call the tool, then answer. */
+function laneModel(): {
+  port: number
+  requests: { lane: RuntimeLane; tools: string[] }[]
+  stop: () => Promise<void>
+} {
+  const requests: { lane: RuntimeLane; tools: string[] }[] = []
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    async fetch(request) {
+      const path = new URL(request.url).pathname
+      const body = (await request.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >
+      const list = (value: unknown): Record<string, unknown>[] =>
+        Array.isArray(value) ? (value as Record<string, unknown>[]) : []
+      const sse = (events: unknown[]) =>
+        new Response(
+          events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''),
+          { headers: { 'content-type': 'text/event-stream' } },
+        )
+      if (path.endsWith('/chat/completions')) {
+        const tools = list(body.tools).map(tool =>
+          String((tool.function as Record<string, unknown>)?.name),
+        )
+        requests.push({ lane: 'openai-chat', tools })
+        const messages = list(body.messages)
+        const lastUser = messages.findLastIndex(one => one.role === 'user')
+        const answered = messages
+          .slice(lastUser + 1)
+          .some(one => one.role === 'tool')
+        const name = tools.find(tool => tool.endsWith(SMOKE_TOOL))
+        const base = { id: 'chatcmpl-smoke', object: 'chat.completion.chunk' }
+        const delta =
+          answered || name === undefined
+            ? { content: 'ok' }
+            : {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'call_smoke',
+                    type: 'function',
+                    function: { name, arguments: '{}' },
+                  },
+                ],
+              }
+        return new Response(
+          [
+            { ...base, choices: [{ index: 0, delta, finish_reason: null }] },
+            {
+              ...base,
+              choices: [
+                {
+                  index: 0,
+                  delta: {},
+                  finish_reason: 'content' in delta ? 'stop' : 'tool_calls',
+                },
+              ],
+            },
+            {
+              ...base,
+              choices: [],
+              usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+              },
+            },
+          ]
+            .map(event => `data: ${JSON.stringify(event)}\n\n`)
+            .concat('data: [DONE]\n\n')
+            .join(''),
+          { headers: { 'content-type': 'text/event-stream' } },
+        )
+      }
+      if (path.endsWith('/messages')) {
+        const tools = list(body.tools).map(tool => String(tool.name))
+        requests.push({ lane: 'anthropic', tools })
+        const answered = JSON.stringify(
+          list(body.messages).at(-1) ?? {},
+        ).includes('"tool_result"')
+        const name = tools.find(tool => tool.endsWith(SMOKE_TOOL))
+        return messageStream(
+          answered || name === undefined
+            ? { type: 'text', text: 'ok' }
+            : { type: 'tool_use', id: 'toolu_smoke', name, input: {} },
+        )
+      }
+      if (path.endsWith(':streamGenerateContent')) {
+        const tools = list(body.tools).flatMap(tool =>
+          list(tool.functionDeclarations).map(one => String(one.name)),
+        )
+        requests.push({ lane: 'gemini', tools })
+        const answered = JSON.stringify(
+          list(body.contents).at(-1) ?? {},
+        ).includes('"functionResponse"')
+        const name = tools.find(tool => tool.endsWith(SMOKE_TOOL))
+        return sse([
+          {
+            candidates: [
+              {
+                index: 0,
+                content: {
+                  role: 'model',
+                  parts: [
+                    answered || name === undefined
+                      ? { text: 'ok' }
+                      : { functionCall: { name, args: {} } },
+                  ],
+                },
+                finishReason: 'STOP',
+              },
+            ],
+            usageMetadata: {
+              promptTokenCount: 1,
+              candidatesTokenCount: 1,
+              totalTokenCount: 2,
+            },
+          },
+        ])
+      }
+      return Response.json({ object: 'list', data: [] })
+    },
+  })
+  return {
+    port: server.port ?? 0,
+    requests,
+    stop: async () => {
+      await server.stop(true)
+    },
+  }
+}
+
+/** The lane's base URL as the hub hands it out (`AcpLaunchInput.baseUrl`). */
+function laneBase(lane: RuntimeLane, root: string): string {
+  return lane === 'openai-chat' || lane === 'openai-responses'
+    ? `${root}/v1`
+    : lane === 'gemini'
+      ? `${root}/v1beta`
+      : root
+}
+
+async function acpSmoke(
+  run: SmokeRun,
+  spec: RuntimeSpec,
+): Promise<string | null> {
+  const acp = spec.acp
+  const lane = spec.lanes[0]
+  if (acp === undefined || lane === undefined)
+    return `${spec.label} 在目录里没有 ACP 启动方式`
+  const model = laneModel()
+  const runDir = join(run.scratch, 'launch')
+  mkdirSync(runDir, { mode: 0o700 })
+  const bridge = {
+    name: RUNTIME_MCP_SERVER,
+    command: isAbsolute(run.mcp[0]!)
+      ? run.mcp[0]!
+      : (Bun.which(run.mcp[0]!) ?? run.mcp[0]!),
+    args: run.mcp.slice(1),
+    timeoutMs: RUNTIME_MCP_TIMEOUT_MS,
+  }
+  let channel: AcpChannel | undefined
+  try {
+    const plan = acp.launch({
+      bin: run.bin,
+      model: SMOKE_MODEL,
+      lane,
+      baseUrl: laneBase(lane, `http://127.0.0.1:${model.port}`),
+      apiKey: 'qianmo-smoke',
+      home: run.home,
+      runDir,
+      cwd: run.workspace,
+      bridge,
+    })
+    for (const dir of [
+      ...(plan.dirs ?? []),
+      ...(plan.cwd === undefined ? [] : [plan.cwd]),
+    ])
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+    for (const file of plan.files ?? []) {
+      mkdirSync(dirname(file.path), { recursive: true, mode: 0o700 })
+      writeFileSync(file.path, file.content, { mode: 0o600 })
+    }
+    const child = spawn(plan.argv[0]!, plan.argv.slice(1), {
+      cwd: plan.cwd ?? run.workspace,
+      env: { ...inheritedEnv(), HOME: run.home, ...plan.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    const opened = new AcpChannel(child, {
+      label: spec.label,
+      runtime: acp,
+      cwd: run.workspace,
+      mcpServers:
+        plan.mountsBridge === true
+          ? []
+          : [
+              {
+                name: bridge.name,
+                command: bridge.command,
+                args: bridge.args,
+                env: [],
+              },
+            ],
+      onSession: () => {},
+      // Only the host's tool is called; the host decides it when called.
+      permission: async () => true,
+    })
+    channel = opened
+    const deadline = new Promise<'timeout'>(resolve =>
+      setTimeout(() => resolve('timeout'), run.timeoutMs).unref(),
+    )
+    const started = await Promise.race([
+      opened.initialize().then(
+        () => null,
+        (error: unknown) =>
+          `会话没有建立（含 qianmo 工具桥）：${error instanceof Error ? error.message : String(error)}`,
+      ),
+      deadline,
+    ])
+    if (started === 'timeout') return `${run.timeoutMs / 1000} 秒内没有完成检查`
+    if (started !== null) return started
+    const result = new Promise<OmpRpcFrame>(resolve =>
+      opened.onFrame(frame => {
+        if (frame.type === 'prompt_result') resolve(frame)
+      }),
+    )
+    await opened.prompt({
+      messageId: 'smoke',
+      text: `Call the ${SMOKE_TOOL} tool, then answer ok.`,
+    })
+    const ended = await Promise.race([result, deadline])
+    if (ended === 'timeout') return `${run.timeoutMs / 1000} 秒内没有完成检查`
+    if (model.requests.length === 0) return '底层没有请求模型'
+    // Any request: a harness may first ask for a session title, toolless.
+    if (
+      !model.requests.some(request =>
+        request.tools.some(tool => tool.endsWith(SMOKE_TOOL)),
+      )
+    )
+      return `qianmo 工具桥的工具没有出现：${SMOKE_TOOL}`
+    if (!run.calls.includes(SMOKE_TOOL)) return '调用 qianmo 工具没有到达节点'
+    if (ended.status !== 'completed')
+      return `回合没有完成：${JSON.stringify(ended.error ?? ended.status)}`
+    return null
+  } finally {
+    await channel?.stop(true).catch(() => {})
+    await model.stop()
+  }
 }

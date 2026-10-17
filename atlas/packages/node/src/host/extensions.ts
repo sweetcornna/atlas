@@ -19,7 +19,10 @@
  *
  * Claude Code gets the MCP servers in its `--mcp-config` file and Codex in
  * the agent's own `CODEX_HOME/config.toml`, so their secrets never sit in a
- * directory a runtime copies or an agent may read. qianmopi starts a stdio
+ * directory a runtime copies or an agent may read. An ACP harness (P36) gets
+ * them in `session/new`, and its skills — the agent's and the `skills/` of
+ * its plugins — in the node's own skills directory inside the harness's
+ * home for the agent (`AcpRuntime.skillsDir`), never touching the rest of it. qianmopi starts a stdio
  * server through `qm mcp-exec`, so it sees none of the node's environment. A GitHub source is only
  * used when its files match the digest the hub pinned.
  *
@@ -54,6 +57,7 @@ import { readTextIfExists, writePrivateJson } from '../providers/store.js'
 import { qmArgv } from '../omp/launch.js'
 import type { ControlHandler } from './control.js'
 import { fetchGithubDir, GITHUB_REPO } from './githubDir.js'
+import { runtimeSpec } from './runtimes/catalog.js'
 import type { ExternalRuntimeKind } from './runtimes/channel.js'
 import { toml } from './runtimes/codex.js'
 import { runCommand, type RunCommand } from './runtimeUpdate.js'
@@ -287,6 +291,8 @@ export interface NodeExtensionsOptions {
   readonly agents: readonly NodeExtensionsAgent[]
   readonly root?: string
   readonly codexHome?: (agent: string) => string
+  /** An agent's state directory for a runtime (P36: the ACP harness's home). */
+  readonly runtimeHome?: (runtime: string, agent: string) => string
   /** The Codex executable; Codex agents get plugins through it. */
   readonly codexBin?: string
   readonly policy?: OutboundPolicy
@@ -546,6 +552,22 @@ export function skillMarkdown(
   return `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---\n\n${body.trim()}\n`
 }
 
+/** The skill directories (`skills/<name>/SKILL.md`) a plugin carries. */
+function pluginSkills(dir: string): string[] {
+  try {
+    return readdirSync(path.join(dir, 'skills'), { withFileTypes: true })
+      .filter(
+        entry =>
+          entry.isDirectory() &&
+          existsSync(path.join(dir, 'skills', entry.name, 'SKILL.md')),
+      )
+      .map(entry => entry.name)
+      .sort()
+  } catch {
+    return []
+  }
+}
+
 function writeManifests(dir: string, name: string, description: string): void {
   const manifest = { name, version: '1.0.0', description }
   mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true })
@@ -758,6 +780,13 @@ export class NodeExtensions {
 
   #agentDir(agent: string): string {
     return path.join(this.#root, 'agents', agent)
+  }
+
+  #runtimeHome(runtime: string, agent: string): string {
+    return (
+      this.#options.runtimeHome?.(runtime, agent) ??
+      qianmoConfigPath('runtimes', runtime, agent)
+    )
   }
 
   status(): ExtensionsStatus {
@@ -1057,6 +1086,19 @@ export class NodeExtensions {
     const codexAgents = roster
       .filter(one => one.runtime === 'codex')
       .map(one => one.agent)
+    const acpAgents = roster.flatMap(one => {
+      const spec = one.runtime === null ? undefined : runtimeSpec(one.runtime)
+      return spec?.acp === undefined
+        ? []
+        : [
+            {
+              agent: one.agent,
+              runtime: spec.id,
+              label: spec.label,
+              acp: spec.acp,
+            },
+          ]
+    })
     for (const entry of entries) {
       if (entry.kind === 'mcp' && entry.transport === 'sse')
         failures.fail(
@@ -1065,6 +1107,34 @@ export class NodeExtensions {
           false,
           codexAgents.filter(agent => forAgent(entry, agent)),
         )
+      for (const one of acpAgents) {
+        if (!forAgent(entry, one.agent)) continue
+        const transport = entry.transport ?? 'stdio'
+        if (entry.kind === 'mcp' && !one.acp.mcpTransports.includes(transport))
+          failures.fail(
+            entry.id,
+            one.acp.mcpTransports.length === 0
+              ? `${one.label} 不接入节点配置的 MCP 服务器`
+              : `${one.label} 不支持 ${transport.toUpperCase()} 传输`,
+            false,
+            [one.agent],
+          )
+        if (entry.kind !== 'mcp' && one.acp.skillsDir === undefined)
+          failures.fail(entry.id, '该底层不支持技能', false, [one.agent])
+        const source = sources.get(entry.id)
+        if (
+          entry.kind === 'plugin' &&
+          one.acp.skillsDir !== undefined &&
+          source !== undefined &&
+          pluginSkills(source).length === 0
+        )
+          failures.fail(
+            entry.id,
+            `${one.label} 只加载插件里的技能，这个插件没有技能`,
+            false,
+            [one.agent],
+          )
+      }
       if (applies(entry).length === 0)
         failures.fail(entry.id, '这台节点上没有它适用的智能体', false)
     }
@@ -1100,6 +1170,37 @@ export class NodeExtensions {
         code: 'failed',
         message: `扩展落地失败：${failure(error)}`,
       }
+    }
+
+    // 6b. ACP harnesses load the agent's skills from the node's skills
+    // directory in their home; an agent that left one is taken out of it.
+    for (const one of acpAgents) {
+      const skillsDir = one.acp.skillsDir
+      if (skillsDir === undefined) continue
+      const mine = laidOut(one.agent).filter(entry => entry.kind !== 'mcp')
+      try {
+        this.#landAcpSkills(one.agent, one.runtime, skillsDir, mine)
+      } catch (error) {
+        for (const entry of mine)
+          failures.fail(
+            entry.id,
+            `技能没有放进 ${one.label}：${failure(error)}`,
+            true,
+            [one.agent],
+          )
+      }
+    }
+    for (const before of previous?.roster ?? []) {
+      const spec =
+        before.runtime === null ? undefined : runtimeSpec(before.runtime)
+      const skillsDir = spec?.acp?.skillsDir
+      if (spec === undefined || skillsDir === undefined) continue
+      const now = roster.find(one => one.agent === before.agent)
+      if (now?.runtime === before.runtime) continue
+      rmSync(path.join(this.#runtimeHome(spec.id, before.agent), skillsDir), {
+        recursive: true,
+        force: true,
+      })
     }
 
     // 7. Codex agents install through Codex itself, when what they should
@@ -1303,6 +1404,48 @@ export class NodeExtensions {
         const { command, args } = this.#mcpExecCommand([])
         writeFileSync(shim, mcpExecShim([command, ...args]), { mode: 0o700 })
       }
+    }
+  }
+
+  /**
+   * The node's skills directory in an ACP harness's home for `agent`: the
+   * agent's skills, and the `skills/` of its plugins as `<plugin>--<skill>`,
+   * built aside and swapped in whole. The harness's own state beside it
+   * (its skills, plugins, profile, sessions) is not touched.
+   */
+  #landAcpSkills(
+    agent: string,
+    runtime: string,
+    skillsDir: string,
+    mine: readonly ExtensionWireEntry[],
+  ): void {
+    const home = this.#runtimeHome(runtime, agent)
+    const target = path.join(home, skillsDir)
+    mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 })
+    const stage = path.join(home, `.qmo-skills.next-${randomUUID()}`)
+    mkdirSync(stage, { mode: 0o700 })
+    try {
+      const laid = path.join(this.#agentDir(agent), 'plugins')
+      const copy = (from: string, name: string) => {
+        if (existsSync(path.join(from, 'SKILL.md')))
+          cpSync(from, path.join(stage, name), { recursive: true })
+      }
+      for (const entry of mine) {
+        if (entry.kind === 'skill')
+          copy(path.join(laid, SKILLS_PLUGIN, 'skills', entry.name), entry.name)
+        if (entry.kind === 'plugin')
+          for (const skill of pluginSkills(path.join(laid, entry.name)))
+            copy(
+              path.join(laid, entry.name, 'skills', skill),
+              `${entry.name}--${skill}`,
+            )
+      }
+      const old = path.join(home, `.qmo-skills.old-${randomUUID()}`)
+      if (existsSync(target)) renameSync(target, old)
+      renameSync(stage, target)
+      rmSync(old, { recursive: true, force: true })
+    } finally {
+      rmSync(stage, { recursive: true, force: true })
     }
   }
 

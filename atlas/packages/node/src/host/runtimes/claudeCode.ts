@@ -13,6 +13,11 @@ import {
 
 /** The MCP server name the host's tools are registered under. */
 export const RUNTIME_MCP_SERVER = 'qianmo'
+/**
+ * How long a runtime's MCP client lets one call to the host's server run:
+ * `qianmo_ask` waits up to 1800 s for the other side, plus the hub's margin.
+ */
+export const RUNTIME_MCP_TIMEOUT_MS = 1_900_000
 /** The host tool Claude Code asks before a call its rules do not settle. */
 export const PERMISSION_TOOL = 'qianmo_permission'
 
@@ -51,10 +56,12 @@ const CLAUDE_SETTINGS = { disableAllHooks: true }
  * Environment that keeps a resident Claude Code to the node's policy: no
  * auto-memory (qianmo's memory goes through `qianmo_*`, and Claude Code's
  * own would live under the protected config root), no self-update (P31
- * installs versions) and no traffic but the model's.
+ * installs versions) and no traffic but the model's. MCP calls get the
+ * bridge's timeout; Claude Code has one setting for every server.
  */
 export const CLAUDE_CODE_ENV: Readonly<Record<string, string>> = {
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+  MCP_TOOL_TIMEOUT: String(RUNTIME_MCP_TIMEOUT_MS),
   DISABLE_AUTOUPDATER: '1',
   DISABLE_TELEMETRY: '1',
   DISABLE_ERROR_REPORTING: '1',

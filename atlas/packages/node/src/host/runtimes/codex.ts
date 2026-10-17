@@ -10,7 +10,7 @@ import {
   type RuntimeChannelHooks,
   type RuntimeUsage,
 } from './channel.js'
-import { RUNTIME_MCP_SERVER } from './claudeCode.js'
+import { RUNTIME_MCP_SERVER, RUNTIME_MCP_TIMEOUT_MS } from './claudeCode.js'
 
 /** A TOML literal for one `-c key=value` override. */
 export function toml(value: unknown): string {
@@ -86,6 +86,7 @@ export function codexArgv(launch: CodexLaunch): string[] {
       command: launch.mcp.command,
       args: [...launch.mcp.args],
       default_tools_approval_mode: 'approve',
+      tool_timeout_sec: RUNTIME_MCP_TIMEOUT_MS / 1000,
     },
     // The host is the only notifier; no desktop notification hooks.
     notify: [],
