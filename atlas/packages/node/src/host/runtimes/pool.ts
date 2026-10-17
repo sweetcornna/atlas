@@ -149,12 +149,17 @@ const INHERITED_ENV = [
   'no_proxy',
 ]
 const CODEX_KEY_ENV = 'QIANMO_RUNTIME_KEY'
-/** Codex features a resident agent never uses. */
+/**
+ * Codex features a resident agent never uses. `plugins` stays on: the
+ * operator's skills and plugins load through it (P32); what a plugin bundles
+ * besides skills is kept out by `apps`, `remote_plugin` and `hooks` here and
+ * by the node's config for bundled MCP servers.
+ */
 const CODEX_DISABLED_FEATURES = [
   'multi_agent',
   'apps',
-  'plugins',
   'remote_plugin',
+  'skill_mcp_dependency_install',
   'browser_use',
   'browser_use_external',
   'computer_use',
@@ -725,6 +730,8 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     // sandbox is the boundary, so only an edit the verdict would ask about
     // goes to the operator.
     if (call.toolName === 'bash') return false
+    // The host's own tools decide for themselves when they are called.
+    if (call.toolName.startsWith(`mcp__${RUNTIME_MCP_SERVER}__`)) return true
     // An operator-configured MCP server set to ask (P32).
     if (call.toolName.startsWith('mcp__'))
       return (await this.#decide(agent, sessionId, call)).ok

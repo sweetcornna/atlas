@@ -53,9 +53,12 @@ export function codexArgv(launch: CodexLaunch): string[] {
     'model_providers.qianmo': provider,
     model_provider: 'qianmo',
     model: launch.model,
+    // The host authorizes its own tools when they are called; Codex asking
+    // first would only get them refused (P32 audit 14).
     [`mcp_servers.${RUNTIME_MCP_SERVER}`]: {
       command: launch.mcp.command,
       args: [...launch.mcp.args],
+      default_tools_approval_mode: 'approve',
     },
     // The host is the only notifier; no desktop notification hooks.
     notify: [],

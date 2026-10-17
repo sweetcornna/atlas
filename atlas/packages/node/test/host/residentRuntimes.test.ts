@@ -238,6 +238,21 @@ test('Codex: a thread is opened once, used for every turn and resumed after a re
   const argv = launches[0]!.argv
   expect(argv).toContain('shell_tool')
   expect(argv.join(' ')).toContain('model_provider="qianmo"')
+  // Plugins load (operator skills, P32 audit 1); what they bundle does not.
+  const disabled = argv.flatMap((arg, at) =>
+    arg === '--disable' ? [argv[at + 1]!] : [],
+  )
+  expect(disabled).not.toContain('plugins')
+  for (const feature of [
+    'apps',
+    'remote_plugin',
+    'hooks',
+    'skill_mcp_dependency_install',
+  ])
+    expect(disabled).toContain(feature)
+  expect(argv.find(arg => arg.startsWith('mcp_servers.qianmo='))).toContain(
+    '"default_tools_approval_mode" = "approve"',
+  )
   expect(launches[0]!.env.QIANMO_RUNTIME_KEY).toBe('sk-test-runtime')
   expect(launches[0]!.env.CODEX_HOME).toStartWith(root!.root)
 })
@@ -348,6 +363,19 @@ test('Codex: a tool call on an MCP server set to ask goes to the operator (P32)'
     content: 'codex(1): mcp action=accept',
   })
   expect(asked.map(call => call.toolName)).toEqual(['mcp__docs__search'])
+})
+
+test('Codex: asked about one of the host’s own tools, the node accepts without asking anyone (P32 audit 14)', async () => {
+  const { pool, agent, asked } = setup(
+    { runtime: 'codex' },
+    { permission: () => false },
+  )
+  const session = await pool.newSession(agent)
+  expect(await turn(pool, session, 'h', 'mcp-host')).toEqual({
+    outcome: 'completed',
+    content: 'codex(1): mcp-host action=accept',
+  })
+  expect(asked).toEqual([])
 })
 
 test('Codex: an MCP elicitation for a server nobody configured is declined', async () => {
