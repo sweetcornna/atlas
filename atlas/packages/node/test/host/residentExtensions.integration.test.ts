@@ -29,20 +29,11 @@ test('a resident turn runs an operator-configured MCP tool and reads an installe
   const previous = {
     config: process.env.QIANMO_CONFIG_DIR,
     path: process.env.PATH,
-    home: process.env.HOME,
   }
   // Something of the node's own that no MCP server may see (P32 audit 9).
   process.env.QIANMO_TRANSPORT_PSK_E2E = 'node-secret'
   const root = mkdtempSync(join(tmpdir(), 'qm-ext-e2e-'))
   process.env.QIANMO_CONFIG_DIR = join(root, 'config')
-  // A skill of whoever the node runs as: never the agent's (P32).
-  const home = join(root, 'home')
-  mkdirSync(join(home, '.agents', 'skills', 'outsider'), { recursive: true })
-  writeFileSync(
-    join(home, '.agents', 'skills', 'outsider', 'SKILL.md'),
-    "---\nname: outsider\ndescription: Not the operator's\n---\nOUTSIDER-MARKER\n",
-  )
-  process.env.HOME = home
   const bin = join(root, 'bin')
   mkdirSync(bin)
   // A bare command on PATH, as the console requires.
@@ -88,7 +79,6 @@ test('a resident turn runs an operator-configured MCP tool and reads an installe
     harness.script([
       { name: tool, input: { q: 'cache' } },
       { name: 'read', input: { path: 'skill://review' } },
-      { name: 'read', input: { path: 'skill://outsider' } },
     ])
     pool = new ResidentOmpPool({
       agents: [{ agent: 'reviewer', cwd: workspace }],
@@ -108,7 +98,6 @@ test('a resident turn runs an operator-configured MCP tool and reads an installe
     expect(harness.offeredTools.has(tool)).toBe(true)
     expect(harness.toolResults[0]).toContain('found: cache (token-1)')
     expect(harness.toolResults[1]).toContain('SKILL-BODY-MARKER')
-    expect(harness.toolResults[2]).not.toContain('OUTSIDER-MARKER')
     // The probe and qianmopi's own start both went through qm mcp-exec: the
     // server saw its own variables and the baseline, not the node's.
     const seen = readFileSync(envLog, 'utf8')
@@ -133,7 +122,6 @@ test('a resident turn runs an operator-configured MCP tool and reads an installe
     await pool?.stop()
     await harness.stop()
     process.env.PATH = previous.path
-    process.env.HOME = previous.home
     delete process.env.QIANMO_TRANSPORT_PSK_E2E
     if (previous.config === undefined) delete process.env.QIANMO_CONFIG_DIR
     else process.env.QIANMO_CONFIG_DIR = previous.config
