@@ -24,6 +24,13 @@ export interface NodeTurnRequest {
    * caller has no session to name.
    */
   readonly sessionId?: string
+  /**
+   * The turn is a hub's background sub-agent turn (P29). When the gate frees
+   * up it takes the oldest turn that is not one of these first, so a person's
+   * next message does not wait behind a queue of background work. A running
+   * turn is never interrupted. Absent means interactive.
+   */
+  readonly background?: boolean
 }
 
 /**
@@ -69,6 +76,7 @@ interface QueuedTurn {
   readonly deadlineAt: number
   readonly enqueuedAt: number
   readonly sessionId: string
+  readonly background: boolean
   readonly resolve: (value: unknown) => void
   readonly reject: (error: unknown) => void
 }
@@ -82,9 +90,15 @@ interface QueuedTurn {
  * what changed; arrival order and "a failed turn still releases the next one"
  * are the same properties they always were.
  *
- * **No priority axis.** FIFO, deliberately: the relative urgency of a watch job
- * against a human's request is a product judgement, and a table of them would
- * grow crooked long before anything in M1 needed it.
+ * **Two classes, not a priority table.** Turns a hub marked as background
+ * sub-agent work ({@link NodeTurnRequest.background}) yield to every other
+ * turn when the gate frees up; within each class the order is arrival order.
+ * Nothing is preempted: a background turn already running finishes its turn
+ * (the hub keeps those short, and its deadline stops one that is not). Watch
+ * jobs, peers and local mail stay in the interactive class, so their relative
+ * order is the FIFO it always was. A background turn can wait as long as
+ * interactive turns keep arriving; at a person's pace that is a pause, not
+ * starvation, and its own deadline still culls it at the head.
  */
 export class NodeTurnGate {
   readonly #queue: QueuedTurn[] = []
@@ -143,6 +157,7 @@ export class NodeTurnGate {
         deadlineAt: request.deadlineAt ?? Number.POSITIVE_INFINITY,
         enqueuedAt: this.#now(),
         sessionId: request.sessionId ?? '',
+        background: request.background === true,
         resolve: resolve as (value: unknown) => void,
         reject,
       })
@@ -156,12 +171,14 @@ export class NodeTurnGate {
    * The deadline is read **here**, at the head of the queue, and not at
    * enqueue: however deep a turn sits, it is worth keeping as long as its
    * deadline is still ahead, and only the moment its slot comes up can say
-   * whether it outlived it.
+   * whether it outlived it. "The head" is the oldest interactive turn when
+   * there is one, else the oldest background turn.
    */
   #pump(): void {
     if (this.#active) return
     for (;;) {
-      const next = this.#queue.shift()
+      const interactive = this.#queue.findIndex(turn => !turn.background)
+      const next = this.#queue.splice(Math.max(0, interactive), 1)[0]
       if (next === undefined) return
       const now = this.#now()
       if (now >= next.deadlineAt) {
