@@ -262,7 +262,11 @@ function open(): ConsoleMagpie {
     agents: {
       control: links,
       nodes: () => [...links.nodes.keys()],
-      tenantOf: node => tenants.get(node) ?? null,
+      tenantOf: node => {
+        const tenant = tenants.get(node) ?? null
+        if (tenant === 'unreadable') throw new Error('租户配置不可用')
+        return tenant
+      },
       waitMs: 20,
     },
   })
@@ -745,6 +749,14 @@ describe('joining magpie', () => {
     expect(ledger.filter(line => line.includes('magpie.autojoin'))).toEqual([
       'system:magpie magpie.autojoin node:beta-1 ok',
     ])
+  })
+
+  test('a node whose tenant cannot be told does not join on its own', async () => {
+    tenants.set('beta-1', 'unreadable')
+    tenants.set('beta-2', 'acme')
+    await connected()
+    expect(fake.keys()).toEqual([])
+    expect(ledger.some(line => line.includes('magpie.autojoin'))).toBe(false)
   })
 
   test('with a global default nothing joins on its own', async () => {

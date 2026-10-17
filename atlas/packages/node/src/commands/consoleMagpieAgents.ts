@@ -490,11 +490,12 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
     return value
   }
 
-  #tenantOf(node: string): string | null {
+  /** The node's tenant; `undefined` when the tenancy cannot be read. */
+  #tenantOf(node: string): string | null | undefined {
     try {
       return this.#options.tenantOf?.(node) ?? null
     } catch {
-      return null
+      return undefined
     }
   }
 
@@ -640,6 +641,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
     for (const [node, gateway] of gateways.nodes) {
       if (this.#closed) break
       if (gateway.assignment !== 'inherit') continue
+      // A tenant's node, or one whose tenant cannot be told, stays out.
       if (this.#tenantOf(node) !== null) continue
       const failedAt = this.#joinFailed.get(node)
       if (failedAt !== undefined && this.#now() - failedAt < JOIN_RETRY_MS)
@@ -711,7 +713,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
     const base = {
       node,
       gateway: gateway?.assignment ?? ('absent' as const),
-      tenant: this.#tenantOf(node),
+      tenant: this.#tenantOf(node) ?? null,
       models,
     }
     if (facts.state !== 'ok')
