@@ -7,7 +7,9 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
@@ -243,6 +245,11 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
   readonly #starting = new Map<string, Promise<ExternalRuntimeChannel>>()
   readonly #tokens = new Map<string, string>()
   readonly #used = new Map<string, number>()
+  /** Turns holding a session's channel (their acquisition signal is live). */
+  readonly #leases = new Map<string, number>()
+  /** Bumped by {@link invalidateAgent}; a channel started before is stale. */
+  readonly #epochs = new Map<string, number>()
+  readonly #channelEpochs = new WeakMap<ExternalRuntimeChannel, number>()
   readonly #toolHost: RuntimeToolHost
   readonly #desktop: RuntimeDesktopTools | undefined
   readonly #timer: Timer
@@ -280,11 +287,15 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         for (const [id, channel] of this.#channels) {
           if (!channel.busy && now - (this.#used.get(id) ?? now) >= idle)
             this.closeSession(id)
+          else this.#retireIfStale(id)
         }
       },
       Math.min(idle, 60_000),
     )
     this.#timer.unref()
+    // A Claude Code MCP config left behind by a process that is gone holds
+    // the agent's MCP secrets for nothing.
+    for (const agent of options.agents) this.#sweepMcpConfigs(agent.agent)
   }
 
   get alive(): boolean {
@@ -357,8 +368,18 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     if (agent === undefined)
       throw new Error(`resident session ${sessionId} has no configured owner`)
     this.#used.set(sessionId, Date.now())
+    if (signal !== undefined) this.#lease(sessionId, signal)
     const live = this.#channels.get(sessionId)
-    if (live?.alive) return live
+    // A stale channel nobody else holds is replaced before this turn.
+    if (
+      live?.alive &&
+      this.#stale(sessionId, live) &&
+      !live.busy &&
+      (this.#leases.get(sessionId) ?? 0) <= (signal === undefined ? 0 : 1)
+    ) {
+      this.closeSession(sessionId)
+      await live.stop().catch(() => {})
+    } else if (live?.alive) return live
     let starting = this.#starting.get(sessionId)
     if (starting === undefined) {
       starting = (async () => {
@@ -375,6 +396,65 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     const channel = await starting
     signal?.throwIfAborted()
     return channel
+  }
+
+  /** Holds `sessionId`'s channel until `signal` aborts (the turn's end). */
+  #lease(sessionId: string, signal: AbortSignal): void {
+    if (signal.aborted) return
+    this.#leases.set(sessionId, (this.#leases.get(sessionId) ?? 0) + 1)
+    signal.addEventListener(
+      'abort',
+      () => {
+        const left = (this.#leases.get(sessionId) ?? 1) - 1
+        if (left > 0) this.#leases.set(sessionId, left)
+        else {
+          this.#leases.delete(sessionId)
+          this.#retireIfStale(sessionId)
+        }
+      },
+      { once: true },
+    )
+  }
+
+  #stale(sessionId: string, channel: ExternalRuntimeChannel): boolean {
+    const agent = this.#owners.get(sessionId)?.agent
+    if (agent === undefined) return false
+    return (
+      (this.#channelEpochs.get(channel) ?? 0) < (this.#epochs.get(agent) ?? 0)
+    )
+  }
+
+  /** Closes a stale channel that no turn is using. */
+  #retireIfStale(sessionId: string): boolean {
+    const channel = this.#channels.get(sessionId)
+    if (
+      channel === undefined ||
+      channel.busy ||
+      this.#leases.has(sessionId) ||
+      !this.#stale(sessionId, channel)
+    )
+      return false
+    this.closeSession(sessionId)
+    return true
+  }
+
+  #mcpConfig(agent: string, sessionId: string): string {
+    return join(this.#sessionDir(agent, sessionId), 'runtime-mcp.json')
+  }
+
+  /** Removes Claude Code MCP configs of `agent`'s sessions with no process. */
+  #sweepMcpConfigs(agent: string): void {
+    let ids: string[]
+    try {
+      ids = readdirSync(qianmoConfigPath('resident', 'sessions', agent))
+    } catch {
+      return
+    }
+    for (const id of ids) {
+      if (!SESSION_ID.test(id) || this.#channels.has(id)) continue
+      if (this.#starting.has(id)) continue
+      rmSync(this.#mcpConfig(agent, id), { force: true })
+    }
   }
 
   async #claimCapacity(sessionId: string): Promise<void> {
@@ -433,6 +513,8 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
   ): Promise<ExternalRuntimeChannel> {
     const dir = this.#sessionDir(agent.agent, sessionId)
     mkdirSync(dir, { recursive: true, mode: 0o700 })
+    // Read before the configuration: an invalidation from here on is newer.
+    const epoch = this.#epochs.get(agent.agent) ?? 0
     const launch = this.#options.resolveLaunch(agent)
     const record = this.#record(dir, agent.runtime)
     const systemPrompt = this.#systemPrompt(dir, agent)
@@ -599,10 +681,12 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
           })
     this.#tokens.set(sessionId, token)
     this.#channels.set(sessionId, channel)
-    channel.onFrame(frame => this.#observe(frame))
+    this.#channelEpochs.set(channel, epoch)
+    channel.onFrame(frame => this.#observe(sessionId, frame))
     const gone = () => {
       this.#toolHost.revoke(token)
       if (this.#channels.get(sessionId) === channel) {
+        rmSync(this.#mcpConfig(agent.agent, sessionId), { force: true })
         this.#channels.delete(sessionId)
         this.#tokens.delete(sessionId)
         this.#longestReadyMs = Math.max(
@@ -635,10 +719,11 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     return channel
   }
 
-  #observe(frame: OmpRpcFrame): void {
+  #observe(sessionId: string, frame: OmpRpcFrame): void {
     if (frame.type !== 'prompt_result' && frame.type !== 'message_end') return
     if (frame.type === 'prompt_result' && frame.status === 'completed')
       this.#completedTurn = true
+    if (frame.type === 'prompt_result') this.#retireIfStale(sessionId)
     const active = [...this.#channels.values()].some(channel => channel.busy)
     void Promise.resolve(this.#options.onActivity?.(active)).catch(error =>
       this.#options.onError?.(error),
@@ -843,6 +928,9 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     this.#desktop?.close(sessionId)
     this.#channels.delete(sessionId)
     this.#used.delete(sessionId)
+    const owner = this.#owners.get(sessionId)
+    if (owner !== undefined && channel !== undefined)
+      rmSync(this.#mcpConfig(owner.agent, sessionId), { force: true })
     if (channel !== undefined) {
       this.#longestReadyMs = Math.max(
         this.#longestReadyMs,
@@ -852,18 +940,23 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     }
   }
 
+  /**
+   * `agent`'s configuration changed (extensions, desktop): idle processes
+   * close now, and one that is starting or running a turn finishes that turn
+   * on what it started with and closes once the turn is over. The next turn
+   * starts a process with the new configuration.
+   */
   async invalidateAgent(agent: string): Promise<void> {
-    const ids = [...this.#owners]
-      .filter(([, owner]) => owner.agent === agent)
-      .map(([id]) => id)
-    await Promise.allSettled(
-      ids.map(async id => {
-        await this.#starting.get(id)?.catch(() => {})
-        const channel = this.#channels.get(id)
-        this.closeSession(id)
-        await channel?.stop()
-      }),
-    )
+    this.#epochs.set(agent, (this.#epochs.get(agent) ?? 0) + 1)
+    const closing: Promise<void>[] = []
+    for (const [id, owner] of this.#owners) {
+      if (owner.agent !== agent) continue
+      const channel = this.#channels.get(id)
+      if (channel !== undefined && this.#retireIfStale(id))
+        closing.push(channel.stop().catch(() => {}))
+    }
+    this.#sweepMcpConfigs(agent)
+    await Promise.allSettled(closing)
   }
 
   async stop(): Promise<void> {
@@ -871,6 +964,11 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     this.#stopped = true
     clearInterval(this.#timer)
     const channels = [...this.#channels.values()]
+    for (const id of this.#channels.keys()) {
+      const owner = this.#owners.get(id)
+      if (owner !== undefined)
+        rmSync(this.#mcpConfig(owner.agent, id), { force: true })
+    }
     this.#channels.clear()
     this.#tokens.clear()
     this.#desktop?.stop()

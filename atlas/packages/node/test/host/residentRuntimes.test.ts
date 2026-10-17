@@ -3,7 +3,13 @@
 
 import { afterEach, expect, test } from 'bun:test'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import {
   OmpResidentTurnPort,
@@ -344,6 +350,50 @@ test('Claude Code: operator extensions load through --plugin-dir and the MCP con
     headers: { Authorization: 'Bearer t' },
   })
   expect(config.qianmo.type).toBe('stdio')
+})
+
+test('invalidating an agent closes its idle process now and lets a running turn finish first (P32 audit 4)', async () => {
+  const { pool, agent } = setup({ runtime: 'claude-code' })
+  const busy = await pool.newSession(agent)
+  const idle = await pool.newSession(agent)
+  expect((await turn(pool, idle, 'i1', 'hello')).outcome).toBe('completed')
+  const idleConfig = join(launches[0]!.sessionDir, 'runtime-mcp.json')
+  expect(existsSync(idleConfig)).toBe(true)
+  const running = turn(pool, busy, 'b1', 'slow')
+  while (launches.length < 2) await Bun.sleep(5)
+  await Bun.sleep(100)
+  await pool.invalidateAgent(agent.agent)
+  // The idle process is gone, and its MCP config (with secrets) with it.
+  const exited = (child: ChildProcess) =>
+    child.exitCode !== null || child.signalCode !== null
+  expect(exited(children[0]!)).toBe(true)
+  expect(existsSync(idleConfig)).toBe(false)
+  // The turn in flight is not interrupted.
+  expect(exited(children[1]!)).toBe(false)
+  expect(await running).toEqual({
+    outcome: 'completed',
+    content: 'echo(1): slow',
+  })
+  const deadline = Date.now() + 3_000
+  while (!exited(children[1]!) && Date.now() < deadline) await Bun.sleep(10)
+  expect(exited(children[1]!)).toBe(true)
+  // The next turn starts a new process, on the new configuration.
+  expect((await turn(pool, busy, 'b2', 'again')).outcome).toBe('completed')
+  expect(launches).toHaveLength(3)
+  expect(launches[2]!.sessionId).toBe(busy)
+})
+
+test('a new pool removes MCP configs left by processes that are gone (P32 audit 12)', async () => {
+  const { pool, agent } = setup({ runtime: 'claude-code' })
+  const session = await pool.newSession(agent)
+  expect((await turn(pool, session, 's1', 'hello')).outcome).toBe('completed')
+  const file = join(launches[0]!.sessionDir, 'runtime-mcp.json')
+  expect(existsSync(file)).toBe(true)
+  // A crash leaves the file; the next generation's pool clears it.
+  await pool.stop()
+  writeFileSync(file, '{"mcpServers":{}}')
+  setup({ runtime: 'claude-code' })
+  expect(existsSync(file)).toBe(false)
 })
 
 test('Codex: a tool call on an MCP server set to ask goes to the operator (P32)', async () => {

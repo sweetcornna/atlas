@@ -585,6 +585,9 @@ export class ResidentOmpPool
   readonly #slots = new Map<string, OmpOpening>()
   readonly #queue: CapacityWaiter[] = []
   readonly #pins = new Map<string, Set<symbol>>()
+  /** Bumped by {@link invalidateAgent}; a child started before is stale. */
+  readonly #epochs = new Map<string, number>()
+  readonly #childEpochs = new WeakMap<OmpRpcProcess, number>()
   #startFailures = 0
   #completedTurn = false
   #longestReadyMs = 0
@@ -619,7 +622,8 @@ export class ResidentOmpPool
     this.#timer = setInterval(
       () => {
         for (const [id, last] of this.#used) {
-          if (this.#idle(id) && Date.now() - last >= idle) this.closeSession(id)
+          if (this.#idle(id) && (Date.now() - last >= idle || this.#stale(id)))
+            this.closeSession(id)
         }
       },
       Math.min(idle, 60_000),
@@ -692,16 +696,32 @@ export class ResidentOmpPool
     }
     throw new Error(`resident session ${sessionId} has no configured owner`)
   }
+  /**
+   * `agent`'s configuration changed (extensions, desktop): idle children
+   * close now, and one that is starting, routing or running a turn finishes
+   * that turn on what it started with and closes once idle. The next turn
+   * starts a child with the new configuration.
+   */
   async invalidateAgent(agent: string): Promise<void> {
-    const ids = [...this.#owners].filter(([, owner]) => owner.agent === agent)
-    // Cancel all starts before joining any handshake (including queued starts).
-    for (const [id] of ids) this.closeSession(id)
-    await Promise.allSettled(
-      ids.map(async ([id]) => {
-        await this.#starting.get(id)?.promise.catch(() => {})
-        await this.#retiring.get(id)
-      }),
+    this.#epochs.set(agent, (this.#epochs.get(agent) ?? 0) + 1)
+    const ids = [...this.#owners]
+      .filter(([, owner]) => owner.agent === agent)
+      .map(([id]) => id)
+    for (const id of ids) this.#retireIfStale(id)
+    await Promise.allSettled(ids.map(id => this.#retiring.get(id)))
+  }
+  #stale(sessionId: string): boolean {
+    const child = this.#children.get(sessionId)
+    const owner = this.#owners.get(sessionId)
+    if (child === undefined || owner === undefined) return false
+    return (
+      (this.#childEpochs.get(child) ?? 0) < (this.#epochs.get(owner.agent) ?? 0)
     )
+  }
+  /** Closes a stale child that nobody is using. */
+  #retireIfStale(sessionId: string): void {
+    if (this.#stale(sessionId) && this.#idle(sessionId))
+      this.closeSession(sessionId)
   }
   async channelFor(
     sessionId: string,
@@ -722,6 +742,7 @@ export class ResidentOmpPool
         this.#pins.delete(sessionId)
         if (signal?.aborted && this.#starting.has(sessionId))
           this.closeSession(sessionId)
+        else this.#retireIfStale(sessionId)
       }
       this.#drainCapacity()
     }
@@ -746,6 +767,14 @@ export class ResidentOmpPool
           ])
         } else if (retiring) {
           await Promise.race([retiring, cancelled.promise])
+        } else if (
+          // A stale child nobody else holds: replace it before this turn.
+          this.#stale(sessionId) &&
+          pins.size === 1 &&
+          !this.#busy.has(sessionId) &&
+          !this.#starting.has(sessionId)
+        ) {
+          this.closeSession(sessionId)
         } else break
       }
       this.#assertAvailable()
@@ -924,6 +953,8 @@ export class ResidentOmpPool
       ),
       ...(media.video ? [VIDEO_TOOL] : []),
     ]
+    // Read before the configuration: an invalidation from here on is newer.
+    const epoch = this.#epochs.get(owner.agent) ?? 0
     const extensions = this.#options.extensions?.(owner.agent) ?? null
     const config: ResidentExtensionConfig = {
       v: 1,
@@ -1037,6 +1068,7 @@ export class ResidentOmpPool
       this.#options.spawn === undefined,
     )
     this.#children.set(sessionId, child)
+    this.#childEpochs.set(child, epoch)
     const videoCalls = new Map<string, AbortController>()
     // Evidence belongs to this child's unsettled activity stretch, not one
     // agent run: ticketless background continuations may start after the
@@ -1147,6 +1179,7 @@ export class ResidentOmpPool
         if (completedAwaitingSettlement) this.#completedTurn = true
         completedAwaitingSettlement = false
         this.#busy.delete(sessionId)
+        this.#retireIfStale(sessionId)
         this.#drainCapacity()
       }
       if (
