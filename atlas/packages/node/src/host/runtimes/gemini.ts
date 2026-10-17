@@ -18,7 +18,12 @@
  * - only the bridge among MCP servers (`--allowed-mcp-server-names`): the
  *   agent's own and its extensions' servers are not started, because
  *   Gemini's permission request does not name the server a tool belongs to
- *   and the node decides MCP calls per server;
+ *   and the node decides MCP calls per server. The bridge is a server of the
+ *   node's own extension with its call timeout (`session/new` carries none,
+ *   and Gemini's default is 10 minutes, shorter than `qianmo_ask` waits);
+ *   the extension file names the process's command and arguments by
+ *   environment variable only, so every process of the agent writes the
+ *   same file;
  * - the four settings the harness only reads from its settings files —
  *   usage statistics off (they go to Google otherwise), hooks off, no
  *   workspace `.env`, the gateway auth type — merged into the agent's own
@@ -26,14 +31,10 @@
  *   natural place, but Gemini skips a system file not owned by root;
  * - telemetry off and the workspace trusted by environment (an untrusted
  *   folder starts no MCP server, not even the bridge), no self-relaunch;
- * - the operator's skills (P32) as the node's own extension under
- *   `.gemini/extensions/qmo/`, beside whatever the harness installs itself.
+ * - the operator's skills (P32) in that extension
+ *   (`.gemini/extensions/qmo/`), beside whatever the harness installs.
  *
- * Auto-update only runs in the interactive UI, never under `--acp`. The
- * bridge comes through `session/new`, which carries no timeout: Gemini gives
- * it its 10-minute default, so a host tool that waits longer
- * (`qianmo_ask`) fails here. Its own settings would need the per-process
- * bridge in the agent's shared file, which concurrent sessions would race.
+ * Auto-update only runs in the interactive UI, never under `--acp`.
  *
  * A trusted workspace's own `.gemini/settings.json` still layers over the
  * agent's settings (Gemini has no per-layer opt-out); the node refuses
@@ -43,6 +44,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, join, sep } from 'node:path'
 import type {
+  AcpBridge,
   AcpLaunch,
   AcpLaunchInput,
   AcpToolCall,
@@ -188,6 +190,45 @@ export function geminiBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, '').replace(/\/v1beta$/, '')
 }
 
+/** The prefix of the variables the bridge's command line reaches Gemini in. */
+const BRIDGE_ENV = 'QM_GEMINI_BRIDGE'
+
+/**
+ * The node's extension: its name, and the bridge with the process's
+ * command and arguments as variables Gemini resolves from its environment.
+ */
+export function geminiExtension(bridge: AcpBridge): {
+  readonly manifest: string
+  readonly env: Readonly<Record<string, string>>
+} {
+  const env: Record<string, string> = {
+    [`${BRIDGE_ENV}_COMMAND`]: bridge.command,
+  }
+  const args = bridge.args.map((arg, at) => {
+    env[`${BRIDGE_ENV}_ARG_${at}`] = arg
+    return `\${${BRIDGE_ENV}_ARG_${at}}`
+  })
+  const manifest = {
+    name: 'qmo',
+    version: '1.0.0',
+    mcpServers: {
+      [bridge.name]: {
+        command: `\${${BRIDGE_ENV}_COMMAND}`,
+        args,
+        timeout: bridge.timeoutMs,
+      },
+    },
+  }
+  return { manifest: `${JSON.stringify(manifest, null, 2)}\n`, env }
+}
+
+/** `content` unless `path` already holds it. */
+function changed(path: string, content: string): string | undefined {
+  return existsSync(path) && readFileSync(path, 'utf8') === content
+    ? undefined
+    : content
+}
+
 /** `Name: value, …`, the form `GEMINI_CLI_CUSTOM_HEADERS` is split by. */
 function customHeaders(headers: Readonly<Record<string, string>>): string {
   return Object.entries(headers)
@@ -207,6 +248,9 @@ export function geminiLaunch(input: AcpLaunchInput): AcpLaunch {
   const policy = join(input.runDir, GEMINI_POLICY_FILE)
   const settingsPath = join(input.home, GEMINI_DIR, 'settings.json')
   const settings = geminiSettings(settingsPath)
+  const extension = geminiExtension(input.bridge)
+  const manifestPath = join(input.home, QMO_EXTENSION, 'gemini-extension.json')
+  const manifest = changed(manifestPath, extension.manifest)
   return {
     argv: [
       input.bin,
@@ -228,6 +272,7 @@ export function geminiLaunch(input: AcpLaunchInput): AcpLaunch {
       GEMINI_TELEMETRY_ENABLED: 'false',
       GEMINI_CLI_TRUST_WORKSPACE: 'true',
       GEMINI_CLI_NO_RELAUNCH: 'true',
+      ...extension.env,
       ...(input.headers === undefined || Object.keys(input.headers).length === 0
         ? {}
         : { GEMINI_CLI_CUSTOM_HEADERS: customHeaders(input.headers) }),
@@ -237,14 +282,14 @@ export function geminiLaunch(input: AcpLaunchInput): AcpLaunch {
       ...(settings === undefined
         ? []
         : [{ path: settingsPath, content: settings }]),
-      {
-        path: join(input.home, QMO_EXTENSION, 'gemini-extension.json'),
-        content: `${JSON.stringify({ name: 'qmo', version: '1.0.0' }, null, 2)}\n`,
-      },
+      ...(manifest === undefined
+        ? []
+        : [{ path: manifestPath, content: manifest }]),
     ],
     // It looks for `.env` files from its working directory up.
     cwd: join(input.home, 'launch'),
     dirs: [join(input.home, GEMINI_QMO_SKILLS)],
+    mountsBridge: true,
   }
 }
 

@@ -14,6 +14,7 @@ import {
   GEMINI_POLICY_FILE,
   GEMINI_QMO_SKILLS,
   geminiBaseUrl,
+  geminiExtension,
   geminiLaunch,
   geminiPolicy,
   geminiSettings,
@@ -167,6 +168,12 @@ test('Gemini CLI starts from its own launch directory under the admin policy, wi
     GEMINI_TELEMETRY_ENABLED: 'false',
     GEMINI_CLI_TRUST_WORKSPACE: 'true',
     GEMINI_CLI_NO_RELAUNCH: 'true',
+    QM_GEMINI_BRIDGE_COMMAND: '/usr/local/bin/qm',
+    QM_GEMINI_BRIDGE_ARG_0: 'runtime-mcp',
+    QM_GEMINI_BRIDGE_ARG_1: '--port',
+    QM_GEMINI_BRIDGE_ARG_2: '4100',
+    QM_GEMINI_BRIDGE_ARG_3: '--token-file',
+    QM_GEMINI_BRIDGE_ARG_4: '/q/t',
   })
   expect(launch.cwd).toBe(join(at.home, 'launch'))
   expect(launch.dirs).toEqual([join(at.home, GEMINI_QMO_SKILLS)])
@@ -177,11 +184,23 @@ test('Gemini CLI starts from its own launch directory under the admin policy, wi
   ])
   for (const file of launch.files ?? [])
     expect(file.content).not.toContain('sk-secret')
-  // The bridge goes in `session/new`, which carries no call timeout: Gemini
-  // gives it its own 10-minute default (a P36.2 limit, not configurable
-  // per process).
-  expect(launch.mountsBridge).toBeUndefined()
-  expect(JSON.stringify(launch)).not.toContain(String(BRIDGE_TIMEOUT_MS))
+  // The bridge is the node's extension's server, with the long call timeout
+  // (`session/new` carries none); the file holds no per-process detail.
+  expect(launch.mountsBridge).toBe(true)
+  const manifest = launch.files?.[2]?.content ?? ''
+  expect(JSON.parse(manifest)).toEqual({
+    name: 'qmo',
+    version: '1.0.0',
+    mcpServers: {
+      qianmo: {
+        command: `\${QM_GEMINI_BRIDGE_COMMAND}`,
+        args: [0, 1, 2, 3, 4].map(at => `\${QM_GEMINI_BRIDGE_ARG_${at}}`),
+        timeout: BRIDGE_TIMEOUT_MS,
+      },
+    },
+  })
+  expect(manifest).not.toContain('4100')
+  expect(geminiExtension(at.bridge).manifest).toBe(manifest)
 
   expect(
     geminiLaunch({ ...at, headers: { 'X-Tenant': 'a b' } }).env
@@ -255,8 +274,17 @@ test('the node’s Gemini settings merge into the agent’s settings.json, every
   })
   writeFileSync(path, merged)
   expect(geminiSettings(path)).toBeUndefined()
+  // Nothing the agent's home already holds is written again.
   const at = input('gemini', { lane: 'gemini', home })
-  expect(geminiLaunch(at).files?.map(file => file.path)).not.toContain(path)
+  const extension = join(home, '.gemini', 'extensions', 'qmo')
+  mkdirSync(extension, { recursive: true })
+  writeFileSync(
+    join(extension, 'gemini-extension.json'),
+    geminiExtension(at.bridge).manifest,
+  )
+  expect(geminiLaunch(at).files?.map(file => file.path)).toEqual([
+    join(at.runDir, GEMINI_POLICY_FILE),
+  ])
 
   // Never rewritten when the node cannot read it as plain JSON.
   writeFileSync(path, '{ // a comment\n "ui": {} }')
