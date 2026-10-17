@@ -56,7 +56,7 @@ import { SelfUpgrader } from '../host/selfUpgradeRunner.js'
 import { parseAddress } from '@qianmo/protocol'
 import { loadConsoleApproverIdentity } from './consoleApproverIdentity.js'
 import { readTrustAnchors } from '../host/trustAnchors.js'
-import { sourceCommit } from '../provenance.js'
+import { publicSourceUrl, sourceCommit } from '../provenance.js'
 import {
   AccountBook,
   resolveTokens,
@@ -521,10 +521,20 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // The public edition (P35) is its billing config: plans, channels, the
   // source link. One that does not load stops the start here, before any
   // store is opened or anything dials out.
+  //
+  // The config's `sourceUrl` names the repository; what every public page
+  // links (AGPL §13) is that repository at the commit this build runs. A
+  // build that cannot name one clean commit (`-dirty`, `unknown`, a source
+  // run with changes) stops here too: it has no corresponding source the
+  // link could honestly point at (`provenance.ts` `publicSourceUrl`).
   let billingConfig: BillingConfig | undefined
   if (config.edition === 'public' && config.billingPath !== undefined) {
     try {
-      billingConfig = loadBillingConfig(config.billingPath)
+      const loaded = loadBillingConfig(config.billingPath)
+      billingConfig = {
+        ...loaded,
+        sourceUrl: publicSourceUrl(loaded.sourceUrl),
+      }
     } catch (error) {
       process.stderr.write(
         `qm console: the public edition refuses to start · ${
