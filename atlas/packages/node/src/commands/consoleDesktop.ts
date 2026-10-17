@@ -8,6 +8,7 @@ import type {
   DesktopNodeView,
   DesktopPort,
   DesktopActor,
+  DesktopScreenView,
   ConsoleResult,
 } from '@qianmo/console'
 import type { ControlLinks } from './consoleControl.js'
@@ -17,6 +18,35 @@ const failed = <T>(message: string): ConsoleResult<T> => ({
   ok: false,
   failure: { code: 'rejected', message },
 })
+/** runtimes-channels.md §6.6: at most 4 MiB of image, as base64. */
+const SCREEN_MAX_BASE64 = Math.ceil((4 * 1024 * 1024) / 3) * 4
+const SCREEN_TYPES: readonly string[] = [
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+]
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
+/** What a node from before `desktop.view` answers for an op it does not know. */
+const OLD_NODE_REPLY = 'Invalid desktop operation'
+function screenOf(value: unknown): DesktopScreenView | null | undefined {
+  if (value === null) return null
+  if (!value || typeof value !== 'object') return undefined
+  const v = value as Record<string, unknown>
+  return Number.isFinite(v.at) &&
+    typeof v.mimeType === 'string' &&
+    SCREEN_TYPES.includes(v.mimeType) &&
+    typeof v.data === 'string' &&
+    v.data.length > 0 &&
+    v.data.length <= SCREEN_MAX_BASE64 &&
+    v.data.length % 4 === 0 &&
+    BASE64.test(v.data)
+    ? {
+        at: v.at as number,
+        mimeType: v.mimeType as DesktopScreenView['mimeType'],
+        data: v.data,
+      }
+    : undefined
+}
 /** The hub only calls authenticated control links; no omp modules run here. */
 export class ConsoleDesktop implements DesktopPort {
   readonly #links: Pick<ControlLinks, 'request' | 'status'>
@@ -120,14 +150,17 @@ export class ConsoleDesktop implements DesktopPort {
     change: Parameters<DesktopPort['set']>[1],
     actor: DesktopActor,
   ): Promise<ConsoleResult<DesktopNodeView>> {
+    // `desktop.disable` takes nothing but false unit flags; a policy change
+    // (confirm, apps, terminal) is an enable that keeps the units as they are.
+    const onlyOff =
+      Object.keys(change).length > 0 &&
+      Object.entries(change).every(
+        ([key, value]) =>
+          (key === 'browser' || key === 'computer') && value === false,
+      )
     return this.#write(
       ref,
-      (change.browser === false || change.computer === false) &&
-        change.browser !== true &&
-        change.computer !== true &&
-        change.confirm === undefined
-        ? 'desktop.disable'
-        : 'desktop.enable',
+      onlyOff ? 'desktop.disable' : 'desktop.enable',
       change,
       actor,
     )
@@ -164,5 +197,43 @@ export class ConsoleDesktop implements DesktopPort {
         .sort((a, b) => b.at - a.at)
         .slice(0, limit),
     )
+  }
+  /** The private desktop's latest screenshot, read over `desktop.view`. */
+  async view(ref: AgentRef): Promise<ConsoleResult<DesktopScreenView | null>> {
+    const r = await this.#links.request(
+      ref.node,
+      'desktop.view',
+      { agent: ref.agent },
+      'console:read',
+    )
+    if (r.ok) {
+      const screen = screenOf(r.value)
+      return screen === undefined ? failed('节点返回了无效画面') : ok(screen)
+    }
+    if (
+      r.code === 'unsupported' ||
+      (r.code === 'invalid' && r.message === OLD_NODE_REPLY)
+    )
+      return {
+        ok: false,
+        failure: {
+          code: 'unsupported',
+          message: '节点版本过旧 · 不能查看画面',
+        },
+      }
+    if (r.code === 'invalid' && r.message.startsWith('控制回执超过'))
+      return failed('画面超过控制链路的大小上限')
+    return {
+      ok: false,
+      failure: {
+        code:
+          r.code === 'unreachable' || r.code === 'timeout'
+            ? 'unreachable'
+            : r.code === 'invalid'
+              ? 'invalid'
+              : 'refused',
+        message: r.message,
+      },
+    }
   }
 }
