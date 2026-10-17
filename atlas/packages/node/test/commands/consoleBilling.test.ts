@@ -1166,8 +1166,10 @@ describe('a delivery that did not land is tried again', () => {
     expect(errors.some(line => line.includes('beta-1'))).toBe(true)
     errors.length = 0
     rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
-    // The next sweep, a minute on.
-    clock += 60_000
+    // A sync on an event does not retry; the next sweep does.
+    const before = applies(0)
+    await billing.syncNodes()
+    expect(applies(0)).toBe(before)
     await billing.tick()
     const row = await nodeRow('beta-1')
     expect(row.actual?.applied?.revision).toBe(row.expected?.revision)
@@ -1177,18 +1179,15 @@ describe('a delivery that did not land is tried again', () => {
     })
   })
 
-  test('a node that keeps refusing is asked one sweep later, then every five minutes', async () => {
+  test('a node that keeps refusing is asked at the next sweep, then every five minutes', async () => {
     const tenant = await pay(ALICE)
     nodes[0]?.set('reply-apply.json', REFUSE)
     mapNodes(tenant, ['beta-1'])
     await billing.syncNodes()
     expect(applies(0)).toBe(1)
-    // Syncs in the same minute (a tenancy change, a profile change) wait.
-    await billing.tick()
-    expect(applies(0)).toBe(1)
-    clock += 60_000
     await billing.tick()
     expect(applies(0)).toBe(2)
+    // The retry failed too: not every sweep from now on.
     clock += 60_000
     await billing.tick()
     expect(applies(0)).toBe(2)

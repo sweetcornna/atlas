@@ -230,8 +230,9 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
   readonly #channels: Partial<Record<PaymentChannelId, PaymentChannel>>
   readonly #dirty = new Set<string>()
   /**
-   * Nodes whose last delivery failed: when to try again (one sweep later
-   * after a first failure, every few minutes after that) and how many failed.
+   * Nodes whose last delivery failed: when the sweep may try again (at the
+   * next sweep after a first failure, every few minutes after that) and how
+   * many failed in a row.
    */
   readonly #retry = new Map<string, { at: number; failures: number }>()
   #nodes: Promise<void> = Promise.resolve()
@@ -280,7 +281,7 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
     } catch (error) {
       this.#options.onError?.(`billing: 扫描失败 · ${String(error)}`)
     }
-    await this.syncNodes()
+    await this.#queueSync(true)
   }
 
   /** A tenant's profile changed (`ConsoleMagpie` `onProfile`): its nodes get it. */
@@ -408,14 +409,19 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
 
   /** Give each paid tenant's nodes its profile, up to the plan, and deliver. */
   syncNodes(): Promise<void> {
-    const next = this.#nodes.then(() => this.#syncNodes())
+    return this.#queueSync(false)
+  }
+
+  /** `sweep`: the 60-second pass, which also retries deliveries that did not land. */
+  #queueSync(sweep: boolean): Promise<void> {
+    const next = this.#nodes.then(() => this.#syncNodes(sweep))
     this.#nodes = next.catch(error => {
       this.#options.onError?.(`billing: 节点指派失败 · ${String(error)}`)
     })
     return this.#nodes
   }
 
-  async #syncNodes(): Promise<void> {
+  async #syncNodes(sweep: boolean): Promise<void> {
     const { providers, caller, magpie } = this.#options
     const config = this.#options.tenancy.read().config
     if (config.nodes.length === 0) {
@@ -462,10 +468,10 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
         if (current(node) === target) {
           const row = rows.get(node)
           if (dirty && target === profileId) deliver.push(node)
-          else if (row !== undefined && behind(row)) {
+          else if (sweep && row !== undefined && behind(row)) {
             // A delivery that did not land (the node was busy, unreachable,
-            // or refused) is tried again here: one sweep after it failed,
-            // then every few minutes while it keeps failing.
+            // or refused) is tried again by the sweep: at the next one, then
+            // every few minutes while the retries keep failing.
             if ((this.#retry.get(node)?.at ?? 0) > now) continue
             deliver.push(node)
           }
@@ -508,11 +514,10 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
   /** Note a delivery that did not land, and when the sweep may try again. */
   #failed(node: string, now: number): void {
     const failures = (this.#retry.get(node)?.failures ?? 0) + 1
-    const wait =
-      failures === 1
-        ? (this.#options.sweepEveryMs ?? SWEEP_EVERY_MS)
-        : RETRY_EVERY_MS
-    this.#retry.set(node, { at: now + wait, failures })
+    this.#retry.set(node, {
+      at: failures === 1 ? now : now + RETRY_EVERY_MS,
+      failures,
+    })
   }
 
   // --- BillingPort: public facts -------------------------------------------
