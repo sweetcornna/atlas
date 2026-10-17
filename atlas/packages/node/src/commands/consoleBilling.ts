@@ -329,6 +329,18 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
     return this.#allowanceIn(config, tenant)
   }
 
+  /** Whether a subject of `tenant` other than `except` has an active plan. */
+  #paidUpIn(tenant: string, except: string): boolean {
+    return this.#options.tenancy
+      .read()
+      .config.subjects.some(
+        row =>
+          row.tenant === tenant &&
+          row.subject !== except &&
+          this.service.entitlement(row.subject).active,
+      )
+  }
+
   #allowanceIn(config: TenantConfig, tenant: string): number {
     let best = 0
     for (const row of config.subjects) {
@@ -360,14 +372,26 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
 
   async setEnabled(subject: string, enabled: boolean): Promise<void> {
     const mapped = this.#tenantOf(subject)
-    // Off also reaches a tenant whose mapping was edited away.
-    const tenants =
-      mapped !== null
-        ? [mapped]
-        : enabled
-          ? []
-          : [`t-${subject.slice(2, 10)}`, `t-${subject.slice(2)}`]
+    // Off also reaches a tenant whose mapping was edited away: the one the
+    // ledger recorded when this subscription was provisioned. Never a tenant
+    // id guessed from the subject — that can be another subscriber's.
+    const recorded = /^tenant:(.+)$/.exec(
+      this.#options.store.subscription(subject)?.binding ?? '',
+    )?.[1]
+    const tenants = enabled
+      ? mapped === null
+        ? []
+        : [mapped]
+      : [
+          ...new Set(
+            [mapped, recorded].filter(
+              (one): one is string => one !== null && one !== undefined,
+            ),
+          ),
+        ]
     for (const tenant of tenants) {
+      // Somebody else in the tenant still paid up keeps it on.
+      if (!enabled && this.#paidUpIn(tenant, subject)) continue
       const result = await this.#options.magpie.setTenantEntitled(
         tenant,
         enabled,

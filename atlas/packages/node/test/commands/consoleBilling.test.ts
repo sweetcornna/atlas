@@ -667,6 +667,58 @@ describe('expiry', () => {
     expect(tenantKey(tenant).off).toBe(false)
   })
 
+  test('switching off goes by the tenant the subscription was provisioned for, never a guessed one', async () => {
+    // Same first 8 hex digits: Alice gets t-a11ce000, Carol the long form.
+    const CAROL = 'u:a11ce000ffffffff'
+    const alice = await pay(ALICE)
+    const carol = await pay(CAROL)
+    expect(alice).toBe('t-a11ce000')
+    expect(carol).toBe('t-a11ce000ffffffff')
+    for (const subject of [ALICE, CAROL]) {
+      const added = await billing.addUpstream(subject, {
+        preset: 'openai',
+        key: `sk-own-${subject.slice(2)}`,
+      })
+      expect(added.ok).toBe(true)
+    }
+    // Ops take Carol out of the subjects table (account cleanup).
+    const current = config()
+    tenancy.replace({
+      ...current,
+      subjects: current.subjects.filter(row => row.subject !== CAROL),
+    })
+    await billing.setEnabled(CAROL, false)
+    expect(tenantKey(carol).off).toBe(true)
+    expect(tenantKey(alice).off).toBe(false)
+  })
+
+  test('a tenant stays on while anybody in it is still paid up', async () => {
+    const DAVE = 'u:da7e000000000004'
+    const tenant = await pay(ALICE)
+    // Ops put Dave into Alice's tenant; he pays ten days later.
+    const current = config()
+    tenancy.replace({
+      ...current,
+      subjects: [...current.subjects, { subject: DAVE, tenant }],
+    })
+    clock += 10 * DAY
+    expect(await pay(DAVE)).toBe(tenant)
+    const added = await billing.addUpstream(ALICE, {
+      preset: 'openai',
+      key: 'sk-alice-own-0001',
+    })
+    expect(added.ok).toBe(true)
+    // Alice's period ends; Dave's has ten days to go.
+    clock += 21 * DAY
+    await billing.tick()
+    expect((await billing.standing(ALICE)).active).toBe(false)
+    expect(tenantKey(tenant).off).toBe(false)
+    // Dave's ends too.
+    clock += 10 * DAY
+    await billing.tick()
+    expect(tenantKey(tenant).off).toBe(true)
+  })
+
   test('disabling somebody never provisioned is a no-op', async () => {
     await billing.setEnabled(BOB, false)
     expect(
