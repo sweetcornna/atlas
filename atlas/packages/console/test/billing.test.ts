@@ -19,6 +19,7 @@ import {
   CONSOLE_HEADER,
   accountsHarness,
   asBearer,
+  person,
 } from './accountsHarness.js'
 import { MAX_NOTIFY_BYTES } from '../src/billingDoors.js'
 import { publicConsole, signNotify, type PublicPerson } from './billingFake.js'
@@ -124,17 +125,20 @@ describe('the default edition has none of it', () => {
     ).text()
     expect(shell).not.toContain('href="/admin/billing"')
     // A write by a member is not gated by anything that is not there.
-    const member = await h.handle(
+    const member = await person(h.handle, 'member')
+    const written = await h.handle(
       new Request(`${BASE}/v0/billing/redeem`, {
         method: 'POST',
         headers: {
-          authorization: `Bearer ${ADMIN}`,
+          authorization: `Bearer ${member.credential}`,
+          [CONSOLE_HEADER]: '1',
           'content-type': 'application/json',
         },
         body: '{}',
       }),
     )
-    expect(member.status).not.toBe(402)
+    expect(written.status).toBe(501)
+    expect(await errorCode(written)).not.toBe('subscription_required')
   })
 })
 
