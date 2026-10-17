@@ -37,6 +37,7 @@ import {
 } from '../../src/host/runtimes/pool.js'
 import { runtimeSmoke } from '../../src/host/runtimes/smoke.js'
 import { isolatedRoot } from '../providers/fake.js'
+import { assertScratchConfigRoot } from './realHarnessGuard.js'
 
 const REAL = process.env.QM_TEST_REAL_ACP === '1'
 const BINS: Record<string, string | undefined> = {
@@ -215,6 +216,7 @@ for (const id of ['gemini', 'qwen', 'opencode']) {
     async () => {
       const root = isolatedRoot()
       cleanup.push(async () => root.dispose())
+      assertScratchConfigRoot()
       const spec = runtimeSpec(id)!
       // The node's update check: a whole turn with the real bridge.
       expect(await runtimeSmoke(id, bin!)).toBeNull()

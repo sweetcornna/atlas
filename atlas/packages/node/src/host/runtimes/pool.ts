@@ -38,15 +38,22 @@ import type { AcpBridge, AcpRuntime, AcpToolCall } from './acpSpec.js'
 import { type RuntimeLane, runtimeSpec } from './catalog.js'
 import type { ExternalRuntimeChannel, ExternalRuntimeKind } from './channel.js'
 import {
-  CLAUDE_CODE_ENV,
   ClaudeCodeChannel,
   claudeCodeArgv,
   claudeCodeToolName,
+  CONNECTOR_PREFIX,
   PERMISSION_TOOL,
   RUNTIME_MCP_SERVER,
   RUNTIME_MCP_TIMEOUT_MS,
 } from './claudeCode.js'
 import { CODEX_KEY_ENV, CodexChannel, codexArgv } from './codex.js'
+import {
+  frontendHolds,
+  readFrontendAck,
+  readFrontendLock,
+  writeFrontendAck,
+} from './frontendLock.js'
+import { freeLoopbackPort, runtimeDirs, runtimeEnv } from './runtimeEnv.js'
 import {
   RuntimeToolHost,
   type RuntimeToolResult,
@@ -59,7 +66,6 @@ import {
   type RuntimeDesktopSource,
 } from './desktopTools.js'
 import { runtimeBin } from '../runtimeUpdate.js'
-import { inheritedEnv } from './inheritedEnv.js'
 import { runWorkspaceTool, WORKSPACE_TOOLS } from './workspaceTools.js'
 
 /** A resident agent that runs on an external runtime (a catalog id). */
@@ -166,11 +172,18 @@ export function defaultExternalSystemPrompt(agent: ExternalAgent): string {
   ].join('\n')
 }
 
-function headerLines(headers: Readonly<Record<string, string>>): string {
-  return Object.entries(headers)
-    .map(([name, value]) => `${name}: ${value}`)
-    .join('\n')
+/**
+ * An operator-configured MCP server (P32 connector) as every runtime gets it
+ * (P36.7): under the reserved prefix, so the agent's own servers neither
+ * remove nor shadow it.
+ */
+function connectorName(name: string): string {
+  return `${CONNECTOR_PREFIX}${name}`
 }
+
+const NATIVE_MCP_REFUSED =
+  "this MCP tool belongs to a server installed in the agent's runtime itself; it needs the operator's approval and this node has no approvals channel"
+const FRONTEND_LOCK_POLL_MS = 1_000
 
 /** Codex without a shell reads the workspace through the host's tools. */
 function codexReadsByHost(agent: ExternalAgent): boolean {
@@ -235,6 +248,9 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
   readonly #toolHost: RuntimeToolHost
   readonly #desktop: RuntimeDesktopTools | undefined
   readonly #timer: Timer
+  readonly #lockTimer: Timer
+  /** Agents whose frontend lock is being answered. */
+  readonly #yielding = new Set<string>()
   #completedTurn = false
   #longestReadyMs = 0
   #stopped = false
@@ -275,6 +291,11 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       Math.min(idle, 60_000),
     )
     this.#timer.unref()
+    this.#lockTimer = setInterval(
+      () => void this.#answerFrontendLocks(),
+      FRONTEND_LOCK_POLL_MS,
+    )
+    this.#lockTimer.unref()
     // A Claude Code MCP config left behind by a process that is gone holds
     // the agent's MCP secrets for nothing.
     for (const agent of options.agents) this.#sweepMcpConfigs(agent.agent)
@@ -371,6 +392,10 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       await live.stop().catch(() => {})
     } else if (live?.alive) return live
     let starting = this.#starting.get(sessionId)
+    if (starting === undefined && frontendHolds(agent.agent))
+      throw new Error(
+        `${agent.agent}'s official frontend is open (qm runtime open); its turns wait until it is closed`,
+      )
     if (starting === undefined) {
       starting = (async () => {
         await this.initialize()
@@ -543,8 +568,18 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       '--token-file',
       tokenFile,
     ])
-    // The node's environment stays with the node; credentials are added.
-    const env = inheritedEnv()
+    // One environment builder for the pool, `qm runtime open` and the native
+    // operations (P36.7): the node's baseline, the harness's state and the
+    // route. ACP launchers add their launch files' variables below.
+    const route = {
+      model: launch.model,
+      baseUrl: launch.baseUrl,
+      apiKey: launch.apiKey,
+      ...(launch.headers === undefined ? {} : { headers: launch.headers }),
+    }
+    const env = runtimeEnv(runtime, agent.agent, route)
+    const { home } = runtimeDirs(runtime, agent.agent)
+    mkdirSync(home, { recursive: true, mode: 0o700 })
     const ledger = join(dir, 'runtime-inputs.ndjson')
     const onAdmitted = (messageId: string) => {
       try {
@@ -561,8 +596,6 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     const extensions = this.#options.extensions?.(agent.agent) ?? null
     switch (spec.protocol) {
       case 'claude-stream': {
-        const home = qianmoConfigPath('runtimes', 'claude-code', agent.agent)
-        mkdirSync(home, { recursive: true, mode: 0o700 })
         const mcpConfig = join(dir, 'runtime-mcp.json')
         writeFileSync(
           mcpConfig,
@@ -570,7 +603,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
             mcpServers: {
               ...Object.fromEntries(
                 (extensions?.mcp ?? []).map(server => [
-                  server.name,
+                  connectorName(server.name),
                   server.transport === 'stdio'
                     ? {
                         type: 'stdio',
@@ -608,6 +641,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         argv = claudeCodeArgv({
           bin: runtimeBin('claude-code', this.#options.bins),
           model: launch.model,
+          baseUrl: launch.baseUrl,
           sessionId: record.nativeId,
           resume: record.started === true,
           systemPrompt,
@@ -621,17 +655,8 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
                 pluginDirs: extensions.claudePluginDirs,
                 allowedMcpServers: extensions.mcp
                   .filter(server => server.approval === 'allow')
-                  .map(server => server.name),
+                  .map(server => connectorName(server.name)),
               }),
-        })
-        Object.assign(env, {
-          ...CLAUDE_CODE_ENV,
-          CLAUDE_CONFIG_DIR: home,
-          ANTHROPIC_API_KEY: launch.apiKey,
-          ANTHROPIC_BASE_URL: launch.baseUrl,
-          ...(launch.headers && Object.keys(launch.headers).length > 0
-            ? { ANTHROPIC_CUSTOM_HEADERS: headerLines(launch.headers) }
-            : {}),
         })
         open = child =>
           new ClaudeCodeChannel(child, {
@@ -645,19 +670,26 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         break
       }
       case 'codex-app-server': {
-        const home = qianmoConfigPath('runtimes', 'codex', agent.agent)
-        mkdirSync(home, { recursive: true, mode: 0o700 })
+        const runDir = this.#launchDir(agent.agent, sessionId)
+        rmSync(runDir, { recursive: true, force: true })
+        mkdirSync(runDir, { recursive: true, mode: 0o700 })
+        const connectors = this.#codexConnectors(
+          extensions?.mcp ?? [],
+          runDir,
+          env,
+        )
         argv = codexArgv({
           bin: runtimeBin('codex', this.#options.bins),
           model: launch.model,
           baseUrl: launch.baseUrl,
           keyEnv: CODEX_KEY_ENV,
           ...(launch.headers ? { headers: launch.headers } : {}),
+          workspace: agent.cwd,
           mcp: { command: mcp[0]!, args: mcp.slice(1) },
+          connectors,
           ...(launch.effort ? { effort: launch.effort } : {}),
           ...(agent.shell ? { shell: true } : {}),
         })
-        Object.assign(env, { CODEX_HOME: home, [CODEX_KEY_ENV]: launch.apiKey })
         open = child =>
           new CodexChannel(child, {
             onAdmitted,
@@ -680,11 +712,13 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         const acp = spec.acp
         if (acp === undefined)
           throw new Error(`${spec.label} has no ACP launch in the catalog`)
-        const home = qianmoConfigPath('runtimes', runtime, agent.agent)
-        mkdirSync(home, { recursive: true, mode: 0o700 })
         const runDir = this.#launchDir(agent.agent, sessionId)
         rmSync(runDir, { recursive: true, force: true })
         mkdirSync(runDir, { recursive: true, mode: 0o700 })
+        // Only what the catalog says it takes; P32 reports the rest.
+        const connectors = (extensions?.mcp ?? [])
+          .filter(server => acp.mcpTransports.includes(server.transport))
+          .map(server => this.#acpMcpServer(server))
         const lane = launch.lane ?? spec.lanes[0]
         if (lane === undefined)
           throw new Error(`${spec.label} has no model lane`)
@@ -712,6 +746,9 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
           runDir,
           cwd: agent.cwd,
           bridge,
+          mcpNames: connectors.map(server => server.name),
+          ...(acp.needsPort === true ? { port: await freeLoopbackPort() } : {}),
+          secret: randomUUID(),
         })
         for (const path of [
           ...(plan.dirs ?? []),
@@ -741,10 +778,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
                   env: [],
                 },
               ]),
-          // Only what the catalog says it takes; P32 reports the rest.
-          ...(extensions?.mcp ?? [])
-            .filter(server => acp.mcpTransports.includes(server.transport))
-            .map(server => this.#acpMcpServer(server)),
+          ...connectors,
         ]
         const usage = acp.usage
         open = child =>
@@ -849,6 +883,112 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     return channel
   }
 
+  /**
+   * The agent's connectors as Codex session overrides (P36.7: never written
+   * into its `config.toml`). A stdio server starts through `qm mcp-exec`,
+   * its variables in a file of this process's launch directory; an HTTP
+   * server's headers are named variables of the app-server's environment
+   * (`QM_SECRET_*`, which Codex keeps out of its shell). Secrets stay off
+   * the command line either way. Codex has no SSE (P32 reports it).
+   */
+  #codexConnectors(
+    servers: readonly AgentMcpServer[],
+    runDir: string,
+    env: Record<string, string>,
+  ): Record<string, Record<string, unknown>> {
+    const tables: Record<string, Record<string, unknown>> = {}
+    let secret = 0
+    for (const server of servers) {
+      if (server.transport === 'sse') continue
+      const name = connectorName(server.name)
+      const approval = server.approval === 'ask' ? 'prompt' : 'approve'
+      if (server.transport === 'stdio') {
+        const file = join(runDir, `${name}.env.json`)
+        writeFileSync(file, JSON.stringify(server.env ?? {}), { mode: 0o600 })
+        const exec = (this.#options.mcpArgv ?? qmArgv)([
+          'mcp-exec',
+          '--env-file',
+          file,
+          '--',
+          server.command ?? '',
+          ...(server.args ?? []),
+        ])
+        tables[name] = {
+          command: exec[0]!,
+          args: exec.slice(1),
+          default_tools_approval_mode: approval,
+        }
+        continue
+      }
+      const headers: Record<string, string> = {}
+      for (const [header, value] of Object.entries(server.headers ?? {})) {
+        const variable = `QM_SECRET_${++secret}`
+        env[variable] = value
+        headers[header] = variable
+      }
+      tables[name] = {
+        url: server.url ?? '',
+        ...(Object.keys(headers).length > 0
+          ? { env_http_headers: headers }
+          : {}),
+        default_tools_approval_mode: approval,
+      }
+    }
+    return tables
+  }
+
+  /** Whether a turn of `agent` holds or is starting a process. */
+  #agentBusy(agent: string): boolean {
+    for (const [id, owner] of this.#owners) {
+      if (owner.agent !== agent) continue
+      if (
+        this.#channels.get(id)?.busy === true ||
+        this.#starting.has(id) ||
+        this.#leases.has(id)
+      )
+        return true
+    }
+    return false
+  }
+
+  /**
+   * Answers `qm runtime open` (P36.7, `frontendLock.ts`): a busy agent keeps
+   * its processes and says so; an idle one's processes are closed first.
+   */
+  async #answerFrontendLocks(): Promise<void> {
+    if (this.#stopped) return
+    for (const agent of this.#agents.keys()) {
+      if (this.#yielding.has(agent)) continue
+      let lock
+      try {
+        lock = readFrontendLock(agent)
+      } catch {
+        continue
+      }
+      if (lock === undefined || readFrontendAck(agent)?.nonce === lock.nonce)
+        continue
+      this.#yielding.add(agent)
+      try {
+        const busy = this.#agentBusy(agent)
+        if (!busy) {
+          const closing: Promise<void>[] = []
+          for (const [id, owner] of this.#owners) {
+            const channel = this.#channels.get(id)
+            if (owner.agent !== agent || channel === undefined) continue
+            this.closeSession(id)
+            closing.push(channel.stop().catch(() => {}))
+          }
+          await Promise.allSettled(closing)
+        }
+        writeFrontendAck(agent, { nonce: lock.nonce, pid: process.pid, busy })
+      } catch (error) {
+        this.#options.onError?.(error)
+      } finally {
+        this.#yielding.delete(agent)
+      }
+    }
+  }
+
   /** An operator-configured MCP server (P32) as `session/new` takes it. */
   #acpMcpServer(server: AgentMcpServer): AcpMcpServer {
     const pairs = (values: Readonly<Record<string, string>> | undefined) =>
@@ -856,7 +996,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     if (server.transport !== 'stdio')
       return {
         type: server.transport,
-        name: server.name,
+        name: connectorName(server.name),
         url: server.url ?? '',
         headers: pairs(server.headers),
       }
@@ -872,7 +1012,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       ...(server.args ?? []),
     ])
     return {
-      name: server.name,
+      name: connectorName(server.name),
       command: absoluteCommand(exec[0]!),
       args: exec.slice(1),
       env: pairs(server.env),
@@ -964,15 +1104,33 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
             reason:
               'this resident agent has no shell (start the node with --agent-shell to allow one)',
           }
-    const verdict = residentToolVerdict(call, this.#policy(agent), {
+    // The host's own tools authorize themselves when they are called.
+    if (call.toolName.startsWith(`mcp__${RUNTIME_MCP_SERVER}__`))
+      return { ok: true }
+    // A connector (P36.7): the P32 posture, on the name it was configured by.
+    const connector = `mcp__${CONNECTOR_PREFIX}`
+    const target = call.toolName.startsWith(connector)
+      ? { ...call, toolName: `mcp__${call.toolName.slice(connector.length)}` }
+      : call
+    // A server installed in the runtime itself: the operator decides each call.
+    if (target === call && call.toolName.startsWith('mcp__')) {
+      if (this.#options.requestPermission === undefined)
+        return { ok: false, reason: NATIVE_MCP_REFUSED }
+      try {
+        return await this.#ask(sessionId, call)
+      } catch {
+        return { ok: false, reason: NATIVE_MCP_REFUSED }
+      }
+    }
+    const verdict = residentToolVerdict(target, this.#policy(agent), {
       agentKind: 'main',
     })
     if (verdict === undefined) return { ok: true }
     if (verdict.approvalEligible === true) {
       try {
         return await this.#ask(sessionId, {
-          toolName: call.toolName,
-          input: residentApprovalInput(call, agent.cwd),
+          toolName: target.toolName,
+          input: residentApprovalInput(target, agent.cwd),
         })
       } catch {
         return { ok: false, reason: verdict.reason }
@@ -992,7 +1150,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     if (call.toolName === 'bash') return false
     // The host's own tools decide for themselves when they are called.
     if (call.toolName.startsWith(`mcp__${RUNTIME_MCP_SERVER}__`)) return true
-    // An operator-configured MCP server set to ask (P32).
+    // A connector set to ask (P32), or one of the agent's own servers.
     if (call.toolName.startsWith('mcp__'))
       return (await this.#decide(agent, sessionId, call)).ok
     if (typeof call.input.path !== 'string') return false
@@ -1066,11 +1224,12 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         args.input && typeof args.input === 'object'
           ? (args.input as Record<string, unknown>)
           : {}
-      const decision = await this.#decide(
-        agent,
-        session.sessionId,
-        verdictCall(String(args.tool_name ?? ''), input),
-      )
+      const tool = String(args.tool_name ?? '')
+      // The pin layer asks for every `mcp__*`, the bridge's own tools too;
+      // those authorize themselves when they are called.
+      const decision = tool.startsWith(`mcp__${RUNTIME_MCP_SERVER}__`)
+        ? { ok: true }
+        : await this.#decide(agent, session.sessionId, verdictCall(tool, input))
       return {
         ok: true,
         text: JSON.stringify(
@@ -1161,6 +1320,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     if (this.#stopped) return
     this.#stopped = true
     clearInterval(this.#timer)
+    clearInterval(this.#lockTimer)
     const channels = [...this.#channels.values()]
     for (const id of this.#channels.keys()) {
       const owner = this.#owners.get(id)

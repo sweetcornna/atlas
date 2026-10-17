@@ -10,6 +10,11 @@
  * Prompts: `fail` completes the turn as failed; `hang` waits for
  * `turn/interrupt`; `approve` asks for a file-change approval first and echoes
  * the decision; anything else is echoed after one command item.
+ *
+ * The native lists (`mcpServerStatus/list`, `plugin/installed`,
+ * `skills/list`) answer from `QIANMO_FAKE_CODEX_NATIVE` (JSON
+ * `{servers, plugins, skills}`), empty without it; `thread/start` and
+ * `thread/resume` params go to `QIANMO_FIXTURE_THREAD_LOG` as JSON lines.
  */
 
 import { appendFileSync } from 'node:fs'
@@ -19,6 +24,13 @@ const log = process.env.QIANMO_FIXTURE_ARGV_LOG
 if (log) appendFileSync(log, `${JSON.stringify(process.argv.slice(2))}\n`)
 const send = (message: Record<string, unknown>) =>
   process.stdout.write(`${JSON.stringify(message)}\n`)
+
+const native = JSON.parse(process.env.QIANMO_FAKE_CODEX_NATIVE ?? '{}') as {
+  servers?: unknown[]
+  plugins?: unknown[]
+  skills?: unknown[]
+}
+const threadLog = process.env.QIANMO_FIXTURE_THREAD_LOG
 
 let thread = ''
 let turns = 0
@@ -90,9 +102,10 @@ async function run(turnId: string, text: string): Promise<void> {
     })
     suffix = ` decision=${String(decision.decision)}`
   }
-  if (text === 'mcp' || text === 'mcp-host') {
-    // A tool call on an MCP server set to `prompt` (P32), or one on the
-    // host's own server.
+  if (text === 'mcp' || text === 'mcp-host' || text === 'mcp-native') {
+    // A tool call on a connector set to `prompt` (P32, `qm-docs`), on a
+    // server the agent installed itself (`docs`, P36.7), or on the host's
+    // own server.
     const host = text === 'mcp-host'
     const id = ++serverSequence
     const answer = await new Promise<Record<string, unknown>>(resolve => {
@@ -103,7 +116,11 @@ async function run(turnId: string, text: string): Promise<void> {
         params: {
           threadId: thread,
           turnId,
-          serverName: host ? 'qianmo' : 'docs',
+          serverName: host
+            ? 'qianmo'
+            : text === 'mcp-native'
+              ? 'docs'
+              : 'qm-docs',
           mode: 'form',
           message: 'Allow the tool to run?',
           requestedSchema: { type: 'object', properties: {} },
@@ -175,11 +192,40 @@ createInterface({ input: process.stdin }).on('line', line => {
       return
     case 'initialized':
       return
+    case 'mcpServerStatus/list':
+      send({ id: message.id, result: { data: native.servers ?? [] } })
+      return
+    case 'plugin/installed':
+      send({
+        id: message.id,
+        result: {
+          marketplaces: [{ name: 'fake', plugins: native.plugins ?? [] }],
+        },
+      })
+      return
+    case 'skills/list':
+      send({
+        id: message.id,
+        result: {
+          data: [{ cwd: '/', skills: native.skills ?? [], errors: [] }],
+        },
+      })
+      return
     case 'thread/start':
+      if (threadLog)
+        appendFileSync(
+          threadLog,
+          `${JSON.stringify({ method: message.method, params })}\n`,
+        )
       thread = `thread-${process.pid}`
       send({ id: message.id, result: { thread: { id: thread } } })
       return
     case 'thread/resume':
+      if (threadLog)
+        appendFileSync(
+          threadLog,
+          `${JSON.stringify({ method: message.method, params })}\n`,
+        )
       if (params.threadId === 'missing') {
         send({
           id: message.id,

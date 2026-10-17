@@ -489,7 +489,8 @@ test('dsh: operator MCP servers go in session/new (the bridge is in the patch); 
     string,
     unknown
   >[]
-  expect(servers.map(server => server.name)).toEqual(['docs', 'crm'])
+  // Under the reserved prefix (P36.7).
+  expect(servers.map(server => server.name)).toEqual(['qm-docs', 'qm-crm'])
   const docs = servers[0]!
   expect(String(docs.command).startsWith('/')).toBe(true)
   const args = docs.args as string[]
@@ -504,7 +505,7 @@ test('dsh: operator MCP servers go in session/new (the bridge is in the patch); 
   expect(docs.env).toEqual([{ name: 'DOCS_TOKEN', value: 'secret-value' }])
   expect(servers[1]).toEqual({
     type: 'http',
-    name: 'crm',
+    name: 'qm-crm',
     url: 'https://crm.example/mcp',
     headers: [{ name: 'Authorization', value: 'Bearer t' }],
   })
@@ -536,21 +537,29 @@ test('dsh: an MCP call on a server set to ask goes to the operator; one set to a
   )
   const session = await pool.newSession(agent)
   expect(
-    content(await turn(pool, session, 'q1', 'mcp mcp__docs__search')),
-  ).toBe('acp(1): mcp__docs__search allow-once')
+    content(await turn(pool, session, 'q1', 'mcp mcp__qm-docs__search')),
+  ).toBe('acp(1): mcp__qm-docs__search allow-once')
   expect(
     content(await turn(pool, session, 'q2', 'mcp mcp__qianmo__qianmo_notify')),
   ).toBe('acp(2): mcp__qianmo__qianmo_notify allow-once')
   expect(asked).toEqual([])
-  expect(content(await turn(pool, session, 'q3', 'mcp mcp__crm__lookup'))).toBe(
-    'acp(3): mcp__crm__lookup allow-once',
-  )
+  expect(
+    content(await turn(pool, session, 'q3', 'mcp mcp__qm-crm__lookup')),
+  ).toBe('acp(3): mcp__qm-crm__lookup allow-once')
   expect(asked.map(call => call.toolName)).toEqual(['mcp__crm__lookup'])
-  // A server nobody configured: refused without asking.
-  expect(content(await turn(pool, session, 'q4', 'mcp mcp__stranger__x'))).toBe(
-    'acp(4): mcp__stranger__x reject-once',
-  )
+  // A connector nobody configured: refused without asking.
+  expect(
+    content(await turn(pool, session, 'q4', 'mcp mcp__qm-stranger__x')),
+  ).toBe('acp(4): mcp__qm-stranger__x reject-once')
   expect(asked).toHaveLength(1)
+  // A server the agent installed in dsh itself: the operator decides.
+  expect(
+    content(await turn(pool, session, 'q5', 'mcp mcp__docs__search')),
+  ).toBe('acp(5): mcp__docs__search allow-once')
+  expect(asked.map(call => call.toolName)).toEqual([
+    'mcp__crm__lookup',
+    'mcp__docs__search',
+  ])
 })
 
 test('dsh: what a client must ignore is ignored; methods it does not offer are refused', async () => {

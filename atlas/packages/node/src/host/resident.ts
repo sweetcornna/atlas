@@ -21,7 +21,11 @@ import { askReentry, peerTools, type PeerToolOrigin } from './peerTools.js'
 import { NodeExtensions } from './extensions.js'
 import { runtimeBin } from './runtimeUpdate.js'
 import { NodeRuntimes } from './runtimeConfig.js'
-import { RUNTIME_CATALOG_CAPABILITY, RUNTIME_OPS } from './runtimes/contract.js'
+import {
+  RUNTIME_CATALOG_CAPABILITY,
+  RUNTIME_EXT_OPS,
+  RUNTIME_OPS,
+} from './runtimes/contract.js'
 import { SelfUpgrader, systemControl } from './selfUpgradeRunner.js'
 import { residentToolSurface, type HostToolDefinition } from './notifyTool.js'
 import { buildVersion } from '../provenance.js'
@@ -148,6 +152,8 @@ import {
 } from './residentOmp.js'
 import type { ExternalRuntimeKind } from './runtimes/channel.js'
 import { ResidentRuntimePool } from './runtimes/composite.js'
+import { writeResidentRoster } from './runtimes/frontendLock.js'
+import { isNativeExtensionOp, NativeExtensions } from './runtimes/nativeExt.js'
 import {
   ExternalRuntimePool,
   type ExternalAgent,
@@ -781,6 +787,8 @@ export class QianmoResident {
   readonly control: ControlRegistry
   /** Where each agent runs and which runtimes are installed (P36). */
   readonly runtimes: NodeRuntimes
+  /** The harnesses' own extension commands for the console (P36.7). */
+  readonly nativeExtensions: NativeExtensions
   /** Host tools answered by the hub: connectors (P25) and background tasks (P29). */
   readonly #hubHostTools: readonly HostToolDefinition[]
   readonly hubCall: HubCallClient
@@ -1033,12 +1041,40 @@ export class QianmoResident {
       void this.#runtimeChild
         ?.invalidateAgent(agent)
         .catch(error => this.#options.onError?.(error))
+      this.#writeRuntimeRoster()
     })
-    this.control.register('runtime', this.runtimes.control, {
-      estopAllowed: [RUNTIME_OPS.versions, RUNTIME_OPS.status],
-      sideEffects: op =>
-        op !== RUNTIME_OPS.versions && op !== RUNTIME_OPS.status,
+    // Native extensions (P36.7) ride the `runtime` prefix: listing works
+    // under ESTOP and is not recorded; installs and removals are.
+    this.nativeExtensions = new NativeExtensions({
+      agents: options.agents.map(agent => ({
+        agent: agent.agent,
+        cwd: agent.cwd,
+      })),
+      runtimeOf: agent => this.runtimes.externalRuntimeOf(agent),
+      ...(options.runtimeBins === undefined
+        ? {}
+        : { bins: options.runtimeBins }),
+      invalidate: async agent => {
+        await this.#runtimeChild?.invalidateAgent(agent)
+      },
     })
+    const readOnly: readonly string[] = [
+      RUNTIME_OPS.versions,
+      RUNTIME_OPS.status,
+      RUNTIME_EXT_OPS.list,
+    ]
+    this.control.register(
+      'runtime',
+      (op, args, ctx) =>
+        isNativeExtensionOp(op)
+          ? this.nativeExtensions.control(op, args, ctx)
+          : this.runtimes.control(op, args, ctx),
+      {
+        estopAllowed: [...readOnly],
+        sideEffects: op => !readOnly.includes(op),
+      },
+    )
+    this.#writeRuntimeRoster()
     // qianmo's own in-place upgrade (P31 §5.2): stage, drain, swap, restart.
     this.control.register(
       'system',
@@ -3357,6 +3393,34 @@ export class QianmoResident {
       return await this.#spawnGeneration()
     } finally {
       this.#generationStarting = false
+    }
+  }
+
+  /**
+   * The agents as `qm runtime open` needs them (P36.7, secret-free): the
+   * workspace, and the runtime and model their external sessions start with.
+   */
+  #writeRuntimeRoster(): void {
+    try {
+      writeResidentRoster(
+        this.#options.agents.map(agent => {
+          const runtime = this.runtimes.externalRuntimeOf(agent.agent)
+          const state = this.runtimes.state(agent.agent)
+          return {
+            agent: agent.agent,
+            cwd: agent.cwd,
+            shell: agent.shell === true,
+            runtime,
+            bin: runtimeBin(runtime, this.#options.runtimeBins),
+            model:
+              state?.effective.runtime === runtime
+                ? (state.effective.model ?? null)
+                : null,
+          }
+        }),
+      )
+    } catch (error) {
+      this.#options.onError?.(error)
     }
   }
 

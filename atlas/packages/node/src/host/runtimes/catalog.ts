@@ -19,16 +19,23 @@ import type { AcpRuntime, RuntimeLane } from './acpSpec.js'
 import {
   DSH_QMO_SKILLS,
   dshLaunch,
+  dshOpen,
   dshToolCall,
   dshUsageReader,
 } from './dsh.js'
-import { GEMINI_QMO_SKILLS, geminiLaunch, geminiToolCall } from './gemini.js'
+import {
+  GEMINI_QMO_SKILLS,
+  geminiLaunch,
+  geminiOpen,
+  geminiToolCall,
+} from './gemini.js'
 import {
   OPENCODE_QMO_SKILLS,
   opencodeLaunch,
+  opencodeOpen,
   opencodeToolCall,
 } from './opencode.js'
-import { QWEN_QMO_SKILLS, qwenLaunch, qwenToolCall } from './qwen.js'
+import { QWEN_QMO_SKILLS, qwenLaunch, qwenOpen, qwenToolCall } from './qwen.js'
 
 export type {
   AcpLaunch,
@@ -146,18 +153,21 @@ const DSH: AcpRuntime = {
   // ACP carries no usage; the session log has the provider's.
   usage: dshUsageReader,
   toolCall: dshToolCall,
+  // Its web UI on the agent's acp profile (§7.2).
+  open: input => dshOpen(input),
 }
 
 /** Gemini CLI over ACP (`gemini.ts`). */
 const GEMINI: AcpRuntime = {
   launch: geminiLaunch,
   skillsDir: GEMINI_QMO_SKILLS,
-  // Its permission request does not name an MCP tool's server: only the
-  // bridge runs (`gemini.ts`).
-  mcpTransports: [],
+  // An MCP tool's server is named in its title (`gemini.ts`); connectors
+  // are also on its server allowlist.
+  mcpTransports: ['stdio', 'http', 'sse'],
   // `session/load` (advertised) replays the conversation, after its answer
   // (the channel waits it out); usage comes in `PromptResponse.usage`.
   toolCall: geminiToolCall,
+  open: input => geminiOpen(input),
 }
 
 /** Qwen Code over ACP (`qwen.ts`). */
@@ -167,6 +177,7 @@ const QWEN: AcpRuntime = {
   mcpTransports: ['stdio', 'http', 'sse'],
   // Advertises `session/resume`; usage only as `usage_update` estimates.
   toolCall: qwenToolCall,
+  open: qwenOpen,
 }
 
 /** opencode over ACP (`opencode.ts`). */
@@ -177,6 +188,9 @@ const OPENCODE: AcpRuntime = {
   // Its `PromptResponse.usage` is the last model call's, not the turn's.
   promptUsage: false,
   toolCall: opencodeToolCall,
+  // Its local server listens even under ACP: a port and a password.
+  needsPort: true,
+  open: opencodeOpen,
 }
 
 /**

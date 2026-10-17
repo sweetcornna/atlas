@@ -117,6 +117,8 @@ export type RunCommand = (
     readonly maxOutput?: number
     /** Kills the command when aborted. */
     readonly signal?: AbortSignal
+    /** Where it runs; default the node's working directory. */
+    readonly cwd?: string
   },
 ) => Promise<RunResult>
 
@@ -124,6 +126,7 @@ export type RunCommand = (
 export const runCommand: RunCommand = async (argv, options) => {
   const child = Bun.spawn([...argv], {
     env: options.env,
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',

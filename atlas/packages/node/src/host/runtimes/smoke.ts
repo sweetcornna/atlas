@@ -47,6 +47,7 @@ import {
 } from './claudeCode.js'
 import { CODEX_KEY_ENV, codexArgv } from './codex.js'
 import { inheritedEnv } from './inheritedEnv.js'
+import { freeLoopbackPort } from './runtimeEnv.js'
 import { RuntimeToolHost } from './toolHost.js'
 
 /** The host tool the check calls. */
@@ -331,6 +332,7 @@ function claudeSmoke(run: SmokeRun): Promise<string | null> {
   const argv = claudeCodeArgv({
     bin: run.bin,
     model: SMOKE_MODEL,
+    baseUrl: run.baseUrl,
     sessionId: randomUUID(),
     resume: false,
     systemPrompt: 'Compatibility check.',
@@ -393,6 +395,7 @@ function codexSmoke(run: SmokeRun): Promise<string | null> {
     model: SMOKE_MODEL,
     baseUrl: `${run.baseUrl}/v1`,
     keyEnv: CODEX_KEY_ENV,
+    workspace: run.workspace,
     mcp: { command: run.mcp[0]!, args: run.mcp.slice(1) },
   })
   const env = {
@@ -619,6 +622,8 @@ async function acpSmoke(
       runDir,
       cwd: run.workspace,
       bridge,
+      ...(acp.needsPort === true ? { port: await freeLoopbackPort() } : {}),
+      secret: randomUUID(),
     })
     for (const dir of [
       ...(plan.dirs ?? []),

@@ -86,8 +86,8 @@ test('the three ACP survey entries are pinned npm installs with their lanes, ver
   })
   expect(gemini.lanes).toEqual(['gemini'])
   expect(gemini.family).toBe(FAMILIES.gemini)
-  // Only the bridge: Gemini's permission request does not name a server.
-  expect(gemini.acp?.mcpTransports).toEqual([])
+  // Connectors in `session/new`: a tool's title names its server (P36.7).
+  expect(gemini.acp?.mcpTransports).toEqual(['stdio', 'http', 'sse'])
   expect(gemini.acp?.skillsDir).toBe(GEMINI_QMO_SKILLS)
 
   const qwen = runtimeSpec('qwen')!
@@ -161,7 +161,9 @@ test('Gemini CLI starts from its own launch directory under the admin policy, wi
     'qianmo',
   ])
   expect(launch.env).toEqual({
+    HOME: at.home,
     GEMINI_CLI_HOME: at.home,
+    GEMINI_FORCE_FILE_STORAGE: 'true',
     GOOGLE_GEMINI_BASE_URL: 'https://gw.example',
     GEMINI_API_KEY: 'sk-secret',
     GEMINI_MODEL: 'vendor/model-x',
@@ -226,12 +228,15 @@ test('the Gemini policy asks by default, frees reads, runs the bridge unasked an
   }
   expect(rules.rule.map(rule => [rule.decision, rule.priority])).toEqual([
     ['ask_user', 100],
+    ['ask_user', 300],
     ['allow', 200],
     ['allow', 400],
     ['deny', 500],
   ])
-  const [ask, free, bridge, off] = rules.rule
+  const [ask, mcp, free, bridge, off] = rules.rule
   expect(ask!.toolName).toBe('*')
+  // Every MCP server's tools ask, over the allowlist's own allow rules.
+  expect(mcp).toMatchObject({ mcpName: '*', toolName: '*' })
   expect(free!.toolName).toContain('read_file')
   expect(free!.toolName).not.toContain('write_file')
   expect(free!.toolName).not.toContain('run_shell_command')
@@ -239,9 +244,16 @@ test('the Gemini policy asks by default, frees reads, runs the bridge unasked an
   expect(off!.toolName).toEqual(
     expect.arrayContaining(['web_fetch', 'google_web_search', 'invoke_agent']),
   )
-  // Never a rule for every MCP server: the allow-list keeps the others off.
-  expect(rules.rule.filter(rule => rule.mcpName !== undefined)).toHaveLength(1)
   expect(() => geminiPolicy('qianmo"\n[[rule]]')).toThrow(/unexpected bridge/)
+  // The frontend: no bridge, so no rule lets a server run unasked.
+  const open = Bun.TOML.parse(geminiPolicy()) as {
+    rule: { decision: string; mcpName?: string }[]
+  }
+  expect(
+    open.rule.filter(
+      rule => rule.mcpName !== undefined && rule.decision === 'allow',
+    ),
+  ).toEqual([])
 })
 
 test('the node’s Gemini settings merge into the agent’s settings.json, every native entry kept, and are written only when missing', () => {
@@ -252,7 +264,7 @@ test('the node’s Gemini settings merge into the agent’s settings.json, every
     privacy: { usageStatisticsEnabled: false },
     hooksConfig: { enabled: false },
     advanced: { ignoreLocalEnv: true },
-    security: { auth: { selectedType: 'gateway' } },
+    security: { auth: { selectedType: 'gemini-api-key' } },
   })
 
   mkdirSync(join(home, '.gemini'), { recursive: true })
@@ -268,7 +280,7 @@ test('the node’s Gemini settings merge into the agent’s settings.json, every
     ui: { theme: 'GitHub' },
     mcpServers: { own: { command: 'own-server' } },
     privacy: { usageStatisticsEnabled: false, other: 1 },
-    security: { auth: { selectedType: 'gateway' }, folderTrust: {} },
+    security: { auth: { selectedType: 'gemini-api-key' }, folderTrust: {} },
     hooksConfig: { enabled: false },
     advanced: { ignoreLocalEnv: true },
   })
@@ -333,6 +345,8 @@ test('Qwen Code starts with its own home, the node’s system settings layer and
     'openai',
     '--approval-mode',
     'default',
+    '--allowed-mcp-server-names',
+    'qianmo',
   ])
   expect(launch.env).toEqual({
     HOME: at.home,
@@ -451,9 +465,15 @@ test('Qwen tool calls go by the name in _meta: commands, writes and MCP calls in
 })
 
 test('opencode starts with its own home and XDG directories, the node’s inline config and the key under its own name', () => {
-  const at = input('opencode', { contextWindow: 128_000 })
+  const at = input('opencode', {
+    contextWindow: 128_000,
+    port: 45_123,
+    secret: 'launch-secret',
+  })
   const launch = opencodeLaunch(at)
-  expect(launch.argv).toEqual([at.bin, 'acp'])
+  // No plugins (they could rewrite permissions); its server on the node's
+  // port behind this launch's password (P36.7).
+  expect(launch.argv).toEqual([at.bin, 'acp', '--pure', '--port', '45123'])
   expect(launch.env).toEqual({
     HOME: at.home,
     XDG_CONFIG_HOME: join(at.home, 'config'),
@@ -461,14 +481,21 @@ test('opencode starts with its own home and XDG directories, the node’s inline
     XDG_CACHE_HOME: join(at.home, 'cache'),
     XDG_STATE_HOME: join(at.home, 'state'),
     OPENCODE_CONFIG_CONTENT: opencodeConfig(at),
+    OPENCODE_PERMISSION: JSON.stringify(
+      JSON.parse(opencodeConfig(at)).permission,
+    ),
+    OPENCODE_SERVER_PASSWORD: 'launch-secret',
     [OPENCODE_KEY_ENV]: 'sk-secret',
     OPENCODE_DISABLE_AUTOUPDATE: '1',
     OPENCODE_DISABLE_MODELS_FETCH: '1',
     OPENCODE_DISABLE_LSP_DOWNLOAD: '1',
     OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+    OPENCODE_DISABLE_EXTERNAL_SKILLS: '1',
     OPENCODE_DISABLE_CLAUDE_CODE: '1',
     OPENCODE_DISABLE_DEFAULT_PLUGINS: '1',
   })
+  expect(() => opencodeLaunch({ ...at, port: undefined })).toThrow(/port/)
+  expect(() => opencodeLaunch({ ...at, secret: undefined })).toThrow(/password/)
   expect(launch.env.OPENCODE_CONFIG_CONTENT).not.toContain('sk-secret')
   expect(launch.cwd).toBe(join(at.home, 'launch'))
   expect(launch.dirs).toEqual([join(at.home, OPENCODE_QMO_SKILLS)])

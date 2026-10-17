@@ -36,6 +36,7 @@ import { OmpResidentTurnPort } from '@qianmo/resident'
 import { NodeExtensions } from '../../src/host/extensions.js'
 import { runtimeSmoke } from '../../src/host/runtimes/smoke.js'
 import { isolatedRoot } from '../providers/fake.js'
+import { assertScratchConfigRoot } from './realHarnessGuard.js'
 import {
   type ExternalAgent,
   ExternalRuntimePool,
@@ -67,6 +68,7 @@ afterEach(async () => {
 function isolate(): void {
   const root = isolatedRoot()
   cleanup.push(async () => root.dispose())
+  assertScratchConfigRoot()
 }
 
 interface Served {
@@ -420,7 +422,7 @@ test.skipIf(DSH === null)(
     expect(applied.ok).toBe(true)
     const fake = gateway(body =>
       stepOf(body, 'Use the docs') === 0
-        ? { tool: 'mcp__docs__search', args: { q: 'cache' } }
+        ? { tool: 'mcp__qm-docs__search', args: { q: 'cache' } }
         : { text: 'done' },
     )
     const asked: string[] = []
@@ -479,7 +481,8 @@ test.skipIf(DSH === null)(
     const tools = (first.tools as { function: { name: string } }[]).map(
       tool => tool.function.name,
     )
-    expect(tools).toContain('mcp__docs__search')
+    // A connector, under the reserved prefix (P36.7).
+    expect(tools).toContain('mcp__qm-docs__search')
     expect(tools).toContain('skill')
     // The skill from the node's directory is in dsh's catalog.
     expect(JSON.stringify(first)).toContain('Review a draft twice')
