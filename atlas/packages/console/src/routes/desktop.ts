@@ -10,7 +10,10 @@
  *
  * The switches write through `/v0/desktop` (`routes/desktopApi.ts`, ops
  * level: a desktop changes what a node runs and holds logins). Without a
- * desktop port the area is not offered.
+ * desktop port the area is not offered. The screenshots are read by the page
+ * script from `GET /v0/desktop/<node>/<agent>/screen`, not drawn into the
+ * polled fragment: a fragment that carried megabytes of image every few
+ * seconds would be most of the page's traffic.
  */
 
 import { html, methodNotAllowed, notFound } from '../respond.js'
@@ -18,6 +21,7 @@ import {
   DESKTOP_PAGE_CSS,
   type DesktopModel,
   desktopConfirms,
+  desktopViewer,
   renderDesktop,
   renderDesktopFailure,
 } from '../view/desktop.js'
@@ -80,6 +84,7 @@ export const desktopRoute: RouteModule = {
           `<div class="kit-pane" id="desktop" data-poll="/fragments/desktop">` +
           (await body(ctx)) +
           `</div>` +
+          desktopViewer() +
           (canOps(ctx) ? desktopConfirms() : ''),
       }
     },
