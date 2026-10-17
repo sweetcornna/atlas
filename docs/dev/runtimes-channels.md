@@ -71,9 +71,10 @@
 ### 1.3 工具与授权
 
 - **宿主工具经 MCP 提供**：外部底层通过 `qm runtime-mcp` 这个 stdio MCP 服务拿到 `qianmo_*` 宿主工具（通知、记忆、任务、应用连接、文件申请、专属浏览器 / 电脑）。它把 `tools/list`、`tools/call` 逐行转给宿主的回环端点（`127.0.0.1` 随机端口，`host/runtimes/toolHost.ts`），每条带该会话的随机令牌；令牌写在会话目录的 `0600` 文件里，不上命令行，会话关闭即吊销。宿主按令牌找回智能体与会话，调用与 qianmopi 同一套处理函数（`host/hostToolDispatch.ts`）。
-- **权限**：Claude Code 用 `--permission-prompt-tool mcp__qianmo__qianmo_permission`，它要征询的调用（工作目录外的读取、写入、shell）由宿主按常驻姿态裁决：允许、拒绝，或转成 P14 审批（只有可批准的越界写入）；`--safe-mode` 与 `--strict-mcp-config` 关掉用户与项目级定制（hooks、技能、插件、CLAUDE.md、MCP）；`--disallowedTools` 去掉派生子代理、定时、工作树、联网工具，未开 `--allow-workspace-edits` 时去掉编辑工具，未开 `--agent-shell` 时去掉 `Bash`。读取用它原生的 `Read`、`Grep`、`Glob`，原生只在工作目录内放行。Codex 线程以 `approvalPolicy: on-request`、`sandbox: workspace-write`（未开 `--allow-workspace-edits` 时 `read-only`）启动，`item/commandExecution/requestApproval` 与 `item/fileChange/requestApproval` 转成同一授权请求。授权请求体复用 `QIANMO_AUTHZ_V1` 的字段（`toolName`、`input`、`agent`）。
+- **权限**：Claude Code 用 `--permission-prompt-tool mcp__qianmo__qianmo_permission`，它要征询的调用（工作目录外的读取、写入、shell）由宿主按常驻姿态裁决：允许、拒绝，或转成 P14 审批（只有可批准的越界写入）；`--permission-mode default` 让规则外的调用都经这个工具问节点（2.1.301 不指定时是 `auto`，由它自己的分类器决定、不调提示工具）。定制只来自节点：`--setting-sources user` 只读 `CLAUDE_CONFIG_DIR`（节点按智能体管的目录），项目级 `.claude/`、CLAUDE.md、钩子与 `.mcp.json` 都不加载；`--settings {"disableAllHooks":true}` 关掉插件自带的钩子，`CLAUDE_CODE_DISABLE_AUTO_MEMORY` 关掉自动记忆；`--strict-mcp-config` 只用节点给的 `--mcp-config`。（2.1.301 的 `--safe-mode` 连 `--mcp-config` 也不加载，`--bare` 只剩 Read / Edit 且看不到插件技能，两者都不用。）`--disallowedTools` 去掉派生子代理、定时、工作树、联网工具，未开 `--allow-workspace-edits` 时去掉编辑工具，未开 `--agent-shell` 时去掉 `Bash`。读取用它原生的 `Read`、`Grep`、`Glob`，原生只在工作目录内放行。Codex 线程以 `approvalPolicy: on-request`、`sandbox: workspace-write`（未开 `--allow-workspace-edits` 时 `read-only`）启动，`item/commandExecution/requestApproval` 与 `item/fileChange/requestApproval` 转成同一授权请求。授权请求体复用 `QIANMO_AUTHZ_V1` 的字段（`toolName`、`input`、`agent`）。
 - **Codex 的 shell（原生化的例外）**：Codex 只能经 shell 读文件，它的沙箱限不住读取范围，所以常驻 Codex 智能体默认关掉 shell（`--disable shell_tool`、`unified_exec`），由宿主经 MCP 提供 `qianmo_read_file`、`qianmo_list_files`、`qianmo_search`，与 qianmopi 的 `read`、`grep`、`glob` 走同一个裁决。`--agent-shell <名>` 打开后 shell 回到 Codex 沙箱内执行，越过沙箱的请求一律拒绝；Claude Code 打开后每条命令都经审批。
-- **隔离**：两种底层的子进程 cwd 是智能体工作区；环境只放白名单变量加凭据；`CLAUDE_CONFIG_DIR` / `CODEX_HOME` 在配置根下按智能体分开；关掉遥测与自动更新（`DISABLE_AUTOUPDATER`、`DISABLE_TELEMETRY`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`）。
+- **隔离**：两种底层的子进程 cwd 是智能体工作区；环境只放白名单变量加凭据；`CLAUDE_CONFIG_DIR` / `CODEX_HOME` 在配置根下按智能体分开，Codex 的 `HOME` 也指到 `CODEX_HOME` 下节点自己的目录（Codex 还会从 `~/.agents/` 读技能与插件，本机的那份属于运行账号）；关掉遥测与自动更新（`DISABLE_AUTOUPDATER`、`DISABLE_TELEMETRY`、`DISABLE_ERROR_REPORTING`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`）。
+- **升级先过兼容检查**：`runtime.update` 把新版本先装进临时前缀，用节点自己的启动参数、真实的 `qm runtime-mcp` 与本机假模型接口跑一遍：Claude Code 的 init 要列出已连上的 qianmo 服务与工具，假模型发起的 qianmo 工具调用要到达节点并完成回合；Codex 的 app-server 要列出 qianmo 服务与工具。不通过就不换进托管前缀，节点继续用原版本，答复里写明原因。
 
 ### 1.4 协作
 
@@ -339,21 +340,23 @@ Linux 真机：本机 lima 虚拟机（Debian 12 arm64，内核 6.1，bubblewrap
 | 项 | 定案 |
 |---|---|
 | 下发 | 中枢按节点算出该节点上各智能体的条目集，经控制链路 `extensions.apply` 下发（一条控制消息，合计上限 192 KiB）；技能正文与 MCP 定义（含秘密）随消息走，GitHub 来源只带仓库、提交号、目录与摘要，节点自己从 `codeload.github.com` 取那个提交的包，核对同 §5.2（成员名、链接与特殊文件、大小），摘要不符就不用 |
-| 对账 | 保存或删除后立即下发；每 10 分钟问一次各节点的集合摘要（`extensions.status`），不一致才重发 |
+| 对账 | 保存或删除后立即下发；每 10 分钟问一次各节点的集合摘要（`extensions.status`），不一致或有可重试的失败（下载、探测、Codex 安装）才重发；不可重试的失败（Codex 不支持 SSE、节点上没有适用的智能体）不重发，旧节点不报可否重试时照旧重发 |
 | 落地位置 | `qianmoConfigPath('extensions')`，每个智能体一个目录：`plugins/qianmo/` 放该智能体的技能（三种清单齐备）；`plugins/<名称>/` 放导入的插件；`.agents/plugins/marketplace.json` 是给 Codex 的本地市场；`mcp/qianmo-mcp/` 放 qianmopi 用的 MCP 定义（`mcp.json` 0600）。新集合在旁边建好后整体换入 |
-| 秘密不扩散 | MCP 秘密只在三处：qianmopi 的 `mcp/qianmo-mcp/mcp.json`、Claude Code 会话目录里的 `--mcp-config` 文件、Codex 该智能体 `CODEX_HOME/config.toml`，都是 0600、都在常驻守卫保护的配置根下；智能体只能读技能目录（`plugins/` 与 Codex 的插件缓存），读不到这三处。Claude Code 启动的本地 MCP 服务拿不到智能体的模型密钥 |
-| 生效 | 只有集合变了的智能体回收空闲子进程，下一个会话用新集合；在途回合不打断 |
-| 状态 | 节点答每个条目的落地结果，页面按「条目 × 节点」显示已生效、失败原因或下发中 |
+| 秘密不扩散 | MCP 秘密只在三处：qianmopi 的 `mcp/qianmo-mcp/mcp.json`、Claude Code 会话目录里的 `--mcp-config` 文件（`runtime-mcp.json`）、Codex 该智能体 `CODEX_HOME/config.toml`，都是 0600、都在常驻守卫保护的配置根下；智能体只能读技能目录（`plugins/` 与 Codex 的插件缓存），读不到这三处。`runtime-mcp.json` 在进程结束、会话关闭、池停止与智能体失效时删掉，新池启动时清掉崩溃留下的。本地 MCP 服务拿不到智能体的模型密钥：qianmopi 起服务与节点探测都经 `qm mcp-exec`，只保留基线变量与该服务自己配置的变量再 execve 成服务本身（`mcp/qianmo-mcp/bin/` 下放一个调 `qm` 的脚本，因为 Agent Plugins 只认裸命令或插件内 `./` 路径） |
+| 生效 | 只有集合变了的智能体换新：空闲的子进程立即关掉，启动中、被回合占用或正在跑的标记为过期，回合结束、占用释放时再关；下一轮用新集合。在途回合不打断（专属电脑开关同此） |
+| 状态 | 节点按「条目 × 智能体」答落地结果并标可否重试，中枢逐个保存；页面每个条目下每台节点一行状态（已生效、下发中或失败），部分智能体失败时列出智能体与原因。非运维账号只看状态，看不到失败详情（可能带命令名或地址） |
 
 ### 9.3 各底层的原生加载
 
 | 底层 | 技能与插件 | MCP 服务器 | 调用授权 |
 |---|---|---|---|
-| qianmopi | 子进程加 `--plugin-dir`（技能插件、MCP 插件、Claude 或 Agent Plugins 格式的导入插件）；技能经 `skill://` 读取 | Agent Plugins 格式的 `mcp.json`；qianmopi 只启用 `--tools` 点名的工具，节点落地时用 qianmopi 自己的 MCP 客户端连一次服务器、按 qianmopi 的命名规则得到工具名（`mcp__qianmo_mcp_<服务器>_<工具>`），写进工具表与覆盖配置 | 扩展的工具裁决：直接运行的放行；每次先问的经节点审批（`QIANMO_AUTHZ_V1`），节点没有审批通道就拒绝；只给主智能体 |
-| Claude Code | `--safe-mode` 换成 `--bare`（同样不读用户与项目的设置、钩子、技能、CLAUDE.md，但加载 `--plugin-dir`）；放行 `Skill` | 并进已有的 `--mcp-config` 文件，保留 `--strict-mcp-config`；直接运行的服务器加进 `--allowedTools`（`mcp__<服务器>`） | 每次先问的经 `qianmo_permission` 问节点，同一套裁决 |
-| Codex | 原生本地市场：在该智能体的 `CODEX_HOME` 下执行 `codex plugin marketplace add` 与 `codex plugin add <插件>@qianmo` | 写进 `CODEX_HOME/config.toml` 的 `[mcp_servers.<名称>]`（`default_tools_approval_mode` 取 `approve` 或 `prompt`）；Codex 不支持 SSE，SSE 服务器在 Codex 智能体上标失败 | `prompt` 时 Codex 发 `mcpServer/elicitation/request`（`codex_approval_kind = mcp_tool_call`），节点按同一套裁决答 accept 或 decline；其他征询一律 decline |
+| qianmopi | 子进程加 `--plugin-dir`（技能插件、MCP 插件、Claude 或 Agent Plugins 格式的导入插件）；技能经 `skill://` 读取；常驻覆盖配置 `skills.enableAgentsUser: false`，不读节点运行账号的 `~/.agents` 技能 | Agent Plugins 格式的 `mcp.json`；qianmopi 只启用 `--tools` 点名的工具，节点落地时用 qianmopi 自己的 MCP 客户端连一次服务器、按 qianmopi 的命名规则得到工具名（`mcp__qianmo_mcp_<服务器>_<工具>`），写进工具表与覆盖配置 | 扩展的工具裁决：直接运行的放行；每次先问的经节点审批（`QIANMO_AUTHZ_V1`），节点没有审批通道就拒绝；只给主智能体 |
+| Claude Code | 加 `--plugin-dir`，有插件时放行 `Skill`；其余同 §1.3（`--setting-sources user`、钩子与自动记忆关掉），插件自带的钩子不跑、自带的 MCP 服务器被 `--strict-mcp-config` 挡在外面 | 并进已有的 `--mcp-config` 文件，保留 `--strict-mcp-config`；直接运行的服务器加进 `--allowedTools`（`mcp__<服务器>`） | 每次先问的经 `qianmo_permission` 问节点，同一套裁决；qianmo 自己的工具（`mcp__qianmo__*`）在被调用时自己裁决，征询直接放行 |
+| Codex | 原生本地市场：在该智能体的 `CODEX_HOME` 下执行 `codex plugin marketplace add` 与 `codex plugin add <插件>@qianmo`；`plugins` 功能保持开启（关掉后 `skills/list` 看不到本地市场里的技能），`apps`、`remote_plugin`、`hooks`、`skill_mcp_dependency_install` 关掉；`skills.bundled.enabled=false` 不带 Codex 自带的系统技能，`HOME` 指到节点自己的目录不读运行账号的 `~/.agents` | 写进 `CODEX_HOME/config.toml` 的 `[mcp_servers.<名称>]`（`default_tools_approval_mode` 取 `approve` 或 `prompt`）；Codex 不支持 SSE，SSE 服务器在 Codex 智能体上标失败 | `prompt` 时 Codex 发 `mcpServer/elicitation/request`（`codex_approval_kind = mcp_tool_call`），节点按同一套裁决答 accept 或 decline；其他征询一律 decline |
 
-本机实测（2026-10-15）：qianmopi 子进程从生成的 MCP 插件注册并启用 `mcp__qianmo_mcp_docs_search`，在常驻回合里经脚本模型调用成功、带上封存的环境变量，并经 `skill://review` 读到技能正文；Claude Code 2.1.296 在 `--bare --plugin-dir` 下列出 `qianmo:review`；Codex 0.162.0 用生成的本地市场装上技能插件，`codex mcp list` 读出生成的服务器。
+本机实测（2026-10-15）：qianmopi 子进程从生成的 MCP 插件注册并启用 `mcp__qianmo_mcp_docs_search`，在常驻回合里经脚本模型调用成功、带上封存的环境变量，并经 `skill://review` 读到技能正文；Codex 0.162.0 用生成的本地市场装上技能插件，`codex mcp list` 读出生成的服务器。
+
+本机实测（2026-10-17，`realRuntimes.smoke.test.ts`，本机装有 `claude` / `codex` 时运行）：Claude Code 2.1.301 与 Codex 0.163.0 用池子的启动参数与节点自己的配置目录，对本机假模型接口跑：两者都连上 qianmo 工具桥与运维配置的 MCP 服务器并列出运维装的技能、不带用户级与自带技能；Claude Code 上设为「每次先问」的服务器每次调用都经 `qianmo_permission` 到节点；兼容检查对已装版本通过、去掉 qianmo 工具桥时不通过。5 项全过。
 
 证据状态：未评估（没有用真实 MCP 服务、真实插件仓库在真实模型上跑过整轮）。
 
