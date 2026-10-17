@@ -126,6 +126,12 @@ const recordSchema = z.object({
   requestedState: z.enum(['', 'completed', 'needs_input']),
   lastError: z.string(),
   turns: z.number().int().nonnegative(),
+  /**
+   * The node task of the worker turn the hub sent and has not seen end:
+   * stopped before the next turn, on cancel and after a restart, so a
+   * leftover turn never runs on in front of the next one.
+   */
+  nodeTaskId: z.string().nullable().default(null),
   quietTurns: z.number().int().nonnegative(),
   readUpdateId: z.number().int().nonnegative(),
   notification: z.enum([
@@ -221,6 +227,19 @@ const TURN_WAIT_SLACK_MS = 60_000
 const MAX_QUIET_TURNS = 5
 /** Consecutive failed turns before the task stops and asks the user. */
 const MAX_FAILURES = 10
+/**
+ * Refusals retrying cannot fix: the owner's account or role changed, the
+ * target left the dial list or the tenant, the quota is spent. Same set the
+ * schedules treat as "skipped". The task pauses for the owner at once.
+ */
+const PERMANENT_REFUSALS: ReadonlySet<number> = new Set([401, 403, 404, 429])
+
+interface TurnOutcome {
+  readonly ok: boolean
+  readonly error?: string
+  readonly cancelled?: boolean
+  readonly permanent?: boolean
+}
 
 function ok(value: unknown): ControlOutcome {
   return { ok: true, value }
@@ -586,6 +605,7 @@ export class ConsoleTasks {
       requestedState: '',
       lastError: '',
       turns: 0,
+      nodeTaskId: null,
       quietTurns: 0,
       readUpdateId: 0,
       notification: 'none',
@@ -636,6 +656,8 @@ export class ConsoleTasks {
       })
     else this.#save()
     this.#schedule(task.id)
+    // A task waiting out a failure's backoff takes the instruction now.
+    this.#waits.get(task.id)?.()
     return ok({ updateId: update.id, task: this.#view(next) })
   }
 
@@ -644,13 +666,13 @@ export class ConsoleTasks {
     this.#patch(task.id, { status: 'cancelled' })
     this.#waits.get(task.id)?.()
     const turn = this.#turns.get(task.id)
-    if (turn !== undefined) {
-      if (turn.taskId !== null && this.#options.stopTask)
-        await this.#options
-          .stopTask(turn.target, turn.taskId)
-          .catch(() => false)
-      turn.handle.cancel()
-    }
+    // The turn the loop waits on, or one a restart left on the node.
+    const running = turn?.taskId ?? task.nodeTaskId
+    if (running !== null && this.#options.stopTask)
+      await this.#options
+        .stopTask(turn?.target ?? task.target, running)
+        .catch(() => false)
+    turn?.handle.cancel()
   }
 
   #report(task: TaskRecord, args: Record<string, unknown>): ControlOutcome {
@@ -809,28 +831,40 @@ export class ConsoleTasks {
     return parts.join('\n\n')
   }
 
+  /** A refused dispatch step, and whether retrying could help. */
+  async #refused(
+    response: Response,
+    fallback: string,
+  ): Promise<{ readonly error: string; readonly permanent: boolean }> {
+    return {
+      error: (await refusal(response)).error ?? fallback,
+      permanent: PERMANENT_REFUSALS.has(response.status),
+    }
+  }
+
   /** Opens (or reuses) the worker conversation; true when it is new. */
   async #session(
     task: TaskRecord,
     dispatch: ChatDispatch,
   ): Promise<
-    { id: string; transcript: ChatTranscript; fresh: boolean } | string
+    | { id: string; transcript: ChatTranscript; fresh: boolean }
+    | { readonly error: string; readonly permanent: boolean }
   > {
     if (task.workerSession !== null) {
       const known = await this.#options.chat.transcript(task.workerSession)
       if (known.ok && known.value.session.target === task.target) {
         const claimed = dispatch.claimSession(task.workerSession)
-        if (claimed) return (await refusal(claimed)).error ?? '子会话不可用'
+        if (claimed) return this.#refused(claimed, '子会话不可用')
         return { id: task.workerSession, transcript: known.value, fresh: false }
       }
     }
     const opened = await dispatch.open(task.target)
     if (opened instanceof Response)
-      return (await refusal(opened)).error ?? '没能开启子会话'
-    if (!opened.ok) return '没能开启子会话'
+      return this.#refused(opened, '没能开启子会话')
+    if (!opened.ok) return { error: '没能开启子会话', permanent: false }
     this.#patch(task.id, { workerSession: opened.value.id })
     const transcript = await this.#options.chat.transcript(opened.value.id)
-    if (!transcript.ok) return '子会话记录不可用'
+    if (!transcript.ok) return { error: '子会话记录不可用', permanent: false }
     return { id: opened.value.id, transcript: transcript.value, fresh: true }
   }
 
@@ -845,9 +879,7 @@ export class ConsoleTasks {
       if (task.status === 'running' && !this.#slotFree(node))
         task = this.#patch(id, { status: 'queued' })
       const release = await this.#slot(node)
-      let outcome: { ok: boolean; error?: string; cancelled?: boolean } = {
-        ok: false,
-      }
+      let outcome: TurnOutcome = { ok: false }
       const before = task
       try {
         task = this.#tasks.get(id)
@@ -855,16 +887,33 @@ export class ConsoleTasks {
           break
         const dispatch = this.#dispatch(task.owner)
         if (typeof dispatch === 'string') {
-          outcome = { ok: false, error: dispatch }
+          outcome = { ok: false, error: dispatch, permanent: true }
         } else {
           const quota = dispatch.preflightUsage(task.target, task.workerSession)
           const denied = quota ?? (await dispatch.authorizeTarget(task.target))
           const session = denied
-            ? ((await refusal(denied)).error ?? '不能派给这个智能体')
+            ? await this.#refused(denied, '不能派给这个智能体')
             : await this.#session(task, dispatch)
-          if (typeof session === 'string')
-            outcome = { ok: false, error: session }
+          // Cancelled or closed while this turn was being authorised and its
+          // session opened: never write `running` over that.
+          task = this.#tasks.get(id)
+          if (task === undefined || !RESUMABLE.has(task.status) || this.#closed)
+            break
+          if ('error' in session)
+            outcome = {
+              ok: false,
+              error: session.error,
+              permanent: session.permanent,
+            }
           else {
+            // A turn the hub never saw end (a restart, a local timeout) is
+            // stopped first, or the next one would queue behind it.
+            if (task.nodeTaskId !== null) {
+              await this.#options
+                .stopTask?.(task.target, task.nodeTaskId)
+                .catch(() => false)
+              task = this.#patch(id, { nodeTaskId: null })
+            }
             task = this.#patch(id, {
               status: 'running',
               requestedState: '',
@@ -896,12 +945,40 @@ export class ConsoleTasks {
                 timeoutMs: ttl + TURN_WAIT_SLACK_MS,
                 onTask: taskId => {
                   turn.taskId = taskId
+                  const now = this.#tasks.get(id)
+                  // Cancelled or closed while the line was on its way: the
+                  // cancel had no node task to stop yet, so stop it here.
+                  if (
+                    this.#closed ||
+                    now === undefined ||
+                    TERMINAL.has(now.status)
+                  ) {
+                    void this.#options
+                      .stopTask?.(turn.target, taskId)
+                      .catch(() => false)
+                    return
+                  }
+                  this.#patch(id, { nodeTaskId: taskId })
                 },
               }),
             }
             this.#turns.set(id, turn)
-            outcome = await turn.handle.outcome
+            const result = await turn.handle.outcome
             this.#turns.delete(id)
+            if (
+              result.answered &&
+              this.#tasks.get(id)?.nodeTaskId === turn.taskId
+            )
+              this.#patch(id, { nodeTaskId: null })
+            outcome = {
+              ok: result.ok,
+              ...(result.error === undefined ? {} : { error: result.error }),
+              ...(result.cancelled ? { cancelled: true } : {}),
+              ...(result.refusedStatus !== undefined &&
+              PERMANENT_REFUSALS.has(result.refusedStatus)
+                ? { permanent: true }
+                : {}),
+            }
           }
         }
       } finally {
@@ -946,6 +1023,14 @@ export class ConsoleTasks {
           1_000,
         ),
       })
+      if (outcome.permanent) {
+        this.#patch(id, {
+          status: 'needs_input',
+          result: `子任务已暂停：${clip(outcome.error ?? '派发被拒绝', 300)}。处理之后追加一条指示即可继续。`,
+          notification: 'pending',
+        })
+        break
+      }
       if (failures >= MAX_FAILURES) {
         this.#patch(id, {
           status: 'needs_input',

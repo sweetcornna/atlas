@@ -538,3 +538,141 @@ describe('durability', () => {
     expect(await book.cancelForSession(second)).toBe(1)
   })
 })
+
+describe('races and leftovers', () => {
+  test('a cancel while the next turn is being authorised stays cancelled and sends nothing', async () => {
+    class GatedChat extends FakeChat {
+      calls = 0
+      release: () => void = () => {}
+      readonly gate = new Promise<void>(resolve => {
+        this.release = resolve
+      })
+      override async targets() {
+        this.calls++
+        if (this.calls === 2) await this.gate
+        return super.targets()
+      }
+    }
+    const gated = new GatedChat([MAIN, CODER])
+    chat = gated
+    const book = tasks()
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: 't', instructions: 'i' }),
+    )
+    await until(() => gated.calls === 2)
+    const cancelled = value<{ task: { status: string } }>(
+      await call(book, 'cancel', parent, { id }),
+    )
+    expect(cancelled.task.status).toBe('cancelled')
+    gated.release()
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(book.forSession(parent)[0]?.status).toBe('cancelled')
+    expect(workerSessions()).toEqual([])
+  })
+
+  test('a cancel while the line is on its way stops the node turn once it has a task id', async () => {
+    class SlowChat extends FakeChat {
+      release: () => void = () => {}
+      readonly gate = new Promise<void>(resolve => {
+        this.release = resolve
+      })
+      override async send(input: Parameters<FakeChat['send']>[0]) {
+        if (input.background) await this.gate
+        return super.send(input)
+      }
+    }
+    const slow = new SlowChat([MAIN, CODER])
+    chat = slow
+    const book = tasks()
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: 't', instructions: 'i' }),
+    )
+    await until(() => slow.sent.length === 1)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    value(await call(book, 'cancel', parent, { id }))
+    expect(stopped).toEqual([])
+    slow.release()
+    await until(() => stopped.length === 1)
+    const worker = workerSessions()[0]!
+    expect(stopped).toEqual([[MAIN, slow.lastTask(worker)]])
+  })
+
+  test('an added instruction wakes a task out of its failure backoff', async () => {
+    const book = new ConsoleTasks({
+      directory: root,
+      chat,
+      backoffMs: () => 60_000,
+    })
+    open.push(book)
+    book.start()
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: 't', instructions: 'i' }),
+    )
+    const worker = await workerTurn(1)
+    chat.reply(worker, '模型服务不可用', 'failed')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    await chat.send({ sessionId: parent, text: '补一句' })
+    const sentAt = Date.now()
+    value(await call(book, 'send', parent, { id, message: '附上图表' }))
+    await until(() => chat.sentTo(worker).length === 2)
+    expect(Date.now() - sentAt).toBeLessThan(1_000)
+  })
+
+  test('a turn a restart left on the node is stopped before the next one goes out', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    value(await call(book, 'start', parent, { title: 't', instructions: 'i' }))
+    const worker = await workerTurn(1)
+    const leftover = chat.lastTask(worker)
+    await until(
+      () =>
+        JSON.parse(fs.readFileSync(path.join(root, 'tasks.json'), 'utf8'))
+          .tasks[0].nodeTaskId === leftover,
+    )
+    await book.close()
+    open = []
+    expect(stopped).toEqual([])
+    tasks()
+    await until(() => chat.sentTo(worker).length === 2)
+    expect(stopped).toEqual([[MAIN, leftover]])
+    // Answered by the node: nothing left over any more.
+    chat.reply(worker, '接着做')
+    await until(() => chat.sentTo(worker).length === 3)
+    expect(stopped).toHaveLength(1)
+  })
+
+  test('a refusal retrying cannot fix pauses the task at once, with the reason', async () => {
+    class LeavingChat extends FakeChat {
+      gone = false
+      override async targets() {
+        const listed = await super.targets()
+        return this.gone
+          ? {
+              ok: true as const,
+              value: listed.value.map(row => ({
+                ...row,
+                dialable: row.address !== MAIN,
+              })),
+            }
+          : listed
+      }
+    }
+    const leaving = new LeavingChat([MAIN, CODER])
+    chat = leaving
+    const book = tasks()
+    const parent = await foreground()
+    value(
+      await call(book, 'start', parent, { title: '周报', instructions: 'i' }),
+    )
+    const worker = await workerTurn(1)
+    leaving.gone = true
+    chat.reply(worker, '阶段一')
+    await until(() => finished.length === 1)
+    expect(finished[0]!.text).toContain('目标已不在对话可拨允许名单内')
+    expect(book.forSession(parent)[0]?.status).toBe('needs_input')
+    expect(chat.sentTo(worker)).toHaveLength(1)
+  })
+})

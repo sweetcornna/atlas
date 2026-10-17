@@ -69,6 +69,10 @@ export interface ChatTurnOutcome {
   readonly timedOut?: boolean
   /** The node said the runtime compacted its context during the turn. */
   readonly compacted?: boolean
+  /** The node's own terminal answer ended the wait, so its turn is over. */
+  readonly answered?: boolean
+  /** The dispatch boundary refused the line with this HTTP status. */
+  readonly refusedStatus?: number
 }
 
 export interface ChatTurnOptions {
@@ -96,7 +100,12 @@ export async function refusal(response: Response): Promise<ChatTurnOutcome> {
   const body = (await response.json().catch(() => ({}))) as {
     error?: { message?: string }
   }
-  return { ok: false, text: '', error: body.error?.message ?? '对话被拒绝' }
+  return {
+    ok: false,
+    text: '',
+    error: body.error?.message ?? '对话被拒绝',
+    refusedStatus: response.status,
+  }
 }
 
 export function sendAndWait(options: ChatTurnOptions): ChatTurnHandle {
@@ -133,7 +142,7 @@ export function sendAndWait(options: ChatTurnOptions): ChatTurnHandle {
       const compacted = reply.compacted === true ? { compacted: true } : {}
       finish(
         reply.state === 'done'
-          ? { ok: true, text: reply.text, ...compacted }
+          ? { ok: true, text: reply.text, answered: true, ...compacted }
           : {
               ok: false,
               text: '',
@@ -142,6 +151,7 @@ export function sendAndWait(options: ChatTurnOptions): ChatTurnHandle {
                   ? '任务超时'
                   : reply.text || '智能体运行失败',
               ...(reply.code === 'E_TASK_TIMEOUT' ? { timedOut: true } : {}),
+              answered: true,
               ...compacted,
             },
       )
