@@ -1072,6 +1072,37 @@ describe('P35: a node scope narrows what a node may hold', () => {
     expect(JSON.stringify(h.nodes['beta-1'].requests())).not.toContain(CANARY)
   }, 30_000)
 
+  test('a scope that changes while the node is asked is read again before anything is sent', async () => {
+    const h = harness()
+    const ops = h.caller()
+    const node = h.nodes['beta-1']
+    node.set('lane-addresses', '1')
+    value(
+      await h.port.saveProfile(
+        {
+          profile: draft({
+            laneAddresses: { 'openai-chat': 'https://gw.example.test/v1' },
+          }),
+          ifMatch: null,
+          secrets: { k1: CANARY },
+        },
+        ops,
+      ),
+    )
+    value(await h.port.setDefault({ profileId: 'luna' }, ops))
+    // The node is moved under a scope as soon as it has been asked.
+    h.port.configureScope(name =>
+      name === 'beta-1' &&
+      node.requests().some(request => request.op === 'status')
+        ? { allows: id => id === 'none', fallback: null, extras: false }
+        : null,
+    )
+    const [result] = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
+    expect(result?.outcome).toBe('refused')
+    expect(result?.code).toBe('scope-refused')
+    expect(received(node, 'apply')).toEqual([])
+  }, 30_000)
+
   test('a scope that cannot be read sends nothing', async () => {
     const h = harness()
     const ops = await twoProfiles(h)

@@ -1871,8 +1871,13 @@ export class ConsoleProviders implements ProviderPort {
           '节点还没回报能力 · 另给的通道编不编得进去未知 · 节点状态刷新后再下发',
         )
       }
-      // The routing was read before the node was asked: a save landing in
-      // that wait is not shipped under the older revision.
+      // The scope and the routing were read before the node was asked: a
+      // change landing in that wait is not shipped under the older reading.
+      const scopeNow = this.#scopeOf(node)
+      if (scopeNow === undefined)
+        return refuse('scope-unavailable', '租户配置读不了 · 拒绝下发')
+      if (scopeNow !== null && !scopeNow.allows(profile.id))
+        return refuse('scope-refused', '这份档案不能下发到这个节点')
       let again: ProviderRouted | undefined
       try {
         again = this.#routing?.(node)
