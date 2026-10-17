@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "currency": "CNY",
+  "sourceUrl": "https://github.com/sweetcornna/atlas",
+  "termsUrl": "https://qianmo.example.com/terms",
+  "plans": [
+    {
+      "id": "node-month",
+      "name": "单节点 · 月付",
+      "priceCents": 0,
+      "periodDays": 30,
+      "note": "一台托管节点 · 模型用自己的密钥接入",
+      "nodes": 1,
+      "gatewayLimits": [{ "period": "month", "costUsd": 50 }]
+    },
+    {
+      "id": "team-month",
+      "name": "三节点 · 月付",
+      "priceCents": 0,
+      "periodDays": 30,
+      "note": "三台托管节点",
+      "nodes": 3,
+      "gatewayLimits": [
+        { "period": "days", "days": 7, "tokens": 200000000, "cacheReads": true }
+      ]
+    }
+  ],
+  "channels": {
+    "wechatpay": {
+      "mchid": "1900000000",
+      "appid": "wx00000000000000aa",
+      "merchantSerialNo": "0000000000000000000000000000000000000000",
+      "merchantPrivateKeyFile": "/etc/qianmo/billing/wechatpay/apiclient_key.pem",
+      "apiV3KeyFile": "/etc/qianmo/billing/wechatpay/apiv3.key",
+      "wechatpayPublicKeyId": "PUB_KEY_ID_0000000000000000000000000000",
+      "wechatpayPublicKeyFile": "/etc/qianmo/billing/wechatpay/pub_key.pem",
+      "notifyUrl": "https://qianmo.example.com/v0/billing/notify/wechatpay"
+    },
+    "alipay": {
+      "appId": "2021000000000000",
+      "appPrivateKeyFile": "/etc/qianmo/billing/alipay/app_private_key.txt",
+      "alipayPublicKeyFile": "/etc/qianmo/billing/alipay/alipay_public_key.txt",
+      "notifyUrl": "https://qianmo.example.com/v0/billing/notify/alipay"
+    },
+    "redeem": { "enabled": true }
+  },
+  "orderTtlMinutes": 15
+}

@@ -1,0 +1,51 @@
+# Copyright 2026 Qianmo AgentNest Team
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# 阡陌公开版 · 中枢控制台（systemd 系统单元模板，P35）。
+#
+# 跑公开版构建 `bun run atlas:build:public` 产出的 dist/qm-public-linux-x64：这个构建
+# 就是公开版，没有开关能把它变回默认版。公开版缺下面任何一个选项都拒绝启动：
+# --accounts --tenancy --open-registration（及 --registration-max-accounts）
+# --providers --magpie，计费配置还要能读通（--billing，见 billing.example.json）。
+# --legacy-view-token 固定为 off。选项的含义见 docs/dev/console.md §3。
+#
+# 控制台只听回环，对外由同机的 TLS 前置转发（两条支付回调
+# /v0/billing/notify/{wechatpay,alipay} 也走它，前置不得改写请求体）。
+# 两枚 token 与节点钥匙都是 0600 文件，单元里只有路径。
+# 每台节点一对 --provider-ssh / --provider-ssh-key；示例里是一台，按实际增减。
+# 配置根是 QIANMO_CONFIG_DIR；租户配置、计费配置与账本都在它下面。
+
+[Unit]
+Description=Qianmo public edition hub console
+After=network-online.target magpie.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=qianmo
+Group=qianmo
+Environment=QIANMO_CONFIG_DIR=/var/lib/qianmo/config
+WorkingDirectory=/opt/qianmo
+ExecStart=/opt/qianmo/dist/qm-public-linux-x64 console \
+  --hostname 127.0.0.1 \
+  --port 38613 \
+  --label qianmo-public \
+  --view-token-file /etc/qianmo/console/view-token \
+  --admin-token-file /etc/qianmo/console/admin-token \
+  --accounts \
+  --break-glass \
+  --legacy-view-token off \
+  --tenancy /var/lib/qianmo/config/qianmo/console/tenancy.json \
+  --open-registration \
+  --registration-max-accounts 5000 \
+  --providers \
+  --provider-ssh p-node-1=qianmo@203.0.113.10 \
+  --provider-ssh-key p-node-1=/etc/qianmo/console/keys/p-node-1 \
+  --magpie \
+  --billing /var/lib/qianmo/config/qianmo/console/billing.json
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
