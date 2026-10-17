@@ -5,7 +5,7 @@
 
 > **本文件由 `bun run atlas:sbom` 生成，不要手改。**改判据请改 `atlas/scripts/sbom.ts`。
 >
-> 输入：`bun.lock`（SHA-256 `1d19ab5047d0fc70…`）+ `node_modules` 的 `license` 字段。机器可读版本见同目录 [`sbom-m0.json`](./sbom-m0.json)（CycloneDX 1.5 形状）。
+> 输入：`bun.lock`（SHA-256 `eee8a6f3ee34aaac…`）+ `node_modules` 的 `license` 字段。机器可读版本见同目录 [`sbom-m0.json`](./sbom-m0.json)（CycloneDX 1.5 形状）。
 
 对应 roadmap **P8.4** 交付物①，章程 §5 与风险 L-2 的证据链见 [`license-chain-m0.md`](./license-chain-m0.md)。
 
@@ -25,9 +25,9 @@
 | ├ 第三方组件 | 907 |
 | └ workspace 自有包 | 47 |
 | 唯一 name@version（第三方） | 852 |
-| runtime 可达 | 236 |
+| runtime 可达 | 237 |
 | dev 可达 | 711 |
-| 未被任何根可达（解析遗漏或纯 peer） | 7 |
+| 未被任何根可达（解析遗漏或纯 peer） | 6 |
 | 本机未安装（去重，平台受限 optional） | 223 |
 
 ## 2. 许可分布
@@ -150,7 +150,7 @@
 | `@qianmo/billing` | `atlas/packages/billing` | AGPL-3.0-or-later | 是 | 16/16 |
 | `@qianmo/capability` | `atlas/packages/capability` | AGPL-3.0-or-later | 是 | 17/17 |
 | `@qianmo/capacity` | `atlas/packages/capacity` | AGPL-3.0-or-later | 是 | 13/13 |
-| `@qianmo/console` | `atlas/packages/console` | AGPL-3.0-or-later | 是 | 211/211 |
+| `@qianmo/console` | `atlas/packages/console` | AGPL-3.0-or-later | 是 | 218/218 |
 | `@qianmo/diagnosis` | `atlas/packages/diagnosis` | AGPL-3.0-or-later | 是 | 6/6 |
 | `@qianmo/elastic` | `atlas/packages/elastic` | AGPL-3.0-or-later | 是 | 4/4 |
 | `@qianmo/extension` | `atlas/packages/extension` | AGPL-3.0-or-later | 是 | 6/6 |
@@ -159,7 +159,7 @@
 | `@qianmo/mailbox` | `atlas/packages/mailbox` | AGPL-3.0-or-later | 是 | 5/5 |
 | `@qianmo/memory` | `atlas/packages/memory` | AGPL-3.0-or-later | 是 | 23/23 |
 | `@qianmo/negotiation` | `atlas/packages/negotiation` | AGPL-3.0-or-later | 是 | 7/7 |
-| `@qianmo/node` | `atlas/packages/node` | AGPL-3.0-or-later | 是 | 365/365 |
+| `@qianmo/node` | `atlas/packages/node` | AGPL-3.0-or-later | 是 | 368/368 |
 | `@qianmo/paths` | `atlas/packages/paths` | AGPL-3.0-or-later | 是 | 3/3 |
 | `@qianmo/protocol` | `atlas/packages/protocol` | AGPL-3.0-or-later | 是 | 20/20 |
 | `@qianmo/providers` | `atlas/packages/providers` | AGPL-3.0-or-later | 是 | 18/18 |
