@@ -377,6 +377,35 @@ describe('the subscription gate (one place, every write)', () => {
     }
   })
 
+  test('a device acts with its owner’s standing', async () => {
+    const f = publicConsole({ devices: true })
+    const device = (owner: PublicPerson, method: string, path: string) =>
+      f.handle(
+        new Request(`${BASE}${path}`, {
+          method,
+          headers: {
+            authorization: `Bearer ${f.deviceOf(owner)}`,
+            'content-type': 'application/json',
+          },
+          ...(method === 'GET' ? {} : { body: '{}' }),
+        }),
+      )
+    for (const owner of [f.unpaid, f.expired, f.ops]) {
+      const refused = await device(owner, 'POST', '/v0/handoff/task/send')
+      expect(refused.status).toBe(402)
+      expect(await errorCode(refused)).toBe('subscription_required')
+    }
+    for (const owner of [f.paid, f.waiting, f.platform]) {
+      const passed = await device(owner, 'POST', '/v0/handoff/task/send')
+      expect(passed.status).not.toBe(402)
+      await passed.body?.cancel()
+    }
+    // A device's read is not gated either.
+    const read = await device(f.unpaid, 'GET', '/v0/handoff/devices')
+    expect(read.status).not.toBe(402)
+    await read.body?.cancel()
+  })
+
   test('reads are not gated, and neither is the legacy admin token', async () => {
     const f = publicConsole()
     for (const path of ['/v0/billing/me', '/v0/agents', '/v0/limits']) {
