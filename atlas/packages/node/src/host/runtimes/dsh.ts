@@ -23,13 +23,15 @@
  *   provider usage is only there);
  * - an approval gate plugin, first in line, that sends every tool call but
  *   a few session-only ones, and every read outside the workspace, through
- *   `session/request_permission` for the node to decide;
+ *   `session/request_permission` for the node to decide, and a guard that
+ *   refuses such a call any native bundle let past it (P36.7);
  * - the node's tool bridge as a global MCP client row with the bridge's
  *   call timeout (servers from `session/new` get dsh's 60 s default).
  *
  * The node's patch is the last layer, so it wins on the rows it names; the
- * harness's own layers in the agent's home (its profile and plugins) load
- * untouched underneath.
+ * harness's own layers in the agent's home (its acp profile, the bundles the
+ * operator added there natively, its MCP rows and skills) load untouched
+ * underneath.
  */
 
 import {
@@ -39,12 +41,14 @@ import {
   openSync,
   readdirSync,
   readSync,
+  realpathSync,
   statSync,
 } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type {
   AcpLaunch,
   AcpLaunchInput,
+  AcpOpenLaunch,
   AcpToolCall,
   AcpUsage,
   AcpUsageReader,
@@ -182,11 +186,13 @@ export function dshPatch(input: AcpLaunchInput): string {
     },
     // ACP waits for the bridge: a row's startup is not awaited before the
     // server answers, and the first turn must already see the host's tools.
-    {
-      id: 'acp',
-      config: route,
-      inject: [ACP_STARTUP_SERVICE, BRIDGE_READY_SERVICE],
-    },
+    input.bridge === undefined
+      ? { id: 'acp', config: route }
+      : {
+          id: 'acp',
+          config: route,
+          inject: [ACP_STARTUP_SERVICE, BRIDGE_READY_SERVICE],
+        },
     { id: 'agent-default-model', config: route },
     // No AGENTS.md / CLAUDE.md from the workspace, its parents or any home.
     { id: 'agent-instructions', config: { maxBytes: 0 } },
@@ -221,27 +227,31 @@ export function dshPatch(input: AcpLaunchInput): string {
         // The node's bridge, here rather than in `session/new`: dsh gives
         // servers from there its 60 s call default, and host tools can wait
         // for a person. Startup fails if it does.
-        {
-          id: 'qm-bridge',
-          name: '@deepseek-ai/dsh-mcp-client',
-          config: {
-            transport: 'stdio',
-            serverName: input.bridge.name,
-            command: input.bridge.command,
-            args: [...input.bridge.args],
-            cwd: input.cwd,
-            toolCallTimeoutMs: input.bridge.timeoutMs,
-            failOnStartupError: true,
-          },
-        },
-        {
-          id: 'qm-bridge-ready',
-          name: `./${DSH_BRIDGE_READY_FILE}`,
-          config: {
-            prefix: `mcp__${input.bridge.name}__`,
-            waitMs: BRIDGE_READY_WAIT_MS,
-          },
-        },
+        ...(input.bridge === undefined
+          ? []
+          : [
+              {
+                id: 'qm-bridge',
+                name: '@deepseek-ai/dsh-mcp-client',
+                config: {
+                  transport: 'stdio',
+                  serverName: input.bridge.name,
+                  command: input.bridge.command,
+                  args: [...input.bridge.args],
+                  cwd: input.cwd,
+                  toolCallTimeoutMs: input.bridge.timeoutMs,
+                  failOnStartupError: true,
+                },
+              },
+              {
+                id: 'qm-bridge-ready',
+                name: `./${DSH_BRIDGE_READY_FILE}`,
+                config: {
+                  prefix: `mcp__${input.bridge.name}__`,
+                  waitMs: BRIDGE_READY_WAIT_MS,
+                },
+              },
+            ]),
         { id: 'qm-approval-gate', name: `./${DSH_GATE_FILE}` },
       ],
     },
@@ -254,18 +264,24 @@ export function dshPatch(input: AcpLaunchInput): string {
 }
 
 /**
- * The approval gate (`tools/pre-execute`, registered first). It lets the
- * rest of the chain decide first, so dsh's own listeners keep working and a
- * denial stays a denial; anything they would allow is turned into an
- * approval request unless it only touches the session, or reads inside the
- * workspace. An approval does not widen dsh's sandbox. It writes nothing to
- * stdout (the ACP stream).
+ * The approval gate, second version (P36.7, research D1–D4). Its
+ * `tools/pre-execute` listener is registered first and lets the rest of the
+ * chain decide, so dsh's own listeners keep working and a denial stays a
+ * denial; anything else on a gated call — every tool but a few
+ * session-only ones and reads inside the workspace, tools it does not know
+ * included — becomes an approval request (`session/request_permission`).
+ * A native bundle registered in front of it could still answer "allow"
+ * without passing the call on; `tools.guard()`, which nothing can loosen,
+ * then refuses every gated call this gate did not see asked. An approval
+ * does not widen dsh's sandbox. It writes nothing to stdout (the ACP
+ * stream).
  */
-export const DSH_GATE_PLUGIN = `// Written by the qianmo node (P36). Do not edit.
+export const DSH_GATE_PLUGIN = `// Written by the qianmo node (P36.7). Do not edit.
 import { realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 export const name = 'qm-approval-gate'
+export const inject = ['tools']
 
 // Tools that act on the session only (and the node's own tools, which the
 // node authorizes when they are called).
@@ -308,11 +324,16 @@ function gated(exec) {
 }
 
 export function apply(ctx) {
+  const asked = new Set()
   ctx.on('tools/pre-execute', async (exec, next) => {
     const decision = await next()
-    if (decision?.kind !== 'allow' || !gated(exec)) return decision
-    return { kind: 'ask', reason: 'qianmo node: ' + String(exec.name) }
+    if (!gated(exec) || decision?.kind === 'deny') return decision
+    asked.add(exec.callId)
+    return decision?.kind === 'ask' ? decision : { kind: 'ask', reason: 'qianmo node: ' + String(exec.name) }
   }, { prepend: true })
+  ctx.tools.guard(exec => gated(exec) && !asked.has(exec.callId)
+    ? 'qianmo node: "' + String(exec.name) + '" was not routed to the node for approval'
+    : undefined)
 }
 `
 
@@ -339,27 +360,44 @@ export async function apply(ctx, config) {
 }
 `
 
+/** dsh's part of an agent's environment (`runtimeEnv`). */
+export function dshEnv(
+  home: string,
+  route?: { readonly apiKey: string },
+): Record<string, string> {
+  return {
+    DSH_HOME: home,
+    // Shared agent skills and AGENTS.md: the agent's own, not ~/.agents.
+    DSH_AGENTS_HOME: join(home, 'agents'),
+    DSH_TELEMETRY_DISABLED: '1',
+    ...(route === undefined ? {} : { [DSH_KEY_ENV]: route.apiKey }),
+  }
+}
+
+/** The patch, the gate (and the bridge's readiness) beside it. */
+function dshFiles(input: AcpLaunchInput): { path: string; content: string }[] {
+  return [
+    { path: join(input.runDir, DSH_PATCH_FILE), content: dshPatch(input) },
+    { path: join(input.runDir, DSH_GATE_FILE), content: DSH_GATE_PLUGIN },
+    ...(input.bridge === undefined
+      ? []
+      : [
+          {
+            path: join(input.runDir, DSH_BRIDGE_READY_FILE),
+            content: DSH_BRIDGE_READY_PLUGIN,
+          },
+        ]),
+  ]
+}
+
 /** How one agent's dsh process starts. */
 export function dshLaunch(input: AcpLaunchInput): AcpLaunch {
   const patch = join(input.runDir, DSH_PATCH_FILE)
   const launchDir = join(input.home, 'launch')
   return {
     argv: [input.bin, '--profile', 'acp', '--patch', patch],
-    env: {
-      DSH_HOME: input.home,
-      // Shared agent skills and AGENTS.md: the agent's own, not ~/.agents.
-      DSH_AGENTS_HOME: join(input.home, 'agents'),
-      DSH_TELEMETRY_DISABLED: '1',
-      [DSH_KEY_ENV]: input.apiKey,
-    },
-    files: [
-      { path: patch, content: dshPatch(input) },
-      { path: join(input.runDir, DSH_GATE_FILE), content: DSH_GATE_PLUGIN },
-      {
-        path: join(input.runDir, DSH_BRIDGE_READY_FILE),
-        content: DSH_BRIDGE_READY_PLUGIN,
-      },
-    ],
+    env: dshEnv(input.home, input),
+    files: dshFiles(input),
     // dsh loads a `.env` from its launch directory into its own environment
     // (and so into the model's shells): an empty directory of its own, never
     // the workspace, which is only `session/new {cwd}`.
@@ -369,6 +407,85 @@ export function dshLaunch(input: AcpLaunchInput): AcpLaunch {
       join(input.home, 'skills', DSH_QMO_SKILLS),
     ],
     mountsBridge: true,
+  }
+}
+
+/** The web app's package, beside dsh's own in the install that has `bin`. */
+export function dshWebApp(bin: string): string | undefined {
+  let real = bin
+  try {
+    real = realpathSync(bin)
+  } catch {
+    // As given.
+  }
+  for (const start of [bin, real])
+    for (let dir = dirname(start); dirname(dir) !== dir; dir = dirname(dir)) {
+      const candidate = join(
+        dir,
+        dir.endsWith('node_modules') ? '' : 'node_modules',
+        '@deepseek-ai',
+        'dsh-web-app',
+      )
+      if (existsSync(join(candidate, 'cordis.patch.yml'))) return candidate
+    }
+  return undefined
+}
+
+/** The web app's patches, in the order `dsh web` layers them. */
+const WEB_PATCHES = [
+  'cordis.patch.yml',
+  'presets/standard.patch.yml',
+  'presets/ptc.patch.yml',
+  'presets/minimal.patch.yml',
+  'presets/cordis.patch.yml',
+]
+
+/**
+ * The official frontend, dsh's web UI, served from the agent's **acp**
+ * profile (the native bundles a resident process loads; a `web` profile
+ * would be another set): the web app's patches, the node's patch and gate,
+ * and the ACP server switched off. dsh binds loopback and prints its
+ * address with a random token; the node never opens a browser.
+ */
+export function dshOpen(input: AcpLaunchInput): AcpOpenLaunch {
+  const app = dshWebApp(input.bin)
+  if (app === undefined)
+    throw new Error('this DeepSeek Harness install has no web app')
+  const off = join(input.runDir, 'qm-open-web.patch.yml')
+  return {
+    argv: [
+      input.bin,
+      '--profile',
+      'acp',
+      ...WEB_PATCHES.flatMap(patch => ['--patch', join(app, patch)]),
+      '--patch',
+      join(input.runDir, DSH_PATCH_FILE),
+      '--patch',
+      off,
+      '--no-open',
+      '--host',
+      '127.0.0.1',
+      '--port',
+      '0',
+    ],
+    env: dshEnv(input.home, input),
+    files: [
+      ...dshFiles(input),
+      {
+        path: off,
+        content: [
+          '# Written by the qianmo node for `qm runtime open` (P36.7). Do not edit.',
+          `- ${yamlFlow({ id: 'acp', disabled: true })}`,
+          `- ${yamlFlow({ id: 'acp-app-startup', disabled: true })}`,
+          '',
+        ].join('\n'),
+      },
+    ],
+    cwd: join(input.home, 'launch'),
+    dirs: [
+      join(input.home, 'agents'),
+      join(input.home, 'skills', DSH_QMO_SKILLS),
+    ],
   }
 }
 

@@ -375,9 +375,12 @@ type GateListener = (
   kind: string
 }>
 
+type GateGuard = (exec: Record<string, unknown>) => string | undefined
+
 async function loadGate(): Promise<{
   listener: GateListener
   options: unknown
+  guard: GateGuard
 }> {
   const dir = temp()
   const file = join(dir, 'qm-approval-gate.mjs')
@@ -389,14 +392,20 @@ async function loadGate(): Promise<{
   expect(plugin.name).toBe('qm-approval-gate')
   let listener: GateListener | undefined
   let options: unknown
+  let guard: GateGuard | undefined
   plugin.apply({
     on: (event: string, callback: GateListener, opts: unknown) => {
       expect(event).toBe('tools/pre-execute')
       listener = callback
       options = opts
     },
+    tools: {
+      guard: (callback: GateGuard) => {
+        guard = callback
+      },
+    },
   })
-  return { listener: listener!, options }
+  return { listener: listener!, options, guard: guard! }
 }
 
 test('the approval gate asks for every effect and every read outside the workspace, after the rest of the chain', async () => {
@@ -464,6 +473,31 @@ test('the approval gate asks for every effect and every read outside the workspa
       )
     ).kind,
   ).toBe('ask')
+})
+
+test('gate v2: a gated call that never reached the node is stopped at execution (P36.7)', async () => {
+  const { listener, guard } = await loadGate()
+  const workspace = temp()
+  const exec = (name: string, callId: string, args = {}) => ({
+    name,
+    callId,
+    arguments: args,
+    agent: { session: { header: { cwd: workspace } } },
+  })
+  // A native bundle's listener answered first and allowed it: never asked.
+  expect(guard(exec('bash', 'c1', { command: 'id' }))).toContain(
+    'was not routed to the node',
+  )
+  expect(guard(exec('some_plugin_tool', 'c2'))).toContain('not routed')
+  // Asked through the node: it runs once the operator allowed it.
+  expect(
+    (await listener(exec('bash', 'c3'), async () => ({ kind: 'allow' }))).kind,
+  ).toBe('ask')
+  expect(guard(exec('bash', 'c3'))).toBeUndefined()
+  // Free tools and the node's own never need the node.
+  expect(guard(exec('todo_write', 'c4'))).toBeUndefined()
+  expect(guard(exec('mcp__qianmo__qianmo_notify', 'c5'))).toBeUndefined()
+  expect(guard(exec('read', 'c6', { file_path: 'a.txt' }))).toBeUndefined()
 })
 
 test('the bridge-ready plugin provides its service once a bridge tool is registered', async () => {

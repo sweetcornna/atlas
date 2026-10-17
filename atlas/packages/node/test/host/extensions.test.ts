@@ -23,13 +23,14 @@ import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 import { OutboundPolicy } from '../../src/commands/outboundPolicy.js'
 import {
-  codexMcpToml,
+  CODEX_TOML_HEADER,
   extensionsDigest,
   extensionWireSchema,
   type ExtensionWireEntry,
   type McpProbeTarget,
   NodeExtensions,
   withoutGrants,
+  withoutNodeCodexServers,
 } from '../../src/host/extensions.js'
 import { treeDigest } from '../../src/host/githubDir.js'
 
@@ -99,10 +100,12 @@ function host(
     run: async (argv, options) => {
       if (argv[0] === '/opt/codex') {
         commands.push([...argv])
-        // Codex installs into a home beside the live one (P32 audit 4).
-        expect(options.env.CODEX_HOME).toStartWith(
-          `${path.join(root, 'codex', 'helper')}.next-`,
+        // Codex installs on the agent's live home, from its empty launch
+        // directory, in the agent's environment (P36.7).
+        expect(path.dirname(options.env.CODEX_HOME!)).toBe(
+          path.join(root, 'codex'),
         )
+        expect(options.cwd).toBe(path.join(options.env.CODEX_HOME!, 'launch'))
         return { code: 0, stdout: '' }
       }
       const done = Bun.spawnSync([...argv], { env: options.env })
@@ -224,19 +227,25 @@ test('lays out skills and MCP servers in each runtime’s native shape', async (
   expect(coder.mcp.map(server => server.name)).toEqual(['docs'])
   expect(existsSync(path.join(base, 'coder', 'mcp'))).toBe(false)
 
-  // Codex: its own config.toml and its own plugin commands.
-  const config = readFileSync(
-    path.join(root, 'codex', 'helper', 'config.toml'),
-    'utf8',
+  // Codex: connectors come per process (the pool); skills through its own
+  // plugin commands; nothing written into its config.toml (P36.7).
+  expect(existsSync(path.join(root, 'codex', 'helper', 'config.toml'))).toBe(
+    false,
   )
-  expect(config).toContain('[mcp_servers."docs"]')
-  expect(config).toContain('default_tools_approval_mode = "approve"')
-  expect(config).toContain('"DOCS_TOKEN" = "secret-value"')
-  // Operator connectors keep Codex's own call timeout; only the bridge waits.
-  expect(config).not.toContain('tool_timeout_sec')
+  expect(node.forAgent('helper')!.mcp.map(server => server.name)).toEqual([
+    'docs',
+  ])
   expect(commands).toEqual([
-    ['/opt/codex', 'plugin', 'marketplace', 'add', path.join(base, 'helper')],
-    ['/opt/codex', 'plugin', 'add', 'qianmo@qianmo'],
+    [
+      '/opt/codex',
+      'plugin',
+      'marketplace',
+      'add',
+      path.join(base, 'helper'),
+      '--json',
+    ],
+    ['/opt/codex', 'plugin', 'add', 'qianmo@qianmo', '--json'],
+    ['/opt/codex', 'plugin', 'list', '--marketplace', 'qianmo', '--json'],
   ])
   const market = JSON.parse(
     readFileSync(
@@ -345,6 +354,7 @@ test('a GitHub plugin is used only when its files match the pinned digest', asyn
     'plugin',
     'add',
     'lint@qianmo',
+    '--json',
   ])
 
   const tampered = {
@@ -358,21 +368,73 @@ test('a GitHub plugin is used only when its files match the pinned digest', asyn
   expect(node.forAgent('coder')!.claudePluginDirs).toEqual([])
 })
 
-test('Codex gets no SSE server and asks for servers set to ask', () => {
-  const { toml, skipped } = codexMcpToml([
-    { ...MCP, approval: 'ask' },
-    {
-      id: id(5),
-      kind: 'mcp',
-      name: 'feed',
-      agents: null,
-      transport: 'sse',
-      url: 'https://feed.example/sse',
-    },
+test('a config.toml the node once wrote whole loses only the node’s server tables (P36.7 migration)', () => {
+  const text = [
+    CODEX_TOML_HEADER,
+    '',
+    '[mcp_servers."docs"]',
+    'command = "docs-mcp"',
+    '',
+    '[mcp_servers.docs.env]',
+    'DOCS_TOKEN = "secret-value"',
+    '',
+    '[mcp_servers.docs.tools.search]',
+    'approval_mode = "approve"',
+    '',
+    '[marketplaces.qianmo]',
+    'source_type = "local"',
+    '',
+    '[plugins."qianmo@qianmo"]',
+    'enabled = true',
+    '',
+    '[mcp_servers.own]',
+    'command = "own-server"',
+    '',
+    '[projects."/w"]',
+    'trust_level = "trusted"',
+    '',
+  ].join('\n')
+  const kept = withoutNodeCodexServers(text, new Set(['docs']))
+  expect(kept).not.toContain('docs')
+  expect(kept).not.toContain('secret-value')
+  expect(kept).not.toContain(CODEX_TOML_HEADER)
+  for (const native of [
+    '[marketplaces.qianmo]',
+    '[plugins."qianmo@qianmo"]',
+    '[mcp_servers.own]',
+    'command = "own-server"',
+    '[projects."/w"]',
   ])
-  expect(toml).toContain('default_tools_approval_mode = "prompt"')
-  expect(toml).not.toContain('feed')
-  expect(skipped).toEqual([id(5)])
+    expect(kept).toContain(native)
+  // A name the node never wrote stays.
+  expect(withoutNodeCodexServers(text, new Set(['own']))).toContain(
+    '[mcp_servers."docs"]',
+  )
+})
+
+test('applying a set migrates a home the node once wrote whole and keeps the operator’s own entries', async () => {
+  const live = path.join(root, 'codex', 'helper')
+  mkdirSync(path.join(live, 'plugins.previous'), { recursive: true })
+  const first = host()
+  await first.apply([MCP, SKILL])
+  writeFileSync(
+    path.join(live, 'config.toml'),
+    [
+      CODEX_TOML_HEADER,
+      '',
+      '[mcp_servers."docs"]',
+      'command = "docs-mcp"',
+      '',
+      '[mcp_servers.own]',
+      'command = "own-server"',
+      '',
+    ].join('\n'),
+  )
+  await host().apply([SKILL])
+  const config = readFileSync(path.join(live, 'config.toml'), 'utf8')
+  expect(config).not.toContain('docs')
+  expect(config).toContain('[mcp_servers.own]')
+  expect(existsSync(path.join(live, 'plugins.previous'))).toBe(false)
 })
 
 test('a failed Codex install is retried while the set stays the same', async () => {
@@ -397,7 +459,7 @@ test('a failed Codex install is retried while the set stays the same', async () 
   changed = []
   await node.apply([SKILL])
   expect(node.status().results[0]!.ok).toBe(true)
-  expect(commands.map(argv => argv[2])).toEqual(['marketplace', 'add'])
+  expect(commands.map(argv => argv[2])).toEqual(['marketplace', 'add', 'list'])
   expect(changed).toEqual(['helper'])
 })
 
@@ -521,9 +583,7 @@ test('a new agent or a runtime switch after a restart gets the set laid out agai
     agents: [{ agent: 'writer', runtime: 'codex' }, { agent: 'pi3' }],
     run: async (argv, options) => {
       commands.push([...argv])
-      expect(options.env.CODEX_HOME).toStartWith(
-        `${path.join(root, 'codex', 'writer')}.next-`,
-      )
+      expect(options.env.CODEX_HOME).toBe(path.join(root, 'codex', 'writer'))
       return { code: 0, stdout: '' }
     },
   })
@@ -537,6 +597,7 @@ test('a new agent or a runtime switch after a restart gets the set laid out agai
   expect(commands.map(argv => argv.slice(1, 3).join(' '))).toEqual([
     'plugin marketplace',
     'plugin add',
+    'plugin list',
   ])
   expect(after.forAgent('writer')!.mcp.map(server => server.name)).toEqual([
     'docs',
@@ -674,37 +735,52 @@ test('an imported plugin brings its instructions, not the processes it bundles',
     )
 })
 
-test('Codex is installed beside its live home and swapped in whole (P32 audit 4)', async () => {
+test('Codex installs on the agent’s live home through its own commands and leaves native entries alone (P36.7)', async () => {
   const live = path.join(root, 'codex', 'helper')
-  let seen: string | undefined
+  const native = '[mcp_servers.own]\ncommand = "own-server"\n'
   const node = host({
     agents: [{ agent: 'helper', runtime: 'codex' }],
     run: async (argv, options) => {
       commands.push([...argv])
-      // While Codex installs, the live home still has the old config.
-      seen = readFileSync(path.join(live, 'config.toml'), 'utf8')
-      const stage = options.env.CODEX_HOME!
-      expect(stage).toStartWith(`${live}.next-`)
-      if (argv[2] === 'add') {
-        mkdirSync(path.join(stage, 'plugins', 'cache', 'qianmo', 'qianmo'), {
-          recursive: true,
-        })
-        writeFileSync(
-          path.join(stage, 'config.toml'),
-          `${readFileSync(path.join(stage, 'config.toml'), 'utf8')}\n[plugins."qianmo@qianmo"]\nenabled = true\n`,
-        )
-      }
+      expect(options.env.CODEX_HOME).toBe(live)
+      // The node's environment and the agent's state: no model key.
+      expect(options.env.QIANMO_RUNTIME_KEY).toBeUndefined()
+      if (argv[2] === 'list')
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            installed: [
+              { name: 'qianmo', marketplaceName: 'qianmo' },
+              { name: 'stale', marketplaceName: 'qianmo' },
+              { name: 'own', marketplaceName: 'operator-market' },
+            ],
+          }),
+        }
       return { code: 0, stdout: '' }
     },
   })
   mkdirSync(live, { recursive: true })
-  writeFileSync(path.join(live, 'config.toml'), '# old\n')
+  writeFileSync(path.join(live, 'config.toml'), native)
   await node.apply([SKILL, MCP])
-  expect(seen).toBe('# old\n')
-  const config = readFileSync(path.join(live, 'config.toml'), 'utf8')
-  expect(config).toContain('[mcp_servers."docs"]')
-  expect(config).toContain('[plugins."qianmo@qianmo"]')
-  expect(existsSync(path.join(live, 'plugins', 'cache', 'qianmo'))).toBe(true)
+  // Connectors are not written into the agent's config; nothing replaced.
+  expect(readFileSync(path.join(live, 'config.toml'), 'utf8')).toBe(native)
+  expect(commands.map(argv => argv.slice(2).join(' '))).toEqual([
+    `marketplace add ${path.join(root, 'extensions', 'agents', 'helper')} --json`,
+    'add qianmo@qianmo --json',
+    'list --marketplace qianmo --json',
+    // Only what the node installed and the agent should no longer have.
+    'remove stale@qianmo --json',
+  ])
+  // Nothing left for the agent: the node's plugins and marketplace go.
+  commands = []
+  await node.apply([MCP])
+  expect(commands.map(argv => argv.slice(2).join(' '))).toEqual([
+    'list --marketplace qianmo --json',
+    'remove qianmo@qianmo --json',
+    'remove stale@qianmo --json',
+    'marketplace remove qianmo',
+  ])
+  expect(readFileSync(path.join(live, 'config.toml'), 'utf8')).toBe(native)
   expect(
     readdirSync(path.join(root, 'codex')).filter(name =>
       name.includes('.next-'),
@@ -841,11 +917,6 @@ test('a Codex install that only partly went in still recycles the agent (P32 rev
   addFails = true
   // The operator switches the server to ask; the skill plugin fails to add.
   await node.apply([{ ...MCP, approval: 'ask' }, SKILL])
-  const config = readFileSync(
-    path.join(root, 'codex', 'helper', 'config.toml'),
-    'utf8',
-  )
-  expect(config).toContain('default_tools_approval_mode = "prompt"')
   expect(
     node.status().results.find(result => result.id === SKILL.id)!.retry,
   ).toBe(true)

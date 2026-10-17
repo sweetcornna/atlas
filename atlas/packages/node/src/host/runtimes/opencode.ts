@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * opencode (`opencode acp`) as an ACP runtime (`harness-backends.md` §1.3;
- * facts from `opencode-ai@1.19.3`, the P36 survey of 2026-10-17).
+ * opencode (`opencode acp`) as an ACP runtime (`harness-backends.md` §1.3,
+ * §7; facts from `opencode-ai@1.19.3`, the P36 survey and the P36.7
+ * native-extension research of 2026-10-17).
  *
  * One process per agent session with the agent's home as `HOME` and the
  * XDG directories under it (opencode also reads `~/.claude` and `~/.agents`).
@@ -13,16 +14,25 @@
  *
  * - the model route: one provider (`qm`) through the AI SDK adapter of the
  *   lane, its key read from `QM_OPENCODE_GATEWAY_KEY`; no other provider;
- * - permissions (config-wide and for the `build` agent): every tool asks
- *   (`session/request_permission`) but reading, searching and listing in the
- *   project, todos and skills; anything outside the project asks; subagents
- *   and web tools are refused; the bridge runs unasked; a refusal goes back
- *   to the model and the turn goes on (opencode's own default ends it);
+ * - permissions, for every agent opencode has and once more through
+ *   `OPENCODE_PERMISSION` (an agent's own rules beat the config-wide ones):
+ *   every tool asks (`session/request_permission`) but reading, searching
+ *   and listing in the project, todos and skills; anything outside the
+ *   project asks; subagents and web tools are refused; the bridge runs
+ *   unasked; a refusal goes back to the model and the turn goes on
+ *   (opencode's own default ends it);
  * - the bridge with its call timeout (servers from `session/new` get no
  *   timeout of their own);
  * - no sharing, no auto-update, no model-list fetch, no LSP downloads, no
- *   workspace `opencode.json` or `.opencode/`, no Claude Code compatibility
- *   files;
+ *   workspace `opencode.json`, `.opencode/` or `AGENTS.md`, no `.claude` or
+ *   `.agents` skills, no Claude Code compatibility files;
+ * - `--pure`: the agent's own opencode plugins are installed and work in
+ *   the frontend, but a resident process never loads them — a plugin runs
+ *   in-process, can rewrite permissions after every layer above, and its
+ *   tools never ask (research O2);
+ * - its local server (it listens even under ACP) on a port of the node's
+ *   choosing, behind a password of this launch: it serves the resolved
+ *   config, the gateway key included, to anyone who asks otherwise;
  * - the operator's skills (P32) from a directory of the node's own.
  *
  * Permission keys the agent's own config names and the node does not (a
@@ -35,8 +45,10 @@ import { join } from 'node:path'
 import type {
   AcpLaunch,
   AcpLaunchInput,
+  AcpOpenLaunch,
   AcpToolCall,
   AcpVerdictCall,
+  RuntimeRoute,
 } from './acpSpec.js'
 import { genericAcpToolCall } from './acpTools.js'
 
@@ -73,7 +85,10 @@ const BUILTIN = new Set([
   'plan_exit',
 ])
 
-export function opencodePermission(bridge: string): Record<string, string> {
+/** opencode's agents: the primary ones and the subagents it ships. */
+const AGENTS = ['build', 'plan', 'general', 'explore']
+
+export function opencodePermission(bridge = 'qianmo'): Record<string, string> {
   return {
     '*': 'ask',
     read: 'allow',
@@ -100,7 +115,7 @@ export function opencodePermission(bridge: string): Record<string, string> {
 
 export function opencodeConfig(input: AcpLaunchInput): string {
   const anthropic = input.lane === 'anthropic'
-  const permission = opencodePermission(input.bridge.name)
+  const permission = opencodePermission(input.bridge?.name)
   const limit =
     input.contextWindow === undefined
       ? undefined
@@ -133,15 +148,19 @@ export function opencodeConfig(input: AcpLaunchInput): string {
     },
     default_agent: 'build',
     permission,
-    agent: { build: { permission } },
-    mcp: {
-      [input.bridge.name]: {
-        type: 'local',
-        command: [input.bridge.command, ...input.bridge.args],
-        enabled: true,
-        timeout: input.bridge.timeoutMs,
-      },
-    },
+    agent: Object.fromEntries(AGENTS.map(agent => [agent, { permission }])),
+    ...(input.bridge === undefined
+      ? {}
+      : {
+          mcp: {
+            [input.bridge.name]: {
+              type: 'local',
+              command: [input.bridge.command, ...input.bridge.args],
+              enabled: true,
+              timeout: input.bridge.timeoutMs,
+            },
+          },
+        }),
     skills: { paths: [join(input.home, OPENCODE_QMO_SKILLS)] },
     share: 'disabled',
     autoupdate: false,
@@ -150,30 +169,88 @@ export function opencodeConfig(input: AcpLaunchInput): string {
   return JSON.stringify(config)
 }
 
-export function opencodeLaunch(input: AcpLaunchInput): AcpLaunch {
+/** opencode's part of an agent's environment (`runtimeEnv`). */
+export function opencodeEnv(
+  home: string,
+  route?: RuntimeRoute,
+): Record<string, string> {
+  return {
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, 'config'),
+    XDG_DATA_HOME: join(home, 'data'),
+    XDG_CACHE_HOME: join(home, 'cache'),
+    XDG_STATE_HOME: join(home, 'state'),
+    OPENCODE_PERMISSION: JSON.stringify(opencodePermission()),
+    OPENCODE_DISABLE_AUTOUPDATE: '1',
+    OPENCODE_DISABLE_MODELS_FETCH: '1',
+    OPENCODE_DISABLE_LSP_DOWNLOAD: '1',
+    OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+    OPENCODE_DISABLE_EXTERNAL_SKILLS: '1',
+    OPENCODE_DISABLE_CLAUDE_CODE: '1',
+    OPENCODE_DISABLE_DEFAULT_PLUGINS: '1',
+    ...(route === undefined ? {} : { [OPENCODE_KEY_ENV]: route.apiKey }),
+  }
+}
+
+function opencodePins(input: AcpLaunchInput): Record<string, string> {
   if (input.lane !== 'openai-chat' && input.lane !== 'anthropic')
     throw new Error(`opencode does not call the ${input.lane} lane here`)
+  if (input.secret === undefined)
+    throw new Error('opencode needs a password for its local server')
   return {
-    argv: [input.bin, 'acp'],
-    env: {
-      HOME: input.home,
-      XDG_CONFIG_HOME: join(input.home, 'config'),
-      XDG_DATA_HOME: join(input.home, 'data'),
-      XDG_CACHE_HOME: join(input.home, 'cache'),
-      XDG_STATE_HOME: join(input.home, 'state'),
-      OPENCODE_CONFIG_CONTENT: opencodeConfig(input),
-      [OPENCODE_KEY_ENV]: input.apiKey,
-      OPENCODE_DISABLE_AUTOUPDATE: '1',
-      OPENCODE_DISABLE_MODELS_FETCH: '1',
-      OPENCODE_DISABLE_LSP_DOWNLOAD: '1',
-      OPENCODE_DISABLE_PROJECT_CONFIG: '1',
-      OPENCODE_DISABLE_CLAUDE_CODE: '1',
-      OPENCODE_DISABLE_DEFAULT_PLUGINS: '1',
-    },
+    ...opencodeEnv(input.home, input),
+    OPENCODE_CONFIG_CONTENT: opencodeConfig(input),
+    OPENCODE_SERVER_PASSWORD: input.secret,
+  }
+}
+
+export function opencodeLaunch(input: AcpLaunchInput): AcpLaunch {
+  if (input.port === undefined)
+    throw new Error('opencode needs a port for its local server')
+  return {
+    argv: [input.bin, 'acp', '--pure', '--port', String(input.port)],
+    env: opencodePins(input),
     // It reads project config from its working directory up.
     cwd: join(input.home, 'launch'),
     dirs: [join(input.home, OPENCODE_QMO_SKILLS)],
     mountsBridge: true,
+  }
+}
+
+/**
+ * The frontends on the same pins: the terminal UI in the workspace, or the
+ * web UI (`serve`, never `web`, which opens a browser) on loopback behind
+ * the password of this launch. The agent's plugins load here (§7.4: they
+ * are installed and usable in the frontend; the resident process runs
+ * `--pure`, and the console says so).
+ */
+export function opencodeOpen(
+  input: AcpLaunchInput,
+  web: boolean,
+): AcpOpenLaunch {
+  const env = opencodePins(input)
+  if (!web)
+    return {
+      argv: [input.bin],
+      env,
+      cwd: input.cwd,
+      dirs: [join(input.home, OPENCODE_QMO_SKILLS)],
+    }
+  if (input.port === undefined)
+    throw new Error('the opencode web UI needs a port')
+  return {
+    argv: [
+      input.bin,
+      'serve',
+      '--hostname',
+      '127.0.0.1',
+      '--port',
+      String(input.port),
+    ],
+    env,
+    cwd: input.cwd,
+    dirs: [join(input.home, OPENCODE_QMO_SKILLS)],
+    url: `http://127.0.0.1:${input.port}/`,
   }
 }
 

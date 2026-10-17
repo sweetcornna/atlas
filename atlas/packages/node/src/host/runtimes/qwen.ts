@@ -19,8 +19,16 @@
  *   the agent's settings union in;
  * - the bridge with its call timeout (`session/new` carries none), and the
  *   MCP idle timeout raised to it — one setting for every server;
- * - usage statistics, telemetry, hooks and auto-update off;
+ * - usage statistics, telemetry, hooks and auto-update off, project skills
+ *   off;
+ * - MCP servers by name (`--allowed-mcp-server-names`): the bridge, the
+ *   agent's own and its extensions' servers, the operator's connectors —
+ *   never a workspace server, even one approved in the frontend;
  * - the operator's skills (P32) from a directory of the node's own.
+ *
+ * What the operator installs natively in the agent's Qwen home (extensions,
+ * MCP servers, skills) loads under these pins; the workspace's `QWEN.md` and
+ * `AGENTS.md` still reach the model (Qwen has no switch for them).
  *
  * Qwen's permission request carries the tool name (`_meta.toolName`) and
  * its arguments, and names MCP tools `mcp__<server>__<tool>`, so the node
@@ -29,12 +37,15 @@
  * refusal and the turn has no answer.
  */
 
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
   AcpLaunch,
   AcpLaunchInput,
+  AcpOpenLaunch,
   AcpToolCall,
   AcpVerdictCall,
+  RuntimeRoute,
 } from './acpSpec.js'
 import { genericAcpToolCall } from './acpTools.js'
 
@@ -144,23 +155,116 @@ export function qwenSettings(input: AcpLaunchInput): string {
     permissions: { ask: ASK_RULES, deny: DENY_RULES },
     // Background model calls that write memories on their own.
     memory: { enableManagedAutoMemory: false, enableManagedAutoDream: false },
-    skills: { directories: [join(input.home, QWEN_QMO_SKILLS)] },
-    mcpServers: {
-      [input.bridge.name]: {
-        command: input.bridge.command,
-        args: [...input.bridge.args],
-        timeout: input.bridge.timeoutMs,
-      },
+    skills: {
+      directories: [join(input.home, QWEN_QMO_SKILLS)],
+      // The workspace's `.qwen/skills` and `.agents/skills`.
+      disabledLevels: ['project'],
     },
-    mcp: { toolIdleTimeoutMs: input.bridge.timeoutMs },
+    ...(input.bridge === undefined
+      ? {}
+      : {
+          mcpServers: {
+            [input.bridge.name]: {
+              command: input.bridge.command,
+              args: [...input.bridge.args],
+              timeout: input.bridge.timeoutMs,
+            },
+          },
+          mcp: { toolIdleTimeoutMs: input.bridge.timeoutMs },
+        }),
   }
   return `${JSON.stringify(settings, null, 2)}\n`
 }
 
-export function qwenLaunch(input: AcpLaunchInput): AcpLaunch {
+function serverNames(file: string): string[] {
+  try {
+    const value: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    const servers =
+      value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>).mcpServers
+        : undefined
+    return servers !== null &&
+      typeof servers === 'object' &&
+      !Array.isArray(servers)
+      ? Object.keys(servers)
+      : []
+  } catch {
+    return []
+  }
+}
+
+/** The agent's own MCP servers by name: its settings' and its extensions'. */
+export function qwenNativeServers(home: string): string[] {
+  const root = join(home, '.qwen')
+  const names = new Set(serverNames(join(root, 'settings.json')))
+  let extensions: string[] = []
+  try {
+    extensions = readdirSync(join(root, 'extensions'))
+  } catch {
+    // No extensions.
+  }
+  for (const name of extensions)
+    for (const server of serverNames(
+      join(root, 'extensions', name, 'qwen-extension.json'),
+    ))
+      names.add(server)
+  return [...names].sort()
+}
+
+/** Qwen's part of an agent's environment (`runtimeEnv`). */
+export function qwenEnv(
+  home: string,
+  route?: RuntimeRoute,
+): Record<string, string> {
+  return {
+    HOME: home,
+    QWEN_HOME: join(home, '.qwen'),
+    QWEN_TELEMETRY_ENABLED: 'false',
+    QWEN_USAGE_STATISTICS_ENABLED: 'false',
+    // MCP servers connect inside `session/new`: otherwise the first turn
+    // can reach the model before the bridge's tools are declared.
+    QWEN_CODE_LEGACY_MCP_BLOCKING: '1',
+    ...(route === undefined
+      ? {}
+      : {
+          OPENAI_BASE_URL: route.baseUrl,
+          OPENAI_API_KEY: route.apiKey,
+          OPENAI_MODEL: route.model,
+        }),
+  }
+}
+
+/** The pins a resident process and the frontends share. */
+function qwenPins(input: AcpLaunchInput): {
+  readonly args: string[]
+  readonly env: Record<string, string>
+  readonly files: { path: string; content: string }[]
+} {
   if (input.lane !== 'openai-chat')
     throw new Error(`Qwen Code does not call the ${input.lane} lane`)
   const settings = join(input.runDir, QWEN_SETTINGS_FILE)
+  const allowed = [
+    ...(input.bridge === undefined ? [] : [input.bridge.name]),
+    ...qwenNativeServers(input.home),
+    ...(input.mcpNames ?? []),
+  ]
+  return {
+    // The workspace's servers stay unstarted. Without a name the flag would
+    // be left out and every server allowed: a name no server has.
+    args: [
+      '--allowed-mcp-server-names',
+      allowed.length === 0 ? 'qmo-none' : [...new Set(allowed)].join(','),
+    ],
+    env: {
+      ...qwenEnv(input.home, input),
+      QWEN_CODE_SYSTEM_SETTINGS_PATH: settings,
+    },
+    files: [{ path: settings, content: qwenSettings(input) }],
+  }
+}
+
+export function qwenLaunch(input: AcpLaunchInput): AcpLaunch {
+  const pins = qwenPins(input)
   return {
     argv: [
       input.bin,
@@ -169,25 +273,59 @@ export function qwenLaunch(input: AcpLaunchInput): AcpLaunch {
       'openai',
       '--approval-mode',
       'default',
+      ...pins.args,
     ],
-    env: {
-      HOME: input.home,
-      QWEN_HOME: join(input.home, '.qwen'),
-      QWEN_CODE_SYSTEM_SETTINGS_PATH: settings,
-      OPENAI_BASE_URL: input.baseUrl,
-      OPENAI_API_KEY: input.apiKey,
-      OPENAI_MODEL: input.model,
-      QWEN_TELEMETRY_ENABLED: 'false',
-      QWEN_USAGE_STATISTICS_ENABLED: 'false',
-      // MCP servers connect inside `session/new`: otherwise the first turn
-      // can reach the model before the bridge's tools are declared.
-      QWEN_CODE_LEGACY_MCP_BLOCKING: '1',
-    },
-    files: [{ path: settings, content: qwenSettings(input) }],
+    env: pins.env,
+    files: pins.files,
     // It looks for `.env` files from its working directory up.
     cwd: join(input.home, 'launch'),
     dirs: [join(input.home, QWEN_QMO_SKILLS)],
     mountsBridge: true,
+  }
+}
+
+/**
+ * The frontends on the same pins: the terminal UI in the workspace, or the
+ * Web Shell on loopback behind a bearer token of this launch (`--web`; Qwen
+ * serves it unauthenticated otherwise, code execution included).
+ */
+export function qwenOpen(input: AcpLaunchInput, web: boolean): AcpOpenLaunch {
+  const pins = qwenPins(input)
+  if (!web)
+    return {
+      argv: [
+        input.bin,
+        '--auth-type',
+        'openai',
+        '--approval-mode',
+        'default',
+        ...pins.args,
+      ],
+      env: pins.env,
+      files: pins.files,
+      cwd: input.cwd,
+      dirs: [join(input.home, QWEN_QMO_SKILLS)],
+    }
+  if (input.port === undefined || input.secret === undefined)
+    throw new Error('the Qwen Web Shell needs a port and a token')
+  return {
+    argv: [
+      input.bin,
+      'serve',
+      '--hostname',
+      '127.0.0.1',
+      '--port',
+      String(input.port),
+      '--require-auth',
+      '--workspace',
+      input.cwd,
+    ],
+    // The token in the environment, never on the command line.
+    env: { ...pins.env, QWEN_SERVER_TOKEN: input.secret },
+    files: pins.files,
+    cwd: join(input.home, 'launch'),
+    dirs: [join(input.home, QWEN_QMO_SKILLS)],
+    url: `http://127.0.0.1:${input.port}/`,
   }
 }
 

@@ -3,6 +3,7 @@
 
 import type { ChildProcess } from 'node:child_process'
 import type { OmpPromptAdmission } from '@qianmo/resident'
+import type { RuntimeRoute } from './acpSpec.js'
 import {
   nonNegative,
   RuntimeChannelBase,
@@ -13,6 +14,11 @@ import {
 
 /** The MCP server name the host's tools are registered under. */
 export const RUNTIME_MCP_SERVER = 'qianmo'
+/**
+ * P32 connectors reach every runtime under this prefix (`qm-<name>`,
+ * P36.7): a native MCP server can neither be removed by nor shadow one.
+ */
+export const CONNECTOR_PREFIX = 'qm-'
 /**
  * How long a runtime's MCP client lets one call to the host's server run:
  * `qianmo_ask` waits up to 1800 s for the other side, plus the hub's margin.
@@ -50,8 +56,26 @@ const NETWORK_TOOLS = ['WebFetch', 'WebSearch']
 /** Session-only tools that never need a prompt. Reads go through the posture check. */
 const SESSION_TOOLS = ['TodoWrite']
 const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']
-/** Settings every resident process starts with (`--settings`). */
-const CLAUDE_SETTINGS = { disableAllHooks: true }
+/**
+ * Tools that always reach the node's permission tool, whatever the agent's
+ * own settings, a plugin or a skill's `allowed-tools` would allow (ask beats
+ * allow across sources; P36.7 research V1e, V5c, V7b).
+ */
+const ASKED_TOOLS = ['Bash', ...EDIT_TOOLS, 'Read', 'Grep', 'Glob', 'mcp__*']
+/**
+ * The pin layer (`--settings`, the highest source the agent's own files
+ * cannot override; `harness-backends.md` §7.4): hooks off, the asked tools,
+ * the gateway (a user `env` would redirect it) and an inert `apiKeyHelper`
+ * (a user one runs at startup even with a key in the environment).
+ */
+export function claudeCodeSettings(baseUrl: string): Record<string, unknown> {
+  return {
+    disableAllHooks: true,
+    permissions: { ask: ASKED_TOOLS },
+    env: { ANTHROPIC_BASE_URL: baseUrl },
+    apiKeyHelper: '/usr/bin/true',
+  }
+}
 /**
  * Environment that keeps a resident Claude Code to the node's policy: no
  * auto-memory (qianmo's memory goes through `qianmo_*`, and Claude Code's
@@ -68,9 +92,87 @@ export const CLAUDE_CODE_ENV: Readonly<Record<string, string>> = {
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
 }
 
+function headerLines(headers: Readonly<Record<string, string>>): string {
+  return Object.entries(headers)
+    .map(([name, value]) => `${name}: ${value}`)
+    .join('\n')
+}
+
+/**
+ * Claude Code's part of an agent's environment (`runtimeEnv`): its state
+ * directory and, when the caller has one, the route.
+ */
+export function claudeCodeEnv(
+  home: string,
+  route?: RuntimeRoute,
+): Record<string, string> {
+  return {
+    ...CLAUDE_CODE_ENV,
+    CLAUDE_CONFIG_DIR: home,
+    ...(route === undefined
+      ? {}
+      : {
+          ANTHROPIC_API_KEY: route.apiKey,
+          ANTHROPIC_BASE_URL: route.baseUrl,
+          ...(route.headers && Object.keys(route.headers).length > 0
+            ? { ANTHROPIC_CUSTOM_HEADERS: headerLines(route.headers) }
+            : {}),
+        }),
+  }
+}
+
+/** What the frontend and the resident process share (P36.7 §7.2). */
+export interface ClaudeCodePins {
+  /** The gateway, pinned over the agent's own settings. */
+  readonly baseUrl: string
+  readonly mcpConfigPath?: string
+  /** Plugins the operator installed for the agent (P32): `--plugin-dir`. */
+  readonly pluginDirs?: readonly string[]
+}
+
+/**
+ * The pin flags: only the user settings (the agent's own
+ * `CLAUDE_CONFIG_DIR`; nothing from the project), the pin layer on top, the
+ * operator's plugin directories, and the MCP config with the node's servers
+ * (`qianmo`, P32 connectors as `qm-<name>`). The agent's own MCP servers
+ * and plugins load beside them (no `--strict-mcp-config`).
+ */
+export function claudeCodePinArgs(pins: ClaudeCodePins): string[] {
+  return [
+    '--setting-sources',
+    'user',
+    '--settings',
+    JSON.stringify(claudeCodeSettings(pins.baseUrl)),
+    ...(pins.pluginDirs ?? []).flatMap(dir => ['--plugin-dir', dir]),
+    ...(pins.mcpConfigPath === undefined
+      ? []
+      : ['--mcp-config', pins.mcpConfigPath]),
+  ]
+}
+
+/**
+ * The official terminal frontend (`qm runtime open`): the same pins, the
+ * person at the terminal approves (Claude Code's default mode, never its
+ * `auto`).
+ */
+export function claudeCodeOpenArgv(
+  input: ClaudeCodePins & { readonly bin: string; readonly model: string },
+): string[] {
+  return [
+    input.bin,
+    ...claudeCodePinArgs(input),
+    '--permission-mode',
+    'default',
+    '--model',
+    input.model,
+  ]
+}
+
 export interface ClaudeCodeLaunch {
   readonly bin: string
   readonly model: string
+  /** The gateway (`ANTHROPIC_BASE_URL`), pinned in the settings layer too. */
+  readonly baseUrl: string
   /** The Claude Code conversation id (a UUID). */
   readonly sessionId: string
   /** Whether the conversation already has a transcript to resume. */
@@ -89,12 +191,13 @@ export interface ClaudeCodeLaunch {
 
 /** The command line for one resident Claude Code process. */
 export function claudeCodeArgv(launch: ClaudeCodeLaunch): string[] {
-  const plugins = launch.pluginDirs ?? []
   const allowed = [
     ...SESSION_TOOLS,
     `mcp__${RUNTIME_MCP_SERVER}`,
-    // Loading a skill reads what the operator installed; nothing else.
-    ...(plugins.length > 0 ? ['Skill'] : []),
+    // Loading a skill reads instructions the operator installed, natively or
+    // through the console; what a skill's `allowed-tools` would grant is
+    // asked all the same (the pin layer).
+    'Skill',
     ...(launch.allowedMcpServers ?? []).map(name => `mcp__${name}`),
   ]
   const denied = [
@@ -111,21 +214,19 @@ export function claudeCodeArgv(launch: ClaudeCodeLaunch): string[] {
     '--output-format',
     'stream-json',
     '--verbose',
-    // Only the user settings, and the user is the node: `CLAUDE_CONFIG_DIR`
-    // is a directory the node owns per agent. Nothing from the project
-    // (`.claude/`, CLAUDE.md, hooks, MCP) loads. Plugins come only from
-    // `--plugin-dir` (P32); their hooks stay off like every other hook, and
-    // `--strict-mcp-config` leaves out the MCP servers they bundle. (In
-    // Claude Code 2.1.301 `--safe-mode` drops `--mcp-config` and `--bare`
-    // drops the built-in tools and plugin skills.)
-    '--setting-sources',
-    'user',
-    '--settings',
-    JSON.stringify(CLAUDE_SETTINGS),
-    ...plugins.flatMap(dir => ['--plugin-dir', dir]),
-    '--strict-mcp-config',
-    '--mcp-config',
-    launch.mcpConfigPath,
+    // The agent's own state (`CLAUDE_CONFIG_DIR`, P36.7: what the operator
+    // installed natively loads, its MCP servers included); nothing from the
+    // project. Hooks stay off and every effectful call reaches the node
+    // whatever those files say. (In Claude Code 2.1.301 `--safe-mode` drops
+    // `--mcp-config` and `--bare` drops the built-in tools and plugin
+    // skills.)
+    ...claudeCodePinArgs({
+      baseUrl: launch.baseUrl,
+      mcpConfigPath: launch.mcpConfigPath,
+      ...(launch.pluginDirs === undefined
+        ? {}
+        : { pluginDirs: launch.pluginDirs }),
+    }),
     // Whatever the rules leave open is asked through the host: Claude Code
     // 2.1.301 otherwise starts in `auto`, where its own model-based
     // classifier decides and the prompt tool is never called.

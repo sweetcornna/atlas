@@ -17,6 +17,17 @@ export type RuntimeLane =
   | 'openai-responses'
   | 'gemini'
 
+/**
+ * The model route a harness starts with (a subset of the pool's launch;
+ * `runtimeEnv` builds every harness's environment from it).
+ */
+export interface RuntimeRoute {
+  readonly model: string
+  readonly baseUrl: string
+  readonly apiKey: string
+  readonly headers?: Readonly<Record<string, string>>
+}
+
 /** What an ACP runtime's launcher gets for one agent's process. */
 export interface AcpLaunchInput {
   /** The executable to start (managed prefix, PATH, or a flag). */
@@ -46,8 +57,20 @@ export interface AcpLaunchInput {
   readonly runDir: string
   /** The agent's workspace: `session/new {cwd}`. */
   readonly cwd: string
-  /** The node's tool bridge for this process. */
-  readonly bridge: AcpBridge
+  /**
+   * The node's tool bridge for this process; absent in the official
+   * frontend (`qm runtime open`), which has no host behind it.
+   */
+  readonly bridge?: AcpBridge
+  /**
+   * The operator's MCP servers (P32 connectors, `qm-<name>`) the node passes
+   * in `session/new`, for harnesses that list allowed servers by name.
+   */
+  readonly mcpNames?: readonly string[]
+  /** A free loopback port, for runtimes that listen on one (`needsPort`). */
+  readonly port?: number
+  /** A random secret of this launch (a local server's password). */
+  readonly secret?: string
 }
 
 /** The node's tool bridge (`qm runtime-mcp`) as one process starts it. */
@@ -171,4 +194,17 @@ export interface AcpRuntime {
    * calls: every one must pass.
    */
   readonly toolCall?: (call: AcpToolCall) => readonly AcpVerdictCall[]
+  /** The launch listens on a loopback port the node picks (`port`). */
+  readonly needsPort?: true
+  /**
+   * The official frontend with the same pins, minus the node's permission
+   * and tool bridges (`qm runtime open`, `harness-backends.md` §7.2).
+   */
+  readonly open?: (input: AcpLaunchInput, web: boolean) => AcpOpenLaunch
+}
+
+/** How `qm runtime open` starts a frontend. */
+export interface AcpOpenLaunch extends AcpLaunch {
+  /** A web frontend's address, secret included; printed, never opened. */
+  readonly url?: string
 }
