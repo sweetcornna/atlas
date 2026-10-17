@@ -22,6 +22,8 @@ export class FakeChat implements ChatPort {
   readonly sent: ChatSendInput[] = []
   readonly opened: string[] = []
   readonly notes: { sessionId: string; text: string }[] = []
+  /** Agents listed but not on the dial list. */
+  readonly undialable = new Set<string>()
   readonly #listeners = new Set<(update: ChatUpdate) => void>()
 
   constructor(readonly agents: readonly string[]) {}
@@ -35,15 +37,23 @@ export class FakeChat implements ChatPort {
         agent: address.split('/')[3]!,
         endpoint: 'ws://127.0.0.1:1',
         status: 'online',
-        dialable: true,
+        dialable: !this.undialable.has(address),
       })),
     }
   }
 
+  /** Sessions, `running` while the last line is the operator's and not failed. */
   async sessions() {
     return {
       ok: true as const,
-      value: [...this.records.values()].map(record => record.session),
+      value: [...this.records.values()].map(record => {
+        const last = record.turns
+          .filter(turn => turn.variant !== 'notice')
+          .at(-1)
+        return last?.author === 'operator' && last.state !== 'failed'
+          ? { ...record.session, running: true as const }
+          : record.session
+      }),
     }
   }
 
@@ -80,6 +90,8 @@ export class FakeChat implements ChatPort {
       at: Date.now(),
       state: 'delivered',
       taskId: crypto.randomUUID(),
+      // A local command's line says so, as the hub's transcript does.
+      ...(input.command === undefined ? {} : { command: input.command }),
     }
     this.#add(turn)
     return { ok: true, value: turn }
@@ -151,6 +163,34 @@ export class FakeChat implements ChatPort {
       variant: 'notice',
       noticeSource: 'agent',
       causeTaskId: this.lastTask(sessionId),
+    })
+  }
+
+  /** A tool step the node reported for the last line; a failed one warns. */
+  step(sessionId: string, text: string, failed = false): void {
+    this.#add({
+      id: crypto.randomUUID(),
+      sessionId,
+      author: 'agent',
+      at: Date.now(),
+      text,
+      state: 'done',
+      variant: 'notice',
+      noticeSource: 'step',
+      severity: failed ? 'warn' : 'info',
+      causeTaskId: this.lastTask(sessionId),
+    })
+  }
+
+  /** Changes the last operator line, e.g. when the node read it. */
+  patchLastLine(sessionId: string, changes: Partial<ChatTurn>): void {
+    const record = this.records.get(sessionId)!
+    const index = record.turns.findLastIndex(turn => turn.author === 'operator')
+    this.records.set(sessionId, {
+      ...record,
+      turns: record.turns.map((turn, at) =>
+        at === index ? { ...turn, ...changes } : turn,
+      ),
     })
   }
 

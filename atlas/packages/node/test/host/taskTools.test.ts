@@ -26,13 +26,32 @@ function tools(
   }
 }
 
-test('six tools, always offered, with closed schemas', () => {
+test('seven tools, always offered, with closed schemas', () => {
   const { byName } = tools(null)
-  for (const name of ['start', 'status', 'send', 'cancel', 'report', 'updates'])
+  for (const name of [
+    'start',
+    'agents',
+    'status',
+    'send',
+    'cancel',
+    'report',
+    'updates',
+  ])
     expect(byName(`qianmo_task_${name}`).parameters).toMatchObject({
       type: 'object',
       additionalProperties: false,
     })
+})
+
+test('the agent list takes no arguments and goes to tasks.agents', async () => {
+  const { calls, byName } = tools({ contextId: 'c', taskId: 't' })
+  expect((await byName('qianmo_task_agents').handler({}, ctx)).ok).toBe(true)
+  expect(
+    (await byName('qianmo_task_agents').handler({ node: 'x' }, ctx)).ok,
+  ).toBe(false)
+  expect(calls).toEqual([
+    ['tasks.agents', { contextId: 'c', taskId: 't' }, { agent: 'main' }],
+  ])
 })
 
 test('a call carries the conversation and turn it came from', async () => {
@@ -97,7 +116,7 @@ test('a refusal is shown; an unknown outcome says what is safe to do next', asyn
   expect(
     (await broken.byName('qianmo_task_cancel').handler({ id: 'x' }, ctx)).text,
   ).toContain('Check with qianmo_task_status before retrying')
-  // A sub-agent may not read status: its two calls say to repeat them.
+  // A background task may not read status: its two calls say to repeat them.
   const updates = await broken.byName('qianmo_task_updates').handler({}, ctx)
   expect(updates.text).toContain('Call qianmo_task_updates again')
   const report = await broken
@@ -106,4 +125,68 @@ test('a refusal is shown; an unknown outcome says what is safe to do next', asyn
   expect(report.text).toContain('Call qianmo_task_report again')
   for (const text of [updates.text, report.text])
     expect(text).not.toContain('qianmo_task_status')
+})
+
+test('a start can be planned: after or at, everyMinutes with times, passed on as given', async () => {
+  const { calls, byName } = tools({ contextId: 'c', taskId: 't' })
+  const start = byName('qianmo_task_start')
+  expect(start.parameters).toMatchObject({
+    properties: {
+      after: { type: 'integer' },
+      at: { type: 'string' },
+      everyMinutes: { type: 'integer' },
+      times: { type: 'integer' },
+    },
+    required: ['title', 'instructions'],
+  })
+  await start.handler(
+    { title: '巡检', instructions: '看磁盘', everyMinutes: 60, times: 3 },
+    ctx,
+  )
+  expect(calls[0]![1]).toMatchObject({ everyMinutes: 60, times: 3 })
+})
+
+test('the descriptions carry the coordination rules to a console conversation', () => {
+  const { byName } = tools(null)
+  const start = byName('qianmo_task_start').description
+  for (const cue of [
+    "Keep this conversation free for the owner's next message",
+    'never wait for it here',
+    'Do it yourself when one or two steps finish it',
+    'one simple tool call, reading one file',
+    'hand work to a background task and return at once',
+    'Start a task without agent, in your own sub-session',
+    'more than a minute or two',
+    'may go to another agent',
+    'qianmo_task_agents, preferring idle and cheaper ones',
+    'separate tasks that run in parallel',
+    'after (minutes, 1-10080) or at (an ISO time with its zone, at most 7 days ahead)',
+    'everyMinutes (30-10080) with times (1-100)',
+    'Tell the owner what you started or planned',
+  ])
+    expect(start).toContain(cue)
+  const status = byName('qianmo_task_status').description
+  expect(status).toContain(
+    'report the real phase; only a completed task is done',
+  )
+  expect(status).toContain('decide the next step yourself')
+  expect(byName('qianmo_task_send').description).toContain('cancels no task')
+  expect(byName('qianmo_task_agents').description).toContain(
+    'prefer idle and cheaper ones',
+  )
+  // The task's two tools still say they are not for the foreground.
+  for (const name of ['qianmo_task_report', 'qianmo_task_updates'])
+    expect(byName(name).description).toStartWith('Background task only.')
+  // Without agent the work goes to a sub-session, not a sub-agent; only
+  // with agent is it another agent.
+  for (const name of [
+    'qianmo_task_start',
+    'qianmo_task_agents',
+    'qianmo_task_status',
+    'qianmo_task_send',
+    'qianmo_task_cancel',
+    'qianmo_task_report',
+    'qianmo_task_updates',
+  ])
+    expect(byName(name).description).not.toMatch(/sub-?agent/i)
 })

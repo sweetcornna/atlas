@@ -37,7 +37,7 @@ import { ConsoleConnectors } from './consoleConnectors.js'
 import { loadOutboundPolicy } from './outboundPolicy.js'
 import { ConsoleSchedules } from './consoleSchedules.js'
 import { ConsoleChannels } from './consoleChannels.js'
-import { ConsoleTasks } from './consoleTasks.js'
+import { AgentProfiles, ConsoleTasks, withTaskNotes } from './consoleTasks.js'
 import { ConsoleExtensions } from './consoleExtensions.js'
 import { ConsoleMagpie } from './consoleMagpie.js'
 import {
@@ -59,6 +59,7 @@ import { readTrustAnchors } from '../host/trustAnchors.js'
 import { sourceCommit } from '../provenance.js'
 import {
   AccountBook,
+  modelFromStartupEnv,
   resolveTokens,
   startConsoleServer,
   tokenFingerprint,
@@ -750,6 +751,23 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       outcome.ok && (outcome.value as { stopped?: unknown }).stopped === true
     )
   }
+  // Runtimes and models for `qianmo_task_agents`: each node's own word over
+  // the control link, and a qianmopi agent's model from the model service.
+  const agentProfiles = new AgentProfiles({
+    ping: async node =>
+      control === undefined
+        ? { ok: false, code: 'unreachable', message: 'no control link' }
+        : control.request(node, 'node.ping', {}, 'system:tasks', {
+            timeoutMs: 5_000,
+          }),
+    nodeModel: async node => {
+      const view = await providers?.node(node)
+      const actual = view?.ok ? view.value.actual : null
+      return actual === null || modelFromStartupEnv(actual)
+        ? undefined
+        : actual.effective?.model
+    },
+  })
   // Background tasks (P29) arrive as hub calls, so they need control links.
   const tasks: ConsoleTasks | undefined =
     chat.hub && config.controlTargets?.length
@@ -760,6 +778,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           ...(usage === undefined ? {} : { usage }),
           ...(tenancy === undefined ? {} : { tenancy }),
           stopTask: stopTurn,
+          profile: address => agentProfiles.of(address),
           scheduled: (sessionId): boolean =>
             schedules?.owns(sessionId) ?? false,
           foreground: (sessionId): boolean =>
@@ -1199,7 +1218,17 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       : { signedFrom: config.chatFrom }),
     ...(wake.legacy === undefined ? {} : { wake: wake.legacy.port }),
     ...(wake.targets === undefined ? {} : { wakeTargets: wake.targets }),
-    ...(chat.hub === undefined ? {} : { chat: chat.hub }),
+    // A person's line in a foreground conversation carries the task note.
+    ...(chat.hub === undefined
+      ? {}
+      : {
+          chat:
+            tasks === undefined
+              ? chat.hub
+              : withTaskNotes(chat.hub, tasks, message =>
+                  process.stderr.write(`[tasks] ${message}\n`),
+                ),
+        }),
     ...(chat.hub === undefined || config.chatDefault === undefined
       ? {}
       : { chatDefault: config.chatDefault }),
