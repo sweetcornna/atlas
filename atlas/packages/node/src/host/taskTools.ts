@@ -45,15 +45,35 @@ const specs = [
     name: 'qianmo_task_start',
     op: 'start',
     description:
-      "Foreground only. Keep this conversation free for the owner's next message: hand work to a background task and return at once with its task id; never wait for it here. Do it yourself when one or two steps finish it (an answer, a question back, one lookup, one simple tool call, reading one file). Start a task without agent, in your own sub-session, for anything that takes several steps or more than a minute or two: research, writing or changing code, long commands, trial and error. Simple but slow work with clear edges (bulk tidying, checking against a list, collecting material, waiting on a result to check it) may go to another agent: give agent, a qianmo://node/agent address from qianmo_task_agents, preferring idle and cheaper ones. Split independent parts into separate tasks that run in parallel. Give a short title and complete instructions (the task sees no more of this conversation than its last few messages). To run it later give after (minutes, 1-10080) or at (an ISO time with its zone, at most 7 days ahead), not both; to repeat it give everyMinutes (30-10080) with times (1-100). Plan this way what should be looked at again later or done periodically. A planned task waits as scheduled, runs in the same sub-session each time and its result comes back here after every run; at most 20 planned per owner. Tell the owner what you started or planned, and when it runs.",
+      "Foreground only. Keep this conversation free for the owner's next message: hand work to a background task and return at once with its task id; never wait for it here. Do it yourself when one or two steps finish it (an answer, a question back, one lookup, one simple tool call, reading one file). Start a task without agent, in your own sub-session, for anything that takes several steps or more than a minute or two: research, writing or changing code, long commands, trial and error. Simple but slow work with clear edges (bulk tidying, checking against a list, collecting material, waiting on a result to check it) may go to another agent: give agent, a qianmo://node/agent address from qianmo_task_agents, preferring idle and cheaper ones. Split independent parts into separate tasks that run in parallel. Give a short title and complete instructions (the task sees no more of this conversation than its last few messages). Leave out (or give null) every optional field you do not need: no agent runs it in your own sub-session, no after or at starts it now, no everyMinutes runs it once; 0 and empty strings count as left out. To run it later give after (minutes, 1-10080) or at (an ISO time with its zone, at most 7 days ahead), not both; to repeat it give everyMinutes (30-10080) with times (1-100). Plan this way what should be looked at again later or done periodically. A planned task waits as scheduled, runs in the same sub-session each time and its result comes back here after every run; at most 20 planned per owner. Tell the owner what you started or planned, and when it runs.",
     properties: {
       title: string,
       instructions: string,
-      agent: string,
-      after: integer,
-      at: string,
-      everyMinutes: integer,
-      times: integer,
+      agent: {
+        ...string,
+        description:
+          'Optional. Another agent, qianmo://node/agent; leave out for your own sub-session.',
+      },
+      after: {
+        ...integer,
+        description:
+          'Optional. Minutes until the first run, 1-10080; leave out to start now.',
+      },
+      at: {
+        ...string,
+        description:
+          'Optional. First run at this ISO time with its zone, at most 7 days ahead; leave out to start now.',
+      },
+      everyMinutes: {
+        ...integer,
+        description:
+          'Optional. Repeat every this many minutes, 30-10080, with times; leave out to run once.',
+      },
+      times: {
+        ...integer,
+        description:
+          'Optional. How many runs in all, 1-100, with everyMinutes; leave out to run once.',
+      },
     },
     required: ['title', 'instructions'],
   },
