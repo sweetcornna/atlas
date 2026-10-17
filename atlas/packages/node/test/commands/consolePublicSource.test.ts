@@ -13,6 +13,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { CONSOLE_HELP_TEXT } from '../../src/commands/consoleArgs.js'
 
 const CLI = resolve(import.meta.dir, '..', '..', 'src', 'cli.ts')
 const REPOSITORY = 'https://github.com/sweetcornna/atlas'
@@ -145,4 +146,17 @@ describe('qm console, public edition: the source link names this build', () => {
       await child.exited
     }
   }, 30_000)
+})
+
+describe('qm console --help says what the public edition needs', () => {
+  test('--billing names the clean build, the source link and live', () => {
+    const start = CONSOLE_HELP_TEXT.indexOf('  --billing <abs path>')
+    const end = CONSOLE_HELP_TEXT.indexOf('\n  --', start + 1)
+    const billing = CONSOLE_HELP_TEXT.slice(start, end).replace(/\s+/g, ' ')
+    expect(start).toBeGreaterThan(0)
+    expect(billing).toContain('<sourceUrl>/tree/<build commit>')
+    expect(billing).toContain('-dirty or unknown')
+    expect(billing).toContain('"live": true')
+    expect(billing).toContain('public-edition.md §0')
+  })
 })
