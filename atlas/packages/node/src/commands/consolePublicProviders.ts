@@ -96,10 +96,21 @@ export function publicProviders(
     const preset = candidatePreset(candidate)
     return preset !== 'saved' && preset !== MAGPIE_PRESET
   }
+  // The model service asks once per node and more than once per node in one
+  // overview; one read of the tenancy file serves a synchronous run of them
+  // and is dropped at the next microtask, so no answer outlives an `await`.
+  let mapped: ReadonlyMap<string, string> | null = null
   /** Throws when the tenancy file cannot be read. */
-  const tenantOfNow = (node: string): string | null =>
-    options.tenancy.read().config.nodes.find(row => row.nodeId === node)
-      ?.tenant ?? null
+  const tenantOfNow = (node: string): string | null => {
+    if (mapped === null) {
+      const rows = options.tenancy.read().config.nodes
+      mapped = new Map(rows.map(row => [row.nodeId, row.tenant]))
+      queueMicrotask(() => {
+        mapped = null
+      })
+    }
+    return mapped.get(node) ?? null
+  }
   const tenantOf = (node: string): string | null | undefined => {
     try {
       return tenantOfNow(node)
