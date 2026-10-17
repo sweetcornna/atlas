@@ -19,12 +19,14 @@
 
 import type {
   BackgroundTasksPort,
+  BillingPort,
   ChannelsPort,
   ConnectorsPort,
   DesktopPort,
   ExtensionsPort,
   FilesPort,
   HandoffDevicesPort,
+  MagpiePort,
   MemoryPort,
   ModelRoutingPort,
   ModelDirection,
@@ -1201,7 +1203,8 @@ export interface ConsoleAction {
   readonly requestId: string
   /**
    * 主体：个人账号的 `u:…`，或 `legacy:admin` / `legacy:view`；没有任何凭据时
-   * 为 `anonymous`（只会出现在 break-glass 之外的公开路由上，今天没有）。
+   * 为 `anonymous`（只会出现在 break-glass 之外的公开路由上，今天没有）；公开版
+   * 付款后中枢自己做的动作是 `system:billing`（P35）。
    */
   readonly subject: string
   /** admin 令牌以 break-glass 方式使用时为 `true`（`tenancy-m1.md` §3.4）。 */
@@ -1345,6 +1348,33 @@ export const CONSOLE_ACTIONS = [
   /** 连接器、技能与插件（P32），target 是条目 id。 */
   'extension.save',
   'extension.remove',
+  /** 平台模型网关 magpie（P33/P34）：target 是绑定 `node:<id>` / `tenant:<id>`、上游或路由组 id。 */
+  'magpie.connect',
+  'magpie.check',
+  'magpie.provider.save',
+  'magpie.provider.toggle',
+  'magpie.provider.test',
+  'magpie.provider.remove',
+  'magpie.group.save',
+  'magpie.group.remove',
+  'magpie.key.issue',
+  'magpie.key.update',
+  'magpie.key.rotate',
+  'magpie.key.remove',
+  /**
+   * 公开版订阅（P35）：成员下单与兑换，target 是订单 id 或 `redeem`；平台运维手动开通
+   * 与延期（target 是被开通的主体）、登记退款（订单 id）、批量生成兑换码（套餐 id）；
+   * 付款后中枢自动建租户并映射账号（主体 `system:billing`，target 是租户 id）；订阅者
+   * 接上或删掉自己的上游（target 是 magpie 上游 id，新增时是预设 id）。
+   */
+  'billing.checkout',
+  'billing.redeem',
+  'billing.grant',
+  'billing.refund',
+  'billing.codes',
+  'billing.tenant',
+  'billing.model.add',
+  'billing.model.remove',
   // 形象（`avatar.ts`）：target 是 `agent:<地址>` 或 `user:<主体>`。
   'avatar.save',
 ] as const
@@ -1722,6 +1752,8 @@ export interface ProviderProfileView {
   readonly compat?: Readonly<Partial<Record<string, string>>>
   readonly effortLock?: ProviderEffortLevel | null
   readonly keySelection?: 'fill_first' | 'round_robin' | 'least_used'
+  /** P33：同一网关其他对话通道的地址（magpie 档案由「网关」页写入）。 */
+  readonly laneAddresses?: Readonly<Partial<Record<string, string>>>
   readonly auth: { readonly scheme: 'bearer' | 'x-api-key' }
   readonly keys: readonly ProviderKeyView[]
   /** 预设带来的验 key 与拉模型请求说明（§5.5），节点用。 */
@@ -1829,6 +1861,8 @@ export interface ProviderNodeActual {
     readonly chatEffortHonorsOverride: boolean
     readonly replayFilter: boolean
     readonly multiKey: boolean
+    /** P33：档案的其他线路地址编成同密钥的兄弟 provider。 */
+    readonly laneAddresses: boolean
   }
   readonly lastResult: {
     readonly requestId: string
@@ -2073,6 +2107,8 @@ type ProviderFailureCode =
   | 'unreachable'
   /** 节点收到了并拒绝；带 `nodeCode`。→ 422 */
   | 'refused'
+  /** 公开版：模型只经平台网关，预设只有 `magpie`，租户节点只能用本租户的档案。→ 403 */
+  | 'edition_public_magpie_only'
 
 export interface ProviderFailure {
   readonly code: ProviderFailureCode
@@ -2449,6 +2485,14 @@ export interface ConsoleDeps {
   readonly updates?: UpdatesPort
   /** 连接器、技能与插件（P32）。 */
   readonly extensions?: ExtensionsPort
+  /** 平台模型网关 magpie（P33/P34）；只在模型服务与个人账号都打开时接。 */
+  readonly magpie?: MagpiePort
+  /**
+   * 公开版订阅（P35）；只在公开版接。接了就有公开的套餐页、成员的订阅页与结账页、
+   * 支付回调、「订阅」页，以及订阅闸门（没有有效订阅的成员写操作回 402）。缺席时
+   * 这些路径照旧是 404，其余行为逐字节不变。
+   */
+  readonly billing?: BillingPort
   /** 形象（`avatar.ts`）。缺席时人人用按地址或主体算出的默认形象，不能改。 */
   readonly avatars?: AvatarsPort
 }

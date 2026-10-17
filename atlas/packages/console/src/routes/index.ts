@@ -22,6 +22,7 @@ import { nodeCount } from '../view/agents.js'
 import type { AvatarSpec } from '../avatar.js'
 import type { Tone } from '../view/bits.js'
 import { escapeHtml } from '../view/escape.js'
+import type { SourceLinks } from '../view/source.js'
 import {
   renderShell,
   type Crumb,
@@ -33,6 +34,7 @@ import { alertsRoute } from './alerts.js'
 import { facesFor } from './avatars.js'
 import { approvalsRoute } from './approvals.js'
 import { auditRoute } from './audit.js'
+import { billingRoute } from './billing.js'
 import { channelsRoute } from './im.js'
 import { chatRoute } from './chat.js'
 import { connectRoute } from './connect.js'
@@ -40,6 +42,7 @@ import { desktopRoute } from './desktop.js'
 import { extensionsRoute } from './extensions.js'
 import { filesRoute } from './files.js'
 import { jobsRoute } from './jobs.js'
+import { magpieRoute } from './magpie.js'
 import { memoryRoute } from './memory.js'
 import { nodesRoute } from './nodes.js'
 import { overviewRoute } from './overview.js'
@@ -74,6 +77,7 @@ export const ROUTES: readonly RouteModule[] = [
   extensionsRoute,
   desktopRoute,
   providersRoute,
+  magpieRoute,
   overviewRoute,
   nodesRoute,
   filesRoute,
@@ -83,6 +87,7 @@ export const ROUTES: readonly RouteModule[] = [
   serversRoute,
   accessRoute,
   usageRoute,
+  billingRoute,
   updatesRoute,
   settingsRoute,
 ]
@@ -119,6 +124,8 @@ export const RESERVED_PAGE_HEADS: readonly string[] = [
   'login',
   'logout',
   'invite',
+  'plans',
+  'subscription',
 ]
 
 /** A page that answers a path, and the segments after its area's own. */
@@ -242,6 +249,16 @@ async function selfFace(ctx: RouteContext): Promise<AvatarSpec> {
   return faces.spec(faces.self)
 }
 
+/**
+ * The public edition's source footer for a page in the shell (AGPL §13,
+ * `view/source.ts`): there whenever the billing port is, which is exactly
+ * the public edition, where a subscriber without a chat channel lands here.
+ */
+function shellSource(ctx: RouteContext): { readonly source?: SourceLinks } {
+  const billing = ctx.deps.billing
+  return billing === undefined ? {} : { source: billing.site() }
+}
+
 /** One page, drawn in the shell. */
 export async function areaDocument(
   ctx: RouteContext,
@@ -267,6 +284,7 @@ export async function areaDocument(
     ...(module.page?.script === undefined
       ? {}
       : { pageScript: module.page.script }),
+    ...shellSource(ctx),
   })
 }
 
@@ -292,5 +310,6 @@ export async function errorDocument(
       `</section>`,
     health: healthOf(listed),
     relogin: loginHref(ctx.url),
+    ...shellSource(ctx),
   })
 }

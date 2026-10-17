@@ -62,6 +62,13 @@
       "name": "@qianmo/backup",
       "version": "0.0.0",
     },
+    "atlas/packages/billing": {
+      "name": "@qianmo/billing",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/paths": "workspace:*",
+      },
+    },
     "atlas/packages/capability": {
       "name": "@qianmo/capability",
       "version": "0.0.0",
@@ -113,6 +120,10 @@
         "@qianmo/protocol": "workspace:*",
       },
     },
+    "atlas/packages/magpie": {
+      "name": "@qianmo/magpie",
+      "version": "0.0.0",
+    },
     "atlas/packages/mailbox": {
       "name": "@qianmo/mailbox",
       "version": "0.0.0",
@@ -160,12 +171,14 @@
         "@qianmo/adapter": "workspace:*",
         "@qianmo/audit": "workspace:*",
         "@qianmo/backup": "workspace:*",
+        "@qianmo/billing": "workspace:*",
         "@qianmo/capability": "workspace:*",
         "@qianmo/capacity": "workspace:*",
         "@qianmo/console": "workspace:*",
         "@qianmo/elastic": "workspace:*",
         "@qianmo/extension": "workspace:*",
         "@qianmo/handoff": "workspace:*",
+        "@qianmo/magpie": "workspace:*",
         "@qianmo/mailbox": "workspace:*",
         "@qianmo/memory": "workspace:*",
         "@qianmo/negotiation": "workspace:*",
@@ -1256,6 +1269,8 @@
 
     "@qianmo/backup": ["@qianmo/backup@workspace:atlas/packages/backup"],
 
+    "@qianmo/billing": ["@qianmo/billing@workspace:atlas/packages/billing"],
+
     "@qianmo/capability": ["@qianmo/capability@workspace:atlas/packages/capability"],
 
     "@qianmo/capacity": ["@qianmo/capacity@workspace:atlas/packages/capacity"],
@@ -1269,6 +1284,8 @@
     "@qianmo/extension": ["@qianmo/extension@workspace:atlas/packages/extension"],
 
     "@qianmo/handoff": ["@qianmo/handoff@workspace:atlas/packages/handoff"],
+
+    "@qianmo/magpie": ["@qianmo/magpie@workspace:atlas/packages/magpie"],
 
     "@qianmo/mailbox": ["@qianmo/mailbox@workspace:atlas/packages/mailbox"],
 

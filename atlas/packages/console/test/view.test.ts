@@ -65,6 +65,7 @@ import {
   publicKeyFingerprint,
 } from '../src/view/format.js'
 import { renderLimits } from '../src/view/limits.js'
+import { renderMagpieForm } from '../src/view/magpie.js'
 import {
   renderOverview,
   renderPage,
@@ -84,6 +85,7 @@ import type {
   NodeServer,
   ServerNote,
 } from '../src/deps.js'
+import { FakeMagpie } from './directionFakes.js'
 
 const NOW = 1_760_000_000_000
 const TTL = 300_000
@@ -2825,5 +2827,21 @@ describe('one place an action reports back (D2)', () => {
     expect(FRONT_JS).toContain(
       "qc.failLine(verb === 'open' ? '打开' : '发送', err)",
     )
+  })
+})
+
+describe('magpie provider form', () => {
+  test('offers a custom upstream by its URLs beside the presets', async () => {
+    const snapshot = await new FakeMagpie().snapshot()
+    if (!snapshot.ok) throw new Error(snapshot.failure.message)
+    const html = renderMagpieForm({
+      kind: 'provider',
+      snapshot: snapshot.value,
+    })
+    expect(html).toContain('<option value="">自定义地址</option>')
+    for (const lane of ['chat', 'responses', 'anthropic']) {
+      expect(html).toContain(`name="${lane}"`)
+    }
+    expect(html).not.toMatch(/<select[^>]*name="preset"[^>]*required/)
   })
 })

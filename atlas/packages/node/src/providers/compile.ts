@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto'
 import { isRuntimeEnvironmentName } from './whitelist.js'
 import {
+  ANTHROPIC_ONLY_COMPAT_KEYS,
   DIRECTION_ROLES,
   MODEL_DIRECTIONS,
   LANE_KINDS,
@@ -283,10 +284,44 @@ export function compileProfile(
     },
     models,
   }
+  const providers: Record<string, OmpProvider> = { [providerId]: provider }
+  const siblings = Object.entries(profile.laneAddresses ?? {}) as [
+    Lane,
+    string,
+  ][]
+  if (siblings.length > 0 && profile.auth.keys.length !== 1)
+    return fail('profile.laneAddresses', '另给线路地址的档案只能有一把密钥')
+  for (const [lane, url] of siblings) {
+    // The same models and key on another lane of the same gateway: what an
+    // external runtime reads when the main lane is not the one it speaks.
+    const { laneAddresses: _, templateValues: __, ...core } = profile
+    const sibling = compileProfile(
+      {
+        ...core,
+        lane,
+        baseUrl: url,
+        compat: Object.fromEntries(
+          Object.entries(profile.compat ?? {}).filter(
+            ([key]) =>
+              lane === 'anthropic' || !ANTHROPIC_ONLY_COMPAT_KEYS.includes(key),
+          ),
+        ),
+      },
+      options,
+    )
+    if (!sibling.ok)
+      return {
+        ok: false,
+        error: { ...sibling.error, path: `profile.laneAddresses.${lane}` },
+      }
+    const id = `qm-${profile.id}-${createHash('sha256').update(`${lane} ${url}`).digest('hex').slice(0, 8)}`
+    providers[id] =
+      sibling.compiled.models.providers[sibling.compiled.providerId]!
+  }
   return {
     ok: true,
     compiled: {
-      models: { providers: { [providerId]: provider } },
+      models: { providers },
       config: {
         modelRoles: {
           default: selector(main),

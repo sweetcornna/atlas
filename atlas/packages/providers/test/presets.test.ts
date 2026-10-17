@@ -60,6 +60,8 @@ const DESIGN_IDS = [
   'lmstudio',
   'custom-anthropic',
   'custom-openai',
+  // P33
+  'magpie',
 ]
 
 /** Placeholder values for presets whose URL or models the user supplies. */
@@ -261,6 +263,66 @@ describe('§4.2 lane choices', () => {
   test('no wire model id carries the client-only [1m] marker', () => {
     for (const entry of PRESETS) {
       for (const model of entry.models) expect(model.id).not.toMatch(/\[1m\]/i)
+    }
+  })
+})
+
+describe('magpie gateway preset (P33)', () => {
+  test('the user supplies the gateway origin; magpie lists models at /v1/models', () => {
+    const entry = presetById('magpie')
+    expect(entry).toBeDefined()
+    expect(entry?.group).toBe('custom')
+    expect(entry?.plan).toBe('custom')
+    expect(entry?.baseUrl).toBe('')
+    expect(entry?.lane).toBe('anthropic')
+    expect(entry?.authScheme).toBe('bearer')
+    expect(entry?.models).toEqual([])
+    expect(entry?.probe).toEqual({
+      auth: { method: 'GET', path: '/v1/models', free: true },
+      models: { method: 'GET', path: '/v1/models', free: true },
+    })
+    expect(entry?.source.url).toBe('https://usemagpie.ai/docs/start')
+    expect(entry?.evaluated).toBe(false)
+    expect(entry?.terms).toBeNull()
+  })
+
+  test('magpie model ids with slashes and group ids parse on every lane', () => {
+    const lanes = [
+      ['anthropic', 'https://gateway.example.test'],
+      ['openai-responses', 'https://gateway.example.test/v1'],
+      ['openai-chat', 'https://gateway.example.test/v1'],
+    ] as const
+    for (const [lane, baseUrl] of lanes) {
+      const parsed = parseWireProfile(
+        {
+          id: 'magpie-node-n1',
+          revision: 1,
+          lane,
+          baseUrl,
+          auth: { scheme: 'bearer', keys: [{ id: 'gw', value: CANARY_KEY }] },
+          models: [
+            {
+              id: 'openrouter/anthropic/claude-sonnet-5',
+              role: 'main',
+              tiers: ['opus', 'sonnet', 'fable'],
+              capabilities: { mode: 'family' },
+              effort: { send: 'auto' },
+            },
+            {
+              id: 'group/fast',
+              role: 'fast',
+              tiers: ['haiku'],
+              capabilities: { mode: 'family' },
+              effort: { send: 'auto' },
+            },
+          ],
+          compat: lane === 'anthropic' ? { disableStrictTools: 'true' } : {},
+        },
+        { capabilities: V1_CAPABILITIES, now: CATALOG_DAY },
+      )
+      if (!parsed.ok)
+        throw new Error(`${lane}: ${JSON.stringify(parsed.error)}`)
+      expect(parsed.ok).toBe(true)
     }
   })
 })

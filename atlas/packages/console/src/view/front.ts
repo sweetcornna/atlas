@@ -98,6 +98,7 @@ import { FRONT_CSS } from './frontStyle.js'
 import { FRONT_TEXT, frontClientText, type FrontText } from './frontText.js'
 import { qianmoMark } from './mark.js'
 import { renderRichText } from './richText.js'
+import { type SourceLinks, sourceFooter } from './source.js'
 import { documentHead, sessionExpired, WORDMARK_CN } from './shell.js'
 
 /** The management side's home, where the panel's admin links point. */
@@ -1220,6 +1221,11 @@ export interface FrontDocumentModel {
   readonly lang: Lang
   /** 部署到新服务器 above the composer (`frontReplicate.ts`). Absent is `off`. */
   readonly replicate?: FrontReplicateMode
+  /**
+   * The public edition's source and terms links (AGPL §13, `source.ts`),
+   * under the side list's foot. Absent — the default edition — nothing.
+   */
+  readonly source?: SourceLinks
 }
 
 function composer(enabled: boolean, t: FrontText): string {
@@ -1358,6 +1364,9 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `<input type="search" id="fx-search" placeholder="${attr(t.search)}" autocomplete="off" spellcheck="false"></label>` +
     `<div class="fx-side-scroll" id="fx-side-scroll">${model.side.agents}</div>` +
     sideFoot(model) +
+    (model.source === undefined
+      ? ''
+      : sourceFooter(model.source, 'foot fx-source')) +
     `</aside>` +
     `<button type="button" class="fx-scrim" data-action="fx-side-close" aria-label="${attr(t.closeSide)}" tabindex="-1"></button>` +
     `<main class="fx-main${model.welcome ? ' is-welcome' : ''}" id="fx-main">` +

@@ -3,9 +3,19 @@
 
 import { pairHandoffDevice } from './routes/handoffDevices.js'
 import { bearerOf } from './auth.js'
+import {
+  notifyChannelOf,
+  provisioningPath,
+  publicFrontDoor,
+  serveBillingNotify,
+  servePlans,
+  serveSubscription,
+  subscriptionDenial,
+} from './billingDoors.js'
 import { decorateConsoleResponse } from './preferences.js'
 import { RegistrationThrottle, handleSignup } from './signup.js'
 import { scopedConsoleDeps, tenantRequestDenial } from './tenantScope.js'
+import type { TenantScope } from './tenancy.js'
 
 /**
  * The console's HTTP face: one page, a handful of JSON routes and three HTML
@@ -266,6 +276,7 @@ import {
 import type { ConsoleActionName, RouteContext } from './routes/types.js'
 import type { PageViewer } from './view/bits.js'
 import { renderLoginPage } from './view/login.js'
+import type { SourceLinks } from './view/source.js'
 import { renderStandalone } from './view/shell.js'
 import { LoginThrottle } from './throttle.js'
 
@@ -318,6 +329,15 @@ function loginRedirect(url: URL): Response {
   return seeOther(loginHref(url))
 }
 
+/**
+ * The public edition's source and terms links for a door (AGPL §13,
+ * `view/source.ts`): there whenever the billing port is, which is exactly
+ * the public edition.
+ */
+function publicSource(deps: ConsoleDeps): { readonly source?: SourceLinks } {
+  return deps.billing === undefined ? {} : { source: deps.billing.site() }
+}
+
 /** The login document, at whatever status the reason calls for. */
 function loginPage(
   deps: ConsoleDeps,
@@ -337,6 +357,7 @@ function loginPage(
     ...(options.error === undefined ? {} : { error: options.error }),
     ...(options.accounts === true ? { accounts: true } : {}),
     ...(options.signupEnabled === true ? { signupEnabled: true } : {}),
+    ...publicSource(deps),
   })
   return new Response(body, {
     status: options.status ?? 200,
@@ -577,6 +598,10 @@ async function serveFrontDoor(
   denial: Access | undefined,
 ): Promise<Response> {
   const { request, deps, url, access } = ctx
+  // The public edition decides first: signed out is the plans page, and a
+  // person without a subscription (or still without a node) gets a card.
+  const gated = await publicFrontDoor(ctx)
+  if (gated !== null) return gated
   const viewDenied = guard(access.credential, 'view', 'document')
   const chatDenied =
     deps.chat === undefined ? null : guardChat(access, 'document')
@@ -956,6 +981,14 @@ async function route(
     return pairHandoffDevice(request, deps.handoffDevices, clientKey)
   }
 
+  // The payment platforms' notifications (public edition): no credential, no
+  // console header, the body untouched — before anything reads either.
+  const notifyChannel =
+    deps.billing === undefined ? null : notifyChannelOf(segments)
+  if (notifyChannel !== null && deps.billing !== undefined) {
+    return serveBillingNotify(request, deps.billing, notifyChannel)
+  }
+
   // Without accounts this is `credentialOf` and nothing else (`access.ts`).
   const access = resolveAccess(
     request,
@@ -972,15 +1005,20 @@ async function route(
     return accessRefused(request, access.refusal, deps, url)
   const tenancy = deps.tenancy
   let revision: string | undefined
+  let scope: TenantScope | undefined
   // Login/logout intentionally replace their own credential. Data responses must
   // still prove the exact original credential after every asynchronous adapter.
   const authenticationDoor = ['login', 'logout', 'invite', 'signup'].includes(
     segments[0] ?? '',
   )
+  // Opening a subscription creates the subscriber's tenant (P35): a tenant
+  // revision the request itself caused, answered with the caller's own
+  // subscription only, so not refused for it (`billingDoors.ts`).
+  const provisioning = deps.billing !== undefined && provisioningPath(segments)
   setAuthorizationCheck(() => {
     if (!authenticationDoor && access.current?.() === false)
       return fail(403, 'forbidden', '账号权限已变化，请重新登录')
-    if (revision !== undefined) {
+    if (revision !== undefined && !provisioning) {
       try {
         if (tenancy!.read().revision !== revision)
           return fail(403, 'forbidden', '租户权限已变化，请重新加载')
@@ -998,6 +1036,17 @@ async function route(
       return fail(503, 'unavailable', '租户配置不可用，访问已暂停')
     }
     revision = scoped.scope?.revision
+    scope = scoped.scope
+    // The subscription gate stands before the tenant boundary: an unpaid write
+    // is refused without asking which tenant's resource it was for.
+    const unpaid = await subscriptionDenial(
+      request,
+      segments,
+      scoped.deps,
+      access,
+      scope,
+    )
+    if (unpaid !== null) return unpaid
     const tenantDenied = await tenantRequestDenial(
       request,
       url,
@@ -1006,6 +1055,17 @@ async function route(
     )
     if (tenantDenied !== null) return tenantDenied
     deps = scoped.deps
+  } else {
+    // The public edition's subscription gate (`billingDoors.ts`); with
+    // tenancy it ran above, before the tenant boundary.
+    const unpaid = await subscriptionDenial(
+      request,
+      segments,
+      deps,
+      access,
+      undefined,
+    )
+    if (unpaid !== null) return unpaid
   }
   const ledger = requestLedger(deps, access, now)
   const breakGlass = access.breakGlass && accounts !== undefined
@@ -1113,11 +1173,27 @@ async function routeAs(
       signupThrottles.get(throttle)!,
       clientKey,
       now(),
+      deps.billing?.site(),
     )
   }
 
   if (segments[0] === 'logout' && segments.length === 1) {
     return handleLogout(request, accounts)
+  }
+
+  // The public edition's plans page: public, like the doors above.
+  if (
+    deps.billing !== undefined &&
+    segments[0] === 'plans' &&
+    segments.length === 1
+  ) {
+    return servePlans(
+      request,
+      deps,
+      deps.billing,
+      access,
+      accounts?.signup !== undefined && deps.tenancy !== undefined,
+    )
   }
 
   // The invitation door. Public like `/login` — an invitee has no credential
@@ -1133,6 +1209,7 @@ async function routeAs(
       throttle,
       clientKey,
       now: now(),
+      ...publicSource(deps),
     })
   }
 
@@ -1145,6 +1222,28 @@ async function routeAs(
   const denial = accounts === undefined ? undefined : access
   const viewer =
     accounts === undefined ? undefined : pageViewer(access, accounts, tokens)
+
+  // The public edition's own pages for a signed-in person (`billingDoors.ts`).
+  if (
+    deps.billing !== undefined &&
+    segments[0] === 'subscription' &&
+    segments.length <= 2
+  ) {
+    return await serveSubscription(
+      routeContext(request, url, deps, access, accounts, now(), viewer, ledger),
+      deps.billing,
+      segments,
+      () =>
+        documentDenial(
+          request,
+          guard(credential, 'view', 'document') ??
+            fail(403, 'forbidden', '订阅页需要个人账号'),
+          deps,
+          url,
+          denial,
+        ),
+    )
+  }
 
   // `/` is the conversation front; every area page lives under `/admin`.
   // Reserved first segments (`v0`, `fragments`, the doors above) never reach

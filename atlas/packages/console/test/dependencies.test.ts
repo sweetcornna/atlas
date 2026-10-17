@@ -19,6 +19,7 @@ import { ROUTES } from '../src/routes/index.js'
 import {
   FakeChannels,
   FakeExtensions,
+  FakeMagpie,
   FakeUpdates,
   FakeConnectors,
   FakeDesktop,
@@ -26,6 +27,7 @@ import {
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
+import { FakeBilling } from './billingFake.js'
 import { ADMIN, browse, NOW, pageHarness } from './pageHarness.js'
 
 const ROOT = resolve(import.meta.dir, '..')
@@ -124,16 +126,20 @@ describe('assets', () => {
         channels: new FakeChannels(() => NOW),
         updates: new FakeUpdates(() => NOW),
         extensions: new FakeExtensions(),
+        magpie: new FakeMagpie(),
+        billing: new FakeBilling(),
         handoffDevices: new FakeHandoffDevices(() => NOW),
         desktop: new FakeDesktop(() => NOW),
         files: new FakeFiles(() => NOW),
       },
     })
-    // The login door is read signed out: signed in, it sends you on.
-    const paths = [...ROUTES.map(module => module.area.href), '/login']
+    // The login door is read signed out: signed in, it sends you on. So is
+    // the public edition's plans page, the one public page with a port.
+    const signedOut = ['/login', '/plans']
+    const paths = [...ROUTES.map(module => module.area.href), ...signedOut]
     for (const path of paths) {
       const response = await h.handle(
-        browse(path, path === '/login' ? undefined : ADMIN),
+        browse(path, signedOut.includes(path) ? undefined : ADMIN),
       )
       expect(`${path} ${response.status}`).toBe(`${path} 200`)
       const html = await response.text()
@@ -146,9 +152,9 @@ describe('assets', () => {
       ]
       expect(`${path} ${external.join(' ')}`).toBe(`${path} `)
       // And the inline ones are there: the scan is not looking at nothing.
-      // The login door is the one page with no script at all.
+      // The two signed-out doors are the pages with no script at all.
       expect(html).toContain('<style>')
-      if (path !== '/login') expect(html).toContain('<script>')
+      if (!signedOut.includes(path)) expect(html).toContain('<script>')
     }
   })
 })

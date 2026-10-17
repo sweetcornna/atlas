@@ -100,6 +100,8 @@ import {
 import { ProviderSecretStore } from './consoleProvidersSecrets.js'
 
 const PERSONAL_SUBJECT = /^u:[0-9a-f]{16}$/
+/** The ledger subject of the hub's own provisioning writes (P35). */
+export const SYSTEM_BILLING_SUBJECT = 'system:billing'
 /** §2.5 limits; `autocompact` is P18.7's and not in this build's table yet. */
 const TIMEOUTS = PROTOCOL_LIMITS.timeoutMs
 /** Repeated refreshes of one node inside this window are answered from cache. */
@@ -126,6 +128,7 @@ const FLOOR_CAPABILITIES: NodeCapabilities = {
   chatEffortHonorsOverride: false,
   replayFilter: false,
   multiKey: false,
+  laneAddresses: false,
 }
 
 /** What a compile preview puts where the key would go; never sent anywhere. */
@@ -160,6 +163,34 @@ interface NodeCache {
 export interface ProviderRouted {
   readonly revision: number
   readonly routing?: ModelRouting
+}
+
+/**
+ * P35: what one node may hold, where something narrower than the book
+ * applies (the public edition: a subscriber's node holds its tenant's
+ * profile or no model, never the platform's). A key reaches a node only in
+ * a profile it may hold — as the one it runs, in its routing, or in a dry
+ * run.
+ */
+export interface ProviderNodeScope {
+  /** Whether the node may hold this profile. */
+  readonly allows: (profileId: string) => boolean
+  /**
+   * What the node is expected to run in place of a profile it may not hold
+   * (and, with {@link required}, in place of none at all); `null`: nothing,
+   * so nothing is delivered.
+   */
+  readonly fallback: string | null
+  /**
+   * Whether the node must run something: not managed and following no
+   * default give way to the fallback too (a subscriber's node would keep
+   * its last key). Otherwise those still mean nothing is sent, and only a
+   * profile it may not hold — named, or the default it follows — is
+   * replaced (a platform node handed back keeps no subscriber's key).
+   */
+  readonly required: boolean
+  /** Whether its routing may bring profiles besides the one it runs. */
+  readonly extras: boolean
 }
 
 interface ConsoleProvidersOptions {
@@ -233,6 +264,28 @@ function autoCompactReportOf(reply: NodeReply): AutoCompactReport | null {
   }
 }
 
+/**
+ * P35: a node's routing with only what its scope lets it hold — the profile
+ * it runs, and others only where the scope allows extras at all.
+ */
+function scopedRouting(
+  routing: ModelRouting | undefined,
+  scope: ProviderNodeScope | null,
+  main: string,
+): ModelRouting | undefined {
+  if (routing === undefined || scope === null) return routing
+  const routes: ModelRouting['routes'] = {}
+  for (const [direction, ref] of Object.entries(routing.routes) as [
+    keyof ModelRouting['routes'],
+    ModelRouting['routes'][keyof ModelRouting['routes']],
+  ][]) {
+    if (ref === undefined) continue
+    if (ref.profileId === main || (scope.extras && scope.allows(ref.profileId)))
+      routes[direction] = ref
+  }
+  return { ...routing, routes }
+}
+
 function targetOf(value: unknown): string {
   return typeof value === 'string' && /^[a-z0-9-]{1,48}$/.test(value)
     ? value
@@ -252,7 +305,12 @@ export class ConsoleProviders implements ProviderPort {
   readonly #onAlarm: (line: string) => void
   readonly #cache = new Map<string, NodeCache>()
   readonly #follows = new Map<string, unknown>()
+  /** The status query on its way to each node, for a caller that must wait for it. */
+  readonly #refreshing = new Map<string, Promise<void>>()
+  /** Callers this hub made for its own writes ({@link systemCaller}). */
+  readonly #system = new WeakSet<ProviderCaller>()
   #routing: ((node: string) => ProviderRouted) | undefined
+  #scope: ((node: string) => ProviderNodeScope | null) | undefined
   #background: unknown = null
   #changes = 0
 
@@ -271,6 +329,14 @@ export class ConsoleProviders implements ProviderPort {
   }
   configureRouting(source: (node: string) => ProviderRouted): void {
     this.#routing = source
+  }
+  /**
+   * P35: narrow what each node may hold ({@link ProviderNodeScope}); `null`
+   * from `source` leaves a node to the book. A `source` that throws (the
+   * tenancy file cannot be read) leaves the node with nothing to deliver.
+   */
+  configureScope(source: (node: string) => ProviderNodeScope | null): void {
+    this.#scope = source
   }
 
   /** `null` while usable; otherwise why the providers face is closed. */
@@ -410,7 +476,13 @@ export class ConsoleProviders implements ProviderPort {
     if (!resolved.ok) return resolved
     const override =
       input.node === undefined ? null : this.#book.contextOverride(input.node)
-    const wire = this.#wire(resolved.value.profile, PREVIEW_SECRET, override)
+    const wire = this.#wire(
+      resolved.value.profile,
+      PREVIEW_SECRET,
+      override,
+      {},
+      this.#capabilities(input.node).laneAddresses,
+    )
     const compiled = compileProfile(wire, {
       secret: PREVIEW_SECRET,
       capabilities: this.#capabilities(input.node),
@@ -878,7 +950,31 @@ export class ConsoleProviders implements ProviderPort {
 
   // --- the gate and the ledger -------------------------------------------
 
+  /**
+   * The caller for the hub's own writes in the public edition (P35): the
+   * subscriber's gateway profile saved and delivered after a payment, with
+   * nobody at the page. Its lines go to the ledger as `system:billing`
+   * through `record`. Only an object made here passes the gate as it: the
+   * subject is not a credential, so no request can claim it.
+   */
+  systemCaller(record: ProviderCaller['record']): ProviderCaller {
+    const caller: ProviderCaller = {
+      subject: SYSTEM_BILLING_SUBJECT,
+      role: null,
+      breakGlass: false,
+      record,
+    }
+    this.#system.add(caller)
+    return caller
+  }
+
+  /** Whether `caller` is one {@link systemCaller} made. */
+  isSystemCaller(caller: ProviderCaller): boolean {
+    return this.#system.has(caller)
+  }
+
   #authorize<T>(caller: ProviderCaller): ProviderResult<T> | null {
+    if (this.#system.has(caller)) return null
     if (
       caller.breakGlass ||
       caller.role !== 'ops' ||
@@ -1004,7 +1100,9 @@ export class ConsoleProviders implements ProviderPort {
       if (!profile.keys.some(key => key.id === keyId)) {
         return fail('invalid', `档案里没有密钥 ${keyId}`, { path: 'secrets' })
       }
-      const parsed = parseWireProfile(this.#wire(profile, value, null))
+      const parsed = parseWireProfile(
+        this.#wire(profile, value, null, {}, true),
+      )
       if (!parsed.ok) {
         // The validator's message names the rule, never the value.
         return fail('invalid', parsed.error.message, {
@@ -1422,14 +1520,31 @@ export class ConsoleProviders implements ProviderPort {
 
   // --- nodes -------------------------------------------------------------
 
+  /** The node's scope; `undefined` when it cannot be told (nothing is sent then). */
+  #scopeOf(node: string): ProviderNodeScope | null | undefined {
+    if (this.#scope === undefined) return null
+    try {
+      return this.#scope(node)
+    } catch {
+      return undefined
+    }
+  }
+
   #expected(node: string): Expected | null {
+    const scope = this.#scopeOf(node)
+    if (scope === undefined) return null
     const assignment = this.#book.assignment(node)
-    const profileId =
+    let profileId =
       assignment.mode === 'profile'
         ? assignment.profileId
         : assignment.mode === 'inherit'
           ? this.#book.defaultProfileId
           : null
+    if (
+      scope !== null &&
+      (profileId === null ? scope.required : !scope.allows(profileId))
+    )
+      profileId = scope.fallback
     if (profileId === null) return null
     const profile = this.#book.profile(profileId)
     if (profile === undefined) return null
@@ -1484,13 +1599,16 @@ export class ConsoleProviders implements ProviderPort {
    * The wire form of a profile for one node: the D-8 override on the main
    * model. `secret` goes with the primary key; `others` (P18.18, an apply's
    * other keys by id) with theirs, in the profile's order. Without `others`
-   * only the primary travels, as it always did.
+   * only the primary travels, as it always did. `laneAddresses` (P33) go only
+   * where `lanes` says the node compiles them; elsewhere the profile is the
+   * single lane it always was.
    */
   #wire(
     profile: ProviderProfile,
     secret: string,
     contextOverride: number | null,
     others: Readonly<Record<string, string>> = {},
+    lanes = false,
   ): WireProfile {
     const key = primaryKey(profile.keys)
     return {
@@ -1516,6 +1634,9 @@ export class ConsoleProviders implements ProviderPort {
       ...(profile.keySelection === undefined
         ? {}
         : { keySelection: profile.keySelection }),
+      ...(profile.laneAddresses === undefined || !lanes
+        ? {}
+        : { laneAddresses: profile.laneAddresses }),
       auth: {
         scheme: profile.auth.scheme,
         keys: profile.keys.flatMap(each => {
@@ -1680,6 +1801,9 @@ export class ConsoleProviders implements ProviderPort {
       code,
       message,
     })
+    const scope = this.#scopeOf(node)
+    if (scope === undefined)
+      return refuse('scope-unavailable', '无法读取租户配置 · 拒绝下发')
     const expected = this.#expected(node)
     const profileId = options.profileId ?? expected?.profileId
     if (profileId === undefined) {
@@ -1687,6 +1811,8 @@ export class ConsoleProviders implements ProviderPort {
     }
     const profile = this.#book.profile(profileId)
     if (profile === undefined) return refuse('not-found', '没有这份档案')
+    if (scope !== null && !scope.allows(profile.id))
+      return refuse('scope-refused', '这份档案不能下发到这个节点')
     const sealed = this.#keysOf(profile)
     if (!sealed.ok) {
       return refuse(
@@ -1700,7 +1826,6 @@ export class ConsoleProviders implements ProviderPort {
     const sessions = this.#sessions(node, profile, options.sessions)
     if (!sessions.ok) return refuse('invalid', sessions.failure.message)
     const override = this.#book.contextOverride(node)
-    const wire = this.#wire(profile, secret, override, others)
     let routed: ProviderRouted | undefined
     try {
       routed = this.#routing?.(node)
@@ -1718,18 +1843,74 @@ export class ConsoleProviders implements ProviderPort {
         '任务分工在下发途中又被改过 · 刷新后再下发',
       )
     }
-    const routing = routed?.routing
+    const routing = scopedRouting(routed?.routing, scope, profile.id)
+    const extraIds = [
+      ...new Set(
+        Object.values(routing?.routes ?? {}).map(ref => ref?.profileId),
+      ),
+    ].filter((id): id is string => Boolean(id) && id !== profile.id)
+    // P33: lanes are compiled only where the node says it can. A node this
+    // console has not heard from yet (it just started, or every status since
+    // failed) gets the v1 floor, and a gateway profile would lose its extra
+    // lanes there without a word: the node then counts as up to date while
+    // Claude Code and Codex on it find no profile for their protocol. Ask the
+    // node first (or wait for the query already on its way, the start-up
+    // tick's); still unknown, do not ship the lanes away. A query that failed
+    // is the node out of reach; one that answered without capabilities is a
+    // refusal.
+    const wantsLanes = [
+      profile,
+      ...extraIds.map(id => this.#book.profile(id)),
+    ].some(one => one?.laneAddresses !== undefined)
+    const known = () =>
+      this.#cache.get(node)?.actual?.capabilities !== undefined
+    if (wantsLanes && !known()) {
+      await this.#refreshing.get(node)
+      if (!known()) await this.#refresh(node, false)
+      if (!known()) {
+        const last = this.#cache.get(node)?.lastStatus
+        if (last?.ok === false)
+          return {
+            node,
+            requestId,
+            outcome: 'failed',
+            code: 'unreachable',
+            message: `节点状态查询失败 · 无法确认附加通道能否编入 · ${last.message ?? '没有回应'}`,
+          }
+        return refuse(
+          'capabilities-unknown',
+          '节点尚未回报能力 · 无法确认附加通道能否编入 · 节点状态刷新后再下发',
+        )
+      }
+      // The scope and the routing were read before the node was asked: a
+      // change landing in that wait is not shipped under the older reading.
+      const scopeNow = this.#scopeOf(node)
+      if (scopeNow === undefined)
+        return refuse('scope-unavailable', '无法读取租户配置 · 拒绝下发')
+      if (scopeNow !== null && !scopeNow.allows(profile.id))
+        return refuse('scope-refused', '这份档案不能下发到这个节点')
+      let again: ProviderRouted | undefined
+      try {
+        again = this.#routing?.(node)
+      } catch {
+        return refuse('routing-unavailable', '路由簿不可用 · 拒绝下发')
+      }
+      if (again?.revision !== routed?.revision)
+        return refuse(
+          'routing-conflict',
+          '任务分工在下发途中又被改过 · 刷新后再下发',
+        )
+    }
+    const lanes = this.#capabilities(node).laneAddresses
+    const wire = this.#wire(profile, secret, override, others, lanes)
     const profiles: WireProfile[] = []
     const routingSecrets: string[] = []
-    for (const id of new Set(
-      Object.values(routing?.routes ?? {}).map(ref => ref?.profileId),
-    )) {
-      if (!id || id === profile.id) continue
+    for (const id of extraIds) {
       const extra = this.#book.profile(id)
       if (!extra) return refuse('routing-invalid', '路由引用的档案不存在')
       const keys = this.#keysOf(extra)
       if (!keys.ok) return refuse('secret-missing', '路由档案未填写全部密钥')
-      profiles.push(this.#wire(extra, keys.secret, null, keys.others))
+      profiles.push(this.#wire(extra, keys.secret, null, keys.others, lanes))
       routingSecrets.push(keys.secret, ...Object.values(keys.others))
     }
     const request = {
@@ -1879,13 +2060,24 @@ export class ConsoleProviders implements ProviderPort {
     })
   }
 
-  async #refresh(node: string): Promise<void> {
+  /** `background: false` when an operator action waits on it (a dial is waited for). */
+  async #refresh(node: string, background = true): Promise<void> {
+    const running = this.#refreshNow(node, background)
+    this.#refreshing.set(node, running)
+    try {
+      await running
+    } finally {
+      if (this.#refreshing.get(node) === running) this.#refreshing.delete(node)
+    }
+  }
+
+  async #refreshNow(node: string, background: boolean): Promise<void> {
     const requestId = this.#requestId()
     const result = await this.#executor.run(
       node,
       { v: 1, op: 'status', requestId, node },
       TIMEOUTS.status,
-      { background: true },
+      { background },
     )
     // No dial left in the node's window (the executor's pacing): nothing was
     // asked, so nothing is learned — the last status stands, the next refresh

@@ -63,6 +63,7 @@ import { AVATAR_CSS, avatarSvg } from './avatar.js'
 import { attr, escapeHtml } from './escape.js'
 import { zoneLabel } from './format.js'
 import { QIANMO_ICON_HREF, qianmoMark } from './mark.js'
+import { type SourceLinks, sourceFooter } from './source.js'
 
 /**
  * The product mark. The instance name sits beside it, never merged into it.
@@ -188,6 +189,12 @@ export interface ShellModel {
    * Absent draws no such dialog.
    */
   readonly relogin?: string
+  /**
+   * The public edition's source and terms links (AGPL §13, `source.ts`),
+   * under the page body and outside every polled region. Absent — the
+   * default edition — the document is what it was.
+   */
+  readonly source?: SourceLinks
 }
 
 const REFRESH_CHOICES: readonly (readonly [string, string])[] = [
@@ -489,6 +496,7 @@ export function renderShell(model: ShellModel): string {
     `<p class="bar bar-warn conn" id="conn" role="status" hidden></p>` +
     `\n<main class="main" id="main" tabindex="-1" aria-labelledby="page-title">\n` +
     model.body +
+    (model.source === undefined ? '' : sourceFooter(model.source)) +
     `\n</main>\n</div>\n</div>\n` +
     (model.relogin === undefined ? '' : sessionExpired(model.relogin)) +
     // Where an action's result is said (`assets/client.ts`, D2): outside

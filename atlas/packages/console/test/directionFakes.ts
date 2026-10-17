@@ -51,6 +51,22 @@ import {
   type HandoffDeviceView,
   type HandoffPairingCode,
   type DirectionActor,
+  type MagpieBinding,
+  type MagpieCaller,
+  type MagpieConnectDraft,
+  type MagpieConnectionView,
+  type MagpieGroupDraft,
+  type MagpieGroupView,
+  type MagpieKeyChange,
+  type MagpieKeyDraft,
+  type MagpieKeyView,
+  type MagpiePort,
+  type MagpieProviderDraft,
+  type MagpieProviderView,
+  type MagpieSnapshot,
+  type MagpieTestView,
+  type MagpieUsagePeriod,
+  type MagpieUsageView,
   type MemoryDraft,
   type MemoryEntryView,
   type MemoryKind,
@@ -2216,5 +2232,369 @@ export class FakeExtensions implements ExtensionsPort {
     if (index < 0) return failed('not_found', '没有这个扩展')
     this.entries.splice(index, 1)
     return ok(undefined)
+  }
+}
+
+/**
+ * The magpie gateway port (P33/P34), in memory: a connected magpie with two
+ * API-key upstreams, a subscription upstream, one eligible and one mixed
+ * routing group, and a key bound to tokyo-1. Writes change the state the
+ * next snapshot shows; `calls` lists them with the caller.
+ */
+export class FakeMagpie implements MagpiePort {
+  readonly calls: string[] = []
+  connection: MagpieConnectionView = {
+    configured: true,
+    gatewayUrl: 'https://gw.tokyo.example:8443',
+    managementUrl: 'http://127.0.0.1:3430',
+    keySet: true,
+    connectedAt: 1,
+    check: {
+      at: 1_700_000_000_000,
+      ok: true,
+      version: '0.1.1268',
+      gateway: 'keyed',
+      code: null,
+    },
+  }
+  problem: MagpieSnapshot['problem'] = null
+  readonly providers: MagpieProviderView[] = [
+    {
+      id: 'openai',
+      name: 'OpenAI',
+      preset: 'openai',
+      host: 'api.openai.com',
+      enabled: true,
+      ready: true,
+      models: 2,
+      access: 'key',
+      plan: null,
+    },
+    {
+      id: 'deepseek',
+      name: 'DeepSeek',
+      preset: 'deepseek',
+      host: 'api.deepseek.com',
+      enabled: false,
+      ready: false,
+      models: 1,
+      access: 'key',
+      plan: null,
+    },
+    {
+      id: 'codex',
+      name: 'Codex 订阅',
+      preset: 'codex',
+      host: 'chatgpt.com',
+      enabled: true,
+      ready: true,
+      models: 3,
+      access: 'account',
+      plan: 'pro',
+    },
+  ]
+  readonly groups: MagpieGroupView[] = [
+    {
+      id: 'fast',
+      name: '快速',
+      members: ['openai/gpt-6-mini', 'deepseek/deepseek-v4'],
+      matched: [],
+      match: [],
+      routing: 'order',
+      affinity: 'auto',
+      ready: true,
+      eligible: true,
+    },
+    {
+      id: 'mixed',
+      name: '混合',
+      members: ['openai/gpt-6', 'codex/gpt-6-codex'],
+      matched: [],
+      match: [],
+      routing: 'smart',
+      affinity: 'session',
+      ready: true,
+      eligible: false,
+    },
+  ]
+  readonly keys: MagpieKeyView[] = [
+    {
+      binding: { kind: 'node', id: 'tokyo-1' },
+      keyId: 'k-0001',
+      keyName: 'qm-node-tokyo-1-0001',
+      profileId: 'magpie-node-tokyo-1',
+      lane: 'anthropic',
+      mainModel: 'openai/gpt-6',
+      fastModel: 'group/fast',
+      modelsMode: 'all',
+      models: ['openai/*', 'deepseek/*', 'group/fast'],
+      enabled: true,
+      masked: '…a1b2',
+      limits: [
+        {
+          period: 'day',
+          days: null,
+          hours: null,
+          tokens: 1_000_000,
+          cost: null,
+          cacheReads: false,
+          tokensUsed: 1_200_000,
+          costUsed: 0.4,
+          spent: true,
+          reset: '2026-10-17T00:00:00Z',
+        },
+      ],
+      createdAt: 1,
+      present: true,
+    },
+  ]
+
+  #find(binding: MagpieBinding): MagpieKeyView | undefined {
+    return this.keys.find(
+      key => key.binding.kind === binding.kind && key.binding.id === binding.id,
+    )
+  }
+
+  #note(what: string, caller: MagpieCaller): void {
+    this.calls.push(`${what} ${caller.subject}`)
+  }
+
+  async snapshot(): Promise<ConsoleResult<MagpieSnapshot>> {
+    return ok({
+      connection: this.connection,
+      problem: this.problem,
+      providers: this.providers,
+      presets: [
+        { id: 'anthropic', name: 'Anthropic', kind: 'vendor', noKey: false },
+        { id: 'openai', name: 'OpenAI', kind: 'vendor', noKey: false },
+        { id: 'ollama', name: 'Ollama', kind: 'local', noKey: true },
+      ],
+      groups: this.groups,
+      keys: this.keys,
+      models: ['openai/gpt-6', 'openai/gpt-6-mini', 'group/fast'],
+      nodes: ['tokyo-1', 'osaka-1'],
+      tenants: ['acme'],
+    })
+  }
+
+  async usage(
+    period: MagpieUsagePeriod,
+  ): Promise<ConsoleResult<MagpieUsageView>> {
+    const row = {
+      calls: 12,
+      errors: 1,
+      input: 48_000,
+      output: 9_500,
+      cacheRead: 120_000,
+      cacheWrite: 0,
+      cost: 0.42,
+      unpriced: 0,
+    }
+    return ok({
+      period,
+      since: '2026-10-09T00:00:00Z',
+      totals: row,
+      models: [{ ...row, id: 'openai/gpt-6', name: 'gpt-6' }],
+      keys: [
+        {
+          ...row,
+          keyId: 'k-0001',
+          name: 'qm-node-tokyo-1-0001',
+          binding: { kind: 'node', id: 'tokyo-1' },
+        },
+      ],
+    })
+  }
+
+  async connect(
+    draft: MagpieConnectDraft,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieConnectionView>> {
+    this.#note(`connect ${draft.gatewayUrl}`, caller)
+    if (!draft.gatewayUrl.startsWith('https://'))
+      return failed('invalid', '网关地址要用 https')
+    this.connection = {
+      ...this.connection,
+      configured: true,
+      gatewayUrl: draft.gatewayUrl,
+      managementUrl: draft.managementUrl,
+      keySet: this.connection.keySet || draft.managementKey !== undefined,
+    }
+    return ok(this.connection)
+  }
+
+  async check(
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieConnectionView>> {
+    this.#note('check', caller)
+    return ok(this.connection)
+  }
+
+  async saveProvider(
+    draft: MagpieProviderDraft,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieProviderView>> {
+    this.#note(`provider.save ${draft.preset}`, caller)
+    if (draft.preset === 'codex')
+      return failed('rejected', '订阅账号的上游阡陌不用')
+    const base = draft.preset || (draft.name ?? 'custom')
+    const view: MagpieProviderView = {
+      id: `${base}-${this.providers.length + 1}`,
+      name: draft.name ?? draft.preset,
+      preset: draft.preset,
+      host:
+        draft.preset === ''
+          ? new URL(draft.chat ?? draft.responses ?? draft.anthropic ?? '').host
+          : `${draft.preset}.example`,
+      enabled: true,
+      ready: true,
+      models: 1,
+      access: 'key',
+      plan: null,
+    }
+    this.providers.push(view)
+    return ok(view)
+  }
+
+  async setProviderEnabled(
+    id: string,
+    on: boolean,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieProviderView>> {
+    this.#note(`provider.toggle ${id} ${on}`, caller)
+    const index = this.providers.findIndex(one => one.id === id)
+    if (index < 0) return failed('not_found', '没有这个上游')
+    const next = { ...this.providers[index]!, enabled: on }
+    this.providers.splice(index, 1, next)
+    return ok(next)
+  }
+
+  async testProvider(
+    id: string,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<readonly MagpieTestView[]>> {
+    this.#note(`provider.test ${id}`, caller)
+    if (!this.providers.some(one => one.id === id))
+      return failed('not_found', '没有这个上游')
+    return ok([
+      { protocol: 'chat', ok: true, status: 200, ms: 412, model: 'gpt-6' },
+    ])
+  }
+
+  async removeProvider(
+    id: string,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<void>> {
+    this.#note(`provider.remove ${id}`, caller)
+    const index = this.providers.findIndex(one => one.id === id)
+    if (index < 0) return failed('not_found', '没有这个上游')
+    this.providers.splice(index, 1)
+    return ok(undefined)
+  }
+
+  async saveGroup(
+    draft: MagpieGroupDraft,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieGroupView>> {
+    this.#note(`group.save ${draft.id}`, caller)
+    if (!/^[a-z0-9][a-z0-9.-]*$/.test(draft.id))
+      return failed('invalid', '路由组 id 只能用小写字母 · 数字 · 点与连字符')
+    const found = this.groups.find(one => one.id === (draft.from ?? draft.id))
+    const view: MagpieGroupView = {
+      ...(found ?? this.groups[0]!),
+      id: draft.id,
+      name: draft.name ?? found?.name ?? draft.id,
+      members: draft.members ?? found?.members ?? [],
+      routing: draft.routing ?? found?.routing ?? 'smart',
+      affinity: draft.affinity ?? found?.affinity ?? 'auto',
+    }
+    if (found) this.groups.splice(this.groups.indexOf(found), 1, view)
+    else this.groups.push(view)
+    return ok(view)
+  }
+
+  async removeGroup(
+    id: string,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<void>> {
+    this.#note(`group.remove ${id}`, caller)
+    const index = this.groups.findIndex(one => one.id === id)
+    if (index < 0) return failed('not_found', '没有这个路由组')
+    this.groups.splice(index, 1)
+    return ok(undefined)
+  }
+
+  async issueKey(
+    draft: MagpieKeyDraft,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieKeyView>> {
+    this.#note(`key.issue ${draft.binding.kind}:${draft.binding.id}`, caller)
+    if (this.#find(draft.binding) !== undefined)
+      return failed('invalid', '这个绑定已有网关密钥')
+    if (draft.models?.some(model => model.startsWith('codex/')))
+      return failed('rejected', '白名单里有订阅账号的上游')
+    const view: MagpieKeyView = {
+      ...this.keys[0]!,
+      binding: draft.binding,
+      keyId: `k-${String(this.keys.length + 1).padStart(4, '0')}`,
+      keyName: `qm-${draft.binding.kind}-${draft.binding.id}-x`,
+      profileId: `magpie-${draft.binding.kind}-${draft.binding.id}`,
+      mainModel: draft.mainModel,
+      fastModel: draft.fastModel ?? null,
+      lane: draft.lane ?? 'anthropic',
+      modelsMode: draft.models === undefined ? 'all' : 'list',
+      models: draft.models ?? ['openai/*', 'deepseek/*', 'group/fast'],
+      limits: [],
+    }
+    this.keys.push(view)
+    return ok(view)
+  }
+
+  async updateKey(
+    binding: MagpieBinding,
+    change: MagpieKeyChange,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieKeyView>> {
+    this.#note(`key.update ${binding.kind}:${binding.id}`, caller)
+    const found = this.#find(binding)
+    if (found === undefined) return failed('not_found', '没有这把网关密钥')
+    const next: MagpieKeyView = {
+      ...found,
+      ...(change.enabled === undefined ? {} : { enabled: change.enabled }),
+      ...(change.mainModel === undefined
+        ? {}
+        : { mainModel: change.mainModel }),
+      ...(change.fastModel === undefined
+        ? {}
+        : { fastModel: change.fastModel }),
+      ...(change.models === undefined
+        ? {}
+        : change.models === null
+          ? { modelsMode: 'all' as const }
+          : { modelsMode: 'list' as const, models: change.models }),
+    }
+    this.keys.splice(this.keys.indexOf(found), 1, next)
+    return ok(next)
+  }
+
+  async rotateKey(
+    binding: MagpieBinding,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieKeyView>> {
+    this.#note(`key.rotate ${binding.kind}:${binding.id}`, caller)
+    const found = this.#find(binding)
+    if (found === undefined) return failed('not_found', '没有这把网关密钥')
+    return ok({ ...found, masked: '…c3d4' })
+  }
+
+  async removeKey(
+    binding: MagpieBinding,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<{ readonly profileKept: boolean }>> {
+    this.#note(`key.remove ${binding.kind}:${binding.id}`, caller)
+    const found = this.#find(binding)
+    if (found === undefined) return failed('not_found', '没有这把网关密钥')
+    this.keys.splice(this.keys.indexOf(found), 1)
+    return ok({ profileKept: false })
   }
 }

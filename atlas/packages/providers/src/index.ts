@@ -16,6 +16,7 @@
  */
 
 export {
+  ANTHROPIC_ONLY_COMPAT_KEYS,
   checkCompatValue,
   COMPAT_KEYS,
   type CompatKey,

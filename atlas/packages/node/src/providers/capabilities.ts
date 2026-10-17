@@ -3,5 +3,10 @@
 
 /** omp owns request shaping and credential rotation. No occ feature switches remain. */
 export function getModelCompatCapabilities() {
-  return { chatEffortHonorsOverride: true, replayFilter: true, multiKey: true }
+  return {
+    chatEffortHonorsOverride: true,
+    replayFilter: true,
+    multiKey: true,
+    laneAddresses: true,
+  }
 }

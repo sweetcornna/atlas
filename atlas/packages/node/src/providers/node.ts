@@ -212,11 +212,17 @@ export function runtimeModelCredential(
   const model = spec.slice(slash + 1)
   const providers = readYaml(providerPaths.models()).providers
   const entries = isRecord(providers) ? Object.entries(providers) : []
-  const match = entries.find(([id]) =>
+  const matches = entries.filter(([id]) =>
     profile.startsWith('qm-')
       ? id === profile
       : id.startsWith(`qm-${profile}-`) && id.length === profile.length + 12,
   )
+  // A gateway profile also carries one provider per extra lane (P33
+  // `laneAddresses`); take the one this runtime speaks, else the main one.
+  const match =
+    matches.find(
+      ([, value]) => isRecord(value) && value.api === RUNTIME_API[runtime],
+    ) ?? matches[0]
   if (match === undefined || !isRecord(match[1]))
     throw new Error(
       `model profile ${profile} is not applied on this node; apply it from the console's model service first`,

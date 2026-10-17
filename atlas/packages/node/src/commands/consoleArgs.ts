@@ -30,6 +30,7 @@ import {
   type AuditWitnessSource,
 } from '../host/auditWitness.js'
 import { parseTrustedKey } from '../host/nodeIdentity.js'
+import { buildEdition, type Edition } from '../provenance.js'
 import {
   isProtocolNodeName,
   type ProviderNodeTarget,
@@ -509,6 +510,18 @@ export interface ConsoleCliConfig {
   /** 连接器（MCP）、技能与插件（P32）：经控制链路下发到节点。 */
   readonly extensions?: boolean
   /**
+   * 平台模型网关 magpie（P33/P34）：中枢调它的管理接口，为节点签发网关密钥并写成
+   * 模型档案。要 `--providers`（因而也要 `--accounts`）。
+   */
+  readonly magpie?: boolean
+  /**
+   * 公开版（P35）：只在公开构建或 `QIANMO_EDITION=public` 下出现，配置形状在默认版
+   * 里不变。`billingPath` 是计费配置（`--billing`，缺省与 `@qianmo/billing` 的
+   * `billingConfigPath()` 同一个文件）。
+   */
+  readonly edition?: 'public'
+  readonly billingPath?: string
+  /**
    * 每个节点跑在哪台服务器上。**给了才有归属面**，一个都没给就整个不显示。
    *
    * 同时是备注的白名单：页面只能给这张表里出现过的服务器写备注。
@@ -602,7 +615,29 @@ function nonEmpty(value: string, flag: string): string {
   return trimmed
 }
 
-export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
+/** `billingConfigPath()` of `@qianmo/billing`, without loading the package here. */
+export function consoleBillingPath(): string {
+  return qianmoConfigPath('qianmo', 'console', 'billing.json')
+}
+
+/**
+ * The flags the public edition (P35) cannot run without: accounts (only
+ * people subscribe), tenancy (each subscriber is a tenant), open
+ * registration (people sign themselves up), and the model service with the
+ * platform gateway (models come only through it).
+ */
+const PUBLIC_EDITION_NEEDS = [
+  '--accounts',
+  '--tenancy',
+  '--open-registration',
+  '--providers',
+  '--magpie',
+] as const
+
+export function parseConsoleArgs(
+  args: readonly string[],
+  edition: Edition = buildEdition(),
+): ConsoleCliConfig {
   let port = DEFAULT_CONSOLE_PORT
   let hostname = DEFAULT_CONSOLE_HOSTNAME
   let registryUrl = DEFAULT_CONSOLE_REGISTRY_URL
@@ -641,6 +676,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let channels = false
   let updates = false
   let extensions = false
+  let magpie = false
   const nodeServers: ConsoleNodeServer[] = []
   let serverNotesPath = consoleServerNotesPath()
   const managed: ConsoleManagedAddress[] = []
@@ -653,6 +689,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let accountsStoreGiven = false
   let sessionsStorePath = consoleSessionsPath()
   let legacyViewToken = true
+  let legacyViewTokenGiven = false
+  let billingPath: string | undefined
   let breakGlass = false
   let actionsStorePath = consoleActionsPath()
   let actionsStoreGiven = false
@@ -916,6 +954,9 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       updates = true
     } else if (arg === '--extensions') {
       extensions = true
+    } else if (arg === '--magpie') {
+      magpie = true
+      needsProviders.push('--magpie')
     } else if (arg === '--chat-url' || arg?.startsWith('--chat-url=')) {
       const parsed = residentOptionValue(args, index, '--chat-url')
       // A complete URL is legacy even when its query contains `=`. Only
@@ -1090,7 +1131,14 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
         throw new Error('--legacy-view-token must be on or off')
       }
       legacyViewToken = parsed.value === 'on'
+      legacyViewTokenGiven = true
       needsAccounts.push('--legacy-view-token')
+      index = parsed.next
+    } else if (arg === '--billing' || arg?.startsWith('--billing=')) {
+      const parsed = residentOptionValue(args, index, '--billing')
+      if (!isAbsolute(parsed.value))
+        throw new Error('--billing must be an absolute path')
+      billingPath = resolve(parsed.value)
       index = parsed.next
     } else if (arg === '--break-glass') {
       breakGlass = true
@@ -1415,6 +1463,30 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   if (providers && !accounts) {
     throw new Error('--providers needs --accounts')
   }
+  // The public edition (P35) is a build, not a flag: a public build has no
+  // way back, and the default edition has no billing at all.
+  if (edition !== 'public' && billingPath !== undefined)
+    throw new Error(
+      '--billing is only for the public edition (a public build, or QIANMO_EDITION=public)',
+    )
+  if (edition === 'public') {
+    const given: Record<(typeof PUBLIC_EDITION_NEEDS)[number], boolean> = {
+      '--accounts': accounts,
+      '--tenancy': tenancyPath !== undefined,
+      '--open-registration': openRegistration,
+      '--providers': providers,
+      '--magpie': magpie,
+    }
+    const missing = PUBLIC_EDITION_NEEDS.filter(flag => !given[flag])
+    if (missing.length > 0)
+      throw new Error(
+        `the public edition needs ${PUBLIC_EDITION_NEEDS.join(', ')} (missing ${missing.join(', ')})`,
+      )
+    // Everyone is a person here: the shared view token stays off.
+    if (legacyViewTokenGiven && legacyViewToken)
+      throw new Error('the public edition keeps --legacy-view-token off')
+    legacyViewToken = false
+  }
   // 每台 ssh 节点一把专用 key（§2.5：与隧道、镜像那把不是同一把）。漏给一把，
   // 那台节点就只能拿用户 ssh 配置里的随便哪把去连，而那正是 `-F /dev/null` 要挡的。
   for (const node of providerSsh.keys()) {
@@ -1540,6 +1612,13 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     ...(channels ? { channels: true } : {}),
     ...(updates ? { updates: true } : {}),
     ...(extensions ? { extensions: true } : {}),
+    ...(magpie ? { magpie: true } : {}),
+    ...(edition === 'public'
+      ? {
+          edition: 'public' as const,
+          billingPath: billingPath ?? consoleBillingPath(),
+        }
+      : {}),
     nodeServers,
     serverNotesPath,
     ...(replicateRoot === undefined ? {} : { replicateRoot }),
@@ -1745,6 +1824,33 @@ Options (each accepts both --name value and --name=value):
                            Needs --control.
                            State: <config root>/qianmo/console/extensions/.
                            Unevaluated against real servers and plugins.
+  --magpie                The platform magpie model gateway on the 网关 page:
+                           this hub drives magpie's management API and issues
+                           one gateway key per node, delivered as a model
+                           profile. Model traffic goes from nodes straight to
+                           the gateway, never through this hub. Requires
+                           --providers. State: <config root>/qianmo/console/
+                           magpie.json. Smoke-tested against magpie 0.1.1278
+                           (HTTP and TLS) with hub, gateway and node on one
+                           machine; not across machines.
+  --billing <abs path>    Public edition only (a public build, or
+                           QIANMO_EDITION=public): the billing config with the
+                           plans (hosted nodes per plan; model quota is not
+                           sold), WeChat Pay and Alipay, redeem codes and the
+                           source link, which every public page gives as
+                           <sourceUrl>/tree/<build commit>. Default <config
+                           root>/qianmo/console/billing.json. The public
+                           edition refuses to start without --accounts,
+                           --tenancy, --open-registration, --providers,
+                           --magpie and a config that loads, and from a build
+                           that is -dirty or unknown (or a source run with
+                           uncommitted changes); it keeps --legacy-view-token
+                           off. QR orders go to WeChat Pay and Alipay only
+                           with "live": true in the config (default false);
+                           turn it on once every legal prerequisite in
+                           public-edition.md §0 is met. Ledger:
+                           <config root>/qianmo/console/billing.sqlite.
+                           Both payment channels tested against fakes only.
   --node-server <node>=<server>
                            Which machine a node runs on. Repeatable, one node
                            per flag, and a node may not be named twice. The

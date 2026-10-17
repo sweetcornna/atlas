@@ -502,6 +502,7 @@ const CORE_KEYS = [
   'compat',
   'effortLock',
   'keySelection',
+  'laneAddresses',
 ] as const
 
 const MAX_MODELS = 32
@@ -647,6 +648,27 @@ function parseCore(
       ? 'fill_first'
       : oneOf(raw.keySelection, KEY_SELECTIONS, at('keySelection'))
 
+  let laneAddresses: Partial<Record<Lane, string>> | undefined
+  if (raw.laneAddresses !== undefined) {
+    const entries = Object.entries(
+      record(raw.laneAddresses, at('laneAddresses')),
+    )
+    if (entries.length === 0)
+      refuse('bad-value', at('laneAddresses'), '不能是空对象')
+    laneAddresses = {}
+    for (const [name, entry] of entries) {
+      const where = at(`laneAddresses.${name}`)
+      const extra = oneOf(name, LANES, where)
+      if (LANE_KINDS[extra] !== 'chat' || LANE_KINDS[lane] !== 'chat')
+        refuse('bad-value', where, '只有对话线路能另给地址')
+      if (extra === lane) refuse('bad-value', where, '主线路的地址是 baseUrl')
+      const url = text(entry, where, { max: 512 })
+      const problem = checkBaseUrl(url)
+      if (problem !== null) refuse('bad-value', where, problem)
+      laneAddresses[extra] = url
+    }
+  }
+
   return {
     id: raw.id,
     revision: integer(raw.revision, at('revision'), {
@@ -660,6 +682,7 @@ function parseCore(
     compat,
     effortLock,
     keySelection,
+    ...(laneAddresses === undefined ? {} : { laneAddresses }),
   }
 }
 

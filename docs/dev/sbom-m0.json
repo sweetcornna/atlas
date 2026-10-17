@@ -44,7 +44,7 @@
       },
       {
         "name": "qianmo:lockfileSha256",
-        "value": "5ad18602f28027122625e8bf72c63aad430d271b8582143fba74e756a49f8de6"
+        "value": "eee8a6f3ee34aaac02d756e9b77864c0b3c358265d474c210e19a7c34477a310"
       },
       {
         "name": "qianmo:deterministic",
@@ -8710,6 +8710,35 @@
     },
     {
       "type": "application",
+      "bom-ref": "pkg:npm/%40qianmo/billing@0.0.0",
+      "name": "@qianmo/billing",
+      "version": "0.0.0",
+      "scope": "required",
+      "purl": "pkg:npm/%40qianmo/billing@0.0.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "AGPL-3.0-or-later"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "network-copyleft"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "workspace"
+        }
+      ]
+    },
+    {
+      "type": "application",
       "bom-ref": "pkg:npm/%40qianmo/capability@0.0.0",
       "name": "@qianmo/capability",
       "version": "0.0.0",
@@ -8889,6 +8918,35 @@
       "version": "0.0.0",
       "scope": "required",
       "purl": "pkg:npm/%40qianmo/handoff@0.0.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "AGPL-3.0-or-later"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "network-copyleft"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "workspace"
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "bom-ref": "pkg:npm/%40qianmo/magpie@0.0.0",
+      "name": "@qianmo/magpie",
+      "version": "0.0.0",
+      "scope": "required",
+      "purl": "pkg:npm/%40qianmo/magpie@0.0.0",
       "licenses": [
         {
           "license": {

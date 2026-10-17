@@ -266,6 +266,7 @@ export function parseNodeState(
       chatEffortHonorsOverride: caps.chatEffortHonorsOverride === true,
       replayFilter: caps.replayFilter === true,
       multiKey: caps.multiKey === true,
+      laneAddresses: caps.laneAddresses === true,
     },
     lastResult,
     ...(keys === undefined ? {} : { keys }),

@@ -28,6 +28,7 @@ type GeneratedProvenance = {
   SOURCE_COMMIT?: string
   BUILD_TIME?: string
   RELEASE_VERSION?: string
+  EDITION?: string
 }
 
 let generated: GeneratedProvenance | null | undefined
@@ -79,6 +80,76 @@ export function sourceCommit(): string {
   )
 }
 
+const FULL_SHA = /^[0-9a-f]{40}$/
+
+/** Whether the checkout this module runs from has no changes to tracked files. */
+function trackedFilesClean(): boolean {
+  try {
+    const run = spawnSync(
+      'git',
+      ['status', '--porcelain', '--untracked-files=no'],
+      {
+        cwd: import.meta.dir,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 5_000,
+      },
+    )
+    return run.status === 0 && run.stdout.trim() === ''
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The commit a public deployment can name as its corresponding source (AGPL
+ * §13, public-edition.md §0): a full SHA this qm is known to run exactly, or
+ * `null`. A build's stamp and `QIANMO_SOURCE_COMMIT` are taken at their word,
+ * so `<sha>-dirty` and `unknown` publish nothing; a source run with neither
+ * counts only while its checkout has no changes to tracked files — the check
+ * `build-qm.ts` makes before it stamps a build.
+ */
+export function publishedSourceCommit(): string | null {
+  const commit = sourceCommit()
+  if (!FULL_SHA.test(commit)) return null
+  if (generatedProvenance()?.SOURCE_COMMIT || process.env.QIANMO_SOURCE_COMMIT)
+    return commit
+  return trackedFilesClean() ? commit : null
+}
+
+/**
+ * `<sourceUrl>/tree/<commit>`: the repository `sourceUrl` names, at one
+ * commit. `sourceUrl` is the repository's home, so a query or a fragment is
+ * refused rather than carried into a link that would no longer say which
+ * tree it is.
+ */
+export function sourceTreeUrl(sourceUrl: string, commit: string): string {
+  if (!FULL_SHA.test(commit))
+    throw new Error(`the source link needs a full commit, not ${commit}`)
+  const url = new URL(sourceUrl)
+  if (url.search !== '' || url.hash !== '')
+    throw new Error(
+      `sourceUrl names a repository: no query or fragment (${sourceUrl})`,
+    )
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/tree/${commit}`
+  return url.toString()
+}
+
+/**
+ * The link every public-edition page gives for its source: the configured
+ * repository at this build's commit. Throws when this build cannot name one
+ * clean commit — a public deployment then has no corresponding source it
+ * could honestly point at, and does not start (`commands/console.ts`).
+ */
+export function publicSourceUrl(sourceUrl: string): string {
+  const commit = publishedSourceCommit()
+  if (commit === null)
+    throw new Error(
+      `the source link needs a build from one clean commit, and this build is ${sourceCommit()} · build the public edition from a committed checkout`,
+    )
+  return sourceTreeUrl(sourceUrl, commit)
+}
+
 /** A release build's tag version, else the `@qianmo/node` package version. */
 export function buildVersion(): string {
   return generatedProvenance()?.RELEASE_VERSION || pkg.version
@@ -87,6 +158,20 @@ export function buildVersion(): string {
 /** The oh-my-pi version qm runs as its agent. */
 export function ompVersion(): string {
   return OMP_VERSION
+}
+
+/** Deployment editions: the self-hosted default and the subscription-only public edition (public-edition.md §0). */
+export type Edition = 'default' | 'public'
+
+/**
+ * The edition this qm runs as. A public build (`build-qm.ts --edition public`)
+ * stamps `EDITION='public'` and cannot be switched back; any other build or a
+ * source run is `default` unless `QIANMO_EDITION=public` opts in (tests,
+ * operators trying the public console from source).
+ */
+export function buildEdition(): Edition {
+  if (generatedProvenance()?.EDITION === 'public') return 'public'
+  return process.env.QIANMO_EDITION === 'public' ? 'public' : 'default'
 }
 
 /** ISO-8601 timestamp of the compiled build, or `undefined` in a source run. */

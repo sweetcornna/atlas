@@ -19,6 +19,7 @@ import { accountsHarness, asSession, person } from './accountsHarness.js'
 import {
   FakeChannels,
   FakeExtensions,
+  FakeMagpie,
   FakeUpdates,
   FakeConnectors,
   FakeDesktop,
@@ -26,6 +27,7 @@ import {
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
+import { FakeBilling } from './billingFake.js'
 import {
   ADMIN,
   NOW,
@@ -94,6 +96,8 @@ function harness() {
       channels: new FakeChannels(() => NOW),
       updates: new FakeUpdates(() => NOW),
       extensions: new FakeExtensions(),
+      magpie: new FakeMagpie(),
+      billing: new FakeBilling(() => NOW),
       handoffDevices: new FakeHandoffDevices(() => NOW),
       desktop: new FakeDesktop(() => NOW),
       files: new FakeFiles(() => NOW),
