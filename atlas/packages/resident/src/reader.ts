@@ -16,7 +16,10 @@ import type {
 } from './contracts.js'
 import { MAX_ADMISSION_RECOVERIES } from './ledger.js'
 import { readCountsByIdentity } from './mailbox-identity.js'
-import { NodeTurnGate } from './turn-gate.js'
+import { NodeTurnGate, type NodeTurnRequest } from './turn-gate.js'
+
+/** See {@link ResidentMailboxReaderOptions.reentryOf}. */
+export type ResidentTurnReentry = Pick<NodeTurnRequest, 'key' | 'chain'>
 import type { ResidentTimingRecorder } from './timings.js'
 
 export interface ResidentMailboxReaderOptions {
@@ -93,6 +96,15 @@ export interface ResidentMailboxReaderOptions {
   readonly backgroundOf?: (
     messages: readonly ResidentMailboxMessage[],
   ) => boolean
+  /**
+   * The batch's turn as the gate's call-chain re-entry sees it (P36.6,
+   * {@link NodeTurnRequest.key} and {@link NodeTurnRequest.chain}): what a
+   * later question calls it, and the verified asking turns on this node it
+   * answers. Injected for the same reason as {@link correlationId}.
+   */
+  readonly reentryOf?: (
+    messages: readonly ResidentMailboxMessage[],
+  ) => ResidentTurnReentry | undefined
   readonly timings?: ResidentTimingRecorder
   readonly gate?: NodeTurnGate
   /**
@@ -265,6 +277,7 @@ export class ResidentMailboxReader {
           ...(this.#options.backgroundOf?.(snapshot) === true
             ? { background: true }
             : {}),
+          ...this.#options.reentryOf?.(snapshot),
         },
       )
       return {
@@ -374,7 +387,7 @@ export class ResidentMailboxReader {
 
   async #submit(
     pending: PendingAdmission,
-    options: {
+    options: ResidentTurnReentry & {
       readonly deadlineAt?: number
       readonly background?: boolean
       readonly onSettled?: () => void
@@ -441,6 +454,10 @@ export class ResidentMailboxReader {
             ? {}
             : { deadlineAt: options.deadlineAt }),
           ...(options.background === true ? { background: true } : {}),
+          ...(options.key === undefined ? {} : { key: options.key }),
+          ...(options.chain === undefined || options.chain.length === 0
+            ? {}
+            : { chain: options.chain }),
         },
       )
       .catch(async error => {

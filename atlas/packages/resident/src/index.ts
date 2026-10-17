@@ -144,6 +144,7 @@ export {
   ResidentMailboxReader,
   type ResidentMailboxReaderOptions,
   type ResidentPollResult,
+  type ResidentTurnReentry,
 } from './reader.js'
 export {
   DEFAULT_RESIDENT_TIMING_CAPACITY,

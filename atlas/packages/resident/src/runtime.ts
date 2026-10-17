@@ -14,7 +14,7 @@ import type {
   ResidentTurnResult,
 } from './contracts.js'
 import { NodeTurnGate } from './turn-gate.js'
-import { ResidentMailboxReader } from './reader.js'
+import { ResidentMailboxReader, type ResidentTurnReentry } from './reader.js'
 import type { ResidentSessionResolver } from './sessions.js'
 import type { ResidentTimingRecorder } from './timings.js'
 
@@ -92,6 +92,10 @@ export class ResidentNodeRuntime {
     readonly backgroundOf?: (
       messages: readonly ResidentMailboxMessage[],
     ) => boolean
+    /** See {@link ResidentMailboxReaderOptions.reentryOf}. */
+    readonly reentryOf?: (
+      messages: readonly ResidentMailboxMessage[],
+    ) => ResidentTurnReentry | undefined
     /** Session source shared by every agent. See {@link ResidentAgentBinding}. */
     readonly sessions?: ResidentSessionResolver
     readonly timings?: ResidentTimingRecorder
@@ -184,6 +188,9 @@ export class ResidentNodeRuntime {
           ...(options.backgroundOf === undefined
             ? {}
             : { backgroundOf: options.backgroundOf }),
+          ...(options.reentryOf === undefined
+            ? {}
+            : { reentryOf: options.reentryOf }),
           ...(options.timings === undefined
             ? {}
             : { timings: options.timings }),
