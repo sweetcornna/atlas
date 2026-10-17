@@ -129,6 +129,13 @@ test('sandbox argv: read-only root, private /tmp, hidden roots before the deskto
     file => file === '/srv/work',
   )
   expect(mounts(writable)).toContain('--bind /srv/work /srv/work')
+  // A home of `/` (some service users) is not hidden: that would hide everything.
+  const rooted = desktopSandboxArgv(
+    { home, writable: [], readOnly: [], hidden: ['/'], env: {} },
+    ['x'],
+    () => true,
+  )
+  expect(mounts(rooted)).not.toContain('--tmpfs /')
   // The probe takes the same namespaces and clears the environment.
   expect(DESKTOP_BWRAP_PROBE).toEqual(
     expect.arrayContaining(['--unshare-user', '--unshare-pid', '--clearenv']),

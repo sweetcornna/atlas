@@ -115,9 +115,15 @@ export function desktopSandboxArgv(
   exists: (file: string) => boolean = fs.existsSync,
 ): string[] {
   const base = ['/tmp', ...['/var/tmp', '/run/user'].filter(exists).map(real)]
-  const hidden = [...new Set(box.hidden.filter(exists).map(real))].sort(
-    (a, b) => a.length - b.length || a.localeCompare(b),
-  )
+  // A service user whose home is `/` must not blank the whole sandbox.
+  const hidden = [
+    ...new Set(
+      box.hidden
+        .filter(exists)
+        .map(real)
+        .filter(root => root !== path.parse(root).root),
+    ),
+  ].sort((a, b) => a.length - b.length || a.localeCompare(b))
   const covered: string[] = [...base]
   const tops: string[] = []
   for (const root of hidden)
