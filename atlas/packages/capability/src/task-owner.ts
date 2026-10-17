@@ -78,3 +78,21 @@ export function verifiedTaskOwner(
     ? payload.onBehalfOf
     : undefined
 }
+
+/**
+ * The request is a hub's background sub-agent turn (P29): `background: true`
+ * in a payload whose owner proof verifies against a controller key.
+ *
+ * The proof covers the whole payload, so the marker is the hub's word and no
+ * relay can add or strip it. An unsigned or unverifiable marker is ignored,
+ * which is also how a node older than the field reads every request.
+ */
+export function verifiedBackground(
+  message: QianmoMessage,
+  controllers: ReadonlyMap<string, string>,
+): boolean {
+  return (
+    verifiedTaskOwner(message, controllers) !== undefined &&
+    (message.payload as Record<string, unknown>).background === true
+  )
+}
