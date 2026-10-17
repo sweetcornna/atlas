@@ -22,6 +22,13 @@ import {
   dshToolCall,
   dshUsageReader,
 } from './dsh.js'
+import { GEMINI_QMO_SKILLS, geminiLaunch, geminiToolCall } from './gemini.js'
+import {
+  OPENCODE_QMO_SKILLS,
+  opencodeLaunch,
+  opencodeToolCall,
+} from './opencode.js'
+import { QWEN_QMO_SKILLS, qwenLaunch, qwenToolCall } from './qwen.js'
 
 export type {
   AcpLaunch,
@@ -141,6 +148,37 @@ const DSH: AcpRuntime = {
   toolCall: dshToolCall,
 }
 
+/** Gemini CLI over ACP (`gemini.ts`). */
+const GEMINI: AcpRuntime = {
+  launch: geminiLaunch,
+  skillsDir: GEMINI_QMO_SKILLS,
+  // Its permission request does not name an MCP tool's server: only the
+  // bridge runs (`gemini.ts`).
+  mcpTransports: [],
+  // `session/load` (advertised) replays the conversation, after its answer
+  // (the channel waits it out); usage comes in `PromptResponse.usage`.
+  toolCall: geminiToolCall,
+}
+
+/** Qwen Code over ACP (`qwen.ts`). */
+const QWEN: AcpRuntime = {
+  launch: qwenLaunch,
+  skillsDir: QWEN_QMO_SKILLS,
+  mcpTransports: ['stdio', 'http', 'sse'],
+  // Advertises `session/resume`; usage only as `usage_update` estimates.
+  toolCall: qwenToolCall,
+}
+
+/** opencode over ACP (`opencode.ts`). */
+const OPENCODE: AcpRuntime = {
+  launch: opencodeLaunch,
+  skillsDir: OPENCODE_QMO_SKILLS,
+  mcpTransports: ['stdio', 'http', 'sse'],
+  // Its `PromptResponse.usage` is the last model call's, not the turn's.
+  promptUsage: false,
+  toolCall: opencodeToolCall,
+}
+
 /**
  * The catalog. ACP entries beyond `dsh` are added by P36.2 from the survey
  * (`harness-backends.md` §1.3); only harnesses whose official release serves
@@ -203,6 +241,59 @@ export const RUNTIME_CATALOG: readonly RuntimeSpec[] = [
     default: false,
     lanes: ['openai-responses'],
     family: FAMILIES.gpt,
+    verified: true,
+  },
+  {
+    id: 'gemini',
+    label: 'Gemini CLI',
+    protocol: 'acp',
+    install: {
+      kind: 'npm',
+      package: '@google/gemini-cli',
+      command: 'gemini',
+      pin: '0.64.0',
+      needsNode: '>=20',
+    },
+    default: false,
+    lanes: ['gemini'],
+    family: FAMILIES.gemini,
+    acp: GEMINI,
+    // `realAcpHarnesses.smoke.test.ts` on 0.64.0 (macOS arm64, 2026-10-17).
+    verified: true,
+  },
+  {
+    id: 'qwen',
+    label: 'Qwen Code',
+    protocol: 'acp',
+    install: {
+      kind: 'npm',
+      package: '@qwen-code/qwen-code',
+      command: 'qwen',
+      pin: '0.25.2',
+      needsNode: '>=22',
+    },
+    default: false,
+    lanes: ['openai-chat'],
+    family: FAMILIES.qwen,
+    acp: QWEN,
+    // `realAcpHarnesses.smoke.test.ts` on 0.25.2 (macOS arm64, 2026-10-17).
+    verified: true,
+  },
+  {
+    id: 'opencode',
+    label: 'opencode',
+    protocol: 'acp',
+    install: {
+      kind: 'npm',
+      package: 'opencode-ai',
+      command: 'opencode',
+      pin: '1.19.3',
+    },
+    default: false,
+    lanes: ['openai-chat', 'anthropic'],
+    family: null,
+    acp: OPENCODE,
+    // `realAcpHarnesses.smoke.test.ts` on 1.19.3 (macOS arm64, 2026-10-17).
     verified: true,
   },
 ]
