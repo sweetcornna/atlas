@@ -320,7 +320,7 @@ const MAX_PLANNED_PER_OWNER = 20
 const TICK_MS = 15_000
 /** `at`: an ISO time with its zone. */
 const ZONED_TIME =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(Z|([+-])(\d{2}):(\d{2}))$/
 /** How long a finished task still answers a status question. */
 const RECENTLY_MS = 10 * 60_000
 /** Finished tasks stay in the ledger this long, and this many per owner. */
@@ -422,6 +422,40 @@ function whole(raw: unknown): number | undefined | null {
   if (typeof value === 'string' && /^\d{1,6}$/.test(value.trim()))
     return Number(value.trim())
   return null
+}
+
+/**
+ * An `at` as epoch milliseconds: undefined when it is not an ISO time with
+ * its zone, null when it names a day or time that does not exist (11-31,
+ * 24:00, an offset of 08:60). `Date.parse` moves such a day to the next one;
+ * the date and time are read back in the zone given and must be the ones
+ * written.
+ */
+function zonedTime(text: string): number | null | undefined {
+  const match = ZONED_TIME.exec(text)
+  if (match === null) return undefined
+  const parsed = Date.parse(text)
+  if (!Number.isFinite(parsed)) return null
+  const offset =
+    match[7] === 'Z'
+      ? 0
+      : (match[8] === '-' ? -1 : 1) *
+        (Number(match[9]) * 60 + Number(match[10]))
+  const local = new Date(parsed + offset * 60_000)
+  const written = [match[1], match[2], match[3], match[4], match[5], match[6]]
+  const read = [
+    local.getUTCFullYear(),
+    local.getUTCMonth() + 1,
+    local.getUTCDate(),
+    local.getUTCHours(),
+    local.getUTCMinutes(),
+    local.getUTCSeconds(),
+  ]
+  return written.every(
+    (part, index) => part === undefined || Number(part) === read[index],
+  )
+    ? parsed
+    : null
 }
 
 type Plan = NonNullable<TaskRecord['plan']>
@@ -1463,9 +1497,11 @@ export class ConsoleTasks implements BackgroundTasksPort {
       first = now + after * 60_000
     } else if (at !== undefined) {
       const text = typeof at === 'string' ? at.trim() : ''
-      const parsed = ZONED_TIME.test(text) ? Date.parse(text) : Number.NaN
-      if (!Number.isFinite(parsed))
+      const parsed = zonedTime(text)
+      if (parsed === undefined)
         return 'at 要是带时区的 ISO 时间，例如 2026-10-18T09:00:00+08:00'
+      if (parsed === null)
+        return `at 的日期或时刻不存在：${text}；请核对当月天数与 00:00–23:59 的时刻`
       if (parsed <= now) return 'at 要晚于现在'
       if (parsed > now + MAX_DELAY_MINUTES * 60_000) return 'at 至多 7 天后'
       first = parsed

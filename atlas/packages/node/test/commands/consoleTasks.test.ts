@@ -1640,6 +1640,50 @@ describe('planned tasks (主动任务)', () => {
     expect(at.nextAt).toBe('2026-10-17T02:30:00.000Z')
   })
 
+  test('an at naming a day or time that does not exist is refused, not moved to the next day', async () => {
+    let now = Date.UTC(2026, 10, 28, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const start = async (at: string) => {
+      const outcome = await call(book, 'start', parent, {
+        title: 't',
+        instructions: 'i',
+        at,
+      })
+      return outcome.ok
+        ? (outcome.value as { nextAt: string }).nextAt
+        : outcome.message
+    }
+    for (const at of [
+      '2026-11-31T09:00:00+08:00',
+      '2026-11-29T24:00:00+08:00',
+      '2026-11-29T25:00+08:00',
+      '2026-11-29T09:00:60Z',
+      '2026-11-29T09:00:00+08:60',
+    ])
+      expect(await start(at)).toBe(
+        `at 的日期或时刻不存在：${at}；请核对当月天数与 00:00–23:59 的时刻`,
+      )
+    // The day and time are read in the zone given, wherever that falls in UTC.
+    expect(await start('2026-11-29T00:30:00+08:00')).toBe(
+      '2026-11-28T16:30:00.000Z',
+    )
+    expect(await start('2026-11-28T23:30:00-05:00')).toBe(
+      '2026-11-29T04:30:00.000Z',
+    )
+    expect(await start('2026-11-28T09:00:00.5Z')).toBe(
+      '2026-11-28T09:00:00.500Z',
+    )
+    now = Date.UTC(2026, 1, 27, 1, 0)
+    expect(await start('2026-02-30T09:00+08:00')).toBe(
+      'at 的日期或时刻不存在：2026-02-30T09:00+08:00；请核对当月天数与 00:00–23:59 的时刻',
+    )
+    now = Date.UTC(2028, 1, 27, 1, 0)
+    expect(await start('2028-02-29T09:00+08:00')).toBe(
+      '2028-02-29T01:00:00.000Z',
+    )
+  })
+
   test('a repeat runs in the same sub-session and goes back to scheduled until its times are used; times a run outlasted are skipped', async () => {
     let now = Date.UTC(2026, 9, 17, 1, 0)
     const anchor = now
