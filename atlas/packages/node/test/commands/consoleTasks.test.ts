@@ -401,9 +401,57 @@ describe('the worker loop', () => {
     }
     await until(() => finished.length === 1)
     expect(finished[0]!.text).toContain(
-      '连续 5 轮没有用 qianmo_task_report 汇报进展',
+      '连续 5 轮没有用 qianmo_task_report 汇报新的进展',
     )
     expect(chat.sentTo(worker)).toHaveLength(5)
+  })
+
+  test('a worker that reports the same words every turn is paused like a quiet one', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    value(await call(book, 'start', parent, { title: 't', instructions: 'x' }))
+    const worker = await workerTurn(1)
+    for (let n = 1; n <= 6; n++) {
+      await until(() => chat.sentTo(worker).length === n || finished.length > 0)
+      if (finished.length > 0) break
+      value(
+        await call(book, 'report', worker, {
+          summary: '继续核实中',
+          state: 'working',
+        }),
+      )
+      chat.reply(worker, `第 ${n} 轮`)
+    }
+    await until(() => finished.length === 1)
+    expect(finished[0]!.text).toContain('汇报新的进展')
+    // The first report is progress; five more turns of the same are not.
+    expect(chat.sentTo(worker)).toHaveLength(6)
+  })
+
+  test('a report says how many new instructions wait to be read', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: 't', instructions: 'x' }),
+    )
+    const worker = await workerTurn(1)
+    const report = () =>
+      call(book, 'report', worker, { summary: '一', state: 'working' })
+    expect(value<object>(await report())).toEqual({
+      state: 'working',
+      newUpdates: 0,
+    })
+    value(await call(book, 'send', parent, { id, message: '换成表格' }))
+    value(await call(book, 'send', parent, { id, message: '加上图' }))
+    expect(value<object>(await report())).toEqual({
+      state: 'working',
+      newUpdates: 2,
+    })
+    value(await call(book, 'updates', worker))
+    expect(value<object>(await report())).toEqual({
+      state: 'working',
+      newUpdates: 0,
+    })
   })
 
   test('failed turns are retried with backoff and the error kept as a checkpoint note', async () => {

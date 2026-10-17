@@ -756,8 +756,9 @@ export class ConsoleTasks {
         ? { ...one, consumedAt: at }
         : one,
     )
+    const progress = clip(summary, 8_000)
     this.#patch(task.id, {
-      progress: clip(summary, 8_000),
+      progress,
       lastError: '',
       status:
         state === 'working'
@@ -766,12 +767,17 @@ export class ConsoleTasks {
             ? 'completion_pending'
             : 'needs_input_pending',
       requestedState: state === 'working' ? '' : state,
-      quietTurns: 0,
+      // The same words again are no progress: the quiet count goes on.
+      quietTurns: progress === task.progress ? task.quietTurns : 0,
       ...(state === 'working'
         ? {}
         : { result: clip(summary, 8_000), notification: 'none' as const }),
     })
-    return ok({ state })
+    // Spares the worker a qianmo_task_updates call that would find nothing.
+    const newUpdates = this.#unread(task).filter(
+      one => one.id > task.readUpdateId,
+    ).length
+    return ok({ state, newUpdates })
   }
 
   #readUpdates(task: TaskRecord): ControlOutcome {
@@ -1116,7 +1122,7 @@ export class ConsoleTasks {
           this.#patch(id, {
             status: 'needs_input',
             quietTurns: 0,
-            result: `子任务连续 ${MAX_QUIET_TURNS} 轮没有用 qianmo_task_report 汇报进展，已暂停。可以追加指示让它继续。`,
+            result: `子任务连续 ${MAX_QUIET_TURNS} 轮没有用 qianmo_task_report 汇报新的进展，已暂停。可以追加指示让它继续。`,
             notification: 'pending',
           })
           break
