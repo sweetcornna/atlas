@@ -2011,7 +2011,8 @@ describe('keeping the main session free', () => {
     if (!opened.ok) throw new Error('open')
     const parent = opened.value.id
     expect(await line(web, parent, '查一下日志')).toBeUndefined()
-    // Worked for two and a half minutes.
+    // The node read it at once and worked for two and a half minutes.
+    chat.patchLastLine(parent, { readMs: 0 })
     chat.reply(parent, '查完了', 'done', { at: Date.now() + 150_000 })
     expect(await line(web, parent, '还有呢')).toBe(
       '[当前会话的后台任务] 提醒：上一轮主会话用了 3 分钟，长活交给后台任务，主会话保持空闲。',
@@ -2055,18 +2056,32 @@ describe('keeping the main session free', () => {
   test('a channel takes the reminder as given; a worker or a local command gets none', async () => {
     const book = tasks()
     const parent = await foreground()
+    chat.patchLastLine(parent, { readMs: 0 })
     chat.reply(parent, '好了', 'done', { at: Date.now() + 100_000 })
     expect(await book.reminderFor(parent)).toBe(
       '提醒：上一轮主会话用了 100 秒，长活交给后台任务，主会话保持空闲。',
     )
     expect(await book.reminderFor(parent)).toBeUndefined()
     await chat.send({ sessionId: parent, text: '/compact', command: 'compact' })
+    chat.patchLastLine(parent, { readMs: 0 })
     chat.reply(parent, '已压缩', 'done', { at: Date.now() + 200_000 })
     expect(await book.reminderFor(parent)).toBeUndefined()
     await chat.send({ sessionId: parent, text: '开个任务' })
     value(await call(book, 'start', parent, { title: 't', instructions: 'i' }))
     const worker = await workerTurn(1)
+    chat.patchLastLine(worker, { readMs: 0 })
     chat.reply(worker, '阶段一', 'done', { at: Date.now() + 600_000 })
     expect(await book.reminderFor(worker)).toBeUndefined()
+  })
+
+  test('a line the node never read earns no reminder for the time it waited', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    // No ack: the chat face's own deadline ran out five minutes on.
+    chat.reply(parent, '这一轮在任务期限内没有回复。', 'failed', {
+      at: Date.now() + 315_000,
+      code: 'E_TASK_TIMEOUT',
+    })
+    expect(await book.reminderFor(parent)).toBeUndefined()
   })
 })

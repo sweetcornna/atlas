@@ -475,7 +475,11 @@ const LONG_TURN_STEPS = 10
 interface FinishedTurn {
   readonly taskId: string
   readonly compacted: boolean
-  /** From when the node took the line (its queue is not this turn's work) to the answer. */
+  /**
+   * From when the node took the line (its queue is not this turn's work) to
+   * the answer; 0 when the node never acknowledged it (the dial failed, or
+   * the chat face's own deadline ran out): that wait was not work done here.
+   */
   readonly ms: number
   /** Tool calls the node reported starting (`noticeSource: 'step'`). */
   readonly steps: number
@@ -498,12 +502,14 @@ function lastTurn(turns: readonly ChatTurn[]): FinishedTurn | undefined {
     const asked = turns.find(
       one => one.author === 'operator' && one.taskId === taskId,
     )
-    const started =
-      asked === undefined ? turn.at : asked.at + (asked.readMs ?? 0)
+    const read = asked?.readMs
     return {
       taskId,
       compacted: turn.compacted === true,
-      ms: Math.max(0, turn.at - started),
+      ms:
+        asked === undefined || read === undefined
+          ? 0
+          : Math.max(0, turn.at - (asked.at + read)),
       steps: turns.filter(
         one =>
           one.variant === 'notice' &&
