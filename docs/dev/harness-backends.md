@@ -262,7 +262,19 @@
 | Qwen Code | 该智能体自己的系统设置文件（`QWEN_CODE_SYSTEM_SETTINGS_PATH`：`disableAllHooks`、`permissions.ask`、项目技能关闭）+ `--approval-mode default` + `--allowed-mcp-server-names` | 项目 `QWEN.md` / `AGENTS.md` 仍会加载，状态里写明 |
 | opencode | `OPENCODE_CONFIG_CONTENT`（每个代理的权限全部征询）+ `OPENCODE_PERMISSION` + `OPENCODE_DISABLE_PROJECT_CONFIG=1` + `OPENCODE_DISABLE_EXTERNAL_SKILLS=1` + `--pure` + 独立 `HOME` + 访问口令与显式端口 | 原生插件能在配置钩子里改掉权限、自带的工具从不征询，所以常驻运行时用 `--pure`：插件装得上、在前端里可用，常驻智能体不加载，控制台写明「常驻运行时不加载 opencode 插件」 |
 
-另：所有底层都用该智能体自己的 `HOME`（opencode、Gemini、Qwen 现在会读到节点账号的 `~/.claude/skills` 一类目录）。
+另：Gemini、Qwen、opencode 用该智能体自己的 `HOME`（否则会读到节点账号的 `~/.claude/skills` 一类目录）；Claude Code、Codex、dsh 由各自的状态目录变量隔离。
+
+**实现口径**（P36.7）：
+
+- 常驻子进程、`qm runtime open` 与原生命令三处共用 `runtimeEnv(底层, 智能体)` 一份环境构造，用例逐个底层核对三处一致。
+- 原生 MCP 工具（`mcp__qianmo__*` 之外）一律经节点裁决，节点没有审批通道时拒绝；连接器以 `qm-` 前缀交给底层（Codex 给模型看到的是 `mcp__qm_<名>`），节点按 P32 的放行或询问裁决。
+- Codex 的 P32 扩展改用它自己的插件市场命令装在该智能体的状态目录里，不再整份替换 `config.toml` 与 `plugins/`；迁移只删节点以前写过的东西。Codex 的受信泄漏只在工作区有 `.codex/` 目录时出现，钉住层之后实测不再写入受信（`runtimeNative` 与真 Codex 冒烟）。
+- 真 Claude Code 冒烟：`claude mcp add` 装的服务在常驻运行里可见、调用前先问运维，原生配置里的钩子不触发。
+- 官方前端与常驻之间的锁是配置根下的文件（两个进程互相看不到内存）：常驻进程写一份不含秘密的名册，进程池每秒检查一次，被前端占着的智能体放掉空闲子进程。前端开着时 `runtime.ext.list` 照常答（附一句说明），安装与卸载回 `E_RUNTIME_EXT_LOCKED`。
+- 前端不挂连接器（连接器的秘密留在常驻进程）；opencode 的前端不加 `--pure`，插件在前端里可用。
+- dsh 没有 MCP 命令行，dsh 上的原生 MCP 操作答「不支持」；opencode 的卸载靠改它的配置文件，配置里有注释时拒绝。
+- Gemini、Qwen 的 `mcp add` 把 `--` 放在服务命令之后（`名 命令 -- 参数`），Codex、opencode 放在命令之前；放行名单为空时传占位名 `qmo-none`，不省略这个参数（省略就是全部放行）。
+- 未实测：`qm runtime open` 从名册、凭据到终端前端的整条路径（各部分与 dsh 网页前端单独跑过）；Qwen 网页前端的令牌登录；同一智能体常驻子进程在跑时执行原生操作。
 
 ## §8 证据
 
