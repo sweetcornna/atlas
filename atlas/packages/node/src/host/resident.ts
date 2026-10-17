@@ -2439,12 +2439,13 @@ export class QianmoResident {
   }
 
   /** The answer to a background turn this node stopped at its deadline. */
-  #deadlineResult(task: ActiveResidentTask): QianmoMessage {
+  #deadlineResult(task: ActiveResidentTask, compacted?: true): QianmoMessage {
     return createTaskResult(task.envelope, task.envelope.to, {
       outcome: 'failed',
       code: ProtocolErrorCode.E_TASK_TIMEOUT,
       reason:
         'background turn reached its task deadline and was stopped; work done so far is kept',
+      ...(compacted === undefined ? {} : { compacted }),
     })
   }
 
@@ -2474,7 +2475,7 @@ export class QianmoResident {
     await this.#settleTask(
       task,
       task.stoppedAtDeadline === true && result.outcome === 'failed'
-        ? this.#deadlineResult(task)
+        ? this.#deadlineResult(task, result.compacted)
         : createTaskResult(task.envelope, task.envelope.to, result),
     )
   }

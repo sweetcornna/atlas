@@ -180,12 +180,23 @@ export interface ResidentTurnInput {
   readonly agent?: string
 }
 
+/**
+ * How a turn ended. `compacted` is set when the runtime said it compacted the
+ * agent's context during the turn; it travels on `task.result` to a requester
+ * that asked for it (`reportCompaction`), and is absent when the runtime did
+ * not say.
+ */
 export type ResidentTurnResult =
-  | { readonly outcome: 'completed'; readonly content: string }
+  | {
+      readonly outcome: 'completed'
+      readonly content: string
+      readonly compacted?: true
+    }
   | {
       readonly outcome: 'failed'
       readonly code: ProtocolErrorCode
       readonly reason: string
+      readonly compacted?: true
     }
 
 export interface ResidentTurnPort {
