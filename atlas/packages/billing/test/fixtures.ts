@@ -4,7 +4,8 @@
 /**
  * Test doubles: in-test RSA keys, secret files, and local Bun.serve fakes of
  * the WeChat Pay v3 and Alipay gateways. Nothing here touches the network
- * beyond 127.0.0.1.
+ * beyond 127.0.0.1. Merchant numbers, ids and message fields are made up
+ * here; none is copied from a provider's documentation examples.
  */
 
 import {
@@ -60,10 +61,10 @@ export function makeKeys(): Keys {
   }
 }
 
-export const MCHID = '1900007291'
-export const APPID = 'wxd678efh567hg6787'
-export const SERIAL = '408B07E79B8269FEC3D5D3E6AB8ED163A6A380DB'
-export const PUB_KEY_ID = 'PUB_KEY_ID_0119000072912024'
+export const MCHID = '1600000001'
+export const APPID = 'wx00000000qianmo01'
+export const SERIAL = '0A1B2C3D4E5F60718293A4B5C6D7E8F901234567'
+export const PUB_KEY_ID = 'PUB_KEY_ID_0116000000012026'
 export const ALIPAY_APP_ID = '2021000122671080'
 /** The merchant's Alipay user id (`seller_id`), made up for the tests. */
 export const ALIPAY_SELLER_ID = '2088000000000001'
@@ -212,7 +213,7 @@ export function wechatNotify(
     trade_state_desc: '支付成功',
     bank_type: 'OTHERS',
     success_time: '2026-10-16T12:00:00+08:00',
-    payer: { openid: 'oUpF8uMuAJO_M2pxb1Q9zNjWeS6o' },
+    payer: { openid: 'o-qianmo-test-openid-0001' },
     amount: {
       total: transaction.total,
       payer_total: transaction.total,
@@ -233,7 +234,7 @@ export function wechatNotify(
     cipher.getAuthTag(),
   ]).toString('base64')
   const rawBody = JSON.stringify({
-    id: 'EV-2018022511223320873',
+    id: 'EV-qianmo-test-0001',
     create_time: '2026-10-16T12:00:01+08:00',
     resource_type: 'encrypt-resource',
     event_type: 'TRANSACTION.SUCCESS',
