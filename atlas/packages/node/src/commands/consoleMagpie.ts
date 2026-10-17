@@ -732,6 +732,7 @@ export class ConsoleMagpie implements MagpiePort {
   #tenantPresent(
     tenant: string,
     read: MagpieRead,
+    except?: string,
   ): readonly {
     readonly upstream: TenantUpstreamRecord
     readonly provider: MagpieProvider
@@ -739,6 +740,7 @@ export class ConsoleMagpie implements MagpiePort {
     const record = this.#tenantRecord(tenant)
     if (record === undefined) return []
     return record.upstreams.flatMap(upstream => {
+      if (upstream.id === except) return []
       const provider = read.providers.find(
         one =>
           one.id === upstream.id &&
@@ -749,19 +751,26 @@ export class ConsoleMagpie implements MagpiePort {
     })
   }
 
-  /** A subscriber key's list: its own upstreams, else nothing; never empty. */
-  #tenantPatterns(tenant: string, read: MagpieRead): readonly string[] {
-    const present = this.#tenantPresent(tenant, read)
+  /**
+   * A subscriber key's list: its own upstreams (but `except`, one on its way
+   * out), else nothing; never empty.
+   */
+  #tenantPatterns(
+    tenant: string,
+    read: MagpieRead,
+    except?: string,
+  ): readonly string[] {
+    const present = this.#tenantPresent(tenant, read, except)
     return present.length === 0
       ? [NO_MODEL_PATTERN]
       : present.map(({ upstream }) => `${upstream.id}/*`)
   }
 
-  /** On only while paid up and with an upstream of its own. */
-  #tenantEnabled(tenant: string, read: MagpieRead): boolean {
+  /** On only while paid up and with an upstream of its own (but `except`). */
+  #tenantEnabled(tenant: string, read: MagpieRead, except?: string): boolean {
     return (
       this.#tenantRecord(tenant)?.entitled === true &&
-      this.#tenantPresent(tenant, read).length > 0
+      this.#tenantPresent(tenant, read, except).length > 0
     )
   }
 
@@ -2248,7 +2257,10 @@ export class ConsoleMagpie implements MagpiePort {
   /**
    * Remove one of the subscriber's upstreams: off its key first (off
    * altogether when it was the last), then out of magpie — only if the
-   * provider there is still the one we made.
+   * provider there is still the one we made — and only then out of our
+   * records. A step that fails leaves the upstream recorded, so asking again
+   * finishes the job; nothing is forgotten while magpie still holds the
+   * subscriber's key for it.
    */
   removeTenantUpstream(tenant: string, id: string): Promise<Result<void>> {
     return this.#serial(async () => {
@@ -2260,20 +2272,42 @@ export class ConsoleMagpie implements MagpiePort {
         return failed('not_found', '没有这个上游')
       const client = this.#client()
       if (!(client instanceof MagpieClient)) return client
-      this.#saveTenant({
-        ...known,
-        upstreams: known.upstreams.filter(one => one.id !== id),
-      })
       try {
         const read = await this.#read(client)
-        await this.#reconcile(client, read)
+        const record = this.#record({ kind: 'tenant', id: tenant })
+        const key =
+          record === undefined
+            ? undefined
+            : (await client.listKeys()).find(one => one.id === record.keyId)
+        if (key !== undefined) {
+          // Narrow only: never switched on here, and off before narrowed.
+          const target = this.#tenantPatterns(tenant, read, id)
+          if (!this.#tenantEnabled(tenant, read, id) && key.enabled)
+            await client.setKeyEnabled(key.id, false)
+          if (!sameList(key.models, target))
+            await client.setKeyModels(key.id, target)
+        }
         const live = read.providers.find(one => one.id === id)
         if (live !== undefined && live.name === upstream.name)
           await client.deleteProvider(id)
-        return ok(undefined)
       } catch (error) {
         return fromMagpie(error)
       }
+      const now = this.#tenantRecord(tenant) ?? known
+      this.#saveTenant({
+        ...now,
+        upstreams: now.upstreams.filter(one => one.id !== id),
+      })
+      try {
+        await this.#reconcile(client)
+      } catch (error) {
+        // Removed from magpie and from our records; the next check finishes
+        // the rest (the profile's main model).
+        this.#options.onError?.(
+          `删除订阅者上游后核对失败 · ${messageOf(error)}`,
+        )
+      }
+      return ok(undefined)
     })
   }
 }

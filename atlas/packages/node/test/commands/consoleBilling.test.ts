@@ -988,6 +988,41 @@ describe('the plan’s node count, kept by the node sync', () => {
   })
 })
 
+describe('removing a subscriber’s upstream', () => {
+  test('one that fails half way is still the subscriber’s, and asking again finishes it', async () => {
+    const tenant = await pay(ALICE)
+    const added = await billing.addUpstream(ALICE, {
+      preset: 'openai',
+      key: 'sk-alice-own-0001',
+    })
+    if (!added.ok) throw new Error(added.failure.message)
+    const id = added.value.id
+    fake.fault({
+      target: 'management',
+      path: '/api/provider/delete',
+      times: 1,
+      status: 500,
+      body: 'down',
+    })
+    const first = await billing.removeUpstream(ALICE, id)
+    expect(first.ok).toBe(false)
+    // Not forgotten while it is still in magpie with the subscriber's key ...
+    expect(fake.provider(id)).toBeDefined()
+    const listed = await billing.me(ALICE)
+    expect(
+      listed.ok && listed.value.upstreams.map(upstream => upstream.id),
+    ).toEqual([id])
+    // ... and the key was taken off it before magpie was asked to delete it.
+    expect(tenantKey(tenant).models).toEqual([NO_MODEL_PATTERN])
+    expect(tenantKey(tenant).off).toBe(true)
+    const again = await billing.removeUpstream(ALICE, id)
+    expect(again.ok).toBe(true)
+    expect(fake.provider(id)).toBeUndefined()
+    const after = await billing.me(ALICE)
+    expect(after.ok && after.value.upstreams).toEqual([])
+  })
+})
+
 describe('a new gateway address', () => {
   test('reaches every subscriber profile, saved as the hub, and their nodes', async () => {
     const tenant = await pay(ALICE)
