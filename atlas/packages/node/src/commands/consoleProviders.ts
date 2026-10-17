@@ -255,6 +255,8 @@ export class ConsoleProviders implements ProviderPort {
   readonly #onAlarm: (line: string) => void
   readonly #cache = new Map<string, NodeCache>()
   readonly #follows = new Map<string, unknown>()
+  /** The status query on its way to each node, for a caller that must wait for it. */
+  readonly #refreshing = new Map<string, Promise<void>>()
   /** Callers this hub made for its own writes ({@link systemCaller}). */
   readonly #system = new WeakSet<ProviderCaller>()
   #routing: ((node: string) => ProviderRouted) | undefined
@@ -1771,20 +1773,46 @@ export class ConsoleProviders implements ProviderPort {
     // failed) gets the v1 floor, and a gateway profile would lose its extra
     // lanes there without a word: the node then counts as up to date while
     // Claude Code and Codex on it find no profile for their protocol. Ask the
-    // node first; still unknown, refuse rather than ship the lanes away.
+    // node first (or wait for the query already on its way, the start-up
+    // tick's); still unknown, do not ship the lanes away. A query that failed
+    // is the node out of reach; one that answered without capabilities is a
+    // refusal.
     const wantsLanes = [
       profile,
       ...extraIds.map(id => this.#book.profile(id)),
     ].some(one => one?.laneAddresses !== undefined)
-    if (
-      wantsLanes &&
-      this.#cache.get(node)?.actual?.capabilities === undefined
-    ) {
-      await this.#refresh(node, false)
-      if (this.#cache.get(node)?.actual?.capabilities === undefined)
+    const known = () =>
+      this.#cache.get(node)?.actual?.capabilities !== undefined
+    if (wantsLanes && !known()) {
+      await this.#refreshing.get(node)
+      if (!known()) await this.#refresh(node, false)
+      if (!known()) {
+        const last = this.#cache.get(node)?.lastStatus
+        if (last?.ok === false)
+          return {
+            node,
+            requestId,
+            outcome: 'failed',
+            code: 'unreachable',
+            message: `节点状态查询失败 · 另给的通道编不编得进去未知 · ${last.message ?? '没有回应'}`,
+          }
         return refuse(
           'capabilities-unknown',
           '节点还没回报能力 · 另给的通道编不编得进去未知 · 节点状态刷新后再下发',
+        )
+      }
+      // The routing was read before the node was asked: a save landing in
+      // that wait is not shipped under the older revision.
+      let again: ProviderRouted | undefined
+      try {
+        again = this.#routing?.(node)
+      } catch {
+        return refuse('routing-unavailable', '路由簿不可用 · 拒绝下发')
+      }
+      if (again?.revision !== routed?.revision)
+        return refuse(
+          'routing-conflict',
+          '任务分工在下发途中又被改过 · 刷新后再下发',
         )
     }
     const lanes = this.#capabilities(node).laneAddresses
@@ -1948,6 +1976,16 @@ export class ConsoleProviders implements ProviderPort {
 
   /** `background: false` when an operator action waits on it (a dial is waited for). */
   async #refresh(node: string, background = true): Promise<void> {
+    const running = this.#refreshNow(node, background)
+    this.#refreshing.set(node, running)
+    try {
+      await running
+    } finally {
+      if (this.#refreshing.get(node) === running) this.#refreshing.delete(node)
+    }
+  }
+
+  async #refreshNow(node: string, background: boolean): Promise<void> {
     const requestId = this.#requestId()
     const result = await this.#executor.run(
       node,

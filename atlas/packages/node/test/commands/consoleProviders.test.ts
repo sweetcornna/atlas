@@ -845,7 +845,7 @@ describe('P33: lane addresses', () => {
     expect(ops0.indexOf('status')).toBeLessThan(ops0.indexOf('apply'))
   }, 30_000)
 
-  test('capabilities still unknown: refused, nothing is applied', async () => {
+  test('the status query fails: failed and unreachable, with its reason; nothing is applied', async () => {
     const h = harness()
     const ops = h.caller()
     const node = h.nodes['beta-1']
@@ -865,8 +865,167 @@ describe('P33: lane addresses', () => {
     )
     value(await h.port.setDefault({ profileId: 'luna' }, ops))
     const [result] = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
+    expect(result?.outcome).toBe('failed')
+    expect(result?.code).toBe('unreachable')
+    const reason = value(await h.port.node('beta-1')).lastStatus?.message
+    expect(reason).toBeTruthy()
+    expect(result?.message).toContain(reason ?? '')
+    expect(received(node, 'apply')).toEqual([])
+  }, 30_000)
+
+  test('the status answers but names no capabilities: refused as capabilities-unknown', async () => {
+    const h = harness()
+    const ops = h.caller()
+    const node = h.nodes['beta-1']
+    node.set(
+      'reply-status.json',
+      JSON.stringify({ v: 1, requestId: 'x', ok: true, state: { odd: true } }),
+    )
+    value(
+      await h.port.saveProfile(
+        {
+          profile: draft({
+            laneAddresses: { 'openai-chat': 'https://gw.example.test/v1' },
+          }),
+          ifMatch: null,
+          secrets: { k1: CANARY },
+        },
+        ops,
+      ),
+    )
+    value(await h.port.setDefault({ profileId: 'luna' }, ops))
+    const [result] = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
     expect(result?.outcome).toBe('refused')
     expect(result?.code).toBe('capabilities-unknown')
+    expect(value(await h.port.node('beta-1')).lastStatus?.ok).toBe(true)
+    expect(received(node, 'apply')).toEqual([])
+  }, 30_000)
+
+  test('only the profile shipped and the ones its routing names decide whether to ask', async () => {
+    const h = harness()
+    const ops = h.caller()
+    const node = h.nodes['beta-1']
+    // Another profile in the book has lanes; the one this node runs has none.
+    value(
+      await h.port.saveProfile(
+        {
+          profile: draft({
+            id: 'gw',
+            laneAddresses: { 'openai-chat': 'https://gw.example.test/v1' },
+          }),
+          ifMatch: null,
+          secrets: { k1: CANARY_2 },
+        },
+        ops,
+      ),
+    )
+    await savedWithKey(h)
+    value(await h.port.setDefault({ profileId: 'luna' }, ops))
+    expect(
+      value(await h.port.apply({ nodes: ['beta-1'] }, ops))[0]?.outcome,
+    ).toBe('ok')
+    expect(node.requests().map(request => request.op)).toEqual(['apply'])
+  }, 30_000)
+
+  test('capabilities already known: the node is not asked again before the apply', async () => {
+    const h = harness()
+    const ops = h.caller()
+    const node = h.nodes['beta-1']
+    node.set('lane-addresses', '1')
+    value(
+      await h.port.saveProfile(
+        {
+          profile: draft({
+            laneAddresses: { 'openai-chat': 'https://gw.example.test/v1' },
+          }),
+          ifMatch: null,
+          secrets: { k1: CANARY },
+        },
+        ops,
+      ),
+    )
+    value(await h.port.setDefault({ profileId: 'luna' }, ops))
+    await h.port.refreshNode('beta-1')
+    expect(
+      value(await h.port.apply({ nodes: ['beta-1'] }, ops))[0]?.outcome,
+    ).toBe('ok')
+    expect(node.requests().map(request => request.op)).toEqual([
+      'status',
+      'apply',
+    ])
+  }, 30_000)
+
+  test('a refresh already on its way (the start-up tick) is waited for, not repeated', async () => {
+    const h = harness({
+      // The start-up tick runs at once; later ticks never come.
+      scheduler: {
+        set: (run, ms) => {
+          if (ms === 0) run()
+          return null
+        },
+        clear: () => {},
+      },
+    })
+    const ops = h.caller()
+    const node = h.nodes['beta-1']
+    node.set('lane-addresses', '1')
+    node.set('delay-ms', '300')
+    const lanes = { 'openai-chat': 'https://gw.example.test/v1' }
+    value(
+      await h.port.saveProfile(
+        {
+          profile: draft({ laneAddresses: lanes }),
+          ifMatch: null,
+          secrets: { k1: CANARY },
+        },
+        ops,
+      ),
+    )
+    value(await h.port.setDefault({ profileId: 'luna' }, ops))
+    h.port.start()
+    expect(
+      value(await h.port.apply({ nodes: ['beta-1'] }, ops))[0]?.outcome,
+    ).toBe('ok')
+    h.port.stop()
+    expect(node.requests().map(request => request.op)).toEqual([
+      'status',
+      'apply',
+    ])
+    expect(received(node, 'apply').at(-1)?.laneAddresses).toEqual(lanes)
+  }, 30_000)
+
+  test('a routing saved while the node is asked is not shipped under the older revision', async () => {
+    const h = harness()
+    const ops = h.caller()
+    const node = h.nodes['beta-1']
+    node.set('lane-addresses', '1')
+    value(
+      await h.port.saveProfile(
+        {
+          profile: draft({
+            laneAddresses: { 'openai-chat': 'https://gw.example.test/v1' },
+          }),
+          ifMatch: null,
+          secrets: { k1: CANARY },
+        },
+        ops,
+      ),
+    )
+    value(await h.port.setDefault({ profileId: 'luna' }, ops))
+    // The routing book moves on as soon as the node has been asked.
+    h.port.configureRouting(() => {
+      const asked = node.requests().some(request => request.op === 'status')
+      return {
+        revision: asked ? 2 : 1,
+        routing: {
+          auto: false,
+          routes: { fast: { profileId: 'luna', modelId: 'gpt-6-luna' } },
+        },
+      }
+    })
+    const [result] = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
+    expect(result?.outcome).toBe('refused')
+    expect(result?.code).toBe('routing-conflict')
     expect(received(node, 'apply')).toEqual([])
   }, 30_000)
 })
