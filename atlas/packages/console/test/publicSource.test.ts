@@ -122,6 +122,36 @@ describe('every public-edition page carries the source link', () => {
   })
 })
 
+/** What a person reads on a page: no style, no script, no markup. */
+function readable(html: string): string {
+  return html
+    .replace(/<style>[\s\S]*?<\/style>/g, '')
+    .replace(/<script>[\s\S]*?<\/script>/g, '')
+    .replace(/<[^>]*>/g, ' ')
+}
+
+describe('the public doors keep the copy rules', () => {
+  test('login, sign-up, invitation and the credential page: no 。，、 or exclamation', async () => {
+    const f = pinned()
+    const pages: [string, Request][] = [
+      ['/login', page('/login')],
+      ['/signup', page('/signup')],
+      ['/invite', page('/invite')],
+      [
+        'POST /signup',
+        formPost('/signup', { label: '' }, { 'sec-fetch-site': 'same-origin' }),
+      ],
+    ]
+    const found: string[] = []
+    for (const [where, request] of pages) {
+      const text = readable(await (await f.handle(request)).text())
+      for (const mark of ['。', '，', '、', '！', '!'])
+        if (text.includes(mark)) found.push(`${where} ${mark}`)
+    }
+    expect(found).toEqual([])
+  })
+})
+
 describe('the default edition is unchanged', () => {
   test('its doors and its front carry no source footer', async () => {
     const h = accountsHarness({ accounts: { breakGlass: true } })

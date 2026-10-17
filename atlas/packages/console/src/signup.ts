@@ -50,7 +50,7 @@ export async function handleSignup(
   if (request.method === 'GET')
     return html(
       documentHead(`${label} · 注册账号`) +
-        `<body><main class="stage"><form class="card panel" method="post" action="/signup"><h1>注册成员账号</h1><p>${escapeHtml(label)}</p><p>注册后由环境负责人分配租户。分配前没有节点或数据访问权限。</p><label for="label">备注（可选）</label><input id="label" name="label" maxlength="40" class="input" autocomplete="off"><button class="btn btn-primary" type="submit">注册并显示个人凭据</button><p>凭据只显示一次，请立即保存。</p>${source === undefined ? '' : sourceFooter(source)}</form></main></body></html>`,
+        `<body><main class="stage"><form class="card panel" method="post" action="/signup"><h1>注册成员账号</h1><p>${escapeHtml(label)}</p><p>注册后由环境负责人分配租户 · 分配前没有节点与数据访问权限</p><label for="label">备注（可选）</label><input id="label" name="label" maxlength="40" class="input" autocomplete="off"><button class="btn btn-primary" type="submit">注册并显示个人凭据</button><p>个人凭据只显示一次 · 注册后立即保存</p>${source === undefined ? '' : sourceFooter(source)}</form></main></body></html>`,
     )
   if (request.method !== 'POST') return methodNotAllowed(['GET', 'POST'])
   const origin = request.headers.get('origin')

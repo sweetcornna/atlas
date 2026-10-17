@@ -165,7 +165,7 @@ const GATEWAY_STATE: Readonly<
   Record<string, readonly ['ok' | 'warn' | 'bad', string]>
 > = {
   keyed: ['ok', '要网关密钥'],
-  open: ['warn', '不带密钥也答'],
+  open: ['warn', '无需密钥即可调用'],
   closed: ['bad', '没有共享到网络'],
   unreachable: ['bad', '连不上'],
 }
@@ -432,7 +432,7 @@ function keyRow(key: MagpieKeyView, writer: boolean): string {
   const id = bindingKeyOf(key.binding)
   const status =
     key.present === false
-      ? state('bad', 'magpie 里已不在')
+      ? state('bad', 'magpie 中已无此密钥')
       : key.enabled === null
         ? state('muted', '未知')
         : key.enabled
