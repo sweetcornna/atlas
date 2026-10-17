@@ -55,6 +55,7 @@ export type AreaId =
   | 'im'
   | 'extensions'
   | 'magpie'
+  | 'billing'
   | 'desktop'
   | 'files'
   | 'audit'

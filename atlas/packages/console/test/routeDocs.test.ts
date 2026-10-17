@@ -42,6 +42,7 @@ import {
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
+import { FakeBilling } from './billingFake.js'
 import { PageAudit, PageRegistry, TRACE } from './pageHarness.js'
 import { FakeProviders } from './providersFake.js'
 import { MemoryNotify } from './watchFakes.js'
@@ -160,6 +161,9 @@ async function wired(): Promise<{
       updates: new FakeUpdates(() => 1_700_000_000_000),
       extensions: new FakeExtensions(),
       magpie: new FakeMagpie(),
+      // Everyone subscribed: the gate would answer every write 402 before
+      // the router, and every unknown path would look routed.
+      billing: new FakeBilling(undefined, true),
       handoffDevices: new FakeHandoffDevices(() => 1_700_000_000_000),
       desktop: new FakeDesktop(() => 1_700_000_000_000),
       files: new FakeFiles(() => 1_700_000_000_000),
@@ -244,7 +248,11 @@ function literalsOf(file: string): readonly string[] {
 /** The module's own file and the sibling route files it imports. */
 function filesOf(module: RouteModule | undefined): readonly string[] {
   if (module === undefined) {
-    return ['../src/http.ts', '../src/accountsHttp.ts']
+    return [
+      '../src/http.ts',
+      '../src/accountsHttp.ts',
+      '../src/billingDoors.ts',
+    ]
   }
   // P20's API ships before the separately owned page module.
   const own = `../src/routes/${module.area.id === 'files' && module.page === undefined ? 'filesApi' : module.area.id}.ts`
@@ -298,6 +306,8 @@ function roots(rows: readonly Row[]): readonly Root[] {
     ['assets'],
     ['v0', 'health'],
     ['v0', 'accounts'],
+    ['plans'],
+    ['subscription'],
   ]) {
     add(prefix, undefined)
   }
