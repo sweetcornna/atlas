@@ -1743,8 +1743,6 @@ export class ConsoleProviders implements ProviderPort {
     const sessions = this.#sessions(node, profile, options.sessions)
     if (!sessions.ok) return refuse('invalid', sessions.failure.message)
     const override = this.#book.contextOverride(node)
-    const lanes = this.#capabilities(node).laneAddresses
-    const wire = this.#wire(profile, secret, override, others, lanes)
     let routed: ProviderRouted | undefined
     try {
       routed = this.#routing?.(node)
@@ -1763,12 +1761,37 @@ export class ConsoleProviders implements ProviderPort {
       )
     }
     const routing = routed?.routing
+    const extraIds = [
+      ...new Set(
+        Object.values(routing?.routes ?? {}).map(ref => ref?.profileId),
+      ),
+    ].filter((id): id is string => Boolean(id) && id !== profile.id)
+    // P33: lanes are compiled only where the node says it can. A node this
+    // console has not heard from yet (it just started, or every status since
+    // failed) gets the v1 floor, and a gateway profile would lose its extra
+    // lanes there without a word: the node then counts as up to date while
+    // Claude Code and Codex on it find no profile for their protocol. Ask the
+    // node first; still unknown, refuse rather than ship the lanes away.
+    const wantsLanes = [
+      profile,
+      ...extraIds.map(id => this.#book.profile(id)),
+    ].some(one => one?.laneAddresses !== undefined)
+    if (
+      wantsLanes &&
+      this.#cache.get(node)?.actual?.capabilities === undefined
+    ) {
+      await this.#refresh(node, false)
+      if (this.#cache.get(node)?.actual?.capabilities === undefined)
+        return refuse(
+          'capabilities-unknown',
+          '节点还没回报能力 · 另给的通道编不编得进去未知 · 节点状态刷新后再下发',
+        )
+    }
+    const lanes = this.#capabilities(node).laneAddresses
+    const wire = this.#wire(profile, secret, override, others, lanes)
     const profiles: WireProfile[] = []
     const routingSecrets: string[] = []
-    for (const id of new Set(
-      Object.values(routing?.routes ?? {}).map(ref => ref?.profileId),
-    )) {
-      if (!id || id === profile.id) continue
+    for (const id of extraIds) {
       const extra = this.#book.profile(id)
       if (!extra) return refuse('routing-invalid', '路由引用的档案不存在')
       const keys = this.#keysOf(extra)
@@ -1923,13 +1946,14 @@ export class ConsoleProviders implements ProviderPort {
     })
   }
 
-  async #refresh(node: string): Promise<void> {
+  /** `background: false` when an operator action waits on it (a dial is waited for). */
+  async #refresh(node: string, background = true): Promise<void> {
     const requestId = this.#requestId()
     const result = await this.#executor.run(
       node,
       { v: 1, op: 'status', requestId, node },
       TIMEOUTS.status,
-      { background: true },
+      { background },
     )
     // No dial left in the node's window (the executor's pacing): nothing was
     // asked, so nothing is learned — the last status stands, the next refresh
