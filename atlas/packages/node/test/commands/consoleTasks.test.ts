@@ -25,6 +25,7 @@ import {
   SUPERVISOR_RULES,
   type TaskFinished,
   WORKER_INSTRUCTIONS,
+  withTaskNotes,
 } from '../../src/commands/consoleTasks.js'
 import { until } from '../channels/fakes.js'
 import { FakeChat } from './fakeChat.js'
@@ -1841,5 +1842,52 @@ describe('the coordination rules', () => {
       expect(SUPERVISOR_RULES).toContain(cue)
     // The old rule sent even one simple tool call to the background.
     expect(SUPERVISOR_RULES).not.toContain('需要工具执行')
+  })
+})
+
+describe('the task note in a console conversation', () => {
+  test('a person’s line carries the note as host context, only when it changed, and again after compaction', async () => {
+    const book = tasks()
+    const web = withTaskNotes(chat, book)
+    const opened = await web.open(MAIN)
+    if (!opened.ok) throw new Error('open')
+    const parent = opened.value.id
+    const say = async (text: string) =>
+      expect((await web.send({ sessionId: parent, text })).ok).toBe(true)
+    // No task yet: nothing to say.
+    await say('你好')
+    expect(chat.sent.at(-1)!.context).toBeUndefined()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
+    )
+    // The worker's turn is out: the note holds still until it reports.
+    const worker = await workerTurn(1)
+    await until(() => book.forSession(parent)[0]?.status === 'running')
+    chat.reply(parent, '已交给后台')
+    await say('进度？')
+    const first = chat.sent.at(-1)!
+    expect(first.text).toBe('进度？')
+    expect(first.context).toStartWith('[当前会话的后台任务] ')
+    expect(first.context).toContain(id)
+    chat.reply(parent, '还在做')
+    // Unchanged: not again.
+    await say('好')
+    expect(chat.sent.at(-1)!.context).toBeUndefined()
+    // The runtime compacted that turn: the note goes again.
+    chat.reply(parent, '好', 'done', { compacted: true })
+    await say('继续')
+    expect(chat.sent.at(-1)!.context).toContain(id)
+    chat.reply(parent, 'ok')
+    // A command, a worker's line and a schedule's session carry none.
+    const command = await web.send({
+      sessionId: parent,
+      text: '/compact',
+      command: 'compact',
+    })
+    expect(command.ok).toBe(true)
+    expect(chat.sent.at(-1)!.context).toBeUndefined()
+    expect(await book.noteFor(worker)).toBeUndefined()
+    const scheduled = tasks({ scheduled: sessionId => sessionId === parent })
+    expect(await scheduled.noteFor(parent)).toBeUndefined()
   })
 })

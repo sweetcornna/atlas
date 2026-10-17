@@ -44,6 +44,7 @@ import {
   ChatDispatch,
   type ChatPort,
   type ChatTranscript,
+  type ChatTurn,
   type ConsoleAccounts,
   type ConsoleResult,
   type DirectionActor,
@@ -455,6 +456,64 @@ function defaultDeliveryRetry(attempts: number): number {
   return Math.min(30 * 60_000, 4 ** (attempts - 1) * 60_000)
 }
 
+/** The task note a console line carries, and the mark that it went out. */
+export interface TaskNote {
+  readonly text: string
+  /** The line carrying it was accepted: later notes carry only what changed. */
+  sent(): void
+}
+
+/** A conversation's last finished turn, as far as the task note needs it. */
+function lastTurn(
+  turns: readonly ChatTurn[],
+): { readonly taskId: string; readonly compacted: boolean } | undefined {
+  for (let index = turns.length - 1; index >= 0; index--) {
+    const turn = turns[index]!
+    if (
+      turn.author === 'agent' &&
+      turn.variant !== 'notice' &&
+      turn.taskId !== undefined &&
+      (turn.state === 'done' || turn.state === 'failed')
+    )
+      return { taskId: turn.taskId, compacted: turn.compacted === true }
+  }
+  return undefined
+}
+
+/**
+ * The console's chat port with the task note put ahead of each line a
+ * person sends in a foreground conversation (`ChatSendInput.context`), the
+ * note a channel turn carries. Background, command and continuation lines go
+ * as they are.
+ */
+export function withTaskNotes(
+  chat: ChatPort,
+  tasks: Pick<ConsoleTasks, 'noteFor'>,
+): ChatPort {
+  const note = chat.note?.bind(chat)
+  return {
+    targets: () => chat.targets(),
+    sessions: () => chat.sessions(),
+    open: target => chat.open(target),
+    transcript: sessionId => chat.transcript(sessionId),
+    subscribe: listener => chat.subscribe(listener),
+    ...(note === undefined ? {} : { note }),
+    async send(input) {
+      const plain =
+        input.background === true ||
+        input.command !== undefined ||
+        input.continuation !== undefined ||
+        input.context !== undefined
+      const extra = plain ? undefined : await tasks.noteFor(input.sessionId)
+      const result = await chat.send(
+        extra === undefined ? input : { ...input, context: extra.text },
+      )
+      if (result.ok) extra?.sent()
+      return result
+    },
+  }
+}
+
 interface Caller {
   readonly transcript: ChatTranscript
   readonly owner: string
@@ -587,6 +646,8 @@ export class ConsoleTasks implements BackgroundTasksPort {
   readonly #redeliveries = new Map<string, ReturnType<typeof setTimeout>>()
   /** Looks for planned runs that are due; see {@link tick}. */
   #ticker: ReturnType<typeof setInterval> | null = null
+  /** The task note each console conversation was last given; see {@link noteFor}. */
+  readonly #noted = new Map<string, { text: string; at: number }>()
   #closed = false
 
   constructor(options: ConsoleTasksOptions) {
@@ -928,6 +989,41 @@ export class ConsoleTasks implements BackgroundTasksPort {
         ...(task.runsLeft === undefined ? {} : { runsLeft: task.runsLeft }),
       })),
     )}`
+  }
+
+  /**
+   * A conversation that may run tasks: not a worker's, not a schedule's
+   * (P24), and on a channel only the owner's private chat.
+   */
+  #foregroundSession(sessionId: string): boolean {
+    if (this.#options.scheduled?.(sessionId) === true) return false
+    if (this.#options.foreground?.(sessionId) === false) return false
+    for (const task of this.#tasks.values())
+      if (task.workerSession === sessionId) return false
+    return true
+  }
+
+  /**
+   * The task note for a console conversation's next line ({@link
+   * withTaskNotes}): {@link contextFor} since the last note that went out,
+   * nothing when that is unchanged, and the whole note again after the
+   * runtime compacted the conversation. A channel keeps its own (its turns
+   * know when they succeeded).
+   */
+  async noteFor(sessionId: string): Promise<TaskNote | undefined> {
+    if (this.#closed || !this.#foregroundSession(sessionId)) return undefined
+    const transcript = await this.#options.chat.transcript(sessionId)
+    if (!transcript.ok) return undefined
+    if (lastTurn(transcript.value.turns)?.compacted === true)
+      this.#noted.delete(sessionId)
+    const noted = this.#noted.get(sessionId)
+    const at = this.#now()
+    const text = this.contextFor(sessionId, noted?.at)
+    if (text === undefined || text === noted?.text) return undefined
+    return {
+      text,
+      sent: () => this.#noted.set(sessionId, { text, at }),
+    }
   }
 
   /**

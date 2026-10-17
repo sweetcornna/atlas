@@ -37,7 +37,7 @@ import { ConsoleConnectors } from './consoleConnectors.js'
 import { loadOutboundPolicy } from './outboundPolicy.js'
 import { ConsoleSchedules } from './consoleSchedules.js'
 import { ConsoleChannels } from './consoleChannels.js'
-import { AgentProfiles, ConsoleTasks } from './consoleTasks.js'
+import { AgentProfiles, ConsoleTasks, withTaskNotes } from './consoleTasks.js'
 import { ConsoleExtensions } from './consoleExtensions.js'
 import { ConsoleUpdates } from './consoleUpdates.js'
 import { SelfUpgrader } from '../host/selfUpgradeRunner.js'
@@ -1099,7 +1099,12 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       : { signedFrom: config.chatFrom }),
     ...(wake.legacy === undefined ? {} : { wake: wake.legacy.port }),
     ...(wake.targets === undefined ? {} : { wakeTargets: wake.targets }),
-    ...(chat.hub === undefined ? {} : { chat: chat.hub }),
+    // A person's line in a foreground conversation carries the task note.
+    ...(chat.hub === undefined
+      ? {}
+      : {
+          chat: tasks === undefined ? chat.hub : withTaskNotes(chat.hub, tasks),
+        }),
     ...(chat.hub === undefined || config.chatDefault === undefined
       ? {}
       : { chatDefault: config.chatDefault }),

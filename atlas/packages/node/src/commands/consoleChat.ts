@@ -1108,7 +1108,12 @@ export function createConsoleChatPort(
           // 出自它的控制台时据此把原文交给会话当命令跑；旧节点不认这个字段，照旧
           // 当一句话——`task.request` 的 payload 本来就不设字段表。
           payload: {
-            prompt: text,
+            // The hub's task note goes ahead of the line; the operator turn
+            // below keeps the line as typed.
+            prompt:
+              input.context === undefined || input.command !== undefined
+                ? text
+                : `${input.context}\n\n${text}`,
             ...(input.onBehalfOf === undefined
               ? {}
               : { onBehalfOf: input.onBehalfOf }),
