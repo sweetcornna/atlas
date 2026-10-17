@@ -377,6 +377,7 @@ function capabilities(
     chatEffortHonorsOverride: chat,
     replayFilter: replay,
     multiKey,
+    laneAddresses: multiKey,
   }
 }
 

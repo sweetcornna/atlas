@@ -1732,6 +1732,8 @@ export interface ProviderProfileView {
   readonly compat?: Readonly<Partial<Record<string, string>>>
   readonly effortLock?: ProviderEffortLevel | null
   readonly keySelection?: 'fill_first' | 'round_robin' | 'least_used'
+  /** P33：同一网关其他对话通道的地址（magpie 档案由「网关」页写入）。 */
+  readonly laneAddresses?: Readonly<Partial<Record<string, string>>>
   readonly auth: { readonly scheme: 'bearer' | 'x-api-key' }
   readonly keys: readonly ProviderKeyView[]
   /** 预设带来的验 key 与拉模型请求说明（§5.5），节点用。 */
@@ -1839,6 +1841,8 @@ export interface ProviderNodeActual {
     readonly chatEffortHonorsOverride: boolean
     readonly replayFilter: boolean
     readonly multiKey: boolean
+    /** P33：档案的其他线路地址编成同密钥的兄弟 provider。 */
+    readonly laneAddresses: boolean
   }
   readonly lastResult: {
     readonly requestId: string

@@ -415,6 +415,10 @@ describe('a gateway key for a node', () => {
     const profile = await providers.profile('magpie-node-beta-1')
     if (!profile.ok) throw new Error('profile')
     expect(profile.value.baseUrl).toBe(`${fake.gatewayUrl}/v1`)
+    expect(profile.value.laneAddresses).toEqual({
+      anthropic: fake.gatewayUrl,
+      'openai-responses': `${fake.gatewayUrl}/v1`,
+    })
     expect(profile.value.models[0]?.tiers).toEqual([
       'opus',
       'sonnet',

@@ -1328,6 +1328,8 @@ export class ConsoleMagpie implements MagpiePort {
   }): ProviderProfileDraft {
     const preset = presetById('magpie')
     const gateway = this.#state.gatewayUrl ?? ''
+    const address = (lane: MagpieLane) =>
+      lane === 'anthropic' ? gateway : `${gateway}/v1`
     const fast =
       record.fastModel !== null && record.fastModel !== record.mainModel
         ? record.fastModel
@@ -1349,7 +1351,14 @@ export class ConsoleMagpie implements MagpiePort {
       plan: preset?.plan ?? 'custom',
       site: null,
       lane: record.lane,
-      baseUrl: record.lane === 'anthropic' ? gateway : `${gateway}/v1`,
+      baseUrl: address(record.lane),
+      // magpie answers every lane on one port, so the one key also serves the
+      // runtimes that speak another protocol (Claude Code, Codex).
+      laneAddresses: Object.fromEntries(
+        (['anthropic', 'openai-responses', 'openai-chat'] as const)
+          .filter(lane => lane !== record.lane)
+          .map(lane => [lane, address(lane)]),
+      ),
       models:
         fast === null
           ? [

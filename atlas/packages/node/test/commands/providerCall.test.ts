@@ -18,6 +18,7 @@ const caps = {
   multiKey: true,
   chatEffortHonorsOverride: true,
   replayFilter: true,
+  laneAddresses: true,
 }
 function compile(baseUrl: string) {
   const result = compileProfile(

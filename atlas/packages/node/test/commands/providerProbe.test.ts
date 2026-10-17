@@ -52,6 +52,7 @@ const CAPABILITIES: NodeCapabilities = {
   chatEffortHonorsOverride: true,
   replayFilter: false,
   multiKey: false,
+  laneAddresses: false,
 }
 const TIMEOUT_MS = 10_000
 

@@ -14,7 +14,12 @@ import {
 import { LANE_KINDS, PRESETS } from '@qianmo/providers'
 import { compileProfile, LANE_API } from '../../src/providers/compile.js'
 import { getModelCompatCapabilities } from '../../src/providers/capabilities.js'
-import { writePrivateJson } from '../../src/providers/store.js'
+import { runtimeModelCredential } from '../../src/providers/node.js'
+import {
+  ensurePrivateDir,
+  providerPaths,
+  writePrivateJson,
+} from '../../src/providers/store.js'
 import { wireProfile, presetProfile, CANARY_KEY } from './helpers.js'
 import { isolatedRoot } from './fake.js'
 const capabilities = { protocol: 1 as const, ...getModelCompatCapabilities() }
@@ -162,6 +167,147 @@ describe('omp compiler', () => {
         fixture.dispose()
       }
     })
+  // P33: magpie answers every lane on one port; the profile's other lanes
+  // become sibling providers with the same key, so Claude Code and Codex find
+  // the protocol they speak while omp keeps the main lane.
+  test('lane addresses compile to sibling providers each runtime picks', async () => {
+    const fixture = isolatedRoot()
+    const store = new SqliteAuthCredentialStore(new Database(':memory:'))
+    try {
+      const lanes = {
+        anthropic: 'https://gateway.example.test',
+        'openai-responses': 'https://gateway.example.test/v1',
+      }
+      const profile = wireProfile(
+        {
+          id: 'magpie-node-n1',
+          lane: 'openai-chat',
+          baseUrl: 'https://gateway.example.test/v1',
+          laneAddresses: lanes,
+          auth: { scheme: 'bearer', keys: [{ id: 'gw', value: CANARY_KEY }] },
+          compat: {},
+          models: [
+            {
+              id: 'api2/gpt-6-luna',
+              role: 'main',
+              tiers: ['opus', 'sonnet', 'haiku', 'fable'],
+              capabilities: { mode: 'family' },
+              effort: { send: 'auto' },
+            },
+          ],
+        },
+        capabilities,
+      )
+      const result = compileProfile(profile, {
+        secret: CANARY_KEY,
+        capabilities,
+      })
+      if (!result.ok) throw new Error(result.error.message)
+      const { compiled } = result
+      const ids = Object.keys(compiled.models.providers)
+      expect(ids[0]).toBe(compiled.providerId)
+      expect(ids).toHaveLength(3)
+      expect(new Set(ids).size).toBe(3)
+      for (const id of ids)
+        expect(id).toMatch(/^qm-magpie-node-n1-[0-9a-f]{8}$/)
+      const byApi = Object.fromEntries(
+        Object.entries(compiled.models.providers).map(([id, p]) => [p.api, id]),
+      )
+      expect(Object.keys(byApi).sort()).toEqual([
+        'anthropic-messages',
+        'openai-completions',
+        'openai-responses',
+      ])
+      for (const p of Object.values(compiled.models.providers)) {
+        expect(p.apiKey).toBe(CANARY_KEY)
+        expect(p.models.map(m => m.id)).toEqual(['api2/gpt-6-luna'])
+      }
+      expect(
+        compiled.models.providers[byApi['anthropic-messages']!]?.baseUrl,
+      ).toBe(lanes.anthropic)
+      expect(compiled.config.modelRoles.default).toStartWith(
+        `${compiled.providerId}/`,
+      )
+      writePrivateJson(join(fixture.root, 'models.yml'), compiled.models)
+      writePrivateJson(join(fixture.root, 'config.yml'), compiled.config)
+      const settings = await Settings.loadReadOnly({
+        agentDir: fixture.root,
+        cwd: fixture.root,
+      })
+      const registry = new ModelRegistry(
+        new AuthStorage(store),
+        join(fixture.root, 'models.yml'),
+        { settings },
+      )
+      expect(registry.getError()).toBeUndefined()
+      for (const [api, id] of Object.entries(byApi))
+        expect(registry.find(id, 'api2/gpt-6-luna')?.api).toBe(api as never)
+      ensurePrivateDir(join(providerPaths.models(), '..'))
+      writePrivateJson(providerPaths.models(), compiled.models)
+      const claude = runtimeModelCredential(
+        'magpie-node-n1/api2/gpt-6-luna',
+        'claude-code',
+      )
+      expect(claude).toMatchObject({
+        model: 'api2/gpt-6-luna',
+        baseUrl: lanes.anthropic,
+        apiKey: CANARY_KEY,
+      })
+      expect(
+        runtimeModelCredential('magpie-node-n1/api2/gpt-6-luna', 'codex')
+          .baseUrl,
+      ).toBe(lanes['openai-responses'])
+    } finally {
+      store.close()
+      fixture.dispose()
+    }
+  })
+  test('lane addresses ride a single key only; without them a runtime is told the lane', () => {
+    const several = compileProfile(
+      wireProfile(
+        {
+          lane: 'openai-chat',
+          baseUrl: 'https://gateway.example.test/v1',
+          compat: {},
+          laneAddresses: { anthropic: 'https://gateway.example.test' },
+          auth: {
+            scheme: 'bearer',
+            keys: [
+              { id: 'a', value: CANARY_KEY },
+              { id: 'b', value: `${CANARY_KEY}-2` },
+            ],
+          },
+        },
+        capabilities,
+      ),
+      { secret: CANARY_KEY, capabilities },
+    )
+    expect(several.ok ? 'ok' : several.error.path).toBe('profile.laneAddresses')
+    const fixture = isolatedRoot()
+    try {
+      const single = compileProfile(
+        wireProfile(
+          {
+            id: 'plain',
+            lane: 'openai-chat',
+            baseUrl: 'https://gateway.example.test/v1',
+            compat: {},
+          },
+          capabilities,
+        ),
+        { secret: CANARY_KEY, capabilities },
+      )
+      if (!single.ok) throw new Error(single.error.message)
+      expect(Object.keys(single.compiled.models.providers)).toHaveLength(1)
+      ensurePrivateDir(join(providerPaths.models(), '..'))
+      writePrivateJson(providerPaths.models(), single.compiled.models)
+      expect(() =>
+        runtimeModelCredential('plain/vendor-model-pro', 'claude-code'),
+      ).toThrow('claude-code needs a anthropic-messages profile')
+    } finally {
+      fixture.dispose()
+    }
+  })
   test('URL changes create a different provider identity; model ids stay literal', () => {
     const a = compileProfile(wireProfile(), {
       secret: CANARY_KEY,

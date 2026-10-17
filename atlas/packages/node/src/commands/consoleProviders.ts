@@ -128,6 +128,7 @@ const FLOOR_CAPABILITIES: NodeCapabilities = {
   chatEffortHonorsOverride: false,
   replayFilter: false,
   multiKey: false,
+  laneAddresses: false,
 }
 
 /** What a compile preview puts where the key would go; never sent anywhere. */
@@ -414,7 +415,13 @@ export class ConsoleProviders implements ProviderPort {
     if (!resolved.ok) return resolved
     const override =
       input.node === undefined ? null : this.#book.contextOverride(input.node)
-    const wire = this.#wire(resolved.value.profile, PREVIEW_SECRET, override)
+    const wire = this.#wire(
+      resolved.value.profile,
+      PREVIEW_SECRET,
+      override,
+      {},
+      this.#capabilities(input.node).laneAddresses,
+    )
     const compiled = compileProfile(wire, {
       secret: PREVIEW_SECRET,
       capabilities: this.#capabilities(input.node),
@@ -1032,7 +1039,9 @@ export class ConsoleProviders implements ProviderPort {
       if (!profile.keys.some(key => key.id === keyId)) {
         return fail('invalid', `档案里没有密钥 ${keyId}`, { path: 'secrets' })
       }
-      const parsed = parseWireProfile(this.#wire(profile, value, null))
+      const parsed = parseWireProfile(
+        this.#wire(profile, value, null, {}, true),
+      )
       if (!parsed.ok) {
         // The validator's message names the rule, never the value.
         return fail('invalid', parsed.error.message, {
@@ -1512,13 +1521,16 @@ export class ConsoleProviders implements ProviderPort {
    * The wire form of a profile for one node: the D-8 override on the main
    * model. `secret` goes with the primary key; `others` (P18.18, an apply's
    * other keys by id) with theirs, in the profile's order. Without `others`
-   * only the primary travels, as it always did.
+   * only the primary travels, as it always did. `laneAddresses` (P33) go only
+   * where `lanes` says the node compiles them; elsewhere the profile is the
+   * single lane it always was.
    */
   #wire(
     profile: ProviderProfile,
     secret: string,
     contextOverride: number | null,
     others: Readonly<Record<string, string>> = {},
+    lanes = false,
   ): WireProfile {
     const key = primaryKey(profile.keys)
     return {
@@ -1544,6 +1556,9 @@ export class ConsoleProviders implements ProviderPort {
       ...(profile.keySelection === undefined
         ? {}
         : { keySelection: profile.keySelection }),
+      ...(profile.laneAddresses === undefined || !lanes
+        ? {}
+        : { laneAddresses: profile.laneAddresses }),
       auth: {
         scheme: profile.auth.scheme,
         keys: profile.keys.flatMap(each => {
@@ -1728,7 +1743,8 @@ export class ConsoleProviders implements ProviderPort {
     const sessions = this.#sessions(node, profile, options.sessions)
     if (!sessions.ok) return refuse('invalid', sessions.failure.message)
     const override = this.#book.contextOverride(node)
-    const wire = this.#wire(profile, secret, override, others)
+    const lanes = this.#capabilities(node).laneAddresses
+    const wire = this.#wire(profile, secret, override, others, lanes)
     let routed: ProviderRouted | undefined
     try {
       routed = this.#routing?.(node)
@@ -1757,7 +1773,7 @@ export class ConsoleProviders implements ProviderPort {
       if (!extra) return refuse('routing-invalid', '路由引用的档案不存在')
       const keys = this.#keysOf(extra)
       if (!keys.ok) return refuse('secret-missing', '路由档案未填写全部密钥')
-      profiles.push(this.#wire(extra, keys.secret, null, keys.others))
+      profiles.push(this.#wire(extra, keys.secret, null, keys.others, lanes))
       routingSecrets.push(keys.secret, ...Object.values(keys.others))
     }
     const request = {

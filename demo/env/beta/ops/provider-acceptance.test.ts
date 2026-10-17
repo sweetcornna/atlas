@@ -702,6 +702,7 @@ function fakeConsole(scenario: Scenario) {
           chatEffortHonorsOverride: true,
           replayFilter: true,
           multiKey: true,
+          laneAddresses: true,
         },
         lastResult: null,
         ...(n.node === 'beta-2'

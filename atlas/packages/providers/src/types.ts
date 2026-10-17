@@ -168,6 +168,13 @@ export type ProfileCore = {
   compat?: CompatEnv
   effortLock?: EffortLevel | null
   keySelection?: KeySelection
+  /**
+   * P33: the same gateway also answers these chat lanes, each at its own
+   * address (magpie: Anthropic Messages at the origin, the OpenAI lanes at
+   * `/v1`). The node writes one more provider per entry with the same key and
+   * models, so an external runtime finds the protocol it speaks.
+   */
+  laneAddresses?: Partial<Record<Lane, string>>
 }
 
 /** §3.1 — what the hub keeps (no key values anywhere). */
@@ -213,4 +220,6 @@ export type NodeCapabilities = {
    * layer (OpenAI lanes; a multi-key profile on another lane is refused).
    */
   multiKey: boolean
+  /** P33: `laneAddresses` compiles to sibling providers. */
+  laneAddresses: boolean
 }

@@ -12,6 +12,7 @@ export const V1_CAPABILITIES: NodeCapabilities = {
   chatEffortHonorsOverride: false,
   replayFilter: false,
   multiKey: false,
+  laneAddresses: false,
 }
 
 export function anthropicModel(

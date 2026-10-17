@@ -19,6 +19,7 @@ export const V1: NodeCapabilities = {
   chatEffortHonorsOverride: false,
   replayFilter: false,
   multiKey: false,
+  laneAddresses: false,
 }
 
 const CATALOG_DAY = new Date('2026-10-03T00:00:00Z')

@@ -14,7 +14,8 @@
  * `raw-<op>` (raw stdout and an exit code, for protocol violations),
  * `delay-ms`, `pending` (apply stages instead of committing), `strict-expect`
  * (apply checks `expect.ownedHash` like a real node), `multi-key` (reports
- * `capabilities.multiKey`, P18.18).
+ * `capabilities.multiKey`, P18.18), `lane-addresses` (reports
+ * `capabilities.laneAddresses`, P33).
  *
  * The fake ssh writes its argv (NUL-separated) and its stdin to files, then
  * plays sshd: with a `forced-command` file it runs that command with
@@ -99,6 +100,7 @@ function state() {
       chatEffortHonorsOverride: false,
       replayFilter: false,
       multiKey: existsSync(join(dir, 'multi-key')),
+      laneAddresses: existsSync(join(dir, 'lane-addresses')),
     },
     lastResult: null,
   }

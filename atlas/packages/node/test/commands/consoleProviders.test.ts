@@ -213,6 +213,7 @@ function compiledDefaultContext(wire: WireProfile): number | undefined {
       chatEffortHonorsOverride: false,
       replayFilter: false,
       multiKey: false,
+      laneAddresses: false,
     },
   })
   if (!compiled.ok) throw new Error(JSON.stringify(compiled.error))
@@ -781,6 +782,37 @@ function sealedPieces(h: Harness, keyId: string): string[] {
         (piece): piece is string => typeof piece === 'string',
       )
 }
+
+describe('P33: lane addresses', () => {
+  test('travel only to a node that compiles them', async () => {
+    const h = harness()
+    const ops = h.caller()
+    const lanes = { 'openai-chat': 'https://gw.example.test/v1' }
+    value(
+      await h.port.saveProfile(
+        {
+          profile: draft({ laneAddresses: lanes }),
+          ifMatch: null,
+          secrets: { k1: CANARY },
+        },
+        ops,
+      ),
+    )
+    value(await h.port.setDefault({ profileId: 'luna' }, ops))
+    const node = h.nodes['beta-1']
+    expect(
+      value(await h.port.apply({ nodes: ['beta-1'] }, ops))[0]?.outcome,
+    ).toBe('ok')
+    expect(received(node, 'apply').at(-1)?.laneAddresses).toBeUndefined()
+    node.set('lane-addresses', '1')
+    await h.port.refreshNode('beta-1')
+    expect(
+      value(await h.port.apply({ nodes: ['beta-1'], force: true }, ops))[0]
+        ?.outcome,
+    ).toBe('ok')
+    expect(received(node, 'apply').at(-1)?.laneAddresses).toEqual(lanes)
+  }, 30_000)
+})
 
 describe('P18.18: several keys', () => {
   test('an apply delivers every key, primary by priority; only to a node that rotates keys', async () => {

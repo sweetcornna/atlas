@@ -473,6 +473,32 @@ describe('keys (multi-key schema, single-key delivery)', () => {
     )
   })
 
+  test('laneAddresses name other chat lanes by checked addresses', () => {
+    const lanes = {
+      'openai-responses': 'https://api.vendor.example/v1',
+      'openai-chat': 'https://api.vendor.example/v1',
+    }
+    expect(
+      accepted(wireProfileJson({ laneAddresses: lanes })).value.laneAddresses,
+    ).toEqual(lanes)
+    expect(accepted(wireProfileJson()).value.laneAddresses).toBeUndefined()
+    for (const laneAddresses of [
+      {},
+      { anthropic: 'https://api.vendor.example' },
+      { 'openai-images': 'https://api.vendor.example/v1' },
+      { 'openai-chat': 'ftp://api.vendor.example/v1' },
+      { bogus: 'https://api.vendor.example/v1' },
+    ]) {
+      expect(refusal(wireProfileJson({ laneAddresses })).code).toBe('bad-value')
+    }
+    expect(
+      refusal(wireProfileJson({ laneAddresses: { 'openai-chat': 42 } })),
+    ).toEqual({
+      code: 'bad-request',
+      path: 'profile.laneAddresses.openai-chat',
+    })
+  })
+
   test('primaryKey: highest priority, ties keep list order', () => {
     expect(primaryKey([{ id: 'a' }, { id: 'b' }]).id).toBe('a')
     expect(
