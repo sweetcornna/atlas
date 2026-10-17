@@ -425,16 +425,23 @@ describe('background tasks', () => {
       this.cancelled.push(sessionId)
       return 1
     }
+    key: string | undefined
+    retried = 0
     onFinished(
       listener: (event: {
         parentSession: string
         text: string
       }) => Promise<boolean | undefined>,
+      key?: string,
     ) {
       this.listener = listener
+      this.key = key
       return () => {
         this.listener = null
       }
+    }
+    retryNotifications() {
+      this.retried++
     }
   }
 
@@ -448,6 +455,9 @@ describe('background tasks', () => {
       ),
     )
     const adapter = adapters[0]!.adapter
+    // Results that could not reach a chat go out once its channel is up.
+    expect(fake.key).toBe('channels')
+    await until(() => fake.retried === 1)
     adapter.sink!(inbound({ text: '帮我写周报' }))
     await until(() => chat.sent.length === 1)
     const session = chat.sent[0]!.sessionId

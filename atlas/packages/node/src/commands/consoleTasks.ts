@@ -80,6 +80,16 @@ const RESUMABLE: ReadonlySet<TaskStatus> = new Set([
 ])
 const TERMINAL: ReadonlySet<TaskStatus> = new Set(['completed', 'cancelled'])
 
+/** One place a result goes; `skipped` is a listener it was not for. */
+const DELIVERY_STATES = [
+  'sending',
+  'sent',
+  'failed',
+  'unknown',
+  'skipped',
+] as const
+type DeliveryState = (typeof DELIVERY_STATES)[number]
+
 const PHASE: Record<TaskStatus, string> = {
   queued: '排队中',
   running: '执行中',
@@ -157,6 +167,14 @@ const recordSchema = z.object({
     'failed',
     'unknown',
   ]),
+  /**
+   * The result's delivery to each place it goes: `note` for the parent's
+   * transcript, then each {@link ConsoleTasks.onFinished} listener by key.
+   * Only a `failed` one is tried again; one cut off mid-send is `unknown`.
+   */
+  deliveries: z.record(z.string(), z.enum(DELIVERY_STATES)).default({}),
+  /** Delivery rounds for the current result; zero for a ledger without it. */
+  deliveryAttempts: z.number().int().nonnegative().default(0),
   context: z.array(
     z.object({ role: z.enum(['user', 'agent']), text: z.string() }),
   ),
@@ -221,6 +239,8 @@ export interface ConsoleTasksOptions {
   readonly turnTtlMs?: number
   /** How long to wait after a failed turn; tests shorten it. */
   readonly backoffMs?: (failures: number) => number
+  /** How long to wait before delivering a result again; tests shorten it. */
+  readonly deliveryRetryMs?: (attempts: number) => number
   readonly onError?: (message: string) => void
 }
 
@@ -244,6 +264,8 @@ const MAX_QUIET_TURNS = 5
 const MAX_FAILURES = 10
 /** The worker rules and the task go out again every this many turns. */
 const BRIEF_EVERY_TURNS = 10
+/** Delivery rounds for one result before a failed place is given up. */
+const MAX_DELIVERY_ATTEMPTS = 5
 /**
  * Refusals retrying cannot fix: the owner's account or role changed, the
  * target left the dial list or the tenant, the quota is spent. Same set the
@@ -306,6 +328,11 @@ function defaultBackoff(failures: number): number {
   return Math.min(60_000, 2 ** Math.min(failures, 6) * 1_000)
 }
 
+/** 1, 4, 16 then 30 minutes between delivery rounds. */
+function defaultDeliveryRetry(attempts: number): number {
+  return Math.min(30 * 60_000, 4 ** (attempts - 1) * 60_000)
+}
+
 interface Caller {
   readonly transcript: ChatTranscript
   readonly owner: string
@@ -333,9 +360,14 @@ export class ConsoleTasks {
   /** Worker turns in flight by node; see {@link MAX_RUNNING_PER_NODE}. */
   readonly #slots = new Map<string, number>()
   readonly #slotQueue = new Map<string, (() => void)[]>()
-  readonly #listeners = new Set<
+  readonly #listeners = new Map<
+    string,
     (event: TaskFinished) => Promise<boolean | undefined>
   >()
+  #listenerSeq = 0
+  /** Results being delivered, and the timers of the next delivery round. */
+  readonly #delivering = new Set<string>()
+  readonly #redeliveries = new Map<string, ReturnType<typeof setTimeout>>()
   #closed = false
 
   constructor(options: ConsoleTasksOptions) {
@@ -361,9 +393,22 @@ export class ConsoleTasks {
   start(): void {
     if (!this.#lock?.owned()) return
     for (const task of this.#tasks.values()) {
-      if (task.notification === 'sending')
-        // The send may or may not have happened; never duplicate it.
-        this.#patch(task.id, { notification: 'unknown' })
+      if (task.notification === 'sending') {
+        // A place cut off mid-send may or may not have it: never send it
+        // twice. Places that had failed are still owed.
+        const deliveries = Object.fromEntries(
+          Object.entries(task.deliveries).map(([key, state]) => [
+            key,
+            state === 'sending' ? ('unknown' as const) : state,
+          ]),
+        )
+        const failed = Object.values(deliveries).includes('failed')
+        const next = this.#patch(task.id, {
+          deliveries,
+          notification: failed ? 'failed' : 'unknown',
+        })
+        if (this.#redeliverable(next)) this.#redeliverLater(next)
+      } else if (this.#redeliverable(task)) this.#redeliverLater(task)
       if (RESUMABLE.has(task.status)) {
         this.#resumed.add(task.id)
         this.#schedule(task.id)
@@ -377,6 +422,8 @@ export class ConsoleTasks {
 
   async close(): Promise<void> {
     this.#closed = true
+    for (const timer of this.#redeliveries.values()) clearTimeout(timer)
+    this.#redeliveries.clear()
     for (const wake of this.#waits.values()) wake()
     for (const turn of this.#turns.values()) turn.handle.cancel()
     for (const queue of this.#slotQueue.values())
@@ -388,12 +435,31 @@ export class ConsoleTasks {
     this.#lock?.release()
   }
 
-  /** Channels deliver results to the chat a task came from. */
+  /**
+   * Channels deliver results to the chat a task came from. The listener
+   * answers true (delivered), false (failed; tried again later) or undefined
+   * (not its conversation). `key` names it in the ledger's delivery record,
+   * so a restart retries only the places that failed.
+   */
   onFinished(
     listener: (event: TaskFinished) => Promise<boolean | undefined>,
+    key = `listener-${++this.#listenerSeq}`,
   ): () => void {
-    this.#listeners.add(listener)
-    return () => this.#listeners.delete(listener)
+    this.#listeners.set(key, listener)
+    return () => this.#listeners.delete(key)
+  }
+
+  /**
+   * Delivers now the results whose last round failed somewhere, without
+   * waiting for the next round. Channels call it once an adapter is up.
+   */
+  retryNotifications(): void {
+    for (const task of this.#tasks.values())
+      if (this.#redeliverable(task)) {
+        clearTimeout(this.#redeliveries.get(task.id))
+        this.#redeliveries.delete(task.id)
+        void this.#notify(task.id)
+      }
   }
 
   // -- the ledger ---------------------------------------------------------------
@@ -666,6 +732,8 @@ export class ConsoleTasks {
       quietTurns: 0,
       readUpdateId: 0,
       notification: 'none',
+      deliveries: {},
+      deliveryAttempts: 0,
       context: caller.transcript.turns
         .filter(turn => turn.variant !== 'notice')
         .map(turn => ({
@@ -1174,25 +1242,92 @@ export class ConsoleTasks {
 
   // -- results ----------------------------------------------------------------
 
+  /** A result whose last round failed somewhere, with rounds left. */
+  #redeliverable(task: TaskRecord): boolean {
+    return (
+      task.notification === 'failed' &&
+      (task.status === 'completed' || task.status === 'needs_input') &&
+      task.deliveryAttempts > 0 &&
+      task.deliveryAttempts < MAX_DELIVERY_ATTEMPTS
+    )
+  }
+
+  #redeliverLater(task: TaskRecord): void {
+    if (this.#closed || this.#redeliveries.has(task.id)) return
+    const timer = setTimeout(
+      () => {
+        this.#redeliveries.delete(task.id)
+        void this.#notify(task.id)
+      },
+      (this.#options.deliveryRetryMs ?? defaultDeliveryRetry)(
+        task.deliveryAttempts,
+      ),
+    )
+    timer.unref?.()
+    this.#redeliveries.set(task.id, timer)
+  }
+
+  /**
+   * Delivers a result to the parent's transcript and to every listener, each
+   * place recorded on its own: a later round (a timer, a channel coming up,
+   * a restart) goes only where the last one failed, never where it arrived
+   * or may have arrived.
+   */
   async #notify(id: string): Promise<void> {
     const task = this.#tasks.get(id)
-    if (task === undefined || task.notification !== 'pending') return
-    const label = task.status === 'completed' ? '已完成' : '需要你的补充'
-    const text = `${task.title}：${label}\n\n${task.result}`
-    this.#patch(id, { notification: 'sending' })
-    let delivered = false
-    let failed = false
-    const noted = await this.#options.chat.note?.(task.parentSession, text)
-    if (noted?.ok) delivered = true
-    for (const listener of this.#listeners) {
-      const sent = await listener({
-        parentSession: task.parentSession,
-        taskId: id,
-        text,
-      }).catch(() => false)
-      if (sent === true) delivered = true
-      if (sent === false) failed = true
+    if (task === undefined || this.#closed || this.#delivering.has(id)) return
+    const first = task.notification === 'pending'
+    if (!first && !this.#redeliverable(task)) return
+    this.#delivering.add(id)
+    try {
+      const label = task.status === 'completed' ? '已完成' : '需要你的补充'
+      const text = `${task.title}：${label}\n\n${task.result}`
+      const deliveries: Record<string, DeliveryState> = first
+        ? {}
+        : { ...task.deliveries }
+      const attempts = (first ? 0 : task.deliveryAttempts) + 1
+      this.#patch(id, {
+        notification: 'sending',
+        deliveries: { ...deliveries },
+        deliveryAttempts: attempts,
+      })
+      const deliver = async (
+        key: string,
+        send: () => Promise<boolean | undefined>,
+      ) => {
+        if (deliveries[key] !== undefined && deliveries[key] !== 'failed')
+          return
+        deliveries[key] = 'sending'
+        this.#patch(id, { deliveries: { ...deliveries } })
+        const sent = await send().catch(() => false)
+        deliveries[key] =
+          sent === true ? 'sent' : sent === false ? 'failed' : 'skipped'
+        this.#patch(id, { deliveries: { ...deliveries } })
+      }
+      const note = this.#options.chat.note?.bind(this.#options.chat)
+      if (note)
+        await deliver(
+          'note',
+          async () => (await note(task.parentSession, text)).ok,
+        )
+      for (const [key, listener] of [...this.#listeners])
+        await deliver(key, () =>
+          listener({ parentSession: task.parentSession, taskId: id, text }),
+        )
+      const states = Object.values(deliveries)
+      const next = this.#patch(id, {
+        notification: states.includes('failed')
+          ? 'failed'
+          : states.includes('unknown')
+            ? 'unknown'
+            : states.includes('sent')
+              ? 'sent'
+              : 'failed',
+      })
+      if (states.includes('failed') && this.#redeliverable(next))
+        this.#redeliverLater(next)
+    } finally {
+      this.#delivering.delete(id)
     }
-    this.#patch(id, { notification: delivered && !failed ? 'sent' : 'failed' })
   }
 }

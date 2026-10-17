@@ -35,8 +35,15 @@ function tasks(
     foreground?: (id: string) => boolean
     related?: (id: string) => readonly string[]
     turnTtlMs?: number
+    deliveryRetryMs?: (attempts: number) => number
+    /** More result listeners, by key, registered before the book starts. */
+    listeners?: Record<
+      string,
+      (event: TaskFinished) => Promise<boolean | undefined>
+    >
   } = {},
 ) {
+  const { listeners, ...rest } = options
   const book = new ConsoleTasks({
     directory: root,
     chat,
@@ -45,12 +52,14 @@ function tasks(
       return true
     },
     backoffMs: () => 5,
-    ...options,
+    ...rest,
   })
   book.onFinished(async event => {
     finished.push(event)
     return undefined
-  })
+  }, 'test')
+  for (const [key, listener] of Object.entries(listeners ?? {}))
+    book.onFinished(listener, key)
   open.push(book)
   book.start()
   return book
@@ -572,6 +581,154 @@ describe('the worker loop', () => {
       state: 'working',
     })
     expect(late.ok ? '' : late.message).toBe('这一轮不在进行中')
+  })
+})
+
+describe('delivering results', () => {
+  /** Starts a task and has its worker complete it. */
+  async function complete(book: ConsoleTasks): Promise<string> {
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
+    )
+    const worker = await workerTurn(1)
+    value(
+      await call(book, 'report', worker, {
+        summary: '写好了',
+        state: 'completed',
+      }),
+    )
+    chat.reply(worker, '完成')
+    return id
+  }
+
+  function ledger(): {
+    tasks: Record<string, unknown>[]
+  } {
+    return JSON.parse(fs.readFileSync(path.join(root, 'tasks.json'), 'utf8'))
+  }
+
+  test('a chat that failed gets the result again later; the transcript note is not repeated', async () => {
+    let calls = 0
+    const book = tasks({
+      deliveryRetryMs: () => 5,
+      listeners: {
+        chat: async () => {
+          calls++
+          return calls >= 3
+        },
+      },
+    })
+    await complete(book)
+    await until(() => calls === 3)
+    await until(() => ledger().tasks[0]!['notification'] === 'sent')
+    expect(chat.notes).toHaveLength(1)
+    expect(finished).toHaveLength(1)
+    expect(ledger().tasks[0]).toMatchObject({
+      deliveries: { note: 'sent', test: 'skipped', chat: 'sent' },
+      deliveryAttempts: 3,
+    })
+  })
+
+  test('a place that keeps failing is given up after five rounds', async () => {
+    let calls = 0
+    const book = tasks({
+      deliveryRetryMs: () => 5,
+      listeners: {
+        chat: async () => {
+          calls++
+          return false
+        },
+      },
+    })
+    await complete(book)
+    await until(() => calls === 5)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(calls).toBe(5)
+    expect(ledger().tasks[0]).toMatchObject({
+      notification: 'failed',
+      deliveryAttempts: 5,
+    })
+  })
+
+  test('a channel coming up delivers at once what failed before', async () => {
+    let calls = 0
+    const book = tasks({
+      deliveryRetryMs: () => 3_600_000,
+      listeners: {
+        chat: async () => {
+          calls++
+          return calls > 1
+        },
+      },
+    })
+    await complete(book)
+    await until(() => calls === 1)
+    await until(() => ledger().tasks[0]!['notification'] === 'failed')
+    book.retryNotifications()
+    await until(() => ledger().tasks[0]!['notification'] === 'sent')
+    expect(calls).toBe(2)
+    expect(chat.notes).toHaveLength(1)
+  })
+
+  test('after a restart only a failed place is tried again, never one cut off mid-send', async () => {
+    const book = tasks()
+    await complete(book)
+    await until(() => ledger().tasks[0]!['notification'] === 'sent')
+    await book.close()
+    open = []
+    const file = path.join(root, 'tasks.json')
+    const cut = ledger()
+    cut.tasks[0] = {
+      ...cut.tasks[0],
+      notification: 'sending',
+      deliveries: { note: 'sent', chat: 'sending', mail: 'failed' },
+      deliveryAttempts: 1,
+    }
+    fs.writeFileSync(file, JSON.stringify(cut), { mode: 0o600 })
+    const sent: string[] = []
+    const reopened = tasks({
+      deliveryRetryMs: () => 5,
+      listeners: {
+        chat: async () => {
+          sent.push('chat')
+          return true
+        },
+        mail: async () => {
+          sent.push('mail')
+          return true
+        },
+      },
+    })
+    await until(() => sent.length === 1)
+    await until(() => ledger().tasks[0]!['notification'] === 'unknown')
+    expect(sent).toEqual(['mail'])
+    expect(ledger().tasks[0]!['deliveries']).toMatchObject({
+      note: 'sent',
+      chat: 'unknown',
+      mail: 'sent',
+    })
+    expect(chat.notes).toHaveLength(1)
+    // A result from a ledger without delivery records is not sent again.
+    await reopened.close()
+    open = []
+    const old = ledger()
+    const { deliveries: _d, deliveryAttempts: _a, ...rest } = old.tasks[0]!
+    old.tasks[0] = { ...rest, notification: 'failed' }
+    fs.writeFileSync(file, JSON.stringify(old), { mode: 0o600 })
+    const later: string[] = []
+    const third = tasks({
+      deliveryRetryMs: () => 5,
+      listeners: {
+        mail: async () => {
+          later.push('mail')
+          return true
+        },
+      },
+    })
+    third.retryNotifications()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(later).toEqual([])
   })
 })
 
