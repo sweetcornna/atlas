@@ -425,6 +425,13 @@ describe('background tasks', () => {
       this.since.push(since)
       return this.summary
     }
+    /** Given once, as the hub's book gives it. */
+    reminder: string | undefined
+    async reminderFor(_sessionId: string) {
+      const reminder = this.reminder
+      this.reminder = undefined
+      return reminder
+    }
     statusText(_sessionId: string, options?: { busy?: boolean }) {
       this.busy.push(options?.busy)
       return this.summary === undefined ? undefined : '周报：执行中'
@@ -551,6 +558,35 @@ describe('background tasks', () => {
     expect(fifth).toContain('[后台任务协调规则]')
     expect(fifth).toContain('[当前会话的后台任务] [{"id":"task-2"}]')
     expect(await say('六', 6)).toBe('六')
+  })
+
+  test('after a long turn the next note carries the reminder once, with or without the task summary', async () => {
+    const fake = new FakeTasks()
+    channels({ tasks: fake })
+    const book = open[0]!
+    value(await book.save(TELEGRAM, ACTOR))
+    const adapter = adapters[0]!.adapter
+    const say = async (text: string, n: number) => {
+      adapter.sink!(inbound({ text }))
+      await until(() => chat.sent.length === n)
+      const sent = chat.sent[n - 1]!
+      chat.reply(sent.sessionId, 'ok')
+      await until(() => adapter.sent.length === n)
+      return sent.text
+    }
+    await say('一', 1)
+    fake.reminder =
+      '提醒：上一轮主会话用了 3 分钟，长活交给后台任务，主会话保持空闲。'
+    expect(await say('二', 2)).toBe(
+      '[当前会话的后台任务] [{"id":"task-1"}]\n提醒：上一轮主会话用了 3 分钟，长活交给后台任务，主会话保持空闲。\n\n二',
+    )
+    // The summary is unchanged: the reminder alone still opens with the marker.
+    fake.reminder =
+      '提醒：上一轮主会话用了 2 分钟，长活交给后台任务，主会话保持空闲。'
+    expect(await say('三', 3)).toBe(
+      '[当前会话的后台任务] 提醒：上一轮主会话用了 2 分钟，长活交给后台任务，主会话保持空闲。\n\n三',
+    )
+    expect(await say('四', 4)).toBe('四')
   })
 
   /** Real tasks behind the channels, as the console wires them. */

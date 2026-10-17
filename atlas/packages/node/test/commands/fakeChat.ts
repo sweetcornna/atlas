@@ -90,6 +90,8 @@ export class FakeChat implements ChatPort {
       at: Date.now(),
       state: 'delivered',
       taskId: crypto.randomUUID(),
+      // A local command's line says so, as the hub's transcript does.
+      ...(input.command === undefined ? {} : { command: input.command }),
     }
     this.#add(turn)
     return { ok: true, value: turn }
@@ -161,6 +163,34 @@ export class FakeChat implements ChatPort {
       variant: 'notice',
       noticeSource: 'agent',
       causeTaskId: this.lastTask(sessionId),
+    })
+  }
+
+  /** A tool step the node reported for the last line; a failed one warns. */
+  step(sessionId: string, text: string, failed = false): void {
+    this.#add({
+      id: crypto.randomUUID(),
+      sessionId,
+      author: 'agent',
+      at: Date.now(),
+      text,
+      state: 'done',
+      variant: 'notice',
+      noticeSource: 'step',
+      severity: failed ? 'warn' : 'info',
+      causeTaskId: this.lastTask(sessionId),
+    })
+  }
+
+  /** Changes the last operator line, e.g. when the node read it. */
+  patchLastLine(sessionId: string, changes: Partial<ChatTurn>): void {
+    const record = this.records.get(sessionId)!
+    const index = record.turns.findLastIndex(turn => turn.author === 'operator')
+    this.records.set(sessionId, {
+      ...record,
+      turns: record.turns.map((turn, at) =>
+        at === index ? { ...turn, ...changes } : turn,
+      ),
     })
   }
 

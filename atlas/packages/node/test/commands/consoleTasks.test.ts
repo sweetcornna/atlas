@@ -1891,3 +1891,81 @@ describe('the task note in a console conversation', () => {
     expect(await scheduled.noteFor(parent)).toBeUndefined()
   })
 })
+
+describe('keeping the main session free', () => {
+  /** A person's line through the console, and the note it carried. */
+  async function line(
+    web: ReturnType<typeof withTaskNotes>,
+    sessionId: string,
+    text: string,
+  ): Promise<string | undefined> {
+    expect((await web.send({ sessionId, text })).ok).toBe(true)
+    return chat.sent.at(-1)!.context
+  }
+
+  test('after a turn over 90 seconds the next line is reminded once; the node’s queue does not count', async () => {
+    const book = tasks()
+    const web = withTaskNotes(chat, book)
+    const opened = await web.open(MAIN)
+    if (!opened.ok) throw new Error('open')
+    const parent = opened.value.id
+    expect(await line(web, parent, '查一下日志')).toBeUndefined()
+    // Worked for two and a half minutes.
+    chat.reply(parent, '查完了', 'done', { at: Date.now() + 150_000 })
+    expect(await line(web, parent, '还有呢')).toBe(
+      '[当前会话的后台任务] 提醒：上一轮主会话用了 3 分钟，长活交给后台任务，主会话保持空闲。',
+    )
+    chat.reply(parent, '好')
+    // Once: the turn after is not reminded again of the same long turn.
+    expect(await line(web, parent, '再看看')).toBeUndefined()
+    // Waited 80 s in the node's queue and worked 70 s: not long.
+    chat.patchLastLine(parent, { readMs: 80_000 })
+    chat.reply(parent, '看了', 'done', { at: Date.now() + 150_000 })
+    expect(await line(web, parent, '嗯')).toBeUndefined()
+  })
+
+  test('more than ten tool steps earn a reminder too, beside the task note; ten do not', async () => {
+    const book = tasks()
+    const web = withTaskNotes(chat, book)
+    const opened = await web.open(MAIN)
+    if (!opened.ok) throw new Error('open')
+    const parent = opened.value.id
+    await line(web, parent, '整理一下')
+    for (let n = 0; n < 10; n++) chat.step(parent, `读取：${n}.md`)
+    // A failed step is not one more call.
+    chat.step(parent, '读取：x.md — 失败', true)
+    chat.reply(parent, '整理好了')
+    expect(await line(web, parent, '好')).toBeUndefined()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
+    )
+    for (let n = 0; n < 11; n++) chat.step(parent, `读取：${n}.md`)
+    chat.reply(parent, '交给后台了')
+    const note = await line(web, parent, '谢谢')
+    expect(note).toStartWith('[当前会话的后台任务] [')
+    expect(note).toContain(id)
+    expect(note).toMatch(
+      /\n提醒：上一轮主会话用了 \d+ 秒、11 个工具步骤，长活交给后台任务/,
+    )
+    // One paragraph: a worker's context drops it whole.
+    expect(note).not.toMatch(/\n[ \t]*\n/)
+  })
+
+  test('a channel takes the reminder as given; a worker or a local command gets none', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    chat.reply(parent, '好了', 'done', { at: Date.now() + 100_000 })
+    expect(await book.reminderFor(parent)).toBe(
+      '提醒：上一轮主会话用了 100 秒，长活交给后台任务，主会话保持空闲。',
+    )
+    expect(await book.reminderFor(parent)).toBeUndefined()
+    await chat.send({ sessionId: parent, text: '/compact', command: 'compact' })
+    chat.reply(parent, '已压缩', 'done', { at: Date.now() + 200_000 })
+    expect(await book.reminderFor(parent)).toBeUndefined()
+    await chat.send({ sessionId: parent, text: '开个任务' })
+    value(await call(book, 'start', parent, { title: 't', instructions: 'i' }))
+    const worker = await workerTurn(1)
+    chat.reply(worker, '阶段一', 'done', { at: Date.now() + 600_000 })
+    expect(await book.reminderFor(worker)).toBeUndefined()
+  })
+})

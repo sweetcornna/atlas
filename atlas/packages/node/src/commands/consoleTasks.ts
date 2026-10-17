@@ -463,21 +463,81 @@ export interface TaskNote {
   sent(): void
 }
 
-/** A conversation's last finished turn, as far as the task note needs it. */
-function lastTurn(
-  turns: readonly ChatTurn[],
-): { readonly taskId: string; readonly compacted: boolean } | undefined {
+/**
+ * A foreground turn longer than this, or with more tool steps, earns the
+ * next turn a reminder to hand long work to a task (保持空闲).
+ */
+const LONG_TURN_MS = 90_000
+const LONG_TURN_STEPS = 10
+
+interface FinishedTurn {
+  readonly taskId: string
+  readonly compacted: boolean
+  /** From when the node took the line (its queue is not this turn's work) to the answer. */
+  readonly ms: number
+  /** Tool calls the node reported starting (`noticeSource: 'step'`). */
+  readonly steps: number
+  /** The line was a local command (`/compact` …), not a turn of the model. */
+  readonly command: boolean
+}
+
+/** A conversation's last finished turn: how long it worked and its tool steps. */
+function lastTurn(turns: readonly ChatTurn[]): FinishedTurn | undefined {
   for (let index = turns.length - 1; index >= 0; index--) {
     const turn = turns[index]!
     if (
-      turn.author === 'agent' &&
-      turn.variant !== 'notice' &&
-      turn.taskId !== undefined &&
-      (turn.state === 'done' || turn.state === 'failed')
+      turn.author !== 'agent' ||
+      turn.variant === 'notice' ||
+      turn.taskId === undefined ||
+      (turn.state !== 'done' && turn.state !== 'failed')
     )
-      return { taskId: turn.taskId, compacted: turn.compacted === true }
+      continue
+    const taskId = turn.taskId
+    const asked = turns.find(
+      one => one.author === 'operator' && one.taskId === taskId,
+    )
+    const started =
+      asked === undefined ? turn.at : asked.at + (asked.readMs ?? 0)
+    return {
+      taskId,
+      compacted: turn.compacted === true,
+      ms: Math.max(0, turn.at - started),
+      steps: turns.filter(
+        one =>
+          one.variant === 'notice' &&
+          one.noticeSource === 'step' &&
+          one.causeTaskId === taskId &&
+          one.severity !== 'warn',
+      ).length,
+      command: asked?.command !== undefined || turn.command !== undefined,
+    }
   }
   return undefined
+}
+
+/** 「上一轮主会话用了 3 分钟、14 个工具步骤，长活交给后台任务。」 */
+function reminderText(turn: FinishedTurn): string {
+  const time =
+    turn.ms < 120_000
+      ? `${Math.round(turn.ms / 1_000)} 秒`
+      : `${Math.round(turn.ms / 60_000)} 分钟`
+  const steps = turn.steps > 0 ? `、${turn.steps} 个工具步骤` : ''
+  return `提醒：上一轮主会话用了 ${time}${steps}，长活交给后台任务，主会话保持空闲。`
+}
+
+/**
+ * The task note's one paragraph: the tasks, then the reminder on a line of
+ * its own; a reminder alone still opens with the note's marker, so a
+ * worker's context drops it.
+ */
+export function taskNote(
+  summary: string | undefined,
+  reminder: string | undefined,
+): string | undefined {
+  if (reminder === undefined) return summary
+  return summary === undefined
+    ? `[当前会话的后台任务] ${reminder}`
+    : `${summary}\n${reminder}`
 }
 
 /**
@@ -648,6 +708,8 @@ export class ConsoleTasks implements BackgroundTasksPort {
   #ticker: ReturnType<typeof setInterval> | null = null
   /** The task note each console conversation was last given; see {@link noteFor}. */
   readonly #noted = new Map<string, { text: string; at: number }>()
+  /** The long foreground turn each conversation was last reminded of. */
+  readonly #reminded = new Map<string, string>()
   #closed = false
 
   constructor(options: ConsoleTasksOptions) {
@@ -1014,16 +1076,56 @@ export class ConsoleTasks implements BackgroundTasksPort {
     if (this.#closed || !this.#foregroundSession(sessionId)) return undefined
     const transcript = await this.#options.chat.transcript(sessionId)
     if (!transcript.ok) return undefined
-    if (lastTurn(transcript.value.turns)?.compacted === true)
-      this.#noted.delete(sessionId)
+    const last = lastTurn(transcript.value.turns)
+    if (last?.compacted === true) this.#noted.delete(sessionId)
     const noted = this.#noted.get(sessionId)
     const at = this.#now()
-    const text = this.contextFor(sessionId, noted?.at)
-    if (text === undefined || text === noted?.text) return undefined
+    const summary = this.contextFor(sessionId, noted?.at)
+    const fresh = summary === noted?.text ? undefined : summary
+    const long = this.#longTurn(sessionId, last)
+    const text = taskNote(
+      fresh,
+      long === undefined ? undefined : reminderText(long),
+    )
+    if (text === undefined) return undefined
     return {
       text,
-      sent: () => this.#noted.set(sessionId, { text, at }),
+      sent: () => {
+        if (fresh !== undefined) this.#noted.set(sessionId, { text: fresh, at })
+        if (long !== undefined) this.#reminded.set(sessionId, long.taskId)
+      },
     }
+  }
+
+  /**
+   * The reminder a foreground's next turn carries once after a long one
+   * (more than {@link LONG_TURN_MS} or {@link LONG_TURN_STEPS} tool steps):
+   * hand long work to a task. The turn it is about is never interrupted;
+   * the reminder is taken as given (a channel builds its note around it).
+   */
+  async reminderFor(sessionId: string): Promise<string | undefined> {
+    if (this.#closed || !this.#foregroundSession(sessionId)) return undefined
+    const transcript = await this.#options.chat.transcript(sessionId)
+    if (!transcript.ok) return undefined
+    const long = this.#longTurn(sessionId, lastTurn(transcript.value.turns))
+    if (long === undefined) return undefined
+    this.#reminded.set(sessionId, long.taskId)
+    return reminderText(long)
+  }
+
+  /** The last turn, when it was long and not reminded of yet. */
+  #longTurn(
+    sessionId: string,
+    last: FinishedTurn | undefined,
+  ): FinishedTurn | undefined {
+    if (
+      last === undefined ||
+      last.command ||
+      this.#reminded.get(sessionId) === last.taskId ||
+      (last.ms <= LONG_TURN_MS && last.steps <= LONG_TURN_STEPS)
+    )
+      return undefined
+    return last
   }
 
   /**
