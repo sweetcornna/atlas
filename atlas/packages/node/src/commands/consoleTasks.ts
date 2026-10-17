@@ -32,10 +32,15 @@ import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import {
+  type BackgroundTaskReader,
+  type BackgroundTasksPort,
+  type BackgroundTaskView,
   ChatDispatch,
   type ChatPort,
   type ChatTranscript,
   type ConsoleAccounts,
+  type ConsoleResult,
+  type DirectionActor,
   type TenantPort,
   type UsagePort,
 } from '@qianmo/console'
@@ -347,7 +352,7 @@ interface Caller {
   readonly worker: TaskRecord | undefined
 }
 
-export class ConsoleTasks {
+export class ConsoleTasks implements BackgroundTasksPort {
   readonly #options: ConsoleTasksOptions
   readonly #now: () => number
   readonly #path: string
@@ -557,6 +562,63 @@ export class ConsoleTasks {
       turns: task.turns,
       updatedAt: task.updatedAt,
     }
+  }
+
+  // -- the console's list (BackgroundTasksPort) --------------------------------
+
+  /** A task's owner sees it; ops and the legacy tokens see every task. */
+  #sees(task: TaskRecord, actor: BackgroundTaskReader): boolean {
+    return (
+      actor.role === 'ops' ||
+      (actor.role == null && actor.subject.startsWith('legacy:')) ||
+      task.owner === actor.subject
+    )
+  }
+
+  #consoleView(task: TaskRecord): BackgroundTaskView {
+    return {
+      id: task.id,
+      title: task.title,
+      owner: task.owner,
+      target: task.target,
+      status: task.status,
+      phase: PHASE[task.status],
+      progress: clip(task.progress, 2_000),
+      lastError: clip(task.lastError, 1_000),
+      turns: task.turns,
+      workerSession: task.workerSession,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+    }
+  }
+
+  list(actor: BackgroundTaskReader): readonly BackgroundTaskView[] {
+    return [...this.#tasks.values()]
+      .filter(task => this.#sees(task, actor))
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map(task => this.#consoleView(task))
+  }
+
+  visible(id: string, actor: BackgroundTaskReader): boolean {
+    const task = this.#tasks.get(id)
+    return task !== undefined && this.#sees(task, actor)
+  }
+
+  /** The console's 取消: the same cancel the conversation has. */
+  async cancel(
+    id: string,
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<BackgroundTaskView>> {
+    const task = this.#tasks.get(id)
+    if (task === undefined || !this.#sees(task, actor))
+      return {
+        ok: false,
+        failure: { code: 'not_found', message: '后台任务不存在' },
+      }
+    if (TERMINAL.has(task.status))
+      return { ok: false, failure: { code: 'rejected', message: '任务已结束' } }
+    await this.#cancel(task)
+    return { ok: true, value: this.#consoleView(this.#tasks.get(id) ?? task) }
   }
 
   #family(sessionId: string): ReadonlySet<string> {

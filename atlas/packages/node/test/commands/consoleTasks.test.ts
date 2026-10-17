@@ -1113,6 +1113,40 @@ describe('durability', () => {
   })
 })
 
+describe('the console list', () => {
+  test('the owner sees a task and ops sees every one; cancel is the conversation’s cancel', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
+    )
+    const worker = await workerTurn(1)
+    const owner = { subject: 'legacy:admin', role: null }
+    const stranger = { subject: 'u:someone', role: 'member' as const }
+    const ops = { subject: 'u:ops', role: 'ops' as const }
+    expect(book.list(owner).map(task => task.id)).toEqual([id])
+    expect(book.list(owner)[0]).toMatchObject({
+      title: '周报',
+      owner: 'legacy:admin',
+      target: MAIN,
+      status: 'running',
+      workerSession: worker,
+    })
+    expect(book.list(stranger)).toEqual([])
+    expect(book.list(ops)).toHaveLength(1)
+    expect(book.visible(id, stranger)).toBe(false)
+    expect(book.visible(id, ops)).toBe(true)
+    const denied = await book.cancel(id, { ...stranger, requestId: 'r' })
+    expect(denied.ok ? '' : denied.failure.code).toBe('not_found')
+    expect(stopped).toEqual([])
+    const done = await book.cancel(id, { ...ops, requestId: 'r' })
+    expect(done.ok && done.value.status).toBe('cancelled')
+    expect(stopped).toEqual([[MAIN, chat.lastTask(worker)]])
+    const again = await book.cancel(id, { ...ops, requestId: 'r' })
+    expect(again.ok ? '' : again.failure.code).toBe('rejected')
+  })
+})
+
 describe('races and leftovers', () => {
   test('a cancel while the next turn is being authorised stays cancelled and sends nothing', async () => {
     class GatedChat extends FakeChat {

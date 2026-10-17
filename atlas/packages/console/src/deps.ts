@@ -18,6 +18,7 @@
  */
 
 import type {
+  BackgroundTasksPort,
   ChannelsPort,
   ConnectorsPort,
   DesktopPort,
@@ -1320,6 +1321,8 @@ export const CONSOLE_ACTIONS = [
   'channel.save',
   'channel.remove',
   'channel.test',
+  /** 后台任务（P29）：在控制台取消一个，target 是任务 id。 */
+  'task.cancel',
   /** 应用连接（P25），target 是连接 id。 */
   'connector.save',
   'connector.remove',
@@ -2430,6 +2433,8 @@ export interface ConsoleDeps {
   readonly memory?: MemoryPort
   /** 定时任务与通知渠道（P24）。 */
   readonly schedules?: SchedulesPort
+  /** 后台任务（P29）：只读列表与取消。 */
+  readonly tasks?: BackgroundTasksPort
   /** 应用连接（P25）。 */
   readonly connectors?: ConnectorsPort
   /** 聊天渠道（P28）。 */
