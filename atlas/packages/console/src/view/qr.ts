@@ -23,9 +23,8 @@
  * encoder (Project Nayuki's qrcodegen) and requires these to match module for
  * module, the chosen mask included.
  *
- * `../qr.ts` is an older, smaller encoder for the WeChat bot login link
- * (level M, versions 1–20, penalty rule 3 left out); this module does not
- * replace it.
+ * It is the console's one encoder: the checkout page's payment codes and the
+ * WeChat channel's login code (`channels.ts`) both draw through it.
  *
  * The drawing is dark on white whatever the page theme: a scanner needs the
  * contrast, and many phone cameras refuse an inverted code. It is one `<rect>`
