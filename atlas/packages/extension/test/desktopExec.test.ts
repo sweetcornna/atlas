@@ -757,3 +757,93 @@ test('a strict-mode call with null optionals runs as the repaired call omp hands
   expect(computer.chains.at(-1)).toEqual([{ method: 'click', args: [1, 2] }])
   expect(gate.phases()).toEqual(['reserve', 'authorize', 'commit', 'completed'])
 })
+
+test("this Mac's own desktop: only the listed applications' windows, input in the background, the rest of the screen never captured", async () => {
+  const HOST_WINDOWS = [
+    { ...WINDOWS[0]!, id: '41', app: 'TextEdit', pid: 70 },
+    { ...WINDOWS[1]!, id: '42', app: 'Mail', pid: 80 },
+  ]
+  const computer = fakeComputer({ windows: () => HOST_WINDOWS })
+  const base = computer.prelude
+  // The base answers `apps.list` with bundle ids and running pids.
+  computer.prelude = {
+    invoke(parameters, context) {
+      const chain = (parameters as { chain?: Step[] }).chain
+      if (chain?.at(-1)?.method === 'apps.list') {
+        computer.chains.push(chain)
+        return Promise.resolve({
+          content: [],
+          details: {
+            value: [
+              { id: 'com.apple.TextEdit', name: 'TextEdit', pid: 70 },
+              { id: 'com.apple.mail', name: 'Mail', pid: 80 },
+            ],
+          },
+        })
+      }
+      return base.invoke(parameters, context)
+    },
+  }
+  const { run } = setup(computer, undefined, {
+    display: null,
+    hostApps: ['com.apple.TextEdit'],
+  })
+
+  // The window list holds only the listed application's windows.
+  const listed = await run('qianmo_computer_windows', {}, fakeGateway().gateway)
+  const windows = JSON.parse(texts(listed).join('')) as { id: string }[]
+  expect(windows.map(w => w.id)).toEqual(['41'])
+
+  // Every input says takeover: false.
+  computer.chains.length = 0
+  await run(
+    'qianmo_computer_actions',
+    {
+      window: '41',
+      actions: [
+        { type: 'click', x: 5, y: 6 },
+        { type: 'type', text: 'hi' },
+        { type: 'keypress', keys: ['super', 's'] },
+        { type: 'scroll', x: 1, y: 2, dx: 0, dy: 3 },
+      ],
+    },
+    fakeGateway().gateway,
+  )
+  const inputs = computer.chains.filter(
+    c => c[0]!.method === 'window' && c[1]!.method !== 'screenshot',
+  )
+  expect(inputs.map(c => c[1])).toEqual([
+    { method: 'click', args: [5, 6, { takeover: false }] },
+    { method: 'type', args: ['hi', { takeover: false }] },
+    { method: 'press', args: [['super', 's'], { takeover: false }] },
+    { method: 'scroll', args: [1, 2, { dx: 0, dy: 3, takeover: false }] },
+  ])
+  // Captures are of the window, never the whole screen.
+  expect(
+    computer.chains.some(c => c.length === 1 && c[0]!.method === 'screenshot'),
+  ).toBe(false)
+
+  // A window of another application is refused before any input.
+  computer.chains.length = 0
+  const other = fakeGateway()
+  await expect(
+    run('qianmo_computer_click', { window: '42', x: 1, y: 1 }, other.gateway),
+  ).rejects.toThrow('Desktop window not allowed')
+  expect(computer.inputs().filter(c => c.length > 1)).toEqual([])
+  expect(other.phases()).toEqual(['reserve', 'failed'])
+
+  // Input without a window is refused before the lease.
+  const bare = fakeGateway()
+  await expect(
+    run('qianmo_computer_screenshot', {}, bare.gateway),
+  ).rejects.toThrow('Desktop window required')
+  expect(bare.phases()).toEqual(['refused'])
+
+  // The owner's clipboard and foreground are not offered.
+  await expect(
+    run('qianmo_computer_clipboard_read', {}, fakeGateway().gateway),
+  ).rejects.toThrow('不提供剪贴板')
+  await expect(
+    run('qianmo_computer_focus', { window: '41' }, fakeGateway().gateway),
+  ).rejects.toThrow('不切换主人的前台窗口')
+})

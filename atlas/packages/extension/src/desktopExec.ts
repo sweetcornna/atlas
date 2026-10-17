@@ -10,6 +10,7 @@ import { createBrowserPrelude } from '@oh-my-pi/pi-coding-agent/tools/browser'
 import { createComputerPrelude } from '@oh-my-pi/pi-coding-agent/tools/computer'
 import type { ToolSession } from '@oh-my-pi/pi-coding-agent/tools/index'
 import {
+  DESKTOP_HOST_WINDOWED,
   DESKTOP_LEASE_REFUSED,
   desktopActionItems,
   desktopArgs,
@@ -44,6 +45,14 @@ export function readDesktopResource(file: string): DesktopResource | undefined {
   } catch {
     return undefined
   }
+}
+
+/** The `value` a base computer call answered with, if any. */
+const valueOf = (result: DesktopResult): unknown => {
+  const details = 'details' in result ? result.details : undefined
+  return details && typeof details === 'object' && 'value' in details
+    ? details.value
+    : undefined
 }
 
 const digest = (value: unknown) =>
@@ -117,8 +126,16 @@ function options(
 const trailing = (...values: unknown[]) =>
   values.at(-1) === undefined ? values.slice(0, -1) : values
 
-/** The base call for one checked `actions` step other than `wait`. */
-function actionStep(item: DesktopArgs): ComputerStep {
+/**
+ * The base call for one checked `actions` step other than `wait`. With
+ * `background`, every input helper that takes options says `takeover: false`:
+ * on this Mac's own desktop the owner keeps the foreground (§6.5).
+ */
+function actionStep(item: DesktopArgs, background = false): ComputerStep {
+  const input = (
+    present: Record<string, DesktopValue> | undefined,
+  ): Record<string, DesktopValue | boolean> | undefined =>
+    background ? { ...present, takeover: false } : present
   switch (item.type) {
     case 'click':
       return step(
@@ -126,37 +143,51 @@ function actionStep(item: DesktopArgs): ComputerStep {
         ...trailing(
           item.x,
           item.y,
-          options(item, {
-            button: 'button',
-            count: 'count',
-            keys: 'modifiers',
-          }),
+          input(
+            options(item, {
+              button: 'button',
+              count: 'count',
+              keys: 'modifiers',
+            }),
+          ),
         ),
       )
     case 'double_click':
       return step(
         'doubleClick',
-        ...trailing(item.x, item.y, options(item, { keys: 'modifiers' })),
+        ...trailing(
+          item.x,
+          item.y,
+          input(options(item, { keys: 'modifiers' })),
+        ),
       )
     case 'move':
       return step('move', item.x, item.y)
     case 'drag':
       return step(
         'drag',
-        ...trailing(item.path, options(item, { keys: 'keys' })),
+        ...trailing(item.path, input(options(item, { keys: 'keys' }))),
       )
     case 'scroll':
-      return step('scroll', item.x, item.y, { dx: item.dx, dy: item.dy })
+      return step('scroll', item.x, item.y, {
+        dx: item.dx,
+        dy: item.dy,
+        ...(background ? { takeover: false } : {}),
+      })
     case 'type':
-      return step('type', item.text)
+      return step('type', ...trailing(item.text, input(undefined)))
     case 'keypress':
-      return step('press', item.keys)
+      return step('press', ...trailing(item.keys, input(undefined)))
     case 'hold_keys':
-      return step('holdKeys', item.keys, { duration: item.seconds })
+      return step('holdKeys', item.keys, {
+        duration: item.seconds,
+        ...(background ? { takeover: false } : {}),
+      })
     case 'hold_mouse':
       return step('holdMouse', item.x, item.y, {
         duration: item.seconds,
         ...options(item, { button: 'button' }),
+        ...(background ? { takeover: false } : {}),
       })
     default:
       throw new Error(`Unsupported desktop action: ${String(item.type)}`)
@@ -186,11 +217,7 @@ function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
  * blink and animation on a live desktop, so a pixel digest would call every
  * approved target changed; the layout changes only when the desktop does.
  */
-function windowLayout(details: unknown): unknown[] | undefined {
-  const value =
-    details && typeof details === 'object' && 'value' in details
-      ? details.value
-      : undefined
+function windowLayout(value: unknown): unknown[] | undefined {
   if (!Array.isArray(value)) return undefined
   const windows: {
     id: string
@@ -289,6 +316,14 @@ export class DesktopExecutor {
         throw new Error(
           'Stale or foreign tab handle: 专属浏览器已重启或回收，先调用 qianmo_browser_tabs 取当前的标签句柄',
         )
+      if (
+        r.hostApps !== undefined &&
+        DESKTOP_HOST_WINDOWED.has(name) &&
+        args.window === undefined
+      )
+        throw new Error(
+          'Desktop window required: 本机桌面的电脑操作必须带 window，先用 qianmo_computer_windows 取允许应用的窗口编号',
+        )
     } catch (error) {
       await gateway
         .confirm(
@@ -372,6 +407,29 @@ export class DesktopExecutor {
         typeof args.window === 'string'
           ? computerCall(step('window', args.window), call)
           : computerCall(call)
+      // This Mac's own desktop (§6.5): only the listed applications' windows
+      // exist for the agent, matched by process id, and input stays in the
+      // background.
+      const hostApps = browser ? undefined : r.hostApps
+      const hostWindows = async (): Promise<
+        { readonly id: string; readonly pid?: unknown }[]
+      > => {
+        const running = valueOf(
+          await computerCall(step('apps.list', { runningOnly: true })),
+        )
+        const pids = new Set(
+          (Array.isArray(running) ? running : [])
+            .filter(app => hostApps?.includes(app?.id) === true)
+            .map(app => app?.pid)
+            .filter(pid => Number.isSafeInteger(pid)),
+        )
+        const windows = valueOf(await computerCall(step('windows')))
+        if (!Array.isArray(windows))
+          throw new Error('Desktop window list unavailable')
+        return windows.filter(
+          w => w && typeof w.id === 'string' && pids.has(w.pid),
+        )
+      }
       let layout: boolean | undefined
       const target = async (): Promise<unknown> => {
         if (browser)
@@ -379,11 +437,23 @@ export class DesktopExecutor {
             url: (await browserCall('url')).details,
             page: (await browserCall('ariaSnapshot')).details,
           }
+        if (hostApps !== undefined) {
+          // No whole-screen fallback: the rest of the screen is the owner's.
+          const windows = await hostWindows()
+          if (
+            typeof args.window === 'string' &&
+            !windows.some(w => w.id === args.window)
+          )
+            throw new Error(
+              'Desktop window not allowed: 这个窗口不属于允许的应用或已经关闭，先用 qianmo_computer_windows 取窗口编号',
+            )
+          return windowLayout(windows)
+        }
         // Both observations of one call use the same kind of digest.
         if (layout !== false) {
           try {
             const windows = windowLayout(
-              (await computerCall(step('windows'))).details,
+              valueOf(await computerCall(step('windows'))),
             )
             if (windows !== undefined) {
               layout = true
@@ -470,7 +540,10 @@ export class DesktopExecutor {
           )
           break
         case 'qianmo_computer_windows':
-          result = await computerCall(step('windows'))
+          result =
+            hostApps === undefined
+              ? await computerCall(step('windows'))
+              : { content: [], details: { value: await hostWindows() } }
           break
         case 'qianmo_computer_observe':
           result = await onTarget(step('observe'))
@@ -482,16 +555,30 @@ export class DesktopExecutor {
           result = await computerCall(step('clipboard.write', args.text))
           break
         case 'qianmo_computer_click':
-          result = await onTarget(actionStep({ ...args, type: 'click' }))
+          result = await onTarget(
+            actionStep({ ...args, type: 'click' }, hostApps !== undefined),
+          )
           break
         case 'qianmo_computer_type':
-          result = await onTarget(step('type', args.text))
+          result = await onTarget(
+            actionStep(
+              { text: args.text!, type: 'type' },
+              hostApps !== undefined,
+            ),
+          )
           break
         case 'qianmo_computer_key':
-          result = await onTarget(step('press', args.key))
+          result = await onTarget(
+            actionStep(
+              { keys: args.key!, type: 'keypress' },
+              hostApps !== undefined,
+            ),
+          )
           break
         case 'qianmo_computer_scroll':
-          result = await onTarget(actionStep({ ...args, type: 'scroll' }))
+          result = await onTarget(
+            actionStep({ ...args, type: 'scroll' }, hostApps !== undefined),
+          )
           break
         case 'qianmo_computer_focus':
           result = await onTarget(step('raise'))
@@ -501,14 +588,21 @@ export class DesktopExecutor {
             step('ref', args.ref),
             args.action === 'set_value'
               ? step('setValue', args.value)
-              : step(String(args.action)),
+              : args.action === 'click' && hostApps !== undefined
+                ? step('click', { takeover: false })
+                : step(String(args.action)),
           )
           break
         case 'qianmo_computer_menu':
           result = await onTarget(step('menu.select', args.path))
           break
         case 'qianmo_computer_actions':
-          result = await this.#actions(args, onTarget, signal)
+          result = await this.#actions(
+            args,
+            onTarget,
+            signal,
+            hostApps !== undefined,
+          )
           break
         case 'qianmo_computer_apps':
         case 'qianmo_computer_open_app': {
@@ -533,11 +627,7 @@ export class DesktopExecutor {
       }
       if (!(await gate('completed')))
         throw new Error('Desktop completion receipt lost; do not retry')
-      const details = 'details' in result ? result.details : undefined
-      const value =
-        details && typeof details === 'object' && 'value' in details
-          ? details.value
-          : undefined
+      const value = valueOf(result)
       const imaged = result.content.some(part => part.type === 'image')
       if ((value !== undefined && !imaged) || result.content.length === 0)
         return {
@@ -571,6 +661,7 @@ export class DesktopExecutor {
     args: DesktopArgs,
     onTarget: (call: ComputerStep) => Promise<DesktopResult>,
     signal: AbortSignal | undefined,
+    background: boolean,
   ): Promise<DesktopResult> {
     const items = desktopActionItems(args)
     const done: string[] = []
@@ -578,7 +669,7 @@ export class DesktopExecutor {
       try {
         signal?.throwIfAborted()
         if (item.type === 'wait') await pause(Number(item.ms), signal)
-        else await onTarget(actionStep(item))
+        else await onTarget(actionStep(item, background))
       } catch (error) {
         if (signal?.aborted) throw error
         throw new Error(

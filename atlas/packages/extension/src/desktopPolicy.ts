@@ -17,6 +17,13 @@ export interface DesktopResource {
    * absent or null when the node has no private bus.
    */
   readonly bus?: string | null
+  /**
+   * Set when the computer is this Mac's own desktop rather than a private
+   * display (runtimes-channels.md §6.5): the bundle ids of the applications
+   * the operator listed. Every input then goes to one of their windows, in
+   * the background; the owner's clipboard and foreground stay the owner's.
+   */
+  readonly hostApps?: readonly string[]
 }
 
 /** One canonical argument value: plain JSON, objects with sorted keys. */
@@ -368,11 +375,35 @@ const spec = (name: DesktopTool): ToolSpec => DESKTOP_SPECS[name]
 export function isDesktopTool(name: string): name is DesktopTool {
   return Object.hasOwn(DESKTOP_SPECS, name)
 }
+/** What a computer on this Mac's own desktop never offers (§6.5). */
+const HOST_WITHHELD: ReadonlySet<string> = new Set([
+  'qianmo_computer_clipboard_read',
+  'qianmo_computer_clipboard_write',
+  'qianmo_computer_focus',
+])
+/**
+ * The computer tools that need `window` on this Mac's own desktop, so input
+ * and capture stay inside the listed applications' windows.
+ */
+export const DESKTOP_HOST_WINDOWED: ReadonlySet<string> = new Set([
+  'qianmo_computer_screenshot',
+  'qianmo_computer_zoom',
+  'qianmo_computer_observe',
+  'qianmo_computer_actions',
+  'qianmo_computer_click',
+  'qianmo_computer_type',
+  'qianmo_computer_key',
+  'qianmo_computer_scroll',
+  'qianmo_computer_menu',
+])
 export function desktopTools(
-  resource?: Pick<DesktopResource, 'browser' | 'computer'>,
+  resource?: Pick<DesktopResource, 'browser' | 'computer' | 'hostApps'>,
 ): DesktopTool[] {
   return (Object.keys(DESKTOP_SPECS) as DesktopTool[]).filter(name =>
-    name.startsWith('qianmo_browser_') ? resource?.browser : resource?.computer,
+    name.startsWith('qianmo_browser_')
+      ? resource?.browser
+      : resource?.computer &&
+        (resource.hostApps === undefined || !HOST_WITHHELD.has(name)),
   )
 }
 /**
@@ -400,7 +431,9 @@ export function isDesktopInvocationId(id: unknown): id is string {
  */
 export function desktopUnavailable(
   name: DesktopTool,
-  resource: Pick<DesktopResource, 'browser' | 'computer'> | undefined,
+  resource:
+    | Pick<DesktopResource, 'browser' | 'computer' | 'hostApps'>
+    | undefined,
   agentKind: string,
   platform: NodeJS.Platform = process.platform,
 ): string | undefined {
@@ -409,9 +442,15 @@ export function desktopUnavailable(
   if (desktopTools(resource).includes(name)) return undefined
   if (name.startsWith('qianmo_browser_'))
     return '专属浏览器没有开启或已停用：请在控制台「云端电脑」页为这个智能体打开「专属浏览器」后重试'
-  return platform === 'linux'
-    ? '专属电脑没有开启或已停用：请在控制台「云端电脑」页为这个智能体打开「专属电脑」（节点需装有 Xvfb 与 xauth）后重试'
-    : `专属电脑只在 Linux 节点上提供（需要 Xvfb 与 xauth）；本节点是 ${platform}，只能开专属浏览器`
+  if (resource?.computer && resource.hostApps !== undefined)
+    return name === 'qianmo_computer_focus'
+      ? '本机桌面不切换主人的前台窗口：带 window 直接在后台操作'
+      : '本机桌面不提供剪贴板：那是主人的剪贴板'
+  if (platform === 'linux')
+    return '专属电脑没有开启或已停用：请在控制台「云端电脑」页为这个智能体打开「专属电脑」（节点需装有 Xvfb 与 xauth）后重试'
+  return platform === 'darwin'
+    ? '专属电脑没有开启：macOS 节点要在控制台「云端电脑」页列出允许的应用后才能操作本机桌面'
+    : `专属电脑只在 Linux 与 macOS 节点上提供；本节点是 ${platform}，只能开专属浏览器`
 }
 /** Read the host's answer to a lease reservation; anything unclear refuses. */
 export function desktopLeaseAnswer(value: string | undefined): DesktopDecision {
