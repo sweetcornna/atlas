@@ -8,7 +8,7 @@
 #   watch-hub.sh install --node <节点> --jobs <作业文件> [--from qianmo://hub/console] [--sign]
 #   watch-hub.sh run                                              # qianmo-watch.service 调它
 #
-# ── 三条接线，都不是新定的 ───────────────────────────────────────────────────
+# ── 四条接线，都不是新定的 ───────────────────────────────────────────────────
 # ① **配置根就是控制台那一份**（<根>/nodes/console/config）。`qm watch --sign` 的签名身份按
 #    配置根落盘（<config>/qianmo/identity/<--from 的 node 段>.json），print-identity 与 run
 #    必须问同一个根——拿另一个根打印出来的公钥，症状是节点端验签失败，查起来看不出是
@@ -21,6 +21,14 @@
 # ③ **先 trust，后 --sign**（console.md §10.1.1）：节点解析不出签发方公钥时，两种策略下都
 #    拒成 E_CAP_INVALID。顺序：print-identity → 每个目标节点带上 --trust hub=<公钥> 重起 →
 #    install --sign → systemctl --user start qianmo-watch.service。
+# ④ **签了消息，握手也签**：WATCH_SIGN=1 时 run 每次从 peers.conf（坐标行 public-key=，或本机
+#    节点的身份文件）现取目标节点公钥，给 qm watch 加 --trust <节点>=<公钥>，握手于是双向签名。
+#    取法与 fleet-probe.sh 的握手探针、H 腿给控制台的 --trust 同一个（beta_resolve_node_key），
+#    不抄进 watch.env——公钥只有 peers.conf 这一个出处。带 --controller（或
+#    --require-signed-handshake）的节点只收签名握手，不签的拨号拒成 signature_required。
+#    取不到公钥时 WARN 并照旧 PSK 握手，与控制台 --wake-sign 缺目标公钥时同一个姿态
+#    （console.md §4.6）。反过来，取得到公钥就要求节点回签：节点要带 --sign-handshake
+#    （--controller 已含），这与控制台唤醒/对话面对名册公钥的要求相同。
 #
 # install 只 enable、不 start：开始计时是一个有意的动作。作业文件被拷进
 # <根>/watch/jobs.json（0600）；改作业 = 改源文件后重跑 install，再 restart 单元。
@@ -53,6 +61,22 @@ assert_jobs_for_node() {
       || beta_die "作业文件里有 target 不在 ${node} 上（${one}）：一个 qm watch 进程只带 ${node} 这一把 PSK"
   done < <(job_target_nodes "$jobs")
   [ "$count" -gt 0 ] || beta_die "作业文件里一个 target 都没有：$jobs"
+}
+
+# watch_resolve_trust <节点> —— 设 WATCH_TRUST：取得到该节点公钥就是 `<节点>=<公钥>`，否则空（④）。
+# beta_load_peers 不放进 if 条件里：那里 set -e 不生效，peers.conf 读坏了要当场停。
+WATCH_TRUST=''
+watch_resolve_trust() {
+  local node="$1"
+  WATCH_TRUST=''
+  beta_load_peers
+  if beta_resolve_node_key "$node"; then
+    WATCH_TRUST="$node=$BETA_NODE_KEY"
+    beta_ok "握手签名：--trust ${WATCH_TRUST}（出处：${BETA_NODE_KEY_SOURCE}）"
+    return 0
+  fi
+  beta_warn "握手不签名（PSK）：取不到 ${node} 的公钥——${BETA_NODE_KEY_GAP}
+带 --controller 或 --require-signed-handshake 的节点会拒成 signature_required"
 }
 
 assert_from() {
@@ -125,6 +149,10 @@ cmd_install() {
   beta_ok "已写：${WATCH_CONF}、${WATCH_JOBS_FILE}、${dst}（节点 ${node}，签名 $([ "$sign" = 1 ] && printf 开 || printf 关)）"
   if [ "$sign" = '1' ]; then
     beta_say "开了 --sign：${node} 必须已经带着 --trust <print-identity 打出的那一行> 起来，否则它会拒成 E_CAP_INVALID"
+    # 这里只报一声；run 每次现取，install 不把公钥写进 watch.env。
+    watch_resolve_trust "$node"
+    [ -z "$WATCH_TRUST" ] \
+      || beta_say "握手双向签名：${node} 还要带 --sign-handshake（--controller 已含），否则 run 起来拨不通"
   else
     beta_warn '没开 --sign：默认策略的节点会拒收，--open-policy 的节点收下但 agent 不会执行（console.md §10.1.1）'
   fi
@@ -145,7 +173,12 @@ cmd_run() {
   unset QIANMO_TRANSPORT_PSK
   beta_load_psk "$(beta_peer_psk_file "$WATCH_NODE")" "${WATCH_NODE} 的传输层 PSK"
   local args=(watch --jobs "$WATCH_JOBS_FILE" --from "$WATCH_FROM")
-  [ "$WATCH_SIGN" = '1' ] && args+=(--sign)
+  # --trust 只在 --sign 下才合法（qm watch 自己也会拒）。
+  if [ "$WATCH_SIGN" = '1' ]; then
+    args+=(--sign)
+    watch_resolve_trust "$WATCH_NODE"
+    [ -z "$WATCH_TRUST" ] || args+=(--trust "$WATCH_TRUST")
+  fi
   export QIANMO_CONFIG_DIR="$BETA_CONFIG_CONSOLE"
   exec "${BETA_QM[@]}" "${args[@]}"
 }
