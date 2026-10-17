@@ -78,6 +78,7 @@ class FrontChat extends CountingChat {
     age = 0,
     running = false,
     title = id,
+    background = false,
   ): void {
     this.sessionsById.set(id, {
       id,
@@ -90,6 +91,7 @@ class FrontChat extends CountingChat {
       turnCount: 0,
       title,
       ...(running ? { running: true } : {}),
+      ...(background ? { background: true } : {}),
     })
   }
 }
@@ -303,6 +305,29 @@ describe('agents and session history', () => {
     expect(stack).toContain('data-session="sub-work"')
     expect(stack).not.toContain('data-session="current"')
     expect(stack).not.toContain('data-session="finished"')
+  })
+
+  test('picking an agent opens its latest conversation, never a background task worker', async () => {
+    const h = front()
+    h.chat.seed('talk', REVIEWER, 60_000)
+    h.chat.seed('worker', REVIEWER, 0, true, '后台任务：周报（task-1）', true)
+    h.chat.seed('only-worker', WRITER, 0, true, '后台任务：x（task-2）', true)
+    const side = await (
+      await h.handle(browse('/fragments/chat/front/side?active=talk', ADMIN))
+    ).text()
+    const agents = region(side, 'fx-agents', '</section>')
+    const row = (address: string) =>
+      new RegExp(
+        `<div class="fx-agent-row[^"]*" data-address="${address}"[^>]*>`,
+      ).exec(agents)?.[0] ?? ''
+    expect(row(REVIEWER.address)).toContain('data-latest="talk"')
+    // An agent with only a worker session opens a new conversation.
+    expect(row(WRITER.address)).not.toContain('data-latest')
+    // Their work still shows: busy rows and the strip.
+    expect(row(WRITER.address)).toContain(' is-busy')
+    expect(row(REVIEWER.address)).toContain(' is-busy')
+    const stack = side.slice(side.indexOf('id="fx-stack"'))
+    expect(stack).toContain('data-session="worker"')
   })
 
   test('rolling history windows include their boundaries; current-agent filtering starts hidden for others', async () => {
