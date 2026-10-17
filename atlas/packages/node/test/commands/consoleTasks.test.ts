@@ -38,6 +38,7 @@ function tasks(
     deliveryRetryMs?: (attempts: number) => number
     stopTask?: (target: string, taskId: string) => Promise<boolean>
     now?: () => number
+    scheduled?: (id: string) => boolean
     /** More result listeners, by key, registered before the book starts. */
     listeners?: Record<
       string,
@@ -204,6 +205,19 @@ describe('starting', () => {
       '[当前会话的后台任务]',
     ])
       expect(prompt).not.toContain(marker)
+  })
+
+  test('a schedule’s session starts no task and is told why', async () => {
+    const parent = await foreground()
+    const book = tasks({ scheduled: id => id === parent })
+    const refused = await call(book, 'start', parent, {
+      title: 't',
+      instructions: 'i',
+    })
+    expect(refused.ok ? '' : refused.message).toBe(
+      '定时任务的会话不能开后台任务，结果没有人接收；请在这一轮里直接完成',
+    )
+    expect(workerSessions()).toEqual([])
   })
 
   test('a task can run on another agent (another runtime or model)', async () => {

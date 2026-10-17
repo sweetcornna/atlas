@@ -531,6 +531,18 @@ export class ConsoleSchedules implements SchedulesPort {
     return this.#schedules.get(id)?.target
   }
 
+  /**
+   * Whether a console session is a schedule's own (current, running, or one
+   * a past run used): no one reads it live, so it starts no background tasks.
+   */
+  owns(sessionId: string): boolean {
+    for (const schedule of this.#schedules.values())
+      if (schedule.sessionId === sessionId) return true
+    for (const active of this.#active.values())
+      if (active.view.sessionId === sessionId) return true
+    return this.#runs.some(run => run.sessionId === sessionId)
+  }
+
   channelTenant(id: string): string | null | undefined {
     const channel = this.#channels.get(id)
     return channel === undefined ? undefined : (channel.tenant ?? null)

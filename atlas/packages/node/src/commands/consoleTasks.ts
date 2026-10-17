@@ -230,6 +230,8 @@ export interface ConsoleTasksOptions {
   readonly stopTask?: (target: string, taskId: string) => Promise<boolean>
   /** False for conversations that may not start tasks (channel groups, members). */
   readonly foreground?: (sessionId: string) => boolean
+  /** True for a schedule's session (P24): its turns start no tasks. */
+  readonly scheduled?: (sessionId: string) => boolean
   /** Sessions that are the same conversation (a chat after `/new`); tasks follow it. */
   readonly related?: (sessionId: string) => readonly string[]
   /**
@@ -655,6 +657,11 @@ export class ConsoleTasks {
         : this.#readUpdates(worker)
     }
     if (worker !== undefined) return refused('后台子任务不能再开或管理其他任务')
+    // Nobody reads a schedule's session live: a result would reach no one.
+    if (this.#options.scheduled?.(sessionId) === true)
+      return refused(
+        '定时任务的会话不能开后台任务，结果没有人接收；请在这一轮里直接完成',
+      )
     if (this.#options.foreground?.(sessionId) === false)
       return refused('后台任务只对主人的私聊和控制台对话开放')
     const family = this.#family(sessionId)

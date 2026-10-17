@@ -730,6 +730,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           ...(usage === undefined ? {} : { usage }),
           ...(tenancy === undefined ? {} : { tenancy }),
           stopTask: stopTurn,
+          scheduled: (sessionId): boolean =>
+            schedules?.owns(sessionId) ?? false,
           foreground: (sessionId): boolean =>
             channels?.foreground(sessionId) ?? true,
           related: (sessionId): readonly string[] =>
