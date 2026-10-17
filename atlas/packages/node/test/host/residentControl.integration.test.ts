@@ -273,6 +273,11 @@ test('signed hub and real resident complete control, upstream and appended omp t
     expect(await hub.request('worker', 'node.ping', {}, 'admin')).toMatchObject(
       { ok: true },
     )
+    // Looking at the cloud computer's screen is read-only: allowed under ESTOP,
+    // so the answer is the desktop's own (nothing is running), not E_BUSY.
+    expect(
+      await hub.request('worker', 'desktop.view', { agent: 'main' }, 'admin'),
+    ).toMatchObject({ ok: false, code: 'rejected' })
     fs.renameSync(sentinel, `${sentinel}.disabled`)
     expect(await hub.request('worker', 'effects.write', {}, 'admin')).toEqual({
       ok: true,

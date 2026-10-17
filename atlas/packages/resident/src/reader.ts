@@ -85,6 +85,14 @@ export interface ResidentMailboxReaderOptions {
    *    being run.
    */
   readonly deadlineOf?: (message: ResidentMailboxMessage) => number | undefined
+  /**
+   * The batch is a hub's background sub-agent turn, so the node-wide gate
+   * lets other turns go first (`NodeTurnRequest.background`). Injected for the
+   * same reason as {@link correlationId}: the envelope is the host's business.
+   */
+  readonly backgroundOf?: (
+    messages: readonly ResidentMailboxMessage[],
+  ) => boolean
   readonly timings?: ResidentTimingRecorder
   readonly gate?: NodeTurnGate
   /**
@@ -254,6 +262,9 @@ export class ResidentMailboxReader {
           ...(batchDeadlineAt === undefined
             ? {}
             : { deadlineAt: batchDeadlineAt }),
+          ...(this.#options.backgroundOf?.(snapshot) === true
+            ? { background: true }
+            : {}),
         },
       )
       return {
@@ -365,6 +376,7 @@ export class ResidentMailboxReader {
     pending: PendingAdmission,
     options: {
       readonly deadlineAt?: number
+      readonly background?: boolean
       readonly onSettled?: () => void
     } = {},
   ): Promise<number> {
@@ -428,6 +440,7 @@ export class ResidentMailboxReader {
           ...(options.deadlineAt === undefined
             ? {}
             : { deadlineAt: options.deadlineAt }),
+          ...(options.background === true ? { background: true } : {}),
         },
       )
       .catch(async error => {

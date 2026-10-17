@@ -122,6 +122,23 @@ function text(value: string, isError = false): CallToolResult {
   }
 }
 
+/** The host's text and image parts as MCP content; anything else is dropped. */
+function mcpContent(value: unknown): CallToolResult['content'] {
+  const content: CallToolResult['content'] = []
+  for (const part of Array.isArray(value) ? value : []) {
+    const item = part as Record<string, unknown>
+    if (item.type === 'text' && typeof item.text === 'string')
+      content.push({ type: 'text', text: item.text })
+    else if (
+      item.type === 'image' &&
+      typeof item.data === 'string' &&
+      typeof item.mimeType === 'string'
+    )
+      content.push({ type: 'image', data: item.data, mimeType: item.mimeType })
+  }
+  return content
+}
+
 function buildServer(link: HostLink): Server {
   const server = new Server(
     { name: 'qianmo', version: buildVersion() },
@@ -141,11 +158,16 @@ function buildServer(link: HostLink): Server {
         args: params.arguments ?? {},
       })
       if (typeof reply.error === 'string') return text(reply.error, true)
-      const result = reply.result as { ok?: unknown; text?: unknown }
-      return text(
-        typeof result?.text === 'string' ? result.text : '',
-        result?.ok !== true,
-      )
+      const result = reply.result as {
+        ok?: unknown
+        text?: unknown
+        content?: unknown
+      }
+      const isError = result?.ok !== true
+      const content = mcpContent(result?.content)
+      if (content.length > 0)
+        return { content, ...(isError ? { isError: true } : {}) }
+      return text(typeof result?.text === 'string' ? result.text : '', isError)
     },
   )
   return server

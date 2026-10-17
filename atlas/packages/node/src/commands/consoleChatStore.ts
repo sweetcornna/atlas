@@ -26,10 +26,10 @@
  * **That sentence stopped being the whole truth when progress rows arrived**
  * (`variant: 'notice'`): those are written by the node, not by a person, up to
  * a couple of dozen per turn. What keeps the assumption standing is a ceiling
- * on the other side rather than compaction on this one — `MAX_NOTICES_PER_SESSION`
- * in `consoleChat.ts`, whose note carries the arithmetic. Raising that number
- * without revisiting this paragraph is how a log with no compaction becomes a
- * log with no bound.
+ * on the other side rather than compaction on this one — `MAX_STEPS_PER_SESSION`
+ * and `MAX_AGENT_NOTICES_PER_SESSION` in `consoleChat.ts`, whose notes carry
+ * the arithmetic. Raising either number without revisiting this paragraph is
+ * how a log with no compaction becomes a log with no bound.
  *
  * ## What is *not* here
  *
@@ -166,6 +166,9 @@ function toTurn(value: unknown): ChatTurn | null {
       ? {}
       : { detail: str(value['detail']) as string }),
     ...(value['redelivered'] === true ? { redelivered: true as const } : {}),
+    // P29：后台子任务的那一行，与节点说这一轮压缩过。
+    ...(value['background'] === true ? { background: true as const } : {}),
+    ...(value['compacted'] === true ? { compacted: true as const } : {}),
     // P18.20。认不出的命令名按一句话处理，理由同上。
     ...commandOf(value['command']),
   }

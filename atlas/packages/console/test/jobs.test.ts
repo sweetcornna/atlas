@@ -271,12 +271,14 @@ describe('the JSON face and the fragment', () => {
 
   test("the area's API heads are one table, so a second head is one more entry", () => {
     // P17.4's handoff is that second head (`routes/handoff.ts`), P24's
-    // schedules and channels the next two (`routes/schedulesApi.ts`).
+    // schedules and channels the next two (`routes/schedulesApi.ts`), P29's
+    // background tasks the last (`routes/tasksApi.ts`).
     expect(jobsRoute.api?.heads).toEqual([
       'jobs',
       'handoff',
       'schedules',
       'channels',
+      'tasks',
     ])
   })
 })

@@ -10,14 +10,21 @@
  * binary and are recycled when idle. npm's cache and config live under the
  * qianmo config root too: nothing here reads or writes the user's own
  * `~/.npm`, `~/.claude` or `~/.codex`.
+ *
+ * A version is first installed into a scratch prefix and must pass the
+ * compatibility check (`runtimes/smoke.ts`: the node's own arguments, the
+ * `qianmo` tool bridge) before it goes into the managed prefix; one that
+ * fails leaves the node on the version it had, and the update says why.
  */
 
-import { existsSync, mkdirSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import * as path from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
 import type { ControlOutcome } from '@qianmo/protocol'
 import type { ControlHandler } from './control.js'
 import type { ExternalRuntimeKind } from './runtimes/channel.js'
+import { runtimeSmoke } from './runtimes/smoke.js'
 
 export const RUNTIME_PACKAGES: Readonly<Record<ExternalRuntimeKind, string>> = {
   'claude-code': '@anthropic-ai/claude-code',
@@ -99,6 +106,11 @@ export interface RuntimeUpdateOptions {
   readonly npm?: string
   /** A new binary is in place; idle children of this runtime may be recycled. */
   readonly onInstalled?: (kind: ExternalRuntimeKind) => void
+  /** The compatibility check: `null` when `bin` works, else why not. */
+  readonly smoke?: (
+    kind: ExternalRuntimeKind,
+    bin: string,
+  ) => Promise<string | null>
 }
 
 function isKind(value: unknown): value is ExternalRuntimeKind {
@@ -131,9 +143,13 @@ export function runtimeControl(
   options: RuntimeUpdateOptions = {},
 ): ControlHandler {
   const run = options.run ?? runCommand
-  const version = async (kind: ExternalRuntimeKind) => {
+  const smoke = options.smoke ?? runtimeSmoke
+  const version = async (
+    kind: ExternalRuntimeKind,
+    bin = runtimeBin(kind, options.bins),
+  ) => {
     try {
-      const result = await run([runtimeBin(kind, options.bins), '--version'], {
+      const result = await run([bin, '--version'], {
         env: env(),
         timeoutMs: 15_000,
       })
@@ -182,19 +198,53 @@ export function runtimeControl(
       recursive: true,
       mode: 0o700,
     })
-    const installed = await run(
-      [
-        options.npm ?? 'npm',
-        'install',
-        '--prefix',
-        prefix,
-        '--save-exact',
-        '--no-audit',
-        '--no-fund',
-        `${RUNTIME_PACKAGES[kind]}@${wanted}`,
-      ],
-      { env: env(), timeoutMs: 10 * 60_000 },
-    ).catch(() => ({ code: -1, stdout: '' }))
+    const install = (into: string, timeoutMs: number) =>
+      run(
+        [
+          options.npm ?? 'npm',
+          'install',
+          '--prefix',
+          into,
+          '--save-exact',
+          '--no-audit',
+          '--no-fund',
+          `${RUNTIME_PACKAGES[kind]}@${wanted}`,
+        ],
+        { env: env(), timeoutMs },
+      ).catch(() => ({ code: -1, stdout: '' }))
+    // Scratch prefix first; the managed one only gets a version that passed.
+    // The budget stays inside the hub's 11 minutes for one update.
+    const stage = qianmoConfigPath('runtimes', `npm-stage-${randomUUID()}`)
+    try {
+      mkdirSync(stage, { recursive: true, mode: 0o700 })
+      if ((await install(stage, 6 * 60_000)).code !== 0)
+        return {
+          ok: false,
+          code: 'unreachable',
+          message: `npm 安装 ${RUNTIME_PACKAGES[kind]}@${wanted} 失败`,
+        }
+      const candidate = path.join(stage, 'node_modules', '.bin', COMMANDS[kind])
+      const staged = await version(kind, candidate)
+      if (staged !== wanted)
+        return {
+          ok: false,
+          code: 'unreachable',
+          message: `安装后版本是 ${staged ?? '未知'}，不是 ${wanted}`,
+        }
+      const reason = await smoke(kind, candidate).catch((error: unknown) =>
+        error instanceof Error ? error.message : String(error),
+      )
+      if (reason !== null)
+        return {
+          ok: false,
+          code: 'refused',
+          message: `${wanted} 没有通过兼容检查，节点继续用原来的版本：${reason}`,
+        }
+    } finally {
+      rmSync(stage, { recursive: true, force: true })
+    }
+    // From npm's cache now: the same files that passed.
+    const installed = await install(prefix, 3 * 60_000)
     if (installed.code !== 0)
       return {
         ok: false,

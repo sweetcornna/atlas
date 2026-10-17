@@ -30,9 +30,11 @@ import {
   type ConnectorsSnapshot,
   type ConnectorView,
   type DesktopActionView,
+  type DesktopApps,
   type DesktopConfirm,
   type DesktopNodeView,
   type DesktopPort,
+  type DesktopScreenView,
   type ExtensionDraft,
   type ExtensionsPort,
   type ExtensionsSnapshot,
@@ -1156,13 +1158,32 @@ export class FakeHandoffDevices implements HandoffDevicesPort {
 }
 
 /** Three agents' desktops: one running on Linux, one off on macOS, one away. */
+/** A 1×1 PNG: the smallest screenshot a browser will draw. */
+export const DESKTOP_PIXEL_PNG =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+
+/**
+ * 云端电脑: tokyo-1/planner is a Linux private desktop running with every
+ * §6 field; osaka-1/writer and berlin-1/helper are what a node from before
+ * §6 sends (no desktop facts); kyoto-1/designer is a macOS host desktop with
+ * no applications listed yet.
+ */
 export class FakeDesktop implements DesktopPort {
   readonly calls: string[] = []
   units: DesktopNodeView[]
   failList = false
+  /** The latest screenshot per `node/agent`; absent is none. */
+  readonly screens = new Map<string, DesktopScreenView | null>()
+  /** What `view` answers instead, e.g. a node too old for `desktop.view`. */
+  failView: ConsoleFailure | null = null
 
   constructor(private readonly now: () => number) {
     const at = now()
+    this.screens.set('tokyo-1/planner', {
+      at: at - 3_000,
+      mimeType: 'image/png',
+      data: DESKTOP_PIXEL_PNG,
+    })
     this.units = [
       {
         node: 'tokyo-1',
@@ -1182,6 +1203,14 @@ export class FakeDesktop implements DesktopPort {
           state: 'running',
           display: ':12',
           reason: null,
+          mode: 'private',
+          windowManager: 'openbox',
+          accessibility: true,
+          confined: true,
+          apps: ['org.gnome.TextEditor', 'org.gnome.Calculator', 'firefox-esr'],
+          terminal: false,
+          memoryBytes: 327_155_712,
+          memoryLimitBytes: 1_610_612_736,
         },
         confirm: 'sensitive',
         lastActionAt: at - 240_000,
@@ -1236,6 +1265,38 @@ export class FakeDesktop implements DesktopPort {
         actions24h: 0,
         confirmed24h: 0,
       },
+      {
+        node: 'kyoto-1',
+        agent: 'designer',
+        reachable: true,
+        platform: 'darwin',
+        browser: {
+          enabled: true,
+          state: 'running',
+          profileBytes: 64_000_000,
+          startedAt: at - 600_000,
+          reason: null,
+        },
+        computer: {
+          enabled: false,
+          supported: true,
+          state: 'off',
+          display: null,
+          reason: null,
+          mode: 'host',
+          windowManager: null,
+          accessibility: false,
+          confined: false,
+          apps: [],
+          terminal: false,
+          memoryBytes: null,
+          memoryLimitBytes: null,
+        },
+        confirm: 'autonomous',
+        lastActionAt: null,
+        actions24h: 0,
+        confirmed24h: 0,
+      },
     ]
   }
 
@@ -1246,12 +1307,25 @@ export class FakeDesktop implements DesktopPort {
     return ok<readonly DesktopNodeView[]>(this.units)
   }
 
+  async view(ref: AgentRef) {
+    this.calls.push(`view ${ref.node}/${ref.agent}`)
+    if (this.failView !== null)
+      return { ok: false as const, failure: this.failView }
+    if (
+      !this.units.some(one => one.node === ref.node && one.agent === ref.agent)
+    )
+      return failed<DesktopScreenView | null>('not_found', 'no such agent')
+    return ok(this.screens.get(`${ref.node}/${ref.agent}`) ?? null)
+  }
+
   async set(
     ref: AgentRef,
     change: {
       readonly browser?: boolean
       readonly computer?: boolean
       readonly confirm?: DesktopConfirm
+      readonly apps?: DesktopApps
+      readonly terminal?: boolean
     },
     actor: DirectionActor,
   ) {
@@ -1266,6 +1340,15 @@ export class FakeDesktop implements DesktopPort {
     if (change.computer === true && !found.computer.supported) {
       return failed<DesktopNodeView>('rejected', '这个节点不提供专属电脑')
     }
+    // §6.5, as the node holds it: a host desktop takes a list of bundle ids.
+    const apps = change.apps ?? found.computer.apps
+    if (
+      found.computer.mode === 'host' &&
+      (change.apps !== undefined || change.computer === true) &&
+      !(Array.isArray(apps) && apps.length > 0 && apps.length <= 20)
+    ) {
+      return failed<DesktopNodeView>('invalid', 'apps 本机桌面只接受应用列表')
+    }
     const at = this.now()
     const view: DesktopNodeView = {
       ...found,
@@ -1278,15 +1361,18 @@ export class FakeDesktop implements DesktopPort {
               state: change.browser ? 'running' : 'off',
               startedAt: change.browser ? at : null,
             },
-      computer:
-        change.computer === undefined
+      computer: {
+        ...(change.computer === undefined
           ? found.computer
           : {
               ...found.computer,
               enabled: change.computer,
               state: change.computer ? 'running' : 'off',
               display: change.computer ? ':13' : null,
-            },
+            }),
+        ...(change.apps === undefined ? {} : { apps: change.apps }),
+        ...(change.terminal === undefined ? {} : { terminal: change.terminal }),
+      },
       confirm: change.confirm ?? found.confirm,
     }
     this.units = this.units.map(one => (one === found ? view : one))
@@ -2038,8 +2124,23 @@ export class FakeExtensions implements ExtensionsPort {
       body: null,
       source: null,
       nodes: [
-        { node: 'tokyo-1', state: 'applied', detail: null, at: 1 },
-        { node: 'osaka-2', state: 'failed', detail: '命令找不到', at: 1 },
+        {
+          node: 'tokyo-1',
+          state: 'applied',
+          detail: null,
+          at: 1,
+          agents: [{ agent: 'planner', state: 'applied', detail: null }],
+        },
+        {
+          node: 'osaka-2',
+          state: 'failed',
+          detail: 'coder：命令找不到',
+          at: 1,
+          agents: [
+            { agent: 'coder', state: 'failed', detail: '命令找不到' },
+            { agent: 'writer', state: 'applied', detail: null },
+          ],
+        },
       ],
       updatedAt: 1,
       updatedBy: 'u:ops',
@@ -2060,7 +2161,9 @@ export class FakeExtensions implements ExtensionsPort {
       approval: 'ask',
       body: '按项目分组列出进展',
       source: null,
-      nodes: [{ node: 'tokyo-1', state: 'applied', detail: null, at: 1 }],
+      nodes: [
+        { node: 'tokyo-1', state: 'applied', detail: null, at: 1, agents: [] },
+      ],
       updatedAt: 1,
       updatedBy: 'u:ops',
     },

@@ -6,23 +6,33 @@ import * as path from 'node:path'
 import { createHash, randomUUID, randomBytes } from 'node:crypto'
 import { ptree } from '@oh-my-pi/pi-utils'
 import { Process } from '@oh-my-pi/pi-natives'
-import { qianmoConfigPath } from '@qianmo/paths'
+import {
+  caDir,
+  memoryBaseDir,
+  nodeHomeDir,
+  protectedConfigRoots,
+  qianmoConfigDir,
+  qianmoConfigPath,
+} from '@qianmo/paths'
 import type {
+  DesktopApps,
   DesktopNodeView,
   DesktopActionView,
   DesktopConfirm,
+  DesktopScreenView,
 } from '@qianmo/console'
 import {
   desktopArgs,
-  desktopObservation,
+  desktopNeedsApproval,
   desktopOp,
   isDesktopInvocationId,
   isDesktopTool,
+  type DesktopArgs,
   type DesktopDecision,
   type DesktopResource,
   type DesktopTool,
 } from '@qianmo/extension/desktopPolicy'
-import type { AuthzCall } from '@qianmo/resident'
+import { ResidentHardline, type AuthzCall } from '@qianmo/resident'
 import { isValidSegment, type ControlOutcome } from '@qianmo/protocol'
 import type { ControlHandler } from './control.js'
 import type { ResidentAuthzEvent } from './residentAuthorization.js'
@@ -31,6 +41,30 @@ import {
   readTextIfExists,
   writePrivateJson,
 } from '../providers/store.js'
+import {
+  DESKTOP_APPLICATION_DIRS,
+  allowedDesktopApps,
+  desktopApplications,
+  isDesktopAppsPolicy,
+  type DesktopApp,
+} from './desktopApps.js'
+import {
+  AT_SPI_BUS_LAUNCHERS,
+  DESKTOP_BWRAP_PROBE,
+  DESKTOP_HOME_DIRS,
+  DESKTOP_WINDOW_MANAGERS,
+  desktopMemory,
+  desktopSandboxArgv,
+  desktopSandboxEnv,
+  desktopScopeArgv,
+  OPENBOX_CONFIG,
+  type DesktopSandbox,
+} from './desktopSandbox.js'
+import {
+  SCREEN_VIEW_BASE64,
+  shrinkScreenshot,
+  type ScreenEncoder,
+} from './desktopScreen.js'
 
 export interface DesktopProcess {
   readonly pid: number
@@ -50,6 +84,11 @@ export interface DesktopLauncher {
     env: Record<string, string | undefined>,
   ): Promise<number>
   reap(pid: number, marker: string): Promise<void>
+  /**
+   * Resident memory of everything these started processes run, in bytes;
+   * `null` (or no method) when the platform cannot tell.
+   */
+  memory?(pids: readonly number[]): number | null
 }
 const alive = (pid: number) => {
   for (const target of [-pid, pid]) {
@@ -91,13 +130,18 @@ export const desktopLauncher: DesktopLauncher = {
     }
   },
   async run(program, argv, env) {
+    // Probes and xauth finish at once; a hung one counts as a failure.
     const proc = Bun.spawn([program, ...argv], {
       env,
       stdout: 'ignore',
       stderr: 'ignore',
+      timeout: 10_000,
     })
     return await proc.exited
   },
+  // ptree supervises each command from a subreaper on Linux; desktopMemory
+  // leaves those roots out and sums what runs under them.
+  memory: pids => (process.platform === 'linux' ? desktopMemory(pids) : null),
   async reap(pid, marker) {
     if (!alive(pid)) return
     // A durable PID is not identity: refuse to kill a reused PID.
@@ -144,7 +188,38 @@ interface ResourceState {
   lastActionAt: number | null
   cdpUrl: string | null
   display: string | null
-  pids: { pid: number; marker: string }[]
+  /** Every started process; `app` marks what `open_app` opened. */
+  pids: { pid: number; marker: string; app?: true }[]
+  apps: DesktopApps
+  terminal: boolean
+  /** The private desktop's session bus address, when one runs. */
+  bus?: string | null
+  windowManager?: string | null
+  accessibility?: boolean
+  /** Whether the private desktop's processes run in bubblewrap. */
+  confined?: boolean | null
+  /** Why a running unit runs with less than it was asked for. */
+  notes?: { browser: string | null; computer: string | null } | null
+  memoryBytes?: number | null
+}
+/** One started process; applications may exit without stopping the desktop. */
+interface Managed {
+  readonly proc: DesktopProcess
+  readonly app: boolean
+}
+/** How one running resource starts its processes. */
+interface Session {
+  /** The node-side environment Xvfb, Chromium headless and `systemd-run` get. */
+  readonly env: Record<string, string | undefined>
+  readonly scope: boolean
+  /** Where sandboxed processes may look; null without usable bubblewrap. */
+  sandbox: Omit<DesktopSandbox, 'env'> | null
+  desktop: {
+    readonly home: string
+    readonly display: string
+    readonly xauthority: string
+    bus: string | null
+  } | null
 }
 interface Operation {
   digest: string
@@ -166,6 +241,8 @@ interface Lease {
   authorizing: boolean
   authorized: boolean
   committed: boolean
+  /** The host already listed or opened applications for this call. */
+  carried: boolean
   host: string | null
   observedTargetDigest: string | null
   requestId: string | null
@@ -185,12 +262,72 @@ interface Options {
   readonly removeData?: (root: string) => void
   readonly invalidated?: (agent: string) => void
   readonly changed?: (agent: string) => Promise<void>
+  /** Resident memory cap of one resource (`--desktop-memory-mib`), bytes. */
+  readonly memoryBytes?: number
+  /** The agent's workspace, mounted into the private desktop. */
+  readonly workspace?: (agent: string) => string | undefined
+  /** `--allow-workspace-edits`: the workspace is writable there too. */
+  readonly workspaceWritable?: boolean
+  /** The resident guard's protected roots and memory root, hidden there. */
+  readonly protectedRoots?: readonly string[]
+  /** Desktop entry directories, highest precedence first (tests). */
+  readonly applicationDirs?: readonly string[]
+  /** How `desktop.view` scales a screenshot down (tests). */
+  readonly screenEncoders?: readonly ScreenEncoder[]
 }
 const hash = (input: unknown) =>
   createHash('sha256').update(JSON.stringify(input)).digest('hex')
 const GRANTED: DesktopDecision = { ok: true }
 const refuse = (reason: string): DesktopDecision => ({ ok: false, reason })
 const UNIT = { browser: '专属浏览器', computer: '专属电脑' } as const
+/** The two tools whose effect the host carries out itself (§6.2). */
+const APPS_TOOL = 'qianmo_computer_apps'
+const OPEN_APP_TOOL = 'qianmo_computer_open_app'
+const DEFAULT_MEMORY_BYTES = 1536 * 1024 * 1024
+/** Applications one private desktop keeps open at a time. */
+const APP_LIMIT = 8
+const SCREEN_BYTES = 4 * 1024 * 1024
+const SCREEN_TYPES: Readonly<Record<string, DesktopScreenView['mimeType']>> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+}
+const NO_BWRAP =
+  '打开应用需要 bubblewrap：本节点没装 bubblewrap，或它建不了用户命名空间（Ubuntu 24.04 等默认 kernel.apparmor_restrict_unprivileged_userns=1 时非特权 bwrap 会被拒），私有桌面没有隔离'
+const NOTE_NO_BWRAP = `${NO_BWRAP}；不许打开应用，浏览器保持无头`
+/**
+ * A bundle id the operator lists for this Mac's own desktop (§6.5); at most
+ * {@link HOST_APPS_MAX} of them.
+ */
+const BUNDLE_ID = /^[A-Za-z0-9][A-Za-z0-9-]*(\.[A-Za-z0-9-]+)+$/
+const HOST_APPS_MAX = 20
+/** Terminal applications on macOS: a shell on the owner's account. */
+const HOST_TERMINALS: ReadonlySet<string> = new Set([
+  'com.apple.Terminal',
+  'com.googlecode.iterm2',
+  'com.mitchellh.ghostty',
+  'dev.warp.Warp-Stable',
+  'io.alacritty',
+  'net.kovidgoyal.kitty',
+  'co.zeit.hyper',
+  'com.github.wez.wezterm',
+])
+const NOTE_HEADLESS =
+  '需要 bubblewrap 才能在专属电脑的显示上有头运行：浏览器保持无头'
+const NOTE_HEADED_FAILED =
+  '有头浏览器在 bubblewrap 里没能启动（多半是不许嵌套用户命名空间，Chromium 自身的沙箱起不来）：已退回无头'
+const NOTE_NO_BUS = '私有 D-Bus 总线没能启动：无障碍不可用'
+const CHROME_LOCKS = ['SingletonLock', 'SingletonSocket', 'SingletonCookie']
+function isImage(bytes: Uint8Array, type: DesktopScreenView['mimeType']) {
+  const ascii = (from: number, to: number) =>
+    String.fromCharCode(...bytes.subarray(from, to))
+  return type === 'image/png'
+    ? ascii(1, 4) === 'PNG' && bytes[0] === 0x89
+    : type === 'image/jpeg'
+      ? bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+      : ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP'
+}
 const stale = (unit: 'browser' | 'computer') =>
   unit === 'browser'
     ? '专属浏览器已重启或回收，资源代次变了：先调用 qianmo_browser_tabs 取当前的标签句柄再重试'
@@ -213,7 +350,10 @@ export class NodeDesktop {
   readonly #options: Options
   readonly #launcher: DesktopLauncher
   readonly #states = new Map<string, ResourceState>()
-  readonly #processes = new Map<string, DesktopProcess[]>()
+  readonly #processes = new Map<string, Managed[]>()
+  readonly #sessions = new Map<string, Session>()
+  /** Why the owner cannot see a resource's screen, until a view succeeds. */
+  readonly #viewReasons = new Map<string, string>()
   readonly #leases = new Map<string, Lease>()
   readonly #operations = new Map<string, Operation>()
   readonly #actions: DesktopActionView[] = []
@@ -222,27 +362,58 @@ export class NodeDesktop {
   readonly #now: () => number
   readonly #file = qianmoConfigPath('qianmo', 'desktop-ledger.json')
   readonly #ready: Promise<void>
+  readonly #memoryLimit: number
+  /**
+   * The resident guard's path rules. Approvals already apply them, but an
+   * `autonomous` call without `confirm` never asks; typed text, clipboard
+   * text and every nested string are checked at reserve either way.
+   */
+  readonly #hardline: ResidentHardline
   #queue: Promise<unknown> = Promise.resolve()
   #timer: Timer
   #closed = false
   #sweeping = false
+  // Probed once, on the first start that needs them (§6.3).
+  #scope: Promise<boolean> | undefined
+  #bwrap: Promise<boolean> | undefined
+  #bwrapUsable: boolean | undefined
   constructor(options: Options) {
     if (
       !isValidSegment(options.node) ||
       options.agents.some(agent => !isValidSegment(agent))
     )
       throw new Error('Invalid desktop owner')
+    if (
+      options.memoryBytes !== undefined &&
+      (!Number.isSafeInteger(options.memoryBytes) || options.memoryBytes <= 0)
+    )
+      throw new Error('Invalid desktop memory limit')
     this.#options = options
     this.#now = options.now ?? Date.now
     this.#launcher = options.launcher ?? desktopLauncher
+    this.#memoryLimit = options.memoryBytes ?? DEFAULT_MEMORY_BYTES
+    this.#hardline = new ResidentHardline({
+      stateRoots: protectedConfigRoots(),
+      protectedRoots: [
+        ...protectedConfigRoots(),
+        ...(options.protectedRoots ?? []),
+      ],
+    })
     const text = readTextIfExists(this.#file)
     if (text !== undefined) {
       const saved = JSON.parse(text) as {
-        states: ResourceState[]
+        states: (Omit<ResourceState, 'apps' | 'terminal'> &
+          Partial<Pick<ResourceState, 'apps' | 'terminal'>>)[]
         operations: [string, Operation][]
         actions: DesktopActionView[]
       }
-      for (const state of saved.states) {
+      for (const stored of saved.states) {
+        // Ledgers written before §6.3 carry no application policy.
+        const state: ResourceState = {
+          ...stored,
+          apps: stored.apps ?? 'all',
+          terminal: stored.terminal ?? false,
+        }
         if (options.agents.includes(state.agent))
           this.#states.set(state.agent, state)
         else this.#orphans.push(state)
@@ -276,6 +447,8 @@ export class NodeDesktop {
           cdpUrl: null,
           display: null,
           pids: [],
+          apps: 'all',
+          terminal: false,
         })
     this.#ready = this.#reap()
     this.#timer = setInterval(() => {
@@ -303,12 +476,25 @@ export class NodeDesktop {
       computer: s.computer && s.state === 'running',
       cdpUrl: s.cdpUrl,
       display: s.display,
-      xauthority: s.computer
-        ? path.join(this.#root(agent), 'Xauthority')
-        : null,
+      xauthority:
+        s.computer && !this.#hostDesktop()
+          ? path.join(this.#root(agent), 'Xauthority')
+          : null,
       downloads: path.join(this.#root(agent), 'downloads'),
       tab: `${s.resourceId}:${s.resourceEpoch}:main`,
+      bus: s.computer && s.state === 'running' ? (s.bus ?? null) : null,
+      // Only what the agent may use: a terminal the operator listed stays
+      // out, or its windows (the owner's shell) would take input (§6.5).
+      ...(this.#hostDesktop() && s.computer && Array.isArray(s.apps)
+        ? { hostApps: this.#allowed(s).map(app => app.id) }
+        : {}),
     }
+  }
+  /** Forget what the last session ran with; its processes are gone. */
+  #clearSession(s: ResourceState): void {
+    s.bus = s.windowManager = s.confined = s.notes = s.memoryBytes = null
+    s.accessibility = false
+    this.#sessions.delete(s.agent)
   }
   #save(): void {
     writePrivateJson(this.#file, {
@@ -324,6 +510,7 @@ export class NodeDesktop {
       s.resourceEpoch++
       s.browser = s.computer = false
       s.cdpUrl = s.display = null
+      this.#clearSession(s)
       try {
         for (const p of s.pids) await this.#launcher.reap(p.pid, p.marker)
         s.pids = []
@@ -349,16 +536,26 @@ export class NodeDesktop {
   }
   #supported(): boolean {
     return (
-      (this.#options.platform ?? process.platform) === 'linux' &&
-      this.#launcher.available('Xvfb') &&
-      this.#launcher.available('xauth')
+      this.#hostDesktop() ||
+      ((this.#options.platform ?? process.platform) === 'linux' &&
+        this.#launcher.available('Xvfb') &&
+        this.#launcher.available('xauth'))
     )
+  }
+  /**
+   * The computer is this Mac's own desktop, limited to the applications the
+   * operator lists (runtimes-channels.md §6.5): no private display, nothing
+   * started, nothing of the owner's stopped.
+   */
+  #hostDesktop(): boolean {
+    return (this.#options.platform ?? process.platform) === 'darwin'
   }
   #view(s: ResourceState): DesktopNodeView {
     const recent = this.#actions.filter(
       a => a.agent === s.agent && a.at >= this.#now() - 86400000,
     )
     const platform = this.#options.platform ?? process.platform
+    const confined = s.confined ?? this.#bwrapUsable
     return {
       node: this.#options.node,
       agent: s.agent,
@@ -370,14 +567,37 @@ export class NodeDesktop {
         state: s.browser ? s.state : s.state === 'failed' ? 'failed' : 'off',
         profileBytes: directoryBytes(path.join(this.#root(s.agent), 'browser')),
         startedAt: s.startedAt,
-        reason: s.reason,
+        reason:
+          s.reason ??
+          s.notes?.browser ??
+          this.#viewReasons.get(s.agent) ??
+          null,
       },
       computer: {
         enabled: s.computer,
         supported: this.#supported(),
         state: s.computer ? s.state : s.state === 'failed' ? 'failed' : 'off',
         display: s.display,
-        reason: !this.#supported() ? '需要 Linux、Xvfb 和 xauth' : s.reason,
+        reason: !this.#supported()
+          ? '需要 Linux（装有 Xvfb 和 xauth）或 macOS'
+          : (s.reason ??
+            s.notes?.computer ??
+            this.#viewReasons.get(s.agent) ??
+            null),
+        ...(platform === 'linux'
+          ? {
+              mode: 'private' as const,
+              windowManager: s.windowManager ?? null,
+              accessibility: s.accessibility === true,
+              ...(confined === undefined ? {} : { confined }),
+              memoryBytes: s.memoryBytes ?? null,
+              memoryLimitBytes: this.#memoryLimit,
+            }
+          : platform === 'darwin'
+            ? { mode: 'host' as const }
+            : {}),
+        apps: s.apps,
+        terminal: s.terminal,
       },
       confirm: s.confirm,
       lastActionAt: s.lastActionAt,
@@ -411,12 +631,14 @@ export class NodeDesktop {
     }
     // Even a full disk must not prevent process termination. The in-memory
     // epoch and gate are already closed; a failed write never authorizes reuse.
+    // Applications first, Xvfb last: the reverse of the order they started.
     const managed = this.#processes.get(s.agent)
-    if (managed) for (const p of [...managed].reverse()) await p.stop()
+    if (managed) for (const m of [...managed].reverse()) await m.proc.stop()
     else
       for (const p of [...s.pids].reverse())
         await this.#launcher.reap(p.pid, p.marker)
     this.#processes.delete(s.agent)
+    this.#clearSession(s)
     s.pids = []
     s.state = 'off'
     s.startedAt = null
@@ -429,6 +651,149 @@ export class NodeDesktop {
     this.#save()
     await this.#options.changed?.(s.agent)
     if (persistenceFailure !== undefined) throw persistenceFailure
+  }
+  /** Whether processes get their own capped scope; whether bwrap works. */
+  #probe(
+    kind: 'scope' | 'bwrap',
+    env: Record<string, string | undefined>,
+  ): Promise<boolean> {
+    const probe = async (program: string, argv: readonly string[]) => {
+      try {
+        return (
+          this.#launcher.available(program) &&
+          (await this.#launcher.run(
+            program,
+            argv,
+            kind === 'scope' ? env : { PATH: env.PATH },
+          )) === 0
+        )
+      } catch {
+        return false
+      }
+    }
+    if (kind === 'scope')
+      return (this.#scope ??= probe('systemd-run', [
+        ...desktopScopeArgv(this.#memoryLimit),
+        'true',
+      ]))
+    return (this.#bwrap ??= probe('bwrap', DESKTOP_BWRAP_PROBE).then(
+      usable => (this.#bwrapUsable = usable),
+    ))
+  }
+  /** Start one process of a running resource and record it in the table. */
+  async #spawn(
+    s: ResourceState,
+    command: readonly string[],
+    marker: string,
+    app = false,
+  ): Promise<DesktopProcess> {
+    const session = this.#sessions.get(s.agent)
+    if (!session) throw new Error('Desktop session is not running')
+    const [program, ...argv] = session.scope
+      ? ['systemd-run', ...desktopScopeArgv(this.#memoryLimit), ...command]
+      : command
+    const proc = await this.#launcher.start(program!, argv, session.env)
+    const managed = this.#processes.get(s.agent) ?? []
+    this.#processes.set(s.agent, managed)
+    managed.push({ proc, app })
+    s.pids.push({
+      pid: proc.pid,
+      marker,
+      ...(app ? { app: true as const } : {}),
+    })
+    this.#save()
+    return proc
+  }
+  /** Stop one process that did not come up, and take it off the table. */
+  async #drop(s: ResourceState, proc: DesktopProcess): Promise<void> {
+    await proc.stop()
+    const managed = this.#processes.get(s.agent) ?? []
+    const index = managed.findIndex(m => m.proc === proc)
+    if (index >= 0) managed.splice(index, 1)
+    s.pids = s.pids.filter(p => p.pid !== proc.pid)
+    this.#save()
+  }
+  /**
+   * The command line of one private desktop process. With bubblewrap it is
+   * sandboxed (§6.3); without, `env -i` gives it the same environment and a
+   * shell that stays its parent keeps the home path in the tree as the
+   * orphan sweep's marker.
+   */
+  #desktopCommand(
+    s: ResourceState,
+    command: readonly string[],
+    proxy = false,
+  ): string[] {
+    const session = this.#sessions.get(s.agent)
+    if (!session?.desktop) throw new Error('Private desktop is not running')
+    const env = desktopSandboxEnv({ ...session.desktop, proxy })
+    return session.sandbox
+      ? ['bwrap', ...desktopSandboxArgv({ ...session.sandbox, env }, command)]
+      : [
+          '/usr/bin/env',
+          '-i',
+          ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
+          '/bin/sh',
+          '-c',
+          'shift; "$@"; exit $?',
+          'qianmo-desktop',
+          session.desktop.home,
+          ...command,
+        ]
+  }
+  /** Roots no private desktop process of `agent` may see. */
+  #hidden(agent: string): string[] {
+    const own = this.#options.workspace?.(agent)
+    return [
+      nodeHomeDir(),
+      qianmoConfigDir(),
+      ...protectedConfigRoots(),
+      caDir(),
+      memoryBaseDir(),
+      ...(this.#options.protectedRoots ?? []),
+      // The other agents' workspaces: each desktop sees its own only.
+      ...[...this.#states.keys()]
+        .filter(other => other !== agent)
+        .map(other => this.#options.workspace?.(other))
+        .filter((dir): dir is string => dir !== undefined && dir !== own),
+    ]
+  }
+  /** Wait for `ready`, giving up early when `proc` has already exited. */
+  async #until(
+    ready: () => boolean | Promise<boolean>,
+    proc: DesktopProcess,
+    ms: number,
+  ): Promise<boolean> {
+    const deadline = Date.now() + ms
+    while (Date.now() < deadline && proc.alive()) {
+      if (await ready()) return true
+      await Bun.sleep(25)
+    }
+    return false
+  }
+  /** The CDP address Chrome published in its profile, once it answers. */
+  async #cdp(profile: string, proc: DesktopProcess, ms: number) {
+    let url: string | null = null
+    await this.#until(
+      async () => {
+        const port = Number(
+          readTextIfExists(path.join(profile, 'DevToolsActivePort'))?.split(
+            '\n',
+          )[0],
+        )
+        if (!Number.isInteger(port) || port <= 0 || port > 65535) return false
+        try {
+          if ((await fetch(`http://127.0.0.1:${port}/json/version`)).ok)
+            url = `http://127.0.0.1:${port}`
+        } catch {
+          /* Still starting. */
+        }
+        return url !== null
+      },
+      proc,
+      ms,
+    )
+    return url
   }
   async #start(
     s: ResourceState,
@@ -444,7 +809,8 @@ export class NodeDesktop {
       throw new Error('Linux computer requires Xvfb and xauth')
     const root = this.#root(s.agent),
       profile = path.join(root, 'browser'),
-      downloads = path.join(root, 'downloads')
+      downloads = path.join(root, 'downloads'),
+      home = path.join(root, 'home')
     for (const dir of [
       root,
       profile,
@@ -456,6 +822,11 @@ export class NodeDesktop {
     s.browser = browser
     s.computer = computer
     s.reason = null
+    const notes = {
+      browser: null as string | null,
+      computer: null as string | null,
+    }
+    s.notes = notes
     const env = { ...process.env }
     for (const key of [
       'DISPLAY',
@@ -464,15 +835,16 @@ export class NodeDesktop {
       'DBUS_SESSION_BUS_ADDRESS',
     ])
       delete env[key]
-    const processes: DesktopProcess[] = []
-    this.#processes.set(s.agent, processes)
-    const start = async (program: string, argv: string[], marker: string) => {
-      const proc = await this.#launcher.start(program, argv, env)
-      processes.push(proc)
-      s.pids.push({ pid: proc.pid, marker })
-      this.#save()
+    this.#processes.set(s.agent, [])
+    const session: Session = {
+      env,
+      scope: platform === 'linux' && (await this.#probe('scope', env)),
+      sandbox: null,
+      desktop: null,
     }
-    if (computer) {
+    this.#sessions.set(s.agent, session)
+    // On this Mac the computer is its own desktop: nothing to start.
+    if (computer && platform === 'linux') {
       const auth = path.join(root, 'Xauthority')
       const displayFile = path.join(root, 'display')
       // xauth writes an independent credential. Xvfb chooses its display
@@ -491,9 +863,10 @@ export class NodeDesktop {
       fs.closeSync(fd)
       // The trusted shell redirects only the fixed display file; the model
       // cannot choose this command or any process argument.
-      await start(
-        '/bin/sh',
+      await this.#spawn(
+        s,
         [
+          '/bin/sh',
           '-c',
           'exec Xvfb -displayfd 3 -screen 0 1440x900x24 -nolisten tcp -auth "$1" 3>"$2"',
           'qianmo-xvfb',
@@ -524,6 +897,104 @@ export class NodeDesktop {
       fs.chmodSync(auth, 0o600)
       env.DISPLAY = s.display
       env.XAUTHORITY = auth
+      // The private desktop (§6.3): its own home with XDG directories, a
+      // session bus with accessibility, a window manager, all in bubblewrap.
+      for (const dir of [
+        home,
+        ...DESKTOP_HOME_DIRS.map(dir => path.join(home, dir)),
+      ])
+        ensurePrivateDir(dir)
+      // ~/Downloads in the private home is the quota-counted directory.
+      const saved = path.join(home, 'Downloads')
+      try {
+        fs.lstatSync(saved)
+      } catch {
+        fs.symlinkSync(downloads, saved)
+      }
+      const confined = await this.#probe('bwrap', env)
+      s.confined = confined
+      // Outside the private home, mounted read-only: nothing in the
+      // sandbox can give the window manager a menu back.
+      const openbox = path.join(root, 'openbox.xml')
+      fs.writeFileSync(openbox, OPENBOX_CONFIG, { mode: 0o600 })
+      const workspace = this.#options.workspace?.(s.agent)
+      session.sandbox = confined
+        ? {
+            home,
+            writable: [home, downloads, profile],
+            readOnly: [auth, openbox],
+            hidden: this.#hidden(s.agent),
+            ...(workspace === undefined
+              ? {}
+              : {
+                  workspace: {
+                    path: workspace,
+                    writable: this.#options.workspaceWritable === true,
+                  },
+                }),
+          }
+        : null
+      const socket = path.join(home, '.run', 'bus')
+      session.desktop = {
+        home,
+        display: s.display,
+        xauthority: auth,
+        bus: null,
+      }
+      // A Unix socket path holds at most 107 bytes.
+      if (
+        confined &&
+        this.#launcher.available('dbus-daemon') &&
+        Buffer.byteLength(socket) <= 107
+      ) {
+        fs.rmSync(socket, { force: true })
+        const bus = `unix:path=${socket}`
+        const daemon = await this.#spawn(
+          s,
+          this.#desktopCommand(s, [
+            'dbus-daemon',
+            '--session',
+            '--nofork',
+            '--nopidfile',
+            `--address=${bus}`,
+          ]),
+          home,
+        )
+        if (await this.#until(() => fs.existsSync(socket), daemon, 10000)) {
+          session.desktop.bus = s.bus = bus
+          const launcher = AT_SPI_BUS_LAUNCHERS.find(program =>
+            this.#launcher.available(program),
+          )
+          if (launcher) {
+            await this.#spawn(
+              s,
+              this.#desktopCommand(s, [launcher, '--launch-immediately']),
+              home,
+            )
+            s.accessibility = true
+          }
+        } else {
+          await this.#drop(s, daemon)
+          notes.computer = NOTE_NO_BUS
+        }
+      }
+      // A window manager only in the sandbox. Without one nothing opens on
+      // this display (apps are refused, Chromium stays headless), and an
+      // unconfined window manager would be a process outside it.
+      const manager = confined
+        ? DESKTOP_WINDOW_MANAGERS.find(program =>
+            this.#launcher.available(program),
+          )
+        : undefined
+      if (manager) {
+        const command =
+          manager === 'openbox'
+            ? ['openbox', '--config-file', openbox]
+            : [manager]
+        await this.#spawn(s, this.#desktopCommand(s, command), home)
+        s.windowManager = manager
+      }
+      if (!confined) notes.computer = NOTE_NO_BWRAP
     }
     if (browser) {
       const chrome =
@@ -541,38 +1012,53 @@ export class NodeDesktop {
         ...existing,
         download: { default_directory: downloads, prompt_for_download: false },
       })
-      const activePort = path.join(profile, 'DevToolsActivePort')
-      fs.rmSync(activePort, { force: true })
-      await start(
-        chrome,
-        [
-          '--headless=new',
-          `--user-data-dir=${profile}`,
-          '--remote-debugging-address=127.0.0.1',
-          '--remote-debugging-port=0',
-          '--no-first-run',
-          '--no-default-browser-check',
-          '--disable-sync',
-          '--window-size=1440,900',
-          'about:blank',
-        ],
-        profile,
-      )
-      const deadline = Date.now() + 15000
-      while (Date.now() < deadline) {
-        const port = Number(readTextIfExists(activePort)?.split('\n')[0])
-        if (Number.isInteger(port) && port > 0 && port <= 65535) {
-          const url = `http://127.0.0.1:${port}`
-          try {
-            if ((await fetch(`${url}/json/version`)).ok) {
-              s.cdpUrl = url
-              break
-            }
-          } catch {
-            /* Still starting. */
-          }
+      // Only this resource's Chrome uses the profile, and none runs now. A
+      // lock left by one in a pid namespace names a pid that means nothing here.
+      const clear = () => {
+        for (const name of ['DevToolsActivePort', ...CHROME_LOCKS])
+          fs.rmSync(path.join(profile, name), { force: true })
+      }
+      const flags = [
+        `--user-data-dir=${profile}`,
+        '--remote-debugging-address=127.0.0.1',
+        '--remote-debugging-port=0',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-sync',
+        '--window-size=1440,900',
+      ]
+      if (computer && session.sandbox) {
+        // Headed on the private display, Chromium's own sandbox kept.
+        clear()
+        const headed = await this.#spawn(
+          s,
+          this.#desktopCommand(
+            s,
+            [
+              chrome,
+              ...flags,
+              '--window-position=0,0',
+              '--password-store=basic',
+              'about:blank',
+            ],
+            true,
+          ),
+          profile,
+        )
+        s.cdpUrl = await this.#cdp(profile, headed, 10000)
+        if (!s.cdpUrl) {
+          await this.#drop(s, headed)
+          notes.browser = NOTE_HEADED_FAILED
         }
-        await Bun.sleep(25)
+      } else if (computer && platform === 'linux') notes.browser = NOTE_HEADLESS
+      if (!s.cdpUrl) {
+        clear()
+        const headless = await this.#spawn(
+          s,
+          [chrome, '--headless=new', ...flags, 'about:blank'],
+          profile,
+        )
+        s.cdpUrl = await this.#cdp(profile, headless, 15000)
       }
       if (!s.cdpUrl) throw new Error('Chrome CDP did not become ready')
     }
@@ -612,6 +1098,31 @@ export class NodeDesktop {
             .reverse(),
         }
       }
+      if (op === 'desktop.view') {
+        // Refusals here say why in words: the hub reads the generic
+        // `Invalid desktop operation` as "this node predates desktop.view".
+        const s =
+          typeof agent === 'string' ? this.#states.get(agent) : undefined
+        if (Object.keys(args).some(key => key !== 'agent'))
+          return {
+            ok: false,
+            code: 'rejected',
+            message: '查看画面只接受 agent 一个参数',
+          }
+        if (!s)
+          return {
+            ok: false,
+            code: 'rejected',
+            message: `节点没有为智能体 ${String(agent)} 配置云端电脑资源`,
+          }
+        if (s.state !== 'running' || (!s.computer && !s.browser))
+          return {
+            ok: false,
+            code: 'rejected',
+            message: '专属电脑和专属浏览器都没有开启：没有正在进行的画面可看',
+          }
+        return await this.#screen(s, ctx.resultFits)
+      }
       if (
         !['desktop.enable', 'desktop.disable', 'desktop.recycle'].includes(
           op,
@@ -628,6 +1139,8 @@ export class NodeDesktop {
               'browser',
               'computer',
               'confirm',
+              'apps',
+              'terminal',
             ].includes(key),
         )
       )
@@ -642,14 +1155,19 @@ export class NodeDesktop {
         ) ||
         (args.confirm !== undefined &&
           args.confirm !== 'always' &&
-          args.confirm !== 'sensitive')
+          args.confirm !== 'sensitive' &&
+          args.confirm !== 'autonomous') ||
+        (args.apps !== undefined && !isDesktopAppsPolicy(args.apps)) ||
+        (args.terminal !== undefined && typeof args.terminal !== 'boolean')
       )
         return { ok: false, code: 'invalid', message: 'Invalid desktop change' }
       if (
         op === 'desktop.disable' &&
         (args.browser === true ||
           args.computer === true ||
-          args.confirm !== undefined)
+          args.confirm !== undefined ||
+          args.apps !== undefined ||
+          args.terminal !== undefined)
       )
         return {
           ok: false,
@@ -660,13 +1178,77 @@ export class NodeDesktop {
         op === 'desktop.recycle' &&
         (args.browser !== undefined ||
           args.computer !== undefined ||
-          args.confirm !== undefined)
+          args.confirm !== undefined ||
+          args.apps !== undefined ||
+          args.terminal !== undefined)
       )
         return {
           ok: false,
           code: 'invalid',
           message: 'Recycle only accepts agent and operationId',
         }
+      // The agents on a node share its network, and nothing authenticates a
+      // browser's debugging port on 127.0.0.1: a terminal in one agent's
+      // desktop could drive another agent's browser (§6.3). Until each agent
+      // gets its own network, one node gives a terminal to a lone agent only.
+      if (op === 'desktop.enable') {
+        const current = this.#states.get(agent)!
+        const on = (key: 'browser' | 'computer') =>
+          typeof args[key] === 'boolean' ? args[key] === true : current[key]
+        const terminal =
+          on('computer') &&
+          (typeof args.terminal === 'boolean'
+            ? args.terminal
+            : current.terminal)
+        const others = [...this.#states.values()].filter(
+          o => o !== current && (o.browser || o.computer),
+        )
+        const shell = others.find(o => o.computer && o.terminal)
+        if (terminal && others.length > 0)
+          return {
+            ok: false,
+            code: 'rejected',
+            message: `同一节点上 ${others.map(o => o.agent).join('、')} 也开着专属浏览器或电脑：智能体之间网络共用，终端能连到它们的浏览器，这台节点暂只给单独一个智能体开终端`,
+          }
+        if ((on('browser') || on('computer')) && shell)
+          return {
+            ok: false,
+            code: 'rejected',
+            message: `同一节点上 ${shell.agent} 的专属电脑开着终端：智能体之间网络共用，先关掉它的终端再给其他智能体开专属浏览器或电脑`,
+          }
+      }
+      // This Mac's own desktop opens only what the operator names (§6.5).
+      if (op === 'desktop.enable' && this.#hostDesktop()) {
+        const current = this.#states.get(agent)!
+        const computer =
+          typeof args.computer === 'boolean' ? args.computer : current.computer
+        const apps = args.apps === undefined ? current.apps : args.apps
+        if (
+          computer &&
+          !(
+            Array.isArray(apps) &&
+            apps.length > 0 &&
+            new Set(apps).size <= HOST_APPS_MAX &&
+            apps.every(id => typeof id === 'string' && BUNDLE_ID.test(id))
+          )
+        )
+          return {
+            ok: false,
+            code: 'rejected',
+            message: `macOS 本机桌面要列出允许的应用：1–${HOST_APPS_MAX} 个 bundle id（如 com.apple.TextEdit），不接受 all`,
+          }
+        // A terminal here is a shell on the owner's account, with nothing
+        // around it: not offered at all.
+        const terminal =
+          typeof args.terminal === 'boolean' ? args.terminal : current.terminal
+        if (computer && terminal)
+          return {
+            ok: false,
+            code: 'rejected',
+            message:
+              'macOS 本机桌面不提供终端类应用：这里的终端就是主人账号的 shell，没有隔离',
+          }
+      }
       const id = args.operationId,
         digest = hash({ op, args, actor: ctx.actor, peer: ctx.peer })
       const previous = this.#operations.get(id)
@@ -694,9 +1276,20 @@ export class NodeDesktop {
             typeof args.browser === 'boolean' ? args.browser : s.browser
           const computer =
             typeof args.computer === 'boolean' ? args.computer : s.computer
+          const apps: DesktopApps = Array.isArray(args.apps)
+            ? [...new Set(args.apps as string[])]
+            : ((args.apps as DesktopApps | undefined) ?? s.apps)
+          const terminal =
+            typeof args.terminal === 'boolean' ? args.terminal : s.terminal
+          // The application policy is part of the confirmation policy: a
+          // running session must not keep opening what it no longer may.
           const policyChanged =
-            args.confirm !== undefined && args.confirm !== s.confirm
+            (args.confirm !== undefined && args.confirm !== s.confirm) ||
+            JSON.stringify(apps) !== JSON.stringify(s.apps) ||
+            terminal !== s.terminal
           if (args.confirm) s.confirm = args.confirm as DesktopConfirm
+          s.apps = apps
+          s.terminal = terminal
           if (
             policyChanged ||
             s.browser !== browser ||
@@ -735,6 +1328,86 @@ export class NodeDesktop {
     const result = this.#queue.then(run)
     this.#queue = result.catch(() => {})
     return result
+  }
+  /**
+   * The newest screenshot the executor saved for this resource (§6.6): a
+   * regular PNG, JPEG or WebP file of at most 4 MiB whose bytes match its
+   * name. A control reply is bounded by the protocol envelope, so a picture
+   * larger than {@link SCREEN_VIEW_BASE64} is scaled down to JPEG; a node
+   * with no way to do that answers null and says so in the status.
+   */
+  async #screen(
+    s: ResourceState,
+    fits?: (outcome: ControlOutcome) => boolean,
+  ): Promise<ControlOutcome> {
+    const dir = path.join(this.#root(s.agent), 'screenshots')
+    let entries: fs.Dirent[] = []
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    const shots = entries
+      .flatMap(entry => {
+        const mimeType = SCREEN_TYPES[path.extname(entry.name).toLowerCase()]
+        if (!entry.isFile() || !mimeType) return []
+        const file = path.join(dir, entry.name)
+        try {
+          const stat = fs.lstatSync(file)
+          return stat.isFile() && stat.size > 0 && stat.size <= SCREEN_BYTES
+            ? [{ file, mimeType, at: Math.floor(stat.mtimeMs) }]
+            : []
+        } catch {
+          return []
+        }
+      })
+      .sort((a, b) => b.at - a.at)
+    const reply = (value: DesktopScreenView | null): ControlOutcome => ({
+      ok: true,
+      value,
+    })
+    const sendable = (view: DesktopScreenView) =>
+      view.data.length <= SCREEN_VIEW_BASE64 && (fits?.(reply(view)) ?? true)
+    for (const shot of shots) {
+      let bytes: Buffer
+      try {
+        bytes = fs.readFileSync(shot.file)
+      } catch {
+        continue
+      }
+      if (bytes.length > SCREEN_BYTES || !isImage(bytes, shot.mimeType))
+        continue
+      const view: DesktopScreenView = {
+        at: shot.at,
+        mimeType: shot.mimeType,
+        data: bytes.toString('base64'),
+      }
+      if (sendable(view)) {
+        this.#viewReasons.delete(s.agent)
+        return reply(view)
+      }
+      const smaller = await shrinkScreenshot(
+        { file: shot.file, bytes, at: shot.at },
+        sendable,
+        this.#options.screenEncoders,
+      )
+      if (smaller === undefined) {
+        this.#viewReasons.set(
+          s.agent,
+          '节点缺少图像压缩能力：截图超过控制回执上限，看不到画面（需要 Bun 的图像编码或 ImageMagick）',
+        )
+        return reply(null)
+      }
+      if (smaller === null)
+        return {
+          ok: false,
+          code: 'rejected',
+          message: '最新一张截图压缩到最小仍超过控制回执上限',
+        }
+      this.#viewReasons.delete(s.agent)
+      return reply(smaller)
+    }
+    return reply(null)
   }
   #finish(lease: Lease, outcome: DesktopActionView['outcome']): void {
     const row: DesktopActionView = {
@@ -808,6 +1481,8 @@ export class NodeDesktop {
       return malformed
     const tool = call.toolName as DesktopTool,
       input = call.input as Record<string, unknown>
+    // `apps` and `launch` (the host lists or opens applications itself) carry
+    // the same binding as the other phases; no phase takes any other key.
     if (
       Object.keys(input).some(
         k =>
@@ -859,7 +1534,7 @@ export class NodeDesktop {
       })
       return GRANTED
     }
-    let args: Record<string, string | number>
+    let args: DesktopArgs
     try {
       args = desktopArgs(tool, input.args)
     } catch {
@@ -895,6 +1570,27 @@ export class NodeDesktop {
           '发起这次调用的任务已经结束、超时，或已不是这个会话的当前回合',
         )
       if (lease) return refuse('这次调用已经持有租约')
+      if (this.#hardline.verdict(tool, args) !== null)
+        return refuse(
+          '参数里出现了节点受保护的路径（身份、凭据、配置、审计或记忆目录）：这次调用不执行',
+        )
+      if (
+        this.#hostCarried(tool) &&
+        s.confined !== true &&
+        !this.#hostDesktop()
+      )
+        return refuse(NO_BWRAP)
+      // Refuse before anyone is asked to approve an app that cannot open.
+      if (
+        String(tool) === OPEN_APP_TOOL &&
+        !this.#allowed(s).some(app => app.id === args.app)
+      )
+        return refuse(
+          !s.terminal &&
+            this.#catalog(s).some(app => app.id === args.app && app.terminal)
+            ? '这台专属电脑没有开放终端类应用：请在控制台「云端电脑」页为它打开「终端」后再试'
+            : '这个应用不在这台专属电脑允许打开的列表里：先调用 qianmo_computer_apps 取编号',
+        )
       const holder = [...this.#leases.values()].find(l => l.resource === s)
       if (holder)
         return refuse(
@@ -923,6 +1619,7 @@ export class NodeDesktop {
         authorizing: false,
         authorized: false,
         committed: false,
+        carried: false,
         host: null,
         observedTargetDigest: null,
         requestId: null,
@@ -1013,7 +1710,12 @@ export class NodeDesktop {
           targetHost: lease.host,
         },
       }
-      const needs = s.confirm === 'always' || !desktopObservation(tool)
+      // On top of the shared rule the host always asks before a terminal
+      // opens: in the private desktop it is a shell (§6.4).
+      const needs =
+        desktopNeedsApproval(tool, args, s.confirm) ||
+        (String(tool) === OPEN_APP_TOOL &&
+          this.#catalog(s).some(app => app.id === args.app && app.terminal))
       const beforeConsume = (
         expiresAt?: number,
         requestId?: string,
@@ -1049,13 +1751,116 @@ export class NodeDesktop {
       this.#finish(lease, 'intent')
       return GRANTED
     }
+    if (input.phase === 'apps' || input.phase === 'launch') {
+      if (String(tool) !== (input.phase === 'apps' ? APPS_TOOL : OPEN_APP_TOOL))
+        return malformed
+      if (!lease.committed || lease.carried)
+        return refuse(
+          '宿主只在这次调用经过审批并提交之后执行一次：不能提前，也不能重复',
+        )
+      lease.carried = true
+      if (s.confined !== true && !this.#hostDesktop()) return refuse(NO_BWRAP)
+      if (input.phase === 'apps')
+        return {
+          ok: true,
+          value: JSON.stringify(
+            this.#allowed(s).map(({ id, name, terminal }) => ({
+              id,
+              name,
+              terminal,
+            })),
+          ),
+        }
+      return await this.#launch(s, lease, args.app, valid)
+    }
     return malformed
+  }
+  #hostCarried(tool: DesktopTool): boolean {
+    const name: string = tool
+    return name === APPS_TOOL || name === OPEN_APP_TOOL
+  }
+  /** Every application installed on this node that it can start. */
+  #catalog(s: ResourceState): DesktopApp[] {
+    // This Mac: exactly the bundle ids the operator listed. `open -g` starts
+    // or reaches one without bringing it to the front.
+    if (this.#hostDesktop())
+      return (Array.isArray(s.apps) ? s.apps : []).map(id => ({
+        id,
+        name: id.split('.').at(-1) ?? id,
+        terminal: HOST_TERMINALS.has(id),
+        argv: ['open', '-g', '-b', id],
+      }))
+    return desktopApplications(
+      this.#options.applicationDirs ?? DESKTOP_APPLICATION_DIRS,
+      program => this.#launcher.available(program),
+    )
+  }
+  /** What this agent's policy lets it open. */
+  #allowed(s: ResourceState): DesktopApp[] {
+    return allowedDesktopApps(this.#catalog(s), s.apps, s.terminal)
+  }
+  /**
+   * Open one allowed application in the sandbox, after the lease committed.
+   * Serialized with disable, recycle and the sweep, so a process is never
+   * added to a table that is being emptied.
+   */
+  #launch(
+    s: ResourceState,
+    lease: Lease,
+    id: unknown,
+    valid: () => boolean,
+  ): Promise<DesktopDecision> {
+    const run = async (): Promise<DesktopDecision> => {
+      if (!valid())
+        return refuse('租约已失效：超时、急停、任务结束、资源重启或批准被撤销')
+      const app = this.#allowed(s).find(entry => entry.id === id)
+      if (!app)
+        return refuse(
+          '这个应用不在这台专属电脑允许打开的列表里：先调用 qianmo_computer_apps 取编号',
+        )
+      if (app.terminal && !lease.confirmed)
+        return refuse('打开终端类应用总要经过操作员批准')
+      if (this.#hostDesktop()) {
+        // The owner's application: opened, never tracked or stopped by us.
+        const [program, ...argv] = app.argv
+        return (await this.#launcher.run(program!, argv, process.env)) === 0
+          ? { ok: true, value: JSON.stringify({ app: app.id }) }
+          : refuse('应用没能打开：这台 Mac 上可能没装它')
+      }
+      const open = (this.#processes.get(s.agent) ?? []).filter(
+        m => m.app && m.proc.alive(),
+      ).length
+      if (open >= APP_LIMIT)
+        return refuse(
+          `这台专属电脑已经开着 ${APP_LIMIT} 个应用：先在桌面上关掉一些再开`,
+        )
+      const session = this.#sessions.get(s.agent)
+      if (!session?.sandbox || !session.desktop) return refuse(NO_BWRAP)
+      try {
+        const [program, ...argv] = app.argv
+        const proc = await this.#spawn(
+          s,
+          this.#desktopCommand(s, [Bun.which(program!) ?? program!, ...argv]),
+          session.desktop.home,
+          true,
+        )
+        return {
+          ok: true,
+          value: JSON.stringify({ app: app.id, pid: proc.pid }),
+        }
+      } catch {
+        return refuse('应用没能启动')
+      }
+    }
+    const result = this.#queue.then(run)
+    this.#queue = result.catch(() => {})
+    return result
   }
   /** Why a unit that is not running cannot be leased, and how to open it. */
   #off(s: ResourceState, unit: 'browser' | 'computer'): string {
     const label = UNIT[unit]
     if (unit === 'computer' && !this.#supported())
-      return `${label}需要 Linux 节点并装有 Xvfb 与 xauth，本节点不支持；只能开专属浏览器`
+      return `${label}需要 Linux 节点（装有 Xvfb 与 xauth）或 macOS 节点，本节点不支持；只能开专属浏览器`
     if (s.state === 'starting') return `${label}正在启动，请稍后重试`
     if (s.state === 'failed')
       return `${label}处于故障状态（${s.reason ?? '原因未记录'}）：请在控制台「云端电脑」页停用后重新打开`
@@ -1081,7 +1886,18 @@ export class NodeDesktop {
     for (const s of this.#states.values())
       if (s.state === 'running') {
         let reason: string | undefined
-        if (this.#processes.get(s.agent)?.some(p => !p.alive()))
+        const managed = this.#processes.get(s.agent) ?? []
+        // An application the agent closed is gone, not a broken desktop.
+        const closed = managed.filter(m => m.app && !m.proc.alive())
+        if (closed.length) {
+          this.#processes.set(
+            s.agent,
+            managed.filter(m => !closed.includes(m)),
+          )
+          s.pids = s.pids.filter(p => !closed.some(m => m.proc.pid === p.pid))
+          this.#save()
+        }
+        if (managed.some(m => !m.app && !m.proc.alive()))
           reason = '资源进程已退出，已停用'
         if (
           this.#now() - (s.lastActionAt ?? s.startedAt ?? 0) >
@@ -1107,6 +1923,13 @@ export class NodeDesktop {
           } catch {
             reason = '浏览器失联，已停用'
           }
+        }
+        // Summed over every process tree of the resource, scopes or not.
+        if ((this.#options.platform ?? process.platform) === 'linux') {
+          s.memoryBytes =
+            this.#launcher.memory?.(s.pids.map(p => p.pid)) ?? null
+          if (s.memoryBytes !== null && s.memoryBytes > this.#memoryLimit)
+            reason = '内存超过上限，已停用'
         }
         if (reason || this.#options.estop()) {
           try {

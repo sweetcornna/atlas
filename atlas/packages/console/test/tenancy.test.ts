@@ -14,6 +14,9 @@ import {
   FakeRouting,
   FakeHandoffDevices,
   FakeAvatars,
+  FakeExtensions,
+  FakeUpdates,
+  FakeChannels,
 } from './directionFakes.js'
 import { describe, expect, test } from 'bun:test'
 import { AccountBook, type AccountRole } from '../src/accounts.js'
@@ -23,7 +26,12 @@ import {
   type TenantPort,
 } from '../src/tenancy.js'
 import { createConsoleHandler } from '../src/http.js'
-import type { SchedulesSnapshot } from '../src/directionPorts.js'
+import type {
+  BackgroundTaskReader,
+  BackgroundTasksPort,
+  BackgroundTaskView,
+  SchedulesSnapshot,
+} from '../src/directionPorts.js'
 import {
   type ConsoleAgent,
   type ConsoleDeps,
@@ -285,7 +293,11 @@ function fixture() {
     connectors = new FakeConnectors(() => 1),
     routing = new FakeRouting(() => 1),
     handoffDevices = new FakeHandoffDevices(() => 1),
-    avatars = new FakeAvatars(() => 1)
+    avatars = new FakeAvatars(() => 1),
+    extensions = new FakeExtensions(),
+    updates = new FakeUpdates(() => 1),
+    channels = new FakeChannels(() => 1),
+    tasks = new SeenTasks()
   const handle = createConsoleHandler(
     {
       ...deps,
@@ -297,6 +309,10 @@ function fixture() {
       routing,
       handoffDevices,
       avatars,
+      extensions,
+      updates,
+      channels,
+      tasks,
     },
     TOKENS,
     {
@@ -314,6 +330,10 @@ function fixture() {
     routing,
     handoffDevices,
     avatars,
+    extensions,
+    updates,
+    channels,
+    tasks,
     alice,
     bob,
     outsider,
@@ -682,6 +702,89 @@ describe('M2 request scopes', () => {
     for (const port of [h.routing, h.handoffDevices, h.avatars])
       expect(port.calls).toEqual([])
   })
+  test('extensions, updates and chat channels are platform-wide: a tenant account reads and writes none of them (P32 audit 3)', async () => {
+    const h = fixture()
+    // Tenant a's ops account: nothing to read, nothing reaches the ports —
+    // not another tenant's node (osaka-2), not a command for tenant b's agent.
+    for (const [method, path, body] of [
+      ['GET', '/v0/extensions', undefined],
+      [
+        'POST',
+        '/v0/extensions',
+        {
+          kind: 'mcp',
+          name: 'evil',
+          command: 'sh',
+          args: ['-c', 'id'],
+          agents: ['qianmo://berlin-1/planner'],
+        },
+      ],
+      [
+        'DELETE',
+        '/v0/extensions/ext-00000000-0000-4000-8000-000000000001',
+        undefined,
+      ],
+      ['GET', '/v0/updates', undefined],
+      ['POST', '/v0/updates/upgrade', {}],
+      ['POST', '/v0/updates/run', undefined],
+      ['GET', '/v0/im', undefined],
+      [
+        'POST',
+        '/v0/im',
+        { name: 'x', platform: 'qq', target: 'qianmo://berlin-1/planner' },
+      ],
+    ] as const) {
+      const response = await h.handle(
+        asBearer(method, path, h.alice.credential, body),
+      )
+      expect(response.status).toBe(501)
+      const text = await response.text()
+      for (const foreign of ['osaka-2', 'docs-mcp', 'berlin-1'])
+        expect(text).not.toContain(foreign)
+    }
+    for (const path of ['/admin/extensions', '/admin/updates', '/admin/im'])
+      expect(
+        (await h.handle(asBearer('GET', path, h.alice.credential))).status,
+      ).toBe(404)
+    expect([h.extensions.calls, h.updates.calls, h.channels.calls]).toEqual([
+      [],
+      [],
+      [],
+    ])
+    expect(h.counts()).toMatchObject({ effects: 0, admission: 0 })
+    // The platform account still has all three.
+    for (const path of ['/v0/extensions', '/v0/updates', '/v0/im'])
+      expect(
+        (await h.handle(asBearer('GET', path, h.platform.credential))).status,
+      ).toBe(200)
+  })
+  test("background tasks and another tenant's desktop screen are out of a tenant account's reach", async () => {
+    const h = fixture()
+    // Tasks are platform-wide: ops in tenant a would otherwise see every
+    // tenant's tasks.
+    for (const [method, path] of [
+      ['GET', '/v0/tasks'],
+      ['POST', '/v0/tasks/task-1/cancel'],
+    ] as const) {
+      const response = await h.handle(
+        asBearer(method, path, h.alice.credential),
+      )
+      expect(response.status).toBe(501)
+    }
+    expect(h.tasks.calls).toEqual([])
+    expect(
+      (await h.handle(asBearer('GET', '/v0/tasks', h.platform.credential)))
+        .status,
+    ).toBe(200)
+    // berlin-1 is tenant b's node: its screen never reaches the port.
+    const foreign = await h.handle(
+      asBearer('GET', '/v0/desktop/berlin-1/helper/screen', h.alice.credential),
+    )
+    expect(foreign.status).not.toBe(200)
+    expect(h.desktop.calls.filter(call => call.includes('berlin-1'))).toEqual(
+      [],
+    )
+  })
   test('audit source selectors and server notes cannot reach an external tenant', async () => {
     const h = fixture()
     expect(
@@ -988,3 +1091,20 @@ describe('wake authority across asynchronous dispatch', () => {
     })
   }
 })
+
+/** A tasks port that only records what reached it. */
+class SeenTasks implements BackgroundTasksPort {
+  readonly calls: string[] = []
+  list(actor: BackgroundTaskReader) {
+    this.calls.push(`list ${actor.subject}`)
+    return []
+  }
+  visible(id: string) {
+    this.calls.push(`visible ${id}`)
+    return false
+  }
+  async cancel(id: string): Promise<ConsoleResult<BackgroundTaskView>> {
+    this.calls.push(`cancel ${id}`)
+    return { ok: false, failure: { code: 'not_found', message: 'no task' } }
+  }
+}

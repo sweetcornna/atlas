@@ -76,7 +76,7 @@ const specs = [
     name: 'qianmo_task_report',
     op: 'report',
     description:
-      "Background sub-agent only. Save this task's real progress (state working), its verified final result (state completed), or the one question you need answered (state needs_input). Only an explicit completed report finishes the task.",
+      "Background sub-agent only. Save this task's real progress (state working), its verified final result (state completed), or the one question you need answered (state needs_input). Only an explicit completed report finishes the task. The answer's newUpdates counts user instructions you have not read yet; read them with qianmo_task_updates.",
     properties: {
       summary: string,
       state: { type: 'string', enum: ['working', 'completed', 'needs_input'] },
@@ -92,6 +92,18 @@ const specs = [
     required: [],
   },
 ] as const
+
+/**
+ * What to do when the hub did not answer. A sub-agent may not read status,
+ * and both of its calls are safe to repeat: a report overwrites the
+ * checkpoint, unconfirmed instructions are returned again.
+ */
+const UNANSWERED: Readonly<Record<string, string>> = {
+  report:
+    'The task service did not answer; the report may not be saved. Call qianmo_task_report again with the same content: reporting twice is harmless.',
+  updates:
+    'The task service did not answer. Call qianmo_task_updates again: instructions you have not confirmed in a report are returned again.',
+}
 
 export function taskTools(options: TaskToolsOptions): HostToolDefinition[] {
   return specs.map(spec => ({
@@ -134,7 +146,9 @@ export function taskTools(options: TaskToolsOptions): HostToolDefinition[] {
       } catch {
         return {
           ok: false,
-          text: 'The task service did not answer; the outcome is unknown. Check with qianmo_task_status before retrying.',
+          text:
+            UNANSWERED[spec.op] ??
+            'The task service did not answer; the outcome is unknown. Check with qianmo_task_status before retrying.',
         }
       }
     },

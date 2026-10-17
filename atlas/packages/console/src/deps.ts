@@ -18,6 +18,7 @@
  */
 
 import type {
+  BackgroundTasksPort,
   ChannelsPort,
   ConnectorsPort,
   DesktopPort,
@@ -522,6 +523,10 @@ export interface ChatTurn {
   readonly command?: ChatLocalCommand
   /** Host-owned reservation, released on task terminal state, not HTTP completion. */
   readonly usageReservation?: string
+  /** 操作者那一行是中枢派给后台子智能体的一轮（P29）。 */
+  readonly background?: true
+  /** 智能体那一行：节点说这一轮压缩过上下文（`task.result` 的 `compacted`）。 */
+  readonly compacted?: true
 }
 
 /**
@@ -561,6 +566,8 @@ export interface ChatSession {
   readonly title?: string
   /** 最后一句是操作者的且没有失败：还在等回复。 */
   readonly running?: true
+  /** 后台子智能体的会话（P29）：中枢替任务主人开的，不是人开的对话。 */
+  readonly background?: true
 }
 
 export interface ChatTranscript {
@@ -585,6 +592,11 @@ export interface ChatSendInput {
   readonly command?: ChatLocalCommand
   /** Host-owned reservation, released on task terminal state, not HTTP completion. */
   readonly usageReservation?: string
+  /**
+   * Host-only: a background sub-agent turn (P29). Signed into the request so
+   * the node lets interactive turns go first and stops it at its deadline.
+   */
+  readonly background?: true
 }
 
 /**
@@ -1309,6 +1321,8 @@ export const CONSOLE_ACTIONS = [
   'channel.save',
   'channel.remove',
   'channel.test',
+  /** 后台任务（P29）：在控制台取消一个，target 是任务 id。 */
+  'task.cancel',
   /** 应用连接（P25），target 是连接 id。 */
   'connector.save',
   'connector.remove',
@@ -2419,6 +2433,8 @@ export interface ConsoleDeps {
   readonly memory?: MemoryPort
   /** 定时任务与通知渠道（P24）。 */
   readonly schedules?: SchedulesPort
+  /** 后台任务（P29）：只读列表与取消。 */
+  readonly tasks?: BackgroundTasksPort
   /** 应用连接（P25）。 */
   readonly connectors?: ConnectorsPort
   /** 聊天渠道（P28）。 */

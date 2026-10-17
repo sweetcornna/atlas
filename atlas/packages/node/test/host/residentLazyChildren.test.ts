@@ -648,25 +648,60 @@ test.each([
   expect(pool.isStable(60_000)).toBe(status === 'completed')
 })
 
-test('invalidateAgent cancels an in-progress handshake and joins real exit without parking', async () => {
+test('invalidateAgent leaves a handshake in progress to serve its turn, then retires the child (P32 audit 4)', async () => {
   const { pool, agent } = setup({
     maxStartFailures: 1,
-    spawn: input =>
-      spawn(
-        process.execPath,
-        ['-e', 'process.stdin.resume(); setInterval(()=>{},1000)'],
-        { cwd: input.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'] },
-      ),
+    env: { QIANMO_FIXTURE_READY_DELAY_MS: '150' },
   })
   const id = await pool.newSession(agent)
-  const opening = pool.channelFor(id)
-  void opening.catch(() => {})
+  const running = turn(pool, id, 'during-start')
   await until(() => children.length === 1)
   await pool.invalidateAgent(agent.agent)
-  await expect(opening).rejects.toThrow('child exited')
-  expect(reaped.has(children[0]!)).toBe(true)
-  expect(children[0]!.signalCode).toBe('SIGTERM')
+  expect(exited(children[0]!)).toBe(false)
+  expect((await running).outcome).toBe('completed')
+  await until(() => exited(children[0]!))
+  expect(children[0]!.signalCode).not.toBe('SIGKILL')
   expect(pool.parkedReason).toBeUndefined()
+  expect((await turn(pool, id, 'after')).outcome).toBe('completed')
+  expect(children).toHaveLength(2)
+})
+
+test('invalidateAgent does not interrupt a running turn; the stale child closes when the turn ends (P32 audit 4)', async () => {
+  const { pool, agent } = setup({
+    env: { QIANMO_FIXTURE_PROGRESS_BATCH: '1' },
+  })
+  // The fixture holds the turn until it is told to finish.
+  const finish = async <T>(child: ChildProcess, running: Promise<T>) => {
+    let done = false
+    void running.finally(() => {
+      done = true
+    })
+    while (!done) {
+      child.stdin!.write(
+        `${JSON.stringify({ type: 'fixture_finish_progress' })}\n`,
+      )
+      await Bun.sleep(20)
+    }
+    return running
+  }
+  const id = await pool.newSession(agent)
+  const running = turn(pool, id, 'long-turn')
+  await until(() => children.length === 1)
+  await Bun.sleep(100)
+  await pool.invalidateAgent(agent.agent)
+  await Bun.sleep(50)
+  expect(exited(children[0]!)).toBe(false)
+  expect(await finish(children[0]!, running)).toEqual({
+    outcome: 'completed',
+    content: 'progress batch complete',
+  })
+  await until(() => exited(children[0]!))
+  // An idle child of the same agent closes at once on the next change.
+  const next = turn(pool, id, 'next')
+  await until(() => children.length === 2)
+  expect((await finish(children[1]!, next)).outcome).toBe('completed')
+  await pool.invalidateAgent(agent.agent)
+  expect(exited(children[1]!)).toBe(true)
 })
 
 test('pool stop cancels queued starts and reaps its busy child without launching queued work', async () => {

@@ -359,7 +359,8 @@ describe('chat send', () => {
     expect(request?.type).toBe(MessageType.TaskRequest)
     expect(request?.from).toBe(FROM)
     expect(request?.to).toBe(TARGET)
-    expect(request?.payload).toEqual({ prompt: '你好' })
+    // `reportCompaction`: this console reads `compacted` on the result.
+    expect(request?.payload).toEqual({ prompt: '你好', reportCompaction: true })
     // §6.3 call site 1：发起方把自己写进 hops[0]，否则审计链没有头。
     expect(request?.hops).toEqual(['console'])
 
@@ -368,6 +369,47 @@ describe('chat send', () => {
       state: 'delivered',
       receipt: 'accepted',
       taskId: request?.taskId,
+    })
+  })
+
+  test('a background turn is marked on the wire, the line and the session; a compacted result is kept across a restart', async () => {
+    const h = harness()
+    const opened = await h.hub.open(TARGET)
+    if (!opened.ok) throw new Error('open failed')
+    const sent = await h.hub.send({
+      sessionId: opened.value.id,
+      text: '后台任务：周报（task-1）',
+      background: true,
+      taskTtlMs: 1_800_000,
+    })
+    expect(sent.ok && sent.value.background).toBe(true)
+    const request = h.dialer.last.sent[0]!
+    expect(request.payload).toMatchObject({
+      background: true,
+      reportCompaction: true,
+    })
+    expect(request.taskTtlMs).toBe(1_800_000)
+    h.dialer.last.reply(
+      taskResult(request, {
+        outcome: 'completed',
+        content: '阶段一完成',
+        completedAt: 2,
+        compacted: true,
+      }),
+    )
+    const sessions = await h.hub.sessions()
+    expect(sessions.ok && sessions.value[0]?.background).toBe(true)
+    const again = harness({ storePath: h.storePath, idPrefix: 'replay' })
+    const replayed = await again.hub.transcript(opened.value.id)
+    if (!replayed.ok) throw new Error('unreachable')
+    expect(replayed.value.session.background).toBe(true)
+    expect(replayed.value.turns.map(turn => turn.background ?? null)).toEqual([
+      true,
+      null,
+    ])
+    expect(replayed.value.turns[1]).toMatchObject({
+      text: '阶段一完成',
+      compacted: true,
     })
   })
 
@@ -385,6 +427,7 @@ describe('chat send', () => {
     expect(h.dialer.last.sent[0]!.payload).toEqual({
       prompt: '规划',
       direction: 'plan',
+      reportCompaction: true,
     })
     expect(h.dialer.last.sent[0]!.taskTtlMs).toBe(3_600_000)
     expect(
@@ -716,44 +759,68 @@ describe('chat reply path', () => {
     })
   })
 
-  test('a session stops taking notices at its ceiling, and the ceiling survives a restart', async () => {
+  test("tool steps stop at their ceiling, the agent's own notices keep coming, and both ceilings survive a restart", async () => {
     const storePath = join(directory, 'flood.ndjson')
     const first = harness({ storePath })
-    const { sessionId } = await openAndSend(first)
-    const flood = (hub: Harness, count: number): void => {
+    const { sessionId, request } = await openAndSend(first)
+    const flood = (
+      hub: Harness,
+      count: number,
+      turn: QianmoMessage | null,
+    ): void => {
       for (let index = 0; index < count; index += 1) {
         hub.dialer.last.reply(
           createNotify({
             from: TARGET,
             to: FROM,
             contextId: sessionId,
-            payload: {
-              kind: 'task',
-              severity: 'info',
-              summary: `第 ${index} 条`,
-              observedAt: 1,
-            },
+            payload:
+              turn === null
+                ? {
+                    kind: 'watch',
+                    severity: 'info',
+                    summary: `agent ${index}`,
+                    observedAt: 1,
+                  }
+                : {
+                    kind: 'task',
+                    severity: 'info',
+                    summary: `step ${index}`,
+                    observedAt: 1,
+                    causeTaskId: turn.taskId,
+                    dedupKey: turnStepDedupKey(
+                      turn.msgId,
+                      `call-${index}`,
+                      'start',
+                    ),
+                  },
           }),
         )
       }
     }
-    flood(first, 260)
-    const before = await first.hub.transcript(sessionId)
-    if (!before.ok) throw new Error('unreachable')
-    // 200 条过程 + 操作者那一轮。
-    expect(before.value.turns).toHaveLength(201)
+    const count = async (hub: Harness, source: string): Promise<number> => {
+      const transcript = await hub.hub.transcript(sessionId)
+      if (!transcript.ok) throw new Error('unreachable')
+      return transcript.value.turns.filter(
+        turn => turn.variant === 'notice' && turn.noticeSource === source,
+      ).length
+    }
+    flood(first, 260, request)
+    expect(await count(first, 'step')).toBe(200)
+    // A long-lived channel session past its step ceiling still hears the
+    // agent: its notices are counted on their own.
+    flood(first, 5, null)
+    expect(await count(first, 'agent')).toBe(5)
     await first.hub.close()
 
     // 重启不是一次免费的额度重置：这个上限防的正是「一台被授权的机器一直写」。
     const second = harness({ storePath, idPrefix: 'second' })
-    const { sessionId: other } = await openAndSend(second)
-    expect(other).not.toBe(sessionId)
-    flood(second, 10)
-    const after = await second.hub.transcript(sessionId)
-    if (!after.ok) throw new Error('unreachable')
-    expect(
-      after.value.turns.filter(turn => turn.variant === 'notice'),
-    ).toHaveLength(200)
+    const sent = await second.hub.send({ sessionId, text: '下一轮' })
+    if (!sent.ok) throw new Error(sent.failure.message)
+    flood(second, 10, second.dialer.last.sent[0]!)
+    expect(await count(second, 'step')).toBe(200)
+    flood(second, 1_996, null)
+    expect(await count(second, 'agent')).toBe(2_000)
   })
 
   test('the port refuses one endpoint claimed by two nodes, as the parser does', () => {
@@ -1174,6 +1241,7 @@ describe('chat local commands (P18.20)', () => {
     expect(request?.payload).toEqual({
       prompt: '/autocompact 150k',
       command: { name: 'autocompact' },
+      reportCompaction: true,
     })
     expect(request?.cap).toBe(`token-for-${request?.taskId}`)
   })
@@ -1181,7 +1249,10 @@ describe('chat local commands (P18.20)', () => {
   test('a message carries no marker', async () => {
     const h = harness(signing)
     const { request } = await openAndSend(h, '/autocompact 150k')
-    expect(request.payload).toEqual({ prompt: '/autocompact 150k' })
+    expect(request.payload).toEqual({
+      prompt: '/autocompact 150k',
+      reportCompaction: true,
+    })
   })
 
   test('without a signer a command is refused here, not sent to be read as text', async () => {

@@ -53,7 +53,23 @@ test('closed desktop arguments reject code, function markers, CDP, arbitrary fil
     expect(() =>
       desktopArgs('qianmo_browser_navigate', { tab: 'minted', url }),
     ).toThrow()
-  expect(() => desktopArgs('qianmo_computer_key', { key: 'Super+R' })).toThrow()
+  // v1.5 §6.2 lifts v1.4's navigation-only computer keys: the private desktop
+  // is isolated (§6.3). Key names stay closed to the base's table, and the
+  // browser keeps its navigation keys.
+  expect(desktopArgs('qianmo_computer_key', { key: 'Super+R' })).toEqual({
+    key: 'super+r',
+  })
+  for (const key of ['Super+Launch', 'ctrl+', '', 'ctrl+\u017fhift'])
+    expect(() => desktopArgs('qianmo_computer_key', { key })).toThrow(
+      'Invalid desktop argument',
+    )
+  expect(() =>
+    desktopArgs('qianmo_browser_press', {
+      tab: 'minted',
+      selector: '#q',
+      key: 'Control+L',
+    }),
+  ).toThrow('Unsupported key')
   expect(() =>
     desktopArgs('qianmo_computer_click', { x: Infinity, y: 0 }),
   ).toThrow()
@@ -203,10 +219,37 @@ test('an unavailable desktop tool explains itself: caller, unit switched off, pl
   ).toContain('打开「专属浏览器」')
   expect(
     desktopUnavailable('qianmo_computer_click', browserOnly, 'main', 'darwin'),
-  ).toContain('只在 Linux 节点上提供')
+  ).toContain('列出允许的应用')
+  expect(
+    desktopUnavailable('qianmo_computer_click', browserOnly, 'main', 'win32'),
+  ).toContain('只在 Linux 与 macOS 节点上提供')
   expect(
     desktopUnavailable('qianmo_computer_click', browserOnly, 'main', 'linux'),
   ).toContain('打开「专属电脑」')
+  // This Mac's own desktop: no clipboard and no foreground switch (§6.5).
+  const host = {
+    browser: false,
+    computer: true,
+    hostApps: ['com.apple.TextEdit'],
+  }
+  expect(
+    desktopUnavailable('qianmo_computer_click', host, 'main', 'darwin'),
+  ).toBeUndefined()
+  expect(
+    desktopUnavailable(
+      'qianmo_computer_clipboard_read',
+      host,
+      'main',
+      'darwin',
+    ),
+  ).toContain('不提供剪贴板')
+  expect(
+    desktopUnavailable('qianmo_computer_focus', host, 'main', 'darwin'),
+  ).toContain('不切换主人的前台窗口')
+  expect(desktopTools(host)).not.toContain('qianmo_computer_clipboard_write')
+  expect(desktopTools({ ...host, hostApps: undefined })).toContain(
+    'qianmo_computer_clipboard_write',
+  )
   const config: ResidentExtensionConfig = {
     v: 1,
     agent: 'main',

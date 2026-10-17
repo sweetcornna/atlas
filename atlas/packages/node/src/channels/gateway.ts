@@ -77,8 +77,15 @@ export interface ChannelTurns {
   sessionOf(conversation: ChannelConversation): string | undefined
   /** `/new`: the next turn opens a new session. */
   reset(conversation: ChannelConversation): Promise<void>
-  /** `/stop`: stops the running turn; false when nothing ran. */
-  stop(conversation: ChannelConversation): Promise<boolean>
+  /**
+   * Stops the running turn and, with `tasks` (`/stop`), the chat's background
+   * tasks; `/new` stops only the turn, the tasks follow the chat. False when
+   * nothing ran.
+   */
+  stop(
+    conversation: ChannelConversation,
+    options?: { readonly tasks?: boolean },
+  ): Promise<boolean>
   compact(conversation: ChannelConversation): Promise<string>
   status(conversation: ChannelConversation): Promise<readonly string[]>
   /** `/model`: shows (undefined), sets, or clears (null) this chat's direction. */
@@ -619,10 +626,12 @@ export class ChannelGateway {
         ].join('\n'),
       },
     ]
+    // One paragraph, so readers of the transcript can tell it from the words
+    // after it (background task context drops it).
     if (rules.prompt?.trim())
       parts.push({
         id: 'channel_prompt',
-        text: `[渠道说明]\n${rules.prompt.trim()}`,
+        text: `[渠道说明]\n${rules.prompt.trim().replace(/\n[ \t]*(\n[ \t]*)+/g, '\n')}`,
       })
     return parts
   }
@@ -746,7 +755,7 @@ export class ChannelGateway {
         break
       case 'stop': {
         this.#pending.delete(key)
-        reply = (await this.#turns.stop(conversation))
+        reply = (await this.#turns.stop(conversation, { tasks: true }))
           ? '停下了。'
           : '现在没在跑任务。'
         break

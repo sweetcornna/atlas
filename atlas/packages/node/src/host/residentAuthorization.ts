@@ -15,6 +15,11 @@ import {
   type NodeKeyPair,
 } from '@qianmo/capability'
 import { qianmoConfigPath, protectedConfigRoots } from '@qianmo/paths'
+import {
+  desktopArgs,
+  desktopSummary,
+  isDesktopTool,
+} from '@qianmo/extension/desktopPolicy'
 
 export function freshApprovalTool(name: string): boolean {
   return (
@@ -27,6 +32,25 @@ export function freshApprovalTool(name: string): boolean {
     name.startsWith('qianmo_browser_') ||
     name.startsWith('qianmo_computer_')
   )
+}
+
+/**
+ * A desktop call's approval card gets one readable line (P21+ §6.2), made
+ * from the canonical arguments beside it and signed with them. Typed text
+ * shows as its length only.
+ */
+export function withDesktopSummary(call: AuthzCall): AuthzCall {
+  if (!isDesktopTool(call.toolName)) return call
+  let summary: string
+  try {
+    summary = desktopSummary(
+      call.toolName,
+      desktopArgs(call.toolName, call.input.args),
+    )
+  } catch {
+    return call
+  }
+  return { ...call, input: { ...call.input, summary } }
 }
 
 /** Keep ten seconds for the model/tool response to unwind before watchdog expiry. */
@@ -130,7 +154,7 @@ export class ResidentAuthorization {
       )
   }
   async request(
-    call: AuthzCall,
+    raw: AuthzCall,
     origin: AuthzOrigin,
     deadlineAt: number,
     watchdogRemainingMs: number,
@@ -141,6 +165,8 @@ export class ResidentAuthorization {
       valid?: () => boolean,
     ) => boolean,
   ): Promise<boolean> {
+    // Asked, used and consumed as one input, so the summary is in the digest.
+    const call = withDesktopSummary(raw)
     if (origin.trust !== 'verified-capability') {
       this.#audit('authz.refused', undefined, {
         status: 'unsigned-turn',

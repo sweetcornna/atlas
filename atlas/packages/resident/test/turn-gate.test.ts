@@ -38,6 +38,66 @@ describe('node turn gate', () => {
     expect(gate.active).toBe(false)
   })
 
+  test('a freed gate takes interactive turns before background ones, and never preempts', async () => {
+    const gate = new NodeTurnGate()
+    const events: string[] = []
+    let releaseFirst!: () => void
+    const held = new Promise<void>(resolve => {
+      releaseFirst = resolve
+    })
+    // A background turn is running; a person's message arrives behind two
+    // more background turns.
+    const running = gate.run(
+      async () => {
+        events.push('bg-1:start')
+        await held
+        events.push('bg-1:end')
+      },
+      { background: true },
+    )
+    const queued = [
+      gate.run(async () => events.push('bg-2'), { background: true }),
+      gate.run(async () => events.push('bg-3'), { background: true }),
+      gate.run(async () => events.push('person')),
+    ]
+    await Promise.resolve()
+    expect(events).toEqual(['bg-1:start'])
+    expect(gate.queued).toBe(3)
+    releaseFirst()
+    await Promise.all([running, ...queued])
+    // The running turn finished first; then the person; then the background
+    // turns in their own arrival order.
+    expect(events).toEqual(['bg-1:start', 'bg-1:end', 'person', 'bg-2', 'bg-3'])
+  })
+
+  test('a background turn past its deadline is dropped when its slot comes up', async () => {
+    let clock = 1_700_000_000_000
+    const gate = new NodeTurnGate({ now: () => clock })
+    let release!: () => void
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const first = gate.run(async () => await held)
+    let ran = 0
+    const stale = gate.run(
+      async () => {
+        ran += 1
+      },
+      { background: true, deadlineAt: clock + 30, sessionId: 'worker' },
+    )
+    const dropped = stale.then(
+      () => null,
+      (error: unknown) => error,
+    )
+    const person = gate.run(async () => 'answered')
+    clock += 31
+    release()
+    expect(await person).toBe('answered')
+    expect(await dropped).toBeInstanceOf(NodeTurnExpiredError)
+    await first
+    expect(ran).toBe(0)
+  })
+
   test('a failed turn still releases the next one', async () => {
     const gate = new NodeTurnGate()
     const first = gate.run(async () => {

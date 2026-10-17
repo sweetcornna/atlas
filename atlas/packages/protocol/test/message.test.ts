@@ -25,6 +25,7 @@ import {
   isReplyType,
   isTaskExpired,
   isTaskResultPayload,
+  requestsCompaction,
   messageBytes,
   newId,
   newTraceparent,
@@ -703,6 +704,63 @@ describe('task result', () => {
         redelivered: true,
       })
       expect(isTaskResultPayload(result.payload)).toBe(true)
+    })
+  })
+
+  describe('the compaction marker', () => {
+    const asking = { ...request, payload: { reportCompaction: true } }
+
+    test('reaches only a request that asked for it', () => {
+      expect(requestsCompaction(asking)).toBe(true)
+      expect(requestsCompaction(request)).toBe(false)
+      const compacted = { outcome: 'completed', content: 'done' } as const
+      expect(
+        createTaskResult(asking, TO, { ...compacted, compacted: true }, 3_000)
+          .payload,
+      ).toEqual({
+        outcome: 'completed',
+        content: 'done',
+        compacted: true,
+        completedAt: 3_000,
+      })
+      // An older console never asks, and would refuse the whole result.
+      expect(
+        createTaskResult(request, TO, { ...compacted, compacted: true }, 3_000)
+          .payload,
+      ).toEqual({ outcome: 'completed', content: 'done', completedAt: 3_000 })
+      const failed = createTaskResult(
+        asking,
+        TO,
+        {
+          outcome: 'failed',
+          code: ProtocolErrorCode.E_TASK_TIMEOUT,
+          reason: 'stopped',
+          compacted: true,
+        },
+        3_000,
+      )
+      expect(isTaskResultPayload(failed.payload)).toBe(true)
+    })
+
+    test('is true or absent, and widens the payload by nothing else', () => {
+      for (const value of [false, 1, 'true', null])
+        expect(
+          isTaskResultPayload({
+            outcome: 'completed',
+            content: 'done',
+            completedAt: 3_000,
+            compacted: value,
+          }),
+        ).toBe(false)
+      expect(
+        isTaskResultPayload({
+          outcome: 'completed',
+          content: 'done',
+          completedAt: 3_000,
+          compacted: true,
+          redelivered: true,
+        }),
+      ).toBe(true)
     })
   })
 })

@@ -6,6 +6,7 @@ import { createMessage, MessageType } from '@qianmo/protocol'
 import {
   generateNodeKeyPair,
   signTaskOwner,
+  verifiedBackground,
   verifiedTaskOwner,
 } from '../src/index.js'
 
@@ -51,4 +52,50 @@ test('only a configured console key can assert the account, and its proof binds 
   expect(() =>
     signTaskOwner({ ...raw, payload: { onBehalfOf: 'legacy:view' } }, keys),
   ).toThrow('principal')
+})
+
+test('the background marker counts only under a verified owner proof, which covers it', () => {
+  const keys = generateNodeKeyPair()
+  const controllers = new Map([['hub', keys.publicKey]])
+  const raw = createMessage({
+    from: 'qianmo://hub/console',
+    to: 'qianmo://worker/helper',
+    type: MessageType.TaskRequest,
+    contextId: 'worker-session',
+    payload: {
+      prompt: 'next phase',
+      onBehalfOf: 'legacy:admin',
+      background: true,
+    },
+  })
+  const signed = signTaskOwner(raw, keys)
+  expect(verifiedBackground(signed, controllers)).toBe(true)
+  // Unsigned, or signed by a key this node does not hold: ignored.
+  expect(verifiedBackground(raw, controllers)).toBe(false)
+  expect(
+    verifiedBackground(signTaskOwner(raw, generateNodeKeyPair()), controllers),
+  ).toBe(false)
+  // A relay can neither strip nor add it under the same proof.
+  const payload = signed.payload as Record<string, unknown>
+  const { background: _dropped, ...stripped } = payload
+  expect(
+    verifiedTaskOwner({ ...signed, payload: stripped }, controllers),
+  ).toBeUndefined()
+  const interactive = signTaskOwner(
+    { ...raw, payload: { prompt: 'hi', onBehalfOf: 'legacy:admin' } },
+    keys,
+  )
+  expect(verifiedBackground(interactive, controllers)).toBe(false)
+  expect(
+    verifiedBackground(
+      {
+        ...interactive,
+        payload: {
+          ...(interactive.payload as Record<string, unknown>),
+          background: true,
+        },
+      },
+      controllers,
+    ),
+  ).toBe(false)
 })

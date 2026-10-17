@@ -10,11 +10,18 @@
  * Operating a browser is the base's (omp's) ability; what this page manages
  * is qianmo's part — which agent gets one, what it must ask first, and
  * wiping it clean.
+ *
+ * A computer that operates like a person (runtimes-channels.md §6) adds the
+ * private desktop's facts — window manager, accessibility, confinement,
+ * memory, which applications it may open and whether a terminal is one of
+ * them — and its latest screenshot. A node from before those fields sends
+ * none of them, and the card shows what it did before.
  */
 
 import type { ConsoleFailure } from '../deps.js'
 import type {
   DesktopActionView,
+  DesktopApps,
   DesktopConfirm,
   DesktopNodeView,
   DesktopUnitState,
@@ -30,7 +37,14 @@ import {
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { formatBytes, formatRelative } from './format.js'
-import { actionButton, dialogActions, dialogTop, emptyState } from './kit.js'
+import {
+  actionButton,
+  dialogActions,
+  dialogTop,
+  emptyState,
+  segmented,
+  textArea,
+} from './kit.js'
 
 export interface DesktopModel {
   readonly units: readonly DesktopNodeView[]
@@ -50,7 +64,17 @@ const STATE_WORD: Readonly<Record<DesktopUnitState, readonly [Tone, string]>> =
 const CONFIRM_WORD: Readonly<Record<DesktopConfirm, string>> = {
   sensitive: '只看自动 · 其余逐次确认',
   always: '每一步都确认',
+  autonomous: '自主 · 只确认有后果的操作',
 }
+
+const CONFIRMS: readonly DesktopConfirm[] = [
+  'sensitive',
+  'always',
+  'autonomous',
+]
+
+/** How many app ids a card shows before it says how many there are. */
+const APPS_SHOWN = 6
 
 const PLATFORM_WORD: Readonly<Record<string, string>> = {
   linux: 'Linux',
@@ -80,10 +104,41 @@ const OP_WORD: Readonly<Record<string, string>> = {
   press: '按键',
   key: '按键',
   scroll: '滚动',
+  zoom: '放大查看',
+  windows: '看窗口',
+  observe: '读窗口',
+  apps: '看应用',
+  actions: '批量动作',
+  focus: '切换窗口',
+  element: '操作元素',
+  menu: '菜单',
+  open_app: '打开应用',
+  clipboard_read: '读剪贴板',
+  clipboard_write: '写剪贴板',
 }
 
 function keyOf(unit: DesktopNodeView): string {
   return `${unit.node}/${unit.agent}`
+}
+
+/** The apps field as sent, or null when the node did not send a usable one. */
+function appsOf(unit: DesktopNodeView): DesktopApps | null {
+  const apps = unit.computer.apps
+  if (apps === 'all' || apps === 'none') return apps
+  return Array.isArray(apps) && apps.every(id => typeof id === 'string')
+    ? apps
+    : null
+}
+
+/** A macOS host desktop: no private display, only listed applications. */
+function hostDesktop(unit: DesktopNodeView): boolean {
+  return unit.computer.mode === 'host'
+}
+
+/** A host desktop opens nothing until the operator lists what it may operate. */
+function needsApps(unit: DesktopNodeView): boolean {
+  const apps = appsOf(unit)
+  return hostDesktop(unit) && !(Array.isArray(apps) && apps.length > 0)
 }
 
 function unitSwitch(
@@ -103,11 +158,24 @@ function unitSwitch(
     )
   }
   const id = `dk-${which}-${unit.node}-${unit.agent}`
+  // Turning a host desktop on without a list asks for the list first.
+  const ask = which === 'computer' && !on && needsApps(unit)
   return (
     `<label class="sw dk-sw" for="${attr(id)}"><input type="checkbox" id="${attr(id)}" ` +
     `data-desktop-unit="${which}" data-node="${attr(unit.node)}" data-agent="${attr(unit.agent)}"` +
+    `${ask ? appsData(unit) : ''}` +
     `${on ? ' checked' : ''}${unit.reachable ? '' : ' disabled'} data-write>` +
     `<span class="trk"></span><span>${label}</span></label>`
+  )
+}
+
+/** What the apps dialog is filled from: the mode and the current list. */
+function appsData(unit: DesktopNodeView): string {
+  const apps = appsOf(unit) ?? 'all'
+  return (
+    ` data-desktop-apps="${attr(typeof apps === 'string' ? apps : 'list')}"` +
+    ` data-apps-list="${attr(typeof apps === 'string' ? '' : apps.join('\n'))}"` +
+    ` data-mode="${hostDesktop(unit) ? 'host' : 'private'}"`
   )
 }
 
@@ -136,12 +204,17 @@ function unitState(
 
 function confirmPicker(unit: DesktopNodeView, ops: boolean): string {
   if (!ops) {
-    return `<span class="note">${escapeHtml(CONFIRM_WORD[unit.confirm])}</span>`
+    return `<span class="note">${escapeHtml(CONFIRM_WORD[unit.confirm] ?? unit.confirm)}</span>`
   }
   const name = `dk-confirm-${unit.node}-${unit.agent}`
+  // A node from before §6 reports no app policy and refuses `autonomous`.
+  const offered =
+    unit.computer.apps !== undefined || unit.confirm === 'autonomous'
+      ? CONFIRMS
+      : CONFIRMS.filter(value => value !== 'autonomous')
   return (
     `<div class="seg dk-confirm" role="radiogroup" aria-label="确认">` +
-    (['sensitive', 'always'] as const)
+    offered
       .map(
         value =>
           `<label class="seg-opt"><input type="radio" name="${attr(name)}" value="${value}" ` +
@@ -151,6 +224,126 @@ function confirmPicker(unit: DesktopNodeView, ops: boolean): string {
       )
       .join('') +
     `</div>`
+  )
+}
+
+function fact(label: string, value: string): string {
+  return (
+    `<div class="dk-fact"><span class="note">${escapeHtml(label)}</span>` +
+    `<span class="dk-fact-v">${value}</span></div>`
+  )
+}
+
+function appsValue(apps: DesktopApps): string {
+  if (apps === 'all') return '全部'
+  if (apps === 'none') return '不给'
+  if (apps.length === 0) return `<span class="note">未列出</span>`
+  const shown = apps
+    .slice(0, APPS_SHOWN)
+    .map(id => `<span class="chip kit-mono">${escapeHtml(id)}</span>`)
+    .join('')
+  return (
+    `<span class="chips">${shown}</span>` +
+    (apps.length > APPS_SHOWN
+      ? `<span class="note">共 ${escapeHtml(String(apps.length))} 个</span>`
+      : '')
+  )
+}
+
+function terminalValue(unit: DesktopNodeView, ops: boolean): string {
+  const on = unit.computer.terminal === true
+  if (!ops) return state(on ? 'warn' : 'muted', on ? '允许' : '不给')
+  const id = `dk-terminal-${unit.node}-${unit.agent}`
+  return (
+    `<label class="sw dk-sw" for="${attr(id)}"><input type="checkbox" id="${attr(id)}" ` +
+    `data-desktop-terminal data-node="${attr(unit.node)}" data-agent="${attr(unit.agent)}"` +
+    `${on ? ' checked' : ''}${unit.reachable ? '' : ' disabled'} data-write>` +
+    `<span class="trk"></span><span>允许终端</span></label>`
+  )
+}
+
+/**
+ * The computer's facts, each only when the node sent it: a node from before
+ * §6 sends none, and then there is no box at all.
+ */
+function computerFacts(unit: DesktopNodeView, ops: boolean): string {
+  const c = unit.computer
+  if (!c.supported) return ''
+  const host = hostDesktop(unit)
+  const rows: string[] = []
+  if (c.mode === 'private' || c.mode === 'host')
+    rows.push(fact('桌面', host ? '本机桌面' : '私有桌面'))
+  if (!host && c.windowManager !== undefined)
+    rows.push(
+      fact(
+        '窗口管理器',
+        typeof c.windowManager === 'string' && c.windowManager !== ''
+          ? `<span class="kit-mono">${escapeHtml(c.windowManager)}</span>`
+          : '无',
+      ),
+    )
+  if (typeof c.accessibility === 'boolean')
+    rows.push(
+      fact(
+        '无障碍',
+        c.accessibility ? state('ok', '可用') : state('muted', '不可用'),
+      ),
+    )
+  if (!host && typeof c.confined === 'boolean')
+    rows.push(
+      fact(
+        '隔离',
+        c.confined
+          ? state('ok', '已隔离')
+          : state('warn', '未隔离 · 不能打开应用'),
+      ),
+    )
+  const used = typeof c.memoryBytes === 'number' ? c.memoryBytes : null
+  const limit =
+    typeof c.memoryLimitBytes === 'number' ? c.memoryLimitBytes : null
+  if (used !== null || limit !== null)
+    rows.push(
+      fact(
+        '内存',
+        `${used === null ? '—' : escapeHtml(formatBytes(used))} / ${
+          limit === null ? '—' : escapeHtml(formatBytes(limit))
+        }`,
+      ),
+    )
+  const apps = appsOf(unit)
+  if (apps !== null) {
+    const edit = ops
+      ? `<button type="button" class="btn btn-ghost btn-small dk-edit" data-action="desktop-apps" ` +
+        `data-node="${attr(unit.node)}" data-agent="${attr(unit.agent)}"${appsData(unit)}` +
+        `${unit.reachable ? '' : ' disabled'} data-write>${icon('square-pen', { small: true })}修改</button>`
+      : ''
+    rows.push(
+      fact('应用', `<span class="dk-apps">${appsValue(apps)}</span>${edit}`),
+    )
+  }
+  if (!host && typeof c.terminal === 'boolean')
+    rows.push(fact('终端', terminalValue(unit, ops)))
+  if (rows.length === 0) return ''
+  return (
+    `<div class="dk-facts">${rows.join('')}</div>` +
+    (host ? `<p class="note dk-host">本机桌面只能操作列表里的应用</p>` : '')
+  )
+}
+
+/**
+ * The latest screenshot. Server-drawn empty; the page script fills it from
+ * `GET /v0/desktop/<node>/<agent>/screen` while the computer runs.
+ */
+function screenArea(unit: DesktopNodeView): string {
+  const c = unit.computer
+  if (!c.supported || !(c.enabled || c.state === 'running')) return ''
+  const live = c.state === 'running' && unit.reachable
+  return (
+    `<div class="dk-field"><span class="flabel">屏幕<span class="note dk-shot-at"></span></span>` +
+    `<button type="button" class="dk-shot" data-action="desktop-screen" ` +
+    `data-node="${attr(unit.node)}" data-agent="${attr(unit.agent)}"` +
+    `${live ? ' data-desktop-screen' : ''} aria-label="放大查看">` +
+    `<img alt="" hidden><span class="note dk-shot-empty">暂无画面</span></button></div>`
   )
 }
 
@@ -202,6 +395,8 @@ function unitCard(unit: DesktopNodeView, model: DesktopModel): string {
     `<div class="dk-switches">${unitSwitch(unit, 'browser', model.ops)}${unitSwitch(unit, 'computer', model.ops)}</div>` +
     noComputer(unit) +
     states +
+    computerFacts(unit, model.ops) +
+    screenArea(unit) +
     `<div class="dk-field"><span class="flabel">确认</span>${confirmPicker(unit, model.ops)}</div>` +
     `<footer class="dk-foot">${activity}${recycle}</footer>` +
     `</article>`
@@ -268,6 +463,7 @@ export function renderDesktopFailure(failure: ConsoleFailure): string {
   return failureBar(failure, '云端电脑')
 }
 
+/** The ops-only dialogs: recycling, and the applications a computer may open. */
 export function desktopConfirms(): string {
   const id = 'confirm-desktop-recycle'
   return (
@@ -277,6 +473,41 @@ export function desktopConfirms(): string {
     `<span id="${id}-name"></span></div></div>` +
     `<p>停掉浏览器和电脑 · 删除它的资料目录 登录状态 下载与截图 · 删除后不能恢复</p></div>` +
     dialogActions('清空回收', { danger: true, action: id }) +
+    `</dialog>` +
+    `<dialog class="dialog" id="desktop-apps" aria-labelledby="desktop-apps-title">` +
+    `<form id="desktop-apps-form" novalidate>` +
+    dialogTop('desktop-apps-title', 'square-pen', '允许的应用') +
+    `<div class="dialog-body"><div class="recap"><div class="recap-row"><span class="k">智能体</span>` +
+    `<span id="desktop-apps-name"></span></div></div>` +
+    segmented(
+      'appsMode',
+      '应用',
+      [
+        ['all', '全部'],
+        ['none', '不给'],
+        ['list', '列表'],
+      ],
+      'all',
+    ) +
+    textArea('appsList', '应用编号', {
+      rows: 5,
+      placeholder: '每行一个',
+      form: 'desktop-apps',
+    }) +
+    `<p class="note" id="desktop-apps-note"></p></div>` +
+    dialogActions('保存', { glyph: 'check' }) +
+    `</form></dialog>`
+  )
+}
+
+/** The enlarged screenshot, for every reader of the page. */
+export function desktopViewer(): string {
+  return (
+    `<dialog class="dialog dk-viewer" id="desktop-screen" aria-labelledby="desktop-screen-title">` +
+    dialogTop('desktop-screen-title', 'monitor', '屏幕') +
+    `<div class="dialog-body"><img class="dk-viewer-img" id="desktop-screen-img" alt="">` +
+    `<p class="note" id="desktop-screen-at"></p></div>` +
+    `<div class="dialog-actions"><button type="button" class="btn btn-secondary" data-action="confirm-cancel">关闭</button></div>` +
     `</dialog>`
   )
 }
@@ -299,7 +530,24 @@ export const DESKTOP_PAGE_CSS = `
 .dk-state { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-13); }
 .dk-state > .note:first-child { width: 4em; }
 .dk-field { display: flex; flex-direction: column; gap: 6px; }
+.dk-confirm { flex-direction: column; border-radius: var(--radius-md); }
 .dk-confirm .seg-opt { font-size: var(--text-12-5); }
+.dk-confirm .seg-opt + .seg-opt { border-left: 0; border-top: 1px solid var(--color-divider); }
+.dk-facts { display: flex; flex-direction: column; gap: 6px; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--color-divider); }
+.dk-fact { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-13); min-height: 24px; }
+.dk-fact > .note:first-child { width: 5.5em; flex: none; }
+.dk-fact-v { display: flex; align-items: center; flex-wrap: wrap; gap: 4px var(--space-2); min-width: 0; flex: 1; }
+.dk-apps, .dk-apps .chips { display: contents; }
+.dk-edit { margin-left: auto; flex: none; }
+.dk-host { margin-top: calc(var(--space-2) * -1); font-size: var(--text-12); }
+.dk-shot-at { margin-left: var(--space-2); font-weight: normal; }
+.dk-shot { position: relative; display: grid; place-items: center; width: 100%; aspect-ratio: 16 / 10; padding: 0; border: 1px solid var(--color-divider); border-radius: var(--radius-md); background: var(--color-bg); overflow: hidden; cursor: zoom-in; color: inherit; font: inherit; }
+.dk-shot:not(.dk-has) { cursor: default; }
+.dk-shot img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.dk-shot img[hidden], .dk-shot-empty[hidden], #desktop-apps .seg-opt[hidden] { display: none; }
+.dk-shot:focus-visible { outline: 2px solid var(--color-text); outline-offset: 2px; }
+dialog.dk-viewer { width: min(1480px, calc(100% - var(--space-8))); }
+.dk-viewer-img { width: 100%; height: auto; max-height: 76vh; object-fit: contain; border-radius: var(--radius-md); background: var(--color-bg); }
 .dk-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; margin-top: auto; }
 .dk-card:not(.dk-on) .dk-states { opacity: .7; }
 `

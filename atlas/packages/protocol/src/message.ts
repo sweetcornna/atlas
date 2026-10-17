@@ -566,9 +566,22 @@ export function isAckPayload(value: unknown): value is AckPayload {
 type Redelivered = true
 
 /**
+ * Marker carried by a result whose turn compacted the agent's context.
+ *
+ * `true` or absent, never `false`, for the same reason as {@link Redelivered}.
+ * A peer older than this field validates `task.result` by its key set and
+ * would refuse the whole result, so it goes only to a request that asked for
+ * it with `reportCompaction: true` ({@link requestsCompaction}); the factory
+ * drops it otherwise. A runtime that cannot tell leaves it out rather than
+ * guessing.
+ */
+type Compacted = true
+
+/**
  * Terminal result of a `task.request`.
  *
- * Closed apart from {@link Redelivered}, which is optional in both branches.
+ * Closed apart from {@link Redelivered} and {@link Compacted}, which are
+ * optional in both branches.
  */
 export type TaskResultPayload =
   | {
@@ -576,6 +589,7 @@ export type TaskResultPayload =
       readonly content: string
       readonly completedAt: number
       readonly redelivered?: Redelivered
+      readonly compacted?: Compacted
     }
   | {
       readonly outcome: 'failed'
@@ -583,6 +597,7 @@ export type TaskResultPayload =
       readonly reason: string
       readonly completedAt: number
       readonly redelivered?: Redelivered
+      readonly compacted?: Compacted
     }
 
 /** Input accepted by {@link createTaskResult}; the factory supplies the clock. */
@@ -591,12 +606,14 @@ export type TaskResultInput =
       readonly outcome: 'completed'
       readonly content: string
       readonly redelivered?: Redelivered
+      readonly compacted?: Compacted
     }
   | {
       readonly outcome: 'failed'
       readonly code: ProtocolErrorCode
       readonly reason: string
       readonly redelivered?: Redelivered
+      readonly compacted?: Compacted
     }
 
 const TASK_RESULT_COMPLETED_KEYS: readonly string[] = [
@@ -611,14 +628,16 @@ const TASK_RESULT_FAILED_KEYS: readonly string[] = [
   'completedAt',
 ]
 /**
- * The only key a `task.result` may carry beyond its branch's required set.
+ * The keys a `task.result` may carry beyond its branch's required set.
  *
- * Kept as a one-element whitelist rather than folded into the two arrays above
- * so the shape stays readable as what it is: a closed payload with a single
- * documented exception, not a payload that has started accepting extras.
+ * Kept as a whitelist rather than folded into the two arrays above so the
+ * shape stays readable as what it is: a closed payload with documented
+ * exceptions, each a `true`-only marker, not a payload that has started
+ * accepting extras.
  */
 const TASK_RESULT_OPTIONAL_KEYS: ReadonlySet<string> = new Set<string>([
   'redelivered',
+  'compacted',
 ])
 const PROTOCOL_ERROR_CODES: ReadonlySet<string> = new Set<string>(
   Object.values(ProtocolErrorCode),
@@ -671,8 +690,9 @@ export function isTaskResultPayload(
   ) {
     return false
   }
-  // Only `true`. See {@link Redelivered}.
+  // Only `true`. See {@link Redelivered} and {@link Compacted}.
   if ('redelivered' in payload && payload['redelivered'] !== true) return false
+  if ('compacted' in payload && payload['compacted'] !== true) return false
   if (payload['outcome'] === 'completed') {
     return (
       hasTaskResultKeys(payload, TASK_RESULT_COMPLETED_KEYS) &&
@@ -718,6 +738,7 @@ export function createTaskResult(
   result: TaskResultInput,
   now: number = Date.now(),
 ): QianmoMessage<TaskResultPayload> {
+  const { compacted, ...rest } = result
   return createMessage({
     from: handler,
     to: original.from,
@@ -728,8 +749,34 @@ export function createTaskResult(
       ? {}
       : { contextId: original.contextId }),
     createdAt: now,
-    payload: { ...result, completedAt: now },
+    payload: {
+      ...rest,
+      // Only to a requester that can read it; see {@link Compacted}.
+      ...(compacted === true && requestsCompaction(original)
+        ? { compacted: true as const }
+        : {}),
+      completedAt: now,
+    },
   })
+}
+
+/**
+ * The `task.request` declares it reads {@link Compacted} on its result.
+ *
+ * Per request rather than per peer: the field is about one answer, and the
+ * `supportedTypes` a peer declares names message types, not result fields.
+ * The request payload is open, so an older node ignores the declaration and
+ * an older console never makes it.
+ */
+export function requestsCompaction(message: QianmoMessage): boolean {
+  const payload = message.payload
+  return (
+    message.type === MessageType.TaskRequest &&
+    typeof payload === 'object' &&
+    payload !== null &&
+    !Array.isArray(payload) &&
+    (payload as Record<string, unknown>)['reportCompaction'] === true
+  )
 }
 
 /** Payload of a protocol `error`; correlation stays in the envelope. */
