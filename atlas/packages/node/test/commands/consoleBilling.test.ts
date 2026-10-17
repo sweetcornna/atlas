@@ -1108,6 +1108,18 @@ describe('a node handed back or moved gives the subscriber’s key back', () => 
     expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
     expect(deliveredProfile(0)?.key).not.toBe(secret)
   })
+
+  test('the plan counts only the nodes mapped to the tenant now', async () => {
+    const { tenant, own } = await subscribed()
+    setNodes(tenant, ['beta-2'])
+    // beta-1 still names the profile until the sync; it is no longer the
+    // tenant's, so it holds no place in the plan.
+    const moved = await providers.assign(
+      { node: 'beta-2', assignment: { mode: 'profile', profileId: own } },
+      ops(),
+    )
+    expect(moved.ok).toBe(true)
+  })
 })
 
 describe('removing a subscriber’s upstream', () => {

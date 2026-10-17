@@ -13,11 +13,12 @@
  * - 租户的节点只持有本租户的档案或「无模型」：这条在期望状态上强制
  *   （`ConsoleProviders.configureScope`），跟随默认、停止托管、别人的档案一律
  *   算作「无模型」，任务分工只带它跑的那份档案，测连、拉模型列表与 dry-run 也
- *   不把别的档案发给它。指派只收本租户档案（不超过套餐含的节点数）或「无模型」；
- *   停止托管会留下节点上次拿到的密钥，所以不收。有租户节点时，全局默认只能清空
- *   或设为「无模型」。平台的节点不持有订阅者的档案：还指派着订阅者档案的（交回平台、
- *   租户换了节点）期望为「无模型」，页面显示偏差，下发即收回密钥；跟随默认与停止
- *   托管照旧。
+ *   不把别的档案发给它。指派只收本租户档案（不超过套餐含的节点数，只数眼下
+ *   映射给该租户的节点）或「无模型」；停止托管会留下节点上次拿到的密钥，所以
+ *   不收。有租户节点时，全局默认只能清空或设为「无模型」。
+ * - 平台的节点不持有订阅者的档案：还指派着订阅者档案的（交回平台、租户换了
+ *   节点）期望为「无模型」，页面显示偏差，下发即收回密钥；跟随默认与停止托管
+ *   照旧。
  *
  * 读与节点上的其余操作原样转交。
  */
@@ -263,12 +264,25 @@ export function publicProviders(
         )
       const overview = await inner.overview()
       if (!overview.ok) return overview
-      const others = overview.value.nodes.filter(
-        row =>
-          row.node !== input.node &&
-          row.assignment.mode === 'profile' &&
-          row.assignment.profileId === own,
-      ).length
+      // Only the tenant's nodes now hold a place in the plan: one handed back
+      // or moved away may still name the profile until the node sync takes
+      // it back, and its key is no longer the tenant's to count.
+      let others = 0
+      for (const row of overview.value.nodes) {
+        if (
+          row.node === input.node ||
+          row.assignment.mode !== 'profile' ||
+          row.assignment.profileId !== own
+        )
+          continue
+        const holder = tenantOf(row.node)
+        if (holder === undefined)
+          return {
+            ok: false,
+            failure: { code: 'unavailable', message: '租户配置不可用' },
+          }
+        if (holder === tenant) others++
+      }
       const allowed = options.allowance(tenant)
       if (others >= allowed)
         return {
