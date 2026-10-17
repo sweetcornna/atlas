@@ -20,7 +20,8 @@
  *
  * 平台运维把节点分给租户（租户配置里的 `nodes`）之后，本端口把档案指派给这个
  * 租户的节点并下发：租户配置一变就做一次，另外每 60 秒随到期扫描再做一次；最多
- * 指派套餐含的节点数（`allowance`），多出来的节点不下发。
+ * 指派套餐含的节点数（`allowance`，没有有效订阅是 0），多出来的节点（映射多于
+ * 套餐、降级、到期）换成「无模型」档案并下发，收回节点上原有的密钥。
  *
  * ## 账本与错误
  *
@@ -303,6 +304,10 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
     } catch {
       return 0
     }
+    return this.#allowanceIn(config, tenant)
+  }
+
+  #allowanceIn(config: TenantConfig, tenant: string): number {
     let best = 0
     for (const row of config.subjects) {
       if (row.tenant !== tenant) continue
@@ -367,43 +372,63 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
   async #syncNodes(): Promise<void> {
     const { providers, caller, magpie } = this.#options
     const config = this.#options.tenancy.read().config
+    if (config.nodes.length === 0) {
+      this.#dirty.clear()
+      return
+    }
     const overview = await providers.overview()
     if (!overview.ok) return
     const reachable = new Map(
       overview.value.nodes.map(row => [row.node, row.assignment] as const),
     )
+    // Where a node beyond the plan goes: an apply of it replaces every key
+    // the node held; "not managed" would leave the last delivery in place.
+    const none = await magpie.noModelProfile()
     for (const { id: tenant } of config.tenants) {
-      const profileId = magpie.tenantProfileId(tenant)
-      if (profileId === null) continue
-      const allowed = this.allowance(tenant)
+      const dirty = this.#dirty.delete(tenant)
       const nodes = config.nodes
         .filter(row => row.tenant === tenant)
         .map(row => row.nodeId)
         .filter(node => reachable.has(node))
-      const onIt = nodes.filter(node => {
+      if (nodes.length === 0) continue
+      const profileId = magpie.tenantProfileId(tenant)
+      const allowed = profileId === null ? 0 : this.#allowanceIn(config, tenant)
+      const current = (node: string): string | null => {
         const assignment = reachable.get(node)
-        return (
-          assignment?.mode === 'profile' && assignment.profileId === profileId
-        )
-      })
-      const deliver = this.#dirty.has(tenant) ? [...onIt] : []
-      this.#dirty.delete(tenant)
-      let room = allowed - onIt.length
+        return assignment?.mode === 'profile' ? assignment.profileId : null
+      }
+      // Nodes already on the tenant's profile keep it first, in the order
+      // ops listed them; the plan's remaining room goes to the next ones;
+      // every other node (a downgrade, an expiry, more mapped than paid
+      // for) is put on no model.
+      const keep = new Set(
+        nodes.filter(node => current(node) === profileId).slice(0, allowed),
+      )
+      let room = allowed - keep.size
+      const deliver: string[] = []
       for (const node of nodes) {
-        if (room <= 0) break
-        if (onIt.includes(node)) continue
+        let target: string | null = none
+        if (keep.has(node)) target = profileId
+        else if (room > 0 && profileId !== null) {
+          target = profileId
+          room -= 1
+        }
+        if (target === null) continue
+        if (current(node) === target) {
+          if (dirty && target === profileId) deliver.push(node)
+          continue
+        }
         const assigned = await providers.assign(
-          { node, assignment: { mode: 'profile', profileId } },
+          { node, assignment: { mode: 'profile', profileId: target } },
           caller,
         )
         if (!assigned.ok) {
           this.#options.onError?.(
-            `billing: ${node} 没能指派 ${profileId} · ${assigned.failure.message}`,
+            `billing: ${node} 没能指派 ${target} · ${assigned.failure.message}`,
           )
           continue
         }
         deliver.push(node)
-        room -= 1
       }
       if (deliver.length === 0) continue
       const applied = await providers.apply({ nodes: deliver }, caller)

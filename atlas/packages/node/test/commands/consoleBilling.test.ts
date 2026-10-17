@@ -453,15 +453,20 @@ describe('a payment opens the subscription', () => {
     const assigned = (node: string) =>
       overview.value.nodes.find(row => row.node === node)?.assignment
     expect(assigned('beta-1')).toEqual({ mode: 'profile', profileId })
-    // The plan has one node: the second mapped node gets nothing.
-    expect(assigned('beta-2')?.mode).not.toBe('profile')
+    // The plan has one node: the second mapped node gets no model.
+    expect(assigned('beta-2')).toEqual({
+      mode: 'profile',
+      profileId: NO_MODEL_PROFILE,
+    })
     // Delivered with the subscriber key; nothing reaches the node unmapped.
     expect(ledger).toContain('system provider.apply beta-1 ok')
     expect(delivered(0)).toEqual({
       key: tenantKey(tenant).secret,
       main: NO_MODEL_PATTERN,
     })
-    expect(delivered(1)).toBeNull()
+    expect(deliveredProfile(1)?.id).toBe(NO_MODEL_PROFILE)
+    expect(delivered(1)?.key).not.toBe(tenantKey(tenant).secret)
+    expect(delivered(2)).toBeNull()
     expect((await billing.standing(ALICE)).nodesMapped).toBe(2)
     // Ops cannot hand it a second node either.
     const refused = await providers.assign(
@@ -911,6 +916,75 @@ describe('a tenant node holds its tenant’s profile or no model, nothing else',
     expect(beta1?.id).toBe(own)
     expect(beta1?.extra).toEqual([])
     expect(JSON.stringify(nodes[0]?.requests())).not.toContain(platform.secret)
+  })
+})
+
+describe('the plan’s node count, kept by the node sync', () => {
+  function assigned(row: { assignment: { mode: string } }): string | null {
+    const assignment = row.assignment as { mode: string; profileId?: string }
+    return assignment.mode === 'profile' ? (assignment.profileId ?? null) : null
+  }
+
+  test('mapped nodes beyond the plan are put on no model and delivered, whatever they held', async () => {
+    // beta-2 was a platform node with a platform key, its profile the default.
+    const issued = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-2' }, mainModel: 'openai/gpt-6' },
+      ops(),
+    )
+    if (!issued.ok) throw new Error(issued.failure.message)
+    const platformSecret = fake.key(issued.value.keyId)?.secret
+    const platformProfile = magpieProfileId({ kind: 'node', id: 'beta-2' })
+    expect(
+      (await providers.setDefault({ profileId: platformProfile }, ops())).ok,
+    ).toBe(true)
+    expect(deliveredProfile(1)?.key).toBe(platformSecret)
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1', 'beta-2', 'beta-3'])
+    await billing.syncNodes()
+    const own = magpieProfileId({ kind: 'tenant', id: tenant })
+    expect(assigned(await nodeRow('beta-1'))).toBe(own)
+    expect(assigned(await nodeRow('beta-2'))).toBe(NO_MODEL_PROFILE)
+    expect(assigned(await nodeRow('beta-3'))).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.id).toBe(own)
+    // The platform key the node held is replaced; beta-3 never had one.
+    expect(deliveredProfile(1)?.id).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(1)?.key).not.toBe(platformSecret)
+    expect(deliveredProfile(2)?.id).toBe(NO_MODEL_PROFILE)
+    expect(ledger).toContain('system provider.apply beta-2 ok')
+  })
+
+  test('a downgrade takes back the nodes the new plan does not cover', async () => {
+    const tenant = await pay(ALICE, 'team')
+    mapNodes(tenant, ['beta-1', 'beta-2'])
+    await billing.syncNodes()
+    const own = magpieProfileId({ kind: 'tenant', id: tenant })
+    expect(assigned(await nodeRow('beta-1'))).toBe(own)
+    expect(assigned(await nodeRow('beta-2'))).toBe(own)
+    clock += 31 * DAY
+    await billing.tick()
+    await pay(ALICE, 'month')
+    await billing.syncNodes()
+    expect(billing.allowance(tenant)).toBe(1)
+    expect(assigned(await nodeRow('beta-1'))).toBe(own)
+    expect(assigned(await nodeRow('beta-2'))).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.id).toBe(own)
+    expect(deliveredProfile(1)?.id).toBe(NO_MODEL_PROFILE)
+  })
+
+  test('expiry takes every node back; renewal gives them back', async () => {
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    const own = magpieProfileId({ kind: 'tenant', id: tenant })
+    expect(deliveredProfile(0)?.id).toBe(own)
+    clock += 31 * DAY
+    await billing.tick()
+    expect(assigned(await nodeRow('beta-1'))).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    await pay(ALICE)
+    await billing.syncNodes()
+    expect(assigned(await nodeRow('beta-1'))).toBe(own)
+    expect(deliveredProfile(0)?.id).toBe(own)
   })
 })
 
