@@ -106,6 +106,14 @@ const runtimeStatusSchema = z.object({
 })
 type RuntimeFacts = z.infer<typeof runtimeStatusSchema>['agents'][number]
 
+/** A question as one target gets it. */
+interface Question {
+  readonly message: string
+  readonly timeoutSec: number
+  /** When every target's answer is due, on {@link ConsolePeersOptions.now}. */
+  readonly deadline: number
+}
+
 /** One asking turn in a call chain. */
 interface Asker {
   readonly address: string
@@ -273,6 +281,11 @@ export class ConsolePeers {
     for (const turn of this.#turns) turn.cancel()
     await Promise.allSettled([...this.#serial.values()])
     this.#lock?.release()
+  }
+
+  /** `sec` seconds of a question; see {@link ConsolePeersOptions.timeoutMs}. */
+  #ms(sec: number): number {
+    return (this.#options.timeoutMs ?? (one => one * 1000))(sec)
   }
 
   #save(): void {
@@ -512,6 +525,8 @@ export class ConsolePeers {
       return refused('操作记录不可写，问答暂停')
     }
     const busy = await this.#busy()
+    // One clock for every target: waiting for a slot spends it too.
+    const deadline = this.#now() + this.#ms(asked.timeoutSec)
     const budget = Math.floor(ANSWER_BUDGET_BYTES / asked.agents.length)
     const answers = await Promise.all(
       asked.agents.map(async target => {
@@ -521,7 +536,7 @@ export class ConsolePeers {
           chain,
           busy,
           target,
-          asked,
+          { ...asked, deadline },
         ).catch(
           (): PeerAnswer => failed(target, 'failed', '问答中途出错，结果未知'),
         )
@@ -551,7 +566,7 @@ export class ConsolePeers {
     chain: readonly Asker[],
     busy: ReadonlySet<string>,
     target: string,
-    asked: { readonly message: string; readonly timeoutSec: number },
+    asked: Question,
   ): Promise<PeerAnswer> {
     const address = parseAddress(target)
     if (address === null)
@@ -640,9 +655,17 @@ export class ConsolePeers {
     dispatch: ChatDispatch,
     chain: readonly Asker[],
     target: string,
-    asked: { readonly message: string; readonly timeoutSec: number },
+    asked: Question,
   ): Promise<PeerAnswer> {
     if (this.#closed) return failed(target, 'cancelled', '中枢正在关闭')
+    const late = () =>
+      failed(
+        target,
+        'timeout',
+        `${target} 在 ${asked.timeoutSec} 秒内没有回答，已停止它这一轮`,
+      )
+    // An earlier question to the same agent from here took the time.
+    if (asked.deadline - this.#now() < this.#ms(1)) return late()
     const quota = dispatch.preflightUsage(
       target,
       this.#conversations.get(`${caller.session}\0${target}`)?.session ?? null,
@@ -656,9 +679,8 @@ export class ConsolePeers {
       )
     const conversation = await this.#conversation(caller, dispatch, target)
     if (!('id' in conversation)) return conversation
-    const timeoutMs = (this.#options.timeoutMs ?? (sec => sec * 1000))(
-      asked.timeoutSec,
-    )
+    const timeoutMs = asked.deadline - this.#now()
+    if (timeoutMs < this.#ms(1)) return late()
     const lines = [`来自 ${caller.address} 的提问`]
     if (conversation.fresh)
       lines.push(
@@ -697,11 +719,7 @@ export class ConsolePeers {
           await this.#options
             .stopTask?.(target, flight.taskId)
             .catch(() => false)
-        return failed(
-          target,
-          'timeout',
-          `${target} 在 ${asked.timeoutSec} 秒内没有回答，已停止它这一轮`,
-        )
+        return late()
       }
       if (outcome.cancelled) return failed(target, 'cancelled', '中枢正在关闭')
       return failed(

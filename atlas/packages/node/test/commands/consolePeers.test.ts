@@ -144,7 +144,9 @@ describe('asking', () => {
     expect(line.chain).toEqual([
       { node: 'node-a', taskId: chat.lastTask(caller) },
     ])
-    expect(line.taskTtlMs).toBe(300 * 20)
+    // The question's own timeout, counted from when it was asked.
+    expect(line.taskTtlMs).toBeLessThanOrEqual(300 * 20)
+    expect(line.taskTtlMs).toBeGreaterThan(299 * 20)
     // An interactive turn: never the background class.
     expect(line.background).toBeUndefined()
     chat.notice(peer, '查了一下')
@@ -243,6 +245,24 @@ describe('asking', () => {
     chat.reply(peer, '二')
     expect(answers(await first)[0]).toMatchObject({ reply: '一' })
     expect(answers(await second)[0]).toMatchObject({ reply: '二' })
+  })
+
+  test('a question waiting for its turn spends its own timeout meanwhile', async () => {
+    const book = peers()
+    const caller = await conversation()
+    const first = ask(book, caller, [CODER], { message: '第一问' })
+    const second = ask(book, caller, [CODER], {
+      message: '第二问',
+      timeoutSec: 5,
+    })
+    const peer = await askedIn(CODER)
+    await Bun.sleep(150)
+    chat.reply(peer, '一')
+    expect(answers(await first)[0]).toMatchObject({ reply: '一' })
+    expect(answers(await second)[0]).toMatchObject({ code: 'timeout' })
+    // It never went out: nothing to stop either.
+    expect(chat.sentTo(peer)).toHaveLength(1)
+    expect(stopped).toEqual([])
   })
 
   test('a very long answer is cut to fit the reply', async () => {
