@@ -1165,6 +1165,36 @@ export class NodeDesktop {
           code: 'invalid',
           message: 'Recycle only accepts agent and operationId',
         }
+      // The agents on a node share its network, and nothing authenticates a
+      // browser's debugging port on 127.0.0.1: a terminal in one agent's
+      // desktop could drive another agent's browser (§6.3). Until each agent
+      // gets its own network, one node gives a terminal to a lone agent only.
+      if (op === 'desktop.enable') {
+        const current = this.#states.get(agent)!
+        const on = (key: 'browser' | 'computer') =>
+          typeof args[key] === 'boolean' ? args[key] === true : current[key]
+        const terminal =
+          on('computer') &&
+          (typeof args.terminal === 'boolean'
+            ? args.terminal
+            : current.terminal)
+        const others = [...this.#states.values()].filter(
+          o => o !== current && (o.browser || o.computer),
+        )
+        const shell = others.find(o => o.computer && o.terminal)
+        if (terminal && others.length > 0)
+          return {
+            ok: false,
+            code: 'rejected',
+            message: `同一节点上 ${others.map(o => o.agent).join('、')} 也开着专属浏览器或电脑：智能体之间网络共用，终端能连到它们的浏览器，这台节点暂只给单独一个智能体开终端`,
+          }
+        if ((on('browser') || on('computer')) && shell)
+          return {
+            ok: false,
+            code: 'rejected',
+            message: `同一节点上 ${shell.agent} 的专属电脑开着终端：智能体之间网络共用，先关掉它的终端再给其他智能体开专属浏览器或电脑`,
+          }
+      }
       // This Mac's own desktop opens only what the operator names (§6.5).
       if (op === 'desktop.enable' && this.#hostDesktop()) {
         const current = this.#states.get(agent)!

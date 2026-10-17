@@ -1145,3 +1145,28 @@ test.skipIf(!hostTools)(
     expect(f.reaped).toEqual([])
   },
 )
+
+test('a node gives a terminal to a lone agent only: agents share its network', async () => {
+  const f = await session({ tools: FULL })
+  const other = (operationId: string, change: Record<string, unknown>) =>
+    f.node.control(
+      'desktop.enable',
+      { agent: 'other', operationId, ...change },
+      ctx,
+    )
+  expect((await other('other-on', { browser: true })).ok).toBe(true)
+  const refused = await f.enable('term', { computer: true, terminal: true })
+  expect(refused.ok).toBe(false)
+  expect(!refused.ok && refused.message).toContain('other')
+  // Without a terminal the same agent's computer opens.
+  expect((await f.enable('plain', { computer: true })).ok).toBe(true)
+  await f.node.control(
+    'desktop.disable',
+    { agent: 'other', operationId: 'other-off' },
+    ctx,
+  )
+  expect((await f.enable('term-2', { terminal: true })).ok).toBe(true)
+  const blocked = await other('other-again', { browser: true })
+  expect(blocked.ok).toBe(false)
+  expect(!blocked.ok && blocked.message).toContain('main')
+})
