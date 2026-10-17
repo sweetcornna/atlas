@@ -635,7 +635,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/admin/servers` | view | 服务器归属与备注（§11） |
 | GET | `/admin/settings` | view | 设置与关于：实例标签、控制台身份、命令名；启动横幅里的构建（`sourceCommit`）、注册中心、审计链来源、唤醒与对话及其签名状态；各端口此刻是否可达；数据路径只给能写的人；以及协议与运行时上限（A4） |
 | GET | `/admin/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
-| GET | `/admin/jobs` | view | 主动执行：定时任务、最近运行、通知渠道（P24，`docs/dev/directions-2026-10.md` §7），其下是原来的值守作业：上次与下次触发、急停、调度器心跳（§10.4） |
+| GET | `/admin/jobs` | view | 主动执行：定时任务、最近运行、通知渠道（P24，`docs/dev/directions-2026-10.md` §7），其下是原来的值守作业：上次与下次触发、急停、调度器心跳（§10.4）；以及后台任务（P29）：主人自己的（ops 看全部）、阶段（含排队中）、轮数、最近汇报与中断、子任务会话，未结束的可以取消 |
 | GET | `/v0/connectors` | view | 连接、预设、最近调用与可授权智能体；只显示主机和打码账号，不显示凭据或 ICS URL。租户范围内过滤；未接端口时 501 |
 | POST | `/v0/connectors` | **个人 ops** | 新建或带 `id` 修改连接；拒绝共用令牌与 break-glass；先动作账本 admission |
 | DELETE | `/v0/connectors/<连接 id>` | **个人 ops** | 删除连接及其秘密槽；成功 204 |
@@ -689,6 +689,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/schedules` | **成员** | 新建或保存一个定时任务（带 `id` 是保存）；目标须在对话白名单内 |
 | DELETE | `/v0/schedules/<任务 id>` | **成员** | 删除 |
 | POST | `/v0/schedules/<任务 id>/<enable\|disable\|run>` | **成员** | 启用、停用、立即运行一次（运行结果进最近运行） |
+| GET | `/v0/tasks` | view | 后台任务（P29，`docs/dev/runtimes-channels.md` §3）：`{ tasks }`，每条有标题、发起人、执行的智能体、状态与阶段（含排队中）、轮数、最近汇报、最近中断、子任务会话。主人只看自己的，ops 和旧令牌看全部；开了租户时受限的调用方拿不到（端口还没有租户包装）。没接端口时 501 |
+| POST | `/v0/tasks/<任务 id>/cancel` | **成员** | 取消一个未结束的后台任务，和对话里的取消同一条路：任务停下，节点停掉在跑的那一轮。只有发起人或 ops；越权与不存在同为 404，已结束 400。记 `task.cancel` |
 | GET | `/admin/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 记忆（P23，`docs/dev/directions-2026-10.md`）：这个人在某个智能体那里的长期记忆，按偏好、计划、项目、日常分类，能找、改、忘记。长期记忆按「智能体 × 账号」分开（复核 D18），只给读者自己的，所以只读令牌没有这一页（403）；没接记忆端口时侧栏不出现、页面 404 |
 | GET | `/admin/desktop` | view | 云端电脑（P21）：每个节点主智能体的专属浏览器与电脑——开关、确认方式（只看自动其余逐次确认 / 每一步都确认）、运行状态、清空回收，与最近的操作（只记类别与主机名）。浏览与操作能力来自基座，阡陌管分配、授权与回收。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/files` | view | 文件互通（P20，管理组）：等人批准的取文件申请（可放宽到目录、选有效期）、传输与汇集（状态、目标摘要核对、失败可重试）、授权（有效期内可再取、可撤销）。发起传输时每个来源可以经 `/v0/files/browse` 浏览来源工作区。路径都是工作区内的相对路径，文件内容不上页面。没接端口时侧栏不出现、页面 404 |
@@ -707,7 +709,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/channels/<渠道 id>/test` | **ops** | 向这个渠道发一条测试通知 |
 | GET | `/v0/desktop` | view | `DesktopNodeView[]`，启用状态、可达性、资源大小与最近操作计数 |
 | GET | `/v0/desktop/actions?agent=<地址>&limit=50` | view | `DesktopActionView[]`，agent 可省，limit 1–200，按租户过滤 |
-| PUT | `/v0/desktop/<节点>/<智能体>` | **ops** | `{ browser?, computer?, confirm? }`，先 admit，再经签名控制链路，记 `desktop.set` |
+| GET | `/v0/desktop/<节点>/<智能体>/screen` | view | 最近一张截图 `DesktopScreenView`（`{at, mimeType, data}`，data 为 base64）或 `null`；按租户过滤；经控制操作 `desktop.view`，节点不支持时 501 |
+| PUT | `/v0/desktop/<节点>/<智能体>` | **ops** | `{ browser?, computer?, confirm?, apps?, terminal? }`：confirm 为 sensitive/always/autonomous，apps 为 all/none/编号列表（至多 50），先 admit，再经签名控制链路，记 `desktop.set` |
 | POST | `/v0/desktop/<节点>/<智能体>/recycle` | **ops** | 停止并删除该智能体资料；先 admit，记 `desktop.recycle` |
 | GET | `/admin/access`、`/admin/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/admin/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
 | GET | `/admin/providers`、`/admin/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
@@ -794,7 +797,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | DELETE | `/v0/routing/nodes/<节点>` | **ops 个人账号** | 去掉这个节点单独的分工，回到默认 |
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段。`/fragments/audit` 带 `since` 时只回表头与自载入以来的新行（§5.6） |
 | GET | `/fragments/lifecycle/<节点>` | view | HTML 片段：生命周期页签被轮询的那一块（§5.5） |
-| GET | `/fragments/alerts?level=&state=`、`/fragments/jobs`、`/fragments/schedules` | view | HTML 片段 |
+| GET | `/fragments/alerts?level=&state=`、`/fragments/jobs`、`/fragments/schedules`、`/fragments/tasks` | view | HTML 片段 |
 | GET | `/fragments/desktop` | view | HTML 片段：云端电脑页被轮询的卡片与操作记录 |
 | GET | `/fragments/files` | view | HTML 片段：文件互通页被轮询的申请、传输与授权 |
 | GET | `/fragments/replicate/jobs` | view | HTML 片段：服务器页「添加服务器」下面的复制记录 |
@@ -1374,7 +1377,7 @@ PSK 与身份、把 `qianmo://<console>/<operator>` 注册进注册中心——�
 「刚刚」的时间戳、排在它所描述的那个回答的下面。重发（`redelivered`）单独有一格，不塞进
 `code`：那一格是失败时的协议错误码，而重发既不是失败也不是错误码。
 
-**一条会话最多收 200 条过程行**（`MAX_NOTICES_PER_SESSION`），且这个数**跨重启有效**。
+**一条会话最多收 200 条工具步骤**（`MAX_STEPS_PER_SESSION`），智能体主动通知另计、上限 2000（`MAX_AGENT_NOTICES_PER_SESSION`），两个数都**跨重启有效**。
 它防的不是流量，是落盘那一头的假设：`consoleChatStore.ts` 明说不做压缩，理由是「写它的是
 一个正在打字的人」——过程行不是人打的。对面每分钟能发 60 条、一个任务期限 5 分钟，于是一台
 **被授权过的、行为异常的**节点（一次构建出错就够）能往一条会话里塞三百条。拨号名单挡得住

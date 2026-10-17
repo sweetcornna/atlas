@@ -3,13 +3,15 @@
 
 /**
  * 扩展 (P32): MCP connectors, skills and plugins the operator installs for
- * agents. Each card says what it is, which agents get it and how it landed on
- * every node. Secret values stay on the hub; the page shows names only.
+ * agents. Each card says what it is, which agents get it and, one line per
+ * node, how it landed there; an agent it failed for is named under its node.
+ * Secret values stay on the hub; the page shows names only.
  */
 
 import type { ConsoleFailure } from '../deps.js'
 import type {
   ExtensionKind,
+  ExtensionNodeState,
   ExtensionsSnapshot,
   ExtensionView,
 } from '../directionPorts.js'
@@ -62,29 +64,42 @@ function mono(text: string): string {
   return `<span class="kit-mono">${escapeHtml(text)}</span>`
 }
 
-/** One line for all nodes: how many have it, and the first failure. */
+/** One node: its state, then each agent it failed for and why. */
+function nodeRow(node: ExtensionNodeState): string {
+  const failed = node.agents.filter(agent => agent.state === 'failed')
+  const partly =
+    node.state === 'failed' &&
+    node.agents.some(agent => agent.state === 'applied')
+  const mark =
+    node.state === 'applied'
+      ? state('ok', '已生效')
+      : node.state === 'pending'
+        ? state('warn', '下发中')
+        : state(partly ? 'warn' : 'bad', partly ? '部分生效' : '失败')
+  const why =
+    node.state === 'failed' && failed.length > 0
+      ? failed.map(agent =>
+          agent.detail === null
+            ? agent.agent
+            : `${agent.agent} · ${agent.detail}`,
+        )
+      : node.detail === null || node.state === 'applied'
+        ? []
+        : [node.detail]
+  return (
+    `<li class="ex-node"><div class="ex-node-head"><span class="kit-mono">${escapeHtml(node.node)}</span>${mark}</div>` +
+    why
+      .map(line => `<span class="note ex-why">${escapeHtml(line)}</span>`)
+      .join('') +
+    `</li>`
+  )
+}
+
+/** Every node the entry goes to, one line each. */
 function landing(extension: ExtensionView): string {
   if (!extension.enabled) return state('muted', '已停用')
   if (extension.nodes.length === 0) return state('muted', '没有节点')
-  const failed = extension.nodes.filter(node => node.state === 'failed')
-  const pending = extension.nodes.filter(node => node.state === 'pending')
-  const applied = extension.nodes.length - failed.length - pending.length
-  const title = extension.nodes
-    .map(
-      node =>
-        `${node.node} ${node.state === 'applied' ? '已生效' : node.state === 'failed' ? `失败 ${node.detail ?? ''}` : '下发中'}`,
-    )
-    .join('\n')
-  const line =
-    failed.length > 0
-      ? state(
-          'bad',
-          `${failed[0]!.node} 失败${failed[0]!.detail ? ` · ${failed[0]!.detail}` : ''}`,
-        )
-      : pending.length > 0
-        ? state('warn', `下发中 · ${applied}/${extension.nodes.length}`)
-        : state('ok', `已生效 · ${applied} 台节点`)
-  return `<span title="${attr(title)}">${line}</span>`
+  return `<ul class="ex-nodes">${extension.nodes.map(nodeRow).join('')}</ul>`
 }
 
 function card(extension: ExtensionView, model: ExtensionsModel): string {
@@ -150,7 +165,8 @@ function card(extension: ExtensionView, model: ExtensionsModel): string {
       : '') +
     `</div></header>` +
     `<div class="ex-facts">${facts.join('')}</div>` +
-    `<footer class="ex-foot">${landing(extension)}${acts}</footer>` +
+    `<div class="ex-landing">${landing(extension)}</div>` +
+    (acts === '' ? '' : `<footer class="ex-foot">${acts}</footer>`) +
     `</article>`
   )
 }
@@ -194,7 +210,7 @@ export function renderExtensions(model: ExtensionsModel): string {
 const NOTES: Readonly<Record<ExtensionKind, string>> = {
   mcp: '本地命令或远程地址 · 三种底层都能用',
   skill: '直接写 SKILL.md 或从 GitHub 公开仓库导入',
-  plugin: '从 GitHub 公开仓库导入 · 按插件自带的清单加载',
+  plugin: '从 GitHub 公开仓库导入 · 按插件自带的清单加载技能与说明',
 }
 
 function agentChecks(
@@ -328,7 +344,7 @@ export function renderExtensionForm(input: {
       textField('name', '名称', {
         mono: true,
         value: extension?.name ?? '',
-        maxLength: 40,
+        maxLength: 64,
         help: '小写字母 · 数字与连字符',
       }) +
       textField('description', '用途', {
@@ -353,10 +369,10 @@ export function renderExtensionForm(input: {
       textField('name', '名称', {
         mono: true,
         value: extension?.name ?? '',
-        maxLength: 40,
+        maxLength: 64,
         help: '不填取目录名',
       }) +
-      `<p class="note field-wide ex-hint">${icon('info', { small: true })}插件按原样加载 · 等于在智能体上装软件 · 只装信任的仓库</p>`
+      `<p class="note field-wide ex-hint">${icon('info', { small: true })}只加载插件里的技能与说明 · 自带的 MCP 服务 · 钩子与工具不加载 · 只装信任的仓库</p>`
   }
   return (
     head +
@@ -400,7 +416,12 @@ export const EXTENSIONS_PAGE_CSS = `
 .ex-facts { display: flex; flex-direction: column; gap: 6px; }
 .ex-fact { display: flex; justify-content: space-between; gap: var(--space-3); font-size: var(--text-13); min-width: 0; }
 .ex-fact .kit-mono { text-align: right; overflow-wrap: anywhere; }
-.ex-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; margin-top: auto; }
+.ex-landing { margin-top: auto; }
+.ex-nodes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: var(--text-13); }
+.ex-node { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ex-node-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.ex-why { overflow-wrap: anywhere; }
+.ex-foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); flex-wrap: wrap; }
 .ex-agents { border: 0; padding: 0; margin: 0; }
 .ex-agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--space-2); }
 .ex-hint { display: flex; gap: 6px; align-items: flex-start; }

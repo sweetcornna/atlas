@@ -410,6 +410,22 @@ describe('resident mailbox admission', () => {
     ])
   })
 
+  test('tells the gate when the host marks the batch background', async () => {
+    const gate = new RecordingGate()
+    await reader(new MemoryMailbox([message()]), new MemoryTurn(), {
+      gate,
+      backgroundOf: batch => batch.length === 1,
+    }).poll()
+    const plain = new RecordingGate()
+    await reader(
+      new MemoryMailbox([message({ text: 'person' })]),
+      new MemoryTurn(),
+      { gate: plain, backgroundOf: () => false },
+    ).poll()
+    expect(gate.requests).toEqual([{ sessionId: SESSION_ID, background: true }])
+    expect(plain.requests).toEqual([{ sessionId: SESSION_ID }])
+  })
+
   test('the recovery path submits without a deadline', async () => {
     const mailbox = new MemoryMailbox([message()])
     ledger.append({

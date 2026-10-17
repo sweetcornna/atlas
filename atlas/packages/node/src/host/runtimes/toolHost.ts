@@ -18,9 +18,16 @@ export interface RuntimeToolSpec {
   readonly inputSchema: Record<string, unknown>
 }
 
+/** One part of a tool result; screenshots come back as images. */
+export type RuntimeToolContent =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'image'; readonly data: string; readonly mimeType: string }
+
 export interface RuntimeToolResult {
   readonly ok: boolean
   readonly text: string
+  /** When set, MCP returns these parts instead of `text` alone. */
+  readonly content?: readonly RuntimeToolContent[]
 }
 
 export interface RuntimeToolHostOptions {

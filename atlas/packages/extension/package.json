@@ -10,7 +10,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./policy": "./src/policy.ts",
-    "./desktopPolicy": "./src/desktopPolicy.ts"
+    "./desktopPolicy": "./src/desktopPolicy.ts",
+    "./desktopExec": "./src/desktopExec.ts"
   },
   "files": [
     "src"

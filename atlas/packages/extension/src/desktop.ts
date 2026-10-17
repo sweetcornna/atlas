@@ -2,56 +2,106 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { declareWorkerHostEntry } from '@oh-my-pi/pi-utils/worker-host'
-import { createHash } from 'node:crypto'
-import * as path from 'node:path'
-import { readFileSync } from 'node:fs'
-import type { EvalPreludeDefinition } from '@oh-my-pi/pi-coding-agent/eval/preludes'
-import type { TSchema } from '@oh-my-pi/omptype/typebox'
-import type {
-  ExtensionAPI,
-  ToolDefinition,
-} from '@oh-my-pi/pi-coding-agent/extensibility/extensions'
-import { Settings } from '@oh-my-pi/pi-coding-agent/config/settings'
-import { createBrowserPrelude } from '@oh-my-pi/pi-coding-agent/tools/browser'
-import { createComputerPrelude } from '@oh-my-pi/pi-coding-agent/tools/computer'
-import type { ToolSession } from '@oh-my-pi/pi-coding-agent/tools/index'
+import type { TSchema, TypeBuilder } from '@oh-my-pi/omptype/typebox'
+import type { ExtensionAPI } from '@oh-my-pi/pi-coding-agent/extensibility/extensions'
 import {
-  DESKTOP_FIELDS,
-  DESKTOP_LEASE_REFUSED,
   isDesktopTool,
-  desktopArgs,
   desktopLeaseAnswer,
-  desktopOp,
-  desktopUnavailable,
-  type DesktopResource,
-  type DesktopTool,
+  desktopToolDescription,
+  desktopToolSchema,
+  desktopTools,
 } from './desktopPolicy.js'
+import { DesktopExecutor, type DesktopGateway } from './desktopExec.js'
 
-export function readDesktopResource(file: string): DesktopResource | undefined {
-  try {
-    const r = JSON.parse(readFileSync(file, 'utf8')) as DesktopResource
-    if (
-      typeof r.resourceId !== 'string' ||
-      !Number.isSafeInteger(r.resourceEpoch) ||
-      typeof r.browser !== 'boolean' ||
-      typeof r.computer !== 'boolean' ||
-      typeof r.tab !== 'string' ||
-      typeof r.downloads !== 'string'
-    )
-      return undefined
-    if (
-      r.browser &&
-      (typeof r.cdpUrl !== 'string' ||
-        !/^http:\/\/127\.0\.0\.1:\d+$/.test(r.cdpUrl))
-    )
-      return undefined
-    return r
-  } catch {
-    return undefined
+export { readDesktopResource } from './desktopExec.js'
+
+type JsonSchema = Readonly<Record<string, unknown>>
+const isSchema = (value: unknown): value is JsonSchema =>
+  !!value && typeof value === 'object' && !Array.isArray(value)
+function numberOpts(
+  doc: JsonSchema,
+  keys: readonly string[],
+): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const key of keys) {
+    const value = doc[key]
+    if (typeof value === 'number') out[key] = value
   }
+  return out
 }
-const digest = (value: unknown) =>
-  createHash('sha256').update(JSON.stringify(value)).digest('hex')
+
+type ToolParameters = Parameters<ExtensionAPI['registerTool']>[0]['parameters']
+
+/**
+ * The typebox form of one {@link desktopToolSchema} document. The host's
+ * `Type.Unsafe` keeps and validates the raw document; a builder whose
+ * `Unsafe` drops it (omptype's own) gets the document rebuilt node by node,
+ * covering the keywords desktopPolicy emits.
+ */
+export function desktopParameters(
+  Type: TypeBuilder,
+  doc: JsonSchema,
+): ToolParameters {
+  const probe = Type.Unsafe({ type: 'string', maxLength: 7 })
+  if (probe.toJsonSchema().maxLength === 7) return Type.Unsafe({ ...doc })
+  return Type.Object(rebuildFields(Type, doc), { additionalProperties: false })
+}
+function rebuildFields(
+  Type: TypeBuilder,
+  doc: JsonSchema,
+): Record<string, TSchema> {
+  const required = Array.isArray(doc.required) ? doc.required : []
+  const properties = isSchema(doc.properties) ? doc.properties : {}
+  const fields: Record<string, TSchema> = {}
+  for (const [key, value] of Object.entries(properties)) {
+    if (!isSchema(value)) continue
+    const field = rebuild(Type, value)
+    fields[key] = required.includes(key) ? field : Type.Optional(field)
+  }
+  return fields
+}
+function rebuild(Type: TypeBuilder, doc: JsonSchema): TSchema {
+  const meta =
+    typeof doc.description === 'string' ? { description: doc.description } : {}
+  if (Array.isArray(doc.anyOf))
+    return Type.Union(
+      doc.anyOf.filter(isSchema).map(branch => rebuild(Type, branch)),
+      meta,
+    )
+  if (Array.isArray(doc.enum))
+    return Type.Union(
+      doc.enum
+        .filter((value): value is string => typeof value === 'string')
+        .map(value => Type.Literal(value)),
+      meta,
+    )
+  switch (doc.type) {
+    case 'string':
+      return Type.String({
+        ...meta,
+        ...numberOpts(doc, ['minLength', 'maxLength']),
+        ...(typeof doc.pattern === 'string' ? { pattern: doc.pattern } : {}),
+      })
+    case 'number':
+    case 'integer':
+      return (doc.type === 'integer' ? Type.Integer : Type.Number)({
+        ...meta,
+        ...numberOpts(doc, ['minimum', 'maximum']),
+      })
+    case 'array':
+      if (!isSchema(doc.items)) break
+      return Type.Array(rebuild(Type, doc.items), {
+        ...meta,
+        ...numberOpts(doc, ['minItems', 'maxItems']),
+      })
+    case 'object':
+      return Type.Object(rebuildFields(Type, doc), {
+        ...meta,
+        additionalProperties: false,
+      })
+  }
+  throw new Error('Unsupported desktop schema node')
+}
 
 /** Invoke only trusted, fixed call chains; no language VM is model-accessible. */
 export function registerDesktopTools(
@@ -66,6 +116,7 @@ export function registerDesktopTools(
   // call only touches the extension's private copy.
   declareWorkerHostEntry()
   const Type = pi.typebox.Type
+  const executor = new DesktopExecutor(file, cwd)
   const originalCalls = new Map<string, { name: string; args: unknown }>()
   pi.on('before_agent_start', () => {
     originalCalls.clear()
@@ -81,295 +132,51 @@ export function registerDesktopTools(
           args: JSON.parse(JSON.stringify(part.arguments)),
         })
   })
-  const session: ToolSession = {
-    cwd,
-    hasUI: false,
-    settings: Settings.isolated({
-      browser: { enabled: true, idleCloseSec: 0 },
-      computer: { enabled: true },
-    }),
-    getSessionFile: () => null,
-    getSessionSpawns: () => null,
-  }
-  let browser: EvalPreludeDefinition | undefined
-  const browserExecutor = () => (browser ??= createBrowserPrelude(session))
-  let computer: EvalPreludeDefinition | undefined
-  let attached: string | undefined
-  // The host grants one lease per resource at a time, and omp runs the tool
-  // calls of one message concurrently. Run this child's desktop calls one
-  // after another, so a parallel read is not refused for the lease the
-  // navigation before it still holds.
-  let queue: Promise<unknown> = Promise.resolve()
-  const serially =
-    (run: ToolDefinition['execute']): ToolDefinition['execute'] =>
-    (...args) => {
-      const result = queue.then(() => run(...args))
-      queue = result.catch(() => {})
-      return result
-    }
-  pi.on('session_shutdown', async () => {
-    await browser
-      ?.invoke(
-        { action: 'close', all: true },
-        { session, toolCallId: 'desktop-close' },
-      )
-      .catch(() => {})
-    await computer
-      ?.invoke({ action: 'close' }, { session, toolCallId: 'desktop-close' })
-      .catch(() => {})
-  })
-  for (const name of Object.keys(DESKTOP_FIELDS) as DesktopTool[]) {
-    const fields: Readonly<Record<string, string>> = DESKTOP_FIELDS[name]
-    const schema: Record<string, TSchema> = {}
-    for (const [key, kind] of Object.entries(fields))
-      schema[key] =
-        kind === 'number'
-          ? Type.Number({ minimum: -10000, maximum: 10000 })
-          : Type.String({ maxLength: key === 'text' ? 16000 : 2000 })
+  pi.on('session_shutdown', () => executor.close())
+  for (const name of desktopTools({ browser: true, computer: true })) {
     pi.registerTool({
       name,
       label: name,
-      description: `Private resource ${desktopOp(name)}. Obtain the current tab handle from qianmo_browser_tabs. Changes require one operator approval.`,
-      parameters: Type.Object(schema, { additionalProperties: false }),
+      description: desktopToolDescription(name),
+      parameters: desktopParameters(Type, desktopToolSchema(name)),
       approval: 'read',
       loadMode: 'essential',
       defaultInactive: true,
-      execute: serially(async (invocationId, raw, signal, _update, ctx) => {
-        signal?.throwIfAborted()
+      execute: async (invocationId, raw, signal, _update, ctx) => {
         const original = originalCalls.get(invocationId)
         originalCalls.delete(invocationId)
-        const r = readDesktopResource(file)
-        let args: Record<string, string | number>
-        try {
-          if (!original || original.name !== name)
-            throw new Error('Missing original desktop invocation')
-          args = desktopArgs(name, original.args)
-          if (digest(desktopArgs(name, raw)) !== digest(args))
-            throw new Error('Desktop arguments changed before execution')
-          const unavailable = desktopUnavailable(name, r, ctx.agent.kind)
-          if (!r || unavailable !== undefined)
-            throw new Error(
-              `Desktop unavailable: ${unavailable ?? '节点没有为这个智能体发放专属浏览器或专属电脑'}`,
-            )
-          if (args.tab !== undefined && args.tab !== r.tab)
-            throw new Error(
-              'Stale or foreign tab handle: 专属浏览器已重启或回收，先调用 qianmo_browser_tabs 取当前的标签句柄',
-            )
-        } catch (error) {
-          await ctx.ui
-            .confirm(
-              'QIANMO_AUTHZ_V1',
-              JSON.stringify({
-                toolName: name,
-                input: {
-                  phase: 'refused',
-                  invocationId,
-                  canonicalArgsDigest: digest(original?.args ?? raw),
-                },
+        // The host answers every phase: `input` carries a reason back,
+        // `confirm` a yes/no (residentOmp.ts).
+        const gateway: DesktopGateway = {
+          reserve: async request =>
+            desktopLeaseAnswer(
+              await ctx.ui.input('QIANMO_AUTHZ_V1', JSON.stringify(request), {
+                timeout: 60_000,
               }),
-              { timeout: 5000 },
-            )
-            .catch(() => false)
-          throw error
+            ),
+          confirm: (request, timeout) =>
+            ctx.ui.confirm('QIANMO_AUTHZ_V1', JSON.stringify(request), {
+              timeout,
+            }),
+          query: async request =>
+            desktopLeaseAnswer(
+              await ctx.ui.input('QIANMO_AUTHZ_V1', JSON.stringify(request), {
+                timeout: 60_000,
+              }),
+            ),
         }
-        if (!r) throw new Error('Desktop unavailable')
-        session.settings = Settings.isolated({
-          browser: {
-            enabled: true,
-            idleCloseSec: 0,
-            screenshotDir: path.join(path.dirname(r.downloads), 'screenshots'),
+        return await executor.run(
+          {
+            name,
+            invocationId,
+            original: original?.name === name ? original.args : undefined,
+            args: raw,
+            agentKind: ctx.agent.kind,
+            ...(signal ? { signal } : {}),
           },
-          computer: { enabled: true },
-        })
-        const binding = {
-          invocationId,
-          resourceId: r.resourceId,
-          resourceEpoch: r.resourceEpoch,
-          args,
-          canonicalArgsDigest: digest(args),
-        }
-        const gate = (phase: string, extra: Record<string, unknown> = {}) =>
-          ctx.ui.confirm(
-            'QIANMO_AUTHZ_V1',
-            JSON.stringify({
-              toolName: name,
-              input: { ...binding, phase, ...extra },
-            }),
-            { timeout: 60_000 },
-          )
-        // The reservation is answered as text, so a refusal says why: no
-        // running resource, ESTOP, another operation holding the lease, an
-        // ended task. Every later phase is a plain yes/no confirmation.
-        const lease = desktopLeaseAnswer(
-          await ctx.ui.input(
-            'QIANMO_AUTHZ_V1',
-            JSON.stringify({
-              toolName: name,
-              input: { ...binding, phase: 'reserve' },
-            }),
-            { timeout: 60_000 },
-          ),
+          gateway,
         )
-        if (!lease.ok)
-          throw new Error(`${DESKTOP_LEASE_REFUSED}: ${lease.reason}`)
-        let executed = false
-        try {
-          const context = { session, toolCallId: invocationId, signal }
-          if (name.startsWith('qianmo_browser_') && attached !== r.tab) {
-            await browserExecutor().invoke(
-              { action: 'close', all: true },
-              context,
-            )
-            await browserExecutor().invoke(
-              {
-                action: 'open',
-                name: r.tab,
-                app: { cdp_url: r.cdpUrl, relay: false, tern: false },
-                downloads: r.downloads,
-                persist: true,
-              },
-              context,
-            )
-            attached = r.tab
-          }
-          const call = (method: string, values: unknown[] = []) =>
-            browserExecutor().invoke(
-              {
-                action: 'call',
-                name: r.tab,
-                chain: [{ method, args: values }],
-              },
-              context,
-            )
-          const target = async () =>
-            name.startsWith('qianmo_browser_')
-              ? {
-                  url: (await call('url')).details,
-                  page: (await call('ariaSnapshot')).details,
-                }
-              : (
-                  await (computer ??= createComputerPrelude(session)).invoke(
-                    {
-                      action: 'call',
-                      chain: [{ method: 'screenshot', args: [] }],
-                    },
-                    context,
-                  )
-                ).content.filter(part => part.type === 'image')
-          const before = await target()
-          const observedTargetDigest = digest(before)
-          const url =
-            name === 'qianmo_browser_navigate'
-              ? String(args.url)
-              : String(
-                  (before as { url?: { value?: unknown } }).url?.value ?? '',
-                )
-          let host: string | null = null
-          try {
-            host = new URL(url).hostname
-          } catch {
-            /* A blank tab has no host. */
-          }
-          if (!(await gate('authorize', { observedTargetDigest, host })))
-            throw new Error('Operator approval denied')
-          if (digest(await target()) !== observedTargetDigest)
-            throw new Error('Desktop target changed during approval')
-          signal?.throwIfAborted()
-          if (!(await gate('commit', { observedTargetDigest })))
-            throw new Error('Stale desktop approval')
-          executed = true
-          let result
-          switch (name) {
-            case 'qianmo_browser_tabs':
-              result = {
-                content: [
-                  {
-                    type: 'text' as const,
-                    text: JSON.stringify([{ tab: r.tab }]),
-                  },
-                ],
-              }
-              break
-            case 'qianmo_browser_screenshot':
-              result = await call('screenshot')
-              break
-            case 'qianmo_browser_read_page':
-              result = await call('text', ['body'])
-              break
-            case 'qianmo_browser_find':
-              result = await call('count', [args.selector])
-              break
-            case 'qianmo_browser_navigate':
-              result = await call('goto', [args.url])
-              break
-            case 'qianmo_browser_click':
-              result = await call('click', [args.selector])
-              break
-            case 'qianmo_browser_type':
-              result = await call('fill', [args.selector, args.text])
-              break
-            case 'qianmo_browser_press':
-              result = await call('press', [
-                args.key,
-                { selector: args.selector },
-              ])
-              break
-            case 'qianmo_browser_scroll':
-              result = await call('scroll', [args.x, args.y])
-              break
-            default: {
-              const op = desktopOp(name)
-              const method = op === 'key' ? 'press' : op
-              const values =
-                op === 'click'
-                  ? [args.x, args.y]
-                  : op === 'scroll'
-                    ? [args.x, args.y, { dx: args.dx, dy: args.dy }]
-                    : op === 'type'
-                      ? [args.text]
-                      : op === 'key'
-                        ? [args.key]
-                        : []
-              result = await (computer ??=
-                createComputerPrelude(session)).invoke(
-                { action: 'call', chain: [{ method, args: values }] },
-                context,
-              )
-            }
-          }
-          if (!(await gate('completed')))
-            throw new Error('Desktop completion receipt lost; do not retry')
-          const details = 'details' in result ? result.details : undefined
-          const value =
-            details && typeof details === 'object' && 'value' in details
-              ? details.value
-              : undefined
-          if (
-            value !== undefined &&
-            !result.content.some(part => part.type === 'image')
-          )
-            return {
-              content: [
-                ...result.content,
-                {
-                  type: 'text',
-                  text: (typeof value === 'string'
-                    ? value
-                    : JSON.stringify(value)
-                  ).slice(0, 64000),
-                },
-              ],
-              details: {
-                actionId: invocationId,
-                resourceEpoch: r.resourceEpoch,
-              },
-            }
-          return result
-        } catch (error) {
-          await gate(executed ? 'unknown' : 'failed').catch(() => false)
-          throw error
-        }
-      }),
+      },
     })
   }
 }

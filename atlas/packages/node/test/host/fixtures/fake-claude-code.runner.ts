@@ -7,7 +7,8 @@
  * prints, so the resident's Claude Code channel can be tested without a model.
  *
  * Prompts: `fail` ends with an error result; `hang` waits for an interrupt
- * control request; `long` stops with `max_tokens`; anything else is echoed.
+ * control request; `long` stops with `max_tokens`; `slow` is echoed after
+ * 400 ms; anything else is echoed.
  */
 
 import { appendFileSync } from 'node:fs'
@@ -27,7 +28,7 @@ const emit = (event: Record<string, unknown>) =>
 let turn = 0
 let hanging = false
 
-createInterface({ input: process.stdin }).on('line', line => {
+createInterface({ input: process.stdin }).on('line', async line => {
   const message = JSON.parse(line) as Record<string, unknown>
   if (message.type === 'control_request') {
     if (hanging) {
@@ -51,6 +52,7 @@ createInterface({ input: process.stdin }).on('line', line => {
     hanging = true
     return
   }
+  if (text === 'slow') await Bun.sleep(400)
   const tool = `tool-${turn}`
   emit({
     type: 'assistant',

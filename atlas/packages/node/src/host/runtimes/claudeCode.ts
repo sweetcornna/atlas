@@ -45,6 +45,21 @@ const NETWORK_TOOLS = ['WebFetch', 'WebSearch']
 /** Session-only tools that never need a prompt. Reads go through the posture check. */
 const SESSION_TOOLS = ['TodoWrite']
 const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']
+/** Settings every resident process starts with (`--settings`). */
+const CLAUDE_SETTINGS = { disableAllHooks: true }
+/**
+ * Environment that keeps a resident Claude Code to the node's policy: no
+ * auto-memory (qianmo's memory goes through `qianmo_*`, and Claude Code's
+ * own would live under the protected config root), no self-update (P31
+ * installs versions) and no traffic but the model's.
+ */
+export const CLAUDE_CODE_ENV: Readonly<Record<string, string>> = {
+  CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+  DISABLE_AUTOUPDATER: '1',
+  DISABLE_TELEMETRY: '1',
+  DISABLE_ERROR_REPORTING: '1',
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+}
 
 export interface ClaudeCodeLaunch {
   readonly bin: string
@@ -89,17 +104,26 @@ export function claudeCodeArgv(launch: ClaudeCodeLaunch): string[] {
     '--output-format',
     'stream-json',
     '--verbose',
-    // No user, project or plugin customization: the node's policy is the
-    // whole policy. Built-in tools and permissions work normally. With
-    // operator-installed plugins (P32), `--bare` instead: it, too, reads
-    // nothing from the user or the project, but loads `--plugin-dir`
-    // (`--safe-mode` skips their skills).
-    ...(plugins.length > 0
-      ? ['--bare', ...plugins.flatMap(dir => ['--plugin-dir', dir])]
-      : ['--safe-mode']),
+    // Only the user settings, and the user is the node: `CLAUDE_CONFIG_DIR`
+    // is a directory the node owns per agent. Nothing from the project
+    // (`.claude/`, CLAUDE.md, hooks, MCP) loads. Plugins come only from
+    // `--plugin-dir` (P32); their hooks stay off like every other hook, and
+    // `--strict-mcp-config` leaves out the MCP servers they bundle. (In
+    // Claude Code 2.1.301 `--safe-mode` drops `--mcp-config` and `--bare`
+    // drops the built-in tools and plugin skills.)
+    '--setting-sources',
+    'user',
+    '--settings',
+    JSON.stringify(CLAUDE_SETTINGS),
+    ...plugins.flatMap(dir => ['--plugin-dir', dir]),
     '--strict-mcp-config',
     '--mcp-config',
     launch.mcpConfigPath,
+    // Whatever the rules leave open is asked through the host: Claude Code
+    // 2.1.301 otherwise starts in `auto`, where its own model-based
+    // classifier decides and the prompt tool is never called.
+    '--permission-mode',
+    'default',
     '--permission-prompt-tool',
     `mcp__${RUNTIME_MCP_SERVER}__${PERMISSION_TOOL}`,
     '--model',

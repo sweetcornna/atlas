@@ -1446,6 +1446,23 @@ test('memory opt-in requires a pinned control endpoint', () => {
   ).toBe(true)
 })
 
+test('extensions are opt-in and need a control link (P32 audit 11)', () => {
+  expect(parseConsoleArgs([]).extensions).toBeUndefined()
+  expect(() => parseConsoleArgs(['--extensions'])).toThrow(
+    '--extensions needs --control',
+  )
+  const key = generateNodeKeyPair().publicKey
+  expect(
+    parseConsoleArgs([
+      '--extensions',
+      '--control',
+      'alpha=ws://127.0.0.1:1234',
+      '--trust',
+      `alpha=${key}`,
+    ]).extensions,
+  ).toBe(true)
+})
+
 test('files are opt-in and require a pinned control link before startup', () => {
   expect(parseConsoleArgs([]).files).toBeUndefined()
   expect(() => parseConsoleArgs(['--files'])).toThrow('--files needs --control')

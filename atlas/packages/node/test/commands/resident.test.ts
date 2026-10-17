@@ -301,6 +301,27 @@ describe('--allow-workspace-edits', () => {
   })
 })
 
+describe('--desktop-memory-mib', () => {
+  test('缺省不写进配置，由宿主取 1.5 GiB；给了按整数 MiB 收', () => {
+    expect(parseResidentArgs(BASE).desktopMemoryMib).toBeUndefined()
+    expect(
+      parseResidentArgs([...BASE, '--desktop-memory-mib', '2048'])
+        .desktopMemoryMib,
+    ).toBe(2048)
+    expect(
+      parseResidentArgs([...BASE, '--desktop-memory-mib=256']).desktopMemoryMib,
+    ).toBe(256)
+  })
+
+  test('小于 256、非整数或不是数字都拒绝，并说出范围', () => {
+    for (const value of ['255', '1.5', 'lots', '0', '1048577'])
+      expect(() =>
+        parseResidentArgs([...BASE, '--desktop-memory-mib', value]),
+      ).toThrow('--desktop-memory-mib must be an integer in 256..1048576')
+    expect(RESIDENT_HELP_TEXT).toContain('Default 1536')
+  })
+})
+
 describe('--local-commands-from (P18.20)', () => {
   const KEY = 'A'.repeat(43)
 

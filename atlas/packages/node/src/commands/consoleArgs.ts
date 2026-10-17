@@ -1380,6 +1380,10 @@ export function parseConsoleArgs(
     throw new Error('--connectors needs --accounts, --approvals and --control')
   if (desktop && controlTargets.length === 0)
     throw new Error('--desktop needs --control')
+  // Extensions reach a node only over its control link; without one the page
+  // would show every entry as on its way, forever.
+  if (extensions && controlTargets.length === 0)
+    throw new Error('--extensions needs --control')
   if (files && !filesExchangeRepo && !connectors)
     throw new Error('--files needs --files-exchange-repo or --connectors')
   if (schedules && chatTargets.length === 0)
@@ -1817,6 +1821,7 @@ Options (each accepts both --name value and --name=value):
                            sent to each node's agents over the control links
                            and loaded natively by qianmopi, Claude Code and
                            Codex. MCP secrets are sealed on this hub.
+                           Needs --control.
                            State: <config root>/qianmo/console/extensions/.
                            Unevaluated against real servers and plugins.
   --magpie                The platform magpie model gateway on the 网关 page:

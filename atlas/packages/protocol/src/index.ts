@@ -115,6 +115,7 @@ export {
   newTraceparent,
   peerIsPostLegacy,
   peerSupportsType,
+  requestsCompaction,
   resolvePeerTypes,
   serializeMessage,
   taskExpiresAt,

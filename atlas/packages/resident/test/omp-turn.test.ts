@@ -176,6 +176,57 @@ describe('omp resident turns', () => {
     expect((await result).outcome).toBe('failed')
     expect(f.port.stop(input.networkMsgId)).toBe(false)
   })
+  test('a turn the runtime compacted says so; an aborted, skipped or empty compaction, or none, says nothing', async () => {
+    const run = async (frames: readonly OmpRpcFrame[]) => {
+      const f = fixture()
+      const result = f.port.execute(input, async () => {})
+      await started(f)
+      f.emit(user)
+      for (const frame of frames) f.emit(frame)
+      f.emit(assistant('answer'))
+      f.emit(complete)
+      f.admit()
+      return await result
+    }
+    const compacted = {
+      type: 'auto_compaction_end',
+      action: 'context-full',
+      aborted: false,
+      willRetry: false,
+      result: { summary: 'earlier turns' },
+    }
+    expect(await run([compacted])).toEqual({
+      outcome: 'completed',
+      content: 'answer',
+      compacted: true,
+    })
+    // Claude Code and Codex, as their channels forward them.
+    for (const subtype of ['compact_boundary', 'thread/compacted'])
+      expect((await run([{ type: 'runtime_status', subtype }])).compacted).toBe(
+        true,
+      )
+    for (const frames of [
+      [],
+      [{ ...compacted, aborted: true }],
+      [{ ...compacted, skipped: true }],
+      [{ ...compacted, result: undefined }],
+      [{ type: 'auto_compaction_start', reason: 'threshold' }],
+      [{ type: 'runtime_status', subtype: 'api_retry' }],
+    ])
+      expect(await run(frames)).toEqual({
+        outcome: 'completed',
+        content: 'answer',
+      })
+    // A failed turn carries it too: the summary replaced the context either way.
+    const f = fixture()
+    const failed = f.port.execute(input, async () => {})
+    await started(f)
+    f.emit(user)
+    f.emit(compacted)
+    f.emit({ ...complete, status: 'aborted' })
+    f.admit()
+    expect(await failed).toMatchObject({ outcome: 'failed', compacted: true })
+  })
   test('empty and whitespace model replies fail; a successful tool-only turn remains valid', async () => {
     for (const body of ['', '   ']) {
       const f = fixture()

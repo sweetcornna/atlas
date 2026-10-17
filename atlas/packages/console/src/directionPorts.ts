@@ -256,8 +256,26 @@ export interface FilesPort {
 // P21 云端电脑
 // ---------------------------------------------------------------------------
 
-/** `sensitive`（默认）：仅截图、读页面、查元素、列 tab 自动放行；其余（含滚动）逐次确认。`always`：观察也逐次确认。只认单次批准。 */
-export type DesktopConfirm = 'sensitive' | 'always'
+/**
+ * `sensitive`（默认）：仅截图、读页面、查元素、列 tab 这类观察自动放行；其余（含滚动）逐次确认。
+ * `always`：观察也逐次确认。`autonomous`：观察与日常操作直接执行，调用自带 `confirm`
+ * 或打开终端类应用时才确认（runtimes-channels.md §6.4）。只认单次批准。
+ */
+export type DesktopConfirm = 'sensitive' | 'always' | 'autonomous'
+
+/**
+ * 专属电脑里允许打开的应用：`all`（默认，终端类另看 `terminal`）、`none`，或桌面条目编号列表；
+ * macOS 本机桌面只接受 bundle id 列表（§6.5）。
+ */
+export type DesktopApps = 'all' | 'none' | readonly string[]
+
+/** 专属电脑最近一张截图（`desktop.view`）。 */
+export interface DesktopScreenView {
+  readonly at: number
+  readonly mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
+  /** base64，至多 4 MiB 原图。 */
+  readonly data: string
+}
 
 export type DesktopUnitState = 'off' | 'starting' | 'running' | 'failed'
 
@@ -280,6 +298,20 @@ export interface DesktopNodeView extends AgentRef {
     /** `:12` 这样的显示号。 */
     readonly display: string | null
     readonly reason: string | null
+    /** Linux 私有桌面（Xvfb）或 macOS 本机桌面（按应用授权）。 */
+    readonly mode?: 'private' | 'host'
+    /** 私有桌面的窗口管理器程序名；没有为 null。 */
+    readonly windowManager?: string | null
+    /** 无障碍总线是否可用：窗口观察、元素与菜单操作依赖它。 */
+    readonly accessibility?: boolean
+    /** 私有桌面的进程是否在 bubblewrap 隔离里；为 false 时不许打开应用、浏览器保持无头。 */
+    readonly confined?: boolean
+    readonly apps?: DesktopApps
+    /** 是否允许打开终端类应用。 */
+    readonly terminal?: boolean
+    /** 资源全部进程的常驻内存合计与上限（字节）；不知道为 null。 */
+    readonly memoryBytes?: number | null
+    readonly memoryLimitBytes?: number | null
   }
   readonly confirm: DesktopConfirm
   readonly lastActionAt: number | null
@@ -327,6 +359,8 @@ export interface DesktopPort {
       readonly browser?: boolean
       readonly computer?: boolean
       readonly confirm?: DesktopConfirm
+      readonly apps?: DesktopApps
+      readonly terminal?: boolean
     },
     actor: DesktopActor,
   ): Promise<ConsoleResult<DesktopNodeView>>
@@ -338,6 +372,8 @@ export interface DesktopPort {
     ref: AgentRef | null,
     limit: number,
   ): Promise<ConsoleResult<readonly DesktopActionView[]>>
+  /** 最近一张截图；没有截图时为 null。 */
+  view?(ref: AgentRef): Promise<ConsoleResult<DesktopScreenView | null>>
 }
 
 // ---------------------------------------------------------------------------
@@ -717,6 +753,62 @@ export interface SchedulesPort {
 }
 
 // ---------------------------------------------------------------------------
+// P29 后台任务
+// ---------------------------------------------------------------------------
+
+export type BackgroundTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'interrupted'
+  | 'completion_pending'
+  | 'needs_input_pending'
+  | 'needs_input'
+  | 'completed'
+  | 'cancelled'
+
+/**
+ * 主智能体交给后台子智能体的一个任务，控制台列表里的一行。主会话的上下文和
+ * 追加指示的原文不在这里。
+ */
+export interface BackgroundTaskView {
+  readonly id: string
+  readonly title: string
+  /** 开这个任务的人：主会话的主人。 */
+  readonly owner: string
+  /** 执行它的智能体，`qianmo://<node>/<agent>`。 */
+  readonly target: string
+  readonly status: BackgroundTaskStatus
+  /** 阶段的说法，含「排队中」。 */
+  readonly phase: string
+  /** 最近一次汇报。 */
+  readonly progress: string
+  /** 最近一次中断的原因；正常时为空。 */
+  readonly lastError: string
+  readonly turns: number
+  /** 子任务所在的会话；还没开时为 null。 */
+  readonly workerSession: string | null
+  readonly createdAt: number
+  readonly updatedAt: number
+}
+
+export interface BackgroundTaskReader {
+  readonly subject: string
+  readonly role?: DirectionActor['role']
+}
+
+export interface BackgroundTasksPort {
+  /** 主人看自己的，运维看全部；新的在前。 */
+  list(actor: BackgroundTaskReader): readonly BackgroundTaskView[]
+  /** 内存里的判断：这个人看得到这条任务（取消也按它）。 */
+  visible(id: string, actor: BackgroundTaskReader): boolean
+  /** 取消，和对话里的取消同一条路：停掉节点上在跑的那一轮。 */
+  cancel(
+    id: string,
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<BackgroundTaskView>>
+}
+
+// ---------------------------------------------------------------------------
 // P25 应用连接
 // ---------------------------------------------------------------------------
 
@@ -1074,6 +1166,13 @@ export interface UpdatesPort {
 export const EXTENSION_KINDS = ['mcp', 'skill', 'plugin'] as const
 export type ExtensionKind = (typeof EXTENSION_KINDS)[number]
 
+/** 一个条目在节点上一个智能体那里的结果。 */
+export interface ExtensionAgentState {
+  readonly agent: string
+  readonly state: 'applied' | 'failed'
+  readonly detail: string | null
+}
+
 /** 一个条目在一个节点上的落地结果。 */
 export interface ExtensionNodeState {
   readonly node: string
@@ -1081,6 +1180,8 @@ export interface ExtensionNodeState {
   readonly state: 'applied' | 'failed' | 'pending'
   readonly detail: string | null
   readonly at: number | null
+  /** 逐个智能体；节点还没答、或节点版本不报时为空。 */
+  readonly agents: readonly ExtensionAgentState[]
 }
 
 /** GitHub 公开仓库里的一个目录，钉在一个提交上。 */

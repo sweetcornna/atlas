@@ -276,6 +276,39 @@ interface ActiveTurn {
   readonly announcedTools: Set<string>
   /** The last assistant message's stop reason. */
   lastStopReason: string | undefined
+  /** The runtime said it compacted the context during this turn. */
+  compacted: boolean
+}
+
+/**
+ * The `runtime_status` subtypes an external runtime reports a compaction
+ * with, as its channel forwards them: Claude Code's `system` message
+ * `compact_boundary`, Codex app-server's `thread/compacted` notification.
+ */
+const EXTERNAL_COMPACTION_STATUSES: ReadonlySet<string> = new Set([
+  'compact_boundary',
+  'thread/compacted',
+])
+
+/**
+ * Whether one frame says the context was compacted. omp's
+ * `auto_compaction_end` counts only when it produced a result and was neither
+ * aborted nor skipped. Anything else says nothing, so a runtime that does not
+ * report compactions never gets one invented for it.
+ */
+function compactionFrame(frame: OmpRpcFrame): boolean {
+  if (frame.type === 'auto_compaction_end')
+    return (
+      frame.result !== undefined &&
+      frame.result !== null &&
+      frame.aborted !== true &&
+      frame.skipped !== true
+    )
+  return (
+    frame.type === 'runtime_status' &&
+    typeof frame.subtype === 'string' &&
+    EXTERNAL_COMPACTION_STATUSES.has(frame.subtype)
+  )
 }
 
 /**
@@ -292,6 +325,7 @@ interface ActiveTurn {
  * | upstream status   | `message_end.errorStatus`, `prompt_result.error.httpStatus`  |
  * | sign of life      | every frame on the session's channel during the turn          |
  * | watchdog cancel   | RPC `abort`; the reason stays host-side (timings, task.result)|
+ * | compaction        | `auto_compaction_end` with a result, or an external runtime's `runtime_status` (see {@link compactionFrame}) |
  * | crash recovery    | {@link OmpTurnRouter.isAccepted} (identity entry scan)        |
  *
  * The node gate already serializes turns, so a channel carries at most one
@@ -501,6 +535,7 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
       failureCount: 0,
       announcedTools: new Set<string>(),
       lastStopReason: undefined,
+      compacted: false,
     }
     const acquisition = new AbortController()
     this.#acquisitions.set(input.sessionId, acquisition)
@@ -535,13 +570,16 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
       // Guarded, not raced by hand: a rejection from the watchdog travels the
       // same path a transport error does, so it reaches the sender as a
       // `task.result{failed}` carrying the watchdog's reason.
-      const result =
+      const ran =
         this.#inactivity === undefined
           ? await run()
           : await this.#inactivity.guard(
               { sessionId: input.sessionId, messageId: input.messageId },
               run,
             )
+      const result: ResidentTurnResult = active.compacted
+        ? { ...ran, compacted: true }
+        : ran
       this.#recordEnd(input, result)
       return result
     } catch (error) {
@@ -630,6 +668,10 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
     frame: OmpRpcFrame,
     accept: () => Promise<void>,
   ): void {
+    if (compactionFrame(frame)) {
+      active.compacted = true
+      return
+    }
     if (frame.type === 'message_end') {
       const message = recordOf(frame.message)
       if (message === undefined) return

@@ -260,6 +260,11 @@ async function loadHeapStats(): Promise<() => HeapStatsSnapshot> {
   return heapStats as () => HeapStatsSnapshot
 }
 
+/** `--desktop-memory-mib` 的默认值与范围（runtimes-channels.md §6.3：默认 1.5 GiB）。 */
+const DEFAULT_DESKTOP_MEMORY_MIB = 1536
+const DESKTOP_MEMORY_MIB_MIN = 256
+const DESKTOP_MEMORY_MIB_MAX = 1_048_576
+
 /** `--mem-sample` 的默认采样间隔：与 P7.3 的 24 h 长跑节拍一致。 */
 export const DEFAULT_RESIDENT_MEM_INTERVAL_MS = 60_000
 /**
@@ -297,6 +302,8 @@ export interface ResidentCliConfig {
    * Default is read-only. Hardline and protected configuration paths stay denied.
    */
   readonly allowWorkspaceEdits?: boolean
+  /** `--desktop-memory-mib`: memory cap of one agent's cloud computer. */
+  readonly desktopMemoryMib?: number
   readonly port?: number
   readonly hostname?: string
   readonly unix?: string
@@ -410,6 +417,7 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
   let requireSignedTasks = true
   let openPolicy = false
   let allowWorkspaceEdits = false
+  let desktopMemoryMib: number | undefined
   let tenancyPath: string | undefined
   const tenantHubPeers: string[] = []
   const approvers: (readonly [string, string])[] = []
@@ -655,6 +663,21 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
       index = parsed.next
     } else if (arg === '--allow-workspace-edits') {
       allowWorkspaceEdits = true
+    } else if (
+      arg === '--desktop-memory-mib' ||
+      arg?.startsWith('--desktop-memory-mib=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--desktop-memory-mib')
+      desktopMemoryMib = Number(parsed.value)
+      if (
+        !Number.isSafeInteger(desktopMemoryMib) ||
+        desktopMemoryMib < DESKTOP_MEMORY_MIB_MIN ||
+        desktopMemoryMib > DESKTOP_MEMORY_MIB_MAX
+      )
+        throw new Error(
+          `--desktop-memory-mib must be an integer in ${DESKTOP_MEMORY_MIB_MIN}..${DESKTOP_MEMORY_MIB_MAX}`,
+        )
+      index = parsed.next
     } else if (arg === '--backup-url' || arg?.startsWith('--backup-url=')) {
       const parsed = residentOptionValue(args, index, '--backup-url')
       const url = new URL(parsed.value)
@@ -894,6 +917,7 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
     ...(controllers.length === 0 ? {} : { controllers }),
     ...(protectedRoots.length === 0 ? {} : { protectedRoots }),
     ...(allowWorkspaceEdits ? { allowWorkspaceEdits } : {}),
+    ...(desktopMemoryMib === undefined ? {} : { desktopMemoryMib }),
     ...(port === undefined ? {} : { port }),
     ...(hostname === undefined ? {} : { hostname }),
     ...(unix === undefined ? {} : { unix }),
@@ -1152,7 +1176,18 @@ Authorization:
                            every call: hardline rules, sensitive paths, node
                            configuration and writes outside the workspace stay
                            blocked. Shell and subagent tools stay unavailable.
-                           Project settings cannot widen this policy.
+                           Project settings cannot widen this policy. A cloud
+                           computer's private desktop mounts the workspace
+                           writable too; without this flag, read-only.
+  --desktop-memory-mib <MiB>
+                           Memory cap of one agent's cloud computer (Xvfb,
+                           window manager, buses, browser and the apps it
+                           opened), an integer from ${DESKTOP_MEMORY_MIB_MIN} to ${DESKTOP_MEMORY_MIB_MAX}.
+                           Default ${DEFAULT_DESKTOP_MEMORY_MIB}. Where \`systemd-run --user\` works each
+                           process runs in its own scope with this MemoryMax;
+                           on Linux the node also sums the resident memory of
+                           all of them every 2 s and switches the computer off
+                           above it.
   --audit-signed-tasks     Observation mode: record every message that
                            --require-signed-tasks would have refused, and
                            refuse nothing. Nothing about what this node
@@ -2310,6 +2345,8 @@ export async function runResident(args: readonly string[]): Promise<void> {
     ...(config.allowWorkspaceEdits === true
       ? { allowWorkspaceEdits: true }
       : {}),
+    desktopMemoryBytes:
+      (config.desktopMemoryMib ?? DEFAULT_DESKTOP_MEMORY_MIB) * 1024 * 1024,
     psk,
     upstreamHealth,
     capability,

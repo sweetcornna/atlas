@@ -295,6 +295,26 @@ describe('operator-configured extensions (P32)', () => {
     )
     expect(noChannel?.approvalEligible).toBeUndefined()
     expect(noChannel?.reason).toContain('no approval channel')
+    // Two servers claiming one qianmopi name (P32 audit 18): the stricter
+    // decides, whichever comes first.
+    for (const order of [
+      ['allow', 'ask'],
+      ['ask', 'allow'],
+    ] as const) {
+      const clash = residentToolVerdict(
+        { toolName: 'mcp__qianmo_mcp_a_b_c', input: {} },
+        {
+          ...withMcp,
+          mcp: order.map((approval, at) => ({
+            server: at === 0 ? 'a' : 'a-b',
+            approval,
+            tools: ['mcp__qianmo_mcp_a_b_c'],
+          })),
+        },
+        { agentKind: 'main' },
+      )
+      expect(clash?.approvalEligible).toBe(true)
+    }
     expect(
       residentApprovalInput(
         { toolName: 'mcp__crm__update', input: { id: 7 } },
@@ -316,8 +336,17 @@ describe('operator-configured extensions (P32)', () => {
     ).toContain('mcp__qianmo_docs_search')
     const overlay = Bun.YAML.parse(
       residentConfigOverlay({ edits: 'none', mcp }),
-    ) as { tools: { approval: Record<string, string> } }
+    ) as {
+      tools: { approval: Record<string, string> }
+      mcp: Record<string, unknown>
+    }
     expect(overlay.tools.approval['mcp__qianmo_docs_search']).toBe('allow')
+    // A slow server still makes the first turn (P32 audit: startup window).
+    expect(overlay.mcp.startupTimeoutMs).toBe(10_000)
+    const none = Bun.YAML.parse(residentConfigOverlay({ edits: 'none' })) as {
+      mcp: Record<string, unknown>
+    }
+    expect(none.mcp).toEqual({ enableProjectConfig: false })
   })
 
   test('installed skill directories are readable, the rest of the root is not', () => {

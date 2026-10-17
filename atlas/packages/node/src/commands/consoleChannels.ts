@@ -221,15 +221,21 @@ export interface ConsoleChannelsOptions {
 
 /** What channels need of the hub's background tasks (`consoleTasks.ts`). */
 export interface ChannelTasks {
-  contextFor(sessionId: string): string | undefined
-  statusText(sessionId: string): string | undefined
+  contextFor(sessionId: string, since?: number): string | undefined
+  statusText(
+    sessionId: string,
+    options?: { readonly busy?: boolean },
+  ): string | undefined
   cancelForSession(sessionId: string): Promise<number>
   onFinished(
     listener: (event: {
       readonly parentSession: string
       readonly text: string
     }) => Promise<boolean | undefined>,
+    key?: string,
   ): () => void
+  /** Delivers results that could not reach a chat before (it is up now). */
+  retryNotifications?(only?: (parentSession: string) => boolean): void
 }
 
 function ok<T>(value: T): ConsoleResult<T> {
@@ -301,6 +307,13 @@ export class ConsoleChannels implements ChannelsPort {
   readonly #running = new Map<string, Running>()
   readonly #logins = new Map<string, PendingLogin>()
   readonly #active = new Map<string, ActiveTurn>()
+  /**
+   * The task note each conversation's session last received, and the one on
+   * its way with the turn in flight: a note goes out only when it changed,
+   * and counts as received once that turn answered.
+   */
+  readonly #noted = new Map<string, { text: string; at: number }>()
+  readonly #offered = new Map<string, { text: string; at: number }>()
   readonly #gateway: ChannelGateway
   #state: StoredState
   #closed = false
@@ -336,8 +349,9 @@ export class ConsoleChannels implements ChannelsPort {
       state === undefined
         ? { v: 1, cursors: {}, conversations: {}, sessions: {} }
         : stateSchema.parse(JSON.parse(state))
-    this.#unsubscribeTasks = options.tasks?.onFinished(event =>
-      this.#taskFinished(event),
+    this.#unsubscribeTasks = options.tasks?.onFinished(
+      event => this.#taskFinished(event),
+      'channels',
     )
     this.#gateway = new ChannelGateway({
       turns: this.#turns(),
@@ -470,6 +484,13 @@ export class ConsoleChannels implements ChannelsPort {
         if (current === undefined || !current.enabled) return
         this.#gateway.handle(this.#rules(current), adapter, message)
       })
+      // Results that found this channel down go out now; other channels'
+      // results keep their attempts.
+      .then(() =>
+        this.#options.tasks?.retryNotifications?.(
+          session => this.#rowOf(session)?.channelId === channel.id,
+        ),
+      )
       .catch(() => this.#options.onError?.(`渠道 ${channel.id} 启动失败`))
   }
 
@@ -617,11 +638,21 @@ export class ConsoleChannels implements ChannelsPort {
 
   #turns(): ChannelTurns {
     return {
-      run: (conversation, text, hooks) =>
-        this.#exchange(conversation, text, { onNotice: hooks.onNotice }),
+      run: async (conversation, text, hooks) => {
+        const offered = this.#offered.get(conversation.key)
+        this.#offered.delete(conversation.key)
+        const outcome = await this.#exchange(conversation, text, {
+          onNotice: hooks.onNotice,
+        })
+        if (outcome.compacted) this.#noted.delete(conversation.key)
+        else if (outcome.ok && offered !== undefined)
+          this.#noted.set(conversation.key, offered)
+        return outcome
+      },
       sessionOf: conversation =>
         this.#state.conversations[conversation.key]?.sessionId ?? undefined,
       reset: async conversation => {
+        this.#noted.delete(conversation.key)
         const row = this.#state.conversations[conversation.key]
         if (row !== undefined) {
           row.sessionId = null
@@ -629,10 +660,10 @@ export class ConsoleChannels implements ChannelsPort {
           this.#saveState()
         }
       },
-      stop: async conversation => {
-        const session = this.#state.conversations[conversation.key]?.sessionId
+      stop: async (conversation, options = {}) => {
+        const session = this.#sessionFor(conversation.key)
         const cancelled =
-          session == null || this.#options.tasks === undefined
+          !options.tasks || session == null || this.#options.tasks === undefined
             ? 0
             : await this.#options.tasks.cancelForSession(session)
         const active = this.#active.get(conversation.key)
@@ -645,23 +676,34 @@ export class ConsoleChannels implements ChannelsPort {
         return true
       },
       context: conversation => {
-        const session = this.#state.conversations[conversation.key]?.sessionId
+        const session = this.#sessionFor(conversation.key)
         if (
           !this.#foregroundLane(conversation) ||
           this.#options.tasks === undefined
         )
           return {}
-        const note =
-          session == null ? undefined : this.#options.tasks.contextFor(session)
+        const noted = this.#noted.get(conversation.key)
+        const at = this.#now()
+        const text =
+          session == null
+            ? undefined
+            : this.#options.tasks.contextFor(session, noted?.at)
+        const note = text === noted?.text ? undefined : text
+        if (note !== undefined)
+          this.#offered.set(conversation.key, { text: note, at })
         return {
           sticky: [{ id: 'tasks_rules', text: SUPERVISOR_RULES }],
           ...(note === undefined ? {} : { note }),
         }
       },
       intercept: async conversation => {
-        const session = this.#state.conversations[conversation.key]?.sessionId
+        const session = this.#sessionFor(conversation.key)
         if (session == null || !this.#foregroundLane(conversation)) return null
-        return this.#options.tasks?.statusText(session) ?? null
+        return (
+          this.#options.tasks?.statusText(session, {
+            busy: this.#active.has(conversation.key),
+          }) ?? null
+        )
       },
       compact: async conversation => {
         if (this.#state.conversations[conversation.key]?.sessionId == null)
@@ -669,6 +711,7 @@ export class ConsoleChannels implements ChannelsPort {
         const result = await this.#exchange(conversation, '/compact', {
           command: 'compact',
         })
+        if (result.ok) this.#noted.delete(conversation.key)
         return result.ok
           ? '上下文已压缩。'
           : `压缩失败：${[...(result.error ?? '')].slice(0, 200).join('')}`
@@ -726,6 +769,18 @@ export class ConsoleChannels implements ChannelsPort {
     readonly chat?: { readonly type: string }
   }): boolean {
     return conversation.lane === 'owner' && conversation.chat?.type === 'dm'
+  }
+
+  /**
+   * The chat's session for its tasks: the current one, or after `/new` and
+   * before the next turn opens one, the last it had (tasks follow the chat).
+   */
+  #sessionFor(key: string): string | undefined {
+    const current = this.#state.conversations[key]?.sessionId
+    if (current != null) return current
+    return Object.entries(this.#state.sessions)
+      .filter(([, owner]) => owner === key)
+      .at(-1)?.[0]
   }
 
   #rowOf(sessionId: string): StoredConversation | undefined {

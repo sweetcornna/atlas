@@ -9,7 +9,9 @@
  * Owns the `/admin/jobs` page, `/v0/jobs` and `/fragments/jobs` (the watch jobs),
  * `/fragments/schedules` (the schedules, runs and channels) and, through
  * {@link schedulesApi} when the host wires it, `/v0/schedules` and
- * `/v0/channels`. The emergency stop is still pulled and released by creating
+ * `/v0/channels`. The background tasks a main agent hands off (P29) are the
+ * hub's other self-driven turns, so they sit here too: `/fragments/tasks`,
+ * and `/v0/tasks` through {@link handleTasks}. The emergency stop is still pulled and released by creating
  * and removing its file (`console.md` §10.2); this page states which way it is
  * set rather than offering a switch.
  *
@@ -37,9 +39,17 @@ import {
   scheduleDialog,
 } from '../view/schedules.js'
 import { SCHEDULES_PAGE_JS } from '../view/schedulesScript.js'
+import {
+  renderTasks,
+  renderTasksUnavailable,
+  TASKS_PAGE_CSS,
+  taskConfirm,
+} from '../view/tasks.js'
+import { TASKS_PAGE_JS } from '../view/tasksScript.js'
 import { canMember, canOps } from './directionShared.js'
 import { handoffApi } from './handoff.js'
 import { schedulesApi } from './schedulesApi.js'
+import { handleTasks, taskActorOf } from './tasksApi.js'
 import { failureResponse, guard, readOnlyNote, underPath } from './shared.js'
 import type { RouteContext, RouteModule } from './types.js'
 
@@ -53,6 +63,19 @@ async function jobsFragment(ctx: RouteContext): Promise<string> {
   return result.ok
     ? renderJobs(result.value, ctx.now)
     : renderJobsUnavailable(result.failure)
+}
+
+/** The background tasks fragment: the caller's tasks (every one for ops). */
+function tasksFragment(ctx: RouteContext): string {
+  const port = ctx.deps.tasks
+  if (port === undefined) return renderTasksUnavailable(null)
+  const actor = taskActorOf(ctx)
+  const tasks = port.list(actor)
+  return renderTasks(tasks, ctx.now, {
+    // Whose task it is, once the list holds someone else's.
+    owners: tasks.some(task => task.owner !== actor.subject),
+    cancel: canMember(ctx),
+  })
 }
 
 /** The schedules fragment: cards, schedules, runs and channels, or why not. */
@@ -101,12 +124,15 @@ const API: Readonly<Record<string, HeadHandler>> = {
         schedulesApi.handle(ctx, head, rest),
     ]),
   ),
+  // P29: the background tasks, read and cancelled (`routes/tasksApi.ts`).
+  tasks: handleTasks,
 }
 
 /** The dialogs, rendered once with the page and outside every polled region. */
 async function dialogs(ctx: RouteContext): Promise<string> {
   const port = ctx.deps.schedules
-  if (port === undefined || !canMember(ctx)) return ''
+  const tasks = ctx.deps.tasks !== undefined && canMember(ctx)
+  if (port === undefined || !canMember(ctx)) return tasks ? taskConfirm() : ''
   const result = await port.snapshot(ctx.access.principal!)
   const snapshot = result.ok
     ? result.value
@@ -114,7 +140,8 @@ async function dialogs(ctx: RouteContext): Promise<string> {
   return (
     scheduleDialog(snapshot) +
     (canOps(ctx) ? channelDialog() : '') +
-    scheduleConfirms()
+    scheduleConfirms() +
+    (tasks ? taskConfirm() : '')
   )
 }
 
@@ -147,6 +174,8 @@ export const jobsRoute: RouteModule = {
         body:
           `<div class="kit-pane" id="schedules" data-poll="/fragments/schedules">` +
           `${await schedulesFragment(ctx)}</div>` +
+          `<div class="kit-pane" id="tasks" data-poll="/fragments/tasks">` +
+          `${tasksFragment(ctx)}</div>` +
           `<section class="sec jobs-legacy" id="jobs-section" aria-labelledby="h-watch">` +
           `<div class="sec-head"><div><div class="kicker">值守作业</div>` +
           `<h2 id="h-watch">由 qm watch 触发的作业</h2></div>` +
@@ -158,8 +187,8 @@ export const jobsRoute: RouteModule = {
         poll: true,
       }
     },
-    css: JOBS_PAGE_CSS + KIT_CSS + SCHEDULES_PAGE_CSS,
-    script: SCHEDULES_PAGE_JS,
+    css: JOBS_PAGE_CSS + KIT_CSS + SCHEDULES_PAGE_CSS + TASKS_PAGE_CSS,
+    script: SCHEDULES_PAGE_JS + TASKS_PAGE_JS,
   },
   api: {
     heads: Object.keys(API),
@@ -171,7 +200,7 @@ export const jobsRoute: RouteModule = {
     },
   },
   fragments: {
-    heads: ['jobs', 'schedules'],
+    heads: ['jobs', 'schedules', 'tasks'],
     async handle(ctx, head, rest) {
       if (rest.length !== 0) {
         return notFound(`unknown path: ${ctx.url.pathname}`)
@@ -182,7 +211,9 @@ export const jobsRoute: RouteModule = {
       return html(
         head === 'schedules'
           ? await schedulesFragment(ctx)
-          : await jobsFragment(ctx),
+          : head === 'tasks'
+            ? tasksFragment(ctx)
+            : await jobsFragment(ctx),
       )
     },
   },
