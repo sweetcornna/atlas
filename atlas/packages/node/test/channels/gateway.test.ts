@@ -246,6 +246,21 @@ describe('sticky framing', () => {
     await gateway.idle()
   })
 
+  test('a channel prompt with blank lines stays one paragraph', async () => {
+    const { turns, adapter, gateway } = setup()
+    gateway.handle(
+      { ...RULES, prompt: '第一条\n\n第二条\n \n\n第三条' },
+      adapter,
+      inbound({ text: 'a' }),
+    )
+    await until(() => turns.calls.length === 1)
+    expect(turns.calls[0]!.text).toContain(
+      '[渠道说明]\n第一条\n第二条\n第三条\n\na',
+    )
+    turns.answer(0, 'ok')
+    await gateway.idle()
+  })
+
   test('a failed turn does not count as delivered', async () => {
     const { turns, adapter, gateway } = setup()
     gateway.handle(RULES, adapter, inbound({ text: 'a' }))

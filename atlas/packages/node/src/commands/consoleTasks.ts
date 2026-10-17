@@ -271,6 +271,36 @@ function clip(text: string, length: number): string {
   return chars.length <= length ? text : `${chars.slice(0, length).join('')}…`
 }
 
+/**
+ * Paragraphs the host adds to a foreground line ahead of what was said: the
+ * channel framing and channel prompt (P28), the coordination rule and the
+ * task note. Each is one paragraph (`gateway.ts` keeps the channel prompt so).
+ */
+const FRAME_MARKERS = [
+  '[渠道]',
+  '[渠道说明]',
+  '[后台任务协调规则]',
+  '[当前会话的后台任务]',
+] as const
+
+/**
+ * What a foreground line said, for a worker's context: the host's framing
+ * paragraphs dropped and, when still long, the end kept, since the words come
+ * after the frames.
+ */
+function spoken(text: string, length: number): string {
+  const said = text
+    .split(/\n[ \t]*\n/)
+    .filter(
+      paragraph =>
+        !FRAME_MARKERS.some(marker => paragraph.trimStart().startsWith(marker)),
+    )
+    .join('\n\n')
+    .trim()
+  const chars = [...said]
+  return chars.length <= length ? said : `…${chars.slice(-length).join('')}`
+}
+
 /** Seconds to wait after the n-th consecutive failure (grantley `_retry_wait`). */
 function defaultBackoff(failures: number): number {
   return Math.min(60_000, 2 ** Math.min(failures, 6) * 1_000)
@@ -637,13 +667,14 @@ export class ConsoleTasks {
       readUpdateId: 0,
       notification: 'none',
       context: caller.transcript.turns
-        .filter(turn => turn.variant !== 'notice' && turn.text.trim() !== '')
-        .slice(-6)
+        .filter(turn => turn.variant !== 'notice')
         .map(turn => ({
           role:
             turn.author === 'operator' ? ('user' as const) : ('agent' as const),
-          text: clip(turn.text, 1_500),
-        })),
+          text: spoken(turn.text, 1_500),
+        }))
+        .filter(turn => turn.text !== '')
+        .slice(-6),
       createdAt: now,
       updatedAt: now,
     }

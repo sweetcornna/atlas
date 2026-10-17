@@ -163,6 +163,38 @@ describe('starting', () => {
     expect(prompt).not.toContain('核实后接着做')
   })
 
+  test("the worker context keeps the user's words, not the host's framing, and the end of a long line", async () => {
+    const book = tasks()
+    const session = await chat.open(MAIN)
+    if (!session.ok) throw new Error('open')
+    const parent = session.value.id
+    // A channel line: framing, a long channel prompt, the coordination rule
+    // and the task note ahead of what the owner said.
+    const framed = [
+      '[渠道] 这段对话来自 Telegram 的私聊。对方是你的主人。\n你的回复会原样发到聊天里',
+      `[渠道说明]\n${'渠道说明。'.repeat(320)}`,
+      '[后台任务协调规则] 你是保持即时响应的主智能体',
+      '[当前会话的后台任务] []',
+      '请把本周提交整理成周报发我',
+    ].join('\n\n')
+    await chat.send({ sessionId: parent, text: framed })
+    chat.reply(parent, '好的')
+    const long = `${'前情。'.repeat(600)}最后这句是要点`
+    await chat.send({ sessionId: parent, text: long })
+    value(await call(book, 'start', parent, { title: 't', instructions: 'i' }))
+    const worker = await workerTurn(1)
+    const prompt = chat.sentTo(worker)[0]!.text
+    expect(prompt).toContain('请把本周提交整理成周报发我')
+    expect(prompt).toContain('最后这句是要点')
+    for (const marker of [
+      '[渠道]',
+      '[渠道说明]',
+      '[后台任务协调规则]',
+      '[当前会话的后台任务]',
+    ])
+      expect(prompt).not.toContain(marker)
+  })
+
   test('a task can run on another agent (another runtime or model)', async () => {
     const book = tasks()
     const parent = await foreground()

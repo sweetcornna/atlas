@@ -619,10 +619,12 @@ export class ChannelGateway {
         ].join('\n'),
       },
     ]
+    // One paragraph, so readers of the transcript can tell it from the words
+    // after it (background task context drops it).
     if (rules.prompt?.trim())
       parts.push({
         id: 'channel_prompt',
-        text: `[渠道说明]\n${rules.prompt.trim()}`,
+        text: `[渠道说明]\n${rules.prompt.trim().replace(/\n[ \t]*(\n[ \t]*)+/g, '\n')}`,
       })
     return parts
   }
