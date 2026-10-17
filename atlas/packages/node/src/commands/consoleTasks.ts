@@ -541,6 +541,11 @@ export interface TaskNote {
  */
 const LONG_TURN_MS = 90_000
 const LONG_TURN_STEPS = 10
+/**
+ * Conversations whose reminded turn is remembered (until they move past it).
+ * Letting the oldest go costs at most one reminder again.
+ */
+const MAX_REMINDED = 1_000
 
 interface FinishedTurn {
   readonly taskId: string
@@ -951,15 +956,19 @@ export class ConsoleTasks implements BackgroundTasksPort {
       )
       .sort((a, b) => b.updatedAt - a.updatedAt)
     const kept = new Map<string, number>()
+    const left = new Set<string>()
     for (const task of finished) {
       const count = (kept.get(task.owner) ?? 0) + 1
       kept.set(task.owner, count)
       if (
         now - task.updatedAt > KEEP_FINISHED_MS ||
         count > KEEP_FINISHED_PER_OWNER
-      )
+      ) {
         this.#tasks.delete(task.id)
+        left.add(task.parentSession)
+      }
     }
+    this.#forgetCleared(left)
     // Confirmed instructions and those of a finished task are never read.
     this.#updates = this.#updates.filter(one => {
       const task = this.#tasks.get(one.taskId)
@@ -969,6 +978,33 @@ export class ConsoleTasks implements BackgroundTasksPort {
         one.consumedAt === null
       )
     })
+  }
+
+  /**
+   * A conversation whose last tasks just left the ledger has no note to
+   * remember, nor a reminder worth keeping for it.
+   */
+  #forgetCleared(left: ReadonlySet<string>): void {
+    if (left.size === 0) return
+    const parents = new Set(
+      [...this.#tasks.values()].map(task => task.parentSession),
+    )
+    for (const sessionId of new Set([
+      ...this.#noted.keys(),
+      ...this.#reminded.keys(),
+    ])) {
+      const family = [...this.#family(sessionId)]
+      if (
+        family.some(id => left.has(id)) &&
+        !family.some(id => parents.has(id))
+      )
+        this.#forget(sessionId)
+    }
+  }
+
+  #forget(sessionId: string): void {
+    this.#noted.delete(sessionId)
+    this.#reminded.delete(sessionId)
   }
 
   #unread(task: TaskRecord): TaskUpdate[] {
@@ -1201,9 +1237,9 @@ export class ConsoleTasks implements BackgroundTasksPort {
    */
   async noteFor(sessionId: string): Promise<TaskNote | undefined> {
     if (this.#closed || !this.#foregroundSession(sessionId)) return undefined
-    const transcript = await this.#options.chat.transcript(sessionId)
-    if (!transcript.ok) return undefined
-    const last = lastTurn(transcript.value.turns)
+    const transcript = await this.#transcriptOf(sessionId)
+    if (transcript === undefined) return undefined
+    const last = lastTurn(transcript.turns)
     if (last?.compacted === true) this.#noted.delete(sessionId)
     const noted = this.#noted.get(sessionId)
     const at = this.#now()
@@ -1219,9 +1255,17 @@ export class ConsoleTasks implements BackgroundTasksPort {
       text,
       sent: () => {
         if (fresh !== undefined) this.#noted.set(sessionId, { text: fresh, at })
-        if (long !== undefined) this.#reminded.set(sessionId, long.taskId)
+        if (long !== undefined) this.#remind(sessionId, long.taskId)
       },
     }
+  }
+
+  /**
+   * The conversations a sent note or reminder is remembered for. Only tests
+   * read it, to see it is let go of with the conversation or its tasks.
+   */
+  remembered(): number {
+    return new Set([...this.#noted.keys(), ...this.#reminded.keys()]).size
   }
 
   /**
@@ -1232,12 +1276,30 @@ export class ConsoleTasks implements BackgroundTasksPort {
    */
   async reminderFor(sessionId: string): Promise<string | undefined> {
     if (this.#closed || !this.#foregroundSession(sessionId)) return undefined
-    const transcript = await this.#options.chat.transcript(sessionId)
-    if (!transcript.ok) return undefined
-    const long = this.#longTurn(sessionId, lastTurn(transcript.value.turns))
+    const transcript = await this.#transcriptOf(sessionId)
+    if (transcript === undefined) return undefined
+    const long = this.#longTurn(sessionId, lastTurn(transcript.turns))
     if (long === undefined) return undefined
-    this.#reminded.set(sessionId, long.taskId)
+    this.#remind(sessionId, long.taskId)
     return reminderText(long)
+  }
+
+  /** A conversation's transcript; one that is gone is forgotten here. */
+  async #transcriptOf(sessionId: string): Promise<ChatTranscript | undefined> {
+    const transcript = await this.#options.chat.transcript(sessionId)
+    if (transcript.ok) return transcript.value
+    if (transcript.failure.code === 'not_found') this.#forget(sessionId)
+    return undefined
+  }
+
+  /** Remembers the long turn reminded of, the oldest let go beyond the cap. */
+  #remind(sessionId: string, taskId: string): void {
+    this.#reminded.delete(sessionId)
+    this.#reminded.set(sessionId, taskId)
+    for (const oldest of this.#reminded.keys()) {
+      if (this.#reminded.size <= MAX_REMINDED) break
+      this.#reminded.delete(oldest)
+    }
   }
 
   /** The last turn, when it was long and not reminded of yet. */
@@ -1245,6 +1307,10 @@ export class ConsoleTasks implements BackgroundTasksPort {
     sessionId: string,
     last: FinishedTurn | undefined,
   ): FinishedTurn | undefined {
+    // Past the turn it was reminded of: nothing left to remember.
+    const reminded = this.#reminded.get(sessionId)
+    if (reminded !== undefined && reminded !== last?.taskId)
+      this.#reminded.delete(sessionId)
     if (
       last === undefined ||
       last.command ||

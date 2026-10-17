@@ -2188,6 +2188,84 @@ describe('the task note in a console conversation', () => {
   })
 })
 
+describe('what the notes remember', () => {
+  test('a conversation that is gone, or whose tasks were all cleared away, is let go of', async () => {
+    const DAY = 24 * 60 * 60_000
+    let now = Date.now()
+    const book = tasks({ now: () => now })
+    const web = withTaskNotes(chat, book)
+    const say = async (sessionId: string, text: string) =>
+      expect((await web.send({ sessionId, text })).ok).toBe(true)
+    // Two conversations, each told of its task.
+    const parents: string[] = []
+    for (const title of ['周报', '月报']) {
+      const opened = await web.open(MAIN)
+      if (!opened.ok) throw new Error('open')
+      const parent = opened.value.id
+      parents.push(parent)
+      await say(parent, `开个${title}任务`)
+      const { id } = value<{ id: string }>(
+        await call(book, 'start', parent, { title, instructions: 'x' }),
+      )
+      chat.reply(parent, '交给后台了')
+      await say(parent, '好')
+      // The worker's first line may go out in between: this chat's own.
+      expect(chat.sentTo(parent).at(-1)!.context).toContain(id)
+      value(await call(book, 'cancel', parent, { id }))
+      chat.reply(parent, '好')
+    }
+    expect(book.remembered()).toBe(2)
+    // The first conversation is gone.
+    chat.records.delete(parents[0]!)
+    expect(await book.noteFor(parents[0]!)).toBeUndefined()
+    expect(book.remembered()).toBe(1)
+    // A month on the second one's task leaves the ledger when another ends.
+    now += 31 * DAY
+    const other = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', other, { title: '另一个', instructions: 'y' }),
+    )
+    value(await call(book, 'cancel', other, { id }))
+    expect(book.forSession(parents[1]!)).toEqual([])
+    expect(book.remembered()).toBe(0)
+  })
+
+  test('a reminder is let go of once the conversation has moved past that turn', async () => {
+    const book = tasks()
+    const web = withTaskNotes(chat, book)
+    const opened = await web.open(MAIN)
+    if (!opened.ok) throw new Error('open')
+    const parent = opened.value.id
+    expect((await web.send({ sessionId: parent, text: '查一下' })).ok).toBe(
+      true,
+    )
+    chat.patchLastLine(parent, { readMs: 0 })
+    chat.reply(parent, '查完了', 'done', { at: Date.now() + 150_000 })
+    expect((await web.send({ sessionId: parent, text: '还有' })).ok).toBe(true)
+    expect(chat.sent.at(-1)!.context).toContain('提醒：')
+    expect(book.remembered()).toBe(1)
+    chat.reply(parent, '好')
+    expect((await web.send({ sessionId: parent, text: '嗯' })).ok).toBe(true)
+    expect(chat.sent.at(-1)!.context).toBeUndefined()
+    expect(book.remembered()).toBe(0)
+  })
+
+  test('at most a thousand reminded conversations are remembered, the oldest let go', async () => {
+    const book = tasks()
+    let first = ''
+    for (let n = 0; n < 1_001; n++) {
+      const parent = await foreground()
+      if (n === 0) first = parent
+      chat.patchLastLine(parent, { readMs: 0 })
+      chat.reply(parent, '好了', 'done', { at: Date.now() + 100_000 })
+      expect(await book.reminderFor(parent)).toStartWith('提醒：')
+    }
+    expect(book.remembered()).toBe(1_000)
+    // The oldest is let go of: its long turn may be reminded of again.
+    expect(await book.reminderFor(first)).toStartWith('提醒：')
+  })
+})
+
 describe('the task note when the ledger fails', () => {
   test('a note that cannot be had leaves the line as typed; the line still goes', async () => {
     const errors: string[] = []
