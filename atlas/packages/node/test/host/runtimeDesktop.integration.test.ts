@@ -3,7 +3,7 @@
 
 import { afterEach, expect, test } from 'bun:test'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { OmpResidentTurnPort } from '@qianmo/resident'
 import { NodeDesktop } from '../../src/host/desktop.js'
@@ -103,11 +103,22 @@ function mcpClient(launch: ExternalRuntimeSpawn) {
 }
 
 /**
+ * Chrome or Chromium where `NodeDesktop` starts it (host/desktop.ts): the app
+ * bundle on macOS, `google-chrome` or `chromium` on Linux, where the browser
+ * alone runs headless and needs no display.
+ */
+const browserAvailable =
+  process.platform === 'darwin'
+    ? existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
+    : process.platform === 'linux' &&
+      (Bun.which('google-chrome') !== null || Bun.which('chromium') !== null)
+
+/**
  * Real Chrome, a real `qm desktop-exec` child and the real `qm runtime-mcp`
  * bridge: an agent on Claude Code drives its private browser through MCP,
  * with the same lease and one-time approvals as qianmopi (§6.1).
  */
-test.skipIf(process.platform !== 'darwin')(
+test.skipIf(!browserAvailable)(
   'external runtime: browser tools over MCP, screenshots come back as images, a denied click has no effect, an approved one runs once',
   async () => {
     const root = isolatedRoot()
@@ -203,7 +214,7 @@ test.skipIf(process.platform !== 'darwin')(
     const names = await mcp.names()
     expect(names).toContain('qianmo_browser_navigate')
     expect(names).toContain('qianmo_browser_screenshot')
-    // macOS has no private display: no computer tools.
+    // Only the browser is on: no computer tools.
     expect(names.some(name => name.startsWith('qianmo_computer_'))).toBe(false)
 
     const tabs = await mcp.call('qianmo_browser_tabs', {})

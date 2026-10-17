@@ -57,6 +57,7 @@ import {
   desktopSandboxArgv,
   desktopSandboxEnv,
   desktopScopeArgv,
+  OPENBOX_CONFIG,
   type DesktopSandbox,
 } from './desktopSandbox.js'
 import {
@@ -482,8 +483,10 @@ export class NodeDesktop {
       downloads: path.join(this.#root(agent), 'downloads'),
       tab: `${s.resourceId}:${s.resourceEpoch}:main`,
       bus: s.computer && s.state === 'running' ? (s.bus ?? null) : null,
+      // Only what the agent may use: a terminal the operator listed stays
+      // out, or its windows (the owner's shell) would take input (§6.5).
       ...(this.#hostDesktop() && s.computer && Array.isArray(s.apps)
-        ? { hostApps: [...s.apps] }
+        ? { hostApps: this.#allowed(s).map(app => app.id) }
         : {}),
     }
   }
@@ -738,8 +741,9 @@ export class NodeDesktop {
           ...command,
         ]
   }
-  /** Roots no private desktop process may see. */
-  #hidden(): string[] {
+  /** Roots no private desktop process of `agent` may see. */
+  #hidden(agent: string): string[] {
+    const own = this.#options.workspace?.(agent)
     return [
       nodeHomeDir(),
       qianmoConfigDir(),
@@ -747,6 +751,11 @@ export class NodeDesktop {
       caDir(),
       memoryBaseDir(),
       ...(this.#options.protectedRoots ?? []),
+      // The other agents' workspaces: each desktop sees its own only.
+      ...[...this.#states.keys()]
+        .filter(other => other !== agent)
+        .map(other => this.#options.workspace?.(other))
+        .filter((dir): dir is string => dir !== undefined && dir !== own),
     ]
   }
   /** Wait for `ready`, giving up early when `proc` has already exited. */
@@ -904,13 +913,17 @@ export class NodeDesktop {
       }
       const confined = await this.#probe('bwrap', env)
       s.confined = confined
+      // Outside the private home, mounted read-only: nothing in the
+      // sandbox can give the window manager a menu back.
+      const openbox = path.join(root, 'openbox.xml')
+      fs.writeFileSync(openbox, OPENBOX_CONFIG, { mode: 0o600 })
       const workspace = this.#options.workspace?.(s.agent)
       session.sandbox = confined
         ? {
             home,
             writable: [home, downloads, profile],
-            readOnly: [auth],
-            hidden: this.#hidden(),
+            readOnly: [auth, openbox],
+            hidden: this.#hidden(s.agent),
             ...(workspace === undefined
               ? {}
               : {
@@ -965,11 +978,20 @@ export class NodeDesktop {
           notes.computer = NOTE_NO_BUS
         }
       }
-      const manager = DESKTOP_WINDOW_MANAGERS.find(program =>
-        this.#launcher.available(program),
-      )
+      // A window manager only in the sandbox. Without one nothing opens on
+      // this display (apps are refused, Chromium stays headless), and an
+      // unconfined window manager would be a process outside it.
+      const manager = confined
+        ? DESKTOP_WINDOW_MANAGERS.find(program =>
+            this.#launcher.available(program),
+          )
+        : undefined
       if (manager) {
-        await this.#spawn(s, this.#desktopCommand(s, [manager]), home)
+        const command =
+          manager === 'openbox'
+            ? ['openbox', '--config-file', openbox]
+            : [manager]
+        await this.#spawn(s, this.#desktopCommand(s, command), home)
         s.windowManager = manager
       }
       if (!confined) notes.computer = NOTE_NO_BWRAP
@@ -1214,6 +1236,17 @@ export class NodeDesktop {
             ok: false,
             code: 'rejected',
             message: `macOS 本机桌面要列出允许的应用：1–${HOST_APPS_MAX} 个 bundle id（如 com.apple.TextEdit），不接受 all`,
+          }
+        // A terminal here is a shell on the owner's account, with nothing
+        // around it: not offered at all.
+        const terminal =
+          typeof args.terminal === 'boolean' ? args.terminal : current.terminal
+        if (computer && terminal)
+          return {
+            ok: false,
+            code: 'rejected',
+            message:
+              'macOS 本机桌面不提供终端类应用：这里的终端就是主人账号的 shell，没有隔离',
           }
       }
       const id = args.operationId,

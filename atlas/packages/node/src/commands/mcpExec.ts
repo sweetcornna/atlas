@@ -9,7 +9,8 @@
  * qianmopi starts MCP servers with its whole environment, which on a node can
  * hold transport keys and model credentials; the node writes this wrapper as
  * the server's command, and probes the server through it too. The process is
- * replaced in place (`execve`), so the server is what its runtime talks to.
+ * replaced in place (`execve`), so the server is what its runtime talks to;
+ * where that is unavailable or fails, the server runs as its child.
  */
 
 import { inheritedEnv } from '../host/runtimes/inheritedEnv.js'
@@ -69,9 +70,14 @@ export async function run(argv: string[]): Promise<number> {
       execve?: (file: string, args: string[], env: NodeJS.ProcessEnv) => never
     }
   ).execve
-  if (typeof execve === 'function')
-    execve(file, [plan.command, ...plan.args], plan.env)
-  // No execve: run it as a child and pass its exit on.
+  if (typeof execve === 'function') {
+    try {
+      execve(file, [plan.command, ...plan.args], plan.env)
+    } catch {
+      // It can exist and still fail (a compiled binary on some Linux hosts).
+    }
+  }
+  // No execve, or one that failed: run it as a child and pass its exit on.
   const child = Bun.spawn([file, ...plan.args], {
     env: plan.env,
     stdin: 'inherit',

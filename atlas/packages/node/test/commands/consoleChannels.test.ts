@@ -690,6 +690,58 @@ describe('background tasks', () => {
     await until(() => adapter.sent.length === answered + 4)
   })
 
+  test('a channel coming up delivers again only the results for its own chats', async () => {
+    const tasks = wired()
+    const saved = value(await open[0]!.save(TELEGRAM, ACTOR))
+    const adapter = adapters[0]!.adapter
+    adapter.sink!(inbound({ text: '帮我写周报' }))
+    await until(() => chat.sent.length === 1)
+    const session = chat.sent[0]!.sessionId
+    const worker = await startTask(tasks, session)
+    chat.reply(session, '已交给后台')
+    await until(() => adapter.sent.length === 1)
+    // The platform is down when the result is ready.
+    adapter.failSend = true
+    const report = await tasks.handle(
+      'tasks.report',
+      {
+        contextId: worker,
+        taskId: chat.lastTask(worker),
+        summary: '周报已发',
+        state: 'completed',
+      },
+      { node: 'node-a', agent: 'planner', callId: 'c' },
+    )
+    expect(report.ok).toBe(true)
+    chat.reply(worker, 'done')
+    const ledger = () =>
+      JSON.parse(
+        fs.readFileSync(path.join(root, 'tasks', 'tasks.json'), 'utf8'),
+      ).tasks[0]
+    await until(() => ledger().notification === 'failed')
+    expect(ledger().deliveryAttempts).toBe(1)
+    // Another channel coming up spends none of this result's rounds.
+    value(
+      await open[0]!.save(
+        { ...TELEGRAM, name: '另一个', secrets: { token: '456:OTHER' } },
+        ACTOR,
+      ),
+    )
+    await until(() => adapters.length === 2)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(ledger()).toMatchObject({
+      notification: 'failed',
+      deliveryAttempts: 1,
+    })
+    // Its own channel back up: delivered at once.
+    value(
+      await open[0]!.save({ ...TELEGRAM, id: saved.id, secrets: {} }, ACTOR),
+    )
+    await until(() => ledger().notification === 'sent')
+    expect(adapters[2]!.adapter.texts()).toEqual(['周报：已完成\n\n周报已发'])
+    expect(ledger().deliveryAttempts).toBe(2)
+  })
+
   test('other people and groups get no task rules and may not start tasks', async () => {
     const fake = new FakeTasks()
     const book = channels({ tasks: fake })

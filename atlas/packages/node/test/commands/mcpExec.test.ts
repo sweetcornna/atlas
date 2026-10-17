@@ -76,3 +76,62 @@ test('the server runs in place of the wrapper, with that environment', async () 
     'Executable not found in $PATH: "no-such-mcp-cmd"',
   )
 })
+
+/**
+ * `qm mcp-exec` in a process whose `execve` exists but fails, as it can for a
+ * compiled binary on some Linux hosts.
+ */
+function withFailingExecve(argv: string[], env: Record<string, string>) {
+  const cli = join(import.meta.dir, '..', '..', 'src', 'cli.ts')
+  return Bun.spawn(
+    [
+      process.execPath,
+      '-e',
+      [
+        "process.execve = () => { throw new Error('execve failed') }",
+        `const { main } = await import(${JSON.stringify(cli)})`,
+        `process.exitCode = await main(${JSON.stringify(['mcp-exec', ...argv])})`,
+      ].join('\n'),
+    ],
+    { env, stdout: 'pipe', stderr: 'pipe' },
+  )
+}
+
+test('where execve fails, the server runs as a child with that environment and its exit code is passed on', async () => {
+  const child = withFailingExecve(
+    ['--keep', 'DOCS_TOKEN', '--', '/bin/sh', '-c', 'env; exit 7'],
+    { ...NODE_ENV, PATH: process.env.PATH ?? '' },
+  )
+  const out = await new Response(child.stdout).text()
+  expect(await child.exited).toBe(7)
+  const names = out
+    .trim()
+    .split('\n')
+    .map(line => line.split('=')[0])
+  expect(names).toContain('DOCS_TOKEN')
+  expect(names).not.toContain('QIANMO_TRANSPORT_PSK_BETA')
+  expect(names).not.toContain('ANTHROPIC_API_KEY')
+  expect(names).not.toContain('QIANMO_CONFIG_DIR')
+})
+
+test('where execve fails, a termination signal reaches the server', async () => {
+  const child = withFailingExecve(
+    [
+      '--',
+      '/bin/sh',
+      '-c',
+      'trap "exit 42" TERM; echo ready; while :; do sleep 0.05; done',
+    ],
+    { PATH: '/usr/bin:/bin' },
+  )
+  const reader = child.stdout.getReader()
+  let seen = ''
+  while (!seen.includes('ready')) {
+    const { value, done } = await reader.read()
+    if (done) break
+    seen += new TextDecoder().decode(value)
+  }
+  expect(seen).toContain('ready')
+  child.kill('SIGTERM')
+  expect(await child.exited).toBe(42)
+})

@@ -4,14 +4,49 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-/** Window managers the private desktop starts; the first installed wins (§6.3). */
+/**
+ * Window managers the private desktop starts; the first installed wins (§6.3).
+ * None of them may start a program: one launched from a menu or a key binding
+ * would get past the allowed list and the terminal rule. openbox runs with
+ * {@link OPENBOX_CONFIG}; xfwm4 and matchbox have no launcher of their own.
+ * fluxbox and icewm are not used: their root menu and task bar start a
+ * terminal.
+ */
 export const DESKTOP_WINDOW_MANAGERS: readonly string[] = [
   'openbox',
   'xfwm4',
-  'fluxbox',
-  'icewm',
   'matchbox-window-manager',
 ]
+
+/**
+ * openbox with no menu and no binding that runs a program: a window can be
+ * focused, raised, moved, maximized and closed, nothing else. Its default
+ * configuration opens the root menu (with a terminal in it) on a right or
+ * middle click on the desktop, and runs a file manager on Super+E.
+ */
+export const OPENBOX_CONFIG = `<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <keyboard/>
+  <mouse>
+    <context name="Titlebar">
+      <mousebind button="Left" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
+      <mousebind button="Left" action="Drag"><action name="Move"/></mousebind>
+      <mousebind button="Left" action="DoubleClick"><action name="ToggleMaximize"/></mousebind>
+    </context>
+    <context name="Client">
+      <mousebind button="Left" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
+      <mousebind button="Middle" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
+      <mousebind button="Right" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
+    </context>
+    <context name="Close">
+      <mousebind button="Left" action="Click"><action name="Close"/></mousebind>
+    </context>
+    <context name="Maximize">
+      <mousebind button="Left" action="Click"><action name="ToggleMaximize"/></mousebind>
+    </context>
+  </mouse>
+</openbox_config>
+`
 
 /** Where distributions put the AT-SPI bus launcher; it is rarely on PATH. */
 export const AT_SPI_BUS_LAUNCHERS: readonly string[] = [

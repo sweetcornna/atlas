@@ -7,7 +7,7 @@
  * own agents' entries, and a node that already has its set is left alone.
  */
 
-import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
 import {
   mkdirSync,
   mkdtempSync,
@@ -232,8 +232,6 @@ test('a node already on its set is only asked, not sent it again', async () => {
   hub.start()
   await hub.settled()
   const first = calls.length
-  // A second start is a no-op: one timer (P32 audit 15).
-  hub.start()
   await until(() => calls.length >= first + 2)
   await hub.settled()
   expect(calls.slice(first, first + 2).map(call => call.op)).toEqual([
@@ -242,6 +240,24 @@ test('a node already on its set is only asked, not sent it again', async () => {
   ])
   expect(onNode.get('n1')).toBe(extensionsDigest([]))
   await hub.close()
+})
+
+test('a second start is a no-op: no push, no second timer (P32 audit 15)', async () => {
+  const intervals = spyOn(globalThis, 'setInterval')
+  try {
+    const hub = book({ reconcileMs: 60_000 })
+    hub.start()
+    await hub.settled()
+    const first = calls.length
+    const timers = intervals.mock.calls.length
+    hub.start()
+    await hub.settled()
+    expect(calls.length).toBe(first)
+    expect(intervals.mock.calls.length).toBe(timers)
+    await hub.close()
+  } finally {
+    intervals.mockRestore()
+  }
 })
 
 test('only a failure another try may get past is sent again (P32 audit 5)', async () => {

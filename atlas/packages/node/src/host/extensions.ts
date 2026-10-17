@@ -13,7 +13,7 @@
  * | layout (`agents/<agent>/`) | used by |
  * |---|---|
  * | `plugins/qianmo/` — the agent's skills, with Agent Plugins, Claude Code and Codex manifests | `--plugin-dir` (qianmopi, Claude Code); local marketplace (Codex) |
- * | `plugins/<name>/` — an imported plugin, without the MCP servers, hooks and LSP servers it bundles | the same, per the manifests it carries |
+ * | `plugins/<name>/` — an imported plugin: its instructions, docs and manifests, nothing it would run itself | the same, per the manifests it carries |
  * | `.agents/plugins/marketplace.json` | Codex: `codex plugin marketplace add` |
  * | `mcp/qianmo-mcp/` — `plugin.json` + `mcp.json` with the agent's MCP servers and their secrets, and `bin/qm-mcp-exec` | `--plugin-dir` (qianmopi only) |
  *
@@ -35,8 +35,10 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
   cpSync,
+  type Dirent,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -129,8 +131,11 @@ export interface ExtensionResult {
   readonly ok: boolean
   /** The first failure, prefixed with the agent when others have it. */
   readonly detail: string | null
-  /** Some failure may go away on the next apply: the hub sends it again. */
-  readonly retry: boolean
+  /**
+   * Some failure may go away on the next apply: the hub sends it again.
+   * Absent in results kept from before v2: the hub resends as it did then.
+   */
+  readonly retry?: boolean
   readonly agents: readonly ExtensionAgentResult[]
 }
 
@@ -239,7 +244,7 @@ const rosterSchema = z.array(
 type Roster = z.infer<typeof rosterSchema>
 
 const appliedSchema = z.object({
-  /** 1: before results per agent; read, then laid out again on start. */
+  /** 1: before results per agent; no agent uses it until laid out again. */
   v: z.union([z.literal(1), z.literal(2)]),
   digest: z.string(),
   entries: z.array(extensionWireSchema),
@@ -248,7 +253,7 @@ const appliedSchema = z.object({
       id: z.string(),
       ok: z.boolean(),
       detail: z.string().nullable(),
-      retry: z.boolean().default(false),
+      retry: z.boolean().optional(),
       agents: z
         .array(
           z.object({
@@ -341,47 +346,194 @@ export function pluginFormats(dir: string): PluginFormats {
   }
 }
 
-/** Files at a plugin's root that start processes outside qianmo's verdict. */
-const BUNDLED_RUNNABLE_FILES = ['.mcp.json', 'mcp.json', '.lsp.json']
-/** Manifest fields that do the same. */
-const BUNDLED_RUNNABLE_FIELDS: ReadonlySet<string> = new Set([
-  'mcpServers',
-  'hooks',
-  'lspServers',
+/** The directories at a plugin's root it keeps: instructions and what they read. */
+const PLUGIN_KEPT_DIRS: ReadonlySet<string> = new Set([
+  'skills',
+  'commands',
+  'agents',
+  'rules',
+  'prompts',
+  // Codex's icons and screenshots.
+  'assets',
+])
+const PLUGIN_DOCS =
+  /^(?:readme|license|licence|notice|changelog|copying|authors)(?:[.-][a-z0-9-]+)*$/i
+const PLUGIN_MANIFEST_DIRS: ReadonlySet<string> = new Set([
+  '.claude-plugin',
+  '.codex-plugin',
 ])
 const PLUGIN_MANIFESTS = [
   ['.claude-plugin', 'plugin.json'],
   ['.codex-plugin', 'plugin.json'],
   ['plugin.json'],
 ] as const
+/** Manifest fields that describe the plugin. */
+const MANIFEST_FIELDS: ReadonlySet<string> = new Set([
+  '$schema',
+  'name',
+  'version',
+  'description',
+  'author',
+  'homepage',
+  'repository',
+  'license',
+  'keywords',
+  // Codex: how the plugin shows.
+  'interface',
+])
+/** Manifest fields naming where its instructions are, when inside the kept. */
+const MANIFEST_PATHS: ReadonlySet<string> = new Set([
+  'skills',
+  'commands',
+  'agents',
+])
+
+function inKeptDirs(value: unknown): boolean {
+  const paths = Array.isArray(value) ? value : [value]
+  return (
+    paths.length > 0 &&
+    paths.every(one => {
+      if (typeof one !== 'string') return false
+      const top = path.posix.normalize(one.trim()).split('/')[0]
+      return top !== undefined && PLUGIN_KEPT_DIRS.has(top)
+    })
+  )
+}
+
+function prune(dir: string, keep: (entry: Dirent) => boolean): void {
+  for (const entry of readdirSync(dir, { withFileTypes: true }))
+    if (!keep(entry))
+      rmSync(path.join(dir, entry.name), { recursive: true, force: true })
+}
 
 /**
  * An imported plugin brings its instructions (skills, commands, agents,
- * rules), never processes of its own: no bundled MCP server (configure it as
- * a connector, so its secrets, approval and environment are qianmo's), no
- * hooks, no LSP servers, and for qianmopi no custom tool modules, which it
- * would import in-process.
+ * rules, prompts), its docs and its manifests, never processes of its own.
+ * Everything else at its root goes, whatever a runtime makes of it now or
+ * later: bundled MCP servers (configure them as connectors, so their secrets,
+ * approval and environment are qianmo's), LSP and debug-adapter servers,
+ * hooks, monitors, workflows, settings, executables, and qianmopi's tool
+ * modules, which it would import in-process.
  */
-export function keepInstructionsOnly(
-  dir: string,
-  runtime: ExternalRuntimeKind | undefined,
-): void {
-  for (const name of BUNDLED_RUNNABLE_FILES)
-    rmSync(path.join(dir, name), { force: true })
-  rmSync(path.join(dir, 'hooks'), { recursive: true, force: true })
-  if (runtime === undefined)
-    rmSync(path.join(dir, 'tools'), { recursive: true, force: true })
+export function keepInstructionsOnly(dir: string): void {
+  prune(dir, entry =>
+    entry.isDirectory()
+      ? PLUGIN_KEPT_DIRS.has(entry.name) || PLUGIN_MANIFEST_DIRS.has(entry.name)
+      : entry.isFile() &&
+        (entry.name === 'plugin.json' || PLUGIN_DOCS.test(entry.name)),
+  )
+  for (const name of PLUGIN_MANIFEST_DIRS)
+    if (existsSync(path.join(dir, name)))
+      prune(
+        path.join(dir, name),
+        entry => entry.isFile() && entry.name === 'plugin.json',
+      )
   for (const parts of PLUGIN_MANIFESTS) {
     const file = path.join(dir, ...parts)
     const manifest = readJson(file)
-    if (manifest === null) continue
+    // One that does not read as an object cannot be cut down.
+    if (manifest === null) {
+      rmSync(file, { force: true })
+      continue
+    }
     const kept = Object.fromEntries(
       Object.entries(manifest).filter(
-        ([key]) => !BUNDLED_RUNNABLE_FIELDS.has(key),
+        ([key, value]) =>
+          MANIFEST_FIELDS.has(key) ||
+          (MANIFEST_PATHS.has(key) && inKeptDirs(value)),
       ),
     )
     if (Object.keys(kept).length !== Object.keys(manifest).length)
       writeFileSync(file, JSON.stringify(kept, null, 2))
+  }
+}
+
+/**
+ * Frontmatter keys an imported skill, command or agent may not carry: tools
+ * a runtime would run without asking while it is active (Claude Code's
+ * `allowed-tools`), and hooks it would run itself.
+ */
+const GRANTING_KEY = /^(?:allowed[-_]?tools|hooks)$/i
+const FRONTMATTER_KEY = /^([ \t]*)(["']?)([^\s"':]+)\2[ \t]*:/
+
+/** Whether YAML, read as a runtime reads frontmatter, has a granting key. */
+function grants(yaml: string): boolean {
+  const text = yaml.replaceAll('\r\n', '\n')
+  // As written, then with plain values quoted, as runtimes retry YAML that
+  // does not parse.
+  const quoted = text.replace(
+    /^([ \t]*[\w-]+:[ \t]+)([^\s"'[{|>&*!#].*?)[ \t]*$/gm,
+    (_, key: string, value: string) => `${key}${JSON.stringify(value)}`,
+  )
+  for (const attempt of [text, quoted]) {
+    try {
+      const value: unknown = Bun.YAML.parse(attempt)
+      return (
+        value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        Object.keys(value).some(key => GRANTING_KEY.test(key))
+      )
+    } catch {
+      // Try the next reading.
+    }
+  }
+  return false
+}
+
+/**
+ * `text` with no granting key in its frontmatter; `null` when it had none.
+ * A key and its value (inline, a block below it, quoted or not) go line by
+ * line and the body stays as it is; a frontmatter that still grants after
+ * that (a flow mapping, an escaped or merged key) stops being frontmatter.
+ */
+export function withoutGrants(text: string): string | null {
+  const bom = text.startsWith('\uFEFF') ? '\uFEFF' : ''
+  if (!text.startsWith('---', bom.length)) return null
+  const lines = text.slice(bom.length).split('\n')
+  // qianmopi ends frontmatter at the next line starting `---`; Claude Code at
+  // the next `---` anywhere, never later.
+  let close = lines.findIndex((line, at) => at > 0 && line.startsWith('---'))
+  if (close === -1) close = lines.length
+  const kept = lines.slice(0, 1)
+  for (let at = 1; at < close; at++) {
+    const line = lines[at]!
+    const key = FRONTMATTER_KEY.exec(line)
+    if (key === null || !GRANTING_KEY.test(key[3]!)) {
+      kept.push(line)
+      continue
+    }
+    // Its value goes too: lines indented further, or listed at its level.
+    const indent = key[1]!.length
+    while (at + 1 < close) {
+      const next = lines[at + 1]!
+      const depth = next.length - next.trimStart().length
+      if (
+        next.trim() !== '' &&
+        (depth < indent || (depth === indent && !/^[ \t]*-(?:\s|$)/.test(next)))
+      )
+        break
+      at++
+    }
+  }
+  const after = lines.slice(close)
+  const stripped = [...kept, ...after].join('\n')
+  const lazy = /^---\s*\n([\s\S]*?)---/.exec(stripped)?.[1]
+  if (grants(kept.slice(1).join('\n')) || (lazy !== undefined && grants(lazy)))
+    return bom + ['', ...kept.slice(1), ...after].join('\n')
+  const result = bom + stripped
+  return result === text ? null : result
+}
+
+/** Takes granting keys out of every Markdown file under `dir`. */
+function dropGrants(dir: string): void {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) dropGrants(full)
+    else if (entry.isFile() && /\.md$/i.test(entry.name)) {
+      const text = withoutGrants(readFileSync(full, 'utf8'))
+      if (text !== null) writeFileSync(full, text)
+    }
   }
 }
 
@@ -562,8 +714,10 @@ export class NodeExtensions {
     try {
       if (text !== undefined) {
         const parsed = appliedSchema.parse(JSON.parse(text))
-        // Before v2 the roster was not kept; `start()` lays the set out again.
-        applied = { ...parsed, roster: parsed.roster ?? this.#roster() }
+        // Before v2 the roster was not kept, and plugins kept what they
+        // bundled and MCP servers started without `qm mcp-exec`: laid out for
+        // nobody here, so no agent gets it until it is laid out again.
+        applied = { ...parsed, roster: parsed.roster ?? [] }
       }
     } catch {
       options.onError?.(
@@ -607,10 +761,17 @@ export class NodeExtensions {
   }
 
   status(): ExtensionsStatus {
+    const applied = this.#applied
     return {
-      digest: this.#applied?.digest ?? null,
-      results: this.#applied?.results ?? [],
-      at: this.#applied?.at ?? null,
+      // Not laid out for this node's agents yet (a set from before v2, or
+      // agents added or moved since, and the start's layout failed or is
+      // still running): the hub sends the set again.
+      digest:
+        applied !== null && sameRoster(applied.roster, this.#roster())
+          ? applied.digest
+          : null,
+      results: applied?.results ?? [],
+      at: applied?.at ?? null,
     }
   }
 
@@ -618,8 +779,8 @@ export class NodeExtensions {
   forAgent(agent: string): AgentExtensions | null {
     const applied = this.#applied
     if (applied === null) return null
-    // Laid out for another runtime, or before this agent existed: nothing
-    // until the set is laid out again.
+    // Laid out for another runtime, before this agent existed or before v2:
+    // nothing until the set is laid out again.
     const here = this.#options.agents.find(one => one.agent === agent)
     const laid = applied.roster.find(one => one.agent === agent)
     if (
@@ -637,7 +798,7 @@ export class NodeExtensions {
         result.agents.find(one => one.agent === agent) ??
         (result.agents.length === 0 ? result : undefined)
       if (mine === undefined || mine.ok) return true
-      return entry.kind === 'mcp' && mine.retry
+      return entry.kind === 'mcp' && mine.retry === true
     }
     const dir = this.#agentDir(agent)
     const skillsPlugin = path.join(dir, 'plugins', SKILLS_PLUGIN)
@@ -818,6 +979,7 @@ export class NodeExtensions {
       .map(one => one.agent)
     const tools: Record<string, string[]> = {}
     const probe = this.#options.probe ?? probeMcpTools
+    const probes = path.join(this.#root, 'probes')
     await Promise.all(
       entries
         .filter(
@@ -826,7 +988,12 @@ export class NodeExtensions {
             ompAgents.some(agent => forAgent(entry, agent)),
         )
         .map(async entry => {
+          let scratch: string | undefined
           try {
+            // In an empty directory of its own: the root holds every
+            // server's secrets.
+            mkdirSync(probes, { recursive: true, mode: 0o700 })
+            scratch = mkdtempSync(path.join(probes, 'probe-'))
             tools[entry.id] = await probe({
               name: entry.name,
               transport: entry.transport ?? 'stdio',
@@ -839,7 +1006,7 @@ export class NodeExtensions {
               ...(entry.headers === undefined
                 ? {}
                 : { headers: entry.headers }),
-              cwd: this.#root,
+              cwd: scratch,
             })
           } catch (error) {
             // A server that is down for now keeps the tools it had.
@@ -855,6 +1022,9 @@ export class NodeExtensions {
               true,
               ompAgents.filter(agent => forAgent(entry, agent)),
             )
+          } finally {
+            if (scratch !== undefined)
+              rmSync(scratch, { recursive: true, force: true })
           }
         }),
     )
@@ -946,8 +1116,12 @@ export class NodeExtensions {
       )
       if (codex[agent] === wanted && !failedBefore) continue
       if (codex[agent] === undefined && mine.length === 0) continue
-      if (await this.#installCodex(agent, mine, plugins, failures))
-        codex[agent] = wanted
+      const missing = await this.#installCodex(agent, mine, plugins, failures)
+      // A home with some plugins missing is swapped in too, with the new
+      // config: the agent is recycled onto it, and installed again next time.
+      if (missing !== null)
+        codex[agent] =
+          missing.length === 0 ? wanted : sha256({ wanted, missing })
     }
 
     // 8. Results, and who sees something else now.
@@ -1050,8 +1224,10 @@ export class NodeExtensions {
       for (const entry of skills) {
         const target = path.join(root, 'skills', entry.name)
         const source = context.sources.get(entry.id)
-        if (source !== undefined) cpSync(source, target, { recursive: true })
-        else {
+        if (source !== undefined) {
+          cpSync(source, target, { recursive: true })
+          dropGrants(target)
+        } else {
           mkdirSync(target, { recursive: true })
           writeFileSync(
             path.join(target, 'SKILL.md'),
@@ -1076,7 +1252,8 @@ export class NodeExtensions {
       if (source === undefined) continue
       const target = path.join(plugins, entry.name)
       cpSync(source, target, { recursive: true })
-      keepInstructionsOnly(target, runtime)
+      keepInstructionsOnly(target)
+      dropGrants(target)
       const codexName = context.plugins[entry.id]?.codex
       if (codexName)
         market.push({
@@ -1133,14 +1310,15 @@ export class NodeExtensions {
    * Builds the agent's Codex configuration in a fresh `CODEX_HOME` beside the
    * live one, then swaps the plugin cache and `config.toml` in. A running
    * Codex never sees a half-written home; if the marketplace cannot be added
-   * the live home stays as it was. Whether every plugin went in.
+   * the live home stays as it was. The plugins that did not go in; `null`
+   * when nothing was swapped in.
    */
   async #installCodex(
     agent: string,
     mine: readonly ExtensionWireEntry[],
     plugins: Readonly<Record<string, PluginFormats>>,
     failures: Failures,
-  ): Promise<boolean> {
+  ): Promise<string[] | null> {
     const home = this.#codexHome(agent)
     mkdirSync(home, { recursive: true, mode: 0o700 })
     const stage = `${home}.next-${randomUUID()}`
@@ -1158,13 +1336,14 @@ export class NodeExtensions {
         const codexName = plugins[entry.id]?.codex
         if (entry.kind === 'plugin' && codexName) want(codexName, entry.id)
       }
-      let complete = true
+      const missing: string[] = []
       const bin = this.#options.codexBin
       if (wanted.size > 0 && bin === undefined) {
-        for (const ids of wanted.values())
+        for (const [name, ids] of wanted) {
+          missing.push(name)
           for (const id of ids)
             failures.fail(id, '这台节点没有 Codex，装不上', false, [agent])
-        complete = false
+        }
       } else if (wanted.size > 0 && bin !== undefined) {
         const run = this.#options.run ?? runCommand
         const env = {
@@ -1195,12 +1374,12 @@ export class NodeExtensions {
               true,
               [agent],
             )
-          return false
+          return null
         }
         for (const [name, ids] of wanted) {
           const added = await step([bin, 'plugin', 'add', `${name}@qianmo`])
           if (added.code === 0) continue
-          complete = false
+          missing.push(name)
           for (const id of ids)
             failures.fail(id, said(added.stdout), true, [agent])
         }
@@ -1218,7 +1397,7 @@ export class NodeExtensions {
         path.join(stage, 'config.toml'),
         path.join(home, 'config.toml'),
       )
-      return complete
+      return missing
     } finally {
       rmSync(stage, { recursive: true, force: true })
     }
