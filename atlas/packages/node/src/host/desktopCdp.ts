@@ -34,7 +34,10 @@ export interface CdpBridge {
   command(argv: readonly string[]): string[]
   /** The host ends of a launcher-made pair; the bridge closes them. */
   attach(pipe: CdpPipe): void
-  /** Whether the browser answered over its pipe before `ms` ran out. */
+  /**
+   * Whether the browser answered over its pipe before `ms` ran out. A ready
+   * bridge closes itself once `alive` turns false.
+   */
   ready(alive: () => boolean, ms: number): Promise<boolean>
   /** The browser's page targets; throws when it does not answer in `ms`. */
   pages(ms: number): Promise<number>
@@ -81,6 +84,12 @@ export interface CdpPeers {
 const PIPE_SCRIPT = 'i=$1 o=$2; shift 2; exec "$@" 3<"$i" 4>"$o"'
 /** The largest DevTools message either way (full-page screenshots). */
 const MAX_MESSAGE = 128 * 1024 * 1024
+/** Peer lookups at once; on macOS each one runs `lsof` and `ps`. */
+const MAX_LOOKUPS = 8
+/** Claiming processes remembered; each executor restart adds one. */
+const MAX_CLAIMS = 16
+/** How often a ready bridge checks that its browser still runs. */
+const ALIVE_MS = 500
 /** `/proc/net/tcp` holds 127.0.0.1 as little-endian hex. */
 const LOOPBACK_HEX = '0100007F'
 
@@ -320,6 +329,9 @@ export const createCdpBridge: CdpBridgeFactory = async options => {
   let queuedBytes = 0
   let offset = 0
   let retry: Timer | undefined
+  /** A FIFO never ends while the host holds both ends, so ask the process. */
+  let watch: Timer | undefined
+  let lookups = 0
   const pump = () => {
     retry = undefined
     while (queue.length > 0 && !closed && writeFd >= 0) {
@@ -557,39 +569,55 @@ export const createCdpBridge: CdpBridgeFactory = async options => {
     )
   }
   const wsPath = `/devtools/browser/${browserId}`
+  const serve = async (
+    req: Request,
+    srv: Server<Socket>,
+    port: number,
+  ): Promise<Response | undefined> => {
+    const { pathname } = new URL(req.url)
+    if (pathname === DESKTOP_CDP_CLAIM_PATH) {
+      if (req.method !== 'POST') return new Response(null, { status: 405 })
+      if (!secret(req.headers.get('authorization'))) return forbidden()
+      const pid = await peers.owner(port, srv.port!)
+      const started = pid === undefined ? undefined : await peers.identity(pid)
+      if (pid === undefined || started === undefined) return forbidden()
+      claims.delete(pid)
+      claims.set(pid, started)
+      for (const old of claims.keys()) {
+        if (claims.size <= MAX_CLAIMS) break
+        claims.delete(old)
+      }
+      return new Response(null, { status: 204 })
+    }
+    if (!(await claimedBy(port)) || closed) return forbidden()
+    if (pathname === '/json/version' || pathname === '/json/version/')
+      return Response.json({
+        Browser: version.product,
+        'Protocol-Version': version.protocolVersion,
+        'User-Agent': version.userAgent,
+        'V8-Version': version.jsVersion,
+        'WebKit-Version': version.revision,
+        webSocketDebuggerUrl: `ws://127.0.0.1:${srv.port}${wsPath}`,
+      })
+    if (pathname === wsPath) {
+      if (srv.upgrade(req, { data: { id: ++clientSequence } })) return undefined
+      return new Response(null, { status: 400 })
+    }
+    return new Response(null, { status: 404 })
+  }
   const server: Server<Socket> = Bun.serve<Socket>({
     hostname: '127.0.0.1',
     port: 0,
     async fetch(req, srv) {
       const peer = srv.requestIP(req)
       if (closed || peer?.address !== '127.0.0.1') return forbidden()
-      const { pathname } = new URL(req.url)
-      if (pathname === DESKTOP_CDP_CLAIM_PATH) {
-        if (req.method !== 'POST') return new Response(null, { status: 405 })
-        if (!secret(req.headers.get('authorization'))) return forbidden()
-        const pid = await peers.owner(peer.port, srv.port!)
-        const started =
-          pid === undefined ? undefined : await peers.identity(pid)
-        if (pid === undefined || started === undefined) return forbidden()
-        claims.set(pid, started)
-        return new Response(null, { status: 204 })
+      if (lookups >= MAX_LOOKUPS) return new Response(null, { status: 503 })
+      lookups++
+      try {
+        return await serve(req, srv, peer.port)
+      } finally {
+        lookups--
       }
-      if (!(await claimedBy(peer.port)) || closed) return forbidden()
-      if (pathname === '/json/version' || pathname === '/json/version/')
-        return Response.json({
-          Browser: version.product,
-          'Protocol-Version': version.protocolVersion,
-          'User-Agent': version.userAgent,
-          'V8-Version': version.jsVersion,
-          'WebKit-Version': version.revision,
-          webSocketDebuggerUrl: `ws://127.0.0.1:${srv.port}${wsPath}`,
-        })
-      if (pathname === wsPath) {
-        if (srv.upgrade(req, { data: { id: ++clientSequence } }))
-          return undefined
-        return new Response(null, { status: 400 })
-      }
-      return new Response(null, { status: 404 })
     },
     websocket: {
       maxPayloadLength: MAX_MESSAGE,
@@ -633,6 +661,7 @@ export const createCdpBridge: CdpBridgeFactory = async options => {
     if (closed) return
     closed = true
     if (retry !== undefined) clearTimeout(retry)
+    if (watch !== undefined) clearInterval(watch)
     for (const entry of pending.values())
       if (entry.kind === 'host') {
         clearTimeout(entry.timer)
@@ -681,6 +710,11 @@ export const createCdpBridge: CdpBridgeFactory = async options => {
         if (result === null) return false
         if (result) {
           version = result
+          clearInterval(watch)
+          watch = setInterval(() => {
+            if (!alive()) close()
+          }, ALIVE_MS)
+          watch.unref()
           return true
         }
       }

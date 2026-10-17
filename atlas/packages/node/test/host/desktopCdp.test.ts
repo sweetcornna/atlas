@@ -394,6 +394,61 @@ test('closing the bridge refuses everyone, fails the host view and removes the p
     expect(fs.existsSync(fifo)).toBe(false)
 })
 
+test('peer lookups are capped, old claims age out, and a bridge closes when its browser stops', async () => {
+  // Lookups that hang: past the cap a request is turned away, not queued.
+  const held: (() => void)[] = []
+  const hanging: CdpPeers = {
+    owner: () => new Promise(resolve => held.push(() => resolve(undefined))),
+    identity: async () => undefined,
+  }
+  const slow = await bridged(hanging)
+  const stuck = Array.from({ length: 8 }, () =>
+    claim(slow.bridge.url, `Bearer ${TOKEN}`),
+  )
+  while (held.length < 8) await Bun.sleep(5)
+  expect((await claim(slow.bridge.url, `Bearer ${TOKEN}`)).status).toBe(503)
+  for (const release of held) release()
+  expect((await Promise.all(stuck)).map(r => r.status)).toEqual(
+    Array(8).fill(403),
+  )
+
+  // Each restarted executor claims anew; the oldest claims are forgotten.
+  let actor = 0
+  const many: CdpPeers = {
+    owner: async (_client, _server, pids) =>
+      !pids || pids.includes(actor) ? actor : undefined,
+    identity: async pid => `start-${pid}`,
+  }
+  const aged = await bridged(many)
+  for (actor = 1; actor <= 17; actor++)
+    expect((await claim(aged.bridge.url, `Bearer ${TOKEN}`)).status).toBe(204)
+  actor = 2
+  expect((await fetch(`${aged.bridge.url}/json/version`)).status).toBe(200)
+  actor = 1
+  expect((await fetch(`${aged.bridge.url}/json/version`)).status).toBe(403)
+
+  // A FIFO never ends while the host holds it: the bridge asks the process.
+  const dir = path.join(tempDir('cdp-'), 'cdp')
+  const bridge = await createCdpBridge({
+    dir,
+    token: TOKEN,
+    peers: fakePeers().peers,
+    transport: 'fifo',
+  })
+  cleanups.push(() => bridge.close())
+  const command = bridge.command(['chromium'])
+  fakeBrowser(command)
+  let running = true
+  expect(await bridge.ready(() => running, 5000)).toBe(true)
+  expect(await bridge.pages(1000)).toBe(2)
+  running = false
+  const deadline = Date.now() + 3000
+  while (fs.existsSync(command[4]!) && Date.now() < deadline)
+    await Bun.sleep(50)
+  await expect(bridge.pages(500)).rejects.toThrow('closed')
+  await expect(fetch(`${bridge.url}/json/version`)).rejects.toThrow()
+})
+
 test('the pair transport runs over the fd 3 and 4 the launcher made, and closes them', async () => {
   const { peers } = fakePeers()
   const bridge = await createCdpBridge({
@@ -612,7 +667,10 @@ test.skipIf(chrome === null)(
     expect(fs.existsSync(path.join(profile, 'DevToolsActivePort'))).toBe(false)
     expect(await bridge.pages(5000)).toBeGreaterThanOrEqual(1)
 
-    // Another process on this machine, without the secret: refused.
+    expect((await claim(bridge.url, `Bearer ${TOKEN}`)).status).toBe(204)
+    expect((await fetch(`${bridge.url}/json/version`)).status).toBe(200)
+    // Another process on this machine, after this one claimed: the real
+    // lookup tells the two apart.
     const other = Bun.spawn(
       [
         process.execPath,
@@ -622,8 +680,6 @@ test.skipIf(chrome === null)(
       { stdout: 'pipe', stderr: 'ignore' },
     )
     expect((await new Response(other.stdout).text()).trim()).toBe('403')
-
-    expect((await claim(bridge.url, `Bearer ${TOKEN}`)).status).toBe(204)
     const { webSocketDebuggerUrl: ws } = (await (
       await fetch(`${bridge.url}/json/version`)
     ).json()) as { webSocketDebuggerUrl: string }
