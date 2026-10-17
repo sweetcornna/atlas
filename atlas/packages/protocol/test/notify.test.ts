@@ -357,6 +357,7 @@ describe('LIMITS — the three numbers P13.2 added', () => {
         'defaultNotifyTtlMs',
         'notifyRatePerMinute',
         'maxQueuedTurns',
+        'maxAskChain',
         'connectorLineBytes',
         'connectorResponseBytes',
         'connectorTextBytes',

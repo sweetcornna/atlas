@@ -420,6 +420,16 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
     return this.#inactivity?.remaining(sessionId) ?? Infinity
   }
 
+  /**
+   * The host is working for this session's turn: a host tool that waits on
+   * someone else (P36.6, `qianmo_ask` waiting for another agent's answer)
+   * says so, because the runtime itself sends nothing while it waits. Same
+   * restart of the countdown a frame gives; the task deadline is untouched.
+   */
+  touch(sessionId: string): void {
+    this.#inactivity?.touch(sessionId)
+  }
+
   /** The inactivity budget in force, or `0` when the watchdog is off. */
   get inactivityMs(): number {
     return this.#inactivity?.timeoutMs ?? 0

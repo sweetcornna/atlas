@@ -31,6 +31,23 @@ export interface NodeTurnRequest {
    * turn is never interrupted. Absent means interactive.
    */
   readonly background?: boolean
+  /**
+   * What a later request's {@link chain} calls this turn (P36.6). The host
+   * gives the `taskId` of the hub-signed request behind the turn; absent for
+   * a turn nobody can be asked from.
+   */
+  readonly key?: string
+  /**
+   * The verified call chain of a synchronous question (P36.6,
+   * `harness-backends.md` §6.2): the {@link key}s of the turns on this node
+   * that asked the question this turn answers, outermost first. The host
+   * passes only what it verified (`verifiedChain`); absent or empty means
+   * none. While the turn running now is in it, that turn is blocked on this
+   * one's answer, so this one starts at once, nested inside it, instead of
+   * queueing behind it forever. That is re-entry, not concurrency: the turn
+   * it nests in is waiting on its tool call and does nothing until it ends.
+   */
+  readonly chain?: readonly string[]
 }
 
 /**
@@ -77,8 +94,15 @@ interface QueuedTurn {
   readonly enqueuedAt: number
   readonly sessionId: string
   readonly background: boolean
+  readonly key: string | undefined
+  readonly chain: readonly string[]
   readonly resolve: (value: unknown) => void
   readonly reject: (error: unknown) => void
+}
+
+/** A turn the gate started and that has not ended yet. */
+interface RunningTurn {
+  readonly key: string | undefined
 }
 
 /**
@@ -99,11 +123,21 @@ interface QueuedTurn {
  * order is the FIFO it always was. A background turn can wait as long as
  * interactive turns keep arriving; at a person's pace that is a pause, not
  * starvation, and its own deadline still culls it at the head.
+ *
+ * **Re-entry along a call chain (P36.6).** A turn that asks another agent on
+ * this node waits inside its tool call for that agent's turn, which would
+ * otherwise queue behind it until the question times out. A request whose
+ * verified {@link NodeTurnRequest.chain} names the turn running now (the
+ * innermost one) starts at once, nested; at most `LIMITS.maxAskChain` turns
+ * nest inside the outermost. While any turn runs, the gate starts nothing
+ * but such nested turns: when a nested turn ends it goes back to the turn it
+ * nested in, and ordinary turns wait until the outermost one has ended too.
  */
 export class NodeTurnGate {
   readonly #queue: QueuedTurn[] = []
   readonly #now: () => number
-  #active = false
+  /** Turns started and not ended, outermost first; nested ones after it. */
+  readonly #running: RunningTurn[] = []
 
   constructor(
     options: {
@@ -127,7 +161,15 @@ export class NodeTurnGate {
 
   /** A turn is running right now. */
   get active(): boolean {
-    return this.#active
+    return this.#running.length > 0
+  }
+
+  /**
+   * Turns running now: 0 or 1, more only while turns nest along a call chain
+   * ({@link NodeTurnRequest.chain}).
+   */
+  get depth(): number {
+    return this.#running.length
   }
 
   /** Turns waiting behind the running one. Excludes the running one. */
@@ -158,6 +200,8 @@ export class NodeTurnGate {
         enqueuedAt: this.#now(),
         sessionId: request.sessionId ?? '',
         background: request.background === true,
+        key: request.key,
+        chain: request.chain ?? [],
         resolve: resolve as (value: unknown) => void,
         reject,
       })
@@ -172,13 +216,20 @@ export class NodeTurnGate {
    * enqueue: however deep a turn sits, it is worth keeping as long as its
    * deadline is still ahead, and only the moment its slot comes up can say
    * whether it outlived it. "The head" is the oldest interactive turn when
-   * there is one, else the oldest background turn.
+   * there is one, else the oldest background turn — or, while a turn is
+   * running, the oldest turn that may nest inside it ({@link #nests}).
    */
   #pump(): void {
-    if (this.#active) return
     for (;;) {
-      const interactive = this.#queue.findIndex(turn => !turn.background)
-      const next = this.#queue.splice(Math.max(0, interactive), 1)[0]
+      let index: number
+      if (this.#running.length === 0) {
+        const interactive = this.#queue.findIndex(turn => !turn.background)
+        index = Math.max(0, interactive)
+      } else {
+        index = this.#queue.findIndex(turn => this.#nests(turn))
+        if (index < 0) return
+      }
+      const next = this.#queue.splice(index, 1)[0]
       if (next === undefined) return
       const now = this.#now()
       if (now >= next.deadlineAt) {
@@ -196,9 +247,26 @@ export class NodeTurnGate {
     }
   }
 
+  /**
+   * The turn running innermost asked the question `turn` answers, and the
+   * nesting stays within `LIMITS.maxAskChain`. A chain longer than that is no
+   * chain: the host never passes one, and the gate does not read one.
+   */
+  #nests(turn: QueuedTurn): boolean {
+    const innermost = this.#running.at(-1)?.key
+    return (
+      innermost !== undefined &&
+      turn.chain.length <= LIMITS.maxAskChain &&
+      this.#running.length <= LIMITS.maxAskChain &&
+      turn.chain.includes(innermost)
+    )
+  }
+
   #start(turn: QueuedTurn): void {
-    if (this.#active) throw new Error('node turn gate overlap')
-    this.#active = true
+    if (this.#running.length > 0 && !this.#nests(turn))
+      throw new Error('node turn gate overlap')
+    const running: RunningTurn = { key: turn.key }
+    this.#running.push(running)
     void (async () => {
       try {
         turn.resolve(await turn.work())
@@ -206,8 +274,10 @@ export class NodeTurnGate {
         turn.reject(error)
       } finally {
         // Released before pumping, and in a `finally`, because a node whose
-        // first failing turn never releases the gate stops for good.
-        this.#active = false
+        // first failing turn never releases the gate stops for good. By
+        // identity, not from the top: an asker stopped while its answer is
+        // still running ends first, and the nested turn keeps the gate.
+        this.#running.splice(this.#running.indexOf(running), 1)
         this.#pump()
       }
     })()

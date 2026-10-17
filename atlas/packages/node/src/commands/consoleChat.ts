@@ -1121,6 +1121,16 @@ export function createConsoleChatPort(
             // A background sub-agent turn (P29); under the owner proof below,
             // so the node can trust it. Older nodes ignore both fields.
             ...(input.background === true ? { background: true } : {}),
+            // The call chain of an agent's question (P36.6), under the same
+            // proof: the node nests this turn in the asker it names.
+            ...(input.chain === undefined || input.chain.length === 0
+              ? {}
+              : {
+                  chain: input.chain.map(link => ({
+                    node: link.node,
+                    taskId: link.taskId,
+                  })),
+                }),
             // This console reads `compacted` on the result.
             reportCompaction: true,
           },
