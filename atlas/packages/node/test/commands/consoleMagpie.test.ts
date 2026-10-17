@@ -78,6 +78,39 @@ function port(tenants: readonly string[] = []): ConsoleMagpie {
   })
 }
 
+/**
+ * A port whose `fetch` drops the answer to the first request for `path`
+ * after magpie has done it: what a timeout or a cut connection looks like.
+ */
+function droppingPort(path: string): {
+  readonly magpie: ConsoleMagpie
+  arm(): void
+} {
+  let armed = false
+  const magpie = new ConsoleMagpie({
+    statePath: paths.state,
+    secretsPath: paths.secrets,
+    keyPath: paths.key,
+    providers,
+    tenants: () => [],
+    onError: line => errors.push(line),
+    fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await fetch(input, init)
+      if (armed && String(input).endsWith(path)) {
+        armed = false
+        throw new TypeError('connection reset')
+      }
+      return response
+    }) as typeof fetch,
+  })
+  return {
+    magpie,
+    arm: () => {
+      armed = true
+    },
+  }
+}
+
 async function connected(
   tenants: readonly string[] = [],
 ): Promise<ConsoleMagpie> {
@@ -493,6 +526,28 @@ describe('a gateway key for a node', () => {
     expect(fake.keys()).toEqual([])
     const profile = await providers.profile('magpie-node-beta-1')
     expect(profile.ok).toBe(false)
+  })
+
+  test('a key magpie made although add-key was not answered is taken back out', async () => {
+    const { magpie, arm } = droppingPort('/api/caller-keys/add-key')
+    const linked = await magpie.connect(
+      {
+        gatewayUrl: fake.gatewayUrl,
+        managementUrl: fake.managementUrl,
+        managementKey: WEB_KEY,
+      },
+      caller(),
+    )
+    expect(linked.ok).toBe(true)
+    arm()
+    const result = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-1' }, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    expect(result.ok).toBe(false)
+    // Not left enabled and open to every model.
+    expect(fake.keys()).toEqual([])
+    expect((await providers.profile('magpie-node-beta-1')).ok).toBe(false)
   })
 
   test('magpie changes are brought back within the eligible set by a check', async () => {

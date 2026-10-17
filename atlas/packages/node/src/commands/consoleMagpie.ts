@@ -103,6 +103,8 @@ const PROFILE_MODEL_ID = /^[A-Za-z0-9~][A-Za-z0-9._:/~@+-]{0,127}$/
 const MANAGEMENT_SLOT = { profileId: 'magpie-management', keyId: 'web-key' }
 const GATEWAY_KEY_ID = 'gw'
 const CHECK_EVERY_MS = 10 * 60 * 1000
+/** After a write magpie did not answer in time, how long to wait before looking again. */
+const LOOK_AGAIN_MS = 1_500
 const SNAPSHOT_TTL_MS = 2_000
 /** The name prefix of every upstream a subscriber connects (P35). */
 const TENANT_UPSTREAM_PREFIX = 'qmt-'
@@ -662,6 +664,59 @@ export class ConsoleMagpie implements MagpiePort {
     if (problem !== null)
       this.#options.onError?.(`下发到 ${node} 没成 · ${problem}`)
     return problem
+  }
+
+  /**
+   * A write that failed may still have been done (the answer timed out or
+   * the connection broke after magpie acted). Look for what it would have
+   * made, and once more after a pause when it timed out; `undefined` when it
+   * is not there (or the look fails too).
+   */
+  async #madeAnyway<T>(
+    error: unknown,
+    look: () => Promise<T | undefined>,
+  ): Promise<T | undefined> {
+    try {
+      const found = await look()
+      if (
+        found !== undefined ||
+        !(error instanceof MagpieError) ||
+        error.code !== 'magpie_unreachable'
+      )
+        return found
+      await Bun.sleep(LOOK_AGAIN_MS)
+      return await look()
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * `add-key`; when it fails, a key magpie made anyway is taken back out —
+   * a new key is on and open to every model until its list is written.
+   */
+  async #addKey(
+    client: MagpieClient,
+    name: string,
+    secret: string,
+  ): Promise<MagpieKey> {
+    try {
+      return await client.addKey({ name, secret })
+    } catch (error) {
+      const stray = await this.#madeAnyway(error, async () =>
+        (await client.listKeys()).find(key => key.name === name),
+      )
+      if (stray !== undefined) {
+        try {
+          await client.removeKey(stray.id)
+        } catch (removal) {
+          this.#options.onError?.(
+            `半成的网关密钥 ${name} 没能收回 · ${messageOf(removal)}`,
+          )
+        }
+      }
+      throw error
+    }
   }
 
   #webKey(): string | null {
@@ -1522,7 +1577,7 @@ export class ConsoleMagpie implements MagpiePort {
       const keyName = `qm-${binding.kind}-${binding.id.slice(0, 60)}-${randomUUID()}`
       let key: MagpieKey
       try {
-        key = await client.addKey({ name: keyName, secret })
+        key = await this.#addKey(client, keyName, secret)
       } catch (error) {
         return fromMagpie(error)
       }
@@ -1932,7 +1987,7 @@ export class ConsoleMagpie implements MagpiePort {
       const keyName = `qm-tenant-${tenant.slice(0, 60)}-${randomUUID()}`
       let key: MagpieKey
       try {
-        key = await client.addKey({ name: keyName, secret })
+        key = await this.#addKey(client, keyName, secret)
       } catch (error) {
         return fromMagpie(error)
       }
