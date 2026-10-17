@@ -2279,11 +2279,22 @@ export class ConsoleMagpie implements MagpiePort {
             0,
             80,
           )
-        const added = await client.saveProvider({
-          preset: preset.id,
-          key: draft.key,
-          name,
-        })
+        let added: MagpieProvider
+        try {
+          added = await client.saveProvider({
+            preset: preset.id,
+            key: draft.key,
+            name,
+          })
+        } catch (error) {
+          // The save may have been done all the same; the name is this
+          // attempt's own. Taken as made, so a retry makes no second one.
+          const made = await this.#madeAnyway(error, async () =>
+            (await client.listProviders()).find(one => one.name === name),
+          )
+          if (made === undefined) throw error
+          added = made
+        }
         if (added.access !== 'key' || added.name !== name) {
           await client.deleteProvider(added.id)
           return failed('rejected', '这个上游不是 API 密钥上游 · 已撤回')

@@ -32,6 +32,7 @@ import type { MagpieCaller } from '@qianmo/console'
 import { FakeMagpie } from '@qianmo/magpie/testing'
 import {
   ConsoleMagpie,
+  type ConsoleMagpieOptions,
   magpieProfileId,
 } from '../../src/commands/consoleMagpie.js'
 import {
@@ -82,7 +83,10 @@ function port(tenants: readonly string[] = []): ConsoleMagpie {
  * A port whose `fetch` drops the answer to the first request for `path`
  * after magpie has done it: what a timeout or a cut connection looks like.
  */
-function droppingPort(path: string): {
+function droppingPort(
+  path: string,
+  extra: Partial<ConsoleMagpieOptions> = {},
+): {
   readonly magpie: ConsoleMagpie
   arm(): void
 } {
@@ -94,6 +98,7 @@ function droppingPort(path: string): {
     providers,
     tenants: () => [],
     onError: line => errors.push(line),
+    ...extra,
     fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
       const response = await fetch(input, init)
       if (armed && String(input).endsWith(path)) {
@@ -876,6 +881,42 @@ describe('a gateway key for a tenant (P35)', () => {
       caller(),
     )
     expect(off.ok && off.value.enabled).toBe(false)
+  })
+})
+
+describe('a subscriber’s upstream (P35)', () => {
+  test('one magpie made although the save was not answered is recorded, not reported as failed', async () => {
+    const { magpie, arm } = droppingPort('/api/provider/save', {
+      tenants: () => ['t-1'],
+      subscriptions: { caller: providers.systemCaller(async () => true) },
+    })
+    const linked = await magpie.connect(
+      {
+        gatewayUrl: fake.gatewayUrl,
+        managementUrl: fake.managementUrl,
+        managementKey: WEB_KEY,
+      },
+      caller(),
+    )
+    expect(linked.ok).toBe(true)
+    expect((await magpie.ensureTenant('t-1', [])).ok).toBe(true)
+    expect((await magpie.setTenantEntitled('t-1', true)).ok).toBe(true)
+    arm()
+    const added = await magpie.addTenantUpstream('t-1', {
+      preset: 'openai',
+      key: 'sk-t1-own-0001',
+    })
+    if (!added.ok) throw new Error(added.failure.message)
+    const view = await magpie.tenantView('t-1')
+    expect(view.ok && view.value.upstreams.map(one => one.id)).toEqual([
+      added.value.id,
+    ])
+    const key = fake.keys().find(one => one.name.startsWith('qm-tenant-t-1-'))
+    expect(key?.models).toEqual([`${added.value.id}/*`])
+    expect(key?.off).toBe(false)
+    expect(
+      fake.requests.filter(request => request.path === '/api/provider/save'),
+    ).toHaveLength(1)
   })
 })
 
