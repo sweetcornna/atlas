@@ -1837,7 +1837,7 @@ describe('planned tasks (主动任务)', () => {
     expect(await refusal({ after: 5, at: '2026-10-17T10:00:00+08:00' })).toBe(
       'after 和 at 只能给一个',
     )
-    expect(await refusal({ after: 0 })).toBe('after 是 1–10080 分钟')
+    expect(await refusal({ after: -1 })).toBe('after 是 1–10080 分钟')
     expect(await refusal({ after: 10_081 })).toBe('after 是 1–10080 分钟')
     expect(await refusal({ after: 1.5 })).toBe(
       'after、everyMinutes、times 要是整数',
@@ -1860,7 +1860,14 @@ describe('planned tasks (主动任务)', () => {
     expect(await refusal({ everyMinutes: 60, times: 101 })).toBe(
       'times 是 1–100 次',
     )
+    expect(await refusal({ everyMinutes: -60, times: 2 })).toBe(
+      'everyMinutes 是 30–10080 分钟',
+    )
+    expect(await refusal({ everyMinutes: 60, times: -1 })).toBe(
+      'times 是 1–100 次',
+    )
     expect(await refusal({ times: 3 })).toBe('times 要和 everyMinutes 一起给')
+    expect(await refusal({ times: -1 })).toBe('times 是 1–100 次')
     // Optional arguments a model left empty are not given.
     expect(
       book.forSession(parent).filter(task => task.status === 'scheduled'),
@@ -1884,6 +1891,75 @@ describe('planned tasks (主动任务)', () => {
       }),
     )
     expect(at.nextAt).toBe('2026-10-17T02:30:00.000Z')
+  })
+
+  test('0 and empty strings are not given: all of them is a task that starts now, once', async () => {
+    const now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    let last = ''
+    const start = async (args: Record<string, unknown>) => {
+      const outcome = await call(book, 'start', parent, {
+        title: 't',
+        instructions: 'i',
+        ...args,
+      })
+      if (!outcome.ok) return outcome
+      last = (outcome.value as { id: string }).id
+      return outcome.value as Record<string, unknown>
+    }
+    /** The plan the ledger keeps for the task started last. */
+    const plan = () => {
+      const { tasks, scheduled } = ledger()
+      return (
+        [...tasks, ...scheduled].find(task => task['id'] === last) as {
+          plan: Record<string, unknown> | null
+        }
+      ).plan
+    }
+    // What gpt-6-luna sent for a task it meant to start at once.
+    const zeros = { agent: '', after: 0, at: '', everyMinutes: 0, times: 0 }
+    const immediate = await start(zeros)
+    expect(immediate).toMatchObject({ status: 'queued', target: MAIN })
+    expect(immediate).not.toContainAnyKeys([
+      'nextAt',
+      'everyMinutes',
+      'runsLeft',
+    ])
+    expect(plan()).toBeNull()
+    // The same as text, and with null.
+    expect(
+      await start({ after: '0', everyMinutes: '0', times: '0', agent: null }),
+    ).toMatchObject({ status: 'queued' })
+    expect(plan()).toBeNull()
+    // Only after given: one run, later.
+    expect(await start({ ...zeros, after: 30 })).toMatchObject({
+      status: 'scheduled',
+      nextAt: new Date(now + 30 * 60_000).toISOString(),
+    })
+    expect(plan()).toMatchObject({ everyMinutes: null, times: 1, runs: 0 })
+    // Only a repeat given: the first run starts now.
+    expect(await start({ ...zeros, everyMinutes: 60, times: 3 })).toMatchObject(
+      { status: 'queued', everyMinutes: 60, runsLeft: 2 },
+    )
+    // No repeat and times 1 is one run; more than one needs everyMinutes.
+    expect(await start({ ...zeros, times: 1 })).toMatchObject({
+      status: 'queued',
+    })
+    expect(plan()).toBeNull()
+    expect(await start({ ...zeros, after: 30, times: 1 })).toMatchObject({
+      status: 'scheduled',
+    })
+    expect(plan()).toMatchObject({ everyMinutes: null, times: 1 })
+    expect(await start({ ...zeros, times: 3 })).toMatchObject({
+      ok: false,
+      message: 'times 要和 everyMinutes 一起给',
+    })
+    // A repeat without times is still refused, 0 or not.
+    expect(await start({ ...zeros, everyMinutes: 60 })).toMatchObject({
+      ok: false,
+      message: '重复任务要给 times（1–100 次）',
+    })
   })
 
   test('an at naming a day or time that does not exist is refused, not moved to the next day', async () => {
