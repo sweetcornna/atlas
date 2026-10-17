@@ -86,6 +86,8 @@ function port(tenants: readonly string[] = []): ConsoleMagpie {
 function droppingPort(
   path: string,
   extra: Partial<ConsoleMagpieOptions> = {},
+  /** Instead of dropping the answer, run this once magpie has answered. */
+  meanwhile?: () => Promise<void>,
 ): {
   readonly magpie: ConsoleMagpie
   arm(): void
@@ -103,7 +105,8 @@ function droppingPort(
       const response = await fetch(input, init)
       if (armed && String(input).endsWith(path)) {
         armed = false
-        throw new TypeError('connection reset')
+        if (meanwhile === undefined) throw new TypeError('connection reset')
+        await meanwhile()
       }
       return response
     }) as typeof fetch,
@@ -666,6 +669,52 @@ describe('a gateway key for a node', () => {
       before.value.keys[0]?.fingerprint,
     )
     expect(JSON.stringify(rotated)).not.toContain(secret)
+  })
+
+  test('rotation takes the profile’s revision after magpie has answered, not before', async () => {
+    const pcaller = {
+      subject: OPS,
+      role: 'ops' as const,
+      breakGlass: false,
+      record: async () => true,
+    }
+    // Somebody saves the gateway profile while magpie is rotating the key.
+    const { magpie, arm } = droppingPort(
+      '/api/caller-keys/rotate-key',
+      {},
+      async () => {
+        const current = await providers.profile('magpie-node-beta-1')
+        if (!current.ok) throw new Error('profile')
+        const saved = await providers.saveProfile(
+          {
+            profile: { ...current.value, name: 'renamed meanwhile' },
+            ifMatch: current.value.revision,
+          },
+          pcaller,
+        )
+        if (!saved.ok) throw new Error(saved.failure.message)
+      },
+    )
+    const linked = await magpie.connect(
+      {
+        gatewayUrl: fake.gatewayUrl,
+        managementUrl: fake.managementUrl,
+        managementKey: WEB_KEY,
+      },
+      caller(),
+    )
+    expect(linked.ok).toBe(true)
+    const binding = { kind: 'node' as const, id: 'beta-1' }
+    const issued = await magpie.issueKey(
+      { binding, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    if (!issued.ok) throw new Error(issued.failure.message)
+    arm()
+    const rotated = await magpie.rotateKey(binding, caller())
+    expect(rotated.ok).toBe(true)
+    const secret = fake.key(issued.value.keyId)?.secret
+    expect(deliveredKey(applies().at(-1))).toBe(secret)
   })
 
   test('removal is refused while the node has nothing else to run on', async () => {

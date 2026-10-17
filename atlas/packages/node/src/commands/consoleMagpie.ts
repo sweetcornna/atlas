@@ -1803,8 +1803,7 @@ export class ConsoleMagpie implements MagpiePort {
       if (!(client instanceof MagpieClient)) return client
       const providers = this.#options.providers
       const pcaller = this.#providerCaller(caller)
-      const revision = await this.#revision(record.profileId)
-      if (revision === null)
+      if ((await this.#revision(record.profileId)) === null)
         return failed('not_found', '模型服务里没有这份档案')
       let secret: string
       try {
@@ -1812,6 +1811,15 @@ export class ConsoleMagpie implements MagpiePort {
       } catch (error) {
         return fromMagpie(error)
       }
+      // Read now, not before magpie answered: a save of the profile in that
+      // wait would otherwise turn the new value away as a stale revision,
+      // with the old value already dead in magpie.
+      const revision = await this.#revision(record.profileId)
+      if (revision === null)
+        return failed(
+          'unreachable',
+          'magpie 里已换新值 · 档案已不在模型服务里 · 请收回这把密钥',
+        )
       const set = await providers.setSecret(
         {
           profileId: record.profileId,
