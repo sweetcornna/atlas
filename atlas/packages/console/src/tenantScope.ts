@@ -118,6 +118,16 @@ export function scopedConsoleDeps(
         })
         return allowed(ref) ? r : hidden()
       },
+      // A screenshot shows what the agent is doing: the same scope as its card.
+      ...(desktop.view === undefined
+        ? {}
+        : {
+            async view(ref: AgentRef) {
+              if (!allowed(ref)) return hidden()
+              const r = await desktop.view!(ref)
+              return allowed(ref) ? r : hidden()
+            },
+          }),
     }
   }
   // Platform membership can be withdrawn while the wake timer/handshake waits.
