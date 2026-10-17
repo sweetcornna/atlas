@@ -471,6 +471,7 @@ test('a runtime process that exits on its own closes its session’s desktop exe
           browser: true,
           computer: false,
           cdpUrl: null,
+          cdpToken: null,
           display: null,
           xauthority: null,
           downloads,
