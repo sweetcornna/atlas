@@ -519,7 +519,7 @@ function wallClock(at: number): string {
   return `${two(date.getMonth() + 1)}-${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())} ${zone}`
 }
 
-/** Seconds to wait after the n-th consecutive failure (grantley `_retry_wait`). */
+/** A delivery a place did not answer within its time. */
 const LATE = Symbol('late')
 
 /** `work`'s value, or {@link LATE} when it takes longer than `ms`. */
@@ -541,6 +541,7 @@ async function within<T>(
   }
 }
 
+/** Seconds to wait after the n-th consecutive failure (grantley `_retry_wait`). */
 function defaultBackoff(failures: number): number {
   return Math.min(60_000, 2 ** Math.min(failures, 6) * 1_000)
 }
