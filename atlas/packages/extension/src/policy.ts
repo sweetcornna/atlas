@@ -348,6 +348,8 @@ function yamlKey(key: string): string {
   return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(key) ? key : JSON.stringify(key)
 }
 
+const MCP_STARTUP_WINDOW_MS = 10_000
+
 /**
  * YAML for the per-process `--config` overlay.
  *
@@ -403,6 +405,12 @@ export function residentConfigOverlay(options: {
     '  mode: hashline',
     'mcp:',
     '  enableProjectConfig: false',
+    // Wait for the operator's servers (P32): qianmopi stops when a tool named
+    // in `--tools` has not appeared by the end of this window, and its 250 ms
+    // default is shorter than a server started through `npx` or `qm mcp-exec`.
+    ...((options.mcp ?? []).length > 0
+      ? [`  startupTimeoutMs: ${MCP_STARTUP_WINDOW_MS}`]
+      : []),
     'advisor:',
     '  enabled: false',
     'goal:',

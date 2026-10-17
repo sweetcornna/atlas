@@ -336,8 +336,17 @@ describe('operator-configured extensions (P32)', () => {
     ).toContain('mcp__qianmo_docs_search')
     const overlay = Bun.YAML.parse(
       residentConfigOverlay({ edits: 'none', mcp }),
-    ) as { tools: { approval: Record<string, string> } }
+    ) as {
+      tools: { approval: Record<string, string> }
+      mcp: Record<string, unknown>
+    }
     expect(overlay.tools.approval['mcp__qianmo_docs_search']).toBe('allow')
+    // A slow server still makes the first turn (P32 audit: startup window).
+    expect(overlay.mcp.startupTimeoutMs).toBe(10_000)
+    const none = Bun.YAML.parse(residentConfigOverlay({ edits: 'none' })) as {
+      mcp: Record<string, unknown>
+    }
+    expect(none.mcp).toEqual({ enableProjectConfig: false })
   })
 
   test('installed skill directories are readable, the rest of the root is not', () => {

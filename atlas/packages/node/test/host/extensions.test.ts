@@ -27,6 +27,7 @@ import {
   extensionsDigest,
   extensionWireSchema,
   type ExtensionWireEntry,
+  type McpProbeTarget,
   NodeExtensions,
 } from '../../src/host/extensions.js'
 import { treeDigest } from '../../src/host/githubDir.js'
@@ -37,6 +38,7 @@ let served: Map<string, Uint8Array>
 let changed: string[]
 let commands: string[][]
 let probes: string[]
+let targets: McpProbeTarget[]
 
 function id(n: number): string {
   return `ext-00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
@@ -107,8 +109,10 @@ function host(
     },
     probe: async target => {
       probes.push(target.name)
+      targets.push(target)
       return [`mcp__qianmo_mcp_${target.name}_search`]
     },
+    mcpExec: args => ['/opt/qm', ...args],
     changed: async agent => {
       changed.push(agent)
     },
@@ -143,6 +147,7 @@ beforeEach(() => {
   changed = []
   commands = []
   probes = []
+  targets = []
 })
 afterEach(() => rmSync(root, { recursive: true, force: true }))
 
@@ -183,10 +188,27 @@ test('lays out skills and MCP servers in each runtime’s native shape', async (
   expect(manifest.$schema).toContain('agent-plugins.org')
   const mcpFile = path.join(base, 'writer', 'mcp', 'qianmo-mcp', 'mcp.json')
   expect(statSync(mcpFile).mode & 0o077).toBe(0)
+  // Through `qm mcp-exec`: only its own variables reach it (P32 audit 9).
+  // Agent Plugins only start a command inside the plugin: a script there.
   expect(JSON.parse(readFileSync(mcpFile, 'utf8')).mcpServers.docs).toEqual({
     type: 'stdio',
-    command: 'docs-mcp',
-    args: ['--stdio'],
+    command: './bin/qm-mcp-exec',
+    args: ['--keep', 'DOCS_TOKEN', '--', 'docs-mcp', '--stdio'],
+    env: { DOCS_TOKEN: 'secret-value' },
+  })
+  const shim = path.join(
+    base,
+    'writer',
+    'mcp',
+    'qianmo-mcp',
+    'bin',
+    'qm-mcp-exec',
+  )
+  expect(readFileSync(shim, 'utf8')).toContain(`exec '/opt/qm' 'mcp-exec' "$@"`)
+  expect(statSync(shim).mode & 0o777).toBe(0o700)
+  expect(targets[0]).toMatchObject({
+    command: '/opt/qm',
+    args: ['mcp-exec', '--keep', 'DOCS_TOKEN', '--', 'docs-mcp', '--stdio'],
     env: { DOCS_TOKEN: 'secret-value' },
   })
   // Secrets are never under the plugins tree an agent may read.

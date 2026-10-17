@@ -53,6 +53,7 @@ import {
   type RuntimeDesktopSource,
 } from './desktopTools.js'
 import { runtimeBin } from '../runtimeUpdate.js'
+import { inheritedEnv } from './inheritedEnv.js'
 import { runWorkspaceTool, WORKSPACE_TOOLS } from './workspaceTools.js'
 
 /** A resident agent that runs on Claude Code or Codex. */
@@ -128,28 +129,6 @@ interface SessionRecord {
 const DEFAULT_IDLE_MS = 600_000
 const CAPACITY_WAIT_MS = 30_000
 const SESSION_ID = /^[a-zA-Z0-9_-]+$/
-/** Environment a runtime inherits from the node; credentials are added. */
-const INHERITED_ENV = [
-  'PATH',
-  'HOME',
-  'USER',
-  'LOGNAME',
-  'SHELL',
-  'LANG',
-  'LC_ALL',
-  'LC_CTYPE',
-  'TZ',
-  'TMPDIR',
-  'TERM',
-  'SSL_CERT_FILE',
-  'NODE_EXTRA_CA_CERTS',
-  'HTTPS_PROXY',
-  'HTTP_PROXY',
-  'NO_PROXY',
-  'https_proxy',
-  'http_proxy',
-  'no_proxy',
-]
 const CODEX_KEY_ENV = 'QIANMO_RUNTIME_KEY'
 /**
  * Codex features a resident agent never uses. `plugins` stays on: the
@@ -184,16 +163,6 @@ export function defaultExternalSystemPrompt(agent: ExternalAgent): string {
         : 'You have no shell. Read the workspace with Read, Grep and Glob.',
     'Tools named qianmo_* act through this node: notify the operator, remember, delegate background tasks to other agents, use authorized connections, and drive your private browser and computer when the operator has switched them on.',
   ].join('\n')
-}
-
-/** The env one runtime child starts with. */
-function baseEnv(): Record<string, string> {
-  const env: Record<string, string> = {}
-  for (const key of INHERITED_ENV) {
-    const value = process.env[key]
-    if (value !== undefined) env[key] = value
-  }
-  return env
 }
 
 function headerLines(headers: Readonly<Record<string, string>>): string {
@@ -528,7 +497,8 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       '--token-file',
       tokenFile,
     ])
-    const env = baseEnv()
+    // The node's environment stays with the node; credentials are added.
+    const env = inheritedEnv()
     const ledger = join(dir, 'runtime-inputs.ndjson')
     const onAdmitted = (messageId: string) => {
       try {

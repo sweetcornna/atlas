@@ -15,11 +15,12 @@
  * | `plugins/qianmo/` — the agent's skills, with Agent Plugins, Claude Code and Codex manifests | `--plugin-dir` (qianmopi, Claude Code); local marketplace (Codex) |
  * | `plugins/<name>/` — an imported plugin, without the MCP servers, hooks and LSP servers it bundles | the same, per the manifests it carries |
  * | `.agents/plugins/marketplace.json` | Codex: `codex plugin marketplace add` |
- * | `mcp/qianmo-mcp/` — `plugin.json` + `mcp.json` with the agent's MCP servers and their secrets | `--plugin-dir` (qianmopi only) |
+ * | `mcp/qianmo-mcp/` — `plugin.json` + `mcp.json` with the agent's MCP servers and their secrets, and `bin/qm-mcp-exec` | `--plugin-dir` (qianmopi only) |
  *
  * Claude Code gets the MCP servers in its `--mcp-config` file and Codex in
  * the agent's own `CODEX_HOME/config.toml`, so their secrets never sit in a
- * directory a runtime copies or an agent may read. A GitHub source is only
+ * directory a runtime copies or an agent may read. qianmopi starts a stdio
+ * server through `qm mcp-exec`, so it sees none of the node's environment. A GitHub source is only
  * used when its files match the digest the hub pinned.
  *
  * Results are kept per entry and agent: a failure on one agent (a Codex
@@ -48,6 +49,7 @@ import { qianmoConfigPath } from '@qianmo/paths'
 import type { ControlOutcome } from '@qianmo/protocol'
 import { OutboundPolicy } from '../commands/outboundPolicy.js'
 import { readTextIfExists, writePrivateJson } from '../providers/store.js'
+import { qmArgv } from '../omp/launch.js'
 import type { ControlHandler } from './control.js'
 import { fetchGithubDir, GITHUB_REPO } from './githubDir.js'
 import type { ExternalRuntimeKind } from './runtimes/channel.js'
@@ -285,6 +287,8 @@ export interface NodeExtensionsOptions {
   readonly policy?: OutboundPolicy
   readonly run?: RunCommand
   readonly probe?: (target: McpProbeTarget) => Promise<string[]>
+  /** How qianmopi starts `qm mcp-exec`; tests point it elsewhere. */
+  readonly mcpExec?: (args: readonly string[]) => string[]
   /** An agent's set changed: recycle its children. */
   readonly changed?: (agent: string) => Promise<void>
   readonly now?: () => number
@@ -408,6 +412,37 @@ function writeManifests(dir: string, name: string, description: string): void {
   )
 }
 
+/**
+ * `qm mcp-exec`'s arguments for a stdio server: it starts the server with the
+ * baseline environment and the server's own variables only.
+ */
+function mcpExecArgs(entry: ExtensionWireEntry): string[] {
+  const keep = Object.keys(entry.env ?? {})
+  return [
+    ...(keep.length > 0 ? ['--keep', keep.join(',')] : []),
+    '--',
+    entry.command ?? '',
+    ...(entry.args ?? []),
+  ]
+}
+
+/** The wrapper inside the MCP plugin that runs `qm mcp-exec`. */
+const MCP_EXEC_SHIM = './bin/qm-mcp-exec'
+
+/**
+ * Agent Plugins only start a bare command or one inside the plugin
+ * (`./…`, symlinks resolved), so the plugin carries a script that execs qm.
+ */
+function mcpExecShim(argv: readonly string[]): string {
+  const quoted = argv.map(arg => `'${arg.replaceAll("'", "'\\''")}'`)
+  return [
+    '#!/bin/sh',
+    '# Written by the qianmo node (P32). Do not edit.',
+    `exec ${quoted.join(' ')} "$@"`,
+    '',
+  ].join('\n')
+}
+
 /** An MCP server in the Agent Plugins `mcp.json` shape. */
 function agentPluginsServer(
   entry: ExtensionWireEntry,
@@ -415,8 +450,8 @@ function agentPluginsServer(
   if (entry.transport === 'stdio')
     return {
       type: 'stdio',
-      command: entry.command ?? '',
-      ...(entry.args?.length ? { args: entry.args } : {}),
+      command: MCP_EXEC_SHIM,
+      args: mcpExecArgs(entry),
       ...(entry.env && Object.keys(entry.env).length ? { env: entry.env } : {}),
     }
   return {
@@ -540,6 +575,17 @@ export class NodeExtensions {
 
   #now(): number {
     return (this.#options.now ?? Date.now)()
+  }
+
+  #mcpExecCommand(args: readonly string[]): {
+    command: string
+    args: string[]
+  } {
+    const [command, ...rest] = (this.#options.mcpExec ?? qmArgv)([
+      'mcp-exec',
+      ...args,
+    ])
+    return { command: command!, args: rest }
   }
 
   #roster(): Roster {
@@ -784,10 +830,10 @@ export class NodeExtensions {
             tools[entry.id] = await probe({
               name: entry.name,
               transport: entry.transport ?? 'stdio',
-              ...(entry.command === undefined
-                ? {}
-                : { command: entry.command }),
-              ...(entry.args === undefined ? {} : { args: entry.args }),
+              // Started as qianmopi will start it, through `qm mcp-exec`.
+              ...((entry.transport ?? 'stdio') === 'stdio'
+                ? this.#mcpExecCommand(mcpExecArgs(entry))
+                : {}),
               ...(entry.env === undefined ? {} : { env: entry.env }),
               ...(entry.url === undefined ? {} : { url: entry.url }),
               ...(entry.headers === undefined
@@ -1074,6 +1120,12 @@ export class NodeExtensions {
         }),
         { mode: 0o600 },
       )
+      if (mcp.some(entry => entry.transport === 'stdio')) {
+        const shim = path.join(root, MCP_EXEC_SHIM)
+        mkdirSync(path.dirname(shim), { recursive: true, mode: 0o700 })
+        const { command, args } = this.#mcpExecCommand([])
+        writeFileSync(shim, mcpExecShim([command, ...args]), { mode: 0o700 })
+      }
     }
   }
 
