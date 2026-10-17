@@ -988,6 +988,43 @@ describe('the plan’s node count, kept by the node sync', () => {
   })
 })
 
+describe('a new gateway address', () => {
+  test('reaches every subscriber profile, saved as the hub, and their nodes', async () => {
+    const tenant = await pay(ALICE)
+    const added = await billing.addUpstream(ALICE, {
+      preset: 'openai',
+      key: 'sk-alice-own-0001',
+    })
+    if (!added.ok) throw new Error(added.failure.message)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    const profileId = magpieProfileId({ kind: 'tenant', id: tenant })
+    const moved = await magpie.connect(
+      {
+        gatewayUrl: 'https://gw2.example.test',
+        managementUrl: fake.managementUrl,
+      },
+      ops(),
+    )
+    expect(moved.ok).toBe(true)
+    await billing.syncNodes()
+    const after = await raw.profile(profileId)
+    expect(after.ok && after.value.baseUrl).toBe('https://gw2.example.test')
+    const none = await raw.profile(NO_MODEL_PROFILE)
+    expect(none.ok && none.value.baseUrl).toBe('https://gw2.example.test')
+    const last = nodes[0]
+      ?.requests()
+      .filter(
+        request => request['op'] === 'apply' && request['dryRun'] !== true,
+      )
+      .at(-1)
+    expect(
+      (last?.['profile'] as { baseUrl?: string } | undefined)?.baseUrl,
+    ).toBe('https://gw2.example.test')
+    expect(ledger).toContain(`system provider.save ${profileId} ok`)
+  })
+})
+
 describe('a delivery that did not land is tried again', () => {
   const REFUSE = JSON.stringify({
     v: 1,

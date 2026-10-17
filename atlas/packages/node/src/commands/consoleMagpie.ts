@@ -1100,13 +1100,19 @@ export class ConsoleMagpie implements MagpiePort {
   async #repoint(caller: MagpieCaller): Promise<string[]> {
     const providers = this.#options.providers
     const pcaller = this.#providerCaller(caller)
+    const subscriptions = this.#options.subscriptions
     const problems: string[] = []
     for (const record of this.#state.bindings) {
       const revision = await this.#revision(record.profileId)
       if (revision === null) continue
+      // A subscriber's profile is the hub's to write (the public edition's
+      // wrapper refuses anyone else); its nodes get it through the billing
+      // port's node sync, which also retries a delivery that did not land.
+      const subscriber =
+        record.modelsMode === 'tenant' && subscriptions !== undefined
       const saved = await providers.saveProfile(
         { profile: this.#profileDraft(record), ifMatch: revision },
-        pcaller,
+        subscriber ? subscriptions.caller : pcaller,
       )
       if (!saved.ok) {
         const line = `${record.profileId} 没能改到新网关地址 · ${saved.failure.message}`
@@ -1114,7 +1120,8 @@ export class ConsoleMagpie implements MagpiePort {
         problems.push(line)
         continue
       }
-      if (record.kind === 'node') {
+      if (subscriber) subscriptions.onProfile?.(record.id)
+      else if (record.kind === 'node') {
         const problem = await this.#deliver(record.id, pcaller)
         if (problem !== null)
           problems.push(`下发到 ${record.id} 没成 · ${problem}`)

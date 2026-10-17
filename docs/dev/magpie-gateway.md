@@ -72,6 +72,7 @@
 | 客户端 | `@qianmo/magpie`：只收源站（无路径、无账号、无查询串），非回环必须 https；不跟随重定向；默认 5 s 超时；响应上限 2 MiB；错误带稳定的 `code`，任何报错文字都不含密钥 |
 | 方法 | `state` / `connect` / `check`、上游与路由组的增删改、`issueKey(binding)` / `updateKey` / `rotateKey` / `removeKey`、`usage(period)`；给 P35 的 `bindTenant` 与 `setBindingEnabled` |
 | 写权限 | 个人 `ops` 账号且不在 break-glass 下；开启租户时只有 `platformSubjects`（共享网关属于「无法按节点归属拆分的全局管理功能」，[`tenancy-m2.md`](./tenancy-m2.md) §3） |
+| 换网关地址 | 每个绑定的档案改到新地址：节点密钥的档案以运维身份改并逐台下发；订阅者的档案以中枢自己的身份改（公开版包装层只让中枢写它），再通知计费端口，由它的节点同步下发并重试；「无模型」档案同样跟着改 |
 | 开关 | `qm console --magpie`，需要 `--accounts` 与 `--providers` |
 
 ### 2.4 用量与记账
