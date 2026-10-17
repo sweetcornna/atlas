@@ -541,6 +541,7 @@ D-3：套餐 key 支持，界面标出条款限制，由使用者自行判断。
 | `vllm` | anthropic（vLLM ≥ 0.11.1）；旧版本选 openai-chat | `http://localhost:8000` | 只认 Bearer；模型是 `--served-model-name` |
 | `lmstudio` | anthropic（LM Studio ≥ 0.4.1）；旧版本选 openai-chat | `http://localhost:1234` | |
 | `custom-anthropic` / `custom-openai` | 用户选 | 用户填 | 没有预设能力：effort 默认 `auto`，能力默认 `family`，页面显示节点算出的结果（§5.3） |
+| `magpie`（P33） | anthropic（默认）；也可选 openai-responses、openai-chat | 用户填平台 magpie 网关的 origin；Anthropic 线路就是 origin，两条 OpenAI 线路是 origin 加 `/v1` | Bearer 网关密钥，由中枢「网关」页按节点或租户签发；模型 id 是 `provider/model` 或 `group/<路由组 id>`；测连 `GET /v1/models`；未评估；出处 https://usemagpie.ai/docs/start |
 
 本地服务探测成功不代表模型已经加载（`vendors-research.md` §6.4 最后一行），测连结果的说明文字要写清楚。
 
