@@ -70,6 +70,8 @@ describe('the pages', () => {
     ['jobs', '/admin/jobs', 'main', false],
     ['memory', '/admin/memory', 'main', false],
     ['connect', '/admin/connect', 'main', false],
+    ['im', '/admin/im', 'main', false],
+    ['extensions', '/admin/extensions', 'main', false],
     ['desktop', '/admin/desktop', 'main', false],
     ['providers', '/admin/providers', 'main', false],
     ['overview', '/admin/overview', 'manage', false],
@@ -81,6 +83,7 @@ describe('the pages', () => {
     ['servers', '/admin/servers', 'manage', false],
     ['access', '/admin/access', 'manage', false],
     ['usage', '/admin/usage', 'manage', false],
+    ['updates', '/admin/updates', 'manage', false],
     ['settings', '/admin/settings', 'manage', false],
   ]
 

@@ -198,6 +198,18 @@ test('signed hub and real resident complete control, upstream and appended omp t
       },
     })
     if (ping.ok) expect((ping.value as { now: number }).now).toBeGreaterThan(0)
+    // A channel's `/stop` for a task this node is not running stops nothing.
+    expect(
+      await hub.request(
+        'worker',
+        'turn.stop',
+        { taskId: 'not-running' },
+        'channels',
+      ),
+    ).toEqual({ ok: true, value: { stopped: false } })
+    expect(
+      await hub.request('worker', 'turn.pause', {}, 'channels'),
+    ).toMatchObject({ ok: false, code: 'unsupported' })
     fs.writeFileSync(path.join(workspace, 'wire-probe.txt'), 'probe')
     fs.mkdirSync(path.join(workspace, '.ssh'))
     fs.writeFileSync(path.join(workspace, '.ssh', 'fixture'), 'private fixture')

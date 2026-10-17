@@ -502,6 +502,12 @@ export interface ConsoleCliConfig {
   readonly connectors?: boolean
   readonly desktop?: boolean
   readonly schedules?: boolean
+  /** 聊天渠道（P28）：QQ、微信、Telegram、Discord、Slack 接到智能体。 */
+  readonly channels?: boolean
+  /** 定时检查更新与阡陌自身在线升级（P31）。 */
+  readonly updates?: boolean
+  /** 连接器（MCP）、技能与插件（P32）：经控制链路下发到节点。 */
+  readonly extensions?: boolean
   /**
    * 每个节点跑在哪台服务器上。**给了才有归属面**，一个都没给就整个不显示。
    *
@@ -632,6 +638,9 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let connectors = false
   let desktop = false
   let schedules = false
+  let channels = false
+  let updates = false
+  let extensions = false
   const nodeServers: ConsoleNodeServer[] = []
   let serverNotesPath = consoleServerNotesPath()
   const managed: ConsoleManagedAddress[] = []
@@ -901,6 +910,12 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       desktop = true
     } else if (arg === '--schedules') {
       schedules = true
+    } else if (arg === '--channels') {
+      channels = true
+    } else if (arg === '--updates') {
+      updates = true
+    } else if (arg === '--extensions') {
+      extensions = true
     } else if (arg === '--chat-url' || arg?.startsWith('--chat-url=')) {
       const parsed = residentOptionValue(args, index, '--chat-url')
       // A complete URL is legacy even when its query contains `=`. Only
@@ -1321,6 +1336,8 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     throw new Error('--files needs --files-exchange-repo or --connectors')
   if (schedules && chatTargets.length === 0)
     throw new Error('--schedules needs --chat-url')
+  if (channels && chatTargets.length === 0)
+    throw new Error('--channels needs --chat-url')
 
   // 给了库路径却没开账号，多半是以为给路径就开了。静默照旧跑会让人以为账号已
   // 上线，而页面上什么都没变。
@@ -1516,6 +1533,9 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     ...(desktop ? { desktop: true } : {}),
     ...(filesExchangeRepo ? { filesExchangeRepo, filesExchangeRetainMs } : {}),
     ...(schedules ? { schedules: true } : {}),
+    ...(channels ? { channels: true } : {}),
+    ...(updates ? { updates: true } : {}),
+    ...(extensions ? { extensions: true } : {}),
     nodeServers,
     serverNotesPath,
     ...(replicateRoot === undefined ? {} : { replicateRoot }),
@@ -1704,6 +1724,22 @@ Options (each accepts both --name value and --name=value):
                            State: <config root>/qianmo/console/schedules/.
                            ESTOP: <config root>/qianmo/scheduler/ESTOP.
                            Notification formats are unevaluated.
+  --channels              Bind chat apps (QQ, WeChat, Telegram, Discord, Slack)
+                           to agents on the 渠道 page; requires an active chat
+                           face. Bot credentials stay on this hub.
+                           State: <config root>/qianmo/console/channels/.
+                           All platforms unevaluated.
+  --updates               Check qianmopi, Claude Code, Codex and qianmo for new
+                           versions at the times set on the 更新 page; notify,
+                           or update automatically. Upgrades qianmo in place,
+                           nodes one at a time and this hub last.
+                           State: <config root>/qianmo/console/updates/.
+  --extensions            MCP connectors, skills and plugins on the 扩展 page,
+                           sent to each node's agents over the control links
+                           and loaded natively by qianmopi, Claude Code and
+                           Codex. MCP secrets are sealed on this hub.
+                           State: <config root>/qianmo/console/extensions/.
+                           Unevaluated against real servers and plugins.
   --node-server <node>=<server>
                            Which machine a node runs on. Repeatable, one node
                            per flag, and a node may not be named twice. The

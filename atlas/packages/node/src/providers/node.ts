@@ -185,6 +185,74 @@ export function nodeModelSelection(
       : undefined)
   return { provider, modelId, ...(thinkingLevel ? { thinkingLevel } : {}) }
 }
+/** The wire API each external runtime speaks (P27 §1.1). */
+const RUNTIME_API = {
+  'claude-code': 'anthropic-messages',
+  codex: 'openai-responses',
+} as const
+
+/**
+ * Address, key and model for an external-runtime agent, read from the model
+ * service already applied to this node. `spec` is `<profile>/<model>`, where
+ * `<profile>` is a console profile id or a full `qm-…` provider id.
+ */
+export function runtimeModelCredential(
+  spec: string,
+  runtime: keyof typeof RUNTIME_API,
+): {
+  readonly model: string
+  readonly baseUrl: string
+  readonly apiKey: string
+  readonly headers?: Readonly<Record<string, string>>
+} {
+  const slash = spec.indexOf('/')
+  if (slash <= 0 || slash === spec.length - 1)
+    throw new Error(`--agent-model must be <profile>/<model>, got ${spec}`)
+  const profile = spec.slice(0, slash)
+  const model = spec.slice(slash + 1)
+  const providers = readYaml(providerPaths.models()).providers
+  const entries = isRecord(providers) ? Object.entries(providers) : []
+  const match = entries.find(([id]) =>
+    profile.startsWith('qm-')
+      ? id === profile
+      : id.startsWith(`qm-${profile}-`) && id.length === profile.length + 12,
+  )
+  if (match === undefined || !isRecord(match[1]))
+    throw new Error(
+      `model profile ${profile} is not applied on this node; apply it from the console's model service first`,
+    )
+  const [providerId, provider] = match
+  if (provider.api !== RUNTIME_API[runtime])
+    throw new Error(
+      `${runtime} needs a ${RUNTIME_API[runtime]} profile; ${profile} speaks ${String(provider.api)}`,
+    )
+  if (typeof provider.baseUrl !== 'string')
+    throw new Error(`model profile ${profile} has no address`)
+  const apiKey =
+    inlineCredential(provider) ??
+    withStore(store => {
+      for (const row of store.listAuthCredentials())
+        if (row.provider === providerId && row.credential.type === 'api_key')
+          return row.credential.key
+      return undefined
+    })
+  if (apiKey === undefined)
+    throw new Error(`model profile ${profile} has no key on this node`)
+  const headers = isRecord(provider.headers)
+    ? Object.fromEntries(
+        Object.entries(provider.headers).filter(
+          (entry): entry is [string, string] =>
+            typeof entry[1] === 'string' && entry[0] !== 'X-Api-Key',
+        ),
+      )
+    : {}
+  return {
+    model,
+    baseUrl: provider.baseUrl,
+    apiKey,
+    ...(Object.keys(headers).length === 0 ? {} : { headers }),
+  }
+}
 export function resolveKeptSecret(fingerprint: string): string | undefined {
   const providers = readYaml(providerPaths.models()).providers
   if (isRecord(providers))

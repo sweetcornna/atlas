@@ -32,6 +32,9 @@ import { CONSOLE_HEADER, accountsHarness, person } from './accountsHarness.js'
 import { PLANNER, StatefulLifecycle } from './lifecycleFake.js'
 import { MemoryActionLedger } from './memoryActions.js'
 import {
+  FakeChannels,
+  FakeExtensions,
+  FakeUpdates,
   FakeConnectors,
   FakeDesktop,
   FakeFiles,
@@ -152,6 +155,9 @@ async function wired(): Promise<{
       providers: new FakeProviders(),
       memory: new FakeMemory(() => 1_700_000_000_000),
       connectors: new FakeConnectors(() => 1_700_000_000_000),
+      channels: new FakeChannels(() => 1_700_000_000_000),
+      updates: new FakeUpdates(() => 1_700_000_000_000),
+      extensions: new FakeExtensions(),
       handoffDevices: new FakeHandoffDevices(() => 1_700_000_000_000),
       desktop: new FakeDesktop(() => 1_700_000_000_000),
       files: new FakeFiles(() => 1_700_000_000_000),

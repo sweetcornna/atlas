@@ -17,6 +17,9 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
 import { ROUTES } from '../src/routes/index.js'
 import {
+  FakeChannels,
+  FakeExtensions,
+  FakeUpdates,
   FakeConnectors,
   FakeDesktop,
   FakeFiles,
@@ -118,6 +121,9 @@ describe('assets', () => {
       memory: new FakeMemory(() => NOW),
       ports: {
         connectors: new FakeConnectors(() => NOW),
+        channels: new FakeChannels(() => NOW),
+        updates: new FakeUpdates(() => NOW),
+        extensions: new FakeExtensions(),
         handoffDevices: new FakeHandoffDevices(() => NOW),
         desktop: new FakeDesktop(() => NOW),
         files: new FakeFiles(() => NOW),

@@ -17,6 +17,9 @@ import { describe, expect, test } from 'bun:test'
 import { ROUTES } from '../src/routes/index.js'
 import { accountsHarness, asSession, person } from './accountsHarness.js'
 import {
+  FakeChannels,
+  FakeExtensions,
+  FakeUpdates,
   FakeConnectors,
   FakeDesktop,
   FakeFiles,
@@ -88,6 +91,9 @@ function harness() {
     memory: new FakeMemory(() => NOW),
     ports: {
       connectors: new FakeConnectors(() => NOW),
+      channels: new FakeChannels(() => NOW),
+      updates: new FakeUpdates(() => NOW),
+      extensions: new FakeExtensions(),
       handoffDevices: new FakeHandoffDevices(() => NOW),
       desktop: new FakeDesktop(() => NOW),
       files: new FakeFiles(() => NOW),

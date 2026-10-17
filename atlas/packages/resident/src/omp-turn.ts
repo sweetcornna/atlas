@@ -441,6 +441,23 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
     return this.#active.get(sessionId)?.input
   }
 
+  /**
+   * Stops the running turn admitted from network message `networkMsgId` (an
+   * operator's `/stop`): the runtime aborts natively and the turn ends with
+   * its own aborted result. False when no such turn is running.
+   */
+  stop(networkMsgId: string): boolean {
+    for (const [sessionId, active] of this.#active) {
+      if (active.input.networkMsgId !== networkMsgId) continue
+      const channel = this.#channels.get(sessionId)
+      if (channel === undefined)
+        this.#acquisitions.get(sessionId)?.abort(new Error(CANCELLED_REASON))
+      else void channel.abort().catch(() => {})
+      return true
+    }
+    return false
+  }
+
   async execute(
     input: ResidentTurnInput,
     onAccepted: () => Promise<void>,

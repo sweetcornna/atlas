@@ -33,9 +33,11 @@ import { alertsRoute } from './alerts.js'
 import { facesFor } from './avatars.js'
 import { approvalsRoute } from './approvals.js'
 import { auditRoute } from './audit.js'
+import { channelsRoute } from './im.js'
 import { chatRoute } from './chat.js'
 import { connectRoute } from './connect.js'
 import { desktopRoute } from './desktop.js'
+import { extensionsRoute } from './extensions.js'
 import { filesRoute } from './files.js'
 import { jobsRoute } from './jobs.js'
 import { memoryRoute } from './memory.js'
@@ -54,6 +56,7 @@ import type {
   RouteContext,
   RouteModule,
 } from './types.js'
+import { updatesRoute } from './updates.js'
 import { usageRoute } from './usage.js'
 
 /**
@@ -67,6 +70,8 @@ export const ROUTES: readonly RouteModule[] = [
   jobsRoute,
   memoryRoute,
   connectRoute,
+  channelsRoute,
+  extensionsRoute,
   desktopRoute,
   providersRoute,
   overviewRoute,
@@ -78,6 +83,7 @@ export const ROUTES: readonly RouteModule[] = [
   serversRoute,
   accessRoute,
   usageRoute,
+  updatesRoute,
   settingsRoute,
 ]
 

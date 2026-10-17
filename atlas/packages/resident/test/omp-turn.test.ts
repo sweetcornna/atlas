@@ -163,6 +163,19 @@ describe('omp resident turns', () => {
     if (status === 'error' && answer.outcome === 'failed')
       expect(turnFailureKind(answer.reason)).toBe('model_empty_response')
   })
+  test('stop aborts the running turn natively, found by its network message id', async () => {
+    const f = fixture()
+    expect(f.port.stop(input.networkMsgId)).toBe(false)
+    const result = f.port.execute(input, async () => {})
+    await started(f)
+    expect(f.port.stop('network-other')).toBe(false)
+    expect(f.port.stop(input.networkMsgId)).toBe(true)
+    expect(f.channel.abort).toHaveBeenCalledTimes(1)
+    f.emit({ ...complete, status: 'aborted' })
+    f.admit()
+    expect((await result).outcome).toBe('failed')
+    expect(f.port.stop(input.networkMsgId)).toBe(false)
+  })
   test('empty and whitespace model replies fail; a successful tool-only turn remains valid', async () => {
     for (const body of ['', '   ']) {
       const f = fixture()

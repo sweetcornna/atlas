@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { NodeDesktop } from './desktop.js'
+import type { AgentExtensionsSource } from './extensions.js'
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -46,12 +47,8 @@ import { VIDEO_TOOL, runVideoTool, type VideoToolResult } from './videoTool.js'
 import { nodeModelSelection } from '../providers/node.js'
 import { residentOmpEnvironment } from './residentOmpEnv.js'
 import { parseResidentOmpLocalCommand } from './residentLocalCommand.js'
-import {
-  residentToolSurface,
-  verdictText,
-  type HostToolDefinition,
-} from './notifyTool.js'
-import { parseNotifyVerdict } from './notifyWire.js'
+import { residentToolSurface, type HostToolDefinition } from './notifyTool.js'
+import { dispatchHostTool } from './hostToolDispatch.js'
 import { residentExtensionPath } from './residentExtension.js'
 
 export interface ResidentOmpSpawn {
@@ -516,6 +513,8 @@ interface PoolOptions {
   /** Internal startup budget; the production default remains 30 seconds. */
   readonly readyTimeoutMs?: number
   readonly desktop?: NodeDesktop
+  /** Operator-configured MCP servers, skills and plugins (P32). */
+  readonly extensions?: AgentExtensionsSource
   readonly extraHostTools?: readonly HostToolDefinition[]
   readonly onLaunch?: (
     sessionId: string,
@@ -920,6 +919,7 @@ export class ResidentOmpPool
       ),
       ...(media.video ? [VIDEO_TOOL] : []),
     ]
+    const extensions = this.#options.extensions?.(owner.agent) ?? null
     const config: ResidentExtensionConfig = {
       v: 1,
       agent: owner.agent,
@@ -940,6 +940,16 @@ export class ResidentOmpPool
       ...(this.#options.requestPermission === undefined
         ? {}
         : { approvals: true }),
+      ...(extensions === null
+        ? {}
+        : {
+            mcp: extensions.mcp.map(server => ({
+              server: server.name,
+              approval: server.approval,
+              tools: server.tools,
+            })),
+            readableRoots: extensions.readableRoots,
+          }),
     }
     this.#options.onLaunch?.(
       sessionId,
@@ -964,10 +974,18 @@ export class ResidentOmpPool
       overlay,
       '--approval-mode',
       config.edits === 'workspace' ? 'write' : 'always-ask',
+      ...(extensions?.ompPluginDirs ?? []).flatMap(dir => [
+        '--plugin-dir',
+        dir,
+      ]),
       '--tools',
-      residentActiveTools(config.edits, [], config.media, config.desktop).join(
-        ',',
-      ),
+      residentActiveTools(
+        config.edits,
+        [],
+        config.media,
+        config.desktop,
+        config.mcp,
+      ).join(','),
       ...(selection
         ? ['--model', `${selection.provider}/${selection.modelId}`]
         : []),
@@ -1180,72 +1198,24 @@ export class ResidentOmpPool
             })
             return
           }
-          const extra = this.#options.extraHostTools?.find(
-            tool => tool.name === frame.toolName,
+          const outcome = await dispatchHostTool(
+            this.#options,
+            { agent: owner.agent, sessionId },
+            String(frame.toolName),
+            frame.arguments,
           )
-          if (extra) {
-            const result = await extra.handler(frame.arguments, {
-              agent: owner.agent,
-              sessionId,
-            })
-            if (child.alive)
-              child.send({
-                type: 'host_tool_result',
-                id: frame.id,
-                isError: !result.ok,
-                result: {
-                  content: [{ type: 'text', text: result.text }],
-                  details: result.details,
-                },
-              })
-            return
-          }
-          if (frame.toolName === 'qianmo_memory_write') {
-            const result = (await this.#options.memoryWrite?.(
-              sessionId,
-              frame.arguments,
-            )) ?? { ok: false, text: 'Memory writer is not enabled' }
+          if (child.alive)
             child.send({
               type: 'host_tool_result',
               id: frame.id,
-              isError: !result.ok,
-              result: { content: [{ type: 'text', text: result.text }] },
+              ...(outcome.isError ? { isError: true } : {}),
+              result: {
+                content: [{ type: 'text', text: outcome.text }],
+                ...(outcome.details === undefined
+                  ? {}
+                  : { details: outcome.details }),
+              },
             })
-            return
-          }
-          if (frame.toolName === 'qianmo_memory_answer') {
-            const answer = this.#options.memoryAnswer?.(
-              sessionId,
-              frame.arguments,
-            ) ?? { ok: false, text: 'Memory answer host unavailable' }
-            child.send({
-              type: 'host_tool_result',
-              id: frame.id,
-              isError: !answer.ok,
-              result: { content: [{ type: 'text', text: answer.text }] },
-            })
-            return
-          }
-          const verdict =
-            frame.toolName === 'qianmo_notify'
-              ? parseNotifyVerdict(
-                  await this.#options.announce({
-                    ...(frame.arguments as Record<string, unknown>),
-                    sessionId,
-                  }),
-                )
-              : {
-                  status: 'rejected' as const,
-                  detail: 'unknown resident host tool',
-                }
-          child.send({
-            type: 'host_tool_result',
-            id: frame.id,
-            result: {
-              content: [{ type: 'text', text: verdictText(verdict) }],
-              details: verdict,
-            },
-          })
         })().catch(error => {
           this.#options.onError?.(error)
           if (child.alive)

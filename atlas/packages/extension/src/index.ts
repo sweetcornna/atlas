@@ -46,6 +46,7 @@ const extension: ExtensionFactory = pi => {
           config.hostTools,
           config.media,
           config.desktop,
+          config.mcp,
         ),
       )
   })
@@ -95,6 +96,7 @@ const extension: ExtensionFactory = pi => {
             config.hostTools,
             config.media,
             config.desktop,
+            config.mcp,
           ),
     )
   })

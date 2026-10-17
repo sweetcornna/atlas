@@ -99,6 +99,10 @@ const COMMANDS: Record<
     summary: 'copy this hub onto a new server over SSH',
     load: () => import('./commands/replicate.js'),
   },
+  'runtime-mcp': {
+    summary: "host tools for a resident node's Claude Code or Codex agent",
+    load: () => import('./commands/runtimeMcp.js'),
+  },
 }
 
 const HELP_TEXT = `Usage: qm <command> [options]

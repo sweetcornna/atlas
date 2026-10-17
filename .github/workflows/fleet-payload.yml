@@ -47,7 +47,7 @@ jobs:
       PLATFORM: ${{ inputs.platform || 'linux/amd64' }}
       # PR 冒烟构建 PR 自己的头，不是 GitHub 合成的 merge 提交：合成提交不在任何
       # 分支上，产物里编进去的 SOURCE_COMMIT 就对不上任何人能检出的东西。
-      BUILD_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref }}
+      BUILD_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'release' && github.event.release.tag_name || inputs.ref }}
 
     steps:
       # 配方取本 workflow 所在的提交（github.sha），只要 atlas/scripts/fleet 这一棵。
@@ -105,7 +105,10 @@ jobs:
           DOCKER_CONTEXT_NAME: default
         run: |
           docker --context "$DOCKER_CONTEXT_NAME" version --format 'docker server {{.Server.Version}} {{.Server.Os}}/{{.Server.Arch}}'
+          release=()
+          if [ "$GITHUB_EVENT_NAME" = release ]; then release=(--release "${BUILD_REF#v}"); fi
           bash recipe/atlas/scripts/fleet/linux-build.sh \
+            "${release[@]}" \
             --repo "$GITHUB_WORKSPACE/source" \
             --branch fleet-payload \
             --commit "${{ steps.src.outputs.sha }}" \
@@ -163,3 +166,32 @@ jobs:
             exit 1
           fi
           echo "::notice title=Fleet payload::14/14 PASS, 0 FAIL. payload.tgz sha256=$got"
+
+  # 发行时把载荷挂到发行上。在构建 job 的判据（14/14 PASS、sha256 对得上）全过之后才跑。
+  attach:
+    needs: build
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: fleet-payload-*
+          path: ${{ runner.temp }}/payload
+      - name: Attach qianmo-<version>-linux-x64.tgz to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          found="$(find "$RUNNER_TEMP/payload" -name payload.tgz -type f)"
+          [ "$(printf '%s\n' "$found" | grep -c .)" = 1 ] || { echo "::error::应当恰好一份 payload.tgz：$found"; exit 1; }
+          name="qianmo-${version}-linux-x64.tgz"
+          cd "$RUNNER_TEMP"
+          cp "$found" "$name"
+          sha256sum "$name" > "$name.sha256"
+          gh release upload "$TAG" "$name" "$name.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+          echo "::notice title=Release asset::$(cat "$name.sha256")"

@@ -779,6 +779,15 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'connector.save': '保存应用连接',
   'connector.remove': '删除应用连接',
   'connector.probe': '测试应用连接',
+  'im.save': '保存聊天渠道',
+  'im.remove': '删除聊天渠道',
+  'im.login': '扫码接入聊天渠道',
+  'updates.save': '保存更新检查设定',
+  'updates.run': '立即检查更新',
+  'updates.upgrade': '升级阡陌',
+  'updates.rollback': '回滚阡陌',
+  'extension.save': '保存扩展',
+  'extension.remove': '删除扩展',
   'avatar.save': '设置形象',
 }
 
@@ -818,6 +827,9 @@ const FAMILY_WORD: Readonly<Partial<Record<string, string>>> = {
   schedule: '定时任务',
   channel: '通知渠道',
   connector: '应用连接',
+  im: '聊天渠道',
+  updates: '更新',
+  extension: '扩展',
   avatar: '形象',
 }
 

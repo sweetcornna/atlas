@@ -52,6 +52,8 @@ export type AreaId =
   | 'chat'
   | 'memory'
   | 'connect'
+  | 'im'
+  | 'extensions'
   | 'desktop'
   | 'files'
   | 'audit'
@@ -62,6 +64,7 @@ export type AreaId =
   | 'servers'
   | 'access'
   | 'usage'
+  | 'updates'
   | 'settings'
 
 /**

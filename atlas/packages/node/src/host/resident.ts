@@ -16,6 +16,10 @@ import {
 import { MemoryControl } from './memoryControl.js'
 import { verifiedTaskOwner } from '@qianmo/capability'
 import { connectorTools, type ConnectorToolContext } from './connectorTools.js'
+import { taskTools, type TaskToolOrigin } from './taskTools.js'
+import { NodeExtensions } from './extensions.js'
+import { runtimeBin, runtimeControl } from './runtimeUpdate.js'
+import { SelfUpgrader, systemControl } from './selfUpgradeRunner.js'
 import { residentToolSurface, type HostToolDefinition } from './notifyTool.js'
 import { buildVersion } from '../provenance.js'
 import {
@@ -139,6 +143,14 @@ import {
   type ResidentOmpSpawn,
   type ResidentPermission,
 } from './residentOmp.js'
+import type { ExternalRuntimeKind } from './runtimes/channel.js'
+import { ResidentRuntimePool } from './runtimes/composite.js'
+import {
+  ExternalRuntimePool,
+  type ExternalAgent,
+  type ExternalLaunch,
+  type ExternalRuntimeSpawn,
+} from './runtimes/pool.js'
 import type { ChildProcess } from 'node:child_process'
 import {
   residentLocalCommand,
@@ -149,6 +161,10 @@ import type { QianmoNotifyVerdict } from './notifyWire.js'
 interface QianmoResidentAgentConfig {
   readonly agent: string
   readonly cwd: string
+  /** Claude Code or Codex instead of qianmopi (`--agent-runtime`, P27). */
+  readonly runtime?: ExternalRuntimeKind
+  /** Shell access for an external runtime (`--agent-shell`). */
+  readonly shell?: boolean
 }
 
 /**
@@ -448,6 +464,15 @@ interface QianmoResidentOptions {
   readonly ompMaxChildren?: number
   readonly spawnOmp?: (input: ResidentOmpSpawn) => ChildProcess
   /**
+   * The model and credentials an external-runtime agent starts with. The CLI
+   * hands this over from the provider stack, which stays out of this module.
+   */
+  readonly resolveRuntimeLaunch?: (agent: ExternalAgent) => ExternalLaunch
+  readonly runtimeBins?: Partial<Record<ExternalRuntimeKind, string>>
+  readonly spawnRuntime?: (input: ExternalRuntimeSpawn) => ChildProcess
+  /** How an external runtime starts `qm runtime-mcp`; tests override it. */
+  readonly runtimeMcpArgv?: (args: readonly string[]) => string[]
+  /**
    * Generation restart policy. Lazy starts use maxRapidFailures as a pool-level
    * consecutive startup failure limit; idle time does not reset it. Backoff
    * applies to generation failures, with the supervisor's existing defaults.
@@ -719,8 +744,11 @@ const RUNTIME_WAIT_MS = 3_000
 
 export class QianmoResident {
   readonly desktop: NodeDesktop
+  /** Operator-configured MCP servers, skills and plugins (P32). */
+  readonly extensions: NodeExtensions
   readonly control: ControlRegistry
-  readonly #connectorHostTools: readonly HostToolDefinition[]
+  /** Host tools answered by the hub: connectors (P25) and background tasks (P29). */
+  readonly #hubHostTools: readonly HostToolDefinition[]
   readonly hubCall: HubCallClient
   readonly #options: QianmoResidentOptions
   /** `options.localCommandIssuers`, as the set it is looked up in. */
@@ -791,7 +819,7 @@ export class QianmoResident {
   /** Woken when `#runtime` becomes available; see `#runtimeForDelivery`. */
   #runtimeWaiters: Array<() => void> = []
   /** The omp RPC child backing `#runtime`; see `#runtimeIsLive`. */
-  #runtimeChild: ResidentOmpPool | null = null
+  #runtimeChild: ResidentRuntimePool | null = null
   #witnessClosed = false
   /** Generations this process has started (`generation.json`, §2.4). */
   #generation = 0
@@ -805,6 +833,8 @@ export class QianmoResident {
   /** Set once startup has rolled a pending intent forward (§2.6 step 5). */
   #providerCheckQueued = false
   #providerCommitting = false
+  /** Set while an in-place upgrade waits for in-flight work (P31 §5.2). */
+  #upgradeDraining = false
   /**
    * A provider switch has recycled the generation and the next one is not
    * published yet. Old pool reaping, the supervisor's backoff and the model
@@ -857,12 +887,20 @@ export class QianmoResident {
         extraHostTools: [...(options.extraHostTools ?? []), files.tool()],
       }
     this.#options = options
-    this.#connectorHostTools = connectorTools({
-      call: (op, args, callOptions) => this.hubCall.call(op, args, callOptions),
-      approve: (ctx, tool, args) => this.#approveConnector(ctx, tool, args),
-    })
+    this.#hubHostTools = [
+      ...connectorTools({
+        call: (op, args, callOptions) =>
+          this.hubCall.call(op, args, callOptions),
+        approve: (ctx, tool, args) => this.#approveConnector(ctx, tool, args),
+      }),
+      ...taskTools({
+        call: (op, args, callOptions) =>
+          this.hubCall.call(op, args, callOptions),
+        origin: ctx => this.#taskOrigin(ctx),
+      }),
+    ]
     residentToolSurface(options.authorization !== undefined, [
-      ...this.#connectorHostTools,
+      ...this.#hubHostTools,
       ...(options.extraHostTools ?? []),
     ])
     this.control = new ControlRegistry({
@@ -895,6 +933,78 @@ export class QianmoResident {
         'desktop.recycle',
       ],
     })
+    // MCP servers, skills and plugins the operator configures on the console
+    // (P32): the hub sends the set, the node lays it out for each runtime.
+    // Under ESTOP the set can be read but not changed.
+    this.extensions = new NodeExtensions({
+      agents: options.agents.map(agent => ({
+        agent: agent.agent,
+        ...(agent.runtime === undefined ? {} : { runtime: agent.runtime }),
+      })),
+      ...(options.agents.some(agent => agent.runtime === 'codex')
+        ? { codexBin: runtimeBin('codex', options.runtimeBins) }
+        : {}),
+      changed: async agent => {
+        await this.#runtimeChild?.invalidateAgent(agent)
+      },
+      onError: message => process.stderr.write(`${message}\n`),
+    })
+    this.control.register('extensions', this.extensions.control, {
+      estopAllowed: ['extensions.status'],
+      sideEffects: op => op === 'extensions.apply',
+    })
+    // `/stop` from a chat channel: the hub names the task it is waiting on.
+    this.control.register(
+      'turn',
+      async (op, args) => {
+        if (op !== 'turn.stop')
+          return { ok: false, code: 'unsupported', message: '不支持此回合操作' }
+        const task =
+          typeof args.taskId === 'string'
+            ? this.#tasksByTask.get(args.taskId)
+            : undefined
+        return {
+          ok: true,
+          value: {
+            stopped: task !== undefined && this.#turn.stop(task.envelope.msgId),
+          },
+        }
+      },
+      { estopAllowed: ['turn.stop'] },
+    )
+    // Claude Code / Codex versions and updates (P31); reading works under ESTOP.
+    this.control.register(
+      'runtime',
+      runtimeControl({
+        ...(options.runtimeBins === undefined
+          ? {}
+          : { bins: options.runtimeBins }),
+      }),
+      {
+        estopAllowed: ['runtime.versions'],
+        sideEffects: op => op === 'runtime.update',
+      },
+    )
+    // qianmo's own in-place upgrade (P31 §5.2): stage, drain, swap, restart.
+    this.control.register(
+      'system',
+      systemControl(
+        new SelfUpgrader({
+          drain: () => {
+            this.#upgradeDraining = true
+          },
+          resume: () => {
+            this.#upgradeDraining = false
+          },
+          idle: () => this.#inFlightWork() === null,
+          log: line => process.stderr.write(`${line}\n`),
+        }),
+      ),
+      {
+        estopAllowed: ['system.version'],
+        sideEffects: op => op !== 'system.version',
+      },
+    )
     this.control.register(
       'node',
       async op =>
@@ -1716,8 +1826,10 @@ export class QianmoResident {
     // as the queue check below: a refusal must not spend the recipient's inbox
     // quota. Pause-new-work only — nothing in flight is touched, because a turn
     // that has been admitted has a `task.result` owed to someone.
-    if (this.#estop.engaged()) {
-      const reason = 'resident is halted by its ESTOP sentinel'
+    if (this.#estop.engaged() || this.#upgradeDraining) {
+      const reason = this.#upgradeDraining
+        ? 'resident is restarting for an upgrade'
+        : 'resident is halted by its ESTOP sentinel'
       const code = errorCodeForPeer(
         ProtocolErrorCode.E_BUSY,
         context.channel.peerSupportedTypes,
@@ -1890,6 +2002,19 @@ export class QianmoResident {
       }),
     )
     if (routed.ok) channel.send(routed.message)
+  }
+
+  /** The console conversation and turn behind a task tool call (P29). */
+  #taskOrigin(ctx: {
+    readonly agent: string
+    readonly sessionId: string
+  }): TaskToolOrigin | null {
+    const input = this.#turn.activeInput(ctx.sessionId)
+    const task = input === undefined ? undefined : this.#taskFor(input)
+    if (!task || task.settled || input?.agent !== ctx.agent) return null
+    const contextId = task.envelope.contextId
+    if (typeof contextId !== 'string' || contextId === '') return null
+    return { contextId, taskId: task.envelope.taskId }
   }
 
   async #approveConnector(
@@ -2084,29 +2209,39 @@ export class QianmoResident {
       toolName: call.toolName,
       input: call.input as Readonly<Record<string, unknown>>,
     }
-    const verdict = residentToolVerdict(
-      tool,
-      {
-        v: 1,
-        agent: agent.agent,
-        workspace: agent.cwd,
-        edits: this.#options.allowWorkspaceEdits ? 'workspace' : 'none',
-        protectedRoots: [
-          this.#memoryRoot,
-          ...(this.#options.protectedRoots ?? []),
-        ],
-        hostTools: [],
-        approvals: true,
-      },
-      { agentKind: 'main' },
-    )
-    if (verdict?.approvalEligible !== true) return false
-    const boundInput = residentApprovalInput(tool, agent.cwd)
-    if (
-      JSON.stringify(boundInput.__qianmoResolvedTargets) !==
-      JSON.stringify(tool.input.__qianmoResolvedTargets)
-    )
-      return false
+    // An external-runtime agent started with --agent-shell asks the operator
+    // for each shell command; qianmopi agents never get one (P27 §1.3).
+    const shellCall =
+      tool.toolName === 'bash' &&
+      agent.runtime !== undefined &&
+      agent.shell === true &&
+      typeof tool.input.command === 'string'
+    let boundInput: Readonly<Record<string, unknown>> = tool.input
+    if (!shellCall) {
+      const verdict = residentToolVerdict(
+        tool,
+        {
+          v: 1,
+          agent: agent.agent,
+          workspace: agent.cwd,
+          edits: this.#options.allowWorkspaceEdits ? 'workspace' : 'none',
+          protectedRoots: [
+            this.#memoryRoot,
+            ...(this.#options.protectedRoots ?? []),
+          ],
+          hostTools: [],
+          approvals: true,
+        },
+        { agentKind: 'main' },
+      )
+      if (verdict?.approvalEligible !== true) return false
+      boundInput = residentApprovalInput(tool, agent.cwd)
+      if (
+        JSON.stringify(boundInput.__qianmoResolvedTargets) !==
+        JSON.stringify(tool.input.__qianmoResolvedTargets)
+      )
+        return false
+    }
     const deadline =
       Date.now() +
       taskExpiresAt(task.envelope) -
@@ -3108,11 +3243,71 @@ export class QianmoResident {
     }
   }
 
+  /** The external-runtime half of a generation, or nothing (P27). */
+  #externalPool(): ExternalRuntimePool | undefined {
+    const agents = this.#options.agents.filter(
+      (agent): agent is ExternalAgent => agent.runtime !== undefined,
+    )
+    if (agents.length === 0) return undefined
+    const resolve = this.#options.resolveRuntimeLaunch
+    return new ExternalRuntimePool({
+      agents,
+      resolveLaunch: agent => {
+        if (resolve === undefined)
+          throw new Error(
+            `${agent.agent} runs on ${agent.runtime}, but this node has no model for it (--agent-model)`,
+          )
+        return resolve(agent)
+      },
+      ...(this.#options.runtimeBins === undefined
+        ? {}
+        : { bins: this.#options.runtimeBins }),
+      memoryRoot: this.#memoryRoot,
+      ...(this.#options.protectedRoots === undefined
+        ? {}
+        : { protectedRoots: this.#options.protectedRoots }),
+      allowWorkspaceEdits: this.#options.allowWorkspaceEdits === true,
+      extensions: agent => this.extensions.forAgent(agent),
+      hostTools: {
+        extraHostTools: [
+          ...this.#hubHostTools,
+          ...(this.#options.extraHostTools ?? []),
+        ],
+        ...(this.#authorization === undefined
+          ? {}
+          : {
+              memoryWrite: (sessionId: string, args: unknown) =>
+                this.#writeMemory(sessionId, args),
+            }),
+        memoryAnswer: (sessionId, args) =>
+          this.#turn.memoryAnswer(sessionId, args),
+        announce: params => this.#announce(params),
+      },
+      requestPermission: (sessionId, call) =>
+        this.#requestPermission(sessionId, call),
+      ...(this.#options.spawnRuntime === undefined
+        ? {}
+        : { spawn: this.#options.spawnRuntime }),
+      ...(this.#options.runtimeMcpArgv === undefined
+        ? {}
+        : { mcpArgv: this.#options.runtimeMcpArgv }),
+      ...(this.#options.ompIdleMs === undefined
+        ? {}
+        : { idleChildMs: this.#options.ompIdleMs }),
+      ...(this.#options.ompMaxChildren === undefined
+        ? {}
+        : { maxChildren: this.#options.ompMaxChildren }),
+      onActivity: active => this.#options.onActivity?.(active),
+      onError: error => this.#options.onError?.(error),
+    })
+  }
+
   async #spawnGeneration(): Promise<ResidentChildConnection> {
-    const child = new ResidentOmpPool({
+    const ompPool = new ResidentOmpPool({
       desktop: this.desktop,
+      extensions: agent => this.extensions.forAgent(agent),
       extraHostTools: [
-        ...this.#connectorHostTools,
+        ...this.#hubHostTools,
         ...(this.#options.extraHostTools ?? []),
       ],
       onLaunch: (sessionId, policy, configHash) =>
@@ -3135,7 +3330,7 @@ export class QianmoResident {
           },
         }),
       protectedRoots: this.#options.protectedRoots,
-      agents: this.#options.agents,
+      agents: this.#options.agents.filter(agent => agent.runtime === undefined),
       memoryRoot: this.#memoryRoot,
       allowWorkspaceEdits: this.#options.allowWorkspaceEdits,
       spawn: this.#options.spawnOmp,
@@ -3157,6 +3352,7 @@ export class QianmoResident {
       requestPermission: (sessionId: string, call: unknown) =>
         this.#requestPermission(sessionId, call),
     })
+    const child = new ResidentRuntimePool(ompPool, this.#externalPool())
     const closed = child.closed
     void closed.catch(() => {})
     // Retire the runtime the moment the child is gone, not when the supervisor
@@ -3312,7 +3508,10 @@ export class QianmoResident {
         // entry into a turn, so skipping it here is what makes "no new work"
         // true at the source — including for mail that arrived before the
         // brake was pulled. Nothing running is touched.
-        paused: () => this.#estop.engaged() || this.#providerCommitting,
+        paused: () =>
+          this.#estop.engaged() ||
+          this.#providerCommitting ||
+          this.#upgradeDraining,
         ...(this.#options.pollIntervalMs === undefined
           ? {}
           : { intervalMs: this.#options.pollIntervalMs }),

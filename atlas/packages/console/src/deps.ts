@@ -18,14 +18,17 @@
  */
 
 import type {
+  ChannelsPort,
   ConnectorsPort,
   DesktopPort,
+  ExtensionsPort,
   FilesPort,
   HandoffDevicesPort,
   MemoryPort,
   ModelRoutingPort,
   ModelDirection,
   SchedulesPort,
+  UpdatesPort,
 } from './directionPorts.js'
 import type { AvatarsPort } from './avatar.js'
 import type { ConsoleFailure, ConsoleResult } from './contracts.js'
@@ -496,8 +499,8 @@ export interface ChatTurn {
   readonly code?: string
   /** 缺省为 `message`；`notice` 是任务跑到一半推过来的一条过程。 */
   readonly variant?: ChatTurnVariant
-  /** 宿主区分智能体显式通知与自动工具过程；旧转录不带此字段。 */
-  readonly noticeSource?: 'agent' | 'step'
+  /** 宿主区分智能体显式通知、自动工具过程与后台任务结果（P29）；旧转录不带此字段。 */
+  readonly noticeSource?: 'agent' | 'step' | 'task'
   /** 通知所由的任务（通知信封自己的 taskId 不是这个任务号）。 */
   readonly causeTaskId?: string
   /** 只有 `notice` 有：这条过程的分量。 */
@@ -620,6 +623,11 @@ export interface ChatPort {
   send(input: ChatSendInput): Promise<ConsoleResult<ChatTurn>>
   /** 订阅新消息，返回退订函数。 */
   subscribe(listener: (update: ChatUpdate) => void): () => void
+  /**
+   * 宿主写进会话的一条通知：后台任务完成或需要补充（P29）。不经过节点、不算一轮，
+   * 会话不存在时是失败值。
+   */
+  note?(sessionId: string, text: string): Promise<ConsoleResult<ChatTurn>>
 }
 
 // ---------------------------------------------------------------------------
@@ -1305,6 +1313,18 @@ export const CONSOLE_ACTIONS = [
   'connector.save',
   'connector.remove',
   'connector.probe',
+  /** 聊天渠道（P28），target 是渠道 id；P24 的通知渠道占用了 `channel.*`。 */
+  'im.save',
+  'im.remove',
+  'im.login',
+  /** 定时检查更新（P31），target 恒为 `updates`。 */
+  'updates.save',
+  'updates.run',
+  'updates.upgrade',
+  'updates.rollback',
+  /** 连接器、技能与插件（P32），target 是条目 id。 */
+  'extension.save',
+  'extension.remove',
   // 形象（`avatar.ts`）：target 是 `agent:<地址>` 或 `user:<主体>`。
   'avatar.save',
 ] as const
@@ -2401,6 +2421,12 @@ export interface ConsoleDeps {
   readonly schedules?: SchedulesPort
   /** 应用连接（P25）。 */
   readonly connectors?: ConnectorsPort
+  /** 聊天渠道（P28）。 */
+  readonly channels?: ChannelsPort
+  /** 定时检查更新（P31）。 */
+  readonly updates?: UpdatesPort
+  /** 连接器、技能与插件（P32）。 */
+  readonly extensions?: ExtensionsPort
   /** 形象（`avatar.ts`）。缺席时人人用按地址或主体算出的默认形象，不能改。 */
   readonly avatars?: AvatarsPort
 }
