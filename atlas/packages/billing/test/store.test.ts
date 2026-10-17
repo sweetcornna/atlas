@@ -3,6 +3,7 @@
 
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { join } from 'node:path'
 import { BillingStore, type OrderRow } from '../src/index.js'
@@ -28,6 +29,25 @@ function order(id: string, patch: Partial<OrderRow> = {}): OrderRow {
     paidAt: null,
     ...patch,
   }
+}
+
+/**
+ * An event's hash the way the store computes it (`store.ts` `canonical`),
+ * written out again here so a test can forge a well-formed row.
+ */
+function chainHash(
+  seq: number,
+  at: number,
+  kind: string,
+  data: Record<string, unknown>,
+  prev: string,
+): string {
+  const pairs = Object.keys(data)
+    .sort()
+    .map(key => [key, data[key]])
+  return createHash('sha256')
+    .update(JSON.stringify([seq, at, kind, pairs, prev]), 'utf8')
+    .digest('hex')
 }
 
 /** A store with a little of everything in it. */
@@ -150,12 +170,13 @@ describe('BillingStore', () => {
   })
 
   describe('tamper detection', () => {
-    function tamper(sql: string) {
+    function tamper(edit: string | ((raw: Database) => void)) {
       const { path, store } = populated()
       store.close()
       const raw = new Database(path)
       raw.exec('DROP TRIGGER events_no_update; DROP TRIGGER events_no_delete;')
-      raw.exec(sql)
+      if (typeof edit === 'string') raw.exec(edit)
+      else edit(raw)
       raw.close()
       const reopened = new BillingStore(path)
       const report = reopened.verifyChain()
@@ -180,11 +201,30 @@ describe('BillingStore', () => {
     })
 
     test('a re-hashed edit still breaks the link to the next event', () => {
-      const report = tamper(
-        `UPDATE events SET hash = '${'f'.repeat(64)}' WHERE seq = 2`,
-      )
-      expect(report.ok).toBe(false)
-      if (!report.ok) expect(report.seq).toBe(2)
+      // seq 2 is edited and given its correct new hash, so it verifies on its
+      // own; seq 3 still names the old hash as its predecessor.
+      const report = tamper(raw => {
+        const row = raw
+          .query<
+            {
+              seq: number
+              at: number
+              kind: string
+              data: string
+              prev: string
+            },
+            []
+          >('SELECT seq, at, kind, data, prev FROM events WHERE seq = 2')
+          .get()!
+        const at = row.at + 1
+        raw
+          .query('UPDATE events SET at = ?, hash = ? WHERE seq = 2')
+          .run(
+            at,
+            chainHash(row.seq, at, row.kind, JSON.parse(row.data), row.prev),
+          )
+      })
+      expect(report).toEqual({ ok: false, seq: 3, reason: '哈希链断开' })
     })
 
     test('a direct edit of the subscription table is caught by the fold', () => {
