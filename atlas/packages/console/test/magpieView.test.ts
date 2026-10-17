@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * 网关's page (P34) where the review of PR #230 found it sending something
- * other than what is: the key form, saved untouched, has to send back the
- * key as it is — its limits' `cacheReads` and its models even when they are
- * not in today's choices (m3).
+ * 网关's page (P34) where the review of PR #230 found it saying or sending
+ * something other than what is: the key form, saved untouched, has to send
+ * back the key as it is — its limits' `cacheReads` and its models even when
+ * they are not in today's choices (m3) — and a magpie that does not answer
+ * must not read as one with no upstreams or groups (m4).
  *
  * The form is rendered by `view/magpie.ts`, read the way a browser fills a
  * form (an input's value, a select's selected or first option, a checkbox's
@@ -16,7 +17,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { MagpieKeyView, MagpieSnapshot } from '../src/directionPorts.js'
-import { renderMagpieForm } from '../src/view/magpie.js'
+import { renderMagpie, renderMagpieForm } from '../src/view/magpie.js'
 import { MAGPIE_PAGE_JS } from '../src/view/magpieScript.js'
 import { FakeMagpie } from './directionFakes.js'
 
@@ -185,5 +186,62 @@ describe('the key form, saved untouched, sends the key back as it is (m3)', () =
     const base = await snapshot()
     const html = renderMagpieForm({ kind: 'key', snapshot: base, key: null })
     expect(fieldsOf(html)['mainModel']?.value).toBe('openai/gpt-6')
+  })
+})
+
+describe('a magpie that does not answer is not an empty one (m4)', () => {
+  const unreachable = async (): Promise<MagpieSnapshot> => ({
+    ...(await snapshot()),
+    problem: { code: 'magpie_unreachable', message: '连不上 magpie 管理接口' },
+    providers: [],
+    groups: [],
+    presets: [],
+    models: [],
+  })
+
+  test('upstreams and groups say they could not be read', async () => {
+    const html = renderMagpie({
+      side: { kind: 'ok', value: await unreachable() },
+      writer: true,
+    })
+    expect(html).not.toContain('还没有上游')
+    expect(html).not.toContain('还没有路由组')
+    expect(html).toContain('上游读取失败')
+    expect(html).toContain('路由组读取失败')
+    // Nothing to add to while magpie is not answering.
+    expect(html).not.toContain('data-action="magpie-provider-new"')
+    expect(html).not.toContain('data-action="magpie-group-new"')
+  })
+
+  test('before a connection the lists say so', async () => {
+    const base = await snapshot()
+    const html = renderMagpie({
+      side: {
+        kind: 'ok',
+        value: {
+          ...base,
+          connection: { ...base.connection, configured: false, check: null },
+          providers: [],
+          groups: [],
+        },
+      },
+      writer: true,
+    })
+    expect(html).not.toContain('还没有上游')
+    expect(html).not.toContain('还没有路由组')
+    expect(html).toContain('连接 magpie 后列出上游')
+  })
+
+  test('a magpie that answers with none still says there are none', async () => {
+    const html = renderMagpie({
+      side: {
+        kind: 'ok',
+        value: { ...(await snapshot()), providers: [], groups: [] },
+      },
+      writer: true,
+    })
+    expect(html).toContain('还没有上游')
+    expect(html).toContain('还没有路由组')
+    expect(html).toContain('data-action="magpie-provider-new"')
   })
 })

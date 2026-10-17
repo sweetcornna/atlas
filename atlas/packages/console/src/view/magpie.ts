@@ -225,6 +225,19 @@ function connectionSection(snapshot: MagpieSnapshot, writer: boolean): string {
 
 // --- upstreams ---------------------------------------------------------
 
+/**
+ * An empty list that was not read: before a connection, or while magpie
+ * does not answer (the connection section says why). Null when the list
+ * is magpie's own answer, so an empty one means there are none.
+ */
+function unread(snapshot: MagpieSnapshot, what: string): string | null {
+  if (!snapshot.connection.configured)
+    return emptyState('未连接', `连接 magpie 后列出${what}`)
+  if (snapshot.problem !== null)
+    return emptyState(`${what}读取失败`, 'magpie 没有应答 · 原因见连接一节')
+  return null
+}
+
 const ACCESS_TAG: Readonly<Record<string, string>> = {
   key: tag('API 密钥', 'ok'),
   account: tag('订阅账号 · 阡陌不用', 'warn'),
@@ -297,7 +310,8 @@ function providersSection(snapshot: MagpieSnapshot, writer: boolean): string {
   const rows = snapshot.providers
   const body =
     rows.length === 0
-      ? emptyState('还没有上游', '从 magpie 预设添加 · 只用 API 密钥', add)
+      ? (unread(snapshot, '上游') ??
+        emptyState('还没有上游', '从 magpie 预设添加 · 只用 API 密钥', add))
       : table(
           '上游',
           ['名称', '主机', '模型', '状态', '类别', ...(writer ? [''] : [])],
@@ -357,7 +371,12 @@ function groupsSection(snapshot: MagpieSnapshot, writer: boolean): string {
   const rows = snapshot.groups
   const body =
     rows.length === 0
-      ? emptyState('还没有路由组', '把几个上游的模型编成一组 · 按规则分流', add)
+      ? (unread(snapshot, '路由组') ??
+        emptyState(
+          '还没有路由组',
+          '把几个上游的模型编成一组 · 按规则分流',
+          add,
+        ))
       : table(
           '路由组',
           ['名称', '成员', '路由', '保持', '类别', ...(writer ? [''] : [])],
