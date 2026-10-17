@@ -26,6 +26,7 @@ import { ROUTES } from '../src/routes/index.js'
 import {
   FakeChannels,
   FakeExtensions,
+  FakeMagpie,
   FakeUpdates,
   FakeConnectors,
   FakeDesktop,
@@ -137,6 +138,22 @@ const PAGES: readonly PageRow[] = [
     ],
   },
   {
+    path: '/admin/magpie',
+    title: '网关',
+    active: 'magpie',
+    reads: [
+      'gw.tokyo.example:8443',
+      '已连接 · 0.1.1268',
+      '订阅账号 · 阡陌不用',
+      'group/fast',
+      '节点 tokyo-1',
+      '已用完',
+      '估算 $0.42',
+      'id="magpie"',
+      'id="magpie-usage"',
+    ],
+  },
+  {
     path: '/admin/updates',
     title: '更新',
     active: 'updates',
@@ -212,6 +229,7 @@ function harness() {
       channels: new FakeChannels(() => NOW),
       updates: new FakeUpdates(() => NOW),
       extensions: new FakeExtensions(),
+      magpie: new FakeMagpie(),
       handoffDevices: new FakeHandoffDevices(() => NOW),
       desktop: new FakeDesktop(() => NOW),
       files: new FakeFiles(() => NOW),

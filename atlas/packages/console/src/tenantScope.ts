@@ -191,6 +191,7 @@ export function scopedConsoleDeps(
     routing: _routing,
     handoffDevices: _handoffDevices,
     avatars: _avatars,
+    magpie: _magpie,
     ...base
   } = deps
   const result: ConsoleDeps = {

@@ -1161,3 +1161,325 @@ export interface ExtensionsPort {
   ): Promise<ConsoleResult<ExtensionView>>
   remove(id: string, actor: DirectionActor): Promise<ConsoleResult<void>>
 }
+
+// ---------------------------------------------------------------------------
+// MagpiePort —— 平台模型网关 magpie（P33 / P34）
+// ---------------------------------------------------------------------------
+
+/**
+ * magpie 作为平台网关：节点拿中枢签发的网关密钥直连它，中枢从不转发模型流量
+ * （章程 N-5 v2.22、R-9），只调它的管理接口。一把网关密钥就是一份普通的模型
+ * 档案 `magpie-<kind>-<id>`，经模型服务原样编译、下发、切换。
+ *
+ * 读方法不收调用者，按角色裁剪是路由的事：不能写的人看不到密钥尾号，地址只有
+ * 主机部分。写方法收 {@link MagpieCaller}，端口自己再查一遍写权限；签发、轮换、
+ * 收回会经 `ProviderPort` 写档案，那些写由模型服务自己记账（`provider.*`）。
+ *
+ * 从不返回网关密钥、上游密钥或管理密钥的值。
+ */
+
+export const MAGPIE_USAGE_PERIODS = ['today', '7d', '30d', 'all'] as const
+export type MagpieUsagePeriod = (typeof MAGPIE_USAGE_PERIODS)[number]
+
+export const MAGPIE_ROUTINGS = [
+  'smart',
+  'order',
+  'rotate',
+  'usage',
+  'pace',
+] as const
+export type MagpieRoutingName = (typeof MAGPIE_ROUTINGS)[number]
+
+export const MAGPIE_AFFINITIES = [
+  'auto',
+  'session',
+  'turn',
+  'off',
+  'strict',
+] as const
+export type MagpieAffinityName = (typeof MAGPIE_AFFINITIES)[number]
+
+export const MAGPIE_LIMIT_PERIODS = [
+  'day',
+  'week',
+  'month',
+  'days',
+  'hours',
+] as const
+export type MagpieLimitWindow = (typeof MAGPIE_LIMIT_PERIODS)[number]
+
+/** 一份 magpie 档案能用的线路：Anthropic 走 origin，两条 OpenAI 走 origin/v1。 */
+export const MAGPIE_LANES = [
+  'anthropic',
+  'openai-responses',
+  'openai-chat',
+] as const
+export type MagpieLane = (typeof MAGPIE_LANES)[number]
+
+/** 一把网关密钥绑给谁：一个节点，或一个租户（P35）。 */
+export interface MagpieBinding {
+  readonly kind: 'node' | 'tenant'
+  readonly id: string
+}
+
+/** 最近一次核对。 */
+export interface MagpieCheckView {
+  readonly at: number
+  readonly ok: boolean
+  /** 管理接口报的 magpie 版本。 */
+  readonly version: string | null
+  /**
+   * 网关这一侧：`keyed` 要网关密钥才答（应有的样子）；`open` 不带密钥也答；
+   * `closed` 没有共享到网络；`unreachable` 连不上。
+   */
+  readonly gateway: 'keyed' | 'open' | 'closed' | 'unreachable'
+  /** 不成功时的失败码（`magpie_auth` 一类）。 */
+  readonly code: string | null
+}
+
+export interface MagpieConnectionView {
+  readonly configured: boolean
+  /** 能写的人看到 origin；其他人只看到主机与端口。 */
+  readonly gatewayUrl: string | null
+  readonly managementUrl: string | null
+  /** 管理密钥已封存在中枢。 */
+  readonly keySet: boolean
+  readonly connectedAt: number | null
+  readonly check: MagpieCheckView | null
+}
+
+/** magpie 里的一个上游。 */
+export interface MagpieProviderView {
+  readonly id: string
+  readonly name: string
+  readonly preset: string
+  readonly host: string
+  readonly enabled: boolean
+  readonly ready: boolean
+  readonly models: number
+  /** `key` API 密钥；`account` 订阅账号；`client` 借用厂商自家客户端身份。后两种阡陌从不使用（L-6）。 */
+  readonly access: 'key' | 'account' | 'client'
+  readonly plan: string | null
+}
+
+export interface MagpiePresetView {
+  readonly id: string
+  readonly name: string
+  readonly kind: string
+  readonly noKey: boolean
+}
+
+export interface MagpieGroupView {
+  readonly id: string
+  readonly name: string
+  readonly members: readonly string[]
+  readonly matched: readonly string[]
+  readonly match: readonly string[]
+  readonly routing: string
+  readonly affinity: string
+  readonly ready: boolean
+  /** 成员全是 API 密钥上游：阡陌的密钥可以用它。 */
+  readonly eligible: boolean
+}
+
+export interface MagpieLimitView {
+  readonly period: MagpieLimitWindow
+  readonly days: number | null
+  readonly hours: number | null
+  readonly tokens: number | null
+  /** 美元，magpie 按它的价目估的，不是账单。 */
+  readonly cost: number | null
+  readonly cacheReads: boolean
+  readonly tokensUsed: number | null
+  readonly costUsed: number | null
+  readonly spent: boolean
+  readonly reset: string | null
+}
+
+export interface MagpieKeyView {
+  readonly binding: MagpieBinding
+  readonly keyId: string
+  readonly keyName: string
+  readonly profileId: string
+  readonly lane: MagpieLane
+  readonly mainModel: string
+  readonly fastModel: string | null
+  /** `all`：合格的全部（随 magpie 增减）；`list`：只这些。 */
+  readonly modelsMode: 'all' | 'list'
+  readonly models: readonly string[]
+  /** magpie 里这把密钥启用与否；没连上或已不在为 null。 */
+  readonly enabled: boolean | null
+  /** magpie 自己的掩码（尾号）；只给能写的人。 */
+  readonly masked: string | null
+  readonly limits: readonly MagpieLimitView[]
+  readonly createdAt: number
+  /** magpie 里还有这把密钥；没连上为 null。 */
+  readonly present: boolean | null
+}
+
+export interface MagpieUsageTotalsView {
+  readonly calls: number
+  readonly errors: number
+  readonly input: number
+  readonly output: number
+  readonly cacheRead: number
+  readonly cacheWrite: number
+  /** magpie 的估算，美元。 */
+  readonly cost: number
+  readonly unpriced: number
+}
+
+export interface MagpieUsageView {
+  readonly period: MagpieUsagePeriod
+  readonly since: string | null
+  readonly totals: MagpieUsageTotalsView
+  readonly models: readonly (MagpieUsageTotalsView & {
+    readonly id: string
+    readonly name: string
+  })[]
+  readonly keys: readonly (MagpieUsageTotalsView & {
+    readonly keyId: string
+    readonly name: string
+    /** 阡陌签发的密钥对应的绑定；别的密钥为 null。 */
+    readonly binding: MagpieBinding | null
+  })[]
+}
+
+export interface MagpieSnapshot {
+  readonly connection: MagpieConnectionView
+  /** 读 magpie 失败的原因；连接与绑定照常列出。 */
+  readonly problem: { readonly code: string; readonly message: string } | null
+  readonly providers: readonly MagpieProviderView[]
+  readonly presets: readonly MagpiePresetView[]
+  readonly groups: readonly MagpieGroupView[]
+  readonly keys: readonly MagpieKeyView[]
+  /** 签发时可选的模型：合格上游的模型与合格的路由组。 */
+  readonly models: readonly string[]
+  /** 模型服务能下发的节点。 */
+  readonly nodes: readonly string[]
+  readonly tenants: readonly string[]
+}
+
+export interface MagpieConnectDraft {
+  readonly gatewayUrl: string
+  readonly managementUrl: string
+  /** 不给：沿用已封存的。 */
+  readonly managementKey?: string
+  /** magpie 管理页实际监听的端口，前面有反向代理时才要。 */
+  readonly webCookiePort?: number
+}
+
+export interface MagpieProviderDraft {
+  readonly preset: string
+  readonly key?: string
+  readonly name?: string
+}
+
+export interface MagpieGroupDraft {
+  readonly id: string
+  readonly from?: string
+  readonly name?: string
+  readonly members?: readonly string[]
+  readonly routing?: MagpieRoutingName
+  readonly affinity?: MagpieAffinityName
+}
+
+export interface MagpieLimitDraft {
+  readonly period: MagpieLimitWindow
+  readonly days?: number
+  readonly hours?: number
+  readonly tokens?: number
+  readonly cost?: number
+  readonly cacheReads?: boolean
+}
+
+export interface MagpieKeyDraft {
+  readonly binding: MagpieBinding
+  readonly mainModel: string
+  readonly fastModel?: string | null
+  readonly lane?: MagpieLane
+  readonly limits?: readonly MagpieLimitDraft[]
+  /** 不给或空：合格的全部；给了：只这些，每条都要合格。 */
+  readonly models?: readonly string[]
+}
+
+export interface MagpieKeyChange {
+  readonly enabled?: boolean
+  readonly limits?: readonly MagpieLimitDraft[]
+  /** null：回到合格的全部。 */
+  readonly models?: readonly string[] | null
+  readonly mainModel?: string
+  readonly fastModel?: string | null
+  /** 重新计数：一条限额的序号，或 `all`。 */
+  readonly resetLimit?: number | 'all'
+}
+
+export interface MagpieTestView {
+  readonly protocol: string
+  readonly ok: boolean
+  readonly status: number | null
+  readonly ms: number
+  readonly model: string | null
+}
+
+/** 发起写的人；`record` 交给模型服务给它自己的写记账。 */
+export interface MagpieCaller extends DirectionActor {
+  readonly breakGlass: boolean
+  record(
+    action: string,
+    target: string,
+    outcome: 'ok' | 'refused' | 'failed',
+    code?: string,
+  ): Promise<boolean>
+}
+
+export interface MagpiePort {
+  snapshot(): Promise<ConsoleResult<MagpieSnapshot>>
+  usage(period: MagpieUsagePeriod): Promise<ConsoleResult<MagpieUsageView>>
+  connect(
+    draft: MagpieConnectDraft,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieConnectionView>>
+  /** 核对连接，并把每把密钥的模型白名单改回合格的范围。 */
+  check(caller: MagpieCaller): Promise<ConsoleResult<MagpieConnectionView>>
+  saveProvider(
+    draft: MagpieProviderDraft,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieProviderView>>
+  setProviderEnabled(
+    id: string,
+    on: boolean,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieProviderView>>
+  /** magpie 向上游发最小请求；厂商原文不转述。 */
+  testProvider(
+    id: string,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<readonly MagpieTestView[]>>
+  removeProvider(id: string, caller: MagpieCaller): Promise<ConsoleResult<void>>
+  saveGroup(
+    draft: MagpieGroupDraft,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieGroupView>>
+  removeGroup(id: string, caller: MagpieCaller): Promise<ConsoleResult<void>>
+  /** 节点：建密钥、写档案、指派、下发；租户：建密钥与档案，指派留给 P35。 */
+  issueKey(
+    draft: MagpieKeyDraft,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieKeyView>>
+  updateKey(
+    binding: MagpieBinding,
+    change: MagpieKeyChange,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieKeyView>>
+  /** magpie 生成新值，中枢写进档案再下发；id、限额与用量不变。 */
+  rotateKey(
+    binding: MagpieBinding,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieKeyView>>
+  /** 先把节点换回原来的指派，再删密钥与档案；档案还有人用时留着。 */
+  removeKey(
+    binding: MagpieBinding,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<{ readonly profileKept: boolean }>>
+}
