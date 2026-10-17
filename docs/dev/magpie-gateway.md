@@ -5,9 +5,9 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.1（生效）**；v1.1 按实现回写 §2.2 的轮换与两个已知窗口 |
+| 文档版本 | **v1.2（生效）**；v1.2 回写 P33.4 真机冒烟（§4）、一把密钥服务三种底层（§2.1 `laneAddresses`）、§1 管理链接进日志与额度插件默认状态；v1.1 按实现回写 §2.2 的轮换与两个已知窗口 |
 | 日期 | 2026-10-17 |
-| 核对基点 | 本仓库 `db52f282`（main，#229 合并提交，基座 qianmopi v18.8.8）；magpie 源码 `yetone/magpie@8b84dc9`，本机发行版 `magpie 0.1.1268`，GitHub 发行 `v0.1.1278` 有 `magpie-cli-linux-{amd64,arm64}` |
+| 核对基点 | 本仓库 `db52f282`（main，#229 合并提交，基座 qianmopi v18.8.8）；magpie 源码 `yetone/magpie@8b84dc9`，本机发行版 `magpie 0.1.1268`，GitHub 发行 `v0.1.1278` 有 `magpie-cli-linux-{amd64,arm64}`；P33.4 冒烟用 `v0.1.1278` linux-arm64 官方二进制 |
 | 范围依据 | 负责人 2026-10-17 决定（对话记录）：接入 magpie 作为模型统一调度管理器；前端按本项目的风格特化；另立公开版（见 [`public-edition.md`](./public-edition.md)，P35）。章程 v3.5 §2.7 |
 | 编号 | P33 magpie 统一模型调度；P34「网关」页 |
 | 结论一句话 | magpie 作为平台网关单独运行，节点带各自的网关密钥直连它取模型；中枢只调 magpie 的管理接口发放密钥、设额度、读用量，不转发模型流量；在阡陌里 magpie 就是一个普通的模型档案，编译、下发、热切换全部沿用 P18 |
@@ -23,7 +23,7 @@
 - **模型调用不经过中枢**（章程 N-5 v2.22「由中枢代为调用模型」仍不解禁，R-9 不变）：magpie 是一个独立的网关服务，可以和中枢同机，但不是中枢进程，模型流量是「节点 → magpie → 上游」。中枢只调用 magpie 的管理接口（`/api/*`）和 `/api/hello`、`/v1/models` 这类只读接口。
 - **只用 API key 类上游**（章程 §5.2③、L-6）：magpie 能读取并代用 Claude、ChatGPT、Copilot、Gemini 等个人订阅的登录态，阡陌不用这部分。阡陌签发的每把密钥都带显式的模型白名单，白名单只由 API key 类供应商（`provider/*`）与成员全部是 API key 类供应商的路由组组成；控制台不提供订阅登录入口，已有的订阅类上游只读展示并标「阡陌不使用」。
 - **中转商排除条款**（[`providers-console-m1.md`](./providers-console-m1.md) §4.5）：magpie 预设指向运营方自己部署的网关，不是第三方中转商，不在排除之列；预设不带推广链接、logo 或赞助排序（N-5）。
-- **证据状态**：magpie 预设 `evaluated:false`；只用假 magpie 测过的接口、没有用真实上游跑过整轮的组合，页面与文档标「未评估」。
+- **证据状态**：magpie 预设 `evaluated:false`；真实 magpie 与真实上游的整轮调用只在 §4 P33.4 记下的组合上跑过，其余组合（TLS 网关、跨公网节点、长跑与并发、其他上游）仍标「未评估」。
 
 ## §1 部署形态
 
@@ -32,9 +32,9 @@
 | 运行 | `magpie serve --web=127.0.0.1:3430`（systemd 用户服务，或 `ghcr.io/yetone/magpie` 容器把 CMD 换成 `serve --web=0.0.0.0:3430` 并只在内网映射 3430）。`DO_NOT_TRACK=1` 关掉每日统计 |
 | 网关 | `MAGPIE_ADDR` 设为非回环地址，配 `--tls-cert/--tls-key`（或放在 TLS 前置之后并设 `MAGPIE_TRUST_PROXY=1`）。非回环即「在网络上」，每个调用方都必须带启用中的网关密钥。可选 `MAGPIE_ALLOW_IPS` 只放行节点所在网段 |
 | 回环陷阱 | magpie 对回环来源不校验密钥（被吊销的密钥从回环来也会被放行且不计数）。因此**节点不得经回环访问网关**；与中枢同机时，节点仍走对外地址，中枢也只用管理口 |
-| 管理口 | `MAGPIE_WEB_KEY`（16 位以上），只监听回环或内网；中枢以 cookie `magpie_web_<port>=<key>` 调用。管理口是全权的，钥匙由中枢加密保管、只写不读 |
+| 管理口 | `MAGPIE_WEB_KEY`（16 位以上），只监听回环或内网；中枢以 cookie `magpie_web_<port>=<key>` 调用。管理口是全权的，钥匙由中枢加密保管、只写不读。magpie 启动时把带钥匙的管理链接打印到标准输出，journald 或容器日志要按机密保管（P33.4 实测） |
 | 时区 | 自然月、自然周额度按 magpie 进程的本地时区算，容器里设 `TZ=Asia/Shanghai` |
-| 额度插件 | magpie 的「Key limits」内置插件必须开着；关着时设了上限的密钥会被 503 拒绝（故障关闭），中枢检查时报出 |
+| 额度插件 | magpie 的「Key limits」内置插件（插件 id `budget`）必须开着；关着时设了上限的密钥会被 503 拒绝（故障关闭），中枢检查时报出。`0.1.1278` 的默认预设 `essentials` 已开启（`magpie plugin dump` 可查） |
 
 ## §2 P33 在阡陌里怎么接
 
@@ -44,11 +44,13 @@
 
 | 通道 | 地址 | 认证 |
 |---|---|---|
-| `anthropic` | 网关源站（`https://gw.example.com`） | `x-api-key`（magpie 依次读 Bearer、`x-api-key`、`x-goog-api-key`） |
+| `anthropic` | 网关源站（`https://gw.example.com`） | 档案下发 Bearer，Claude Code 发 `x-api-key`（magpie 依次读 Bearer、`x-api-key`、`x-goog-api-key`） |
 | `openai-responses` | 源站 + `/v1` | Bearer |
 | `openai-chat` | 源站 + `/v1` | Bearer |
 
 模型号就是 magpie 的号：`provider/model`（模型段可以再带斜杠）或 `group/<id>`。目录取自 `GET /v1/models`（受限密钥只看得到自己能用的模型）。之后的编译（`models.yml` / `config.yml`）、经 SSH 第六类动作下发、节点空闲时热切换、期望与实际对账、Claude Code 的 `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` 与 Codex 的 `-c model_providers.qianmo…` 全部不变。
+
+**一把密钥服务三种底层**：magpie 在同一个端口上说三种协议，所以中枢写进 magpie 档案的除了主通道，还有档案字段 `laneAddresses`（另外两条通道各自的地址，上表）。节点编译时为每条另给的通道多写一个同模型、同密钥的 provider（`qm-<档案>-<地址与通道的哈希>`），主通道仍是 qianmopi 用的那一个；Claude Code 与 Codex 取档案里自己协议的那一个，没有就照旧报「需要某某通道的档案」。字段只发给上报了 `capabilities.laneAddresses` 的节点，旧节点照旧收到单通道档案；只允许对话通道、不能重复主通道、档案只能有一把密钥。签发时选的通道因此只决定 qianmopi 走哪种协议。
 
 ### 2.2 绑定与密钥
 
@@ -98,7 +100,7 @@
 | P33.2 | `magpie` 预设与模型号校验 | `presets.test.ts` 控制台集合 = 节点集合；`provider/model`、`group/<id>` 能编译进 `models.yml` |
 | P33.3 | `MagpiePort` 与 `--magpie` | 用假 magpie 跑通签发 → 建档 → 指派 → 下发 → 轮换 → 吊销；状态文件 0600；白名单只含 API key 类上游 |
 | P34 | 「网关」页 | 路由、页面、角色、文档同步、动作词、依赖与文案各门禁通过；读者看不到写控件 |
-| P33.4 | 真实 magpie 冒烟 | **未评估**：等真实上游 key 与部署后，在节点上用三种底层各跑一轮，回写本节 |
+| P33.4 | 真实 magpie 冒烟 | **2026-10-17 实测通过**。环境：magpie `0.1.1278` linux-arm64 官方二进制跑在 colima 容器里（`DO_NOT_TRACK=1`、`TZ=Asia/Shanghai`），网关经端口映射访问，magpie 看到的来源都不是回环，每个调用都要密钥；上游是一个 API key 类自定义上游；Claude Code `2.1.301`、codex-cli `0.163.0`，qianmopi 与中枢为本分支源码。结果：中枢签发 → 建档 → 下发到真节点；同一台节点、同一把密钥上 qianmopi（`qm agent -p`）、Claude Code（阡陌的 stream-json 启动参数与环境）、Codex（阡陌的 `CodexChannel` 驱动 `codex app-server`）各完成一轮真实对话，用量按这把密钥归账；轮换后节点拿到新值、旧值 401；额度用尽回 429，带 `Retry-After`、`X-Magpie-Limit-Reset`、`X-Should-Retry: false`；删钥后 401；另一个容器与宿主不带或带错密钥一律 401，不带 cookie 访问管理口 401。冒烟中补了两处：网关页可按地址加自定义上游、`laneAddresses`。**未覆盖**：TLS 网关（冒烟走 http）、跨公网的另一台机器、长跑与多节点并发。证据在 `atlas-evidence/2026-10-17/magpie-smoke/` |
 
 ## §5 不做
 
