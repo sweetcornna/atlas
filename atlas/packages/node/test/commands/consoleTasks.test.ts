@@ -2274,6 +2274,57 @@ describe('planned tasks (主动任务)', () => {
     expect(next).not.toContain('核实后接着做')
   })
 
+  test('a cancel while a due run stops the turn its last run left on the node stays cancelled and sends nothing', async () => {
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const anchor = now
+    // The node cannot be reached for the /stop; later stops wait for release.
+    let reachable = false
+    const releases: (() => void)[] = []
+    const book = tasks({
+      now: () => now,
+      stopTask: async (target, taskId) => {
+        stopped.push([target, taskId])
+        if (!reachable) return false
+        await new Promise<void>(resolve => releases.push(resolve))
+        return true
+      },
+    })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        everyMinutes: 60,
+        times: 3,
+      }),
+    )
+    const worker = await workerTurn(1)
+    const left = chat.lastTask(worker)
+    await until(() => book.forSession(parent)[0]?.status === 'running')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(await book.cancelForSession(parent)).toBe(1)
+    // The run is stopped back to its plan, its node turn still recorded.
+    expect(book.forSession(parent)[0]!.status).toBe('scheduled')
+    const ledger = JSON.parse(
+      fs.readFileSync(path.join(root, 'tasks.json'), 'utf8'),
+    ) as { scheduled: { nodeTaskId: string | null }[] }
+    expect(ledger.scheduled[0]!.nodeTaskId).toBe(left)
+    reachable = true
+    now = anchor + 61 * MINUTE
+    book.tick()
+    // The due run stops that turn first; the cancel comes meanwhile.
+    await until(() => releases.length === 1)
+    const cancelling = call(book, 'cancel', parent, { id })
+    await until(() => book.forSession(parent)[0]?.status === 'cancelled')
+    // The cancel stops that same turn too; then both stops answer.
+    await until(() => releases.length === 2)
+    for (const release of releases.splice(0)) release()
+    value(await cancelling)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(book.forSession(parent)[0]!.status).toBe('cancelled')
+    expect(chat.sentTo(worker)).toHaveLength(1)
+  })
+
   test('a finished repeat has no runs left, in the view, the note and the console list alike', async () => {
     const now = Date.UTC(2026, 9, 17, 1, 0)
     const book = tasks({ now: () => now })
