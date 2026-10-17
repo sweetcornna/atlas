@@ -1372,13 +1372,14 @@ describe('the agent list (qianmo_task_agents)', () => {
 
   test("the owner's tenant decides who is listed, as for qianmo_task_start", async () => {
     const subject = 'u:alice'
+    let state = 'active'
     const accounts = {
       book: {
         ownerOf: () => subject,
         list: () => ({
           ok: true,
           value: {
-            accounts: [{ subject, state: 'active', role: 'member' }],
+            accounts: [{ subject, state, role: 'member' }],
           },
         }),
       },
@@ -1417,6 +1418,10 @@ describe('the agent list (qianmo_task_agents)', () => {
       agent: CODER,
     })
     expect(refused.ok).toBe(false)
+    // The owner's account is gone: nobody is listed.
+    state = 'disabled'
+    const gone = await call(book, 'agents', parent)
+    expect(gone.ok ? '' : gone.message).toBe('任务主人的账号已不可用')
   })
 
   test('AgentProfiles: each node says its runtimes; a qianmopi agent runs the node model; nothing is guessed', async () => {
