@@ -302,9 +302,8 @@ function setUpRoot(prefix: string): NodeRoot {
   chmodSync(config, 0o700)
   mkdirSync(workspace)
   mkdirSync(home)
-  // A user-level skill in the root's own HOME: a resident child reads no
-  // user-level skills (P32), so neither this one nor the real home's is
-  // listed (see `spawnRealOmp`).
+  // A user-level skill in the root's own HOME: the child must list it, and
+  // nothing from the real home directory (see `spawnRealOmp`).
   mkdirSync(join(home, '.agents', 'skills', HOME_PROBE_SKILL), {
     recursive: true,
   })
@@ -537,14 +536,14 @@ describe('resident hot switch against real omp RPC', () => {
       expect(turn?.authorization).toBe(`Bearer ${KEY_A}`)
       expect(processEnvModel.turns()).toEqual([])
       sessionAfterFirstTurn = storedSessionId()
-      // User-level skills are not the agent's (P32): not the one planted in
-      // the child's own HOME, and nothing a developer installed under the
-      // real home directory.
+      // The child's HOME is the root's own: it lists the skill planted there
+      // and nothing a developer installed under the real home directory. (The
+      // description may already be omp's model-compressed one.)
       const listed = turn?.text
         .match(/<skills>\n([\s\S]*?)\n<\/skills>/)?.[1]
         ?.split('\n')
         .map(line => line.match(/^- ([^:]+):/)?.[1])
-      expect(listed ?? []).toEqual([])
+      expect(listed).toEqual([HOME_PROBE_SKILL])
     },
     TEST_TIMEOUT_MS,
   )
