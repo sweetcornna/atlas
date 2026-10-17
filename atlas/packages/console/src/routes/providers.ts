@@ -215,6 +215,7 @@ const STATUS_OF: Readonly<Record<ProviderFailure['code'], number>> = {
   unavailable: 503,
   unreachable: 502,
   refused: 422,
+  edition_public_magpie_only: 403,
 }
 
 /**

@@ -186,6 +186,7 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--updates` | 关 | 定时检查更新与阡陌在线升级（P31，`docs/dev/runtimes-channels.md` §5）：按设定时间查 qianmopi 上游发行、npm 上 Claude Code 与 Codex 的最新版、阡陌发行，有新版本时记录并推送到选定的通知渠道；设为自动处理时经仓库连接触发 `sync-omp.yml`（同步 PR 仍要评审合并），或经控制链路让节点装新版外部底层，或把阡陌逐台升级（节点先、中枢最后，复刻 sub2api 的做法，§5.2）。节点的版本与升级经控制链路，没有控制链路时只管中枢自身；设定与记录在 `qianmoConfigPath('qianmo','console','updates')`。出站经 `api.github.com`、`registry.npmjs.org` 与 GitHub 发行下载域；没有用真实发行跑过在线升级 |
 | `--extensions` | 关 | 连接器（MCP）、技能与插件（P32，`docs/dev/runtimes-channels.md` §9）：运维在「扩展」页配置，中枢把 MCP 的环境变量与请求头封存，把 GitHub 来源钉到提交号并记下目录摘要，经控制链路 `extensions.apply` 把每个节点自己的智能体用到的条目送过去；节点按 qianmopi、Claude Code、Codex 各自的原生方式落地（`--plugin-dir`、`--mcp-config`、Codex 本地市场与 `config.toml`），只回收集合变了的智能体的空闲子进程。每 10 分钟核对一次各节点的集合。状态在 `qianmoConfigPath('qianmo','console','extensions')`；出站只到 `api.github.com` 与 `codeload.github.com`；没有用真实 MCP 服务与插件仓库跑过整轮 |
 | `--magpie` | 关 | 平台模型网关 magpie（P33/P34）：须同时给 `--accounts` 与 `--providers`。中枢只调 magpie 的管理接口（`magpie serve --web=127.0.0.1:3430`，管理密钥封存在 `qianmoConfigPath('qianmo','console','magpie-secrets.json')`），从不转发模型流量；节点拿中枢签发的网关密钥直连网关。每把密钥一份 `magpie` 预设的模型档案，经模型服务原样编译下发；白名单只含 API 密钥上游与全由它们组成的路由组（L-6），每 10 分钟核对一次。连接与绑定在 `qianmoConfigPath('qianmo','console','magpie.json')`；只用假 magpie 测过，没有对真实网关跑过整轮 |
+| `--billing <绝对路径>` | `qianmoConfigPath('qianmo','console','billing.json')` | 公开版（P35）的计费配置：按托管节点定价的套餐（不卖模型额度，可选给网关密钥的合理使用上限）、微信支付与支付宝两种收款、兑换码、源代码链接（AGPL 第 13 条，每个公开页面的页脚都有）。**只有公开版有这个选项**：公开构建（`atlas:build:public`）或 `QIANMO_EDITION=public` 的源码运行；默认版给了就拒绝启动，公开构建也关不掉公开版。公开版必须同时给 `--accounts`、`--tenancy`、`--open-registration`（及 `--registration-max-accounts`）、`--providers`、`--magpie`，配置要能读通，缺一样拒绝启动；`--legacy-view-token` 固定为 `off`，给 `on` 也拒绝。订单与订阅账本在 `qianmoConfigPath('qianmo','console','billing.sqlite')`。开通即为订阅者建租户 `t-<主体前 8 位>` 和一把停用的网关密钥；订阅者在 `/subscription` 用自己的 API 密钥接上游后密钥才启用，白名单只含他自己的上游。每 60 秒扫一次到期并停用密钥。公开版的模型服务只收 magpie 预设，别的预设与导入答 `edition_public_magpie_only`；订阅者的档案 `magpie-tenant-<租户>` 只由中枢自己写（账本主体 `system:billing`），不能设为默认，只指派给本租户的节点，数量不超过套餐含的节点数；租户的节点不能继承平台默认。网关页不能轮换、删除订阅者的密钥，平台的模型列表里也看不到订阅者的上游。两种支付通道只对本地假服务测过，没有对真实商户号跑过 |
 | `--node-server <node>=<server>` | 无 | 这个节点跑在哪台机器上，**可重复**，一个节点一条，同一个节点不许给两次。**给了才有归属面**（§11）；也是备注的白名单。server 的形状：非空、≤64 字符、只收 `A-Za-z0-9 . _ : -`（主机名、IPv4、IPv6 的冒号、短名都在内） |
 | `--server-notes <绝对路径>` | `occConfigPath('qianmo','console','server-notes.ndjson')` | 服务器备注的落盘位置（§11）。**必须是绝对路径**，理由同 `--audit` |
 | `--handoff-repo <owner/name>=<绝对令牌文件>` | 无 | GitHub 接力备用凭据；连接簿优先，连接模式启用租户时不使用无属主的备用文件。可重复，令牌文件 0600、当前属主、非软链，地址固定 github.com。没有 `--handoff-root` 时只保留台账；节点不需要 `--handoff-node-git` |
@@ -351,6 +352,17 @@ ssh -L 38613:127.0.0.1:38613 <host>     # 然后在本地浏览器开 127.0.0.1:
   token 才准「停止使用 token」**，会把那些开着标签页、而 token 已经被轮换掉的人卡死在
   里面。同样带 `Sec-Fetch-Site` 检查，因为「同站另一个端口上的页面把运维循环登出」
   这种恶作剧只值三行代码就能去掉。
+
+公开版（`--billing`，§3）另有三条公开路径：
+
+- `GET /plans` —— 套餐页：价格、周期、含几台托管节点、说明，与登录、注册入口；
+  公开版里匿名访客在 `/` 看到的也是它。
+- `POST /v0/billing/notify/wechatpay`、`POST /v0/billing/notify/alipay` —— 支付平台的
+  回调。在读任何凭据之前分派，不要登录、不要控制台头；正文按原文读一次、一个字节不改
+  地交给通道验签（签名覆盖的就是这些字节），超过 64 KiB 答 413，应答原样是通道给的那
+  一份。防线是验签，不是凭据。
+
+`/subscription` 与 `/subscription/checkout` 是登录后成员自己的页，不在此列。
 
 其余全部要 view 或 admin。**未认证的浏览器不会拿到一份它无法处置的 JSON 401**：
 `Accept: text/html` 的 `GET` 会被 303 到 `/login` 并带上校验过的回程；而拿着 view token
@@ -605,9 +617,16 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 `token` 的同一地址（H5，`http.ts` 的 `tokenInAddressBar`，§4.1、§6.8）；令牌无效就照常
 按无凭据处理。`/v0` 与 `/fragments` 上的 `?token=` 不换会话，脚本照旧可用。
 
+公开版（`--billing`）多一道订阅闸门，只在一处（`billingDoors.ts` 的 `subscriptionDenial`，
+`http.ts` 在租户边界之前、动作账本之前问它）：个人账号（或替它行事的设备）没有有效订阅
+时，**任何写**（GET、HEAD、OPTIONS 以外）都答 **402 `subscription_required`**，不论下表
+哪一行；读照常，登录、登出、注册、邀请、下单（`/subscription/checkout`、
+`/v0/billing/checkout`）与兑换（`/v0/billing/redeem`）不受限。平台主体、break-glass
+与两枚旧令牌不受闸门限制。到期后租户网关密钥同时停用。
+
 | 方法 | 路径 | 角色 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/` | 成员 / ops / 管理令牌 | 对话前台：默认主智能体欢迎页；`?agent=<地址>` 选智能体，`?session=<会话 id>` 打开会话。已登录但不能对话或未接聊天通道时答 303 到 `/admin`；匿名导航到登录门并回跳 `/`；已登录的非 GET 答 405 |
+| GET | `/` | 成员 / ops / 管理令牌 | 对话前台：默认主智能体欢迎页；`?agent=<地址>` 选智能体，`?session=<会话 id>` 打开会话。已登录但不能对话或未接聊天通道时答 303 到 `/admin`；匿名导航到登录门并回跳 `/`；已登录的非 GET 答 405。公开版（`--billing`）先看订阅：匿名是套餐页；个人账号没有有效订阅时是一张指向 `/subscription` 的卡片，订阅有效而租户还没有节点时是「节点分配中」；平台主体与 break-glass 照旧 |
 | GET | `/admin` | view | 管理后台总览，区域页面都在 `/admin/…` |
 | GET | `/admin/overview` | view | 总览：会变的卡（智能体总数与在线、滞后、过期；消息链记录数与完整性；近 1 小时拒绝与丢弃；第四张是证书，没接证书源而接了对话时是近 1 小时会话，两样都没有就只有三张）与每个节点一行（A2）。原先的两项协议常量卡移到设置页 |
 | GET | `/admin/nodes?q=&state=&server=` | view | 节点名册。`q` 按地址或端点搜（不分大小写），`state` 是 `live` / `stale` / `expired`（与行上的判法同一个函数），`server` 按 `--node-server` 归属；原生 GET 表单，轮询的 `/fragments/roster` 带同样的查询串，计数「筛选后 n · 共 m」在片段里随刷新重算（D6）。接了登记簿时名册下另列「名册上没有的节点」：登记簿或托管清单里有、名册上没有的节点，链到它的生命周期页签（§5.5） |
@@ -641,6 +660,23 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/magpie/keys` | **个人 ops** | 签发网关密钥：`{ binding, mainModel, fastModel?, lane?, limits?, models? }`，`binding` 是 `node:<节点>` 或 `tenant:<租户>`。中枢生成密钥值、在 magpie 建密钥并写死模型白名单，再经模型服务写档案 `magpie-<kind>-<id>`；节点还会指派并下发。记 `magpie.key.issue` |
 | POST、DELETE | `/v0/magpie/keys/<绑定>` | **个人 ops** | POST `{ enabled?, limits?, models?, mainModel?, fastModel?, resetLimit? }` 修改，记 `magpie.key.update`；DELETE 先把节点换回原来的指派再删密钥与档案（档案仍有人用时保留，答 `profileKept`），记 `magpie.key.remove` |
 | POST | `/v0/magpie/keys/<绑定>/rotate` | **个人 ops** | magpie 生成新值，中枢写进档案再下发；id、限额与用量不变。记 `magpie.key.rotate` |
+| GET | `/plans` | 公开，公开版 | 套餐页（§4.3）：每个套餐的价格、周期、含几台托管节点与说明，一句「模型用你自己的密钥接入」；已登录的给「我的订阅」，没登录的给登录与注册。页脚是源代码链接。没开 `--billing` 时 404 |
+| GET | `/subscription` | 个人账号，公开版 | 我的订阅：状态、套餐、到期、节点 `n/N`（订阅已生效而还没分到节点时写「节点分配中」）；模型（网关密钥状态、主模型、自己接的上游与接入表单，只有有效订阅能接）；网关用量近 30 天；续费或购买；兑换码；订单。共用令牌与 break-glass 没有这一页（403）。没开 `--billing` 时 404 |
+| GET | `/subscription/checkout?plan=<套餐 id>&channel=<wechatpay\|alipay>` | 个人账号，公开版 | 确认订单，由同源表单提交；没有这个套餐 404，通道没开 400 |
+| POST | `/subscription/checkout` | 个人账号，公开版 | 表单 `plan`、`channel`；拒绝跨源提交（`Sec-Fetch-Site`、`Origin`）。同一人同一套餐同一通道复用未过期的待支付订单，303 到 `?order=`；失败给一张原因卡片。记 `billing.checkout`；不受订阅闸门限制 |
+| GET | `/subscription/checkout?order=<订单 id>` | 订单本人，公开版 | 付款页：金额、内联 SVG 二维码（不加载外部资源）与订单状态，脚本每 3 秒查一次单直到付清或关闭；别人的订单与不存在的一样 404 |
+| GET | `/v0/billing/me` | 个人账号 | 自己的订阅、最近订单、上游、网关密钥状态、主模型与近 30 天用量；读网关失败时 `usage` 为 null。共用令牌与 break-glass 403；没接端口时 501 |
+| POST | `/v0/billing/checkout` | 个人账号 | `{ planId, channel }` 下单，答订单号、金额、失效时刻与二维码内容；复用规则同上。记 `billing.checkout`；不受订阅闸门限制 |
+| GET | `/v0/billing/orders/<订单 id>` | 订单本人 | 订单状态；待支付时顺带向支付平台查一次单。不回二维码内容；别人的订单 404 |
+| POST | `/v0/billing/redeem` | 个人账号 | `{ code }` 兑换，答兑换后的订阅。记 `billing.redeem`；不受订阅闸门限制 |
+| POST | `/v0/billing/models` | 个人账号，有效订阅 | `{ preset, key }`：用 magpie 的 API 密钥预设（L-6）接自己的上游，密钥只交给 magpie、中枢不留存；租户网关密钥的白名单随之改为本租户上游的模型并启用。记 `billing.model.add` |
+| DELETE | `/v0/billing/models/<上游 id>` | 个人账号，有效订阅 | 删除自己接的上游；最后一个删掉后网关密钥停用。别人的与平台的上游 404。成功 204，记 `billing.model.remove` |
+| POST | `/v0/billing/notify/{wechatpay,alipay}` | 公开，公开版 | 支付平台回调（§4.3）：不要凭据与控制台头，原文交给通道验签，原样回通道的应答；非 POST 405，超过 64 KiB 413 |
+| GET | `/v0/billing/admin` | 平台读者 | 订阅管理快照：套餐、通道、订单、订阅（含租户与开通状态）、兑换码（只有编号与使用情况）、账本校验。有租户时只给平台主体与 break-glass |
+| GET | `/v0/billing/admin/verify` | 平台读者 | 从头校验账本的哈希链，答 `{ ok, events }` 或第一处不一致 |
+| POST | `/v0/billing/admin/grant` | **个人 ops**（平台） | `{ subject, planId, periods, reason }` 手动开通或延期，原因必填。规则同网关写入：拒绝共用令牌与 break-glass，有租户时只收平台主体；记 `billing.grant` |
+| POST | `/v0/billing/admin/refund` | **个人 ops**（平台） | `{ orderId, reason }`：只登记商户平台上已经做完的退款并缩短订阅，不向支付平台发起退款。记 `billing.refund` |
+| POST | `/v0/billing/admin/codes` | **个人 ops**（平台） | `{ planId, periods, count, expiresInDays? }` 生成兑换码，明文只在这次应答里出现，落盘只存哈希。记 `billing.codes` |
 | GET | `/v0/updates` | view | 更新检查（P31，`docs/dev/runtimes-channels.md` §5）：检查时间与时区、每个来源（qianmopi、Claude Code、Codex、阡陌）的当前版本、最新版本、各节点版本与动作、最近 100 行记录、下次检查时刻；中枢自身的版本与本机备份、能回到的更旧发行、最近一次升级或回滚作业。不是运维时不给通知渠道。没接端口时 501 |
 | POST | `/v0/updates` | **个人 ops** | 保存设定：`{ times, timezone, actions, channels, repo }`；`times` 是 daily / weekly 规则，`actions` 每个来源 `notify` 或 `auto`（阡陌设为 `auto` 时，检查到新发行就逐台升级）。拒绝共用令牌与 break-glass；记 `updates.save` |
 | POST | `/v0/updates/run` | **个人 ops** | 立即检查一次，在后台进行，返回时 `running` 为 true；按各来源的动作处理。记 `updates.run` |
@@ -660,6 +696,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/admin/im` | view | 渠道（P28）：QQ、微信、Telegram、Discord、Slack 接到哪个智能体、在线状态与会话数；运维能添加、编辑、停用、删除，微信扫码接入。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/extensions` | view | 扩展（P32，主组）：连接器、技能、插件三个分区，每条显示适用的智能体与在各节点是否生效；运维能添加、编辑、停用、删除。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/magpie` | view | 网关（P34，主组）：连接、上游、路由组、网关密钥、用量五块；平台运维能连接、添加上游、编排路由组、为节点签发与轮换收回密钥。没接端口时侧栏不出现、页面 404 |
+| GET | `/admin/billing` | 平台读者 | 订阅（P35，管理组）：订阅、订单、兑换码、账本四块；平台运维能手动开通或延期、登记退款、生成兑换码。只在公开版接入，没接时侧栏不出现、页面 404 |
 | GET | `/admin/updates` | view | 更新（P31，管理组）：各来源的版本、状态与检查记录，阡陌一行列出中枢与各节点的版本；运维能改检查时间、各来源动作、通知渠道与阡陌仓库，能立即检查，能把阡陌逐台升级到新版或回滚。没接端口时侧栏不出现、页面 404 |
 | GET | `/v0/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 同一份列表的 JSON：`{ agent, entries, total, counts }`。没接记忆端口时 501 |
 | POST | `/v0/memory` | **成员** | 记一条：`{ agent, kind, title, summary, body }`，`kind` 只能是四类之一，一句话 ≤120 字、摘要 ≤400 字、细节 ≤4000 字。记 `memory.add` |
@@ -850,6 +887,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 | GET/POST/PUT/DELETE | `/updates` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/extensions` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/magpie` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/billing` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/access`、`/access/{invites,sessions,actions}` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/providers`、`/providers?node=<节点>` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/providers/new?q=`、`/providers/new?preset=<预设>&site=<站点>` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |

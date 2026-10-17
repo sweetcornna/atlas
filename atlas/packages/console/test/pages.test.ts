@@ -34,6 +34,7 @@ import {
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
+import { FakeBilling } from './billingFake.js'
 import {
   ADMIN,
   LABEL,
@@ -154,6 +155,18 @@ const PAGES: readonly PageRow[] = [
     ],
   },
   {
+    path: '/admin/billing',
+    title: '订阅',
+    active: 'billing',
+    reads: [
+      '还没有订阅',
+      '还没有订单',
+      '完整 · 0 条事件',
+      '未评估',
+      'id="billing"',
+    ],
+  },
+  {
     path: '/admin/updates',
     title: '更新',
     active: 'updates',
@@ -220,7 +233,11 @@ const PAGES: readonly PageRow[] = [
   },
 ]
 
-function harness() {
+/**
+ * Every port wired, the public edition's billing among them unless a test
+ * says otherwise: with it, a signed-out `/` is the plans page.
+ */
+function harness(options: { readonly billing?: boolean } = {}) {
   return pageHarness({
     chat: true,
     memory: new FakeMemory(() => NOW),
@@ -230,6 +247,9 @@ function harness() {
       updates: new FakeUpdates(() => NOW),
       extensions: new FakeExtensions(),
       magpie: new FakeMagpie(),
+      ...(options.billing === false
+        ? {}
+        : { billing: new FakeBilling(() => NOW) }),
       handoffDevices: new FakeHandoffDevices(() => NOW),
       desktop: new FakeDesktop(() => NOW),
       files: new FakeFiles(() => NOW),
@@ -391,7 +411,7 @@ describe('completed governance routes', () => {
 
 describe('the doors in front of the pages', () => {
   test('an anonymous browser is sent to the login door with the way back', async () => {
-    const { handle } = harness()
+    const { handle } = harness({ billing: false })
     for (const row of PAGES) {
       const response = await handle(browse(row.path))
       expect(`${row.path} ${response.status}`).toBe(`${row.path} 303`)
@@ -404,7 +424,7 @@ describe('the doors in front of the pages', () => {
   })
 
   test('a script without a credential keeps its 401', async () => {
-    const { handle } = harness()
+    const { handle } = harness({ billing: false })
     for (const row of PAGES) {
       const response = await handle(
         new Request(`http://console.test${row.path}`),

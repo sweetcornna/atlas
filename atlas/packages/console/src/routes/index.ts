@@ -33,6 +33,7 @@ import { alertsRoute } from './alerts.js'
 import { facesFor } from './avatars.js'
 import { approvalsRoute } from './approvals.js'
 import { auditRoute } from './audit.js'
+import { billingRoute } from './billing.js'
 import { channelsRoute } from './im.js'
 import { chatRoute } from './chat.js'
 import { connectRoute } from './connect.js'
@@ -85,6 +86,7 @@ export const ROUTES: readonly RouteModule[] = [
   serversRoute,
   accessRoute,
   usageRoute,
+  billingRoute,
   updatesRoute,
   settingsRoute,
 ]
@@ -121,6 +123,8 @@ export const RESERVED_PAGE_HEADS: readonly string[] = [
   'login',
   'logout',
   'invite',
+  'plans',
+  'subscription',
 ]
 
 /** A page that answers a path, and the segments after its area's own. */

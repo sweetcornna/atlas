@@ -27,6 +27,7 @@ import {
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
+import { FakeBilling } from './billingFake.js'
 import {
   ADMIN,
   NOW,
@@ -96,6 +97,7 @@ function harness() {
       updates: new FakeUpdates(() => NOW),
       extensions: new FakeExtensions(),
       magpie: new FakeMagpie(),
+      billing: new FakeBilling(() => NOW),
       handoffDevices: new FakeHandoffDevices(() => NOW),
       desktop: new FakeDesktop(() => NOW),
       files: new FakeFiles(() => NOW),

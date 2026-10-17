@@ -1,0 +1,32 @@
+# Copyright 2026 Qianmo AgentNest Team
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# 阡陌公开版 · 平台模型网关 magpie（systemd 系统单元模板，P35）。
+#
+# 部署形态以 docs/dev/magpie-gateway.md §1 为准，这里不复制论证：管理口只在回环
+# （127.0.0.1:3430，中枢经它管理上游与网关密钥），网关开在网络上、带 TLS、每个调用方都
+# 必须带启用中的网关密钥。节点不得经回环访问网关（magpie 对回环来源不校验密钥）。
+#
+# 单元里没有密钥：MAGPIE_WEB_KEY（16 位以上）写在 /etc/qianmo/magpie.env（0600），控制台
+# 第一次在「网关」页连接时填一次，之后由中枢封存。网关的地址、证书与 IP 放行写在同一个
+# 文件里，按 magpie 自己的文档填；本模板没有对真实 magpie 跑过（未评估）。
+
+[Unit]
+Description=Qianmo public edition model gateway (magpie)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=qianmo
+Group=qianmo
+EnvironmentFile=/etc/qianmo/magpie.env
+Environment=DO_NOT_TRACK=1
+Environment=TZ=Asia/Shanghai
+ExecStart=/usr/local/bin/magpie serve --web=127.0.0.1:3430
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

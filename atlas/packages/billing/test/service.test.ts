@@ -120,7 +120,9 @@ describe('orders and notifications', () => {
     expect(prov.calls).toEqual(['ensure alice', 'enable alice'])
     expect(prov.state.get('alice')).toEqual({
       enabled: true,
-      models: ['group/standard'],
+      plan: 'month',
+      nodes: 1,
+      limits: 1,
     })
     expect(store.subscription('alice')?.gateway).toBe('enabled')
     const view = await service.pollOrder(order.orderId)
@@ -329,6 +331,50 @@ describe('orders and notifications', () => {
     expect((await caught(service.pollOrder('ord_missing'))).code).toBe(
       'unknown_order',
     )
+  })
+})
+
+describe('per-node plans', () => {
+  test('plans carry their node count; the provisioner gets nodes and limits, never a price', async () => {
+    const seen: unknown[] = []
+    const prov = fakeProvisioner()
+    const { service } = setup({
+      provisioner: {
+        async ensure(subject, plan) {
+          seen.push(plan)
+          return prov.ensure(subject, plan)
+        },
+        setEnabled: (subject, enabled) => prov.setEnabled(subject, enabled),
+      },
+    })
+    expect(service.plans().map(plan => [plan.id, plan.nodes])).toEqual([
+      ['month', 1],
+      ['pro', 3],
+    ])
+    await service.grant('u:ops', 'alice', 'pro', 1, '内测')
+    expect(seen).toEqual([
+      {
+        id: 'pro',
+        nodes: 3,
+        gatewayLimits: [
+          { period: 'days', days: 7, tokens: 50_000_000, cacheReads: true },
+          { period: 'hours', hours: 5, costUsd: 10 },
+        ],
+      },
+    ])
+  })
+
+  test("a subscriber's orders, newest first, and nobody else's", async () => {
+    const { service } = setup()
+    const first = await service.createOrder('alice', 'month', 'wechatpay')
+    now += 1000
+    const second = await service.createOrder('alice', 'month', 'alipay')
+    await service.createOrder('bob', 'month', 'wechatpay')
+    expect(service.orders('alice').map(order => order.orderId)).toEqual([
+      second.orderId,
+      first.orderId,
+    ])
+    expect(service.orders('carol')).toEqual([])
   })
 })
 

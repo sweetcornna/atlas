@@ -36,7 +36,7 @@ import {
 } from './channels/types.js'
 import { WechatPayChannel } from './channels/wechatpay.js'
 import type { FetchLike } from './channels/wire.js'
-import type { BillingConfig, Plan, PlanGateway } from './config.js'
+import type { BillingConfig, Plan, PlanProvision } from './config.js'
 import type {
   BillingStore,
   ChainReport,
@@ -59,14 +59,15 @@ const MAX_PERIODS = 120
 const BASE62 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
 
 /**
- * The hub implements this with the gateway (magpie). Contract:
- * `ensure` is idempotent (create or update the subscriber's key, limits and
- * models) and returns an opaque binding (not a secret); `setEnabled(subject,
- * false)` for a subject never ensured must resolve as a no-op. Errors may be
- * thrown freely; only their `name` is recorded.
+ * The hub implements this with its tenancy and the gateway (magpie).
+ * Contract: `ensure` is idempotent (give the subscriber a tenant, the plan's
+ * node allowance and the fair-use limits on the tenant's gateway key) and
+ * returns an opaque binding (not a secret); `setEnabled(subject, false)` for
+ * a subject never ensured must resolve as a no-op. Errors may be thrown
+ * freely; only their `name` is recorded.
  */
 export interface GatewayProvisioner {
-  ensure(subject: string, plan: PlanGateway): Promise<{ binding: string }>
+  ensure(subject: string, plan: PlanProvision): Promise<{ binding: string }>
   setEnabled(subject: string, enabled: boolean): Promise<void>
 }
 
@@ -125,6 +126,7 @@ export interface PublicPlan {
   readonly priceCents: number
   readonly periodDays: number
   readonly note: string | null
+  readonly nodes: number
 }
 
 export interface AdminSnapshot {
@@ -260,7 +262,13 @@ export class BillingService {
       priceCents: plan.priceCents,
       periodDays: plan.periodDays,
       note: plan.note,
+      nodes: plan.nodes,
     }))
+  }
+
+  /** One subscriber's own orders, newest first. */
+  orders(subject: string, limit = 20): OrderView[] {
+    return this.#store.ordersOf(subject, limit).map(viewOf)
   }
 
   entitlement(subject: string, now = this.#clock()): Entitlement {
@@ -773,7 +781,11 @@ export class BillingService {
         return
       }
       try {
-        const result = await this.#provisioner.ensure(subject, plan.gateway)
+        const result = await this.#provisioner.ensure(subject, {
+          id: plan.id,
+          nodes: plan.nodes,
+          gatewayLimits: plan.gatewayLimits,
+        })
         if (!validText(result?.binding, 512))
           throw new TypeError('provisioner returned an invalid binding')
         await this.#provisioner.setEnabled(subject, true)

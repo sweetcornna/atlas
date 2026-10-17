@@ -84,6 +84,7 @@ describe('the pages', () => {
     ['servers', '/admin/servers', 'manage', false],
     ['access', '/admin/access', 'manage', false],
     ['usage', '/admin/usage', 'manage', false],
+    ['billing', '/admin/billing', 'manage', false],
     ['updates', '/admin/updates', 'manage', false],
     ['settings', '/admin/settings', 'manage', false],
   ]
@@ -148,6 +149,8 @@ describe('the pages', () => {
       'login',
       'logout',
       'invite',
+      'plans',
+      'subscription',
     ])
     // And no real module tries.
     for (const module of ROUTES) {

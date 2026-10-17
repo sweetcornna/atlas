@@ -24,6 +24,16 @@
  * 上游永远不在内。magpie 那边的上游与路由组会变，所以每次改动之后、以及每 10
  * 分钟，都把每把密钥的白名单改回合格范围。
  *
+ * ## 公开版：订阅者自己的上游（P35）
+ *
+ * 公开版不卖模型额度。开通订阅时（`consoleBilling.ts`）给订阅者的租户建一把
+ * 「订阅密钥」（`modelsMode: 'tenant'`）：先停用、白名单只有 `NO_MODEL_PATTERN`。
+ * 订阅者在订阅页用自己的 API 密钥从 magpie 预设接上游，中枢记下它的 id 与名字
+ * （名字以 `qmt-` 开头），之后这把密钥的白名单**恰好**是本租户仍在 magpie 里、
+ * id 与名字都对得上的那些上游的 `<id>/*`；一个都没有时回到 `NO_MODEL_PATTERN`
+ * 并停用——magpie 把空白名单当作全部模型，所以空列表从不写出。订阅到期也停用。
+ * 租户的上游从不进平台密钥的白名单、平台的路由组与平台页的上游列表。
+ *
  * ## 文件
  *
  * - `qianmoConfigPath('qianmo','console','magpie.json')`：网关与管理地址、最近
@@ -36,6 +46,9 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type {
+  BillingPresetView,
+  BillingUpstreamView,
+  BillingUsageView,
   ConsoleFailure,
   ConsoleResult,
   MagpieBinding,
@@ -91,6 +104,17 @@ const MANAGEMENT_SLOT = { profileId: 'magpie-management', keyId: 'web-key' }
 const GATEWAY_KEY_ID = 'gw'
 const CHECK_EVERY_MS = 10 * 60 * 1000
 const SNAPSHOT_TTL_MS = 2_000
+/** The name prefix of every upstream a subscriber connects (P35). */
+const TENANT_UPSTREAM_PREFIX = 'qmt-'
+const MAX_TENANT_UPSTREAMS = 10
+const LIMIT_PERIODS: readonly string[] = [
+  'day',
+  'week',
+  'month',
+  'days',
+  'hours',
+]
+const SUBSCRIPTION_KEY = '订阅者的网关密钥随订阅管理 · 这里只能重置限额用量'
 
 interface BindingRecord {
   readonly kind: 'node' | 'tenant'
@@ -101,12 +125,32 @@ interface BindingRecord {
   readonly lane: MagpieLane
   readonly mainModel: string
   readonly fastModel: string | null
-  readonly modelsMode: 'all' | 'list'
-  /** The chosen list in `list` mode; empty in `all` mode. */
+  /**
+   * `all` and `list` are the platform's keys; `tenant` is a subscriber's
+   * (P35), held to the tenant's own upstreams and nothing else.
+   */
+  readonly modelsMode: 'all' | 'list' | 'tenant'
+  /** The chosen list in `list` mode; empty in `all` and `tenant` mode. */
   readonly models: readonly string[]
   /** The node's assignment before it was bound, to give back on removal. */
   readonly previous: ProviderAssignment | null
   readonly createdAt: number
+}
+
+/** One upstream a subscriber connected: magpie's id and the name we gave it. */
+interface TenantUpstreamRecord {
+  readonly id: string
+  readonly name: string
+  readonly preset: string
+  readonly createdAt: number
+}
+
+/** A subscriber tenant (P35): whether it is paid up, its plan's caps, its upstreams. */
+interface TenantRecord {
+  readonly tenant: string
+  readonly entitled: boolean
+  readonly limits: readonly MagpieLimit[]
+  readonly upstreams: readonly TenantUpstreamRecord[]
 }
 
 interface MagpieState {
@@ -117,6 +161,7 @@ interface MagpieState {
   readonly connectedAt: number | null
   readonly lastCheck: MagpieCheckView | null
   readonly bindings: readonly BindingRecord[]
+  readonly tenants: readonly TenantRecord[]
 }
 
 const EMPTY_STATE: MagpieState = {
@@ -127,6 +172,15 @@ const EMPTY_STATE: MagpieState = {
   connectedAt: null,
   lastCheck: null,
   bindings: [],
+  tenants: [],
+}
+
+/** A subscriber tenant's gateway as its subscription page shows it. */
+export interface TenantGatewayView {
+  readonly gateway: 'none' | 'off' | 'on'
+  readonly mainModel: string | null
+  readonly upstreams: readonly BillingUpstreamView[]
+  readonly usage: BillingUsageView | null
 }
 
 export interface ConsoleMagpieOptions {
@@ -136,6 +190,16 @@ export interface ConsoleMagpieOptions {
   readonly providers: ProviderPort
   /** The tenants a key may be bound to (P35). */
   readonly tenants?: () => readonly string[]
+  /**
+   * The public edition (P35): tenant keys come only with a subscription
+   * (`ensureTenant`), never from the page. `caller` is the hub's own
+   * (`ConsoleProviders.systemCaller`); `onProfile` hears that a tenant's
+   * profile changed, so its nodes get it.
+   */
+  readonly subscriptions?: {
+    readonly caller: ProviderCaller
+    readonly onProfile?: (tenant: string) => void
+  }
   readonly fetch?: typeof fetch
   readonly now?: () => number
   readonly checkEveryMs?: number
@@ -194,6 +258,8 @@ function fromProviders(failure: ProviderFailure): Failure {
       return failed('rejected', message)
     case 'refused':
       return failed('refused', message)
+    case 'edition_public_magpie_only':
+      return failed('rejected', message)
     default:
       return failed('unreachable', message)
   }
@@ -247,6 +313,23 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
   )
 }
 
+/** Whether magpie's limits are the plan's, field by field. */
+function sameLimits(
+  a: readonly MagpieLimit[],
+  b: readonly MagpieLimit[],
+): boolean {
+  const key = (limit: MagpieLimit) =>
+    [
+      limit.period,
+      limit.days ?? '',
+      limit.hours ?? '',
+      limit.tokens ?? '',
+      limit.cost ?? '',
+      limit.cacheReads === true,
+    ].join('|')
+  return sameList(a.map(key), b.map(key))
+}
+
 function parseState(text: string): MagpieState | null {
   let raw: unknown
   try {
@@ -292,7 +375,10 @@ function parseState(text: string): MagpieState | null {
       lane,
       mainModel,
       fastModel: text_(entry['fastModel']),
-      modelsMode: entry['modelsMode'] === 'list' ? 'list' : 'all',
+      modelsMode:
+        entry['modelsMode'] === 'list' || entry['modelsMode'] === 'tenant'
+          ? entry['modelsMode']
+          : 'all',
       models: Array.isArray(entry['models'])
         ? entry['models'].filter(
             (one): one is string => typeof one === 'string',
@@ -304,6 +390,36 @@ function parseState(text: string): MagpieState | null {
       createdAt: number(entry['createdAt']) ?? 0,
     })
   }
+  const tenants: TenantRecord[] = []
+  for (const entry of Array.isArray(raw['tenants']) ? raw['tenants'] : []) {
+    if (!isRecord(entry)) return null
+    const tenant = text_(entry['tenant'])
+    if (tenant === null || !Array.isArray(entry['upstreams'])) return null
+    const upstreams: TenantUpstreamRecord[] = []
+    for (const one of entry['upstreams']) {
+      if (!isRecord(one)) return null
+      const id = text_(one['id'])
+      const name = text_(one['name'])
+      if (id === null || name === null) return null
+      upstreams.push({
+        id,
+        name,
+        preset: text_(one['preset']) ?? '',
+        createdAt: number(one['createdAt']) ?? 0,
+      })
+    }
+    tenants.push({
+      tenant,
+      entitled: entry['entitled'] === true,
+      limits: Array.isArray(entry['limits'])
+        ? entry['limits'].filter(
+            (one): one is MagpieLimit =>
+              isRecord(one) && LIMIT_PERIODS.includes(String(one['period'])),
+          )
+        : [],
+      upstreams,
+    })
+  }
   const check = raw['lastCheck']
   return {
     v: 1,
@@ -313,6 +429,7 @@ function parseState(text: string): MagpieState | null {
     connectedAt: number(raw['connectedAt']),
     lastCheck: isRecord(check) ? (check as unknown as MagpieCheckView) : null,
     bindings,
+    tenants,
   }
 }
 
@@ -546,18 +663,100 @@ export class ConsoleMagpie implements MagpiePort {
     return { providers, groups }
   }
 
+  // --- subscriber tenants (P35) -------------------------------------------
+
+  /** An upstream a subscriber connected, by our records or by its name. */
+  #tenantOwned(provider: MagpieProvider): boolean {
+    if (provider.name.startsWith(TENANT_UPSTREAM_PREFIX)) return true
+    const id = provider.id.toLowerCase()
+    return this.#state.tenants.some(tenant =>
+      tenant.upstreams.some(one => one.id.toLowerCase() === id),
+    )
+  }
+
+  /** What the platform's keys, groups and page may see: no subscriber's upstream. */
+  #platform(read: MagpieRead): MagpieRead {
+    return {
+      providers: read.providers.filter(one => !this.#tenantOwned(one)),
+      groups: read.groups,
+    }
+  }
+
+  #tenantRecord(tenant: string): TenantRecord | undefined {
+    return this.#state.tenants.find(one => one.tenant === tenant)
+  }
+
+  /**
+   * A tenant's upstreams that are still its own in magpie: same id, same
+   * name, an API-key upstream. A provider magpie later gave the same id to
+   * somebody else does not match the name and is not let through.
+   */
+  #tenantPresent(
+    tenant: string,
+    read: MagpieRead,
+  ): readonly {
+    readonly upstream: TenantUpstreamRecord
+    readonly provider: MagpieProvider
+  }[] {
+    const record = this.#tenantRecord(tenant)
+    if (record === undefined) return []
+    return record.upstreams.flatMap(upstream => {
+      const provider = read.providers.find(
+        one =>
+          one.id === upstream.id &&
+          one.name === upstream.name &&
+          one.access === 'key',
+      )
+      return provider === undefined ? [] : [{ upstream, provider }]
+    })
+  }
+
+  /** A subscriber key's list: its own upstreams, else nothing; never empty. */
+  #tenantPatterns(tenant: string, read: MagpieRead): readonly string[] {
+    const present = this.#tenantPresent(tenant, read)
+    return present.length === 0
+      ? [NO_MODEL_PATTERN]
+      : present.map(({ upstream }) => `${upstream.id}/*`)
+  }
+
+  /** On only while paid up and with an upstream of its own. */
+  #tenantEnabled(tenant: string, read: MagpieRead): boolean {
+    return (
+      this.#tenantRecord(tenant)?.entitled === true &&
+      this.#tenantPresent(tenant, read).length > 0
+    )
+  }
+
+  /** The main model of a subscriber's profile: kept while valid, else the first. */
+  #tenantMain(record: BindingRecord, read: MagpieRead): string {
+    const models = this.#tenantPresent(record.id, read)
+      .flatMap(({ provider }) =>
+        provider.modelIds.map(model => `${provider.id}/${model}`),
+      )
+      .filter(id => PROFILE_MODEL_ID.test(id))
+    if (models.includes(record.mainModel)) return record.mainModel
+    return models[0] ?? NO_MODEL_PATTERN
+  }
+
   /** What a binding's key may use now. */
   #target(record: BindingRecord, read: MagpieRead): readonly string[] {
-    const eligible = eligiblePatterns(read.providers, read.groups)
+    if (record.modelsMode === 'tenant')
+      return this.#tenantPatterns(record.id, read)
+    const platform = this.#platform(read)
+    const eligible = eligiblePatterns(platform.providers, platform.groups)
     if (record.modelsMode === 'all') return eligible
     const bad = new Set(
-      ineligiblePatterns(record.models, read.providers, read.groups),
+      ineligiblePatterns(record.models, platform.providers, platform.groups),
     )
     const kept = record.models.filter(model => !bad.has(model))
     return kept.length === 0 ? [NO_MODEL_PATTERN] : kept
   }
 
-  /** Bring every key's list back within what is eligible (L-6). */
+  /**
+   * Bring every key's list back within what is eligible (L-6); a subscriber
+   * key also to on or off, narrowed before it is switched on and switched
+   * off before it is narrowed, and its profile to a main model it can use.
+   */
   async #reconcile(client: MagpieClient, read?: MagpieRead): Promise<void> {
     if (this.#state.bindings.length === 0) return
     const now = read ?? (await this.#read(client))
@@ -566,9 +765,38 @@ export class ConsoleMagpie implements MagpiePort {
       const key = keys.find(one => one.id === record.keyId)
       if (key === undefined) continue
       const target = this.#target(record, now)
+      const tenant = record.modelsMode === 'tenant'
+      const enable = tenant && this.#tenantEnabled(record.id, now)
+      if (tenant && !enable && key.enabled)
+        await client.setKeyEnabled(key.id, false)
       if (!sameList(key.models, target))
         await client.setKeyModels(key.id, target)
+      if (tenant && enable && !key.enabled)
+        await client.setKeyEnabled(key.id, true)
+      if (tenant) await this.#tenantProfile(record, now)
     }
+  }
+
+  /** Point a subscriber's profile at a main model its key lets through. */
+  async #tenantProfile(record: BindingRecord, read: MagpieRead): Promise<void> {
+    const main = this.#tenantMain(record, read)
+    const subscriptions = this.#options.subscriptions
+    if (main === record.mainModel || subscriptions === undefined) return
+    const next: BindingRecord = { ...record, mainModel: main }
+    const revision = await this.#revision(record.profileId)
+    if (revision === null) return
+    const saved = await this.#options.providers.saveProfile(
+      { profile: this.#profileDraft(next), ifMatch: revision },
+      subscriptions.caller,
+    )
+    if (!saved.ok) {
+      this.#options.onError?.(
+        `${record.profileId} 没能换主模型 · ${saved.failure.message}`,
+      )
+      return
+    }
+    this.#replace(next)
+    subscriptions.onProfile?.(record.id)
   }
 
   async #nodes(): Promise<readonly string[]> {
@@ -608,7 +836,8 @@ export class ConsoleMagpie implements MagpiePort {
       lane: record.lane,
       mainModel: record.mainModel,
       fastModel: record.fastModel,
-      modelsMode: record.modelsMode,
+      // A subscriber's key shows as the list it is held to.
+      modelsMode: record.modelsMode === 'tenant' ? 'list' : record.modelsMode,
       models: key?.models ?? record.models,
       enabled: key === null || key === undefined ? null : key.enabled,
       masked: key?.masked ?? null,
@@ -687,10 +916,11 @@ export class ConsoleMagpie implements MagpiePort {
         client.listPresets(),
         client.listKeys(),
       ])
+      const platform = this.#platform(read)
       const value: MagpieSnapshot = {
         ...base,
         problem: null,
-        providers: read.providers.map(providerView),
+        providers: platform.providers.map(providerView),
         presets: presets.map(preset => ({
           id: preset.id,
           name: preset.name,
@@ -698,7 +928,7 @@ export class ConsoleMagpie implements MagpiePort {
           noKey: preset.noKey,
         })),
         groups: read.groups.map(group =>
-          groupView(group, read.providers, read.groups),
+          groupView(group, platform.providers, platform.groups),
         ),
         keys: this.#state.bindings.map(record =>
           this.#keyView(
@@ -706,7 +936,7 @@ export class ConsoleMagpie implements MagpiePort {
             keys.find(key => key.id === record.keyId),
           ),
         ),
-        models: modelChoices(read.providers, read.groups),
+        models: modelChoices(platform.providers, platform.groups),
       }
       this.#cache = { at: this.#now(), value }
       return ok(value)
@@ -867,6 +1097,11 @@ export class ConsoleMagpie implements MagpiePort {
   ): Promise<Result<MagpieProvider>> {
     const provider = (await client.listProviders()).find(one => one.id === id)
     if (provider === undefined) return failed('not_found', '没有这个上游')
+    if (this.#tenantOwned(provider))
+      return failed(
+        'rejected',
+        '这个上游是订阅者自己接的 · 由订阅者在订阅页管理',
+      )
     if (provider.access !== 'key')
       return failed(
         'rejected',
@@ -888,6 +1123,8 @@ export class ConsoleMagpie implements MagpiePort {
         const presets = await client.listPresets()
         if (!presets.some(preset => preset.id === draft.preset))
           return failed('rejected', '这个预设不能用 · 只收用 API 密钥的上游')
+        if (draft.name?.trim().startsWith(TENANT_UPSTREAM_PREFIX))
+          return failed('invalid', `名称不能以 ${TENANT_UPSTREAM_PREFIX} 开头`)
         const added = await client.saveProvider({
           preset: draft.preset,
           ...(draft.key === undefined ? {} : { key: draft.key }),
@@ -988,7 +1225,7 @@ export class ConsoleMagpie implements MagpiePort {
       const client = this.#client()
       if (!(client instanceof MagpieClient)) return client
       try {
-        const read = await this.#read(client)
+        const read = this.#platform(await this.#read(client))
         if (draft.members !== undefined) {
           const bad = ineligiblePatterns(
             draft.members,
@@ -1012,7 +1249,8 @@ export class ConsoleMagpie implements MagpiePort {
         const saved = await client.saveGroup(draft)
         const after = await this.#read(client)
         await this.#reconcile(client, after)
-        return ok(groupView(saved, after.providers, after.groups))
+        const platform = this.#platform(after)
+        return ok(groupView(saved, platform.providers, platform.groups))
       } catch (error) {
         return fromMagpie(error)
       }
@@ -1139,6 +1377,14 @@ export class ConsoleMagpie implements MagpiePort {
         (binding.kind === 'tenant' && !TENANT_ID.test(binding.id))
       )
         return failed('invalid', '绑定无效')
+      if (
+        binding.kind === 'tenant' &&
+        this.#options.subscriptions !== undefined
+      )
+        return failed(
+          'rejected',
+          '公开版的租户网关密钥随订阅开通 · 模型由订阅者自己接入',
+        )
       if (this.#state.bindings.some(one => sameBinding(one, binding)))
         return failed('invalid', '这个绑定已有网关密钥 · 要换就轮换或收回')
       const providers = this.#options.providers
@@ -1161,7 +1407,7 @@ export class ConsoleMagpie implements MagpiePort {
       const profileId = magpieProfileId(binding)
       let read: MagpieRead
       try {
-        read = await this.#read(client)
+        read = this.#platform(await this.#read(client))
       } catch (error) {
         return fromMagpie(error)
       }
@@ -1307,12 +1553,23 @@ export class ConsoleMagpie implements MagpiePort {
       if (denied !== null) return denied
       const current = this.#record(binding)
       if (current === undefined) return failed('not_found', '没有这把网关密钥')
+      if (
+        current.modelsMode === 'tenant' &&
+        (change.models !== undefined ||
+          change.mainModel !== undefined ||
+          change.fastModel !== undefined ||
+          change.enabled !== undefined ||
+          change.limits !== undefined)
+      )
+        return failed('rejected', SUBSCRIPTION_KEY)
       const client = this.#client()
       if (!(client instanceof MagpieClient)) return client
       const providers = this.#options.providers
       const pcaller = this.#providerCaller(caller)
       try {
-        const read = await this.#read(client)
+        const live = await this.#read(client)
+        const read =
+          current.modelsMode === 'tenant' ? live : this.#platform(live)
         let record = current
         if (change.models !== undefined) {
           if (change.models === null) {
@@ -1394,6 +1651,8 @@ export class ConsoleMagpie implements MagpiePort {
       if (denied !== null) return denied
       const record = this.#record(binding)
       if (record === undefined) return failed('not_found', '没有这把网关密钥')
+      if (record.modelsMode === 'tenant')
+        return failed('rejected', SUBSCRIPTION_KEY)
       const client = this.#client()
       if (!(client instanceof MagpieClient)) return client
       const providers = this.#options.providers
@@ -1448,6 +1707,8 @@ export class ConsoleMagpie implements MagpiePort {
       if (denied !== null) return denied
       const record = this.#record(binding)
       if (record === undefined) return failed('not_found', '没有这把网关密钥')
+      if (record.modelsMode === 'tenant')
+        return failed('rejected', SUBSCRIPTION_KEY)
       const client = this.#client()
       if (!(client instanceof MagpieClient)) return client
       const providers = this.#options.providers
@@ -1505,6 +1766,370 @@ export class ConsoleMagpie implements MagpiePort {
         bindings: this.#state.bindings.filter(one => !sameBinding(one, record)),
       })
       return ok({ profileKept })
+    })
+  }
+  // --- subscriber tenants (P35): the hub's own calls -------------------------
+
+  #subscriptionsOpen(): Failure | null {
+    if (this.#options.subscriptions === undefined)
+      return failed('unsupported', '这个网关没有接订阅')
+    const problem = this.problem
+    return problem === null ? null : failed('unsupported', problem)
+  }
+
+  #saveTenant(next: TenantRecord): void {
+    const others = this.#state.tenants.filter(one => one.tenant !== next.tenant)
+    this.#save({ ...this.#state, tenants: [...others, next] })
+  }
+
+  /**
+   * Give a subscriber tenant its gateway key (idempotent): made, held to
+   * nothing and switched off before anything else, capped by the plan's
+   * fair-use limits, written into profile `magpie-tenant-<id>` with the
+   * hub's own caller. The value lives only in the model service's sealed
+   * store; magpie and this file know its name and id.
+   */
+  ensureTenant(
+    tenant: string,
+    limits: readonly MagpieLimit[],
+  ): Promise<Result<{ readonly binding: string }>> {
+    return this.#serial(async () => {
+      const closed = this.#subscriptionsOpen()
+      if (closed !== null) return closed
+      const caller = this.#options.subscriptions?.caller
+      if (caller === undefined)
+        return failed('unsupported', '这个网关没有接订阅')
+      if (!TENANT_ID.test(tenant)) return failed('invalid', '租户 id 无效')
+      const binding: MagpieBinding = { kind: 'tenant', id: tenant }
+      const client = this.#client()
+      if (!(client instanceof MagpieClient)) return client
+      const existing = this.#record(binding)
+      const known = this.#tenantRecord(tenant)
+      try {
+        if (existing !== undefined) {
+          if (existing.modelsMode !== 'tenant')
+            return failed(
+              'invalid',
+              '这个租户已有平台签发的网关密钥 · 先在网关页收回',
+            )
+          const key = (await client.listKeys()).find(
+            one => one.id === existing.keyId,
+          )
+          if (key === undefined)
+            return failed('not_found', 'magpie 里没有这个租户的网关密钥')
+          if (!sameLimits(key.limits, limits))
+            await client.setKeyLimits(key.id, limits)
+          this.#saveTenant({
+            tenant,
+            entitled: known?.entitled ?? false,
+            limits,
+            upstreams: known?.upstreams ?? [],
+          })
+          await this.#reconcile(client)
+          return ok({ binding: bindingKey(binding) })
+        }
+      } catch (error) {
+        return fromMagpie(error)
+      }
+      const providers = this.#options.providers
+      const secret = newSecret()
+      const keyName = `qm-tenant-${tenant.slice(0, 60)}-${randomUUID()}`
+      let key: MagpieKey
+      try {
+        key = await client.addKey({ name: keyName, secret })
+      } catch (error) {
+        return fromMagpie(error)
+      }
+      const undo = async (): Promise<void> => {
+        try {
+          await client.removeKey(key.id)
+        } catch (error) {
+          this.#options.onError?.(
+            `收回半成的订阅密钥失败 · ${messageOf(error)}`,
+          )
+        }
+      }
+      try {
+        // Nothing, then off: magpie reads an empty list as every model.
+        key = await client.setKeyModels(key.id, [NO_MODEL_PATTERN])
+        key = await client.setKeyEnabled(key.id, false)
+        if (limits.length > 0) key = await client.setKeyLimits(key.id, limits)
+      } catch (error) {
+        await undo()
+        return fromMagpie(error)
+      }
+      const record: BindingRecord = {
+        kind: 'tenant',
+        id: tenant,
+        keyId: key.id,
+        keyName,
+        profileId: magpieProfileId(binding),
+        lane: 'anthropic',
+        mainModel: NO_MODEL_PATTERN,
+        fastModel: null,
+        modelsMode: 'tenant',
+        models: [],
+        previous: null,
+        createdAt: this.#now(),
+      }
+      const revision = await this.#revision(record.profileId)
+      const saved = await providers.saveProfile(
+        {
+          profile: this.#profileDraft(record),
+          ifMatch: revision,
+          secrets: { [GATEWAY_KEY_ID]: secret },
+        },
+        caller,
+      )
+      if (!saved.ok) {
+        await undo()
+        return fromProviders(saved.failure)
+      }
+      try {
+        this.#save({
+          ...this.#state,
+          bindings: [...this.#state.bindings, record],
+          tenants: [
+            ...this.#state.tenants.filter(one => one.tenant !== tenant),
+            {
+              tenant,
+              entitled: known?.entitled ?? false,
+              limits,
+              upstreams: known?.upstreams ?? [],
+            },
+          ],
+        })
+      } catch (error) {
+        return failed('unreachable', `网关状态写不进去 · ${messageOf(error)}`)
+      }
+      try {
+        await this.#reconcile(client)
+      } catch (error) {
+        this.#options.onError?.(`订阅密钥核对失败 · ${messageOf(error)}`)
+      }
+      return ok({ binding: bindingKey(binding) })
+    })
+  }
+
+  /**
+   * Paid up or not. Off takes the key off at once; on lets it on only with
+   * an upstream of the tenant's own. A tenant never ensured is a no-op.
+   */
+  setTenantEntitled(tenant: string, entitled: boolean): Promise<Result<void>> {
+    return this.#serial(async () => {
+      const known = this.#tenantRecord(tenant)
+      if (known === undefined) return ok(undefined)
+      const closed = this.#subscriptionsOpen()
+      if (closed !== null) return closed
+      if (known.entitled !== entitled) this.#saveTenant({ ...known, entitled })
+      const client = this.#client()
+      if (!(client instanceof MagpieClient)) return client
+      try {
+        await this.#reconcile(client)
+      } catch (error) {
+        return fromMagpie(error)
+      }
+      return ok(undefined)
+    })
+  }
+
+  /** The profile a tenant's nodes run on, once its key exists. */
+  tenantProfileId(tenant: string): string | null {
+    const record = this.#record({ kind: 'tenant', id: tenant })
+    return record?.modelsMode === 'tenant' ? record.profileId : null
+  }
+
+  /** The presets a subscriber may connect: one API key and nothing else (L-6). */
+  async tenantPresets(): Promise<Result<readonly BillingPresetView[]>> {
+    const client = this.#client()
+    if (!(client instanceof MagpieClient)) return client
+    try {
+      return ok(
+        (await client.listPresets())
+          .filter(preset => !preset.noKey)
+          .map(preset => ({ id: preset.id, name: preset.name })),
+      )
+    } catch (error) {
+      return fromMagpie(error)
+    }
+  }
+
+  /** A subscriber tenant's gateway, for its own page; never another's. */
+  async tenantView(tenant: string): Promise<Result<TenantGatewayView>> {
+    const record = this.#record({ kind: 'tenant', id: tenant })
+    const known = this.#tenantRecord(tenant)
+    if (record === undefined || record.modelsMode !== 'tenant')
+      return ok({
+        gateway: 'none',
+        mainModel: null,
+        upstreams: [],
+        usage: null,
+      })
+    const offline = (): TenantGatewayView => ({
+      gateway: 'off',
+      mainModel:
+        record.mainModel === NO_MODEL_PATTERN ? null : record.mainModel,
+      upstreams: (known?.upstreams ?? []).map(one => ({
+        id: one.id,
+        name: one.preset,
+        preset: one.preset,
+        models: 0,
+        ready: false,
+        present: false,
+      })),
+      usage: null,
+    })
+    const client = this.#client()
+    if (!(client instanceof MagpieClient)) return ok(offline())
+    let read: MagpieRead
+    let keys: readonly MagpieKey[]
+    let presets: readonly { readonly id: string; readonly name: string }[]
+    try {
+      ;[read, keys, presets] = await Promise.all([
+        this.#read(client),
+        client.listKeys(),
+        client.listPresets(),
+      ])
+    } catch {
+      return ok(offline())
+    }
+    const present = this.#tenantPresent(tenant, read)
+    const key = keys.find(one => one.id === record.keyId)
+    let usage: BillingUsageView | null = null
+    try {
+      const row = (await client.usage('30d')).keys.find(
+        one => one.keyId === record.keyId,
+      )
+      usage = {
+        period: '30d',
+        calls: row?.calls ?? 0,
+        input: row?.input ?? 0,
+        output: row?.output ?? 0,
+        cacheRead: row?.cacheRead ?? 0,
+        cost: row?.cost ?? 0,
+      }
+    } catch {
+      usage = null
+    }
+    return ok({
+      gateway: key?.enabled === true ? 'on' : 'off',
+      mainModel:
+        record.mainModel === NO_MODEL_PATTERN ? null : record.mainModel,
+      upstreams: (known?.upstreams ?? []).map(one => {
+        const live = present.find(item => item.upstream.id === one.id)
+        return {
+          id: one.id,
+          name:
+            presets.find(preset => preset.id === one.preset)?.name ??
+            one.preset,
+          preset: one.preset,
+          models: live?.provider.models ?? 0,
+          ready: live?.provider.ready ?? false,
+          present: live !== undefined,
+        }
+      }),
+      usage,
+    })
+  }
+
+  /**
+   * Connect one of the subscriber's own upstreams from a magpie preset. The
+   * key goes to magpie and nowhere else; the upstream is named `qmt-…` and
+   * recorded before the tenant's key is widened to it.
+   */
+  addTenantUpstream(
+    tenant: string,
+    draft: { readonly preset: string; readonly key: string },
+  ): Promise<Result<BillingUpstreamView>> {
+    return this.#serial(async () => {
+      const closed = this.#subscriptionsOpen()
+      if (closed !== null) return closed
+      const known = this.#tenantRecord(tenant)
+      if (known === undefined || this.tenantProfileId(tenant) === null)
+        return failed('invalid', '订阅还在开通 · 稍后再试')
+      if (!known.entitled)
+        return failed('rejected', '订阅已到期 · 续费后再接入')
+      if (known.upstreams.length >= MAX_TENANT_UPSTREAMS)
+        return failed('invalid', `最多接 ${MAX_TENANT_UPSTREAMS} 个上游`)
+      const client = this.#client()
+      if (!(client instanceof MagpieClient)) return client
+      try {
+        const preset = (await client.listPresets()).find(
+          one => one.id === draft.preset && !one.noKey,
+        )
+        if (preset === undefined)
+          return failed(
+            'rejected',
+            '这个预设不能用 · 只收填一把 API 密钥的上游',
+          )
+        const name =
+          `${TENANT_UPSTREAM_PREFIX}${tenant.slice(0, 48)}-${preset.id.slice(0, 20)}-${randomBytes(3).toString('hex')}`.slice(
+            0,
+            80,
+          )
+        const added = await client.saveProvider({
+          preset: preset.id,
+          key: draft.key,
+          name,
+        })
+        if (added.access !== 'key' || added.name !== name) {
+          await client.deleteProvider(added.id)
+          return failed('rejected', '这个上游不是 API 密钥上游 · 已撤回')
+        }
+        const upstream: TenantUpstreamRecord = {
+          id: added.id,
+          name,
+          preset: preset.id,
+          createdAt: this.#now(),
+        }
+        this.#saveTenant({
+          ...known,
+          upstreams: [...known.upstreams, upstream],
+        })
+        await this.#reconcile(client)
+        return ok({
+          id: added.id,
+          name: preset.name,
+          preset: preset.id,
+          models: added.models,
+          ready: added.ready,
+          present: true,
+        })
+      } catch (error) {
+        return fromMagpie(error)
+      }
+    })
+  }
+
+  /**
+   * Remove one of the subscriber's upstreams: off its key first (off
+   * altogether when it was the last), then out of magpie — only if the
+   * provider there is still the one we made.
+   */
+  removeTenantUpstream(tenant: string, id: string): Promise<Result<void>> {
+    return this.#serial(async () => {
+      const closed = this.#subscriptionsOpen()
+      if (closed !== null) return closed
+      const known = this.#tenantRecord(tenant)
+      const upstream = known?.upstreams.find(one => one.id === id)
+      if (known === undefined || upstream === undefined)
+        return failed('not_found', '没有这个上游')
+      const client = this.#client()
+      if (!(client instanceof MagpieClient)) return client
+      this.#saveTenant({
+        ...known,
+        upstreams: known.upstreams.filter(one => one.id !== id),
+      })
+      try {
+        const read = await this.#read(client)
+        await this.#reconcile(client, read)
+        const live = read.providers.find(one => one.id === id)
+        if (live !== undefined && live.name === upstream.name)
+          await client.deleteProvider(id)
+        return ok(undefined)
+      } catch (error) {
+        return fromMagpie(error)
+      }
     })
   }
 }

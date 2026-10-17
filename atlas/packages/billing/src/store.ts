@@ -342,6 +342,15 @@ export class BillingStore {
       .all(now, limit)
   }
 
+  /** One subject's orders, newest first. */
+  ordersOf(subject: string, limit: number): OrderRow[] {
+    return this.#db
+      .query<OrderRow, [string, number]>(
+        'SELECT * FROM orders WHERE subject = ? ORDER BY createdAt DESC, id LIMIT ?',
+      )
+      .all(subject, limit)
+  }
+
   recentOrders(limit: number): OrderRow[] {
     return this.#db
       .query<OrderRow, [number]>(

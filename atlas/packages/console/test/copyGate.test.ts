@@ -52,6 +52,7 @@ import {
   invite,
   person,
 } from './accountsHarness.js'
+import { publicConsole } from './billingFake.js'
 import { ADMIN, VIEW, browse, pageHarness } from './pageHarness.js'
 
 const BANNED = ['。', '，', '、', '！', '!'] as const
@@ -176,7 +177,90 @@ async function frontDocuments(): Promise<[string, string][]> {
   return out
 }
 
+/**
+ * The public edition's documents (P35), each in the state that shows the
+ * most copy: the plans page, the three standing cards on `/`, the
+ * subscription page before and after subscribing (with an upstream and with
+ * more nodes than the plan), both checkout steps, a refused checkout, and
+ * 订阅 for platform ops with rows in every section.
+ */
+async function publicDocuments(): Promise<[string, string][]> {
+  const f = publicConsole()
+  const out: [string, string][] = []
+  const get = async (where: string, path: string, bearer?: string) => {
+    const response = await f.handle(
+      new Request(`${ACCOUNTS_BASE}${path}`, {
+        headers: {
+          accept: 'text/html',
+          ...(bearer === undefined
+            ? {}
+            : { authorization: `Bearer ${bearer}` }),
+        },
+      }),
+    )
+    out.push([where, await response.text()])
+  }
+  const form = (fields: Record<string, string>) =>
+    new Request(`${ACCOUNTS_BASE}/subscription/checkout`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${f.unpaid.credential}`,
+        'content-type': 'application/x-www-form-urlencoded',
+        'sec-fetch-site': 'same-origin',
+      },
+      body: new URLSearchParams(fields).toString(),
+    })
+  await get('plans', '/plans')
+  await get('plans signed in', '/plans', f.unpaid.credential)
+  for (const who of ['unpaid', 'expired', 'waiting'] as const)
+    await get(`front ${who}`, '/', f[who].credential)
+  await get('subscription unpaid', '/subscription', f.unpaid.credential)
+  await f.billing.addUpstream(f.paid.subject, { preset: 'openai', key: 'k' })
+  f.billing.activate(f.paid.subject, { nodes: 1, nodesMapped: 2 })
+  await get('subscription paid', '/subscription', f.paid.credential)
+  await get('subscription waiting', '/subscription', f.waiting.credential)
+  await get(
+    'checkout confirm',
+    '/subscription/checkout?plan=month&channel=alipay',
+    f.unpaid.credential,
+  )
+  const created = await f.handle(form({ plan: 'month', channel: 'wechatpay' }))
+  await get(
+    'checkout qr',
+    created.headers.get('location') ?? '/',
+    f.unpaid.credential,
+  )
+  f.billing.siteView = {
+    ...f.billing.siteView,
+    channels: { wechatpay: true, alipay: false, redeem: true },
+  }
+  const refused = await f.handle(form({ plan: 'month', channel: 'alipay' }))
+  out.push(['checkout refused', await refused.text()])
+  await f.billing.codes(
+    { subject: f.platform.subject, role: 'ops', requestId: 'r' },
+    { planId: 'month', periods: 1, count: 1 },
+  )
+  await get('订阅 as platform', '/admin/billing', f.platform.credential)
+  return out
+}
+
 describe('every document keeps the copy rules (I1)', () => {
+  test('the public edition: plans, standings, subscription, checkout, 订阅, and their scripts', async () => {
+    const found: string[] = []
+    const documents = await publicDocuments()
+    expect(documents.length).toBeGreaterThan(10)
+    let literals = 0
+    for (const [where, html] of documents) {
+      found.push(...checkDocument(where, html))
+      for (const literal of cjkLiterals(scriptOf(html))) {
+        literals += 1
+        found.push(...violations(`${where} '${literal}'`, literal))
+      }
+    }
+    expect(literals).toBeGreaterThan(20)
+    expect(found).toEqual([])
+  })
+
   test('front welcome, loaded session and redirected readers keep document and attribute copy clean', async () => {
     const found: string[] = []
     for (const [where, html] of await frontDocuments())
@@ -442,6 +526,7 @@ async function everythingShown(): Promise<[string, string][]> {
     ).text(),
   )
   for (const [where, html] of await frontDocuments()) add(where, html)
+  for (const [where, html] of await publicDocuments()) add(where, html)
   // What the console's own code can say: every CJK literal in its source.
   for (const literal of messageCorpus(
     sourceFiles().filter(isConsoleSource),

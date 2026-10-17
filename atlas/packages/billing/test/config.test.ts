@@ -39,10 +39,11 @@ describe('parseBillingConfig', () => {
     const { json } = setup()
     const config = parseBillingConfig(JSON.stringify(json))
     expect(config.plans.map(plan => plan.id)).toEqual(['month', 'pro'])
-    expect(config.plans[0]!.note).toBe('每月 30 美元额度')
+    expect(config.plans[0]!.note).toBe('一个托管节点')
     expect(config.plans[1]!.note).toBeNull()
-    expect(config.plans[1]!.gateway.limits).toEqual([
-      { period: 'days', days: 7, tokens: 50_000_000 },
+    expect(config.plans.map(plan => plan.nodes)).toEqual([1, 3])
+    expect(config.plans[1]!.gatewayLimits).toEqual([
+      { period: 'days', days: 7, tokens: 50_000_000, cacheReads: true },
       { period: 'hours', hours: 5, costUsd: 10 },
     ])
     expect(config.channels.wechatpay?.endpoint).toBe(
@@ -83,10 +84,14 @@ describe('parseBillingConfig', () => {
     channels['wechatpay']!['mchId'] = 'x'
     rejects({ ...json, channels }, /wechatpay\.mchId：未知字段/)
     const limits = structuredClone(json['plans']) as {
-      gateway: { limits: Record<string, unknown>[] }
+      gatewayLimits: Record<string, unknown>[]
     }[]
-    limits[0]!.gateway.limits[0]!['tokenz'] = 5
-    rejects({ ...json, plans: limits }, /limits\[0\]\.tokenz：未知字段/)
+    limits[0]!.gatewayLimits[0]!['tokenz'] = 5
+    rejects({ ...json, plans: limits }, /gatewayLimits\[0\]\.tokenz：未知字段/)
+    // A plan sells nodes, never models: the old model allowance is refused.
+    const old = structuredClone(json['plans']) as Record<string, unknown>[]
+    old[0]!['gateway'] = { limits: [], models: ['openai/*'] }
+    rejects({ ...json, plans: old }, /plans\[0\]\.gateway：未知字段/)
   })
 
   test('requires sourceUrl (AGPL §13) over https', () => {
@@ -96,7 +101,7 @@ describe('parseBillingConfig', () => {
     rejects({ ...json, sourceUrl: 'http://example.com/src' }, /https/)
   })
 
-  test('validates plans, limits and model patterns', () => {
+  test('validates plans, node counts and fair-use limits', () => {
     const { json } = setup()
     const base = json['plans'] as Record<string, unknown>[]
     const withPlan = (patch: Record<string, unknown>) => ({
@@ -107,66 +112,56 @@ describe('parseBillingConfig', () => {
     rejects(withPlan({ priceCents: 99.5 }), /priceCents/)
     rejects(withPlan({ periodDays: 0 }), /periodDays/)
     rejects(withPlan({ id: 'Bad Id' }), /\.id：格式不对/)
+    const { nodes: _nodes, ...noNodes } = base[0]!
+    rejects({ ...json, plans: [noNodes] }, /nodes：必须是 1–100/)
+    rejects(withPlan({ nodes: 0 }), /nodes：必须是 1–100/)
+    rejects(withPlan({ nodes: 101 }), /nodes：必须是 1–100/)
+    rejects(withPlan({ nodes: 1.5 }), /nodes/)
     rejects(
-      withPlan({
-        gateway: { limits: [{ period: 'days', tokens: 5 }], models: ['a/b'] },
-      }),
+      withPlan({ gatewayLimits: [{ period: 'days', tokens: 5 }] }),
       /days：必须是/,
     )
     rejects(
-      withPlan({
-        gateway: {
-          limits: [{ period: 'day', hours: 3, tokens: 5 }],
-          models: ['a/b'],
-        },
-      }),
+      withPlan({ gatewayLimits: [{ period: 'day', hours: 3, tokens: 5 }] }),
       /hours：只有 period 为 hours/,
     )
     rejects(
-      withPlan({ gateway: { limits: [{ period: 'day' }], models: ['a/b'] } }),
-      /至少填一个/,
+      withPlan({ gatewayLimits: [{ period: 'day' }] }),
+      /tokens、costUsd 至少填一个/,
     )
     rejects(
       withPlan({
-        gateway: {
-          limits: Array.from({ length: 6 }, () => ({
-            period: 'day',
-            tokens: 1,
-          })),
-          models: ['a/b'],
-        },
+        gatewayLimits: [{ period: 'day', costUsd: 1, cacheReads: 5 }],
+      }),
+      /cacheReads：必须是布尔值/,
+    )
+    rejects(
+      withPlan({
+        gatewayLimits: [{ period: 'day', costUsd: 1, cacheReads: true }],
+      }),
+      /cacheReads：只有填了 tokens/,
+    )
+    rejects(
+      withPlan({
+        gatewayLimits: Array.from({ length: 6 }, () => ({
+          period: 'day',
+          tokens: 1,
+        })),
       }),
       /不超过 5 项/,
     )
-    for (const bad of ['no-slash', 'a/', 'group/*', 'a/b*c', '/x'])
-      rejects(
-        withPlan({ gateway: { limits: [], models: [bad] } }),
-        /models\[0\]/,
-      )
-    rejects(
-      withPlan({
-        gateway: {
-          limits: [],
-          models: Array.from({ length: 501 }, (_, i) => `p/m${i}`),
-        },
-      }),
-      /1–500 项/,
-    )
     rejects({ ...json, plans: [base[0], base[0]] }, /\.id：重复/)
-    expect(() =>
+    const { gatewayLimits: _limits, ...noLimits } = base[0]!
+    const parsed = parseBillingConfig({ ...json, plans: [noLimits] })
+    expect(parsed.plans[0]!.gatewayLimits).toEqual([])
+    expect(parsed.plans[0]!.nodes).toBe(1)
+    expect(
       parseBillingConfig(
         withPlan({
-          gateway: {
-            limits: [],
-            models: [
-              'openai/*',
-              'group/standard',
-              'openrouter/meta/llama-3:free',
-            ],
-          },
+          gatewayLimits: [{ period: 'week', tokens: 9, cacheReads: false }],
         }),
-      ),
-    ).not.toThrow()
+      ).plans[0]!.gatewayLimits,
+    ).toEqual([{ period: 'week', tokens: 9 }])
   })
 
   test('applies the notify_url rules and the endpoint rules', () => {
