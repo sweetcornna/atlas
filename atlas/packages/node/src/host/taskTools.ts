@@ -9,7 +9,7 @@
  * these tools only forward to it (`tasks.*` hub calls) with the console
  * conversation and turn they were called from, which the hub checks.
  *
- * All six tools are always offered, so the tool surface (and the prompt
+ * All seven tools are always offered, so the tool surface (and the prompt
  * prefix it is part of) never changes between turns; the hub decides from
  * the conversation whether the caller is a foreground or a worker.
  */
@@ -47,6 +47,14 @@ const specs = [
       'Foreground only. Start a persistent background sub-agent for work that needs tools, research, several steps or a long time, and return at once with its task id; do not wait for it. Give a short title and complete instructions (the sub-agent does not see this conversation beyond its last few messages). Optional agent: a qianmo://node/agent address to run it on another agent (another runtime or model); default is yourself.',
     properties: { title: string, instructions: string, agent: string },
     required: ['title', 'instructions'],
+  },
+  {
+    name: 'qianmo_task_agents',
+    op: 'agents',
+    description:
+      "Foreground only. List the agents you may hand a task to (qianmo_task_start's agent): address, name, runtime and model when known, whether it is you, and how busy it is — idle (nothing running on its node), turns in flight, background tasks queued and running. Does not wait.",
+    properties: {},
+    required: [],
   },
   {
     name: 'qianmo_task_status',

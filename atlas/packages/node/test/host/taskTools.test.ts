@@ -26,13 +26,32 @@ function tools(
   }
 }
 
-test('six tools, always offered, with closed schemas', () => {
+test('seven tools, always offered, with closed schemas', () => {
   const { byName } = tools(null)
-  for (const name of ['start', 'status', 'send', 'cancel', 'report', 'updates'])
+  for (const name of [
+    'start',
+    'agents',
+    'status',
+    'send',
+    'cancel',
+    'report',
+    'updates',
+  ])
     expect(byName(`qianmo_task_${name}`).parameters).toMatchObject({
       type: 'object',
       additionalProperties: false,
     })
+})
+
+test('the agent list takes no arguments and goes to tasks.agents', async () => {
+  const { calls, byName } = tools({ contextId: 'c', taskId: 't' })
+  expect((await byName('qianmo_task_agents').handler({}, ctx)).ok).toBe(true)
+  expect(
+    (await byName('qianmo_task_agents').handler({ node: 'x' }, ctx)).ok,
+  ).toBe(false)
+  expect(calls).toEqual([
+    ['tasks.agents', { contextId: 'c', taskId: 't' }, { agent: 'main' }],
+  ])
 })
 
 test('a call carries the conversation and turn it came from', async () => {

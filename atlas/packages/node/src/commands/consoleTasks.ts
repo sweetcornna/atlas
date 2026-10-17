@@ -240,6 +240,11 @@ export interface ConsoleTasksOptions {
   /** Sessions that are the same conversation (a chat after `/new`); tasks follow it. */
   readonly related?: (sessionId: string) => readonly string[]
   /**
+   * What the hub knows of an agent's runtime and model, for
+   * `qianmo_task_agents` ({@link AgentProfiles}); either may be absent.
+   */
+  readonly profile?: (address: string) => Promise<AgentProfile>
+  /**
    * One worker turn's deadline (`taskTtlMs`); approvals asked for in the
    * turn expire with it. Default 30 minutes.
    */
@@ -350,6 +355,101 @@ interface Caller {
   readonly transcript: ChatTranscript
   readonly owner: string
   readonly worker: TaskRecord | undefined
+}
+
+/** An agent's runtime and model as far as the hub knows them. */
+export interface AgentProfile {
+  readonly runtime?: 'qianmopi' | 'claude-code' | 'codex'
+  readonly model?: string
+}
+
+/** Rows `qianmo_task_agents` lists at most. */
+const MAX_AGENTS_LISTED = 50
+/** How long a node's answer about its agents is kept, and a failed one. */
+const PROFILE_TTL_MS = 5 * 60_000
+const PROFILE_RETRY_MS = 60_000
+
+const pingSchema = z.object({
+  runtimes: z.record(z.string(), z.string()).optional(),
+  models: z.record(z.string(), z.string()).optional(),
+})
+
+interface NodeProfiles {
+  readonly at: number
+  /** Agent → `omp` / `claude-code` / `codex`; null when the node did not say. */
+  readonly runtimes: Readonly<Record<string, string>> | null
+  readonly models: Readonly<Record<string, string>>
+}
+
+/**
+ * Runtimes and models for `qianmo_task_agents`: each node's `node.ping`
+ * names its agents' runtimes and an external runtime's model; a qianmopi
+ * agent runs the node's model, which the model service knows. Nothing is
+ * guessed: a node that did not answer, or an older one, gives neither.
+ */
+export class AgentProfiles {
+  readonly #ping: (node: string) => Promise<ControlOutcome>
+  readonly #nodeModel: (node: string) => Promise<string | undefined>
+  readonly #now: () => number
+  readonly #nodes = new Map<string, NodeProfiles>()
+  readonly #asking = new Map<string, Promise<NodeProfiles>>()
+
+  constructor(options: {
+    /** `node.ping` over the node's control link. */
+    readonly ping: (node: string) => Promise<ControlOutcome>
+    /** The model the node's qianmopi agents run, when the hub knows it. */
+    readonly nodeModel?: (node: string) => Promise<string | undefined>
+    readonly now?: () => number
+  }) {
+    this.#ping = options.ping
+    this.#nodeModel = options.nodeModel ?? (async () => undefined)
+    this.#now = options.now ?? Date.now
+  }
+
+  async of(address: string): Promise<AgentProfile> {
+    const parsed = parseAddress(address)
+    if (parsed === null) return {}
+    const node = await this.#node(parsed.node)
+    const runtime = node.runtimes?.[parsed.agent]
+    if (runtime === 'omp') {
+      const model = await this.#nodeModel(parsed.node).catch(() => undefined)
+      return {
+        runtime: 'qianmopi',
+        ...(model ? { model: clip(model, 200) } : {}),
+      }
+    }
+    if (runtime !== 'claude-code' && runtime !== 'codex') return {}
+    const model = node.models[parsed.agent]
+    return { runtime, ...(model ? { model: clip(model, 200) } : {}) }
+  }
+
+  async #node(node: string): Promise<NodeProfiles> {
+    const known = this.#nodes.get(node)
+    const age = known === undefined ? Infinity : this.#now() - known.at
+    if (
+      known !== undefined &&
+      age < (known.runtimes === null ? PROFILE_RETRY_MS : PROFILE_TTL_MS)
+    )
+      return known
+    const asking =
+      this.#asking.get(node) ??
+      this.#ask(node).finally(() => this.#asking.delete(node))
+    this.#asking.set(node, asking)
+    return asking
+  }
+
+  async #ask(node: string): Promise<NodeProfiles> {
+    const outcome = await this.#ping(node).catch(() => null)
+    const parsed =
+      outcome?.ok === true ? pingSchema.safeParse(outcome.value) : null
+    const value: NodeProfiles = {
+      at: this.#now(),
+      runtimes: parsed?.success ? (parsed.data.runtimes ?? null) : null,
+      models: parsed?.success ? (parsed.data.models ?? {}) : {},
+    }
+    this.#nodes.set(node, value)
+    return value
+  }
 }
 
 export class ConsoleTasks implements BackgroundTasksPort {
@@ -736,6 +836,8 @@ export class ConsoleTasks implements BackgroundTasksPort {
     switch (op) {
       case 'start':
         return this.#start(caller, args)
+      case 'agents':
+        return this.#agents(caller)
       case 'status': {
         if (args['id'] === undefined)
           return ok({ tasks: this.forSession(sessionId) })
@@ -895,6 +997,73 @@ export class ConsoleTasks implements BackgroundTasksPort {
     this.#save()
     this.#schedule(task.id)
     return ok({ id: task.id, title, target, status: task.status })
+  }
+
+  /**
+   * `qianmo_task_agents`: whom this owner may hand work to — the dial list
+   * and tenant rule `qianmo_task_start` checks — with the runtime and model
+   * where the hub knows them, and how busy each is. A node runs one turn at a
+   * time, so `idle` is about the node: no conversation turn waiting for its
+   * answer there (the caller's own aside) and no background task running or
+   * queued for it.
+   */
+  async #agents(caller: Caller): Promise<ControlOutcome> {
+    const dispatch = this.#dispatch(caller.owner)
+    if (typeof dispatch === 'string') return refused(dispatch)
+    const targets = await dispatch.dialable()
+    if (targets instanceof Response)
+      return refused((await refusal(targets)).error ?? '名册暂不可用')
+    const self = caller.transcript.session
+    const tasks = [...this.#tasks.values()]
+    const workers = new Set(tasks.map(task => task.workerSession))
+    const sessions = await this.#options.chat.sessions()
+    const turns = new Map<string, number>()
+    const busy = new Set<string>()
+    const nodeOf = (address: string) => parseAddress(address)?.node ?? address
+    for (const session of sessions.ok ? sessions.value : [])
+      if (
+        session.running === true &&
+        session.id !== self.id &&
+        !workers.has(session.id)
+      ) {
+        turns.set(session.target, (turns.get(session.target) ?? 0) + 1)
+        busy.add(nodeOf(session.target))
+      }
+    const counts = new Map<string, { queued: number; running: number }>()
+    for (const task of tasks) {
+      if (TERMINAL.has(task.status) || task.status === 'needs_input') continue
+      const count = counts.get(task.target) ?? { queued: 0, running: 0 }
+      if (task.status === 'queued' || task.status === 'interrupted')
+        count.queued++
+      else count.running++
+      counts.set(task.target, count)
+      busy.add(nodeOf(task.target))
+    }
+    const listed = targets.slice(0, MAX_AGENTS_LISTED)
+    const agents = await Promise.all(
+      listed.map(async row => {
+        const profile =
+          (await this.#options.profile?.(row.address).catch(() => ({}))) ?? {}
+        const count = counts.get(row.address)
+        return {
+          address: row.address,
+          name: row.agent,
+          status: row.status,
+          self: row.address === self.target,
+          ...profile,
+          idle: !busy.has(row.node),
+          turns: turns.get(row.address) ?? 0,
+          queued: count?.queued ?? 0,
+          running: count?.running ?? 0,
+        }
+      }),
+    )
+    return ok({
+      agents,
+      ...(targets.length > listed.length
+        ? { more: targets.length - listed.length }
+        : {}),
+    })
   }
 
   #send(task: TaskRecord, raw: unknown): ControlOutcome {

@@ -6,6 +6,7 @@ import { chatScopeOf } from './accountsHttp.js'
 import type {
   ChatSendInput,
   ChatSession,
+  ChatTarget,
   ChatTurn,
   ConsoleDeps,
   ConsoleResult,
@@ -132,6 +133,23 @@ export class ChatDispatch {
     return targets.value.some(row => row.address === target && row.dialable)
       ? null
       : fail(403, 'forbidden', '目标已不在对话可拨允许名单内')
+  }
+
+  /**
+   * Every target this subject may dial: the rows of the dial list that are
+   * dialable and inside its tenant, the rule {@link authorizeTarget} applies
+   * to one target (P29 `qianmo_task_agents`).
+   */
+  async dialable(): Promise<readonly ChatTarget[] | Response> {
+    const denied = this.authorize()
+    if (denied) return denied
+    const targets = await this.#ctx.deps.chat!.targets()
+    const changed = this.authorize()
+    if (changed) return changed
+    if (!targets.ok) return failureResponse(targets.failure)
+    return targets.value.filter(
+      row => row.dialable && this.authorize(row.address) === null,
+    )
   }
 
   /** A schedule must reject exhausted quota before reading any chat port. */

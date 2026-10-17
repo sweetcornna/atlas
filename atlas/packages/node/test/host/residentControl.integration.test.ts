@@ -193,6 +193,9 @@ test('signed hub and real resident complete control, upstream and appended omp t
       value: {
         node: 'worker',
         agents: ['main'],
+        // The hub's agent list reads runtimes (and external models) here.
+        runtimes: { main: 'omp' },
+        models: {},
         platform: process.platform,
         version: '3.0.0-dev',
       },

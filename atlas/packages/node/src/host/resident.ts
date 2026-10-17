@@ -165,6 +165,12 @@ interface QianmoResidentAgentConfig {
   readonly runtime?: ExternalRuntimeKind
   /** Shell access for an external runtime (`--agent-shell`). */
   readonly shell?: boolean
+  /**
+   * The model an external runtime runs (the model of `--agent-model`), for
+   * `node.ping`: the hub lists it to a foreground choosing whom to hand work
+   * to (P29 `qianmo_task_agents`).
+   */
+  readonly model?: string
 }
 
 /**
@@ -1047,6 +1053,21 @@ export class QianmoResident {
               value: {
                 node: options.node,
                 agents: options.agents.map(agent => agent.agent),
+                // Each agent's runtime, and an external one's model: what
+                // the hub's agent list says about them (P29).
+                runtimes: Object.fromEntries(
+                  options.agents.map(agent => [
+                    agent.agent,
+                    agent.runtime ?? 'omp',
+                  ]),
+                ),
+                models: Object.fromEntries(
+                  options.agents.flatMap(agent =>
+                    agent.runtime !== undefined && agent.model !== undefined
+                      ? [[agent.agent, agent.model]]
+                      : [],
+                  ),
+                ),
                 version: buildVersion(),
                 platform: process.platform,
                 now: Date.now(),

@@ -12,8 +12,15 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import type {
+  ConsoleAccounts,
+  TenantPort,
+  TenantSnapshot,
+} from '@qianmo/console'
 import type { ControlOutcome } from '@qianmo/protocol'
 import {
+  AgentProfiles,
+  type AgentProfile,
   ConsoleTasks,
   type TaskFinished,
   WORKER_INSTRUCTIONS,
@@ -39,6 +46,9 @@ function tasks(
     stopTask?: (target: string, taskId: string) => Promise<boolean>
     now?: () => number
     scheduled?: (id: string) => boolean
+    accounts?: ConsoleAccounts
+    tenancy?: TenantPort
+    profile?: (address: string) => Promise<AgentProfile>
     /** More result listeners, by key, registered before the book starts. */
     listeners?: Record<
       string,
@@ -1282,5 +1292,183 @@ describe('races and leftovers', () => {
     expect(finished[0]!.text).toContain('目标已不在对话可拨允许名单内')
     expect(book.forSession(parent)[0]?.status).toBe('needs_input')
     expect(chat.sentTo(worker)).toHaveLength(1)
+  })
+})
+
+describe('the agent list (qianmo_task_agents)', () => {
+  const THIRD = 'qianmo://node-c/third'
+
+  type Row = {
+    address: string
+    name: string
+    self: boolean
+    idle: boolean
+    turns: number
+    queued: number
+    running: number
+    runtime?: string
+    model?: string
+  }
+
+  test('dialable agents only, with the caller marked, runtime and model where known, and how busy each node is', async () => {
+    chat = new FakeChat([MAIN, CODER, THIRD])
+    chat.undialable.add(THIRD)
+    const book = tasks({
+      profile: async address =>
+        address === CODER
+          ? { runtime: 'codex', model: 'gpt-6-luna' }
+          : address === MAIN
+            ? { runtime: 'qianmopi' }
+            : {},
+    })
+    const parent = await foreground()
+    // Nothing else is running: the caller's own turn does not make it busy.
+    const quiet = value<{ agents: Row[] }>(await call(book, 'agents', parent))
+    expect(quiet.agents.map(row => row.address)).toEqual([MAIN, CODER])
+    expect(quiet.agents[0]).toEqual({
+      address: MAIN,
+      name: 'main',
+      status: 'online',
+      self: true,
+      runtime: 'qianmopi',
+      idle: true,
+      turns: 0,
+      queued: 0,
+      running: 0,
+    } as Row)
+    expect(quiet.agents[1]).toMatchObject({
+      self: false,
+      runtime: 'codex',
+      model: 'gpt-6-luna',
+      idle: true,
+    })
+    // Another conversation waits on main; a task runs on coder.
+    await foreground(MAIN)
+    value(
+      await call(book, 'start', parent, {
+        title: '编码',
+        instructions: 'x',
+        agent: CODER,
+      }),
+    )
+    const worker = await workerTurn(1)
+    const busy = value<{ agents: Row[] }>(await call(book, 'agents', parent))
+    expect(busy.agents[0]).toMatchObject({ turns: 1, idle: false })
+    // The worker's own session is a task, not a conversation turn.
+    expect(busy.agents[1]).toMatchObject({
+      turns: 0,
+      running: 1,
+      queued: 0,
+      idle: false,
+    })
+    // A worker may not ask.
+    const nested = await call(book, 'agents', worker, {}, 'coder', 'node-b')
+    expect(nested.ok ? '' : nested.message).toBe(
+      '后台子任务不能再开或管理其他任务',
+    )
+  })
+
+  test("the owner's tenant decides who is listed, as for qianmo_task_start", async () => {
+    const subject = 'u:alice'
+    const accounts = {
+      book: {
+        ownerOf: () => subject,
+        list: () => ({
+          ok: true,
+          value: {
+            accounts: [{ subject, state: 'active', role: 'member' }],
+          },
+        }),
+      },
+      breakGlass: false,
+    } as unknown as ConsoleAccounts
+    const snapshot: TenantSnapshot = {
+      revision: 'r1',
+      config: {
+        version: 1,
+        hubServer: 'hub',
+        tenants: [{ id: 'a' }],
+        subjects: [{ subject, tenant: 'a' }],
+        nodes: [
+          {
+            nodeId: 'node-a',
+            tenant: 'a',
+            server: 'server-a',
+            memoryRoot: path.join(root, 'a'),
+          },
+        ],
+        jobs: [],
+        platformSubjects: [],
+      },
+    }
+    const tenancy: TenantPort = {
+      read: () => snapshot,
+      subscribe: () => () => {},
+    }
+    const book = tasks({ accounts, tenancy })
+    const parent = await foreground()
+    const listed = value<{ agents: Row[] }>(await call(book, 'agents', parent))
+    expect(listed.agents.map(row => row.address)).toEqual([MAIN])
+    const refused = await call(book, 'start', parent, {
+      title: 't',
+      instructions: 'i',
+      agent: CODER,
+    })
+    expect(refused.ok).toBe(false)
+  })
+
+  test('AgentProfiles: each node says its runtimes; a qianmopi agent runs the node model; nothing is guessed', async () => {
+    let now = 1_000_000
+    const pings: string[] = []
+    let answer: ControlOutcome = {
+      ok: true,
+      value: {
+        node: 'node-a',
+        agents: ['main', 'coder', 'reviewer'],
+        runtimes: { main: 'omp', coder: 'codex', reviewer: 'claude-code' },
+        models: { coder: 'gpt-6-luna' },
+      },
+    }
+    const profiles = new AgentProfiles({
+      ping: async node => {
+        pings.push(node)
+        return answer
+      },
+      nodeModel: async node => (node === 'node-a' ? 'claude-opus' : undefined),
+      now: () => now,
+    })
+    expect(await profiles.of('qianmo://node-a/main')).toEqual({
+      runtime: 'qianmopi',
+      model: 'claude-opus',
+    })
+    expect(await profiles.of('qianmo://node-a/coder')).toEqual({
+      runtime: 'codex',
+      model: 'gpt-6-luna',
+    })
+    expect(await profiles.of('qianmo://node-a/reviewer')).toEqual({
+      runtime: 'claude-code',
+    })
+    expect(await profiles.of('qianmo://node-a/unknown')).toEqual({})
+    // One answer per node for five minutes.
+    expect(pings).toEqual(['node-a'])
+    // A node that does not answer, or an older one, gives nothing.
+    answer = { ok: false, code: 'unreachable', message: 'down' }
+    expect(await profiles.of('qianmo://node-b/main')).toEqual({})
+    answer = { ok: true, value: { node: 'node-c', agents: ['main'] } }
+    expect(await profiles.of('qianmo://node-c/main')).toEqual({})
+    expect(await profiles.of('not-an-address')).toEqual({})
+    // A failed node is asked again after a minute; a known one after five.
+    now += 61_000
+    answer = {
+      ok: true,
+      value: { runtimes: { main: 'omp' }, models: {} },
+    }
+    expect(await profiles.of('qianmo://node-b/main')).toEqual({
+      runtime: 'qianmopi',
+    })
+    expect(pings.filter(node => node === 'node-a')).toHaveLength(1)
+    now += 5 * 60_000
+    await profiles.of('qianmo://node-a/main')
+    expect(pings.filter(node => node === 'node-a')).toHaveLength(2)
   })
 })
