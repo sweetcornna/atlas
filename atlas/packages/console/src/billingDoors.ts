@@ -90,9 +90,38 @@ export function notifyChannelOf(segments: readonly string[]): string | null {
 }
 
 /**
+ * The body as UTF-8 text, or `null` once it passes `limit` bytes: reading
+ * stops there and the stream is cancelled, so a sender without a
+ * `Content-Length` cannot make the hub hold more than the cap.
+ */
+async function boundedText(
+  request: Request,
+  limit: number,
+): Promise<string | null> {
+  if (request.body === null) return ''
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let bytes = 0
+  try {
+    for (;;) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      bytes += chunk.value.byteLength
+      if (bytes > limit) return null
+      chunks.push(chunk.value)
+    }
+  } finally {
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+/**
  * One payment notification: public, no login, no console header. The body
- * is read once as text and handed over untouched — the signature covers
- * those exact bytes — and the channel's reply goes back as it is.
+ * is read once (at most {@link MAX_NOTIFY_BYTES}, as a stream) and handed
+ * over untouched — the signature covers those exact bytes — and the
+ * channel's reply goes back as it is.
  */
 export async function serveBillingNotify(
   request: Request,
@@ -107,9 +136,8 @@ export async function serveBillingNotify(
     await request.body?.cancel()
     return fail(413, 'invalid', '通知过大')
   }
-  const rawBody = await request.text()
-  if (Buffer.byteLength(rawBody, 'utf8') > MAX_NOTIFY_BYTES)
-    return fail(413, 'invalid', '通知过大')
+  const rawBody = await boundedText(request, MAX_NOTIFY_BYTES)
+  if (rawBody === null) return fail(413, 'invalid', '通知过大')
   const contentType = request.headers.get('content-type')
   const reply = await billing.notify(channel, {
     headers: request.headers,

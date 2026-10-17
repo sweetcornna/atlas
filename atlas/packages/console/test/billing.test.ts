@@ -470,6 +470,30 @@ describe('payment notifications', () => {
     expect(await bad.text()).toBe('FAIL')
   })
 
+  test('a body without a length is read only up to the cap, then refused', async () => {
+    const f = publicConsole()
+    const chunk = new Uint8Array(16 * 1024).fill(0x78)
+    let pulled = 0
+    // 16 MiB if read to the end; the cap is 64 KiB.
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1
+        if (pulled > 1024) controller.close()
+        else controller.enqueue(chunk)
+      },
+    })
+    const request = new Request(`${BASE}/v0/billing/notify/alipay`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+    })
+    expect(request.headers.get('content-length')).toBeNull()
+    const response = await f.handle(request)
+    expect(response.status).toBe(413)
+    expect(pulled).toBeLessThan(16)
+    expect(f.billing.notified).toEqual([])
+  })
+
   test('only POST, only the two channels, nothing oversized', async () => {
     const f = publicConsole()
     const get = await f.handle(new Request(`${BASE}/v0/billing/notify/alipay`))

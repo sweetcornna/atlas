@@ -359,7 +359,8 @@ ssh -L 38613:127.0.0.1:38613 <host>     # 然后在本地浏览器开 127.0.0.1:
   公开版里匿名访客在 `/` 看到的也是它。
 - `POST /v0/billing/notify/wechatpay`、`POST /v0/billing/notify/alipay` —— 支付平台的
   回调。在读任何凭据之前分派，不要登录、不要控制台头；正文按原文读一次、一个字节不改
-  地交给通道验签（签名覆盖的就是这些字节），超过 64 KiB 答 413，应答原样是通道给的那
+  地交给通道验签（签名覆盖的就是这些字节），超过 64 KiB 答 413（正文按流读，读到上限
+  就停读、不先整份收进内存，没有 `Content-Length` 也一样），应答原样是通道给的那
   一份。防线是验签，不是凭据。
 
 `/subscription` 与 `/subscription/checkout` 是登录后成员自己的页，不在此列。
@@ -672,7 +673,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/billing/redeem` | 个人账号 | `{ code }` 兑换，答兑换后的订阅。记 `billing.redeem`；不受订阅闸门限制 |
 | POST | `/v0/billing/models` | 个人账号，有效订阅 | `{ preset, key }`：用 magpie 的 API 密钥预设（L-6）接自己的上游，密钥只交给 magpie、中枢不留存；租户网关密钥的白名单随之改为本租户上游的模型并启用。记 `billing.model.add` |
 | DELETE | `/v0/billing/models/<上游 id>` | 个人账号（到期后也能删） | 删除自己接的上游，不受订阅闸门限制；最后一个删掉后网关密钥停用。别人的与平台的上游 404。成功 204，记 `billing.model.remove` |
-| POST | `/v0/billing/notify/{wechatpay,alipay}` | 公开，公开版 | 支付平台回调（§4.3）：不要凭据与控制台头，原文交给通道验签，原样回通道的应答；非 POST 405，超过 64 KiB 413 |
+| POST | `/v0/billing/notify/{wechatpay,alipay}` | 公开，公开版 | 支付平台回调（§4.3）：不要凭据与控制台头，原文交给通道验签，原样回通道的应答；非 POST 405，超过 64 KiB 413（按流读到上限即停） |
 | GET | `/v0/billing/admin` | 平台读者 | 订阅管理快照：套餐、通道、订单、订阅（含租户与开通状态）、兑换码（只有编号与使用情况）、待退款（付款时已有别的套餐在有效期内、没有计入的订单）、账本校验。有租户时只给平台主体与 break-glass |
 | GET | `/v0/billing/admin/verify` | 平台读者 | 从头校验账本的哈希链，答 `{ ok, events }` 或第一处不一致 |
 | POST | `/v0/billing/admin/grant` | **个人 ops**（平台） | `{ subject, planId, periods, reason }` 手动开通或延期，原因必填。规则同网关写入：拒绝共用令牌与 break-glass，有租户时只收平台主体；记 `billing.grant` |
