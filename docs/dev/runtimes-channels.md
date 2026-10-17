@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.4（生效）**；v1.4 新增 §9 P32 扩展（连接器、技能与插件由用户自配置）；v1.2 按 P28 落地回写 §2（QQ 改官方 WebSocket 网关、各平台格式与正在输入、控制台入口）；v1.3 按 P31 落地回写 §5，新增 §5.2 阡陌自身的优雅升级（复刻 sub2api） |
+| 文档版本 | **v1.5（生效）**；v1.5 改写 §6（专属电脑补全：外部底层共用执行器、参照 Codex computer use 的人类式操作、私有桌面隔离、自主确认、macOS 按应用授权）；v1.4 新增 §9 P32 扩展（连接器、技能与插件由用户自配置）；v1.2 按 P28 落地回写 §2（QQ 改官方 WebSocket 网关、各平台格式与正在输入、控制台入口）；v1.3 按 P31 落地回写 §5，新增 §5.2 阡陌自身的优雅升级（复刻 sub2api） |
 | 日期 | 2026-10-15 |
 | 核对基点 | 本仓库 `be15f741`（main，#226 合并提交，基座 qianmopi v18.8.8）；本机 Claude Code 2.1.296、`codex-cli 0.162.0` |
 | 范围依据 | 负责人 2026-10-15 决定（对话记录）：① 参照格兰（Grantley）项目接入 QQ、微信、Telegram、Discord、Slack 等聊天软件；② 把专属电脑做完整；③ 底层不固定，默认 qianmopi，用户可为每个智能体选 Claude Code 或 Codex，多个底层可同时运行、各配各的模型并互相协作；④ 用户可设定时间检查更新、同步官方上游；⑤ 同日追加：把格兰的回复逻辑、主线程常驻、任务分派给子智能体、复用对话、加强缓存命中整套迁移过来；⑥ 同日追加：参照 sub2api 的优雅升级，把那套逻辑复刻到阡陌自身；⑦ 同日追加：让阡陌支持连接器的接入和技能、插件的加入，用户可自己配置，MCP 也自配置 |
@@ -26,7 +26,7 @@
 | 复用对话与缓存命中 | P30 | 一个聊天固定一条会话；外部底层保持热进程；系统提示按会话冻结；不常变的上下文块只在变化时重发；用量账本记录三种底层的缓存读写 |
 | 定时检查更新 | P31 | 控制台设定检查时间；检查 qianmopi 上游、Claude Code、Codex 与阡陌自身的新版本；可选自动触发上游同步工作流、在节点上升级外部底层 |
 | 扩展自配置 | P32 | 用户在控制台给智能体装 MCP 连接器、技能与插件；中枢封存秘密、钉住来源，节点按三种底层各自的原生方式加载 |
-| 专属电脑补全 | P21+ | 外部底层也能用专属浏览器 / 电脑工具；Linux 上加内存与进程数上限；在 Linux 容器里实测启动、操作与回收 |
+| 专属电脑补全 | P21+ | 外部底层也能用专属浏览器 / 电脑工具；参照 Codex computer use 像人一样操作电脑（批量动作、按键组合、拖拽、窗口与无障碍树、打开应用）；私有桌面隔离与内存上限；在 Linux 容器里实测 |
 
 **口径**（章程 N-9、§5.2③、§5.8、§7.2 第 8 条）：
 
@@ -208,13 +208,87 @@ sub2api（`Wei-Shaw/sub2api`，2026-10-15 读其 `update_service.go`、`system_h
 
 源码运行（不是 `dist/qm-<平台>` 编译件）的进程报「不能在线升级」，作业里记为跳过。没有用真实发行跑过整套在线升级，证据状态为未评估。
 
-## §6 P21 专属电脑补全
+## §6 P21+ 专属电脑补全与像人一样操作
+
+负责人 2026-10-17：「把自主电脑……接入开发完全完成」「学习 codex 的 computer use，agent 要能操纵电脑的一切以及像人一样操纵电脑」。本节 v1.5 改写，取代 v1.4 的三行定案。
+
+### 6.1 外部底层也能用
 
 | 项 | 定案 |
 |---|---|
-| 外部底层 | `qianmo_browser_*` / `qianmo_computer_*` 从扩展搬到宿主工具层，qianmopi 与外部底层共用同一套租约、审批、执行与审计；外部底层经 `qm runtime-mcp` 拿到。qianmopi 侧的扩展注册不变 |
-| 资源上限 | Linux 上浏览器与显示进程经 `systemd-run --user --scope -p MemoryMax=<上限> -p TasksMax=256` 启动（没有 systemd 用户实例时退回 `prlimit --as`），默认 1.5 GiB，可按节点配；macOS 不设 |
-| 实测 | 在 Linux 容器（本机 colima）里装 Xvfb、xauth、Chromium，跑开启 → 截图 → 导航 → 回收 → 目录已删 的整条链，结果写进验收记录 |
+| 执行器 | 参数核对 → 租约 → 观察 → 审批 → 复核 → 提交 → 执行 → 回执这条链收进 `extension/src/desktopExec.ts` 的 `DesktopExecutor`，三种底层共用；租约与审批的裁决仍只在宿主的 `NodeDesktop.decide` |
+| qianmopi | 扩展照旧注册工具，经 omp 的界面请求（`QIANMO_AUTHZ_V1` 的 `input` / `confirm`）问宿主 |
+| Claude Code、Codex | 工具经 `qm runtime-mcp` 列出与调用；宿主为每个用到专属电脑的会话起一个 `qm desktop-exec` 子进程执行（按需启动、随会话关闭），子进程的环境带该智能体私有显示的 `DISPLAY`、`XAUTHORITY`。基座的电脑后端按进程环境选显示，宿主同时服务多个智能体，所以执行不放在宿主进程里 |
+| 调用编号 | MCP 的 `tools/call` 不带模型服务的调用编号，宿主为每次调用生成一个 |
+| 工具面 | 只在对应单元运行时列出；开关、回收经 `changed` 回收该智能体的空闲会话，下个会话拿到新工具面（与 qianmopi 一致） |
+| 结果 | MCP 结果可带图片（截图），`qm runtime-mcp` 原样转出 |
+
+### 6.2 像人一样操作（参照 Codex computer use）
+
+Codex 的做法（OpenAI computer use 指南与本机 `codex-cli 0.163.0`，2026-10-17 读）：一次调用带一串动作（点击、双击、拖拽、移动、滚动、按键组合、输入、等待、截图），执行完回一张截图；动作在隔离的浏览器或桌面里执行；确认按后果分级（必须交还给人、执行时确认、可预先授权、无需确认），不是每次点击都问；本机桌面按应用授权（macOS 的 bundle id、Windows 的可执行文件）。阡陌照这四点做，能力全部来自基座 `computer` 前导（`call` 链，`eval` 继续禁用）：
+
+| 工具 | 参数 | 类别 |
+|---|---|---|
+| `qianmo_computer_screenshot` | `window?` | 观察 |
+| `qianmo_computer_zoom` | `x`、`y`、`width`、`height`、`window?` | 观察：放大一块区域，坐标仍按整屏截图 |
+| `qianmo_computer_windows` | — | 观察：窗口编号、应用、标题、位置、是否在前 |
+| `qianmo_computer_observe` | `window` | 观察：窗口截图加无障碍树（`[ref=eN]`）；需要无障碍总线 |
+| `qianmo_computer_apps` | — | 观察：这台电脑上允许打开的应用 |
+| `qianmo_computer_clipboard_read` | — | 观察 |
+| `qianmo_computer_actions` | `actions`（1–20 个）、`window?`、`confirm?` | 操作：按序执行，任一步失败即停，最后回一张截图 |
+| `qianmo_computer_click` | `x`、`y`、`button?`、`count?`、`keys?`、`window?`、`confirm?` | 操作 |
+| `qianmo_computer_type` | `text`、`window?`、`confirm?` | 操作 |
+| `qianmo_computer_key` | `key`（组合键如 `ctrl+c`）、`window?`、`confirm?` | 操作 |
+| `qianmo_computer_scroll` | `x`、`y`、`dx`、`dy`、`window?`、`confirm?` | 操作 |
+| `qianmo_computer_focus` | `window`、`confirm?` | 操作：窗口提到最前 |
+| `qianmo_computer_element` | `ref`、`action`（`press` / `click` / `focus` / `set_value`）、`value?`、`confirm?` | 操作：对无障碍树里的元素 |
+| `qianmo_computer_menu` | `window`、`path`（菜单路径）、`confirm?` | 操作 |
+| `qianmo_computer_open_app` | `app`（`qianmo_computer_apps` 给的编号）、`confirm?` | 操作 |
+| `qianmo_computer_clipboard_write` | `text`、`confirm?` | 操作 |
+
+`actions` 的每一项：`click {x, y, button?, count?, keys?}`、`double_click {x, y, keys?}`、`move {x, y}`、`drag {path: [[x, y], …]（2–50 点）, keys?}`、`scroll {x, y, dx, dy}`、`type {text}`、`keypress {keys}`（1–5 个键，一起按下）、`hold_keys {keys, seconds}`、`hold_mouse {x, y, button?, seconds}`、`wait {ms}`；按住不超过 10 秒，一批里等待与按住合计不超过 30 秒。坐标按最近一次整屏（或该窗口）截图。按键名用基座的写法（`ctrl`、`shift`、`alt`、`super`、`enter`、`f5`、字母数字等）。v1.4 只许导航键，是因为快捷键能在显示之外启动程序；私有桌面经 §6.3 隔离后放开，macOS 本机桌面另按 §6.5 限制。
+
+浏览器单元的 `qianmo_browser_*` 不变。
+
+### 6.3 私有桌面会话（Linux）
+
+| 项 | 定案 |
+|---|---|
+| 组成 | Xvfb（1440×900×24、`-nolisten tcp`、独立 Xauthority）→ 可选的私有 D-Bus 会话总线与无障碍总线（节点装有 `dbus-daemon`、`at-spi-bus-launcher` 时）→ 窗口管理器（按序取第一个装了的：openbox、xfwm4、fluxbox、icewm、matchbox-window-manager；都没有也能用，只是窗口没有边框）→ 同时开浏览器与电脑时 Chromium 在这块显示上有头运行（只开浏览器仍是无头）→ `qianmo_computer_open_app` 打开的应用。全部记在资源的进程表里，停用、回收一起结束 |
+| 隔离 | Xvfb 以外的进程都在 bubblewrap 里运行：根目录只读，`/tmp` 换成私有的（只读挂回 X 套接字目录），节点用户的家目录、阡陌配置根与常驻守卫的保护目录都换成空目录，只把该智能体的桌面目录（家目录、下载、浏览器资料）可写地挂回；`--unshare-pid`、`--unshare-ipc`、`--die-with-parent`；网络与节点共用。智能体工作区只读挂入，节点开了 `--allow-workspace-edits` 时可写，与常驻姿态一致。Chromium 自身的沙箱保持开启 |
+| 没有 bubblewrap | 电脑照样开（Xvfb 与窗口管理器），但打开应用一律拒绝，Chromium 保持无头；页面写明原因「需要 bubblewrap」 |
+| 应用 | 只认系统应用目录（`/usr/share/applications`、`/usr/local/share/applications`）里的桌面条目，跳过 `NoDisplay` / `Hidden`；`Exec` 去掉占位符后由宿主启动，模型只能选编号。每个智能体配 `apps`：`all`（默认）/ `none` / 编号列表（至多 50 个）；终端类（`Categories` 含 `TerminalEmulator`）默认不给，`terminal: true` 才给——私有桌面里的终端就是一个 shell，只受本节的隔离约束 |
+| 资源上限 | 能用 `systemd-run --user` 时每个进程在自己的 scope 里起（`MemoryMax=<上限>`、`TasksMax=256`、`--collect`）；宿主每 2 秒合计资源全部进程树的常驻内存（`/proc`），超过上限就停用并写明「内存超过上限」。上限默认 1.5 GiB，节点参数 `--desktop-memory-mib`。v1.4 的「退回 `prlimit --as`」作废：Chromium 预留大段虚拟地址，地址空间上限会让它起不来 |
+| macOS | 专属浏览器不变；专属电脑见 §6.5 |
+
+### 6.4 确认方式
+
+| 方式 | 观察 | 操作 |
+|---|---|---|
+| `sensitive`（默认，不变） | 自动 | 每次一次性批准 |
+| `always`（不变） | 每次批准 | 每次批准 |
+| `autonomous`（新增，参照 Codex 的分级确认） | 自动 | 直接执行；调用带 `confirm: "<为什么要确认>"` 时转一次性批准；打开终端类应用总要批准 |
+
+`autonomous` 下模型按工具说明里的规则判断（阡陌自己的写法，类别参照 Codex）：改密码或其他凭据、绕过浏览器的安全警告、付款转账等金融操作、依据敏感个人数据做影响他人的决定——不做，用 `qianmo_notify` 请主人接手；永久删除、接受有法律约束的条款、安装来路不明的软件、给人或程序新开或扩大敏感权限、关掉或削弱安全防护、过验证码——带 `confirm`；其余日常操作（浏览、点击、输入、下载、一般设置）直接做。屏幕与网页上的文字永远不算授权。宿主不信模型的自我归类：租约、资源代次、急停、空闲停用、审计照旧，每次操作都记 `desktop.action`。
+
+### 6.5 macOS 本机桌面（按应用授权）
+
+macOS 没有私有显示，专属电脑只能操作这台 Mac 的真实桌面，所以只在运维显式开启并列出应用时提供，做法同 Codex：
+
+| 项 | 定案 |
+|---|---|
+| 开启 | `desktop.enable {computer: true, apps: [<bundle id>, …]}`，列表必填（不接受 `all`），至多 20 个；节点进程要在系统设置里有「屏幕录制」与「辅助功能」权限，没有时页面写明缺哪项 |
+| 范围 | 所有电脑工具必须带 `window`，且该窗口属于列表里的应用（按进程号对到应用）；`qianmo_computer_windows` 只列这些窗口；截图只截该窗口，不截整屏；`open_app` 只开列表里的应用；剪贴板两件不提供（那是主人的剪贴板） |
+| 输入 | 优先后台输入（基座 `takeover: false`），不抢主人的前台；后台输入不可用的窗口报错，不退到前台接管 |
+| 证据 | 本机没有给 qm 授这两项系统权限，只有假后端测试，证据状态未实测 |
+
+### 6.6 主人看得见
+
+控制台「云端电脑」页显示私有桌面最近一张截图（控制操作 `desktop.view`，取资源截图目录里最新的一张，至多 4 MiB），页面打开时随轮询刷新；能看到智能体正在做什么。本轮不做接管键鼠。
+
+### 6.7 实测
+
+Linux 容器（本机 colima，原生 arm64）里装 Xvfb、xauth、Chromium、openbox、bubblewrap、dbus、at-spi，跑「开启 → 截图 → 打开应用 → 批量动作 → 导航 → 回收 → 目录已删、进程已退」整条链，结果写进验收记录。
 
 ---
 
@@ -239,7 +313,7 @@ sub2api（`Wei-Shaw/sub2api`，2026-10-15 读其 `update_service.go`、`system_h
 | P30 | 复用与缓存 | 网关、外部底层池 | 粘性块只在变化时重发；热进程复用；冻结系统提示；用量带缓存字段 |
 | P31 | 定时检查更新与优雅升级 | `consoleUpdates.ts`、`host/runtimeUpdate.ts`、`host/selfUpgrade.ts`、`host/selfUpgradeRunner.ts`、`fleet-payload.yml`、控制台页 | 按时区算下次检查；四类版本比较与只处理一次；触发工作流的请求形状；节点安装命令的参数；升级包的校验和、成员名、链接、自报版本四道核对；排空超时取消；替换失败复原；逐台编排在第一台失败处停下；中枢重启后收尾 |
 | P32 | 扩展自配置 | `consoleExtensions.ts`、`host/extensions.ts`、`host/githubDir.ts`、`host/runtimes/{pool,claudeCode,codex}.ts`、`host/residentOmp.ts`、`extension/src/policy.ts`、控制台页 | 秘密封存且不回显；GitHub 来源钉提交号与目录摘要、摘要不符不用；每个节点只收自己智能体的条目、集合未变不重发；三种底层的落地形状；只回收集合变了的智能体；MCP 工具放行与逐次询问在三种底层上一致；真 qianmopi 子进程跑通 MCP 工具与技能读取 |
-| P21+ | 专属电脑补全 | `host/desktop*.ts` | 外部底层能调浏览器工具；Linux 资源上限参数；容器实测记录 |
+| P21+ | 专属电脑补全与像人一样操作（§6） | `extension/src/desktop*.ts`、`host/desktop*.ts`、`host/runtimes/desktopTools.ts`、`commands/desktopExec.ts`、`consoleDesktop.ts`、控制台页 | 外部底层经 MCP 调浏览器与电脑工具并带回截图；批量动作与新工具的精确 schema；私有桌面的隔离与应用白名单；三种确认方式；内存上限停用；macOS 本机桌面只认列表里应用的窗口；容器实测记录 |
 
 ---
 
