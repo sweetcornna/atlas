@@ -119,3 +119,75 @@ export const RUNTIME_ERRORS = {
   busy: 'E_RUNTIME_BUSY',
   installFailed: 'E_RUNTIME_INSTALL',
 } as const
+
+/** P36.7 (`harness-backends.md` §7.3): native extension operations. */
+export const RUNTIME_EXT_OPS = {
+  list: 'runtime.ext.list',
+  install: 'runtime.ext.install',
+  remove: 'runtime.ext.remove',
+} as const
+
+export type NativeExtensionKind = 'plugin' | 'mcp' | 'skill'
+
+/** One natively installed item, as the harness's own list reports it. */
+export interface NativeExtensionRow {
+  readonly kind: NativeExtensionKind
+  /** The harness's own name/id for it (e.g. `name@marketplace`). */
+  readonly name: string
+  readonly version?: string
+  readonly enabled: boolean
+  /** Where it came from, when the harness records it (repo, npm, path). */
+  readonly source?: string
+  /**
+   * The resident runtime does not load it, and why (e.g. opencode plugins
+   * under `--pure`); absent = loaded.
+   */
+  readonly notLoaded?: string
+}
+
+export interface NativeExtensionsReply {
+  readonly agent: string
+  readonly runtime: string
+  readonly items: readonly NativeExtensionRow[]
+  /** Pin-layer facts the console shows (e.g. 「已撤销预授权」, project files still loaded). */
+  readonly notes: readonly string[]
+  /** The node command that opens this agent's official frontend (§7.2). */
+  readonly openCommand: string
+}
+
+/** `runtime.ext.list`. */
+export interface NativeExtensionsListRequest {
+  readonly agent: string
+}
+
+/**
+ * `runtime.ext.install`: `source` is a GitHub repo (`owner/repo[#ref]` or an
+ * https github.com URL), an npm package name (`[@scope/]name[@exact]`), or the
+ * harness's own marketplace name (`name@marketplace`); for `mcp`, a stdio
+ * command line (`command` + `args`, env names only — values are connectors'
+ * business) or an https URL.
+ */
+export interface NativeExtensionInstallRequest {
+  readonly agent: string
+  readonly kind: NativeExtensionKind
+  readonly source: string
+  readonly name?: string
+  readonly command?: string
+  readonly args?: readonly string[]
+  readonly url?: string
+}
+
+/** `runtime.ext.remove`. */
+export interface NativeExtensionRemoveRequest {
+  readonly agent: string
+  readonly kind: NativeExtensionKind
+  readonly name: string
+}
+
+export const RUNTIME_EXT_ERRORS = {
+  unsupported: 'E_RUNTIME_EXT_UNSUPPORTED',
+  badSource: 'E_RUNTIME_EXT_SOURCE',
+  failed: 'E_RUNTIME_EXT_FAILED',
+  /** The agent's official frontend is open (§7.2 lock). */
+  locked: 'E_RUNTIME_EXT_LOCKED',
+} as const
