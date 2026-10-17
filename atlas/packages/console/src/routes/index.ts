@@ -22,6 +22,7 @@ import { nodeCount } from '../view/agents.js'
 import type { AvatarSpec } from '../avatar.js'
 import type { Tone } from '../view/bits.js'
 import { escapeHtml } from '../view/escape.js'
+import type { SourceLinks } from '../view/source.js'
 import {
   renderShell,
   type Crumb,
@@ -248,6 +249,16 @@ async function selfFace(ctx: RouteContext): Promise<AvatarSpec> {
   return faces.spec(faces.self)
 }
 
+/**
+ * The public edition's source footer for a page in the shell (AGPL §13,
+ * `view/source.ts`): there whenever the billing port is, which is exactly
+ * the public edition, where a subscriber without a chat channel lands here.
+ */
+function shellSource(ctx: RouteContext): { readonly source?: SourceLinks } {
+  const billing = ctx.deps.billing
+  return billing === undefined ? {} : { source: billing.site() }
+}
+
 /** One page, drawn in the shell. */
 export async function areaDocument(
   ctx: RouteContext,
@@ -273,6 +284,7 @@ export async function areaDocument(
     ...(module.page?.script === undefined
       ? {}
       : { pageScript: module.page.script }),
+    ...shellSource(ctx),
   })
 }
 
@@ -298,5 +310,6 @@ export async function errorDocument(
       `</section>`,
     health: healthOf(listed),
     relogin: loginHref(ctx.url),
+    ...shellSource(ctx),
   })
 }

@@ -9,8 +9,12 @@
  * has them: the plans, subscription and checkout pages and the `/` standing
  * cards (`billing.ts`), the login, sign-up and invitation doors and the
  * credential page they answer with (`login.ts`, `invite.ts`,
- * `../signup.ts`), and the conversation front (`front.ts`). The default
- * edition has no billing port and draws none of it.
+ * `../signup.ts`), the conversation front (`front.ts`), and every page and
+ * error page drawn in the management shell (`shell.ts`, `/admin/*`), where
+ * a subscriber lands when the console has no chat channel. The
+ * documents outside the shell for a caller not yet signed in
+ * (`renderStandalone`) carry none. The default edition has no billing port
+ * and draws none of it.
  *
  * The address is the billing port's `sourceUrl` as the host hands it over:
  * in the public edition the configured repository at the commit this build
