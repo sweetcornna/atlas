@@ -276,6 +276,7 @@ import {
 import type { ConsoleActionName, RouteContext } from './routes/types.js'
 import type { PageViewer } from './view/bits.js'
 import { renderLoginPage } from './view/login.js'
+import type { SourceLinks } from './view/source.js'
 import { renderStandalone } from './view/shell.js'
 import { LoginThrottle } from './throttle.js'
 
@@ -328,6 +329,15 @@ function loginRedirect(url: URL): Response {
   return seeOther(loginHref(url))
 }
 
+/**
+ * The public edition's source and terms links for a door (AGPL §13,
+ * `view/source.ts`): there whenever the billing port is, which is exactly
+ * the public edition.
+ */
+function publicSource(deps: ConsoleDeps): { readonly source?: SourceLinks } {
+  return deps.billing === undefined ? {} : { source: deps.billing.site() }
+}
+
 /** The login document, at whatever status the reason calls for. */
 function loginPage(
   deps: ConsoleDeps,
@@ -347,6 +357,7 @@ function loginPage(
     ...(options.error === undefined ? {} : { error: options.error }),
     ...(options.accounts === true ? { accounts: true } : {}),
     ...(options.signupEnabled === true ? { signupEnabled: true } : {}),
+    ...publicSource(deps),
   })
   return new Response(body, {
     status: options.status ?? 200,
@@ -1162,6 +1173,7 @@ async function routeAs(
       signupThrottles.get(throttle)!,
       clientKey,
       now(),
+      deps.billing?.site(),
     )
   }
 
@@ -1197,6 +1209,7 @@ async function routeAs(
       throttle,
       clientKey,
       now: now(),
+      ...publicSource(deps),
     })
   }
 

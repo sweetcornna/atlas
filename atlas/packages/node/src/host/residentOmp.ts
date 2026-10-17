@@ -60,6 +60,17 @@ export interface ResidentOmpSpawn {
   readonly agent: string
 }
 
+/**
+ * The resource as the session configuration records it. The configuration is
+ * written beside the session and audited verbatim, so the browser's claim
+ * secret stays in the resource descriptor; the extension reads it from there.
+ */
+function withoutClaimSecret(
+  resource: ResidentExtensionConfig['desktop'],
+): ResidentExtensionConfig['desktop'] {
+  return resource && { ...resource, cdpToken: null }
+}
+
 const STARTUP_STDERR_LIMIT = 2_048
 
 /** Only the bounded tail is retained; ambiguous boundary secrets are discarded. */
@@ -970,7 +981,9 @@ export class ResidentOmpPool
       ...(this.#options.desktop
         ? {
             desktopPath: this.#options.desktop.resourcePath(owner.agent),
-            desktop: this.#options.desktop.resource(owner.agent),
+            desktop: withoutClaimSecret(
+              this.#options.desktop.resource(owner.agent),
+            ),
           }
         : {}),
       ...(this.#options.requestPermission === undefined

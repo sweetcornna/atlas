@@ -81,6 +81,7 @@ for (const [bundled, api] of [
       let pool: ResidentOmpPool | undefined,
         turn: OmpResidentTurnPort | undefined
       const requests: AuthzRequest[] = []
+      const launched: string[] = []
       let clickAsk = 0
       try {
         const enabled = await node.control(
@@ -155,6 +156,7 @@ for (const [bundled, api] of [
               }
             : {}),
           desktop: node,
+          onLaunch: (_session, config) => launched.push(JSON.stringify(config)),
           agents: [{ agent: 'reviewer', cwd: workspace }],
           memoryRoot: path.join(root, 'memory'),
           announce: async () => ({ status: 'queued' }),
@@ -242,6 +244,14 @@ for (const [bundled, api] of [
           async () => {},
         )
         expect(result.outcome).toBe('completed')
+        // The session configuration is written out and audited; the claim
+        // secret stays in the resource descriptor.
+        expect(r.cdpToken).toHaveLength(43)
+        expect(launched.length).toBeGreaterThan(0)
+        for (const config of launched) {
+          expect(config).not.toContain(r.cdpToken!)
+          expect(JSON.parse(config).desktop.cdpToken).toBeNull()
+        }
         expect(harness.offeredTools.has('eval')).toBe(false)
         expect(requests.map(r => r.toolName)).toEqual([
           'qianmo_browser_navigate',
@@ -359,15 +369,7 @@ async function leaseRun(
   const launcher: DesktopLauncher = {
     available: () => true,
     run: async () => 0,
-    async start(_program, argv) {
-      const profile = argv
-        .find(a => a.startsWith('--user-data-dir='))
-        ?.slice('--user-data-dir='.length)
-      if (profile)
-        fs.writeFileSync(
-          path.join(profile, 'DevToolsActivePort'),
-          `${cdp.port}\n/ws\n`,
-        )
+    async start() {
       let running = true
       return {
         pid: 2_000_000_000,
@@ -385,6 +387,16 @@ async function leaseRun(
     agents: ['reviewer'],
     estop: () => false,
     launcher,
+    // The fake answers the claim and discovery; nothing serves a websocket.
+    cdpBridge: async () => ({
+      url: `http://127.0.0.1:${cdp.port}`,
+      pair: false,
+      command: argv => [...argv],
+      attach: () => {},
+      ready: async () => true,
+      pages: async () => 1,
+      close: () => {},
+    }),
   })
   let turn: OmpResidentTurnPort | undefined
   const answers: LeaseAnswer[] = []

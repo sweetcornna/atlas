@@ -37,6 +37,7 @@ import {
   emptyState,
   segmented,
   selectField,
+  switchField,
   textArea,
   textField,
   unwiredCard,
@@ -164,7 +165,7 @@ const GATEWAY_STATE: Readonly<
   Record<string, readonly ['ok' | 'warn' | 'bad', string]>
 > = {
   keyed: ['ok', '要网关密钥'],
-  open: ['warn', '不带密钥也答'],
+  open: ['warn', '无需密钥即可调用'],
   closed: ['bad', '没有共享到网络'],
   unreachable: ['bad', '连不上'],
 }
@@ -223,6 +224,19 @@ function connectionSection(snapshot: MagpieSnapshot, writer: boolean): string {
 }
 
 // --- upstreams ---------------------------------------------------------
+
+/**
+ * An empty list that was not read: before a connection, or while magpie
+ * does not answer (the connection section says why). Null when the list
+ * is magpie's own answer, so an empty one means there are none.
+ */
+function unread(snapshot: MagpieSnapshot, what: string): string | null {
+  if (!snapshot.connection.configured)
+    return emptyState('未连接', `连接 magpie 后列出${what}`)
+  if (snapshot.problem !== null)
+    return emptyState(`${what}读取失败`, 'magpie 没有应答 · 原因见连接一节')
+  return null
+}
 
 const ACCESS_TAG: Readonly<Record<string, string>> = {
   key: tag('API 密钥', 'ok'),
@@ -296,7 +310,8 @@ function providersSection(snapshot: MagpieSnapshot, writer: boolean): string {
   const rows = snapshot.providers
   const body =
     rows.length === 0
-      ? emptyState('还没有上游', '从 magpie 预设添加 · 只用 API 密钥', add)
+      ? (unread(snapshot, '上游') ??
+        emptyState('还没有上游', '从 magpie 预设添加 · 只用 API 密钥', add))
       : table(
           '上游',
           ['名称', '主机', '模型', '状态', '类别', ...(writer ? [''] : [])],
@@ -356,7 +371,12 @@ function groupsSection(snapshot: MagpieSnapshot, writer: boolean): string {
   const rows = snapshot.groups
   const body =
     rows.length === 0
-      ? emptyState('还没有路由组', '把几个上游的模型编成一组 · 按规则分流', add)
+      ? (unread(snapshot, '路由组') ??
+        emptyState(
+          '还没有路由组',
+          '把几个上游的模型编成一组 · 按规则分流',
+          add,
+        ))
       : table(
           '路由组',
           ['名称', '成员', '路由', '保持', '类别', ...(writer ? [''] : [])],
@@ -412,7 +432,7 @@ function keyRow(key: MagpieKeyView, writer: boolean): string {
   const id = bindingKeyOf(key.binding)
   const status =
     key.present === false
-      ? state('bad', 'magpie 里已不在')
+      ? state('bad', 'magpie 中已无此密钥')
       : key.enabled === null
         ? state('muted', '未知')
         : key.enabled
@@ -803,10 +823,39 @@ function limitRows(limits: readonly MagpieLimitView[]): string {
               ? ''
               : String(limit.cost),
         }) +
+        // Carried both ways: a limit saved from this form keeps counting
+        // cache reads in its tokens when it did before.
+        switchField(
+          `limitCacheReads${index}`,
+          'token 含缓存读',
+          limit?.cacheReads === true,
+        ) +
         `</div>`,
     )
   }
   return `<div class="field field-wide mg-limits"><span class="flabel">限额</span>${rows.join('')}<span class="note field-help">要启用 magpie 的预算插件才生效</span></div>`
+}
+
+/**
+ * The model choices, with the key's own models first when they are not
+ * among them (a provider switched off since, magpie not answering): the
+ * form saved untouched sends the key back as it is, never the first choice.
+ */
+function modelChoices(
+  choices: readonly string[],
+  key: MagpieKeyView | null,
+): (readonly [string, string])[] {
+  const own = [key?.mainModel, key?.fastModel ?? undefined].filter(
+    (model, index, all): model is string =>
+      model !== undefined &&
+      model !== '' &&
+      !choices.includes(model) &&
+      all.indexOf(model) === index,
+  )
+  return [
+    ...own.map(model => [model, `${model} · 现用`] as const),
+    ...choices.map(model => [model, model] as const),
+  ]
 }
 
 function keyForm(snapshot: MagpieSnapshot, key: MagpieKeyView | null): string {
@@ -817,7 +866,7 @@ function keyForm(snapshot: MagpieSnapshot, key: MagpieKeyView | null): string {
       tenant => [`tenant:${tenant}`, `租户 ${tenant}`] as const,
     ),
   ].filter(([value]) => !taken.has(value))
-  const models = snapshot.models.map(model => [model, model] as const)
+  const models = modelChoices(snapshot.models, key)
   const binding =
     key === null
       ? selectField('binding', '绑定', choices, { required: true, wide: true })

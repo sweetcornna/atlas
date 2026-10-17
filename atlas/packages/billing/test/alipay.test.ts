@@ -291,6 +291,20 @@ describe('notifications', () => {
     expect(verdict.ok && verdict.trade.merchantMatches).toBe(false)
   })
 
+  test('a foreign or missing seller_id is reported for the service to reject', () => {
+    for (const sellerId of ['2088999999999999', null]) {
+      const request = alipayNotify(keys, {
+        outTradeNo: 'K'.repeat(32),
+        totalAmount: '99.00',
+        sellerId,
+      })
+      const verdict = channel.verifyNotify({ headers: {}, ...request }, clock)
+      expect(`${sellerId} ${verdict.ok && verdict.trade.merchantMatches}`).toBe(
+        `${sellerId} false`,
+      )
+    }
+  })
+
   test('replies are the literal success / fail bodies', () => {
     expect(channel.reply('ok', '').body).toBe('success')
     expect(channel.reply('rejected', 'x').body).toBe('fail')

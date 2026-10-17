@@ -8,10 +8,11 @@
  *
  * Read-only but for 取消, which is the cancel the conversation has: the task
  * stops and the node stops the turn it is running. A row says what the hub
- * knows — the phase (排队中 while it waits for its node), the turns so far,
- * the last report and the last interruption — and links the worker session,
- * where the whole exchange is. Labels and states only; what a task was asked
- * to do is in that session, not repeated here.
+ * knows — the phase (排队中 while it waits for its node, 已安排 with the next
+ * start for a delayed or repeating one, and the runs a repeating one has
+ * left), the turns so far, the last report and the last interruption — and
+ * links the worker session, where the whole exchange is. Labels and states
+ * only; what a task was asked to do is in that session, not repeated here.
  */
 
 import type {
@@ -28,6 +29,7 @@ import {
   sectionHead,
   state,
   type Tone,
+  withTimes,
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { formatRelative } from './format.js'
@@ -37,6 +39,7 @@ import { actionButton, dialogActions, dialogTop, unwiredCard } from './kit.js'
 const FINISHED_SHOWN = 20
 
 const STATUS_TONE: Readonly<Record<BackgroundTaskStatus, Tone>> = {
+  scheduled: 'muted',
   queued: 'muted',
   running: 'ok',
   interrupted: 'warn',
@@ -65,6 +68,29 @@ function textCell(text: string, tone?: 'bad'): string {
   )
 }
 
+/** Within a day the next start reads as a clock time; further off, with its date. */
+const DAY_MS = 24 * 60 * 60_000
+
+/**
+ * 已安排 · 下次 HH:MM, and · 剩 N 次 for a repeating task. A start already
+ * due reads as the hub says (e.g. 已安排 · 等名额), without a time gone by.
+ */
+function phaseCell(task: BackgroundTaskView, now: number): string {
+  const left = task.runsLeft === null ? '' : ` · 剩 ${task.runsLeft} 次`
+  const text =
+    task.status === 'scheduled' && task.nextAt !== null && task.nextAt > now
+      ? withTimes(
+          `${task.phase} · 下次 `,
+          {
+            at: task.nextAt,
+            fmt: task.nextAt - now < DAY_MS ? 'hm' : 'minute',
+          },
+          left,
+        )
+      : `${task.phase}${left}`
+  return `<td>${state(STATUS_TONE[task.status], text)}</td>`
+}
+
 function taskRow(
   task: BackgroundTaskView,
   now: number,
@@ -89,7 +115,7 @@ function taskRow(
       ? `<td><span class="kit-mono">${escapeHtml(task.owner)}</span></td>`
       : '') +
     `<td>${address(task.target)}</td>` +
-    `<td>${state(STATUS_TONE[task.status], task.phase)}</td>` +
+    phaseCell(task, now) +
     `<td class="num">${task.turns}</td>` +
     textCell(task.progress) +
     textCell(task.lastError, 'bad') +
@@ -110,11 +136,17 @@ export function renderTasks(
   now: number,
   options: { readonly owners: boolean; readonly cancel: boolean },
 ): string {
-  const open = tasks.filter(task => !FINISHED.has(task.status))
+  const open = tasks.filter(
+    task => !FINISHED.has(task.status) && task.status !== 'scheduled',
+  )
+  // Planned ones after the running ones, the next to start first.
+  const planned = tasks
+    .filter(task => task.status === 'scheduled')
+    .sort((a, b) => (a.nextAt ?? 0) - (b.nextAt ?? 0))
   const done = tasks
     .filter(task => FINISHED.has(task.status))
     .slice(0, FINISHED_SHOWN)
-  const shown = [...open, ...done]
+  const shown = [...open, ...planned, ...done]
   const head = [
     '任务',
     ...(options.owners ? ['发起人'] : []),
@@ -142,7 +174,9 @@ export function renderTasks(
     `<section class="sec" aria-labelledby="h-tasks">` +
     sectionHead('Tasks', '后台任务', {
       headingId: 'h-tasks',
-      tail: `<span class="note">进行中 ${open.length} · 最近结束 ${done.length}</span>`,
+      tail: `<span class="note">进行中 ${open.length}${
+        planned.length === 0 ? '' : ` · 已安排 ${planned.length}`
+      } · 最近结束 ${done.length}</span>`,
     }) +
     body +
     `</section>`
@@ -157,7 +191,7 @@ export function renderTasksUnavailable(failure: ConsoleFailure | null): string {
     sectionHead('Tasks', '后台任务', { headingId: 'h-tasks' }) +
     unwiredCard(
       '后台任务',
-      '中枢接上节点的控制链路后 · 主智能体交给后台子智能体的任务列在这里',
+      '中枢接上节点的控制链路后 · 主会话交出的后台任务列在这里',
       'qm console --chat-url <节点>=<地址> --control <节点>=<地址>',
     ) +
     `</section>`

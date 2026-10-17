@@ -64,7 +64,7 @@ import {
 } from '../channels/weixin.js'
 import { ConnectorVault, type ConnectorSecret } from '../connectors/secrets.js'
 import { refusal, sendAndWait } from './chatTurn.js'
-import { SUPERVISOR_RULES } from './consoleTasks.js'
+import { SUPERVISOR_RULES, taskNote } from './consoleTasks.js'
 import {
   acquirePrivateInstanceLock,
   ensurePrivateDir,
@@ -222,6 +222,8 @@ export interface ConsoleChannelsOptions {
 /** What channels need of the hub's background tasks (`consoleTasks.ts`). */
 export interface ChannelTasks {
   contextFor(sessionId: string, since?: number): string | undefined
+  /** Once after a long foreground turn: hand long work to a task (保持空闲). */
+  reminderFor?(sessionId: string): Promise<string | undefined>
   statusText(
     sessionId: string,
     options?: { readonly busy?: boolean },
@@ -675,22 +677,21 @@ export class ConsoleChannels implements ChannelsPort {
         active.cancel()
         return true
       },
-      context: conversation => {
+      context: async conversation => {
         const session = this.#sessionFor(conversation.key)
-        if (
-          !this.#foregroundLane(conversation) ||
-          this.#options.tasks === undefined
-        )
+        const tasks = this.#options.tasks
+        if (!this.#foregroundLane(conversation) || tasks === undefined)
           return {}
         const noted = this.#noted.get(conversation.key)
         const at = this.#now()
         const text =
-          session == null
-            ? undefined
-            : this.#options.tasks.contextFor(session, noted?.at)
-        const note = text === noted?.text ? undefined : text
-        if (note !== undefined)
-          this.#offered.set(conversation.key, { text: note, at })
+          session == null ? undefined : tasks.contextFor(session, noted?.at)
+        const fresh = text === noted?.text ? undefined : text
+        if (fresh !== undefined)
+          this.#offered.set(conversation.key, { text: fresh, at })
+        const reminder =
+          session == null ? undefined : await tasks.reminderFor?.(session)
+        const note = taskNote(fresh, reminder)
         return {
           sticky: [{ id: 'tasks_rules', text: SUPERVISOR_RULES }],
           ...(note === undefined ? {} : { note }),

@@ -7,7 +7,13 @@ export interface DesktopResource {
   readonly resourceEpoch: number
   readonly browser: boolean
   readonly computer: boolean
+  /**
+   * The host bridge to the browser's DevTools pipe (runtimes-channels.md
+   * §6.3). It lets in only processes that claimed it with {@link cdpToken}.
+   */
   readonly cdpUrl: string | null
+  /** The claim secret, set with `cdpUrl`; see {@link DESKTOP_CDP_CLAIM_PATH}. */
+  readonly cdpToken: string | null
   readonly display: string | null
   readonly xauthority: string | null
   readonly downloads: string
@@ -25,6 +31,15 @@ export interface DesktopResource {
    */
   readonly hostApps?: readonly string[]
 }
+
+/**
+ * Where an executor claims its browser's host bridge before it attaches:
+ * `POST` with `Authorization: Bearer <cdpToken>`. The bridge then lets in
+ * the claiming process's own connections, and no one else's.
+ */
+export const DESKTOP_CDP_CLAIM_PATH = '/qianmo/claim'
+/** A claim secret: 32 random bytes, base64url. */
+export const DESKTOP_CDP_TOKEN = /^[A-Za-z0-9_-]{43}$/
 
 /** One canonical argument value: plain JSON, objects with sorted keys. */
 export type DesktopValue =

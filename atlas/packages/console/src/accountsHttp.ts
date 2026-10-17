@@ -79,6 +79,7 @@ import { safeDecode } from './routes/shared.js'
 import type { LoginThrottle } from './throttle.js'
 import type { PageViewer } from './view/bits.js'
 import { renderCredentialPage, renderInvitePage } from './view/invite.js'
+import type { SourceLinks } from './view/source.js'
 
 /** Everything the invitation door needs from the request that reached it. */
 interface InviteDoor {
@@ -87,6 +88,8 @@ interface InviteDoor {
   readonly throttle: LoginThrottle
   readonly clientKey: string
   readonly now: number
+  /** The public edition's source and terms links (AGPL §13, `view/source.ts`). */
+  readonly source?: SourceLinks
 }
 
 /** A 303 that sets several cookies: `seeOther` takes one value per header. */
@@ -131,8 +134,10 @@ export async function handleInvite(
   request: Request,
   door: InviteDoor,
 ): Promise<Response> {
+  // The public edition's source footer rides on every card this door draws.
+  const source = door.source === undefined ? {} : { source: door.source }
   if (request.method === 'GET') {
-    return html(renderInvitePage({ label: door.label }))
+    return html(renderInvitePage({ label: door.label, ...source }))
   }
   if (request.method !== 'POST') return methodNotAllowed(['GET', 'POST'])
 
@@ -148,6 +153,7 @@ export async function handleInvite(
       renderInvitePage({
         label: door.label,
         error: `尝试过多 · 请等 ${wait} 秒`,
+        ...source,
       }),
       429,
     )
@@ -167,7 +173,7 @@ export async function handleInvite(
         ? ACCOUNTS_UNAVAILABLE_LINE
         : accepted.refusal.message
     return html(
-      renderInvitePage({ label: door.label, error }),
+      renderInvitePage({ label: door.label, error, ...source }),
       statusOf(accepted.refusal),
     )
   }
@@ -188,6 +194,7 @@ export async function handleInvite(
       role: accepted.value.role,
       credential: accepted.value.credential,
       signedIn: session.ok,
+      ...source,
     }),
   )
   if (session.ok) {

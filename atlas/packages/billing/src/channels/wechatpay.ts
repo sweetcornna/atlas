@@ -5,7 +5,9 @@
  * WeChat Pay API v3, Native payment, merchant direct mode (普通商户).
  *
  * **未评估**：not run against a real merchant account. Tested only against
- * local fakes and the signing example from the official docs.
+ * local fakes with keys generated in the test; the request-signing message
+ * and header are checked against the docs' description of them, not against
+ * the docs' example key or example request.
  *
  * ## Protocol facts relied on (official docs, fetched 2026-10-16)
  *

@@ -85,6 +85,11 @@ export interface WechatPayConfig {
 
 export interface AlipayConfig {
   readonly appId: string
+  /**
+   * The merchant's Alipay user id (`2088…`, 16 digits): a notification's
+   * `seller_id` must equal it.
+   */
+  readonly sellerId: string
   readonly appPrivateKey: KeyObject
   readonly alipayPublicKey: KeyObject
   readonly notifyUrl: string
@@ -95,6 +100,17 @@ export interface AlipayConfig {
 export interface BillingConfig {
   readonly version: 1
   readonly currency: 'CNY'
+  /**
+   * 正式收款. Off (the default) means no QR order is ever placed with WeChat
+   * Pay or Alipay, whatever merchant numbers the channels carry; orders
+   * placed while it was on are still queried, closed and settled. Turning it
+   * on is the operator's explicit `"live": true`, and its precondition is
+   * every legal prerequisite in public-edition.md §0: the written conclusion
+   * on L-2 that charter §8 M3 requires before real money is taken, the
+   * generative-AI service filing (or a written opinion that none is
+   * needed), a commercial ICP licence and a published privacy policy.
+   */
+  readonly live: boolean
   /** AGPL §13: where users of a public deployment get the Corresponding Source. */
   readonly sourceUrl: string
   readonly termsUrl: string | null
@@ -417,6 +433,7 @@ function alipay(
 ): AlipayConfig {
   const record = object(value, path, [
     'appId',
+    'sellerId',
     'appPrivateKeyFile',
     'alipayPublicKeyFile',
     'notifyUrl',
@@ -426,6 +443,10 @@ function alipay(
     appId: text(record['appId'], `${path}.appId`, {
       max: 32,
       pattern: /^[0-9]{8,32}$/,
+    }),
+    sellerId: text(record['sellerId'], `${path}.sellerId`, {
+      max: 16,
+      pattern: /^2088[0-9]{12}$/,
     }),
     appPrivateKey: secret(
       absolutePath(record['appPrivateKeyFile'], `${path}.appPrivateKeyFile`),
@@ -471,6 +492,7 @@ export function parseBillingConfig(
   const root = object(input, '$', [
     'version',
     'currency',
+    'live',
     'sourceUrl',
     'termsUrl',
     'plans',
@@ -479,6 +501,8 @@ export function parseBillingConfig(
   ])
   if (root['version'] !== 1) fail('$.version', '只支持 1')
   if (root['currency'] !== 'CNY') fail('$.currency', '只支持 CNY')
+  const live = root['live'] === undefined ? false : root['live']
+  if (typeof live !== 'boolean') fail('$.live', '必须是布尔值')
   if (root['sourceUrl'] === undefined)
     fail('$.sourceUrl', '必填（AGPL 第 13 条：公开部署须提供对应源码）')
   const sourceUrl = httpsUrl(root['sourceUrl'], '$.sourceUrl').toString()
@@ -523,6 +547,7 @@ export function parseBillingConfig(
   return {
     version: 1,
     currency: 'CNY',
+    live,
     sourceUrl,
     termsUrl,
     plans,

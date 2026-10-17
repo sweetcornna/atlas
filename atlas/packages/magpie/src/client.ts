@@ -6,10 +6,19 @@
  * --web` serves, `internal/gui/*.go`) and two reads of its gateway
  * (`GET /api/hello`, `GET /v1/models`, `internal/gateway/gateway.go`).
  *
+ * The routes, the JSON shapes and the cookie name are taken from magpie's
+ * source, yetone/magpie@8b84dc9 (MIT, Copyright (c) 2026 yetone; NOTICE
+ * 五.6); the code is Qianmo's own.
+ *
  * ## What it will not do
  *
  * - **Call a model.** The gateway's model endpoints are the nodes'; this
  *   client reads the gateway's identity and catalog only (N-5 v2.22, R-9).
+ *   The one exception is on the management side: saving a provider,
+ *   `providerModels` and `testProvider` ask magpie to reach the vendor (its
+ *   model list; one smallest request per protocol). Those requests leave
+ *   from magpie, never from this process, and only their results come back
+ *   (charter N-5 v3.6 note, providers-console-m1.md R-9 v1.9).
  * - **Follow a redirect.** Every request is `redirect: 'manual'` and a 3xx is
  *   an error: a management key in a cookie must not be carried to wherever a
  *   redirect points.
@@ -95,6 +104,8 @@ const MAX_ERROR_TEXT = 200
 const MAGPIE_KEY_PREFIX = 'sk-magpie-'
 /** magpie web's own default port (`internal/cli/web_cli.go` `webAddr`). */
 const DEFAULT_WEB_PORT = 3430
+/** The one aggregator a subscriber may connect (`listPresets` `vendors`). */
+const OPENROUTER_PRESET = 'openrouter'
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters is the point
 const CONTROL = /[\u0000-\u001f\u007f]/
@@ -543,12 +554,20 @@ export class MagpieClient {
   }
 
   /**
-   * The presets a provider can be added from with nothing but a key, by id.
-   * Left out: another magpie and the presets that send as a vendor's own
-   * client (both borrow an identity), and those that need the user's own
-   * endpoint. Sponsorship and taglines are not carried.
+   * The presets a provider can be added from with nothing but a key, by id
+   * (never in magpie's order, so no sponsor ranks first). Left out: another
+   * magpie and the presets that send as a vendor's own client (both borrow
+   * an identity), and those that need the user's own endpoint. Sponsorship
+   * and taglines are not carried.
+   *
+   * `vendors`: only the vendors' own APIs (magpie's kind `vendor`), plus
+   * OpenRouter, the one aggregator the catalog takes in
+   * (`providers-console-m1.md` §4.5) — what a subscriber is offered. Relays
+   * and resellers stay for the platform's own gateway page only.
    */
-  async listPresets(): Promise<readonly MagpiePreset[]> {
+  async listPresets(
+    options: { readonly vendors?: boolean } = {},
+  ): Promise<readonly MagpiePreset[]> {
     const state = await this.#providersState()
     const out: MagpiePreset[] = []
     for (const raw of list(state['presets'])) {
@@ -557,6 +576,12 @@ export class MagpieClient {
       const kind = text(raw['kind'])
       if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) continue
       if (kind === 'remote' || raw['ownClient'] === true) continue
+      if (
+        options.vendors === true &&
+        kind !== 'vendor' &&
+        id !== OPENROUTER_PRESET
+      )
+        continue
       if (text(raw['endpoint']) !== '') continue
       const urls = [raw['chat'], raw['responses'], raw['anthropic']].some(
         value => text(value) !== '',

@@ -2421,7 +2421,8 @@ export async function runResident(args: readonly string[]): Promise<void> {
     node: config.node,
     team: config.team,
     // What reads an agent's runtime once (P32 layouts, shell approvals)
-    // sees the one it is configured on at start.
+    // sees the one it is configured on at start; `node.ping` reads the
+    // runtime and model in effect from `runtimes` (P29, P36).
     agents: config.agents.map(agent => {
       const runtime = runtimes.configured(agent.agent).runtime
       return runtime === FALLBACK_RUNTIME

@@ -1830,16 +1830,25 @@ Options (each accepts both --name value and --name=value):
                            profile. Model traffic goes from nodes straight to
                            the gateway, never through this hub. Requires
                            --providers. State: <config root>/qianmo/console/
-                           magpie.json. Tested against a fake magpie only.
+                           magpie.json. Smoke-tested against magpie 0.1.1278
+                           (HTTP and TLS) with hub, gateway and node on one
+                           machine; not across machines.
   --billing <abs path>    Public edition only (a public build, or
                            QIANMO_EDITION=public): the billing config with the
                            plans (hosted nodes per plan; model quota is not
                            sold), WeChat Pay and Alipay, redeem codes and the
-                           source link. Default <config root>/qianmo/console/
-                           billing.json. The public edition refuses to start
-                           without --accounts, --tenancy, --open-registration,
-                           --providers, --magpie and a config that loads, and
-                           keeps --legacy-view-token off. Ledger:
+                           source link, which every public page gives as
+                           <sourceUrl>/tree/<build commit>. Default <config
+                           root>/qianmo/console/billing.json. The public
+                           edition refuses to start without --accounts,
+                           --tenancy, --open-registration, --providers,
+                           --magpie and a config that loads, and from a build
+                           that is -dirty or unknown (or a source run with
+                           uncommitted changes); it keeps --legacy-view-token
+                           off. QR orders go to WeChat Pay and Alipay only
+                           with "live": true in the config (default false);
+                           turn it on once every legal prerequisite in
+                           public-edition.md §0 is met. Ledger:
                            <config root>/qianmo/console/billing.sqlite.
                            Both payment channels tested against fakes only.
   --node-server <node>=<server>

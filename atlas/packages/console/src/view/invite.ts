@@ -33,6 +33,7 @@ import { icon } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { qianmoMark } from './mark.js'
 import { BRAND, documentHead } from './page.js'
+import { type SourceLinks, sourceFooter } from './source.js'
 
 /** How a role reads on these two cards. */
 const ROLE_TEXT: Readonly<Record<AccountRole, string>> = {
@@ -69,10 +70,17 @@ function brand(label: string, title: string): string {
   )
 }
 
+/** The public edition's source footer (`source.ts`); absent, nothing. */
+function footer(source: SourceLinks | undefined): string {
+  return source === undefined ? '' : sourceFooter(source)
+}
+
 interface InvitePageModel {
   readonly label: string
   /** The line above the field after a refused attempt. */
   readonly error?: string
+  /** The public edition's source and terms links (AGPL §13). */
+  readonly source?: SourceLinks
 }
 
 /** `GET /invite`, and the card again after a refusal. */
@@ -97,6 +105,7 @@ export function renderInvitePage(model: InvitePageModel): string {
     `<div class="tokrow">邀请只能用一次 · 过期作废</div>` +
     `</div>` +
     `<p class="foot">没有收到邀请请联系环境负责人</p>` +
+    footer(model.source) +
     `</form>\n</main>\n` +
     `<script>${FRAGMENT_SCRIPT}</script>\n` +
     `</body>\n</html>\n`
@@ -110,6 +119,8 @@ interface CredentialPageModel {
   readonly credential: string
   /** True when the same response also signed the browser in. */
   readonly signedIn: boolean
+  /** The public edition's source and terms links (AGPL §13). */
+  readonly source?: SourceLinks
 }
 
 /** The answer to a successful `POST /invite`. No script, no cache. */
@@ -135,6 +146,7 @@ export function renderCredentialPage(model: CredentialPageModel): string {
     `<div class="tokrow">登录时填在凭据框里 · 脚本用 Authorization Bearer</div>` +
     `<div class="tokrow">不要放进链接或书签 · 丢失后找运维重置</div>` +
     `</div>` +
+    footer(model.source) +
     `</div>\n</main>\n` +
     `</body>\n</html>\n`
   )

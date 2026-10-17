@@ -154,13 +154,18 @@ export class NodeRuntimes {
    * fallback; agents without `runtime` run on qianmopi.
    */
   static unmanaged(
-    agents: readonly { readonly agent: string; readonly runtime?: string }[],
+    agents: readonly {
+      readonly agent: string
+      readonly runtime?: string
+      readonly model?: string
+    }[],
     bins?: Partial<Record<ExternalRuntimeKind, string>>,
   ): NodeRuntimes {
     return new NodeRuntimes({
       agents: agents.map(agent => ({
         agent: agent.agent,
         ...(agent.runtime === undefined ? {} : { runtime: agent.runtime }),
+        ...(agent.model === undefined ? {} : { model: agent.model }),
       })),
       defaultRuntime: FALLBACK_RUNTIME,
       installer: new RuntimeInstaller(bins === undefined ? {} : { bins }),

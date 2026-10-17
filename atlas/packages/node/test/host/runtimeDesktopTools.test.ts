@@ -118,6 +118,7 @@ const BROWSER: DesktopResource = {
   browser: true,
   computer: false,
   cdpUrl: 'http://127.0.0.1:9222',
+  cdpToken: 'a'.repeat(43),
   display: null,
   xauthority: null,
   downloads: '/srv/desktop/coder/downloads',

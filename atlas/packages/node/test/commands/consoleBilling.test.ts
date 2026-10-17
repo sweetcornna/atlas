@@ -59,6 +59,7 @@ import {
 import {
   ConsoleMagpie,
   magpieProfileId,
+  NO_MODEL_PROFILE,
 } from '../../src/commands/consoleMagpie.js'
 import {
   type ConsoleProviders,
@@ -66,6 +67,10 @@ import {
   type ProviderScheduler,
 } from '../../src/commands/consoleProviders.js'
 import { publicProviders } from '../../src/commands/consolePublicProviders.js'
+import {
+  ConsoleRouting,
+  routingWire,
+} from '../../src/commands/consoleRouting.js'
 import { FileTenantStore } from '../../src/commands/consoleTenancy.js'
 import { type FakeNode, fakeNode } from './consoleProvidersFakeNode.js'
 
@@ -350,6 +355,8 @@ beforeEach(async () => {
     config: parseBillingConfig({
       version: 1,
       currency: 'CNY',
+      // The channel is the in-file fake; nothing real is charged.
+      live: true,
       sourceUrl: 'https://github.com/sweetcornna/atlas',
       termsUrl: null,
       plans: [
@@ -448,15 +455,20 @@ describe('a payment opens the subscription', () => {
     const assigned = (node: string) =>
       overview.value.nodes.find(row => row.node === node)?.assignment
     expect(assigned('beta-1')).toEqual({ mode: 'profile', profileId })
-    // The plan has one node: the second mapped node gets nothing.
-    expect(assigned('beta-2')?.mode).not.toBe('profile')
+    // The plan has one node: the second mapped node gets no model.
+    expect(assigned('beta-2')).toEqual({
+      mode: 'profile',
+      profileId: NO_MODEL_PROFILE,
+    })
     // Delivered with the subscriber key; nothing reaches the node unmapped.
     expect(ledger).toContain('system provider.apply beta-1 ok')
     expect(delivered(0)).toEqual({
       key: tenantKey(tenant).secret,
       main: NO_MODEL_PATTERN,
     })
-    expect(delivered(1)).toBeNull()
+    expect(deliveredProfile(1)?.id).toBe(NO_MODEL_PROFILE)
+    expect(delivered(1)?.key).not.toBe(tenantKey(tenant).secret)
+    expect(delivered(2)).toBeNull()
     expect((await billing.standing(ALICE)).nodesMapped).toBe(2)
     // Ops cannot hand it a second node either.
     const refused = await providers.assign(
@@ -609,6 +621,34 @@ describe('the subscriber’s own models', () => {
       'ollama',
     )
   })
+
+  test('a subscriber is offered the vendors’ own APIs and OpenRouter, no other relay', async () => {
+    await pay(ALICE)
+    const presets = await billing.presets()
+    expect(presets.ok && presets.value.map(one => one.id)).toEqual([
+      'anthropic',
+      'openai',
+      'openrouter',
+    ])
+    const relay = await billing.addUpstream(ALICE, {
+      preset: 'relay-hub',
+      key: 'sk-relay-0001',
+    })
+    expect(relay.ok).toBe(false)
+    if (!relay.ok) {
+      expect(relay.failure.code).toBe('rejected')
+      expect(relay.failure.message).toBe(
+        '这个预设不能用 · 只收厂商自有接口与 OpenRouter',
+      )
+    }
+    expect(
+      fake.requests.some(
+        request =>
+          request.path === '/api/provider/save' &&
+          (request.body as { preset?: unknown } | null)?.preset === 'relay-hub',
+      ),
+    ).toBe(false)
+  })
 })
 
 describe('expiry', () => {
@@ -632,6 +672,58 @@ describe('expiry', () => {
     // Renewing switches it back on: the upstream is still there.
     await pay(ALICE)
     expect(tenantKey(tenant).off).toBe(false)
+  })
+
+  test('switching off goes by the tenant the subscription was provisioned for, never a guessed one', async () => {
+    // Same first 8 hex digits: Alice gets t-a11ce000, Carol the long form.
+    const CAROL = 'u:a11ce000ffffffff'
+    const alice = await pay(ALICE)
+    const carol = await pay(CAROL)
+    expect(alice).toBe('t-a11ce000')
+    expect(carol).toBe('t-a11ce000ffffffff')
+    for (const subject of [ALICE, CAROL]) {
+      const added = await billing.addUpstream(subject, {
+        preset: 'openai',
+        key: `sk-own-${subject.slice(2)}`,
+      })
+      expect(added.ok).toBe(true)
+    }
+    // Ops take Carol out of the subjects table (account cleanup).
+    const current = config()
+    tenancy.replace({
+      ...current,
+      subjects: current.subjects.filter(row => row.subject !== CAROL),
+    })
+    await billing.setEnabled(CAROL, false)
+    expect(tenantKey(carol).off).toBe(true)
+    expect(tenantKey(alice).off).toBe(false)
+  })
+
+  test('a tenant stays on while anybody in it is still paid up', async () => {
+    const DAVE = 'u:da7e000000000004'
+    const tenant = await pay(ALICE)
+    // Ops put Dave into Alice's tenant; he pays ten days later.
+    const current = config()
+    tenancy.replace({
+      ...current,
+      subjects: [...current.subjects, { subject: DAVE, tenant }],
+    })
+    clock += 10 * DAY
+    expect(await pay(DAVE)).toBe(tenant)
+    const added = await billing.addUpstream(ALICE, {
+      preset: 'openai',
+      key: 'sk-alice-own-0001',
+    })
+    expect(added.ok).toBe(true)
+    // Alice's period ends; Dave's has ten days to go.
+    clock += 21 * DAY
+    await billing.tick()
+    expect((await billing.standing(ALICE)).active).toBe(false)
+    expect(tenantKey(tenant).off).toBe(false)
+    // Dave's ends too.
+    clock += 10 * DAY
+    await billing.tick()
+    expect(tenantKey(tenant).off).toBe(true)
   })
 
   test('disabling somebody never provisioned is a no-op', async () => {
@@ -693,12 +785,683 @@ describe('the model service in the public edition', () => {
       if (!result.ok)
         expect(result.failure.code).toBe('edition_public_magpie_only')
     }
+    // Not managing would leave whatever key the node last got: refused. No
+    // model is how a tenant node is taken back.
     const stop = await providers.assign(
       { node: 'beta-1', assignment: { mode: 'unmanaged' } },
       caller,
     )
-    expect(stop.ok).toBe(true)
+    expect(stop.ok).toBe(false)
+    if (!stop.ok) expect(stop.failure.code).toBe('edition_public_magpie_only')
+    const none = await providers.assign(
+      {
+        node: 'beta-1',
+        assignment: { mode: 'profile', profileId: NO_MODEL_PROFILE },
+      },
+      caller,
+    )
+    expect(none.ok).toBe(true)
   })
+})
+
+/** The profile id, key and main model last delivered to node `index`, or null. */
+function deliveredProfile(
+  index: number,
+): { id: unknown; key: unknown; main: unknown; extra: unknown[] } | null {
+  const last = nodes[index]
+    ?.requests()
+    .filter(request => request['op'] === 'apply' && request['dryRun'] !== true)
+    .at(-1)
+  if (last === undefined) return null
+  const profile = last['profile'] as {
+    id: string
+    auth: { keys: { value?: string }[] }
+    models: { id: string; role: string }[]
+  }
+  const extra = (last['profiles'] ?? []) as { id: string }[]
+  return {
+    id: profile.id,
+    key: profile.auth.keys[0]?.value,
+    main: profile.models.find(model => model.role === 'main')?.id,
+    extra: extra.map(one => one.id),
+  }
+}
+
+async function nodeRow(node: string) {
+  const overview = await raw.overview()
+  if (!overview.ok) throw new Error('overview')
+  const row = overview.value.nodes.find(one => one.node === node)
+  if (row === undefined) throw new Error(`no ${node}`)
+  return row
+}
+
+describe('a tenant node holds its tenant’s profile or no model, nothing else', () => {
+  async function platformKey(node: string) {
+    const issued = await magpie.issueKey(
+      { binding: { kind: 'node', id: node }, mainModel: 'openai/gpt-6' },
+      ops(),
+    )
+    if (!issued.ok) throw new Error(issued.failure.message)
+    const secret = fake.key(issued.value.keyId)?.secret
+    if (secret === undefined) throw new Error('no platform secret')
+    return { profileId: magpieProfileId({ kind: 'node', id: node }), secret }
+  }
+
+  test('a platform default is never what a tenant node is expected to run, and deliver-all gives it no model', async () => {
+    // Before any tenant node exists, ops make a platform profile the default.
+    const platform = await platformKey('beta-3')
+    const def = await providers.setDefault(
+      { profileId: platform.profileId },
+      ops(),
+    )
+    expect(def.ok).toBe(true)
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1', 'beta-2'])
+    // beta-2 follows the default in the book; it is still not the platform's.
+    expect((await nodeRow('beta-2')).assignment.mode).not.toBe('profile')
+    expect((await nodeRow('beta-2')).expected?.profileId).toBe(NO_MODEL_PROFILE)
+    const applied = await providers.apply({}, ops())
+    expect(applied.ok).toBe(true)
+    const beta2 = deliveredProfile(1)
+    expect(beta2?.id).toBe(NO_MODEL_PROFILE)
+    expect(beta2?.main).toBe(NO_MODEL_PATTERN)
+    expect(beta2?.key).not.toBe(platform.secret)
+    // magpie does not know the no-model key: it opens nothing.
+    expect(fake.keys().some(key => key.secret === beta2?.key)).toBe(false)
+    // The platform node still runs the platform profile.
+    expect(deliveredProfile(2)?.key).toBe(platform.secret)
+    for (let index = 0; index < 2; index++) {
+      const all = JSON.stringify(nodes[index]?.requests())
+      expect(all).not.toContain(platform.secret)
+    }
+  })
+
+  test('with tenant nodes the default can only be cleared or set to no model', async () => {
+    const platform = await platformKey('beta-3')
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1'])
+    const set = await providers.setDefault(
+      { profileId: platform.profileId },
+      ops(),
+    )
+    expect(set.ok).toBe(false)
+    if (!set.ok) expect(set.failure.code).toBe('edition_public_magpie_only')
+    expect((await providers.setDefault({ profileId: null }, ops())).ok).toBe(
+      true,
+    )
+    expect(
+      (await providers.setDefault({ profileId: NO_MODEL_PROFILE }, ops())).ok,
+    ).toBe(true)
+  })
+
+  test('the no-model profile is the hub’s own: ops cannot edit or delete it', async () => {
+    const profile = await raw.profile(NO_MODEL_PROFILE)
+    if (!profile.ok) throw new Error('no no-model profile after connect')
+    expect(profile.value.presetId).toBe('magpie')
+    const revision = profile.value.revision
+    for (const result of [
+      await providers.setSecret(
+        {
+          profileId: NO_MODEL_PROFILE,
+          keyId: 'gw',
+          value: 'sk-planted-0000001',
+          ifMatch: revision,
+        },
+        ops(),
+      ),
+      await providers.deleteProfile(
+        { profileId: NO_MODEL_PROFILE, ifMatch: revision },
+        ops(),
+      ),
+      await providers.saveProfile(
+        { profile: { ...profile.value }, ifMatch: revision },
+        ops(),
+      ),
+    ]) {
+      expect(result.ok).toBe(false)
+      if (!result.ok)
+        expect(result.failure.code).toBe('edition_public_magpie_only')
+    }
+  })
+
+  test('probes, model lists and dry runs of another profile never reach a tenant node', async () => {
+    const platform = await platformKey('beta-3')
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    const before = nodes[0]?.requests().length ?? 0
+    const candidate = { profileId: platform.profileId }
+    for (const result of [
+      await providers.probe({ node: 'beta-1', mode: 'auth', candidate }, ops()),
+      await providers.models({ node: 'beta-1', candidate }, ops()),
+      await providers.probe(
+        {
+          node: 'beta-1',
+          mode: 'auth',
+          candidate: {
+            draft: { id: platform.profileId, presetId: 'magpie' },
+          },
+        },
+        ops(),
+      ),
+    ]) {
+      expect(result.ok).toBe(false)
+      if (!result.ok)
+        expect(result.failure.code).toBe('edition_public_magpie_only')
+    }
+    const dry = await providers.apply(
+      { nodes: ['beta-1'], dryRun: true, profileId: platform.profileId },
+      ops(),
+    )
+    expect(dry.ok && dry.value[0]?.outcome).toBe('refused')
+    expect(nodes[0]?.requests().length).toBe(before)
+  })
+
+  test('hub-wide task routing to a platform profile does not travel to a tenant node', async () => {
+    const routing = new ConsoleRouting({
+      path: join(root, 'config', 'routing.json'),
+      profiles: () => raw.routingProfiles(),
+    })
+    raw.configureRouting(node => {
+      const view = routing.effective(node)
+      return view.updatedAt === null
+        ? { revision: view.revision }
+        : { revision: view.revision, routing: routingWire(view) }
+    })
+    const platform = await platformKey('beta-3')
+    const saved = await routing.save(
+      {
+        node: null,
+        auto: false,
+        revision: 0,
+        routes: [
+          {
+            direction: 'fast',
+            profileId: platform.profileId,
+            modelId: 'openai/gpt-6',
+          },
+        ],
+      },
+      { subject: OPS, role: 'ops', requestId: 'r-1' },
+    )
+    expect(saved.ok).toBe(true)
+    const tenant = await pay(ALICE)
+    const added = await billing.addUpstream(ALICE, {
+      preset: 'openai',
+      key: 'sk-alice-own-0001',
+    })
+    expect(added.ok).toBe(true)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    const own = magpieProfileId({ kind: 'tenant', id: tenant })
+    const beta1 = deliveredProfile(0)
+    expect(beta1?.id).toBe(own)
+    expect(beta1?.extra).toEqual([])
+    expect(JSON.stringify(nodes[0]?.requests())).not.toContain(platform.secret)
+  })
+})
+
+describe('the plan’s node count, kept by the node sync', () => {
+  function assigned(row: { assignment: { mode: string } }): string | null {
+    const assignment = row.assignment as { mode: string; profileId?: string }
+    return assignment.mode === 'profile' ? (assignment.profileId ?? null) : null
+  }
+
+  test('mapped nodes beyond the plan are put on no model and delivered, whatever they held', async () => {
+    // beta-2 was a platform node with a platform key, its profile the default.
+    const issued = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-2' }, mainModel: 'openai/gpt-6' },
+      ops(),
+    )
+    if (!issued.ok) throw new Error(issued.failure.message)
+    const platformSecret = fake.key(issued.value.keyId)?.secret
+    const platformProfile = magpieProfileId({ kind: 'node', id: 'beta-2' })
+    expect(
+      (await providers.setDefault({ profileId: platformProfile }, ops())).ok,
+    ).toBe(true)
+    expect(deliveredProfile(1)?.key).toBe(platformSecret)
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1', 'beta-2', 'beta-3'])
+    await billing.syncNodes()
+    const own = magpieProfileId({ kind: 'tenant', id: tenant })
+    expect(assigned(await nodeRow('beta-1'))).toBe(own)
+    expect(assigned(await nodeRow('beta-2'))).toBe(NO_MODEL_PROFILE)
+    expect(assigned(await nodeRow('beta-3'))).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.id).toBe(own)
+    // The platform key the node held is replaced; beta-3 never had one.
+    expect(deliveredProfile(1)?.id).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(1)?.key).not.toBe(platformSecret)
+    expect(deliveredProfile(2)?.id).toBe(NO_MODEL_PROFILE)
+    expect(ledger).toContain('system provider.apply beta-2 ok')
+  })
+
+  test('a downgrade takes back the nodes the new plan does not cover', async () => {
+    const tenant = await pay(ALICE, 'team')
+    mapNodes(tenant, ['beta-1', 'beta-2'])
+    await billing.syncNodes()
+    const own = magpieProfileId({ kind: 'tenant', id: tenant })
+    expect(assigned(await nodeRow('beta-1'))).toBe(own)
+    expect(assigned(await nodeRow('beta-2'))).toBe(own)
+    clock += 31 * DAY
+    await billing.tick()
+    await pay(ALICE, 'month')
+    await billing.syncNodes()
+    expect(billing.allowance(tenant)).toBe(1)
+    expect(assigned(await nodeRow('beta-1'))).toBe(own)
+    expect(assigned(await nodeRow('beta-2'))).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.id).toBe(own)
+    expect(deliveredProfile(1)?.id).toBe(NO_MODEL_PROFILE)
+  })
+
+  test('expiry takes every node back; renewal gives them back', async () => {
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    const own = magpieProfileId({ kind: 'tenant', id: tenant })
+    expect(deliveredProfile(0)?.id).toBe(own)
+    clock += 31 * DAY
+    await billing.tick()
+    expect(assigned(await nodeRow('beta-1'))).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    await pay(ALICE)
+    await billing.syncNodes()
+    expect(assigned(await nodeRow('beta-1'))).toBe(own)
+    expect(deliveredProfile(0)?.id).toBe(own)
+  })
+})
+
+describe('a node handed back or moved gives the subscriber’s key back', () => {
+  function assigned(row: { assignment: { mode: string } }): string | null {
+    const assignment = row.assignment as { mode: string; profileId?: string }
+    return assignment.mode === 'profile' ? (assignment.profileId ?? null) : null
+  }
+
+  /** Ops give `tenant` exactly these nodes, taking it off any others. */
+  function setNodes(tenant: string, names: readonly string[]): void {
+    const current = config()
+    tenancy.replace({
+      ...current,
+      nodes: current.nodes.filter(row => row.tenant !== tenant),
+    })
+    mapNodes(tenant, names)
+  }
+
+  async function subscribed() {
+    const tenant = await pay(ALICE)
+    const added = await billing.addUpstream(ALICE, {
+      preset: 'openai',
+      key: 'sk-alice-own-0001',
+    })
+    if (!added.ok) throw new Error(added.failure.message)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    const own = magpieProfileId({ kind: 'tenant', id: tenant })
+    expect(deliveredProfile(0)?.id).toBe(own)
+    return { tenant, own, secret: tenantKey(tenant).secret }
+  }
+
+  test('a node handed back still assigned the subscriber’s profile is out of step, and deliver-all takes the key back', async () => {
+    const { tenant, own, secret } = await subscribed()
+    setNodes(tenant, [])
+    const row = await nodeRow('beta-1')
+    // Still assigned in the book, but not what a platform node may run.
+    expect(assigned(row)).toBe(own)
+    expect(row.expected?.profileId).toBe(NO_MODEL_PROFILE)
+    expect(row.drift.map(one => one.kind)).toContain('out-of-sync')
+    const applied = await providers.apply({}, ops())
+    expect(applied.ok).toBe(true)
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.key).not.toBe(secret)
+  })
+
+  test('map, sync, hand the only node back, sync: it is on no model and delivered', async () => {
+    const { tenant, secret } = await subscribed()
+    setNodes(tenant, [])
+    // No tenant node is left at all; the sync still runs.
+    expect(config().nodes).toEqual([])
+    await billing.syncNodes()
+    expect(assigned(await nodeRow('beta-1'))).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.key).not.toBe(secret)
+    expect(ledger).toContain('system provider.apply beta-1 ok')
+  })
+
+  test('map, sync, move the tenant to another node, sync: the old one gives the key back, the new one gets it', async () => {
+    const { tenant, own, secret } = await subscribed()
+    setNodes(tenant, ['beta-2'])
+    await billing.syncNodes()
+    expect(assigned(await nodeRow('beta-1'))).toBe(NO_MODEL_PROFILE)
+    expect(assigned(await nodeRow('beta-2'))).toBe(own)
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.key).not.toBe(secret)
+    expect(deliveredProfile(1)?.id).toBe(own)
+    expect(deliveredProfile(1)?.key).toBe(secret)
+  })
+
+  test('the plan counts only the nodes mapped to the tenant now', async () => {
+    const { tenant, own } = await subscribed()
+    setNodes(tenant, ['beta-2'])
+    // beta-1 still names the profile until the sync; it is no longer the
+    // tenant's, so it holds no place in the plan.
+    const moved = await providers.assign(
+      { node: 'beta-2', assignment: { mode: 'profile', profileId: own } },
+      ops(),
+    )
+    expect(moved.ok).toBe(true)
+  })
+
+  test('a node handed back still running the subscriber’s profile cannot be left to send nothing', async () => {
+    const { tenant } = await subscribed()
+    setNodes(tenant, [])
+    expect((await providers.setDefault({ profileId: null }, ops())).ok).toBe(
+      true,
+    )
+    // Not managed, or following a default of nothing: nothing would be sent
+    // and the subscriber's key would stay on the node for good.
+    for (const assignment of [
+      { mode: 'unmanaged' as const },
+      { mode: 'inherit' as const },
+    ]) {
+      const result = await providers.assign(
+        { node: 'beta-1', assignment },
+        ops(),
+      )
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.failure.code).toBe('edition_public_magpie_only')
+        expect(result.failure.message).toContain('订阅者的密钥')
+      }
+    }
+    // A node that has never answered a status may hold one too.
+    const unknown = await providers.assign(
+      { node: 'beta-3', assignment: { mode: 'unmanaged' } },
+      ops(),
+    )
+    expect(unknown.ok).toBe(false)
+    // Once it is known to run something else, the choice is the operator's.
+    expect((await raw.refreshNode('beta-3')).ok).toBe(true)
+    expect(
+      (
+        await providers.assign(
+          { node: 'beta-3', assignment: { mode: 'unmanaged' } },
+          ops(),
+        )
+      ).ok,
+    ).toBe(true)
+    // Taken back first, beta-1 may be left alone too.
+    await billing.syncNodes()
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    expect(
+      (
+        await providers.assign(
+          { node: 'beta-1', assignment: { mode: 'unmanaged' } },
+          ops(),
+        )
+      ).ok,
+    ).toBe(true)
+  })
+
+  test('a node handed back that refuses the delivery is asked again at the next sweep', async () => {
+    const { tenant, secret } = await subscribed()
+    nodes[0]?.set(
+      'reply-apply.json',
+      JSON.stringify({
+        v: 1,
+        requestId: 'x',
+        ok: false,
+        code: 'write-failed',
+        message: 'busy',
+      }),
+    )
+    setNodes(tenant, [])
+    await billing.syncNodes()
+    expect(errors.some(line => line.includes('beta-1'))).toBe(true)
+    errors.length = 0
+    rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
+    await billing.tick()
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.key).not.toBe(secret)
+    const row = await nodeRow('beta-1')
+    expect(row.actual?.applied?.profileId).toBe(NO_MODEL_PROFILE)
+  })
+})
+
+describe('no model while no gateway is connected', () => {
+  test('nodes that should be taken back are left as they are, and that is said once', async () => {
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    const own = magpieProfileId({ kind: 'tenant', id: tenant })
+    // A hub whose gateway is not connected: it cannot make 「无模型」.
+    const warned: string[] = []
+    const bare = new ConsoleMagpie({
+      statePath: join(root, 'bare', 'magpie.json'),
+      secretsPath: join(root, 'bare', 'magpie-secrets.json'),
+      keyPath: join(root, 'bare', 'magpie-master.key'),
+      providers,
+      tenants: () => config().tenants.map(row => row.id),
+      subscriptions: { caller: system, onProfile: () => {} },
+      onError: line => warned.push(line),
+    })
+    const bareStore = new BillingStore(':memory:')
+    const bareBilling = new ConsoleBilling({
+      config: parseBillingConfig({
+        version: 1,
+        currency: 'CNY',
+        live: true,
+        sourceUrl: 'https://github.com/sweetcornna/atlas',
+        termsUrl: null,
+        plans: [
+          {
+            id: 'month',
+            name: '月付',
+            priceCents: 9900,
+            periodDays: 30,
+            note: null,
+            nodes: 1,
+          },
+        ],
+        channels: { wechatpay: null, alipay: null, redeem: { enabled: true } },
+      }),
+      store: bareStore,
+      channels: {},
+      tenancy,
+      magpie: bare,
+      providers,
+      caller: system,
+      record: async () => true,
+      now: () => clock,
+      onError: line => warned.push(line),
+    })
+    try {
+      // The tenant moves from beta-1 to beta-2: one to take back, and one
+      // this hub knows no plan for.
+      const current = config()
+      tenancy.replace({
+        ...current,
+        nodes: current.nodes.filter(row => row.nodeId !== 'beta-1'),
+      })
+      mapNodes(tenant, ['beta-2'])
+      await bareBilling.syncNodes()
+      await bareBilling.tick()
+      expect(warned).toHaveLength(1)
+      expect(warned[0]).toContain('beta-1')
+      expect(warned[0]).toContain('beta-2')
+      expect(
+        (await nodeRow('beta-1')).assignment as { profileId?: string },
+      ).toMatchObject({ profileId: own })
+    } finally {
+      bareBilling.close()
+      bare.close()
+      bareStore.close()
+    }
+  })
+})
+
+describe('removing a subscriber’s upstream', () => {
+  test('one that fails half way is still the subscriber’s, and asking again finishes it', async () => {
+    const tenant = await pay(ALICE)
+    const added = await billing.addUpstream(ALICE, {
+      preset: 'openai',
+      key: 'sk-alice-own-0001',
+    })
+    if (!added.ok) throw new Error(added.failure.message)
+    const id = added.value.id
+    fake.fault({
+      target: 'management',
+      path: '/api/provider/delete',
+      times: 1,
+      status: 500,
+      body: 'down',
+    })
+    const first = await billing.removeUpstream(ALICE, id)
+    expect(first.ok).toBe(false)
+    // Not forgotten while it is still in magpie with the subscriber's key ...
+    expect(fake.provider(id)).toBeDefined()
+    const listed = await billing.me(ALICE)
+    expect(
+      listed.ok && listed.value.upstreams.map(upstream => upstream.id),
+    ).toEqual([id])
+    // ... and the key was taken off it before magpie was asked to delete it.
+    expect(tenantKey(tenant).models).toEqual([NO_MODEL_PATTERN])
+    expect(tenantKey(tenant).off).toBe(true)
+    const again = await billing.removeUpstream(ALICE, id)
+    expect(again.ok).toBe(true)
+    expect(fake.provider(id)).toBeUndefined()
+    const after = await billing.me(ALICE)
+    expect(after.ok && after.value.upstreams).toEqual([])
+  })
+})
+
+describe('a new gateway address', () => {
+  test('reaches every subscriber profile, saved as the hub, and their nodes', async () => {
+    const tenant = await pay(ALICE)
+    const added = await billing.addUpstream(ALICE, {
+      preset: 'openai',
+      key: 'sk-alice-own-0001',
+    })
+    if (!added.ok) throw new Error(added.failure.message)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    const profileId = magpieProfileId({ kind: 'tenant', id: tenant })
+    const moved = await magpie.connect(
+      {
+        gatewayUrl: 'https://gw2.example.test',
+        managementUrl: fake.managementUrl,
+      },
+      ops(),
+    )
+    expect(moved.ok).toBe(true)
+    await billing.syncNodes()
+    const after = await raw.profile(profileId)
+    expect(after.ok && after.value.baseUrl).toBe('https://gw2.example.test')
+    const none = await raw.profile(NO_MODEL_PROFILE)
+    expect(none.ok && none.value.baseUrl).toBe('https://gw2.example.test')
+    const last = nodes[0]
+      ?.requests()
+      .filter(
+        request => request['op'] === 'apply' && request['dryRun'] !== true,
+      )
+      .at(-1)
+    expect(
+      (last?.['profile'] as { baseUrl?: string } | undefined)?.baseUrl,
+    ).toBe('https://gw2.example.test')
+    expect(ledger).toContain(`system provider.save ${profileId} ok`)
+  })
+})
+
+describe('a delivery that did not land is tried again', () => {
+  const REFUSE = JSON.stringify({
+    v: 1,
+    requestId: 'x',
+    ok: false,
+    code: 'write-failed',
+    message: 'busy',
+  })
+  const applies = (index: number) =>
+    nodes[index]
+      ?.requests()
+      .filter(
+        request => request['op'] === 'apply' && request['dryRun'] !== true,
+      ).length ?? 0
+
+  test('the sweep delivers again until the node runs what it is expected to', async () => {
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    // The node cannot take a delivery when the subscriber connects a model.
+    nodes[0]?.set('reply-apply.json', REFUSE)
+    const added = await billing.addUpstream(ALICE, {
+      preset: 'openai',
+      key: 'sk-alice-own-0001',
+    })
+    if (!added.ok) throw new Error(added.failure.message)
+    await billing.syncNodes()
+    // Said, not swallowed.
+    expect(errors.some(line => line.includes('下发到 beta-1 未完成'))).toBe(
+      true,
+    )
+    errors.length = 0
+    rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
+    // A sync on an event does not retry; the next sweep does.
+    const before = applies(0)
+    await billing.syncNodes()
+    expect(applies(0)).toBe(before)
+    await billing.tick()
+    const row = await nodeRow('beta-1')
+    expect(row.actual?.applied?.revision).toBe(row.expected?.revision)
+    expect(delivered(0)).toEqual({
+      key: tenantKey(tenant).secret,
+      main: 'openai-2/gpt-6',
+    })
+  })
+
+  test('starting sweeps at once: a delivery that did not land before is tried again without waiting a minute', async () => {
+    const tenant = await pay(ALICE)
+    nodes[0]?.set('reply-apply.json', REFUSE)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    expect(applies(0)).toBe(1)
+    errors.length = 0
+    rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
+    billing.start()
+    // Queued behind the first sweep; a sync on an event does not retry.
+    await billing.syncNodes()
+    expect(applies(0)).toBe(2)
+    const row = await nodeRow('beta-1')
+    expect(row.actual?.applied?.revision).toBe(row.expected?.revision)
+  })
+
+  test('a node that keeps refusing is asked at the next sweep, then less and less often, at least hourly', async () => {
+    const tenant = await pay(ALICE)
+    nodes[0]?.set('reply-apply.json', REFUSE)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    expect(applies(0)).toBe(1)
+    // Four hours of sweeps, one a minute: the minutes a delivery was tried.
+    const asked: number[] = []
+    for (let minute = 1; minute <= 240; minute++) {
+      const before = applies(0)
+      clock += 60_000
+      await billing.tick()
+      if (applies(0) > before) asked.push(minute)
+    }
+    // 5, 10, 20, 40 minutes apart, then an hour: four tries in the first
+    // hour, not one every five minutes.
+    expect(asked).toEqual([1, 6, 16, 36, 76, 136, 196])
+    expect(errors.length).toBeGreaterThan(0)
+    errors.length = 0
+    rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
+    // The node takes it at the next try, and is left alone after that.
+    clock += 60 * 60_000
+    await billing.tick()
+    const row = await nodeRow('beta-1')
+    expect(row.actual?.applied?.revision).toBe(row.expected?.revision)
+    const settled = applies(0)
+    clock += 60_000
+    await billing.tick()
+    expect(applies(0)).toBe(settled)
+  }, 120_000)
 })
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { afterAll, describe, expect, test } from 'bun:test'
-import { createCipheriv, createPrivateKey, createSecretKey } from 'node:crypto'
+import {
+  createCipheriv,
+  createSecretKey,
+  generateKeyPairSync,
+  sign as rsaSign,
+  verify as rsaVerify,
+} from 'node:crypto'
 import { WechatPayChannel } from '../src/channels/wechatpay.js'
 import { ChannelError, parseBillingConfig } from '../src/index.js'
 import {
@@ -25,57 +31,60 @@ const config = parseBillingConfig(
 ).channels.wechatpay!
 const channel = new WechatPayChannel({ config, now })
 
-/**
- * The signing example in the official docs, with its published test key
- * (https://pay.weixin.qq.com/doc/v3/merchant/4012365336 — "示例密钥本身是不可用的").
- */
-const DOC_TEST_KEY = `-----BEGIN PRIVATE KEY-----
-MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCm2mb6q8gMKH/3
-CNTbpJAIrbqiBiQGEOtjGcBrDYltsGynWgNscqT7WvfzU14FQbYcQUC5T4Wvva7m
-i3fIp3OgX8VqMDNA0qebnr38Pe6kqiLyZgFpJPXlSKDyPyqhRbVTbXssvSMQeVKc
-dXeVxoNNeoOlNFHgF/P0io6AmAVnz+hN8SiZKuOsth5/zUTLGvtkgxBcQooQrtXh
-RcpLT798OyIb9xeJ2HO3xRtMv2+perEzb4gMibI74UBz+2QEbnkubPE+2jU2rRZu
-dnNEz/BPOt3Qj/w2V6/G0VumGDh6+UeMU0jv4aupHztWITC4Akn0l7lBCNy3lgl8
-VFaJnkIxAgMBAAECggEAYGL8aESB7NwciDWW2UdoWUsa7GxFtSdjAz2mFXGdeTsY
-mVh7b9OOkRGM+Qio4LqEHDBp1mMk5E/cUJwy1zw8pGGO5nfvs7u9TT3XnHaefIs4
-YvUgTYAneIuLRkXNN5rQU+CD7mVYczTSz0Vgjqo9wa1LjUz7G0xbBmJgTdMEFGJs
-eJjy6AbJo0CGIwp6HJbTm4CmOUgXnnDAIbEGTIRImkZFH/rzneIeR7oZ77FVwxr1
-CZB2gfRCov/yRPbw8vnryYkmvQ7D/ze3j5097vRg/MoDGBSdoOwcmo75vyofr0AS
-zytMjmHYyifqkf5slPropSiJeGf4p/7gtKyF6dE/XQKBgQDVAlJ+4U5ZVGOuDc3+
-sAhz8CTzgFNlq9vKuSoFK6hOz2L+cwj+E7NXGkOe2DsHHZNy2Xqxk7caKhPEp1z9
-hhpMpyLVMoFt6CKemyoRBWDCQwLLwem9SZF/IAyovBkLiH36P42Jm26gUkNMKC/5
-Zhtqxf6RZgRQzbVudJi47vIRCwKBgQDIh0+v27Oo+DM3fhObH4I1NrXpWOEGH7OQ
-G1dEsMuFYF4hjGhg0kBEP3w9vVdl2+mRllZKTsx9oqjb8OibPLLIH8xsdbAB0WLf
-JvjLu4wl/ILUzN1RI03dWnnv2EnEeQn6c3hizvrJ9wR5U4ue9RPVnQooJ0hZF1PU
-uCL5fWK3MwKBgElReU/PAYbh80WP3t3Rfbdaa32dKBeQ5iCLR5lsA4zM+YgX1HqQ
-EWTj126vgvHaDkyz6vWAoL/Sx+cirHFfXWIRDX5Q2hgYlQH+6qXdMgbrxeSYpHnQ
-/tHBGFpkFELSAnrGsVMyOwvYBO4LzyeLK9i+ufcWJFoj1FVmsMLHDG8tAoGARdbi
-iQQCoYG4DMarO2aQ6cmhN6EN1h0qY7EyBqlwaIZ0okiNfdMcMOjPc41DKCWcRmlO
-qlihXcxN9TQFPzO3rH1urAOdBjUPs1qWYhZyrDQyuLyVBBJApyxAtajloDjrob+f
-mQIvVDHk7ACN6xG+E7K6+9salnTKbJapD618uQMCgYBNy6XUvzLkP/A1U/UZdtcx
-l8GwU/dturLxz4CyGbqDw4ubaYY2e13lnqHUqQgPtiSyH51nq3tdo8G0YAJdfkSv
-KvnfslW91fyEBUKnkdW1o3/1UFU/wprZ7ixVL/F42A4xDu7OFE8EnweJOZ0jWceE
-OdhCkaIGBCfRnlECRK8UyQ==
------END PRIVATE KEY-----`
-
 describe('request signing', () => {
-  test('reproduces the official documentation example byte for byte', () => {
-    const docChannel = new WechatPayChannel({
-      config: {
-        ...config,
-        mchid: '1900007291',
-        merchantSerialNo: '408B07E79B8269FEC3D5D3E6AB8ED163A6A380DB',
-        merchantPrivateKey: createPrivateKey(DOC_TEST_KEY),
-      },
-      now: () => 1554208460 * 1000,
-      nonce: () => '593BEC0C930BF1AFEB40B4A08C8FB242',
-    })
-    const body =
-      '{"appid":"wxd678efh567hg6787","mchid":"1900007291","description":"Image形象店-深圳腾大-QQ公仔","out_trade_no":"1217752501201407033233368018","notify_url":"https://www.weixin.qq.com/wxpay/pay.php","amount":{"total":100,"currency":"CNY"},"payer":{"openid":"oUpF8uMuAJO_M2pxb1Q9zNjWeS6o"}}'
+  // The message format and the header are written out here from the
+  // documentation's description; the key and the expected signature are made
+  // in the test (no example key or example request from the documentation).
+  const signer = generateKeyPairSync('rsa', { modulusLength: 2048 })
+  const timestamp = 1_800_000_000
+  const nonce = '0F1E2D3C4B5A69788796A5B4C3D2E1F0'
+  const signing = new WechatPayChannel({
+    config: { ...config, merchantPrivateKey: signer.privateKey },
+    now: () => timestamp * 1000,
+    nonce: () => nonce,
+  })
+
+  function expectSigned(header: string, message: string): void {
+    const signature = rsaSign(
+      'RSA-SHA256',
+      Buffer.from(message, 'utf8'),
+      signer.privateKey,
+    ).toString('base64')
+    expect(header).toBe(
+      `WECHATPAY2-SHA256-RSA2048 mchid="${config.mchid}",nonce_str="${nonce}",` +
+        `signature="${signature}",timestamp="${timestamp}",serial_no="${config.merchantSerialNo}"`,
+    )
     expect(
-      docChannel.authorization('POST', '/v3/pay/transactions/jsapi', body),
-    ).toBe(
-      'WECHATPAY2-SHA256-RSA2048 mchid="1900007291",nonce_str="593BEC0C930BF1AFEB40B4A08C8FB242",signature="jnks4dlrPw3ZX+ozVvSK39oa0t7OMBsg83BHAwd8BRdUFiVaQNTLTvci+wURgP1OQBbKYhFGvt7iqYpDSTQkp7Uq1sltaQKyncCyrA1g88m5bsKERQfPyT0ahSwKTYJ1CAn9QiJuSJRq1QsQs07eehbU/k9BCS51jTyc1Jpsi2H77HF9f/BnjXAOP3/sPObg6V5Ee4EzwLox684hhuMuIwHo7D8KFk3LIHOKDcNI4It1aCXydFWNpNK+SG86VUDe5kwoDpw4Ulqfu9z8OFDGbDs9TCxEv8iqQzbpxOlEVoOe2kalSYM5kApQb3nZcxdUtoE0liJGW3RGUNE0t4v01A==",timestamp="1554208460",serial_no="408B07E79B8269FEC3D5D3E6AB8ED163A6A380DB"',
+      rsaVerify(
+        'RSA-SHA256',
+        Buffer.from(message, 'utf8'),
+        signer.publicKey,
+        Buffer.from(signature, 'base64'),
+      ),
+    ).toBe(true)
+  }
+
+  test('a POST signs method, path, timestamp, nonce and body, each line ended by \\n', () => {
+    const path = '/v3/pay/transactions/native'
+    const body = JSON.stringify({
+      appid: config.appid,
+      mchid: config.mchid,
+      description: '阡陌 · 签名测试',
+      out_trade_no: 'S'.repeat(32),
+      notify_url: config.notifyUrl,
+      amount: { total: 100, currency: 'CNY' },
+    })
+    expectSigned(
+      signing.authorization('POST', path, body),
+      `POST\n${path}\n${timestamp}\n${nonce}\n${body}\n`,
+    )
+  })
+
+  test('a GET signs the path with its query and an empty body line', () => {
+    const path = `/v3/pay/transactions/out-trade-no/${'S'.repeat(32)}?mchid=${config.mchid}`
+    expectSigned(
+      signing.authorization('GET', path, ''),
+      `GET\n${path}\n${timestamp}\n${nonce}\n\n`,
     )
   })
 })
@@ -255,7 +264,7 @@ describe('notifications', () => {
       reason: '微信支付公钥 ID 不符',
     })
     const platform = wechatNotify(keys, clock, tx, {
-      serial: '5157F09EFDC096DE15EBE81A47057A7232F1B8E1',
+      serial: '7C6B5A49382716051F2E3D4C5B6A79880A1B2C3D',
     })
     expect(channel.verifyNotify(platform, clock)).toEqual({
       ok: false,

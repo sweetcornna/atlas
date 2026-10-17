@@ -609,6 +609,12 @@ export interface ChatSendInput {
     readonly node: string
     readonly taskId: string
   }[]
+  /**
+   * Host-only, never read from HTTP JSON: a paragraph the hub puts ahead of
+   * the line in the prompt (P29 的后台任务附注). The transcript keeps the line
+   * as the person typed it.
+   */
+  readonly context?: string
 }
 
 /**

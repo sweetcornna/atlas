@@ -37,7 +37,7 @@ import { ConsoleConnectors } from './consoleConnectors.js'
 import { loadOutboundPolicy } from './outboundPolicy.js'
 import { ConsoleSchedules } from './consoleSchedules.js'
 import { ConsoleChannels } from './consoleChannels.js'
-import { ConsoleTasks } from './consoleTasks.js'
+import { AgentProfiles, ConsoleTasks, withTaskNotes } from './consoleTasks.js'
 import { ConsolePeers } from './consolePeers.js'
 import { ConsoleExtensions } from './consoleExtensions.js'
 import { ConsoleMagpie } from './consoleMagpie.js'
@@ -57,9 +57,10 @@ import { SelfUpgrader } from '../host/selfUpgradeRunner.js'
 import { parseAddress } from '@qianmo/protocol'
 import { loadConsoleApproverIdentity } from './consoleApproverIdentity.js'
 import { readTrustAnchors } from '../host/trustAnchors.js'
-import { sourceCommit } from '../provenance.js'
+import { publicSourceUrl, sourceCommit } from '../provenance.js'
 import {
   AccountBook,
+  modelFromStartupEnv,
   resolveTokens,
   startConsoleServer,
   tokenFingerprint,
@@ -525,10 +526,20 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // The public edition (P35) is its billing config: plans, channels, the
   // source link. One that does not load stops the start here, before any
   // store is opened or anything dials out.
+  //
+  // The config's `sourceUrl` names the repository; what every public page
+  // links (AGPL §13) is that repository at the commit this build runs. A
+  // build that cannot name one clean commit (`-dirty`, `unknown`, a source
+  // run with changes) stops here too: it has no corresponding source the
+  // link could honestly point at (`provenance.ts` `publicSourceUrl`).
   let billingConfig: BillingConfig | undefined
   if (config.edition === 'public' && config.billingPath !== undefined) {
     try {
-      billingConfig = loadBillingConfig(config.billingPath)
+      const loaded = loadBillingConfig(config.billingPath)
+      billingConfig = {
+        ...loaded,
+        sourceUrl: publicSourceUrl(loaded.sourceUrl),
+      }
     } catch (error) {
       process.stderr.write(
         `qm console: the public edition refuses to start · ${
@@ -754,6 +765,23 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       outcome.ok && (outcome.value as { stopped?: unknown }).stopped === true
     )
   }
+  // Runtimes and models for `qianmo_task_agents`: each node's own word over
+  // the control link, and a qianmopi agent's model from the model service.
+  const agentProfiles = new AgentProfiles({
+    ping: async node =>
+      control === undefined
+        ? { ok: false, code: 'unreachable', message: 'no control link' }
+        : control.request(node, 'node.ping', {}, 'system:tasks', {
+            timeoutMs: 5_000,
+          }),
+    nodeModel: async node => {
+      const view = await providers?.node(node)
+      const actual = view?.ok ? view.value.actual : null
+      return actual === null || modelFromStartupEnv(actual)
+        ? undefined
+        : actual.effective?.model
+    },
+  })
   // Background tasks (P29) arrive as hub calls, so they need control links.
   const tasks: ConsoleTasks | undefined =
     chat.hub && config.controlTargets?.length
@@ -764,6 +792,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           ...(usage === undefined ? {} : { usage }),
           ...(tenancy === undefined ? {} : { tenancy }),
           stopTask: stopTurn,
+          profile: address => agentProfiles.of(address),
           scheduled: (sessionId): boolean =>
             schedules?.owns(sessionId) ?? false,
           foreground: (sessionId): boolean =>
@@ -1264,7 +1293,17 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       : { signedFrom: config.chatFrom }),
     ...(wake.legacy === undefined ? {} : { wake: wake.legacy.port }),
     ...(wake.targets === undefined ? {} : { wakeTargets: wake.targets }),
-    ...(chat.hub === undefined ? {} : { chat: chat.hub }),
+    // A person's line in a foreground conversation carries the task note.
+    ...(chat.hub === undefined
+      ? {}
+      : {
+          chat:
+            tasks === undefined
+              ? chat.hub
+              : withTaskNotes(chat.hub, tasks, message =>
+                  process.stderr.write(`[tasks] ${message}\n`),
+                ),
+        }),
     ...(chat.hub === undefined || config.chatDefault === undefined
       ? {}
       : { chatDefault: config.chatDefault }),
@@ -1512,7 +1551,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       banner += field(
         'magpie',
         magpie.problem === null
-          ? 'enabled (management API only; nodes call the gateway directly; fake-tested only)'
+          ? 'enabled (management API only; nodes call the gateway directly; real magpie smoke-tested on one machine only)'
           : `UNAVAILABLE (${magpie.problem})`,
       )
     if (billing !== undefined && billingConfig !== undefined) {
@@ -1522,6 +1561,12 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         `public edition -> ${config.billingPath ?? ''} (plans ${site.plans.length}; ` +
           `wechatpay ${site.channels.wechatpay ? 'on' : 'off'}, alipay ${site.channels.alipay ? 'on' : 'off'}, ` +
           `redeem ${site.channels.redeem ? 'on' : 'off'}; payment channels unevaluated)`,
+      )
+      banner += field(
+        'payments',
+        billingConfig.live
+          ? 'LIVE (billing.json live=true: real QR orders at WeChat Pay / Alipay; precondition: every legal prerequisite in public-edition.md §0 — the written conclusion on L-2 (charter §8 M3), the generative AI service filing, a commercial ICP licence, a published privacy policy)'
+          : 'not live (billing.json live=false: no order is sent to WeChat Pay or Alipay; pages say 未开通正式收款)',
       )
       banner += field('billing-store', billingStorePath())
     }

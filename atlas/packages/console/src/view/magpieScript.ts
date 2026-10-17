@@ -137,6 +137,8 @@ export const MAGPIE_PAGE_JS = `
       var cost = number(value(form, 'limitCost' + i));
       if (tokens !== undefined) limit.tokens = tokens;
       if (cost !== undefined) limit.cost = cost;
+      var cache = form.elements['limitCacheReads' + i];
+      if (cache && cache.checked) limit.cacheReads = true;
       out.push(limit);
     }
     return out;

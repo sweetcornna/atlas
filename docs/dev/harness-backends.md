@@ -9,7 +9,7 @@
 | 日期 | 2026-10-17 |
 | 核对基点 | 本仓库 `16c7be61`（`feat/magpie-gateway`，合并了 main `fdb77fc1`）；DeepSeek Harness 源码 `deepseek-ai/deepseek-harness@687f282e`（2026-10-17），npm `@deepseek-ai/dsh`；调研记录 `atlas-evidence/m1-work/2026-10-17/harness/`（仓库外） |
 | 范围依据 | 负责人 2026-10-17 决定（对话记录）：① 默认安装 DeepSeek Harness 作为后端，可选择性安装 qianmopi、Codex、Claude Code 等一众 harness 作为后端；② 后端之间联通交流性很高；③ 用户可直接在我们特化的 magpie 前端上进行各底层的智能体模型配置，用户接入 provider，智能体默认接入 magpie 并配置对应系列的模型（Claude Code 接 Claude、Codex 接 GPT） |
-| 编号 | P36（P36.1–P36.7，包表见 §8）；章程 v3.6 §2.8 |
+| 编号 | P36（P36.1–P36.7，包表见 §8）；章程 v3.7 §2.8 |
 | 依赖 | [`runtimes-channels.md`](./runtimes-channels.md)（P27 多底层、P29 后台任务、P31 更新、P32 扩展）、[`magpie-gateway.md`](./magpie-gateway.md)（P33 网关与密钥、P34「网关」页） |
 | 结论一句话 | 底层从写死的三种变成一份目录：DeepSeek Harness 是默认底层、节点默认安装，qianmopi 内置，Claude Code、Codex 与其他支持 ACP 的 harness 按需安装；dsh 与其他 ACP harness 共用一个 ACP 通道；智能体默认经节点的 magpie 密钥取各自系列的模型，用户在「网关」页逐个改；所有底层拿到同一套宿主工具，智能体之间除了后台任务还能同步问答，换底层时对话接着走 |
 
@@ -292,7 +292,7 @@
 
 | 包 | 内容 | 主要文件 | 完成标准 |
 |---|---|---|---|
-| P36.0 | 本文、章程 v3.6、路线图 v3.7、`runtimes-channels.md` 回写 | `docs/dev/*` | 合入 |
+| P36.0 | 本文、章程 v3.7、路线图 v3.7、`runtimes-channels.md` 回写 | `docs/dev/*` | 合入 |
 | P36.1 | 底层目录 | `host/runtimes/catalog.ts` | 目录项校验；中枢与节点同一份；类型从写死的两种改为目录 id |
 | P36.2 | ACP 通道与 dsh 等适配 | `host/runtimes/acp.ts`、`host/runtimes/pool.ts`、`extensions.ts` | 假 ACP harness 脚本驱动的整轮：正文、工具进度、用量、权限放行与拒绝零副作用、中止、续会话、崩溃恢复；真 dsh 子进程在假模型接口上跑通一轮并调到宿主工具 |
 | P36.3 | 安装 | `host/runtimeUpdate.ts`、`host/runtimes/smoke.ts` | 缺省安装、可选安装、卸载被占用时拒绝、兼容检查不过不装、退避重试 |

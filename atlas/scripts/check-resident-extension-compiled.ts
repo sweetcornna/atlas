@@ -49,6 +49,7 @@ export async function checkResidentExtensionCompiled(
       browser: true,
       computer: true,
       cdpUrl: 'http://127.0.0.1:9',
+      cdpToken: 'f'.repeat(43),
       display: ':99',
       xauthority: null,
       downloads: path.join(root, 'downloads'),

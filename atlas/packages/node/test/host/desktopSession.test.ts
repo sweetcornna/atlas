@@ -10,6 +10,7 @@ import { deflateSync } from 'node:zlib'
 import type { DesktopNodeView, DesktopScreenView } from '@qianmo/console'
 import { desktopArgs, isDesktopTool } from '@qianmo/extension/desktopPolicy'
 import { NodeDesktop, type DesktopLauncher } from '../../src/host/desktop.js'
+import type { CdpBridgeFactory } from '../../src/host/desktopCdp.js'
 import {
   DESKTOP_BWRAP_PROBE,
   DESKTOP_WINDOW_MANAGERS,
@@ -88,19 +89,23 @@ async function session(
   for (const [name, text] of Object.entries(opts.entries ?? {}))
     fs.writeFileSync(path.join(appsDir, name), text)
   spyOn(Bun, 'which').mockReturnValue(null)
-  spyOn(globalThis, 'fetch').mockImplementation(
-    Object.assign(
-      async (input: string | URL | Request) => {
-        const url = input instanceof Request ? input.url : String(input)
-        if (url === 'http://127.0.0.1:9222/json/version')
-          return Response.json({})
-        if (url === 'http://127.0.0.1:9222/json/list')
-          return Response.json([{ type: 'page' }])
-        throw new Error(`Unexpected fixture fetch: ${url}`)
+  // The DevTools bridge is faked: Chrome "answers" while its process lives.
+  const bridges: { dir: string; token: string; closed: boolean }[] = []
+  const cdpBridge: CdpBridgeFactory = async ({ dir, token }) => {
+    const bridge = { dir, token, closed: false }
+    bridges.push(bridge)
+    return {
+      url: 'http://127.0.0.1:9222',
+      pair: false,
+      command: argv => [...argv],
+      attach: () => {},
+      ready: async alive => alive(),
+      pages: async () => 1,
+      close: () => {
+        bridge.closed = true
       },
-      { preconnect: globalThis.fetch.preconnect },
-    ),
-  )
+    }
+  }
   const tools = new Set(opts.tools ?? [])
   const calls: Call[] = []
   const runs: Call[] = []
@@ -130,11 +135,6 @@ async function session(
         ?.slice('--user-data-dir='.length)
       const headless = argv.includes('--headless=new')
       if (profile && !headless && opts.headed === 'dies') dead.add(own)
-      else if (profile)
-        fs.writeFileSync(
-          path.join(profile, 'DevToolsActivePort'),
-          '9222\n/ws\n',
-        )
       return {
         pid: own,
         alive: () => !dead.has(own),
@@ -173,6 +173,7 @@ async function session(
       ],
       applicationDirs: [appsDir],
       ...(opts.screenEncoders ? { screenEncoders: opts.screenEncoders } : {}),
+      cdpBridge,
     })
   const node = make()
   const desktop = path.join(root, 'qianmo/desktop/main')
@@ -180,6 +181,7 @@ async function session(
     node,
     make,
     launcher,
+    bridges,
     calls,
     runs,
     stops,
@@ -373,7 +375,8 @@ test('private desktop: Xvfb, bus, accessibility, first window manager, headed Ch
   const headed = bwrapOf(f.calls[4]!).command
   expect(headed).not.toContain('--headless=new')
   expect(headed).not.toContain('--no-sandbox')
-  expect(headed).toContain('--remote-debugging-address=127.0.0.1')
+  expect(headed).toContain('--remote-debugging-pipe')
+  expect(headed.some(a => a.startsWith('--remote-debugging-port'))).toBe(false)
   expect(setenv(bwrapOf(f.calls[4]!).args)).toMatchObject({
     DISPLAY: ':27',
     DBUS_SESSION_BUS_ADDRESS: bus,
@@ -598,7 +601,12 @@ test('browser alone stays headless; a headed Chromium that dies is dropped and t
   const headed = g.calls[4]!.pid
   expect(g.stops).toContain(headed)
   expect(g.pids().map(p => p.pid)).not.toContain(headed)
-  expect(g.node.resource('main')?.cdpUrl).toBe('http://127.0.0.1:9222')
+  // The headed attempt's bridge is gone; headless Chrome got a fresh one.
+  expect(g.bridges.map(b => b.closed)).toEqual([true, false])
+  expect(g.node.resource('main')).toMatchObject({
+    cdpUrl: 'http://127.0.0.1:9222',
+    cdpToken: g.bridges[1]!.token,
+  })
   const view = await g.view()
   expect(view.browser.state).toBe('running')
   expect(view.browser.reason).toContain('已退回无头')
@@ -1177,7 +1185,7 @@ test.skipIf(!hostTools)(
   },
 )
 
-test('a node gives a terminal to a lone agent only: agents share its network', async () => {
+test('agents on one node each get a terminal: each browser has its own bridge and secret', async () => {
   const f = await session({ tools: FULL })
   const other = (operationId: string, change: Record<string, unknown>) =>
     f.node.control(
@@ -1185,19 +1193,28 @@ test('a node gives a terminal to a lone agent only: agents share its network', a
       { agent: 'other', operationId, ...change },
       ctx,
     )
-  expect((await other('other-on', { browser: true })).ok).toBe(true)
-  const refused = await f.enable('term', { computer: true, terminal: true })
-  expect(refused.ok).toBe(false)
-  expect(!refused.ok && refused.message).toContain('other')
-  // Without a terminal the same agent's computer opens.
-  expect((await f.enable('plain', { computer: true })).ok).toBe(true)
+  const both = { browser: true, computer: true, terminal: true }
+  expect((await other('other-on', both)).ok).toBe(true)
+  expect((await f.enable('term', both)).ok).toBe(true)
+  const mine = f.node.resource('main')!,
+    theirs = f.node.resource('other')!
+  expect(mine.cdpToken).toMatch(/^[A-Za-z0-9_-]{43}$/)
+  expect(theirs.cdpToken).toMatch(/^[A-Za-z0-9_-]{43}$/)
+  expect(mine.cdpToken).not.toBe(theirs.cdpToken)
+  expect(f.bridges.map(b => path.basename(path.dirname(b.dir)))).toEqual([
+    'other',
+    'main',
+  ])
+  // Stopping one agent's browser cuts its bridge and secret only.
   await f.node.control(
     'desktop.disable',
     { agent: 'other', operationId: 'other-off' },
     ctx,
   )
-  expect((await f.enable('term-2', { terminal: true })).ok).toBe(true)
-  const blocked = await other('other-again', { browser: true })
-  expect(blocked.ok).toBe(false)
-  expect(!blocked.ok && blocked.message).toContain('main')
+  expect(f.bridges.map(b => b.closed)).toEqual([true, false])
+  expect(f.node.resource('other')).toMatchObject({
+    cdpUrl: null,
+    cdpToken: null,
+  })
+  expect(f.node.resource('main')?.cdpToken).toBe(mine.cdpToken)
 })
