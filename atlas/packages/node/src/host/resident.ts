@@ -305,6 +305,8 @@ interface QianmoResidentOptions {
    * 是这台节点的权限姿态，不该由「跑的是哪一版产物」决定。
    */
   readonly allowWorkspaceEdits?: boolean
+  /** `--desktop-memory-mib`: memory cap of one agent's cloud computer, bytes. */
+  readonly desktopMemoryBytes?: number
   readonly pollIntervalMs?: number
   readonly psk: string
   readonly listen: {
@@ -922,6 +924,17 @@ export class QianmoResident {
       changed: async agent => {
         await this.#runtimeChild?.invalidateAgent(agent)
       },
+      // The private desktop sees the workspace the way the agent does, and
+      // none of what the resident guard protects (runtimes-channels.md §6.3).
+      workspace: agent => options.agents.find(a => a.agent === agent)?.cwd,
+      workspaceWritable: options.allowWorkspaceEdits === true,
+      protectedRoots: [
+        options.memoryRoot ?? defaultMemoryRoot(),
+        ...(options.protectedRoots ?? []),
+      ],
+      ...(options.desktopMemoryBytes === undefined
+        ? {}
+        : { memoryBytes: options.desktopMemoryBytes }),
     })
     // Under ESTOP the cloud computer can still be read, switched off and
     // recycled; enabling it and acting through it wait (P21 §4.2).
@@ -929,6 +942,7 @@ export class QianmoResident {
       estopAllowed: [
         'desktop.status',
         'desktop.actions',
+        'desktop.view',
         'desktop.disable',
         'desktop.recycle',
       ],
