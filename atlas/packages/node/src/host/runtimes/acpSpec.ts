@@ -26,7 +26,9 @@ export interface AcpLaunchInput {
   /**
    * The lane's base URL as its paths append to it: ending in `/v1` for
    * `openai-chat` (`…/v1/chat/completions`), the root for `anthropic`
-   * (`…/v1/messages`) and `gemini` (`…/v1beta/models/…`).
+   * (`…/v1/messages`), the root or `<root>/v1beta` for `gemini` (as
+   * `@qianmo/providers` writes it; launchers that append the version strip
+   * it).
    */
   readonly baseUrl: string
   readonly apiKey: string
@@ -44,6 +46,22 @@ export interface AcpLaunchInput {
   readonly runDir: string
   /** The agent's workspace: `session/new {cwd}`. */
   readonly cwd: string
+  /** The node's tool bridge for this process. */
+  readonly bridge: AcpBridge
+}
+
+/** The node's tool bridge (`qm runtime-mcp`) as one process starts it. */
+export interface AcpBridge {
+  /** The MCP server name (`qianmo`). */
+  readonly name: string
+  /** Absolute. */
+  readonly command: string
+  readonly args: readonly string[]
+  /**
+   * How long one call may run before the harness gives up on it: host
+   * tools can wait for a person (`qianmo_ask`).
+   */
+  readonly timeoutMs: number
 }
 
 /** How to start one ACP runtime child. */
@@ -67,6 +85,12 @@ export interface AcpLaunch {
   readonly cwd?: string
   /** Directories the harness expects to exist (created 0700). */
   readonly dirs?: readonly string[]
+  /**
+   * The launch starts the bridge itself, with its timeout, where servers
+   * from `session/new` get a fixed call timeout shorter than the bridge
+   * needs; `session/new` then leaves it out.
+   */
+  readonly mountsBridge?: boolean
 }
 
 /** One turn's token usage, as the turn port records it. */
@@ -97,6 +121,8 @@ export interface AcpToolCall {
   readonly rawInput: Readonly<Record<string, unknown>>
   /** ACP `locations[].path`. */
   readonly paths: readonly string[]
+  /** ACP `_meta`, where a harness adds its own facts (Qwen: `toolName`). */
+  readonly meta?: Readonly<Record<string, unknown>>
 }
 
 /** One call in the node's permission vocabulary (`residentToolVerdict`). */
@@ -114,7 +140,11 @@ export interface AcpRuntime {
    * state; absent = the harness takes no skills.
    */
   readonly skillsDir?: string
-  /** MCP transports `session/new` takes (stdio always). */
+  /**
+   * Transports of the operator's MCP servers (P32) the node passes in
+   * `session/new`; empty when it cannot decide their calls on this harness.
+   * The node's own bridge is always passed (or mounted by the launch).
+   */
   readonly mcpTransports: readonly ('stdio' | 'http' | 'sse')[]
   /**
    * How a conversation continues in a new process. Absent: `session/resume`
@@ -123,6 +153,12 @@ export interface AcpRuntime {
   readonly resume?: 'session/resume' | 'session/load'
   /** The `session/set_config_option` id effort is set through, when offered. */
   readonly effortOption?: string
+  /**
+   * `false` when the harness's `PromptResponse.usage` does not cover the
+   * whole turn (opencode: its last model call only); the turn then counts 0
+   * and says so rather than undercount.
+   */
+  readonly promptUsage?: false
   /** Where the provider's real usage is, when ACP does not carry it. */
   readonly usage?: (session: {
     readonly home: string

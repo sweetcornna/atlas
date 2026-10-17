@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import type { AcpLaunchInput } from '../../src/host/runtimes/acpSpec.js'
 import { runtimeSpec } from '../../src/host/runtimes/catalog.js'
 import {
+  DSH_BRIDGE_READY_PLUGIN,
   DSH_GATE_PLUGIN,
   dshEncodeSegment,
   dshLaunch,
@@ -44,12 +45,19 @@ const INPUT: AcpLaunchInput = {
   home: '/q/runtimes/dsh/coder',
   runDir: '/q/resident/sessions/coder/s1/runtime-launch',
   cwd: '/work/space',
+  bridge: {
+    name: 'qianmo',
+    command: '/usr/local/bin/qm',
+    args: ['runtime-mcp', '--port', '4100', '--token-file', '/q/t'],
+    timeoutMs: 1_900_000,
+  },
 }
 
 type Row = {
   id?: string
   config?: Record<string, unknown>
   disabled?: boolean
+  inject?: string[]
   insert?: unknown[]
 }
 
@@ -89,9 +97,11 @@ test('dsh starts from its own empty launch directory with its home, the key unde
   expect(launch.files?.map(file => file.path)).toEqual([
     patch,
     join(INPUT.runDir, 'qm-approval-gate.mjs'),
+    join(INPUT.runDir, 'qm-bridge-ready.mjs'),
   ])
   expect(launch.files?.[0]?.content).not.toContain('sk-secret')
   expect(launch.dirs).toContain(join(INPUT.home, 'skills', 'qmo'))
+  expect(launch.mountsBridge).toBe(true)
 })
 
 test('the patch routes the openai-chat lane through pi-ai and isolates dsh', () => {
@@ -114,6 +124,8 @@ test('the patch routes the openai-chat lane through pi-ai and isolates dsh', () 
       provider: 'qm',
       model: 'deepseek/deepseek-chat',
     })
+  // ACP serves nothing before the bridge's tools are registered.
+  expect(byId.get('acp')?.inject).toEqual(['acpAppStartup', 'qmBridgeReady'])
   expect(byId.get('agent-instructions')?.config).toEqual({ maxBytes: 0 })
   expect(byId.get('skill-filesystem')?.config).toEqual({
     includeDefaultRoots: false,
@@ -145,8 +157,30 @@ test('the patch routes the openai-chat lane through pi-ai and isolates dsh', () 
     root: "dshHomePath('sessions')",
     compression: 'none',
   })
+  // The bridge is a global MCP client with the long call timeout (dsh gives
+  // `session/new` servers 60 s), so the launch keeps it out of `session/new`.
   expect(parsed.at(-1)).toEqual({
-    insert: [{ id: 'qm-approval-gate', name: './qm-approval-gate.mjs' }],
+    insert: [
+      {
+        id: 'qm-bridge',
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: {
+          transport: 'stdio',
+          serverName: 'qianmo',
+          command: '/usr/local/bin/qm',
+          args: ['runtime-mcp', '--port', '4100', '--token-file', '/q/t'],
+          cwd: '/work/space',
+          toolCallTimeoutMs: 1_900_000,
+          failOnStartupError: true,
+        },
+      },
+      {
+        id: 'qm-bridge-ready',
+        name: './qm-bridge-ready.mjs',
+        config: { prefix: 'mcp__qianmo__', waitMs: 30_000 },
+      },
+      { id: 'qm-approval-gate', name: './qm-approval-gate.mjs' },
+    ],
   })
   // The `!!js` tags are literal and only on dsh's own helper.
   expect(text).toContain(`"root": !!js "dshHomePath('sessions')"`)
@@ -430,4 +464,30 @@ test('the approval gate asks for every effect and every read outside the workspa
       )
     ).kind,
   ).toBe('ask')
+})
+
+test('the bridge-ready plugin provides its service once a bridge tool is registered', async () => {
+  const file = join(temp(), 'qm-bridge-ready.mjs')
+  writeFileSync(file, DSH_BRIDGE_READY_PLUGIN)
+  const plugin = (await import(file)) as {
+    name: string
+    inject: string[]
+    apply: (ctx: unknown, config: unknown) => Promise<void>
+  }
+  expect(plugin.name).toBe('qm-bridge-ready')
+  expect(plugin.inject).toEqual(['tools'])
+  const visible = new Map<string, unknown>([['read', {}]])
+  const provided: [string, unknown][] = []
+  const started = plugin.apply(
+    {
+      tools: { view: () => ({ visible }) },
+      provide: (name: string, value: unknown) => provided.push([name, value]),
+    },
+    { prefix: 'mcp__qianmo__', waitMs: 5_000 },
+  )
+  await Bun.sleep(80)
+  expect(provided).toEqual([])
+  visible.set('mcp__qianmo__qianmo_notify', {})
+  await started
+  expect(provided).toEqual([['qmBridgeReady', { ready: true }]])
 })

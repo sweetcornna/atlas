@@ -43,6 +43,7 @@ import {
   claudeCodeArgv,
   PERMISSION_TOOL,
   RUNTIME_MCP_SERVER,
+  RUNTIME_MCP_TIMEOUT_MS,
 } from './claudeCode.js'
 import { CODEX_KEY_ENV, codexArgv } from './codex.js'
 import { inheritedEnv } from './inheritedEnv.js'
@@ -578,11 +579,13 @@ function laneModel(): {
   }
 }
 
-/** The base URL a lane's paths append to (`AcpLaunchInput.baseUrl`). */
+/** The lane's base URL as the hub hands it out (`AcpLaunchInput.baseUrl`). */
 function laneBase(lane: RuntimeLane, root: string): string {
   return lane === 'openai-chat' || lane === 'openai-responses'
     ? `${root}/v1`
-    : root
+    : lane === 'gemini'
+      ? `${root}/v1beta`
+      : root
 }
 
 async function acpSmoke(
@@ -596,6 +599,14 @@ async function acpSmoke(
   const model = laneModel()
   const runDir = join(run.scratch, 'launch')
   mkdirSync(runDir, { mode: 0o700 })
+  const bridge = {
+    name: RUNTIME_MCP_SERVER,
+    command: isAbsolute(run.mcp[0]!)
+      ? run.mcp[0]!
+      : (Bun.which(run.mcp[0]!) ?? run.mcp[0]!),
+    args: run.mcp.slice(1),
+    timeoutMs: RUNTIME_MCP_TIMEOUT_MS,
+  }
   let channel: AcpChannel | undefined
   try {
     const plan = acp.launch({
@@ -607,6 +618,7 @@ async function acpSmoke(
       home: run.home,
       runDir,
       cwd: run.workspace,
+      bridge,
     })
     for (const dir of [
       ...(plan.dirs ?? []),
@@ -626,16 +638,17 @@ async function acpSmoke(
       label: spec.label,
       runtime: acp,
       cwd: run.workspace,
-      mcpServers: [
-        {
-          name: RUNTIME_MCP_SERVER,
-          command: isAbsolute(run.mcp[0]!)
-            ? run.mcp[0]!
-            : (Bun.which(run.mcp[0]!) ?? run.mcp[0]!),
-          args: run.mcp.slice(1),
-          env: [],
-        },
-      ],
+      mcpServers:
+        plan.mountsBridge === true
+          ? []
+          : [
+              {
+                name: bridge.name,
+                command: bridge.command,
+                args: bridge.args,
+                env: [],
+              },
+            ],
       onSession: () => {},
       // Only the host's tool is called; the host decides it when called.
       permission: async () => true,
@@ -666,7 +679,12 @@ async function acpSmoke(
     const ended = await Promise.race([result, deadline])
     if (ended === 'timeout') return `${run.timeoutMs / 1000} 秒内没有完成检查`
     if (model.requests.length === 0) return '底层没有请求模型'
-    if (!model.requests[0]!.tools.some(tool => tool.endsWith(SMOKE_TOOL)))
+    // Any request: a harness may first ask for a session title, toolless.
+    if (
+      !model.requests.some(request =>
+        request.tools.some(tool => tool.endsWith(SMOKE_TOOL)),
+      )
+    )
       return `qianmo 工具桥的工具没有出现：${SMOKE_TOOL}`
     if (!run.calls.includes(SMOKE_TOOL)) return '调用 qianmo 工具没有到达节点'
     if (ended.status !== 'completed')

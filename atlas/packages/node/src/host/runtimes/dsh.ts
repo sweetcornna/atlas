@@ -23,7 +23,9 @@
  *   provider usage is only there);
  * - an approval gate plugin, first in line, that sends every tool call but
  *   a few session-only ones, and every read outside the workspace, through
- *   `session/request_permission` for the node to decide.
+ *   `session/request_permission` for the node to decide;
+ * - the node's tool bridge as a global MCP client row with the bridge's
+ *   call timeout (servers from `session/new` get dsh's 60 s default).
  *
  * The node's patch is the last layer, so it wins on the rows it names; the
  * harness's own layers in the agent's home (its profile and plugins) load
@@ -55,6 +57,14 @@ export const DSH_KEY_ENV = 'QM_DSH_GATEWAY_KEY'
 export const DSH_PATCH_FILE = 'qianmo-dsh.patch.yml'
 /** The approval gate, beside the patch (relative plugin names resolve there). */
 export const DSH_GATE_FILE = 'qm-approval-gate.mjs'
+/** Holds the ACP server back until the bridge's tools are registered. */
+export const DSH_BRIDGE_READY_FILE = 'qm-bridge-ready.mjs'
+/** The service it provides, which the `acp` row is made to wait for. */
+const BRIDGE_READY_SERVICE = 'qmBridgeReady'
+/** What the `acp` row waits for in 0.2.1-rc.2 (a patch replaces the list). */
+const ACP_STARTUP_SERVICE = 'acpAppStartup'
+/** How long the bridge may take to list its tools. */
+const BRIDGE_READY_WAIT_MS = 30_000
 /** The provider id the route is declared under. */
 const PROVIDER = 'qm'
 /** The operator's skills (P32), a subtree of dsh's own skills root. */
@@ -170,7 +180,13 @@ export function dshPatch(input: AcpLaunchInput): string {
         },
       },
     },
-    { id: 'acp', config: route },
+    // ACP waits for the bridge: a row's startup is not awaited before the
+    // server answers, and the first turn must already see the host's tools.
+    {
+      id: 'acp',
+      config: route,
+      inject: [ACP_STARTUP_SERVICE, BRIDGE_READY_SERVICE],
+    },
     { id: 'agent-default-model', config: route },
     // No AGENTS.md / CLAUDE.md from the workspace, its parents or any home.
     { id: 'agent-instructions', config: { maxBytes: 0 } },
@@ -200,7 +216,35 @@ export function dshPatch(input: AcpLaunchInput): string {
       id: 'session-persistence-jsonl',
       config: { root: homePath('sessions'), compression: 'none' },
     },
-    { insert: [{ id: 'qm-approval-gate', name: `./${DSH_GATE_FILE}` }] },
+    {
+      insert: [
+        // The node's bridge, here rather than in `session/new`: dsh gives
+        // servers from there its 60 s call default, and host tools can wait
+        // for a person. Startup fails if it does.
+        {
+          id: 'qm-bridge',
+          name: '@deepseek-ai/dsh-mcp-client',
+          config: {
+            transport: 'stdio',
+            serverName: input.bridge.name,
+            command: input.bridge.command,
+            args: [...input.bridge.args],
+            cwd: input.cwd,
+            toolCallTimeoutMs: input.bridge.timeoutMs,
+            failOnStartupError: true,
+          },
+        },
+        {
+          id: 'qm-bridge-ready',
+          name: `./${DSH_BRIDGE_READY_FILE}`,
+          config: {
+            prefix: `mcp__${input.bridge.name}__`,
+            waitMs: BRIDGE_READY_WAIT_MS,
+          },
+        },
+        { id: 'qm-approval-gate', name: `./${DSH_GATE_FILE}` },
+      ],
+    },
   ]
   return [
     '# Written by the qianmo node for one DeepSeek Harness process (P36). Do not edit.',
@@ -272,6 +316,29 @@ export function apply(ctx) {
 }
 `
 
+/**
+ * Provides the service the `acp` row waits for once a tool of the bridge is
+ * registered. Without one in time dsh stops (stderr, exit 70) rather than
+ * serving turns without the host's tools.
+ */
+export const DSH_BRIDGE_READY_PLUGIN = `// Written by the qianmo node (P36). Do not edit.
+export const name = 'qm-bridge-ready'
+export const inject = ['tools']
+
+export async function apply(ctx, config) {
+  const deadline = Date.now() + config.waitMs
+  const ready = () => [...ctx.tools.view().visible.keys()].some(tool => tool.startsWith(config.prefix))
+  while (!ready()) {
+    if (Date.now() > deadline) {
+      process.stderr.write('qianmo: the node bridge listed no tools in ' + config.waitMs + ' ms\\n')
+      process.exit(70)
+    }
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  ctx.provide('${BRIDGE_READY_SERVICE}', { ready: true })
+}
+`
+
 /** How one agent's dsh process starts. */
 export function dshLaunch(input: AcpLaunchInput): AcpLaunch {
   const patch = join(input.runDir, DSH_PATCH_FILE)
@@ -288,6 +355,10 @@ export function dshLaunch(input: AcpLaunchInput): AcpLaunch {
     files: [
       { path: patch, content: dshPatch(input) },
       { path: join(input.runDir, DSH_GATE_FILE), content: DSH_GATE_PLUGIN },
+      {
+        path: join(input.runDir, DSH_BRIDGE_READY_FILE),
+        content: DSH_BRIDGE_READY_PLUGIN,
+      },
     ],
     // dsh loads a `.env` from its launch directory into its own environment
     // (and so into the model's shells): an empty directory of its own, never
@@ -297,6 +368,7 @@ export function dshLaunch(input: AcpLaunchInput): AcpLaunch {
       join(input.home, 'agents'),
       join(input.home, 'skills', DSH_QMO_SKILLS),
     ],
+    mountsBridge: true,
   }
 }
 

@@ -232,6 +232,8 @@ test('lays out skills and MCP servers in each runtime’s native shape', async (
   expect(config).toContain('[mcp_servers."docs"]')
   expect(config).toContain('default_tools_approval_mode = "approve"')
   expect(config).toContain('"DOCS_TOKEN" = "secret-value"')
+  // Operator connectors keep Codex's own call timeout; only the bridge waits.
+  expect(config).not.toContain('tool_timeout_sec')
   expect(commands).toEqual([
     ['/opt/codex', 'plugin', 'marketplace', 'add', path.join(base, 'helper')],
     ['/opt/codex', 'plugin', 'add', 'qianmo@qianmo'],

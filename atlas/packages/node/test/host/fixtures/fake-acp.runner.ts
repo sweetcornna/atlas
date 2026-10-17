@@ -17,6 +17,9 @@
  * else is echoed.
  *
  * `QIANMO_FIXTURE_LOG` (a file) gets one JSON line per event the test checks.
+ * `QIANMO_FAKE_ACP_LOAD=late` offers `session/load` instead of
+ * `session/resume` and, like Gemini CLI, replays the old conversation only
+ * after answering it.
  */
 
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -30,6 +33,7 @@ const log = (entry: Record<string, unknown>) => {
 }
 const send = (message: Record<string, unknown>) =>
   process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`)
+const lateLoad = process.env.QIANMO_FAKE_ACP_LOAD === 'late'
 
 log({
   event: 'start',
@@ -120,6 +124,8 @@ async function prompt(
   session: Session,
   text: string,
 ): Promise<void> {
+  // The model call a replay overlaps with.
+  if (lateLoad) await new Promise(done => setTimeout(done, 150))
   session.turns++
   const turn = session.turns
   const step = (n: number) => ({
@@ -354,7 +360,10 @@ lines.on('line', line => {
           agentCapabilities: {
             mcpCapabilities: { http: true },
             promptCapabilities: { image: false },
-            sessionCapabilities: { close: {}, list: {}, resume: {} },
+            sessionCapabilities: lateLoad
+              ? { close: {}, list: {} }
+              : { close: {}, list: {}, resume: {} },
+            ...(lateLoad ? { loadSession: true } : {}),
           },
           authMethods: [],
         },
@@ -404,6 +413,30 @@ lines.on('line', line => {
           id,
           error: { code: -32602, message: `unknown session ${sessionId}` },
         })
+      return
+    }
+    case 'session/load': {
+      const session: Session = {
+        id: String(params.sessionId),
+        cwd: String(params.cwd),
+        turns: 0,
+        seq: 1000,
+      }
+      sessions.set(session.id, session)
+      send({ id, result: {} })
+      void (async () => {
+        for (const [kind, text] of [
+          ['user_message_chunk', 'old question'],
+          ['agent_message_chunk', 'old '],
+          ['agent_message_chunk', 'answer'],
+        ]) {
+          await new Promise(done => setTimeout(done, 20))
+          update(session, {
+            sessionUpdate: kind,
+            content: { type: 'text', text },
+          })
+        }
+      })()
       return
     }
     case 'session/set_config_option':

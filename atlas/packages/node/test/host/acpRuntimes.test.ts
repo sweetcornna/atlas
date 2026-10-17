@@ -183,6 +183,16 @@ const content = (result: ResidentTurnResult): string =>
 const exited = (child: ChildProcess) =>
   child.exitCode !== null || child.signalCode !== null
 
+/** The bridge row of a dsh patch the pool wrote. */
+function patchBridge(patch: string): Record<string, unknown> {
+  const rows = Bun.YAML.parse(readFileSync(patch, 'utf8')) as {
+    insert?: { id: string; config?: Record<string, unknown> }[]
+  }[]
+  return rows
+    .flatMap(row => row.insert ?? [])
+    .find(row => row.id === 'qm-bridge')!.config!
+}
+
 test('dsh: a warm process answers turns with text, tool progress and the usage in its session log', async () => {
   const { pool, agent, requests } = setup()
   const session = await pool.newSession(agent)
@@ -263,14 +273,14 @@ test('dsh: started from an empty directory of its own with the node’s patch, i
   // The workspace only as the session's directory.
   const opened = requests('session/new')[0]!.params!
   expect(opened.cwd).toBe(agent.cwd)
-  const servers = opened.mcpServers as {
-    name: string
-    command: string
-    args: string[]
-  }[]
-  expect(servers.map(server => server.name)).toEqual(['qianmo'])
-  expect(servers[0]!.command.startsWith('/')).toBe(true)
-  expect(servers[0]!.args).toContain('runtime-mcp')
+  // The bridge is in the patch with the long call timeout, not in
+  // `session/new` (where dsh would give it 60 s).
+  expect(opened.mcpServers).toEqual([])
+  const bridge = patchBridge(patch)
+  expect(bridge.serverName).toBe('qianmo')
+  expect(String(bridge.command).startsWith('/')).toBe(true)
+  expect(bridge.args).toContain('runtime-mcp')
+  expect(bridge.toolCallTimeoutMs).toBe(1_900_000)
   // No effort configured: the harness's default stays.
   expect(requests('session/set_config_option')).toEqual([])
   const initialize = requests('initialize')[0]!.params!
@@ -413,7 +423,7 @@ test('dsh: a new process resumes the session; a crash is recovered; a lost sessi
   expect(resumed[0]!.params!.cwd).toBe(agent.cwd)
   expect(
     (resumed[0]!.params!.mcpServers as { name: string }[]).map(s => s.name),
-  ).toEqual(['qianmo'])
+  ).toEqual([])
   // Resumed: the instructions are already in the conversation.
   expect(requests('session/prompt')[1]!.params!.prompt).toHaveLength(1)
 
@@ -468,7 +478,7 @@ const SERVERS: AgentExtensions = {
   readableRoots: [],
 }
 
-test('dsh: the host bridge and operator MCP servers go in session/new; stdio through qm mcp-exec, SSE left out', async () => {
+test('dsh: operator MCP servers go in session/new (the bridge is in the patch); stdio through qm mcp-exec, SSE left out', async () => {
   const { pool, agent, requests, announced } = setup(
     {},
     { extensions: () => SERVERS },
@@ -479,8 +489,8 @@ test('dsh: the host bridge and operator MCP servers go in session/new; stdio thr
     string,
     unknown
   >[]
-  expect(servers.map(server => server.name)).toEqual(['qianmo', 'docs', 'crm'])
-  const docs = servers[1]!
+  expect(servers.map(server => server.name)).toEqual(['docs', 'crm'])
+  const docs = servers[0]!
   expect(String(docs.command).startsWith('/')).toBe(true)
   const args = docs.args as string[]
   expect(args.slice(args.indexOf('mcp-exec'))).toEqual([
@@ -492,14 +502,17 @@ test('dsh: the host bridge and operator MCP servers go in session/new; stdio thr
     '--fast',
   ])
   expect(docs.env).toEqual([{ name: 'DOCS_TOKEN', value: 'secret-value' }])
-  expect(servers[2]).toEqual({
+  expect(servers[1]).toEqual({
     type: 'http',
     name: 'crm',
     url: 'https://crm.example/mcp',
     headers: [{ name: 'Authorization', value: 'Bearer t' }],
   })
   // The bridge answers for this session, with the host's tools.
-  const bridge = servers[0] as { command: string; args: string[] }
+  const launch = launches.at(-1)!
+  const bridge = patchBridge(
+    join(launch.sessionDir, 'runtime-launch', 'qianmo-dsh.patch.yml'),
+  ) as { command: string; args: string[] }
   const mcp = mcpClient(bridge)
   await mcp.open()
   const listed = await mcp.request('tools/list')
@@ -627,6 +640,53 @@ test('an ACP turn with no usage anywhere records zero, marked unreported', async
   expect(frames.at(-1)).toMatchObject({ status: 'completed' })
   await channel.stop()
   expect(exited(child)).toBe(true)
+})
+
+test('a conversation session/load replays after its answer is not taken for the next turn’s', async () => {
+  root ??= isolatedRoot()
+  const cwd = `${root.root}-workspace`
+  mkdirSync(cwd, { recursive: true })
+  const child = spawn(process.execPath, [FAKE.dsh!], {
+    cwd,
+    env: {
+      ...process.env,
+      DSH_HOME: join(root.root, 'nowhere'),
+      QIANMO_FAKE_ACP_LOAD: 'late',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  children.push(child)
+  const opened: string[] = []
+  const channel = new AcpChannel(child, {
+    label: 'Fake ACP',
+    runtime: {
+      launch: () => ({ argv: [], env: {} }),
+      mcpTransports: ['stdio'],
+    },
+    cwd,
+    mcpServers: [],
+    sessionId: 'earlier',
+    onSession: id => opened.push(id),
+    permission: async () => false,
+  })
+  await channel.initialize()
+  expect(opened).toEqual(['earlier'])
+  const frames: OmpRpcFrame[] = []
+  const done = new Promise<void>(resolve =>
+    channel.onFrame(frame => {
+      frames.push(frame)
+      if (frame.type === 'prompt_result') resolve()
+    }),
+  )
+  await channel.prompt({ messageId: 'u1', text: 'hello' })
+  await done
+  const said = frames
+    .filter(frame => frame.type === 'message_end')
+    .map(frame => frame.message as { role: string; content: unknown[] })
+    .filter(message => message.role === 'assistant')
+    .flatMap(message => message.content)
+  expect(said).toEqual([{ type: 'text', text: 'acp(1): hello' }])
+  await channel.stop()
 })
 
 /** Speaks MCP to the `qm runtime-mcp` command a runtime would start. */

@@ -32,8 +32,9 @@ import {
 } from '../hostToolDispatch.js'
 import { residentToolSurface } from '../notifyTool.js'
 import type { ResidentPermission } from '../residentOmp.js'
-import { AcpChannel, type AcpMcpServer, acpVerdictCalls } from './acp.js'
-import type { AcpRuntime, AcpToolCall } from './acpSpec.js'
+import { AcpChannel, type AcpMcpServer } from './acp.js'
+import { acpVerdictCalls } from './acpTools.js'
+import type { AcpBridge, AcpRuntime, AcpToolCall } from './acpSpec.js'
 import { type RuntimeLane, runtimeSpec } from './catalog.js'
 import type { ExternalRuntimeChannel, ExternalRuntimeKind } from './channel.js'
 import {
@@ -43,6 +44,7 @@ import {
   claudeCodeToolName,
   PERMISSION_TOOL,
   RUNTIME_MCP_SERVER,
+  RUNTIME_MCP_TIMEOUT_MS,
 } from './claudeCode.js'
 import { CODEX_KEY_ENV, CodexChannel, codexArgv } from './codex.js'
 import {
@@ -686,6 +688,12 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         const lane = launch.lane ?? spec.lanes[0]
         if (lane === undefined)
           throw new Error(`${spec.label} has no model lane`)
+        const bridge: AcpBridge = {
+          name: RUNTIME_MCP_SERVER,
+          command: absoluteCommand(mcp[0]!),
+          args: mcp.slice(1),
+          timeoutMs: RUNTIME_MCP_TIMEOUT_MS,
+        }
         const plan = acp.launch({
           bin: runtimeBin(runtime, this.#options.bins),
           model: launch.model,
@@ -703,6 +711,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
           home,
           runDir,
           cwd: agent.cwd,
+          bridge,
         })
         for (const path of [
           ...(plan.dirs ?? []),
@@ -722,13 +731,20 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         Object.assign(env, plan.env)
         cwd = plan.cwd ?? agent.cwd
         const servers: AcpMcpServer[] = [
-          {
-            name: RUNTIME_MCP_SERVER,
-            command: absoluteCommand(mcp[0]!),
-            args: mcp.slice(1),
-            env: [],
-          },
-          ...(extensions?.mcp ?? []).map(server => this.#acpMcpServer(server)),
+          ...(plan.mountsBridge === true
+            ? []
+            : [
+                {
+                  name: bridge.name,
+                  command: bridge.command,
+                  args: bridge.args,
+                  env: [],
+                },
+              ]),
+          // Only what the catalog says it takes; P32 reports the rest.
+          ...(extensions?.mcp ?? [])
+            .filter(server => acp.mcpTransports.includes(server.transport))
+            .map(server => this.#acpMcpServer(server)),
         ]
         const usage = acp.usage
         open = child =>

@@ -35,6 +35,7 @@ import { qianmoConfigPath } from '@qianmo/paths'
 import { OmpResidentTurnPort } from '@qianmo/resident'
 import { NodeExtensions } from '../../src/host/extensions.js'
 import { runtimeSmoke } from '../../src/host/runtimes/smoke.js'
+import { isolatedRoot } from '../providers/fake.js'
 import {
   type ExternalAgent,
   ExternalRuntimePool,
@@ -61,6 +62,12 @@ afterEach(async () => {
   for (const step of cleanup.reverse()) await step()
   cleanup = []
 })
+
+/** The node's config root for one test: a temp directory, never ~/.qianmo. */
+function isolate(): void {
+  const root = isolatedRoot()
+  cleanup.push(async () => root.dispose())
+}
 
 interface Served {
   readonly body: Record<string, unknown>
@@ -194,6 +201,7 @@ function stepOf(body: Record<string, unknown>, marker: string): number {
 test.skipIf(DSH === null)(
   'DeepSeek Harness: whole turns through the ACP channel, a host tool, the posture, session-log usage and resume',
   async () => {
+    isolate()
     const workspace = mkdtempSync(join(tmpdir(), 'qm-real-dsh-'))
     writeFileSync(join(workspace, 'README.md'), 'hello\n')
     writeFileSync(join(workspace, 'AGENTS.md'), 'WORKSPACE-AGENTS-MARKER\n')
@@ -371,6 +379,7 @@ const TINY = join(import.meta.dir, 'fixtures', 'tiny-mcp.runner.ts')
 test.skipIf(DSH === null)(
   'DeepSeek Harness: the operator’s MCP server (through qm mcp-exec) and skill load from what the node laid out (P32)',
   async () => {
+    isolate()
     const root = mkdtempSync(join(tmpdir(), 'qm-real-dsh-ext-'))
     const bin = join(root, 'bin')
     mkdirSync(bin)
@@ -487,6 +496,7 @@ test.skipIf(DSH === null)(
 test.skipIf(DSH === null)(
   'the update check passes the real dsh and fails it without the qianmo bridge',
   async () => {
+    isolate()
     expect(await runtimeSmoke('dsh', DSH!)).toBeNull()
     expect(
       await runtimeSmoke('dsh', DSH!, { mcpArgv: () => ['/usr/bin/false'] }),

@@ -8,8 +8,8 @@ import type {
   AcpToolCall,
   AcpUsage,
   AcpUsageReader,
-  AcpVerdictCall,
 } from './acpSpec.js'
+import { acpVerdictCalls } from './acpTools.js'
 import {
   nonNegative,
   RuntimeChannelBase,
@@ -82,6 +82,10 @@ interface TrackedTool {
 
 const REQUEST_TIMEOUT_MS = 60_000
 const CANCEL_GRACE_MS = 5_000
+/** A `session/load` replay is over once updates stop this long… */
+const REPLAY_QUIET_MS = 200
+/** …or after this long at most. */
+const REPLAY_WAIT_MS = 5_000
 const ZERO_USAGE: AcpUsage = {
   input: 0,
   output: 0,
@@ -91,71 +95,6 @@ const ZERO_USAGE: AcpUsage = {
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
-}
-
-function firstPath(...values: unknown[]): string | undefined {
-  return values.find(
-    (value): value is string => typeof value === 'string' && value !== '',
-  )
-}
-
-/**
- * A tool call by its ACP `kind` and `locations`, for harnesses without a
- * mapping of their own. What it cannot place keeps its title, which the
- * node's verdict refuses as a tool it does not know.
- */
-export function genericAcpToolCall(call: AcpToolCall): AcpVerdictCall[] {
-  const raw = call.rawInput
-  const path = firstPath(
-    call.paths[0],
-    raw.file_path,
-    raw.filePath,
-    raw.absolute_path,
-    raw.path,
-  )
-  if (call.title.startsWith('mcp__'))
-    return [{ toolName: call.title, input: { ...raw } }]
-  switch (call.kind) {
-    case 'execute':
-      return [
-        {
-          toolName: 'bash',
-          input: { ...raw, command: text(raw.command) ?? call.title },
-        },
-      ]
-    case 'edit':
-    case 'delete':
-    case 'move': {
-      const targets =
-        call.paths.length > 0 ? call.paths : path === undefined ? [] : [path]
-      // No target: the verdict cannot tell what it would change and refuses.
-      if (targets.length === 0) return [{ toolName: 'edit', input: { ...raw } }]
-      return targets.map(target => ({
-        toolName: 'edit',
-        input: { ...raw, path: target },
-      }))
-    }
-    case 'read':
-      return path === undefined
-        ? [{ toolName: `read:${call.title}`, input: { ...raw } }]
-        : [{ toolName: 'read', input: { path } }]
-    case 'search':
-      return [{ toolName: 'grep', input: { path: path ?? '.' } }]
-    case 'think':
-      return [{ toolName: 'todo', input: {} }]
-    case 'fetch':
-      return [{ toolName: 'fetch', input: { ...raw } }]
-    default:
-      return [{ toolName: call.title, input: { ...raw } }]
-  }
-}
-
-/** `call` in the node's vocabulary, by the harness's own mapping if it has one. */
-export function acpVerdictCalls(
-  runtime: AcpRuntime,
-  call: AcpToolCall,
-): readonly AcpVerdictCall[] {
-  return (runtime.toolCall ?? genericAcpToolCall)(call)
 }
 
 /** What the progress line calls a tool. */
@@ -175,6 +114,7 @@ function toolCallOf(
     : undefined
   const raw = update.rawInput
   const kind = text(update.kind) ?? before?.kind
+  const meta = toolArgs(update._meta)
   return {
     title: text(update.title) ?? before?.title ?? 'tool',
     ...(kind === undefined ? {} : { kind }),
@@ -183,6 +123,11 @@ function toolCallOf(
         ? (raw as Record<string, unknown>)
         : (before?.rawInput ?? {}),
     paths: locations ?? before?.paths ?? [],
+    ...(Object.keys(meta).length > 0
+      ? { meta: { ...before?.meta, ...meta } }
+      : before?.meta === undefined
+        ? {}
+        : { meta: before.meta }),
   }
 }
 
@@ -231,6 +176,8 @@ export class AcpChannel extends RuntimeChannelBase {
   #abortTimer: Timer | undefined
   #usage: AcpUsageReader | undefined
   #usageFrom = 0
+  /** When the last `session/update` arrived (ms epoch). */
+  #lastUpdate = 0
 
   constructor(child: ChildProcess, settings: AcpSessionSettings) {
     super(child, settings)
@@ -294,6 +241,7 @@ export class AcpChannel extends RuntimeChannelBase {
           }),
         )
         this.#sessionId = settings.sessionId
+        if (resume === 'session/load') await this.#replayed()
       } catch {
         // The harness no longer has it (wiped home, another node): a new
         // conversation, with the node's instructions again.
@@ -317,6 +265,26 @@ export class AcpChannel extends RuntimeChannelBase {
     this.#usage = settings.usage?.(this.#sessionId)
     await this.#applyEffort(opened ?? {})
     this.markReady()
+  }
+
+  /**
+   * ACP has the agent replay a loaded conversation before it answers
+   * `session/load`; Gemini CLI (0.64) answers first and replays after, and a
+   * prompt sent meanwhile would take the old answers for its own. The
+   * replay is not a turn's, so it is waited out: until updates have stopped
+   * for a moment, a few seconds at most.
+   */
+  async #replayed(): Promise<void> {
+    const answered = Date.now()
+    const until = answered + REPLAY_WAIT_MS
+    for (;;) {
+      const now = Date.now()
+      const quiet = now - Math.max(answered, this.#lastUpdate)
+      if (quiet >= REPLAY_QUIET_MS || now >= until) return
+      await new Promise(resolve =>
+        setTimeout(resolve, Math.min(REPLAY_QUIET_MS - quiet, until - now)),
+      )
+    }
   }
 
   /** Effort through the harness's config option, when it offers the value. */
@@ -437,7 +405,10 @@ export class AcpChannel extends RuntimeChannelBase {
         this.#settings.onError?.(error)
       }
     }
-    const usage = promptUsage(answer.usage)
+    const usage =
+      this.#settings.runtime.promptUsage === false
+        ? undefined
+        : promptUsage(answer.usage)
     return usage === undefined
       ? { usage: ZERO_USAGE, reported: false }
       : { usage, reported: true }
@@ -590,7 +561,10 @@ export class AcpChannel extends RuntimeChannelBase {
       return
     }
     // Notifications other than session updates are not ours to act on.
-    if (method === 'session/update') this.#update(toolArgs(message.params))
+    if (method === 'session/update') {
+      this.#lastUpdate = Date.now()
+      this.#update(toolArgs(message.params))
+    }
   }
 
   #update(params: Record<string, unknown>): void {

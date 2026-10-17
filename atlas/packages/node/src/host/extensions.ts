@@ -1113,7 +1113,9 @@ export class NodeExtensions {
         if (entry.kind === 'mcp' && !one.acp.mcpTransports.includes(transport))
           failures.fail(
             entry.id,
-            `${one.label} 不支持 ${transport.toUpperCase()} 传输`,
+            one.acp.mcpTransports.length === 0
+              ? `${one.label} 不接入节点配置的 MCP 服务器`
+              : `${one.label} 不支持 ${transport.toUpperCase()} 传输`,
             false,
             [one.agent],
           )
