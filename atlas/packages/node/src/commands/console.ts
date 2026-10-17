@@ -1498,7 +1498,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       banner += field(
         'payments',
         billingConfig.live
-          ? 'LIVE (billing.json live=true: real QR orders at WeChat Pay / Alipay; precondition: charter §8 M3, a written conclusion on L-2)'
+          ? 'LIVE (billing.json live=true: real QR orders at WeChat Pay / Alipay; precondition: every legal prerequisite in public-edition.md §0 — the written conclusion on L-2 (charter §8 M3), the generative AI service filing, a commercial ICP licence, a published privacy policy)'
           : 'not live (billing.json live=false: no order is sent to WeChat Pay or Alipay; pages say 未开通正式收款)',
       )
       banner += field('billing-store', billingStorePath())
