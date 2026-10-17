@@ -1936,6 +1936,92 @@ describe('planned tasks (主动任务)', () => {
     expect(chat.sentTo(planned)[0]!.text).toContain('有 1 条尚未确认的用户补充')
   })
 
+  test('/stop during a repeat’s run stops that run only and the later runs go on; on the last run it cancels', async () => {
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const anchor = now
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        everyMinutes: 60,
+        times: 3,
+      }),
+    )
+    const worker = await workerTurn(1)
+    const first = chat.lastTask(worker)
+    await until(() => book.forSession(parent)[0]?.status === 'running')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    now += 10 * MINUTE
+    expect(await book.cancelForSession(parent)).toBe(1)
+    expect(stopped).toEqual([[MAIN, first]])
+    expect(book.forSession(parent)[0]).toMatchObject({
+      id,
+      status: 'scheduled',
+      nextAt: new Date(anchor + 60 * MINUTE).toISOString(),
+      runsLeft: 2,
+    })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(book.forSession(parent)[0]!.status).toBe('scheduled')
+    // A stopped run reports nothing.
+    expect(finished).toEqual([])
+    now = anchor + 61 * MINUTE
+    book.tick()
+    await until(() => chat.sentTo(worker).length === 2)
+    expect(chat.sentTo(worker)[1]!.text).toContain('这是重复任务的第 2 次运行')
+    // The stopped turn is not stopped twice.
+    expect(stopped).toEqual([[MAIN, first]])
+    await finishRun(book, worker, '第二次正常')
+    await until(() => finished.length === 1)
+    now = anchor + 121 * MINUTE
+    book.tick()
+    await until(() => chat.sentTo(worker).length === 3)
+    await until(() => book.forSession(parent)[0]?.status === 'running')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(await book.cancelForSession(parent)).toBe(1)
+    expect(book.forSession(parent)[0]).toMatchObject({ status: 'cancelled' })
+  })
+
+  test('/stop while a repeat’s line is on its way stops the node turn once it has a task id, and the plan stays', async () => {
+    class SlowChat extends FakeChat {
+      release: () => void = () => {}
+      readonly gate = new Promise<void>(resolve => {
+        this.release = resolve
+      })
+      override async send(input: Parameters<FakeChat['send']>[0]) {
+        if (input.background) await this.gate
+        return super.send(input)
+      }
+    }
+    const slow = new SlowChat([MAIN, CODER])
+    chat = slow
+    const now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    value(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        everyMinutes: 60,
+        times: 3,
+      }),
+    )
+    // The line is sent and waits at the gate: no node task id yet.
+    await until(() => book.forSession(parent)[0]?.status === 'running')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(await book.cancelForSession(parent)).toBe(1)
+    expect(stopped).toEqual([])
+    slow.release()
+    await until(() => stopped.length === 1)
+    expect(stopped).toEqual([[MAIN, slow.lastTask(workerSessions()[0]!)]])
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(book.forSession(parent)[0]).toMatchObject({
+      status: 'scheduled',
+      runsLeft: 2,
+    })
+  })
+
   test('the console list carries the next start and the runs left', async () => {
     const now = Date.UTC(2026, 9, 17, 1, 0)
     const book = tasks({ now: () => now })

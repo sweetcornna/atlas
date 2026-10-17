@@ -1256,7 +1256,15 @@ export class ConsoleTasks implements BackgroundTasksPort {
         task.status !== 'scheduled',
     )
     // Each stop may wait on its node; the chat's answer waits for the slowest.
-    await Promise.all(doomed.map(task => this.#cancel(task)))
+    await Promise.all(
+      doomed.map(task =>
+        task.plan !== null &&
+        task.plan.everyMinutes !== null &&
+        task.plan.runs < task.plan.times
+          ? this.#stopRun(task, task.plan)
+          : this.#cancel(task),
+      ),
+    )
     return doomed.length
   }
 
@@ -1658,6 +1666,33 @@ export class ConsoleTasks implements BackgroundTasksPort {
     turn?.handle.cancel()
   }
 
+  /**
+   * `/stop` on a repeat with runs still to come: this run stops on its node
+   * and the task waits as scheduled for its next start, the later runs
+   * untouched. A cancel (qianmo_task_cancel, the console) ends them all;
+   * `/stop` on the last run is one.
+   */
+  async #stopRun(task: TaskRecord, plan: Plan): Promise<void> {
+    this.#patch(task.id, {
+      status: 'scheduled',
+      plan: { ...plan, nextAt: nextSlot(plan, this.#now()) },
+      requestedState: '',
+      notification: 'none',
+    })
+    this.#waits.get(task.id)?.()
+    const turn = this.#turns.get(task.id)
+    const running = turn?.taskId ?? task.nodeTaskId
+    if (running !== null && this.#options.stopTask) {
+      const stopped = await this.#options
+        .stopTask(turn?.target ?? task.target, running)
+        .catch(() => false)
+      // Stopped: the next run need not stop it again first.
+      if (stopped && this.#tasks.get(task.id)?.nodeTaskId === running)
+        this.#patch(task.id, { nodeTaskId: null })
+    }
+    turn?.handle.cancel()
+  }
+
   #report(task: TaskRecord, args: Record<string, unknown>): ControlOutcome {
     const state = args['state']
     const summary =
@@ -1994,12 +2029,13 @@ export class ConsoleTasks implements BackgroundTasksPort {
                 onTask: taskId => {
                   turn.taskId = taskId
                   const now = this.#tasks.get(id)
-                  // Cancelled or closed while the line was on its way: the
-                  // cancel had no node task to stop yet, so stop it here.
+                  // Cancelled, stopped back to its plan or closed while the
+                  // line was on its way: there was no node task to stop yet,
+                  // so stop it here.
                   if (
                     this.#closed ||
                     now === undefined ||
-                    TERMINAL.has(now.status)
+                    !RESUMABLE.has(now.status)
                   ) {
                     void this.#options
                       .stopTask?.(turn.target, taskId)
