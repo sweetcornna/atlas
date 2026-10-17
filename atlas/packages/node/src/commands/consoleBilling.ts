@@ -73,6 +73,7 @@ import type { MagpieLimit } from '@qianmo/magpie'
 import {
   type ConsoleMagpie,
   isTenantProfile,
+  mayRunTenantProfile,
   NO_MODEL_PROFILE,
 } from './consoleMagpie.js'
 
@@ -241,16 +242,6 @@ function behind(row: ProviderNodeView): boolean {
   const kinds = new Set(row.drift.map(one => one.kind))
   if (kinds.has('pending')) return false
   return kinds.has('out-of-sync') || kinds.has('unmanaged')
-}
-
-/**
- * Whether a node may still run a subscriber's profile, as far as the hub
- * knows: its last status said so, or it has never answered one.
- */
-function stillSubscribed(row: ProviderNodeView): boolean {
-  if (row.actual === null) return true
-  const applied = row.actual.applied
-  return applied !== null && isTenantProfile(applied.profileId)
 }
 
 export class ConsoleBilling implements BillingPort, GatewayProvisioner {
@@ -504,7 +495,7 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
         sweep &&
         current === none &&
         behind(row) &&
-        stillSubscribed(row) &&
+        mayRunTenantProfile(row) &&
         (this.#retry.get(row.node)?.at ?? 0) <= now
       )
         reclaim.push(row.node)

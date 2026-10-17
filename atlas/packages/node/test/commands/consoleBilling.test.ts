@@ -1150,6 +1150,57 @@ describe('a node handed back or moved gives the subscriber’s key back', () => 
     expect(moved.ok).toBe(true)
   })
 
+  test('a node handed back still running the subscriber’s profile cannot be left to send nothing', async () => {
+    const { tenant } = await subscribed()
+    setNodes(tenant, [])
+    expect((await providers.setDefault({ profileId: null }, ops())).ok).toBe(
+      true,
+    )
+    // Not managed, or following a default of nothing: nothing would be sent
+    // and the subscriber's key would stay on the node for good.
+    for (const assignment of [
+      { mode: 'unmanaged' as const },
+      { mode: 'inherit' as const },
+    ]) {
+      const result = await providers.assign(
+        { node: 'beta-1', assignment },
+        ops(),
+      )
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.failure.code).toBe('edition_public_magpie_only')
+        expect(result.failure.message).toContain('订阅者的密钥')
+      }
+    }
+    // A node that has never answered a status may hold one too.
+    const unknown = await providers.assign(
+      { node: 'beta-3', assignment: { mode: 'unmanaged' } },
+      ops(),
+    )
+    expect(unknown.ok).toBe(false)
+    // Once it is known to run something else, the choice is the operator's.
+    expect((await raw.refreshNode('beta-3')).ok).toBe(true)
+    expect(
+      (
+        await providers.assign(
+          { node: 'beta-3', assignment: { mode: 'unmanaged' } },
+          ops(),
+        )
+      ).ok,
+    ).toBe(true)
+    // Taken back first, beta-1 may be left alone too.
+    await billing.syncNodes()
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    expect(
+      (
+        await providers.assign(
+          { node: 'beta-1', assignment: { mode: 'unmanaged' } },
+          ops(),
+        )
+      ).ok,
+    ).toBe(true)
+  })
+
   test('a node handed back that refuses the delivery is asked again at the next sweep', async () => {
     const { tenant, secret } = await subscribed()
     nodes[0]?.set(

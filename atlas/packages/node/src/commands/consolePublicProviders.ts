@@ -18,7 +18,8 @@
  *   不收。有租户节点时，全局默认只能清空或设为「无模型」。
  * - 平台的节点不持有订阅者的档案：还指派着订阅者档案的（交回平台、租户换了
  *   节点）期望为「无模型」，页面显示偏差，下发即收回密钥；跟随默认与停止托管
- *   照旧。
+ *   照旧，但节点可能还跑着订阅者的档案（上次状态如此，或从没回报过）时，停止
+ *   托管与跟随空默认都不收，先指派档案或「无模型」收回。
  *
  * 读与节点上的其余操作原样转交。
  */
@@ -34,6 +35,7 @@ import type {
 import {
   isTenantProfile,
   magpieProfileId,
+  mayRunTenantProfile,
   NO_MODEL_PROFILE,
 } from './consoleMagpie.js'
 import type { ProviderNodeScope } from './consoleProviders.js'
@@ -250,10 +252,25 @@ export function publicProviders(
         }
       const assignment: ProviderAssignment = input.assignment
       if (tenant === null) {
-        return assignment.mode === 'profile' &&
-          isTenantProfile(assignment.profileId)
-          ? refused('订阅者的网关档案只给它自己租户的节点')
-          : inner.assign(input, caller)
+        if (assignment.mode === 'profile')
+          return isTenantProfile(assignment.profileId)
+            ? refused('订阅者的网关档案只给它自己租户的节点')
+            : inner.assign(input, caller)
+        // Not managed, or following a default of nothing, sends nothing: a
+        // node handed back that may still run a subscriber's profile would
+        // keep the key for good (the node sync takes back only one assigned
+        // that profile).
+        const overview = await inner.overview()
+        if (!overview.ok) return overview
+        const row = overview.value.nodes.find(one => one.node === input.node)
+        const sendsNothing =
+          assignment.mode === 'unmanaged' ||
+          overview.value.defaultProfileId === null
+        if (row !== undefined && sendsNothing && mayRunTenantProfile(row))
+          return refused(
+            '这台节点上还有订阅者的密钥 · 先指派档案或「无模型」收回',
+          )
+        return inner.assign(input, caller)
       }
       if (
         assignment.mode === 'profile' &&

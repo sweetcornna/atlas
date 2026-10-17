@@ -74,6 +74,7 @@ import type {
   ProviderAssignment,
   ProviderCaller,
   ProviderFailure,
+  ProviderNodeView,
   ProviderOverview,
   ProviderPort,
   ProviderProfileDraft,
@@ -293,6 +294,16 @@ export function magpieProfileId(binding: MagpieBinding): string {
 /** Whether `id` is a subscriber's profile, `magpie-tenant-<tenant>` (P35). */
 export function isTenantProfile(id: string): boolean {
   return id.startsWith('magpie-tenant-')
+}
+
+/**
+ * Whether a node may still run a subscriber's profile, as far as the hub
+ * knows: its last status said so, or it has never answered one.
+ */
+export function mayRunTenantProfile(row: ProviderNodeView): boolean {
+  if (row.actual === null) return true
+  const applied = row.actual.applied
+  return applied !== null && isTenantProfile(applied.profileId)
 }
 
 /** A gateway key value of ours: never magpie's `sk-magpie-` prefix. */
