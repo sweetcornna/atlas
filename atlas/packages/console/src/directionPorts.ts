@@ -1830,7 +1830,7 @@ export interface BillingPort {
       readonly reason: string
     },
   ): Promise<ConsoleResult<BillingStanding>>
-  /** 只登记商户平台上已经做完的退款，并相应缩短订阅。 */
+  /** 只登记商户平台上已经做完的退款，并减去这张订单计入当前这段订阅的天数。 */
   refund(
     actor: DirectionActor,
     input: { readonly orderId: string; readonly reason: string },

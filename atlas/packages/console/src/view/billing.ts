@@ -798,7 +798,7 @@ export function billingAdminDialogs(plans: readonly BillingPlanView[]): string {
     `<dialog class="dialog bl-dialog" id="bl-refund-dialog" aria-labelledby="bl-refund-title">` +
     `<form id="bl-refund-form" novalidate>` +
     dialogTop('bl-refund-title', 'x', '登记退款', true) +
-    `<div class="dialog-body"><p class="note">只登记已在商户平台完成的退款 · 订阅相应缩短</p>` +
+    `<div class="dialog-body"><p class="note">只登记已在商户平台完成的退款 · 订阅减去这张订单计入的天数</p>` +
     `<div class="form-grid">` +
     textField('order', '订单', {
       required: true,

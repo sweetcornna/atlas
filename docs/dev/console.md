@@ -675,7 +675,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/billing/admin` | 平台读者 | 订阅管理快照：套餐、通道、订单、订阅（含租户与开通状态）、兑换码（只有编号与使用情况）、待退款（付款时已有别的套餐在有效期内、没有计入的订单）、账本校验。有租户时只给平台主体与 break-glass |
 | GET | `/v0/billing/admin/verify` | 平台读者 | 从头校验账本的哈希链，答 `{ ok, events }` 或第一处不一致 |
 | POST | `/v0/billing/admin/grant` | **个人 ops**（平台） | `{ subject, planId, periods, reason }` 手动开通或延期，原因必填。规则同网关写入：拒绝共用令牌与 break-glass，有租户时只收平台主体；记 `billing.grant` |
-| POST | `/v0/billing/admin/refund` | **个人 ops**（平台） | `{ orderId, reason }`：只登记商户平台上已经做完的退款并缩短订阅，不向支付平台发起退款。记 `billing.refund` |
+| POST | `/v0/billing/admin/refund` | **个人 ops**（平台） | `{ orderId, reason }`：只登记商户平台上已经做完的退款，从订阅里减去这张订单计入当前这段订阅的天数（更早一段的订单与套餐冲突没计入的订单不减），不向支付平台发起退款。记 `billing.refund` |
 | POST | `/v0/billing/admin/codes` | **个人 ops**（平台） | `{ planId, periods, count, expiresInDays? }` 生成兑换码，明文只在这次应答里出现，落盘只存哈希。记 `billing.codes` |
 | GET | `/v0/updates` | view | 更新检查（P31，`docs/dev/runtimes-channels.md` §5）：检查时间与时区、每个来源（qianmopi、Claude Code、Codex、阡陌）的当前版本、最新版本、各节点版本与动作、最近 100 行记录、下次检查时刻；中枢自身的版本与本机备份、能回到的更旧发行、最近一次升级或回滚作业。不是运维时不给通知渠道。没接端口时 501 |
 | POST | `/v0/updates` | **个人 ops** | 保存设定：`{ times, timezone, actions, channels, repo }`；`times` 是 daily / weekly 规则，`actions` 每个来源 `notify` 或 `auto`（阡陌设为 `auto` 时，检查到新发行就逐台升级）。拒绝共用令牌与 break-glass；记 `updates.save` |

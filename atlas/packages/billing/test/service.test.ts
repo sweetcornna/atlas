@@ -418,6 +418,45 @@ describe('subscription periods', () => {
     })
   })
 
+  test('refunding an order from an earlier, lapsed period leaves the current one', async () => {
+    const { service, store } = setup()
+    const january = await service.createOrder('alice', 'month', 'wechatpay')
+    await service.handleNotify(
+      'wechatpay',
+      wechatNotify(keys, now, { outTradeNo: january.outTradeNo, total: 9900 }),
+    )
+    // It lapses; three months later a new month starts.
+    now = T0 + 90 * DAY
+    await service.grant('ops', 'alice', 'month', 1, '四月')
+    const april = service.entitlement('alice')
+    expect(april).toEqual({
+      active: true,
+      planId: 'month',
+      endsAt: now + 30 * DAY,
+    })
+    expect(
+      await service.markRefunded('ops', january.orderId, '一月的退款'),
+    ).toEqual(april)
+    expect(store.order(january.orderId)?.status).toBe('refunded')
+    expect(store.subscription('alice')?.gateway).toBe('enabled')
+    expect(store.verifyChain().ok).toBe(true)
+  })
+
+  test('within one run a refund takes back that order’s days', async () => {
+    const { service } = setup()
+    const first = await service.createOrder('alice', 'month', 'wechatpay')
+    await service.handleNotify(
+      'wechatpay',
+      wechatNotify(keys, now, { outTradeNo: first.outTradeNo, total: 9900 }),
+    )
+    now += DAY
+    await service.grant('ops', 'alice', 'month', 2, '补偿')
+    expect(service.entitlement('alice').endsAt).toBe(T0 + 90 * DAY)
+    expect(
+      (await service.markRefunded('ops', first.orderId, '退第一单')).endsAt,
+    ).toBe(T0 + 60 * DAY)
+  })
+
   test('an open order for another plan blocks a new one until it is paid or expires', async () => {
     const { service, store } = setup()
     const month = await service.createOrder('alice', 'month', 'wechatpay')

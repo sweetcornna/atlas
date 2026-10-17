@@ -731,8 +731,11 @@ export class BillingService {
   }
 
   /**
-   * Record a refund made in the merchant console and take the order's
-   * period back off the subscription.
+   * Record a refund made in the merchant console and take back what the
+   * order put into the current run: its days, if it was paid since the run
+   * began and was credited, and never past the run's start. An order from an
+   * earlier, lapsed period, or one that extended nothing (a conflict), leaves
+   * the subscription as it is.
    */
   async markRefunded(
     by: string,
@@ -747,18 +750,23 @@ export class BillingService {
       if (order === null) throw new BillingError('unknown_order', '订单不存在')
       if (!this.#store.markOrderRefunded(orderId, by, reason, now))
         throw new BillingError('not_paid', '只有已支付的订单才能记退款')
-      // A conflicting order never extended anything; there is nothing to take back.
-      const row =
+      const row = this.#store.subscription(order.subject)
+      const credited =
+        row !== null &&
+        row.endsAt > now &&
+        order.paidAt !== null &&
+        order.paidAt >= row.startsAt &&
         this.#store.conflict(orderId) === null
-          ? this.#store.subscription(order.subject)
-          : null
-      if (row !== null)
+      if (credited)
         this.#store.saveSubscription(
           {
             subject: row.subject,
             planId: row.planId,
             startsAt: row.startsAt,
-            endsAt: row.endsAt - order.periodDays * DAY_MS,
+            endsAt: Math.max(
+              row.startsAt,
+              row.endsAt - order.periodDays * DAY_MS,
+            ),
           },
           { cause: 'refund', ref: orderId, by, reason },
           now,
