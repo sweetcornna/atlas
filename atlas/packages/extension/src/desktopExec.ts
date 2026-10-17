@@ -11,12 +11,15 @@ import { createComputerPrelude } from '@oh-my-pi/pi-coding-agent/tools/computer'
 import type { ToolSession } from '@oh-my-pi/pi-coding-agent/tools/index'
 import {
   DESKTOP_LEASE_REFUSED,
+  desktopActionItems,
   desktopArgs,
   desktopOp,
   desktopUnavailable,
+  type DesktopArgs,
   type DesktopDecision,
   type DesktopResource,
   type DesktopTool,
+  type DesktopValue,
 } from './desktopPolicy.js'
 
 export function readDesktopResource(file: string): DesktopResource | undefined {
@@ -84,6 +87,132 @@ export interface DesktopCall {
 /** What a desktop call returns: omp's tool result (text and image parts). */
 export type DesktopResult = Awaited<ReturnType<EvalPreludeDefinition['invoke']>>
 
+/** The part of omp's browser and computer preludes the executor drives. */
+export type DesktopPrelude = Pick<EvalPreludeDefinition, 'invoke'>
+/** Where the executor gets its preludes; tests pass fakes. */
+export interface DesktopPreludes {
+  readonly browser?: (session: ToolSession) => DesktopPrelude
+  readonly computer?: (session: ToolSession) => DesktopPrelude
+}
+
+/** One `call` step on the base computer facade (`computer/call.ts`). */
+interface ComputerStep {
+  readonly method: string
+  readonly args: readonly unknown[]
+}
+const step = (method: string, ...args: unknown[]): ComputerStep => ({
+  method,
+  args,
+})
+/** Copy the present options under the base's names; absent ones stay unset. */
+function options(
+  args: DesktopArgs,
+  names: Readonly<Record<string, string>>,
+): Record<string, DesktopValue> | undefined {
+  const out: Record<string, DesktopValue> = {}
+  for (const [from, to] of Object.entries(names))
+    if (args[from] !== undefined) out[to] = args[from]
+  return Object.keys(out).length > 0 ? out : undefined
+}
+const trailing = (...values: unknown[]) =>
+  values.at(-1) === undefined ? values.slice(0, -1) : values
+
+/** The base call for one checked `actions` step other than `wait`. */
+function actionStep(item: DesktopArgs): ComputerStep {
+  switch (item.type) {
+    case 'click':
+      return step(
+        'click',
+        ...trailing(
+          item.x,
+          item.y,
+          options(item, {
+            button: 'button',
+            count: 'count',
+            keys: 'modifiers',
+          }),
+        ),
+      )
+    case 'double_click':
+      return step(
+        'doubleClick',
+        ...trailing(item.x, item.y, options(item, { keys: 'modifiers' })),
+      )
+    case 'move':
+      return step('move', item.x, item.y)
+    case 'drag':
+      return step(
+        'drag',
+        ...trailing(item.path, options(item, { keys: 'keys' })),
+      )
+    case 'scroll':
+      return step('scroll', item.x, item.y, { dx: item.dx, dy: item.dy })
+    case 'type':
+      return step('type', item.text)
+    case 'keypress':
+      return step('press', item.keys)
+    case 'hold_keys':
+      return step('holdKeys', item.keys, { duration: item.seconds })
+    case 'hold_mouse':
+      return step('holdMouse', item.x, item.y, {
+        duration: item.seconds,
+        ...options(item, { button: 'button' }),
+      })
+    default:
+      throw new Error(`Unsupported desktop action: ${String(item.type)}`)
+  }
+}
+
+/** Sleep for a `wait` step; an abort ends it at once. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  signal?.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const done = () => {
+      signal?.removeEventListener('abort', stop)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    const stop = () => {
+      clearTimeout(timer)
+      reject(signal?.reason ?? new Error('Desktop wait aborted'))
+    }
+    signal?.addEventListener('abort', stop, { once: true })
+  })
+}
+
+/**
+ * The window layout a computer call is authorized against: what `windows()`
+ * reports for each window, in a stable order. Pixels change with every caret
+ * blink and animation on a live desktop, so a pixel digest would call every
+ * approved target changed; the layout changes only when the desktop does.
+ */
+function windowLayout(details: unknown): unknown[] | undefined {
+  const value =
+    details && typeof details === 'object' && 'value' in details
+      ? details.value
+      : undefined
+  if (!Array.isArray(value)) return undefined
+  const windows: {
+    id: string
+    app: unknown
+    title: unknown
+    bounds: unknown
+    focused: unknown
+  }[] = []
+  for (const w of value) {
+    if (!w || typeof w !== 'object' || typeof w.id !== 'string')
+      return undefined
+    windows.push({
+      id: w.id,
+      app: w.app,
+      title: w.title,
+      bounds: { x: w.x, y: w.y, width: w.width, height: w.height },
+      focused: w.focused,
+    })
+  }
+  return windows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+}
+
 /**
  * Runs the typed desktop tools against one agent's private browser and
  * display: only trusted, fixed call chains, no language VM the model can
@@ -95,13 +224,19 @@ export type DesktopResult = Awaited<ReturnType<EvalPreludeDefinition['invoke']>>
 export class DesktopExecutor {
   readonly #resourceFile: string
   readonly #session: ToolSession
-  #browser: EvalPreludeDefinition | undefined
-  #computer: EvalPreludeDefinition | undefined
+  readonly #preludes: DesktopPreludes
+  #browser: DesktopPrelude | undefined
+  #computer: DesktopPrelude | undefined
   #attached: string | undefined
   #queue: Promise<unknown> = Promise.resolve()
 
-  constructor(resourceFile: string, cwd: string) {
+  constructor(
+    resourceFile: string,
+    cwd: string,
+    preludes: DesktopPreludes = {},
+  ) {
     this.#resourceFile = resourceFile
+    this.#preludes = preludes
     this.#session = {
       cwd,
       hasUI: false,
@@ -114,11 +249,15 @@ export class DesktopExecutor {
     }
   }
 
-  #browserPrelude(): EvalPreludeDefinition {
-    return (this.#browser ??= createBrowserPrelude(this.#session))
+  #browserPrelude(): DesktopPrelude {
+    return (this.#browser ??= (this.#preludes.browser ?? createBrowserPrelude)(
+      this.#session,
+    ))
   }
-  #computerPrelude(): EvalPreludeDefinition {
-    return (this.#computer ??= createComputerPrelude(this.#session))
+  #computerPrelude(): DesktopPrelude {
+    return (this.#computer ??= (
+      this.#preludes.computer ?? createComputerPrelude
+    )(this.#session))
   }
 
   run(call: DesktopCall, gateway: DesktopGateway): Promise<DesktopResult> {
@@ -134,7 +273,7 @@ export class DesktopExecutor {
     const { name, invocationId, signal } = call
     signal?.throwIfAborted()
     const r = readDesktopResource(this.#resourceFile)
-    let args: Record<string, string | number>
+    let args: DesktopArgs
     try {
       if (call.original === undefined)
         throw new Error('Missing original desktop invocation')
@@ -196,10 +335,11 @@ export class DesktopExecutor {
       input: { ...binding, phase: 'reserve' },
     })
     if (!lease.ok) throw new Error(`${DESKTOP_LEASE_REFUSED}: ${lease.reason}`)
+    const browser = name.startsWith('qianmo_browser_')
     let executed = false
     try {
       const context = { session, toolCallId: invocationId, signal }
-      if (name.startsWith('qianmo_browser_') && this.#attached !== r.tab) {
+      if (browser && this.#attached !== r.tab) {
         await this.#browserPrelude().invoke(
           { action: 'close', all: true },
           context,
@@ -225,32 +365,54 @@ export class DesktopExecutor {
           },
           context,
         )
-      const target = async () =>
-        name.startsWith('qianmo_browser_')
-          ? {
-              url: (await browserCall('url')).details,
-              page: (await browserCall('ariaSnapshot')).details,
+      const computerCall = (...chain: ComputerStep[]) =>
+        this.#computerPrelude().invoke({ action: 'call', chain }, context)
+      // Input on one window takes the base's one handle hop.
+      const onTarget = (call: ComputerStep) =>
+        typeof args.window === 'string'
+          ? computerCall(step('window', args.window), call)
+          : computerCall(call)
+      let layout: boolean | undefined
+      const target = async (): Promise<unknown> => {
+        if (browser)
+          return {
+            url: (await browserCall('url')).details,
+            page: (await browserCall('ariaSnapshot')).details,
+          }
+        // Both observations of one call use the same kind of digest.
+        if (layout !== false) {
+          try {
+            const windows = windowLayout(
+              (await computerCall(step('windows'))).details,
+            )
+            if (windows !== undefined) {
+              layout = true
+              return windows
             }
-          : (
-              await this.#computerPrelude().invoke(
-                {
-                  action: 'call',
-                  chain: [{ method: 'screenshot', args: [] }],
-                },
-                context,
-              )
-            ).content.filter(part => part.type === 'image')
+          } catch (error) {
+            if (layout === true) throw error
+          }
+          if (layout === true)
+            throw new Error('Desktop window list became unavailable')
+          layout = false
+        }
+        return (await computerCall(step('screenshot'))).content.filter(
+          part => part.type === 'image',
+        )
+      }
       const before = await target()
       const observedTargetDigest = digest(before)
-      const url =
-        name === 'qianmo_browser_navigate'
-          ? String(args.url)
-          : String((before as { url?: { value?: unknown } }).url?.value ?? '')
       let host: string | null = null
-      try {
-        host = new URL(url).hostname
-      } catch {
-        /* A blank tab has no host. */
+      if (browser) {
+        const url =
+          name === 'qianmo_browser_navigate'
+            ? String(args.url)
+            : String((before as { url?: { value?: unknown } }).url?.value ?? '')
+        try {
+          host = new URL(url).hostname
+        } catch {
+          /* A blank tab has no host. */
+        }
       }
       if (!(await gate('authorize', { observedTargetDigest, host })))
         throw new Error('Operator approval denied')
@@ -294,23 +456,79 @@ export class DesktopExecutor {
         case 'qianmo_browser_scroll':
           result = await browserCall('scroll', [args.x, args.y])
           break
-        default: {
-          const op = desktopOp(name)
-          const method = op === 'key' ? 'press' : op
-          const values =
-            op === 'click'
-              ? [args.x, args.y]
-              : op === 'scroll'
-                ? [args.x, args.y, { dx: args.dx, dy: args.dy }]
-                : op === 'type'
-                  ? [args.text]
-                  : op === 'key'
-                    ? [args.key]
-                    : []
-          result = await this.#computerPrelude().invoke(
-            { action: 'call', chain: [{ method, args: values }] },
-            context,
+        case 'qianmo_computer_screenshot':
+          result = await onTarget(step('screenshot'))
+          break
+        case 'qianmo_computer_zoom':
+          result = await onTarget(
+            step('zoom', {
+              x: args.x,
+              y: args.y,
+              width: args.width,
+              height: args.height,
+            }),
           )
+          break
+        case 'qianmo_computer_windows':
+          result = await computerCall(step('windows'))
+          break
+        case 'qianmo_computer_observe':
+          result = await onTarget(step('observe'))
+          break
+        case 'qianmo_computer_clipboard_read':
+          result = await computerCall(step('clipboard.read'))
+          break
+        case 'qianmo_computer_clipboard_write':
+          result = await computerCall(step('clipboard.write', args.text))
+          break
+        case 'qianmo_computer_click':
+          result = await onTarget(actionStep({ ...args, type: 'click' }))
+          break
+        case 'qianmo_computer_type':
+          result = await onTarget(step('type', args.text))
+          break
+        case 'qianmo_computer_key':
+          result = await onTarget(step('press', args.key))
+          break
+        case 'qianmo_computer_scroll':
+          result = await onTarget(actionStep({ ...args, type: 'scroll' }))
+          break
+        case 'qianmo_computer_focus':
+          result = await onTarget(step('raise'))
+          break
+        case 'qianmo_computer_element':
+          result = await computerCall(
+            step('ref', args.ref),
+            args.action === 'set_value'
+              ? step('setValue', args.value)
+              : step(String(args.action)),
+          )
+          break
+        case 'qianmo_computer_menu':
+          result = await onTarget(step('menu.select', args.path))
+          break
+        case 'qianmo_computer_actions':
+          result = await this.#actions(args, onTarget, signal)
+          break
+        case 'qianmo_computer_apps':
+        case 'qianmo_computer_open_app': {
+          // The host lists and launches desktop entries itself (§6.3); the
+          // model only ever names an id it was given.
+          const answer = await gateway.query({
+            toolName: name,
+            input: {
+              ...binding,
+              phase: name === 'qianmo_computer_apps' ? 'apps' : 'launch',
+            },
+          })
+          if (!answer.ok)
+            throw new Error(`${DESKTOP_LEASE_REFUSED}: ${answer.reason}`)
+          if (answer.value === undefined)
+            throw new Error('Desktop host answered without a result')
+          result = {
+            content: [{ type: 'text', text: answer.value.slice(0, 64000) }],
+          }
+          break
         }
       }
       if (!(await gate('completed')))
@@ -320,19 +538,20 @@ export class DesktopExecutor {
         details && typeof details === 'object' && 'value' in details
           ? details.value
           : undefined
-      if (
-        value !== undefined &&
-        !result.content.some(part => part.type === 'image')
-      )
+      const imaged = result.content.some(part => part.type === 'image')
+      if ((value !== undefined && !imaged) || result.content.length === 0)
         return {
           content: [
             ...result.content,
             {
               type: 'text',
-              text: (typeof value === 'string'
-                ? value
-                : JSON.stringify(value)
-              ).slice(0, 64000),
+              text:
+                value === undefined || imaged
+                  ? `Done: ${desktopOp(name)}`
+                  : (typeof value === 'string'
+                      ? value
+                      : JSON.stringify(value)
+                    ).slice(0, 64000),
             },
           ],
           details: { actionId: invocationId, resourceEpoch: r.resourceEpoch },
@@ -341,6 +560,49 @@ export class DesktopExecutor {
     } catch (error) {
       await gate(executed ? 'unknown' : 'failed').catch(() => false)
       throw error
+    }
+  }
+
+  /**
+   * One batch, step by step on the same target: waits sleep here, the first
+   * failure stops the rest, and a screenshot of the target closes the batch.
+   */
+  async #actions(
+    args: DesktopArgs,
+    onTarget: (call: ComputerStep) => Promise<DesktopResult>,
+    signal: AbortSignal | undefined,
+  ): Promise<DesktopResult> {
+    const items = desktopActionItems(args)
+    const done: string[] = []
+    for (const [index, item] of items.entries()) {
+      try {
+        signal?.throwIfAborted()
+        if (item.type === 'wait') await pause(Number(item.ms), signal)
+        else await onTarget(actionStep(item))
+      } catch (error) {
+        if (signal?.aborted) throw error
+        throw new Error(
+          `Desktop actions stopped at step ${index + 1} of ${items.length} (${String(item.type)}): ${
+            index === 0
+              ? '后面的步骤都没有执行'
+              : `前 ${index} 步已执行，后面的没有执行`
+          }；${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+      done.push(
+        `${index + 1} ${String(item.type)}${item.type === 'wait' ? ` ${item.ms} ms` : ''}`,
+      )
+    }
+    const shot = await onTarget(step('screenshot'))
+    return {
+      ...shot,
+      content: [
+        {
+          type: 'text',
+          text: `Completed ${done.length} of ${items.length} actions: ${done.join(', ')}.`,
+        },
+        ...shot.content,
+      ],
     }
   }
 

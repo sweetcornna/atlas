@@ -53,7 +53,23 @@ test('closed desktop arguments reject code, function markers, CDP, arbitrary fil
     expect(() =>
       desktopArgs('qianmo_browser_navigate', { tab: 'minted', url }),
     ).toThrow()
-  expect(() => desktopArgs('qianmo_computer_key', { key: 'Super+R' })).toThrow()
+  // v1.5 §6.2 lifts v1.4's navigation-only computer keys: the private desktop
+  // is isolated (§6.3). Key names stay closed to the base's table, and the
+  // browser keeps its navigation keys.
+  expect(desktopArgs('qianmo_computer_key', { key: 'Super+R' })).toEqual({
+    key: 'super+r',
+  })
+  for (const key of ['Super+Launch', 'ctrl+', '', 'ctrl+\u017fhift'])
+    expect(() => desktopArgs('qianmo_computer_key', { key })).toThrow(
+      'Invalid desktop argument',
+    )
+  expect(() =>
+    desktopArgs('qianmo_browser_press', {
+      tab: 'minted',
+      selector: '#q',
+      key: 'Control+L',
+    }),
+  ).toThrow('Unsupported key')
   expect(() =>
     desktopArgs('qianmo_computer_click', { x: Infinity, y: 0 }),
   ).toThrow()
