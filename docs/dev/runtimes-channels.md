@@ -5,8 +5,8 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.5（生效）**；v1.5 改写 §6（专属电脑补全：外部底层共用执行器、参照 Codex computer use 的人类式操作、私有桌面隔离、自主确认、macOS 按应用授权）；v1.4 新增 §9 P32 扩展（连接器、技能与插件由用户自配置）；v1.2 按 P28 落地回写 §2（QQ 改官方 WebSocket 网关、各平台格式与正在输入、控制台入口）；v1.3 按 P31 落地回写 §5，新增 §5.2 阡陌自身的优雅升级（复刻 sub2api） |
-| 日期 | 2026-10-15 |
+| 文档版本 | **v1.6（生效）**；v1.6 按 P21+ 落地与 Linux、macOS 实测回写 §6.3、§6.5–§6.7；v1.5 改写 §6（专属电脑补全：外部底层共用执行器、参照 Codex computer use 的人类式操作、私有桌面隔离、自主确认、macOS 按应用授权）；v1.4 新增 §9 P32 扩展（连接器、技能与插件由用户自配置）；v1.2 按 P28 落地回写 §2（QQ 改官方 WebSocket 网关、各平台格式与正在输入、控制台入口）；v1.3 按 P31 落地回写 §5，新增 §5.2 阡陌自身的优雅升级（复刻 sub2api） |
+| 日期 | 2026-10-15（v1.5、v1.6 于 2026-10-17） |
 | 核对基点 | 本仓库 `be15f741`（main，#226 合并提交，基座 qianmopi v18.8.8）；本机 Claude Code 2.1.296、`codex-cli 0.162.0` |
 | 范围依据 | 负责人 2026-10-15 决定（对话记录）：① 参照格兰（Grantley）项目接入 QQ、微信、Telegram、Discord、Slack 等聊天软件；② 把专属电脑做完整；③ 底层不固定，默认 qianmopi，用户可为每个智能体选 Claude Code 或 Codex，多个底层可同时运行、各配各的模型并互相协作；④ 用户可设定时间检查更新、同步官方上游；⑤ 同日追加：把格兰的回复逻辑、主线程常驻、任务分派给子智能体、复用对话、加强缓存命中整套迁移过来；⑥ 同日追加：参照 sub2api 的优雅升级，把那套逻辑复刻到阡陌自身；⑦ 同日追加：让阡陌支持连接器的接入和技能、插件的加入，用户可自己配置，MCP 也自配置 |
 | 编号 | P27 ~ P32，另有 P21 补全；包表见 §8 |
@@ -255,9 +255,11 @@ Codex 的做法（OpenAI computer use 指南与本机 `codex-cli 0.163.0`，2026
 | 项 | 定案 |
 |---|---|
 | 组成 | Xvfb（1440×900×24、`-nolisten tcp`、独立 Xauthority）→ 可选的私有 D-Bus 会话总线与无障碍总线（节点装有 `dbus-daemon`、`at-spi-bus-launcher` 时）→ 窗口管理器（按序取第一个装了的：openbox、xfwm4、fluxbox、icewm、matchbox-window-manager；都没有也能用，只是窗口没有边框）→ 同时开浏览器与电脑时 Chromium 在这块显示上有头运行（只开浏览器仍是无头）→ `qianmo_computer_open_app` 打开的应用。全部记在资源的进程表里，停用、回收一起结束 |
-| 隔离 | Xvfb 以外的进程都在 bubblewrap 里运行：根目录只读，`/tmp` 换成私有的（只读挂回 X 套接字目录），节点用户的家目录、阡陌配置根与常驻守卫的保护目录都换成空目录，只把该智能体的桌面目录（家目录、下载、浏览器资料）可写地挂回；`--unshare-pid`、`--unshare-ipc`、`--die-with-parent`；网络与节点共用。智能体工作区只读挂入，节点开了 `--allow-workspace-edits` 时可写，与常驻姿态一致。Chromium 自身的沙箱保持开启 |
-| 没有 bubblewrap | 电脑照样开（Xvfb 与窗口管理器），但打开应用一律拒绝，Chromium 保持无头；页面写明原因「需要 bubblewrap」 |
-| 应用 | 只认系统应用目录（`/usr/share/applications`、`/usr/local/share/applications`）里的桌面条目，跳过 `NoDisplay` / `Hidden`；`Exec` 去掉占位符后由宿主启动，模型只能选编号。每个智能体配 `apps`：`all`（默认）/ `none` / 编号列表（至多 50 个）；终端类（`Categories` 含 `TerminalEmulator`）默认不给，`terminal: true` 才给——私有桌面里的终端就是一个 shell，只受本节的隔离约束 |
+| 隔离 | Xvfb 以外的进程都在 bubblewrap 里运行：根目录只读，`/tmp` 换成私有的（只读挂回 X 套接字目录），节点用户的家目录、阡陌配置根、常驻守卫的保护目录与记忆目录、`/run/user` 都换成空目录，存在时 `docker.sock` 用 `/dev/null` 盖住，只把该智能体的桌面目录（家目录、下载、浏览器资料）可写地挂回；`--clearenv` 后只给白名单环境（显示、私有总线、XDG 目录、无障碍开关，代理变量只给 Chromium）；`--unshare-user`、`--unshare-pid`、`--unshare-ipc`、`--die-with-parent`、`--new-session`；网络与节点共用。智能体工作区只读挂入，节点开了 `--allow-workspace-edits` 时可写，与常驻姿态一致。Chromium 自身的沙箱保持开启；有头起不来时退回无头并写明原因 |
+| 没有 bubblewrap | 电脑照样开（Xvfb 与窗口管理器，不起总线），但打开应用一律拒绝，Chromium 保持无头；状态 `confined: false`，页面写明原因「需要 bubblewrap」（含 Ubuntu 24.04 的 `kernel.apparmor_restrict_unprivileged_userns`）。bubblewrap 与 `systemd-run` 在第一次开启时各探测一次 |
+| 应用 | 只认系统应用目录（`/usr/local/share/applications` 优先、`/usr/share/applications`）里的桌面条目，跳过 `NoDisplay` / `Hidden` / 程序不存在的；`Exec` 去掉占位符后由宿主在 bubblewrap 里启动，模型只能选编号；同时至多 8 个。每个智能体配 `apps`：`all`（默认）/ `none` / 编号列表（至多 50 个）；终端类（`Categories` 含 `TerminalEmulator`，以及经终端模拟器起的 `Terminal=true` 条目）默认不给，`terminal: true` 才给，且每次打开都要批准——私有桌面里的终端就是一个 shell，只受本节的隔离约束 |
+| 输入 | 私有显示上没有主人，每次输入调用取得基座的输入控制、结束即还，键鼠像人一样走前台，GTK 等过滤后台事件的应用也收得到；每块显示先按一次 shift（基座对显示上第一个按键的键盘切换会取消在途输入）。输入控制锁按节点账户，另一智能体持锁时等至多 2 秒，期间基座不发任何输入 |
+| 同节点多智能体 | 网络共用：沙箱里的程序（尤其终端）能连到本机 127.0.0.1 上其他智能体 Chromium 的调试端口，该端口没有认证。专属浏览器一开始就有这个面，本轮新增的终端与应用让它更容易用到；按智能体隔离网络或给调试端口加认证另立工作包，在此之前一台节点上只给一个智能体开终端 |
 | 资源上限 | 能用 `systemd-run --user` 时每个进程在自己的 scope 里起（`MemoryMax=<上限>`、`TasksMax=256`、`--collect`）；宿主每 2 秒合计资源全部进程树的常驻内存（`/proc`），超过上限就停用并写明「内存超过上限」。上限默认 1.5 GiB，节点参数 `--desktop-memory-mib`。v1.4 的「退回 `prlimit --as`」作废：Chromium 预留大段虚拟地址，地址空间上限会让它起不来 |
 | macOS | 专属浏览器不变；专属电脑见 §6.5 |
 
@@ -277,18 +279,19 @@ macOS 没有私有显示，专属电脑只能操作这台 Mac 的真实桌面，
 
 | 项 | 定案 |
 |---|---|
-| 开启 | `desktop.enable {computer: true, apps: [<bundle id>, …]}`，列表必填（不接受 `all`），至多 20 个；节点进程要在系统设置里有「屏幕录制」与「辅助功能」权限，没有时页面写明缺哪项 |
-| 范围 | 所有电脑工具必须带 `window`，且该窗口属于列表里的应用（按进程号对到应用）；`qianmo_computer_windows` 只列这些窗口；截图只截该窗口，不截整屏；`open_app` 只开列表里的应用；剪贴板两件不提供（那是主人的剪贴板） |
-| 输入 | 优先后台输入（基座 `takeover: false`），不抢主人的前台；后台输入不可用的窗口报错，不退到前台接管 |
-| 证据 | 本机没有给 qm 授这两项系统权限，只有假后端测试，证据状态未实测 |
+| 开启 | `desktop.enable {computer: true, apps: [<bundle id>, …]}`，列表必填（不接受 `all`），1–20 个；不起任何进程，资源描述带 `hostApps`；节点进程要在系统设置里有「屏幕录制」与「辅助功能」权限，没有时工具报错写明缺哪项 |
+| 范围 | 截图、放大、观察、批量动作、点击、输入、按键、滚动、菜单必须带 `window`，且该窗口属于列表里正在运行的应用（按进程号对到应用）；`qianmo_computer_windows` 只列这些窗口；截图只截该窗口，读不到窗口列表时不退到整屏截图；`open_app` 只开列表里的应用，经 `open -g -b` 在后台打开，不记进程表、回收时不停；剪贴板两件与 `qianmo_computer_focus` 不提供（剪贴板和前台是主人的）。终端类 bundle id（Terminal、iTerm2 等）列进来也要 `terminal: true`，且每次打开都要批准 |
+| 输入 | 后台输入（基座 `takeover: false`），不取输入控制、不抢主人的前台；后台输入不可用的窗口报错，不退到前台接管 |
+| 当前桌面空间 | 基座只列当前桌面空间里的窗口：主人在全屏应用里、或窗口最小化时，允许应用的窗口不在列表里，`qianmo_computer_windows` 写明原因 |
+| 证据 | 本机（权限齐全）实测：工具面不含剪贴板与切前台、应用清单、不带窗口的截图被拒、打开应用后主人的前台不变；本机当时处于全屏空间，后台输入一段没跑到（`hostDesktop.darwin.integration.test.ts`，`QM_TEST_HOST_DESKTOP=1` 才跑） |
 
 ### 6.6 主人看得见
 
-控制台「云端电脑」页显示私有桌面最近一张截图（控制操作 `desktop.view`，取资源截图目录里最新的一张，至多 4 MiB），页面打开时随轮询刷新；能看到智能体正在做什么。本轮不做接管键鼠。
+控制台「云端电脑」页显示最近一张截图（控制操作 `desktop.view`，取资源截图目录里最新的一张、至多 4 MiB；base64 超过 180 KiB 时缩放转 JPEG（`Bun.Image`，其次 ImageMagick），压不下来返回 `null` 并写明「节点缺少图像压缩能力」），控制链路单条回执 256 KiB 以内；页面打开时随轮询刷新，急停下也可读。本轮不做接管键鼠。
 
 ### 6.7 实测
 
-Linux 容器（本机 colima，原生 arm64）里装 Xvfb、xauth、Chromium、openbox、bubblewrap、dbus、at-spi，跑「开启 → 截图 → 打开应用 → 批量动作 → 导航 → 回收 → 目录已删、进程已退」整条链，结果写进验收记录。
+Linux 真机：本机 lima 虚拟机（Debian 12 arm64，内核 6.1，bubblewrap 0.8.0、Openbox 3.6.1、Chromium 155、Mousepad 0.5.10，非 root）。colima 的 Ubuntu 24.04 默认禁止非特权用户命名空间，没改它的安全设置，换用 Debian。`desktop.linux.integration.test.ts` 跑「开启（自主确认、全部应用、不给终端）→ 状态 confined、openbox → MCP 工具面 → 应用清单无终端、xterm 被拒 → 打开 Mousepad → 截图 → 批量点击、输入、全选（免批准，文档标为已修改）→ 带理由的 Ctrl+S 走一次批准 → 有头 Chromium 窗口在同一显示 → `desktop.view` 出图 → 回收后进程全退、目录已删」，同一份代码连续三轮全绿；桌面单测在该机 89 过、3 跳过。记录在 `~/atlas-evidence/m1-work/2026-10-17/desktop-linux/`（仓库外）。未在真机测：内存超限停用、没有 bubblewrap 时的退化、孤儿清查。
 
 ---
 
