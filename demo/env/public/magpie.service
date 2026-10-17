@@ -10,6 +10,10 @@
 # 单元里没有密钥：MAGPIE_WEB_KEY（16 位以上）写在 /etc/qianmo/magpie.env（0600），控制台
 # 第一次在「网关」页连接时填一次，之后由中枢封存。网关的地址、证书与 IP 放行写在同一个
 # 文件里，按 magpie 自己的文档填；本模板没有对真实 magpie 跑过（未评估）。
+#
+# MAGPIE_NO_ACCOUNTS=1：magpie 不去读本机智能体的订阅登录态（Claude Code、Codex 的
+# 登录文件、钥匙串），API 密钥类上游照常可用。阡陌只用 API 密钥类上游（章程 §5.2③、
+# L-6，docs/dev/magpie-gateway.md §0）；P33.4 冒烟同样这样起。
 
 [Unit]
 Description=Qianmo public edition model gateway (magpie)
@@ -23,6 +27,7 @@ Group=qianmo
 EnvironmentFile=/etc/qianmo/magpie.env
 Environment=DO_NOT_TRACK=1
 Environment=TZ=Asia/Shanghai
+Environment=MAGPIE_NO_ACCOUNTS=1
 ExecStart=/usr/local/bin/magpie serve --web=127.0.0.1:3430
 Restart=on-failure
 RestartSec=5
