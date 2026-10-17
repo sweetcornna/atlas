@@ -1030,6 +1030,63 @@ describe('P33: lane addresses', () => {
   }, 30_000)
 })
 
+describe('P35: a node scope narrows what a node may hold', () => {
+  async function twoProfiles(h: Harness) {
+    const ops = h.caller()
+    await savedWithKey(h)
+    value(
+      await h.port.saveProfile(
+        {
+          profile: draft({ id: 'none', name: '无模型' }),
+          ifMatch: null,
+          secrets: { k1: CANARY_2 },
+        },
+        ops,
+      ),
+    )
+    value(await h.port.setDefault({ profileId: 'luna' }, ops))
+    return ops
+  }
+
+  test('an assignment the node may not hold gives way to the fallback, and that is what is sent', async () => {
+    const h = harness()
+    const ops = await twoProfiles(h)
+    h.port.configureScope(node =>
+      node === 'beta-1'
+        ? { allows: id => id === 'none', fallback: 'none', extras: false }
+        : null,
+    )
+    expect(value(await h.port.node('beta-1')).expected?.profileId).toBe('none')
+    expect(value(await h.port.node('beta-4')).expected?.profileId).toBe('luna')
+    // Not managing is no way out either: the node would keep its last key.
+    value(
+      await h.port.assign(
+        { node: 'beta-1', assignment: { mode: 'unmanaged' } },
+        ops,
+      ),
+    )
+    expect(value(await h.port.node('beta-1')).expected?.profileId).toBe('none')
+    const [result] = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
+    expect(result?.outcome).toBe('ok')
+    expect(received(h.nodes['beta-1'], 'apply').at(-1)?.id).toBe('none')
+    expect(JSON.stringify(h.nodes['beta-1'].requests())).not.toContain(CANARY)
+  }, 30_000)
+
+  test('a scope that cannot be read sends nothing', async () => {
+    const h = harness()
+    const ops = await twoProfiles(h)
+    h.port.configureScope(() => {
+      throw new Error('tenancy unreadable')
+    })
+    expect(value(await h.port.node('beta-1')).expected).toBeNull()
+    const [result] = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
+    expect(result?.outcome).toBe('refused')
+    expect(result?.code).toBe('scope-unavailable')
+    expect(value(await h.port.apply({}, ops))).toEqual([])
+    expect(h.nodes['beta-1'].requests()).toEqual([])
+  }, 30_000)
+})
+
 describe('P18.18: several keys', () => {
   test('an apply delivers every key, primary by priority; only to a node that rotates keys', async () => {
     const h = harness()

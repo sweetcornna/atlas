@@ -293,6 +293,16 @@ function newSecret(): string {
   return `qm-gw-${randomBytes(32).toString('base64url')}`
 }
 
+/**
+ * The profile a subscriber's node runs when it is not on its tenant's (P35,
+ * 「无模型」): the gateway's address, the model `NO_MODEL_PATTERN` and a key
+ * magpie has never been told, so every call is refused. Delivering it is how
+ * a node is taken back: an apply replaces every key the node held, while
+ * "not managed" leaves the last delivery where it is. No extra lanes, so a
+ * node whose capabilities are unknown can still be given it.
+ */
+export const NO_MODEL_PROFILE = 'magpie-none'
+
 /** Does a key list let `id` through (`access.ModelAllowed`, plus group naming)? */
 function allows(patterns: readonly string[], id: string): boolean {
   return patterns.some(pattern => {
@@ -1043,6 +1053,9 @@ export class ConsoleMagpie implements MagpiePort {
         lastCheck: check,
       })
       if (moved) await this.#repoint(caller)
+      // The public edition takes a subscriber's node back onto no model:
+      // that profile exists from the first connection and follows the gateway.
+      await this.#ensureNoModel()
       return ok(this.#connection())
     })
   }
@@ -1955,6 +1968,63 @@ export class ConsoleMagpie implements MagpiePort {
       }
       return ok(undefined)
     })
+  }
+
+  /**
+   * The no-model profile ({@link NO_MODEL_PROFILE}), made or pointed at the
+   * gateway as it is now with the hub's own caller; its id, or `null` while
+   * there is no gateway (or no subscriptions) to point it at.
+   */
+  noModelProfile(): Promise<string | null> {
+    return this.#serial(() => this.#ensureNoModel())
+  }
+
+  async #ensureNoModel(): Promise<string | null> {
+    const subscriptions = this.#options.subscriptions
+    if (subscriptions === undefined || this.#state.gatewayUrl === null)
+      return null
+    const { laneAddresses: _lanes, ...draft } = this.#profileDraft({
+      kind: 'tenant',
+      id: 'none',
+      profileId: NO_MODEL_PROFILE,
+      lane: 'anthropic',
+      mainModel: NO_MODEL_PATTERN,
+      fastModel: null,
+    })
+    const providers = this.#options.providers
+    const overview = await providers.overview()
+    if (!overview.ok) return null
+    const current = overview.value.profiles.find(
+      one => one.profile.id === NO_MODEL_PROFILE,
+    )
+    const sealed = current?.secrets.every(one => one.set) === true
+    if (
+      current !== undefined &&
+      sealed &&
+      current.profile.baseUrl === draft['baseUrl']
+    )
+      return NO_MODEL_PROFILE
+    const saved = await providers.saveProfile(
+      {
+        profile: { ...draft, name: '无模型' },
+        ifMatch: current?.profile.revision ?? null,
+        ...(sealed
+          ? {}
+          : {
+              secrets: {
+                [GATEWAY_KEY_ID]: `qm-none-${randomBytes(32).toString('base64url')}`,
+              },
+            }),
+      },
+      subscriptions.caller,
+    )
+    if (!saved.ok) {
+      this.#options.onError?.(
+        `${NO_MODEL_PROFILE} 没能存进模型服务 · ${saved.failure.message}`,
+      )
+      return null
+    }
+    return NO_MODEL_PROFILE
   }
 
   /** The profile a tenant's nodes run on, once its key exists. */

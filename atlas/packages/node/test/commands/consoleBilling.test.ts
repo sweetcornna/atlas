@@ -59,6 +59,7 @@ import {
 import {
   ConsoleMagpie,
   magpieProfileId,
+  NO_MODEL_PROFILE,
 } from '../../src/commands/consoleMagpie.js'
 import {
   type ConsoleProviders,
@@ -66,6 +67,10 @@ import {
   type ProviderScheduler,
 } from '../../src/commands/consoleProviders.js'
 import { publicProviders } from '../../src/commands/consolePublicProviders.js'
+import {
+  ConsoleRouting,
+  routingWire,
+} from '../../src/commands/consoleRouting.js'
 import { FileTenantStore } from '../../src/commands/consoleTenancy.js'
 import { type FakeNode, fakeNode } from './consoleProvidersFakeNode.js'
 
@@ -693,11 +698,219 @@ describe('the model service in the public edition', () => {
       if (!result.ok)
         expect(result.failure.code).toBe('edition_public_magpie_only')
     }
+    // Not managing would leave whatever key the node last got: refused. No
+    // model is how a tenant node is taken back.
     const stop = await providers.assign(
       { node: 'beta-1', assignment: { mode: 'unmanaged' } },
       caller,
     )
-    expect(stop.ok).toBe(true)
+    expect(stop.ok).toBe(false)
+    if (!stop.ok) expect(stop.failure.code).toBe('edition_public_magpie_only')
+    const none = await providers.assign(
+      {
+        node: 'beta-1',
+        assignment: { mode: 'profile', profileId: NO_MODEL_PROFILE },
+      },
+      caller,
+    )
+    expect(none.ok).toBe(true)
+  })
+})
+
+/** The profile id, key and main model last delivered to node `index`, or null. */
+function deliveredProfile(
+  index: number,
+): { id: unknown; key: unknown; main: unknown; extra: unknown[] } | null {
+  const last = nodes[index]
+    ?.requests()
+    .filter(request => request['op'] === 'apply' && request['dryRun'] !== true)
+    .at(-1)
+  if (last === undefined) return null
+  const profile = last['profile'] as {
+    id: string
+    auth: { keys: { value?: string }[] }
+    models: { id: string; role: string }[]
+  }
+  const extra = (last['profiles'] ?? []) as { id: string }[]
+  return {
+    id: profile.id,
+    key: profile.auth.keys[0]?.value,
+    main: profile.models.find(model => model.role === 'main')?.id,
+    extra: extra.map(one => one.id),
+  }
+}
+
+async function nodeRow(node: string) {
+  const overview = await raw.overview()
+  if (!overview.ok) throw new Error('overview')
+  const row = overview.value.nodes.find(one => one.node === node)
+  if (row === undefined) throw new Error(`no ${node}`)
+  return row
+}
+
+describe('a tenant node holds its tenant’s profile or no model, nothing else', () => {
+  async function platformKey(node: string) {
+    const issued = await magpie.issueKey(
+      { binding: { kind: 'node', id: node }, mainModel: 'openai/gpt-6' },
+      ops(),
+    )
+    if (!issued.ok) throw new Error(issued.failure.message)
+    const secret = fake.key(issued.value.keyId)?.secret
+    if (secret === undefined) throw new Error('no platform secret')
+    return { profileId: magpieProfileId({ kind: 'node', id: node }), secret }
+  }
+
+  test('a platform default is never what a tenant node is expected to run, and deliver-all gives it no model', async () => {
+    // Before any tenant node exists, ops make a platform profile the default.
+    const platform = await platformKey('beta-3')
+    const def = await providers.setDefault(
+      { profileId: platform.profileId },
+      ops(),
+    )
+    expect(def.ok).toBe(true)
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1', 'beta-2'])
+    // beta-2 follows the default in the book; it is still not the platform's.
+    expect((await nodeRow('beta-2')).assignment.mode).not.toBe('profile')
+    expect((await nodeRow('beta-2')).expected?.profileId).toBe(NO_MODEL_PROFILE)
+    const applied = await providers.apply({}, ops())
+    expect(applied.ok).toBe(true)
+    const beta2 = deliveredProfile(1)
+    expect(beta2?.id).toBe(NO_MODEL_PROFILE)
+    expect(beta2?.main).toBe(NO_MODEL_PATTERN)
+    expect(beta2?.key).not.toBe(platform.secret)
+    // magpie does not know the no-model key: it opens nothing.
+    expect(fake.keys().some(key => key.secret === beta2?.key)).toBe(false)
+    // The platform node still runs the platform profile.
+    expect(deliveredProfile(2)?.key).toBe(platform.secret)
+    for (let index = 0; index < 2; index++) {
+      const all = JSON.stringify(nodes[index]?.requests())
+      expect(all).not.toContain(platform.secret)
+    }
+  })
+
+  test('with tenant nodes the default can only be cleared or set to no model', async () => {
+    const platform = await platformKey('beta-3')
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1'])
+    const set = await providers.setDefault(
+      { profileId: platform.profileId },
+      ops(),
+    )
+    expect(set.ok).toBe(false)
+    if (!set.ok) expect(set.failure.code).toBe('edition_public_magpie_only')
+    expect((await providers.setDefault({ profileId: null }, ops())).ok).toBe(
+      true,
+    )
+    expect(
+      (await providers.setDefault({ profileId: NO_MODEL_PROFILE }, ops())).ok,
+    ).toBe(true)
+  })
+
+  test('the no-model profile is the hub’s own: ops cannot edit or delete it', async () => {
+    const profile = await raw.profile(NO_MODEL_PROFILE)
+    if (!profile.ok) throw new Error('no no-model profile after connect')
+    expect(profile.value.presetId).toBe('magpie')
+    const revision = profile.value.revision
+    for (const result of [
+      await providers.setSecret(
+        {
+          profileId: NO_MODEL_PROFILE,
+          keyId: 'gw',
+          value: 'sk-planted-0000001',
+          ifMatch: revision,
+        },
+        ops(),
+      ),
+      await providers.deleteProfile(
+        { profileId: NO_MODEL_PROFILE, ifMatch: revision },
+        ops(),
+      ),
+      await providers.saveProfile(
+        { profile: { ...profile.value }, ifMatch: revision },
+        ops(),
+      ),
+    ]) {
+      expect(result.ok).toBe(false)
+      if (!result.ok)
+        expect(result.failure.code).toBe('edition_public_magpie_only')
+    }
+  })
+
+  test('probes, model lists and dry runs of another profile never reach a tenant node', async () => {
+    const platform = await platformKey('beta-3')
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    const before = nodes[0]?.requests().length ?? 0
+    const candidate = { profileId: platform.profileId }
+    for (const result of [
+      await providers.probe({ node: 'beta-1', mode: 'auth', candidate }, ops()),
+      await providers.models({ node: 'beta-1', candidate }, ops()),
+      await providers.probe(
+        {
+          node: 'beta-1',
+          mode: 'auth',
+          candidate: {
+            draft: { id: platform.profileId, presetId: 'magpie' },
+          },
+        },
+        ops(),
+      ),
+    ]) {
+      expect(result.ok).toBe(false)
+      if (!result.ok)
+        expect(result.failure.code).toBe('edition_public_magpie_only')
+    }
+    const dry = await providers.apply(
+      { nodes: ['beta-1'], dryRun: true, profileId: platform.profileId },
+      ops(),
+    )
+    expect(dry.ok && dry.value[0]?.outcome).toBe('refused')
+    expect(nodes[0]?.requests().length).toBe(before)
+  })
+
+  test('hub-wide task routing to a platform profile does not travel to a tenant node', async () => {
+    const routing = new ConsoleRouting({
+      path: join(root, 'config', 'routing.json'),
+      profiles: () => raw.routingProfiles(),
+    })
+    raw.configureRouting(node => {
+      const view = routing.effective(node)
+      return view.updatedAt === null
+        ? { revision: view.revision }
+        : { revision: view.revision, routing: routingWire(view) }
+    })
+    const platform = await platformKey('beta-3')
+    const saved = await routing.save(
+      {
+        node: null,
+        auto: false,
+        revision: 0,
+        routes: [
+          {
+            direction: 'fast',
+            profileId: platform.profileId,
+            modelId: 'openai/gpt-6',
+          },
+        ],
+      },
+      { subject: OPS, role: 'ops', requestId: 'r-1' },
+    )
+    expect(saved.ok).toBe(true)
+    const tenant = await pay(ALICE)
+    const added = await billing.addUpstream(ALICE, {
+      preset: 'openai',
+      key: 'sk-alice-own-0001',
+    })
+    expect(added.ok).toBe(true)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    const own = magpieProfileId({ kind: 'tenant', id: tenant })
+    const beta1 = deliveredProfile(0)
+    expect(beta1?.id).toBe(own)
+    expect(beta1?.extra).toEqual([])
+    expect(JSON.stringify(nodes[0]?.requests())).not.toContain(platform.secret)
   })
 })
 
