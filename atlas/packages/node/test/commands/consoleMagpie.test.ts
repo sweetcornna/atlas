@@ -101,7 +101,7 @@ function droppingPort(
     tenants: () => [],
     onError: line => errors.push(line),
     ...extra,
-    fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
       const response = await fetch(input, init)
       if (armed && String(input).endsWith(path)) {
         armed = false
