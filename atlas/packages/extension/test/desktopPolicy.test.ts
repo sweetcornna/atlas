@@ -124,6 +124,7 @@ test('enabled resources activate only structured tools for main; eval remains de
     browser: true,
     computer: false,
     cdpUrl: 'http://127.0.0.1:1',
+    cdpToken: 'a'.repeat(43),
     display: null,
     xauthority: null,
     downloads: '/tmp/owned',
