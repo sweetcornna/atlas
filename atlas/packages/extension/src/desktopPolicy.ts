@@ -50,8 +50,10 @@ export function desktopTools(
  * model and the operator can read; it never carries argument text.
  */
 export type DesktopDecision =
-  | { readonly ok: true }
+  | { readonly ok: true; readonly value?: string }
   | { readonly ok: false; readonly reason: string }
+/** How the operator confirms desktop calls (runtimes-channels.md §6.4). */
+export type DesktopConfirmMode = 'sensitive' | 'always' | 'autonomous'
 /** The stable prefix of the tool error when the host refuses a lease. */
 export const DESKTOP_LEASE_REFUSED = 'Desktop lease refused'
 /**
@@ -89,8 +91,15 @@ export function desktopLeaseAnswer(value: string | undefined): DesktopDecision {
       reason: '节点没有应答租约请求（等待超时，或宿主没有接入授权通道）',
     }
   try {
-    const answer = JSON.parse(value) as { ok?: unknown; reason?: unknown }
-    if (answer?.ok === true) return { ok: true }
+    const answer = JSON.parse(value) as {
+      ok?: unknown
+      reason?: unknown
+      value?: unknown
+    }
+    if (answer?.ok === true)
+      return typeof answer.value === 'string'
+        ? { ok: true, value: answer.value }
+        : { ok: true }
     if (
       answer?.ok === false &&
       typeof answer.reason === 'string' &&
@@ -122,6 +131,21 @@ export function desktopToolSchema(name: DesktopTool): Record<string, unknown> {
     required: Object.keys(fields),
     additionalProperties: false,
   }
+}
+/**
+ * Whether one call needs a one-time operator approval. `autonomous` runs
+ * ordinary operations directly and asks only when the call itself carries a
+ * `confirm` reason; the host adds its own always-ask cases on top.
+ */
+export function desktopNeedsApproval(
+  name: DesktopTool,
+  args: Readonly<Record<string, unknown>>,
+  mode: DesktopConfirmMode,
+): boolean {
+  if (mode === 'always') return true
+  if (desktopObservation(name)) return false
+  if (mode === 'sensitive') return true
+  return typeof args.confirm === 'string' && args.confirm.length > 0
 }
 export function desktopObservation(name: DesktopTool): boolean {
   return ['tabs', 'screenshot', 'read_page', 'find'].includes(desktopOp(name))

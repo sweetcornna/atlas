@@ -256,8 +256,26 @@ export interface FilesPort {
 // P21 云端电脑
 // ---------------------------------------------------------------------------
 
-/** `sensitive`（默认）：仅截图、读页面、查元素、列 tab 自动放行；其余（含滚动）逐次确认。`always`：观察也逐次确认。只认单次批准。 */
-export type DesktopConfirm = 'sensitive' | 'always'
+/**
+ * `sensitive`（默认）：仅截图、读页面、查元素、列 tab 这类观察自动放行；其余（含滚动）逐次确认。
+ * `always`：观察也逐次确认。`autonomous`：观察与日常操作直接执行，调用自带 `confirm`
+ * 或打开终端类应用时才确认（runtimes-channels.md §6.4）。只认单次批准。
+ */
+export type DesktopConfirm = 'sensitive' | 'always' | 'autonomous'
+
+/**
+ * 专属电脑里允许打开的应用：`all`（默认，终端类另看 `terminal`）、`none`，或桌面条目编号列表；
+ * macOS 本机桌面只接受 bundle id 列表（§6.5）。
+ */
+export type DesktopApps = 'all' | 'none' | readonly string[]
+
+/** 专属电脑最近一张截图（`desktop.view`）。 */
+export interface DesktopScreenView {
+  readonly at: number
+  readonly mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
+  /** base64，至多 4 MiB 原图。 */
+  readonly data: string
+}
 
 export type DesktopUnitState = 'off' | 'starting' | 'running' | 'failed'
 
@@ -280,6 +298,20 @@ export interface DesktopNodeView extends AgentRef {
     /** `:12` 这样的显示号。 */
     readonly display: string | null
     readonly reason: string | null
+    /** Linux 私有桌面（Xvfb）或 macOS 本机桌面（按应用授权）。 */
+    readonly mode?: 'private' | 'host'
+    /** 私有桌面的窗口管理器程序名；没有为 null。 */
+    readonly windowManager?: string | null
+    /** 无障碍总线是否可用：窗口观察、元素与菜单操作依赖它。 */
+    readonly accessibility?: boolean
+    /** 私有桌面的进程是否在 bubblewrap 隔离里；为 false 时不许打开应用、浏览器保持无头。 */
+    readonly confined?: boolean
+    readonly apps?: DesktopApps
+    /** 是否允许打开终端类应用。 */
+    readonly terminal?: boolean
+    /** 资源全部进程的常驻内存合计与上限（字节）；不知道为 null。 */
+    readonly memoryBytes?: number | null
+    readonly memoryLimitBytes?: number | null
   }
   readonly confirm: DesktopConfirm
   readonly lastActionAt: number | null
@@ -327,6 +359,8 @@ export interface DesktopPort {
       readonly browser?: boolean
       readonly computer?: boolean
       readonly confirm?: DesktopConfirm
+      readonly apps?: DesktopApps
+      readonly terminal?: boolean
     },
     actor: DesktopActor,
   ): Promise<ConsoleResult<DesktopNodeView>>
@@ -338,6 +372,8 @@ export interface DesktopPort {
     ref: AgentRef | null,
     limit: number,
   ): Promise<ConsoleResult<readonly DesktopActionView[]>>
+  /** 最近一张截图；没有截图时为 null。 */
+  view?(ref: AgentRef): Promise<ConsoleResult<DesktopScreenView | null>>
 }
 
 // ---------------------------------------------------------------------------

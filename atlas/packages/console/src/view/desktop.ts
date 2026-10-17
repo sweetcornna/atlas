@@ -50,6 +50,7 @@ const STATE_WORD: Readonly<Record<DesktopUnitState, readonly [Tone, string]>> =
 const CONFIRM_WORD: Readonly<Record<DesktopConfirm, string>> = {
   sensitive: '只看自动 · 其余逐次确认',
   always: '每一步都确认',
+  autonomous: '自主 · 只确认有后果的操作',
 }
 
 const PLATFORM_WORD: Readonly<Record<string, string>> = {

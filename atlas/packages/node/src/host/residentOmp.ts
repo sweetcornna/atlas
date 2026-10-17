@@ -559,7 +559,12 @@ interface PoolOptions {
  */
 export type ResidentPermission =
   | boolean
-  | { readonly ok: boolean; readonly reason?: string }
+  | {
+      readonly ok: boolean
+      readonly reason?: string
+      /** A desktop phase the host carried out answers with a value. */
+      readonly value?: string
+    }
 
 /** Registered (agent, context) sessions acquire isolated omp processes on demand. */
 export class ResidentOmpPool
@@ -1082,7 +1087,9 @@ export class ResidentOmpPool
                   id: frame.id,
                   value: JSON.stringify(
                     granted
-                      ? { ok: true }
+                      ? typeof decision?.value === 'string'
+                        ? { ok: true, value: decision.value }
+                        : { ok: true }
                       : {
                           ok: false,
                           reason: decision?.reason || '宿主拒绝了这次请求',

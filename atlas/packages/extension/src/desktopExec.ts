@@ -62,6 +62,11 @@ export interface DesktopGateway {
   reserve(request: DesktopGateRequest): Promise<DesktopDecision>
   /** Every other phase is a plain yes/no answer. */
   confirm(request: DesktopGateRequest, timeoutMs: number): Promise<boolean>
+  /**
+   * A phase the host itself carries out and answers with a value: `apps`
+   * (the applications this computer may open) and `launch` (open one).
+   */
+  query(request: DesktopGateRequest): Promise<DesktopDecision>
 }
 
 /** One desktop call: the provider's id and the arguments as it sent them. */

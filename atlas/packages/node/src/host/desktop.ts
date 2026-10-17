@@ -14,7 +14,7 @@ import type {
 } from '@qianmo/console'
 import {
   desktopArgs,
-  desktopObservation,
+  desktopNeedsApproval,
   desktopOp,
   isDesktopInvocationId,
   isDesktopTool,
@@ -642,7 +642,8 @@ export class NodeDesktop {
         ) ||
         (args.confirm !== undefined &&
           args.confirm !== 'always' &&
-          args.confirm !== 'sensitive')
+          args.confirm !== 'sensitive' &&
+          args.confirm !== 'autonomous')
       )
         return { ok: false, code: 'invalid', message: 'Invalid desktop change' }
       if (
@@ -1013,7 +1014,7 @@ export class NodeDesktop {
           targetHost: lease.host,
         },
       }
-      const needs = s.confirm === 'always' || !desktopObservation(tool)
+      const needs = desktopNeedsApproval(tool, args, s.confirm)
       const beforeConsume = (
         expiresAt?: number,
         requestId?: string,

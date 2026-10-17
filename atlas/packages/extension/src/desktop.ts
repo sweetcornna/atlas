@@ -77,6 +77,12 @@ export function registerDesktopTools(
             ctx.ui.confirm('QIANMO_AUTHZ_V1', JSON.stringify(request), {
               timeout,
             }),
+          query: async request =>
+            desktopLeaseAnswer(
+              await ctx.ui.input('QIANMO_AUTHZ_V1', JSON.stringify(request), {
+                timeout: 60_000,
+              }),
+            ),
         }
         return await executor.run(
           {
