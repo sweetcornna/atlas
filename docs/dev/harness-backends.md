@@ -53,11 +53,31 @@
 
 ### 1.2 其他 ACP harness
 
-按调研记录（`acp-harness-survey.md`）收进目录的、官方发行版自带 ACP 服务端且能经环境变量或配置文件指向自定义网关的 harness，见 §1.3 的定案表。只经 ACP 适配器（第三方包装）才能说 ACP 的不收；要 OAuth 登录才能用自定义地址的不收。
+只收官方发行版自带 ACP 服务端、能经环境变量或配置文件指向自定义网关、不用登录厂商账号的 harness；名单与不收的理由见 §1.3。
 
 ### 1.3 目录定案
 
-（由 P36.2 按调研与实测填写，与 `catalog.ts` 一致；`presets.test` 式的门禁核对两边相同。）
+依据 2026-10-17 两份调研（`dsh-acp-facts.md`：dsh `0.2.1-rc.2` 在假模型接口上实测整轮；`acp-harness-survey.md`：各 harness 当日版本在本机完成 ACP 握手与 `session/new`，并以 `provider/model` 形式的模型号向假网关发出请求）。「实测」一列由 P36.2 的测试回写。
+
+| id | 名称 | 包与钉住的版本 | 启动 | 凭据与状态目录 | 线路 | 系列 | 运行环境 |
+|---|---|---|---|---|---|---|---|
+| `dsh` | DeepSeek Harness | `@deepseek-ai/dsh@0.2.1-rc.2` | `dsh --profile acp --patch <补丁>` | 补丁文件写路由（地址、模型、密钥所在的环境变量名）与隔离项；`DSH_HOME`、`DSH_AGENTS_HOME` 在该智能体目录下；密钥放在名字含 `KEY` 的变量里（dsh 不把这类变量交给模型的 shell） | `openai-chat`、`anthropic` | DeepSeek | Node.js `^22.19.0 \|\| >=24`；安装约 850 MB |
+| `gemini` | Gemini CLI | `@google/gemini-cli@0.64.0` | `gemini --acp` | `GOOGLE_GEMINI_BASE_URL`、`GEMINI_API_KEY`、`GEMINI_MODEL`；`GEMINI_CLI_HOME` | `gemini` | Gemini | Node.js |
+| `qwen` | Qwen Code | `@qwen-code/qwen-code@0.25.2` | `qwen --acp --auth-type openai --approval-mode default` | `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_MODEL`；`QWEN_HOME` | `openai-chat` | Qwen | Node.js |
+| `opencode` | opencode | `opencode-ai@1.19.3` | `opencode acp` | `OPENCODE_CONFIG_CONTENT` 写自定义供应商与权限；`XDG_*_HOME` | `openai-chat`、`anthropic` | 跟随节点主模型 | 无（自带二进制） |
+
+不收：goose（只发 GitHub 二进制，v1 只做 npm 安装）；Kimi CLI、Cline、Augment（自定义网关也要先登录厂商账号，或流量只走厂商服务器）；`claude-agent-acp`、`codex-acp`（Claude Code 与 Codex 已按原生接口接入，前者还捆绑专有 SDK）；iFlow（服务已于 2026-04-17 关停）。
+
+**dsh 的几处做法**（`dsh-acp-facts.md` §10）：
+
+- 子进程在该智能体目录下一个空的 `launch/` 里启动，工作区只经 `session/new.cwd` 交给它——dsh 会把启动目录的 `.env` 读进自己的环境。
+- 隔离补丁：不注入工作区的 AGENTS.md / CLAUDE.md，技能只认该智能体的 `skills/`，关掉 DeepSeek 原生路由的会话日志上报与插件清单上报、遥测、联网工具、子代理与工作流，会话改存不压缩的 JSONL。
+- 权限：dsh 缺省只在越出它自己沙箱时才征询。补丁另装一个本地插件（阡陌生成，约 25 行，写在该智能体目录下），让每次 shell、写入、MCP 调用与工作目录外的读取都经 `session/request_permission` 问节点。这是 dsh 自己的插件机制，不改 dsh。
+- 用量：dsh 不在 ACP 里报模型用量，每轮结束后读它会话日志里本轮新增的 `assistant/message` 的 `usage`（未命中输入、输出、缓存读、缓存写）。
+- 续会话：dsh 没有 `session/load`，用 `session/resume`（模型侧历史恢复，不回放）。
+- 每个 stdio MCP 服务每个会话会被起两次（第一次是探测）；有启动副作用的连接器要能容忍。
+
+**其他 ACP harness 的共同约束**：qwen、opencode 缺省自动放行一切，目录项把权限改成征询；只有对方在 `initialize` 里声明支持时才交 http MCP 服务，SSE 一律不交；各自的遥测与自动更新开关按调研关掉。除 Gemini CLI 外都不在 ACP 里报每轮 token 用量，这些底层的用量记 0 并标「底层未报告」，计量以 magpie 网关侧为准（P33 §2.4）。
 
 ---
 
@@ -70,7 +90,8 @@
 | 可选安装 | 控制链路 `runtime.install {runtime, version?}`（不给版本装目录钉住的版本）、`runtime.remove {runtime}`（有智能体配置在它上面时拒绝，写明是哪些）；`runtime.update` 保留，泛化到目录里所有 npm 项。三个都是有副作用的操作，走节点的幂等账本，急停下拒绝 |
 | 兼容检查 | 沿用 P31 的做法，按接口分：ACP 底层用节点自己的启动参数、真实的 `qm runtime-mcp` 工具桥与本机假模型接口（按它的首选线路）跑 `initialize` → `session/new`（带 qianmo MCP）→ 一轮，要求工具列表里有 `qianmo_*`、一次宿主工具调用到达节点；不通过就不装，节点留在原状，答复写明原因 |
 | 报告 | `runtime.versions` 列出目录里每一项：是否已装、版本、来源（前缀 / PATH / 启动参数）、钉住的版本、上次安装的结果；中枢「更新」页与「网关」页都读它 |
-| 出站 | `registry.npmjs.org`（npm 自己的下载域）；走 §7.2 出站策略。dsh 运行要 Node.js（版本见 §1.3），节点没有合适的 Node.js 时安装报「缺少 Node.js」，不替节点装 Node.js |
+| 前置 | 安装前核对磁盘：受管前缀所在文件系统的可用空间不够（dsh 要 2 GiB 以上）就不开始，报「磁盘空间不足」；要 Node.js 的底层先核对版本范围（dsh `^22.19.0 \|\| >=24`），不合要求报「缺少 Node.js」（退回原因 `no-node`），不替节点装 Node.js |
+| 出站 | `registry.npmjs.org`（npm 自己的下载域）；走 §7.2 出站策略 |
 
 ---
 
@@ -104,7 +125,7 @@
 
 ### 4.1 默认接入 magpie
 
-中枢接了 magpie（`--magpie`）时，「网关」页「智能体」区块打开「新节点自动接入」（缺省开）：模型指派为 `inherit` 且没有全局缺省档案的节点，自动签发网关密钥、建 magpie 档案并指派、下发（P33 原有的签发链，不是新的调度器）。已经指派了别的档案的节点不动，页面给「接入 magpie」按钮。magpie 档案带 `anthropic`、`openai-responses`、`openai-chat` 三条线路（P33 `laneAddresses`）；目录里有说 Gemini 协议的底层时再加 `gemini` 线路（magpie 同端口也说 Gemini）。
+中枢接了 magpie（`--magpie`）时，「网关」页「智能体」区块打开「新节点自动接入」（缺省开）：模型指派为 `inherit` 且没有全局缺省档案的节点，自动签发网关密钥、建 magpie 档案并指派、下发（P33 原有的签发链，不是新的调度器）。已经指派了别的档案的节点不动，页面给「接入 magpie」按钮。magpie 档案带 `anthropic`、`openai-responses`、`openai-chat`、`gemini` 四条线路（P33 `laneAddresses`，magpie 同端口说这四种协议），一把密钥服务目录里所有底层。
 
 ### 4.2 按系列选模型
 
@@ -134,11 +155,11 @@
 
 | 回合信号 | ACP |
 |---|---|
-| 启动 | `initialize`（声明我们的客户端能力：不提供 `fs`、`terminal`，文件与命令由 harness 自己的工具做、经权限征询裁决）→ 首次 `session/new {cwd, mcpServers}`，之后 `session/load`（harness 声明 `loadSession` 时；不支持的每次新开并在首轮带 §6.3 的前情） |
+| 启动 | `initialize`（声明我们的客户端能力：不提供 `fs`、`terminal`——实测 dsh 从不调用它们，文件与命令由 harness 自己的工具做、经权限征询裁决）→ 首次 `session/new {cwd, mcpServers}`，之后按目录项用 `session/load` 或 `session/resume`；都不支持的每次新开并在首轮带 §6.3 的前情 |
 | 发出一轮 | `session/prompt {sessionId, prompt: [{type:"text"}]}`；请求发出即补 user `message_end` |
 | 正文 | `session/update` 的 `agent_message_chunk` 累积，到下一个工具调用或回合结束时出一条 assistant `message_end`；`agent_thought_chunk` 不进正文 |
 | 工具 | `tool_call` → `tool_execution_start`；`tool_call_update` 的 `completed` / `failed` → `tool_execution_end` |
-| 用量 | harness 在 ACP 里报的用量（`session/prompt` 应答或 `usage_update`，以调研为准）；不报时用量记 0 并标「底层未报告」，不估算 |
+| 用量 | 目录项给的读取方式（dsh 读会话日志，见 §1.3）；ACP 的 `usage_update` 只是上下文占用的估计，不当用量；读不到时记 0 并标「底层未报告」，不估算 |
 | 结束 | `session/prompt` 应答的 `stopReason`：`end_turn` → `completed`、`max_tokens` → `length`、`cancelled` → `aborted`、`refusal` 与错误 → `error` |
 | 中止 | `session/cancel`；5 秒内没有应答才关子进程 |
 | 权限 | `session/request_permission` 按常驻姿态裁决（与 Claude Code 的 `qianmo_permission` 同一套：工作区外读取、写入、shell；可批准的越界写入转 P14 审批），答 `allow_once` 或 `reject_once`，从不答 `allow_always` |
@@ -146,7 +167,7 @@
 
 每个 ACP harness 的差异（启动参数、凭据交法、状态目录、要关的东西）都在目录项的 `acp` 字段里，通道本身不分 harness。dsh 的具体做法见 §1.3 与调研记录。
 
-隔离与 P27 相同：子进程 cwd 是智能体工作区，环境只放白名单变量加凭据，状态目录在 `qianmoConfigPath('runtimes', <id>, <智能体>)`，关掉遥测与自动更新，不加载用户级钩子与项目里的定制文件（能关的都关，关不掉的在 §1.3 写明）。
+隔离与 P27 相同（子进程 cwd 例外：会读启动目录配置的 harness 在该智能体目录下的空目录里启动，工作区只经 `session/new` 交给它），环境只放白名单变量加凭据，状态目录在 `qianmoConfigPath('runtimes', <id>, <智能体>)`，关掉遥测与自动更新，不加载用户级钩子与项目里的定制文件（能关的都关，关不掉的在 §1.3 写明）。
 
 扩展（P32）：MCP 连接器经 `session/new` 的 `mcpServers` 交给所有 ACP harness；技能按各 harness 原生的技能目录落地（dsh 有原生技能目录），没有原生技能机制的底层在扩展状态里标「该底层不支持技能」。
 
