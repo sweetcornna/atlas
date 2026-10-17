@@ -759,7 +759,9 @@ export class ConsoleUpdates implements UpdatesPort {
             'runtime.update',
             { runtime: id, version: latest },
             'updates',
-            { timeoutMs: 11 * 60_000 },
+            // The node's own steps take up to 11 minutes (staged install 6,
+            // check 1.5, install 3, two version reads): a margin on top.
+            { timeoutMs: 13 * 60_000 },
           )
           .catch(() => null)
         if (outcome?.ok) results.push(`${node.node} 已装 ${latest}`)
