@@ -6,7 +6,8 @@
 # **这是模板**，由 `watch-hub.sh install` 派生。参数（目标节点、--from、是否签名）在
 # <内测根>/ops/watch.env，作业在 <内测根>/watch/jobs.json，PSK 由 `watch-hub.sh run` 从
 # secrets/peers/<节点>.psk 读进环境——单元里没有任何密钥，也没有密钥路径以外的东西。
-# 配置根、一个进程一把 PSK、先 trust 后 --sign 这三条，见 watch-hub.sh 头注。
+# 配置根、一个进程一把 PSK、先 trust 后 --sign、签名时握手也签（--trust 从 peers.conf 现取）
+# 这四条，见 watch-hub.sh 头注。
 #
 # Type=exec + Restart=on-failure：调度器的状态在磁盘上（state.json 与 claims/），重起不重放
 # 已经 fire 过的格；停机期间错过的格按「补跑塌缩」计数（console.md §10、roadmap F7）。

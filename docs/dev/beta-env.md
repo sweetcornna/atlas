@@ -511,6 +511,13 @@ OCC_CONFIG_DIR="$CONSOLE_ROOT" qm watch --jobs ./jobs.json --from qianmo://hub/c
 的那一把；控制台的作业页与急停读的是 `<控制台配置根>/qianmo/scheduler/`（console.md §10.4）。
 `demo/env/beta/ops/watch-hub.sh` 的 `print-identity` 与 `run` 已经替你这样设，手工起时照上面写。
 
+**目标节点带 `--controller` 时握手也要签。**`--controller` 会打开必须签名的握手
+（`--require-signed-handshake`），`qm watch` 只在给了 `--trust <节点>=<公钥>` 时签握手，只有
+`--sign` 的拨号会被拒成 `signature_required`。手工起时在 ③ 上加
+`--trust <节点>=<节点公钥>`；`watch-hub.sh run` 在 `--sign` 时从 `peers.conf` 现取这把公钥
+（坐标行 `public-key=`，或本机节点的身份文件），取不到就 WARN 并照旧 PSK 握手。给了 `--trust`
+就要求节点回签，所以节点要带 `--sign-handshake`（`--controller` 已含）。
+
 只读检查类作业（`df`、工作区内的 Read / Grep）在节点默认的 `dontAsk` 模式下就能执行，
 **不需要为它打开 `--allow-workspace-edits`**；工作区之外的读取在两种模式下都会被拒绝
 （console.md §10.1.2）。节点在作业运行中推送的工具过程行只进中枢审计链
