@@ -8,6 +8,8 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import {
   DesktopExecutor,
+  claimDesktopBrowser,
+  readDesktopResource,
   type DesktopCall,
   type DesktopGateRequest,
   type DesktopGateway,
@@ -168,6 +170,7 @@ function resourceFile(change: Record<string, unknown> = {}) {
       browser: false,
       computer: true,
       cdpUrl: null,
+      cdpToken: null,
       display: ':99',
       xauthority: null,
       downloads: path.join(root, 'downloads'),
@@ -183,9 +186,13 @@ function setup(
   browser?: DesktopPrelude,
   resource: Record<string, unknown> = {},
 ) {
+  const claims: { cdpUrl: string | null; cdpToken: string | null }[] = []
   const preludes: DesktopPreludes = {
     computer: () => computer.prelude,
     ...(browser ? { browser: () => browser } : {}),
+    claim: async r => {
+      claims.push({ cdpUrl: r.cdpUrl, cdpToken: r.cdpToken })
+    },
   }
   const executor = new DesktopExecutor(
     resourceFile(resource),
@@ -208,8 +215,9 @@ function setup(
     }
     return executor.run(call, gateway)
   }
-  return { executor, computer, run }
+  return { executor, computer, run, claims }
 }
+const TOKEN = 'a'.repeat(43)
 const texts = (result: DesktopResult) =>
   result.content.flatMap(part => (part.type === 'text' ? [part.text] : []))
 
@@ -733,9 +741,10 @@ test('browser tools keep their path: attach, url plus page snapshot as target, h
       return { content: [], details: { value: 'ok' } }
     },
   }
-  const { run, computer } = setup(fakeComputer(), browser, {
+  const { run, computer, claims } = setup(fakeComputer(), browser, {
     browser: true,
     cdpUrl: 'http://127.0.0.1:9222',
+    cdpToken: TOKEN,
   })
   const gate = fakeGateway()
   const tab = 'res-1:3:main'
@@ -749,6 +758,8 @@ test('browser tools keep their path: attach, url plus page snapshot as target, h
     { action: 'close', all: true },
     { action: 'open', name: tab },
   ])
+  // The bridge is claimed once, before the base attaches.
+  expect(claims).toEqual([{ cdpUrl: 'http://127.0.0.1:9222', cdpToken: TOKEN }])
   expect(calls.slice(2).map(c => (c as { chain: Step[] }).chain[0])).toEqual([
     { method: 'url', args: [] },
     { method: 'ariaSnapshot', args: [] },
@@ -935,4 +946,102 @@ test("this Mac's own desktop never takes input control", async () => {
     fakeGateway().gateway,
   )
   expect(computer.controls).toEqual([])
+})
+
+test('a browser resource needs a loopback bridge address and a well-formed claim secret', () => {
+  const browser = { browser: true, cdpUrl: 'http://127.0.0.1:9222' }
+  expect(
+    readDesktopResource(resourceFile({ ...browser, cdpToken: TOKEN })),
+  ).toMatchObject({ cdpToken: TOKEN })
+  for (const change of [
+    { cdpToken: null },
+    { cdpToken: 'short' },
+    { cdpToken: `${'a'.repeat(42)}=` },
+    { cdpToken: TOKEN, cdpUrl: 'http://localhost:9222' },
+    { cdpToken: TOKEN, cdpUrl: 'ws://127.0.0.1:9222' },
+  ])
+    expect(
+      readDesktopResource(resourceFile({ ...browser, ...change })),
+    ).toBeUndefined()
+  // Without a browser the secret is not needed.
+  expect(readDesktopResource(resourceFile())).toMatchObject({ browser: false })
+})
+
+test('the claim posts the secret as a bearer token and fails in words on a refusal', async () => {
+  const seen: { method: string; path: string; auth: string | null }[] = []
+  let status = 204
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch(req) {
+      seen.push({
+        method: req.method,
+        path: new URL(req.url).pathname,
+        auth: req.headers.get('authorization'),
+      })
+      return new Response(null, { status })
+    },
+  })
+  try {
+    const resource = { cdpUrl: server.url.origin, cdpToken: TOKEN }
+    await claimDesktopBrowser(resource)
+    expect(seen).toEqual([
+      { method: 'POST', path: '/qianmo/claim', auth: `Bearer ${TOKEN}` },
+    ])
+    status = 403
+    await expect(claimDesktopBrowser(resource)).rejects.toThrow(
+      '拒绝了认领（HTTP 403）',
+    )
+  } finally {
+    server.stop(true)
+  }
+  await expect(
+    claimDesktopBrowser({ cdpUrl: server.url.origin, cdpToken: TOKEN }),
+  ).rejects.toThrow('没有应答')
+})
+
+test('the claim goes straight to the bridge even when the environment names a proxy', async () => {
+  const bridge: string[] = []
+  const proxy: string[] = []
+  const serve = (seen: string[]) =>
+    Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(req) {
+        seen.push(`${req.method} ${req.headers.get('authorization')}`)
+        return new Response(null, { status: 204 })
+      },
+    })
+  const target = serve(bridge)
+  const relay = serve(proxy)
+  try {
+    // Bun reads the proxy settings when a process starts, so the claim runs
+    // in a process started with them, as an executor would be.
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      HTTP_PROXY: relay.url.origin,
+      http_proxy: relay.url.origin,
+    }
+    delete env.NO_PROXY
+    delete env.no_proxy
+    const source = path.join(import.meta.dir, '../src/desktopExec.ts')
+    const resource = { cdpUrl: target.url.origin, cdpToken: TOKEN }
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        '-e',
+        `const { claimDesktopBrowser } = await import(${JSON.stringify(source)}); await claimDesktopBrowser(${JSON.stringify(resource)})`,
+      ],
+      { env, stdout: 'ignore', stderr: 'pipe' },
+    )
+    expect([
+      await child.exited,
+      await new Response(child.stderr).text(),
+    ]).toEqual([0, ''])
+  } finally {
+    target.stop(true)
+    relay.stop(true)
+  }
+  expect(bridge).toEqual([`POST Bearer ${TOKEN}`])
+  expect(proxy).toEqual([])
 })
