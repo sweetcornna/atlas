@@ -1985,6 +1985,51 @@ describe('planned tasks (主动任务)', () => {
     expect(book.forSession(parent)[0]).toMatchObject({ status: 'cancelled' })
   })
 
+  test('the run after /stop cut short a resumed run before the node took it is a new run, not a resume', async () => {
+    class GatedChat extends FakeChat {
+      gated = false
+      release: () => void = () => {}
+      readonly gate = new Promise<void>(resolve => {
+        this.release = resolve
+      })
+      override async send(input: Parameters<FakeChat['send']>[0]) {
+        if (input.background && this.gated) await this.gate
+        return super.send(input)
+      }
+    }
+    const gated = new GatedChat([MAIN, CODER])
+    chat = gated
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const anchor = now
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    value(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        everyMinutes: 60,
+        times: 3,
+      }),
+    )
+    const worker = await workerTurn(1)
+    await book.close()
+    open = []
+    // After the restart the run resumes; its line waits at the gate.
+    gated.gated = true
+    const reopened = tasks({ now: () => now })
+    await until(() => reopened.forSession(parent)[0]?.status === 'running')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(await reopened.cancelForSession(parent)).toBe(1)
+    gated.release()
+    await until(() => chat.sentTo(worker).length === 2)
+    now = anchor + 61 * MINUTE
+    reopened.tick()
+    await until(() => chat.sentTo(worker).length === 3)
+    const next = chat.sentTo(worker)[2]!.text
+    expect(next).toContain('这是重复任务的第 2 次运行')
+    expect(next).not.toContain('核实后接着做')
+  })
+
   test('a finished repeat has no runs left, in the view, the note and the console list alike', async () => {
     const now = Date.UTC(2026, 9, 17, 1, 0)
     const book = tasks({ now: () => now })

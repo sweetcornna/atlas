@@ -2299,6 +2299,8 @@ export class ConsoleTasks implements BackgroundTasksPort {
   #run(task: TaskRecord, plan: Plan): void {
     clearTimeout(this.#redeliveries.get(task.id))
     this.#redeliveries.delete(task.id)
+    // A new run, not the resumption of one a restart or /stop cut short.
+    this.#resumed.delete(task.id)
     this.#patch(task.id, {
       status: 'queued',
       plan: { ...plan, runs: plan.runs + 1 },
