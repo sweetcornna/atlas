@@ -2152,7 +2152,7 @@ describe('the task note in a console conversation', () => {
       expect((await web.send({ sessionId: parent, text })).ok).toBe(true)
     // No task yet: nothing to say.
     await say('你好')
-    expect(chat.sent.at(-1)!.context).toBeUndefined()
+    expect(chat.sentTo(parent).at(-1)!.context).toBeUndefined()
     const { id } = value<{ id: string }>(
       await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
     )
@@ -2161,18 +2161,18 @@ describe('the task note in a console conversation', () => {
     await until(() => book.forSession(parent)[0]?.status === 'running')
     chat.reply(parent, '已交给后台')
     await say('进度？')
-    const first = chat.sent.at(-1)!
+    const first = chat.sentTo(parent).at(-1)!
     expect(first.text).toBe('进度？')
     expect(first.context).toStartWith('[当前会话的后台任务] ')
     expect(first.context).toContain(id)
     chat.reply(parent, '还在做')
     // Unchanged: not again.
     await say('好')
-    expect(chat.sent.at(-1)!.context).toBeUndefined()
+    expect(chat.sentTo(parent).at(-1)!.context).toBeUndefined()
     // The runtime compacted that turn: the note goes again.
     chat.reply(parent, '好', 'done', { compacted: true })
     await say('继续')
-    expect(chat.sent.at(-1)!.context).toContain(id)
+    expect(chat.sentTo(parent).at(-1)!.context).toContain(id)
     chat.reply(parent, 'ok')
     // A command, a worker's line and a schedule's session carry none.
     const command = await web.send({
@@ -2181,7 +2181,7 @@ describe('the task note in a console conversation', () => {
       command: 'compact',
     })
     expect(command.ok).toBe(true)
-    expect(chat.sent.at(-1)!.context).toBeUndefined()
+    expect(chat.sentTo(parent).at(-1)!.context).toBeUndefined()
     expect(await book.noteFor(worker)).toBeUndefined()
     const scheduled = tasks({ scheduled: sessionId => sessionId === parent })
     expect(await scheduled.noteFor(parent)).toBeUndefined()
@@ -2242,11 +2242,11 @@ describe('what the notes remember', () => {
     chat.patchLastLine(parent, { readMs: 0 })
     chat.reply(parent, '查完了', 'done', { at: Date.now() + 150_000 })
     expect((await web.send({ sessionId: parent, text: '还有' })).ok).toBe(true)
-    expect(chat.sent.at(-1)!.context).toContain('提醒：')
+    expect(chat.sentTo(parent).at(-1)!.context).toContain('提醒：')
     expect(book.remembered()).toBe(1)
     chat.reply(parent, '好')
     expect((await web.send({ sessionId: parent, text: '嗯' })).ok).toBe(true)
-    expect(chat.sent.at(-1)!.context).toBeUndefined()
+    expect(chat.sentTo(parent).at(-1)!.context).toBeUndefined()
     expect(book.remembered()).toBe(0)
   })
 
@@ -2280,10 +2280,11 @@ describe('the task note when the ledger fails', () => {
     )
     const opened = await web.open(MAIN)
     if (!opened.ok) throw new Error('open')
-    const sent = await web.send({ sessionId: opened.value.id, text: '在吗' })
+    const parent = opened.value.id
+    const sent = await web.send({ sessionId: parent, text: '在吗' })
     expect(sent.ok).toBe(true)
-    expect(chat.sent.at(-1)).toMatchObject({ text: '在吗' })
-    expect(chat.sent.at(-1)!.context).toBeUndefined()
+    expect(chat.sentTo(parent).at(-1)).toMatchObject({ text: '在吗' })
+    expect(chat.sentTo(parent).at(-1)!.context).toBeUndefined()
     expect(errors).toEqual(['后台任务附注失败：账本读不出来'])
   })
 })
@@ -2296,7 +2297,7 @@ describe('keeping the main session free', () => {
     text: string,
   ): Promise<string | undefined> {
     expect((await web.send({ sessionId, text })).ok).toBe(true)
-    return chat.sent.at(-1)!.context
+    return chat.sentTo(sessionId).at(-1)!.context
   }
 
   test('after a turn over 90 seconds the next line is reminded once; the node’s queue does not count', async () => {
