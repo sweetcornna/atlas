@@ -18,6 +18,7 @@ import {
   OmpResidentTurnPort,
   type OmpRpcFrame,
   type ResidentTurnProgress,
+  type ResidentTurnResult,
 } from '@qianmo/resident'
 import type {
   AgentExtensions,
@@ -175,6 +176,10 @@ async function turn(
   )
 }
 
+/** The answer, or why the turn failed. */
+const content = (result: ResidentTurnResult): string =>
+  result.outcome === 'completed' ? result.content : `failed: ${result.reason}`
+
 const exited = (child: ChildProcess) =>
   child.exitCode !== null || child.signalCode !== null
 
@@ -200,7 +205,7 @@ test('dsh: a warm process answers turns with text, tool progress and the usage i
   expect(progress.map(step => step.summary)).toEqual(['读：README.md'])
   // The node's instructions go ahead of the first prompt only.
   const prompts = requests('session/prompt').map(
-    entry => entry.params!.prompt as { text: string }[],
+    entry => entry.params!.prompt as { type: string; text: string }[],
   )
   expect(prompts[0]).toHaveLength(2)
   expect(prompts[0]![0]!.text).toContain('a resident agent on a Qianmo')
@@ -328,14 +333,14 @@ test('dsh: a write the node refuses never happens; one inside the workspace on a
 test('dsh: a shell command is refused without --agent-shell and asked of the operator with it', async () => {
   const plain = setup({}, { permission: () => true })
   const session = await plain.pool.newSession(plain.agent)
-  expect((await turn(plain.pool, session, 'b1', 'bash')).content).toBe(
+  expect(content(await turn(plain.pool, session, 'b1', 'bash'))).toBe(
     'acp(1): bash reject-once',
   )
   expect(plain.asked).toEqual([])
   await plain.pool.stop()
   const shell = setup({ shell: true }, { permission: () => true })
   const second = await shell.pool.newSession(shell.agent)
-  expect((await turn(shell.pool, second, 'b2', 'bash')).content).toBe(
+  expect(content(await turn(shell.pool, second, 'b2', 'bash'))).toBe(
     'acp(1): bash allow-once',
   )
   expect(shell.asked).toEqual([
@@ -518,20 +523,20 @@ test('dsh: an MCP call on a server set to ask goes to the operator; one set to a
   )
   const session = await pool.newSession(agent)
   expect(
-    (await turn(pool, session, 'q1', 'mcp mcp__docs__search')).content,
+    content(await turn(pool, session, 'q1', 'mcp mcp__docs__search')),
   ).toBe('acp(1): mcp__docs__search allow-once')
   expect(
-    (await turn(pool, session, 'q2', 'mcp mcp__qianmo__qianmo_notify')).content,
+    content(await turn(pool, session, 'q2', 'mcp mcp__qianmo__qianmo_notify')),
   ).toBe('acp(2): mcp__qianmo__qianmo_notify allow-once')
   expect(asked).toEqual([])
-  expect(
-    (await turn(pool, session, 'q3', 'mcp mcp__crm__lookup')).content,
-  ).toBe('acp(3): mcp__crm__lookup allow-once')
+  expect(content(await turn(pool, session, 'q3', 'mcp mcp__crm__lookup'))).toBe(
+    'acp(3): mcp__crm__lookup allow-once',
+  )
   expect(asked.map(call => call.toolName)).toEqual(['mcp__crm__lookup'])
   // A server nobody configured: refused without asking.
-  expect(
-    (await turn(pool, session, 'q4', 'mcp mcp__stranger__x')).content,
-  ).toBe('acp(4): mcp__stranger__x reject-once')
+  expect(content(await turn(pool, session, 'q4', 'mcp mcp__stranger__x'))).toBe(
+    'acp(4): mcp__stranger__x reject-once',
+  )
   expect(asked).toHaveLength(1)
 })
 
@@ -553,7 +558,7 @@ test('a session moved to another runtime starts a new native conversation there'
     { runtimeOf: () => runtime },
   )
   const session = await pool.newSession(agent)
-  expect((await turn(pool, session, 'x1', 'hello')).content).toBe(
+  expect(content(await turn(pool, session, 'x1', 'hello'))).toBe(
     'acp(1): hello',
   )
   expect(resolved.at(-1)!.runtime).toBe('dsh')
@@ -565,7 +570,7 @@ test('a session moved to another runtime starts a new native conversation there'
   runtime = 'claude-code'
   pool.closeSession(session)
   await Bun.sleep(50)
-  expect((await turn(pool, session, 'x2', 'again')).content).toBe(
+  expect(content(await turn(pool, session, 'x2', 'again'))).toBe(
     'echo(1): again',
   )
   expect(launches[1]!.kind).toBe('claude-code')
