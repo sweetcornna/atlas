@@ -461,10 +461,12 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
     // the node held; "not managed" would leave the last delivery in place.
     const none = await magpie.noModelProfile()
     // A node no longer mapped to any tenant (handed back to the platform, or
-    // its tenant moved to another) may still be assigned a subscriber's
-    // profile, and keeps its key until something else is delivered: it goes
-    // on no model too. This runs with no tenant node left at all; the sweep
-    // tries again while the node still runs a subscriber's profile.
+    // its tenant moved to another) keeps a subscriber's key until something
+    // else is delivered. Still assigned their profile, or meant to send
+    // nothing (not managed, a default of nothing) while it may still run
+    // one, it goes on no model; meant to run something else, the sweep
+    // delivers that again while it may still run one. This runs with no
+    // tenant node left at all.
     const mapped = new Set(config.nodes.map(row => row.nodeId))
     const reclaim: string[] = []
     // Nodes that should go on no model while it cannot be made (no gateway
@@ -474,8 +476,11 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
       if (mapped.has(row.node)) continue
       const current =
         row.assignment.mode === 'profile' ? row.assignment.profileId : null
-      if (current === null) continue
-      if (isTenantProfile(current)) {
+      const runs = mayRunTenantProfile(row)
+      if (
+        (current !== null && isTenantProfile(current)) ||
+        (row.expected === null && runs)
+      ) {
         if (none === null) {
           waiting.push(row.node)
           continue
@@ -493,9 +498,9 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
         reclaim.push(row.node)
       } else if (
         sweep &&
-        current === none &&
+        runs &&
+        row.expected !== null &&
         behind(row) &&
-        mayRunTenantProfile(row) &&
         (this.#retry.get(row.node)?.at ?? 0) <= now
       )
         reclaim.push(row.node)

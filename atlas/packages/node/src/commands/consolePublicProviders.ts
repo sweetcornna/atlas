@@ -18,9 +18,9 @@
  *   不收。有租户节点时，全局默认只能清空或设为「无模型」。
  * - 平台的节点不持有订阅者的档案：还指派着订阅者档案的（交回平台、租户换了
  *   节点）期望为「无模型」，页面显示偏差，下发即收回密钥；跟随默认与停止托管
- *   照旧，但节点可能还跑着订阅者的档案时，停止托管与跟随空默认都不收，先指派
- *   档案或「无模型」收回。「可能还跑着」看节点上次回报的状态；中枢启动后还没
- *   回报过的，看账本里最近一次可能落地的下发。
+ *   照旧，但节点可能还跑着订阅者的档案时，停止托管与跟随空默认都不收，有平台
+ *   节点跟随默认时也不能清空默认，先指派档案或「无模型」收回。「可能还跑着」看
+ *   节点上次回报的状态；中枢启动后还没回报过的，看账本里最近一次可能落地的下发。
  *
  * 读与节点上的其余操作原样转交。
  */
@@ -232,6 +232,27 @@ export function publicProviders(
       const profileId = input.profileId
       if (profileId !== null && isTenantProfile(profileId))
         return refused('订阅者的网关档案不能设为默认')
+      if (profileId === null) {
+        // Clearing it leaves every platform node that follows it sending
+        // nothing: one handed back that may still run a subscriber's
+        // profile would keep the key for good.
+        const overview = await inner.overview()
+        if (!overview.ok) return overview
+        if (overview.value.defaultProfileId !== null) {
+          const held: string[] = []
+          for (const row of overview.value.nodes) {
+            if (row.assignment.mode !== 'inherit') continue
+            const tenant = tenantOf(row.node)
+            if (tenant === undefined)
+              return {
+                ok: false,
+                failure: { code: 'unavailable', message: '租户配置不可用' },
+              }
+            if (tenant === null && mayRunTenantProfile(row)) held.push(row.node)
+          }
+          if (held.length > 0) return refused(unsure(held.join(' ')))
+        }
+      }
       if (profileId !== null && profileId !== NO_MODEL_PROFILE) {
         let tenantNodes: number
         try {
@@ -264,8 +285,7 @@ export function publicProviders(
             : inner.assign(input, caller)
         // Not managed, or following a default of nothing, sends nothing: a
         // node handed back that may still run a subscriber's profile would
-        // keep the key for good (the node sync takes back only one assigned
-        // that profile).
+        // keep the key until the node sync takes it back.
         const overview = await inner.overview()
         if (!overview.ok) return overview
         const row = overview.value.nodes.find(one => one.node === input.node)

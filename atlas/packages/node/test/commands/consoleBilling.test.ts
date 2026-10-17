@@ -1198,6 +1198,88 @@ describe('a node handed back or moved gives the subscriber’s key back', () => 
     ).toBe(true)
   })
 
+  /**
+   * A platform default set before any tenant node, beta-1 subscribed, then
+   * handed back while it refuses deliveries: still on the subscriber's
+   * profile, assigned no model.
+   */
+  async function handedBackRefusing() {
+    const issued = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-3' }, mainModel: 'openai/gpt-6' },
+      ops(),
+    )
+    if (!issued.ok) throw new Error(issued.failure.message)
+    const platform = magpieProfileId({ kind: 'node', id: 'beta-3' })
+    expect(
+      (await providers.setDefault({ profileId: platform }, ops())).ok,
+    ).toBe(true)
+    const subscriber = await subscribed()
+    nodes[0]?.set(
+      'reply-apply.json',
+      JSON.stringify({
+        v: 1,
+        requestId: 'x',
+        ok: false,
+        code: 'write-failed',
+        message: 'disk full',
+      }),
+    )
+    setNodes(subscriber.tenant, [])
+    await billing.syncNodes()
+    expect(errors.some(line => line.includes('beta-1'))).toBe(true)
+    errors.length = 0
+    // Ops put it back on the platform default.
+    expect(
+      (
+        await providers.assign(
+          { node: 'beta-1', assignment: { mode: 'inherit' } },
+          ops(),
+        )
+      ).ok,
+    ).toBe(true)
+    const row = await nodeRow('beta-1')
+    expect(row.actual?.applied?.profileId).toBe(subscriber.own)
+    return { ...subscriber, platform }
+  }
+
+  test('the default cannot be cleared while a platform node following it may still run a subscriber’s profile', async () => {
+    const { platform, secret } = await handedBackRefusing()
+    const cleared = await providers.setDefault({ profileId: null }, ops())
+    expect(cleared.ok).toBe(false)
+    if (!cleared.ok) {
+      expect(cleared.failure.code).toBe('edition_public_magpie_only')
+      expect(cleared.failure.message).toContain('无法确认')
+      expect(cleared.failure.message).toContain('beta-1')
+    }
+    // The sweep delivers what it follows, and that takes the key back.
+    rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
+    await billing.tick()
+    expect(deliveredProfile(0)?.id).toBe(platform)
+    expect(deliveredProfile(0)?.key).not.toBe(secret)
+    expect((await nodeRow('beta-1')).actual?.applied?.profileId).toBe(platform)
+    expect((await providers.setDefault({ profileId: null }, ops())).ok).toBe(
+      true,
+    )
+  })
+
+  test('a platform node meant to run nothing while it may still run a subscriber’s profile is put on no model', async () => {
+    const { secret } = await handedBackRefusing()
+    // A default of nothing reached past the guard (cleared before it
+    // existed): the node is expected to run nothing, and shows no drift.
+    expect((await raw.setDefault({ profileId: null }, ops())).ok).toBe(true)
+    const before = await nodeRow('beta-1')
+    expect(before.expected).toBeNull()
+    expect(before.drift).toEqual([])
+    rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
+    await billing.tick()
+    expect(assigned(await nodeRow('beta-1'))).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.key).not.toBe(secret)
+    expect((await nodeRow('beta-1')).actual?.applied?.profileId).toBe(
+      NO_MODEL_PROFILE,
+    )
+  })
+
   test('with no status since a restart, what the book delivered last decides', async () => {
     const issued = await magpie.issueKey(
       { binding: { kind: 'node', id: 'beta-3' }, mainModel: 'openai/gpt-6' },
