@@ -216,13 +216,22 @@ function connectDraft(body: Record<string, unknown>): MagpieConnectDraft {
 
 function providerDraft(body: Record<string, unknown>): MagpieProviderDraft {
   const preset = str(body, 'preset')
-  if (!preset) throw new Invalid('要选预设')
   const key = str(body, 'key')
   const name = str(body, 'name')
+  const urls: { chat?: string; responses?: string; anthropic?: string } = {}
+  for (const lane of ['chat', 'responses', 'anthropic'] as const) {
+    const url = str(body, lane)
+    if (url) urls[lane] = url
+  }
+  const custom = Object.keys(urls).length > 0
+  if (preset && custom) throw new Invalid('选了预设就不填地址')
+  if (!preset && !custom) throw new Invalid('要选预设或填自定义地址')
+  if (!preset && !name) throw new Invalid('自定义上游要给名称')
   return {
-    preset,
+    preset: preset ?? '',
     ...(key ? { key } : {}),
     ...(name ? { name } : {}),
+    ...urls,
   }
 }
 

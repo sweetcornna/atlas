@@ -676,11 +676,17 @@ function providerForm(snapshot: MagpieSnapshot): string {
     selectField(
       'preset',
       '预设',
-      snapshot.presets.map(preset => [
-        preset.id,
-        preset.noKey ? `${preset.name} · 无需密钥` : preset.name,
-      ]),
-      { required: true, wide: true },
+      [
+        ...snapshot.presets.map(
+          preset =>
+            [
+              preset.id,
+              preset.noKey ? `${preset.name} · 无需密钥` : preset.name,
+            ] as const,
+        ),
+        ['', '自定义地址'] as const,
+      ],
+      { wide: true },
     ) +
     textField('key', '上游 API 密钥', {
       type: 'password',
@@ -688,7 +694,31 @@ function providerForm(snapshot: MagpieSnapshot): string {
       mono: true,
       help: '只交给 magpie · 中枢不留存',
     }) +
-    textField('name', '名称', { maxLength: 80, help: '不填用预设名' }) +
+    textField('name', '名称', {
+      maxLength: 80,
+      help: '不填用预设名 · 自定义地址时必填',
+    }) +
+    textField('chat', 'Chat Completions 地址', {
+      type: 'url',
+      wide: true,
+      mono: true,
+      placeholder: 'https://api.example.cn/v1',
+      help: '仅自定义地址 · 以 /v1 结尾',
+    }) +
+    textField('responses', 'Responses 地址', {
+      type: 'url',
+      wide: true,
+      mono: true,
+      placeholder: 'https://api.example.cn/v1',
+      help: '仅自定义地址 · 以 /v1 结尾',
+    }) +
+    textField('anthropic', 'Anthropic Messages 地址', {
+      type: 'url',
+      wide: true,
+      mono: true,
+      placeholder: 'https://api.example.cn',
+      help: '仅自定义地址 · 填源站 · 三项至少填一项',
+    }) +
     `</div>`
   )
 }

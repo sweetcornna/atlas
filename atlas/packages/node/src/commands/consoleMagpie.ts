@@ -1120,15 +1120,30 @@ export class ConsoleMagpie implements MagpiePort {
       const client = this.#client()
       if (!(client instanceof MagpieClient)) return client
       try {
-        const presets = await client.listPresets()
-        if (!presets.some(preset => preset.id === draft.preset))
-          return failed('rejected', '这个预设不能用 · 只收用 API 密钥的上游')
+        const urls = {
+          ...(draft.chat ? { chat: draft.chat } : {}),
+          ...(draft.responses ? { responses: draft.responses } : {}),
+          ...(draft.anthropic ? { anthropic: draft.anthropic } : {}),
+        }
+        const custom = Object.keys(urls).length > 0
+        if (draft.preset !== '' && custom)
+          return failed('invalid', '选了预设就不填地址')
+        if (draft.preset === '' && !custom)
+          return failed('invalid', '要选预设或填自定义地址')
+        // A custom upstream is given by its URLs and key: magpie classes it
+        // as an API key upstream, which is what L-6 lets a key route to.
+        if (draft.preset !== '') {
+          const presets = await client.listPresets()
+          if (!presets.some(preset => preset.id === draft.preset))
+            return failed('rejected', '这个预设不能用 · 只收用 API 密钥的上游')
+        }
         if (draft.name?.trim().startsWith(TENANT_UPSTREAM_PREFIX))
           return failed('invalid', `名称不能以 ${TENANT_UPSTREAM_PREFIX} 开头`)
         const added = await client.saveProvider({
           preset: draft.preset,
           ...(draft.key === undefined ? {} : { key: draft.key }),
           ...(draft.name === undefined ? {} : { name: draft.name }),
+          ...urls,
         })
         await this.#reconcile(client)
         return ok(providerView(added))

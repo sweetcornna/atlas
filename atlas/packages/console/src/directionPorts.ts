@@ -1370,9 +1370,14 @@ export interface MagpieConnectDraft {
 }
 
 export interface MagpieProviderDraft {
+  /** magpie 的预设 id；空串表示按地址接的自定义上游。 */
   readonly preset: string
   readonly key?: string
   readonly name?: string
+  /** 自定义上游的地址：chat 与 responses 以 `/v1` 结尾，anthropic 是源站。 */
+  readonly chat?: string
+  readonly responses?: string
+  readonly anthropic?: string
 }
 
 export interface MagpieGroupDraft {

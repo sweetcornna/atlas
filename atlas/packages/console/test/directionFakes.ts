@@ -2334,11 +2334,15 @@ export class FakeMagpie implements MagpiePort {
     this.#note(`provider.save ${draft.preset}`, caller)
     if (draft.preset === 'codex')
       return failed('rejected', '订阅账号的上游阡陌不用')
+    const base = draft.preset || (draft.name ?? 'custom')
     const view: MagpieProviderView = {
-      id: `${draft.preset}-${this.providers.length + 1}`,
+      id: `${base}-${this.providers.length + 1}`,
       name: draft.name ?? draft.preset,
       preset: draft.preset,
-      host: `${draft.preset}.example`,
+      host:
+        draft.preset === ''
+          ? new URL(draft.chat ?? draft.responses ?? draft.anthropic ?? '').host
+          : `${draft.preset}.example`,
       enabled: true,
       ready: true,
       models: 1,

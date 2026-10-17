@@ -12,7 +12,11 @@
 import { beforeEach, expect, test } from 'bun:test'
 import type { Access } from '../src/access.js'
 import type { ConsoleDeps } from '../src/deps.js'
-import type { MagpieKeyView, MagpieSnapshot } from '../src/directionPorts.js'
+import type {
+  MagpieKeyView,
+  MagpieProviderView,
+  MagpieSnapshot,
+} from '../src/directionPorts.js'
 import { magpieApi } from '../src/routes/magpieApi.js'
 import type { RouteContext } from '../src/routes/types.js'
 import type { TenantPort } from '../src/tenancy.js'
@@ -311,6 +315,17 @@ test('bodies and path segments are checked before the port is asked', async () =
   const bad: readonly (readonly [string, string, unknown?])[] = [
     ['POST', '/v0/magpie/connection', { gatewayUrl: '' }],
     ['POST', '/v0/magpie/providers', {}],
+    [
+      'POST',
+      '/v0/magpie/providers',
+      { preset: 'openai', chat: 'https://api.example.cn/v1' },
+    ],
+    [
+      'POST',
+      '/v0/magpie/providers',
+      { preset: '', chat: 'https://api.example.cn/v1' },
+    ],
+    ['POST', '/v0/magpie/providers', { preset: '', name: 'api2' }],
     ['POST', '/v0/magpie/providers/Bad_Id', { enabled: true }],
     ['POST', '/v0/magpie/providers/openai', { enabled: 'yes' }],
     ['POST', '/v0/magpie/groups', { id: 'g', routing: 'weight' }],
@@ -347,6 +362,20 @@ test('bodies and path segments are checked before the port is asked', async () =
   }
   expect(port.calls).toEqual([])
   expect(records).toEqual([])
+})
+
+test('a custom upstream reaches the port by its name and URLs', async () => {
+  const response = await call('POST', '/v0/magpie/providers', access('ops'), {
+    name: 'api2',
+    key: 'sk-upstream',
+    chat: ' https://api.example.cn/v1 ',
+    responses: 'https://api.example.cn/v1',
+  })
+  expect(response.status).toBe(200)
+  const view = (await response.json()) as MagpieProviderView
+  expect(view.preset).toBe('')
+  expect(view.host).toBe('api.example.cn')
+  expect(port.calls).toEqual([`provider.save  ${SUBJECT}`])
 })
 
 test('a tenant binding and a key change reach the port as typed drafts', async () => {

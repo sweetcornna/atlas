@@ -125,7 +125,12 @@ export const MAGPIE_PAGE_JS = `
       var key = form.elements.key ? form.elements.key.value.trim() : '';
       if (key) provider.key = key;
       if (value(form, 'name')) provider.name = value(form, 'name');
-      return { path: '/v0/magpie/providers', body: provider, ok: '已添加上游', need: provider.preset ? '' : '要选预设' };
+      var urls = 0;
+      ['chat', 'responses', 'anthropic'].forEach(function (lane) {
+        if (!provider.preset && value(form, lane)) { provider[lane] = value(form, lane); urls += 1; }
+      });
+      var need = provider.preset ? '' : !urls ? '要选预设或填自定义地址' : provider.name ? '' : '自定义上游要给名称';
+      return { path: '/v0/magpie/providers', body: provider, ok: '已添加上游', need: need };
     }
     if (kind === 'group') {
       var group = {

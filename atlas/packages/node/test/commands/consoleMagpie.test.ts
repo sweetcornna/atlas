@@ -746,6 +746,41 @@ describe('upstreams and groups', () => {
     expect(JSON.stringify(added)).not.toContain('sk-ant-upstream-0001')
   })
 
+  test('a custom upstream is added by its URLs and joins every all-mode key', async () => {
+    const magpie = await connected()
+    const issued = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-1' }, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    if (!issued.ok) throw new Error(issued.failure.message)
+    const both = await magpie.saveProvider(
+      { preset: 'openai', chat: 'https://api.example.cn/v1' },
+      caller(),
+    )
+    expect(both.ok ? 'ok' : both.failure.code).toBe('invalid')
+    const neither = await magpie.saveProvider({ preset: '' }, caller())
+    expect(neither.ok ? 'ok' : neither.failure.code).toBe('invalid')
+    const added = await magpie.saveProvider(
+      {
+        preset: '',
+        name: 'api2',
+        key: 'sk-custom-upstream-0001',
+        chat: 'https://api.example.cn/v1',
+        responses: 'https://api.example.cn/v1',
+      },
+      caller(),
+    )
+    if (!added.ok) throw new Error(added.failure.message)
+    expect(added.value).toMatchObject({
+      id: 'api2',
+      preset: '',
+      host: 'api.example.cn',
+      access: 'key',
+    })
+    expect(fake.key(issued.value.keyId)?.models).toContain('api2/*')
+    expect(JSON.stringify(added)).not.toContain('sk-custom-upstream-0001')
+  })
+
   test('a subscription upstream is read-only here', async () => {
     const magpie = await connected()
     for (const result of [

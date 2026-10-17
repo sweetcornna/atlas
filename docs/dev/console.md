@@ -652,7 +652,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/magpie/usage?period=<today\|7d\|30d\|all>` | view | magpie 用量汇总：合计、按模型、按密钥（阡陌签发的带绑定）；费用是 magpie 按它的价目估算，不是账单。其他周期 400 |
 | POST | `/v0/magpie/connection` | **个人 ops** | 连接或改连接：`{ gatewayUrl, managementUrl, managementKey?, webCookiePort? }`，都是 origin；https，或本机回环上的 http。管理密钥封存在中枢，不给就沿用；保存前先核对一次。拒绝共用令牌与 break-glass，有租户时只收平台主体；记 `magpie.connect` |
 | POST | `/v0/magpie/check` | **个人 ops** | 核对管理接口与网关侧，并把每把密钥的模型白名单改回合格范围；记 `magpie.check` |
-| POST | `/v0/magpie/providers` | **个人 ops** | 从 magpie 预设添加一个 API 密钥上游：`{ preset, key?, name? }`；上游密钥只交给 magpie，中枢不留存。记 `magpie.provider.save` |
+| POST | `/v0/magpie/providers` | **个人 ops** | 添加一个 API 密钥上游：从 magpie 预设 `{ preset, key?, name? }`，或按地址自定义 `{ preset: "", name, key?, chat?, responses?, anthropic? }`（三个地址至少一个，chat 与 responses 以 `/v1` 结尾，anthropic 是源站；选了预设就不收地址）；上游密钥只交给 magpie，中枢不留存。记 `magpie.provider.save` |
 | POST、DELETE | `/v0/magpie/providers/<上游 id>` | **个人 ops** | POST `{ enabled }` 启用或停用，记 `magpie.provider.toggle`；DELETE 删除（成功 204），记 `magpie.provider.remove`。订阅账号与客户端身份的上游一律拒绝 |
 | POST | `/v0/magpie/providers/<上游 id>/test` | **个人 ops** | magpie 向上游发最小请求，答协议、状态码、耗时与模型；厂商原文不转述。记 `magpie.provider.test` |
 | POST | `/v0/magpie/groups` | **个人 ops** | 新建或保存路由组：`{ id, from?, name?, members?, routing?, affinity? }`；没给的字段沿用 magpie 里的。记 `magpie.group.save` |
