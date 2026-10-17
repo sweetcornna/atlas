@@ -34,7 +34,7 @@ export const PEER_ASK = {
  * never waits right up to the asking turn's deadline.
  */
 const REPLY_MARGIN_MS = 30_000
-/** Below this a question is not worth sending at all. */
+/** A turn with less than this left (after the margin) does not ask at all. */
 const MIN_TIMEOUT_SEC = 10
 /**
  * How much longer than the question's own timeout the hub call may take: the
@@ -211,7 +211,7 @@ export function peerTools(options: PeerToolsOptions): HostToolDefinition[] {
         // The answer has to come back while this turn can still use it.
         const left = Math.floor((origin.remainingMs - REPLY_MARGIN_MS) / 1000)
         const timeoutSec = Math.min(ask.timeoutSec, left)
-        if (timeoutSec < MIN_TIMEOUT_SEC)
+        if (left < Math.min(ask.timeoutSec, MIN_TIMEOUT_SEC))
           return {
             ok: false,
             text: 'Not enough time is left in this turn to wait for an answer. Answer without asking, or hand the question over with qianmo_task_start.',

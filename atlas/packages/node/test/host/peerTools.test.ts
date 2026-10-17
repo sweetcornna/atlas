@@ -134,6 +134,12 @@ test('the wait never runs past the asking turn: the timeout shrinks to what is l
   )
   // 100 s left, 30 s kept for the answer: 70 s, not the default 300.
   expect(calls[0]?.[1]).toMatchObject({ timeoutSec: 70 })
+  // A short timeout the caller chose is its own business.
+  const quick = tools({ remainingMs: 100_000 })
+  await quick
+    .byName('qianmo_ask')
+    .handler({ agent: CODER, message: 'q', timeoutSec: 3 }, ctx)
+  expect(quick.calls[0]?.[1]).toMatchObject({ timeoutSec: 3 })
   const late = tools({ remainingMs: 35_000 })
   const refused = await late
     .byName('qianmo_ask')
