@@ -988,6 +988,72 @@ describe('the plan’s node count, kept by the node sync', () => {
   })
 })
 
+describe('a delivery that did not land is tried again', () => {
+  const REFUSE = JSON.stringify({
+    v: 1,
+    requestId: 'x',
+    ok: false,
+    code: 'write-failed',
+    message: 'busy',
+  })
+  const applies = (index: number) =>
+    nodes[index]
+      ?.requests()
+      .filter(
+        request => request['op'] === 'apply' && request['dryRun'] !== true,
+      ).length ?? 0
+
+  test('the sweep delivers again until the node runs what it is expected to', async () => {
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    // The node cannot take a delivery when the subscriber connects a model.
+    nodes[0]?.set('reply-apply.json', REFUSE)
+    const added = await billing.addUpstream(ALICE, {
+      preset: 'openai',
+      key: 'sk-alice-own-0001',
+    })
+    if (!added.ok) throw new Error(added.failure.message)
+    await billing.syncNodes()
+    // Said, not swallowed.
+    expect(errors.some(line => line.includes('beta-1'))).toBe(true)
+    errors.length = 0
+    rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
+    // The next sweep, a minute on.
+    clock += 60_000
+    await billing.tick()
+    const row = await nodeRow('beta-1')
+    expect(row.actual?.applied?.revision).toBe(row.expected?.revision)
+    expect(delivered(0)).toEqual({
+      key: tenantKey(tenant).secret,
+      main: 'openai-2/gpt-6',
+    })
+  })
+
+  test('a node that keeps refusing is asked one sweep later, then every five minutes', async () => {
+    const tenant = await pay(ALICE)
+    nodes[0]?.set('reply-apply.json', REFUSE)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    expect(applies(0)).toBe(1)
+    // Syncs in the same minute (a tenancy change, a profile change) wait.
+    await billing.tick()
+    expect(applies(0)).toBe(1)
+    clock += 60_000
+    await billing.tick()
+    expect(applies(0)).toBe(2)
+    clock += 60_000
+    await billing.tick()
+    expect(applies(0)).toBe(2)
+    clock += 4 * 60_000
+    await billing.tick()
+    expect(applies(0)).toBe(3)
+    expect(errors.length).toBeGreaterThan(0)
+    errors.length = 0
+    rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Startup rules and templates
 // ---------------------------------------------------------------------------
