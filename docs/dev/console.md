@@ -662,7 +662,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/magpie/keys` | **个人 ops** | 签发网关密钥：`{ binding, mainModel, fastModel?, lane?, limits?, models? }`，`binding` 是 `node:<节点>` 或 `tenant:<租户>`。中枢生成密钥值、在 magpie 建密钥并写死模型白名单，再经模型服务写档案 `magpie-<kind>-<id>`；节点还会指派并下发。记 `magpie.key.issue` |
 | POST、DELETE | `/v0/magpie/keys/<绑定>` | **个人 ops** | POST `{ enabled?, limits?, models?, mainModel?, fastModel?, resetLimit? }` 修改，记 `magpie.key.update`；DELETE 先把节点换回原来的指派再删密钥与档案（档案仍有人用时保留，答 `profileKept`），记 `magpie.key.remove` |
 | POST | `/v0/magpie/keys/<绑定>/rotate` | **个人 ops** | magpie 生成新值，中枢写进档案再下发；id、限额与用量不变。记 `magpie.key.rotate` |
-| GET | `/plans` | 公开，公开版 | 套餐页（§4.3）：每个套餐的价格、周期、含几台托管节点与说明，一句「模型用你自己的密钥接入」；已登录的给「我的订阅」，没登录的给登录与注册。页脚是源代码链接。没开 `--billing` 时 404 |
+| GET | `/plans` | 公开，公开版 | 套餐页（§4.3）：每个套餐的价格、周期、含几台托管节点与说明，一句「模型接入订阅者自有的 API 密钥」；已登录的给「我的订阅」，没登录的给登录与注册。页脚是源代码链接。没开 `--billing` 时 404 |
 | GET | `/subscription` | 个人账号，公开版 | 我的订阅：状态、套餐、到期、节点 `n/N`（订阅已生效而还没分到节点时写「节点分配中」）；模型（网关密钥状态、主模型、自己接的上游与接入表单，只有有效订阅能接）；网关用量近 30 天；续费或购买；兑换码；订单。共用令牌与 break-glass 没有这一页（403）。没开 `--billing` 时 404 |
 | GET | `/subscription/checkout?plan=<套餐 id>&channel=<wechatpay\|alipay>` | 个人账号，公开版 | 确认订单，由同源表单提交；没有这个套餐 404，通道没开 400 |
 | POST | `/subscription/checkout` | 个人账号，公开版 | 表单 `plan`、`channel`；拒绝跨源提交（`Sec-Fetch-Site`、`Origin`）。同一人同一套餐同一通道复用未过期的待支付订单，303 到 `?order=`；同一人还有另一个套餐的未过期待支付订单时拒绝；失败给一张原因卡片。记 `billing.checkout`；不受订阅闸门限制 |

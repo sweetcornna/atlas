@@ -10,7 +10,7 @@
  * 每一页的页脚都有对应源代码的链接（AGPL 第 13 条，`sourceUrl` 必填）。
  *
  * 套餐卖的是托管节点，不是模型额度：卡片写价格、周期、含几台节点与说明，另有
- * 一句「模型用你自己的密钥接入」。二维码用本包唯一的编码器（`qr.ts`）画成内联
+ * 一句「模型接入订阅者自有的 API 密钥」。二维码用本包唯一的编码器（`qr.ts`）画成内联
  * SVG，页面不加载任何外部资源。
  */
 
@@ -66,7 +66,7 @@ const ORDER_WORD: Readonly<Record<BillingOrderStatus, string>> = {
 }
 
 /** 模型怎么接：卡片下面那一句，文案门禁同其他页。 */
-export const BYOK_LINE = '模型用你自己的密钥接入 · 经平台网关统一调度'
+export const BYOK_LINE = '模型接入订阅者自有的 API 密钥 · 经平台网关统一调度'
 
 /** 没开正式收款时公开页上的那一句；开了就没有。 */
 function notLiveLine(site: BillingSiteView): string {
@@ -177,9 +177,9 @@ export function renderStandingCard(
       ? '还没有订阅'
       : '订阅已到期'
   const line = waiting
-    ? '订阅已生效 · 平台运维分配节点后这里就能对话'
+    ? '订阅已生效 · 节点分配完成后可用'
     : standing.endsAt === null
-      ? '买一个套餐后就能使用'
+      ? '订阅套餐后可用'
       : '续费后立即恢复'
   return publicDocument(
     title,
