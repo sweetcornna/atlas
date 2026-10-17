@@ -183,6 +183,8 @@ export function scopedConsoleDeps(
   // The 2026-10 ports (design review D01) that carry no tenant wrapper yet: a
   // scoped caller is not offered them at all until each gets one — list
   // filtered, detail 404, write refused before admission and dialling.
+  // Extensions (P32) run code on any node, updates (P31) upgrade the whole
+  // fleet and chat channels (P28) bind any agent: none is tenant-shaped.
   const {
     providers: _providers,
     about: _about,
@@ -191,6 +193,9 @@ export function scopedConsoleDeps(
     routing: _routing,
     handoffDevices: _handoffDevices,
     avatars: _avatars,
+    extensions: _extensions,
+    updates: _updates,
+    channels: _channels,
     ...base
   } = deps
   const result: ConsoleDeps = {
