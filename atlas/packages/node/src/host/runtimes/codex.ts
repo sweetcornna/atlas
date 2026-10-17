@@ -89,9 +89,6 @@ export function codexArgv(launch: CodexLaunch): string[] {
     },
     // The host is the only notifier; no desktop notification hooks.
     notify: [],
-    // Skills are the ones the operator installs (P32): not Codex's own
-    // (`skill-installer`, `imagegen` and the like).
-    'skills.bundled.enabled': false,
     ...(launch.effort ? { model_reasoning_effort: launch.effort } : {}),
   }
   return [

@@ -403,10 +403,6 @@ export function residentConfigOverlay(options: {
       : []),
     'edit:',
     '  mode: hashline',
-    // Skills are the node's and the operator's (P32): not those of whoever
-    // the node runs as (`~/.agents/skills`).
-    'skills:',
-    '  enableAgentsUser: false',
     'mcp:',
     '  enableProjectConfig: false',
     // Wait for the operator's servers (P32): qianmopi stops when a tool named

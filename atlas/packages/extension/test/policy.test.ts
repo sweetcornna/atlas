@@ -345,11 +345,8 @@ describe('operator-configured extensions (P32)', () => {
     expect(overlay.mcp.startupTimeoutMs).toBe(10_000)
     const none = Bun.YAML.parse(residentConfigOverlay({ edits: 'none' })) as {
       mcp: Record<string, unknown>
-      skills: Record<string, unknown>
     }
     expect(none.mcp).toEqual({ enableProjectConfig: false })
-    // Not the machine user's own skills (real-child check in node tests).
-    expect(none.skills).toEqual({ enableAgentsUser: false })
   })
 
   test('installed skill directories are readable, the rest of the root is not', () => {
