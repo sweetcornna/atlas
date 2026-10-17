@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.0（生效）** |
+| 文档版本 | **v1.1（生效）**；v1.1 按实现回写 §2.2 的轮换与两个已知窗口 |
 | 日期 | 2026-10-17 |
 | 核对基点 | 本仓库 `db52f282`（main，#229 合并提交，基座 qianmopi v18.8.8）；magpie 源码 `yetone/magpie@8b84dc9`，本机发行版 `magpie 0.1.1268`，GitHub 发行 `v0.1.1278` 有 `magpie-cli-linux-{amd64,arm64}` |
 | 范围依据 | 负责人 2026-10-17 决定（对话记录）：接入 magpie 作为模型统一调度管理器；前端按本项目的风格特化；另立公开版（见 [`public-edition.md`](./public-edition.md)，P35）。章程 v3.5 §2.7 |
@@ -55,7 +55,8 @@
 - **绑定**：一把网关密钥绑定到 `{kind:'node', id}`（自用部署，一台节点一把）或 `{kind:'tenant', id}`（公开版，一个订阅者一把，P35）。
 - **签发**：中枢生成 32 位以上的随机密钥（不以 `sk-magpie-` 开头，magpie 保留这个前缀），经 `POST /api/caller-keys/add-key {"name":"qm-<binding>-<uuid>","secret":…}` 建到 magpie，再按名字找回 id；随后 `models-key` 写白名单（§0），按需 `limit-key` 设上限。
 - **保管**：密钥明文只进 P18 的模型档案（`consoleProvidersSecrets.ts` 的信封加密），magpie 侧状态文件只记名字与 id。之后节点拿到它的方式与任何 API key 档案相同。
-- **轮换**：生成新密钥 → `rotate-key` → 更新档案密钥 → 走正常下发；旧密钥在 magpie 侧即时失效（magpie 每次请求都重读密钥表）。
+- **轮换**：`rotate-key` 由 magpie 生成新值（magpie 不接受指定值，所以轮换后的密钥以 `sk-magpie-key-` 开头）→ 更新档案密钥 → 走正常下发；旧密钥在 magpie 侧即时失效（magpie 每次请求都重读密钥表）。
+- **已知窗口**：① magpie 的 `add-key` 不接受白名单与停用，新密钥建出来那一刻是「启用 + 不限模型」，中枢紧接着写白名单（公开版的订阅者密钥再停用）；这段毫秒级窗口里密钥值只有中枢知道。② 轮换后旧值立即失效，节点要等空闲才切到新值，期间的模型调用会失败一次并按限流重试。
 - **吊销**：先把节点改派回原档案或空档案，再 `remove-key`；公开版到期用 `off-key`（续费时 `on-key`），不删记录。
 
 ### 2.3 中枢的 `MagpiePort`
