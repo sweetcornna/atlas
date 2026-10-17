@@ -11,16 +11,23 @@
  * Each event row stores the SHA-256 of its canonical form
  * `[seq, at, kind, sorted data pairs, prev]`, `prev` being the previous row's
  * hash (the first one 64 zeros) — the construction of the console's account
- * ledger (`@qianmo/console` `ledger.ts`) and `@qianmo/audit`, so an edit,
- * deletion or reordering breaks the chain from that row on. Triggers refuse
- * UPDATE and DELETE on `events`; dropping them is possible for whoever owns
- * the file, which is what the chain is for.
+ * ledger (`@qianmo/console` `ledger.ts`) and `@qianmo/audit`. Triggers refuse
+ * UPDATE and DELETE on `events`. {@link BillingStore.verifyChain} walks the
+ * chain, then folds the events and compares the result with the state tables.
  *
- * {@link BillingStore.verifyChain} also folds the events and compares the
- * result with the state tables, so a direct edit of `orders`,
- * `subscriptions` or `redeem_codes` that skips the events shows up too.
- * Truncation at the tail and swapping the whole file for an older copy are
- * not detected (same limit as the console ledger).
+ * What that finds: an edited, deleted or reordered event whose hashes were
+ * not recomputed, and a direct edit of `orders`, `subscriptions` or
+ * `redeem_codes` that skips the events.
+ *
+ * What it does not: the hash has no key. Whoever can write the file (the
+ * hub's user, root, anyone who can swap in a copy) can drop the triggers,
+ * recompute the chain from any row on, or append a well-formed event together
+ * with the matching table row, and `verifyChain` passes (`store.test.ts` pins
+ * this). Truncation at the tail and swapping the whole file for an older copy
+ * are not detected either (same limits as the console ledger). So the chain
+ * is a consistency check and a record of how the state came to be, not a
+ * defence against the file's owner; that would need the head hash kept
+ * somewhere the owner of this file cannot rewrite, which is not done.
  *
  * Writes are serialised by `BEGIN IMMEDIATE`, so the `prev` a writer reads is
  * the last row even with a second process on the same file. Event data holds

@@ -227,6 +227,49 @@ describe('BillingStore', () => {
       expect(report).toEqual({ ok: false, seq: 3, reason: '哈希链断开' })
     })
 
+    test('whoever can write the file can forge a row and its event: the documented limit', () => {
+      // The chain has no key (`store.ts` module note): one more subscription
+      // row plus a well-formed event naming it, and the walk and the fold agree.
+      const report = tamper(raw => {
+        const last = raw
+          .query<{ seq: number; hash: string }, []>(
+            'SELECT seq, hash FROM events ORDER BY seq DESC LIMIT 1',
+          )
+          .get()!
+        const data = {
+          subject: 'mallory',
+          planId: 'month',
+          startsAt: T0,
+          endsAt: T0 + 999 * DAY,
+          fromPlanId: null,
+          fromEndsAt: null,
+          cause: 'grant',
+          ref: '',
+          by: 'ops',
+          reason: 'forged',
+        }
+        const seq = last.seq + 1
+        raw
+          .query(
+            'INSERT INTO events (seq, at, kind, data, prev, hash) VALUES (?, ?, ?, ?, ?, ?)',
+          )
+          .run(
+            seq,
+            T0,
+            'subscription.changed',
+            JSON.stringify(data),
+            last.hash,
+            chainHash(seq, T0, 'subscription.changed', data, last.hash),
+          )
+        raw
+          .query(
+            "INSERT INTO subscriptions (subject, planId, startsAt, endsAt, updatedAt, revision, gateway) VALUES ('mallory', 'month', ?, ?, ?, 1, 'pending')",
+          )
+          .run(T0, T0 + 999 * DAY, T0)
+      })
+      expect(report).toEqual({ ok: true, events: 10 })
+    })
+
     test('a direct edit of the subscription table is caught by the fold', () => {
       expect(
         tamper(
