@@ -999,3 +999,49 @@ test('the claim posts the secret as a bearer token and fails in words on a refus
     claimDesktopBrowser({ cdpUrl: server.url.origin, cdpToken: TOKEN }),
   ).rejects.toThrow('没有应答')
 })
+
+test('the claim goes straight to the bridge even when the environment names a proxy', async () => {
+  const bridge: string[] = []
+  const proxy: string[] = []
+  const serve = (seen: string[]) =>
+    Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(req) {
+        seen.push(`${req.method} ${req.headers.get('authorization')}`)
+        return new Response(null, { status: 204 })
+      },
+    })
+  const target = serve(bridge)
+  const relay = serve(proxy)
+  try {
+    // Bun reads the proxy settings when a process starts, so the claim runs
+    // in a process started with them, as an executor would be.
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      HTTP_PROXY: relay.url.origin,
+      http_proxy: relay.url.origin,
+    }
+    delete env.NO_PROXY
+    delete env.no_proxy
+    const source = path.join(import.meta.dir, '../src/desktopExec.ts')
+    const resource = { cdpUrl: target.url.origin, cdpToken: TOKEN }
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        '-e',
+        `const { claimDesktopBrowser } = await import(${JSON.stringify(source)}); await claimDesktopBrowser(${JSON.stringify(resource)})`,
+      ],
+      { env, stdout: 'ignore', stderr: 'pipe' },
+    )
+    expect([
+      await child.exited,
+      await new Response(child.stderr).text(),
+    ]).toEqual([0, ''])
+  } finally {
+    target.stop(true)
+    relay.stop(true)
+  }
+  expect(bridge).toEqual([`POST Bearer ${TOKEN}`])
+  expect(proxy).toEqual([])
+})

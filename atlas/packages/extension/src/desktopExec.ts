@@ -3,6 +3,7 @@
 
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { connect } from 'node:net'
 import * as path from 'node:path'
 import type { EvalPreludeDefinition } from '@oh-my-pi/pi-coding-agent/eval/preludes'
 import { Settings } from '@oh-my-pi/pi-coding-agent/config/settings'
@@ -63,13 +64,11 @@ export async function claimDesktopBrowser(
   const timeout = AbortSignal.timeout(5000)
   let status: number
   try {
-    status = (
-      await fetch(`${resource.cdpUrl}${DESKTOP_CDP_CLAIM_PATH}`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${resource.cdpToken}` },
-        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      })
-    ).status
+    status = await loopbackPost(
+      new URL(`${resource.cdpUrl}${DESKTOP_CDP_CLAIM_PATH}`),
+      `Bearer ${resource.cdpToken}`,
+      signal ? AbortSignal.any([signal, timeout]) : timeout,
+    )
   } catch (error) {
     signal?.throwIfAborted()
     throw new Error(
@@ -80,6 +79,57 @@ export async function claimDesktopBrowser(
     throw new Error(
       `专属浏览器的调试入口拒绝了认领（HTTP ${status}）：浏览器可能刚重启，重试即可`,
     )
+}
+
+/**
+ * An empty HTTP/1.1 POST over raw TCP, resolving with the status code.
+ * `fetch` and `node:http` send even 127.0.0.1 through `HTTP_PROXY` unless
+ * `NO_PROXY` covers it: the secret would reach the proxy, and the bridge
+ * would take the proxy for the claiming process.
+ */
+function loopbackPost(
+  url: URL,
+  authorization: string,
+  signal: AbortSignal,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    signal.throwIfAborted()
+    const socket = connect({ host: url.hostname, port: Number(url.port) })
+    let head = ''
+    let settled = false
+    const settle = (status: number | undefined, error?: unknown) => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', aborted)
+      socket.destroy()
+      if (status === undefined) reject(error ?? new Error('连接在应答前关闭'))
+      else resolve(status)
+    }
+    const aborted = () => settle(undefined, signal.reason)
+    signal.addEventListener('abort', aborted, { once: true })
+    socket.setEncoding('latin1')
+    socket.once('connect', () =>
+      socket.write(
+        `POST ${url.pathname} HTTP/1.1\r\nHost: ${url.host}\r\n` +
+          `Authorization: ${authorization}\r\nContent-Length: 0\r\n` +
+          'Connection: close\r\n\r\n',
+      ),
+    )
+    socket.on('data', (chunk: string) => {
+      head += chunk
+      const line = head.indexOf('\r\n')
+      if (line === -1 && head.length < 1024) return
+      const status = /^HTTP\/1\.[01] (\d{3})(?: |$)/.exec(
+        line === -1 ? '' : head.slice(0, line),
+      )?.[1]
+      settle(
+        status === undefined ? undefined : Number(status),
+        new Error('应答不是 HTTP/1.1'),
+      )
+    })
+    socket.once('error', error => settle(undefined, error))
+    socket.once('close', () => settle(undefined))
+  })
 }
 
 /**
