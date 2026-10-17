@@ -262,6 +262,45 @@ describe('omp compiler', () => {
       fixture.dispose()
     }
   })
+  // P36.5: a Gemini runtime in the catalog adds magpie's Gemini lane, at
+  // `/v1beta` as Google's API base, to the same key.
+  test('a Gemini lane address compiles to a Gemini sibling on the same key', () => {
+    const result = compileProfile(
+      wireProfile(
+        {
+          id: 'magpie-node-n1',
+          lane: 'anthropic',
+          baseUrl: 'https://gateway.example.test',
+          laneAddresses: {
+            'openai-chat': 'https://gateway.example.test/v1',
+            gemini: 'https://gateway.example.test/v1beta',
+          },
+          auth: { scheme: 'bearer', keys: [{ id: 'gw', value: CANARY_KEY }] },
+          compat: {},
+          // What the hub writes into every magpie profile (`consoleMagpie.ts`).
+          models: [
+            {
+              id: 'google/gemini-3.1-pro',
+              role: 'main',
+              tiers: ['opus', 'sonnet', 'haiku', 'fable'],
+              capabilities: { mode: 'family' },
+              effort: { send: 'auto' },
+            },
+          ],
+        },
+        capabilities,
+      ),
+      { secret: CANARY_KEY, capabilities },
+    )
+    if (!result.ok) throw new Error(result.error.message)
+    const gemini = Object.values(result.compiled.models.providers).find(
+      provider => provider.api === 'google-generative-ai',
+    )
+    expect(gemini?.baseUrl).toBe('https://gateway.example.test/v1beta')
+    expect(gemini?.apiKey).toBe(CANARY_KEY)
+    expect(Object.keys(result.compiled.models.providers)).toHaveLength(3)
+  })
+
   test('lane addresses ride a single key only; without them a runtime is told the lane', () => {
     const several = compileProfile(
       wireProfile(

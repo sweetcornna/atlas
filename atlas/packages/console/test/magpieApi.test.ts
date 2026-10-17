@@ -13,6 +13,7 @@ import { beforeEach, expect, test } from 'bun:test'
 import type { Access } from '../src/access.js'
 import type { ConsoleDeps } from '../src/deps.js'
 import type {
+  MagpieAgentsSnapshot,
   MagpieKeyView,
   MagpieProviderView,
   MagpieSnapshot,
@@ -421,4 +422,169 @@ test('unknown paths, wrong methods and a missing port', async () => {
   deps = rest
   expect((await call('GET', '/v0/magpie', ops)).status).toBe(501)
   expect((await call('POST', '/v0/magpie/check', ops, {})).status).toBe(501)
+})
+
+// --- the 智能体 section (P36.5) -------------------------------------------
+
+const AGENT_WRITES: readonly (readonly [string, string, unknown])[] = [
+  [
+    'POST',
+    '/v0/magpie/agents/configure',
+    { node: 'tokyo-1', agent: 'coder', model: 'openai/gpt-6' },
+  ],
+  [
+    'POST',
+    '/v0/magpie/agents/configure',
+    { node: 'tokyo-1', agent: 'builder', runtime: 'claude-code' },
+  ],
+  ['POST', '/v0/magpie/agents/install', { node: 'tokyo-1', runtime: 'codex' }],
+  ['POST', '/v0/magpie/agents/remove', { node: 'tokyo-1', runtime: 'dsh' }],
+  ['POST', '/v0/magpie/agents/autojoin', { on: false }],
+  ['POST', '/v0/magpie/agents/join', { node: 'osaka-1' }],
+]
+
+function agentCalls(): readonly string[] {
+  return port.agents?.calls ?? []
+}
+
+test('agents: everyone with view reads names and states; only a writer reads failure text', async () => {
+  for (const role of ['view', 'viewer', 'member', 'ops'] as const) {
+    const response = await call('GET', '/v0/magpie/agents', access(role))
+    expect(response.status).toBe(200)
+    const snapshot = (await response.json()) as MagpieAgentsSnapshot
+    const writer = role === 'ops'
+    const tokyo = snapshot.nodes.find(one => one.node === 'tokyo-1')
+    const reviewer = tokyo?.agents.find(one => one.agent === 'reviewer')
+    const builder = tokyo?.agents.find(one => one.agent === 'builder')
+    expect(`${role} ${reviewer?.write?.message ?? null}`).toBe(
+      `${role} ${writer ? 'E_RUNTIME_MODEL：模型不在档案里，已拒绝' : null}`,
+    )
+    expect(`${role} ${builder?.reason?.message ?? null}`).toBe(
+      `${role} ${writer ? '未安装，等待安装' : null}`,
+    )
+    // The state words stay for everyone.
+    expect(builder?.reason?.code).toBe('not-installed')
+    expect(reviewer?.write?.state).toBe('failed')
+    expect(
+      `${role} ${tokyo?.runtimes.find(one => one.id === 'codex')?.failed?.message ?? null}`,
+    ).toBe(`${role} ${writer ? 'npm 下载失败，网络超时' : null}`)
+    expect(
+      `${role} ${snapshot.nodes.find(one => one.node === 'nagoya-1')?.error ?? null}`,
+    ).toBe(`${role} ${writer ? '节点控制链路未连接，稍后重试' : null}`)
+    expect(reviewer?.model).toBe('anthropic/claude-opus-5')
+  }
+  expect((await call('GET', '/v0/magpie/agents', access('none'))).status).toBe(
+    401,
+  )
+  expect(agentCalls()).toEqual([])
+  expect(admits).toBe(0)
+})
+
+test('agents: nobody but a personal ops account (a platform subject with tenants) writes', async () => {
+  for (const who of [
+    access('view'),
+    access('admin'),
+    access('viewer'),
+    access('member'),
+    access('ops', true),
+  ]) {
+    for (const [method, path, body] of AGENT_WRITES) {
+      const response = await call(method, path, who, body)
+      expect(`${path} ${response.status}`).toBe(`${path} 403`)
+    }
+  }
+  deps = { ...deps, tenancy: tenancy(['u:ffffffffffffffff']) }
+  for (const [method, path, body] of AGENT_WRITES) {
+    expect((await call(method, path, access('ops'), body)).status).toBe(403)
+  }
+  expect(agentCalls()).toEqual([])
+  expect(admits).toBe(0)
+  expect(records).toEqual([])
+})
+
+test('agents: every write is admitted once and recorded under our own target', async () => {
+  const ops = access('ops')
+  const statuses: number[] = []
+  for (const [method, path, body] of AGENT_WRITES)
+    statuses.push((await call(method, path, ops, body)).status)
+  expect(statuses).toEqual([200, 200, 200, 200, 200, 200])
+  expect(admits).toBe(AGENT_WRITES.length)
+  expect(records).toEqual([
+    'runtime.configure qianmo://tokyo-1/coder ok',
+    'runtime.configure qianmo://tokyo-1/builder ok',
+    'runtime.install tokyo-1/codex ok',
+    'runtime.remove tokyo-1/dsh ok',
+    'magpie.autojoin magpie ok',
+    'magpie.key.issue node:osaka-1 ok',
+  ])
+  expect(agentCalls()).toEqual([
+    `configure tokyo-1/coder - openai/gpt-6 ${SUBJECT}`,
+    `configure tokyo-1/builder claude-code - ${SUBJECT}`,
+    `install tokyo-1/codex ${SUBJECT}`,
+    `remove tokyo-1/dsh ${SUBJECT}`,
+    `autojoin false ${SUBJECT}`,
+    `join osaka-1 ${SUBJECT}`,
+  ])
+  const refused = await call('POST', '/v0/magpie/agents/remove', ops, {
+    node: 'tokyo-1',
+    runtime: 'claude-code',
+  })
+  expect(refused.status).toBe(403)
+  expect(
+    ((await refused.json()) as { error: { code: string } }).error.code,
+  ).toBe('refused')
+  expect(records.at(-1)).toBe('runtime.remove tokyo-1/claude-code failed')
+})
+
+test('agents: bodies are checked before the port is asked', async () => {
+  const ops = access('ops')
+  const bad: readonly (readonly [string, unknown])[] = [
+    ['/v0/magpie/agents/configure', { node: 'tokyo-1', agent: 'coder' }],
+    [
+      '/v0/magpie/agents/configure',
+      { node: 'Tokyo 1', agent: 'coder', model: 'auto' },
+    ],
+    [
+      '/v0/magpie/agents/configure',
+      { node: 'tokyo-1', agent: 'Coder!', model: 'auto' },
+    ],
+    [
+      '/v0/magpie/agents/configure',
+      { node: 'tokyo-1', agent: 'coder', runtime: 'Claude Code' },
+    ],
+    [
+      '/v0/magpie/agents/configure',
+      { node: 'tokyo-1', agent: 'coder', model: 'a b' },
+    ],
+    ['/v0/magpie/agents/install', { node: 'tokyo-1' }],
+    ['/v0/magpie/agents/remove', { runtime: 'codex' }],
+    ['/v0/magpie/agents/autojoin', { on: 'yes' }],
+    ['/v0/magpie/agents/join', {}],
+  ]
+  for (const [path, body] of bad) {
+    const response = await call('POST', path, ops, body)
+    expect(`${path} ${JSON.stringify(body)} ${response.status}`).toBe(
+      `${path} ${JSON.stringify(body)} 400`,
+    )
+  }
+  expect(agentCalls()).toEqual([])
+  expect(records).toEqual([])
+})
+
+test('agents: unknown actions, wrong methods and an unwired section', async () => {
+  const ops = access('ops')
+  expect(
+    (await call('POST', '/v0/magpie/agents/upgrade', ops, {})).status,
+  ).toBe(404)
+  expect(
+    (await call('POST', '/v0/magpie/agents/configure/x', ops, {})).status,
+  ).toBe(404)
+  expect((await call('POST', '/v0/magpie/agents', ops, {})).status).toBe(405)
+  expect((await call('GET', '/v0/magpie/agents/join', ops)).status).toBe(405)
+  port.agents = undefined
+  expect((await call('GET', '/v0/magpie/agents', ops)).status).toBe(501)
+  expect(
+    (await call('POST', '/v0/magpie/agents/autojoin', ops, { on: true }))
+      .status,
+  ).toBe(501)
 })

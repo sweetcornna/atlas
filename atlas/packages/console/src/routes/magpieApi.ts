@@ -7,7 +7,11 @@
  * | Route | Who |
  * |---|---|
  * | `GET /v0/magpie`, `GET /v0/magpie/usage?period=` | view and up (key tails and full addresses only for writers) |
+ * | `GET /v0/magpie/agents` | view and up (failure details only for writers) |
  * | every `POST` and `DELETE` | personal ops, outside break-glass, a platform subject when there are tenants |
+ *
+ * The agents section (P36.5) takes its writes as
+ * `POST /v0/magpie/agents/{configure,install,remove,autojoin,join}`.
  *
  * The hub never relays model traffic: these routes only drive magpie's
  * management API through the port. No key value, upstream key or management
@@ -15,6 +19,8 @@
  */
 
 import type {
+  MagpieAgentChange,
+  MagpieAgentsSnapshot,
   MagpieBinding,
   MagpieCaller,
   MagpieConnectDraft,
@@ -50,6 +56,18 @@ const NODE_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
 const TENANT_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/
 const PROVIDER_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
 const GROUP_ID = /^[a-z0-9][a-z0-9.-]{0,63}$/
+const AGENT_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
+const RUNTIME_ID = /^[a-z0-9][a-z0-9-]{0,39}$/
+/** What a delivered profile accepts as a model id (`@qianmo/providers`). */
+const MODEL_ID = /^[A-Za-z0-9~][A-Za-z0-9._:/~@+-]{0,127}$/
+const AGENT_ACTIONS = [
+  'configure',
+  'install',
+  'remove',
+  'autojoin',
+  'join',
+] as const
+type AgentAction = (typeof AGENT_ACTIONS)[number]
 
 /**
  * May this caller change the gateway: a personal `ops` account outside
@@ -126,6 +144,32 @@ export function magpieForReader(
       managementUrl: hostOf(snapshot.connection.managementUrl),
     },
     keys: snapshot.keys.map(key => ({ ...key, masked: null })),
+  }
+}
+
+/** What a caller who may not write sees of the agents: names and states, no failure text. */
+export function magpieAgentsForReader(
+  snapshot: MagpieAgentsSnapshot,
+  writer: boolean,
+): MagpieAgentsSnapshot {
+  if (writer) return snapshot
+  return {
+    ...snapshot,
+    nodes: snapshot.nodes.map(node => ({
+      ...node,
+      error: null,
+      runtimes: node.runtimes.map(runtime => ({
+        ...runtime,
+        failed:
+          runtime.failed === null ? null : { ...runtime.failed, message: null },
+      })),
+      agents: node.agents.map(agent => ({
+        ...agent,
+        reason:
+          agent.reason === null ? null : { ...agent.reason, message: null },
+        write: agent.write === null ? null : { ...agent.write, message: null },
+      })),
+    })),
   }
 }
 
@@ -309,6 +353,37 @@ function keyChange(body: Record<string, unknown>): MagpieKeyChange {
   }
 }
 
+function nodeOf(body: Record<string, unknown>): string {
+  const node = str(body, 'node')
+  if (!node || !NODE_ID.test(node)) throw new Invalid('节点名无效')
+  return node
+}
+
+function runtimeOf(body: Record<string, unknown>): string {
+  const runtime = str(body, 'runtime')
+  if (!runtime || !RUNTIME_ID.test(runtime)) throw new Invalid('底层 id 无效')
+  return runtime
+}
+
+function agentChange(body: Record<string, unknown>): MagpieAgentChange {
+  const node = nodeOf(body)
+  const agent = str(body, 'agent')
+  if (!agent || !AGENT_ID.test(agent)) throw new Invalid('智能体名无效')
+  const runtime = str(body, 'runtime')
+  if (runtime !== undefined && !RUNTIME_ID.test(runtime))
+    throw new Invalid('底层 id 无效')
+  const model = str(body, 'model')
+  if (model !== undefined && model !== 'auto' && !MODEL_ID.test(model))
+    throw new Invalid('模型 id 无效')
+  if (!runtime && !model) throw new Invalid('要给底层或模型')
+  return {
+    node,
+    agent,
+    ...(runtime ? { runtime } : {}),
+    ...(model ? { model } : {}),
+  }
+}
+
 // --- routing -----------------------------------------------------------
 
 type Name =
@@ -324,6 +399,8 @@ type Name =
   | 'key-issue'
   | 'key'
   | 'key-rotate'
+  | 'agents'
+  | `agents-${AgentAction}`
 
 /** Which route a path is and the methods it takes, or null for none. */
 function routeOf(
@@ -331,6 +408,13 @@ function routeOf(
 ): { readonly name: Name; readonly allowed: readonly string[] } | null {
   const [head, id, tail] = rest
   if (rest.length === 0) return { name: 'snapshot', allowed: ['GET'] }
+  if (head === 'agents') {
+    if (rest.length === 1) return { name: 'agents', allowed: ['GET'] }
+    const action = AGENT_ACTIONS.find(one => one === id)
+    if (rest.length === 2 && action !== undefined)
+      return { name: `agents-${action}`, allowed: ['POST'] }
+    return null
+  }
   if (rest.length === 1) {
     if (head === 'usage') return { name: 'usage', allowed: ['GET'] }
     if (head === 'connection') return { name: 'connect', allowed: ['POST'] }
@@ -358,6 +442,54 @@ function routeOf(
 
 function invalid(message: string): Response {
   return fail(400, 'invalid', message)
+}
+
+/** One write of the agents section, recorded under our own target. */
+async function agentsWrite(
+  ctx: RouteContext,
+  name: Name,
+  caller: MagpieCaller,
+): Promise<Response> {
+  const agents = ctx.deps.magpie?.agents
+  if (agents === undefined) return unwired('节点控制链路')
+  const body = await bodyOf(ctx)
+  if (body instanceof Response) return body
+  try {
+    if (name === 'agents-configure') {
+      const change = agentChange(body)
+      return write(
+        ctx,
+        'runtime.configure',
+        `qianmo://${change.node}/${change.agent}`,
+        () => agents.configure(change, caller),
+      )
+    }
+    if (name === 'agents-install' || name === 'agents-remove') {
+      const input = { node: nodeOf(body), runtime: runtimeOf(body) }
+      const target = `${input.node}/${input.runtime}`
+      return name === 'agents-install'
+        ? write(ctx, 'runtime.install', target, () =>
+            agents.install(input, caller),
+          )
+        : write(ctx, 'runtime.remove', target, () =>
+            agents.remove(input, caller),
+          )
+    }
+    if (name === 'agents-autojoin') {
+      const on = body['on']
+      if (typeof on !== 'boolean') throw new Invalid('on 要是布尔值')
+      return write(ctx, 'magpie.autojoin', 'magpie', () =>
+        agents.setAutoJoin(on, caller),
+      )
+    }
+    const node = nodeOf(body)
+    return write(ctx, 'magpie.key.issue', `node:${node}`, () =>
+      agents.join(node, caller),
+    )
+  } catch (error) {
+    if (error instanceof Invalid) return invalid(error.message)
+    throw error
+  }
 }
 
 export const magpieApi: HeadRoute = {
@@ -397,7 +529,24 @@ export const magpieApi: HeadRoute = {
       return answer(await port.usage(period as MagpieUsagePeriod))
     }
 
+    if (route.name === 'agents') {
+      const agents = port.agents
+      if (agents === undefined) return unwired('节点控制链路')
+      const snapshot = await agents.snapshot()
+      return answer(
+        snapshot.ok
+          ? {
+              ok: true,
+              value: magpieAgentsForReader(snapshot.value, magpieWriter(ctx)),
+            }
+          : snapshot,
+      )
+    }
+
     const caller = callerOf(ctx)
+
+    if (route.name.startsWith('agents-'))
+      return agentsWrite(ctx, route.name, caller)
 
     if (route.name === 'check')
       return write(ctx, 'magpie.check', 'magpie', () => port.check(caller))
