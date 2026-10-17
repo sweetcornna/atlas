@@ -102,6 +102,27 @@ export function desktopLeaseAnswer(value: string | undefined): DesktopDecision {
   }
   return { ok: false, reason: '节点返回的租约应答无法识别' }
 }
+/** What every runtime's tool list says about one desktop tool. */
+export function desktopToolDescription(name: DesktopTool): string {
+  return `Private resource ${desktopOp(name)}. Obtain the current tab handle from qianmo_browser_tabs. Changes require one operator approval.`
+}
+/** The JSON schema of one desktop tool's arguments, for MCP tool lists. */
+export function desktopToolSchema(name: DesktopTool): Record<string, unknown> {
+  const fields: Readonly<Record<string, string>> = DESKTOP_FIELDS[name]
+  return {
+    type: 'object',
+    properties: Object.fromEntries(
+      Object.entries(fields).map(([key, kind]) => [
+        key,
+        kind === 'number'
+          ? { type: 'number', minimum: -10000, maximum: 10000 }
+          : { type: 'string', maxLength: key === 'text' ? 16000 : 2000 },
+      ]),
+    ),
+    required: Object.keys(fields),
+    additionalProperties: false,
+  }
+}
 export function desktopObservation(name: DesktopTool): boolean {
   return ['tabs', 'screenshot', 'read_page', 'find'].includes(desktopOp(name))
 }
