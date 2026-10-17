@@ -244,7 +244,11 @@ export interface ConsoleTasksOptions {
   readonly onError?: (message: string) => void
 }
 
+/** Unfinished tasks per conversation, not counting those waiting for input. */
 const MAX_ACTIVE_PER_PARENT = 8
+/** Finished tasks stay in the ledger this long, and this many per owner. */
+const KEEP_FINISHED_MS = 30 * 24 * 60 * 60_000
+const KEEP_FINISHED_PER_OWNER = 200
 /**
  * Worker turns in flight per node. One: the node runs one turn at a time, and
  * a second worker turn would only queue there in front of the owner's next
@@ -392,6 +396,8 @@ export class ConsoleTasks {
   /** Resumes unfinished tasks and resends notices a restart cut off. */
   start(): void {
     if (!this.#lock?.owned()) return
+    this.#prune()
+    this.#save()
     for (const task of this.#tasks.values()) {
       if (task.notification === 'sending') {
         // A place cut off mid-send may or may not have it: never send it
@@ -483,8 +489,49 @@ export class ConsoleTasks {
     if (current === undefined) throw new Error(`no task ${id}`)
     const next = { ...current, ...changes, updatedAt: this.#now() }
     this.#tasks.set(id, next)
+    if (TERMINAL.has(next.status) && !TERMINAL.has(current.status))
+      this.#prune()
     this.#save()
     return next
+  }
+
+  /**
+   * Keeps the ledger, rewritten whole on every change, from growing without
+   * end: finished tasks go after {@link KEEP_FINISHED_MS} or beyond
+   * {@link KEEP_FINISHED_PER_OWNER} per owner (never one whose result is still
+   * being delivered), and instructions nobody reads again go with them.
+   */
+  #prune(): void {
+    const now = this.#now()
+    const finished = [...this.#tasks.values()]
+      .filter(
+        task =>
+          TERMINAL.has(task.status) &&
+          task.notification !== 'pending' &&
+          task.notification !== 'sending' &&
+          !this.#redeliverable(task) &&
+          !this.#delivering.has(task.id),
+      )
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+    const kept = new Map<string, number>()
+    for (const task of finished) {
+      const count = (kept.get(task.owner) ?? 0) + 1
+      kept.set(task.owner, count)
+      if (
+        now - task.updatedAt > KEEP_FINISHED_MS ||
+        count > KEEP_FINISHED_PER_OWNER
+      )
+        this.#tasks.delete(task.id)
+    }
+    // Confirmed instructions and those of a finished task are never read.
+    this.#updates = this.#updates.filter(one => {
+      const task = this.#tasks.get(one.taskId)
+      return (
+        task !== undefined &&
+        !TERMINAL.has(task.status) &&
+        one.consumedAt === null
+      )
+    })
   }
 
   #unread(task: TaskRecord): TaskUpdate[] {
@@ -554,14 +601,13 @@ export class ConsoleTasks {
 
   /** `/stop` in a chat: cancels that conversation's running tasks. */
   async cancelForSession(sessionId: string): Promise<number> {
-    let count = 0
     const family = this.#family(sessionId)
-    for (const task of [...this.#tasks.values()])
-      if (family.has(task.parentSession) && !TERMINAL.has(task.status)) {
-        await this.#cancel(task)
-        count++
-      }
-    return count
+    const doomed = [...this.#tasks.values()].filter(
+      task => family.has(task.parentSession) && !TERMINAL.has(task.status),
+    )
+    // Each stop may wait on its node; the chat's answer waits for the slowest.
+    await Promise.all(doomed.map(task => this.#cancel(task)))
+    return doomed.length
   }
 
   // -- hub calls ------------------------------------------------------------------
@@ -697,11 +743,15 @@ export class ConsoleTasks {
     if (parseAddress(target) === null)
       return refused('agent 不是有效的智能体地址')
     const family = this.#family(session.id)
+    // A task waiting for the owner's answer holds no place.
     const active = [...this.#tasks.values()].filter(
-      task => family.has(task.parentSession) && !TERMINAL.has(task.status),
+      task =>
+        family.has(task.parentSession) &&
+        !TERMINAL.has(task.status) &&
+        task.status !== 'needs_input',
     )
     if (active.length >= MAX_ACTIVE_PER_PARENT)
-      return refused(`这个会话已有 ${active.length} 个未结束的任务`)
+      return refused(`这个会话已有 ${active.length} 个进行中的任务`)
     const dispatch = this.#dispatch(caller.owner)
     if (typeof dispatch === 'string') return refused(dispatch)
     const denied = await dispatch.authorizeTarget(target)
@@ -1124,6 +1174,8 @@ export class ConsoleTasks {
                 baseline: new Set(session.transcript.turns.map(one => one.id)),
                 now: this.#now,
                 timeoutMs: ttl + TURN_WAIT_SLACK_MS,
+                // Checked against the dial list just above.
+                authorized: true,
                 onTask: taskId => {
                   turn.taskId = taskId
                   const now = this.#tasks.get(id)

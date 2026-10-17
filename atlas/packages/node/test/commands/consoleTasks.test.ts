@@ -36,6 +36,7 @@ function tasks(
     related?: (id: string) => readonly string[]
     turnTtlMs?: number
     deliveryRetryMs?: (attempts: number) => number
+    stopTask?: (target: string, taskId: string) => Promise<boolean>
     /** More result listeners, by key, registered before the book starts. */
     listeners?: Record<
       string,
@@ -940,6 +941,134 @@ describe('durability', () => {
     expect(listed.tasks.map(task => task.id)).toEqual([id])
     expect(book.contextFor(second)).toContain(`"id":"${id}"`)
     expect(await book.cancelForSession(second)).toBe(1)
+  })
+
+  test('finished tasks leave the ledger after 30 days or beyond 200 per owner, with their instructions', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '活的', instructions: 'x' }),
+    )
+    const worker = await workerTurn(1)
+    value(await call(book, 'send', parent, { id, message: '未读的' }))
+    await book.close()
+    open = []
+    const file = path.join(root, 'tasks.json')
+    const ledger = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const live = ledger.tasks[0]
+    const day = 24 * 60 * 60_000
+    const finished = (n: number, age: number, owner = live.owner) => ({
+      ...live,
+      id: `task-${crypto.randomUUID()}`,
+      title: `旧${n}`,
+      owner,
+      status: 'completed',
+      notification: 'sent',
+      updatedAt: Date.now() - age,
+    })
+    const old = finished(0, 31 * day)
+    const many = Array.from({ length: 205 }, (_, n) =>
+      finished(n + 1, (n + 1) * 60_000),
+    )
+    const other = finished(999, day, 'someone-else')
+    ledger.tasks = [live, old, ...many, other]
+    ledger.updates = [
+      ...ledger.updates,
+      { id: 90, taskId: old.id, message: 'x', at: 1, consumedAt: null },
+      { id: 91, taskId: live.id, message: 'y', at: 1, consumedAt: 5 },
+    ]
+    fs.writeFileSync(file, JSON.stringify(ledger), { mode: 0o600 })
+    tasks()
+    const after = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const ids = new Set(after.tasks.map((task: { id: string }) => task.id))
+    expect(ids.has(live.id)).toBe(true)
+    expect(ids.has(old.id)).toBe(false)
+    expect(ids.has(other.id)).toBe(true)
+    // The newest 200 of that owner's finished tasks stay.
+    expect(many.filter(task => ids.has(task.id))).toEqual(many.slice(0, 200))
+    expect(
+      after.updates.map((one: { message: string }) => one.message),
+    ).toEqual(['未读的'])
+    await until(() => chat.sentTo(worker).length === 2)
+  })
+
+  test('a task waiting for the owner holds no place among the eight', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    value(await call(book, 'start', parent, { title: 'a', instructions: 'x' }))
+    await workerTurn(1)
+    await book.close()
+    open = []
+    const file = path.join(root, 'tasks.json')
+    const ledger = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const waiting = { ...ledger.tasks[0], status: 'needs_input' }
+    ledger.tasks = Array.from({ length: 8 }, () => ({
+      ...waiting,
+      id: `task-${crypto.randomUUID()}`,
+    }))
+    fs.writeFileSync(file, JSON.stringify(ledger), { mode: 0o600 })
+    const reopened = tasks()
+    await chat.send({ sessionId: parent, text: '再开一个' })
+    value(
+      await call(reopened, 'start', parent, { title: 'b', instructions: 'y' }),
+    )
+  })
+
+  test('/stop stops all of a chat’s tasks at once, not one after another', async () => {
+    const THIRD = 'qianmo://node-c/third'
+    chat = new FakeChat([MAIN, CODER, THIRD])
+    const book = tasks({
+      stopTask: async (target, taskId) => {
+        await new Promise(resolve => setTimeout(resolve, 150))
+        stopped.push([target, taskId])
+        return true
+      },
+    })
+    const parent = await foreground()
+    for (const agent of [MAIN, CODER, THIRD])
+      value(
+        await call(book, 'start', parent, {
+          title: agent,
+          instructions: 'x',
+          agent,
+        }),
+      )
+    await until(() => workerSessions().length === 3)
+    await until(
+      () =>
+        outstanding('node-a') +
+          outstanding('node-b') +
+          outstanding('node-c') ===
+        3,
+    )
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const began = Date.now()
+    expect(await book.cancelForSession(parent)).toBe(3)
+    expect(Date.now() - began).toBeLessThan(400)
+    expect(stopped).toHaveLength(3)
+  })
+
+  test('a worker turn looks the target up in the dial list once', async () => {
+    class CountingChat extends FakeChat {
+      lookups = 0
+      override async targets() {
+        this.lookups++
+        return super.targets()
+      }
+    }
+    const counting = new CountingChat([MAIN, CODER])
+    chat = counting
+    const book = tasks()
+    const parent = await foreground()
+    value(await call(book, 'start', parent, { title: 't', instructions: 'x' }))
+    const worker = await workerTurn(1)
+    const first = counting.lookups
+    value(
+      await call(book, 'report', worker, { summary: '一', state: 'working' }),
+    )
+    chat.reply(worker, 'r1')
+    await until(() => chat.sentTo(worker).length === 2)
+    expect(counting.lookups - first).toBe(1)
   })
 })
 

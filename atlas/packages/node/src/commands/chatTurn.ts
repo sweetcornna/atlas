@@ -84,6 +84,11 @@ export interface ChatTurnOptions {
   readonly baseline: ReadonlySet<string>
   readonly now: () => number
   readonly timeoutMs: number
+  /**
+   * The caller just checked the target against the dial list, so the send
+   * skips a second lookup; the chat face still checks the endpoint itself.
+   */
+  readonly authorized?: true
   readonly onNotice?: (text: string) => void
   /** The node accepted the line under this task id. */
   readonly onTask?: (taskId: string) => void
@@ -169,7 +174,10 @@ export function sendAndWait(options: ChatTurnOptions): ChatTurnHandle {
     )
     deadline.unref?.()
     void (async () => {
-      const sent = await options.dispatch.send(input, options.target)
+      const sent = await options.dispatch.send(
+        input,
+        options.authorized ? undefined : options.target,
+      )
       if (sent instanceof Response) return finish(await refusal(sent))
       if (!sent.ok)
         return finish({
