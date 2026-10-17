@@ -158,6 +158,8 @@ test('Claude Code: a warm process answers consecutive turns, reports tools and c
   expect(argv[argv.indexOf('--permission-prompt-tool') + 1]).toBe(
     'mcp__qianmo__qianmo_permission',
   )
+  // Not Claude Code's own `auto` classifier (real-runtime smoke test).
+  expect(argv[argv.indexOf('--permission-mode') + 1]).toBe('default')
   expect(argv[argv.indexOf('--model') + 1]).toBe('fake-model')
   expect(argv).toContain('--session-id')
   const denied = argv[argv.indexOf('--disallowedTools') + 1]!.split(',')

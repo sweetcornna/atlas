@@ -155,7 +155,14 @@ function responses(item: Record<string, unknown>): Response {
 }
 
 /** The node, its extensions and a pool for one real-runtime agent. */
-async function node(runtime: ExternalRuntimeKind, url: string) {
+async function node(
+  runtime: ExternalRuntimeKind,
+  url: string,
+  options: {
+    readonly approval?: 'allow' | 'ask'
+    readonly permission?: (toolName: string) => boolean
+  } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), 'qm-real-runtime-'))
   const bin = join(root, 'bin')
   mkdirSync(bin)
@@ -183,7 +190,7 @@ async function node(runtime: ExternalRuntimeKind, url: string) {
       transport: 'stdio',
       command: 'tiny-mcp',
       env: { DOCS_TOKEN: 'token-1' },
-      approval: 'allow',
+      approval: options.approval ?? 'allow',
     },
     {
       id: 'ext-00000000-0000-4000-8000-000000000002',
@@ -196,6 +203,7 @@ async function node(runtime: ExternalRuntimeKind, url: string) {
   ])
   expect(applied.ok).toBe(true)
   const agent: ExternalAgent = { agent: 'coder', cwd: workspace, runtime }
+  const asked: string[] = []
   const pool = new ExternalRuntimePool({
     agents: [agent],
     resolveLaunch: () => ({
@@ -206,6 +214,10 @@ async function node(runtime: ExternalRuntimeKind, url: string) {
     memoryRoot: join(root, 'memory'),
     hostTools: { announce: async () => ({ status: 'sent' }) },
     extensions: name => extensions.forAgent(name),
+    requestPermission: async (_sessionId, call) => {
+      asked.push(call.toolName)
+      return options.permission?.(call.toolName) ?? false
+    },
   })
   cleanup.push(async () => {
     await pool.stop()
@@ -219,7 +231,7 @@ async function node(runtime: ExternalRuntimeKind, url: string) {
       { sessionId, messageId: 'real-1', prompt: 'Use the docs.' },
       async () => {},
     )
-  return { turn }
+  return { turn, asked }
 }
 
 test.skipIf(CLAUDE === null)(
@@ -256,6 +268,39 @@ test.skipIf(CLAUDE === null)(
     expect(JSON.stringify(turns.at(-1)!.body)).toContain(
       'found: cache (token-1)',
     )
+  },
+  120_000,
+)
+
+test.skipIf(CLAUDE === null)(
+  'Claude Code: a call on a server set to ask goes through qianmo_permission to the operator, every time',
+  async () => {
+    const fake = model((path, body) => {
+      if (!path.endsWith('/messages')) return Response.json({ input_tokens: 1 })
+      const results = JSON.stringify(body.messages ?? []).split(
+        '"tool_result"',
+      ).length
+      // Two calls in one turn: each one is asked about.
+      if (results <= 2)
+        return anthropic({
+          type: 'tool_use',
+          id: `toolu_docs_${results}`,
+          name: 'mcp__docs__search',
+          input: { q: `cache-${results}` },
+        })
+      return anthropic({ type: 'text', text: 'done' })
+    })
+    const { turn, asked } = await node('claude-code', fake.url, {
+      approval: 'ask',
+      permission: tool => tool === 'mcp__docs__search',
+    })
+    expect(await turn()).toEqual({ outcome: 'completed', content: 'done' })
+    expect(asked).toEqual(['mcp__docs__search', 'mcp__docs__search'])
+    const last = JSON.stringify(
+      fake.seen.filter(one => one.path.endsWith('/messages')).at(-1)!.body,
+    )
+    expect(last).toContain('found: cache-1 (token-1)')
+    expect(last).toContain('found: cache-2 (token-1)')
   },
   120_000,
 )

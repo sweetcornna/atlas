@@ -10,8 +10,9 @@
  * against a loopback stand-in for the model and a tool host with one tool:
  *
  * - Claude Code: its `init` lists the `qianmo` server as connected with the
- *   host's tools, and a turn in which the stand-in model calls the host tool
- *   reaches the host and completes;
+ *   host's tools, and a turn completes in which the stand-in model calls the
+ *   host tool, then the same tool on a server the rules leave open, which
+ *   Claude Code must ask the host about (`qianmo_permission`) first;
  * - Codex: `app-server` starts with the node's overrides and lists the
  *   `qianmo` server with the host's tools.
  *
@@ -40,6 +41,8 @@ import { RuntimeToolHost } from './toolHost.js'
 /** The host tool the check calls. */
 export const SMOKE_TOOL = 'qianmo_smoke'
 const SMOKE_MODEL = 'qianmo-smoke'
+/** The same bridge again under a name no rule allows: every call is asked. */
+const ASKED_SERVER = 'qianmo-check'
 const DEFAULT_TIMEOUT_MS = 90_000
 
 export interface RuntimeSmokeOptions {
@@ -134,9 +137,10 @@ interface SmokeRun {
 }
 
 /**
- * A loopback stand-in for the Anthropic Messages API: the first request of a
- * turn gets a call of the host tool, the one carrying its result gets "ok".
- * Anything else (Codex never sends a turn here) gets an empty answer.
+ * A loopback stand-in for the Anthropic Messages API: a turn's first request
+ * gets a call of the host tool, the second the same tool on the asked server,
+ * the third "ok". Anything else (Codex never sends a turn here) gets an empty
+ * answer.
  */
 function fakeModel(): { port: number; stop: () => Promise<void> } {
   const server = Bun.serve({
@@ -149,16 +153,16 @@ function fakeModel(): { port: number; stop: () => Promise<void> } {
       const body = (await request.json().catch(() => ({}))) as {
         messages?: { content?: unknown }[]
       }
-      const answered = JSON.stringify(body.messages ?? []).includes(
-        '"tool_result"',
-      )
+      const answered =
+        JSON.stringify(body.messages ?? []).split('"tool_result"').length - 1
+      const server = [RUNTIME_MCP_SERVER, ASKED_SERVER][answered]
       return messageStream(
-        answered
+        server === undefined
           ? { type: 'text', text: 'ok' }
           : {
               type: 'tool_use',
-              id: 'toolu_smoke',
-              name: `mcp__${RUNTIME_MCP_SERVER}__${SMOKE_TOOL}`,
+              id: `toolu_smoke_${answered}`,
+              name: `mcp__${server}__${SMOKE_TOOL}`,
               input: {},
             },
       )
@@ -295,13 +299,12 @@ function claudeSmoke(run: SmokeRun): Promise<string | null> {
   writeFileSync(
     mcpConfig,
     JSON.stringify({
-      mcpServers: {
-        [RUNTIME_MCP_SERVER]: {
-          type: 'stdio',
-          command: run.mcp[0],
-          args: run.mcp.slice(1),
-        },
-      },
+      mcpServers: Object.fromEntries(
+        [RUNTIME_MCP_SERVER, ASKED_SERVER].map(name => [
+          name,
+          { type: 'stdio', command: run.mcp[0], args: run.mcp.slice(1) },
+        ]),
+      ),
     }),
     { mode: 0o600 },
   )
@@ -355,6 +358,10 @@ function claudeSmoke(run: SmokeRun): Promise<string | null> {
       if (message.subtype !== 'success' || message.is_error === true)
         return `回合没有完成：${String(message.result ?? message.subtype)}`
       if (!run.calls.includes(SMOKE_TOOL)) return '调用 qianmo 工具没有到达节点'
+      if (!run.calls.includes(PERMISSION_TOOL))
+        return '规则没放行的调用没有经 qianmo_permission 问节点'
+      if (run.calls.filter(name => name === SMOKE_TOOL).length < 2)
+        return '问过节点之后调用没有执行'
       return null
     },
   )

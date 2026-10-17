@@ -119,6 +119,11 @@ export function claudeCodeArgv(launch: ClaudeCodeLaunch): string[] {
     '--strict-mcp-config',
     '--mcp-config',
     launch.mcpConfigPath,
+    // Whatever the rules leave open is asked through the host: Claude Code
+    // 2.1.301 otherwise starts in `auto`, where its own model-based
+    // classifier decides and the prompt tool is never called.
+    '--permission-mode',
+    'default',
     '--permission-prompt-tool',
     `mcp__${RUNTIME_MCP_SERVER}__${PERMISSION_TOOL}`,
     '--model',
