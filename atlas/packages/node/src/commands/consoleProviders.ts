@@ -100,6 +100,8 @@ import {
 import { ProviderSecretStore } from './consoleProvidersSecrets.js'
 
 const PERSONAL_SUBJECT = /^u:[0-9a-f]{16}$/
+/** The ledger subject of the hub's own provisioning writes (P35). */
+export const SYSTEM_BILLING_SUBJECT = 'system:billing'
 /** §2.5 limits; `autocompact` is P18.7's and not in this build's table yet. */
 const TIMEOUTS = PROTOCOL_LIMITS.timeoutMs
 /** Repeated refreshes of one node inside this window are answered from cache. */
@@ -252,6 +254,8 @@ export class ConsoleProviders implements ProviderPort {
   readonly #onAlarm: (line: string) => void
   readonly #cache = new Map<string, NodeCache>()
   readonly #follows = new Map<string, unknown>()
+  /** Callers this hub made for its own writes ({@link systemCaller}). */
+  readonly #system = new WeakSet<ProviderCaller>()
   #routing: ((node: string) => ProviderRouted) | undefined
   #background: unknown = null
   #changes = 0
@@ -878,7 +882,31 @@ export class ConsoleProviders implements ProviderPort {
 
   // --- the gate and the ledger -------------------------------------------
 
+  /**
+   * The caller for the hub's own writes in the public edition (P35): the
+   * subscriber's gateway profile saved and delivered after a payment, with
+   * nobody at the page. Its lines go to the ledger as `system:billing`
+   * through `record`. Only an object made here passes the gate as it: the
+   * subject is not a credential, so no request can claim it.
+   */
+  systemCaller(record: ProviderCaller['record']): ProviderCaller {
+    const caller: ProviderCaller = {
+      subject: SYSTEM_BILLING_SUBJECT,
+      role: null,
+      breakGlass: false,
+      record,
+    }
+    this.#system.add(caller)
+    return caller
+  }
+
+  /** Whether `caller` is one {@link systemCaller} made. */
+  isSystemCaller(caller: ProviderCaller): boolean {
+    return this.#system.has(caller)
+  }
+
   #authorize<T>(caller: ProviderCaller): ProviderResult<T> | null {
+    if (this.#system.has(caller)) return null
     if (
       caller.breakGlass ||
       caller.role !== 'ops' ||

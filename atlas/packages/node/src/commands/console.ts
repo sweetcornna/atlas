@@ -40,6 +40,17 @@ import { ConsoleChannels } from './consoleChannels.js'
 import { ConsoleTasks } from './consoleTasks.js'
 import { ConsoleExtensions } from './consoleExtensions.js'
 import { ConsoleMagpie } from './consoleMagpie.js'
+import {
+  BillingStore,
+  billingStorePath,
+  type BillingConfig,
+} from '@qianmo/billing'
+import {
+  ConsoleBilling,
+  loadBillingConfig,
+  systemRecorder,
+} from './consoleBilling.js'
+import { publicProviders } from './consolePublicProviders.js'
 import { ConsoleUpdates } from './consoleUpdates.js'
 import { SelfUpgrader } from '../host/selfUpgradeRunner.js'
 import { parseAddress } from '@qianmo/protocol'
@@ -507,6 +518,24 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     generate: newConsoleToken,
   })
 
+  // The public edition (P35) is its billing config: plans, channels, the
+  // source link. One that does not load stops the start here, before any
+  // store is opened or anything dials out.
+  let billingConfig: BillingConfig | undefined
+  if (config.edition === 'public' && config.billingPath !== undefined) {
+    try {
+      billingConfig = loadBillingConfig(config.billingPath)
+    } catch (error) {
+      process.stderr.write(
+        `qm console: the public edition refuses to start · ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      )
+      process.exitCode = 1
+      return
+    }
+  }
+
   // The handoff ledger (P17.4), first of the stores and before anything dials
   // out: it is locked to one process, and a second console on this config
   // root must stop here — having opened nothing else — rather than become a
@@ -860,11 +889,27 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         onError: message => process.stderr.write(`[extensions] ${message}\n`),
       })
     : undefined
+  // The public edition (P35): the model service only through the platform
+  // gateway, tenant nodes only on their tenant's profile, and the hub's own
+  // writes (after a payment, nobody at the page) recorded as system:billing.
+  let billing: ConsoleBilling | undefined
+  const systemCaller =
+    billingConfig !== undefined && providers !== undefined && actions
+      ? providers.systemCaller(systemRecorder(entry => actions.record(entry)))
+      : undefined
+  const providersPort =
+    systemCaller !== undefined && providers !== undefined && tenancy
+      ? publicProviders(providers, {
+          tenancy,
+          isSystem: caller => providers.isSystemCaller(caller),
+          allowance: tenant => billing?.allowance(tenant) ?? 0,
+        })
+      : providers
   // The platform magpie gateway (P33/P34) rides on the model service: each
   // gateway key is a profile there. This process only drives magpie's
   // management API; model traffic goes from nodes straight to the gateway.
   const magpie =
-    config.magpie === true && providers !== undefined
+    config.magpie === true && providersPort !== undefined
       ? new ConsoleMagpie({
           statePath: qianmoConfigPath('qianmo', 'console', 'magpie.json'),
           secretsPath: qianmoConfigPath(
@@ -877,16 +922,54 @@ export async function runConsole(args: readonly string[]): Promise<void> {
             'console-keys',
             'magpie-master.key',
           ),
-          providers,
+          providers: providersPort,
           ...(tenancy === undefined
             ? {}
             : {
                 tenants: () =>
                   tenancy.read().config.tenants.map(tenant => tenant.id),
               }),
+          ...(systemCaller === undefined
+            ? {}
+            : {
+                subscriptions: {
+                  caller: systemCaller,
+                  onProfile: (tenant: string) =>
+                    billing?.profileChanged(tenant),
+                },
+              }),
           onError: message => process.stderr.write(`[magpie] ${message}\n`),
         })
       : undefined
+  const billingStore =
+    billingConfig !== undefined &&
+    magpie !== undefined &&
+    tenancy !== undefined &&
+    systemCaller !== undefined &&
+    providersPort !== undefined &&
+    actions !== undefined
+      ? new BillingStore(billingStorePath())
+      : undefined
+  if (
+    billingStore !== undefined &&
+    billingConfig !== undefined &&
+    magpie !== undefined &&
+    tenancy !== undefined &&
+    systemCaller !== undefined &&
+    providersPort !== undefined &&
+    actions !== undefined
+  ) {
+    billing = new ConsoleBilling({
+      config: billingConfig,
+      store: billingStore,
+      tenancy,
+      magpie,
+      providers: providersPort,
+      caller: systemCaller,
+      record: systemRecorder(entry => actions.record(entry)),
+      onError: line => process.stderr.write(`[billing] ${line}\n`),
+    })
+  }
 
   // File exchange goes through the repo connection marked for it, else the
   // CLI repo: connections win, as for the relay. The repo is fixed for this
@@ -1078,6 +1161,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(updates === undefined ? {} : { updates }),
     ...(extensions === undefined ? {} : { extensions }),
     ...(magpie === undefined ? {} : { magpie }),
+    ...(billing === undefined ? {} : { billing }),
     ...(approvals === undefined ? {} : { approvals }),
     ...(usage === undefined ? {} : { usage }),
     ...(tenancy === undefined ? {} : { tenancy }),
@@ -1127,7 +1211,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(handoff === undefined ? {} : { handoff: handoff.port }),
     ...(handoffDevices === undefined ? {} : { handoffDevices }),
     ...(handoffGit === undefined ? {} : { handoffGit }),
-    ...(providers === undefined ? {} : { providers }),
+    ...(providersPort === undefined ? {} : { providers: providersPort }),
     ...(desktop === undefined ? {} : { desktop }),
     ...(routing === undefined ? {} : { routing }),
     binName: 'qm',
@@ -1168,6 +1252,12 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         ...(providers === undefined || config.providers === undefined
           ? []
           : [['模型服务配置', config.providers.storePath] as const]),
+        ...(billing === undefined || config.billingPath === undefined
+          ? []
+          : [
+              ['计费配置', config.billingPath] as const,
+              ['计费账本', billingStorePath()] as const,
+            ]),
       ],
     },
   }
@@ -1190,6 +1280,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   updates?.start()
   extensions?.start()
   magpie?.start()
+  billing?.start()
 
   const origin = httpOrigin(config.hostname, handle.port)
   // token 是自己生成的才回显：显式提供的那一个已经在操作者手里，把它再打进
@@ -1348,6 +1439,16 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           ? 'enabled (management API only; nodes call the gateway directly; fake-tested only)'
           : `UNAVAILABLE (${magpie.problem})`,
       )
+    if (billing !== undefined && billingConfig !== undefined) {
+      const site = billing.site()
+      banner += field(
+        'billing',
+        `public edition -> ${config.billingPath ?? ''} (plans ${site.plans.length}; ` +
+          `wechatpay ${site.channels.wechatpay ? 'on' : 'off'}, alipay ${site.channels.alipay ? 'on' : 'off'}, ` +
+          `redeem ${site.channels.redeem ? 'on' : 'off'}; payment channels unevaluated)`,
+      )
+      banner += field('billing-store', billingStorePath())
+    }
     banner += field(
       'legacy-view',
       accounts.legacyView === false ? 'off' : 'on (migration)',
@@ -1402,6 +1503,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     void updates?.close()
     void extensions?.close()
     magpie?.close()
+    billing?.close()
+    billingStore?.close()
     connectors?.close()
     usageCollection?.stop()
     void approvals?.close()

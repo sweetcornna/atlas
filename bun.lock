@@ -171,6 +171,7 @@
         "@qianmo/adapter": "workspace:*",
         "@qianmo/audit": "workspace:*",
         "@qianmo/backup": "workspace:*",
+        "@qianmo/billing": "workspace:*",
         "@qianmo/capability": "workspace:*",
         "@qianmo/capacity": "workspace:*",
         "@qianmo/console": "workspace:*",
