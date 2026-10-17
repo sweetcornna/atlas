@@ -34,6 +34,7 @@ function tasks(
   options: {
     foreground?: (id: string) => boolean
     related?: (id: string) => readonly string[]
+    turnTtlMs?: number
   } = {},
 ) {
   const book = new ConsoleTasks({
@@ -96,6 +97,35 @@ async function workerTurn(n: number): Promise<string> {
     return worker !== '' && chat.sentTo(worker).length >= n
   })
   return worker
+}
+
+/** Worker sessions, in the order the hub first sent into them. */
+function workerSessions(): string[] {
+  return [
+    ...new Set(
+      chat.sent.filter(one => one.background).map(one => one.sessionId),
+    ),
+  ]
+}
+
+function targetOf(sessionId: string): string {
+  return chat.records.get(sessionId)!.session.target
+}
+
+/** Worker lines on a node's agents still waiting for their answer. */
+function outstanding(node: string): number {
+  let count = 0
+  for (const id of workerSessions()) {
+    if (targetOf(id).split('/')[2] !== node) continue
+    const turns = chat.records.get(id)!.turns
+    for (const turn of turns)
+      if (
+        turn.author === 'operator' &&
+        !turns.some(one => one.author === 'agent' && one.taskId === turn.taskId)
+      )
+        count++
+  }
+  return count
 }
 
 beforeEach(() => {
@@ -378,27 +408,82 @@ describe('the worker loop', () => {
     expect(chat.sentTo(worker)).toHaveLength(1)
   })
 
-  test('at most two workers run on one agent at a time', async () => {
+  test('one worker turn per node: tasks on a node take turns, the slot is handed over, another node runs alongside', async () => {
     const book = tasks()
     const parent = await foreground()
+    const ids: string[] = []
     for (const title of ['a', 'b', 'c'])
-      value(await call(book, 'start', parent, { title, instructions: 'x' }))
-    await until(
-      () =>
-        chat.sent.filter(one => one.text.startsWith('你是一个持久后台子智能体'))
-          .length === 2,
+      ids.push(
+        value<{ id: string }>(
+          await call(book, 'start', parent, { title, instructions: 'x' }),
+        ).id,
+      )
+    value(
+      await call(book, 'start', parent, {
+        title: 'd',
+        instructions: 'x',
+        agent: CODER,
+      }),
     )
+    await until(() => workerSessions().length === 2)
     await new Promise(resolve => setTimeout(resolve, 20))
-    const first = chat.sent.filter(one =>
-      one.text.startsWith('你是一个持久后台子智能体'),
+    // One on node-a, one on node-b, the other two node-a tasks wait.
+    expect(outstanding('node-a')).toBe(1)
+    expect(outstanding('node-b')).toBe(1)
+    const waiting = book
+      .forSession(parent)
+      .filter(task => task.target === MAIN && task.status === 'queued')
+    expect(waiting.map(task => task.phase)).toEqual(['排队中', '排队中'])
+    // The running node-a worker ends a turn without a report: its loop wants
+    // another turn, but the slot goes to the next task in line first.
+    const first = workerSessions().find(id => targetOf(id) === MAIN)!
+    chat.reply(first, '这一阶段做完了')
+    await until(() => workerSessions().length === 3)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(outstanding('node-a')).toBe(1)
+    expect(chat.sentTo(first)).toHaveLength(1)
+    expect(
+      book.forSession(parent).find(task => task.title === 'a')?.status,
+    ).toBe('queued')
+  })
+
+  test('a worker turn carries its own deadline and the background marker', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    value(await call(book, 'start', parent, { title: 't', instructions: 'i' }))
+    const worker = await workerTurn(1)
+    // Not the chat face's five-minute default: 30 minutes unless configured.
+    expect(chat.sentTo(worker)[0]).toMatchObject({
+      taskTtlMs: 30 * 60_000,
+      background: true,
+    })
+    await book.close()
+    open = []
+    tasks({ turnTtlMs: 1_200_000 })
+    await until(() => chat.sentTo(worker).length === 2)
+    expect(chat.sentTo(worker)[1]?.taskTtlMs).toBe(1_200_000)
+  })
+
+  test("a report after the chat face's local timeout still counts until the node answers", async () => {
+    const book = tasks()
+    const parent = await foreground()
+    value(await call(book, 'start', parent, { title: 't', instructions: 'i' }))
+    const worker = await workerTurn(1)
+    // The chat face gave up waiting; the node has not answered.
+    chat.timeout(worker, false)
+    value(
+      await call(book, 'report', worker, {
+        summary: '到点前的进展',
+        state: 'working',
+      }),
     )
-    expect(first).toHaveLength(2)
-    chat.reply(first[0]!.sessionId, 'x', 'failed')
-    await until(
-      () =>
-        chat.sent.filter(one => one.text.startsWith('你是一个持久后台子智能体'))
-          .length === 3,
-    )
+    // The node's own E_TASK_TIMEOUT ends the turn: now it is over.
+    chat.timeout(worker, true)
+    const late = await call(book, 'report', worker, {
+      summary: '晚到',
+      state: 'working',
+    })
+    expect(late.ok ? '' : late.message).toBe('这一轮不在进行中')
   })
 })
 

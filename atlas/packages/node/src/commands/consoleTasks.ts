@@ -19,6 +19,13 @@
  * Every worker turn goes through the same `ChatDispatch` boundary as the
  * console (ownership, tenancy, quota, audit), so a task cannot do anything
  * its owner could not.
+ *
+ * A node runs one turn at a time, so a worker turn is a turn the owner's
+ * foreground is not getting. Three things keep the foreground responsive:
+ * workers end their turn after each phase (the hub calls them again), at most
+ * one worker turn per node is in flight, and every worker turn goes out marked
+ * `background` with its own deadline, so the node lets interactive turns go
+ * first and stops a worker turn that outlives it.
  */
 
 import * as path from 'node:path'
@@ -40,7 +47,12 @@ import {
   readTextIfExists,
   writePrivateJson,
 } from '../providers/store.js'
-import { refusal, sendAndWait, type ChatTurnHandle } from './chatTurn.js'
+import {
+  refusal,
+  sendAndWait,
+  terminalReply,
+  type ChatTurnHandle,
+} from './chatTurn.js'
 import type { HubCallHandler } from './consoleControl.js'
 
 const STATUSES = [
@@ -69,7 +81,7 @@ const RESUMABLE: ReadonlySet<TaskStatus> = new Set([
 const TERMINAL: ReadonlySet<TaskStatus> = new Set(['completed', 'cancelled'])
 
 const PHASE: Record<TaskStatus, string> = {
-  queued: '等待执行',
+  queued: '排队中',
   running: '执行中',
   interrupted: '等待恢复',
   completion_pending: '已报告完成，等这一轮结束',
@@ -181,15 +193,30 @@ export interface ConsoleTasksOptions {
   readonly foreground?: (sessionId: string) => boolean
   /** Sessions that are the same conversation (a chat after `/new`); tasks follow it. */
   readonly related?: (sessionId: string) => readonly string[]
-  /** Longest wait for one worker turn. */
-  readonly turnTimeoutMs?: number
+  /**
+   * One worker turn's deadline (`taskTtlMs`); approvals asked for in the
+   * turn expire with it. Default 30 minutes.
+   */
+  readonly turnTtlMs?: number
   /** How long to wait after a failed turn; tests shorten it. */
   readonly backoffMs?: (failures: number) => number
   readonly onError?: (message: string) => void
 }
 
 const MAX_ACTIVE_PER_PARENT = 8
-const MAX_RUNNING_PER_TARGET = 2
+/**
+ * Worker turns in flight per node. One: the node runs one turn at a time, and
+ * a second worker turn would only queue there in front of the owner's next
+ * message. Tasks on the same node take turns.
+ */
+const MAX_RUNNING_PER_NODE = 1
+const DEFAULT_TURN_TTL_MS = 30 * 60_000
+/**
+ * How much longer than the deadline the hub waits for a worker turn's answer:
+ * the node answers a stopped background turn within seconds of its deadline,
+ * and the chat face's own fallback fires 15 s after it.
+ */
+const TURN_WAIT_SLACK_MS = 60_000
 /** Consecutive successful turns without any report before the task pauses. */
 const MAX_QUIET_TURNS = 5
 /** Consecutive failed turns before the task stops and asks the user. */
@@ -234,6 +261,7 @@ export class ConsoleTasks {
     { target: string; taskId: string | null; handle: ChatTurnHandle }
   >()
   readonly #waits = new Map<string, () => void>()
+  /** Worker turns in flight by node; see {@link MAX_RUNNING_PER_NODE}. */
   readonly #slots = new Map<string, number>()
   readonly #slotQueue = new Map<string, (() => void)[]>()
   readonly #listeners = new Set<
@@ -479,14 +507,11 @@ export class ConsoleTasks {
     const asked = turns.some(
       turn => turn.author === 'operator' && turn.taskId === taskId,
     )
-    const answered = turns.some(
-      turn =>
-        turn.author === 'agent' &&
-        turn.variant !== 'notice' &&
-        turn.taskId === taskId &&
-        (turn.state === 'done' || turn.state === 'failed'),
-    )
-    if (!asked || answered) return '这一轮不在进行中'
+    // The same terminal rule the worker loop waits on: the chat face's local
+    // timeout guess is not the node's answer, and until the node answers the
+    // turn may still be running and reporting.
+    if (!asked || terminalReply(turns, taskId) !== undefined)
+      return '这一轮不在进行中'
     return {
       transcript: transcript.value,
       owner: this.#options.accounts?.book.ownerOf(contextId) ?? 'legacy:admin',
@@ -712,21 +737,32 @@ export class ConsoleTasks {
     this.#loops.set(id, loop)
   }
 
-  async #slot(target: string): Promise<() => void> {
-    const used = this.#slots.get(target) ?? 0
-    if (used >= MAX_RUNNING_PER_TARGET)
+  #slotFree(node: string): boolean {
+    return (this.#slots.get(node) ?? 0) < MAX_RUNNING_PER_NODE
+  }
+
+  /**
+   * A worker-turn slot on `node`. Released with a waiter queued, the slot is
+   * handed straight to it and the count never drops, so a loop that comes
+   * straight back for another turn queues behind the others instead of
+   * slipping in before the waiter it just woke has counted itself.
+   */
+  async #slot(node: string): Promise<() => void> {
+    if (this.#slotFree(node))
+      this.#slots.set(node, (this.#slots.get(node) ?? 0) + 1)
+    else
       await new Promise<void>(resolve => {
-        const queue = this.#slotQueue.get(target) ?? []
+        const queue = this.#slotQueue.get(node) ?? []
         queue.push(resolve)
-        this.#slotQueue.set(target, queue)
+        this.#slotQueue.set(node, queue)
       })
-    this.#slots.set(target, (this.#slots.get(target) ?? 0) + 1)
     let released = false
     return () => {
       if (released) return
       released = true
-      this.#slots.set(target, (this.#slots.get(target) ?? 1) - 1)
-      this.#slotQueue.get(target)?.shift()?.()
+      const next = this.#slotQueue.get(node)?.shift()
+      if (next !== undefined) next()
+      else this.#slots.set(node, Math.max(0, (this.#slots.get(node) ?? 1) - 1))
     }
   }
 
@@ -799,11 +835,16 @@ export class ConsoleTasks {
   }
 
   async #execute(id: string): Promise<void> {
+    const ttl = this.#options.turnTtlMs ?? DEFAULT_TURN_TTL_MS
     let failures = 0
     while (!this.#closed) {
       let task = this.#tasks.get(id)
       if (task === undefined || !RESUMABLE.has(task.status)) break
-      const release = await this.#slot(task.target)
+      const node = parseAddress(task.target)?.node ?? task.target
+      // Waiting for the node's one worker turn reads as waiting, not running.
+      if (task.status === 'running' && !this.#slotFree(node))
+        task = this.#patch(id, { status: 'queued' })
+      const release = await this.#slot(node)
       let outcome: { ok: boolean; error?: string; cancelled?: boolean } = {
         ok: false,
       }
@@ -844,10 +885,15 @@ export class ConsoleTasks {
                 chat: this.#options.chat,
                 dispatch,
                 target: task.target,
-                input: { sessionId: session.id, text: prompt },
+                input: {
+                  sessionId: session.id,
+                  text: prompt,
+                  taskTtlMs: ttl,
+                  background: true,
+                },
                 baseline: new Set(session.transcript.turns.map(one => one.id)),
                 now: this.#now,
-                timeoutMs: this.#options.turnTimeoutMs ?? 6 * 60 * 60_000,
+                timeoutMs: ttl + TURN_WAIT_SLACK_MS,
                 onTask: taskId => {
                   turn.taskId = taskId
                 },
