@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.4（生效）**；v1.4 按 2026-10-17 合并前审查改：§0、§5 写明上游测连与拉模型列表由中枢经管理接口触发、从 magpie 发出（章程 v3.6 N-5 补注）；v1.3 回写 P33.4 TLS 补测（§4）、§1 节点信任自签 CA 与名单行为、§2.2 轮换窗口的实测与「节点能力未知先问节点」；v1.2 回写 P33.4 真机冒烟（§4）、一把密钥服务三种底层（§2.1 `laneAddresses`）、§1 管理链接进日志与额度插件默认状态；v1.1 按实现回写 §2.2 的轮换与两个已知窗口 |
+| 文档版本 | **v1.4（生效）**；v1.4 按 2026-10-17 合并前审查改：§0、§5 写明上游测连与拉模型列表由中枢经管理接口触发、从 magpie 发出（章程 v3.6 N-5 补注），§2.2 与 §4 注明轮换窗口里的换代由测试脚本驱动、常驻主机不在环内，未评估的长跑改为「超过 1 小时」；v1.3 回写 P33.4 TLS 补测（§4）、§1 节点信任自签 CA 与名单行为、§2.2 轮换窗口的实测与「节点能力未知先问节点」；v1.2 回写 P33.4 真机冒烟（§4）、一把密钥服务三种底层（§2.1 `laneAddresses`）、§1 管理链接进日志与额度插件默认状态；v1.1 按实现回写 §2.2 的轮换与两个已知窗口 |
 | 日期 | 2026-10-17 |
 | 核对基点 | 本仓库 `db52f282`（main，#229 合并提交，基座 qianmopi v18.8.8）；magpie 源码 `yetone/magpie@8b84dc9`，本机发行版 `magpie 0.1.1268`，GitHub 发行 `v0.1.1278` 有 `magpie-cli-linux-{amd64,arm64}`；P33.4 冒烟用 `v0.1.1278` linux-arm64 官方二进制 |
 | 范围依据 | 负责人 2026-10-17 决定（对话记录）：接入 magpie 作为模型统一调度管理器；前端按本项目的风格特化；另立公开版（见 [`public-edition.md`](./public-edition.md)，P35）。章程 v3.5 §2.7 |
@@ -23,7 +23,7 @@
 - **模型调用不经过中枢**（章程 N-5 v2.22「由中枢代为调用模型」仍不解禁，R-9 不变）：magpie 是一个独立的网关服务，可以和中枢同机，但不是中枢进程，模型流量是「节点 → magpie → 上游」。中枢只调用 magpie 的管理接口（`/api/*`）和 `/api/hello`、`/v1/models` 这类只读接口。例外（章程 N-5 v3.6 补注、[`providers-console-m1.md`](./providers-console-m1.md) R-9）：加上游时 magpie 保存前向上游拉一次模型列表，「网关」页的「测试」让 magpie 向上游每种协议发一个最小请求；这两类请求由中枢经管理接口触发，从 magpie 发给上游、不经中枢进程，中枢只收到结果（模型号，各协议通断、状态码与耗时，上游报错原文丢掉），不转发模型流量。
 - **只用 API key 类上游**（章程 §5.2③、L-6）：magpie 能读取并代用 Claude、ChatGPT、Copilot、Gemini 等个人订阅的登录态，阡陌不用这部分。阡陌签发的每把密钥都带显式的模型白名单，白名单只由 API key 类供应商（`provider/*`）与成员全部是 API key 类供应商的路由组组成；控制台不提供订阅登录入口，已有的订阅类上游只读展示并标「阡陌不使用」。
 - **中转商排除条款**（[`providers-console-m1.md`](./providers-console-m1.md) §4.5）：magpie 预设指向运营方自己部署的网关，不是第三方中转商，不在排除之列；预设不带推广链接、logo 或赞助排序（N-5）。
-- **证据状态**：magpie 预设 `evaluated:false`；真实 magpie 与真实上游的整轮调用只在 §4 P33.4 记下的组合上跑过，其余组合（跨公网节点、多节点并发、24 小时以上长跑、其他上游）仍标「未评估」。
+- **证据状态**：magpie 预设 `evaluated:false`；真实 magpie 与真实上游的整轮调用只在 §4 P33.4 记下的组合上跑过，其余组合（跨公网节点、多节点并发、超过 1 小时的长跑、其他上游）仍标「未评估」。
 
 ## §1 部署形态
 
@@ -58,7 +58,7 @@
 - **签发**：中枢生成 32 位以上的随机密钥（不以 `sk-magpie-` 开头，magpie 保留这个前缀），经 `POST /api/caller-keys/add-key {"name":"qm-<binding>-<uuid>","secret":…}` 建到 magpie，再按名字找回 id；随后 `models-key` 写白名单（§0），按需 `limit-key` 设上限。
 - **保管**：密钥明文只进 P18 的模型档案（`consoleProvidersSecrets.ts` 的信封加密），magpie 侧状态文件只记名字与 id。之后节点拿到它的方式与任何 API key 档案相同。
 - **轮换**：`rotate-key` 由 magpie 生成新值（magpie 不接受指定值，所以轮换后的密钥以 `sk-magpie-key-` 开头）→ 更新档案密钥 → 走正常下发；旧密钥在 magpie 侧即时失效（magpie 每次请求都重读密钥表）。
-- **已知窗口**：① magpie 的 `add-key` 不接受白名单与停用，新密钥建出来那一刻是「启用 + 不限模型」，中枢紧接着写白名单（公开版的订阅者密钥再停用）；这段毫秒级窗口里密钥值只有中枢知道。② 轮换后旧值立即失效，节点要等空闲才切到新值（P33.4 实测）：在途的请求照常完成（magpie 只在请求开始时验密钥）；等待期间进旧一代的新回合拿 401 失败——这不是限流，底层不按限流重试，Codex 约 6 s 失败，Claude Code 按自己的重试走完约 3 分钟才失败，这期间节点算忙、换代随之推迟；空闲换代后重试成功。一次性起的 `qm agent -p` 直接读到新值。
+- **已知窗口**：① magpie 的 `add-key` 不接受白名单与停用，新密钥建出来那一刻是「启用 + 不限模型」，中枢紧接着写白名单（公开版的订阅者密钥再停用）；这段毫秒级窗口里密钥值只有中枢知道。② 轮换后旧值立即失效，节点按 [`providers-console-m1.md`](./providers-console-m1.md) §2.7 等空闲才切到新值：在途的请求照常完成（magpie 只在请求开始时验密钥）；等待期间进旧一代的新回合拿 401 失败——这不是限流，底层不按限流重试，Codex 约 6 s 失败，Claude Code 按自己的重试走完约 3 分钟才失败；空闲换代后重试成功。这几条出自 P33.4 TLS 补测，其中换代由测试脚本 `node-runner.ts` 的 `maybeSwitch` 按 §2.7 的规则驱动（有回合在途就等，空闲后按新档案重起热会话），常驻主机不在环内。由此推断常驻主机在 Claude Code 那约 3 分钟里把节点算忙、换代推迟到它失败之后，这一点未评估。一次性起的 `qm agent -p` 直接读到新值。
 - **下发时节点能力未知先问节点**：中枢按节点回报的能力决定是否带 `laneAddresses`。档案带另给的通道、而这个节点自中枢启动以来还没回报过能力（或状态查询一直失败）时，下发前先做一次状态查询，仍未知就拒绝（`capabilities-unknown`），不按 v1 下限把通道编掉——否则节点只剩主通道、Claude Code 与 Codex 找不到自己协议的档案，而版本号相同、中枢不会补发（P33.4 TLS 补测中发现并修掉）。
 - **吊销**：先把节点改派回原档案或空档案，再 `remove-key`；公开版到期用 `off-key`（续费时 `on-key`），不删记录。
 
@@ -101,7 +101,7 @@
 | P33.2 | `magpie` 预设与模型号校验 | `presets.test.ts` 控制台集合 = 节点集合；`provider/model`、`group/<id>` 能编译进 `models.yml` |
 | P33.3 | `MagpiePort` 与 `--magpie` | 用假 magpie 跑通签发 → 建档 → 指派 → 下发 → 轮换 → 吊销；状态文件 0600；白名单只含 API key 类上游 |
 | P34 | 「网关」页 | 路由、页面、角色、文档同步、动作词、依赖与文案各门禁通过；读者看不到写控件 |
-| P33.4 | 真实 magpie 冒烟 | **2026-10-17 实测通过**。环境：magpie `0.1.1278` linux-arm64 官方二进制跑在 colima 容器里（`DO_NOT_TRACK=1`、`TZ=Asia/Shanghai`），网关经端口映射访问，magpie 看到的来源都不是回环，每个调用都要密钥；上游是一个 API key 类自定义上游；Claude Code `2.1.301`、codex-cli `0.163.0`，qianmopi 与中枢为本分支源码。结果：中枢签发 → 建档 → 下发到真节点；同一台节点、同一把密钥上 qianmopi（`qm agent -p`）、Claude Code（阡陌的 stream-json 启动参数与环境）、Codex（阡陌的 `CodexChannel` 驱动 `codex app-server`）各完成一轮真实对话，用量按这把密钥归账；轮换后节点拿到新值、旧值 401；额度用尽回 429，带 `Retry-After`、`X-Magpie-Limit-Reset`、`X-Should-Retry: false`；删钥后 401；另一个容器与宿主不带或带错密钥一律 401，不带 cookie 访问管理口 401。冒烟中补了两处：网关页可按地址加自定义上游、`laneAddresses`。证据在 `atlas-evidence/2026-10-17/magpie-smoke/`。<br>**TLS 补测（同日）**：magpie 同一发行版以 `--tls-cert/--tls-key` 起网关与管理页（自签 CA，`MAGPIE_ALLOW_IPS` 只放节点网段，`DO_NOT_TRACK=1`、`TZ=Asia/Shanghai`，只映射到本机回环、不对公网开放）；中枢以 https 网关源站与 https 管理源站连接、签发、下发，非回环的 http 源站被客户端拒绝，中枢不信任 CA 时报「连不上」；节点信任 CA 后一把密钥上 qianmopi、Claude Code、Codex 各通一轮。第三来源在名单内不带或带错密钥一律 401（三种协议），名单外连有效密钥也 403。节点连续 1 小时、每 5 分钟三种底层各一轮（39/39 成功），中途在 Claude Code 长回合进行时轮换：长回合照常完成，进旧一代的 Codex 回合 401，节点空闲后换代、重试成功。补测中修掉一处：节点能力未知时下发会丢掉 `laneAddresses`（§2.2）。证据在 `atlas-evidence/2026-10-17/magpie-smoke-tls/`。<br>**未覆盖**：跨公网的另一台机器（节点与网关在两台机器上）、多节点并发、24 小时以上长跑。 |
+| P33.4 | 真实 magpie 冒烟 | **2026-10-17 实测通过**。环境：magpie `0.1.1278` linux-arm64 官方二进制跑在 colima 容器里（`DO_NOT_TRACK=1`、`TZ=Asia/Shanghai`），网关经端口映射访问，magpie 看到的来源都不是回环，每个调用都要密钥；上游是一个 API key 类自定义上游；Claude Code `2.1.301`、codex-cli `0.163.0`，qianmopi 与中枢为本分支源码。结果：中枢签发 → 建档 → 下发到真节点；同一台节点、同一把密钥上 qianmopi（`qm agent -p`）、Claude Code（阡陌的 stream-json 启动参数与环境）、Codex（阡陌的 `CodexChannel` 驱动 `codex app-server`）各完成一轮真实对话，用量按这把密钥归账；轮换后节点拿到新值、旧值 401；额度用尽回 429，带 `Retry-After`、`X-Magpie-Limit-Reset`、`X-Should-Retry: false`；删钥后 401；另一个容器与宿主不带或带错密钥一律 401，不带 cookie 访问管理口 401。冒烟中补了两处：网关页可按地址加自定义上游、`laneAddresses`。证据在 `atlas-evidence/2026-10-17/magpie-smoke/`。<br>**TLS 补测（同日）**：magpie 同一发行版以 `--tls-cert/--tls-key` 起网关与管理页（自签 CA，`MAGPIE_ALLOW_IPS` 只放节点网段，`DO_NOT_TRACK=1`、`TZ=Asia/Shanghai`，只映射到本机回环、不对公网开放）；中枢以 https 网关源站与 https 管理源站连接、签发、下发，非回环的 http 源站被客户端拒绝，中枢不信任 CA 时报「连不上」；节点信任 CA 后一把密钥上 qianmopi、Claude Code、Codex 各通一轮。第三来源在名单内不带或带错密钥一律 401（三种协议），名单外连有效密钥也 403。节点连续 1 小时、每 5 分钟三种底层各一轮（39/39 成功），中途在 Claude Code 长回合进行时轮换：长回合照常完成，进旧一代的 Codex 回合 401，节点空闲后换代、重试成功；换代由测试脚本 `node-runner.ts` 的 `maybeSwitch` 按 providers-console-m1 §2.7 的规则驱动，常驻主机不在环内。补测中修掉一处：节点能力未知时下发会丢掉 `laneAddresses`（§2.2）。证据在 `atlas-evidence/2026-10-17/magpie-smoke-tls/`。<br>**未覆盖**：跨公网的另一台机器（节点与网关在两台机器上）、多节点并发、超过 1 小时的长跑、常驻主机自己驱动的换代（上面由测试脚本代行）。 |
 
 ## §5 不做
 
