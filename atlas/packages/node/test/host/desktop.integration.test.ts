@@ -81,6 +81,7 @@ for (const [bundled, api] of [
       let pool: ResidentOmpPool | undefined,
         turn: OmpResidentTurnPort | undefined
       const requests: AuthzRequest[] = []
+      const launched: string[] = []
       let clickAsk = 0
       try {
         const enabled = await node.control(
@@ -155,6 +156,7 @@ for (const [bundled, api] of [
               }
             : {}),
           desktop: node,
+          onLaunch: (_session, config) => launched.push(JSON.stringify(config)),
           agents: [{ agent: 'reviewer', cwd: workspace }],
           memoryRoot: path.join(root, 'memory'),
           announce: async () => ({ status: 'queued' }),
@@ -242,6 +244,14 @@ for (const [bundled, api] of [
           async () => {},
         )
         expect(result.outcome).toBe('completed')
+        // The session configuration is written out and audited; the claim
+        // secret stays in the resource descriptor.
+        expect(r.cdpToken).toHaveLength(43)
+        expect(launched.length).toBeGreaterThan(0)
+        for (const config of launched) {
+          expect(config).not.toContain(r.cdpToken!)
+          expect(JSON.parse(config).desktop.cdpToken).toBeNull()
+        }
         expect(harness.offeredTools.has('eval')).toBe(false)
         expect(requests.map(r => r.toolName)).toEqual([
           'qianmo_browser_navigate',
