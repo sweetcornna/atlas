@@ -69,7 +69,9 @@ async function session(
   const root = path.join(base, 'config')
   process.env.QIANMO_CONFIG_DIR = root
   const workspace = path.join(base, 'workspace')
-  const otherWorkspace = path.join(base, 'other-workspace')
+  // Inside this agent's workspace, so it is hidden by name (a sibling under
+  // /tmp would already be covered by the private /tmp on Linux).
+  const otherWorkspace = path.join(workspace, 'other')
   const protectedRoot = path.join(base, 'protected')
   const memoryRoot = path.join(base, 'memory')
   const appsDir = path.join(base, 'applications')
@@ -461,9 +463,6 @@ test('bubblewrap hides the node home, config root and guarded roots, then mounts
     mountAt(args, '--ro-bind', path.join(desktop, 'openbox.xml')),
   ]
   for (const at of backs) expect(at).toBeGreaterThan(Math.max(...covering))
-  // Another agent's workspace is hidden; this agent's is not.
-  expect(hiddenAt(args, real(f.otherWorkspace))).toBeGreaterThanOrEqual(0)
-  expect(hiddenAt(args, real(f.workspace))).toBe(-1)
   // The workspace comes back read-only; a guarded root inside is hidden again.
   const workspace = mountAt(args, '--ro-bind', real(f.workspace))
   expect(workspace).toBeGreaterThan(Math.max(...covering))
@@ -472,6 +471,13 @@ test('bubblewrap hides the node home, config root and guarded roots, then mounts
   expect(
     args.findIndex(
       (a, i) => i > workspace && a === '--tmpfs' && args[i + 1] === vault,
+    ),
+  ).toBeGreaterThan(workspace)
+  // So is another agent's workspace: each desktop sees its own only.
+  const other = real(f.otherWorkspace)
+  expect(
+    args.findIndex(
+      (a, i) => i > workspace && a === '--tmpfs' && args[i + 1] === other,
     ),
   ).toBeGreaterThan(workspace)
   const env = setenv(args)
