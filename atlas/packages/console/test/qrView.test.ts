@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The checkout page's QR encoder (`src/view/qr.ts`). The WeChat login code's
- * smaller encoder, `src/qr.ts`, has its own file, `qr.test.ts`.
+ * The console's one QR encoder (`src/view/qr.ts`): the checkout page's payment
+ * codes and the WeChat channel's login code both render through it.
  *
  * The expected symbols are not this encoder's own output. They were produced
  * once, outside the repository, by Project Nayuki's qrcodegen (the TypeScript

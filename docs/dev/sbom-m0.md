@@ -149,7 +149,7 @@
 | `@qianmo/backup` | `atlas/packages/backup` | AGPL-3.0-or-later | 是 | 13/13 |
 | `@qianmo/capability` | `atlas/packages/capability` | AGPL-3.0-or-later | 是 | 17/17 |
 | `@qianmo/capacity` | `atlas/packages/capacity` | AGPL-3.0-or-later | 是 | 13/13 |
-| `@qianmo/console` | `atlas/packages/console` | AGPL-3.0-or-later | 是 | 208/208 |
+| `@qianmo/console` | `atlas/packages/console` | AGPL-3.0-or-later | 是 | 206/206 |
 | `@qianmo/diagnosis` | `atlas/packages/diagnosis` | AGPL-3.0-or-later | 是 | 6/6 |
 | `@qianmo/elastic` | `atlas/packages/elastic` | AGPL-3.0-or-later | 是 | 4/4 |
 | `@qianmo/extension` | `atlas/packages/extension` | AGPL-3.0-or-later | 是 | 6/6 |

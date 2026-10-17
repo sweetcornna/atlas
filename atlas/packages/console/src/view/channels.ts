@@ -13,7 +13,7 @@ import type {
   ChannelsSnapshot,
   ChannelView,
 } from '../directionPorts.js'
-import { qrSvg } from '../qr.js'
+import { qrSvg } from './qr.js'
 import { failureBar, icon, sectionHead, state, tag } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { formatRelative } from './format.js'
