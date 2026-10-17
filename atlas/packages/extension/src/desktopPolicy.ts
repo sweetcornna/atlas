@@ -12,6 +12,11 @@ export interface DesktopResource {
   readonly xauthority: string | null
   readonly downloads: string
   readonly tab: string
+  /**
+   * The private desktop's D-Bus session address (accessibility runs over it);
+   * absent or null when the node has no private bus.
+   */
+  readonly bus?: string | null
 }
 export const DESKTOP_FIELDS = {
   qianmo_browser_tabs: {},

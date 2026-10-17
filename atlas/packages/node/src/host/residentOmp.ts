@@ -1009,7 +1009,9 @@ export class ResidentOmpPool
       env.DISPLAY = config.desktop.display!
       env.XAUTHORITY = config.desktop.xauthority!
       delete env.WAYLAND_DISPLAY
-      delete env.DBUS_SESSION_BUS_ADDRESS
+      // Only the private desktop's own bus, never the node user's.
+      if (config.desktop.bus) env.DBUS_SESSION_BUS_ADDRESS = config.desktop.bus
+      else delete env.DBUS_SESSION_BUS_ADDRESS
     } else {
       delete env.DISPLAY
       delete env.XAUTHORITY
