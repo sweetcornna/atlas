@@ -13,9 +13,13 @@
  * - 租户的节点只持有本租户的档案或「无模型」：这条在期望状态上强制
  *   （`ConsoleProviders.configureScope`），跟随默认、停止托管、别人的档案一律
  *   算作「无模型」，任务分工只带它跑的那份档案，测连、拉模型列表与 dry-run 也
- *   不把别的档案发给它。指派只收本租户档案（不超过套餐含的节点数）或「无模型」；
- *   停止托管会留下节点上次拿到的密钥，所以不收。有租户节点时，全局默认只能清空
- *   或设为「无模型」。平台的节点不持有订阅者的档案。
+ *   不把别的档案发给它。指派只收本租户档案（不超过套餐含的节点数，只数眼下
+ *   映射给该租户的节点）或「无模型」；停止托管会留下节点上次拿到的密钥，所以
+ *   不收。有租户节点时，全局默认只能清空或设为「无模型」。
+ * - 平台的节点不持有订阅者的档案：还指派着订阅者档案的（交回平台、租户换了
+ *   节点）期望为「无模型」，页面显示偏差，下发即收回密钥；跟随默认与停止托管
+ *   照旧，但节点可能还跑着订阅者的档案（上次状态如此，或从没回报过）时，停止
+ *   托管与跟随空默认都不收，先指派档案或「无模型」收回。
  *
  * 读与节点上的其余操作原样转交。
  */
@@ -28,11 +32,15 @@ import type {
   ProviderResult,
   TenantPort,
 } from '@qianmo/console'
-import { magpieProfileId, NO_MODEL_PROFILE } from './consoleMagpie.js'
+import {
+  isTenantProfile,
+  magpieProfileId,
+  mayRunTenantProfile,
+  NO_MODEL_PROFILE,
+} from './consoleMagpie.js'
 import type { ProviderNodeScope } from './consoleProviders.js'
 
 const MAGPIE_PRESET = 'magpie'
-const TENANT_PROFILE = /^magpie-tenant-/
 
 export interface PublicProvidersOptions {
   readonly tenancy: TenantPort
@@ -69,10 +77,17 @@ function candidateProfile(candidate: ProviderCandidate): string {
     : candidate.profileId
 }
 
-/** A platform node: anything but a subscriber's profile, the book decides the rest. */
+/**
+ * A platform node: anything but a subscriber's profile, the book decides the
+ * rest. One still assigned a subscriber's profile (handed back, or its
+ * tenant moved elsewhere) is expected to run 「无模型」, so the page shows it
+ * out of step and delivering takes the key back; following no default or not
+ * managed still means nothing is sent.
+ */
 const PLATFORM_SCOPE: ProviderNodeScope = {
-  allows: id => !TENANT_PROFILE.test(id),
-  fallback: null,
+  allows: id => !isTenantProfile(id),
+  fallback: NO_MODEL_PROFILE,
+  required: false,
   extras: true,
 }
 
@@ -90,7 +105,7 @@ export function publicProviders(
   options: PublicProvidersOptions,
 ): ProviderPort {
   const subscriptionWrite = (profileId: string, caller: ProviderCaller) =>
-    (TENANT_PROFILE.test(profileId) || profileId === NO_MODEL_PROFILE) &&
+    (isTenantProfile(profileId) || profileId === NO_MODEL_PROFILE) &&
     !options.isSystem(caller)
   const draftRefused = (candidate: ProviderCandidate): boolean => {
     const preset = candidatePreset(candidate)
@@ -125,6 +140,7 @@ export function publicProviders(
     return {
       allows: id => id === own || id === NO_MODEL_PROFILE,
       fallback: NO_MODEL_PROFILE,
+      required: true,
       extras: false,
     }
   }
@@ -208,7 +224,7 @@ export function publicProviders(
     },
     async setDefault(input, caller) {
       const profileId = input.profileId
-      if (profileId !== null && TENANT_PROFILE.test(profileId))
+      if (profileId !== null && isTenantProfile(profileId))
         return refused('订阅者的网关档案不能设为默认')
       if (profileId !== null && profileId !== NO_MODEL_PROFILE) {
         let tenantNodes: number
@@ -236,10 +252,25 @@ export function publicProviders(
         }
       const assignment: ProviderAssignment = input.assignment
       if (tenant === null) {
-        return assignment.mode === 'profile' &&
-          TENANT_PROFILE.test(assignment.profileId)
-          ? refused('订阅者的网关档案只给它自己租户的节点')
-          : inner.assign(input, caller)
+        if (assignment.mode === 'profile')
+          return isTenantProfile(assignment.profileId)
+            ? refused('订阅者的网关档案只给它自己租户的节点')
+            : inner.assign(input, caller)
+        // Not managed, or following a default of nothing, sends nothing: a
+        // node handed back that may still run a subscriber's profile would
+        // keep the key for good (the node sync takes back only one assigned
+        // that profile).
+        const overview = await inner.overview()
+        if (!overview.ok) return overview
+        const row = overview.value.nodes.find(one => one.node === input.node)
+        const sendsNothing =
+          assignment.mode === 'unmanaged' ||
+          overview.value.defaultProfileId === null
+        if (row !== undefined && sendsNothing && mayRunTenantProfile(row))
+          return refused(
+            '这台节点上还有订阅者的密钥 · 先指派档案或「无模型」收回',
+          )
+        return inner.assign(input, caller)
       }
       if (
         assignment.mode === 'profile' &&
@@ -253,12 +284,25 @@ export function publicProviders(
         )
       const overview = await inner.overview()
       if (!overview.ok) return overview
-      const others = overview.value.nodes.filter(
-        row =>
-          row.node !== input.node &&
-          row.assignment.mode === 'profile' &&
-          row.assignment.profileId === own,
-      ).length
+      // Only the tenant's nodes now hold a place in the plan: one handed back
+      // or moved away may still name the profile until the node sync takes
+      // it back, and its key is no longer the tenant's to count.
+      let others = 0
+      for (const row of overview.value.nodes) {
+        if (
+          row.node === input.node ||
+          row.assignment.mode !== 'profile' ||
+          row.assignment.profileId !== own
+        )
+          continue
+        const holder = tenantOf(row.node)
+        if (holder === undefined)
+          return {
+            ok: false,
+            failure: { code: 'unavailable', message: '租户配置不可用' },
+          }
+        if (holder === tenant) others++
+      }
       const allowed = options.allowance(tenant)
       if (others >= allowed)
         return {

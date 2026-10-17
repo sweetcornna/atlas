@@ -70,11 +70,24 @@ import type {
   TenantPort,
 } from '@qianmo/console'
 import type { MagpieLimit } from '@qianmo/magpie'
-import type { ConsoleMagpie } from './consoleMagpie.js'
+import {
+  type ConsoleMagpie,
+  isTenantProfile,
+  mayRunTenantProfile,
+  NO_MODEL_PROFILE,
+} from './consoleMagpie.js'
 
 const SWEEP_EVERY_MS = 60_000
-/** A delivery that failed twice running is tried again after this long. */
-const RETRY_EVERY_MS = 5 * 60_000
+/**
+ * A delivery that failed twice running is tried again after this long, then
+ * after twice as long each time it fails again, never more than
+ * {@link RETRY_AT_MOST_MS} apart. Every try is an apply in the model
+ * service's book and a row in the action ledger, and a node that answers
+ * but refuses (a full disk) would otherwise be asked every few minutes for
+ * as long as it lasts.
+ */
+const RETRY_FIRST_MS = 5 * 60_000
+const RETRY_AT_MOST_MS = 60 * 60_000
 
 /**
  * Read and check the billing config, secrets and all; throws a line that
@@ -238,11 +251,14 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
   readonly #dirty = new Set<string>()
   /**
    * Nodes whose last delivery failed: when the sweep may try again (at the
-   * next sweep after a first failure, every few minutes after that) and how
-   * many failed in a row.
+   * next sweep after a first failure, then backing off up to an hour) and
+   * how many failed in a row. A delivery on an event (a changed profile, a
+   * tenant node to (re)assign) does not wait for it.
    */
   readonly #retry = new Map<string, { at: number; failures: number }>()
   #nodes: Promise<void> = Promise.resolve()
+  /** Said once that nodes wait for 「无模型」, until it can be made again. */
+  #noModelWarned = false
   #timer: ReturnType<typeof setInterval> | null = null
   #unsubscribe: (() => void) | null = null
 
@@ -262,7 +278,12 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
     })
   }
 
-  /** The 60-second sweep and the tenancy watch, after the console is up. */
+  /**
+   * The 60-second sweep and the tenancy watch, after the console is up. The
+   * nodes are put in step at once, as a sweep does (retries included): a
+   * restart forgets which deliveries are owed, and a node handed back while
+   * the hub was down still holds its key.
+   */
   start(): void {
     if (this.#timer !== null) return
     this.#timer = setInterval(() => {
@@ -272,6 +293,7 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
     this.#unsubscribe = this.#options.tenancy.subscribe(() => {
       void this.syncNodes()
     })
+    void this.#queueSync(true)
   }
 
   close(): void {
@@ -431,10 +453,6 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
   async #syncNodes(sweep: boolean): Promise<void> {
     const { providers, caller, magpie } = this.#options
     const config = this.#options.tenancy.read().config
-    if (config.nodes.length === 0) {
-      this.#dirty.clear()
-      return
-    }
     const overview = await providers.overview()
     if (!overview.ok) return
     const rows = new Map(overview.value.nodes.map(row => [row.node, row]))
@@ -442,6 +460,47 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
     // Where a node beyond the plan goes: an apply of it replaces every key
     // the node held; "not managed" would leave the last delivery in place.
     const none = await magpie.noModelProfile()
+    // A node no longer mapped to any tenant (handed back to the platform, or
+    // its tenant moved to another) may still be assigned a subscriber's
+    // profile, and keeps its key until something else is delivered: it goes
+    // on no model too. This runs with no tenant node left at all; the sweep
+    // tries again while the node still runs a subscriber's profile.
+    const mapped = new Set(config.nodes.map(row => row.nodeId))
+    const reclaim: string[] = []
+    // Nodes that should go on no model while it cannot be made (no gateway
+    // connected): left as they are, and said.
+    const waiting: string[] = []
+    for (const row of overview.value.nodes) {
+      if (mapped.has(row.node)) continue
+      const current =
+        row.assignment.mode === 'profile' ? row.assignment.profileId : null
+      if (current === null) continue
+      if (isTenantProfile(current)) {
+        if (none === null) {
+          waiting.push(row.node)
+          continue
+        }
+        const assigned = await providers.assign(
+          { node: row.node, assignment: { mode: 'profile', profileId: none } },
+          caller,
+        )
+        if (!assigned.ok) {
+          this.#options.onError?.(
+            `billing: ${row.node} 没能指派 ${none} · ${assigned.failure.message}`,
+          )
+          continue
+        }
+        reclaim.push(row.node)
+      } else if (
+        sweep &&
+        current === none &&
+        behind(row) &&
+        mayRunTenantProfile(row) &&
+        (this.#retry.get(row.node)?.at ?? 0) <= now
+      )
+        reclaim.push(row.node)
+    }
+    await this.#deliver(reclaim, now)
     for (const { id: tenant } of config.tenants) {
       const dirty = this.#dirty.delete(tenant)
       const nodes = config.nodes
@@ -471,17 +530,23 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
           target = profileId
           room -= 1
         }
-        if (target === null) continue
+        if (target === null) {
+          if (current(node) !== NO_MODEL_PROFILE) waiting.push(node)
+          continue
+        }
         if (current(node) === target) {
           const row = rows.get(node)
           if (dirty && target === profileId) deliver.push(node)
           else if (sweep && row !== undefined && behind(row)) {
             // A delivery that did not land (the node was busy, unreachable,
             // or refused) is tried again by the sweep: at the next one, then
-            // every few minutes while the retries keep failing.
+            // less often while the retries keep failing, at least hourly.
             if ((this.#retry.get(node)?.at ?? 0) > now) continue
             deliver.push(node)
-          }
+          } else if (row !== undefined && !behind(row))
+            // In step after all (ops delivered it): the next failure starts
+            // the back-off afresh.
+            this.#retry.delete(node)
           continue
         }
         const assigned = await providers.assign(
@@ -496,25 +561,38 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
         }
         deliver.push(node)
       }
-      if (deliver.length === 0) continue
-      const applied = await providers.apply({ nodes: deliver }, caller)
-      if (!applied.ok) {
-        this.#options.onError?.(
-          `billing: 下发到 ${deliver.join(' ')} 失败 · ${applied.failure.message}`,
-        )
-        for (const node of deliver) this.#failed(node, now)
+      await this.#deliver(deliver, now)
+    }
+    if (none !== null) this.#noModelWarned = false
+    else if (waiting.length > 0 && !this.#noModelWarned) {
+      this.#noModelWarned = true
+      this.#options.onError?.(
+        `billing: 无模型档案不可用 · 网关未连接或档案未存入 · ${waiting.join(' ')} 暂未收回`,
+      )
+    }
+  }
+
+  /** Deliver to `nodes`, noting what did not land for the sweep to try again. */
+  async #deliver(nodes: readonly string[], now: number): Promise<void> {
+    if (nodes.length === 0) return
+    const { providers, caller } = this.#options
+    const applied = await providers.apply({ nodes: [...nodes] }, caller)
+    if (!applied.ok) {
+      this.#options.onError?.(
+        `billing: 下发到 ${nodes.join(' ')} 失败 · ${applied.failure.message}`,
+      )
+      for (const node of nodes) this.#failed(node, now)
+      return
+    }
+    for (const result of applied.value) {
+      if (result.outcome === 'ok') {
+        this.#retry.delete(result.node)
         continue
       }
-      for (const result of applied.value) {
-        if (result.outcome === 'ok') {
-          this.#retry.delete(result.node)
-          continue
-        }
-        this.#failed(result.node, now)
-        this.#options.onError?.(
-          `billing: 下发到 ${result.node} 没成 · ${result.code ?? result.outcome} · ${result.message ?? ''}`,
-        )
-      }
+      this.#failed(result.node, now)
+      this.#options.onError?.(
+        `billing: 下发到 ${result.node} 未完成 · ${result.code ?? result.outcome} · ${result.message ?? ''}`,
+      )
     }
   }
 
@@ -522,7 +600,11 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
   #failed(node: string, now: number): void {
     const failures = (this.#retry.get(node)?.failures ?? 0) + 1
     this.#retry.set(node, {
-      at: failures === 1 ? now : now + RETRY_EVERY_MS,
+      at:
+        failures === 1
+          ? now
+          : now +
+            Math.min(RETRY_FIRST_MS * 2 ** (failures - 2), RETRY_AT_MOST_MS),
       failures,
     })
   }

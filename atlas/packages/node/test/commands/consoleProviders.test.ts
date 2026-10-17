@@ -870,6 +870,7 @@ describe('P33: lane addresses', () => {
     const reason = value(await h.port.node('beta-1')).lastStatus?.message
     expect(reason).toBeTruthy()
     expect(result?.message).toContain(reason ?? '')
+    expect(result?.message).toContain('无法确认附加通道能否编入')
     expect(received(node, 'apply')).toEqual([])
   }, 30_000)
 
@@ -897,6 +898,9 @@ describe('P33: lane addresses', () => {
     const [result] = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
     expect(result?.outcome).toBe('refused')
     expect(result?.code).toBe('capabilities-unknown')
+    expect(result?.message).toBe(
+      '节点尚未回报能力 · 无法确认附加通道能否编入 · 节点状态刷新后再下发',
+    )
     expect(value(await h.port.node('beta-1')).lastStatus?.ok).toBe(true)
     expect(received(node, 'apply')).toEqual([])
   }, 30_000)
@@ -1053,7 +1057,12 @@ describe('P35: a node scope narrows what a node may hold', () => {
     const ops = await twoProfiles(h)
     h.port.configureScope(node =>
       node === 'beta-1'
-        ? { allows: id => id === 'none', fallback: 'none', extras: false }
+        ? {
+            allows: id => id === 'none',
+            fallback: 'none',
+            required: true,
+            extras: false,
+          }
         : null,
     )
     expect(value(await h.port.node('beta-1')).expected?.profileId).toBe('none')
@@ -1094,13 +1103,51 @@ describe('P35: a node scope narrows what a node may hold', () => {
     h.port.configureScope(name =>
       name === 'beta-1' &&
       node.requests().some(request => request.op === 'status')
-        ? { allows: id => id === 'none', fallback: null, extras: false }
+        ? {
+            allows: id => id === 'none',
+            fallback: null,
+            required: false,
+            extras: false,
+          }
         : null,
     )
     const [result] = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
     expect(result?.outcome).toBe('refused')
     expect(result?.code).toBe('scope-refused')
     expect(received(node, 'apply')).toEqual([])
+  }, 30_000)
+
+  test('a scope that does not require a profile replaces only one the node may not hold', async () => {
+    const h = harness()
+    const ops = await twoProfiles(h)
+    // A platform node in the public edition: anything but one profile.
+    h.port.configureScope(() => ({
+      allows: id => id !== 'luna',
+      fallback: 'none',
+      required: false,
+      extras: true,
+    }))
+    const expected = async (node: 'beta-1' | 'beta-4') =>
+      value(await h.port.node(node)).expected?.profileId ?? null
+    // Following a default it may not hold, or naming one: the fallback.
+    expect(await expected('beta-1')).toBe('none')
+    value(
+      await h.port.assign(
+        { node: 'beta-4', assignment: { mode: 'profile', profileId: 'luna' } },
+        ops,
+      ),
+    )
+    expect(await expected('beta-4')).toBe('none')
+    // Not managed, or following no default: still nothing.
+    value(
+      await h.port.assign(
+        { node: 'beta-4', assignment: { mode: 'unmanaged' } },
+        ops,
+      ),
+    )
+    expect(await expected('beta-4')).toBeNull()
+    value(await h.port.setDefault({ profileId: null }, ops))
+    expect(await expected('beta-1')).toBeNull()
   }, 30_000)
 
   test('a scope that cannot be read sends nothing', async () => {
@@ -1113,6 +1160,7 @@ describe('P35: a node scope narrows what a node may hold', () => {
     const [result] = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
     expect(result?.outcome).toBe('refused')
     expect(result?.code).toBe('scope-unavailable')
+    expect(result?.message).toBe('无法读取租户配置 · 拒绝下发')
     expect(value(await h.port.apply({}, ops))).toEqual([])
     expect(h.nodes['beta-1'].requests()).toEqual([])
   }, 30_000)

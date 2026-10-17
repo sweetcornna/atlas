@@ -176,11 +176,19 @@ export interface ProviderNodeScope {
   /** Whether the node may hold this profile. */
   readonly allows: (profileId: string) => boolean
   /**
-   * What the node is expected to run when its assignment gives it nothing
-   * it may hold (following a default, not managed, another's profile);
-   * `null`: nothing, so nothing is delivered.
+   * What the node is expected to run in place of a profile it may not hold
+   * (and, with {@link required}, in place of none at all); `null`: nothing,
+   * so nothing is delivered.
    */
   readonly fallback: string | null
+  /**
+   * Whether the node must run something: not managed and following no
+   * default give way to the fallback too (a subscriber's node would keep
+   * its last key). Otherwise those still mean nothing is sent, and only a
+   * profile it may not hold — named, or the default it follows — is
+   * replaced (a platform node handed back keeps no subscriber's key).
+   */
+  readonly required: boolean
   /** Whether its routing may bring profiles besides the one it runs. */
   readonly extras: boolean
 }
@@ -1532,7 +1540,10 @@ export class ConsoleProviders implements ProviderPort {
         : assignment.mode === 'inherit'
           ? this.#book.defaultProfileId
           : null
-    if (scope !== null && (profileId === null || !scope.allows(profileId)))
+    if (
+      scope !== null &&
+      (profileId === null ? scope.required : !scope.allows(profileId))
+    )
       profileId = scope.fallback
     if (profileId === null) return null
     const profile = this.#book.profile(profileId)
@@ -1792,7 +1803,7 @@ export class ConsoleProviders implements ProviderPort {
     })
     const scope = this.#scopeOf(node)
     if (scope === undefined)
-      return refuse('scope-unavailable', '租户配置读不了 · 拒绝下发')
+      return refuse('scope-unavailable', '无法读取租户配置 · 拒绝下发')
     const expected = this.#expected(node)
     const profileId = options.profileId ?? expected?.profileId
     if (profileId === undefined) {
@@ -1864,18 +1875,18 @@ export class ConsoleProviders implements ProviderPort {
             requestId,
             outcome: 'failed',
             code: 'unreachable',
-            message: `节点状态查询失败 · 另给的通道编不编得进去未知 · ${last.message ?? '没有回应'}`,
+            message: `节点状态查询失败 · 无法确认附加通道能否编入 · ${last.message ?? '没有回应'}`,
           }
         return refuse(
           'capabilities-unknown',
-          '节点还没回报能力 · 另给的通道编不编得进去未知 · 节点状态刷新后再下发',
+          '节点尚未回报能力 · 无法确认附加通道能否编入 · 节点状态刷新后再下发',
         )
       }
       // The scope and the routing were read before the node was asked: a
       // change landing in that wait is not shipped under the older reading.
       const scopeNow = this.#scopeOf(node)
       if (scopeNow === undefined)
-        return refuse('scope-unavailable', '租户配置读不了 · 拒绝下发')
+        return refuse('scope-unavailable', '无法读取租户配置 · 拒绝下发')
       if (scopeNow !== null && !scopeNow.allows(profile.id))
         return refuse('scope-refused', '这份档案不能下发到这个节点')
       let again: ProviderRouted | undefined

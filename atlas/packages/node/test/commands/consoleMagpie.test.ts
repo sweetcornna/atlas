@@ -903,9 +903,14 @@ describe('a gateway key for a node', () => {
       caller(),
     )
     expect(issued.ok).toBe(false)
-    if (!issued.ok)
+    if (!issued.ok) {
       expect(issued.failure.message).toContain('capabilities-unknown')
+      expect(issued.failure.message).toContain('下发到 beta-1 未完成')
+    }
     expect(errors.some(line => line.includes('capabilities-unknown'))).toBe(
+      true,
+    )
+    expect(errors.some(line => line.includes('下发到 beta-1 未完成'))).toBe(
       true,
     )
     expect(applies()).toEqual([])
