@@ -16,6 +16,12 @@
  * The result goes back into the parent conversation as a notice, and to the
  * chat it came from when that is a channel.
  *
+ * A task can also be planned (主动任务): its first run after a delay or at a
+ * time, and repeats at an interval a set number of times. It waits as
+ * `scheduled`, holding no place among a conversation's running tasks; when a
+ * run is due it queues like any task, in the same worker session each time,
+ * and every run's result goes back the same way.
+ *
  * Every worker turn goes through the same `ChatDispatch` boundary as the
  * console (ownership, tenancy, quota, audit), so a task cannot do anything
  * its owner could not.
@@ -61,6 +67,7 @@ import {
 import type { HubCallHandler } from './consoleControl.js'
 
 const STATUSES = [
+  'scheduled',
   'queued',
   'running',
   'interrupted',
@@ -96,6 +103,7 @@ const DELIVERY_STATES = [
 type DeliveryState = (typeof DELIVERY_STATES)[number]
 
 const PHASE: Record<TaskStatus, string> = {
+  scheduled: '已安排',
   queued: '排队中',
   running: '执行中',
   interrupted: '等待恢复',
@@ -180,6 +188,21 @@ const recordSchema = z.object({
   deliveries: z.record(z.string(), z.enum(DELIVERY_STATES)).default({}),
   /** Delivery rounds for the current result; zero for a ledger without it. */
   deliveryAttempts: z.number().int().nonnegative().default(0),
+  /**
+   * A delayed or repeating task (主动任务): when the next run starts, the
+   * time repeats are counted from, how often and how many times, and the runs
+   * started so far. Null for a task that runs once, at once.
+   */
+  plan: z
+    .object({
+      nextAt: z.number(),
+      anchor: z.number(),
+      everyMinutes: z.number().int().positive().nullable(),
+      times: z.number().int().positive(),
+      runs: z.number().int().nonnegative(),
+    })
+    .nullable()
+    .default(null),
   context: z.array(
     z.object({ role: z.enum(['user', 'agent']), text: z.string() }),
   ),
@@ -200,6 +223,12 @@ type TaskUpdate = z.infer<typeof updateSchema>
 const bookSchema = z.object({
   v: z.literal(1),
   tasks: z.array(recordSchema),
+  /**
+   * Tasks waiting for their next run (`scheduled`), kept apart from `tasks`:
+   * a hub from before 主动任务 ignores this key instead of refusing a status
+   * it does not know, so rolling back loses the plans, not the ledger.
+   */
+  scheduled: z.array(recordSchema).default([]),
   updates: z.array(updateSchema),
   nextUpdateId: z.number().int().positive(),
 })
@@ -215,6 +244,11 @@ export interface TaskView {
   readonly lastError: string
   readonly turns: number
   readonly updatedAt: number
+  /** A planned task's next start (ISO, UTC); only while it is `scheduled`. */
+  readonly nextAt?: string
+  /** A repeating task: how often, and the runs not started yet. */
+  readonly everyMinutes?: number
+  readonly runsLeft?: number
 }
 
 /** A task finished or needs input; `text` is what the parent hears. */
@@ -256,8 +290,25 @@ export interface ConsoleTasksOptions {
   readonly onError?: (message: string) => void
 }
 
-/** Unfinished tasks per conversation, not counting those waiting for input. */
+/**
+ * Unfinished tasks per conversation, not counting those waiting for input or
+ * for their planned start.
+ */
 const MAX_ACTIVE_PER_PARENT = 8
+/**
+ * 主动任务: the first run at most a week ahead; a repeat every 30 minutes to
+ * a week, at most 100 times; at most 20 planned tasks per owner at once.
+ */
+const MAX_DELAY_MINUTES = 7 * 24 * 60
+const MIN_EVERY_MINUTES = 30
+const MAX_EVERY_MINUTES = 7 * 24 * 60
+const MAX_TIMES = 100
+const MAX_PLANNED_PER_OWNER = 20
+/** How often the hub looks for planned runs that are due. */
+const TICK_MS = 15_000
+/** `at`: an ISO time with its zone. */
+const ZONED_TIME =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/
 /** How long a finished task still answers a status question. */
 const RECENTLY_MS = 10 * 60_000
 /** Finished tasks stay in the ledger this long, and this many per owner. */
@@ -339,6 +390,50 @@ function spoken(text: string, length: number): string {
     .trim()
   const chars = [...said]
   return chars.length <= length ? said : `…${chars.slice(-length).join('')}`
+}
+
+/** An optional tool argument a model left empty is not given. */
+function given(value: unknown): unknown {
+  return value === null || (typeof value === 'string' && value.trim() === '')
+    ? undefined
+    : value
+}
+
+/**
+ * A whole number from a tool argument — a number, or digits a model sent as
+ * text; undefined when absent, null when it is something else.
+ */
+function whole(raw: unknown): number | undefined | null {
+  const value = given(raw)
+  if (value === undefined) return undefined
+  if (typeof value === 'number') return Number.isInteger(value) ? value : null
+  if (typeof value === 'string' && /^\d{1,6}$/.test(value.trim()))
+    return Number(value.trim())
+  return null
+}
+
+type Plan = NonNullable<TaskRecord['plan']>
+
+/** A repeat's next start after `now`: the times a run outlasted are skipped. */
+function nextSlot(plan: Plan, now: number): number {
+  const every = (plan.everyMinutes ?? 0) * 60_000
+  if (every <= 0) return now
+  const k = Math.max(1, Math.floor((now - plan.anchor) / every) + 1)
+  return plan.anchor + k * every
+}
+
+/** `10-18 09:00 UTC+8`: the hub's clock with its zone, for people to read. */
+function wallClock(at: number): string {
+  const date = new Date(at)
+  const two = (n: number) => String(n).padStart(2, '0')
+  const offset = -date.getTimezoneOffset()
+  const zone =
+    offset === 0
+      ? 'UTC'
+      : `UTC${offset > 0 ? '+' : '-'}${Math.floor(Math.abs(offset) / 60)}${
+          Math.abs(offset) % 60 === 0 ? '' : `:${two(Math.abs(offset) % 60)}`
+        }`
+  return `${two(date.getMonth() + 1)}-${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())} ${zone}`
 }
 
 /** Seconds to wait after the n-th consecutive failure (grantley `_retry_wait`). */
@@ -481,6 +576,8 @@ export class ConsoleTasks implements BackgroundTasksPort {
   /** Results being delivered, and the timers of the next delivery round. */
   readonly #delivering = new Set<string>()
   readonly #redeliveries = new Map<string, ReturnType<typeof setTimeout>>()
+  /** Looks for planned runs that are due; see {@link tick}. */
+  #ticker: ReturnType<typeof setInterval> | null = null
   #closed = false
 
   constructor(options: ConsoleTasksOptions) {
@@ -496,7 +593,8 @@ export class ConsoleTasks implements BackgroundTasksPort {
     const raw = readTextIfExists(this.#path)
     if (raw !== undefined) {
       const book = bookSchema.parse(JSON.parse(raw))
-      for (const task of book.tasks) this.#tasks.set(task.id, task)
+      for (const task of [...book.tasks, ...book.scheduled])
+        this.#tasks.set(task.id, task)
       this.#updates = book.updates
       this.#nextUpdateId = book.nextUpdateId
     }
@@ -528,15 +626,23 @@ export class ConsoleTasks implements BackgroundTasksPort {
         this.#resumed.add(task.id)
         this.#schedule(task.id)
       } else if (
-        (task.status === 'completed' || task.status === 'needs_input') &&
+        (task.status === 'completed' ||
+          task.status === 'needs_input' ||
+          task.status === 'scheduled') &&
         task.notification === 'pending'
       )
         void this.#notify(task.id)
     }
+    // Runs that came due while the hub was down start now, once each.
+    this.tick()
+    this.#ticker = setInterval(() => this.tick(), TICK_MS)
+    this.#ticker.unref?.()
   }
 
   async close(): Promise<void> {
     this.#closed = true
+    if (this.#ticker !== null) clearInterval(this.#ticker)
+    this.#ticker = null
     for (const timer of this.#redeliveries.values()) clearTimeout(timer)
     this.#redeliveries.clear()
     for (const wake of this.#waits.values()) wake()
@@ -582,9 +688,11 @@ export class ConsoleTasks implements BackgroundTasksPort {
   #save(): void {
     if (!this.#lock?.owned()) return
     try {
+      const all = [...this.#tasks.values()]
       writePrivateJson(this.#path, {
         v: 1,
-        tasks: [...this.#tasks.values()],
+        tasks: all.filter(task => task.status !== 'scheduled'),
+        scheduled: all.filter(task => task.status === 'scheduled'),
         updates: this.#updates,
         nextUpdateId: this.#nextUpdateId,
       })
@@ -655,13 +763,57 @@ export class ConsoleTasks implements BackgroundTasksPort {
       title: task.title,
       target: task.target,
       status: task.status,
-      phase: PHASE[task.status],
+      phase: this.#phase(task),
       progress: clip(task.progress, 2_000),
       result: clip(task.result, 6_000),
       lastError: clip(task.lastError, 1_000),
       turns: task.turns,
       updatedAt: task.updatedAt,
+      ...this.#planFields(task),
     }
+  }
+
+  /** The phase as a person reads it: a planned task with its next start. */
+  #phase(task: TaskRecord): string {
+    const plan = task.plan
+    let phase = PHASE[task.status]
+    if (task.status === 'scheduled' && plan !== null)
+      phase += ` · 下次 ${wallClock(plan.nextAt)}`
+    if (plan?.everyMinutes != null && !TERMINAL.has(task.status))
+      phase += ` · 剩 ${plan.times - plan.runs} 次`
+    return phase
+  }
+
+  /** What a foreground is told of a planned task. */
+  #planFields(task: TaskRecord): {
+    nextAt?: string
+    everyMinutes?: number
+    runsLeft?: number
+  } {
+    const plan = task.plan
+    if (plan === null) return {}
+    return {
+      ...(task.status === 'scheduled'
+        ? { nextAt: new Date(plan.nextAt).toISOString() }
+        : {}),
+      ...(plan.everyMinutes === null
+        ? {}
+        : {
+            everyMinutes: plan.everyMinutes,
+            runsLeft: plan.times - plan.runs,
+          }),
+    }
+  }
+
+  /** A delayed task not started yet, or a repeat with runs still to start. */
+  #planned(task: TaskRecord): boolean {
+    const plan = task.plan
+    return (
+      plan !== null &&
+      !TERMINAL.has(task.status) &&
+      (task.status === 'scheduled' ||
+        (plan.everyMinutes !== null && plan.runs < plan.times))
+    )
   }
 
   // -- the console's list (BackgroundTasksPort) --------------------------------
@@ -687,9 +839,15 @@ export class ConsoleTasks implements BackgroundTasksPort {
       lastError: clip(task.lastError, 1_000),
       turns: task.turns,
       workerSession: task.workerSession,
-      nextAt: null,
-      everyMinutes: null,
-      runsLeft: null,
+      nextAt:
+        task.status === 'scheduled' && task.plan !== null
+          ? task.plan.nextAt
+          : null,
+      everyMinutes: task.plan?.everyMinutes ?? null,
+      runsLeft:
+        task.plan?.everyMinutes == null || TERMINAL.has(task.status)
+          ? null
+          : task.plan.times - task.plan.runs,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
     }
@@ -757,6 +915,8 @@ export class ConsoleTasks implements BackgroundTasksPort {
         title: task.title,
         status: task.status,
         progress: clip(task.progress, 300),
+        ...(task.nextAt === undefined ? {} : { nextAt: task.nextAt }),
+        ...(task.runsLeft === undefined ? {} : { runsLeft: task.runsLeft }),
       })),
     )}`
   }
@@ -772,7 +932,10 @@ export class ConsoleTasks implements BackgroundTasksPort {
     options: { readonly busy?: boolean } = {},
   ): string | undefined {
     const tasks = this.forSession(sessionId)
-    const active = tasks.filter(task => !TERMINAL.has(task.status))
+    // A planned task is not in progress: the question is not about it.
+    const active = tasks.filter(
+      task => !TERMINAL.has(task.status) && task.status !== 'scheduled',
+    )
     const shown =
       active.length > 0
         ? active
@@ -792,11 +955,17 @@ export class ConsoleTasks implements BackgroundTasksPort {
       .join('\n\n')
   }
 
-  /** `/stop` in a chat: cancels that conversation's running tasks. */
+  /**
+   * `/stop` in a chat: cancels that conversation's running tasks. Planned
+   * ones waiting for their start are not running; they stay.
+   */
   async cancelForSession(sessionId: string): Promise<number> {
     const family = this.#family(sessionId)
     const doomed = [...this.#tasks.values()].filter(
-      task => family.has(task.parentSession) && !TERMINAL.has(task.status),
+      task =>
+        family.has(task.parentSession) &&
+        !TERMINAL.has(task.status) &&
+        task.status !== 'scheduled',
     )
     // Each stop may wait on its node; the chat's answer waits for the slowest.
     await Promise.all(doomed.map(task => this.#cancel(task)))
@@ -942,16 +1111,33 @@ export class ConsoleTasks implements BackgroundTasksPort {
         : session.target
     if (parseAddress(target) === null)
       return refused('agent 不是有效的智能体地址')
+    const plan = this.#plan(args)
+    if (typeof plan === 'string') return refused(plan)
+    const later = plan !== null && plan.runs === 0
     const family = this.#family(session.id)
-    // A task waiting for the owner's answer holds no place.
+    // A task waiting for the owner's answer, or for its planned start, holds
+    // no place; nor does one created to wait for its start.
     const active = [...this.#tasks.values()].filter(
       task =>
         family.has(task.parentSession) &&
         !TERMINAL.has(task.status) &&
-        task.status !== 'needs_input',
+        task.status !== 'needs_input' &&
+        task.status !== 'scheduled',
     )
-    if (active.length >= MAX_ACTIVE_PER_PARENT)
+    if (!later && active.length >= MAX_ACTIVE_PER_PARENT)
       return refused(`这个会话已有 ${active.length} 个进行中的任务`)
+    if (
+      plan !== null &&
+      (later || (plan.everyMinutes !== null && plan.runs < plan.times))
+    ) {
+      const planned = [...this.#tasks.values()].filter(
+        task => task.owner === caller.owner && this.#planned(task),
+      ).length
+      if (planned >= MAX_PLANNED_PER_OWNER)
+        return refused(
+          `已有 ${planned} 个安排好的任务，最多 ${MAX_PLANNED_PER_OWNER} 个；先取消不需要的`,
+        )
+    }
     const dispatch = this.#dispatch(caller.owner)
     if (typeof dispatch === 'string') return refused(dispatch)
     const denied = await dispatch.authorizeTarget(target)
@@ -967,7 +1153,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       parentTarget: session.target,
       target,
       workerSession: null,
-      status: 'queued',
+      status: later ? 'scheduled' : 'queued',
       progress: '',
       result: '',
       requestedState: '',
@@ -984,6 +1170,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       notification: 'none',
       deliveries: {},
       deliveryAttempts: 0,
+      plan,
       context: caller.transcript.turns
         .filter(turn => turn.variant !== 'notice')
         .map(turn => ({
@@ -998,8 +1185,68 @@ export class ConsoleTasks implements BackgroundTasksPort {
     }
     this.#tasks.set(task.id, task)
     this.#save()
-    this.#schedule(task.id)
-    return ok({ id: task.id, title, target, status: task.status })
+    if (!later) this.#schedule(task.id)
+    return ok({
+      id: task.id,
+      title,
+      target,
+      status: task.status,
+      ...this.#planFields(task),
+    })
+  }
+
+  /**
+   * 主动任务: `after` minutes or `at` an ISO time with its zone for a later
+   * first run, `everyMinutes` with `times` for a repeat. Null when the task
+   * runs once, at once; a refusal's words when the arguments do not hold.
+   */
+  #plan(args: Record<string, unknown>): Plan | null | string {
+    const now = this.#now()
+    const after = whole(args['after'])
+    const every = whole(args['everyMinutes'])
+    const times = whole(args['times'])
+    const at = given(args['at'])
+    if (after === null || every === null || times === null)
+      return 'after、everyMinutes、times 要是整数'
+    if (after !== undefined && at !== undefined) return 'after 和 at 只能给一个'
+    let first = now
+    if (after !== undefined) {
+      if (after < 1 || after > MAX_DELAY_MINUTES)
+        return `after 是 1–${MAX_DELAY_MINUTES} 分钟`
+      first = now + after * 60_000
+    } else if (at !== undefined) {
+      const text = typeof at === 'string' ? at.trim() : ''
+      const parsed = ZONED_TIME.test(text) ? Date.parse(text) : Number.NaN
+      if (!Number.isFinite(parsed))
+        return 'at 要是带时区的 ISO 时间，例如 2026-10-18T09:00:00+08:00'
+      if (parsed <= now) return 'at 要晚于现在'
+      if (parsed > now + MAX_DELAY_MINUTES * 60_000) return 'at 至多 7 天后'
+      first = parsed
+    }
+    if (every === undefined) {
+      if (times !== undefined) return 'times 要和 everyMinutes 一起给'
+      return first === now
+        ? null
+        : {
+            nextAt: first,
+            anchor: first,
+            everyMinutes: null,
+            times: 1,
+            runs: 0,
+          }
+    }
+    if (every < MIN_EVERY_MINUTES || every > MAX_EVERY_MINUTES)
+      return `everyMinutes 是 ${MIN_EVERY_MINUTES}–${MAX_EVERY_MINUTES} 分钟`
+    if (times === undefined) return `重复任务要给 times（1–${MAX_TIMES} 次）`
+    if (times < 1 || times > MAX_TIMES) return `times 是 1–${MAX_TIMES} 次`
+    // Without a later start the first run starts now.
+    return {
+      nextAt: first,
+      anchor: first,
+      everyMinutes: every,
+      times,
+      runs: first === now ? 1 : 0,
+    }
   }
 
   /**
@@ -1034,7 +1281,12 @@ export class ConsoleTasks implements BackgroundTasksPort {
       }
     const counts = new Map<string, { queued: number; running: number }>()
     for (const task of tasks) {
-      if (TERMINAL.has(task.status) || task.status === 'needs_input') continue
+      if (
+        TERMINAL.has(task.status) ||
+        task.status === 'needs_input' ||
+        task.status === 'scheduled'
+      )
+        continue
       const count = counts.get(task.target) ?? { queued: 0, running: 0 }
       if (task.status === 'queued' || task.status === 'interrupted')
         count.queued++
@@ -1082,6 +1334,11 @@ export class ConsoleTasks implements BackgroundTasksPort {
       consumedAt: null,
     }
     this.#updates.push(update)
+    // A planned task reads it when its run starts, not before.
+    if (task.status === 'scheduled') {
+      this.#save()
+      return ok({ updateId: update.id, task: this.#view(task) })
+    }
     let next = task
     if (task.status === 'needs_input' || task.status === 'interrupted')
       next = this.#patch(task.id, {
@@ -1281,8 +1538,16 @@ export class ConsoleTasks implements BackgroundTasksPort {
     },
   ): string {
     const parts = [`后台任务：${task.title}（${task.id}）`]
+    const plan = task.plan
     if (turn.brief) {
       parts.push(WORKER_INSTRUCTIONS, `任务说明：\n${task.instructions}`)
+      // A repeat: each run is the whole task again, in the same session.
+      if (plan !== null && plan.everyMinutes !== null)
+        parts.push(
+          `这是重复任务的第 ${plan.runs} 次运行（共 ${plan.times} 次，每 ${plan.everyMinutes} 分钟一次）。按任务说明完整做这一次${
+            plan.runs > 1 ? '，上一次的结果在检查点里，可以对照' : ''
+          }；做完就报告 completed，下一次由任务管理器到点再叫你。`,
+        )
       // The main session's words, for what "it" and "that" refer to: the
       // session has them once it was briefed, unless compaction dropped them.
       if (
@@ -1493,11 +1758,22 @@ export class ConsoleTasks implements BackgroundTasksPort {
         break
       if (outcome.compacted) task = this.#patch(id, { rebrief: true })
       if (outcome.ok && PENDING.has(task.status)) {
+        const done = task.requestedState === 'completed'
+        const plan = task.plan
+        // A repeat with runs left waits for the next one; the times this run
+        // outlasted are skipped, not made up.
+        const again =
+          done &&
+          plan !== null &&
+          plan.everyMinutes !== null &&
+          plan.runs < plan.times
         this.#patch(id, {
-          status:
-            task.requestedState === 'completed' ? 'completed' : 'needs_input',
+          status: again ? 'scheduled' : done ? 'completed' : 'needs_input',
           requestedState: '',
           notification: 'pending',
+          ...(again
+            ? { plan: { ...plan, nextAt: nextSlot(plan, this.#now()) } }
+            : {}),
         })
         break
       }
@@ -1553,19 +1829,77 @@ export class ConsoleTasks implements BackgroundTasksPort {
     const task = this.#tasks.get(id)
     if (
       task &&
-      (task.status === 'completed' || task.status === 'needs_input') &&
+      (task.status === 'completed' ||
+        task.status === 'needs_input' ||
+        task.status === 'scheduled') &&
       task.notification === 'pending'
     )
       await this.#notify(id)
   }
 
+  // -- planned runs -------------------------------------------------------------
+
+  /**
+   * Starts the planned runs that are due: at start-up (a time missed while
+   * the hub was down runs once, not once per missed time) and every
+   * {@link TICK_MS}. A run whose last result is still being delivered waits
+   * for the next look.
+   */
+  tick(): void {
+    if (this.#closed || !this.#lock?.owned()) return
+    const now = this.#now()
+    for (const task of [...this.#tasks.values()])
+      if (
+        task.status === 'scheduled' &&
+        task.plan !== null &&
+        task.plan.nextAt <= now &&
+        !this.#delivering.has(task.id)
+      )
+        this.#run(task, task.plan)
+  }
+
+  /**
+   * One planned run: the task goes to its node's queue like any other. A
+   * repeat continues in its worker session, briefed again for the run; a
+   * delivery of the last result still owed is given up for the new one.
+   */
+  #run(task: TaskRecord, plan: Plan): void {
+    clearTimeout(this.#redeliveries.get(task.id))
+    this.#redeliveries.delete(task.id)
+    this.#patch(task.id, {
+      status: 'queued',
+      plan: { ...plan, runs: plan.runs + 1 },
+      requestedState: '',
+      quietTurns: 0,
+      abnormal: false,
+      lastError: '',
+      notification: 'none',
+      deliveries: {},
+      deliveryAttempts: 0,
+      rebrief: task.workerSession !== null,
+    })
+    this.#schedule(task.id)
+  }
+
   // -- results ----------------------------------------------------------------
+
+  /** 已完成, 需要你的补充, or a repeat's run and its next start. */
+  #resultLabel(task: TaskRecord): string {
+    const plan = task.plan
+    if (task.status === 'needs_input') return '需要你的补充'
+    if (plan === null || plan.everyMinutes === null) return '已完成'
+    return task.status === 'scheduled'
+      ? `第 ${plan.runs}/${plan.times} 次已完成 · 下次 ${wallClock(plan.nextAt)}`
+      : `第 ${plan.runs}/${plan.times} 次已完成 · 全部完成`
+  }
 
   /** A result whose last round failed somewhere, with rounds left. */
   #redeliverable(task: TaskRecord): boolean {
     return (
       task.notification === 'failed' &&
-      (task.status === 'completed' || task.status === 'needs_input') &&
+      (task.status === 'completed' ||
+        task.status === 'needs_input' ||
+        task.status === 'scheduled') &&
       task.deliveryAttempts > 0 &&
       task.deliveryAttempts < MAX_DELIVERY_ATTEMPTS
     )
@@ -1599,8 +1933,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
     if (!first && !this.#redeliverable(task)) return
     this.#delivering.add(id)
     try {
-      const label = task.status === 'completed' ? '已完成' : '需要你的补充'
-      const text = `${task.title}：${label}\n\n${task.result}`
+      const text = `${task.title}：${this.#resultLabel(task)}\n\n${task.result}`
       const deliveries: Record<string, DeliveryState> = first
         ? {}
         : { ...task.deliveries }

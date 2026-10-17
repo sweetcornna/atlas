@@ -38,14 +38,23 @@ export interface TaskToolsOptions {
 }
 
 const string = { type: 'string' }
+const integer = { type: 'integer' }
 
 const specs = [
   {
     name: 'qianmo_task_start',
     op: 'start',
     description:
-      'Foreground only. Start a persistent background sub-agent for work that needs tools, research, several steps or a long time, and return at once with its task id; do not wait for it. Give a short title and complete instructions (the sub-agent does not see this conversation beyond its last few messages). Optional agent: a qianmo://node/agent address to run it on another agent (another runtime or model); default is yourself.',
-    properties: { title: string, instructions: string, agent: string },
+      'Foreground only. Start a persistent background sub-agent for work that needs tools, research, several steps or a long time, and return at once with its task id; do not wait for it. Give a short title and complete instructions (the sub-agent does not see this conversation beyond its last few messages). Optional agent: a qianmo://node/agent address to run it on another agent (another runtime or model); default is yourself. To run it later give after (minutes, 1-10080) or at (an ISO time with its zone, at most 7 days ahead), not both; to repeat it give everyMinutes (30-10080) with times (1-100). A planned task waits as scheduled, runs in the same sub-session each time and its result comes back here after every run; at most 20 planned per owner.',
+    properties: {
+      title: string,
+      instructions: string,
+      agent: string,
+      after: integer,
+      at: string,
+      everyMinutes: integer,
+      times: integer,
+    },
     required: ['title', 'instructions'],
   },
   {

@@ -126,3 +126,22 @@ test('a refusal is shown; an unknown outcome says what is safe to do next', asyn
   for (const text of [updates.text, report.text])
     expect(text).not.toContain('qianmo_task_status')
 })
+
+test('a start can be planned: after or at, everyMinutes with times, passed on as given', async () => {
+  const { calls, byName } = tools({ contextId: 'c', taskId: 't' })
+  const start = byName('qianmo_task_start')
+  expect(start.parameters).toMatchObject({
+    properties: {
+      after: { type: 'integer' },
+      at: { type: 'string' },
+      everyMinutes: { type: 'integer' },
+      times: { type: 'integer' },
+    },
+    required: ['title', 'instructions'],
+  })
+  await start.handler(
+    { title: '巡检', instructions: '看磁盘', everyMinutes: 60, times: 3 },
+    ctx,
+  )
+  expect(calls[0]![1]).toMatchObject({ everyMinutes: 60, times: 3 })
+})
