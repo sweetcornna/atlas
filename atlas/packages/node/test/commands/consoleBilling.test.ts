@@ -1286,6 +1286,22 @@ describe('a delivery that did not land is tried again', () => {
     })
   })
 
+  test('starting sweeps at once: a delivery that did not land before is tried again without waiting a minute', async () => {
+    const tenant = await pay(ALICE)
+    nodes[0]?.set('reply-apply.json', REFUSE)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    expect(applies(0)).toBe(1)
+    errors.length = 0
+    rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
+    billing.start()
+    // Queued behind the first sweep; a sync on an event does not retry.
+    await billing.syncNodes()
+    expect(applies(0)).toBe(2)
+    const row = await nodeRow('beta-1')
+    expect(row.actual?.applied?.revision).toBe(row.expected?.revision)
+  })
+
   test('a node that keeps refusing is asked at the next sweep, then less and less often, at least hourly', async () => {
     const tenant = await pay(ALICE)
     nodes[0]?.set('reply-apply.json', REFUSE)

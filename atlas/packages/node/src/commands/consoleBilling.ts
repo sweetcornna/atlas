@@ -281,7 +281,12 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
     })
   }
 
-  /** The 60-second sweep and the tenancy watch, after the console is up. */
+  /**
+   * The 60-second sweep and the tenancy watch, after the console is up. The
+   * nodes are put in step at once, as a sweep does (retries included): a
+   * restart forgets which deliveries are owed, and a node handed back while
+   * the hub was down still holds its key.
+   */
   start(): void {
     if (this.#timer !== null) return
     this.#timer = setInterval(() => {
@@ -291,6 +296,7 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
     this.#unsubscribe = this.#options.tenancy.subscribe(() => {
       void this.syncNodes()
     })
+    void this.#queueSync(true)
   }
 
   close(): void {
