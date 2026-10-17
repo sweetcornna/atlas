@@ -38,6 +38,7 @@ import { loadOutboundPolicy } from './outboundPolicy.js'
 import { ConsoleSchedules } from './consoleSchedules.js'
 import { ConsoleChannels } from './consoleChannels.js'
 import { ConsoleTasks } from './consoleTasks.js'
+import { ConsolePeers } from './consolePeers.js'
 import { ConsoleExtensions } from './consoleExtensions.js'
 import { ConsoleMagpie } from './consoleMagpie.js'
 import {
@@ -858,6 +859,26 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       : undefined
   if (connectors) control!.onHubCall('connector', connectors.handle)
   if (tasks) control!.onHubCall('tasks', tasks.handle)
+  // Questions between agents (P36.6) go wherever background tasks do.
+  const peers: ConsolePeers | undefined =
+    tasks && chat.hub
+      ? new ConsolePeers({
+          directory: qianmoConfigPath('qianmo', 'console', 'peers'),
+          chat: chat.hub,
+          ...(accounts === undefined ? {} : { accounts }),
+          ...(usage === undefined ? {} : { usage }),
+          ...(tenancy === undefined ? {} : { tenancy }),
+          ...(actions === undefined ? {} : { actions }),
+          stopTask: stopTurn,
+          scheduled: (sessionId): boolean =>
+            schedules?.owns(sessionId) ?? false,
+          foreground: (sessionId): boolean =>
+            channels?.foreground(sessionId) ?? true,
+          control: control!,
+          onError: message => process.stderr.write(`[peers] ${message}\n`),
+        })
+      : undefined
+  if (peers) control!.onHubCall('peers', peers.handle)
 
   // Update checks and qianmo's own rolling upgrade (P31): nodes over the
   // control link, the hub itself in place (host/selfUpgrade.ts).
@@ -1285,6 +1306,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   handoff?.start()
   schedules?.start()
   tasks?.start()
+  peers?.start()
   channels?.start()
   updates?.start()
   extensions?.start()
@@ -1378,6 +1400,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       'enabled (MCP · skills · plugins; unevaluated on real servers)',
     )
   if (tasks) banner += field('tasks', 'enabled (background sub-agents)')
+  if (peers) banner += field('peers', 'enabled (agents ask each other)')
   if (chat.hub !== undefined) {
     banner += field('chat-store', config.chatStorePath)
   }
@@ -1509,6 +1532,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     schedules?.close()
     void channels?.close()
     void tasks?.close()
+    void peers?.close()
     void updates?.close()
     void extensions?.close()
     magpie?.close()
