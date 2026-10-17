@@ -12,7 +12,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import type { ConsoleAccounts } from '@qianmo/console'
 import type { ControlOutcome } from '@qianmo/protocol'
+import {
+  accountsHarness,
+  person,
+} from '../../../console/test/accountsHarness.js'
 import {
   ConsoleTasks,
   type TaskFinished,
@@ -39,6 +44,7 @@ function tasks(
     stopTask?: (target: string, taskId: string) => Promise<boolean>
     now?: () => number
     scheduled?: (id: string) => boolean
+    accounts?: ConsoleAccounts
     /** More result listeners, by key, registered before the book starts. */
     listeners?: Record<
       string,
@@ -746,6 +752,98 @@ describe('delivering results', () => {
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(later).toEqual([])
   })
+
+  test('a newer result that comes while an older one is still on its way goes out after it', async () => {
+    const texts: string[] = []
+    let release: (sent: boolean) => void = () => {}
+    const book = tasks({
+      deliveryRetryMs: () => 5,
+      listeners: {
+        chat: async event => {
+          texts.push(event.text)
+          // The question fails, then its second round hangs on a slow chat.
+          if (texts.length === 1) return false
+          if (texts.length === 2)
+            return new Promise<boolean>(resolve => {
+              release = resolve
+            })
+          return true
+        },
+      },
+    })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '订会议室',
+        instructions: '订周五的会议室',
+      }),
+    )
+    const worker = await workerTurn(1)
+    value(
+      await call(book, 'report', worker, {
+        summary: '几点开始？',
+        state: 'needs_input',
+      }),
+    )
+    chat.reply(worker, '等回复')
+    await until(() => texts.length === 2)
+    await chat.send({ sessionId: parent, text: '下午三点' })
+    value(await call(book, 'send', parent, { id, message: '下午三点' }))
+    await until(() => chat.sentTo(worker).length === 2)
+    value(await call(book, 'updates', worker))
+    value(
+      await call(book, 'report', worker, {
+        summary: '已订下午三点',
+        state: 'completed',
+      }),
+    )
+    chat.reply(worker, '完成')
+    await until(() => book.forSession(parent)[0]?.status === 'completed')
+    release(true)
+    await until(() => texts.length === 3)
+    expect(texts[2]).toBe('订会议室：已完成\n\n已订下午三点')
+    await until(() => ledger().tasks[0]!['notification'] === 'sent')
+    expect(chat.notes.map(one => one.text)).toEqual([
+      '订会议室：需要你的补充\n\n几点开始？',
+      '订会议室：已完成\n\n已订下午三点',
+    ])
+    expect(ledger().tasks[0]).toMatchObject({
+      deliveries: { note: 'sent', test: 'skipped', chat: 'sent' },
+      deliveryAttempts: 1,
+    })
+  })
+
+  test('delivering a result again later does not make a long-finished task recent', async () => {
+    let now = 1_000_000
+    let calls = 0
+    const book = tasks({
+      now: () => now,
+      deliveryRetryMs: () => 3_600_000,
+      listeners: { chat: async () => ++calls > 1 },
+    })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
+    )
+    const worker = await workerTurn(1)
+    value(
+      await call(book, 'report', worker, {
+        summary: '写好了',
+        state: 'completed',
+      }),
+    )
+    chat.reply(worker, '完成')
+    await until(() => ledger().tasks[0]!['notification'] === 'failed')
+    const done = now
+    // The chat comes back eleven minutes later and gets the result.
+    now += 11 * 60_000
+    book.retryNotifications()
+    await until(() => ledger().tasks[0]!['notification'] === 'sent')
+    expect(book.contextFor(parent, done)).toBeUndefined()
+    expect(book.statusText(parent)).toBeUndefined()
+    expect(book.forSession(parent)[0]).toMatchObject({ id, finishedAt: done })
+    expect(ledger().tasks[0]).toMatchObject({ finishedAt: done })
+  })
 })
 
 describe('prompts', () => {
@@ -1055,6 +1153,78 @@ describe('durability', () => {
     )
   })
 
+  test('a conversation runs at most eight unfinished tasks; the ninth is refused', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    for (let n = 1; n <= 8; n++)
+      value(
+        await call(book, 'start', parent, {
+          title: `t${n}`,
+          instructions: 'x',
+        }),
+      )
+    const ninth = await call(book, 'start', parent, {
+      title: 't9',
+      instructions: 'x',
+    })
+    expect(ninth.ok ? '' : ninth.message).toBe('这个会话已有 8 个进行中的任务')
+    expect(book.forSession(parent)).toHaveLength(8)
+  })
+
+  test('a conversation holds at most 32 tasks waiting for the owner', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    value(await call(book, 'start', parent, { title: 'a', instructions: 'x' }))
+    await workerTurn(1)
+    await book.close()
+    open = []
+    const file = path.join(root, 'tasks.json')
+    const ledger = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const waiting = { ...ledger.tasks[0], status: 'needs_input' }
+    ledger.tasks = Array.from({ length: 32 }, () => ({
+      ...waiting,
+      id: `task-${crypto.randomUUID()}`,
+    }))
+    fs.writeFileSync(file, JSON.stringify(ledger), { mode: 0o600 })
+    const reopened = tasks()
+    await chat.send({ sessionId: parent, text: '再开一个' })
+    const refused = await call(reopened, 'start', parent, {
+      title: 'b',
+      instructions: 'y',
+    })
+    expect(refused.ok ? '' : refused.message).toBe(
+      '这个会话已有 32 个等待补充的任务；请先补充或取消一些',
+    )
+    expect(reopened.forSession(parent)).toHaveLength(32)
+  })
+
+  test('a finished task in a ledger from before the finish time counts as finished when last changed', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '旧账', instructions: 'x' }),
+    )
+    await workerTurn(1)
+    await book.close()
+    open = []
+    const file = path.join(root, 'tasks.json')
+    const ledger = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const { finishedAt: _f, ...old } = ledger.tasks[0]
+    const at = Date.now() - 60_000
+    ledger.tasks = [
+      { ...old, status: 'completed', notification: 'sent', updatedAt: at },
+    ]
+    fs.writeFileSync(file, JSON.stringify(ledger), { mode: 0o600 })
+    const reopened = tasks()
+    expect(reopened.forSession(parent)[0]).toMatchObject({
+      id,
+      finishedAt: at,
+    })
+    expect(reopened.contextFor(parent, at - 1)).toContain(id)
+    expect(reopened.contextFor(parent, at)).toBeUndefined()
+    expect(reopened.statusText(parent)).toBe('旧账：已完成')
+  })
+
   test('/stop stops all of a chat’s tasks at once, not one after another', async () => {
     const THIRD = 'qianmo://node-c/third'
     chat = new FakeChat([MAIN, CODER, THIRD])
@@ -1144,6 +1314,47 @@ describe('the console list', () => {
     expect(stopped).toEqual([[MAIN, chat.lastTask(worker)]])
     const again = await book.cancel(id, { ...ops, requestId: 'r' })
     expect(again.ok ? '' : again.failure.code).toBe('rejected')
+  })
+
+  test('a member who started a task sees and cancels it; another member does neither', async () => {
+    const h = accountsHarness()
+    const member = async () => {
+      const principal = h.book.bearerPrincipal(
+        (await person(h.handle)).credential,
+      )
+      if (!principal.ok || principal.value.kind !== 'user')
+        throw new Error('fixture account unavailable')
+      return principal.value.subject
+    }
+    const alice = await member()
+    const bob = await member()
+    const book = tasks({ accounts: { book: h.book } })
+    const parent = await foreground()
+    expect(h.book.recordOwner(parent, alice).ok).toBe(true)
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
+    )
+    // The worker turns go out as her, too.
+    const worker = await workerTurn(1)
+    expect(h.book.ownerOf(worker)).toBe(alice)
+    const owner = { subject: alice, role: 'member' as const }
+    const other = { subject: bob, role: 'member' as const }
+    expect(book.list(owner).map(task => task.id)).toEqual([id])
+    expect(book.list(owner)[0]).toMatchObject({
+      owner: alice,
+      status: 'running',
+      workerSession: worker,
+    })
+    expect(book.visible(id, owner)).toBe(true)
+    expect(book.list(other)).toEqual([])
+    expect(book.visible(id, other)).toBe(false)
+    const denied = await book.cancel(id, { ...other, requestId: 'r' })
+    expect(denied.ok ? '' : denied.failure.code).toBe('not_found')
+    expect(stopped).toEqual([])
+    expect(book.list(owner)[0]?.status).toBe('running')
+    const done = await book.cancel(id, { ...owner, requestId: 'r' })
+    expect(done.ok && done.value.status).toBe('cancelled')
+    expect(stopped).toEqual([[MAIN, chat.lastTask(worker)]])
   })
 })
 
@@ -1250,6 +1461,41 @@ describe('races and leftovers', () => {
     chat.reply(worker, '接着做')
     await until(() => chat.sentTo(worker).length === 3)
     expect(stopped).toHaveLength(1)
+  })
+
+  test('a cancel while a leftover turn is being stopped stays cancelled and starts no new turn', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    value(await call(book, 'start', parent, { title: 't', instructions: 'i' }))
+    const worker = await workerTurn(1)
+    const leftover = chat.lastTask(worker)
+    await until(
+      () =>
+        JSON.parse(fs.readFileSync(path.join(root, 'tasks.json'), 'utf8'))
+          .tasks[0].nodeTaskId === leftover,
+    )
+    await book.close()
+    open = []
+    let release: () => void = () => {}
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    // A node can take seconds to stop a turn.
+    const reopened = tasks({
+      stopTask: async (target, taskId) => {
+        stopped.push([target, taskId])
+        await gate
+        return true
+      },
+    })
+    await until(() => stopped.length === 1)
+    const cancelling = reopened.cancelForSession(parent)
+    expect(reopened.forSession(parent)[0]?.status).toBe('cancelled')
+    release()
+    expect(await cancelling).toBe(1)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(reopened.forSession(parent)[0]?.status).toBe('cancelled')
+    expect(chat.sentTo(worker)).toHaveLength(1)
   })
 
   test('a refusal retrying cannot fix pauses the task at once, with the reason', async () => {
