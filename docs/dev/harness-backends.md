@@ -86,8 +86,8 @@
 | 项 | 定案 |
 |---|---|
 | 位置 | 沿用 P31：`qianmoConfigPath('runtimes','npm')` 前缀，`npm install --prefix`，缓存与配置也在其下；先装进临时前缀、过兼容检查再换入。启动参数指定了路径的（`--claude-code-bin`、`--codex-bin`、新增 `--runtime-bin <id>=<路径>`）不管 |
-| 缺省安装 | 节点启动时，若某个智能体的配置底层是 `dsh`（包括按缺省落到 dsh 的）而节点上找不到可用的 dsh，就在后台装钉住的版本；安装期间与失败后，这些智能体按 §3.3 退回 qianmopi 并写明原因，装好后它们的空闲子进程换新（与扩展变更同一个口子），下一轮起用 dsh。`--no-runtime-autoinstall` 关掉；失败按 5、15、60 分钟退避重试，每次启动最多三次 |
-| 可选安装 | 控制链路 `runtime.install {runtime, version?}`（不给版本装目录钉住的版本）、`runtime.remove {runtime}`（有智能体配置在它上面时拒绝，写明是哪些）；`runtime.update` 保留，泛化到目录里所有 npm 项。三个都是有副作用的操作，走节点的幂等账本，急停下拒绝 |
+| 缺省安装 | 节点启动时，若某个智能体的配置底层是 `dsh`（包括按缺省落到 dsh 的）而节点上找不到可用的 dsh，就在后台装钉住的版本；安装期间与失败后，这些智能体按 §3.3 退回 qianmopi 并写明原因，装好后它们的空闲子进程换新（与扩展变更同一个口子），下一轮起用 dsh。`--no-runtime-autoinstall` 或环境变量 `QIANMO_RUNTIME_AUTOINSTALL=0` 关掉；首次失败后按 5、15、60 分钟各重试一次，之后本次启动不再试；节点停机时中止进行中的安装，不记为失败 |
+| 可选安装 | 控制链路 `runtime.install {runtime, version?}`（不给版本装目录钉住的版本，只收精确版本号）、`runtime.remove {runtime}`（有智能体配置在它上面时拒绝 `E_RUNTIME_IN_USE` 并写明是哪些；内置的 qianmopi 拒绝 `E_RUNTIME_BUILTIN`）；`runtime.update` 保留，泛化到目录里所有 npm 项。同一底层正在装时再装回 `E_RUNTIME_BUSY`，安装失败回 `E_RUNTIME_INSTALL`，被 `--runtime-bin` 钉住路径的底层不装不卸。三个都是有副作用的操作，走节点的幂等账本，急停下拒绝。上次安装的结果记在 `qianmoConfigPath('runtimes','installs.json')`（0600） |
 | 兼容检查 | 沿用 P31 的做法，按接口分：ACP 底层用节点自己的启动参数、真实的 `qm runtime-mcp` 工具桥与本机假模型接口（按它的首选线路）跑 `initialize` → `session/new`（带 qianmo MCP）→ 一轮，要求工具列表里有 `qianmo_*`、一次宿主工具调用到达节点；不通过就不装，节点留在原状，答复写明原因 |
 | 报告 | `runtime.versions` 列出目录里每一项：是否已装、版本、来源（前缀 / PATH / 启动参数）、钉住的版本、上次安装的结果；中枢「更新」页与「网关」页都读它 |
 | 前置 | 安装前核对磁盘：受管前缀所在文件系统的可用空间不够（dsh 要 2 GiB 以上）就不开始，报「磁盘空间不足」；要 Node.js 的底层先核对版本范围（dsh `^22.19.0 \|\| >=24`），不合要求报「缺少 Node.js」（退回原因 `no-node`），不替节点装 Node.js |
@@ -101,11 +101,11 @@
 
 优先级从高到低：
 
-1. 节点的 `runtimes.json`（`qianmoConfigPath('qianmo','runtimes.json')`，0600 原子写）：控制链路 `runtime.configure {agent, runtime, model}` 写入，`model` 是 `<档案>/<模型号>` 或 `auto`；
+1. 节点的 `runtimes.json`（`qianmoConfigPath('qianmo','runtimes.json')`，0600 原子写，`{v:1, agents:{<智能体>:{runtime?, model?}}}`）：控制链路 `runtime.configure {agent, runtime, model}` 写入，`model` 是 `<档案>/<模型号>` 或 `auto`，传 `null` 清掉该字段；
 2. 启动参数 `--agent-runtime`、`--agent-model`（P27 原有）；
 3. 节点缺省底层 `--default-runtime <id>`，**缺省 `dsh`**。
 
-`runtime.configure` 只接受目录里的 id 与本节点名册里的智能体；写入后该智能体的空闲子进程立即换新，忙的回合结束后换（同 P32）。
+`runtime.configure` 只接受目录里的 id 与本节点名册里的智能体；写入后该智能体的空闲子进程立即换新，忙的回合结束后换（同 P32）。外部底层不再强制要求 `--agent-model`（取不到模型是一种退回原因，不是启动错误）；`--agent-shell` 对任何外部底层都可用。
 
 ### 3.2 模型
 
@@ -201,7 +201,7 @@
 
 ### 6.3 换底层时对话接着走
 
-每条会话不论底层都记一份「便携记录」（会话目录 `portable.ndjson`，0600：每轮的用户文字、最终回答、一行工具摘要，保留最近 64 KiB）。智能体换了底层（用户改了、或因 §3.3 退回 / 恢复）之后，已有会话的下一轮在新底层上开新的原生会话，第一轮前面带一段「前情」（最近若干轮，至多 12 KiB，注明来自哪个底层），之后照常续接。不支持续接的 ACP harness 进程重启时同样用它。
+每条会话不论底层都记一份「便携记录」（`portable.ndjson`，0600：每轮的用户文字（单条至多 4 KiB）、最终回答（8 KiB）、一行工具摘要（300 字节），保留最近 64 KiB；本地命令不记）。智能体换了底层（用户改了、或因 §3.3 退回 / 恢复）之后，已有会话的下一轮在新底层上开新的原生会话，第一轮前面带一段「前情」（最近若干轮，至多 12 KiB，注明来自哪个底层），之后照常续接。不支持续接的 ACP harness 进程重启时同样用它。
 
 ### 6.4 共享
 
