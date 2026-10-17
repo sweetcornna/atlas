@@ -170,6 +170,7 @@
         "@qianmo/elastic": "workspace:*",
         "@qianmo/extension": "workspace:*",
         "@qianmo/handoff": "workspace:*",
+        "@qianmo/magpie": "workspace:*",
         "@qianmo/mailbox": "workspace:*",
         "@qianmo/memory": "workspace:*",
         "@qianmo/negotiation": "workspace:*",

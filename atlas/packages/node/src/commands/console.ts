@@ -39,6 +39,7 @@ import { ConsoleSchedules } from './consoleSchedules.js'
 import { ConsoleChannels } from './consoleChannels.js'
 import { ConsoleTasks } from './consoleTasks.js'
 import { ConsoleExtensions } from './consoleExtensions.js'
+import { ConsoleMagpie } from './consoleMagpie.js'
 import { ConsoleUpdates } from './consoleUpdates.js'
 import { SelfUpgrader } from '../host/selfUpgradeRunner.js'
 import { parseAddress } from '@qianmo/protocol'
@@ -859,6 +860,33 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         onError: message => process.stderr.write(`[extensions] ${message}\n`),
       })
     : undefined
+  // The platform magpie gateway (P33/P34) rides on the model service: each
+  // gateway key is a profile there. This process only drives magpie's
+  // management API; model traffic goes from nodes straight to the gateway.
+  const magpie =
+    config.magpie === true && providers !== undefined
+      ? new ConsoleMagpie({
+          statePath: qianmoConfigPath('qianmo', 'console', 'magpie.json'),
+          secretsPath: qianmoConfigPath(
+            'qianmo',
+            'console',
+            'magpie-secrets.json',
+          ),
+          keyPath: qianmoConfigPath(
+            'qianmo',
+            'console-keys',
+            'magpie-master.key',
+          ),
+          providers,
+          ...(tenancy === undefined
+            ? {}
+            : {
+                tenants: () =>
+                  tenancy.read().config.tenants.map(tenant => tenant.id),
+              }),
+          onError: message => process.stderr.write(`[magpie] ${message}\n`),
+        })
+      : undefined
 
   // File exchange goes through the repo connection marked for it, else the
   // CLI repo: connections win, as for the relay. The repo is fixed for this
@@ -1049,6 +1077,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(channels === undefined ? {} : { channels }),
     ...(updates === undefined ? {} : { updates }),
     ...(extensions === undefined ? {} : { extensions }),
+    ...(magpie === undefined ? {} : { magpie }),
     ...(approvals === undefined ? {} : { approvals }),
     ...(usage === undefined ? {} : { usage }),
     ...(tenancy === undefined ? {} : { tenancy }),
@@ -1160,6 +1189,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   channels?.start()
   updates?.start()
   extensions?.start()
+  magpie?.start()
 
   const origin = httpOrigin(config.hostname, handle.port)
   // token 是自己生成的才回显：显式提供的那一个已经在操作者手里，把它再打进
@@ -1311,6 +1341,13 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           : `UNAVAILABLE (${providers.problem})`,
       )
     }
+    if (magpie !== undefined)
+      banner += field(
+        'magpie',
+        magpie.problem === null
+          ? 'enabled (management API only; nodes call the gateway directly; fake-tested only)'
+          : `UNAVAILABLE (${magpie.problem})`,
+      )
     banner += field(
       'legacy-view',
       accounts.legacyView === false ? 'off' : 'on (migration)',
@@ -1364,6 +1401,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     void tasks?.close()
     void updates?.close()
     void extensions?.close()
+    magpie?.close()
     connectors?.close()
     usageCollection?.stop()
     void approvals?.close()

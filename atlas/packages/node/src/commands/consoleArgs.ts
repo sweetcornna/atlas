@@ -509,6 +509,11 @@ export interface ConsoleCliConfig {
   /** 连接器（MCP）、技能与插件（P32）：经控制链路下发到节点。 */
   readonly extensions?: boolean
   /**
+   * 平台模型网关 magpie（P33/P34）：中枢调它的管理接口，为节点签发网关密钥并写成
+   * 模型档案。要 `--providers`（因而也要 `--accounts`）。
+   */
+  readonly magpie?: boolean
+  /**
    * 每个节点跑在哪台服务器上。**给了才有归属面**，一个都没给就整个不显示。
    *
    * 同时是备注的白名单：页面只能给这张表里出现过的服务器写备注。
@@ -641,6 +646,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
   let channels = false
   let updates = false
   let extensions = false
+  let magpie = false
   const nodeServers: ConsoleNodeServer[] = []
   let serverNotesPath = consoleServerNotesPath()
   const managed: ConsoleManagedAddress[] = []
@@ -916,6 +922,9 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
       updates = true
     } else if (arg === '--extensions') {
       extensions = true
+    } else if (arg === '--magpie') {
+      magpie = true
+      needsProviders.push('--magpie')
     } else if (arg === '--chat-url' || arg?.startsWith('--chat-url=')) {
       const parsed = residentOptionValue(args, index, '--chat-url')
       // A complete URL is legacy even when its query contains `=`. Only
@@ -1536,6 +1545,7 @@ export function parseConsoleArgs(args: readonly string[]): ConsoleCliConfig {
     ...(channels ? { channels: true } : {}),
     ...(updates ? { updates: true } : {}),
     ...(extensions ? { extensions: true } : {}),
+    ...(magpie ? { magpie: true } : {}),
     nodeServers,
     serverNotesPath,
     ...(replicateRoot === undefined ? {} : { replicateRoot }),
@@ -1740,6 +1750,13 @@ Options (each accepts both --name value and --name=value):
                            Codex. MCP secrets are sealed on this hub.
                            State: <config root>/qianmo/console/extensions/.
                            Unevaluated against real servers and plugins.
+  --magpie                The platform magpie model gateway on the 网关 page:
+                           this hub drives magpie's management API and issues
+                           one gateway key per node, delivered as a model
+                           profile. Model traffic goes from nodes straight to
+                           the gateway, never through this hub. Requires
+                           --providers. State: <config root>/qianmo/console/
+                           magpie.json. Tested against a fake magpie only.
   --node-server <node>=<server>
                            Which machine a node runs on. Repeatable, one node
                            per flag, and a node may not be named twice. The
