@@ -18,6 +18,7 @@ import {
   desktopOp,
   isDesktopInvocationId,
   isDesktopTool,
+  type DesktopArgs,
   type DesktopDecision,
   type DesktopResource,
   type DesktopTool,
@@ -860,7 +861,7 @@ export class NodeDesktop {
       })
       return GRANTED
     }
-    let args: Record<string, string | number>
+    let args: DesktopArgs
     try {
       args = desktopArgs(tool, input.args)
     } catch {
