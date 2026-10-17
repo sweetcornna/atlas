@@ -260,7 +260,7 @@ function documentedWrites(): readonly (readonly [string, string])[] {
 }
 
 /** Writes a person without a subscription may still make, and why. */
-function ungated(path: string): boolean {
+function ungated(method: string, path: string): boolean {
   const parts = path.split('/').filter(Boolean)
   // The doors that make or end a session.
   if (['/login', '/logout', '/signup', '/invite'].includes(path)) return true
@@ -275,6 +275,15 @@ function ungated(path: string): boolean {
     return true
   // Answered before any credential is read.
   if (parts[0] === 'v0' && parts[1] === 'billing' && parts[2] === 'notify')
+    return true
+  // Taking one's own upstream key back out of the gateway, lapsed or not.
+  if (
+    method === 'DELETE' &&
+    parts.length === 4 &&
+    parts[0] === 'v0' &&
+    parts[1] === 'billing' &&
+    parts[2] === 'models'
+  )
     return true
   return path === '/v0/handoff/pair'
 }
@@ -315,11 +324,48 @@ describe('the subscription gate (one place, every write)', () => {
     for (const who of ['unpaid', 'expired', 'ops'] as const) {
       const f = publicConsole()
       const { gated, passed } = await walk(f, f[who])
-      const wrong = passed.filter(line => !ungated(line.split(' ')[1] ?? ''))
+      const wrong = passed.filter(line => {
+        const [method = '', path = ''] = line.split(' ')
+        return !ungated(method, path)
+      })
       expect(`${who} ${wrong.join(', ')}`).toBe(`${who} `)
       expect(gated.length).toBeGreaterThan(70)
       // Nothing behind the gate ran: no line in the action ledger.
       expect(f.actions.entries.filter(e => e.outcome === 'ok')).toEqual([])
+    }
+  })
+
+  test('a lapsed subscriber can still take their own upstream key out', async () => {
+    const f = publicConsole()
+    f.billing.upstreams.set(f.expired.subject, [
+      {
+        id: 'openai-1',
+        name: 'expired-openai',
+        preset: 'openai',
+        models: 2,
+        ready: true,
+        present: true,
+      },
+    ])
+    const removed = await f.handle(
+      call('DELETE', '/v0/billing/models/openai-1', f.expired),
+    )
+    expect(removed.status).toBe(204)
+    expect(
+      f.actions.entries.map(
+        e => `${e.subject} ${e.action} ${e.target} ${e.outcome}`,
+      ),
+    ).toEqual([`${f.expired.subject} billing.model.remove openai-1 ok`])
+    // Adding one is still for subscribers, and only DELETE is let through.
+    for (const [method, path, body] of [
+      ['POST', '/v0/billing/models', { preset: 'openai', key: 'sk-1' }],
+      ['POST', '/v0/billing/models/openai-1', {}],
+      ['PUT', '/v0/billing/models/openai-1', {}],
+    ] as const) {
+      const response = await f.handle(call(method, path, f.expired, body))
+      expect(`${method} ${path} ${response.status}`).toBe(
+        `${method} ${path} 402`,
+      )
     }
   })
 

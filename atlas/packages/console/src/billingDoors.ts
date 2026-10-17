@@ -23,8 +23,10 @@
  * by a non-platform person (or a device acting for one) whose subscription
  * is not active answers **402 `subscription_required`**, whatever route it
  * was for. Reads pass (their own history stays readable), and so do the
- * doors and the two writes that make a person a subscriber: checkout and
- * redeem. Platform subjects and break-glass are never gated.
+ * doors, the two writes that make a person a subscriber (checkout and
+ * redeem), and `DELETE /v0/billing/models/<id>`: a lapsed subscriber can
+ * still take their own upstream key back out of the gateway. Platform
+ * subjects and break-glass are never gated.
  *
  * `/` (`publicFrontDoor`) follows the same standing: signed out it is the
  * plans page; signed in without a subscription a card that points at
@@ -124,8 +126,8 @@ export async function serveBillingNotify(
 
 // --- the gate ----------------------------------------------------------
 
-/** Paths a person without a subscription may still write to. */
-function ungated(segments: readonly string[]): boolean {
+/** Writes a person without a subscription may still make. */
+function ungated(method: string, segments: readonly string[]): boolean {
   const [head, second, third] = segments
   if (
     segments.length === 1 &&
@@ -133,12 +135,10 @@ function ungated(segments: readonly string[]): boolean {
   )
     return true
   if (head === 'subscription' && second === 'checkout') return true
-  return (
-    head === 'v0' &&
-    second === 'billing' &&
-    segments.length === 3 &&
-    (third === 'checkout' || third === 'redeem')
-  )
+  if (head !== 'v0' || second !== 'billing') return false
+  if (segments.length === 3) return third === 'checkout' || third === 'redeem'
+  // Their own upstream key, out of the gateway, whatever their standing.
+  return segments.length === 4 && third === 'models' && method === 'DELETE'
 }
 
 /**
@@ -189,7 +189,7 @@ export async function subscriptionDenial(
   // The legacy tokens are the platform's own (and the view token is off in
   // the public edition).
   if (subject === null) return null
-  if (ungated(segments)) return null
+  if (ungated(request.method, segments)) return null
   const standing = await billing.standing(subject)
   if (standing.active) return null
   return fail(402, 'subscription_required', '需要有效订阅 · 在订阅页购买或续费')

@@ -621,7 +621,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 `http.ts` 在租户边界之前、动作账本之前问它）：个人账号（或替它行事的设备）没有有效订阅
 时，**任何写**（GET、HEAD、OPTIONS 以外）都答 **402 `subscription_required`**，不论下表
 哪一行；读照常，登录、登出、注册、邀请、下单（`/subscription/checkout`、
-`/v0/billing/checkout`）与兑换（`/v0/billing/redeem`）不受限。平台主体、break-glass
+`/v0/billing/checkout`）、兑换（`/v0/billing/redeem`）与删除自己接的上游
+（`DELETE /v0/billing/models/<上游 id>`，到期后也要能把自己的密钥从网关里撤出）不受限。平台主体、break-glass
 与两枚旧令牌不受闸门限制。到期后租户网关密钥同时停用。
 
 | 方法 | 路径 | 角色 | 说明 |
@@ -670,7 +671,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/billing/orders/<订单 id>` | 订单本人 | 订单状态；待支付时顺带向支付平台查一次单。不回二维码内容；别人的订单 404 |
 | POST | `/v0/billing/redeem` | 个人账号 | `{ code }` 兑换，答兑换后的订阅。记 `billing.redeem`；不受订阅闸门限制 |
 | POST | `/v0/billing/models` | 个人账号，有效订阅 | `{ preset, key }`：用 magpie 的 API 密钥预设（L-6）接自己的上游，密钥只交给 magpie、中枢不留存；租户网关密钥的白名单随之改为本租户上游的模型并启用。记 `billing.model.add` |
-| DELETE | `/v0/billing/models/<上游 id>` | 个人账号，有效订阅 | 删除自己接的上游；最后一个删掉后网关密钥停用。别人的与平台的上游 404。成功 204，记 `billing.model.remove` |
+| DELETE | `/v0/billing/models/<上游 id>` | 个人账号（到期后也能删） | 删除自己接的上游，不受订阅闸门限制；最后一个删掉后网关密钥停用。别人的与平台的上游 404。成功 204，记 `billing.model.remove` |
 | POST | `/v0/billing/notify/{wechatpay,alipay}` | 公开，公开版 | 支付平台回调（§4.3）：不要凭据与控制台头，原文交给通道验签，原样回通道的应答；非 POST 405，超过 64 KiB 413 |
 | GET | `/v0/billing/admin` | 平台读者 | 订阅管理快照：套餐、通道、订单、订阅（含租户与开通状态）、兑换码（只有编号与使用情况）、待退款（付款时已有别的套餐在有效期内、没有计入的订单）、账本校验。有租户时只给平台主体与 break-glass |
 | GET | `/v0/billing/admin/verify` | 平台读者 | 从头校验账本的哈希链，答 `{ ok, events }` 或第一处不一致 |
