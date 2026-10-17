@@ -50,6 +50,7 @@ let fake: FakeMagpie
 let node: FakeNode
 let providers: ConsoleProviders
 let ledger: string[]
+let errors: string[]
 let paths: { state: string; secrets: string; key: string }
 
 function caller(overrides: Partial<MagpieCaller> = {}): MagpieCaller {
@@ -73,6 +74,7 @@ function port(tenants: readonly string[] = []): ConsoleMagpie {
     keyPath: paths.key,
     providers,
     tenants: () => tenants,
+    onError: line => errors.push(line),
   })
 }
 
@@ -151,6 +153,7 @@ function deliveredKey(request: Record<string, unknown> | undefined): unknown {
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'qianmo-magpie-port-'))
   ledger = []
+  errors = []
   fake = await FakeMagpie.start({
     webKey: WEB_KEY,
     providers: [
@@ -680,6 +683,97 @@ describe('a gateway key for a node', () => {
     if (!profile.ok) throw new Error('profile')
     expect(profile.value.baseUrl).toBe('https://gw2.example.test')
     expect(applies().length).toBe(before + 1)
+  })
+
+  test('a delivery the node does not take is said to the caller and to the log, not passed off as done', async () => {
+    await otherDefault()
+    const magpie = await connected()
+    const binding = { kind: 'node' as const, id: 'beta-1' }
+    const refuse = () =>
+      node.set(
+        'reply-apply.json',
+        JSON.stringify({
+          v: 1,
+          requestId: 'x',
+          ok: false,
+          code: 'write-failed',
+          message: 'disk full',
+        }),
+      )
+    const take = () => rmSync(join(node.dir, 'reply-apply.json'))
+    const unsaid = (result: {
+      ok: boolean
+      failure?: { code: string; message: string }
+    }) => {
+      expect(result.ok).toBe(false)
+      expect(result.failure?.code).toBe('unreachable')
+      expect(result.failure?.message).toContain('beta-1')
+      expect(errors.some(line => line.includes('beta-1'))).toBe(true)
+      errors.length = 0
+    }
+    // Issue: the key and the profile exist; the node did not get them.
+    refuse()
+    const issued = await magpie.issueKey(
+      { binding, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    unsaid(issued as never)
+    const snapshot = await magpie.snapshot()
+    expect(
+      snapshot.ok && snapshot.value.keys.map(key => key.binding.id),
+    ).toEqual(['beta-1'])
+    const keyId = snapshot.ok ? snapshot.value.keys[0]?.keyId : undefined
+    // A new main model.
+    unsaid(
+      (await magpie.updateKey(
+        binding,
+        { mainModel: 'openai/gpt-6-mini' },
+        caller(),
+      )) as never,
+    )
+    // Rotation: magpie has the new value, the node still the dead one.
+    const before = fake.key(keyId ?? '')?.secret
+    unsaid((await magpie.rotateKey(binding, caller())) as never)
+    expect(fake.key(keyId ?? '')?.secret).not.toBe(before)
+    // A new gateway address: saved, not delivered.
+    unsaid(
+      (await magpie.connect(
+        {
+          gatewayUrl: 'https://gw2.example.test',
+          managementUrl: fake.managementUrl,
+        },
+        caller(),
+      )) as never,
+    )
+    const profile = await providers.profile('magpie-node-beta-1')
+    expect(profile.ok && profile.value.baseUrl).toBe('https://gw2.example.test')
+    // Removal: the node did not get its old profile back, so the key stays.
+    unsaid((await magpie.removeKey(binding, caller())) as never)
+    expect(fake.keys()).toHaveLength(1)
+    // Asked again, it goes ahead: the node was already moved back.
+    const again = await magpie.removeKey(binding, caller())
+    expect(again.ok).toBe(true)
+    expect(fake.keys()).toEqual([])
+    take()
+  })
+
+  test('a node whose capabilities cannot be told refuses the lanes: issuing says so', async () => {
+    node.set(
+      'reply-status.json',
+      JSON.stringify({ v: 1, requestId: 'x', ok: true, state: { odd: true } }),
+    )
+    const magpie = await connected()
+    const issued = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-1' }, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    expect(issued.ok).toBe(false)
+    if (!issued.ok)
+      expect(issued.failure.message).toContain('capabilities-unknown')
+    expect(errors.some(line => line.includes('capabilities-unknown'))).toBe(
+      true,
+    )
+    expect(applies()).toEqual([])
   })
 
   test('usage names the binding behind each key of ours', async () => {

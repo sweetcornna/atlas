@@ -636,6 +636,34 @@ export class ConsoleMagpie implements MagpiePort {
     }
   }
 
+  /**
+   * Deliver to one node and look at what it answered: a line saying what did
+   * not land (also written to the log), or `null` when it took it. A refusal
+   * (busy, a local edit, capabilities it has not told) is as much a failure
+   * as a node out of reach: the caller must not report the change as done.
+   */
+  async #deliver(
+    node: string,
+    pcaller: ProviderCaller,
+  ): Promise<string | null> {
+    const applied = await this.#options.providers.apply(
+      { nodes: [node] },
+      pcaller,
+    )
+    let problem: string | null
+    if (!applied.ok) problem = applied.failure.message
+    else {
+      const bad = applied.value.find(one => one.outcome !== 'ok')
+      problem =
+        bad === undefined
+          ? null
+          : `${bad.code ?? bad.outcome}${bad.message === undefined ? '' : ` · ${bad.message}`}`
+    }
+    if (problem !== null)
+      this.#options.onError?.(`下发到 ${node} 没成 · ${problem}`)
+    return problem
+  }
+
   #webKey(): string | null {
     try {
       return this.#secrets.reveal(MANAGEMENT_SLOT)
@@ -1052,18 +1080,27 @@ export class ConsoleMagpie implements MagpiePort {
         connectedAt: this.#state.connectedAt ?? this.#now(),
         lastCheck: check,
       })
-      if (moved) await this.#repoint(caller)
+      const problems = moved ? await this.#repoint(caller) : []
       // The public edition takes a subscriber's node back onto no model:
       // that profile exists from the first connection and follows the gateway.
       await this.#ensureNoModel()
+      if (problems.length > 0)
+        return failed(
+          'unreachable',
+          `已改到新网关地址 · ${problems.join(' · ')} · 在模型服务页重新下发`,
+        )
       return ok(this.#connection())
     })
   }
 
-  /** The gateway moved: every binding's profile follows it, nodes get it. */
-  async #repoint(caller: MagpieCaller): Promise<void> {
+  /**
+   * The gateway moved: every binding's profile follows it, nodes get it.
+   * Returns what did not follow (also in the log).
+   */
+  async #repoint(caller: MagpieCaller): Promise<string[]> {
     const providers = this.#options.providers
     const pcaller = this.#providerCaller(caller)
+    const problems: string[] = []
     for (const record of this.#state.bindings) {
       const revision = await this.#revision(record.profileId)
       if (revision === null) continue
@@ -1072,19 +1109,18 @@ export class ConsoleMagpie implements MagpiePort {
         pcaller,
       )
       if (!saved.ok) {
-        this.#options.onError?.(
-          `${record.profileId} 没能改到新网关地址 · ${saved.failure.message}`,
-        )
+        const line = `${record.profileId} 没能改到新网关地址 · ${saved.failure.message}`
+        this.#options.onError?.(line)
+        problems.push(line)
         continue
       }
       if (record.kind === 'node') {
-        const applied = await providers.apply({ nodes: [record.id] }, pcaller)
-        if (!applied.ok)
-          this.#options.onError?.(
-            `下发到 ${record.id} 失败 · ${applied.failure.message}`,
-          )
+        const problem = await this.#deliver(record.id, pcaller)
+        if (problem !== null)
+          problems.push(`下发到 ${record.id} 没成 · ${problem}`)
       }
     }
+    return problems
   }
 
   check(caller: MagpieCaller): Promise<Result<MagpieConnectionView>> {
@@ -1557,10 +1593,11 @@ export class ConsoleMagpie implements MagpiePort {
         return failed('unreachable', `网关状态写不进去 · ${messageOf(error)}`)
       }
       if (binding.kind === 'node') {
-        const applied = await providers.apply({ nodes: [binding.id] }, pcaller)
-        if (!applied.ok)
-          this.#options.onError?.(
-            `下发到 ${binding.id} 失败 · ${applied.failure.message}`,
+        const problem = await this.#deliver(binding.id, pcaller)
+        if (problem !== null)
+          return failed(
+            'unreachable',
+            `密钥已签发并写进档案 · 下发到 ${binding.id} 没成 · ${problem} · 在模型服务页重新下发`,
           )
       }
       return ok(this.#keyView(record, key))
@@ -1663,10 +1700,11 @@ export class ConsoleMagpie implements MagpiePort {
         }
         this.#replace(record)
         if (modelsChanged && record.kind === 'node') {
-          const applied = await providers.apply({ nodes: [record.id] }, pcaller)
-          if (!applied.ok)
-            this.#options.onError?.(
-              `下发到 ${record.id} 失败 · ${applied.failure.message}`,
+          const problem = await this.#deliver(record.id, pcaller)
+          if (problem !== null)
+            return failed(
+              'unreachable',
+              `已改进档案 · 下发到 ${record.id} 没成 · ${problem} · 在模型服务页重新下发`,
             )
         }
         const key = (await client.listKeys()).find(
@@ -1718,10 +1756,11 @@ export class ConsoleMagpie implements MagpiePort {
           `magpie 里已换新值 · 写进档案失败 · 请重试轮换 · ${set.failure.message}`,
         )
       if (record.kind === 'node') {
-        const applied = await providers.apply({ nodes: [record.id] }, pcaller)
-        if (!applied.ok)
-          this.#options.onError?.(
-            `下发到 ${record.id} 失败 · ${applied.failure.message}`,
+        const problem = await this.#deliver(record.id, pcaller)
+        if (problem !== null)
+          return failed(
+            'unreachable',
+            `magpie 里已换新值并写进档案 · 下发到 ${record.id} 没成 · 节点手里的旧值已失效 · ${problem} · 在模型服务页重新下发`,
           )
       }
       try {
@@ -1771,10 +1810,14 @@ export class ConsoleMagpie implements MagpiePort {
             pcaller,
           )
           if (!assigned.ok) return fromProviders(assigned.failure)
-          const applied = await providers.apply({ nodes: [record.id] }, pcaller)
-          if (!applied.ok)
-            this.#options.onError?.(
-              `下发到 ${record.id} 失败 · ${applied.failure.message}`,
+          // The node did not get its own profile back: it still runs on this
+          // key, so the key stays. The assignment has moved, so asking again
+          // removes it regardless.
+          const problem = await this.#deliver(record.id, pcaller)
+          if (problem !== null)
+            return failed(
+              'unreachable',
+              `${record.id} 已改回原来的档案 · 下发没成 · ${problem} · 密钥先不收回 · 再收回一次会直接收回`,
             )
         }
       }
