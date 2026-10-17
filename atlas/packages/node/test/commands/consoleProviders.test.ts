@@ -785,7 +785,8 @@ function sealedPieces(h: Harness, keyId: string): string[] {
 
 describe('P33: lane addresses', () => {
   test('travel only to a node that compiles them', async () => {
-    const h = harness()
+    let now = Date.now()
+    const h = harness({ now: () => now })
     const ops = h.caller()
     const lanes = { 'openai-chat': 'https://gw.example.test/v1' }
     value(
@@ -805,12 +806,68 @@ describe('P33: lane addresses', () => {
     ).toBe('ok')
     expect(received(node, 'apply').at(-1)?.laneAddresses).toBeUndefined()
     node.set('lane-addresses', '1')
+    // The first apply asked the node (its capabilities were unknown); step
+    // past the refresh throttle so this one asks again.
+    now += 10_000
     await h.port.refreshNode('beta-1')
     expect(
       value(await h.port.apply({ nodes: ['beta-1'], force: true }, ops))[0]
         ?.outcome,
     ).toBe('ok')
     expect(received(node, 'apply').at(-1)?.laneAddresses).toEqual(lanes)
+  }, 30_000)
+
+  test('a node not heard from yet is asked before the lanes are compiled away', async () => {
+    // P33.4 TLS run: a console that had just started rotated a gateway key; the
+    // re-delivery went out at the v1 floor and the node lost its extra lanes.
+    const h = harness()
+    const ops = h.caller()
+    const lanes = { 'openai-chat': 'https://gw.example.test/v1' }
+    const node = h.nodes['beta-1']
+    node.set('lane-addresses', '1')
+    value(
+      await h.port.saveProfile(
+        {
+          profile: draft({ laneAddresses: lanes }),
+          ifMatch: null,
+          secrets: { k1: CANARY },
+        },
+        ops,
+      ),
+    )
+    value(await h.port.setDefault({ profileId: 'luna' }, ops))
+    expect(
+      value(await h.port.apply({ nodes: ['beta-1'] }, ops))[0]?.outcome,
+    ).toBe('ok')
+    expect(received(node, 'apply').at(-1)?.laneAddresses).toEqual(lanes)
+    const ops0 = node.requests().map(request => request.op)
+    expect(ops0.indexOf('status')).toBeGreaterThanOrEqual(0)
+    expect(ops0.indexOf('status')).toBeLessThan(ops0.indexOf('apply'))
+  }, 30_000)
+
+  test('capabilities still unknown: refused, nothing is applied', async () => {
+    const h = harness()
+    const ops = h.caller()
+    const node = h.nodes['beta-1']
+    node.set('lane-addresses', '1')
+    node.set('raw-status', '1\nnot a reply')
+    value(
+      await h.port.saveProfile(
+        {
+          profile: draft({
+            laneAddresses: { 'openai-chat': 'https://gw.example.test/v1' },
+          }),
+          ifMatch: null,
+          secrets: { k1: CANARY },
+        },
+        ops,
+      ),
+    )
+    value(await h.port.setDefault({ profileId: 'luna' }, ops))
+    const [result] = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
+    expect(result?.outcome).toBe('refused')
+    expect(result?.code).toBe('capabilities-unknown')
+    expect(received(node, 'apply')).toEqual([])
   }, 30_000)
 })
 
