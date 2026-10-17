@@ -40,7 +40,7 @@ import {
   PERMISSION_TOOL,
   RUNTIME_MCP_SERVER,
 } from './claudeCode.js'
-import { CodexChannel, codexArgv } from './codex.js'
+import { CODEX_KEY_ENV, CodexChannel, codexArgv } from './codex.js'
 import {
   RuntimeToolHost,
   type RuntimeToolResult,
@@ -129,28 +129,6 @@ interface SessionRecord {
 const DEFAULT_IDLE_MS = 600_000
 const CAPACITY_WAIT_MS = 30_000
 const SESSION_ID = /^[a-zA-Z0-9_-]+$/
-const CODEX_KEY_ENV = 'QIANMO_RUNTIME_KEY'
-/**
- * Codex features a resident agent never uses. `plugins` stays on: the
- * operator's skills and plugins load through it (P32); what a plugin bundles
- * besides skills is kept out by `apps`, `remote_plugin` and `hooks` here and
- * by the node's config for bundled MCP servers.
- */
-const CODEX_DISABLED_FEATURES = [
-  'multi_agent',
-  'apps',
-  'remote_plugin',
-  'skill_mcp_dependency_install',
-  'browser_use',
-  'browser_use_external',
-  'computer_use',
-  'in_app_browser',
-  'image_generation',
-  'hooks',
-  'memories',
-  'goals',
-]
-const CODEX_SHELL_FEATURES = ['shell_tool', 'unified_exec']
 
 export function defaultExternalSystemPrompt(agent: ExternalAgent): string {
   return [
@@ -580,10 +558,6 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         CLAUDE_CONFIG_DIR: home,
         ANTHROPIC_API_KEY: launch.apiKey,
         ANTHROPIC_BASE_URL: launch.baseUrl,
-        DISABLE_AUTOUPDATER: '1',
-        DISABLE_TELEMETRY: '1',
-        DISABLE_ERROR_REPORTING: '1',
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
         ...(launch.headers && Object.keys(launch.headers).length > 0
           ? { ANTHROPIC_CUSTOM_HEADERS: headerLines(launch.headers) }
           : {}),
@@ -599,13 +573,8 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         ...(launch.headers ? { headers: launch.headers } : {}),
         mcp: { command: mcp[0]!, args: mcp.slice(1) },
         ...(launch.effort ? { effort: launch.effort } : {}),
+        ...(agent.shell ? { shell: true } : {}),
       })
-      for (const feature of [
-        ...CODEX_DISABLED_FEATURES,
-        ...(agent.shell ? [] : CODEX_SHELL_FEATURES),
-      ])
-        argv.push('--disable', feature)
-      argv.push('-c', 'web_search="disabled"')
       Object.assign(env, { CODEX_HOME: home, [CODEX_KEY_ENV]: launch.apiKey })
     }
     const spawnInput: ExternalRuntimeSpawn = {

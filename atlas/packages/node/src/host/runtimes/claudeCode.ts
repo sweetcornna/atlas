@@ -50,10 +50,15 @@ const CLAUDE_SETTINGS = { disableAllHooks: true }
 /**
  * Environment that keeps a resident Claude Code to the node's policy: no
  * auto-memory (qianmo's memory goes through `qianmo_*`, and Claude Code's
- * own would live under the protected config root).
+ * own would live under the protected config root), no self-update (P31
+ * installs versions) and no traffic but the model's.
  */
 export const CLAUDE_CODE_ENV: Readonly<Record<string, string>> = {
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+  DISABLE_AUTOUPDATER: '1',
+  DISABLE_TELEMETRY: '1',
+  DISABLE_ERROR_REPORTING: '1',
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
 }
 
 export interface ClaudeCodeLaunch {
