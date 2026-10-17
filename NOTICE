@@ -374,7 +374,97 @@ hermes-agent 不是本项目的依赖，它的源代码不在本仓库里，也�
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
 
-五.6 已离开当前树的组件（历史记录）
+五.6 依据 magpie 整理的接口事实
+----------------------------------------
+
+`@qianmo/magpie`（atlas/packages/magpie/）是阡陌自己写的 magpie 管理客户端、L-6 访问
+判定与测试用的假 magpie。magpie（yetone/magpie，https://github.com/yetone/magpie ，MIT
+许可，Copyright (c) 2026 yetone）是运营方单独部署的模型网关，不是本项目的依赖，它的
+源代码不在本仓库里，也不随产物分发。为与它对接，下列事实依据它的源代码整理，代码是
+阡陌自己写的：
+
+  * 出处：取于提交 8b84dc9（8b84dc902bf016ef391836e1b287d091e827f5b6），取用日期
+    2026-10-17；P33.4 真机冒烟另以官方发行版 0.1.1278 核对。
+  * 整理了什么：管理接口与网关只读接口的路由形状和请求、应答的 JSON 字段
+    （`internal/gui/*.go`、`internal/gateway/gateway.go`）；管理口 cookie 名
+    `magpie_web_<端口>`、管理页默认端口与 magpie 保留的密钥前缀；密钥模型白名单的访问
+    规则（空白名单即全部模型，列出的路由组按请求时的成员放行，`gateway/key_models.go`）；
+    用量周期、限额窗口与路由方式的取值。假 magpie 为与真实行为对得上，照搬了 magpie
+    的若干报错句（管理接口 400 应答里的句子，出自 `internal/access/access.go` 等；网关
+    401、403 的说明文字，出自 `internal/gateway/lan.go` 等）。
+  * 涉及的文件（2026-10-17 列出）：atlas/packages/magpie/src/ 下的 client.ts、
+    access.ts、parse.ts、types.ts、testing.ts，其中 client.ts 头注写明取用提交，除
+    parse.ts（读 client.ts 所述接口的应答）外各文件注释写明所依据的 magpie 源文件：
+
+        git grep -n 'internal/[a-z]*/\|key_models.go' -- atlas/packages/magpie/src
+
+    中枢的 atlas/packages/node/src/commands/consoleMagpie.ts 还用到其中两条（保留的
+    密钥前缀、空白名单即全部模型），出处同上；magpie 预设
+    （atlas/packages/providers/src/presets.ts）的线路与模型号写法依据 magpie 的公开
+    文档，出处记在该预设的 `source` 字段。
+  * 许可声明：出于审慎，依 MIT 许可「在全部副本或实质部分中保留版权声明与许可
+    声明」的条件，原样保留 magpie 的版权声明与许可声明如下：
+
+    MIT License
+
+    Copyright (c) 2026 yetone
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+五.7 参照 qrcodegen 的结构
+----------------------------------------
+
+结账页的付款码与微信渠道的登录码由 atlas/packages/console/src/view/qr.ts 编成，这个
+编码器是阡陌按 ISO/IEC 18004 自己写的，其中四处的结构与 Project Nayuki 的 QR Code
+generator library（qrcodegen，https://www.nayuki.io/page/qr-code-generator-library ，
+MIT 许可，Copyright (c) Project Nayuki）相同。qrcodegen 不是本项目的依赖，它的源代码
+不在本仓库里，也不随产物分发。
+
+  * 结构相同之处：校正图形中心坐标的算法（步长规则、版本 32 的特例、从 `size − 7`
+    往回排）；码字按两列之字形放置并跳过第 6 列；罚分规则 3 按 1:1:3:1:1 判定、把符号
+    外的静区计为浅色的读法；规则 4 的计算式。qr.ts 头注逐条写明。
+  * 测试：atlas/packages/console/test/qrView.test.ts 的期望码图是在仓库外用 qrcodegen
+    （naive-ui 2.44.1 内附的 TypeScript 版）生成、以十六进制记下的，用来逐模块比对；
+    它是 qrcodegen 的输出，不含其代码。参照与取样日期 2026-10-17。
+  * 许可声明：出于审慎，依 MIT 许可的保留条件，原样保留 qrcodegen 源文件中的版权
+    声明与许可声明如下：
+
+    Copyright (c) Project Nayuki. (MIT License)
+    https://www.nayuki.io/page/qr-code-generator-library
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy of
+    this software and associated documentation files (the "Software"), to deal in
+    the Software without restriction, including without limitation the rights to
+    use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+    the Software, and to permit persons to whom the Software is furnished to do so,
+    subject to the following conditions:
+    - The above copyright notice and this permission notice shall be included in
+      all copies or substantial portions of the Software.
+    - The Software is provided "as is", without warranty of any kind, express or
+      implied, including but not limited to the warranties of merchantability,
+      fitness for a particular purpose and noninfringement. In no event shall the
+      authors or copyright holders be liable for any claim, damages or other
+      liability, whether in an action of contract, tort or otherwise, arising from,
+      out of or in connection with the Software or the use or other dealings in the
+      Software.
+
+五.8 已离开当前树的组件（历史记录）
 ----------------------------------------
 
 下列组件只存在于基座切换之前的提交里，在那些提交中按当时 NOTICE 的说明分发
@@ -834,7 +924,117 @@ artifacts.
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
 
-5.6 Components no longer in the current tree (historical)
+5.6 Interface facts compiled from magpie
+----------------------------------------
+
+`@qianmo/magpie` (atlas/packages/magpie/) is Qianmo's own magpie management
+client, L-6 access guard and in-memory magpie for tests. magpie (yetone/magpie,
+https://github.com/yetone/magpie, MIT License, Copyright (c) 2026 yetone) is a
+model gateway the operator deploys on its own; it is not a dependency of this
+project, its source code is not in this repository and is not distributed
+with its artifacts. To talk to it, the facts below were compiled from its
+source; the code is Qianmo's own.
+
+  * Source: commit 8b84dc9 (8b84dc902bf016ef391836e1b287d091e827f5b6), taken on
+    2026-10-17; the P33.4 smoke test checked them again against the official
+    release 0.1.1278.
+  * What was compiled: the shapes of the management API's and the gateway's
+    read-only routes and the JSON fields they take and return
+    (`internal/gui/*.go`, `internal/gateway/gateway.go`); the management
+    cookie name `magpie_web_<port>`, the management page's default port and
+    the key prefix magpie reserves; the access rule of a key's model list (an
+    empty list means every model, a listed routing group passes its members
+    at request time, `gateway/key_models.go`); the values of usage periods,
+    limit windows and routings. To behave like the real thing, the fake
+    magpie repeats several of magpie's error sentences verbatim (the
+    sentences of management 400 answers, from `internal/access/access.go` and
+    others; the gateway's 401 and 403 texts, from `internal/gateway/lan.go`
+    and others).
+  * Affected files (as listed on 2026-10-17): client.ts, access.ts, parse.ts,
+    types.ts and testing.ts under atlas/packages/magpie/src/. The header of
+    client.ts names the commit; the comments of each file except parse.ts
+    (which reads the answers of the API client.ts describes) name the magpie
+    source files they rely on:
+
+        git grep -n 'internal/[a-z]*/\|key_models.go' -- atlas/packages/magpie/src
+
+    The hub's atlas/packages/node/src/commands/consoleMagpie.ts uses two of
+    the same facts (the reserved key prefix, an empty list meaning every
+    model), from the same source; the lanes and model id forms of the magpie
+    preset (atlas/packages/providers/src/presets.ts) follow magpie's public
+    documentation, cited in that preset's `source` field.
+  * License notice: as a matter of caution, and per the MIT condition that the
+    copyright and permission notices be included in all copies or substantial
+    portions, magpie's notices are reproduced here verbatim:
+
+    MIT License
+
+    Copyright (c) 2026 yetone
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+5.7 Structure following qrcodegen
+----------------------------------------
+
+The checkout page's payment codes and the WeChat channel's login code are
+encoded by atlas/packages/console/src/view/qr.ts, an encoder Qianmo wrote to
+ISO/IEC 18004; four of its parts have the same structure as Project Nayuki's
+QR Code generator library (qrcodegen,
+https://www.nayuki.io/page/qr-code-generator-library, MIT License, Copyright
+(c) Project Nayuki). qrcodegen is not a dependency of this project; its source
+code is not in this repository and is not distributed with its artifacts.
+
+  * Same structure: the alignment pattern centres (the step rule, the version
+    32 exception, the fill back from `size − 7`); codeword placement in a
+    two-column zigzag that steps over column 6; penalty rule 3 as the
+    1:1:3:1:1 run test with the quiet zone outside the symbol counted as
+    light; the rule 4 formula. The header of qr.ts names each.
+  * Tests: the expected symbols in
+    atlas/packages/console/test/qrView.test.ts were produced outside the
+    repository by qrcodegen (the TypeScript version bundled in naive-ui
+    2.44.1) and kept as hex for a module-by-module comparison; they are
+    qrcodegen's output and contain none of its code. Referenced and sampled
+    on 2026-10-17.
+  * License notice: as a matter of caution, and per the MIT condition, the
+    copyright and permission notices in qrcodegen's source files are
+    reproduced here verbatim:
+
+    Copyright (c) Project Nayuki. (MIT License)
+    https://www.nayuki.io/page/qr-code-generator-library
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy of
+    this software and associated documentation files (the "Software"), to deal in
+    the Software without restriction, including without limitation the rights to
+    use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+    the Software, and to permit persons to whom the Software is furnished to do so,
+    subject to the following conditions:
+    - The above copyright notice and this permission notice shall be included in
+      all copies or substantial portions of the Software.
+    - The Software is provided "as is", without warranty of any kind, express or
+      implied, including but not limited to the warranties of merchantability,
+      fitness for a particular purpose and noninfringement. In no event shall the
+      authors or copyright holders be liable for any claim, damages or other
+      liability, whether in an action of contract, tort or otherwise, arising from,
+      out of or in connection with the Software or the use or other dealings in the
+      Software.
+
+5.8 Components no longer in the current tree (historical)
 ----------------------------------------
 
 The following exist only in commits before the base switch, where they are

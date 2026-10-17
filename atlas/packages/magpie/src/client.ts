@@ -6,10 +6,19 @@
  * --web` serves, `internal/gui/*.go`) and two reads of its gateway
  * (`GET /api/hello`, `GET /v1/models`, `internal/gateway/gateway.go`).
  *
+ * The routes, the JSON shapes and the cookie name are taken from magpie's
+ * source, yetone/magpie@8b84dc9 (MIT, Copyright (c) 2026 yetone; NOTICE
+ * 五.6); the code is Qianmo's own.
+ *
  * ## What it will not do
  *
  * - **Call a model.** The gateway's model endpoints are the nodes'; this
  *   client reads the gateway's identity and catalog only (N-5 v2.22, R-9).
+ *   The one exception is on the management side: saving a provider,
+ *   `providerModels` and `testProvider` ask magpie to reach the vendor (its
+ *   model list; one smallest request per protocol). Those requests leave
+ *   from magpie, never from this process, and only their results come back
+ *   (charter N-5 v3.6 note, providers-console-m1.md R-9 v1.9).
  * - **Follow a redirect.** Every request is `redirect: 'manual'` and a 3xx is
  *   an error: a management key in a cookie must not be carried to wherever a
  *   redirect points.

@@ -358,7 +358,15 @@ describe('every page', () => {
   test('loads nothing from anywhere, and carries one style and one script', async () => {
     for (const row of PAGES) {
       const html = await read(row.path)
-      const stripped = html.replace(/<link rel="icon"[^>]*>\n?/, '')
+      // The public edition's source footer (AGPL §13, `view/source.ts`) is
+      // the one place a page names another site: two links a reader may
+      // follow, nothing the page loads.
+      const stripped = html
+        .replace(/<link rel="icon"[^>]*>\n?/, '')
+        .replace(
+          /<footer class="[^"]*"><a href="[^"]*" rel="noopener" data-source>[\s\S]*?<\/footer>/,
+          '',
+        )
       expect(stripped).not.toContain('<link')
       expect(stripped).not.toContain('http://')
       expect(stripped).not.toContain('https://')

@@ -16,6 +16,7 @@ import { fail, html, methodNotAllowed, notFound, readForm } from './respond.js'
 import { escapeHtml } from './view/escape.js'
 import { documentHead } from './view/page.js'
 import { renderCredentialPage } from './view/invite.js'
+import { type SourceLinks, sourceFooter } from './view/source.js'
 
 /** Dedicated registration budget: successful attempts count too; no caller-controlled proxy key. */
 export class RegistrationThrottle {
@@ -42,12 +43,14 @@ export async function handleSignup(
   throttle: RegistrationThrottle,
   clientKey: string,
   now: number,
+  /** The public edition's source and terms links (AGPL §13, `view/source.ts`). */
+  source?: SourceLinks,
 ): Promise<Response> {
   if (accounts.signup === undefined) return notFound('注册未开放')
   if (request.method === 'GET')
     return html(
       documentHead(`${label} · 注册账号`) +
-        `<body><main class="stage"><form class="card panel" method="post" action="/signup"><h1>注册成员账号</h1><p>${escapeHtml(label)}</p><p>注册后由环境负责人分配租户。分配前没有节点或数据访问权限。</p><label for="label">备注（可选）</label><input id="label" name="label" maxlength="40" class="input" autocomplete="off"><button class="btn btn-primary" type="submit">注册并显示个人凭据</button><p>凭据只显示一次，请立即保存。</p></form></main></body></html>`,
+        `<body><main class="stage"><form class="card panel" method="post" action="/signup"><h1>注册成员账号</h1><p>${escapeHtml(label)}</p><p>注册后由环境负责人分配租户 · 分配前没有节点与数据访问权限</p><label for="label">备注（可选）</label><input id="label" name="label" maxlength="40" class="input" autocomplete="off"><button class="btn btn-primary" type="submit">注册并显示个人凭据</button><p>个人凭据只显示一次 · 注册后立即保存</p>${source === undefined ? '' : sourceFooter(source)}</form></main></body></html>`,
     )
   if (request.method !== 'POST') return methodNotAllowed(['GET', 'POST'])
   const origin = request.headers.get('origin')
@@ -94,6 +97,7 @@ export async function handleSignup(
       role: 'member',
       credential: result.value.credential,
       signedIn: session.ok,
+      ...(source === undefined ? {} : { source }),
     }),
   )
   if (session.ok) {

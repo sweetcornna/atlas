@@ -338,6 +338,10 @@ export async function renderFront(
           : canWrite(ctx.access)
             ? 'ops'
             : 'view',
+      // The public edition's source footer (AGPL §13, `view/source.ts`).
+      ...(ctx.deps.billing === undefined
+        ? {}
+        : { source: ctx.deps.billing.site() }),
     }),
     status: view.status ?? 200,
   }

@@ -1830,7 +1830,9 @@ Options (each accepts both --name value and --name=value):
                            profile. Model traffic goes from nodes straight to
                            the gateway, never through this hub. Requires
                            --providers. State: <config root>/qianmo/console/
-                           magpie.json. Tested against a fake magpie only.
+                           magpie.json. Smoke-tested against magpie 0.1.1278
+                           (HTTP and TLS) with hub, gateway and node on one
+                           machine; not across machines.
   --billing <abs path>    Public edition only (a public build, or
                            QIANMO_EDITION=public): the billing config with the
                            plans (hosted nodes per plan; model quota is not

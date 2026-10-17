@@ -7,7 +7,7 @@
 |---|---|
 | 文档版本 | **v3.6** |
 | 生效日期 | 2026-10-17 |
-| 依据 | [`charter.md`](./charter.md) v3.5（范围与验收标准以章程为准） |
+| 依据 | [`charter.md`](./charter.md) v3.6（范围与验收标准以章程为准） |
 | 用途 | 历史排期与验收记录保留；当前 M1/M2 任务见 [开发清单](./m1-m2-completion.md) |
 
 ## 当前开发进展 2026-10-08
@@ -1050,7 +1050,7 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 
 ### M2 magpie 统一模型调度与公开版 · P33–P35（v3.6 新增）
 
-> 依据章程 v3.5 §2.7、[`magpie-gateway.md`](./magpie-gateway.md) v1.0 与 [`public-edition.md`](./public-edition.md) v1.0。各包的目标、文件范围与完成标准只写在设计文档的包表，本节只作排期索引。
+> 依据章程 v3.5 §2.7（v3.6 补注）、[`magpie-gateway.md`](./magpie-gateway.md) v1.4 与 [`public-edition.md`](./public-edition.md) v1.1。各包的目标、文件范围与完成标准只写在设计文档的包表，本节只作排期索引。
 
 | 包 | 内容 | 状态 |
 |---|---|---|
