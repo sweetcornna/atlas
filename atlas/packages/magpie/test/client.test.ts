@@ -481,9 +481,9 @@ describe('groups', () => {
     await expect(
       client.saveGroup({ id: 'Bad Id', members: ['a/b'] }),
     ).rejects.toThrow(MagpieError)
-    // @ts-expect-error an unknown routing is the point
+    const weight = 'weight' as unknown as 'order'
     await expect(
-      client.saveGroup({ id: 'g', routing: 'weight', members: ['a/b'] }),
+      client.saveGroup({ id: 'g', routing: weight, members: ['a/b'] }),
     ).rejects.toThrow(MagpieError)
     await expect(
       client.saveGroup({ id: 'g', members: ['nomodel'] }),
@@ -706,8 +706,8 @@ describe('usage', () => {
 
   test('an unknown period is refused before asking', async () => {
     const before = fake.requests.length
-    // @ts-expect-error an unknown period is the point
-    expect((await failure(() => client.usage('90d'))).code).toBe(
+    const period = '90d' as unknown as '7d'
+    expect((await failure(() => client.usage(period))).code).toBe(
       'magpie_invalid',
     )
     expect(fake.requests.length).toBe(before)
