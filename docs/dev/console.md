@@ -656,7 +656,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/channels/<渠道 id>/test` | **ops** | 向这个渠道发一条测试通知 |
 | GET | `/v0/desktop` | view | `DesktopNodeView[]`，启用状态、可达性、资源大小与最近操作计数 |
 | GET | `/v0/desktop/actions?agent=<地址>&limit=50` | view | `DesktopActionView[]`，agent 可省，limit 1–200，按租户过滤 |
-| PUT | `/v0/desktop/<节点>/<智能体>` | **ops** | `{ browser?, computer?, confirm? }`，先 admit，再经签名控制链路，记 `desktop.set` |
+| GET | `/v0/desktop/<节点>/<智能体>/screen` | view | 最近一张截图 `DesktopScreenView`（`{at, mimeType, data}`，data 为 base64）或 `null`；按租户过滤；经控制操作 `desktop.view`，节点不支持时 501 |
+| PUT | `/v0/desktop/<节点>/<智能体>` | **ops** | `{ browser?, computer?, confirm?, apps?, terminal? }`：confirm 为 sensitive/always/autonomous，apps 为 all/none/编号列表（至多 50），先 admit，再经签名控制链路，记 `desktop.set` |
 | POST | `/v0/desktop/<节点>/<智能体>/recycle` | **ops** | 停止并删除该智能体资料；先 admit，记 `desktop.recycle` |
 | GET | `/admin/access`、`/admin/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/admin/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
 | GET | `/admin/providers`、`/admin/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
