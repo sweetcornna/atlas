@@ -31,6 +31,7 @@ import { residentToolSurface } from '../notifyTool.js'
 import type { ResidentPermission } from '../residentOmp.js'
 import type { ExternalRuntimeChannel, ExternalRuntimeKind } from './channel.js'
 import {
+  CLAUDE_CODE_ENV,
   ClaudeCodeChannel,
   claudeCodeArgv,
   claudeCodeToolName,
@@ -518,6 +519,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
             }),
       })
       Object.assign(env, {
+        ...CLAUDE_CODE_ENV,
         CLAUDE_CONFIG_DIR: home,
         ANTHROPIC_API_KEY: launch.apiKey,
         ANTHROPIC_BASE_URL: launch.baseUrl,

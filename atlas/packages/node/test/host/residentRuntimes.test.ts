@@ -140,8 +140,18 @@ test('Claude Code: a warm process answers consecutive turns, reports tools and c
   expect(await pool.isAccepted(session, 'm1')).toBe(true)
   expect(await pool.isAccepted(session, 'never')).toBe(false)
   const argv = launches[0]!.argv
-  expect(argv).toContain('--safe-mode')
+  // Only the node-owned user settings, never the project's (P32 audit 2).
+  expect(argv[argv.indexOf('--setting-sources') + 1]).toBe('user')
+  expect(argv).not.toContain('--safe-mode')
+  expect(argv).not.toContain('--bare')
+  expect(argv).not.toContain('--plugin-dir')
+  expect(
+    JSON.parse(argv[argv.indexOf('--settings') + 1]!).disableAllHooks,
+  ).toBe(true)
   expect(argv).toContain('--strict-mcp-config')
+  expect(argv[argv.indexOf('--permission-prompt-tool') + 1]).toBe(
+    'mcp__qianmo__qianmo_permission',
+  )
   expect(argv[argv.indexOf('--model') + 1]).toBe('fake-model')
   expect(argv).toContain('--session-id')
   const denied = argv[argv.indexOf('--disallowedTools') + 1]!.split(',')
@@ -151,6 +161,7 @@ test('Claude Code: a warm process answers consecutive turns, reports tools and c
   const env = launches[0]!.env
   expect(env.ANTHROPIC_API_KEY).toBe('sk-test-runtime')
   expect(env.CLAUDE_CONFIG_DIR).toStartWith(root!.root)
+  expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1')
 })
 
 test('Claude Code: an idle-reaped session resumes the same conversation', async () => {
@@ -280,7 +291,7 @@ const DOCS: AgentExtensions = {
   readableRoots: [],
 }
 
-test('Claude Code: operator extensions load through --bare, --plugin-dir and the MCP config (P32)', async () => {
+test('Claude Code: operator extensions load through --plugin-dir and the MCP config, user settings only (P32)', async () => {
   const { pool, agent } = setup(
     { runtime: 'claude-code' },
     { extensions: name => (name === 'coder' ? DOCS : null) },
@@ -288,8 +299,10 @@ test('Claude Code: operator extensions load through --bare, --plugin-dir and the
   const session = await pool.newSession(agent)
   expect((await turn(pool, session, 'p', 'hello')).outcome).toBe('completed')
   const argv = launches[0]!.argv
-  expect(argv).toContain('--bare')
+  expect(argv[argv.indexOf('--setting-sources') + 1]).toBe('user')
+  expect(argv).not.toContain('--bare')
   expect(argv).not.toContain('--safe-mode')
+  expect(argv).toContain('--strict-mcp-config')
   expect(argv[argv.indexOf('--plugin-dir') + 1]).toBe(
     '/ext/agents/coder/plugins/qianmo',
   )
