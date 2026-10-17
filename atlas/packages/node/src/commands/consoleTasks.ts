@@ -1018,6 +1018,21 @@ export class ConsoleTasks implements BackgroundTasksPort {
     return new Set([sessionId, ...(this.#options.related?.(sessionId) ?? [])])
   }
 
+  /**
+   * A conversation's tasks holding one of its eight places. One waiting for
+   * the owner's answer, or for its planned start, holds none.
+   */
+  #activeIn(sessionId: string): number {
+    const family = this.#family(sessionId)
+    return [...this.#tasks.values()].filter(
+      task =>
+        family.has(task.parentSession) &&
+        !TERMINAL.has(task.status) &&
+        task.status !== 'needs_input' &&
+        task.status !== 'scheduled',
+    ).length
+  }
+
   /** Tasks started from a conversation, newest first. */
   forSession(sessionId: string): TaskView[] {
     const family = this.#family(sessionId)
@@ -1321,18 +1336,16 @@ export class ConsoleTasks implements BackgroundTasksPort {
     const plan = this.#plan(args)
     if (typeof plan === 'string') return refused(plan)
     const later = plan !== null && plan.runs === 0
-    const family = this.#family(session.id)
-    // A task waiting for the owner's answer, or for its planned start, holds
-    // no place; nor does one created to wait for its start.
-    const active = [...this.#tasks.values()].filter(
-      task =>
-        family.has(task.parentSession) &&
-        !TERMINAL.has(task.status) &&
-        task.status !== 'needs_input' &&
-        task.status !== 'scheduled',
-    )
-    if (!later && active.length >= MAX_ACTIVE_PER_PARENT)
-      return refused(`这个会话已有 ${active.length} 个进行中的任务`)
+    const dispatch = this.#dispatch(caller.owner)
+    if (typeof dispatch === 'string') return refused(dispatch)
+    const denied = await dispatch.authorizeTarget(target)
+    if (denied)
+      return refused((await refusal(denied)).error ?? '不能派给这个智能体')
+    // The limits are counted after the last await and before the write, so
+    // starts made in parallel in one turn cannot all pass them.
+    const active = this.#activeIn(session.id)
+    if (!later && active >= MAX_ACTIVE_PER_PARENT)
+      return refused(`这个会话已有 ${active} 个进行中的任务`)
     if (
       plan !== null &&
       (later || (plan.everyMinutes !== null && plan.runs < plan.times))
@@ -1345,11 +1358,6 @@ export class ConsoleTasks implements BackgroundTasksPort {
           `已有 ${planned} 个安排好的任务，最多 ${MAX_PLANNED_PER_OWNER} 个；先取消不需要的`,
         )
     }
-    const dispatch = this.#dispatch(caller.owner)
-    if (typeof dispatch === 'string') return refused(dispatch)
-    const denied = await dispatch.authorizeTarget(target)
-    if (denied)
-      return refused((await refusal(denied)).error ?? '不能派给这个智能体')
     const now = this.#now()
     const task: TaskRecord = {
       id: `task-${randomUUID()}`,

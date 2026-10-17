@@ -1295,6 +1295,52 @@ describe('races and leftovers', () => {
     expect(book.forSession(parent)[0]?.status).toBe('needs_input')
     expect(chat.sentTo(worker)).toHaveLength(1)
   })
+
+  test('starts made in parallel in one turn cannot pass the eight or the twenty', async () => {
+    const now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    for (let n = 0; n < 7; n++)
+      value(
+        await call(book, 'start', parent, {
+          title: `n${n}`,
+          instructions: 'x',
+        }),
+      )
+    const eighth = await Promise.all(
+      [0, 1, 2].map(n =>
+        call(book, 'start', parent, { title: `并行 ${n}`, instructions: 'x' }),
+      ),
+    )
+    expect(eighth.filter(one => one.ok)).toHaveLength(1)
+    expect(
+      eighth.filter(one => !one.ok).map(one => (one.ok ? '' : one.message)),
+    ).toEqual([
+      '这个会话已有 8 个进行中的任务',
+      '这个会话已有 8 个进行中的任务',
+    ])
+    for (let n = 0; n < 19; n++)
+      value(
+        await call(book, 'start', parent, {
+          title: `安排 ${n}`,
+          instructions: 'x',
+          after: 60 + n,
+        }),
+      )
+    const twentieth = await Promise.all(
+      [0, 1, 2, 3, 4].map(n =>
+        call(book, 'start', parent, {
+          title: `并行安排 ${n}`,
+          instructions: 'x',
+          after: 120 + n,
+        }),
+      ),
+    )
+    expect(twentieth.filter(one => one.ok)).toHaveLength(1)
+    expect(
+      book.forSession(parent).filter(task => task.status === 'scheduled'),
+    ).toHaveLength(20)
+  })
 })
 
 describe('the agent list (qianmo_task_agents)', () => {
