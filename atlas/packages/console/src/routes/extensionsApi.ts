@@ -6,7 +6,7 @@
  *
  * | Route | Who |
  * |---|---|
- * | `GET /v0/extensions` | view and up (commands, addresses and skill text only for ops) |
+ * | `GET /v0/extensions` | view and up (commands, addresses, secret names, skill text and failure details only for ops) |
  * | `POST /v0/extensions`, `DELETE /v0/extensions/<id>` | ops personal account |
  *
  * Secret values (MCP environment variables and request headers) never leave
@@ -42,7 +42,10 @@ function auditTarget(raw: string): string {
   return /^ext-[0-9a-f-]{36}$/.test(raw) ? raw : '-'
 }
 
-/** What a reader below ops level may see: what is installed, not how. */
+/**
+ * What a reader below ops level may see: what is installed and whether it
+ * works, not how. A failure's detail can carry a command or an address.
+ */
 export function extensionsForReader(
   snapshot: ExtensionsSnapshot,
   ops: boolean,
@@ -58,6 +61,11 @@ export function extensionsForReader(
       envKeys: [],
       headerKeys: [],
       body: null,
+      nodes: extension.nodes.map(node => ({
+        ...node,
+        detail: null,
+        agents: node.agents.map(agent => ({ ...agent, detail: null })),
+      })),
     })),
   }
 }

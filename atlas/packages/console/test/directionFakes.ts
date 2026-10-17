@@ -2124,8 +2124,23 @@ export class FakeExtensions implements ExtensionsPort {
       body: null,
       source: null,
       nodes: [
-        { node: 'tokyo-1', state: 'applied', detail: null, at: 1 },
-        { node: 'osaka-2', state: 'failed', detail: '命令找不到', at: 1 },
+        {
+          node: 'tokyo-1',
+          state: 'applied',
+          detail: null,
+          at: 1,
+          agents: [{ agent: 'planner', state: 'applied', detail: null }],
+        },
+        {
+          node: 'osaka-2',
+          state: 'failed',
+          detail: 'coder：命令找不到',
+          at: 1,
+          agents: [
+            { agent: 'coder', state: 'failed', detail: '命令找不到' },
+            { agent: 'writer', state: 'applied', detail: null },
+          ],
+        },
       ],
       updatedAt: 1,
       updatedBy: 'u:ops',
@@ -2146,7 +2161,9 @@ export class FakeExtensions implements ExtensionsPort {
       approval: 'ask',
       body: '按项目分组列出进展',
       source: null,
-      nodes: [{ node: 'tokyo-1', state: 'applied', detail: null, at: 1 }],
+      nodes: [
+        { node: 'tokyo-1', state: 'applied', detail: null, at: 1, agents: [] },
+      ],
       updatedAt: 1,
       updatedBy: 'u:ops',
     },

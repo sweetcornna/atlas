@@ -25,6 +25,31 @@ export function toml(value: unknown): string {
   return '""'
 }
 
+/** The variable a resident Codex reads its key from. */
+export const CODEX_KEY_ENV = 'QIANMO_RUNTIME_KEY'
+
+/**
+ * Codex features a resident agent never uses. `plugins` stays on: the
+ * operator's skills and plugins load through it (P32); what a plugin bundles
+ * besides skills is kept out by `apps`, `remote_plugin` and `hooks` here and
+ * by the node's config for bundled MCP servers.
+ */
+const CODEX_DISABLED_FEATURES = [
+  'multi_agent',
+  'apps',
+  'remote_plugin',
+  'skill_mcp_dependency_install',
+  'browser_use',
+  'browser_use_external',
+  'computer_use',
+  'in_app_browser',
+  'image_generation',
+  'hooks',
+  'memories',
+  'goals',
+]
+const CODEX_SHELL_FEATURES = ['shell_tool', 'unified_exec']
+
 export interface CodexLaunch {
   readonly bin: string
   readonly model: string
@@ -36,6 +61,8 @@ export interface CodexLaunch {
   /** The MCP server that exposes the host's `qianmo_*` tools. */
   readonly mcp: { readonly command: string; readonly args: readonly string[] }
   readonly effort?: string
+  /** `--agent-shell`: keep Codex's shell, which then asks for every command. */
+  readonly shell?: boolean
 }
 
 /** The command line for one resident `codex app-server` (stdio). */
@@ -53,12 +80,18 @@ export function codexArgv(launch: CodexLaunch): string[] {
     'model_providers.qianmo': provider,
     model_provider: 'qianmo',
     model: launch.model,
+    // The host authorizes its own tools when they are called; Codex asking
+    // first would only get them refused (P32 audit 14).
     [`mcp_servers.${RUNTIME_MCP_SERVER}`]: {
       command: launch.mcp.command,
       args: [...launch.mcp.args],
+      default_tools_approval_mode: 'approve',
     },
     // The host is the only notifier; no desktop notification hooks.
     notify: [],
+    // Skills are the ones the operator installs (P32): not Codex's own
+    // (`skill-installer`, `imagegen` and the like).
+    'skills.bundled.enabled': false,
     ...(launch.effort ? { model_reasoning_effort: launch.effort } : {}),
   }
   return [
@@ -68,6 +101,12 @@ export function codexArgv(launch: CodexLaunch): string[] {
       '-c',
       `${key}=${toml(value)}`,
     ]),
+    ...[
+      ...CODEX_DISABLED_FEATURES,
+      ...(launch.shell ? [] : CODEX_SHELL_FEATURES),
+    ].flatMap(feature => ['--disable', feature]),
+    '-c',
+    'web_search="disabled"',
   ]
 }
 

@@ -1,8 +1,17 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/** A minimal stdio MCP server with one tool, `search` (P32 tests). */
-export {}
+/**
+ * A minimal stdio MCP server with one tool, `search` (P32 tests). With
+ * `TINY_MCP_ENV_LOG` set it appends the names in its environment there.
+ */
+import { appendFileSync } from 'node:fs'
+
+if (process.env.TINY_MCP_ENV_LOG)
+  appendFileSync(
+    process.env.TINY_MCP_ENV_LOG,
+    `${JSON.stringify(Object.keys(process.env).sort())}\n`,
+  )
 
 const decoder = new TextDecoder()
 let buffer = ''

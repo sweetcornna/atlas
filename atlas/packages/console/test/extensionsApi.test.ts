@@ -134,6 +134,17 @@ test('view reads what is installed; only ops see how', async () => {
     const ops = role === 'admin' || role === 'ops'
     const docs = snapshot.extensions.find(one => one.name === 'docs')!
     expect(docs.nodes.map(node => node.state)).toEqual(['applied', 'failed'])
+    // A failure's detail may name a command: ops only (P32 audit 13).
+    expect(`${role} ${docs.nodes[1]!.detail}`).toBe(
+      `${role} ${ops ? 'coder：命令找不到' : null}`,
+    )
+    expect(docs.nodes[1]!.agents.map(agent => agent.state)).toEqual([
+      'failed',
+      'applied',
+    ])
+    expect(`${role} ${docs.nodes[1]!.agents[0]!.detail}`).toBe(
+      `${role} ${ops ? '命令找不到' : null}`,
+    )
     expect(`${role} ${docs.command}`).toBe(`${role} ${ops ? 'docs-mcp' : null}`)
     expect(`${role} ${docs.envKeys.length}`).toBe(`${role} ${ops ? 1 : 0}`)
     const skill = snapshot.extensions.find(one => one.kind === 'skill')!

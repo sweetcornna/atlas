@@ -10,7 +10,9 @@
  * connector vault, and pins every GitHub source to a commit and the digest of
  * its directory. Each node gets the entries for its own agents on the control
  * link (`extensions.apply`, see `host/extensions.ts`) after every change and
- * whenever a periodic check finds the node on another set.
+ * whenever a periodic check finds the node on another set, or with a failure
+ * the node says another try may get past. A failure that will not change (an
+ * SSE server for Codex, an entry for no agent there) is shown, not resent.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -21,6 +23,7 @@ import {
   EXTENSION_KINDS,
   type ConsoleResult,
   type DirectionActor,
+  type ExtensionAgentState,
   type ExtensionDraft,
   type ExtensionKind,
   type ExtensionNodeState,
@@ -35,6 +38,7 @@ import {
   extensionsDigest,
   type ExtensionsStatus,
   type ExtensionWireEntry,
+  MCP_SERVER_NAME,
   pluginFormats,
   RESERVED_NAMES,
 } from '../host/extensions.js'
@@ -66,6 +70,7 @@ const RESERVED_ENV: ReadonlySet<string> = new Set([
   'PLUGIN_DATA',
 ])
 const RECONCILE_MS = 10 * 60_000
+const NAME_RULE = '小写字母 · 数字与单个连字符 · 字母开头'
 
 const secretSchema = z.object({
   revision: z.number().int().positive(),
@@ -109,7 +114,19 @@ const nodeSchema = z.object({
   digest: z.string().nullable(),
   results: z.record(
     z.string(),
-    z.object({ ok: z.boolean(), detail: z.string().nullable() }),
+    z.object({
+      ok: z.boolean(),
+      detail: z.string().nullable(),
+      agents: z
+        .array(
+          z.object({
+            agent: z.string(),
+            ok: z.boolean(),
+            detail: z.string().nullable(),
+          }),
+        )
+        .default([]),
+    }),
   ),
   at: z.number().nullable(),
   error: z.string().nullable(),
@@ -311,7 +328,13 @@ export class ConsoleExtensions implements ExtensionsPort {
 
   /** Pushes once now, then checks every node periodically. */
   start(): void {
-    if (!this.#lock?.owned() || this.#options.control === undefined) return
+    if (
+      this.#timer !== null ||
+      this.#closed ||
+      !this.#lock?.owned() ||
+      this.#options.control === undefined
+    )
+      return
     this.#push()
     this.#timer = setInterval(
       () => this.#push(),
@@ -392,12 +415,20 @@ export class ConsoleExtensions implements ExtensionsPort {
           state: 'pending',
           detail: record?.error ?? null,
           at: record?.at ?? null,
+          agents: [],
         }
       return {
         node,
         state: result.ok ? 'applied' : 'failed',
         detail: result.detail,
         at: record.at,
+        agents: result.agents.map(
+          (one): ExtensionAgentState => ({
+            agent: one.agent,
+            state: one.ok ? 'applied' : 'failed',
+            detail: one.detail,
+          }),
+        ),
       }
     })
     return {
@@ -577,8 +608,9 @@ export class ConsoleExtensions implements ExtensionsPort {
 
     if (kind === 'mcp') {
       const name = String(draft.name ?? '').trim()
-      if (!EXTENSION_NAME.test(name) || RESERVED_NAMES.has(name))
-        throw new Invalid('名称只能用小写字母 · 数字与连字符 · 字母开头')
+      // 40: the runtimes' tool names (`mcp__<server>__<tool>`) must fit 64.
+      if (!MCP_SERVER_NAME.test(name) || RESERVED_NAMES.has(name))
+        throw new Invalid(`名称只能用${NAME_RULE} · 不超过 40 字符`)
       this.#unique('mcp', name, entryId)
       const transport = draft.transport ?? 'stdio'
       if (!['stdio', 'http', 'sse'].includes(transport))
@@ -650,7 +682,7 @@ export class ConsoleExtensions implements ExtensionsPort {
     if (kind === 'skill' && draft.source === undefined) {
       const name = String(draft.name ?? '').trim()
       if (!EXTENSION_NAME.test(name) || RESERVED_NAMES.has(name))
-        throw new Invalid('名称只能用小写字母 · 数字与连字符 · 字母开头')
+        throw new Invalid(`名称只能用${NAME_RULE} · 不超过 64 字符`)
       this.#unique('skill', name, entryId)
       const description = String(draft.description ?? '').trim()
       if (description === '' || description.length > 1024)
@@ -678,6 +710,8 @@ export class ConsoleExtensions implements ExtensionsPort {
     mkdirSync(work, { recursive: true, mode: 0o700 })
     const dest = path.join(work, `check-${randomUUID()}`)
     try {
+      // Without the token, as every node downloads it: a repo only the
+      // connection can read would pin here and fail on every node.
       const fetched = await fetchGithubDir({
         policy: this.#options.policy,
         repo: ref.repo,
@@ -685,8 +719,16 @@ export class ConsoleExtensions implements ExtensionsPort {
         path: ref.path,
         work,
         dest,
-        token,
+        token: null,
         ...(this.#options.run === undefined ? {} : { run: this.#options.run }),
+      }).catch(error => {
+        if (
+          token !== null &&
+          error instanceof GithubDirError &&
+          error.message === '仓库不存在或不是公开仓库'
+        )
+          throw new Invalid('这个仓库不是公开仓库 · 节点不带令牌下载 · 取不到')
+        throw error
       })
       const source = {
         repo: ref.repo,
@@ -706,7 +748,7 @@ export class ConsoleExtensions implements ExtensionsPort {
         const name = front.name ?? ''
         if (!EXTENSION_NAME.test(name) || RESERVED_NAMES.has(name))
           throw new Invalid(
-            'SKILL.md 的 name 要用小写字母 · 数字与连字符 · 不超过 40 字符',
+            `SKILL.md 的 name 要用${NAME_RULE} · 不超过 64 字符`,
           )
         if ((front.description ?? '').trim() === '')
           throw new Invalid('SKILL.md 缺少 description')
@@ -733,7 +775,9 @@ export class ConsoleExtensions implements ExtensionsPort {
         .replace(/^-+|-+$/g, '')
       const name = String(draft.name ?? '').trim() || fallback
       if (!EXTENSION_NAME.test(name) || RESERVED_NAMES.has(name))
-        throw new Invalid('插件名称只能用小写字母 · 数字与连字符 · 请填一个')
+        throw new Invalid(
+          `插件名称只能用${NAME_RULE} · 不超过 64 字符 · 请填一个`,
+        )
       this.#unique('plugin', name, entryId)
       return {
         ...base,
@@ -840,9 +884,11 @@ export class ConsoleExtensions implements ExtensionsPort {
             .catch(() => null)
           current =
             status?.ok === true ? (status.value as ExtensionsStatus) : null
+          // Resent only for a failure another try may get past; a node
+          // that does not say (`retry` missing) is resent as before.
           if (
             current?.digest === digest &&
-            current.results.every(result => result.ok)
+            current.results.every(result => result.ok || result.retry === false)
           ) {
             this.#record(node, current, null)
             return
@@ -899,7 +945,15 @@ export class ConsoleExtensions implements ExtensionsPort {
             results: Object.fromEntries(
               status.results.map(result => [
                 result.id,
-                { ok: result.ok, detail: result.detail },
+                {
+                  ok: result.ok,
+                  detail: result.detail,
+                  agents: (result.agents ?? []).map(one => ({
+                    agent: one.agent,
+                    ok: one.ok,
+                    detail: one.detail,
+                  })),
+                },
               ]),
             ),
             at: status.at ?? this.#now(),

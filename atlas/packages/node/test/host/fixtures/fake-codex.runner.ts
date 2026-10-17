@@ -90,8 +90,10 @@ async function run(turnId: string, text: string): Promise<void> {
     })
     suffix = ` decision=${String(decision.decision)}`
   }
-  if (text === 'mcp') {
-    // A tool call on an MCP server set to `prompt` (P32).
+  if (text === 'mcp' || text === 'mcp-host') {
+    // A tool call on an MCP server set to `prompt` (P32), or one on the
+    // host's own server.
+    const host = text === 'mcp-host'
     const id = ++serverSequence
     const answer = await new Promise<Record<string, unknown>>(resolve => {
       waiting.set(id, resolve)
@@ -101,11 +103,14 @@ async function run(turnId: string, text: string): Promise<void> {
         params: {
           threadId: thread,
           turnId,
-          serverName: 'docs',
+          serverName: host ? 'qianmo' : 'docs',
           mode: 'form',
-          message: 'Allow docs to run search?',
+          message: 'Allow the tool to run?',
           requestedSchema: { type: 'object', properties: {} },
-          _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'search' },
+          _meta: {
+            codex_approval_kind: 'mcp_tool_call',
+            tool_name: host ? 'qianmo_notify' : 'search',
+          },
         },
       })
     })

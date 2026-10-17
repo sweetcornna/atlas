@@ -3,7 +3,13 @@
 
 import { afterEach, expect, test } from 'bun:test'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import {
   OmpResidentTurnPort,
@@ -140,8 +146,20 @@ test('Claude Code: a warm process answers consecutive turns, reports tools and c
   expect(await pool.isAccepted(session, 'm1')).toBe(true)
   expect(await pool.isAccepted(session, 'never')).toBe(false)
   const argv = launches[0]!.argv
-  expect(argv).toContain('--safe-mode')
+  // Only the node-owned user settings, never the project's (P32 audit 2).
+  expect(argv[argv.indexOf('--setting-sources') + 1]).toBe('user')
+  expect(argv).not.toContain('--safe-mode')
+  expect(argv).not.toContain('--bare')
+  expect(argv).not.toContain('--plugin-dir')
+  expect(
+    JSON.parse(argv[argv.indexOf('--settings') + 1]!).disableAllHooks,
+  ).toBe(true)
   expect(argv).toContain('--strict-mcp-config')
+  expect(argv[argv.indexOf('--permission-prompt-tool') + 1]).toBe(
+    'mcp__qianmo__qianmo_permission',
+  )
+  // Not Claude Code's own `auto` classifier (real-runtime smoke test).
+  expect(argv[argv.indexOf('--permission-mode') + 1]).toBe('default')
   expect(argv[argv.indexOf('--model') + 1]).toBe('fake-model')
   expect(argv).toContain('--session-id')
   const denied = argv[argv.indexOf('--disallowedTools') + 1]!.split(',')
@@ -151,6 +169,7 @@ test('Claude Code: a warm process answers consecutive turns, reports tools and c
   const env = launches[0]!.env
   expect(env.ANTHROPIC_API_KEY).toBe('sk-test-runtime')
   expect(env.CLAUDE_CONFIG_DIR).toStartWith(root!.root)
+  expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1')
 })
 
 test('Claude Code: an idle-reaped session resumes the same conversation', async () => {
@@ -227,8 +246,27 @@ test('Codex: a thread is opened once, used for every turn and resumed after a re
   const argv = launches[0]!.argv
   expect(argv).toContain('shell_tool')
   expect(argv.join(' ')).toContain('model_provider="qianmo"')
+  // Plugins load (operator skills, P32 audit 1); what they bundle does not.
+  const disabled = argv.flatMap((arg, at) =>
+    arg === '--disable' ? [argv[at + 1]!] : [],
+  )
+  expect(disabled).not.toContain('plugins')
+  for (const feature of [
+    'apps',
+    'remote_plugin',
+    'hooks',
+    'skill_mcp_dependency_install',
+  ])
+    expect(disabled).toContain(feature)
+  expect(argv.find(arg => arg.startsWith('mcp_servers.qianmo='))).toContain(
+    '"default_tools_approval_mode" = "approve"',
+  )
   expect(launches[0]!.env.QIANMO_RUNTIME_KEY).toBe('sk-test-runtime')
   expect(launches[0]!.env.CODEX_HOME).toStartWith(root!.root)
+  // Only the operator's skills: not Codex's own, not the machine user's
+  // `~/.agents/` (found by the real-runtime smoke test).
+  expect(argv).toContain('skills.bundled.enabled=false')
+  expect(launches[0]!.env.HOME).toBe(join(launches[0]!.env.CODEX_HOME!, 'home'))
 })
 
 test('Codex: failed turns fail; an escalation outside the workspace goes to the operator', async () => {
@@ -280,7 +318,7 @@ const DOCS: AgentExtensions = {
   readableRoots: [],
 }
 
-test('Claude Code: operator extensions load through --bare, --plugin-dir and the MCP config (P32)', async () => {
+test('Claude Code: operator extensions load through --plugin-dir and the MCP config, user settings only (P32)', async () => {
   const { pool, agent } = setup(
     { runtime: 'claude-code' },
     { extensions: name => (name === 'coder' ? DOCS : null) },
@@ -288,8 +326,10 @@ test('Claude Code: operator extensions load through --bare, --plugin-dir and the
   const session = await pool.newSession(agent)
   expect((await turn(pool, session, 'p', 'hello')).outcome).toBe('completed')
   const argv = launches[0]!.argv
-  expect(argv).toContain('--bare')
+  expect(argv[argv.indexOf('--setting-sources') + 1]).toBe('user')
+  expect(argv).not.toContain('--bare')
   expect(argv).not.toContain('--safe-mode')
+  expect(argv).toContain('--strict-mcp-config')
   expect(argv[argv.indexOf('--plugin-dir') + 1]).toBe(
     '/ext/agents/coder/plugins/qianmo',
   )
@@ -318,6 +358,50 @@ test('Claude Code: operator extensions load through --bare, --plugin-dir and the
   expect(config.qianmo.type).toBe('stdio')
 })
 
+test('invalidating an agent closes its idle process now and lets a running turn finish first (P32 audit 4)', async () => {
+  const { pool, agent } = setup({ runtime: 'claude-code' })
+  const busy = await pool.newSession(agent)
+  const idle = await pool.newSession(agent)
+  expect((await turn(pool, idle, 'i1', 'hello')).outcome).toBe('completed')
+  const idleConfig = join(launches[0]!.sessionDir, 'runtime-mcp.json')
+  expect(existsSync(idleConfig)).toBe(true)
+  const running = turn(pool, busy, 'b1', 'slow')
+  while (launches.length < 2) await Bun.sleep(5)
+  await Bun.sleep(100)
+  await pool.invalidateAgent(agent.agent)
+  // The idle process is gone, and its MCP config (with secrets) with it.
+  const exited = (child: ChildProcess) =>
+    child.exitCode !== null || child.signalCode !== null
+  expect(exited(children[0]!)).toBe(true)
+  expect(existsSync(idleConfig)).toBe(false)
+  // The turn in flight is not interrupted.
+  expect(exited(children[1]!)).toBe(false)
+  expect(await running).toEqual({
+    outcome: 'completed',
+    content: 'echo(1): slow',
+  })
+  const deadline = Date.now() + 3_000
+  while (!exited(children[1]!) && Date.now() < deadline) await Bun.sleep(10)
+  expect(exited(children[1]!)).toBe(true)
+  // The next turn starts a new process, on the new configuration.
+  expect((await turn(pool, busy, 'b2', 'again')).outcome).toBe('completed')
+  expect(launches).toHaveLength(3)
+  expect(launches[2]!.sessionId).toBe(busy)
+})
+
+test('a new pool removes MCP configs left by processes that are gone (P32 audit 12)', async () => {
+  const { pool, agent } = setup({ runtime: 'claude-code' })
+  const session = await pool.newSession(agent)
+  expect((await turn(pool, session, 's1', 'hello')).outcome).toBe('completed')
+  const file = join(launches[0]!.sessionDir, 'runtime-mcp.json')
+  expect(existsSync(file)).toBe(true)
+  // A crash leaves the file; the next generation's pool clears it.
+  await pool.stop()
+  writeFileSync(file, '{"mcpServers":{}}')
+  setup({ runtime: 'claude-code' })
+  expect(existsSync(file)).toBe(false)
+})
+
 test('Codex: a tool call on an MCP server set to ask goes to the operator (P32)', async () => {
   const { pool, agent, asked } = setup(
     { runtime: 'codex' },
@@ -335,6 +419,19 @@ test('Codex: a tool call on an MCP server set to ask goes to the operator (P32)'
     content: 'codex(1): mcp action=accept',
   })
   expect(asked.map(call => call.toolName)).toEqual(['mcp__docs__search'])
+})
+
+test('Codex: asked about one of the host’s own tools, the node accepts without asking anyone (P32 audit 14)', async () => {
+  const { pool, agent, asked } = setup(
+    { runtime: 'codex' },
+    { permission: () => false },
+  )
+  const session = await pool.newSession(agent)
+  expect(await turn(pool, session, 'h', 'mcp-host')).toEqual({
+    outcome: 'completed',
+    content: 'codex(1): mcp-host action=accept',
+  })
+  expect(asked).toEqual([])
 })
 
 test('Codex: an MCP elicitation for a server nobody configured is declined', async () => {

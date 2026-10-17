@@ -14,6 +14,9 @@ import {
   FakeRouting,
   FakeHandoffDevices,
   FakeAvatars,
+  FakeExtensions,
+  FakeUpdates,
+  FakeChannels,
 } from './directionFakes.js'
 import { describe, expect, test } from 'bun:test'
 import { AccountBook, type AccountRole } from '../src/accounts.js'
@@ -285,7 +288,10 @@ function fixture() {
     connectors = new FakeConnectors(() => 1),
     routing = new FakeRouting(() => 1),
     handoffDevices = new FakeHandoffDevices(() => 1),
-    avatars = new FakeAvatars(() => 1)
+    avatars = new FakeAvatars(() => 1),
+    extensions = new FakeExtensions(),
+    updates = new FakeUpdates(() => 1),
+    channels = new FakeChannels(() => 1)
   const handle = createConsoleHandler(
     {
       ...deps,
@@ -297,6 +303,9 @@ function fixture() {
       routing,
       handoffDevices,
       avatars,
+      extensions,
+      updates,
+      channels,
     },
     TOKENS,
     {
@@ -314,6 +323,9 @@ function fixture() {
     routing,
     handoffDevices,
     avatars,
+    extensions,
+    updates,
+    channels,
     alice,
     bob,
     outsider,
@@ -681,6 +693,62 @@ describe('M2 request scopes', () => {
       expect(page).toContain(`href="${href}"`)
     for (const port of [h.routing, h.handoffDevices, h.avatars])
       expect(port.calls).toEqual([])
+  })
+  test('extensions, updates and chat channels are platform-wide: a tenant account reads and writes none of them (P32 audit 3)', async () => {
+    const h = fixture()
+    // Tenant a's ops account: nothing to read, nothing reaches the ports —
+    // not another tenant's node (osaka-2), not a command for tenant b's agent.
+    for (const [method, path, body] of [
+      ['GET', '/v0/extensions', undefined],
+      [
+        'POST',
+        '/v0/extensions',
+        {
+          kind: 'mcp',
+          name: 'evil',
+          command: 'sh',
+          args: ['-c', 'id'],
+          agents: ['qianmo://berlin-1/planner'],
+        },
+      ],
+      [
+        'DELETE',
+        '/v0/extensions/ext-00000000-0000-4000-8000-000000000001',
+        undefined,
+      ],
+      ['GET', '/v0/updates', undefined],
+      ['POST', '/v0/updates/upgrade', {}],
+      ['POST', '/v0/updates/run', undefined],
+      ['GET', '/v0/im', undefined],
+      [
+        'POST',
+        '/v0/im',
+        { name: 'x', platform: 'qq', target: 'qianmo://berlin-1/planner' },
+      ],
+    ] as const) {
+      const response = await h.handle(
+        asBearer(method, path, h.alice.credential, body),
+      )
+      expect(response.status).toBe(501)
+      const text = await response.text()
+      for (const foreign of ['osaka-2', 'docs-mcp', 'berlin-1'])
+        expect(text).not.toContain(foreign)
+    }
+    for (const path of ['/admin/extensions', '/admin/updates', '/admin/im'])
+      expect(
+        (await h.handle(asBearer('GET', path, h.alice.credential))).status,
+      ).toBe(404)
+    expect([h.extensions.calls, h.updates.calls, h.channels.calls]).toEqual([
+      [],
+      [],
+      [],
+    ])
+    expect(h.counts()).toMatchObject({ effects: 0, admission: 0 })
+    // The platform account still has all three.
+    for (const path of ['/v0/extensions', '/v0/updates', '/v0/im'])
+      expect(
+        (await h.handle(asBearer('GET', path, h.platform.credential))).status,
+      ).toBe(200)
   })
   test('audit source selectors and server notes cannot reach an external tenant', async () => {
     const h = fixture()

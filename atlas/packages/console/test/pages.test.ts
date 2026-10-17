@@ -131,7 +131,10 @@ const PAGES: readonly PageRow[] = [
     reads: [
       '连接器',
       'docs-mcp',
-      'osaka-2 失败',
+      // One line per node; the agent it failed for named under it (P32 audit 8).
+      '<span class="kit-mono">osaka-2</span>',
+      '部分生效',
+      'coder · 命令找不到',
       'weekly-report',
       'id="extensions"',
     ],

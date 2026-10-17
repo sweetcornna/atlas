@@ -8,19 +8,28 @@
  * The hub sends the node its whole set on the control link
  * (`extensions.apply`); the node lays it out under
  * `qianmoConfigPath('extensions')` in the shapes each runtime loads natively,
- * and recycles the idle children of every agent whose set changed:
+ * and recycles the children of every agent whose set changed:
  *
  * | layout (`agents/<agent>/`) | used by |
  * |---|---|
  * | `plugins/qianmo/` — the agent's skills, with Agent Plugins, Claude Code and Codex manifests | `--plugin-dir` (qianmopi, Claude Code); local marketplace (Codex) |
- * | `plugins/<name>/` — an imported plugin, as published | the same, per the manifests it carries |
+ * | `plugins/<name>/` — an imported plugin, without the MCP servers, hooks and LSP servers it bundles | the same, per the manifests it carries |
  * | `.agents/plugins/marketplace.json` | Codex: `codex plugin marketplace add` |
- * | `mcp/qianmo-mcp/` — `plugin.json` + `mcp.json` with the agent's MCP servers and their secrets | `--plugin-dir` (qianmopi only) |
+ * | `mcp/qianmo-mcp/` — `plugin.json` + `mcp.json` with the agent's MCP servers and their secrets, and `bin/qm-mcp-exec` | `--plugin-dir` (qianmopi only) |
  *
  * Claude Code gets the MCP servers in its `--mcp-config` file and Codex in
  * the agent's own `CODEX_HOME/config.toml`, so their secrets never sit in a
- * directory a runtime copies or an agent may read. A GitHub source is only
+ * directory a runtime copies or an agent may read. qianmopi starts a stdio
+ * server through `qm mcp-exec`, so it sees none of the node's environment. A GitHub source is only
  * used when its files match the digest the hub pinned.
+ *
+ * Results are kept per entry and agent: a failure on one agent (a Codex
+ * install, an SSE server on Codex, a clashing tool name on qianmopi) leaves
+ * the entry working for the others. A failure the next apply may get past
+ * (a download, a probe, a Codex install) is marked `retry`; the hub resends
+ * only for those. The set is laid out again when this node's agents or their
+ * runtimes change, and on every start, which also probes every MCP server
+ * anew.
  */
 
 import { createHash, randomUUID } from 'node:crypto'
@@ -40,14 +49,20 @@ import { qianmoConfigPath } from '@qianmo/paths'
 import type { ControlOutcome } from '@qianmo/protocol'
 import { OutboundPolicy } from '../commands/outboundPolicy.js'
 import { readTextIfExists, writePrivateJson } from '../providers/store.js'
+import { qmArgv } from '../omp/launch.js'
 import type { ControlHandler } from './control.js'
 import { fetchGithubDir, GITHUB_REPO } from './githubDir.js'
 import type { ExternalRuntimeKind } from './runtimes/channel.js'
 import { toml } from './runtimes/codex.js'
 import { runCommand, type RunCommand } from './runtimeUpdate.js'
 
-/** Entry names: what skills, MCP servers and plugins are called everywhere. */
-export const EXTENSION_NAME = /^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$/
+/** Skill and plugin names, as Agent Skills allows (up to 64 characters). */
+export const EXTENSION_NAME = /^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){0,63}$/
+/**
+ * MCP server names stay at 40: a runtime's tool name (`mcp__<server>__<tool>`)
+ * must fit the 64 characters model APIs accept.
+ */
+export const MCP_SERVER_NAME = /^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$/
 export const EXTENSION_ID = /^ext-[0-9a-f-]{36}$/
 /** The plugin that carries an agent's skills. */
 export const SKILLS_PLUGIN = 'qianmo'
@@ -71,23 +86,27 @@ const githubSchema = z.object({
   digest: z.string().regex(/^[0-9a-f]{64}$/),
 })
 
-export const extensionWireSchema = z.object({
-  id: z.string().regex(EXTENSION_ID),
-  kind: z.enum(['mcp', 'skill', 'plugin']),
-  name: z.string().regex(EXTENSION_NAME),
-  /** Agent names on this node; `null` is every agent. */
-  agents: z.array(z.string()).nullable(),
-  transport: z.enum(['stdio', 'http', 'sse']).optional(),
-  command: z.string().optional(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  url: z.string().optional(),
-  headers: z.record(z.string(), z.string()).optional(),
-  approval: z.enum(['allow', 'ask']).optional(),
-  description: z.string().optional(),
-  body: z.string().optional(),
-  github: githubSchema.optional(),
-})
+export const extensionWireSchema = z
+  .object({
+    id: z.string().regex(EXTENSION_ID),
+    kind: z.enum(['mcp', 'skill', 'plugin']),
+    name: z.string().regex(EXTENSION_NAME),
+    /** Agent names on this node; `null` is every agent. */
+    agents: z.array(z.string()).nullable(),
+    transport: z.enum(['stdio', 'http', 'sse']).optional(),
+    command: z.string().optional(),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    url: z.string().optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    approval: z.enum(['allow', 'ask']).optional(),
+    description: z.string().optional(),
+    body: z.string().optional(),
+    github: githubSchema.optional(),
+  })
+  .refine(entry => entry.kind !== 'mcp' || MCP_SERVER_NAME.test(entry.name), {
+    message: 'MCP server names are at most 40 characters',
+  })
 export type ExtensionWireEntry = z.infer<typeof extensionWireSchema>
 
 const applySchema = z.object({
@@ -95,10 +114,24 @@ const applySchema = z.object({
   entries: z.array(extensionWireSchema).max(200),
 })
 
-export interface ExtensionResult {
-  readonly id: string
+/** How one entry landed for one agent on this node. */
+export interface ExtensionAgentResult {
+  readonly agent: string
   readonly ok: boolean
   readonly detail: string | null
+  /** The failure may go away on the next apply. */
+  readonly retry: boolean
+}
+
+export interface ExtensionResult {
+  readonly id: string
+  /** It works for every agent it is for on this node. */
+  readonly ok: boolean
+  /** The first failure, prefixed with the agent when others have it. */
+  readonly detail: string | null
+  /** Some failure may go away on the next apply: the hub sends it again. */
+  readonly retry: boolean
+  readonly agents: readonly ExtensionAgentResult[]
 }
 
 export interface ExtensionsStatus {
@@ -190,8 +223,24 @@ export async function probeMcpTools(target: McpProbeTarget): Promise<string[]> {
   }
 }
 
+const formatsSchema = z.object({
+  claude: z.boolean(),
+  codex: z.string().nullable(),
+  standard: z.boolean(),
+})
+type PluginFormats = z.infer<typeof formatsSchema>
+
+const rosterSchema = z.array(
+  z.object({
+    agent: z.string(),
+    runtime: z.enum(['claude-code', 'codex']).nullable(),
+  }),
+)
+type Roster = z.infer<typeof rosterSchema>
+
 const appliedSchema = z.object({
-  v: z.literal(1),
+  /** 1: before results per agent; read, then laid out again on start. */
+  v: z.union([z.literal(1), z.literal(2)]),
   digest: z.string(),
   entries: z.array(extensionWireSchema),
   results: z.array(
@@ -199,22 +248,29 @@ const appliedSchema = z.object({
       id: z.string(),
       ok: z.boolean(),
       detail: z.string().nullable(),
+      retry: z.boolean().default(false),
+      agents: z
+        .array(
+          z.object({
+            agent: z.string(),
+            ok: z.boolean(),
+            detail: z.string().nullable(),
+            retry: z.boolean(),
+          }),
+        )
+        .default([]),
     }),
   ),
   tools: z.record(z.string(), z.array(z.string())),
-  plugins: z.record(
-    z.string(),
-    z.object({
-      claude: z.boolean(),
-      codex: z.string().nullable(),
-      standard: z.boolean(),
-    }),
-  ),
+  plugins: z.record(z.string(), formatsSchema),
   agentDigests: z.record(z.string(), z.string()),
+  /** The agents and runtimes the set was laid out for. */
+  roster: rosterSchema.optional(),
+  /** Codex agents: what their `CODEX_HOME` was last installed with. */
+  codex: z.record(z.string(), z.string()).default({}),
   at: z.number(),
 })
-type Applied = z.infer<typeof appliedSchema>
-type PluginFormats = Applied['plugins'][string]
+type Applied = z.infer<typeof appliedSchema> & { roster: Roster }
 
 export interface NodeExtensionsAgent {
   readonly agent: string
@@ -231,7 +287,9 @@ export interface NodeExtensionsOptions {
   readonly policy?: OutboundPolicy
   readonly run?: RunCommand
   readonly probe?: (target: McpProbeTarget) => Promise<string[]>
-  /** An agent's set changed: recycle its idle children. */
+  /** How qianmopi starts `qm mcp-exec`; tests point it elsewhere. */
+  readonly mcpExec?: (args: readonly string[]) => string[]
+  /** An agent's set changed: recycle its children. */
   readonly changed?: (agent: string) => Promise<void>
   readonly now?: () => number
   readonly onError?: (message: string) => void
@@ -243,6 +301,16 @@ function failure(error: unknown): string {
 
 function forAgent(entry: ExtensionWireEntry, agent: string): boolean {
   return entry.agents === null || entry.agents.includes(agent)
+}
+
+function sha256(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex')
+}
+
+function sameRoster(a: Roster, b: Roster): boolean {
+  const key = (roster: Roster) =>
+    JSON.stringify([...roster].sort((x, y) => x.agent.localeCompare(y.agent)))
+  return key(a) === key(b)
 }
 
 function readJson(file: string): Record<string, unknown> | null {
@@ -273,6 +341,50 @@ export function pluginFormats(dir: string): PluginFormats {
   }
 }
 
+/** Files at a plugin's root that start processes outside qianmo's verdict. */
+const BUNDLED_RUNNABLE_FILES = ['.mcp.json', 'mcp.json', '.lsp.json']
+/** Manifest fields that do the same. */
+const BUNDLED_RUNNABLE_FIELDS: ReadonlySet<string> = new Set([
+  'mcpServers',
+  'hooks',
+  'lspServers',
+])
+const PLUGIN_MANIFESTS = [
+  ['.claude-plugin', 'plugin.json'],
+  ['.codex-plugin', 'plugin.json'],
+  ['plugin.json'],
+] as const
+
+/**
+ * An imported plugin brings its instructions (skills, commands, agents,
+ * rules), never processes of its own: no bundled MCP server (configure it as
+ * a connector, so its secrets, approval and environment are qianmo's), no
+ * hooks, no LSP servers, and for qianmopi no custom tool modules, which it
+ * would import in-process.
+ */
+export function keepInstructionsOnly(
+  dir: string,
+  runtime: ExternalRuntimeKind | undefined,
+): void {
+  for (const name of BUNDLED_RUNNABLE_FILES)
+    rmSync(path.join(dir, name), { force: true })
+  rmSync(path.join(dir, 'hooks'), { recursive: true, force: true })
+  if (runtime === undefined)
+    rmSync(path.join(dir, 'tools'), { recursive: true, force: true })
+  for (const parts of PLUGIN_MANIFESTS) {
+    const file = path.join(dir, ...parts)
+    const manifest = readJson(file)
+    if (manifest === null) continue
+    const kept = Object.fromEntries(
+      Object.entries(manifest).filter(
+        ([key]) => !BUNDLED_RUNNABLE_FIELDS.has(key),
+      ),
+    )
+    if (Object.keys(kept).length !== Object.keys(manifest).length)
+      writeFileSync(file, JSON.stringify(kept, null, 2))
+  }
+}
+
 /** `SKILL.md` for an inline skill, in the Agent Skills format. */
 export function skillMarkdown(
   name: string,
@@ -300,6 +412,37 @@ function writeManifests(dir: string, name: string, description: string): void {
   )
 }
 
+/**
+ * `qm mcp-exec`'s arguments for a stdio server: it starts the server with the
+ * baseline environment and the server's own variables only.
+ */
+function mcpExecArgs(entry: ExtensionWireEntry): string[] {
+  const keep = Object.keys(entry.env ?? {})
+  return [
+    ...(keep.length > 0 ? ['--keep', keep.join(',')] : []),
+    '--',
+    entry.command ?? '',
+    ...(entry.args ?? []),
+  ]
+}
+
+/** The wrapper inside the MCP plugin that runs `qm mcp-exec`. */
+const MCP_EXEC_SHIM = './bin/qm-mcp-exec'
+
+/**
+ * Agent Plugins only start a bare command or one inside the plugin
+ * (`./…`, symlinks resolved), so the plugin carries a script that execs qm.
+ */
+function mcpExecShim(argv: readonly string[]): string {
+  const quoted = argv.map(arg => `'${arg.replaceAll("'", "'\\''")}'`)
+  return [
+    '#!/bin/sh',
+    '# Written by the qianmo node (P32). Do not edit.',
+    `exec ${quoted.join(' ')} "$@"`,
+    '',
+  ].join('\n')
+}
+
 /** An MCP server in the Agent Plugins `mcp.json` shape. */
 function agentPluginsServer(
   entry: ExtensionWireEntry,
@@ -307,8 +450,8 @@ function agentPluginsServer(
   if (entry.transport === 'stdio')
     return {
       type: 'stdio',
-      command: entry.command ?? '',
-      ...(entry.args?.length ? { args: entry.args } : {}),
+      command: MCP_EXEC_SHIM,
+      args: mcpExecArgs(entry),
       ...(entry.env && Object.keys(entry.env).length ? { env: entry.env } : {}),
     }
   return {
@@ -359,6 +502,52 @@ export function codexMcpToml(servers: readonly ExtensionWireEntry[]): {
   return { toml: `${lines.join('\n')}\n`, skipped }
 }
 
+interface Failure {
+  readonly detail: string
+  readonly retry: boolean
+}
+
+/** Failures of one apply: for an entry everywhere, or for one agent. */
+class Failures {
+  readonly #entry = new Map<string, Failure>()
+  readonly #agent = new Map<string, Map<string, Failure>>()
+
+  /** The first failure recorded wins. */
+  fail(
+    id: string,
+    detail: string,
+    retry: boolean,
+    agents?: readonly string[],
+  ): void {
+    if (agents === undefined) {
+      if (!this.#entry.has(id)) this.#entry.set(id, { detail, retry })
+      return
+    }
+    const byAgent = this.#agent.get(id) ?? new Map<string, Failure>()
+    for (const agent of agents)
+      if (!byAgent.has(agent)) byAgent.set(agent, { detail, retry })
+    this.#agent.set(id, byAgent)
+  }
+
+  entry(id: string): Failure | undefined {
+    return this.#entry.get(id)
+  }
+
+  of(id: string, agent: string): Failure | undefined {
+    return this.#entry.get(id) ?? this.#agent.get(id)?.get(agent)
+  }
+
+  /**
+   * Not laid out for `agent`: failed everywhere, or for good on this agent.
+   * An MCP server whose probe failed stays, with the tools it had.
+   */
+  blocked(id: string, agent: string): boolean {
+    if (this.#entry.has(id)) return true
+    const failed = this.#agent.get(id)?.get(agent)
+    return failed !== undefined && !failed.retry
+  }
+}
+
 export class NodeExtensions {
   readonly #options: NodeExtensionsOptions
   readonly #root: string
@@ -371,8 +560,11 @@ export class NodeExtensions {
     const text = readTextIfExists(path.join(this.#root, 'applied.json'))
     let applied: Applied | null = null
     try {
-      applied =
-        text === undefined ? null : appliedSchema.parse(JSON.parse(text))
+      if (text !== undefined) {
+        const parsed = appliedSchema.parse(JSON.parse(text))
+        // Before v2 the roster was not kept; `start()` lays the set out again.
+        applied = { ...parsed, roster: parsed.roster ?? this.#roster() }
+      }
     } catch {
       options.onError?.(
         'extensions: applied.json is unreadable; waiting for the hub',
@@ -383,6 +575,24 @@ export class NodeExtensions {
 
   #now(): number {
     return (this.#options.now ?? Date.now)()
+  }
+
+  #mcpExecCommand(args: readonly string[]): {
+    command: string
+    args: string[]
+  } {
+    const [command, ...rest] = (this.#options.mcpExec ?? qmArgv)([
+      'mcp-exec',
+      ...args,
+    ])
+    return { command: command!, args: rest }
+  }
+
+  #roster(): Roster {
+    return this.#options.agents.map(agent => ({
+      agent: agent.agent,
+      runtime: agent.runtime ?? null,
+    }))
   }
 
   #codexHome(agent: string): string {
@@ -408,19 +618,36 @@ export class NodeExtensions {
   forAgent(agent: string): AgentExtensions | null {
     const applied = this.#applied
     if (applied === null) return null
+    // Laid out for another runtime, or before this agent existed: nothing
+    // until the set is laid out again.
+    const here = this.#options.agents.find(one => one.agent === agent)
+    const laid = applied.roster.find(one => one.agent === agent)
+    if (
+      here === undefined ||
+      laid === undefined ||
+      (here.runtime ?? null) !== laid.runtime
+    )
+      return null
     const entries = applied.entries.filter(entry => forAgent(entry, agent))
     if (entries.length === 0) return null
+    const usable = (entry: ExtensionWireEntry): boolean => {
+      const result = applied.results.find(one => one.id === entry.id)
+      if (result === undefined) return true
+      const mine =
+        result.agents.find(one => one.agent === agent) ??
+        (result.agents.length === 0 ? result : undefined)
+      if (mine === undefined || mine.ok) return true
+      return entry.kind === 'mcp' && mine.retry
+    }
     const dir = this.#agentDir(agent)
-    const failed = new Set(
-      applied.results.filter(result => !result.ok).map(result => result.id),
-    )
-    const skills = entries.some(
-      entry => entry.kind === 'skill' && !failed.has(entry.id),
-    )
     const skillsPlugin = path.join(dir, 'plugins', SKILLS_PLUGIN)
+    const skills =
+      entries.some(entry => entry.kind === 'skill' && usable(entry)) &&
+      existsSync(skillsPlugin)
     const plugins = entries.filter(
       entry =>
         entry.kind === 'plugin' &&
+        usable(entry) &&
         existsSync(path.join(dir, 'plugins', entry.name)),
     )
     const formats = (entry: ExtensionWireEntry): PluginFormats =>
@@ -429,7 +656,7 @@ export class NodeExtensions {
         codex: null,
         standard: false,
       }
-    const mcp = entries.filter(entry => entry.kind === 'mcp')
+    const mcp = entries.filter(entry => entry.kind === 'mcp' && usable(entry))
     const mcpPlugin = path.join(dir, 'mcp', MCP_PLUGIN)
     return {
       ompPluginDirs: [
@@ -477,11 +704,40 @@ export class NodeExtensions {
   }
 
   /** Lays out `entries`; one apply at a time. */
-  async apply(
+  apply(
     entries: readonly ExtensionWireEntry[],
     digest = extensionsDigest(entries),
   ): Promise<ControlOutcome> {
-    const run = this.#queue.then(() => this.#apply(entries, digest))
+    return this.#serial(() => this.#apply(entries, digest, false))
+  }
+
+  /**
+   * At node start: lays the last set out again for this node's agents (some
+   * may be new or on another runtime) and probes every MCP server anew, so a
+   * server that gained tools gets them allowed. Recycles who changed.
+   */
+  start(): Promise<void> {
+    const applied = this.#applied
+    if (applied === null) return Promise.resolve()
+    return this.#serial(() =>
+      this.#apply(applied.entries, applied.digest, true),
+    ).then(
+      outcome => {
+        if (!outcome.ok)
+          this.#options.onError?.(`extensions: ${outcome.message}`)
+      },
+      error =>
+        this.#options.onError?.(`extensions: start failed: ${failure(error)}`),
+    )
+  }
+
+  /** Waits for the apply in progress. */
+  async close(): Promise<void> {
+    await this.#queue
+  }
+
+  #serial<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.#queue.then(work)
     this.#queue = run.catch(() => {})
     return run
   }
@@ -489,18 +745,20 @@ export class NodeExtensions {
   async #apply(
     entries: readonly ExtensionWireEntry[],
     digest: string,
+    again: boolean,
   ): Promise<ControlOutcome> {
     const previous = this.#applied
+    const roster = this.#roster()
     if (
+      !again &&
       previous?.digest === digest &&
-      previous.results.every(result => result.ok)
+      sameRoster(previous.roster, roster) &&
+      !previous.results.some(result => result.retry)
     )
       return { ok: true, value: this.status() }
-    const known = new Set(this.#options.agents.map(agent => agent.agent))
-    const errors = new Map<string, string>()
-    const fail = (id: string, message: string) => {
-      if (!errors.has(id)) errors.set(id, message)
-    }
+    const failures = new Failures()
+    const applies = (entry: ExtensionWireEntry) =>
+      roster.map(one => one.agent).filter(agent => forAgent(entry, agent))
     mkdirSync(this.#root, { recursive: true, mode: 0o700 })
 
     // 1. GitHub sources, cached by commit, directory and digest.
@@ -528,16 +786,16 @@ export class NodeExtensions {
           })
           if (got.digest !== want) {
             rmSync(dest, { recursive: true, force: true })
-            fail(entry.id, '下载到的文件与中枢记录的摘要不符')
+            failures.fail(entry.id, '下载到的文件与中枢记录的摘要不符', false)
             continue
           }
         } catch (error) {
-          fail(entry.id, failure(error))
+          failures.fail(entry.id, failure(error), true)
           continue
         }
       }
       if (entry.kind === 'skill' && !existsSync(path.join(dest, 'SKILL.md')))
-        fail(entry.id, '目录里没有 SKILL.md')
+        failures.fail(entry.id, '目录里没有 SKILL.md', false)
       sources.set(entry.id, dest)
     }
 
@@ -549,14 +807,15 @@ export class NodeExtensions {
       if (source === undefined) continue
       const formats = pluginFormats(source)
       if (!formats.claude && !formats.standard && formats.codex === null)
-        fail(entry.id, '目录里没有可识别的插件清单')
+        failures.fail(entry.id, '目录里没有可识别的插件清单', false)
       plugins[entry.id] = formats
     }
 
-    // 3. qianmopi needs each MCP server's tool names.
-    const ompAgents = this.#options.agents
-      .filter(agent => agent.runtime === undefined)
-      .map(agent => agent.agent)
+    // 3. qianmopi needs each MCP server's tool names: asked anew every time,
+    // so tools a server adds later are allowed too.
+    const ompAgents = roster
+      .filter(one => one.runtime === null)
+      .map(one => one.agent)
     const tools: Record<string, string[]> = {}
     const probe = this.#options.probe ?? probeMcpTools
     await Promise.all(
@@ -567,23 +826,14 @@ export class NodeExtensions {
             ompAgents.some(agent => forAgent(entry, agent)),
         )
         .map(async entry => {
-          const reused = previous?.entries.find(old => old.id === entry.id)
-          if (
-            reused !== undefined &&
-            JSON.stringify(reused) === JSON.stringify(entry) &&
-            (previous?.tools[entry.id]?.length ?? 0) > 0
-          ) {
-            tools[entry.id] = previous!.tools[entry.id]!
-            return
-          }
           try {
             tools[entry.id] = await probe({
               name: entry.name,
               transport: entry.transport ?? 'stdio',
-              ...(entry.command === undefined
-                ? {}
-                : { command: entry.command }),
-              ...(entry.args === undefined ? {} : { args: entry.args }),
+              // Started as qianmopi will start it, through `qm mcp-exec`.
+              ...((entry.transport ?? 'stdio') === 'stdio'
+                ? this.#mcpExecCommand(mcpExecArgs(entry))
+                : {}),
               ...(entry.env === undefined ? {} : { env: entry.env }),
               ...(entry.url === undefined ? {} : { url: entry.url }),
               ...(entry.headers === undefined
@@ -592,33 +842,80 @@ export class NodeExtensions {
               cwd: this.#root,
             })
           } catch (error) {
-            tools[entry.id] = []
-            fail(entry.id, `qianmopi 连不上这个服务器：${failure(error)}`)
+            // A server that is down for now keeps the tools it had.
+            const before = previous?.entries.find(old => old.id === entry.id)
+            tools[entry.id] =
+              before !== undefined &&
+              JSON.stringify(before) === JSON.stringify(entry)
+                ? (previous?.tools[entry.id] ?? [])
+                : []
+            failures.fail(
+              entry.id,
+              `qianmopi 连不上这个服务器：${failure(error)}`,
+              true,
+              ompAgents.filter(agent => forAgent(entry, agent)),
+            )
           }
         }),
     )
 
-    // 4. Every agent's layout, built aside and swapped in whole.
-    const next = path.join(this.#root, `agents.next-${randomUUID()}`)
-    const agentDigests: Record<string, string> = {}
-    try {
-      for (const { agent, runtime } of this.#options.agents) {
-        const mine = entries.filter(entry => forAgent(entry, agent))
-        agentDigests[agent] = createHash('sha256')
-          .update(
-            JSON.stringify({
-              entries: mine,
-              tools: mine.map(entry => tools[entry.id] ?? []),
-              failed: mine.map(entry => errors.has(entry.id)),
-            }),
+    // 4. Two servers whose tools qianmopi would name alike: the verdict could
+    // not tell them apart, so the later name stays off that agent.
+    for (const agent of ompAgents) {
+      const seen = new Map<string, ExtensionWireEntry>()
+      const servers = entries
+        .filter(entry => entry.kind === 'mcp' && forAgent(entry, agent))
+        .sort((a, b) => a.name.localeCompare(b.name))
+      for (const entry of servers) {
+        const clash = (tools[entry.id] ?? [])
+          .map(name => seen.get(name))
+          .find(other => other !== undefined)
+        if (clash !== undefined) {
+          failures.fail(
+            entry.id,
+            `qianmopi 里它的工具名与连接器 ${clash.name} 的相同 · 给其中一个换个名称`,
+            false,
+            [agent],
           )
-          .digest('hex')
+          continue
+        }
+        for (const name of tools[entry.id] ?? []) seen.set(name, entry)
+      }
+    }
+
+    // 5. What a runtime cannot take, and entries for nobody here.
+    const codexAgents = roster
+      .filter(one => one.runtime === 'codex')
+      .map(one => one.agent)
+    for (const entry of entries) {
+      if (entry.kind === 'mcp' && entry.transport === 'sse')
+        failures.fail(
+          entry.id,
+          'Codex 不支持 SSE 传输',
+          false,
+          codexAgents.filter(agent => forAgent(entry, agent)),
+        )
+      if (applies(entry).length === 0)
+        failures.fail(entry.id, '这台节点上没有它适用的智能体', false)
+    }
+
+    // 6. Every agent's layout, built aside and swapped in whole.
+    const laidOut = (agent: string) =>
+      entries.filter(
+        entry => forAgent(entry, agent) && !failures.blocked(entry.id, agent),
+      )
+    const next = path.join(this.#root, `agents.next-${randomUUID()}`)
+    try {
+      for (const { agent, runtime } of roster) {
+        const mine = laidOut(agent)
         if (mine.length === 0) continue
-        this.#layout(path.join(next, agent), agent, runtime, mine, {
-          sources,
-          plugins,
-          errors,
-        })
+        this.#layout(
+          path.join(next, agent),
+          agent,
+          runtime ?? undefined,
+          mine,
+          { sources, plugins },
+        )
       }
       const live = path.join(this.#root, 'agents')
       const old = path.join(this.#root, `agents.old-${randomUUID()}`)
@@ -634,46 +931,85 @@ export class NodeExtensions {
         message: `扩展落地失败：${failure(error)}`,
       }
     }
-    for (const entry of entries)
-      if (
-        entry.agents !== null &&
-        !entry.agents.some(agent => known.has(agent))
-      )
-        fail(entry.id, '这台节点上没有它适用的智能体')
 
-    const changed = this.#options.agents
-      .map(agent => agent.agent)
-      .filter(agent => previous?.agentDigests[agent] !== agentDigests[agent])
-
-    // 5. Codex agents install through Codex itself; a failed install is
-    // retried on the next apply even when the set did not change.
-    const failedBefore = new Set(
-      (previous?.results ?? [])
-        .filter(result => !result.ok)
-        .map(result => result.id),
-    )
-    for (const { agent, runtime } of this.#options.agents) {
-      if (runtime !== 'codex') continue
-      const retry = entries.some(
-        entry => forAgent(entry, agent) && failedBefore.has(entry.id),
+    // 7. Codex agents install through Codex itself, when what they should
+    // have differs from their last install or that install failed.
+    const codex: Record<string, string> = { ...(previous?.codex ?? {}) }
+    for (const agent of codexAgents) {
+      const mine = laidOut(agent)
+      const wanted = sha256({
+        entries: mine,
+        plugins: mine.map(entry => plugins[entry.id] ?? null),
+      })
+      const failedBefore = (previous?.results ?? []).some(result =>
+        result.agents.some(one => one.agent === agent && !one.ok && one.retry),
       )
-      if (!changed.includes(agent) && !retry) continue
-      await this.#installCodex(agent, entries, plugins, fail)
-      if (retry && !changed.includes(agent)) changed.push(agent)
+      if (codex[agent] === wanted && !failedBefore) continue
+      if (codex[agent] === undefined && mine.length === 0) continue
+      if (await this.#installCodex(agent, mine, plugins, failures))
+        codex[agent] = wanted
     }
 
+    // 8. Results, and who sees something else now.
+    const results: Applied['results'] = entries.map(entry => {
+      const agents = applies(entry).map(agent => {
+        const failed = failures.of(entry.id, agent)
+        return {
+          agent,
+          ok: failed === undefined,
+          detail: failed?.detail ?? null,
+          retry: failed?.retry ?? false,
+        }
+      })
+      const whole = failures.entry(entry.id)
+      const bad = agents.filter(one => !one.ok)
+      const first = bad[0]
+      return {
+        id: entry.id,
+        ok: whole === undefined && bad.length === 0,
+        detail:
+          whole?.detail ??
+          (first === undefined
+            ? null
+            : bad.length === agents.length &&
+                bad.every(one => one.detail === first.detail)
+              ? first.detail
+              : `${first.agent}：${first.detail}`),
+        retry: whole?.retry ?? bad.some(one => one.retry),
+        agents,
+      }
+    })
+    const agentDigests: Record<string, string> = {}
+    for (const { agent, runtime } of roster) {
+      const mine = laidOut(agent)
+      agentDigests[agent] = sha256(
+        runtime === 'codex'
+          ? { runtime, installed: codex[agent] ?? null }
+          : {
+              runtime,
+              entries: mine,
+              plugins: mine.map(entry => plugins[entry.id] ?? null),
+              tools:
+                runtime === null
+                  ? mine.map(entry => tools[entry.id] ?? [])
+                  : [],
+            },
+      )
+    }
+    const changed = roster
+      .map(one => one.agent)
+      .filter(agent => previous?.agentDigests[agent] !== agentDigests[agent])
+
     this.#applied = {
-      v: 1,
+      v: 2,
       digest,
       entries: [...entries],
-      results: entries.map(entry => ({
-        id: entry.id,
-        ok: !errors.has(entry.id),
-        detail: errors.get(entry.id) ?? null,
-      })),
+      results,
       tools,
       plugins,
       agentDigests,
+      roster,
+      codex,
       at: this.#now(),
     }
     // Lifting a cache entry nobody uses any more is housekeeping.
@@ -698,15 +1034,12 @@ export class NodeExtensions {
     context: {
       readonly sources: ReadonlyMap<string, string>
       readonly plugins: Readonly<Record<string, PluginFormats>>
-      readonly errors: ReadonlyMap<string, string>
     },
   ): void {
     mkdirSync(dir, { recursive: true, mode: 0o700 })
     const plugins = path.join(dir, 'plugins')
     const market: Record<string, unknown>[] = []
-    const skills = entries.filter(
-      entry => entry.kind === 'skill' && !context.errors.has(entry.id),
-    )
+    const skills = entries.filter(entry => entry.kind === 'skill')
     if (skills.length > 0) {
       const root = path.join(plugins, SKILLS_PLUGIN)
       writeManifests(
@@ -738,10 +1071,12 @@ export class NodeExtensions {
       })
     }
     for (const entry of entries) {
-      if (entry.kind !== 'plugin' || context.errors.has(entry.id)) continue
+      if (entry.kind !== 'plugin') continue
       const source = context.sources.get(entry.id)
       if (source === undefined) continue
-      cpSync(source, path.join(plugins, entry.name), { recursive: true })
+      const target = path.join(plugins, entry.name)
+      cpSync(source, target, { recursive: true })
+      keepInstructionsOnly(target, runtime)
       const codexName = context.plugins[entry.id]?.codex
       if (codexName)
         market.push({
@@ -785,61 +1120,107 @@ export class NodeExtensions {
         }),
         { mode: 0o600 },
       )
+      if (mcp.some(entry => entry.transport === 'stdio')) {
+        const shim = path.join(root, MCP_EXEC_SHIM)
+        mkdirSync(path.dirname(shim), { recursive: true, mode: 0o700 })
+        const { command, args } = this.#mcpExecCommand([])
+        writeFileSync(shim, mcpExecShim([command, ...args]), { mode: 0o700 })
+      }
     }
   }
 
+  /**
+   * Builds the agent's Codex configuration in a fresh `CODEX_HOME` beside the
+   * live one, then swaps the plugin cache and `config.toml` in. A running
+   * Codex never sees a half-written home; if the marketplace cannot be added
+   * the live home stays as it was. Whether every plugin went in.
+   */
   async #installCodex(
     agent: string,
-    entries: readonly ExtensionWireEntry[],
+    mine: readonly ExtensionWireEntry[],
     plugins: Readonly<Record<string, PluginFormats>>,
-    fail: (id: string, message: string) => void,
-  ): Promise<void> {
-    const mine = entries.filter(entry => forAgent(entry, agent))
+    failures: Failures,
+  ): Promise<boolean> {
     const home = this.#codexHome(agent)
     mkdirSync(home, { recursive: true, mode: 0o700 })
-    const { toml: config, skipped } = codexMcpToml(
-      mine.filter(entry => entry.kind === 'mcp'),
-    )
-    for (const id of skipped) fail(id, 'Codex 不支持 SSE 传输')
-    writeFileSync(path.join(home, 'config.toml'), config, { mode: 0o600 })
-    rmSync(path.join(home, 'plugins'), { recursive: true, force: true })
-    const names = [
-      ...(mine.some(entry => entry.kind === 'skill') ? [SKILLS_PLUGIN] : []),
-      ...mine.flatMap(entry =>
-        entry.kind === 'plugin' && plugins[entry.id]?.codex
-          ? [plugins[entry.id]!.codex!]
-          : [],
-      ),
-    ]
-    if (names.length === 0) return
-    const ids = mine
-      .filter(entry => entry.kind !== 'mcp')
-      .map(entry => entry.id)
-    const bin = this.#options.codexBin
-    if (bin === undefined) {
-      for (const id of ids) fail(id, '这台节点没有 Codex，装不上')
-      return
-    }
-    const run = this.#options.run ?? runCommand
-    const env = {
-      PATH: process.env['PATH'] ?? '/usr/bin:/bin',
-      HOME: home,
-      CODEX_HOME: home,
-      LC_ALL: 'C',
-    }
-    const steps = [
-      [bin, 'plugin', 'marketplace', 'add', this.#agentDir(agent)],
-      ...names.map(name => [bin, 'plugin', 'add', `${name}@qianmo`]),
-    ]
-    for (const argv of steps) {
-      const result = await run(argv, { env, timeoutMs: 120_000 }).catch(
-        error => ({ code: -1, stdout: failure(error) }),
+    const stage = `${home}.next-${randomUUID()}`
+    mkdirSync(stage, { mode: 0o700 })
+    try {
+      const { toml: config } = codexMcpToml(
+        mine.filter(entry => entry.kind === 'mcp'),
       )
-      if (result.code !== 0) {
-        const detail = `Codex 安装失败：${result.stdout.trim().split('\n').pop() ?? ''}`
-        for (const id of ids) fail(id, detail)
-        return
+      writeFileSync(path.join(stage, 'config.toml'), config, { mode: 0o600 })
+      const wanted = new Map<string, string[]>()
+      const want = (name: string, id: string) =>
+        wanted.set(name, [...(wanted.get(name) ?? []), id])
+      for (const entry of mine) {
+        if (entry.kind === 'skill') want(SKILLS_PLUGIN, entry.id)
+        const codexName = plugins[entry.id]?.codex
+        if (entry.kind === 'plugin' && codexName) want(codexName, entry.id)
       }
+      let complete = true
+      const bin = this.#options.codexBin
+      if (wanted.size > 0 && bin === undefined) {
+        for (const ids of wanted.values())
+          for (const id of ids)
+            failures.fail(id, '这台节点没有 Codex，装不上', false, [agent])
+        complete = false
+      } else if (wanted.size > 0 && bin !== undefined) {
+        const run = this.#options.run ?? runCommand
+        const env = {
+          PATH: process.env['PATH'] ?? '/usr/bin:/bin',
+          HOME: stage,
+          CODEX_HOME: stage,
+          LC_ALL: 'C',
+        }
+        const step = (argv: readonly string[]) =>
+          run(argv, { env, timeoutMs: 120_000 }).catch(error => ({
+            code: -1,
+            stdout: failure(error),
+          }))
+        const said = (stdout: string) =>
+          `Codex 安装失败：${stdout.trim().split('\n').pop() ?? ''}`
+        const market = await step([
+          bin,
+          'plugin',
+          'marketplace',
+          'add',
+          this.#agentDir(agent),
+        ])
+        if (market.code !== 0) {
+          for (const entry of mine)
+            failures.fail(
+              entry.id,
+              `${said(market.stdout)} · 这个智能体沿用上一次的扩展`,
+              true,
+              [agent],
+            )
+          return false
+        }
+        for (const [name, ids] of wanted) {
+          const added = await step([bin, 'plugin', 'add', `${name}@qianmo`])
+          if (added.code === 0) continue
+          complete = false
+          for (const id of ids)
+            failures.fail(id, said(added.stdout), true, [agent])
+        }
+      }
+      // The plugin cache first, then the config that enables it. The cache
+      // before this one stays until the next install, for a turn still
+      // reading a skill from it.
+      const live = path.join(home, 'plugins')
+      const previous = path.join(home, 'plugins.previous')
+      rmSync(previous, { recursive: true, force: true })
+      if (existsSync(live)) renameSync(live, previous)
+      const staged = path.join(stage, 'plugins')
+      if (existsSync(staged)) renameSync(staged, live)
+      renameSync(
+        path.join(stage, 'config.toml'),
+        path.join(home, 'config.toml'),
+      )
+      return complete
+    } finally {
+      rmSync(stage, { recursive: true, force: true })
     }
   }
 

@@ -103,6 +103,11 @@ const COMMANDS: Record<
     summary: "host tools for a resident node's Claude Code or Codex agent",
     load: () => import('./commands/runtimeMcp.js'),
   },
+  'mcp-exec': {
+    summary:
+      "start an operator-configured MCP server for a resident node's qianmopi agent",
+    load: () => import('./commands/mcpExec.js'),
+  },
   'desktop-exec': {
     summary:
       "private browser and computer tools for a resident node's Claude Code or Codex session",

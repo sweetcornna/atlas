@@ -111,16 +111,20 @@ function parseMcpServers(value: unknown): ResidentMcpServer[] {
  * The configured server a tool belongs to: qianmopi's exact names from the
  * probe, or `mcp__<server>__<tool>` as Claude Code and Codex name them.
  * Server names have no underscore, so the double one cannot be ambiguous.
+ * qianmopi's names can be (server `a` tool `b_c`, server `a-b` tool `c`);
+ * the node keeps such pairs apart, and should two still meet, the stricter
+ * server decides.
  */
 export function residentMcpServer(
   toolName: string,
   servers: readonly ResidentMcpServer[] | undefined,
 ): ResidentMcpServer | undefined {
-  return servers?.find(
-    server =>
-      server.tools.includes(toolName) ||
-      toolName.startsWith(`mcp__${server.server}__`),
+  const exact = (servers ?? []).filter(server =>
+    server.tools.includes(toolName),
   )
+  if (exact.length > 0)
+    return exact.find(server => server.approval === 'ask') ?? exact[0]
+  return servers?.find(server => toolName.startsWith(`mcp__${server.server}__`))
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -344,6 +348,8 @@ function yamlKey(key: string): string {
   return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(key) ? key : JSON.stringify(key)
 }
 
+const MCP_STARTUP_WINDOW_MS = 10_000
+
 /**
  * YAML for the per-process `--config` overlay.
  *
@@ -397,8 +403,18 @@ export function residentConfigOverlay(options: {
       : []),
     'edit:',
     '  mode: hashline',
+    // Skills are the node's and the operator's (P32): not those of whoever
+    // the node runs as (`~/.agents/skills`).
+    'skills:',
+    '  enableAgentsUser: false',
     'mcp:',
     '  enableProjectConfig: false',
+    // Wait for the operator's servers (P32): qianmopi stops when a tool named
+    // in `--tools` has not appeared by the end of this window, and its 250 ms
+    // default is shorter than a server started through `npx` or `qm mcp-exec`.
+    ...((options.mcp ?? []).length > 0
+      ? [`  startupTimeoutMs: ${MCP_STARTUP_WINDOW_MS}`]
+      : []),
     'advisor:',
     '  enabled: false',
     'goal:',
