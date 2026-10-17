@@ -662,6 +662,11 @@ export function createConsoleChatPort(
     if (message.type === MessageType.TaskResult) {
       settle(task)
       const payload = message.payload
+      // Only a request this console made with `reportCompaction` gets it.
+      const compacted =
+        isTaskResultPayload(payload) && payload.compacted === true
+          ? { compacted: true as const }
+          : {}
       if (isTaskResultPayload(payload) && payload.outcome === 'completed') {
         patchTurn(task.turnId, { state: 'read' })
         addTurn({
@@ -676,6 +681,7 @@ export function createConsoleChatPort(
           traceId: message.traceId,
           elapsedMs: at - task.sentAt,
           ...(task.command === undefined ? {} : { command: task.command }),
+          ...compacted,
         })
         return
       }
@@ -701,6 +707,7 @@ export function createConsoleChatPort(
         taskId: message.taskId,
         traceId: message.traceId,
         elapsedMs: at - task.sentAt,
+        ...compacted,
       })
       return
     }
@@ -791,6 +798,7 @@ export function createConsoleChatPort(
     // 标题是操作者的第一句（本地命令不算）：会话列表按它认出一条对话，
     // 预览照旧是最后一句。
     let title: string | undefined
+    let background = false
     for (const id of ids) {
       const turn = turns.get(id)
       if (
@@ -800,6 +808,7 @@ export function createConsoleChatPort(
         turn.command === undefined
       ) {
         title = turn.text
+        background = turn.background === true
         break
       }
     }
@@ -819,6 +828,7 @@ export function createConsoleChatPort(
       preview: last?.text ?? '',
       ...(title === undefined ? {} : { title }),
       ...(running ? { running: true } : {}),
+      ...(background ? { background: true } : {}),
     }
   }
 
@@ -1093,6 +1103,11 @@ export function createConsoleChatPort(
             ...(input.command === undefined
               ? {}
               : { command: { name: input.command } }),
+            // A background sub-agent turn (P29); under the owner proof below,
+            // so the node can trust it. Older nodes ignore both fields.
+            ...(input.background === true ? { background: true } : {}),
+            // This console reads `compacted` on the result.
+            reportCompaction: true,
           },
           taskId,
           createdAt,
@@ -1128,6 +1143,7 @@ export function createConsoleChatPort(
         taskId: message.taskId,
         traceId: message.traceId,
         ...(input.command === undefined ? {} : { command: input.command }),
+        ...(input.background === true ? { background: true as const } : {}),
       })
 
       const task: PendingTask = {

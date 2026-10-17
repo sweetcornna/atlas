@@ -359,7 +359,8 @@ describe('chat send', () => {
     expect(request?.type).toBe(MessageType.TaskRequest)
     expect(request?.from).toBe(FROM)
     expect(request?.to).toBe(TARGET)
-    expect(request?.payload).toEqual({ prompt: '你好' })
+    // `reportCompaction`: this console reads `compacted` on the result.
+    expect(request?.payload).toEqual({ prompt: '你好', reportCompaction: true })
     // §6.3 call site 1：发起方把自己写进 hops[0]，否则审计链没有头。
     expect(request?.hops).toEqual(['console'])
 
@@ -368,6 +369,47 @@ describe('chat send', () => {
       state: 'delivered',
       receipt: 'accepted',
       taskId: request?.taskId,
+    })
+  })
+
+  test('a background turn is marked on the wire, the line and the session; a compacted result is kept across a restart', async () => {
+    const h = harness()
+    const opened = await h.hub.open(TARGET)
+    if (!opened.ok) throw new Error('open failed')
+    const sent = await h.hub.send({
+      sessionId: opened.value.id,
+      text: '后台任务：周报（task-1）',
+      background: true,
+      taskTtlMs: 1_800_000,
+    })
+    expect(sent.ok && sent.value.background).toBe(true)
+    const request = h.dialer.last.sent[0]!
+    expect(request.payload).toMatchObject({
+      background: true,
+      reportCompaction: true,
+    })
+    expect(request.taskTtlMs).toBe(1_800_000)
+    h.dialer.last.reply(
+      taskResult(request, {
+        outcome: 'completed',
+        content: '阶段一完成',
+        completedAt: 2,
+        compacted: true,
+      }),
+    )
+    const sessions = await h.hub.sessions()
+    expect(sessions.ok && sessions.value[0]?.background).toBe(true)
+    const again = harness({ storePath: h.storePath, idPrefix: 'replay' })
+    const replayed = await again.hub.transcript(opened.value.id)
+    if (!replayed.ok) throw new Error('unreachable')
+    expect(replayed.value.session.background).toBe(true)
+    expect(replayed.value.turns.map(turn => turn.background ?? null)).toEqual([
+      true,
+      null,
+    ])
+    expect(replayed.value.turns[1]).toMatchObject({
+      text: '阶段一完成',
+      compacted: true,
     })
   })
 
@@ -385,6 +427,7 @@ describe('chat send', () => {
     expect(h.dialer.last.sent[0]!.payload).toEqual({
       prompt: '规划',
       direction: 'plan',
+      reportCompaction: true,
     })
     expect(h.dialer.last.sent[0]!.taskTtlMs).toBe(3_600_000)
     expect(
@@ -1174,6 +1217,7 @@ describe('chat local commands (P18.20)', () => {
     expect(request?.payload).toEqual({
       prompt: '/autocompact 150k',
       command: { name: 'autocompact' },
+      reportCompaction: true,
     })
     expect(request?.cap).toBe(`token-for-${request?.taskId}`)
   })
@@ -1181,7 +1225,10 @@ describe('chat local commands (P18.20)', () => {
   test('a message carries no marker', async () => {
     const h = harness(signing)
     const { request } = await openAndSend(h, '/autocompact 150k')
-    expect(request.payload).toEqual({ prompt: '/autocompact 150k' })
+    expect(request.payload).toEqual({
+      prompt: '/autocompact 150k',
+      reportCompaction: true,
+    })
   })
 
   test('without a signer a command is refused here, not sent to be read as text', async () => {

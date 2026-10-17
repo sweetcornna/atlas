@@ -166,6 +166,9 @@ function toTurn(value: unknown): ChatTurn | null {
       ? {}
       : { detail: str(value['detail']) as string }),
     ...(value['redelivered'] === true ? { redelivered: true as const } : {}),
+    // P29：后台子任务的那一行，与节点说这一轮压缩过。
+    ...(value['background'] === true ? { background: true as const } : {}),
+    ...(value['compacted'] === true ? { compacted: true as const } : {}),
     // P18.20。认不出的命令名按一句话处理，理由同上。
     ...commandOf(value['command']),
   }

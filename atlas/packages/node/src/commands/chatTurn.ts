@@ -67,6 +67,8 @@ export interface ChatTurnOutcome {
   readonly error?: string
   readonly cancelled?: boolean
   readonly timedOut?: boolean
+  /** The node said the runtime compacted its context during the turn. */
+  readonly compacted?: boolean
 }
 
 export interface ChatTurnOptions {
@@ -128,9 +130,10 @@ export function sendAndWait(options: ChatTurnOptions): ChatTurnHandle {
       }
       const reply: ChatTurn | undefined = terminalReply(fresh, taskId)
       if (reply === undefined) return
+      const compacted = reply.compacted === true ? { compacted: true } : {}
       finish(
         reply.state === 'done'
-          ? { ok: true, text: reply.text }
+          ? { ok: true, text: reply.text, ...compacted }
           : {
               ok: false,
               text: '',
@@ -139,6 +142,7 @@ export function sendAndWait(options: ChatTurnOptions): ChatTurnHandle {
                   ? '任务超时'
                   : reply.text || '智能体运行失败',
               ...(reply.code === 'E_TASK_TIMEOUT' ? { timedOut: true } : {}),
+              ...compacted,
             },
       )
     }
