@@ -131,6 +131,15 @@ export function claudeProjectsDir(): string {
   )
 }
 
+/**
+ * Claude Code's state file (onboarding, MCP servers, per-project trust) for
+ * a configuration root it is pointed at with `CLAUDE_CONFIG_DIR`, such as an
+ * agent's own state directory.
+ */
+export function claudeStateFile(configDir: string): string {
+  return join(configDir, '.claude.json')
+}
+
 /** User-level config roots that agents and sandboxed commands must never modify. */
 export function protectedConfigRoots(): string[] {
   const home = nodeHomeDir()

@@ -38,6 +38,7 @@ import { loadOutboundPolicy } from './outboundPolicy.js'
 import { ConsoleSchedules } from './consoleSchedules.js'
 import { ConsoleChannels } from './consoleChannels.js'
 import { AgentProfiles, ConsoleTasks, withTaskNotes } from './consoleTasks.js'
+import { ConsolePeers } from './consolePeers.js'
 import { ConsoleExtensions } from './consoleExtensions.js'
 import { ConsoleMagpie } from './consoleMagpie.js'
 import {
@@ -113,7 +114,10 @@ import { openConsoleHandoffDevices } from './consoleHandoffDevices.js'
 import { openConsoleHandoffGit } from './consoleHandoffGit.js'
 import { handoffLockRefusal, openConsoleHandoff } from './consoleHandoff.js'
 import { wireHandoffDispatch } from './consoleHandoffDispatch.js'
-import { openConsoleProviders } from './consoleProviders.js'
+import {
+  openConsoleProviders,
+  SYSTEM_MAGPIE_SUBJECT,
+} from './consoleProviders.js'
 import { deploymentTree, openConsoleReplicate } from './consoleReplicate.js'
 import { openConsoleUsage, startUsageCollection } from './consoleUsage.js'
 import { ControlLinks } from './consoleControl.js'
@@ -887,6 +891,26 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       : undefined
   if (connectors) control!.onHubCall('connector', connectors.handle)
   if (tasks) control!.onHubCall('tasks', tasks.handle)
+  // Questions between agents (P36.6) go wherever background tasks do.
+  const peers: ConsolePeers | undefined =
+    tasks && chat.hub
+      ? new ConsolePeers({
+          directory: qianmoConfigPath('qianmo', 'console', 'peers'),
+          chat: chat.hub,
+          ...(accounts === undefined ? {} : { accounts }),
+          ...(usage === undefined ? {} : { usage }),
+          ...(tenancy === undefined ? {} : { tenancy }),
+          ...(actions === undefined ? {} : { actions }),
+          stopTask: stopTurn,
+          scheduled: (sessionId): boolean =>
+            schedules?.owns(sessionId) ?? false,
+          foreground: (sessionId): boolean =>
+            channels?.foreground(sessionId) ?? true,
+          control: control!,
+          onError: message => process.stderr.write(`[peers] ${message}\n`),
+        })
+      : undefined
+  if (peers) control!.onHubCall('peers', peers.handle)
 
   // Update checks and qianmo's own rolling upgrade (P31): nodes over the
   // control link, the hub itself in place (host/selfUpgrade.ts).
@@ -939,6 +963,16 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // The platform magpie gateway (P33/P34) rides on the model service: each
   // gateway key is a profile there. This process only drives magpie's
   // management API; model traffic goes from nodes straight to the gateway.
+  // Its 「智能体」 section (P36.5) asks the nodes over the control link, and
+  // the hub's own joins are written as `system:magpie`.
+  const magpieRecord =
+    actions === undefined
+      ? undefined
+      : systemRecorder(
+          entry => actions.record(entry),
+          Date.now,
+          SYSTEM_MAGPIE_SUBJECT,
+        )
   const magpie =
     config.magpie === true && providersPort !== undefined
       ? new ConsoleMagpie({
@@ -967,6 +1001,37 @@ export async function runConsole(args: readonly string[]): Promise<void> {
                   caller: systemCaller,
                   onProfile: (tenant: string) =>
                     billing?.profileChanged(tenant),
+                },
+              }),
+          ...(providers === undefined || magpieRecord === undefined
+            ? {}
+            : {
+                system: {
+                  caller: providers.systemCaller(
+                    magpieRecord,
+                    SYSTEM_MAGPIE_SUBJECT,
+                  ),
+                  record: magpieRecord,
+                },
+              }),
+          ...(control === undefined
+            ? {}
+            : {
+                agents: {
+                  control,
+                  nodes: () =>
+                    (config.controlTargets ?? []).map(target => target.node),
+                  ...(tenancy === undefined
+                    ? {}
+                    : {
+                        tenantOf: (node: string) =>
+                          tenancy
+                            .read()
+                            .config.nodes.find(row => row.nodeId === node)
+                            ?.tenant ?? null,
+                      }),
+                  onError: (message: string) =>
+                    process.stderr.write(`[magpie] ${message}\n`),
                 },
               }),
           onError: message => process.stderr.write(`[magpie] ${message}\n`),
@@ -1324,6 +1389,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   handoff?.start()
   schedules?.start()
   tasks?.start()
+  peers?.start()
   channels?.start()
   updates?.start()
   extensions?.start()
@@ -1417,6 +1483,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       'enabled (MCP · skills · plugins; unevaluated on real servers)',
     )
   if (tasks) banner += field('tasks', 'enabled (background sub-agents)')
+  if (peers) banner += field('peers', 'enabled (agents ask each other)')
   if (chat.hub !== undefined) {
     banner += field('chat-store', config.chatStorePath)
   }
@@ -1554,6 +1621,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     schedules?.close()
     void channels?.close()
     void tasks?.close()
+    void peers?.close()
     void updates?.close()
     void extensions?.close()
     magpie?.close()

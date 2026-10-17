@@ -42,6 +42,8 @@
 
 ## §1 P27 多底层并存与协作
 
+> **2026-10-17 起由 [`harness-backends.md`](./harness-backends.md)（P36）接续**：底层改为一份目录，缺省底层是 DeepSeek Harness（节点缺省安装），qianmopi 内置作退路；dsh 与其他 ACP harness 走一个 ACP 通道；`--agent-runtime` 收目录里的任何 id；每个智能体的底层与模型由节点的 `runtimes.json` 与 `runtime.configure` 管；Codex 的 P32 落地不再改写 `config.toml`（P36 §7）。本节以下是 P27 时的原文。
+
 ### 1.1 选择
 
 | 项 | 定案 |

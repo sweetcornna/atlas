@@ -1,7 +1,13 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { MessageType, parseAddress, type QianmoMessage } from '@qianmo/protocol'
+import {
+  isValidSegment,
+  LIMITS,
+  MessageType,
+  parseAddress,
+  type QianmoMessage,
+} from '@qianmo/protocol'
 import { canonicalJson } from './authz.js'
 import { signBytes, verifyBytes, type NodeKeyPair } from './keys.js'
 
@@ -95,4 +101,54 @@ export function verifiedBackground(
     verifiedTaskOwner(message, controllers) !== undefined &&
     (message.payload as Record<string, unknown>).background === true
   )
+}
+
+/**
+ * One asking turn of a synchronous agent-to-agent question (P36.6): the node
+ * it runs on and the `taskId` of the `task.request` that started it.
+ */
+export interface AskChainLink {
+  readonly node: string
+  readonly taskId: string
+}
+
+const CHAIN_TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
+
+/**
+ * The call chain of a hub's ask turn (P36.6, `harness-backends.md` §6.2):
+ * `chain: [{node, taskId}]` — the turns waiting on this one's answer,
+ * outermost first — in a payload whose owner proof verifies against a
+ * controller key, exactly as {@link verifiedBackground} reads its marker.
+ *
+ * Unsigned, unverifiable, empty, longer than `LIMITS.maxAskChain` or not made
+ * of well-formed links: `undefined`, the same as no chain. A node then queues
+ * the turn as it always has; nothing is concluded from a bad chain.
+ */
+export function verifiedChain(
+  message: QianmoMessage,
+  controllers: ReadonlyMap<string, string>,
+): readonly AskChainLink[] | undefined {
+  if (verifiedTaskOwner(message, controllers) === undefined) return undefined
+  const chain = (message.payload as Record<string, unknown>).chain
+  if (
+    !Array.isArray(chain) ||
+    chain.length === 0 ||
+    chain.length > LIMITS.maxAskChain
+  )
+    return undefined
+  const links: AskChainLink[] = []
+  for (const link of chain as unknown[]) {
+    if (!link || typeof link !== 'object' || Array.isArray(link))
+      return undefined
+    const { node, taskId, ...rest } = link as Record<string, unknown>
+    if (
+      Object.keys(rest).length > 0 ||
+      !isValidSegment(node) ||
+      typeof taskId !== 'string' ||
+      !CHAIN_TASK_ID.test(taskId)
+    )
+      return undefined
+    links.push({ node, taskId })
+  }
+  return links
 }

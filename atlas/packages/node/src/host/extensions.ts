@@ -14,12 +14,17 @@
  * |---|---|
  * | `plugins/qianmo/` — the agent's skills, with Agent Plugins, Claude Code and Codex manifests | `--plugin-dir` (qianmopi, Claude Code); local marketplace (Codex) |
  * | `plugins/<name>/` — an imported plugin: its instructions, docs and manifests, nothing it would run itself | the same, per the manifests it carries |
- * | `.agents/plugins/marketplace.json` | Codex: `codex plugin marketplace add` |
+ * | `.agents/plugins/marketplace.json` | Codex: `codex plugin marketplace add`, then `codex plugin add <name>@qianmo` on the agent's live home |
  * | `mcp/qianmo-mcp/` — `plugin.json` + `mcp.json` with the agent's MCP servers and their secrets, and `bin/qm-mcp-exec` | `--plugin-dir` (qianmopi only) |
  *
  * Claude Code gets the MCP servers in its `--mcp-config` file and Codex in
- * the agent's own `CODEX_HOME/config.toml`, so their secrets never sit in a
- * directory a runtime copies or an agent may read. qianmopi starts a stdio
+ * session overrides (`-c mcp_servers.qm-<name>`, P36.7), both written per
+ * process by the pool, so their secrets never sit in a directory a runtime
+ * copies or an agent may read, nor in the harness's own files (what the
+ * operator installs natively there is the agent's). An ACP harness (P36) gets
+ * them in `session/new`, and its skills — the agent's and the `skills/` of
+ * its plugins — in the node's own skills directory inside the harness's
+ * home for the agent (`AcpRuntime.skillsDir`), never touching the rest of it. qianmopi starts a stdio
  * server through `qm mcp-exec`, so it sees none of the node's environment. A GitHub source is only
  * used when its files match the digest the hub pinned.
  *
@@ -50,12 +55,18 @@ import { z } from 'zod'
 import { qianmoConfigPath } from '@qianmo/paths'
 import type { ControlOutcome } from '@qianmo/protocol'
 import { OutboundPolicy } from '../commands/outboundPolicy.js'
-import { readTextIfExists, writePrivateJson } from '../providers/store.js'
+import {
+  readTextIfExists,
+  writePrivateFileAtomic,
+  writePrivateJson,
+} from '../providers/store.js'
 import { qmArgv } from '../omp/launch.js'
 import type { ControlHandler } from './control.js'
 import { fetchGithubDir, GITHUB_REPO } from './githubDir.js'
+import { runtimeSpec } from './runtimes/catalog.js'
 import type { ExternalRuntimeKind } from './runtimes/channel.js'
-import { toml } from './runtimes/codex.js'
+import { inheritedEnv } from './runtimes/inheritedEnv.js'
+import { runtimeOwnEnv } from './runtimes/runtimeEnv.js'
 import { runCommand, type RunCommand } from './runtimeUpdate.js'
 
 /** Skill and plugin names, as Agent Skills allows (up to 64 characters). */
@@ -238,7 +249,7 @@ type PluginFormats = z.infer<typeof formatsSchema>
 const rosterSchema = z.array(
   z.object({
     agent: z.string(),
-    runtime: z.enum(['claude-code', 'codex']).nullable(),
+    runtime: z.string().nullable(),
   }),
 )
 type Roster = z.infer<typeof rosterSchema>
@@ -287,6 +298,8 @@ export interface NodeExtensionsOptions {
   readonly agents: readonly NodeExtensionsAgent[]
   readonly root?: string
   readonly codexHome?: (agent: string) => string
+  /** An agent's state directory for a runtime (P36: the ACP harness's home). */
+  readonly runtimeHome?: (runtime: string, agent: string) => string
   /** The Codex executable; Codex agents get plugins through it. */
   readonly codexBin?: string
   readonly policy?: OutboundPolicy
@@ -546,6 +559,22 @@ export function skillMarkdown(
   return `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---\n\n${body.trim()}\n`
 }
 
+/** The skill directories (`skills/<name>/SKILL.md`) a plugin carries. */
+function pluginSkills(dir: string): string[] {
+  try {
+    return readdirSync(path.join(dir, 'skills'), { withFileTypes: true })
+      .filter(
+        entry =>
+          entry.isDirectory() &&
+          existsSync(path.join(dir, 'skills', entry.name, 'SKILL.md')),
+      )
+      .map(entry => entry.name)
+      .sort()
+  } catch {
+    return []
+  }
+}
+
 function writeManifests(dir: string, name: string, description: string): void {
   const manifest = { name, version: '1.0.0', description }
   mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true })
@@ -615,43 +644,88 @@ function agentPluginsServer(
   }
 }
 
-/** The `CODEX_HOME/config.toml` part qianmo owns: the agent's MCP servers. */
-export function codexMcpToml(servers: readonly ExtensionWireEntry[]): {
-  toml: string
-  skipped: readonly string[]
-} {
-  const lines = [
-    '# Written by the qianmo node (P32) on every extension change. Do not edit.',
-  ]
-  const skipped: string[] = []
-  for (const entry of servers) {
-    // Codex speaks stdio and streamable HTTP only.
-    if (entry.transport === 'sse') {
-      skipped.push(entry.id)
-      continue
-    }
-    lines.push('', `[mcp_servers.${JSON.stringify(entry.name)}]`)
-    const fields: Record<string, unknown> =
-      entry.transport === 'stdio'
-        ? {
-            command: entry.command ?? '',
-            args: entry.args ?? [],
-            ...(entry.env && Object.keys(entry.env).length
-              ? { env: entry.env }
-              : {}),
-          }
-        : {
-            url: entry.url ?? '',
-            ...(entry.headers && Object.keys(entry.headers).length
-              ? { http_headers: entry.headers }
-              : {}),
-          }
-    fields.default_tools_approval_mode =
-      entry.approval === 'ask' ? 'prompt' : 'approve'
-    for (const [key, value] of Object.entries(fields))
-      lines.push(`${key} = ${toml(value)}`)
+/** The first line of a `config.toml` the node wrote whole (before P36.7). */
+export const CODEX_TOML_HEADER =
+  '# Written by the qianmo node (P32) on every extension change. Do not edit.'
+/** The node's Codex marketplace (`.agents/plugins/marketplace.json`). */
+const CODEX_MARKETPLACE = 'qianmo'
+
+/** A TOML key path (`a."b.c".d`) as its segments; `undefined` if unreadable. */
+function tomlKeyPath(text: string): string[] | undefined {
+  const segments: string[] = []
+  const part = /\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*(\.|$)/y
+  let at = 0
+  while (at < text.length) {
+    part.lastIndex = at
+    const match = part.exec(text)
+    if (match === null) return undefined
+    if (match[1] !== undefined) {
+      try {
+        segments.push(JSON.parse(`"${match[1]}"`) as string)
+      } catch {
+        return undefined
+      }
+    } else segments.push(match[2] ?? match[3] ?? '')
+    at = part.lastIndex
+    if (match[4] === '') break
   }
-  return { toml: `${lines.join('\n')}\n`, skipped }
+  return segments
+}
+
+/**
+ * A `config.toml` the node once wrote whole, without the MCP server tables
+ * it wrote there (`names`), sub-tables Codex added under them (approvals,
+ * `env`) included, and without its header. Everything else stays as Codex
+ * and the operator left it.
+ */
+export function withoutNodeCodexServers(
+  text: string,
+  names: ReadonlySet<string>,
+): string {
+  const out: string[] = []
+  let dropping = false
+  for (const line of text.split('\n')) {
+    const header = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line)
+    if (header !== null) {
+      const keys = tomlKeyPath(header[1]!)
+      dropping =
+        keys !== undefined &&
+        keys[0] === 'mcp_servers' &&
+        keys[1] !== undefined &&
+        names.has(keys[1])
+    }
+    if (!dropping) out.push(line)
+  }
+  if (out[0] === CODEX_TOML_HEADER) out.shift()
+  while (out.length > 0 && out[0]!.trim() === '') out.shift()
+  return out.join('\n')
+}
+
+/** The node's plugins `codex plugin list --json` reports installed. */
+function codexMarketplacePlugins(listed: {
+  readonly code: number
+  readonly stdout: string
+}): string[] {
+  if (listed.code !== 0) return []
+  let value: unknown
+  try {
+    value = JSON.parse(listed.stdout)
+  } catch {
+    return []
+  }
+  const installed =
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>).installed
+      : undefined
+  if (!Array.isArray(installed)) return []
+  return installed.flatMap(item => {
+    if (item === null || typeof item !== 'object') return []
+    const row = item as Record<string, unknown>
+    return row.marketplaceName === CODEX_MARKETPLACE &&
+      typeof row.name === 'string'
+      ? [row.name]
+      : []
+  })
 }
 
 interface Failure {
@@ -758,6 +832,13 @@ export class NodeExtensions {
 
   #agentDir(agent: string): string {
     return path.join(this.#root, 'agents', agent)
+  }
+
+  #runtimeHome(runtime: string, agent: string): string {
+    return (
+      this.#options.runtimeHome?.(runtime, agent) ??
+      qianmoConfigPath('runtimes', runtime, agent)
+    )
   }
 
   status(): ExtensionsStatus {
@@ -1057,6 +1138,19 @@ export class NodeExtensions {
     const codexAgents = roster
       .filter(one => one.runtime === 'codex')
       .map(one => one.agent)
+    const acpAgents = roster.flatMap(one => {
+      const spec = one.runtime === null ? undefined : runtimeSpec(one.runtime)
+      return spec?.acp === undefined
+        ? []
+        : [
+            {
+              agent: one.agent,
+              runtime: spec.id,
+              label: spec.label,
+              acp: spec.acp,
+            },
+          ]
+    })
     for (const entry of entries) {
       if (entry.kind === 'mcp' && entry.transport === 'sse')
         failures.fail(
@@ -1065,6 +1159,34 @@ export class NodeExtensions {
           false,
           codexAgents.filter(agent => forAgent(entry, agent)),
         )
+      for (const one of acpAgents) {
+        if (!forAgent(entry, one.agent)) continue
+        const transport = entry.transport ?? 'stdio'
+        if (entry.kind === 'mcp' && !one.acp.mcpTransports.includes(transport))
+          failures.fail(
+            entry.id,
+            one.acp.mcpTransports.length === 0
+              ? `${one.label} 不接入节点配置的 MCP 服务器`
+              : `${one.label} 不支持 ${transport.toUpperCase()} 传输`,
+            false,
+            [one.agent],
+          )
+        if (entry.kind !== 'mcp' && one.acp.skillsDir === undefined)
+          failures.fail(entry.id, '该底层不支持技能', false, [one.agent])
+        const source = sources.get(entry.id)
+        if (
+          entry.kind === 'plugin' &&
+          one.acp.skillsDir !== undefined &&
+          source !== undefined &&
+          pluginSkills(source).length === 0
+        )
+          failures.fail(
+            entry.id,
+            `${one.label} 只加载插件里的技能，这个插件没有技能`,
+            false,
+            [one.agent],
+          )
+      }
       if (applies(entry).length === 0)
         failures.fail(entry.id, '这台节点上没有它适用的智能体', false)
     }
@@ -1102,12 +1224,47 @@ export class NodeExtensions {
       }
     }
 
+    // 6b. ACP harnesses load the agent's skills from the node's skills
+    // directory in their home; an agent that left one is taken out of it.
+    for (const one of acpAgents) {
+      const skillsDir = one.acp.skillsDir
+      if (skillsDir === undefined) continue
+      const mine = laidOut(one.agent).filter(entry => entry.kind !== 'mcp')
+      try {
+        this.#landAcpSkills(one.agent, one.runtime, skillsDir, mine)
+      } catch (error) {
+        for (const entry of mine)
+          failures.fail(
+            entry.id,
+            `技能没有放进 ${one.label}：${failure(error)}`,
+            true,
+            [one.agent],
+          )
+      }
+    }
+    for (const before of previous?.roster ?? []) {
+      const spec =
+        before.runtime === null ? undefined : runtimeSpec(before.runtime)
+      const skillsDir = spec?.acp?.skillsDir
+      if (spec === undefined || skillsDir === undefined) continue
+      const now = roster.find(one => one.agent === before.agent)
+      if (now?.runtime === before.runtime) continue
+      rmSync(path.join(this.#runtimeHome(spec.id, before.agent), skillsDir), {
+        recursive: true,
+        force: true,
+      })
+    }
+
     // 7. Codex agents install through Codex itself, when what they should
-    // have differs from their last install or that install failed.
+    // have differs from their last install or that install failed. A home
+    // the node once wrote whole loses what the node wrote there first.
     const codex: Record<string, string> = { ...(previous?.codex ?? {}) }
     for (const agent of codexAgents) {
       const mine = laidOut(agent)
+      this.#migrateCodexHome(agent, previous, entries)
       const wanted = sha256({
+        // v2: native installs on the live home, connectors per process.
+        v: 2,
         entries: mine,
         plugins: mine.map(entry => plugins[entry.id] ?? null),
       })
@@ -1307,11 +1464,93 @@ export class NodeExtensions {
   }
 
   /**
-   * Builds the agent's Codex configuration in a fresh `CODEX_HOME` beside the
-   * live one, then swaps the plugin cache and `config.toml` in. A running
-   * Codex never sees a half-written home; if the marketplace cannot be added
-   * the live home stays as it was. The plugins that did not go in; `null`
-   * when nothing was swapped in.
+   * The node's skills directory in an ACP harness's home for `agent`: the
+   * agent's skills, and the `skills/` of its plugins as `<plugin>--<skill>`,
+   * built aside and swapped in whole. The harness's own state beside it
+   * (its skills, plugins, profile, sessions) is not touched.
+   */
+  #landAcpSkills(
+    agent: string,
+    runtime: string,
+    skillsDir: string,
+    mine: readonly ExtensionWireEntry[],
+  ): void {
+    const home = this.#runtimeHome(runtime, agent)
+    const target = path.join(home, skillsDir)
+    mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 })
+    const stage = path.join(home, `.qmo-skills.next-${randomUUID()}`)
+    mkdirSync(stage, { mode: 0o700 })
+    try {
+      const laid = path.join(this.#agentDir(agent), 'plugins')
+      const copy = (from: string, name: string) => {
+        if (existsSync(path.join(from, 'SKILL.md')))
+          cpSync(from, path.join(stage, name), { recursive: true })
+      }
+      for (const entry of mine) {
+        if (entry.kind === 'skill')
+          copy(path.join(laid, SKILLS_PLUGIN, 'skills', entry.name), entry.name)
+        if (entry.kind === 'plugin')
+          for (const skill of pluginSkills(path.join(laid, entry.name)))
+            copy(
+              path.join(laid, entry.name, 'skills', skill),
+              `${entry.name}--${skill}`,
+            )
+      }
+      const old = path.join(home, `.qmo-skills.old-${randomUUID()}`)
+      if (existsSync(target)) renameSync(target, old)
+      renameSync(stage, target)
+      rmSync(old, { recursive: true, force: true })
+    } finally {
+      rmSync(stage, { recursive: true, force: true })
+    }
+  }
+
+  /**
+   * Before P36.7 the node replaced the agent's `config.toml` and `plugins/`
+   * whole. A `config.toml` that still starts with the node's header loses the
+   * MCP server tables the node wrote there (connectors now come per process,
+   * as `qm-<name>`); the node knows them from its last set and this one. The
+   * plugin cache the node kept aside goes too. Nothing the node cannot tell
+   * apart as its own is touched: without a readable last set the file stays
+   * and the operator hears so.
+   */
+  #migrateCodexHome(
+    agent: string,
+    previous: Applied | null,
+    entries: readonly ExtensionWireEntry[],
+  ): void {
+    const home = this.#codexHome(agent)
+    rmSync(path.join(home, 'plugins.previous'), {
+      recursive: true,
+      force: true,
+    })
+    const file = path.join(home, 'config.toml')
+    const text = readTextIfExists(file)
+    if (text === undefined || !text.startsWith(CODEX_TOML_HEADER)) return
+    if (previous === null) {
+      this.#options.onError?.(
+        `extensions: ${file} was written by an older node and its last extension set is unknown; left as it is`,
+      )
+      return
+    }
+    const names = new Set(
+      [...previous.entries, ...entries]
+        .filter(entry => entry.kind === 'mcp' && forAgent(entry, agent))
+        .map(entry => entry.name),
+    )
+    writePrivateFileAtomic(file, withoutNodeCodexServers(text, names))
+  }
+
+  /**
+   * The agent's skills and plugins, installed by Codex itself on the agent's
+   * live home (P36.7): the node's marketplace
+   * (`codex plugin marketplace add <agent dir>`, named `qianmo`), then
+   * `codex plugin add <name>@qianmo` for each (a second add refreshes the
+   * cache); what the node installed before and the agent should no longer
+   * have is removed with `codex plugin remove`. The plugins and MCP servers
+   * the operator installed natively, and Codex's own records (approvals,
+   * trust), are not touched. The plugins that did not go in; `null` when the
+   * marketplace could not be added (the agent keeps what it had).
    */
   async #installCodex(
     agent: string,
@@ -1320,87 +1559,96 @@ export class NodeExtensions {
     failures: Failures,
   ): Promise<string[] | null> {
     const home = this.#codexHome(agent)
-    mkdirSync(home, { recursive: true, mode: 0o700 })
-    const stage = `${home}.next-${randomUUID()}`
-    mkdirSync(stage, { mode: 0o700 })
-    try {
-      const { toml: config } = codexMcpToml(
-        mine.filter(entry => entry.kind === 'mcp'),
-      )
-      writeFileSync(path.join(stage, 'config.toml'), config, { mode: 0o600 })
-      const wanted = new Map<string, string[]>()
-      const want = (name: string, id: string) =>
-        wanted.set(name, [...(wanted.get(name) ?? []), id])
-      for (const entry of mine) {
-        if (entry.kind === 'skill') want(SKILLS_PLUGIN, entry.id)
-        const codexName = plugins[entry.id]?.codex
-        if (entry.kind === 'plugin' && codexName) want(codexName, entry.id)
+    const launch = path.join(home, 'launch')
+    mkdirSync(launch, { recursive: true, mode: 0o700 })
+    const wanted = new Map<string, string[]>()
+    const want = (name: string, id: string) =>
+      wanted.set(name, [...(wanted.get(name) ?? []), id])
+    for (const entry of mine) {
+      if (entry.kind === 'skill') want(SKILLS_PLUGIN, entry.id)
+      const codexName = plugins[entry.id]?.codex
+      if (entry.kind === 'plugin' && codexName) want(codexName, entry.id)
+    }
+    const missing: string[] = []
+    const bin = this.#options.codexBin
+    if (bin === undefined) {
+      for (const [name, ids] of wanted) {
+        missing.push(name)
+        for (const id of ids)
+          failures.fail(id, '这台节点没有 Codex，装不上', false, [agent])
       }
-      const missing: string[] = []
-      const bin = this.#options.codexBin
-      if (wanted.size > 0 && bin === undefined) {
-        for (const [name, ids] of wanted) {
-          missing.push(name)
-          for (const id of ids)
-            failures.fail(id, '这台节点没有 Codex，装不上', false, [agent])
-        }
-      } else if (wanted.size > 0 && bin !== undefined) {
-        const run = this.#options.run ?? runCommand
-        const env = {
-          PATH: process.env['PATH'] ?? '/usr/bin:/bin',
-          HOME: stage,
-          CODEX_HOME: stage,
-          LC_ALL: 'C',
-        }
-        const step = (argv: readonly string[]) =>
-          run(argv, { env, timeoutMs: 120_000 }).catch(error => ({
-            code: -1,
-            stdout: failure(error),
-          }))
-        const said = (stdout: string) =>
-          `Codex 安装失败：${stdout.trim().split('\n').pop() ?? ''}`
-        const market = await step([
+      return missing
+    }
+    const run = this.#options.run ?? runCommand
+    // The agent's environment (`runtimeEnv`), from its empty launch
+    // directory, as every native operation runs.
+    const env = {
+      ...inheritedEnv(),
+      ...runtimeOwnEnv('codex', home),
+      LC_ALL: 'C',
+    }
+    const step = (argv: readonly string[], maxOutput?: number) =>
+      run(argv, {
+        env,
+        cwd: launch,
+        timeoutMs: 120_000,
+        ...(maxOutput === undefined ? {} : { maxOutput }),
+      }).catch(error => ({
+        code: -1,
+        stdout: failure(error),
+      }))
+    const said = (stdout: string) =>
+      `Codex 安装失败：${stdout.trim().split('\n').pop() ?? ''}`
+    if (wanted.size > 0) {
+      const market = await step([
+        bin,
+        'plugin',
+        'marketplace',
+        'add',
+        this.#agentDir(agent),
+        '--json',
+      ])
+      if (market.code !== 0) {
+        for (const entry of mine)
+          failures.fail(
+            entry.id,
+            `${said(market.stdout)} · 这个智能体沿用上一次的扩展`,
+            true,
+            [agent],
+          )
+        return null
+      }
+      for (const [name, ids] of wanted) {
+        const added = await step([
           bin,
           'plugin',
-          'marketplace',
           'add',
-          this.#agentDir(agent),
+          `${name}@${CODEX_MARKETPLACE}`,
+          '--json',
         ])
-        if (market.code !== 0) {
-          for (const entry of mine)
-            failures.fail(
-              entry.id,
-              `${said(market.stdout)} · 这个智能体沿用上一次的扩展`,
-              true,
-              [agent],
-            )
-          return null
-        }
-        for (const [name, ids] of wanted) {
-          const added = await step([bin, 'plugin', 'add', `${name}@qianmo`])
-          if (added.code === 0) continue
-          missing.push(name)
-          for (const id of ids)
-            failures.fail(id, said(added.stdout), true, [agent])
-        }
+        if (added.code === 0) continue
+        missing.push(name)
+        for (const id of ids)
+          failures.fail(id, said(added.stdout), true, [agent])
       }
-      // The plugin cache first, then the config that enables it. The cache
-      // before this one stays until the next install, for a turn still
-      // reading a skill from it.
-      const live = path.join(home, 'plugins')
-      const previous = path.join(home, 'plugins.previous')
-      rmSync(previous, { recursive: true, force: true })
-      if (existsSync(live)) renameSync(live, previous)
-      const staged = path.join(stage, 'plugins')
-      if (existsSync(staged)) renameSync(staged, live)
-      renameSync(
-        path.join(stage, 'config.toml'),
-        path.join(home, 'config.toml'),
-      )
-      return missing
-    } finally {
-      rmSync(stage, { recursive: true, force: true })
     }
+    const listed = await step(
+      [bin, 'plugin', 'list', '--marketplace', CODEX_MARKETPLACE, '--json'],
+      1_000_000,
+    )
+    for (const name of codexMarketplacePlugins(listed)) {
+      if (wanted.has(name)) continue
+      await step([
+        bin,
+        'plugin',
+        'remove',
+        `${name}@${CODEX_MARKETPLACE}`,
+        '--json',
+      ])
+    }
+    if (wanted.size === 0)
+      await step([bin, 'plugin', 'marketplace', 'remove', CODEX_MARKETPLACE])
+    return missing
   }
 
   #pruneSources(keep: ReadonlySet<string>): void {

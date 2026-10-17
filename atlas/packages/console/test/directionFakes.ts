@@ -51,10 +51,19 @@ import {
   type HandoffDeviceView,
   type HandoffPairingCode,
   type DirectionActor,
+  type MagpieAgentChange,
+  type MagpieAgentsNodeView,
+  type MagpieAgentsPort,
+  type MagpieAgentsSnapshot,
+  type MagpieAgentView,
   type MagpieBinding,
   type MagpieCaller,
   type MagpieConnectDraft,
   type MagpieConnectionView,
+  type MagpieExtensionInstall,
+  type MagpieExtensionJobView,
+  type MagpieExtensionRemove,
+  type MagpieExtensionsView,
   type MagpieGroupDraft,
   type MagpieGroupView,
   type MagpieKeyChange,
@@ -63,6 +72,8 @@ import {
   type MagpiePort,
   type MagpieProviderDraft,
   type MagpieProviderView,
+  type MagpieRuntimeJobView,
+  type MagpieRuntimeView,
   type MagpieSnapshot,
   type MagpieTestView,
   type MagpieUsagePeriod,
@@ -89,6 +100,7 @@ import {
   type UpdatesPort,
   type UpdatesSnapshot,
 } from '../src/directionPorts.js'
+import { extensionInstallRequest } from '../src/extensionSource.js'
 
 export function ok<T>(value: T): ConsoleResult<T> {
   return { ok: true, value }
@@ -2241,8 +2253,410 @@ export class FakeExtensions implements ExtensionsPort {
  * routing group, and a key bound to tokyo-1. Writes change the state the
  * next snapshot shows; `calls` lists them with the caller.
  */
+function fakeRuntime(
+  id: string,
+  label: string,
+  over: Partial<MagpieRuntimeView> = {},
+): MagpieRuntimeView {
+  return {
+    id,
+    label,
+    installed: true,
+    version: null,
+    builtin: false,
+    installing: false,
+    removing: false,
+    verified: true,
+    failed: null,
+    ...over,
+  }
+}
+
+function fakeAgent(
+  agent: string,
+  over: Partial<MagpieAgentView> = {},
+): MagpieAgentView {
+  return {
+    agent,
+    runtime: 'dsh',
+    effective: 'dsh',
+    model: null,
+    choice: { mode: 'auto' },
+    pick: null,
+    outOfFamily: false,
+    followsNode: false,
+    choosable: true,
+    reason: null,
+    write: null,
+    extensions: null,
+    ...over,
+  }
+}
+
+function fakeExtensions(
+  agent: string,
+  over: Partial<MagpieExtensionsView> = {},
+): MagpieExtensionsView {
+  return {
+    node: 'tokyo-1',
+    agent,
+    state: 'ok',
+    fresh: true,
+    runtime: 'dsh',
+    items: [],
+    notes: [],
+    openCommand: `qm runtime open ${agent}`,
+    error: null,
+    job: null,
+    ...over,
+  }
+}
+
+/**
+ * The 智能体 section (P36.5): tokyo-1 on its magpie key with four agents —
+ * one automatic, one manual whose last write failed, one falling back to
+ * qianmopi, one on qianmopi — osaka-1 too old for the runtime ops, nagoya-1
+ * out of reach. Failure text carries marks the copy rules forbid on purpose:
+ * only writers see it, folded under 详情.
+ *
+ * Native extensions (P36.7): coder lists one of each kind and opens a web
+ * frontend on a port; reviewer's last read and install failed; builder has
+ * an install running and was never read; planner's plugin is not loaded by
+ * the resident runtime.
+ */
+export class FakeMagpieAgents implements MagpieAgentsPort {
+  readonly calls: string[] = []
+  autoJoin = true
+  readonly nodes: MagpieAgentsNodeView[] = [
+    {
+      node: 'tokyo-1',
+      state: 'ok',
+      gateway: 'bound',
+      tenant: null,
+      defaultRuntime: 'dsh',
+      runtimes: [
+        fakeRuntime('dsh', 'DeepSeek Harness', {
+          version: '0.2.0-rc.2',
+          verified: false,
+        }),
+        fakeRuntime('omp', 'qianmopi', { builtin: true }),
+        fakeRuntime('claude-code', 'Claude Code', { version: '2.1.301' }),
+        fakeRuntime('codex', 'Codex', {
+          installed: false,
+          failed: { at: 1_700_000_000_000, message: 'npm 下载失败，网络超时' },
+        }),
+      ],
+      agents: [
+        fakeAgent('coder', {
+          model: 'deepseek/deepseek-v4',
+          pick: 'deepseek/deepseek-v4',
+          extensions: fakeExtensions('coder', {
+            items: [
+              {
+                kind: 'plugin',
+                name: '@deepseek-ai/dsh-plugin-review',
+                version: '0.3.1',
+                enabled: true,
+                source: 'npm',
+                notLoaded: null,
+              },
+              {
+                kind: 'mcp',
+                name: 'github',
+                version: null,
+                enabled: false,
+                source: 'npx',
+                notLoaded: null,
+              },
+              {
+                kind: 'skill',
+                name: 'release-notes',
+                version: null,
+                enabled: true,
+                source: null,
+                notLoaded: null,
+              },
+            ],
+            notes: ['项目级配置不加载'],
+            openCommand: 'qm runtime open coder --port 8123',
+          }),
+        }),
+        fakeAgent('reviewer', {
+          runtime: 'claude-code',
+          effective: 'claude-code',
+          model: 'anthropic/claude-opus-5',
+          choice: { mode: 'manual', model: 'anthropic/claude-opus-5' },
+          pick: 'anthropic/claude-opus-5',
+          write: {
+            state: 'failed',
+            at: 1_700_000_000_000,
+            message: 'E_RUNTIME_MODEL：模型不在档案里，已拒绝',
+          },
+          extensions: fakeExtensions('reviewer', {
+            state: 'failed',
+            fresh: false,
+            runtime: 'claude-code',
+            error: '列表命令超时，已放弃',
+            job: {
+              op: 'install',
+              kind: 'plugin',
+              name: 'obra/superpowers',
+              state: 'failed',
+              at: 1_700_000_000_000,
+              message: 'E_RUNTIME_EXT_FAILED：克隆失败，仓库不存在',
+            },
+          }),
+        }),
+        fakeAgent('builder', {
+          runtime: 'codex',
+          effective: 'omp',
+          model: 'openai/gpt-6',
+          pick: 'openai/gpt-6',
+          reason: { code: 'not-installed', message: '未安装，等待安装' },
+          extensions: fakeExtensions('builder', {
+            state: 'unread',
+            fresh: false,
+            runtime: null,
+            openCommand: null,
+            job: {
+              op: 'install',
+              kind: 'mcp',
+              name: 'docs',
+              state: 'running',
+              at: 1_700_000_000_000,
+              message: null,
+            },
+          }),
+        }),
+        fakeAgent('planner', {
+          runtime: 'omp',
+          effective: 'omp',
+          followsNode: true,
+          choosable: false,
+          extensions: fakeExtensions('planner', {
+            runtime: 'omp',
+            items: [
+              {
+                kind: 'plugin',
+                name: 'opencode-wakatime',
+                version: '1.0.0',
+                enabled: true,
+                source: 'npm',
+                notLoaded: '常驻运行时不加载',
+              },
+            ],
+          }),
+        }),
+      ],
+      models: [
+        { id: 'deepseek/deepseek-v4', family: 'DeepSeek', group: false },
+        { id: 'anthropic/claude-opus-5', family: 'Claude', group: false },
+        { id: 'openai/gpt-6', family: 'GPT', group: false },
+        { id: 'group/fast', family: null, group: true },
+      ],
+      error: null,
+    },
+    {
+      node: 'osaka-1',
+      state: 'old',
+      gateway: 'inherit',
+      tenant: null,
+      defaultRuntime: null,
+      runtimes: [],
+      agents: [],
+      models: [],
+      error: null,
+    },
+    {
+      node: 'nagoya-1',
+      state: 'unreachable',
+      gateway: 'profile',
+      tenant: null,
+      defaultRuntime: null,
+      runtimes: [],
+      agents: [],
+      models: [],
+      error: '节点控制链路未连接，稍后重试',
+    },
+  ]
+
+  #note(what: string, caller: MagpieCaller): void {
+    this.calls.push(`${what} ${caller.subject}`)
+  }
+
+  async snapshot(): Promise<ConsoleResult<MagpieAgentsSnapshot>> {
+    return ok({
+      autoJoin: this.autoJoin,
+      connected: true,
+      catalog: [
+        {
+          id: 'dsh',
+          label: 'DeepSeek Harness',
+          family: 'DeepSeek',
+          builtin: false,
+          default: true,
+        },
+        {
+          id: 'omp',
+          label: 'qianmopi',
+          family: null,
+          builtin: true,
+          default: false,
+        },
+        {
+          id: 'claude-code',
+          label: 'Claude Code',
+          family: 'Claude',
+          builtin: false,
+          default: false,
+        },
+        {
+          id: 'codex',
+          label: 'Codex',
+          family: 'GPT',
+          builtin: false,
+          default: false,
+        },
+      ],
+      nodes: this.nodes,
+    })
+  }
+
+  async configure(
+    change: MagpieAgentChange,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieAgentView>> {
+    this.#note(
+      `configure ${change.node}/${change.agent} ${change.runtime ?? '-'} ${change.model ?? '-'}`,
+      caller,
+    )
+    const agent = this.nodes
+      .find(one => one.node === change.node)
+      ?.agents.find(one => one.agent === change.agent)
+    if (agent === undefined) return failed('not_found', '节点上没有这个智能体')
+    return ok({
+      ...agent,
+      ...(change.runtime === undefined ? {} : { runtime: change.runtime }),
+      ...(change.model === undefined
+        ? {}
+        : {
+            choice:
+              change.model === 'auto'
+                ? { mode: 'auto' as const }
+                : { mode: 'manual' as const, model: change.model },
+          }),
+    })
+  }
+
+  async install(
+    input: { readonly node: string; readonly runtime: string },
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieRuntimeJobView>> {
+    this.#note(`install ${input.node}/${input.runtime}`, caller)
+    return ok({ ...input, state: 'running' })
+  }
+
+  async remove(
+    input: { readonly node: string; readonly runtime: string },
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieRuntimeJobView>> {
+    this.#note(`remove ${input.node}/${input.runtime}`, caller)
+    if (input.runtime === 'claude-code')
+      return failed('refused', '节点 · reviewer 配置在它上面')
+    return ok({ ...input, state: 'done' })
+  }
+
+  async setAutoJoin(
+    on: boolean,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<{ readonly autoJoin: boolean }>> {
+    this.#note(`autojoin ${on}`, caller)
+    this.autoJoin = on
+    return ok({ autoJoin: on })
+  }
+
+  async join(
+    node: string,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieKeyView>> {
+    this.#note(`join ${node}`, caller)
+    if (node === 'tokyo-1') return failed('invalid', '这台节点已经有网关密钥')
+    return ok(fakeJoinKey(node))
+  }
+
+  #agent(node: string, agent: string): MagpieAgentView | undefined {
+    return this.nodes
+      .find(one => one.node === node)
+      ?.agents.find(one => one.agent === agent)
+  }
+
+  async extensions(
+    node: string,
+    agent: string,
+  ): Promise<ConsoleResult<MagpieExtensionsView>> {
+    const found = this.#agent(node, agent)
+    if (found === undefined) return failed('not_found', '节点上没有这个智能体')
+    if (found.extensions === null)
+      return failed('unsupported', '节点版本过旧 · 不支持原生扩展')
+    return ok(found.extensions)
+  }
+
+  async installExtension(
+    input: MagpieExtensionInstall,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieExtensionJobView>> {
+    const { node, agent, ...asked } = input
+    const request = extensionInstallRequest(asked)
+    if (!request.ok) return request
+    const name = request.value.name ?? request.value.source
+    this.#note(`ext-install ${node}/${agent} ${input.kind}:${name}`, caller)
+    if (agent === 'reviewer')
+      return failed('refused', '该智能体的官方前端正开着')
+    return ok({
+      node,
+      agent,
+      op: 'install',
+      kind: input.kind,
+      name,
+      state: 'running',
+    })
+  }
+
+  async removeExtension(
+    input: MagpieExtensionRemove,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieExtensionJobView>> {
+    this.#note(
+      `ext-remove ${input.node}/${input.agent} ${input.kind}:${input.name}`,
+      caller,
+    )
+    return ok({ ...input, op: 'remove', state: 'done' })
+  }
+}
+
+/** The key a node gets when it joins magpie from the page. */
+function fakeJoinKey(node: string): MagpieKeyView {
+  return {
+    binding: { kind: 'node', id: node },
+    keyId: 'k-0002',
+    keyName: `qm-node-${node}-0002`,
+    profileId: `magpie-node-${node}`,
+    lane: 'anthropic',
+    mainModel: 'deepseek/deepseek-v4',
+    fastModel: null,
+    modelsMode: 'all',
+    models: ['deepseek/*'],
+    enabled: true,
+    masked: '…c3d4',
+    limits: [],
+    createdAt: 1,
+    present: true,
+  }
+}
+
 export class FakeMagpie implements MagpiePort {
   readonly calls: string[] = []
+  agents: FakeMagpieAgents | undefined = new FakeMagpieAgents()
   connection: MagpieConnectionView = {
     configured: true,
     gatewayUrl: 'https://gw.tokyo.example:8443',

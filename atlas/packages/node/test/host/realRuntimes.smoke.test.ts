@@ -11,19 +11,21 @@
  * the same binaries.
  *
  * Nothing reaches a real model or reads the user's own Claude Code or Codex
- * state: the runtimes get the node's own homes under the test config root and
- * a fake key.
+ * state: the runtimes get the node's own homes under the test config root, a
+ * scratch `HOME` and a fake key; the file refuses to run with a config root
+ * under the real home (P36.7). Connectors reach the runtimes as `qm-<name>`.
  */
 
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, beforeAll, expect, test } from 'bun:test'
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { OmpResidentTurnPort } from '@qianmo/resident'
 import { NodeExtensions } from '../../src/host/extensions.js'
@@ -32,7 +34,11 @@ import {
   type ExternalAgent,
   ExternalRuntimePool,
 } from '../../src/host/runtimes/pool.js'
+import type { NativeExtensionsReply } from '../../src/host/runtimes/contract.js'
+import { NativeExtensions } from '../../src/host/runtimes/nativeExt.js'
+import { runtimeDirs } from '../../src/host/runtimes/runtimeEnv.js'
 import { runtimeSmoke } from '../../src/host/runtimes/smoke.js'
+import { assertScratchConfigRoot, REAL_HOME } from './realHarnessGuard.js'
 
 const CLAUDE = Bun.which('claude')
 const CODEX = Bun.which('codex')
@@ -42,6 +48,9 @@ interface Seen {
   readonly path: string
   readonly body: Record<string, unknown>
 }
+
+// Real harnesses write where the config root says: never the user's own.
+beforeAll(assertScratchConfigRoot)
 
 let cleanup: (() => Promise<void>)[] = []
 afterEach(async () => {
@@ -173,7 +182,11 @@ async function node(
   )
   chmodSync(join(bin, 'tiny-mcp'), 0o755)
   const path = process.env.PATH
+  const home = process.env.HOME
   process.env.PATH = `${bin}:${path}`
+  // The harnesses' own HOME too: nothing of the user's `~/.agents` and such.
+  process.env.HOME = join(root, 'home')
+  mkdirSync(process.env.HOME)
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
   const extensions = new NodeExtensions({
@@ -223,6 +236,7 @@ async function node(
     await pool.stop()
     await extensions.close()
     process.env.PATH = path
+    process.env.HOME = home
     rmSync(root, { recursive: true, force: true })
   })
   const sessionId = await pool.newSession(agent)
@@ -231,7 +245,7 @@ async function node(
       { sessionId, messageId: 'real-1', prompt: 'Use the docs.' },
       async () => {},
     )
-  return { turn, asked }
+  return { turn, asked, root, workspace }
 }
 
 test.skipIf(CLAUDE === null)(
@@ -244,7 +258,7 @@ test.skipIf(CLAUDE === null)(
         return anthropic({
           type: 'tool_use',
           id: 'toolu_docs',
-          name: 'mcp__docs__search',
+          name: 'mcp__qm-docs__search',
           input: { q: 'cache' },
         })
       return anthropic({ type: 'text', text: 'done' })
@@ -260,10 +274,10 @@ test.skipIf(CLAUDE === null)(
     )!
     const tools = (first.body.tools as { name: string }[]).map(one => one.name)
     expect(tools).toContain('mcp__qianmo__qianmo_notify')
-    expect(tools).toContain('mcp__docs__search')
+    expect(tools).toContain('mcp__qm-docs__search')
     expect(tools).toContain('Skill')
     expect(JSON.stringify(first.body)).toContain('qianmo:review')
-    expect(JSON.stringify(first.body)).not.toContain(join(homedir(), '.agents'))
+    expect(JSON.stringify(first.body)).not.toContain(join(REAL_HOME, '.agents'))
     // The operator's server ran, with its own variable.
     expect(JSON.stringify(turns.at(-1)!.body)).toContain(
       'found: cache (token-1)',
@@ -285,7 +299,7 @@ test.skipIf(CLAUDE === null)(
         return anthropic({
           type: 'tool_use',
           id: `toolu_docs_${results}`,
-          name: 'mcp__docs__search',
+          name: 'mcp__qm-docs__search',
           input: { q: `cache-${results}` },
         })
       return anthropic({ type: 'text', text: 'done' })
@@ -317,7 +331,8 @@ test.skipIf(CODEX === null)(
           type: 'function_call',
           id: 'fc_docs',
           call_id: 'call_docs',
-          namespace: 'mcp__docs',
+          // Codex shows the model `qm-docs` as `qm_docs`.
+          namespace: 'mcp__qm_docs',
           name: 'search',
           arguments: JSON.stringify({ q: 'cache' }),
         })
@@ -337,7 +352,7 @@ test.skipIf(CODEX === null)(
       tool => tool.name,
     )
     expect(namespaces).toContain('mcp__qianmo')
-    expect(namespaces).toContain('mcp__docs')
+    expect(namespaces).toContain('mcp__qm_docs')
     expect(first).toContain('qianmo_notify')
     // Codex also lists its own bundled skills and those under the node
     // account's `~/.agents/skills`, as qianmopi does (whether a resident agent
@@ -348,6 +363,82 @@ test.skipIf(CODEX === null)(
     expect(JSON.stringify(turns.at(-1)!.body.input)).toContain(
       'found: cache (token-1)',
     )
+  },
+  120_000,
+)
+
+test.skipIf(CLAUDE === null)(
+  'Claude Code: a server added with its own `claude mcp add` loads headless and is the operator’s call; a native hook never fires (P36.7)',
+  async () => {
+    const fake = model((path, body) => {
+      if (!path.endsWith('/messages')) return Response.json({ input_tokens: 1 })
+      if (!JSON.stringify(body.messages ?? []).includes('"tool_result"'))
+        return anthropic({
+          type: 'tool_use',
+          id: 'toolu_own',
+          name: 'mcp__own__search',
+          input: { q: 'native' },
+        })
+      return anthropic({ type: 'text', text: 'done' })
+    })
+    const { turn, asked, root, workspace } = await node(
+      'claude-code',
+      fake.url,
+      { permission: tool => tool === 'mcp__own__search' },
+    )
+    // Hooks the agent's own settings carry: the pin layer keeps them off.
+    const marker = join(root, 'hook-fired')
+    const home = runtimeDirs('claude-code', 'coder').home
+    mkdirSync(home, { recursive: true })
+    const hook = [{ hooks: [{ type: 'command', command: `touch ${marker}` }] }]
+    writeFileSync(
+      join(home, 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          SessionStart: hook,
+          PreToolUse: [{ matcher: '.*', ...hook[0] }],
+        },
+      }),
+    )
+    // The console's native operation: Claude Code's own command.
+    const native = new NativeExtensions({
+      agents: [{ agent: 'coder', cwd: workspace }],
+      runtimeOf: () => 'claude-code',
+      bins: { 'claude-code': CLAUDE! },
+    })
+    const added = await native.control(
+      'runtime.ext.install',
+      {
+        agent: 'coder',
+        kind: 'mcp',
+        name: 'own',
+        source: 'tiny-mcp',
+        command: 'tiny-mcp',
+      },
+      {} as never,
+    )
+    expect(added).toMatchObject({ ok: true })
+    expect(
+      (added as { value: NativeExtensionsReply }).value.items,
+    ).toContainEqual({ kind: 'mcp', name: 'own', enabled: true })
+    expect(await turn()).toEqual({ outcome: 'completed', content: 'done' })
+    const first = fake.seen.find(
+      one =>
+        one.path.endsWith('/messages') &&
+        Array.isArray(one.body.tools) &&
+        (one.body.tools as unknown[]).length > 0,
+    )!
+    expect(
+      (first.body.tools as { name: string }[]).map(one => one.name),
+    ).toContain('mcp__own__search')
+    // Not a connector: the operator decided, and the server ran.
+    expect(asked).toEqual(['mcp__own__search'])
+    expect(
+      JSON.stringify(
+        fake.seen.filter(one => one.path.endsWith('/messages')).at(-1)!.body,
+      ),
+    ).toContain('found: native')
+    expect(existsSync(marker)).toBe(false)
   },
   120_000,
 )

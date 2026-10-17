@@ -99,6 +99,11 @@ const COMMANDS: Record<
     summary: 'copy this hub onto a new server over SSH',
     load: () => import('./commands/replicate.js'),
   },
+  runtime: {
+    summary:
+      "open a resident agent's official harness frontend on its own state",
+    load: () => import('./commands/runtimeOpen.js'),
+  },
   'runtime-mcp': {
     summary: "host tools for a resident node's Claude Code or Codex agent",
     load: () => import('./commands/runtimeMcp.js'),

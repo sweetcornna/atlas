@@ -600,6 +600,16 @@ export interface ChatSendInput {
    */
   readonly background?: true
   /**
+   * Host-only: the call chain of a synchronous question between agents
+   * (P36.6) — the asking turns, outermost first, each its node and the
+   * `taskId` of its request. Signed into the request so a node whose running
+   * turn is one of them lets this turn in nested instead of queueing it.
+   */
+  readonly chain?: readonly {
+    readonly node: string
+    readonly taskId: string
+  }[]
+  /**
    * Host-only, never read from HTTP JSON: a paragraph the hub puts ahead of
    * the line in the prompt (P29 的后台任务附注). The transcript keeps the line
    * as the person typed it.
@@ -1204,7 +1214,8 @@ export interface ConsoleAction {
   /**
    * 主体：个人账号的 `u:…`，或 `legacy:admin` / `legacy:view`；没有任何凭据时
    * 为 `anonymous`（只会出现在 break-glass 之外的公开路由上，今天没有）；公开版
-   * 付款后中枢自己做的动作是 `system:billing`（P35）。
+   * 付款后中枢自己做的动作是 `system:billing`（P35）；网关页「智能体」区块里中枢
+   * 自己的接入与按系列下发是 `system:magpie`（P36.5）。
    */
   readonly subject: string
   /** admin 令牌以 break-glass 方式使用时为 `true`（`tenancy-m1.md` §3.4）。 */
@@ -1332,6 +1343,11 @@ export const CONSOLE_ACTIONS = [
   'channel.test',
   /** 后台任务（P29）：在控制台取消一个，target 是任务 id。 */
   'task.cancel',
+  /**
+   * 智能体之间的同步问答（P36.6）：每个被问的智能体一条，主体是发问会话的主人，
+   * target 是 `发问方地址 → 被问方地址`；不记问题与回答的正文。
+   */
+  'peer.ask',
   /** 应用连接（P25），target 是连接 id。 */
   'connector.save',
   'connector.remove',
@@ -1361,6 +1377,24 @@ export const CONSOLE_ACTIONS = [
   'magpie.key.update',
   'magpie.key.rotate',
   'magpie.key.remove',
+  /**
+   * 新节点自动接入 magpie（P36.5）：页面开关的 target 是 `magpie`；中枢自己替一台节点
+   * 接入时主体是 `system:magpie`，target 是 `node:<id>`。
+   */
+  'magpie.autojoin',
+  /**
+   * 智能体的底层与模型（P36.5）：改一个智能体的 target 是智能体地址（中枢按系列自动下发
+   * 时主体是 `system:magpie`）；装卸底层的 target 是 `<节点>/<底层 id>`。
+   */
+  'runtime.configure',
+  'runtime.install',
+  'runtime.remove',
+  /**
+   * 智能体的原生扩展（P36.7）：由该底层自己的命令装卸，target 是
+   * `<节点>/<智能体> <种类>:<名字或来源>`（从不带参数与地址）。
+   */
+  'runtime.ext.install',
+  'runtime.ext.remove',
   /**
    * 公开版订阅（P35）：成员下单与兑换，target 是订单 id 或 `redeem`；平台运维手动开通
    * 与延期（target 是被开通的主体）、登记退款（订单 id）、批量生成兑换码（套餐 id）；

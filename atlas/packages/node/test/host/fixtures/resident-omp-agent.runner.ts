@@ -126,6 +126,31 @@ async function prompt(frame: Record<string, unknown>) {
     const details = result.details as Record<string, unknown>
     text += ` notify=${String(details.status)}`
   }
+  // P36.6: a prompt naming `QIANMO-ASK <address>` asks that agent through
+  // the host tool and answers with what came back.
+  const peer =
+    process.env.QIANMO_FIXTURE_ASK === '1'
+      ? /QIANMO-ASK (qianmo:\/\/\S+)/.exec(input.text)?.[1]
+      : undefined
+  if (peer) {
+    const wait = new Promise<Record<string, unknown>>(resolve =>
+      pendingTools.set('ask-1', resolve),
+    )
+    emit({
+      type: 'host_tool_call',
+      id: 'ask-1',
+      toolCallId: 'fixture-ask',
+      toolName: 'qianmo_ask',
+      arguments: {
+        agent: peer,
+        message: 'what is 6*7?',
+        timeoutSec: Number(process.env.QIANMO_FIXTURE_ASK_TIMEOUT_SEC ?? 60),
+      },
+    })
+    const result = await wait
+    const content = result.content as { text?: string }[] | undefined
+    text += ` ask=${content?.[0]?.text ?? ''}`
+  }
   const work = process.env.QIANMO_FIXTURE_WORK_LOG
   if (work) {
     const ask = /QIANMO-COMPUTE (\d+)\*(\d+)/.exec(input.text)
