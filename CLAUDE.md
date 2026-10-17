@@ -3,7 +3,7 @@
 
 # Atlas agent guidance
 
-This is 阡陌 AgentNest, built on the oh-my-pi (omp) base. The detailed rules live in [CLAUDE.full.md](CLAUDE.full.md); load the sections matching the task, not the whole reference.
+This is 阡陌 Qmo, built on the oh-my-pi (omp) base. The detailed rules live in [CLAUDE.full.md](CLAUDE.full.md); load the sections matching the task, not the whole reference.
 
 ## Standing constraints
 

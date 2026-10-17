@@ -1,7 +1,7 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# 阡陌 AgentNest — 本地—云端接力设计（M1 · P17，以开源 Codex 为底座）
+# 阡陌 Qmo — 本地—云端接力设计（M1 · P17，以开源 Codex 为底座）
 
 | 项 | 内容 |
 |---|---|

@@ -1,7 +1,7 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# 阡陌 AgentNest — 用户授权流与权限审计（M1 · 权限模型上线 · P14）
+# 阡陌 Qmo — 用户授权流与权限审计（M1 · 权限模型上线 · P14）
 
 | 项 | 内容 |
 |---|---|

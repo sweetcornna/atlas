@@ -1,7 +1,7 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# 阡陌 AgentNest — 2026-10 新方向设计（P19 ~ P25）
+# 阡陌 Qmo — 2026-10 新方向设计（P19 ~ P25）
 
 | 项 | 内容 |
 |---|---|
