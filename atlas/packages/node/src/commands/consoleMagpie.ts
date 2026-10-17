@@ -2092,13 +2092,17 @@ export class ConsoleMagpie implements MagpiePort {
     return record?.modelsMode === 'tenant' ? record.profileId : null
   }
 
-  /** The presets a subscriber may connect: one API key and nothing else (L-6). */
+  /**
+   * The presets a subscriber may connect: one API key and nothing else
+   * (L-6), and only a vendor's own API or OpenRouter — no relay or reseller
+   * magpie lists, sponsors included (N-5).
+   */
   async tenantPresets(): Promise<Result<readonly BillingPresetView[]>> {
     const client = this.#client()
     if (!(client instanceof MagpieClient)) return client
     try {
       return ok(
-        (await client.listPresets())
+        (await client.listPresets({ vendors: true }))
           .filter(preset => !preset.noKey)
           .map(preset => ({ id: preset.id, name: preset.name })),
       )
@@ -2207,7 +2211,7 @@ export class ConsoleMagpie implements MagpiePort {
       const client = this.#client()
       if (!(client instanceof MagpieClient)) return client
       try {
-        const preset = (await client.listPresets()).find(
+        const preset = (await client.listPresets({ vendors: true })).find(
           one => one.id === draft.preset && !one.noKey,
         )
         if (preset === undefined)

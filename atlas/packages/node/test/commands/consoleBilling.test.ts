@@ -619,6 +619,29 @@ describe('the subscriber’s own models', () => {
       'ollama',
     )
   })
+
+  test('a subscriber is offered the vendors’ own APIs and OpenRouter, no other relay', async () => {
+    await pay(ALICE)
+    const presets = await billing.presets()
+    expect(presets.ok && presets.value.map(one => one.id)).toEqual([
+      'anthropic',
+      'openai',
+      'openrouter',
+    ])
+    const relay = await billing.addUpstream(ALICE, {
+      preset: 'relay-hub',
+      key: 'sk-relay-0001',
+    })
+    expect(relay.ok).toBe(false)
+    if (!relay.ok) expect(relay.failure.code).toBe('rejected')
+    expect(
+      fake.requests.some(
+        request =>
+          request.path === '/api/provider/save' &&
+          (request.body as { preset?: unknown } | null)?.preset === 'relay-hub',
+      ),
+    ).toBe(false)
+  })
 })
 
 describe('expiry', () => {

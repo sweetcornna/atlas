@@ -230,6 +230,13 @@ const DEFAULT_PRESETS: readonly FakePresetSeed[] = [
     models: ['anthropic/claude-sonnet-5', 'deepseek/deepseek-v4'],
   },
   {
+    id: 'relay-hub',
+    name: 'Relay Hub',
+    kind: 'relay',
+    host: 'relay-hub.example',
+    models: ['vendor/model-1'],
+  },
+  {
     id: 'ollama',
     name: 'Ollama',
     kind: 'local',
