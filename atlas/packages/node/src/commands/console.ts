@@ -970,6 +970,12 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       onError: line => process.stderr.write(`[billing] ${line}\n`),
     })
   }
+  // The flags guarantee every piece above; this keeps a later change from
+  // serving the public edition without its subscription gate.
+  if (config.edition === 'public' && billing === undefined)
+    throw new Error(
+      'qm console: the public edition is missing its billing port',
+    )
 
   // File exchange goes through the repo connection marked for it, else the
   // CLI repo: connections win, as for the relay. The repo is fixed for this
