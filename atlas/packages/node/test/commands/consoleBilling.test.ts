@@ -1170,6 +1170,78 @@ describe('a node handed back or moved gives the subscriber’s key back', () => 
   })
 })
 
+describe('no model while no gateway is connected', () => {
+  test('nodes that should be taken back are left as they are, and that is said once', async () => {
+    const tenant = await pay(ALICE)
+    mapNodes(tenant, ['beta-1'])
+    await billing.syncNodes()
+    const own = magpieProfileId({ kind: 'tenant', id: tenant })
+    // A hub whose gateway is not connected: it cannot make 「无模型」.
+    const warned: string[] = []
+    const bare = new ConsoleMagpie({
+      statePath: join(root, 'bare', 'magpie.json'),
+      secretsPath: join(root, 'bare', 'magpie-secrets.json'),
+      keyPath: join(root, 'bare', 'magpie-master.key'),
+      providers,
+      tenants: () => config().tenants.map(row => row.id),
+      subscriptions: { caller: system, onProfile: () => {} },
+      onError: line => warned.push(line),
+    })
+    const bareStore = new BillingStore(':memory:')
+    const bareBilling = new ConsoleBilling({
+      config: parseBillingConfig({
+        version: 1,
+        currency: 'CNY',
+        live: true,
+        sourceUrl: 'https://github.com/sweetcornna/atlas',
+        termsUrl: null,
+        plans: [
+          {
+            id: 'month',
+            name: '月付',
+            priceCents: 9900,
+            periodDays: 30,
+            note: null,
+            nodes: 1,
+          },
+        ],
+        channels: { wechatpay: null, alipay: null, redeem: { enabled: true } },
+      }),
+      store: bareStore,
+      channels: {},
+      tenancy,
+      magpie: bare,
+      providers,
+      caller: system,
+      record: async () => true,
+      now: () => clock,
+      onError: line => warned.push(line),
+    })
+    try {
+      // The tenant moves from beta-1 to beta-2: one to take back, and one
+      // this hub knows no plan for.
+      const current = config()
+      tenancy.replace({
+        ...current,
+        nodes: current.nodes.filter(row => row.nodeId !== 'beta-1'),
+      })
+      mapNodes(tenant, ['beta-2'])
+      await bareBilling.syncNodes()
+      await bareBilling.tick()
+      expect(warned).toHaveLength(1)
+      expect(warned[0]).toContain('beta-1')
+      expect(warned[0]).toContain('beta-2')
+      expect(
+        (await nodeRow('beta-1')).assignment as { profileId?: string },
+      ).toMatchObject({ profileId: own })
+    } finally {
+      bareBilling.close()
+      bare.close()
+      bareStore.close()
+    }
+  })
+})
+
 describe('removing a subscriber’s upstream', () => {
   test('one that fails half way is still the subscriber’s, and asking again finishes it', async () => {
     const tenant = await pay(ALICE)

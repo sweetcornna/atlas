@@ -70,7 +70,11 @@ import type {
   TenantPort,
 } from '@qianmo/console'
 import type { MagpieLimit } from '@qianmo/magpie'
-import { type ConsoleMagpie, isTenantProfile } from './consoleMagpie.js'
+import {
+  type ConsoleMagpie,
+  isTenantProfile,
+  NO_MODEL_PROFILE,
+} from './consoleMagpie.js'
 
 const SWEEP_EVERY_MS = 60_000
 /**
@@ -262,6 +266,8 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
    */
   readonly #retry = new Map<string, { at: number; failures: number }>()
   #nodes: Promise<void> = Promise.resolve()
+  /** Said once that nodes wait for 「无模型」, until it can be made again. */
+  #noModelWarned = false
   #timer: ReturnType<typeof setInterval> | null = null
   #unsubscribe: (() => void) | null = null
 
@@ -470,13 +476,19 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
     // tries again while the node still runs a subscriber's profile.
     const mapped = new Set(config.nodes.map(row => row.nodeId))
     const reclaim: string[] = []
+    // Nodes that should go on no model while it cannot be made (no gateway
+    // connected): left as they are, and said.
+    const waiting: string[] = []
     for (const row of overview.value.nodes) {
       if (mapped.has(row.node)) continue
       const current =
         row.assignment.mode === 'profile' ? row.assignment.profileId : null
       if (current === null) continue
       if (isTenantProfile(current)) {
-        if (none === null) continue
+        if (none === null) {
+          waiting.push(row.node)
+          continue
+        }
         const assigned = await providers.assign(
           { node: row.node, assignment: { mode: 'profile', profileId: none } },
           caller,
@@ -527,7 +539,10 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
           target = profileId
           room -= 1
         }
-        if (target === null) continue
+        if (target === null) {
+          if (current(node) !== NO_MODEL_PROFILE) waiting.push(node)
+          continue
+        }
         if (current(node) === target) {
           const row = rows.get(node)
           if (dirty && target === profileId) deliver.push(node)
@@ -556,6 +571,13 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
         deliver.push(node)
       }
       await this.#deliver(deliver, now)
+    }
+    if (none !== null) this.#noModelWarned = false
+    else if (waiting.length > 0 && !this.#noModelWarned) {
+      this.#noModelWarned = true
+      this.#options.onError?.(
+        `billing: 无模型档案不可用 · 网关未连接或档案未存入 · ${waiting.join(' ')} 暂未收回`,
+      )
     }
   }
 
