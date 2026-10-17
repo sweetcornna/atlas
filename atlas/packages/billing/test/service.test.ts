@@ -418,6 +418,40 @@ describe('subscription periods', () => {
     })
   })
 
+  test('an open order for another plan blocks a new one until it is paid or expires', async () => {
+    const { service, store } = setup()
+    const month = await service.createOrder('alice', 'month', 'wechatpay')
+    const asked = wx.requests.length + ali.requests.length
+    const refused = await caught(service.createOrder('alice', 'pro', 'alipay'))
+    expect(refused.code).toBe('order_open')
+    // Refused before any row or provider call.
+    expect(wx.requests.length + ali.requests.length).toBe(asked)
+    expect(store.ordersOf('alice', 10)).toHaveLength(1)
+    // The same plan on the other channel, and other people, are not affected.
+    await service.createOrder('alice', 'month', 'alipay')
+    await service.createOrder('bob', 'pro', 'wechatpay')
+    // Once the month orders are past their time, pro can be ordered.
+    now = month.expiresAt
+    expect(
+      (await service.createOrder('alice', 'pro', 'wechatpay')).amountCents,
+    ).toBe(29900)
+  })
+
+  test('two orders for different plans at once: one is made, one refused', async () => {
+    const { service, store } = setup()
+    const results = await Promise.allSettled([
+      service.createOrder('carol', 'month', 'wechatpay'),
+      service.createOrder('carol', 'pro', 'alipay'),
+    ])
+    expect(results.map(result => result.status).sort()).toEqual([
+      'fulfilled',
+      'rejected',
+    ])
+    expect(
+      store.ordersOf('carol', 10).filter(order => order.status === 'created'),
+    ).toHaveLength(1)
+  })
+
   test('a refund takes the order period back and switches the gateway off', async () => {
     const { service, store, prov } = setup()
     const order = await service.createOrder('alice', 'month', 'wechatpay')

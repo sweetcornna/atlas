@@ -12,6 +12,12 @@
  *   say) is recorded as paid and extends nothing: crediting it would switch
  *   the plan and carry the old period over. It is listed as owed a refund
  *   (`AdminSnapshot.refundsDue`) until the operator marks it refunded.
+ * - One payable plan per person: while an order for one plan can still be
+ *   paid, an order for another plan is refused (`order_open`), and order
+ *   creation is serialised per person. Refused rather than closing the old
+ *   order: an Alipay precreate QR nobody has scanned yet answers the close
+ *   with "no such trade" and can still be paid until its own timeout, so a
+ *   close would not make the old QR unpayable.
  * - A verified payment is never dropped. It is committed (order paid +
  *   subscription extended + gateway marked pending) in one transaction
  *   before the gateway is touched; a provisioning failure leaves the
@@ -80,6 +86,7 @@ export type BillingErrorCode =
   | 'unknown_plan'
   | 'channel_unavailable'
   | 'plan_conflict'
+  | 'order_open'
   | 'provider_error'
   | 'unknown_order'
   | 'invalid_code'
@@ -351,9 +358,14 @@ export class BillingService {
     this.#assertSubject(subject)
     const plan = this.#plan(planId)
     const channel = this.#channel(channelId)
-    return this.#serial(`order:${subject}:${planId}:${channelId}`, async () => {
+    return this.#serial(`order:${subject}`, async () => {
       const now = this.#clock()
       this.#assertPlanCompatible(subject, plan.id, now)
+      if (this.#store.openOrderOfOtherPlan(subject, plan.id, now) !== null)
+        throw new BillingError(
+          'order_open',
+          '另一个套餐还有待支付的订单，付款或等它过期后再下单',
+        )
       const open = this.#store.openOrder(
         subject,
         plan.id,

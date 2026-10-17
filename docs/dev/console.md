@@ -663,10 +663,10 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/plans` | 公开，公开版 | 套餐页（§4.3）：每个套餐的价格、周期、含几台托管节点与说明，一句「模型用你自己的密钥接入」；已登录的给「我的订阅」，没登录的给登录与注册。页脚是源代码链接。没开 `--billing` 时 404 |
 | GET | `/subscription` | 个人账号，公开版 | 我的订阅：状态、套餐、到期、节点 `n/N`（订阅已生效而还没分到节点时写「节点分配中」）；模型（网关密钥状态、主模型、自己接的上游与接入表单，只有有效订阅能接）；网关用量近 30 天；续费或购买；兑换码；订单。共用令牌与 break-glass 没有这一页（403）。没开 `--billing` 时 404 |
 | GET | `/subscription/checkout?plan=<套餐 id>&channel=<wechatpay\|alipay>` | 个人账号，公开版 | 确认订单，由同源表单提交；没有这个套餐 404，通道没开 400 |
-| POST | `/subscription/checkout` | 个人账号，公开版 | 表单 `plan`、`channel`；拒绝跨源提交（`Sec-Fetch-Site`、`Origin`）。同一人同一套餐同一通道复用未过期的待支付订单，303 到 `?order=`；失败给一张原因卡片。记 `billing.checkout`；不受订阅闸门限制 |
+| POST | `/subscription/checkout` | 个人账号，公开版 | 表单 `plan`、`channel`；拒绝跨源提交（`Sec-Fetch-Site`、`Origin`）。同一人同一套餐同一通道复用未过期的待支付订单，303 到 `?order=`；同一人还有另一个套餐的未过期待支付订单时拒绝；失败给一张原因卡片。记 `billing.checkout`；不受订阅闸门限制 |
 | GET | `/subscription/checkout?order=<订单 id>` | 订单本人，公开版 | 付款页：金额、内联 SVG 二维码（不加载外部资源）与订单状态，脚本每 3 秒查一次单直到付清或关闭；别人的订单与不存在的一样 404 |
 | GET | `/v0/billing/me` | 个人账号 | 自己的订阅、最近订单、上游、网关密钥状态、主模型与近 30 天用量；读网关失败时 `usage` 为 null。共用令牌与 break-glass 403；没接端口时 501 |
-| POST | `/v0/billing/checkout` | 个人账号 | `{ planId, channel }` 下单，答订单号、金额、失效时刻与二维码内容；复用规则同上。记 `billing.checkout`；不受订阅闸门限制 |
+| POST | `/v0/billing/checkout` | 个人账号 | `{ planId, channel }` 下单，答订单号、金额、失效时刻与二维码内容；复用与拒绝规则同上。记 `billing.checkout`；不受订阅闸门限制 |
 | GET | `/v0/billing/orders/<订单 id>` | 订单本人 | 订单状态；待支付时顺带向支付平台查一次单。不回二维码内容；别人的订单 404 |
 | POST | `/v0/billing/redeem` | 个人账号 | `{ code }` 兑换，答兑换后的订阅。记 `billing.redeem`；不受订阅闸门限制 |
 | POST | `/v0/billing/models` | 个人账号，有效订阅 | `{ preset, key }`：用 magpie 的 API 密钥预设（L-6）接自己的上游，密钥只交给 magpie、中枢不留存；租户网关密钥的白名单随之改为本租户上游的模型并启用。记 `billing.model.add` |

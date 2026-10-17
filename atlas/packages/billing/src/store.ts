@@ -373,6 +373,19 @@ export class BillingStore {
       .get(subject, planId, channel, after)
   }
 
+  /** The newest `created` order of `subject` for a plan other than `planId`, still open after `after`. */
+  openOrderOfOtherPlan(
+    subject: string,
+    planId: string,
+    after: number,
+  ): OrderRow | null {
+    return this.#db
+      .query<OrderRow, [string, string, number]>(
+        "SELECT * FROM orders WHERE subject = ? AND planId != ? AND status = 'created' AND expiresAt > ? ORDER BY createdAt DESC LIMIT 1",
+      )
+      .get(subject, planId, after)
+  }
+
   /** `created` orders whose time is up. */
   ordersDue(now: number, limit: number): OrderRow[] {
     return this.#db

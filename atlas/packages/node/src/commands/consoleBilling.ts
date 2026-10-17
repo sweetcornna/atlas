@@ -167,6 +167,11 @@ function fromBilling<T>(error: unknown): Result<T> {
       return failed('invalid', '这个付款方式没有开通')
     case 'plan_conflict':
       return failed('rejected', '已有别的套餐在有效期内 · 到期后再换')
+    case 'order_open':
+      return failed(
+        'rejected',
+        '另一个套餐还有待支付的订单 · 付款或等它过期后再下单',
+      )
     case 'provider_error':
       return failed('unreachable', '支付平台暂时不可用 · 稍后再试')
     case 'invalid_code':
