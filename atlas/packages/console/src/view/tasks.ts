@@ -191,7 +191,7 @@ export function renderTasksUnavailable(failure: ConsoleFailure | null): string {
     sectionHead('Tasks', '后台任务', { headingId: 'h-tasks' }) +
     unwiredCard(
       '后台任务',
-      '中枢接上节点的控制链路后 · 主智能体交给后台子智能体的任务列在这里',
+      '中枢接上节点的控制链路后 · 主会话交出的后台任务列在这里',
       'qm console --chat-url <节点>=<地址> --control <节点>=<地址>',
     ) +
     `</section>`
