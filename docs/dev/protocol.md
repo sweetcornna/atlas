@@ -300,14 +300,16 @@ ack 从发出到回到请求方，链路逐段如下（**数值一律指向出�
 
 | 分支 | 字段 | 含义 |
 |---|---|---|
-| 成功 | `{ outcome: 'completed', content, completedAt, redelivered? }` | `content` 是处理方本轮 ACP turn 聚合出的正文字符串（`agent_message_chunk` 的 text 顺序拼接），不是日志、不是事件流 |
-| 失败 | `{ outcome: 'failed', code, reason, completedAt, redelivered? }` | `code` 取自 `ProtocolErrorCode`（§11）且逐个校验，未知码判非法；`reason` 是人读摘要 |
+| 成功 | `{ outcome: 'completed', content, completedAt, redelivered?, compacted? }` | `content` 是处理方本轮 ACP turn 聚合出的正文字符串（`agent_message_chunk` 的 text 顺序拼接），不是日志、不是事件流 |
+| 失败 | `{ outcome: 'failed', code, reason, completedAt, redelivered?, compacted? }` | `code` 取自 `ProtocolErrorCode`（§11）且逐个校验，未知码判非法；`reason` 是人读摘要 |
 
-**`redelivered` 是唯一的可选字段（P13.5 新增），它把校验形状从「精确键数」改成「必填子集 + 白名单」。**这条改动有三处必须一起记住，否则会被「顺手统一」掉：
+**可选字段有两个：`redelivered`（P13.5）与 `compacted`（P29，本轮底层压缩过上下文），都只取 `true`；`compacted` 只回给 task.request 带了 `reportCompaction: true` 的请求，拿不到就不给。**可选字段把校验形状从「精确键数」改成「必填子集 + 白名单」。这条改动有三处必须一起记住，否则会被「顺手统一」掉：
 
 - **只接受 `true`，不接受 `false`**——与 `notify` 的同名字段同一条理由（§14.3）：`false` 与「不存在」是同一个事实，一个事实两种编码 = 同一条结果有两个 `fingerprint`。
-- **白名单只有这一个键**，未列出的键仍然判非法。放宽的是「有没有可选字段」，不是「payload 变开放」——对端仍然塞不进业务字段。
+- **白名单只有这两个键**，未列出的键仍然判非法。放宽的是「有没有可选字段」，不是「payload 变开放」——对端仍然塞不进业务字段。
 - **发送侧按规则 N-1 降级**（§11.3）：只有**声明了后 legacy 类型**的对端才会收到这个字段。这是把 N-1 的纪律从「错误码」推广到「字段」，理由与 §11.3 那个陷阱逐字相同——比该字段更旧的节点用**精确键数**校验 `task.result`，收到它不会退化成「看不懂这个标记但收下结果」，而是**整条拒收**。降级后对端照样拿到答案，也照样有 `taskId` 判重（规则 C-1）。
+
+**task.request 的两个可选声明（P29）**：payload 可带 `background: true`（中枢后台子任务回合；`ownerProof` 覆盖整份 payload，节点用控制者公钥验过才算，没签或验不过当交互回合）与 `reportCompaction: true`（请求方读得懂结果上的 `compacted`）。请求 payload 是开放的，旧节点忽略这两个键。
 
 **为什么再投必须是新信封**：台账驱动的再投走「新 `msgId` + 新 `createdAt` + 同 `taskId`」，不是重传原信封——重启走完之后原信封的 `deliverTtlMs` 早已过期，原样重发只会换回一个 `E_TTL_EXPIRED`（同 §14.4③）。因此两级去重都不会静默吸收它，这正是本字段存在的意义：**重复是可见的，不是无声的。**
 
