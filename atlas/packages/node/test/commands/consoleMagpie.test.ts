@@ -1050,6 +1050,26 @@ describe('upstreams and groups', () => {
     expect(JSON.stringify(added)).not.toContain('sk-custom-upstream-0001')
   })
 
+  test('a provider test does not hold up the writes behind it', async () => {
+    const magpie = await connected()
+    fake.fault({
+      target: 'management',
+      path: '/api/provider/test',
+      times: 1,
+      delayMs: 1_500,
+    })
+    const order: string[] = []
+    const testing = magpie
+      .testProvider('openai', caller())
+      .then(result => order.push(`test ${result.ok}`))
+    await Bun.sleep(100)
+    const write = magpie
+      .setProviderEnabled('openai', false, caller())
+      .then(result => order.push(`write ${result.ok}`))
+    await Promise.all([testing, write])
+    expect(order).toEqual(['write true', 'test true'])
+  })
+
   test('a subscription upstream is read-only here', async () => {
     const magpie = await connected()
     for (const result of [

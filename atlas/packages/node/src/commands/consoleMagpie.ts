@@ -1308,23 +1308,25 @@ export class ConsoleMagpie implements MagpiePort {
     })
   }
 
-  testProvider(
+  /**
+   * Not in the write queue: magpie's test may take up to 30 s and changes
+   * nothing of ours, and a provisioning write must not wait behind it.
+   */
+  async testProvider(
     id: string,
     caller: MagpieCaller,
   ): Promise<Result<readonly MagpieTestView[]>> {
-    return this.#serial(async () => {
-      const denied = this.#authorize(caller)
-      if (denied !== null) return denied
-      const client = this.#client()
-      if (!(client instanceof MagpieClient)) return client
-      try {
-        const found = await this.#keyProvider(client, id)
-        if (!found.ok) return found
-        return ok(await client.testProvider(id))
-      } catch (error) {
-        return fromMagpie(error)
-      }
-    })
+    const denied = this.#authorize(caller)
+    if (denied !== null) return denied
+    const client = this.#client()
+    if (!(client instanceof MagpieClient)) return client
+    try {
+      const found = await this.#keyProvider(client, id)
+      if (!found.ok) return found
+      return ok(await client.testProvider(id))
+    } catch (error) {
+      return fromMagpie(error)
+    }
   }
 
   /** The bindings whose profile points at `prefix` (a provider or a group). */
