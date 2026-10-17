@@ -359,15 +359,7 @@ async function leaseRun(
   const launcher: DesktopLauncher = {
     available: () => true,
     run: async () => 0,
-    async start(_program, argv) {
-      const profile = argv
-        .find(a => a.startsWith('--user-data-dir='))
-        ?.slice('--user-data-dir='.length)
-      if (profile)
-        fs.writeFileSync(
-          path.join(profile, 'DevToolsActivePort'),
-          `${cdp.port}\n/ws\n`,
-        )
+    async start() {
       let running = true
       return {
         pid: 2_000_000_000,
@@ -385,6 +377,16 @@ async function leaseRun(
     agents: ['reviewer'],
     estop: () => false,
     launcher,
+    // The fake answers the claim and discovery; nothing serves a websocket.
+    cdpBridge: async () => ({
+      url: `http://127.0.0.1:${cdp.port}`,
+      pair: false,
+      command: argv => [...argv],
+      attach: () => {},
+      ready: async () => true,
+      pages: async () => 1,
+      close: () => {},
+    }),
   })
   let turn: OmpResidentTurnPort | undefined
   const answers: LeaseAnswer[] = []

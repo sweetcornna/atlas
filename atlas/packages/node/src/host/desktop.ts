@@ -60,6 +60,12 @@ import {
   type DesktopSandbox,
 } from './desktopSandbox.js'
 import {
+  createCdpBridge,
+  type CdpBridge,
+  type CdpBridgeFactory,
+  type CdpPipe,
+} from './desktopCdp.js'
+import {
   SCREEN_VIEW_BASE64,
   shrinkScreenshot,
   type ScreenEncoder,
@@ -67,15 +73,22 @@ import {
 
 export interface DesktopProcess {
   readonly pid: number
+  /** The host ends of the fd 3 and 4 it was started with, when asked. */
+  readonly devtools?: CdpPipe
   alive(): boolean
   stop(): Promise<void>
 }
 export interface DesktopLauncher {
   available(program: string): boolean
+  /**
+   * With `devtools`, the process gets a socket pair on fd 3 and on fd 4 for
+   * a browser's DevTools pipe (macOS only; Linux bridges through FIFOs).
+   */
   start(
     program: string,
     argv: readonly string[],
     env: Record<string, string | undefined>,
+    devtools?: boolean,
   ): Promise<DesktopProcess>
   run(
     program: string,
@@ -110,15 +123,34 @@ export const desktopLauncher: DesktopLauncher = {
     path.isAbsolute(program)
       ? fs.existsSync(program)
       : Bun.which(program) !== null,
-  async start(program, argv, env) {
+  async start(program, argv, env, devtools) {
+    // The Linux subreaper passes no descriptor past stdio.
+    if (devtools && process.platform === 'linux')
+      throw new Error('DevTools socket pairs are not passed on Linux')
     const child = ptree
-      .spawn([program, ...argv], { detached: true, subreaper: true, env })
+      .spawn([program, ...argv], {
+        detached: true,
+        subreaper: true,
+        env,
+        ...(devtools
+          ? { stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'] as const }
+          : {}),
+      })
       .nothrow()
     // Drain both pipes through the shared supervisor; no child output is logged.
     const closed = child.wait({ allowNonZero: true, allowAbort: true })
     void closed.catch(() => {})
+    const extra = devtools ? (child.proc.stdio as unknown[]) : []
     return {
       pid: child.pid,
+      ...(devtools
+        ? {
+            devtools: {
+              input: extra[3] as number,
+              output: extra[4] as number,
+            },
+          }
+        : {}),
       alive: () => alive(child.pid),
       async stop() {
         child.attachTimeout(5000)
@@ -273,6 +305,8 @@ interface Options {
   readonly applicationDirs?: readonly string[]
   /** How `desktop.view` scales a screenshot down (tests). */
   readonly screenEncoders?: readonly ScreenEncoder[]
+  /** How a browser's DevTools pipe is bridged to its executor (tests). */
+  readonly cdpBridge?: CdpBridgeFactory
 }
 const hash = (input: unknown) =>
   createHash('sha256').update(JSON.stringify(input)).digest('hex')
@@ -351,6 +385,8 @@ export class NodeDesktop {
   readonly #states = new Map<string, ResourceState>()
   readonly #processes = new Map<string, Managed[]>()
   readonly #sessions = new Map<string, Session>()
+  /** Each running browser's DevTools bridge and its claim secret (§6.3). */
+  readonly #bridges = new Map<string, { bridge: CdpBridge; token: string }>()
   /** Why the owner cannot see a resource's screen, until a view succeeds. */
   readonly #viewReasons = new Map<string, string>()
   readonly #leases = new Map<string, Lease>()
@@ -474,6 +510,7 @@ export class NodeDesktop {
       browser: s.browser && s.state === 'running',
       computer: s.computer && s.state === 'running',
       cdpUrl: s.cdpUrl,
+      cdpToken: s.cdpUrl ? (this.#bridges.get(agent)?.token ?? null) : null,
       display: s.display,
       xauthority:
         s.computer && !this.#hostDesktop()
@@ -486,6 +523,11 @@ export class NodeDesktop {
         ? { hostApps: [...s.apps] }
         : {}),
     }
+  }
+  /** Cut every executor off the browser; the claim secret dies with it. */
+  #closeBridge(agent: string): void {
+    this.#bridges.get(agent)?.bridge.close()
+    this.#bridges.delete(agent)
   }
   /** Forget what the last session ran with; its processes are gone. */
   #clearSession(s: ResourceState): void {
@@ -612,6 +654,7 @@ export class NodeDesktop {
       persistenceFailure = error
     }
     s.cdpUrl = s.display = null
+    this.#closeBridge(s.agent)
     for (const lease of [...this.#leases.values()]) {
       if (lease.resource !== s) continue
       try {
@@ -683,13 +726,19 @@ export class NodeDesktop {
     command: readonly string[],
     marker: string,
     app = false,
+    devtools = false,
   ): Promise<DesktopProcess> {
     const session = this.#sessions.get(s.agent)
     if (!session) throw new Error('Desktop session is not running')
     const [program, ...argv] = session.scope
       ? ['systemd-run', ...desktopScopeArgv(this.#memoryLimit), ...command]
       : command
-    const proc = await this.#launcher.start(program!, argv, session.env)
+    const proc = await this.#launcher.start(
+      program!,
+      argv,
+      session.env,
+      devtools,
+    )
     const managed = this.#processes.get(s.agent) ?? []
     this.#processes.set(s.agent, managed)
     managed.push({ proc, app })
@@ -762,29 +811,55 @@ export class NodeDesktop {
     }
     return false
   }
-  /** The CDP address Chrome published in its profile, once it answers. */
-  async #cdp(profile: string, proc: DesktopProcess, ms: number) {
-    let url: string | null = null
-    await this.#until(
-      async () => {
-        const port = Number(
-          readTextIfExists(path.join(profile, 'DevToolsActivePort'))?.split(
-            '\n',
-          )[0],
-        )
-        if (!Number.isInteger(port) || port <= 0 || port > 65535) return false
-        try {
-          if ((await fetch(`http://127.0.0.1:${port}/json/version`)).ok)
-            url = `http://127.0.0.1:${port}`
-        } catch {
-          /* Still starting. */
-        }
-        return url !== null
-      },
-      proc,
-      ms,
-    )
-    return url
+  /**
+   * Start Chrome on a DevTools pipe (§6.3): it listens on no port, and only
+   * the host bridge, which lets in the executor that claims it, reaches it.
+   * Whether it answered there within `ms`; one that did not is stopped.
+   */
+  async #browser(
+    s: ResourceState,
+    command: readonly string[],
+    profile: string,
+    ms: number,
+  ): Promise<boolean> {
+    const token = randomBytes(32).toString('base64url')
+    const bridge = await (this.#options.cdpBridge ?? createCdpBridge)({
+      dir: path.join(this.#root(s.agent), 'cdp'),
+      token,
+      transport:
+        (this.#options.platform ?? process.platform) === 'linux'
+          ? 'fifo'
+          : 'pair',
+    })
+    let proc: DesktopProcess
+    try {
+      proc = await this.#spawn(
+        s,
+        bridge.command(command),
+        profile,
+        false,
+        bridge.pair,
+      )
+    } catch (error) {
+      bridge.close()
+      throw error
+    }
+    if (bridge.pair) {
+      if (proc.devtools) bridge.attach(proc.devtools)
+      else {
+        bridge.close()
+        await this.#drop(s, proc)
+        throw new Error('Launcher handed the browser no DevTools pipe')
+      }
+    }
+    if (await bridge.ready(() => proc.alive(), ms)) {
+      this.#bridges.set(s.agent, { bridge, token })
+      s.cdpUrl = bridge.url
+      return true
+    }
+    bridge.close()
+    await this.#drop(s, proc)
+    return false
   }
   async #start(
     s: ResourceState,
@@ -998,8 +1073,7 @@ export class NodeDesktop {
       }
       const flags = [
         `--user-data-dir=${profile}`,
-        '--remote-debugging-address=127.0.0.1',
-        '--remote-debugging-port=0',
+        '--remote-debugging-pipe',
         '--no-first-run',
         '--no-default-browser-check',
         '--disable-sync',
@@ -1008,7 +1082,7 @@ export class NodeDesktop {
       if (computer && session.sandbox) {
         // Headed on the private display, Chromium's own sandbox kept.
         clear()
-        const headed = await this.#spawn(
+        const headed = await this.#browser(
           s,
           this.#desktopCommand(
             s,
@@ -1022,23 +1096,22 @@ export class NodeDesktop {
             true,
           ),
           profile,
+          10000,
         )
-        s.cdpUrl = await this.#cdp(profile, headed, 10000)
-        if (!s.cdpUrl) {
-          await this.#drop(s, headed)
-          notes.browser = NOTE_HEADED_FAILED
-        }
+        if (!headed) notes.browser = NOTE_HEADED_FAILED
       } else if (computer && platform === 'linux') notes.browser = NOTE_HEADLESS
       if (!s.cdpUrl) {
         clear()
-        const headless = await this.#spawn(
-          s,
-          [chrome, '--headless=new', ...flags, 'about:blank'],
-          profile,
+        if (
+          !(await this.#browser(
+            s,
+            [chrome, '--headless=new', ...flags, 'about:blank'],
+            profile,
+            15000,
+          ))
         )
-        s.cdpUrl = await this.#cdp(profile, headless, 15000)
+          throw new Error('Chrome CDP did not become ready')
       }
-      if (!s.cdpUrl) throw new Error('Chrome CDP did not become ready')
     }
     s.state = 'running'
     s.startedAt = this.#now()
@@ -1165,36 +1238,6 @@ export class NodeDesktop {
           code: 'invalid',
           message: 'Recycle only accepts agent and operationId',
         }
-      // The agents on a node share its network, and nothing authenticates a
-      // browser's debugging port on 127.0.0.1: a terminal in one agent's
-      // desktop could drive another agent's browser (§6.3). Until each agent
-      // gets its own network, one node gives a terminal to a lone agent only.
-      if (op === 'desktop.enable') {
-        const current = this.#states.get(agent)!
-        const on = (key: 'browser' | 'computer') =>
-          typeof args[key] === 'boolean' ? args[key] === true : current[key]
-        const terminal =
-          on('computer') &&
-          (typeof args.terminal === 'boolean'
-            ? args.terminal
-            : current.terminal)
-        const others = [...this.#states.values()].filter(
-          o => o !== current && (o.browser || o.computer),
-        )
-        const shell = others.find(o => o.computer && o.terminal)
-        if (terminal && others.length > 0)
-          return {
-            ok: false,
-            code: 'rejected',
-            message: `同一节点上 ${others.map(o => o.agent).join('、')} 也开着专属浏览器或电脑：智能体之间网络共用，终端能连到它们的浏览器，这台节点暂只给单独一个智能体开终端`,
-          }
-        if ((on('browser') || on('computer')) && shell)
-          return {
-            ok: false,
-            code: 'rejected',
-            message: `同一节点上 ${shell.agent} 的专属电脑开着终端：智能体之间网络共用，先关掉它的终端再给其他智能体开专属浏览器或电脑`,
-          }
-      }
       // This Mac's own desktop opens only what the operator names (§6.5).
       if (op === 'desktop.enable' && this.#hostDesktop()) {
         const current = this.#states.get(agent)!
@@ -1879,13 +1922,9 @@ export class NodeDesktop {
           reason = '下载配额超限，已停用'
         if (s.cdpUrl) {
           try {
-            const tabs = (await fetch(`${s.cdpUrl}/json/list`, {
-              signal: AbortSignal.timeout(2000),
-            }).then(r => r.json())) as { type: string }[]
-            if (
-              tabs.filter(t => t.type === 'page').length >
-              (this.#options.tabLimit ?? 4)
-            )
+            const bridge = this.#bridges.get(s.agent)?.bridge
+            if (!bridge) throw new Error('DevTools bridge missing')
+            if ((await bridge.pages(2000)) > (this.#options.tabLimit ?? 4))
               reason = 'tab 配额超限，已停用'
           } catch {
             reason = '浏览器失联，已停用'

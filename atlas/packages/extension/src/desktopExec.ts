@@ -10,6 +10,8 @@ import { createBrowserPrelude } from '@oh-my-pi/pi-coding-agent/tools/browser'
 import { createComputerPrelude } from '@oh-my-pi/pi-coding-agent/tools/computer'
 import type { ToolSession } from '@oh-my-pi/pi-coding-agent/tools/index'
 import {
+  DESKTOP_CDP_CLAIM_PATH,
+  DESKTOP_CDP_TOKEN,
   DESKTOP_HOST_WINDOWED,
   DESKTOP_LEASE_REFUSED,
   desktopActionItems,
@@ -38,13 +40,46 @@ export function readDesktopResource(file: string): DesktopResource | undefined {
     if (
       r.browser &&
       (typeof r.cdpUrl !== 'string' ||
-        !/^http:\/\/127\.0\.0\.1:\d+$/.test(r.cdpUrl))
+        !/^http:\/\/127\.0\.0\.1:\d+$/.test(r.cdpUrl) ||
+        typeof r.cdpToken !== 'string' ||
+        !DESKTOP_CDP_TOKEN.test(r.cdpToken))
     )
       return undefined
     return r
   } catch {
     return undefined
   }
+}
+
+/**
+ * Claim the browser's host bridge for this process (runtimes-channels.md
+ * §6.3). The base attaches through plain discovery, which carries no secret;
+ * the bridge lets in the connections of the process that claimed it.
+ */
+export async function claimDesktopBrowser(
+  resource: Pick<DesktopResource, 'cdpUrl' | 'cdpToken'>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const timeout = AbortSignal.timeout(5000)
+  let status: number
+  try {
+    status = (
+      await fetch(`${resource.cdpUrl}${DESKTOP_CDP_CLAIM_PATH}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${resource.cdpToken}` },
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      })
+    ).status
+  } catch (error) {
+    signal?.throwIfAborted()
+    throw new Error(
+      `专属浏览器的调试入口没有应答：${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+  if (status < 200 || status >= 300)
+    throw new Error(
+      `专属浏览器的调试入口拒绝了认领（HTTP ${status}）：浏览器可能刚重启，重试即可`,
+    )
 }
 
 /**
@@ -129,6 +164,11 @@ export type DesktopPrelude = Pick<EvalPreludeDefinition, 'invoke'>
 export interface DesktopPreludes {
   readonly browser?: (session: ToolSession) => DesktopPrelude
   readonly computer?: (session: ToolSession) => DesktopPrelude
+  /** How the executor claims the browser's host bridge before attaching. */
+  readonly claim?: (
+    resource: Pick<DesktopResource, 'cdpUrl' | 'cdpToken'>,
+    signal?: AbortSignal,
+  ) => Promise<void>
 }
 
 /** One `call` step on the base computer facade (`computer/call.ts`). */
@@ -408,6 +448,7 @@ export class DesktopExecutor {
           { action: 'close', all: true },
           context,
         )
+        await (this.#preludes.claim ?? claimDesktopBrowser)(r, signal)
         await this.#browserPrelude().invoke(
           {
             action: 'open',

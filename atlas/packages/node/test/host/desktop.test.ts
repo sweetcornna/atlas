@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 import { createHash } from 'node:crypto'
 import { NodeDesktop, type DesktopLauncher } from '../../src/host/desktop.js'
+import type { CdpBridgeFactory } from '../../src/host/desktopCdp.js'
 import type { DesktopActionView, DesktopNodeView } from '@qianmo/console'
 const ctx = { peer: 'hub', actor: 'ops', taskId: 'control' }
 const hash = (args: unknown) =>
@@ -18,7 +19,11 @@ async function fixture(
     xvfb?: boolean
     now?: () => number
     display?: (file: string) => void
-    version?: () => Promise<Response>
+    ready?: () => Promise<boolean>
+    /** The bridge asks the launcher for a socket pair (macOS). */
+    pair?: boolean
+    /** Whether the launcher hands one out when asked. */
+    devtools?: boolean
   } = {},
 ) {
   const previous = process.env.QIANMO_CONFIG_DIR
@@ -28,30 +33,47 @@ async function fixture(
     program: string
     argv: readonly string[]
     env: Record<string, string | undefined>
+    devtools?: boolean
   }[] = []
   const stops: number[] = []
   let tabs = 1,
     pid = 100,
     estop = false
-  const cdpPort = 9222
-  const cdpUrl = `http://127.0.0.1:${cdpPort}`
-  // Unit tests fake the CDP boundary; real HTTP/Chrome is covered by the
-  // adjacent integration suite. Restore this per-test spy in afterEach.
-  spyOn(globalThis, 'fetch').mockImplementation(
-    Object.assign(
-      async (input: string | URL | Request) => {
-        const url = input instanceof Request ? input.url : String(input)
-        if (url === `${cdpUrl}/json/version`)
-          return opts.version ? await opts.version() : Response.json({})
-        if (url === `${cdpUrl}/json/list`)
-          return Response.json(
-            Array.from({ length: tabs }, () => ({ type: 'page' })),
-          )
-        throw new Error(`Unexpected fixture fetch: ${url}`)
+  // Unit tests fake the DevTools bridge; the real pipe and Chrome are
+  // covered by desktopCdp.test.ts and the integration suites.
+  const bridges: {
+    dir: string
+    token: string
+    transport?: string
+    closed: boolean
+    attached?: { input: number; output: number }
+  }[] = []
+  let lost = false
+  const cdpBridge: CdpBridgeFactory = async ({ dir, token, transport }) => {
+    const bridge: (typeof bridges)[number] = {
+      dir,
+      token,
+      transport,
+      closed: false,
+    }
+    bridges.push(bridge)
+    return {
+      url: 'http://127.0.0.1:9222',
+      pair: opts.pair === true,
+      command: argv => [...argv, PIPE_MARK],
+      attach: pipe => {
+        bridge.attached = pipe
       },
-      { preconnect: globalThis.fetch.preconnect },
-    ),
-  )
+      ready: async alive => (opts.ready ? await opts.ready() : alive()),
+      pages: async () => {
+        if (lost) throw new Error('DevTools Target.getTargets timed out')
+        return tabs
+      },
+      close: () => {
+        bridge.closed = true
+      },
+    }
+  }
   // Only Chrome (and Xvfb when asked): no bubblewrap, systemd, bus or window
   // manager here; desktopSession.test.ts covers the private desktop.
   const launcher: DesktopLauncher = {
@@ -65,23 +87,20 @@ async function fixture(
       fs.writeFileSync(auth, 'fixture-cookie', { mode: 0o600 })
       return 0
     },
-    async start(program, argv, env) {
-      calls.push({ program, argv, env: { ...env } })
+    async start(program, argv, env, devtools) {
+      calls.push({ program, argv, env: { ...env }, devtools })
       if (program === '/bin/sh') {
         const displayFile = argv.at(-1)!
         if (opts.display) opts.display(displayFile)
         else fs.writeFileSync(displayFile, '27\n')
       }
-      const profileArg = argv.find(a => a.startsWith('--user-data-dir='))
-      if (profileArg)
-        fs.writeFileSync(
-          path.join(profileArg.split('=')[1]!, 'DevToolsActivePort'),
-          `${cdpPort}\n/ws\n`,
-        )
       const ownPid = pid++
       let running = true
       return {
         pid: ownPid,
+        ...(devtools && opts.devtools
+          ? { devtools: { input: 1000 + ownPid, output: 2000 + ownPid } }
+          : {}),
         alive: () => running,
         async stop() {
           running = false
@@ -105,6 +124,7 @@ async function fixture(
     downloadBytes: 20,
     tabLimit: 2,
     audit: e => audits.push(e),
+    cdpBridge,
   })
   const enable = (
     operationId = 'enable',
@@ -127,10 +147,14 @@ async function fixture(
     calls,
     stops,
     audits,
+    bridges,
     enable,
     view,
     setTabs: (v: number) => {
       tabs = v
+    },
+    loseBrowser: () => {
+      lost = true
     },
     setEstop: () => {
       estop = true
@@ -142,6 +166,8 @@ async function fixture(
     },
   }
 }
+/** What the fake bridge adds to the browser command it wraps. */
+const PIPE_MARK = '--fixture-devtools-pipe'
 function callOf(
   node: NodeDesktop,
   toolName = 'qianmo_browser_click',
@@ -168,15 +194,27 @@ test('host allocates trusted launch args, deduplicates controls, refuses mismatc
     expect((await f.enable()).ok).toBe(true)
     expect((await f.enable()).ok).toBe(true)
     expect(
-      f.calls.filter(c => c.argv.includes('--remote-debugging-port=0')).length,
+      f.calls.filter(c => c.argv.includes('--remote-debugging-pipe')).length,
     ).toBe(1)
     expect((await f.enable('enable', { browser: false })).ok).toBe(false)
     const launch = f.calls.find(c =>
-      c.argv.includes('--remote-debugging-port=0'),
+      c.argv.includes('--remote-debugging-pipe'),
     )!
-    expect(launch.argv).toContain('--remote-debugging-port=0')
-    expect(launch.argv).toContain('--remote-debugging-address=127.0.0.1')
+    // No debugging port: Chrome speaks DevTools over the pipe the bridge
+    // hands it, and the resource carries the bridge's claim secret.
+    expect(launch.argv).toContain('--remote-debugging-pipe')
+    expect(launch.argv.at(-1)).toBe(PIPE_MARK)
+    expect(launch.argv.some(a => a.startsWith('--remote-debugging-port'))).toBe(
+      false,
+    )
     expect(launch.argv).not.toContain('--no-sandbox')
+    expect(f.bridges).toHaveLength(1)
+    expect(f.bridges[0]!.dir).toBe(path.join(f.root, 'qianmo/desktop/main/cdp'))
+    expect(f.node.resource('main')).toMatchObject({
+      cdpUrl: 'http://127.0.0.1:9222',
+      cdpToken: f.bridges[0]!.token,
+    })
+    expect(f.bridges[0]!.token).toMatch(/^[A-Za-z0-9_-]{43}$/)
     const profile = path.join(f.root, 'qianmo/desktop/main/browser')
     expect(fs.statSync(profile).mode & 0o777).toBe(0o700)
     const old = f.node.resource('main')!
@@ -367,7 +405,7 @@ for (const executable of ['google-chrome', 'chromium', null]) {
       )
       expect(xvfb.argv[1]).not.toContain('-ac ')
       const browser = f.calls.find(c =>
-        c.argv.includes('--remote-debugging-port=0'),
+        c.argv.includes('--remote-debugging-pipe'),
       )!
       expect(browser.program).toBe(
         executable ? path.join(f.root, 'bin', executable) : 'chromium',
@@ -409,14 +447,14 @@ test('Linux enable waits for delayed Xvfb allocation and Chrome CDP readiness', 
   const displayPolling = Promise.withResolvers<void>()
   const displayReady = Promise.withResolvers<void>()
   const versionRequested = Promise.withResolvers<void>()
-  const version = Promise.withResolvers<Response>()
+  const version = Promise.withResolvers<boolean>()
   let displayFile: string | undefined
   const f = await fixture('linux', {
     xvfb: true,
     display: file => {
       displayFile = file
     },
-    version: () => {
+    ready: () => {
       versionRequested.resolve()
       return version.promise
     },
@@ -439,9 +477,9 @@ test('Linux enable waits for delayed Xvfb allocation and Chrome CDP readiness', 
     await displayPolling.promise
     await Promise.resolve()
     expect(settled).toBe(false)
-    expect(
-      f.calls.some(c => c.argv.includes('--remote-debugging-port=0')),
-    ).toBe(false)
+    expect(f.calls.some(c => c.argv.includes('--remote-debugging-pipe'))).toBe(
+      false,
+    )
     expect(f.node.resource('main')).toMatchObject({
       browser: false,
       computer: false,
@@ -459,7 +497,7 @@ test('Linux enable waits for delayed Xvfb allocation and Chrome CDP readiness', 
       display: ':27',
       cdpUrl: null,
     })
-    version.resolve(Response.json({}))
+    version.resolve(true)
     expect((await enabled).ok).toBe(true)
     expect(f.node.resource('main')).toMatchObject({
       browser: true,
@@ -470,7 +508,7 @@ test('Linux enable waits for delayed Xvfb allocation and Chrome CDP readiness', 
   } finally {
     if (displayFile) fs.writeFileSync(displayFile, '27\n')
     displayReady.resolve()
-    version.resolve(Response.json({}))
+    version.resolve(true)
     await f.cleanup()
   }
 })
@@ -868,6 +906,67 @@ test('a refused lease says why and how to switch the resource on', async () => {
     expect(await reason(decider(f.node, fresh)('reserve'))).toContain(
       '急停，已停用',
     )
+  } finally {
+    await f.cleanup()
+  }
+})
+test('macOS hands Chrome a socket pair from the launcher; without one the browser does not start', async () => {
+  const f = await fixture('darwin', { pair: true, devtools: true })
+  try {
+    expect((await f.enable()).ok).toBe(true)
+    const launch = f.calls.find(c =>
+      c.argv.includes('--remote-debugging-pipe'),
+    )!
+    expect(launch.devtools).toBe(true)
+    expect(f.bridges[0]).toMatchObject({
+      transport: 'pair',
+      attached: { input: 1100, output: 2100 },
+      closed: false,
+    })
+  } finally {
+    await f.cleanup()
+  }
+  const g = await fixture('darwin', { pair: true })
+  try {
+    const refused = await g.enable()
+    expect(refused.ok).toBe(false)
+    expect(g.bridges.every(b => b.closed)).toBe(true)
+    expect(g.node.resource('main')).toMatchObject({
+      browser: false,
+      cdpUrl: null,
+      cdpToken: null,
+    })
+    expect(g.stops).toContain(100)
+  } finally {
+    await g.cleanup()
+  }
+  const linux = await fixture('linux')
+  try {
+    expect((await linux.enable()).ok).toBe(true)
+    expect(linux.bridges[0]!.transport).toBe('fifo')
+    const launch = linux.calls.find(c =>
+      c.argv.includes('--remote-debugging-pipe'),
+    )!
+    expect(launch.devtools).toBe(false)
+  } finally {
+    await linux.cleanup()
+  }
+})
+test('a browser that stops answering on its pipe is disabled; stopping closes its bridge', async () => {
+  const f = await fixture()
+  try {
+    expect((await f.enable()).ok).toBe(true)
+    f.loseBrowser()
+    await f.node.sweep()
+    expect((await f.view()).value[0]?.browser).toMatchObject({
+      enabled: false,
+      reason: '浏览器失联，已停用',
+    })
+    expect(f.bridges[0]!.closed).toBe(true)
+    expect(f.node.resource('main')).toMatchObject({
+      cdpUrl: null,
+      cdpToken: null,
+    })
   } finally {
     await f.cleanup()
   }
