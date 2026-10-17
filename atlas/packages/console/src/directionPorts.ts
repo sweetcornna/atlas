@@ -1110,6 +1110,13 @@ export interface UpdatesPort {
 export const EXTENSION_KINDS = ['mcp', 'skill', 'plugin'] as const
 export type ExtensionKind = (typeof EXTENSION_KINDS)[number]
 
+/** 一个条目在节点上一个智能体那里的结果。 */
+export interface ExtensionAgentState {
+  readonly agent: string
+  readonly state: 'applied' | 'failed'
+  readonly detail: string | null
+}
+
 /** 一个条目在一个节点上的落地结果。 */
 export interface ExtensionNodeState {
   readonly node: string
@@ -1117,6 +1124,8 @@ export interface ExtensionNodeState {
   readonly state: 'applied' | 'failed' | 'pending'
   readonly detail: string | null
   readonly at: number | null
+  /** 逐个智能体；节点还没答、或节点版本不报时为空。 */
+  readonly agents: readonly ExtensionAgentState[]
 }
 
 /** GitHub 公开仓库里的一个目录，钉在一个提交上。 */
