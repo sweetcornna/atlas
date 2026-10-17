@@ -20,6 +20,7 @@ import * as path from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
 import type { ControlContext } from '../../src/host/control.js'
 import {
+  hasLauncher,
   NodeRuntimes,
   type NodeRuntimesOptions,
   type RuntimeAgentFlags,
@@ -152,6 +153,8 @@ function setup(
       }
     },
     mainModel: () => main,
+    // These cases are about install, Node.js and models, not launchers.
+    launchable: () => true,
     ...options,
   })
   made.push(runtimes)
@@ -494,4 +497,23 @@ test('unmanaged (embedders): no fallback and no default install; agents run wher
   expect(runtimes.effectiveRuntime('b')).toBe('codex')
   expect(runtimes.externalRuntimeOf('b')).toBe('codex')
   expect(runtimes.externalRuntimeOf('a')).toBe('dsh')
+})
+
+test('an ACP runtime this build has no launcher for stays on qianmopi, installed or not', () => {
+  const dsh = runtimeSpec('dsh')!
+  expect(hasLauncher(dsh)).toBe(dsh.acp !== undefined)
+  expect(hasLauncher({ ...dsh, acp: undefined })).toBe(false)
+  expect(hasLauncher(runtimeSpec('codex')!)).toBe(true)
+  managed('dsh')
+  const { runtimes } = setup({
+    agents: [{ agent: 'main' }],
+    launchable: spec => spec.id !== 'dsh',
+  })
+  expect(state(runtimes, 'main')).toMatchObject({
+    effective: { runtime: 'omp' },
+    reason: {
+      code: 'smoke-failed',
+      message: '这个版本的阡陌还不能驱动 DeepSeek Harness（ACP 启动方式未定）',
+    },
+  })
 })

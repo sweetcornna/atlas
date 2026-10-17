@@ -115,6 +115,8 @@ export type RunCommand = (
     readonly timeoutMs: number
     /** Default 4000 characters. */
     readonly maxOutput?: number
+    /** Kills the command when aborted. */
+    readonly signal?: AbortSignal
   },
 ) => Promise<RunResult>
 
@@ -127,6 +129,9 @@ export const runCommand: RunCommand = async (argv, options) => {
     stderr: 'pipe',
   })
   const timer = setTimeout(() => child.kill(), options.timeoutMs)
+  const abort = () => child.kill()
+  options.signal?.addEventListener('abort', abort, { once: true })
+  if (options.signal?.aborted) child.kill()
   try {
     const [stdout, code] = await Promise.all([
       new Response(child.stdout).text(),
@@ -140,6 +145,7 @@ export const runCommand: RunCommand = async (argv, options) => {
     }
   } finally {
     clearTimeout(timer)
+    options.signal?.removeEventListener('abort', abort)
   }
 }
 
@@ -329,6 +335,8 @@ export class RuntimeInstaller {
   #prefixLock: Promise<unknown> = Promise.resolve()
   /** `undefined`: not checked yet; `null`: no Node.js found. */
   #nodeVersion: string | null | undefined
+  /** Stops every command this installer runs (the node is shutting down). */
+  readonly #stopping = new AbortController()
 
   constructor(options: RuntimeUpdateOptions = {}) {
     this.#options = options
@@ -433,6 +441,7 @@ export class RuntimeInstaller {
         {
           env: env(),
           timeoutMs: 15_000,
+          signal: this.#stopping.signal,
         },
       )
       if (result.code === 0)
@@ -449,6 +458,7 @@ export class RuntimeInstaller {
       const result = await this.#run([bin, '--version'], {
         env: env(),
         timeoutMs: 15_000,
+        signal: this.#stopping.signal,
       })
       return result.code === 0
         ? (SEMVER_IN_OUTPUT.exec(result.stdout)?.[0] ?? null)
@@ -592,13 +602,15 @@ export class RuntimeInstaller {
       fallback: NonNullable<RuntimeInstallRecord['code']>,
       message: string,
     ): RuntimeInstallResult => {
-      this.#record(spec.id, {
-        at: this.#now(),
-        ok: false,
-        version: wanted,
-        error: message.slice(0, 300),
-        code: fallback,
-      })
+      // Cut short by the node stopping: not a verdict on the runtime.
+      if (!this.#stopping.signal.aborted)
+        this.#record(spec.id, {
+          at: this.#now(),
+          ok: false,
+          version: wanted,
+          error: message.slice(0, 300),
+          code: fallback,
+        })
       return {
         ok: false,
         code: RUNTIME_ERRORS.installFailed,
@@ -656,7 +668,7 @@ export class RuntimeInstaller {
             '--no-fund',
             `${spec.install.package}@${wanted}`,
           ],
-          { env: env(), timeoutMs },
+          { env: env(), timeoutMs, signal: this.#stopping.signal },
         ).catch(() => ({ code: -1, stdout: '' }))
       // Scratch prefix first; the managed one only gets a version that passed.
       // The budget stays inside the hub's 11 minutes for one update.
@@ -751,7 +763,7 @@ export class RuntimeInstaller {
           '--no-fund',
           spec.install.package,
         ],
-        { env: env(), timeoutMs: 3 * 60_000 },
+        { env: env(), timeoutMs: 3 * 60_000, signal: this.#stopping.signal },
       ).catch(() => ({ code: -1, stdout: '' })),
     )
     this.#changed(spec.id)
@@ -766,6 +778,14 @@ export class RuntimeInstaller {
 
   #now(): number {
     return (this.#options.now ?? Date.now)()
+  }
+
+  /**
+   * The node is stopping: running npm commands are killed so the process can
+   * exit, and nothing they leave unfinished is recorded as a failure.
+   */
+  stop(): void {
+    this.#stopping.abort()
   }
 
   /** `runtime.versions`, `runtime.install`, `runtime.update`, `runtime.remove`. */

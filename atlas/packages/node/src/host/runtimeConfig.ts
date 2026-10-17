@@ -31,6 +31,7 @@ import {
   normalizeRuntimeId,
   RUNTIME_CATALOG,
   type RuntimeLane,
+  type RuntimeSpec,
   runtimeSpec,
 } from './runtimes/catalog.js'
 import type { ExternalRuntimeKind } from './runtimes/channel.js'
@@ -78,6 +79,8 @@ export interface NodeRuntimesOptions {
   readonly retryDelaysMs?: readonly number[]
   /** Default `qianmoConfigPath('qianmo', 'runtimes.json')`. */
   readonly configPath?: string
+  /** Whether this build can start `spec` at all (default: {@link hasLauncher}). */
+  readonly launchable?: (spec: RuntimeSpec) => boolean
   readonly onError?: (error: unknown) => void
 }
 
@@ -100,6 +103,14 @@ interface RuntimesFile {
 
 /** `<profile>/<model>`; the model id may itself contain slashes. */
 const MODEL_SPEC = /^[^/\s]+\/\S+$/
+
+/**
+ * An ACP runtime needs its catalog launcher (`acp`, filled in by P36.2);
+ * without one this build cannot drive it, whatever is installed.
+ */
+export function hasLauncher(spec: RuntimeSpec): boolean {
+  return spec.protocol !== 'acp' || spec.acp !== undefined
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -187,7 +198,8 @@ export class NodeRuntimes {
       )
       return { v: 1, agents: {} }
     }
-    const agents: Record<string, AgentEntry> = {}
+    // No prototype: the file's keys are data, `__proto__` included.
+    const agents: Record<string, AgentEntry> = Object.create(null)
     if (isRecord(raw) && isRecord(raw['agents']))
       for (const [agent, value] of Object.entries(raw['agents'])) {
         if (!isRecord(value)) continue
@@ -284,6 +296,11 @@ export class NodeRuntimes {
     const spec = runtimeSpec(runtime)
     if (spec === undefined)
       return { code: 'not-installed', message: `目录里没有 ${runtime}` }
+    if (!(this.#options.launchable ?? hasLauncher)(spec))
+      return {
+        code: 'smoke-failed',
+        message: `这个版本的阡陌还不能驱动 ${spec.label}（ACP 启动方式未定）`,
+      }
     const installer = this.installer
     if (!installer.availability(runtime).installed) {
       if (installer.installing(runtime))
@@ -316,10 +333,10 @@ export class NodeRuntimes {
       configured !== null && configured !== 'auto' ? configured : undefined
     if (credential === undefined)
       return explicit === undefined ? {} : { model: explicit }
-    const spec = explicit ?? this.#options.mainModel?.()
-    if (spec === undefined)
-      return { error: '没有为它配置模型，节点也没有可用的主模型' }
     try {
+      const spec = explicit ?? this.#options.mainModel?.()
+      if (spec === undefined)
+        return { error: '没有为它配置模型，节点也没有可用的主模型' }
       return { model: spec, lane: credential(spec, runtime).lane }
     } catch (error) {
       return { error: `没有可用模型：${errorText(error)}` }
@@ -462,10 +479,12 @@ export class NodeRuntimes {
       .catch(error => this.#options.onError?.(error))
   }
 
+  /** The node is stopping: no more retries, and running installs end. */
   stop(): void {
     this.#stopped = true
     for (const timer of this.#timers) clearTimeout(timer)
     this.#timers.clear()
+    this.installer.stop()
   }
 
   /** `runtime.configure` (§3.1): validates, writes, recomputes. */

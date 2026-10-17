@@ -487,3 +487,30 @@ test('a runtime given by flag is the operator’s: never installed or removed he
   ).toMatchObject({ ok: false, code: 'invalid' })
   expect(npm.calls).toEqual([])
 })
+
+test('stopping the node ends a running install without recording a verdict', async () => {
+  let started!: () => void
+  const running = new Promise<void>(done => {
+    started = done
+  })
+  const installer = new RuntimeInstaller({
+    freeBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+    run: async (argv, options) => {
+      if (argv[0] === 'node') return { code: 0, stdout: 'v24.1.0' }
+      started()
+      // npm runs until the node stops and kills it.
+      await new Promise(done =>
+        options.signal?.addEventListener('abort', done, { once: true }),
+      )
+      return { code: 143, stdout: '' }
+    },
+  })
+  const install = installer.install('dsh')
+  await running
+  installer.stop()
+  expect(await install).toMatchObject({ ok: false })
+  expect(installer.lastInstall('dsh')).toBeUndefined()
+  expect(installer.installing('dsh')).toBe(false)
+})
