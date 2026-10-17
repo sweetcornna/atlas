@@ -800,6 +800,14 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'magpie.key.update': '修改网关密钥',
   'magpie.key.rotate': '轮换网关密钥',
   'magpie.key.remove': '收回网关密钥',
+  'billing.checkout': '下单',
+  'billing.redeem': '兑换订阅',
+  'billing.grant': '手动开通订阅',
+  'billing.refund': '登记退款',
+  'billing.codes': '生成兑换码',
+  'billing.tenant': '为订阅者建租户',
+  'billing.model.add': '接入自己的上游',
+  'billing.model.remove': '删除自己的上游',
   'avatar.save': '设置形象',
 }
 
@@ -843,6 +851,7 @@ const FAMILY_WORD: Readonly<Partial<Record<string, string>>> = {
   updates: '更新',
   extension: '扩展',
   magpie: '网关',
+  billing: '订阅',
   avatar: '形象',
 }
 

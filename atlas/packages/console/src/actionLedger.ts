@@ -102,7 +102,13 @@ const MAX_TARGET_LENGTH = 512
 const MAX_ACTION_LENGTH = 64
 /** A dotted verb: `chat.transcript.open`, `authz.decision.allow-once`. */
 const ACTION_NAME = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/
-const SUBJECT = /^(?:u:[0-9a-f]{16}|legacy:admin|legacy:view|anonymous)$/
+/**
+ * `system:billing` is the public edition's own hand (P35): after a payment the
+ * hub creates the subscriber's tenant and writes the model service on its
+ * behalf, and those lines must name a subject that no request can claim.
+ */
+const SUBJECT =
+  /^(?:u:[0-9a-f]{16}|legacy:admin|legacy:view|anonymous|system:billing)$/
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/
 const CODE = /^[a-z0-9][a-z0-9_.-]{0,39}$/
 const OUTCOMES: ReadonlySet<string> = new Set(['ok', 'refused', 'failed'])

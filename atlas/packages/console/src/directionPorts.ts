@@ -1483,3 +1483,242 @@ export interface MagpiePort {
     caller: MagpieCaller,
   ): Promise<ConsoleResult<{ readonly profileKept: boolean }>>
 }
+
+// ---------------------------------------------------------------------------
+// BillingPort —— 公开版订阅（P35）
+// ---------------------------------------------------------------------------
+
+/**
+ * 公开版：运营方托管，按节点买订阅才能用。套餐 = 价格 + 天数 + 含几台托管节点；
+ * **不卖模型额度**——订阅者在订阅页把自己的上游密钥接进平台网关（magpie），由
+ * magpie 按租户隔离统一调度。宿主实现在 `packages/node/src/commands/consoleBilling.ts`，
+ * 用 `@qianmo/billing` 记账、收款，用租户配置与网关端口开通；控制台包只认这个形状。
+ *
+ * 读方法按「谁」裁剪：成员只拿到自己的（`subject` 由路由从会话取，从不来自请求体）；
+ * 平台方法由路由先判平台运维再调。写方法收 {@link DirectionActor}。
+ *
+ * 返回值从不含商户密钥、上游密钥或网关密钥；兑换码明文只在 `codes` 那一次返回里出现。
+ * 两种支付通道只对本地假服务测过（未评估）。
+ */
+
+export const BILLING_CHANNELS = ['wechatpay', 'alipay'] as const
+export type BillingChannel = (typeof BILLING_CHANNELS)[number]
+
+export interface BillingPlanView {
+  readonly id: string
+  readonly name: string
+  /** 整数分。 */
+  readonly priceCents: number
+  readonly periodDays: number
+  /** 套餐含几台托管节点。 */
+  readonly nodes: number
+  readonly note: string | null
+}
+
+/** 配置里的公开事实：套餐、开着的收款方式、源代码与条款链接。 */
+export interface BillingSiteView {
+  /** AGPL 第 13 条：每个公开页面页脚都给出这个链接。 */
+  readonly sourceUrl: string
+  readonly termsUrl: string | null
+  readonly plans: readonly BillingPlanView[]
+  readonly channels: {
+    readonly wechatpay: boolean
+    readonly alipay: boolean
+    readonly redeem: boolean
+  }
+}
+
+/** 一个人此刻的订阅，闸门与前台据它判断；读本地账本，不连支付平台与网关。 */
+export interface BillingStanding {
+  readonly active: boolean
+  readonly planId: string | null
+  readonly endsAt: number | null
+  /** 有效套餐含的节点数；没有有效订阅为 0。 */
+  readonly nodes: number
+  /** 开通后自动建的租户；还没开通为 null。 */
+  readonly tenant: string | null
+  /** 租户配置里分给这个租户的节点数（运维分配，可能超过 {@link nodes}）。 */
+  readonly nodesMapped: number
+}
+
+export type BillingOrderStatus =
+  | 'created'
+  | 'paid'
+  | 'closed'
+  | 'expired'
+  | 'refunded'
+
+export interface BillingOrderView {
+  readonly orderId: string
+  readonly planId: string
+  readonly channel: string
+  readonly amountCents: number
+  readonly status: BillingOrderStatus
+  readonly createdAt: number
+  readonly expiresAt: number
+  readonly paidAt: number | null
+}
+
+/** 一张待支付订单与它的二维码内容（页面用零依赖编码器画成 SVG）。 */
+export interface BillingCheckoutView {
+  readonly orderId: string
+  readonly planId: string
+  readonly channel: BillingChannel
+  readonly amountCents: number
+  readonly expiresAt: number
+  readonly qrText: string
+}
+
+/** 订阅者自己接进网关的一个上游。密钥只写不读。 */
+export interface BillingUpstreamView {
+  /** magpie 里的上游 id。 */
+  readonly id: string
+  readonly name: string
+  readonly preset: string
+  readonly models: number
+  readonly ready: boolean
+  /** 还在 magpie 里且仍属于这个租户；不在了就不进白名单。 */
+  readonly present: boolean
+}
+
+/** 可选的上游预设：只有填一把 API 密钥就能用的那些（L-6）。 */
+export interface BillingPresetView {
+  readonly id: string
+  readonly name: string
+}
+
+/** 订阅者网关密钥近 30 天的用量；费用是 magpie 的估算，不是账单。 */
+export interface BillingUsageView {
+  readonly period: '30d'
+  readonly calls: number
+  readonly input: number
+  readonly output: number
+  readonly cacheRead: number
+  readonly cost: number
+}
+
+export interface BillingMeView {
+  readonly standing: BillingStanding
+  readonly orders: readonly BillingOrderView[]
+  readonly upstreams: readonly BillingUpstreamView[]
+  /** 租户网关密钥：还没有（`none`）、停用（`off`）、可用（`on`）。 */
+  readonly gateway: 'none' | 'off' | 'on'
+  /** 档案的主模型；还没有自己的上游时为 null。 */
+  readonly mainModel: string | null
+  /** 读网关失败时为 null，其余照常给出。 */
+  readonly usage: BillingUsageView | null
+}
+
+export interface BillingAdminOrderView extends BillingOrderView {
+  readonly subject: string
+  readonly outTradeNo: string
+  readonly providerTxnId: string | null
+}
+
+export interface BillingAdminSubscriptionView {
+  readonly subject: string
+  readonly planId: string
+  readonly startsAt: number
+  readonly endsAt: number
+  readonly active: boolean
+  /** 开通状态：待开通、已开通、已停用。 */
+  readonly gateway: 'pending' | 'enabled' | 'disabled'
+  readonly attempts: number
+  readonly tenant: string | null
+}
+
+export interface BillingAdminCodeView {
+  readonly id: string
+  readonly planId: string
+  readonly periods: number
+  readonly createdBy: string
+  readonly createdAt: number
+  readonly expiresAt: number | null
+  readonly usedBy: string | null
+  readonly usedAt: number | null
+}
+
+export type BillingChainView =
+  | { readonly ok: true; readonly events: number }
+  | { readonly ok: false; readonly seq: number; readonly reason: string }
+
+export interface BillingAdminView {
+  readonly plans: readonly BillingPlanView[]
+  readonly channels: BillingSiteView['channels']
+  readonly orders: readonly BillingAdminOrderView[]
+  readonly subscriptions: readonly BillingAdminSubscriptionView[]
+  readonly codes: readonly BillingAdminCodeView[]
+  readonly chain: BillingChainView
+}
+
+/** 支付平台的回调原样交进来：原文一个字节不动，签名覆盖的就是它。 */
+export interface BillingNotifyRequest {
+  readonly headers: Headers
+  readonly rawBody: string
+  readonly contentType?: string
+}
+
+/** 回给支付平台的原样应答（状态、正文、头都由通道定）。 */
+export interface BillingNotifyReply {
+  readonly httpStatus: number
+  readonly body: string
+  readonly headers: Readonly<Record<string, string>>
+}
+
+export interface BillingPort {
+  site(): BillingSiteView
+  standing(subject: string): Promise<BillingStanding>
+  me(subject: string): Promise<ConsoleResult<BillingMeView>>
+  /** 同一人同一套餐同一通道只留一张未过期的待支付订单，再来就复用。 */
+  checkout(
+    subject: string,
+    planId: string,
+    channel: BillingChannel,
+  ): Promise<ConsoleResult<BillingCheckoutView>>
+  /** 只答这个人自己的订单；别人的与不存在的一样是 `not_found`。待支付时顺带查一次单。 */
+  order(
+    subject: string,
+    orderId: string,
+  ): Promise<
+    ConsoleResult<BillingOrderView & { readonly qrText: string | null }>
+  >
+  redeem(subject: string, code: string): Promise<ConsoleResult<BillingStanding>>
+  notify(
+    channel: string,
+    request: BillingNotifyRequest,
+  ): Promise<BillingNotifyReply>
+  presets(): Promise<ConsoleResult<readonly BillingPresetView[]>>
+  /** 有效订阅者接一个自己的上游；密钥只交给 magpie，中枢不留存。 */
+  addUpstream(
+    subject: string,
+    draft: { readonly preset: string; readonly key: string },
+  ): Promise<ConsoleResult<BillingUpstreamView>>
+  removeUpstream(subject: string, id: string): Promise<ConsoleResult<void>>
+  // --- 平台运维 ---------------------------------------------------------
+  admin(): Promise<ConsoleResult<BillingAdminView>>
+  grant(
+    actor: DirectionActor,
+    input: {
+      readonly subject: string
+      readonly planId: string
+      readonly periods: number
+      readonly reason: string
+    },
+  ): Promise<ConsoleResult<BillingStanding>>
+  /** 只登记商户平台上已经做完的退款，并相应缩短订阅。 */
+  refund(
+    actor: DirectionActor,
+    input: { readonly orderId: string; readonly reason: string },
+  ): Promise<ConsoleResult<BillingStanding>>
+  /** 兑换码明文只在这一次返回；落盘只存哈希。 */
+  codes(
+    actor: DirectionActor,
+    input: {
+      readonly planId: string
+      readonly periods: number
+      readonly count: number
+      readonly expiresAt?: number
+    },
+  ): Promise<ConsoleResult<{ readonly codes: readonly string[] }>>
+  verify(): Promise<ConsoleResult<BillingChainView>>
+}
