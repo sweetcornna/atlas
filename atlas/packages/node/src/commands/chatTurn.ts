@@ -9,8 +9,8 @@
  * behalf — chat channels (P28) and background tasks (P29) — need the reply
  * itself, so this sends through the caller's {@link ChatDispatch} (ownership,
  * quota and audit unchanged), then watches the transcript until that task's
- * terminal turn, forwarding the agent's own notices on the way. Same reply
- * rule as schedules (`consoleSchedules.ts`).
+ * terminal turn, forwarding the agent's own notices on the way. Schedules
+ * (`consoleSchedules.ts`) read their replies with the same two functions.
  */
 
 import type {
@@ -19,6 +19,47 @@ import type {
   ChatSendInput,
   ChatTurn,
 } from '@qianmo/console'
+
+/**
+ * The agent's own notices (`qianmo_notify`) for the turn sent under `taskId`
+ * at `startedAt`. Tool steps and host notes are not among them.
+ */
+export function agentNotices(
+  turns: readonly ChatTurn[],
+  taskId: string | null,
+  startedAt: number,
+): ChatTurn[] {
+  return turns.filter(
+    turn =>
+      turn.author === 'agent' &&
+      turn.variant === 'notice' &&
+      turn.noticeSource === 'agent' &&
+      (turn.causeTaskId === undefined || turn.causeTaskId === taskId) &&
+      turn.at >= startedAt,
+  )
+}
+
+/**
+ * The terminal answer to the line sent under `taskId`, if it has one.
+ *
+ * The chat face also writes a local timeout pseudo-reply when no result came
+ * back in time; only its `remoteTerminal` marker proves a timeout ended on
+ * the node, so a timeout without it is not an answer.
+ */
+export function terminalReply(
+  turns: readonly ChatTurn[],
+  taskId: string | null,
+): ChatTurn | undefined {
+  return turns.find(
+    turn =>
+      turn.author === 'agent' &&
+      turn.variant !== 'notice' &&
+      turn.taskId === taskId &&
+      (turn.state === 'done' || turn.state === 'failed') &&
+      !turn.deliveryUnknown &&
+      (turn.code !== 'E_TASK_TIMEOUT' || turn.remoteTerminal === true),
+  )
+}
 
 export interface ChatTurnOutcome {
   readonly ok: boolean
@@ -80,28 +121,12 @@ export function sendAndWait(options: ChatTurnOptions): ChatTurnHandle {
       const fresh = current.value.turns.filter(
         turn => !options.baseline.has(turn.id),
       )
-      for (const turn of fresh) {
-        if (
-          turn.author === 'agent' &&
-          turn.variant === 'notice' &&
-          turn.noticeSource === 'agent' &&
-          (turn.causeTaskId === undefined || turn.causeTaskId === taskId) &&
-          turn.at >= startedAt &&
-          !told.has(turn.id)
-        ) {
-          told.add(turn.id)
-          options.onNotice?.(turn.text)
-        }
+      for (const turn of agentNotices(fresh, taskId, startedAt)) {
+        if (told.has(turn.id)) continue
+        told.add(turn.id)
+        options.onNotice?.(turn.text)
       }
-      const reply: ChatTurn | undefined = fresh.find(
-        turn =>
-          turn.author === 'agent' &&
-          turn.variant !== 'notice' &&
-          turn.taskId === taskId &&
-          (turn.state === 'done' || turn.state === 'failed') &&
-          !turn.deliveryUnknown &&
-          (turn.code !== 'E_TASK_TIMEOUT' || turn.remoteTerminal === true),
-      )
+      const reply: ChatTurn | undefined = terminalReply(fresh, taskId)
       if (reply === undefined) return
       finish(
         reply.state === 'done'

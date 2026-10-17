@@ -35,6 +35,7 @@ import {
   readTextIfExists,
   writePrivateJson,
 } from '../providers/store.js'
+import { agentNotices, terminalReply } from './chatTurn.js'
 import { FileLedger } from './consoleAccountsStore.js'
 import {
   notifyChannelUrl,
@@ -1399,28 +1400,12 @@ export class ConsoleSchedules implements SchedulesPort {
     const turns = transcript.value.turns.filter(
       turn => !active.baseline.has(turn.id),
     )
-    active.notices = turns
-      .filter(
-        turn =>
-          turn.author === 'agent' &&
-          turn.variant === 'notice' &&
-          turn.noticeSource === 'agent' &&
-          (turn.causeTaskId === undefined ||
-            turn.causeTaskId === active.view.taskId) &&
-          turn.at >= active.view.startedAt,
-      )
-      .map(turn => turn.text)
-    const reply = turns.find(
-      turn =>
-        turn.author === 'agent' &&
-        turn.variant !== 'notice' &&
-        turn.taskId === active.view.taskId &&
-        (turn.state === 'done' || turn.state === 'failed') &&
-        // ConsoleChat also persists local timeout pseudo-replies. Only its
-        // remoteTerminal marker proves those failures ended on the node.
-        !turn.deliveryUnknown &&
-        (turn.code !== 'E_TASK_TIMEOUT' || turn.remoteTerminal === true),
-    )
+    active.notices = agentNotices(
+      turns,
+      active.view.taskId,
+      active.view.startedAt,
+    ).map(turn => turn.text)
+    const reply = terminalReply(turns, active.view.taskId)
     if (reply) {
       this.#finish(
         active,
