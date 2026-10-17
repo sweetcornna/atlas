@@ -282,4 +282,31 @@ describe('planned tasks (主动任务)', () => {
     // A planned task can be cancelled like any unfinished one.
     expect(region.match(/data-action="task-cancel"/g)).toHaveLength(3)
   })
+
+  test('a start already due reads as the hub says, without a time gone by', async () => {
+    const tasks = new FakeTasks()
+    const actions = new MemoryActionLedger()
+    const h = accountsHarness({ deps: { tasks, actions } })
+    const member = await person(h.handle, 'member')
+    await h.handle(asSession('GET', '/v0/tasks', member.sid))
+    const owner = tasks.readers.at(-1)!.subject
+    tasks.rows = [
+      task({
+        id: 'task-due',
+        owner,
+        title: '巡检',
+        status: 'scheduled',
+        phase: '已安排 · 等名额',
+        nextAt: h.clock.now() - 60_000,
+        everyMinutes: 60,
+        runsLeft: 2,
+      }),
+    ]
+    const page = await (
+      await h.handle(asSession('GET', '/admin/jobs', member.sid))
+    ).text()
+    const region = page.slice(page.indexOf('id="tasks"'))
+    expect(region).toContain('已安排 · 等名额 · 剩 2 次')
+    expect(region).not.toContain('下次')
+  })
 })

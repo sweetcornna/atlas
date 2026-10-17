@@ -71,11 +71,14 @@ function textCell(text: string, tone?: 'bad'): string {
 /** Within a day the next start reads as a clock time; further off, with its date. */
 const DAY_MS = 24 * 60 * 60_000
 
-/** 已安排 · 下次 HH:MM, and · 剩 N 次 for a repeating task. */
+/**
+ * 已安排 · 下次 HH:MM, and · 剩 N 次 for a repeating task. A start already
+ * due reads as the hub says (e.g. 已安排 · 等名额), without a time gone by.
+ */
 function phaseCell(task: BackgroundTaskView, now: number): string {
   const left = task.runsLeft === null ? '' : ` · 剩 ${task.runsLeft} 次`
   const text =
-    task.status === 'scheduled' && task.nextAt !== null
+    task.status === 'scheduled' && task.nextAt !== null && task.nextAt > now
       ? withTimes(
           `${task.phase} · 下次 `,
           {

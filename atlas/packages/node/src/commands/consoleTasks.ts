@@ -259,6 +259,8 @@ export interface TaskView {
   /** A repeating task: how often, and the runs not started yet. */
   readonly everyMinutes?: number
   readonly runsLeft?: number
+  /** Due, but its conversation has eight in flight: it starts when one ends. */
+  readonly waitingForPlace?: true
 }
 
 /** A task finished or needs input; `text` is what the parent hears. */
@@ -905,11 +907,15 @@ export class ConsoleTasks implements BackgroundTasksPort {
     }
   }
 
-  /** The phase as a person reads it: a planned task with its next start. */
+  /**
+   * The phase as a person reads it: a planned task with its next start, or
+   * waiting for a place once due.
+   */
   #phase(task: TaskRecord): string {
     const plan = task.plan
     let phase = PHASE[task.status]
-    if (task.status === 'scheduled' && plan !== null)
+    if (this.#waitingForPlace(task)) phase += ' · 等名额'
+    else if (task.status === 'scheduled' && plan !== null)
       phase += ` · 下次 ${wallClock(plan.nextAt)}`
     if (plan?.everyMinutes != null && !TERMINAL.has(task.status))
       phase += ` · 剩 ${plan.times - plan.runs} 次`
@@ -921,6 +927,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
     nextAt?: string
     everyMinutes?: number
     runsLeft?: number
+    waitingForPlace?: true
   } {
     const plan = task.plan
     if (plan === null) return {}
@@ -928,6 +935,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       ...(task.status === 'scheduled'
         ? { nextAt: new Date(plan.nextAt).toISOString() }
         : {}),
+      ...(this.#waitingForPlace(task) ? { waitingForPlace: true } : {}),
       ...(plan.everyMinutes === null
         ? {}
         : {
@@ -935,6 +943,19 @@ export class ConsoleTasks implements BackgroundTasksPort {
             runsLeft: plan.times - plan.runs,
           }),
     }
+  }
+
+  /**
+   * A planned start that is due while its conversation has eight tasks in
+   * flight: it stays scheduled until one of them ends (see {@link tick}).
+   */
+  #waitingForPlace(task: TaskRecord): boolean {
+    return (
+      task.status === 'scheduled' &&
+      task.plan !== null &&
+      task.plan.nextAt <= this.#now() &&
+      this.#activeIn(task.parentSession) >= MAX_ACTIVE_PER_PARENT
+    )
   }
 
   /** A delayed task not started yet, or a repeat with runs still to start. */
@@ -966,7 +987,9 @@ export class ConsoleTasks implements BackgroundTasksPort {
       owner: task.owner,
       target: task.target,
       status: task.status,
-      phase: PHASE[task.status],
+      phase: this.#waitingForPlace(task)
+        ? `${PHASE.scheduled} · 等名额`
+        : PHASE[task.status],
       progress: clip(task.progress, 2_000),
       lastError: clip(task.lastError, 1_000),
       turns: task.turns,
@@ -1064,6 +1087,9 @@ export class ConsoleTasks implements BackgroundTasksPort {
         progress: clip(task.progress, 300),
         ...(task.nextAt === undefined ? {} : { nextAt: task.nextAt }),
         ...(task.runsLeft === undefined ? {} : { runsLeft: task.runsLeft }),
+        ...(task.waitingForPlace === undefined
+          ? {}
+          : { waitingForPlace: true }),
       })),
     )}`
   }
@@ -2058,7 +2084,8 @@ export class ConsoleTasks implements BackgroundTasksPort {
    * Starts the planned runs that are due: at start-up (a time missed while
    * the hub was down runs once, not once per missed time) and every
    * {@link TICK_MS}. A run whose last result is still being delivered waits
-   * for the next look.
+   * for the next look; so does one whose conversation has eight tasks in
+   * flight, which is the same limit a start meets.
    */
   tick(): void {
     if (this.#closed || !this.#lock?.owned()) return
@@ -2068,7 +2095,8 @@ export class ConsoleTasks implements BackgroundTasksPort {
         task.status === 'scheduled' &&
         task.plan !== null &&
         task.plan.nextAt <= now &&
-        !this.#delivering.has(task.id)
+        !this.#delivering.has(task.id) &&
+        this.#activeIn(task.parentSession) < MAX_ACTIVE_PER_PARENT
       )
         this.#run(task, task.plan)
   }

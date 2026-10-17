@@ -1792,6 +1792,56 @@ describe('planned tasks (主动任务)', () => {
     ).toHaveLength(20)
   })
 
+  test('a due plan waits for a place when its conversation already has eight in flight, and says so', async () => {
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '回看',
+        instructions: 'x',
+        after: 1,
+        everyMinutes: 60,
+        times: 2,
+      }),
+    )
+    const running: string[] = []
+    for (let n = 0; n < 8; n++)
+      running.push(
+        value<{ id: string }>(
+          await call(book, 'start', parent, {
+            title: `n${n}`,
+            instructions: 'x',
+          }),
+        ).id,
+      )
+    now += 2 * MINUTE
+    book.tick()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const waiting = () => book.forSession(parent).find(task => task.id === id)!
+    expect(waiting()).toMatchObject({
+      status: 'scheduled',
+      phase: '已安排 · 等名额 · 剩 2 次',
+      waitingForPlace: true,
+    })
+    expect(book.contextFor(parent)).toContain('"waitingForPlace":true')
+    expect(
+      book
+        .list({ subject: 'legacy:admin', role: null })
+        .find(task => task.id === id),
+    ).toMatchObject({ status: 'scheduled', phase: '已安排 · 等名额' })
+    expect(
+      book
+        .forSession(parent)
+        .filter(task => task.status === 'queued' || task.status === 'running'),
+    ).toHaveLength(8)
+    // A place frees up: the next look starts it.
+    value(await call(book, 'cancel', parent, { id: running[7]! }))
+    book.tick()
+    expect(waiting().status).toBe('queued')
+    expect(waiting().waitingForPlace).toBeUndefined()
+  })
+
   test('a worker and a schedule’s session cannot plan; /stop leaves planned tasks; an instruction waits for the run', async () => {
     let now = Date.UTC(2026, 9, 17, 1, 0)
     const scheduledSession = await foreground()
