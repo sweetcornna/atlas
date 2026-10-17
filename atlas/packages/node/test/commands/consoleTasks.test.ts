@@ -1983,6 +1983,33 @@ describe('planned tasks (主动任务)', () => {
     expect(book.forSession(parent)[0]).toMatchObject({ status: 'cancelled' })
   })
 
+  test('a finished repeat has no runs left, in the view, the note and the console list alike', async () => {
+    const now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        after: 30,
+        everyMinutes: 60,
+        times: 4,
+      }),
+    )
+    value(await call(book, 'cancel', parent, { id }))
+    expect(book.forSession(parent)[0]).toMatchObject({
+      status: 'cancelled',
+      phase: '已取消',
+      everyMinutes: 60,
+      runsLeft: null,
+    })
+    expect(book.forSession(parent)[0]!.nextAt).toBeUndefined()
+    expect(book.contextFor(parent)).toContain('"runsLeft":null')
+    expect(book.list({ subject: 'legacy:admin', role: null })[0]).toMatchObject(
+      { status: 'cancelled', nextAt: null, everyMinutes: 60, runsLeft: null },
+    )
+  })
+
   test('/stop while a repeat’s line is on its way stops the node turn once it has a task id, and the plan stays', async () => {
     class SlowChat extends FakeChat {
       release: () => void = () => {}

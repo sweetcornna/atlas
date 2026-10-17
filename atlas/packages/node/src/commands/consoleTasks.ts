@@ -256,9 +256,12 @@ export interface TaskView {
   readonly updatedAt: number
   /** A planned task's next start (ISO, UTC); only while it is `scheduled`. */
   readonly nextAt?: string
-  /** A repeating task: how often, and the runs not started yet. */
+  /**
+   * A repeating task: how often, and the runs not started yet (null once it
+   * has ended, as in the console's list).
+   */
   readonly everyMinutes?: number
-  readonly runsLeft?: number
+  readonly runsLeft?: number | null
   /** Due, but its conversation has eight in flight: it starts when one ends. */
   readonly waitingForPlace?: true
 }
@@ -966,7 +969,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
   #planFields(task: TaskRecord): {
     nextAt?: string
     everyMinutes?: number
-    runsLeft?: number
+    runsLeft?: number | null
     waitingForPlace?: true
   } {
     const plan = task.plan
@@ -980,7 +983,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
         ? {}
         : {
             everyMinutes: plan.everyMinutes,
-            runsLeft: plan.times - plan.runs,
+            runsLeft: TERMINAL.has(task.status) ? null : plan.times - plan.runs,
           }),
     }
   }
