@@ -162,7 +162,8 @@ export const RUNTIME_CATALOG: readonly RuntimeSpec[] = [
     lanes: ['openai-chat', 'anthropic'],
     family: FAMILIES.deepseek,
     acp: DSH,
-    verified: false,
+    // `realDsh.smoke.test.ts` on 0.2.1-rc.2 (macOS arm64, 2026-10-17).
+    verified: true,
   },
   {
     id: 'omp',
