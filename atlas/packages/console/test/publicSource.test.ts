@@ -130,6 +130,14 @@ function readable(html: string): string {
     .replace(/<[^>]*>/g, ' ')
 }
 
+describe('the public sign-up page describes the public flow', () => {
+  test('a subscription opens the tenant; no environment owner assigns it', async () => {
+    const html = readable(await (await pinned().handle(page('/signup'))).text())
+    expect(html).toContain('订阅套餐后开通租户')
+    expect(html).not.toContain('环境负责人')
+  })
+})
+
 describe('the public doors keep the copy rules', () => {
   test('login, sign-up, invitation and the credential page: no 。，、 or exclamation', async () => {
     const f = pinned()
