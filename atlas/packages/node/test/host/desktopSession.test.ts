@@ -8,7 +8,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { deflateSync } from 'node:zlib'
 import type { DesktopNodeView, DesktopScreenView } from '@qianmo/console'
-import { isDesktopTool } from '@qianmo/extension/desktopPolicy'
+import { desktopArgs, isDesktopTool } from '@qianmo/extension/desktopPolicy'
 import { NodeDesktop, type DesktopLauncher } from '../../src/host/desktop.js'
 import {
   DESKTOP_BWRAP_PROBE,
@@ -260,12 +260,15 @@ function decider(
   approve: () => void = () => {},
 ) {
   const resource = node.resource('main')!
+  // The digest is over the canonical arguments, the way the executor sends it.
   const input = {
     invocationId,
     resourceId: resource.resourceId,
     resourceEpoch: resource.resourceEpoch,
     args,
-    canonicalArgsDigest: hash(args),
+    canonicalArgsDigest: hash(
+      isDesktopTool(tool) ? desktopArgs(tool, args) : args,
+    ),
   }
   return (phase: string, extra: Record<string, unknown> = {}) =>
     node.decide(
