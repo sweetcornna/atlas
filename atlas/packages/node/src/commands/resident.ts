@@ -94,6 +94,14 @@ import {
 } from '../host/runtimes/channel.js'
 import type { ExternalAgent } from '../host/runtimes/pool.js'
 import {
+  DEFAULT_RUNTIME,
+  FALLBACK_RUNTIME,
+  normalizeRuntimeId,
+  runtimeSpec,
+} from '../host/runtimes/catalog.js'
+import { NodeRuntimes } from '../host/runtimeConfig.js'
+import { RuntimeInstaller } from '../host/runtimeUpdate.js'
+import {
   createResidentModelProbeGate,
   residentModelProbeFingerprint,
   probeResidentModel,
@@ -296,6 +304,13 @@ export interface ResidentCliConfig {
   }[]
   /** `--agent-model`: `<agent>` → `<profile>/<model>` for external runtimes. */
   readonly agentModels?: readonly (readonly [string, string])[]
+  /** `--agent-runtime` as given, `omp` included (P36 §3.1). */
+  readonly agentRuntimes?: readonly (readonly [string, string])[]
+  /** `--default-runtime`; absent means `dsh`. */
+  readonly defaultRuntime?: string
+  /** `--no-runtime-autoinstall`. */
+  readonly runtimeAutoInstall?: false
+  /** `--runtime-bin` (and `--claude-code-bin`, `--codex-bin`). */
   readonly runtimeBins?: Partial<Record<ExternalRuntimeKind, string>>
   /**
    * Explicitly grant the resident extension workspace-local write/edit tools.
@@ -443,7 +458,9 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
     runtime?: ExternalRuntimeKind
     shell?: boolean
   }> = []
-  const agentRuntimes = new Map<string, ExternalRuntimeKind | 'omp'>()
+  const agentRuntimes = new Map<string, string>()
+  let defaultRuntime: string | undefined
+  let runtimeAutoInstall = true
   const agentModels = new Map<string, string>()
   const agentShell = new Set<string>()
   const runtimeBins: Partial<Record<ExternalRuntimeKind, string>> = {}
@@ -503,13 +520,30 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
       arg?.startsWith('--agent-runtime=')
     ) {
       const parsed = residentOptionValue(args, index, '--agent-runtime')
-      const [agent, runtime] = agentPair('--agent-runtime', parsed.value)
-      if (runtime !== 'omp' && !isExternalRuntimeKind(runtime))
+      const [agent, value] = agentPair('--agent-runtime', parsed.value)
+      const runtime = normalizeRuntimeId(value)
+      if (
+        runtime === undefined ||
+        (runtime !== FALLBACK_RUNTIME && !isExternalRuntimeKind(runtime))
+      )
         throw new Error(
-          `--agent-runtime must be omp, ${EXTERNAL_RUNTIME_KINDS.join(' or ')}`,
+          `--agent-runtime must be omp (qianmopi), ${EXTERNAL_RUNTIME_KINDS.join(', ')}`,
         )
       agentRuntimes.set(agent, runtime)
       index = parsed.next
+    } else if (
+      arg === '--default-runtime' ||
+      arg?.startsWith('--default-runtime=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--default-runtime')
+      defaultRuntime = normalizeRuntimeId(parsed.value)
+      if (defaultRuntime === undefined)
+        throw new Error(
+          `--default-runtime must be omp (qianmopi), ${EXTERNAL_RUNTIME_KINDS.join(', ')}`,
+        )
+      index = parsed.next
+    } else if (arg === '--no-runtime-autoinstall') {
+      runtimeAutoInstall = false
     } else if (arg === '--agent-model' || arg?.startsWith('--agent-model=')) {
       const parsed = residentOptionValue(args, index, '--agent-model')
       const [agent, model] = agentPair('--agent-model', parsed.value)
@@ -523,16 +557,28 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
       arg === '--claude-code-bin' ||
       arg?.startsWith('--claude-code-bin=') ||
       arg === '--codex-bin' ||
-      arg?.startsWith('--codex-bin=')
+      arg?.startsWith('--codex-bin=') ||
+      arg === '--runtime-bin' ||
+      arg?.startsWith('--runtime-bin=')
     ) {
+      // `--claude-code-bin` / `--codex-bin` are `--runtime-bin` for one id.
       const flag = arg.startsWith('--codex-bin')
         ? '--codex-bin'
-        : '--claude-code-bin'
+        : arg.startsWith('--claude-code-bin')
+          ? '--claude-code-bin'
+          : '--runtime-bin'
       const parsed = residentOptionValue(args, index, flag)
-      if (!isAbsolute(parsed.value) && parsed.value.includes('/'))
+      const [kind, bin] =
+        flag === '--runtime-bin'
+          ? agentPair('--runtime-bin', parsed.value)
+          : [flag === '--codex-bin' ? 'codex' : 'claude-code', parsed.value]
+      if (runtimeSpec(kind)?.install.kind !== 'npm')
+        throw new Error(
+          `--runtime-bin names an installable runtime: ${EXTERNAL_RUNTIME_KINDS.join(', ')}`,
+        )
+      if (!isAbsolute(bin) && bin.includes('/'))
         throw new Error(`${flag} must be a command name or an absolute path`)
-      runtimeBins[flag === '--codex-bin' ? 'codex' : 'claude-code'] =
-        parsed.value
+      runtimeBins[kind] = bin
       index = parsed.next
     } else if (arg === '--port' || arg?.startsWith('--port=')) {
       const parsed = residentOptionValue(args, index, '--port')
@@ -887,20 +933,22 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
   ])
     if (!agents.some(agent => agent.agent === name))
       throw new Error(`no --agent named ${name}`)
+  // An external agent without --agent-model takes the node's main model,
+  // or runs on qianmopi until it has one (P36 §3.2–§3.3).
   for (const agent of agents) {
-    const runtime = agentRuntimes.get(agent.agent)
-    if (runtime !== undefined && runtime !== 'omp') {
-      agent.runtime = runtime
-      if (!agentModels.has(agent.agent))
-        throw new Error(
-          `${agent.agent} runs on ${runtime} and needs --agent-model ${agent.agent}=<profile>/<model>`,
-        )
+    const flagged = agentRuntimes.get(agent.agent)
+    const runtime = flagged ?? defaultRuntime ?? DEFAULT_RUNTIME
+    if (flagged !== undefined && flagged !== FALLBACK_RUNTIME)
+      agent.runtime = flagged
+    if (runtime !== FALLBACK_RUNTIME) {
       if (agentShell.has(agent.agent)) agent.shell = true
     } else if (agentShell.has(agent.agent))
-      throw new Error('--agent-shell applies to claude-code and codex agents')
+      throw new Error(
+        '--agent-shell applies to agents on an external runtime, not qianmopi',
+      )
     else if (agentModels.has(agent.agent))
       throw new Error(
-        '--agent-model applies to claude-code and codex agents; qianmopi agents follow the node model service',
+        '--agent-model applies to agents on an external runtime; qianmopi agents follow the node model service',
       )
   }
 
@@ -909,6 +957,9 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
     team,
     agents,
     ...(agentModels.size === 0 ? {} : { agentModels: [...agentModels] }),
+    ...(agentRuntimes.size === 0 ? {} : { agentRuntimes: [...agentRuntimes] }),
+    ...(defaultRuntime === undefined ? {} : { defaultRuntime }),
+    ...(runtimeAutoInstall ? {} : { runtimeAutoInstall: false as const }),
     ...(Object.keys(runtimeBins).length === 0 ? {} : { runtimeBins }),
     ...(ompIdleMs === undefined ? {} : { ompIdleMs }),
     ...(ompMaxChildren === undefined ? {} : { ompMaxChildren }),
@@ -959,6 +1010,41 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
     ...(witnessUrl === undefined ? {} : { witnessUrl }),
     ...(witnessIntervalMs === undefined ? {} : { witnessIntervalMs }),
   }
+}
+
+/**
+ * Each agent's runtime and model (P36 §3): `runtimes.json`, then the flags,
+ * then `--default-runtime`; models and the main model come from the model
+ * service applied to this node.
+ */
+function residentRuntimes(config: ResidentCliConfig): NodeRuntimes {
+  const runtimeFlags = new Map(config.agentRuntimes)
+  const modelFlags = new Map(config.agentModels)
+  // Lazily, like the other provider reads in this handler.
+  const providers = () =>
+    require('../providers/node.js') as typeof import('../providers/node.js')
+  return new NodeRuntimes({
+    agents: config.agents.map(({ agent }) => ({
+      agent,
+      ...(runtimeFlags.has(agent) ? { runtime: runtimeFlags.get(agent) } : {}),
+      ...(modelFlags.has(agent) ? { model: modelFlags.get(agent) } : {}),
+    })),
+    defaultRuntime: config.defaultRuntime ?? DEFAULT_RUNTIME,
+    installer: new RuntimeInstaller(
+      config.runtimeBins === undefined ? {} : { bins: config.runtimeBins },
+    ),
+    // `QIANMO_RUNTIME_AUTOINSTALL=0` is the flag for service units and tests.
+    autoInstall:
+      config.runtimeAutoInstall !== false &&
+      process.env.QIANMO_RUNTIME_AUTOINSTALL !== '0',
+    credential: (spec, runtime) =>
+      providers().runtimeModelCredential(spec, runtime),
+    mainModel: () => providers().nodeMainModelSpec(),
+    onError: error =>
+      process.stderr.write(
+        `[resident runtimes] ${formatResidentError(error)}\n`,
+      ),
+  })
 }
 
 export function assertResidentRuntime(
@@ -1016,22 +1102,35 @@ Identity and workspaces, all required:
                            flag; at least one is required and two agents may
                            not share a name.
 
-Runtimes (each agent runs on one; qianmopi unless told otherwise):
+Runtimes (each agent runs on one; the console's runtime.configure, kept in
+the node's runtimes.json, wins over these flags):
 
-  --agent-runtime <name>=<omp|claude-code|codex>
-                           Run this agent on Claude Code or Codex instead of
-                           qianmopi. Agents on different runtimes share the
-                           node; each keeps its own warm processes.
+  --default-runtime <id>   Runtime of agents nobody configured: one of
+                           ${EXTERNAL_RUNTIME_KINDS.join(', ')} or omp (also written qianmopi).
+                           Default ${DEFAULT_RUNTIME}. Use omp to keep agents on qianmopi.
+  --agent-runtime <name>=<id>
+                           Run this agent on that runtime. Agents on
+                           different runtimes share the node; each keeps
+                           its own warm processes.
   --agent-model <name>=<profile>/<model>
-                           Model for a claude-code or codex agent, from a
-                           model service profile applied to this node
-                           (Claude Code: Anthropic Messages; Codex:
-                           OpenAI Responses). Required for those agents.
-  --agent-shell <name>     Give a claude-code or codex agent a shell: Codex
-                           runs commands in its sandbox without network,
-                           Claude Code asks the operator for each command.
-  --claude-code-bin <cmd>  Claude Code executable (default: claude).
-  --codex-bin <cmd>        Codex executable (default: codex).
+                           Model for an agent on an external runtime, from a
+                           model service profile applied to this node; the
+                           runtime takes the first lane of the profile it
+                           speaks. Without one the node's main model is used.
+                           An agent whose runtime is missing, still
+                           installing or has no usable model runs on
+                           qianmopi meanwhile (runtime.status says why).
+  --agent-shell <name>     Give an agent on an external runtime a shell:
+                           Codex runs commands in its sandbox without
+                           network, Claude Code asks the operator for each.
+  --runtime-bin <id>=<cmd> The executable of an installable runtime; the
+                           node then never installs or updates it.
+  --claude-code-bin <cmd>  Same as --runtime-bin claude-code=<cmd>.
+  --codex-bin <cmd>        Same as --runtime-bin codex=<cmd>.
+  --no-runtime-autoinstall Do not install a missing configured runtime at
+                           start (default: install its pinned version in the
+                           background, retried after 5, 15 and 60 minutes).
+                           QIANMO_RUNTIME_AUTOINSTALL=0 does the same.
 
 Listener, exactly one of --port and --unix:
 
@@ -2264,6 +2363,7 @@ export async function runResident(args: readonly string[]): Promise<void> {
             timeoutMs: embedding.timeoutMs ?? 300,
           },
   })
+  const runtimes = residentRuntimes(config)
   const resident = new QianmoResident({
     beforeModelGeneration: ({ signal }) => modelProbeGate(signal),
     ...(embedding === null
@@ -2320,20 +2420,17 @@ export async function runResident(args: readonly string[]): Promise<void> {
         }),
     node: config.node,
     team: config.team,
-    agents: config.agents,
-    ...(config.agentModels === undefined
-      ? {}
-      : {
-          resolveRuntimeLaunch: (agent: ExternalAgent) => {
-            const spec = new Map(config.agentModels).get(agent.agent)
-            if (spec === undefined)
-              throw new Error(`${agent.agent} has no --agent-model`)
-            // Lazily, like the other provider reads in this handler.
-            const { runtimeModelCredential } =
-              require('../providers/node.js') as typeof import('../providers/node.js')
-            return runtimeModelCredential(spec, agent.runtime)
-          },
-        }),
+    // What reads an agent's runtime once (P32 layouts, shell approvals)
+    // sees the one it is configured on at start.
+    agents: config.agents.map(agent => {
+      const runtime = runtimes.configured(agent.agent).runtime
+      return runtime === FALLBACK_RUNTIME
+        ? { agent: agent.agent, cwd: agent.cwd }
+        : { ...agent, runtime }
+    }),
+    runtimes,
+    resolveRuntimeLaunch: (agent: ExternalAgent) =>
+      runtimes.launch(agent.agent),
     ...(config.runtimeBins === undefined
       ? {}
       : { runtimeBins: config.runtimeBins }),

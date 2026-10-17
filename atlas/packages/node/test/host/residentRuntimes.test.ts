@@ -617,12 +617,17 @@ test('resident flags pick a runtime and model per agent', () => {
     '--port=0',
     '--hostname=127.0.0.1',
   ]
+  // No --agent-model: the node's main model, else qianmopi meanwhile (P36).
+  expect(
+    parseResidentArgs([...base, '--agent-runtime=main=claude-code']).agents,
+  ).toEqual([{ agent: 'main', cwd: root.root, runtime: 'claude-code' }])
   expect(() =>
-    parseResidentArgs([...base, '--agent-runtime=main=claude-code']),
-  ).toThrow('needs --agent-model')
-  expect(() => parseResidentArgs([...base, '--agent-shell=main'])).toThrow(
-    'applies to claude-code and codex',
-  )
+    parseResidentArgs([
+      ...base,
+      '--agent-runtime=main=qianmopi',
+      '--agent-shell=main',
+    ]),
+  ).toThrow('applies to agents on an external runtime')
   expect(() =>
     parseResidentArgs([...base, '--agent-runtime=main=gpt']),
   ).toThrow('--agent-runtime must be')
