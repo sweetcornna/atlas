@@ -10,6 +10,11 @@
  *
  * - **Call a model.** The gateway's model endpoints are the nodes'; this
  *   client reads the gateway's identity and catalog only (N-5 v2.22, R-9).
+ *   The one exception is on the management side: saving a provider,
+ *   `providerModels` and `testProvider` ask magpie to reach the vendor (its
+ *   model list; one smallest request per protocol). Those requests leave
+ *   from magpie, never from this process, and only their results come back
+ *   (charter N-5 v3.6 note, providers-console-m1.md R-9 v1.9).
  * - **Follow a redirect.** Every request is `redirect: 'manual'` and a 3xx is
  *   an error: a management key in a cookie must not be carried to wherever a
  *   redirect points.
