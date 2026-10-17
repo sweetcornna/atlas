@@ -244,6 +244,11 @@
 
 控制链路 `runtime.ext.list` / `runtime.ext.install` / `runtime.ext.remove {agent, kind: plugin|mcp|skill, …}`：节点在该智能体的环境里、空的启动目录下、关掉标准输入并限时，执行该 harness **自己的**命令（调研 §2.2：如 `claude plugin install … -s user`、`codex plugin add … --json`、`dsh plugin --profile acp add`、`gemini extensions install … --consent`、`qwen extensions install … --consent`、`opencode plugin … -g`；MCP 用各自的 `mcp add/remove`；没有技能命令的按原生目录放 `skills/<名>/SKILL.md`）。每次操作后用原生的列表命令（有 JSON 的用 JSON）重读一遍，控制台「网关」页每个智能体显示「原生扩展」清单（插件、MCP、技能）与安装、卸载。安装来源只收 GitHub 仓库、npm 包名与该 harness 的官方市场名；只给运维个人账号，记 `runtime.ext.install` / `runtime.ext.remove`。会派生全部 MCP 服务的列表命令（Gemini、Qwen、opencode 的 `mcp list`）不用，改读它们的配置文件。
 
+- **来源规则**（中枢先核对形状再记账，节点再核一遍）：GitHub 只认 `github.com`，不带账号、端口与查询串；npm 要精确版本；任何一段不能以 `-` 开头，拒绝 `..`、`%`、反斜杠与空白；MCP 服务要么给命令（裸命令名或绝对路径）、要么给不带账号与查询串的 https 地址，二者不兼得；`qm-` 开头的名字与 `qianmo` 留给阡陌。节点把服务命令放在 `--` 之后再交给 harness 的命令行，免得 `npx -y` 一类参数被当成 harness 自己的选项。
+- **读取**：列表命令要起 harness 的命令行，所以页面只从中枢的缓存渲染，打开面板时缓存超过 1 分钟才重读；节点支不支持看第一次对该节点第一个智能体的探测（答 `unsupported` 就是旧节点，1 小时后再探）。
+- **写入**：同一智能体同一时刻只跑一件装卸；5 秒内没答就显示「进行中」，页面每 3 秒跟进。审计目标是 `节点/智能体 种类:名称或来源`，不记参数与地址。官方前端开着时节点拒绝（「该智能体的官方前端正开着」）；该底层没有这类扩展时显示「该底层不支持这类扩展」。读者看得到清单与命令，看不到表单、卸载按钮与失败详情。
+- **前端命令**：面板给出 `qm runtime open` 那一行并可复制；命令里带端口的（网页前端）另给一行 `ssh -L` 转发写法。
+
 ### 7.4 钉住层：原生配置改不动的几条
 
 原生扩展是运维的信任决定，但下面几条由阡陌每次启动重新生成（命令行、环境变量或节点自有文件，从不写进原生文件），原生配置改不动：钩子关闭；会产生副作用的调用经节点裁决；不加载工作区里的项目级配置；不开 harness 自带的子代理。
