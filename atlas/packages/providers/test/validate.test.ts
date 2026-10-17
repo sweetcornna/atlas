@@ -482,6 +482,11 @@ describe('keys (multi-key schema, single-key delivery)', () => {
       accepted(wireProfileJson({ laneAddresses: lanes })).value.laneAddresses,
     ).toEqual(lanes)
     expect(accepted(wireProfileJson()).value.laneAddresses).toBeUndefined()
+    // Gemini is a chat lane too (P36.5: magpie serves it under /v1beta).
+    const gemini = { gemini: 'https://api.vendor.example/v1beta' }
+    expect(
+      accepted(wireProfileJson({ laneAddresses: gemini })).value.laneAddresses,
+    ).toEqual(gemini)
     for (const laneAddresses of [
       {},
       { anthropic: 'https://api.vendor.example' },

@@ -112,7 +112,10 @@ import { openConsoleHandoffDevices } from './consoleHandoffDevices.js'
 import { openConsoleHandoffGit } from './consoleHandoffGit.js'
 import { handoffLockRefusal, openConsoleHandoff } from './consoleHandoff.js'
 import { wireHandoffDispatch } from './consoleHandoffDispatch.js'
-import { openConsoleProviders } from './consoleProviders.js'
+import {
+  openConsoleProviders,
+  SYSTEM_MAGPIE_SUBJECT,
+} from './consoleProviders.js'
 import { deploymentTree, openConsoleReplicate } from './consoleReplicate.js'
 import { openConsoleUsage, startUsageCollection } from './consoleUsage.js'
 import { ControlLinks } from './consoleControl.js'
@@ -910,6 +913,16 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // The platform magpie gateway (P33/P34) rides on the model service: each
   // gateway key is a profile there. This process only drives magpie's
   // management API; model traffic goes from nodes straight to the gateway.
+  // Its 「智能体」 section (P36.5) asks the nodes over the control link, and
+  // the hub's own joins are written as `system:magpie`.
+  const magpieRecord =
+    actions === undefined
+      ? undefined
+      : systemRecorder(
+          entry => actions.record(entry),
+          Date.now,
+          SYSTEM_MAGPIE_SUBJECT,
+        )
   const magpie =
     config.magpie === true && providersPort !== undefined
       ? new ConsoleMagpie({
@@ -938,6 +951,37 @@ export async function runConsole(args: readonly string[]): Promise<void> {
                   caller: systemCaller,
                   onProfile: (tenant: string) =>
                     billing?.profileChanged(tenant),
+                },
+              }),
+          ...(providers === undefined || magpieRecord === undefined
+            ? {}
+            : {
+                system: {
+                  caller: providers.systemCaller(
+                    magpieRecord,
+                    SYSTEM_MAGPIE_SUBJECT,
+                  ),
+                  record: magpieRecord,
+                },
+              }),
+          ...(control === undefined
+            ? {}
+            : {
+                agents: {
+                  control,
+                  nodes: () =>
+                    (config.controlTargets ?? []).map(target => target.node),
+                  ...(tenancy === undefined
+                    ? {}
+                    : {
+                        tenantOf: (node: string) =>
+                          tenancy
+                            .read()
+                            .config.nodes.find(row => row.nodeId === node)
+                            ?.tenant ?? null,
+                      }),
+                  onError: (message: string) =>
+                    process.stderr.write(`[magpie] ${message}\n`),
                 },
               }),
           onError: message => process.stderr.write(`[magpie] ${message}\n`),
