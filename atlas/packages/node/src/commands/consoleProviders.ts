@@ -165,6 +165,26 @@ export interface ProviderRouted {
   readonly routing?: ModelRouting
 }
 
+/**
+ * P35: what one node may hold, where something narrower than the book
+ * applies (the public edition: a subscriber's node holds its tenant's
+ * profile or no model, never the platform's). A key reaches a node only in
+ * a profile it may hold — as the one it runs, in its routing, or in a dry
+ * run.
+ */
+export interface ProviderNodeScope {
+  /** Whether the node may hold this profile. */
+  readonly allows: (profileId: string) => boolean
+  /**
+   * What the node is expected to run when its assignment gives it nothing
+   * it may hold (following a default, not managed, another's profile);
+   * `null`: nothing, so nothing is delivered.
+   */
+  readonly fallback: string | null
+  /** Whether its routing may bring profiles besides the one it runs. */
+  readonly extras: boolean
+}
+
 interface ConsoleProvidersOptions {
   readonly book: ProviderBook
   readonly secrets: ProviderSecretStore
@@ -236,6 +256,28 @@ function autoCompactReportOf(reply: NodeReply): AutoCompactReport | null {
   }
 }
 
+/**
+ * P35: a node's routing with only what its scope lets it hold — the profile
+ * it runs, and others only where the scope allows extras at all.
+ */
+function scopedRouting(
+  routing: ModelRouting | undefined,
+  scope: ProviderNodeScope | null,
+  main: string,
+): ModelRouting | undefined {
+  if (routing === undefined || scope === null) return routing
+  const routes: ModelRouting['routes'] = {}
+  for (const [direction, ref] of Object.entries(routing.routes) as [
+    keyof ModelRouting['routes'],
+    ModelRouting['routes'][keyof ModelRouting['routes']],
+  ][]) {
+    if (ref === undefined) continue
+    if (ref.profileId === main || (scope.extras && scope.allows(ref.profileId)))
+      routes[direction] = ref
+  }
+  return { ...routing, routes }
+}
+
 function targetOf(value: unknown): string {
   return typeof value === 'string' && /^[a-z0-9-]{1,48}$/.test(value)
     ? value
@@ -255,9 +297,12 @@ export class ConsoleProviders implements ProviderPort {
   readonly #onAlarm: (line: string) => void
   readonly #cache = new Map<string, NodeCache>()
   readonly #follows = new Map<string, unknown>()
+  /** The status query on its way to each node, for a caller that must wait for it. */
+  readonly #refreshing = new Map<string, Promise<void>>()
   /** Callers this hub made for its own writes ({@link systemCaller}). */
   readonly #system = new WeakSet<ProviderCaller>()
   #routing: ((node: string) => ProviderRouted) | undefined
+  #scope: ((node: string) => ProviderNodeScope | null) | undefined
   #background: unknown = null
   #changes = 0
 
@@ -276,6 +321,14 @@ export class ConsoleProviders implements ProviderPort {
   }
   configureRouting(source: (node: string) => ProviderRouted): void {
     this.#routing = source
+  }
+  /**
+   * P35: narrow what each node may hold ({@link ProviderNodeScope}); `null`
+   * from `source` leaves a node to the book. A `source` that throws (the
+   * tenancy file cannot be read) leaves the node with nothing to deliver.
+   */
+  configureScope(source: (node: string) => ProviderNodeScope | null): void {
+    this.#scope = source
   }
 
   /** `null` while usable; otherwise why the providers face is closed. */
@@ -1459,14 +1512,28 @@ export class ConsoleProviders implements ProviderPort {
 
   // --- nodes -------------------------------------------------------------
 
+  /** The node's scope; `undefined` when it cannot be told (nothing is sent then). */
+  #scopeOf(node: string): ProviderNodeScope | null | undefined {
+    if (this.#scope === undefined) return null
+    try {
+      return this.#scope(node)
+    } catch {
+      return undefined
+    }
+  }
+
   #expected(node: string): Expected | null {
+    const scope = this.#scopeOf(node)
+    if (scope === undefined) return null
     const assignment = this.#book.assignment(node)
-    const profileId =
+    let profileId =
       assignment.mode === 'profile'
         ? assignment.profileId
         : assignment.mode === 'inherit'
           ? this.#book.defaultProfileId
           : null
+    if (scope !== null && (profileId === null || !scope.allows(profileId)))
+      profileId = scope.fallback
     if (profileId === null) return null
     const profile = this.#book.profile(profileId)
     if (profile === undefined) return null
@@ -1723,6 +1790,9 @@ export class ConsoleProviders implements ProviderPort {
       code,
       message,
     })
+    const scope = this.#scopeOf(node)
+    if (scope === undefined)
+      return refuse('scope-unavailable', '租户配置读不了 · 拒绝下发')
     const expected = this.#expected(node)
     const profileId = options.profileId ?? expected?.profileId
     if (profileId === undefined) {
@@ -1730,6 +1800,8 @@ export class ConsoleProviders implements ProviderPort {
     }
     const profile = this.#book.profile(profileId)
     if (profile === undefined) return refuse('not-found', '没有这份档案')
+    if (scope !== null && !scope.allows(profile.id))
+      return refuse('scope-refused', '这份档案不能下发到这个节点')
     const sealed = this.#keysOf(profile)
     if (!sealed.ok) {
       return refuse(
@@ -1760,7 +1832,7 @@ export class ConsoleProviders implements ProviderPort {
         '任务分工在下发途中又被改过 · 刷新后再下发',
       )
     }
-    const routing = routed?.routing
+    const routing = scopedRouting(routed?.routing, scope, profile.id)
     const extraIds = [
       ...new Set(
         Object.values(routing?.routes ?? {}).map(ref => ref?.profileId),
@@ -1771,20 +1843,51 @@ export class ConsoleProviders implements ProviderPort {
     // failed) gets the v1 floor, and a gateway profile would lose its extra
     // lanes there without a word: the node then counts as up to date while
     // Claude Code and Codex on it find no profile for their protocol. Ask the
-    // node first; still unknown, refuse rather than ship the lanes away.
+    // node first (or wait for the query already on its way, the start-up
+    // tick's); still unknown, do not ship the lanes away. A query that failed
+    // is the node out of reach; one that answered without capabilities is a
+    // refusal.
     const wantsLanes = [
       profile,
       ...extraIds.map(id => this.#book.profile(id)),
     ].some(one => one?.laneAddresses !== undefined)
-    if (
-      wantsLanes &&
-      this.#cache.get(node)?.actual?.capabilities === undefined
-    ) {
-      await this.#refresh(node, false)
-      if (this.#cache.get(node)?.actual?.capabilities === undefined)
+    const known = () =>
+      this.#cache.get(node)?.actual?.capabilities !== undefined
+    if (wantsLanes && !known()) {
+      await this.#refreshing.get(node)
+      if (!known()) await this.#refresh(node, false)
+      if (!known()) {
+        const last = this.#cache.get(node)?.lastStatus
+        if (last?.ok === false)
+          return {
+            node,
+            requestId,
+            outcome: 'failed',
+            code: 'unreachable',
+            message: `节点状态查询失败 · 另给的通道编不编得进去未知 · ${last.message ?? '没有回应'}`,
+          }
         return refuse(
           'capabilities-unknown',
           '节点还没回报能力 · 另给的通道编不编得进去未知 · 节点状态刷新后再下发',
+        )
+      }
+      // The scope and the routing were read before the node was asked: a
+      // change landing in that wait is not shipped under the older reading.
+      const scopeNow = this.#scopeOf(node)
+      if (scopeNow === undefined)
+        return refuse('scope-unavailable', '租户配置读不了 · 拒绝下发')
+      if (scopeNow !== null && !scopeNow.allows(profile.id))
+        return refuse('scope-refused', '这份档案不能下发到这个节点')
+      let again: ProviderRouted | undefined
+      try {
+        again = this.#routing?.(node)
+      } catch {
+        return refuse('routing-unavailable', '路由簿不可用 · 拒绝下发')
+      }
+      if (again?.revision !== routed?.revision)
+        return refuse(
+          'routing-conflict',
+          '任务分工在下发途中又被改过 · 刷新后再下发',
         )
     }
     const lanes = this.#capabilities(node).laneAddresses
@@ -1948,6 +2051,16 @@ export class ConsoleProviders implements ProviderPort {
 
   /** `background: false` when an operator action waits on it (a dial is waited for). */
   async #refresh(node: string, background = true): Promise<void> {
+    const running = this.#refreshNow(node, background)
+    this.#refreshing.set(node, running)
+    try {
+      await running
+    } finally {
+      if (this.#refreshing.get(node) === running) this.#refreshing.delete(node)
+    }
+  }
+
+  async #refreshNow(node: string, background: boolean): Promise<void> {
     const requestId = this.#requestId()
     const result = await this.#executor.run(
       node,

@@ -32,6 +32,7 @@ import type { MagpieCaller } from '@qianmo/console'
 import { FakeMagpie } from '@qianmo/magpie/testing'
 import {
   ConsoleMagpie,
+  type ConsoleMagpieOptions,
   magpieProfileId,
 } from '../../src/commands/consoleMagpie.js'
 import {
@@ -50,6 +51,7 @@ let fake: FakeMagpie
 let node: FakeNode
 let providers: ConsoleProviders
 let ledger: string[]
+let errors: string[]
 let paths: { state: string; secrets: string; key: string }
 
 function caller(overrides: Partial<MagpieCaller> = {}): MagpieCaller {
@@ -73,7 +75,48 @@ function port(tenants: readonly string[] = []): ConsoleMagpie {
     keyPath: paths.key,
     providers,
     tenants: () => tenants,
+    onError: line => errors.push(line),
   })
+}
+
+/**
+ * A port whose `fetch` drops the answer to the first request for `path`
+ * after magpie has done it: what a timeout or a cut connection looks like.
+ */
+function droppingPort(
+  path: string,
+  extra: Partial<ConsoleMagpieOptions> = {},
+  /** Instead of dropping the answer, run this once magpie has answered. */
+  meanwhile?: () => Promise<void>,
+): {
+  readonly magpie: ConsoleMagpie
+  arm(): void
+} {
+  let armed = false
+  const magpie = new ConsoleMagpie({
+    statePath: paths.state,
+    secretsPath: paths.secrets,
+    keyPath: paths.key,
+    providers,
+    tenants: () => [],
+    onError: line => errors.push(line),
+    ...extra,
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      const response = await fetch(input, init)
+      if (armed && String(input).endsWith(path)) {
+        armed = false
+        if (meanwhile === undefined) throw new TypeError('connection reset')
+        await meanwhile()
+      }
+      return response
+    }) as typeof fetch,
+  })
+  return {
+    magpie,
+    arm: () => {
+      armed = true
+    },
+  }
 }
 
 async function connected(
@@ -151,6 +194,7 @@ function deliveredKey(request: Record<string, unknown> | undefined): unknown {
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'qianmo-magpie-port-'))
   ledger = []
+  errors = []
   fake = await FakeMagpie.start({
     webKey: WEB_KEY,
     providers: [
@@ -492,6 +536,28 @@ describe('a gateway key for a node', () => {
     expect(profile.ok).toBe(false)
   })
 
+  test('a key magpie made although add-key was not answered is taken back out', async () => {
+    const { magpie, arm } = droppingPort('/api/caller-keys/add-key')
+    const linked = await magpie.connect(
+      {
+        gatewayUrl: fake.gatewayUrl,
+        managementUrl: fake.managementUrl,
+        managementKey: WEB_KEY,
+      },
+      caller(),
+    )
+    expect(linked.ok).toBe(true)
+    arm()
+    const result = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-1' }, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    expect(result.ok).toBe(false)
+    // Not left enabled and open to every model.
+    expect(fake.keys()).toEqual([])
+    expect((await providers.profile('magpie-node-beta-1')).ok).toBe(false)
+  })
+
   test('magpie changes are brought back within the eligible set by a check', async () => {
     const magpie = await connected()
     const issued = await magpie.issueKey(
@@ -511,6 +577,32 @@ describe('a gateway key for a node', () => {
       'openrouter/*',
       'deepseek/*',
     ])
+  })
+
+  test('one key magpie will not change does not stop the check from fixing the others', async () => {
+    const magpie = await connected(['t-1'])
+    const first = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-1' }, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    const second = await magpie.issueKey(
+      { binding: { kind: 'tenant', id: 't-1' }, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    if (!first.ok || !second.ok) throw new Error('issue')
+    fake.addProvider({ id: 'deepseek', models: ['deepseek-v4'] })
+    fake.fault({
+      target: 'management',
+      path: '/api/caller-keys/models-key',
+      times: 1,
+      status: 500,
+      body: 'down',
+    })
+    const checked = await magpie.check(caller())
+    // Said, and the rest still done.
+    expect(checked.ok).toBe(false)
+    expect(fake.key(first.value.keyId)?.models).not.toContain('deepseek/*')
+    expect(fake.key(second.value.keyId)?.models).toContain('deepseek/*')
   })
 
   test('a list-mode key keeps its list, minus what stops being eligible', async () => {
@@ -605,6 +697,52 @@ describe('a gateway key for a node', () => {
     expect(JSON.stringify(rotated)).not.toContain(secret)
   })
 
+  test('rotation takes the profile’s revision after magpie has answered, not before', async () => {
+    const pcaller = {
+      subject: OPS,
+      role: 'ops' as const,
+      breakGlass: false,
+      record: async () => true,
+    }
+    // Somebody saves the gateway profile while magpie is rotating the key.
+    const { magpie, arm } = droppingPort(
+      '/api/caller-keys/rotate-key',
+      {},
+      async () => {
+        const current = await providers.profile('magpie-node-beta-1')
+        if (!current.ok) throw new Error('profile')
+        const saved = await providers.saveProfile(
+          {
+            profile: { ...current.value, name: 'renamed meanwhile' },
+            ifMatch: current.value.revision,
+          },
+          pcaller,
+        )
+        if (!saved.ok) throw new Error(saved.failure.message)
+      },
+    )
+    const linked = await magpie.connect(
+      {
+        gatewayUrl: fake.gatewayUrl,
+        managementUrl: fake.managementUrl,
+        managementKey: WEB_KEY,
+      },
+      caller(),
+    )
+    expect(linked.ok).toBe(true)
+    const binding = { kind: 'node' as const, id: 'beta-1' }
+    const issued = await magpie.issueKey(
+      { binding, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    if (!issued.ok) throw new Error(issued.failure.message)
+    arm()
+    const rotated = await magpie.rotateKey(binding, caller())
+    expect(rotated.ok).toBe(true)
+    const secret = fake.key(issued.value.keyId)?.secret
+    expect(deliveredKey(applies().at(-1))).toBe(secret)
+  })
+
   test('removal is refused while the node has nothing else to run on', async () => {
     const magpie = await connected()
     const binding = { kind: 'node' as const, id: 'beta-1' }
@@ -682,6 +820,97 @@ describe('a gateway key for a node', () => {
     expect(applies().length).toBe(before + 1)
   })
 
+  test('a delivery the node does not take is said to the caller and to the log, not passed off as done', async () => {
+    await otherDefault()
+    const magpie = await connected()
+    const binding = { kind: 'node' as const, id: 'beta-1' }
+    const refuse = () =>
+      node.set(
+        'reply-apply.json',
+        JSON.stringify({
+          v: 1,
+          requestId: 'x',
+          ok: false,
+          code: 'write-failed',
+          message: 'disk full',
+        }),
+      )
+    const take = () => rmSync(join(node.dir, 'reply-apply.json'))
+    const unsaid = (result: {
+      ok: boolean
+      failure?: { code: string; message: string }
+    }) => {
+      expect(result.ok).toBe(false)
+      expect(result.failure?.code).toBe('unreachable')
+      expect(result.failure?.message).toContain('beta-1')
+      expect(errors.some(line => line.includes('beta-1'))).toBe(true)
+      errors.length = 0
+    }
+    // Issue: the key and the profile exist; the node did not get them.
+    refuse()
+    const issued = await magpie.issueKey(
+      { binding, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    unsaid(issued as never)
+    const snapshot = await magpie.snapshot()
+    expect(
+      snapshot.ok && snapshot.value.keys.map(key => key.binding.id),
+    ).toEqual(['beta-1'])
+    const keyId = snapshot.ok ? snapshot.value.keys[0]?.keyId : undefined
+    // A new main model.
+    unsaid(
+      (await magpie.updateKey(
+        binding,
+        { mainModel: 'openai/gpt-6-mini' },
+        caller(),
+      )) as never,
+    )
+    // Rotation: magpie has the new value, the node still the dead one.
+    const before = fake.key(keyId ?? '')?.secret
+    unsaid((await magpie.rotateKey(binding, caller())) as never)
+    expect(fake.key(keyId ?? '')?.secret).not.toBe(before)
+    // A new gateway address: saved, not delivered.
+    unsaid(
+      (await magpie.connect(
+        {
+          gatewayUrl: 'https://gw2.example.test',
+          managementUrl: fake.managementUrl,
+        },
+        caller(),
+      )) as never,
+    )
+    const profile = await providers.profile('magpie-node-beta-1')
+    expect(profile.ok && profile.value.baseUrl).toBe('https://gw2.example.test')
+    // Removal: the node did not get its old profile back, so the key stays.
+    unsaid((await magpie.removeKey(binding, caller())) as never)
+    expect(fake.keys()).toHaveLength(1)
+    // Asked again, it goes ahead: the node was already moved back.
+    const again = await magpie.removeKey(binding, caller())
+    expect(again.ok).toBe(true)
+    expect(fake.keys()).toEqual([])
+    take()
+  })
+
+  test('a node whose capabilities cannot be told refuses the lanes: issuing says so', async () => {
+    node.set(
+      'reply-status.json',
+      JSON.stringify({ v: 1, requestId: 'x', ok: true, state: { odd: true } }),
+    )
+    const magpie = await connected()
+    const issued = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-1' }, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    expect(issued.ok).toBe(false)
+    if (!issued.ok)
+      expect(issued.failure.message).toContain('capabilities-unknown')
+    expect(errors.some(line => line.includes('capabilities-unknown'))).toBe(
+      true,
+    )
+    expect(applies()).toEqual([])
+  })
+
   test('usage names the binding behind each key of ours', async () => {
     const magpie = await connected()
     const issued = await magpie.issueKey(
@@ -727,6 +956,42 @@ describe('a gateway key for a tenant (P35)', () => {
       caller(),
     )
     expect(off.ok && off.value.enabled).toBe(false)
+  })
+})
+
+describe('a subscriber’s upstream (P35)', () => {
+  test('one magpie made although the save was not answered is recorded, not reported as failed', async () => {
+    const { magpie, arm } = droppingPort('/api/provider/save', {
+      tenants: () => ['t-1'],
+      subscriptions: { caller: providers.systemCaller(async () => true) },
+    })
+    const linked = await magpie.connect(
+      {
+        gatewayUrl: fake.gatewayUrl,
+        managementUrl: fake.managementUrl,
+        managementKey: WEB_KEY,
+      },
+      caller(),
+    )
+    expect(linked.ok).toBe(true)
+    expect((await magpie.ensureTenant('t-1', [])).ok).toBe(true)
+    expect((await magpie.setTenantEntitled('t-1', true)).ok).toBe(true)
+    arm()
+    const added = await magpie.addTenantUpstream('t-1', {
+      preset: 'openai',
+      key: 'sk-t1-own-0001',
+    })
+    if (!added.ok) throw new Error(added.failure.message)
+    const view = await magpie.tenantView('t-1')
+    expect(view.ok && view.value.upstreams.map(one => one.id)).toEqual([
+      added.value.id,
+    ])
+    const key = fake.keys().find(one => one.name.startsWith('qm-tenant-t-1-'))
+    expect(key?.models).toEqual([`${added.value.id}/*`])
+    expect(key?.off).toBe(false)
+    expect(
+      fake.requests.filter(request => request.path === '/api/provider/save'),
+    ).toHaveLength(1)
   })
 })
 
@@ -783,6 +1048,26 @@ describe('upstreams and groups', () => {
     })
     expect(fake.key(issued.value.keyId)?.models).toContain('api2/*')
     expect(JSON.stringify(added)).not.toContain('sk-custom-upstream-0001')
+  })
+
+  test('a provider test does not hold up the writes behind it', async () => {
+    const magpie = await connected()
+    fake.fault({
+      target: 'management',
+      path: '/api/provider/test',
+      times: 1,
+      delayMs: 1_500,
+    })
+    const order: string[] = []
+    const testing = magpie
+      .testProvider('openai', caller())
+      .then(result => order.push(`test ${result.ok}`))
+    await Bun.sleep(100)
+    const write = magpie
+      .setProviderEnabled('openai', false, caller())
+      .then(result => order.push(`write ${result.ok}`))
+    await Promise.all([testing, write])
+    expect(order).toEqual(['write true', 'test true'])
   })
 
   test('a subscription upstream is read-only here', async () => {

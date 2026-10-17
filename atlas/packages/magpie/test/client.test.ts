@@ -321,6 +321,18 @@ describe('providers', () => {
     expect(ids).not.toContain('remote-magpie')
     expect(ids).not.toContain('opencode')
     expect(ids).not.toContain('azure')
+    // By id, not in magpie's order: nothing is ranked first.
+    expect(ids).toEqual([...ids].sort())
+  })
+
+  test('for a subscriber: the vendors’ own presets and OpenRouter, no other relay', async () => {
+    const all = (await client.listPresets()).map(preset => preset.id)
+    // The platform's own gateway page keeps them.
+    expect(all).toContain('relay-hub')
+    const vendors = (await client.listPresets({ vendors: true })).map(
+      preset => preset.id,
+    )
+    expect(vendors).toEqual(['anthropic', 'openai', 'openrouter'])
   })
 
   test('save adds under the next free id and returns it', async () => {
