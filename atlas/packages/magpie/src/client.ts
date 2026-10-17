@@ -6,6 +6,10 @@
  * --web` serves, `internal/gui/*.go`) and two reads of its gateway
  * (`GET /api/hello`, `GET /v1/models`, `internal/gateway/gateway.go`).
  *
+ * The routes, the JSON shapes and the cookie name are taken from magpie's
+ * source, yetone/magpie@8b84dc9 (MIT, Copyright (c) 2026 yetone; NOTICE
+ * 五.6); the code is Qianmo's own.
+ *
  * ## What it will not do
  *
  * - **Call a model.** The gateway's model endpoints are the nodes'; this

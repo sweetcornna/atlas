@@ -23,6 +23,15 @@
  * encoder (Project Nayuki's qrcodegen) and requires these to match module for
  * module, the chosen mask included.
  *
+ * Four parts follow the structure of that library, Project Nayuki's QR Code
+ * generator library (qrcodegen, MIT, Copyright (c) Project Nayuki,
+ * https://www.nayuki.io/page/qr-code-generator-library; NOTICE 五.7):
+ * `alignmentCentres` (the step rule with its version 32 exception and the
+ * fill from `size − 7` back), `placeCodewords` (the two-column zigzag that
+ * steps over column 6), `lineScore` (rule 3 as the 1:1:3:1:1 run test with
+ * the quiet zone counted as light) and the rule 4 formula in `penalty`. The
+ * rest is written from the standard.
+ *
  * It is the console's one encoder: the checkout page's payment codes and the
  * WeChat channel's login code (`channels.ts`) both draw through it.
  *
