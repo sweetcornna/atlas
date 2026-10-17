@@ -115,7 +115,7 @@ const PHASE: Record<TaskStatus, string> = {
   cancelled: '已取消',
 }
 
-export const WORKER_INSTRUCTIONS = `你是一个持久后台子智能体，独立执行下面这个任务。
+export const WORKER_INSTRUCTIONS = `你在为主会话处理一个后台任务，按下面的任务说明独立完成。
 任务没有总时长或总轮数上限，保持执行直到完成，或确实需要用户补充信息；单轮有时间上限，到点会被停下。
 每一轮只推进一个阶段：做完一个阶段就调用 qianmo_task_report(state='working', summary=真实进展、证据和下一步)，然后结束本轮回复。任务管理器会在同一会话里接着叫你，主会话也借这个空档及时回应用户。
 任务实际完成并验证后，必须调用 qianmo_task_report(state='completed', summary=最终结果及验证证据)。

@@ -2479,6 +2479,13 @@ describe('the coordination rules', () => {
     // Without agent it is a sub-session; only with agent another agent.
     expect(SUPERVISOR_RULES).not.toContain('子智能体')
   })
+
+  test('the worker is told it handles a background task for the main session, whether or not it is another agent', () => {
+    expect(WORKER_INSTRUCTIONS).toStartWith(
+      '你在为主会话处理一个后台任务，按下面的任务说明独立完成。',
+    )
+    expect(WORKER_INSTRUCTIONS).not.toContain('子智能体')
+  })
 })
 
 describe('the task note in a console conversation', () => {
