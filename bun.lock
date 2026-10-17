@@ -62,6 +62,13 @@
       "name": "@qianmo/backup",
       "version": "0.0.0",
     },
+    "atlas/packages/billing": {
+      "name": "@qianmo/billing",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/paths": "workspace:*",
+      },
+    },
     "atlas/packages/capability": {
       "name": "@qianmo/capability",
       "version": "0.0.0",
@@ -1255,6 +1262,8 @@
     "@qianmo/audit": ["@qianmo/audit@workspace:atlas/packages/audit"],
 
     "@qianmo/backup": ["@qianmo/backup@workspace:atlas/packages/backup"],
+
+    "@qianmo/billing": ["@qianmo/billing@workspace:atlas/packages/billing"],
 
     "@qianmo/capability": ["@qianmo/capability@workspace:atlas/packages/capability"],
 

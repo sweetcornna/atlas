@@ -44,7 +44,7 @@
       },
       {
         "name": "qianmo:lockfileSha256",
-        "value": "5ad18602f28027122625e8bf72c63aad430d271b8582143fba74e756a49f8de6"
+        "value": "e5690de734c1a3d09f5789c1818adcec559c1b3db3aa0dc01805410fa6be548a"
       },
       {
         "name": "qianmo:deterministic",
@@ -8697,6 +8697,35 @@
         {
           "name": "qianmo:reach",
           "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "network-copyleft"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "workspace"
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "bom-ref": "pkg:npm/%40qianmo/billing@0.0.0",
+      "name": "@qianmo/billing",
+      "version": "0.0.0",
+      "scope": "optional",
+      "purl": "pkg:npm/%40qianmo/billing@0.0.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "AGPL-3.0-or-later"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "unreached"
         },
         {
           "name": "qianmo:licenseTier",
