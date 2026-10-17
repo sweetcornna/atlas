@@ -20,10 +20,14 @@
 
 1. 构建公开版：`bun run atlas:build:public`，把 `dist/qm-public-linux-x64` 放到 `/opt/qianmo/dist/`。
    这个构建就是公开版，没有开关能把它变回默认版；默认版给 `--billing` 会拒绝启动。
+   要从没有未提交改动的检出构建：构建把提交号打进产物，带 `-dirty` 或提交未知的公开版拒绝启动。
 2. 装 magpie，按 `magpie.service` 起来；`/etc/qianmo/magpie.env`（0600）里写 `MAGPIE_WEB_KEY`
    与网关的地址、证书。
 3. 准备计费配置：复制 `billing.example.json` 到 `--billing` 指向的位置（0600），**把每个套餐的
    `priceCents` 改成真实价格**，填商户号、应用号与密钥文件路径；密钥文件都要 0600。
+   `sourceUrl` 填源码仓库的首页，页面上的源码链接是 `<sourceUrl>/tree/<构建的提交>`（AGPL
+   第 13 条）。**改过代码再部署，`sourceUrl` 要指向放着改后源码的仓库**，并把构建用的提交推上去；
+   样例里的地址只对没改过的阡陌源码成立。
 4. 准备租户配置（`--tenancy`，0600）：`platformSubjects` 写平台运维的个人账号；订阅者的租户
    由中枢在开通时自动建，平台运维只需要把节点写进 `nodes`、分给对应的租户。
 5. 按 `qm-public-console.service` 起控制台；对外经 TLS 前置转发到 `127.0.0.1:38613`。两条支付
