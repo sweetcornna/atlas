@@ -49,6 +49,7 @@ import {
 import { qianmoMark } from './mark.js'
 import { documentHead } from './page.js'
 import { qrSvg } from './qr.js'
+import { sourceFooter } from './source.js'
 
 /** 支付方式在页面上的名字。 */
 const CHANNEL_WORD: Readonly<Record<BillingChannel, string>> = {
@@ -84,16 +85,9 @@ function channelName(channel: string): string {
 
 // --- the public frame --------------------------------------------------
 
-/** 每个公开页面的页脚：源代码链接，有条款时再给条款。 */
+/** 每个公开页面的页脚：源代码链接，有条款时再给条款（`source.ts`，与登录、注册、邀请页和前台同一个）。 */
 function billingFooter(site: BillingSiteView): string {
-  return (
-    `<footer class="bl-foot">` +
-    `<a href="${attr(site.sourceUrl)}" rel="noopener" data-source>源代码 · AGPL-3.0</a>` +
-    (site.termsUrl === null
-      ? ''
-      : `<span class="sep">·</span><a href="${attr(site.termsUrl)}" rel="noopener">服务条款</a>`) +
-    `</footer>`
-  )
+  return sourceFooter(site, 'bl-foot')
 }
 
 function brandRow(label: string): string {

@@ -46,6 +46,7 @@ import { icon } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { qianmoMark } from './mark.js'
 import { BRAND, documentHead } from './page.js'
+import { type SourceLinks, sourceFooter } from './source.js'
 
 export interface LoginPageModel {
   /** The instance label, so two consoles in two tabs are told apart. */
@@ -67,6 +68,11 @@ export interface LoginPageModel {
    */
   readonly accounts?: boolean
   readonly signupEnabled?: boolean
+  /**
+   * The public edition's source and terms links (AGPL §13, `source.ts`).
+   * Absent — the default edition — the page is byte for byte what it was.
+   */
+  readonly source?: SourceLinks
 }
 
 /** The field label and the button, kept next to each other on purpose. */
@@ -133,6 +139,7 @@ export function renderLoginPage(model: LoginPageModel): string {
     (model.signupEnabled === true
       ? `<p class="foot"><a href="/signup">注册成员账号</a></p>`
       : '') +
+    (model.source === undefined ? '' : sourceFooter(model.source)) +
     `</form>\n</main>\n</body>\n</html>\n`
   )
 }
