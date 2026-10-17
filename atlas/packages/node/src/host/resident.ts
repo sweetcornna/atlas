@@ -17,6 +17,7 @@ import { MemoryControl } from './memoryControl.js'
 import { verifiedBackground, verifiedTaskOwner } from '@qianmo/capability'
 import { connectorTools, type ConnectorToolContext } from './connectorTools.js'
 import { taskTools, type TaskToolOrigin } from './taskTools.js'
+import { askReentry, peerTools, type PeerToolOrigin } from './peerTools.js'
 import { NodeExtensions } from './extensions.js'
 import { runtimeBin, runtimeControl } from './runtimeUpdate.js'
 import { SelfUpgrader, systemControl } from './selfUpgradeRunner.js'
@@ -918,6 +919,12 @@ export class QianmoResident {
         call: (op, args, callOptions) =>
           this.hubCall.call(op, args, callOptions),
         origin: ctx => this.#taskOrigin(ctx),
+      }),
+      // The roster and synchronous questions between agents (P36.6).
+      ...peerTools({
+        call: (op, args, callOptions) =>
+          this.hubCall.call(op, args, callOptions),
+        origin: ctx => this.#peerOrigin(ctx),
       }),
     ]
     residentToolSurface(options.authorization !== undefined, [
@@ -2056,6 +2063,24 @@ export class QianmoResident {
     const contextId = task.envelope.contextId
     if (typeof contextId !== 'string' || contextId === '') return null
     return { contextId, taskId: task.envelope.taskId }
+  }
+
+  /** The same turn, for a question that waits on other agents (P36.6). */
+  #peerOrigin(ctx: {
+    readonly agent: string
+    readonly sessionId: string
+  }): PeerToolOrigin | null {
+    const origin = this.#taskOrigin(ctx)
+    const input = this.#turn.activeInput(ctx.sessionId)
+    const task = input === undefined ? undefined : this.#taskFor(input)
+    if (origin === null || task === undefined) return null
+    return {
+      ...origin,
+      remainingMs:
+        taskExpiresAt(task.envelope) -
+        this.#deadlineClock.nowFor(task.envelope.createdAt),
+      keepAlive: () => this.#turn.touch(ctx.sessionId),
+    }
   }
 
   async #approveConnector(
@@ -3542,6 +3567,19 @@ export class QianmoResident {
             id !== undefined &&
             this.#tasksByMessage.get(id)?.background === true
           )
+        },
+        // A hub-signed question nests in the turn here that asked it (P36.6).
+        reentryOf: messages => {
+          const task = this.#tasksByMessage.get(
+            networkMessageId(messages) ?? '',
+          )
+          return task === undefined
+            ? undefined
+            : askReentry(
+                task.envelope,
+                this.#options.node,
+                this.#options.memoryControllers ?? new Map(),
+              )
         },
         sessions,
         timings: this.#timings,
