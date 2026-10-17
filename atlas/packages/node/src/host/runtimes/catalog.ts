@@ -15,15 +15,31 @@
  *   harness speaks the Agent Client Protocol and shares one channel (§5).
  */
 
-/** Wire protocols a runtime child is driven over. */
-export type RuntimeProtocol = 'omp' | 'claude-stream' | 'codex-app-server' | 'acp'
+import type { AcpRuntime, RuntimeLane } from './acpSpec.js'
+import {
+  DSH_QMO_SKILLS,
+  dshLaunch,
+  dshToolCall,
+  dshUsageReader,
+} from './dsh.js'
 
-/** Model lanes a runtime can call (a subset of `@qianmo/providers` lanes). */
-export type RuntimeLane =
-  | 'openai-chat'
-  | 'anthropic'
-  | 'openai-responses'
-  | 'gemini'
+export type {
+  AcpLaunch,
+  AcpLaunchInput,
+  AcpRuntime,
+  AcpToolCall,
+  AcpUsage,
+  AcpUsageReader,
+  AcpVerdictCall,
+  RuntimeLane,
+} from './acpSpec.js'
+
+/** Wire protocols a runtime child is driven over. */
+export type RuntimeProtocol =
+  | 'omp'
+  | 'claude-stream'
+  | 'codex-app-server'
+  | 'acp'
 
 /** A model family an agent defaults to on its runtime (§4.2). */
 export interface ModelFamily {
@@ -51,43 +67,6 @@ export interface NpmInstall {
 
 export type RuntimeInstall = { readonly kind: 'builtin' } | NpmInstall
 
-/** What an ACP runtime's launcher gets for one agent. */
-export interface AcpLaunchInput {
-  /** The executable to start (managed prefix, PATH, or a flag). */
-  readonly bin: string
-  readonly model: string
-  readonly lane: RuntimeLane
-  readonly baseUrl: string
-  readonly apiKey: string
-  readonly headers?: Readonly<Record<string, string>>
-  readonly effort?: string
-  /** This agent's private state directory for the harness (0700). */
-  readonly home: string
-  /** The agent's workspace (the child's cwd). */
-  readonly cwd: string
-}
-
-/** How to start one ACP runtime child. */
-export interface AcpLaunch {
-  readonly argv: readonly string[]
-  /** Added on top of the node's inherited allowlisted environment. */
-  readonly env: Readonly<Record<string, string>>
-  /** Config files the harness reads, written under `home` (0600) first. */
-  readonly files?: readonly {
-    readonly path: string
-    readonly content: string
-  }[]
-}
-
-export interface AcpRuntime {
-  readonly launch: (input: AcpLaunchInput) => AcpLaunch
-  /**
-   * Skills directory under `home` the harness loads natively, when it has
-   * one (P32 lands the agent's skills there); absent = no skills.
-   */
-  readonly skillsDir?: string
-}
-
 export interface RuntimeSpec {
   readonly id: string
   /** Display name. */
@@ -109,7 +88,12 @@ export const FAMILIES = {
   deepseek: {
     id: 'deepseek',
     label: 'DeepSeek',
-    tiers: [/^deepseek-v\d/, /^deepseek-chat/, /^deepseek-reasoner/, /deepseek/],
+    tiers: [
+      /^deepseek-v\d/,
+      /^deepseek-chat/,
+      /^deepseek-reasoner/,
+      /deepseek/,
+    ],
   },
   claude: {
     id: 'claude',
@@ -143,6 +127,20 @@ export const FAMILIES = {
   },
 } as const satisfies Record<string, ModelFamily>
 
+/** DeepSeek Harness over ACP (`dsh.ts`). */
+const DSH: AcpRuntime = {
+  launch: dshLaunch,
+  skillsDir: `skills/${DSH_QMO_SKILLS}`,
+  // dsh rejects SSE servers in `session/new`.
+  mcpTransports: ['stdio', 'http'],
+  // No `session/load`; `session/resume` restores the history model-side.
+  resume: 'session/resume',
+  effortOption: 'reasoning_effort',
+  // ACP carries no usage; the session log has the provider's.
+  usage: dshUsageReader,
+  toolCall: dshToolCall,
+}
+
 /**
  * The catalog. ACP entries beyond `dsh` are added by P36.2 from the survey
  * (`harness-backends.md` §1.3); only harnesses whose official release serves
@@ -157,13 +155,13 @@ export const RUNTIME_CATALOG: readonly RuntimeSpec[] = [
       kind: 'npm',
       package: '@deepseek-ai/dsh',
       command: 'dsh',
-      pin: '0.2.0-rc.2',
-      needsNode: '>=22',
+      pin: '0.2.1-rc.2',
+      needsNode: '^22.19.0 || >=24',
     },
     default: true,
     lanes: ['openai-chat', 'anthropic'],
     family: FAMILIES.deepseek,
-    // P36.2 fills `acp` from the dsh facts (`dsh --profile acp`).
+    acp: DSH,
     verified: false,
   },
   {
@@ -252,8 +250,6 @@ export function rankFamilyModels(
     const tier = family.tiers.findIndex(pattern => pattern.test(name))
     if (tier >= 0) ranked.push({ id, tier, name })
   }
-  ranked.sort(
-    (a, b) => a.tier - b.tier || compareVersionsDesc(a.name, b.name),
-  )
+  ranked.sort((a, b) => a.tier - b.tier || compareVersionsDesc(a.name, b.name))
   return ranked.map(entry => entry.id)
 }
