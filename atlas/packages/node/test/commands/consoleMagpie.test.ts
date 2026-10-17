@@ -351,6 +351,9 @@ describe('a gateway key for a node', () => {
     expect(view.profileId).toBe('magpie-node-beta-1')
     expect(view.modelsMode).toBe('all')
     expect(view.models).toEqual(['openai/*', 'openrouter/*', 'group/fast'])
+    expect(view.limits.map(limit => [limit.period, limit.tokens])).toEqual([
+      ['day', 100_000],
+    ])
 
     const key = fake.key(view.keyId)
     expect(key?.name.startsWith('qm-node-beta-1-')).toBe(true)

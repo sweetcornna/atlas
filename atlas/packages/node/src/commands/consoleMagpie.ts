@@ -1208,9 +1208,9 @@ export class ConsoleMagpie implements MagpiePort {
           )
       }
       try {
-        await client.setKeyModels(key.id, patterns)
+        key = await client.setKeyModels(key.id, patterns)
         if (draft.limits !== undefined && draft.limits.length > 0)
-          await client.setKeyLimits(key.id, draft.limits.map(limitOf))
+          key = await client.setKeyLimits(key.id, draft.limits.map(limitOf))
       } catch (error) {
         await undo(false)
         return fromMagpie(error)
@@ -1280,7 +1280,7 @@ export class ConsoleMagpie implements MagpiePort {
             `下发到 ${binding.id} 失败 · ${applied.failure.message}`,
           )
       }
-      return ok(this.#keyView(record, { ...key, models: patterns }))
+      return ok(this.#keyView(record, key))
     })
   }
 
