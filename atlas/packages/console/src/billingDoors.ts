@@ -390,6 +390,8 @@ async function serveCheckout(
   const channel = url.searchParams.get('channel')
   const plan = site.plans.find(one => one.id === planId)
   if (plan === undefined) return notFound('套餐不存在')
+  if (!site.live)
+    return fail(400, 'invalid', '未开通正式收款 · 暂不接受扫码付款')
   if (!isChannel(channel) || !site.channels[channel])
     return fail(400, 'invalid', '这个付款方式没有开通')
   return html(

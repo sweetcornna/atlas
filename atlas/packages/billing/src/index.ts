@@ -21,6 +21,9 @@
  * - **Channels**: WeChat Pay API v3 Native (`code_url`) and Alipay 当面付
  *   precreate (`qr_code`), both official native APIs (charter §7.2 item 8);
  *   plus operator-issued **redeem codes** (SHA-256 stored, single use).
+ *   QR orders are placed only with `live: true` in the config (default
+ *   off, 未开通正式收款); its precondition is charter §8 M3's written
+ *   conclusion on L-2.
  *   **Both payment channels are 未评估** — exercised only against local
  *   fakes, never against a real merchant account. Each adapter's header lists
  *   the protocol facts it relies on and where they come from.

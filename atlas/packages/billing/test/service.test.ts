@@ -350,6 +350,61 @@ describe('orders and notifications', () => {
   })
 })
 
+describe('the live switch', () => {
+  function notLive(store: BillingStore) {
+    const { live: _, ...json } = configJson(writeSecrets(tempDir(), keys), {
+      wechat: wx.origin,
+      alipay: ali.endpoint,
+    })
+    const config = parseBillingConfig(json)
+    expect(config.live).toBe(false)
+    const prov = fakeProvisioner()
+    return {
+      prov,
+      service: new BillingService({
+        config,
+        store,
+        channels: createPaymentChannels(config, { now: clock }),
+        provisioner: prov,
+        clock,
+      }),
+    }
+  }
+
+  test('off: no QR order is made, no provider is asked; codes still work', async () => {
+    const { store } = setup()
+    const { service } = notLive(store)
+    const asked = wx.requests.length + ali.requests.length
+    for (const channel of ['wechatpay', 'alipay'] as const)
+      expect(
+        (await caught(service.createOrder('alice', 'month', channel))).code,
+      ).toBe('not_live')
+    expect(wx.requests.length + ali.requests.length).toBe(asked)
+    expect(store.recentOrders(10)).toEqual([])
+    expect(service.adminSnapshot().live).toBe(false)
+    const [code] = service.issueRedeemCodes('ops', 'month', 1, 1)
+    expect((await service.redeem('alice', code!)).active).toBe(true)
+  })
+
+  test('switched off later, an order placed while on still settles', async () => {
+    const { service: live, store } = setup()
+    expect(live.adminSnapshot().live).toBe(true)
+    const order = await live.createOrder('bob', 'month', 'wechatpay')
+    const { service } = notLive(store)
+    const reply = await service.handleNotify(
+      'wechatpay',
+      wechatNotify(keys, now, { outTradeNo: order.outTradeNo, total: 9900 }),
+    )
+    expect(reply.httpStatus).toBe(204)
+    expect(service.entitlement('bob').active).toBe(true)
+    // And an unpaid one is still queried and closed at the provider.
+    const open = await live.createOrder('carol', 'month', 'wechatpay')
+    now = T0 + 16 * 60_000
+    expect((await service.sweep()).closed).toBe(1)
+    expect(wx.trades.get(open.outTradeNo)?.state).toBe('CLOSED')
+  })
+})
+
 describe('per-node plans', () => {
   test('plans carry their node count; the provisioner gets nodes and limits, never a price', async () => {
     const seen: unknown[] = []

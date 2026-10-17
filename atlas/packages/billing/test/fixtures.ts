@@ -112,6 +112,8 @@ export function configJson(
   return {
     version: 1,
     currency: 'CNY',
+    // The channels point at local fakes; nothing real is charged.
+    live: true,
     sourceUrl: 'https://github.com/sweetcornna/atlas',
     termsUrl: null,
     plans: [

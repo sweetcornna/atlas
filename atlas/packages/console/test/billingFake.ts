@@ -79,6 +79,7 @@ export class FakeBilling implements BillingPort {
   siteView: BillingSiteView = {
     sourceUrl: 'https://github.com/sweetcornna/atlas',
     termsUrl: 'https://qianmo.example/terms',
+    live: true,
     plans: [
       {
         id: 'month',
@@ -344,6 +345,7 @@ export class FakeBilling implements BillingPort {
     this.calls.push('admin')
     return ok({
       plans: this.siteView.plans,
+      live: this.siteView.live,
       channels: this.siteView.channels,
       orders: [...this.orders.values()].map(order => ({
         ...order.view,

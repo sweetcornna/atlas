@@ -165,6 +165,8 @@ function fromBilling<T>(error: unknown): Result<T> {
       return failed('not_found', '订单不存在')
     case 'channel_unavailable':
       return failed('invalid', '这个付款方式没有开通')
+    case 'not_live':
+      return failed('rejected', '未开通正式收款 · 暂不接受扫码付款')
     case 'plan_conflict':
       return failed('rejected', '已有别的套餐在有效期内 · 到期后再换')
     case 'order_open':
@@ -423,13 +425,16 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
 
   site(): BillingSiteView {
     const config = this.#options.config
+    // Without 正式收款 the QR channels stay wired for orders already out,
+    // but none takes a new one.
     return {
       sourceUrl: config.sourceUrl,
       termsUrl: config.termsUrl,
+      live: config.live,
       plans: this.service.plans(),
       channels: {
-        wechatpay: this.#channels.wechatpay !== undefined,
-        alipay: this.#channels.alipay !== undefined,
+        wechatpay: config.live && this.#channels.wechatpay !== undefined,
+        alipay: config.live && this.#channels.alipay !== undefined,
         redeem: config.channels.redeem.enabled,
       },
     }
@@ -595,6 +600,7 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
     }
     return ok({
       plans: snapshot.plans,
+      live: snapshot.live,
       channels: snapshot.channels,
       orders: snapshot.orders.map(order => ({
         ...orderView(order),

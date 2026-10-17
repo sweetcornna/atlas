@@ -67,6 +67,13 @@ const ORDER_WORD: Readonly<Record<BillingOrderStatus, string>> = {
 /** 模型怎么接：卡片下面那一句，文案门禁同其他页。 */
 export const BYOK_LINE = '模型用你自己的密钥接入 · 经平台网关统一调度'
 
+/** 没开正式收款时公开页上的那一句；开了就没有。 */
+function notLiveLine(site: BillingSiteView): string {
+  if (site.live) return ''
+  const tail = site.channels.redeem ? ' · 可用兑换码开通' : ''
+  return `<p class="bl-live note" role="note">未开通正式收款 · 暂不接受扫码付款${tail}</p>`
+}
+
 /** 整数分写成元：`9900` → `99`，`990` → `9.90`。 */
 function yuan(cents: number): string {
   return cents % 100 === 0 ? String(cents / 100) : (cents / 100).toFixed(2)
@@ -156,6 +163,7 @@ export function renderPlansPage(model: PlansPageModel): string {
     model.site,
     `<h1 class="page-title" id="page-title">套餐</h1>` +
       `<p class="bl-lead">按托管节点订阅 · 预付周期 · 到期不自动扣款</p>` +
+      notLiveLine(model.site) +
       `<div class="bl-plans">${model.site.plans.map(plan => planCard(plan)).join('')}</div>` +
       `<p class="bl-byok note">${escapeHtml(BYOK_LINE)}</p>` +
       `<div class="bl-actions">${links}</div>`,
@@ -380,7 +388,7 @@ function renewSection(
   return (
     `<section class="bl-sec" aria-labelledby="h-bl-renew">` +
     `<h2 id="h-bl-renew">${standing.active ? '续费' : '购买'}</h2>` +
-    `${cards}${redeem}</section>`
+    `${notLiveLine(site)}${cards}${redeem}</section>`
   )
 }
 
@@ -695,6 +703,11 @@ function adminChain(view: BillingAdminView, writer: boolean): string {
       tail: `<div class="kit-row">${check}</div>`,
     }) +
     `<p id="bl-chain">${line}</p>` +
+    `<p id="bl-live">${
+      view.live
+        ? state('warn', '正式收款已开通')
+        : state('muted', '未开通正式收款')
+    } · 由 billing.json 的 live 决定</p>` +
     `<p class="note">${tag('未评估')} 两种支付通道只对本地假服务测过 · 开始收取真实款项前须满足章程 §8 M3 的法律前置</p>` +
     `</section>`
   )

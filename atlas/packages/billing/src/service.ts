@@ -4,6 +4,11 @@
 /**
  * Subscription rules on top of the store and the channels.
  *
+ * - Real payments only when the config says so: with `live` off (the
+ *   default) a QR order is refused (`not_live`) before any row is written or
+ *   any provider is asked. The channels are still built, so orders placed
+ *   while it was on are queried, closed and settled. Redeem codes and grants
+ *   are not payments and work either way.
  * - Prepaid periods: every purchase, code or grant adds
  *   `periods × periodDays` to `max(now, endsAt)`. No recurring debit.
  * - One plan at a time: buying or redeeming a different plan while one is
@@ -85,6 +90,7 @@ export type BillingErrorCode =
   | 'invalid_argument'
   | 'unknown_plan'
   | 'channel_unavailable'
+  | 'not_live'
   | 'plan_conflict'
   | 'order_open'
   | 'provider_error'
@@ -142,6 +148,8 @@ export interface PublicPlan {
 
 export interface AdminSnapshot {
   readonly plans: readonly PublicPlan[]
+  /** `billing.json` `live`: may QR orders be placed with the providers. */
+  readonly live: boolean
   readonly channels: Readonly<Record<PaymentChannelId | 'redeem', boolean>>
   readonly orders: readonly OrderView[]
   readonly subscriptions: readonly {
@@ -307,6 +315,7 @@ export class BillingService {
     const now = this.#clock()
     return {
       plans: this.plans(),
+      live: this.#config.live,
       channels: {
         wechatpay: this.#channels.wechatpay !== undefined,
         alipay: this.#channels.alipay !== undefined,
@@ -358,6 +367,8 @@ export class BillingService {
     this.#assertSubject(subject)
     const plan = this.#plan(planId)
     const channel = this.#channel(channelId)
+    if (!this.#config.live)
+      throw new BillingError('not_live', '未开通正式收款，暂不接受扫码付款')
     return this.#serial(`order:${subject}`, async () => {
       const now = this.#clock()
       this.#assertPlanCompatible(subject, plan.id, now)

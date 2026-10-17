@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { inspect } from 'node:util'
 import { qianmoConfigDir } from '@qianmo/paths'
@@ -188,6 +188,36 @@ describe('parseBillingConfig', () => {
       parseBillingConfig(withWechat({ endpoint: 'http://127.0.0.1:9' }))
         .channels.wechatpay?.endpoint,
     ).toBe('http://127.0.0.1:9')
+  })
+
+  test('live is off unless the config says true', () => {
+    const { json } = setup()
+    const { live: _, ...unset } = json
+    expect(parseBillingConfig(unset).live).toBe(false)
+    expect(parseBillingConfig({ ...json, live: false }).live).toBe(false)
+    expect(parseBillingConfig(json).live).toBe(true)
+    for (const value of ['true', 1, null])
+      rejects({ ...json, live: value }, /\$\.live：必须是布尔值/)
+  })
+
+  test('the deployment example says live: false out loud', () => {
+    const example = JSON.parse(
+      readFileSync(
+        join(
+          import.meta.dir,
+          '..',
+          '..',
+          '..',
+          '..',
+          'demo',
+          'env',
+          'public',
+          'billing.example.json',
+        ),
+        'utf8',
+      ),
+    ) as Record<string, unknown>
+    expect(example['live']).toBe(false)
   })
 
   test('requires at least one channel; redeem alone is enough', () => {

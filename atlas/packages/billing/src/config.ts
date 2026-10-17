@@ -100,6 +100,15 @@ export interface AlipayConfig {
 export interface BillingConfig {
   readonly version: 1
   readonly currency: 'CNY'
+  /**
+   * 正式收款. Off (the default) means no QR order is ever placed with WeChat
+   * Pay or Alipay, whatever merchant numbers the channels carry; orders
+   * placed while it was on are still queried, closed and settled. Turning it
+   * on is the operator's explicit `"live": true`, and its precondition is
+   * the written conclusion on L-2 that charter §8 M3 requires before real
+   * money is taken.
+   */
+  readonly live: boolean
   /** AGPL §13: where users of a public deployment get the Corresponding Source. */
   readonly sourceUrl: string
   readonly termsUrl: string | null
@@ -481,6 +490,7 @@ export function parseBillingConfig(
   const root = object(input, '$', [
     'version',
     'currency',
+    'live',
     'sourceUrl',
     'termsUrl',
     'plans',
@@ -489,6 +499,8 @@ export function parseBillingConfig(
   ])
   if (root['version'] !== 1) fail('$.version', '只支持 1')
   if (root['currency'] !== 'CNY') fail('$.currency', '只支持 CNY')
+  const live = root['live'] === undefined ? false : root['live']
+  if (typeof live !== 'boolean') fail('$.live', '必须是布尔值')
   if (root['sourceUrl'] === undefined)
     fail('$.sourceUrl', '必填（AGPL 第 13 条：公开部署须提供对应源码）')
   const sourceUrl = httpsUrl(root['sourceUrl'], '$.sourceUrl').toString()
@@ -533,6 +545,7 @@ export function parseBillingConfig(
   return {
     version: 1,
     currency: 'CNY',
+    live,
     sourceUrl,
     termsUrl,
     plans,

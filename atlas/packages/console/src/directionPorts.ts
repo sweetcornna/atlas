@@ -1626,7 +1626,13 @@ export interface BillingSiteView {
   /** AGPL 第 13 条：每个公开页面页脚都给出这个链接。 */
   readonly sourceUrl: string
   readonly termsUrl: string | null
+  /**
+   * 正式收款是否开通（billing.json `live`，缺省关）。没开时不向支付平台下扫码订单，
+   * 页面写明「未开通正式收款」。
+   */
+  readonly live: boolean
   readonly plans: readonly BillingPlanView[]
+  /** 此刻能下单的收款方式：扫码通道要已配置且 {@link live}。 */
   readonly channels: {
     readonly wechatpay: boolean
     readonly alipay: boolean
@@ -1767,6 +1773,9 @@ export interface BillingRefundDueView {
 
 export interface BillingAdminView {
   readonly plans: readonly BillingPlanView[]
+  /** 正式收款是否开通（billing.json `live`）。 */
+  readonly live: boolean
+  /** 配置了哪些收款方式（不论是否开通正式收款）。 */
   readonly channels: BillingSiteView['channels']
   readonly orders: readonly BillingAdminOrderView[]
   readonly subscriptions: readonly BillingAdminSubscriptionView[]

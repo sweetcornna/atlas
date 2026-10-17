@@ -1,6 +1,7 @@
 {
   "version": 1,
   "currency": "CNY",
+  "live": false,
   "sourceUrl": "https://github.com/sweetcornna/atlas",
   "termsUrl": "https://qianmo.example.com/terms",
   "plans": [

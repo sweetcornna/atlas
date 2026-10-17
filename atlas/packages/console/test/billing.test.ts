@@ -663,6 +663,46 @@ describe('/subscription', () => {
   })
 })
 
+describe('the live switch', () => {
+  test('off: every page says 未开通正式收款, no QR checkout, redeem still offered', async () => {
+    const f = publicConsole()
+    f.billing.siteView = {
+      ...f.billing.siteView,
+      live: false,
+      channels: { wechatpay: false, alipay: false, redeem: true },
+    }
+    const plans = await (await f.handle(page('/plans'))).text()
+    expect(plans).toContain('未开通正式收款')
+    const mine = await (await f.handle(page('/subscription', f.unpaid))).text()
+    expect(mine).toContain('未开通正式收款')
+    expect(mine).not.toContain('name="channel"')
+    expect(mine).toContain('id="bl-redeem-form"')
+    const confirm = await f.handle(
+      page('/subscription/checkout?plan=month&channel=wechatpay', f.unpaid),
+    )
+    expect(confirm.status).toBe(400)
+    expect(await confirm.text()).toContain('未开通正式收款')
+    const admin = await (
+      await f.handle(page('/admin/billing', f.platform))
+    ).text()
+    expect(admin).toContain('id="bl-live"')
+    expect(admin).toContain('未开通正式收款')
+  })
+
+  test('on: no such line on the public pages; the admin page says it is on', async () => {
+    const f = publicConsole()
+    expect(f.billing.siteView.live).toBe(true)
+    for (const path of ['/plans', '/subscription']) {
+      const html = await (await f.handle(page(path, f.unpaid))).text()
+      expect(`${path} ${html.includes('未开通正式收款')}`).toBe(`${path} false`)
+    }
+    const admin = await (
+      await f.handle(page('/admin/billing', f.platform))
+    ).text()
+    expect(admin).toContain('正式收款已开通')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // The member API
 // ---------------------------------------------------------------------------
