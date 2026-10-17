@@ -1,0 +1,497 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+/**
+ * Each agent's runtime and model (P36.4): `runtimes.json` over the flags over
+ * the node default; an agent whose runtime cannot run is on qianmopi with a
+ * reason and comes back by itself; the default install runs in the background
+ * and retries after 5, 15 and 60 minutes.
+ */
+
+import { afterEach, beforeEach, expect, jest, test } from 'bun:test'
+import {
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
+import * as path from 'node:path'
+import { qianmoConfigPath } from '@qianmo/paths'
+import type { ControlContext } from '../../src/host/control.js'
+import {
+  NodeRuntimes,
+  type NodeRuntimesOptions,
+  type RuntimeAgentFlags,
+} from '../../src/host/runtimeConfig.js'
+import {
+  managedRuntimePrefix,
+  type RunCommand,
+  RuntimeInstaller,
+  type RuntimeUpdateOptions,
+} from '../../src/host/runtimeUpdate.js'
+import {
+  RUNTIME_CATALOG,
+  runtimeSpec,
+} from '../../src/host/runtimes/catalog.js'
+import type {
+  AgentRuntimeState,
+  RuntimeStatusReply,
+  RuntimeVersionsReply,
+} from '../../src/host/runtimes/contract.js'
+import { isolatedRoot } from '../providers/fake.js'
+
+const CTX: ControlContext = { peer: 'hub', actor: 'ops', taskId: 't' }
+const DSH_PIN = (() => {
+  const spec = runtimeSpec('dsh')!
+  return spec.install.kind === 'npm' ? spec.install.pin : ''
+})()
+
+let root: ReturnType<typeof isolatedRoot>
+const made: NodeRuntimes[] = []
+beforeEach(() => {
+  root = isolatedRoot()
+})
+afterEach(() => {
+  for (const runtimes of made.splice(0)) runtimes.stop()
+  jest.useRealTimers()
+  root.dispose()
+})
+
+interface Npm {
+  run: RunCommand
+  /** `npm install` calls so far (scratch and managed). */
+  installs: () => number
+  fail: boolean
+  node: string | null
+  /** Holds every scratch install until released. */
+  hold?: Promise<void>
+}
+
+function fakeNpm(): Npm {
+  const calls: string[][] = []
+  const npm: Npm = {
+    fail: false,
+    node: 'v24.1.0',
+    installs: () => calls.filter(argv => argv[1] === 'install').length,
+    run: async argv => {
+      calls.push([...argv])
+      if (argv[0] === 'node')
+        return npm.node === null
+          ? { code: 127, stdout: '' }
+          : { code: 0, stdout: npm.node }
+      if (argv[1] === 'install') {
+        await npm.hold
+        if (npm.fail) return { code: 1, stdout: 'ETARGET' }
+        const prefix = argv[argv.indexOf('--prefix') + 1]!
+        const entry = RUNTIME_CATALOG.find(
+          one =>
+            one.install.kind === 'npm' &&
+            argv.at(-1)!.startsWith(`${one.install.package}@`),
+        )!
+        const bin = path.join(prefix, 'node_modules', '.bin')
+        mkdirSync(bin, { recursive: true })
+        if (entry.install.kind === 'npm')
+          writeFileSync(path.join(bin, entry.install.command), '')
+        return { code: 0, stdout: '' }
+      }
+      const entry = RUNTIME_CATALOG.find(
+        one =>
+          one.install.kind === 'npm' &&
+          argv[0]!.endsWith(`/${one.install.command}`),
+      )
+      return {
+        code: 0,
+        stdout: entry?.install.kind === 'npm' ? entry.install.pin : '0.0.0',
+      }
+    },
+  }
+  return npm
+}
+
+const MODELS = new Set([
+  'magpie/deepseek-v4',
+  'luna/gpt-6',
+  'magpie/claude-opus-5',
+])
+
+function setup(
+  options: Partial<NodeRuntimesOptions> & {
+    agents?: readonly RuntimeAgentFlags[]
+    installer?: RuntimeUpdateOptions
+  } = {},
+) {
+  const npm = fakeNpm()
+  const smoke = { reason: null as string | null }
+  const installer = new RuntimeInstaller({
+    run: npm.run,
+    freeBytes: () => 64 * 1024 ** 3,
+    which: () => null,
+    smoke: async () => smoke.reason,
+    ...options.installer,
+  })
+  let main: string | undefined = 'magpie/deepseek-v4'
+  const changed: string[] = []
+  const runtimes = new NodeRuntimes({
+    agents: options.agents ?? [
+      { agent: 'main' },
+      { agent: 'coder', runtime: 'codex', model: 'luna/gpt-6' },
+      { agent: 'pi', runtime: 'omp' },
+    ],
+    installer,
+    credential: (spec, runtime) => {
+      if (!MODELS.has(spec))
+        throw new Error(
+          `model profile ${spec.split('/')[0]} is not applied on this node`,
+        )
+      return {
+        model: spec.slice(spec.indexOf('/') + 1),
+        baseUrl: 'http://127.0.0.1:9/v1',
+        apiKey: 'sk-test',
+        lane: runtimeSpec(runtime)!.lanes[0]!,
+      }
+    },
+    mainModel: () => main,
+    ...options,
+  })
+  made.push(runtimes)
+  runtimes.onChange(agent => changed.push(agent))
+  return {
+    runtimes,
+    installer,
+    npm,
+    smoke,
+    changed,
+    setMain: (value: string | undefined) => {
+      main = value
+    },
+  }
+}
+
+/** Lets the installer's promise chains run (no timers involved). */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 200; i++) await Promise.resolve()
+}
+
+function managed(command: string) {
+  const bin = path.join(managedRuntimePrefix(), 'node_modules', '.bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(path.join(bin, command), '')
+}
+
+const state = (runtimes: NodeRuntimes, agent: string): AgentRuntimeState =>
+  runtimes.state(agent)!
+
+test('runtime comes from runtimes.json, then the flags, then the node default (dsh)', async () => {
+  const file = qianmoConfigPath('qianmo', 'runtimes.json')
+  mkdirSync(path.dirname(file), { recursive: true })
+  writeFileSync(
+    file,
+    JSON.stringify({
+      v: 1,
+      agents: { coder: { runtime: 'qianmopi' }, main: { model: 'auto' } },
+    }),
+  )
+  const { runtimes } = setup()
+  expect(runtimes.defaultRuntime).toBe('dsh')
+  expect(runtimes.configured('main')).toEqual({
+    runtime: 'dsh',
+    source: 'default',
+    model: 'auto',
+  })
+  expect(runtimes.configured('coder')).toEqual({
+    runtime: 'omp',
+    source: 'config',
+    model: 'luna/gpt-6',
+  })
+  expect(runtimes.configured('pi')).toEqual({
+    runtime: 'omp',
+    source: 'flag',
+    model: null,
+  })
+  // `--default-runtime qianmopi` keeps everyone without a choice on omp.
+  const kept = setup({ defaultRuntime: 'qianmopi' }).runtimes
+  expect(kept.configured('main')).toMatchObject({
+    runtime: 'omp',
+    source: 'default',
+  })
+  expect(() => setup({ defaultRuntime: 'vim' })).toThrow('unknown default')
+})
+
+test('not installed: on qianmopi with the reason; installed: back on its runtime with model and lane', async () => {
+  const { runtimes, changed } = setup()
+  expect(state(runtimes, 'main')).toEqual({
+    agent: 'main',
+    configured: { runtime: 'dsh', source: 'default', model: null },
+    effective: { runtime: 'omp' },
+    reason: { code: 'not-installed', message: '节点上没有 DeepSeek Harness' },
+  })
+  expect(runtimes.effectiveRuntime('pi')).toBe('omp')
+  expect(state(runtimes, 'pi').reason).toBeUndefined()
+  // The binary shows up (an install, or an operator's copy) and a recompute
+  // (any of: install finished, configure, model service applied) sees it.
+  managed('dsh')
+  managed('codex')
+  expect(runtimes.recompute().sort()).toEqual(['coder', 'main'])
+  expect(changed.sort()).toEqual(['coder', 'main'])
+  expect(state(runtimes, 'main').effective).toEqual({
+    runtime: 'dsh',
+    model: 'magpie/deepseek-v4',
+    lane: 'openai-chat',
+  })
+  expect(state(runtimes, 'main').reason).toBeUndefined()
+  expect(state(runtimes, 'coder').effective).toEqual({
+    runtime: 'codex',
+    model: 'luna/gpt-6',
+    lane: 'openai-responses',
+  })
+  expect(runtimes.launch('coder')).toMatchObject({
+    model: 'gpt-6',
+    lane: 'openai-responses',
+  })
+  expect(() => runtimes.launch('pi')).toThrow('runs on qianmopi')
+})
+
+test('installing, then install-failed with the error, then back once a retry works', async () => {
+  const { runtimes, installer, npm, changed } = setup()
+  let release!: () => void
+  npm.hold = new Promise(done => {
+    release = done
+  })
+  const install = installer.install('dsh')
+  expect(state(runtimes, 'main').reason?.code).toBe('installing')
+  npm.fail = true
+  release()
+  expect((await install).ok).toBe(false)
+  expect(state(runtimes, 'main').reason).toEqual({
+    code: 'install-failed',
+    message: `npm 安装 @deepseek-ai/dsh@${DSH_PIN} 失败`,
+  })
+  expect(changed).toEqual([])
+  npm.hold = undefined
+  npm.fail = false
+  expect((await installer.install('dsh')).ok).toBe(true)
+  expect(state(runtimes, 'main').effective.runtime).toBe('dsh')
+  expect(changed).toEqual(['main'])
+})
+
+test('a failed compatibility check and a missing Node.js are reasons of their own', async () => {
+  const { runtimes, installer, npm, smoke } = setup()
+  smoke.reason = 'qianmo 工具不在工具列表里'
+  expect((await installer.install('dsh')).ok).toBe(false)
+  expect(state(runtimes, 'main').reason?.code).toBe('smoke-failed')
+  expect(state(runtimes, 'main').reason?.message).toContain(
+    'qianmo 工具不在工具列表里',
+  )
+  npm.node = null
+  expect((await installer.install('dsh')).ok).toBe(false)
+  expect(state(runtimes, 'main').reason).toMatchObject({ code: 'no-node' })
+  // Installed by hand, but the node has no Node.js it can run on.
+  managed('dsh')
+  await runtimes.start()
+  expect(state(runtimes, 'main').reason).toMatchObject({ code: 'no-node' })
+  npm.node = 'v24.2.0'
+  await runtimes.start()
+  expect(state(runtimes, 'main').effective.runtime).toBe('dsh')
+})
+
+test('no model: no --agent-model and no main model, or one the node does not have; back when the model service has it', async () => {
+  const { runtimes, setMain, changed } = setup({
+    agents: [
+      { agent: 'main' },
+      { agent: 'writer', runtime: 'claude-code', model: 'anthropic/claude-x' },
+    ],
+  })
+  managed('dsh')
+  managed('claude')
+  setMain(undefined)
+  runtimes.recompute()
+  expect(state(runtimes, 'main').reason).toEqual({
+    code: 'no-model',
+    message: '没有为它配置模型，节点也没有可用的主模型',
+  })
+  expect(state(runtimes, 'writer').reason?.code).toBe('no-model')
+  expect(state(runtimes, 'writer').reason?.message).toContain(
+    'anthropic is not applied',
+  )
+  // An explicit model never falls back to the main one.
+  setMain('magpie/deepseek-v4')
+  runtimes.recompute()
+  expect(state(runtimes, 'main').effective.model).toBe('magpie/deepseek-v4')
+  expect(state(runtimes, 'writer').effective.runtime).toBe('omp')
+  // The hub picks one through the console.
+  changed.length = 0
+  const configured = await runtimes.control(
+    'runtime.configure',
+    { agent: 'writer', model: 'magpie/claude-opus-5' },
+    CTX,
+  )
+  expect(configured).toMatchObject({
+    ok: true,
+    value: {
+      agent: 'writer',
+      configured: { runtime: 'claude-code', source: 'flag' },
+      effective: {
+        runtime: 'claude-code',
+        model: 'magpie/claude-opus-5',
+        lane: 'anthropic',
+      },
+    },
+  })
+  expect(changed).toEqual(['writer'])
+})
+
+test('runtime.configure validates agent, runtime and model, writes runtimes.json privately, and null clears', async () => {
+  const { runtimes, changed } = setup()
+  const configure = (args: Record<string, unknown>) =>
+    runtimes.control('runtime.configure', args, CTX)
+  expect(await configure({ agent: 'ghost', runtime: 'dsh' })).toMatchObject({
+    ok: false,
+    code: 'E_AGENT_UNKNOWN',
+  })
+  expect(await configure({ agent: 'main', runtime: 'vim' })).toMatchObject({
+    ok: false,
+    code: 'E_RUNTIME_UNKNOWN',
+  })
+  for (const model of ['gpt-6', '/x', 'a b/c', 3])
+    expect(await configure({ agent: 'main', model })).toMatchObject({
+      ok: false,
+      code: 'E_RUNTIME_MODEL',
+    })
+  expect(changed).toEqual([])
+  const file = qianmoConfigPath('qianmo', 'runtimes.json')
+  const set = await configure({
+    agent: 'main',
+    runtime: 'qianmopi',
+    model: 'auto',
+  })
+  expect(set).toMatchObject({
+    ok: true,
+    value: {
+      configured: { runtime: 'omp', source: 'config', model: 'auto' },
+      effective: { runtime: 'omp' },
+    },
+  })
+  expect(changed).toEqual(['main'])
+  expect(statSync(file).mode & 0o777).toBe(0o600)
+  expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({
+    v: 1,
+    agents: { main: { runtime: 'omp', model: 'auto' } },
+  })
+  // The same again changes nothing and recycles nobody.
+  await configure({ agent: 'main', runtime: 'omp' })
+  expect(changed).toEqual(['main'])
+  expect(
+    await configure({ agent: 'main', runtime: null, model: null }),
+  ).toMatchObject({
+    ok: true,
+    value: { configured: { runtime: 'dsh', source: 'default', model: null } },
+  })
+  expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ v: 1, agents: {} })
+  // A new process reads what was written.
+  await configure({ agent: 'coder', runtime: 'claude-code' })
+  const again = setup().runtimes
+  expect(again.configured('coder')).toMatchObject({
+    runtime: 'claude-code',
+    source: 'config',
+  })
+})
+
+test('runtime.status and runtime.versions answer per contract; remove refuses while agents are configured on it', async () => {
+  const { runtimes } = setup()
+  const status = await runtimes.control('runtime.status', {}, CTX)
+  expect(status.ok).toBe(true)
+  const reply = (status as { value: RuntimeStatusReply }).value
+  expect(reply.defaultRuntime).toBe('dsh')
+  expect(reply.agents.map(one => one.agent)).toEqual(['main', 'coder', 'pi'])
+  const versions = await runtimes.control('runtime.versions', {}, CTX)
+  expect(
+    (versions as { value: RuntimeVersionsReply }).value.defaultRuntime,
+  ).toBe('dsh')
+  managed('dsh')
+  const refused = await runtimes.control(
+    'runtime.remove',
+    { runtime: 'dsh' },
+    CTX,
+  )
+  expect(refused).toEqual({
+    ok: false,
+    code: 'E_RUNTIME_IN_USE',
+    message: 'DeepSeek Harness 正被这些智能体使用：main；先把它们改到别的底层',
+  })
+  expect(
+    await runtimes.control('runtime.remove', { runtime: 'qianmopi' }, CTX),
+  ).toMatchObject({ ok: false, code: 'E_RUNTIME_BUILTIN' })
+  expect(runtimes.inUse('codex')).toEqual(['coder'])
+})
+
+test('the default install runs at start in the background and retries after 5, 15 and 60 minutes', async () => {
+  jest.useFakeTimers()
+  const { runtimes, npm, changed } = setup({ autoInstall: true })
+  npm.fail = true
+  const started = runtimes.start()
+  await settle()
+  await started
+  await settle()
+  // Both configured npm runtimes (dsh by default, codex by flag) were tried.
+  expect(npm.installs()).toBe(2)
+  expect(state(runtimes, 'main').reason?.code).toBe('install-failed')
+  const tries = async (ms: number) => {
+    jest.advanceTimersByTime(ms)
+    await settle()
+    return npm.installs()
+  }
+  expect(await tries(5 * 60_000 - 1)).toBe(2)
+  expect(await tries(1)).toBe(4)
+  expect(await tries(15 * 60_000)).toBe(6)
+  expect(await tries(60 * 60_000)).toBe(8)
+  // Three retries per start, then no more.
+  expect(await tries(10 * 60 * 60_000)).toBe(8)
+  expect(changed).toEqual([])
+})
+
+test('a retry that works brings the agents over; stop() cancels what is pending; --no-runtime-autoinstall installs nothing', async () => {
+  jest.useFakeTimers()
+  const { runtimes, npm, changed } = setup({
+    autoInstall: true,
+    agents: [{ agent: 'main' }],
+  })
+  npm.fail = true
+  await runtimes.start()
+  await settle()
+  expect(npm.installs()).toBe(1)
+  npm.fail = false
+  jest.advanceTimersByTime(5 * 60_000)
+  await settle()
+  expect(state(runtimes, 'main').effective.runtime).toBe('dsh')
+  expect(changed).toEqual(['main'])
+
+  const second = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
+  rmSync(managedRuntimePrefix(), { recursive: true, force: true })
+  second.npm.fail = true
+  await second.runtimes.start()
+  await settle()
+  const before = second.npm.installs()
+  second.runtimes.stop()
+  jest.advanceTimersByTime(2 * 60 * 60_000)
+  await settle()
+  expect(second.npm.installs()).toBe(before)
+
+  const off = setup({ autoInstall: false, agents: [{ agent: 'main' }] })
+  await off.runtimes.start()
+  await settle()
+  expect(off.npm.installs()).toBe(0)
+})
+
+test('unmanaged (embedders): no fallback and no default install; agents run where they say', () => {
+  const runtimes = NodeRuntimes.unmanaged([
+    { agent: 'a' },
+    { agent: 'b', runtime: 'codex' },
+  ])
+  made.push(runtimes)
+  expect(runtimes.defaultRuntime).toBe('omp')
+  expect(runtimes.effectiveRuntime('a')).toBe('omp')
+  expect(runtimes.effectiveRuntime('b')).toBe('codex')
+  expect(runtimes.externalRuntimeOf('b')).toBe('codex')
+  expect(runtimes.externalRuntimeOf('a')).toBe('dsh')
+})

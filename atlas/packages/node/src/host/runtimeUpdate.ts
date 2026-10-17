@@ -32,6 +32,7 @@ import { readTextIfExists, writePrivateJson } from '../providers/store.js'
 import type { ControlHandler } from './control.js'
 import {
   DEFAULT_RUNTIME,
+  normalizeRuntimeId,
   type NpmInstall,
   RUNTIME_CATALOG,
   type RuntimeSpec,
@@ -510,13 +511,14 @@ export class RuntimeInstaller {
     kind: unknown,
     version: unknown,
   ): Extract<RuntimeInstallResult, { ok: false }> | NpmRuntime {
-    if (typeof kind !== 'string' || runtimeSpec(kind) === undefined)
+    const id = typeof kind === 'string' ? normalizeRuntimeId(kind) : undefined
+    if (id === undefined)
       return {
         ok: false,
         code: RUNTIME_ERRORS.unknownRuntime,
         message: `目录里没有这个底层：${String(kind)}`,
       }
-    const spec = npmRuntime(kind)
+    const spec = npmRuntime(id)
     if (spec === undefined)
       return {
         ok: false,
@@ -532,7 +534,7 @@ export class RuntimeInstaller {
         code: 'invalid',
         message: '版本号必须是确切的版本（如 1.2.3），不接受范围或标签',
       }
-    if (this.#options.bins?.[kind] !== undefined)
+    if (this.#options.bins?.[id] !== undefined)
       return {
         ok: false,
         code: 'refused',

@@ -14,7 +14,10 @@ import {
 import { LANE_KINDS, PRESETS } from '@qianmo/providers'
 import { compileProfile, LANE_API } from '../../src/providers/compile.js'
 import { getModelCompatCapabilities } from '../../src/providers/capabilities.js'
-import { runtimeModelCredential } from '../../src/providers/node.js'
+import {
+  nodeMainModelSpec,
+  runtimeModelCredential,
+} from '../../src/providers/node.js'
 import {
   ensurePrivateDir,
   providerPaths,
@@ -257,6 +260,13 @@ describe('omp compiler', () => {
         runtimeModelCredential('magpie-node-n1/api2/gpt-6-luna', 'codex')
           .baseUrl,
       ).toBe(lanes['openai-responses'])
+      // An agent with no model of its own takes the node's main one (P36
+      // §3.2), on the first lane its runtime speaks: Chat for dsh.
+      writePrivateJson(providerPaths.config(), compiled.config)
+      expect(nodeMainModelSpec()).toBe('magpie-node-n1/api2/gpt-6-luna')
+      expect(runtimeModelCredential(nodeMainModelSpec()!, 'dsh')).toMatchObject(
+        { lane: 'openai-chat', model: 'api2/gpt-6-luna' },
+      )
     } finally {
       store.close()
       fixture.dispose()

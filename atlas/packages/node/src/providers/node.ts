@@ -187,6 +187,16 @@ export function nodeModelSelection(
   return { provider, modelId, ...(thinkingLevel ? { thinkingLevel } : {}) }
 }
 /**
+ * The node's main model as `<profile>/<model>` (P36 §3.2): the console
+ * profile behind the provider `qm-<profile>-<hash>` of the default role.
+ */
+export function nodeMainModelSpec(): string | undefined {
+  const selection = nodeModelSelection()
+  if (selection === undefined) return undefined
+  const profile = /^qm-(.+)-[0-9a-f]{8}$/.exec(selection.provider)?.[1]
+  return `${profile ?? selection.provider}/${selection.modelId}`
+}
+/**
  * Address, key and model for an external-runtime agent, read from the model
  * service already applied to this node. `spec` is `<profile>/<model>`, where
  * `<profile>` is a console profile id or a full `qm-…` provider id. The lane
