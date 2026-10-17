@@ -4,10 +4,25 @@
 /**
  * Subscription rules on top of the store and the channels.
  *
+ * - Real payments only when the config says so: with `live` off (the
+ *   default) a QR order is refused (`not_live`) before any row is written or
+ *   any provider is asked. The channels are still built, so orders placed
+ *   while it was on are queried, closed and settled. Redeem codes and grants
+ *   are not payments and work either way.
  * - Prepaid periods: every purchase, code or grant adds
  *   `periods × periodDays` to `max(now, endsAt)`. No recurring debit.
  * - One plan at a time: buying or redeeming a different plan while one is
- *   active is refused; an operator grant may switch plans.
+ *   active is refused; an operator grant may switch plans. A payment that
+ *   settles while another plan is active (an order paid after it expired,
+ *   say) is recorded as paid and extends nothing: crediting it would switch
+ *   the plan and carry the old period over. It is listed as owed a refund
+ *   (`AdminSnapshot.refundsDue`) until the operator marks it refunded.
+ * - One payable plan per person: while an order for one plan can still be
+ *   paid, an order for another plan is refused (`order_open`), and order
+ *   creation is serialised per person. Refused rather than closing the old
+ *   order: an Alipay precreate QR nobody has scanned yet answers the close
+ *   with "no such trade" and can still be paid until its own timeout, so a
+ *   close would not make the old QR unpayable.
  * - A verified payment is never dropped. It is committed (order paid +
  *   subscription extended + gateway marked pending) in one transaction
  *   before the gateway is touched; a provisioning failure leaves the
@@ -75,7 +90,9 @@ export type BillingErrorCode =
   | 'invalid_argument'
   | 'unknown_plan'
   | 'channel_unavailable'
+  | 'not_live'
   | 'plan_conflict'
+  | 'order_open'
   | 'provider_error'
   | 'unknown_order'
   | 'invalid_code'
@@ -131,6 +148,8 @@ export interface PublicPlan {
 
 export interface AdminSnapshot {
   readonly plans: readonly PublicPlan[]
+  /** `billing.json` `live`: may QR orders be placed with the providers. */
+  readonly live: boolean
   readonly channels: Readonly<Record<PaymentChannelId | 'redeem', boolean>>
   readonly orders: readonly OrderView[]
   readonly subscriptions: readonly {
@@ -152,6 +171,20 @@ export interface AdminSnapshot {
     readonly expiresAt: number | null
     readonly usedBy: string | null
     readonly usedAt: number | null
+  }[]
+  /** Paid orders that extended nothing (another plan was active), not yet refunded. */
+  readonly refundsDue: readonly {
+    readonly orderId: string
+    readonly subject: string
+    readonly planId: string
+    /** The plan that was active when the order settled. */
+    readonly activePlanId: string
+    readonly amountCents: number
+    readonly channel: string
+    readonly outTradeNo: string
+    readonly paidAt: number | null
+    /** When the conflict was recorded. */
+    readonly at: number
   }[]
   readonly chain: ChainReport
 }
@@ -227,6 +260,7 @@ function errorName(error: unknown): string {
 
 type Settlement =
   | { readonly kind: 'settled'; readonly subject: string }
+  | { readonly kind: 'conflict' }
   | { readonly kind: 'duplicate' }
   | { readonly kind: 'mismatch'; readonly field: string }
 
@@ -281,6 +315,7 @@ export class BillingService {
     const now = this.#clock()
     return {
       plans: this.plans(),
+      live: this.#config.live,
       channels: {
         wechatpay: this.#channels.wechatpay !== undefined,
         alipay: this.#channels.alipay !== undefined,
@@ -307,6 +342,17 @@ export class BillingService {
         usedBy: row.usedBy,
         usedAt: row.usedAt,
       })),
+      refundsDue: this.#store.refundsDue(limit).map(row => ({
+        orderId: row.orderId,
+        subject: row.subject,
+        planId: row.planId,
+        activePlanId: row.activePlanId,
+        amountCents: row.amountCents,
+        channel: row.channel,
+        outTradeNo: row.outTradeNo,
+        paidAt: row.paidAt,
+        at: row.at,
+      })),
       chain: this.#store.verifyChain(),
     }
   }
@@ -321,9 +367,16 @@ export class BillingService {
     this.#assertSubject(subject)
     const plan = this.#plan(planId)
     const channel = this.#channel(channelId)
-    return this.#serial(`order:${subject}:${planId}:${channelId}`, async () => {
+    if (!this.#config.live)
+      throw new BillingError('not_live', '未开通正式收款，暂不接受扫码付款')
+    return this.#serial(`order:${subject}`, async () => {
       const now = this.#clock()
       this.#assertPlanCompatible(subject, plan.id, now)
+      if (this.#store.openOrderOfOtherPlan(subject, plan.id, now) !== null)
+        throw new BillingError(
+          'order_open',
+          '另一个套餐还有待支付的订单，付款或等它过期后再下单',
+        )
       const open = this.#store.openOrder(
         subject,
         plan.id,
@@ -537,6 +590,7 @@ export class BillingService {
           this.#log(`billing: ${paid.id} 重复支付通知的交易号不同`)
         return { kind: 'duplicate' }
       }
+      const current = this.#store.subscription(paid.subject)
       this.#store.markOrderPaid(
         paid.id,
         {
@@ -546,6 +600,27 @@ export class BillingService {
         },
         now,
       )
+      if (
+        current !== null &&
+        current.endsAt > now &&
+        current.planId !== paid.planId
+      ) {
+        // The money is in; crediting it would switch the plan and keep the
+        // other plan's days. Recorded, not credited, owed a refund.
+        this.#store.recordConflict(
+          {
+            orderId: paid.id,
+            subject: paid.subject,
+            planId: paid.planId,
+            activePlanId: current.planId,
+          },
+          now,
+        )
+        this.#log(
+          `billing: ${paid.id} 付款时已有别的套餐在有效期内 · 记已付不延长 · 待退款`,
+        )
+        return { kind: 'conflict' }
+      }
       this.#extend(
         paid.subject,
         paid.planId,
@@ -667,8 +742,11 @@ export class BillingService {
   }
 
   /**
-   * Record a refund made in the merchant console and take the order's
-   * period back off the subscription.
+   * Record a refund made in the merchant console and take back what the
+   * order put into the current run: its days, if it was paid since the run
+   * began and was credited, and never past the run's start. An order from an
+   * earlier, lapsed period, or one that extended nothing (a conflict), leaves
+   * the subscription as it is.
    */
   async markRefunded(
     by: string,
@@ -684,13 +762,22 @@ export class BillingService {
       if (!this.#store.markOrderRefunded(orderId, by, reason, now))
         throw new BillingError('not_paid', '只有已支付的订单才能记退款')
       const row = this.#store.subscription(order.subject)
-      if (row !== null)
+      const credited =
+        row !== null &&
+        row.endsAt > now &&
+        order.paidAt !== null &&
+        order.paidAt >= row.startsAt &&
+        this.#store.conflict(orderId) === null
+      if (credited)
         this.#store.saveSubscription(
           {
             subject: row.subject,
             planId: row.planId,
             startsAt: row.startsAt,
-            endsAt: row.endsAt - order.periodDays * DAY_MS,
+            endsAt: Math.max(
+              row.startsAt,
+              row.endsAt - order.periodDays * DAY_MS,
+            ),
           },
           { cause: 'refund', ref: orderId, by, reason },
           now,

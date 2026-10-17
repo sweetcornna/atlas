@@ -350,6 +350,8 @@ beforeEach(async () => {
     config: parseBillingConfig({
       version: 1,
       currency: 'CNY',
+      // The channel is the in-file fake; nothing real is charged.
+      live: true,
       sourceUrl: 'https://github.com/sweetcornna/atlas',
       termsUrl: null,
       plans: [

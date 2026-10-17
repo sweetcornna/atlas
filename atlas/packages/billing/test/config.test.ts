@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { inspect } from 'node:util'
 import { qianmoConfigDir } from '@qianmo/paths'
@@ -190,6 +190,36 @@ describe('parseBillingConfig', () => {
     ).toBe('http://127.0.0.1:9')
   })
 
+  test('live is off unless the config says true', () => {
+    const { json } = setup()
+    const { live: _, ...unset } = json
+    expect(parseBillingConfig(unset).live).toBe(false)
+    expect(parseBillingConfig({ ...json, live: false }).live).toBe(false)
+    expect(parseBillingConfig(json).live).toBe(true)
+    for (const value of ['true', 1, null])
+      rejects({ ...json, live: value }, /\$\.live：必须是布尔值/)
+  })
+
+  test('the deployment example says live: false out loud', () => {
+    const example = JSON.parse(
+      readFileSync(
+        join(
+          import.meta.dir,
+          '..',
+          '..',
+          '..',
+          '..',
+          'demo',
+          'env',
+          'public',
+          'billing.example.json',
+        ),
+        'utf8',
+      ),
+    ) as Record<string, unknown>
+    expect(example['live']).toBe(false)
+  })
+
   test('requires at least one channel; redeem alone is enough', () => {
     const { json } = setup()
     rejects({ ...json, channels: {} }, /至少启用一个渠道/)
@@ -213,6 +243,30 @@ describe('parseBillingConfig', () => {
     }
     expect(message).toMatch(/apiV3KeyFile.*32 字节/)
     expect(message).not.toContain(secret)
+  })
+
+  test('Alipay needs the seller id the notifications are checked against', () => {
+    const { json } = setup()
+    const without = structuredClone(json['channels']) as Record<
+      string,
+      Record<string, unknown>
+    >
+    delete without['alipay']!['sellerId']
+    rejects(
+      { ...json, channels: without },
+      /alipay\.sellerId：必须是非空字符串/,
+    )
+    for (const sellerId of ['2021000122671080', '2088123', 2088000000000001]) {
+      const channels = structuredClone(json['channels']) as Record<
+        string,
+        Record<string, unknown>
+      >
+      channels['alipay']!['sellerId'] = sellerId
+      rejects({ ...json, channels }, /alipay\.sellerId/)
+    }
+    expect(parseBillingConfig(json).channels.alipay?.sellerId).toBe(
+      '2088000000000001',
+    )
   })
 
   test('readSecret is injectable', () => {

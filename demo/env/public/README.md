@@ -23,7 +23,9 @@
 2. 装 magpie，按 `magpie.service` 起来；`/etc/qianmo/magpie.env`（0600）里写 `MAGPIE_WEB_KEY`
    与网关的地址、证书。
 3. 准备计费配置：复制 `billing.example.json` 到 `--billing` 指向的位置（0600），**把每个套餐的
-   `priceCents` 改成真实价格**，填商户号、应用号与密钥文件路径；密钥文件都要 0600。
+   `priceCents` 改成真实价格**，填商户号、应用号、支付宝的卖家 ID（`sellerId`，`2088` 开头，回调的
+   `seller_id` 要与它相同）与密钥文件路径；密钥文件都要 0600。`live` 保持 `false`（未开通正式收款：
+   不向支付平台下单，只能用兑换码），见文末。
 4. 准备租户配置（`--tenancy`，0600）：`platformSubjects` 写平台运维的个人账号；订阅者的租户
    由中枢在开通时自动建，平台运维只需要把节点写进 `nodes`、分给对应的租户。
 5. 按 `qm-public-console.service` 起控制台；对外经 TLS 前置转发到 `127.0.0.1:38613`。两条支付
@@ -48,7 +50,8 @@
 ## 做不到的事
 
 - 两种支付通道只对本地假服务测过，没有对真实商户号跑过（未评估）。开始收取真实款项前须满足
-  章程 §8 M3 的法律前置。
+  章程 §8 M3 的法律前置（L-2 取得书面结论）；在那之前计费配置的 `live` 保持 `false`，中枢不向
+  微信支付、支付宝下单，启动横幅的 `payments` 一行与各页面都写明「未开通正式收款」。
 - `magpie.service` 没有对真实 magpie 跑过；网关监听、TLS 与 IP 放行按 magpie 自己的文档填。
 - 节点的 SSH 动作、对话通道（`--chat-url`、`--chat-sign`、`--trust`）与本模板无关，按
   `docs/dev/console.md` 另行配置。

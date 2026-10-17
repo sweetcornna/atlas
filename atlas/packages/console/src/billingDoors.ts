@@ -23,8 +23,10 @@
  * by a non-platform person (or a device acting for one) whose subscription
  * is not active answers **402 `subscription_required`**, whatever route it
  * was for. Reads pass (their own history stays readable), and so do the
- * doors and the two writes that make a person a subscriber: checkout and
- * redeem. Platform subjects and break-glass are never gated.
+ * doors, the two writes that make a person a subscriber (checkout and
+ * redeem), and `DELETE /v0/billing/models/<id>`: a lapsed subscriber can
+ * still take their own upstream key back out of the gateway. Platform
+ * subjects and break-glass are never gated.
  *
  * `/` (`publicFrontDoor`) follows the same standing: signed out it is the
  * plans page; signed in without a subscription a card that points at
@@ -88,9 +90,38 @@ export function notifyChannelOf(segments: readonly string[]): string | null {
 }
 
 /**
+ * The body as UTF-8 text, or `null` once it passes `limit` bytes: reading
+ * stops there and the stream is cancelled, so a sender without a
+ * `Content-Length` cannot make the hub hold more than the cap.
+ */
+async function boundedText(
+  request: Request,
+  limit: number,
+): Promise<string | null> {
+  if (request.body === null) return ''
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let bytes = 0
+  try {
+    for (;;) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      bytes += chunk.value.byteLength
+      if (bytes > limit) return null
+      chunks.push(chunk.value)
+    }
+  } finally {
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+/**
  * One payment notification: public, no login, no console header. The body
- * is read once as text and handed over untouched — the signature covers
- * those exact bytes — and the channel's reply goes back as it is.
+ * is read once (at most {@link MAX_NOTIFY_BYTES}, as a stream) and handed
+ * over untouched — the signature covers those exact bytes — and the
+ * channel's reply goes back as it is.
  */
 export async function serveBillingNotify(
   request: Request,
@@ -105,9 +136,8 @@ export async function serveBillingNotify(
     await request.body?.cancel()
     return fail(413, 'invalid', '通知过大')
   }
-  const rawBody = await request.text()
-  if (Buffer.byteLength(rawBody, 'utf8') > MAX_NOTIFY_BYTES)
-    return fail(413, 'invalid', '通知过大')
+  const rawBody = await boundedText(request, MAX_NOTIFY_BYTES)
+  if (rawBody === null) return fail(413, 'invalid', '通知过大')
   const contentType = request.headers.get('content-type')
   const reply = await billing.notify(channel, {
     headers: request.headers,
@@ -124,8 +154,8 @@ export async function serveBillingNotify(
 
 // --- the gate ----------------------------------------------------------
 
-/** Paths a person without a subscription may still write to. */
-function ungated(segments: readonly string[]): boolean {
+/** Writes a person without a subscription may still make. */
+function ungated(method: string, segments: readonly string[]): boolean {
   const [head, second, third] = segments
   if (
     segments.length === 1 &&
@@ -133,12 +163,10 @@ function ungated(segments: readonly string[]): boolean {
   )
     return true
   if (head === 'subscription' && second === 'checkout') return true
-  return (
-    head === 'v0' &&
-    second === 'billing' &&
-    segments.length === 3 &&
-    (third === 'checkout' || third === 'redeem')
-  )
+  if (head !== 'v0' || second !== 'billing') return false
+  if (segments.length === 3) return third === 'checkout' || third === 'redeem'
+  // Their own upstream key, out of the gateway, whatever their standing.
+  return segments.length === 4 && third === 'models' && method === 'DELETE'
 }
 
 /**
@@ -189,7 +217,7 @@ export async function subscriptionDenial(
   // The legacy tokens are the platform's own (and the view token is off in
   // the public edition).
   if (subject === null) return null
-  if (ungated(segments)) return null
+  if (ungated(request.method, segments)) return null
   const standing = await billing.standing(subject)
   if (standing.active) return null
   return fail(402, 'subscription_required', '需要有效订阅 · 在订阅页购买或续费')
@@ -362,6 +390,8 @@ async function serveCheckout(
   const channel = url.searchParams.get('channel')
   const plan = site.plans.find(one => one.id === planId)
   if (plan === undefined) return notFound('套餐不存在')
+  if (!site.live)
+    return fail(400, 'invalid', '未开通正式收款 · 暂不接受扫码付款')
   if (!isChannel(channel) || !site.channels[channel])
     return fail(400, 'invalid', '这个付款方式没有开通')
   return html(

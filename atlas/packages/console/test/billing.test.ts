@@ -19,6 +19,7 @@ import {
   CONSOLE_HEADER,
   accountsHarness,
   asBearer,
+  person,
 } from './accountsHarness.js'
 import { MAX_NOTIFY_BYTES } from '../src/billingDoors.js'
 import { publicConsole, signNotify, type PublicPerson } from './billingFake.js'
@@ -124,17 +125,20 @@ describe('the default edition has none of it', () => {
     ).text()
     expect(shell).not.toContain('href="/admin/billing"')
     // A write by a member is not gated by anything that is not there.
-    const member = await h.handle(
+    const member = await person(h.handle, 'member')
+    const written = await h.handle(
       new Request(`${BASE}/v0/billing/redeem`, {
         method: 'POST',
         headers: {
-          authorization: `Bearer ${ADMIN}`,
+          authorization: `Bearer ${member.credential}`,
+          [CONSOLE_HEADER]: '1',
           'content-type': 'application/json',
         },
         body: '{}',
       }),
     )
-    expect(member.status).not.toBe(402)
+    expect(written.status).toBe(501)
+    expect(await errorCode(written)).not.toBe('subscription_required')
   })
 })
 
@@ -260,7 +264,7 @@ function documentedWrites(): readonly (readonly [string, string])[] {
 }
 
 /** Writes a person without a subscription may still make, and why. */
-function ungated(path: string): boolean {
+function ungated(method: string, path: string): boolean {
   const parts = path.split('/').filter(Boolean)
   // The doors that make or end a session.
   if (['/login', '/logout', '/signup', '/invite'].includes(path)) return true
@@ -275,6 +279,15 @@ function ungated(path: string): boolean {
     return true
   // Answered before any credential is read.
   if (parts[0] === 'v0' && parts[1] === 'billing' && parts[2] === 'notify')
+    return true
+  // Taking one's own upstream key back out of the gateway, lapsed or not.
+  if (
+    method === 'DELETE' &&
+    parts.length === 4 &&
+    parts[0] === 'v0' &&
+    parts[1] === 'billing' &&
+    parts[2] === 'models'
+  )
     return true
   return path === '/v0/handoff/pair'
 }
@@ -315,11 +328,48 @@ describe('the subscription gate (one place, every write)', () => {
     for (const who of ['unpaid', 'expired', 'ops'] as const) {
       const f = publicConsole()
       const { gated, passed } = await walk(f, f[who])
-      const wrong = passed.filter(line => !ungated(line.split(' ')[1] ?? ''))
+      const wrong = passed.filter(line => {
+        const [method = '', path = ''] = line.split(' ')
+        return !ungated(method, path)
+      })
       expect(`${who} ${wrong.join(', ')}`).toBe(`${who} `)
       expect(gated.length).toBeGreaterThan(70)
       // Nothing behind the gate ran: no line in the action ledger.
       expect(f.actions.entries.filter(e => e.outcome === 'ok')).toEqual([])
+    }
+  })
+
+  test('a lapsed subscriber can still take their own upstream key out', async () => {
+    const f = publicConsole()
+    f.billing.upstreams.set(f.expired.subject, [
+      {
+        id: 'openai-1',
+        name: 'expired-openai',
+        preset: 'openai',
+        models: 2,
+        ready: true,
+        present: true,
+      },
+    ])
+    const removed = await f.handle(
+      call('DELETE', '/v0/billing/models/openai-1', f.expired),
+    )
+    expect(removed.status).toBe(204)
+    expect(
+      f.actions.entries.map(
+        e => `${e.subject} ${e.action} ${e.target} ${e.outcome}`,
+      ),
+    ).toEqual([`${f.expired.subject} billing.model.remove openai-1 ok`])
+    // Adding one is still for subscribers, and only DELETE is let through.
+    for (const [method, path, body] of [
+      ['POST', '/v0/billing/models', { preset: 'openai', key: 'sk-1' }],
+      ['POST', '/v0/billing/models/openai-1', {}],
+      ['PUT', '/v0/billing/models/openai-1', {}],
+    ] as const) {
+      const response = await f.handle(call(method, path, f.expired, body))
+      expect(`${method} ${path} ${response.status}`).toBe(
+        `${method} ${path} 402`,
+      )
     }
   })
 
@@ -329,6 +379,35 @@ describe('the subscription gate (one place, every write)', () => {
       const { gated } = await walk(f, f[who])
       expect(`${who} ${gated.join(', ')}`).toBe(`${who} `)
     }
+  })
+
+  test('a device acts with its owner’s standing', async () => {
+    const f = publicConsole({ devices: true })
+    const device = (owner: PublicPerson, method: string, path: string) =>
+      f.handle(
+        new Request(`${BASE}${path}`, {
+          method,
+          headers: {
+            authorization: `Bearer ${f.deviceOf(owner)}`,
+            'content-type': 'application/json',
+          },
+          ...(method === 'GET' ? {} : { body: '{}' }),
+        }),
+      )
+    for (const owner of [f.unpaid, f.expired, f.ops]) {
+      const refused = await device(owner, 'POST', '/v0/handoff/task/send')
+      expect(refused.status).toBe(402)
+      expect(await errorCode(refused)).toBe('subscription_required')
+    }
+    for (const owner of [f.paid, f.waiting, f.platform]) {
+      const passed = await device(owner, 'POST', '/v0/handoff/task/send')
+      expect(passed.status).not.toBe(402)
+      await passed.body?.cancel()
+    }
+    // A device's read is not gated either.
+    const read = await device(f.unpaid, 'GET', '/v0/handoff/devices')
+    expect(read.status).not.toBe(402)
+    await read.body?.cancel()
   })
 
   test('reads are not gated, and neither is the legacy admin token', async () => {
@@ -389,6 +468,30 @@ describe('payment notifications', () => {
     const bad = await f.handle(notify('wechatpay', '{"x":1}', false))
     expect(bad.status).toBe(401)
     expect(await bad.text()).toBe('FAIL')
+  })
+
+  test('a body without a length is read only up to the cap, then refused', async () => {
+    const f = publicConsole()
+    const chunk = new Uint8Array(16 * 1024).fill(0x78)
+    let pulled = 0
+    // 16 MiB if read to the end; the cap is 64 KiB.
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1
+        if (pulled > 1024) controller.close()
+        else controller.enqueue(chunk)
+      },
+    })
+    const request = new Request(`${BASE}/v0/billing/notify/alipay`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+    })
+    expect(request.headers.get('content-length')).toBeNull()
+    const response = await f.handle(request)
+    expect(response.status).toBe(413)
+    expect(pulled).toBeLessThan(16)
+    expect(f.billing.notified).toEqual([])
   })
 
   test('only POST, only the two channels, nothing oversized', async () => {
@@ -560,6 +663,46 @@ describe('/subscription', () => {
   })
 })
 
+describe('the live switch', () => {
+  test('off: every page says 未开通正式收款, no QR checkout, redeem still offered', async () => {
+    const f = publicConsole()
+    f.billing.siteView = {
+      ...f.billing.siteView,
+      live: false,
+      channels: { wechatpay: false, alipay: false, redeem: true },
+    }
+    const plans = await (await f.handle(page('/plans'))).text()
+    expect(plans).toContain('未开通正式收款')
+    const mine = await (await f.handle(page('/subscription', f.unpaid))).text()
+    expect(mine).toContain('未开通正式收款')
+    expect(mine).not.toContain('name="channel"')
+    expect(mine).toContain('id="bl-redeem-form"')
+    const confirm = await f.handle(
+      page('/subscription/checkout?plan=month&channel=wechatpay', f.unpaid),
+    )
+    expect(confirm.status).toBe(400)
+    expect(await confirm.text()).toContain('未开通正式收款')
+    const admin = await (
+      await f.handle(page('/admin/billing', f.platform))
+    ).text()
+    expect(admin).toContain('id="bl-live"')
+    expect(admin).toContain('未开通正式收款')
+  })
+
+  test('on: no such line on the public pages; the admin page says it is on', async () => {
+    const f = publicConsole()
+    expect(f.billing.siteView.live).toBe(true)
+    for (const path of ['/plans', '/subscription']) {
+      const html = await (await f.handle(page(path, f.unpaid))).text()
+      expect(`${path} ${html.includes('未开通正式收款')}`).toBe(`${path} false`)
+    }
+    const admin = await (
+      await f.handle(page('/admin/billing', f.platform))
+    ).text()
+    expect(admin).toContain('正式收款已开通')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // The member API
 // ---------------------------------------------------------------------------
@@ -721,6 +864,52 @@ describe('订阅 for platform ops', () => {
       `billing.grant ${f.unpaid.subject} ok`,
       `billing.refund ${orderId} ok`,
     ])
+  })
+
+  test('orders paid while another plan was active are listed as owed a refund', async () => {
+    const f = publicConsole()
+    const orderId = await checkout(f, f.expired)
+    f.billing.pay(orderId)
+    f.billing.refundsDue = [
+      {
+        orderId,
+        subject: f.expired.subject,
+        planId: 'month',
+        activePlanId: 'pro',
+        amountCents: 9900,
+        channel: 'wechatpay',
+        outTradeNo: 'Q'.repeat(32),
+        paidAt: f.now,
+      },
+    ]
+    const html = await (
+      await f.handle(page('/admin/billing', f.platform))
+    ).text()
+    expect(html).toContain('id="h-bl-a-refunds">待退款</h2>')
+    const section = html.slice(html.indexOf('id="h-bl-a-refunds"'))
+    expect(section).toContain(`data-key="${orderId}"`)
+    expect(section).toContain('团队')
+    expect(section).toContain(`data-action="bl-refund" data-order="${orderId}"`)
+    expect(html).toContain('已支付 · 待退款')
+    // A reader who cannot write sees the list without the button.
+    const reader = publicConsole({ breakGlass: true })
+    const readerOrder = await checkout(reader, reader.expired)
+    reader.billing.pay(readerOrder)
+    reader.billing.refundsDue = f.billing.refundsDue.map(row => ({
+      ...row,
+      orderId: readerOrder,
+    }))
+    const read = await (
+      await reader.handle(page('/admin/billing', ADMIN))
+    ).text()
+    expect(read).toContain('id="h-bl-a-refunds">待退款</h2>')
+    expect(read).not.toContain('data-action="bl-refund"')
+    // Nothing owed: no section.
+    f.billing.refundsDue = []
+    const none = await (
+      await f.handle(page('/admin/billing', f.platform))
+    ).text()
+    expect(none).not.toContain('h-bl-a-refunds')
   })
 
   test('admin input is checked before the port', async () => {

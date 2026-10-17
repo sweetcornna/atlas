@@ -23,10 +23,12 @@ import type {
   BillingOrderView,
   BillingPort,
   BillingPresetView,
+  BillingRefundDueView,
   BillingSiteView,
   BillingStanding,
   BillingUpstreamView,
   DirectionActor,
+  HandoffDevicesPort,
 } from '../src/directionPorts.js'
 import { createConsoleHandler } from '../src/http.js'
 import type { TenantConfig, TenantPort } from '../src/tenancy.js'
@@ -77,6 +79,7 @@ export class FakeBilling implements BillingPort {
   siteView: BillingSiteView = {
     sourceUrl: 'https://github.com/sweetcornna/atlas',
     termsUrl: 'https://qianmo.example/terms',
+    live: true,
     plans: [
       {
         id: 'month',
@@ -101,6 +104,8 @@ export class FakeBilling implements BillingPort {
   readonly orders = new Map<string, Order>()
   readonly upstreams = new Map<string, BillingUpstreamView[]>()
   readonly codesIssued: string[] = []
+  /** What `admin()` lists as owed a refund; a test sets it. */
+  refundsDue: readonly BillingRefundDueView[] = []
   presetList: readonly BillingPresetView[] = [
     { id: 'anthropic', name: 'Anthropic' },
     { id: 'openai', name: 'OpenAI' },
@@ -340,6 +345,7 @@ export class FakeBilling implements BillingPort {
     this.calls.push('admin')
     return ok({
       plans: this.siteView.plans,
+      live: this.siteView.live,
       channels: this.siteView.channels,
       orders: [...this.orders.values()].map(order => ({
         ...order.view,
@@ -369,6 +375,7 @@ export class FakeBilling implements BillingPort {
         usedBy: null,
         usedAt: null,
       })),
+      refundsDue: this.refundsDue,
       chain: { ok: true, events: this.orders.size },
     })
   }
@@ -453,9 +460,16 @@ export interface PublicPerson {
  * | `paid` | active, `t-paid` with `tokyo-1` |
  * | `platform` | ops and a platform subject |
  * | `ops` | ops, not a platform subject |
+ *
+ * With `devices`, each person also has a paired handoff device
+ * ({@link deviceOf}) that acts for them.
  */
 export function publicConsole(
-  options: { readonly tenancy?: boolean; readonly breakGlass?: boolean } = {},
+  options: {
+    readonly tenancy?: boolean
+    readonly breakGlass?: boolean
+    readonly devices?: boolean
+  } = {},
 ) {
   const now = 1_700_000_000_000
   const billing = new FakeBilling(() => now)
@@ -510,6 +524,29 @@ export function publicConsole(
     read: () => ({ config, revision: String(revision) }),
     subscribe: () => () => {},
   }
+  const deviceOf = (who: PublicPerson): string => `qmd_${who.subject.slice(2)}`
+  const owners = new Map(
+    [unpaid, expired, waiting, paid, platform, ops].map(
+      who => [deviceOf(who), who.subject] as const,
+    ),
+  )
+  const handoffDevices: HandoffDevicesPort = {
+    authenticate: token => {
+      const owner = owners.get(token)
+      return owner === undefined
+        ? null
+        : { deviceId: `d-${owner.slice(2, 14)}`, owner }
+    },
+    listDevices: async () => ({ ok: true, value: [] }),
+    issuePairing: async () => ({
+      ok: false,
+      failure: { code: 'rejected', message: '测试里不配对' },
+    }),
+    revokeDevice: async () => ({
+      ok: false,
+      failure: { code: 'not_found', message: '没有这个设备' },
+    }),
+  }
   const actions = new MemoryActionLedger()
   const chat = new CountingChat()
   const deps: ConsoleDeps = {
@@ -522,6 +559,7 @@ export function publicConsole(
     actions,
     billing,
     ...(options.tenancy === false ? {} : { tenancy }),
+    ...(options.devices === true ? { handoffDevices } : {}),
   }
   const handle = createConsoleHandler(deps, TOKENS, {
     book,
@@ -541,6 +579,8 @@ export function publicConsole(
     paid,
     platform,
     ops,
+    /** The bearer of the handoff device paired to `who` (with `devices`). */
+    deviceOf,
     /** A new tenant revision, the way a provisioner's write makes one. */
     bump(): void {
       config = { ...config }

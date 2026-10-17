@@ -67,6 +67,13 @@ const ORDER_WORD: Readonly<Record<BillingOrderStatus, string>> = {
 /** 模型怎么接：卡片下面那一句，文案门禁同其他页。 */
 export const BYOK_LINE = '模型用你自己的密钥接入 · 经平台网关统一调度'
 
+/** 没开正式收款时公开页上的那一句；开了就没有。 */
+function notLiveLine(site: BillingSiteView): string {
+  if (site.live) return ''
+  const tail = site.channels.redeem ? ' · 可用兑换码开通' : ''
+  return `<p class="bl-live note" role="note">未开通正式收款 · 暂不接受扫码付款${tail}</p>`
+}
+
 /** 整数分写成元：`9900` → `99`，`990` → `9.90`。 */
 function yuan(cents: number): string {
   return cents % 100 === 0 ? String(cents / 100) : (cents / 100).toFixed(2)
@@ -156,6 +163,7 @@ export function renderPlansPage(model: PlansPageModel): string {
     model.site,
     `<h1 class="page-title" id="page-title">套餐</h1>` +
       `<p class="bl-lead">按托管节点订阅 · 预付周期 · 到期不自动扣款</p>` +
+      notLiveLine(model.site) +
       `<div class="bl-plans">${model.site.plans.map(plan => planCard(plan)).join('')}</div>` +
       `<p class="bl-byok note">${escapeHtml(BYOK_LINE)}</p>` +
       `<div class="bl-actions">${links}</div>`,
@@ -380,7 +388,7 @@ function renewSection(
   return (
     `<section class="bl-sec" aria-labelledby="h-bl-renew">` +
     `<h2 id="h-bl-renew">${standing.active ? '续费' : '购买'}</h2>` +
-    `${cards}${redeem}</section>`
+    `${notLiveLine(site)}${cards}${redeem}</section>`
   )
 }
 
@@ -529,13 +537,60 @@ function mono(text: string): string {
   return `<span class="kit-mono">${escapeHtml(text)}</span>`
 }
 
+/** 付了款却因套餐冲突没有计入的订单；没有就不出这一块。 */
+function adminRefundsDue(view: BillingAdminView, writer: boolean): string {
+  if (view.refundsDue.length === 0) return ''
+  const rows = view.refundsDue.map(
+    row =>
+      `<tr data-key="${attr(row.orderId)}"><td>${row.paidAt === null ? absent() : timeTag(row.paidAt, 'minute')}</td>` +
+      `<td>${mono(row.subject)}</td><td>${escapeHtml(planName(view.plans, row.planId))}</td>` +
+      `<td>${escapeHtml(planName(view.plans, row.activePlanId))}</td>` +
+      `<td>${escapeHtml(yuan(row.amountCents))} 元</td><td>${escapeHtml(channelName(row.channel))}</td>` +
+      `<td>${mono(row.outTradeNo)}</td>` +
+      (writer
+        ? `<td class="acts">${actionButton('bl-refund', '登记退款', {
+            tone: 'ghost',
+            data: { order: row.orderId },
+          })}</td>`
+        : '') +
+      `</tr>`,
+  )
+  return (
+    `<section class="sec" aria-labelledby="h-bl-a-refunds">` +
+    sectionHead('Refunds due', '待退款', { headingId: 'h-bl-a-refunds' }) +
+    `<p class="note">付款时这个账号有别的套餐在有效期内 · 钱已到账 · 订阅没有改动 · 在商户平台退款后在这里登记</p>` +
+    table(
+      '待退款',
+      [
+        '付款',
+        '账号',
+        '付的套餐',
+        '当时有效的套餐',
+        '金额',
+        '方式',
+        '商户订单号',
+        ...(writer ? [''] : []),
+      ],
+      rows,
+    ) +
+    `</section>`
+  )
+}
+
 function adminOrders(view: BillingAdminView, writer: boolean): string {
+  const owed = new Set(view.refundsDue.map(row => row.orderId))
   const rows = view.orders.map(
     order =>
       `<tr data-key="${attr(order.orderId)}"><td>${timeTag(order.createdAt, 'minute')}</td>` +
       `<td>${mono(order.subject)}</td><td>${escapeHtml(planName(view.plans, order.planId))}</td>` +
       `<td>${escapeHtml(yuan(order.amountCents))} 元</td><td>${escapeHtml(channelName(order.channel))}</td>` +
-      `<td>${order.status === 'paid' ? state('ok', ORDER_WORD.paid) : escapeHtml(ORDER_WORD[order.status])}</td>` +
+      `<td>${
+        order.status !== 'paid'
+          ? escapeHtml(ORDER_WORD[order.status])
+          : owed.has(order.orderId)
+            ? state('warn', `${ORDER_WORD.paid} · 待退款`)
+            : state('ok', ORDER_WORD.paid)
+      }</td>` +
       `<td>${mono(order.outTradeNo)}</td>` +
       (writer
         ? `<td class="acts">${
@@ -648,6 +703,11 @@ function adminChain(view: BillingAdminView, writer: boolean): string {
       tail: `<div class="kit-row">${check}</div>`,
     }) +
     `<p id="bl-chain">${line}</p>` +
+    `<p id="bl-live">${
+      view.live
+        ? state('warn', '正式收款已开通')
+        : state('muted', '未开通正式收款')
+    } · 由 billing.json 的 live 决定</p>` +
     `<p class="note">${tag('未评估')} 两种支付通道只对本地假服务测过 · 开始收取真实款项前须满足章程 §8 M3 的法律前置</p>` +
     `</section>`
   )
@@ -666,6 +726,7 @@ export function renderBillingAdmin(
   if (side.kind === 'failed') return failureBar(side.failure, '订阅')
   const view = side.value
   return (
+    adminRefundsDue(view, writer) +
     adminSubscriptions(view, writer) +
     adminOrders(view, writer) +
     adminCodes(view, writer) +
@@ -750,7 +811,7 @@ export function billingAdminDialogs(plans: readonly BillingPlanView[]): string {
     `<dialog class="dialog bl-dialog" id="bl-refund-dialog" aria-labelledby="bl-refund-title">` +
     `<form id="bl-refund-form" novalidate>` +
     dialogTop('bl-refund-title', 'x', '登记退款', true) +
-    `<div class="dialog-body"><p class="note">只登记已在商户平台完成的退款 · 订阅相应缩短</p>` +
+    `<div class="dialog-body"><p class="note">只登记已在商户平台完成的退款 · 订阅减去这张订单计入的天数</p>` +
     `<div class="form-grid">` +
     textField('order', '订单', {
       required: true,

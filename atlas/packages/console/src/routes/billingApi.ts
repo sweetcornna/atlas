@@ -7,7 +7,8 @@
  * | Route | Who |
  * |---|---|
  * | `GET /v0/billing/me`, `POST /v0/billing/checkout`, `GET /v0/billing/orders/<id>`, `POST /v0/billing/redeem` | the signed-in person, for themselves |
- * | `POST /v0/billing/models`, `DELETE /v0/billing/models/<id>` | the signed-in person, with an active subscription (the 402 gate in `http.ts` stands before them) |
+ * | `POST /v0/billing/models` | the signed-in person, with an active subscription (the 402 gate in `http.ts` stands before it) |
+ * | `DELETE /v0/billing/models/<id>` | the signed-in person, subscribed or lapsed: taking their own key out is never gated |
  * | `GET /v0/billing/admin`, `GET /v0/billing/admin/verify` | a platform reader ({@link billingReader}) |
  * | `POST /v0/billing/admin/{grant,refund,codes}` | platform ops on a personal account ({@link billingWriter}) |
  *

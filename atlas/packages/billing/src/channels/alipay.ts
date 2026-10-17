@@ -40,9 +40,11 @@
  * - close: `10000`, or `ACQ.TRADE_NOT_EXIST` for a never-scanned QR (knowledge).
  * - Async notify: form-encoded POST; verify over the sorted params minus
  *   `sign`, `sign_type` and empty values (Java `getSignCheckContentV1`);
- *   check app_id, out_trade_no, total_amount; pay on TRADE_SUCCESS or
- *   TRADE_FINISHED; answer the exact body `success`, anything else makes
- *   Alipay retry (knowledge: over about 25 h).
+ *   check app_id, seller_id (the merchant's `2088…` user id; the notify page
+ *   says to check it, or seller_email — knowledge), out_trade_no,
+ *   total_amount; pay on TRADE_SUCCESS or TRADE_FINISHED; answer the exact
+ *   body `success`, anything else makes Alipay retry (knowledge: over about
+ *   25 h).
  */
 
 import { sign as rsaSign, verify as rsaVerify } from 'node:crypto'
@@ -436,7 +438,9 @@ export class AlipayChannel implements PaymentChannel {
             : yuanToCents(params['total_amount']),
         currency: 'CNY',
         providerTxnId: tradeNo ? tradeNo : null,
-        merchantMatches: params['app_id'] === this.#config.appId,
+        merchantMatches:
+          params['app_id'] === this.#config.appId &&
+          params['seller_id'] === this.#config.sellerId,
       },
     }
   }

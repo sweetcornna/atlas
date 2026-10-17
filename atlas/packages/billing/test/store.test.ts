@@ -3,6 +3,7 @@
 
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { join } from 'node:path'
 import { BillingStore, type OrderRow } from '../src/index.js'
@@ -28,6 +29,25 @@ function order(id: string, patch: Partial<OrderRow> = {}): OrderRow {
     paidAt: null,
     ...patch,
   }
+}
+
+/**
+ * An event's hash the way the store computes it (`store.ts` `canonical`),
+ * written out again here so a test can forge a well-formed row.
+ */
+function chainHash(
+  seq: number,
+  at: number,
+  kind: string,
+  data: Record<string, unknown>,
+  prev: string,
+): string {
+  const pairs = Object.keys(data)
+    .sort()
+    .map(key => [key, data[key]])
+  return createHash('sha256')
+    .update(JSON.stringify([seq, at, kind, pairs, prev]), 'utf8')
+    .digest('hex')
 }
 
 /** A store with a little of everything in it. */
@@ -150,12 +170,13 @@ describe('BillingStore', () => {
   })
 
   describe('tamper detection', () => {
-    function tamper(sql: string) {
+    function tamper(edit: string | ((raw: Database) => void)) {
       const { path, store } = populated()
       store.close()
       const raw = new Database(path)
       raw.exec('DROP TRIGGER events_no_update; DROP TRIGGER events_no_delete;')
-      raw.exec(sql)
+      if (typeof edit === 'string') raw.exec(edit)
+      else edit(raw)
       raw.close()
       const reopened = new BillingStore(path)
       const report = reopened.verifyChain()
@@ -180,11 +201,73 @@ describe('BillingStore', () => {
     })
 
     test('a re-hashed edit still breaks the link to the next event', () => {
-      const report = tamper(
-        `UPDATE events SET hash = '${'f'.repeat(64)}' WHERE seq = 2`,
-      )
-      expect(report.ok).toBe(false)
-      if (!report.ok) expect(report.seq).toBe(2)
+      // seq 2 is edited and given its correct new hash, so it verifies on its
+      // own; seq 3 still names the old hash as its predecessor.
+      const report = tamper(raw => {
+        const row = raw
+          .query<
+            {
+              seq: number
+              at: number
+              kind: string
+              data: string
+              prev: string
+            },
+            []
+          >('SELECT seq, at, kind, data, prev FROM events WHERE seq = 2')
+          .get()!
+        const at = row.at + 1
+        raw
+          .query('UPDATE events SET at = ?, hash = ? WHERE seq = 2')
+          .run(
+            at,
+            chainHash(row.seq, at, row.kind, JSON.parse(row.data), row.prev),
+          )
+      })
+      expect(report).toEqual({ ok: false, seq: 3, reason: '哈希链断开' })
+    })
+
+    test('whoever can write the file can forge a row and its event: the documented limit', () => {
+      // The chain has no key (`store.ts` module note): one more subscription
+      // row plus a well-formed event naming it, and the walk and the fold agree.
+      const report = tamper(raw => {
+        const last = raw
+          .query<{ seq: number; hash: string }, []>(
+            'SELECT seq, hash FROM events ORDER BY seq DESC LIMIT 1',
+          )
+          .get()!
+        const data = {
+          subject: 'mallory',
+          planId: 'month',
+          startsAt: T0,
+          endsAt: T0 + 999 * DAY,
+          fromPlanId: null,
+          fromEndsAt: null,
+          cause: 'grant',
+          ref: '',
+          by: 'ops',
+          reason: 'forged',
+        }
+        const seq = last.seq + 1
+        raw
+          .query(
+            'INSERT INTO events (seq, at, kind, data, prev, hash) VALUES (?, ?, ?, ?, ?, ?)',
+          )
+          .run(
+            seq,
+            T0,
+            'subscription.changed',
+            JSON.stringify(data),
+            last.hash,
+            chainHash(seq, T0, 'subscription.changed', data, last.hash),
+          )
+        raw
+          .query(
+            "INSERT INTO subscriptions (subject, planId, startsAt, endsAt, updatedAt, revision, gateway) VALUES ('mallory', 'month', ?, ?, ?, 1, 'pending')",
+          )
+          .run(T0, T0 + 999 * DAY, T0)
+      })
+      expect(report).toEqual({ ok: true, events: 10 })
     })
 
     test('a direct edit of the subscription table is caught by the fold', () => {
@@ -214,6 +297,53 @@ describe('BillingStore', () => {
         tamper(`UPDATE redeem_codes SET usedBy = NULL, usedAt = NULL`),
       ).toEqual({ ok: false, seq: 0, reason: '兑换码表与事件不符：rc_1' })
     })
+  })
+
+  test('a conflict is an event and a row; the fold checks the row', () => {
+    const { path, store } = populated()
+    store.insertOrder(
+      order('o3', { planId: 'pro', amountCents: 29900 }),
+      T0 + 4000,
+    )
+    store.markOrderPaid(
+      'o3',
+      { providerTxnId: 'tx3', source: 'notify', late: false },
+      T0 + 5000,
+    )
+    store.recordConflict(
+      { orderId: 'o3', subject: 'alice', planId: 'pro', activePlanId: 'month' },
+      T0 + 5000,
+    )
+    expect(store.events().at(-1)?.kind).toBe('order.conflict')
+    expect(store.verifyChain().ok).toBe(true)
+    expect(store.refundsDue(10)).toEqual([
+      {
+        orderId: 'o3',
+        subject: 'alice',
+        planId: 'pro',
+        activePlanId: 'month',
+        at: T0 + 5000,
+        amountCents: 29900,
+        channel: 'wechatpay',
+        outTradeNo: store.order('o3')!.outTradeNo,
+        paidAt: T0 + 5000,
+      },
+    ])
+    // Once marked refunded it is no longer due; the row stays.
+    store.markOrderRefunded('o3', 'ops', '已退', T0 + 6000)
+    expect(store.refundsDue(10)).toEqual([])
+    expect(store.conflict('o3')?.activePlanId).toBe('month')
+    store.close()
+    const raw = new Database(path)
+    raw.exec('DELETE FROM conflicts')
+    raw.close()
+    const reopened = new BillingStore(path)
+    expect(reopened.verifyChain()).toEqual({
+      ok: false,
+      seq: 0,
+      reason: '冲突表与事件不符：行数',
+    })
+    reopened.close()
   })
 
   test('gateway bookkeeping honours the revision', () => {

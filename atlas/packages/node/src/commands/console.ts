@@ -1456,6 +1456,12 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           `wechatpay ${site.channels.wechatpay ? 'on' : 'off'}, alipay ${site.channels.alipay ? 'on' : 'off'}, ` +
           `redeem ${site.channels.redeem ? 'on' : 'off'}; payment channels unevaluated)`,
       )
+      banner += field(
+        'payments',
+        billingConfig.live
+          ? 'LIVE (billing.json live=true: real QR orders at WeChat Pay / Alipay; precondition: charter §8 M3, a written conclusion on L-2)'
+          : 'not live (billing.json live=false: no order is sent to WeChat Pay or Alipay; pages say 未开通正式收款)',
+      )
       banner += field('billing-store', billingStorePath())
     }
     banner += field(

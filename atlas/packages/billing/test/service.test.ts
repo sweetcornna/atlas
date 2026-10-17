@@ -199,6 +199,22 @@ describe('orders and notifications', () => {
     expect(store.events().at(-1)?.data['field']).toBe('channel')
   })
 
+  test('an Alipay notification for another seller is a merchant mismatch', async () => {
+    const { service, store } = setup()
+    const order = await service.createOrder('alice', 'month', 'alipay')
+    const reply = await service.handleNotify('alipay', {
+      headers: {},
+      ...alipayNotify(keys, {
+        outTradeNo: order.outTradeNo,
+        totalAmount: '99.00',
+        sellerId: '2088999999999999',
+      }),
+    })
+    expect(reply).toMatchObject({ httpStatus: 400, body: 'fail' })
+    expect(store.events().at(-1)?.data['field']).toBe('merchant')
+    expect(service.entitlement('alice').active).toBe(false)
+  })
+
   test('unauthenticated garbage is rejected without touching the ledger', async () => {
     const { service, store, logs } = setup()
     const order = await service.createOrder('alice', 'month', 'wechatpay')
@@ -334,6 +350,61 @@ describe('orders and notifications', () => {
   })
 })
 
+describe('the live switch', () => {
+  function notLive(store: BillingStore) {
+    const { live: _, ...json } = configJson(writeSecrets(tempDir(), keys), {
+      wechat: wx.origin,
+      alipay: ali.endpoint,
+    })
+    const config = parseBillingConfig(json)
+    expect(config.live).toBe(false)
+    const prov = fakeProvisioner()
+    return {
+      prov,
+      service: new BillingService({
+        config,
+        store,
+        channels: createPaymentChannels(config, { now: clock }),
+        provisioner: prov,
+        clock,
+      }),
+    }
+  }
+
+  test('off: no QR order is made, no provider is asked; codes still work', async () => {
+    const { store } = setup()
+    const { service } = notLive(store)
+    const asked = wx.requests.length + ali.requests.length
+    for (const channel of ['wechatpay', 'alipay'] as const)
+      expect(
+        (await caught(service.createOrder('alice', 'month', channel))).code,
+      ).toBe('not_live')
+    expect(wx.requests.length + ali.requests.length).toBe(asked)
+    expect(store.recentOrders(10)).toEqual([])
+    expect(service.adminSnapshot().live).toBe(false)
+    const [code] = service.issueRedeemCodes('ops', 'month', 1, 1)
+    expect((await service.redeem('alice', code!)).active).toBe(true)
+  })
+
+  test('switched off later, an order placed while on still settles', async () => {
+    const { service: live, store } = setup()
+    expect(live.adminSnapshot().live).toBe(true)
+    const order = await live.createOrder('bob', 'month', 'wechatpay')
+    const { service } = notLive(store)
+    const reply = await service.handleNotify(
+      'wechatpay',
+      wechatNotify(keys, now, { outTradeNo: order.outTradeNo, total: 9900 }),
+    )
+    expect(reply.httpStatus).toBe(204)
+    expect(service.entitlement('bob').active).toBe(true)
+    // And an unpaid one is still queried and closed at the provider.
+    const open = await live.createOrder('carol', 'month', 'wechatpay')
+    now = T0 + 16 * 60_000
+    expect((await service.sweep()).closed).toBe(1)
+    expect(wx.trades.get(open.outTradeNo)?.state).toBe('CLOSED')
+  })
+})
+
 describe('per-node plans', () => {
   test('plans carry their node count; the provisioner gets nodes and limits, never a price', async () => {
     const seen: unknown[] = []
@@ -418,6 +489,79 @@ describe('subscription periods', () => {
     })
   })
 
+  test('refunding an order from an earlier, lapsed period leaves the current one', async () => {
+    const { service, store } = setup()
+    const january = await service.createOrder('alice', 'month', 'wechatpay')
+    await service.handleNotify(
+      'wechatpay',
+      wechatNotify(keys, now, { outTradeNo: january.outTradeNo, total: 9900 }),
+    )
+    // It lapses; three months later a new month starts.
+    now = T0 + 90 * DAY
+    await service.grant('ops', 'alice', 'month', 1, '四月')
+    const april = service.entitlement('alice')
+    expect(april).toEqual({
+      active: true,
+      planId: 'month',
+      endsAt: now + 30 * DAY,
+    })
+    expect(
+      await service.markRefunded('ops', january.orderId, '一月的退款'),
+    ).toEqual(april)
+    expect(store.order(january.orderId)?.status).toBe('refunded')
+    expect(store.subscription('alice')?.gateway).toBe('enabled')
+    expect(store.verifyChain().ok).toBe(true)
+  })
+
+  test('within one run a refund takes back that order’s days', async () => {
+    const { service } = setup()
+    const first = await service.createOrder('alice', 'month', 'wechatpay')
+    await service.handleNotify(
+      'wechatpay',
+      wechatNotify(keys, now, { outTradeNo: first.outTradeNo, total: 9900 }),
+    )
+    now += DAY
+    await service.grant('ops', 'alice', 'month', 2, '补偿')
+    expect(service.entitlement('alice').endsAt).toBe(T0 + 90 * DAY)
+    expect(
+      (await service.markRefunded('ops', first.orderId, '退第一单')).endsAt,
+    ).toBe(T0 + 60 * DAY)
+  })
+
+  test('an open order for another plan blocks a new one until it is paid or expires', async () => {
+    const { service, store } = setup()
+    const month = await service.createOrder('alice', 'month', 'wechatpay')
+    const asked = wx.requests.length + ali.requests.length
+    const refused = await caught(service.createOrder('alice', 'pro', 'alipay'))
+    expect(refused.code).toBe('order_open')
+    // Refused before any row or provider call.
+    expect(wx.requests.length + ali.requests.length).toBe(asked)
+    expect(store.ordersOf('alice', 10)).toHaveLength(1)
+    // The same plan on the other channel, and other people, are not affected.
+    await service.createOrder('alice', 'month', 'alipay')
+    await service.createOrder('bob', 'pro', 'wechatpay')
+    // Once the month orders are past their time, pro can be ordered.
+    now = month.expiresAt
+    expect(
+      (await service.createOrder('alice', 'pro', 'wechatpay')).amountCents,
+    ).toBe(29900)
+  })
+
+  test('two orders for different plans at once: one is made, one refused', async () => {
+    const { service, store } = setup()
+    const results = await Promise.allSettled([
+      service.createOrder('carol', 'month', 'wechatpay'),
+      service.createOrder('carol', 'pro', 'alipay'),
+    ])
+    expect(results.map(result => result.status).sort()).toEqual([
+      'fulfilled',
+      'rejected',
+    ])
+    expect(
+      store.ordersOf('carol', 10).filter(order => order.status === 'created'),
+    ).toHaveLength(1)
+  })
+
   test('a refund takes the order period back and switches the gateway off', async () => {
     const { service, store, prov } = setup()
     const order = await service.createOrder('alice', 'month', 'wechatpay')
@@ -450,6 +594,115 @@ describe('subscription periods', () => {
     expect(reply.httpStatus).toBe(204)
     expect(service.entitlement('alice').active).toBe(false)
     expect(store.verifyChain().ok).toBe(true)
+  })
+})
+
+describe('a payment for another plan than the active one', () => {
+  test('is recorded as paid, extends nothing and is listed as owed a refund', async () => {
+    const { service, store, prov } = setup()
+    // A month order the payer leaves open until it expires...
+    const late = await service.createOrder('alice', 'month', 'wechatpay')
+    now = T0 + 16 * 60_000
+    await service.sweep()
+    expect(store.order(late.orderId)?.status).toBe('expired')
+    // ...then a pro order, paid.
+    const pro = await service.createOrder('alice', 'pro', 'wechatpay')
+    await service.handleNotify(
+      'wechatpay',
+      wechatNotify(keys, now, { outTradeNo: pro.outTradeNo, total: 29900 }),
+    )
+    const before = service.entitlement('alice')
+    expect(before).toEqual({
+      active: true,
+      planId: 'pro',
+      endsAt: now + 30 * DAY,
+    })
+    const calls = prov.calls.length
+    // The month order's payment arrives late: the money is real.
+    const reply = await service.handleNotify(
+      'wechatpay',
+      wechatNotify(keys, now, { outTradeNo: late.outTradeNo, total: 9900 }),
+    )
+    expect(reply.httpStatus).toBe(204)
+    expect(store.order(late.orderId)?.status).toBe('paid')
+    // Not credited: same plan, same end, nothing provisioned.
+    expect(service.entitlement('alice')).toEqual(before)
+    expect(prov.calls.length).toBe(calls)
+    expect(
+      store
+        .events()
+        .filter(event => event.kind === 'order.conflict')
+        .map(event => event.data),
+    ).toEqual([
+      {
+        orderId: late.orderId,
+        subject: 'alice',
+        planId: 'month',
+        activePlanId: 'pro',
+      },
+    ])
+    expect(service.adminSnapshot().refundsDue).toEqual([
+      {
+        orderId: late.orderId,
+        subject: 'alice',
+        planId: 'month',
+        activePlanId: 'pro',
+        amountCents: 9900,
+        channel: 'wechatpay',
+        outTradeNo: late.outTradeNo,
+        paidAt: now,
+        at: now,
+      },
+    ])
+    // A second notification for it is a duplicate, not a second conflict.
+    await service.handleNotify(
+      'wechatpay',
+      wechatNotify(keys, now, { outTradeNo: late.outTradeNo, total: 9900 }),
+    )
+    expect(service.adminSnapshot().refundsDue).toHaveLength(1)
+    // Refunding it takes nothing off the pro period and clears the list.
+    now += DAY
+    expect(
+      await service.markRefunded('ops', late.orderId, '换套餐冲突 · 已退'),
+    ).toEqual(before)
+    expect(service.adminSnapshot().refundsDue).toEqual([])
+    expect(store.verifyChain().ok).toBe(true)
+  })
+
+  test('the pro order paid while month is active is held, whichever was cheaper', async () => {
+    const { service, store } = setup()
+    await service.grant('ops', 'bob', 'month', 1, '试用')
+    // An order for pro inserted the way an earlier session could have left it.
+    store.insertOrder(
+      {
+        id: 'ord_PPPPPPPPPPPPPPPPPPPPPP',
+        subject: 'bob',
+        planId: 'pro',
+        amountCents: 29900,
+        periodDays: 30,
+        channel: 'wechatpay',
+        status: 'created',
+        outTradeNo: 'P'.repeat(32),
+        providerTxnId: null,
+        qrText: null,
+        createdAt: now,
+        expiresAt: now + 15 * 60_000,
+        paidAt: null,
+      },
+      now,
+    )
+    await service.handleNotify(
+      'wechatpay',
+      wechatNotify(keys, now, { outTradeNo: 'P'.repeat(32), total: 29900 }),
+    )
+    expect(service.entitlement('bob')).toEqual({
+      active: true,
+      planId: 'month',
+      endsAt: T0 + 30 * DAY,
+    })
+    expect(service.adminSnapshot().refundsDue.map(row => row.orderId)).toEqual([
+      'ord_PPPPPPPPPPPPPPPPPPPPPP',
+    ])
   })
 })
 
