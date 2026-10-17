@@ -46,6 +46,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -79,6 +80,10 @@ const KEY_A = 'sk-test-canary-hot-switch-a-7Rw2'
 const KEY_B = 'sk-test-canary-hot-switch-b-3Ld8'
 const KEY_C = 'sk-test-canary-hot-switch-c-9Xe5'
 const KEY_D = 'sk-test-canary-hot-switch-d-5Np1'
+
+/** The one skill the child may list: planted in the test's own HOME. */
+const HOME_PROBE_SKILL = 'hs-home-probe'
+const HOME_PROBE_DESCRIPTION = 'Planted in this test’s own HOME.'
 
 async function waitUntil(
   predicate: () => boolean,
@@ -121,8 +126,10 @@ interface ModelCall {
 }
 
 /**
- * A loopback Chat Completions endpoint. Answers every streamed request with
- * `reply-from-<name>` and every other one with the trivial non-streamed shape;
+ * A loopback Chat Completions endpoint. Answers every main-turn request with
+ * `reply-from-<name>`, any other streamed request (omp's own auxiliary calls,
+ * such as compressing a skill description into the system prompt) with
+ * `aux-from-<name>`, and every other one with the trivial non-streamed shape;
  * can hold the request whose text carries a given token until released.
  */
 class ModelDouble {
@@ -220,7 +227,7 @@ class ModelDouble {
         choices: [{ index: 0, delta, finish_reason: finish }],
       })}\n\n`
     return new Response(
-      `${frame({ role: 'assistant', content: `reply-from-${this.name}` }, null)}${frame({}, 'stop')}data: [DONE]\n\n`,
+      `${frame({ role: 'assistant', content: `${turn ? 'reply' : 'aux'}-from-${this.name}` }, null)}${frame({}, 'stop')}data: [DONE]\n\n`,
       { headers: { 'content-type': 'text/event-stream' } },
     )
   }
@@ -295,6 +302,15 @@ function setUpRoot(prefix: string): NodeRoot {
   chmodSync(config, 0o700)
   mkdirSync(workspace)
   mkdirSync(home)
+  // A user-level skill in the root's own HOME: the child must list it, and
+  // nothing from the real home directory (see `spawnRealOmp`).
+  mkdirSync(join(home, '.agents', 'skills', HOME_PROBE_SKILL), {
+    recursive: true,
+  })
+  writeFileSync(
+    join(home, '.agents', 'skills', HOME_PROBE_SKILL, 'SKILL.md'),
+    `---\nname: ${HOME_PROBE_SKILL}\ndescription: ${HOME_PROBE_DESCRIPTION}\n---\n\nNothing to do.\n`,
+  )
   const previous = {
     QIANMO_CONFIG_DIR: process.env.QIANMO_CONFIG_DIR,
   }
@@ -318,18 +334,23 @@ function setUpRoot(prefix: string): NodeRoot {
 }
 
 /**
- * The real child, started the way `defaultSpawnAcp` starts it but from
- * source. The environment is built, not inherited: a developer's own provider
- * keys must not reach it, and `HOME` is the root's own so nothing under the
- * real home directory is read.
+ * The real child, started the way the resident starts it but from source,
+ * on the environment the resident built for it (`residentOmpEnvironment`
+ * strips a managed node's provider keys) with two changes. The process
+ * environment names the `process-env` double. `HOME` is the root's own, so
+ * nothing under the real home directory is read: omp discovers user-level
+ * skills, rules and agents there, and rewrites each skill's description with
+ * a model call that one of the doubles would answer.
  */
 function spawnRealOmp(
   input: import('../../src/host/residentOmp.js').ResidentOmpSpawn,
+  node: NodeRoot,
   processEnvModel: ModelDouble,
   log: { text: string },
 ): ChildProcess {
   const env = residentOmpEnvironment({
     ...input.env,
+    HOME: node.home,
     OPENAI_BASE_URL: processEnvModel.baseUrl,
     OPENAI_API_KEY: KEY_PROCESS,
   })
@@ -448,7 +469,7 @@ describe('resident hot switch against real omp RPC', () => {
       listen: { unix: join(node.root, 'r.sock') },
       memoryRoot: node.memory,
       spawnOmp: input => {
-        const child = spawnRealOmp(input, processEnvModel, childLog)
+        const child = spawnRealOmp(input, node, processEnvModel, childLog)
         spawned.push(child)
         return child
       },
@@ -515,6 +536,14 @@ describe('resident hot switch against real omp RPC', () => {
       expect(turn?.authorization).toBe(`Bearer ${KEY_A}`)
       expect(processEnvModel.turns()).toEqual([])
       sessionAfterFirstTurn = storedSessionId()
+      // The child's HOME is the root's own: it lists the skill planted there
+      // and nothing a developer installed under the real home directory. (The
+      // description may already be omp's model-compressed one.)
+      const listed = turn?.text
+        .match(/<skills>\n([\s\S]*?)\n<\/skills>/)?.[1]
+        ?.split('\n')
+        .map(line => line.match(/^- ([^:]+):/)?.[1])
+      expect(listed).toEqual([HOME_PROBE_SKILL])
     },
     TEST_TIMEOUT_MS,
   )
