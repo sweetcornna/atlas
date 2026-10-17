@@ -831,6 +831,7 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 | `LIMITS.defaultNotifyTtlMs` | 2 min（P13.2，见 §14.3） |
 | `LIMITS.notifyRatePerMinute` | 60（P13.2，见 §14.5） |
 | `LIMITS.maxQueuedTurns` | 32（P13.2，见 §4.5.1） |
+| `LIMITS.maxAskChain` | 3（P36.6，同步问答的调用链层数，见 [`harness-backends.md`](./harness-backends.md) §6.2） |
 
 ---
 
