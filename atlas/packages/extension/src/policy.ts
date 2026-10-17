@@ -111,16 +111,20 @@ function parseMcpServers(value: unknown): ResidentMcpServer[] {
  * The configured server a tool belongs to: qianmopi's exact names from the
  * probe, or `mcp__<server>__<tool>` as Claude Code and Codex name them.
  * Server names have no underscore, so the double one cannot be ambiguous.
+ * qianmopi's names can be (server `a` tool `b_c`, server `a-b` tool `c`);
+ * the node keeps such pairs apart, and should two still meet, the stricter
+ * server decides.
  */
 export function residentMcpServer(
   toolName: string,
   servers: readonly ResidentMcpServer[] | undefined,
 ): ResidentMcpServer | undefined {
-  return servers?.find(
-    server =>
-      server.tools.includes(toolName) ||
-      toolName.startsWith(`mcp__${server.server}__`),
+  const exact = (servers ?? []).filter(server =>
+    server.tools.includes(toolName),
   )
+  if (exact.length > 0)
+    return exact.find(server => server.approval === 'ask') ?? exact[0]
+  return servers?.find(server => toolName.startsWith(`mcp__${server.server}__`))
 }
 
 function isStringArray(value: unknown): value is string[] {

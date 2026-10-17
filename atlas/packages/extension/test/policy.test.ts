@@ -295,6 +295,26 @@ describe('operator-configured extensions (P32)', () => {
     )
     expect(noChannel?.approvalEligible).toBeUndefined()
     expect(noChannel?.reason).toContain('no approval channel')
+    // Two servers claiming one qianmopi name (P32 audit 18): the stricter
+    // decides, whichever comes first.
+    for (const order of [
+      ['allow', 'ask'],
+      ['ask', 'allow'],
+    ] as const) {
+      const clash = residentToolVerdict(
+        { toolName: 'mcp__qianmo_mcp_a_b_c', input: {} },
+        {
+          ...withMcp,
+          mcp: order.map((approval, at) => ({
+            server: at === 0 ? 'a' : 'a-b',
+            approval,
+            tools: ['mcp__qianmo_mcp_a_b_c'],
+          })),
+        },
+        { agentKind: 'main' },
+      )
+      expect(clash?.approvalEligible).toBe(true)
+    }
     expect(
       residentApprovalInput(
         { toolName: 'mcp__crm__update', input: { id: 7 } },

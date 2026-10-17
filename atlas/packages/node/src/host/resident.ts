@@ -1322,6 +1322,9 @@ export class QianmoResident {
     // now, while no child can be reading settings (§2.6 step 5).
     await this.#prepareProviderConfig()
     this.#startProviderPoll()
+    // The last extension set, laid out again for this start's agents with
+    // every MCP server probed anew (P32); in the background, like the hub's.
+    void this.extensions.start()
     try {
       await this.#supervisor.run()
       // `supervisor.run()` returning means one of two very different things.
@@ -1351,6 +1354,7 @@ export class QianmoResident {
       }
     } finally {
       await this.desktop.close()
+      await this.extensions.close()
       this.#stopping = true
       this.#stopProviderPoll()
       // Before the listener goes, not after. The last generation's own
