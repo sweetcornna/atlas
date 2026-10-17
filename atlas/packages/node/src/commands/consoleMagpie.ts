@@ -667,7 +667,7 @@ export class ConsoleMagpie implements MagpiePort {
           : `${bad.code ?? bad.outcome}${bad.message === undefined ? '' : ` · ${bad.message}`}`
     }
     if (problem !== null)
-      this.#options.onError?.(`下发到 ${node} 没成 · ${problem}`)
+      this.#options.onError?.(`下发到 ${node} 未完成 · ${problem}`)
     return problem
   }
 
@@ -1205,7 +1205,7 @@ export class ConsoleMagpie implements MagpiePort {
       else if (record.kind === 'node') {
         const problem = await this.#deliver(record.id, pcaller)
         if (problem !== null)
-          problems.push(`下发到 ${record.id} 没成 · ${problem}`)
+          problems.push(`下发到 ${record.id} 未完成 · ${problem}`)
       }
     }
     return problems
@@ -1687,7 +1687,7 @@ export class ConsoleMagpie implements MagpiePort {
         if (problem !== null)
           return failed(
             'unreachable',
-            `密钥已签发并写进档案 · 下发到 ${binding.id} 没成 · ${problem} · 在模型服务页重新下发`,
+            `密钥已签发并写进档案 · 下发到 ${binding.id} 未完成 · ${problem} · 在模型服务页重新下发`,
           )
       }
       return ok(this.#keyView(record, key))
@@ -1794,7 +1794,7 @@ export class ConsoleMagpie implements MagpiePort {
           if (problem !== null)
             return failed(
               'unreachable',
-              `已改进档案 · 下发到 ${record.id} 没成 · ${problem} · 在模型服务页重新下发`,
+              `已改进档案 · 下发到 ${record.id} 未完成 · ${problem} · 在模型服务页重新下发`,
             )
         }
         const key = (await client.listKeys()).find(
@@ -1858,7 +1858,7 @@ export class ConsoleMagpie implements MagpiePort {
         if (problem !== null)
           return failed(
             'unreachable',
-            `magpie 里已换新值并写进档案 · 下发到 ${record.id} 没成 · 节点手里的旧值已失效 · ${problem} · 在模型服务页重新下发`,
+            `magpie 里已换新值并写进档案 · 下发到 ${record.id} 未完成 · 节点手里的旧值已失效 · ${problem} · 在模型服务页重新下发`,
           )
       }
       try {
@@ -1915,7 +1915,7 @@ export class ConsoleMagpie implements MagpiePort {
           if (problem !== null)
             return failed(
               'unreachable',
-              `${record.id} 已改回原来的档案 · 下发没成 · ${problem} · 密钥先不收回 · 再收回一次会直接收回`,
+              `${record.id} 已改回原来的档案 · 下发未完成 · ${problem} · 密钥先不收回 · 再收回一次会直接收回`,
             )
         }
       }
@@ -2299,7 +2299,7 @@ export class ConsoleMagpie implements MagpiePort {
         if (preset === undefined)
           return failed(
             'rejected',
-            '这个预设不能用 · 只收填一把 API 密钥的上游',
+            '这个预设不能用 · 只收厂商自有接口与 OpenRouter',
           )
         const name =
           `${TENANT_UPSTREAM_PREFIX}${tenant.slice(0, 48)}-${preset.id.slice(0, 20)}-${randomBytes(3).toString('hex')}`.slice(

@@ -600,7 +600,7 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
       }
       this.#failed(result.node, now)
       this.#options.onError?.(
-        `billing: 下发到 ${result.node} 没成 · ${result.code ?? result.outcome} · ${result.message ?? ''}`,
+        `billing: 下发到 ${result.node} 未完成 · ${result.code ?? result.outcome} · ${result.message ?? ''}`,
       )
     }
   }

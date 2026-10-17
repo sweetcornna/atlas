@@ -635,7 +635,12 @@ describe('the subscriber’s own models', () => {
       key: 'sk-relay-0001',
     })
     expect(relay.ok).toBe(false)
-    if (!relay.ok) expect(relay.failure.code).toBe('rejected')
+    if (!relay.ok) {
+      expect(relay.failure.code).toBe('rejected')
+      expect(relay.failure.message).toBe(
+        '这个预设不能用 · 只收厂商自有接口与 OpenRouter',
+      )
+    }
     expect(
       fake.requests.some(
         request =>
@@ -1342,7 +1347,9 @@ describe('a delivery that did not land is tried again', () => {
     if (!added.ok) throw new Error(added.failure.message)
     await billing.syncNodes()
     // Said, not swallowed.
-    expect(errors.some(line => line.includes('beta-1'))).toBe(true)
+    expect(errors.some(line => line.includes('下发到 beta-1 未完成'))).toBe(
+      true,
+    )
     errors.length = 0
     rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
     // A sync on an event does not retry; the next sweep does.

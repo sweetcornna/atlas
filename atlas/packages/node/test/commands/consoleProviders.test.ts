@@ -870,6 +870,7 @@ describe('P33: lane addresses', () => {
     const reason = value(await h.port.node('beta-1')).lastStatus?.message
     expect(reason).toBeTruthy()
     expect(result?.message).toContain(reason ?? '')
+    expect(result?.message).toContain('无法确认附加通道能否编入')
     expect(received(node, 'apply')).toEqual([])
   }, 30_000)
 
@@ -897,6 +898,9 @@ describe('P33: lane addresses', () => {
     const [result] = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
     expect(result?.outcome).toBe('refused')
     expect(result?.code).toBe('capabilities-unknown')
+    expect(result?.message).toBe(
+      '节点尚未回报能力 · 无法确认附加通道能否编入 · 节点状态刷新后再下发',
+    )
     expect(value(await h.port.node('beta-1')).lastStatus?.ok).toBe(true)
     expect(received(node, 'apply')).toEqual([])
   }, 30_000)
@@ -1156,6 +1160,7 @@ describe('P35: a node scope narrows what a node may hold', () => {
     const [result] = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
     expect(result?.outcome).toBe('refused')
     expect(result?.code).toBe('scope-unavailable')
+    expect(result?.message).toBe('无法读取租户配置 · 拒绝下发')
     expect(value(await h.port.apply({}, ops))).toEqual([])
     expect(h.nodes['beta-1'].requests()).toEqual([])
   }, 30_000)

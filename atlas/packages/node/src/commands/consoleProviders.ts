@@ -1803,7 +1803,7 @@ export class ConsoleProviders implements ProviderPort {
     })
     const scope = this.#scopeOf(node)
     if (scope === undefined)
-      return refuse('scope-unavailable', '租户配置读不了 · 拒绝下发')
+      return refuse('scope-unavailable', '无法读取租户配置 · 拒绝下发')
     const expected = this.#expected(node)
     const profileId = options.profileId ?? expected?.profileId
     if (profileId === undefined) {
@@ -1875,18 +1875,18 @@ export class ConsoleProviders implements ProviderPort {
             requestId,
             outcome: 'failed',
             code: 'unreachable',
-            message: `节点状态查询失败 · 另给的通道编不编得进去未知 · ${last.message ?? '没有回应'}`,
+            message: `节点状态查询失败 · 无法确认附加通道能否编入 · ${last.message ?? '没有回应'}`,
           }
         return refuse(
           'capabilities-unknown',
-          '节点还没回报能力 · 另给的通道编不编得进去未知 · 节点状态刷新后再下发',
+          '节点尚未回报能力 · 无法确认附加通道能否编入 · 节点状态刷新后再下发',
         )
       }
       // The scope and the routing were read before the node was asked: a
       // change landing in that wait is not shipped under the older reading.
       const scopeNow = this.#scopeOf(node)
       if (scopeNow === undefined)
-        return refuse('scope-unavailable', '租户配置读不了 · 拒绝下发')
+        return refuse('scope-unavailable', '无法读取租户配置 · 拒绝下发')
       if (scopeNow !== null && !scopeNow.allows(profile.id))
         return refuse('scope-refused', '这份档案不能下发到这个节点')
       let again: ProviderRouted | undefined
