@@ -4,17 +4,20 @@
 /**
  * # @qianmo/billing — 公开版订阅
  *
- * The public edition is usable only with a paid subscription. This package
- * is the domain logic and the official payment-channel adapters; the hub
- * owns HTTP routes, the checkout page, the operator page and the gateway
- * (magpie) side of {@link GatewayProvisioner}.
+ * The public edition is usable only with a paid subscription, priced per
+ * hosted node. This package is the domain logic and the official
+ * payment-channel adapters; the hub owns HTTP routes, the checkout page, the
+ * operator page, the tenant and the gateway (magpie) side of
+ * {@link GatewayProvisioner}.
  *
  * ## Model
  *
  * - **Plans** (`billing.json`, {@link parseBillingConfig}): price in integer
- *   cents (分) + period in days + the gateway limits and model patterns the
- *   subscriber's key gets. Prepaid, never auto-debit: each purchase extends
- *   `endsAt = max(now, endsAt) + periodDays`.
+ *   cents (分) + period in days + the hosted nodes included (`nodes`) +
+ *   optional fair-use windows on the subscriber's gateway key
+ *   (`gatewayLimits`). **Model quota is not sold**: the subscriber connects
+ *   their own upstream keys through the platform gateway. Prepaid, never
+ *   auto-debit: each purchase extends `endsAt = max(now, endsAt) + periodDays`.
  * - **Channels**: WeChat Pay API v3 Native (`code_url`) and Alipay 当面付
  *   precreate (`qr_code`), both official native APIs (charter §7.2 item 8);
  *   plus operator-issued **redeem codes** (SHA-256 stored, single use).
@@ -78,8 +81,8 @@ export {
   billingStorePath,
   type LimitPeriod,
   type Plan,
-  type PlanGateway,
   type PlanLimit,
+  type PlanProvision,
   parseBillingConfig,
   type WechatPayConfig,
 } from './config.js'

@@ -19,6 +19,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { alipaySignContent } from '../src/channels/alipay.js'
+import type { PlanProvision } from '../src/index.js'
 
 export interface KeyPair {
   readonly privateKey: KeyObject
@@ -116,24 +117,20 @@ export function configJson(
         name: '月度',
         priceCents: 9900,
         periodDays: 30,
-        note: '每月 30 美元额度',
-        gateway: {
-          limits: [{ period: 'month', costUsd: 30 }],
-          models: ['group/standard'],
-        },
+        note: '一个托管节点',
+        nodes: 1,
+        gatewayLimits: [{ period: 'month', costUsd: 30 }],
       },
       {
         id: 'pro',
         name: '专业',
         priceCents: 29900,
         periodDays: 30,
-        gateway: {
-          limits: [
-            { period: 'days', days: 7, tokens: 50_000_000 },
-            { period: 'hours', hours: 5, costUsd: 10 },
-          ],
-          models: ['openai/*', 'anthropic/claude-sonnet-4-5'],
-        },
+        nodes: 3,
+        gatewayLimits: [
+          { period: 'days', days: 7, tokens: 50_000_000, cacheReads: true },
+          { period: 'hours', hours: 5, costUsd: 10 },
+        ],
       },
     ],
     channels: {
@@ -521,20 +518,25 @@ export function startAlipayFake(keys: Keys) {
 /** A provisioner that records calls and can be told to fail. */
 export function fakeProvisioner() {
   const calls: string[] = []
-  const state = new Map<string, { enabled: boolean; models: string[] }>()
+  const state = new Map<
+    string,
+    { enabled: boolean; plan: string; nodes: number; limits: number }
+  >()
   const control = { failEnsure: false, failDisable: false }
   return {
     calls,
     state,
     control,
-    async ensure(subject: string, plan: { models: readonly string[] }) {
+    async ensure(subject: string, plan: PlanProvision) {
       calls.push(`ensure ${subject}`)
       if (control.failEnsure)
         throw new Error('gateway down sk-live-SHOULD-NOT-LEAK')
       const prior = state.get(subject)
       state.set(subject, {
         enabled: prior?.enabled ?? false,
-        models: [...plan.models],
+        plan: plan.id,
+        nodes: plan.nodes,
+        limits: plan.gatewayLimits.length,
       })
       return { binding: `key-${subject}` }
     },

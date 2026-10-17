@@ -31,23 +31,25 @@ export function billingStorePath(): string {
 
 export type LimitPeriod = 'day' | 'week' | 'month' | 'days' | 'hours'
 
-/** One gateway limit window; `days` / `hours` only with the matching period. */
+/**
+ * One fair-use window on the subscriber's gateway key, in magpie's terms
+ * (`limit-key`): `days` / `hours` only with the matching period; `cacheReads`
+ * counts cache reads into `tokens` too, so it needs `tokens`.
+ */
 export interface PlanLimit {
   readonly period: LimitPeriod
   readonly days?: number
   readonly hours?: number
   readonly tokens?: number
   readonly costUsd?: number
-  readonly cacheReads?: number
+  readonly cacheReads?: boolean
 }
 
-/** What a subscriber's gateway key may do. Handed to the provisioner as is. */
-export interface PlanGateway {
-  readonly limits: readonly PlanLimit[]
-  /** `provider/model`, `provider/*` or `group/<id>`. */
-  readonly models: readonly string[]
-}
-
+/**
+ * A plan sells hosted nodes for a prepaid period. Models are not sold: the
+ * subscriber connects their own upstream keys through the platform gateway,
+ * and `gatewayLimits` is only a fair-use cap on that tenant's gateway key.
+ */
 export interface Plan {
   readonly id: string
   readonly name: string
@@ -55,7 +57,17 @@ export interface Plan {
   readonly priceCents: number
   readonly periodDays: number
   readonly note: string | null
-  readonly gateway: PlanGateway
+  /** Hosted nodes the plan includes, 1–100. */
+  readonly nodes: number
+  /** Fair-use windows on the tenant's gateway key; empty is none. */
+  readonly gatewayLimits: readonly PlanLimit[]
+}
+
+/** What the provisioner is handed for a subscription: never a price. */
+export interface PlanProvision {
+  readonly id: string
+  readonly nodes: number
+  readonly gatewayLimits: readonly PlanLimit[]
 }
 
 export interface WechatPayConfig {
@@ -101,15 +113,10 @@ export class BillingConfigError extends Error {
 
 const MAX_PLANS = 50
 const MAX_LIMITS = 5
-const MAX_MODELS = 500
+const MAX_NODES = 100
 const MAX_PRICE_CENTS = 100_000_000
 const MAX_PERIOD_DAYS = 3660
 const PLAN_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/
-const PROVIDER = '[A-Za-z0-9][A-Za-z0-9._-]{0,63}'
-const MODEL_PATTERN = new RegExp(
-  `^${PROVIDER}/(?:\\*|[A-Za-z0-9][A-Za-z0-9._:@+/-]{0,191})$`,
-)
-const GROUP_PATTERN = new RegExp(`^group/${PROVIDER}$`)
 const PERIODS: readonly LimitPeriod[] = [
   'day',
   'week',
@@ -251,7 +258,7 @@ function limit(value: unknown, path: string): PlanLimit {
     hours?: number
     tokens?: number
     costUsd?: number
-    cacheReads?: number
+    cacheReads?: boolean
   } = { period: period as LimitPeriod }
   if (period === 'days')
     out.days = integer(record['days'], `${path}.days`, 1, 366)
@@ -268,13 +275,11 @@ function limit(value: unknown, path: string): PlanLimit {
       1,
       Number.MAX_SAFE_INTEGER,
     )
-  if (record['cacheReads'] !== undefined)
-    out.cacheReads = integer(
-      record['cacheReads'],
-      `${path}.cacheReads`,
-      1,
-      Number.MAX_SAFE_INTEGER,
-    )
+  if (record['cacheReads'] !== undefined) {
+    if (typeof record['cacheReads'] !== 'boolean')
+      fail(`${path}.cacheReads`, '必须是布尔值')
+    if (record['cacheReads']) out.cacheReads = true
+  }
   if (record['costUsd'] !== undefined) {
     const cost = record['costUsd']
     if (
@@ -286,45 +291,18 @@ function limit(value: unknown, path: string): PlanLimit {
       fail(`${path}.costUsd`, '必须是 0–1000000 之间的正数')
     out.costUsd = cost
   }
-  if (
-    out.tokens === undefined &&
-    out.costUsd === undefined &&
-    out.cacheReads === undefined
-  )
-    fail(path, 'tokens、costUsd、cacheReads 至少填一个')
+  if (out.tokens === undefined && out.costUsd === undefined)
+    fail(path, 'tokens、costUsd 至少填一个')
+  if (out.cacheReads === true && out.tokens === undefined)
+    fail(`${path}.cacheReads`, '只有填了 tokens 才能计入缓存读取')
   return out
 }
 
-function gateway(value: unknown, path: string): PlanGateway {
-  const record = object(value, path, ['limits', 'models'])
-  const limits = record['limits']
-  if (!Array.isArray(limits) || limits.length > MAX_LIMITS)
-    fail(`${path}.limits`, `必须是不超过 ${MAX_LIMITS} 项的数组`)
-  const models = record['models']
-  if (
-    !Array.isArray(models) ||
-    models.length === 0 ||
-    models.length > MAX_MODELS
-  )
-    fail(`${path}.models`, `必须是 1–${MAX_MODELS} 项的数组`)
-  const seen = new Set<string>()
-  const patterns = models.map((model, index) => {
-    const at = `${path}.models[${index}]`
-    const pattern = text(model, at, { max: 256 })
-    const ok = pattern.startsWith('group/')
-      ? GROUP_PATTERN.test(pattern)
-      : MODEL_PATTERN.test(pattern)
-    if (!ok) fail(at, '必须是 provider/model、provider/* 或 group/<id>')
-    if (seen.has(pattern)) fail(at, '重复')
-    seen.add(pattern)
-    return pattern
-  })
-  return {
-    limits: limits.map((item, index) =>
-      limit(item, `${path}.limits[${index}]`),
-    ),
-    models: patterns,
-  }
+function gatewayLimits(value: unknown, path: string): PlanLimit[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > MAX_LIMITS)
+    fail(path, `必须是不超过 ${MAX_LIMITS} 项的数组`)
+  return value.map((item, index) => limit(item, `${path}[${index}]`))
 }
 
 function plan(value: unknown, path: string): Plan {
@@ -334,7 +312,8 @@ function plan(value: unknown, path: string): Plan {
     'priceCents',
     'periodDays',
     'note',
-    'gateway',
+    'nodes',
+    'gatewayLimits',
   ])
   const note = record['note']
   return {
@@ -356,7 +335,11 @@ function plan(value: unknown, path: string): Plan {
       note === undefined || note === null
         ? null
         : text(note, `${path}.note`, { max: 500 }),
-    gateway: gateway(record['gateway'], `${path}.gateway`),
+    nodes: integer(record['nodes'], `${path}.nodes`, 1, MAX_NODES),
+    gatewayLimits: gatewayLimits(
+      record['gatewayLimits'],
+      `${path}.gatewayLimits`,
+    ),
   }
 }
 
