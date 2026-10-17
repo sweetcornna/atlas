@@ -512,6 +512,7 @@ async function within<T>(
       work,
       new Promise<typeof LATE>(resolve => {
         timer = setTimeout(() => resolve(LATE), ms)
+        timer.unref?.()
       }),
     ])
   } finally {
