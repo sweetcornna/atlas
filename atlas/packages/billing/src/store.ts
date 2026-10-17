@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The billing database: orders, subscriptions, redeem codes, and an
+ * The billing database: orders, subscriptions, redeem codes, conflicts (paid
+ * orders that extended nothing because another plan was active), and an
  * append-only `events` table that every state change writes to in the same
  * transaction.
  *
@@ -16,8 +17,8 @@
  * chain, then folds the events and compares the result with the state tables.
  *
  * What that finds: an edited, deleted or reordered event whose hashes were
- * not recomputed, and a direct edit of `orders`, `subscriptions` or
- * `redeem_codes` that skips the events.
+ * not recomputed, and a direct edit of `orders`, `subscriptions`,
+ * `redeem_codes` or `conflicts` that skips the events.
  *
  * What it does not: the hash has no key. Whoever can write the file (the
  * hub's user, root, anyone who can swap in a copy) can drop the triggers,
@@ -73,6 +74,27 @@ export interface SubscriptionRow {
   readonly gateway: GatewayState
   readonly binding: string | null
   readonly attempts: number
+}
+
+/**
+ * A paid order that extended nothing: when it settled, another plan was
+ * active. It is owed a refund until the order is marked refunded.
+ */
+export interface ConflictRow {
+  readonly orderId: string
+  readonly subject: string
+  readonly planId: string
+  /** The plan that was active when the order settled. */
+  readonly activePlanId: string
+  readonly at: number
+}
+
+/** A conflict whose order is still paid, with what the refund is about. */
+export interface RefundDueRow extends ConflictRow {
+  readonly amountCents: number
+  readonly channel: string
+  readonly outTradeNo: string
+  readonly paidAt: number | null
 }
 
 export interface RedeemCodeRow {
@@ -184,6 +206,13 @@ CREATE TABLE IF NOT EXISTS redeem_codes (
   usedBy TEXT,
   usedAt INTEGER
 );
+CREATE TABLE IF NOT EXISTS conflicts (
+  orderId TEXT PRIMARY KEY,
+  subject TEXT NOT NULL,
+  planId TEXT NOT NULL,
+  activePlanId TEXT NOT NULL,
+  at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY,
   at INTEGER NOT NULL,
@@ -215,6 +244,10 @@ interface Folded {
     { planId: string; startsAt: number; endsAt: number }
   >
   codes: Map<string, { planId: string; periods: number; usedBy: string | null }>
+  conflicts: Map<
+    string,
+    { subject: string; planId: string; activePlanId: string }
+  >
 }
 
 /**
@@ -621,6 +654,47 @@ export class BillingStore {
     })
   }
 
+  // ──────────────────────────── conflicts ────────────────────────────
+
+  /**
+   * A paid order is not credited because another plan is active; call it in
+   * the transaction that marks the order paid.
+   */
+  recordConflict(row: Omit<ConflictRow, 'at'>, at: number): void {
+    this.transaction(() => {
+      this.#db
+        .query(
+          'INSERT INTO conflicts (orderId, subject, planId, activePlanId, at) VALUES (?, ?, ?, ?, ?)',
+        )
+        .run(row.orderId, row.subject, row.planId, row.activePlanId, at)
+      this.#append(
+        'order.conflict',
+        {
+          orderId: row.orderId,
+          subject: row.subject,
+          planId: row.planId,
+          activePlanId: row.activePlanId,
+        },
+        at,
+      )
+    })
+  }
+
+  conflict(orderId: string): ConflictRow | null {
+    return this.#db
+      .query<ConflictRow, [string]>('SELECT * FROM conflicts WHERE orderId = ?')
+      .get(orderId)
+  }
+
+  /** Conflicts whose order is still paid (not marked refunded), oldest first. */
+  refundsDue(limit: number): RefundDueRow[] {
+    return this.#db
+      .query<RefundDueRow, [number]>(
+        "SELECT c.orderId, c.subject, c.planId, c.activePlanId, c.at, o.amountCents, o.channel, o.outTradeNo, o.paidAt FROM conflicts c JOIN orders o ON o.id = c.orderId WHERE o.status = 'paid' ORDER BY c.at, c.orderId LIMIT ?",
+      )
+      .all(limit)
+  }
+
   // ─────────────────────────── redeem codes ───────────────────────────
 
   redeemCode(hash: string): RedeemCodeRow | null {
@@ -695,6 +769,7 @@ export class BillingStore {
       orders: new Map(),
       subscriptions: new Map(),
       codes: new Map(),
+      conflicts: new Map(),
     }
     let previous = GENESIS
     let count = 0
@@ -791,6 +866,21 @@ export class BillingStore {
       )
         return `兑换码表与事件不符：${row.id}`
     }
+    const conflicts = this.#db
+      .query<ConflictRow, []>('SELECT * FROM conflicts')
+      .all()
+    if (conflicts.length !== folded.conflicts.size)
+      return '冲突表与事件不符：行数'
+    for (const row of conflicts) {
+      const want = folded.conflicts.get(row.orderId)
+      if (
+        want === undefined ||
+        want.subject !== row.subject ||
+        want.planId !== row.planId ||
+        want.activePlanId !== row.activePlanId
+      )
+        return `冲突表与事件不符：${row.orderId}`
+    }
     return null
   }
 }
@@ -858,6 +948,17 @@ function fold(state: Folded, kind: string, data: EventData): string | null {
       if (code === undefined || !subject)
         return 'redeem.used 指向不存在的兑换码'
       code.usedBy = subject
+      return null
+    }
+    case 'order.conflict': {
+      const id = str(data, 'orderId')
+      const subject = str(data, 'subject')
+      const planId = str(data, 'planId')
+      const activePlanId = str(data, 'activePlanId')
+      if (!id || !subject || !planId || !activePlanId)
+        return 'order.conflict 字段不全'
+      if (!state.orders.has(id)) return 'order.conflict 指向不存在的订单'
+      state.conflicts.set(id, { subject, planId, activePlanId })
       return null
     }
     case 'order.qr':

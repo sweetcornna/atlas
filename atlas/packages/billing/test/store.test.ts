@@ -299,6 +299,53 @@ describe('BillingStore', () => {
     })
   })
 
+  test('a conflict is an event and a row; the fold checks the row', () => {
+    const { path, store } = populated()
+    store.insertOrder(
+      order('o3', { planId: 'pro', amountCents: 29900 }),
+      T0 + 4000,
+    )
+    store.markOrderPaid(
+      'o3',
+      { providerTxnId: 'tx3', source: 'notify', late: false },
+      T0 + 5000,
+    )
+    store.recordConflict(
+      { orderId: 'o3', subject: 'alice', planId: 'pro', activePlanId: 'month' },
+      T0 + 5000,
+    )
+    expect(store.events().at(-1)?.kind).toBe('order.conflict')
+    expect(store.verifyChain().ok).toBe(true)
+    expect(store.refundsDue(10)).toEqual([
+      {
+        orderId: 'o3',
+        subject: 'alice',
+        planId: 'pro',
+        activePlanId: 'month',
+        at: T0 + 5000,
+        amountCents: 29900,
+        channel: 'wechatpay',
+        outTradeNo: store.order('o3')!.outTradeNo,
+        paidAt: T0 + 5000,
+      },
+    ])
+    // Once marked refunded it is no longer due; the row stays.
+    store.markOrderRefunded('o3', 'ops', '已退', T0 + 6000)
+    expect(store.refundsDue(10)).toEqual([])
+    expect(store.conflict('o3')?.activePlanId).toBe('month')
+    store.close()
+    const raw = new Database(path)
+    raw.exec('DELETE FROM conflicts')
+    raw.close()
+    const reopened = new BillingStore(path)
+    expect(reopened.verifyChain()).toEqual({
+      ok: false,
+      seq: 0,
+      reason: '冲突表与事件不符：行数',
+    })
+    reopened.close()
+  })
+
   test('gateway bookkeeping honours the revision', () => {
     const { store } = populated()
     store.saveSubscription(

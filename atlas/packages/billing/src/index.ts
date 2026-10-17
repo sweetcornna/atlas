@@ -105,9 +105,11 @@ export {
   type BillingEvent,
   BillingStore,
   type ChainReport,
+  type ConflictRow,
   type GatewayState,
   type OrderRow,
   type OrderStatus,
   type RedeemCodeRow,
+  type RefundDueRow,
   type SubscriptionRow,
 } from './store.js'

@@ -7,7 +7,11 @@
  * - Prepaid periods: every purchase, code or grant adds
  *   `periods × periodDays` to `max(now, endsAt)`. No recurring debit.
  * - One plan at a time: buying or redeeming a different plan while one is
- *   active is refused; an operator grant may switch plans.
+ *   active is refused; an operator grant may switch plans. A payment that
+ *   settles while another plan is active (an order paid after it expired,
+ *   say) is recorded as paid and extends nothing: crediting it would switch
+ *   the plan and carry the old period over. It is listed as owed a refund
+ *   (`AdminSnapshot.refundsDue`) until the operator marks it refunded.
  * - A verified payment is never dropped. It is committed (order paid +
  *   subscription extended + gateway marked pending) in one transaction
  *   before the gateway is touched; a provisioning failure leaves the
@@ -153,6 +157,20 @@ export interface AdminSnapshot {
     readonly usedBy: string | null
     readonly usedAt: number | null
   }[]
+  /** Paid orders that extended nothing (another plan was active), not yet refunded. */
+  readonly refundsDue: readonly {
+    readonly orderId: string
+    readonly subject: string
+    readonly planId: string
+    /** The plan that was active when the order settled. */
+    readonly activePlanId: string
+    readonly amountCents: number
+    readonly channel: string
+    readonly outTradeNo: string
+    readonly paidAt: number | null
+    /** When the conflict was recorded. */
+    readonly at: number
+  }[]
   readonly chain: ChainReport
 }
 
@@ -227,6 +245,7 @@ function errorName(error: unknown): string {
 
 type Settlement =
   | { readonly kind: 'settled'; readonly subject: string }
+  | { readonly kind: 'conflict' }
   | { readonly kind: 'duplicate' }
   | { readonly kind: 'mismatch'; readonly field: string }
 
@@ -306,6 +325,17 @@ export class BillingService {
         expiresAt: row.expiresAt,
         usedBy: row.usedBy,
         usedAt: row.usedAt,
+      })),
+      refundsDue: this.#store.refundsDue(limit).map(row => ({
+        orderId: row.orderId,
+        subject: row.subject,
+        planId: row.planId,
+        activePlanId: row.activePlanId,
+        amountCents: row.amountCents,
+        channel: row.channel,
+        outTradeNo: row.outTradeNo,
+        paidAt: row.paidAt,
+        at: row.at,
       })),
       chain: this.#store.verifyChain(),
     }
@@ -537,6 +567,7 @@ export class BillingService {
           this.#log(`billing: ${paid.id} 重复支付通知的交易号不同`)
         return { kind: 'duplicate' }
       }
+      const current = this.#store.subscription(paid.subject)
       this.#store.markOrderPaid(
         paid.id,
         {
@@ -546,6 +577,27 @@ export class BillingService {
         },
         now,
       )
+      if (
+        current !== null &&
+        current.endsAt > now &&
+        current.planId !== paid.planId
+      ) {
+        // The money is in; crediting it would switch the plan and keep the
+        // other plan's days. Recorded, not credited, owed a refund.
+        this.#store.recordConflict(
+          {
+            orderId: paid.id,
+            subject: paid.subject,
+            planId: paid.planId,
+            activePlanId: current.planId,
+          },
+          now,
+        )
+        this.#log(
+          `billing: ${paid.id} 付款时已有别的套餐在有效期内 · 记已付不延长 · 待退款`,
+        )
+        return { kind: 'conflict' }
+      }
       this.#extend(
         paid.subject,
         paid.planId,
@@ -683,7 +735,11 @@ export class BillingService {
       if (order === null) throw new BillingError('unknown_order', '订单不存在')
       if (!this.#store.markOrderRefunded(orderId, by, reason, now))
         throw new BillingError('not_paid', '只有已支付的订单才能记退款')
-      const row = this.#store.subscription(order.subject)
+      // A conflicting order never extended anything; there is nothing to take back.
+      const row =
+        this.#store.conflict(orderId) === null
+          ? this.#store.subscription(order.subject)
+          : null
       if (row !== null)
         this.#store.saveSubscription(
           {
