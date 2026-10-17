@@ -2320,7 +2320,13 @@ export async function runResident(args: readonly string[]): Promise<void> {
         }),
     node: config.node,
     team: config.team,
-    agents: config.agents,
+    // An external runtime's model, as `node.ping` reports it (P29).
+    agents: config.agents.map(agent => {
+      const spec = new Map(config.agentModels ?? []).get(agent.agent)
+      return spec === undefined
+        ? agent
+        : { ...agent, model: spec.slice(spec.indexOf('/') + 1) }
+    }),
     ...(config.agentModels === undefined
       ? {}
       : {

@@ -96,11 +96,11 @@ export interface ChannelTurns {
   /**
    * More context for this turn: sticky blocks (resent only when changed) and
    * a note for this turn only, e.g. the background-task rules and summary.
+   * May have to read the conversation first (the long-turn reminder).
    */
-  context?(conversation: ChannelConversation): {
-    readonly sticky?: readonly StickyPart[]
-    readonly note?: string
-  }
+  context?(
+    conversation: ChannelConversation,
+  ): ChannelTurnContext | Promise<ChannelTurnContext>
   /**
    * Answers an owner's short status question ("进度怎么样了") without a turn;
    * null lets the message through as usual (grantley `intercept`).
@@ -109,6 +109,11 @@ export interface ChannelTurns {
     conversation: ChannelConversation,
     text: string,
   ): Promise<string | null>
+}
+
+interface ChannelTurnContext {
+  readonly sticky?: readonly StickyPart[]
+  readonly note?: string
 }
 
 /** Short progress questions and nudges (grantley `tasks._QUERY`, `_NUDGE`). */
@@ -555,7 +560,15 @@ export class ChannelGateway {
     const { conversation, inbound } = event
     const generation = this.#generations.get(conversation.key) ?? 0
     const session = this.#turns.sessionOf(conversation)
-    const extra = this.#turns.context?.(conversation)
+    // A task note that cannot be had is left out: the owner's words still go.
+    let extra: ChannelTurnContext | undefined
+    try {
+      extra = await this.#turns.context?.(conversation)
+    } catch (error) {
+      this.#onError?.(
+        `渠道 ${rules.id} 后台任务附注失败：${String((error as Error)?.message ?? error)}`,
+      )
+    }
     const { texts, marks } = this.#sticky.filter(
       conversation.key,
       generation,
