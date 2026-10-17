@@ -71,6 +71,14 @@ export const LIMITS = {
    * A larger bound would only hold messages that are certain to time out.
    */
   maxQueuedTurns: 32,
+  /**
+   * Longest call chain of a synchronous agent-to-agent question (P36.6,
+   * `harness-backends.md` §6.2): the asking turns a hub signs into a
+   * `task.request`, outermost first. A question three asks deep refuses to
+   * go further, and a node nests at most this many turns inside the one it
+   * runs, so a chain can never turn into unbounded concurrency.
+   */
+  maxAskChain: 3,
 } as const
 
 export type Limits = typeof LIMITS
