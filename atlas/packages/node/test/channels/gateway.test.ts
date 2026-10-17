@@ -246,6 +246,21 @@ describe('sticky framing', () => {
     await gateway.idle()
   })
 
+  test('a channel prompt with blank lines stays one paragraph', async () => {
+    const { turns, adapter, gateway } = setup()
+    gateway.handle(
+      { ...RULES, prompt: '第一条\n\n第二条\n \n\n第三条' },
+      adapter,
+      inbound({ text: 'a' }),
+    )
+    await until(() => turns.calls.length === 1)
+    expect(turns.calls[0]!.text).toContain(
+      '[渠道说明]\n第一条\n第二条\n第三条\n\na',
+    )
+    turns.answer(0, 'ok')
+    await gateway.idle()
+  })
+
   test('a failed turn does not count as delivered', async () => {
     const { turns, adapter, gateway } = setup()
     gateway.handle(RULES, adapter, inbound({ text: 'a' }))
@@ -387,7 +402,7 @@ describe('replies', () => {
 })
 
 describe('commands', () => {
-  test('/new stops, resets and re-sends the framing', async () => {
+  test('/new stops the turn (not the tasks), resets and re-sends the framing', async () => {
     const { turns, adapter, gateway } = setup()
     gateway.handle(RULES, adapter, inbound({ text: 'a' }))
     await until(() => turns.calls.length === 1)
@@ -432,6 +447,8 @@ describe('commands', () => {
     )
     expect(texts.some(text => text.startsWith('/new 新会话'))).toBe(true)
     expect(turns.calls).toHaveLength(0)
+    // /stop also stops the chat's background tasks.
+    expect(turns.log).toContain('stop+tasks ch-1:dm:owner')
   })
 
   test("a member's command is ordinary text, except /help", async () => {

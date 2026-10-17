@@ -203,13 +203,36 @@ lines.on('line', line => {
   if (frame.type === 'set_thinking_level') thinkingLevel = String(frame.level)
   if (frame.type === 'fixture_settle') emit({ type: 'session_settled' })
   if (frame.type === 'abort' && current) {
-    emit({
-      type: 'prompt_result',
-      id: current,
-      status: 'aborted',
-      sessionSettled: true,
-    })
-    emit({ type: 'session_settled' })
+    const id = current
+    const finish = () => {
+      emit({
+        type: 'prompt_result',
+        id,
+        status: 'aborted',
+        sessionSettled: true,
+      })
+      emit({ type: 'session_settled' })
+    }
+    // A turn that is told to stop while it still has one tool call to make:
+    // the call goes out first and its result is logged, then the turn ends.
+    const tool = process.env.QIANMO_FIXTURE_TOOL_ON_ABORT
+    if (tool) {
+      const wait = new Promise<Record<string, unknown>>(resolve =>
+        pendingTools.set('abort-tool', resolve),
+      )
+      emit({
+        type: 'host_tool_call',
+        id: 'abort-tool',
+        toolCallId: 'fixture-abort-tool',
+        toolName: tool,
+        arguments: { summary: 'progress before the stop', state: 'working' },
+      })
+      void wait.then(result => {
+        const log = process.env.QIANMO_FIXTURE_TOOL_LOG
+        if (log) appendFileSync(log, `${JSON.stringify(result)}\n`)
+        finish()
+      })
+    } else finish()
   }
   emit({
     type: 'response',

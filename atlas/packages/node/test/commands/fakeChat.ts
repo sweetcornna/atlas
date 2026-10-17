@@ -106,6 +106,7 @@ export class FakeChat implements ChatPort {
     sessionId: string,
     text: string,
     state: 'done' | 'failed' = 'done',
+    extra: Partial<ChatTurn> = {},
   ): void {
     this.#add({
       id: crypto.randomUUID(),
@@ -115,6 +116,27 @@ export class FakeChat implements ChatPort {
       text,
       state,
       taskId: this.lastTask(sessionId),
+      ...extra,
+    })
+  }
+
+  /**
+   * A timeout for the last line: the node's own (`remote`, with the
+   * `remoteTerminal` mark) or the chat face's local guess after its deadline.
+   */
+  timeout(sessionId: string, remote: boolean): void {
+    this.#add({
+      id: crypto.randomUUID(),
+      sessionId,
+      author: 'agent',
+      at: Date.now(),
+      text: remote
+        ? 'resident task deadline expired'
+        : '这一轮在任务期限内没有回复。',
+      state: 'failed',
+      code: 'E_TASK_TIMEOUT',
+      taskId: this.lastTask(sessionId),
+      ...(remote ? { remoteTerminal: true as const } : {}),
     })
   }
 

@@ -88,6 +88,10 @@ export class ResidentNodeRuntime {
     readonly deadlineOf?: (
       message: ResidentMailboxMessage,
     ) => number | undefined
+    /** See {@link ResidentMailboxReaderOptions.backgroundOf}. */
+    readonly backgroundOf?: (
+      messages: readonly ResidentMailboxMessage[],
+    ) => boolean
     /** Session source shared by every agent. See {@link ResidentAgentBinding}. */
     readonly sessions?: ResidentSessionResolver
     readonly timings?: ResidentTimingRecorder
@@ -177,6 +181,9 @@ export class ResidentNodeRuntime {
           ...(options.deadlineOf === undefined
             ? {}
             : { deadlineOf: options.deadlineOf }),
+          ...(options.backgroundOf === undefined
+            ? {}
+            : { backgroundOf: options.backgroundOf }),
           ...(options.timings === undefined
             ? {}
             : { timings: options.timings }),

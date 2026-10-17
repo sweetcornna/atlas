@@ -308,8 +308,11 @@ function sessionTitle(session: ChatSession, t: FrontText): string {
 
 /** One agent's conversations, as its row tells them. */
 interface AgentLine {
-  /** The conversation it spoke in last: what picking the row opens. */
-  readonly latest: ChatSession
+  /**
+   * The conversation it spoke in last, not counting background task workers
+   * (P29): what picking the row opens.
+   */
+  readonly latest?: ChatSession
   /** How many of its conversations wait for an answer, beside the open one. */
   readonly running: number
 }
@@ -324,11 +327,18 @@ function linesOf(
     // The open conversation shows its own work in the thread.
     const busy = session.running === true && session.id !== activeId
     const running = (was?.running ?? 0) + (busy ? 1 : 0)
+    // A worker session is the hub's, not a conversation to open: its work
+    // still shows as running, and in the strip.
     const latest =
-      was === undefined || session.updatedAt > was.latest.updatedAt
-        ? session
-        : was.latest
-    out.set(session.target, { latest, running })
+      session.background === true
+        ? was?.latest
+        : was?.latest === undefined || session.updatedAt > was.latest.updatedAt
+          ? session
+          : was.latest
+    out.set(session.target, {
+      ...(latest === undefined ? {} : { latest }),
+      running,
+    })
   }
   return out
 }
@@ -454,7 +464,7 @@ function listOrder(
   lines: ReadonlyMap<string, AgentLine>,
 ): readonly ChatTarget[] {
   const spoken = (target: ChatTarget): number =>
-    lines.get(target.address)?.latest.updatedAt ?? Number.NEGATIVE_INFINITY
+    lines.get(target.address)?.latest?.updatedAt ?? Number.NEGATIVE_INFINITY
   const head = targets.filter(target => target.address === main)
   const rest = targets
     .filter(target => target.address !== main)

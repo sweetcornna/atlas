@@ -548,6 +548,26 @@ describe('execution through the conversation port', () => {
     expect(chat.sent[3]!.sessionId).toBe(chat.sent[2]!.sessionId)
   })
 
+  test('a schedule names its sessions, current and past, so they start no background tasks', async () => {
+    const job = value(
+      await book.save(draft({ enabled: false, direction: null }), actor),
+    )
+    chat.autoReply = '完成'
+    value(await book.runNow(job.id, actor))
+    await book.idle()
+    const session = chat.sent[0]!.sessionId
+    expect(book.owns(session)).toBe(true)
+    chat.records.delete(session)
+    value(await book.runNow(job.id, actor))
+    await book.idle()
+    const rebuilt = chat.sent[1]!.sessionId
+    expect(rebuilt).not.toBe(session)
+    expect(book.owns(rebuilt)).toBe(true)
+    // The one a past run used is still the schedule's.
+    expect(book.owns(session)).toBe(true)
+    expect(book.owns('a-console-chat')).toBe(false)
+  })
+
   test('local timeouts retain unknown occupancy and late replies reconcile it', async () => {
     const channel = value(
       await book.saveChannel(

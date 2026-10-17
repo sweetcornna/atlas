@@ -300,17 +300,25 @@ export function normalizeChatEndpoint(raw: string): string | null {
  * 每个回调里各写一遍「除非已经是……」要短得多，也少一处会漂移的判断。
  */
 /**
- * 一条会话最多收下多少条过程行。
+ * 一条会话最多收下多少条工具步骤行（`noticeSource: 'step'`）。
  *
  * 这个上限的对手不是流量，是**落盘那一头的假设**：`consoleChatStore.ts` 明说
  * 不做压缩，理由是「写它的是一个正在打字的人」。过程行不是人打的，所以那句话
- * 得有个东西替它继续成立——就是这个数。
+ * 得有个东西替它继续成立——就是这个数。工具步骤每轮最多二十几条，长期复用的
+ * 渠道会话几十轮就到顶；到顶之后少的只是装饰，所以它只管步骤。
  *
  * **不按 `dedupKey` 去重**：协议 §14.4 明确说那把钥匙由发送方的账本消费，接收
  * 方不消费它，因为接收方要做同样的事就得为每个上下文攒一份无界的新状态。一个
  * 计数器是有界的，一张去重表不是。
  */
-const MAX_NOTICES_PER_SESSION = 200
+const MAX_STEPS_PER_SESSION = 200
+
+/**
+ * 智能体主动通知（`qianmo_notify`）另算一个数。它们要转给主人，不能被工具步骤
+ * 挤掉；仍然有界，理由同上，只是宽得多：节点那一头每分钟限 60 条，正常的会话
+ * 一辈子也到不了。
+ */
+const MAX_AGENT_NOTICES_PER_SESSION = 2_000
 
 const STATE_RANK: Readonly<Record<ChatTurn['state'], number>> = {
   pending: 0,
@@ -386,7 +394,9 @@ export function createConsoleChatPort(
   const turns = new Map<string, ChatTurn>()
   const order = new Map<string, string[]>()
   const pending = new Map<string, PendingTask>()
-  /** 每条会话已经收下的过程行数，见 {@link MAX_NOTICES_PER_SESSION}。 */
+  /** 每条会话已经收下的工具步骤行数，见 {@link MAX_STEPS_PER_SESSION}。 */
+  const stepCount = new Map<string, number>()
+  /** 每条会话已经收下的智能体通知数，见 {@link MAX_AGENT_NOTICES_PER_SESSION}。 */
   const noticeCount = new Map<string, number>()
   const links = new Map<string, ChatLink>()
   const listeners = new Set<(update: ChatUpdate) => void>()
@@ -408,12 +418,11 @@ export function createConsoleChatPort(
     turns.set(turn.id, turn)
     ids.push(turn.id)
     // 重放要把上限一起带回来，否则重启就是一次免费的额度重置——而这个上限防的
-    // 正是「一台被授权的机器一直往里写」，那种情形跨得过重启。
-    if (turn.variant === 'notice') {
-      noticeCount.set(
-        turn.sessionId,
-        (noticeCount.get(turn.sessionId) ?? 0) + 1,
-      )
+    // 正是「一台被授权的机器一直往里写」，那种情形跨得过重启。宿主自己写的
+    // 后台任务通知不算；分不出来源的旧行按工具步骤算。
+    if (turn.variant === 'notice' && turn.noticeSource !== 'task') {
+      const counts = turn.noticeSource === 'agent' ? noticeCount : stepCount
+      counts.set(turn.sessionId, (counts.get(turn.sessionId) ?? 0) + 1)
     }
   }
   settleRestartOrphans()
@@ -589,13 +598,11 @@ export function createConsoleChatPort(
 
     // 上限存在，是因为落盘那一头的假设变了。`consoleChatStore.ts` 原本写着
     // 「写它的是一个正在打字的人」，并据此明说不做压缩；过程行不是人打的。
-    // 对面每分钟能发 60 条（`LIMITS.notifyRatePerMinute`），一个任务期限 5 分钟，
-    // 于是**一个行为异常的节点**——一次构建出错就够——能往一条会话里塞三百条。
-    // 拨号名单挡得住陌生人，挡不住一台被授权过的机器发疯。
-    const counted = noticeCount.get(sessionId) ?? 0
-    if (counted >= MAX_NOTICES_PER_SESSION) return
-    noticeCount.set(sessionId, counted + 1)
-
+    // 对面每分钟能发 60 条（`LIMITS.notifyRatePerMinute`），一个任务期限几十分钟，
+    // 于是**一个行为异常的节点**——一次构建出错就够——能往一条会话里塞上千条。
+    // 拨号名单挡得住陌生人，挡不住一台被授权过的机器发疯。工具步骤与智能体
+    // 通知各计各的：步骤到顶不能让主人收不到智能体主动说的话。归哪一类与落盘
+    // 的 `noticeSource` 是同一个判断，重放才数得回同一个数。
     const step =
       payload.kind === 'task' && payload.dedupKey !== undefined
         ? parseTurnStepDedupKey(payload.dedupKey)
@@ -606,6 +613,14 @@ export function createConsoleChatPort(
         : pending.get(payload.causeTaskId)
     const automatic =
       step !== undefined && causingTask?.msgId === step.networkMsgId
+    const counts = automatic ? stepCount : noticeCount
+    const counted = counts.get(sessionId) ?? 0
+    if (
+      counted >=
+      (automatic ? MAX_STEPS_PER_SESSION : MAX_AGENT_NOTICES_PER_SESSION)
+    )
+      return
+    counts.set(sessionId, counted + 1)
 
     addTurn({
       id: newId(),
@@ -662,6 +677,11 @@ export function createConsoleChatPort(
     if (message.type === MessageType.TaskResult) {
       settle(task)
       const payload = message.payload
+      // Only a request this console made with `reportCompaction` gets it.
+      const compacted =
+        isTaskResultPayload(payload) && payload.compacted === true
+          ? { compacted: true as const }
+          : {}
       if (isTaskResultPayload(payload) && payload.outcome === 'completed') {
         patchTurn(task.turnId, { state: 'read' })
         addTurn({
@@ -676,6 +696,7 @@ export function createConsoleChatPort(
           traceId: message.traceId,
           elapsedMs: at - task.sentAt,
           ...(task.command === undefined ? {} : { command: task.command }),
+          ...compacted,
         })
         return
       }
@@ -701,6 +722,7 @@ export function createConsoleChatPort(
         taskId: message.taskId,
         traceId: message.traceId,
         elapsedMs: at - task.sentAt,
+        ...compacted,
       })
       return
     }
@@ -791,6 +813,7 @@ export function createConsoleChatPort(
     // 标题是操作者的第一句（本地命令不算）：会话列表按它认出一条对话，
     // 预览照旧是最后一句。
     let title: string | undefined
+    let background = false
     for (const id of ids) {
       const turn = turns.get(id)
       if (
@@ -800,6 +823,7 @@ export function createConsoleChatPort(
         turn.command === undefined
       ) {
         title = turn.text
+        background = turn.background === true
         break
       }
     }
@@ -819,6 +843,7 @@ export function createConsoleChatPort(
       preview: last?.text ?? '',
       ...(title === undefined ? {} : { title }),
       ...(running ? { running: true } : {}),
+      ...(background ? { background: true } : {}),
     }
   }
 
@@ -1093,6 +1118,11 @@ export function createConsoleChatPort(
             ...(input.command === undefined
               ? {}
               : { command: { name: input.command } }),
+            // A background sub-agent turn (P29); under the owner proof below,
+            // so the node can trust it. Older nodes ignore both fields.
+            ...(input.background === true ? { background: true } : {}),
+            // This console reads `compacted` on the result.
+            reportCompaction: true,
           },
           taskId,
           createdAt,
@@ -1128,6 +1158,7 @@ export function createConsoleChatPort(
         taskId: message.taskId,
         traceId: message.traceId,
         ...(input.command === undefined ? {} : { command: input.command }),
+        ...(input.background === true ? { background: true as const } : {}),
       })
 
       const task: PendingTask = {

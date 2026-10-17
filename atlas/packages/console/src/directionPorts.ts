@@ -753,6 +753,62 @@ export interface SchedulesPort {
 }
 
 // ---------------------------------------------------------------------------
+// P29 后台任务
+// ---------------------------------------------------------------------------
+
+export type BackgroundTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'interrupted'
+  | 'completion_pending'
+  | 'needs_input_pending'
+  | 'needs_input'
+  | 'completed'
+  | 'cancelled'
+
+/**
+ * 主智能体交给后台子智能体的一个任务，控制台列表里的一行。主会话的上下文和
+ * 追加指示的原文不在这里。
+ */
+export interface BackgroundTaskView {
+  readonly id: string
+  readonly title: string
+  /** 开这个任务的人：主会话的主人。 */
+  readonly owner: string
+  /** 执行它的智能体，`qianmo://<node>/<agent>`。 */
+  readonly target: string
+  readonly status: BackgroundTaskStatus
+  /** 阶段的说法，含「排队中」。 */
+  readonly phase: string
+  /** 最近一次汇报。 */
+  readonly progress: string
+  /** 最近一次中断的原因；正常时为空。 */
+  readonly lastError: string
+  readonly turns: number
+  /** 子任务所在的会话；还没开时为 null。 */
+  readonly workerSession: string | null
+  readonly createdAt: number
+  readonly updatedAt: number
+}
+
+export interface BackgroundTaskReader {
+  readonly subject: string
+  readonly role?: DirectionActor['role']
+}
+
+export interface BackgroundTasksPort {
+  /** 主人看自己的，运维看全部；新的在前。 */
+  list(actor: BackgroundTaskReader): readonly BackgroundTaskView[]
+  /** 内存里的判断：这个人看得到这条任务（取消也按它）。 */
+  visible(id: string, actor: BackgroundTaskReader): boolean
+  /** 取消，和对话里的取消同一条路：停掉节点上在跑的那一轮。 */
+  cancel(
+    id: string,
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<BackgroundTaskView>>
+}
+
+// ---------------------------------------------------------------------------
 // P25 应用连接
 // ---------------------------------------------------------------------------
 

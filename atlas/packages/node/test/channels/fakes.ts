@@ -132,8 +132,11 @@ export class FakeTurns implements ChannelTurns {
     this.sessions.delete(conversation.key)
   }
 
-  async stop(conversation: ChannelConversation): Promise<boolean> {
-    this.log.push(`stop ${conversation.key}`)
+  async stop(
+    conversation: ChannelConversation,
+    options: { readonly tasks?: boolean } = {},
+  ): Promise<boolean> {
+    this.log.push(`stop${options.tasks ? '+tasks' : ''} ${conversation.key}`)
     return false
   }
 
