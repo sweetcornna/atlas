@@ -18,8 +18,9 @@
  *   不收。有租户节点时，全局默认只能清空或设为「无模型」。
  * - 平台的节点不持有订阅者的档案：还指派着订阅者档案的（交回平台、租户换了
  *   节点）期望为「无模型」，页面显示偏差，下发即收回密钥；跟随默认与停止托管
- *   照旧，但节点可能还跑着订阅者的档案（上次状态如此，或从没回报过）时，停止
- *   托管与跟随空默认都不收，先指派档案或「无模型」收回。
+ *   照旧，但节点可能还跑着订阅者的档案时，停止托管与跟随空默认都不收，先指派
+ *   档案或「无模型」收回。「可能还跑着」看节点上次回报的状态；中枢启动后还没
+ *   回报过的，看账本里最近一次可能落地的下发。
  *
  * 读与节点上的其余操作原样转交。
  */
@@ -59,6 +60,11 @@ function refused<T>(message: string): ProviderResult<T> {
 
 const MAGPIE_ONLY = '公开版的模型只经平台网关 · 预设只能是 magpie'
 const SUBSCRIPTION_PROFILE = '订阅者的网关档案随订阅管理'
+
+/** A platform node that would send nothing may still hold a subscriber's key. */
+function unsure(nodes: string): string {
+  return `无法确认 ${nodes} 上没有订阅者的密钥 · 先指派档案或「无模型」收回`
+}
 
 /** A draft is an open record until the service parses it. */
 function field(draft: Readonly<Record<string, unknown>>, name: string): string {
@@ -267,9 +273,7 @@ export function publicProviders(
           assignment.mode === 'unmanaged' ||
           overview.value.defaultProfileId === null
         if (row !== undefined && sendsNothing && mayRunTenantProfile(row))
-          return refused(
-            '这台节点上还有订阅者的密钥 · 先指派档案或「无模型」收回',
-          )
+          return refused(unsure(input.node))
         return inner.assign(input, caller)
       }
       if (

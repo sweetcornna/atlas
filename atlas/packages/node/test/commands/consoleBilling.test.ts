@@ -59,6 +59,7 @@ import {
 import {
   ConsoleMagpie,
   magpieProfileId,
+  mayRunTenantProfile,
   NO_MODEL_PROFILE,
 } from '../../src/commands/consoleMagpie.js'
 import {
@@ -1172,14 +1173,10 @@ describe('a node handed back or moved gives the subscriber’s key back', () => 
         expect(result.failure.message).toContain('订阅者的密钥')
       }
     }
-    // A node that has never answered a status may hold one too.
-    const unknown = await providers.assign(
-      { node: 'beta-3', assignment: { mode: 'unmanaged' } },
-      ops(),
-    )
-    expect(unknown.ok).toBe(false)
-    // Once it is known to run something else, the choice is the operator's.
-    expect((await raw.refreshNode('beta-3')).ok).toBe(true)
+    // A node that has never answered a status, and was never sent a
+    // subscriber's profile, holds none of their keys: the choice is the
+    // operator's.
+    expect((await nodeRow('beta-3')).actual).toBeNull()
     expect(
       (
         await providers.assign(
@@ -1199,6 +1196,61 @@ describe('a node handed back or moved gives the subscriber’s key back', () => 
         )
       ).ok,
     ).toBe(true)
+  })
+
+  test('with no status since a restart, what the book delivered last decides', async () => {
+    const issued = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-3' }, mainModel: 'openai/gpt-6' },
+      ops(),
+    )
+    if (!issued.ok) throw new Error(issued.failure.message)
+    const { tenant } = await subscribed()
+    // Handed back; the hub restarts before the sync takes the key back.
+    setNodes(tenant, [])
+    const restarted = openConsoleProviders({
+      storePath: join(root, 'config', 'providers.ndjson'),
+      secretsPath: join(root, 'config', 'provider-secrets.json'),
+      keyPath: join(root, 'keys', 'provider-master.key'),
+      knownHostsFile: join(root, 'known_hosts'),
+      nodes: nodes.map((node, index) => ({
+        node: `beta-${index + 1}`,
+        kind: 'local' as const,
+        command: node.command,
+      })),
+      scheduler: STILL,
+    })
+    try {
+      const wrapped = publicProviders(restarted, {
+        tenancy,
+        isSystem: caller => restarted.isSystemCaller(caller),
+        allowance: one => billing.allowance(one),
+      })
+      const overview = await restarted.overview()
+      if (!overview.ok) throw new Error('overview')
+      const row = (node: string) => {
+        const found = overview.value.nodes.find(one => one.node === node)
+        if (found === undefined) throw new Error(`no ${node}`)
+        return found
+      }
+      for (const node of ['beta-1', 'beta-2', 'beta-3'])
+        expect(row(node).actual).toBeNull()
+      // beta-1 was last sent the subscriber's profile; beta-3 a platform
+      // one; beta-2 nothing at all.
+      expect(mayRunTenantProfile(row('beta-1'))).toBe(true)
+      expect(mayRunTenantProfile(row('beta-3'))).toBe(false)
+      expect(mayRunTenantProfile(row('beta-2'))).toBe(false)
+      const refused = await wrapped.assign(
+        { node: 'beta-1', assignment: { mode: 'unmanaged' } },
+        ops(),
+      )
+      expect(refused.ok).toBe(false)
+      if (!refused.ok)
+        expect(refused.failure.message).toBe(
+          '无法确认 beta-1 上没有订阅者的密钥 · 先指派档案或「无模型」收回',
+        )
+    } finally {
+      restarted.stop()
+    }
   })
 
   test('a node handed back that refuses the delivery is asked again at the next sweep', async () => {
