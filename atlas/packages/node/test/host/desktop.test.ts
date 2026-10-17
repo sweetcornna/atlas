@@ -52,9 +52,13 @@ async function fixture(
       { preconnect: globalThis.fetch.preconnect },
     ),
   )
+  // Only Chrome (and Xvfb when asked): no bubblewrap, systemd, bus or window
+  // manager here; desktopSession.test.ts covers the private desktop.
   const launcher: DesktopLauncher = {
     available: name =>
-      name === 'Xvfb' || name === 'xauth' ? opts.xvfb === true : true,
+      name === 'Xvfb' || name === 'xauth'
+        ? opts.xvfb === true
+        : /chrom/i.test(name),
     async run(program, argv, env) {
       calls.push({ program, argv, env })
       const auth = argv[1]!
