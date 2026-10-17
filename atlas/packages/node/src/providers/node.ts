@@ -30,6 +30,7 @@ import {
   type CompiledProfile,
   LANE_API,
 } from './compile.js'
+import { runtimeSpec, type RuntimeLane } from '../host/runtimes/catalog.js'
 import { getModelCompatCapabilities } from './capabilities.js'
 import {
   diffKeyHashes,
@@ -185,26 +186,25 @@ export function nodeModelSelection(
       : undefined)
   return { provider, modelId, ...(thinkingLevel ? { thinkingLevel } : {}) }
 }
-/** The wire API each external runtime speaks (P27 §1.1). */
-const RUNTIME_API = {
-  'claude-code': 'anthropic-messages',
-  codex: 'openai-responses',
-} as const
-
 /**
  * Address, key and model for an external-runtime agent, read from the model
  * service already applied to this node. `spec` is `<profile>/<model>`, where
- * `<profile>` is a console profile id or a full `qm-…` provider id.
+ * `<profile>` is a console profile id or a full `qm-…` provider id. The lane
+ * is the first of the runtime's catalog lanes (P36 §1) the profile answers.
  */
 export function runtimeModelCredential(
   spec: string,
-  runtime: keyof typeof RUNTIME_API,
+  runtime: string,
 ): {
   readonly model: string
   readonly baseUrl: string
   readonly apiKey: string
+  readonly lane: RuntimeLane
   readonly headers?: Readonly<Record<string, string>>
 } {
+  const lanes = runtimeSpec(runtime)?.lanes ?? []
+  if (lanes.length === 0)
+    throw new Error(`${runtime} is not an external runtime with model lanes`)
   const slash = spec.indexOf('/')
   if (slash <= 0 || slash === spec.length - 1)
     throw new Error(`--agent-model must be <profile>/<model>, got ${spec}`)
@@ -217,21 +217,30 @@ export function runtimeModelCredential(
       ? id === profile
       : id.startsWith(`qm-${profile}-`) && id.length === profile.length + 12,
   )
-  // A gateway profile also carries one provider per extra lane (P33
-  // `laneAddresses`); take the one this runtime speaks, else the main one.
-  const match =
-    matches.find(
-      ([, value]) => isRecord(value) && value.api === RUNTIME_API[runtime],
-    ) ?? matches[0]
-  if (match === undefined || !isRecord(match[1]))
+  if (matches.length === 0)
     throw new Error(
       `model profile ${profile} is not applied on this node; apply it from the console's model service first`,
     )
-  const [providerId, provider] = match
-  if (provider.api !== RUNTIME_API[runtime])
-    throw new Error(
-      `${runtime} needs a ${RUNTIME_API[runtime]} profile; ${profile} speaks ${String(provider.api)}`,
+  // A gateway profile also carries one provider per extra lane (P33
+  // `laneAddresses`); take the first lane this runtime speaks, in its order.
+  let match: [string, unknown] | undefined
+  let lane: RuntimeLane | undefined
+  for (const candidate of lanes) {
+    match = matches.find(
+      ([, value]) => isRecord(value) && value.api === LANE_API[candidate],
     )
+    if (match !== undefined) {
+      lane = candidate
+      break
+    }
+  }
+  if (match === undefined || lane === undefined || !isRecord(match[1]))
+    throw new Error(
+      `${runtime} needs a ${lanes.map(l => LANE_API[l]).join(' or ')} profile; ${profile} speaks ${matches
+        .map(([, value]) => (isRecord(value) ? String(value.api) : '?'))
+        .join(', ')}`,
+    )
+  const [providerId, provider] = match as [string, Record<string, unknown>]
   if (typeof provider.baseUrl !== 'string')
     throw new Error(`model profile ${profile} has no address`)
   const apiKey =
@@ -256,6 +265,7 @@ export function runtimeModelCredential(
     model,
     baseUrl: provider.baseUrl,
     apiKey,
+    lane,
     ...(Object.keys(headers).length === 0 ? {} : { headers }),
   }
 }

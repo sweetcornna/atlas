@@ -106,7 +106,7 @@ function setup(
       launches.push(input)
       const child = spawn(
         process.execPath,
-        [FAKE[input.kind], ...input.argv.slice(1)],
+        [FAKE[input.kind as keyof typeof FAKE], ...input.argv.slice(1)],
         { cwd: input.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'] },
       )
       children.push(child)

@@ -238,7 +238,7 @@ type PluginFormats = z.infer<typeof formatsSchema>
 const rosterSchema = z.array(
   z.object({
     agent: z.string(),
-    runtime: z.enum(['claude-code', 'codex']).nullable(),
+    runtime: z.string().nullable(),
   }),
 )
 type Roster = z.infer<typeof rosterSchema>
