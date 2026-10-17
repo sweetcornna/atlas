@@ -14,7 +14,7 @@ import {
   type ControlOutcome,
 } from './control.js'
 import { MemoryControl } from './memoryControl.js'
-import { verifiedTaskOwner } from '@qianmo/capability'
+import { verifiedBackground, verifiedTaskOwner } from '@qianmo/capability'
 import { connectorTools, type ConnectorToolContext } from './connectorTools.js'
 import { taskTools, type TaskToolOrigin } from './taskTools.js'
 import { NodeExtensions } from './extensions.js'
@@ -616,6 +616,17 @@ function networkContextId(
 
 const TASK_REPLY_RECEIPT_TIMEOUT_MS = 5_000
 
+/**
+ * How long a background turn stopped at its deadline gets to end on its own
+ * abort before the node answers without it.
+ *
+ * Shorter than the console's local fallback after the deadline (15 s,
+ * `CHAT_TIMEOUT_SLACK_MS` in `consoleChat.ts`), so the hub hears the node's
+ * own `E_TASK_TIMEOUT` rather than its local guess, and until then the turn's
+ * `qianmo_task_report` still reaches the hub.
+ */
+const BACKGROUND_STOP_GRACE_MS = 10_000
+
 /** Largest delay `setTimeout` takes before silently collapsing it to 1 ms. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
@@ -650,6 +661,14 @@ interface ActiveResidentTask {
    * `#assemblePrompt`; absent for everything else.
    */
   localCommand?: string
+  /**
+   * A hub's background sub-agent turn, by its signed marker
+   * (`verifiedBackground`): it yields at the gate and is stopped at its
+   * deadline rather than left running.
+   */
+  background?: boolean
+  /** The deadline passed and this node asked the runtime to stop the turn. */
+  stoppedAtDeadline?: boolean
 }
 
 /**
@@ -1872,6 +1891,10 @@ export class QianmoResident {
         message,
         this.#options.memoryControllers ?? new Map(),
       )
+      task.background = verifiedBackground(
+        message,
+        this.#options.memoryControllers ?? new Map(),
+      )
       const command = residentLocalCommand(
         message,
         routed,
@@ -2381,6 +2404,23 @@ export class QianmoResident {
           this.#armTaskTimeout(task)
           return
         }
+        // A background turn is stopped, the way `/stop` stops one, and is
+        // answered once it has ended: until then it is still this task's turn,
+        // so its `qianmo_task_report` reaches the hub. An ordinary turn is
+        // answered at once and keeps running, as it always has.
+        if (
+          task.background === true &&
+          !task.stoppedAtDeadline &&
+          this.#turn.stop(task.envelope.msgId)
+        ) {
+          task.stoppedAtDeadline = true
+          task.timeout = setTimeout(() => {
+            task.timeout = null
+            void this.#settleTask(task, this.#deadlineResult(task))
+          }, BACKGROUND_STOP_GRACE_MS)
+          task.timeout.unref?.()
+          return
+        }
         void this.#settleTask(
           task,
           createTaskResult(task.envelope, task.envelope.to, {
@@ -2396,6 +2436,16 @@ export class QianmoResident {
       Math.min(Math.max(0, remaining), MAX_TIMER_DELAY_MS),
     )
     task.timeout.unref?.()
+  }
+
+  /** The answer to a background turn this node stopped at its deadline. */
+  #deadlineResult(task: ActiveResidentTask): QianmoMessage {
+    return createTaskResult(task.envelope, task.envelope.to, {
+      outcome: 'failed',
+      code: ProtocolErrorCode.E_TASK_TIMEOUT,
+      reason:
+        'background turn reached its task deadline and was stopped; work done so far is kept',
+    })
   }
 
   #taskFor(input: ResidentTurnInput): ActiveResidentTask | undefined {
@@ -2423,7 +2473,9 @@ export class QianmoResident {
     if (task === undefined || task.settled) return
     await this.#settleTask(
       task,
-      createTaskResult(task.envelope, task.envelope.to, result),
+      task.stoppedAtDeadline === true && result.outcome === 'failed'
+        ? this.#deadlineResult(task)
+        : createTaskResult(task.envelope, task.envelope.to, result),
     )
   }
 
@@ -2469,11 +2521,13 @@ export class QianmoResident {
     const reason = error instanceof Error ? error.message : String(error)
     await this.#settleTask(
       task,
-      createTaskResult(task.envelope, task.envelope.to, {
-        outcome: 'failed',
-        code: this.#failureCodeFor(error, task),
-        reason,
-      }),
+      task.stoppedAtDeadline === true
+        ? this.#deadlineResult(task)
+        : createTaskResult(task.envelope, task.envelope.to, {
+            outcome: 'failed',
+            code: this.#failureCodeFor(error, task),
+            reason,
+          }),
     )
   }
 
@@ -3462,6 +3516,13 @@ export class QianmoResident {
             : this.#tasksByMessage.get(id)?.owner
         },
         deadlineOf: message => this.#taskDeadlineOf(message),
+        backgroundOf: messages => {
+          const id = networkMessageId(messages)
+          return (
+            id !== undefined &&
+            this.#tasksByMessage.get(id)?.background === true
+          )
+        },
         sessions,
         timings: this.#timings,
         gate: this.#gate,
