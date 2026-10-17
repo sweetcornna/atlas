@@ -1455,7 +1455,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       banner += field(
         'magpie',
         magpie.problem === null
-          ? 'enabled (management API only; nodes call the gateway directly; fake-tested only)'
+          ? 'enabled (management API only; nodes call the gateway directly; real magpie smoke-tested on one machine only)'
           : `UNAVAILABLE (${magpie.problem})`,
       )
     if (billing !== undefined && billingConfig !== undefined) {
