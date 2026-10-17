@@ -579,6 +579,32 @@ describe('a gateway key for a node', () => {
     ])
   })
 
+  test('one key magpie will not change does not stop the check from fixing the others', async () => {
+    const magpie = await connected(['t-1'])
+    const first = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-1' }, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    const second = await magpie.issueKey(
+      { binding: { kind: 'tenant', id: 't-1' }, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    if (!first.ok || !second.ok) throw new Error('issue')
+    fake.addProvider({ id: 'deepseek', models: ['deepseek-v4'] })
+    fake.fault({
+      target: 'management',
+      path: '/api/caller-keys/models-key',
+      times: 1,
+      status: 500,
+      body: 'down',
+    })
+    const checked = await magpie.check(caller())
+    // Said, and the rest still done.
+    expect(checked.ok).toBe(false)
+    expect(fake.key(first.value.keyId)?.models).not.toContain('deepseek/*')
+    expect(fake.key(second.value.keyId)?.models).toContain('deepseek/*')
+  })
+
   test('a list-mode key keeps its list, minus what stops being eligible', async () => {
     const magpie = await connected()
     const issued = await magpie.issueKey(

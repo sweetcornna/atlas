@@ -863,20 +863,32 @@ export class ConsoleMagpie implements MagpiePort {
     if (this.#state.bindings.length === 0) return
     const now = read ?? (await this.#read(client))
     const keys = await client.listKeys()
+    // One key magpie will not change does not leave the others as they are
+    // (a subscriber's key that should go off among them); the first failure
+    // is thrown once every key has been tried, each one is logged.
+    let first: { readonly error: unknown } | null = null
     for (const record of this.#state.bindings) {
       const key = keys.find(one => one.id === record.keyId)
       if (key === undefined) continue
-      const target = this.#target(record, now)
-      const tenant = record.modelsMode === 'tenant'
-      const enable = tenant && this.#tenantEnabled(record.id, now)
-      if (tenant && !enable && key.enabled)
-        await client.setKeyEnabled(key.id, false)
-      if (!sameList(key.models, target))
-        await client.setKeyModels(key.id, target)
-      if (tenant && enable && !key.enabled)
-        await client.setKeyEnabled(key.id, true)
-      if (tenant) await this.#tenantProfile(record, now)
+      try {
+        const target = this.#target(record, now)
+        const tenant = record.modelsMode === 'tenant'
+        const enable = tenant && this.#tenantEnabled(record.id, now)
+        if (tenant && !enable && key.enabled)
+          await client.setKeyEnabled(key.id, false)
+        if (!sameList(key.models, target))
+          await client.setKeyModels(key.id, target)
+        if (tenant && enable && !key.enabled)
+          await client.setKeyEnabled(key.id, true)
+        if (tenant) await this.#tenantProfile(record, now)
+      } catch (error) {
+        this.#options.onError?.(
+          `核对 ${bindingKey(record)} 的网关密钥失败 · ${messageOf(error)}`,
+        )
+        first ??= { error }
+      }
     }
+    if (first !== null) throw first.error
   }
 
   /** Point a subscriber's profile at a main model its key lets through. */
