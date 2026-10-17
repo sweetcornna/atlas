@@ -82,7 +82,7 @@ test('refused before the hub: bad arguments, no running console turn', async () 
   expect(offline.calls).toEqual([])
 })
 
-test('a refusal is shown, an unknown outcome says not to retry blindly', async () => {
+test('a refusal is shown; an unknown outcome says what is safe to do next', async () => {
   const refused = tools(
     { contextId: 'c', taskId: 't' },
     { ok: false, code: 'refused', message: '当前会话中没有这个任务' },
@@ -95,6 +95,15 @@ test('a refusal is shown, an unknown outcome says not to retry blindly', async (
   })
   const broken = tools({ contextId: 'c', taskId: 't' }, new Error('link down'))
   expect(
-    (await broken.byName('qianmo_task_updates').handler({}, ctx)).text,
+    (await broken.byName('qianmo_task_cancel').handler({ id: 'x' }, ctx)).text,
   ).toContain('Check with qianmo_task_status before retrying')
+  // A sub-agent may not read status: its two calls say to repeat them.
+  const updates = await broken.byName('qianmo_task_updates').handler({}, ctx)
+  expect(updates.text).toContain('Call qianmo_task_updates again')
+  const report = await broken
+    .byName('qianmo_task_report')
+    .handler({ summary: 's', state: 'working' }, ctx)
+  expect(report.text).toContain('Call qianmo_task_report again')
+  for (const text of [updates.text, report.text])
+    expect(text).not.toContain('qianmo_task_status')
 })
