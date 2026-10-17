@@ -32,23 +32,35 @@
  * 打开时（缺省），模型指派是 `inherit`、没有全局缺省档案、不属于任何租户的节点，由
  * 中枢自己（账本主体 `system:magpie`）走「为节点签发」同一条签发链接入；magpie 里
  * 还没有可用模型时不试，失败的一小时内不再试。
+ *
+ * ## 原生扩展
+ *
+ * 每个智能体的插件、MCP 与技能（P36.7）在 `consoleMagpieExtensions.ts`；这里把
+ * 它接上同一条控制链路、同一道写权限，并在第一次读到一台节点时探明它有没有这组操作。
  */
 
-import type {
-  ConsoleFailure,
-  ConsoleResult,
-  MagpieAgentChange,
-  MagpieAgentModelView,
-  MagpieAgentsNodeView,
-  MagpieAgentsPort,
-  MagpieAgentsSnapshot,
-  MagpieAgentView,
-  MagpieCaller,
-  MagpieKeyView,
-  MagpieRuntimeEntryView,
-  MagpieRuntimeJobView,
-  MagpieRuntimeView,
-  ProviderCaller,
+import {
+  type ConsoleFailure,
+  type ConsoleResult,
+  extensionInstallRequest,
+  extensionItemName,
+  MAGPIE_EXTENSION_KINDS,
+  type MagpieAgentChange,
+  type MagpieAgentModelView,
+  type MagpieAgentsNodeView,
+  type MagpieAgentsPort,
+  type MagpieAgentsSnapshot,
+  type MagpieAgentView,
+  type MagpieCaller,
+  type MagpieExtensionInstall,
+  type MagpieExtensionJobView,
+  type MagpieExtensionRemove,
+  type MagpieExtensionsView,
+  type MagpieKeyView,
+  type MagpieRuntimeEntryView,
+  type MagpieRuntimeJobView,
+  type MagpieRuntimeView,
+  type ProviderCaller,
 } from '@qianmo/console'
 import type { ControlOutcome } from '@qianmo/protocol'
 import { z } from 'zod'
@@ -71,6 +83,7 @@ import {
   type RuntimeVersionRow,
   type RuntimeVersionsReply,
 } from '../host/runtimes/contract.js'
+import { AgentExtensions } from './consoleMagpieExtensions.js'
 
 type RuntimeSource = NonNullable<RuntimeVersionRow['source']>
 
@@ -391,11 +404,24 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
   #again = false
   #closed = false
   #chain: Promise<unknown> = Promise.resolve()
+  /** Each agent's native extensions (P36.7). */
+  readonly #ext: AgentExtensions
 
   constructor(host: MagpieAgentsHost, options: MagpieAgentsOptions) {
     this.#host = host
     this.#options = options
     this.#now = options.now ?? Date.now
+    this.#ext = new AgentExtensions({
+      request: (node, op, args, actor, timeoutMs) =>
+        settle(options.control.request(node, op, args, actor, { timeoutMs })),
+      fromNode,
+      track: promise => {
+        this.#track(promise)
+      },
+      now: this.#now,
+      waitMs: options.waitMs ?? WAIT_MS,
+      actor: ACTOR,
+    })
   }
 
   /** Something the models depend on changed: recompute in the background. */
@@ -674,13 +700,18 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
       this.#gateways(),
       Promise.all(nodes.map(node => this.#read(node, false))),
     ])
-    // A node read for the first time gets its models worked out.
+    // A node read for the first time gets its models worked out, and is
+    // asked once whether it has the native extension ops.
     let fresh = false
     nodes.forEach((node, index) => {
-      if (facts[index]?.state === 'ok' && !this.#seen.has(node)) {
+      const read = facts[index]
+      if (read?.state !== 'ok') return
+      if (!this.#seen.has(node)) {
         this.#seen.add(node)
         fresh = true
       }
+      const first = read.status.agents[0]
+      if (first !== undefined) this.#ext.probe(node, first.agent)
     })
     if (fresh) this.#schedule()
     return ok({
@@ -805,14 +836,16 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
           ? null
           : { code: agent.reason.code, message: agent.reason.message },
       write: this.#writes.get(`${node}/${agent.agent}`) ?? null,
+      extensions: this.#ext.view(node, agent.agent),
     }
   }
 
   // --- writes ------------------------------------------------------------
 
-  /** The node, read now, with the runtime ops; or why not. */
+  /** The node with the runtime ops (read now unless `fresh` is false); or why not. */
   async #capable(
     node: string,
+    fresh = true,
   ): Promise<
     | { readonly ok: true; readonly status: RuntimeStatusReply }
     | { readonly ok: false; readonly failure: ConsoleFailure }
@@ -822,7 +855,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
         ok: false,
         failure: { code: 'not_found', message: '控制链路上没有这台节点' },
       }
-    const facts = await this.#read(node, true)
+    const facts = await this.#read(node, fresh)
     if (facts.state === 'old')
       return {
         ok: false,
@@ -1037,5 +1070,67 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
     const result = await this.#host.join(node, caller)
     if (result.ok) this.#schedule()
     return result
+  }
+
+  // --- native extensions (P36.7) -------------------------------------------
+
+  /** The agent on a node that has the runtime ops, and not one known to lack the extension ops. */
+  async #extensionAgent(
+    node: string,
+    agent: string,
+    fresh: boolean,
+  ): Promise<ConsoleResult<null>> {
+    if (!NAME.test(agent)) return failed('invalid', '智能体名无效')
+    const found = await this.#capable(node, fresh)
+    if (!found.ok) return found
+    if (!found.status.agents.some(one => one.agent === agent))
+      return failed('not_found', '节点上没有这个智能体')
+    if (this.#ext.supported(node) === false)
+      return failed('unsupported', '节点版本过旧 · 不支持原生扩展')
+    return ok(null)
+  }
+
+  async extensions(
+    node: string,
+    agent: string,
+  ): Promise<ConsoleResult<MagpieExtensionsView>> {
+    const found = await this.#extensionAgent(node, agent, false)
+    if (!found.ok) return found
+    return this.#ext.read(node, agent, ACTOR)
+  }
+
+  async installExtension(
+    input: MagpieExtensionInstall,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieExtensionJobView>> {
+    const denied = this.#host.authorize(caller)
+    if (denied !== null) return { ok: false, failure: denied }
+    const { node, agent, ...asked } = input
+    const request = extensionInstallRequest(asked)
+    if (!request.ok) return request
+    const found = await this.#extensionAgent(node, agent, true)
+    if (!found.ok) return found
+    return this.#ext.install(node, agent, request.value, caller.subject)
+  }
+
+  async removeExtension(
+    input: MagpieExtensionRemove,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieExtensionJobView>> {
+    const denied = this.#host.authorize(caller)
+    if (denied !== null) return { ok: false, failure: denied }
+    if (!(MAGPIE_EXTENSION_KINDS as readonly string[]).includes(input.kind))
+      return failed('invalid', '扩展种类只能是插件 · MCP · 技能')
+    const name = extensionItemName(input.name)
+    if (name === null) return failed('invalid', '扩展名无效')
+    const found = await this.#extensionAgent(input.node, input.agent, true)
+    if (!found.ok) return found
+    return this.#ext.remove(
+      input.node,
+      input.agent,
+      input.kind,
+      name,
+      caller.subject,
+    )
   }
 }

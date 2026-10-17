@@ -1666,6 +1666,94 @@ export interface MagpieAgentView {
     readonly at: number
     readonly message: string | null
   } | null
+  /**
+   * 原生扩展（P36.7）：节点没有 `runtime.ext.*` 操作或还没探明时为 null，
+   * 页面不显示这一块。
+   */
+  readonly extensions: MagpieExtensionsView | null
+}
+
+/** 原生扩展的三类（harness-backends.md §7.3）。 */
+export const MAGPIE_EXTENSION_KINDS = ['plugin', 'mcp', 'skill'] as const
+export type MagpieExtensionKind = (typeof MAGPIE_EXTENSION_KINDS)[number]
+
+/** 底层自己的列表命令报的一项。 */
+export interface MagpieExtensionItemView {
+  readonly kind: MagpieExtensionKind
+  /** 底层自己的名字或 id（例如 `name@marketplace`）。 */
+  readonly name: string
+  readonly version: string | null
+  readonly enabled: boolean
+  /** 来源（仓库、npm、路径），底层记了才有。 */
+  readonly source: string | null
+  /** 常驻运行时不加载它，及原因；加载时为 null。 */
+  readonly notLoaded: string | null
+}
+
+/** 中枢发出的一次安装或卸载：进行中，或失败（原因只给能写的人）。 */
+export interface MagpieExtensionJobState {
+  readonly op: 'install' | 'remove'
+  readonly kind: MagpieExtensionKind
+  /** MCP 的名字，或插件、技能的来源。 */
+  readonly name: string
+  readonly state: 'running' | 'failed'
+  readonly at: number
+  readonly message: string | null
+}
+
+/**
+ * 一个智能体的原生扩展，取自中枢的缓存：节点跑一次列表命令要起底层的进程，
+ * 所以区块轮询从不触发它，展开时（缓存过期）才读。
+ */
+export interface MagpieExtensionsView {
+  readonly node: string
+  readonly agent: string
+  /** `unread` 还没读过；`failed` 上次没读到（原因见 `error`）。 */
+  readonly state: 'unread' | 'ok' | 'failed'
+  /** 一分钟内读过：展开时不再问节点。 */
+  readonly fresh: boolean
+  readonly runtime: string | null
+  readonly items: readonly MagpieExtensionItemView[]
+  /** 钉住层的事实（例如「已撤销预授权」），节点原文。 */
+  readonly notes: readonly string[]
+  /** 在节点上打开该底层官方前端的命令（§7.2）。 */
+  readonly openCommand: string | null
+  /** 没读到的原因；只给能写的人。 */
+  readonly error: string | null
+  readonly job: MagpieExtensionJobState | null
+}
+
+/**
+ * 装一项原生扩展。插件与技能给 `source`（GitHub `owner/repo[#ref]` 或
+ * `https://github.com/…`、npm `[@scope/]name[@x.y.z]`、`name@marketplace`）；
+ * MCP 给 `name`，加 `command` 与 `args`，或 https `url`。
+ */
+export interface MagpieExtensionInstall {
+  readonly node: string
+  readonly agent: string
+  readonly kind: MagpieExtensionKind
+  readonly source?: string
+  readonly name?: string
+  readonly command?: string
+  readonly args?: readonly string[]
+  readonly url?: string
+}
+
+export interface MagpieExtensionRemove {
+  readonly node: string
+  readonly agent: string
+  readonly kind: MagpieExtensionKind
+  readonly name: string
+}
+
+/** 一次扩展安装或卸载：`running` 表示节点还在做，结果随区块刷新。 */
+export interface MagpieExtensionJobView {
+  readonly node: string
+  readonly agent: string
+  readonly op: 'install' | 'remove'
+  readonly kind: MagpieExtensionKind
+  readonly name: string
+  readonly state: 'running' | 'done'
 }
 
 /** 这台节点的网关密钥能用的一个模型；路由组的 `family` 为 null 且 `group` 为真。 */
@@ -1742,6 +1830,19 @@ export interface MagpieAgentsPort {
     node: string,
     caller: MagpieCaller,
   ): Promise<ConsoleResult<MagpieKeyView>>
+  /** 一个智能体的原生扩展（P36.7）：缓存过期才问节点 `runtime.ext.list`。 */
+  extensions(
+    node: string,
+    agent: string,
+  ): Promise<ConsoleResult<MagpieExtensionsView>>
+  installExtension(
+    input: MagpieExtensionInstall,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieExtensionJobView>>
+  removeExtension(
+    input: MagpieExtensionRemove,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieExtensionJobView>>
 }
 
 // ---------------------------------------------------------------------------

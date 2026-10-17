@@ -1384,6 +1384,12 @@ export const CONSOLE_ACTIONS = [
   'runtime.install',
   'runtime.remove',
   /**
+   * 智能体的原生扩展（P36.7）：由该底层自己的命令装卸，target 是
+   * `<节点>/<智能体> <种类>:<名字或来源>`（从不带参数与地址）。
+   */
+  'runtime.ext.install',
+  'runtime.ext.remove',
+  /**
    * 公开版订阅（P35）：成员下单与兑换，target 是订单 id 或 `redeem`；平台运维手动开通
    * 与延期（target 是被开通的主体）、登记退款（订单 id）、批量生成兑换码（套餐 id）；
    * 付款后中枢自动建租户并映射账号（主体 `system:billing`，target 是租户 id）；订阅者

@@ -291,6 +291,12 @@ export * from './tenancy.js'
 export { FileUsageStore, usageDelta } from './usage.js'
 
 export * from './directionPorts.js'
+// 原生扩展的来源检查（P36.7）：路由在记账前、中枢在发给节点前各查一次。
+export {
+  type ExtensionInstallRequest,
+  extensionInstallRequest,
+  extensionItemName,
+} from './extensionSource.js'
 export * from './routes/routingApi.js'
 export * from './chatDispatch.js'
 export { unansweredTurns } from './chatTurns.js'

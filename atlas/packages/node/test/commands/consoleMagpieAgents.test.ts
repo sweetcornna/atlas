@@ -54,6 +54,9 @@ import {
 } from '../../src/host/runtimes/catalog.js'
 import type {
   AgentRuntimeState,
+  NativeExtensionKind,
+  NativeExtensionRow,
+  NativeExtensionsReply,
   RuntimeVersionRow,
 } from '../../src/host/runtimes/contract.js'
 import { fakeNode } from './consoleProvidersFakeNode.js'
@@ -73,6 +76,12 @@ interface FakeRuntimeNode {
   readonly kind: 'current' | 'old' | 'down'
   readonly agents: FakeAgent[]
   readonly installed: Set<string>
+  /** Has the native extension ops (P36.7); a P36.5 node does not. */
+  ext: boolean
+  /** Each agent's natively installed items. */
+  readonly items: Map<string, NativeExtensionRow[]>
+  /** Agents whose official frontend is open. */
+  readonly locked: Set<string>
 }
 
 /**
@@ -84,6 +93,8 @@ interface FakeRuntimeNode {
 class FakeLinks {
   readonly nodes = new Map<string, FakeRuntimeNode>()
   readonly writes: string[] = []
+  /** Every `runtime.ext.*` a node was asked, lists included. */
+  readonly ext: string[] = []
   #held: (() => void) | null = null
   hold = false
 
@@ -100,7 +111,82 @@ class FakeLinks {
         model: null,
       })),
       installed: new Set(['dsh', 'claude-code', 'codex']),
+      ext: kind === 'current',
+      items: new Map(),
+      locked: new Set(),
     })
+  }
+
+  /**
+   * The extension ops as §7.3 has them: a list after every change, the
+   * frontend lock, dsh without an MCP command, a repository that is not there.
+   */
+  async #extension(
+    fake: FakeRuntimeNode,
+    node: string,
+    op: string,
+    args: Record<string, unknown>,
+    actor: string,
+  ): Promise<ControlOutcome> {
+    this.ext.push(`${node} ${op} ${JSON.stringify(args)} by ${actor}`)
+    if (!fake.ext)
+      return { ok: false, code: 'unsupported', message: '不支持此底层操作' }
+    const name = String(args['agent'])
+    const agent = fake.agents.find(one => one.agent === name)
+    if (agent === undefined)
+      return { ok: false, code: 'E_AGENT_UNKNOWN', message: '没有这个智能体' }
+    const list = (): NativeExtensionsReply => ({
+      agent: name,
+      runtime: agent.runtime,
+      items: fake.items.get(name) ?? [],
+      notes: ['项目级配置不加载'],
+      openCommand: `qm runtime open ${name}${agent.runtime === 'dsh' ? ' --port 8123' : ''}`,
+    })
+    if (op === 'runtime.ext.list') return { ok: true, value: list() }
+    if (fake.locked.has(name))
+      return {
+        ok: false,
+        code: 'E_RUNTIME_EXT_LOCKED',
+        message: '官方前端开着',
+      }
+    const kind = String(args['kind']) as NativeExtensionKind
+    const items = fake.items.get(name) ?? []
+    if (op === 'runtime.ext.remove') {
+      fake.items.set(
+        name,
+        items.filter(item => item.kind !== kind || item.name !== args['name']),
+      )
+      return { ok: true, value: list() }
+    }
+    if (kind === 'mcp' && agent.runtime === 'dsh')
+      return {
+        ok: false,
+        code: 'E_RUNTIME_EXT_UNSUPPORTED',
+        message: 'dsh 没有 MCP 命令',
+      }
+    if (this.hold)
+      await new Promise<void>(resolve => {
+        this.#held = resolve
+      })
+    const source = String(args['source'])
+    if (source.includes('missing'))
+      return {
+        ok: false,
+        code: 'E_RUNTIME_EXT_FAILED',
+        message: '克隆失败 · 仓库不存在',
+      }
+    fake.items.set(name, [
+      ...items,
+      {
+        kind,
+        name: typeof args['name'] === 'string' ? args['name'] : source,
+        version: '1.0.0',
+        enabled: true,
+        source,
+      },
+    ])
+    // An MCP add answers without the list: the hub reads it again.
+    return { ok: true, value: kind === 'mcp' ? { added: true } : list() }
   }
 
   agent(node: string, agent: string): FakeAgent | undefined {
@@ -149,6 +235,8 @@ class FakeLinks {
         }
       return { ok: false, code: 'unsupported', message: '不支持此底层操作' }
     }
+    if (op.startsWith('runtime.ext.'))
+      return this.#extension(fake, node, op, args, actor)
     if (op !== 'runtime.status' && op !== 'runtime.versions')
       this.writes.push(`${node} ${op} ${JSON.stringify(args)} by ${actor}`)
     if (op === 'runtime.status')
@@ -239,7 +327,7 @@ const PCALLER: ProviderCaller = {
   record: async () => true,
 }
 
-function open(): ConsoleMagpie {
+function open(now?: () => number): ConsoleMagpie {
   const record = systemRecorder(
     async entry => {
       ledger.push(
@@ -268,6 +356,7 @@ function open(): ConsoleMagpie {
         return tenant
       },
       waitMs: 20,
+      ...(now === undefined ? {} : { now }),
     },
   })
   return magpie
@@ -278,8 +367,8 @@ function agentsOf(port: ConsoleMagpie): ConsoleMagpieAgents {
   return port.agents
 }
 
-async function connected(): Promise<ConsoleMagpie> {
-  const port = open()
+async function connected(now?: () => number): Promise<ConsoleMagpie> {
+  const port = open(now)
   const result = await port.connect(
     {
       gatewayUrl: fake.gatewayUrl,
@@ -377,6 +466,9 @@ beforeEach(async () => {
     ['main', 'omp'],
   ])
   links.add('beta-2', 'current', [['coder', 'dsh']])
+  // beta-2 runs a P36.5 node: the runtime ops, not the extension ones.
+  const p365 = links.nodes.get('beta-2')
+  if (p365 !== undefined) p365.ext = false
   links.add('old-1', 'old')
   links.add('down-1', 'down')
   const one = fakeNode(join(root, 'node-1'))
@@ -945,5 +1037,310 @@ describe('gateway lanes', () => {
     // Up to date: the next check leaves it.
     await port.check(caller())
     expect(ledger.filter(one => one === line)).toHaveLength(before + 1)
+  })
+})
+
+describe('native extensions (P36.7)', () => {
+  function extLines(match: string): string[] {
+    return links.ext.filter(line => line.includes(match))
+  }
+
+  /** Connected, with every node asked once whether it has the ops. */
+  async function probed(now?: () => number): Promise<ConsoleMagpie> {
+    const port = await connected(now)
+    await snapshot(port)
+    await agentsOf(port).idle()
+    return port
+  }
+
+  test('a node is asked once whether it has the ops; only those that do get a panel', async () => {
+    const port = await connected()
+    const agents = agentsOf(port)
+    expect(links.ext).toEqual([])
+    await snapshot(port)
+    await agents.idle()
+    // One list per node, for its first agent; old and unreachable nodes are not asked.
+    expect(links.ext).toEqual([
+      'beta-1 runtime.ext.list {"agent":"coder"} by magpie',
+      'beta-2 runtime.ext.list {"agent":"coder"} by magpie',
+    ])
+    const view = await snapshot(port)
+    await agents.idle()
+    expect(links.ext).toHaveLength(2)
+    const beta1 = view.nodes.find(one => one.node === 'beta-1')
+    const coder = beta1?.agents.find(one => one.agent === 'coder')?.extensions
+    expect(coder?.state).toBe('ok')
+    expect(coder?.fresh).toBe(true)
+    expect(coder?.openCommand).toBe('qm runtime open coder --port 8123')
+    expect(coder?.notes).toEqual(['项目级配置不加载'])
+    expect(
+      beta1?.agents.find(one => one.agent === 'reviewer')?.extensions?.state,
+    ).toBe('unread')
+    // The P36.5 node shows nothing extra and is not asked again on a read.
+    expect(
+      view.nodes
+        .find(one => one.node === 'beta-2')
+        ?.agents.map(one => one.extensions),
+    ).toEqual([null])
+    const old = await agents.extensions('beta-2', 'coder')
+    expect(old).toEqual({
+      ok: false,
+      failure: {
+        code: 'unsupported',
+        message: '节点版本过旧 · 不支持原生扩展',
+      },
+    })
+    expect((await agents.extensions('old-1', 'coder')).ok).toBe(false)
+    expect(links.ext).toHaveLength(2)
+  })
+
+  test('opening a panel asks the node only when its list is over a minute old', async () => {
+    let clock = Date.now()
+    const port = await probed(() => clock)
+    const agents = agentsOf(port)
+    links.nodes.get('beta-1')?.items.set('reviewer', [
+      { kind: 'skill', name: 'triage', enabled: true },
+      {
+        kind: 'plugin',
+        name: 'opencode-wakatime',
+        enabled: true,
+        notLoaded: '常驻运行时不加载',
+      },
+      {
+        kind: 'theme' as NativeExtensionKind,
+        name: 'solarized',
+        enabled: true,
+      },
+    ])
+    const first = await agents.extensions('beta-1', 'reviewer')
+    if (!first.ok) throw new Error(first.failure.message)
+    // A kind this hub does not know is left out, not the whole list.
+    expect(
+      first.value.items.map(
+        item => `${item.kind}:${item.name}:${item.notLoaded ?? '-'}`,
+      ),
+    ).toEqual(['skill:triage:-', 'plugin:opencode-wakatime:常驻运行时不加载'])
+    expect(first.value.openCommand).toBe('qm runtime open reviewer')
+    expect(extLines('"agent":"reviewer"')).toHaveLength(1)
+    await agents.extensions('beta-1', 'reviewer')
+    expect(extLines('"agent":"reviewer"')).toHaveLength(1)
+    clock += 61_000
+    const later = await agents.extensions('beta-1', 'reviewer')
+    expect(later.ok && later.value.fresh).toBe(true)
+    expect(extLines('"agent":"reviewer"')).toHaveLength(2)
+    const ghost = await agents.extensions('beta-1', 'ghost')
+    expect(ghost.ok ? null : ghost.failure.code).toBe('not_found')
+    const nowhere = await agents.extensions('nowhere-1', 'coder')
+    expect(nowhere.ok ? null : nowhere.failure.code).toBe('not_found')
+  })
+
+  test('an install goes out as the node takes it, shows running, then lands in the list', async () => {
+    const port = await probed()
+    const agents = agentsOf(port)
+    links.hold = true
+    const job = await agents.installExtension(
+      {
+        node: 'beta-1',
+        agent: 'reviewer',
+        kind: 'plugin',
+        source: 'https://github.com/obra/superpowers.git',
+      },
+      caller(),
+    )
+    expect(job).toEqual({
+      ok: true,
+      value: {
+        node: 'beta-1',
+        agent: 'reviewer',
+        op: 'install',
+        kind: 'plugin',
+        name: 'https://github.com/obra/superpowers',
+        state: 'running',
+      },
+    })
+    expect(links.ext.at(-1)).toBe(
+      `beta-1 runtime.ext.install {"agent":"reviewer","kind":"plugin","source":"https://github.com/obra/superpowers"} by ${OPS}`,
+    )
+    const during = (await snapshot(port)).nodes[0]?.agents.find(
+      one => one.agent === 'reviewer',
+    )?.extensions
+    expect(during?.job).toMatchObject({
+      op: 'install',
+      kind: 'plugin',
+      state: 'running',
+    })
+    // One change per agent at a time.
+    const second = await agents.installExtension(
+      {
+        node: 'beta-1',
+        agent: 'reviewer',
+        kind: 'skill',
+        source: 'acme/skills',
+      },
+      caller(),
+    )
+    expect(second.ok ? null : second.failure.code).toBe('invalid')
+    links.release()
+    await agents.idle()
+    const after = await agents.extensions('beta-1', 'reviewer')
+    if (!after.ok) throw new Error(after.failure.message)
+    expect(after.value.job).toBeNull()
+    expect(after.value.items.map(item => `${item.kind}:${item.name}`)).toEqual([
+      'plugin:https://github.com/obra/superpowers',
+    ])
+    // The node's answer was the list: not asked for it again.
+    expect(extLines('"agent":"reviewer"')).toHaveLength(1)
+  })
+
+  test('an MCP server goes as a name and a command line; the list is read again after', async () => {
+    const port = await probed()
+    const agents = agentsOf(port)
+    const done = await agents.installExtension(
+      {
+        node: 'beta-1',
+        agent: 'reviewer',
+        kind: 'mcp',
+        name: 'github',
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-github'],
+      },
+      caller(),
+    )
+    expect(done.ok && done.value.state).toBe('done')
+    await agents.idle()
+    expect(extLines('"agent":"reviewer"')).toEqual([
+      `beta-1 runtime.ext.install {"agent":"reviewer","kind":"mcp","source":"npx","name":"github","command":"npx","args":["-y","@modelcontextprotocol/server-github"]} by ${OPS}`,
+      'beta-1 runtime.ext.list {"agent":"reviewer"} by magpie',
+    ])
+    const view = await agents.extensions('beta-1', 'reviewer')
+    expect(view.ok && view.value.items.map(item => item.name)).toEqual([
+      'github',
+    ])
+    const removed = await agents.removeExtension(
+      { node: 'beta-1', agent: 'reviewer', kind: 'mcp', name: 'github' },
+      caller(),
+    )
+    expect(removed.ok && removed.value.state).toBe('done')
+    await agents.idle()
+    const empty = await agents.extensions('beta-1', 'reviewer')
+    expect(empty.ok && empty.value.items).toEqual([])
+  })
+
+  test('the node refusals read as the page words them; a late failure stays on the page', async () => {
+    const port = await probed()
+    const agents = agentsOf(port)
+    const mcp = await agents.installExtension(
+      {
+        node: 'beta-1',
+        agent: 'coder',
+        kind: 'mcp',
+        name: 'docs',
+        url: 'https://mcp.example.com/mcp',
+      },
+      caller(),
+    )
+    expect(mcp).toEqual({
+      ok: false,
+      failure: { code: 'unsupported', message: '该底层不支持这类扩展' },
+    })
+    links.nodes.get('beta-1')?.locked.add('reviewer')
+    const locked = await agents.removeExtension(
+      { node: 'beta-1', agent: 'reviewer', kind: 'skill', name: 'triage' },
+      caller(),
+    )
+    expect(locked).toEqual({
+      ok: false,
+      failure: { code: 'refused', message: '该智能体的官方前端正开着' },
+    })
+    links.nodes.get('beta-1')?.locked.clear()
+    links.hold = true
+    const late = await agents.installExtension(
+      {
+        node: 'beta-1',
+        agent: 'reviewer',
+        kind: 'plugin',
+        source: 'acme/missing',
+      },
+      caller(),
+    )
+    expect(late.ok && late.value.state).toBe('running')
+    links.release()
+    await agents.idle()
+    const job = (await snapshot(port)).nodes[0]?.agents.find(
+      one => one.agent === 'reviewer',
+    )?.extensions?.job
+    expect(job).toMatchObject({
+      op: 'install',
+      name: 'acme/missing',
+      state: 'failed',
+      message: '节点 · 克隆失败 · 仓库不存在',
+    })
+  })
+
+  test('a source the hub would not send, or a caller who may not write, never reaches the node', async () => {
+    const port = await probed()
+    const agents = agentsOf(port)
+    const before = links.ext.length
+    for (const source of [
+      'https://gitlab.com/owner/repo',
+      'https://user:secret@github.com/owner/repo',
+      '../../etc/passwd',
+      '--registry=https://evil.example',
+    ]) {
+      const result = await agents.installExtension(
+        { node: 'beta-1', agent: 'coder', kind: 'plugin', source },
+        caller(),
+      )
+      expect(`${source} ${result.ok ? 'ok' : result.failure.code}`).toBe(
+        `${source} invalid`,
+      )
+    }
+    const named = await agents.installExtension(
+      {
+        node: 'beta-1',
+        agent: 'coder',
+        kind: 'mcp',
+        name: 'qm-github',
+        command: 'npx',
+      },
+      caller(),
+    )
+    expect(named.ok ? null : named.failure.code).toBe('invalid')
+    const climbing = await agents.removeExtension(
+      { node: 'beta-1', agent: 'coder', kind: 'plugin', name: '../x' },
+      caller(),
+    )
+    expect(climbing.ok ? null : climbing.failure.code).toBe('invalid')
+    for (const who of [
+      caller({ role: 'viewer' }),
+      caller({ breakGlass: true }),
+      caller({ subject: 'legacy:admin', role: null }),
+    ]) {
+      const results = await Promise.all([
+        agents.installExtension(
+          {
+            node: 'beta-1',
+            agent: 'coder',
+            kind: 'plugin',
+            source: 'obra/superpowers',
+          },
+          who,
+        ),
+        agents.removeExtension(
+          {
+            node: 'beta-1',
+            agent: 'coder',
+            kind: 'plugin',
+            name: 'superpowers',
+          },
+          who,
+        ),
+      ])
+      expect(results.map(one => (one.ok ? 'ok' : one.failure.code))).toEqual([
+        'rejected',
+        'rejected',
+      ])
+    }
+    expect(links.ext).toHaveLength(before)
   })
 })

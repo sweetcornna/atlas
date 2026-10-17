@@ -806,6 +806,8 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'runtime.configure': '设智能体底层与模型',
   'runtime.install': '安装底层',
   'runtime.remove': '卸载底层',
+  'runtime.ext.install': '安装原生扩展',
+  'runtime.ext.remove': '卸载原生扩展',
   'billing.checkout': '下单',
   'billing.redeem': '兑换订阅',
   'billing.grant': '手动开通订阅',
