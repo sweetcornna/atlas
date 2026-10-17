@@ -37,6 +37,7 @@ import {
   emptyState,
   segmented,
   selectField,
+  switchField,
   textArea,
   textField,
   unwiredCard,
@@ -803,10 +804,39 @@ function limitRows(limits: readonly MagpieLimitView[]): string {
               ? ''
               : String(limit.cost),
         }) +
+        // Carried both ways: a limit saved from this form keeps counting
+        // cache reads in its tokens when it did before.
+        switchField(
+          `limitCacheReads${index}`,
+          'token 含缓存读',
+          limit?.cacheReads === true,
+        ) +
         `</div>`,
     )
   }
   return `<div class="field field-wide mg-limits"><span class="flabel">限额</span>${rows.join('')}<span class="note field-help">要启用 magpie 的预算插件才生效</span></div>`
+}
+
+/**
+ * The model choices, with the key's own models first when they are not
+ * among them (a provider switched off since, magpie not answering): the
+ * form saved untouched sends the key back as it is, never the first choice.
+ */
+function modelChoices(
+  choices: readonly string[],
+  key: MagpieKeyView | null,
+): (readonly [string, string])[] {
+  const own = [key?.mainModel, key?.fastModel ?? undefined].filter(
+    (model, index, all): model is string =>
+      model !== undefined &&
+      model !== '' &&
+      !choices.includes(model) &&
+      all.indexOf(model) === index,
+  )
+  return [
+    ...own.map(model => [model, `${model} · 现用`] as const),
+    ...choices.map(model => [model, model] as const),
+  ]
 }
 
 function keyForm(snapshot: MagpieSnapshot, key: MagpieKeyView | null): string {
@@ -817,7 +847,7 @@ function keyForm(snapshot: MagpieSnapshot, key: MagpieKeyView | null): string {
       tenant => [`tenant:${tenant}`, `租户 ${tenant}`] as const,
     ),
   ].filter(([value]) => !taken.has(value))
-  const models = snapshot.models.map(model => [model, model] as const)
+  const models = modelChoices(snapshot.models, key)
   const binding =
     key === null
       ? selectField('binding', '绑定', choices, { required: true, wide: true })
