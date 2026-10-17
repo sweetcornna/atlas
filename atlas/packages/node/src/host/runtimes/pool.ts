@@ -325,6 +325,9 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       (this.#leases.get(sessionId) ?? 0) <= (signal === undefined ? 0 : 1)
     ) {
       this.closeSession(sessionId)
+      // Closing forgot the session's last use; this turn is one, and the
+      // idle reaper needs it to ever close the replacement.
+      this.#used.set(sessionId, Date.now())
       await live.stop().catch(() => {})
     } else if (live?.alive) return live
     let starting = this.#starting.get(sessionId)
@@ -626,6 +629,9 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       this.#toolHost.revoke(token)
       if (this.#channels.get(sessionId) === channel) {
         rmSync(this.#mcpConfig(agent.agent, sessionId), { force: true })
+        // The session's desktop child goes with the process; the next one
+        // starts its own on the resource as it is then (a re-enabled display).
+        this.#desktop?.close(sessionId)
         this.#channels.delete(sessionId)
         this.#tokens.delete(sessionId)
         this.#longestReadyMs = Math.max(
