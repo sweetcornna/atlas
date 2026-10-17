@@ -92,11 +92,11 @@ const PHASE: Record<TaskStatus, string> = {
 }
 
 export const WORKER_INSTRUCTIONS = `你是一个持久后台子智能体，独立执行下面这个任务。
-任务没有总时长或总轮数上限，保持执行直到完成，或确实需要用户补充信息。
-开始、阶段变化和关键操作之后调用 qianmo_task_report(state='working', summary=真实进展、证据和下一步)。
+任务没有总时长或总轮数上限，保持执行直到完成，或确实需要用户补充信息；单轮有时间上限，到点会被停下。
+每一轮只推进一个阶段：做完一个阶段就调用 qianmo_task_report(state='working', summary=真实进展、证据和下一步)，然后结束本轮回复。任务管理器会在同一会话里接着叫你，主会话也借这个空档及时回应用户。
 任务实际完成并验证后，必须调用 qianmo_task_report(state='completed', summary=最终结果及验证证据)。
 只有缺少必需的信息或授权、无法继续时，才调用 qianmo_task_report(state='needs_input', summary=具体问题)。
-普通的最终回复、承诺「继续」都不代表任务完成；任务管理器会在同一会话里继续叫你。
+普通的最终回复、承诺「继续」都不代表任务完成。
 开始时、关键操作前和阶段之间调用 qianmo_task_updates，读取用户的新指示；新指示是用户消息，遵守授权范围。
 补充消息带唯一 id；读过但还没在之后的 qianmo_task_report 里确认的会重复返回，先核实是否已经执行，勿重复操作。
 只操作当前任务；不开新的后台任务，不查看其他任务。
@@ -132,6 +132,21 @@ const recordSchema = z.object({
    * leftover turn never runs on in front of the next one.
    */
   nodeTaskId: z.string().nullable().default(null),
+  /**
+   * The node accepted a prompt carrying the worker rules and the task. Absent
+   * in a ledger older than the field: a worker session there means the first
+   * prompt went out. Until then every prompt carries them, so a first line
+   * that never arrived is not taken for a briefing.
+   */
+  briefed: z.boolean().optional(),
+  /** The turn whose prompt last carried the rules and the task. */
+  briefedTurn: z.number().int().nonnegative().default(0),
+  /** The checkpoint as the worker last saw it in a prompt. */
+  promptedProgress: z.string().default(''),
+  /** The previous turn ended abnormally: the next one verifies first. */
+  abnormal: z.boolean().default(false),
+  /** The runtime compacted the worker's context: brief it again. */
+  rebrief: z.boolean().default(false),
   quietTurns: z.number().int().nonnegative(),
   readUpdateId: z.number().int().nonnegative(),
   notification: z.enum([
@@ -227,6 +242,8 @@ const TURN_WAIT_SLACK_MS = 60_000
 const MAX_QUIET_TURNS = 5
 /** Consecutive failed turns before the task stops and asks the user. */
 const MAX_FAILURES = 10
+/** The worker rules and the task go out again every this many turns. */
+const BRIEF_EVERY_TURNS = 10
 /**
  * Refusals retrying cannot fix: the owner's account or role changed, the
  * target left the dial list or the tenant, the quota is spent. Same set the
@@ -239,6 +256,7 @@ interface TurnOutcome {
   readonly error?: string
   readonly cancelled?: boolean
   readonly permanent?: boolean
+  readonly compacted?: boolean
 }
 
 function ok(value: unknown): ControlOutcome {
@@ -280,6 +298,8 @@ export class ConsoleTasks {
     { target: string; taskId: string | null; handle: ChatTurnHandle }
   >()
   readonly #waits = new Map<string, () => void>()
+  /** Tasks this process resumed from the ledger, until their first prompt. */
+  readonly #resumed = new Set<string>()
   /** Worker turns in flight by node; see {@link MAX_RUNNING_PER_NODE}. */
   readonly #slots = new Map<string, number>()
   readonly #slotQueue = new Map<string, (() => void)[]>()
@@ -314,8 +334,10 @@ export class ConsoleTasks {
       if (task.notification === 'sending')
         // The send may or may not have happened; never duplicate it.
         this.#patch(task.id, { notification: 'unknown' })
-      if (RESUMABLE.has(task.status)) this.#schedule(task.id)
-      else if (
+      if (RESUMABLE.has(task.status)) {
+        this.#resumed.add(task.id)
+        this.#schedule(task.id)
+      } else if (
         (task.status === 'completed' || task.status === 'needs_input') &&
         task.notification === 'pending'
       )
@@ -606,6 +628,11 @@ export class ConsoleTasks {
       lastError: '',
       turns: 0,
       nodeTaskId: null,
+      briefed: false,
+      briefedTurn: 0,
+      promptedProgress: '',
+      abnormal: false,
+      rebrief: false,
       quietTurns: 0,
       readUpdateId: 0,
       notification: 'none',
@@ -801,21 +828,60 @@ export class ConsoleTasks {
     this.#waits.delete(id)
   }
 
-  #prompt(task: TaskRecord, fresh: boolean): string {
-    const parts = [`后台任务 ${task.id}：${task.title}`, task.instructions]
-    if (fresh) {
-      parts.unshift(WORKER_INSTRUCTIONS)
-      if (task.context.length > 0)
+  /**
+   * Whether this turn's prompt carries the worker rules and the task: until a
+   * briefing was accepted, after a restart, in a new session, after the
+   * runtime compacted the session, and every {@link BRIEF_EVERY_TURNS} turns.
+   * Other turns carry only what changed, so a long task does not resend the
+   * same few thousand characters every turn.
+   */
+  #briefing(task: TaskRecord, fresh: boolean, resumed: boolean): boolean {
+    const briefed = task.briefed ?? task.workerSession !== null
+    return (
+      fresh ||
+      !briefed ||
+      resumed ||
+      task.rebrief ||
+      task.turns - task.briefedTurn >= BRIEF_EVERY_TURNS
+    )
+  }
+
+  /**
+   * One worker turn's prompt. The first line names the task, so the session
+   * reads as that task wherever it is listed.
+   */
+  #prompt(
+    task: TaskRecord,
+    turn: {
+      readonly brief: boolean
+      readonly fresh: boolean
+      readonly resumed: boolean
+    },
+  ): string {
+    const parts = [`后台任务：${task.title}（${task.id}）`]
+    if (turn.brief) {
+      parts.push(WORKER_INSTRUCTIONS, `任务说明：\n${task.instructions}`)
+      // The main session's words, for what "it" and "that" refer to: the
+      // session has them once it was briefed, unless compaction dropped them.
+      if (
+        task.context.length > 0 &&
+        (turn.fresh || task.briefed !== true || task.rebrief)
+      )
         parts.push(
           `主会话最近的消息（引用资料，用于理解指代）：\n${JSON.stringify(task.context)}`,
         )
     }
-    if (task.turns > 1 || !fresh)
+    if (task.abnormal || turn.resumed)
       parts.push(
-        '继续同一持久会话。先检查上次工具调用、实际文件或外部操作的状态，核实后接着做，避免重复执行。',
+        '上一轮没有正常结束，或任务管理器重启过。先检查上次工具调用、实际文件或外部操作的状态，核实后接着做，避免重复执行。',
       )
-    if (task.progress) parts.push(`持久检查点：${task.progress}`)
-    if (task.lastError) parts.push(`上次中断：${task.lastError}`)
+    if (
+      task.progress &&
+      (turn.brief || turn.resumed || task.progress !== task.promptedProgress)
+    )
+      parts.push(`持久检查点：${task.progress}`)
+    if (task.lastError && (task.abnormal || turn.resumed))
+      parts.push(`上次中断：${task.lastError}`)
     if (task.requestedState)
       parts.push(
         `上一轮报告了 ${task.requestedState}，但那一轮没有正常结束；这不是已确认的终态。请先核实实际结果，再明确重新 qianmo_task_report。`,
@@ -823,10 +889,12 @@ export class ConsoleTasks {
     const unread = this.#unread(task)
     if (unread.length > 0)
       parts.push(
-        `尚未确认的用户补充（先调用 qianmo_task_updates 读取并确认）：${JSON.stringify(unread.map(one => ({ id: one.id, message: one.message })))}`,
+        `有 ${unread.length} 条尚未确认的用户补充（编号 ${unread.map(one => one.id).join('、')}），先调用 qianmo_task_updates 读取并确认。`,
       )
     parts.push(
-      '执行剩余工作，用 qianmo_task_report 汇报阶段；完成后明确报告 completed。',
+      turn.brief
+        ? '执行剩余工作，每完成一个阶段用 qianmo_task_report 汇报并结束本轮；完成后明确报告 completed。'
+        : '继续下一个阶段；做完就用 qianmo_task_report 汇报并结束本轮，完成后明确报告 completed。',
     )
     return parts.join('\n\n')
   }
@@ -919,10 +987,18 @@ export class ConsoleTasks {
               requestedState: '',
               turns: task.turns + 1,
             })
+            const resumed = this.#resumed.delete(id)
+            const brief = this.#briefing(task, session.fresh, resumed)
             const prompt = this.#prompt(
               { ...task, requestedState: before.requestedState },
-              session.fresh,
+              { brief, fresh: session.fresh, resumed },
             )
+            const prompted = {
+              promptedProgress: task.progress,
+              ...(brief
+                ? { briefed: true, briefedTurn: task.turns, rebrief: false }
+                : {}),
+            }
             const turn: {
               target: string
               taskId: string | null
@@ -958,13 +1034,16 @@ export class ConsoleTasks {
                       .catch(() => false)
                     return
                   }
-                  this.#patch(id, { nodeTaskId: taskId })
+                  // Accepted by the node: now the worker has seen it.
+                  this.#patch(id, { nodeTaskId: taskId, ...prompted })
                 },
               }),
             }
             this.#turns.set(id, turn)
             const result = await turn.handle.outcome
             this.#turns.delete(id)
+            // The node never took this line: the restart note still owes.
+            if (resumed && turn.taskId === null) this.#resumed.add(id)
             if (
               result.answered &&
               this.#tasks.get(id)?.nodeTaskId === turn.taskId
@@ -978,6 +1057,7 @@ export class ConsoleTasks {
               PERMANENT_REFUSALS.has(result.refusedStatus)
                 ? { permanent: true }
                 : {}),
+              ...(result.compacted ? { compacted: true } : {}),
             }
           }
         }
@@ -987,6 +1067,7 @@ export class ConsoleTasks {
       task = this.#tasks.get(id)
       if (task === undefined || !RESUMABLE.has(task.status) || this.#closed)
         break
+      if (outcome.compacted) task = this.#patch(id, { rebrief: true })
       if (outcome.ok && PENDING.has(task.status)) {
         this.#patch(id, {
           status:
@@ -1009,12 +1090,13 @@ export class ConsoleTasks {
           })
           break
         }
-        this.#patch(id, { quietTurns: quiet })
+        this.#patch(id, { quietTurns: quiet, abnormal: false })
         continue
       }
       failures++
       this.#patch(id, {
         status: outcome.cancelled ? 'interrupted' : task.status,
+        abnormal: true,
         lastError: clip(
           outcome.error ??
             (outcome.cancelled

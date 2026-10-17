@@ -106,6 +106,7 @@ export class FakeChat implements ChatPort {
     sessionId: string,
     text: string,
     state: 'done' | 'failed' = 'done',
+    extra: Partial<ChatTurn> = {},
   ): void {
     this.#add({
       id: crypto.randomUUID(),
@@ -115,6 +116,7 @@ export class FakeChat implements ChatPort {
       text,
       state,
       taskId: this.lastTask(sessionId),
+      ...extra,
     })
   }
 

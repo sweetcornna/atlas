@@ -89,9 +89,7 @@ async function workerTurn(n: number): Promise<string> {
   let worker = ''
   await until(() => {
     const ids = [...chat.records.keys()].filter(id =>
-      chat
-        .sentTo(id)
-        .some(one => one.text.startsWith('你是一个持久后台子智能体')),
+      chat.sentTo(id).some(one => one.background),
     )
     worker = ids[0] ?? ''
     return worker !== '' && chat.sentTo(worker).length >= n
@@ -156,10 +154,13 @@ describe('starting', () => {
     const worker = await workerTurn(1)
     expect(worker).not.toBe(parent)
     const prompt = chat.sentTo(worker)[0]!.text
-    expect(prompt.startsWith(WORKER_INSTRUCTIONS)).toBe(true)
-    expect(prompt).toContain(`后台任务 ${started.id}：周报`)
+    // The first line names the task, wherever the session is listed.
+    expect(prompt.startsWith(`后台任务：周报（${started.id}）\n\n`)).toBe(true)
+    expect(prompt).toContain(WORKER_INSTRUCTIONS)
     expect(prompt).toContain('汇总本周提交并写成周报')
     expect(prompt).toContain('帮我整理一下周报')
+    // Nothing went wrong before the first turn: nothing to verify.
+    expect(prompt).not.toContain('核实后接着做')
   })
 
   test('a task can run on another agent (another runtime or model)', async () => {
@@ -251,7 +252,7 @@ describe('the worker loop', () => {
     // An ordinary final answer is not a completion: the hub continues.
     chat.reply(worker, '我写好了')
     await until(() => chat.sentTo(worker).length === 2)
-    expect(chat.sentTo(worker)[1]!.text).toContain('继续同一持久会话')
+    expect(chat.sentTo(worker)[1]!.text).toContain('继续下一个阶段')
     value(
       await call(
         book,
@@ -347,7 +348,12 @@ describe('the worker loop', () => {
     await chat.send({ sessionId: parent, text: '下午三点' })
     value(await call(book, 'send', parent, { id, message: '下午三点' }))
     await until(() => chat.sentTo(worker).length === 2)
-    expect(chat.sentTo(worker)[1]!.text).toContain('"message":"下午三点"')
+    // Only the ids and the count: the worker reads them with the tool.
+    const resumed = chat.sentTo(worker)[1]!.text
+    expect(resumed).toMatch(
+      /有 1 条尚未确认的用户补充（编号 \S+），先调用 qianmo_task_updates 读取并确认/,
+    )
+    expect(resumed).not.toContain('下午三点')
     // The parent and one worker session: resuming opened nothing new.
     expect(chat.opened).toEqual([MAIN, MAIN])
   })
@@ -377,7 +383,9 @@ describe('the worker loop', () => {
     const worker = await workerTurn(1)
     chat.reply(worker, '模型服务不可用', 'failed')
     await until(() => chat.sentTo(worker).length === 2)
-    expect(chat.sentTo(worker)[1]!.text).toContain('上次中断：模型服务不可用')
+    const retry = chat.sentTo(worker)[1]!.text
+    expect(retry).toContain('上次中断：模型服务不可用')
+    expect(retry).toContain('核实后接着做')
     expect(
       value<{ task: { lastError: string } }>(
         await call(book, 'status', parent, { id }),
@@ -487,6 +495,132 @@ describe('the worker loop', () => {
   })
 })
 
+describe('prompts', () => {
+  test('a first prompt the node never took goes out again with the rules and the context', async () => {
+    class FlakyChat extends FakeChat {
+      failed = false
+      override async send(input: Parameters<FakeChat['send']>[0]) {
+        if (input.background && !this.failed) {
+          this.failed = true
+          this.sent.push(input)
+          return {
+            ok: false as const,
+            failure: { code: 'unreachable' as const, message: 'node offline' },
+          }
+        }
+        return super.send(input)
+      }
+    }
+    const flaky = new FlakyChat([MAIN, CODER])
+    chat = flaky
+    const book = tasks()
+    const parent = await foreground()
+    value(
+      await call(book, 'start', parent, {
+        title: 't',
+        instructions: '要做的事',
+      }),
+    )
+    await until(() => flaky.sent.filter(one => one.background).length >= 2)
+    const second = flaky.sent.filter(one => one.background)[1]!.text
+    expect(second).toContain(WORKER_INSTRUCTIONS)
+    expect(second).toContain('要做的事')
+    expect(second).toContain('帮我整理一下周报')
+  })
+
+  test('continuation prompts carry only what changed', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    const long = '很长的任务说明。'.repeat(200)
+    value(await call(book, 'start', parent, { title: 't', instructions: long }))
+    const worker = await workerTurn(1)
+    value(
+      await call(book, 'report', worker, {
+        summary: '阶段一完成',
+        state: 'working',
+      }),
+    )
+    chat.reply(worker, 'r1')
+    await until(() => chat.sentTo(worker).length === 2)
+    chat.reply(worker, 'r2')
+    await until(() => chat.sentTo(worker).length === 3)
+    const prompts = chat.sentTo(worker).map(one => one.text)
+    expect(prompts.map(one => one.includes(long))).toEqual([true, false, false])
+    // The checkpoint once it changed, not again while it stays the same.
+    expect(prompts.map(one => one.includes('持久检查点：阶段一完成'))).toEqual([
+      false,
+      true,
+      false,
+    ])
+    expect(prompts.some(one => one.includes('核实后接着做'))).toBe(false)
+    expect(prompts[2]!.length).toBeLessThan(200)
+  })
+
+  test('the rules go out again every ten turns', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    value(
+      await call(book, 'start', parent, {
+        title: 't',
+        instructions: '长期任务说明',
+      }),
+    )
+    const worker = await workerTurn(1)
+    for (let n = 1; n <= 11; n++) {
+      await until(() => chat.sentTo(worker).length === n)
+      value(
+        await call(book, 'report', worker, {
+          summary: `第 ${n} 步`,
+          state: 'working',
+        }),
+      )
+      chat.reply(worker, `r${n}`)
+    }
+    await until(() => chat.sentTo(worker).length === 12)
+    const briefed = chat
+      .sentTo(worker)
+      .map(one => one.text.includes('长期任务说明'))
+    expect(briefed).toEqual([
+      true,
+      ...Array<boolean>(9).fill(false),
+      true,
+      false,
+    ])
+  })
+
+  test('after the runtime compacted the worker session the next prompt briefs it again', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    value(
+      await call(book, 'start', parent, {
+        title: 't',
+        instructions: '整理说明',
+      }),
+    )
+    const worker = await workerTurn(1)
+    for (let n = 1; n <= 3; n++) {
+      await until(() => chat.sentTo(worker).length === n)
+      value(
+        await call(book, 'report', worker, {
+          summary: `第 ${n} 步`,
+          state: 'working',
+        }),
+      )
+      chat.reply(worker, `r${n}`, 'done', n === 2 ? { compacted: true } : {})
+    }
+    await until(() => chat.sentTo(worker).length === 4)
+    const prompts = chat.sentTo(worker).map(one => one.text)
+    expect(prompts.map(one => one.includes('整理说明'))).toEqual([
+      true,
+      false,
+      true,
+      false,
+    ])
+    expect(prompts[2]).toContain(WORKER_INSTRUCTIONS)
+    expect(prompts[2]).toContain('帮我整理一下周报')
+  })
+})
+
 describe('durability', () => {
   test('an interrupted task resumes after a restart in the same worker session', async () => {
     const book = tasks()
@@ -516,9 +650,42 @@ describe('durability', () => {
     tasks()
     await until(() => chat.sentTo(worker).length === 2)
     const prompt = chat.sentTo(worker)[1]!.text
-    expect(prompt).toContain('继续同一持久会话')
+    expect(prompt.startsWith(`后台任务：长任务（${id}）`)).toBe(true)
+    // A restart briefs again and asks to verify what the cut turn left.
+    expect(prompt).toContain(WORKER_INSTRUCTIONS)
+    expect(prompt).toContain('核实后接着做')
     expect(prompt).toContain('持久检查点：做了一半')
-    expect(prompt.startsWith(WORKER_INSTRUCTIONS)).toBe(false)
+    // The session has the main conversation's words from the first prompt.
+    expect(prompt).not.toContain('帮我整理一下周报')
+  })
+
+  test('a ledger from before the briefing mark counts a worker session as briefed', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '旧账', instructions: 'x' }),
+    )
+    const worker = await workerTurn(1)
+    await book.close()
+    open = []
+    const file = path.join(root, 'tasks.json')
+    const ledger = JSON.parse(fs.readFileSync(file, 'utf8'))
+    for (const key of [
+      'briefed',
+      'briefedTurn',
+      'promptedProgress',
+      'abnormal',
+      'rebrief',
+    ])
+      delete ledger.tasks[0][key]
+    fs.writeFileSync(file, JSON.stringify(ledger), { mode: 0o600 })
+    tasks()
+    await until(() => chat.sentTo(worker).length === 2)
+    chat.reply(worker, '继续')
+    await until(() => chat.sentTo(worker).length === 3)
+    const third = chat.sentTo(worker)[2]!.text
+    expect(third.startsWith(`后台任务：旧账（${id}）`)).toBe(true)
+    expect(third).not.toContain(WORKER_INSTRUCTIONS)
   })
 
   test('tasks follow a chat across /new (related sessions)', async () => {
