@@ -23,6 +23,7 @@ import type {
   BillingOrderView,
   BillingPort,
   BillingPresetView,
+  BillingRefundDueView,
   BillingSiteView,
   BillingStanding,
   BillingUpstreamView,
@@ -101,6 +102,8 @@ export class FakeBilling implements BillingPort {
   readonly orders = new Map<string, Order>()
   readonly upstreams = new Map<string, BillingUpstreamView[]>()
   readonly codesIssued: string[] = []
+  /** What `admin()` lists as owed a refund; a test sets it. */
+  refundsDue: readonly BillingRefundDueView[] = []
   presetList: readonly BillingPresetView[] = [
     { id: 'anthropic', name: 'Anthropic' },
     { id: 'openai', name: 'OpenAI' },
@@ -369,6 +372,7 @@ export class FakeBilling implements BillingPort {
         usedBy: null,
         usedAt: null,
       })),
+      refundsDue: this.refundsDue,
       chain: { ok: true, events: this.orders.size },
     })
   }

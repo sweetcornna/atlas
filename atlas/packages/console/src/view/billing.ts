@@ -529,13 +529,60 @@ function mono(text: string): string {
   return `<span class="kit-mono">${escapeHtml(text)}</span>`
 }
 
+/** 付了款却因套餐冲突没有计入的订单；没有就不出这一块。 */
+function adminRefundsDue(view: BillingAdminView, writer: boolean): string {
+  if (view.refundsDue.length === 0) return ''
+  const rows = view.refundsDue.map(
+    row =>
+      `<tr data-key="${attr(row.orderId)}"><td>${row.paidAt === null ? absent() : timeTag(row.paidAt, 'minute')}</td>` +
+      `<td>${mono(row.subject)}</td><td>${escapeHtml(planName(view.plans, row.planId))}</td>` +
+      `<td>${escapeHtml(planName(view.plans, row.activePlanId))}</td>` +
+      `<td>${escapeHtml(yuan(row.amountCents))} 元</td><td>${escapeHtml(channelName(row.channel))}</td>` +
+      `<td>${mono(row.outTradeNo)}</td>` +
+      (writer
+        ? `<td class="acts">${actionButton('bl-refund', '登记退款', {
+            tone: 'ghost',
+            data: { order: row.orderId },
+          })}</td>`
+        : '') +
+      `</tr>`,
+  )
+  return (
+    `<section class="sec" aria-labelledby="h-bl-a-refunds">` +
+    sectionHead('Refunds due', '待退款', { headingId: 'h-bl-a-refunds' }) +
+    `<p class="note">付款时这个账号有别的套餐在有效期内 · 钱已到账 · 订阅没有改动 · 在商户平台退款后在这里登记</p>` +
+    table(
+      '待退款',
+      [
+        '付款',
+        '账号',
+        '付的套餐',
+        '当时有效的套餐',
+        '金额',
+        '方式',
+        '商户订单号',
+        ...(writer ? [''] : []),
+      ],
+      rows,
+    ) +
+    `</section>`
+  )
+}
+
 function adminOrders(view: BillingAdminView, writer: boolean): string {
+  const owed = new Set(view.refundsDue.map(row => row.orderId))
   const rows = view.orders.map(
     order =>
       `<tr data-key="${attr(order.orderId)}"><td>${timeTag(order.createdAt, 'minute')}</td>` +
       `<td>${mono(order.subject)}</td><td>${escapeHtml(planName(view.plans, order.planId))}</td>` +
       `<td>${escapeHtml(yuan(order.amountCents))} 元</td><td>${escapeHtml(channelName(order.channel))}</td>` +
-      `<td>${order.status === 'paid' ? state('ok', ORDER_WORD.paid) : escapeHtml(ORDER_WORD[order.status])}</td>` +
+      `<td>${
+        order.status !== 'paid'
+          ? escapeHtml(ORDER_WORD[order.status])
+          : owed.has(order.orderId)
+            ? state('warn', `${ORDER_WORD.paid} · 待退款`)
+            : state('ok', ORDER_WORD.paid)
+      }</td>` +
       `<td>${mono(order.outTradeNo)}</td>` +
       (writer
         ? `<td class="acts">${
@@ -666,6 +713,7 @@ export function renderBillingAdmin(
   if (side.kind === 'failed') return failureBar(side.failure, '订阅')
   const view = side.value
   return (
+    adminRefundsDue(view, writer) +
     adminSubscriptions(view, writer) +
     adminOrders(view, writer) +
     adminCodes(view, writer) +

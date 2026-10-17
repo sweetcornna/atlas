@@ -723,6 +723,52 @@ describe('订阅 for platform ops', () => {
     ])
   })
 
+  test('orders paid while another plan was active are listed as owed a refund', async () => {
+    const f = publicConsole()
+    const orderId = await checkout(f, f.expired)
+    f.billing.pay(orderId)
+    f.billing.refundsDue = [
+      {
+        orderId,
+        subject: f.expired.subject,
+        planId: 'month',
+        activePlanId: 'pro',
+        amountCents: 9900,
+        channel: 'wechatpay',
+        outTradeNo: 'Q'.repeat(32),
+        paidAt: f.now,
+      },
+    ]
+    const html = await (
+      await f.handle(page('/admin/billing', f.platform))
+    ).text()
+    expect(html).toContain('id="h-bl-a-refunds">待退款</h2>')
+    const section = html.slice(html.indexOf('id="h-bl-a-refunds"'))
+    expect(section).toContain(`data-key="${orderId}"`)
+    expect(section).toContain('团队')
+    expect(section).toContain(`data-action="bl-refund" data-order="${orderId}"`)
+    expect(html).toContain('已支付 · 待退款')
+    // A reader who cannot write sees the list without the button.
+    const reader = publicConsole({ breakGlass: true })
+    const readerOrder = await checkout(reader, reader.expired)
+    reader.billing.pay(readerOrder)
+    reader.billing.refundsDue = f.billing.refundsDue.map(row => ({
+      ...row,
+      orderId: readerOrder,
+    }))
+    const read = await (
+      await reader.handle(page('/admin/billing', ADMIN))
+    ).text()
+    expect(read).toContain('id="h-bl-a-refunds">待退款</h2>')
+    expect(read).not.toContain('data-action="bl-refund"')
+    // Nothing owed: no section.
+    f.billing.refundsDue = []
+    const none = await (
+      await f.handle(page('/admin/billing', f.platform))
+    ).text()
+    expect(none).not.toContain('h-bl-a-refunds')
+  })
+
   test('admin input is checked before the port', async () => {
     const f = publicConsole()
     for (const [path, body] of [

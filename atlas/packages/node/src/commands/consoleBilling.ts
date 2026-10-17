@@ -609,6 +609,16 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
           subjects.find(one => one.subject === row.subject)?.tenant ?? null,
       })),
       codes: snapshot.codes,
+      refundsDue: snapshot.refundsDue.map(row => ({
+        orderId: row.orderId,
+        subject: row.subject,
+        planId: row.planId,
+        activePlanId: row.activePlanId,
+        amountCents: row.amountCents,
+        channel: row.channel,
+        outTradeNo: row.outTradeNo,
+        paidAt: row.paidAt,
+      })),
       chain: snapshot.chain,
     })
   }

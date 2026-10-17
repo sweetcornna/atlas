@@ -672,7 +672,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/billing/models` | 个人账号，有效订阅 | `{ preset, key }`：用 magpie 的 API 密钥预设（L-6）接自己的上游，密钥只交给 magpie、中枢不留存；租户网关密钥的白名单随之改为本租户上游的模型并启用。记 `billing.model.add` |
 | DELETE | `/v0/billing/models/<上游 id>` | 个人账号，有效订阅 | 删除自己接的上游；最后一个删掉后网关密钥停用。别人的与平台的上游 404。成功 204，记 `billing.model.remove` |
 | POST | `/v0/billing/notify/{wechatpay,alipay}` | 公开，公开版 | 支付平台回调（§4.3）：不要凭据与控制台头，原文交给通道验签，原样回通道的应答；非 POST 405，超过 64 KiB 413 |
-| GET | `/v0/billing/admin` | 平台读者 | 订阅管理快照：套餐、通道、订单、订阅（含租户与开通状态）、兑换码（只有编号与使用情况）、账本校验。有租户时只给平台主体与 break-glass |
+| GET | `/v0/billing/admin` | 平台读者 | 订阅管理快照：套餐、通道、订单、订阅（含租户与开通状态）、兑换码（只有编号与使用情况）、待退款（付款时已有别的套餐在有效期内、没有计入的订单）、账本校验。有租户时只给平台主体与 break-glass |
 | GET | `/v0/billing/admin/verify` | 平台读者 | 从头校验账本的哈希链，答 `{ ok, events }` 或第一处不一致 |
 | POST | `/v0/billing/admin/grant` | **个人 ops**（平台） | `{ subject, planId, periods, reason }` 手动开通或延期，原因必填。规则同网关写入：拒绝共用令牌与 break-glass，有租户时只收平台主体；记 `billing.grant` |
 | POST | `/v0/billing/admin/refund` | **个人 ops**（平台） | `{ orderId, reason }`：只登记商户平台上已经做完的退款并缩短订阅，不向支付平台发起退款。记 `billing.refund` |
@@ -698,7 +698,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/admin/im` | view | 渠道（P28）：QQ、微信、Telegram、Discord、Slack 接到哪个智能体、在线状态与会话数；运维能添加、编辑、停用、删除，微信扫码接入。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/extensions` | view | 扩展（P32，主组）：连接器、技能、插件三个分区，每条显示适用的智能体与在各节点是否生效；运维能添加、编辑、停用、删除。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/magpie` | view | 网关（P34，主组）：连接、上游、路由组、网关密钥、用量五块；平台运维能连接、添加上游、编排路由组、为节点签发与轮换收回密钥。没接端口时侧栏不出现、页面 404 |
-| GET | `/admin/billing` | 平台读者 | 订阅（P35，管理组）：订阅、订单、兑换码、账本四块；平台运维能手动开通或延期、登记退款、生成兑换码。只在公开版接入，没接时侧栏不出现、页面 404 |
+| GET | `/admin/billing` | 平台读者 | 订阅（P35，管理组）：订阅、订单、兑换码、账本四块，有待退款的订单时最上面多一块「待退款」；平台运维能手动开通或延期、登记退款、生成兑换码。只在公开版接入，没接时侧栏不出现、页面 404 |
 | GET | `/admin/updates` | view | 更新（P31，管理组）：各来源的版本、状态与检查记录，阡陌一行列出中枢与各节点的版本；运维能改检查时间、各来源动作、通知渠道与阡陌仓库，能立即检查，能把阡陌逐台升级到新版或回滚。没接端口时侧栏不出现、页面 404 |
 | GET | `/v0/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 同一份列表的 JSON：`{ agent, entries, total, counts }`。没接记忆端口时 501 |
 | POST | `/v0/memory` | **成员** | 记一条：`{ agent, kind, title, summary, body }`，`kind` 只能是四类之一，一句话 ≤120 字、摘要 ≤400 字、细节 ≤4000 字。记 `memory.add` |

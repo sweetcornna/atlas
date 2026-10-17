@@ -1748,12 +1748,31 @@ export type BillingChainView =
   | { readonly ok: true; readonly events: number }
   | { readonly ok: false; readonly seq: number; readonly reason: string }
 
+/**
+ * 付了款却没有计入的订单：结算时这个人有别的套餐在有效期内。钱已到账、订阅没变，
+ * 等运维在商户平台退款后登记；登记了就不再列出。
+ */
+export interface BillingRefundDueView {
+  readonly orderId: string
+  readonly subject: string
+  readonly planId: string
+  /** 结算时在有效期内的那个套餐。 */
+  readonly activePlanId: string
+  /** 整数分。 */
+  readonly amountCents: number
+  readonly channel: string
+  readonly outTradeNo: string
+  readonly paidAt: number | null
+}
+
 export interface BillingAdminView {
   readonly plans: readonly BillingPlanView[]
   readonly channels: BillingSiteView['channels']
   readonly orders: readonly BillingAdminOrderView[]
   readonly subscriptions: readonly BillingAdminSubscriptionView[]
   readonly codes: readonly BillingAdminCodeView[]
+  /** 待退款：付了款却因套餐冲突没有计入的订单，最早的在前。 */
+  readonly refundsDue: readonly BillingRefundDueView[]
   readonly chain: BillingChainView
 }
 
