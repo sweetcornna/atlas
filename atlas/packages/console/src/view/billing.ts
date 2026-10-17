@@ -51,7 +51,7 @@ import { documentHead } from './page.js'
 import { qrSvg } from './qr.js'
 
 /** 支付方式在页面上的名字。 */
-export const CHANNEL_WORD: Readonly<Record<BillingChannel, string>> = {
+const CHANNEL_WORD: Readonly<Record<BillingChannel, string>> = {
   wechatpay: '微信支付',
   alipay: '支付宝',
 }
@@ -68,7 +68,7 @@ const ORDER_WORD: Readonly<Record<BillingOrderStatus, string>> = {
 export const BYOK_LINE = '模型用你自己的密钥接入 · 经平台网关统一调度'
 
 /** 整数分写成元：`9900` → `99`，`990` → `9.90`。 */
-export function yuan(cents: number): string {
+function yuan(cents: number): string {
   return cents % 100 === 0 ? String(cents / 100) : (cents / 100).toFixed(2)
 }
 
@@ -85,7 +85,7 @@ function channelName(channel: string): string {
 // --- the public frame --------------------------------------------------
 
 /** 每个公开页面的页脚：源代码链接，有条款时再给条款。 */
-export function billingFooter(site: BillingSiteView): string {
+function billingFooter(site: BillingSiteView): string {
   return (
     `<footer class="bl-foot">` +
     `<a href="${attr(site.sourceUrl)}" rel="noopener" data-source>源代码 · AGPL-3.0</a>` +
@@ -135,7 +135,7 @@ function planCard(plan: BillingPlanView, action = ''): string {
   )
 }
 
-export interface PlansPageModel {
+interface PlansPageModel {
   readonly label: string
   readonly site: BillingSiteView
   readonly signedIn: boolean
@@ -213,7 +213,7 @@ export function renderBillingNotice(
 
 // --- /subscription -----------------------------------------------------
 
-export interface SubscriptionPageModel {
+interface SubscriptionPageModel {
   readonly label: string
   readonly site: BillingSiteView
   readonly me: BillingMeView | null
@@ -447,7 +447,7 @@ export function renderSubscriptionPage(
 
 // --- /subscription/checkout --------------------------------------------
 
-export interface CheckoutConfirmModel {
+interface CheckoutConfirmModel {
   readonly label: string
   readonly site: BillingSiteView
   readonly plan: BillingPlanView
@@ -471,7 +471,7 @@ export function renderCheckoutConfirm(model: CheckoutConfirmModel): string {
   )
 }
 
-export interface CheckoutPageModel {
+interface CheckoutPageModel {
   readonly label: string
   readonly site: BillingSiteView
   readonly order: BillingOrderView
