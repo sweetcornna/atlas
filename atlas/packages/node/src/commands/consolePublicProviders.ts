@@ -143,9 +143,12 @@ export function publicProviders(
         failure: { code: 'unavailable', message: '租户配置不可用' },
       }
     }
-    return scope.allows(candidateProfile(candidate))
-      ? null
-      : refused('这份档案不能发到这个节点 · 租户的节点只收本租户的档案')
+    if (scope.allows(candidateProfile(candidate))) return null
+    return refused(
+      scope === PLATFORM_SCOPE
+        ? '订阅者的网关档案只发到它自己租户的节点'
+        : '这份档案不能发到这个节点 · 租户的节点只收本租户的档案',
+    )
   }
   return {
     overview: () => inner.overview(),
