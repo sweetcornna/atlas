@@ -524,6 +524,23 @@ describe('background tasks', () => {
     expect(contexts).toEqual(['ch-1:dm:owner', 'ch-1:dm:owner'])
   })
 
+  test('a task context that fails leaves the line without a note, not unanswered', async () => {
+    const { turns, adapter, gateway, errors } = setup()
+    Object.assign(turns, {
+      context: async () => {
+        throw new Error('账本读不出来')
+      },
+    })
+    gateway.handle(RULES, adapter, inbound({ text: '在吗' }))
+    await until(() => turns.calls.length === 1)
+    expect(turns.calls[0]!.text.endsWith('在吗')).toBe(true)
+    expect(turns.calls[0]!.text).not.toContain('[当前会话的后台任务]')
+    turns.answer(0, '在')
+    await gateway.idle()
+    expect(adapter.sent.map(one => one.text)).toEqual(['在'])
+    expect(errors).toEqual(['渠道 ch-1 后台任务附注失败：账本读不出来'])
+  })
+
   test("the owner's progress question is answered from task status, without a turn", async () => {
     const { turns, adapter, gateway } = setup()
     let tasks = true

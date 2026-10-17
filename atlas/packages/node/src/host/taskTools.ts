@@ -4,12 +4,12 @@
 /**
  * Background task tools (P29, `runtimes-channels.md` §3), ported from
  * grantley's `tasks/`: a foreground conversation hands long work to a
- * background sub-agent and stays responsive; the sub-agent reports progress
- * and completion. The hub keeps the task ledger and runs the worker loop;
+ * background task (its own sub-session, or another agent) and stays
+ * responsive; the task reports progress and completion. The hub keeps the task ledger and runs the worker loop;
  * these tools only forward to it (`tasks.*` hub calls) with the console
  * conversation and turn they were called from, which the hub checks.
  *
- * All six tools are always offered, so the tool surface (and the prompt
+ * All seven tools are always offered, so the tool surface (and the prompt
  * prefix it is part of) never changes between turns; the hub decides from
  * the conversation whether the caller is a foreground or a worker.
  */
@@ -38,21 +38,38 @@ export interface TaskToolsOptions {
 }
 
 const string = { type: 'string' }
+const integer = { type: 'integer' }
 
 const specs = [
   {
     name: 'qianmo_task_start',
     op: 'start',
     description:
-      'Foreground only. Start a persistent background sub-agent for work that needs tools, research, several steps or a long time, and return at once with its task id; do not wait for it. Give a short title and complete instructions (the sub-agent does not see this conversation beyond its last few messages). Optional agent: a qianmo://node/agent address to run it on another agent (another runtime or model); default is yourself.',
-    properties: { title: string, instructions: string, agent: string },
+      "Foreground only. Keep this conversation free for the owner's next message: hand work to a background task and return at once with its task id; never wait for it here. Do it yourself when one or two steps finish it (an answer, a question back, one lookup, one simple tool call, reading one file). Start a task without agent, in your own sub-session, for anything that takes several steps or more than a minute or two: research, writing or changing code, long commands, trial and error. Simple but slow work with clear edges (bulk tidying, checking against a list, collecting material, waiting on a result to check it) may go to another agent: give agent, a qianmo://node/agent address from qianmo_task_agents, preferring idle and cheaper ones. Split independent parts into separate tasks that run in parallel. Give a short title and complete instructions (the task sees no more of this conversation than its last few messages). To run it later give after (minutes, 1-10080) or at (an ISO time with its zone, at most 7 days ahead), not both; to repeat it give everyMinutes (30-10080) with times (1-100). Plan this way what should be looked at again later or done periodically. A planned task waits as scheduled, runs in the same sub-session each time and its result comes back here after every run; at most 20 planned per owner. Tell the owner what you started or planned, and when it runs.",
+    properties: {
+      title: string,
+      instructions: string,
+      agent: string,
+      after: integer,
+      at: string,
+      everyMinutes: integer,
+      times: integer,
+    },
     required: ['title', 'instructions'],
+  },
+  {
+    name: 'qianmo_task_agents',
+    op: 'agents',
+    description:
+      "Foreground only. List the agents you may hand a task to with qianmo_task_start's agent: address, name, runtime and model when known, whether it is you, and how busy it is — idle (nothing running on its node; a node runs one turn at a time), turns in flight, background tasks queued and running. Check it before handing simple but slow work to another agent, and prefer idle and cheaper ones. Does not wait.",
+    properties: {},
+    required: [],
   },
   {
     name: 'qianmo_task_status',
     op: 'status',
     description:
-      "Foreground only. Read this conversation's background tasks: real phase, last report, result. Does not wait.",
+      "Foreground only. Read this conversation's background tasks: real phase (a scheduled one with its next start and the runs left), last report, result. When the owner asks how things are going, report the real phase; only a completed task is done. When a task has completed, decide the next step yourself: start the next task or ask the owner. Does not wait.",
     properties: { id: string },
     required: [],
   },
@@ -60,7 +77,7 @@ const specs = [
     name: 'qianmo_task_send',
     op: 'send',
     description:
-      'Foreground only. Pass an extra instruction from the user to one of this conversation’s background tasks; a task waiting for input resumes in the same sub-session.',
+      'Foreground only. Pass an extra instruction from the owner to one of this conversation’s background tasks; a task waiting for input resumes in the same sub-session, a scheduled one reads it when its next run starts. A new message from the owner cancels no task.',
     properties: { id: string, message: string },
     required: ['id', 'message'],
   },
@@ -68,7 +85,7 @@ const specs = [
     name: 'qianmo_task_cancel',
     op: 'cancel',
     description:
-      "Foreground only. Stop one of this conversation's background tasks.",
+      "Foreground only. Stop one of this conversation's background tasks; a scheduled one is cancelled with all its remaining runs.",
     properties: { id: string },
     required: ['id'],
   },
@@ -76,7 +93,7 @@ const specs = [
     name: 'qianmo_task_report',
     op: 'report',
     description:
-      "Background sub-agent only. Save this task's real progress (state working), its verified final result (state completed), or the one question you need answered (state needs_input). Only an explicit completed report finishes the task. The answer's newUpdates counts user instructions you have not read yet; read them with qianmo_task_updates.",
+      "Background task only. Save this task's real progress (state working), its verified final result (state completed), or the one question you need answered (state needs_input). Only an explicit completed report finishes the task. The answer's newUpdates counts user instructions you have not read yet; read them with qianmo_task_updates.",
     properties: {
       summary: string,
       state: { type: 'string', enum: ['working', 'completed', 'needs_input'] },
@@ -87,14 +104,14 @@ const specs = [
     name: 'qianmo_task_updates',
     op: 'updates',
     description:
-      'Background sub-agent only. Read the user’s new instructions for this task. Call it before starting, before key actions and between phases.',
+      'Background task only. Read the user’s new instructions for this task. Call it before starting, before key actions and between phases.',
     properties: {},
     required: [],
   },
 ] as const
 
 /**
- * What to do when the hub did not answer. A sub-agent may not read status,
+ * What to do when the hub did not answer. A background task may not read status,
  * and both of its calls are safe to repeat: a report overwrites the
  * checkpoint, unconfirmed instructions are returned again.
  */

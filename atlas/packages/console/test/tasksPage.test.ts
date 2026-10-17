@@ -36,6 +36,9 @@ function task(fields: Partial<BackgroundTaskView>): BackgroundTaskView {
     lastError: '',
     turns: 1,
     workerSession: null,
+    nextAt: null,
+    everyMinutes: null,
+    runsLeft: null,
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,
     ...fields,
@@ -213,5 +216,97 @@ describe('background tasks in the console (P29)', () => {
     expect((await h.handle(asBearer('GET', '/v0/tasks', ADMIN))).status).toBe(
       501,
     )
+  })
+})
+
+describe('planned tasks (主动任务)', () => {
+  test('a delayed or repeating task reads 已安排 with its next start and the runs left; the API carries the fields', async () => {
+    const tasks = new FakeTasks()
+    const actions = new MemoryActionLedger()
+    const h = accountsHarness({ deps: { tasks, actions } })
+    const member = await person(h.handle, 'member')
+    await h.handle(asSession('GET', '/v0/tasks', member.sid))
+    const owner = tasks.readers.at(-1)!.subject
+    const soon = h.clock.now() + 2 * 60 * 60_000
+    const later = h.clock.now() + 3 * 24 * 60 * 60_000
+    tasks.rows = [
+      task({
+        id: 'task-later',
+        owner,
+        title: '周检',
+        status: 'scheduled',
+        phase: '已安排',
+        nextAt: later,
+      }),
+      task({
+        id: 'task-repeat',
+        owner,
+        title: '巡检',
+        status: 'scheduled',
+        phase: '已安排',
+        nextAt: soon,
+        everyMinutes: 60,
+        runsLeft: 3,
+      }),
+      task({
+        id: 'task-run',
+        owner,
+        title: '日报',
+        everyMinutes: 1440,
+        runsLeft: 2,
+      }),
+    ]
+    const body = (await (
+      await h.handle(asSession('GET', '/v0/tasks', member.sid))
+    ).json()) as { tasks: BackgroundTaskView[] }
+    expect(body.tasks.find(row => row.id === 'task-repeat')).toMatchObject({
+      status: 'scheduled',
+      nextAt: soon,
+      everyMinutes: 60,
+      runsLeft: 3,
+    })
+    const page = await (
+      await h.handle(asSession('GET', '/admin/jobs', member.sid))
+    ).text()
+    const region = page.slice(page.indexOf('id="tasks"'))
+    // Running first, then the planned ones by their next start.
+    expect(region.indexOf('日报')).toBeLessThan(region.indexOf('巡检'))
+    expect(region.indexOf('巡检')).toBeLessThan(region.indexOf('周检'))
+    expect(region).toContain('执行中 · 剩 2 次')
+    expect(region).toMatch(
+      /已安排 · 下次 <time[^>]*data-fmt="hm"[^>]*>\d{2}:\d{2}<\/time> · 剩 3 次/,
+    )
+    // Further than a day off: with the date.
+    expect(region).toMatch(/已安排 · 下次 <time[^>]*data-fmt="minute"/)
+    expect(region).toContain('进行中 1 · 已安排 2 · 最近结束 0')
+    // A planned task can be cancelled like any unfinished one.
+    expect(region.match(/data-action="task-cancel"/g)).toHaveLength(3)
+  })
+
+  test('a start already due reads as the hub says, without a time gone by', async () => {
+    const tasks = new FakeTasks()
+    const actions = new MemoryActionLedger()
+    const h = accountsHarness({ deps: { tasks, actions } })
+    const member = await person(h.handle, 'member')
+    await h.handle(asSession('GET', '/v0/tasks', member.sid))
+    const owner = tasks.readers.at(-1)!.subject
+    tasks.rows = [
+      task({
+        id: 'task-due',
+        owner,
+        title: '巡检',
+        status: 'scheduled',
+        phase: '已安排 · 等名额',
+        nextAt: h.clock.now() - 60_000,
+        everyMinutes: 60,
+        runsLeft: 2,
+      }),
+    ]
+    const page = await (
+      await h.handle(asSession('GET', '/admin/jobs', member.sid))
+    ).text()
+    const region = page.slice(page.indexOf('id="tasks"'))
+    expect(region).toContain('已安排 · 等名额 · 剩 2 次')
+    expect(region).not.toContain('下次')
   })
 })

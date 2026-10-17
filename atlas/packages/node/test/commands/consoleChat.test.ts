@@ -372,6 +372,26 @@ describe('chat send', () => {
     })
   })
 
+  test("the hub's task note goes ahead of the line on the wire; the transcript keeps the line as typed", async () => {
+    const h = harness()
+    const opened = await h.hub.open(TARGET)
+    if (!opened.ok) throw new Error('open failed')
+    const sent = await h.hub.send({
+      sessionId: opened.value.id,
+      text: '帮我看看日志',
+      context: '[当前会话的后台任务] []',
+    })
+    expect(sent.ok && sent.value.text).toBe('帮我看看日志')
+    expect(h.dialer.last.sent[0]!.payload).toEqual({
+      prompt: '[当前会话的后台任务] []\n\n帮我看看日志',
+      reportCompaction: true,
+    })
+    const transcript = await h.hub.transcript(opened.value.id)
+    expect(transcript.ok && transcript.value.turns[0]!.text).toBe(
+      '帮我看看日志',
+    )
+  })
+
   test('a background turn is marked on the wire, the line and the session; a compacted result is kept across a restart', async () => {
     const h = harness()
     const opened = await h.hub.open(TARGET)

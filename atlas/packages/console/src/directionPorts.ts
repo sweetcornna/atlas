@@ -757,6 +757,7 @@ export interface SchedulesPort {
 // ---------------------------------------------------------------------------
 
 export type BackgroundTaskStatus =
+  | 'scheduled'
   | 'queued'
   | 'running'
   | 'interrupted'
@@ -768,7 +769,7 @@ export type BackgroundTaskStatus =
 
 /**
  * 主智能体交给后台子智能体的一个任务，控制台列表里的一行。主会话的上下文和
- * 追加指示的原文不在这里。
+ * 追加指示的原文不在这里。`scheduled` 是延时或重复的任务在等下一次开始。
  */
 export interface BackgroundTaskView {
   readonly id: string
@@ -787,6 +788,12 @@ export interface BackgroundTaskView {
   readonly turns: number
   /** 子任务所在的会话；还没开时为 null。 */
   readonly workerSession: string | null
+  /** 已安排的任务下次开始的时刻（epoch 毫秒）；不是已安排时为 null。 */
+  readonly nextAt: number | null
+  /** 重复任务每隔多少分钟一次；不重复的为 null。 */
+  readonly everyMinutes: number | null
+  /** 重复任务还没开始的次数；不重复的为 null。 */
+  readonly runsLeft: number | null
   readonly createdAt: number
   readonly updatedAt: number
 }

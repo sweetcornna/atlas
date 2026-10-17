@@ -12,16 +12,24 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import type { ConsoleAccounts } from '@qianmo/console'
+import type {
+  ConsoleAccounts,
+  TenantPort,
+  TenantSnapshot,
+} from '@qianmo/console'
 import type { ControlOutcome } from '@qianmo/protocol'
 import {
   accountsHarness,
   person,
 } from '../../../console/test/accountsHarness.js'
 import {
+  AgentProfiles,
+  type AgentProfile,
   ConsoleTasks,
+  SUPERVISOR_RULES,
   type TaskFinished,
   WORKER_INSTRUCTIONS,
+  withTaskNotes,
 } from '../../src/commands/consoleTasks.js'
 import { until } from '../channels/fakes.js'
 import { FakeChat } from './fakeChat.js'
@@ -41,10 +49,14 @@ function tasks(
     related?: (id: string) => readonly string[]
     turnTtlMs?: number
     deliveryRetryMs?: (attempts: number) => number
+    deliveryTimeoutMs?: number
+    onError?: (message: string) => void
     stopTask?: (target: string, taskId: string) => Promise<boolean>
     now?: () => number
     scheduled?: (id: string) => boolean
     accounts?: ConsoleAccounts
+    tenancy?: TenantPort
+    profile?: (address: string) => Promise<AgentProfile>
     /** More result listeners, by key, registered before the book starts. */
     listeners?: Record<
       string,
@@ -1528,5 +1540,1191 @@ describe('races and leftovers', () => {
     expect(finished[0]!.text).toContain('目标已不在对话可拨允许名单内')
     expect(book.forSession(parent)[0]?.status).toBe('needs_input')
     expect(chat.sentTo(worker)).toHaveLength(1)
+  })
+
+  test('starts made in parallel in one turn cannot pass the eight or the twenty', async () => {
+    const now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    for (let n = 0; n < 7; n++)
+      value(
+        await call(book, 'start', parent, {
+          title: `n${n}`,
+          instructions: 'x',
+        }),
+      )
+    const eighth = await Promise.all(
+      [0, 1, 2].map(n =>
+        call(book, 'start', parent, { title: `并行 ${n}`, instructions: 'x' }),
+      ),
+    )
+    expect(eighth.filter(one => one.ok)).toHaveLength(1)
+    expect(
+      eighth.filter(one => !one.ok).map(one => (one.ok ? '' : one.message)),
+    ).toEqual([
+      '这个会话已有 8 个进行中的任务',
+      '这个会话已有 8 个进行中的任务',
+    ])
+    for (let n = 0; n < 19; n++)
+      value(
+        await call(book, 'start', parent, {
+          title: `安排 ${n}`,
+          instructions: 'x',
+          after: 60 + n,
+        }),
+      )
+    const twentieth = await Promise.all(
+      [0, 1, 2, 3, 4].map(n =>
+        call(book, 'start', parent, {
+          title: `并行安排 ${n}`,
+          instructions: 'x',
+          after: 120 + n,
+        }),
+      ),
+    )
+    expect(twentieth.filter(one => one.ok)).toHaveLength(1)
+    expect(
+      book.forSession(parent).filter(task => task.status === 'scheduled'),
+    ).toHaveLength(20)
+  })
+})
+
+describe('the agent list (qianmo_task_agents)', () => {
+  const THIRD = 'qianmo://node-c/third'
+
+  type Row = {
+    address: string
+    name: string
+    self: boolean
+    idle: boolean
+    turns: number
+    queued: number
+    running: number
+    runtime?: string
+    model?: string
+  }
+
+  test('dialable agents only, with the caller marked, runtime and model where known, and how busy each node is', async () => {
+    chat = new FakeChat([MAIN, CODER, THIRD])
+    chat.undialable.add(THIRD)
+    const book = tasks({
+      profile: async address =>
+        address === CODER
+          ? { runtime: 'codex', model: 'gpt-6-luna' }
+          : address === MAIN
+            ? { runtime: 'qianmopi' }
+            : {},
+    })
+    const parent = await foreground()
+    // Nothing else is running: the caller's own turn does not make it busy.
+    const quiet = value<{ agents: Row[] }>(await call(book, 'agents', parent))
+    expect(quiet.agents.map(row => row.address)).toEqual([MAIN, CODER])
+    expect(quiet.agents[0]).toEqual({
+      address: MAIN,
+      name: 'main',
+      status: 'online',
+      self: true,
+      runtime: 'qianmopi',
+      idle: true,
+      turns: 0,
+      queued: 0,
+      running: 0,
+    } as Row)
+    expect(quiet.agents[1]).toMatchObject({
+      self: false,
+      runtime: 'codex',
+      model: 'gpt-6-luna',
+      idle: true,
+    })
+    // Another conversation waits on main; a task runs on coder.
+    await foreground(MAIN)
+    value(
+      await call(book, 'start', parent, {
+        title: '编码',
+        instructions: 'x',
+        agent: CODER,
+      }),
+    )
+    const worker = await workerTurn(1)
+    const busy = value<{ agents: Row[] }>(await call(book, 'agents', parent))
+    expect(busy.agents[0]).toMatchObject({ turns: 1, idle: false })
+    // The worker's own session is a task, not a conversation turn.
+    expect(busy.agents[1]).toMatchObject({
+      turns: 0,
+      running: 1,
+      queued: 0,
+      idle: false,
+    })
+    // A worker may not ask.
+    const nested = await call(book, 'agents', worker, {}, 'coder', 'node-b')
+    expect(nested.ok ? '' : nested.message).toBe(
+      '后台子任务不能再开或管理其他任务',
+    )
+  })
+
+  test("the owner's tenant decides who is listed, as for qianmo_task_start", async () => {
+    const subject = 'u:alice'
+    let state = 'active'
+    const accounts = {
+      book: {
+        ownerOf: () => subject,
+        list: () => ({
+          ok: true,
+          value: {
+            accounts: [{ subject, state, role: 'member' }],
+          },
+        }),
+      },
+      breakGlass: false,
+    } as unknown as ConsoleAccounts
+    const snapshot: TenantSnapshot = {
+      revision: 'r1',
+      config: {
+        version: 1,
+        hubServer: 'hub',
+        tenants: [{ id: 'a' }],
+        subjects: [{ subject, tenant: 'a' }],
+        nodes: [
+          {
+            nodeId: 'node-a',
+            tenant: 'a',
+            server: 'server-a',
+            memoryRoot: path.join(root, 'a'),
+          },
+        ],
+        jobs: [],
+        platformSubjects: [],
+      },
+    }
+    const tenancy: TenantPort = {
+      read: () => snapshot,
+      subscribe: () => () => {},
+    }
+    const book = tasks({ accounts, tenancy })
+    const parent = await foreground()
+    const listed = value<{ agents: Row[] }>(await call(book, 'agents', parent))
+    expect(listed.agents.map(row => row.address)).toEqual([MAIN])
+    const refused = await call(book, 'start', parent, {
+      title: 't',
+      instructions: 'i',
+      agent: CODER,
+    })
+    expect(refused.ok).toBe(false)
+    // The owner's account is gone: nobody is listed.
+    state = 'disabled'
+    const gone = await call(book, 'agents', parent)
+    expect(gone.ok ? '' : gone.message).toBe('任务主人的账号已不可用')
+  })
+
+  test('AgentProfiles: each node says its runtimes; a qianmopi agent runs the node model; nothing is guessed', async () => {
+    let now = 1_000_000
+    const pings: string[] = []
+    let answer: ControlOutcome = {
+      ok: true,
+      value: {
+        node: 'node-a',
+        agents: ['main', 'coder', 'reviewer'],
+        runtimes: { main: 'omp', coder: 'codex', reviewer: 'claude-code' },
+        models: { coder: 'gpt-6-luna' },
+      },
+    }
+    const profiles = new AgentProfiles({
+      ping: async node => {
+        pings.push(node)
+        return answer
+      },
+      nodeModel: async node => (node === 'node-a' ? 'claude-opus' : undefined),
+      now: () => now,
+    })
+    expect(await profiles.of('qianmo://node-a/main')).toEqual({
+      runtime: 'qianmopi',
+      model: 'claude-opus',
+    })
+    expect(await profiles.of('qianmo://node-a/coder')).toEqual({
+      runtime: 'codex',
+      model: 'gpt-6-luna',
+    })
+    expect(await profiles.of('qianmo://node-a/reviewer')).toEqual({
+      runtime: 'claude-code',
+    })
+    expect(await profiles.of('qianmo://node-a/unknown')).toEqual({})
+    // One answer per node for five minutes.
+    expect(pings).toEqual(['node-a'])
+    // A node that does not answer, or an older one, gives nothing.
+    answer = { ok: false, code: 'unreachable', message: 'down' }
+    expect(await profiles.of('qianmo://node-b/main')).toEqual({})
+    answer = { ok: true, value: { node: 'node-c', agents: ['main'] } }
+    expect(await profiles.of('qianmo://node-c/main')).toEqual({})
+    expect(await profiles.of('not-an-address')).toEqual({})
+    // A failed node is asked again after a minute; a known one after five.
+    now += 61_000
+    answer = {
+      ok: true,
+      value: { runtimes: { main: 'omp' }, models: {} },
+    }
+    expect(await profiles.of('qianmo://node-b/main')).toEqual({
+      runtime: 'qianmopi',
+    })
+    expect(pings.filter(node => node === 'node-a')).toHaveLength(1)
+    now += 5 * 60_000
+    await profiles.of('qianmo://node-a/main')
+    expect(pings.filter(node => node === 'node-a')).toHaveLength(2)
+  })
+})
+
+describe('planned tasks (主动任务)', () => {
+  const MINUTE = 60_000
+
+  function ledger(): {
+    tasks: Record<string, unknown>[]
+    scheduled: Record<string, unknown>[]
+  } {
+    return JSON.parse(fs.readFileSync(path.join(root, 'tasks.json'), 'utf8'))
+  }
+
+  /** The worker reports its run done and ends the turn. */
+  async function finishRun(
+    book: ConsoleTasks,
+    worker: string,
+    summary: string,
+  ): Promise<void> {
+    value(await call(book, 'report', worker, { summary, state: 'completed' }))
+    chat.reply(worker, '完成')
+  }
+
+  test('a delayed task waits as scheduled and starts only when due', async () => {
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const started = value<{ id: string; status: string; nextAt: string }>(
+      await call(book, 'start', parent, {
+        title: '回看',
+        instructions: '看一下构建结果',
+        after: 30,
+      }),
+    )
+    expect(started).toMatchObject({
+      status: 'scheduled',
+      nextAt: new Date(now + 30 * MINUTE).toISOString(),
+    })
+    expect(book.forSession(parent)[0]!.phase).toStartWith('已安排 · 下次 ')
+    now += 29 * MINUTE
+    book.tick()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(workerSessions()).toEqual([])
+    now += 2 * MINUTE
+    book.tick()
+    const worker = await workerTurn(1)
+    expect(book.forSession(parent)[0]!.status).toBe('running')
+    await finishRun(book, worker, '构建通过')
+    await until(() => finished.length === 1)
+    expect(finished[0]!.text).toBe('回看：已完成\n\n构建通过')
+    expect(book.forSession(parent)[0]!.status).toBe('completed')
+  })
+
+  test('the arguments: one of after and at, at with its zone within a week, repeats with times', async () => {
+    const now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const refusal = async (args: Record<string, unknown>) => {
+      const outcome = await call(book, 'start', parent, {
+        title: 't',
+        instructions: 'i',
+        ...args,
+      })
+      return outcome.ok ? 'ok' : outcome.message
+    }
+    expect(await refusal({ after: 5, at: '2026-10-17T10:00:00+08:00' })).toBe(
+      'after 和 at 只能给一个',
+    )
+    expect(await refusal({ after: 0 })).toBe('after 是 1–10080 分钟')
+    expect(await refusal({ after: 10_081 })).toBe('after 是 1–10080 分钟')
+    expect(await refusal({ after: 1.5 })).toBe(
+      'after、everyMinutes、times 要是整数',
+    )
+    expect(await refusal({ at: '2026-10-17T10:00:00' })).toBe(
+      'at 要是带时区的 ISO 时间，例如 2026-10-18T09:00:00+08:00',
+    )
+    expect(await refusal({ at: '2026-10-17T08:59:00+08:00' })).toBe(
+      'at 要晚于现在',
+    )
+    expect(await refusal({ at: '2026-10-25T09:00:00+08:00' })).toBe(
+      'at 至多 7 天后',
+    )
+    expect(await refusal({ everyMinutes: 29, times: 2 })).toBe(
+      'everyMinutes 是 30–10080 分钟',
+    )
+    expect(await refusal({ everyMinutes: 60 })).toBe(
+      '重复任务要给 times（1–100 次）',
+    )
+    expect(await refusal({ everyMinutes: 60, times: 101 })).toBe(
+      'times 是 1–100 次',
+    )
+    expect(await refusal({ times: 3 })).toBe('times 要和 everyMinutes 一起给')
+    // Optional arguments a model left empty are not given.
+    expect(
+      book.forSession(parent).filter(task => task.status === 'scheduled'),
+    ).toHaveLength(0)
+    const empty = value<{ status: string }>(
+      await call(book, 'start', parent, {
+        title: 't',
+        instructions: 'i',
+        at: '',
+        after: null,
+      }),
+    )
+    expect(empty.status).toBe('queued')
+    // Digits a model sent as text are taken; an at with its zone is too.
+    expect(await refusal({ after: '15' })).toBe('ok')
+    const at = value<{ nextAt: string }>(
+      await call(book, 'start', parent, {
+        title: 't',
+        instructions: 'i',
+        at: '2026-10-17T10:30:00+08:00',
+      }),
+    )
+    expect(at.nextAt).toBe('2026-10-17T02:30:00.000Z')
+  })
+
+  test('an at naming a day or time that does not exist is refused, not moved to the next day', async () => {
+    let now = Date.UTC(2026, 10, 28, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const start = async (at: string) => {
+      const outcome = await call(book, 'start', parent, {
+        title: 't',
+        instructions: 'i',
+        at,
+      })
+      return outcome.ok
+        ? (outcome.value as { nextAt: string }).nextAt
+        : outcome.message
+    }
+    for (const at of [
+      '2026-11-31T09:00:00+08:00',
+      '2026-11-29T24:00:00+08:00',
+      '2026-11-29T25:00+08:00',
+      '2026-11-29T09:00:60Z',
+      '2026-11-29T09:00:00+08:60',
+    ])
+      expect(await start(at)).toBe(
+        `at 的日期或时刻不存在：${at}；请核对当月天数与 00:00–23:59 的时刻`,
+      )
+    // The day and time are read in the zone given, wherever that falls in UTC.
+    expect(await start('2026-11-29T00:30:00+08:00')).toBe(
+      '2026-11-28T16:30:00.000Z',
+    )
+    expect(await start('2026-11-28T23:30:00-05:00')).toBe(
+      '2026-11-29T04:30:00.000Z',
+    )
+    expect(await start('2026-11-28T09:00:00.5Z')).toBe(
+      '2026-11-28T09:00:00.500Z',
+    )
+    now = Date.UTC(2026, 1, 27, 1, 0)
+    expect(await start('2026-02-30T09:00+08:00')).toBe(
+      'at 的日期或时刻不存在：2026-02-30T09:00+08:00；请核对当月天数与 00:00–23:59 的时刻',
+    )
+    now = Date.UTC(2028, 1, 27, 1, 0)
+    expect(await start('2028-02-29T09:00+08:00')).toBe(
+      '2028-02-29T01:00:00.000Z',
+    )
+  })
+
+  test('a repeat runs in the same sub-session and goes back to scheduled until its times are used; times a run outlasted are skipped', async () => {
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const anchor = now
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const started = value<{ status: string; runsLeft: number }>(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: '检查三台机器的磁盘',
+        everyMinutes: 60,
+        times: 3,
+      }),
+    )
+    // No later start: the first run starts now.
+    expect(started).toMatchObject({ status: 'queued', runsLeft: 2 })
+    const worker = await workerTurn(1)
+    expect(chat.sentTo(worker)[0]!.text).toContain(
+      '这是重复任务的第 1 次运行（共 3 次，每 60 分钟一次）',
+    )
+    now += 5 * MINUTE
+    await finishRun(book, worker, '磁盘都在 60% 以下')
+    await until(() => finished.length === 1)
+    expect(book.forSession(parent)[0]).toMatchObject({
+      status: 'scheduled',
+      nextAt: new Date(anchor + 60 * MINUTE).toISOString(),
+      runsLeft: 2,
+    })
+    expect(finished[0]!.text).toStartWith('巡检：第 1/3 次已完成 · 下次 ')
+    now = anchor + 61 * MINUTE
+    book.tick()
+    await until(() => chat.sentTo(worker).length === 2)
+    const second = chat.sentTo(worker)[1]!.text
+    expect(second).toContain(WORKER_INSTRUCTIONS)
+    expect(second).toContain('这是重复任务的第 2 次运行')
+    expect(second).toContain('上一次的结果在检查点里')
+    expect(second).toContain('持久检查点：磁盘都在 60% 以下')
+    expect(workerSessions()).toEqual([worker])
+    // This run lasts past 2:00 and 3:00: the next start is 4:00.
+    now = anchor + 190 * MINUTE
+    await finishRun(book, worker, '第二次也正常')
+    await until(() => finished.length === 2)
+    expect(book.forSession(parent)[0]!.nextAt).toBe(
+      new Date(anchor + 240 * MINUTE).toISOString(),
+    )
+    now = anchor + 241 * MINUTE
+    book.tick()
+    await until(() => chat.sentTo(worker).length === 3)
+    await finishRun(book, worker, '第三次正常')
+    await until(() => finished.length === 3)
+    expect(finished[2]!.text).toBe(
+      '巡检：第 3/3 次已完成 · 全部完成\n\n第三次正常',
+    )
+    expect(book.forSession(parent)[0]!.status).toBe('completed')
+    now += 2 * 60 * MINUTE
+    book.tick()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(chat.sentTo(worker)).toHaveLength(3)
+  })
+
+  test('a cancel takes effect at once and a cancelled plan never runs', async () => {
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '回看',
+        instructions: 'x',
+        after: 10,
+      }),
+    )
+    const cancelled = value<{ task: { status: string } }>(
+      await call(book, 'cancel', parent, { id }),
+    )
+    expect(cancelled.task.status).toBe('cancelled')
+    now += 20 * MINUTE
+    book.tick()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(workerSessions()).toEqual([])
+    expect(book.forSession(parent)[0]!.status).toBe('cancelled')
+  })
+
+  test('a restart resumes the plans from the ledger; times missed while the hub was down run once', async () => {
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const anchor = now + 30 * MINUTE
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        after: 30,
+        everyMinutes: 30,
+        times: 5,
+      }),
+    )
+    await book.close()
+    open = []
+    // Waiting plans are kept apart, so an older hub ignores them.
+    expect(ledger().tasks).toEqual([])
+    expect(ledger().scheduled[0]).toMatchObject({ id, status: 'scheduled' })
+    // Down for three hours: six starts missed.
+    now = anchor + 180 * MINUTE + 5 * MINUTE
+    const reopened = tasks({ now: () => now })
+    const worker = await workerTurn(1)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(workerSessions()).toEqual([worker])
+    expect(reopened.forSession(parent)[0]).toMatchObject({
+      status: 'running',
+      runsLeft: 4,
+    })
+    await finishRun(reopened, worker, '补跑一次')
+    await until(() => finished.length === 1)
+    expect(reopened.forSession(parent)[0]).toMatchObject({
+      status: 'scheduled',
+      nextAt: new Date(anchor + 210 * MINUTE).toISOString(),
+      runsLeft: 4,
+    })
+    reopened.tick()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(chat.sentTo(worker)).toHaveLength(1)
+  })
+
+  test('at most twenty planned per owner; planned ones hold no place among the eight', async () => {
+    const now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    for (let n = 0; n < 20; n++)
+      value(
+        await call(book, 'start', parent, {
+          title: `安排 ${n}`,
+          instructions: 'x',
+          after: 60 + n,
+        }),
+      )
+    const over = await call(book, 'start', parent, {
+      title: '多一个',
+      instructions: 'x',
+      everyMinutes: 60,
+      times: 2,
+    })
+    expect(over.ok ? '' : over.message).toBe(
+      '已有 20 个安排好的任务，最多 20 个；先取消不需要的',
+    )
+    // A task that runs once, now, is not planned and still has its place.
+    value(
+      await call(book, 'start', parent, { title: '现在', instructions: 'y' }),
+    )
+    expect(
+      book.forSession(parent).filter(task => task.status === 'scheduled'),
+    ).toHaveLength(20)
+  })
+
+  test('a due plan waits for a place when its conversation already has eight in flight, and says so', async () => {
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '回看',
+        instructions: 'x',
+        after: 1,
+        everyMinutes: 60,
+        times: 2,
+      }),
+    )
+    const running: string[] = []
+    for (let n = 0; n < 8; n++)
+      running.push(
+        value<{ id: string }>(
+          await call(book, 'start', parent, {
+            title: `n${n}`,
+            instructions: 'x',
+          }),
+        ).id,
+      )
+    now += 2 * MINUTE
+    book.tick()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const waiting = () => book.forSession(parent).find(task => task.id === id)!
+    expect(waiting()).toMatchObject({
+      status: 'scheduled',
+      phase: '已安排 · 等名额 · 剩 2 次',
+      waitingForPlace: true,
+    })
+    expect(book.contextFor(parent)).toContain('"waitingForPlace":true')
+    expect(
+      book
+        .list({ subject: 'legacy:admin', role: null })
+        .find(task => task.id === id),
+    ).toMatchObject({ status: 'scheduled', phase: '已安排 · 等名额' })
+    expect(
+      book
+        .forSession(parent)
+        .filter(task => task.status === 'queued' || task.status === 'running'),
+    ).toHaveLength(8)
+    // A place frees up: the next look starts it.
+    value(await call(book, 'cancel', parent, { id: running[7]! }))
+    book.tick()
+    expect(waiting().status).toBe('queued')
+    expect(waiting().waitingForPlace).toBeUndefined()
+  })
+
+  test('a worker and a schedule’s session cannot plan; /stop leaves planned tasks; an instruction waits for the run', async () => {
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const scheduledSession = await foreground()
+    const book = tasks({
+      now: () => now,
+      scheduled: id => id === scheduledSession,
+    })
+    const fromSchedule = await call(book, 'start', scheduledSession, {
+      title: 't',
+      instructions: 'i',
+      after: 5,
+    })
+    expect(fromSchedule.ok).toBe(false)
+    const parent = await foreground()
+    value(
+      await call(book, 'start', parent, { title: '现在', instructions: 'y' }),
+    )
+    const worker = await workerTurn(1)
+    const nested = await call(book, 'start', worker, {
+      title: 't',
+      instructions: 'i',
+      after: 5,
+    })
+    expect(nested.ok ? '' : nested.message).toBe(
+      '后台子任务不能再开或管理其他任务',
+    )
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '回看',
+        instructions: 'x',
+        after: 10,
+      }),
+    )
+    value(await call(book, 'send', parent, { id, message: '顺便看日志' }))
+    expect(book.forSession(parent).find(task => task.id === id)!.status).toBe(
+      'scheduled',
+    )
+    // /stop stops what runs; the plan stays.
+    expect(await book.cancelForSession(parent)).toBe(1)
+    expect(book.forSession(parent).find(task => task.id === id)!.status).toBe(
+      'scheduled',
+    )
+    now += 11 * MINUTE
+    book.tick()
+    await until(() => workerSessions().length === 2)
+    const planned = workerSessions()[1]!
+    await until(() => chat.sentTo(planned).length === 1)
+    expect(chat.sentTo(planned)[0]!.text).toContain('有 1 条尚未确认的用户补充')
+  })
+
+  test('/stop during a repeat’s run stops that run only and the later runs go on; on the last run it cancels', async () => {
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const anchor = now
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        everyMinutes: 60,
+        times: 3,
+      }),
+    )
+    const worker = await workerTurn(1)
+    const first = chat.lastTask(worker)
+    await until(() => book.forSession(parent)[0]?.status === 'running')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    now += 10 * MINUTE
+    expect(await book.cancelForSession(parent)).toBe(1)
+    expect(stopped).toEqual([[MAIN, first]])
+    expect(book.forSession(parent)[0]).toMatchObject({
+      id,
+      status: 'scheduled',
+      nextAt: new Date(anchor + 60 * MINUTE).toISOString(),
+      runsLeft: 2,
+    })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(book.forSession(parent)[0]!.status).toBe('scheduled')
+    // A stopped run reports nothing.
+    expect(finished).toEqual([])
+    now = anchor + 61 * MINUTE
+    book.tick()
+    await until(() => chat.sentTo(worker).length === 2)
+    expect(chat.sentTo(worker)[1]!.text).toContain('这是重复任务的第 2 次运行')
+    // The stopped turn is not stopped twice.
+    expect(stopped).toEqual([[MAIN, first]])
+    await finishRun(book, worker, '第二次正常')
+    await until(() => finished.length === 1)
+    now = anchor + 121 * MINUTE
+    book.tick()
+    await until(() => chat.sentTo(worker).length === 3)
+    await until(() => book.forSession(parent)[0]?.status === 'running')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(await book.cancelForSession(parent)).toBe(1)
+    expect(book.forSession(parent)[0]).toMatchObject({ status: 'cancelled' })
+  })
+
+  test('the run after /stop cut short a resumed run before the node took it is a new run, not a resume', async () => {
+    class GatedChat extends FakeChat {
+      gated = false
+      release: () => void = () => {}
+      readonly gate = new Promise<void>(resolve => {
+        this.release = resolve
+      })
+      override async send(input: Parameters<FakeChat['send']>[0]) {
+        if (input.background && this.gated) await this.gate
+        return super.send(input)
+      }
+    }
+    const gated = new GatedChat([MAIN, CODER])
+    chat = gated
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const anchor = now
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    value(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        everyMinutes: 60,
+        times: 3,
+      }),
+    )
+    const worker = await workerTurn(1)
+    await book.close()
+    open = []
+    // After the restart the run resumes; its line waits at the gate.
+    gated.gated = true
+    const reopened = tasks({ now: () => now })
+    await until(() => reopened.forSession(parent)[0]?.status === 'running')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(await reopened.cancelForSession(parent)).toBe(1)
+    gated.release()
+    await until(() => chat.sentTo(worker).length === 2)
+    now = anchor + 61 * MINUTE
+    reopened.tick()
+    await until(() => chat.sentTo(worker).length === 3)
+    const next = chat.sentTo(worker)[2]!.text
+    expect(next).toContain('这是重复任务的第 2 次运行')
+    expect(next).not.toContain('核实后接着做')
+  })
+
+  test('a cancel while a due run stops the turn its last run left on the node stays cancelled and sends nothing', async () => {
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const anchor = now
+    // The node cannot be reached for the /stop; later stops wait for release.
+    let reachable = false
+    const releases: (() => void)[] = []
+    const book = tasks({
+      now: () => now,
+      stopTask: async (target, taskId) => {
+        stopped.push([target, taskId])
+        if (!reachable) return false
+        await new Promise<void>(resolve => releases.push(resolve))
+        return true
+      },
+    })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        everyMinutes: 60,
+        times: 3,
+      }),
+    )
+    const worker = await workerTurn(1)
+    const left = chat.lastTask(worker)
+    await until(() => book.forSession(parent)[0]?.status === 'running')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(await book.cancelForSession(parent)).toBe(1)
+    // The run is stopped back to its plan, its node turn still recorded.
+    expect(book.forSession(parent)[0]!.status).toBe('scheduled')
+    const ledger = JSON.parse(
+      fs.readFileSync(path.join(root, 'tasks.json'), 'utf8'),
+    ) as { scheduled: { nodeTaskId: string | null }[] }
+    expect(ledger.scheduled[0]!.nodeTaskId).toBe(left)
+    reachable = true
+    now = anchor + 61 * MINUTE
+    book.tick()
+    // The due run stops that turn first; the cancel comes meanwhile.
+    await until(() => releases.length === 1)
+    const cancelling = call(book, 'cancel', parent, { id })
+    await until(() => book.forSession(parent)[0]?.status === 'cancelled')
+    // The cancel stops that same turn too; then both stops answer.
+    await until(() => releases.length === 2)
+    for (const release of releases.splice(0)) release()
+    value(await cancelling)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(book.forSession(parent)[0]!.status).toBe('cancelled')
+    expect(chat.sentTo(worker)).toHaveLength(1)
+  })
+
+  test('a finished repeat has no runs left, in the view, the note and the console list alike', async () => {
+    const now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        after: 30,
+        everyMinutes: 60,
+        times: 4,
+      }),
+    )
+    value(await call(book, 'cancel', parent, { id }))
+    expect(book.forSession(parent)[0]).toMatchObject({
+      status: 'cancelled',
+      phase: '已取消',
+      everyMinutes: 60,
+      runsLeft: null,
+    })
+    expect(book.forSession(parent)[0]!.nextAt).toBeUndefined()
+    expect(book.contextFor(parent)).toContain('"runsLeft":null')
+    expect(book.list({ subject: 'legacy:admin', role: null })[0]).toMatchObject(
+      { status: 'cancelled', nextAt: null, everyMinutes: 60, runsLeft: null },
+    )
+  })
+
+  test('/stop while a repeat’s line is on its way stops the node turn once it has a task id, and the plan stays', async () => {
+    class SlowChat extends FakeChat {
+      release: () => void = () => {}
+      readonly gate = new Promise<void>(resolve => {
+        this.release = resolve
+      })
+      override async send(input: Parameters<FakeChat['send']>[0]) {
+        if (input.background) await this.gate
+        return super.send(input)
+      }
+    }
+    const slow = new SlowChat([MAIN, CODER])
+    chat = slow
+    const now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    value(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        everyMinutes: 60,
+        times: 3,
+      }),
+    )
+    // The line is sent and waits at the gate: no node task id yet.
+    await until(() => book.forSession(parent)[0]?.status === 'running')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(await book.cancelForSession(parent)).toBe(1)
+    expect(stopped).toEqual([])
+    slow.release()
+    await until(() => stopped.length === 1)
+    expect(stopped).toEqual([[MAIN, slow.lastTask(workerSessions()[0]!)]])
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(book.forSession(parent)[0]).toMatchObject({
+      status: 'scheduled',
+      runsLeft: 2,
+    })
+  })
+
+  test('a place that never answers a delivery is given up as unknown, and the next run still starts', async () => {
+    let now = Date.UTC(2026, 9, 17, 1, 0)
+    const anchor = now
+    const errors: string[] = []
+    const book = tasks({
+      now: () => now,
+      deliveryTimeoutMs: 50,
+      onError: message => errors.push(message),
+      listeners: { stuck: () => new Promise(() => {}) },
+    })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        everyMinutes: 60,
+        times: 2,
+      }),
+    )
+    const worker = await workerTurn(1)
+    await finishRun(book, worker, '第一次正常')
+    await until(() => finished.length === 1)
+    await until(() => ledger().scheduled[0]?.['notification'] === 'unknown')
+    expect(ledger().scheduled[0]).toMatchObject({
+      deliveries: { note: 'sent', test: 'skipped', stuck: 'unknown' },
+    })
+    expect(errors).toEqual([
+      `后台任务 ${id} 的结果送到 stuck 超时没有回音，按不确定记下，不再重发`,
+    ])
+    now = anchor + 61 * MINUTE
+    book.tick()
+    await until(() => chat.sentTo(worker).length === 2)
+  })
+
+  test('the console list carries the next start and the runs left', async () => {
+    const now = Date.UTC(2026, 9, 17, 1, 0)
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    value(
+      await call(book, 'start', parent, {
+        title: '巡检',
+        instructions: 'x',
+        after: 30,
+        everyMinutes: 60,
+        times: 4,
+      }),
+    )
+    expect(book.list({ subject: 'legacy:admin', role: null })[0]).toMatchObject(
+      {
+        status: 'scheduled',
+        phase: '已安排',
+        nextAt: now + 30 * MINUTE,
+        everyMinutes: 60,
+        runsLeft: 4,
+      },
+    )
+    expect(book.contextFor(parent)).toContain('"runsLeft":4')
+  })
+})
+
+describe('the coordination rules', () => {
+  test('the main session stays free: short work in place, long work to its own sub-session, simple slow work to another agent, and it plans ahead', () => {
+    expect(SUPERVISOR_RULES).toStartWith(
+      '[后台任务协调规则] 你是主会话，始终保持空闲，随时能接主人的下一句。',
+    )
+    // One paragraph: a worker's context drops it whole.
+    expect(SUPERVISOR_RULES).not.toMatch(/\n[ \t]*\n/)
+    for (const cue of [
+      '一两步能完成的（直接回答、澄清、查一项、一次简单的工具调用、读一个文件）当场做完，不开任务',
+      '大约超过一两分钟',
+      '立即用 qianmo_task_start 不带 agent 交给你自己的子会话',
+      '不在主会话里等它',
+      '可以带 agent 交给名册里的其他智能体',
+      '先用 qianmo_task_agents 看有谁、谁闲、用什么底层与模型，优先闲的、便宜的',
+      '分别开任务并行',
+      '主动判断下一步',
+      'after 或 at、everyMinutes 与 times',
+      '告诉主人安排了什么',
+      'qianmo_task_status 报告真实阶段',
+      '只有后台任务明确报告 completed 才能说完成',
+      '主人的新消息不会取消正在运行的后台任务',
+    ])
+      expect(SUPERVISOR_RULES).toContain(cue)
+    // The old rule sent even one simple tool call to the background.
+    expect(SUPERVISOR_RULES).not.toContain('需要工具执行')
+    // Without agent it is a sub-session; only with agent another agent.
+    expect(SUPERVISOR_RULES).not.toContain('子智能体')
+  })
+
+  test('the worker is told it handles a background task for the main session, whether or not it is another agent', () => {
+    expect(WORKER_INSTRUCTIONS).toStartWith(
+      '你在为主会话处理一个后台任务，按下面的任务说明独立完成。',
+    )
+    expect(WORKER_INSTRUCTIONS).not.toContain('子智能体')
+  })
+})
+
+describe('the task note in a console conversation', () => {
+  test('a person’s line carries the note as host context, only when it changed, and again after compaction', async () => {
+    const book = tasks()
+    const web = withTaskNotes(chat, book)
+    const opened = await web.open(MAIN)
+    if (!opened.ok) throw new Error('open')
+    const parent = opened.value.id
+    const say = async (text: string) =>
+      expect((await web.send({ sessionId: parent, text })).ok).toBe(true)
+    // No task yet: nothing to say.
+    await say('你好')
+    expect(chat.sentTo(parent).at(-1)!.context).toBeUndefined()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
+    )
+    // The worker's turn is out: the note holds still until it reports.
+    const worker = await workerTurn(1)
+    await until(() => book.forSession(parent)[0]?.status === 'running')
+    chat.reply(parent, '已交给后台')
+    await say('进度？')
+    const first = chat.sentTo(parent).at(-1)!
+    expect(first.text).toBe('进度？')
+    expect(first.context).toStartWith('[当前会话的后台任务] ')
+    expect(first.context).toContain(id)
+    chat.reply(parent, '还在做')
+    // Unchanged: not again.
+    await say('好')
+    expect(chat.sentTo(parent).at(-1)!.context).toBeUndefined()
+    // The runtime compacted that turn: the note goes again.
+    chat.reply(parent, '好', 'done', { compacted: true })
+    await say('继续')
+    expect(chat.sentTo(parent).at(-1)!.context).toContain(id)
+    chat.reply(parent, 'ok')
+    // A command, a worker's line and a schedule's session carry none.
+    const command = await web.send({
+      sessionId: parent,
+      text: '/compact',
+      command: 'compact',
+    })
+    expect(command.ok).toBe(true)
+    expect(chat.sentTo(parent).at(-1)!.context).toBeUndefined()
+    expect(await book.noteFor(worker)).toBeUndefined()
+    const scheduled = tasks({ scheduled: sessionId => sessionId === parent })
+    expect(await scheduled.noteFor(parent)).toBeUndefined()
+  })
+})
+
+describe('what the notes remember', () => {
+  test('a conversation that is gone, or whose tasks were all cleared away, is let go of', async () => {
+    const DAY = 24 * 60 * 60_000
+    let now = Date.now()
+    const book = tasks({ now: () => now })
+    const web = withTaskNotes(chat, book)
+    const say = async (sessionId: string, text: string) =>
+      expect((await web.send({ sessionId, text })).ok).toBe(true)
+    // Two conversations, each told of its task.
+    const parents: string[] = []
+    for (const title of ['周报', '月报']) {
+      const opened = await web.open(MAIN)
+      if (!opened.ok) throw new Error('open')
+      const parent = opened.value.id
+      parents.push(parent)
+      await say(parent, `开个${title}任务`)
+      const { id } = value<{ id: string }>(
+        await call(book, 'start', parent, { title, instructions: 'x' }),
+      )
+      chat.reply(parent, '交给后台了')
+      await say(parent, '好')
+      // The worker's first line may go out in between: this chat's own.
+      expect(chat.sentTo(parent).at(-1)!.context).toContain(id)
+      value(await call(book, 'cancel', parent, { id }))
+      chat.reply(parent, '好')
+    }
+    expect(book.remembered()).toBe(2)
+    // The first conversation is gone.
+    chat.records.delete(parents[0]!)
+    expect(await book.noteFor(parents[0]!)).toBeUndefined()
+    expect(book.remembered()).toBe(1)
+    // A month on the second one's task leaves the ledger when another ends.
+    now += 31 * DAY
+    const other = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', other, { title: '另一个', instructions: 'y' }),
+    )
+    value(await call(book, 'cancel', other, { id }))
+    expect(book.forSession(parents[1]!)).toEqual([])
+    expect(book.remembered()).toBe(0)
+  })
+
+  test('a reminder is let go of once the conversation has moved past that turn', async () => {
+    const book = tasks()
+    const web = withTaskNotes(chat, book)
+    const opened = await web.open(MAIN)
+    if (!opened.ok) throw new Error('open')
+    const parent = opened.value.id
+    expect((await web.send({ sessionId: parent, text: '查一下' })).ok).toBe(
+      true,
+    )
+    chat.patchLastLine(parent, { readMs: 0 })
+    chat.reply(parent, '查完了', 'done', { at: Date.now() + 150_000 })
+    expect((await web.send({ sessionId: parent, text: '还有' })).ok).toBe(true)
+    expect(chat.sentTo(parent).at(-1)!.context).toContain('提醒：')
+    expect(book.remembered()).toBe(1)
+    chat.reply(parent, '好')
+    expect((await web.send({ sessionId: parent, text: '嗯' })).ok).toBe(true)
+    expect(chat.sentTo(parent).at(-1)!.context).toBeUndefined()
+    expect(book.remembered()).toBe(0)
+  })
+
+  test('at most a thousand reminded conversations are remembered, the oldest let go', async () => {
+    const book = tasks()
+    let first = ''
+    for (let n = 0; n < 1_001; n++) {
+      const parent = await foreground()
+      if (n === 0) first = parent
+      chat.patchLastLine(parent, { readMs: 0 })
+      chat.reply(parent, '好了', 'done', { at: Date.now() + 100_000 })
+      expect(await book.reminderFor(parent)).toStartWith('提醒：')
+    }
+    expect(book.remembered()).toBe(1_000)
+    // The oldest is let go of: its long turn may be reminded of again.
+    expect(await book.reminderFor(first)).toStartWith('提醒：')
+  })
+})
+
+describe('the task note when the ledger fails', () => {
+  test('a note that cannot be had leaves the line as typed; the line still goes', async () => {
+    const errors: string[] = []
+    const web = withTaskNotes(
+      chat,
+      {
+        noteFor: async () => {
+          throw new Error('账本读不出来')
+        },
+      },
+      message => errors.push(message),
+    )
+    const opened = await web.open(MAIN)
+    if (!opened.ok) throw new Error('open')
+    const parent = opened.value.id
+    const sent = await web.send({ sessionId: parent, text: '在吗' })
+    expect(sent.ok).toBe(true)
+    expect(chat.sentTo(parent).at(-1)).toMatchObject({ text: '在吗' })
+    expect(chat.sentTo(parent).at(-1)!.context).toBeUndefined()
+    expect(errors).toEqual(['后台任务附注失败：账本读不出来'])
+  })
+})
+
+describe('keeping the main session free', () => {
+  /** A person's line through the console, and the note it carried. */
+  async function line(
+    web: ReturnType<typeof withTaskNotes>,
+    sessionId: string,
+    text: string,
+  ): Promise<string | undefined> {
+    expect((await web.send({ sessionId, text })).ok).toBe(true)
+    return chat.sentTo(sessionId).at(-1)!.context
+  }
+
+  test('after a turn over 90 seconds the next line is reminded once; the node’s queue does not count', async () => {
+    const book = tasks()
+    const web = withTaskNotes(chat, book)
+    const opened = await web.open(MAIN)
+    if (!opened.ok) throw new Error('open')
+    const parent = opened.value.id
+    expect(await line(web, parent, '查一下日志')).toBeUndefined()
+    // The node read it at once and worked for two and a half minutes.
+    chat.patchLastLine(parent, { readMs: 0 })
+    chat.reply(parent, '查完了', 'done', { at: Date.now() + 150_000 })
+    expect(await line(web, parent, '还有呢')).toBe(
+      '[当前会话的后台任务] 提醒：上一轮主会话用了 3 分钟，长活交给后台任务，主会话保持空闲。',
+    )
+    chat.reply(parent, '好')
+    // Once: the turn after is not reminded again of the same long turn.
+    expect(await line(web, parent, '再看看')).toBeUndefined()
+    // Waited 80 s in the node's queue and worked 70 s: not long.
+    chat.patchLastLine(parent, { readMs: 80_000 })
+    chat.reply(parent, '看了', 'done', { at: Date.now() + 150_000 })
+    expect(await line(web, parent, '嗯')).toBeUndefined()
+  })
+
+  test('more than ten tool steps earn a reminder too, beside the task note; ten do not', async () => {
+    const book = tasks()
+    const web = withTaskNotes(chat, book)
+    const opened = await web.open(MAIN)
+    if (!opened.ok) throw new Error('open')
+    const parent = opened.value.id
+    await line(web, parent, '整理一下')
+    for (let n = 0; n < 10; n++) chat.step(parent, `读取：${n}.md`)
+    // A failed step is not one more call.
+    chat.step(parent, '读取：x.md — 失败', true)
+    chat.reply(parent, '整理好了')
+    expect(await line(web, parent, '好')).toBeUndefined()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
+    )
+    for (let n = 0; n < 11; n++) chat.step(parent, `读取：${n}.md`)
+    chat.reply(parent, '交给后台了')
+    const note = await line(web, parent, '谢谢')
+    expect(note).toStartWith('[当前会话的后台任务] [')
+    expect(note).toContain(id)
+    expect(note).toMatch(
+      /\n提醒：上一轮主会话用了 \d+ 秒、11 个工具步骤，长活交给后台任务/,
+    )
+    // One paragraph: a worker's context drops it whole.
+    expect(note).not.toMatch(/\n[ \t]*\n/)
+  })
+
+  test('a channel takes the reminder as given; a worker or a local command gets none', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    chat.patchLastLine(parent, { readMs: 0 })
+    chat.reply(parent, '好了', 'done', { at: Date.now() + 100_000 })
+    expect(await book.reminderFor(parent)).toBe(
+      '提醒：上一轮主会话用了 100 秒，长活交给后台任务，主会话保持空闲。',
+    )
+    expect(await book.reminderFor(parent)).toBeUndefined()
+    await chat.send({ sessionId: parent, text: '/compact', command: 'compact' })
+    chat.patchLastLine(parent, { readMs: 0 })
+    chat.reply(parent, '已压缩', 'done', { at: Date.now() + 200_000 })
+    expect(await book.reminderFor(parent)).toBeUndefined()
+    await chat.send({ sessionId: parent, text: '开个任务' })
+    value(await call(book, 'start', parent, { title: 't', instructions: 'i' }))
+    const worker = await workerTurn(1)
+    chat.patchLastLine(worker, { readMs: 0 })
+    chat.reply(worker, '阶段一', 'done', { at: Date.now() + 600_000 })
+    expect(await book.reminderFor(worker)).toBeUndefined()
+  })
+
+  test('a line the node never read earns no reminder for the time it waited', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    // No ack: the chat face's own deadline ran out five minutes on.
+    chat.reply(parent, '这一轮在任务期限内没有回复。', 'failed', {
+      at: Date.now() + 315_000,
+      code: 'E_TASK_TIMEOUT',
+    })
+    expect(await book.reminderFor(parent)).toBeUndefined()
   })
 })
