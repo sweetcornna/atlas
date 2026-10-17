@@ -653,6 +653,28 @@ describe('a gateway key for a node', () => {
     expect(fake.group('fast')).toBeDefined()
   })
 
+  test('a new gateway address is written into every bound profile and delivered', async () => {
+    const magpie = await connected()
+    const issued = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-1' }, mainModel: 'openai/gpt-6' },
+      caller(),
+    )
+    if (!issued.ok) throw new Error(issued.failure.message)
+    const before = applies().length
+    const moved = await magpie.connect(
+      {
+        gatewayUrl: 'https://gw2.example.test',
+        managementUrl: fake.managementUrl,
+      },
+      caller(),
+    )
+    expect(moved.ok && moved.value.check?.gateway).toBe('unreachable')
+    const profile = await providers.profile('magpie-node-beta-1')
+    if (!profile.ok) throw new Error('profile')
+    expect(profile.value.baseUrl).toBe('https://gw2.example.test')
+    expect(applies().length).toBe(before + 1)
+  })
+
   test('usage names the binding behind each key of ours', async () => {
     const magpie = await connected()
     const issued = await magpie.issueKey(

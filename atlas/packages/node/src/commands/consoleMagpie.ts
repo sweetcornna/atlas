@@ -472,9 +472,12 @@ export class ConsoleMagpie implements MagpiePort {
 
   /** One write at a time: "read magpie, then change it" must not interleave. */
   #serial<T>(run: () => Promise<T>): Promise<T> {
-    const next = this.#queue.then(run, run)
-    this.#queue = next.catch(() => {})
     this.#cache = null
+    const next = this.#queue.then(run, run).finally(() => {
+      // A snapshot taken while this ran may hold the state from before it.
+      this.#cache = null
+    })
+    this.#queue = next.catch(() => {})
     return next
   }
 
@@ -799,6 +802,8 @@ export class ConsoleMagpie implements MagpiePort {
           return failed('unreachable', `管理密钥封存失败 · ${messageOf(error)}`)
         }
       }
+      const moved =
+        this.#state.gatewayUrl !== null && this.#state.gatewayUrl !== gatewayUrl
       this.#save({
         ...this.#state,
         gatewayUrl,
@@ -807,8 +812,36 @@ export class ConsoleMagpie implements MagpiePort {
         connectedAt: this.#state.connectedAt ?? this.#now(),
         lastCheck: check,
       })
+      if (moved) await this.#repoint(caller)
       return ok(this.#connection())
     })
+  }
+
+  /** The gateway moved: every binding's profile follows it, nodes get it. */
+  async #repoint(caller: MagpieCaller): Promise<void> {
+    const providers = this.#options.providers
+    const pcaller = this.#providerCaller(caller)
+    for (const record of this.#state.bindings) {
+      const revision = await this.#revision(record.profileId)
+      if (revision === null) continue
+      const saved = await providers.saveProfile(
+        { profile: this.#profileDraft(record), ifMatch: revision },
+        pcaller,
+      )
+      if (!saved.ok) {
+        this.#options.onError?.(
+          `${record.profileId} 没能改到新网关地址 · ${saved.failure.message}`,
+        )
+        continue
+      }
+      if (record.kind === 'node') {
+        const applied = await providers.apply({ nodes: [record.id] }, pcaller)
+        if (!applied.ok)
+          this.#options.onError?.(
+            `下发到 ${record.id} 失败 · ${applied.failure.message}`,
+          )
+      }
+    }
   }
 
   check(caller: MagpieCaller): Promise<Result<MagpieConnectionView>> {
