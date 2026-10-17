@@ -575,7 +575,15 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         ...(launch.effort ? { effort: launch.effort } : {}),
         ...(agent.shell ? { shell: true } : {}),
       })
-      Object.assign(env, { CODEX_HOME: home, [CODEX_KEY_ENV]: launch.apiKey })
+      // A home of the node's own: Codex also loads skills and plugins from
+      // `~/.agents/`, which on this machine are its user's, not the agent's.
+      const userHome = join(home, 'home')
+      mkdirSync(userHome, { recursive: true, mode: 0o700 })
+      Object.assign(env, {
+        HOME: userHome,
+        CODEX_HOME: home,
+        [CODEX_KEY_ENV]: launch.apiKey,
+      })
     }
     const spawnInput: ExternalRuntimeSpawn = {
       kind: agent.runtime,

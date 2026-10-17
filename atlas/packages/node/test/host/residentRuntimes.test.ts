@@ -261,6 +261,10 @@ test('Codex: a thread is opened once, used for every turn and resumed after a re
   )
   expect(launches[0]!.env.QIANMO_RUNTIME_KEY).toBe('sk-test-runtime')
   expect(launches[0]!.env.CODEX_HOME).toStartWith(root!.root)
+  // Only the operator's skills: not Codex's own, not the machine user's
+  // `~/.agents/` (found by the real-runtime smoke test).
+  expect(argv).toContain('skills.bundled.enabled=false')
+  expect(launches[0]!.env.HOME).toBe(join(launches[0]!.env.CODEX_HOME!, 'home'))
 })
 
 test('Codex: failed turns fail; an escalation outside the workspace goes to the operator', async () => {
