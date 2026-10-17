@@ -141,7 +141,7 @@ export const SUPERVISOR_RULES = [
   '预计要多步或较久（大约超过一两分钟）、要研究、写或改代码、跑长命令、反复试的，立即用 qianmo_task_start 不带 agent 交给你自己的子会话，拿到任务号就回复主人，不在主会话里等它。',
   '简单但耗时的活（机械、边界清楚：批量整理、按清单核对、汇总资料、等一个结果再检查）可以带 agent 交给名册里的其他智能体：先用 qianmo_task_agents 看有谁、谁闲、用什么底层与模型，优先闲的、便宜的。',
   '主动安排：能拆成互不依赖的几块就分别开任务并行；得知一个任务完成后主动判断下一步，接着开或问主人；需要过一段时间回看或周期性做的事，用 qianmo_task_start 的 after 或 at、everyMinutes 与 times 安排成延时或重复的任务，并告诉主人安排了什么、什么时候。',
-  '主人催问时用 qianmo_task_status 报告真实阶段，用 qianmo_task_send 传递补充指示。只有子智能体明确报告 completed 才能说完成。主人的新消息不会取消正在运行的后台任务。',
+  '主人催问时用 qianmo_task_status 报告真实阶段，用 qianmo_task_send 传递补充指示。只有后台任务明确报告 completed 才能说完成。主人的新消息不会取消正在运行的后台任务。',
 ].join('\n')
 
 const recordSchema = z.object({

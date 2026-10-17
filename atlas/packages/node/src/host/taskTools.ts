@@ -4,8 +4,8 @@
 /**
  * Background task tools (P29, `runtimes-channels.md` §3), ported from
  * grantley's `tasks/`: a foreground conversation hands long work to a
- * background sub-agent and stays responsive; the sub-agent reports progress
- * and completion. The hub keeps the task ledger and runs the worker loop;
+ * background task (its own sub-session, or another agent) and stays
+ * responsive; the task reports progress and completion. The hub keeps the task ledger and runs the worker loop;
  * these tools only forward to it (`tasks.*` hub calls) with the console
  * conversation and turn they were called from, which the hub checks.
  *
@@ -45,7 +45,7 @@ const specs = [
     name: 'qianmo_task_start',
     op: 'start',
     description:
-      "Foreground only. Keep this conversation free for the owner's next message: hand work to a background sub-agent and return at once with its task id; never wait for it here. Do it yourself when one or two steps finish it (an answer, a question back, one lookup, one simple tool call, reading one file). Start a task without agent, in your own sub-session, for anything that takes several steps or more than a minute or two: research, writing or changing code, long commands, trial and error. Simple but slow work with clear edges (bulk tidying, checking against a list, collecting material, waiting on a result to check it) may go to another agent: give agent, a qianmo://node/agent address from qianmo_task_agents, preferring idle and cheaper ones. Split independent parts into separate tasks that run in parallel. Give a short title and complete instructions (the sub-agent sees no more of this conversation than its last few messages). To run it later give after (minutes, 1-10080) or at (an ISO time with its zone, at most 7 days ahead), not both; to repeat it give everyMinutes (30-10080) with times (1-100). Plan this way what should be looked at again later or done periodically. A planned task waits as scheduled, runs in the same sub-session each time and its result comes back here after every run; at most 20 planned per owner. Tell the owner what you started or planned, and when it runs.",
+      "Foreground only. Keep this conversation free for the owner's next message: hand work to a background task and return at once with its task id; never wait for it here. Do it yourself when one or two steps finish it (an answer, a question back, one lookup, one simple tool call, reading one file). Start a task without agent, in your own sub-session, for anything that takes several steps or more than a minute or two: research, writing or changing code, long commands, trial and error. Simple but slow work with clear edges (bulk tidying, checking against a list, collecting material, waiting on a result to check it) may go to another agent: give agent, a qianmo://node/agent address from qianmo_task_agents, preferring idle and cheaper ones. Split independent parts into separate tasks that run in parallel. Give a short title and complete instructions (the task sees no more of this conversation than its last few messages). To run it later give after (minutes, 1-10080) or at (an ISO time with its zone, at most 7 days ahead), not both; to repeat it give everyMinutes (30-10080) with times (1-100). Plan this way what should be looked at again later or done periodically. A planned task waits as scheduled, runs in the same sub-session each time and its result comes back here after every run; at most 20 planned per owner. Tell the owner what you started or planned, and when it runs.",
     properties: {
       title: string,
       instructions: string,
@@ -93,7 +93,7 @@ const specs = [
     name: 'qianmo_task_report',
     op: 'report',
     description:
-      "Background sub-agent only. Save this task's real progress (state working), its verified final result (state completed), or the one question you need answered (state needs_input). Only an explicit completed report finishes the task. The answer's newUpdates counts user instructions you have not read yet; read them with qianmo_task_updates.",
+      "Background task only. Save this task's real progress (state working), its verified final result (state completed), or the one question you need answered (state needs_input). Only an explicit completed report finishes the task. The answer's newUpdates counts user instructions you have not read yet; read them with qianmo_task_updates.",
     properties: {
       summary: string,
       state: { type: 'string', enum: ['working', 'completed', 'needs_input'] },
@@ -104,14 +104,14 @@ const specs = [
     name: 'qianmo_task_updates',
     op: 'updates',
     description:
-      'Background sub-agent only. Read the user’s new instructions for this task. Call it before starting, before key actions and between phases.',
+      'Background task only. Read the user’s new instructions for this task. Call it before starting, before key actions and between phases.',
     properties: {},
     required: [],
   },
 ] as const
 
 /**
- * What to do when the hub did not answer. A sub-agent may not read status,
+ * What to do when the hub did not answer. A background task may not read status,
  * and both of its calls are safe to repeat: a report overwrites the
  * checkpoint, unconfirmed instructions are returned again.
  */

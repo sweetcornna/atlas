@@ -2130,12 +2130,14 @@ describe('the coordination rules', () => {
       'after 或 at、everyMinutes 与 times',
       '告诉主人安排了什么',
       'qianmo_task_status 报告真实阶段',
-      '只有子智能体明确报告 completed 才能说完成',
+      '只有后台任务明确报告 completed 才能说完成',
       '主人的新消息不会取消正在运行的后台任务',
     ])
       expect(SUPERVISOR_RULES).toContain(cue)
     // The old rule sent even one simple tool call to the background.
     expect(SUPERVISOR_RULES).not.toContain('需要工具执行')
+    // Without agent it is a sub-session; only with agent another agent.
+    expect(SUPERVISOR_RULES).not.toContain('子智能体')
   })
 })
 

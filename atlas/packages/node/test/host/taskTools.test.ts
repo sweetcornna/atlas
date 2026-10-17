@@ -116,7 +116,7 @@ test('a refusal is shown; an unknown outcome says what is safe to do next', asyn
   expect(
     (await broken.byName('qianmo_task_cancel').handler({ id: 'x' }, ctx)).text,
   ).toContain('Check with qianmo_task_status before retrying')
-  // A sub-agent may not read status: its two calls say to repeat them.
+  // A background task may not read status: its two calls say to repeat them.
   const updates = await broken.byName('qianmo_task_updates').handler({}, ctx)
   expect(updates.text).toContain('Call qianmo_task_updates again')
   const report = await broken
@@ -154,6 +154,7 @@ test('the descriptions carry the coordination rules to a console conversation', 
     'never wait for it here',
     'Do it yourself when one or two steps finish it',
     'one simple tool call, reading one file',
+    'hand work to a background task and return at once',
     'Start a task without agent, in your own sub-session',
     'more than a minute or two',
     'may go to another agent',
@@ -173,7 +174,19 @@ test('the descriptions carry the coordination rules to a console conversation', 
   expect(byName('qianmo_task_agents').description).toContain(
     'prefer idle and cheaper ones',
   )
-  // The sub-agent's two tools still say they are not for the foreground.
+  // The task's two tools still say they are not for the foreground.
   for (const name of ['qianmo_task_report', 'qianmo_task_updates'])
-    expect(byName(name).description).toStartWith('Background sub-agent only.')
+    expect(byName(name).description).toStartWith('Background task only.')
+  // Without agent the work goes to a sub-session, not a sub-agent; only
+  // with agent is it another agent.
+  for (const name of [
+    'qianmo_task_start',
+    'qianmo_task_agents',
+    'qianmo_task_status',
+    'qianmo_task_send',
+    'qianmo_task_cancel',
+    'qianmo_task_report',
+    'qianmo_task_updates',
+  ])
+    expect(byName(name).description).not.toMatch(/sub-?agent/i)
 })
