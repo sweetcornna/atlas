@@ -73,8 +73,16 @@ import type { MagpieLimit } from '@qianmo/magpie'
 import { type ConsoleMagpie, isTenantProfile } from './consoleMagpie.js'
 
 const SWEEP_EVERY_MS = 60_000
-/** A delivery that failed twice running is tried again after this long. */
-const RETRY_EVERY_MS = 5 * 60_000
+/**
+ * A delivery that failed twice running is tried again after this long, then
+ * after twice as long each time it fails again, never more than
+ * {@link RETRY_AT_MOST_MS} apart. Every try is an apply in the model
+ * service's book and a row in the action ledger, and a node that answers
+ * but refuses (a full disk) would otherwise be asked every few minutes for
+ * as long as it lasts.
+ */
+const RETRY_FIRST_MS = 5 * 60_000
+const RETRY_AT_MOST_MS = 60 * 60_000
 
 /**
  * Read and check the billing config, secrets and all; throws a line that
@@ -248,8 +256,9 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
   readonly #dirty = new Set<string>()
   /**
    * Nodes whose last delivery failed: when the sweep may try again (at the
-   * next sweep after a first failure, every few minutes after that) and how
-   * many failed in a row.
+   * next sweep after a first failure, then backing off up to an hour) and
+   * how many failed in a row. A delivery on an event (a changed profile, a
+   * tenant node to (re)assign) does not wait for it.
    */
   readonly #retry = new Map<string, { at: number; failures: number }>()
   #nodes: Promise<void> = Promise.resolve()
@@ -519,10 +528,13 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
           else if (sweep && row !== undefined && behind(row)) {
             // A delivery that did not land (the node was busy, unreachable,
             // or refused) is tried again by the sweep: at the next one, then
-            // every few minutes while the retries keep failing.
+            // less often while the retries keep failing, at least hourly.
             if ((this.#retry.get(node)?.at ?? 0) > now) continue
             deliver.push(node)
-          }
+          } else if (row !== undefined && !behind(row))
+            // In step after all (ops delivered it): the next failure starts
+            // the back-off afresh.
+            this.#retry.delete(node)
           continue
         }
         const assigned = await providers.assign(
@@ -569,7 +581,11 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
   #failed(node: string, now: number): void {
     const failures = (this.#retry.get(node)?.failures ?? 0) + 1
     this.#retry.set(node, {
-      at: failures === 1 ? now : now + RETRY_EVERY_MS,
+      at:
+        failures === 1
+          ? now
+          : now +
+            Math.min(RETRY_FIRST_MS * 2 ** (failures - 2), RETRY_AT_MOST_MS),
       failures,
     })
   }

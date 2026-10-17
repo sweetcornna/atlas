@@ -1286,25 +1286,36 @@ describe('a delivery that did not land is tried again', () => {
     })
   })
 
-  test('a node that keeps refusing is asked at the next sweep, then every five minutes', async () => {
+  test('a node that keeps refusing is asked at the next sweep, then less and less often, at least hourly', async () => {
     const tenant = await pay(ALICE)
     nodes[0]?.set('reply-apply.json', REFUSE)
     mapNodes(tenant, ['beta-1'])
     await billing.syncNodes()
     expect(applies(0)).toBe(1)
-    await billing.tick()
-    expect(applies(0)).toBe(2)
-    // The retry failed too: not every sweep from now on.
-    clock += 60_000
-    await billing.tick()
-    expect(applies(0)).toBe(2)
-    clock += 4 * 60_000
-    await billing.tick()
-    expect(applies(0)).toBe(3)
+    // Four hours of sweeps, one a minute: the minutes a delivery was tried.
+    const asked: number[] = []
+    for (let minute = 1; minute <= 240; minute++) {
+      const before = applies(0)
+      clock += 60_000
+      await billing.tick()
+      if (applies(0) > before) asked.push(minute)
+    }
+    // 5, 10, 20, 40 minutes apart, then an hour: four tries in the first
+    // hour, not one every five minutes.
+    expect(asked).toEqual([1, 6, 16, 36, 76, 136, 196])
     expect(errors.length).toBeGreaterThan(0)
     errors.length = 0
     rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
-  })
+    // The node takes it at the next try, and is left alone after that.
+    clock += 60 * 60_000
+    await billing.tick()
+    const row = await nodeRow('beta-1')
+    expect(row.actual?.applied?.revision).toBe(row.expected?.revision)
+    const settled = applies(0)
+    clock += 60_000
+    await billing.tick()
+    expect(applies(0)).toBe(settled)
+  }, 120_000)
 })
 
 // ---------------------------------------------------------------------------
