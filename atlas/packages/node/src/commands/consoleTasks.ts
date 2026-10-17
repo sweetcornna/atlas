@@ -246,6 +246,8 @@ export interface ConsoleTasksOptions {
 
 /** Unfinished tasks per conversation, not counting those waiting for input. */
 const MAX_ACTIVE_PER_PARENT = 8
+/** How long a finished task still answers a status question. */
+const RECENTLY_MS = 10 * 60_000
 /** Finished tasks stay in the ledger this long, and this many per owner. */
 const KEEP_FINISHED_MS = 30 * 24 * 60 * 60_000
 const KEEP_FINISHED_PER_OWNER = 200
@@ -568,12 +570,20 @@ export class ConsoleTasks {
       .map(task => this.#view(task))
   }
 
-  /** The per-turn note a foreground gets: its current and recent tasks. */
-  contextFor(sessionId: string): string | undefined {
+  /**
+   * The per-turn note a foreground gets: its unfinished tasks, and those that
+   * finished after `since` (when it was last given one) or, without it, the
+   * five most recent finished ones.
+   */
+  contextFor(sessionId: string, since?: number): string | undefined {
     const tasks = this.forSession(sessionId)
-    if (tasks.length === 0) return undefined
     const current = tasks.filter(task => !TERMINAL.has(task.status))
-    const recent = tasks.filter(task => TERMINAL.has(task.status)).slice(0, 5)
+    const finished = tasks.filter(task => TERMINAL.has(task.status))
+    const recent =
+      since === undefined
+        ? finished.slice(0, 5)
+        : finished.filter(task => task.updatedAt > since)
+    if (current.length + recent.length === 0) return undefined
     return `[当前会话的后台任务] ${JSON.stringify(
       [...current, ...recent].map(task => ({
         id: task.id,
@@ -584,12 +594,28 @@ export class ConsoleTasks {
     )}`
   }
 
-  /** A short status answer for "进度怎么样了" (grantley `status_text`). */
-  statusText(sessionId: string): string | undefined {
+  /**
+   * A short status answer for "进度怎么样了" (grantley `status_text`): the
+   * unfinished tasks, else those finished in the last ten minutes unless the
+   * foreground is `busy` with a turn of its own (the question is then about
+   * that). Undefined lets the question through to the agent.
+   */
+  statusText(
+    sessionId: string,
+    options: { readonly busy?: boolean } = {},
+  ): string | undefined {
     const tasks = this.forSession(sessionId)
-    if (tasks.length === 0) return undefined
     const active = tasks.filter(task => !TERMINAL.has(task.status))
-    return (active.length > 0 ? active : tasks.slice(0, 3))
+    const shown =
+      active.length > 0
+        ? active
+        : options.busy
+          ? []
+          : tasks
+              .filter(task => this.#now() - task.updatedAt <= RECENTLY_MS)
+              .slice(0, 3)
+    if (shown.length === 0) return undefined
+    return shown
       .map(task => {
         let line = `${task.title}：${task.phase}`
         if (task.progress) line += `。${clip(task.progress, 400)}`

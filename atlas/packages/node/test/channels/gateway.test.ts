@@ -402,7 +402,7 @@ describe('replies', () => {
 })
 
 describe('commands', () => {
-  test('/new stops, resets and re-sends the framing', async () => {
+  test('/new stops the turn (not the tasks), resets and re-sends the framing', async () => {
     const { turns, adapter, gateway } = setup()
     gateway.handle(RULES, adapter, inbound({ text: 'a' }))
     await until(() => turns.calls.length === 1)
@@ -447,6 +447,8 @@ describe('commands', () => {
     )
     expect(texts.some(text => text.startsWith('/new 新会话'))).toBe(true)
     expect(turns.calls).toHaveLength(0)
+    // /stop also stops the chat's background tasks.
+    expect(turns.log).toContain('stop+tasks ch-1:dm:owner')
   })
 
   test("a member's command is ordinary text, except /help", async () => {

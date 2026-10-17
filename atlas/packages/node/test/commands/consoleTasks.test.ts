@@ -37,6 +37,7 @@ function tasks(
     turnTtlMs?: number
     deliveryRetryMs?: (attempts: number) => number
     stopTask?: (target: string, taskId: string) => Promise<boolean>
+    now?: () => number
     /** More result listeners, by key, registered before the book starts. */
     listeners?: Record<
       string,
@@ -941,6 +942,32 @@ describe('durability', () => {
     expect(listed.tasks.map(task => task.id)).toEqual([id])
     expect(book.contextFor(second)).toContain(`"id":"${id}"`)
     expect(await book.cancelForSession(second)).toBe(1)
+  })
+
+  test('the task note carries unfinished tasks and those finished since the last note', async () => {
+    let now = 1_000_000
+    const book = tasks({ now: () => now })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
+    )
+    const worker = await workerTurn(1)
+    expect(book.contextFor(parent, now)).toContain(id)
+    const before = now
+    now += 1_000
+    value(
+      await call(book, 'report', worker, {
+        summary: '好了',
+        state: 'completed',
+      }),
+    )
+    chat.reply(worker, '完成')
+    await until(() => finished.length === 1)
+    now += 1_000
+    // Finished after the last note: once; with no note yet: among the recent.
+    expect(book.contextFor(parent, before)).toContain(id)
+    expect(book.contextFor(parent, now)).toBeUndefined()
+    expect(book.contextFor(parent)).toContain(id)
   })
 
   test('finished tasks leave the ledger after 30 days or beyond 200 per owner, with their instructions', async () => {

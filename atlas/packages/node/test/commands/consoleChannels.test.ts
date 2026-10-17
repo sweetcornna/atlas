@@ -21,6 +21,7 @@ import {
   type ChannelTasks,
   ConsoleChannels,
 } from '../../src/commands/consoleChannels.js'
+import { ConsoleTasks } from '../../src/commands/consoleTasks.js'
 import { FakeAdapter, FakeNet, inbound, until } from '../channels/fakes.js'
 import { FakeChat } from './fakeChat.js'
 
@@ -47,6 +48,7 @@ let adapters: {
 }[]
 let stopped: [string, string][]
 let open: ConsoleChannels[]
+let taskBooks: ConsoleTasks[]
 
 function channels(
   options: { net?: FakeNet; turnTimeoutMs?: number; tasks?: ChannelTasks } = {},
@@ -93,10 +95,12 @@ beforeEach(() => {
   adapters = []
   stopped = []
   open = []
+  taskBooks = []
 })
 
 afterEach(async () => {
   await Promise.all(open.map(book => book.close()))
+  await Promise.all(taskBooks.map(book => book.close()))
   fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -415,10 +419,14 @@ describe('background tasks', () => {
         }) => Promise<boolean | undefined>)
       | null = null
     summary: string | undefined = '[当前会话的后台任务] [{"id":"task-1"}]'
-    contextFor() {
+    readonly since: (number | undefined)[] = []
+    readonly busy: (boolean | undefined)[] = []
+    contextFor(_sessionId: string, since?: number) {
+      this.since.push(since)
       return this.summary
     }
-    statusText() {
+    statusText(_sessionId: string, options?: { busy?: boolean }) {
+      this.busy.push(options?.busy)
       return this.summary === undefined ? undefined : '周报：执行中'
     }
     async cancelForSession(sessionId: string) {
@@ -483,6 +491,7 @@ describe('background tasks', () => {
     await until(() => adapter.sent.length === 4)
     expect(adapter.texts()[3]).toBe('停下了。')
     expect(fake.cancelled).toEqual([session])
+    expect(fake.busy).toEqual([false])
     // A finished task reaches the chat its conversation lives in.
     expect(
       await fake.listener!({ parentSession: session, text: '周报：已完成' }),
@@ -491,9 +500,11 @@ describe('background tasks', () => {
     expect(
       await fake.listener!({ parentSession: 'elsewhere', text: 'x' }),
     ).toBeUndefined()
-    // After /new the chat keeps its tasks: both sessions are related.
+    // After /new the chat keeps its tasks: /new cancels none, and both
+    // sessions are related.
     adapter.sink!(inbound({ text: '/new' }))
     await until(() => adapter.sent.length === 6)
+    expect(fake.cancelled).toEqual([session])
     adapter.sink!(inbound({ text: '新话题' }))
     await until(() => chat.sent.length === 3)
     expect(book.related(chat.sent[2]!.sessionId)).toEqual([
@@ -502,6 +513,145 @@ describe('background tasks', () => {
     ])
     chat.reply(chat.sent[2]!.sessionId, 'ok')
     await until(() => adapter.sent.length === 7)
+  })
+
+  test('the task note goes out only when it changed, and again after the runtime compacted', async () => {
+    const fake = new FakeTasks()
+    channels({ tasks: fake })
+    const book = open[0]!
+    value(await book.save(TELEGRAM, ACTOR))
+    const adapter = adapters[0]!.adapter
+    const say = async (text: string, n: number, compacted = false) => {
+      adapter.sink!(inbound({ text }))
+      await until(() => chat.sent.length === n)
+      const sent = chat.sent[n - 1]!
+      chat.reply(
+        sent.sessionId,
+        'ok',
+        'done',
+        compacted ? { compacted: true } : {},
+      )
+      await until(() => adapter.sent.length === n)
+      return sent.text
+    }
+    await say('一', 1)
+    expect(await say('二', 2)).toBe(
+      '[当前会话的后台任务] [{"id":"task-1"}]\n\n二',
+    )
+    // Unchanged: not again.
+    expect(await say('三', 3)).toBe('三')
+    expect(fake.since.at(-1)).toBeNumber()
+    fake.summary = '[当前会话的后台任务] [{"id":"task-2"}]'
+    expect(await say('四', 4, true)).toBe(
+      '[当前会话的后台任务] [{"id":"task-2"}]\n\n四',
+    )
+    // The runtime compacted that turn: framing, rules and note go out again.
+    const fifth = await say('五', 5)
+    expect(fifth).toContain('[渠道] 这段对话来自 Telegram 的私聊')
+    expect(fifth).toContain('[后台任务协调规则]')
+    expect(fifth).toContain('[当前会话的后台任务] [{"id":"task-2"}]')
+    expect(await say('六', 6)).toBe('六')
+  })
+
+  /** Real tasks behind the channels, as the console wires them. */
+  function wired(now?: () => number): ConsoleTasks {
+    let book: ConsoleChannels | undefined
+    const tasks = new ConsoleTasks({
+      directory: path.join(root, 'tasks'),
+      chat,
+      backoffMs: () => 5,
+      stopTask: async () => true,
+      foreground: id => book?.foreground(id) ?? true,
+      related: id => book?.related(id) ?? [id],
+      ...(now === undefined ? {} : { now }),
+    })
+    taskBooks.push(tasks)
+    book = channels({ tasks })
+    tasks.start()
+    return tasks
+  }
+
+  async function startTask(tasks: ConsoleTasks, session: string) {
+    const started = await tasks.handle(
+      'tasks.start',
+      {
+        contextId: session,
+        taskId: chat.lastTask(session),
+        title: '周报',
+        instructions: '写周报',
+      },
+      { node: 'node-a', agent: 'planner', callId: 'c' },
+    )
+    expect(started.ok).toBe(true)
+    await until(() => chat.sent.some(one => one.background))
+    return chat.sent.find(one => one.background)!.sessionId
+  }
+
+  test('/new leaves the chat’s tasks running; /stop right after it still cancels them', async () => {
+    const tasks = wired()
+    value(await open[0]!.save(TELEGRAM, ACTOR))
+    const adapter = adapters[0]!.adapter
+    adapter.sink!(inbound({ text: '帮我写周报' }))
+    await until(() => chat.sent.length === 1)
+    const session = chat.sent[0]!.sessionId
+    await startTask(tasks, session)
+    chat.reply(session, '已交给后台')
+    await until(() => adapter.sent.length === 1)
+    adapter.sink!(inbound({ text: '/new' }))
+    await until(() => adapter.sent.length === 2)
+    expect(tasks.forSession(session)[0]?.status).toBe('running')
+    adapter.sink!(inbound({ text: '/stop' }))
+    await until(() => adapter.sent.length === 3)
+    expect(adapter.texts()[2]).toBe('停下了。')
+    expect(tasks.forSession(session)[0]?.status).toBe('cancelled')
+  })
+
+  test('a status question is answered from a finished task only when it is recent and the chat is idle', async () => {
+    let now = Date.now()
+    const tasks = wired(() => now)
+    value(await open[0]!.save(TELEGRAM, ACTOR))
+    const adapter = adapters[0]!.adapter
+    adapter.sink!(inbound({ text: '帮我写周报' }))
+    await until(() => chat.sent.length === 1)
+    const session = chat.sent[0]!.sessionId
+    const worker = await startTask(tasks, session)
+    const report = await tasks.handle(
+      'tasks.report',
+      {
+        contextId: worker,
+        taskId: chat.lastTask(worker),
+        summary: '周报已发',
+        state: 'completed',
+      },
+      { node: 'node-a', agent: 'planner', callId: 'c' },
+    )
+    expect(report.ok).toBe(true)
+    chat.reply(worker, 'done')
+    chat.reply(session, '已交给后台')
+    await until(() => adapter.texts().some(one => one.includes('周报：已完成')))
+    const answered = adapter.sent.length
+    // Idle and just finished: answered from the ledger, no turn.
+    adapter.sink!(inbound({ text: '好了吗' }))
+    await until(() => adapter.sent.length === answered + 1)
+    expect(adapter.texts().at(-1)).toContain('周报：已完成')
+    expect(chat.sentTo(session)).toHaveLength(1)
+    // A turn of the chat's own is running: the question is about that.
+    adapter.sink!(inbound({ text: '帮我查下明天天气' }))
+    await until(() => chat.sentTo(session).length === 2)
+    adapter.sink!(inbound({ text: '好了吗' }))
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(adapter.sent).toHaveLength(answered + 1)
+    chat.reply(session, '明天晴')
+    await until(() => chat.sentTo(session).length === 3)
+    expect(chat.sentTo(session)[2]!.text).toContain('好了吗')
+    chat.reply(session, '查好了')
+    await until(() => adapter.sent.length === answered + 3)
+    // Long after it finished, the question goes to the agent too.
+    now += 11 * 60_000
+    adapter.sink!(inbound({ text: '好了吗' }))
+    await until(() => chat.sentTo(session).length === 4)
+    chat.reply(session, '都好了')
+    await until(() => adapter.sent.length === answered + 4)
   })
 
   test('other people and groups get no task rules and may not start tasks', async () => {
