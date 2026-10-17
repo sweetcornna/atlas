@@ -9,7 +9,7 @@
 
 import { afterEach, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
 import {
@@ -134,6 +134,36 @@ test('runtime.status and runtime.versions read under ESTOP; configure, install a
         op,
         { agent: 'main', runtime: 'dsh' },
         ctx(randomUUID()),
+      ),
+    ).toMatchObject({ ok: false, code: ProtocolErrorCode.E_BUSY })
+})
+
+test('native extension ops ride the runtime prefix: listing reads under ESTOP, changes are refused under it; the roster is written (P36.7)', async () => {
+  const { node } = resident()
+  cleanups.push(() => node.control.close())
+  const ctx: ControlContext = { peer: 'hub', actor: 'ops', taskId: 't' }
+  // The secret-free roster `qm runtime open` reads.
+  const roster = JSON.parse(
+    readFileSync(qianmoConfigPath('resident', 'runtime-agents.json'), 'utf8'),
+  )
+  expect(roster).toMatchObject({
+    v: 1,
+    pid: process.pid,
+    agents: [{ agent: 'main', runtime: 'dsh', shell: false, model: null }],
+  })
+  const estop = qianmoConfigPath('resident', 'ESTOP')
+  writeFileSync(estop, '')
+  cleanups.push(() => rmSync(estop, { force: true }))
+  // Answered by the native operations (an unknown agent), not the ESTOP gate.
+  expect(
+    await node.control.handle('runtime.ext.list', { agent: 'nobody' }, ctx),
+  ).toMatchObject({ ok: false, code: 'invalid' })
+  for (const op of ['runtime.ext.install', 'runtime.ext.remove'])
+    expect(
+      await node.control.handle(
+        op,
+        { agent: 'main', kind: 'mcp', name: 'own' },
+        { ...ctx, operationId: randomUUID() },
       ),
     ).toMatchObject({ ok: false, code: ProtocolErrorCode.E_BUSY })
 })
