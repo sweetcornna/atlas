@@ -7,6 +7,10 @@
  * `/v0/magpie` takes, asks before anything that cannot be undone, and moves
  * the usage section between periods. Addresses are put together here from
  * a scheme and a host, so the page itself never carries a full URL.
+ *
+ * The 智能体 section (`view/magpieAgents.ts`) sends a select's change at once
+ * to `/v0/magpie/agents/configure`, and while a runtime installs it follows
+ * the section every few seconds until nothing is busy.
  */
 
 export const MAGPIE_PAGE_JS = `
@@ -19,11 +23,31 @@ export const MAGPIE_PAGE_JS = `
   function refresh() {
     var jobs = [];
     var main = byId('magpie');
+    var agents = byId('magpie-agents');
     var usage = byId('magpie-usage');
     if (main) jobs.push(qc.refreshRegion(main));
+    if (agents) jobs.push(qc.refreshRegion(agents));
     if (usage) jobs.push(qc.refreshRegion(usage));
     return Promise.all(jobs);
   }
+
+  var following = null;
+  function stopFollowing() {
+    if (following !== null) clearInterval(following);
+    following = null;
+  }
+  function follow() {
+    if (following !== null) return;
+    following = setInterval(function () {
+      var mount = byId('magpie-agents');
+      if (!mount || qc.isExpired()) { stopFollowing(); return; }
+      qc.refreshRegion(mount).then(function () {
+        if (!mount.querySelector('[data-busy]')) stopFollowing();
+      }).catch(function () {});
+    }, 3000);
+  }
+  qc.onExpire(stopFollowing);
+  if (document.querySelector('#magpie-agents [data-busy]')) follow();
 
   function value(form, name) {
     var field = form.elements[name];
@@ -251,8 +275,69 @@ export const MAGPIE_PAGE_JS = `
     });
   });
 
+  qc.onAction('magpie-autojoin', function (button) {
+    var on = button.getAttribute('data-on') === '1';
+    qc.sendJson('POST', '/v0/magpie/agents/autojoin', { on: on }).then(function () {
+      return done(on ? '新节点自动接入已打开' : '新节点自动接入已关闭');
+    }).catch(failed(on ? '打开' : '关闭'));
+  });
+
+  qc.onAction('magpie-join', function (button) {
+    var node = button.getAttribute('data-node') || '';
+    confirmThen(node, '签发网关密钥 · 节点的模型档案换成 magpie 并下发 · 收回密钥即换回', function () {
+      qc.sendJson('POST', '/v0/magpie/agents/join', { node: node }).then(function () {
+        return done('已接入 ' + node);
+      }).catch(failed('接入'));
+    });
+  });
+
+  qc.onAction('magpie-runtime-install', function (button) {
+    var node = button.getAttribute('data-node') || '';
+    var runtime = button.getAttribute('data-runtime') || '';
+    var name = button.getAttribute('data-name') || runtime;
+    qc.sendJson('POST', '/v0/magpie/agents/install', { node: node, runtime: runtime }).then(function (job) {
+      var running = job && job.state === 'running';
+      if (running) follow();
+      return done(running ? node + ' 正在安装 ' + name : node + ' 已安装 ' + name);
+    }).catch(failed('安装'));
+  });
+
+  qc.onAction('magpie-runtime-remove', function (button) {
+    var node = button.getAttribute('data-node') || '';
+    var runtime = button.getAttribute('data-runtime') || '';
+    var name = button.getAttribute('data-name') || runtime;
+    confirmThen(node + ' · ' + name, '从节点卸载 · 有智能体用着它时节点会拒绝', function () {
+      qc.sendJson('POST', '/v0/magpie/agents/remove', { node: node, runtime: runtime }).then(function (job) {
+        var running = job && job.state === 'running';
+        if (running) follow();
+        return done(running ? node + ' 正在卸载 ' + name : node + ' 已卸载 ' + name);
+      }).catch(failed('卸载'));
+    });
+  });
+
+  function configure(select) {
+    var body = {
+      node: select.getAttribute('data-node') || '',
+      agent: select.getAttribute('data-agent') || ''
+    };
+    var what = select.name === 'mg-runtime' ? '底层' : '模型';
+    if (select.name === 'mg-runtime') body.runtime = select.value;
+    else body.model = select.value;
+    select.disabled = true;
+    qc.sendJson('POST', '/v0/magpie/agents/configure', body).then(function () {
+      return done(body.agent + ' 的' + what + '已下发');
+    }).catch(function (err) {
+      failed('下发')(err);
+      return refresh();
+    }).then(function () { select.disabled = false; });
+  }
+
   document.addEventListener('change', function (event) {
     var target = event.target;
+    if (target && (target.name === 'mg-runtime' || target.name === 'mg-model')) {
+      configure(target);
+      return;
+    }
     if (!target || target.name !== 'magpie-period') return;
     var mount = byId('magpie-usage');
     if (!mount) return;

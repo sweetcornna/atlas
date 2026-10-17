@@ -6,7 +6,7 @@
  *
  * | Route | Who |
  * |---|---|
- * | `GET /admin/magpie`, `GET /fragments/magpie`, `GET /fragments/magpie/usage?period=` | view and up |
+ * | `GET /admin/magpie`, `GET /fragments/magpie`, `GET /fragments/magpie/agents`, `GET /fragments/magpie/usage?period=` | view and up |
  * | `GET /fragments/magpie/form?kind=&id=` | gateway writers |
  *
  * The JSON behind the buttons is `/v0/magpie` (`routes/magpieApi.ts`).
@@ -27,11 +27,17 @@ import {
   renderMagpieForm,
   renderMagpieUsage,
 } from '../view/magpie.js'
+import {
+  MAGPIE_AGENTS_CSS,
+  type MagpieAgentsModel,
+  renderMagpieAgents,
+} from '../view/magpieAgents.js'
 import { MAGPIE_PAGE_JS } from '../view/magpieScript.js'
 import { guardRead } from './directionShared.js'
 import {
   bindingKey,
   bindingOf,
+  magpieAgentsForReader,
   magpieApi,
   magpieForReader,
   magpieWriter,
@@ -51,6 +57,22 @@ async function modelOf(ctx: RouteContext): Promise<MagpieModel> {
       ? { kind: 'ok', value: magpieForReader(snapshot.value, writer) }
       : { kind: 'failed', failure: snapshot.failure },
     writer,
+  }
+}
+
+async function agentsOf(ctx: RouteContext): Promise<MagpieAgentsModel> {
+  const writer = magpieWriter(ctx)
+  const mainAgent = ctx.deps.chatDefault ?? null
+  const agents = ctx.deps.magpie?.agents
+  if (agents === undefined)
+    return { side: { kind: 'unwired' }, writer, mainAgent }
+  const snapshot = await agents.snapshot()
+  return {
+    side: snapshot.ok
+      ? { kind: 'ok', value: magpieAgentsForReader(snapshot.value, writer) }
+      : { kind: 'failed', failure: snapshot.failure },
+    writer,
+    mainAgent,
   }
 }
 
@@ -115,6 +137,8 @@ async function magpieFragment(
   const denied = guardRead(ctx)
   if (denied !== null) return denied
   if (rest.length === 0) return html(renderMagpie(await modelOf(ctx)))
+  if (rest.length === 1 && rest[0] === 'agents')
+    return html(renderMagpieAgents(await agentsOf(ctx)))
   if (rest.length === 1 && rest[0] === 'usage') {
     const period = periodOf(ctx)
     if (period === null)
@@ -141,20 +165,22 @@ export const magpieRoute: RouteModule = {
     async render(ctx) {
       if (ctx.deps.magpie === undefined)
         return notFound(`unknown path: ${ctx.url.pathname}`)
-      const [model, usage] = await Promise.all([
+      const [model, agents, usage] = await Promise.all([
         modelOf(ctx),
+        agentsOf(ctx),
         usageOf(ctx, DEFAULT_PERIOD),
       ])
       return {
         title: '网关',
         body:
           `<div class="kit-pane" id="magpie" data-poll="/fragments/magpie">${renderMagpie(model)}</div>` +
+          `<div class="kit-pane" id="magpie-agents" data-poll="/fragments/magpie/agents">${renderMagpieAgents(agents)}</div>` +
           `<div class="kit-pane" id="magpie-usage" data-poll="/fragments/magpie/usage?period=${DEFAULT_PERIOD}">` +
           `${renderMagpieUsage(usage, DEFAULT_PERIOD)}</div>` +
           (model.writer ? magpieDialogs() : ''),
       }
     },
-    css: KIT_CSS + MAGPIE_PAGE_CSS,
+    css: KIT_CSS + MAGPIE_PAGE_CSS + MAGPIE_AGENTS_CSS,
     script: MAGPIE_PAGE_JS,
   },
   api: magpieApi,

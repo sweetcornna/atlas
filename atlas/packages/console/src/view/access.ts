@@ -801,6 +801,10 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'magpie.key.update': '修改网关密钥',
   'magpie.key.rotate': '轮换网关密钥',
   'magpie.key.remove': '收回网关密钥',
+  'magpie.autojoin': '新节点自动接入',
+  'runtime.configure': '设智能体底层与模型',
+  'runtime.install': '安装底层',
+  'runtime.remove': '卸载底层',
   'billing.checkout': '下单',
   'billing.redeem': '兑换订阅',
   'billing.grant': '手动开通订阅',
@@ -853,6 +857,7 @@ const FAMILY_WORD: Readonly<Partial<Record<string, string>>> = {
   updates: '更新',
   extension: '扩展',
   magpie: '网关',
+  runtime: '底层',
   billing: '订阅',
   avatar: '形象',
 }
