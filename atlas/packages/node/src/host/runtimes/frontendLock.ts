@@ -15,6 +15,7 @@
  * |---|---|---|
  * | `<agent>.lock` | `qm runtime open` (created exclusively) | `{pid, nonce, runtime, at}` |
  * | `<agent>.ack` | the resident's pool, once per lock | `{nonce, pid, busy}` |
+ * | `<agent>.change` | a native extension change, for its whole run | as `.lock` |
  *
  * The pool looks every second. A lock it has not answered yet: a turn in
  * progress answers `busy` (the frontend refuses and lets go); otherwise the
@@ -35,7 +36,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
 import { writePrivateJson } from '../../providers/store.js'
 
@@ -83,6 +84,9 @@ function lockPath(agent: string): string {
 }
 function ackPath(agent: string): string {
   return join(lockDir(), `${agent}.ack`)
+}
+function changePath(agent: string): string {
+  return lockPath(agent).replace(/\.lock$/, '.change')
 }
 
 /** Whether a process with `pid` exists (one of another user counts). */
@@ -155,7 +159,12 @@ export function acquireFrontendLock(
   agent: string,
   runtime: string,
 ): FrontendLock | undefined {
-  const path = lockPath(agent)
+  const lock = takeLock(lockPath(agent), runtime)
+  if (lock !== undefined) rmSync(ackPath(agent), { force: true })
+  return lock
+}
+
+function takeLock(path: string, runtime: string): FrontendLock | undefined {
   mkdirSync(lockDir(), { recursive: true, mode: 0o700 })
   const lock: FrontendLock = {
     pid: process.pid,
@@ -164,7 +173,7 @@ export function acquireFrontendLock(
     at: Date.now(),
   }
   // Written whole before it can be seen: a taker never finds it half done.
-  const staged = join(lockDir(), `.${agent}.${lock.nonce}.new`)
+  const staged = join(dirname(path), `.${basename(path)}.${lock.nonce}.new`)
   writeFileSync(staged, JSON.stringify(lock), { mode: 0o600, flag: 'wx' })
   try {
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -172,10 +181,9 @@ export function acquireFrontendLock(
         linkSync(staged, path)
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-        if (!clearDeadLock(agent)) return undefined
+        if (!clearDeadLock(path)) return undefined
         continue
       }
-      rmSync(ackPath(agent), { force: true })
       return lock
     }
     return undefined
@@ -185,16 +193,15 @@ export function acquireFrontendLock(
 }
 
 /**
- * Removes `agent`'s lock unless a live process holds it (`false` then). It is
- * moved aside first and compared with what was judged dead: a lock another
- * taker put in place meanwhile is put back, not removed.
+ * Removes the lock at `path` unless a live process holds it (`false` then).
+ * It is moved aside first and compared with what was judged dead: a lock
+ * another taker put in place meanwhile is put back, not removed.
  */
-function clearDeadLock(agent: string): boolean {
-  const path = lockPath(agent)
+function clearDeadLock(path: string): boolean {
   const seen = readText(path)
   if (seen === undefined) return true
   if (liveLock(seen) !== undefined) return false
-  const aside = join(lockDir(), `.${agent}.${randomUUID()}.dead`)
+  const aside = join(dirname(path), `.${basename(path)}.${randomUUID()}.dead`)
   try {
     renameSync(path, aside)
   } catch (error) {
@@ -219,6 +226,28 @@ function clearDeadLock(agent: string): boolean {
 /** Whether `lock` is still the one in place (checked before a frontend starts). */
 export function holdsFrontendLock(agent: string, lock: FrontendLock): boolean {
   return readJson(lockPath(agent))?.nonce === lock.nonce
+}
+
+/**
+ * Taken by a native extension change for its whole run (§7.3). It and the
+ * frontend's lock exclude each other: each side takes its own, then looks
+ * for the other's, so at least one of two that start together sees both.
+ */
+export function acquireChangeLock(
+  agent: string,
+  runtime: string,
+): FrontendLock | undefined {
+  return takeLock(changePath(agent), runtime)
+}
+
+export function releaseChangeLock(agent: string, lock: FrontendLock): void {
+  if (readJson(changePath(agent))?.nonce !== lock.nonce) return
+  rmSync(changePath(agent), { force: true })
+}
+
+/** Whether a native extension change of `agent` is running now. */
+export function changeHolds(agent: string): boolean {
+  return liveLock(readText(changePath(agent))) !== undefined
 }
 
 /** Lets go of `lock` (only if it is still this one). */

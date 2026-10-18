@@ -1056,7 +1056,7 @@ export class QianmoResident {
         agent: agent.agent,
         cwd: agent.cwd,
       })),
-      runtimeOf: agent => this.runtimes.externalRuntimeOf(agent),
+      runtimeOf: agent => this.runtimes.nativeRuntimeOf(agent),
       ...(options.runtimeBins === undefined
         ? {}
         : { bins: options.runtimeBins }),
@@ -3434,7 +3434,7 @@ export class QianmoResident {
     try {
       writeResidentRoster(
         this.#options.agents.map(agent => {
-          const runtime = this.runtimes.externalRuntimeOf(agent.agent)
+          const runtime = this.runtimes.nativeRuntimeOf(agent.agent)
           const state = this.runtimes.state(agent.agent)
           return {
             agent: agent.agent,

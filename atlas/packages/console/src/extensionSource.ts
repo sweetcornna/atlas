@@ -156,6 +156,14 @@ function sourceOf(text: string): string | null {
   return null
 }
 
+/** A skill's source: a GitHub repository only. */
+function githubSourceOf(text: string): string | null {
+  if (text.length === 0 || text.length > 300) return null
+  if (text.startsWith('https://')) return githubAddress(text)
+  if (unsafe(text) || text.includes(':')) return null
+  return githubShort(text) ? text : null
+}
+
 function commandOf(text: string): boolean {
   if (text.length === 0 || unsafe(text)) return false
   if (!text.startsWith('/')) return BARE_COMMAND.test(text)
@@ -207,7 +215,13 @@ export function extensionInstallRequest(
       input.url !== undefined
     )
       return invalid('插件与技能只给来源')
-    const source = sourceOf(input.source ?? '')
+    const text = input.source ?? ''
+    if (input.kind === 'skill') {
+      const source = githubSourceOf(text)
+      if (source === null) return invalid('技能只收 GitHub 仓库')
+      return { ok: true, value: { kind: 'skill', source } }
+    }
+    const source = sourceOf(text)
     if (source === null)
       return invalid('来源只收 GitHub 仓库 · npm 包名 · 名字@市场')
     return { ok: true, value: { kind: input.kind, source } }

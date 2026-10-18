@@ -97,6 +97,8 @@ class FakeLinks {
   readonly ext: string[] = []
   #held: (() => void) | null = null
   hold = false
+  /** `runtime.configure` answers a refusal. */
+  refuseConfigure = false
 
   add(
     node: string,
@@ -266,6 +268,8 @@ class FakeLinks {
         },
       }
     if (op === 'runtime.configure') {
+      if (this.refuseConfigure)
+        return { ok: false, code: 'E_RUNTIME_BUSY', message: '节点正忙' }
       const agent = this.agent(node, String(args['agent']))
       if (agent === undefined)
         return { ok: false, code: 'E_AGENT_UNKNOWN', message: '没有这个智能体' }
@@ -731,6 +735,23 @@ describe('choices from the page', () => {
     expect(links.writes.length).toBe(unchanged)
   })
 
+  test('a choice the node did not take is not kept for a later check to apply', async () => {
+    const port = await connected()
+    const agents = agentsOf(port)
+    const before = links.agent('beta-1', 'coder')?.model
+    links.refuseConfigure = true
+    const refused = await agents.configure(
+      { node: 'beta-1', agent: 'coder', model: 'openai/gpt-6' },
+      caller(),
+    )
+    expect(refused.ok).toBe(false)
+    expect(readFileSync(paths.state, 'utf8')).not.toContain('"openai/gpt-6"')
+    links.refuseConfigure = false
+    await port.check(caller())
+    await agents.idle()
+    expect(links.agent('beta-1', 'coder')?.model).toBe(before)
+  })
+
   test('a model the key cannot use, an unknown runtime or agent is refused before the node', async () => {
     const port = await connected()
     const agents = agentsOf(port)
@@ -1132,6 +1153,22 @@ describe('native extensions (P36.7)', () => {
     expect(ghost.ok ? null : ghost.failure.code).toBe('not_found')
     const nowhere = await agents.extensions('nowhere-1', 'coder')
     expect(nowhere.ok ? null : nowhere.failure.code).toBe('not_found')
+  })
+
+  test('a runtime change drops the agent’s list; another runtime’s list is never shown as its', async () => {
+    const port = await probed()
+    const agents = agentsOf(port)
+    const first = await agents.extensions('beta-1', 'reviewer')
+    expect(first.ok && first.value.runtime).toBe('claude-code')
+    const moved = await agents.configure(
+      { node: 'beta-1', agent: 'reviewer', runtime: 'codex' },
+      caller(),
+    )
+    if (!moved.ok) throw new Error(moved.failure.message)
+    expect(moved.value.extensions?.state).toBe('unread')
+    const again = await agents.extensions('beta-1', 'reviewer')
+    expect(again.ok && again.value.runtime).toBe('codex')
+    expect(extLines('"agent":"reviewer"')).toHaveLength(2)
   })
 
   test('an install goes out as the node takes it, shows running, then lands in the list', async () => {

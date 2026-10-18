@@ -451,7 +451,7 @@ export function renderMagpieExtensionForm(target: {
       mono: true,
       maxLength: 300,
       placeholder: 'owner/repo · @scope/name@1.2.3 · name@market',
-      help: '插件与技能填 · GitHub 仓库 · npm 包名 · 名字@市场',
+      help: '插件填 · GitHub 仓库 · npm 包名 · 名字@市场 · 技能只收 GitHub 仓库',
     }) +
     textField('name', 'MCP 名字', {
       mono: true,

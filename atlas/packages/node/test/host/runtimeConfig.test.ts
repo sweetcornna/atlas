@@ -298,6 +298,18 @@ test('a failed compatibility check and a missing Node.js are reasons of their ow
   expect(state(runtimes, 'main').effective.runtime).toBe('dsh')
 })
 
+test('native extensions belong to the runtime an agent is configured on, qianmopi included', async () => {
+  const { runtimes } = setup()
+  managed('dsh')
+  await runtimes.start()
+  // Configured on qianmopi: no other runtime's state is its.
+  expect(runtimes.nativeRuntimeOf('pi')).toBe('omp')
+  expect(runtimes.externalRuntimeOf('pi')).toBe('dsh')
+  // Away on the fallback (Codex is not installed): still Codex's.
+  expect(state(runtimes, 'coder').effective.runtime).toBe('omp')
+  expect(runtimes.nativeRuntimeOf('coder')).toBe('codex')
+})
+
 test('no model: a runtime that cannot send a profile’s custom headers does not run on it', async () => {
   const { runtimes, npm } = setup({
     agents: [{ agent: 'qw', runtime: 'qwen', model: 'gw/qwen3-coder' }],

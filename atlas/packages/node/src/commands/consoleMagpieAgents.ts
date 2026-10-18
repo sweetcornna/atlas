@@ -836,7 +836,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
           ? null
           : { code: agent.reason.code, message: agent.reason.message },
       write: this.#writes.get(`${node}/${agent.agent}`) ?? null,
-      extensions: this.#ext.view(node, agent.agent),
+      extensions: this.#ext.view(node, agent.agent, agent.configured.runtime),
     }
   }
 
@@ -896,6 +896,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
           ? agent
           : { ...agent, configured: { ...agent.configured, runtime } }
       const spec = runtimeSpec(next.configured.runtime)
+      const before = this.#host.choice(change.node, change.agent)
       if (change.model !== undefined) {
         let model: string | null = null
         if (change.model !== 'auto') {
@@ -933,7 +934,18 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
         caller.subject,
         false,
       )
-      if (!outcome.ok) return { ok: false, failure: fromNode(outcome) }
+      if (!outcome.ok) {
+        // Not taken: the choice goes back, so no later sync applies it.
+        if (change.model !== undefined)
+          try {
+            this.#host.setChoice(change.node, change.agent, before)
+          } catch {
+            // Left as it was written; the operator was told it failed.
+          }
+        return { ok: false, failure: fromNode(outcome) }
+      }
+      // Another runtime's plugins and servers are not this one's.
+      if ('runtime' in args) this.#ext.forget(change.node, change.agent)
       const answered = agentStateSchema.safeParse(outcome.value)
       const state: AgentRuntimeState = answered.success
         ? answered.data

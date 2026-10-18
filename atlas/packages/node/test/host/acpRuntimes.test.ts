@@ -47,12 +47,15 @@ let root: ReturnType<typeof isolatedRoot> | undefined
 const pools: ExternalRuntimePool[] = []
 const children: ChildProcess[] = []
 const launches: ExternalRuntimeSpawn[] = []
+/** Process starts and turn ends, in order. */
+const events: string[] = []
 afterEach(async () => {
   for (const pool of pools.splice(0)) await pool.stop()
   for (const child of children.splice(0)) {
     if (child.exitCode === null && child.signalCode === null) child.kill()
   }
   launches.length = 0
+  events.length = 0
   if (root) {
     rmSync(`${root.root}-workspace`, { recursive: true, force: true })
     rmSync(`${root.root}-outside.txt`, { force: true })
@@ -81,6 +84,7 @@ function setup(
     launch?: Partial<ExternalLaunch>
     runtimeOf?: () => string
     spawnFails?: boolean
+    maxChildren?: number
   } = {},
 ) {
   root ??= isolatedRoot()
@@ -134,8 +138,12 @@ function setup(
     ...(options.extensions === undefined
       ? {}
       : { extensions: options.extensions }),
+    ...(options.maxChildren === undefined
+      ? {}
+      : { maxChildren: options.maxChildren }),
     spawn: input => {
       launches.push(input)
+      events.push(`spawn:${input.sessionId}`)
       if (options.spawnFails === true) throw new Error('spawn refused')
       const child = spawn(
         process.execPath,
@@ -450,6 +458,28 @@ test('dsh: a new process resumes the session; a crash is recovered; a lost sessi
   const last = requests('session/prompt').at(-1)!.params!
   expect(last.prompt).toHaveLength(2)
   expect(JSON.parse(readFileSync(record, 'utf8')).nativeId).toBe(last.sessionId)
+})
+
+test('starts at the same time share the process cap: the second waits for the first to go idle', async () => {
+  const { pool, agent } = setup({}, { maxChildren: 1 })
+  const a = await pool.newSession(agent)
+  const b = await pool.newSession(agent)
+  const ended = (session: string, id: string) =>
+    turn(pool, session, id, 'hello').then(result => {
+      events.push(`done:${session}`)
+      return result
+    })
+  const results = await Promise.all([ended(a, 'c1'), ended(b, 'c2')])
+  expect(results.map(result => result.outcome)).toEqual([
+    'completed',
+    'completed',
+  ])
+  expect(events.map(event => event.split(':')[0])).toEqual([
+    'spawn',
+    'done',
+    'spawn',
+    'done',
+  ])
 })
 
 test('a launch that fails before its process is running leaves no token or launch files behind', async () => {

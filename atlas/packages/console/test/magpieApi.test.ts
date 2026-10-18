@@ -593,7 +593,7 @@ test('agents: unknown actions, wrong methods and an unwired section', async () =
 const EXT = '/v0/magpie/agents/tokyo-1/coder/extensions'
 const EXT_WRITES: readonly (readonly [string, unknown])[] = [
   [`${EXT}/install`, { kind: 'plugin', source: 'obra/superpowers#v4.1.0' }],
-  [`${EXT}/install`, { kind: 'skill', source: '@acme/release-notes@1.2.3' }],
+  [`${EXT}/install`, { kind: 'skill', source: 'acme/release-notes#v1.2.3' }],
   [
     `${EXT}/install`,
     {
@@ -691,7 +691,7 @@ test('extensions: every write is admitted once and recorded as node/agent kind:n
   expect(admits).toBe(EXT_WRITES.length)
   expect(records).toEqual([
     'runtime.ext.install tokyo-1/coder plugin:obra/superpowers#v4.1.0 ok',
-    'runtime.ext.install tokyo-1/coder skill:@acme/release-notes@1.2.3 ok',
+    'runtime.ext.install tokyo-1/coder skill:acme/release-notes#v1.2.3 ok',
     'runtime.ext.install tokyo-1/coder mcp:github ok',
     'runtime.ext.install tokyo-1/coder mcp:docs ok',
     'runtime.ext.remove tokyo-1/coder plugin:superpowers@claude-plugins ok',
@@ -700,7 +700,7 @@ test('extensions: every write is admitted once and recorded as node/agent kind:n
   expect(records.join('\n')).not.toContain('mcp.example.com')
   expect(agentCalls()).toEqual([
     `ext-install tokyo-1/coder plugin:obra/superpowers#v4.1.0 ${SUBJECT}`,
-    `ext-install tokyo-1/coder skill:@acme/release-notes@1.2.3 ${SUBJECT}`,
+    `ext-install tokyo-1/coder skill:acme/release-notes#v1.2.3 ${SUBJECT}`,
     `ext-install tokyo-1/coder mcp:github ${SUBJECT}`,
     `ext-install tokyo-1/coder mcp:docs ${SUBJECT}`,
     `ext-remove tokyo-1/coder plugin:superpowers@claude-plugins ${SUBJECT}`,

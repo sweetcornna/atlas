@@ -257,6 +257,17 @@ export class NodeRuntimes {
     return configured !== FALLBACK_RUNTIME ? configured : DEFAULT_RUNTIME
   }
 
+  /**
+   * The runtime whose native state is `agent`'s (P36.7): `omp` when it is
+   * configured on qianmopi, else its external runtime (the configured one
+   * while it is away on the fallback).
+   */
+  nativeRuntimeOf(agent: string): string {
+    return this.configured(agent).runtime === FALLBACK_RUNTIME
+      ? FALLBACK_RUNTIME
+      : this.externalRuntimeOf(agent)
+  }
+
   /** The agents configured on `kind` (`runtime.remove` refuses while any). */
   inUse(kind: string): string[] {
     return [...this.#agents.keys()].filter(

@@ -788,6 +788,40 @@ test('Codex installs on the agent’s live home through its own commands and lea
   ).toEqual([])
 })
 
+test('a Codex plugin removal that fails is tried again until it goes', async () => {
+  let removals = 1
+  const node = host({
+    agents: [{ agent: 'helper', runtime: 'codex' }],
+    run: async argv => {
+      commands.push([...argv])
+      if (argv[2] === 'list')
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            installed: [{ name: 'stale', marketplaceName: 'qianmo' }],
+          }),
+        }
+      if (argv[2] === 'remove' && removals > 0) {
+        removals -= 1
+        return { code: 1, stdout: 'plugin is busy' }
+      }
+      return { code: 0, stdout: '' }
+    },
+  })
+  const removes = () =>
+    commands.filter(argv => argv[2] === 'remove').map(argv => argv[3])
+  await node.apply([SKILL])
+  expect(removes()).toEqual(['stale@qianmo'])
+  // The same set again: not counted as done, so the removal is tried again.
+  commands = []
+  await node.apply([SKILL])
+  expect(removes()).toEqual(['stale@qianmo'])
+  // It went: nothing more to do for this set.
+  commands = []
+  await node.apply([SKILL])
+  expect(commands).toEqual([])
+})
+
 test('skill and plugin names may have 64 characters; MCP server names 40', () => {
   const long = `a${'b'.repeat(63)}`
   expect(extensionWireSchema.safeParse({ ...SKILL, name: long }).success).toBe(

@@ -243,7 +243,7 @@
 
 ### 7.3 控制台调用原生命令
 
-控制链路 `runtime.ext.list` / `runtime.ext.install` / `runtime.ext.remove {agent, kind: plugin|mcp|skill, …}`：节点在该智能体的环境里、空的启动目录下、关掉标准输入并限时，执行该 harness **自己的**命令（调研 §2.2：如 `claude plugin install … -s user`、`codex plugin add … --json`、`dsh plugin --profile acp add`、`gemini extensions install … --consent`、`qwen extensions install … --consent`、`opencode plugin … -g`；MCP 用各自的 `mcp add/remove`；没有技能命令的按原生目录放 `skills/<名>/SKILL.md`）。每次操作后用原生的列表命令（有 JSON 的用 JSON）重读一遍，控制台「网关」页每个智能体显示「原生扩展」清单（插件、MCP、技能）与安装、卸载。安装来源只收 GitHub 仓库、npm 包名与该 harness 的官方市场名；只给运维个人账号，记 `runtime.ext.install` / `runtime.ext.remove`。会派生全部 MCP 服务的列表命令（Gemini、Qwen、opencode 的 `mcp list`）不用，改读它们的配置文件。
+控制链路 `runtime.ext.list` / `runtime.ext.install` / `runtime.ext.remove {agent, kind: plugin|mcp|skill, …}`：节点在该智能体的环境里、空的启动目录下、关掉标准输入并限时，执行该 harness **自己的**命令（调研 §2.2：如 `claude plugin install … -s user`、`codex plugin add … --json`、`dsh plugin --profile acp add`、`gemini extensions install … --consent`、`qwen extensions install … --consent`、`opencode plugin … -g`；MCP 用各自的 `mcp add/remove`；没有技能命令的按原生目录放 `skills/<名>/SKILL.md`）。每次操作后用原生的列表命令（有 JSON 的用 JSON）重读一遍，控制台「网关」页每个智能体显示「原生扩展」清单（插件、MCP、技能）与安装、卸载。安装来源只收 GitHub 仓库、npm 包名与该 harness 的官方市场名（技能只收 GitHub 仓库，节点只从那里装技能）；配置在 qianmopi 上的智能体没有原生扩展（不会落到 dsh 的状态目录）；只给运维个人账号，记 `runtime.ext.install` / `runtime.ext.remove`。会派生全部 MCP 服务的列表命令（Gemini、Qwen、opencode 的 `mcp list`）不用，改读它们的配置文件。
 
 - **来源规则**（中枢先核对形状再记账，节点再核一遍）：GitHub 只认 `github.com`，不带账号、端口与查询串；npm 要精确版本；任何一段不能以 `-` 开头，拒绝 `..`、`%`、反斜杠与空白；MCP 服务要么给命令（裸命令名或绝对路径）、要么给不带账号与查询串的 https 地址，二者不兼得；`qm-` 开头的名字与 `qianmo` 留给阡陌。节点把服务命令放在 `--` 之后再交给 harness 的命令行，免得 `npx -y` 一类参数被当成 harness 自己的选项。
 - **读取**：列表命令要起 harness 的命令行，所以页面只从中枢的缓存渲染，打开面板时缓存超过 1 分钟才重读；节点支不支持看第一次对该节点第一个智能体的探测（答 `unsupported` 就是旧节点，1 小时后再探）。
@@ -271,7 +271,7 @@
 - 原生 MCP 工具（`mcp__qianmo__*` 之外）一律经节点裁决，节点没有审批通道时拒绝；连接器以 `qm-` 前缀交给底层（Codex 给模型看到的是 `mcp__qm_<名>`），节点按 P32 的放行或询问裁决。
 - Codex 的 P32 扩展改用它自己的插件市场命令装在该智能体的状态目录里，不再整份替换 `config.toml` 与 `plugins/`；迁移只删节点以前写过的东西。Codex 的受信泄漏只在工作区有 `.codex/` 目录时出现，钉住层之后实测不再写入受信（`runtimeNative` 与真 Codex 冒烟）。
 - 真 Claude Code 冒烟：`claude mcp add` 装的服务在常驻运行里可见、调用前先问运维，原生配置里的钩子不触发。
-- 官方前端与常驻之间的锁是配置根下的文件（两个进程互相看不到内存）；锁文件先写好再以硬链接放到位，不会被看到半截，接管已死进程的锁时先挪开、核对还是那一份才删，挪错了就放回，前端启动前再核一次锁仍是自己的：常驻进程写一份不含秘密的名册，进程池每秒检查一次，被前端占着的智能体放掉空闲子进程。前端开着时 `runtime.ext.list` 照常答（附一句说明），安装与卸载回 `E_RUNTIME_EXT_LOCKED`。
+- 官方前端与常驻之间的锁是配置根下的文件（两个进程互相看不到内存）；锁文件先写好再以硬链接放到位，不会被看到半截，接管已死进程的锁时先挪开、核对还是那一份才删，挪错了就放回，前端启动前再核一次锁仍是自己的：常驻进程写一份不含秘密的名册，进程池每秒检查一次，被前端占着的智能体放掉空闲子进程。前端开着时 `runtime.ext.list` 照常答（附一句说明），安装与卸载回 `E_RUNTIME_EXT_LOCKED`。安装与卸载在整个过程中持有自己的一把锁（`<agent>.change`）；它与前端锁各自先取自己的再看对方的，所以同时开始的两者至少有一方看见对方而退出，前端不会在改动进行中打开。网关页换了智能体的底层就丢掉它缓存的扩展清单，另一个底层的清单也不会当成它的显示。
 - 前端不挂连接器（连接器的秘密留在常驻进程）；opencode 的前端不加 `--pure`，插件在前端里可用。
 - dsh 没有 MCP 命令行，dsh 上的原生 MCP 操作答「不支持」；opencode 的卸载靠改它的配置文件，配置里有注释时拒绝。
 - Gemini、Qwen 的 `mcp add` 把 `--` 放在服务命令之后（`名 命令 -- 参数`），Codex、opencode 放在命令之前；放行名单为空时传占位名 `qmo-none`，不省略这个参数（省略就是全部放行）。

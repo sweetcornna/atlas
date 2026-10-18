@@ -284,6 +284,8 @@ const appliedSchema = z.object({
   roster: rosterSchema.optional(),
   /** Codex agents: what their `CODEX_HOME` was last installed with. */
   codex: z.record(z.string(), z.string()).default({}),
+  /** Codex agents with a plugin removal still to do: applied again. */
+  codexLeft: z.array(z.string()).default([]),
   at: z.number(),
 })
 type Applied = z.infer<typeof appliedSchema> & { roster: Roster }
@@ -995,7 +997,8 @@ export class NodeExtensions {
       !again &&
       previous?.digest === digest &&
       sameRoster(previous.roster, roster) &&
-      !previous.results.some(result => result.retry)
+      !previous.results.some(result => result.retry) &&
+      previous.codexLeft.length === 0
     )
       return { ok: true, value: this.status() }
     const failures = new Failures()
@@ -1259,6 +1262,7 @@ export class NodeExtensions {
     // have differs from their last install or that install failed. A home
     // the node once wrote whole loses what the node wrote there first.
     const codex: Record<string, string> = { ...(previous?.codex ?? {}) }
+    const codexLeft: string[] = []
     for (const agent of codexAgents) {
       const mine = laidOut(agent)
       this.#migrateCodexHome(agent, previous, entries)
@@ -1274,6 +1278,7 @@ export class NodeExtensions {
       if (codex[agent] === wanted && !failedBefore) continue
       if (codex[agent] === undefined && mine.length === 0) continue
       const missing = await this.#installCodex(agent, mine, plugins, failures)
+      if (missing?.some(name => name.startsWith('-'))) codexLeft.push(agent)
       // A home with some plugins missing is swapped in too, with the new
       // config: the agent is recycled onto it, and installed again next time.
       if (missing !== null)
@@ -1341,6 +1346,7 @@ export class NodeExtensions {
       agentDigests,
       roster,
       codex,
+      codexLeft,
       at: this.#now(),
     }
     // Lifting a cache entry nobody uses any more is housekeeping.
@@ -1549,8 +1555,10 @@ export class NodeExtensions {
    * cache); what the node installed before and the agent should no longer
    * have is removed with `codex plugin remove`. The plugins and MCP servers
    * the operator installed natively, and Codex's own records (approvals,
-   * trust), are not touched. The plugins that did not go in; `null` when the
-   * marketplace could not be added (the agent keeps what it had).
+   * trust), are not touched. What is left to reconcile: the plugins that did
+   * not go in, and `-<name>` for each that did not go (`-` alone when the
+   * list to remove from could not be read); `null` when the marketplace could
+   * not be added (the agent keeps what it had).
    */
   async #installCodex(
     agent: string,
@@ -1636,18 +1644,30 @@ export class NodeExtensions {
       [bin, 'plugin', 'list', '--marketplace', CODEX_MARKETPLACE, '--json'],
       1_000_000,
     )
+    // A removal that did not happen keeps this install from counting as
+    // done, so the next apply tries again.
+    if (listed.code !== 0) missing.push('-')
     for (const name of codexMarketplacePlugins(listed)) {
       if (wanted.has(name)) continue
-      await step([
+      const removed = await step([
         bin,
         'plugin',
         'remove',
         `${name}@${CODEX_MARKETPLACE}`,
         '--json',
       ])
+      if (removed.code !== 0) missing.push(`-${name}`)
     }
-    if (wanted.size === 0)
-      await step([bin, 'plugin', 'marketplace', 'remove', CODEX_MARKETPLACE])
+    if (wanted.size === 0) {
+      const gone = await step([
+        bin,
+        'plugin',
+        'marketplace',
+        'remove',
+        CODEX_MARKETPLACE,
+      ])
+      if (gone.code !== 0) missing.push(`-@${CODEX_MARKETPLACE}`)
+    }
     return missing
   }
 

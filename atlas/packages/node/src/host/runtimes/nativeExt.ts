@@ -70,7 +70,11 @@ import {
   RUNTIME_EXT_OPS,
 } from './contract.js'
 import { DSH_QMO_SKILLS } from './dsh.js'
-import { frontendHolds } from './frontendLock.js'
+import {
+  acquireChangeLock,
+  frontendHolds,
+  releaseChangeLock,
+} from './frontendLock.js'
 import { geminiNativeServers, geminiStripTrust } from './gemini.js'
 import { qwenNativeServers } from './qwen.js'
 import { runtimeDirs, runtimeEnv } from './runtimeEnv.js'
@@ -1166,15 +1170,22 @@ export class NativeExtensions {
   ): Promise<NativeExtensionsReply> {
     return this.#serial(agent, async () => {
       const ctx = this.#context(agent)
-      if (frontendHolds(agent))
+      // Held for the whole change: a frontend opened meanwhile finds it.
+      const held = acquireChangeLock(agent, ctx.runtime)
+      if (held === undefined || frontendHolds(agent)) {
+        if (held !== undefined) releaseChangeLock(agent, held)
         throw new OpError(
           RUNTIME_EXT_ERRORS.locked,
-          `${agent} 的官方前端正开着（qm runtime open）；关掉之后再装或卸`,
+          held === undefined
+            ? `${agent} 的原生扩展正由另一处在改`
+            : `${agent} 的官方前端正开着（qm runtime open）；关掉之后再装或卸`,
         )
+      }
       let notes: string[]
       try {
         notes = await work(ctx)
       } finally {
+        releaseChangeLock(agent, held)
         await this.#options.invalidate?.(agent).catch(() => {})
       }
       return this.#reply(ctx, notes)

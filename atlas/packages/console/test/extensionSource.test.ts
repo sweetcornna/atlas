@@ -56,7 +56,11 @@ describe('extension sources', () => {
     ]
     for (const [text, sent] of cases) {
       expect(`${text} ${source('plugin', text)}`).toBe(`${text} ${sent}`)
-      expect(`${text} ${source('skill', text)}`).toBe(`${text} ${sent}`)
+      // The node installs a skill from GitHub only.
+      const github = text.includes('/') && !text.startsWith('@')
+      expect(`${text} ${source('skill', text)}`).toBe(
+        `${text} ${github ? sent : null}`,
+      )
     }
   })
 

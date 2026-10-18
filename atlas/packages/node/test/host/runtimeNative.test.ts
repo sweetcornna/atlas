@@ -34,10 +34,13 @@ import {
   RUNTIME_EXT_ERRORS,
 } from '../../src/host/runtimes/contract.js'
 import {
+  acquireChangeLock,
   acquireFrontendLock,
+  changeHolds,
   holdsFrontendLock,
   readFrontendAck,
   readFrontendLock,
+  releaseChangeLock,
   releaseFrontendLock,
 } from '../../src/host/runtimes/frontendLock.js'
 import { GEMINI_TRUST_RECORD } from '../../src/host/runtimes/gemini.js'
@@ -882,6 +885,34 @@ test('native changes wait for the official frontend to close; listing does not',
   const taken = acquireFrontendLock('coder', 'gemini')
   expect(taken?.pid).toBe(process.pid)
   releaseFrontendLock('coder', taken!)
+})
+
+test('a native change holds its own lock while it runs, which the frontend looks for', async () => {
+  const { workspace } = scratch()
+  const during: boolean[] = []
+  const { ext } = native('gemini', workspace, argv => {
+    if (argv.includes('install')) during.push(changeHolds('coder'))
+    return '[]'
+  })
+  await ext.control(
+    'runtime.ext.install',
+    { agent: 'coder', kind: 'plugin', source: 'team/ext' },
+    {} as never,
+  )
+  expect(during).toEqual([true])
+  expect(changeHolds('coder')).toBe(false)
+  // One change at a time, across processes too.
+  const held = acquireChangeLock('coder', 'gemini')!
+  expect(acquireChangeLock('coder', 'gemini')).toBeUndefined()
+  expect(
+    await ext.control(
+      'runtime.ext.install',
+      { agent: 'coder', kind: 'plugin', source: 'team/ext' },
+      {} as never,
+    ),
+  ).toMatchObject({ ok: false, code: RUNTIME_EXT_ERRORS.locked })
+  releaseChangeLock('coder', held)
+  expect(changeHolds('coder')).toBe(false)
 })
 
 test('a frontend lock appears whole; an empty or dead one is taken over and its old holder learns it', () => {

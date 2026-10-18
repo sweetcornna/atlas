@@ -182,11 +182,25 @@ export class AgentExtensions {
     )
   }
 
-  /** What the page shows for an agent, from the cache; null on a node without the ops. */
-  view(node: string, agent: string): MagpieExtensionsView | null {
+  /**
+   * What the page shows for an agent, from the cache; null on a node without
+   * the ops. A list of another runtime than `runtime` is not shown as its.
+   */
+  view(
+    node: string,
+    agent: string,
+    runtime?: string,
+  ): MagpieExtensionsView | null {
     if (this.supported(node) !== true) return null
     const key = `${node}/${agent}`
-    const listed = this.#lists.get(key)
+    const cached = this.#lists.get(key)
+    const listed =
+      runtime === undefined ||
+      cached?.reply === null ||
+      cached?.reply === undefined ||
+      cached.reply.runtime === runtime
+        ? cached
+        : undefined
     const now = this.#options.now()
     let job = this.#jobs.get(key) ?? null
     if (
@@ -263,6 +277,11 @@ export class AgentExtensions {
           },
         }
       : { ok: true, value: view }
+  }
+
+  /** Drops an agent's cached list (its runtime changed). */
+  forget(node: string, agent: string): void {
+    this.#lists.delete(`${node}/${agent}`)
   }
 
   /** The agent's install or removal in flight, if any. */

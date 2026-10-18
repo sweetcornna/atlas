@@ -240,6 +240,8 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
   /** Each live process's agent, on the runtime it was started on. */
   readonly #running = new Map<string, ExternalAgent>()
   readonly #starting = new Map<string, Promise<ExternalRuntimeChannel>>()
+  /** Sessions holding a slot under `maxChildren` while they start. */
+  readonly #reserved = new Set<string>()
   readonly #tokens = new Map<string, string>()
   readonly #used = new Map<string, number>()
   /** Turns holding a session's channel (their acquisition signal is live). */
@@ -402,7 +404,11 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       starting = (async () => {
         await this.initialize()
         await this.#claimCapacity(sessionId)
-        return this.#spawn(agent, sessionId)
+        try {
+          return await this.#spawn(agent, sessionId)
+        } finally {
+          this.#reserved.delete(sessionId)
+        }
       })()
       this.#starting.set(sessionId, starting)
       void starting.then(
@@ -486,11 +492,16 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     }
   }
 
+  /**
+   * Waits for room under `maxChildren` and holds it for `sessionId` until
+   * its start settles: a start that is still being set up counts, so
+   * concurrent starts cannot all see room.
+   */
   async #claimCapacity(sessionId: string): Promise<void> {
     const max = this.#options.maxChildren
     if (max === undefined) return
     const deadline = Date.now() + CAPACITY_WAIT_MS
-    while (this.#channels.size >= max) {
+    while (this.#channels.size + this.#reserved.size >= max) {
       const idle = [...this.#channels]
         .filter(([id, channel]) => id !== sessionId && !channel.busy)
         .sort(
@@ -504,6 +515,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         throw new Error('external runtime capacity is exhausted')
       await new Promise(resolve => setTimeout(resolve, 200))
     }
+    this.#reserved.add(sessionId)
   }
 
   #record(dir: string, kind: ExternalRuntimeKind): SessionRecord {
