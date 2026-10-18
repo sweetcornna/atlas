@@ -926,6 +926,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         self: new SelfUpgrader({
           log: line => process.stderr.write(`${line}\n`),
         }),
+        // The gateway page keeps each node's runtime versions for minutes.
+        runtimesChanged: node => magpie?.agents?.runtimesChanged(node),
         onError: message => process.stderr.write(`[updates] ${message}\n`),
       })
     : undefined

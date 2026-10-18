@@ -124,6 +124,12 @@ const CHECK_EVERY_MS = 10 * 60 * 1000
 /** After a write magpie did not answer in time, how long to wait before looking again. */
 const LOOK_AGAIN_MS = 1_500
 const SNAPSHOT_TTL_MS = 2_000
+/**
+ * How long the 「智能体」 section reuses magpie's providers and groups: the
+ * section is read every few seconds while the page follows a job, and they
+ * change by this port's own writes (which drop them) or rarely elsewhere.
+ */
+const GATEWAYS_READ_TTL_MS = 15_000
 /** The name prefix of every upstream a subscriber connects (P35). */
 const TENANT_UPSTREAM_PREFIX = 'qmt-'
 const MAX_TENANT_UPSTREAMS = 10
@@ -651,6 +657,13 @@ export class ConsoleMagpie implements MagpiePort {
   #queue: Promise<unknown> = Promise.resolve()
   #timer: ReturnType<typeof setInterval> | null = null
   #cache: { readonly at: number; readonly value: MagpieSnapshot } | null = null
+  /** magpie's providers and groups as {@link #gateways} last read them. */
+  #gatewaysRead: {
+    readonly at: number
+    readonly read: MagpieRead | null
+  } | null = null
+  /** Bumped whenever a write may have changed magpie: older reads are not kept. */
+  #generation = 0
   /** The 「智能体」 section (P36.5); absent without a control link. */
   readonly agents: ConsoleMagpieAgents | undefined
 
@@ -710,10 +723,10 @@ export class ConsoleMagpie implements MagpiePort {
 
   /** One write at a time: "read magpie, then change it" must not interleave. */
   #serial<T>(run: () => Promise<T>): Promise<T> {
-    this.#cache = null
+    this.#forgetReads()
     const next = this.#queue.then(run, run).finally(() => {
       // A snapshot taken while this ran may hold the state from before it.
-      this.#cache = null
+      this.#forgetReads()
     })
     this.#queue = next.catch(() => {})
     return next
@@ -722,7 +735,14 @@ export class ConsoleMagpie implements MagpiePort {
   #save(next: MagpieState): void {
     writePrivateJson(this.#options.statePath, next)
     this.#state = next
+    this.#forgetReads()
+  }
+
+  /** Drops what was read of magpie before a write. */
+  #forgetReads(): void {
     this.#cache = null
+    this.#gatewaysRead = null
+    this.#generation++
   }
 
   #authorize(caller: MagpieCaller): Failure | null {
@@ -2158,15 +2178,7 @@ export class ConsoleMagpie implements MagpiePort {
   async #gateways(): Promise<MagpieAgentsGateways | null> {
     const overview = await this.#options.providers.overview()
     if (!overview.ok) return null
-    let read: MagpieRead | null = null
-    const client = this.#client()
-    if (client instanceof MagpieClient) {
-      try {
-        read = this.#platform(await this.#read(client))
-      } catch {
-        read = null
-      }
-    }
+    const read = await this.#gatewaysMagpie()
     const choices =
       read === null ? null : modelChoices(read.providers, read.groups)
     const nodes = new Map<string, AgentNodeGateway>()
@@ -2199,6 +2211,26 @@ export class ConsoleMagpie implements MagpiePort {
       nodes,
       platformModels: choices,
     }
+  }
+
+  /** magpie's platform providers and groups, reused for a short while. */
+  async #gatewaysMagpie(): Promise<MagpieRead | null> {
+    const cached = this.#gatewaysRead
+    if (cached !== null && this.#now() - cached.at < GATEWAYS_READ_TTL_MS)
+      return cached.read
+    const generation = this.#generation
+    let read: MagpieRead | null = null
+    const client = this.#client()
+    if (client instanceof MagpieClient) {
+      try {
+        read = this.#platform(await this.#read(client))
+      } catch {
+        read = null
+      }
+    }
+    if (generation === this.#generation)
+      this.#gatewaysRead = { at: this.#now(), read }
+    return read
   }
 
   /**

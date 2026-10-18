@@ -209,6 +209,11 @@ export interface ConsoleUpdatesOptions {
   readonly notify?: UpdatesNotify
   /** The hub's own upgrade job. */
   readonly self: SelfUpgrader
+  /**
+   * A node was asked to update a runtime: what is installed there may have
+   * changed (the gateway page's cached `runtime.versions`, P36.5).
+   */
+  readonly runtimesChanged?: (node: string) => void
   readonly now?: () => number
   readonly sleep?: (ms: number) => Promise<void>
   readonly onError?: (message: string) => void
@@ -787,6 +792,7 @@ export class ConsoleUpdates implements UpdatesPort {
             { timeoutMs: 13 * 60_000 },
           )
           .catch(() => null)
+        this.#options.runtimesChanged?.(node.node)
         if (outcome?.ok) results.push(`${node.node} 已装 ${latest}`)
         else {
           failed++
