@@ -233,6 +233,22 @@ export interface FleetConfig {
    */
   readonly sshBin?: string
   /**
+   * 重试退避基数（ms，第 n 次退避 `n × 基数`）—— 与 {@link sshBin} 同一种
+   * **只给护栏测试用的注入点**。缺省各用各的常数：`#sshRetry` 用
+   * {@link TRANSPORT_RETRY_BACKOFF_MS}（750），长命隧道重建用
+   * {@link TUNNEL_REVIVE_BACKOFF_MS}（800）。
+   *
+   * 存在的理由：退避不乘 `ctx.timeoutScale`（真机腿上它是链路的喘息，不是
+   * 就绪预算），于是假 ssh 回一次 255，用例就白等 750 + 1500 ms，而护栏只数
+   * 次数、不看退避多长。`fleetConfigFromEnv` 故意不填它。
+   */
+  readonly retryBackoffMs?: number
+  /**
+   * runner 侧的固定拍子（ms）—— 同上，只给护栏测试用，`fleetConfigFromEnv`
+   * 不填。缺省各用各的：两条就绪循环 400，反向隧道探测与重启前放端口 500。
+   */
+  readonly pollIntervalMs?: number
+  /**
    * SSH 连接复用（`ControlMaster`）。**缺省开**；
    * `QIANMO_ACCEPTANCE_SSH_MULTIPLEX=0` 一键退回「每条命令自己建一次连接」。
    *
@@ -584,6 +600,16 @@ export class FleetDriver implements AcceptanceDriver {
     this.capabilities = new Set(caps)
   }
 
+  /** 第 `n` 次重试前的退避：缺省 `n × fallback`，见 {@link FleetConfig.retryBackoffMs}。 */
+  #backoff(fallback: number, n: number): number {
+    return (this.#config.retryBackoffMs ?? fallback) * n
+  }
+
+  /** runner 侧的一拍：缺省 `fallback`，见 {@link FleetConfig.pollIntervalMs}。 */
+  #tick(fallback: number): number {
+    return this.#config.pollIntervalMs ?? fallback
+  }
+
   /**
    * 一轮结束把 SSH 复用 master 逐台拆掉（issue #100 ③）。
    *
@@ -894,7 +920,7 @@ export class FleetDriver implements AcceptanceDriver {
             `stderr:\n${diag.slice(0, 1_500)}`,
         )
       }
-      await sleep(400)
+      await sleep(this.#tick(400))
     }
     // **杀进程的清理必须登记在这里，而不是只靠 `#scratch` 的 `rm -rf`。**
     // 第一版漏了这一条，于是一次跑完之后每台机器上都留着还活着的常驻：
@@ -980,7 +1006,7 @@ export class FleetDriver implements AcceptanceDriver {
     const disposable = requireDisposable(node, '重启')
     await this.#killGroup(node as FleetNodeHandle, disposable, 'TERM')
     // 端口要真的放开再绑回去。
-    await sleep(500)
+    await sleep(this.#tick(500))
     return await this.#launchDisposable(
       ctx,
       { ...node.spec, ...overrides },
@@ -1460,7 +1486,7 @@ export class FleetDriver implements AcceptanceDriver {
             `stderr:\n${(await diagErr()).slice(0, 1_500)}`,
         )
       }
-      await sleep(400)
+      await sleep(this.#tick(400))
     }
 
     const { viewToken, adminToken } = tokensFromBanner(banner, spec)
@@ -1697,7 +1723,7 @@ export class FleetDriver implements AcceptanceDriver {
           `到 ${ssh} 的反向隧道 ${String(remotePort)}→${String(localPort)} 没通：${probe.stdout.trim()}`,
         )
       }
-      await sleep(500)
+      await sleep(this.#tick(500))
     }
   }
 
@@ -1989,7 +2015,7 @@ export class FleetDriver implements AcceptanceDriver {
           `[tunnel] ${label}断了，第 ${String(attempts)} 次重建` +
             `${lastTail === '' ? '' : `（上一次退出：${lastTail.slice(-200)}）`}`,
         )
-        await sleep(TUNNEL_REVIVE_BACKOFF_MS * attempts)
+        await sleep(this.#backoff(TUNNEL_REVIVE_BACKOFF_MS, attempts))
         if (disposed) return
         current = spawnOne()
       }
@@ -2384,7 +2410,7 @@ export class FleetDriver implements AcceptanceDriver {
     for (let n = 1; n < attempts; n++) {
       if (!isRetriableTransportFailure(result)) break
       options?.onRetry?.(n, result)
-      await sleep(TRANSPORT_RETRY_BACKOFF_MS * n)
+      await sleep(this.#backoff(TRANSPORT_RETRY_BACKOFF_MS, n))
       result = await this.#ssh(ssh, lines, options?.timeoutMs)
     }
     return result

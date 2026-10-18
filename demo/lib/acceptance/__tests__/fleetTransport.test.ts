@@ -231,6 +231,15 @@ function fakeSsh(script: string, tunnelDies = 0): string {
   return bin
 }
 
+/**
+ * 退避与 runner 侧拍子压短（`FleetConfig.retryBackoffMs` / `pollIntervalMs`）。
+ *
+ * 缺省的 750 + 1500 ms 重试退避不乘 `timeoutScale`，假 ssh 回一次 255，用例就
+ * 白等 2.25 s；而这里的护栏只数次数、看结论，不看退避多长。拍子不压到 1 ms：
+ * 等满预算的那几条会把每一拍都变成一次真拨号或一次假 ssh 起停。
+ */
+const FAST_PACING = { retryBackoffMs: 1, pollIntervalMs: 50 } as const
+
 /** 那个假 ssh 一共被要求建了几次长命隧道。 */
 function tunnelSpawns(sshBin: string): number {
   const f = join(dirname(sshBin), 'tunnel-calls')
@@ -255,6 +264,7 @@ function driver(sshBin: string): FleetDriver {
       ],
       psk: {},
       sshBin,
+      ...FAST_PACING,
     }),
   )
 }
@@ -555,6 +565,12 @@ describe('sshBin 只是护栏的注入点', () => {
       delete process.env.QIANMO_ACCEPTANCE_SSH_BIN
     }
   })
+
+  it('退避与拍子也一样：fleetConfigFromEnv 不填，真跑永远是缺省常数', () => {
+    const config = fleetConfigFromEnv()
+    expect(config.retryBackoffMs).toBeUndefined()
+    expect(config.pollIntervalMs).toBeUndefined()
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -665,6 +681,7 @@ function driverWithConsole(sshBin: string): FleetDriver {
       psk: {},
       consoleHost: 'fake-console',
       sshBin,
+      ...FAST_PACING,
     }),
   )
 }

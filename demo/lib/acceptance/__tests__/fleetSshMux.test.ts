@@ -157,6 +157,9 @@ function driver(sshBin: string, sshMultiplex: boolean): FleetDriver {
     psk: {},
     sshBin,
     sshMultiplex,
+    // 退避与拍子压短，理由见 fleetTransport.test.ts 的 FAST_PACING。
+    retryBackoffMs: 1,
+    pollIntervalMs: 50,
   })
   openDrivers.push(made)
   return made
