@@ -339,10 +339,9 @@ describe('model-apply.sh', () => {
       skip: !HAS_FLOCK,
     },
   ]
+  const lockFile = (t: Tree) => join(t.home, '.qianmo-model-apply-host.lock')
+  const lockDir = (t: Tree) => `${lockFile(t)}.d`
   for (const mode of modes) {
-    const lockFile = (t: Tree) => join(t.home, '.qianmo-model-apply-host.lock')
-    const lockDir = (t: Tree) => `${lockFile(t)}.d`
-
     test.skipIf(mode.skip)(
       `${mode.name}: two nodes under different roots share the host lock and run serially`,
       async () => {
@@ -399,46 +398,58 @@ describe('model-apply.sh', () => {
       },
       30_000,
     )
-
-    test.skipIf(mode.skip)(
-      `${mode.name}: waiting past the limit answers busy instead of hanging`,
-      async () => {
-        const t = tree(undefined, mode.kind)
-        writeFileSync(join(t.records, 'delay-ms'), '22000')
-        const env = sshdEnv(t, {
-          ...mode.env,
-          QIANMO_MODEL_APPLY_LOCK_WAIT_S: '1',
-        })
-        const first = run(t, ['beta-1'], env)
-        for (
-          let attempt = 0;
-          attempt < 100 && t.calls().length === 0;
-          attempt++
-        )
-          await Bun.sleep(50)
-        expect(t.calls()).toHaveLength(1)
-        const waiting = Date.now()
-        const second = await run(t, ['beta-2'], env)
-        // The deprecated one-second override cannot shorten the fixed 20 s wait.
-        // mkdir uses second-resolution date, so allow one second of rounding.
-        expect(Date.now() - waiting).toBeGreaterThanOrEqual(19_000)
-        expect(second.code).toBe(1)
-        expect(JSON.parse(second.stdout)).toMatchObject({
-          v: 1,
-          requestId: null,
-          ok: false,
-          code: 'busy',
-        })
-        // While the first one still holds it: the lock of this implementation.
-        expect(
-          existsSync(mode.kind === 'flock' ? lockFile(t) : lockDir(t)),
-        ).toBe(true)
-        expect((await first).code).toBe(0)
-        expect(t.calls()).toHaveLength(1)
-      },
-      35_000,
-    )
   }
+
+  /**
+   * The fixed 20 s wait cannot be shortened — that is what this case proves —
+   * so the implementations sit it out at once instead of one after the other:
+   * each in its own tree (its own `$HOME`, so its own host lock). Where flock
+   * is missing only mkdir runs, and the name says which ran.
+   */
+  const waiting = modes.filter(mode => !mode.skip)
+  async function waitPastLimit(mode: (typeof modes)[number]): Promise<void> {
+    const t = tree(undefined, mode.kind)
+    writeFileSync(join(t.records, 'delay-ms'), '22000')
+    const env = sshdEnv(t, {
+      ...mode.env,
+      QIANMO_MODEL_APPLY_LOCK_WAIT_S: '1',
+    })
+    const first = run(t, ['beta-1'], env)
+    for (let attempt = 0; attempt < 100 && t.calls().length === 0; attempt++)
+      await Bun.sleep(50)
+    expect(t.calls()).toHaveLength(1)
+    const began = Date.now()
+    const second = await run(t, ['beta-2'], env)
+    // The deprecated one-second override cannot shorten the fixed 20 s wait.
+    // mkdir uses second-resolution date, so allow one second of rounding.
+    expect(Date.now() - began).toBeGreaterThanOrEqual(19_000)
+    expect(second.code).toBe(1)
+    expect(JSON.parse(second.stdout)).toMatchObject({
+      v: 1,
+      requestId: null,
+      ok: false,
+      code: 'busy',
+    })
+    // While the first one still holds it: the lock of this implementation.
+    expect(existsSync(mode.kind === 'flock' ? lockFile(t) : lockDir(t))).toBe(
+      true,
+    )
+    expect((await first).code).toBe(0)
+    expect(t.calls()).toHaveLength(1)
+  }
+  test(`${waiting.map(mode => mode.kind).join(' and ')} lock, side by side: waiting past the limit answers busy instead of hanging`, async () => {
+    // Every run to its end before judging, so a red names the implementation.
+    const outcomes = await Promise.allSettled(
+      waiting.map(mode => waitPastLimit(mode)),
+    )
+    expect(
+      outcomes.flatMap((outcome, i) =>
+        outcome.status === 'rejected'
+          ? [`${waiting[i]?.kind}: ${String(outcome.reason)}`]
+          : [],
+      ),
+    ).toEqual([])
+  }, 35_000)
 
   test('mkdir stale reclamation with concurrent waiters preserves host serialization', async () => {
     const t = tree(undefined, 'mkdir')

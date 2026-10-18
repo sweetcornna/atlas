@@ -527,7 +527,12 @@ describe('beta-up.sh --role node：就绪必须是刚起的那个 pid 在应答'
   test('应答来自别的 pid：不算就绪，超时时把应答者报出来', async () => {
     const leg = await nodeLeg()
 
-    const up = runUp(leg, { FAKE_RESIDENT_MODE: 'child' })
+    // 负例要等满就绪上限才报：上限从 runUp 的 4 s（探两拍）压到 1 s（一拍）。
+    // 应答者在 1 s 起后宽限内就已在听，第一拍就认得出它不是 beta-1。
+    const up = runUp(leg, {
+      FAKE_RESIDENT_MODE: 'child',
+      QIANMO_BETA_READY_TIMEOUT_S: '1',
+    })
     const said = `${up.stdout}${up.stderr}`
 
     expect(up.exitCode).not.toBe(0)

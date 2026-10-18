@@ -163,6 +163,8 @@ function startQm(
       HOME: process.env.HOME ?? BASE,
       TMPDIR: tmpdir(),
       QIANMO_CONFIG_DIR: configDir,
+      // 手写的环境不继承 preload，这一项要再设一次：测试节点不下载缺省底层（P36 §2）。
+      QIANMO_RUNTIME_AUTOINSTALL: '0',
       NO_COLOR: '1',
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:9',
       OPENAI_BASE_URL: 'http://127.0.0.1:9/v1',

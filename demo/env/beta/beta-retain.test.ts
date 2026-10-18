@@ -411,11 +411,19 @@ describe('beta-retain host retention tool', () => {
     const staleLock = join(stale, 'run', '.retain-apply-lock')
     mkdirSync(staleLock)
 
-    const staleResult = run(stale, ['--apply'])
+    // 锁上限压到 1 s（缺省 10 s）：这条测的是等满上限仍拿不到锁时如实报错、
+    // 不删旧锁，与上限多长无关。
+    const staleResult = run(stale, ['--apply'], NOW, {
+      QIANMO_BETA_RETAIN_LOCK_WAIT_S: '1',
+    })
 
     expect(staleResult.exitCode).not.toBe(0)
-    expect(staleResult.stderr).toContain('10 秒内未完成')
+    expect(staleResult.stderr).toContain('apply 1 秒内未完成')
     expect(lstatSync(staleLock).isDirectory()).toBe(true)
+    // 真跑不设这个变量，上限仍是 10 s。
+    expect(readFileSync(RETAIN_IMPLEMENTATION, 'utf8')).toContain(
+      'if (configured === undefined) return 10\n',
+    )
 
     const malicious = root()
     const outside = mkdtempSync(join(tmpdir(), 'qianmo-retain-lock-'))
