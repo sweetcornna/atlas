@@ -156,6 +156,9 @@ function spawnResidentCli(
 
         QIANMO_CONFIG_DIR: configDir,
         QIANMO_TRANSPORT_PSK: PSK,
+        // Built, not inherited, so the preload's value is set again: a test
+        // node never downloads its default runtime (P36 §2).
+        QIANMO_RUNTIME_AUTOINSTALL: '0',
       },
     },
   )
