@@ -13,7 +13,9 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import type { ChatSendInput } from '@qianmo/console'
 import { LIMITS, type ControlOutcome } from '@qianmo/protocol'
+import { NodeTurnGate } from '@qianmo/resident'
 import { MemoryActionLedger } from '../../../console/test/memoryActions.js'
 import {
   ConsolePeers,
@@ -381,6 +383,122 @@ describe('the call chain', () => {
     expect(helper).toMatchObject({ ok: false, code: 'busy' })
     expect(coder).toMatchObject({ ok: true })
     expect(asked(HELPER)).toEqual([])
+  })
+})
+
+/**
+ * Two nodes, each with the real `NodeTurnGate`: a line sent to an agent runs
+ * as a turn on its node's gate, keyed by its task, with the chain links on
+ * that node — what `askReentry` passes a resident. An agent's turn does what
+ * the test scripted for it, else answers at once.
+ */
+class TwoNodes extends FakeChat {
+  readonly gates = new Map([
+    ['node-a', new NodeTurnGate()],
+    ['node-b', new NodeTurnGate()],
+  ])
+  readonly scripts = new Map<string, (sessionId: string) => Promise<void>>()
+
+  override async send(input: ChatSendInput) {
+    const sent = await super.send(input)
+    if (!sent.ok) return sent
+    const target = this.records.get(input.sessionId)!.session.target
+    const node = target.split('/')[2]!
+    const chain = (input.chain ?? [])
+      .filter(link => link.node === node)
+      .map(link => link.taskId)
+    const script =
+      this.scripts.get(target) ?? (async (id: string) => this.reply(id, '42'))
+    void this.gates
+      .get(node)!
+      .run(() => script(input.sessionId), {
+        key: sent.value.taskId!,
+        ...(chain.length > 0 ? { chain } : {}),
+      })
+      .catch(() => {})
+    return sent
+  }
+
+  idle(): boolean {
+    return [...this.gates.values()].every(
+      gate => !gate.active && gate.queued === 0,
+    )
+  }
+}
+
+describe('two nodes asking across', () => {
+  test('crossing questions from two unrelated turns: one is refused busy at once, the other is answered', async () => {
+    const nodes = new TwoNodes([MAIN, HELPER, CODER, REVIEWER, OTHER])
+    chat = nodes
+    const book = peers()
+    // MAIN (node-a) asks REVIEWER (node-b) while CODER (node-b) asks HELPER
+    // (node-a): each question lands behind the other node's asking turn.
+    const both = Promise.withResolvers<void>()
+    let started = 0
+    const results = new Map<string, ControlOutcome>()
+    const asker =
+      (self: string, target: string) =>
+      async (sessionId: string): Promise<void> => {
+        if (++started === 2) both.resolve()
+        await both.promise
+        const outcome = await ask(
+          book,
+          sessionId,
+          [target],
+          { timeoutSec: 50 },
+          self,
+        )
+        results.set(self, outcome)
+        nodes.reply(sessionId, 'done')
+      }
+    nodes.scripts.set(MAIN, asker(MAIN, REVIEWER))
+    nodes.scripts.set(CODER, asker(CODER, HELPER))
+    await conversation(MAIN)
+    await conversation(CODER)
+    await until(() => results.size === 2, 5_000)
+    const main = answers(results.get(MAIN)!)[0]!
+    const coder = answers(results.get(CODER)!)[0]!
+    // Neither waits out its timeout behind the other.
+    expect([main, coder].map(one => (one.ok ? 'ok' : one.code)).sort()).toEqual(
+      ['busy', 'ok'],
+    )
+    const refused = [main, coder].find(one => !one.ok)
+    if (refused?.ok === false) expect(refused.error).toContain('稍后再问')
+    expect(stopped).toEqual([])
+    await until(() => nodes.idle())
+  })
+
+  test('one chain crossing nodes and back still nests', async () => {
+    const nodes = new TwoNodes([MAIN, HELPER, CODER, REVIEWER, OTHER])
+    chat = nodes
+    const book = peers()
+    let outer: ControlOutcome | undefined
+    // MAIN (node-a) asks CODER (node-b), which asks HELPER back on node-a.
+    nodes.scripts.set(MAIN, async sessionId => {
+      outer = await ask(book, sessionId, [CODER], { timeoutSec: 50 }, MAIN)
+      nodes.reply(sessionId, 'done')
+    })
+    nodes.scripts.set(CODER, async sessionId => {
+      const inner = await ask(
+        book,
+        sessionId,
+        [HELPER],
+        { timeoutSec: 50 },
+        CODER,
+      )
+      nodes.reply(sessionId, JSON.stringify(answers(inner)[0]))
+    })
+    await conversation(MAIN)
+    await until(() => outer !== undefined, 5_000)
+    const [answer] = answers(outer!)
+    expect(answer).toMatchObject({ agent: CODER, ok: true })
+    if (answer?.ok)
+      expect(JSON.parse(answer.reply)).toMatchObject({
+        agent: HELPER,
+        ok: true,
+        reply: '42',
+      })
+    await until(() => nodes.idle())
   })
 })
 

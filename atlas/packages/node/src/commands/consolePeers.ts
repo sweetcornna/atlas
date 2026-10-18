@@ -27,6 +27,14 @@
  * ask in flight, extends it when an asked agent asks in turn, refuses a
  * question to an agent already asking in it (A→B→A, on one node or across
  * nodes) and stops it at `LIMITS.maxAskChain` levels.
+ *
+ * Two unrelated chains can still hold each other: A on node 1 asks B on node
+ * 2 while X on node 2 asks Y on node 1, and each question queues behind the
+ * other node's asking turn. The hub knows every turn waiting on a question
+ * (`#waiting`), so a question to a node where a turn outside its chain is
+ * waiting is refused `busy` at once. The check and the record of the new
+ * wait happen in one synchronous step, so of two crossing questions the
+ * second always sees the first.
  */
 
 import * as path from 'node:path'
@@ -249,6 +257,14 @@ export class ConsolePeers {
   /** By `caller\0target`. */
   readonly #conversations = new Map<string, Conversation>()
   readonly #inFlight = new Map<string, InFlight>()
+  /**
+   * The asking turns waiting for an answer now, by `node\0taskId`, with how
+   * many of their targets are still out.
+   */
+  readonly #waiting = new Map<
+    string,
+    { readonly node: string; count: number }
+  >()
   /** One question at a time per conversation pair, in arrival order. */
   readonly #serial = new Map<string, Promise<unknown>>()
   readonly #turns = new Set<ChatTurnHandle>()
@@ -585,6 +601,17 @@ export class ConsolePeers {
         'busy',
         `${target} 与问答链上的一方在同一节点，它还有一轮在排队；现在问只会等到超时。稍后再问，或用 qianmo_task_start 交给它`,
       )
+    // A turn there waiting on a question of another chain holds that node:
+    // this question would queue behind it, and if that one waits on this
+    // chain the two wait for each other until both time out.
+    if (this.#waitingOutside(address.node, chain))
+      return failed(
+        target,
+        'busy',
+        `${target} 所在节点上另有一轮正在等别的智能体回答，现在问会排在它后面，可能互相等到超时。先自己回答，稍后再问，或用 qianmo_task_start 交给它`,
+      )
+    // Recorded in the same synchronous step as the check above.
+    const release = this.#wait(caller)
     const key = `${caller.session}\0${target}`
     const previous = this.#serial.get(key) ?? Promise.resolve()
     const run = previous
@@ -594,7 +621,33 @@ export class ConsolePeers {
     try {
       return await run
     } finally {
+      release()
       if (this.#serial.get(key) === run) this.#serial.delete(key)
+    }
+  }
+
+  /** A turn on `node` waits on a question and is not one of `chain`'s askers. */
+  #waitingOutside(node: string, chain: readonly Asker[]): boolean {
+    for (const [key, one] of this.#waiting) {
+      if (one.node !== node) continue
+      if (!chain.some(link => `${link.node}\0${link.taskId}` === key))
+        return true
+    }
+    return false
+  }
+
+  /** Records `caller` as waiting on one more target; returns the release. */
+  #wait(caller: Caller): () => void {
+    const key = `${caller.node}\0${caller.taskId}`
+    const entry = this.#waiting.get(key) ?? { node: caller.node, count: 0 }
+    entry.count++
+    this.#waiting.set(key, entry)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      if (--entry.count <= 0 && this.#waiting.get(key) === entry)
+        this.#waiting.delete(key)
     }
   }
 
