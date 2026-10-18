@@ -9,9 +9,14 @@
  * | `GET /v0/im` | view and up (bot ids and allow lists only for ops) |
  * | `POST /v0/im`, `DELETE /v0/im/<id>` | ops personal account |
  * | `POST /v0/im/login`, `GET /v0/im/login/<id>` | ops personal account |
+ * | `POST /v0/im/<id>/pairing` `{requestId, decision}` | ops personal account |
  */
 
-import type { ChannelDraft, ChannelsSnapshot } from '../directionPorts.js'
+import type {
+  ChannelDraft,
+  ChannelPairingDecision,
+  ChannelsSnapshot,
+} from '../directionPorts.js'
 import { fail, methodNotAllowed, notFound } from '../respond.js'
 import {
   actorOf,
@@ -40,6 +45,8 @@ function auditTarget(raw: string): string {
   return /^ch-[0-9a-f-]{36}$/.test(raw) ? raw : '-'
 }
 
+const DECISIONS: readonly ChannelPairingDecision[] = ['owner', 'member', 'deny']
+
 /** What a reader below ops level may see: no platform user ids. */
 export function channelsForReader(
   snapshot: ChannelsSnapshot,
@@ -53,6 +60,7 @@ export function channelsForReader(
       ownerIds: [],
       allowUsers: [],
       allowGroups: [],
+      pairingRequests: [],
       settings: {},
     })),
   }
@@ -62,6 +70,7 @@ export const channelsApi: HeadRoute = {
   heads: ['im'],
   async handle(ctx, _head, rest) {
     const login = rest[0] === 'login'
+    const pairing = !login && rest.length === 2 && rest[1] === 'pairing'
     const allowed =
       rest.length === 0
         ? ['GET', 'POST']
@@ -69,9 +78,11 @@ export const channelsApi: HeadRoute = {
           ? ['POST']
           : login && rest.length === 2
             ? ['GET']
-            : rest.length === 1
-              ? ['DELETE']
-              : null
+            : pairing
+              ? ['POST']
+              : rest.length === 1
+                ? ['DELETE']
+                : null
     if (!allowed) return notFound(`unknown path: ${ctx.url.pathname}`)
     const read = ctx.request.method === 'GET' && rest.length === 0
     const denied = read ? guardRead(ctx) : guardOpsWrite(ctx)
@@ -120,6 +131,23 @@ export const channelsApi: HeadRoute = {
     }
     const id = segment(rest[0])
     if (id === null) return fail(400, 'invalid', '渠道标识无效')
+    if (pairing) {
+      const body = await bodyOf(ctx)
+      if (body instanceof Response) return body
+      const requestId =
+        typeof body['requestId'] === 'string' &&
+        /^[A-Za-z0-9-]{1,64}$/.test(body['requestId'])
+          ? body['requestId']
+          : null
+      const decision = DECISIONS.find(one => one === body['decision'])
+      if (requestId === null || decision === undefined)
+        return fail(400, 'invalid', '配对请求或处理方式无效')
+      // The decision is part of the record: making someone an owner is a
+      // grant of the owner lane.
+      return write(ctx, 'im.pair', `${auditTarget(id)}:${decision}`, () =>
+        port.pair(id, requestId, decision, actorOf(ctx)),
+      )
+    }
     const response = await write(ctx, 'im.remove', auditTarget(id), () =>
       port.remove(id, actorOf(ctx)),
     )

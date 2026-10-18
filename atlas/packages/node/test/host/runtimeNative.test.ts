@@ -515,6 +515,62 @@ test('Gemini: trust on the agent’s own servers is taken off before a start and
   )
 })
 
+test('Gemini: listing leaves settings.json alone while its frontend or a change holds it', async () => {
+  const { workspace } = scratch()
+  const home = runtimeDirs('gemini', 'coder').home
+  mkdirSync(join(home, '.gemini'), { recursive: true })
+  const settings = join(home, '.gemini', 'settings.json')
+  const before = JSON.stringify({
+    mcpServers: { own: { command: 'own-server', trust: true } },
+  })
+  writeFileSync(settings, before)
+  const { ext } = native('gemini', workspace)
+  const frontend = acquireFrontendLock('coder', 'gemini')!
+  expect((await ext.list('coder')).notes).not.toContain('已撤销预授权：own')
+  expect(readFileSync(settings, 'utf8')).toBe(before)
+  releaseFrontendLock('coder', frontend)
+  const change = acquireChangeLock('coder', 'gemini')!
+  await ext.list('coder')
+  expect(readFileSync(settings, 'utf8')).toBe(before)
+  releaseChangeLock('coder', change)
+  expect((await ext.list('coder')).notes).toContain('已撤销预授权：own')
+  expect(JSON.parse(readFileSync(settings, 'utf8')).mcpServers.own).toEqual({
+    command: 'own-server',
+  })
+})
+
+test('a change that went through is reported done even when listing again fails', async () => {
+  const { workspace } = scratch()
+  const { ext, calls } = native('gemini', workspace, argv => {
+    if (argv.includes('list')) throw new Error('list timed out')
+    return '[]'
+  })
+  const outcome = await ext.control(
+    'runtime.ext.install',
+    { agent: 'coder', kind: 'plugin', source: 'team/ext' },
+    {} as never,
+  )
+  expect(outcome).toMatchObject({
+    ok: true,
+    value: { agent: 'coder', runtime: 'gemini', changed: true },
+  })
+  const value = (outcome as { value: Record<string, unknown> }).value
+  expect(value.items).toBeUndefined()
+  expect(value.notes).toContain('已完成，但重新列出失败：list timed out')
+  expect(calls.some(call => call.argv.includes('install'))).toBe(true)
+  // A change that failed is still a failure.
+  const { ext: failing } = native('gemini', workspace, () => {
+    throw new Error('install refused')
+  })
+  expect(
+    await failing.control(
+      'runtime.ext.install',
+      { agent: 'coder', kind: 'plugin', source: 'team/ext' },
+      {} as never,
+    ),
+  ).toMatchObject({ ok: false })
+})
+
 test('native sources: GitHub, npm and marketplaces; credentials, other hosts, traversal and flags refused', () => {
   expect(parseNativeSource('team/tools')).toEqual({
     kind: 'github',
@@ -682,6 +738,35 @@ test('native MCP commands: the server command after its separator, connector nam
     ok: false,
     code: RUNTIME_EXT_ERRORS.badSource,
   })
+  // One added in the harness's own frontend may carry dots: it goes by that
+  // name. Adding one does not (a harness config path splits on dots).
+  const dotted = native('gemini', workspace)
+  expect(
+    await dotted.ext.control(
+      'runtime.ext.remove',
+      { agent: 'coder', kind: 'mcp', name: 'docs.v2' },
+      {} as never,
+    ),
+  ).toMatchObject({ ok: true })
+  expect(dotted.calls[0]!.argv.slice(1)).toEqual([
+    'mcp',
+    'remove',
+    '-s',
+    'user',
+    'docs.v2',
+  ])
+  for (const [op, name] of [
+    ['runtime.ext.remove', 'docs..v2'],
+    ['runtime.ext.remove', '.docs'],
+    ['runtime.ext.install', 'docs.v2'],
+  ] as const)
+    expect(
+      await dotted.ext.control(
+        op,
+        { agent: 'coder', kind: 'mcp', name, command: 'npx' },
+        {} as never,
+      ),
+    ).toMatchObject({ ok: false, code: RUNTIME_EXT_ERRORS.badSource })
   // dsh has no command for MCP servers: its web frontend does it.
   const dsh = native('dsh', workspace)
   expect(

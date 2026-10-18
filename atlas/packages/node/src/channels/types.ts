@@ -6,11 +6,15 @@
  *
  * Every adapter speaks its platform's own official interface (charter §7.2
  * item 8) and turns the platform's events into {@link ChannelInbound}; the
- * gateway (`gateway.ts`) owns everything platform-independent.
+ * gateway (`gateway.ts`) owns everything platform-independent. The one
+ * exception is `qq-personal`: an ordinary QQ account through a SnowLuma
+ * OneBot 11 bridge, by the owner's decision of 2026-10-17 (charter v3.8,
+ * `runtimes-channels.md` §2.5); the official bot stays `qq`.
  */
 
 export const CHANNEL_PLATFORMS = [
   'qq',
+  'qq-personal',
   'weixin',
   'telegram',
   'discord',
@@ -71,6 +75,10 @@ export interface ChannelSendResult {
   readonly messageId?: string
   /** A fixed, secret-free description. */
   readonly error?: string
+  /** The platform throttled the send and said how long to wait (429). */
+  readonly retryAfterMs?: number
+  /** A transient failure (network, timeout, 5xx) the same send may survive. */
+  readonly retryable?: boolean
 }
 
 export type ChannelState =
@@ -95,6 +103,23 @@ export interface ChannelAdapter {
    * room for escaping.
    */
   readonly chunkLimit: number
+  /** Replies longer than this go to {@link sendLong} first (default: {@link chunkLimit}). */
+  readonly longReplyAt?: number
+  /**
+   * The platform's client splits a long paste into messages of about this
+   * length: an inbound text this long waits briefly for its continuation
+   * (hermes `_SPLIT_THRESHOLD`).
+   */
+  readonly inboundSplitAt?: number
+  /** Least time between two sends to one chat (hermes per-chat budget). */
+  readonly sendGapMs?: number
+  /** How long a message id is remembered against redelivery (default 5 min). */
+  readonly dedupTtlMs?: number
+  /**
+   * A thread the bot has answered in is a conversation with it: later
+   * messages there need no @ (hermes thread participation, Slack).
+   */
+  readonly followsThreads?: boolean
   start(sink: (message: ChannelInbound) => void): Promise<void>
   stop(): Promise<void>
   /** Sends one chunk of agent markdown, rendered the platform's own way. */
@@ -103,6 +128,17 @@ export interface ChannelAdapter {
     markdown: string,
     options?: ChannelSendOptions,
   ): Promise<ChannelSendResult>
+  /**
+   * A reply longer than {@link chunkLimit} the platform can carry whole in
+   * its own way (a QQ merged-forward card; hermes `splits_long_messages`).
+   * Null declines; null and a failure both make the gateway send chunks, so
+   * an adapter that cannot tell whether the platform took it answers ok.
+   */
+  sendLong?(
+    chat: ChannelChat,
+    markdown: string,
+    options?: ChannelSendOptions,
+  ): Promise<ChannelSendResult | null>
   /**
    * The platform's native "typing" indicator. The gateway calls it every few
    * seconds while a turn runs; the adapter debounces to the platform's own

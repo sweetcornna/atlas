@@ -23,9 +23,15 @@ describe('silence', () => {
       'NO_REPLY',
       '*NO_REPLY*',
       ' [no_reply]. ',
+      // hermes tokens
+      'NO REPLY',
+      '[静默]',
+      '静默。',
+      '[沉默]',
+      '沉默',
     ])
       expect(`${reply} ${isSilence(reply)}`).toBe(`${reply} true`)
-    for (const reply of ['我会保持 [SILENT]', 'SILENTLY', '好'])
+    for (const reply of ['我会保持 [SILENT]', 'SILENTLY', '好', '保持静默吧'])
       expect(`${reply} ${isSilence(reply)}`).toBe(`${reply} false`)
   })
 })

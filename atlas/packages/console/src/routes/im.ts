@@ -56,6 +56,8 @@ async function formFragment(ctx: RouteContext): Promise<Response> {
   const channel =
     id === null ? null : (channels.find(one => one.id === id) ?? null)
   if (id !== null && channel === null) return notFound('没有这个渠道')
+  if (channel !== null && !platforms.some(one => one.id === channel.platform))
+    return fail(409, 'refused', '这个平台在当前版本不可用，只能删除')
   const asked = channel?.platform ?? ctx.url.searchParams.get('platform')
   const platform = platforms.find(one => one.id === asked) ?? platforms[0]
   if (platform === undefined) return fail(503, 'unreachable', '没有可用的平台')
