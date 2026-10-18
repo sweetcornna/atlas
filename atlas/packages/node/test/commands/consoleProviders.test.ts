@@ -42,6 +42,7 @@ import { MemoryActionStore } from '../../../console/test/actionStore.js'
 import { compileProfile } from '../../src/providers/compile.js'
 import {
   type ConsoleProviders,
+  mayRunOf,
   openConsoleProviders,
   type ProviderScheduler,
 } from '../../src/commands/consoleProviders.js'
@@ -2028,4 +2029,48 @@ describe('background refresh (§2.3 step 10)', () => {
     expect(statuses(h.nodes['beta-4'])).toBe(4)
     h.port.stop()
   }, 30_000)
+})
+
+describe('what a node may run (mayRunOf)', () => {
+  const done = (profileId: string, at: number) => ({
+    profileId,
+    at,
+    switched: true,
+  })
+  const maybe = (profileId: string, at: number) => ({
+    profileId,
+    at,
+    switched: false,
+  })
+  const status = (at: number, applied: string | null, waiting = null) => ({
+    at,
+    applied,
+    waiting,
+  })
+
+  test('with no status, the book from the last switch on', () => {
+    expect(mayRunOf(null, [])).toEqual([])
+    expect(mayRunOf(null, [done('a', 1)])).toEqual(['a'])
+    expect(mayRunOf(null, [done('a', 1), maybe('t', 2)])).toEqual(['a', 't'])
+    expect(mayRunOf(null, [maybe('t', 1), maybe('a', 2)])).toEqual(['t', 'a'])
+  })
+
+  test('with a status, what it reported and the deliveries since', () => {
+    // An unanswered delivery before the status: the status settles it.
+    expect(mayRunOf(status(5, 'a'), [done('a', 1), maybe('t', 2)])).toEqual([
+      'a',
+    ])
+    expect(mayRunOf(status(5, null), [maybe('t', 2)])).toEqual([])
+    // One after the status may have landed.
+    expect(mayRunOf(status(5, 'a'), [done('a', 1), maybe('t', 7)])).toEqual([
+      'a',
+      't',
+    ])
+    // Switched to after the status: what the status said is gone.
+    expect(mayRunOf(status(5, 't'), [done('a', 7)])).toEqual(['a'])
+    // Waiting to switch when the status was taken: it may land any time.
+    expect(
+      mayRunOf({ at: 5, applied: 't', waiting: 'a' }, [done('t', 1)]),
+    ).toEqual(['t', 'a'])
+  })
 })

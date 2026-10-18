@@ -355,3 +355,56 @@ test('legacy stored compat replays into native fields; malformed old headers sti
   })
   expect(open(invalid.store).book.problem).not.toBeNull()
 })
+
+describe('what a node may be running, as the book knows it', () => {
+  const apply = (
+    requestId: string,
+    profileId: string,
+    outcome: 'ok' | 'refused' | 'failed',
+    pending = false,
+  ): BookEvent => ({
+    kind: 'apply.result',
+    node: 'beta-1',
+    requestId,
+    profileId,
+    revision: 1,
+    outcome,
+    pending,
+    force: false,
+    sessions: 'keep',
+    lane: 'openai-responses',
+    host: 'gateway.vendor.example',
+  })
+  const ids = (book: ProviderBook) =>
+    book.delivered('beta-1').map(one => [one.profileId, one.switched])
+
+  test('from the last delivery it switched to, whatever the activity keeps', () => {
+    const { store, book } = open()
+    expect(book.record(apply('req-00000001', 'tenant', 'ok'))).toBe(true)
+    // More than the ten-line activity: unanswered deliveries of another.
+    for (let i = 2; i <= 14; i++)
+      expect(
+        book.record(
+          apply(`req-${String(i).padStart(8, '0')}`, 'none', 'failed'),
+        ),
+      ).toBe(true)
+    // Refused: the node kept what it had.
+    expect(book.record(apply('req-00000015', 'other', 'refused'))).toBe(true)
+    expect(book.activity('beta-1')).toHaveLength(10)
+    expect(ids(book)).toEqual([
+      ['tenant', true],
+      ['none', false],
+    ])
+    // Taken but waiting to switch: the old one still runs.
+    expect(book.record(apply('req-00000016', 'none', 'ok', true))).toBe(true)
+    expect(ids(book)).toEqual([
+      ['tenant', true],
+      ['none', false],
+    ])
+    // Read back from the ledger the same.
+    expect(ids(open(store).book)).toEqual(ids(book))
+    // Switched: it replaced everything before.
+    expect(book.record(apply('req-00000017', 'none', 'ok'))).toBe(true)
+    expect(ids(book)).toEqual([['none', true]])
+  })
+})

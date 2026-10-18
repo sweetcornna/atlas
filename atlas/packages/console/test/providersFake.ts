@@ -437,6 +437,7 @@ function nodeA(): ProviderNodeView {
     lastStatus: { at: NOW - 60_000, ok: true },
     drift: [],
     recent,
+    mayRun: ['deepseek'],
   }
 }
 
@@ -502,6 +503,7 @@ function nodeB(): ProviderNodeView {
       },
       { kind: 'env-residue', message: '进程环境残留、需重启' },
     ],
+    mayRun: ['deepseek'],
     recent: [
       {
         kind: 'apply',
@@ -525,6 +527,7 @@ function nodeC(): ProviderNodeView {
     actual: null,
     lastStatus: null,
     drift: [],
+    mayRun: [],
     recent: [],
   }
 }
@@ -578,6 +581,7 @@ function nodeD(): ProviderNodeView {
     },
     lastStatus: { at: NOW - 30_000, ok: true },
     drift: [],
+    mayRun: ['pool'],
     recent: [],
   }
 }

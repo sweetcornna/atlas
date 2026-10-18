@@ -81,7 +81,7 @@ import {
 import type { ModelRouting } from '@qianmo/providers'
 import { compileProfile } from '../providers/compile.js'
 import { FileActionLedger } from './consoleActionLedger.js'
-import { ProviderBook } from './consoleProvidersBook.js'
+import { type DeliveredProfile, ProviderBook } from './consoleProvidersBook.js'
 import {
   type ExecResult,
   type NodeReply,
@@ -153,7 +153,36 @@ const REAL_SCHEDULER: ProviderScheduler = {
 
 interface NodeCache {
   actual: ProviderNodeActual | null
+  /** When `actual` was reported (on the book's clock); `null` with it. */
+  actualAt: number | null
   lastStatus: { at: number; ok: boolean; message?: string } | null
+}
+
+/**
+ * What a node may be running, as far as the hub knows: what its last status
+ * reported (`applied`, and the request it waits to switch to), and every
+ * delivery since that may have landed (`delivered`: since the last one it
+ * switched to, that one first). One it took and switched to after the
+ * status replaced what the status said. With no status since the hub
+ * started, the book alone.
+ */
+export function mayRunOf(
+  status: {
+    readonly at: number
+    readonly applied: string | null
+    readonly waiting: string | null
+  } | null,
+  delivered: readonly DeliveredProfile[],
+): readonly string[] {
+  const since = status === null ? Number.NEGATIVE_INFINITY : status.at
+  const runs = new Set<string>()
+  const replaced = delivered[0]?.switched === true && delivered[0].at >= since
+  if (status !== null && !replaced) {
+    if (status.applied !== null) runs.add(status.applied)
+    if (status.waiting !== null) runs.add(status.waiting)
+  }
+  for (const one of delivered) if (one.at >= since) runs.add(one.profileId)
+  return [...runs]
 }
 
 /**
@@ -1592,7 +1621,30 @@ export class ConsoleProviders implements ProviderPort {
         now: new Date(this.#now()),
       }),
       recent: this.#book.activity(node),
+      mayRun: this.#mayRun(node, cache),
     }
+  }
+
+  /** {@link mayRunOf} for `node`: its cached status and the book's deliveries. */
+  #mayRun(node: string, cache: NodeCache | undefined): readonly string[] {
+    const actual = cache?.actual ?? null
+    const waiting =
+      actual?.pending == null
+        ? undefined
+        : this.#book.sent(actual.pending.requestId)
+    return mayRunOf(
+      actual === null
+        ? null
+        : {
+            at: cache?.actualAt ?? 0,
+            applied: actual.applied?.profileId ?? null,
+            waiting:
+              waiting !== undefined && waiting.node === node
+                ? waiting.profileId
+                : null,
+          },
+      this.#book.delivered(node),
+    )
   }
 
   /**
@@ -2044,6 +2096,7 @@ export class ConsoleProviders implements ProviderPort {
         !modelFromStartupEnv(actual)
           ? { ...actual, effective: previous.actual.effective }
           : actual,
+      actualAt: Math.floor(this.#now()),
       lastStatus: previous?.lastStatus ?? null,
     })
     this.#changes += 1
@@ -2084,7 +2137,11 @@ export class ConsoleProviders implements ProviderPort {
     // tries again.
     if (!result.ok && result.reason === 'deferred') return
     const at = this.#now()
-    const previous = this.#cache.get(node) ?? { actual: null, lastStatus: null }
+    const previous = this.#cache.get(node) ?? {
+      actual: null,
+      actualAt: null,
+      lastStatus: null,
+    }
     if (result.ok && result.reply.ok) {
       this.#observe(node, result.reply)
       const cache = this.#cache.get(node) ?? previous
@@ -2096,6 +2153,7 @@ export class ConsoleProviders implements ProviderPort {
         : result.message
       this.#cache.set(node, {
         actual: previous.actual,
+        actualAt: previous.actualAt,
         lastStatus: { at, ok: false, message },
       })
       this.#changes += 1

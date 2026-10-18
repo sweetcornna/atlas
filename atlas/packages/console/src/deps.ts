@@ -1938,8 +1938,6 @@ export interface ProviderActivity {
   /** probe 的模式；apply 是否带了 force。 */
   readonly mode?: 'auth' | 'latency' | 'call'
   readonly force?: boolean
-  /** apply 被节点接下、等空闲才切换（§2.7）：节点还跑着原来的档案。 */
-  readonly pending?: boolean
 }
 
 /** 节点 → 档案的指派（§2.4）：跟随全局默认、指定一份、或明确不托管。 */
@@ -1971,6 +1969,12 @@ export interface ProviderNodeView {
   readonly drift: readonly ProviderDrift[]
   /** 新的在前，最多 10 条。 */
   readonly recent: readonly ProviderActivity[]
+  /**
+   * 中枢所知节点可能正在跑的档案：上次成功的 `status` 报的（含在等空闲切换的那次），
+   * 加上那之后可能落地的下发；之后有一次下发被接下且立即切换，就只从那次算起。
+   * 中枢启动后还没拿到状态时只看账本。
+   */
+  readonly mayRun: readonly string[]
 }
 
 export interface ProviderProfileSummary {

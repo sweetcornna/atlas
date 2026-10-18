@@ -732,6 +732,7 @@ function fakeConsole(scenario: Scenario) {
       lastStatus: { at: Date.now(), ok: true },
       drift,
       recent: [],
+      mayRun: n.applied === null ? [] : [n.applied.profileId],
     }
   }
 

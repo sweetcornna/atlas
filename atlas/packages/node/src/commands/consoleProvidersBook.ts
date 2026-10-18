@@ -136,6 +136,16 @@ export interface SentRecord {
   readonly context?: number
 }
 
+/**
+ * One delivery that may have reached a node: `switched` when the node took
+ * it and switched at once (it replaced whatever ran before).
+ */
+export interface DeliveredProfile {
+  readonly profileId: string
+  readonly at: number
+  readonly switched: boolean
+}
+
 interface State {
   readonly profiles: Map<string, ProviderProfile>
   /** Highest revision ever recorded per id, deleted incarnations included. */
@@ -146,6 +156,12 @@ interface State {
   readonly sent: Map<string, SentRecord>
   readonly committed: Map<string, { requestId: string; appliedHash: string }>
   readonly activity: Map<string, ProviderActivity[]>
+  /**
+   * Per node, every delivery since the last one it switched to (that one
+   * first): what it may be running, as far as the book knows. Kept apart
+   * from the ten-line activity, one entry per profile after the first.
+   */
+  readonly delivered: Map<string, DeliveredProfile[]>
 }
 
 function emptyState(): State {
@@ -158,6 +174,7 @@ function emptyState(): State {
     sent: new Map(),
     committed: new Map(),
     activity: new Map(),
+    delivered: new Map(),
   }
 }
 
@@ -174,6 +191,34 @@ function pushActivity(state: State, node: string, entry: ProviderActivity) {
   list.unshift(entry)
   if (list.length > ACTIVITY_LIMIT) list.length = ACTIVITY_LIMIT
   state.activity.set(node, list)
+}
+
+/** Fold one apply's answer into what the node may be running. */
+function noteDelivered(
+  state: State,
+  node: string,
+  delivery: { profileId: string; outcome: ActionOutcome; pending: boolean },
+  at: number,
+) {
+  // Refused: the node kept what it had.
+  if (delivery.outcome === 'refused') return
+  const entry = {
+    profileId: delivery.profileId,
+    at,
+    switched: delivery.outcome === 'ok' && !delivery.pending,
+  }
+  if (entry.switched) {
+    state.delivered.set(node, [entry])
+    return
+  }
+  // Taken but waiting to switch, or unanswered: it may land any time.
+  const list = state.delivered.get(node) ?? []
+  const kept = list.filter(
+    (one, index) =>
+      (index === 0 && one.switched) || one.profileId !== entry.profileId,
+  )
+  kept.push(entry)
+  state.delivered.set(node, kept)
 }
 
 function referenced(state: State, id: string): boolean {
@@ -471,8 +516,8 @@ function fold(state: State, event: BookEvent, at: number): string | null {
         outcome: event.outcome,
         ...(event.code === undefined ? {} : { code: event.code }),
         force: event.force,
-        ...(event.pending ? { pending: true } : {}),
       })
+      noteDelivered(state, event.node, event, at)
       return null
     }
     case 'apply.committed': {
@@ -630,6 +675,11 @@ export class ProviderBook {
     return this.#state.activity.get(node) ?? []
   }
 
+  /** Deliveries since the last one `node` switched to, oldest first. */
+  delivered(node: string): readonly DeliveredProfile[] {
+    return this.#state.delivered.get(node) ?? []
+  }
+
   /** Is `id` the default or some node's explicit choice? */
   isReferenced(id: string): boolean {
     return referenced(this.#state, id)
@@ -745,6 +795,9 @@ function cloneState(state: State): State {
     committed: new Map(state.committed),
     activity: new Map(
       [...state.activity].map(([node, list]) => [node, [...list]]),
+    ),
+    delivered: new Map(
+      [...state.delivered].map(([node, list]) => [node, [...list]]),
     ),
   }
 }
