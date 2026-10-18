@@ -107,7 +107,7 @@ bun run atlas:test [<目录> …]    # 阡陌测试分片，可只跑指定目�
 
 ### 3.1 测试
 
-- 入口是 `atlas/scripts/test-shards.sh`（`bun run atlas:test`）：每个 `atlas/packages/*` 一个分片，另有 `atlas/tests/*`、`demo/lib`、`demo/env`、`atlas/scripts`；每个分片一个 `bun test` 进程、带 `--isolate`，JUnit 报告写到 `test-reports/`。
+- 入口是 `atlas/scripts/test-shards.sh`（`bun run atlas:test`）：每个 `atlas/packages/*` 一个分片，另有 `atlas/tests/*`、`demo/lib`、`demo/env`、`atlas/scripts`；每个分片一个 `bun test` 进程、带 `--isolate`，JUnit 报告写到 `test-reports/`。`atlas/scripts/test-shards.sh --list` 只列出会跑的分片、不跑测试；判断目录有没有测试不能经管道（pipefail 下 `find | grep -q` 在 Linux 上会因 SIGPIPE 误判，10-10 到 10-18 的 CI 因此没跑 node 分片），由 `atlas/scripts/__tests__/testShards.test.ts` 守着。
 - 预载 `atlas/tests/preload.ts` 只经命令行传入，根 `bunfig.toml` 不加预载（omp 自己的测试从同一个根跑）。它清掉开发者 shell 里的凭据与改变状态根的变量，把配置根与 CA 目录指到每进程的临时目录，并设置 `PI_TEST_RUNTIME=1`。
 - 跑单个文件：`bun test --preload ./atlas/tests/preload.ts ./atlas/packages/<pkg>/test/<name>.test.ts`。路径写成 `./` 开头，否则 Bun 会当成子串过滤、把 omp 的测试也拉进来。
 - 测试里起的任何 omp 子进程都用 `ompChildEnv()` / `ompSpawnEnv()`，`QIANMO_CONFIG_DIR` 指向临时目录；测试不得碰 `~/.omp`、`~/.qianmo`、`~/.claude`。需要真跑一轮 RPC 时，用 omp 的假 OpenAI 服务 `packages/coding-agent/test/rpc-wire/fake-openai-server.ts`，经 `models.yml` 自定义 provider 指过去。
