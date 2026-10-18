@@ -8,13 +8,21 @@
 name: CI
 
 on:
+  # push 只跑 main：功能分支都开 PR，PR 那一次就够；以前 feat/* 的推送和它的 PR
+  # 各跑一整轮（13 天里 81 个 PR 运行有 39 个带这样的孪生运行）。没开 PR 的分支要
+  # 验证就开草稿 PR 或手动触发。
   push:
-    branches: [main, "feature/*", "feat/*"]
+    branches: [main]
   # 不加分支过滤：每个 PR 都跑，不管基点是哪条分支。枚举基点分支每次换集成分支都要
   # 重改，漏过一次（PR #2-#4 没有任何检查），"每个 PR" 不会过期。
-  # `push` 保留过滤，免得一次分支推送和它的 PR 各跑一遍。
   pull_request:
   workflow_dispatch:
+
+# 同一个 PR 连推几次只跑最后一次。其他事件每次运行自成一组：同组里排队的运行
+# 会被后来者顶掉，main 上的每个提交都要跑完。
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

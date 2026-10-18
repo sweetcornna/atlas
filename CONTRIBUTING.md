@@ -9,7 +9,7 @@
 3. 推送或发 PR 前运行只读门禁 `bun run verify`。实际执行项目、测试分片、预算规则与失败排查见 [CLAUDE.full.md §3](CLAUDE.full.md#3-命令测试与门禁)。
 4. 用 Conventional Commits，一件事一个提交。全部走 PR 和评审，不直推 `main`；按 [PR 模板](.github/PULL_REQUEST_TEMPLATE.md)写改动动机、边界用例及实际验证结果。
 
-不对整个仓库运行格式化器。阡陌代码使用 biome，omp 路径使用上游工具。新增检查要同时接进 `verify` 与 `.github/workflows/atlas.yml`。
+不对整个仓库运行格式化器。阡陌代码使用 biome，omp 路径使用上游工具。新增检查要同时接进 `verify` 与 `.github/workflows/atlas.yml`。CI 只在 PR 与 `main` 上跑，同一 PR 的新推送会取消旧运行；没开 PR 的分支要验证就开草稿 PR 或手动触发。
 
 ## 测试与边界
 
