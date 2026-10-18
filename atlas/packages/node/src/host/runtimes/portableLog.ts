@@ -219,6 +219,11 @@ export function portableChannel<C extends OmpRpcChannel>(
   options: PortableChannelOptions,
 ): C {
   const report = (error: unknown) => options.onError?.(error)
+  // One close listener for the wrapper, ending whichever turn is current: a
+  // listener per turn would stay on the long-lived promise with its turn.
+  let current: (() => void) | undefined
+  const closed = () => current?.()
+  void channel.closed.then(closed, closed)
   const prompt = async (input: {
     readonly messageId: string
     readonly text: string
@@ -241,10 +246,16 @@ export function portableChannel<C extends OmpRpcChannel>(
     const results = new Map<string, OmpRpcFrame>()
     let requestId: string | undefined
     let done = false
+    // A process gone mid-turn still leaves the question in the record.
+    const gone = () => finish('error')
+    const release = () => {
+      if (current === gone) current = undefined
+    }
     const finish = (status: PortableTurn['status']) => {
       if (done) return
       done = true
       unsubscribe()
+      release()
       try {
         appendPortableTurn(options.file, {
           v: 1,
@@ -259,7 +270,6 @@ export function portableChannel<C extends OmpRpcChannel>(
       } catch (error) {
         report(error)
       }
-      // The closed-handler outlives the turn on a warm process: hold nothing.
       answers.length = 0
       tools.clear()
     }
@@ -289,20 +299,20 @@ export function portableChannel<C extends OmpRpcChannel>(
         else if (frame.id === requestId) settle(frame)
       }
     })
-    // A process gone mid-turn still leaves the question in the record.
-    const gone = () => finish('error')
-    void channel.closed.then(gone, gone)
+    current = gone
     let admission: OmpPromptAdmission
     try {
       admission = await channel.prompt({ messageId: input.messageId, text })
     } catch (error) {
       done = true
       unsubscribe()
+      release()
       throw error
     }
     if (!admission.agentInvoked) {
       done = true
       unsubscribe()
+      release()
       return admission
     }
     requestId = admission.requestId

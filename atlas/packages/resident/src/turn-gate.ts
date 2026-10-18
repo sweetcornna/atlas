@@ -189,8 +189,17 @@ export class NodeTurnGate {
     return this.#queue.length >= LIMITS.maxQueuedTurns
   }
 
+  /**
+   * A request with `chain` would start now, nested in the turn running
+   * innermost: it never waits in the queue, so a full queue does not refuse
+   * it (the nesting depth still bounds it).
+   */
+  wouldNest(chain: readonly string[] = []): boolean {
+    return chain.length > 0 && this.#nestsChain(chain)
+  }
+
   run<T>(work: () => Promise<T>, request: NodeTurnRequest = {}): Promise<T> {
-    if (this.saturated) {
+    if (this.saturated && !this.wouldNest(request.chain)) {
       return Promise.reject(new NodeTurnQueueFullError(LIMITS.maxQueuedTurns))
     }
     return new Promise<T>((resolve, reject) => {
@@ -253,12 +262,16 @@ export class NodeTurnGate {
    * chain: the host never passes one, and the gate does not read one.
    */
   #nests(turn: QueuedTurn): boolean {
+    return this.#nestsChain(turn.chain)
+  }
+
+  #nestsChain(chain: readonly string[]): boolean {
     const innermost = this.#running.at(-1)?.key
     return (
       innermost !== undefined &&
-      turn.chain.length <= LIMITS.maxAskChain &&
+      chain.length <= LIMITS.maxAskChain &&
       this.#running.length <= LIMITS.maxAskChain &&
-      turn.chain.includes(innermost)
+      chain.includes(innermost)
     )
   }
 

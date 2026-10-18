@@ -484,6 +484,7 @@ async function marketplacePlugin(
   harness: {
     readonly label: string
     readonly addMarket: (source: NativeSource & { kind: 'github' }) => string[]
+    readonly removeMarket: (market: string) => string[]
     readonly marketName: (
       added: HarnessResult,
       source: NativeSource & { kind: 'github' },
@@ -507,7 +508,11 @@ async function marketplacePlugin(
   if (source.path !== '') throw badSource('市场来源不带目录')
   const added = await step(ctx, harness.addMarket(source), '添加市场')
   const market = await harness.marketName(added, source)
-  if (market === 'qianmo') throw badSource('qianmo 市场归阡陌所有')
+  if (market === 'qianmo') {
+    // Already added under the node's own marketplace name: taken back.
+    await step(ctx, harness.removeMarket(market), '移除市场').catch(() => {})
+    throw badSource('qianmo 市场归阡陌所有')
+  }
   if (name === undefined)
     return [
       market === undefined
@@ -560,6 +565,7 @@ const CLAUDE: Driver = {
           throw badSource('Claude Code 的市场来源不带分支')
         return ['plugin', 'marketplace', 'add', source.repo]
       },
+      removeMarket: market => ['plugin', 'marketplace', 'remove', market],
       // Its `marketplace add` prints no JSON: the list names it by repo.
       marketName: async (_added, source) => {
         const listed = await step(
@@ -674,6 +680,7 @@ const CODEX: Driver = {
         ...(source.ref === undefined ? [] : ['--ref', source.ref]),
         '--json',
       ],
+      removeMarket: market => ['plugin', 'marketplace', 'remove', market],
       marketName: async added => {
         const name = record(json(added.stdout)).marketplaceName
         return typeof name === 'string' ? name : undefined

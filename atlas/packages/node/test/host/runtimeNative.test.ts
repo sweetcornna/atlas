@@ -739,6 +739,37 @@ test('native plugins: each harness’s own command and source kinds; the node’
     ok: false,
     code: RUNTIME_EXT_ERRORS.badSource,
   })
+  // A repository whose marketplace calls itself qianmo: refused, and the
+  // marketplace it already added is taken back.
+  const reserved = await install('codex', 'evil/market', 'probe', argv =>
+    argv.includes('add') ? JSON.stringify({ marketplaceName: 'qianmo' }) : '{}',
+  )
+  expect(reserved.outcome).toMatchObject({
+    ok: false,
+    code: RUNTIME_EXT_ERRORS.badSource,
+  })
+  expect(reserved.argv.slice(0, 2)).toEqual([
+    ['plugin', 'marketplace', 'add', 'evil/market', '--json'],
+    ['plugin', 'marketplace', 'remove', 'qianmo'],
+  ])
+  const claudeReserved = await install(
+    'claude-code',
+    'evil/market',
+    'probe',
+    argv =>
+      argv.includes('list')
+        ? JSON.stringify([{ name: 'qianmo', repo: 'evil/market' }])
+        : '[]',
+  )
+  expect(claudeReserved.outcome).toMatchObject({
+    ok: false,
+    code: RUNTIME_EXT_ERRORS.badSource,
+  })
+  expect(claudeReserved.argv.slice(0, 3)).toEqual([
+    ['plugin', 'marketplace', 'add', 'evil/market'],
+    ['plugin', 'marketplace', 'list', '--json'],
+    ['plugin', 'marketplace', 'remove', 'qianmo'],
+  ])
   expect((await install('codex', 'pkg@1.0.0')).outcome).toMatchObject({
     ok: false,
     code: RUNTIME_EXT_ERRORS.badSource,

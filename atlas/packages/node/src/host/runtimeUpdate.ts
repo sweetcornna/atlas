@@ -5,16 +5,19 @@
  * Installing the runtimes of the catalog (P31, P36.3; `harness-backends.md`
  * §2, `runtimes-channels.md` §5): every `npm` entry of `RUNTIME_CATALOG`
  * (DeepSeek Harness, Claude Code, Codex, …) is installed unmodified from its
- * official package into a qianmo-owned prefix, `qianmoConfigPath('runtimes',
- * 'npm')`. New runtime children start from there; running ones finish on the
- * old binary and are recycled when idle. npm's cache, config and HOME live
+ * official package into a qianmo-owned tree of its own under
+ * `qianmoConfigPath('runtimes', 'trees')`. New runtime children start from
+ * there; running ones finish on the old binary and are recycled when idle. npm's cache, config and HOME live
  * under the qianmo config root too: nothing here reads or writes the user's
  * own `~/.npm`, `~/.claude` or `~/.codex`.
  *
- * A version is first installed into a scratch prefix and must pass the
- * compatibility check (`runtimes/smoke.ts`: the node's own arguments, the
- * `qianmo` tool bridge) before it goes into the managed prefix; one that
- * fails leaves the node on the version it had, and the answer says why. A
+ * A version is installed into a tree of its own staged beside the live one
+ * (`qianmoConfigPath('runtimes', 'trees')`) and must pass the compatibility
+ * check (`runtimes/smoke.ts`: the node's own arguments, the `qianmo` tool
+ * bridge); only then is that same tree made live, by swapping the runtime's
+ * link onto it in one rename (no second npm resolution). One that fails
+ * leaves the node on the version it had, and the answer says why. Installs
+ * of earlier builds in the shared prefix are still found and removed. A
  * runtime that needs Node.js is not installed on a node without a matching
  * one, and nothing starts without the disk space a whole install takes.
  *
@@ -23,7 +26,16 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, rmSync, statfsSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readlinkSync,
+  renameSync,
+  rmSync,
+  statfsSync,
+  symlinkSync,
+} from 'node:fs'
 import * as path from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
 import type { ControlOutcome } from '@qianmo/protocol'
@@ -81,9 +93,24 @@ function diskMiB(spec: NpmRuntime): number {
     : (DISK_MIB[spec.id] ?? DEFAULT_DISK_MIB)
 }
 
-/** The npm prefix runtime installs go into. */
+/**
+ * The node's npm home: its cache and config, and the shared prefix earlier
+ * builds installed every runtime into (still read, see `managedRuntimeBin`).
+ */
 export function managedRuntimePrefix(): string {
   return qianmoConfigPath('runtimes', 'npm')
+}
+
+function treesDir(): string {
+  return qianmoConfigPath('runtimes', 'trees')
+}
+
+/**
+ * Where a runtime is installed now: its own npm tree, behind a link that an
+ * install swaps whole for the tree that passed its checks.
+ */
+export function managedRuntimeTree(kind: ExternalRuntimeKind): string {
+  return path.join(treesDir(), kind)
 }
 
 /** The installed binary of a managed runtime, when an install put one there. */
@@ -92,13 +119,34 @@ export function managedRuntimeBin(
 ): string | undefined {
   const spec = npmRuntime(kind)
   if (spec === undefined) return undefined
-  const bin = path.join(
-    managedRuntimePrefix(),
-    'node_modules',
-    '.bin',
-    spec.install.command,
-  )
-  return existsSync(bin) ? bin : undefined
+  for (const prefix of [managedRuntimeTree(kind), managedRuntimePrefix()]) {
+    const bin = path.join(prefix, 'node_modules', '.bin', spec.install.command)
+    if (existsSync(bin)) return bin
+  }
+  return undefined
+}
+
+/** A runtime's trees on disk (`<kind>-<id>`), the live one among them. */
+function runtimeTrees(kind: string): string[] {
+  try {
+    return readdirSync(treesDir())
+      .filter(
+        name =>
+          name.startsWith(`${kind}-`) &&
+          /^[0-9a-f-]{36}$/.test(name.slice(kind.length + 1)),
+      )
+      .map(name => path.join(treesDir(), name))
+  } catch {
+    return []
+  }
+}
+
+function liveTree(kind: string): string | undefined {
+  try {
+    return path.resolve(treesDir(), readlinkSync(managedRuntimeTree(kind)))
+  } catch {
+    return undefined
+  }
 }
 
 export interface RunResult {
@@ -136,8 +184,10 @@ export const runCommand: RunCommand = async (argv, options) => {
   options.signal?.addEventListener('abort', abort, { once: true })
   if (options.signal?.aborted) child.kill()
   try {
-    const [stdout, code] = await Promise.all([
+    const [stdout, , code] = await Promise.all([
       new Response(child.stdout).text(),
+      // Read as it comes, so a chatty command never blocks on a full pipe.
+      drain(child.stderr),
       child.exited,
     ])
     const max = options.maxOutput ?? 4_000
@@ -149,6 +199,17 @@ export const runCommand: RunCommand = async (argv, options) => {
   } finally {
     clearTimeout(timer)
     options.signal?.removeEventListener('abort', abort)
+  }
+}
+
+async function drain(stream: ReadableStream<Uint8Array>): Promise<void> {
+  const reader = stream.getReader()
+  try {
+    for (;;) if ((await reader.read()).done) return
+  } catch {
+    // Closed with the process.
+  } finally {
+    reader.releaseLock()
   }
 }
 
@@ -325,8 +386,9 @@ const SEMVER_IN_OUTPUT = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/
 
 /**
  * The node's runtime installs: what is there, installing one (a control op
- * or {@link ensureRuntimeInstalled}), removing one. One install per runtime at
- * a time; the managed prefix itself is changed by one npm at a time.
+ * or {@link ensureRuntimeInstalled}), removing one. One install at a time,
+ * whichever runtime; the live trees and the shared prefix are changed one
+ * step at a time.
  */
 export class RuntimeInstaller {
   readonly #options: RuntimeUpdateOptions
@@ -334,8 +396,10 @@ export class RuntimeInstaller {
   readonly #installing = new Map<string, Promise<RuntimeInstallResult>>()
   readonly #listeners = new Set<(kind: ExternalRuntimeKind) => void>()
   #records: Record<string, RuntimeInstallRecord> | undefined
-  /** The managed prefix's lock: npm never runs twice on it. */
+  /** Promotions and removals, one at a time. */
   #prefixLock: Promise<unknown> = Promise.resolve()
+  /** One install at a time, whichever runtime: each checks memory and disk alone. */
+  #attemptLock: Promise<unknown> = Promise.resolve()
   /** `undefined`: not checked yet; `null`: no Node.js found. */
   #nodeVersion: string | null | undefined
   /** Stops every command this installer runs (the node is shutting down). */
@@ -573,7 +637,11 @@ export class RuntimeInstaller {
         message: `${spec.label} 正在安装`,
       }
     const wanted = typeof version === 'string' ? version : spec.install.pin
-    const attempt = this.#attempt(spec, wanted)
+    const attempt = this.#attemptLock.then(
+      () => this.#attempt(spec, wanted),
+      () => this.#attempt(spec, wanted),
+    )
+    this.#attemptLock = attempt.catch(() => {})
     this.#installing.set(spec.id, attempt)
     this.#changed(spec.id)
     try {
@@ -642,8 +710,8 @@ export class RuntimeInstaller {
         return { ok: true, version: wanted }
       }
       const root = qianmoConfigPath('runtimes')
-      const prefix = managedRuntimePrefix()
-      mkdirSync(prefix, { recursive: true, mode: 0o700 })
+      mkdirSync(managedRuntimePrefix(), { recursive: true, mode: 0o700 })
+      mkdirSync(treesDir(), { recursive: true, mode: 0o700 })
       mkdirSync(qianmoConfigPath('runtimes', 'npm-home'), {
         recursive: true,
         mode: 0o700,
@@ -673,9 +741,11 @@ export class RuntimeInstaller {
           ],
           { env: env(), timeoutMs, signal: this.#stopping.signal },
         ).catch(() => ({ code: -1, stdout: '' }))
-      // Scratch prefix first; the managed one only gets a version that passed.
-      // The budget stays inside the hub's 11 minutes for one update.
-      const stage = qianmoConfigPath('runtimes', `npm-stage-${randomUUID()}`)
+      // Its own tree, staged beside the live one; only a tree that passed
+      // goes live, moved into place as it was checked. The budget stays
+      // inside the hub's 11 minutes for one update.
+      const stage = path.join(treesDir(), `.stage-${spec.id}-${randomUUID()}`)
+      let promoted = false
       try {
         mkdirSync(stage, { recursive: true, mode: 0o700 })
         // npm's warnings (blocked install scripts) are not failures; its exit is.
@@ -703,18 +773,11 @@ export class RuntimeInstaller {
             'smoke-failed',
             `${wanted} 没有通过兼容检查，节点继续用原来的版本：${reason}`,
           )
+        await this.#withPrefix(async () => this.#promote(spec.id, stage))
+        promoted = true
       } finally {
-        rmSync(stage, { recursive: true, force: true })
+        if (!promoted) rmSync(stage, { recursive: true, force: true })
       }
-      // From npm's cache now: the same files that passed.
-      const installed = await this.#withPrefix(() =>
-        npmInstall(prefix, 3 * 60_000),
-      )
-      if (installed.code !== 0)
-        return fail(
-          'install-failed',
-          `npm 安装 ${spec.install.package}@${wanted} 失败`,
-        )
       const bin = managedRuntimeBin(spec.id)
       const now = bin === undefined ? null : await this.#version(bin)
       if (now !== wanted)
@@ -730,13 +793,31 @@ export class RuntimeInstaller {
     }
   }
 
+  /**
+   * Makes the checked tree at `stage` the live one: moved to its final name,
+   * then the runtime's link swapped onto it in one rename. The tree it
+   * replaces stays until the next install (a process may still run from it);
+   * older ones go.
+   */
+  #promote(kind: string, stage: string): void {
+    const tree = path.join(treesDir(), `${kind}-${randomUUID()}`)
+    renameSync(stage, tree)
+    const previous = liveTree(kind)
+    const link = path.join(treesDir(), `.${kind}.link-${randomUUID()}`)
+    symlinkSync(path.basename(tree), link)
+    renameSync(link, managedRuntimeTree(kind))
+    for (const old of runtimeTrees(kind))
+      if (old !== tree && old !== previous)
+        rmSync(old, { recursive: true, force: true })
+  }
+
   #withPrefix<T>(work: () => Promise<T>): Promise<T> {
     const next = this.#prefixLock.then(work, work)
     this.#prefixLock = next.catch(() => {})
     return next
   }
 
-  /** Removes an npm runtime from the managed prefix (only from there). */
+  /** Removes an npm runtime the node installed (only those). */
   async remove(kind: unknown): Promise<ControlOutcome> {
     const spec = this.#refusal(kind, undefined)
     if ('ok' in spec) return spec
@@ -755,8 +836,20 @@ export class RuntimeInstaller {
       }
     if (managedRuntimeBin(spec.id) === undefined)
       return { ok: true, value: { runtime: spec.id, removed: false } }
-    const removed = await this.#withPrefix(() =>
-      this.#run(
+    const removed = await this.#withPrefix(async () => {
+      // Its own trees, and the link to the live one.
+      rmSync(managedRuntimeTree(spec.id), { force: true })
+      for (const tree of runtimeTrees(spec.id))
+        rmSync(tree, { recursive: true, force: true })
+      // An install of an earlier build, in the shared prefix.
+      const legacy = path.join(
+        managedRuntimePrefix(),
+        'node_modules',
+        '.bin',
+        spec.install.command,
+      )
+      if (!existsSync(legacy)) return { code: 0, stdout: '' }
+      return this.#run(
         [
           this.#options.npm ?? 'npm',
           'uninstall',
@@ -767,8 +860,8 @@ export class RuntimeInstaller {
           spec.install.package,
         ],
         { env: env(), timeoutMs: 3 * 60_000, signal: this.#stopping.signal },
-      ).catch(() => ({ code: -1, stdout: '' })),
-    )
+      ).catch(() => ({ code: -1, stdout: '' }))
+    })
     this.#changed(spec.id)
     if (removed.code !== 0 || managedRuntimeBin(spec.id) !== undefined)
       return {
