@@ -325,7 +325,8 @@ export class NodeRuntimes {
         message: `这个版本的阡陌还不能驱动 ${spec.label}（ACP 启动方式未定）`,
       }
     const installer = this.installer
-    if (!installer.availability(runtime).installed) {
+    const here = installer.availability(runtime)
+    if (!here.installed) {
       if (installer.installing(runtime))
         return { code: 'installing', message: `${spec.label} 正在安装` }
       const last = installer.lastInstall(runtime)
@@ -334,7 +335,13 @@ export class NodeRuntimes {
           code: last.code ?? 'install-failed',
           message: last.error ?? `${spec.label} 安装失败`,
         }
-      return { code: 'not-installed', message: `节点上没有 ${spec.label}` }
+      return {
+        code: 'not-installed',
+        message:
+          here.rejected === undefined
+            ? `节点上没有 ${spec.label}`
+            : `节点上没有 ${spec.label}：${here.rejected}`,
+      }
     }
     const range =
       spec.install.kind === 'npm' ? spec.install.needsNode : undefined
@@ -458,13 +465,21 @@ export class NodeRuntimes {
 
   /**
    * At resident start, after the model service is in place: sweeps leftover
-   * scratch prefixes, computes every agent's runtime, starts the default
-   * installs and checks Node.js. Never waits for an install; resolves once
-   * Node.js was checked.
+   * scratch prefixes, checks who the configured runtimes found on PATH are,
+   * computes every agent's runtime, starts the default installs and checks
+   * Node.js. Never waits for an install; resolves once Node.js was checked.
    */
   async start(): Promise<void> {
     // What an install left when the node died in the middle of it.
     this.installer.sweepStages()
+    // A configured runtime found on PATH says who it is before it counts
+    // (Debian's `dsh` is not DeepSeek Harness), and before the install.
+    const configured = new Set(
+      [...this.#agents.keys()].map(agent => this.configured(agent).runtime),
+    )
+    await Promise.all(
+      [...configured].map(kind => this.installer.checkPath(kind)),
+    )
     this.recompute()
     if (this.#options.autoInstall === true) this.#autoInstall()
     const needsNode = this.#options.agents.some(agent => {

@@ -118,11 +118,13 @@ const MODELS = new Set([
 ])
 
 function setup(
-  options: Partial<NodeRuntimesOptions> & {
+  options: Partial<Omit<NodeRuntimesOptions, 'installer'>> & {
     agents?: readonly RuntimeAgentFlags[]
+    /** Options of the installer the helper builds (not an installer). */
     installer?: RuntimeUpdateOptions
   } = {},
 ) {
+  const { installer: installerOptions, ...rest } = options
   const npm = fakeNpm()
   const smoke = { reason: null as string | null }
   const installer = new RuntimeInstaller({
@@ -131,7 +133,7 @@ function setup(
     freeMemoryBytes: () => 64 * 1024 ** 3,
     which: () => null,
     smoke: async () => smoke.reason,
-    ...options.installer,
+    ...installerOptions,
   })
   let main: string | undefined = 'magpie/deepseek-v4'
   const changed: string[] = []
@@ -157,7 +159,7 @@ function setup(
     mainModel: () => main,
     // These cases are about install, Node.js and models, not launchers.
     launchable: () => true,
-    ...options,
+    ...rest,
   })
   made.push(runtimes)
   runtimes.onChange(agent => changed.push(agent))
@@ -631,6 +633,42 @@ test('a failure recorded before the count existed backs off like a first one', a
   jest.advanceTimersByTime(5 * 60_000)
   await settle()
   expect(npm.installs()).toBe(1)
+})
+
+test('a dsh on PATH that is not DeepSeek Harness is no dsh: the agent says why, and the default install goes ahead', async () => {
+  const { runtimes, npm } = setup({
+    autoInstall: true,
+    agents: [{ agent: 'main' }],
+    installer: {
+      which: command => (command === 'dsh' ? '/usr/bin/dsh' : null),
+    },
+  })
+  let release!: () => void
+  npm.hold = new Promise(done => {
+    release = done
+  })
+  await runtimes.start()
+  await settle()
+  expect(state(runtimes, 'main').reason?.code).toBe('installing')
+  expect(npm.installs()).toBe(1)
+  release()
+  await settle()
+  expect(state(runtimes, 'main').effective).toMatchObject({ runtime: 'dsh' })
+  expect(runtimes.installer.availability('dsh').source).toBe('prefix')
+  // Without the default install, the reason names the binary it did not take.
+  rmSync(managedRuntimePrefix(), { recursive: true, force: true })
+  const off = setup({
+    agents: [{ agent: 'main' }],
+    installer: {
+      which: command => (command === 'dsh' ? '/usr/bin/dsh' : null),
+    },
+  })
+  await off.runtimes.start()
+  expect(state(off.runtimes, 'main').reason).toEqual({
+    code: 'not-installed',
+    message:
+      '节点上没有 DeepSeek Harness：PATH 上的 /usr/bin/dsh 不是 DeepSeek Harness（它的 --help 里没有这个名字），当作没有安装',
+  })
 })
 
 test('start sweeps the scratch prefixes a dead node left, install or no install', async () => {

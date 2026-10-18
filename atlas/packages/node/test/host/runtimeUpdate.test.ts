@@ -115,6 +115,8 @@ function fakeNpm(
           )
         return { code: 0, stdout: '' }
       }
+      // A dsh found on PATH is asked who it is (DeepSeek Harness names itself).
+      if (argv[1] === '--help') return { code: 0, stdout: DEEPSEEK_DSH_HELP }
       return { code: 0, stdout: `${installed} (Claude Code)` }
     },
   }
@@ -590,6 +592,86 @@ test('runtime.versions asks each binary once per ten minutes: reads together sha
   expect(await installer.remove('codex')).toMatchObject({ ok: true })
   await installer.versions()
   expect(asked()).toBe(installed + 2)
+})
+
+/** What Debian's `dsh` (distributed shell) answers; DeepSeek Harness's own `--help` names it. */
+const DEBIAN_DSH =
+  "Distributed Shell / Dancer's shell. version 0.25.10\nUsage: dsh [-v|-q] [-M|-H] [-i|-c] [-b n] [-a] [-g groupname] [-f filename] [-r remoteshellname] [commandline]\n"
+const DEEPSEEK_DSH_HELP =
+  'Usage: dsh [--profile] <name> [options] [app-args...]\n\ndsh: boot a DeepSeek Harness profile\n'
+
+test('a dsh on PATH counts only once its --help says it is DeepSeek Harness; one given by flag is trusted', async () => {
+  const asked: string[] = []
+  const answering =
+    (help: string): RunCommand =>
+    async argv => {
+      asked.push(argv.join(' '))
+      if (argv[1] === '--help') return { code: 0, stdout: help }
+      if (argv[1] === '--version')
+        return {
+          code: 0,
+          stdout: help === DEBIAN_DSH ? DEBIAN_DSH : '0.2.1-rc.2\n',
+        }
+      return { code: 1, stdout: '' }
+    }
+  const debian = new RuntimeInstaller({
+    run: answering(DEBIAN_DSH),
+    which: command => (command === 'dsh' ? '/usr/bin/dsh' : null),
+  })
+  // Before the check it is not taken either.
+  expect(debian.availability('dsh').installed).toBe(false)
+  await Promise.all([debian.checkPath('dsh'), debian.checkPath('dsh')])
+  expect(debian.availability('dsh')).toEqual({
+    installed: false,
+    rejected:
+      'PATH 上的 /usr/bin/dsh 不是 DeepSeek Harness（它的 --help 里没有这个名字），当作没有安装',
+  })
+  const row = (await debian.versions()).runtimes.find(one => one.id === 'dsh')!
+  expect(row).toMatchObject({ installed: false })
+  expect(row.version).toBeUndefined()
+  expect(row.source).toBeUndefined()
+  // Asked once for that binary, whoever asked.
+  expect(asked).toEqual(['/usr/bin/dsh --help'])
+
+  asked.length = 0
+  const deepseek = new RuntimeInstaller({
+    run: answering(DEEPSEEK_DSH_HELP),
+    which: command => (command === 'dsh' ? '/opt/homebrew/bin/dsh' : null),
+  })
+  expect(await deepseek.ensureRuntimeInstalled('dsh')).toEqual({ ok: true })
+  expect(deepseek.availability('dsh')).toEqual({
+    installed: true,
+    source: 'path',
+    bin: '/opt/homebrew/bin/dsh',
+  })
+  expect(
+    (await deepseek.versions()).runtimes.find(one => one.id === 'dsh'),
+  ).toMatchObject({ installed: true, source: 'path', version: '0.2.1-rc.2' })
+  expect(asked).toEqual([
+    '/opt/homebrew/bin/dsh --help',
+    '/opt/homebrew/bin/dsh --version',
+  ])
+
+  asked.length = 0
+  const flagged = new RuntimeInstaller({
+    run: answering(DEBIAN_DSH),
+    bins: { dsh: '/usr/bin/dsh' },
+    which: command => (command === 'dsh' ? '/usr/bin/dsh' : null),
+  })
+  await flagged.checkPath('dsh')
+  expect(flagged.availability('dsh')).toEqual({
+    installed: true,
+    source: 'flag',
+    bin: '/usr/bin/dsh',
+  })
+  expect(asked).toEqual([])
+  // Other runtimes on PATH are taken as they are.
+  const codex = new RuntimeInstaller({
+    run: answering(DEBIAN_DSH),
+    which: command => (command === 'codex' ? '/usr/local/bin/codex' : null),
+  })
+  await codex.checkPath('codex')
+  expect(codex.availability('codex')).toMatchObject({ installed: true })
 })
 
 test('a second install of the same runtime is refused while one runs; ensureRuntimeInstalled joins it', async () => {

@@ -299,6 +299,36 @@ export interface RuntimeAvailability {
   readonly installed: boolean
   readonly source?: 'builtin' | 'prefix' | 'path' | 'flag'
   readonly bin?: string
+  /** A binary of its name on PATH that was not taken, and why. */
+  readonly rejected?: string
+}
+
+/**
+ * Runtimes told apart from other programs of the same name on PATH, by what
+ * the runtime prints itself. Debian's `dsh` (distributed shell) and pdsh's
+ * `dsh` are not DeepSeek Harness, whose `--help` names it (its `--version`
+ * prints a bare version number, which proves nothing). A binary given by
+ * flag is the operator's and is not asked; the managed prefix only holds
+ * what passed the compatibility check.
+ */
+const PATH_IDENTITY: Readonly<
+  Record<string, { readonly args: readonly string[]; readonly name: RegExp }>
+> = {
+  dsh: { args: ['--help'], name: /DeepSeek Harness/ },
+}
+
+function identityRule(
+  kind: string,
+): (typeof PATH_IDENTITY)[string] | undefined {
+  return Object.hasOwn(PATH_IDENTITY, kind) ? PATH_IDENTITY[kind] : undefined
+}
+
+/** One PATH binary checked against {@link PATH_IDENTITY}. */
+interface PathCheck {
+  readonly bin: string
+  /** `null`: it is the runtime; a string: why it is not; absent: running. */
+  verdict?: string | null
+  done?: Promise<void>
 }
 
 /** The last install of one runtime, kept across restarts. */
@@ -427,6 +457,8 @@ export class RuntimeInstaller {
   #nodeVersion: string | null | undefined
   /** Scratch prefixes of the installs running now. */
   readonly #stages = new Set<string>()
+  /** PATH binaries checked against {@link PATH_IDENTITY}, by runtime. */
+  readonly #onPath = new Map<string, PathCheck>()
   /**
    * `runtime.versions`' `--version` answers by runtime, for one binary path;
    * reads at the same time share the one in flight. Dropped when the
@@ -482,12 +514,67 @@ export class RuntimeInstaller {
     const managed = managedRuntimeBin(kind)
     if (managed !== undefined)
       return { installed: true, source: 'prefix', bin: managed }
-    const which =
-      this.#options.which ?? ((command: string) => Bun.which(command))
-    const found = which(spec.install.command)
-    return found === null || found === undefined
-      ? { installed: false }
-      : { installed: true, source: 'path', bin: found }
+    const found = this.#which(spec.install.command)
+    if (found === null) return { installed: false }
+    if (identityRule(kind) !== undefined) {
+      // Taken only once it said who it is (`checkPath`).
+      const check = this.#onPath.get(kind)
+      if (check?.bin !== found || check.verdict === undefined)
+        return {
+          installed: false,
+          rejected: `PATH 上的 ${found} 还没有核对是不是 ${spec.label}`,
+        }
+      if (check.verdict !== null)
+        return { installed: false, rejected: check.verdict }
+    }
+    return { installed: true, source: 'path', bin: found }
+  }
+
+  #which(command: string): string | null {
+    const which = this.#options.which ?? ((name: string) => Bun.which(name))
+    return which(command) ?? null
+  }
+
+  /**
+   * Asks the PATH binary of `kind` who it is, for the runtimes that need it
+   * ({@link PATH_IDENTITY}); until then, and when it is another program, it
+   * does not count as installed. Once per binary path; callers at the same
+   * time share the one check. Nothing to do for a runtime given by flag or
+   * in the managed prefix.
+   */
+  checkPath(kind: string): Promise<void> {
+    const rule = identityRule(kind)
+    const spec = npmRuntime(kind)
+    if (
+      rule === undefined ||
+      spec === undefined ||
+      this.#options.bins?.[kind] !== undefined ||
+      managedRuntimeBin(kind) !== undefined
+    )
+      return Promise.resolve()
+    const found = this.#which(spec.install.command)
+    if (found === null) return Promise.resolve()
+    const known = this.#onPath.get(kind)
+    if (known?.bin === found && known.done !== undefined) return known.done
+    const check: PathCheck = { bin: found }
+    check.done = (async () => {
+      const shown = `${spec.install.command} ${rule.args.join(' ')}`
+      try {
+        const result = await this.#run([found, ...rule.args], {
+          env: env(),
+          timeoutMs: 15_000,
+          signal: this.#stopping.signal,
+        })
+        check.verdict = rule.name.test(result.stdout)
+          ? null
+          : `PATH 上的 ${found} 不是 ${spec.label}（它的 ${rule.args.join(' ')} 里没有这个名字），当作没有安装`
+      } catch (error) {
+        check.verdict = `PATH 上的 ${found} 核对不了（${shown}：${errorText(error)}），当作没有安装`
+      }
+      this.#changed(spec.id)
+    })()
+    this.#onPath.set(kind, check)
+    return check.done
   }
 
   installing(kind: string): boolean {
@@ -635,6 +722,7 @@ export class RuntimeInstaller {
             installing: false,
             verified: spec.verified,
           }
+        await this.checkPath(spec.id)
         const here = this.availability(spec.id)
         const version =
           here.bin === undefined
@@ -743,6 +831,7 @@ export class RuntimeInstaller {
   async ensureRuntimeInstalled(
     kind: ExternalRuntimeKind,
   ): Promise<RuntimeInstallResult> {
+    await this.checkPath(kind)
     if (this.availability(kind).installed) return { ok: true }
     const running = this.#installing.get(kind)
     if (running !== undefined) return running
