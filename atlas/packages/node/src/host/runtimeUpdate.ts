@@ -440,6 +440,13 @@ function errorText(error: unknown): string {
 
 const SEMVER_IN_OUTPUT = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/
 
+/** Refused once the installer stopped (the node is shutting down). */
+const STOPPING = {
+  ok: false,
+  code: RUNTIME_ERRORS.busy,
+  message: '节点正在停机，不开始新的安装或卸载',
+} as const
+
 /** What an install that never ended reads as after a restart. */
 const UNFINISHED =
   '上一次安装没有结束（节点在安装中途退出，常见原因是内存不足被系统结束）'
@@ -866,6 +873,9 @@ export class RuntimeInstaller {
   ): Promise<RuntimeInstallResult> {
     const spec = this.#refusal(kind, version)
     if ('ok' in spec) return spec
+    // Before the "unfinished" record: one written now would never be
+    // replaced (every ending sees the stop) and the next start would back off.
+    if (this.#stopping.signal.aborted) return STOPPING
     if (this.#installing.has(spec.id))
       return {
         ok: false,
@@ -1079,6 +1089,7 @@ export class RuntimeInstaller {
   async remove(kind: unknown): Promise<ControlOutcome> {
     const spec = this.#refusal(kind, undefined)
     if ('ok' in spec) return spec
+    if (this.#stopping.signal.aborted) return STOPPING
     const users = this.#options.inUse?.(spec.id) ?? []
     if (users.length > 0)
       return {
@@ -1126,6 +1137,8 @@ export class RuntimeInstaller {
    * The node is stopping: running npm commands are killed so the process can
    * exit, and nothing they leave unfinished is recorded as a failure — the
    * last finished record of each goes back on disk now, before the exit.
+   * From here on no install or removal starts (`E_RUNTIME_BUSY`): the
+   * resident stops its runtimes before its control link closes.
    */
   stop(): void {
     for (const [kind, finished] of this.#unfinished)

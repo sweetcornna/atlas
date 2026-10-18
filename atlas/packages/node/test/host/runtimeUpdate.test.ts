@@ -890,6 +890,46 @@ test('stopping the node ends a running install without recording a verdict', asy
   expect(new RuntimeInstaller({}).lastInstall('dsh')).toBeUndefined()
 })
 
+test('after stop() nothing new is installed or removed: refused before anything is written', async () => {
+  const npm = fakeNpm(PIN('dsh'))
+  const installer = new RuntimeInstaller({
+    run: npm.run,
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+  })
+  // A managed copy to (not) remove.
+  const bin = path.join(managedRuntimePrefix(), 'node_modules', '.bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(path.join(bin, 'codex'), '')
+  // The resident stops its runtimes before its control link closes, so a
+  // request can still come in after this.
+  installer.stop()
+  for (const op of ['runtime.install', 'runtime.update'])
+    expect(await installer.control(op, { runtime: 'dsh' }, CTX)).toEqual({
+      ok: false,
+      code: 'E_RUNTIME_BUSY',
+      message: '节点正在停机，不开始新的安装或卸载',
+    })
+  expect(await installer.ensureRuntimeInstalled('dsh')).toMatchObject({
+    ok: false,
+    code: 'E_RUNTIME_BUSY',
+  })
+  expect(
+    await installer.control('runtime.remove', { runtime: 'codex' }, CTX),
+  ).toEqual({
+    ok: false,
+    code: 'E_RUNTIME_BUSY',
+    message: '节点正在停机，不开始新的安装或卸载',
+  })
+  expect(npm.calls).toEqual([])
+  expect(managedRuntimeBin('codex')).toBeDefined()
+  // No "unfinished" record for the next start to back off from.
+  expect(existsSync(qianmoConfigPath('runtimes', 'installs.json'))).toBe(false)
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toBeUndefined()
+})
+
 test('a failed install counts once, a success clears the count', async () => {
   const installer = new RuntimeInstaller({
     run: fakeNpm(PIN('dsh'), { failInstall: true }).run,
