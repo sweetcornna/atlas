@@ -299,7 +299,7 @@ export function coverageByDimension(
  * ```
  *
  * **为什么要有 `start` 这一行。** 结果是流式落盘的（见
- * `scripts/qianmo-acceptance.ts`），于是被打断的一轮会留下一份**没有末行**的
+ * `atlas/scripts/qianmo-acceptance.ts`），于是被打断的一轮会留下一份**没有末行**的
  * 文件 —— 那是好事（issue #85：以前是零产物），但「缺末行」本身不能是唯一的
  * 信号：读的人拿到一份没有 summary 的文件，分不出「跑了一半被杀」「一条都没
  * 跑起来」「文件被截断了」，也拿不到 target / startedAt（那两个字段以前只存在
@@ -374,7 +374,7 @@ export function ndjsonSummaryLine(run: SuiteRun): string {
  * 机器可读：首行 start、一行一个场景、末行 summary。
  *
  * 一次性渲染一份**完整**产物。真跑不走这条路（那边是流式追加的，见
- * `scripts/qianmo-acceptance.ts`），但两边逐字节同形 —— 三段都是上面那三个
+ * `atlas/scripts/qianmo-acceptance.ts`），但两边逐字节同形 —— 三段都是上面那三个
  * 函数拼的，格式只有一份定义。
  */
 export function toNdjson(run: SuiteRun): string {

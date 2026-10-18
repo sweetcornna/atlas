@@ -10,7 +10,7 @@
  * 去测「错 PSK 该回什么」，能观察到的只有一个自己合成的
  * `'transport handshake rejected (4003)'` —— 那不是被测系统说的话。
  *
- * 所以这里照着 `packages/transport/test/retained-channel-auth.test.ts` 的
+ * 所以这里照着 `atlas/packages/transport/test/retained-channel-auth.test.ts` 的
  * `rawHandshake` 自己发帧：challenge 来了就按指定的档位拼 auth 帧，然后把
  * **收到的每一帧原文**和**关闭时的 code/reason** 原样交出去。构造非法材料是
  * 这个探针存在的全部意义，所以它不做任何合法性检查。

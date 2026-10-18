@@ -246,7 +246,7 @@ export interface BurstResult {
  * 在**一条连接上**连发多条信封，把每条的答复各自收回来。
  *
  * 为什么不能用 `sendEnvelope` 循环：速率预算是 `LIMITS.ratePerMinute` 条/分钟
- * 的连续补充令牌桶（`packages/router/src/rate.ts`），每秒补回 1/60 的容量。
+ * 的连续补充令牌桶（`atlas/packages/router/src/rate.ts`），每秒补回 1/60 的容量。
  * 一条一条拨号，每次握手加收帧的开销让六百条要跑好几分钟，那时候桶早就补满
  * 了 —— 测不出上限，只测出「补得比发得快」。所以必须一次握手、一口气发完。
  *

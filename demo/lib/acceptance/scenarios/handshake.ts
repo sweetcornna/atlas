@@ -574,7 +574,7 @@ export const credentialChannelScenarios: readonly Scenario[] = [
       //   · 证书目录只在**启动时**同步拉一次，随后按 `DEFAULT_REGISTRY_POLL_
       //     INTERVAL_MS`（一小时）轮询，而重启会把在持的那条连接一起带走 ——
       //     「同一条通道上换一把签名钥匙」因此没有落点。
-      // 于是这条腿由 `packages/transport/test/retained-channel-auth.test.ts`
+      // 于是这条腿由 `atlas/packages/transport/test/retained-channel-auth.test.ts`
       // 用一个手写的 HandshakeCredentialDirectory 覆盖，那里能在两次拨号之间
       // 换答案。这条场景负责的是**别让这个结论悄悄过期**。
       const source = readSource(
@@ -588,7 +588,7 @@ export const credentialChannelScenarios: readonly Scenario[] = [
       const unitTest = readSource(
         joinPath(
           REPO_ROOT,
-          'packages/transport/test/retained-channel-auth.test.ts',
+          'atlas/packages/transport/test/retained-channel-auth.test.ts',
         ),
         'utf8',
       )
@@ -613,7 +613,7 @@ export const credentialChannelScenarios: readonly Scenario[] = [
           .done('结论过期')
       }
       return checks.skip(
-        '本地腿造不出：--trust 是静态表；--trust-ca 那条路上公钥与 credential 指纹绑死、换一个必然换另一个；证书目录只在启动时同步一次、之后每小时轮询，而重启会带走在持连接。这条腿由 packages/transport/test/retained-channel-auth.test.ts 用手写目录覆盖。',
+        '本地腿造不出：--trust 是静态表；--trust-ca 那条路上公钥与 credential 指纹绑死、换一个必然换另一个；证书目录只在启动时同步一次、之后每小时轮询，而重启会带走在持连接。这条腿由 atlas/packages/transport/test/retained-channel-auth.test.ts 用手写目录覆盖。',
       )
     },
   },

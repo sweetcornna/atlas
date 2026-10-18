@@ -6,7 +6,7 @@
  *
  * 这一维跑的是**仓库自带的真 shell 脚本**（`/bin/bash` 里 source
  * `demo/env/beta/common.sh`，或直接 exec `beta-up.sh`），不是它们的 TypeScript
- * 替身。理由与 `scripts/test-shards.sh` 把 `demo/env` 单独列一格是同一条：
+ * 替身。理由与 `atlas/scripts/test-shards.sh` 把 `demo/env` 单独列一格是同一条：
  * 这些脚本要证明的东西恰恰是「在真 bash 上会怎样」，而开发机的 macOS bash 3.2
  * 与线上的 Linux bash 5 差别就在这一层。
  *

@@ -4,7 +4,7 @@
 /**
  * 可控假上游 —— 一个 OpenAI 兼容的本地模型端点。
  *
- * **它证明什么、不证明什么**（照 `tests/integration/qianmo-end-to-end.test.ts`
+ * **它证明什么、不证明什么**（照 `atlas/tests/integration/qianmo-end-to-end.test.ts`
  * 的规矩，每个 stub 都要自己交代边界）：
  *
  *   证明的：常驻节点起了 ACP 子进程、子进程真的按环境里的凭据去打模型端点、
