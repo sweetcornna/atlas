@@ -1051,7 +1051,7 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 
 ### M2 magpie 统一模型调度与公开版 · P33–P35（v3.6 新增）
 
-> 依据章程 v3.5 §2.7（v3.6 补注）、[`magpie-gateway.md`](./magpie-gateway.md) v1.5 与 [`public-edition.md`](./public-edition.md) v1.2。各包的目标、文件范围与完成标准只写在设计文档的包表，本节只作排期索引。
+> 依据章程 v3.5 §2.7（v3.6 补注）、[`magpie-gateway.md`](./magpie-gateway.md) v1.5 与 [`public-edition.md`](./public-edition.md) v1.3。各包的目标、文件范围与完成标准只写在设计文档的包表，本节只作排期索引。
 
 | 包 | 内容 | 状态 |
 |---|---|---|

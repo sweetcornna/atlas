@@ -34,6 +34,7 @@ import {
   ConsoleMagpie,
   type ConsoleMagpieOptions,
   magpieProfileId,
+  mayRunTenantProfile,
 } from '../../src/commands/consoleMagpie.js'
 import {
   type ConsoleProviders,
@@ -1118,6 +1119,95 @@ describe('profile ids', () => {
     }
     expect(magpieProfileId({ kind: 'node', id: 'tokyo_1' })).not.toBe(
       magpieProfileId({ kind: 'node', id: 'tokyo-1' }),
+    )
+  })
+})
+
+describe('whether a node may run a subscriber’s profile', () => {
+  const TENANT = 'magpie-tenant-t1-0123abcd'
+  const apply = (profileId: string, outcome: 'ok' | 'refused' | 'failed') => ({
+    kind: 'apply' as const,
+    at: 0,
+    requestId: `r-${profileId}-${outcome}`,
+    profileId,
+    outcome,
+  })
+  const probe = {
+    kind: 'probe' as const,
+    at: 0,
+    requestId: 'p',
+    profileId: TENANT,
+    outcome: 'ok' as const,
+  }
+
+  test('with no status, the newest delivery that may have landed decides', () => {
+    // Newest first, as the book keeps them.
+    const cases: [readonly ReturnType<typeof apply>[], boolean][] = [
+      [[], false],
+      [[apply(TENANT, 'ok')], true],
+      // Unanswered: it may have landed.
+      [[apply(TENANT, 'failed')], true],
+      // Refused: it did not.
+      [[apply(TENANT, 'refused')], false],
+      // Something else landed after it and replaced it.
+      [[apply('platform', 'ok'), apply(TENANT, 'ok')], false],
+      // Something else did not land; the subscriber's still may be there.
+      [[apply('platform', 'failed'), apply(TENANT, 'ok')], true],
+      [[apply(TENANT, 'refused'), apply('platform', 'ok')], false],
+    ]
+    for (const [recent, expected] of cases)
+      expect(mayRunTenantProfile({ actual: null, recent })).toBe(expected)
+    // A probe is not a delivery.
+    expect(mayRunTenantProfile({ actual: null, recent: [probe] })).toBe(false)
+    // Taken but waiting to switch: the subscriber's is still what runs.
+    expect(
+      mayRunTenantProfile({
+        actual: null,
+        recent: [
+          { ...apply('platform', 'ok'), pending: true },
+          apply(TENANT, 'ok'),
+        ],
+      }),
+    ).toBe(true)
+  })
+
+  test('with a status, deliveries after the one it reports count too', () => {
+    const runs = (profileId: string, requestId: string) => ({
+      applied: { profileId, requestId },
+    })
+    const platformOk = apply('platform', 'ok')
+    const tenantOk = apply(TENANT, 'ok')
+    // The status reports a platform profile; a delivery of the subscriber's
+    // after it went unanswered and may have landed.
+    expect(
+      mayRunTenantProfile({
+        actual: runs('platform', platformOk.requestId),
+        recent: [apply(TENANT, 'failed'), platformOk],
+      }),
+    ).toBe(true)
+    // Deliveries before the reported one do not.
+    expect(
+      mayRunTenantProfile({
+        actual: runs('platform', platformOk.requestId),
+        recent: [platformOk, apply(TENANT, 'failed')],
+      }),
+    ).toBe(false)
+    // The status reports the subscriber's; something else landed after it.
+    expect(
+      mayRunTenantProfile({
+        actual: runs(TENANT, tenantOk.requestId),
+        recent: [platformOk, tenantOk],
+      }),
+    ).toBe(false)
+    // ... or was only taken, waiting to switch.
+    expect(
+      mayRunTenantProfile({
+        actual: runs(TENANT, tenantOk.requestId),
+        recent: [{ ...platformOk, pending: true }, tenantOk],
+      }),
+    ).toBe(true)
+    expect(mayRunTenantProfile({ actual: { applied: null }, recent: [] })).toBe(
+      false,
     )
   })
 })
