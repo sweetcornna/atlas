@@ -488,7 +488,8 @@ export const credentialChannelScenarios: readonly Scenario[] = [
       if (skipReason !== undefined) return checks.skip(skipReason)
 
       // 同一个配置根签两次：Ed25519 身份是 `wx` 创建、永不覆盖，所以两张证书
-      // 绑的是**同一把签名钥匙**，四元组里只有 credential 那一格不同。
+      // 绑的是**同一把签名钥匙**，四元组里只有 credential 那一格不同。第二次
+      // 要 `--replace`：`qm ca issue` 默认拒绝覆盖已有的 `issued/ctl.crt`。
       const first = await issueCertificate(fixture.ca, {
         node: 'ctl',
         configRoot: fixture.peerConfig,
@@ -498,6 +499,7 @@ export const credentialChannelScenarios: readonly Scenario[] = [
         node: 'ctl',
         configRoot: fixture.peerConfig,
         outName: 'cert-two.crt',
+        replace: true,
       })
       const rl = await signRevocationList(fixture.ca)
       await publishRevocationList(fixture.registryUrl, rl)
