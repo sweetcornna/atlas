@@ -82,7 +82,8 @@ const KEEP_IDLE_MS = 30 * 24 * 60 * 60_000
 /**
  * Room for the answers in one hub-call result, below the envelope's
  * `LIMITS.maxMessageBytes` with space for the JSON around them; split evenly
- * between the targets.
+ * between the targets. Counted as JSON writes them: a control character
+ * takes six bytes there, a quote two.
  */
 const ANSWER_BUDGET_BYTES = 160 * 1024
 
@@ -212,14 +213,22 @@ function failed(agent: string, code: string, error: string): PeerAnswer {
   return { agent, ok: false, code, error }
 }
 
-/** `text` cut to `bytes` of UTF-8 on a character boundary, marked when cut. */
+/** The bytes `text` takes inside a JSON string, quotes not counted. */
+function jsonBytes(text: string): number {
+  return Buffer.byteLength(JSON.stringify(text)) - 2
+}
+
+/**
+ * `text` cut on a character boundary so that, as JSON writes it, it takes at
+ * most `bytes`; marked when cut.
+ */
 function clipBytes(text: string, bytes: number): string {
-  if (Buffer.byteLength(text) <= bytes) return text
+  if (jsonBytes(text) <= bytes) return text
   const mark = '…（回答过长，已截断）'
-  let used = Buffer.byteLength(mark)
+  let used = jsonBytes(mark)
   let out = ''
   for (const char of text) {
-    used += Buffer.byteLength(char)
+    used += jsonBytes(char)
     if (used > bytes) break
     out += char
   }

@@ -340,6 +340,26 @@ describe('asking', () => {
     expect(Buffer.byteLength(answer.reply)).toBeLessThanOrEqual(160 * 1024)
     expect(answer.reply.endsWith('（回答过长，已截断）')).toBe(true)
   })
+
+  test('the budget is counted as the reply goes on the wire, escapes included', async () => {
+    const book = peers()
+    const caller = await conversation()
+    const pending = ask(book, caller, [CODER, REVIEWER])
+    // 60 KB of text that JSON writes six times as long, and quotes and
+    // backslashes that it writes twice as long.
+    chat.reply(await askedIn(CODER), '\u0001'.repeat(60_000))
+    chat.reply(await askedIn(REVIEWER), '"\\'.repeat(60_000))
+    const outcome = await pending
+    // The hub-call result, as the control link sends it, fits an envelope
+    // with room to spare.
+    expect(Buffer.byteLength(JSON.stringify(outcome))).toBeLessThanOrEqual(
+      LIMITS.maxMessageBytes - 64 * 1024,
+    )
+    for (const answer of answers(outcome)) {
+      if (!answer.ok) throw new Error('no answer')
+      expect(answer.reply.endsWith('（回答过长，已截断）')).toBe(true)
+    }
+  })
 })
 
 describe('the call chain', () => {
