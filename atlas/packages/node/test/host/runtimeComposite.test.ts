@@ -359,6 +359,18 @@ test('a runtime that continues its conversation hears only the turns after its l
   expect(
     portablePreamble(turns.slice(0, 3), 'codex', undefined, 0),
   ).toBeUndefined()
+  // A turn whose process went away there is not taken for one it has.
+  const lost = [
+    ...turns.slice(0, 3),
+    { ...turnOf('codex', '五', '', 35), status: 'error' as const },
+    turnOf('dsh', '六', '答六', 50),
+  ]
+  const text = portablePreamble(lost, 'codex', undefined, 0) ?? ''
+  expect(
+    ['一', '二', '三', '五', '六'].filter(user =>
+      text.includes(`用户：${user}`),
+    ),
+  ).toEqual(['五', '六'])
 })
 
 test('the transcript keeps the newest 64 KiB; the preamble the newest turns that fit in 12 KiB', () => {

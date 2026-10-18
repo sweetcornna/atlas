@@ -986,7 +986,8 @@ test('a command that exits leaving a process on its pipes: that process is kille
       timeoutMs: 20_000,
     },
   )
-  expect(result).toMatchObject({ code: 0, stdout: 'done\n' })
+  // Cut off with the pipes: the output may be incomplete, and says so.
+  expect(result).toEqual({ code: 0, stdout: 'done\n', truncated: true })
   expect(Date.now() - started).toBeLessThan(4_000)
   expect(await gone(Number(readFileSync(pidFile, 'utf8')))).toBe(true)
   rmSync(path.dirname(pidFile), { recursive: true, force: true })
@@ -1234,6 +1235,49 @@ test('after stop() nothing new is installed or removed: refused before anything 
   // No "unfinished" record for the next start to back off from.
   expect(existsSync(qianmoConfigPath('runtimes', 'installs.json'))).toBe(false)
   expect(new RuntimeInstaller({}).lastInstall('dsh')).toBeUndefined()
+})
+
+test('a removal still queued when the node stops is not begun', async () => {
+  const npm = fakeNpm(PIN('codex'))
+  let release!: () => void
+  const held = new Promise<void>(done => {
+    release = done
+  })
+  let uninstalling!: () => void
+  const first = new Promise<void>(done => {
+    uninstalling = done
+  })
+  const installer = new RuntimeInstaller({
+    run: async (argv, options) => {
+      if (argv[1] === 'uninstall') {
+        uninstalling()
+        await held
+      }
+      return npm.run(argv, options)
+    },
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+  })
+  // Two earlier-build installs in the shared prefix.
+  const bin = path.join(managedRuntimePrefix(), 'node_modules', '.bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(path.join(bin, 'codex'), '')
+  writeFileSync(path.join(bin, 'gemini'), '')
+  const codex = installer.control('runtime.remove', { runtime: 'codex' }, CTX)
+  await first
+  const gemini = installer.control('runtime.remove', { runtime: 'gemini' }, CTX)
+  installer.stop()
+  release()
+  await codex
+  expect(await gemini).toEqual({
+    ok: false,
+    code: 'E_RUNTIME_BUSY',
+    message: '节点正在停机，不开始新的安装或卸载',
+  })
+  expect(npm.calls.filter(call => call[1] === 'uninstall')).toHaveLength(1)
+  expect(existsSync(path.join(bin, 'gemini'))).toBe(true)
 })
 
 test('a failed install counts once, a success clears the count', async () => {

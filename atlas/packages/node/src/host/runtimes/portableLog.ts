@@ -157,7 +157,12 @@ export function portablePreamble(
   let from = 0
   if (since !== undefined)
     for (let i = all.length - 1; i >= 0; i--)
-      if (all[i]!.runtime === next && all[i]!.at >= since) {
+      // A turn whose process went away (`error`) may not be in it.
+      if (
+        all[i]!.runtime === next &&
+        all[i]!.at >= since &&
+        all[i]!.status !== 'error'
+      ) {
         from = i + 1
         break
       }

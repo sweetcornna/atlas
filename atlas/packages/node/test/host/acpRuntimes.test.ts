@@ -745,11 +745,17 @@ test('a session moved to another runtime starts a new native conversation there'
 })
 
 test('a conversation id equal to the one another runtime had is still a new conversation', async () => {
-  const { pool, agent } = setup({}, { env: { QIANMO_FIXTURE_SESSION_ID: 'same-id' } })
+  const { pool, agent } = setup(
+    {},
+    { env: { QIANMO_FIXTURE_SESSION_ID: 'same-id' } },
+  )
   const session = await pool.newSession(agent)
   // The session ran on Gemini before, whose conversation had the same id.
   writeFileSync(
-    join(qianmoConfigPath('resident', 'sessions', 'coder', session), 'runtime.json'),
+    join(
+      qianmoConfigPath('resident', 'sessions', 'coder', session),
+      'runtime.json',
+    ),
     JSON.stringify({ kind: 'gemini', nativeId: 'same-id', since: 1 }),
   )
   const begun = Date.now()
