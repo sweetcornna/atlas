@@ -28,10 +28,34 @@ afterAll(() => {
   for (const dir of temps) rmSync(dir, { recursive: true, force: true })
 })
 
+function shards(...args: string[]): { code: number; lines: string[] } {
+  const run = Bun.spawnSync(['bash', SCRIPT, ...args], { cwd: ROOT })
+  return {
+    code: run.exitCode,
+    lines: run.stdout.toString().split('\n').filter(Boolean),
+  }
+}
+
 function list(...dirs: string[]): string[] {
-  const run = Bun.spawnSync(['bash', SCRIPT, '--list', ...dirs], { cwd: ROOT })
-  expect(run.exitCode).toBe(0)
-  return run.stdout.toString().split('\n').filter(Boolean)
+  const run = shards('--list', ...dirs)
+  expect(run.code).toBe(0)
+  return run.lines
+}
+
+function files(...args: string[]): string[] {
+  const run = shards('--files', ...args)
+  expect(run.code).toBe(0)
+  return run.lines
+}
+
+function tree(paths: string[]): string {
+  const dir = mkdtempSync(join(tmpdir(), 'qm-test-shards-'))
+  temps.push(dir)
+  for (const path of paths) {
+    mkdirSync(join(dir, path, '..'), { recursive: true })
+    writeFileSync(join(dir, path), '')
+  }
+  return dir
 }
 
 function hasTests(dir: string): boolean {
@@ -97,5 +121,78 @@ describe('test-shards.sh --list', () => {
     writeFileSync(join(dir, 'node_modules', 'dep', 'x.test.ts'), '')
 
     expect(list(dir)).toEqual([])
+  })
+})
+
+describe('test-shards.sh paths and exclusions', () => {
+  test('a single test file is a shard; any other file is not', () => {
+    const dir = tree(['a/x.test.ts', 'a/helper.ts'])
+
+    expect(list(`${dir}/a/x.test.ts`)).toEqual([`${dir}/a/x.test.ts`])
+    expect(files(`${dir}/a/x.test.ts`)).toEqual([`${dir}/a/x.test.ts`])
+    expect(list(`${dir}/a/helper.ts`)).toEqual([])
+  })
+
+  test('--exclude drops a subtree; the shard keeps the rest', () => {
+    const dir = tree([
+      'a/x.test.ts',
+      'ab/y.test.ts',
+      'b/z.test.tsx',
+      'w.test.ts',
+    ])
+
+    expect(list('--exclude', `${dir}/a`, dir)).toEqual([dir])
+    // `a` is not a prefix of `ab`: only whole path segments are excluded.
+    expect(files('--exclude', `${dir}/a/`, `${dir}/`)).toEqual([
+      `${dir}/ab/y.test.ts`,
+      `${dir}/b/z.test.tsx`,
+      `${dir}/w.test.ts`,
+    ])
+  })
+
+  test('a shard inside or equal to an exclusion is not a shard', () => {
+    const dir = tree(['a/x.test.ts'])
+
+    expect(list('--exclude', dir, `${dir}/a`)).toEqual([])
+    expect(list('--exclude', `${dir}/a`, `${dir}/a`)).toEqual([])
+  })
+
+  test('bad arguments stop before running anything', () => {
+    expect(shards('--group', 'nope').code).toBe(2)
+    expect(shards('--group', 'ops', 'atlas/scripts').code).toBe(2)
+    expect(shards('--list', '--files').code).toBe(2)
+    expect(shards('--exclude').code).toBe(2)
+    expect(shards('--bogus').code).toBe(2)
+  })
+})
+
+describe('test-shards.sh CI groups', () => {
+  const groups = shards('--list-groups').lines
+
+  test('the groups split the default shards, each test file exactly once', () => {
+    expect(groups.length).toBeGreaterThan(1)
+    const grouped = groups.flatMap(group => {
+      const run = files('--group', group)
+      expect(run.length).toBeGreaterThan(0)
+      return run
+    })
+
+    expect(new Set(grouped).size).toBe(grouped.length)
+    expect([...grouped].sort()).toEqual([...files()].sort())
+  })
+
+  test('node is split into test/host and everything else', () => {
+    const host = files('--group', 'node-host')
+    const rest = files('--group', 'node-rest')
+
+    expect(host.length).toBeGreaterThan(0)
+    expect(rest.length).toBeGreaterThan(0)
+    expect(
+      host.every(path => path.startsWith('atlas/packages/node/test/host/')),
+    ).toBe(true)
+    expect(
+      rest.some(path => path.startsWith('atlas/packages/node/test/host/')),
+    ).toBe(false)
+    expect([...host, ...rest].sort()).toEqual(files('atlas/packages/node'))
   })
 })
