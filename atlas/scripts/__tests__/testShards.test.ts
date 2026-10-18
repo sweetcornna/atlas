@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, test } from 'bun:test'
+import { junitFiles } from '../check-test-files-ran'
 
 const ROOT = join(import.meta.dir, '..', '..', '..')
 const SCRIPT = join(ROOT, 'atlas', 'scripts', 'test-shards.sh')
@@ -163,7 +164,32 @@ describe('test-shards.sh paths and exclusions', () => {
     expect(shards('--group', 'ops', 'atlas/scripts').code).toBe(2)
     expect(shards('--list', '--files').code).toBe(2)
     expect(shards('--exclude').code).toBe(2)
+    expect(shards('--report-dir').code).toBe(2)
+    expect(shards('--report-dir', '').code).toBe(2)
     expect(shards('--bogus').code).toBe(2)
+  })
+})
+
+describe('test-shards.sh --report-dir', () => {
+  // test-groups.sh runs the groups side by side, one directory each under
+  // test-reports/: a group clearing more than its own reports would delete
+  // another group's.
+  test('reports land there; only its old shard reports are cleared', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qm-test-shards-'))
+    temps.push(dir)
+    writeFileSync(join(dir, 'shard-07-stale.xml'), '')
+    writeFileSync(join(dir, 'other.log'), 'kept\n')
+    mkdirSync(join(dir, 'group'))
+    writeFileSync(join(dir, 'group', 'shard-01-kept.xml'), '')
+    const file = 'atlas/packages/paths/test/qmcodeHome.test.ts'
+
+    const run = shards('--report-dir', dir, file)
+
+    expect(run.code).toBe(0)
+    const report = `shard-01-${file.replaceAll('/', '-')}.xml`
+    expect(readdirSync(dir).sort()).toEqual(['group', 'other.log', report])
+    expect(readdirSync(join(dir, 'group'))).toEqual(['shard-01-kept.xml'])
+    expect(junitFiles(readFileSync(join(dir, report), 'utf8'))).toEqual([file])
   })
 })
 
@@ -199,6 +225,19 @@ describe('test-shards.sh CI groups', () => {
 
   // A group the workflow does not list never runs in CI; a listed name the
   // script does not know fails that job. Either way, keep the two in step.
+  test('bun run atlas:test runs these groups with test-groups.sh; precheck formats first', () => {
+    const { scripts } = JSON.parse(
+      readFileSync(join(ROOT, 'package.json'), 'utf8'),
+    ) as { scripts: Record<string, string> }
+
+    expect(scripts['atlas:test']).toBe('bash atlas/scripts/test-groups.sh')
+    // lint:fix writes files, so it finishes before anything reads them.
+    expect(scripts.precheck).toBe(
+      'bun run atlas:lint:fix && bash atlas/scripts/test-groups.sh --precheck',
+    )
+    expect(scripts.verify).toContain('ATLAS_TEST_HEAVY=all bun run atlas:test')
+  })
+
   test('the CI test matrix lists exactly these groups', () => {
     const workflow = Bun.YAML.parse(
       readFileSync(join(ROOT, '.github', 'workflows', 'atlas.yml'), 'utf8'),

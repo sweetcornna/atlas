@@ -30,9 +30,14 @@
 #   --files                                  print every test file the shards
 #                                            would run, run nothing
 #   --list-groups                            print the CI group names
+#   --report-dir <dir>                       write the JUnit reports to <dir>
+#                                            (default test-reports)
 #
-# One JUnit XML per shard lands in `test-reports/` (cleared first, so a shard
-# that dies before writing cannot leave a stale report under its name).
+# One JUnit XML per shard lands in the report directory, cleared first so a
+# shard that dies before writing cannot leave a stale report under its name:
+# the default `test-reports/` is removed whole; a `--report-dir` only loses the
+# `shard-*.xml` files directly in it, since test-groups.sh runs groups side by
+# side, each with its own directory under test-reports/.
 # Exit status is 0 only if every shard passed; there is no early abort, so one
 # red shard never hides the ones after it.
 
@@ -54,7 +59,7 @@ CI_GROUPS="node-host node-rest ops e2e packages"
 CLAIMED=" atlas/packages/node demo/env atlas/scripts atlas/tests/integration demo/lib "
 
 usage() {
-  echo "usage: test-shards.sh [--list | --files] [--group <name> | <path> …] [--exclude <path> …]" >&2
+  echo "usage: test-shards.sh [--list | --files] [--group <name> | <path> …] [--exclude <path> …] [--report-dir <dir>]" >&2
   echo "       test-shards.sh --list-groups" >&2
   exit 2
 }
@@ -92,6 +97,11 @@ while [ $# -gt 0 ]; do
     --exclude)
       [ $# -ge 2 ] || usage
       excludes+=("$(norm "$2")")
+      shift
+      ;;
+    --report-dir)
+      [ $# -ge 2 ] && [ -n "$2" ] || usage
+      REPORT_DIR="$2"
       shift
       ;;
     -*) usage ;;
@@ -158,7 +168,11 @@ shard_files() {
 }
 
 if [ "$mode" = run ]; then
-  rm -rf "$REPORT_DIR" && mkdir -p "$REPORT_DIR"
+  if [ "$REPORT_DIR" = test-reports ]; then
+    rm -rf test-reports
+  fi
+  mkdir -p "$REPORT_DIR" || exit 2
+  find "$REPORT_DIR" -maxdepth 1 -type f -name 'shard-*.xml' -exec rm -f {} +
 fi
 
 count=0

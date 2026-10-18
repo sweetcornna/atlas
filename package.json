@@ -173,7 +173,7 @@
 		"atlas:lint": "biome check atlas demo",
 		"atlas:lint:fix": "biome check --fix atlas demo",
 		"atlas:lint:ci": "biome ci atlas demo",
-		"atlas:test": "bash atlas/scripts/test-shards.sh",
+		"atlas:test": "bash atlas/scripts/test-groups.sh",
 		"atlas:test:registry-ha": "bun atlas/scripts/test-registry-ha.ts",
 		"atlas:check:license-headers": "bun atlas/scripts/check-license-headers.ts",
 		"atlas:check:identity-paths": "bun atlas/scripts/check-identity-paths.ts",
@@ -188,8 +188,8 @@
 		"atlas:check:qm-smoke": "bun atlas/scripts/check-qm-smoke.ts",
 		"qm": "bun atlas/packages/node/src/cli.ts",
 		"qianmo:acceptance": "bun atlas/scripts/qianmo-acceptance.ts",
-		"precheck": "bun run atlas:typecheck && bun run atlas:lint:fix && bun run atlas:check:identity-paths && bun run atlas:check:license-headers && bun run atlas:test",
-		"verify": "bun run atlas:lint:ci && bun run atlas:typecheck && bun run atlas:check:identity-paths && bun run atlas:check:license-headers && bun run atlas:check:omp-pin && bun run atlas:check:cycles && bun run atlas:check:unused && bun run atlas:sbom -- --check && bun run check:ts && bun run atlas:test && bun run atlas:test:registry-ha && bun run atlas:build:qm && bun run atlas:check:qm-smoke"
+		"precheck": "bun run atlas:lint:fix && bash atlas/scripts/test-groups.sh --precheck",
+		"verify": "bun run atlas:lint:ci && bun run atlas:typecheck && bun run atlas:check:identity-paths && bun run atlas:check:license-headers && bun run atlas:check:omp-pin && bun run atlas:check:cycles && bun run atlas:check:unused && bun run atlas:sbom -- --check && bun run check:ts && ATLAS_TEST_HEAVY=all bun run atlas:test && bun run atlas:test:registry-ha && bun run atlas:build:qm && bun run atlas:check:qm-smoke"
 	},
 	"dependencies": {
 		"sherpa-onnx": "1.13.2",

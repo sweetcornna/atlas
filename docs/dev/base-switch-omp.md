@@ -159,7 +159,7 @@ Fleet 载荷不带 `node_modules`，因此 `atlas:build:qm` 用 omp 的二进制
 | 测试 | `atlas/scripts/test-shards.sh`：每个阡陌包一个分片（`--isolate`），预载 `atlas/tests/preload.ts`；根 `bunfig.toml` 不加预载。CI 按 `--group` 分五组并行（node-host、node-rest、ops、e2e、packages），汇总作业用 `check-test-files-ran.ts` 核对每个已跟踪测试文件恰好跑一次。重用例集（routeDocs 反向扫描、recall 评测门禁）在 PR 上按改动路径开，`ATLAS_TEST_HEAVY` 由各组用 `atlas/scripts/ci/heavy-tests.ts` 自己算，触发表在 `atlas/tests/support/heavy.ts`；跳过的用例仍在 JUnit 里 |
 | omp 自身 | `verify` 里跑 omp 的 `check:ts`（证明阡陌没碰坏基座）；只有改了 omp 文件时才跑 omp 的 `test:ts`（根 `package.json` 只改阡陌脚本不算），CI 里按 `OMP_TEST_SHARD` 分 6 片 |
 
-`precheck` = 阡陌类型检查 + biome 修复 + identity-paths + license-headers + 阡陌测试；`verify` = 在此之上加 biome ci、cycles、unused、sbom --check、omp `check:ts`、`qm` 编译与冒烟。CI 改为 `.github/workflows/atlas.yml`；omp 自带的 `ci.yml`、`bun-cache-warm.yml`、`nix.yml` 依赖 omp 的自托管 runner，在本仓库删除，发布类流程一律不保留。CI 在 PR、`main` 的 push 与每晚定时（`43 19 * * *` UTC）上跑（同一 PR 的新推送取消旧运行）；PR 按路径省掉的重用例由 `main` 推送与夜间全量补上；夜间 static 的 `BASE_REF` 为空，走 `--all`，omp-test 也跑全量。原生插件按构建输入的哈希缓存；sync-omp 与 fleet-payload 不走缓存、每次重编。CI 拆成 static、native、test 五组、build-qm、omp-test 几个并行作业，汇总作业 `ci` 等全部作业并做防跳过自检。
+`precheck` = 先 biome 修复，再阡陌类型检查、identity-paths、license-headers 与阡陌测试五组并发（`atlas/scripts/test-groups.sh --precheck`，机器级锁、跑完做防跳过自检）；`verify` = 在此之上加 biome ci、cycles、unused、sbom --check、omp `check:ts`、`qm` 编译与冒烟。CI 改为 `.github/workflows/atlas.yml`；omp 自带的 `ci.yml`、`bun-cache-warm.yml`、`nix.yml` 依赖 omp 的自托管 runner，在本仓库删除，发布类流程一律不保留。CI 在 PR、`main` 的 push 与每晚定时（`43 19 * * *` UTC）上跑（同一 PR 的新推送取消旧运行）；PR 按路径省掉的重用例由 `main` 推送与夜间全量补上；夜间 static 的 `BASE_REF` 为空，走 `--all`，omp-test 也跑全量。原生插件按构建输入的哈希缓存；sync-omp 与 fleet-payload 不走缓存、每次重编。CI 拆成 static、native、test 五组、build-qm、omp-test 几个并行作业，汇总作业 `ci` 等全部作业并做防跳过自检。
 
 ## 7. 对外可见的变化
 

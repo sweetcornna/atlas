@@ -56,6 +56,7 @@ export const HEAVY_EVERYTHING = [
   'atlas/tests/preload.ts',
   'atlas/tests/support/**',
   'atlas/scripts/test-shards.sh',
+  'atlas/scripts/test-groups.sh',
   'atlas/scripts/ci/heavy-tests.ts',
   '.github/workflows/atlas.yml',
 ] as const
