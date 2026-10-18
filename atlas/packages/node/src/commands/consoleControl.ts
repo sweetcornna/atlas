@@ -443,16 +443,26 @@ export class ControlLinks {
       !context.channel.supports(MessageType.HubCallResult)
     )
       return
-    const reply = this.#router.outbound(
-      createMessage({
-        from: message.to,
-        to: message.from,
-        type: MessageType.HubCallResult,
-        payload: { callId: payload.callId, ...outcome },
-        taskId: message.taskId,
-        traceId: message.traceId,
-      }),
-    )
+    const answer = (result: ControlOutcome) =>
+      this.#router.outbound(
+        createMessage({
+          from: message.to,
+          to: message.from,
+          type: MessageType.HubCallResult,
+          payload: { callId: payload.callId, ...result },
+          taskId: message.taskId,
+          traceId: message.traceId,
+        }),
+      )
+    let reply = answer(outcome)
+    // An answer no envelope can carry would never arrive, and the node would
+    // wait out its whole call budget; it hears that it was too large instead.
+    if (reply.ok && messageBytes(reply.message) > LIMITS.maxMessageBytes)
+      reply = answer({
+        ok: false,
+        code: 'invalid',
+        message: '中枢的答复超过消息上限',
+      })
     if (reply.ok)
       void context.channel
         .sendOnce?.(reply.message)
