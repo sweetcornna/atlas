@@ -26,8 +26,12 @@ import { join } from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
 import { OmpResidentTurnPort } from '@qianmo/resident'
 import { OutboundPolicy } from '../../src/commands/outboundPolicy.js'
-import { frontendLaunch } from '../../src/commands/runtimeOpen.js'
+import {
+  frontendLaunch,
+  run as openRuntime,
+} from '../../src/commands/runtimeOpen.js'
 import type { AgentExtensions } from '../../src/host/extensions.js'
+import { providerPaths, writePrivateJson } from '../../src/providers/store.js'
 import { codexArgv } from '../../src/host/runtimes/codex.js'
 import {
   type NativeExtensionsReply,
@@ -556,7 +560,7 @@ test('a change that went through is reported done even when listing again fails'
   })
   const value = (outcome as { value: Record<string, unknown> }).value
   expect(value.items).toBeUndefined()
-  expect(value.notes).toContain('已完成，但重新列出失败：list timed out')
+  expect(value.listError).toBe('list timed out')
   expect(calls.some(call => call.argv.includes('install'))).toBe(true)
   // A change that failed is still a failure.
   const { ext: failing } = native('gemini', workspace, () => {
@@ -569,6 +573,104 @@ test('a change that went through is reported done even when listing again fails'
       {} as never,
     ),
   ).toMatchObject({ ok: false })
+})
+
+test('a change that went through stays done when revoking trust after it fails; that is a note', async () => {
+  const { workspace } = scratch()
+  const home = runtimeDirs('gemini', 'coder').home
+  mkdirSync(join(home, '.gemini'), { recursive: true })
+  // With comments: the node does not rewrite it, so revoking throws.
+  writeFileSync(join(home, '.gemini', 'settings.json'), '// mine\n{}\n')
+  const { ext, calls } = native('gemini', workspace)
+  const outcome = await ext.control(
+    'runtime.ext.install',
+    { agent: 'coder', kind: 'plugin', source: 'team/ext' },
+    {} as never,
+  )
+  expect(outcome.ok).toBe(true)
+  const notes = (outcome as { value: NativeExtensionsReply }).value.notes
+  expect(
+    notes.filter(note => note.startsWith('没能撤销预授权：')),
+  ).toHaveLength(1)
+  expect(calls.some(call => call.argv.includes('install'))).toBe(true)
+  // A skill removal, the same.
+  const skill = join(home, '.gemini', 'skills', 'triage')
+  mkdirSync(skill, { recursive: true })
+  writeFileSync(join(skill, 'SKILL.md'), '# triage\n')
+  const removed = await ext.control(
+    'runtime.ext.remove',
+    { agent: 'coder', kind: 'skill', name: 'triage' },
+    {} as never,
+  )
+  expect(removed.ok).toBe(true)
+  expect(existsSync(skill)).toBe(false)
+  expect(
+    (removed as { value: NativeExtensionsReply }).value.notes.some(note =>
+      note.startsWith('没能撤销预授权：'),
+    ),
+  ).toBe(true)
+  // Listing too.
+  expect(
+    (await ext.list('coder')).notes.some(note =>
+      note.startsWith('没能撤销预授权：'),
+    ),
+  ).toBe(true)
+})
+
+test('qm runtime open waits out a listing’s moment on the change lock; a change that goes on keeps it out', async () => {
+  const { workspace } = scratch()
+  // The resident's roster (its process gone: no lock answer to wait for)
+  // and a model profile applied on the node.
+  writePrivateJson(qianmoConfigPath('resident', 'runtime-agents.json'), {
+    v: 1,
+    pid: 2 ** 22 + 7,
+    agents: [
+      {
+        agent: 'coder',
+        cwd: workspace,
+        shell: false,
+        runtime: 'codex',
+        bin: '/usr/bin/true',
+        model: 'p/model-x',
+      },
+    ],
+  })
+  writePrivateJson(providerPaths.models(), {
+    providers: {
+      'qm-p-0123abcd': {
+        api: 'openai-responses',
+        baseUrl: 'https://gw.example/v1',
+        apiKey: 'sk-route',
+      },
+    },
+  })
+  const errors: string[] = []
+  const write = process.stderr.write
+  process.stderr.write = ((chunk: string) => {
+    errors.push(String(chunk))
+    return true
+  }) as typeof process.stderr.write
+  cleanups.push(() => {
+    process.stderr.write = write
+  })
+  // A Gemini listing in the resident holds the change lock for a moment:
+  // still held when the frontend has taken its own lock and looks.
+  const listing = acquireChangeLock('coder', 'codex')!
+  let settled = false
+  const opening = openRuntime(['open', 'coder']).finally(() => {
+    settled = true
+  })
+  while (readFrontendLock('coder') === undefined && !settled) await Bun.sleep(5)
+  await Bun.sleep(100)
+  releaseChangeLock('coder', listing)
+  expect(await opening).toBe(0)
+  expect(errors).toEqual([])
+  expect(readFrontendLock('coder')).toBeUndefined()
+  // An install that goes on: refused once the wait is over.
+  const change = acquireChangeLock('coder', 'codex')!
+  expect(await openRuntime(['open', 'coder'])).toBe(2)
+  releaseChangeLock('coder', change)
+  expect(errors.join('')).toContain('coder 正在装或卸原生扩展')
 })
 
 test('native sources: GitHub, npm and marketplaces; credentials, other hosts, traversal and flags refused', () => {

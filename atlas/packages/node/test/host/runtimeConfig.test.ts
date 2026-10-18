@@ -685,6 +685,56 @@ test('a pending retry is dropped once no agent is configured on its runtime', as
   expect(npm.installs()).toBe(2)
 })
 
+test('a default install that comes in while its runtime is being removed waits for the removal and then installs', async () => {
+  const npm = fakeNpm()
+  let release!: () => void
+  const held = new Promise<void>(done => {
+    release = done
+  })
+  let uninstalling!: () => void
+  const uninstallStarted = new Promise<void>(done => {
+    uninstalling = done
+  })
+  const legacy = path.join(
+    managedRuntimePrefix(),
+    'node_modules',
+    '.bin',
+    'dsh',
+  )
+  const { runtimes, installer } = setup({
+    autoInstall: true,
+    agents: [{ agent: 'main', runtime: 'qianmopi' }],
+    installer: {
+      run: async (argv, options) => {
+        if (argv[1] === 'uninstall') {
+          // Past the point of no return: the binary is gone, the removal not done.
+          rmSync(legacy, { force: true })
+          uninstalling()
+          await held
+          return { code: 0, stdout: '' }
+        }
+        return npm.run(argv, options)
+      },
+    },
+  })
+  managed('dsh')
+  const removing = runtimes.control('runtime.remove', { runtime: 'dsh' }, CTX)
+  await uninstallStarted
+  // Moved onto dsh meanwhile; the default install for it starts.
+  expect(runtimes.configure({ agent: 'main', runtime: 'dsh' }).ok).toBe(true)
+  await runtimes.start()
+  release()
+  expect(await removing).toEqual({
+    ok: true,
+    value: { runtime: 'dsh', removed: true },
+  })
+  // Not a busy refusal with no retry: installed once the removal is done.
+  await until(() => installer.availability('dsh').installed)
+  expect(npm.installs()).toBe(1)
+  await until(() => state(runtimes, 'main').effective.runtime === 'dsh')
+  expect(state(runtimes, 'main').effective.runtime).toBe('dsh')
+})
+
 test('a failure recorded before the count existed backs off like a first one', async () => {
   jest.useFakeTimers()
   const file = qianmoConfigPath('runtimes', 'installs.json')

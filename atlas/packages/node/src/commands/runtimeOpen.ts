@@ -64,6 +64,13 @@ user.
 /** How long a running resident has to answer the lock. */
 const ACK_WAIT_MS = 15_000
 
+/**
+ * How long the frontend waits for a native extension change's lock to go
+ * before it gives up: a Gemini listing holds it for a moment and never
+ * keeps the frontend out; an install or removal takes longer.
+ */
+const CHANGE_WAIT_MS = 2_000
+
 class OpenError extends Error {}
 
 interface Opened {
@@ -224,6 +231,19 @@ export async function frontendLaunch(input: {
   }
 }
 
+/**
+ * Waits for `agent`'s change lock to go; `true` once it has. A change that
+ * starts meanwhile finds the frontend's lock (taken before) and stops.
+ */
+async function changeLetsGo(agent: string): Promise<boolean> {
+  const deadline = Date.now() + CHANGE_WAIT_MS
+  while (changeHolds(agent)) {
+    if (Date.now() >= deadline) return false
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  return true
+}
+
 /** Waits for the resident's answer to `lock`; `true` when it let go. */
 async function residentYields(
   lock: FrontendLock,
@@ -280,7 +300,7 @@ export async function run(argv: string[]): Promise<number> {
     const credential = runtimeModelCredential(entry.model, entry.runtime)
     lock = acquireFrontendLock(agent, entry.runtime)
     if (lock === undefined) throw new OpenError(`${agent} 的另一个前端正开着`)
-    if (changeHolds(agent))
+    if (!(await changeLetsGo(agent)))
       throw new OpenError(`${agent} 正在装或卸原生扩展；完成后再打开前端`)
     if (pidAlive(roster.pid) && !(await residentYields(lock, agent)))
       throw new OpenError(

@@ -587,8 +587,11 @@ export class RuntimeInstaller {
   readonly #options: RuntimeUpdateOptions
   readonly #run: RunCommand
   readonly #installing = new Map<string, Promise<RuntimeInstallResult>>()
-  /** Runtimes being removed: no install starts on one until it is done. */
-  readonly #removing = new Set<string>()
+  /**
+   * Removals running now, by runtime: no install starts on one until it is
+   * done, and the default install waits for it before looking.
+   */
+  readonly #removing = new Map<string, Promise<unknown>>()
   readonly #listeners = new Set<(kind: ExternalRuntimeKind) => void>()
   #records: Record<string, RuntimeInstallRecord> | undefined
   /** Promotions and removals, one at a time. */
@@ -1034,11 +1037,19 @@ export class RuntimeInstaller {
   /**
    * The default install (§2): makes sure `kind` has a binary — already there
    * (prefix, PATH or flag), joins an install in progress, or installs the
-   * catalog pin once {@link INSTALL_MEMORY_MIB} is available.
+   * catalog pin once {@link INSTALL_MEMORY_MIB} is available. A removal in
+   * progress is waited out first: the binary it is deleting is not an
+   * install, and its being busy is no failure to back off from.
    */
   async ensureRuntimeInstalled(
     kind: ExternalRuntimeKind,
   ): Promise<RuntimeInstallResult> {
+    for (
+      let removal = this.#removing.get(kind);
+      removal !== undefined;
+      removal = this.#removing.get(kind)
+    )
+      await removal
     await this.checkPath(kind)
     if (this.availability(kind).installed) return { ok: true }
     const running = this.#installing.get(kind)
@@ -1274,9 +1285,13 @@ export class RuntimeInstaller {
       return { ok: true, value: { runtime: spec.id, removed: false } }
     // Held for the whole removal: an install that came in meanwhile would
     // see the binary still there and report it installed.
-    this.#removing.add(spec.id)
+    const removal = this.#remove(spec)
+    this.#removing.set(
+      spec.id,
+      removal.catch(() => {}),
+    )
     try {
-      return await this.#remove(spec)
+      return await removal
     } finally {
       this.#removing.delete(spec.id)
     }

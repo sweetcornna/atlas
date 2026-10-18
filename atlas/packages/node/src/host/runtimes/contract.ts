@@ -157,13 +157,16 @@ export interface NativeExtensionsReply {
 
 /**
  * An install or removal that went through when listing again afterwards did
- * not: no `items`, so the console reads the list itself.
+ * not: no `items`, so the console reads the list itself and shows `notes`
+ * (the change's own) with it.
  */
 export interface NativeExtensionsChanged {
   readonly agent: string
   readonly runtime: string
   readonly changed: true
   readonly notes: readonly string[]
+  /** Why listing again failed. */
+  readonly listError: string
 }
 
 /** `runtime.ext.list`. */

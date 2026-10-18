@@ -112,6 +112,16 @@ const replySchema: z.ZodType<NativeExtensionsReply> = z.object({
   openCommand: z.string().max(500),
 })
 
+/**
+ * A change that went through when the node's own listing after it did not:
+ * its notes (what the change did, e.g. trust revoked) go with the list the
+ * console reads instead.
+ */
+const changedSchema = z.object({
+  changed: z.literal(true),
+  notes: z.array(z.string()),
+})
+
 function isKind(value: string): value is MagpieExtensionKind {
   return (MAGPIE_EXTENSION_KINDS as readonly string[]).includes(value)
 }
@@ -425,6 +435,22 @@ export class AgentExtensions {
   }
 
   /**
+   * A change's notes on the agent's cached list, ahead of the list's own,
+   * as the node puts them when it lists after the change itself. With no
+   * list cached (never read, and reading it now failed) there is nothing to
+   * show them on.
+   */
+  #addNotes(key: string, notes: readonly string[]): void {
+    const listed = this.#lists.get(key)
+    const reply = listed?.reply ?? null
+    if (notes.length === 0 || listed === undefined || reply === null) return
+    const merged = [
+      ...new Set([...notes.map(note => note.slice(0, 300)), ...reply.notes]),
+    ].slice(0, 20)
+    this.#lists.set(key, { ...listed, reply: { ...reply, notes: merged } })
+  }
+
+  /**
    * Send an install or a removal and wait a little for its answer; a late
    * answer updates the cache, a late failure stays on the page a while.
    */
@@ -476,12 +502,15 @@ export class AgentExtensions {
               code: null,
             })
             this.#jobs.delete(key)
-          } else
+          } else {
+            const changed = changedSchema.safeParse(outcome.value)
+            const notes = changed.success ? changed.data.notes : []
             this.#options.track(
-              this.#list(node, agent, this.#options.actor).finally(() =>
-                this.#jobs.delete(key),
-              ),
+              this.#list(node, agent, this.#options.actor)
+                .then(() => this.#addNotes(key, notes))
+                .finally(() => this.#jobs.delete(key)),
             )
+          }
         } else {
           // Kept for the page; an answer in time is the caller's to show.
           this.#jobs.set(key, {

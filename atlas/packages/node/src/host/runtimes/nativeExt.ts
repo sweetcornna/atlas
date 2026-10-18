@@ -1115,12 +1115,20 @@ export class NativeExtensions {
 
   /**
    * Gemini: revokes trust pre-granted in its `settings.json`. That rewrites
-   * the whole file, so only with the change lock held (the caller's).
+   * the whole file, so only with the change lock held (the caller's). Never
+   * throws: what a change did stands, and every start revokes again.
    */
   #revokeTrust(ctx: Context): string[] {
     if (ctx.runtime !== 'gemini') return []
-    const revoked = geminiStripTrust(ctx.home)
-    return revoked.length > 0 ? [`已撤销预授权：${revoked.join('、')}`] : []
+    try {
+      const revoked = geminiStripTrust(ctx.home)
+      return revoked.length > 0 ? [`已撤销预授权：${revoked.join('、')}`] : []
+    } catch {
+      // Notes reach the page's readers: no paths or raw errors.
+      return [
+        '没能撤销预授权：settings.json 读不了或写不进（带注释的节点不改写）',
+      ]
+    }
   }
 
   async list(agent: string): Promise<NativeExtensionsReply> {
@@ -1239,11 +1247,8 @@ export class NativeExtensions {
           agent,
           runtime: ctx.runtime,
           changed: true,
-          notes: [
-            ...notes,
-            ...revoked,
-            `已完成，但重新列出失败：${why}`.slice(0, 300),
-          ],
+          notes: [...notes, ...revoked],
+          listError: why.slice(0, 300),
         }
       }
     })
