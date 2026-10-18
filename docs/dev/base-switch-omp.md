@@ -37,7 +37,7 @@ atlas/                          仓库根 = omp v18.8.4 基座树（MIT，见 LI
 
 根工作区：根 `package.json` 以 omp 版本为底，`workspaces.packages` 追加 `atlas/packages/*`，阡陌脚本一律加 `atlas:` 前缀，不改 omp 既有脚本名。
 
-工具链：Bun **≥ 1.4**（omp `packageManager: bun@>=1.4`，`.tool-versions` 固定 1.4.2）；omp 原生插件 `pi_natives.<platform>.node` 由 `bun run build:native` 本地构建（cargo，需要 `rust-toolchain.toml` 指定的 nightly 与 ninja），或取 npm 预编译叶包。
+工具链：Bun **≥ 1.4**（omp `packageManager: bun@>=1.4`，`.tool-versions` 固定 1.4.3）；omp 原生插件 `pi_natives.<platform>.node` 由 `bun run build:native` 本地构建（cargo，需要 `rust-toolchain.toml` 指定的 nightly 与 ninja），或取 npm 预编译叶包。
 
 格式与类型：阡陌路径用 biome（`biome.json` 的 `files.includes` 仅含 `atlas/**`、`demo/**`）与 `tsgo -p tsconfig.atlas.json`；omp 路径保持 oxlint / oxfmt / 各包 tsgo，阡陌不重排 omp 文件。
 
