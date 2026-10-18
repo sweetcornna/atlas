@@ -103,6 +103,8 @@ class FakeLinks {
   refuseConfigure = false
   /** A runtime the node reports as installing on its own (P36.3). */
   installing: string | null = null
+  /** `runtime.ext.list` fails (the harness's list command broke). */
+  failList = false
 
   add(
     node: string,
@@ -148,7 +150,14 @@ class FakeLinks {
       notes: ['项目级配置不加载'],
       openCommand: `qm runtime open ${name}${agent.runtime === 'dsh' ? ' --port 8123' : ''}`,
     })
-    if (op === 'runtime.ext.list') return { ok: true, value: list() }
+    if (op === 'runtime.ext.list')
+      return this.failList
+        ? {
+            ok: false,
+            code: 'E_RUNTIME_EXT_FAILED',
+            message: '列表命令退出码 1',
+          }
+        : { ok: true, value: list() }
     if (fake.locked.has(name))
       return {
         ok: false,
@@ -1231,6 +1240,34 @@ describe('native extensions (P36.7)', () => {
     expect(ghost.ok ? null : ghost.failure.code).toBe('not_found')
     const nowhere = await agents.extensions('nowhere-1', 'coder')
     expect(nowhere.ok ? null : nowhere.failure.code).toBe('not_found')
+  })
+
+  test('a list that failed is not asked for again within a minute, by anyone; reads at the same time share one', async () => {
+    let clock = Date.now()
+    const port = await probed(() => clock)
+    const agents = agentsOf(port)
+    links.failList = true
+    const read = () => agents.extensions('beta-1', 'reviewer')
+    const first = await read()
+    expect(first.ok ? 'ok' : first.failure).toEqual({
+      code: 'refused',
+      message: '节点 · 列表命令退出码 1',
+    })
+    expect(extLines('"agent":"reviewer"')).toHaveLength(1)
+    // A reader opening the panel again and again runs nothing on the node.
+    for (let i = 0; i < 5; i++) {
+      clock += 5_000
+      const again = await read()
+      expect(again.ok ? 'ok' : again.failure.message).toBe(
+        '节点 · 列表命令退出码 1',
+      )
+    }
+    expect(extLines('"agent":"reviewer"')).toHaveLength(1)
+    clock += 61_000
+    links.failList = false
+    const [one, two] = await Promise.all([read(), read()])
+    expect(one.ok && two.ok).toBe(true)
+    expect(extLines('"agent":"reviewer"')).toHaveLength(2)
   })
 
   test('a runtime change drops the agent’s list; another runtime’s list is never shown as its', async () => {
