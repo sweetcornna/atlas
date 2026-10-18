@@ -374,7 +374,8 @@ lines.on('line', line => {
       return
     case 'session/new': {
       const session: Session = {
-        id: crypto.randomUUID(),
+        // A fixed id when asked: another harness may hand out an equal one.
+        id: process.env.QIANMO_FIXTURE_SESSION_ID ?? crypto.randomUUID(),
         cwd: String(params.cwd),
         turns: 0,
         seq: 0,

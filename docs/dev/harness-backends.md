@@ -89,7 +89,7 @@
 
 | 项 | 定案 |
 |---|---|
-| 位置 | 每个底层一棵自己的 npm 树，在 `qianmoConfigPath('runtimes','trees')` 下：先在旁边的暂存树里 `npm install --prefix`、核对版本并过兼容检查，通过的**就是这棵树**——改名到位后把该底层的链接一次改名换过去，不再做第二次 npm 解析；被换下的树留到下一次安装（可能还有进程在用），更早的删掉。npm 的缓存与配置仍在 `qianmoConfigPath('runtimes','npm')`，早先版本装在这个共享前缀里的照样能找到、能卸载。安装一次只跑一个（不分底层，缺省与手动安装同排一队），各自核对的内存与磁盘余量不会被并发的另一次吃掉；命令的标准错误边跑边读掉，输出多也不会卡住。启动参数指定了路径的（`--claude-code-bin`、`--codex-bin`、新增 `--runtime-bin <id>=<路径>`）不管 |
+| 位置 | 每个底层一棵自己的 npm 树，在 `qianmoConfigPath('runtimes','trees')` 下：先在旁边的暂存树里 `npm install --prefix`、核对版本并过兼容检查，通过的**就是这棵树**——改名到位后把该底层的链接一次改名换过去，不再做第二次 npm 解析；被换下的树留到下一次安装（可能还有进程在用），更早的删掉。npm 的缓存与配置仍在 `qianmoConfigPath('runtimes','npm')`，早先版本装在这个共享前缀里的照样能找到、能卸载。安装一次只跑一个（不分底层，缺省与手动安装同排一队），各自核对的内存与磁盘余量不会被并发的另一次吃掉；命令的标准错误边跑边读掉，标准输出边读边只留前面一段，输出多也不会卡住或撑大内存；超时或停机先发终止信号，5 秒内不退就强杀，它留下的子进程占着管道也只再等 2 秒。卸载期间这个底层算忙，同时来的安装回 `E_RUNTIME_BUSY`，不会把正在删的旧程序当成已装好。启动参数指定了路径的（`--claude-code-bin`、`--codex-bin`、新增 `--runtime-bin <id>=<路径>`）不管 |
 | 缺省安装 | 节点启动时，若某个智能体的配置底层是 `dsh`（包括按缺省落到 dsh 的）而节点上找不到可用的 dsh，就在后台装钉住的版本；安装期间与失败后，这些智能体按 §3.3 退回 qianmopi 并写明原因，装好后它们的空闲子进程换新（与扩展变更同一个口子），下一轮起用 dsh。`--no-runtime-autoinstall` 或环境变量 `QIANMO_RUNTIME_AUTOINSTALL=0` 关掉（服务单元与脚本用环境变量：旧产物不认识这个参数会 `unknown resident option` 退出，变量则被忽略，回滚安全）；节点停机时中止进行中的安装，不记为失败；停机开始后（常驻节点先停底层、再关控制链路）再到的 `runtime.install` / `update` / `remove`，以及还在排队、没轮到的安装，一律回 `E_RUNTIME_BUSY`「节点正在停机」，不写任何记录 |
 | 失败与退避 | 首次失败后按 5、15、60 分钟各重试一次，之后本次启动不再试。连续失败次数记在 `installs.json`（成功清零），所以退避跨重启：重启后先等完上次失败留下的那一档再装，不立即重装。安装轮到它开始时（排队等前一次安装的时间不算，下载与兼容检查之前）就先写一条「上一次安装没有结束」的失败记录、次数 +1 落盘，正常结束时改写成真实结果（失败不再重复 +1，成功清零），节点停机中止时放回上一条记录；所以安装中途进程被杀（多半是 OOM）的节点重启后同样按退避等，不会再装再被杀——这一档从重启时起算、等满整档（「未结束」记录的时间是那次安装开始的时刻，说明不了它何时被杀）；三次重试用完后，之后每次启动最多再试一次，且距上次失败不少于 60 分钟。没有智能体再配置在这个底层上时（`runtime.configure` 改走了），已排的重试取消；之后再有智能体改回来，要等下次启动或 `runtime.install` |
 | 一次性节点 | 验收的一次性节点（本地与真机两条腿）、编译版冒烟、`demo/env` 下的起法（`up.sh`、`remote/prepare-sandbox.sh`、`beta/beta-up.sh`）都带 `QIANMO_RUNTIME_AUTOINSTALL=0` 起常驻，不下载底层；验收场景可在自己的 `env` 里覆盖，三个脚本写成 `${QIANMO_RUNTIME_AUTOINSTALL:-0}`，运维事先 export 的值优先 |
@@ -216,7 +216,7 @@
 
 ### 6.3 换底层时对话接着走
 
-每条会话不论底层都记一份「便携记录」（`portable.ndjson`，0600：每轮的用户文字（单条至多 4 KiB）、最终回答（8 KiB）、一行工具摘要（300 字节），保留最近 64 KiB；本地命令不记）。智能体换了底层（用户改了、或因 §3.3 退回 / 恢复）之后，已有会话的下一轮在新底层上开新的原生会话，第一轮前面带一段「前情」（最近若干轮，至多 12 KiB，注明来自哪个底层），之后照常续接。不支持续接的 ACP harness 进程重启时同样用它。
+每条会话不论底层都记一份「便携记录」（`portable.ndjson`，0600：每轮的用户文字（单条至多 4 KiB）、最终回答（8 KiB）、一行工具摘要（300 字节），保留最近 64 KiB；本地命令不记）。智能体换了底层（用户改了、或因 §3.3 退回 / 恢复）之后，已有会话的下一轮在新底层上开新的原生会话，第一轮前面带一段「前情」（最近若干轮，至多 12 KiB，注明来自哪个底层），之后照常续接。换回一个原生会话还在的底层（qianmopi 的会话一直在；外部底层看它记下的原生会话从何时开始）时，只带它最后一轮之后别处跑的那些轮，它自己会话里已有的不重复。不支持续接的 ACP harness 进程重启时同样用它。
 
 ### 6.4 共享
 
@@ -253,9 +253,9 @@
 
 ### 7.3 控制台调用原生命令
 
-控制链路 `runtime.ext.list` / `runtime.ext.install` / `runtime.ext.remove {agent, kind: plugin|mcp|skill, …}`：节点在该智能体的环境里、空的启动目录下、关掉标准输入并限时，执行该 harness **自己的**命令（调研 §2.2：如 `claude plugin install … -s user`、`codex plugin add … --json`、`dsh plugin --profile acp add`、`gemini extensions install … --consent`、`qwen extensions install … --consent`、`opencode plugin … -g`；MCP 用各自的 `mcp add/remove`；没有技能命令的按原生目录放 `skills/<名>/SKILL.md`）。每次操作后用原生的列表命令（有 JSON 的用 JSON）重读一遍，控制台「网关」页每个智能体显示「原生扩展」清单（插件、MCP、技能）与安装、卸载。安装来源只收 GitHub 仓库、npm 包名与该 harness 的官方市场名（技能只收 GitHub 仓库，节点只从那里装技能）；配置在 qianmopi 上的智能体没有原生扩展（不会落到 dsh 的状态目录）；只给运维个人账号，记 `runtime.ext.install` / `runtime.ext.remove`。会派生全部 MCP 服务的列表命令（Gemini、Qwen、opencode 的 `mcp list`）不用，改读它们的配置文件。
+控制链路 `runtime.ext.list` / `runtime.ext.install` / `runtime.ext.remove {agent, kind: plugin|mcp|skill, …}`：节点在该智能体的环境里、空的启动目录下、关掉标准输入并限时，执行该 harness **自己的**命令（调研 §2.2：如 `claude plugin install … -s user`、`codex plugin add … --json`、`dsh plugin --profile acp add`、`gemini extensions install … --consent`、`qwen extensions install … --consent`、`opencode plugin … -g`；MCP 用各自的 `mcp add/remove`；没有技能命令的按原生目录放 `skills/<名>/SKILL.md`）。每次操作后用原生的列表命令（有 JSON 的用 JSON）重读一遍（装卸已成而重读失败时照样答成功、注明列表没刷新，中枢自己再读），控制台「网关」页每个智能体显示「原生扩展」清单（插件、MCP、技能）与安装、卸载。安装来源只收 GitHub 仓库、npm 包名与该 harness 的官方市场名（技能只收 GitHub 仓库，节点只从那里装技能）；配置在 qianmopi 上的智能体没有原生扩展（不会落到 dsh 的状态目录）；只给运维个人账号，记 `runtime.ext.install` / `runtime.ext.remove`。会派生全部 MCP 服务的列表命令（Gemini、Qwen、opencode 的 `mcp list`）不用，改读它们的配置文件。
 
-- **来源规则**（中枢先核对形状再记账，节点再核一遍）：GitHub 只认 `github.com`，不带账号、端口与查询串；npm 包名可以不带版本，带版本时只收精确版本号；任何一段不能以 `-` 开头，拒绝 `..`、`%`、反斜杠与空白；MCP 服务要么给命令（裸命令名或绝对路径）、要么给不带账号与查询串的 https 地址，二者不兼得；`qm-` 开头的名字与 `qianmo` 留给阡陌。节点把服务命令放在 `--` 之后再交给 harness 的命令行，免得 `npx -y` 一类参数被当成 harness 自己的选项。
+- **来源规则**（中枢先核对形状再记账，节点再核一遍）：GitHub 只认 `github.com`，不带账号、端口与查询串；npm 包名可以不带版本，带版本时只收精确版本号；任何一段不能以 `-` 开头，拒绝 `..`、`%`、反斜杠与空白；MCP 服务要么给命令（裸命令名或绝对路径）、要么给不带账号与查询串的 https 地址，二者不兼得；MCP 服务名只用字母数字与 `_ -`（harness 的配置路径按点号分段，中枢与节点同一条规则；卸载时收原生前端里加的带点名字），`qm-` 开头的名字与 `qianmo` 留给阡陌。节点把服务命令放在 `--` 之后再交给 harness 的命令行，免得 `npx -y` 一类参数被当成 harness 自己的选项。
 - **读取**：列表命令要起 harness 的命令行，所以页面只从中枢的缓存渲染，打开面板时缓存超过 1 分钟才重读；上次没列出来的同样 1 分钟内不重读（谁打开都一样），同时打开的共用一次；节点支不支持看第一次对该节点第一个智能体的探测（答 `unsupported` 就是旧节点，1 小时后再探）。
 - **写入**：同一智能体同一时刻只跑一件装卸；5 秒内没答就显示「进行中」，页面每 3 秒跟进。审计目标是 `节点/智能体 种类:名称或来源`，不记参数与地址。官方前端开着时节点拒绝（「该智能体的官方前端正开着」）；该底层没有这类扩展时显示「该底层不支持这类扩展」。读者看得到清单与命令，看不到表单、卸载按钮与失败详情。
 - **前端命令**：面板给出 `qm runtime open` 那一行并可复制；命令里带端口的（网页前端）另给一行 `ssh -L` 转发写法。
@@ -269,7 +269,7 @@
 | Claude Code | `--settings` 标志层（`disableAllHooks`、`permissions.ask`、`env`、`apiKeyHelper`）+ `--permission-mode default` + `--setting-sources user` | 去掉 `--strict-mcp-config`，让用户级与插件自带的 MCP 加载；权限桥对 `mcp__qianmo__*` 直接放行（它们在宿主侧自行授权） |
 | Codex | 会话 `-c`：工作区一律 `trust_level = "untrusted"`（必须写成内联表）、`project_doc_max_bytes=0`、仓库技能关闭、原生 MCP 工具逐个 `approval_mode="prompt"`；`thread/start` 带 `approvalsReviewer: "user"`；`--disable hooks` | **现网修复**：现在第一轮 `workspace-write` 会把工作区写成受信，之后工作区 `.codex/config.toml` 里的 MCP 服务不经询问就运行。另外 P32 的连接器改走 `-c`，不再整份重写 `config.toml` 与 `plugins/`（会抹掉原生安装与原生的授权记录） |
 | dsh | `--patch` 文件 + 闸门插件第二版（最先注册、`tools.guard()`、缺省征询） | 原生插件对执行前事件答「允许」会绕过第一版闸门，第二版堵上 |
-| Gemini CLI | `--admin-policy`（节点生成）+ `--allowed-mcp-server-names` + `--approval-mode default` | 工作区必须受信 MCP 才可用，于是项目层会被加载：项目 MCP 由策略挡住，项目 `GEMINI.md` 与项目技能仍会加载（没有开关），状态里写明。用户级 MCP 条目上的 `trust: true` 会跳过确认，节点每次启动前把它去掉——这是节点唯一改动原生配置的地方，控制台显示「已撤销预授权」 |
+| Gemini CLI | `--admin-policy`（节点生成）+ `--allowed-mcp-server-names` + `--approval-mode default` | 工作区必须受信 MCP 才可用，于是项目层会被加载：项目 MCP 由策略挡住，项目 `GEMINI.md` 与项目技能仍会加载（没有开关），状态里写明。用户级 MCP 条目上的 `trust: true` 会跳过确认，节点每次启动前把它去掉——这是节点唯一改动原生配置的地方，控制台显示「已撤销预授权」；列清单时也去掉，但只在拿到变更锁、官方前端没开时（整文件改写，不和前端或另一次变更抢写） |
 | Qwen Code | 该智能体自己的系统设置文件（`QWEN_CODE_SYSTEM_SETTINGS_PATH`：`disableAllHooks`、`permissions.ask`、项目技能关闭）+ `--approval-mode default` + `--allowed-mcp-server-names` | 项目 `QWEN.md` / `AGENTS.md` 仍会加载，状态里写明 |
 | opencode | `OPENCODE_CONFIG_CONTENT`（每个代理的权限全部征询）+ `OPENCODE_PERMISSION` + `OPENCODE_DISABLE_PROJECT_CONFIG=1` + `OPENCODE_DISABLE_EXTERNAL_SKILLS=1` + `--pure` + 独立 `HOME` + 访问口令与显式端口 | 原生插件能在配置钩子里改掉权限、自带的工具从不征询，所以常驻运行时用 `--pure`：插件装得上、在前端里可用，常驻智能体不加载，控制台写明「常驻运行时不加载 opencode 插件」 |
 

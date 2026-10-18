@@ -8,7 +8,8 @@
  * server-to-client approval request.
  *
  * Prompts: `fail` completes the turn as failed; `hang` waits for
- * `turn/interrupt`; `approve` asks for a file-change approval first and echoes
+ * `turn/interrupt`; `late` answers `turn/start` only after 300 ms, then
+ * waits like `hang`; `approve` asks for a file-change approval first and echoes
  * the decision; anything else is echoed after one command item.
  *
  * The native lists (`mcpServerStatus/list`, `plugin/installed`,
@@ -239,9 +240,17 @@ createInterface({ input: process.stdin }).on('line', line => {
     case 'turn/start': {
       turns += 1
       const turnId = `turn-${turns}`
-      send({ id: message.id, result: { turn: { id: turnId } } })
       const input = params.input as { text: string }[]
-      void run(turnId, input.map(part => part.text).join(''))
+      const text = input.map(part => part.text).join('')
+      if (text === 'late') {
+        setTimeout(() => {
+          send({ id: message.id, result: { turn: { id: turnId } } })
+          void run(turnId, 'hang')
+        }, 300)
+        return
+      }
+      send({ id: message.id, result: { turn: { id: turnId } } })
+      void run(turnId, text)
       return
     }
     case 'turn/interrupt':

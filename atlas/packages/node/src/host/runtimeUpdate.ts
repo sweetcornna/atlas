@@ -229,8 +229,16 @@ export type RunCommand = (
     readonly signal?: AbortSignal
     /** Where it runs; default the node's working directory. */
     readonly cwd?: string
+    /** After a stop, how long it gets before it is killed outright; default 5 s. */
+    readonly killGraceMs?: number
   },
 ) => Promise<RunResult>
+
+/**
+ * After a command exits, how long its pipes get to close; a process it left
+ * behind (an npm lifecycle script's) that still holds them is then killed.
+ */
+const PIPE_GRACE_MS = 2_000
 
 /** Runs a command without a shell; output is capped. */
 export const runCommand: RunCommand = async (argv, options) => {
@@ -240,32 +248,95 @@ export const runCommand: RunCommand = async (argv, options) => {
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
+    // A process group of its own, so a stop reaches what it started (npm's
+    // lifecycle scripts) and not only the command.
+    detached: process.platform !== 'win32',
   })
-  const timer = setTimeout(() => child.kill(), options.timeoutMs)
-  const abort = () => child.kill()
-  options.signal?.addEventListener('abort', abort, { once: true })
-  if (options.signal?.aborted) child.kill()
+  const signalAll = (signal: NodeJS.Signals) => {
+    if (process.platform === 'win32') child.kill(signal)
+    else
+      try {
+        process.kill(-child.pid, signal)
+      } catch {
+        // The whole group is gone.
+      }
+  }
+  let force: ReturnType<typeof setTimeout> | undefined
+  const stop = () => {
+    if (force !== undefined) return
+    signalAll('SIGTERM')
+    // One that ignores the signal (npm and its lifecycle children can) goes anyway.
+    force = setTimeout(() => signalAll('SIGKILL'), options.killGraceMs ?? 5_000)
+  }
+  const timer = setTimeout(stop, options.timeoutMs)
+  options.signal?.addEventListener('abort', stop, { once: true })
+  if (options.signal?.aborted) stop()
+  const out = child.stdout.getReader()
+  const err = child.stderr.getReader()
+  // Both read as they come, so a chatty command never blocks on a full pipe,
+  // and only the first `maxOutput` characters of stdout are kept.
+  const reading = Promise.all([
+    readCapped(out, options.maxOutput ?? 4_000),
+    drain(err),
+  ])
+  let late: ReturnType<typeof setTimeout> | undefined
+  // Output cut off when the pipes were: it may be incomplete.
+  let cutOff = false
   try {
-    const [stdout, , code] = await Promise.all([
-      new Response(child.stdout).text(),
-      // Read as it comes, so a chatty command never blocks on a full pipe.
-      drain(child.stderr),
-      child.exited,
-    ])
-    const max = options.maxOutput ?? 4_000
+    const code = await child.exited
+    // Stopped: what it started goes with it, now.
+    if (force !== undefined) signalAll('SIGKILL')
+    late = setTimeout(() => {
+      // Exited, but something it started still holds the pipes: it goes too.
+      cutOff = true
+      signalAll('SIGKILL')
+      out.cancel().catch(() => {})
+      err.cancel().catch(() => {})
+    }, PIPE_GRACE_MS)
+    const [stdout] = await reading
     return {
       code,
-      stdout: stdout.slice(0, max),
-      truncated: stdout.length > max,
+      stdout: stdout.stdout,
+      truncated: stdout.truncated || cutOff,
     }
   } finally {
     clearTimeout(timer)
-    options.signal?.removeEventListener('abort', abort)
+    clearTimeout(force)
+    clearTimeout(late)
+    options.signal?.removeEventListener('abort', stop)
   }
 }
 
-async function drain(stream: ReadableStream<Uint8Array>): Promise<void> {
-  const reader = stream.getReader()
+/** What reading a pipe needs of its reader. */
+interface PipeReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array }>
+  releaseLock(): void
+}
+
+async function readCapped(
+  reader: PipeReader,
+  max: number,
+): Promise<{ stdout: string; truncated: boolean }> {
+  const decoder = new TextDecoder()
+  let text = ''
+  let cut = false
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (text.length > max) cut = true
+      else text += decoder.decode(value, { stream: true })
+    }
+    if (!cut) text += decoder.decode()
+  } catch {
+    // Closed with the process.
+  } finally {
+    reader.releaseLock()
+  }
+  return { stdout: text.slice(0, max), truncated: cut || text.length > max }
+}
+
+async function drain(reader: PipeReader): Promise<void> {
   try {
     for (;;) if ((await reader.read()).done) return
   } catch {
@@ -536,6 +607,8 @@ export class RuntimeInstaller {
   readonly #options: RuntimeUpdateOptions
   readonly #run: RunCommand
   readonly #installing = new Map<string, Promise<RuntimeInstallResult>>()
+  /** Runtimes being removed: no install starts on one until it is done. */
+  readonly #removing = new Set<string>()
   readonly #listeners = new Set<(kind: ExternalRuntimeKind) => void>()
   #records: Record<string, RuntimeInstallRecord> | undefined
   /** Promotions and removals, one at a time. */
@@ -955,6 +1028,12 @@ export class RuntimeInstaller {
         code: RUNTIME_ERRORS.busy,
         message: `${spec.label} 正在安装`,
       }
+    if (this.#removing.has(spec.id))
+      return {
+        ok: false,
+        code: RUNTIME_ERRORS.busy,
+        message: `${spec.label} 正在卸载`,
+      }
     const wanted = typeof version === 'string' ? version : spec.install.pin
     // One install at a time, whichever runtime: each checks memory and disk
     // alone. The "unfinished" record is written when its turn comes.
@@ -1205,9 +1284,28 @@ export class RuntimeInstaller {
         code: RUNTIME_ERRORS.busy,
         message: `${spec.label} 正在安装`,
       }
+    if (this.#removing.has(spec.id))
+      return {
+        ok: false,
+        code: RUNTIME_ERRORS.busy,
+        message: `${spec.label} 正在卸载`,
+      }
     if (managedRuntimeBin(spec.id) === undefined)
       return { ok: true, value: { runtime: spec.id, removed: false } }
+    // Held for the whole removal: an install that came in meanwhile would
+    // see the binary still there and report it installed.
+    this.#removing.add(spec.id)
+    try {
+      return await this.#remove(spec)
+    } finally {
+      this.#removing.delete(spec.id)
+    }
+  }
+
+  async #remove(spec: NpmRuntime): Promise<ControlOutcome> {
     const removed = await this.#withPrefix(async () => {
+      // Queued behind another change while the node stopped: not begun.
+      if (this.#stopping.signal.aborted) return null
       // Its own trees, and the link to the live one.
       rmSync(managedRuntimeTree(spec.id), { force: true })
       for (const tree of runtimeTrees(spec.id))
@@ -1233,6 +1331,7 @@ export class RuntimeInstaller {
         { env: env(), timeoutMs: 3 * 60_000, signal: this.#stopping.signal },
       ).catch(() => ({ code: -1, stdout: '' }))
     })
+    if (removed === null) return STOPPING
     this.#changed(spec.id)
     if (removed.code !== 0 || managedRuntimeBin(spec.id) !== undefined)
       return {

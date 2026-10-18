@@ -99,6 +99,14 @@ class FakeLinks {
   readonly ext: string[] = []
   #held: (() => void) | null = null
   hold = false
+  /**
+   * The next `runtime.status` answers what the node had when it was asked,
+   * only once this settles; `statusAsked` fires as it is asked.
+   */
+  holdStatus: Promise<void> | null = null
+  statusAsked: (() => void) | null = null
+  /** Only this node's status is held; null: whichever is asked first. */
+  holdStatusNode: string | null = null
   /** `runtime.configure` answers a refusal. */
   refuseConfigure = false
   /** A runtime the node reports as installing on its own (P36.3). */
@@ -256,14 +264,22 @@ class FakeLinks {
       return this.#extension(fake, node, op, args, actor)
     if (op !== 'runtime.status' && op !== 'runtime.versions')
       this.writes.push(`${node} ${op} ${JSON.stringify(args)} by ${actor}`)
-    if (op === 'runtime.status')
-      return {
-        ok: true,
-        value: {
-          defaultRuntime: 'dsh',
-          agents: fake.agents.map(agent => this.#state(fake, agent)),
-        },
+    if (op === 'runtime.status') {
+      const value = {
+        defaultRuntime: 'dsh',
+        agents: fake.agents.map(agent => this.#state(fake, agent)),
       }
+      const held = this.holdStatus
+      if (
+        held !== null &&
+        (this.holdStatusNode === null || this.holdStatusNode === node)
+      ) {
+        this.holdStatus = null
+        this.statusAsked?.()
+        await held
+      }
+      return { ok: true, value }
+    }
     if (op === 'runtime.versions')
       return {
         ok: true,
@@ -751,6 +767,35 @@ describe('choices from the page', () => {
     expect(links.writes.length).toBe(unchanged)
   })
 
+  test('a background check that read before a runtime change does not write the old runtime\u2019s model over it', async () => {
+    const port = await connected()
+    const agents = agentsOf(port)
+    // A new DeepSeek upstream: the check would move coder (dsh) onto it.
+    fake.addProvider({ id: 'ds2', models: ['deepseek-v5'] })
+    let release!: () => void
+    links.holdStatus = new Promise(done => {
+      release = done
+    })
+    const asked = new Promise<void>(done => {
+      links.statusAsked = done
+    })
+    const checked = port.check(caller())
+    await asked
+    // Meanwhile the operator moves coder to Claude Code.
+    const moved = await agents.configure(
+      { node: 'beta-1', agent: 'coder', runtime: 'claude-code' },
+      caller(),
+    )
+    if (!moved.ok) throw new Error(moved.failure.message)
+    release()
+    expect((await checked).ok).toBe(true)
+    await agents.idle()
+    expect(links.agent('beta-1', 'coder')).toMatchObject({
+      runtime: 'claude-code',
+      model: `${PROFILE}/anthropic/claude-opus-5`,
+    })
+  })
+
   test('a choice the node did not take is not kept for a later check to apply', async () => {
     const port = await connected()
     const agents = agentsOf(port)
@@ -956,6 +1001,34 @@ describe('runtimes on a node', () => {
     expect(
       links.writes.filter(line => line.includes('runtime.install')),
     ).toEqual([`beta-1 runtime.install {"runtime":"codex"} by ${OPS}`])
+  })
+
+  test('a versions answer read while an install ended elsewhere is not kept for the next reads', async () => {
+    const port = await connected()
+    const agents = agentsOf(port)
+    links.nodes.get('beta-1')?.installed.delete('codex')
+    agents.runtimesChanged('beta-1')
+    let release!: () => void
+    links.holdStatusNode = 'beta-1'
+    links.holdStatus = new Promise(done => {
+      release = done
+    })
+    const asked = new Promise<void>(done => {
+      links.statusAsked = done
+    })
+    const reading = snapshot(port)
+    await asked
+    // The install ends while that read is out; its versions answer predates it.
+    links.nodes.get('beta-1')?.installed.add('codex')
+    agents.runtimesChanged('beta-1')
+    release()
+    await reading
+    const after = (await snapshot(port)).nodes.find(
+      one => one.node === 'beta-1',
+    )
+    expect(after?.runtimes.find(one => one.id === 'codex')).toMatchObject({
+      installed: true,
+    })
   })
 
   test('removal in use is refused with the node words; built-in and unknown are not sent', async () => {

@@ -85,6 +85,8 @@ function setup(
     runtimeOf?: () => string
     spawnFails?: boolean
     maxChildren?: number
+    /** More for the fixture's environment. */
+    env?: Record<string, string>
   } = {},
 ) {
   root ??= isolatedRoot()
@@ -150,7 +152,7 @@ function setup(
         [FAKE[input.kind]!, ...input.argv.slice(1)],
         {
           cwd: input.cwd,
-          env: { ...input.env, QIANMO_FIXTURE_LOG: logFile },
+          env: { ...input.env, ...options.env, QIANMO_FIXTURE_LOG: logFile },
           stdio: ['pipe', 'pipe', 'pipe'],
         },
       )
@@ -505,6 +507,18 @@ test('a launch that fails before its process is running leaves no token or launc
   expect(leftovers(launches.at(-1)!.sessionDir)).toEqual([])
 })
 
+test('a start still being set up when the pool stops spawns nothing and hands out no token', async () => {
+  const { pool, agent } = setup()
+  const session = await pool.newSession(agent)
+  const before = launches.length
+  const starting = pool.channelFor(session)
+  await pool.stop()
+  await expect(starting).rejects.toThrow('external runtime pool is closed')
+  expect(launches.length).toBe(before)
+  const sessionDir = qianmoConfigPath('resident', 'sessions', 'coder', session)
+  expect(existsSync(join(sessionDir, 'runtime-mcp.token'))).toBe(false)
+})
+
 test('a session the harness cannot open right now is kept; only an unknown one, or one failing three starts in a row, starts anew', async () => {
   const { pool, agent, requests } = setup()
   const session = await pool.newSession(agent)
@@ -698,10 +712,14 @@ test('a session moved to another runtime starts a new native conversation there'
     { runtimeOf: () => runtime },
   )
   const session = await pool.newSession(agent)
+  expect(pool.conversationSince(session)).toBeUndefined()
+  const begun = Date.now()
   expect(content(await turn(pool, session, 'x1', 'hello'))).toBe(
     'acp(1): hello',
   )
   expect(resolved.at(-1)!.runtime).toBe('dsh')
+  const dshSince = pool.conversationSince(session)!
+  expect(dshSince).toBeGreaterThanOrEqual(begun)
   const dir = launches[0]!.sessionDir
   expect(JSON.parse(readFileSync(join(dir, 'runtime.json'), 'utf8')).kind).toBe(
     'dsh',
@@ -718,10 +736,33 @@ test('a session moved to another runtime starts a new native conversation there'
   expect(launches[1]!.argv).not.toContain('--resume')
   const claude = JSON.parse(readFileSync(join(dir, 'runtime.json'), 'utf8'))
   expect(claude.kind).toBe('claude-code')
+  // Its conversation there is new: the dsh turn is not in it.
+  expect(pool.conversationSince(session)!).toBeGreaterThan(dshSince)
   // The instructions follow the runtime it runs on now.
   expect(readFileSync(join(dir, 'runtime-system.txt'), 'utf8')).not.toBe(
     dshPrompt,
   )
+})
+
+test('a conversation id equal to the one another runtime had is still a new conversation', async () => {
+  const { pool, agent } = setup(
+    {},
+    { env: { QIANMO_FIXTURE_SESSION_ID: 'same-id' } },
+  )
+  const session = await pool.newSession(agent)
+  // The session ran on Gemini before, whose conversation had the same id.
+  writeFileSync(
+    join(
+      qianmoConfigPath('resident', 'sessions', 'coder', session),
+      'runtime.json',
+    ),
+    JSON.stringify({ kind: 'gemini', nativeId: 'same-id', since: 1 }),
+  )
+  const begun = Date.now()
+  expect(content(await turn(pool, session, 'x1', 'hello'))).toBe(
+    'acp(1): hello',
+  )
+  expect(pool.conversationSince(session)!).toBeGreaterThanOrEqual(begun)
 })
 
 test('an ACP turn with no usage anywhere records zero, marked unreported', async () => {

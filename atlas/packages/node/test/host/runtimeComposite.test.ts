@@ -232,6 +232,8 @@ test('each turn goes to the pool of the runtime its agent is on now; the first a
   expect(back).toContain('现在换到了 qianmopi')
   expect(back).toContain('[DeepSeek Harness] 用户：再来')
   expect(back).toContain('[DeepSeek Harness] 回答：dsh 的回答 2')
+  // Its own earlier turn is in its conversation already: not carried again.
+  expect(back).not.toContain('看一下 README')
   expect(back).toEndWith('回来了')
   // Re-opened in the omp pool only once per move.
   expect(omp.opened).toEqual([session, session])
@@ -333,6 +335,43 @@ function turnOf(
     status: 'completed',
   }
 }
+
+test('a runtime that continues its conversation hears only the turns after its last one in it; a new one hears them all', () => {
+  const turns = [
+    turnOf('codex', '一', '答一', 10),
+    turnOf('dsh', '二', '答二', 20),
+    turnOf('codex', '三', '答三', 30),
+    turnOf('dsh', '四', '答四', 40),
+  ]
+  const carried = (since?: number) => {
+    const text = portablePreamble(turns, 'codex', undefined, since) ?? ''
+    return ['一', '二', '三', '四'].filter(user =>
+      text.includes(`用户：${user}`),
+    )
+  }
+  // Its conversation began before turn three: turn four is all it missed.
+  expect(carried(0)).toEqual(['四'])
+  expect(carried(30)).toEqual(['四'])
+  // Begun after its turns there (a new conversation): everything.
+  expect(carried(31)).toEqual(['一', '二', '三', '四'])
+  expect(carried(undefined)).toEqual(['一', '二', '三', '四'])
+  // Nothing missed: no block at all.
+  expect(
+    portablePreamble(turns.slice(0, 3), 'codex', undefined, 0),
+  ).toBeUndefined()
+  // A turn whose process went away there is not taken for one it has.
+  const lost = [
+    ...turns.slice(0, 3),
+    { ...turnOf('codex', '五', '', 35), status: 'error' as const },
+    turnOf('dsh', '六', '答六', 50),
+  ]
+  const text = portablePreamble(lost, 'codex', undefined, 0) ?? ''
+  expect(
+    ['一', '二', '三', '五', '六'].filter(user =>
+      text.includes(`用户：${user}`),
+    ),
+  ).toEqual(['五', '六'])
+})
 
 test('the transcript keeps the newest 64 KiB; the preamble the newest turns that fit in 12 KiB', () => {
   const file = portableLogPath('coder', 's3')
