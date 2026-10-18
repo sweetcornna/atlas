@@ -9,25 +9,35 @@
  */
 
 import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { randomUUID } from 'node:crypto'
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import * as path from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
 import type { ControlContext } from '../../src/host/control.js'
 import {
+  availableMemoryBytes,
+  INSTALL_MEMORY_MIB,
   managedRuntimeBin,
   managedRuntimePrefix,
+  memAvailableBytes,
   type RunCommand,
   RuntimeInstaller,
   runtimeControl,
   satisfiesVersionRange,
+  VERSION_CACHE_MS,
+  vmStatAvailableBytes,
 } from '../../src/host/runtimeUpdate.js'
 import {
   RUNTIME_CATALOG,
@@ -105,11 +115,14 @@ function fakeNpm(
           )
         return { code: 0, stdout: '' }
       }
+      // A dsh found on PATH is asked who it is (DeepSeek Harness names itself).
+      if (argv[1] === '--help') return { code: 0, stdout: DEEPSEEK_DSH_HELP }
       return { code: 0, stdout: `${installed} (Claude Code)` }
     },
   }
 }
 
+/** Disk or memory: plenty, whatever the machine running the test has. */
 const roomy = () => 64 * 1024 * 1024 * 1024
 const nowhere = () => null
 
@@ -226,6 +239,7 @@ test('runtime.install without a version installs the catalog pin, DeepSeek Harne
   const npm = fakeNpm(pin)
   const smoked: string[] = []
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: npm.run,
     freeBytes: roomy,
     which: nowhere,
@@ -265,6 +279,7 @@ test('no Node.js in range: nothing is downloaded, the install says so (no-node)'
   for (const node of [null, 'v18.20.4']) {
     const npm = fakeNpm(PIN('dsh'), { node })
     const installer = new RuntimeInstaller({
+      freeMemoryBytes: roomy,
       run: npm.run,
       freeBytes: roomy,
       which: nowhere,
@@ -289,6 +304,7 @@ test('too little disk: the install never starts, and says how much it needs', as
   const npm = fakeNpm(PIN('dsh'))
   const asked: string[] = []
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: npm.run,
     which: nowhere,
     smoke: async () => null,
@@ -308,6 +324,7 @@ test('too little disk: the install never starts, and says how much it needs', as
   expect(npm.calls.filter(argv => argv[0] !== 'node')).toEqual([])
   // Other runtimes need less: 1 GiB is enough for Codex.
   const codex = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: fakeNpm('0.170.0').run,
     which: nowhere,
     smoke: async () => null,
@@ -317,6 +334,149 @@ test('too little disk: the install never starts, and says how much it needs', as
     ok: true,
     version: '0.170.0',
   })
+})
+
+test('too little free memory: the install never starts, and says how much it needs and has', async () => {
+  const npm = fakeNpm(PIN('dsh'))
+  const installer = new RuntimeInstaller({
+    run: npm.run,
+    which: nowhere,
+    smoke: async () => null,
+    freeBytes: roomy,
+    freeMemoryBytes: () => 1024 * 1024 * 1024,
+  })
+  expect(await installer.install('dsh')).toEqual({
+    ok: false,
+    code: 'E_RUNTIME_INSTALL',
+    message: `可用内存不足（安装需要约 ${INSTALL_MEMORY_MIB} MiB，现有 1024 MiB），稍后重试`,
+    fallback: 'install-failed',
+  })
+  // Nothing downloaded, nothing staged; the refusal is a recorded failure.
+  expect(npm.calls.filter(argv => argv[0] !== 'node')).toEqual([])
+  expect(installer.lastInstall('dsh')).toMatchObject({
+    ok: false,
+    code: 'install-failed',
+  })
+  expect(INSTALL_MEMORY_MIB).toBe(1536)
+  const enough = new RuntimeInstaller({
+    run: npm.run,
+    which: nowhere,
+    smoke: async () => null,
+    freeBytes: roomy,
+    freeMemoryBytes: () => INSTALL_MEMORY_MIB * 1024 * 1024,
+  })
+  expect(await enough.install('dsh')).toEqual({
+    ok: true,
+    version: PIN('dsh'),
+  })
+})
+
+test('free memory is MemAvailable from /proc/meminfo, in bytes', () => {
+  expect(
+    memAvailableBytes(
+      'MemTotal:        2014256 kB\nMemFree:          101232 kB\nMemAvailable:     812345 kB\n',
+    ),
+  ).toBe(812_345 * 1024)
+  // Kernels before 3.14 have no MemAvailable: the caller falls back.
+  expect(memAvailableBytes('MemTotal: 2014256 kB\nMemFree: 1 kB\n')).toBe(
+    undefined,
+  )
+  expect(availableMemoryBytes()).toBeGreaterThan(0)
+})
+
+test('on macOS it is the free, inactive and speculative pages vm_stat counts', () => {
+  const vmStat = [
+    'Mach Virtual Memory Statistics: (page size of 16384 bytes)',
+    'Pages free:                                    17325.',
+    'Pages active:                                 502750.',
+    'Pages inactive:                               497605.',
+    'Pages speculative:                              4241.',
+    'Pages wired down:                             205667.',
+  ].join('\n')
+  expect(vmStatAvailableBytes(vmStat)).toBe((17_325 + 497_605 + 4_241) * 16_384)
+  expect(vmStatAvailableBytes('Pages free: 1.')).toBeUndefined()
+})
+
+test('scratch prefixes a dead node left behind are swept: npm-stage-<uuid> directories under the runtimes root only, never through a link', () => {
+  const runtimes = qianmoConfigPath('runtimes')
+  const stage = () => path.join(runtimes, `npm-stage-${randomUUID()}`)
+  const outside = mkdtempSync(path.join(tmpdir(), 'qm-sweep-outside-'))
+  try {
+    writeFileSync(path.join(outside, 'keep'), 'x')
+    const stale = stage()
+    mkdirSync(path.join(stale, 'node_modules', '.bin'), { recursive: true })
+    writeFileSync(path.join(stale, 'node_modules', '.bin', 'dsh'), '')
+    // A link inside a stale stage goes with it; what it points at stays.
+    symlinkSync(outside, path.join(stale, 'node_modules', 'linked'))
+    const link = stage()
+    symlinkSync(outside, link)
+    const file = stage()
+    writeFileSync(file, '')
+    const lookalike = path.join(runtimes, 'npm-stage-notauuid')
+    mkdirSync(lookalike)
+    const elsewhere = qianmoConfigPath('qianmo', `npm-stage-${randomUUID()}`)
+    mkdirSync(elsewhere, { recursive: true })
+    mkdirSync(managedRuntimePrefix(), { recursive: true })
+    const installer = new RuntimeInstaller({ which: nowhere })
+    expect(installer.sweepStages()).toEqual([stale])
+    expect(existsSync(stale)).toBe(false)
+    expect(readFileSync(path.join(outside, 'keep'), 'utf8')).toBe('x')
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(existsSync(file)).toBe(true)
+    expect(existsSync(lookalike)).toBe(true)
+    expect(existsSync(elsewhere)).toBe(true)
+    expect(existsSync(managedRuntimePrefix())).toBe(true)
+    // Nothing there (a fresh node): nothing to do.
+    rmSync(runtimes, { recursive: true, force: true })
+    expect(installer.sweepStages()).toEqual([])
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test('a failed or stopped install leaves no scratch prefix', async () => {
+  const stages = () =>
+    readdirSync(qianmoConfigPath('runtimes')).filter(name =>
+      name.startsWith('npm-stage-'),
+    )
+  const failing = new RuntimeInstaller({
+    run: fakeNpm(PIN('dsh'), { failInstall: true }).run,
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+  })
+  expect((await failing.install('dsh')).ok).toBe(false)
+  expect(stages()).toEqual([])
+  let started!: () => void
+  const running = new Promise<void>(done => {
+    started = done
+  })
+  const stopped = new RuntimeInstaller({
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+    run: async (argv, options) => {
+      if (argv[0] === 'node') return { code: 0, stdout: 'v24.1.0' }
+      // npm has started filling the scratch prefix when the node stops.
+      const prefix = argv[argv.indexOf('--prefix') + 1]!
+      mkdirSync(path.join(prefix, 'node_modules'), { recursive: true })
+      started()
+      await new Promise(done =>
+        options.signal?.addEventListener('abort', done, { once: true }),
+      )
+      return { code: 143, stdout: '' }
+    },
+  })
+  const install = stopped.install('dsh')
+  await running
+  expect(stages()).toHaveLength(1)
+  // A sweep while it runs leaves it alone.
+  expect(stopped.sweepStages()).toEqual([])
+  stopped.stop()
+  expect((await install).ok).toBe(false)
+  expect(stages()).toEqual([])
 })
 
 test('Node.js ranges: ||, ^, ~, >= and partial versions', () => {
@@ -343,6 +503,7 @@ test('Node.js ranges: ||, ^, ~, >= and partial versions', () => {
 test('runtime.versions lists every catalog entry: built in, managed, on PATH, from a flag', async () => {
   const npm = fakeNpm('0.170.0')
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: npm.run,
     freeBytes: roomy,
     bins: { 'claude-code': '/opt/claude/bin/claude' },
@@ -386,6 +547,133 @@ test('runtime.versions lists every catalog entry: built in, managed, on PATH, fr
   })
 })
 
+test('runtime.versions asks each binary once per ten minutes: reads together share it, an install, a removal or another binary asks again', async () => {
+  let now = 1_000_000
+  let codexOnPath: string | null = '/usr/local/bin/codex'
+  const npm = fakeNpm('0.170.0')
+  const installer = new RuntimeInstaller({
+    run: npm.run,
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    bins: { 'claude-code': '/opt/claude/bin/claude', dsh: '/opt/dsh/bin/dsh' },
+    which: command => (command === 'codex' ? codexOnPath : null),
+    smoke: async () => null,
+    now: () => now,
+  })
+  const asked = () => npm.calls.filter(argv => argv[1] === '--version').length
+  const [one, two] = await Promise.all([
+    installer.versions(),
+    installer.versions(),
+  ])
+  // dsh, Claude Code and Codex: one process each, for both reads.
+  expect(asked()).toBe(3)
+  expect(two).toEqual(one)
+  expect(one.runtimes.find(row => row.id === 'codex')?.version).toBe('0.170.0')
+  await installer.versions()
+  expect(asked()).toBe(3)
+  now += VERSION_CACHE_MS - 1
+  await installer.versions()
+  expect(asked()).toBe(3)
+  now += 1
+  await installer.versions()
+  expect(asked()).toBe(6)
+  // Another binary on PATH is another answer.
+  codexOnPath = '/opt/homebrew/bin/codex'
+  await installer.versions()
+  expect(asked()).toBe(7)
+  // An install puts a new binary in place: only that runtime is asked again.
+  expect((await installer.install('codex', '0.170.0')).ok).toBe(true)
+  const installed = asked()
+  await installer.versions()
+  expect(asked()).toBe(installed + 1)
+  await installer.versions()
+  expect(asked()).toBe(installed + 1)
+  // Removed: back to the PATH one, asked anew.
+  expect(await installer.remove('codex')).toMatchObject({ ok: true })
+  await installer.versions()
+  expect(asked()).toBe(installed + 2)
+})
+
+/** What Debian's `dsh` (distributed shell) answers; DeepSeek Harness's own `--help` names it. */
+const DEBIAN_DSH =
+  "Distributed Shell / Dancer's shell. version 0.25.10\nUsage: dsh [-v|-q] [-M|-H] [-i|-c] [-b n] [-a] [-g groupname] [-f filename] [-r remoteshellname] [commandline]\n"
+const DEEPSEEK_DSH_HELP =
+  'Usage: dsh [--profile] <name> [options] [app-args...]\n\ndsh: boot a DeepSeek Harness profile\n'
+
+test('a dsh on PATH counts only once its --help says it is DeepSeek Harness; one given by flag is trusted', async () => {
+  const asked: string[] = []
+  const answering =
+    (help: string): RunCommand =>
+    async argv => {
+      asked.push(argv.join(' '))
+      if (argv[1] === '--help') return { code: 0, stdout: help }
+      if (argv[1] === '--version')
+        return {
+          code: 0,
+          stdout: help === DEBIAN_DSH ? DEBIAN_DSH : '0.2.1-rc.2\n',
+        }
+      return { code: 1, stdout: '' }
+    }
+  const debian = new RuntimeInstaller({
+    run: answering(DEBIAN_DSH),
+    which: command => (command === 'dsh' ? '/usr/bin/dsh' : null),
+  })
+  // Before the check it is not taken either.
+  expect(debian.availability('dsh').installed).toBe(false)
+  await Promise.all([debian.checkPath('dsh'), debian.checkPath('dsh')])
+  expect(debian.availability('dsh')).toEqual({
+    installed: false,
+    rejected:
+      'PATH 上的 /usr/bin/dsh 不是 DeepSeek Harness（它的 --help 里没有这个名字），当作没有安装',
+  })
+  const row = (await debian.versions()).runtimes.find(one => one.id === 'dsh')!
+  expect(row).toMatchObject({ installed: false })
+  expect(row.version).toBeUndefined()
+  expect(row.source).toBeUndefined()
+  // Asked once for that binary, whoever asked.
+  expect(asked).toEqual(['/usr/bin/dsh --help'])
+
+  asked.length = 0
+  const deepseek = new RuntimeInstaller({
+    run: answering(DEEPSEEK_DSH_HELP),
+    which: command => (command === 'dsh' ? '/opt/homebrew/bin/dsh' : null),
+  })
+  expect(await deepseek.ensureRuntimeInstalled('dsh')).toEqual({ ok: true })
+  expect(deepseek.availability('dsh')).toEqual({
+    installed: true,
+    source: 'path',
+    bin: '/opt/homebrew/bin/dsh',
+  })
+  expect(
+    (await deepseek.versions()).runtimes.find(one => one.id === 'dsh'),
+  ).toMatchObject({ installed: true, source: 'path', version: '0.2.1-rc.2' })
+  expect(asked).toEqual([
+    '/opt/homebrew/bin/dsh --help',
+    '/opt/homebrew/bin/dsh --version',
+  ])
+
+  asked.length = 0
+  const flagged = new RuntimeInstaller({
+    run: answering(DEBIAN_DSH),
+    bins: { dsh: '/usr/bin/dsh' },
+    which: command => (command === 'dsh' ? '/usr/bin/dsh' : null),
+  })
+  await flagged.checkPath('dsh')
+  expect(flagged.availability('dsh')).toEqual({
+    installed: true,
+    source: 'flag',
+    bin: '/usr/bin/dsh',
+  })
+  expect(asked).toEqual([])
+  // Other runtimes on PATH are taken as they are.
+  const codex = new RuntimeInstaller({
+    run: answering(DEBIAN_DSH),
+    which: command => (command === 'codex' ? '/usr/local/bin/codex' : null),
+  })
+  await codex.checkPath('codex')
+  expect(codex.availability('codex')).toMatchObject({ installed: true })
+})
+
 test('a second install of the same runtime is refused while one runs; ensureRuntimeInstalled joins it', async () => {
   const npm = fakeNpm(PIN('codex'))
   let release!: () => void
@@ -393,6 +681,7 @@ test('a second install of the same runtime is refused while one runs; ensureRunt
     release = done
   })
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: npm.run,
     freeBytes: roomy,
     which: nowhere,
@@ -424,6 +713,7 @@ test('runtime.remove: refused for qianmopi, for unknown ids and while agents use
   const npm = fakeNpm('0.170.0')
   let users: string[] = ['coder', 'writer']
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: npm.run,
     freeBytes: roomy,
     which: nowhere,
@@ -469,6 +759,7 @@ test('runtime.remove: refused for qianmopi, for unknown ids and while agents use
 test('a runtime given by flag is the operator’s: never installed or removed here', async () => {
   const npm = fakeNpm('2.2.0')
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: npm.run,
     freeBytes: roomy,
     bins: { codex: 'codex-nightly' },
@@ -494,6 +785,7 @@ test('stopping the node ends a running install without recording a verdict', asy
     started = done
   })
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     freeBytes: roomy,
     which: nowhere,
     smoke: async () => null,

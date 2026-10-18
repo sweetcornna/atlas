@@ -1425,6 +1425,11 @@ run_node() {
   beta_prepare_witness
   # 紧挨着起进程：resident 与它的 ACP 子进程从本 shell 继承 oom_score_adj。
   beta_raise_oom_score
+  # P36 §2：节点不在启动时自己下载底层（缺省底层 dsh 一次约 850 MB，舰队的小内存机
+  # 扛不住）。用环境变量而不是 --no-runtime-autoinstall：回滚到不认识那个参数的旧产物
+  # 时参数会让它当场退出，变量则被忽略。运维要本节点自己装，起之前 export 成别的值即可
+  # （model-env 里写也行，它先于这一行载入）。resident-task-policy.test.ts 钉着这一行。
+  export QIANMO_RUNTIME_AUTOINSTALL="${QIANMO_RUNTIME_AUTOINSTALL:-0}"
   # 起之前先问端口空不空（2026-09-26 p1）：pid 文件说本节点没在跑、端口上却已经有人在听，
   # 新进程起来只会 EADDRINUSE 退出——而它退出之前那一两秒，下面的就绪探测会被旧进程的应答
   # 骗成绿，退出的新进程还往配置根的 lifecycle.json 里留一条误导的 priorLife。不起它。

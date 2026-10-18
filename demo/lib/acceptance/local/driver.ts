@@ -65,6 +65,27 @@ export const WRONG_PSK = 'qianmo-acceptance-psk-9999999999'
 /** 时间线文件在配置根里的相对路径 —— 两个驱动共用这一个名字。 */
 export const TIMINGS_FILE = 'acceptance-timings.jsonl'
 
+/**
+ * 一次性常驻起来时的环境 —— 两个驱动共用这一份。
+ *
+ * 除了配置根与 PSK，还**关掉底层自动安装**（P36 §2）：缺省底层是 dsh，不关的话
+ * 每个一次性节点一起来就在后台下载约 850 MB。用环境变量而不是
+ * `--no-runtime-autoinstall`：被测的若是不认识这个参数的旧产物，参数会让它当场
+ * 退出，变量则被忽略。场景自己给的 `env` 排在最后，要测自动安装的场景可以打开。
+ */
+export function disposableNodeEnv(
+  configRoot: string,
+  psk: string,
+  env: Readonly<Record<string, string>> | undefined,
+): Record<string, string> {
+  return {
+    QIANMO_CONFIG_DIR: configRoot,
+    QIANMO_TRANSPORT_PSK: psk,
+    QIANMO_RUNTIME_AUTOINSTALL: '0',
+    ...env,
+  }
+}
+
 const LOCAL_CAPABILITIES: ReadonlySet<DriverCapability> = new Set([
   'attach-node',
   'spawn-node',
@@ -198,11 +219,7 @@ export class LocalDriver implements AcceptanceDriver {
     const psk = spec.auth.mode === 'psk' ? spec.auth.psk : ACCEPTANCE_PSK
     const proc = spawnCli({
       argv,
-      env: {
-        QIANMO_CONFIG_DIR: configRoot,
-        QIANMO_TRANSPORT_PSK: psk,
-        ...spec.env,
-      },
+      env: disposableNodeEnv(configRoot, psk, spec.env),
     })
     ctx.cleanup(() => proc.stop())
 

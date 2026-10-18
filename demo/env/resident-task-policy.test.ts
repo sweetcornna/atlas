@@ -15,6 +15,9 @@
  * ① 已知的三处起法各自写全了策略开关；
  * ② **没有第四处**——新增一处起法而忘了写策略，会在这里变红，而不是等到某次例行
  *    部署之后。只断言①的用例挡不住这个方向。
+ *
+ * 同一张起法表还钉一件 P36 的事：③ 每处起法在起进程之前关掉底层自动安装（环境
+ * 变量，可被运维覆盖），见文件末尾。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -160,6 +163,40 @@ describe('resident launches state their task policy', () => {
       }
       expect(block).toMatch(/--(open-policy|require-signed-tasks)\b/)
       expect(file).toMatch(/\.sh$/)
+    }
+  })
+})
+
+describe('resident launches do not download a runtime (P36 §2)', () => {
+  // 缺省底层是 dsh，不关掉的话每处起法一起来就在后台下载约 850 MB。关法是环境
+  // 变量而不是 `--no-runtime-autoinstall`：回滚到不认识这个参数的旧产物时，参数
+  // 会让它当场退出，变量则被忽略。写成 `${…:-0}`：运维在起之前 export 了别的值
+  // （例如要这台节点自己装），就用运维的。
+  const AUTOINSTALL_OFF =
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: 这是 shell 的参数展开，不是 JS 模板串
+    'export QIANMO_RUNTIME_AUTOINSTALL="${QIANMO_RUNTIME_AUTOINSTALL:-0}"'
+  /** 每处起法里**真正起进程**的那一行：export 必须在它之前才到得了那个进程。 */
+  const STARTS: Readonly<Record<string, string>> = {
+    'demo/env/beta/beta-up.sh': 'beta_start_process "$BETA_NODE"',
+    'demo/env/up.sh': 'start_resident "$DEMO_NODE_A"',
+    'demo/env/remote/prepare-sandbox.sh': 'exec env QIANMO_CONFIG_DIR=',
+  }
+
+  test('every launch site turns the default install off before it starts, overridable', () => {
+    expect(Object.keys(STARTS).sort()).toEqual([...launchSites().keys()].sort())
+    for (const [file, start] of Object.entries(STARTS)) {
+      const code = readFileSync(join(REPOSITORY_ROOT, file), 'utf8')
+        .split('\n')
+        .map(line => line.trim())
+      const off = code.indexOf(AUTOINSTALL_OFF)
+      const starts = code.findIndex(line => line.startsWith(start))
+      // 断言带上文件名，红的时候不用去猜是哪一处。
+      expect({ file, off: off >= 0, starts: starts >= 0 }).toEqual({
+        file,
+        off: true,
+        starts: true,
+      })
+      expect({ file, before: off < starts }).toEqual({ file, before: true })
     }
   })
 })

@@ -90,6 +90,9 @@ done
 demo_ok "注册中心就绪：$DEMO_REGISTRY_URL"
 
 demo_head '② 两个常驻节点'
+# P36 §2：演示节点不下载底层（缺省底层 dsh 一次约 850 MB）。环境变量而不是
+# --no-runtime-autoinstall，理由同 beta-up.sh：旧产物不认识参数会退出；要装就先 export 别的值。
+export QIANMO_RUNTIME_AUTOINSTALL="${QIANMO_RUNTIME_AUTOINSTALL:-0}"
 start_resident() {
   local name="$1" node="$2" agent="$3" port="$4" config_dir="$5"
   start_process "$name" "$config_dir" \

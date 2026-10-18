@@ -16,14 +16,25 @@
  * `qianmo` tool bridge) before it goes into the managed prefix; one that
  * fails leaves the node on the version it had, and the answer says why. A
  * runtime that needs Node.js is not installed on a node without a matching
- * one, and nothing starts without the disk space a whole install takes.
+ * one, and nothing starts without the disk space a whole install takes and
+ * {@link INSTALL_MEMORY_MIB} of available memory.
  *
  * Binaries given with `--runtime-bin` (or its aliases `--claude-code-bin`,
  * `--codex-bin`) are the operator's: they are reported, never managed.
  */
 
+import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, rmSync, statfsSync } from 'node:fs'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statfsSync,
+} from 'node:fs'
+import { freemem } from 'node:os'
 import * as path from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
 import type { ControlOutcome } from '@qianmo/protocol'
@@ -79,6 +90,59 @@ function diskMiB(spec: NpmRuntime): number {
   return typeof hint === 'number' && hint > 0
     ? hint
     : (DISK_MIB[spec.id] ?? DEFAULT_DISK_MIB)
+}
+
+/**
+ * Memory an install needs free before it starts (§2): npm unpacking dsh and
+ * the compatibility check's harness process beside a running node. Below it
+ * the install is refused like a failed one and retried on the backoff.
+ */
+export const INSTALL_MEMORY_MIB = 1536
+
+/** How long `runtime.versions` reuses a binary's `--version` answer. */
+export const VERSION_CACHE_MS = 10 * 60_000
+
+/** `MemAvailable` of a `/proc/meminfo` text, in bytes (absent before Linux 3.14). */
+export function memAvailableBytes(meminfo: string): number | undefined {
+  const kib = /^MemAvailable:\s+(\d+)\s+kB$/m.exec(meminfo)?.[1]
+  return kib === undefined ? undefined : Number(kib) * 1024
+}
+
+/**
+ * Free, inactive and speculative pages of a `vm_stat` text, in bytes: what
+ * macOS can hand a new process without swapping.
+ */
+export function vmStatAvailableBytes(vmStat: string): number | undefined {
+  const page = /page size of (\d+) bytes/.exec(vmStat)?.[1]
+  const pages = ['free', 'inactive', 'speculative'].map(
+    name => new RegExp(`^Pages ${name}:\\s+(\\d+)\\.`, 'm').exec(vmStat)?.[1],
+  )
+  if (page === undefined || pages.some(count => count === undefined))
+    return undefined
+  return pages.reduce((sum, count) => sum + Number(count), 0) * Number(page)
+}
+
+/**
+ * Memory a new process can take: `MemAvailable` on Linux and the reclaimable
+ * pages on macOS (free memory alone leaves out the caches the kernel gives
+ * back; on macOS `os.freemem()` is a few hundred MiB on a machine with GiBs
+ * to spare), else `os.freemem()`.
+ */
+export function availableMemoryBytes(): number {
+  try {
+    if (process.platform === 'linux') {
+      const bytes = memAvailableBytes(readFileSync('/proc/meminfo', 'utf8'))
+      if (bytes !== undefined) return bytes
+    } else if (process.platform === 'darwin') {
+      const bytes = vmStatAvailableBytes(
+        execFileSync('/usr/bin/vm_stat', { encoding: 'utf8', timeout: 5_000 }),
+      )
+      if (bytes !== undefined) return bytes
+    }
+  } catch {
+    // No procfs or vm_stat: what the OS says is free.
+  }
+  return freemem()
 }
 
 /** The npm prefix runtime installs go into. */
@@ -235,6 +299,36 @@ export interface RuntimeAvailability {
   readonly installed: boolean
   readonly source?: 'builtin' | 'prefix' | 'path' | 'flag'
   readonly bin?: string
+  /** A binary of its name on PATH that was not taken, and why. */
+  readonly rejected?: string
+}
+
+/**
+ * Runtimes told apart from other programs of the same name on PATH, by what
+ * the runtime prints itself. Debian's `dsh` (distributed shell) and pdsh's
+ * `dsh` are not DeepSeek Harness, whose `--help` names it (its `--version`
+ * prints a bare version number, which proves nothing). A binary given by
+ * flag is the operator's and is not asked; the managed prefix only holds
+ * what passed the compatibility check.
+ */
+const PATH_IDENTITY: Readonly<
+  Record<string, { readonly args: readonly string[]; readonly name: RegExp }>
+> = {
+  dsh: { args: ['--help'], name: /DeepSeek Harness/ },
+}
+
+function identityRule(
+  kind: string,
+): (typeof PATH_IDENTITY)[string] | undefined {
+  return Object.hasOwn(PATH_IDENTITY, kind) ? PATH_IDENTITY[kind] : undefined
+}
+
+/** One PATH binary checked against {@link PATH_IDENTITY}. */
+interface PathCheck {
+  readonly bin: string
+  /** `null`: it is the runtime; a string: why it is not; absent: running. */
+  verdict?: string | null
+  done?: Promise<void>
 }
 
 /** The last install of one runtime, kept across restarts. */
@@ -248,6 +342,12 @@ export interface RuntimeInstallRecord {
     RuntimeFallbackCode,
     'install-failed' | 'smoke-failed' | 'no-node'
   >
+  /**
+   * Failed installs in a row, this one included (only on a failure; a record
+   * from before the count existed counts as one). The default install's
+   * backoff reads it after a restart; never on the wire.
+   */
+  readonly failures?: number
 }
 
 /** What {@link RuntimeInstaller.ensureRuntimeInstalled} answers. */
@@ -279,6 +379,8 @@ export interface RuntimeUpdateOptions {
   readonly which?: (command: string) => string | null
   /** Free bytes on the filesystem holding `dir` (default `statfs`). */
   readonly freeBytes?: (dir: string) => number
+  /** Memory available to a new process (default {@link availableMemoryBytes}). */
+  readonly freeMemoryBytes?: () => number
   /** The agents configured on a runtime: `runtime.remove` refuses while any. */
   readonly inUse?: (kind: ExternalRuntimeKind) => readonly string[]
   /** The node's default runtime, for `runtime.versions`. */
@@ -323,6 +425,21 @@ function errorText(error: unknown): string {
 
 const SEMVER_IN_OUTPUT = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/
 
+/** A scratch prefix of one install: `npm-stage-<uuid>` under the runtimes root. */
+const STAGE_NAME =
+  /^npm-stage-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/** Failed installs in a row a record stands for (0 after a success). */
+export function failuresOf(record: RuntimeInstallRecord | undefined): number {
+  if (record === undefined || record.ok) return 0
+  const failures = record.failures
+  return typeof failures === 'number' &&
+    Number.isSafeInteger(failures) &&
+    failures > 0
+    ? failures
+    : 1
+}
+
 /**
  * The node's runtime installs: what is there, installing one (a control op
  * or {@link ensureRuntimeInstalled}), removing one. One install per runtime at
@@ -338,6 +455,23 @@ export class RuntimeInstaller {
   #prefixLock: Promise<unknown> = Promise.resolve()
   /** `undefined`: not checked yet; `null`: no Node.js found. */
   #nodeVersion: string | null | undefined
+  /** Scratch prefixes of the installs running now. */
+  readonly #stages = new Set<string>()
+  /** PATH binaries checked against {@link PATH_IDENTITY}, by runtime. */
+  readonly #onPath = new Map<string, PathCheck>()
+  /**
+   * `runtime.versions`' `--version` answers by runtime, for one binary path;
+   * reads at the same time share the one in flight. Dropped when the
+   * runtime is installed or removed, and after {@link VERSION_CACHE_MS}.
+   */
+  readonly #versions = new Map<
+    string,
+    {
+      readonly bin: string
+      readonly at: number
+      readonly version: Promise<string | null>
+    }
+  >()
   /** Stops every command this installer runs (the node is shutting down). */
   readonly #stopping = new AbortController()
 
@@ -357,6 +491,8 @@ export class RuntimeInstaller {
     return () => this.#listeners.delete(listener)
   }
   #changed(kind: ExternalRuntimeKind): void {
+    // A new binary, or none: whatever its `--version` said is stale.
+    this.#versions.delete(kind)
     for (const listener of [...this.#listeners]) {
       try {
         listener(kind)
@@ -378,12 +514,67 @@ export class RuntimeInstaller {
     const managed = managedRuntimeBin(kind)
     if (managed !== undefined)
       return { installed: true, source: 'prefix', bin: managed }
-    const which =
-      this.#options.which ?? ((command: string) => Bun.which(command))
-    const found = which(spec.install.command)
-    return found === null || found === undefined
-      ? { installed: false }
-      : { installed: true, source: 'path', bin: found }
+    const found = this.#which(spec.install.command)
+    if (found === null) return { installed: false }
+    if (identityRule(kind) !== undefined) {
+      // Taken only once it said who it is (`checkPath`).
+      const check = this.#onPath.get(kind)
+      if (check?.bin !== found || check.verdict === undefined)
+        return {
+          installed: false,
+          rejected: `PATH 上的 ${found} 还没有核对是不是 ${spec.label}`,
+        }
+      if (check.verdict !== null)
+        return { installed: false, rejected: check.verdict }
+    }
+    return { installed: true, source: 'path', bin: found }
+  }
+
+  #which(command: string): string | null {
+    const which = this.#options.which ?? ((name: string) => Bun.which(name))
+    return which(command) ?? null
+  }
+
+  /**
+   * Asks the PATH binary of `kind` who it is, for the runtimes that need it
+   * ({@link PATH_IDENTITY}); until then, and when it is another program, it
+   * does not count as installed. Once per binary path; callers at the same
+   * time share the one check. Nothing to do for a runtime given by flag or
+   * in the managed prefix.
+   */
+  checkPath(kind: string): Promise<void> {
+    const rule = identityRule(kind)
+    const spec = npmRuntime(kind)
+    if (
+      rule === undefined ||
+      spec === undefined ||
+      this.#options.bins?.[kind] !== undefined ||
+      managedRuntimeBin(kind) !== undefined
+    )
+      return Promise.resolve()
+    const found = this.#which(spec.install.command)
+    if (found === null) return Promise.resolve()
+    const known = this.#onPath.get(kind)
+    if (known?.bin === found && known.done !== undefined) return known.done
+    const check: PathCheck = { bin: found }
+    check.done = (async () => {
+      const shown = `${spec.install.command} ${rule.args.join(' ')}`
+      try {
+        const result = await this.#run([found, ...rule.args], {
+          env: env(),
+          timeoutMs: 15_000,
+          signal: this.#stopping.signal,
+        })
+        check.verdict = rule.name.test(result.stdout)
+          ? null
+          : `PATH 上的 ${found} 不是 ${spec.label}（它的 ${rule.args.join(' ')} 里没有这个名字），当作没有安装`
+      } catch (error) {
+        check.verdict = `PATH 上的 ${found} 核对不了（${shown}：${errorText(error)}），当作没有安装`
+      }
+      this.#changed(spec.id)
+    })()
+    this.#onPath.set(kind, check)
+    return check.done
   }
 
   installing(kind: string): boolean {
@@ -424,6 +615,36 @@ export class RuntimeInstaller {
     } catch {
       // Kept in memory for this process; the status stays right.
     }
+  }
+
+  /**
+   * Removes the scratch prefixes installs left when the node died during
+   * one (at start, before any install): only `npm-stage-<uuid>` directories
+   * right under the runtimes root, none of this process's running installs,
+   * and an entry of that name that is a link or a file is left alone. A
+   * directory's own links are removed, never followed. Returns what went.
+   */
+  sweepStages(): string[] {
+    const root = qianmoConfigPath('runtimes')
+    let names: string[]
+    try {
+      names = readdirSync(root)
+    } catch {
+      return []
+    }
+    const removed: string[] = []
+    for (const name of names) {
+      const dir = path.join(root, name)
+      if (!STAGE_NAME.test(name) || this.#stages.has(dir)) continue
+      try {
+        if (!lstatSync(dir).isDirectory()) continue
+        rmSync(dir, { recursive: true, force: true })
+        removed.push(dir)
+      } catch {
+        // Left for the next start.
+      }
+    }
+    return removed
   }
 
   /** Whether the node's Node.js is in `range`; `undefined` before a check. */
@@ -471,6 +692,22 @@ export class RuntimeInstaller {
     }
   }
 
+  /** `bin`'s version for `runtime.versions`, reused per {@link VERSION_CACHE_MS}. */
+  #reportedVersion(kind: string, bin: string): Promise<string | null> {
+    const now = this.#now()
+    const known = this.#versions.get(kind)
+    if (
+      known !== undefined &&
+      known.bin === bin &&
+      now >= known.at &&
+      now - known.at < VERSION_CACHE_MS
+    )
+      return known.version
+    const version = this.#version(bin)
+    this.#versions.set(kind, { bin, at: now, version })
+    return version
+  }
+
   /** One row per catalog entry (`runtime.versions`). */
   async versions(): Promise<RuntimeVersionsReply> {
     const rows = await Promise.all(
@@ -485,9 +722,12 @@ export class RuntimeInstaller {
             installing: false,
             verified: spec.verified,
           }
+        await this.checkPath(spec.id)
         const here = this.availability(spec.id)
         const version =
-          here.bin === undefined ? null : await this.#version(here.bin)
+          here.bin === undefined
+            ? null
+            : await this.#reportedVersion(spec.id, here.bin)
         const last = this.lastInstall(spec.id)
         return {
           id: spec.id,
@@ -591,6 +831,7 @@ export class RuntimeInstaller {
   async ensureRuntimeInstalled(
     kind: ExternalRuntimeKind,
   ): Promise<RuntimeInstallResult> {
+    await this.checkPath(kind)
     if (this.availability(kind).installed) return { ok: true }
     const running = this.#installing.get(kind)
     if (running !== undefined) return running
@@ -613,6 +854,7 @@ export class RuntimeInstaller {
           version: wanted,
           error: message.slice(0, 300),
           code: fallback,
+          failures: failuresOf(this.lastInstall(spec.id)) + 1,
         })
       return {
         ok: false,
@@ -659,6 +901,12 @@ export class RuntimeInstaller {
       )(root)
       if (free < need * MIB)
         return fail('install-failed', `磁盘空间不足（需要约 ${need} MiB）`)
+      const memory = (this.#options.freeMemoryBytes ?? availableMemoryBytes)()
+      if (memory < INSTALL_MEMORY_MIB * MIB)
+        return fail(
+          'install-failed',
+          `可用内存不足（安装需要约 ${INSTALL_MEMORY_MIB} MiB，现有 ${Math.floor(memory / MIB)} MiB），稍后重试`,
+        )
       const npmInstall = (into: string, timeoutMs: number) =>
         this.#run(
           [
@@ -676,6 +924,7 @@ export class RuntimeInstaller {
       // Scratch prefix first; the managed one only gets a version that passed.
       // The budget stays inside the hub's 11 minutes for one update.
       const stage = qianmoConfigPath('runtimes', `npm-stage-${randomUUID()}`)
+      this.#stages.add(stage)
       try {
         mkdirSync(stage, { recursive: true, mode: 0o700 })
         // npm's warnings (blocked install scripts) are not failures; its exit is.
@@ -704,7 +953,12 @@ export class RuntimeInstaller {
             `${wanted} 没有通过兼容检查，节点继续用原来的版本：${reason}`,
           )
       } finally {
-        rmSync(stage, { recursive: true, force: true })
+        // Best effort: what cannot go now goes at the next start's sweep,
+        // and a failed cleanup is not a second verdict on the install.
+        try {
+          rmSync(stage, { recursive: true, force: true })
+        } catch {}
+        this.#stages.delete(stage)
       }
       // From npm's cache now: the same files that passed.
       const installed = await this.#withPrefix(() =>
