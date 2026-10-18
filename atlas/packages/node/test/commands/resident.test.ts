@@ -338,6 +338,38 @@ describe('runtime flags (P36)', () => {
     expect(RESIDENT_HELP_TEXT).toContain('Default dsh')
   })
 
+  test('QIANMO_DEFAULT_RUNTIME does what --default-runtime does; the flag wins; a bad value stops the start', () => {
+    // Older binaries refuse an unknown flag but ignore an unknown variable,
+    // so service units carry the choice here (rollback-safe).
+    const env = (value: string) => ({ QIANMO_DEFAULT_RUNTIME: value })
+    expect(parseResidentArgs(BASE, {}).defaultRuntime).toBeUndefined()
+    expect(parseResidentArgs(BASE, env('qianmopi')).defaultRuntime).toBe('omp')
+    expect(parseResidentArgs(BASE, env('omp')).defaultRuntime).toBe('omp')
+    expect(parseResidentArgs(BASE, env(' codex ')).defaultRuntime).toBe('codex')
+    // Empty is unset (a unit's `Environment=QIANMO_DEFAULT_RUNTIME=`).
+    expect(parseResidentArgs(BASE, env('')).defaultRuntime).toBeUndefined()
+    expect(
+      parseResidentArgs([...BASE, '--default-runtime', 'dsh'], env('qianmopi'))
+        .defaultRuntime,
+    ).toBe('dsh')
+    // The flag wins outright: the variable is not even read then.
+    expect(
+      parseResidentArgs([...BASE, '--default-runtime=omp'], env('vim'))
+        .defaultRuntime,
+    ).toBe('omp')
+    expect(() => parseResidentArgs(BASE, env('vim'))).toThrow(
+      'QIANMO_DEFAULT_RUNTIME must be omp (qianmopi), dsh',
+    )
+    // A default taken from the variable is a default like any other.
+    expect(() =>
+      parseResidentArgs(
+        [...BASE, '--agent-shell', 'reviewer'],
+        env('qianmopi'),
+      ),
+    ).toThrow('not qianmopi')
+    expect(RESIDENT_HELP_TEXT).toContain('QIANMO_DEFAULT_RUNTIME')
+  })
+
   test('--runtime-bin names an installable runtime; the old flags are aliases', () => {
     expect(
       parseResidentArgs([
