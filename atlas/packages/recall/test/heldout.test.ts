@@ -16,6 +16,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { heavy } from '../../../tests/support/heavy.js'
 import {
   memoizeForCandidateSet,
   NULL_RANKERS,
@@ -274,7 +275,10 @@ describe('R2–R4 judgment on the held-out set', () => {
 
   // Nonsense questions tie every entry at zero relevance, so the fusion order
   // past the floor is the query-blind ranker's alone — a ranker that must not
-  // pass. One judgment per unit, shared by the two tests below.
+  // pass. One judgment per unit, shared by the two tests below, so the two
+  // are gated together: on a pull request they run when recall, memory or
+  // paths changed, and always on main and nightly (tests/support/heavy.ts).
+  const judging = heavy('recall-eval')
   const judged = new Map<'question' | 'gold', RetrievalJudgment>()
   const judgeBy = (unit: 'question' | 'gold'): RetrievalJudgment => {
     const cached = judged.get(unit)
@@ -289,36 +293,45 @@ describe('R2–R4 judgment on the held-out set', () => {
   }
   const SEEDS = [20260926, 20260927, 20260928, 20260929, 20260930]
 
-  test('evidence for sign_test_unit = "gold": a query-blind ranker passes R3 per question and is stopped per gold', () => {
-    // Two questions per gold: per question, each gold the ranker pulls in
-    // counts twice and R3 passes on every seed. Per gold (mean paired
-    // difference of its questions) it fails on every seed. This is the
-    // measured reason for the 2026-09-27 ruling.
-    const byQuestion = judgeBy('question')
-    const byGold = judgeBy('gold')
-    for (const judgment of [byQuestion, byGold]) {
-      expect(judgment.status).toBe('judged')
-      expect(judgment.R3?.perSeed.map(v => v.seed)).toEqual(SEEDS)
-    }
-    expect(byQuestion.R3?.pass).toBe(true)
-    expect(byQuestion.R3?.perSeed.every(v => v.pass)).toBe(true)
-    expect(byGold.R3?.pass).toBe(false)
-    expect(byGold.R3?.perSeed.every(v => !v.pass)).toBe(true)
-    const wins = (v: RetrievalJudgment) => v.R3?.perSeed.map(x => x.wins) ?? []
-    for (const [index, count] of wins(byQuestion).entries()) {
-      expect(count).toBeGreaterThan(wins(byGold)[index] ?? 0)
-    }
-  }, 180_000)
+  test.skipIf(!judging)(
+    'evidence for sign_test_unit = "gold": a query-blind ranker passes R3 per question and is stopped per gold',
+    () => {
+      // Two questions per gold: per question, each gold the ranker pulls in
+      // counts twice and R3 passes on every seed. Per gold (mean paired
+      // difference of its questions) it fails on every seed. This is the
+      // measured reason for the 2026-09-27 ruling.
+      const byQuestion = judgeBy('question')
+      const byGold = judgeBy('gold')
+      for (const judgment of [byQuestion, byGold]) {
+        expect(judgment.status).toBe('judged')
+        expect(judgment.R3?.perSeed.map(v => v.seed)).toEqual(SEEDS)
+      }
+      expect(byQuestion.R3?.pass).toBe(true)
+      expect(byQuestion.R3?.perSeed.every(v => v.pass)).toBe(true)
+      expect(byGold.R3?.pass).toBe(false)
+      expect(byGold.R3?.perSeed.every(v => !v.pass)).toBe(true)
+      const wins = (v: RetrievalJudgment) =>
+        v.R3?.perSeed.map(x => x.wins) ?? []
+      for (const [index, count] of wins(byQuestion).entries()) {
+        expect(count).toBeGreaterThan(wins(byGold)[index] ?? 0)
+      }
+    },
+    180_000,
+  )
 
-  test('the shuffle control stops it under either unit', () => {
-    // Blind to the question, the real and shuffled arms inject the same.
-    for (const unit of ['question', 'gold'] as const) {
-      const judgment = judgeBy(unit)
-      expect(judgment.R4?.pass).toBe(false)
-      expect(judgment.R4?.perSeed.map(v => v.seed)).toEqual(SEEDS)
-      expect(
-        judgment.R4?.perSeed.every(v => v.wins === 0 && v.losses === 0),
-      ).toBe(true)
-    }
-  }, 180_000)
+  test.skipIf(!judging)(
+    'the shuffle control stops it under either unit',
+    () => {
+      // Blind to the question, the real and shuffled arms inject the same.
+      for (const unit of ['question', 'gold'] as const) {
+        const judgment = judgeBy(unit)
+        expect(judgment.R4?.pass).toBe(false)
+        expect(judgment.R4?.perSeed.map(v => v.seed)).toEqual(SEEDS)
+        expect(
+          judgment.R4?.perSeed.every(v => v.wins === 0 && v.losses === 0),
+        ).toBe(true)
+      }
+    },
+    180_000,
+  )
 })

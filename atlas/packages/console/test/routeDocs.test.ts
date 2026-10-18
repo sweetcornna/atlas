@@ -44,6 +44,7 @@ import {
 } from './directionFakes.js'
 import { FakeBilling } from './billingFake.js'
 import { PageAudit, PageRegistry, TRACE } from './pageHarness.js'
+import { heavy } from './heavy.js'
 import { FakeProviders } from './providersFake.js'
 import { MemoryNotify } from './watchFakes.js'
 
@@ -360,63 +361,71 @@ describe('console.md §5 is the route table (P18.11)', () => {
     expect(missing).toEqual([])
   })
 
-  test('every routed path is documented', async () => {
-    const h = await wired()
-    const extra = new Set<string>()
-    let probes = 0
-    const probe = async (path: readonly string[]): Promise<boolean> => {
-      let routed = false
-      for (const method of METHODS) {
-        probes += 1
-        const seen = await verdict(h, method, `/${path.join('/')}`)
-        if (seen !== 'routed') continue
-        routed = true
-        if (!rows.some(row => matches(row, method, path))) {
-          extra.add(`${method} /${path.join('/')}`)
-        }
-      }
-      return routed
-    }
-
-    // The heads nobody listed: every literal anywhere, as a first segment
-    // and under `/v0` and `/fragments`.
-    const everyWord = new Set<string>(['zz-sample'])
-    for (const root of roots(rows)) {
-      for (const word of root.vocabulary) everyWord.add(word)
-      for (const word of root.prefix) everyWord.add(word)
-    }
-    await probe([])
-    for (const word of everyWord) {
-      await probe([word])
-      await probe(['v0', word])
-      await probe(['fragments', word])
-    }
-
-    for (const root of roots(rows)) {
-      // Two levels under every head are walked whole, even where the table
-      // has nothing, so a head documented by nothing still shows what it
-      // answers. Deeper, a path is walked on only if it is routed or a row
-      // goes on below it, and never more than one level past the deepest
-      // row: an undocumented route under an unrouted, undocumented
-      // intermediate path that deep is the scan's blind spot.
-      const whole = root.prefix.length + 2
-      const limit = Math.max(depthUnder(rows, root.prefix), whole)
-      let frontier: string[][] = [[...root.prefix]]
-      for (let depth = root.prefix.length; depth <= limit + 1; depth += 1) {
-        const next: string[][] = []
-        for (const path of frontier) {
-          const routed = await probe(path)
-          const onward = depth < whole || routed || underARow(rows, path)
-          if (onward && depth <= limit) {
-            for (const word of root.vocabulary) next.push([...path, word])
+  // The reverse scan is the slow half (millions of probes) and only
+  // this package or console.md can turn it red: it runs on a pull request
+  // when one of those changed, and always on main and nightly
+  // (atlas/tests/support/heavy.ts).
+  test.skipIf(!heavy('route-docs'))(
+    'every routed path is documented',
+    async () => {
+      const h = await wired()
+      const extra = new Set<string>()
+      let probes = 0
+      const probe = async (path: readonly string[]): Promise<boolean> => {
+        let routed = false
+        for (const method of METHODS) {
+          probes += 1
+          const seen = await verdict(h, method, `/${path.join('/')}`)
+          if (seen !== 'routed') continue
+          routed = true
+          if (!rows.some(row => matches(row, method, path))) {
+            extra.add(`${method} /${path.join('/')}`)
           }
         }
-        if (next.length === 0) break
-        frontier = next
+        return routed
       }
-    }
-    console.log(`[route docs] ${rows.length} rows, ${probes} probes`)
-    expect([...extra].sort()).toEqual([])
-    expect(probes).toBeGreaterThan(1000)
-  }, 120_000)
+
+      // The heads nobody listed: every literal anywhere, as a first segment
+      // and under `/v0` and `/fragments`.
+      const everyWord = new Set<string>(['zz-sample'])
+      for (const root of roots(rows)) {
+        for (const word of root.vocabulary) everyWord.add(word)
+        for (const word of root.prefix) everyWord.add(word)
+      }
+      await probe([])
+      for (const word of everyWord) {
+        await probe([word])
+        await probe(['v0', word])
+        await probe(['fragments', word])
+      }
+
+      for (const root of roots(rows)) {
+        // Two levels under every head are walked whole, even where the table
+        // has nothing, so a head documented by nothing still shows what it
+        // answers. Deeper, a path is walked on only if it is routed or a row
+        // goes on below it, and never more than one level past the deepest
+        // row: an undocumented route under an unrouted, undocumented
+        // intermediate path that deep is the scan's blind spot.
+        const whole = root.prefix.length + 2
+        const limit = Math.max(depthUnder(rows, root.prefix), whole)
+        let frontier: string[][] = [[...root.prefix]]
+        for (let depth = root.prefix.length; depth <= limit + 1; depth += 1) {
+          const next: string[][] = []
+          for (const path of frontier) {
+            const routed = await probe(path)
+            const onward = depth < whole || routed || underARow(rows, path)
+            if (onward && depth <= limit) {
+              for (const word of root.vocabulary) next.push([...path, word])
+            }
+          }
+          if (next.length === 0) break
+          frontier = next
+        }
+      }
+      console.log(`[route docs] ${rows.length} rows, ${probes} probes`)
+      expect([...extra].sort()).toEqual([])
+      expect(probes).toBeGreaterThan(1000)
+    },
+    120_000,
+  )
 })

@@ -96,22 +96,24 @@
 bun install
 bun run build:native            # omp 原生插件
 bun run qm -- --help            # qm 源码模式入口（atlas/packages/node/src/cli.ts）
-bun run precheck                # 阡陌类型检查 + biome 修复 + identity-paths + license-headers + 阡陌测试；会改文件
-bun run verify                  # 推送 / 发 PR 前；只读的全量门禁
-bun run atlas:test [<目录> …]    # 阡陌测试分片，可只跑指定目录
+bun run precheck                # 先 biome 修复，再类型检查 + identity-paths + license-headers 与阡陌测试五组并发；会改文件
+bun run verify                  # 推送 / 发 PR 前；只读的全量门禁，重用例集全开
+bun run atlas:test [<目录> …]    # 阡陌测试按 CI 五组并发 + 防跳过自检；带目录时只跑这些分片（test-shards.sh）
 ```
 
 完整脚本以根 `package.json` 的 `scripts` 为准（阡陌的都带 `atlas:` 前缀，另有 `qm`、`qianmo:acceptance`、`precheck`、`verify`）。
 
-CI（`.github/workflows/atlas.yml`）只在 PR 与 `main` 的 push 上跑，同一 PR 的新推送取消旧运行；没开 PR 的分支要验证就开草稿 PR 或手动触发。作业图：`static`（verify 里不跑测试的各道门禁与基座改动检测）与 `native`（原生插件，按输入哈希缓存，产物作 artifact 交给下游）并行；`native` 之后是 `test` 五组矩阵（见 §3.1）、`build-qm`（编译与冒烟）、`omp-test`；最后的汇总作业 `ci` 是唯一要看的检查，任何作业失败或被取消即红。改到基座快照路径（含根 `CONTRIBUTING.md`、`README.md`、`bun.lock`；根 `package.json` 只改 `atlas:`、`qianmo:` 脚本与 `qm`、`precheck`、`verify` 时不算）会追加 omp 全量 `test:ts`，按 omp 的 `OMP_TEST_SHARD` 分 6 片并行，每片约 5 分钟。
+CI（`.github/workflows/atlas.yml`）在 PR、`main` 的 push 与每晚定时（`43 19 * * *` UTC，北京时间 03:43）上跑，同一 PR 的新推送取消旧运行；没开 PR 的分支要验证就开草稿 PR 或手动触发。作业图：`static`（verify 里不跑测试的各道门禁与基座改动检测）与 `native`（原生插件，按输入哈希缓存，产物作 artifact 交给下游）并行；`native` 之后是 `test` 五组矩阵（见 §3.1）、`build-qm`（编译与冒烟）、`omp-test`；最后的汇总作业 `ci` 是唯一要看的检查，任何作业失败或被取消即红。改到基座快照路径（含根 `CONTRIBUTING.md`、`README.md`、`bun.lock`；根 `package.json` 只改 `atlas:`、`qianmo:` 脚本与 `qm`、`precheck`、`verify` 时不算）会追加 omp 全量 `test:ts`，按 omp 的 `OMP_TEST_SHARD` 分 6 片并行，每片约 5 分钟。
 
 **`precheck` ≠ `verify`。**`precheck` 跑 `atlas:lint:fix`，会改写 `atlas/`、`demo/` 下的文件，跑完看 `git diff`。`verify` 换成只读的 `atlas:lint:ci`，并加上 `atlas:check:cycles`、`atlas:check:unused`、`atlas:sbom -- --check`、omp 的 `check:ts`（证明阡陌没碰坏基座）、`atlas:build:qm` 与 `atlas:check:qm-smoke`。
 
 ### 3.1 测试
 
-- 入口是 `atlas/scripts/test-shards.sh`（`bun run atlas:test`）：每个 `atlas/packages/*` 一个分片，另有 `atlas/tests/*`、`demo/lib`、`demo/env`、`atlas/scripts`；每个分片一个 `bun test` 进程、带 `--isolate`，JUnit 报告写到 `test-reports/`。分片参数可以是目录或单个测试文件，`--exclude <路径>` 从分片里去掉一棵子树（被切到的分片按剩余文件名仍在一个进程里跑）。`--list` 只列分片、`--files` 只列将跑的测试文件，都不跑测试；判断目录有没有测试不能经管道（pipefail 下 `find | grep -q` 在 Linux 上会因 SIGPIPE 误判，10-10 到 10-18 的 CI 因此没跑 node 分片），由 `atlas/scripts/__tests__/testShards.test.ts` 守着。
+- 本机入口是 `atlas/scripts/test-groups.sh`（`bun run atlas:test`）：按 CI 的五组同时跑，每组一个 `test-shards.sh --group` 进程树，日志在 `test-reports/<组>.log`、报告在 `test-reports/<组>/`；跑完逐组报耗时，红的组附上 `::error` 行与日志末 40 行，最后跑一遍防跳过自检（未跟踪的新测试文件也算在内）。`ATLAS_TEST_JOBS=1` 退回逐组串行，`ATLAS_TEST_JOBS=<n>` 限并发；同一台机器一次只跑一份，锁是 `${TMPDIR:-/tmp}/atlas-test-groups.lock.d`（记着持有者的 pid 与检出），第二份会说明在等谁并排队，持有者已不在的锁直接接管。`precheck` 用 `--precheck` 把类型检查、identity-paths、license-headers 也并进去，lint:fix 在它之前跑完。带参数时原样交给 `test-shards.sh`，不加锁、不自检。
+- 分片脚本是 `atlas/scripts/test-shards.sh`：每个 `atlas/packages/*` 一个分片，另有 `atlas/tests/*`、`demo/lib`、`demo/env`、`atlas/scripts`；每个分片一个 `bun test` 进程、带 `--isolate`，JUnit 报告写到 `test-reports/`（`--report-dir <目录>` 改写，此时只清该目录下的 `shard-*.xml`）。分片参数可以是目录或单个测试文件，`--exclude <路径>` 从分片里去掉一棵子树（被切到的分片按剩余文件名仍在一个进程里跑）。`--list` 只列分片、`--files` 只列将跑的测试文件，都不跑测试；判断目录有没有测试不能经管道（pipefail 下 `find | grep -q` 在 Linux 上会因 SIGPIPE 误判，10-10 到 10-18 的 CI 因此没跑 node 分片），由 `atlas/scripts/__tests__/testShards.test.ts` 守着。
 - CI 分组：`test-shards.sh --group <名>`，组定义在脚本的 `CI_GROUPS`：`node-host`（`atlas/packages/node/test/host`）、`node-rest`（node 包其余全部）、`ops`（`demo/env`、`atlas/scripts`，作业里另跑 `atlas:test:registry-ha`）、`e2e`（`atlas/tests/integration`、`demo/lib`）、`packages`（其余各组没点名的默认分片，即其余包与 `atlas/tests/boundary`、`support`，新包自动落入）。Linux 上每组约 4–4.5 分钟。五组拼起来恰好是默认分片，`testShards.test.ts` 逐文件核对，并核对 `atlas.yml` 的矩阵列着同样的组；加组或改名两边一起改。
-- 防跳过自检：汇总作业 `ci` 用 `atlas/scripts/check-test-files-ran.ts` 读各组上传的 JUnit，与 `git ls-files` 里 `atlas/`、`demo/` 下的 `*.test.ts(x)` 比：没跑的、跑了却不是已跟踪阡陌测试的、在两个分片里各跑一次的，任一出现即红。一个测试都不注册的文件 Bun 不写进报告，按没跑算；只在某些条件下才有用例的文件用 `test.skip` / `describe.skipIf`，不要整个不注册。本地全量 `atlas:test` 之后也可以 `bun atlas/scripts/check-test-files-ran.ts test-reports` 自查。
+- 防跳过自检：汇总作业 `ci` 用 `atlas/scripts/check-test-files-ran.ts` 读各组上传的 JUnit，与 `git ls-files` 里 `atlas/`、`demo/` 下的 `*.test.ts(x)` 比：没跑的、跑了却不是已跟踪阡陌测试的、在两个分片里各跑一次的，任一出现即红。一个测试都不注册的文件 Bun 不写进报告，按没跑算；只在某些条件下才有用例的文件用 `test.skip` / `describe.skipIf`，不要整个不注册。本机 `atlas:test` 跑完会自己做这道检查（`--include-untracked`）。
+- 重用例集按路径触发：只有少数路径能弄红、又很慢的用例（routeDocs 的反向扫描 `route-docs`；recall 的 P16.2b/P16.3 评测门禁 `recall-eval`）写成 `describe.skipIf(!heavy('<集合>'))` / `test.skipIf(…)`，由环境变量 `ATLAS_TEST_HEAVY`（`all` / `none` / 逗号列表；不设即全开，手跑单文件不受影响；不能用 `QIANMO_` 前缀，预载会删）决定开哪些。触发表在 `atlas/tests/support/heavy.ts`，改了测试基础设施（`bun.lock`、根 `package.json`、`.tool-versions`、预载、`atlas/tests/support/**`、`test-shards.sh`、`test-groups.sh`、`atlas/scripts/ci/heavy-tests.ts`、`atlas.yml`）即全开。本机 `atlas:test` / `precheck` 在没设 `ATLAS_TEST_HEAVY` 时用 `heavy-tests.ts --local` 按本检出相对 `origin/main` 的改动（含未提交的）判定，`ATLAS_TEST_HEAVY=all bun run precheck` 强制全开，`verify` 固定全开。CI 的 `test` 作业每组自己跑 `atlas/scripts/ci/heavy-tests.ts`：PR 按 `base...HEAD` 的改动路径裁，`main` 推送、夜间与手动运行一律全开；触发表漏列依赖时最坏是红在 `main` 推送上。跳过的用例仍在 JUnit 里，防跳过自检照常通过。新加的重用例要进触发表，并让它的用例文件 `heavy('<集合>')` 一次（`heavyTests.test.ts` 核对每个集合都有用例、每条触发路径都对得上检出里的文件）。console 包的用例只许加载包内文件（它的 `dependencies.test.ts`），所以用包内 `test/heavy.ts` 的同名副本，`heavyTests.test.ts` 核对两份读法一致；集合名拼错时预载直接报错，不会读成跳过。
 - 预载 `atlas/tests/preload.ts` 只经命令行传入，根 `bunfig.toml` 不加预载（omp 自己的测试从同一个根跑）。它清掉开发者 shell 里的凭据与改变状态根的变量，把配置根与 CA 目录指到每进程的临时目录，并设置 `PI_TEST_RUNTIME=1`。
 - 跑单个文件：`bun test --preload ./atlas/tests/preload.ts ./atlas/packages/<pkg>/test/<name>.test.ts`。路径写成 `./` 开头，否则 Bun 会当成子串过滤、把 omp 的测试也拉进来。
 - 测试里起的任何 omp 子进程都用 `ompChildEnv()` / `ompSpawnEnv()`，`QIANMO_CONFIG_DIR` 指向临时目录；测试不得碰 `~/.omp`、`~/.qianmo`、`~/.claude`。需要真跑一轮 RPC 时，用 omp 的假 OpenAI 服务 `packages/coding-agent/test/rpc-wire/fake-openai-server.ts`，经 `models.yml` 自定义 provider 指过去。

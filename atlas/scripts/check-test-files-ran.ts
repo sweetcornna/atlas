@@ -22,7 +22,10 @@
  *
  * Any of the three fails, as does finding no report at all.
  *
- * Usage: bun atlas/scripts/check-test-files-ran.ts <report-dir> …
+ * Usage: bun atlas/scripts/check-test-files-ran.ts [--include-untracked] <report-dir> …
+ *
+ * `--include-untracked` also expects the untracked, unignored test files, for a
+ * local run (test-groups.sh) where a new test is usually not committed yet.
  */
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -71,12 +74,16 @@ export function junitFiles(xml: string): string[] {
   return [...files].sort()
 }
 
-export function trackedTestFiles(root: string): string[] {
-  const run = Bun.spawnSync(['git', 'ls-files', '-z', '--', ...TRACKED], {
-    cwd: root,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  })
+export function trackedTestFiles(
+  root: string,
+  // Default false (CI: a fresh checkout); true adds untracked, unignored files.
+  includeUntracked = false,
+): string[] {
+  const untracked = includeUntracked ? ['--others', '--exclude-standard'] : []
+  const run = Bun.spawnSync(
+    ['git', 'ls-files', '-z', '--cached', ...untracked, '--', ...TRACKED],
+    { cwd: root, stdout: 'pipe', stderr: 'pipe' },
+  )
   if (run.exitCode !== 0)
     throw new Error(`git ls-files failed: ${run.stderr.toString().trim()}`)
   return run.stdout.toString().split('\0').filter(Boolean).sort()
@@ -124,17 +131,29 @@ export function compareTestFiles(
 export function checkTestFilesRan(
   root: string,
   reportDirs: readonly string[],
+  includeUntracked = false,
 ): TestFilesRan {
-  return compareTestFiles(trackedTestFiles(root), readReports(reportDirs))
+  return compareTestFiles(
+    trackedTestFiles(root, includeUntracked),
+    readReports(reportDirs),
+  )
 }
 
 if (import.meta.main) {
-  const dirs = process.argv.slice(2)
-  if (dirs.length === 0) {
-    console.error('Usage: bun atlas/scripts/check-test-files-ran.ts <dir> …')
+  const args = process.argv.slice(2)
+  const includeUntracked = args[0] === '--include-untracked'
+  const dirs = includeUntracked ? args.slice(1) : args
+  if (dirs.length === 0 || dirs.some(dir => dir.startsWith('--'))) {
+    console.error(
+      'Usage: bun atlas/scripts/check-test-files-ran.ts [--include-untracked] <dir> …',
+    )
     process.exit(2)
   }
-  const result = checkTestFilesRan(resolve(import.meta.dir, '../..'), dirs)
+  const result = checkTestFilesRan(
+    resolve(import.meta.dir, '../..'),
+    dirs,
+    includeUntracked,
+  )
   console.log(
     `atlas test files: ${result.tracked} tracked, ${result.ran} ran in ` +
       `${result.reports} reports; missing ${result.missing.length}, ` +

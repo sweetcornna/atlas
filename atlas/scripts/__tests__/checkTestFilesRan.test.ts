@@ -156,6 +156,12 @@ describe('checkTestFilesRan', () => {
       'atlas/pkg/test/a.test.ts',
       'demo/lib/b.test.tsx',
     ])
+    // A local run (test-groups.sh) expects the uncommitted one too.
+    expect(trackedTestFiles(repo, true)).toEqual([
+      'atlas/pkg/test/a.test.ts',
+      'atlas/pkg/test/draft.test.ts',
+      'demo/lib/b.test.tsx',
+    ])
 
     const reports = temp()
     write(reports, {
@@ -215,5 +221,19 @@ describe('check-test-files-ran.ts', () => {
     const run = cli(temp())
     expect(run.out).toContain('::error title=No JUnit reports::')
     expect(run.code).toBe(1)
+  })
+
+  test('--include-untracked expects the untracked test files as well', () => {
+    const files = trackedTestFiles(ROOT, true)
+    const reports = temp()
+    write(reports, { 'g1/shard-01.xml': junit(...files) })
+
+    const run = cli('--include-untracked', reports)
+    expect(run.out).toContain(
+      `${files.length} tracked, ${files.length} ran in 1 reports; missing 0`,
+    )
+    expect(run.code).toBe(0)
+    expect(cli('--include-untracked').code).toBe(2)
+    expect(cli(reports, '--include-untracked').code).toBe(2)
   })
 })
