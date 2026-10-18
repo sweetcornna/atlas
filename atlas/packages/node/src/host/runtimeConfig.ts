@@ -505,16 +505,27 @@ export class NodeRuntimes {
 
   #later(kind: string, wait: number): void {
     if (this.#stopped || this.#retries.has(kind)) return
+    // Configured away while it was installing: nothing to retry for.
+    if (this.inUse(kind).length === 0) return
     if (wait <= 0) {
       this.#installInBackground(kind)
       return
     }
     const timer = setTimeout(() => {
       this.#retries.delete(kind)
-      this.#installInBackground(kind)
+      if (this.inUse(kind).length > 0) this.#installInBackground(kind)
     }, wait)
     timer.unref?.()
     this.#retries.set(kind, timer)
+  }
+
+  /** No agent is configured on a runtime any more: its pending retry goes. */
+  #dropUnusedRetries(): void {
+    for (const [kind, timer] of this.#retries)
+      if (this.inUse(kind).length === 0) {
+        clearTimeout(timer)
+        this.#retries.delete(kind)
+      }
   }
 
   #installInBackground(kind: string): void {
@@ -602,6 +613,7 @@ export class NodeRuntimes {
     this.recompute(
       JSON.stringify(agents[agent] ?? {}) === before ? [] : [agent],
     )
+    this.#dropUnusedRetries()
     return { ok: true, value: this.#states.get(agent) }
   }
 

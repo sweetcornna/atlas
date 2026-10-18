@@ -587,6 +587,28 @@ test('the backoff outlives a restart: a node started again after a failure waits
   expect(four.installer.lastInstall('dsh')?.failures).toBeUndefined()
 })
 
+test('a pending retry is dropped once no agent is configured on its runtime', async () => {
+  jest.useFakeTimers()
+  const { runtimes, npm } = setup({
+    autoInstall: true,
+    agents: [{ agent: 'a' }, { agent: 'b' }],
+  })
+  npm.fail = true
+  await runtimes.start()
+  await settle()
+  expect(npm.installs()).toBe(1)
+  // b is still on dsh: the retry stays.
+  runtimes.configure({ agent: 'a', runtime: 'qianmopi' })
+  jest.advanceTimersByTime(5 * 60_000)
+  await settle()
+  expect(npm.installs()).toBe(2)
+  runtimes.configure({ agent: 'b', runtime: 'qianmopi' })
+  expect(runtimes.inUse('dsh')).toEqual([])
+  jest.advanceTimersByTime(10 * 60 * 60_000)
+  await settle()
+  expect(npm.installs()).toBe(2)
+})
+
 test('a failure recorded before the count existed backs off like a first one', async () => {
   jest.useFakeTimers()
   const file = qianmoConfigPath('runtimes', 'installs.json')
