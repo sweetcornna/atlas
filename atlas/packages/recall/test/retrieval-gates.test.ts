@@ -10,6 +10,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { MemoryEntry } from '@qianmo/memory'
+import { heavy } from '../../../tests/support/heavy.js'
 import { buildDataset, DEFAULT_SEED } from '../eval/dataset.js'
 import {
   fuseReference,
@@ -303,54 +304,64 @@ describe('the ranking shortcut is recall() itself', () => {
   })
 })
 
-describe('P16.2b acceptance: null rankers on the hardened corpus', () => {
-  test('positive control: on v0.1 the review outlier ranker passes R3 at 2000', () => {
-    const dataset = positivesOnly(buildDataset(2000, DEFAULT_SEED))
-    const { real } = nullRankerCells(
-      { label: 'v0.1', dataset, options: {} },
-      'outlier-unigram',
-    )
-    const [verdict] = signGate(real, {
-      tier: 2000,
-      queryIds: mismatchIds(dataset),
-      alpha: ALPHA,
-    })
-    // If this stops passing, the check below proves nothing: it would no
-    // longer be able to go red on the corpus it was written against.
-    expect(verdict?.pass).toBe(true)
-    expect(verdict?.losses).toBe(0)
-  }, 60_000)
+// Evidence gates over generated 2000-entry corpora, and only recall, memory
+// and paths feed them: they run on a pull request when one of those changed,
+// and always on main and nightly (atlas/tests/support/heavy.ts).
+describe.skipIf(!heavy('recall-eval'))(
+  'P16.2b acceptance: null rankers on the hardened corpus',
+  () => {
+    test('positive control: on v0.1 the review outlier ranker passes R3 at 2000', () => {
+      const dataset = positivesOnly(buildDataset(2000, DEFAULT_SEED))
+      const { real } = nullRankerCells(
+        { label: 'v0.1', dataset, options: {} },
+        'outlier-unigram',
+      )
+      const [verdict] = signGate(real, {
+        tier: 2000,
+        queryIds: mismatchIds(dataset),
+        alpha: ALPHA,
+      })
+      // If this stops passing, the check below proves nothing: it would no
+      // longer be able to go red on the corpus it was written against.
+      expect(verdict?.pass).toBe(true)
+      expect(verdict?.losses).toBe(0)
+    }, 60_000)
 
-  for (const name of Object.keys(NULL_RANKERS)) {
-    test(`${name} fails R3 at 2000 on every seed; R4 is not needed for that`, () => {
-      for (const seed of HARDENED_SEEDS) {
-        const dataset = positivesOnly(buildHardenedDataset(2000, seed))
-        const { real, shuffled } = nullRankerCells(
-          {
-            label: `hardened/${seed}`,
-            dataset,
-            options: { sourceIdOf: hardenedSourceId },
-          },
-          name,
-        )
-        const ids = mismatchIds(dataset)
-        const [r3] = signGate(real, { tier: 2000, queryIds: ids, alpha: ALPHA })
-        if (r3 === undefined) throw new Error('no verdict')
-        if (r3.pass) {
-          throw new Error(
-            `${name} passes R3 on seed ${seed}: ${r3.wins} wins / ${r3.losses} losses, p = ${r3.p}`,
+    for (const name of Object.keys(NULL_RANKERS)) {
+      test(`${name} fails R3 at 2000 on every seed; R4 is not needed for that`, () => {
+        for (const seed of HARDENED_SEEDS) {
+          const dataset = positivesOnly(buildHardenedDataset(2000, seed))
+          const { real, shuffled } = nullRankerCells(
+            {
+              label: `hardened/${seed}`,
+              dataset,
+              options: { sourceIdOf: hardenedSourceId },
+            },
+            name,
           )
+          const ids = mismatchIds(dataset)
+          const [r3] = signGate(real, {
+            tier: 2000,
+            queryIds: ids,
+            alpha: ALPHA,
+          })
+          if (r3 === undefined) throw new Error('no verdict')
+          if (r3.pass) {
+            throw new Error(
+              `${name} passes R3 on seed ${seed}: ${r3.wins} wins / ${r3.losses} losses, p = ${r3.p}`,
+            )
+          }
+          // R4 fails for any query-independent ranker by construction: the
+          // shuffled arm injects exactly what the real arm injects.
+          const [r4] = signGate(shuffled, {
+            tier: 2000,
+            queryIds: ids,
+            alpha: ALPHA,
+          })
+          expect(r4?.wins).toBe(0)
+          expect(r4?.losses).toBe(0)
         }
-        // R4 fails for any query-independent ranker by construction: the
-        // shuffled arm injects exactly what the real arm injects.
-        const [r4] = signGate(shuffled, {
-          tier: 2000,
-          queryIds: ids,
-          alpha: ALPHA,
-        })
-        expect(r4?.wins).toBe(0)
-        expect(r4?.losses).toBe(0)
-      }
-    }, 120_000)
-  }
-})
+      }, 120_000)
+    }
+  },
+)

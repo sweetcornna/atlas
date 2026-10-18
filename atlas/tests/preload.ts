@@ -15,7 +15,9 @@
  *   per-process temp directory, so no test can read or write `~/.qianmo`,
  *   `~/.qianmo-ca`, `~/.omp` or `~/.claude` by default;
  * - `PI_TEST_RUNTIME=1` tells omp code (in-process and in children that inherit
- *   the env) that it runs under a test runner.
+ *   the env) that it runs under a test runner;
+ * - an `ATLAS_TEST_HEAVY` naming a heavy test set that does not exist fails
+ *   the process (`support/heavy.ts`); the variable itself is left alone.
  *
  * A test that needs one of these values sets it itself.
  */
@@ -23,6 +25,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { isolateCredentialEnv } from './support/credentialEnv.ts'
+import { heavySets } from './support/heavy.ts'
 
 /** Names that move state roots: config/agent dirs, profiles, entries, homes. */
 const STATE_ENV =
@@ -62,3 +65,7 @@ export function isolateTestEnv(env: NodeJS.ProcessEnv = process.env): string[] {
 }
 
 isolateTestEnv()
+
+// A misspelt ATLAS_TEST_HEAVY fails every test file here, before a test can
+// read the name it does not know as "skip" (support/heavy.ts).
+heavySets(process.env.ATLAS_TEST_HEAVY)
