@@ -377,16 +377,18 @@ test('too little disk: the install never starts, and says how much it needs', as
   })
 })
 
-test('too little free memory: the install never starts, and says how much it needs and has', async () => {
+test('too little free memory: the default install never starts and says how much it needs and has; an operator’s install or update goes ahead', async () => {
   const npm = fakeNpm(PIN('dsh'))
+  const low = () => 1024 * 1024 * 1024
   const installer = new RuntimeInstaller({
     run: npm.run,
     which: nowhere,
     smoke: async () => null,
     freeBytes: roomy,
-    freeMemoryBytes: () => 1024 * 1024 * 1024,
+    freeMemoryBytes: low,
   })
-  expect(await installer.install('dsh')).toEqual({
+  // The default install (`ensureRuntimeInstalled`) waits for memory.
+  expect(await installer.ensureRuntimeInstalled('dsh')).toEqual({
     ok: false,
     code: 'E_RUNTIME_INSTALL',
     message: `可用内存不足（安装需要约 ${INSTALL_MEMORY_MIB} MiB，现有 1024 MiB），稍后重试`,
@@ -399,6 +401,36 @@ test('too little free memory: the install never starts, and says how much it nee
     code: 'install-failed',
   })
   expect(INSTALL_MEMORY_MIB).toBe(1536)
+  // `runtime.install` and `runtime.update` are the operator's call: the
+  // memory floor does not apply (p3 has about 1 GiB available).
+  for (const op of ['runtime.install', 'runtime.update'])
+    expect(
+      await new RuntimeInstaller({
+        run: npm.run,
+        which: nowhere,
+        smoke: async () => null,
+        freeBytes: roomy,
+        freeMemoryBytes: low,
+      }).control(op, { runtime: 'dsh' }, CTX),
+    ).toEqual({ ok: true, value: { runtime: 'dsh', version: PIN('dsh') } })
+  // On disk now: a success (each installer keeps its own copy in memory).
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toMatchObject({
+    ok: true,
+  })
+  // Disk still applies to them (nothing installed this time).
+  rmSync(qianmoConfigPath('runtimes', 'trees'), {
+    recursive: true,
+    force: true,
+  })
+  expect(
+    await new RuntimeInstaller({
+      run: npm.run,
+      which: nowhere,
+      smoke: async () => null,
+      freeBytes: () => 1024 * 1024 * 1024,
+      freeMemoryBytes: low,
+    }).install('dsh'),
+  ).toMatchObject({ ok: false, message: '磁盘空间不足（需要约 2048 MiB）' })
   const enough = new RuntimeInstaller({
     run: npm.run,
     which: nowhere,
@@ -406,7 +438,7 @@ test('too little free memory: the install never starts, and says how much it nee
     freeBytes: roomy,
     freeMemoryBytes: () => INSTALL_MEMORY_MIB * 1024 * 1024,
   })
-  expect(await enough.install('dsh')).toEqual({
+  expect(await enough.ensureRuntimeInstalled('dsh')).toEqual({
     ok: true,
     version: PIN('dsh'),
   })
@@ -438,7 +470,7 @@ test('on macOS it is the free, inactive and speculative pages vm_stat counts', (
   expect(vmStatAvailableBytes('Pages free: 1.')).toBeUndefined()
 })
 
-test('scratch prefixes a dead node left behind are swept: npm-stage-<uuid> directories under the runtimes root only, never through a link', () => {
+test('scratch prefixes a dead node left behind are swept: npm-stage-<uuid> directories under the runtimes root only, never through a link', async () => {
   const runtimes = qianmoConfigPath('runtimes')
   const stage = () => path.join(runtimes, `npm-stage-${randomUUID()}`)
   const outside = mkdtempSync(path.join(tmpdir(), 'qm-sweep-outside-'))
@@ -459,7 +491,7 @@ test('scratch prefixes a dead node left behind are swept: npm-stage-<uuid> direc
     mkdirSync(elsewhere, { recursive: true })
     mkdirSync(managedRuntimePrefix(), { recursive: true })
     const installer = new RuntimeInstaller({ which: nowhere })
-    expect(installer.sweepStages()).toEqual([stale])
+    expect(await installer.sweepStages()).toEqual([stale])
     expect(existsSync(stale)).toBe(false)
     expect(readFileSync(path.join(outside, 'keep'), 'utf8')).toBe('x')
     expect(lstatSync(link).isSymbolicLink()).toBe(true)
@@ -469,13 +501,52 @@ test('scratch prefixes a dead node left behind are swept: npm-stage-<uuid> direc
     expect(existsSync(managedRuntimePrefix())).toBe(true)
     // Nothing there (a fresh node): nothing to do.
     rmSync(runtimes, { recursive: true, force: true })
-    expect(installer.sweepStages()).toEqual([])
+    expect(await installer.sweepStages()).toEqual([])
   } finally {
     rmSync(outside, { recursive: true, force: true })
   }
 })
 
-test('staged trees and unswapped links a dead node left are swept; live trees, their links and lookalikes stay', () => {
+test('an operator’s install waits for a sweep in progress before it checks the disk', async () => {
+  const stale = path.join(
+    qianmoConfigPath('runtimes'),
+    `npm-stage-${randomUUID()}`,
+  )
+  mkdirSync(stale, { recursive: true })
+  const events: string[] = []
+  let release!: () => void
+  const released = new Promise<void>(done => {
+    release = done
+  })
+  const installer = new RuntimeInstaller({
+    run: fakeNpm('0.170.0').run,
+    which: nowhere,
+    smoke: async () => null,
+    freeMemoryBytes: roomy,
+    freeBytes: () => {
+      events.push('disk')
+      return roomy()
+    },
+    removeTree: async dir => {
+      if (dir === stale) await released
+      rmSync(dir, { recursive: true, force: true })
+      events.push(`removed ${path.basename(dir)}`)
+    },
+  })
+  const sweeping = installer.sweepStages()
+  const install = installer.install('codex', '0.170.0')
+  for (let i = 0; i < 20; i++) await Bun.sleep(5)
+  expect(events).toEqual([])
+  release()
+  expect(await install).toEqual({ ok: true, version: '0.170.0' })
+  expect(await sweeping).toEqual([stale])
+  expect(events.slice(0, 2)).toEqual([
+    `removed ${path.basename(stale)}`,
+    'disk',
+  ])
+})
+
+test('staged trees and unswapped links a dead node left are swept; live trees, their links and lookalikes stay', async () => {
   const trees = qianmoConfigPath('runtimes', 'trees')
   const outside = mkdtempSync(path.join(tmpdir(), 'qm-sweep-outside-'))
   try {
@@ -496,7 +567,9 @@ test('staged trees and unswapped links a dead node left are swept; live trees, t
     const lookalike = path.join(trees, '.stage-dsh-notauuid')
     mkdirSync(lookalike)
     const installer = new RuntimeInstaller({ which: nowhere })
-    expect(installer.sweepStages().sort()).toEqual([pending, stale].sort())
+    expect((await installer.sweepStages()).sort()).toEqual(
+      [pending, stale].sort(),
+    )
     expect(existsSync(stale)).toBe(false)
     expect(existsSync(pending)).toBe(false)
     expect(readFileSync(path.join(outside, 'keep'), 'utf8')).toBe('x')
@@ -554,7 +627,7 @@ test('a failed or stopped install leaves no scratch prefix', async () => {
   await running
   expect(stages()).toHaveLength(1)
   // A sweep while it runs leaves it alone.
-  expect(stopped.sweepStages()).toEqual([])
+  expect(await stopped.sweepStages()).toEqual([])
   stopped.stop()
   expect((await install).ok).toBe(false)
   expect(stages()).toEqual([])
@@ -1022,8 +1095,137 @@ test('stopping the node ends a running install without recording a verdict', asy
   })
   const install = installer.install('dsh')
   await running
+  // While it runs, the disk says "not finished" (a kill now is a failure)…
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toMatchObject({
+    ok: false,
+    failures: 1,
+    error:
+      '上一次安装没有结束（节点在安装中途退出，常见原因是内存不足被系统结束）',
+  })
+  // …and this node still reports the last install that finished: none.
+  expect(installer.lastInstall('dsh')).toBeUndefined()
+  expect(
+    (await installer.versions()).runtimes.find(row => row.id === 'dsh')!
+      .lastInstall,
+  ).toBeUndefined()
   installer.stop()
   expect(await install).toMatchObject({ ok: false })
   expect(installer.lastInstall('dsh')).toBeUndefined()
   expect(installer.installing('dsh')).toBe(false)
+  // A stop is not a kill: nothing is left on disk to back off from.
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toBeUndefined()
+})
+
+test('an install queued behind another writes nothing until its turn; stopped while queued, it never begins', async () => {
+  let started!: () => void
+  const running = new Promise<void>(done => {
+    started = done
+  })
+  const calls: string[][] = []
+  const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
+    freeBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+    run: async (argv, options) => {
+      calls.push([...argv])
+      if (argv[0] === 'node') return { code: 0, stdout: 'v24.1.0' }
+      started()
+      // npm runs until the node stops and kills it.
+      await new Promise(done =>
+        options.signal?.addEventListener('abort', done, { once: true }),
+      )
+      return { code: 143, stdout: '' }
+    },
+  })
+  const first = installer.install('dsh')
+  await running
+  const queued = installer.install('qwen')
+  expect(installer.installing('qwen')).toBe(true)
+  // Waiting its turn is not an install yet: nothing on disk to back off from.
+  expect(new RuntimeInstaller({}).lastInstall('qwen')).toBeUndefined()
+  installer.stop()
+  expect(await first).toMatchObject({ ok: false })
+  expect(await queued).toEqual({
+    ok: false,
+    code: 'E_RUNTIME_BUSY',
+    message: '节点正在停机，不开始新的安装或卸载',
+  })
+  expect(calls.filter(argv => argv.at(-1)?.startsWith('@qwen-code/'))).toEqual(
+    [],
+  )
+  expect(installer.installing('qwen')).toBe(false)
+  expect(new RuntimeInstaller({}).lastInstall('qwen')).toBeUndefined()
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toBeUndefined()
+})
+
+test('after stop() nothing new is installed or removed: refused before anything is written', async () => {
+  const npm = fakeNpm(PIN('dsh'))
+  const installer = new RuntimeInstaller({
+    run: npm.run,
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+  })
+  // A managed copy to (not) remove.
+  const bin = path.join(managedRuntimePrefix(), 'node_modules', '.bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(path.join(bin, 'codex'), '')
+  // The resident stops its runtimes before its control link closes, so a
+  // request can still come in after this.
+  installer.stop()
+  for (const op of ['runtime.install', 'runtime.update'])
+    expect(await installer.control(op, { runtime: 'dsh' }, CTX)).toEqual({
+      ok: false,
+      code: 'E_RUNTIME_BUSY',
+      message: '节点正在停机，不开始新的安装或卸载',
+    })
+  expect(await installer.ensureRuntimeInstalled('dsh')).toMatchObject({
+    ok: false,
+    code: 'E_RUNTIME_BUSY',
+  })
+  expect(
+    await installer.control('runtime.remove', { runtime: 'codex' }, CTX),
+  ).toEqual({
+    ok: false,
+    code: 'E_RUNTIME_BUSY',
+    message: '节点正在停机，不开始新的安装或卸载',
+  })
+  expect(npm.calls).toEqual([])
+  expect(managedRuntimeBin('codex')).toBeDefined()
+  // No "unfinished" record for the next start to back off from.
+  expect(existsSync(qianmoConfigPath('runtimes', 'installs.json'))).toBe(false)
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toBeUndefined()
+})
+
+test('a failed install counts once, a success clears the count', async () => {
+  const installer = new RuntimeInstaller({
+    run: fakeNpm(PIN('dsh'), { failInstall: true }).run,
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+  })
+  expect((await installer.install('dsh')).ok).toBe(false)
+  expect(installer.lastInstall('dsh')).toMatchObject({ failures: 1 })
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toMatchObject({
+    failures: 1,
+    error: `npm 安装 @deepseek-ai/dsh@${PIN('dsh')} 失败`,
+  })
+  expect((await installer.install('dsh')).ok).toBe(false)
+  expect(installer.lastInstall('dsh')).toMatchObject({ failures: 2 })
+  const working = new RuntimeInstaller({
+    run: fakeNpm(PIN('dsh')).run,
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+  })
+  expect((await working.install('dsh')).ok).toBe(true)
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toEqual({
+    at: expect.any(Number),
+    ok: true,
+    version: PIN('dsh'),
+  })
 })

@@ -19,8 +19,9 @@
  * leaves the node on the version it had, and the answer says why. Installs
  * of earlier builds in the shared prefix are still found and removed. A
  * runtime that needs Node.js is not installed on a node without a matching
- * one, and nothing starts without the disk space a whole install takes and
- * {@link INSTALL_MEMORY_MIB} of available memory.
+ * one, and nothing starts without the disk space a whole install takes;
+ * the default install also waits for {@link INSTALL_MEMORY_MIB} of available
+ * memory.
  *
  * Binaries given with `--runtime-bin` (or its aliases `--claude-code-bin`,
  * `--codex-bin`) are the operator's: they are reported, never managed.
@@ -40,6 +41,7 @@ import {
   statfsSync,
   symlinkSync,
 } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { freemem } from 'node:os'
 import * as path from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
@@ -99,9 +101,11 @@ function diskMiB(spec: NpmRuntime): number {
 }
 
 /**
- * Memory an install needs free before it starts (§2): npm unpacking dsh and
- * the compatibility check's harness process beside a running node. Below it
- * the install is refused like a failed one and retried on the backoff.
+ * Memory the default install needs free before it starts (§2): npm unpacking
+ * dsh and the compatibility check's harness process beside a running node.
+ * Below it the default install is refused like a failed one and retried on
+ * the backoff. An operator's `runtime.install` / `runtime.update` is their
+ * call and does not wait for it (the disk floor applies to every install).
  */
 export const INSTALL_MEMORY_MIB = 1536
 
@@ -454,6 +458,13 @@ export interface RuntimeInstallRecord {
    * backoff reads it after a restart; never on the wire.
    */
   readonly failures?: number
+  /**
+   * Written when the install began and never replaced: the node died in it.
+   * `at` is when it began, which says nothing about when it died, so the
+   * default install's backoff counts from the restart that finds it; never
+   * on the wire.
+   */
+  readonly unfinished?: true
 }
 
 /** What {@link RuntimeInstaller.ensureRuntimeInstalled} answers. */
@@ -487,6 +498,11 @@ export interface RuntimeUpdateOptions {
   readonly freeBytes?: (dir: string) => number
   /** Memory available to a new process (default {@link availableMemoryBytes}). */
   readonly freeMemoryBytes?: () => number
+  /**
+   * Removes a scratch prefix and all under it, off the event loop (default
+   * `fs.promises.rm`, recursive: links are removed, never followed).
+   */
+  readonly removeTree?: (dir: string) => Promise<void>
   /** The agents configured on a runtime: `runtime.remove` refuses while any. */
   readonly inUse?: (kind: ExternalRuntimeKind) => readonly string[]
   /** The node's default runtime, for `runtime.versions`. */
@@ -531,6 +547,17 @@ function errorText(error: unknown): string {
 
 const SEMVER_IN_OUTPUT = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/
 
+/** Refused once the installer stopped (the node is shutting down). */
+const STOPPING = {
+  ok: false,
+  code: RUNTIME_ERRORS.busy,
+  message: '节点正在停机，不开始新的安装或卸载',
+} as const
+
+/** What an install that never ended reads as after a restart. */
+const UNFINISHED =
+  '上一次安装没有结束（节点在安装中途退出，常见原因是内存不足被系统结束）'
+
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 /** A scratch prefix of an earlier build's install, under the runtimes root. */
 const STAGE_NAME = new RegExp(`^npm-stage-${UUID}$`)
@@ -572,8 +599,15 @@ export class RuntimeInstaller {
   #nodeVersion: string | null | undefined
   /** Scratch prefixes of the installs running now. */
   readonly #stages = new Set<string>()
+  /**
+   * The installs running now, with the last finished install of each: on
+   * disk they read as an unfinished one (see `#attempt`), here they do not.
+   */
+  readonly #unfinished = new Map<string, RuntimeInstallRecord | undefined>()
   /** PATH binaries checked against {@link PATH_IDENTITY}, by runtime. */
   readonly #onPath = new Map<string, PathCheck>()
+  /** The leftover sweeps under way: an install checks the disk after them. */
+  #sweeping: Promise<unknown> = Promise.resolve()
   /**
    * `runtime.versions`' `--version` answers by runtime, for one binary path;
    * reads at the same time share the one in flight. Dropped when the
@@ -696,7 +730,9 @@ export class RuntimeInstaller {
     return this.#installing.has(kind)
   }
 
+  /** The last install of `kind` that finished (in any run of the node). */
   lastInstall(kind: string): RuntimeInstallRecord | undefined {
+    if (this.#unfinished.has(kind)) return this.#unfinished.get(kind)
     return this.#loadRecords()[kind]
   }
 
@@ -723,8 +759,12 @@ export class RuntimeInstaller {
     return records
   }
 
-  #record(kind: string, record: RuntimeInstallRecord): void {
-    this.#records = { ...this.#loadRecords(), [kind]: record }
+  /** Writes `kind`'s record; `undefined` removes it. */
+  #record(kind: string, record: RuntimeInstallRecord | undefined): void {
+    const records = { ...this.#loadRecords() }
+    if (record === undefined) delete records[kind]
+    else records[kind] = record
+    this.#records = records
     try {
       writePrivateJson(installsFile(), this.#records)
     } catch {
@@ -732,18 +772,39 @@ export class RuntimeInstaller {
     }
   }
 
+  #removeTree(dir: string): Promise<void> {
+    return (
+      this.#options.removeTree ??
+      ((tree: string) => rm(tree, { recursive: true, force: true }))
+    )(dir)
+  }
+
   /**
-   * Removes what installs left when the node died during one (at start,
-   * before any install): staged trees (`.stage-<runtime>-<uuid>` beside the
-   * live trees, `npm-stage-<uuid>` of earlier builds under the runtimes root)
-   * and links not yet swapped in, none of this process's running installs.
-   * A staged entry that is a link or a file is left alone; a directory's own
-   * links are removed, never followed, and a leftover link is unlinked, not
-   * followed. Returns what went.
+   * Removes what installs left when the node died during one: staged trees
+   * (`.stage-<runtime>-<uuid>` beside the live trees, `npm-stage-<uuid>` of
+   * earlier builds under the runtimes root) and links not yet swapped in
+   * (`.<runtime>.link-<uuid>`), none of this process's running installs. The
+   * live trees (`<runtime>-<uuid>`, the one each `<runtime>` link points at
+   * and the one it replaced, kept for a round) never match. A staged entry
+   * that is a link or a file is left alone; a directory's own links are
+   * removed, never followed, and a leftover link is unlinked, not followed.
+   * The removal is asynchronous — one leftover of dsh is about 850 MB, and
+   * the node is serving by the time this runs — so callers need not wait; a
+   * new install never meets one of these (its stage has a fresh uuid), and
+   * it checks the disk only once the sweep is over (the space is on its way
+   * back). Resolves to what went.
    */
-  sweepStages(): string[] {
+  sweepStages(): Promise<string[]> {
+    const sweep = this.#sweep()
+    this.#sweeping = Promise.all([this.#sweeping, sweep]).catch(() => {})
+    return sweep
+  }
+
+  async #sweep(): Promise<string[]> {
     const removed: string[] = []
-    const sweep = (root: string, stage: RegExp, link?: RegExp) => {
+    const sweep = async (root: string, stage: RegExp, link?: RegExp) => {
+      // Listing one directory of a handful of entries is synchronous (and so
+      // is a sweep with nothing to remove); removing a tree is not.
       let names: string[]
       try {
         names = readdirSync(root)
@@ -752,11 +813,13 @@ export class RuntimeInstaller {
       }
       for (const name of names) {
         const entry = path.join(root, name)
-        if (this.#stages.has(entry)) continue
         try {
           const stat = lstatSync(entry)
+          // Checked last thing before the removal: an install that made its
+          // stage since the listing is in `#stages` by now.
+          if (this.#stages.has(entry)) continue
           if (stage.test(name) && stat.isDirectory())
-            rmSync(entry, { recursive: true, force: true })
+            await this.#removeTree(entry)
           else if (link?.test(name) === true && stat.isSymbolicLink())
             rmSync(entry, { force: true })
           else continue
@@ -766,8 +829,8 @@ export class RuntimeInstaller {
         }
       }
     }
-    sweep(qianmoConfigPath('runtimes'), STAGE_NAME)
-    sweep(treesDir(), TREE_STAGE_NAME, LINK_NAME)
+    await sweep(qianmoConfigPath('runtimes'), STAGE_NAME)
+    await sweep(treesDir(), TREE_STAGE_NAME, LINK_NAME)
     return removed
   }
 
@@ -924,12 +987,21 @@ export class RuntimeInstaller {
    * Installs `version` (default: the catalog pin) of an npm runtime. A second
    * request for a runtime already installing is refused (`E_RUNTIME_BUSY`).
    */
-  async install(
+  install(kind: unknown, version?: unknown): Promise<RuntimeInstallResult> {
+    return this.#install(kind, version, false)
+  }
+
+  async #install(
     kind: unknown,
-    version?: unknown,
+    version: unknown,
+    /** The default install: also waits for {@link INSTALL_MEMORY_MIB}. */
+    automatic: boolean,
   ): Promise<RuntimeInstallResult> {
     const spec = this.#refusal(kind, version)
     if ('ok' in spec) return spec
+    // Before the "unfinished" record: one written now would never be
+    // replaced (every ending sees the stop) and the next start would back off.
+    if (this.#stopping.signal.aborted) return STOPPING
     if (this.#installing.has(spec.id))
       return {
         ok: false,
@@ -943,24 +1015,26 @@ export class RuntimeInstaller {
         message: `${spec.label} 正在卸载`,
       }
     const wanted = typeof version === 'string' ? version : spec.install.pin
-    const attempt = this.#attemptLock.then(
-      () => this.#attempt(spec, wanted),
-      () => this.#attempt(spec, wanted),
-    )
+    // One install at a time, whichever runtime: each checks memory and disk
+    // alone. The "unfinished" record is written when its turn comes.
+    const begin = () => this.#begin(spec, wanted, automatic)
+    const attempt = this.#attemptLock.then(begin, begin)
     this.#attemptLock = attempt.catch(() => {})
     this.#installing.set(spec.id, attempt)
     this.#changed(spec.id)
     try {
       return await attempt
     } finally {
+      this.#unfinished.delete(spec.id)
       this.#installing.delete(spec.id)
       this.#changed(spec.id)
     }
   }
 
   /**
-   * Makes sure `kind` has a binary: already there (prefix, PATH or flag),
-   * joins an install in progress, or installs the catalog pin.
+   * The default install (§2): makes sure `kind` has a binary — already there
+   * (prefix, PATH or flag), joins an install in progress, or installs the
+   * catalog pin once {@link INSTALL_MEMORY_MIB} is available.
    */
   async ensureRuntimeInstalled(
     kind: ExternalRuntimeKind,
@@ -969,18 +1043,51 @@ export class RuntimeInstaller {
     if (this.availability(kind).installed) return { ok: true }
     const running = this.#installing.get(kind)
     if (running !== undefined) return running
-    return this.install(kind)
+    return this.#install(kind, undefined, true)
+  }
+
+  /**
+   * An install whose turn came. Before anything that can take the node down
+   * with it (npm, the check): on disk this install is a failure until it
+   * ends, one more in a row, so a node killed in the middle (an OOM kill,
+   * most likely) backs off after the restart instead of installing again at
+   * once. Its own ending writes the real verdict with the same count, or
+   * clears it. Queued behind another while the node stopped: not begun.
+   */
+  #begin(
+    spec: NpmRuntime,
+    wanted: string,
+    automatic: boolean,
+  ): Promise<RuntimeInstallResult> {
+    if (this.#stopping.signal.aborted) return Promise.resolve(STOPPING)
+    const finished = this.lastInstall(spec.id)
+    const failures = failuresOf(finished) + 1
+    this.#unfinished.set(spec.id, finished)
+    this.#record(spec.id, {
+      at: this.#now(),
+      ok: false,
+      version: wanted,
+      error: UNFINISHED,
+      code: 'install-failed',
+      failures,
+      unfinished: true,
+    })
+    return this.#attempt(spec, wanted, automatic, failures)
   }
 
   async #attempt(
     spec: NpmRuntime,
     wanted: string,
+    automatic: boolean,
+    /** This one included, already on disk. */
+    failures: number,
   ): Promise<RuntimeInstallResult> {
     const fail = (
       fallback: NonNullable<RuntimeInstallRecord['code']>,
       message: string,
     ): RuntimeInstallResult => {
-      // Cut short by the node stopping: not a verdict on the runtime.
+      // Cut short by the node stopping: not a verdict on the runtime (`stop`
+      // has put the last finished record back).
       if (!this.#stopping.signal.aborted)
         this.#record(spec.id, {
           at: this.#now(),
@@ -988,7 +1095,7 @@ export class RuntimeInstaller {
           version: wanted,
           error: message.slice(0, 300),
           code: fallback,
-          failures: failuresOf(this.lastInstall(spec.id)) + 1,
+          failures,
         })
       return {
         ok: false,
@@ -1025,6 +1132,8 @@ export class RuntimeInstaller {
         mode: 0o700,
       })
       // Never a partial install: not starting is better than a half prefix.
+      // A leftover being swept is space on its way back: wait for it.
+      await this.#sweeping
       const need = diskMiB(spec)
       const free = (
         this.#options.freeBytes ??
@@ -1035,7 +1144,9 @@ export class RuntimeInstaller {
       )(root)
       if (free < need * MIB)
         return fail('install-failed', `磁盘空间不足（需要约 ${need} MiB）`)
-      const memory = (this.#options.freeMemoryBytes ?? availableMemoryBytes)()
+      const memory = automatic
+        ? (this.#options.freeMemoryBytes ?? availableMemoryBytes)()
+        : Number.POSITIVE_INFINITY
       if (memory < INSTALL_MEMORY_MIB * MIB)
         return fail(
           'install-failed',
@@ -1091,12 +1202,9 @@ export class RuntimeInstaller {
         await this.#withPrefix(async () => this.#promote(spec.id, stage))
         promoted = true
       } finally {
-        // Best effort: what cannot go now goes at the next start's sweep,
-        // and a failed cleanup is not a second verdict on the install.
-        if (!promoted)
-          try {
-            rmSync(stage, { recursive: true, force: true })
-          } catch {}
+        // Best effort and off the event loop: what cannot go now goes at the
+        // next start's sweep, and a failed cleanup is not a second verdict.
+        if (!promoted) await this.#removeTree(stage).catch(() => {})
         this.#stages.delete(stage)
       }
       const bin = managedRuntimeBin(spec.id)
@@ -1142,6 +1250,7 @@ export class RuntimeInstaller {
   async remove(kind: unknown): Promise<ControlOutcome> {
     const spec = this.#refusal(kind, undefined)
     if ('ok' in spec) return spec
+    if (this.#stopping.signal.aborted) return STOPPING
     const users = this.#options.inUse?.(spec.id) ?? []
     if (users.length > 0)
       return {
@@ -1216,9 +1325,14 @@ export class RuntimeInstaller {
 
   /**
    * The node is stopping: running npm commands are killed so the process can
-   * exit, and nothing they leave unfinished is recorded as a failure.
+   * exit, and nothing they leave unfinished is recorded as a failure — the
+   * last finished record of each goes back on disk now, before the exit.
+   * From here on no install or removal starts (`E_RUNTIME_BUSY`): the
+   * resident stops its runtimes before its control link closes.
    */
   stop(): void {
+    for (const [kind, finished] of this.#unfinished)
+      this.#record(kind, finished)
     this.#stopping.abort()
   }
 

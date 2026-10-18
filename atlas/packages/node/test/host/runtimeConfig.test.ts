@@ -68,6 +68,8 @@ interface Npm {
   node: string | null
   /** Holds every scratch install until released. */
   hold?: Promise<void>
+  /** What a binary's `--help` prints (default: its version, like Debian's dsh would not name DeepSeek Harness). */
+  help?: string
 }
 
 function fakeNpm(): Npm {
@@ -78,6 +80,8 @@ function fakeNpm(): Npm {
     installs: () => calls.filter(argv => argv[1] === 'install').length,
     run: async argv => {
       calls.push([...argv])
+      if (argv[1] === '--help' && npm.help !== undefined)
+        return { code: 0, stdout: npm.help }
       if (argv[0] === 'node')
         return npm.node === null
           ? { code: 127, stdout: '' }
@@ -133,6 +137,11 @@ function setup(
     freeMemoryBytes: () => 64 * 1024 ** 3,
     which: () => null,
     smoke: async () => smoke.reason,
+    // Settles within `settle()` (real removal is I/O; these cases count on
+    // microtasks only, under fake timers).
+    removeTree: async dir => {
+      rmSync(dir, { recursive: true, force: true })
+    },
     ...installerOptions,
   })
   let main: string | undefined = 'magpie/deepseek-v4'
@@ -173,6 +182,11 @@ function setup(
       main = value
     },
   }
+}
+
+/** Waits (real time, at most 2 s) for `done`; for steps that do real I/O. */
+async function until(done: () => boolean): Promise<void> {
+  for (let i = 0; i < 400 && !done(); i++) await Bun.sleep(5)
 }
 
 /** Lets the installer's promise chains run (no timers involved). */
@@ -599,6 +613,56 @@ test('the backoff outlives a restart: a node started again after a failure waits
   expect(four.installer.lastInstall('dsh')?.failures).toBeUndefined()
 })
 
+test('a node killed in the middle of an install backs off after the restart instead of installing again at once', async () => {
+  jest.useFakeTimers()
+  const one = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
+  // npm never comes back: the node is OOM-killed while it runs.
+  one.npm.hold = new Promise(() => {})
+  await one.runtimes.start()
+  await settle()
+  expect(one.npm.installs()).toBe(1)
+  // Killed after ten minutes in the install (npm's scratch step alone may
+  // take six), so no stop() and no ending: the disk is all there is. The
+  // backoff is counted from the restart, not from when that install began.
+  jest.advanceTimersByTime(10 * 60_000)
+  const two = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
+  await two.runtimes.start()
+  await settle()
+  expect(two.npm.installs()).toBe(0)
+  expect(state(two.runtimes, 'main').reason).toEqual({
+    code: 'install-failed',
+    message:
+      '上一次安装没有结束（节点在安装中途退出，常见原因是内存不足被系统结束）',
+  })
+  expect(two.installer.lastInstall('dsh')).toMatchObject({ failures: 1 })
+  // All five minutes, from this start.
+  jest.advanceTimersByTime(5 * 60_000 - 1)
+  await settle()
+  expect(two.npm.installs()).toBe(0)
+  jest.advanceTimersByTime(1)
+  await settle()
+  expect(two.npm.installs()).toBe(1)
+  expect(state(two.runtimes, 'main').effective.runtime).toBe('dsh')
+  expect(two.installer.lastInstall('dsh')).toMatchObject({ ok: true })
+  expect(two.installer.lastInstall('dsh')?.failures).toBeUndefined()
+})
+
+test('an install that ended in a failure still backs off from when it failed', async () => {
+  jest.useFakeTimers()
+  const one = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
+  one.npm.fail = true
+  await one.runtimes.start()
+  await settle()
+  expect(one.npm.installs()).toBe(1)
+  one.runtimes.stop()
+  jest.advanceTimersByTime(10 * 60_000)
+  // The five minutes are over: a restart installs at once.
+  const two = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
+  await two.runtimes.start()
+  await settle()
+  expect(two.npm.installs()).toBe(1)
+})
+
 test('a pending retry is dropped once no agent is configured on its runtime', async () => {
   jest.useFakeTimers()
   const { runtimes, npm } = setup({
@@ -680,17 +744,121 @@ test('a dsh on PATH that is not DeepSeek Harness is no dsh: the agent says why, 
   })
 })
 
-test('start sweeps the scratch prefixes a dead node left, install or no install', async () => {
+test('configured onto a dsh found on PATH while running: it is asked who it is, and the agent moves once it says DeepSeek Harness', async () => {
+  const { runtimes, npm, changed } = setup({
+    agents: [{ agent: 'pi', runtime: 'omp' }],
+    installer: {
+      which: command => (command === 'dsh' ? '/opt/homebrew/bin/dsh' : null),
+    },
+  })
+  npm.help =
+    'Usage: dsh [--profile] <name>\n\ndsh: boot a DeepSeek Harness profile\n'
+  await runtimes.start()
+  expect(runtimes.effectiveRuntime('pi')).toBe('omp')
+  const outcome = runtimes.configure({ agent: 'pi', runtime: 'dsh' })
+  // Not waited for: configure answers at once, the check runs behind it.
+  expect(outcome).toMatchObject({
+    ok: true,
+    value: { effective: { runtime: 'omp' }, reason: { code: 'not-installed' } },
+  })
+  await settle()
+  expect(state(runtimes, 'pi').effective).toEqual({
+    runtime: 'dsh',
+    model: 'magpie/deepseek-v4',
+    lane: 'openai-chat',
+  })
+  expect(changed).toEqual(['pi', 'pi'])
+})
+
+test('start sweeps the scratch prefixes a dead node left, behind it: start does not wait for a large leftover to go', async () => {
   const stale = qianmoConfigPath(
     'runtimes',
     'npm-stage-0f9c6a52-6a8e-4d1b-9d4e-2b7f0c1a3e55',
   )
   mkdirSync(path.join(stale, 'node_modules'), { recursive: true })
-  const { runtimes, npm } = setup({ autoInstall: false })
-  expect(existsSync(stale)).toBe(true)
+  const removing: string[] = []
+  let release!: () => void
+  const released = new Promise<void>(done => {
+    release = done
+  })
+  const { runtimes, npm } = setup({
+    autoInstall: false,
+    installer: {
+      // dsh leaves about 850 MB: a removal that takes its time.
+      removeTree: async dir => {
+        removing.push(dir)
+        await released
+        rmSync(dir, { recursive: true, force: true })
+      },
+    },
+  })
   await runtimes.start()
+  // start() is done; the sweep reads the directory (real I/O) and then
+  // removes, and the removal is still going.
+  await until(() => removing.length > 0)
+  expect(removing).toEqual([stale])
+  expect(existsSync(stale)).toBe(true)
+  release()
+  await until(() => !existsSync(stale))
   expect(existsSync(stale)).toBe(false)
   expect(npm.installs()).toBe(0)
+})
+
+test('the default install checks the disk only once the leftover sweep is done', async () => {
+  const stale = qianmoConfigPath(
+    'runtimes',
+    'npm-stage-2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e',
+  )
+  mkdirSync(path.join(stale, 'node_modules'), { recursive: true })
+  const events: string[] = []
+  let release!: () => void
+  const released = new Promise<void>(done => {
+    release = done
+  })
+  const { runtimes, npm } = setup({
+    autoInstall: true,
+    agents: [{ agent: 'main' }],
+    installer: {
+      // The leftover of a killed install, about 850 MiB: slow to go.
+      removeTree: async dir => {
+        events.push(`removing ${path.basename(dir)}`)
+        if (dir === stale) await released
+        rmSync(dir, { recursive: true, force: true })
+        events.push(`removed ${path.basename(dir)}`)
+      },
+      freeBytes: () => {
+        events.push('disk')
+        return 64 * 1024 ** 3
+      },
+    },
+  })
+  await runtimes.start()
+  await until(() => events.length > 0)
+  await settle()
+  // Counting the leftover as used space would fail the install (and back
+  // off five minutes) for space that is on its way out.
+  expect(events).toEqual([`removing ${path.basename(stale)}`])
+  expect(state(runtimes, 'main').reason?.code).toBe('installing')
+  release()
+  await until(() => npm.installs() === 2)
+  expect(events.slice(0, 3)).toEqual([
+    `removing ${path.basename(stale)}`,
+    `removed ${path.basename(stale)}`,
+    'disk',
+  ])
+  await until(() => state(runtimes, 'main').effective.runtime === 'dsh')
+  expect(state(runtimes, 'main').effective.runtime).toBe('dsh')
+})
+
+test('the sweep removes for real without an injected remover, off the event loop', async () => {
+  const stale = qianmoConfigPath(
+    'runtimes',
+    'npm-stage-1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d',
+  )
+  mkdirSync(path.join(stale, 'node_modules', '.bin'), { recursive: true })
+  writeFileSync(path.join(stale, 'node_modules', '.bin', 'dsh'), '')
+  expect(await new RuntimeInstaller({}).sweepStages()).toEqual([stale])
+  expect(existsSync(stale)).toBe(false)
 })
 
 test('unmanaged (embedders): no fallback and no default install; agents run where they say', () => {
