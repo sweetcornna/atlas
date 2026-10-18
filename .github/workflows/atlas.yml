@@ -8,13 +8,21 @@
 name: CI
 
 on:
+  # push 只跑 main：功能分支都开 PR，PR 那一次就够；以前 feat/* 的推送和它的 PR
+  # 各跑一整轮（13 天里 81 个 PR 运行有 39 个带这样的孪生运行）。没开 PR 的分支要
+  # 验证就开草稿 PR 或手动触发。
   push:
-    branches: [main, "feature/*", "feat/*"]
+    branches: [main]
   # 不加分支过滤：每个 PR 都跑，不管基点是哪条分支。枚举基点分支每次换集成分支都要
   # 重改，漏过一次（PR #2-#4 没有任何检查），"每个 PR" 不会过期。
-  # `push` 保留过滤，免得一次分支推送和它的 PR 各跑一遍。
   pull_request:
   workflow_dispatch:
+
+# 同一个 PR 连推几次只跑最后一次。其他事件每次运行自成一组：同组里排队的运行
+# 会被后来者顶掉，main 上的每个提交都要跑完。
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -48,13 +56,42 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install system packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build cmake bubblewrap postgresql
+
       # omp 的原生插件（Rust）。omp 子进程和 qm 编译都要加载它；toolchain 版本
       # 取自 rust-toolchain.toml。x64 上出 build-qm 内嵌的 baseline 版（与舰队配方同一脚本）。
-      - name: Build the omp native addon
+      # 从零编译约 9–14 分钟，是整个作业最大的一块；它的输入除构建脚本外都是基座文件，
+      # 只在上游同步时变，所以按输入哈希缓存产物。sync-omp 与 fleet-payload 不走缓存，
+      # 每次重编，兜住缓存键漏列输入的情况。
+      # `ImageOS`（如 ubuntu24）是 runner 的环境变量，表达式的 env 上下文读不到它。
+      # 根 package.json 只取 build:native 那一条脚本进键：整份文件常因阡陌脚本变动，
+      # 进键会让缓存频繁失效。
+      - name: Read the native cache inputs
+        id: image
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build cmake bubblewrap postgresql
+          echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "script=$(jq -r '.scripts["build:native"]' package.json | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the omp native addon
+        id: native-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0, 2026-06-26
+        with:
+          # 构建同时重写 index.d.ts 与 index.js 的生成段，一起缓存，命中时与重编结果一致。
+          path: |
+            packages/natives/native/pi_natives.linux-x64-baseline.node
+            packages/natives/native/index.d.ts
+            packages/natives/native/index.js
+          key: omp-native-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.os }}-${{ steps.image.outputs.script }}-${{ hashFiles('crates/**', 'Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/**', '.tool-versions', 'bun.lock', 'packages/natives/package.json', 'packages/natives/scripts/**', 'packages/natives/native/*.js', 'packages/natives/native/*.d.ts', 'scripts/bazel-natives.ts', 'scripts/host-detect.ts', 'scripts/stamp-native-version.ts', 'atlas/scripts/build-native-portable.sh') }}
+
+      - name: Build the omp native addon
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
           rustup toolchain install --profile minimal "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
           bash atlas/scripts/build-native-portable.sh
+
+      - name: Show the omp native addon
+        run: sha256sum packages/natives/native/pi_natives.linux-x64-baseline.node
 
       # Ubuntu 24.04 runners confine unprivileged user namespaces with AppArmor, so
       # bubblewrap cannot configure the sandbox's loopback ("Failed RTM_NEWADDR:
