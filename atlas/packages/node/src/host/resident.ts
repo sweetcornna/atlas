@@ -518,7 +518,17 @@ interface QianmoResidentOptions {
   readonly ompRestart?: {
     readonly initialBackoffMs?: number
     readonly maxRapidFailures?: number
+    /** How long a generation must stay healthy before its crash no longer
+     * counts as rapid (supervisor default 10 s). */
+    readonly stableAfterMs?: number
   }
+  /**
+   * How long a terminal reply waits for its transport receipt, and teardown
+   * for the receipts still owed (default 5 s, the budget every caller in this
+   * repository uses). An option only so a test whose peer is gone does not
+   * sit the 5 s out.
+   */
+  readonly replyReceiptTimeoutMs?: number
   /**
    * The node's provider write path (`providers/node.ts`), which turns on hot
    * switching (design `providers-console-m1.md` §2.7). **Absent, nothing
@@ -1425,6 +1435,9 @@ export class QianmoResident {
       ...(options.ompRestart?.maxRapidFailures === undefined
         ? {}
         : { maxRapidFailures: options.ompRestart.maxRapidFailures }),
+      ...(options.ompRestart?.stableAfterMs === undefined
+        ? {}
+        : { stableAfterMs: options.ompRestart.stableAfterMs }),
       onError: error => this.#options.onError?.(error),
       onParked: failures =>
         this.#options.onError?.(
@@ -2825,7 +2838,10 @@ export class QianmoResident {
     deliveryId: string | undefined,
   ): Promise<void> {
     try {
-      await task.channel.sendAndWait(reply, TASK_REPLY_RECEIPT_TIMEOUT_MS)
+      await task.channel.sendAndWait(
+        reply,
+        this.#options.replyReceiptTimeoutMs ?? TASK_REPLY_RECEIPT_TIMEOUT_MS,
+      )
       this.#settleDelivery(deliveryId, 'delivered')
     } catch (error) {
       // Deliberately **not** retired. An unreceipted reply stays `attempting`
@@ -3151,7 +3167,10 @@ export class QianmoResident {
     const release = channel.hold()
     const sent = (async () => {
       try {
-        await channel.sendAndWait(reply, TASK_REPLY_RECEIPT_TIMEOUT_MS)
+        await channel.sendAndWait(
+          reply,
+          this.#options.replyReceiptTimeoutMs ?? TASK_REPLY_RECEIPT_TIMEOUT_MS,
+        )
         this.#settleDelivery(deliveryId, 'delivered')
       } catch (error) {
         // Left outstanding again — the attempt was spent, and the ceiling is
@@ -3215,7 +3234,10 @@ export class QianmoResident {
   async #drainReplyReceipts(): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<void>(resolve => {
-      timer = setTimeout(resolve, TASK_REPLY_RECEIPT_TIMEOUT_MS)
+      timer = setTimeout(
+        resolve,
+        this.#options.replyReceiptTimeoutMs ?? TASK_REPLY_RECEIPT_TIMEOUT_MS,
+      )
       timer.unref?.()
     })
     // Re-read rather than snapshotted: the listener is still up here, so an

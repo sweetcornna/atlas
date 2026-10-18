@@ -565,6 +565,8 @@ beforeAll(async () => {
   // ssh: the stand-in; qmcode: the real one, fenced, through a wrapper.
   bin = join(root, 'laptop-bin')
   const shims = writeAttachShims(bin)
+  // The shim is a link to a shared file: replace the link, not that file.
+  rmSync(shims.qmcode)
   writeFileSync(
     shims.qmcode,
     `#!/bin/sh\nexec '${SANDBOX_EXEC}' -f '${profile}' '${QMCODE_BIN}' "$@"\n`,

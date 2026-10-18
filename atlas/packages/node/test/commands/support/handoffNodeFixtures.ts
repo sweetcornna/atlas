@@ -8,7 +8,7 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { generateNodeKeyPair, type NodeKeyPair } from '@qianmo/capability'
 import {
@@ -19,6 +19,7 @@ import {
   shadowCommit,
   wipRef,
 } from '@qianmo/handoff'
+import { linkSharedExecutable } from '../../../../../tests/support/sharedExecutable.ts'
 import { createConsoleWakeIssuer } from '../../../src/commands/consoleWakeIdentity.js'
 import {
   type HandoffNodeHandle,
@@ -62,16 +63,17 @@ export function git(cwd: string, ...args: string[]): string {
   return proc.stdout.toString().trim()
 }
 
-/** A directory holding a `bwrap` that exits `exit` (stderr `stderr`). */
+/**
+ * A directory holding a `bwrap` that exits `exit` (stderr `stderr`): a link
+ * to the one file with that text (support/sharedExecutable.ts).
+ */
 export function bwrapStub(dir: string, exit = 0, stderr = ''): string {
   const bin = join(dir, 'bwrap-bin')
-  mkdirSync(bin, { recursive: true })
-  const path = join(bin, 'bwrap')
-  writeFileSync(
-    path,
+  linkSharedExecutable(
+    join(bin, 'bwrap'),
     `#!/bin/sh\n${stderr === '' ? '' : `echo '${stderr}' >&2\n`}exit ${exit}\n`,
+    { name: 'bwrap' },
   )
-  chmodSync(path, 0o755)
   return bin
 }
 

@@ -389,12 +389,15 @@ test('locks older than 30 seconds recover even when the crashed file is empty', 
 })
 
 test('a fresh lock refuses writes after a bounded wait without removing the holder or changing saved figures', async () => {
-  const { port, storePath } = setup()
+  const { port, storePath, options } = setup()
   value(await port.save(agentKey, spec, actor))
   const before = fs.readFileSync(storePath, 'utf8')
   const lockPath = `${storePath}.lock`
   fs.writeFileSync(lockPath, 'active holder', { mode: 0o600 })
-  expect(await port.save(userKey, spec, actor)).toMatchObject({
+  // The wait is bounded at 200 ms instead of the default 5 s: what is tested
+  // is that it ends in a refusal and leaves the holder alone, not its length.
+  const bounded = new ConsoleAvatars({ ...options, lockWaitMs: 200 })
+  expect(await bounded.save(userKey, spec, actor)).toMatchObject({
     ok: false,
     failure: { code: 'unreachable' },
   })

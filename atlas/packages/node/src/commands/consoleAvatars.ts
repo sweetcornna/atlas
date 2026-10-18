@@ -24,6 +24,8 @@ const LOCK_RETRY_MS = 10
 interface Options {
   readonly path?: string
   readonly now?: () => number
+  /** How long a write waits for a held lock before refusing (default 5 s); tests shorten it. */
+  readonly lockWaitMs?: number
 }
 
 interface AvatarLock {
@@ -88,11 +90,13 @@ function decode(text: string): Map<AvatarKey, AvatarRecord> {
 export class ConsoleAvatars implements AvatarsPort {
   readonly path: string
   readonly #now: () => number
+  readonly #lockWaitMs: number
 
   constructor(options: Options = {}) {
     this.path =
       options.path ?? qianmoConfigPath('qianmo', 'console', 'avatars.json')
     this.#now = options.now ?? Date.now
+    this.#lockWaitMs = options.lockWaitMs ?? LOCK_WAIT_MS
   }
 
   #read(): Map<AvatarKey, AvatarRecord> {
@@ -197,7 +201,7 @@ export class ConsoleAvatars implements AvatarsPort {
     ensurePrivateDir(path.dirname(this.path))
     const lockPath = `${this.path}.lock`
     // Lock age uses the real filesystem clock, not the record's injected clock.
-    const deadline = Date.now() + LOCK_WAIT_MS
+    const deadline = Date.now() + this.#lockWaitMs
     for (;;) {
       if (Date.now() >= deadline) throw new Error('avatar lock busy')
       try {

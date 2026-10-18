@@ -19,7 +19,7 @@
  * 不建、一次真套件都不跑。
  */
 
-import { afterAll, afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import {
   existsSync,
   mkdirSync,
@@ -31,6 +31,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { sharedExecutable } from '../../../../atlas/tests/support/sharedExecutable.ts'
 
 const HERE = resolve(import.meta.dir)
 const LAUNCHER = join(HERE, 'fleet-acceptance.sh')
@@ -77,33 +78,11 @@ interface Place {
  *
  * 所以桩的内容不许带每用例的东西：假 `bun` 的日志路径改从环境变量读（原先
  * 是把路径拼进脚本里，那会让每个 `place()` 都产生一个新 inode），假 `ssh`
- * 只随 `missing` 集合分出两三种，按内容折成同一个 inode。
+ * 只随 `missing` 集合分出两三种，按内容折成同一个 inode
+ * （`atlas/tests/support/sharedExecutable.ts`）。
  */
-const SCAN_ONCE_DIR = mkdtempSync(join(tmpdir(), 'qm-fleet-acceptance-bin-'))
-const scanOnce = new Map<string, string>()
-
-afterAll(() => {
-  rmSync(SCAN_ONCE_DIR, { recursive: true, force: true })
-})
-
-/** 同样内容只写一个 inode；第一次写完当场预热，把扫描付在用例计时器之外。 */
-function sharedExecutable(key: string, text: string): string {
-  const hit = scanOnce.get(key)
-  if (hit !== undefined) return hit
-  const path = join(SCAN_ONCE_DIR, key)
-  writeFileSync(path, text, { mode: 0o755 })
-  // **预热必须在这里**，不能等到用例里——那时超时计时器已经在跑了。
-  Bun.spawnSync([path, '--qianmo-warmup'], {
-    env: {
-      ...process.env,
-      QM_FLEET_ACCEPTANCE_RUN_LOG: join(SCAN_ONCE_DIR, 'warmup.log'),
-    },
-    stdout: 'ignore',
-    stderr: 'ignore',
-  })
-  scanOnce.set(key, path)
-  return path
-}
+/** 假 `bun` 的日志路径从环境来；预热那一次写到 /dev/null。 */
+const WARMUP_ENV = { QM_FLEET_ACCEPTANCE_RUN_LOG: '/dev/null' }
 
 /**
  * 假 ssh 只认得「取那个文件」这一种用法：认不出来就退 2，于是壳里那条
@@ -152,9 +131,15 @@ const SSH_MISSING_P7: readonly string[] = ['cornna-p7']
  * 毫秒上下 —— 在忙起来的 `verify` 上，那 3.25 s 就是 5 s 预算的大半。
  */
 const STUBS = {
-  sshAll: sharedExecutable('ssh_all', fakeSsh(SSH_MISSING_NONE)),
-  sshNoP7: sharedExecutable('ssh_no_p7', fakeSsh(SSH_MISSING_P7)),
-  bun: sharedExecutable('bun', FAKE_BUN),
+  sshAll: sharedExecutable(fakeSsh(SSH_MISSING_NONE), {
+    name: 'ssh_all',
+    warmupEnv: WARMUP_ENV,
+  }),
+  sshNoP7: sharedExecutable(fakeSsh(SSH_MISSING_P7), {
+    name: 'ssh_no_p7',
+    warmupEnv: WARMUP_ENV,
+  }),
+  bun: sharedExecutable(FAKE_BUN, { name: 'bun', warmupEnv: WARMUP_ENV }),
 } as const
 
 function place(options: { readonly missing?: readonly string[] } = {}): Place {

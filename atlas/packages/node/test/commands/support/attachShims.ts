@@ -28,8 +28,9 @@
  * so a test can scan the log for it as one more place it must not be.
  */
 
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { linkSharedExecutable } from '../../../../../tests/support/sharedExecutable.ts'
 
 const SSH = `
 import { appendFileSync } from 'node:fs'
@@ -153,15 +154,18 @@ export interface AttachShims {
   readonly qmcode: string
 }
 
-/** Write `ssh` and `qmcode` into `dir` (created), executable, run by this Bun. */
+/**
+ * `ssh` and `qmcode` in `dir` (created), run by this Bun: links to one file
+ * per shim (support/sharedExecutable.ts). Both read only their arguments and
+ * environment, so every test can share them. Replace a link before writing a
+ * different program at its path.
+ */
 export function writeAttachShims(dir: string): AttachShims {
   mkdirSync(dir, { recursive: true })
-  const write = (name: string, body: string): string => {
-    const path = join(dir, name)
-    writeFileSync(path, `#!${process.execPath}\n${body}`)
-    chmodSync(path, 0o755)
-    return path
-  }
+  const write = (name: string, body: string): string =>
+    linkSharedExecutable(join(dir, name), `#!${process.execPath}\n${body}`, {
+      name,
+    })
   return { dir, ssh: write('ssh', SSH), qmcode: write('qmcode', QMCODE) }
 }
 

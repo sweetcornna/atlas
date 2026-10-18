@@ -520,6 +520,22 @@ function nowMs(): number {
   return value
 }
 
+/**
+ * apply 锁最多等几秒，缺省 10。`QIANMO_BETA_RETAIN_LOCK_WAIT_S` 只为测试缩短
+ * 「等满上限仍拿不到锁」那条路径（与 `QIANMO_BETA_RETAIN_NOW_EPOCH_MS` 同一种注入）。
+ */
+function applyLockWaitSeconds(): number {
+  const configured = process.env.QIANMO_BETA_RETAIN_LOCK_WAIT_S
+  if (configured === undefined) return 10
+  if (!/^\d+$/.test(configured))
+    die('QIANMO_BETA_RETAIN_LOCK_WAIT_S 必须是秒数整数')
+  const value = Number(configured)
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    die('QIANMO_BETA_RETAIN_LOCK_WAIT_S 超出有效范围')
+  }
+  return value
+}
+
 function utcDay(value: number): string {
   const date = new Date(value)
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`
@@ -1714,7 +1730,8 @@ function acquireApplyLock(paths: Paths): ApplyLock {
   assertDerivedPath(paths, lock, '保留工具 apply 锁')
   assertExistingDirectory(paths, paths.run, '运行态目录')
   const parents = parentSnapshots(paths, lock)
-  const deadline = performance.now() + 10_000
+  const waitSeconds = applyLockWaitSeconds()
+  const deadline = performance.now() + waitSeconds * 1_000
   while (true) {
     try {
       mkdirSync(lock, { mode: 0o700 })
@@ -1745,7 +1762,9 @@ function acquireApplyLock(paths: Paths): ApplyLock {
         throw validationError
       }
       if (performance.now() >= deadline)
-        die(`另一个保留工具 apply 10 秒内未完成：${JSON.stringify(lock)}`)
+        die(
+          `另一个保留工具 apply ${String(waitSeconds)} 秒内未完成：${JSON.stringify(lock)}`,
+        )
       Atomics.wait(checkpointWait, 0, 0, 10)
     }
   }
