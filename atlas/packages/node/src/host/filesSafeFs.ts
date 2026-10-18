@@ -128,9 +128,22 @@ export class FileDirectory {
     )
     try {
       // The registered workspace is the trust anchor; OS aliases such as /var
-      // are resolved once here. All untrusted relative components use openat.
+      // are resolved once here. All untrusted relative components use openat
+      // with the alias check (`open`). The anchor's own components are
+      // realpath's spelling, opened as they are: no listing of each ancestor
+      // (a large one, like a busy temp directory, made every call slow), and
+      // a sibling differing only in case does not refuse the workspace.
       for (const part of fs.realpathSync(absolute).split('/').filter(Boolean)) {
-        const next = dir.directory(part)
+        const fd = openAt(
+          dir.fd,
+          ptr(cstring(part)),
+          fs.constants.O_RDONLY |
+            fs.constants.O_DIRECTORY |
+            fs.constants.O_NOFOLLOW,
+          0,
+        )
+        if (fd < 0) throw new FileFault('unsafe-open')
+        const next = new FileDirectory(fd)
         dir.close()
         dir = next
       }
