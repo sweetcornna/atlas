@@ -67,17 +67,20 @@ describe('test-shards.sh --list', () => {
   })
 
   // GNU find writes a long listing in several chunks; `find | grep -q .`
-  // under pipefail then exits 141 and the shard used to be dropped.
+  // under pipefail then exits 141 and the shard used to be dropped. The
+  // listing here (~1 MB) is far past a pipe buffer plus grep's read, so find
+  // must still be writing after grep has exited: the old probe fails every
+  // time, not only when the scheduler happens to interleave them badly.
   test('a directory whose test listing is far past one pipe write is still a shard', () => {
     const dir = mkdtempSync(join(tmpdir(), 'qm-test-shards-'))
     temps.push(dir)
     const nested = join(dir, 'a'.repeat(40), 'b'.repeat(40))
     mkdirSync(nested, { recursive: true })
-    for (let i = 0; i < 400; i++) {
+    for (let i = 0; i < 4000; i++) {
       writeFileSync(
         join(
           nested,
-          `case-${String(i).padStart(4, '0')}-${'x'.repeat(40)}.test.ts`,
+          `case-${String(i).padStart(4, '0')}-${'x'.repeat(140)}.test.ts`,
         ),
         '',
       )
