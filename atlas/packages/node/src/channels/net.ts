@@ -71,7 +71,8 @@ export async function requestJson(
   } catch {
     body = {}
   }
-  const after = Number(response.headers.get('retry-after'))
+  const header = response.headers.get('retry-after')
+  const after = header === null || header.trim() === '' ? NaN : Number(header)
   return {
     status: response.status,
     body,

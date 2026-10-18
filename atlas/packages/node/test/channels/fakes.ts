@@ -198,6 +198,7 @@ export interface Exchange {
 interface Answer {
   readonly status?: number
   readonly body?: unknown
+  readonly headers?: Record<string, string>
 }
 
 /** A function reply may return undefined: that call hangs until aborted, like a long poll. */
@@ -275,7 +276,7 @@ export class FakeNet {
       }
       return new Response(JSON.stringify(reply.body ?? {}), {
         status: reply.status ?? 200,
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...reply.headers },
       })
     }
     class Socket extends FakeSocket {

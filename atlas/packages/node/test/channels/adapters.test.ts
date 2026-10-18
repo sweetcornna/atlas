@@ -280,24 +280,40 @@ describe('Discord', () => {
     expect(adapter.health().detail).toBe('机器人没有开启 Message Content 意图')
   })
 
-  test('replies by reference, without pinging anyone, and waits out one 429', async () => {
+  test('replies by reference, without pinging anyone; a 429 goes back with its wait', async () => {
     let calls = 0
     const net = new FakeNet().on('/messages', () =>
       calls++ === 0
-        ? { status: 429, body: { retry_after: 0.01 } }
+        ? { status: 429, body: { retry_after: 1.5 } }
         : { body: { id: 'm9' } },
     )
     const adapter = new DiscordAdapter({ token: 'D' }, net.io())
     expect(
       await adapter.send({ type: 'group', id: 'c1' }, 'ok', { replyTo: 'm1' }),
+    ).toEqual({ ok: false, error: 'Discord 限流', retryAfterMs: 1_500 })
+    expect(net.sleeps).toEqual([])
+    expect(
+      await adapter.send({ type: 'group', id: 'c1' }, 'ok', { replyTo: 'm1' }),
     ).toEqual({ ok: true, messageId: 'm9' })
-    expect(net.exchanges).toHaveLength(2)
     expect(net.exchanges[1]!.headers.authorization).toBe('Bot D')
     expect(net.exchanges[1]!.body).toEqual({
       content: 'ok',
       allowed_mentions: { parse: [], replied_user: false },
       message_reference: { message_id: 'm1', fail_if_not_exists: false },
     })
+  })
+
+  test('a reference Discord rejects is dropped and the words still go', async () => {
+    const net = new FakeNet().on('/messages', exchange =>
+      (exchange.body as { message_reference?: unknown }).message_reference
+        ? { status: 400, body: { code: 50035 } }
+        : { body: { id: 'm2' } },
+    )
+    const adapter = new DiscordAdapter({ token: 'D' }, net.io())
+    expect(
+      await adapter.send({ type: 'group', id: 'c1' }, 'ok', { replyTo: 'gone' }),
+    ).toEqual({ ok: true, messageId: 'm2' })
+    expect(net.exchanges).toHaveLength(2)
   })
 })
 
@@ -684,5 +700,154 @@ describe('WeChat (iLink)', () => {
     )
     await until(() => adapter.health().state === 'failed')
     expect(adapter.health().detail).toBe('微信登录已失效，请在控制台重新扫码')
+  })
+})
+
+describe('failure classes (hermes)', () => {
+  test('Telegram: a throttle carries its wait, an unreachable API is retryable, a timeout is not', async () => {
+    let mode = 'throttle'
+    const net = new FakeNet().on('/sendMessage', () => {
+      if (mode === 'throttle')
+        return { status: 429, body: { ok: false, parameters: { retry_after: 3 } } }
+      return { body: { ok: true, result: { message_id: 1 } } }
+    })
+    const adapter = new TelegramAdapter({ token: 'T' }, net.io())
+    expect(await adapter.send({ type: 'dm', id: '1' }, 'x')).toMatchObject({
+      ok: false,
+      retryAfterMs: 3_000,
+    })
+    const down = new FakeNet()
+    const io = down.io()
+    const refused = new TelegramAdapter(
+      { token: 'T' },
+      {
+        ...io,
+        fetch: (async () => {
+          throw new TypeError('connect ECONNREFUSED')
+        }) as unknown as typeof fetch,
+      },
+    )
+    expect(await refused.send({ type: 'dm', id: '1' }, 'x')).toMatchObject({
+      ok: false,
+      retryable: true,
+    })
+    mode = 'ok'
+    expect(adapter.inboundSplitAt).toBe(4_000)
+    expect(adapter.sendGapMs).toBe(1_000)
+  })
+
+  test('Telegram: another poller is waited out a few times before the channel stops', async () => {
+    const net = new FakeNet()
+      .on('/getMe', { body: { ok: true, result: { id: 42, username: 'b' } } })
+      .on('/getUpdates', { status: 409, body: { ok: false } })
+    const { adapter } = await started(new TelegramAdapter({ token: 'T' }, net.io()))
+    await until(() => net.to('/getUpdates').length >= 2)
+    expect(adapter.health().state).not.toBe('failed')
+    await until(() => adapter.health().state === 'failed')
+    expect(net.to('/getUpdates')).toHaveLength(5)
+    expect(adapter.health().detail).toContain('另有程序')
+  })
+
+  test('Slack: 429 and ratelimited carry Retry-After, 5xx is retryable, other errors are final', async () => {
+    const answers = [
+      { status: 429, headers: { 'retry-after': '7' }, body: { ok: false, error: 'ratelimited' } },
+      { status: 200, body: { ok: false, error: 'ratelimited' } },
+      { status: 503, body: {} },
+      { status: 200, body: { ok: false, error: 'channel_not_found' } },
+    ]
+    const net = new FakeNet().on('/chat.postMessage', () => answers.shift())
+    const adapter = new SlackAdapter({ appToken: 'xapp', botToken: 'xoxb' }, net.io())
+    const chat = { type: 'group' as const, id: 'C1', threadId: '1.1' }
+    expect(await adapter.send(chat, 'a')).toMatchObject({ ok: false, retryAfterMs: 7_000 })
+    expect(await adapter.send(chat, 'a')).toMatchObject({ ok: false, retryAfterMs: 1_000 })
+    expect(await adapter.send(chat, 'a')).toMatchObject({ ok: false, retryable: true })
+    const final = await adapter.send(chat, 'a')
+    expect(final).toEqual({ ok: false, error: 'Slack 发送失败（channel_not_found）' })
+    expect(adapter.followsThreads).toBe(true)
+    expect(adapter.dedupTtlMs).toBe(3_600_000)
+  })
+
+  test('Slack: posts by bots and apps are not people', async () => {
+    const net = new FakeNet()
+      .on('/auth.test', { body: { ok: true, user_id: 'UBOT' } })
+      .on('/apps.connections.open', {
+        body: { ok: true, url: 'wss://wss-primary.slack.com/link/?ticket=1' },
+      })
+      .on('/users.info', { body: { ok: true, user: { profile: { display_name: '人' } } } })
+    const { got } = await started(
+      new SlackAdapter({ appToken: 'xapp', botToken: 'xoxb' }, net.io()),
+    )
+    await until(() => net.sockets.length === 1)
+    const socket = net.sockets[0]!
+    socket.push({ type: 'hello' })
+    const base = { type: 'message', channel: 'D1', channel_type: 'im', user: 'U1', text: 'hi' }
+    const events = [
+      { ...base, ts: '1', bot_profile: { name: 'x' } },
+      { ...base, ts: '2', app_id: 'A1' },
+      { ...base, ts: '3', app_id: 'A1', client_msg_id: 'c' },
+      { ...base, ts: '4' },
+    ]
+    for (const [i, event] of events.entries())
+      socket.push({ type: 'events_api', envelope_id: `e${i}`, payload: { event } })
+    await until(() => got.length === 2)
+    expect(got.map(one => one.messageId)).toEqual(['3', '4'])
+  })
+
+  test('QQ: protocol close codes stop the channel; quick closes three times in a row too', async () => {
+    const world = () =>
+      new FakeNet()
+        .on('getAppAccessToken', { body: { access_token: 'ACC', expires_in: 7200 } })
+        .on('/gateway', { body: { url: 'wss://api.sgroup.qq.com/websocket' } })
+    const net = world()
+    const { adapter } = await started(new QqAdapter({ appId: '1', appSecret: 's' }, net.io()))
+    await until(() => net.sockets.length === 1)
+    net.sockets[0]!.close(4014, 'disallowed intents')
+    await until(() => adapter.health().state === 'failed')
+    expect(adapter.health().detail).toBe('机器人没有开通单聊或群聊消息的权限')
+
+    const quick = world()
+    const second = await started(new QqAdapter({ appId: '1', appSecret: 's' }, quick.io()))
+    for (let i = 0; i < 3; i++) {
+      await until(() => quick.sockets.length === i + 1)
+      await until(() => quick.sockets[i]!.readyState === 1)
+      quick.sockets[i]!.close(4900, 'internal')
+    }
+    await until(() => second.adapter.health().state === 'failed')
+    expect(second.adapter.health().detail).toContain('连续三次')
+  })
+
+  test('WeChat: a stale context token is dropped and the words resent; too frequent waits 30 s', async () => {
+    const sends: Record<string, unknown>[] = []
+    let answers = [{ errcode: -14 }, { ret: 0 }]
+    const net = new FakeNet().on('/sendmessage', exchange => {
+      sends.push((exchange.body as { msg: Record<string, unknown> }).msg)
+      return { body: answers.shift() ?? { ret: 0 } }
+    })
+    const states: unknown[] = []
+    const adapter = new WeixinAdapter(
+      {
+        accountId: 'b',
+        token: 'BT',
+        baseUrl: ILINK_BASE_URL,
+        contextTokens: { 'wx-a': 'OLD' },
+        onState: state => states.push(state),
+      },
+      net.io(),
+    )
+    expect(await adapter.send({ type: 'dm', id: 'wx-a' }, '在')).toEqual({ ok: true })
+    expect(sends.map(one => one.context_token)).toEqual(['OLD', undefined])
+    expect(states).toEqual([{ cursor: '', contextTokens: {} }])
+    answers = [{ errcode: -2 }]
+    expect(await adapter.send({ type: 'dm', id: 'wx-a' }, '在')).toEqual({
+      ok: false,
+      error: '微信限流',
+      retryAfterMs: 30_000,
+    })
+    // Without a context token, an expired session is the login itself.
+    answers = [{ errcode: -14 }]
+    const result = await adapter.send({ type: 'dm', id: 'wx-a' }, '在')
+    expect(result).toMatchObject({ ok: false })
+    expect(adapter.health().state).toBe('failed')
+    expect(adapter.sendGapMs).toBe(1_500)
   })
 })

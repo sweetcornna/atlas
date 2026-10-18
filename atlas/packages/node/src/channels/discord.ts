@@ -17,6 +17,7 @@ import {
   record,
   requestJson,
   runSocket,
+  sendFailure,
   sendFrame,
   text,
 } from './net.js'
@@ -48,6 +49,8 @@ const FATAL_CLOSE = new Map<number, string>([
 export class DiscordAdapter implements ChannelAdapter {
   readonly platform = 'discord' as const
   readonly chunkLimit = 1_900
+  /** hermes `_SPLIT_THRESHOLD` for Discord. */
+  readonly inboundSplitAt = 1_900
   readonly #io: ChannelIo
   readonly #settings: DiscordSettings
   readonly #loop: ChannelLoop
@@ -233,46 +236,58 @@ export class DiscordAdapter implements ChannelAdapter {
     })
   }
 
+  #post(chat: ChannelChat, markdown: string, replyTo: string | undefined) {
+    return requestJson(
+      this.#io,
+      `${API}/channels/${encodeURIComponent(chat.id)}/messages`,
+      {
+        headers: this.#headers(),
+        body: {
+          content: discordMarkdown(markdown),
+          allowed_mentions: { parse: [], replied_user: false },
+          ...(replyTo
+            ? {
+                message_reference: {
+                  message_id: replyTo,
+                  fail_if_not_exists: false,
+                },
+              }
+            : {}),
+        },
+      },
+    )
+  }
+
+  /**
+   * A 429 goes back to the gateway with Discord's wait (hermes: the retry
+   * waits there, bounded); a reply reference Discord rejects is dropped and
+   * the words sent plain.
+   */
   async send(
     chat: ChannelChat,
     markdown: string,
     options: ChannelSendOptions = {},
-    retried = false,
   ): Promise<ChannelSendResult> {
     try {
-      const reply = await requestJson(
-        this.#io,
-        `${API}/channels/${encodeURIComponent(chat.id)}/messages`,
-        {
-          headers: this.#headers(),
-          body: {
-            content: discordMarkdown(markdown),
-            allowed_mentions: { parse: [], replied_user: false },
-            ...(options.replyTo
-              ? {
-                  message_reference: {
-                    message_id: options.replyTo,
-                    fail_if_not_exists: false,
-                  },
-                }
-              : {}),
-          },
-        },
-      )
-      if (reply.status === 429 && !retried) {
+      let reply = await this.#post(chat, markdown, options.replyTo)
+      if (reply.status === 400 && options.replyTo)
+        reply = await this.#post(chat, markdown, undefined)
+      if (reply.status === 429) {
         const after = Number(reply.body.retry_after)
-        await this.#io.sleep((Number.isFinite(after) ? after : 1) * 1_000)
-        return this.send(chat, markdown, options, true)
+        return {
+          ok: false,
+          error: 'Discord 限流',
+          retryAfterMs: Number.isFinite(after)
+            ? Math.ceil(after * 1_000)
+            : (reply.retryAfterMs ?? 1_000),
+        }
       }
       if (reply.status !== 200)
         return { ok: false, error: `Discord 发送失败（${reply.status}）` }
       this.#typing.clear(chat.id)
       return { ok: true, messageId: text(reply.body.id) }
     } catch (error) {
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : 'Discord 发送失败',
-      }
+      return sendFailure(error, 'Discord 发送失败')
     }
   }
 
