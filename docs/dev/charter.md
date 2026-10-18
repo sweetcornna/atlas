@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v3.8** |
+| 文档版本 | **v3.9** |
 | 生效日期 | 2026-10-18 |
 | 覆盖阶段 | M0 历史记录、M1 内测与 M2 公测开发 |
 | 撰写 | 喻永昌（项目负责人） |
@@ -16,6 +16,7 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| **v3.9** | **2026-10-18** | **补注，不扩大范围**（实施方按负责人 10-03 常设委托作出，非全员评审结论）：§8「工具链」一格的 `.tool-versions` 由 1.4.2 改为 1.4.3，与 #244 已升的版本一致（1.4.3 修了 Linux 上 spawnSync 收不回子进程的空转）。 |
 | **v3.8** | **2026-10-18** | **负责人 10-17 决定：社交平台接入参照 hermes-agent，个人 QQ 对接 SnowLuma**。① **规则例外**：§7.2 第 8 条加 v3.8 例外——新增「个人 QQ」渠道，经 SnowLuma（在用户自己电脑上注入 QQNT 客户端的 OneBot 11 实现）接入普通 QQ 号；这是该条「不用模拟客户端、协议逆向或 hook 的第三方实现」的唯一例外，只限个人 QQ。QQ 开放平台机器人仍是 QQ 群与频道的官方接入，原 QQ 渠道不变。阡陌只作 OneBot 客户端连接用户自备的 SnowLuma，不分发、不安装、不配置、不代为登录；公开版不提供（SnowLuma 许可非商用）。② **口径**：§2.6 第 2 条加指针；§6.2 新增 L-7（个人号封号与 SnowLuma 许可风险）。③ 六个平台的发送重试、长回复、群聊上下文、配对码、防机器人互回等做法参照 hermes-agent（MIT）重写，不拷代码。设计见 [`runtimes-channels.md`](./runtimes-channels.md) §2.5。负责人决议，不冒称全员评审；§4 验收判据不变。 |
 | **v3.7** | **2026-10-17** | **负责人 10-17 决定底层改为目录、默认 DeepSeek Harness**。① **范围**：新增 §2.8——节点缺省安装 DeepSeek Harness（dsh，DeepSeek 发布的开源 harness，MIT）作为智能体的默认底层；qianmopi 内置、作退路；Claude Code、Codex 与其他官方自带 ACP 服务端的 harness 由用户按需安装；后端之间高度互通（同一套宿主工具、同步问答、换底层对话接续）；用户在「网关」页直接为各底层的智能体配模型，智能体默认经 magpie 取各自系列的模型。设计见 [`harness-backends.md`](./harness-backends.md)，编号 P36。② **口径**：N-9 的 v3.4 补注扩到 dsh 与目录里的 harness（官方发行版原样运行，只经公开的非交互接口接入，状态与凭据由阡陌隔离）；§2.6 第 1 条「默认 qianmopi」由本版 §2.8 取代，原文保留。负责人决议，不冒称全员评审；§4 验收判据不变。 |
 | **v3.6** | **2026-10-17** | **补注，不扩大范围**（依据 2026-10-17 合并前审查，PR #230 / #231；实施方按负责人 10-03 常设委托作出，非全员评审结论）。① N-5 加 v3.6 补注、§2.7 第 1 条加指针：magpie 上游的测连与拉模型列表由中枢经管理接口触发、请求从 magpie 发出、不经中枢进程，写明它是「测连、测速都在节点上执行」的例外；中枢仍不转发模型流量，「由中枢代为调用模型」仍不解禁。② §2.5 加 v3.6 补注：其中「不扩大为支付」以 §2.7 与 N-1 v3.5 补注为例外，限公开版。§4 验收判据不变。 |
@@ -358,7 +359,7 @@ M0 的产出是**可演示、可复现、可测量的原型**，不是可交付�
 | 基座快照 | 标签 `base-snapshot/omp-v18.8.4` → 无父提交 `8eda2911`，树 `c7d2ecac783e9aecd5799b6dff14547d5089e649` | `git cat-file -p base-snapshot/omp-v18.8.4` |
 | 导入方式 | 零改动快照，导入提交 `c9a87c8c`（删除 occ 基座树、逐字写入 omp 树，阡陌文件原样保留）；omp 树位于仓库根，阡陌代码在 `atlas/` | `BASE.md`、[`base-switch-omp.md`](./base-switch-omp.md) §2 |
 | 溯源记录 | 根目录 `BASE.md` | 见 §5.6 |
-| 工具链 | Bun ≥ 1.4（`.tool-versions` 为 1.4.2）；原生插件由 `bun run build:native` 构建，需要 `rust-toolchain.toml` 指定的 nightly 与 ninja | 根 `package.json` 的 `packageManager`、`rust-toolchain.toml` |
+| 工具链 | Bun ≥ 1.4（`.tool-versions` 为 1.4.3）；原生插件由 `bun run build:native` 构建，需要 `rust-toolchain.toml` 指定的 nightly 与 ninja | 根 `package.json` 的 `packageManager`、`rust-toolchain.toml` |
 | 状态 | omp 以上游 v18.8.4 原样导入；阡陌的移植与验证进行中（DoD 见 `base-switch-omp.md` §8） | — |
 
 换基座的理由与移植契约见 [`base-switch-omp.md`](./base-switch-omp.md) §1；occ 时代的采用决策与能力盘点仍在 `base-adoption.md`。
