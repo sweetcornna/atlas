@@ -1951,7 +1951,7 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `packages/console/src/routes/nodes.ts`、`view/node.ts` | 节点详情四个页签、生命周期页签：能否拨号的判法、只画会成功的动作、四个确认框、「模型」页签的装载与 404 降级（§5.5） |
 | `packages/console/src/routes/audit.ts`、`view/audit.ts` | 消息链：倒序翻页、搜索、增量轮询（§5.6） |
 | `packages/audit/src/reader.ts`、`query.ts` | `TrailReader` 增量读取与 `pageTrail` 游标分页（§5.6） |
-| `packages/console/test/routeDocs.test.ts` | 本文 §5 路由表与实际路由的双向扫描：表里每行都有路由，路由出来的每个路径都在表里；反向扫描按路径触发（重用例集 `route-docs`）：PR 上本包或本文改动时跑，`main` 与夜间全量 |
+| `packages/console/test/routeDocs.test.ts` | 本文 §5 路由表与实际路由的双向扫描：表里每行都有路由，路由出来的每个路径都在表里；反向扫描按路径触发（重用例集 `route-docs`）：PR 上本包、audit 与 protocol 包或本文改动时跑，`main` 与夜间全量 |
 | `packages/console/src/accounts.ts`、`accountsHttp.ts` | 账号库与会话表（哈希链、严格重放、强制下线）与账号 API（§8.1.1） |
 | `packages/console/src/view/alerts.ts`、`jobs.ts` | 告警收件箱由哪些来源合成、各自的 id 与级别，作业页每一格的口径（§10.4） |
 | `packages/console/src/view/front.ts`、`frontStyle.ts`、`chat.ts` | 前台文档、智能体与会话、转录；旧片段兼容渲染（§6.1） |

@@ -25,7 +25,13 @@
 /** The paths that turn each set on. Globs are `Bun.Glob`, repo-relative. */
 export const HEAVY_TRIGGERS = {
   /** routeDocs.test.ts「every routed path is documented」: the reverse scan. */
-  'route-docs': ['atlas/packages/console/**', 'docs/dev/console.md'],
+  'route-docs': [
+    'atlas/packages/console/**',
+    // The console's routes are built from these two packages' types and readers.
+    'atlas/packages/audit/**',
+    'atlas/packages/protocol/**',
+    'docs/dev/console.md',
+  ],
   /**
    * The P16.2b/P16.3 evidence gates (docs/dev/memory-m1.md):
    * retrieval-gates.test.ts「P16.2b acceptance: null rankers on the hardened
@@ -41,6 +47,8 @@ export const HEAVY_TRIGGERS = {
     'atlas/packages/node/src/host/memoryEmbedding.ts',
     'atlas/scripts/qianmo-recall-*.ts',
     'atlas/scripts/__tests__/qianmo-recall-*',
+    // Base utility files the answer eval reaches through its imports.
+    'packages/utils/src/**',
   ],
 } as const satisfies Record<string, readonly string[]>
 
