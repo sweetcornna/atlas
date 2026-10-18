@@ -1056,6 +1056,71 @@ test('an install that comes in while the runtime is being removed is refused, no
   expect((await installer.install('codex')).ok).toBe(true)
 })
 
+/**
+ * The default install while a removal is under way: `npm uninstall` of an
+ * earlier build's install is held until `release`; `gone` deletes the binary
+ * before the hold (the removal past the point of no return).
+ */
+async function defaultInstallDuringRemoval(gone: boolean) {
+  const npm = fakeNpm(PIN('codex'))
+  let release!: () => void
+  const held = new Promise<void>(done => {
+    release = done
+  })
+  let uninstalling!: () => void
+  const uninstallStarted = new Promise<void>(done => {
+    uninstalling = done
+  })
+  const legacy = path.join(managedRuntimePrefix(), 'node_modules', '.bin')
+  const installer = new RuntimeInstaller({
+    run: async (argv, options) => {
+      if (argv[1] === 'uninstall') {
+        if (gone) rmSync(path.join(legacy, 'codex'), { force: true })
+        uninstalling()
+        await held
+      }
+      return npm.run(argv, options)
+    },
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+  })
+  mkdirSync(legacy, { recursive: true })
+  writeFileSync(path.join(legacy, 'codex'), '')
+  const removing = installer.control(
+    'runtime.remove',
+    { runtime: 'codex' },
+    CTX,
+  )
+  await uninstallStarted
+  let answered = false
+  const ensured = installer.ensureRuntimeInstalled('codex').finally(() => {
+    answered = true
+  })
+  for (let i = 0; i < 50; i++) await Promise.resolve()
+  await Bun.sleep(20)
+  // Neither "installed" (the binary is on its way out) nor "busy" (no
+  // failure to back off from): it waits for the removal to end.
+  expect(answered).toBe(false)
+  release()
+  expect(await removing).toEqual({
+    ok: true,
+    value: { runtime: 'codex', removed: true },
+  })
+  expect(await ensured).toEqual({ ok: true, version: PIN('codex') })
+  expect(managedRuntimeBin('codex')).toBeDefined()
+  expect(npm.calls.filter(argv => argv[1] === 'install')).toHaveLength(1)
+}
+
+test('the default install waits for a removal whose binary is still there, then installs', async () => {
+  await defaultInstallDuringRemoval(false)
+})
+
+test('the default install waits for a removal whose binary is already gone instead of failing busy, then installs', async () => {
+  await defaultInstallDuringRemoval(true)
+})
+
 test('installs of two runtimes run one after the other, never together', async () => {
   const npm = fakeNpm(PIN('gemini'))
   let running = 0

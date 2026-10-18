@@ -113,6 +113,11 @@ class FakeLinks {
   installing: string | null = null
   /** `runtime.ext.list` fails (the harness's list command broke). */
   failList = false
+  /**
+   * A change answers done without its list, with these notes (the node's
+   * own listing after it failed).
+   */
+  changedNotes: string[] | null = null
 
   add(
     node: string,
@@ -208,6 +213,17 @@ class FakeLinks {
         source,
       },
     ])
+    if (this.changedNotes !== null)
+      return {
+        ok: true,
+        value: {
+          agent: name,
+          runtime: agent.runtime,
+          changed: true,
+          notes: this.changedNotes,
+          listError: '列表命令超时',
+        },
+      }
     // An MCP add answers without the list: the hub reads it again.
     return { ok: true, value: kind === 'mcp' ? { added: true } : list() }
   }
@@ -1449,6 +1465,33 @@ describe('native extensions (P36.7)', () => {
     await agents.idle()
     const empty = await agents.extensions('beta-1', 'reviewer')
     expect(empty.ok && empty.value.items).toEqual([])
+  })
+
+  test('a change done without the node’s list keeps its notes on the list the hub reads after', async () => {
+    const port = await probed()
+    const agents = agentsOf(port)
+    links.changedNotes = ['已撤销预授权：own']
+    const done = await agents.installExtension(
+      {
+        node: 'beta-1',
+        agent: 'reviewer',
+        kind: 'plugin',
+        source: 'https://github.com/obra/superpowers',
+      },
+      caller(),
+    )
+    expect(done.ok && done.value.state).toBe('done')
+    await agents.idle()
+    expect(extLines('"agent":"reviewer"').at(-1)).toBe(
+      'beta-1 runtime.ext.list {"agent":"reviewer"} by magpie',
+    )
+    const view = await agents.extensions('beta-1', 'reviewer')
+    if (!view.ok) throw new Error(view.failure.message)
+    expect(view.value.job).toBeNull()
+    expect(view.value.items.map(item => item.name)).toEqual([
+      'https://github.com/obra/superpowers',
+    ])
+    expect(view.value.notes).toEqual(['已撤销预授权：own', '项目级配置不加载'])
   })
 
   test('the node refusals read as the page words them; a late failure stays on the page', async () => {
