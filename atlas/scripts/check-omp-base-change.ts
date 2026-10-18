@@ -3,12 +3,55 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /** Decide whether CI must run the upstream TS suite. Renames are deliberately
- * expanded to deletion/addition so moving a base file cannot evade the gate. */
+ * expanded to deletion/addition so moving a base file cannot evade the gate.
+ * The root package.json is a base file that also carries Atlas's scripts; a
+ * change confined to those does not require the suite (see atlasOnlyManifest). */
 import { appendFileSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { git } from './sync-omp'
 
 const MANIFEST = 'atlas/upstream/omp.json'
+const ROOT_PACKAGE = 'package.json'
+
+/** Root scripts Atlas owns (CLAUDE.full.md §3): the `atlas:` and `qianmo:`
+ * prefixes plus `qm`, `precheck` and `verify`. Nothing in omp runs them. */
+function isAtlasScript(name: string): boolean {
+  return (
+    /^(atlas|qianmo):/.test(name) ||
+    name === 'qm' ||
+    name === 'precheck' ||
+    name === 'verify'
+  )
+}
+
+function withoutAtlasScripts(contents: string): string | null {
+  let manifest: unknown
+  try {
+    manifest = JSON.parse(contents)
+  } catch {
+    return null
+  }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest))
+    return null
+  const { scripts } = manifest as { scripts?: unknown }
+  if (!scripts || typeof scripts !== 'object' || Array.isArray(scripts))
+    return JSON.stringify(manifest)
+  return JSON.stringify({
+    ...manifest,
+    scripts: Object.fromEntries(
+      Object.entries(scripts).filter(([name]) => !isAtlasScript(name)),
+    ),
+  })
+}
+
+/** True when two versions of the root package.json differ only in Atlas's own
+ * scripts. Every other field and script, key order included, still counts; so
+ * does a side that is missing or not a JSON object. */
+export function atlasOnlyManifest(before: string, after: string): boolean {
+  const base = withoutAtlasScripts(before)
+  return base !== null && base === withoutAtlasScripts(after)
+}
+
 function snapshotFromManifest(contents: string): string {
   const pin = JSON.parse(contents) as { snapshot?: unknown }
   if (
@@ -64,6 +107,18 @@ export function changedOmpBasePaths(
   ])
     .split('\0')
     .filter(path => basePaths.has(path))
+    .filter(
+      path =>
+        path !== ROOT_PACKAGE ||
+        !atlasOnlyManifest(
+          git(root, ['show', `${base}:${ROOT_PACKAGE}`], {
+            allowFailure: true,
+          }),
+          git(root, ['show', `${head}:${ROOT_PACKAGE}`], {
+            allowFailure: true,
+          }),
+        ),
+    )
     .sort()
 }
 

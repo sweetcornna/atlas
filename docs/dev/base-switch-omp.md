@@ -37,7 +37,7 @@ atlas/                          仓库根 = omp v18.8.4 基座树（MIT，见 LI
 
 根工作区：根 `package.json` 以 omp 版本为底，`workspaces.packages` 追加 `atlas/packages/*`，阡陌脚本一律加 `atlas:` 前缀，不改 omp 既有脚本名。
 
-工具链：Bun **≥ 1.4**（omp `packageManager: bun@>=1.4`，`.tool-versions` 固定 1.4.2）；omp 原生插件 `pi_natives.<platform>.node` 由 `bun run build:native` 本地构建（cargo，需要 `rust-toolchain.toml` 指定的 nightly 与 ninja），或取 npm 预编译叶包。
+工具链：Bun **≥ 1.4**（omp `packageManager: bun@>=1.4`，`.tool-versions` 固定 1.4.3）；omp 原生插件 `pi_natives.<platform>.node` 由 `bun run build:native` 本地构建（cargo，需要 `rust-toolchain.toml` 指定的 nightly 与 ninja），或取 npm 预编译叶包。
 
 格式与类型：阡陌路径用 biome（`biome.json` 的 `files.includes` 仅含 `atlas/**`、`demo/**`）与 `tsgo -p tsconfig.atlas.json`；omp 路径保持 oxlint / oxfmt / 各包 tsgo，阡陌不重排 omp 文件。
 
@@ -156,10 +156,10 @@ Fleet 载荷不带 `node_modules`，因此 `atlas:build:qm` 用 omp 的二进制
 | identity-paths | 只扫描阡陌文件（git ls-files 减快照路径）；禁用字面量加入 `.omp`、`.claude` 之外的 occ 目录名 `.occ` |
 | sbom | 基座 pin 改为 omp v18.8.4；按 hoisted 布局与 `catalog:` 解析；Rust 依赖取 omp 的 `about.toml` / `THIRD-PARTY-NOTICES.txt` |
 | cycles、unused | 只覆盖 `atlas/`，预算重置 |
-| 测试 | `atlas/scripts/test-shards.sh`：每个阡陌包一个分片（`--isolate`），预载 `atlas/tests/preload.ts`；根 `bunfig.toml` 不加预载 |
-| omp 自身 | `verify` 里跑 omp 的 `check:ts`（证明阡陌没碰坏基座）；只有改了 omp 文件时才跑 omp 的 `test:ts` |
+| 测试 | `atlas/scripts/test-shards.sh`：每个阡陌包一个分片（`--isolate`），预载 `atlas/tests/preload.ts`；根 `bunfig.toml` 不加预载。CI 按 `--group` 分五组并行（node-host、node-rest、ops、e2e、packages），汇总作业用 `check-test-files-ran.ts` 核对每个已跟踪测试文件恰好跑一次 |
+| omp 自身 | `verify` 里跑 omp 的 `check:ts`（证明阡陌没碰坏基座）；只有改了 omp 文件时才跑 omp 的 `test:ts`（根 `package.json` 只改阡陌脚本不算），CI 里按 `OMP_TEST_SHARD` 分 6 片 |
 
-`precheck` = 阡陌类型检查 + biome 修复 + identity-paths + license-headers + 阡陌测试；`verify` = 在此之上加 biome ci、cycles、unused、sbom --check、omp `check:ts`、`qm` 编译与冒烟。CI 改为 `.github/workflows/atlas.yml`；omp 自带的 `ci.yml`、`bun-cache-warm.yml`、`nix.yml` 依赖 omp 的自托管 runner，在本仓库删除，发布类流程一律不保留。CI 只在 PR 与 `main` 的 push 上跑（同一 PR 的新推送取消旧运行），原生插件按构建输入的哈希缓存；sync-omp 与 fleet-payload 不走缓存、每次重编。
+`precheck` = 阡陌类型检查 + biome 修复 + identity-paths + license-headers + 阡陌测试；`verify` = 在此之上加 biome ci、cycles、unused、sbom --check、omp `check:ts`、`qm` 编译与冒烟。CI 改为 `.github/workflows/atlas.yml`；omp 自带的 `ci.yml`、`bun-cache-warm.yml`、`nix.yml` 依赖 omp 的自托管 runner，在本仓库删除，发布类流程一律不保留。CI 只在 PR 与 `main` 的 push 上跑（同一 PR 的新推送取消旧运行），原生插件按构建输入的哈希缓存；sync-omp 与 fleet-payload 不走缓存、每次重编。CI 拆成 static、native、test 五组、build-qm、omp-test 几个并行作业，汇总作业 `ci` 等全部作业并做防跳过自检。
 
 ## 7. 对外可见的变化
 

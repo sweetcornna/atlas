@@ -21,10 +21,13 @@ import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import {
+  type ActionLedgerPort,
   ChatDispatch,
   MODEL_DIRECTIONS,
   type ChannelDraft,
   type ChannelLoginView,
+  type ChannelPairingDecision,
+  type ChannelPairingMode,
   type ChannelPlatformView,
   type ChannelsPort,
   type ChannelsSnapshot,
@@ -46,13 +49,20 @@ import {
   type ChannelTurns,
 } from '../channels/gateway.js'
 import { DiscordAdapter } from '../channels/discord.js'
+import {
+  ChannelPairing,
+  emptyPairingBook,
+  formatPairingCode,
+} from '../channels/pairing.js'
 import { QqAdapter } from '../channels/qq.js'
+import { QqPersonalAdapter } from '../channels/qqPersonal.js'
 import { SlackAdapter } from '../channels/slack.js'
 import { TelegramAdapter } from '../channels/telegram.js'
 import {
   defaultChannelIo,
   isChannelPlatform,
   type ChannelAdapter,
+  type ChannelInbound,
   type ChannelIo,
   type ChannelPlatform,
 } from '../channels/types.js'
@@ -80,7 +90,18 @@ export const CHANNEL_PLATFORM_VIEWS: readonly ChannelPlatformView[] = [
     settings: [{ key: 'appId', label: 'AppID' }],
     secrets: [{ key: 'appSecret', label: 'AppSecret' }],
     qrLogin: false,
+    pairing: true,
     hint: '在 QQ 开放平台创建机器人并开通单聊、群聊消息；群里只有 @ 机器人的消息会送达',
+    evaluated: false,
+  },
+  {
+    id: 'qq-personal',
+    name: '个人 QQ',
+    settings: [{ key: 'url', label: 'SnowLuma 地址（正向 WebSocket）' }],
+    secrets: [{ key: 'accessToken', label: 'OneBot 访问令牌' }],
+    qrLogin: false,
+    pairing: false,
+    hint: '在自己的电脑上运行 SnowLuma 并扫码登录 QQ（建议小号），开一个正向 WebSocket 并设好 accessToken；阡陌只连接，不安装、不配置它。个人号接入不是 QQ 官方接口，有封号风险',
     evaluated: false,
   },
   {
@@ -89,6 +110,7 @@ export const CHANNEL_PLATFORM_VIEWS: readonly ChannelPlatformView[] = [
     settings: [],
     secrets: [],
     qrLogin: true,
+    pairing: true,
     hint: '用微信扫码授权一个机器人账号（腾讯 iLink 机器人接口）；扫码的人记为主人',
     evaluated: false,
   },
@@ -98,6 +120,7 @@ export const CHANNEL_PLATFORM_VIEWS: readonly ChannelPlatformView[] = [
     settings: [],
     secrets: [{ key: 'token', label: 'Bot Token' }],
     qrLogin: false,
+    pairing: true,
     hint: '找 @BotFather 创建机器人；群里 @ 机器人或回复它的消息才会送达，除非关掉隐私模式',
     evaluated: false,
   },
@@ -107,6 +130,7 @@ export const CHANNEL_PLATFORM_VIEWS: readonly ChannelPlatformView[] = [
     settings: [],
     secrets: [{ key: 'token', label: 'Bot Token' }],
     qrLogin: false,
+    pairing: true,
     hint: '在开发者后台创建机器人，开启 Message Content 意图后邀请进服务器',
     evaluated: false,
   },
@@ -119,6 +143,7 @@ export const CHANNEL_PLATFORM_VIEWS: readonly ChannelPlatformView[] = [
       { key: 'botToken', label: 'Bot Token（xoxb-）' },
     ],
     qrLogin: false,
+    pairing: true,
     hint: '开启 Socket Mode，订阅 message.im、message.channels、app_mention 事件',
     evaluated: false,
   },
@@ -135,7 +160,14 @@ const secretSchema = z.object({
 const storedSchema = z.object({
   id: z.string().regex(/^ch-[0-9a-f-]{36}$/),
   name: z.string(),
-  platform: z.enum(['qq', 'weixin', 'telegram', 'discord', 'slack']),
+  platform: z.enum([
+    'qq',
+    'qq-personal',
+    'weixin',
+    'telegram',
+    'discord',
+    'slack',
+  ]),
   enabled: z.boolean(),
   owner: z.string(),
   target: z.string(),
@@ -147,6 +179,13 @@ const storedSchema = z.object({
   groupTrigger: z.enum(['mention', 'all']),
   replyWindowMs: z.number().int().min(0).max(60_000),
   prompt: z.string(),
+  /**
+   * Strangers may ask to pair (hermes). Channels saved before this field
+   * existed read as `off`: an upgrade never starts answering strangers.
+   */
+  pairing: z.enum(['auto', 'on', 'off']).default('off'),
+  /** Addressed group turns carry the room's recent lines. */
+  groupContext: z.boolean().default(true),
   settings: z.record(z.string(), z.string()),
   secret: secretSchema.nullable(),
   createdAt: z.number(),
@@ -178,6 +217,24 @@ const conversationSchema = z.object({
 })
 type StoredConversation = z.infer<typeof conversationSchema>
 
+const pairingBookSchema = z.object({
+  requests: z.array(
+    z.object({
+      id: z.string(),
+      userId: z.string(),
+      userName: z.string(),
+      chatId: z.string(),
+      createdAt: z.number(),
+      expiresAt: z.number(),
+      salt: z.string(),
+      hash: z.string(),
+    }),
+  ),
+  asked: z.record(z.string(), z.number()),
+  failures: z.number().int().nonnegative(),
+  lockedUntil: z.number(),
+})
+
 const stateSchema = z.object({
   v: z.literal(1),
   cursors: z.record(
@@ -191,6 +248,8 @@ const stateSchema = z.object({
   conversations: z.record(z.string(), conversationSchema),
   /** Every console session a chat has used, to its conversation key (`/new` keeps tasks with the chat). */
   sessions: z.record(z.string(), z.string()).default({}),
+  /** Pairing requests per channel: salted code hashes, never the codes. */
+  pairing: z.record(z.string(), pairingBookSchema).default({}),
 })
 type StoredState = z.infer<typeof stateSchema>
 
@@ -216,7 +275,77 @@ export interface ConsoleChannelsOptions {
   readonly tasks?: ChannelTasks
   /** How long a turn may take before the gateway gives up waiting. */
   readonly turnTimeoutMs?: number
+  /**
+   * The paid public edition (P35): no personal QQ. SnowLuma's licence is
+   * non-commercial, so the platform is neither offered, saved nor started.
+   */
+  readonly publicEdition?: boolean
+  /** The console's action ledger: approvals made with `/pair` in chat are recorded there. */
+  readonly actions?: ActionLedgerPort
   readonly onError?: (message: string) => void
+}
+
+/** Platforms the public edition leaves out. */
+const NOT_PUBLIC: ReadonlySet<ChannelPlatform> = new Set(['qq-personal'])
+
+const PAIRING_ANSWER = (code: string) =>
+  `你还没有和这个机器人配对。请把配对码 ${formatPairingCode(code)} 发给机器人的主人，批准后就能对话；1 小时内有效。`
+
+/** A new channel pairs `auto`; an edit keeps what it had; personal QQ never pairs. */
+function pairingMode(
+  supported: boolean,
+  asked: unknown,
+  previous: ChannelPairingMode | undefined,
+): ChannelPairingMode {
+  if (!supported) return 'off'
+  if (asked === undefined) return previous ?? 'auto'
+  if (asked !== 'auto' && asked !== 'on' && asked !== 'off')
+    throw new Error('配对档位无效')
+  return asked
+}
+
+/** Hosts where a plain `ws://` token stays off the public internet. */
+function privateHost(raw: string): boolean {
+  const host = raw.replace(/^\[|\]$/g, '').toLowerCase()
+  if (host === 'localhost' || (!host.includes('.') && !host.includes(':')))
+    return true
+  if (/\.(local|lan|internal|home\.arpa|ts\.net)$/.test(host)) return true
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(host)
+  if (v4) {
+    const a = Number(v4[1])
+    const b = Number(v4[2])
+    return (
+      a === 10 ||
+      a === 127 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254)
+    )
+  }
+  return (
+    host === '::1' ||
+    /^f[cd][0-9a-f]{2}:/.test(host) ||
+    host.startsWith('fe80:')
+  )
+}
+
+/** SnowLuma's address: ws(s) only, no secrets in it, wss off the private network. */
+function snowlumaUrl(raw: string): string {
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    throw new Error('SnowLuma 地址无效')
+  }
+  if (url.protocol !== 'ws:' && url.protocol !== 'wss:')
+    throw new Error('SnowLuma 地址要以 ws:// 或 wss:// 开头')
+  if (url.username || url.password || url.searchParams.has('access_token'))
+    throw new Error('令牌填在 OneBot 访问令牌里，不要写进地址')
+  if (url.protocol === 'ws:' && !privateHost(url.hostname))
+    throw new Error('公网上的 SnowLuma 要用 wss://，否则令牌会明文传输')
+  url.hash = ''
+  return url.toString()
 }
 
 /** What channels need of the hub's background tasks (`consoleTasks.ts`). */
@@ -349,7 +478,7 @@ export class ConsoleChannels implements ChannelsPort {
     const state = readTextIfExists(this.#statePath)
     this.#state =
       state === undefined
-        ? { v: 1, cursors: {}, conversations: {}, sessions: {} }
+        ? { v: 1, cursors: {}, conversations: {}, sessions: {}, pairing: {} }
         : stateSchema.parse(JSON.parse(state))
     this.#unsubscribeTasks = options.tasks?.onFinished(
       event => this.#taskFinished(event),
@@ -444,6 +573,14 @@ export class ConsoleChannels implements ChannelsPort {
           },
           this.#io,
         )
+      case 'qq-personal':
+        return new QqPersonalAdapter(
+          {
+            url: channel.settings.url ?? '',
+            accessToken: secrets.accessToken ?? '',
+          },
+          this.#io,
+        )
       case 'qq':
         return new QqAdapter(
           {
@@ -470,7 +607,12 @@ export class ConsoleChannels implements ChannelsPort {
   }
 
   #launch(channel: StoredChannel): void {
-    if (this.#closed || !this.#lock?.owned() || this.#running.has(channel.id))
+    if (
+      this.#closed ||
+      !this.#lock?.owned() ||
+      this.#running.has(channel.id) ||
+      this.#excluded(channel.platform)
+    )
       return
     let adapter: ChannelAdapter
     try {
@@ -502,9 +644,107 @@ export class ConsoleChannels implements ChannelsPort {
     await running?.adapter.stop().catch(() => {})
   }
 
+  #excluded(platform: ChannelPlatform): boolean {
+    return this.#options.publicEdition === true && NOT_PUBLIC.has(platform)
+  }
+
+  /** Whether strangers may ask to pair now: `on`, or `auto` while nobody is configured (hermes). */
+  #pairingOpen(channel: StoredChannel): boolean {
+    const platform = CHANNEL_PLATFORM_VIEWS.find(
+      view => view.id === channel.platform,
+    )
+    if (platform?.pairing !== true) return false
+    return (
+      channel.pairing === 'on' ||
+      (channel.pairing === 'auto' &&
+        channel.ownerIds.length === 0 &&
+        channel.allowUsers.length === 0 &&
+        !channel.allowAll)
+    )
+  }
+
+  #pairing(channelId: string): ChannelPairing {
+    let book = this.#state.pairing[channelId]
+    if (book === undefined) {
+      book = emptyPairingBook()
+      this.#state.pairing[channelId] = book
+    }
+    return new ChannelPairing(book, this.#now)
+  }
+
+  /** A stranger's private message on a pairing channel: a code, or silence. */
+  #ask(channelId: string, inbound: ChannelInbound): string | null {
+    const channel = this.#channels.get(channelId)
+    if (channel === undefined || !this.#pairingOpen(channel)) return null
+    const asked = this.#pairing(channelId).ask(
+      inbound.userId,
+      inbound.userName,
+      inbound.chat.id,
+    )
+    if (asked.kind === 'quiet') return null
+    this.#saveState()
+    return PAIRING_ANSWER(asked.code)
+  }
+
+  /** `/pair <码>` from the owner: the person joins as a member. */
+  async #approveByCode(channelId: string, code: string): Promise<string> {
+    const channel = this.#channels.get(channelId)
+    if (channel === undefined) return '没有这个渠道'
+    if (channel.memberTarget === null)
+      return '这个渠道没有成员对话的智能体；要把对方设为主人，请在控制台处理。'
+    const found = this.#pairing(channelId).redeem(code)
+    this.#saveState()
+    if (found === 'locked') return '配对码错了太多次，1 小时后再试。'
+    if (found === null) return '配对码不对或已过期。'
+    await this.#admitPaired(channel, found, 'member')
+    // Same ledger entry as an approval on the page, made by the owner in chat.
+    await this.#options.actions
+      ?.record({
+        at: this.#now(),
+        requestId: `chat-${randomUUID()}`,
+        subject: channel.owner,
+        action: 'im.pair',
+        target: `${channel.id}:member`,
+        outcome: 'ok',
+      })
+      .catch(() => undefined)
+    return `已批准 ${found.userName}，对方现在可以和成员智能体对话。`
+  }
+
+  async #admitPaired(
+    channel: StoredChannel,
+    request: { readonly userId: string; readonly chatId: string },
+    decision: 'owner' | 'member',
+  ): Promise<StoredChannel> {
+    const updated: StoredChannel = {
+      ...channel,
+      ...(decision === 'owner'
+        ? { ownerIds: [...new Set([...channel.ownerIds, request.userId])] }
+        : {
+            allowUsers: [...new Set([...channel.allowUsers, request.userId])],
+          }),
+      updatedAt: this.#now(),
+    }
+    // Rules are read per message: no reconnect needed.
+    this.#channels.set(channel.id, updated)
+    this.#saveBook()
+    const running = this.#running.get(channel.id)
+    if (running !== undefined)
+      await this.#gateway
+        .post(
+          running.adapter,
+          { type: 'dm', id: request.chatId },
+          '配对已通过，可以开始对话了。',
+        )
+        .catch(() => false)
+    return updated
+  }
+
   #rules(channel: StoredChannel): ChannelRules {
     return {
       id: channel.id,
+      pairing: this.#pairingOpen(channel),
+      groupContext: channel.groupContext,
       ownerIds: channel.ownerIds,
       members: channel.memberTarget !== null,
       allowAll: channel.allowAll,
@@ -697,6 +937,8 @@ export class ConsoleChannels implements ChannelsPort {
           ...(note === undefined ? {} : { note }),
         }
       },
+      pair: (channelId, inbound) => this.#ask(channelId, inbound),
+      approvePairing: (channelId, code) => this.#approveByCode(channelId, code),
       intercept: async conversation => {
         const session = this.#sessionFor(conversation.key)
         if (session == null || !this.#foregroundLane(conversation)) return null
@@ -834,15 +1076,22 @@ export class ConsoleChannels implements ChannelsPort {
       groupTrigger: channel.groupTrigger,
       replyWindowMs: channel.replyWindowMs,
       prompt: channel.prompt,
+      pairing: channel.pairing,
+      pairingOpen: this.#pairingOpen(channel),
+      groupContext: channel.groupContext,
+      pairingRequests: (this.#state.pairing[channel.id] === undefined
+        ? []
+        : this.#pairing(channel.id).pending()
+      ).map(request => ({
+        id: request.id,
+        userId: request.userId,
+        userName: request.userName,
+        createdAt: request.createdAt,
+        expiresAt: request.expiresAt,
+      })),
       settings: channel.settings,
       secretSet: channel.secret !== null,
-      health: running?.adapter.health() ?? {
-        state: channel.enabled && !this.#lock?.owned() ? 'failed' : 'stopped',
-        since: channel.updatedAt,
-        ...(channel.enabled && !this.#lock?.owned()
-          ? { detail: '另一控制台实例持有渠道' }
-          : {}),
-      },
+      health: running?.adapter.health() ?? this.#idleHealth(channel),
       conversations: Object.values(this.#state.conversations).filter(
         row => row.channelId === channel.id,
       ).length,
@@ -853,13 +1102,30 @@ export class ConsoleChannels implements ChannelsPort {
     }
   }
 
+  #idleHealth(channel: StoredChannel): ChannelView['health'] {
+    if (channel.enabled && this.#excluded(channel.platform))
+      return {
+        state: 'failed',
+        since: channel.updatedAt,
+        detail: '公开版不提供个人 QQ',
+      }
+    const held = channel.enabled && !this.#lock?.owned()
+    return {
+      state: held ? 'failed' : 'stopped',
+      since: channel.updatedAt,
+      ...(held ? { detail: '另一控制台实例持有渠道' } : {}),
+    }
+  }
+
   async snapshot(): Promise<ConsoleResult<ChannelsSnapshot>> {
     const targets = await this.#options.chat.targets()
     return ok({
       channels: [...this.#channels.values()].map(channel =>
         this.#view(channel),
       ),
-      platforms: CHANNEL_PLATFORM_VIEWS,
+      platforms: CHANNEL_PLATFORM_VIEWS.filter(
+        view => !this.#excluded(view.id),
+      ),
       agents: targets.ok
         ? targets.value.filter(row => row.dialable).map(row => row.address)
         : [],
@@ -876,7 +1142,8 @@ export class ConsoleChannels implements ChannelsPort {
       readonly secrets: Record<string, string>
     },
   ): StoredChannel {
-    if (!isChannelPlatform(draft.platform)) throw new Error('不支持的平台')
+    if (!isChannelPlatform(draft.platform) || this.#excluded(draft.platform))
+      throw new Error('不支持的平台')
     if (previous && previous.platform !== draft.platform)
       throw new Error('渠道平台不能修改')
     const platform = CHANNEL_PLATFORM_VIEWS.find(
@@ -905,6 +1172,18 @@ export class ConsoleChannels implements ChannelsPort {
       if (value !== undefined) settings[field.key] = String(value).trim()
       if (!settings[field.key]) throw new Error(`缺少${field.label}`)
     }
+    const ownerIds = cleanList(
+      draft.ownerIds ?? previous?.ownerIds,
+      '主人用户号',
+    )
+    if (draft.platform === 'qq-personal') {
+      settings.url = snowlumaUrl(settings.url ?? '')
+      // A personal account answers only people the owner named: no
+      // pairing replies to strangers from someone's own QQ.
+      if (ownerIds.length === 0) throw new Error('个人 QQ 需要填主人的 QQ 号')
+      if (ownerIds.some(id => !/^\d{5,12}$/.test(id)))
+        throw new Error('主人的 QQ 号只能是数字')
+    }
     let secrets = previous ? this.#secrets(previous) : {}
     const supplied = { ...credentials?.secrets }
     for (const field of platform.secrets) {
@@ -915,6 +1194,12 @@ export class ConsoleChannels implements ChannelsPort {
     secrets = { ...secrets, ...supplied }
     for (const field of platform.secrets)
       if (!secrets[field.key]) throw new Error(`缺少${field.label}`)
+    // The OneBot token goes into a request header: visible ASCII only.
+    if (
+      draft.platform === 'qq-personal' &&
+      !/^[\x21-\x7e]{1,512}$/.test(secrets.accessToken ?? '')
+    )
+      throw new Error('OneBot 访问令牌只能是不含空格的英文字母、数字和符号')
     if (platform.qrLogin && !secrets.token) throw new Error('请先扫码登录')
     const id = previous?.id ?? `ch-${randomUUID()}`
     const now = this.#now()
@@ -946,7 +1231,7 @@ export class ConsoleChannels implements ChannelsPort {
         memberRaw === null || memberRaw === undefined || memberRaw === ''
           ? null
           : address(memberRaw, '成员对话的智能体'),
-      ownerIds: cleanList(draft.ownerIds ?? previous?.ownerIds, '主人用户号'),
+      ownerIds,
       allowAll: draft.allowAll ?? previous?.allowAll ?? false,
       allowUsers: cleanList(
         draft.allowUsers ?? previous?.allowUsers,
@@ -964,6 +1249,8 @@ export class ConsoleChannels implements ChannelsPort {
             : (previous?.groupTrigger ?? 'mention'),
       replyWindowMs,
       prompt,
+      pairing: pairingMode(platform.pairing, draft.pairing, previous?.pairing),
+      groupContext: draft.groupContext ?? previous?.groupContext ?? true,
       settings,
       secret: secret as StoredChannel['secret'],
       createdAt: previous?.createdAt ?? now,
@@ -1008,6 +1295,7 @@ export class ConsoleChannels implements ChannelsPort {
     await this.#halt(id)
     this.#channels.delete(id)
     delete this.#state.cursors[id]
+    delete this.#state.pairing[id]
     for (const [key, row] of Object.entries(this.#state.conversations))
       if (row.channelId === id) {
         delete this.#state.conversations[key]
@@ -1017,6 +1305,25 @@ export class ConsoleChannels implements ChannelsPort {
     this.#saveBook()
     this.#saveState()
     return ok(null)
+  }
+
+  async pair(
+    channelId: string,
+    requestId: string,
+    decision: ChannelPairingDecision,
+    _actor?: DirectionActor,
+  ): Promise<ConsoleResult<ChannelView>> {
+    if (!this.#lock?.owned())
+      return fail('refused', '渠道目录由另一控制台实例持有')
+    const channel = this.#channels.get(channelId)
+    if (channel === undefined) return fail('not_found', '没有这个渠道')
+    if (decision === 'member' && channel.memberTarget === null)
+      return fail('invalid', '这个渠道没有成员对话的智能体')
+    const request = this.#pairing(channelId).take(requestId)
+    if (request === null) return fail('not_found', '这条配对请求已过期或已处理')
+    this.#saveState()
+    if (decision === 'deny') return ok(this.#view(channel))
+    return ok(this.#view(await this.#admitPaired(channel, request, decision)))
   }
 
   #loginView(login: PendingLogin): ChannelLoginView {
