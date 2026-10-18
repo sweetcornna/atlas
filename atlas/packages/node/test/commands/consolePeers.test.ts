@@ -712,7 +712,12 @@ describe('the roster', () => {
                 agent: 'reviewer',
                 configured: { runtime: 'dsh', model: null, source: 'default' },
                 effective: { runtime: 'omp' },
-                reason: { code: 'not-installed', message: '未安装' },
+                // The installer's own words: for the operator, not a model.
+                reason: {
+                  code: 'install-failed',
+                  message:
+                    'npm ERR! 404 GET https://registry.npmjs.org/@deepseek-ai%2fdsh - token npm_SECRETtoken',
+                },
               },
             ],
           }
@@ -755,8 +760,10 @@ describe('the roster', () => {
       runtime: 'qianmopi',
       model: null,
       busy: false,
-      description: expect.stringContaining('暂用 qianmopi：未安装'),
+      description:
+        'qianmopi 上的智能体，配置的是 DeepSeek Harness，暂用 qianmopi：安装失败',
     })
+    expect(JSON.stringify(rows)).not.toContain('npm')
     // A node that said nothing usable: the row is there, the facts are not.
     expect(byAgent.get(OTHER)).toMatchObject({
       runtime: null,

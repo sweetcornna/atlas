@@ -54,6 +54,7 @@ import {
   type ChatPort,
   type ChatTranscript,
   type ConsoleAccounts,
+  RUNTIME_FALLBACK_WORDS,
   type TenantPort,
   type UsagePort,
 } from '@qianmo/console'
@@ -121,7 +122,7 @@ const runtimeStatusSchema = z.object({
       effective: z
         .object({ runtime: z.string(), model: z.string().optional() })
         .passthrough(),
-      reason: z.object({ message: z.string() }).passthrough().optional(),
+      reason: z.object({ code: z.string() }).passthrough().optional(),
     }),
   ),
 })
@@ -500,10 +501,13 @@ export class ConsolePeers {
           : [
               `${label(fact.effective.runtime)} 上的智能体`,
               ...(model === null ? [] : [`模型 ${model}`]),
+              // The reason's code only, as a reader of the gateway page
+              // sees it: the node's own words (an installer's error) are
+              // for the operator, not for a model.
               ...(fact.reason === undefined
                 ? []
                 : [
-                    `配置的是 ${label(fact.configured.runtime)}，暂用 ${label(fact.effective.runtime)}：${fact.reason.message}`,
+                    `配置的是 ${label(fact.configured.runtime)}，暂用 ${label(fact.effective.runtime)}：${RUNTIME_FALLBACK_WORDS[fact.reason.code] ?? '不可用'}`,
                   ]),
             ].join('，'))
       return {
