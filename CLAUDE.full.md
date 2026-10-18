@@ -90,7 +90,7 @@
 
 ## 3. 命令、测试与门禁
 
-环境：Bun ≥ 1.4（`.tool-versions` 钉 1.4.3），用 `bunx` 不用 `npx`。omp 原生插件 `pi_natives.<platform>.node` 要先构建：`bun run build:native`（需要 `rust-toolchain.toml` 指定的 Rust nightly 与 ninja，细节见 omp 的 `docs/natives-build-release-debugging.md`）。
+环境：Bun ≥ 1.4（`.tool-versions` 钉 1.4.2），用 `bunx` 不用 `npx`。omp 原生插件 `pi_natives.<platform>.node` 要先构建：`bun run build:native`（需要 `rust-toolchain.toml` 指定的 Rust nightly 与 ninja，细节见 omp 的 `docs/natives-build-release-debugging.md`）。
 
 ```bash
 bun install
