@@ -1002,7 +1002,8 @@ const OPENCODE: Driver = {
   async removeMcp(ctx, name) {
     opencodeEdit(ctx.home, config => {
       const mcp = record(config.mcp)
-      if (!(name in mcp)) return false
+      // Its own entries only: `in` also finds `toString` and the like.
+      if (!Object.hasOwn(mcp, name)) return false
       delete mcp[name]
       config.mcp = mcp
       return true
@@ -1056,7 +1057,9 @@ export class NativeExtensions {
     if (one === undefined)
       throw new OpError('invalid', `这台节点上没有智能体 ${agent}`)
     const runtime = this.#options.runtimeOf(agent)
-    const driver = DRIVERS[runtime]
+    const driver = Object.hasOwn(DRIVERS, runtime)
+      ? DRIVERS[runtime]
+      : undefined
     if (driver === undefined || runtimeSpec(runtime)?.protocol === 'omp')
       throw unsupported(`${agent} 不在外部底层上，没有原生扩展`)
     const { home, launchDir } = runtimeDirs(runtime, agent)

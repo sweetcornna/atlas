@@ -28,6 +28,7 @@ import type {
   MagpieRuntimeEntryView,
   MagpieRuntimeView,
 } from '../directionPorts.js'
+import { RUNTIME_FALLBACK_WORDS } from '../directionPorts.js'
 import {
   absent,
   chevron,
@@ -58,15 +59,6 @@ export interface MagpieAgentsModel {
   readonly writer: boolean
   /** `--chat-default`: the main agent, marked 主. */
   readonly mainAgent: string | null
-}
-
-const REASON_WORD: Readonly<Record<string, string>> = {
-  'not-installed': '未安装',
-  installing: '安装中',
-  'install-failed': '安装失败',
-  'smoke-failed': '兼容检查未过',
-  'no-model': '没有可用模型',
-  'no-node': '节点没有 Node.js',
 }
 
 const GATEWAY_TAG: Readonly<Record<string, string>> = {
@@ -255,7 +247,7 @@ function statusCell(
       state(
         'warn',
         `暂用 ${labelOf(catalog, agent.effective)} · ${
-          REASON_WORD[agent.reason.code] ?? '不可用'
+          RUNTIME_FALLBACK_WORDS[agent.reason.code] ?? '不可用'
         }`,
       ) + detail(agent.reason.message)
     )

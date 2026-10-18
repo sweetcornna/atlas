@@ -879,6 +879,42 @@ test('native plugins: each harness’s own command and source kinds; the node’
   expect(value.notes.join()).toContain('不加载 opencode 插件')
 })
 
+test('opencode: an MCP server is removed by its own name only, never one the object inherits', async () => {
+  const { workspace } = scratch()
+  const config = join(
+    runtimeDirs('opencode', 'coder').home,
+    'config',
+    'opencode',
+  )
+  mkdirSync(config, { recursive: true })
+  const file = join(config, 'opencode.json')
+  // Compact on purpose: the node writes it back indented, so a rewrite shows.
+  const before = JSON.stringify({ mcp: { own: { type: 'local' } } })
+  writeFileSync(file, before)
+  const oc = native('opencode', workspace)
+  for (const name of ['toString', 'constructor', 'hasOwnProperty', 'valueOf']) {
+    const outcome = await oc.ext.control(
+      'runtime.ext.remove',
+      { agent: 'coder', kind: 'mcp', name },
+      {} as never,
+    )
+    expect({ name, outcome }).toMatchObject({
+      name,
+      outcome: { ok: false, code: RUNTIME_EXT_ERRORS.failed },
+    })
+  }
+  // Nothing was written.
+  expect(readFileSync(file, 'utf8')).toBe(before)
+  expect(
+    await oc.ext.control(
+      'runtime.ext.remove',
+      { agent: 'coder', kind: 'mcp', name: 'own' },
+      {} as never,
+    ),
+  ).toMatchObject({ ok: true })
+  expect(JSON.parse(readFileSync(file, 'utf8')).mcp).toEqual({})
+})
+
 test('native changes wait for the official frontend to close; listing does not', async () => {
   const { workspace } = scratch()
   const lock = acquireFrontendLock('coder', 'gemini')!

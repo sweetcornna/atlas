@@ -93,12 +93,18 @@ interface FakeRuntimeNode {
 class FakeLinks {
   readonly nodes = new Map<string, FakeRuntimeNode>()
   readonly writes: string[] = []
+  /** Every `runtime.status` and `runtime.versions` a node was asked. */
+  readonly reads: string[] = []
   /** Every `runtime.ext.*` a node was asked, lists included. */
   readonly ext: string[] = []
   #held: (() => void) | null = null
   hold = false
   /** `runtime.configure` answers a refusal. */
   refuseConfigure = false
+  /** A runtime the node reports as installing on its own (P36.3). */
+  installing: string | null = null
+  /** `runtime.ext.list` fails (the harness's list command broke). */
+  failList = false
 
   add(
     node: string,
@@ -144,7 +150,14 @@ class FakeLinks {
       notes: ['项目级配置不加载'],
       openCommand: `qm runtime open ${name}${agent.runtime === 'dsh' ? ' --port 8123' : ''}`,
     })
-    if (op === 'runtime.ext.list') return { ok: true, value: list() }
+    if (op === 'runtime.ext.list')
+      return this.failList
+        ? {
+            ok: false,
+            code: 'E_RUNTIME_EXT_FAILED',
+            message: '列表命令退出码 1',
+          }
+        : { ok: true, value: list() }
     if (fake.locked.has(name))
       return {
         ok: false,
@@ -227,6 +240,8 @@ class FakeLinks {
     actor: string,
   ): Promise<ControlOutcome> {
     const fake = this.nodes.get(node)
+    if (op === 'runtime.status' || op === 'runtime.versions')
+      this.reads.push(`${node} ${op}`)
     if (fake === undefined || fake.kind === 'down')
       return { ok: false, code: 'unreachable', message: '节点控制链路未连接' }
     if (fake.kind === 'old') {
@@ -261,7 +276,7 @@ class FakeLinks {
               installed:
                 spec.install.kind === 'builtin' || fake.installed.has(spec.id),
               ...(fake.installed.has(spec.id) ? { version: '1.0.0' } : {}),
-              installing: false,
+              installing: this.installing === spec.id,
               verified: spec.verified,
             }),
           ),
@@ -347,6 +362,7 @@ function open(now?: () => number): ConsoleMagpie {
     secretsPath: paths.secrets,
     keyPath: paths.key,
     providers,
+    ...(now === undefined ? {} : { now }),
     system: {
       caller: providers.systemCaller(record, SYSTEM_MAGPIE_SUBJECT),
       record,
@@ -992,6 +1008,77 @@ describe('runtimes on a node', () => {
   })
 })
 
+describe('polling', () => {
+  test('a page polled every 3 s reads runtime.status each time, runtime.versions every 5 minutes or after an install, magpie every 15 s', async () => {
+    let clock = Date.now()
+    const port = await connected(() => clock)
+    const agents = agentsOf(port)
+    await snapshot(port)
+    await agents.idle()
+    const asked = (op: string) =>
+      links.reads.filter(line => line === `beta-1 ${op}`).length
+    const management = () =>
+      fake.requests.filter(
+        one => one.target === 'management' && one.path === '/api/providers',
+      ).length
+    const status = asked('runtime.status')
+    const versions = asked('runtime.versions')
+    const before = management()
+    // A minute of the page following a job: twenty reads.
+    for (let i = 0; i < 20; i++) {
+      clock += 3_000
+      await snapshot(port)
+    }
+    await agents.idle()
+    expect(asked('runtime.status') - status).toBe(20)
+    expect(asked('runtime.versions') - versions).toBe(0)
+    // magpie's management API: one read of its providers (and groups) per
+    // 15 s, not one per poll.
+    expect(management() - before).toBeLessThanOrEqual(4)
+    // Five minutes on the versions are read again.
+    clock += 5 * 60_000
+    await snapshot(port)
+    expect(asked('runtime.versions') - versions).toBe(1)
+    // An install makes them stale at once.
+    links.nodes.get('beta-1')?.installed.delete('codex')
+    const installed = await agents.install(
+      { node: 'beta-1', runtime: 'codex' },
+      caller(),
+    )
+    expect(installed.ok && installed.value.state).toBe('done')
+    clock += 3_000
+    const after = await snapshot(port)
+    expect(asked('runtime.versions') - versions).toBe(2)
+    expect(
+      after.nodes
+        .find(one => one.node === 'beta-1')
+        ?.runtimes.find(one => one.id === 'codex')?.installed,
+    ).toBe(true)
+  })
+
+  test('while a node reports an install in progress, its versions follow the page', async () => {
+    let clock = Date.now()
+    const port = await connected(() => clock)
+    await snapshot(port)
+    await agentsOf(port).idle()
+    links.installing = 'claude-code'
+    clock += 5 * 60_000
+    await snapshot(port)
+    const asked = () =>
+      links.reads.filter(line => line === 'beta-1 runtime.versions').length
+    const first = asked()
+    clock += 3_000
+    await snapshot(port)
+    expect(asked()).toBe(first + 1)
+    links.installing = null
+    clock += 3_000
+    await snapshot(port)
+    clock += 3_000
+    await snapshot(port)
+    expect(asked()).toBe(first + 2)
+  })
+})
+
 describe('gateway lanes', () => {
   test('Gemini joins the lane addresses once a catalog runtime speaks it', () => {
     const base = RUNTIME_CATALOG.filter(spec => !spec.lanes.includes('gemini'))
@@ -1153,6 +1240,34 @@ describe('native extensions (P36.7)', () => {
     expect(ghost.ok ? null : ghost.failure.code).toBe('not_found')
     const nowhere = await agents.extensions('nowhere-1', 'coder')
     expect(nowhere.ok ? null : nowhere.failure.code).toBe('not_found')
+  })
+
+  test('a list that failed is not asked for again within a minute, by anyone; reads at the same time share one', async () => {
+    let clock = Date.now()
+    const port = await probed(() => clock)
+    const agents = agentsOf(port)
+    links.failList = true
+    const read = () => agents.extensions('beta-1', 'reviewer')
+    const first = await read()
+    expect(first.ok ? 'ok' : first.failure).toEqual({
+      code: 'refused',
+      message: '节点 · 列表命令退出码 1',
+    })
+    expect(extLines('"agent":"reviewer"')).toHaveLength(1)
+    // A reader opening the panel again and again runs nothing on the node.
+    for (let i = 0; i < 5; i++) {
+      clock += 5_000
+      const again = await read()
+      expect(again.ok ? 'ok' : again.failure.message).toBe(
+        '节点 · 列表命令退出码 1',
+      )
+    }
+    expect(extLines('"agent":"reviewer"')).toHaveLength(1)
+    clock += 61_000
+    links.failList = false
+    const [one, two] = await Promise.all([read(), read()])
+    expect(one.ok && two.ok).toBe(true)
+    expect(extLines('"agent":"reviewer"')).toHaveLength(2)
   })
 
   test('a runtime change drops the agent’s list; another runtime’s list is never shown as its', async () => {

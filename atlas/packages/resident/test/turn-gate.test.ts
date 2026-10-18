@@ -282,8 +282,8 @@ describe('re-entry along a verified call chain (P36.6)', () => {
       held(gate, events, `q${i}`),
     )
     expect(gate.saturated).toBe(true)
-    expect(gate.wouldNest(['task-a'])).toBe(true)
-    expect(gate.wouldNest(['task-x'])).toBe(false)
+    expect(gate.nestsNow(['task-a'])).toBe(true)
+    expect(gate.nestsNow(['task-x'])).toBe(false)
     const answer = held(gate, events, 'b', { key: 'task-b', chain: ['task-a'] })
     expect(answer.started).toBe(true)
     expect(gate.queued).toBe(LIMITS.maxQueuedTurns)
@@ -464,5 +464,25 @@ describe('re-entry along a verified call chain (P36.6)', () => {
     asker.release()
     await Promise.all([live.done, asker.done])
     expect(events).not.toContain('stale')
+  })
+
+  test('nestsNow tells a host whether a chain would nest right now, without queueing anything', async () => {
+    const gate = new NodeTurnGate()
+    const events: string[] = []
+    // Nothing runs: nothing to nest in.
+    expect(gate.nestsNow(['task-a'])).toBe(false)
+    const asker = held(gate, events, 'a', { key: 'task-a' })
+    expect(gate.nestsNow(['task-a'])).toBe(true)
+    expect(gate.nestsNow(['task-x'])).toBe(false)
+    expect(gate.nestsNow([])).toBe(false)
+    const nested = held(gate, events, 'b', { key: 'task-b', chain: ['task-a'] })
+    // Only the innermost turn counts, as for a turn that arrives.
+    expect(gate.nestsNow(['task-a'])).toBe(false)
+    expect(gate.nestsNow(['task-a', 'task-b'])).toBe(true)
+    expect(gate.queued).toBe(0)
+    nested.release()
+    asker.release()
+    await Promise.all([nested.done, asker.done])
+    expect(gate.nestsNow(['task-a'])).toBe(false)
   })
 })

@@ -22,6 +22,7 @@
 import { describe, expect, it } from 'bun:test'
 import { FleetDriver, fleetConfigFromEnv } from '../fleet/driver.js'
 import { getDialTimeoutScale, setDialTimeoutScale } from '../local/dial.js'
+import { disposableNodeEnv } from '../local/driver.js'
 import { runScenario } from '../runner.js'
 import type {
   AcceptanceDriver,
@@ -146,6 +147,24 @@ describe('一次性节点的配置根', () => {
     // 附着分支不起进程，configRoot 换掉它没有任何意义 —— 那会让审计链、身份、
     // 会话表全部指向一个空目录，而现场看起来像内测节点被清空了。
     expect(node.configRoot).toBe('/home/nobody/qianmo-beta/nodes/beta-1/config')
+  })
+})
+
+describe('一次性节点不下载底层（P36 §2）', () => {
+  it('两条腿起常驻都带 QIANMO_RUNTIME_AUTOINSTALL=0，场景自己的 env 仍可覆盖', () => {
+    // 缺省底层是 dsh：不关掉，每个一次性节点一起来就在后台装约 850 MB。
+    // 用环境变量而不是 --no-runtime-autoinstall：被测的旧产物不认识那个参数。
+    expect(disposableNodeEnv('/tmp/root/config', 'psk-x', undefined)).toEqual({
+      QIANMO_CONFIG_DIR: '/tmp/root/config',
+      QIANMO_TRANSPORT_PSK: 'psk-x',
+      QIANMO_RUNTIME_AUTOINSTALL: '0',
+    })
+    expect(
+      disposableNodeEnv('/tmp/root/config', 'psk-x', {
+        QIANMO_RUNTIME_AUTOINSTALL: '1',
+        EXTRA: 'y',
+      }),
+    ).toMatchObject({ QIANMO_RUNTIME_AUTOINSTALL: '1', EXTRA: 'y' })
   })
 })
 

@@ -20,6 +20,8 @@
 # Usage (from anywhere; runs at the repo root):
 #   atlas/scripts/test-shards.sh             all shards
 #   atlas/scripts/test-shards.sh <dir> …     only these shard directories
+#   atlas/scripts/test-shards.sh --list [<dir> …]
+#                                            print the shard directories, run nothing
 #
 # One JUnit XML per shard lands in `test-reports/` (cleared first, so a shard
 # that dies before writing cannot leave a stale report under its name).
@@ -32,7 +34,16 @@ set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 
 REPORT_DIR=test-reports
-rm -rf "$REPORT_DIR" && mkdir -p "$REPORT_DIR"
+
+list_only=0
+if [ "${1:-}" = "--list" ]; then
+  list_only=1
+  shift
+fi
+
+if [ "$list_only" -eq 0 ]; then
+  rm -rf "$REPORT_DIR" && mkdir -p "$REPORT_DIR"
+fi
 
 if [ $# -gt 0 ]; then
   shards=("$@")
@@ -47,8 +58,16 @@ for d in "${shards[@]}"; do
   d="${d%/}"
   [ -d "$d" ] || continue
   # A directory without tests is not a shard; `bun test` would call "no files
-  # matched" a failure.
-  if ! find "$d" -path '*/node_modules' -prune -o \( -name '*.test.ts' -o -name '*.test.tsx' \) -print | grep -q .; then
+  # matched" a failure. No pipe here: under pipefail, `find | grep -q .` dies
+  # with SIGPIPE (141) once find writes its listing in more than one chunk
+  # (GNU find past ~4 KB), and that read as "no tests" and silently dropped
+  # atlas/packages/node from every Linux run.
+  if [ -z "$(find "$d" -path '*/node_modules' -prune -o \( -name '*.test.ts' -o -name '*.test.tsx' \) -print -quit)" ]; then
+    continue
+  fi
+
+  if [ "$list_only" -eq 1 ]; then
+    echo "$d"
     continue
   fi
 
@@ -65,6 +84,10 @@ for d in "${shards[@]}"; do
     echo "::error title=Test shard failed::${d}"
   fi
 done
+
+if [ "$list_only" -eq 1 ]; then
+  exit 0
+fi
 
 if [ "$count" -eq 0 ]; then
   echo "──── no shards found" >&2

@@ -306,7 +306,7 @@ export interface ResidentCliConfig {
   readonly agentModels?: readonly (readonly [string, string])[]
   /** `--agent-runtime` as given, `omp` included (P36 §3.1). */
   readonly agentRuntimes?: readonly (readonly [string, string])[]
-  /** `--default-runtime`; absent means `dsh`. */
+  /** `--default-runtime`, else `QIANMO_DEFAULT_RUNTIME`; absent means `dsh`. */
   readonly defaultRuntime?: string
   /** `--no-runtime-autoinstall`. */
   readonly runtimeAutoInstall?: false
@@ -413,7 +413,16 @@ export interface ResidentCliConfig {
   readonly witnessIntervalMs?: number
 }
 
-export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
+/**
+ * `--default-runtime` for service units: older binaries stop on a flag they do
+ * not know but ignore a variable, so a unit that carries it can roll back.
+ */
+export const DEFAULT_RUNTIME_ENV = 'QIANMO_DEFAULT_RUNTIME'
+
+export function parseResidentArgs(
+  args: readonly string[],
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): ResidentCliConfig {
   let ompIdleMs: number | undefined
   let ompMaxChildren: number | undefined
   let node: string | undefined
@@ -926,6 +935,15 @@ export function parseResidentArgs(args: readonly string[]): ResidentCliConfig {
     if (trusted.some(([, commander]) => commander === key))
       throw new Error('approval key must differ from every command key')
   }
+  // The flag wins; the variable is not read then. Empty counts as unset.
+  const envRuntime = env[DEFAULT_RUNTIME_ENV]?.trim()
+  if (defaultRuntime === undefined && envRuntime) {
+    defaultRuntime = normalizeRuntimeId(envRuntime)
+    if (defaultRuntime === undefined)
+      throw new Error(
+        `${DEFAULT_RUNTIME_ENV} must be omp (qianmopi), ${EXTERNAL_RUNTIME_KINDS.join(', ')}; got ${JSON.stringify(envRuntime)}`,
+      )
+  }
   for (const name of [
     ...agentRuntimes.keys(),
     ...agentModels.keys(),
@@ -1108,6 +1126,9 @@ the node's runtimes.json, wins over these flags):
   --default-runtime <id>   Runtime of agents nobody configured: one of
                            ${EXTERNAL_RUNTIME_KINDS.join(', ')} or omp (also written qianmopi).
                            Default ${DEFAULT_RUNTIME}. Use omp to keep agents on qianmopi.
+                           ${DEFAULT_RUNTIME_ENV}=<id> in the environment does
+                           the same and survives a rollback to a binary that
+                           lacks this flag; the flag wins over it.
   --agent-runtime <name>=<id>
                            Run this agent on that runtime. Agents on
                            different runtimes share the node; each keeps

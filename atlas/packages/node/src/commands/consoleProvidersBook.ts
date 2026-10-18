@@ -471,6 +471,7 @@ function fold(state: State, event: BookEvent, at: number): string | null {
         outcome: event.outcome,
         ...(event.code === undefined ? {} : { code: event.code }),
         force: event.force,
+        ...(event.pending ? { pending: true } : {}),
       })
       return null
     }

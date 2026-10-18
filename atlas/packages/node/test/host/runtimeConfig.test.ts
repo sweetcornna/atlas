@@ -10,6 +10,7 @@
 
 import { afterEach, beforeEach, expect, jest, test } from 'bun:test'
 import {
+  existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -117,19 +118,22 @@ const MODELS = new Set([
 ])
 
 function setup(
-  options: Partial<NodeRuntimesOptions> & {
+  options: Partial<Omit<NodeRuntimesOptions, 'installer'>> & {
     agents?: readonly RuntimeAgentFlags[]
+    /** Options of the installer the helper builds (not an installer). */
     installer?: RuntimeUpdateOptions
   } = {},
 ) {
+  const { installer: installerOptions, ...rest } = options
   const npm = fakeNpm()
   const smoke = { reason: null as string | null }
   const installer = new RuntimeInstaller({
     run: npm.run,
     freeBytes: () => 64 * 1024 ** 3,
+    freeMemoryBytes: () => 64 * 1024 ** 3,
     which: () => null,
     smoke: async () => smoke.reason,
-    ...options.installer,
+    ...installerOptions,
   })
   let main: string | undefined = 'magpie/deepseek-v4'
   const changed: string[] = []
@@ -155,7 +159,7 @@ function setup(
     mainModel: () => main,
     // These cases are about install, Node.js and models, not launchers.
     launchable: () => true,
-    ...options,
+    ...rest,
   })
   made.push(runtimes)
   runtimes.onChange(agent => changed.push(agent))
@@ -488,6 +492,15 @@ test('the default install runs at start in the background and retries after 5, 1
   expect(changed).toEqual([])
 })
 
+/** Removes what the node installed: the runtime trees and the shared prefix of earlier builds. */
+const dropInstalled = () => {
+  rmSync(managedRuntimePrefix(), { recursive: true, force: true })
+  rmSync(qianmoConfigPath('runtimes', 'trees'), {
+    recursive: true,
+    force: true,
+  })
+}
+
 test('a retry that works brings the agents over; stop() cancels what is pending; --no-runtime-autoinstall installs nothing', async () => {
   jest.useFakeTimers()
   const { runtimes, npm, changed } = setup({
@@ -505,7 +518,7 @@ test('a retry that works brings the agents over; stop() cancels what is pending;
   expect(changed).toEqual(['main'])
 
   const second = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
-  rmSync(managedRuntimePrefix(), { recursive: true, force: true })
+  dropInstalled()
   second.npm.fail = true
   await second.runtimes.start()
   await settle()
@@ -519,6 +532,165 @@ test('a retry that works brings the agents over; stop() cancels what is pending;
   await off.runtimes.start()
   await settle()
   expect(off.npm.installs()).toBe(0)
+})
+
+test('the backoff outlives a restart: a node started again after a failure waits out the rest of it', async () => {
+  jest.useFakeTimers()
+  const one = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
+  one.npm.fail = true
+  await one.runtimes.start()
+  await settle()
+  expect(one.npm.installs()).toBe(1)
+  expect(one.installer.lastInstall('dsh')).toMatchObject({
+    ok: false,
+    failures: 1,
+  })
+  one.runtimes.stop()
+  // Started again two minutes later: three of the five minutes are left.
+  jest.advanceTimersByTime(2 * 60_000)
+  const two = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
+  two.npm.fail = true
+  await two.runtimes.start()
+  await settle()
+  expect(two.npm.installs()).toBe(0)
+  expect(state(two.runtimes, 'main').reason?.code).toBe('install-failed')
+  const tries = async (ms: number) => {
+    jest.advanceTimersByTime(ms)
+    await settle()
+    return two.npm.installs()
+  }
+  expect(await tries(3 * 60_000 - 1)).toBe(0)
+  expect(await tries(1)).toBe(1)
+  expect(two.installer.lastInstall('dsh')).toMatchObject({ failures: 2 })
+  // The rest of the schedule goes on as if there had been no restart.
+  expect(await tries(15 * 60_000)).toBe(2)
+  expect(await tries(60 * 60_000)).toBe(3)
+  expect(await tries(10 * 60 * 60_000)).toBe(3)
+  expect(two.installer.lastInstall('dsh')).toMatchObject({ failures: 4 })
+  two.runtimes.stop()
+  // Retries used up: each later start tries once, no sooner than an hour
+  // after the last failure (ten hours have passed here)…
+  const three = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
+  three.npm.fail = true
+  await three.runtimes.start()
+  await settle()
+  expect(three.npm.installs()).toBe(1)
+  three.runtimes.stop()
+  // …and started again right after that failure, it waits the hour out,
+  // tries once and stops trying for that run.
+  const four = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
+  four.npm.fail = true
+  await four.runtimes.start()
+  await settle()
+  expect(four.npm.installs()).toBe(0)
+  const later = async (ms: number) => {
+    jest.advanceTimersByTime(ms)
+    await settle()
+    return four.npm.installs()
+  }
+  expect(await later(60 * 60_000 - 1)).toBe(0)
+  expect(await later(1)).toBe(1)
+  expect(await later(10 * 60 * 60_000)).toBe(1)
+  expect(four.installer.lastInstall('dsh')).toMatchObject({ failures: 6 })
+  // A success clears the count.
+  four.npm.fail = false
+  expect((await four.installer.install('dsh')).ok).toBe(true)
+  expect(four.installer.lastInstall('dsh')).toMatchObject({ ok: true })
+  expect(four.installer.lastInstall('dsh')?.failures).toBeUndefined()
+})
+
+test('a pending retry is dropped once no agent is configured on its runtime', async () => {
+  jest.useFakeTimers()
+  const { runtimes, npm } = setup({
+    autoInstall: true,
+    agents: [{ agent: 'a' }, { agent: 'b' }],
+  })
+  npm.fail = true
+  await runtimes.start()
+  await settle()
+  expect(npm.installs()).toBe(1)
+  // b is still on dsh: the retry stays.
+  runtimes.configure({ agent: 'a', runtime: 'qianmopi' })
+  jest.advanceTimersByTime(5 * 60_000)
+  await settle()
+  expect(npm.installs()).toBe(2)
+  runtimes.configure({ agent: 'b', runtime: 'qianmopi' })
+  expect(runtimes.inUse('dsh')).toEqual([])
+  jest.advanceTimersByTime(10 * 60 * 60_000)
+  await settle()
+  expect(npm.installs()).toBe(2)
+})
+
+test('a failure recorded before the count existed backs off like a first one', async () => {
+  jest.useFakeTimers()
+  const file = qianmoConfigPath('runtimes', 'installs.json')
+  mkdirSync(path.dirname(file), { recursive: true })
+  writeFileSync(
+    file,
+    JSON.stringify({
+      dsh: { at: Date.now(), ok: false, version: DSH_PIN, error: 'E404' },
+    }),
+  )
+  const { runtimes, npm } = setup({
+    autoInstall: true,
+    agents: [{ agent: 'main' }],
+  })
+  npm.fail = true
+  await runtimes.start()
+  await settle()
+  expect(npm.installs()).toBe(0)
+  jest.advanceTimersByTime(5 * 60_000)
+  await settle()
+  expect(npm.installs()).toBe(1)
+})
+
+test('a dsh on PATH that is not DeepSeek Harness is no dsh: the agent says why, and the default install goes ahead', async () => {
+  const { runtimes, npm } = setup({
+    autoInstall: true,
+    agents: [{ agent: 'main' }],
+    installer: {
+      which: command => (command === 'dsh' ? '/usr/bin/dsh' : null),
+    },
+  })
+  let release!: () => void
+  npm.hold = new Promise(done => {
+    release = done
+  })
+  await runtimes.start()
+  await settle()
+  expect(state(runtimes, 'main').reason?.code).toBe('installing')
+  expect(npm.installs()).toBe(1)
+  release()
+  await settle()
+  expect(state(runtimes, 'main').effective).toMatchObject({ runtime: 'dsh' })
+  expect(runtimes.installer.availability('dsh').source).toBe('prefix')
+  // Without the default install, the reason names the binary it did not take.
+  dropInstalled()
+  const off = setup({
+    agents: [{ agent: 'main' }],
+    installer: {
+      which: command => (command === 'dsh' ? '/usr/bin/dsh' : null),
+    },
+  })
+  await off.runtimes.start()
+  expect(state(off.runtimes, 'main').reason).toEqual({
+    code: 'not-installed',
+    message:
+      '节点上没有 DeepSeek Harness：PATH 上的 /usr/bin/dsh 不是 DeepSeek Harness（它的 --help 里没有这个名字），当作没有安装',
+  })
+})
+
+test('start sweeps the scratch prefixes a dead node left, install or no install', async () => {
+  const stale = qianmoConfigPath(
+    'runtimes',
+    'npm-stage-0f9c6a52-6a8e-4d1b-9d4e-2b7f0c1a3e55',
+  )
+  mkdirSync(path.join(stale, 'node_modules'), { recursive: true })
+  const { runtimes, npm } = setup({ autoInstall: false })
+  expect(existsSync(stale)).toBe(true)
+  await runtimes.start()
+  expect(existsSync(stale)).toBe(false)
+  expect(npm.installs()).toBe(0)
 })
 
 test('unmanaged (embedders): no fallback and no default install; agents run where they say', () => {

@@ -1640,6 +1640,19 @@ export interface MagpieRuntimeView {
   } | null
 }
 
+/**
+ * 退回 qianmopi 的原因码对应的短语（`harness-backends.md` §3.3）。原因的原文
+ * （安装器的报错等）只给能写的人；只读的人与智能体间问答的名册只看这些短语。
+ */
+export const RUNTIME_FALLBACK_WORDS: Readonly<Record<string, string>> = {
+  'not-installed': '未安装',
+  installing: '安装中',
+  'install-failed': '安装失败',
+  'smoke-failed': '兼容检查未过',
+  'no-model': '没有可用模型',
+  'no-node': '节点没有 Node.js',
+}
+
 /** 智能体的模型选择：自动按系列取，或手选的 magpie 模型号。 */
 export type MagpieAgentChoice =
   | { readonly mode: 'auto' }

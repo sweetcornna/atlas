@@ -17,14 +17,15 @@
  *
  * The default install (§2) lives here too: at start, every npm runtime some
  * agent is configured on and the node lacks is installed in the background,
- * retried after 5, 15 and 60 minutes.
+ * retried after 5, 15 and 60 minutes; the count of failures is kept across
+ * restarts, so a restart does not install again before the wait is over.
  */
 
 import { qianmoConfigPath } from '@qianmo/paths'
 import type { ControlOutcome } from '@qianmo/protocol'
 import { readTextIfExists, writePrivateJson } from '../providers/store.js'
 import type { ControlHandler } from './control.js'
-import { RuntimeInstaller } from './runtimeUpdate.js'
+import { failuresOf, RuntimeInstaller } from './runtimeUpdate.js'
 import {
   DEFAULT_RUNTIME,
   FALLBACK_RUNTIME,
@@ -84,7 +85,12 @@ export interface NodeRuntimesOptions {
   readonly onError?: (error: unknown) => void
 }
 
-/** §2: retried after 5, 15 and 60 minutes, then not again in this process. */
+/**
+ * §2: retried after 5, 15 and 60 minutes, then not again in this process.
+ * The count of failures is kept in `installs.json`: a node started again
+ * waits out what is left of the wait its last failure set (the last one,
+ * once the retries are used up) instead of installing at once.
+ */
 export const RUNTIME_INSTALL_RETRY_MS: readonly number[] = [
   5 * 60_000,
   15 * 60_000,
@@ -126,7 +132,8 @@ export class NodeRuntimes {
   readonly #agents: ReadonlyMap<string, RuntimeAgentFlags>
   readonly #listeners = new Set<(agent: string) => void>()
   readonly #states = new Map<string, AgentRuntimeState>()
-  readonly #timers = new Set<ReturnType<typeof setTimeout>>()
+  /** Pending default installs, by runtime. */
+  readonly #retries = new Map<string, ReturnType<typeof setTimeout>>()
   /** The last successful install seen per runtime: newer ones recycle. */
   readonly #installedAt = new Map<string, number>()
   readonly #defaultRuntime: string
@@ -318,7 +325,8 @@ export class NodeRuntimes {
         message: `这个版本的阡陌还不能驱动 ${spec.label}（ACP 启动方式未定）`,
       }
     const installer = this.installer
-    if (!installer.availability(runtime).installed) {
+    const here = installer.availability(runtime)
+    if (!here.installed) {
       if (installer.installing(runtime))
         return { code: 'installing', message: `${spec.label} 正在安装` }
       const last = installer.lastInstall(runtime)
@@ -327,7 +335,13 @@ export class NodeRuntimes {
           code: last.code ?? 'install-failed',
           message: last.error ?? `${spec.label} 安装失败`,
         }
-      return { code: 'not-installed', message: `节点上没有 ${spec.label}` }
+      return {
+        code: 'not-installed',
+        message:
+          here.rejected === undefined
+            ? `节点上没有 ${spec.label}`
+            : `节点上没有 ${spec.label}：${here.rejected}`,
+      }
     }
     const range =
       spec.install.kind === 'npm' ? spec.install.needsNode : undefined
@@ -450,11 +464,22 @@ export class NodeRuntimes {
   }
 
   /**
-   * At resident start, after the model service is in place: computes every
-   * agent's runtime, starts the default installs and checks Node.js. Never
-   * waits for an install; resolves once Node.js was checked.
+   * At resident start, after the model service is in place: sweeps leftover
+   * scratch prefixes, checks who the configured runtimes found on PATH are,
+   * computes every agent's runtime, starts the default installs and checks
+   * Node.js. Never waits for an install; resolves once Node.js was checked.
    */
   async start(): Promise<void> {
+    // What an install left when the node died in the middle of it.
+    this.installer.sweepStages()
+    // A configured runtime found on PATH says who it is before it counts
+    // (Debian's `dsh` is not DeepSeek Harness), and before the install.
+    const configured = new Set(
+      [...this.#agents.keys()].map(agent => this.configured(agent).runtime),
+    )
+    await Promise.all(
+      [...configured].map(kind => this.installer.checkPath(kind)),
+    )
     this.recompute()
     if (this.#options.autoInstall === true) this.#autoInstall()
     const needsNode = this.#options.agents.some(agent => {
@@ -479,10 +504,49 @@ export class NodeRuntimes {
       )
         missing.add(runtime)
     }
-    for (const kind of missing) this.#installInBackground(kind, 0)
+    for (const kind of missing) {
+      // What an earlier run's failures left of the backoff (§2); a clock
+      // that went back never makes it longer than the wait itself.
+      const last = this.installer.lastInstall(kind)
+      const failures = failuresOf(last)
+      const wait = failures === 0 ? 0 : this.#delay(failures)
+      const left = (last?.at ?? 0) + wait - Date.now()
+      this.#later(kind, Math.min(wait, Math.max(0, left)))
+    }
   }
 
-  #installInBackground(kind: string, retry: number): void {
+  /** The wait after `failures` failed installs in a row (the last, past the end). */
+  #delay(failures: number): number {
+    const delays = this.#options.retryDelaysMs ?? RUNTIME_INSTALL_RETRY_MS
+    return delays[Math.min(failures, delays.length) - 1] ?? 0
+  }
+
+  #later(kind: string, wait: number): void {
+    if (this.#stopped || this.#retries.has(kind)) return
+    // Configured away while it was installing: nothing to retry for.
+    if (this.inUse(kind).length === 0) return
+    if (wait <= 0) {
+      this.#installInBackground(kind)
+      return
+    }
+    const timer = setTimeout(() => {
+      this.#retries.delete(kind)
+      if (this.inUse(kind).length > 0) this.#installInBackground(kind)
+    }, wait)
+    timer.unref?.()
+    this.#retries.set(kind, timer)
+  }
+
+  /** No agent is configured on a runtime any more: its pending retry goes. */
+  #dropUnusedRetries(): void {
+    for (const [kind, timer] of this.#retries)
+      if (this.inUse(kind).length === 0) {
+        clearTimeout(timer)
+        this.#retries.delete(kind)
+      }
+  }
+
+  #installInBackground(kind: string): void {
     if (this.#stopped) return
     void this.installer
       .ensureRuntimeInstalled(kind)
@@ -491,15 +555,11 @@ export class NodeRuntimes {
         this.#options.onError?.(
           new Error(`default install of ${kind} failed: ${result.message}`),
         )
+        // In this run: one retry per entry of the schedule, then no more.
+        const failures = failuresOf(this.installer.lastInstall(kind))
         const delays = this.#options.retryDelaysMs ?? RUNTIME_INSTALL_RETRY_MS
-        const delay = delays[retry]
-        if (delay === undefined) return
-        const timer = setTimeout(() => {
-          this.#timers.delete(timer)
-          this.#installInBackground(kind, retry + 1)
-        }, delay)
-        timer.unref?.()
-        this.#timers.add(timer)
+        if (failures > 0 && failures <= delays.length)
+          this.#later(kind, this.#delay(failures))
       })
       .catch(error => this.#options.onError?.(error))
   }
@@ -507,8 +567,8 @@ export class NodeRuntimes {
   /** The node is stopping: no more retries, and running installs end. */
   stop(): void {
     this.#stopped = true
-    for (const timer of this.#timers) clearTimeout(timer)
-    this.#timers.clear()
+    for (const timer of this.#retries.values()) clearTimeout(timer)
+    this.#retries.clear()
     this.installer.stop()
   }
 
@@ -571,6 +631,7 @@ export class NodeRuntimes {
     this.recompute(
       JSON.stringify(agents[agent] ?? {}) === before ? [] : [agent],
     )
+    this.#dropUnusedRetries()
     return { ok: true, value: this.#states.get(agent) }
   }
 

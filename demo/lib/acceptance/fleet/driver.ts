@@ -127,7 +127,11 @@ import {
   tokensFromBanner,
 } from '../local/console.js'
 import { rawDial } from '../local/dial.js'
-import { ACCEPTANCE_PSK, TIMINGS_FILE } from '../local/driver.js'
+import {
+  ACCEPTANCE_PSK,
+  disposableNodeEnv,
+  TIMINGS_FILE,
+} from '../local/driver.js'
 import { TRAIL_PATH } from '../observe.js'
 import { SshMultiplex, TUNNEL_NO_MUX_ARGS } from './sshMux.js'
 import {
@@ -739,11 +743,7 @@ export class FleetDriver implements AcceptanceDriver {
     }
     argv.push(...(spec.extraArgs ?? []))
 
-    const env: Record<string, string> = {
-      QIANMO_CONFIG_DIR: configRoot,
-      QIANMO_TRANSPORT_PSK: psk,
-      ...spec.env,
-    }
+    const env = disposableNodeEnv(configRoot, psk, spec.env)
     const envPrefix = Object.entries(env)
       .map(([k, v]) => `${k}='${shellQuote(v)}' `)
       .join('')

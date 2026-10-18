@@ -58,6 +58,10 @@ beta_start_process() {
     printf '=== %s\\n' "$name"
     printf '%s\\n' "$@"
   } >>"$BETA_ARGV_LOG"
+  # What the process would inherit: \`env\` is a child, so only exported values.
+  if [ -n "\${BETA_ENV_LOG:-}" ]; then
+    printf '%s %s\\n' "$name" "$(env | grep '^QIANMO_RUNTIME_AUTOINSTALL=' || printf unset)" >>"$BETA_ENV_LOG"
+  fi
   local a prev='' ready=''
   for a in "$@"; do
     if [ "$prev" = '--ready' ]; then ready="$a"; fi
@@ -330,6 +334,34 @@ afterEach(() => {
   for (const value of scratches.splice(0)) {
     rmSync(value, { force: true, recursive: true })
   }
+})
+
+describe('beta-up.sh starts the node without the default runtime install (P36 §2)', () => {
+  function inherited(env: Record<string, string>): string {
+    const place = scratch()
+    const log = join(place.argvLog, '..', 'env.log')
+    const result = runBetaUp(
+      place,
+      ['--role', 'node', '--node', 'beta-1', '--agent', 'planner'],
+      { env: { ...env, BETA_ENV_LOG: log } },
+    )
+    expect({ log: existsSync(log), stderr: result.stderr }).toEqual({
+      log: true,
+      stderr: result.stderr,
+    })
+    return readFileSync(log, 'utf8').trim()
+  }
+
+  test('off unless the operator chose otherwise, as an exported variable', () => {
+    // A variable, not --no-runtime-autoinstall: a rollback to a binary that
+    // lacks the flag would stop on it, and ignores the variable.
+    expect(inherited({ QIANMO_RUNTIME_AUTOINSTALL: '' })).toBe(
+      'beta-1 QIANMO_RUNTIME_AUTOINSTALL=0',
+    )
+    expect(inherited({ QIANMO_RUNTIME_AUTOINSTALL: '1' })).toBe(
+      'beta-1 QIANMO_RUNTIME_AUTOINSTALL=1',
+    )
+  })
 })
 
 describe('beta-up.sh forwards tail arguments to the underlying command', () => {

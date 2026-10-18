@@ -26,6 +26,8 @@ let clock: number
 let requests: string[]
 let pushes: string[]
 let calls: string[]
+/** Nodes the gateway page was told to read the runtimes of again. */
+let changed: string[]
 let nodeVersions: Record<string, string>
 let failUpgrade: Set<string>
 
@@ -143,6 +145,7 @@ function make(options: { self?: SelfUpgrader } = {}): ConsoleUpdates {
       },
     },
     self: options.self ?? new SelfUpgrader({ tree: null, version: '3.0.1' }),
+    runtimesChanged: node => changed.push(node),
     now: () => clock,
     sleep: async () => {
       clock += 5_000
@@ -168,6 +171,7 @@ beforeEach(() => {
   requests = []
   pushes = []
   calls = []
+  changed = []
   nodeVersions = { 'tokyo-1': '3.0.1', 'osaka-1': '3.1.0' }
   failUpgrade = new Set()
 })
@@ -264,6 +268,8 @@ test('a check writes one row per source; new versions are pushed and handled onc
     'tokyo-1 runtime.update 2.1.0',
     'osaka-1 runtime.update 2.1.0',
   ])
+  // The gateway page's cached versions of both are dropped (P36.5).
+  expect(changed).toEqual(['tokyo-1', 'osaka-1'])
   // Both shapes read the same; a binary given by flag is pinned.
   const source = (id: string) => value.sources.find(one => one.id === id)!
   expect(source('claude-code').nodes).toEqual([
