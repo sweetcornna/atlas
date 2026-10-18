@@ -16,8 +16,9 @@
  * `qianmo` tool bridge) before it goes into the managed prefix; one that
  * fails leaves the node on the version it had, and the answer says why. A
  * runtime that needs Node.js is not installed on a node without a matching
- * one, and nothing starts without the disk space a whole install takes and
- * {@link INSTALL_MEMORY_MIB} of available memory.
+ * one, and nothing starts without the disk space a whole install takes;
+ * the default install also waits for {@link INSTALL_MEMORY_MIB} of available
+ * memory.
  *
  * Binaries given with `--runtime-bin` (or its aliases `--claude-code-bin`,
  * `--codex-bin`) are the operator's: they are reported, never managed.
@@ -93,9 +94,11 @@ function diskMiB(spec: NpmRuntime): number {
 }
 
 /**
- * Memory an install needs free before it starts (§2): npm unpacking dsh and
- * the compatibility check's harness process beside a running node. Below it
- * the install is refused like a failed one and retried on the backoff.
+ * Memory the default install needs free before it starts (§2): npm unpacking
+ * dsh and the compatibility check's harness process beside a running node.
+ * Below it the default install is refused like a failed one and retried on
+ * the backoff. An operator's `runtime.install` / `runtime.update` is their
+ * call and does not wait for it (the disk floor applies to every install).
  */
 export const INSTALL_MEMORY_MIB = 1536
 
@@ -800,9 +803,15 @@ export class RuntimeInstaller {
    * Installs `version` (default: the catalog pin) of an npm runtime. A second
    * request for a runtime already installing is refused (`E_RUNTIME_BUSY`).
    */
-  async install(
+  install(kind: unknown, version?: unknown): Promise<RuntimeInstallResult> {
+    return this.#install(kind, version, false)
+  }
+
+  async #install(
     kind: unknown,
-    version?: unknown,
+    version: unknown,
+    /** The default install: also waits for {@link INSTALL_MEMORY_MIB}. */
+    automatic: boolean,
   ): Promise<RuntimeInstallResult> {
     const spec = this.#refusal(kind, version)
     if ('ok' in spec) return spec
@@ -813,7 +822,7 @@ export class RuntimeInstaller {
         message: `${spec.label} 正在安装`,
       }
     const wanted = typeof version === 'string' ? version : spec.install.pin
-    const attempt = this.#attempt(spec, wanted)
+    const attempt = this.#attempt(spec, wanted, automatic)
     this.#installing.set(spec.id, attempt)
     this.#changed(spec.id)
     try {
@@ -825,8 +834,9 @@ export class RuntimeInstaller {
   }
 
   /**
-   * Makes sure `kind` has a binary: already there (prefix, PATH or flag),
-   * joins an install in progress, or installs the catalog pin.
+   * The default install (§2): makes sure `kind` has a binary — already there
+   * (prefix, PATH or flag), joins an install in progress, or installs the
+   * catalog pin once {@link INSTALL_MEMORY_MIB} is available.
    */
   async ensureRuntimeInstalled(
     kind: ExternalRuntimeKind,
@@ -835,12 +845,13 @@ export class RuntimeInstaller {
     if (this.availability(kind).installed) return { ok: true }
     const running = this.#installing.get(kind)
     if (running !== undefined) return running
-    return this.install(kind)
+    return this.#install(kind, undefined, true)
   }
 
   async #attempt(
     spec: NpmRuntime,
     wanted: string,
+    automatic: boolean,
   ): Promise<RuntimeInstallResult> {
     const fail = (
       fallback: NonNullable<RuntimeInstallRecord['code']>,
@@ -901,7 +912,9 @@ export class RuntimeInstaller {
       )(root)
       if (free < need * MIB)
         return fail('install-failed', `磁盘空间不足（需要约 ${need} MiB）`)
-      const memory = (this.#options.freeMemoryBytes ?? availableMemoryBytes)()
+      const memory = automatic
+        ? (this.#options.freeMemoryBytes ?? availableMemoryBytes)()
+        : Number.POSITIVE_INFINITY
       if (memory < INSTALL_MEMORY_MIB * MIB)
         return fail(
           'install-failed',

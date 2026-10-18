@@ -98,7 +98,7 @@
 | 可选安装 | 控制链路 `runtime.install {runtime, version?}`（不给版本装目录钉住的版本，只收精确版本号）、`runtime.remove {runtime}`（有智能体配置在它上面时拒绝 `E_RUNTIME_IN_USE` 并写明是哪些；内置的 qianmopi 拒绝 `E_RUNTIME_BUILTIN`）；`runtime.update` 保留，泛化到目录里所有 npm 项。同一底层正在装时再装回 `E_RUNTIME_BUSY`，安装失败回 `E_RUNTIME_INSTALL`，被 `--runtime-bin` 钉住路径的底层不装不卸。三个都是有副作用的操作，走节点的幂等账本，急停下拒绝。上次安装的结果记在 `qianmoConfigPath('runtimes','installs.json')`（0600） |
 | 兼容检查 | 沿用 P31 的做法，按接口分：ACP 底层用节点自己的启动参数、真实的 `qm runtime-mcp` 工具桥与本机假模型接口（按它的首选线路）跑 `initialize` → `session/new`（带 qianmo MCP）→ 一轮，要求工具列表里有 `qianmo_*`、一次宿主工具调用到达节点；不通过就不装，节点留在原状，答复写明原因 |
 | 报告 | `runtime.versions` 列出目录里每一项：是否已装、版本、来源（前缀 / PATH / 启动参数）、钉住的版本、上次安装的结果；中枢「更新」页与「网关」页都读它。各底层 `--version` 的结果在节点内缓存 10 分钟（按二进制路径，同时到的读共用一次查询），该底层安装开始、结束或卸载时作废 |
-| 前置 | 安装前核对磁盘：受管前缀所在文件系统的可用空间不够（dsh 要 2 GiB 以上）就不开始，报「磁盘空间不足」；核对可用内存：低于 1.5 GiB（`INSTALL_MEMORY_MIB` = 1536）不开始，报「可用内存不足」并写明需要与现有的 MiB 数，按安装失败记录、走上面的退避（Linux 取 `/proc/meminfo` 的 `MemAvailable`，macOS 取 `vm_stat` 的空闲 + 非活跃 + 预读页，其他平台 `os.freemem()`；npm 解包与兼容检查起的 harness 进程叠在常驻节点上，小内存机会被 OOM）；要 Node.js 的底层先核对版本范围（dsh `^22.19.0 \|\| >=24`），不合要求报「缺少 Node.js」（退回原因 `no-node`），不替节点装 Node.js |
+| 前置 | 安装前核对磁盘：受管前缀所在文件系统的可用空间不够（dsh 要 2 GiB 以上）就不开始，报「磁盘空间不足」；**缺省安装**还核对可用内存：低于 1.5 GiB（`INSTALL_MEMORY_MIB` = 1536）不开始，报「可用内存不足」并写明需要与现有的 MiB 数，按安装失败记录、走上面的退避（Linux 取 `/proc/meminfo` 的 `MemAvailable`，macOS 取 `vm_stat` 的空闲 + 非活跃 + 预读页，其他平台 `os.freemem()`；npm 解包与兼容检查起的 harness 进程叠在常驻节点上，小内存机会被 OOM）。运维发起的 `runtime.install` / `runtime.update`（含更新页推送）不受内存门槛限制——p3 这类可用内存约 1 GiB 的节点仍能手动装与更新，后果由发起人判断；磁盘门槛对所有安装都适用；要 Node.js 的底层先核对版本范围（dsh `^22.19.0 \|\| >=24`），不合要求报「缺少 Node.js」（退回原因 `no-node`），不替节点装 Node.js |
 | 出站 | `registry.npmjs.org`（npm 自己的下载域）；走 §7.2 出站策略 |
 
 ---

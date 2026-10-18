@@ -336,16 +336,18 @@ test('too little disk: the install never starts, and says how much it needs', as
   })
 })
 
-test('too little free memory: the install never starts, and says how much it needs and has', async () => {
+test('too little free memory: the default install never starts and says how much it needs and has; an operator’s install or update goes ahead', async () => {
   const npm = fakeNpm(PIN('dsh'))
+  const low = () => 1024 * 1024 * 1024
   const installer = new RuntimeInstaller({
     run: npm.run,
     which: nowhere,
     smoke: async () => null,
     freeBytes: roomy,
-    freeMemoryBytes: () => 1024 * 1024 * 1024,
+    freeMemoryBytes: low,
   })
-  expect(await installer.install('dsh')).toEqual({
+  // The default install (`ensureRuntimeInstalled`) waits for memory.
+  expect(await installer.ensureRuntimeInstalled('dsh')).toEqual({
     ok: false,
     code: 'E_RUNTIME_INSTALL',
     message: `可用内存不足（安装需要约 ${INSTALL_MEMORY_MIB} MiB，现有 1024 MiB），稍后重试`,
@@ -358,6 +360,33 @@ test('too little free memory: the install never starts, and says how much it nee
     code: 'install-failed',
   })
   expect(INSTALL_MEMORY_MIB).toBe(1536)
+  // `runtime.install` and `runtime.update` are the operator's call: the
+  // memory floor does not apply (p3 has about 1 GiB available).
+  for (const op of ['runtime.install', 'runtime.update'])
+    expect(
+      await new RuntimeInstaller({
+        run: npm.run,
+        which: nowhere,
+        smoke: async () => null,
+        freeBytes: roomy,
+        freeMemoryBytes: low,
+      }).control(op, { runtime: 'dsh' }, CTX),
+    ).toEqual({ ok: true, value: { runtime: 'dsh', version: PIN('dsh') } })
+  // On disk now: a success (each installer keeps its own copy in memory).
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toMatchObject({
+    ok: true,
+  })
+  // Disk still applies to them (nothing installed this time).
+  rmSync(managedRuntimePrefix(), { recursive: true, force: true })
+  expect(
+    await new RuntimeInstaller({
+      run: npm.run,
+      which: nowhere,
+      smoke: async () => null,
+      freeBytes: () => 1024 * 1024 * 1024,
+      freeMemoryBytes: low,
+    }).install('dsh'),
+  ).toMatchObject({ ok: false, message: '磁盘空间不足（需要约 2048 MiB）' })
   const enough = new RuntimeInstaller({
     run: npm.run,
     which: nowhere,
@@ -365,7 +394,7 @@ test('too little free memory: the install never starts, and says how much it nee
     freeBytes: roomy,
     freeMemoryBytes: () => INSTALL_MEMORY_MIB * 1024 * 1024,
   })
-  expect(await enough.install('dsh')).toEqual({
+  expect(await enough.ensureRuntimeInstalled('dsh')).toEqual({
     ok: true,
     version: PIN('dsh'),
   })
