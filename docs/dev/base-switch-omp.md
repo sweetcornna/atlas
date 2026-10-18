@@ -159,7 +159,7 @@ Fleet 载荷不带 `node_modules`，因此 `atlas:build:qm` 用 omp 的二进制
 | 测试 | `atlas/scripts/test-shards.sh`：每个阡陌包一个分片（`--isolate`），预载 `atlas/tests/preload.ts`；根 `bunfig.toml` 不加预载 |
 | omp 自身 | `verify` 里跑 omp 的 `check:ts`（证明阡陌没碰坏基座）；只有改了 omp 文件时才跑 omp 的 `test:ts` |
 
-`precheck` = 阡陌类型检查 + biome 修复 + identity-paths + license-headers + 阡陌测试；`verify` = 在此之上加 biome ci、cycles、unused、sbom --check、omp `check:ts`、`qm` 编译与冒烟。CI 改为 `.github/workflows/atlas.yml`；omp 自带的 `ci.yml`、`bun-cache-warm.yml`、`nix.yml` 依赖 omp 的自托管 runner，在本仓库删除，发布类流程一律不保留。
+`precheck` = 阡陌类型检查 + biome 修复 + identity-paths + license-headers + 阡陌测试；`verify` = 在此之上加 biome ci、cycles、unused、sbom --check、omp `check:ts`、`qm` 编译与冒烟。CI 改为 `.github/workflows/atlas.yml`；omp 自带的 `ci.yml`、`bun-cache-warm.yml`、`nix.yml` 依赖 omp 的自托管 runner，在本仓库删除，发布类流程一律不保留。CI 只在 PR 与 `main` 的 push 上跑（同一 PR 的新推送取消旧运行），原生插件按构建输入的哈希缓存；sync-omp 与 fleet-payload 不走缓存、每次重编。
 
 ## 7. 对外可见的变化
 
