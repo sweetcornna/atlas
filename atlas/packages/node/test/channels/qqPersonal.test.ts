@@ -47,11 +47,20 @@ function snowluma(answers: Record<string, (frame: Frame) => unknown> = {}) {
       case 'send_group_msg':
       case 'send_private_forward_msg':
       case 'send_group_forward_msg':
-        return { status: 'ok', retcode: 0, data: { message_id: 900 + net.exchanges.length } }
+        return {
+          status: 'ok',
+          retcode: 0,
+          data: { message_id: 900 + net.exchanges.length },
+        }
       case 'set_input_status':
         return { status: 'ok', retcode: 0, data: {} }
       default:
-        return { status: 'failed', retcode: 1404, data: null, wording: 'unknown action' }
+        return {
+          status: 'failed',
+          retcode: 1404,
+          data: null,
+          wording: 'unknown action',
+        }
     }
   }
   return net
@@ -98,7 +107,9 @@ describe('connection', () => {
     const net = snowluma()
     const { socket } = await started(net)
     expect(socket.headers.authorization).toBe('Bearer ob-token')
-    expect(new URL(socket.url).searchParams.get('access_token')).toBe('ob-token')
+    expect(new URL(socket.url).searchParams.get('access_token')).toBe(
+      'ob-token',
+    )
     expect(sent(socket, 'get_login_info')).toHaveLength(1)
     for (const frame of socket.sent as Frame[]) {
       expect(typeof frame.echo).toBe('string')
@@ -155,7 +166,11 @@ describe('connection', () => {
     expect(refused.retryable).toBeUndefined()
     expect(sent(socket, 'send_private_msg')).toHaveLength(0)
     // A heartbeat without the flag is not evidence either way.
-    socket.push({ post_type: 'meta_event', meta_event_type: 'heartbeat', status: {} })
+    socket.push({
+      post_type: 'meta_event',
+      meta_event_type: 'heartbeat',
+      status: {},
+    })
     expect(adapter.health().state).toBe('failed')
     socket.push({
       post_type: 'meta_event',
@@ -237,7 +252,10 @@ describe('inbound', () => {
       }),
     })
     const { adapter, got, socket } = await started(net)
-    const own = await adapter.send({ type: 'group', id: '20002000' }, '我说的话')
+    const own = await adapter.send(
+      { type: 'group', id: '20002000' },
+      '我说的话',
+    )
     expect(own.ok).toBe(true)
     const group = {
       message_type: 'group',
@@ -286,7 +304,10 @@ describe('outbound', () => {
         message_id: 31,
         message_type: 'group',
         group_id: 20002000,
-        message: [{ type: 'at', data: { qq: SELF } }, { type: 'text', data: { text: '在吗' } }],
+        message: [
+          { type: 'at', data: { qq: SELF } },
+          { type: 'text', data: { text: '在吗' } },
+        ],
       }),
     )
     await until(() => got.length === 1)
@@ -332,16 +353,27 @@ describe('outbound', () => {
   })
 
   test('a refusal is reported with the backend wording; a missing echo counts as sent', async () => {
-    let answer: unknown = { status: 'failed', retcode: 100, data: null, wording: '发送失败：被禁言' }
+    let answer: unknown = {
+      status: 'failed',
+      retcode: 100,
+      data: null,
+      wording: '发送失败：被禁言',
+    }
     const net = snowluma({ send_group_msg: () => answer })
     const { adapter } = await started(net)
     const refused = await adapter.send({ type: 'group', id: '1' }, 'x')
-    expect(refused).toEqual({ ok: false, error: 'QQ 发送失败（100 发送失败：被禁言）' })
+    expect(refused).toEqual({
+      ok: false,
+      error: 'QQ 发送失败（100 发送失败：被禁言）',
+    })
     answer = undefined
     const silent = adapter.send({ type: 'group', id: '1' }, 'y')
-    expect(await Promise.race([silent, new Promise(r => setTimeout(() => r('pending'), 20))])).toBe(
-      'pending',
-    )
+    expect(
+      await Promise.race([
+        silent,
+        new Promise(r => setTimeout(() => r('pending'), 20)),
+      ]),
+    ).toBe('pending')
   })
 
   test('sends from the account are spaced', async () => {
@@ -362,11 +394,17 @@ describe('outbound', () => {
         message_id: 51,
         message_type: 'group',
         group_id: 20002000,
-        message: [{ type: 'at', data: { qq: SELF } }, { type: 'text', data: { text: '写个总结' } }],
+        message: [
+          { type: 'at', data: { qq: SELF } },
+          { type: 'text', data: { text: '写个总结' } },
+        ],
       }),
     )
     await until(() => got.length === 1)
-    const long = Array.from({ length: 6 }, (_, i) => `第${i}段${'字'.repeat(400)}`).join('\n\n')
+    const long = Array.from(
+      { length: 6 },
+      (_, i) => `第${i}段${'字'.repeat(400)}`,
+    ).join('\n\n')
     const result = await adapter.sendLong(
       { type: 'group', id: '20002000' },
       long,
@@ -374,11 +412,19 @@ describe('outbound', () => {
     )
     expect(result?.ok).toBe(true)
     const lead = sent(socket, 'send_group_msg')[0]!.params as Frame
-    expect((lead.message as Frame[])[0]).toEqual({ type: 'reply', data: { id: '51' } })
+    expect((lead.message as Frame[])[0]).toEqual({
+      type: 'reply',
+      data: { id: '51' },
+    })
     const card = sent(socket, 'send_group_forward_msg')[0]!.params as Frame
     const nodes = card.messages as { type: string; data: Frame }[]
     expect(nodes.length).toBeGreaterThan(1)
-    expect(nodes[0]!.data).toMatchObject({ name: '小阡', uin: SELF, nickname: '小阡', user_id: SELF })
+    expect(nodes[0]!.data).toMatchObject({
+      name: '小阡',
+      uin: SELF,
+      nickname: '小阡',
+      user_id: SELF,
+    })
     const joined = nodes
       .map(node => ((node.data.content as Frame[])[0]!.data as Frame).text)
       .join('\n\n')
@@ -387,10 +433,16 @@ describe('outbound', () => {
 
   test('a card the backend refuses is declined, so the gateway sends chunks', async () => {
     const net = snowluma({
-      send_private_forward_msg: () => ({ status: 'failed', retcode: 1404, data: null }),
+      send_private_forward_msg: () => ({
+        status: 'failed',
+        retcode: 1404,
+        data: null,
+      }),
     })
     const { adapter } = await started(net)
-    expect(await adapter.sendLong({ type: 'dm', id: '1' }, 'x'.repeat(2_000))).toBeNull()
+    expect(
+      await adapter.sendLong({ type: 'dm', id: '1' }, 'x'.repeat(2_000)),
+    ).toBeNull()
   })
 
   test('typing is private-only and stops asking a backend without it', async () => {

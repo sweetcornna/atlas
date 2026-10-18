@@ -19,10 +19,14 @@ describe('pairing codes', () => {
     const asked = pairing.ask('u1', '访客', 'dm-1')
     if (asked.kind !== 'issued') throw new Error('no code')
     expect(asked.code).toHaveLength(8)
-    expect([...asked.code].every(one => PAIRING_ALPHABET.includes(one))).toBe(true)
+    expect([...asked.code].every(one => PAIRING_ALPHABET.includes(one))).toBe(
+      true,
+    )
     expect(formatPairingCode('ABCDEFGH')).toBe('ABCD-EFGH')
     expect(JSON.stringify(book)).not.toContain(asked.code)
-    expect(pairing.redeem(` ${formatPairingCode(asked.code).toLowerCase()} `)).toMatchObject({
+    expect(
+      pairing.redeem(` ${formatPairingCode(asked.code).toLowerCase()} `),
+    ).toMatchObject({
       userId: 'u1',
       chatId: 'dm-1',
     })

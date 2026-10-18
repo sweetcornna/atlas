@@ -838,7 +838,12 @@ describe('hermes alignment', () => {
       gateway.handle(
         rules,
         adapter,
-        inbound({ chat: GROUP, userId: `u${i}`, text: `第${i}句`, addressed: true }),
+        inbound({
+          chat: GROUP,
+          userId: `u${i}`,
+          text: `第${i}句`,
+          addressed: true,
+        }),
       )
       await until(() => turns.calls.length === i + 1)
       turns.answer(i, `回${i}`)
@@ -848,7 +853,12 @@ describe('hermes alignment', () => {
     gateway.handle(
       rules,
       adapter,
-      inbound({ chat: GROUP, userId: 'u-late', text: '还在吗', addressed: true }),
+      inbound({
+        chat: GROUP,
+        userId: 'u-late',
+        text: '还在吗',
+        addressed: true,
+      }),
     )
     await gateway.idle()
     expect(turns.calls).toHaveLength(20)
@@ -862,7 +872,12 @@ describe('hermes alignment', () => {
     gateway.handle(
       rules,
       adapter,
-      inbound({ chat: GROUP, userId: 'u-back', text: '恢复了吗', addressed: true }),
+      inbound({
+        chat: GROUP,
+        userId: 'u-back',
+        text: '恢复了吗',
+        addressed: true,
+      }),
     )
     await until(() => turns.calls.length === 22)
     expect(turns.calls[21]!.text).toContain('(u-late)] 还在吗')
@@ -873,7 +888,12 @@ describe('hermes alignment', () => {
     const adapter = new FakeAdapter('discord', 100)
     gateway.handle(RULES, adapter, inbound())
     await until(() => turns.calls.length === 1)
-    turns.answer(0, Array.from({ length: 60 }, (_, i) => `第${i}行${'字'.repeat(20)}`).join('\n'))
+    turns.answer(
+      0,
+      Array.from({ length: 60 }, (_, i) => `第${i}行${'字'.repeat(20)}`).join(
+        '\n',
+      ),
+    )
     await gateway.idle()
     expect(adapter.sent).toHaveLength(8)
     expect(adapter.sent.every(one => one.text.length <= 100)).toBe(true)
@@ -887,7 +907,10 @@ describe('hermes alignment', () => {
     })
     gateway.handle(RULES, adapter, inbound())
     await until(() => turns.calls.length === 1)
-    turns.answer(0, Array.from({ length: 4 }, (_, i) => `第${i}行内容内容`).join('\n'))
+    turns.answer(
+      0,
+      Array.from({ length: 4 }, (_, i) => `第${i}行内容内容`).join('\n'),
+    )
     await gateway.idle()
     expect(adapter.sent.length).toBeGreaterThan(1)
     expect(waits).toHaveLength(adapter.sent.length - 1)
@@ -901,18 +924,45 @@ describe('hermes alignment', () => {
     })
     const rules = { ...RULES, members: true, allowGroups: ['C1'] }
     const thread = { type: 'group', id: 'C1', threadId: '111.1' } as const
-    gateway.handle(rules, adapter, inbound({ chat: thread, userId: 'u1', text: '路过', addressed: false }))
-    gateway.handle(rules, adapter, inbound({ chat: thread, userId: 'u1', text: '@bot 看看', addressed: true }))
+    gateway.handle(
+      rules,
+      adapter,
+      inbound({ chat: thread, userId: 'u1', text: '路过', addressed: false }),
+    )
+    gateway.handle(
+      rules,
+      adapter,
+      inbound({
+        chat: thread,
+        userId: 'u1',
+        text: '@bot 看看',
+        addressed: true,
+      }),
+    )
     await until(() => turns.calls.length === 1)
     turns.answer(0, '看了')
     await gateway.idle()
-    gateway.handle(rules, adapter, inbound({ chat: thread, userId: 'u2', text: '那这个呢', addressed: false }))
+    gateway.handle(
+      rules,
+      adapter,
+      inbound({
+        chat: thread,
+        userId: 'u2',
+        text: '那这个呢',
+        addressed: false,
+      }),
+    )
     await until(() => turns.calls.length === 2)
     // Another thread in the same channel still needs the mention.
     gateway.handle(
       rules,
       adapter,
-      inbound({ chat: { ...thread, threadId: '222.2' }, userId: 'u2', text: '别处', addressed: false }),
+      inbound({
+        chat: { ...thread, threadId: '222.2' },
+        userId: 'u2',
+        text: '别处',
+        addressed: false,
+      }),
     )
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(turns.calls).toHaveLength(2)
@@ -925,14 +975,22 @@ describe('hermes alignment', () => {
       dedupTtlMs: 3_600_000,
     })
     gateway.handle(RULES, plain, inbound({ id: 'p-1', text: 'a' }))
-    gateway.handle({ ...RULES, id: 'ch-2' }, slack, inbound({ id: 's-1', text: 'b' }))
+    gateway.handle(
+      { ...RULES, id: 'ch-2' },
+      slack,
+      inbound({ id: 's-1', text: 'b' }),
+    )
     await until(() => turns.calls.length === 2)
     turns.answer(0, '1')
     turns.answer(1, '2')
     await gateway.idle()
     advance(30 * 60_000)
     gateway.handle(RULES, plain, inbound({ id: 'p-1', text: 'a' }))
-    gateway.handle({ ...RULES, id: 'ch-2' }, slack, inbound({ id: 's-1', text: 'b' }))
+    gateway.handle(
+      { ...RULES, id: 'ch-2' },
+      slack,
+      inbound({ id: 's-1', text: 'b' }),
+    )
     await until(() => turns.calls.length === 3)
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(turns.calls).toHaveLength(3)
@@ -962,11 +1020,21 @@ describe('pairing (hermes)', () => {
   test('a stranger in a pairing channel gets the hub answer, not a turn', async () => {
     const { turns, adapter, gateway } = pairing()
     const rules = { ...RULES, pairing: true }
-    const stranger = { userId: 'stranger', chat: { type: 'dm', id: 'dm-s' } } as const
+    const stranger = {
+      userId: 'stranger',
+      chat: { type: 'dm', id: 'dm-s' },
+    } as const
     gateway.handle(rules, adapter, inbound(stranger))
     await until(() => adapter.sent.length === 1)
-    expect(adapter.sent[0]).toMatchObject({ chat: { id: 'dm-s' }, text: '配对码 ABCD-EFGH' })
-    gateway.handle(rules, adapter, inbound({ userId: 'quiet', chat: { type: 'dm', id: 'dm-q' } }))
+    expect(adapter.sent[0]).toMatchObject({
+      chat: { id: 'dm-s' },
+      text: '配对码 ABCD-EFGH',
+    })
+    gateway.handle(
+      rules,
+      adapter,
+      inbound({ userId: 'quiet', chat: { type: 'dm', id: 'dm-q' } }),
+    )
     await until(() => turns.asked.length === 2)
     // Without pairing, strangers are dropped as before; groups never pair.
     gateway.handle(RULES, adapter, inbound(stranger))

@@ -364,7 +364,9 @@ export class FakeSocket {
     this.sent.push(frame)
     const answer = this.respond?.(frame)
     if (answer !== undefined)
-      queueMicrotask(() => this.push({ echo: frame.echo, ...(answer as object) }))
+      queueMicrotask(() =>
+        this.push({ echo: frame.echo, ...(answer as object) }),
+      )
   }
 
   /** What the server pushes. */

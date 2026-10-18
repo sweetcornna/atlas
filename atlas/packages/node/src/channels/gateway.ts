@@ -761,7 +761,10 @@ export class ChannelGateway {
           window.fire,
           Math.max(
             0,
-            Math.min(SPLIT_WAIT_MS, window.opened + SPLIT_WAIT_CAP_MS - Date.now()),
+            Math.min(
+              SPLIT_WAIT_MS,
+              window.opened + SPLIT_WAIT_CAP_MS - Date.now(),
+            ),
           ),
         )
       }

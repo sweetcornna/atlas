@@ -854,7 +854,12 @@ describe('pairing (hermes)', () => {
   const CODE = /([A-HJ-NP-Z2-9]{4})-([A-HJ-NP-Z2-9]{4})/
 
   function stranger(id: string, text = '你好') {
-    return inbound({ userId: id, userName: `访客${id}`, chat: { type: 'dm', id: `dm-${id}` }, text })
+    return inbound({
+      userId: id,
+      userName: `访客${id}`,
+      chat: { type: 'dm', id: `dm-${id}` },
+      text,
+    })
   }
 
   test('a channel nobody is configured on answers a stranger with a code; the console approves an owner', async () => {
@@ -890,7 +895,12 @@ describe('pairing (hermes)', () => {
     adapter.sink!(stranger('s1', '现在呢'))
     await until(() => chat.sent.length === 1)
     expect(chat.opened).toEqual([OWNER_AGENT])
-    const again = await book.pair(saved.id, view.pairingRequests[0]!.id, 'deny', ACTOR)
+    const again = await book.pair(
+      saved.id,
+      view.pairingRequests[0]!.id,
+      'deny',
+      ACTOR,
+    )
     expect(again.ok ? 'ok' : again.failure.code).toBe('not_found')
   })
 
@@ -909,7 +919,10 @@ describe('pairing (hermes)', () => {
     adapter.sink!(inbound({ text: `/pair ${code.toLowerCase()}` }))
     await until(() => adapter.sent.length === 3)
     expect(adapter.texts().slice(1).sort()).toEqual(
-      ['已批准 访客s2，对方现在可以和成员智能体对话。', '配对已通过，可以开始对话了。'].sort(),
+      [
+        '已批准 访客s2，对方现在可以和成员智能体对话。',
+        '配对已通过，可以开始对话了。',
+      ].sort(),
     )
     expect(value(await book.snapshot()).channels[0]!.allowUsers).toEqual(['s2'])
     for (let i = 0; i < 5; i++) {
@@ -931,13 +944,20 @@ describe('pairing (hermes)', () => {
     await new Promise(resolve => setTimeout(resolve, 20))
     const view = value(await book.snapshot()).channels[0]!
     expect(view.pairingRequests.map(one => one.userId)).toEqual(['a', 'b', 'c'])
-    const refused = await book.pair(saved.id, view.pairingRequests[0]!.id, 'member', ACTOR)
+    const refused = await book.pair(
+      saved.id,
+      view.pairingRequests[0]!.id,
+      'member',
+      ACTOR,
+    )
     expect(refused.ok ? 'ok' : refused.failure.message).toBe(
       '这个渠道没有成员对话的智能体',
     )
     value(await book.pair(saved.id, view.pairingRequests[1]!.id, 'deny', ACTOR))
     expect(
-      value(await book.snapshot()).channels[0]!.pairingRequests.map(one => one.userId),
+      value(await book.snapshot()).channels[0]!.pairingRequests.map(
+        one => one.userId,
+      ),
     ).toEqual(['a', 'c'])
   })
 })

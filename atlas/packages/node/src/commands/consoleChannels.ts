@@ -301,7 +301,11 @@ function privateHost(raw: string): boolean {
       (a === 169 && b === 254)
     )
   }
-  return host === '::1' || /^f[cd][0-9a-f]{2}:/.test(host) || host.startsWith('fe80:')
+  return (
+    host === '::1' ||
+    /^f[cd][0-9a-f]{2}:/.test(host) ||
+    host.startsWith('fe80:')
+  )
 }
 
 /** SnowLuma's address: ws(s) only, no secrets in it, wss off the private network. */
@@ -899,8 +903,7 @@ export class ConsoleChannels implements ChannelsPort {
         }
       },
       pair: (channelId, inbound) => this.#ask(channelId, inbound),
-      approvePairing: (channelId, code) =>
-        this.#approveByCode(channelId, code),
+      approvePairing: (channelId, code) => this.#approveByCode(channelId, code),
       intercept: async conversation => {
         const session = this.#sessionFor(conversation.key)
         if (session == null || !this.#foregroundLane(conversation)) return null
@@ -1204,7 +1207,8 @@ export class ConsoleChannels implements ChannelsPort {
             : (previous?.groupTrigger ?? 'mention'),
       replyWindowMs,
       prompt,
-      pairing: platform.pairing && (draft.pairing ?? previous?.pairing ?? false),
+      pairing:
+        platform.pairing && (draft.pairing ?? previous?.pairing ?? false),
       settings,
       secret: secret as StoredChannel['secret'],
       createdAt: previous?.createdAt ?? now,
@@ -1265,6 +1269,7 @@ export class ConsoleChannels implements ChannelsPort {
     channelId: string,
     requestId: string,
     decision: ChannelPairingDecision,
+    _actor?: DirectionActor,
   ): Promise<ConsoleResult<ChannelView>> {
     if (!this.#lock?.owned())
       return fail('refused', '渠道目录由另一控制台实例持有')

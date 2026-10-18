@@ -2026,7 +2026,9 @@ export class FakeChannels implements ChannelsPort {
           ? [...channel.allowUsers, request.userId]
           : channel.allowUsers,
     }
-    this.channels = this.channels.map(one => (one.id === channelId ? view : one))
+    this.channels = this.channels.map(one =>
+      one.id === channelId ? view : one,
+    )
     return ok(view)
   }
 }

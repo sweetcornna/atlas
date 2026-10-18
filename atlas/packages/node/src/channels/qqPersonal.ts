@@ -295,7 +295,8 @@ export class QqPersonalAdapter implements ChannelAdapter {
           throw new ChannelFatalError(REJECTED)
         throw new Error('SnowLuma 不可达')
       }
-      if (closed.code === 1008) throw new Error('SnowLuma 断开了连接（令牌可能已更换）')
+      if (closed.code === 1008)
+        throw new Error('SnowLuma 断开了连接（令牌可能已更换）')
     })
   }
 
@@ -344,8 +345,7 @@ export class QqPersonalAdapter implements ChannelAdapter {
     if (!QQ_PERSONAL_ACTIONS.has(action))
       return Promise.reject(new Error(`不允许的 OneBot 动作：${action}`))
     const socket = this.#socket
-    if (socket === null || socket.readyState !== 1)
-      return Promise.resolve(null)
+    if (socket === null || socket.readyState !== 1) return Promise.resolve(null)
     const echo = `qm-${++this.#seq}-${randomUUID().slice(0, 8)}`
     return new Promise(resolve => {
       const timer = setTimeout(() => {
@@ -390,7 +390,9 @@ export class QqPersonalAdapter implements ChannelAdapter {
     }
   }
 
-  async #inbound(event: Record<string, unknown>): Promise<ChannelInbound | null> {
+  async #inbound(
+    event: Record<string, unknown>,
+  ): Promise<ChannelInbound | null> {
     const user = text(event.user_id)
     if (user === '' || (this.#selfId !== '' && user === this.#selfId))
       return null
@@ -417,7 +419,8 @@ export class QqPersonalAdapter implements ChannelAdapter {
         case 'at': {
           const qq = text(data.qq)
           if (this.#selfId !== '' && qq === this.#selfId) addressed = true
-          else body += qq === 'all' ? '@全体成员 ' : `@${text(data.name) || qq} `
+          else
+            body += qq === 'all' ? '@全体成员 ' : `@${text(data.name) || qq} `
           break
         }
         case 'reply':
@@ -428,7 +431,10 @@ export class QqPersonalAdapter implements ChannelAdapter {
           body += '[表情]'
           break
         case 'image':
-          attachments.push({ name: text(data.summary) || '图片', kind: 'image' })
+          attachments.push({
+            name: text(data.summary) || '图片',
+            kind: 'image',
+          })
           break
         case 'record':
           attachments.push({ name: '语音', kind: 'voice' })
@@ -545,7 +551,11 @@ export class QqPersonalAdapter implements ChannelAdapter {
     if (replyTo === undefined) return []
     const segments: Segment[] = [{ type: 'reply', data: { id: replyTo } }]
     const author = this.#senders.get(replyTo)
-    if (chat.type === 'group' && author !== undefined && author !== this.#selfId)
+    if (
+      chat.type === 'group' &&
+      author !== undefined &&
+      author !== this.#selfId
+    )
       segments.push({ type: 'at', data: { qq: author } })
     return segments
   }
@@ -620,7 +630,11 @@ export class QqPersonalAdapter implements ChannelAdapter {
     const content = plainText(markdown)
     const name = this.#nickname || 'Qmo'
     if (chat.type === 'group' && options.replyTo !== undefined) {
-      const lead = await this.send(chat, '内容较长，整理成了下面的聊天记录。', options)
+      const lead = await this.send(
+        chat,
+        '内容较长，整理成了下面的聊天记录。',
+        options,
+      )
       if (!lead.ok) return null
     }
     const answer = await this.#paced(() =>

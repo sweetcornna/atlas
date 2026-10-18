@@ -311,7 +311,9 @@ describe('Discord', () => {
     )
     const adapter = new DiscordAdapter({ token: 'D' }, net.io())
     expect(
-      await adapter.send({ type: 'group', id: 'c1' }, 'ok', { replyTo: 'gone' }),
+      await adapter.send({ type: 'group', id: 'c1' }, 'ok', {
+        replyTo: 'gone',
+      }),
     ).toEqual({ ok: true, messageId: 'm2' })
     expect(net.exchanges).toHaveLength(2)
   })
@@ -708,7 +710,10 @@ describe('failure classes (hermes)', () => {
     let mode = 'throttle'
     const net = new FakeNet().on('/sendMessage', () => {
       if (mode === 'throttle')
-        return { status: 429, body: { ok: false, parameters: { retry_after: 3 } } }
+        return {
+          status: 429,
+          body: { ok: false, parameters: { retry_after: 3 } },
+        }
       return { body: { ok: true, result: { message_id: 1 } } }
     })
     const adapter = new TelegramAdapter({ token: 'T' }, net.io())
@@ -740,7 +745,9 @@ describe('failure classes (hermes)', () => {
     const net = new FakeNet()
       .on('/getMe', { body: { ok: true, result: { id: 42, username: 'b' } } })
       .on('/getUpdates', { status: 409, body: { ok: false } })
-    const { adapter } = await started(new TelegramAdapter({ token: 'T' }, net.io()))
+    const { adapter } = await started(
+      new TelegramAdapter({ token: 'T' }, net.io()),
+    )
     await until(() => net.to('/getUpdates').length >= 2)
     expect(adapter.health().state).not.toBe('failed')
     await until(() => adapter.health().state === 'failed')
@@ -750,19 +757,38 @@ describe('failure classes (hermes)', () => {
 
   test('Slack: 429 and ratelimited carry Retry-After, 5xx is retryable, other errors are final', async () => {
     const answers = [
-      { status: 429, headers: { 'retry-after': '7' }, body: { ok: false, error: 'ratelimited' } },
+      {
+        status: 429,
+        headers: { 'retry-after': '7' },
+        body: { ok: false, error: 'ratelimited' },
+      },
       { status: 200, body: { ok: false, error: 'ratelimited' } },
       { status: 503, body: {} },
       { status: 200, body: { ok: false, error: 'channel_not_found' } },
     ]
     const net = new FakeNet().on('/chat.postMessage', () => answers.shift())
-    const adapter = new SlackAdapter({ appToken: 'xapp', botToken: 'xoxb' }, net.io())
+    const adapter = new SlackAdapter(
+      { appToken: 'xapp', botToken: 'xoxb' },
+      net.io(),
+    )
     const chat = { type: 'group' as const, id: 'C1', threadId: '1.1' }
-    expect(await adapter.send(chat, 'a')).toMatchObject({ ok: false, retryAfterMs: 7_000 })
-    expect(await adapter.send(chat, 'a')).toMatchObject({ ok: false, retryAfterMs: 1_000 })
-    expect(await adapter.send(chat, 'a')).toMatchObject({ ok: false, retryable: true })
+    expect(await adapter.send(chat, 'a')).toMatchObject({
+      ok: false,
+      retryAfterMs: 7_000,
+    })
+    expect(await adapter.send(chat, 'a')).toMatchObject({
+      ok: false,
+      retryAfterMs: 1_000,
+    })
+    expect(await adapter.send(chat, 'a')).toMatchObject({
+      ok: false,
+      retryable: true,
+    })
     const final = await adapter.send(chat, 'a')
-    expect(final).toEqual({ ok: false, error: 'Slack 发送失败（channel_not_found）' })
+    expect(final).toEqual({
+      ok: false,
+      error: 'Slack 发送失败（channel_not_found）',
+    })
     expect(adapter.followsThreads).toBe(true)
     expect(adapter.dedupTtlMs).toBe(3_600_000)
   })
@@ -773,14 +799,22 @@ describe('failure classes (hermes)', () => {
       .on('/apps.connections.open', {
         body: { ok: true, url: 'wss://wss-primary.slack.com/link/?ticket=1' },
       })
-      .on('/users.info', { body: { ok: true, user: { profile: { display_name: '人' } } } })
+      .on('/users.info', {
+        body: { ok: true, user: { profile: { display_name: '人' } } },
+      })
     const { got } = await started(
       new SlackAdapter({ appToken: 'xapp', botToken: 'xoxb' }, net.io()),
     )
     await until(() => net.sockets.length === 1)
     const socket = net.sockets[0]!
     socket.push({ type: 'hello' })
-    const base = { type: 'message', channel: 'D1', channel_type: 'im', user: 'U1', text: 'hi' }
+    const base = {
+      type: 'message',
+      channel: 'D1',
+      channel_type: 'im',
+      user: 'U1',
+      text: 'hi',
+    }
     const events = [
       { ...base, ts: '1', bot_profile: { name: 'x' } },
       { ...base, ts: '2', app_id: 'A1' },
@@ -788,7 +822,11 @@ describe('failure classes (hermes)', () => {
       { ...base, ts: '4' },
     ]
     for (const [i, event] of events.entries())
-      socket.push({ type: 'events_api', envelope_id: `e${i}`, payload: { event } })
+      socket.push({
+        type: 'events_api',
+        envelope_id: `e${i}`,
+        payload: { event },
+      })
     await until(() => got.length === 2)
     expect(got.map(one => one.messageId)).toEqual(['3', '4'])
   })
@@ -796,17 +834,23 @@ describe('failure classes (hermes)', () => {
   test('QQ: protocol close codes stop the channel; quick closes three times in a row too', async () => {
     const world = () =>
       new FakeNet()
-        .on('getAppAccessToken', { body: { access_token: 'ACC', expires_in: 7200 } })
+        .on('getAppAccessToken', {
+          body: { access_token: 'ACC', expires_in: 7200 },
+        })
         .on('/gateway', { body: { url: 'wss://api.sgroup.qq.com/websocket' } })
     const net = world()
-    const { adapter } = await started(new QqAdapter({ appId: '1', appSecret: 's' }, net.io()))
+    const { adapter } = await started(
+      new QqAdapter({ appId: '1', appSecret: 's' }, net.io()),
+    )
     await until(() => net.sockets.length === 1)
     net.sockets[0]!.close(4014, 'disallowed intents')
     await until(() => adapter.health().state === 'failed')
     expect(adapter.health().detail).toBe('机器人没有开通单聊或群聊消息的权限')
 
     const quick = world()
-    const second = await started(new QqAdapter({ appId: '1', appSecret: 's' }, quick.io()))
+    const second = await started(
+      new QqAdapter({ appId: '1', appSecret: 's' }, quick.io()),
+    )
     for (let i = 0; i < 3; i++) {
       await until(() => quick.sockets.length === i + 1)
       await until(() => quick.sockets[i]!.readyState === 1)
@@ -834,7 +878,9 @@ describe('failure classes (hermes)', () => {
       },
       net.io(),
     )
-    expect(await adapter.send({ type: 'dm', id: 'wx-a' }, '在')).toEqual({ ok: true })
+    expect(await adapter.send({ type: 'dm', id: 'wx-a' }, '在')).toEqual({
+      ok: true,
+    })
     expect(sends.map(one => one.context_token)).toEqual(['OLD', undefined])
     expect(states).toEqual([{ cursor: '', contextTokens: {} }])
     answers = [{ errcode: -2 }]
