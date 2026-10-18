@@ -36,6 +36,7 @@ import {
   RuntimeInstaller,
   runtimeControl,
   satisfiesVersionRange,
+  VERSION_CACHE_MS,
   vmStatAvailableBytes,
 } from '../../src/host/runtimeUpdate.js'
 import {
@@ -542,6 +543,53 @@ test('runtime.versions lists every catalog entry: built in, managed, on PATH, fr
     source: 'path',
     pin: PIN('dsh'),
   })
+})
+
+test('runtime.versions asks each binary once per ten minutes: reads together share it, an install, a removal or another binary asks again', async () => {
+  let now = 1_000_000
+  let codexOnPath: string | null = '/usr/local/bin/codex'
+  const npm = fakeNpm('0.170.0')
+  const installer = new RuntimeInstaller({
+    run: npm.run,
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    bins: { 'claude-code': '/opt/claude/bin/claude', dsh: '/opt/dsh/bin/dsh' },
+    which: command => (command === 'codex' ? codexOnPath : null),
+    smoke: async () => null,
+    now: () => now,
+  })
+  const asked = () => npm.calls.filter(argv => argv[1] === '--version').length
+  const [one, two] = await Promise.all([
+    installer.versions(),
+    installer.versions(),
+  ])
+  // dsh, Claude Code and Codex: one process each, for both reads.
+  expect(asked()).toBe(3)
+  expect(two).toEqual(one)
+  expect(one.runtimes.find(row => row.id === 'codex')?.version).toBe('0.170.0')
+  await installer.versions()
+  expect(asked()).toBe(3)
+  now += VERSION_CACHE_MS - 1
+  await installer.versions()
+  expect(asked()).toBe(3)
+  now += 1
+  await installer.versions()
+  expect(asked()).toBe(6)
+  // Another binary on PATH is another answer.
+  codexOnPath = '/opt/homebrew/bin/codex'
+  await installer.versions()
+  expect(asked()).toBe(7)
+  // An install puts a new binary in place: only that runtime is asked again.
+  expect((await installer.install('codex', '0.170.0')).ok).toBe(true)
+  const installed = asked()
+  await installer.versions()
+  expect(asked()).toBe(installed + 1)
+  await installer.versions()
+  expect(asked()).toBe(installed + 1)
+  // Removed: back to the PATH one, asked anew.
+  expect(await installer.remove('codex')).toMatchObject({ ok: true })
+  await installer.versions()
+  expect(asked()).toBe(installed + 2)
 })
 
 test('a second install of the same runtime is refused while one runs; ensureRuntimeInstalled joins it', async () => {

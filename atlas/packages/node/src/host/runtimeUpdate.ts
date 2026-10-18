@@ -99,6 +99,9 @@ function diskMiB(spec: NpmRuntime): number {
  */
 export const INSTALL_MEMORY_MIB = 1536
 
+/** How long `runtime.versions` reuses a binary's `--version` answer. */
+export const VERSION_CACHE_MS = 10 * 60_000
+
 /** `MemAvailable` of a `/proc/meminfo` text, in bytes (absent before Linux 3.14). */
 export function memAvailableBytes(meminfo: string): number | undefined {
   const kib = /^MemAvailable:\s+(\d+)\s+kB$/m.exec(meminfo)?.[1]
@@ -424,6 +427,19 @@ export class RuntimeInstaller {
   #nodeVersion: string | null | undefined
   /** Scratch prefixes of the installs running now. */
   readonly #stages = new Set<string>()
+  /**
+   * `runtime.versions`' `--version` answers by runtime, for one binary path;
+   * reads at the same time share the one in flight. Dropped when the
+   * runtime is installed or removed, and after {@link VERSION_CACHE_MS}.
+   */
+  readonly #versions = new Map<
+    string,
+    {
+      readonly bin: string
+      readonly at: number
+      readonly version: Promise<string | null>
+    }
+  >()
   /** Stops every command this installer runs (the node is shutting down). */
   readonly #stopping = new AbortController()
 
@@ -443,6 +459,8 @@ export class RuntimeInstaller {
     return () => this.#listeners.delete(listener)
   }
   #changed(kind: ExternalRuntimeKind): void {
+    // A new binary, or none: whatever its `--version` said is stale.
+    this.#versions.delete(kind)
     for (const listener of [...this.#listeners]) {
       try {
         listener(kind)
@@ -587,6 +605,22 @@ export class RuntimeInstaller {
     }
   }
 
+  /** `bin`'s version for `runtime.versions`, reused per {@link VERSION_CACHE_MS}. */
+  #reportedVersion(kind: string, bin: string): Promise<string | null> {
+    const now = this.#now()
+    const known = this.#versions.get(kind)
+    if (
+      known !== undefined &&
+      known.bin === bin &&
+      now >= known.at &&
+      now - known.at < VERSION_CACHE_MS
+    )
+      return known.version
+    const version = this.#version(bin)
+    this.#versions.set(kind, { bin, at: now, version })
+    return version
+  }
+
   /** One row per catalog entry (`runtime.versions`). */
   async versions(): Promise<RuntimeVersionsReply> {
     const rows = await Promise.all(
@@ -603,7 +637,9 @@ export class RuntimeInstaller {
           }
         const here = this.availability(spec.id)
         const version =
-          here.bin === undefined ? null : await this.#version(here.bin)
+          here.bin === undefined
+            ? null
+            : await this.#reportedVersion(spec.id, here.bin)
         const last = this.lastInstall(spec.id)
         return {
           id: spec.id,
