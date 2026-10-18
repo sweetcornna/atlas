@@ -74,6 +74,9 @@ mode=run
 group=""
 shards=()
 excludes=()
+# Files a group runs as shards of their own: left out of any larger shard
+# that contains them, the way an exclusion is, but still run.
+apart=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --list | --files)
@@ -105,7 +108,19 @@ if [ -n "$group" ]; then
   case "$group" in
     node-host) shards=(atlas/packages/node/test/host) ;;
     node-rest)
-      shards=(atlas/packages/node)
+      # These four run as their own processes. On Linux, Bun 1.4.2 run after
+      # them in the same process (then residentRootOverlap's run of openssl
+      # spawnSync calls) stops reaping spawnSync children: the child is a
+      # zombie, its pidfd is readable, and the main thread spins until the
+      # 10 s test timeout (identityIsolation, residentRootOverlap). Bun 1.4.3
+      # fixes it; drop this once .tool-versions moves past 1.4.2.
+      apart=(
+        atlas/packages/node/test/commands/residentModelCredential.isolated.test.ts
+        atlas/packages/node/test/commands/residentModelProbe.test.ts
+        atlas/packages/node/test/commands/residentModelProbeGate.test.ts
+        atlas/packages/node/test/commands/residentProviderSignal.test.ts
+      )
+      shards=(atlas/packages/node "${apart[@]}")
       excludes+=(atlas/packages/node/test/host)
       ;;
     ops) shards=(demo/env atlas/scripts) ;;
@@ -151,6 +166,12 @@ shard_files() {
         break
       fi
     done
+    for e in ${apart[@]+"${apart[@]}"}; do
+      if [ "$1" != "$e" ] && [ "$f" = "$e" ]; then
+        keep=0
+        break
+      fi
+    done
     if [ "$keep" -eq 1 ]; then
       printf '%s\n' "$f"
     fi
@@ -189,6 +210,11 @@ for d in ${shards[@]+"${shards[@]}"}; do
   cut=()
   for e in ${excludes[@]+"${excludes[@]}"}; do
     if under "$e" "$d"; then
+      cut+=("$e")
+    fi
+  done
+  for e in ${apart[@]+"${apart[@]}"}; do
+    if [ "$e" != "$d" ] && under "$e" "$d"; then
       cut+=("$e")
     fi
   done
