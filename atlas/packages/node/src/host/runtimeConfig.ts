@@ -470,8 +470,11 @@ export class NodeRuntimes {
    * Node.js. Never waits for an install; resolves once Node.js was checked.
    */
   async start(): Promise<void> {
-    // What an install left when the node died in the middle of it.
-    this.installer.sweepStages()
+    // What an install left when the node died in the middle of it; in the
+    // background (large trees), never in the way of starting.
+    void this.installer
+      .sweepStages()
+      .catch(error => this.#options.onError?.(error))
     // A configured runtime found on PATH says who it is before it counts
     // (Debian's `dsh` is not DeepSeek Harness), and before the install.
     const configured = new Set(

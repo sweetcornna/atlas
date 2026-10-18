@@ -26,15 +26,8 @@
 
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statfsSync,
-} from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statfsSync } from 'node:fs'
+import { lstat, readdir, rm } from 'node:fs/promises'
 import { freemem } from 'node:os'
 import * as path from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
@@ -384,6 +377,11 @@ export interface RuntimeUpdateOptions {
   readonly freeBytes?: (dir: string) => number
   /** Memory available to a new process (default {@link availableMemoryBytes}). */
   readonly freeMemoryBytes?: () => number
+  /**
+   * Removes a scratch prefix and all under it, off the event loop (default
+   * `fs.promises.rm`, recursive: links are removed, never followed).
+   */
+  readonly removeTree?: (dir: string) => Promise<void>
   /** The agents configured on a runtime: `runtime.remove` refuses while any. */
   readonly inUse?: (kind: ExternalRuntimeKind) => readonly string[]
   /** The node's default runtime, for `runtime.versions`. */
@@ -635,28 +633,41 @@ export class RuntimeInstaller {
     }
   }
 
+  #removeTree(dir: string): Promise<void> {
+    return (
+      this.#options.removeTree ??
+      ((tree: string) => rm(tree, { recursive: true, force: true }))
+    )(dir)
+  }
+
   /**
    * Removes the scratch prefixes installs left when the node died during
-   * one (at start, before any install): only `npm-stage-<uuid>` directories
-   * right under the runtimes root, none of this process's running installs,
-   * and an entry of that name that is a link or a file is left alone. A
-   * directory's own links are removed, never followed. Returns what went.
+   * one: only `npm-stage-<uuid>` directories right under the runtimes root,
+   * none of this process's running installs, and an entry of that name that
+   * is a link or a file is left alone. A directory's own links are removed,
+   * never followed. Asynchronous throughout — one leftover of dsh is about
+   * 850 MB, and the node is serving by the time this runs — so callers need
+   * not wait; a new install never meets one of these, its scratch prefix has
+   * a fresh uuid. Resolves to what went.
    */
-  sweepStages(): string[] {
+  async sweepStages(): Promise<string[]> {
     const root = qianmoConfigPath('runtimes')
     let names: string[]
     try {
-      names = readdirSync(root)
+      names = await readdir(root)
     } catch {
       return []
     }
     const removed: string[] = []
     for (const name of names) {
       const dir = path.join(root, name)
-      if (!STAGE_NAME.test(name) || this.#stages.has(dir)) continue
+      if (!STAGE_NAME.test(name)) continue
       try {
-        if (!lstatSync(dir).isDirectory()) continue
-        rmSync(dir, { recursive: true, force: true })
+        if (!(await lstat(dir)).isDirectory()) continue
+        // Checked last thing before the removal: an install that made its
+        // prefix since the listing is in `#stages` by now.
+        if (this.#stages.has(dir)) continue
+        await this.#removeTree(dir)
         removed.push(dir)
       } catch {
         // Left for the next start.
@@ -1001,11 +1012,9 @@ export class RuntimeInstaller {
             `${wanted} 没有通过兼容检查，节点继续用原来的版本：${reason}`,
           )
       } finally {
-        // Best effort: what cannot go now goes at the next start's sweep,
-        // and a failed cleanup is not a second verdict on the install.
-        try {
-          rmSync(stage, { recursive: true, force: true })
-        } catch {}
+        // Best effort and off the event loop: what cannot go now goes at the
+        // next start's sweep, and a failed cleanup is not a second verdict.
+        await this.#removeTree(stage).catch(() => {})
         this.#stages.delete(stage)
       }
       // From npm's cache now: the same files that passed.

@@ -426,7 +426,7 @@ test('on macOS it is the free, inactive and speculative pages vm_stat counts', (
   expect(vmStatAvailableBytes('Pages free: 1.')).toBeUndefined()
 })
 
-test('scratch prefixes a dead node left behind are swept: npm-stage-<uuid> directories under the runtimes root only, never through a link', () => {
+test('scratch prefixes a dead node left behind are swept: npm-stage-<uuid> directories under the runtimes root only, never through a link', async () => {
   const runtimes = qianmoConfigPath('runtimes')
   const stage = () => path.join(runtimes, `npm-stage-${randomUUID()}`)
   const outside = mkdtempSync(path.join(tmpdir(), 'qm-sweep-outside-'))
@@ -447,7 +447,7 @@ test('scratch prefixes a dead node left behind are swept: npm-stage-<uuid> direc
     mkdirSync(elsewhere, { recursive: true })
     mkdirSync(managedRuntimePrefix(), { recursive: true })
     const installer = new RuntimeInstaller({ which: nowhere })
-    expect(installer.sweepStages()).toEqual([stale])
+    expect(await installer.sweepStages()).toEqual([stale])
     expect(existsSync(stale)).toBe(false)
     expect(readFileSync(path.join(outside, 'keep'), 'utf8')).toBe('x')
     expect(lstatSync(link).isSymbolicLink()).toBe(true)
@@ -457,7 +457,7 @@ test('scratch prefixes a dead node left behind are swept: npm-stage-<uuid> direc
     expect(existsSync(managedRuntimePrefix())).toBe(true)
     // Nothing there (a fresh node): nothing to do.
     rmSync(runtimes, { recursive: true, force: true })
-    expect(installer.sweepStages()).toEqual([])
+    expect(await installer.sweepStages()).toEqual([])
   } finally {
     rmSync(outside, { recursive: true, force: true })
   }
@@ -502,7 +502,7 @@ test('a failed or stopped install leaves no scratch prefix', async () => {
   await running
   expect(stages()).toHaveLength(1)
   // A sweep while it runs leaves it alone.
-  expect(stopped.sweepStages()).toEqual([])
+  expect(await stopped.sweepStages()).toEqual([])
   stopped.stop()
   expect((await install).ok).toBe(false)
   expect(stages()).toEqual([])

@@ -137,6 +137,11 @@ function setup(
     freeMemoryBytes: () => 64 * 1024 ** 3,
     which: () => null,
     smoke: async () => smoke.reason,
+    // Settles within `settle()` (real removal is I/O; these cases count on
+    // microtasks only, under fake timers).
+    removeTree: async dir => {
+      rmSync(dir, { recursive: true, force: true })
+    },
     ...installerOptions,
   })
   let main: string | undefined = 'magpie/deepseek-v4'
@@ -177,6 +182,11 @@ function setup(
       main = value
     },
   }
+}
+
+/** Waits (real time, at most 2 s) for `done`; for steps that do real I/O. */
+async function until(done: () => boolean): Promise<void> {
+  for (let i = 0; i < 400 && !done(); i++) await Bun.sleep(5)
 }
 
 /** Lets the installer's promise chains run (no timers involved). */
@@ -733,17 +743,49 @@ test('configured onto a dsh found on PATH while running: it is asked who it is, 
   expect(changed).toEqual(['pi', 'pi'])
 })
 
-test('start sweeps the scratch prefixes a dead node left, install or no install', async () => {
+test('start sweeps the scratch prefixes a dead node left, behind it: start does not wait for a large leftover to go', async () => {
   const stale = qianmoConfigPath(
     'runtimes',
     'npm-stage-0f9c6a52-6a8e-4d1b-9d4e-2b7f0c1a3e55',
   )
   mkdirSync(path.join(stale, 'node_modules'), { recursive: true })
-  const { runtimes, npm } = setup({ autoInstall: false })
-  expect(existsSync(stale)).toBe(true)
+  const removing: string[] = []
+  let release!: () => void
+  const released = new Promise<void>(done => {
+    release = done
+  })
+  const { runtimes, npm } = setup({
+    autoInstall: false,
+    installer: {
+      // dsh leaves about 850 MB: a removal that takes its time.
+      removeTree: async dir => {
+        removing.push(dir)
+        await released
+        rmSync(dir, { recursive: true, force: true })
+      },
+    },
+  })
   await runtimes.start()
+  // start() is done; the sweep reads the directory (real I/O) and then
+  // removes, and the removal is still going.
+  await until(() => removing.length > 0)
+  expect(removing).toEqual([stale])
+  expect(existsSync(stale)).toBe(true)
+  release()
+  await until(() => !existsSync(stale))
   expect(existsSync(stale)).toBe(false)
   expect(npm.installs()).toBe(0)
+})
+
+test('the sweep removes for real without an injected remover, off the event loop', async () => {
+  const stale = qianmoConfigPath(
+    'runtimes',
+    'npm-stage-1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d',
+  )
+  mkdirSync(path.join(stale, 'node_modules', '.bin'), { recursive: true })
+  writeFileSync(path.join(stale, 'node_modules', '.bin', 'dsh'), '')
+  expect(await new RuntimeInstaller({}).sweepStages()).toEqual([stale])
+  expect(existsSync(stale)).toBe(false)
 })
 
 test('unmanaged (embedders): no fallback and no default install; agents run where they say', () => {
