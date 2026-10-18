@@ -10,6 +10,9 @@
  * 经控制链路问节点 `runtime.status` 与 `runtime.versions`（形状见
  * `host/runtimes/contract.ts`）。答不了 `runtime.status` 的节点（答 `unsupported`，
  * 或答的不是这个形状）就是没有 `runtimeCatalog` 能力的旧节点：照列，不给写控件。
+ * 页面跟进作业时每 3 秒一读：`runtime.status` 缓存 3 秒；`runtime.versions` 只随
+ * 装、卸、更新变，缓存 5 分钟，这几样写之后立即作废，节点自己报「安装中」时按
+ * 3 秒跟。
  * 底层的名称、系列与线路一律取目录（`host/runtimes/catalog.ts`），这里不写死任何
  * 一个底层或系列。
  *
@@ -94,7 +97,13 @@ const INSTALL_MS = 13 * 60_000
 const REMOVE_MS = 2 * 60_000
 /** How long a page write waits for an install's answer before saying it runs. */
 const WAIT_MS = 5_000
-const FACTS_TTL_MS = 3_000
+/** How long a node's `runtime.status` answer is shown as is. */
+const STATUS_TTL_MS = 3_000
+/**
+ * How long its `runtime.versions` answer is: what is installed changes by an
+ * install, a removal or an update, and each of those drops it at once.
+ */
+const VERSIONS_TTL_MS = 5 * 60_000
 const JOIN_RETRY_MS = 60 * 60_000
 /** The control-link actor of the hub's own writes. */
 const ACTOR = 'magpie'
@@ -395,6 +404,11 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
     string,
     { readonly at: number; readonly value: Facts }
   >()
+  /** Each node's last `runtime.versions` answer; null when it gave none usable. */
+  readonly #versions = new Map<
+    string,
+    { readonly at: number; readonly value: RuntimeVersionsReply | null }
+  >()
   readonly #seen = new Set<string>()
   readonly #writes = new Map<string, WriteState>()
   readonly #jobs = new Map<string, JobState>()
@@ -427,6 +441,12 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
   /** Something the models depend on changed: recompute in the background. */
   changed(): void {
     this.#schedule()
+  }
+
+  /** What is installed on `node` changed elsewhere (an update): read it again. */
+  runtimesChanged(node: string): void {
+    this.#facts.delete(node)
+    this.#versions.delete(node)
   }
 
   /** Every background round and write has finished (tests). */
@@ -476,36 +496,48 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
   }
 
   async #read(node: string, fresh: boolean): Promise<Facts> {
+    const now = this.#now()
     const cached = this.#facts.get(node)
-    if (
-      !fresh &&
-      cached !== undefined &&
-      this.#now() - cached.at < FACTS_TTL_MS
-    )
+    if (!fresh && cached !== undefined && now - cached.at < STATUS_TTL_MS)
       return cached.value
     const control = this.#options.control
+    const known = this.#versions.get(node)
+    // A node installing on its own (P36.3) is followed at the status pace.
+    const due =
+      known === undefined ||
+      now - known.at >=
+        (known.value?.runtimes.some(row => row.installing) === true
+          ? STATUS_TTL_MS
+          : VERSIONS_TTL_MS)
     const [status, versions] = await Promise.all([
       settle(
         control.request(node, RUNTIME_OPS.status, {}, ACTOR, {
           timeoutMs: READ_MS,
         }),
       ),
-      settle(
-        control.request(node, RUNTIME_OPS.versions, {}, ACTOR, {
-          timeoutMs: READ_MS,
-        }),
-      ),
+      due
+        ? settle(
+            control.request(node, RUNTIME_OPS.versions, {}, ACTOR, {
+              timeoutMs: READ_MS,
+            }),
+          )
+        : null,
     ])
+    let rows = known?.value ?? null
+    // An answer is kept; a link failure keeps what was read before and asks
+    // again next time.
+    if (versions !== null && (versions.ok || versions.code === 'unsupported')) {
+      const parsed = versions.ok
+        ? versionsSchema.safeParse(versions.value)
+        : null
+      rows = parsed?.success === true ? parsed.data : null
+      this.#versions.set(node, { at: now, value: rows })
+    }
     let value: Facts
     if (status.ok) {
       const parsed = statusSchema.safeParse(status.value)
-      const rows = versions.ok ? versionsSchema.safeParse(versions.value) : null
       value = parsed.success
-        ? {
-            state: 'ok',
-            status: parsed.data,
-            versions: rows?.success === true ? rows.data : null,
-          }
+        ? { state: 'ok', status: parsed.data, versions: rows }
         : { state: 'old' }
     } else if (status.code === 'unsupported') {
       value = { state: 'old' }
@@ -1017,7 +1049,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
       at: this.#now(),
       message: null,
     })
-    this.#facts.delete(node)
+    this.runtimesChanged(node)
     let answered = false
     const run = settle(
       this.#options.control.request(
@@ -1028,7 +1060,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
         { timeoutMs: kind === 'install' ? INSTALL_MS : REMOVE_MS },
       ),
     ).then(outcome => {
-      this.#facts.delete(node)
+      this.runtimesChanged(node)
       // A failure the page already showed is not kept; a late one is.
       if (outcome.ok || answered) this.#jobs.delete(key)
       else

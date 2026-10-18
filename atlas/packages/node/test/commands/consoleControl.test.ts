@@ -285,6 +285,64 @@ test('ControlLinks reconnects and resubscribes; only correlated replies and auth
   }
 }, 20_000)
 
+test('an answer to a hub call too large for an envelope reaches the node as a failure, not as silence', async () => {
+  const nodeKeys = generateNodeKeyPair(),
+    hubKeys = generateNodeKeyPair()
+  const directory = new StaticPublicKeyDirectory([
+    ['hub', hubKeys.publicKey],
+    ['worker', nodeKeys.publicKey],
+  ])
+  const psk = 'control-links-oversize-psk-000000'
+  let context: InboundContext | undefined
+  const results: unknown[] = []
+  const listener = startTransportServer({
+    psk,
+    hostname: '127.0.0.1',
+    port: 0,
+    supportedTypes: [...LEGACY_MESSAGE_TYPES, ...CONTROL_MESSAGE_TYPES],
+    signing: { node: 'worker', keys: nodeKeys, directory, required: true },
+    onMessage: (message, ctx) => {
+      if (message.type === MessageType.HubSubscribe) context = ctx
+      if (message.type === MessageType.HubCallResult)
+        results.push(message.payload)
+    },
+  })
+  const hub = new ControlLinks({
+    from: 'qianmo://hub/operator',
+    commandKeys: hubKeys,
+    targets: [
+      {
+        node: 'worker',
+        url: listener.url!,
+        publicKey: nodeKeys.publicKey,
+        psk,
+      },
+    ],
+  })
+  hub.onHubCall('peers', async () => ({
+    ok: true,
+    value: { text: 'x'.repeat(300 * 1024) },
+  }))
+  try {
+    hub.start()
+    await until(() => context !== undefined)
+    const callId = crypto.randomUUID()
+    await context!.channel.sendAndWait(
+      createMessage({
+        from: 'qianmo://worker/main',
+        to: 'qianmo://hub/operator',
+        type: MessageType.HubCall,
+        payload: { callId, op: 'peers.ask', args: {} },
+      }),
+    )
+    await until(() => results.length === 1)
+    expect(results[0]).toMatchObject({ callId, ok: false, code: 'invalid' })
+  } finally {
+    await hub.close()
+    await listener.stop()
+  }
+}, 20_000)
+
 test('a peer advertising only legacy types never receives control traffic', async () => {
   const nodeKeys = generateNodeKeyPair(),
     hubKeys = generateNodeKeyPair()

@@ -189,6 +189,19 @@ export class NodeTurnGate {
     return this.#queue.length >= LIMITS.maxQueuedTurns
   }
 
+  /**
+   * A request carrying this verified {@link NodeTurnRequest.chain} would
+   * start right now, nested in the turn running innermost (P36.6).
+   *
+   * Exposed for the same reason as {@link saturated}: a host that cannot give
+   * such a turn what it needs to run (a process, when every one it may start
+   * is held by the turns it would nest in) refuses it before writing it down,
+   * instead of starting a turn that can only wait for them.
+   */
+  nestsNow(chain: readonly string[]): boolean {
+    return this.#running.length > 0 && this.#nests(chain)
+  }
+
   run<T>(work: () => Promise<T>, request: NodeTurnRequest = {}): Promise<T> {
     if (this.saturated) {
       return Promise.reject(new NodeTurnQueueFullError(LIMITS.maxQueuedTurns))
@@ -226,7 +239,7 @@ export class NodeTurnGate {
         const interactive = this.#queue.findIndex(turn => !turn.background)
         index = Math.max(0, interactive)
       } else {
-        index = this.#queue.findIndex(turn => this.#nests(turn))
+        index = this.#queue.findIndex(turn => this.#nests(turn.chain))
         if (index < 0) return
       }
       const next = this.#queue.splice(index, 1)[0]
@@ -248,22 +261,23 @@ export class NodeTurnGate {
   }
 
   /**
-   * The turn running innermost asked the question `turn` answers, and the
-   * nesting stays within `LIMITS.maxAskChain`. A chain longer than that is no
-   * chain: the host never passes one, and the gate does not read one.
+   * The turn running innermost asked the question a turn with `chain`
+   * answers, and the nesting stays within `LIMITS.maxAskChain`. A chain
+   * longer than that is no chain: the host never passes one, and the gate
+   * does not read one.
    */
-  #nests(turn: QueuedTurn): boolean {
+  #nests(chain: readonly string[]): boolean {
     const innermost = this.#running.at(-1)?.key
     return (
       innermost !== undefined &&
-      turn.chain.length <= LIMITS.maxAskChain &&
+      chain.length <= LIMITS.maxAskChain &&
       this.#running.length <= LIMITS.maxAskChain &&
-      turn.chain.includes(innermost)
+      chain.includes(innermost)
     )
   }
 
   #start(turn: QueuedTurn): void {
-    if (this.#running.length > 0 && !this.#nests(turn))
+    if (this.#running.length > 0 && !this.#nests(turn.chain))
       throw new Error('node turn gate overlap')
     const running: RunningTurn = { key: turn.key }
     this.#running.push(running)

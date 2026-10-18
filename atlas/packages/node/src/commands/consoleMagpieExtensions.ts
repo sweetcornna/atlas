@@ -9,7 +9,9 @@
  * ## 读
  *
  * 节点每列一次都要起该底层的进程，所以区块的轮询从不触发它：中枢按节点 / 智能体
- * 缓存最近一次的列表，页面只从缓存渲染；展开面板时缓存超过一分钟才再问。
+ * 缓存最近一次的列表，页面只从缓存渲染；展开面板时缓存超过一分钟才再问，上次没
+ * 列出来的同样等一分钟（谁打开都一样，只读的人反复打开也不会让节点反复起进程），
+ * 同时打开的共用一次。
  *
  * 节点有没有这组操作没有能力位可看：第一次读到一台节点时拿它的第一个智能体问一次
  * 列表，答 `unsupported` 的是旧节点（页面不显示这一块，一小时后再看），答了的就有；
@@ -50,7 +52,7 @@ const INSTALL_MS = 10 * 60_000
 const REMOVE_MS = 2 * 60_000
 /** A list this young is shown as is; opening the panel does not ask again. */
 const FRESH_MS = 60_000
-/** A node that could not be asked is asked again after this. */
+/** A node that could not be asked, or a list that failed, is asked again after this. */
 const UNKNOWN_RETRY_MS = 60_000
 /** A node without the ops is looked at again after this (it may be upgraded). */
 const UNSUPPORTED_RECHECK_MS = 60 * 60_000
@@ -140,6 +142,8 @@ interface Listed {
   readonly at: number
   readonly reply: NativeExtensionsReply | null
   readonly error: string | null
+  /** The failure's code, with {@link error}. */
+  readonly code: ConsoleFailure['code'] | null
 }
 
 interface Support {
@@ -153,6 +157,8 @@ export class AgentExtensions {
   readonly #support = new Map<string, Support>()
   readonly #probing = new Set<string>()
   readonly #lists = new Map<string, Listed>()
+  /** Lists asked for and not answered yet: a second reader waits for the same. */
+  readonly #listing = new Map<string, Promise<ConsoleFailure | null>>()
   readonly #jobs = new Map<string, MagpieExtensionJobState>()
 
   constructor(options: AgentExtensionsOptions) {
@@ -258,15 +264,29 @@ export class AgentExtensions {
           message: '节点版本过旧 · 不支持原生扩展',
         },
       }
-    const listed = this.#lists.get(`${node}/${agent}`)
+    const key = `${node}/${agent}`
+    const listed = this.#lists.get(key)
+    // Every list starts the harness on the node, a failed one too.
     if (
       listed === undefined ||
-      listed.error !== null ||
-      this.#options.now() - listed.at >= FRESH_MS
+      this.#options.now() - listed.at >=
+        (listed.error === null ? FRESH_MS : UNKNOWN_RETRY_MS)
     ) {
-      const failure = await this.#list(node, agent, actor)
+      let listing = this.#listing.get(key)
+      if (listing === undefined) {
+        const started = this.#list(node, agent, actor).finally(() => {
+          if (this.#listing.get(key) === started) this.#listing.delete(key)
+        })
+        this.#listing.set(key, started)
+        listing = started
+      }
+      const failure = await listing
       if (failure !== null) return { ok: false, failure }
-    }
+    } else if (listed.error !== null)
+      return {
+        ok: false,
+        failure: { code: listed.code ?? 'unreachable', message: listed.error },
+      }
     const view = this.view(node, agent)
     return view === null
       ? {
@@ -370,14 +390,24 @@ export class AgentExtensions {
     if (outcome.ok) {
       const parsed = replySchema.safeParse(outcome.value)
       if (parsed.success) {
-        this.#lists.set(key, { at: now, reply: parsed.data, error: null })
+        this.#lists.set(key, {
+          at: now,
+          reply: parsed.data,
+          error: null,
+          code: null,
+        })
         return null
       }
       const failure: ConsoleFailure = {
         code: 'unreachable',
         message: '节点的答复不是扩展列表',
       }
-      this.#lists.set(key, { at: now, reply: previous, error: failure.message })
+      this.#lists.set(key, {
+        at: now,
+        reply: previous,
+        error: failure.message,
+        code: failure.code,
+      })
       return failure
     }
     const failure = fromExtension(outcome, this.#options.fromNode)
@@ -385,7 +415,12 @@ export class AgentExtensions {
       this.#lists.delete(key)
       return failure
     }
-    this.#lists.set(key, { at: now, reply: previous, error: failure.message })
+    this.#lists.set(key, {
+      at: now,
+      reply: previous,
+      error: failure.message,
+      code: failure.code,
+    })
     return failure
   }
 
@@ -438,6 +473,7 @@ export class AgentExtensions {
               at: this.#options.now(),
               reply: listed.data,
               error: null,
+              code: null,
             })
             this.#jobs.delete(key)
           } else

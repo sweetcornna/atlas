@@ -27,6 +27,21 @@
  * ask in flight, extends it when an asked agent asks in turn, refuses a
  * question to an agent already asking in it (A→B→A, on one node or across
  * nodes) and stops it at `LIMITS.maxAskChain` levels.
+ *
+ * Two unrelated chains can still hold each other: A on node 1 asks B on node
+ * 2 while X on node 2 asks Y on node 1, and each question queues behind the
+ * other node's asking turn. The hub knows every turn waiting on a question
+ * (`#waiting`), so a question to a node where a turn outside its chain is
+ * waiting is refused `busy` at once. The check and the record of the new
+ * wait happen in one synchronous step, so of two crossing questions the
+ * second always sees the first.
+ *
+ * A question is worth answering only while its asking turn waits. The hub
+ * watches that turn's conversation; once the turn has its terminal answer
+ * (stopped, failed, or over without waiting), the questions it still has out
+ * are withdrawn: one not sent yet is not sent, one running is stopped on its
+ * node like a late one. On one node that also gives the gate back, which a
+ * nested answer would otherwise keep until its own timeout.
  */
 
 import * as path from 'node:path'
@@ -39,11 +54,12 @@ import {
   type ChatPort,
   type ChatTranscript,
   type ConsoleAccounts,
+  RUNTIME_FALLBACK_WORDS,
   type TenantPort,
   type UsagePort,
 } from '@qianmo/console'
 import { LIMITS, parseAddress, type ControlOutcome } from '@qianmo/protocol'
-import { PEER_ASK } from '../host/peerTools.js'
+import { NESTED_NO_ROOM_REASON, PEER_ASK } from '../host/peerTools.js'
 import { runtimeSpec } from '../host/runtimes/catalog.js'
 import { RUNTIME_OPS } from '../host/runtimes/contract.js'
 import {
@@ -66,7 +82,8 @@ const KEEP_IDLE_MS = 30 * 24 * 60 * 60_000
 /**
  * Room for the answers in one hub-call result, below the envelope's
  * `LIMITS.maxMessageBytes` with space for the JSON around them; split evenly
- * between the targets.
+ * between the targets. Counted as JSON writes them: a control character
+ * takes six bytes there, a quote two.
  */
 const ANSWER_BUDGET_BYTES = 160 * 1024
 
@@ -88,6 +105,12 @@ const bookSchema = z.object({
   conversations: z.array(conversationSchema),
 })
 
+/**
+ * How often an asking turn's conversation is read while its questions are
+ * out, on top of its updates (which can be missed across a reconnect).
+ */
+const CALLER_POLL_MS = 15_000
+
 /** A node gets this long to say what its agents run on. */
 const RUNTIME_STATUS_TIMEOUT_MS = 5_000
 
@@ -100,7 +123,7 @@ const runtimeStatusSchema = z.object({
       effective: z
         .object({ runtime: z.string(), model: z.string().optional() })
         .passthrough(),
-      reason: z.object({ message: z.string() }).passthrough().optional(),
+      reason: z.object({ code: z.string() }).passthrough().optional(),
     }),
   ),
 })
@@ -112,6 +135,8 @@ interface Question {
   readonly timeoutSec: number
   /** When every target's answer is due, on {@link ConsolePeersOptions.now}. */
   readonly deadline: number
+  /** Aborts when the asking turn has ended: nobody waits for the answer. */
+  readonly withdrawn: AbortSignal
 }
 
 /** One asking turn in a call chain. */
@@ -188,14 +213,22 @@ function failed(agent: string, code: string, error: string): PeerAnswer {
   return { agent, ok: false, code, error }
 }
 
-/** `text` cut to `bytes` of UTF-8 on a character boundary, marked when cut. */
+/** The bytes `text` takes inside a JSON string, quotes not counted. */
+function jsonBytes(text: string): number {
+  return Buffer.byteLength(JSON.stringify(text)) - 2
+}
+
+/**
+ * `text` cut on a character boundary so that, as JSON writes it, it takes at
+ * most `bytes`; marked when cut.
+ */
 function clipBytes(text: string, bytes: number): string {
-  if (Buffer.byteLength(text) <= bytes) return text
+  if (jsonBytes(text) <= bytes) return text
   const mark = '…（回答过长，已截断）'
-  let used = Buffer.byteLength(mark)
+  let used = jsonBytes(mark)
   let out = ''
   for (const char of text) {
-    used += Buffer.byteLength(char)
+    used += jsonBytes(char)
     if (used > bytes) break
     out += char
   }
@@ -249,6 +282,14 @@ export class ConsolePeers {
   /** By `caller\0target`. */
   readonly #conversations = new Map<string, Conversation>()
   readonly #inFlight = new Map<string, InFlight>()
+  /**
+   * The asking turns waiting for an answer now, by `node\0taskId`, with how
+   * many of their targets are still out.
+   */
+  readonly #waiting = new Map<
+    string,
+    { readonly node: string; count: number }
+  >()
   /** One question at a time per conversation pair, in arrival order. */
   readonly #serial = new Map<string, Promise<unknown>>()
   readonly #turns = new Set<ChatTurnHandle>()
@@ -469,10 +510,13 @@ export class ConsolePeers {
           : [
               `${label(fact.effective.runtime)} 上的智能体`,
               ...(model === null ? [] : [`模型 ${model}`]),
+              // The reason's code only, as a reader of the gateway page
+              // sees it: the node's own words (an installer's error) are
+              // for the operator, not for a model.
               ...(fact.reason === undefined
                 ? []
                 : [
-                    `配置的是 ${label(fact.configured.runtime)}，暂用 ${label(fact.effective.runtime)}：${fact.reason.message}`,
+                    `配置的是 ${label(fact.configured.runtime)}，暂用 ${label(fact.effective.runtime)}：${RUNTIME_FALLBACK_WORDS[fact.reason.code] ?? '不可用'}`,
                   ]),
             ].join('，'))
       return {
@@ -528,35 +572,76 @@ export class ConsolePeers {
     // One clock for every target: waiting for a slot spends it too.
     const deadline = this.#now() + this.#ms(asked.timeoutSec)
     const budget = Math.floor(ANSWER_BUDGET_BYTES / asked.agents.length)
-    const answers = await Promise.all(
-      asked.agents.map(async target => {
-        const answer = await this.#askOne(
-          caller,
-          dispatch,
-          chain,
-          busy,
-          target,
-          { ...asked, deadline },
-        ).catch(
-          (): PeerAnswer => failed(target, 'failed', '问答中途出错，结果未知'),
-        )
-        await this.#audit(
-          requestId,
-          caller,
-          target,
-          answer.ok
-            ? 'ok'
-            : ['timeout', 'failed', 'cancelled'].includes(answer.code)
-              ? 'failed'
-              : 'refused',
-          answer.ok ? undefined : answer.code,
-        )
-        return answer.ok
-          ? { ...answer, reply: clipBytes(answer.reply, budget) }
-          : answer
-      }),
-    )
-    return ok({ answers })
+    const watch = this.#watch(caller)
+    try {
+      const answers = await Promise.all(
+        asked.agents.map(async target => {
+          const answer = await this.#askOne(
+            caller,
+            dispatch,
+            chain,
+            busy,
+            target,
+            { ...asked, deadline, withdrawn: watch.signal },
+          ).catch(
+            (): PeerAnswer =>
+              failed(target, 'failed', '问答中途出错，结果未知'),
+          )
+          await this.#audit(
+            requestId,
+            caller,
+            target,
+            answer.ok
+              ? 'ok'
+              : ['timeout', 'failed', 'cancelled'].includes(answer.code)
+                ? 'failed'
+                : 'refused',
+            answer.ok ? undefined : answer.code,
+          )
+          return answer.ok
+            ? { ...answer, reply: clipBytes(answer.reply, budget) }
+            : answer
+        }),
+      )
+      return ok({ answers })
+    } finally {
+      watch.stop()
+    }
+  }
+
+  /**
+   * Watches the asking turn while its questions are out: the signal aborts
+   * once the turn has its terminal answer, and nobody reads theirs any more.
+   */
+  #watch(caller: Caller): { readonly signal: AbortSignal; stop(): void } {
+    const controller = new AbortController()
+    const look = (): void => {
+      if (controller.signal.aborted) return
+      void this.#options.chat
+        .transcript(caller.session)
+        .then(transcript => {
+          if (
+            transcript.ok &&
+            terminalReply(transcript.value.turns, caller.taskId) !== undefined
+          )
+            controller.abort()
+        })
+        .catch(() => {})
+    }
+    const unsubscribe = this.#options.chat.subscribe(update => {
+      if (update.sessionId === caller.session) look()
+    })
+    const poll = setInterval(look, CALLER_POLL_MS)
+    poll.unref?.()
+    // It may have ended while this question was being checked.
+    look()
+    return {
+      signal: controller.signal,
+      stop: () => {
+        unsubscribe()
+        clearInterval(poll)
+      },
+    }
   }
 
   /** One target: checks, its conversation, the turn and its answer. */
@@ -585,6 +670,17 @@ export class ConsolePeers {
         'busy',
         `${target} 与问答链上的一方在同一节点，它还有一轮在排队；现在问只会等到超时。稍后再问，或用 qianmo_task_start 交给它`,
       )
+    // A turn there waiting on a question of another chain holds that node:
+    // this question would queue behind it, and if that one waits on this
+    // chain the two wait for each other until both time out.
+    if (this.#waitingOutside(address.node, chain))
+      return failed(
+        target,
+        'busy',
+        `${target} 所在节点上另有一轮正在等别的智能体回答，现在问会排在它后面，可能互相等到超时。先自己回答，稍后再问，或用 qianmo_task_start 交给它`,
+      )
+    // Recorded in the same synchronous step as the check above.
+    const release = this.#wait(caller)
     const key = `${caller.session}\0${target}`
     const previous = this.#serial.get(key) ?? Promise.resolve()
     const run = previous
@@ -594,7 +690,33 @@ export class ConsolePeers {
     try {
       return await run
     } finally {
+      release()
       if (this.#serial.get(key) === run) this.#serial.delete(key)
+    }
+  }
+
+  /** A turn on `node` waits on a question and is not one of `chain`'s askers. */
+  #waitingOutside(node: string, chain: readonly Asker[]): boolean {
+    for (const [key, one] of this.#waiting) {
+      if (one.node !== node) continue
+      if (!chain.some(link => `${link.node}\0${link.taskId}` === key))
+        return true
+    }
+    return false
+  }
+
+  /** Records `caller` as waiting on one more target; returns the release. */
+  #wait(caller: Caller): () => void {
+    const key = `${caller.node}\0${caller.taskId}`
+    const entry = this.#waiting.get(key) ?? { node: caller.node, count: 0 }
+    entry.count++
+    this.#waiting.set(key, entry)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      if (--entry.count <= 0 && this.#waiting.get(key) === entry)
+        this.#waiting.delete(key)
     }
   }
 
@@ -672,6 +794,9 @@ export class ConsolePeers {
         'timeout',
         `${target} 在 ${asked.timeoutSec} 秒内没有回答，已停止它这一轮`,
       )
+    const unsent = () =>
+      failed(target, 'cancelled', '发问的这一轮已经结束，提问没有发出')
+    if (asked.withdrawn.aborted) return unsent()
     // An earlier question to the same agent from here took the time.
     if (asked.deadline - this.#now() < this.#ms(1)) return late()
     const quota = dispatch.preflightUsage(
@@ -695,6 +820,18 @@ export class ConsolePeers {
         '（另一个智能体经中枢同步发来的提问，对方在等你这一轮的最终回答：直接作答，答完就结束本轮；耗时的活请在回答里建议对方改用后台任务。）',
       )
     lines.push(asked.message)
+    if (asked.withdrawn.aborted) return unsent()
+    // One `turn.stop` per question, whoever asks first: a late answer, or a
+    // withdrawal (also one that only learns its task id afterwards).
+    let stopping: Promise<boolean> | null = null
+    const stop = (taskId: string): Promise<boolean> => {
+      const stopTask = this.#options.stopTask
+      stopping ??=
+        stopTask === undefined
+          ? Promise.resolve(false)
+          : stopTask(target, taskId).catch(() => false)
+      return stopping
+    }
     const flight: InFlight = { chain, taskId: null }
     this.#inFlight.set(conversation.id, flight)
     const handle = sendAndWait({
@@ -714,37 +851,61 @@ export class ConsolePeers {
       authorized: true,
       onTask: taskId => {
         flight.taskId = taskId
+        if (asked.withdrawn.aborted) void stop(taskId)
       },
     })
     this.#turns.add(handle)
+    const withdraw = () => handle.cancel()
+    asked.withdrawn.addEventListener('abort', withdraw, { once: true })
     try {
       const outcome = await handle.outcome
       if (outcome.ok) return { agent: target, ok: true, reply: outcome.text }
-      if (outcome.timedOut || (outcome.cancelled && !this.#closed)) {
-        // A turn past its question is stopped natively, as a cancelled task's
-        // is: an interactive turn's own deadline answers without stopping it.
-        const stopTask = this.#options.stopTask
-        const stopped =
-          flight.taskId !== null &&
-          stopTask !== undefined &&
-          (await stopTask(target, flight.taskId).catch(() => false))
-        if (stopped) return late()
+      const gone =
+        outcome.cancelled === true && asked.withdrawn.aborted && !this.#closed
+      if (outcome.timedOut || gone) {
+        // A turn past its question, or whose asker is gone, is stopped
+        // natively, as a cancelled task's is: an interactive turn's own
+        // deadline answers without stopping it.
+        const stopped = flight.taskId !== null && (await stop(flight.taskId))
+        if (stopped)
+          return gone
+            ? failed(
+                target,
+                'cancelled',
+                '发问的这一轮已经结束，已收回提问并停止它这一轮',
+              )
+            : late()
         // Still running there: whatever it answers later must not become the
         // context of the next question, so that one opens a new conversation.
         this.#forget(caller, target, conversation.id)
-        return failed(
-          target,
-          'timeout',
-          `${target} 在 ${asked.timeoutSec} 秒内没有回答，没能停止它这一轮（可能仍在进行）；下次提问会开新对话`,
-        )
+        return gone
+          ? failed(
+              target,
+              'cancelled',
+              '发问的这一轮已经结束；没能停止它这一轮（可能仍在进行），下次提问会开新对话',
+            )
+          : failed(
+              target,
+              'timeout',
+              `${target} 在 ${asked.timeoutSec} 秒内没有回答，没能停止它这一轮（可能仍在进行）；下次提问会开新对话`,
+            )
       }
       if (outcome.cancelled) return failed(target, 'cancelled', '中枢正在关闭')
+      // Its node had no process for it: every one it may start is held by
+      // the turns this answer would nest in. Nothing ran.
+      if (outcome.error?.startsWith(NESTED_NO_ROOM_REASON) === true)
+        return failed(
+          target,
+          'busy',
+          `${target} 所在节点的进程数已到上限（--omp-max-children），都被这条问答链上等回答的一方占着，它这一轮起不来。请自己回答，或用 qianmo_task_start 交给它`,
+        )
       return failed(
         target,
         outcome.refusedStatus === undefined ? 'failed' : 'refused',
         outcome.error ?? '对方这一轮没有正常结束',
       )
     } finally {
+      asked.withdrawn.removeEventListener('abort', withdraw)
       this.#turns.delete(handle)
       if (this.#inFlight.get(conversation.id) === flight)
         this.#inFlight.delete(conversation.id)

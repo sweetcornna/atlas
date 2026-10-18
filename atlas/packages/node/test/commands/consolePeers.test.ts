@@ -13,7 +13,9 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import type { ChatSendInput } from '@qianmo/console'
 import { LIMITS, type ControlOutcome } from '@qianmo/protocol'
+import { NodeTurnGate } from '@qianmo/resident'
 import { MemoryActionLedger } from '../../../console/test/memoryActions.js'
 import {
   ConsolePeers,
@@ -282,6 +284,52 @@ describe('asking', () => {
     expect(stopped).toEqual([])
   })
 
+  test('when the asking turn ends first, its questions are withdrawn: the one out is stopped, the one waiting never goes out', async () => {
+    const book = peers()
+    const caller = await conversation()
+    // Two questions to one agent from the same turn: the second waits for
+    // the first in their conversation.
+    const first = ask(book, caller, [CODER], { message: '第一问' })
+    const second = ask(book, caller, [CODER], { message: '第二问' })
+    const peer = await askedIn(CODER)
+    const started = Date.now()
+    // The asking turn is stopped on its node; its answer reaches the hub.
+    chat.reply(caller, '这一轮已停止', 'failed', { remoteTerminal: true })
+    await until(() => stopped.length === 1, 1_000)
+    expect(stopped).toEqual([[CODER, chat.lastTask(peer)]])
+    expect(answers(await first)[0]).toMatchObject({
+      agent: CODER,
+      ok: false,
+      code: 'cancelled',
+    })
+    expect(answers(await second)[0]).toMatchObject({ code: 'cancelled' })
+    // Not the question's own 300 s (6 s here).
+    expect(Date.now() - started).toBeLessThan(2_000)
+    expect(chat.sentTo(peer)).toHaveLength(1)
+    expect(actions.entries.map(one => [one.outcome, one.code]).sort()).toEqual([
+      ['failed', 'cancelled'],
+      ['failed', 'cancelled'],
+    ])
+  })
+
+  test('a withdrawn question that could not be stopped is reported so, and the next one opens a new conversation', async () => {
+    const book = peers({ stopTask: async () => false })
+    const caller = await conversation()
+    const pending = ask(book, caller, [CODER])
+    const peer = await askedIn(CODER)
+    chat.reply(caller, '这一轮已停止', 'failed', { remoteTerminal: true })
+    const result = answers(await pending)[0]!
+    expect(result).toMatchObject({ code: 'cancelled' })
+    expect(JSON.stringify(result)).toContain('没能停止')
+    // A later turn of the same conversation asks again: a new conversation.
+    await chat.send({ sessionId: caller, text: '再问一次' })
+    const next = ask(book, caller, [CODER])
+    await until(() => asked(CODER).length === 2)
+    expect(asked(CODER)[1]).not.toBe(peer)
+    chat.reply(asked(CODER)[1]!, '好')
+    expect(answers(await next)[0]).toMatchObject({ ok: true })
+  })
+
   test('a very long answer is cut to fit the reply', async () => {
     const book = peers()
     const caller = await conversation()
@@ -291,6 +339,26 @@ describe('asking', () => {
     if (!answer?.ok) throw new Error('no answer')
     expect(Buffer.byteLength(answer.reply)).toBeLessThanOrEqual(160 * 1024)
     expect(answer.reply.endsWith('（回答过长，已截断）')).toBe(true)
+  })
+
+  test('the budget is counted as the reply goes on the wire, escapes included', async () => {
+    const book = peers()
+    const caller = await conversation()
+    const pending = ask(book, caller, [CODER, REVIEWER])
+    // 60 KB of text that JSON writes six times as long, and quotes and
+    // backslashes that it writes twice as long.
+    chat.reply(await askedIn(CODER), '\u0001'.repeat(60_000))
+    chat.reply(await askedIn(REVIEWER), '"\\'.repeat(60_000))
+    const outcome = await pending
+    // The hub-call result, as the control link sends it, fits an envelope
+    // with room to spare.
+    expect(Buffer.byteLength(JSON.stringify(outcome))).toBeLessThanOrEqual(
+      LIMITS.maxMessageBytes - 64 * 1024,
+    )
+    for (const answer of answers(outcome)) {
+      if (!answer.ok) throw new Error('no answer')
+      expect(answer.reply.endsWith('（回答过长，已截断）')).toBe(true)
+    }
   })
 })
 
@@ -381,6 +449,122 @@ describe('the call chain', () => {
     expect(helper).toMatchObject({ ok: false, code: 'busy' })
     expect(coder).toMatchObject({ ok: true })
     expect(asked(HELPER)).toEqual([])
+  })
+})
+
+/**
+ * Two nodes, each with the real `NodeTurnGate`: a line sent to an agent runs
+ * as a turn on its node's gate, keyed by its task, with the chain links on
+ * that node — what `askReentry` passes a resident. An agent's turn does what
+ * the test scripted for it, else answers at once.
+ */
+class TwoNodes extends FakeChat {
+  readonly gates = new Map([
+    ['node-a', new NodeTurnGate()],
+    ['node-b', new NodeTurnGate()],
+  ])
+  readonly scripts = new Map<string, (sessionId: string) => Promise<void>>()
+
+  override async send(input: ChatSendInput) {
+    const sent = await super.send(input)
+    if (!sent.ok) return sent
+    const target = this.records.get(input.sessionId)!.session.target
+    const node = target.split('/')[2]!
+    const chain = (input.chain ?? [])
+      .filter(link => link.node === node)
+      .map(link => link.taskId)
+    const script =
+      this.scripts.get(target) ?? (async (id: string) => this.reply(id, '42'))
+    void this.gates
+      .get(node)!
+      .run(() => script(input.sessionId), {
+        key: sent.value.taskId!,
+        ...(chain.length > 0 ? { chain } : {}),
+      })
+      .catch(() => {})
+    return sent
+  }
+
+  idle(): boolean {
+    return [...this.gates.values()].every(
+      gate => !gate.active && gate.queued === 0,
+    )
+  }
+}
+
+describe('two nodes asking across', () => {
+  test('crossing questions from two unrelated turns: one is refused busy at once, the other is answered', async () => {
+    const nodes = new TwoNodes([MAIN, HELPER, CODER, REVIEWER, OTHER])
+    chat = nodes
+    const book = peers()
+    // MAIN (node-a) asks REVIEWER (node-b) while CODER (node-b) asks HELPER
+    // (node-a): each question lands behind the other node's asking turn.
+    const both = Promise.withResolvers<void>()
+    let started = 0
+    const results = new Map<string, ControlOutcome>()
+    const asker =
+      (self: string, target: string) =>
+      async (sessionId: string): Promise<void> => {
+        if (++started === 2) both.resolve()
+        await both.promise
+        const outcome = await ask(
+          book,
+          sessionId,
+          [target],
+          { timeoutSec: 50 },
+          self,
+        )
+        results.set(self, outcome)
+        nodes.reply(sessionId, 'done')
+      }
+    nodes.scripts.set(MAIN, asker(MAIN, REVIEWER))
+    nodes.scripts.set(CODER, asker(CODER, HELPER))
+    await conversation(MAIN)
+    await conversation(CODER)
+    await until(() => results.size === 2, 5_000)
+    const main = answers(results.get(MAIN)!)[0]!
+    const coder = answers(results.get(CODER)!)[0]!
+    // Neither waits out its timeout behind the other.
+    expect([main, coder].map(one => (one.ok ? 'ok' : one.code)).sort()).toEqual(
+      ['busy', 'ok'],
+    )
+    const refused = [main, coder].find(one => !one.ok)
+    if (refused?.ok === false) expect(refused.error).toContain('稍后再问')
+    expect(stopped).toEqual([])
+    await until(() => nodes.idle())
+  })
+
+  test('one chain crossing nodes and back still nests', async () => {
+    const nodes = new TwoNodes([MAIN, HELPER, CODER, REVIEWER, OTHER])
+    chat = nodes
+    const book = peers()
+    let outer: ControlOutcome | undefined
+    // MAIN (node-a) asks CODER (node-b), which asks HELPER back on node-a.
+    nodes.scripts.set(MAIN, async sessionId => {
+      outer = await ask(book, sessionId, [CODER], { timeoutSec: 50 }, MAIN)
+      nodes.reply(sessionId, 'done')
+    })
+    nodes.scripts.set(CODER, async sessionId => {
+      const inner = await ask(
+        book,
+        sessionId,
+        [HELPER],
+        { timeoutSec: 50 },
+        CODER,
+      )
+      nodes.reply(sessionId, JSON.stringify(answers(inner)[0]))
+    })
+    await conversation(MAIN)
+    await until(() => outer !== undefined, 5_000)
+    const [answer] = answers(outer!)
+    expect(answer).toMatchObject({ agent: CODER, ok: true })
+    if (answer?.ok)
+      expect(JSON.parse(answer.reply)).toMatchObject({
+        agent: HELPER,
+        ok: true,
+        reply: '42',
+      })
+    await until(() => nodes.idle())
   })
 })
 
@@ -548,7 +732,12 @@ describe('the roster', () => {
                 agent: 'reviewer',
                 configured: { runtime: 'dsh', model: null, source: 'default' },
                 effective: { runtime: 'omp' },
-                reason: { code: 'not-installed', message: '未安装' },
+                // The installer's own words: for the operator, not a model.
+                reason: {
+                  code: 'install-failed',
+                  message:
+                    'npm ERR! 404 GET https://registry.npmjs.org/@deepseek-ai%2fdsh - token npm_SECRETtoken',
+                },
               },
             ],
           }
@@ -591,8 +780,10 @@ describe('the roster', () => {
       runtime: 'qianmopi',
       model: null,
       busy: false,
-      description: expect.stringContaining('暂用 qianmopi：未安装'),
+      description:
+        'qianmopi 上的智能体，配置的是 DeepSeek Harness，暂用 qianmopi：安装失败',
     })
+    expect(JSON.stringify(rows)).not.toContain('npm')
     // A node that said nothing usable: the row is there, the facts are not.
     expect(byAgent.get(OTHER)).toMatchObject({
       runtime: null,
