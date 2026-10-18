@@ -22,12 +22,16 @@ import * as path from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
 import type { ControlContext } from '../../src/host/control.js'
 import {
+  availableMemoryBytes,
+  INSTALL_MEMORY_MIB,
   managedRuntimeBin,
   managedRuntimePrefix,
+  memAvailableBytes,
   type RunCommand,
   RuntimeInstaller,
   runtimeControl,
   satisfiesVersionRange,
+  vmStatAvailableBytes,
 } from '../../src/host/runtimeUpdate.js'
 import {
   RUNTIME_CATALOG,
@@ -110,6 +114,7 @@ function fakeNpm(
   }
 }
 
+/** Disk or memory: plenty, whatever the machine running the test has. */
 const roomy = () => 64 * 1024 * 1024 * 1024
 const nowhere = () => null
 
@@ -226,6 +231,7 @@ test('runtime.install without a version installs the catalog pin, DeepSeek Harne
   const npm = fakeNpm(pin)
   const smoked: string[] = []
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: npm.run,
     freeBytes: roomy,
     which: nowhere,
@@ -265,6 +271,7 @@ test('no Node.js in range: nothing is downloaded, the install says so (no-node)'
   for (const node of [null, 'v18.20.4']) {
     const npm = fakeNpm(PIN('dsh'), { node })
     const installer = new RuntimeInstaller({
+      freeMemoryBytes: roomy,
       run: npm.run,
       freeBytes: roomy,
       which: nowhere,
@@ -289,6 +296,7 @@ test('too little disk: the install never starts, and says how much it needs', as
   const npm = fakeNpm(PIN('dsh'))
   const asked: string[] = []
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: npm.run,
     which: nowhere,
     smoke: async () => null,
@@ -308,6 +316,7 @@ test('too little disk: the install never starts, and says how much it needs', as
   expect(npm.calls.filter(argv => argv[0] !== 'node')).toEqual([])
   // Other runtimes need less: 1 GiB is enough for Codex.
   const codex = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: fakeNpm('0.170.0').run,
     which: nowhere,
     smoke: async () => null,
@@ -317,6 +326,67 @@ test('too little disk: the install never starts, and says how much it needs', as
     ok: true,
     version: '0.170.0',
   })
+})
+
+test('too little free memory: the install never starts, and says how much it needs and has', async () => {
+  const npm = fakeNpm(PIN('dsh'))
+  const installer = new RuntimeInstaller({
+    run: npm.run,
+    which: nowhere,
+    smoke: async () => null,
+    freeBytes: roomy,
+    freeMemoryBytes: () => 1024 * 1024 * 1024,
+  })
+  expect(await installer.install('dsh')).toEqual({
+    ok: false,
+    code: 'E_RUNTIME_INSTALL',
+    message: `可用内存不足（安装需要约 ${INSTALL_MEMORY_MIB} MiB，现有 1024 MiB），稍后重试`,
+    fallback: 'install-failed',
+  })
+  // Nothing downloaded, nothing staged; the refusal is a recorded failure.
+  expect(npm.calls.filter(argv => argv[0] !== 'node')).toEqual([])
+  expect(installer.lastInstall('dsh')).toMatchObject({
+    ok: false,
+    code: 'install-failed',
+  })
+  expect(INSTALL_MEMORY_MIB).toBe(1536)
+  const enough = new RuntimeInstaller({
+    run: npm.run,
+    which: nowhere,
+    smoke: async () => null,
+    freeBytes: roomy,
+    freeMemoryBytes: () => INSTALL_MEMORY_MIB * 1024 * 1024,
+  })
+  expect(await enough.install('dsh')).toEqual({
+    ok: true,
+    version: PIN('dsh'),
+  })
+})
+
+test('free memory is MemAvailable from /proc/meminfo, in bytes', () => {
+  expect(
+    memAvailableBytes(
+      'MemTotal:        2014256 kB\nMemFree:          101232 kB\nMemAvailable:     812345 kB\n',
+    ),
+  ).toBe(812_345 * 1024)
+  // Kernels before 3.14 have no MemAvailable: the caller falls back.
+  expect(memAvailableBytes('MemTotal: 2014256 kB\nMemFree: 1 kB\n')).toBe(
+    undefined,
+  )
+  expect(availableMemoryBytes()).toBeGreaterThan(0)
+})
+
+test('on macOS it is the free, inactive and speculative pages vm_stat counts', () => {
+  const vmStat = [
+    'Mach Virtual Memory Statistics: (page size of 16384 bytes)',
+    'Pages free:                                    17325.',
+    'Pages active:                                 502750.',
+    'Pages inactive:                               497605.',
+    'Pages speculative:                              4241.',
+    'Pages wired down:                             205667.',
+  ].join('\n')
+  expect(vmStatAvailableBytes(vmStat)).toBe((17_325 + 497_605 + 4_241) * 16_384)
+  expect(vmStatAvailableBytes('Pages free: 1.')).toBeUndefined()
 })
 
 test('Node.js ranges: ||, ^, ~, >= and partial versions', () => {
@@ -343,6 +413,7 @@ test('Node.js ranges: ||, ^, ~, >= and partial versions', () => {
 test('runtime.versions lists every catalog entry: built in, managed, on PATH, from a flag', async () => {
   const npm = fakeNpm('0.170.0')
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: npm.run,
     freeBytes: roomy,
     bins: { 'claude-code': '/opt/claude/bin/claude' },
@@ -393,6 +464,7 @@ test('a second install of the same runtime is refused while one runs; ensureRunt
     release = done
   })
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: npm.run,
     freeBytes: roomy,
     which: nowhere,
@@ -424,6 +496,7 @@ test('runtime.remove: refused for qianmopi, for unknown ids and while agents use
   const npm = fakeNpm('0.170.0')
   let users: string[] = ['coder', 'writer']
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: npm.run,
     freeBytes: roomy,
     which: nowhere,
@@ -469,6 +542,7 @@ test('runtime.remove: refused for qianmopi, for unknown ids and while agents use
 test('a runtime given by flag is the operator’s: never installed or removed here', async () => {
   const npm = fakeNpm('2.2.0')
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     run: npm.run,
     freeBytes: roomy,
     bins: { codex: 'codex-nightly' },
@@ -494,6 +568,7 @@ test('stopping the node ends a running install without recording a verdict', asy
     started = done
   })
   const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
     freeBytes: roomy,
     which: nowhere,
     smoke: async () => null,

@@ -16,14 +16,23 @@
  * `qianmo` tool bridge) before it goes into the managed prefix; one that
  * fails leaves the node on the version it had, and the answer says why. A
  * runtime that needs Node.js is not installed on a node without a matching
- * one, and nothing starts without the disk space a whole install takes.
+ * one, and nothing starts without the disk space a whole install takes and
+ * {@link INSTALL_MEMORY_MIB} of available memory.
  *
  * Binaries given with `--runtime-bin` (or its aliases `--claude-code-bin`,
  * `--codex-bin`) are the operator's: they are reported, never managed.
  */
 
+import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, rmSync, statfsSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statfsSync,
+} from 'node:fs'
+import { freemem } from 'node:os'
 import * as path from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
 import type { ControlOutcome } from '@qianmo/protocol'
@@ -79,6 +88,56 @@ function diskMiB(spec: NpmRuntime): number {
   return typeof hint === 'number' && hint > 0
     ? hint
     : (DISK_MIB[spec.id] ?? DEFAULT_DISK_MIB)
+}
+
+/**
+ * Memory an install needs free before it starts (§2): npm unpacking dsh and
+ * the compatibility check's harness process beside a running node. Below it
+ * the install is refused like a failed one and retried on the backoff.
+ */
+export const INSTALL_MEMORY_MIB = 1536
+
+/** `MemAvailable` of a `/proc/meminfo` text, in bytes (absent before Linux 3.14). */
+export function memAvailableBytes(meminfo: string): number | undefined {
+  const kib = /^MemAvailable:\s+(\d+)\s+kB$/m.exec(meminfo)?.[1]
+  return kib === undefined ? undefined : Number(kib) * 1024
+}
+
+/**
+ * Free, inactive and speculative pages of a `vm_stat` text, in bytes: what
+ * macOS can hand a new process without swapping.
+ */
+export function vmStatAvailableBytes(vmStat: string): number | undefined {
+  const page = /page size of (\d+) bytes/.exec(vmStat)?.[1]
+  const pages = ['free', 'inactive', 'speculative'].map(
+    name => new RegExp(`^Pages ${name}:\\s+(\\d+)\\.`, 'm').exec(vmStat)?.[1],
+  )
+  if (page === undefined || pages.some(count => count === undefined))
+    return undefined
+  return pages.reduce((sum, count) => sum + Number(count), 0) * Number(page)
+}
+
+/**
+ * Memory a new process can take: `MemAvailable` on Linux and the reclaimable
+ * pages on macOS (free memory alone leaves out the caches the kernel gives
+ * back; on macOS `os.freemem()` is a few hundred MiB on a machine with GiBs
+ * to spare), else `os.freemem()`.
+ */
+export function availableMemoryBytes(): number {
+  try {
+    if (process.platform === 'linux') {
+      const bytes = memAvailableBytes(readFileSync('/proc/meminfo', 'utf8'))
+      if (bytes !== undefined) return bytes
+    } else if (process.platform === 'darwin') {
+      const bytes = vmStatAvailableBytes(
+        execFileSync('/usr/bin/vm_stat', { encoding: 'utf8', timeout: 5_000 }),
+      )
+      if (bytes !== undefined) return bytes
+    }
+  } catch {
+    // No procfs or vm_stat: what the OS says is free.
+  }
+  return freemem()
 }
 
 /** The npm prefix runtime installs go into. */
@@ -279,6 +338,8 @@ export interface RuntimeUpdateOptions {
   readonly which?: (command: string) => string | null
   /** Free bytes on the filesystem holding `dir` (default `statfs`). */
   readonly freeBytes?: (dir: string) => number
+  /** Memory available to a new process (default {@link availableMemoryBytes}). */
+  readonly freeMemoryBytes?: () => number
   /** The agents configured on a runtime: `runtime.remove` refuses while any. */
   readonly inUse?: (kind: ExternalRuntimeKind) => readonly string[]
   /** The node's default runtime, for `runtime.versions`. */
@@ -659,6 +720,12 @@ export class RuntimeInstaller {
       )(root)
       if (free < need * MIB)
         return fail('install-failed', `磁盘空间不足（需要约 ${need} MiB）`)
+      const memory = (this.#options.freeMemoryBytes ?? availableMemoryBytes)()
+      if (memory < INSTALL_MEMORY_MIB * MIB)
+        return fail(
+          'install-failed',
+          `可用内存不足（安装需要约 ${INSTALL_MEMORY_MIB} MiB，现有 ${Math.floor(memory / MIB)} MiB），稍后重试`,
+        )
       const npmInstall = (into: string, timeoutMs: number) =>
         this.#run(
           [

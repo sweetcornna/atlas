@@ -127,6 +127,7 @@ function setup(
   const installer = new RuntimeInstaller({
     run: npm.run,
     freeBytes: () => 64 * 1024 ** 3,
+    freeMemoryBytes: () => 64 * 1024 ** 3,
     which: () => null,
     smoke: async () => smoke.reason,
     ...options.installer,
