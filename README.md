@@ -2,7 +2,7 @@
 
 阡陌基于开源项目 oh-my-pi（MIT 许可）构建，在其上实现常驻化改造与智能体通信网络。
 
-当前基座固定为 **omp v18.8.8**。迁移及 M1 / M2 本地开发候选已构建，逐项实现、验证和现场边界见 [交付清单](docs/dev/m1-m2-completion.md)；旧基座上的 M0 / M1 验收记录保留为历史证据。当前候选尚未部署，语义记忆增强因质量硬闸未过保持默认关闭。切换的接口和状态布局见 [设计契约](docs/dev/base-switch-omp.md)，部署配置与回退见 [审核清单](docs/dev/m1-m2-deployment-review.md)。
+当前基座固定为 **omp v18.8.8**。迁移及 M1 / M2 本地开发候选已构建，逐项实现、验证和现场边界见 [交付清单](docs/dev/m1-m2-completion.md)；旧基座上的 M0 / M1 验收记录保留为历史证据。内测环境（中枢与两个节点）跟随 main 部署，公开版未开，语义记忆增强因质量硬闸未过保持默认关闭。切换的接口和状态布局见 [设计契约](docs/dev/base-switch-omp.md)，部署配置与回退见 [审核清单](docs/dev/m1-m2-deployment-review.md)。
 
 - `atlas/`：阡陌的 `@qianmo/*` 包、脚本与测试；`demo/`：节点演示与验收；`docs/dev/`：章程、设计与证据。
 - 根 `packages/`、`crates/`、`scripts/` 等保留 omp 基座布局。编程智能体与多模型适配属于基座能力。
@@ -25,6 +25,16 @@ bun run verify
 ## 控制台
 
 `qm console` 提供节点、对话、消息链、个人审批与用量页面。界面支持明暗及跟随系统主题、键盘搜索与导航、名册和审计版本更新通知、带权限复核的片段缓存与审计导出，并提供窄屏抽屉、可见焦点和辅助阅读提示。账号、租户范围及审批配置见 [控制台说明](docs/dev/console.md) 与 [M2 租户契约](docs/dev/tenancy-m2.md)；运行时行为与验收以对应测试和现场配置为准。
+
+## 底层与模型
+
+每个智能体选一种底层：缺省是 DeepSeek Harness（dsh），qianmopi 内置在 `qm` 里作退路，Claude Code、Codex、Gemini CLI、Qwen Code、opencode 按需安装。所有底层拿到同一套宿主工具，智能体之间可以同步问答；底层用不了时自动退回 qianmopi 并写明原因。节点用 `--default-runtime` 或环境变量 `QIANMO_DEFAULT_RUNTIME` 定缺省底层，`QIANMO_RUNTIME_AUTOINSTALL=0` 关掉启动时安装。见 [多底层设计](docs/dev/harness-backends.md)。
+
+中枢接上 magpie 网关后，模型由网关统一调度，控制台「网关」页按底层系列给智能体配模型（内测环境暂未接），见 [网关设计](docs/dev/magpie-gateway.md)。公开版只能按节点订阅使用，尚未上线，见 [公开版](docs/dev/public-edition.md)。
+
+## 聊天渠道
+
+中枢可接入 QQ 官方机器人、微信、Telegram、Discord、Slack：消息进对应智能体的会话，回复送回原聊天。重试、分块、群聊上下文、陌生人配对等收发细节参照 hermes-agent。个人 QQ 经用户自己运行的 SnowLuma（OneBot 11 正向 WebSocket）接入，仅限非商用，公开版不提供，尚未用真号实测。见 [渠道设计](docs/dev/runtimes-channels.md)。
 
 ## 来源与许可
 
