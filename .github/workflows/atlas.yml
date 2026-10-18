@@ -5,6 +5,15 @@
 # omp 自带的 ci.yml / bun-cache-warm.yml / nix.yml 依赖它的自托管 runner，已在本仓库删除。
 # 静态与阡陌门禁和 `bun run verify` 相同；触及基座路径时追加 omp 测试。
 # 逐条列成步骤，让红灯指到具体一道门禁。
+#
+# 作业图（以前是一个串行作业，普通 PR 约 28–37 分钟）：
+#
+#   static ─────────────────────────────────────────┐
+#   native ─┬─ test × 5 组（test-shards.sh --group）──┤
+#           ├─ build-qm ──────────────────────────────┼─ ci（汇总 + 防跳过自检）
+#           └─ omp-test × 6 片（static 判定改了基座才跑）┘
+#
+# 要设成必需检查的只有 `ci`：它等全部作业，任何一个失败或被取消即失败。
 name: CI
 
 on:
@@ -28,10 +37,14 @@ permissions:
   contents: read
 
 jobs:
-  ci:
+  # verify 里不跑测试的那一半，外加「这次改没改基座」的判定。不需要原生插件：
+  # 类型检查读的是入库的 packages/natives/native/index.d.ts（与生成的是否一致，
+  # native 作业会报）。
+  static:
     runs-on: ubuntu-latest
-    # Base-changing PRs add the complete upstream TS suite after native build.
-    timeout-minutes: 120
+    timeout-minutes: 20
+    outputs:
+      required: ${{ steps.omp-change.outputs.required }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
@@ -56,54 +69,6 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Install system packages
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build cmake bubblewrap postgresql
-
-      # omp 的原生插件（Rust）。omp 子进程和 qm 编译都要加载它；toolchain 版本
-      # 取自 rust-toolchain.toml。x64 上出 build-qm 内嵌的 baseline 版（与舰队配方同一脚本）。
-      # 从零编译约 9–14 分钟，是整个作业最大的一块；它的输入除构建脚本外都是基座文件，
-      # 只在上游同步时变，所以按输入哈希缓存产物。sync-omp 与 fleet-payload 不走缓存，
-      # 每次重编，兜住缓存键漏列输入的情况。
-      # `ImageOS`（如 ubuntu24）是 runner 的环境变量，表达式的 env 上下文读不到它。
-      # 根 package.json 只取 build:native 那一条脚本进键：整份文件常因阡陌脚本变动，
-      # 进键会让缓存频繁失效。
-      - name: Read the native cache inputs
-        id: image
-        run: |
-          echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
-          echo "script=$(jq -r '.scripts["build:native"]' package.json | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
-
-      - name: Restore the omp native addon
-        id: native-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0, 2026-06-26
-        with:
-          # 构建同时重写 index.d.ts 与 index.js 的生成段，一起缓存，命中时与重编结果一致。
-          path: |
-            packages/natives/native/pi_natives.linux-x64-baseline.node
-            packages/natives/native/index.d.ts
-            packages/natives/native/index.js
-          key: omp-native-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.os }}-${{ steps.image.outputs.script }}-${{ hashFiles('crates/**', 'Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/**', '.tool-versions', 'bun.lock', 'packages/natives/package.json', 'packages/natives/scripts/**', 'packages/natives/native/*.js', 'packages/natives/native/*.d.ts', 'scripts/bazel-natives.ts', 'scripts/host-detect.ts', 'scripts/stamp-native-version.ts', 'atlas/scripts/build-native-portable.sh') }}
-
-      - name: Build the omp native addon
-        if: steps.native-cache.outputs.cache-hit != 'true'
-        run: |
-          rustup toolchain install --profile minimal "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
-          bash atlas/scripts/build-native-portable.sh
-
-      - name: Show the omp native addon
-        run: sha256sum packages/natives/native/pi_natives.linux-x64-baseline.node
-
-      # Ubuntu 24.04 runners confine unprivileged user namespaces with AppArmor, so
-      # bubblewrap cannot configure the sandbox's loopback ("Failed RTM_NEWADDR:
-      # Operation not permitted"). The generated-code isolation tests need the
-      # same bwrap a fleet host runs; Debian hosts allow it by default.
-      - name: Allow unprivileged user namespaces for bubblewrap
-        run: |
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          bwrap --unshare-all --die-with-parent --ro-bind / / true
-
       - name: Lint and format check
         run: bun run atlas:lint:ci
 
@@ -111,9 +76,6 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=4096
         run: bun run atlas:typecheck
-
-      - name: Verify shared registry with real PostgreSQL
-        run: bun run atlas:test:registry-ha
 
       # 双向棘轮：新增环依赖会红，消除了环而没提交更低基线也会红。
       - name: Check circular dependencies
@@ -143,6 +105,7 @@ jobs:
 
       # Compare both sides of a rename and both snapshot versions during sync.
       # A missing ref/tag fails the check; manual/new-branch runs test everything.
+      # The root package.json counts unless only Atlas's own scripts changed.
       - name: Detect changes to omp snapshot paths
         id: omp-change
         env:
@@ -154,28 +117,304 @@ jobs:
             bun atlas/scripts/check-omp-base-change.ts --all
           fi
 
-      - name: Test changed omp base
-        if: steps.omp-change.outputs.required == 'true'
-        run: bun run test:ts
+  # omp 的原生插件（Rust）。omp 子进程和 qm 编译都要加载它；toolchain 版本
+  # 取自 rust-toolchain.toml。x64 上出 build-qm 内嵌的 baseline 版（与舰队配方同一脚本）。
+  # 构建一次，作为 artifact 交给 test、build-qm、omp-test。
+  native:
+    runs-on: ubuntu-latest
+    # 从零编译约 9–14 分钟。
+    timeout-minutes: 30
 
-      # 每个阡陌包一个分片，分片之间互不泄漏 mock.module；任一分片失败即失败。
-      - name: Test (sharded per package)
-        run: bun run atlas:test
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
 
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          bun-version-file: .tool-versions
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # 从零编译是整个 CI 最大的一块；它的输入除构建脚本外都是基座文件，
+      # 只在上游同步时变，所以按输入哈希缓存产物。sync-omp 与 fleet-payload 不走缓存，
+      # 每次重编，兜住缓存键漏列输入的情况。
+      # `ImageOS`（如 ubuntu24）是 runner 的环境变量，表达式的 env 上下文读不到它。
+      # 根 package.json 只取 build:native 那一条脚本进键：整份文件常因阡陌脚本变动，
+      # 进键会让缓存频繁失效。
+      - name: Read the native cache inputs
+        id: image
+        run: |
+          echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "script=$(jq -r '.scripts["build:native"]' package.json | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the omp native addon
+        id: native-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0, 2026-06-26
+        with:
+          # 构建同时重写 index.d.ts 与 index.js 的生成段，一起缓存，命中时与重编结果一致。
+          path: |
+            packages/natives/native/pi_natives.linux-x64-baseline.node
+            packages/natives/native/index.d.ts
+            packages/natives/native/index.js
+          key: omp-native-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.os }}-${{ steps.image.outputs.script }}-${{ hashFiles('crates/**', 'Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/**', '.tool-versions', 'bun.lock', 'packages/natives/package.json', 'packages/natives/scripts/**', 'packages/natives/native/*.js', 'packages/natives/native/*.d.ts', 'scripts/bazel-natives.ts', 'scripts/host-detect.ts', 'scripts/stamp-native-version.ts', 'atlas/scripts/build-native-portable.sh') }}
+
+      - name: Install native build tools
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build cmake
+          rustup toolchain install --profile minimal "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+
+      - name: Build the omp native addon
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: bash atlas/scripts/build-native-portable.sh
+
+      - name: Show the omp native addon
+        run: sha256sum packages/natives/native/pi_natives.linux-x64-baseline.node
+
+      # static 用入库的绑定做类型检查，测试与 qm 编译用这里生成的；两者不一致时
+      # 只提醒不判红（入库的是基座文件，要随上游同步改）。
+      - name: Compare the generated bindings with the checked-in ones
+        run: |
+          if git diff --quiet -- packages/natives/native/index.d.ts packages/natives/native/index.js; then
+            echo "generated bindings match the checked-in ones"
+          else
+            git diff --stat -- packages/natives/native/index.d.ts packages/natives/native/index.js
+            echo "::warning title=Generated native bindings differ::static type-checks the checked-in packages/natives/native/index.{d.ts,js}; tests and build-qm use the generated ones."
+          fi
+
+      # 名字不带 run_attempt、允许覆盖：只重跑失败作业时，下游从上一次尝试取到它。
+      - name: Upload the omp native addon
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1, 2026-04-10
+        with:
+          name: omp-native
+          path: |
+            packages/natives/native/pi_natives.linux-x64-baseline.node
+            packages/natives/native/index.d.ts
+            packages/natives/native/index.js
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  # 阡陌测试按组并行，组的定义在 atlas/scripts/test-shards.sh（CI_GROUPS），
+  # 五组拼起来恰好是全部分片；每组 Linux 上约 4–4.5 分钟（node-host 258 s、
+  # node-rest 250 s、ops 246 s、e2e 260 s、packages 约 250 s）。改组要同时改这里的
+  # 列表，testShards.test.ts 核对两边一致。
+  test:
+    needs: native
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # 一组红不取消其他组：一个红分片不该藏住别的。
+      fail-fast: false
+      matrix:
+        group: [node-host, node-rest, ops, e2e, packages]
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        with:
+          # 与以前的单作业一样取全量历史与标签：测试看到的仓库与本地检出一致。
+          fetch-depth: 0
+          fetch-tags: true
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          bun-version-file: .tool-versions
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # bubblewrap 给生成代码隔离与接力的沙箱用例；postgresql 只有 ops 组的
+      # registry-ha 要。
+      - name: Install system packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap ${{ matrix.group == 'ops' && 'postgresql' || '' }}
+
+      - name: Allow unprivileged user namespaces for bubblewrap
+        uses: ./atlas/scripts/ci/allow-bwrap
+
+      - name: Download the omp native addon
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: omp-native
+          path: packages/natives/native
+
+      - name: Verify shared registry with real PostgreSQL
+        if: matrix.group == 'ops'
+        run: bun run atlas:test:registry-ha
+
+      # 每个分片一个 bun test 进程，分片之间互不泄漏 mock.module；任一分片失败即失败。
+      - name: Test (${{ matrix.group }})
+        env:
+          GROUP: ${{ matrix.group }}
+        run: bash atlas/scripts/test-shards.sh --group "$GROUP"
+
+      # 名字按组、允许覆盖：ci 作业按名字前缀收齐各组报告做防跳过自检，只重跑
+      # 失败作业时不能让同一组的两次尝试都算进去。
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1, 2026-04-10
         with:
-          name: test-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          name: test-reports-${{ matrix.group }}
           path: test-reports/
           if-no-files-found: warn
+          overwrite: true
           retention-days: 14
+
+  build-qm:
+    needs: native
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          bun-version-file: .tool-versions
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # 冒烟里有一轮真实常驻回合，与测试作业在同样的沙箱条件下跑。
+      - name: Install system packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap
+
+      - name: Allow unprivileged user namespaces for bubblewrap
+        uses: ./atlas/scripts/ci/allow-bwrap
+
+      - name: Download the omp native addon
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: omp-native
+          path: packages/natives/native
 
       - name: Build qm
         run: bun run atlas:build:qm
 
       - name: Smoke the compiled qm
         run: bun run atlas:check:qm-smoke
+
+  # 改了基座快照路径才跑 omp 全量 `test:ts`（以前串行 21–26 分钟）。分片用 omp
+  # 自己的 OMP_TEST_SHARD=i/n：把 test:ts 的 202 个块按序号轮转分给 n 片，每块恰好
+  # 落一片，覆盖与不分片完全相同（含 CI 桶以外的 python/robomp/web），不改基座文件。
+  # 按 10-17 一次运行的逐块耗时，6 片最大约 300 s；片内仍逐块串行，内存与以前一样。
+  omp-test:
+    needs: [static, native]
+    if: needs.static.outputs.required == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          bun-version-file: .tool-versions
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install system packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap
+
+      - name: Allow unprivileged user namespaces for bubblewrap
+        uses: ./atlas/scripts/ci/allow-bwrap
+
+      - name: Download the omp native addon
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: omp-native
+          path: packages/natives/native
+
+      - name: Test changed omp base (${{ matrix.shard }})
+        env:
+          OMP_TEST_SHARD: ${{ matrix.shard }}
+        run: bun run test:ts
+
+  # 汇总。上面任何一个作业失败或被取消即失败；omp-test 只有在 static 判定不需要
+  # 时才允许被跳过。然后核对各组的 JUnit：每个已跟踪的阡陌测试文件恰好跑过一次
+  # （绿的作业不等于跑过测试，10-10 到 10-18 node 分片就是这样静默缺席的）。
+  ci:
+    if: always()
+    needs: [static, native, test, build-qm, omp-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check every job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          OMP_REQUIRED: ${{ needs.static.outputs.required }}
+        run: |
+          set -uo pipefail
+          bad=0
+          for job in $(jq -r 'keys[]' <<<"$NEEDS"); do
+            result="$(jq -r --arg job "$job" '.[$job].result' <<<"$NEEDS")"
+            if [ "$result" = success ]; then
+              echo "${job}: success"
+            elif [ "$job" = omp-test ] && [ "$result" = skipped ] && [ "$OMP_REQUIRED" = false ]; then
+              echo "${job}: skipped (no omp snapshot path changed)"
+            else
+              echo "::error title=CI job did not pass::${job}: ${result}"
+              bad=1
+            fi
+          done
+          exit "$bad"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          bun-version-file: .tool-versions
+
+      # 每组一个子目录，同名的 shard-NN 报告互不覆盖。
+      - name: Download test reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: test-reports-*
+          path: test-reports
+
+      - name: Check every atlas test file ran exactly once
+        run: bun atlas/scripts/check-test-files-ran.ts test-reports
 
   acceptance-local:
     runs-on: ubuntu-latest

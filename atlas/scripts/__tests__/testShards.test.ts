@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -194,5 +195,17 @@ describe('test-shards.sh CI groups', () => {
       rest.some(path => path.startsWith('atlas/packages/node/test/host/')),
     ).toBe(false)
     expect([...host, ...rest].sort()).toEqual(files('atlas/packages/node'))
+  })
+
+  // A group the workflow does not list never runs in CI; a listed name the
+  // script does not know fails that job. Either way, keep the two in step.
+  test('the CI test matrix lists exactly these groups', () => {
+    const workflow = Bun.YAML.parse(
+      readFileSync(join(ROOT, '.github', 'workflows', 'atlas.yml'), 'utf8'),
+    ) as { jobs: { test: { strategy: { matrix: { group: string[] } } } } }
+
+    expect([...workflow.jobs.test.strategy.matrix.group].sort()).toEqual(
+      [...groups].sort(),
+    )
   })
 })
