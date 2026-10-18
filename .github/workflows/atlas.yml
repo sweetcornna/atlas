@@ -213,7 +213,7 @@ jobs:
       # 一组红不取消其他组：一个红分片不该藏住别的。
       fail-fast: false
       matrix:
-        group: [node-rest]
+        group: [solo, hot, probe, hotprobe, before]
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
@@ -259,8 +259,23 @@ jobs:
           GROUP: ${{ matrix.group }}
         run: |
           set +e
+          T=atlas/packages/node/test
+          bash atlas/scripts/test-shards.sh --files --group node-rest > "$RUNNER_TEMP/all.txt"
+          R="./$T/commands/residentRootOverlap.test.ts ./$T/identity/identityIsolation.test.ts"
+          H="./$T/commands/residentHotSwitch.integration.test.ts"
+          P=$(sed -n '100,103p' "$RUNNER_TEMP/all.txt" | sed 's|^|./|' | tr '\n' ' ')
+          B=$(sed -n '1,98p' "$RUNNER_TEMP/all.txt" | sed 's|^|./|' | tr '\n' ' ')
+          case "$GROUP" in
+            solo) F="$R" ;;
+            hot) F="$H $R" ;;
+            probe) F="$P $R" ;;
+            hotprobe) F="$H $P $R" ;;
+            before) F="$B $R" ;;
+          esac
+          echo "files: $F"
           (bash atlas/scripts/ci/hangwatch.sh > "$RUNNER_TEMP/hangwatch.log" 2>&1 &)
-          bash atlas/scripts/test-shards.sh --group "$GROUP"; rc=$?
+          mkdir -p test-reports
+          bun test --preload ./atlas/tests/preload.ts --timeout 10000 --isolate $F 2>&1 | grep -vE '^\s*(\(pass\)|\(skip\))'; rc=${PIPESTATUS[0]}
           echo "################ hangwatch"; cat "$RUNNER_TEMP/hangwatch.log"
           exit $rc
 
