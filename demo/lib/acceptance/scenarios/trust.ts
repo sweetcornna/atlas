@@ -4,15 +4,18 @@
 /**
  * 信任层级维度 —— issue #47 的验收面。
  *
- * **先记住这条，不然断言会写错方向：`notice.trust` 不门控执行。**
- * 全仓库**真的按这两个常量分支**的非测试文件只有两处（实测，见
+ * **先记住这条，不然断言会写错方向：常驻唤醒路径上 `notice.trust` 不门控执行。**
+ * 全仓库**真的按这两个常量分支**的非测试文件是一张核对过的名单（实测，见
  * `trust/no-execution-gate`）：`adapter/src/wrapper.ts` 按档位给模型两句不同的
  * 英文，`protocol/src/validate.ts` 把线上的 `envelope.trust` 钉死成
- * `untrusted`（写别的值即 `E_BAD_ENVELOPE`）。`capability/src/gate.ts` 只**产出**
- * 档位、自己不按它分支；`router` / `inbound` / `message` / `index` 是纯转发。
- * 两处分支一个决定措辞、一个决定线格式，**都不决定跑不跑** —— turn 照跑、
- * token 照计费。所以这一维断言的是**字段值与给模型的措辞**，不是「有没有被
- * 执行」。
+ * `untrusted`（写别的值即 `E_BAD_ENVELOPE`），`capability/src/authz.ts` 只校验
+ * 签名对象里这个字段是两值之一，`node/src/host/residentLocalCommand.ts` 只决定
+ * 一条消息是原样交给 omp 当本地命令还是照常组装成消息。`capability/src/gate.ts`
+ * 只**产出**档位、自己不按它分支；`router` / `inbound` / `message` / `index` 是
+ * 纯转发。这几处**都不决定常驻跑不跑** —— turn 照跑、token 照计费。唯一决定
+ * 跑不跑的是 `node/src/commands/handoffNode.ts`：`qm handoff node` 节点桥
+ * （P17.5）只接 `verified-capability` 的 `task.request`，那是另一个入口，不是
+ * 常驻唤醒。所以这一维断言的是**字段值与给模型的措辞**，不是「有没有被执行」。
  *
  * 三个容易读错的地方，各有一条场景钉着：
  *   ① `NoticeTrust` 只有两个取值，没有 `trusted`；
@@ -158,14 +161,18 @@ export const trustScenarios: readonly Scenario[] = [
     id: 'trust/no-execution-gate',
     dimension: 'trust',
     title:
-      'trust 不门控执行：全仓按它分支的生产文件只有两处，且都不决定「跑不跑」',
+      'trust 不门控常驻执行：全仓按它分支的生产文件恰好是核对过的那几处，常驻唤醒路径上没有一处决定「跑不跑」',
     expected:
-      "按 trust 分支的生产文件恰好是 adapter/wrapper.ts（挑措辞）与 protocol/validate.ts（钉死线上恒为 'untrusted'），此外没有第三处",
+      '按 trust 分支的生产文件恰好是 REVIEWED 名单里的五处（措辞、线格式、签名对象结构校验、本地命令原样交付、接力节点桥入口），此外没有别的',
     requires: ['read-repo-source'],
     async run(ctx) {
-      // 源码扫描，与 `packages/capability/test/authorization-invariants.test.ts`
+      // 源码扫描，与 `atlas/packages/capability/test/authorization-invariants.test.ts`
       // 同一个路子：一条**不存在的**门控只能靠「谁读了这个常量」来证明。
-      const roots = [join(REPO_ROOT, 'src'), join(REPO_ROOT, 'packages')]
+      // 扫基座（`packages/`）与阡陌自有包（`atlas/packages/`）两棵树。
+      const roots = [
+        join(REPO_ROOT, 'packages'),
+        join(REPO_ROOT, 'atlas/packages'),
+      ]
       const hits: string[] = []
       const scan = (dir: string): void => {
         let entries: string[]
@@ -213,31 +220,42 @@ export const trustScenarios: readonly Scenario[] = [
         )
       })
       ctx.log(`提到常量的生产文件: ${hits.join(', ')}`)
-      // 两处**已核对过的**分支点，各自为什么不是执行门控：
-      //   · `packages/adapter/src/wrapper.ts` —— 按 `notice.trust` 在两段措辞
-      //     里挑一段交给模型。挑完照样把消息交下去，没有「不交」这条分支。
-      //   · `packages/protocol/src/validate.ts` —— `raw['trust'] !== TRUST_UNTRUSTED`
+      // **已核对过的**分支点，各自做什么。新增一处必须先读过、再加进来：
+      //   · `adapter/src/wrapper.ts` —— 按 `notice.trust` 在两段措辞里挑一段
+      //     交给模型。挑完照样把消息交下去，没有「不交」这条分支。
+      //   · `protocol/src/validate.ts` —— `raw['trust'] !== TRUST_UNTRUSTED`
       //     时报 `E_BAD_ENVELOPE`。它是**线格式校验**：信封上的 trust 字段恒为
       //     `untrusted`，写别的值直接被判为坏信封。这条分支恰恰是「trust 不可能
       //     从线上被抬高」的证据，与「按 trust 决定跑不跑」相反。
-      const ALLOWED = [
-        'packages/adapter/src/wrapper.ts',
-        'packages/protocol/src/validate.ts',
+      //   · `capability/src/authz.ts` —— `isAuthzOrigin` 只校验签名授权对象
+      //     （P14.3）里的 `origin.trust` 是两值之一，是结构校验，不是门控。
+      //   · `node/src/host/residentLocalCommand.ts` —— 只有 `verified-capability`
+      //     且签发者在 `--local-commands-from` 里时，才把 `/compact` 这类本地命令
+      //     原样交给 omp；否则照常组装成消息。两条路 turn 都照跑。
+      //   · `node/src/commands/handoffNode.ts` —— `qm handoff node` 节点桥
+      //     （P17.5）对不是 `verified-capability` 的 `task.request` 回
+      //     `E_CAP_INSUFFICIENT`。**这是名单里唯一决定跑不跑的一处**，但它是
+      //     接力节点桥自己的入口，不是常驻唤醒路径。
+      const REVIEWED = [
+        'atlas/packages/adapter/src/wrapper.ts',
+        'atlas/packages/protocol/src/validate.ts',
+        'atlas/packages/capability/src/authz.ts',
+        'atlas/packages/node/src/host/residentLocalCommand.ts',
+        'atlas/packages/node/src/commands/handoffNode.ts',
       ]
-      const unexpected = branching.filter(
-        p => !ALLOWED.some(allowed => p.endsWith(allowed)),
-      )
+      const unexpected = branching.filter(p => !REVIEWED.includes(p))
+      const missing = REVIEWED.filter(p => !branching.includes(p))
       return new Checks()
         .note('提到常量的生产文件', hits.join('\n'))
         .note('真的按它分支的文件', branching.join('\n'))
-        .eq(unexpected.length, 0, '白名单之外的 trust 分支点数')
-        .eq(branching.length, ALLOWED.length, '按 trust 分支的生产文件数')
+        .eq(unexpected.length, 0, '名单之外的 trust 分支点数')
+        .eq(branching.length, REVIEWED.length, '按 trust 分支的生产文件数')
         .expect(
-          ALLOWED.every(allowed => branching.some(p => p.endsWith(allowed))),
-          '两处白名单文件都还在（少一处说明措辞或线格式校验被删了）',
-          branching,
+          missing.length === 0,
+          '名单里的文件都还在按 trust 分支（少一处说明那处被删或改了，名单该跟着改）',
+          missing,
         )
-        .done('trust 只影响措辞与线格式，不影响跑不跑')
+        .done('trust 只影响措辞、线格式与本地命令交付，常驻跑不跑不看它')
     },
   },
 
@@ -249,7 +267,7 @@ export const trustScenarios: readonly Scenario[] = [
     requires: ['read-repo-source'],
     async run() {
       const source = readFileSync(
-        join(REPO_ROOT, 'packages/protocol/src/message.ts'),
+        join(REPO_ROOT, 'atlas/packages/protocol/src/message.ts'),
         'utf8',
       )
       const untrusted = /TRUST_UNTRUSTED\s*=\s*'untrusted'/.test(source)

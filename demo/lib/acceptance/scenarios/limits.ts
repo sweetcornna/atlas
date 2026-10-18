@@ -11,12 +11,12 @@
  *
  * 四种超限的**观测点不在同一层**，这是读断言之前必须先知道的：
  *
- *   · TTL / 跳数 / 体积 —— 在 `packages/transport/src/receiver.ts` 里由
+ *   · TTL / 跳数 / 体积 —— 在 `atlas/packages/transport/src/receiver.ts` 里由
  *     `validateMessage` 判掉，**早于**节点的任何业务逻辑。所以答复是一条
  *     `receipt`（`status='rejected'` + 真 code + `reason='invalid envelope'`），
  *     **没有 error 信封**：那条是 `resident.ts#receive` 才会补的，而这里
  *     根本走不到那儿。
- *   · 速率预算 —— 在 `packages/router/src/router.ts` 的 `inbound()` 里，
+ *   · 速率预算 —— 在 `atlas/packages/router/src/router.ts` 的 `inbound()` 里，
  *     排在能力与环路之后。它走的是另一条路：error 信封带
  *     `E_RATE_LIMITED`，而回执被 `receiver.ts` 统一压成 `E_UNDELIVERABLE`。
  *     **只看回执分辨不出它**，两条都要读。

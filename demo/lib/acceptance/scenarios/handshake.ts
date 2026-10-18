@@ -488,7 +488,8 @@ export const credentialChannelScenarios: readonly Scenario[] = [
       if (skipReason !== undefined) return checks.skip(skipReason)
 
       // 同一个配置根签两次：Ed25519 身份是 `wx` 创建、永不覆盖，所以两张证书
-      // 绑的是**同一把签名钥匙**，四元组里只有 credential 那一格不同。
+      // 绑的是**同一把签名钥匙**，四元组里只有 credential 那一格不同。第二次
+      // 要 `--replace`：`qm ca issue` 默认拒绝覆盖已有的 `issued/ctl.crt`。
       const first = await issueCertificate(fixture.ca, {
         node: 'ctl',
         configRoot: fixture.peerConfig,
@@ -498,6 +499,7 @@ export const credentialChannelScenarios: readonly Scenario[] = [
         node: 'ctl',
         configRoot: fixture.peerConfig,
         outName: 'cert-two.crt',
+        replace: true,
       })
       const rl = await signRevocationList(fixture.ca)
       await publishRevocationList(fixture.registryUrl, rl)
@@ -574,7 +576,7 @@ export const credentialChannelScenarios: readonly Scenario[] = [
       //   · 证书目录只在**启动时**同步拉一次，随后按 `DEFAULT_REGISTRY_POLL_
       //     INTERVAL_MS`（一小时）轮询，而重启会把在持的那条连接一起带走 ——
       //     「同一条通道上换一把签名钥匙」因此没有落点。
-      // 于是这条腿由 `packages/transport/test/retained-channel-auth.test.ts`
+      // 于是这条腿由 `atlas/packages/transport/test/retained-channel-auth.test.ts`
       // 用一个手写的 HandshakeCredentialDirectory 覆盖，那里能在两次拨号之间
       // 换答案。这条场景负责的是**别让这个结论悄悄过期**。
       const source = readSource(
@@ -588,7 +590,7 @@ export const credentialChannelScenarios: readonly Scenario[] = [
       const unitTest = readSource(
         joinPath(
           REPO_ROOT,
-          'packages/transport/test/retained-channel-auth.test.ts',
+          'atlas/packages/transport/test/retained-channel-auth.test.ts',
         ),
         'utf8',
       )
@@ -613,7 +615,7 @@ export const credentialChannelScenarios: readonly Scenario[] = [
           .done('结论过期')
       }
       return checks.skip(
-        '本地腿造不出：--trust 是静态表；--trust-ca 那条路上公钥与 credential 指纹绑死、换一个必然换另一个；证书目录只在启动时同步一次、之后每小时轮询，而重启会带走在持连接。这条腿由 packages/transport/test/retained-channel-auth.test.ts 用手写目录覆盖。',
+        '本地腿造不出：--trust 是静态表；--trust-ca 那条路上公钥与 credential 指纹绑死、换一个必然换另一个；证书目录只在启动时同步一次、之后每小时轮询，而重启会带走在持连接。这条腿由 atlas/packages/transport/test/retained-channel-auth.test.ts 用手写目录覆盖。',
       )
     },
   },

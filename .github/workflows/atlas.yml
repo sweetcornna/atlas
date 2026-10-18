@@ -417,6 +417,8 @@ jobs:
         run: bun atlas/scripts/check-test-files-ran.ts test-reports
 
   acceptance-local:
+    # 原生插件取 `native` 作业的 artifact，与 `test` 作业同一做法。不进 `ci` 的汇总。
+    needs: native
     runs-on: ubuntu-latest
     # **只手动跑。**托管 runner 上没有模型凭据。
     #
@@ -446,7 +448,14 @@ jobs:
     # 共享机器，比这个容器慢多少事前不可知。**宁可宽**——job 级超时切下去拿到
     # 的是「没有汇总表的红」，那种红查不动；真正的兜底是场景级超时，它至少会
     # 指名是哪一条卡住了。
-    timeout-minutes: 30
+    #
+    # 换基座后重测（Apple Silicon 开发机，bun 1.4.2，--timeout-scale 3，
+    # 2026-10-18）：117 条，套件本体 1056 s（17.6 min），101 pass / 12 fail /
+    # 3 skip / 1 error（那条 error 是缺 `--replace`，同一改动里已修）。
+    # 按同一条「留一倍」放到 45。原生插件在 `native` 作业里编，不占这份预算。
+    # 第一次 CI 实测（run 39120383120，原生插件命中缓存）：套件本体 1093 s，
+    # 作业全程 20.5 min，106 pass / 8 fail / 3 skip / 0 error。
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
@@ -464,13 +473,16 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install system packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap
+
       # The local leg starts the resident host from source, and the host spawns
       # omp children (`omp --mode rpc`), which load the native addon.
-      - name: Build the omp native addon
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build cmake bubblewrap
-          rustup toolchain install --profile minimal "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
-          bun run build:native
+      - name: Download the omp native addon
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: omp-native
+          path: packages/natives/native
 
       # 这一步**故意**制造 issue #61 那个形状，然后要求套件因此变红。
       #
