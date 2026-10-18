@@ -26,8 +26,9 @@ while true; do
         echo "  task ${t##*/} $(cat $t/comm) $(awk '{print $3}' $t/stat) wchan=$(cat $t/wchan)"
         sudo cat $t/stack 2>/dev/null | head -6 | sed 's/^/      /'
       done
-      if [ "$dumped" -eq 1 ] && command -v gdb >/dev/null; then
-        timeout 60 sudo gdb -p "$b" -batch -ex 'set pagination off' -ex 'thread apply all bt 25' 2>&1 | grep -vE '^\[New LWP|^warning' | head -400 | sed 's/^/    gdb| /'
+      for k in 1 2 3 4 5; do echo "    syscall: $(sudo cat /proc/$b/task/$b/syscall 2>/dev/null)"; done
+      if [ "$dumped" -le 2 ] && command -v strace >/dev/null; then
+        sudo timeout 3 strace -p "$b" -tt -e trace=all -e signal=all 2>&1 | head -300 | sed 's/^/    st| /'
       fi
     done
   done
