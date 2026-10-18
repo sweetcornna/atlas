@@ -90,11 +90,15 @@
 | 项 | 定案 |
 |---|---|
 | 位置 | 沿用 P31：`qianmoConfigPath('runtimes','npm')` 前缀，`npm install --prefix`，缓存与配置也在其下；先装进临时前缀、过兼容检查再换入。启动参数指定了路径的（`--claude-code-bin`、`--codex-bin`、新增 `--runtime-bin <id>=<路径>`）不管 |
-| 缺省安装 | 节点启动时，若某个智能体的配置底层是 `dsh`（包括按缺省落到 dsh 的）而节点上找不到可用的 dsh，就在后台装钉住的版本；安装期间与失败后，这些智能体按 §3.3 退回 qianmopi 并写明原因，装好后它们的空闲子进程换新（与扩展变更同一个口子），下一轮起用 dsh。`--no-runtime-autoinstall` 或环境变量 `QIANMO_RUNTIME_AUTOINSTALL=0` 关掉；首次失败后按 5、15、60 分钟各重试一次，之后本次启动不再试；节点停机时中止进行中的安装，不记为失败 |
+| 缺省安装 | 节点启动时，若某个智能体的配置底层是 `dsh`（包括按缺省落到 dsh 的）而节点上找不到可用的 dsh，就在后台装钉住的版本；安装期间与失败后，这些智能体按 §3.3 退回 qianmopi 并写明原因，装好后它们的空闲子进程换新（与扩展变更同一个口子），下一轮起用 dsh。`--no-runtime-autoinstall` 或环境变量 `QIANMO_RUNTIME_AUTOINSTALL=0` 关掉（服务单元与脚本用环境变量：旧产物不认识这个参数会 `unknown resident option` 退出，变量则被忽略，回滚安全）；节点停机时中止进行中的安装，不记为失败 |
+| 失败与退避 | 首次失败后按 5、15、60 分钟各重试一次，之后本次启动不再试。连续失败次数记在 `installs.json`（成功清零），所以退避跨重启：重启后先等完上次失败留下的那一档再装，不立即重装；三次重试用完后，之后每次启动最多再试一次，且距上次失败不少于 60 分钟。没有智能体再配置在这个底层上时（`runtime.configure` 改走了），已排的重试取消；之后再有智能体改回来，要等下次启动或 `runtime.install` |
+| 一次性节点 | 验收的一次性节点（本地与真机两条腿）、编译版冒烟、`demo/env` 下的起法（`up.sh`、`remote/prepare-sandbox.sh`、`beta/beta-up.sh`）都带 `QIANMO_RUNTIME_AUTOINSTALL=0` 起常驻，不下载底层；验收场景可在自己的 `env` 里覆盖，三个脚本写成 `${QIANMO_RUNTIME_AUTOINSTALL:-0}`，运维事先 export 的值优先 |
+| 暂存清理 | 先装进安装根下的 `npm-stage-<uuid>`；失败、停机中止或过检后都删掉本次暂存。节点在安装中途被杀会留下它（dsh 一份约 850 MB），所以节点启动时先清：只看 `qianmoConfigPath('runtimes')` 这一层、名字精确匹配 `npm-stage-<uuid>`、是真目录才删（同名的符号链接或文件不动，目录里的链接只删链接不跟），本进程正在用的跳过。同一个配置根只应有一个常驻节点 |
+| PATH 上的同名程序 | 找到的 `dsh` 不一定是 DeepSeek Harness（Debian 的 distributed shell、pdsh 都带 `dsh`）。PATH 上的 dsh 先跑一次 `dsh --help`，输出里有「DeepSeek Harness」才采用（它的 `--version` 只打版本号，区分不了）；不是就当没装，`runtime.status` 的原因写明路径与理由，缺省安装照常装进受管前缀。每个路径只问一次，节点启动时先核对再算退回与安装。`--runtime-bin` 指定的照旧信任 |
 | 可选安装 | 控制链路 `runtime.install {runtime, version?}`（不给版本装目录钉住的版本，只收精确版本号）、`runtime.remove {runtime}`（有智能体配置在它上面时拒绝 `E_RUNTIME_IN_USE` 并写明是哪些；内置的 qianmopi 拒绝 `E_RUNTIME_BUILTIN`）；`runtime.update` 保留，泛化到目录里所有 npm 项。同一底层正在装时再装回 `E_RUNTIME_BUSY`，安装失败回 `E_RUNTIME_INSTALL`，被 `--runtime-bin` 钉住路径的底层不装不卸。三个都是有副作用的操作，走节点的幂等账本，急停下拒绝。上次安装的结果记在 `qianmoConfigPath('runtimes','installs.json')`（0600） |
 | 兼容检查 | 沿用 P31 的做法，按接口分：ACP 底层用节点自己的启动参数、真实的 `qm runtime-mcp` 工具桥与本机假模型接口（按它的首选线路）跑 `initialize` → `session/new`（带 qianmo MCP）→ 一轮，要求工具列表里有 `qianmo_*`、一次宿主工具调用到达节点；不通过就不装，节点留在原状，答复写明原因 |
-| 报告 | `runtime.versions` 列出目录里每一项：是否已装、版本、来源（前缀 / PATH / 启动参数）、钉住的版本、上次安装的结果；中枢「更新」页与「网关」页都读它 |
-| 前置 | 安装前核对磁盘：受管前缀所在文件系统的可用空间不够（dsh 要 2 GiB 以上）就不开始，报「磁盘空间不足」；要 Node.js 的底层先核对版本范围（dsh `^22.19.0 \|\| >=24`），不合要求报「缺少 Node.js」（退回原因 `no-node`），不替节点装 Node.js |
+| 报告 | `runtime.versions` 列出目录里每一项：是否已装、版本、来源（前缀 / PATH / 启动参数）、钉住的版本、上次安装的结果；中枢「更新」页与「网关」页都读它。各底层 `--version` 的结果在节点内缓存 10 分钟（按二进制路径，同时到的读共用一次查询），该底层安装开始、结束或卸载时作废 |
+| 前置 | 安装前核对磁盘：受管前缀所在文件系统的可用空间不够（dsh 要 2 GiB 以上）就不开始，报「磁盘空间不足」；核对可用内存：低于 1.5 GiB（`INSTALL_MEMORY_MIB` = 1536）不开始，报「可用内存不足」并写明需要与现有的 MiB 数，按安装失败记录、走上面的退避（Linux 取 `/proc/meminfo` 的 `MemAvailable`，macOS 取 `vm_stat` 的空闲 + 非活跃 + 预读页，其他平台 `os.freemem()`；npm 解包与兼容检查起的 harness 进程叠在常驻节点上，小内存机会被 OOM）；要 Node.js 的底层先核对版本范围（dsh `^22.19.0 \|\| >=24`），不合要求报「缺少 Node.js」（退回原因 `no-node`），不替节点装 Node.js |
 | 出站 | `registry.npmjs.org`（npm 自己的下载域）；走 §7.2 出站策略 |
 
 ---
@@ -107,7 +111,7 @@
 
 1. 节点的 `runtimes.json`（`qianmoConfigPath('qianmo','runtimes.json')`，0600 原子写，`{v:1, agents:{<智能体>:{runtime?, model?}}}`）：控制链路 `runtime.configure {agent, runtime, model}` 写入，`model` 是 `<档案>/<模型号>` 或 `auto`，传 `null` 清掉该字段；
 2. 启动参数 `--agent-runtime`、`--agent-model`（P27 原有）；
-3. 节点缺省底层 `--default-runtime <id>`，**缺省 `dsh`**。
+3. 节点缺省底层 `--default-runtime <id>`，没给参数时取环境变量 `QIANMO_DEFAULT_RUNTIME`（取值相同，`qianmopi` 与 `omp` 同义；空串当没设；给了参数就不读它；非法值启动时报错并列出可选值），**都没有就是 `dsh`**。
 
 `runtime.configure` 只接受目录里的 id 与本节点名册里的智能体；写入后该智能体的空闲子进程立即换新，忙的回合结束后换（同 P32）。外部底层不再强制要求 `--agent-model`（取不到模型是一种退回原因，不是启动错误）；`--agent-shell` 对任何外部底层都可用。
 
@@ -122,7 +126,7 @@
 
 配置的底层用不了时智能体不停摆，退回 qianmopi，原因写清楚：未安装、安装中、安装失败（带错误）、兼容检查未过、没有可用模型、节点没有 Node.js。原因消失（装好了、模型下发了）后自动回到配置的底层。退回不是静默的：控制链路 `runtime.status` 逐个智能体答 `{configured, effective, model, lane, reason}`，「网关」页与「智能体」页显示「暂用 qianmopi · 原因」。
 
-**对现网的影响**：已经部署、没写 `--agent-runtime` 的节点升级后，智能体按缺省改用 dsh（装好、有模型之后）。要保持原样的节点加 `--default-runtime qianmopi`（与 `omp` 同义）。
+**对现网的影响**：已经部署、没写 `--agent-runtime` 的节点升级后，智能体按缺省改用 dsh（装好、有模型之后），并在启动时后台下载 dsh。要保持原样，推荐在现网节点的环境里（服务单元、model-env 或起法脚本）设 `QIANMO_DEFAULT_RUNTIME=qianmopi` 与 `QIANMO_RUNTIME_AUTOINSTALL=0`：旧产物不认识这两个变量、直接忽略，回滚与自升级都安全。也可以用参数 `--default-runtime qianmopi --no-runtime-autoinstall`，但旧产物不认识这两个参数、会 `unknown resident option` 退出，**回滚到旧产物之前必须先把它们去掉**。`beta-up.sh` 起的内测节点已经缺省带 `QIANMO_RUNTIME_AUTOINSTALL=0`（§2 一次性节点一行），缺省底层仍要另设。
 
 ---
 
