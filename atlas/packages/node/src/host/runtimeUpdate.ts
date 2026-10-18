@@ -235,8 +235,8 @@ export type RunCommand = (
 ) => Promise<RunResult>
 
 /**
- * After a command exits, how long its pipes get to close: a process it left
- * behind (an npm lifecycle script's) may hold them open.
+ * After a command exits, how long its pipes get to close; a process it left
+ * behind (an npm lifecycle script's) that still holds them is then killed.
  */
 const PIPE_GRACE_MS = 2_000
 
@@ -248,14 +248,26 @@ export const runCommand: RunCommand = async (argv, options) => {
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
+    // A process group of its own, so a stop reaches what it started (npm's
+    // lifecycle scripts) and not only the command.
+    detached: process.platform !== 'win32',
   })
+  const signalAll = (signal: NodeJS.Signals) => {
+    if (process.platform === 'win32') child.kill(signal)
+    else
+      try {
+        process.kill(-child.pid, signal)
+      } catch {
+        // The whole group is gone.
+      }
+  }
   let force: ReturnType<typeof setTimeout> | undefined
   const stop = () => {
     if (force !== undefined) return
-    child.kill()
+    signalAll('SIGTERM')
     // One that ignores the signal (npm and its lifecycle children can) goes anyway.
     force = setTimeout(
-      () => child.kill('SIGKILL'),
+      () => signalAll('SIGKILL'),
       options.killGraceMs ?? 5_000,
     )
   }
@@ -273,7 +285,11 @@ export const runCommand: RunCommand = async (argv, options) => {
   let late: ReturnType<typeof setTimeout> | undefined
   try {
     const code = await child.exited
+    // Stopped: what it started goes with it, now.
+    if (force !== undefined) signalAll('SIGKILL')
     late = setTimeout(() => {
+      // Exited, but something it started still holds the pipes: it goes too.
+      signalAll('SIGKILL')
       out.cancel().catch(() => {})
       err.cancel().catch(() => {})
     }, PIPE_GRACE_MS)

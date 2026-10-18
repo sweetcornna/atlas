@@ -532,6 +532,9 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
         : null,
     ])
     let rows = known?.value ?? null
+    // A write while this was asked: the answer may predate it, so it is used
+    // for this read only, never cached.
+    const current = (this.#factsEpoch.get(node) ?? 0) === epoch
     // An answer is kept; a link failure keeps what was read before and asks
     // again next time.
     if (versions !== null && (versions.ok || versions.code === 'unsupported')) {
@@ -539,7 +542,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
         ? versionsSchema.safeParse(versions.value)
         : null
       rows = parsed?.success === true ? parsed.data : null
-      this.#versions.set(node, { at: now, value: rows })
+      if (current) this.#versions.set(node, { at: now, value: rows })
     }
     let value: Facts
     if (status.ok) {
@@ -552,9 +555,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
     } else {
       value = { state: 'unreachable', error: status.message.slice(0, 300) }
     }
-    // A write while this was asked: the answer may predate it.
-    if ((this.#factsEpoch.get(node) ?? 0) === epoch)
-      this.#facts.set(node, { at: this.#now(), value })
+    if (current) this.#facts.set(node, { at: this.#now(), value })
     return value
   }
 

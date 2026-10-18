@@ -952,11 +952,17 @@ test('a command that writes a lot to stdout keeps only maxOutput of it', async (
   expect(result).toEqual({ code: 0, stdout: 'y'.repeat(100), truncated: true })
 })
 
-test('a command that ignores its timeout is killed outright, and a child it left holding the pipes does not keep it waiting', async () => {
+test('a command that ignores its timeout is killed outright, with what it started', async () => {
+  const pidFile = path.join(mkdtempSync(path.join(tmpdir(), 'qm-kill-')), 'pid')
   const started = Date.now()
   const result = await runCommand(
     // The shell ignores SIGTERM, and so does the sleep it starts.
-    ['/bin/sh', '-c', "trap '' TERM; sleep 6; echo late"],
+    [
+      '/bin/sh',
+      '-c',
+      `trap '' TERM; sleep 6 & echo $! > "$0"; wait; echo late`,
+      pidFile,
+    ],
     {
       env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin' },
       timeoutMs: 100,
@@ -965,8 +971,39 @@ test('a command that ignores its timeout is killed outright, and a child it left
   )
   expect(result.code).not.toBe(0)
   expect(result.stdout).toBe('')
-  expect(Date.now() - started).toBeLessThan(4_000)
+  expect(Date.now() - started).toBeLessThan(2_000)
+  expect(await gone(Number(readFileSync(pidFile, 'utf8')))).toBe(true)
+  rmSync(path.dirname(pidFile), { recursive: true, force: true })
 })
+
+test('a command that exits leaving a process on its pipes: that process is killed, the answer kept', async () => {
+  const pidFile = path.join(mkdtempSync(path.join(tmpdir(), 'qm-kill-')), 'pid')
+  const started = Date.now()
+  const result = await runCommand(
+    ['/bin/sh', '-c', `sleep 6 & echo $! > "$0"; echo done`, pidFile],
+    {
+      env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin' },
+      timeoutMs: 20_000,
+    },
+  )
+  expect(result).toMatchObject({ code: 0, stdout: 'done\n' })
+  expect(Date.now() - started).toBeLessThan(4_000)
+  expect(await gone(Number(readFileSync(pidFile, 'utf8')))).toBe(true)
+  rmSync(path.dirname(pidFile), { recursive: true, force: true })
+})
+
+/** Whether process `pid` is gone within a second. */
+async function gone(pid: number): Promise<boolean> {
+  for (let i = 0; i < 20; i++) {
+    try {
+      process.kill(pid, 0)
+    } catch {
+      return true
+    }
+    await Bun.sleep(50)
+  }
+  return false
+}
 
 test('an install that comes in while the runtime is being removed is refused, not reported done', async () => {
   const npm = fakeNpm(PIN('codex'))

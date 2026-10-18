@@ -105,6 +105,8 @@ class FakeLinks {
    */
   holdStatus: Promise<void> | null = null
   statusAsked: (() => void) | null = null
+  /** Only this node's status is held; null: whichever is asked first. */
+  holdStatusNode: string | null = null
   /** `runtime.configure` answers a refusal. */
   refuseConfigure = false
   /** A runtime the node reports as installing on its own (P36.3). */
@@ -268,7 +270,10 @@ class FakeLinks {
         agents: fake.agents.map(agent => this.#state(fake, agent)),
       }
       const held = this.holdStatus
-      if (held !== null) {
+      if (
+        held !== null &&
+        (this.holdStatusNode === null || this.holdStatusNode === node)
+      ) {
         this.holdStatus = null
         this.statusAsked?.()
         await held
@@ -996,6 +1001,34 @@ describe('runtimes on a node', () => {
     expect(
       links.writes.filter(line => line.includes('runtime.install')),
     ).toEqual([`beta-1 runtime.install {"runtime":"codex"} by ${OPS}`])
+  })
+
+  test('a versions answer read while an install ended elsewhere is not kept for the next reads', async () => {
+    const port = await connected()
+    const agents = agentsOf(port)
+    links.nodes.get('beta-1')?.installed.delete('codex')
+    agents.runtimesChanged('beta-1')
+    let release!: () => void
+    links.holdStatusNode = 'beta-1'
+    links.holdStatus = new Promise(done => {
+      release = done
+    })
+    const asked = new Promise<void>(done => {
+      links.statusAsked = done
+    })
+    const reading = snapshot(port)
+    await asked
+    // The install ends while that read is out; its versions answer predates it.
+    links.nodes.get('beta-1')?.installed.add('codex')
+    agents.runtimesChanged('beta-1')
+    release()
+    await reading
+    const after = (await snapshot(port)).nodes.find(
+      one => one.node === 'beta-1',
+    )
+    expect(after?.runtimes.find(one => one.id === 'codex')).toMatchObject({
+      installed: true,
+    })
   })
 
   test('removal in use is refused with the node words; built-in and unknown are not sent', async () => {
