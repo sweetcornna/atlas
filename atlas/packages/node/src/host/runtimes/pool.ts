@@ -536,10 +536,13 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     return { kind }
   }
   #saveRecord(dir: string, record: SessionRecord): void {
-    // A new native conversation: the turns before it are not in it.
+    // A new native conversation: the turns before it are not in it. An id
+    // means something only on its own runtime, so another runtime's equal id
+    // is a new one too.
+    const saved = this.#savedRecord(dir)
     if (
       record.nativeId !== undefined &&
-      record.nativeId !== this.#savedRecord(dir)?.nativeId
+      (record.nativeId !== saved?.nativeId || record.kind !== saved.kind)
     )
       record.since = Date.now()
     writeFileSync(join(dir, 'runtime.json'), JSON.stringify(record), {

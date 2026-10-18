@@ -85,6 +85,8 @@ function setup(
     runtimeOf?: () => string
     spawnFails?: boolean
     maxChildren?: number
+    /** More for the fixture's environment. */
+    env?: Record<string, string>
   } = {},
 ) {
   root ??= isolatedRoot()
@@ -150,7 +152,7 @@ function setup(
         [FAKE[input.kind]!, ...input.argv.slice(1)],
         {
           cwd: input.cwd,
-          env: { ...input.env, QIANMO_FIXTURE_LOG: logFile },
+          env: { ...input.env, ...options.env, QIANMO_FIXTURE_LOG: logFile },
           stdio: ['pipe', 'pipe', 'pipe'],
         },
       )
@@ -740,6 +742,27 @@ test('a session moved to another runtime starts a new native conversation there'
   expect(readFileSync(join(dir, 'runtime-system.txt'), 'utf8')).not.toBe(
     dshPrompt,
   )
+})
+
+test('a conversation id equal to the one another runtime had is still a new conversation', async () => {
+  const { pool, agent } = setup(
+    {},
+    { env: { QIANMO_FIXTURE_SESSION_ID: 'same-id' } },
+  )
+  const session = await pool.newSession(agent)
+  // The session ran on Gemini before, whose conversation had the same id.
+  writeFileSync(
+    join(
+      qianmoConfigPath('resident', 'sessions', 'coder', session),
+      'runtime.json',
+    ),
+    JSON.stringify({ kind: 'gemini', nativeId: 'same-id', since: 1 }),
+  )
+  const begun = Date.now()
+  expect(content(await turn(pool, session, 'x1', 'hello'))).toBe(
+    'acp(1): hello',
+  )
+  expect(pool.conversationSince(session)!).toBeGreaterThanOrEqual(begun)
 })
 
 test('an ACP turn with no usage anywhere records zero, marked unreported', async () => {
