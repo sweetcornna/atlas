@@ -146,6 +146,33 @@ test('a start can be planned: after or at, everyMinutes with times, passed on as
   expect(calls[0]![1]).toMatchObject({ everyMinutes: 60, times: 3 })
 })
 
+test('the optional fields say to leave them out; zeros go to the hub as sent', async () => {
+  const { calls, byName } = tools({ contextId: 'c', taskId: 't' })
+  const start = byName('qianmo_task_start')
+  expect(start.description).toContain(
+    'Leave out (or give null) every optional field you do not need',
+  )
+  expect(start.description).toContain('0 and empty strings count as left out')
+  const properties = start.parameters['properties'] as Record<
+    string,
+    { description?: string }
+  >
+  for (const name of ['agent', 'after', 'at', 'everyMinutes', 'times'])
+    expect(properties[name]!.description).toMatch(/^Optional\. .*leave out/)
+  // What a model fills in for fields it does not mean (seen with gpt-6-luna):
+  // the hub reads 0 and "" as not given.
+  const zeros = { agent: '', after: 0, at: '', everyMinutes: 0, times: 0 }
+  expect(
+    (
+      await start.handler(
+        { title: '查', instructions: '查日志', ...zeros },
+        ctx,
+      )
+    ).ok,
+  ).toBe(true)
+  expect(calls[0]![1]).toMatchObject(zeros)
+})
+
 test('the descriptions carry the coordination rules to a console conversation', () => {
   const { byName } = tools(null)
   const start = byName('qianmo_task_start').description

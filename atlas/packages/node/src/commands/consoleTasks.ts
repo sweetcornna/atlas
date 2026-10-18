@@ -449,15 +449,17 @@ function given(value: unknown): unknown {
 }
 
 /**
- * A whole number from a tool argument — a number, or digits a model sent as
- * text; undefined when absent, null when it is something else.
+ * A whole number from an optional count — a number, or digits a model sent
+ * as text; undefined when absent or 0, null when it is something else. 0 is
+ * how a model fills a count it does not mean to give (`after`,
+ * `everyMinutes` and `times` all start at 1), so it is not given either.
  */
 function whole(raw: unknown): number | undefined | null {
   const value = given(raw)
-  if (value === undefined) return undefined
+  if (value === undefined || value === 0) return undefined
   if (typeof value === 'number') return Number.isInteger(value) ? value : null
   if (typeof value === 'string' && /^\d{1,6}$/.test(value.trim()))
-    return Number(value.trim())
+    return Number(value.trim()) || undefined
   return null
 }
 
@@ -1647,6 +1649,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
    * 主动任务: `after` minutes or `at` an ISO time with its zone for a later
    * first run, `everyMinutes` with `times` for a repeat. Null when the task
    * runs once, at once; a refusal's words when the arguments do not hold.
+   * Empty strings, null and 0 are not given ({@link whole}).
    */
   #plan(args: Record<string, unknown>): Plan | null | string {
     const now = this.#now()
@@ -1673,8 +1676,12 @@ export class ConsoleTasks implements BackgroundTasksPort {
       if (parsed > now + MAX_DELAY_MINUTES * 60_000) return 'at 至多 7 天后'
       first = parsed
     }
+    if (times !== undefined && (times < 1 || times > MAX_TIMES))
+      return `times 是 1–${MAX_TIMES} 次`
     if (every === undefined) {
-      if (times !== undefined) return 'times 要和 everyMinutes 一起给'
+      // Without a repeat a task runs once: times 1 says no more than that.
+      if (times !== undefined && times !== 1)
+        return 'times 要和 everyMinutes 一起给'
       return first === now
         ? null
         : {
@@ -1688,7 +1695,6 @@ export class ConsoleTasks implements BackgroundTasksPort {
     if (every < MIN_EVERY_MINUTES || every > MAX_EVERY_MINUTES)
       return `everyMinutes 是 ${MIN_EVERY_MINUTES}–${MAX_EVERY_MINUTES} 分钟`
     if (times === undefined) return `重复任务要给 times（1–${MAX_TIMES} 次）`
-    if (times < 1 || times > MAX_TIMES) return `times 是 1–${MAX_TIMES} 次`
     // Without a later start the first run starts now.
     return {
       nextAt: first,

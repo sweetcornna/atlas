@@ -875,7 +875,7 @@ demo/env/beta/beta-up.sh --role host -- --replicate "$HOME/qianmo-beta" <原有�
 
 ## 值守作业（`ops/watch-hub.sh`，`qm watch`）
 
-跑在 H 上的 `qm watch`（P13.6；起法与判据的真源是 console.md §10，这里只写内测的三条接线）：
+跑在 H 上的 `qm watch`（P13.6；起法与判据的真源是 console.md §10，这里只写内测的四条接线）：
 
 1. **配置根是控制台那一份**（`<根>/nodes/console/config`）。签名身份按配置根落盘，`print-identity`
    与 `run` 问的是同一个根；调度状态与 `ESTOP` 在 `<根>/nodes/console/config/qianmo/scheduler/`。
@@ -883,6 +883,10 @@ demo/env/beta/beta-up.sh --role host -- --replicate "$HOME/qianmo-beta" <原有�
    `install --node` 钉死目标，`run` 从 `secrets/peers/<节点>.psk` 读进环境，并先查作业文件里每个
    `target` 都在这个节点上。
 3. **先 trust，后 `--sign`**（console.md §10.1.1）。
+4. **签了消息，握手也签**：`--sign` 时 `run` 每次从 `peers.conf` 现取目标节点公钥（坐标行 `public-key=`，
+   或本机节点的身份文件；与握手探针、H 腿给控制台的 `--trust` 同一个取法），给 `qm watch` 加
+   `--trust <节点>=<公钥>`。带 `--controller` 的节点只收签名握手，不签的拨号拒成 `signature_required`。
+   取不到公钥时 WARN 并照旧 PSK 握手；取得到就要求节点回签，节点要带 `--sign-handshake`（`--controller` 已含）。
 
 ```bash
 demo/env/beta/ops/watch-hub.sh print-identity                        # → hub=<公钥>
