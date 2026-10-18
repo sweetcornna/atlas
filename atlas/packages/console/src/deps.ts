@@ -1938,6 +1938,8 @@ export interface ProviderActivity {
   /** probe 的模式；apply 是否带了 force。 */
   readonly mode?: 'auth' | 'latency' | 'call'
   readonly force?: boolean
+  /** apply 被节点接下、等空闲才切换（§2.7）：节点还跑着原来的档案。 */
+  readonly pending?: boolean
 }
 
 /** 节点 → 档案的指派（§2.4）：跟随全局默认、指定一份、或明确不托管。 */

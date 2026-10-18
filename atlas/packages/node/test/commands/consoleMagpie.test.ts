@@ -1159,5 +1159,55 @@ describe('whether a node may run a subscriber’s profile', () => {
       expect(mayRunTenantProfile({ actual: null, recent })).toBe(expected)
     // A probe is not a delivery.
     expect(mayRunTenantProfile({ actual: null, recent: [probe] })).toBe(false)
+    // Taken but waiting to switch: the subscriber's is still what runs.
+    expect(
+      mayRunTenantProfile({
+        actual: null,
+        recent: [
+          { ...apply('platform', 'ok'), pending: true },
+          apply(TENANT, 'ok'),
+        ],
+      }),
+    ).toBe(true)
+  })
+
+  test('with a status, deliveries after the one it reports count too', () => {
+    const runs = (profileId: string, requestId: string) => ({
+      applied: { profileId, requestId },
+    })
+    const platformOk = apply('platform', 'ok')
+    const tenantOk = apply(TENANT, 'ok')
+    // The status reports a platform profile; a delivery of the subscriber's
+    // after it went unanswered and may have landed.
+    expect(
+      mayRunTenantProfile({
+        actual: runs('platform', platformOk.requestId),
+        recent: [apply(TENANT, 'failed'), platformOk],
+      }),
+    ).toBe(true)
+    // Deliveries before the reported one do not.
+    expect(
+      mayRunTenantProfile({
+        actual: runs('platform', platformOk.requestId),
+        recent: [platformOk, apply(TENANT, 'failed')],
+      }),
+    ).toBe(false)
+    // The status reports the subscriber's; something else landed after it.
+    expect(
+      mayRunTenantProfile({
+        actual: runs(TENANT, tenantOk.requestId),
+        recent: [platformOk, tenantOk],
+      }),
+    ).toBe(false)
+    // ... or was only taken, waiting to switch.
+    expect(
+      mayRunTenantProfile({
+        actual: runs(TENANT, tenantOk.requestId),
+        recent: [{ ...platformOk, pending: true }, tenantOk],
+      }),
+    ).toBe(true)
+    expect(mayRunTenantProfile({ actual: { applied: null }, recent: [] })).toBe(
+      false,
+    )
   })
 })
