@@ -276,6 +276,11 @@ describe('the pid file', () => {
         })
       } finally {
         child.kill('SIGKILL')
+        // Reaped before the test ends: a child still exiting while later
+        // files spawn synchronously leaves Bun's spawnSync on Linux spinning
+        // on an exited child it never reaps.
+        if (child.exitCode === null && child.signalCode === null)
+          await new Promise(resolve => child.once('exit', resolve))
       }
     },
     20_000,

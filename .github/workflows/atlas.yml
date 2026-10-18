@@ -213,7 +213,7 @@ jobs:
       # 一组红不取消其他组：一个红分片不该藏住别的。
       fail-fast: false
       matrix:
-        group: [rep1, rep2, rep3, rep4]
+        group: [si-i-1, si-i-2, si-i-3, fixset-1, fixset-2, fixset-3, fixfull-1, fixfull-2]
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
@@ -270,7 +270,12 @@ jobs:
           CR="$C/residentModelCredential.isolated.test.ts"; PR="$C/residentModelProbe.test.ts"
           GA="$C/residentModelProbeGate.test.ts"; SI="$C/residentProviderSignal.test.ts"
           RO="$C/residentRootOverlap.test.ts"
-          F="$CR $PR $GA $SI $RO $I"
+          case "$GROUP" in
+            si-i-*) git checkout b45595a48 -- "$SI"; F="$SI $I" ;;
+            fixset-*) F="$CR $PR $GA $SI $RO $I" ;;
+            fixfull-*) F="" ;;
+          esac
+          git diff --stat
           sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
           (bash atlas/scripts/ci/zwatch.sh > "$RUNNER_TEMP/zwatch.log" 2>&1 &)
           echo "files: $F"
@@ -281,6 +286,8 @@ jobs:
             strace -f -tt -o "$RUNNER_TEMP/st" -e trace=pidfd_open,epoll_ctl,epoll_wait,epoll_pwait,epoll_pwait2,waitid,wait4,clone,clone3,vfork,execve,kill,pidfd_send_signal,rt_sigaction,prctl,exit_group \
               bun test --preload ./atlas/tests/preload.ts --timeout 10000 --isolate $F 2>&1 | grep -vE '^\s*(\(pass\)|\(skip\))'; rc=${PIPESTATUS[0]}
             ls -la "$RUNNER_TEMP"/st* | head; mkdir -p test-reports; cp "$RUNNER_TEMP"/st* test-reports/ 2>/dev/null
+          elif [ -z "$F" ]; then
+            bash atlas/scripts/test-shards.sh --group node-rest; rc=$?
           else
             bun test --preload ./atlas/tests/preload.ts --timeout 10000 --isolate $F 2>&1 | grep -vE '^\s*(\(pass\)|\(skip\))'; rc=${PIPESTATUS[0]}
           fi
