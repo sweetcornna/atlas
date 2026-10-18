@@ -344,6 +344,13 @@ export interface RuntimeInstallRecord {
    * backoff reads it after a restart; never on the wire.
    */
   readonly failures?: number
+  /**
+   * Written when the install began and never replaced: the node died in it.
+   * `at` is when it began, which says nothing about when it died, so the
+   * default install's backoff counts from the restart that finds it; never
+   * on the wire.
+   */
+  readonly unfinished?: true
 }
 
 /** What {@link RuntimeInstaller.ensureRuntimeInstalled} answers. */
@@ -863,6 +870,7 @@ export class RuntimeInstaller {
       error: UNFINISHED,
       code: 'install-failed',
       failures,
+      unfinished: true,
     })
     const attempt = this.#attempt(spec, wanted, automatic, failures)
     this.#installing.set(spec.id, attempt)

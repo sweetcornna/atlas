@@ -509,11 +509,14 @@ export class NodeRuntimes {
     }
     for (const kind of missing) {
       // What an earlier run's failures left of the backoff (§2); a clock
-      // that went back never makes it longer than the wait itself.
+      // that went back never makes it longer than the wait itself. An
+      // install the node died in has no time of failure (its `at` is when it
+      // began, maybe long before the kill): the whole wait, from now.
       const last = this.installer.lastInstall(kind)
       const failures = failuresOf(last)
       const wait = failures === 0 ? 0 : this.#delay(failures)
-      const left = (last?.at ?? 0) + wait - Date.now()
+      const left =
+        last?.unfinished === true ? wait : (last?.at ?? 0) + wait - Date.now()
       this.#later(kind, Math.min(wait, Math.max(0, left)))
     }
   }

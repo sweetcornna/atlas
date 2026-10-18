@@ -612,8 +612,10 @@ test('a node killed in the middle of an install backs off after the restart inst
   await one.runtimes.start()
   await settle()
   expect(one.npm.installs()).toBe(1)
-  // Killed, so no stop() and no ending: what is on disk is all there is.
-  jest.advanceTimersByTime(60_000)
+  // Killed after ten minutes in the install (npm's scratch step alone may
+  // take six), so no stop() and no ending: the disk is all there is. The
+  // backoff is counted from the restart, not from when that install began.
+  jest.advanceTimersByTime(10 * 60_000)
   const two = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
   await two.runtimes.start()
   await settle()
@@ -624,8 +626,8 @@ test('a node killed in the middle of an install backs off after the restart inst
       '上一次安装没有结束（节点在安装中途退出，常见原因是内存不足被系统结束）',
   })
   expect(two.installer.lastInstall('dsh')).toMatchObject({ failures: 1 })
-  // Four of the five minutes are left.
-  jest.advanceTimersByTime(4 * 60_000 - 1)
+  // All five minutes, from this start.
+  jest.advanceTimersByTime(5 * 60_000 - 1)
   await settle()
   expect(two.npm.installs()).toBe(0)
   jest.advanceTimersByTime(1)
@@ -634,6 +636,22 @@ test('a node killed in the middle of an install backs off after the restart inst
   expect(state(two.runtimes, 'main').effective.runtime).toBe('dsh')
   expect(two.installer.lastInstall('dsh')).toMatchObject({ ok: true })
   expect(two.installer.lastInstall('dsh')?.failures).toBeUndefined()
+})
+
+test('an install that ended in a failure still backs off from when it failed', async () => {
+  jest.useFakeTimers()
+  const one = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
+  one.npm.fail = true
+  await one.runtimes.start()
+  await settle()
+  expect(one.npm.installs()).toBe(1)
+  one.runtimes.stop()
+  jest.advanceTimersByTime(10 * 60_000)
+  // The five minutes are over: a restart installs at once.
+  const two = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
+  await two.runtimes.start()
+  await settle()
+  expect(two.npm.installs()).toBe(2)
 })
 
 test('a pending retry is dropped once no agent is configured on its runtime', async () => {
