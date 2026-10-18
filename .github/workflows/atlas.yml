@@ -258,6 +258,7 @@ jobs:
         env:
           GROUP: ${{ matrix.group }}
         run: |
+          set +e
           (bash atlas/scripts/ci/hangwatch.sh > "$RUNNER_TEMP/hangwatch.log" 2>&1 &)
           bash atlas/scripts/test-shards.sh --group "$GROUP"; rc=$?
           echo "################ hangwatch"; cat "$RUNNER_TEMP/hangwatch.log"

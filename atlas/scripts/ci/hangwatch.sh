@@ -1,24 +1,25 @@
 #!/usr/bin/env bash
-# Prints the state of any openssl / identityProbe child older than 4 s.
+# Temporary CI probe: every 15 s, the state of each `bun test` process and its
+# children; any child older than 8 s is dumped once in detail.
 seen=""
 while true; do
-  for pid in $(pgrep -f 'identityProbe.runner.ts|^openssl ' 2>/dev/null); do
-    et=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
-    [ -n "$et" ] && [ "$et" -ge 4 ] || continue
-    case " $seen " in *" $pid "*) continue ;; esac
-    seen="$seen $pid"
-    echo "=== HANG pid=$pid age=${et}s $(date -u +%T)"
-    ps -o pid,ppid,stat,wchan:32,etimes,args -p "$pid"
-    echo "--- status"; grep -E 'State|PPid|SigBlk|SigIgn|SigCgt' /proc/$pid/status
-    echo "--- fds"; ls -l /proc/$pid/fd 2>&1 | head -20
-    echo "--- stack"; sudo cat /proc/$pid/stack 2>&1 | head -20
-    echo "--- children"; pgrep -P "$pid" | xargs -r ps -o pid,stat,wchan:32,args -p
-    ppid=$(awk '/PPid/{print $2}' /proc/$pid/status)
-    echo "--- parent $ppid"; ps -o pid,stat,wchan:32,etimes,nlwp -p "$ppid"
-    echo "--- parent fds"; sudo ls -l /proc/$ppid/fd 2>&1 | wc -l
-    echo "--- all bun/qm/npm/sleep processes"; ps -eo pid,ppid,stat,etimes,args --forest | grep -vE 'hangwatch|grep' | grep -E 'bun|qm|npm|node|sleep|openssl|sh ' | cut -c1-200 | head -40
-    echo "--- top cpu"; ps -eo pid,pcpu,pmem,args --sort=-pcpu | head -8 | cut -c1-160
-    free -m
+  echo "=== $(date -u +%T) load=$(cut -d' ' -f1-3 /proc/loadavg) $(free -m | awk '/Mem/{print "used="$3" avail="$7}')"
+  for b in $(pgrep -x bun); do
+    grep -q -- '--isolate' /proc/$b/cmdline 2>/dev/null || continue
+    echo "bun-test pid=$b fds=$(ls /proc/$b/fd 2>/dev/null | wc -l) thr=$(ls /proc/$b/task | wc -l) $(grep -E 'SigBlk|SigIgn|SigCgt' /proc/$b/status | tr '\n' ' ')"
+    for c in $(pgrep -P "$b"); do
+      et=$(ps -o etimes= -p "$c" | tr -d ' ')
+      st=$(awk '{print $3}' /proc/$c/stat 2>/dev/null)
+      echo "  child $c state=$st age=${et}s $(tr '\0' ' ' < /proc/$c/cmdline | cut -c1-120)"
+      if [ "${et:-0}" -ge 8 ]; then
+        case " $seen " in *" $c "*) continue ;; esac
+        seen="$seen $c"
+        echo "  --- detail $c"; grep -E 'State|SigBlk|SigIgn|SigCgt' /proc/$c/status | sed 's/^/    /'
+        echo "    wchan=$(cat /proc/$c/wchan 2>/dev/null)"; sudo cat /proc/$c/stack 2>/dev/null | head -8 | sed 's/^/    /'
+        ls -l /proc/$c/fd 2>/dev/null | head -8 | sed 's/^/    /'
+        pgrep -P "$c" | xargs -r ps -o pid,stat,etimes,args -p | sed 's/^/    /'
+      fi
+    done
   done
-  sleep 1
+  sleep 15
 done
