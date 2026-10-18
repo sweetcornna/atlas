@@ -48,13 +48,34 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install system packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build cmake bubblewrap postgresql
+
       # omp 的原生插件（Rust）。omp 子进程和 qm 编译都要加载它；toolchain 版本
       # 取自 rust-toolchain.toml。x64 上出 build-qm 内嵌的 baseline 版（与舰队配方同一脚本）。
+      # 从零编译约 9–14 分钟，是整个作业最大的一块；它的输入除构建脚本外都是基座文件，
+      # 只在上游同步时变，所以按输入哈希缓存产物。sync-omp 与 fleet-payload 不走缓存，
+      # 每次重编，兜住缓存键漏列输入的情况。
+      # `ImageOS`（如 ubuntu24）是 runner 的环境变量，表达式的 env 上下文读不到它。
+      - name: Read the runner image
+        id: image
+        run: echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the omp native addon
+        id: native-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0, 2026-06-26
+        with:
+          path: packages/natives/native/pi_natives.linux-x64-baseline.node
+          key: omp-native-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.os }}-${{ hashFiles('crates/**', 'Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/**', 'bun.lock', 'packages/natives/package.json', 'packages/natives/scripts/**', 'packages/natives/native/*.js', 'scripts/bazel-natives.ts', 'scripts/host-detect.ts', 'scripts/stamp-native-version.ts', 'atlas/scripts/build-native-portable.sh') }}
+
       - name: Build the omp native addon
+        if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build cmake bubblewrap postgresql
           rustup toolchain install --profile minimal "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
           bash atlas/scripts/build-native-portable.sh
+
+      - name: Show the omp native addon
+        run: sha256sum packages/natives/native/pi_natives.linux-x64-baseline.node
 
       # Ubuntu 24.04 runners confine unprivileged user namespaces with AppArmor, so
       # bubblewrap cannot configure the sandbox's loopback ("Failed RTM_NEWADDR:
