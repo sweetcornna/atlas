@@ -35,6 +35,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ninja-build cmake bubblewrap postgresql
           rustup toolchain install --profile minimal "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' "$RUNNER_TEMP/omp-sync/candidate/rust-toolchain.toml")"
+      # The candidate's atlas:test runs the generated-code isolation tests under
+      # bwrap; without this every scheduled run went red on RTM_NEWADDR.
+      - name: Allow unprivileged user namespaces for bubblewrap
+        if: steps.prepare.outputs.status == 'prepared'
+        uses: ./atlas/scripts/ci/allow-bwrap
       - name: Check compatibility and record evidence
         if: steps.prepare.outputs.status == 'prepared'
         run: bun atlas/scripts/sync-omp.ts verify "$RUNNER_TEMP/omp-sync"
