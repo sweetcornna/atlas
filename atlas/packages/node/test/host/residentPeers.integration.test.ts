@@ -116,6 +116,8 @@ async function network(options: {
   const errors: unknown[] = []
   /** Which agent each fixture child was started for, and the most alive at once. */
   const spawned: string[] = []
+  /** Each turn stage the node reports, with the agent it was for. */
+  const timings: { stage: string; agent?: string }[] = []
   let alive = 0
   let mostAlive = 0
   const resident = new QianmoResident({
@@ -170,6 +172,7 @@ async function network(options: {
       url = address.url
     },
     onTiming: event => {
+      timings.push({ stage: event.stage, agent: event.agent })
       if (event.stage === 'runtime_ready') ready = true
     },
     onError: error => errors.push(error),
@@ -220,6 +223,19 @@ async function network(options: {
   control.start()
   await until(() => control.status()[0]?.connected === true)
 
+  /** A person's line to `target`, not waited for: its conversation and task. */
+  async function start(target: string, text: string) {
+    const opened = await chat.open(target)
+    if (!opened.ok) throw new Error(opened.failure.message)
+    const sent = await chat.send({
+      sessionId: opened.value.id,
+      text,
+      onBehalfOf: 'legacy:admin',
+    })
+    if (!sent.ok) throw new Error(sent.failure.message)
+    return { sessionId: opened.value.id, taskId: sent.value.taskId! }
+  }
+
   /** A person's line to `target`; resolves with the agent's answer. */
   async function say(target: string, text: string) {
     const opened = await chat.open(target)
@@ -251,10 +267,12 @@ async function network(options: {
     resident,
     chat,
     control,
+    start,
     say,
     stopped,
     errors,
     spawned,
+    timings,
     mostAlive: () => mostAlive,
   }
 }
@@ -285,7 +303,9 @@ test('two agents on one node ask each other, each answer nested in the asking tu
   // Answered by nesting, not by waiting out the 60 s question.
   expect(Date.now() - started).toBeLessThan(30_000)
   expect(deepest).toBe(2)
-  expect(resident.gate.depth).toBe(0)
+  // The hub has the answer a moment before the node's turn lets go of the
+  // gate (it waits for the hub's receipt of that answer).
+  await until(() => resident.gate.depth === 0, 5_000)
   // Each asked agent got the question in a conversation of its own, marked
   // with who asked.
   const sessions = await chat.sessions()
@@ -344,5 +364,36 @@ test('with two processes allowed the same question nests and is answered', async
     answers: [{ agent: BETA, ok: true, reply: 'fixture response' }],
   })
   expect(mostAlive()).toBe(2)
-  expect(resident.gate.depth).toBe(0)
+  await until(() => resident.gate.depth === 0, 5_000)
+}, 60_000)
+
+test('an asker stopped while its nested answer runs: the hub stops the answer too, and the gate is free at once', async () => {
+  const { resident, control, start, say, stopped, timings } = await network({
+    sign: true,
+    hold: 'beta',
+  })
+  const asker = await start(ALPHA, `please QIANMO-ASK ${BETA} now`)
+  // BETA's answer is running, nested in ALPHA's turn, and never ends alone.
+  await until(
+    () =>
+      resident.gate.depth === 2 &&
+      timings.some(one => one.stage === 'admitted' && one.agent === 'beta'),
+  )
+  const halted = Date.now()
+  const outcome = await control.request(
+    'node-b',
+    'turn.stop',
+    { taskId: asker.taskId },
+    'test',
+    { timeoutMs: 10_000 },
+  )
+  expect(outcome).toMatchObject({ ok: true, value: { stopped: true } })
+  // Not the question's 60 s: the hub withdrew it and stopped BETA's turn.
+  await until(() => resident.gate.depth === 0, 15_000)
+  expect(Date.now() - halted).toBeLessThan(15_000)
+  expect(stopped).toHaveLength(1)
+  // The node takes ordinary turns again straight away.
+  const next = await say(ALPHA, 'hello')
+  expect(next.state).toBe('done')
+  expect(Date.now() - halted).toBeLessThan(20_000)
 }, 60_000)

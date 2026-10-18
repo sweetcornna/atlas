@@ -284,6 +284,52 @@ describe('asking', () => {
     expect(stopped).toEqual([])
   })
 
+  test('when the asking turn ends first, its questions are withdrawn: the one out is stopped, the one waiting never goes out', async () => {
+    const book = peers()
+    const caller = await conversation()
+    // Two questions to one agent from the same turn: the second waits for
+    // the first in their conversation.
+    const first = ask(book, caller, [CODER], { message: '第一问' })
+    const second = ask(book, caller, [CODER], { message: '第二问' })
+    const peer = await askedIn(CODER)
+    const started = Date.now()
+    // The asking turn is stopped on its node; its answer reaches the hub.
+    chat.reply(caller, '这一轮已停止', 'failed', { remoteTerminal: true })
+    await until(() => stopped.length === 1, 1_000)
+    expect(stopped).toEqual([[CODER, chat.lastTask(peer)]])
+    expect(answers(await first)[0]).toMatchObject({
+      agent: CODER,
+      ok: false,
+      code: 'cancelled',
+    })
+    expect(answers(await second)[0]).toMatchObject({ code: 'cancelled' })
+    // Not the question's own 300 s (6 s here).
+    expect(Date.now() - started).toBeLessThan(2_000)
+    expect(chat.sentTo(peer)).toHaveLength(1)
+    expect(actions.entries.map(one => [one.outcome, one.code]).sort()).toEqual([
+      ['failed', 'cancelled'],
+      ['failed', 'cancelled'],
+    ])
+  })
+
+  test('a withdrawn question that could not be stopped is reported so, and the next one opens a new conversation', async () => {
+    const book = peers({ stopTask: async () => false })
+    const caller = await conversation()
+    const pending = ask(book, caller, [CODER])
+    const peer = await askedIn(CODER)
+    chat.reply(caller, '这一轮已停止', 'failed', { remoteTerminal: true })
+    const result = answers(await pending)[0]!
+    expect(result).toMatchObject({ code: 'cancelled' })
+    expect(JSON.stringify(result)).toContain('没能停止')
+    // A later turn of the same conversation asks again: a new conversation.
+    await chat.send({ sessionId: caller, text: '再问一次' })
+    const next = ask(book, caller, [CODER])
+    await until(() => asked(CODER).length === 2)
+    expect(asked(CODER)[1]).not.toBe(peer)
+    chat.reply(asked(CODER)[1]!, '好')
+    expect(answers(await next)[0]).toMatchObject({ ok: true })
+  })
+
   test('a very long answer is cut to fit the reply', async () => {
     const book = peers()
     const caller = await conversation()
