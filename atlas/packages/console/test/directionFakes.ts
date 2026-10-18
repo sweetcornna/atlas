@@ -1882,8 +1882,9 @@ export class FakeChannels implements ChannelsPort {
         groupTrigger: 'mention',
         replyWindowMs: 0,
         prompt: '',
-        pairing: true,
+        pairing: 'on',
         pairingOpen: true,
+        groupContext: true,
         pairingRequests: [
           {
             id: 'pr-1',
@@ -1938,8 +1939,9 @@ export class FakeChannels implements ChannelsPort {
       groupTrigger: draft.groupTrigger ?? old?.groupTrigger ?? 'mention',
       replyWindowMs: draft.replyWindowMs ?? old?.replyWindowMs ?? 0,
       prompt: draft.prompt ?? old?.prompt ?? '',
-      pairing: draft.pairing ?? old?.pairing ?? false,
-      pairingOpen: draft.pairing ?? old?.pairingOpen ?? false,
+      pairing: draft.pairing ?? old?.pairing ?? 'auto',
+      pairingOpen: (draft.pairing ?? old?.pairing) === 'on',
+      groupContext: draft.groupContext ?? old?.groupContext ?? true,
       pairingRequests: old?.pairingRequests ?? [],
       settings: { ...old?.settings, ...draft.settings },
       secretSet:

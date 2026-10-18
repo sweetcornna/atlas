@@ -15,8 +15,11 @@ export class ChannelUnreachable extends Error {}
 
 /** The platform asked us to wait before retrying. */
 export class ChannelRateLimited extends Error {
-  constructor(readonly retryAfterMs: number) {
-    super('rate limited')
+  constructor(
+    readonly retryAfterMs: number,
+    message = 'rate limited',
+  ) {
+    super(message)
   }
 }
 
@@ -245,8 +248,9 @@ export function runSocket(
         handlers.headers === undefined
           ? new io.WebSocket(url)
           : new io.WebSocket(url, { headers: handlers.headers })
-    } catch (error) {
-      reject(error)
+    } catch {
+      // The runtime's message may quote a header (a token): never pass it on.
+      reject(new Error('WebSocket 连接无法建立'))
       return
     }
     const abort = () => socket.close(1000, 'stopping')

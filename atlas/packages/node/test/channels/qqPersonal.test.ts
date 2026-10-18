@@ -360,6 +360,54 @@ describe('outbound', () => {
     expect(frames[1]).not.toHaveProperty('group_id')
   })
 
+  test('a send still queued when SnowLuma goes away is not counted as sent', async () => {
+    const net = snowluma({
+      send_private_msg: frame =>
+        (frame.params as { message: { data: { text?: string } }[] }).message[0]!
+          .data.text === 'first'
+          ? undefined
+          : { status: 'ok', retcode: 0, data: { message_id: 1 } },
+    })
+    const { adapter, socket } = await started(net)
+    const first = adapter.send({ type: 'dm', id: '1' }, 'first')
+    const second = adapter.send({ type: 'dm', id: '1' }, 'second')
+    await until(() => sent(socket, 'send_private_msg').length === 1)
+    // SnowLuma stays away: no reconnect to carry the second message.
+    net.refuseSockets = true
+    net.on('http://127.0.0.1:3001', { status: 426 })
+    socket.close(1006, 'gone')
+    // Written but never acknowledged: may have arrived, so it counts as sent.
+    expect(await first).toEqual({ ok: true })
+    expect(await second).toEqual({
+      ok: false,
+      error: 'SnowLuma 未连接',
+      retryable: true,
+    })
+    expect(
+      sent(socket, 'send_private_msg').map(
+        frame =>
+          (frame.params as { message: { data: { text?: string } }[] })
+            .message[0]!.data.text,
+      ),
+    ).toEqual(['first'])
+  })
+
+  test('a token that cannot go into a header stops the channel without echoing it', async () => {
+    const net = snowluma()
+    const adapter = new QqPersonalAdapter(
+      { url: 'ws://127.0.0.1:3001/', accessToken: 'sec\nret' },
+      net.io(),
+    )
+    running.push(adapter)
+    await adapter.start(() => {})
+    await until(() => adapter.health().state === 'failed')
+    expect(adapter.health().detail).toBe(
+      'OneBot 访问令牌含有不能放进请求头的字符，请重新填写',
+    )
+    expect(net.sockets).toHaveLength(0)
+    expect(JSON.stringify([adapter.health(), net.errors])).not.toContain('sec')
+  })
+
   test('a send while the socket is closing is refused as retryable, not counted as sent', async () => {
     const net = snowluma()
     const { adapter, socket } = await started(net)

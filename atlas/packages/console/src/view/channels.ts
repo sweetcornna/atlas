@@ -334,10 +334,20 @@ export function renderChannelForm(input: {
     `<label class="chk field-wide"><input type="checkbox" name="allowAll"${channel?.allowAll ? ' checked' : ''}>` +
     `<span class="bx">${icon('check', { small: true })}</span>不限人和群</label>` +
     (platform.pairing
-      ? `<label class="chk field-wide"><input type="checkbox" name="pairing"${channel?.pairing ? ' checked' : ''}>` +
-        `<span class="bx">${icon('check', { small: true })}</span>陌生人私聊可申请配对</label>` +
-        `<p class="note field-wide">没填主人、也没放开任何人时自动接受申请；对方把配对码发给你，私聊机器人 /pair 配对码，或在这里批准</p>`
+      ? selectField(
+          'pairing',
+          '陌生人私聊',
+          [
+            ['auto', '没填主人时可申请配对'],
+            ['on', '可申请配对'],
+            ['off', '不回应'],
+          ],
+          { wide: true, selected: channel?.pairing ?? 'auto' },
+        ) +
+        `<p class="note field-wide">对方把配对码发给你：私聊机器人 /pair 配对码，或在渠道卡片上批准</p>`
       : '') +
+    `<label class="chk field-wide"><input type="checkbox" name="groupContext"${(channel?.groupContext ?? true) ? ' checked' : ''}>` +
+    `<span class="bx">${icon('check', { small: true })}</span>群里被 @ 时带上最近的群聊</label>` +
     textArea('prompt', '渠道说明', {
       value: channel?.prompt ?? '',
       maxLength: 4000,

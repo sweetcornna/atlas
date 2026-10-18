@@ -51,6 +51,11 @@ export interface ChannelRules {
    * of silence (hermes pairing); the owner approves them.
    */
   readonly pairing?: boolean
+  /**
+   * Addressed group turns carry the room's recent lines (default on;
+   * hermes `group_context_messages: 0` turns it off).
+   */
+  readonly groupContext?: boolean
 }
 
 export interface ChannelConversation {
@@ -250,6 +255,7 @@ const THREADS_KEPT = 2_000
 interface ReplyWindow {
   timer: ReturnType<typeof setTimeout>
   readonly opened: number
+  deadline: number
   readonly fire: () => void
 }
 
@@ -257,11 +263,22 @@ function senderKey(event: ChannelEvent): string | null {
   return event.conversation.chat.type === 'group' ? event.inbound.userId : null
 }
 
+/**
+ * A display name or id fit for a `[名字(编号)]` prefix: no line breaks or
+ * brackets, so a nickname cannot start a line that looks like someone else's
+ * (hermes cleans names the same way in its reply context).
+ */
+function cleanName(value: string): string {
+  return value
+    .replace(/[\r\n\t\u2028\u2029[\]]+/g, ' ')
+    .replace(/ {2,}/g, ' ')
+    .trim()
+}
+
 function identity(inbound: ChannelInbound): string {
-  const who = inbound.userName || inbound.userId || '群友'
-  return inbound.userId && who !== inbound.userId
-    ? `${who}(${inbound.userId})`
-    : who
+  const id = cleanName(inbound.userId)
+  const who = cleanName(inbound.userName) || id || '群友'
+  return id && who !== id ? `${who}(${id})` : who
 }
 
 /** Folds queued events into one turn, keeping each speaker visible. */
@@ -563,9 +580,12 @@ export class ChannelGateway {
     } else {
       if (!rules.allowAll && !rules.allowGroups.includes(inbound.chat.id))
         return null
-      // Everything said in an allowed room is context for the next turn
-      // that is meant for the bot, answered or not.
-      this.#remember(rules.id, inbound)
+      // What an allowed room says is context for the next turn meant for
+      // the bot. A room without a member agent talks to the owner lane
+      // only: there, only the owner's own lines are kept, so nobody else's
+      // words reach the owner's agent.
+      if (rules.groupContext !== false && (rules.members || fromOwner))
+        this.#remember(rules.id, inbound)
       // A thread the bot answered in is a conversation with it (hermes,
       // Slack): no mention needed there.
       if (!inbound.addressed && this.#follows(adapter, inbound.chat))
@@ -595,6 +615,11 @@ export class ChannelGateway {
 
   #roomKey(channelId: string, chat: ChannelChat): string {
     return `${channelId}:${chat.id}`
+  }
+
+  /** Room lines are kept per chat and thread: a Slack thread is its own room. */
+  #contextKey(channelId: string, chat: ChannelChat): string {
+    return `${channelId}:${chat.id}:${chat.threadId ?? ''}`
   }
 
   #threadKey(chat: ChannelChat): string | null {
@@ -668,7 +693,7 @@ export class ChannelGateway {
   }
 
   #remember(channelId: string, inbound: ChannelInbound): void {
-    const key = this.#roomKey(channelId, inbound.chat)
+    const key = this.#contextKey(channelId, inbound.chat)
     const now = this.#now()
     const kept = (this.#rooms.get(key) ?? []).filter(
       line => now - line.at <= CONTEXT_MAX_AGE_MS,
@@ -703,7 +728,7 @@ export class ChannelGateway {
     const { conversation } = event
     if (conversation.chat.type !== 'group') return null
     const lines = this.#rooms.get(
-      this.#roomKey(conversation.channelId, conversation.chat),
+      this.#contextKey(conversation.channelId, conversation.chat),
     )
     if (lines === undefined) return null
     const own = new Set(event.ids)
@@ -733,7 +758,13 @@ export class ChannelGateway {
       const name = command[1]!.toLowerCase()
       // Members cannot steer the agent; their commands are ordinary text.
       if (event.fromOwner || name === 'help') {
-        await this.#command(adapter, event, name, (command[2] ?? '').trim())
+        await this.#command(
+          rules,
+          adapter,
+          event,
+          name,
+          (command[2] ?? '').trim(),
+        )
         return
       }
     }
@@ -764,18 +795,18 @@ export class ChannelGateway {
     if (window !== undefined) {
       this.#queue(key).add(event)
       if (split) {
-        // Another full-length piece: the paste goes on.
-        clearTimeout(window.timer)
-        window.timer = setTimeout(
-          window.fire,
-          Math.max(
-            0,
-            Math.min(
-              SPLIT_WAIT_MS,
-              window.opened + SPLIT_WAIT_CAP_MS - Date.now(),
-            ),
-          ),
+        // Another full-length piece: the paste goes on. The wait only ever
+        // grows, so the operator's reply window is never cut short.
+        const now = this.#now()
+        const target = Math.min(
+          now + SPLIT_WAIT_MS,
+          window.opened + SPLIT_WAIT_CAP_MS,
         )
+        if (target > window.deadline) {
+          clearTimeout(window.timer)
+          window.deadline = target
+          window.timer = setTimeout(window.fire, target - now)
+        }
       }
       return
     }
@@ -788,9 +819,11 @@ export class ChannelGateway {
         if (pending === undefined || pending.events.length === 0) return
         this.#start(rules, adapter, key, pending.take())
       }
+      const opened = this.#now()
       this.#windows.set(key, {
         timer: setTimeout(fire, waitMs),
-        opened: Date.now(),
+        opened,
+        deadline: opened + waitMs,
         fire,
       })
       return
@@ -871,7 +904,7 @@ export class ChannelGateway {
     const text = [
       ...texts,
       extra?.note ?? '',
-      this.#roomContext(event) ?? '',
+      (rules.groupContext === false ? null : this.#roomContext(event)) ?? '',
       ...this.#notes(event),
       this.#body(event),
     ]
@@ -1139,11 +1172,17 @@ export class ChannelGateway {
     }
   }
 
-  #help(): string {
-    return this.#turns.approvePairing === undefined ? HELP : HELP + HELP_PAIR
+  /** `/pair` is listed for the owner of a channel that pairs. */
+  #help(rules: ChannelRules, event: ChannelEvent): string {
+    return this.#turns.approvePairing !== undefined &&
+      rules.pairing === true &&
+      event.fromOwner
+      ? HELP + HELP_PAIR
+      : HELP
   }
 
   async #command(
+    rules: ChannelRules,
     adapter: ChannelAdapter,
     event: ChannelEvent,
     name: string,
@@ -1197,14 +1236,14 @@ export class ChannelGateway {
         break
       case 'pair':
         reply =
-          this.#turns.approvePairing === undefined
-            ? this.#help()
+          this.#turns.approvePairing === undefined || rules.pairing !== true
+            ? '这个渠道没有开配对。'
             : args === ''
               ? '用法：/pair 配对码'
               : await this.#turns.approvePairing(conversation.channelId, args)
         break
       default:
-        reply = this.#help()
+        reply = this.#help(rules, event)
     }
     await this.#send(adapter, conversation.chat, reply, event.inbound.messageId)
   }

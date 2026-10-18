@@ -647,7 +647,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | DELETE | `/v0/im/<渠道 id>` | **个人 ops** | 停掉连接并删除渠道及其凭据；对话页里的会话保留。成功 204，记 `im.remove` |
 | POST | `/v0/im/login` | **个人 ops** | 开始微信扫码：中枢向官方接口取二维码并在后台轮询，扫码确认后把凭据封存进这条渠道、扫码人记为主人。记 `im.login` |
 | GET | `/v0/im/login/<登录 id>` | **个人 ops** | 这次扫码的状态：`wait` / `scanned` / `expired` / `confirmed` / `failed`；二维码过期会自动换新 |
-| POST | `/v0/im/<渠道 id>/pairing` | **个人 ops** | 处理一条配对请求（`runtimes-channels.md` §2.5）：`{ requestId, decision }`，`decision` 是 `owner`（加进主人号）、`member`（加进放行名单，须有成员智能体）或 `deny`；不重连渠道，批准后给对方发一句「配对已通过」。记 `im.pair`；不是运维时 `GET /v0/im` 不给待批请求 |
+| POST | `/v0/im/<渠道 id>/pairing` | **个人 ops** | 处理一条配对请求（`runtimes-channels.md` §2.5）：`{ requestId, decision }`，`decision` 是 `owner`（加进主人号）、`member`（加进放行名单，须有成员智能体）或 `deny`；不重连渠道，批准后给对方发一句「配对已通过」。记 `im.pair`，目标是 `<渠道 id>:<decision>`（主人在聊天里用 `/pair` 批准的同样记一条，主体是渠道主人）；不是运维时 `GET /v0/im` 不给待批请求 |
 | GET | `/v0/extensions` | view | 扩展（P32，`docs/dev/runtimes-channels.md` §9）：每个条目的种类、名称、适用的智能体、启用状态、来源（GitHub 仓库、引用、目录与钉住的提交）与各节点的落地结果，以及可选的智能体与节点。秘密只答名称；不是运维时也不给命令、参数、地址与技能正文。没接端口时 501 |
 | POST | `/v0/extensions` | **个人 ops** | 新建或带 `id` 修改：`{ kind, name?, description?, enabled?, agents?, transport?, command?, args?, url?, env?, headers?, approval?, body?, source? }`；`env` 与 `headers` 里值为 null 的沿用已存的值，没列出的删除；带 `source` 时重新解析引用、取一次目录核对清单。只给 `id` 与 `enabled` 是只切换启用，不动钉住的提交。拒绝共用令牌与 break-glass；记 `extension.save` |
 | DELETE | `/v0/extensions/<条目 id>` | **个人 ops** | 删除条目与它的秘密；各节点随后卸下。成功 204，记 `extension.remove` |

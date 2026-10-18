@@ -70,7 +70,8 @@ export const CHANNELS_PAGE_JS = `
       secrets: {}
     };
     if (form.elements.ownerIds) draft.ownerIds = split(form.elements.ownerIds.value);
-    if (form.elements.pairing) draft.pairing = !!form.elements.pairing.checked;
+    if (form.elements.pairing) draft.pairing = form.elements.pairing.value;
+    if (form.elements.groupContext) draft.groupContext = !!form.elements.groupContext.checked;
     var id = form.elements.channelId ? form.elements.channelId.value : '';
     if (id) draft.id = id;
     var settings = form.querySelectorAll('[data-setting]');

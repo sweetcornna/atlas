@@ -788,9 +788,9 @@ describe('personal QQ (SnowLuma)', () => {
 
   test('saves the forward WebSocket and seals the OneBot token; owners are QQ numbers', async () => {
     const book = channels()
-    const saved = value(await book.save({ ...PERSONAL, pairing: true }, ACTOR))
+    const saved = value(await book.save({ ...PERSONAL, pairing: 'on' }, ACTOR))
     expect(saved.settings).toEqual({ url: 'ws://127.0.0.1:3001/' })
-    expect(saved.pairing).toBe(false)
+    expect(saved.pairing).toBe('off')
     expect(saved.pairingOpen).toBe(false)
     expect(adapters[0]).toMatchObject({
       platform: 'qq-personal',
@@ -804,6 +804,9 @@ describe('personal QQ (SnowLuma)', () => {
       return result.ok ? 'saved' : result.failure.message
     }
     expect(await refused({ ownerIds: [] })).toBe('个人 QQ 需要填主人的 QQ 号')
+    expect(await refused({ secrets: { accessToken: 'a\nb c' } })).toBe(
+      'OneBot 访问令牌只能是不含空格的英文字母、数字和符号',
+    )
     expect(await refused({ ownerIds: ['qq-owner'] })).toBe(
       '主人的 QQ 号只能是数字',
     )
@@ -908,7 +911,7 @@ describe('pairing (hermes)', () => {
     const book = channels()
     value(
       await book.save(
-        { ...TELEGRAM, memberTarget: MEMBER_AGENT, pairing: true },
+        { ...TELEGRAM, memberTarget: MEMBER_AGENT, pairing: 'on' },
         ACTOR,
       ),
     )
@@ -933,6 +936,109 @@ describe('pairing (hermes)', () => {
     adapter.sink!(inbound({ text: '/pair AAAA-AAAA' }))
     await until(() => adapter.sent.length === 9)
     expect(adapter.texts().at(-1)).toBe('配对码错了太多次，1 小时后再试。')
+  })
+
+  test('channels saved before pairing existed stay silent to strangers; new ones pair while nobody is configured', async () => {
+    const book = channels()
+    const old = value(await book.save({ ...TELEGRAM, ownerIds: [] }, ACTOR))
+    await book.close()
+    open = []
+    adapters = []
+    // Rewrite the book as an older hub wrote it: no pairing field.
+    const file = path.join(root, 'channels.json')
+    const disk = JSON.parse(fs.readFileSync(file, 'utf8'))
+    delete disk.channels[0].pairing
+    delete disk.channels[0].groupContext
+    fs.writeFileSync(file, JSON.stringify(disk))
+    const upgraded = channels()
+    const view = value(await upgraded.snapshot()).channels[0]!
+    expect(view).toMatchObject({
+      pairing: 'off',
+      pairingOpen: false,
+      groupContext: true,
+    })
+    const adapter = adapters[0]!.adapter
+    adapter.sink!(stranger('s9'))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(adapter.sent).toHaveLength(0)
+    // A new channel pairs `auto`, and stops once an owner is named.
+    const fresh = value(
+      await upgraded.save({ ...TELEGRAM, name: '新', ownerIds: [] }, ACTOR),
+    )
+    expect(fresh).toMatchObject({ pairing: 'auto', pairingOpen: true })
+    const named = value(
+      await upgraded.save(
+        { ...TELEGRAM, id: fresh.id, name: '新', ownerIds: ['owner'] },
+        ACTOR,
+      ),
+    )
+    expect(named).toMatchObject({ pairing: 'auto', pairingOpen: false })
+    expect(old.id).toBe(view.id)
+  })
+
+  test('approving by code in chat is recorded in the action ledger', async () => {
+    const recorded: { subject: string; action: string; target: string }[] = []
+    const book = new ConsoleChannels({
+      directory: root,
+      chat,
+      actions: {
+        record: async entry => {
+          recorded.push({
+            subject: entry.subject,
+            action: entry.action,
+            target: entry.target,
+          })
+          return { ok: true, value: undefined }
+        },
+        list: async () => ({
+          ok: true,
+          value: { entries: [], next: null } as never,
+        }),
+      },
+      adapter: channel => {
+        const adapter = new FakeAdapter(channel.platform)
+        adapters.push({
+          adapter,
+          platform: channel.platform,
+          secrets: {},
+          settings: {},
+        })
+        return adapter
+      },
+    })
+    open.push(book)
+    book.start()
+    const saved = value(
+      await book.save(
+        { ...TELEGRAM, memberTarget: MEMBER_AGENT, pairing: 'on' },
+        ACTOR,
+      ),
+    )
+    const adapter = adapters[0]!.adapter
+    adapter.sink!(stranger('s3'))
+    await until(() => adapter.sent.length === 1)
+    const code = CODE.exec(adapter.texts()[0]!)![0]
+    adapter.sink!(inbound({ text: `/pair ${code}` }))
+    await until(() => recorded.length === 1)
+    expect(recorded).toEqual([
+      {
+        subject: 'legacy:admin',
+        action: 'im.pair',
+        target: `${saved.id}:member`,
+      },
+    ])
+  })
+
+  test('the room-context switch is saved and kept across edits', async () => {
+    const book = channels()
+    const saved = value(
+      await book.save({ ...TELEGRAM, groupContext: false }, ACTOR),
+    )
+    expect(saved.groupContext).toBe(false)
+    const edited = value(
+      await book.save({ ...TELEGRAM, id: saved.id, name: '改名' }, ACTOR),
+    )
+    expect(edited.groupContext).toBe(false)
   })
 
   test('approving a member needs a member agent; three requests wait at most', async () => {

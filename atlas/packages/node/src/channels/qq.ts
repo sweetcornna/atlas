@@ -75,9 +75,14 @@ function sessionGone(code: number): boolean {
   )
 }
 
-/** Three closes this soon after opening, in a row, is a rejection (hermes). */
+/**
+ * Three closes this soon after opening, in a row: something QQ will not
+ * accept right now. hermes keeps such a bot in its reconnect queue, so the
+ * channel pauses five minutes and tries again instead of giving up.
+ */
 const QUICK_CLOSE_MS = 5_000
 const QUICK_CLOSES = 3
+const QUICK_PAUSE_MS = 5 * 60_000
 
 export class QqAdapter implements ChannelAdapter {
   readonly platform = 'qq' as const
@@ -221,16 +226,20 @@ export class QqAdapter implements ChannelAdapter {
       if (signal.aborted) return
       const fatal = FATAL_CLOSE.get(closed.code)
       if (fatal !== undefined) throw new ChannelFatalError(fatal)
-      if (closed.opened && this.#io.now() - openedAt < QUICK_CLOSE_MS) {
-        if (++this.#quickCloses >= QUICK_CLOSES)
-          throw new ChannelFatalError(
-            'QQ 网关连上就断开，已连续三次（检查机器人的消息权限）',
-          )
-      } else this.#quickCloses = 0
       if (sessionGone(closed.code)) this.#session = null
       if (closed.code === 4004) this.#token = null
+      if (closed.opened && this.#io.now() - openedAt < QUICK_CLOSE_MS) {
+        if (++this.#quickCloses >= QUICK_CLOSES) {
+          this.#quickCloses = 0
+          throw new ChannelRateLimited(
+            QUICK_PAUSE_MS,
+            'QQ 网关连上就断开，已连续三次，5 分钟后重连（检查机器人的消息权限）',
+          )
+        }
+      } else this.#quickCloses = 0
       // 4008: sending too fast; QQ asks for a pause.
-      if (closed.code === 4008) throw new ChannelRateLimited(60_000)
+      if (closed.code === 4008)
+        throw new ChannelRateLimited(60_000, 'QQ 网关要求放慢，60 秒后重连')
     })
   }
 

@@ -142,7 +142,9 @@ export const channelsApi: HeadRoute = {
       const decision = DECISIONS.find(one => one === body['decision'])
       if (requestId === null || decision === undefined)
         return fail(400, 'invalid', '配对请求或处理方式无效')
-      return write(ctx, 'im.pair', auditTarget(id), () =>
+      // The decision is part of the record: making someone an owner is a
+      // grant of the owner lane.
+      return write(ctx, 'im.pair', `${auditTarget(id)}:${decision}`, () =>
         port.pair(id, requestId, decision, actorOf(ctx)),
       )
     }

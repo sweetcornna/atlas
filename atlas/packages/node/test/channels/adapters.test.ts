@@ -831,7 +831,7 @@ describe('failure classes (hermes)', () => {
     expect(got.map(one => one.messageId)).toEqual(['3', '4'])
   })
 
-  test('QQ: protocol close codes stop the channel; quick closes three times in a row too', async () => {
+  test('QQ: protocol close codes stop the channel; quick closes back off and keep reconnecting', async () => {
     const world = () =>
       new FakeNet()
         .on('getAppAccessToken', {
@@ -856,8 +856,11 @@ describe('failure classes (hermes)', () => {
       await until(() => quick.sockets[i]!.readyState === 1)
       quick.sockets[i]!.close(4900, 'internal')
     }
-    await until(() => second.adapter.health().state === 'failed')
-    expect(second.adapter.health().detail).toContain('连续三次')
+    // Not a dead end (hermes keeps it in the reconnect queue): a long pause, then again.
+    await until(() => quick.sleeps.includes(300_000))
+    expect(second.adapter.health().state).toBe('retrying')
+    expect(second.adapter.health().detail).toContain('5 分钟后重连')
+    await until(() => quick.sockets.length === 4)
   })
 
   test('WeChat: a stale context token is dropped and the words resent; too frequent waits 30 s', async () => {

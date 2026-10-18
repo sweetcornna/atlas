@@ -215,7 +215,7 @@ test('a pairing request is decided by ops, validated and recorded', async () => 
     'OWNER-OPENID',
     'STRANGER-OPENID',
   ])
-  expect(records).toEqual(['im.pair -'])
+  expect(records).toEqual(['im.pair -:owner'])
   expect(port.calls).toEqual(['pair ch-1 pr-1 owner'])
 })
 

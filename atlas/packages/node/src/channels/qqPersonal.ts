@@ -79,8 +79,14 @@ const NODE_CHARS = 1_500
 const ACCOUNT_OFFLINE = 'QQ 账号已离线，请在 SnowLuma 里重新扫码登录'
 /** `threadId` of a temporary session: the group it came through. */
 const TEMP_PREFIX = 'temp:'
-/** A card whose send found the socket gone while it waited in the queue. */
-const REFUSED_LATE: Record<string, unknown> = { status: 'failed', retcode: -1 }
+/** An action that never left: the socket was not open when its turn came. */
+const UNSENT = Symbol('unsent')
+const TOKEN_UNFIT = 'OneBot 访问令牌含有不能放进请求头的字符，请重新填写'
+const DISCONNECTED: ChannelSendResult = {
+  ok: false,
+  error: 'SnowLuma 未连接',
+  retryable: true,
+}
 const REJECTED =
   'SnowLuma 拒绝了 OneBot 令牌（填 wsServers 里的 accessToken，不是 WebUI 密码）'
 
@@ -266,6 +272,9 @@ export class QqPersonalAdapter implements ChannelAdapter {
 
   async start(sink: (message: ChannelInbound) => void): Promise<void> {
     this.#loop.start(async signal => {
+      // Bun rejects such a header with the token in its message.
+      if (!/^[\x21-\x7e]+$/.test(this.#settings.accessToken))
+        throw new ChannelFatalError(TOKEN_UNFIT)
       let watch: ReturnType<typeof setInterval> | undefined
       let probe: ReturnType<typeof setInterval> | undefined
       const closed = await runSocket(this.#io, this.#socketUrl(), signal, {
@@ -316,7 +325,7 @@ export class QqPersonalAdapter implements ChannelAdapter {
 
   async #identify(): Promise<void> {
     const login = await this.#call('get_login_info', {})
-    if (login !== null && this.#ok(login)) {
+    if (login !== null && login !== UNSENT && this.#ok(login)) {
       const data = record(login.data)
       if (text(data.user_id)) this.#selfId = text(data.user_id)
       this.#nickname = text(data.nickname)
@@ -326,7 +335,7 @@ export class QqPersonalAdapter implements ChannelAdapter {
 
   async #probe(): Promise<void> {
     const status = await this.#call('get_status', {})
-    if (status !== null && this.#ok(status))
+    if (status !== null && status !== UNSENT && this.#ok(status))
       this.#setAccount(onlineOf(record(status.data)))
   }
 
@@ -338,16 +347,21 @@ export class QqPersonalAdapter implements ChannelAdapter {
     )
   }
 
-  /** One action, answered by its echo; null when no answer came in time. */
+  /**
+   * One action, answered by its echo. {@link UNSENT} when it never left
+   * (worth sending again); null when it left and no answer came (it may have
+   * arrived, so senders count it as sent).
+   */
   #call(
     action: string,
     params: Record<string, unknown>,
     timeoutMs = CALL_TIMEOUT_MS,
-  ): Promise<Answer | null> {
+  ): Promise<Answer | null | typeof UNSENT> {
     if (!QQ_PERSONAL_ACTIONS.has(action))
       return Promise.reject(new Error(`不允许的 OneBot 动作：${action}`))
     const socket = this.#socket
-    if (socket === null || socket.readyState !== 1) return Promise.resolve(null)
+    if (socket === null || socket.readyState !== 1)
+      return Promise.resolve(UNSENT)
     const echo = `qm-${++this.#seq}-${randomUUID().slice(0, 8)}`
     return new Promise(resolve => {
       const timer = setTimeout(() => {
@@ -497,7 +511,8 @@ export class QqPersonalAdapter implements ChannelAdapter {
       { message_id: numeric(id) },
       QUOTE_TIMEOUT_MS,
     )
-    if (answer === null || !this.#ok(answer)) return undefined
+    if (answer === null || answer === UNSENT || !this.#ok(answer))
+      return undefined
     const data = record(answer.data)
     const sender = record(data.sender)
     const quoted = segmentsOf(data.message ?? data.raw_message)
@@ -573,12 +588,16 @@ export class QqPersonalAdapter implements ChannelAdapter {
   #refusal(): ChannelSendResult | null {
     if (this.#account === false) return { ok: false, error: ACCOUNT_OFFLINE }
     if (this.#socket === null || this.#socket.readyState !== 1)
-      return { ok: false, error: 'SnowLuma 未连接', retryable: true }
+      return DISCONNECTED
     return null
   }
 
   /** The answer to a send; no answer in time counts as sent (hermes: a missing echo is not a failure). */
-  #result(answer: Answer | null, remember: string): ChannelSendResult {
+  #result(
+    answer: Answer | null | typeof UNSENT,
+    remember: string,
+  ): ChannelSendResult {
+    if (answer === UNSENT) return DISCONNECTED
     if (answer === null) {
       this.#io.onError?.('SnowLuma 没有确认这条消息，按已发送处理')
       return { ok: true }
@@ -650,29 +669,26 @@ export class QqPersonalAdapter implements ChannelAdapter {
       if (!lead.ok) return null
     }
     const answer = await this.#paced(() =>
-      this.#refusal() !== null
-        ? Promise.resolve(REFUSED_LATE)
-        : this.#call(
-            chat.type === 'group'
-              ? 'send_group_forward_msg'
-              : 'send_private_forward_msg',
-            {
-              ...this.#target(chat),
-              messages: forwardNodes(content).map(node => ({
-                type: 'node',
-                data: {
-                  name,
-                  uin: this.#selfId,
-                  nickname: name,
-                  user_id: this.#selfId,
-                  content: [{ type: 'text', data: { text: node } }],
-                },
-              })),
+      this.#call(
+        chat.type === 'group'
+          ? 'send_group_forward_msg'
+          : 'send_private_forward_msg',
+        {
+          ...this.#target(chat),
+          messages: forwardNodes(content).map(node => ({
+            type: 'node',
+            data: {
+              name,
+              uin: this.#selfId,
+              nickname: name,
+              user_id: this.#selfId,
+              content: [{ type: 'text', data: { text: node } }],
             },
-          ),
+          })),
+        },
+      ),
     )
-    if (answer === REFUSED_LATE || (answer !== null && !this.#ok(answer)))
-      return null
+    if (answer === UNSENT || (answer !== null && !this.#ok(answer))) return null
     return this.#result(answer, content)
   }
 
@@ -690,7 +706,7 @@ export class QqPersonalAdapter implements ChannelAdapter {
       { user_id: numeric(chat.id), event_type: 1 },
       5_000,
     )
-    if (answer !== null && Number(answer.retcode) === 1404)
+    if (answer !== null && answer !== UNSENT && Number(answer.retcode) === 1404)
       this.#typingSupported = false
   }
 

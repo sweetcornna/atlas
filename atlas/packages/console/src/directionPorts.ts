@@ -960,6 +960,12 @@ export interface ChannelPairingRequest {
 
 export type ChannelPairingDecision = 'owner' | 'member' | 'deny'
 
+/**
+ * 陌生人私聊时：`auto` 没填主人、也没放开任何人时接受配对申请（新建渠道的缺省，
+ * hermes 的做法）；`on` 一直接受；`off` 不回应（升级前已有的渠道保持这一档）。
+ */
+export type ChannelPairingMode = 'auto' | 'on' | 'off'
+
 export interface ChannelView {
   readonly id: string
   readonly name: string
@@ -977,10 +983,12 @@ export interface ChannelView {
   readonly groupTrigger: 'mention' | 'all'
   readonly replyWindowMs: number
   readonly prompt: string
-  /** 配对开关本身。 */
-  readonly pairing: boolean
-  /** 实际是否接受配对：开关打开，或没填主人、也没放开任何人时自动接受。 */
+  /** 配对档位。 */
+  readonly pairing: ChannelPairingMode
+  /** 按档位与当前配置，现在是否接受配对申请。 */
   readonly pairingOpen: boolean
+  /** 群里被 @ 时带上最近的群聊（主人群只带主人自己的话）。 */
+  readonly groupContext: boolean
   readonly pairingRequests: readonly ChannelPairingRequest[]
   readonly settings: Readonly<Record<string, string>>
   readonly secretSet: boolean
@@ -1011,7 +1019,8 @@ export interface ChannelDraft {
   readonly groupTrigger?: 'mention' | 'all'
   readonly replyWindowMs?: number
   readonly prompt?: string
-  readonly pairing?: boolean
+  readonly pairing?: ChannelPairingMode
+  readonly groupContext?: boolean
   readonly settings?: Readonly<Record<string, string>>
   readonly secrets?: Readonly<Record<string, string>>
 }

@@ -21,11 +21,13 @@ import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import {
+  type ActionLedgerPort,
   ChatDispatch,
   MODEL_DIRECTIONS,
   type ChannelDraft,
   type ChannelLoginView,
   type ChannelPairingDecision,
+  type ChannelPairingMode,
   type ChannelPlatformView,
   type ChannelsPort,
   type ChannelsSnapshot,
@@ -177,8 +179,13 @@ const storedSchema = z.object({
   groupTrigger: z.enum(['mention', 'all']),
   replyWindowMs: z.number().int().min(0).max(60_000),
   prompt: z.string(),
-  /** Strangers may ask to pair (hermes); implied when nobody is configured. */
-  pairing: z.boolean().default(false),
+  /**
+   * Strangers may ask to pair (hermes). Channels saved before this field
+   * existed read as `off`: an upgrade never starts answering strangers.
+   */
+  pairing: z.enum(['auto', 'on', 'off']).default('off'),
+  /** Addressed group turns carry the room's recent lines. */
+  groupContext: z.boolean().default(true),
   settings: z.record(z.string(), z.string()),
   secret: secretSchema.nullable(),
   createdAt: z.number(),
@@ -273,6 +280,8 @@ export interface ConsoleChannelsOptions {
    * non-commercial, so the platform is neither offered, saved nor started.
    */
   readonly publicEdition?: boolean
+  /** The console's action ledger: approvals made with `/pair` in chat are recorded there. */
+  readonly actions?: ActionLedgerPort
   readonly onError?: (message: string) => void
 }
 
@@ -281,6 +290,19 @@ const NOT_PUBLIC: ReadonlySet<ChannelPlatform> = new Set(['qq-personal'])
 
 const PAIRING_ANSWER = (code: string) =>
   `你还没有和这个机器人配对。请把配对码 ${formatPairingCode(code)} 发给机器人的主人，批准后就能对话；1 小时内有效。`
+
+/** A new channel pairs `auto`; an edit keeps what it had; personal QQ never pairs. */
+function pairingMode(
+  supported: boolean,
+  asked: unknown,
+  previous: ChannelPairingMode | undefined,
+): ChannelPairingMode {
+  if (!supported) return 'off'
+  if (asked === undefined) return previous ?? 'auto'
+  if (asked !== 'auto' && asked !== 'on' && asked !== 'off')
+    throw new Error('配对档位无效')
+  return asked
+}
 
 /** Hosts where a plain `ws://` token stays off the public internet. */
 function privateHost(raw: string): boolean {
@@ -626,15 +648,16 @@ export class ConsoleChannels implements ChannelsPort {
     return this.#options.publicEdition === true && NOT_PUBLIC.has(platform)
   }
 
-  /** Whether strangers may ask to pair: switched on, or nobody configured (hermes). */
+  /** Whether strangers may ask to pair now: `on`, or `auto` while nobody is configured (hermes). */
   #pairingOpen(channel: StoredChannel): boolean {
     const platform = CHANNEL_PLATFORM_VIEWS.find(
       view => view.id === channel.platform,
     )
     if (platform?.pairing !== true) return false
     return (
-      channel.pairing ||
-      (channel.ownerIds.length === 0 &&
+      channel.pairing === 'on' ||
+      (channel.pairing === 'auto' &&
+        channel.ownerIds.length === 0 &&
         channel.allowUsers.length === 0 &&
         !channel.allowAll)
     )
@@ -674,6 +697,17 @@ export class ConsoleChannels implements ChannelsPort {
     if (found === 'locked') return '配对码错了太多次，1 小时后再试。'
     if (found === null) return '配对码不对或已过期。'
     await this.#admitPaired(channel, found, 'member')
+    // Same ledger entry as an approval on the page, made by the owner in chat.
+    await this.#options.actions
+      ?.record({
+        at: this.#now(),
+        requestId: `chat-${randomUUID()}`,
+        subject: channel.owner,
+        action: 'im.pair',
+        target: `${channel.id}:member`,
+        outcome: 'ok',
+      })
+      .catch(() => undefined)
     return `已批准 ${found.userName}，对方现在可以和成员智能体对话。`
   }
 
@@ -710,6 +744,7 @@ export class ConsoleChannels implements ChannelsPort {
     return {
       id: channel.id,
       pairing: this.#pairingOpen(channel),
+      groupContext: channel.groupContext,
       ownerIds: channel.ownerIds,
       members: channel.memberTarget !== null,
       allowAll: channel.allowAll,
@@ -1043,6 +1078,7 @@ export class ConsoleChannels implements ChannelsPort {
       prompt: channel.prompt,
       pairing: channel.pairing,
       pairingOpen: this.#pairingOpen(channel),
+      groupContext: channel.groupContext,
       pairingRequests: (this.#state.pairing[channel.id] === undefined
         ? []
         : this.#pairing(channel.id).pending()
@@ -1158,6 +1194,12 @@ export class ConsoleChannels implements ChannelsPort {
     secrets = { ...secrets, ...supplied }
     for (const field of platform.secrets)
       if (!secrets[field.key]) throw new Error(`缺少${field.label}`)
+    // The OneBot token goes into a request header: visible ASCII only.
+    if (
+      draft.platform === 'qq-personal' &&
+      !/^[\x21-\x7e]{1,512}$/.test(secrets.accessToken ?? '')
+    )
+      throw new Error('OneBot 访问令牌只能是不含空格的英文字母、数字和符号')
     if (platform.qrLogin && !secrets.token) throw new Error('请先扫码登录')
     const id = previous?.id ?? `ch-${randomUUID()}`
     const now = this.#now()
@@ -1207,8 +1249,8 @@ export class ConsoleChannels implements ChannelsPort {
             : (previous?.groupTrigger ?? 'mention'),
       replyWindowMs,
       prompt,
-      pairing:
-        platform.pairing && (draft.pairing ?? previous?.pairing ?? false),
+      pairing: pairingMode(platform.pairing, draft.pairing, previous?.pairing),
+      groupContext: draft.groupContext ?? previous?.groupContext ?? true,
       settings,
       secret: secret as StoredChannel['secret'],
       createdAt: previous?.createdAt ?? now,
