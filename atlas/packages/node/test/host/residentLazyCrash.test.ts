@@ -40,7 +40,9 @@ test('production lazy generations park after five rapid RPC crashes despite long
     listen: { unix: socket },
     inactivityMs: 0,
     pollIntervalMs: 10,
-    ompRestart: { initialBackoffMs: 5 }, // Keep the default five-failure limit.
+    // Keep the default five-failure limit. A 2 s stability window instead of
+    // the default 10 s: the idle periods below only have to outlast it.
+    ompRestart: { initialBackoffMs: 5, stableAfterMs: 2_000 },
     spawnOmp: input => {
       const child = spawn(
         process.execPath,
@@ -85,10 +87,10 @@ test('production lazy generations park after five rapid RPC crashes despite long
     for (let generation = 1; generation <= 5; generation++) {
       await until(() => registeredAt.length === generation)
       expect(children).toHaveLength(generation - 1)
-      // Real time beyond the production 10 s threshold. start() only registers
+      // Real time beyond the stability window. start() only registers
       // sessions; the transport delivery below is what starts the RPC child.
       await Bun.sleep(
-        Math.max(0, registeredAt[generation - 1]! + 10_050 - Date.now()),
+        Math.max(0, registeredAt[generation - 1]! + 2_050 - Date.now()),
       )
       expect(children).toHaveLength(generation - 1)
       const request = createMessage({
@@ -157,4 +159,4 @@ test('production lazy generations park after five rapid RPC crashes despite long
     ).toBe(true)
     root.dispose()
   }
-}, 75_000)
+}, 35_000)

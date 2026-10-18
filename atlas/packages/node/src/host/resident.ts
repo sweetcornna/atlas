@@ -518,6 +518,9 @@ interface QianmoResidentOptions {
   readonly ompRestart?: {
     readonly initialBackoffMs?: number
     readonly maxRapidFailures?: number
+    /** How long a generation must stay healthy before its crash no longer
+     * counts as rapid (supervisor default 10 s). */
+    readonly stableAfterMs?: number
   }
   /**
    * The node's provider write path (`providers/node.ts`), which turns on hot
@@ -1425,6 +1428,9 @@ export class QianmoResident {
       ...(options.ompRestart?.maxRapidFailures === undefined
         ? {}
         : { maxRapidFailures: options.ompRestart.maxRapidFailures }),
+      ...(options.ompRestart?.stableAfterMs === undefined
+        ? {}
+        : { stableAfterMs: options.ompRestart.stableAfterMs }),
       onError: error => this.#options.onError?.(error),
       onParked: failures =>
         this.#options.onError?.(
