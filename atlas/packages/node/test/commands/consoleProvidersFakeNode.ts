@@ -24,7 +24,6 @@
  */
 
 import {
-  chmodSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -32,6 +31,10 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import {
+  linkSharedExecutable,
+  sharedExecutable,
+} from '../../../../tests/support/sharedExecutable.ts'
 
 const FAKE_NODE = String.raw`
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -179,8 +182,10 @@ if (op === 'autocompact') {
 answer({ ...base, ok: false, code: 'unsupported-op', message: '不支持的操作' })
 `
 
+// One text for every fake ssh: its directory is the one it was started from
+// (bash keeps the link's own path in $0), so it can be a shared inode.
 const FAKE_SSH = `#!/bin/bash
-dir="$FAKE_SSH_DIR_PLACEHOLDER"
+dir="\${0%/*}"
 stamp="$$-$RANDOM"
 printf '%s\\0' "$@" > "$dir/ssh-argv-$stamp"
 last="\${@: -1}"
@@ -199,6 +204,17 @@ if [ -f "$dir/forced-command" ]; then
 fi
 exec /bin/sh -c "$last"
 `
+
+/** `<command> <node>` runs the fake node of the directory the link is in. */
+const FAKE_NODE_COMMAND = `#!/bin/sh
+d="\${0%/*}"
+exec '${process.execPath}' "$d/fake-node.mjs" "$d" "$@"
+`
+
+// Written and warmed at module scope, before any test's timer; every fake
+// ssh and fake node below is a link to one of these.
+sharedExecutable(FAKE_SSH, { name: 'ssh' })
+sharedExecutable(FAKE_NODE_COMMAND, { name: 'fake-node' })
 
 export interface FakeNode {
   readonly dir: string
@@ -224,14 +240,12 @@ function lines(path: string): string[] {
 /** A fake node under `dir` (created if needed). */
 export function fakeNode(dir: string): FakeNode {
   mkdirSync(dir, { recursive: true })
-  const script = join(dir, 'fake-node.mjs')
-  writeFileSync(script, FAKE_NODE)
-  const command = join(dir, 'fake-node.sh')
-  writeFileSync(
-    command,
-    `#!/bin/sh\nexec '${process.execPath}' '${script}' '${dir}' "$@"\n`,
+  writeFileSync(join(dir, 'fake-node.mjs'), FAKE_NODE)
+  const command = linkSharedExecutable(
+    join(dir, 'fake-node.sh'),
+    FAKE_NODE_COMMAND,
+    { name: 'fake-node' },
   )
-  chmodSync(command, 0o755)
   return {
     dir,
     command,
@@ -271,9 +285,9 @@ interface FakeSsh {
 
 export function fakeSsh(dir: string): FakeSsh {
   mkdirSync(dir, { recursive: true })
-  const binary = join(dir, 'ssh')
-  writeFileSync(binary, FAKE_SSH.replace('$FAKE_SSH_DIR_PLACEHOLDER', dir))
-  chmodSync(binary, 0o755)
+  const binary = linkSharedExecutable(join(dir, 'ssh'), FAKE_SSH, {
+    name: 'ssh',
+  })
   return {
     binary,
     dir,

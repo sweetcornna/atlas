@@ -35,6 +35,10 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import {
+  linkSharedExecutable,
+  sharedExecutable,
+} from '../../../atlas/tests/support/sharedExecutable.ts'
 import { processAlive, TestProcessTable } from './testProcessTable'
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..')
@@ -103,6 +107,16 @@ Bun.spawnSync([QMCODE_REAL, '--version'], {
   stderr: 'ignore',
 })
 
+/**
+ * 每棵树里的 `dist/qm-<平台>-<架构>`：内容恒定，只读环境与参数，所以全文件共用一个
+ * 文件、在模块作用域写好并先跑一次（`atlas/tests/support/sharedExecutable.ts`）。
+ */
+const FAKE_QM_TEXT = `#!/usr/bin/env bun\n${FAKE_OCC.replace(/^#![^\n]*\n/, '')}`
+sharedExecutable(FAKE_QM_TEXT, {
+  name: 'qm',
+  warmupEnv: { FAKE_LOG_DIR: join(STUB_HOME, 'warmup') },
+})
+
 const scratches: string[] = [STUB_HOME]
 const orphans: number[] = []
 
@@ -145,11 +159,11 @@ function scratch(
     join(REPOSITORY_ROOT, 'demo/lib/entry.sh'),
     join(repo, 'demo/lib/entry.sh'),
   )
-  mkdirSync(join(repo, 'dist'), { recursive: true })
-  writeFileSync(
+  // 指向全文件共用的那一个假 qm（FAKE_QM_TEXT），每棵树都一样。
+  linkSharedExecutable(
     join(repo, `dist/qm-${process.platform}-${process.arch}`),
-    `#!/usr/bin/env bun\n${FAKE_OCC.replace(/^#![^\n]*\n/, '')}`,
-    { mode: 0o755 },
+    FAKE_QM_TEXT,
+    { name: 'qm' },
   )
 
   const root = join(base, 'beta-root')
