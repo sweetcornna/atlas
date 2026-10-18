@@ -1174,6 +1174,32 @@ describe('非幂等的只判返回码，一次都不重发', () => {
     expect(message).toContain('SSH 链路失败')
   }, 60_000)
 
+  it('一次性节点起来时关着自动安装，场景给的 env 排在后面（P36 §2）', async () => {
+    const launched = async (env?: Record<string, string>): Promise<string> => {
+      const capture = tmpFile('launch')
+      const bin = fakeSsh(
+        [
+          `if [[ "$cmd" == *"setsid "* ]]; then printf '%s' "$cmd" > ${JSON.stringify(capture)}; printf '${CLOSED}\\n' >&2; exit 255; fi`,
+          BASE,
+        ].join('\n'),
+      )
+      const handle = disposableHandle()
+      await transportThrow(
+        async () =>
+          await driver(bin).restartNode(bareCtx(), {
+            ...handle,
+            spec: { ...DISPOSABLE_SPEC, ...(env === undefined ? {} : { env }) },
+          }),
+      )
+      return readFileSync(capture, 'utf8')
+    }
+    const plain = await launched()
+    expect(plain).toContain(" QIANMO_RUNTIME_AUTOINSTALL='0' setsid ")
+    const chosen = await launched({ QIANMO_RUNTIME_AUTOINSTALL: '1' })
+    expect(chosen).toContain("QIANMO_RUNTIME_AUTOINSTALL='1' ")
+    expect(chosen).not.toContain("QIANMO_RUNTIME_AUTOINSTALL='0'")
+  }, 60_000)
+
   it('#startConsole 的启动与 banner（第 20、21、22 条），以及 #killByPidFile（第 23 条）', async () => {
     const counter = newCounter()
     const bin = fakeSsh(
