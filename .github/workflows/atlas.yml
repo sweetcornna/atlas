@@ -213,7 +213,7 @@ jobs:
       # 一组红不取消其他组：一个红分片不该藏住别的。
       fail-fast: false
       matrix:
-        group: [cr-r, pr-r, ga-r, si-r, all4r-strace]
+        group: [rep1, rep2, rep3, rep4]
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
@@ -270,17 +270,13 @@ jobs:
           CR="$C/residentModelCredential.isolated.test.ts"; PR="$C/residentModelProbe.test.ts"
           GA="$C/residentModelProbeGate.test.ts"; SI="$C/residentProviderSignal.test.ts"
           RO="$C/residentRootOverlap.test.ts"
-          case "$GROUP" in
-            all4r-strace) F="$CR $PR $GA $SI $RO $I" ;;
-            cr-r) F="$CR $RO $I" ;;
-            pr-r) F="$PR $RO $I" ;;
-            ga-r) F="$GA $RO $I" ;;
-            si-r) F="$SI $RO $I" ;;
-          esac
+          F="$CR $PR $GA $SI $RO $I"
+          sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
+          (bash atlas/scripts/ci/zwatch.sh > "$RUNNER_TEMP/zwatch.log" 2>&1 &)
           echo "files: $F"
           (bash atlas/scripts/ci/hangwatch.sh > "$RUNNER_TEMP/hangwatch.log" 2>&1 &)
           mkdir -p test-reports
-          if [ "$GROUP" = all4r-strace ]; then
+          if [ "$GROUP" = none ]; then
             sudo apt-get install -y -qq strace >/dev/null 2>&1 || true
             strace -f -tt -o "$RUNNER_TEMP/st" -e trace=pidfd_open,epoll_ctl,epoll_wait,epoll_pwait,epoll_pwait2,waitid,wait4,clone,clone3,vfork,execve,kill,pidfd_send_signal,rt_sigaction,prctl,exit_group \
               bun test --preload ./atlas/tests/preload.ts --timeout 10000 --isolate $F 2>&1 | grep -vE '^\s*(\(pass\)|\(skip\))'; rc=${PIPESTATUS[0]}
@@ -289,6 +285,7 @@ jobs:
             bun test --preload ./atlas/tests/preload.ts --timeout 10000 --isolate $F 2>&1 | grep -vE '^\s*(\(pass\)|\(skip\))'; rc=${PIPESTATUS[0]}
           fi
           echo "################ hangwatch"; cat "$RUNNER_TEMP/hangwatch.log"
+          echo "################ zwatch"; cat "$RUNNER_TEMP/zwatch.log"
           exit $rc
 
       # 名字按组、允许覆盖：ci 作业按名字前缀收齐各组报告做防跳过自检，只重跑
