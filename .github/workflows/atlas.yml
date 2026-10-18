@@ -65,16 +65,24 @@ jobs:
       # 只在上游同步时变，所以按输入哈希缓存产物。sync-omp 与 fleet-payload 不走缓存，
       # 每次重编，兜住缓存键漏列输入的情况。
       # `ImageOS`（如 ubuntu24）是 runner 的环境变量，表达式的 env 上下文读不到它。
-      - name: Read the runner image
+      # 根 package.json 只取 build:native 那一条脚本进键：整份文件常因阡陌脚本变动，
+      # 进键会让缓存频繁失效。
+      - name: Read the native cache inputs
         id: image
-        run: echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "script=$(jq -r '.scripts["build:native"]' package.json | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
       - name: Restore the omp native addon
         id: native-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0, 2026-06-26
         with:
-          path: packages/natives/native/pi_natives.linux-x64-baseline.node
-          key: omp-native-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.os }}-${{ hashFiles('crates/**', 'Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/**', 'bun.lock', 'packages/natives/package.json', 'packages/natives/scripts/**', 'packages/natives/native/*.js', 'scripts/bazel-natives.ts', 'scripts/host-detect.ts', 'scripts/stamp-native-version.ts', 'atlas/scripts/build-native-portable.sh') }}
+          # 构建同时重写 index.d.ts 与 index.js 的生成段，一起缓存，命中时与重编结果一致。
+          path: |
+            packages/natives/native/pi_natives.linux-x64-baseline.node
+            packages/natives/native/index.d.ts
+            packages/natives/native/index.js
+          key: omp-native-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.os }}-${{ steps.image.outputs.script }}-${{ hashFiles('crates/**', 'Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/**', '.tool-versions', 'bun.lock', 'packages/natives/package.json', 'packages/natives/scripts/**', 'packages/natives/native/*.js', 'packages/natives/native/*.d.ts', 'scripts/bazel-natives.ts', 'scripts/host-detect.ts', 'scripts/stamp-native-version.ts', 'atlas/scripts/build-native-portable.sh') }}
 
       - name: Build the omp native addon
         if: steps.native-cache.outputs.cache-hit != 'true'
