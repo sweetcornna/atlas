@@ -203,7 +203,7 @@ export class NodeTurnGate {
   }
 
   run<T>(work: () => Promise<T>, request: NodeTurnRequest = {}): Promise<T> {
-    if (this.saturated) {
+    if (this.saturated && !this.nestsNow(request.chain ?? [])) {
       return Promise.reject(new NodeTurnQueueFullError(LIMITS.maxQueuedTurns))
     }
     return new Promise<T>((resolve, reject) => {

@@ -1996,8 +1996,18 @@ export class QianmoResident {
     // the design asks for both "refuse before the write" and "`#receive` sees
     // it", which only a look-before-you-write satisfies. The gate keeps its
     // own bound as well; that one is the hard invariant, this one is what the
-    // sender hears about.
-    if (this.#gate.saturated) {
+    // sender hears about. A hub-signed answer to the turn running here starts
+    // nested at once and never waits in that queue (P36.6).
+    const nested =
+      message.type === MessageType.TaskRequest &&
+      this.#gate.nestsNow(
+        askReentry(
+          message,
+          this.#options.node,
+          this.#options.memoryControllers ?? new Map(),
+        )?.chain ?? [],
+      )
+    if (this.#gate.saturated && !nested) {
       const reason = `resident turn queue is full, ${this.#gate.queued} turns waiting`
       const code = errorCodeForPeer(
         ProtocolErrorCode.E_BUSY,

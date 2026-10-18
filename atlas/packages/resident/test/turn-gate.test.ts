@@ -274,6 +274,33 @@ describe('re-entry along a verified call chain (P36.6)', () => {
     expect(gate.active).toBe(false)
   })
 
+  test('a full queue does not refuse an answer that nests; it refuses one that would wait', async () => {
+    const gate = new NodeTurnGate()
+    const events: string[] = []
+    const asker = held(gate, events, 'a', { key: 'task-a' })
+    const backlog = Array.from({ length: LIMITS.maxQueuedTurns }, (_, i) =>
+      held(gate, events, `q${i}`),
+    )
+    expect(gate.saturated).toBe(true)
+    expect(gate.nestsNow(['task-a'])).toBe(true)
+    expect(gate.nestsNow(['task-x'])).toBe(false)
+    const answer = held(gate, events, 'b', { key: 'task-b', chain: ['task-a'] })
+    expect(answer.started).toBe(true)
+    expect(gate.queued).toBe(LIMITS.maxQueuedTurns)
+    await expect(
+      gate.run(async () => {}, { chain: ['task-x'] }),
+    ).rejects.toBeInstanceOf(NodeTurnQueueFullError)
+    answer.release()
+    await answer.done
+    asker.release()
+    await asker.done
+    for (const turn of backlog) {
+      while (!turn.started) await Promise.resolve()
+      turn.release()
+      await turn.done
+    }
+  })
+
   test('a chain that does not name the running turn queues as ever', async () => {
     const gate = new NodeTurnGate()
     const events: string[] = []

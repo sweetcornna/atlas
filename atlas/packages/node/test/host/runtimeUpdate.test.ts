@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Installing catalog runtimes (P31, P36.3): a version goes into the managed
- * prefix only after it passed the compatibility check in a scratch prefix;
- * one that fails leaves the node on what it had and says why. No Node.js in
+ * Installing catalog runtimes (P31, P36.3): a version is installed into a
+ * staged tree of its own, and only that same tree goes live after it passed
+ * the compatibility check; one that fails leaves the node on what it had and
+ * says why. No Node.js in
  * range, or too little disk, and nothing starts at all.
  */
 
@@ -17,6 +18,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -31,9 +33,11 @@ import {
   INSTALL_MEMORY_MIB,
   managedRuntimeBin,
   managedRuntimePrefix,
+  managedRuntimeTree,
   memAvailableBytes,
   type RunCommand,
   RuntimeInstaller,
+  runCommand,
   runtimeControl,
   satisfiesVersionRange,
   VERSION_CACHE_MS,
@@ -153,28 +157,43 @@ test('a version that fails the check is not installed, and the update says why (
     message:
       '2.2.0 没有通过兼容检查，节点继续用原来的版本：没有连上 qianmo 工具桥（failed）',
   })
-  // Only the scratch prefix got it, and it is gone again.
+  // Only the staged tree got it, and it is gone again.
   expect(npm.prefixes).toHaveLength(1)
-  expect(npm.prefixes[0]).not.toBe(managedRuntimePrefix())
-  expect(path.dirname(npm.prefixes[0]!)).toBe(qianmoConfigPath('runtimes'))
+  expect(path.dirname(npm.prefixes[0]!)).toBe(
+    qianmoConfigPath('runtimes', 'trees'),
+  )
   expect(existsSync(npm.prefixes[0]!)).toBe(false)
   expect(checked).toEqual([
     `claude-code ${path.join(npm.prefixes[0]!, 'node_modules', '.bin', 'claude')}`,
   ])
   expect(installed).toEqual([])
   expect(managedRuntimeBin('claude-code')).toBeUndefined()
-  expect(
-    readdirSync(qianmoConfigPath('runtimes')).filter(name =>
-      name.startsWith('npm-stage-'),
-    ),
-  ).toEqual([])
+  expect(readdirSync(qianmoConfigPath('runtimes', 'trees'))).toEqual([])
 })
 
-test('a version that passes goes into the managed prefix', async () => {
+test('a version that passes goes live as the very tree that was checked, without a second npm install', async () => {
   const npm = fakeNpm('0.170.0')
   const installed: string[] = []
   const control = runtimeControl({
-    run: npm.run,
+    // Each installed binary answers `--version` with the version put there.
+    run: async (argv, options) => {
+      if (argv[0] !== 'npm')
+        return argv[0] === 'node'
+          ? npm.run(argv, options)
+          : { code: 0, stdout: `codex-cli ${readFileSync(argv[0]!, 'utf8')}` }
+      const result = await npm.run(argv, options)
+      if (argv[1] === 'install')
+        writeFileSync(
+          path.join(
+            argv[argv.indexOf('--prefix') + 1]!,
+            'node_modules',
+            '.bin',
+            'codex',
+          ),
+          argv.at(-1)!.split('@').pop()!,
+        )
+      return result
+    },
     freeBytes: roomy,
     smoke: async () => null,
     onInstalled: kind => installed.push(kind),
@@ -191,11 +210,33 @@ test('a version that passes goes into the managed prefix', async () => {
     ok: true,
     value: { runtime: 'codex', version: '0.170.0' },
   })
-  expect(npm.prefixes).toHaveLength(2)
-  expect(npm.prefixes[1]).toBe(managedRuntimePrefix())
+  expect(npm.prefixes).toHaveLength(1)
   expect(installed).toEqual(['codex'])
   expect(managedRuntimeBin('codex')).toBe(
-    path.join(managedRuntimePrefix(), 'node_modules', '.bin', 'codex'),
+    path.join(managedRuntimeTree('codex'), 'node_modules', '.bin', 'codex'),
+  )
+  const first = readlinkSync(managedRuntimeTree('codex'))
+  expect(first).toStartWith('codex-')
+  // Another version: the link moves; the tree it replaced stays one install
+  // (a process may still run from it), the one before goes.
+  const again = async (next: string) => {
+    const result = await control(
+      'runtime.update',
+      { runtime: 'codex', version: next },
+      CTX,
+    )
+    expect(result.ok).toBe(true)
+  }
+  await again('0.171.0')
+  const second = readlinkSync(managedRuntimeTree('codex'))
+  expect(second).not.toBe(first)
+  expect(readdirSync(qianmoConfigPath('runtimes', 'trees')).sort()).toEqual(
+    ['codex', first, second].sort(),
+  )
+  await again('0.172.0')
+  const third = readlinkSync(managedRuntimeTree('codex'))
+  expect(readdirSync(qianmoConfigPath('runtimes', 'trees')).sort()).toEqual(
+    ['codex', second, third].sort(),
   )
   // npm's cache, config and HOME are the node's, never the user's.
   for (const env of npm.envs) {
@@ -257,7 +298,7 @@ test('runtime.install without a version installs the catalog pin, DeepSeek Harne
   expect(smoked).toEqual(['dsh'])
   expect(
     npm.calls.filter(argv => argv[1] === 'install').map(argv => argv.at(-1)),
-  ).toEqual([`@deepseek-ai/dsh@${pin}`, `@deepseek-ai/dsh@${pin}`])
+  ).toEqual([`@deepseek-ai/dsh@${pin}`])
   // Node.js was checked before anything was downloaded.
   expect(npm.calls[0]).toEqual(['node', '--version'])
   expect(installer.availability('dsh')).toEqual({
@@ -377,7 +418,10 @@ test('too little free memory: the default install never starts and says how much
     ok: true,
   })
   // Disk still applies to them (nothing installed this time).
-  rmSync(managedRuntimePrefix(), { recursive: true, force: true })
+  rmSync(qianmoConfigPath('runtimes', 'trees'), {
+    recursive: true,
+    force: true,
+  })
   expect(
     await new RuntimeInstaller({
       run: npm.run,
@@ -502,11 +546,53 @@ test('an operator’s install waits for a sweep in progress before it checks the
   ])
 })
 
-test('a failed or stopped install leaves no scratch prefix', async () => {
-  const stages = () =>
-    readdirSync(qianmoConfigPath('runtimes')).filter(name =>
-      name.startsWith('npm-stage-'),
+test('staged trees and unswapped links a dead node left are swept; live trees, their links and lookalikes stay', async () => {
+  const trees = qianmoConfigPath('runtimes', 'trees')
+  const outside = mkdtempSync(path.join(tmpdir(), 'qm-sweep-outside-'))
+  try {
+    writeFileSync(path.join(outside, 'keep'), 'x')
+    mkdirSync(trees, { recursive: true })
+    const stale = path.join(trees, `.stage-dsh-${randomUUID()}`)
+    mkdirSync(path.join(stale, 'node_modules'), { recursive: true })
+    symlinkSync(outside, path.join(stale, 'node_modules', 'linked'))
+    const live = path.join(trees, `dsh-${randomUUID()}`)
+    mkdirSync(live)
+    symlinkSync(live, managedRuntimeTree('dsh'))
+    const pending = path.join(trees, `.dsh.link-${randomUUID()}`)
+    symlinkSync(outside, pending)
+    const linkedStage = path.join(trees, `.stage-qwen-${randomUUID()}`)
+    symlinkSync(outside, linkedStage)
+    const pendingDir = path.join(trees, `.qwen.link-${randomUUID()}`)
+    mkdirSync(pendingDir)
+    const lookalike = path.join(trees, '.stage-dsh-notauuid')
+    mkdirSync(lookalike)
+    const installer = new RuntimeInstaller({ which: nowhere })
+    expect((await installer.sweepStages()).sort()).toEqual(
+      [pending, stale].sort(),
     )
+    expect(existsSync(stale)).toBe(false)
+    expect(existsSync(pending)).toBe(false)
+    expect(readFileSync(path.join(outside, 'keep'), 'utf8')).toBe('x')
+    expect(existsSync(live)).toBe(true)
+    expect(readlinkSync(managedRuntimeTree('dsh'))).toBe(live)
+    expect(lstatSync(linkedStage).isSymbolicLink()).toBe(true)
+    expect(existsSync(pendingDir)).toBe(true)
+    expect(existsSync(lookalike)).toBe(true)
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test('a failed or stopped install leaves no scratch prefix', async () => {
+  const stages = () => {
+    try {
+      return readdirSync(qianmoConfigPath('runtimes', 'trees')).filter(name =>
+        name.startsWith('.stage-'),
+      )
+    } catch {
+      return []
+    }
+  }
   const failing = new RuntimeInstaller({
     run: fakeNpm(PIN('dsh'), { failInstall: true }).run,
     freeBytes: roomy,
@@ -777,7 +863,7 @@ test('a second install of the same runtime is refused while one runs; ensureRunt
   expect(await installer.ensureRuntimeInstalled('codex')).toEqual({ ok: true })
 })
 
-test('runtime.remove: refused for qianmopi, for unknown ids and while agents use it; else only the managed prefix', async () => {
+test('runtime.remove: refused for qianmopi, for unknown ids and while agents use it; else only what the node installed', async () => {
   const npm = fakeNpm('0.170.0')
   let users: string[] = ['coder', 'writer']
   const installer = new RuntimeInstaller({
@@ -810,6 +896,22 @@ test('runtime.remove: refused for qianmopi, for unknown ids and while agents use
   expect(
     await installer.control('runtime.remove', { runtime: 'codex' }, CTX),
   ).toEqual({ ok: true, value: { runtime: 'codex', removed: true } })
+  expect(readdirSync(qianmoConfigPath('runtimes', 'trees'))).toEqual([])
+  expect(managedRuntimeBin('codex')).toBeUndefined()
+  expect(installer.availability('codex').installed).toBe(false)
+  // Nothing of it left to remove.
+  expect(
+    await installer.control('runtime.remove', { runtime: 'codex' }, CTX),
+  ).toEqual({ ok: true, value: { runtime: 'codex', removed: false } })
+  // An earlier build's install in the shared prefix is found and removed
+  // with npm there.
+  const legacy = path.join(managedRuntimePrefix(), 'node_modules', '.bin')
+  mkdirSync(legacy, { recursive: true })
+  writeFileSync(path.join(legacy, 'codex'), '')
+  expect(managedRuntimeBin('codex')).toBe(path.join(legacy, 'codex'))
+  expect(
+    await installer.control('runtime.remove', { runtime: 'codex' }, CTX),
+  ).toEqual({ ok: true, value: { runtime: 'codex', removed: true } })
   expect(npm.calls.at(-1)!.slice(0, 4)).toEqual([
     'npm',
     'uninstall',
@@ -817,11 +919,53 @@ test('runtime.remove: refused for qianmopi, for unknown ids and while agents use
     managedRuntimePrefix(),
   ])
   expect(managedRuntimeBin('codex')).toBeUndefined()
-  expect(installer.availability('codex').installed).toBe(false)
-  // Nothing of it left to remove.
-  expect(
-    await installer.control('runtime.remove', { runtime: 'codex' }, CTX),
-  ).toEqual({ ok: true, value: { runtime: 'codex', removed: false } })
+})
+
+test('a command that writes a lot to stderr still finishes', async () => {
+  const result = await runCommand(
+    [
+      process.execPath,
+      '-e',
+      "process.stderr.write('x'.repeat(4 * 1024 * 1024)); console.log('done')",
+    ],
+    {
+      env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin' },
+      timeoutMs: 20_000,
+    },
+  )
+  expect(result).toMatchObject({ code: 0, stdout: 'done\n' })
+})
+
+test('installs of two runtimes run one after the other, never together', async () => {
+  const npm = fakeNpm(PIN('gemini'))
+  let running = 0
+  let most = 0
+  const installer = new RuntimeInstaller({
+    run: async (argv, options) => {
+      running += 1
+      most = Math.max(most, running)
+      await Bun.sleep(5)
+      try {
+        return await npm.run(argv, options)
+      } finally {
+        running -= 1
+      }
+    },
+    freeBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+  })
+  const [a, b] = await Promise.all([
+    installer.install('gemini'),
+    installer.install('qwen'),
+  ])
+  expect(installer.installing('qwen')).toBe(false)
+  expect(most).toBe(1)
+  expect(a.ok).toBe(true)
+  expect(npm.calls.some(argv => argv.at(-1)?.startsWith('@qwen-code/'))).toBe(
+    true,
+  )
+  expect(b.ok ? 'ok' : b.message).toContain('不是')
 })
 
 test('a runtime given by flag is the operator’s: never installed or removed here', async () => {
@@ -887,6 +1031,49 @@ test('stopping the node ends a running install without recording a verdict', asy
   expect(installer.lastInstall('dsh')).toBeUndefined()
   expect(installer.installing('dsh')).toBe(false)
   // A stop is not a kill: nothing is left on disk to back off from.
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toBeUndefined()
+})
+
+test('an install queued behind another writes nothing until its turn; stopped while queued, it never begins', async () => {
+  let started!: () => void
+  const running = new Promise<void>(done => {
+    started = done
+  })
+  const calls: string[][] = []
+  const installer = new RuntimeInstaller({
+    freeMemoryBytes: roomy,
+    freeBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+    run: async (argv, options) => {
+      calls.push([...argv])
+      if (argv[0] === 'node') return { code: 0, stdout: 'v24.1.0' }
+      started()
+      // npm runs until the node stops and kills it.
+      await new Promise(done =>
+        options.signal?.addEventListener('abort', done, { once: true }),
+      )
+      return { code: 143, stdout: '' }
+    },
+  })
+  const first = installer.install('dsh')
+  await running
+  const queued = installer.install('qwen')
+  expect(installer.installing('qwen')).toBe(true)
+  // Waiting its turn is not an install yet: nothing on disk to back off from.
+  expect(new RuntimeInstaller({}).lastInstall('qwen')).toBeUndefined()
+  installer.stop()
+  expect(await first).toMatchObject({ ok: false })
+  expect(await queued).toEqual({
+    ok: false,
+    code: 'E_RUNTIME_BUSY',
+    message: '节点正在停机，不开始新的安装或卸载',
+  })
+  expect(calls.filter(argv => argv.at(-1)?.startsWith('@qwen-code/'))).toEqual(
+    [],
+  )
+  expect(installer.installing('qwen')).toBe(false)
+  expect(new RuntimeInstaller({}).lastInstall('qwen')).toBeUndefined()
   expect(new RuntimeInstaller({}).lastInstall('dsh')).toBeUndefined()
 })
 

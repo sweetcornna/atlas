@@ -506,6 +506,15 @@ test('the default install runs at start in the background and retries after 5, 1
   expect(changed).toEqual([])
 })
 
+/** Removes what the node installed: the runtime trees and the shared prefix of earlier builds. */
+const dropInstalled = () => {
+  rmSync(managedRuntimePrefix(), { recursive: true, force: true })
+  rmSync(qianmoConfigPath('runtimes', 'trees'), {
+    recursive: true,
+    force: true,
+  })
+}
+
 test('a retry that works brings the agents over; stop() cancels what is pending; --no-runtime-autoinstall installs nothing', async () => {
   jest.useFakeTimers()
   const { runtimes, npm, changed } = setup({
@@ -523,7 +532,7 @@ test('a retry that works brings the agents over; stop() cancels what is pending;
   expect(changed).toEqual(['main'])
 
   const second = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
-  rmSync(managedRuntimePrefix(), { recursive: true, force: true })
+  dropInstalled()
   second.npm.fail = true
   await second.runtimes.start()
   await settle()
@@ -632,7 +641,7 @@ test('a node killed in the middle of an install backs off after the restart inst
   expect(two.npm.installs()).toBe(0)
   jest.advanceTimersByTime(1)
   await settle()
-  expect(two.npm.installs()).toBe(2)
+  expect(two.npm.installs()).toBe(1)
   expect(state(two.runtimes, 'main').effective.runtime).toBe('dsh')
   expect(two.installer.lastInstall('dsh')).toMatchObject({ ok: true })
   expect(two.installer.lastInstall('dsh')?.failures).toBeUndefined()
@@ -651,7 +660,7 @@ test('an install that ended in a failure still backs off from when it failed', a
   const two = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
   await two.runtimes.start()
   await settle()
-  expect(two.npm.installs()).toBe(2)
+  expect(two.npm.installs()).toBe(1)
 })
 
 test('a pending retry is dropped once no agent is configured on its runtime', async () => {
@@ -720,7 +729,7 @@ test('a dsh on PATH that is not DeepSeek Harness is no dsh: the agent says why, 
   expect(state(runtimes, 'main').effective).toMatchObject({ runtime: 'dsh' })
   expect(runtimes.installer.availability('dsh').source).toBe('prefix')
   // Without the default install, the reason names the binary it did not take.
-  rmSync(managedRuntimePrefix(), { recursive: true, force: true })
+  dropInstalled()
   const off = setup({
     agents: [{ agent: 'main' }],
     installer: {

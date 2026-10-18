@@ -297,6 +297,26 @@ test('a process gone mid-turn still records the question', async () => {
   ])
 })
 
+test('a warm process keeps one close listener however many turns it runs', async () => {
+  const channel = new FakeChannel('dsh')
+  let listeners = 0
+  const then = channel.closed.then.bind(channel.closed)
+  Object.defineProperty(channel.closed, 'then', {
+    value: (...args: Parameters<typeof then>) => {
+      listeners += 1
+      return then(...args)
+    },
+  })
+  const file = portableLogPath('coder', 's3')
+  const wrapped = portableChannel(channel, { file, runtime: 'dsh' })
+  for (let i = 0; i < 5; i++) {
+    await wrapped.prompt({ messageId: `m${i}`, text: `第 ${i} 问` })
+    await new Promise(resolve => setTimeout(resolve, 0))
+  }
+  expect(readPortableTurns(file)).toHaveLength(5)
+  expect(listeners).toBe(1)
+})
+
 function turnOf(
   runtime: string,
   user: string,
