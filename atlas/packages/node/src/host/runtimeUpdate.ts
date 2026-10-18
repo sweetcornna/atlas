@@ -428,6 +428,10 @@ function errorText(error: unknown): string {
 
 const SEMVER_IN_OUTPUT = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/
 
+/** What an install that never ended reads as after a restart. */
+const UNFINISHED =
+  '上一次安装没有结束（节点在安装中途退出，常见原因是内存不足被系统结束）'
+
 /** A scratch prefix of one install: `npm-stage-<uuid>` under the runtimes root. */
 const STAGE_NAME =
   /^npm-stage-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -460,6 +464,11 @@ export class RuntimeInstaller {
   #nodeVersion: string | null | undefined
   /** Scratch prefixes of the installs running now. */
   readonly #stages = new Set<string>()
+  /**
+   * The installs running now, with the last finished install of each: on
+   * disk they read as an unfinished one (see `#attempt`), here they do not.
+   */
+  readonly #unfinished = new Map<string, RuntimeInstallRecord | undefined>()
   /** PATH binaries checked against {@link PATH_IDENTITY}, by runtime. */
   readonly #onPath = new Map<string, PathCheck>()
   /**
@@ -584,7 +593,9 @@ export class RuntimeInstaller {
     return this.#installing.has(kind)
   }
 
+  /** The last install of `kind` that finished (in any run of the node). */
   lastInstall(kind: string): RuntimeInstallRecord | undefined {
+    if (this.#unfinished.has(kind)) return this.#unfinished.get(kind)
     return this.#loadRecords()[kind]
   }
 
@@ -611,8 +622,12 @@ export class RuntimeInstaller {
     return records
   }
 
-  #record(kind: string, record: RuntimeInstallRecord): void {
-    this.#records = { ...this.#loadRecords(), [kind]: record }
+  /** Writes `kind`'s record; `undefined` removes it. */
+  #record(kind: string, record: RuntimeInstallRecord | undefined): void {
+    const records = { ...this.#loadRecords() }
+    if (record === undefined) delete records[kind]
+    else records[kind] = record
+    this.#records = records
     try {
       writePrivateJson(installsFile(), this.#records)
     } catch {
@@ -822,12 +837,29 @@ export class RuntimeInstaller {
         message: `${spec.label} 正在安装`,
       }
     const wanted = typeof version === 'string' ? version : spec.install.pin
-    const attempt = this.#attempt(spec, wanted, automatic)
+    // Before anything that can take the node down with it (npm, the check):
+    // on disk this install is a failure until it ends, one more in a row, so
+    // a node killed in the middle (an OOM kill, most likely) backs off after
+    // the restart instead of installing again at once. Its own ending writes
+    // the real verdict with the same count, or clears it.
+    const finished = this.lastInstall(spec.id)
+    const failures = failuresOf(finished) + 1
+    this.#unfinished.set(spec.id, finished)
+    this.#record(spec.id, {
+      at: this.#now(),
+      ok: false,
+      version: wanted,
+      error: UNFINISHED,
+      code: 'install-failed',
+      failures,
+    })
+    const attempt = this.#attempt(spec, wanted, automatic, failures)
     this.#installing.set(spec.id, attempt)
     this.#changed(spec.id)
     try {
       return await attempt
     } finally {
+      this.#unfinished.delete(spec.id)
       this.#installing.delete(spec.id)
       this.#changed(spec.id)
     }
@@ -852,12 +884,15 @@ export class RuntimeInstaller {
     spec: NpmRuntime,
     wanted: string,
     automatic: boolean,
+    /** This one included, already on disk. */
+    failures: number,
   ): Promise<RuntimeInstallResult> {
     const fail = (
       fallback: NonNullable<RuntimeInstallRecord['code']>,
       message: string,
     ): RuntimeInstallResult => {
-      // Cut short by the node stopping: not a verdict on the runtime.
+      // Cut short by the node stopping: not a verdict on the runtime (`stop`
+      // has put the last finished record back).
       if (!this.#stopping.signal.aborted)
         this.#record(spec.id, {
           at: this.#now(),
@@ -865,7 +900,7 @@ export class RuntimeInstaller {
           version: wanted,
           error: message.slice(0, 300),
           code: fallback,
-          failures: failuresOf(this.lastInstall(spec.id)) + 1,
+          failures,
         })
       return {
         ok: false,
@@ -1052,9 +1087,12 @@ export class RuntimeInstaller {
 
   /**
    * The node is stopping: running npm commands are killed so the process can
-   * exit, and nothing they leave unfinished is recorded as a failure.
+   * exit, and nothing they leave unfinished is recorded as a failure — the
+   * last finished record of each goes back on disk now, before the exit.
    */
   stop(): void {
+    for (const [kind, finished] of this.#unfinished)
+      this.#record(kind, finished)
     this.#stopping.abort()
   }
 

@@ -590,6 +590,38 @@ test('the backoff outlives a restart: a node started again after a failure waits
   expect(four.installer.lastInstall('dsh')?.failures).toBeUndefined()
 })
 
+test('a node killed in the middle of an install backs off after the restart instead of installing again at once', async () => {
+  jest.useFakeTimers()
+  const one = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
+  // npm never comes back: the node is OOM-killed while it runs.
+  one.npm.hold = new Promise(() => {})
+  await one.runtimes.start()
+  await settle()
+  expect(one.npm.installs()).toBe(1)
+  // Killed, so no stop() and no ending: what is on disk is all there is.
+  jest.advanceTimersByTime(60_000)
+  const two = setup({ autoInstall: true, agents: [{ agent: 'main' }] })
+  await two.runtimes.start()
+  await settle()
+  expect(two.npm.installs()).toBe(0)
+  expect(state(two.runtimes, 'main').reason).toEqual({
+    code: 'install-failed',
+    message:
+      '上一次安装没有结束（节点在安装中途退出，常见原因是内存不足被系统结束）',
+  })
+  expect(two.installer.lastInstall('dsh')).toMatchObject({ failures: 1 })
+  // Four of the five minutes are left.
+  jest.advanceTimersByTime(4 * 60_000 - 1)
+  await settle()
+  expect(two.npm.installs()).toBe(0)
+  jest.advanceTimersByTime(1)
+  await settle()
+  expect(two.npm.installs()).toBe(2)
+  expect(state(two.runtimes, 'main').effective.runtime).toBe('dsh')
+  expect(two.installer.lastInstall('dsh')).toMatchObject({ ok: true })
+  expect(two.installer.lastInstall('dsh')?.failures).toBeUndefined()
+})
+
 test('a pending retry is dropped once no agent is configured on its runtime', async () => {
   jest.useFakeTimers()
   const { runtimes, npm } = setup({

@@ -830,8 +830,54 @@ test('stopping the node ends a running install without recording a verdict', asy
   })
   const install = installer.install('dsh')
   await running
+  // While it runs, the disk says "not finished" (a kill now is a failure)…
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toMatchObject({
+    ok: false,
+    failures: 1,
+    error:
+      '上一次安装没有结束（节点在安装中途退出，常见原因是内存不足被系统结束）',
+  })
+  // …and this node still reports the last install that finished: none.
+  expect(installer.lastInstall('dsh')).toBeUndefined()
+  expect(
+    (await installer.versions()).runtimes.find(row => row.id === 'dsh')!
+      .lastInstall,
+  ).toBeUndefined()
   installer.stop()
   expect(await install).toMatchObject({ ok: false })
   expect(installer.lastInstall('dsh')).toBeUndefined()
   expect(installer.installing('dsh')).toBe(false)
+  // A stop is not a kill: nothing is left on disk to back off from.
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toBeUndefined()
+})
+
+test('a failed install counts once, a success clears the count', async () => {
+  const installer = new RuntimeInstaller({
+    run: fakeNpm(PIN('dsh'), { failInstall: true }).run,
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+  })
+  expect((await installer.install('dsh')).ok).toBe(false)
+  expect(installer.lastInstall('dsh')).toMatchObject({ failures: 1 })
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toMatchObject({
+    failures: 1,
+    error: `npm 安装 @deepseek-ai/dsh@${PIN('dsh')} 失败`,
+  })
+  expect((await installer.install('dsh')).ok).toBe(false)
+  expect(installer.lastInstall('dsh')).toMatchObject({ failures: 2 })
+  const working = new RuntimeInstaller({
+    run: fakeNpm(PIN('dsh')).run,
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+  })
+  expect((await working.install('dsh')).ok).toBe(true)
+  expect(new RuntimeInstaller({}).lastInstall('dsh')).toEqual({
+    at: expect.any(Number),
+    ok: true,
+    version: PIN('dsh'),
+  })
 })
