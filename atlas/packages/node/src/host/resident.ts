@@ -17,7 +17,13 @@ import { MemoryControl } from './memoryControl.js'
 import { verifiedBackground, verifiedTaskOwner } from '@qianmo/capability'
 import { connectorTools, type ConnectorToolContext } from './connectorTools.js'
 import { taskTools, type TaskToolOrigin } from './taskTools.js'
-import { askReentry, peerTools, type PeerToolOrigin } from './peerTools.js'
+import {
+  askReentry,
+  NESTED_NO_ROOM_REASON,
+  peerTools,
+  type PeerToolOrigin,
+} from './peerTools.js'
+import { FALLBACK_RUNTIME } from './runtimes/catalog.js'
 import { NodeExtensions } from './extensions.js'
 import { runtimeBin } from './runtimeUpdate.js'
 import { NodeRuntimes } from './runtimeConfig.js'
@@ -655,6 +661,9 @@ const BACKGROUND_STOP_GRACE_MS = 10_000
 /** Largest delay `setTimeout` takes before silently collapsing it to 1 ms. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
+/** The two process pools of a generation, each capped by `--omp-max-children`. */
+type RuntimePool = 'qianmopi' | 'external'
+
 interface ActiveResidentTask {
   owner?: string
   trust?: 'untrusted' | 'verified-capability'
@@ -802,6 +811,13 @@ export class QianmoResident {
   /** `options.localCommandIssuers`, as the set it is looked up in. */
   readonly #localCommandIssuers: ReadonlySet<string>
   readonly #gate = new NodeTurnGate()
+  /**
+   * The process each running turn holds, by session: which pool it came from
+   * (qianmopi or an external runtime). Each pool starts at most
+   * `--omp-max-children` processes, and a turn's process stays busy until the
+   * turn ends — so this says when a nested answer would find none (P36.6).
+   */
+  readonly #held = new Map<string, RuntimePool>()
   readonly #mailbox = new BaseMailboxPort()
   readonly #deadlineClock = new ResidentDeadlineClock({ periodMs: 10_000 })
   readonly #adapter: InboundAdapter
@@ -1248,7 +1264,11 @@ export class QianmoResident {
         channelFor: async (sessionId, signal) => {
           if (this.#runtimeChild === null)
             throw new Error('resident omp pool is not ready')
+          const owner = this.#turn.activeInput(sessionId)?.agent
+          const pool = owner === undefined ? undefined : this.#poolOf(owner)
           const child = await this.#runtimeChild.channelFor(sessionId, signal)
+          if (pool !== undefined && signal !== undefined)
+            this.#hold(sessionId, pool, signal)
           const active = this.#turn.activeInput(sessionId)
           if (active) {
             const pending = active.agent
@@ -2010,6 +2030,26 @@ export class QianmoResident {
         this.#localCommandIssuers,
       )
       if (command !== undefined) task.localCommand = command
+      // A question that would nest in a turn here right now, with every
+      // process its runtime may start held by the turns it would nest in,
+      // could only wait for one none of them gives up. Answered at once and
+      // before the mailbox write: no turn, nothing left to recover later.
+      const crowded = this.#nestedWithoutRoom(message)
+      if (crowded !== undefined) {
+        task.delivering = false
+        void this.#settleTask(
+          task,
+          createTaskResult(task.envelope, task.envelope.to, {
+            outcome: 'failed',
+            code: errorCodeForPeer(
+              ProtocolErrorCode.E_TASK_FAILED,
+              task.channel.peerSupportedTypes,
+            ),
+            reason: crowded,
+          }),
+        ).catch(error => this.#options.onError?.(error))
+        return
+      }
     }
     try {
       // Both halves of the routing layer's finding travel together: who
@@ -2068,6 +2108,53 @@ export class QianmoResident {
     } finally {
       if (task !== undefined) task.delivering = false
     }
+  }
+
+  /** The pool `agent`'s next process comes from (`ResidentRuntimePool`). */
+  #poolOf(agent: string): RuntimePool {
+    return this.runtimes.effectiveRuntime(agent) === FALLBACK_RUNTIME
+      ? 'qianmopi'
+      : 'external'
+  }
+
+  /** `sessionId`'s turn holds a process of `pool` until `signal` aborts. */
+  #hold(sessionId: string, pool: RuntimePool, signal: AbortSignal): void {
+    if (signal.aborted) return
+    this.#held.set(sessionId, pool)
+    signal.addEventListener(
+      'abort',
+      () => {
+        if (this.#held.get(sessionId) === pool) this.#held.delete(sessionId)
+      },
+      { once: true },
+    )
+  }
+
+  /**
+   * Why a hub-signed question cannot run here now, or undefined (P36.6): it
+   * would nest in the running turn, and the turns running already hold every
+   * process its agent's runtime may start (`--omp-max-children`).
+   */
+  #nestedWithoutRoom(message: QianmoMessage): string | undefined {
+    const max = this.#options.ompMaxChildren
+    if (max === undefined) return undefined
+    const agent = parseAddress(message.to)?.agent
+    if (
+      agent === undefined ||
+      !this.#options.agents.some(row => row.agent === agent)
+    )
+      return undefined
+    const chain = askReentry(
+      message,
+      this.#options.node,
+      this.#options.memoryControllers ?? new Map(),
+    )?.chain
+    if (chain === undefined || !this.#gate.nestsNow(chain)) return undefined
+    const pool = this.#poolOf(agent)
+    let held = 0
+    for (const one of this.#held.values()) if (one === pool) held++
+    if (held < max) return undefined
+    return `${NESTED_NO_ROOM_REASON}: the turns it would nest in hold all ${max} ${pool} processes this node may start (--omp-max-children)`
   }
 
   #registerTask(

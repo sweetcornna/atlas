@@ -51,7 +51,7 @@ import {
   type UsagePort,
 } from '@qianmo/console'
 import { LIMITS, parseAddress, type ControlOutcome } from '@qianmo/protocol'
-import { PEER_ASK } from '../host/peerTools.js'
+import { NESTED_NO_ROOM_REASON, PEER_ASK } from '../host/peerTools.js'
 import { runtimeSpec } from '../host/runtimes/catalog.js'
 import { RUNTIME_OPS } from '../host/runtimes/contract.js'
 import {
@@ -792,6 +792,14 @@ export class ConsolePeers {
         )
       }
       if (outcome.cancelled) return failed(target, 'cancelled', '中枢正在关闭')
+      // Its node had no process for it: every one it may start is held by
+      // the turns this answer would nest in. Nothing ran.
+      if (outcome.error?.startsWith(NESTED_NO_ROOM_REASON) === true)
+        return failed(
+          target,
+          'busy',
+          `${target} 所在节点的进程数已到上限（--omp-max-children），都被这条问答链上等回答的一方占着，它这一轮起不来。请自己回答，或用 qianmo_task_start 交给它`,
+        )
       return failed(
         target,
         outcome.refusedStatus === undefined ? 'failed' : 'refused',

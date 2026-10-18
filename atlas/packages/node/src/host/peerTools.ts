@@ -30,6 +30,13 @@ export const PEER_ASK = {
 } as const
 
 /**
+ * How a node's answer to a question starts when it had no process to run it
+ * in: every one `--omp-max-children` allows is held by the turns it would
+ * nest in. The hub reads it as `busy` (`consolePeers.ts`).
+ */
+export const NESTED_NO_ROOM_REASON = 'no room for a nested answer turn'
+
+/**
  * The asker keeps this long of its own turn for using the answer: a question
  * never waits right up to the asking turn's deadline.
  */
