@@ -59,6 +59,7 @@ import {
   qmcodeRolloutPath,
   type QmcodeTurn,
 } from '../../packages/node/test/commands/support/handoffSamples.js'
+import { skipSyncDebounce } from './fixtures/handoff-debounce.js'
 import {
   cliPrefix,
   freePort,
@@ -617,6 +618,8 @@ describe('qm handoff mcp end to end', () => {
         ccFile(),
         claudeCodeTranscript(CC_SESSION, docs, 'complete'),
       )
+      // The previous handoff just synced; this hook would sit out the debounce.
+      skipSyncDebounce(laptopConfig, repo)
       const hook = await qm(['handoff', 'sync', '--hook', 'claude-code'], {
         stdin: claudeCodeHookInput(CC_SESSION, ccFile(), docs),
       })

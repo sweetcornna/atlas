@@ -66,6 +66,7 @@ import {
   qmcodeRolloutPath,
   type QmcodeTurn,
 } from '../../packages/node/test/commands/support/handoffSamples.js'
+import { skipSyncDebounce } from './fixtures/handoff-debounce.js'
 import {
   cliPrefix,
   freePort,
@@ -564,6 +565,8 @@ describe('qm handoff end to end', () => {
         doneInput,
         claudeCodeHookInput(CC_DONE, ccTranscript(CC_DONE), join(repo, 'docs')),
       )
+      // The previous step just synced; this hook would sit out the debounce.
+      skipSyncDebounce(laptopConfig, repo)
       const done = await qm(['handoff', 'sync', '--hook', 'claude-code'], {
         stdinFile: doneInput,
       })
@@ -777,6 +780,8 @@ describe('qm handoff end to end', () => {
       try {
         turns.push({ turnId: TURN_4, user: '再跑一次', assistant: 'four' })
         writeRollout()
+        // `now` in the previous step just synced: no debounce wait here.
+        skipSyncDebounce(laptopConfig, repo)
         const failed = await qm([
           'handoff',
           'sync',
@@ -792,6 +797,8 @@ describe('qm handoff end to end', () => {
       }
       turns.push({ turnId: TURN_5, user: '收尾', assistant: 'five' })
       writeRollout()
+      // The failed sync is recorded as a sync too: no debounce wait either.
+      skipSyncDebounce(laptopConfig, repo)
       const next = await qm([
         'handoff',
         'sync',
