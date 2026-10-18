@@ -463,9 +463,12 @@ describe('dispatch to a node bridge', () => {
         message => message.type === MessageType.TaskRequest,
       )
       expect(requests).toHaveLength(2)
+      // The window runs from the hub's lastRequestAt, stamped just before the
+      // first message's createdAt; the two can fall in different
+      // milliseconds, so the gap between the stamps may be a few ms short.
       expect(
         (requests[1]?.createdAt ?? 0) - (requests[0]?.createdAt ?? 0),
-      ).toBeGreaterThanOrEqual(300)
+      ).toBeGreaterThanOrEqual(300 - 10)
       expect(hub.logs.join('\n')).toContain('暂时不收（E_BUSY）')
     },
     SLOW,
