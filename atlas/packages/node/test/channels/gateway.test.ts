@@ -401,6 +401,184 @@ describe('replies', () => {
   })
 })
 
+describe('delivery (hermes send retry and long replies)', () => {
+  function paced() {
+    const turns = new FakeTurns()
+    const adapter = new FakeAdapter()
+    const errors: string[] = []
+    const waits: number[] = []
+    const gateway = new ChannelGateway({
+      turns,
+      sleep: async ms => {
+        waits.push(ms)
+      },
+      onError: message => errors.push(message),
+    })
+    return { turns, adapter, gateway, errors, waits }
+  }
+
+  test('a chunk the platform throttled is sent again after the wait it asked for', async () => {
+    const { turns, adapter, gateway, errors, waits } = paced()
+    adapter.results.push({ ok: false, error: '限流', retryAfterMs: 1_500 })
+    gateway.handle(RULES, adapter, inbound())
+    await until(() => turns.calls.length === 1)
+    turns.answer(0, '好')
+    await gateway.idle()
+    expect(adapter.texts()).toEqual(['好'])
+    expect(waits).toEqual([1_500])
+    expect(errors).toEqual([])
+  })
+
+  test('transient failures back off and give up after three attempts; a refusal is not retried', async () => {
+    const { turns, adapter, gateway, errors, waits } = paced()
+    for (let i = 0; i < 3; i++)
+      adapter.results.push({ ok: false, error: '超时', retryable: true })
+    gateway.handle(RULES, adapter, inbound({ text: 'a' }))
+    await until(() => turns.calls.length === 1)
+    turns.answer(0, '一')
+    await gateway.idle()
+    expect(adapter.attempts).toBe(3)
+    expect(waits).toEqual([2_000, 4_000])
+    expect(errors).toEqual(['渠道发送失败：超时'])
+    adapter.results.push({ ok: false, error: '被禁言' })
+    gateway.handle(RULES, adapter, inbound({ text: 'b' }))
+    await until(() => turns.calls.length === 2)
+    turns.answer(1, '二')
+    await gateway.idle()
+    expect(adapter.attempts).toBe(4)
+    expect(errors.at(-1)).toBe('渠道发送失败：被禁言')
+  })
+
+  test('a platform wait longer than a minute is not slept through', async () => {
+    const { turns, adapter, gateway, waits } = paced()
+    adapter.results.push({ ok: false, error: '限流', retryAfterMs: 600_000 })
+    gateway.handle(RULES, adapter, inbound())
+    await until(() => turns.calls.length === 1)
+    turns.answer(0, '好')
+    await gateway.idle()
+    expect(waits).toEqual([])
+    expect(adapter.sent).toHaveLength(0)
+  })
+
+  test('an adapter that delivers long replies whole gets the whole reply; one that declines gets chunks', async () => {
+    const turns = new FakeTurns()
+    const longs: string[] = []
+    let accept = true
+    const adapter = Object.assign(new FakeAdapter('qq-personal', 40), {
+      sendLong: async (_chat: unknown, text: string) => {
+        longs.push(text)
+        return accept ? { ok: true } : null
+      },
+    })
+    const gateway = new ChannelGateway({ turns })
+    const reply = Array.from({ length: 8 }, (_, i) => `第${i}行内容`).join('\n')
+    gateway.handle(RULES, adapter, inbound({ id: 'm-1' }))
+    await until(() => turns.calls.length === 1)
+    turns.answer(0, reply)
+    await gateway.idle()
+    expect(longs).toEqual([reply])
+    expect(adapter.sent).toHaveLength(0)
+    accept = false
+    gateway.handle(RULES, adapter, inbound({ id: 'm-2' }))
+    await until(() => turns.calls.length === 2)
+    turns.answer(1, reply)
+    await gateway.idle()
+    expect(longs).toHaveLength(2)
+    expect(adapter.sent.length).toBeGreaterThan(1)
+    expect(adapter.sent[0]!.replyTo).toBe('m-2')
+    // Short replies never take the long path.
+    gateway.handle(RULES, adapter, inbound())
+    await until(() => turns.calls.length === 3)
+    turns.answer(2, '短')
+    await gateway.idle()
+    expect(longs).toHaveLength(2)
+  })
+})
+
+describe('group context (hermes channel context)', () => {
+  const rules = { ...RULES, members: true, allowGroups: ['g-1'] }
+  function said(userId: string, text: string, addressed = false) {
+    return inbound({
+      chat: GROUP,
+      userId,
+      userName: userId.toUpperCase(),
+      text,
+      addressed,
+    })
+  }
+
+  test('an addressed turn sees what the room said since the bot last spoke', async () => {
+    const { turns, adapter, gateway } = setup()
+    gateway.handle(rules, adapter, said('u1', '这个报错怎么修'))
+    gateway.handle(rules, adapter, said('u2', '看日志啊'))
+    gateway.handle(
+      rules,
+      adapter,
+      inbound({ chat: { type: 'group', id: 'g-2' }, text: '别的群' }),
+    )
+    gateway.handle(rules, adapter, said('u3', '你觉得呢', true))
+    await until(() => turns.calls.length === 1)
+    const first = turns.calls[0]!.text
+    expect(first).toContain(
+      '[群里最近的消息]\n[U1(u1)] 这个报错怎么修\n[U2(u2)] 看日志啊',
+    )
+    expect(first).not.toContain('别的群')
+    expect(first.endsWith('[U3(u3)] 你觉得呢')).toBe(true)
+    expect(first.indexOf('[群里最近的消息]')).toBeLessThan(
+      first.indexOf('[U3(u3)] 你觉得呢'),
+    )
+    turns.answer(0, '先看第 12 行')
+    await gateway.idle()
+    gateway.handle(rules, adapter, said('u4', '还是不行'))
+    gateway.handle(rules, adapter, said('u5', '再看看？', true))
+    await until(() => turns.calls.length === 2)
+    const second = turns.calls[1]!.text
+    expect(second).toContain('[群里最近的消息]\n[U4(u4)] 还是不行')
+    expect(second).not.toContain('看日志啊')
+    turns.answer(1, '好')
+    await gateway.idle()
+  })
+
+  test('at most twelve lines, each cut short; private chats and silent rooms get none', async () => {
+    const { turns, adapter, gateway } = setup()
+    for (let i = 0; i < 20; i++)
+      gateway.handle(rules, adapter, said('u1', `${i}:${'长'.repeat(400)}`))
+    gateway.handle(rules, adapter, said('u2', '总结一下', true))
+    await until(() => turns.calls.length === 1)
+    const text = turns.calls[0]!.text
+    const block = text.slice(text.indexOf('[群里最近的消息]')).split('\n\n')[0]!
+    const lines = block.split('\n').slice(1)
+    expect(lines).toHaveLength(12)
+    expect(lines[0]!.startsWith('[U1(u1)] 8:')).toBe(true)
+    expect(lines[0]!.length).toBeLessThan(320)
+    turns.answer(0, 'ok')
+    await gateway.idle()
+    gateway.handle(rules, adapter, inbound({ text: '私聊' }))
+    await until(() => turns.calls.length === 2)
+    expect(turns.calls[1]!.text).not.toContain('[群里最近的消息]')
+    turns.answer(1, 'ok')
+    await gateway.idle()
+  })
+
+  test('lines a turn already carried are not shown again when the bot stayed silent', async () => {
+    const { turns, adapter, gateway } = setup()
+    gateway.handle(rules, adapter, said('u1', '甲'))
+    gateway.handle(rules, adapter, said('u2', '叫你', true))
+    await until(() => turns.calls.length === 1)
+    turns.answer(0, '[SILENT]')
+    await gateway.idle()
+    gateway.handle(rules, adapter, said('u3', '乙'))
+    gateway.handle(rules, adapter, said('u2', '又叫你', true))
+    await until(() => turns.calls.length === 2)
+    const second = turns.calls[1]!.text
+    expect(second).toContain('[U3(u3)] 乙')
+    expect(second).not.toContain('甲')
+    expect(second).not.toContain('[U2(u2)] 叫你')
+    turns.answer(1, 'ok')
+    await gateway.idle()
+  })
+})
+
 describe('commands', () => {
   test('/new stops the turn (not the tasks), resets and re-sends the framing', async () => {
     const { turns, adapter, gateway } = setup()

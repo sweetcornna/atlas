@@ -34,6 +34,10 @@ export async function until(check: () => boolean, ms = 3_000): Promise<void> {
 export class FakeAdapter implements ChannelAdapter {
   readonly sent: { chat: ChannelChat; text: string; replyTo?: string }[] = []
   readonly typed: string[] = []
+  /** Answers for the next sends, in order; empty means success. */
+  readonly results: ChannelSendResult[] = []
+  /** Every attempt, including the failed ones. */
+  attempts = 0
   sink: ((message: ChannelInbound) => void) | null = null
   failSend = false
 
@@ -55,7 +59,10 @@ export class FakeAdapter implements ChannelAdapter {
     markdown: string,
     options?: ChannelSendOptions,
   ): Promise<ChannelSendResult> {
+    this.attempts++
     if (this.failSend) return { ok: false, error: 'down' }
+    const scripted = this.results.shift()
+    if (scripted !== undefined && !scripted.ok) return scripted
     this.sent.push({
       chat,
       text: markdown,
@@ -207,6 +214,10 @@ export class FakeNet {
     []
   /** Calls with no route wait here until the request is aborted. */
   readonly hanging: Exchange[] = []
+  /** New sockets close before opening, like a refused handshake. */
+  refuseSockets = false
+  /** Answers frames a socket sends (OneBot actions with an echo). */
+  respond: ((frame: Record<string, unknown>) => unknown) | undefined
 
   on(match: string | ((exchange: Exchange) => boolean), reply: Reply): this {
     this.#routes.push({
@@ -268,8 +279,9 @@ export class FakeNet {
       })
     }
     class Socket extends FakeSocket {
-      constructor(url: string) {
-        super(url)
+      constructor(url: string, options?: { headers?: Record<string, string> }) {
+        super(url, net.refuseSockets, options?.headers)
+        this.respond = net.respond
         net.sockets.push(this)
       }
     }
@@ -300,14 +312,25 @@ export class FakeNet {
 export class FakeSocket {
   readonly sent: unknown[] = []
   readyState = 0
+  /** Returns the answer to push back for a sent frame, if any. */
+  respond: ((frame: Record<string, unknown>) => unknown) | undefined
   onopen: ((event: unknown) => void) | null = null
   onmessage: ((event: { data: string }) => void) | null = null
   onclose: ((event: { code: number; reason: string }) => void) | null = null
   onerror: ((event: unknown) => void) | null = null
   readonly #listeners = new Map<string, ((event: never) => void)[]>()
 
-  constructor(readonly url: string) {
+  constructor(
+    readonly url: string,
+    refuse = false,
+    readonly headers: Record<string, string> = {},
+  ) {
     queueMicrotask(() => {
+      if (refuse) {
+        this.readyState = 3
+        this.#emit('close', { code: 1002, reason: 'Expected 101 status code' })
+        return
+      }
       this.readyState = 1
       this.#emit('open', {})
     })
@@ -336,7 +359,11 @@ export class FakeSocket {
   }
 
   send(data: string): void {
-    this.sent.push(JSON.parse(data))
+    const frame = JSON.parse(data)
+    this.sent.push(frame)
+    const answer = this.respond?.(frame)
+    if (answer !== undefined)
+      queueMicrotask(() => this.push({ echo: frame.echo, ...(answer as object) }))
   }
 
   /** What the server pushes. */

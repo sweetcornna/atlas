@@ -24,6 +24,8 @@ import type {
   ChannelChat,
   ChannelInbound,
   ChannelPlatform,
+  ChannelSendOptions,
+  ChannelSendResult,
 } from './types.js'
 
 export type ChannelLane = 'owner' | 'member'
@@ -158,10 +160,13 @@ interface ChannelEvent {
   /** Lines already carry `[name(id)]` prefixes. */
   readonly prefixed: boolean
   readonly merged: number
+  /** The platform message ids folded into this event. */
+  readonly ids: readonly string[]
 }
 
 const PLATFORM_NAMES: Record<ChannelPlatform, string> = {
   qq: 'QQ',
+  'qq-personal': 'QQ',
   weixin: '微信',
   telegram: 'Telegram',
   discord: 'Discord',
@@ -170,11 +175,38 @@ const PLATFORM_NAMES: Record<ChannelPlatform, string> = {
 
 const FORMAT_HINTS: Record<ChannelPlatform, string> = {
   qq: 'QQ 按纯文本显示，不要用 Markdown 表格和标题',
+  'qq-personal':
+    'QQ 按纯文本显示，不要用 Markdown 表格和标题；像人聊天一样简短，很长的内容会折成一张聊天记录卡片',
   weixin: '微信按纯文本显示，不要用 Markdown 表格和标题，每段不要太长',
   telegram: '可以用常见 Markdown（粗体、代码、链接）',
   discord: '可以用 Markdown',
   slack: '可以用常见 Markdown，会转成 Slack 的格式',
 }
+
+/**
+ * Group chatter an addressed turn sees (hermes `channel_context`, its
+ * OneBot `reply_context.py`): in a room the message that names the bot is
+ * usually the last of an exchange. Lines are kept in memory only, per room,
+ * and each is shown to the agent at most once.
+ */
+const CONTEXT_LINES = 12
+const CONTEXT_LINE_CHARS = 200
+const CONTEXT_KEEP = 50
+const CONTEXT_MAX_AGE_MS = 2 * 60 * 60_000
+const CONTEXT_ROOMS = 500
+
+interface RoomLine {
+  readonly id: string
+  readonly at: number
+  readonly line: string
+  shown: boolean
+}
+
+/** Sends a chunk again after a throttle or a transient failure (hermes send retry). */
+const SEND_ATTEMPTS = 3
+const SEND_BACKOFF_MS = [2_000, 4_000]
+/** A platform asking for a longer pause than this is not slept through. */
+const SEND_MAX_WAIT_MS = 60_000
 
 function senderKey(event: ChannelEvent): string | null {
   return event.conversation.chat.type === 'group' ? event.inbound.userId : null
@@ -210,6 +242,7 @@ function mergeEvents(events: readonly ChannelEvent[]): ChannelEvent {
     fromOwner: events.some(event => event.fromOwner),
     prefixed: group || last.prefixed,
     merged: events.reduce((sum, event) => sum + event.merged, 0),
+    ids: events.flatMap(event => event.ids),
   }
 }
 
@@ -322,6 +355,8 @@ class StickyContext {
 export interface ChannelGatewayOptions {
   readonly turns: ChannelTurns
   readonly now?: () => number
+  /** Waits between send attempts; tests record them instead. */
+  readonly sleep?: (ms: number) => Promise<void>
   /** How often a running turn refreshes the platform's typing indicator. */
   readonly typingIntervalMs?: number
   readonly stickyRefreshTurns?: number
@@ -353,6 +388,7 @@ export function conversationKey(channelId: string, chat: ChannelChat): string {
 export class ChannelGateway {
   readonly #turns: ChannelTurns
   readonly #now: () => number
+  readonly #sleep: (ms: number) => Promise<void>
   readonly #typingMs: number
   readonly #onError: ((message: string) => void) | undefined
   readonly #sticky: StickyContext
@@ -361,11 +397,15 @@ export class ChannelGateway {
   readonly #windows = new Map<string, ReturnType<typeof setTimeout>>()
   readonly #generations = new Map<string, number>()
   readonly #seen = new Map<string, number>()
+  /** Recent lines per group room (`<channel>:<chat>`), for addressed turns. */
+  readonly #rooms = new Map<string, RoomLine[]>()
   #closed = false
 
   constructor(options: ChannelGatewayOptions) {
     this.#turns = options.turns
     this.#now = options.now ?? Date.now
+    this.#sleep =
+      options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)))
     this.#typingMs = options.typingIntervalMs ?? 4_500
     this.#sticky = new StickyContext(options.stickyRefreshTurns ?? 40)
     this.#onError = options.onError
@@ -437,6 +477,9 @@ export class ChannelGateway {
     } else {
       if (!rules.allowAll && !rules.allowGroups.includes(inbound.chat.id))
         return null
+      // Everything said in an allowed room is context for the next turn
+      // that is meant for the bot, answered or not.
+      this.#remember(rules.id, inbound)
       if (rules.groupTrigger === 'mention' && !inbound.addressed) return null
       if (!fromOwner && !rules.members) return null
       lane = rules.members ? 'member' : 'owner'
@@ -456,7 +499,66 @@ export class ChannelGateway {
       fromOwner,
       prefixed: false,
       merged: 1,
+      ids: [inbound.messageId],
     }
+  }
+
+  #roomKey(channelId: string, chat: ChannelChat): string {
+    return `${channelId}:${chat.id}`
+  }
+
+  #remember(channelId: string, inbound: ChannelInbound): void {
+    const key = this.#roomKey(channelId, inbound.chat)
+    const now = this.#now()
+    const kept = (this.#rooms.get(key) ?? []).filter(
+      line => now - line.at <= CONTEXT_MAX_AGE_MS,
+    )
+    const media = (inbound.attachments ?? []).map(file =>
+      file.kind === 'image' ? '[图片]' : `[文件 ${file.name}]`,
+    )
+    const said = [inbound.text.trim(), ...media].filter(Boolean).join(' ')
+    if (said === '') return
+    const clipped =
+      [...said].length > CONTEXT_LINE_CHARS
+        ? `${[...said].slice(0, CONTEXT_LINE_CHARS).join('')}…`
+        : said
+    kept.push({
+      id: inbound.messageId,
+      at: now,
+      line: `[${identity(inbound)}] ${clipped.replace(/\s*\n\s*/g, ' ')}`,
+      shown: false,
+    })
+    this.#rooms.delete(key)
+    this.#rooms.set(key, kept.slice(-CONTEXT_KEEP))
+    if (this.#rooms.size > CONTEXT_ROOMS)
+      this.#rooms.delete(this.#rooms.keys().next().value!)
+  }
+
+  /**
+   * What the room said that this turn's agent has not seen: lines before
+   * the turn's own messages that no earlier turn carried. Everything up to
+   * the turn's last message counts as seen afterwards.
+   */
+  #roomContext(event: ChannelEvent): string | null {
+    const { conversation } = event
+    if (conversation.chat.type !== 'group') return null
+    const lines = this.#rooms.get(
+      this.#roomKey(conversation.channelId, conversation.chat),
+    )
+    if (lines === undefined) return null
+    const own = new Set(event.ids)
+    let end = lines.length
+    while (end > 0 && !own.has(lines[end - 1]!.id)) end--
+    if (end === 0) end = lines.length
+    const unseen = lines
+      .slice(0, end)
+      .filter(line => !line.shown && !own.has(line.id))
+    for (const line of lines.slice(0, end)) line.shown = true
+    if (unseen.length === 0) return null
+    return [
+      '[群里最近的消息]',
+      ...unseen.slice(-CONTEXT_LINES).map(line => line.line),
+    ].join('\n')
   }
 
   async #dispatch(
@@ -578,6 +680,7 @@ export class ChannelGateway {
     const text = [
       ...texts,
       extra?.note ?? '',
+      this.#roomContext(event) ?? '',
       ...this.#notes(event),
       this.#body(event),
     ]
@@ -730,9 +833,16 @@ export class ChannelGateway {
     text: string,
     replyTo?: string,
   ): Promise<boolean> {
+    if (text.length > adapter.chunkLimit && adapter.sendLong !== undefined) {
+      const whole = await adapter
+        .sendLong(chat, text, replyTo ? { replyTo } : {})
+        .catch(() => null)
+      if (whole?.ok) return true
+    }
     let first = true
     for (const chunk of splitMessage(text, adapter.chunkLimit)) {
-      const sent = await adapter.send(
+      const sent = await this.#sendChunk(
+        adapter,
         chat,
         chunk,
         first && replyTo ? { replyTo } : {},
@@ -744,6 +854,29 @@ export class ChannelGateway {
       }
     }
     return true
+  }
+
+  /**
+   * One chunk, sent again when the platform throttled it (after the wait it
+   * named) or failed before reaching it (2 s, then 4 s, as hermes `_send_with_retry`);
+   * three attempts at most. A failure that may already have delivered the
+   * text is not marked retryable by the adapters, so nobody gets it twice.
+   */
+  async #sendChunk(
+    adapter: ChannelAdapter,
+    chat: ChannelChat,
+    chunk: string,
+    options: ChannelSendOptions,
+  ): Promise<ChannelSendResult> {
+    for (let attempt = 1; ; attempt++) {
+      const sent = await adapter.send(chat, chunk, options)
+      if (sent.ok || attempt >= SEND_ATTEMPTS || this.#closed) return sent
+      const wait =
+        sent.retryAfterMs ??
+        (sent.retryable ? SEND_BACKOFF_MS[attempt - 1] : undefined)
+      if (wait === undefined || wait > SEND_MAX_WAIT_MS) return sent
+      await this.#sleep(wait)
+    }
   }
 
   async #command(

@@ -6,6 +6,13 @@ import type { ChannelHealth, ChannelIo, ChannelState } from './types.js'
 /** An error the platform will keep returning (bad credentials, revoked bot). */
 export class ChannelFatalError extends Error {}
 
+/**
+ * The request never reached the platform (refused, reset, DNS): sending it
+ * again cannot deliver twice. A timeout is not this: the platform may have
+ * taken it (hermes retries connection errors only, never read timeouts).
+ */
+export class ChannelUnreachable extends Error {}
+
 /** The platform asked us to wait before retrying. */
 export class ChannelRateLimited extends Error {
   constructor(readonly retryAfterMs: number) {
@@ -16,6 +23,8 @@ export class ChannelRateLimited extends Error {
 export interface JsonReply {
   readonly status: number
   readonly body: Record<string, unknown>
+  /** A `Retry-After` header in seconds, as milliseconds. */
+  readonly retryAfterMs?: number
 }
 
 /** One JSON request with a deadline. Never echoes credentials into errors. */
@@ -50,11 +59,8 @@ export async function requestJson(
     })
   } catch (error) {
     if (init.signal?.aborted) throw error
-    throw new Error(
-      timeout.aborted
-        ? `${new URL(url).host} 请求超时`
-        : `${new URL(url).host} 不可达`,
-    )
+    if (timeout.aborted) throw new Error(`${new URL(url).host} 请求超时`)
+    throw new ChannelUnreachable(`${new URL(url).host} 不可达`)
   }
   const text = await response.text()
   let body: Record<string, unknown> = {}
@@ -65,7 +71,29 @@ export async function requestJson(
   } catch {
     body = {}
   }
-  return { status: response.status, body }
+  const after = Number(response.headers.get('retry-after'))
+  return {
+    status: response.status,
+    body,
+    ...(Number.isFinite(after) && after >= 0
+      ? { retryAfterMs: after * 1_000 }
+      : {}),
+  }
+}
+
+/**
+ * A send that threw, as a result: unreachable is worth another attempt,
+ * anything else (a timeout above all) is reported as it is.
+ */
+export function sendFailure(error: unknown, fallback: string) {
+  return {
+    ok: false as const,
+    error: error instanceof Error ? error.message : fallback,
+    ...(error instanceof ChannelUnreachable ? { retryable: true } : {}),
+    ...(error instanceof ChannelRateLimited
+      ? { retryAfterMs: error.retryAfterMs }
+      : {}),
+  }
 }
 
 /**
@@ -199,24 +227,33 @@ export function runSocket(
   url: string,
   signal: AbortSignal,
   handlers: {
+    /** Handshake headers (Bun's WebSocket takes them; OneBot's Bearer token). */
+    readonly headers?: Record<string, string>
     readonly onOpen?: (socket: WebSocket) => void
     readonly onMessage: (
       frame: Record<string, unknown>,
       socket: WebSocket,
     ) => void
   },
-): Promise<{ code: number; reason: string }> {
+): Promise<{ code: number; reason: string; opened: boolean }> {
   return new Promise((resolve, reject) => {
     let socket: WebSocket
+    let opened = false
     try {
-      socket = new io.WebSocket(url)
+      socket =
+        handlers.headers === undefined
+          ? new io.WebSocket(url)
+          : new io.WebSocket(url, { headers: handlers.headers })
     } catch (error) {
       reject(error)
       return
     }
     const abort = () => socket.close(1000, 'stopping')
     signal.addEventListener('abort', abort, { once: true })
-    socket.addEventListener('open', () => handlers.onOpen?.(socket))
+    socket.addEventListener('open', () => {
+      opened = true
+      handlers.onOpen?.(socket)
+    })
     socket.addEventListener('message', event => {
       let frame: unknown
       try {
@@ -231,7 +268,7 @@ export function runSocket(
     socket.addEventListener('close', event => {
       signal.removeEventListener('abort', abort)
       const closed = event as CloseEvent
-      resolve({ code: closed.code, reason: closed.reason })
+      resolve({ code: closed.code, reason: closed.reason, opened })
     })
   })
 }
