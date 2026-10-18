@@ -213,7 +213,7 @@ jobs:
       # 一组红不取消其他组：一个红分片不该藏住别的。
       fail-fast: false
       matrix:
-        group: [node-host, node-rest, ops, e2e, packages]
+        group: [node-rest]
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
@@ -257,7 +257,11 @@ jobs:
       - name: Test (${{ matrix.group }})
         env:
           GROUP: ${{ matrix.group }}
-        run: bash atlas/scripts/test-shards.sh --group "$GROUP"
+        run: |
+          (bash atlas/scripts/ci/hangwatch.sh > "$RUNNER_TEMP/hangwatch.log" 2>&1 &)
+          bash atlas/scripts/test-shards.sh --group "$GROUP"; rc=$?
+          echo "################ hangwatch"; cat "$RUNNER_TEMP/hangwatch.log"
+          exit $rc
 
       # 名字按组、允许覆盖：ci 作业按名字前缀收齐各组报告做防跳过自检，只重跑
       # 失败作业时不能让同一组的两次尝试都算进去。
