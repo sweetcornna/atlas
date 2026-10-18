@@ -926,6 +926,7 @@ export interface ConnectorsPort {
 
 export type ChannelPlatformId =
   | 'qq'
+  | 'qq-personal'
   | 'weixin'
   | 'telegram'
   | 'discord'
@@ -941,10 +942,29 @@ export interface ChannelPlatformView {
   readonly secrets: readonly { readonly key: string; readonly label: string }[]
   /** 凭据靠扫码取得（微信）。 */
   readonly qrLogin: boolean
+  /** 陌生人私聊可以申请配对（hermes 配对码）；个人 QQ 不做。 */
+  readonly pairing: boolean
   readonly hint: string
   /** 没有用真实账号跑过：一律 false。 */
   readonly evaluated: boolean
 }
+
+/** 一条待批准的配对请求。配对码只在对方手里，中枢只存散列。 */
+export interface ChannelPairingRequest {
+  readonly id: string
+  readonly userId: string
+  readonly userName: string
+  readonly createdAt: number
+  readonly expiresAt: number
+}
+
+export type ChannelPairingDecision = 'owner' | 'member' | 'deny'
+
+/**
+ * 陌生人私聊时：`auto` 没填主人、也没放开任何人时接受配对申请（新建渠道的缺省，
+ * hermes 的做法）；`on` 一直接受；`off` 不回应（升级前已有的渠道保持这一档）。
+ */
+export type ChannelPairingMode = 'auto' | 'on' | 'off'
 
 export interface ChannelView {
   readonly id: string
@@ -963,6 +983,13 @@ export interface ChannelView {
   readonly groupTrigger: 'mention' | 'all'
   readonly replyWindowMs: number
   readonly prompt: string
+  /** 配对档位。 */
+  readonly pairing: ChannelPairingMode
+  /** 按档位与当前配置，现在是否接受配对申请。 */
+  readonly pairingOpen: boolean
+  /** 群里被 @ 时带上最近的群聊（主人群只带主人自己的话）。 */
+  readonly groupContext: boolean
+  readonly pairingRequests: readonly ChannelPairingRequest[]
   readonly settings: Readonly<Record<string, string>>
   readonly secretSet: boolean
   readonly health: {
@@ -992,6 +1019,8 @@ export interface ChannelDraft {
   readonly groupTrigger?: 'mention' | 'all'
   readonly replyWindowMs?: number
   readonly prompt?: string
+  readonly pairing?: ChannelPairingMode
+  readonly groupContext?: boolean
   readonly settings?: Readonly<Record<string, string>>
   readonly secrets?: Readonly<Record<string, string>>
 }
@@ -1033,6 +1062,13 @@ export interface ChannelsPort {
     loginId: string,
     actor: DirectionActor,
   ): Promise<ConsoleResult<string>>
+  /** 处理一条配对请求：设为主人、设为成员（要有成员智能体）或拒绝。 */
+  pair(
+    channelId: string,
+    requestId: string,
+    decision: ChannelPairingDecision,
+    actor: DirectionActor,
+  ): Promise<ConsoleResult<ChannelView>>
 }
 
 // ---------------------------------------------------------------------------

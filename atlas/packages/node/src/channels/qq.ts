@@ -16,12 +16,14 @@
 import {
   ChannelFatalError,
   ChannelLoop,
+  ChannelRateLimited,
   Debounce,
   list,
   officialUrl,
   record,
   requestJson,
   runSocket,
+  sendFailure,
   sendFrame,
   text,
 } from './net.js'
@@ -46,14 +48,41 @@ const API = 'https://api.sgroup.qq.com'
 /** Group and C2C (private) message events. */
 const INTENTS = 1 << 25
 /**
- * Close codes after which reconnecting cannot help. 4004 (token rejected) is
- * not one: the access token may simply have expired; a fresh one is fetched,
- * and wrong credentials fail at the token exchange instead.
+ * Close codes after which reconnecting cannot help (hermes `qqbot`). 4004
+ * (token rejected) is not one: the access token may simply have expired; a
+ * fresh one is fetched, and wrong credentials fail at the token exchange.
  */
 const FATAL_CLOSE = new Map<number, string>([
+  [4001, 'QQ 网关拒绝了无效的操作码'],
+  [4002, 'QQ 网关拒绝了无效的数据'],
+  [4010, 'QQ 网关分片无效'],
+  [4011, '机器人需要分片连接'],
+  [4012, 'QQ 网关版本无效'],
+  [4013, '机器人订阅的事件无效'],
+  [4014, '机器人没有开通单聊或群聊消息的权限'],
   [4914, '机器人已下架'],
   [4915, '机器人已封禁'],
 ])
+
+/** The session cannot be resumed: identify afresh. */
+function sessionGone(code: number): boolean {
+  return (
+    code === 4006 ||
+    code === 4007 ||
+    code === 9001 ||
+    code === 9005 ||
+    (code >= 4900 && code <= 4913)
+  )
+}
+
+/**
+ * Three closes this soon after opening, in a row: something QQ will not
+ * accept right now. hermes keeps such a bot in its reconnect queue, so the
+ * channel pauses five minutes and tries again instead of giving up.
+ */
+const QUICK_CLOSE_MS = 5_000
+const QUICK_CLOSES = 3
+const QUICK_PAUSE_MS = 5 * 60_000
 
 export class QqAdapter implements ChannelAdapter {
   readonly platform = 'qq' as const
@@ -67,6 +96,7 @@ export class QqAdapter implements ChannelAdapter {
   readonly #sequence = new Map<string, number>()
   #token: { value: string; expiresAt: number } | null = null
   #session: { id: string; seq: number | null } | null = null
+  #quickCloses = 0
 
   constructor(settings: QqSettings, io: ChannelIo) {
     this.#settings = settings
@@ -131,7 +161,11 @@ export class QqAdapter implements ChannelAdapter {
         throw new Error(`QQ 网关地址获取失败（${gateway.status}）`)
       const url = officialUrl(gateway.body.url, ['wss:'], ['qq.com'])
       let heartbeat: ReturnType<typeof setInterval> | undefined
+      let openedAt = 0
       const closed = await runSocket(this.#io, url.toString(), signal, {
+        onOpen: () => {
+          openedAt = this.#io.now()
+        },
         onMessage: (frame, socket) => {
           if (typeof frame.s === 'number' && frame.s > 0 && this.#session)
             this.#session.seq = frame.s
@@ -189,10 +223,23 @@ export class QqAdapter implements ChannelAdapter {
         },
       })
       clearInterval(heartbeat)
+      if (signal.aborted) return
       const fatal = FATAL_CLOSE.get(closed.code)
       if (fatal !== undefined) throw new ChannelFatalError(fatal)
-      if (closed.code === 9001 || closed.code === 9005) this.#session = null
+      if (sessionGone(closed.code)) this.#session = null
       if (closed.code === 4004) this.#token = null
+      if (closed.opened && this.#io.now() - openedAt < QUICK_CLOSE_MS) {
+        if (++this.#quickCloses >= QUICK_CLOSES) {
+          this.#quickCloses = 0
+          throw new ChannelRateLimited(
+            QUICK_PAUSE_MS,
+            'QQ 网关连上就断开，已连续三次，5 分钟后重连（检查机器人的消息权限）',
+          )
+        }
+      } else this.#quickCloses = 0
+      // 4008: sending too fast; QQ asks for a pause.
+      if (closed.code === 4008)
+        throw new ChannelRateLimited(60_000, 'QQ 网关要求放慢，60 秒后重连')
     })
   }
 
@@ -288,10 +335,7 @@ export class QqAdapter implements ChannelAdapter {
         }
       return { ok: true, messageId: text(reply.body.id) }
     } catch (error) {
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : 'QQ 发送失败',
-      }
+      return sendFailure(error, 'QQ 发送失败')
     }
   }
 

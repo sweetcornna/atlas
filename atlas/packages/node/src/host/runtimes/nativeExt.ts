@@ -65,6 +65,7 @@ import { CONNECTOR_PREFIX, RUNTIME_MCP_SERVER } from './claudeCode.js'
 import {
   type NativeExtensionKind,
   type NativeExtensionRow,
+  type NativeExtensionsChanged,
   type NativeExtensionsReply,
   RUNTIME_EXT_ERRORS,
   RUNTIME_EXT_OPS,
@@ -252,6 +253,8 @@ export function parseNativeSource(raw: string): NativeSource | string {
 }
 
 const SERVER_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+/** A server to remove may carry dots: added in the harness's own frontend, it is named as there. */
+const REMOVABLE_SERVER = /^[A-Za-z0-9](?!.*\.\.)[A-Za-z0-9_.-]{0,63}$/
 const COMMAND = /^(?:\/[^\0\n\r]*|[A-Za-z0-9_][A-Za-z0-9_.@+-]*)$/
 const ITEM_NAME = /^[A-Za-z0-9@][A-Za-z0-9._@/-]{0,199}$/
 const SKILL_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/
@@ -1093,14 +1096,12 @@ export class NativeExtensions {
   async #reply(
     ctx: Context & { driver: Driver },
     extra: readonly string[] = [],
+    revoked: readonly string[] = [],
   ): Promise<NativeExtensionsReply> {
     const listed = await ctx.driver.list(ctx)
-    const notes = [...extra, ...listed.notes]
-    if (ctx.runtime === 'gemini') {
-      const revoked = geminiStripTrust(ctx.home)
-      if (revoked.length > 0) notes.push(`已撤销预授权：${revoked.join('、')}`)
+    const notes = [...extra, ...listed.notes, ...revoked]
+    if (ctx.runtime === 'gemini')
       notes.push('工作区的 GEMINI.md 与项目技能仍会加载（Gemini CLI 没有开关）')
-    }
     if (frontendHolds(ctx.agent))
       notes.push('官方前端正开着：安装与卸载要等它退出')
     return {
@@ -1112,11 +1113,37 @@ export class NativeExtensions {
     }
   }
 
-  async list(agent: string): Promise<NativeExtensionsReply> {
-    return this.#serial(agent, async () => this.#reply(this.#context(agent)))
+  /**
+   * Gemini: revokes trust pre-granted in its `settings.json`. That rewrites
+   * the whole file, so only with the change lock held (the caller's).
+   */
+  #revokeTrust(ctx: Context): string[] {
+    if (ctx.runtime !== 'gemini') return []
+    const revoked = geminiStripTrust(ctx.home)
+    return revoked.length > 0 ? [`已撤销预授权：${revoked.join('、')}`] : []
   }
 
-  async install(args: Record<string, unknown>): Promise<NativeExtensionsReply> {
+  async list(agent: string): Promise<NativeExtensionsReply> {
+    return this.#serial(agent, async () => {
+      const ctx = this.#context(agent)
+      let revoked: string[] = []
+      if (ctx.runtime === 'gemini') {
+        // Not while its frontend or another change may be writing the file.
+        const held = acquireChangeLock(agent, ctx.runtime)
+        if (held !== undefined)
+          try {
+            if (!frontendHolds(agent)) revoked = this.#revokeTrust(ctx)
+          } finally {
+            releaseChangeLock(agent, held)
+          }
+      }
+      return this.#reply(ctx, [], revoked)
+    })
+  }
+
+  async install(
+    args: Record<string, unknown>,
+  ): Promise<NativeExtensionsReply | NativeExtensionsChanged> {
     const agent = String(args.agent ?? '')
     return this.#change(agent, async ctx => {
       const kind = args.kind as NativeExtensionKind
@@ -1139,7 +1166,9 @@ export class NativeExtensions {
     })
   }
 
-  async remove(args: Record<string, unknown>): Promise<NativeExtensionsReply> {
+  async remove(
+    args: Record<string, unknown>,
+  ): Promise<NativeExtensionsReply | NativeExtensionsChanged> {
     const agent = String(args.agent ?? '')
     return this.#change(agent, async ctx => {
       const name = typeof args.name === 'string' ? args.name : ''
@@ -1149,7 +1178,7 @@ export class NativeExtensions {
           await ctx.driver.removePlugin(ctx, name)
           return []
         case 'mcp':
-          if (!SERVER_NAME.test(name)) throw badSource('MCP 服务名无效')
+          if (!REMOVABLE_SERVER.test(name)) throw badSource('MCP 服务名无效')
           if (reservedServerName(name))
             throw badSource(
               'qm- 前缀与 qianmo 是阡陌连接器，在控制台的连接器里管理',
@@ -1177,7 +1206,7 @@ export class NativeExtensions {
   async #change(
     agent: string,
     work: (ctx: Context & { driver: Driver }) => Promise<string[]>,
-  ): Promise<NativeExtensionsReply> {
+  ): Promise<NativeExtensionsReply | NativeExtensionsChanged> {
     return this.#serial(agent, async () => {
       const ctx = this.#context(agent)
       // Held for the whole change: a frontend opened meanwhile finds it.
@@ -1192,13 +1221,31 @@ export class NativeExtensions {
         )
       }
       let notes: string[]
+      let revoked: string[]
       try {
         notes = await work(ctx)
+        revoked = this.#revokeTrust(ctx)
       } finally {
         releaseChangeLock(agent, held)
         await this.#options.invalidate?.(agent).catch(() => {})
       }
-      return this.#reply(ctx, notes)
+      try {
+        return await this.#reply(ctx, notes, revoked)
+      } catch (error) {
+        // The change took effect; only listing again failed. Not a failed
+        // job: a retry would find it already done.
+        const why = error instanceof Error ? error.message : String(error)
+        return {
+          agent,
+          runtime: ctx.runtime,
+          changed: true,
+          notes: [
+            ...notes,
+            ...revoked,
+            `已完成，但重新列出失败：${why}`.slice(0, 300),
+          ],
+        }
+      }
     })
   }
 

@@ -404,6 +404,8 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
     string,
     { readonly at: number; readonly value: Facts }
   >()
+  /** Bumped when `node`'s facts go stale: a read begun before is not cached. */
+  readonly #factsEpoch = new Map<string, number>()
   /** Each node's last `runtime.versions` answer; null when it gave none usable. */
   readonly #versions = new Map<
     string,
@@ -445,8 +447,13 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
 
   /** What is installed on `node` changed elsewhere (an update): read it again. */
   runtimesChanged(node: string): void {
-    this.#facts.delete(node)
+    this.#forget(node)
     this.#versions.delete(node)
+  }
+
+  #forget(node: string): void {
+    this.#facts.delete(node)
+    this.#factsEpoch.set(node, (this.#factsEpoch.get(node) ?? 0) + 1)
   }
 
   /** Every background round and write has finished (tests). */
@@ -500,6 +507,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
     const cached = this.#facts.get(node)
     if (!fresh && cached !== undefined && now - cached.at < STATUS_TTL_MS)
       return cached.value
+    const epoch = this.#factsEpoch.get(node) ?? 0
     const control = this.#options.control
     const known = this.#versions.get(node)
     // A node installing on its own (P36.3) is followed at the status pace.
@@ -524,6 +532,9 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
         : null,
     ])
     let rows = known?.value ?? null
+    // A write while this was asked: the answer may predate it, so it is used
+    // for this read only, never cached.
+    const current = (this.#factsEpoch.get(node) ?? 0) === epoch
     // An answer is kept; a link failure keeps what was read before and asks
     // again next time.
     if (versions !== null && (versions.ok || versions.code === 'unsupported')) {
@@ -531,7 +542,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
         ? versionsSchema.safeParse(versions.value)
         : null
       rows = parsed?.success === true ? parsed.data : null
-      this.#versions.set(node, { at: now, value: rows })
+      if (current) this.#versions.set(node, { at: now, value: rows })
     }
     let value: Facts
     if (status.ok) {
@@ -544,7 +555,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
     } else {
       value = { state: 'unreachable', error: status.message.slice(0, 300) }
     }
-    this.#facts.set(node, { at: this.#now(), value })
+    if (current) this.#facts.set(node, { at: this.#now(), value })
     return value
   }
 
@@ -605,7 +616,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
   ): Promise<ControlOutcome> {
     const key = `${node}/${agent}`
     this.#writes.set(key, { state: 'pending', at: this.#now(), message: null })
-    this.#facts.delete(node)
+    this.#forget(node)
     const outcome = await settle(
       this.#options.control.request(
         node,
@@ -615,7 +626,7 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
         { timeoutMs: CONFIGURE_MS },
       ),
     )
-    this.#facts.delete(node)
+    this.#forget(node)
     if (outcome.ok) this.#writes.delete(key)
     else
       this.#writes.set(key, {
@@ -665,12 +676,21 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
         for (const agent of facts.status.agents) {
           await this.#serial(async () => {
             if (this.#closed) return
-            const desired = this.#desired(node, agent, known.nodes.get(node))
-            if (desired === undefined || desired === agent.configured.model)
+            // Read again inside the slot: a page write queued before it may
+            // have moved the agent to another runtime (a write drops the
+            // cached facts, so this asks the node then).
+            const now = await this.#read(node, false)
+            if (now.state !== 'ok') return
+            const current = now.status.agents.find(
+              one => one.agent === agent.agent,
+            )
+            if (current === undefined) return
+            const desired = this.#desired(node, current, known.nodes.get(node))
+            if (desired === undefined || desired === current.configured.model)
               return
             const outcome = await this.#configure(
               node,
-              agent.agent,
+              current.agent,
               { model: desired },
               ACTOR,
               true,

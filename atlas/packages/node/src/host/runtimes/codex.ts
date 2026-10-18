@@ -451,8 +451,15 @@ export class CodexChannel extends RuntimeChannelBase {
       throw error
     }
     const turnId = toolArgs(toolArgs(result).turn).id
-    if (typeof turnId === 'string' && this.currentRequest === requestId)
+    if (typeof turnId === 'string' && this.currentRequest === requestId) {
       this.#turnId = turnId
+      // Stopped while turn/start was pending: the interrupt goes now that
+      // the turn has an id.
+      if (this.#aborting)
+        void this.#request('turn/interrupt', { threadId, turnId }).catch(
+          () => {},
+        )
+    }
     this.acceptInput(input.messageId, input.text)
     return { requestId, agentInvoked: true }
   }

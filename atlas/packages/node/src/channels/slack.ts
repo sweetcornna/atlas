@@ -18,6 +18,7 @@ import {
   record,
   requestJson,
   runSocket,
+  sendFailure,
   sendFrame,
   text,
 } from './net.js'
@@ -50,6 +51,10 @@ const FATAL = new Set([
 export class SlackAdapter implements ChannelAdapter {
   readonly platform = 'slack' as const
   readonly chunkLimit = 3_500
+  /** A thread the bot answered in needs no mention (hermes thread participation). */
+  readonly followsThreads = true
+  /** Socket Mode redelivers unacknowledged events; hermes keeps Slack ids an hour. */
+  readonly dedupTtlMs = 3_600_000
   readonly #io: ChannelIo
   readonly #settings: SlackSettings
   readonly #loop: ChannelLoop
@@ -69,13 +74,13 @@ export class SlackAdapter implements ChannelAdapter {
     return this.#loop.health()
   }
 
-  async #api(
+  #request(
     method: string,
     token: string,
     body: Record<string, unknown>,
     signal?: AbortSignal,
   ) {
-    const reply = await requestJson(this.#io, `${API}/${method}`, {
+    return requestJson(this.#io, `${API}/${method}`, {
       headers: {
         authorization: `Bearer ${token}`,
         'content-type': 'application/json; charset=utf-8',
@@ -83,7 +88,15 @@ export class SlackAdapter implements ChannelAdapter {
       body,
       ...(signal === undefined ? {} : { signal }),
     })
-    return reply.body
+  }
+
+  async #api(
+    method: string,
+    token: string,
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+  ) {
+    return (await this.#request(method, token, body, signal)).body
   }
 
   async start(sink: (message: ChannelInbound) => void): Promise<void> {
@@ -168,7 +181,15 @@ export class SlackAdapter implements ChannelAdapter {
     )
       return null
     const user = text(event.user)
-    if (user === '' || event.bot_id !== undefined || user === this.#botUser)
+    // Bots and apps, the hermes way: a bot id or profile, or an app post
+    // that no person's client sent.
+    if (
+      user === '' ||
+      user === this.#botUser ||
+      event.bot_id !== undefined ||
+      event.bot_profile !== undefined ||
+      (event.app_id !== undefined && event.client_msg_id === undefined)
+    )
       return null
     const channelType = text(event.channel_type)
     const dm = channelType === 'im'
@@ -204,9 +225,10 @@ export class SlackAdapter implements ChannelAdapter {
     }
   }
 
+  /** Throttled (429, `ratelimited`) and 5xx answers are retryable, as in hermes. */
   async send(chat: ChannelChat, markdown: string): Promise<ChannelSendResult> {
     try {
-      const reply = await this.#api(
+      const reply = await this.#request(
         'chat.postMessage',
         this.#settings.botToken,
         {
@@ -216,18 +238,28 @@ export class SlackAdapter implements ChannelAdapter {
           unfurl_links: false,
         },
       )
-      if (reply.ok !== true)
+      const body = reply.body
+      if (reply.status === 429 || text(body.error) === 'ratelimited')
         return {
           ok: false,
-          error: `Slack 发送失败（${text(reply.error) || '未知'}）`,
+          error: 'Slack 限流',
+          retryAfterMs: reply.retryAfterMs ?? 1_000,
+        }
+      if (reply.status >= 500)
+        return {
+          ok: false,
+          error: `Slack 发送失败（${reply.status}）`,
+          retryable: true,
+        }
+      if (body.ok !== true)
+        return {
+          ok: false,
+          error: `Slack 发送失败（${text(body.error) || '未知'}）`,
         }
       this.#status.clear(chat.id)
-      return { ok: true, messageId: text(reply.ts) }
+      return { ok: true, messageId: text(body.ts) }
     } catch (error) {
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : 'Slack 发送失败',
-      }
+      return sendFailure(error, 'Slack 发送失败')
     }
   }
 

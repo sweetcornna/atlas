@@ -17,6 +17,7 @@ import {
   list,
   record,
   requestJson,
+  sendFailure,
   text,
 } from './net.js'
 import { plainText } from './text.js'
@@ -33,6 +34,8 @@ export const ILINK_BASE_URL = 'https://ilinkai.weixin.qq.com'
 const CHANNEL_VERSION = '2.2.0'
 const CLIENT_VERSION = String((2 << 16) | (2 << 8) | 0)
 const SESSION_EXPIRED = -14
+/** iLink's "too frequent"; hermes holds sends for 30 s. */
+const RATE_LIMITED = -2
 const ITEM_TEXT = 1
 const ITEM_IMAGE = 2
 const ITEM_VOICE = 3
@@ -167,6 +170,10 @@ function quoteOf(items: readonly Record<string, unknown>[]): string {
 export class WeixinAdapter implements ChannelAdapter {
   readonly platform = 'weixin' as const
   readonly chunkLimit = 1_800
+  /** hermes `_SPLIT_THRESHOLD` for WeChat. */
+  readonly inboundSplitAt = 1_800
+  /** hermes waits 1.5 s between chunks to one peer. */
+  readonly sendGapMs = 1_500
   readonly #io: ChannelIo
   readonly #settings: WeixinSettings
   readonly #base: string
@@ -190,11 +197,13 @@ export class WeixinAdapter implements ChannelAdapter {
     return this.#loop.health()
   }
 
+  /** `staleContext`: an expired session may only mean the peer's context token went stale. */
   async #post(
     endpoint: string,
     payload: Record<string, unknown>,
     timeoutMs = 15_000,
     signal?: AbortSignal,
+    staleContext = false,
   ) {
     const reply = await requestJson(
       this.#io,
@@ -207,7 +216,7 @@ export class WeixinAdapter implements ChannelAdapter {
       },
     )
     const code = Number(reply.body.errcode ?? reply.body.ret ?? 0)
-    if (code === SESSION_EXPIRED || reply.status === 401)
+    if ((code === SESSION_EXPIRED && !staleContext) || reply.status === 401)
       throw new ChannelFatalError('微信登录已失效，请在控制台重新扫码')
     return { ...reply, code }
   }
@@ -306,22 +315,46 @@ export class WeixinAdapter implements ChannelAdapter {
     }
   }
 
+  #message(chat: ChannelChat, words: string, context: string | undefined) {
+    return {
+      msg: {
+        from_user_id: '',
+        to_user_id: chat.id,
+        client_id: randomUUID(),
+        message_type: MESSAGE_FROM_BOT,
+        message_state: 2,
+        item_list: [{ type: ITEM_TEXT, text_item: { text: words } }],
+        ...(context === undefined ? {} : { context_token: context }),
+      },
+    }
+  }
+
+  /**
+   * An expired session with a context token is first taken as a stale token
+   * and the words resent without it (hermes); "too frequent" goes back to
+   * the gateway with a 30 s wait.
+   */
   async send(chat: ChannelChat, markdown: string): Promise<ChannelSendResult> {
     const context = this.#contexts.get(chat.id)
+    const words = plainText(markdown)
     try {
-      const reply = await this.#post('sendmessage', {
-        msg: {
-          from_user_id: '',
-          to_user_id: chat.id,
-          client_id: randomUUID(),
-          message_type: MESSAGE_FROM_BOT,
-          message_state: 2,
-          item_list: [
-            { type: ITEM_TEXT, text_item: { text: plainText(markdown) } },
-          ],
-          ...(context === undefined ? {} : { context_token: context }),
-        },
-      })
+      let reply = await this.#post(
+        'sendmessage',
+        this.#message(chat, words, context),
+        15_000,
+        undefined,
+        context !== undefined,
+      )
+      if (reply.code === SESSION_EXPIRED) {
+        this.#contexts.delete(chat.id)
+        this.#persist()
+        reply = await this.#post(
+          'sendmessage',
+          this.#message(chat, words, undefined),
+        )
+      }
+      if (reply.code === RATE_LIMITED)
+        return { ok: false, error: '微信限流', retryAfterMs: 30_000 }
       if (reply.status !== 200 || reply.code !== 0)
         return {
           ok: false,
@@ -331,10 +364,7 @@ export class WeixinAdapter implements ChannelAdapter {
     } catch (error) {
       if (error instanceof ChannelFatalError)
         this.#loop.mark('failed', error.message)
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : '微信发送失败',
-      }
+      return sendFailure(error, '微信发送失败')
     }
   }
 

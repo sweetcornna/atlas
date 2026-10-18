@@ -141,16 +141,32 @@ function label(runtime: string): string {
 
 /**
  * The 「前情」 block for a session moving to `next`: the most recent turns
- * that fit in `maxBytes`, oldest first, each named by its runtime. `undefined`
- * when there is nothing to carry over.
+ * that fit in `maxBytes`, oldest first, each named by its runtime. When
+ * `next` continues a conversation begun at `since`, only the turns after its
+ * last turn in it: the earlier ones are there already. `undefined` when there
+ * is nothing to carry over.
  */
 export function portablePreamble(
-  turns: readonly PortableTurn[],
+  all: readonly PortableTurn[],
   next: string,
   maxBytes = PORTABLE_PREAMBLE_MAX_BYTES,
+  since?: number,
 ): string | undefined {
-  const last = turns.at(-1)
+  const last = all.at(-1)
   if (last === undefined) return undefined
+  let from = 0
+  if (since !== undefined)
+    for (let i = all.length - 1; i >= 0; i--)
+      // A turn whose process went away (`error`) may not be in it.
+      if (
+        all[i]!.runtime === next &&
+        all[i]!.at >= since &&
+        all[i]!.status !== 'error'
+      ) {
+        from = i + 1
+        break
+      }
+  const turns = all.slice(from)
   const blocks: string[] = []
   const footer = '「前情」完。下面是这一轮的消息：\n\n'
   const header = (count: number) =>
@@ -205,6 +221,11 @@ export interface PortableChannelOptions {
   readonly file: string
   /** The runtime this channel is (`omp` or an external catalog id). */
   readonly runtime: string
+  /**
+   * When the native conversation this channel continues began; absent or
+   * `undefined`: a new one (everything is carried over).
+   */
+  readonly conversationSince?: () => number | undefined
   readonly now?: () => number
   readonly onError?: (error: unknown) => void
 }
@@ -235,7 +256,12 @@ export function portableChannel<C extends OmpRpcChannel>(
     try {
       const turns = readPortableTurns(options.file)
       if (turns.length > 0 && turns.at(-1)!.runtime !== options.runtime) {
-        const preamble = portablePreamble(turns, options.runtime)
+        const preamble = portablePreamble(
+          turns,
+          options.runtime,
+          PORTABLE_PREAMBLE_MAX_BYTES,
+          options.conversationSince?.(),
+        )
         if (preamble !== undefined) text = `${preamble}${input.text}`
       }
     } catch (error) {

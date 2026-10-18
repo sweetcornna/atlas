@@ -274,6 +274,9 @@ describe('qm resident: hot switch from the outside', () => {
 
           QIANMO_CONFIG_DIR: config,
           QIANMO_TRANSPORT_PSK: PSK,
+          // Built, not inherited, so the preload's value is set again: a test
+          // node never downloads its default runtime (P36 §2).
+          QIANMO_RUNTIME_AUTOINSTALL: '0',
           CLAUDE_CODE_USE_OPENAI: '1',
           OPENAI_BASE_URL: processModel.baseUrl,
           OPENAI_API_KEY: KEY_PROCESS,
