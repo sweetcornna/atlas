@@ -307,6 +307,12 @@ export interface RuntimeInstallRecord {
     RuntimeFallbackCode,
     'install-failed' | 'smoke-failed' | 'no-node'
   >
+  /**
+   * Failed installs in a row, this one included (only on a failure; a record
+   * from before the count existed counts as one). The default install's
+   * backoff reads it after a restart; never on the wire.
+   */
+  readonly failures?: number
 }
 
 /** What {@link RuntimeInstaller.ensureRuntimeInstalled} answers. */
@@ -383,6 +389,17 @@ function errorText(error: unknown): string {
 }
 
 const SEMVER_IN_OUTPUT = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/
+
+/** Failed installs in a row a record stands for (0 after a success). */
+export function failuresOf(record: RuntimeInstallRecord | undefined): number {
+  if (record === undefined || record.ok) return 0
+  const failures = record.failures
+  return typeof failures === 'number' &&
+    Number.isSafeInteger(failures) &&
+    failures > 0
+    ? failures
+    : 1
+}
 
 /**
  * The node's runtime installs: what is there, installing one (a control op
@@ -674,6 +691,7 @@ export class RuntimeInstaller {
           version: wanted,
           error: message.slice(0, 300),
           code: fallback,
+          failures: failuresOf(this.lastInstall(spec.id)) + 1,
         })
       return {
         ok: false,
