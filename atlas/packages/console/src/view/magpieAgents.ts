@@ -448,7 +448,7 @@ export function renderMagpieExtensionForm(target: {
     textField('name', 'MCP 名字', {
       mono: true,
       maxLength: 64,
-      help: '仅 MCP · qm- 开头的留给连接器',
+      help: '仅 MCP · 字母数字与 _ - · qm- 开头的留给连接器',
     }) +
     textField('command', 'MCP 命令', {
       mono: true,

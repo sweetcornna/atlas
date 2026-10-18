@@ -112,7 +112,7 @@ describe('extension sources', () => {
     })
     const address = extensionInstallRequest({
       kind: 'mcp',
-      name: 'docs.v2',
+      name: 'docs-v2',
       url: 'https://mcp.example.com:8443/mcp',
     })
     expect(address).toEqual({
@@ -120,7 +120,7 @@ describe('extension sources', () => {
       value: {
         kind: 'mcp',
         source: 'https://mcp.example.com:8443/mcp',
-        name: 'docs.v2',
+        name: 'docs-v2',
         url: 'https://mcp.example.com:8443/mcp',
       },
     })
@@ -128,6 +128,8 @@ describe('extension sources', () => {
       { name: 'x' },
       { name: 'x', command: 'npx', url: 'https://mcp.example.com' },
       { name: 'QM-tools', command: 'npx' },
+      // The node refuses dots in a name it adds (a harness config path splits on them).
+      { name: 'docs.v2', command: 'npx' },
       { name: 'x', command: 'np x' },
       { name: 'x', command: '/usr/../bin/sh' },
       {

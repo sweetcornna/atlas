@@ -37,6 +37,8 @@ export interface ExternalSessionPool<
 > extends SessionPool<C> {
   hasAgent(agent: string): boolean
   owner(sessionId: string): { readonly agent: string } | undefined
+  /** {@link ExternalRuntimePool.conversationSince}. */
+  conversationSince?(sessionId: string): number | undefined
 }
 
 /** How sessions are routed between the pools. */
@@ -180,6 +182,9 @@ export class ResidentRuntimePool<
     return portableChannel(channel, {
       file: portableLogPath(agent, sessionId),
       runtime: external === undefined ? FALLBACK_RUNTIME : runtime,
+      // qianmopi keeps one conversation per session for good.
+      conversationSince: () =>
+        external === undefined ? 0 : external.conversationSince?.(sessionId),
       ...(this.#routing.onError === undefined
         ? {}
         : { onError: this.#routing.onError }),

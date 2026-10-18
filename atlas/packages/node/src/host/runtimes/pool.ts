@@ -153,6 +153,8 @@ interface SessionRecord {
   started?: boolean
   /** ACP: starts in a row that failed to continue `nativeId`. */
   resumeFailures?: number
+  /** When the conversation `nativeId` names began (epoch ms). */
+  since?: number
 }
 
 const DEFAULT_IDLE_MS = 600_000
@@ -502,6 +504,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     if (max === undefined) return
     const deadline = Date.now() + CAPACITY_WAIT_MS
     while (this.#channels.size + this.#reserved.size >= max) {
+      if (this.#stopped) throw new Error('external runtime pool is closed')
       const idle = [...this.#channels]
         .filter(([id, channel]) => id !== sessionId && !channel.busy)
         .sort(
@@ -533,10 +536,45 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     return { kind }
   }
   #saveRecord(dir: string, record: SessionRecord): void {
+    // A new native conversation: the turns before it are not in it. An id
+    // means something only on its own runtime, so another runtime's equal id
+    // is a new one too.
+    const saved = this.#savedRecord(dir)
+    if (
+      record.nativeId !== undefined &&
+      (record.nativeId !== saved?.nativeId || record.kind !== saved.kind)
+    )
+      record.since = Date.now()
     writeFileSync(join(dir, 'runtime.json'), JSON.stringify(record), {
       mode: 0o600,
     })
   }
+  #savedRecord(dir: string): SessionRecord | undefined {
+    try {
+      return JSON.parse(
+        readFileSync(join(dir, 'runtime.json'), 'utf8'),
+      ) as SessionRecord
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * When the native conversation `sessionId` continues began, so a turn
+   * that ran on this runtime since is already in it; `undefined` when it has
+   * none yet (the next turn starts one).
+   */
+  conversationSince(sessionId: string): number | undefined {
+    const owner = this.owner(sessionId)
+    if (owner === undefined) return undefined
+    const record = this.#savedRecord(this.#sessionDir(owner.agent, sessionId))
+    if (record?.nativeId === undefined) return undefined
+    // Claude Code names its conversation before it has a transcript.
+    if (record.kind === 'claude-code' && record.started !== true)
+      return undefined
+    return record.since ?? 0
+  }
+
   /** The frozen appended system prompt (P30): written once, then reused. */
   #systemPrompt(dir: string, agent: ExternalAgent): string {
     const path = join(dir, 'runtime-system.txt')
@@ -863,6 +901,9 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         sessionId,
         sessionDir: dir,
       }
+      // Shutdown began while this start was being set up: from here to the
+      // registration below nothing awaits, so a process starts only before it.
+      if (this.#stopped) throw new Error('external runtime pool is closed')
       token = this.#toolHost.issue({ agent: agent.agent, sessionId })
       writeFileSync(tokenFile, token, { mode: 0o600 })
       child =
@@ -1364,6 +1405,8 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     clearInterval(this.#timer)
     clearInterval(this.#lockTimer)
     const channels = [...this.#channels.values()]
+    // Starts still being set up end at the check before their spawn.
+    const starting = [...this.#starting.values()]
     for (const id of this.#channels.keys()) {
       const owner = this.#owners.get(id)
       if (owner !== undefined) this.#removeLaunchFiles(owner.agent, id)
@@ -1372,7 +1415,10 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     this.#running.clear()
     this.#tokens.clear()
     this.#desktop?.stop()
-    await Promise.allSettled(channels.map(channel => channel.stop()))
+    await Promise.allSettled([
+      ...channels.map(channel => channel.stop()),
+      ...starting,
+    ])
     await this.#toolHost.stop()
   }
 }

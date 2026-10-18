@@ -11,7 +11,19 @@
  * `platforms/telegram/formatting.py`.
  */
 
-const SILENT_MARKERS = new Set(['[SILENT]', 'SILENT', 'NO_REPLY', '[NO_REPLY]'])
+/** Whole-reply markers for "say nothing" (hermes adds the spaced and Chinese ones). */
+const SILENT_MARKERS = new Set([
+  '[SILENT]',
+  'SILENT',
+  'NO_REPLY',
+  '[NO_REPLY]',
+  'NO REPLY',
+  '[NO REPLY]',
+  '[静默]',
+  '静默',
+  '[沉默]',
+  '沉默',
+])
 
 function stripEdgePunctuation(text: string): string {
   const punctuation = /[\p{P}]/u

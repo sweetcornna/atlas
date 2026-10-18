@@ -90,7 +90,7 @@
 
 ## 3. 命令、测试与门禁
 
-环境：Bun ≥ 1.4（`.tool-versions` 钉 1.4.2），用 `bunx` 不用 `npx`。omp 原生插件 `pi_natives.<platform>.node` 要先构建：`bun run build:native`（需要 `rust-toolchain.toml` 指定的 Rust nightly 与 ninja，细节见 omp 的 `docs/natives-build-release-debugging.md`）。
+环境：Bun ≥ 1.4（`.tool-versions` 钉 1.4.3），用 `bunx` 不用 `npx`。omp 原生插件 `pi_natives.<platform>.node` 要先构建：`bun run build:native`（需要 `rust-toolchain.toml` 指定的 Rust nightly 与 ninja，细节见 omp 的 `docs/natives-build-release-debugging.md`）。
 
 ```bash
 bun install
@@ -103,13 +103,15 @@ bun run atlas:test [<目录> …]    # 阡陌测试分片，可只跑指定目�
 
 完整脚本以根 `package.json` 的 `scripts` 为准（阡陌的都带 `atlas:` 前缀，另有 `qm`、`qianmo:acceptance`、`precheck`、`verify`）。
 
-CI（`.github/workflows/atlas.yml`）只在 PR 与 `main` 的 push 上跑，同一 PR 的新推送取消旧运行；没开 PR 的分支要验证就开草稿 PR 或手动触发。改到基座快照路径（含根 `CONTRIBUTING.md`、`README.md`）会追加 omp 全量 `test:ts`，约 20–25 分钟。
+CI（`.github/workflows/atlas.yml`）只在 PR 与 `main` 的 push 上跑，同一 PR 的新推送取消旧运行；没开 PR 的分支要验证就开草稿 PR 或手动触发。作业图：`static`（verify 里不跑测试的各道门禁与基座改动检测）与 `native`（原生插件，按输入哈希缓存，产物作 artifact 交给下游）并行；`native` 之后是 `test` 五组矩阵（见 §3.1）、`build-qm`（编译与冒烟）、`omp-test`；最后的汇总作业 `ci` 是唯一要看的检查，任何作业失败或被取消即红。改到基座快照路径（含根 `CONTRIBUTING.md`、`README.md`、`bun.lock`；根 `package.json` 只改 `atlas:`、`qianmo:` 脚本与 `qm`、`precheck`、`verify` 时不算）会追加 omp 全量 `test:ts`，按 omp 的 `OMP_TEST_SHARD` 分 6 片并行，每片约 5 分钟。
 
 **`precheck` ≠ `verify`。**`precheck` 跑 `atlas:lint:fix`，会改写 `atlas/`、`demo/` 下的文件，跑完看 `git diff`。`verify` 换成只读的 `atlas:lint:ci`，并加上 `atlas:check:cycles`、`atlas:check:unused`、`atlas:sbom -- --check`、omp 的 `check:ts`（证明阡陌没碰坏基座）、`atlas:build:qm` 与 `atlas:check:qm-smoke`。
 
 ### 3.1 测试
 
-- 入口是 `atlas/scripts/test-shards.sh`（`bun run atlas:test`）：每个 `atlas/packages/*` 一个分片，另有 `atlas/tests/*`、`demo/lib`、`demo/env`、`atlas/scripts`；每个分片一个 `bun test` 进程、带 `--isolate`，JUnit 报告写到 `test-reports/`。`atlas/scripts/test-shards.sh --list` 只列出会跑的分片、不跑测试；判断目录有没有测试不能经管道（pipefail 下 `find | grep -q` 在 Linux 上会因 SIGPIPE 误判，10-10 到 10-18 的 CI 因此没跑 node 分片），由 `atlas/scripts/__tests__/testShards.test.ts` 守着。
+- 入口是 `atlas/scripts/test-shards.sh`（`bun run atlas:test`）：每个 `atlas/packages/*` 一个分片，另有 `atlas/tests/*`、`demo/lib`、`demo/env`、`atlas/scripts`；每个分片一个 `bun test` 进程、带 `--isolate`，JUnit 报告写到 `test-reports/`。分片参数可以是目录或单个测试文件，`--exclude <路径>` 从分片里去掉一棵子树（被切到的分片按剩余文件名仍在一个进程里跑）。`--list` 只列分片、`--files` 只列将跑的测试文件，都不跑测试；判断目录有没有测试不能经管道（pipefail 下 `find | grep -q` 在 Linux 上会因 SIGPIPE 误判，10-10 到 10-18 的 CI 因此没跑 node 分片），由 `atlas/scripts/__tests__/testShards.test.ts` 守着。
+- CI 分组：`test-shards.sh --group <名>`，组定义在脚本的 `CI_GROUPS`：`node-host`（`atlas/packages/node/test/host`）、`node-rest`（node 包其余全部）、`ops`（`demo/env`、`atlas/scripts`，作业里另跑 `atlas:test:registry-ha`）、`e2e`（`atlas/tests/integration`、`demo/lib`）、`packages`（其余各组没点名的默认分片，即其余包与 `atlas/tests/boundary`、`support`，新包自动落入）。Linux 上每组约 4–4.5 分钟。五组拼起来恰好是默认分片，`testShards.test.ts` 逐文件核对，并核对 `atlas.yml` 的矩阵列着同样的组；加组或改名两边一起改。
+- 防跳过自检：汇总作业 `ci` 用 `atlas/scripts/check-test-files-ran.ts` 读各组上传的 JUnit，与 `git ls-files` 里 `atlas/`、`demo/` 下的 `*.test.ts(x)` 比：没跑的、跑了却不是已跟踪阡陌测试的、在两个分片里各跑一次的，任一出现即红。一个测试都不注册的文件 Bun 不写进报告，按没跑算；只在某些条件下才有用例的文件用 `test.skip` / `describe.skipIf`，不要整个不注册。本地全量 `atlas:test` 之后也可以 `bun atlas/scripts/check-test-files-ran.ts test-reports` 自查。
 - 预载 `atlas/tests/preload.ts` 只经命令行传入，根 `bunfig.toml` 不加预载（omp 自己的测试从同一个根跑）。它清掉开发者 shell 里的凭据与改变状态根的变量，把配置根与 CA 目录指到每进程的临时目录，并设置 `PI_TEST_RUNTIME=1`。
 - 跑单个文件：`bun test --preload ./atlas/tests/preload.ts ./atlas/packages/<pkg>/test/<name>.test.ts`。路径写成 `./` 开头，否则 Bun 会当成子串过滤、把 omp 的测试也拉进来。
 - 测试里起的任何 omp 子进程都用 `ompChildEnv()` / `ompSpawnEnv()`，`QIANMO_CONFIG_DIR` 指向临时目录；测试不得碰 `~/.omp`、`~/.qianmo`、`~/.claude`。需要真跑一轮 RPC 时，用 omp 的假 OpenAI 服务 `packages/coding-agent/test/rpc-wire/fake-openai-server.ts`，经 `models.yml` 自定义 provider 指过去。

@@ -54,6 +54,11 @@ test.skipIf(process.platform !== "linux")("bash tool children never inherit sess
 
 	const control = path.join(root, "control.jsonl");
 	const controlFd = fs.openSync(control, "a");
+	// Where the runtime opens plain `fs` descriptors close-on-exec, as libuv
+	// does, the pre-fix writer's descriptor cannot reach the child either: the
+	// control is asserted only while it is still inheritable.
+	const controlFlags = /^flags:\s*([0-7]+)/m.exec(fs.readFileSync(`/proc/self/fdinfo/${controlFd}`, "utf8"))?.[1];
+	const controlInheritable = (Number.parseInt(controlFlags ?? "0", 8) & 0o2000000) === 0;
 
 	let output = "";
 	try {
@@ -67,7 +72,8 @@ test.skipIf(process.platform !== "linux")("bash tool children never inherit sess
 	}
 
 	const inherited = output.split("\n").filter(line => line.includes(root));
-	expect(inherited.join("\n"), "control: an inheritable descriptor must reach the child").toContain(control);
+	if (controlInheritable)
+		expect(inherited.join("\n"), "control: an inheritable descriptor must reach the child").toContain(control);
 	expect(inherited.join("\n")).not.toContain(transcript);
 	expect(inherited.join("\n")).not.toMatch(/omp\.[\d-]+\.\d+\.log/);
 });
