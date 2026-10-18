@@ -26,8 +26,15 @@
 
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, statfsSync } from 'node:fs'
-import { lstat, readdir, rm } from 'node:fs/promises'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statfsSync,
+} from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { freemem } from 'node:os'
 import * as path from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
@@ -476,6 +483,8 @@ export class RuntimeInstaller {
   readonly #unfinished = new Map<string, RuntimeInstallRecord | undefined>()
   /** PATH binaries checked against {@link PATH_IDENTITY}, by runtime. */
   readonly #onPath = new Map<string, PathCheck>()
+  /** The leftover sweeps under way: an install checks the disk after them. */
+  #sweeping: Promise<unknown> = Promise.resolve()
   /**
    * `runtime.versions`' `--version` answers by runtime, for one binary path;
    * reads at the same time share the one in flight. Dropped when the
@@ -652,16 +661,25 @@ export class RuntimeInstaller {
    * one: only `npm-stage-<uuid>` directories right under the runtimes root,
    * none of this process's running installs, and an entry of that name that
    * is a link or a file is left alone. A directory's own links are removed,
-   * never followed. Asynchronous throughout — one leftover of dsh is about
-   * 850 MB, and the node is serving by the time this runs — so callers need
+   * never followed. The removal is asynchronous — one leftover of dsh is
+   * about 850 MB, and the node is serving by the time this runs — so callers need
    * not wait; a new install never meets one of these, its scratch prefix has
-   * a fresh uuid. Resolves to what went.
+   * a fresh uuid, and it checks the disk only once the sweep is over (the
+   * space is on its way back). Resolves to what went.
    */
-  async sweepStages(): Promise<string[]> {
+  sweepStages(): Promise<string[]> {
+    const sweep = this.#sweep()
+    this.#sweeping = Promise.all([this.#sweeping, sweep]).catch(() => {})
+    return sweep
+  }
+
+  async #sweep(): Promise<string[]> {
+    // Listing one directory of a handful of entries is synchronous (and so
+    // is a sweep with nothing to remove); removing a tree is not.
     const root = qianmoConfigPath('runtimes')
     let names: string[]
     try {
-      names = await readdir(root)
+      names = readdirSync(root)
     } catch {
       return []
     }
@@ -670,7 +688,7 @@ export class RuntimeInstaller {
       const dir = path.join(root, name)
       if (!STAGE_NAME.test(name)) continue
       try {
-        if (!(await lstat(dir)).isDirectory()) continue
+        if (!lstatSync(dir).isDirectory()) continue
         // Checked last thing before the removal: an install that made its
         // prefix since the listing is in `#stages` by now.
         if (this.#stages.has(dir)) continue
@@ -956,6 +974,8 @@ export class RuntimeInstaller {
         mode: 0o700,
       })
       // Never a partial install: not starting is better than a half prefix.
+      // A leftover being swept is space on its way back: wait for it.
+      await this.#sweeping
       const need = diskMiB(spec)
       const free = (
         this.#options.freeBytes ??

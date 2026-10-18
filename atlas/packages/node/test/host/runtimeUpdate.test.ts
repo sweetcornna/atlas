@@ -463,6 +463,45 @@ test('scratch prefixes a dead node left behind are swept: npm-stage-<uuid> direc
   }
 })
 
+test('an operator’s install waits for a sweep in progress before it checks the disk', async () => {
+  const stale = path.join(
+    qianmoConfigPath('runtimes'),
+    `npm-stage-${randomUUID()}`,
+  )
+  mkdirSync(stale, { recursive: true })
+  const events: string[] = []
+  let release!: () => void
+  const released = new Promise<void>(done => {
+    release = done
+  })
+  const installer = new RuntimeInstaller({
+    run: fakeNpm('0.170.0').run,
+    which: nowhere,
+    smoke: async () => null,
+    freeMemoryBytes: roomy,
+    freeBytes: () => {
+      events.push('disk')
+      return roomy()
+    },
+    removeTree: async dir => {
+      if (dir === stale) await released
+      rmSync(dir, { recursive: true, force: true })
+      events.push(`removed ${path.basename(dir)}`)
+    },
+  })
+  const sweeping = installer.sweepStages()
+  const install = installer.install('codex', '0.170.0')
+  for (let i = 0; i < 20; i++) await Bun.sleep(5)
+  expect(events).toEqual([])
+  release()
+  expect(await install).toEqual({ ok: true, version: '0.170.0' })
+  expect(await sweeping).toEqual([stale])
+  expect(events.slice(0, 2)).toEqual([
+    `removed ${path.basename(stale)}`,
+    'disk',
+  ])
+})
+
 test('a failed or stopped install leaves no scratch prefix', async () => {
   const stages = () =>
     readdirSync(qianmoConfigPath('runtimes')).filter(name =>

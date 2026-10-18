@@ -795,6 +795,52 @@ test('start sweeps the scratch prefixes a dead node left, behind it: start does 
   expect(npm.installs()).toBe(0)
 })
 
+test('the default install checks the disk only once the leftover sweep is done', async () => {
+  const stale = qianmoConfigPath(
+    'runtimes',
+    'npm-stage-2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e',
+  )
+  mkdirSync(path.join(stale, 'node_modules'), { recursive: true })
+  const events: string[] = []
+  let release!: () => void
+  const released = new Promise<void>(done => {
+    release = done
+  })
+  const { runtimes, npm } = setup({
+    autoInstall: true,
+    agents: [{ agent: 'main' }],
+    installer: {
+      // The leftover of a killed install, about 850 MiB: slow to go.
+      removeTree: async dir => {
+        events.push(`removing ${path.basename(dir)}`)
+        if (dir === stale) await released
+        rmSync(dir, { recursive: true, force: true })
+        events.push(`removed ${path.basename(dir)}`)
+      },
+      freeBytes: () => {
+        events.push('disk')
+        return 64 * 1024 ** 3
+      },
+    },
+  })
+  await runtimes.start()
+  await until(() => events.length > 0)
+  await settle()
+  // Counting the leftover as used space would fail the install (and back
+  // off five minutes) for space that is on its way out.
+  expect(events).toEqual([`removing ${path.basename(stale)}`])
+  expect(state(runtimes, 'main').reason?.code).toBe('installing')
+  release()
+  await until(() => npm.installs() === 2)
+  expect(events.slice(0, 3)).toEqual([
+    `removing ${path.basename(stale)}`,
+    `removed ${path.basename(stale)}`,
+    'disk',
+  ])
+  await until(() => state(runtimes, 'main').effective.runtime === 'dsh')
+  expect(state(runtimes, 'main').effective.runtime).toBe('dsh')
+})
+
 test('the sweep removes for real without an injected remover, off the event loop', async () => {
   const stale = qianmoConfigPath(
     'runtimes',
