@@ -334,22 +334,42 @@ describe('outbound', () => {
     })
   })
 
-  test('a temporary session is answered through its group', async () => {
+  test('a temporary session is its own chat, answered through its group', async () => {
     const net = snowluma()
     const { adapter, got, socket } = await started(net)
-    socket.push(
+    const temp = (id: number, group: number) =>
       message({
-        message_id: 41,
+        message_id: id,
         sub_type: 'group',
-        sender: { user_id: 30003000, nickname: '张三', group_id: 20002000 },
-      }),
-    )
-    await until(() => got.length === 1)
-    await adapter.send({ type: 'dm', id: '30003000' }, '好')
-    expect(sent(socket, 'send_private_msg')[0]!.params).toMatchObject({
-      user_id: 30003000,
-      group_id: 20002000,
+        sender: { user_id: 30003000, nickname: '张三', group_id: group },
+      })
+    socket.push(temp(41, 20002000))
+    socket.push(temp(42, 20002001))
+    socket.push(message({ message_id: 43 }))
+    await until(() => got.length === 3)
+    expect(got.map(one => one.chat)).toEqual([
+      { type: 'dm', id: '30003000', threadId: 'temp:20002000' },
+      { type: 'dm', id: '30003000', threadId: 'temp:20002001' },
+      { type: 'dm', id: '30003000' },
+    ])
+    // The plain private message in between changes nobody's route.
+    await adapter.send(got[0]!.chat, '好')
+    await adapter.send(got[2]!.chat, '嗯')
+    const frames = sent(socket, 'send_private_msg').map(frame => frame.params)
+    expect(frames[0]).toMatchObject({ user_id: 30003000, group_id: 20002000 })
+    expect(frames[1]).not.toHaveProperty('group_id')
+  })
+
+  test('a send while the socket is closing is refused as retryable, not counted as sent', async () => {
+    const net = snowluma()
+    const { adapter, socket } = await started(net)
+    socket.readyState = 2
+    expect(await adapter.send({ type: 'dm', id: '1' }, 'x')).toEqual({
+      ok: false,
+      error: 'SnowLuma 未连接',
+      retryable: true,
     })
+    expect(sent(socket, 'send_private_msg')).toHaveLength(0)
   })
 
   test('a refusal is reported with the backend wording; a missing echo counts as sent', async () => {

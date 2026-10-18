@@ -113,32 +113,42 @@ function card(
       ? `${word} · ${channel.health.detail}`
       : word,
   )}</span>`
-  const acts = model.ops
-    ? `<span class="kit-acts">` +
-      (channel.platform === 'weixin'
-        ? actionButton('channel-relogin', '重新扫码', {
-            tone: 'ghost',
-            data: { id: channel.id, name: channel.name },
-          })
-        : '') +
-      actionButton('channel-edit', '编辑', {
-        tone: 'ghost',
-        data: { id: channel.id },
-      }) +
-      actionButton('channel-toggle', channel.enabled ? '停用' : '启用', {
-        tone: 'ghost',
-        data: {
-          id: channel.id,
-          name: channel.name,
-          enabled: channel.enabled ? '0' : '1',
-        },
-      }) +
-      actionButton('channel-remove', '删除', {
-        tone: 'ghost',
-        data: { id: channel.id, name: channel.name },
-      }) +
-      `</span>`
-    : ''
+  // A platform this hub no longer offers (personal QQ on the public
+  // edition): the channel can only be removed.
+  const offered = snapshot.platforms.some(one => one.id === channel.platform)
+  const acts = !model.ops
+    ? ''
+    : !offered
+      ? `<span class="kit-acts">` +
+        actionButton('channel-remove', '删除', {
+          tone: 'ghost',
+          data: { id: channel.id, name: channel.name },
+        }) +
+        `</span>`
+      : `<span class="kit-acts">` +
+        (channel.platform === 'weixin'
+          ? actionButton('channel-relogin', '重新扫码', {
+              tone: 'ghost',
+              data: { id: channel.id, name: channel.name },
+            })
+          : '') +
+        actionButton('channel-edit', '编辑', {
+          tone: 'ghost',
+          data: { id: channel.id },
+        }) +
+        actionButton('channel-toggle', channel.enabled ? '停用' : '启用', {
+          tone: 'ghost',
+          data: {
+            id: channel.id,
+            name: channel.name,
+            enabled: channel.enabled ? '0' : '1',
+          },
+        }) +
+        actionButton('channel-remove', '删除', {
+          tone: 'ghost',
+          data: { id: channel.id, name: channel.name },
+        }) +
+        `</span>`
   return (
     `<article class="card elev-sm ch-card" data-key="${attr(channel.id)}">` +
     `<header class="ch-head"><span class="ch-glyph ch-${attr(channel.platform)}">${icon('messages-square')}</span>` +

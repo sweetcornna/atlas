@@ -147,6 +147,23 @@ describe('admission', () => {
     expect(turns.calls).toHaveLength(1)
   })
 
+  test('message ids are per chat: the same id in another chat is a new message', async () => {
+    const { turns, adapter, gateway } = setup()
+    const rules = { ...RULES, members: true, allowAll: true }
+    gateway.handle(rules, adapter, inbound({ id: '7', text: 'a' }))
+    gateway.handle(
+      rules,
+      adapter,
+      inbound({
+        id: '7',
+        userId: 'guest',
+        chat: { type: 'dm', id: 'guest' },
+        text: 'b',
+      }),
+    )
+    await until(() => turns.calls.length === 2)
+  })
+
   test('threads are their own conversations', () => {
     expect(
       conversationKey('c', { type: 'group', id: 'g', threadId: 't' }),
@@ -898,6 +915,41 @@ describe('hermes alignment', () => {
     expect(adapter.sent).toHaveLength(8)
     expect(adapter.sent.every(one => one.text.length <= 100)).toBe(true)
     expect(adapter.sent.at(-1)!.text).toContain('控制台')
+  })
+
+  test('overlapping sends to one chat wait their turn for the gap', async () => {
+    const turns = new FakeTurns()
+    const order: string[] = []
+    let now = 1_000
+    const adapter = Object.assign(new FakeAdapter('telegram'), {
+      sendGapMs: 1_000,
+    })
+    const send = adapter.send.bind(adapter)
+    adapter.send = async (chat, text, options) => {
+      order.push(`start ${text} @${now}`)
+      await new Promise(resolve => setTimeout(resolve, 5))
+      const result = await send(chat, text, options)
+      order.push(`end ${text}`)
+      return result
+    }
+    const gateway = new ChannelGateway({
+      turns,
+      now: () => now,
+      sleep: async ms => {
+        now += ms
+      },
+    })
+    const chat = { type: 'dm', id: 'owner' } as const
+    await Promise.all([
+      gateway.post(adapter, chat, '一'),
+      gateway.post(adapter, chat, '二'),
+    ])
+    expect(order).toEqual([
+      'start 一 @1000',
+      'end 一',
+      'start 二 @2000',
+      'end 二',
+    ])
   })
 
   test('sends to one chat keep the platform gap', async () => {

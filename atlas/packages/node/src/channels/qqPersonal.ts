@@ -77,6 +77,10 @@ const SEND_SPACING_MS = 800
 /** Characters per merged-forward node. */
 const NODE_CHARS = 1_500
 const ACCOUNT_OFFLINE = 'QQ 账号已离线，请在 SnowLuma 里重新扫码登录'
+/** `threadId` of a temporary session: the group it came through. */
+const TEMP_PREFIX = 'temp:'
+/** A card whose send found the socket gone while it waited in the queue. */
+const REFUSED_LATE: Record<string, unknown> = { status: 'failed', retcode: -1 }
 const REJECTED =
   'SnowLuma 拒绝了 OneBot 令牌（填 wsServers 里的 accessToken，不是 WebUI 密码）'
 
@@ -199,8 +203,6 @@ export class QqPersonalAdapter implements ChannelAdapter {
   readonly #own = new Map<string, string>()
   /** Who sent each recent inbound message, for the @ on a group reply. */
   readonly #senders = new Map<string, string>()
-  /** Private chats that came in through a group (temporary sessions). */
-  readonly #tempGroups = new Map<string, string>()
   #socket: WebSocket | null = null
   #selfId = ''
   #nickname = ''
@@ -401,11 +403,12 @@ export class QqPersonalAdapter implements ChannelAdapter {
     const groupId = text(event.group_id)
     if (group && groupId === '') return null
     if (!group && event.message_type !== 'private') return null
-    if (!group) {
-      const via = text(sender.group_id) || text(event.group_id)
-      if (event.sub_type === 'group' && via) this.#tempGroups.set(user, via)
-      else this.#tempGroups.delete(user)
-    }
+    // A temporary session belongs to the user and the group it came
+    // through: its own chat (and conversation), routed by that group.
+    const via =
+      !group && event.sub_type === 'group'
+        ? text(sender.group_id) || text(event.group_id)
+        : ''
     let body = ''
     let addressed = !group
     let replyId = ''
@@ -468,7 +471,11 @@ export class QqPersonalAdapter implements ChannelAdapter {
     if (this.#senders.size > 1_000)
       this.#senders.delete(this.#senders.keys().next().value!)
     return {
-      chat: group ? { type: 'group', id: groupId } : { type: 'dm', id: user },
+      chat: group
+        ? { type: 'group', id: groupId }
+        : via
+          ? { type: 'dm', id: user, threadId: `${TEMP_PREFIX}${via}` }
+          : { type: 'dm', id: user },
       ...(group && text(event.group_name)
         ? { chatName: text(event.group_name) }
         : {}),
@@ -539,10 +546,12 @@ export class QqPersonalAdapter implements ChannelAdapter {
 
   #target(chat: ChannelChat): Record<string, unknown> {
     if (chat.type === 'group') return { group_id: numeric(chat.id) }
-    const via = this.#tempGroups.get(chat.id)
+    const via = chat.threadId?.startsWith(TEMP_PREFIX)
+      ? chat.threadId.slice(TEMP_PREFIX.length)
+      : ''
     return {
       user_id: numeric(chat.id),
-      ...(via === undefined ? {} : { group_id: numeric(via) }),
+      ...(via ? { group_id: numeric(via) } : {}),
     }
   }
 
@@ -560,9 +569,10 @@ export class QqPersonalAdapter implements ChannelAdapter {
     return segments
   }
 
+  /** Checked again inside the send queue: the socket may close while a send waits. */
   #refusal(): ChannelSendResult | null {
     if (this.#account === false) return { ok: false, error: ACCOUNT_OFFLINE }
-    if (this.#socket === null)
+    if (this.#socket === null || this.#socket.readyState !== 1)
       return { ok: false, error: 'SnowLuma 未连接', retryable: true }
     return null
   }
@@ -599,8 +609,10 @@ export class QqPersonalAdapter implements ChannelAdapter {
     const refused = this.#refusal()
     if (refused !== null) return refused
     const content = plainText(markdown)
-    return this.#paced(async () =>
-      this.#result(
+    return this.#paced(async () => {
+      const late = this.#refusal()
+      if (late !== null) return late
+      return this.#result(
         await this.#call(
           chat.type === 'group' ? 'send_group_msg' : 'send_private_msg',
           {
@@ -612,8 +624,8 @@ export class QqPersonalAdapter implements ChannelAdapter {
           },
         ),
         content,
-      ),
-    )
+      )
+    })
   }
 
   /**
@@ -638,26 +650,29 @@ export class QqPersonalAdapter implements ChannelAdapter {
       if (!lead.ok) return null
     }
     const answer = await this.#paced(() =>
-      this.#call(
-        chat.type === 'group'
-          ? 'send_group_forward_msg'
-          : 'send_private_forward_msg',
-        {
-          ...this.#target(chat),
-          messages: forwardNodes(content).map(node => ({
-            type: 'node',
-            data: {
-              name,
-              uin: this.#selfId,
-              nickname: name,
-              user_id: this.#selfId,
-              content: [{ type: 'text', data: { text: node } }],
+      this.#refusal() !== null
+        ? Promise.resolve(REFUSED_LATE)
+        : this.#call(
+            chat.type === 'group'
+              ? 'send_group_forward_msg'
+              : 'send_private_forward_msg',
+            {
+              ...this.#target(chat),
+              messages: forwardNodes(content).map(node => ({
+                type: 'node',
+                data: {
+                  name,
+                  uin: this.#selfId,
+                  nickname: name,
+                  user_id: this.#selfId,
+                  content: [{ type: 'text', data: { text: node } }],
+                },
+              })),
             },
-          })),
-        },
-      ),
+          ),
     )
-    if (answer !== null && !this.#ok(answer)) return null
+    if (answer === REFUSED_LATE || (answer !== null && !this.#ok(answer)))
+      return null
     return this.#result(answer, content)
   }
 

@@ -451,6 +451,11 @@ export class ChannelGateway {
   readonly #roomPauses = new Map<string, number>()
   /** When each chat last got a send, per adapter, for `sendGapMs`. */
   readonly #lastSends = new WeakMap<ChannelAdapter, Map<string, number>>()
+  /** The send in flight per chat, per adapter: gapped sends go one at a time. */
+  readonly #chatQueues = new WeakMap<
+    ChannelAdapter,
+    Map<string, Promise<unknown>>
+  >()
   /** Threads the bot answered in, per adapter, for `followsThreads`. */
   readonly #followed = new WeakMap<ChannelAdapter, Set<string>>()
   #closed = false
@@ -493,11 +498,7 @@ export class ChannelGateway {
   ): void {
     if (
       this.#closed ||
-      this.#duplicate(
-        rules.id,
-        inbound.messageId,
-        adapter.dedupTtlMs ?? DEDUP_MS,
-      )
+      this.#duplicate(rules.id, inbound, adapter.dedupTtlMs ?? DEDUP_MS)
     )
       return
     const event = this.#admit(rules, adapter, inbound)
@@ -517,10 +518,18 @@ export class ChannelGateway {
     )
   }
 
-  /** Remembers each id until its time is up (the adapter's, else five minutes). */
-  #duplicate(channelId: string, messageId: string, ttlMs: number): boolean {
+  /**
+   * Remembers each id until its time is up (the adapter's, else five
+   * minutes). Ids are per chat on some platforms (Telegram), so the chat is
+   * part of the key.
+   */
+  #duplicate(
+    channelId: string,
+    inbound: ChannelInbound,
+    ttlMs: number,
+  ): boolean {
     const now = this.#now()
-    const key = `${channelId}:${messageId}`
+    const key = `${channelId}:${inbound.chat.type}:${inbound.chat.id}:${inbound.messageId}`
     if (this.#seen.size > 2_000)
       for (const [seen, until] of this.#seen)
         if (until <= now) this.#seen.delete(seen)
@@ -1009,7 +1018,36 @@ export class ChannelGateway {
     return this.#send(adapter, chat, text)
   }
 
+  /**
+   * On a platform with a send gap, one message at a time per chat: two sends
+   * that overlap (a notice and the reply) would both read the same last-send
+   * time and go out together.
+   */
   async #send(
+    adapter: ChannelAdapter,
+    chat: ChannelChat,
+    text: string,
+    replyTo?: string,
+  ): Promise<boolean> {
+    if (!adapter.sendGapMs) return this.#sendNow(adapter, chat, text, replyTo)
+    let queues = this.#chatQueues.get(adapter)
+    if (queues === undefined) {
+      queues = new Map()
+      this.#chatQueues.set(adapter, queues)
+    }
+    const key = `${chat.id}:${chat.threadId ?? ''}`
+    const before = queues.get(key) ?? Promise.resolve()
+    const run = before.then(() => this.#sendNow(adapter, chat, text, replyTo))
+    const settled = run.catch(() => {})
+    queues.set(key, settled)
+    try {
+      return await run
+    } finally {
+      if (queues.get(key) === settled) queues.delete(key)
+    }
+  }
+
+  async #sendNow(
     adapter: ChannelAdapter,
     chat: ChannelChat,
     text: string,
