@@ -784,6 +784,7 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'im.save': '保存聊天渠道',
   'im.remove': '删除聊天渠道',
   'im.login': '扫码接入聊天渠道',
+  'im.pair': '处理渠道配对请求',
   'updates.save': '保存更新检查设定',
   'updates.run': '立即检查更新',
   'updates.upgrade': '升级阡陌',

@@ -1356,6 +1356,7 @@ export const CONSOLE_ACTIONS = [
   'im.save',
   'im.remove',
   'im.login',
+  'im.pair',
   /** 定时检查更新（P31），target 恒为 `updates`。 */
   'updates.save',
   'updates.run',

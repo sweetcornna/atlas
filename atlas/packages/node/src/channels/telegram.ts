@@ -15,6 +15,7 @@ import {
   list,
   record,
   requestJson,
+  sendFailure,
   text,
 } from './net.js'
 import { plainText, telegramMarkdownV2 } from './text.js'
@@ -36,10 +37,16 @@ export interface TelegramSettings {
 }
 
 const API = 'https://api.telegram.org'
+/** Conflicting pollers tolerated in a row before the channel stops. */
+const CONFLICT_LIMIT = 5
 
 export class TelegramAdapter implements ChannelAdapter {
   readonly platform = 'telegram' as const
   readonly chunkLimit = 3_500
+  /** The client splits a long paste near 4096 characters (hermes `_SPLIT_THRESHOLD`). */
+  readonly inboundSplitAt = 4_000
+  /** One message per chat per second (hermes per-chat budget). */
+  readonly sendGapMs = 1_000
   readonly #io: ChannelIo
   readonly #settings: TelegramSettings
   readonly #loop: ChannelLoop
@@ -47,6 +54,8 @@ export class TelegramAdapter implements ChannelAdapter {
   #offset: number
   #botId = ''
   #username = ''
+  /** 409s in a row from getUpdates. */
+  #conflicts = 0
 
   constructor(settings: TelegramSettings, io: ChannelIo) {
     this.#settings = settings
@@ -99,11 +108,17 @@ export class TelegramAdapter implements ChannelAdapter {
           45_000,
           signal,
         )
-        if (reply.status === 409)
-          throw new ChannelFatalError(
-            '这个机器人另有程序在接收消息（webhook 或另一个轮询）',
-          )
+        if (reply.status === 409) {
+          // A poller from a restart usually goes away within seconds
+          // (hermes keeps polling through conflicts); a webhook does not.
+          if (++this.#conflicts >= CONFLICT_LIMIT)
+            throw new ChannelFatalError(
+              '这个机器人另有程序在接收消息（webhook 或另一个轮询）',
+            )
+          throw new Error('这个机器人另有程序在接收消息，稍后重试')
+        }
         if (reply.body.ok !== true) throw new Error('Telegram getUpdates 失败')
+        this.#conflicts = 0
         this.#loop.mark('connected')
         for (const update of list(reply.body.result)) {
           const row = record(update)
@@ -222,10 +237,7 @@ export class TelegramAdapter implements ChannelAdapter {
       this.#typing.clear(chat.id)
       return { ok: true, messageId: text(record(reply.body.result).message_id) }
     } catch (error) {
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : 'Telegram 发送失败',
-      }
+      return sendFailure(error, 'Telegram 发送失败')
     }
   }
 
