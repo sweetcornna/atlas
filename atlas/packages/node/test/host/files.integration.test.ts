@@ -727,6 +727,50 @@ test('descriptor walker rejects path traversal and platform aliases; canonical m
   ).not.toBe(manifestSha256([{ path: 'a', size: 2, sha256: sha256('x') }]))
 })
 
+test('the workspace anchor opens without listing its ancestors; names under it still get the alias check', () => {
+  const f = fixture()
+  f.file('a.txt', 'a')
+  const names = spyOn(FileDirectory.prototype, 'names')
+  const dir = FileDirectory.root(f.workspaces.get('alpha')!)
+  try {
+    // Every ancestor used to be read in full on each call: tens of
+    // thousands of names under a busy temp directory, for every operation.
+    expect(names).not.toHaveBeenCalled()
+    fs.closeSync(dir.open('a.txt'))
+    expect(names).toHaveBeenCalled()
+  } finally {
+    dir.close()
+  }
+})
+
+/** Whether the temp directory tells `a` from `A` (Linux, not a default macOS volume). */
+const caseSensitiveTmp = (() => {
+  const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'qm-case-'))
+  try {
+    fs.mkdirSync(path.join(probe, 'a'))
+    fs.mkdirSync(path.join(probe, 'A'))
+    return true
+  } catch {
+    return false
+  } finally {
+    fs.rmSync(probe, { recursive: true, force: true })
+  }
+})()
+
+test.skipIf(!caseSensitiveTmp)(
+  'an ancestor with a sibling differing only in case does not refuse the workspace',
+  () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qm-case-'))
+    try {
+      fs.mkdirSync(path.join(root, 'ws', 'inner'), { recursive: true })
+      fs.mkdirSync(path.join(root, 'WS'))
+      FileDirectory.root(path.join(root, 'ws', 'inner')).close()
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  },
+)
+
 test('transfer totals, target digest rejection and host-owned staging guards protect externally visible publication', async () => {
   const f = fixture()
   const oversized = Array.from({ length: 5 }, (_, i) => ({
