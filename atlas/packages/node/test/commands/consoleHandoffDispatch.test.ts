@@ -138,6 +138,8 @@ function openHub(
   base: string,
   root: string,
   config: HandoffDispatchConfig,
+  /** The hub's clock; `Date.now` unless a test drives it. */
+  now?: () => number,
 ): Hub {
   const ledgerPath = join(base, 'hub-state', 'ledger.ndjson')
   const auditPath = join(base, 'hub-state', 'audit.ndjson')
@@ -148,6 +150,7 @@ function openHub(
     auditPath,
     onError: line => logs.push(line),
     dispatch: { config, status: 'test' },
+    ...(now === undefined ? {} : { now }),
   })
   cleanups.push(() => handoff.close())
   return {
@@ -598,13 +601,14 @@ describe('restart and deadlines', () => {
     async () => {
       const base = tempDir()
       const target = await node(base, { node: 'cloud-a' })
-      // The first task must be dispatched before this passes, after two laptops
-      // and the hub repository are built with real git and the deadline is cut
-      // to the second. 2 s was not enough on a loaded machine (the task failed
-      // as never taken before the hub's first push landed).
-      const soon = new Date(Date.now() + 6_000)
-        .toISOString()
-        .replace(/\.\d+Z$/, 'Z')
+      // The hub runs on the test's clock (ticks still come on the real
+      // timer): the deadline passes when the test moves the clock, not after
+      // however long the real git work before the first push takes on a
+      // loaded machine. The deadline is cut to the second, as manifests are.
+      let clock = Date.now()
+      const soon = new Date(clock + 6_000).toISOString().replace(/\.\d+Z$/, 'Z')
+      const deadline = Date.parse(soon)
+      const grace = 500
       const from = await laptop(base, { deadline: soon })
       const other = await laptop(join(base, 'second'), {
         deadline: soon,
@@ -630,16 +634,26 @@ describe('restart and deadlines', () => {
             },
           ],
           target.issue,
-          { deadlineGraceMs: 500 },
+          { deadlineGraceMs: grace },
         ),
+        () => clock,
       )
       hub.handoff.start()
       const went = await accept(hub, from)
       await until('dispatched', () => hub.state(went) === 'dispatched')
       const waiting = await accept(hub, other)
+      // At the deadline the one nobody took fails; the one that went out
+      // still has its grace.
+      clock = deadline
       await until(
-        'both failed',
-        () => hub.state(went) === 'failed' && hub.state(waiting) === 'failed',
+        'the waiting one failed',
+        () => hub.state(waiting) === 'failed',
+      )
+      expect(hub.state(went)).toBe('dispatched')
+      clock = deadline + grace
+      await until(
+        'the one that went out failed',
+        () => hub.state(went) === 'failed',
       )
       const [a, b] = await Promise.all([
         hub.handoff.port.get(went),

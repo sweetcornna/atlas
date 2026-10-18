@@ -252,6 +252,10 @@ interface ProviderExecutorOptions {
   readonly dialWindowMs?: number
   /** Defaults to {@link DIALS_PER_WINDOW}. */
   readonly dialsPerWindow?: number
+  /** The pacing clock: `Date.now` by default; tests drive a fake one. */
+  readonly now?: () => number
+  /** The pacing wait: a real timer by default; tests drive a fake one. */
+  readonly sleep?: (ms: number) => Promise<void>
 }
 
 interface RunOptions {
@@ -374,6 +378,8 @@ export class ProviderExecutor {
   readonly #dials = new Map<string, number[]>()
   readonly #dialWindowMs: number
   readonly #dialsPerWindow: number
+  readonly #now: () => number
+  readonly #sleep: (ms: number) => Promise<void>
 
   constructor(
     targets: readonly ProviderNodeTarget[],
@@ -383,6 +389,8 @@ export class ProviderExecutor {
     this.#options = options
     this.#dialWindowMs = options.dialWindowMs ?? DIAL_WINDOW_MS
     this.#dialsPerWindow = options.dialsPerWindow ?? DIALS_PER_WINDOW
+    this.#now = options.now ?? Date.now
+    this.#sleep = options.sleep ?? sleep
   }
 
   /** Node names in the order they were configured. */
@@ -463,7 +471,7 @@ export class ProviderExecutor {
       this.#spawn(target, argv, env, request, timeoutMs + SSH_GRACE_MS)
     const key = `${target.host}:${target.port}`
     if (options.background === true) {
-      if (this.#slot(key) > Date.now()) {
+      if (this.#slot(key) > this.#now()) {
         return {
           ok: false,
           reason: 'deferred',
@@ -473,13 +481,13 @@ export class ProviderExecutor {
       this.#book(key)
       return dial()
     }
-    await sleep(this.#book(key))
+    await this.#sleep(this.#book(key))
     const first = await dial()
     if (first.ok || first.preHandshake !== true) return first
     // Refused before the handshake: whatever filled the node's window (us or
     // another tool on this machine) has to age out first. One redial only.
-    await sleep(this.#dialWindowMs + DIAL_MARGIN_MS)
-    await sleep(this.#book(key))
+    await this.#sleep(this.#dialWindowMs + DIAL_MARGIN_MS)
+    await this.#sleep(this.#book(key))
     return dial()
   }
 
@@ -490,7 +498,7 @@ export class ProviderExecutor {
    * booked dial — goes over.
    */
   #slot(key: string): number {
-    const now = Date.now()
+    const now = this.#now()
     const window = this.#dialWindowMs
     const dials = (this.#dials.get(key) ?? []).filter(at => at > now - window)
     this.#dials.set(key, dials)
@@ -511,7 +519,7 @@ export class ProviderExecutor {
   #book(key: string): number {
     const at = this.#slot(key)
     this.#dials.get(key)?.push(at)
-    return Math.max(0, at - Date.now())
+    return Math.max(0, at - this.#now())
   }
 
   #spawn(

@@ -13,13 +13,7 @@
 
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createHmac, randomBytes } from 'node:crypto'
-import {
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SENTINEL_COMMAND } from '@qianmo/providers'
@@ -370,19 +364,27 @@ describe('dial pacing (v2.47.2: nodes rate-limit new ssh connections)', () => {
     const knownHosts = join(root, 'known_hosts')
     writeFileSync(knownHosts, `node-1.example.test ${HOST_KEY}\n`)
     ssh.forcedCommand(`${node.command} beta-1`)
+    // The pacing clock is the test's: a wait moves it forward at once, and
+    // real time does not move it at all. So a dial's own few hundred ms (more
+    // on a loaded machine) never decide what fits in the window, and every
+    // wait the executor asks for is recorded exactly.
+    let now = 1_000_000
+    const slept: number[] = []
     const executor = new ProviderExecutor([sshTarget(root)], {
       knownHostsFile: knownHosts,
       sshBinary: ssh.binary,
       dialWindowMs: windowMs,
       dialsPerWindow,
+      now: () => now,
+      sleep: async ms => {
+        slept.push(ms)
+        now += Math.max(0, ms)
+      },
     })
-    /** When each dial started (the fake ssh writes its argv first thing). */
-    const dialTimes = () =>
-      readdirSync(ssh.dir)
-        .filter(name => name.startsWith('ssh-argv-'))
-        .map(name => statSync(join(ssh.dir, name)).mtimeMs)
-        .sort((a, b) => a - b)
-    return { ssh, node, executor, dialTimes }
+    const advance = (ms: number) => {
+      now += ms
+    }
+    return { ssh, node, executor, slept, advance }
   }
 
   test('the defaults are what ufw limit allows: 3 new connections per 30 s', () => {
@@ -391,10 +393,7 @@ describe('dial pacing (v2.47.2: nodes rate-limit new ssh connections)', () => {
   })
 
   test('a dial past the window waits for the oldest to age out; the ones inside do not', async () => {
-    const { executor, dialTimes } = setup()
-    // Lower bounds are taken from before the first run: the fake ssh writes
-    // its argv a variable few hundred ms after the executor booked the dial.
-    const started = Date.now()
+    const { ssh, executor, slept } = setup()
     for (const id of ['req-pace-00001', 'req-pace-00002', 'req-pace-00003']) {
       const result = await executor.run(
         'beta-1',
@@ -403,19 +402,14 @@ describe('dial pacing (v2.47.2: nodes rate-limit new ssh connections)', () => {
       )
       expect(result.ok).toBe(true)
     }
-    const [, second, third] = dialTimes()
-    // Positive control: the first two went straight out.
-    expect((second ?? Infinity) - started).toBeLessThan(WINDOW)
-    // The third waited until the first had left the window (plus the margin).
-    expect((third ?? 0) - started).toBeGreaterThanOrEqual(WINDOW + MARGIN - 20)
+    expect(ssh.invocations()).toHaveLength(3)
+    // Positive control: the first two went straight out. The third waited
+    // until the first had left the window, plus the margin.
+    expect(slept).toEqual([0, 0, WINDOW + MARGIN])
   }, 30_000)
 
   test('a background run with the window full dials nothing and answers deferred', async () => {
-    // A wider window than the shared one: the first run alone can take longer
-    // than 1.5 s on a loaded machine, and the window must still be full when
-    // the background run asks.
-    const window = 6_000
-    const { ssh, executor } = setup(1, window)
+    const { ssh, executor, advance } = setup(1)
     expect(
       (await executor.run('beta-1', applyRequest('beta-1'), 10_000)).ok,
     ).toBe(true)
@@ -431,7 +425,7 @@ describe('dial pacing (v2.47.2: nodes rate-limit new ssh connections)', () => {
     expect(deferred.ok ? 'ok' : deferred.reason).toBe('deferred')
     expect(ssh.invocations()).toHaveLength(1)
     // Positive control: once the window has room, the same run dials.
-    await new Promise(resolve => setTimeout(resolve, window + MARGIN + 100))
+    advance(WINDOW + MARGIN)
     const later = await executor.run('beta-1', status, 10_000, {
       background: true,
     })
@@ -440,14 +434,13 @@ describe('dial pacing (v2.47.2: nodes rate-limit new ssh connections)', () => {
   }, 30_000)
 
   test('refused before the handshake: one redial after the window, and it lands', async () => {
-    const { ssh, node, executor, dialTimes } = setup()
+    const { ssh, node, executor, slept } = setup()
     ssh.refuse(1, REFUSED)
-    const started = Date.now()
     const result = await executor.run('beta-1', applyRequest('beta-1'), 10_000)
     expect(result.ok).toBe(true)
-    const [, redial] = dialTimes()
-    expect(dialTimes()).toHaveLength(2)
-    expect((redial ?? 0) - started).toBeGreaterThanOrEqual(WINDOW + MARGIN - 20)
+    expect(ssh.invocations()).toHaveLength(2)
+    // The redial waited out the whole window plus the margin first.
+    expect(slept).toEqual([0, WINDOW + MARGIN, 0])
     expect(node.requests()).toHaveLength(1)
   }, 30_000)
 

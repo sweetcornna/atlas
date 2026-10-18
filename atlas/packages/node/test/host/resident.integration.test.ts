@@ -1189,6 +1189,9 @@ describe('the reliability kit (P13.5)', () => {
       // until teardown, by which time the peer is already gone.
       spawnOmp: () =>
         spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
+      // The peer is gone, so the receipt never comes: 200 ms of it instead of
+      // the default 5 s. Only this life — the second one's receipt is real.
+      replyReceiptTimeoutMs: 200,
       onReady: address => {
         if (address.unix !== undefined) firstReady.push(address.unix)
       },
@@ -1342,6 +1345,9 @@ describe('the reliability kit (P13.5)', () => {
       // until teardown, by which time the peer is already gone.
       spawnOmp: () =>
         spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
+      // The peer is gone, so the receipt never comes: 200 ms of it instead of
+      // the default 5 s. Only this life — the second one's receipt is real.
+      replyReceiptTimeoutMs: 200,
       onReady: address => {
         if (address.unix !== undefined) firstReady.push(address.unix)
       },
