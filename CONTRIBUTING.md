@@ -1,16 +1,16 @@
 # 贡献指南
 
-欢迎参与**阡陌 AgentNest**。这份文档讲**怎么在这个仓库里干活**；架构、模块地图、feature flag 体系这些「代码是什么样」的问题，一律以 [`CLAUDE.md`](CLAUDE.md) 为准。
+欢迎参与**阡陌 AgentNest**。这份文档讲**怎么在这个仓库里干活**；[`CLAUDE.md`](CLAUDE.md) 是简短入口，架构、模块地图、feature flag 体系的详细约定见 [`CLAUDE.full.md`](CLAUDE.full.md)。
 
 > 术语保留英文原文（feature flag、barrel、ratchet 等），因为它们同时是代码里的标识符，翻译会让搜索失效。
 
 ## 1. 开始之前
 
-按这个顺序读：
+先读简短入口，再按当前任务选择文档：
 
-1. [`CLAUDE.md`](CLAUDE.md) —— 唯一的架构真源。**「路径与隔离不变式」一节在动任何路径相关代码前必读。**
-2. 本文档 —— 工作流与规范。
-3. 你要改的那块代码附近的 `docs/`。
+1. [`CLAUDE.md`](CLAUDE.md) —— 本仓库硬约束与详细文档路由。**动路径相关代码前，阅读 [`CLAUDE.full.md`](CLAUDE.full.md) 的「路径与隔离不变式」一节。**
+2. 本文档中对应的工作流与规范。
+3. 需要设计依据时，查你要改的代码附近的 `docs/`。
 
 **这个仓库是两层。**阡陌基于团队负责人自有的开源项目 **open-claude-code**（CLI 名 `occ`，MIT 许可）构建，
 并在其上实现常驻化改造与智能体通信网络。基座以零改动快照导入，**目录结构原样保留在仓库根**，阡陌自己的代码是
@@ -20,7 +20,7 @@
 
 - **基座那层**是 Anthropic Claude Code CLI 的逆向/反编译还原版，目标是恢复核心功能、裁掉次要能力，
   并与官方 Claude Code 做到用户态完全隔离。很多模块是 stub 或被 feature flag 关掉的 —— 看到「空实现」
-  先确认是不是有意为之，再动手补。**改它要考虑上游同步成本**（见 §1 之后各节与 `CLAUDE.md` §2.3：能走扩展点就别改核心）。
+  先确认是不是有意为之，再动手补。**改它要考虑上游同步成本**（见 §1 之后各节与 `CLAUDE.full.md` §2.3：能走扩展点就别改核心）。
 - **阡陌那层**是本项目的自有工作，范围以 [`docs/dev/charter.md`](docs/dev/charter.md) 为唯一依据。
 
 分不清某个 `packages/` 子目录属于哪一层，看它 `package.json` 的 `name`：`@qianmo/*` 是阡陌的，其余是基座的。
@@ -39,22 +39,24 @@ bun install          # 这是 Bun 项目，不是 Node 项目
 ```bash
 bun run dev                    # 开发模式
 bun test src/path/to/x.test.ts # 单个测试文件
-bun run precheck               # 任务完成前必须跑，且必须零错误
+bun run precheck               # 代码改动完成前必须跑，且必须零错误
 ```
 
 `precheck` = `tsc --noEmit` + `biome check --fix` + 三道毫秒级门禁 + 全量 `bun test`。注意它**会改写你的文件**（`check:fix` 而非 `check`），跑完记得看 `git diff`。
+
+纯文案/指令改动检查相关文档、链接与 `git diff --check`，不触发业务测试或全仓格式化。输入和环境未变的有效验证结果可以复用；代码改动的零错误要求及下述推送 / PR 门禁继续适用。
 
 推送 / 发 PR 之前跑 **`bun run verify`** —— 它是只读式的近 CI 全量检查（`biome ci` 而非 `--fix`），并补上 `precheck` 不含的几道重活（`check:cycles`、`check:unused`、`check:bundle`、`build:vite`、分片测试）。**`precheck` 过 ≠ CI 会过**，两者的差集就在这里。
 
 **九道 `check:*` 门禁必须全部接进 `verify` 与 CI。** 一道定义了却没接的门禁比没有更糟：它看着在，其实从不运行，而写的人以为有人在守。2026-08-26 清出过两道这样的孤儿——`check:identity-paths`（守三方身份隔离，且在干净树上恒红）与 `check:docs-i18n`（守文档站死链），后者的失守直接导致 `sync-docs-i18n.ts` 与 `check-docs-i18n.ts` 对同一条约定分叉而无人发现。**新增 `check:*` 脚本时，同一个提交里必须把它接进 `verify` 和 `.github/workflows/ci.yml`。**
 
-完整命令表在 [`CLAUDE.md`](CLAUDE.md) 的 Commands 一节，这里不复制。
+常用命令及 worktree 限制在 [`CLAUDE.full.md`](CLAUDE.full.md) §3，这里不复制。
 
 ## 4. 「指针不复制」铁律
 
 **同一个事实只允许存在于一个地方，其他地方只放指针。**
 
-这条不是洁癖，是有代价的教训：`AGENTS.md` 曾经是 `CLAUDE.md` 的完整副本，两份漂移到相差 783 行，审计发现副本里有 **21 处与代码不符的陈述** —— 不存在的 workspace package、过期的 feature flag 计数、脚本早已删除的命令。现在 `AGENTS.md` 只剩 17 行指针。
+这条不是洁癖，是有代价的教训：`AGENTS.md` 曾经是 `CLAUDE.md` 的完整副本，两份漂移到相差 783 行，审计发现副本里有 **21 处与代码不符的陈述** —— 不存在的 workspace package、过期的 feature flag 计数、脚本早已删除的命令。`AGENTS.md` 保持跨工具指针，详细约定由 `CLAUDE.full.md` 维护。
 
 落到日常：
 
@@ -92,7 +94,7 @@ bun run precheck               # 任务完成前必须跑，且必须零错误
 - `log.ts` / `debug.ts` 用 `tests/mocks/` 下的共享 mock，不要在测试文件里内联。
 - 修 bug 先写出会红的测试，再让它变绿。**不要为了让测试过而削弱断言或 skip 用例。**
 
-完整的 mock 规则与污染排查方法在 [`CLAUDE.md`](CLAUDE.md) 的 Testing 一节。
+完整的 mock 规则与污染排查方法在 [`CLAUDE.full.md` 的 Testing 一节](CLAUDE.full.md#testing)。
 
 ## 8. 路径与隔离不变式
 
@@ -100,7 +102,7 @@ occ 必须能和官方 Claude Code 装在同一台机器上互不干扰。**所�
 
 隔离改造前有 12 处绕过 helper 直接拼路径，其中两处是真实事故：卸载逻辑会 `rm -rf ~/.claude/local`（等于删掉官方 CLI 的本地安装），`doctor` 上报的路径和它实际检查的路径根本不是同一个。
 
-具体对照表（要什么用什么、绝对不要写什么）、以及**故意保持不变**的那几项（`CLAUDE.md` 文件名、`CLAUDECODE=1`、`~/.claude/ide` 锁文件目录），见 [`CLAUDE.md`](CLAUDE.md) 的「路径与隔离不变式」。改这块之前请务必读完。
+具体对照表（要什么用什么、绝对不要写什么）、以及**故意保持不变**的那几项（`CLAUDE.md` 文件名、`CLAUDECODE=1`、`~/.claude/ide` 锁文件目录），见 [`CLAUDE.full.md`](CLAUDE.full.md) 的「路径与隔离不变式」。改这块之前请务必读完。
 
 ## 9. 循环依赖棘轮（ratchet）
 
@@ -197,7 +199,7 @@ git fetch --depth 1 origin 'refs/tags/base-snapshot/*:refs/tags/base-snapshot/*'
 ## 11. 本仓库不发布
 
 **阡陌不发 npm 包、不打 tag、不跑基座的 release 流程**（章程 N-13/N-14，另见
-[`CLAUDE.md`](CLAUDE.md) §0）。`publish-npm.yml` 已按 roadmap P0.4 移除；
+[`CLAUDE.full.md`](CLAUDE.full.md) §0）。`publish-npm.yml` 已按 roadmap P0.4 移除；
 `scripts/release.ts` / `scripts/releaseCore.ts` / `scripts/changelog-section.ts`
 **已于 2026-08-26 一并删除** —— 它们只服务那个不存在的工作流，留着只会让人以为
 这里有一条发布路径。`.github/workflows/` 下只有 `ci.yml`。
@@ -207,7 +209,7 @@ git fetch --depth 1 origin 'refs/tags/base-snapshot/*:refs/tags/base-snapshot/*'
 | 基座的发布面 | 在本仓库的状态 |
 | --- | --- |
 | `npm publish` / `--provenance` | 不做 |
-| git tag `v<version>` + GitHub Release | 不做（`base-snapshot/*` 标签是另一回事，见 §12 与 CLAUDE.md §2.5） |
+| git tag `v<version>` + GitHub Release | 不做（`base-snapshot/*` 标签是另一回事，见 CLAUDE.full.md §2.5） |
 | `CHANGELOG.md` 的发布约定与多语言译本 | 不维护；文件保留为历史记录 |
 | `package.json` 的 `version` | 只作为 `MACRO.VERSION` 的构建真源，不代表任何已发布版本 |
 
@@ -219,7 +221,8 @@ git fetch --depth 1 origin 'refs/tags/base-snapshot/*:refs/tags/base-snapshot/*'
 
 | 内容 | 位置 |
 | --- | --- |
-| 架构、模块地图、约定 | [`CLAUDE.md`](CLAUDE.md)（唯一真源） |
+| 入口硬约束与任务路由 | [`CLAUDE.md`](CLAUDE.md) |
+| 架构、模块地图、详细约定 | [`CLAUDE.full.md`](CLAUDE.full.md)（详细规则真源） |
 | 跨工具入口 | `AGENTS.md`（**只放指针**，不要往里抄内容） |
 | 功能说明、集成指南 | `docs/zh/features/`、`docs/` 下按主题分目录 |
 | 编号的功能规格与人工验收清单 | `spec/feature_<日期>_<编号>_<名字>/` |
