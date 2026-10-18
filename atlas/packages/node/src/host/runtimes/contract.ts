@@ -155,6 +155,17 @@ export interface NativeExtensionsReply {
   readonly openCommand: string
 }
 
+/**
+ * An install or removal that went through when listing again afterwards did
+ * not: no `items`, so the console reads the list itself.
+ */
+export interface NativeExtensionsChanged {
+  readonly agent: string
+  readonly runtime: string
+  readonly changed: true
+  readonly notes: readonly string[]
+}
+
 /** `runtime.ext.list`. */
 export interface NativeExtensionsListRequest {
   readonly agent: string

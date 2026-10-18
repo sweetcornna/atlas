@@ -296,6 +296,20 @@ test('Codex: a thread is opened once, used for every turn and resumed after a re
   expect(launches[0]!.env.CODEX_HOME).toStartWith(root!.root)
 })
 
+test('Codex: a stop while turn/start is still unanswered interrupts the turn once it has an id', async () => {
+  const { pool, agent } = setup({ runtime: 'codex' })
+  const session = await pool.newSession(agent)
+  const channel = await pool.channelFor(session)
+  const pending = new OmpResidentTurnPort(pool).execute(
+    { sessionId: session, messageId: 'late', prompt: 'late' },
+    async () => {},
+  )
+  await Bun.sleep(50)
+  await channel.abort()
+  const stopped = await pending
+  expect(stopped.outcome).toBe('failed')
+})
+
 test('Codex: failed turns fail; an escalation outside the workspace goes to the operator', async () => {
   const { pool, agent, asked } = setup(
     { runtime: 'codex' },

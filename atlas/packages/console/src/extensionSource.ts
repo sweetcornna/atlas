@@ -43,7 +43,8 @@ const REF = /^[A-Za-z0-9._/-]{1,200}$/
 const NPM_PART = /^[a-z0-9~][a-z0-9._~-]{0,213}$/
 const NPM_EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
 const MARKET_PART = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-const MCP_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/
+/** The node's own rule (`nativeExt.ts`): no dots, a harness config path splits on them. */
+const MCP_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const BARE_COMMAND = /^[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}$/
 const PATH_PART = /^[A-Za-z0-9_.+@-]{1,128}$/
 /** A harness's own id for an installed item (`name@market`, `@scope/pkg`, `owner/repo`). */
@@ -227,8 +228,7 @@ export function extensionInstallRequest(
     return { ok: true, value: { kind: input.kind, source } }
   }
   const name = input.name ?? ''
-  if (!MCP_NAME.test(name) || name.includes('..'))
-    return invalid('MCP 名字只用字母数字与 _ . -')
+  if (!MCP_NAME.test(name)) return invalid('MCP 名字只用字母数字与 _ -')
   if (name.toLowerCase().startsWith('qm-') || name.toLowerCase() === 'qianmo')
     return invalid('qm- 开头的名字与 qianmo 留给阡陌自己')
   if (input.source !== undefined) return invalid('MCP 给命令或地址 · 不给来源')

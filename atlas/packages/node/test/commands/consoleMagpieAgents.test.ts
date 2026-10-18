@@ -99,6 +99,12 @@ class FakeLinks {
   readonly ext: string[] = []
   #held: (() => void) | null = null
   hold = false
+  /**
+   * The next `runtime.status` answers what the node had when it was asked,
+   * only once this settles; `statusAsked` fires as it is asked.
+   */
+  holdStatus: Promise<void> | null = null
+  statusAsked: (() => void) | null = null
   /** `runtime.configure` answers a refusal. */
   refuseConfigure = false
   /** A runtime the node reports as installing on its own (P36.3). */
@@ -256,14 +262,19 @@ class FakeLinks {
       return this.#extension(fake, node, op, args, actor)
     if (op !== 'runtime.status' && op !== 'runtime.versions')
       this.writes.push(`${node} ${op} ${JSON.stringify(args)} by ${actor}`)
-    if (op === 'runtime.status')
-      return {
-        ok: true,
-        value: {
-          defaultRuntime: 'dsh',
-          agents: fake.agents.map(agent => this.#state(fake, agent)),
-        },
+    if (op === 'runtime.status') {
+      const value = {
+        defaultRuntime: 'dsh',
+        agents: fake.agents.map(agent => this.#state(fake, agent)),
       }
+      const held = this.holdStatus
+      if (held !== null) {
+        this.holdStatus = null
+        this.statusAsked?.()
+        await held
+      }
+      return { ok: true, value }
+    }
     if (op === 'runtime.versions')
       return {
         ok: true,
@@ -749,6 +760,35 @@ describe('choices from the page', () => {
     )
     expect(same.ok).toBe(true)
     expect(links.writes.length).toBe(unchanged)
+  })
+
+  test('a background check that read before a runtime change does not write the old runtime\u2019s model over it', async () => {
+    const port = await connected()
+    const agents = agentsOf(port)
+    // A new DeepSeek upstream: the check would move coder (dsh) onto it.
+    fake.addProvider({ id: 'ds2', models: ['deepseek-v5'] })
+    let release!: () => void
+    links.holdStatus = new Promise(done => {
+      release = done
+    })
+    const asked = new Promise<void>(done => {
+      links.statusAsked = done
+    })
+    const checked = port.check(caller())
+    await asked
+    // Meanwhile the operator moves coder to Claude Code.
+    const moved = await agents.configure(
+      { node: 'beta-1', agent: 'coder', runtime: 'claude-code' },
+      caller(),
+    )
+    if (!moved.ok) throw new Error(moved.failure.message)
+    release()
+    expect((await checked).ok).toBe(true)
+    await agents.idle()
+    expect(links.agent('beta-1', 'coder')).toMatchObject({
+      runtime: 'claude-code',
+      model: `${PROFILE}/anthropic/claude-opus-5`,
+    })
   })
 
   test('a choice the node did not take is not kept for a later check to apply', async () => {

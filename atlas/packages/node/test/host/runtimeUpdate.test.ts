@@ -863,6 +863,88 @@ test('a command that writes a lot to stderr still finishes', async () => {
   expect(result).toMatchObject({ code: 0, stdout: 'done\n' })
 })
 
+test('a command that writes a lot to stdout keeps only maxOutput of it', async () => {
+  const result = await runCommand(
+    [
+      process.execPath,
+      '-e',
+      "for (let i = 0; i < 64; i++) process.stdout.write('y'.repeat(1024 * 1024))",
+    ],
+    {
+      env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin' },
+      timeoutMs: 20_000,
+      maxOutput: 100,
+    },
+  )
+  expect(result).toEqual({ code: 0, stdout: 'y'.repeat(100), truncated: true })
+})
+
+test('a command that ignores its timeout is killed outright, and a child it left holding the pipes does not keep it waiting', async () => {
+  const started = Date.now()
+  const result = await runCommand(
+    // The shell ignores SIGTERM, and so does the sleep it starts.
+    ['/bin/sh', '-c', "trap '' TERM; sleep 6; echo late"],
+    {
+      env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin' },
+      timeoutMs: 100,
+      killGraceMs: 200,
+    },
+  )
+  expect(result.code).not.toBe(0)
+  expect(result.stdout).toBe('')
+  expect(Date.now() - started).toBeLessThan(4_000)
+})
+
+test('an install that comes in while the runtime is being removed is refused, not reported done', async () => {
+  const npm = fakeNpm(PIN('codex'))
+  let release!: () => void
+  const held = new Promise<void>(done => {
+    release = done
+  })
+  let uninstalling!: () => void
+  const uninstallStarted = new Promise<void>(done => {
+    uninstalling = done
+  })
+  const installer = new RuntimeInstaller({
+    run: async (argv, options) => {
+      if (argv[1] === 'uninstall') {
+        uninstalling()
+        await held
+      }
+      return npm.run(argv, options)
+    },
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+  })
+  // An earlier build's install in the shared prefix, at the pinned version.
+  const legacy = path.join(managedRuntimePrefix(), 'node_modules', '.bin')
+  mkdirSync(legacy, { recursive: true })
+  writeFileSync(path.join(legacy, 'codex'), '')
+  const removing = installer.control(
+    'runtime.remove',
+    { runtime: 'codex' },
+    CTX,
+  )
+  await uninstallStarted
+  expect(await installer.install('codex')).toMatchObject({
+    ok: false,
+    code: 'E_RUNTIME_BUSY',
+  })
+  expect(
+    await installer.control('runtime.remove', { runtime: 'codex' }, CTX),
+  ).toMatchObject({ ok: false, code: 'E_RUNTIME_BUSY' })
+  release()
+  expect(await removing).toEqual({
+    ok: true,
+    value: { runtime: 'codex', removed: true },
+  })
+  expect(managedRuntimeBin('codex')).toBeUndefined()
+  // Once it is gone, an install goes ahead.
+  expect((await installer.install('codex')).ok).toBe(true)
+})
+
 test('installs of two runtimes run one after the other, never together', async () => {
   const npm = fakeNpm(PIN('gemini'))
   let running = 0

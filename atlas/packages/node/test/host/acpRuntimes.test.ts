@@ -505,6 +505,18 @@ test('a launch that fails before its process is running leaves no token or launc
   expect(leftovers(launches.at(-1)!.sessionDir)).toEqual([])
 })
 
+test('a start still being set up when the pool stops spawns nothing and hands out no token', async () => {
+  const { pool, agent } = setup()
+  const session = await pool.newSession(agent)
+  const before = launches.length
+  const starting = pool.channelFor(session)
+  await pool.stop()
+  await expect(starting).rejects.toThrow('external runtime pool is closed')
+  expect(launches.length).toBe(before)
+  const sessionDir = qianmoConfigPath('resident', 'sessions', 'coder', session)
+  expect(existsSync(join(sessionDir, 'runtime-mcp.token'))).toBe(false)
+})
+
 test('a session the harness cannot open right now is kept; only an unknown one, or one failing three starts in a row, starts anew', async () => {
   const { pool, agent, requests } = setup()
   const session = await pool.newSession(agent)
@@ -698,10 +710,14 @@ test('a session moved to another runtime starts a new native conversation there'
     { runtimeOf: () => runtime },
   )
   const session = await pool.newSession(agent)
+  expect(pool.conversationSince(session)).toBeUndefined()
+  const begun = Date.now()
   expect(content(await turn(pool, session, 'x1', 'hello'))).toBe(
     'acp(1): hello',
   )
   expect(resolved.at(-1)!.runtime).toBe('dsh')
+  const dshSince = pool.conversationSince(session)!
+  expect(dshSince).toBeGreaterThanOrEqual(begun)
   const dir = launches[0]!.sessionDir
   expect(JSON.parse(readFileSync(join(dir, 'runtime.json'), 'utf8')).kind).toBe(
     'dsh',
@@ -718,6 +734,8 @@ test('a session moved to another runtime starts a new native conversation there'
   expect(launches[1]!.argv).not.toContain('--resume')
   const claude = JSON.parse(readFileSync(join(dir, 'runtime.json'), 'utf8'))
   expect(claude.kind).toBe('claude-code')
+  // Its conversation there is new: the dsh turn is not in it.
+  expect(pool.conversationSince(session)!).toBeGreaterThan(dshSince)
   // The instructions follow the runtime it runs on now.
   expect(readFileSync(join(dir, 'runtime-system.txt'), 'utf8')).not.toBe(
     dshPrompt,
