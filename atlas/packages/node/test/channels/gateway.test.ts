@@ -784,3 +784,209 @@ describe('background tasks', () => {
       expect(`${text} ${isStatusQuery(text)}`).toBe(`${text} false`)
   })
 })
+
+describe('hermes alignment', () => {
+  function paced() {
+    const turns = new FakeTurns()
+    const errors: string[] = []
+    const waits: number[] = []
+    let now = 1_000_000
+    const gateway = new ChannelGateway({
+      turns,
+      now: () => now,
+      sleep: async ms => {
+        waits.push(ms)
+        now += ms
+      },
+      onError: message => errors.push(message),
+    })
+    return {
+      turns,
+      gateway,
+      errors,
+      waits,
+      advance: (ms: number) => {
+        now += ms
+      },
+    }
+  }
+
+  test('a paste the client split waits for its continuation and becomes one turn', async () => {
+    const { turns, gateway } = paced()
+    const adapter = Object.assign(new FakeAdapter('telegram', 4_000), {
+      inboundSplitAt: 50,
+    })
+    const first = 'x'.repeat(60)
+    gateway.handle(RULES, adapter, inbound({ text: first }))
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(turns.calls).toHaveLength(0)
+    gateway.handle(RULES, adapter, inbound({ text: '结尾' }))
+    await until(() => turns.calls.length === 1, 3_000)
+    expect(turns.calls[0]!.text.endsWith(`${first}\n结尾`)).toBe(true)
+    // A short message does not wait.
+    turns.answer(0, '好')
+    await gateway.idle()
+    gateway.handle(RULES, adapter, inbound({ text: '短' }))
+    await until(() => turns.calls.length === 2, 200)
+  })
+
+  test('a group that keeps the bot busy is paused, its lines still kept as context', async () => {
+    const { turns, gateway, errors, advance } = paced()
+    const adapter = new FakeAdapter()
+    const rules = { ...RULES, members: true, allowGroups: ['g-1'] }
+    for (let i = 0; i < 20; i++) {
+      gateway.handle(
+        rules,
+        adapter,
+        inbound({ chat: GROUP, userId: `u${i}`, text: `第${i}句`, addressed: true }),
+      )
+      await until(() => turns.calls.length === i + 1)
+      turns.answer(i, `回${i}`)
+      await gateway.idle()
+      advance(1_000)
+    }
+    gateway.handle(
+      rules,
+      adapter,
+      inbound({ chat: GROUP, userId: 'u-late', text: '还在吗', addressed: true }),
+    )
+    await gateway.idle()
+    expect(turns.calls).toHaveLength(20)
+    expect(errors.some(line => line.includes('暂停'))).toBe(true)
+    // Private chats are not affected.
+    gateway.handle(rules, adapter, inbound({ text: '私聊' }))
+    await until(() => turns.calls.length === 21)
+    turns.answer(20, '好')
+    await gateway.idle()
+    advance(10 * 60_000 + 1)
+    gateway.handle(
+      rules,
+      adapter,
+      inbound({ chat: GROUP, userId: 'u-back', text: '恢复了吗', addressed: true }),
+    )
+    await until(() => turns.calls.length === 22)
+    expect(turns.calls[21]!.text).toContain('(u-late)] 还在吗')
+  })
+
+  test('a reply is at most eight chunks, the rest left to the console', async () => {
+    const { turns, gateway } = paced()
+    const adapter = new FakeAdapter('discord', 100)
+    gateway.handle(RULES, adapter, inbound())
+    await until(() => turns.calls.length === 1)
+    turns.answer(0, Array.from({ length: 60 }, (_, i) => `第${i}行${'字'.repeat(20)}`).join('\n'))
+    await gateway.idle()
+    expect(adapter.sent).toHaveLength(8)
+    expect(adapter.sent.every(one => one.text.length <= 100)).toBe(true)
+    expect(adapter.sent.at(-1)!.text).toContain('控制台')
+  })
+
+  test('sends to one chat keep the platform gap', async () => {
+    const { turns, gateway, waits } = paced()
+    const adapter = Object.assign(new FakeAdapter('telegram', 30), {
+      sendGapMs: 1_000,
+    })
+    gateway.handle(RULES, adapter, inbound())
+    await until(() => turns.calls.length === 1)
+    turns.answer(0, Array.from({ length: 4 }, (_, i) => `第${i}行内容内容`).join('\n'))
+    await gateway.idle()
+    expect(adapter.sent.length).toBeGreaterThan(1)
+    expect(waits).toHaveLength(adapter.sent.length - 1)
+    expect(waits.every(ms => ms > 0 && ms <= 1_000)).toBe(true)
+  })
+
+  test('a thread the bot answered in needs no mention afterwards', async () => {
+    const { turns, gateway } = paced()
+    const adapter = Object.assign(new FakeAdapter('slack'), {
+      followsThreads: true,
+    })
+    const rules = { ...RULES, members: true, allowGroups: ['C1'] }
+    const thread = { type: 'group', id: 'C1', threadId: '111.1' } as const
+    gateway.handle(rules, adapter, inbound({ chat: thread, userId: 'u1', text: '路过', addressed: false }))
+    gateway.handle(rules, adapter, inbound({ chat: thread, userId: 'u1', text: '@bot 看看', addressed: true }))
+    await until(() => turns.calls.length === 1)
+    turns.answer(0, '看了')
+    await gateway.idle()
+    gateway.handle(rules, adapter, inbound({ chat: thread, userId: 'u2', text: '那这个呢', addressed: false }))
+    await until(() => turns.calls.length === 2)
+    // Another thread in the same channel still needs the mention.
+    gateway.handle(
+      rules,
+      adapter,
+      inbound({ chat: { ...thread, threadId: '222.2' }, userId: 'u2', text: '别处', addressed: false }),
+    )
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(turns.calls).toHaveLength(2)
+  })
+
+  test('an adapter can remember message ids longer against redelivery', async () => {
+    const { turns, gateway, advance } = paced()
+    const plain = new FakeAdapter()
+    const slack = Object.assign(new FakeAdapter('slack'), {
+      dedupTtlMs: 3_600_000,
+    })
+    gateway.handle(RULES, plain, inbound({ id: 'p-1', text: 'a' }))
+    gateway.handle({ ...RULES, id: 'ch-2' }, slack, inbound({ id: 's-1', text: 'b' }))
+    await until(() => turns.calls.length === 2)
+    turns.answer(0, '1')
+    turns.answer(1, '2')
+    await gateway.idle()
+    advance(30 * 60_000)
+    gateway.handle(RULES, plain, inbound({ id: 'p-1', text: 'a' }))
+    gateway.handle({ ...RULES, id: 'ch-2' }, slack, inbound({ id: 's-1', text: 'b' }))
+    await until(() => turns.calls.length === 3)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(turns.calls).toHaveLength(3)
+    expect(turns.calls[2]!.text.endsWith('a')).toBe(true)
+  })
+})
+
+describe('pairing (hermes)', () => {
+  function pairing() {
+    const turns = Object.assign(new FakeTurns(), {
+      asked: [] as string[],
+      approved: [] as string[],
+      pair: async (channelId: string, message: { userId: string }) => {
+        turns.asked.push(`${channelId}:${message.userId}`)
+        return message.userId === 'quiet' ? null : '配对码 ABCD-EFGH'
+      },
+      approvePairing: async (_channelId: string, code: string) => {
+        turns.approved.push(code)
+        return '已批准'
+      },
+    })
+    const adapter = new FakeAdapter()
+    const gateway = new ChannelGateway({ turns })
+    return { turns, adapter, gateway }
+  }
+
+  test('a stranger in a pairing channel gets the hub answer, not a turn', async () => {
+    const { turns, adapter, gateway } = pairing()
+    const rules = { ...RULES, pairing: true }
+    const stranger = { userId: 'stranger', chat: { type: 'dm', id: 'dm-s' } } as const
+    gateway.handle(rules, adapter, inbound(stranger))
+    await until(() => adapter.sent.length === 1)
+    expect(adapter.sent[0]).toMatchObject({ chat: { id: 'dm-s' }, text: '配对码 ABCD-EFGH' })
+    gateway.handle(rules, adapter, inbound({ userId: 'quiet', chat: { type: 'dm', id: 'dm-q' } }))
+    await until(() => turns.asked.length === 2)
+    // Without pairing, strangers are dropped as before; groups never pair.
+    gateway.handle(RULES, adapter, inbound(stranger))
+    gateway.handle(
+      { ...rules, allowGroups: ['g-1'], members: true },
+      adapter,
+      inbound({ chat: GROUP, userId: 'stranger', addressed: true }),
+    )
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(turns.asked).toHaveLength(2)
+    expect(adapter.sent).toHaveLength(1)
+    expect(turns.calls).toHaveLength(1)
+  })
+
+  test('the owner approves with /pair', async () => {
+    const { turns, adapter, gateway } = pairing()
+    gateway.handle(RULES, adapter, inbound({ text: '/pair abcd-efgh' }))
+    await until(() => adapter.sent.length === 1)
+    expect(turns.approved).toEqual(['abcd-efgh'])
+    expect(adapter.texts()).toEqual(['已批准'])
+    expect(turns.calls).toHaveLength(0)
+  })
+})

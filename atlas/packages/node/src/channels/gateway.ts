@@ -46,6 +46,11 @@ export interface ChannelRules {
   readonly replyWindowMs: number
   /** Fixed framing the operator wrote for this channel; sticky. */
   readonly prompt?: string
+  /**
+   * Strangers who write privately get a pairing answer from the hub instead
+   * of silence (hermes pairing); the owner approves them.
+   */
+  readonly pairing?: boolean
 }
 
 export interface ChannelConversation {
@@ -111,6 +116,16 @@ export interface ChannelTurns {
     conversation: ChannelConversation,
     text: string,
   ): Promise<string | null>
+  /**
+   * A private message from someone a pairing channel does not know: the
+   * answer to send them (a pairing code), or null to stay silent.
+   */
+  pair?(
+    channelId: string,
+    inbound: ChannelInbound,
+  ): string | null | Promise<string | null>
+  /** `/pair <码>` from the owner: approves that request; the answer to show. */
+  approvePairing?(channelId: string, code: string): Promise<string>
 }
 
 interface ChannelTurnContext {
@@ -207,6 +222,36 @@ const SEND_ATTEMPTS = 3
 const SEND_BACKOFF_MS = [2_000, 4_000]
 /** A platform asking for a longer pause than this is not slept through. */
 const SEND_MAX_WAIT_MS = 60_000
+/** Chunks one reply may take; the rest stays on the console (hermes Discord `MAX_SPLIT_MESSAGES`). */
+const MAX_CHUNKS = 8
+const TRUNCATED = '（回复太长，后面的部分没有发出，完整内容在控制台对话页。）'
+
+/**
+ * A message as long as the client's own split is probably the first piece
+ * of a long paste: wait for the rest before starting a turn (hermes text
+ * batching, `_SPLIT_THRESHOLD`).
+ */
+const SPLIT_WAIT_MS = 1_000
+const SPLIT_WAIT_CAP_MS = 4_000
+
+/**
+ * Turns one group room may start in five minutes before it is paused
+ * (hermes `bot_loop_guard`): two bots answering each other never stop.
+ */
+const ROOM_TURNS = 20
+const ROOM_WINDOW_MS = 5 * 60_000
+const ROOM_PAUSE_MS = 10 * 60_000
+
+/** How long a message id is remembered against redelivery (hermes `MessageDeduplicator`). */
+const DEDUP_MS = 300_000
+/** Threads per adapter the bot is known to take part in. */
+const THREADS_KEPT = 2_000
+
+interface ReplyWindow {
+  timer: ReturnType<typeof setTimeout>
+  readonly opened: number
+  readonly fire: () => void
+}
 
 function senderKey(event: ChannelEvent): string | null {
   return event.conversation.chat.type === 'group' ? event.inbound.userId : null
@@ -372,9 +417,11 @@ const COMMANDS = new Set([
   'model',
   'compact',
   'help',
+  'pair',
 ])
 const HELP =
   '/new 新会话 · /stop 停止 · /status 状态 · /model [方向|default] · /compact 压缩上下文'
+const HELP_PAIR = ' · /pair 码 批准配对'
 
 export function conversationKey(channelId: string, chat: ChannelChat): string {
   return [
@@ -394,11 +441,18 @@ export class ChannelGateway {
   readonly #sticky: StickyContext
   readonly #pending = new Map<string, Pending>()
   readonly #active = new Map<string, Promise<void>>()
-  readonly #windows = new Map<string, ReturnType<typeof setTimeout>>()
+  readonly #windows = new Map<string, ReplyWindow>()
   readonly #generations = new Map<string, number>()
   readonly #seen = new Map<string, number>()
   /** Recent lines per group room (`<channel>:<chat>`), for addressed turns. */
   readonly #rooms = new Map<string, RoomLine[]>()
+  /** Turn starts per room in the last five minutes, and paused rooms. */
+  readonly #roomTurns = new Map<string, number[]>()
+  readonly #roomPauses = new Map<string, number>()
+  /** When each chat last got a send, per adapter, for `sendGapMs`. */
+  readonly #lastSends = new WeakMap<ChannelAdapter, Map<string, number>>()
+  /** Threads the bot answered in, per adapter, for `followsThreads`. */
+  readonly #followed = new WeakMap<ChannelAdapter, Set<string>>()
   #closed = false
 
   constructor(options: ChannelGatewayOptions) {
@@ -426,7 +480,7 @@ export class ChannelGateway {
 
   close(): void {
     this.#closed = true
-    for (const timer of this.#windows.values()) clearTimeout(timer)
+    for (const window of this.#windows.values()) clearTimeout(window.timer)
     this.#windows.clear()
     this.#pending.clear()
   }
@@ -437,8 +491,24 @@ export class ChannelGateway {
     adapter: ChannelAdapter,
     inbound: ChannelInbound,
   ): void {
-    if (this.#closed || this.#duplicate(rules.id, inbound.messageId)) return
-    const event = this.#admit(rules, adapter.platform, inbound)
+    if (
+      this.#closed ||
+      this.#duplicate(
+        rules.id,
+        inbound.messageId,
+        adapter.dedupTtlMs ?? DEDUP_MS,
+      )
+    )
+      return
+    const event = this.#admit(rules, adapter, inbound)
+    if (event === 'pair') {
+      void this.#pair(rules, adapter, inbound).catch(error =>
+        this.#onError?.(
+          `渠道 ${rules.id} 配对失败：${String((error as Error)?.message ?? error)}`,
+        ),
+      )
+      return
+    }
     if (event === null) return
     void this.#dispatch(rules, adapter, event).catch(error =>
       this.#onError?.(
@@ -447,23 +517,27 @@ export class ChannelGateway {
     )
   }
 
-  #duplicate(channelId: string, messageId: string): boolean {
+  /** Remembers each id until its time is up (the adapter's, else five minutes). */
+  #duplicate(channelId: string, messageId: string, ttlMs: number): boolean {
     const now = this.#now()
     const key = `${channelId}:${messageId}`
     if (this.#seen.size > 2_000)
-      for (const [seen, at] of this.#seen)
-        if (now - at > 300_000) this.#seen.delete(seen)
-    if (this.#seen.has(key)) return true
-    this.#seen.set(key, now)
+      for (const [seen, until] of this.#seen)
+        if (until <= now) this.#seen.delete(seen)
+    const until = this.#seen.get(key)
+    if (until !== undefined && until > now) return true
+    this.#seen.delete(key)
+    this.#seen.set(key, now + ttlMs)
     return false
   }
 
-  /** Who may talk here and on which lane; null drops the message. */
+  /** Who may talk here and on which lane; null drops the message, `pair` asks the hub. */
   #admit(
     rules: ChannelRules,
-    platform: ChannelPlatform,
-    inbound: ChannelInbound,
-  ): ChannelEvent | null {
+    adapter: ChannelAdapter,
+    message: ChannelInbound,
+  ): ChannelEvent | 'pair' | null {
+    let inbound = message
     const fromOwner = rules.ownerIds.includes(inbound.userId)
     let lane: ChannelLane
     if (inbound.chat.type === 'dm') {
@@ -473,13 +547,20 @@ export class ChannelGateway {
         (rules.allowAll || rules.allowUsers.includes(inbound.userId))
       )
         lane = 'member'
-      else return null
+      else
+        return rules.pairing === true && this.#turns.pair !== undefined
+          ? 'pair'
+          : null
     } else {
       if (!rules.allowAll && !rules.allowGroups.includes(inbound.chat.id))
         return null
       // Everything said in an allowed room is context for the next turn
       // that is meant for the bot, answered or not.
       this.#remember(rules.id, inbound)
+      // A thread the bot answered in is a conversation with it (hermes,
+      // Slack): no mention needed there.
+      if (!inbound.addressed && this.#follows(adapter, inbound.chat))
+        inbound = { ...inbound, addressed: true }
       if (rules.groupTrigger === 'mention' && !inbound.addressed) return null
       if (!fromOwner && !rules.members) return null
       lane = rules.members ? 'member' : 'owner'
@@ -488,7 +569,7 @@ export class ChannelGateway {
       conversation: {
         key: conversationKey(rules.id, inbound.chat),
         channelId: rules.id,
-        platform,
+        platform: adapter.platform,
         lane,
         chat: inbound.chat,
         ...(inbound.chatName === undefined
@@ -505,6 +586,76 @@ export class ChannelGateway {
 
   #roomKey(channelId: string, chat: ChannelChat): string {
     return `${channelId}:${chat.id}`
+  }
+
+  #threadKey(chat: ChannelChat): string | null {
+    return chat.type === 'group' && chat.threadId
+      ? `${chat.id}:${chat.threadId}`
+      : null
+  }
+
+  #follows(adapter: ChannelAdapter, chat: ChannelChat): boolean {
+    const key = this.#threadKey(chat)
+    return (
+      adapter.followsThreads === true &&
+      key !== null &&
+      (this.#followed.get(adapter)?.has(key) ?? false)
+    )
+  }
+
+  #joined(adapter: ChannelAdapter, chat: ChannelChat): void {
+    const key = this.#threadKey(chat)
+    if (adapter.followsThreads !== true || key === null) return
+    let threads = this.#followed.get(adapter)
+    if (threads === undefined) {
+      threads = new Set()
+      this.#followed.set(adapter, threads)
+    }
+    threads.delete(key)
+    threads.add(key)
+    if (threads.size > THREADS_KEPT)
+      threads.delete(threads.values().next().value!)
+  }
+
+  async #pair(
+    rules: ChannelRules,
+    adapter: ChannelAdapter,
+    inbound: ChannelInbound,
+  ): Promise<void> {
+    const reply = await this.#turns.pair?.(rules.id, inbound)
+    if (reply) await this.#send(adapter, inbound.chat, reply, inbound.messageId)
+  }
+
+  /** The room is paused (too many turns); its lines are still kept. */
+  #paused(conversation: ChannelConversation): boolean {
+    if (conversation.chat.type !== 'group') return false
+    const key = this.#roomKey(conversation.channelId, conversation.chat)
+    const until = this.#roomPauses.get(key)
+    if (until === undefined) return false
+    if (until > this.#now()) return true
+    this.#roomPauses.delete(key)
+    return false
+  }
+
+  #countTurn(conversation: ChannelConversation): void {
+    if (conversation.chat.type !== 'group') return
+    const key = this.#roomKey(conversation.channelId, conversation.chat)
+    const now = this.#now()
+    const recent = (this.#roomTurns.get(key) ?? []).filter(
+      at => now - at < ROOM_WINDOW_MS,
+    )
+    recent.push(now)
+    this.#roomTurns.delete(key)
+    if (recent.length < ROOM_TURNS) {
+      this.#roomTurns.set(key, recent)
+      if (this.#roomTurns.size > CONTEXT_ROOMS)
+        this.#roomTurns.delete(this.#roomTurns.keys().next().value!)
+      return
+    }
+    this.#roomPauses.set(key, now + ROOM_PAUSE_MS)
+    this.#onError?.(
+      `渠道 ${conversation.channelId} 的群 ${conversation.chat.id} 五分钟内跑了 ${ROOM_TURNS} 轮，暂停 10 分钟（防止和其他机器人互相回复）`,
+    )
   }
 
   #remember(channelId: string, inbound: ChannelInbound): void {
@@ -591,22 +742,45 @@ export class ChannelGateway {
         return
       }
     }
+    if (this.#paused(conversation)) return
     const key = conversation.key
-    if (this.#active.has(key) || this.#windows.has(key)) {
+    const split =
+      adapter.inboundSplitAt !== undefined &&
+      inbound.text.length >= adapter.inboundSplitAt
+    if (this.#active.has(key)) {
       this.#queue(key).add(event)
       return
     }
-    if (rules.replyWindowMs > 0) {
+    const window = this.#windows.get(key)
+    if (window !== undefined) {
       this.#queue(key).add(event)
-      this.#windows.set(
-        key,
-        setTimeout(() => {
-          this.#windows.delete(key)
-          const pending = this.#pending.get(key)
-          if (pending === undefined || pending.events.length === 0) return
-          this.#start(rules, adapter, key, pending.take())
-        }, rules.replyWindowMs),
-      )
+      if (split) {
+        // Another full-length piece: the paste goes on.
+        clearTimeout(window.timer)
+        window.timer = setTimeout(
+          window.fire,
+          Math.max(
+            0,
+            Math.min(SPLIT_WAIT_MS, window.opened + SPLIT_WAIT_CAP_MS - Date.now()),
+          ),
+        )
+      }
+      return
+    }
+    const waitMs = Math.max(rules.replyWindowMs, split ? SPLIT_WAIT_MS : 0)
+    if (waitMs > 0) {
+      this.#queue(key).add(event)
+      const fire = () => {
+        this.#windows.delete(key)
+        const pending = this.#pending.get(key)
+        if (pending === undefined || pending.events.length === 0) return
+        this.#start(rules, adapter, key, pending.take())
+      }
+      this.#windows.set(key, {
+        timer: setTimeout(fire, waitMs),
+        opened: Date.now(),
+        fire,
+      })
       return
     }
     this.#start(rules, adapter, key, event)
@@ -638,6 +812,10 @@ export class ChannelGateway {
             pending.events.length === 0
           )
             break
+          if (this.#paused(first.conversation)) {
+            this.#pending.delete(key)
+            break
+          }
           const next = pending.take()
           if (pending.events.length === 0) this.#pending.delete(key)
           await this.#run(rules, adapter, next)
@@ -660,6 +838,7 @@ export class ChannelGateway {
     event: ChannelEvent,
   ): Promise<void> {
     const { conversation, inbound } = event
+    this.#countTurn(conversation)
     const generation = this.#generations.get(conversation.key) ?? 0
     const session = this.#turns.sessionOf(conversation)
     // A task note that cannot be had is left out: the owner's words still go.
@@ -833,14 +1012,20 @@ export class ChannelGateway {
     text: string,
     replyTo?: string,
   ): Promise<boolean> {
-    if (text.length > adapter.chunkLimit && adapter.sendLong !== undefined) {
+    if (
+      text.length > (adapter.longReplyAt ?? adapter.chunkLimit) &&
+      adapter.sendLong !== undefined
+    ) {
       const whole = await adapter
         .sendLong(chat, text, replyTo ? { replyTo } : {})
         .catch(() => null)
-      if (whole?.ok) return true
+      if (whole?.ok) {
+        this.#joined(adapter, chat)
+        return true
+      }
     }
     let first = true
-    for (const chunk of splitMessage(text, adapter.chunkLimit)) {
+    for (const chunk of this.#chunks(text, adapter.chunkLimit)) {
       const sent = await this.#sendChunk(
         adapter,
         chat,
@@ -852,8 +1037,27 @@ export class ChannelGateway {
         this.#onError?.(`渠道发送失败：${sent.error ?? '未知原因'}`)
         return false
       }
+      this.#joined(adapter, chat)
     }
     return true
+  }
+
+  /** At most {@link MAX_CHUNKS}: a longer reply is cut at a line and says so. */
+  #chunks(text: string, limit: number): string[] {
+    const chunks = splitMessage(text, limit)
+    if (chunks.length <= MAX_CHUNKS) return chunks
+    for (
+      let budget = limit * (MAX_CHUNKS - 1);
+      budget > limit;
+      budget -= Math.ceil(limit / 4)
+    ) {
+      let head = text.slice(0, budget)
+      const line = head.lastIndexOf('\n')
+      if (line > budget / 2) head = head.slice(0, line)
+      const kept = splitMessage(head.trimEnd(), limit)
+      if (kept.length < MAX_CHUNKS) return [...kept, TRUNCATED]
+    }
+    return [...chunks.slice(0, MAX_CHUNKS - 1), TRUNCATED]
   }
 
   /**
@@ -868,8 +1072,23 @@ export class ChannelGateway {
     chunk: string,
     options: ChannelSendOptions,
   ): Promise<ChannelSendResult> {
+    const gap = adapter.sendGapMs ?? 0
+    const chatKey = `${chat.id}:${chat.threadId ?? ''}`
+    let sends = this.#lastSends.get(adapter)
+    if (sends === undefined) {
+      sends = new Map()
+      this.#lastSends.set(adapter, sends)
+    }
     for (let attempt = 1; ; attempt++) {
+      const last = sends.get(chatKey)
+      if (gap > 0 && last !== undefined) {
+        const wait = last + gap - this.#now()
+        if (wait > 0) await this.#sleep(wait)
+      }
       const sent = await adapter.send(chat, chunk, options)
+      sends.delete(chatKey)
+      sends.set(chatKey, this.#now())
+      if (sends.size > 1_000) sends.delete(sends.keys().next().value!)
       if (sent.ok || attempt >= SEND_ATTEMPTS || this.#closed) return sent
       const wait =
         sent.retryAfterMs ??
@@ -877,6 +1096,10 @@ export class ChannelGateway {
       if (wait === undefined || wait > SEND_MAX_WAIT_MS) return sent
       await this.#sleep(wait)
     }
+  }
+
+  #help(): string {
+    return this.#turns.approvePairing === undefined ? HELP : HELP + HELP_PAIR
   }
 
   async #command(
@@ -931,8 +1154,16 @@ export class ChannelGateway {
           this.#generations.set(key, (this.#generations.get(key) ?? 0) + 1)
         }
         break
+      case 'pair':
+        reply =
+          this.#turns.approvePairing === undefined
+            ? this.#help()
+            : args === ''
+              ? '用法：/pair 配对码'
+              : await this.#turns.approvePairing(conversation.channelId, args)
+        break
       default:
-        reply = HELP
+        reply = this.#help()
     }
     await this.#send(adapter, conversation.chat, reply, event.inbound.messageId)
   }
