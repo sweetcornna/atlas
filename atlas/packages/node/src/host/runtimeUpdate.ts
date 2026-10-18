@@ -27,7 +27,9 @@ import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statfsSync,
@@ -390,6 +392,10 @@ function errorText(error: unknown): string {
 
 const SEMVER_IN_OUTPUT = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/
 
+/** A scratch prefix of one install: `npm-stage-<uuid>` under the runtimes root. */
+const STAGE_NAME =
+  /^npm-stage-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
 /** Failed installs in a row a record stands for (0 after a success). */
 export function failuresOf(record: RuntimeInstallRecord | undefined): number {
   if (record === undefined || record.ok) return 0
@@ -416,6 +422,8 @@ export class RuntimeInstaller {
   #prefixLock: Promise<unknown> = Promise.resolve()
   /** `undefined`: not checked yet; `null`: no Node.js found. */
   #nodeVersion: string | null | undefined
+  /** Scratch prefixes of the installs running now. */
+  readonly #stages = new Set<string>()
   /** Stops every command this installer runs (the node is shutting down). */
   readonly #stopping = new AbortController()
 
@@ -502,6 +510,36 @@ export class RuntimeInstaller {
     } catch {
       // Kept in memory for this process; the status stays right.
     }
+  }
+
+  /**
+   * Removes the scratch prefixes installs left when the node died during
+   * one (at start, before any install): only `npm-stage-<uuid>` directories
+   * right under the runtimes root, none of this process's running installs,
+   * and an entry of that name that is a link or a file is left alone. A
+   * directory's own links are removed, never followed. Returns what went.
+   */
+  sweepStages(): string[] {
+    const root = qianmoConfigPath('runtimes')
+    let names: string[]
+    try {
+      names = readdirSync(root)
+    } catch {
+      return []
+    }
+    const removed: string[] = []
+    for (const name of names) {
+      const dir = path.join(root, name)
+      if (!STAGE_NAME.test(name) || this.#stages.has(dir)) continue
+      try {
+        if (!lstatSync(dir).isDirectory()) continue
+        rmSync(dir, { recursive: true, force: true })
+        removed.push(dir)
+      } catch {
+        // Left for the next start.
+      }
+    }
+    return removed
   }
 
   /** Whether the node's Node.js is in `range`; `undefined` before a check. */
@@ -761,6 +799,7 @@ export class RuntimeInstaller {
       // Scratch prefix first; the managed one only gets a version that passed.
       // The budget stays inside the hub's 11 minutes for one update.
       const stage = qianmoConfigPath('runtimes', `npm-stage-${randomUUID()}`)
+      this.#stages.add(stage)
       try {
         mkdirSync(stage, { recursive: true, mode: 0o700 })
         // npm's warnings (blocked install scripts) are not failures; its exit is.
@@ -789,7 +828,12 @@ export class RuntimeInstaller {
             `${wanted} 没有通过兼容检查，节点继续用原来的版本：${reason}`,
           )
       } finally {
-        rmSync(stage, { recursive: true, force: true })
+        // Best effort: what cannot go now goes at the next start's sweep,
+        // and a failed cleanup is not a second verdict on the install.
+        try {
+          rmSync(stage, { recursive: true, force: true })
+        } catch {}
+        this.#stages.delete(stage)
       }
       // From npm's cache now: the same files that passed.
       const installed = await this.#withPrefix(() =>

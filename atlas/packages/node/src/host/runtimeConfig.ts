@@ -457,11 +457,14 @@ export class NodeRuntimes {
   }
 
   /**
-   * At resident start, after the model service is in place: computes every
-   * agent's runtime, starts the default installs and checks Node.js. Never
-   * waits for an install; resolves once Node.js was checked.
+   * At resident start, after the model service is in place: sweeps leftover
+   * scratch prefixes, computes every agent's runtime, starts the default
+   * installs and checks Node.js. Never waits for an install; resolves once
+   * Node.js was checked.
    */
   async start(): Promise<void> {
+    // What an install left when the node died in the middle of it.
+    this.installer.sweepStages()
     this.recompute()
     if (this.#options.autoInstall === true) this.#autoInstall()
     const needsNode = this.#options.agents.some(agent => {

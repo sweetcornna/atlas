@@ -9,15 +9,20 @@
  */
 
 import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { randomUUID } from 'node:crypto'
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import * as path from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
 import type { ControlContext } from '../../src/host/control.js'
@@ -387,6 +392,88 @@ test('on macOS it is the free, inactive and speculative pages vm_stat counts', (
   ].join('\n')
   expect(vmStatAvailableBytes(vmStat)).toBe((17_325 + 497_605 + 4_241) * 16_384)
   expect(vmStatAvailableBytes('Pages free: 1.')).toBeUndefined()
+})
+
+test('scratch prefixes a dead node left behind are swept: npm-stage-<uuid> directories under the runtimes root only, never through a link', () => {
+  const runtimes = qianmoConfigPath('runtimes')
+  const stage = () => path.join(runtimes, `npm-stage-${randomUUID()}`)
+  const outside = mkdtempSync(path.join(tmpdir(), 'qm-sweep-outside-'))
+  try {
+    writeFileSync(path.join(outside, 'keep'), 'x')
+    const stale = stage()
+    mkdirSync(path.join(stale, 'node_modules', '.bin'), { recursive: true })
+    writeFileSync(path.join(stale, 'node_modules', '.bin', 'dsh'), '')
+    // A link inside a stale stage goes with it; what it points at stays.
+    symlinkSync(outside, path.join(stale, 'node_modules', 'linked'))
+    const link = stage()
+    symlinkSync(outside, link)
+    const file = stage()
+    writeFileSync(file, '')
+    const lookalike = path.join(runtimes, 'npm-stage-notauuid')
+    mkdirSync(lookalike)
+    const elsewhere = qianmoConfigPath('qianmo', `npm-stage-${randomUUID()}`)
+    mkdirSync(elsewhere, { recursive: true })
+    mkdirSync(managedRuntimePrefix(), { recursive: true })
+    const installer = new RuntimeInstaller({ which: nowhere })
+    expect(installer.sweepStages()).toEqual([stale])
+    expect(existsSync(stale)).toBe(false)
+    expect(readFileSync(path.join(outside, 'keep'), 'utf8')).toBe('x')
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(existsSync(file)).toBe(true)
+    expect(existsSync(lookalike)).toBe(true)
+    expect(existsSync(elsewhere)).toBe(true)
+    expect(existsSync(managedRuntimePrefix())).toBe(true)
+    // Nothing there (a fresh node): nothing to do.
+    rmSync(runtimes, { recursive: true, force: true })
+    expect(installer.sweepStages()).toEqual([])
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test('a failed or stopped install leaves no scratch prefix', async () => {
+  const stages = () =>
+    readdirSync(qianmoConfigPath('runtimes')).filter(name =>
+      name.startsWith('npm-stage-'),
+    )
+  const failing = new RuntimeInstaller({
+    run: fakeNpm(PIN('dsh'), { failInstall: true }).run,
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+  })
+  expect((await failing.install('dsh')).ok).toBe(false)
+  expect(stages()).toEqual([])
+  let started!: () => void
+  const running = new Promise<void>(done => {
+    started = done
+  })
+  const stopped = new RuntimeInstaller({
+    freeBytes: roomy,
+    freeMemoryBytes: roomy,
+    which: nowhere,
+    smoke: async () => null,
+    run: async (argv, options) => {
+      if (argv[0] === 'node') return { code: 0, stdout: 'v24.1.0' }
+      // npm has started filling the scratch prefix when the node stops.
+      const prefix = argv[argv.indexOf('--prefix') + 1]!
+      mkdirSync(path.join(prefix, 'node_modules'), { recursive: true })
+      started()
+      await new Promise(done =>
+        options.signal?.addEventListener('abort', done, { once: true }),
+      )
+      return { code: 143, stdout: '' }
+    },
+  })
+  const install = stopped.install('dsh')
+  await running
+  expect(stages()).toHaveLength(1)
+  // A sweep while it runs leaves it alone.
+  expect(stopped.sweepStages()).toEqual([])
+  stopped.stop()
+  expect((await install).ok).toBe(false)
+  expect(stages()).toEqual([])
 })
 
 test('Node.js ranges: ||, ^, ~, >= and partial versions', () => {

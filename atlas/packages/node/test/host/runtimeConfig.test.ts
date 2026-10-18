@@ -10,6 +10,7 @@
 
 import { afterEach, beforeEach, expect, jest, test } from 'bun:test'
 import {
+  existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -630,6 +631,19 @@ test('a failure recorded before the count existed backs off like a first one', a
   jest.advanceTimersByTime(5 * 60_000)
   await settle()
   expect(npm.installs()).toBe(1)
+})
+
+test('start sweeps the scratch prefixes a dead node left, install or no install', async () => {
+  const stale = qianmoConfigPath(
+    'runtimes',
+    'npm-stage-0f9c6a52-6a8e-4d1b-9d4e-2b7f0c1a3e55',
+  )
+  mkdirSync(path.join(stale, 'node_modules'), { recursive: true })
+  const { runtimes, npm } = setup({ autoInstall: false })
+  expect(existsSync(stale)).toBe(true)
+  await runtimes.start()
+  expect(existsSync(stale)).toBe(false)
+  expect(npm.installs()).toBe(0)
 })
 
 test('unmanaged (embedders): no fallback and no default install; agents run where they say', () => {
