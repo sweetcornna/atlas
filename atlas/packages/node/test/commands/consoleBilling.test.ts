@@ -59,6 +59,7 @@ import {
 import {
   ConsoleMagpie,
   magpieProfileId,
+  mayRunTenantProfile,
   NO_MODEL_PROFILE,
 } from '../../src/commands/consoleMagpie.js'
 import {
@@ -1172,14 +1173,10 @@ describe('a node handed back or moved gives the subscriber’s key back', () => 
         expect(result.failure.message).toContain('订阅者的密钥')
       }
     }
-    // A node that has never answered a status may hold one too.
-    const unknown = await providers.assign(
-      { node: 'beta-3', assignment: { mode: 'unmanaged' } },
-      ops(),
-    )
-    expect(unknown.ok).toBe(false)
-    // Once it is known to run something else, the choice is the operator's.
-    expect((await raw.refreshNode('beta-3')).ok).toBe(true)
+    // A node that has never answered a status, and was never sent a
+    // subscriber's profile, holds none of their keys: the choice is the
+    // operator's.
+    expect((await nodeRow('beta-3')).actual).toBeNull()
     expect(
       (
         await providers.assign(
@@ -1199,6 +1196,143 @@ describe('a node handed back or moved gives the subscriber’s key back', () => 
         )
       ).ok,
     ).toBe(true)
+  })
+
+  /**
+   * A platform default set before any tenant node, beta-1 subscribed, then
+   * handed back while it refuses deliveries: still on the subscriber's
+   * profile, assigned no model.
+   */
+  async function handedBackRefusing() {
+    const issued = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-3' }, mainModel: 'openai/gpt-6' },
+      ops(),
+    )
+    if (!issued.ok) throw new Error(issued.failure.message)
+    const platform = magpieProfileId({ kind: 'node', id: 'beta-3' })
+    expect(
+      (await providers.setDefault({ profileId: platform }, ops())).ok,
+    ).toBe(true)
+    const subscriber = await subscribed()
+    nodes[0]?.set(
+      'reply-apply.json',
+      JSON.stringify({
+        v: 1,
+        requestId: 'x',
+        ok: false,
+        code: 'write-failed',
+        message: 'disk full',
+      }),
+    )
+    setNodes(subscriber.tenant, [])
+    await billing.syncNodes()
+    expect(errors.some(line => line.includes('beta-1'))).toBe(true)
+    errors.length = 0
+    // Ops put it back on the platform default.
+    expect(
+      (
+        await providers.assign(
+          { node: 'beta-1', assignment: { mode: 'inherit' } },
+          ops(),
+        )
+      ).ok,
+    ).toBe(true)
+    const row = await nodeRow('beta-1')
+    expect(row.actual?.applied?.profileId).toBe(subscriber.own)
+    return { ...subscriber, platform }
+  }
+
+  test('the default cannot be cleared while a platform node following it may still run a subscriber’s profile', async () => {
+    const { platform, secret } = await handedBackRefusing()
+    const cleared = await providers.setDefault({ profileId: null }, ops())
+    expect(cleared.ok).toBe(false)
+    if (!cleared.ok) {
+      expect(cleared.failure.code).toBe('edition_public_magpie_only')
+      expect(cleared.failure.message).toContain('无法确认')
+      expect(cleared.failure.message).toContain('beta-1')
+    }
+    // The sweep delivers what it follows, and that takes the key back.
+    rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
+    await billing.tick()
+    expect(deliveredProfile(0)?.id).toBe(platform)
+    expect(deliveredProfile(0)?.key).not.toBe(secret)
+    expect((await nodeRow('beta-1')).actual?.applied?.profileId).toBe(platform)
+    expect((await providers.setDefault({ profileId: null }, ops())).ok).toBe(
+      true,
+    )
+  })
+
+  test('a platform node meant to run nothing while it may still run a subscriber’s profile is put on no model', async () => {
+    const { secret } = await handedBackRefusing()
+    // A default of nothing reached past the guard (cleared before it
+    // existed): the node is expected to run nothing, and shows no drift.
+    expect((await raw.setDefault({ profileId: null }, ops())).ok).toBe(true)
+    const before = await nodeRow('beta-1')
+    expect(before.expected).toBeNull()
+    expect(before.drift).toEqual([])
+    rmSync(join(nodes[0]?.dir ?? '', 'reply-apply.json'))
+    await billing.tick()
+    expect(assigned(await nodeRow('beta-1'))).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.id).toBe(NO_MODEL_PROFILE)
+    expect(deliveredProfile(0)?.key).not.toBe(secret)
+    expect((await nodeRow('beta-1')).actual?.applied?.profileId).toBe(
+      NO_MODEL_PROFILE,
+    )
+  })
+
+  test('with no status since a restart, what the book delivered last decides', async () => {
+    const issued = await magpie.issueKey(
+      { binding: { kind: 'node', id: 'beta-3' }, mainModel: 'openai/gpt-6' },
+      ops(),
+    )
+    if (!issued.ok) throw new Error(issued.failure.message)
+    const { tenant } = await subscribed()
+    // Handed back; the hub restarts before the sync takes the key back.
+    setNodes(tenant, [])
+    const restarted = openConsoleProviders({
+      storePath: join(root, 'config', 'providers.ndjson'),
+      secretsPath: join(root, 'config', 'provider-secrets.json'),
+      keyPath: join(root, 'keys', 'provider-master.key'),
+      knownHostsFile: join(root, 'known_hosts'),
+      nodes: nodes.map((node, index) => ({
+        node: `beta-${index + 1}`,
+        kind: 'local' as const,
+        command: node.command,
+      })),
+      scheduler: STILL,
+    })
+    try {
+      const wrapped = publicProviders(restarted, {
+        tenancy,
+        isSystem: caller => restarted.isSystemCaller(caller),
+        allowance: one => billing.allowance(one),
+      })
+      const overview = await restarted.overview()
+      if (!overview.ok) throw new Error('overview')
+      const row = (node: string) => {
+        const found = overview.value.nodes.find(one => one.node === node)
+        if (found === undefined) throw new Error(`no ${node}`)
+        return found
+      }
+      for (const node of ['beta-1', 'beta-2', 'beta-3'])
+        expect(row(node).actual).toBeNull()
+      // beta-1 was last sent the subscriber's profile; beta-3 a platform
+      // one; beta-2 nothing at all.
+      expect(mayRunTenantProfile(row('beta-1'))).toBe(true)
+      expect(mayRunTenantProfile(row('beta-3'))).toBe(false)
+      expect(mayRunTenantProfile(row('beta-2'))).toBe(false)
+      const refused = await wrapped.assign(
+        { node: 'beta-1', assignment: { mode: 'unmanaged' } },
+        ops(),
+      )
+      expect(refused.ok).toBe(false)
+      if (!refused.ok)
+        expect(refused.failure.message).toBe(
+          '无法确认 beta-1 上没有订阅者的密钥 · 先指派档案或「无模型」收回',
+        )
+    } finally {
+      restarted.stop()
+    }
   })
 
   test('a node handed back that refuses the delivery is asked again at the next sweep', async () => {

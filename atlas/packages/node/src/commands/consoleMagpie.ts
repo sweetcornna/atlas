@@ -78,10 +78,10 @@ import type {
   MagpieTestView,
   MagpieUsagePeriod,
   MagpieUsageView,
+  ProviderActivity,
   ProviderAssignment,
   ProviderCaller,
   ProviderFailure,
-  ProviderNodeView,
   ProviderOverview,
   ProviderPort,
   ProviderProfileDraft,
@@ -372,12 +372,38 @@ export function isTenantProfile(id: string): boolean {
 
 /**
  * Whether a node may still run a subscriber's profile, as far as the hub
- * knows: its last status said so, or it has never answered one.
+ * knows: what its last status reports, and the book's deliveries to it
+ * since (with no status since the hub started, a restart or a node that
+ * never answers, all it has), newest first. A subscriber's profile that may
+ * have landed (anything but refused) is a yes; anything else that landed
+ * and switched is a no, as it replaced what was there, while one taken but
+ * waiting to switch (§2.7) still leaves the old profile running. The book
+ * keeps a node's last ten actions; with no status and none of them
+ * deciding, the book never sent it a subscriber's profile it knows of, and
+ * the node's next status settles it.
  */
-export function mayRunTenantProfile(row: ProviderNodeView): boolean {
-  if (row.actual === null) return true
-  const applied = row.actual.applied
-  return applied !== null && isTenantProfile(applied.profileId)
+export function mayRunTenantProfile(row: {
+  readonly actual: {
+    readonly applied: {
+      readonly profileId: string
+      readonly requestId: string
+    } | null
+  } | null
+  readonly recent: readonly Pick<
+    ProviderActivity,
+    'kind' | 'requestId' | 'profileId' | 'outcome' | 'pending'
+  >[]
+}): boolean {
+  const reported = row.actual?.applied ?? null
+  for (const entry of row.recent) {
+    if (entry.kind !== 'apply') continue
+    // What the status reports, and everything before it, is settled.
+    if (entry.requestId === reported?.requestId) break
+    if (isTenantProfile(entry.profileId)) {
+      if (entry.outcome !== 'refused') return true
+    } else if (entry.outcome === 'ok' && entry.pending !== true) return false
+  }
+  return reported !== null && isTenantProfile(reported.profileId)
 }
 
 /** A gateway key value of ours: never magpie's `sk-magpie-` prefix. */
