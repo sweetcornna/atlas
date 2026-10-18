@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.5（生效）**；v1.5 新增 §6 P37 桌面版与订阅迁移（规划）的范围与合规边界；v1.4 按 2026-10-17 合并前审查改：§0、§5 写明上游测连与拉模型列表由中枢经管理接口触发、从 magpie 发出（章程 v3.6 N-5 补注），§2.2 与 §4 注明轮换窗口里的换代由测试脚本驱动、常驻主机不在环内，未评估的长跑改为「超过 1 小时」；v1.3 回写 P33.4 TLS 补测（§4）、§1 节点信任自签 CA 与名单行为、§2.2 轮换窗口的实测与「节点能力未知先问节点」；v1.2 回写 P33.4 真机冒烟（§4）、一把密钥服务三种底层（§2.1 `laneAddresses`）、§1 管理链接进日志与额度插件默认状态；v1.1 按实现回写 §2.2 的轮换与两个已知窗口 |
+| 文档版本 | **v1.6（生效）**；v1.6 回写 P33.4 跨机器一段（§4：另一台机器上的节点经 SSH 反向隧道跨公网连 TLS 网关，1 小时长跑与忙时轮换）、§2.4 上游 429 透传时三种底层的实测；v1.5 新增 §6 P37 桌面版与订阅迁移（规划）的范围与合规边界；v1.4 按 2026-10-17 合并前审查改：§0、§5 写明上游测连与拉模型列表由中枢经管理接口触发、从 magpie 发出（章程 v3.6 N-5 补注），§2.2 与 §4 注明轮换窗口里的换代由测试脚本驱动、常驻主机不在环内，未评估的长跑改为「超过 1 小时」；v1.3 回写 P33.4 TLS 补测（§4）、§1 节点信任自签 CA 与名单行为、§2.2 轮换窗口的实测与「节点能力未知先问节点」；v1.2 回写 P33.4 真机冒烟（§4）、一把密钥服务三种底层（§2.1 `laneAddresses`）、§1 管理链接进日志与额度插件默认状态；v1.1 按实现回写 §2.2 的轮换与两个已知窗口 |
 | 日期 | 2026-10-17 |
 | 核对基点 | 本仓库 `db52f282`（main，#229 合并提交，基座 qianmopi v18.8.8）；magpie 源码 `yetone/magpie@8b84dc9`，本机发行版 `magpie 0.1.1268`，GitHub 发行 `v0.1.1278` 有 `magpie-cli-linux-{amd64,arm64}`；P33.4 冒烟用 `v0.1.1278` linux-arm64 官方二进制 |
 | 范围依据 | 负责人 2026-10-17 决定（对话记录）：接入 magpie 作为模型统一调度管理器；前端按本项目的风格特化；另立公开版（见 [`public-edition.md`](./public-edition.md)，P35）。章程 v3.5 §2.7 |
@@ -23,7 +23,7 @@
 - **模型调用不经过中枢**（章程 N-5 v2.22「由中枢代为调用模型」仍不解禁；R-9 v1.9 有一处例外，见下）：magpie 是一个独立的网关服务，可以和中枢同机，但不是中枢进程，模型流量是「节点 → magpie → 上游」。中枢只调用 magpie 的管理接口（`/api/*`）和 `/api/hello`、`/v1/models` 这类只读接口。例外（章程 N-5 v3.6 补注、[`providers-console-m1.md`](./providers-console-m1.md) R-9）：加上游时 magpie 保存前向上游拉一次模型列表，「网关」页的「测试」让 magpie 向上游每种协议发一个最小请求；这两类请求由中枢经管理接口触发，从 magpie 发给上游、不经中枢进程，中枢只收到结果（模型号，各协议通断、状态码与耗时，上游报错原文丢掉），不转发模型流量。
 - **只用 API key 类上游**（章程 §5.2③、L-6）：magpie 能读取并代用 Claude、ChatGPT、Copilot、Gemini 等个人订阅的登录态，阡陌不用这部分。阡陌签发的每把密钥都带显式的模型白名单，白名单只由 API key 类供应商（`provider/*`）与成员全部是 API key 类供应商的路由组组成；控制台不提供订阅登录入口，已有的订阅类上游只读展示并标「阡陌不使用」。
 - **中转商排除条款**（[`providers-console-m1.md`](./providers-console-m1.md) §4.5）：magpie 预设指向运营方自己部署的网关，不是第三方中转商，不在排除之列；预设不带推广链接、logo 或赞助排序（N-5）。magpie 自己的预设目录里有中转站与赞助位：公开版订阅页只列厂商自有接口（`vendor` 类）与 OpenRouter（同 §4.5 的例外）；「网关」页是平台运维自用，列全部 API key 类预设，按 id 排序。
-- **证据状态**：magpie 预设 `evaluated:false`；真实 magpie 与真实上游的整轮调用只在 §4 P33.4 记下的组合上跑过，其余组合（跨公网节点、多节点并发、超过 1 小时的长跑、其他上游）仍标「未评估」。
+- **证据状态**：magpie 预设 `evaluated:false`；真实 magpie 与真实上游的整轮调用只在 §4 P33.4 记下的组合上跑过，其余组合（节点直连公网地址上的网关、多节点并发、超过 1 小时的长跑、其他上游）仍标「未评估」。
 
 ## §1 部署形态
 
@@ -81,6 +81,7 @@
 - 用量取 magpie 的记录（每次请求一行，含模型、token、缓存读写、状态与调用密钥）。magpie 的费用是按当前价目表现算的**估算**，页面写「估算」，不当账单用。
 - 阡陌自己的 `usage.tokens` 审计与配额（`UsagePort`）不变；两边口径不同（magpie 按网关看到的请求，阡陌按回合），并列显示，不合并。
 - 网关密钥额度耗尽时 magpie 在联系上游之前回 429（带 `Retry-After`、`X-Magpie-Limit-Reset`、`X-Should-Retry: false`，正文是调用方协议的错误形状）。三种底层都把它当限流处理；阡陌把 `X-Magpie-Limit-Reset` 写进常驻回合的失败说明。
+- 上游自己回 429 时 magpie 原样转给调用方（P33.4 跨机器长跑中遇上 api2 额度空窗时实测）：Claude Code 1–2 s 失败；qianmopi 第一次约 60 s、之后数秒失败；**Codex 不结束回合**，一直重试到上游恢复，期间这个会话进不了新回合、节点算忙。
 
 ## §3 P34「网关」页（阡陌风格）
 
@@ -104,7 +105,7 @@
 | P33.2 | `magpie` 预设与模型号校验 | `presets.test.ts` 控制台集合 = 节点集合；`provider/model`、`group/<id>` 能编译进 `models.yml` |
 | P33.3 | `MagpiePort` 与 `--magpie` | 用假 magpie 跑通签发 → 建档 → 指派 → 下发 → 轮换 → 吊销；状态文件 0600；白名单只含 API key 类上游 |
 | P34 | 「网关」页 | 路由、页面、角色、文档同步、动作词、依赖与文案各门禁通过；读者看不到写控件 |
-| P33.4 | 真实 magpie 冒烟 | **2026-10-17 实测通过**。环境：magpie `0.1.1278` linux-arm64 官方二进制跑在 colima 容器里（`DO_NOT_TRACK=1`、`TZ=Asia/Shanghai`），网关经端口映射访问，magpie 看到的来源都不是回环，每个调用都要密钥；上游是一个 API key 类自定义上游；Claude Code `2.1.301`、codex-cli `0.163.0`，qianmopi 与中枢为本分支源码。结果：中枢签发 → 建档 → 下发到真节点；同一台节点、同一把密钥上 qianmopi（`qm agent -p`）、Claude Code（阡陌的 stream-json 启动参数与环境）、Codex（阡陌的 `CodexChannel` 驱动 `codex app-server`）各完成一轮真实对话，用量按这把密钥归账；轮换后节点拿到新值、旧值 401；额度用尽回 429，带 `Retry-After`、`X-Magpie-Limit-Reset`、`X-Should-Retry: false`；删钥后 401；另一个容器与宿主不带或带错密钥一律 401，不带 cookie 访问管理口 401。冒烟中补了两处：网关页可按地址加自定义上游、`laneAddresses`。证据在 `atlas-evidence/2026-10-17/magpie-smoke/`。<br>**TLS 补测（同日）**：magpie 同一发行版以 `--tls-cert/--tls-key` 起网关与管理页（自签 CA，`MAGPIE_ALLOW_IPS` 只放节点网段，`DO_NOT_TRACK=1`、`TZ=Asia/Shanghai`，只映射到本机回环、不对公网开放）；中枢以 https 网关源站与 https 管理源站连接、签发、下发，非回环的 http 源站被客户端拒绝，中枢不信任 CA 时报「连不上」；节点信任 CA 后一把密钥上 qianmopi、Claude Code、Codex 各通一轮。第三来源在名单内不带或带错密钥一律 401（三种协议），名单外连有效密钥也 403。节点连续 1 小时、每 5 分钟三种底层各一轮（39/39 成功），中途在 Claude Code 长回合进行时轮换：长回合照常完成，进旧一代的 Codex 回合 401，节点空闲后换代、重试成功；换代由测试脚本 `node-runner.ts` 的 `maybeSwitch` 按 providers-console-m1 §2.7 的规则驱动，常驻主机不在环内。补测中修掉一处：节点能力未知时下发会丢掉 `laneAddresses`（§2.2）。证据在 `atlas-evidence/2026-10-17/magpie-smoke-tls/`。<br>**未覆盖**：跨公网的另一台机器（节点与网关在两台机器上）、多节点并发、超过 1 小时的长跑、常驻主机自己驱动的换代（上面由测试脚本代行）。 |
+| P33.4 | 真实 magpie 冒烟 | **2026-10-17 实测通过**。环境：magpie `0.1.1278` linux-arm64 官方二进制跑在 colima 容器里（`DO_NOT_TRACK=1`、`TZ=Asia/Shanghai`），网关经端口映射访问，magpie 看到的来源都不是回环，每个调用都要密钥；上游是一个 API key 类自定义上游；Claude Code `2.1.301`、codex-cli `0.163.0`，qianmopi 与中枢为本分支源码。结果：中枢签发 → 建档 → 下发到真节点；同一台节点、同一把密钥上 qianmopi（`qm agent -p`）、Claude Code（阡陌的 stream-json 启动参数与环境）、Codex（阡陌的 `CodexChannel` 驱动 `codex app-server`）各完成一轮真实对话，用量按这把密钥归账；轮换后节点拿到新值、旧值 401；额度用尽回 429，带 `Retry-After`、`X-Magpie-Limit-Reset`、`X-Should-Retry: false`；删钥后 401；另一个容器与宿主不带或带错密钥一律 401，不带 cookie 访问管理口 401。冒烟中补了两处：网关页可按地址加自定义上游、`laneAddresses`。证据在 `atlas-evidence/2026-10-17/magpie-smoke/`。<br>**TLS 补测（同日）**：magpie 同一发行版以 `--tls-cert/--tls-key` 起网关与管理页（自签 CA，`MAGPIE_ALLOW_IPS` 只放节点网段，`DO_NOT_TRACK=1`、`TZ=Asia/Shanghai`，只映射到本机回环、不对公网开放）；中枢以 https 网关源站与 https 管理源站连接、签发、下发，非回环的 http 源站被客户端拒绝，中枢不信任 CA 时报「连不上」；节点信任 CA 后一把密钥上 qianmopi、Claude Code、Codex 各通一轮。第三来源在名单内不带或带错密钥一律 401（三种协议），名单外连有效密钥也 403。节点连续 1 小时、每 5 分钟三种底层各一轮（39/39 成功），中途在 Claude Code 长回合进行时轮换：长回合照常完成，进旧一代的 Codex 回合 401，节点空闲后换代、重试成功；换代由测试脚本 `node-runner.ts` 的 `maybeSwitch` 按 providers-console-m1 §2.7 的规则驱动，常驻主机不在环内。补测中修掉一处：节点能力未知时下发会丢掉 `laneAddresses`（§2.2）。证据在 `atlas-evidence/2026-10-17/magpie-smoke-tls/`。<br>**跨机器（2026-10-18 UTC，负责人同意临时用 cornna-p2）**：节点放在另一台 x86 Linux 机器上（本分支交叉编译的 `qm-linux-x64`，Claude Code 与 Codex 的 linux-x64 包由该机从 npm 取并核 integrity），网关仍不对公网开放，节点经本机发起、只绑该机回环的 `ssh -R` 隧道跨公网到网关，TLS 在节点与 magpie 之间端到端；中枢把同一行 stdin 协议经 ssh 送到该机的 `qm provider serve-stdin`（没有给该机加强制命令行，生产的 ssh 执行器路径未走）。签发 → 下发后一把密钥 3 个 provider，三种底层各通一轮；该机不带或带错密钥 401。1 小时 13 轮：前段遇上游 api2 额度空窗（ticks 2–6 全部 429，§2.4），上游恢复后 tick 7 在 Claude Code 长回合进行时轮换（`rotateKey` 经跳板 16.5 s）：长回合照常完成，进旧一代的 Codex 回合 401，空闲后换代、重试成功，ticks 7–13 的 21 个常规回合全部成功；隧道零掉线。收尾后该机回到动手前的状态，见证端点未受影响。证据同上，第 6、7 节。<br>**未覆盖**：节点直连公网地址上的 TLS 网关（上面经 SSH 隧道，网关不对公网开放）、多节点同时并发、超过 1 小时的长跑、常驻主机自己驱动的换代（上面由测试脚本代行）。 |
 
 ## §5 不做
 
