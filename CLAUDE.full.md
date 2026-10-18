@@ -103,6 +103,8 @@ bun run atlas:test [<目录> …]    # 阡陌测试分片，可只跑指定目�
 
 完整脚本以根 `package.json` 的 `scripts` 为准（阡陌的都带 `atlas:` 前缀，另有 `qm`、`qianmo:acceptance`、`precheck`、`verify`）。
 
+CI（`.github/workflows/atlas.yml`）只在 PR 与 `main` 的 push 上跑，同一 PR 的新推送取消旧运行；没开 PR 的分支要验证就开草稿 PR 或手动触发。改到基座快照路径（含根 `CONTRIBUTING.md`、`README.md`）会追加 omp 全量 `test:ts`，约 20–25 分钟。
+
 **`precheck` ≠ `verify`。**`precheck` 跑 `atlas:lint:fix`，会改写 `atlas/`、`demo/` 下的文件，跑完看 `git diff`。`verify` 换成只读的 `atlas:lint:ci`，并加上 `atlas:check:cycles`、`atlas:check:unused`、`atlas:sbom -- --check`、omp 的 `check:ts`（证明阡陌没碰坏基座）、`atlas:build:qm` 与 `atlas:check:qm-smoke`。
 
 ### 3.1 测试
