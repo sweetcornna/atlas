@@ -2,7 +2,7 @@
 
 阡陌基于开源项目 oh-my-pi（MIT 许可）构建，在其上实现常驻化改造与智能体通信网络。
 
-当前基座固定为 **omp v18.8.8**。迁移及 M1 / M2 本地开发候选已构建，逐项实现、验证和现场边界见 [交付清单](docs/dev/m1-m2-completion.md)；旧基座上的 M0 / M1 验收记录保留为历史证据。内测环境（中枢与两个节点）跟随 main 部署，公开版未开，语义记忆增强因质量硬闸未过保持默认关闭。切换的接口和状态布局见 [设计契约](docs/dev/base-switch-omp.md)，部署配置与回退见 [审核清单](docs/dev/m1-m2-deployment-review.md)。
+当前基座固定为 **omp v18.8.8**。迁移及 M1 / M2 本地开发候选已构建，逐项实现、验证和现场边界见 [交付清单](docs/dev/m1-m2-completion.md)；旧基座上的 M0 / M1 验收记录保留为历史证据。内测环境（中枢与三个节点）跟随 main 部署，公开版未开，语义记忆增强因质量硬闸未过保持默认关闭。切换的接口和状态布局见 [设计契约](docs/dev/base-switch-omp.md)，部署配置与回退见 [审核清单](docs/dev/m1-m2-deployment-review.md)。
 
 - `atlas/`：阡陌的 `@qianmo/*` 包、脚本与测试；`demo/`：节点演示与验收；`docs/dev/`：章程、设计与证据。
 - 根 `packages/`、`crates/`、`scripts/` 等保留 omp 基座布局。编程智能体与多模型适配属于基座能力。
