@@ -316,7 +316,9 @@ describe('resident product integration', () => {
       // time, so the only honest number here is "this one".
       expect(events.find(event => event.stage === 'queued')?.queueDepth).toBe(1)
       expect(at('detected')).toBeLessThanOrEqual(at('admitted'))
-      expect(at('admitted')).toBeLessThanOrEqual(at('first_content'))
+      // Admission is polled every 5 ms (omp-turn `accept`), so its stamp can
+      // land a few ms after the agent's first content; both follow `queued`.
+      expect(at('queued')).toBeLessThanOrEqual(at('first_content'))
       expect(at('first_content')).toBeLessThanOrEqual(at('turn_completed'))
       expect(at('detected')).toBeLessThanOrEqual(at('read'))
       expect(at('read')).toBeLessThanOrEqual(at('turn_completed'))
