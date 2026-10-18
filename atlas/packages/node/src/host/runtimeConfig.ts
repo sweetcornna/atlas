@@ -470,8 +470,11 @@ export class NodeRuntimes {
    * Node.js. Never waits for an install; resolves once Node.js was checked.
    */
   async start(): Promise<void> {
-    // What an install left when the node died in the middle of it.
-    this.installer.sweepStages()
+    // What an install left when the node died in the middle of it; in the
+    // background (large trees), never in the way of starting.
+    void this.installer
+      .sweepStages()
+      .catch(error => this.#options.onError?.(error))
     // A configured runtime found on PATH says who it is before it counts
     // (Debian's `dsh` is not DeepSeek Harness), and before the install.
     const configured = new Set(
@@ -506,11 +509,14 @@ export class NodeRuntimes {
     }
     for (const kind of missing) {
       // What an earlier run's failures left of the backoff (§2); a clock
-      // that went back never makes it longer than the wait itself.
+      // that went back never makes it longer than the wait itself. An
+      // install the node died in has no time of failure (its `at` is when it
+      // began, maybe long before the kill): the whole wait, from now.
       const last = this.installer.lastInstall(kind)
       const failures = failuresOf(last)
       const wait = failures === 0 ? 0 : this.#delay(failures)
-      const left = (last?.at ?? 0) + wait - Date.now()
+      const left =
+        last?.unfinished === true ? wait : (last?.at ?? 0) + wait - Date.now()
       this.#later(kind, Math.min(wait, Math.max(0, left)))
     }
   }
@@ -632,6 +638,11 @@ export class NodeRuntimes {
       JSON.stringify(agents[agent] ?? {}) === before ? [] : [agent],
     )
     this.#dropUnusedRetries()
+    // Moved onto a runtime whose PATH binary was never asked who it is (§2):
+    // ask now, without waiting; its answer recomputes (`#installerChanged`).
+    void this.installer
+      .checkPath(this.configured(agent).runtime)
+      .catch(error => this.#options.onError?.(error))
     return { ok: true, value: this.#states.get(agent) }
   }
 
