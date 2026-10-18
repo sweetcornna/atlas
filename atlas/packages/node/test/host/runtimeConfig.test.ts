@@ -68,6 +68,8 @@ interface Npm {
   node: string | null
   /** Holds every scratch install until released. */
   hold?: Promise<void>
+  /** What a binary's `--help` prints (default: its version, like Debian's dsh would not name DeepSeek Harness). */
+  help?: string
 }
 
 function fakeNpm(): Npm {
@@ -78,6 +80,8 @@ function fakeNpm(): Npm {
     installs: () => calls.filter(argv => argv[1] === 'install').length,
     run: async argv => {
       calls.push([...argv])
+      if (argv[1] === '--help' && npm.help !== undefined)
+        return { code: 0, stdout: npm.help }
       if (argv[0] === 'node')
         return npm.node === null
           ? { code: 127, stdout: '' }
@@ -701,6 +705,32 @@ test('a dsh on PATH that is not DeepSeek Harness is no dsh: the agent says why, 
     message:
       '节点上没有 DeepSeek Harness：PATH 上的 /usr/bin/dsh 不是 DeepSeek Harness（它的 --help 里没有这个名字），当作没有安装',
   })
+})
+
+test('configured onto a dsh found on PATH while running: it is asked who it is, and the agent moves once it says DeepSeek Harness', async () => {
+  const { runtimes, npm, changed } = setup({
+    agents: [{ agent: 'pi', runtime: 'omp' }],
+    installer: {
+      which: command => (command === 'dsh' ? '/opt/homebrew/bin/dsh' : null),
+    },
+  })
+  npm.help =
+    'Usage: dsh [--profile] <name>\n\ndsh: boot a DeepSeek Harness profile\n'
+  await runtimes.start()
+  expect(runtimes.effectiveRuntime('pi')).toBe('omp')
+  const outcome = runtimes.configure({ agent: 'pi', runtime: 'dsh' })
+  // Not waited for: configure answers at once, the check runs behind it.
+  expect(outcome).toMatchObject({
+    ok: true,
+    value: { effective: { runtime: 'omp' }, reason: { code: 'not-installed' } },
+  })
+  await settle()
+  expect(state(runtimes, 'pi').effective).toEqual({
+    runtime: 'dsh',
+    model: 'magpie/deepseek-v4',
+    lane: 'openai-chat',
+  })
+  expect(changed).toEqual(['pi', 'pi'])
 })
 
 test('start sweeps the scratch prefixes a dead node left, install or no install', async () => {

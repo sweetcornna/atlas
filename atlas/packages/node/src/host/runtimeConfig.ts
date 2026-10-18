@@ -632,6 +632,11 @@ export class NodeRuntimes {
       JSON.stringify(agents[agent] ?? {}) === before ? [] : [agent],
     )
     this.#dropUnusedRetries()
+    // Moved onto a runtime whose PATH binary was never asked who it is (§2):
+    // ask now, without waiting; its answer recomputes (`#installerChanged`).
+    void this.installer
+      .checkPath(this.configured(agent).runtime)
+      .catch(error => this.#options.onError?.(error))
     return { ok: true, value: this.#states.get(agent) }
   }
 
