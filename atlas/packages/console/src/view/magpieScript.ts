@@ -7,6 +7,16 @@
  * `/v0/magpie` takes, asks before anything that cannot be undone, and moves
  * the usage section between periods. Addresses are put together here from
  * a scheme and a host, so the page itself never carries a full URL.
+ *
+ * The 智能体 section (`view/magpieAgents.ts`) sends a select's change at once
+ * to `/v0/magpie/agents/configure`, and while a runtime installs it follows
+ * the section every few seconds until nothing is busy.
+ *
+ * An agent's 原生扩展 panel (P36.7) is drawn from the hub's cache. Opening it
+ * when that is stale asks for the list once (`GET …/extensions`) and redraws
+ * the section; a redraw reopens the panel, which is why the same panel is
+ * not asked again for half a minute. Installs go through the dialog, and an
+ * install or removal that is still running is followed like a runtime's.
  */
 
 export const MAGPIE_PAGE_JS = `
@@ -19,10 +29,37 @@ export const MAGPIE_PAGE_JS = `
   function refresh() {
     var jobs = [];
     var main = byId('magpie');
+    var agents = byId('magpie-agents');
     var usage = byId('magpie-usage');
     if (main) jobs.push(qc.refreshRegion(main));
+    if (agents) jobs.push(qc.refreshRegion(agents));
     if (usage) jobs.push(qc.refreshRegion(usage));
     return Promise.all(jobs);
+  }
+
+  var following = null;
+  function stopFollowing() {
+    if (following !== null) clearInterval(following);
+    following = null;
+  }
+  function follow() {
+    if (following !== null) return;
+    following = setInterval(function () {
+      var mount = byId('magpie-agents');
+      if (!mount || qc.isExpired()) { stopFollowing(); return; }
+      qc.refreshRegion(mount).then(function () {
+        if (!mount.querySelector('[data-busy]')) stopFollowing();
+      }).catch(function () {});
+    }, 3000);
+  }
+  qc.onExpire(stopFollowing);
+  function followIfBusy() {
+    if (document.querySelector('#magpie-agents [data-busy]')) follow();
+  }
+  followIfBusy();
+
+  function extensionsPath(node, agent) {
+    return '/v0/magpie/agents/' + encodeURIComponent(node) + '/' + encodeURIComponent(agent) + '/extensions';
   }
 
   function value(form, name) {
@@ -112,8 +149,34 @@ export const MAGPIE_PAGE_JS = `
     return host ? value(form, prefix + 'Scheme') + '://' + host : '';
   }
 
+  function extensionRequest(form) {
+    var extKind = value(form, 'extKind');
+    var ext = { kind: extKind };
+    if (extKind === 'mcp') {
+      ext.name = value(form, 'name');
+      if (value(form, 'url')) ext.url = value(form, 'url');
+      if (value(form, 'command')) {
+        ext.command = value(form, 'command');
+        ext.args = lines(form.elements.args && form.elements.args.value);
+      }
+    } else {
+      ext.source = value(form, 'source');
+    }
+    var label = ext.name || ext.source || '';
+    var need = extKind === 'mcp'
+      ? (!ext.name ? 'MCP 要填名字' : (ext.url ? 1 : 0) + (ext.command ? 1 : 0) !== 1 ? '命令与地址填一样' : '')
+      : (ext.source ? '' : '来源必填');
+    return {
+      path: extensionsPath(value(form, 'node'), value(form, 'agent')) + '/install',
+      body: ext,
+      ok: function (job) { return job && job.state === 'running' ? '正在安装 ' + label : '已安装 ' + label; },
+      need: need
+    };
+  }
+
   function request(form) {
     var kind = value(form, 'form');
+    if (kind === 'ext') return extensionRequest(form);
     if (kind === 'connect') {
       var connect = { gatewayUrl: origin(form, 'gateway'), managementUrl: origin(form, 'management') };
       var secret = form.elements.managementKey ? form.elements.managementKey.value : '';
@@ -167,11 +230,54 @@ export const MAGPIE_PAGE_JS = `
     var asked = request(form);
     if (asked.need) { qc.say(status, asked.need, 'bad'); return; }
     qc.say(status, '保存中', 'muted');
-    qc.sendJson('POST', asked.path, asked.body).then(function () {
+    qc.sendJson('POST', asked.path, asked.body).then(function (result) {
       qc.closeDialog(byId('magpie-dialog'));
-      return done(asked.ok);
+      return done(typeof asked.ok === 'function' ? asked.ok(result) : asked.ok).then(followIfBusy);
     }).catch(function (err) { qc.say(status, qc.failLine('保存', err), qc.failTone(err)); });
   });
+
+  qc.onAction('magpie-ext-new', function (button) {
+    var node = button.getAttribute('data-node') || '';
+    var agent = button.getAttribute('data-agent') || '';
+    open('ext', node + '/' + agent, '为 ' + agent + ' 安装原生扩展');
+  });
+
+  qc.onAction('magpie-ext-remove', function (button) {
+    var node = button.getAttribute('data-node') || '';
+    var agent = button.getAttribute('data-agent') || '';
+    var kind = button.getAttribute('data-kind') || '';
+    var name = button.getAttribute('data-name') || '';
+    confirmThen(agent + ' · ' + name, '由该底层自己的命令卸载 · 前端开着时节点会拒绝', function () {
+      qc.sendJson('POST', extensionsPath(node, agent) + '/remove', { kind: kind, name: name }).then(function (job) {
+        var running = job && job.state === 'running';
+        return done(running ? '正在卸载 ' + name : '已卸载 ' + name).then(followIfBusy);
+      }).catch(failed('卸载'));
+    });
+  });
+
+  qc.onAction('magpie-ext-copy', function (button) {
+    var text = button.getAttribute('data-copy') || '';
+    var manual = function () { qc.toast('复制不了 · 请手动选中', 'bad'); };
+    if (!text || !navigator.clipboard) { manual(); return; }
+    navigator.clipboard.writeText(text).then(function () { qc.toast('已复制', 'ok'); }, manual);
+  });
+
+  // Opening a panel whose list is stale asks the node once; the redraw that
+  // follows reopens the panel, so the same one waits half a minute.
+  var listedAt = {};
+  document.addEventListener('toggle', function (event) {
+    var panel = event.target;
+    if (!panel || !panel.classList || !panel.classList.contains('mg-ext') || !panel.open) return;
+    if (panel.getAttribute('data-fresh') === '1') return;
+    var key = panel.getAttribute('data-key') || '';
+    if (listedAt[key] && Date.now() - listedAt[key] < 30000) return;
+    listedAt[key] = Date.now();
+    var mount = byId('magpie-agents');
+    qc.sendJson('GET', extensionsPath(panel.getAttribute('data-node') || '', panel.getAttribute('data-agent') || ''))
+      .catch(function () { return null; })
+      .then(function () { return mount ? qc.refreshRegion(mount) : null; })
+      .catch(function () {});
+  }, true);
 
   qc.onAction('magpie-provider-test', function (button) {
     var id = button.getAttribute('data-id') || '';
@@ -253,8 +359,69 @@ export const MAGPIE_PAGE_JS = `
     });
   });
 
+  qc.onAction('magpie-autojoin', function (button) {
+    var on = button.getAttribute('data-on') === '1';
+    qc.sendJson('POST', '/v0/magpie/agents/autojoin', { on: on }).then(function () {
+      return done(on ? '新节点自动接入已打开' : '新节点自动接入已关闭');
+    }).catch(failed(on ? '打开' : '关闭'));
+  });
+
+  qc.onAction('magpie-join', function (button) {
+    var node = button.getAttribute('data-node') || '';
+    confirmThen(node, '签发网关密钥 · 节点的模型档案换成 magpie 并下发 · 收回密钥即换回', function () {
+      qc.sendJson('POST', '/v0/magpie/agents/join', { node: node }).then(function () {
+        return done('已接入 ' + node);
+      }).catch(failed('接入'));
+    });
+  });
+
+  qc.onAction('magpie-runtime-install', function (button) {
+    var node = button.getAttribute('data-node') || '';
+    var runtime = button.getAttribute('data-runtime') || '';
+    var name = button.getAttribute('data-name') || runtime;
+    qc.sendJson('POST', '/v0/magpie/agents/install', { node: node, runtime: runtime }).then(function (job) {
+      var running = job && job.state === 'running';
+      if (running) follow();
+      return done(running ? node + ' 正在安装 ' + name : node + ' 已安装 ' + name);
+    }).catch(failed('安装'));
+  });
+
+  qc.onAction('magpie-runtime-remove', function (button) {
+    var node = button.getAttribute('data-node') || '';
+    var runtime = button.getAttribute('data-runtime') || '';
+    var name = button.getAttribute('data-name') || runtime;
+    confirmThen(node + ' · ' + name, '从节点卸载 · 有智能体用着它时节点会拒绝', function () {
+      qc.sendJson('POST', '/v0/magpie/agents/remove', { node: node, runtime: runtime }).then(function (job) {
+        var running = job && job.state === 'running';
+        if (running) follow();
+        return done(running ? node + ' 正在卸载 ' + name : node + ' 已卸载 ' + name);
+      }).catch(failed('卸载'));
+    });
+  });
+
+  function configure(select) {
+    var body = {
+      node: select.getAttribute('data-node') || '',
+      agent: select.getAttribute('data-agent') || ''
+    };
+    var what = select.name === 'mg-runtime' ? '底层' : '模型';
+    if (select.name === 'mg-runtime') body.runtime = select.value;
+    else body.model = select.value;
+    select.disabled = true;
+    qc.sendJson('POST', '/v0/magpie/agents/configure', body).then(function () {
+      return done(body.agent + ' 的' + what + '已下发');
+    }).catch(function (err) {
+      failed('下发')(err);
+      return refresh();
+    }).then(function () { select.disabled = false; });
+  }
+
   document.addEventListener('change', function (event) {
     var target = event.target;
+    if (target && (target.name === 'mg-runtime' || target.name === 'mg-model')) {
+      configure(target);
+      return;
+    }
     if (!target || target.name !== 'magpie-period') return;
     var mount = byId('magpie-usage');
     if (!mount) return;

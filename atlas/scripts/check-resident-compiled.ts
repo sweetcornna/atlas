@@ -213,6 +213,8 @@ export async function checkResidentCompiled(
         HOME: home,
         QIANMO_CONFIG_DIR: config,
         QIANMO_TRANSPORT_PSK: psk,
+        // The fixture agent defaults to dsh: never download it here (P36 §2).
+        QIANMO_RUNTIME_AUTOINSTALL: '0',
       },
       stdout: Bun.file(join(root, 'resident.stdout')),
       stderr: Bun.file(join(root, 'resident.stderr')),

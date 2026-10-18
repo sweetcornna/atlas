@@ -155,6 +155,13 @@ const PAGES: readonly PageRow[] = [
       '估算 $0.42',
       'id="magpie"',
       'id="magpie-usage"',
+      // 智能体 (P36.5): states for everyone, the runtime names the catalog gives.
+      'id="magpie-agents"',
+      '新节点自动接入',
+      '暂用 qianmopi · 未安装',
+      '节点版本过旧',
+      '已装 v0.2.0-rc.2 · 未实测',
+      '跟随节点主模型',
     ],
   },
   {

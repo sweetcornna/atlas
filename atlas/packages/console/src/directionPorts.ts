@@ -1595,6 +1595,274 @@ export interface MagpiePort {
     binding: MagpieBinding,
     caller: MagpieCaller,
   ): Promise<ConsoleResult<{ readonly profileKept: boolean }>>
+  /** 「智能体」区块（P36.5）；中枢没有控制链路时不接。 */
+  readonly agents?: MagpieAgentsPort
+}
+
+// ---------------------------------------------------------------------------
+// MagpieAgentsPort —— 网关页的「智能体」区块（P36.5，harness-backends.md §4）
+// ---------------------------------------------------------------------------
+
+/**
+ * 每个节点上每个智能体的底层与模型，经控制链路问节点（`runtime.status`、
+ * `runtime.versions`），改动经 `runtime.configure` / `install` / `remove` 下发。
+ * 模型为「自动」的智能体，中枢按底层所属系列在这台节点网关密钥能用的模型里取第一名；
+ * 手选的原样保存。只读角色由路由裁掉所有错误详情（`message`、`error`）。
+ */
+
+/** 目录里的一项，标签取自节点与中枢共用的目录。 */
+export interface MagpieRuntimeEntryView {
+  readonly id: string
+  readonly label: string
+  /** 默认系列的显示名；qianmopi 为 null（跟随节点主模型）。 */
+  readonly family: string | null
+  readonly builtin: boolean
+  /** 节点缺省底层。 */
+  readonly default: boolean
+}
+
+/** 一台节点上目录的一项：是否已装、版本、安装进度。 */
+export interface MagpieRuntimeView {
+  readonly id: string
+  readonly label: string
+  readonly installed: boolean
+  readonly version: string | null
+  readonly builtin: boolean
+  /** 节点报的安装中，或中枢发出的安装还没答复。 */
+  readonly installing: boolean
+  /** 中枢发出的卸载还没答复。 */
+  readonly removing: boolean
+  readonly verified: boolean
+  /** 上次安装失败（节点报的，或中枢发出的那次）；只给能写的人原因。 */
+  readonly failed: {
+    readonly at: number
+    readonly message: string | null
+  } | null
+}
+
+/**
+ * 退回 qianmopi 的原因码对应的短语（`harness-backends.md` §3.3）。原因的原文
+ * （安装器的报错等）只给能写的人；只读的人与智能体间问答的名册只看这些短语。
+ */
+export const RUNTIME_FALLBACK_WORDS: Readonly<Record<string, string>> = {
+  'not-installed': '未安装',
+  installing: '安装中',
+  'install-failed': '安装失败',
+  'smoke-failed': '兼容检查未过',
+  'no-model': '没有可用模型',
+  'no-node': '节点没有 Node.js',
+}
+
+/** 智能体的模型选择：自动按系列取，或手选的 magpie 模型号。 */
+export type MagpieAgentChoice =
+  | { readonly mode: 'auto' }
+  | { readonly mode: 'manual'; readonly model: string }
+
+export interface MagpieAgentView {
+  readonly agent: string
+  /** 配置的底层（节点 `runtime.status` 的 `configured.runtime`）。 */
+  readonly runtime: string
+  /** 实际在跑的底层。 */
+  readonly effective: string
+  /** 配置的模型；本节点 magpie 档案下的写成 magpie 模型号，别的照节点原文。 */
+  readonly model: string | null
+  readonly choice: MagpieAgentChoice
+  /** 自动时中枢这一刻会选的模型；底层跟随节点主模型或没有候选时为 null。 */
+  readonly pick: string | null
+  /** 选中的不属于底层的默认系列。 */
+  readonly outOfFamily: boolean
+  /** 底层没有默认系列：自动即跟随节点主模型。 */
+  readonly followsNode: boolean
+  /** 底层能用中枢下发的模型（qianmopi 不能：它总跟随节点主模型）。 */
+  readonly choosable: boolean
+  /** 退回 qianmopi 的原因：`code` 给所有人，`message` 只给能写的人。 */
+  readonly reason: {
+    readonly code: string
+    readonly message: string | null
+  } | null
+  /** 中枢最近一次下发：进行中，或失败（原因只给能写的人）。 */
+  readonly write: {
+    readonly state: 'pending' | 'failed'
+    readonly at: number
+    readonly message: string | null
+  } | null
+  /**
+   * 原生扩展（P36.7）：节点没有 `runtime.ext.*` 操作或还没探明时为 null，
+   * 页面不显示这一块。
+   */
+  readonly extensions: MagpieExtensionsView | null
+}
+
+/** 原生扩展的三类（harness-backends.md §7.3）。 */
+export const MAGPIE_EXTENSION_KINDS = ['plugin', 'mcp', 'skill'] as const
+export type MagpieExtensionKind = (typeof MAGPIE_EXTENSION_KINDS)[number]
+
+/** 底层自己的列表命令报的一项。 */
+export interface MagpieExtensionItemView {
+  readonly kind: MagpieExtensionKind
+  /** 底层自己的名字或 id（例如 `name@marketplace`）。 */
+  readonly name: string
+  readonly version: string | null
+  readonly enabled: boolean
+  /** 来源（仓库、npm、路径），底层记了才有。 */
+  readonly source: string | null
+  /** 常驻运行时不加载它，及原因；加载时为 null。 */
+  readonly notLoaded: string | null
+}
+
+/** 中枢发出的一次安装或卸载：进行中，或失败（原因只给能写的人）。 */
+export interface MagpieExtensionJobState {
+  readonly op: 'install' | 'remove'
+  readonly kind: MagpieExtensionKind
+  /** MCP 的名字，或插件、技能的来源。 */
+  readonly name: string
+  readonly state: 'running' | 'failed'
+  readonly at: number
+  readonly message: string | null
+}
+
+/**
+ * 一个智能体的原生扩展，取自中枢的缓存：节点跑一次列表命令要起底层的进程，
+ * 所以区块轮询从不触发它，展开时（缓存过期）才读。
+ */
+export interface MagpieExtensionsView {
+  readonly node: string
+  readonly agent: string
+  /** `unread` 还没读过；`failed` 上次没读到（原因见 `error`）。 */
+  readonly state: 'unread' | 'ok' | 'failed'
+  /** 一分钟内读过：展开时不再问节点。 */
+  readonly fresh: boolean
+  readonly runtime: string | null
+  readonly items: readonly MagpieExtensionItemView[]
+  /** 钉住层的事实（例如「已撤销预授权」），节点原文。 */
+  readonly notes: readonly string[]
+  /** 在节点上打开该底层官方前端的命令（§7.2）。 */
+  readonly openCommand: string | null
+  /** 没读到的原因；只给能写的人。 */
+  readonly error: string | null
+  readonly job: MagpieExtensionJobState | null
+}
+
+/**
+ * 装一项原生扩展。插件与技能给 `source`（GitHub `owner/repo[#ref]` 或
+ * `https://github.com/…`、npm `[@scope/]name[@x.y.z]`、`name@marketplace`）；
+ * MCP 给 `name`，加 `command` 与 `args`，或 https `url`。
+ */
+export interface MagpieExtensionInstall {
+  readonly node: string
+  readonly agent: string
+  readonly kind: MagpieExtensionKind
+  readonly source?: string
+  readonly name?: string
+  readonly command?: string
+  readonly args?: readonly string[]
+  readonly url?: string
+}
+
+export interface MagpieExtensionRemove {
+  readonly node: string
+  readonly agent: string
+  readonly kind: MagpieExtensionKind
+  readonly name: string
+}
+
+/** 一次扩展安装或卸载：`running` 表示节点还在做，结果随区块刷新。 */
+export interface MagpieExtensionJobView {
+  readonly node: string
+  readonly agent: string
+  readonly op: 'install' | 'remove'
+  readonly kind: MagpieExtensionKind
+  readonly name: string
+  readonly state: 'running' | 'done'
+}
+
+/** 这台节点的网关密钥能用的一个模型；路由组的 `family` 为 null 且 `group` 为真。 */
+export interface MagpieAgentModelView {
+  readonly id: string
+  readonly family: string | null
+  readonly group: boolean
+}
+
+export interface MagpieAgentsNodeView {
+  readonly node: string
+  /** `old`：节点不答 `runtime.status`（版本过旧），不给写控件。 */
+  readonly state: 'ok' | 'old' | 'unreachable'
+  /**
+   * 模型指派：`bound` 在本节点的 magpie 档案上；`inherit` 跟随全局缺省；
+   * `profile` 指派了别的档案；`unmanaged` 不托管；`absent` 模型服务里没有它。
+   */
+  readonly gateway: 'bound' | 'inherit' | 'profile' | 'unmanaged' | 'absent'
+  /** 节点属于哪个租户；平台的为 null。 */
+  readonly tenant: string | null
+  readonly defaultRuntime: string | null
+  readonly runtimes: readonly MagpieRuntimeView[]
+  readonly agents: readonly MagpieAgentView[]
+  /** 只有 `bound` 有：这把密钥能用的模型与路由组。 */
+  readonly models: readonly MagpieAgentModelView[]
+  /** 读节点失败的原因；只给能写的人。 */
+  readonly error: string | null
+}
+
+export interface MagpieAgentsSnapshot {
+  /** 新节点自动接入 magpie。 */
+  readonly autoJoin: boolean
+  /** magpie 已连接（连接配置齐全）。 */
+  readonly connected: boolean
+  readonly catalog: readonly MagpieRuntimeEntryView[]
+  readonly nodes: readonly MagpieAgentsNodeView[]
+}
+
+/** 改一个智能体：给了才改；`model` 是 magpie 模型号或 `auto`。 */
+export interface MagpieAgentChange {
+  readonly node: string
+  readonly agent: string
+  readonly runtime?: string
+  readonly model?: string
+}
+
+/** 一次安装或卸载：`running` 表示节点还在装，进度看 `runtime.versions`。 */
+export interface MagpieRuntimeJobView {
+  readonly node: string
+  readonly runtime: string
+  readonly state: 'running' | 'done'
+}
+
+export interface MagpieAgentsPort {
+  snapshot(): Promise<ConsoleResult<MagpieAgentsSnapshot>>
+  configure(
+    change: MagpieAgentChange,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieAgentView>>
+  install(
+    input: { readonly node: string; readonly runtime: string },
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieRuntimeJobView>>
+  remove(
+    input: { readonly node: string; readonly runtime: string },
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieRuntimeJobView>>
+  setAutoJoin(
+    on: boolean,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<{ readonly autoJoin: boolean }>>
+  /** 给一台节点签发网关密钥并指派、下发（与「为节点签发」同一条签发链）。 */
+  join(
+    node: string,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieKeyView>>
+  /** 一个智能体的原生扩展（P36.7）：缓存过期才问节点 `runtime.ext.list`。 */
+  extensions(
+    node: string,
+    agent: string,
+  ): Promise<ConsoleResult<MagpieExtensionsView>>
+  installExtension(
+    input: MagpieExtensionInstall,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieExtensionJobView>>
+  removeExtension(
+    input: MagpieExtensionRemove,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<MagpieExtensionJobView>>
 }
 
 // ---------------------------------------------------------------------------

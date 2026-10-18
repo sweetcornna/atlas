@@ -34,10 +34,17 @@
  * 并停用——magpie 把空白名单当作全部模型，所以空列表从不写出。订阅到期也停用。
  * 租户的上游从不进平台密钥的白名单、平台的路由组与平台页的上游列表。
  *
+ * ## 智能体（P36.5）
+ *
+ * 「智能体」区块在 `consoleMagpieAgents.ts`：中枢有控制链路时接上
+ * （`options.agents`），这里借给它状态文件里的两样（新节点自动接入、手选的模型）、
+ * 写权限的判断、每把节点密钥能用的模型，和「为节点签发」那条签发链。网关的连接、
+ * 上游、路由组、密钥变了之后与每 10 分钟的核对都告诉它重算。
+ *
  * ## 文件
  *
  * - `qianmoConfigPath('qianmo','console','magpie.json')`：网关与管理地址、最近
- *   一次核对、绑定（0600，整份原子重写）。
+ *   一次核对、绑定、新节点自动接入、手选的智能体模型（0600，整份原子重写）。
  * - 管理密钥（`MAGPIE_WEB_KEY`）封在另一个密文库里，信封与模型密钥同一套
  *   （`ProviderSecretStore`），槽名 `magpie-management:web-key` 绑进附加数据，
  *   主密钥也是单独一把。
@@ -93,11 +100,21 @@ import {
   NO_MODEL_PATTERN,
 } from '@qianmo/magpie'
 import { presetById } from '@qianmo/providers'
+import { RUNTIME_CATALOG, type RuntimeSpec } from '../host/runtimes/catalog.js'
 import { writePrivateJson } from '../providers/store.js'
+import {
+  type AgentNodeGateway,
+  ConsoleMagpieAgents,
+  joinModel,
+  type MagpieAgentsGateways,
+  type MagpieAgentsOptions,
+  type MagpieSystem,
+} from './consoleMagpieAgents.js'
 import { ProviderSecretStore } from './consoleProvidersSecrets.js'
 
 const PERSONAL_SUBJECT = /^u:[0-9a-f]{16}$/
 const NODE_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
+const AGENT_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
 const TENANT_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/
 /** What a delivered profile accepts as a model id (`@qianmo/providers`). */
 const PROFILE_MODEL_ID = /^[A-Za-z0-9~][A-Za-z0-9._:/~@+-]{0,127}$/
@@ -107,6 +124,12 @@ const CHECK_EVERY_MS = 10 * 60 * 1000
 /** After a write magpie did not answer in time, how long to wait before looking again. */
 const LOOK_AGAIN_MS = 1_500
 const SNAPSHOT_TTL_MS = 2_000
+/**
+ * How long the 「智能体」 section reuses magpie's providers and groups: the
+ * section is read every few seconds while the page follows a job, and they
+ * change by this port's own writes (which drop them) or rarely elsewhere.
+ */
+const GATEWAYS_READ_TTL_MS = 15_000
 /** The name prefix of every upstream a subscriber connects (P35). */
 const TENANT_UPSTREAM_PREFIX = 'qmt-'
 const MAX_TENANT_UPSTREAMS = 10
@@ -148,6 +171,13 @@ interface TenantUpstreamRecord {
   readonly createdAt: number
 }
 
+/** An agent's manual model (P36.5); an agent without one is automatic. */
+interface AgentModelRecord {
+  readonly node: string
+  readonly agent: string
+  readonly model: string
+}
+
 /** A subscriber tenant (P35): whether it is paid up, its plan's caps, its upstreams. */
 interface TenantRecord {
   readonly tenant: string
@@ -165,6 +195,9 @@ interface MagpieState {
   readonly lastCheck: MagpieCheckView | null
   readonly bindings: readonly BindingRecord[]
   readonly tenants: readonly TenantRecord[]
+  /** New nodes join magpie on their own (P36.5); on unless turned off. */
+  readonly autoJoin: boolean
+  readonly agentModels: readonly AgentModelRecord[]
 }
 
 const EMPTY_STATE: MagpieState = {
@@ -176,6 +209,8 @@ const EMPTY_STATE: MagpieState = {
   lastCheck: null,
   bindings: [],
   tenants: [],
+  autoJoin: true,
+  agentModels: [],
 }
 
 /** A subscriber tenant's gateway as its subscription page shows it. */
@@ -203,6 +238,14 @@ export interface ConsoleMagpieOptions {
     readonly caller: ProviderCaller
     readonly onProfile?: (tenant: string) => void
   }
+  /** The 「智能体」 section (P36.5): only with a control link to the nodes. */
+  readonly agents?: MagpieAgentsOptions
+  /**
+   * The hub's own model-service caller and ledger (`system:magpie`): joins a
+   * node on its own and brings older node profiles up to the lanes the
+   * runtime catalog speaks. Without it neither happens.
+   */
+  readonly system?: MagpieSystem
   readonly fetch?: typeof fetch
   readonly now?: () => number
   readonly checkEveryMs?: number
@@ -289,6 +332,37 @@ export function magpieProfileId(binding: MagpieBinding): string {
     .digest('hex')
     .slice(0, 8)
   return `${base.slice(0, 39).replace(/-+$/, '')}-${hash}`
+}
+
+/** Where a lane is on the gateway: Anthropic at the origin, OpenAI under `/v1`, Gemini under `/v1beta`. */
+function laneAddress(gateway: string, lane: string): string {
+  if (lane === 'anthropic') return gateway
+  if (lane === 'gemini') return `${gateway}/v1beta`
+  return `${gateway}/v1`
+}
+
+/**
+ * The addresses of a magpie profile's other lanes. magpie answers every lane
+ * on one port, so the one key also serves the runtimes that speak another
+ * protocol: the three P33 gives every key (Claude Code, Codex), and Gemini
+ * once a runtime in the catalog speaks it (`harness-backends.md` §4.1), at
+ * `/v1beta` — Google's API base, as the `gemini` lane takes it everywhere.
+ */
+export function magpieLaneAddresses(
+  gateway: string,
+  main: MagpieLane,
+  catalog: readonly RuntimeSpec[] = RUNTIME_CATALOG,
+): Record<string, string> {
+  const lanes = [
+    'anthropic',
+    'openai-responses',
+    'openai-chat',
+    ...(catalog.some(spec => spec.lanes.includes('gemini')) ? ['gemini'] : []),
+  ]
+  const out: Record<string, string> = {}
+  for (const lane of lanes)
+    if (lane !== main) out[lane] = laneAddress(gateway, lane)
+  return out
 }
 
 /** Whether `id` is a subscriber's profile, `magpie-tenant-<tenant>` (P35). */
@@ -474,6 +548,17 @@ function parseState(text: string): MagpieState | null {
       upstreams,
     })
   }
+  const agentModels: AgentModelRecord[] = []
+  for (const entry of Array.isArray(raw['agentModels'])
+    ? raw['agentModels']
+    : []) {
+    if (!isRecord(entry)) return null
+    const node = text_(entry['node'])
+    const agent = text_(entry['agent'])
+    const model = text_(entry['model'])
+    if (node === null || agent === null || model === null) return null
+    agentModels.push({ node, agent, model })
+  }
   const check = raw['lastCheck']
   return {
     v: 1,
@@ -484,6 +569,8 @@ function parseState(text: string): MagpieState | null {
     lastCheck: isRecord(check) ? (check as unknown as MagpieCheckView) : null,
     bindings,
     tenants,
+    autoJoin: raw['autoJoin'] !== false,
+    agentModels,
   }
 }
 
@@ -596,6 +683,15 @@ export class ConsoleMagpie implements MagpiePort {
   #queue: Promise<unknown> = Promise.resolve()
   #timer: ReturnType<typeof setInterval> | null = null
   #cache: { readonly at: number; readonly value: MagpieSnapshot } | null = null
+  /** magpie's providers and groups as {@link #gateways} last read them. */
+  #gatewaysRead: {
+    readonly at: number
+    readonly read: MagpieRead | null
+  } | null = null
+  /** Bumped whenever a write may have changed magpie: older reads are not kept. */
+  #generation = 0
+  /** The 「智能体」 section (P36.5); absent without a control link. */
+  readonly agents: ConsoleMagpieAgents | undefined
 
   constructor(options: ConsoleMagpieOptions) {
     this.#options = options
@@ -616,6 +712,10 @@ export class ConsoleMagpie implements MagpiePort {
       if (parsed === null) this.#problem = '网关状态文件无法解析 · 不会覆盖它'
       else this.#state = parsed
     }
+    this.agents =
+      options.agents === undefined
+        ? undefined
+        : new ConsoleMagpieAgents(this.#agentsHost(), options.agents)
   }
 
   /** Why writes are refused, or null. */
@@ -637,16 +737,22 @@ export class ConsoleMagpie implements MagpiePort {
   close(): void {
     if (this.#timer !== null) clearInterval(this.#timer)
     this.#timer = null
+    this.agents?.close()
+  }
+
+  /** What the agents' models depend on changed: they are worked out again. */
+  #changed(): void {
+    this.agents?.changed()
   }
 
   // --- plumbing ----------------------------------------------------------
 
   /** One write at a time: "read magpie, then change it" must not interleave. */
   #serial<T>(run: () => Promise<T>): Promise<T> {
-    this.#cache = null
+    this.#forgetReads()
     const next = this.#queue.then(run, run).finally(() => {
       // A snapshot taken while this ran may hold the state from before it.
-      this.#cache = null
+      this.#forgetReads()
     })
     this.#queue = next.catch(() => {})
     return next
@@ -655,7 +761,14 @@ export class ConsoleMagpie implements MagpiePort {
   #save(next: MagpieState): void {
     writePrivateJson(this.#options.statePath, next)
     this.#state = next
+    this.#forgetReads()
+  }
+
+  /** Drops what was read of magpie before a write. */
+  #forgetReads(): void {
     this.#cache = null
+    this.#gatewaysRead = null
+    this.#generation++
   }
 
   #authorize(caller: MagpieCaller): Failure | null {
@@ -1038,7 +1151,50 @@ export class ConsoleMagpie implements MagpiePort {
     const check = await this.#probe(client)
     if (check.ok) await this.#reconcile(client)
     this.#save({ ...this.#state, lastCheck: check })
+    if (check.ok) {
+      await this.#refreshLanes()
+      this.#changed()
+    }
     return check
+  }
+
+  /**
+   * A node profile written before the catalog spoke another lane (Gemini,
+   * P36.5) gets that lane's address and goes to its node again; only with
+   * the hub's own caller, since nobody at the page asked.
+   */
+  async #refreshLanes(): Promise<void> {
+    const caller = this.#options.system?.caller
+    if (caller === undefined) return
+    const providers = this.#options.providers
+    for (const record of this.#state.bindings) {
+      if (record.kind !== 'node') continue
+      const profile = await providers.profile(record.profileId)
+      if (!profile.ok) continue
+      const want = Object.entries(this.#laneAddresses(record.lane))
+      const have = Object.entries(profile.value.laneAddresses ?? {})
+      const line = ([lane, url]: [string, string | undefined]) =>
+        `${lane} ${url ?? ''}`
+      if (sameList(want.map(line), have.map(line))) continue
+      const saved = await providers.saveProfile(
+        {
+          profile: this.#profileDraft(record),
+          ifMatch: profile.value.revision,
+        },
+        caller,
+      )
+      if (!saved.ok) {
+        this.#options.onError?.(
+          `${record.profileId} 没能补上线路地址 · ${saved.failure.message}`,
+        )
+        continue
+      }
+      const applied = await providers.apply({ nodes: [record.id] }, caller)
+      if (!applied.ok)
+        this.#options.onError?.(
+          `下发到 ${record.id} 失败 · ${applied.failure.message}`,
+        )
+    }
   }
 
   // --- reads -------------------------------------------------------------
@@ -1202,6 +1358,7 @@ export class ConsoleMagpie implements MagpiePort {
       // The public edition takes a subscriber's node back onto no model:
       // that profile exists from the first connection and follows the gateway.
       await this.#ensureNoModel()
+      this.#changed()
       if (problems.length > 0)
         return failed(
           'unreachable',
@@ -1320,6 +1477,7 @@ export class ConsoleMagpie implements MagpiePort {
           ...urls,
         })
         await this.#reconcile(client)
+        this.#changed()
         return ok(providerView(added))
       } catch (error) {
         return fromMagpie(error)
@@ -1343,6 +1501,7 @@ export class ConsoleMagpie implements MagpiePort {
         const after = await client.setProviderEnabled(id, on)
         const provider = after.find(one => one.id === id)
         if (provider === undefined) return failed('not_found', '没有这个上游')
+        this.#changed()
         return ok(providerView(provider))
       } catch (error) {
         return fromMagpie(error)
@@ -1397,6 +1556,7 @@ export class ConsoleMagpie implements MagpiePort {
         if (!found.ok) return found
         await client.deleteProvider(id)
         await this.#reconcile(client)
+        this.#changed()
         return ok(undefined)
       } catch (error) {
         return fromMagpie(error)
@@ -1440,6 +1600,7 @@ export class ConsoleMagpie implements MagpiePort {
         const saved = await client.saveGroup(draft)
         const after = await this.#read(client)
         await this.#reconcile(client, after)
+        this.#changed()
         const platform = this.#platform(after)
         return ok(groupView(saved, platform.providers, platform.groups))
       } catch (error) {
@@ -1463,6 +1624,7 @@ export class ConsoleMagpie implements MagpiePort {
       try {
         await client.deleteGroup(id)
         await this.#reconcile(client)
+        this.#changed()
         return ok(undefined)
       } catch (error) {
         return fromMagpie(error)
@@ -1494,6 +1656,10 @@ export class ConsoleMagpie implements MagpiePort {
     return ok(undefined)
   }
 
+  #laneAddresses(main: MagpieLane): Record<string, string> {
+    return magpieLaneAddresses(this.#state.gatewayUrl ?? '', main)
+  }
+
   #profileDraft(record: {
     readonly kind: 'node' | 'tenant'
     readonly id: string
@@ -1504,8 +1670,6 @@ export class ConsoleMagpie implements MagpiePort {
   }): ProviderProfileDraft {
     const preset = presetById('magpie')
     const gateway = this.#state.gatewayUrl ?? ''
-    const address = (lane: MagpieLane) =>
-      lane === 'anthropic' ? gateway : `${gateway}/v1`
     const fast =
       record.fastModel !== null && record.fastModel !== record.mainModel
         ? record.fastModel
@@ -1527,14 +1691,8 @@ export class ConsoleMagpie implements MagpiePort {
       plan: preset?.plan ?? 'custom',
       site: null,
       lane: record.lane,
-      baseUrl: address(record.lane),
-      // magpie answers every lane on one port, so the one key also serves the
-      // runtimes that speak another protocol (Claude Code, Codex).
-      laneAddresses: Object.fromEntries(
-        (['anthropic', 'openai-responses', 'openai-chat'] as const)
-          .filter(lane => lane !== record.lane)
-          .map(lane => [lane, address(lane)]),
-      ),
+      baseUrl: laneAddress(gateway, record.lane),
+      laneAddresses: this.#laneAddresses(record.lane),
       models:
         fast === null
           ? [
@@ -1571,164 +1729,171 @@ export class ConsoleMagpie implements MagpiePort {
     return this.#serial(async () => {
       const denied = this.#authorize(caller)
       if (denied !== null) return denied
-      const { binding } = draft
-      if (
-        (binding.kind === 'node' && !NODE_ID.test(binding.id)) ||
-        (binding.kind === 'tenant' && !TENANT_ID.test(binding.id))
+      const before = this.#state.bindings.length
+      const issued = await this.#issue(draft, this.#providerCaller(caller))
+      // A key saved but not yet delivered is still a new binding.
+      if (this.#state.bindings.length !== before) this.#changed()
+      return issued
+    })
+  }
+
+  /**
+   * The issuance chain (§2.2): key in magpie with its list, profile, and for
+   * a node the assignment and the delivery. The page's 「为节点签发」 and
+   * 「接入 magpie」 and the automatic join all come here.
+   */
+  async #issue(
+    draft: MagpieKeyDraft,
+    pcaller: ProviderCaller,
+  ): Promise<Result<MagpieKeyView>> {
+    const { binding } = draft
+    if (
+      (binding.kind === 'node' && !NODE_ID.test(binding.id)) ||
+      (binding.kind === 'tenant' && !TENANT_ID.test(binding.id))
+    )
+      return failed('invalid', '绑定无效')
+    if (binding.kind === 'tenant' && this.#options.subscriptions !== undefined)
+      return failed(
+        'rejected',
+        '公开版的租户网关密钥随订阅开通 · 模型由订阅者自己接入',
       )
-        return failed('invalid', '绑定无效')
-      if (
-        binding.kind === 'tenant' &&
-        this.#options.subscriptions !== undefined
-      )
+    if (this.#state.bindings.some(one => sameBinding(one, binding)))
+      return failed('invalid', '这个绑定已有网关密钥 · 要换就轮换或收回')
+    const providers = this.#options.providers
+    let previous: ProviderAssignment | null = null
+    if (binding.kind === 'node') {
+      const overview = await providers.overview()
+      if (!overview.ok) return fromProviders(overview.failure)
+      const node = overview.value.nodes.find(one => one.node === binding.id)
+      if (node === undefined)
+        return failed('not_found', '模型服务里没有这个节点')
+      previous = node.assignment
+    } else if (!this.#tenants().includes(binding.id)) {
+      return failed('not_found', '没有这个租户')
+    }
+    const client = this.#client()
+    if (!(client instanceof MagpieClient)) return client
+    const lane = draft.lane ?? 'anthropic'
+    const fastModel = draft.fastModel ?? null
+    const profileId = magpieProfileId(binding)
+    let read: MagpieRead
+    try {
+      read = this.#platform(await this.#read(client))
+    } catch (error) {
+      return fromMagpie(error)
+    }
+    const listMode = draft.models !== undefined && draft.models.length > 0
+    const chosen = listMode ? (draft.models ?? []) : []
+    if (listMode) {
+      const bad = ineligiblePatterns(chosen, read.providers, read.groups)
+      if (bad.length > 0)
         return failed(
           'rejected',
-          '公开版的租户网关密钥随订阅开通 · 模型由订阅者自己接入',
+          `白名单里有阡陌不用的上游 · ${bad.slice(0, 3).join(' ')}`,
         )
-      if (this.#state.bindings.some(one => sameBinding(one, binding)))
-        return failed('invalid', '这个绑定已有网关密钥 · 要换就轮换或收回')
-      const providers = this.#options.providers
-      const pcaller = this.#providerCaller(caller)
-      let previous: ProviderAssignment | null = null
-      if (binding.kind === 'node') {
-        const overview = await providers.overview()
-        if (!overview.ok) return fromProviders(overview.failure)
-        const node = overview.value.nodes.find(one => one.node === binding.id)
-        if (node === undefined)
-          return failed('not_found', '模型服务里没有这个节点')
-        previous = node.assignment
-      } else if (!this.#tenants().includes(binding.id)) {
-        return failed('not_found', '没有这个租户')
-      }
-      const client = this.#client()
-      if (!(client instanceof MagpieClient)) return client
-      const lane = draft.lane ?? 'anthropic'
-      const fastModel = draft.fastModel ?? null
-      const profileId = magpieProfileId(binding)
-      let read: MagpieRead
+    }
+    const patterns = listMode
+      ? chosen
+      : eligiblePatterns(read.providers, read.groups)
+    const checked = this.#checkModels(read, patterns, [
+      draft.mainModel,
+      fastModel,
+    ])
+    if (!checked.ok) return checked
+    const secret = newSecret()
+    const keyName = `qm-${binding.kind}-${binding.id.slice(0, 60)}-${randomUUID()}`
+    let key: MagpieKey
+    try {
+      key = await this.#addKey(client, keyName, secret)
+    } catch (error) {
+      return fromMagpie(error)
+    }
+    const undo = async (profileSaved: boolean): Promise<void> => {
       try {
-        read = this.#platform(await this.#read(client))
+        await client.removeKey(key.id)
       } catch (error) {
-        return fromMagpie(error)
+        this.#options.onError?.(`收回半成的网关密钥失败 · ${messageOf(error)}`)
       }
-      const listMode = draft.models !== undefined && draft.models.length > 0
-      const chosen = listMode ? (draft.models ?? []) : []
-      if (listMode) {
-        const bad = ineligiblePatterns(chosen, read.providers, read.groups)
-        if (bad.length > 0)
-          return failed(
-            'rejected',
-            `白名单里有阡陌不用的上游 · ${bad.slice(0, 3).join(' ')}`,
-          )
-      }
-      const patterns = listMode
-        ? chosen
-        : eligiblePatterns(read.providers, read.groups)
-      const checked = this.#checkModels(read, patterns, [
-        draft.mainModel,
-        fastModel,
-      ])
-      if (!checked.ok) return checked
-      const secret = newSecret()
-      const keyName = `qm-${binding.kind}-${binding.id.slice(0, 60)}-${randomUUID()}`
-      let key: MagpieKey
-      try {
-        key = await this.#addKey(client, keyName, secret)
-      } catch (error) {
-        return fromMagpie(error)
-      }
-      const undo = async (profileSaved: boolean): Promise<void> => {
-        try {
-          await client.removeKey(key.id)
-        } catch (error) {
-          this.#options.onError?.(
-            `收回半成的网关密钥失败 · ${messageOf(error)}`,
-          )
-        }
-        if (!profileSaved) return
-        const revision = await this.#revision(profileId)
-        if (revision !== null)
-          await providers.deleteProfile(
-            { profileId, ifMatch: revision },
-            pcaller,
-          )
-      }
-      try {
-        key = await client.setKeyModels(key.id, patterns)
-        if (draft.limits !== undefined && draft.limits.length > 0)
-          key = await client.setKeyLimits(key.id, draft.limits.map(limitOf))
-      } catch (error) {
-        await undo(false)
-        return fromMagpie(error)
-      }
-      // The hub may not reach the gateway the nodes reach; when it does, the
-      // key must see its main model there.
-      try {
-        const catalog = await client.catalog(secret)
-        if (!catalog.some(model => model.id === draft.mainModel)) {
-          await undo(false)
-          return failed('invalid', '网关的模型目录里没有主模型 · 已收回密钥')
-        }
-      } catch (error) {
-        this.#options.onError?.(
-          `签发后读网关目录失败 · 跳过核对 · ${messageOf(error)}`,
-        )
-      }
-      const record: BindingRecord = {
-        kind: binding.kind,
-        id: binding.id,
-        keyId: key.id,
-        keyName,
-        profileId,
-        lane,
-        mainModel: draft.mainModel,
-        fastModel,
-        modelsMode: listMode ? 'list' : 'all',
-        models: chosen,
-        previous,
-        createdAt: this.#now(),
-      }
+      if (!profileSaved) return
       const revision = await this.#revision(profileId)
-      const saved = await providers.saveProfile(
-        {
-          profile: this.#profileDraft(record),
-          ifMatch: revision,
-          secrets: { [GATEWAY_KEY_ID]: secret },
-        },
+      if (revision !== null)
+        await providers.deleteProfile({ profileId, ifMatch: revision }, pcaller)
+    }
+    try {
+      key = await client.setKeyModels(key.id, patterns)
+      if (draft.limits !== undefined && draft.limits.length > 0)
+        key = await client.setKeyLimits(key.id, draft.limits.map(limitOf))
+    } catch (error) {
+      await undo(false)
+      return fromMagpie(error)
+    }
+    // The hub may not reach the gateway the nodes reach; when it does, the
+    // key must see its main model there.
+    try {
+      const catalog = await client.catalog(secret)
+      if (!catalog.some(model => model.id === draft.mainModel)) {
+        await undo(false)
+        return failed('invalid', '网关的模型目录里没有主模型 · 已收回密钥')
+      }
+    } catch (error) {
+      this.#options.onError?.(
+        `签发后读网关目录失败 · 跳过核对 · ${messageOf(error)}`,
+      )
+    }
+    const record: BindingRecord = {
+      kind: binding.kind,
+      id: binding.id,
+      keyId: key.id,
+      keyName,
+      profileId,
+      lane,
+      mainModel: draft.mainModel,
+      fastModel,
+      modelsMode: listMode ? 'list' : 'all',
+      models: chosen,
+      previous,
+      createdAt: this.#now(),
+    }
+    const revision = await this.#revision(profileId)
+    const saved = await providers.saveProfile(
+      {
+        profile: this.#profileDraft(record),
+        ifMatch: revision,
+        secrets: { [GATEWAY_KEY_ID]: secret },
+      },
+      pcaller,
+    )
+    if (!saved.ok) {
+      await undo(false)
+      return fromProviders(saved.failure)
+    }
+    if (binding.kind === 'node') {
+      const assigned = await providers.assign(
+        { node: binding.id, assignment: { mode: 'profile', profileId } },
         pcaller,
       )
-      if (!saved.ok) {
-        await undo(false)
-        return fromProviders(saved.failure)
+      if (!assigned.ok) {
+        await undo(true)
+        return fromProviders(assigned.failure)
       }
-      if (binding.kind === 'node') {
-        const assigned = await providers.assign(
-          { node: binding.id, assignment: { mode: 'profile', profileId } },
-          pcaller,
+    }
+    try {
+      this.#save({
+        ...this.#state,
+        bindings: [...this.#state.bindings, record],
+      })
+    } catch (error) {
+      return failed('unreachable', `网关状态写不进去 · ${messageOf(error)}`)
+    }
+    if (binding.kind === 'node') {
+      const problem = await this.#deliver(binding.id, pcaller)
+      if (problem !== null)
+        return failed(
+          'unreachable',
+          `密钥已签发并写进档案 · 下发到 ${binding.id} 未完成 · ${problem} · 在模型服务页重新下发`,
         )
-        if (!assigned.ok) {
-          await undo(true)
-          return fromProviders(assigned.failure)
-        }
-      }
-      try {
-        this.#save({
-          ...this.#state,
-          bindings: [...this.#state.bindings, record],
-        })
-      } catch (error) {
-        return failed('unreachable', `网关状态写不进去 · ${messageOf(error)}`)
-      }
-      if (binding.kind === 'node') {
-        const problem = await this.#deliver(binding.id, pcaller)
-        if (problem !== null)
-          return failed(
-            'unreachable',
-            `密钥已签发并写进档案 · 下发到 ${binding.id} 未完成 · ${problem} · 在模型服务页重新下发`,
-          )
-      }
-      return ok(this.#keyView(record, key))
-    })
+    }
+    return ok(this.#keyView(record, key))
   }
 
   #record(binding: MagpieBinding): BindingRecord | undefined {
@@ -1834,6 +1999,7 @@ export class ConsoleMagpie implements MagpiePort {
               `已改进档案 · 下发到 ${record.id} 未完成 · ${problem} · 在模型服务页重新下发`,
             )
         }
+        this.#changed()
         const key = (await client.listKeys()).find(
           one => one.id === record.keyId,
         )
@@ -1980,9 +2146,174 @@ export class ConsoleMagpie implements MagpiePort {
         ...this.#state,
         bindings: this.#state.bindings.filter(one => !sameBinding(one, record)),
       })
+      this.#changed()
       return ok({ profileKept })
     })
   }
+  // --- the agents section (P36.5) ------------------------------------------
+
+  /** What `ConsoleMagpieAgents` may use of this port. */
+  #agentsHost() {
+    return {
+      configured: () =>
+        this.#state.managementUrl !== null && this.#state.gatewayUrl !== null,
+      authorize: (caller: MagpieCaller) => {
+        const denied = this.#authorize(caller)
+        return denied === null ? null : denied.failure
+      },
+      autoJoin: () => this.#state.autoJoin,
+      setAutoJoin: (on: boolean) => {
+        if (this.#state.autoJoin !== on)
+          this.#save({ ...this.#state, autoJoin: on })
+      },
+      choice: (node: string, agent: string) =>
+        this.#state.agentModels.find(
+          one => one.node === node && one.agent === agent,
+        )?.model ?? null,
+      setChoice: (node: string, agent: string, model: string | null) =>
+        this.#setChoice(node, agent, model),
+      gateways: () => this.#gateways(),
+      join: (node: string, caller: MagpieCaller | null) =>
+        this.#join(node, caller),
+      system: this.#options.system,
+    }
+  }
+
+  #setChoice(node: string, agent: string, model: string | null): void {
+    if (!NODE_ID.test(node) || !AGENT_ID.test(agent))
+      throw new Error('节点或智能体名无效')
+    if (model !== null && !PROFILE_MODEL_ID.test(model))
+      throw new Error('模型 id 不能用')
+    const others = this.#state.agentModels.filter(
+      one => one.node !== node || one.agent !== agent,
+    )
+    const next = model === null ? others : [...others, { node, agent, model }]
+    if (
+      next.length === this.#state.agentModels.length &&
+      next.every(one => this.#state.agentModels.includes(one))
+    )
+      return
+    this.#save({ ...this.#state, agentModels: next })
+  }
+
+  /**
+   * Every node of the model service: on its own magpie profile or not, and
+   * what its key lets through — the eligible models and groups the key's list
+   * allows, the same reckoning as the whitelist's.
+   */
+  async #gateways(): Promise<MagpieAgentsGateways | null> {
+    const overview = await this.#options.providers.overview()
+    if (!overview.ok) return null
+    const read = await this.#gatewaysMagpie()
+    const choices =
+      read === null ? null : modelChoices(read.providers, read.groups)
+    const nodes = new Map<string, AgentNodeGateway>()
+    for (const view of overview.value.nodes) {
+      const record = this.#record({ kind: 'node', id: view.node })
+      const profileId =
+        record?.profileId ??
+        magpieProfileId({
+          kind: 'node',
+          id: view.node,
+        })
+      const bound =
+        record !== undefined &&
+        view.assignment.mode === 'profile' &&
+        view.assignment.profileId === record.profileId
+      const models =
+        !bound || record === undefined
+          ? []
+          : read === null || choices === null
+            ? null
+            : choices.filter(id => allows(this.#target(record, read), id))
+      nodes.set(view.node, {
+        profileId,
+        assignment: bound ? 'bound' : view.assignment.mode,
+        models,
+      })
+    }
+    return {
+      defaultProfileId: overview.value.defaultProfileId,
+      nodes,
+      platformModels: choices,
+    }
+  }
+
+  /** magpie's platform providers and groups, reused for a short while. */
+  async #gatewaysMagpie(): Promise<MagpieRead | null> {
+    const cached = this.#gatewaysRead
+    if (cached !== null && this.#now() - cached.at < GATEWAYS_READ_TTL_MS)
+      return cached.read
+    const generation = this.#generation
+    let read: MagpieRead | null = null
+    const client = this.#client()
+    if (client instanceof MagpieClient) {
+      try {
+        read = this.#platform(await this.#read(client))
+      } catch {
+        read = null
+      }
+    }
+    if (generation === this.#generation)
+      this.#gatewaysRead = { at: this.#now(), read }
+    return read
+  }
+
+  /**
+   * One node onto magpie by the issuance chain: a person from the page, or
+   * the hub itself (`caller` null) for a node that follows nothing.
+   */
+  #join(
+    node: string,
+    caller: MagpieCaller | null,
+  ): Promise<Result<MagpieKeyView>> {
+    return this.#serial(async () => {
+      let pcaller: ProviderCaller
+      if (caller === null) {
+        const system = this.#options.system
+        if (system === undefined)
+          return failed('unsupported', '中枢没有自己的调用者 · 不能自动接入')
+        if (this.problem !== null) return failed('unsupported', this.problem)
+        pcaller = system.caller
+      } else {
+        const denied = this.#authorize(caller)
+        if (denied !== null) return denied
+        pcaller = this.#providerCaller(caller)
+      }
+      if (!NODE_ID.test(node)) return failed('invalid', '节点名无效')
+      if (this.#record({ kind: 'node', id: node }) !== undefined)
+        return failed('invalid', '这台节点已经有网关密钥')
+      const overview = await this.#options.providers.overview()
+      if (!overview.ok) return fromProviders(overview.failure)
+      const view = overview.value.nodes.find(one => one.node === node)
+      if (view === undefined)
+        return failed('not_found', '模型服务里没有这个节点')
+      if (
+        caller === null &&
+        (view.assignment.mode !== 'inherit' ||
+          overview.value.defaultProfileId !== null)
+      )
+        return failed('invalid', '这台节点已有模型档案 · 不自动接入')
+      const client = this.#client()
+      if (!(client instanceof MagpieClient)) return client
+      let main: string | null
+      try {
+        const read = this.#platform(await this.#read(client))
+        main = joinModel(modelChoices(read.providers, read.groups))
+      } catch (error) {
+        return fromMagpie(error)
+      }
+      if (main === null) return failed('invalid', 'magpie 里还没有可用的模型')
+      const before = this.#state.bindings.length
+      const issued = await this.#issue(
+        { binding: { kind: 'node', id: node }, mainModel: main },
+        pcaller,
+      )
+      if (this.#state.bindings.length !== before) this.#changed()
+      return issued
+    })
+  }
+
   // --- subscriber tenants (P35): the hub's own calls -------------------------
 
   #subscriptionsOpen(): Failure | null {

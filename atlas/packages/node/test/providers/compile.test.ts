@@ -14,7 +14,10 @@ import {
 import { LANE_KINDS, PRESETS } from '@qianmo/providers'
 import { compileProfile, LANE_API } from '../../src/providers/compile.js'
 import { getModelCompatCapabilities } from '../../src/providers/capabilities.js'
-import { runtimeModelCredential } from '../../src/providers/node.js'
+import {
+  nodeMainModelSpec,
+  runtimeModelCredential,
+} from '../../src/providers/node.js'
 import {
   ensurePrivateDir,
   providerPaths,
@@ -257,11 +260,57 @@ describe('omp compiler', () => {
         runtimeModelCredential('magpie-node-n1/api2/gpt-6-luna', 'codex')
           .baseUrl,
       ).toBe(lanes['openai-responses'])
+      // An agent with no model of its own takes the node's main one (P36
+      // §3.2), on the first lane its runtime speaks: Chat for dsh.
+      writePrivateJson(providerPaths.config(), compiled.config)
+      expect(nodeMainModelSpec()).toBe('magpie-node-n1/api2/gpt-6-luna')
+      expect(runtimeModelCredential(nodeMainModelSpec()!, 'dsh')).toMatchObject(
+        { lane: 'openai-chat', model: 'api2/gpt-6-luna' },
+      )
     } finally {
       store.close()
       fixture.dispose()
     }
   })
+  // P36.5: a Gemini runtime in the catalog adds magpie's Gemini lane, at
+  // `/v1beta` as Google's API base, to the same key.
+  test('a Gemini lane address compiles to a Gemini sibling on the same key', () => {
+    const result = compileProfile(
+      wireProfile(
+        {
+          id: 'magpie-node-n1',
+          lane: 'anthropic',
+          baseUrl: 'https://gateway.example.test',
+          laneAddresses: {
+            'openai-chat': 'https://gateway.example.test/v1',
+            gemini: 'https://gateway.example.test/v1beta',
+          },
+          auth: { scheme: 'bearer', keys: [{ id: 'gw', value: CANARY_KEY }] },
+          compat: {},
+          // What the hub writes into every magpie profile (`consoleMagpie.ts`).
+          models: [
+            {
+              id: 'google/gemini-3.1-pro',
+              role: 'main',
+              tiers: ['opus', 'sonnet', 'haiku', 'fable'],
+              capabilities: { mode: 'family' },
+              effort: { send: 'auto' },
+            },
+          ],
+        },
+        capabilities,
+      ),
+      { secret: CANARY_KEY, capabilities },
+    )
+    if (!result.ok) throw new Error(result.error.message)
+    const gemini = Object.values(result.compiled.models.providers).find(
+      provider => provider.api === 'google-generative-ai',
+    )
+    expect(gemini?.baseUrl).toBe('https://gateway.example.test/v1beta')
+    expect(gemini?.apiKey).toBe(CANARY_KEY)
+    expect(Object.keys(result.compiled.models.providers)).toHaveLength(3)
+  })
+
   test('lane addresses ride a single key only; without them a runtime is told the lane', () => {
     const several = compileProfile(
       wireProfile(
@@ -304,6 +353,40 @@ describe('omp compiler', () => {
       expect(() =>
         runtimeModelCredential('plain/vendor-model-pro', 'claude-code'),
       ).toThrow('claude-code needs a anthropic-messages profile')
+    } finally {
+      fixture.dispose()
+    }
+  })
+  test('a profile whose id begins with qm- is still found by its id, and by its provider id', () => {
+    const fixture = isolatedRoot()
+    try {
+      const result = compileProfile(
+        wireProfile(
+          {
+            id: 'qm-prod',
+            lane: 'openai-chat',
+            baseUrl: 'https://gateway.example.test/v1',
+            compat: {},
+          },
+          capabilities,
+        ),
+        { secret: CANARY_KEY, capabilities },
+      )
+      if (!result.ok) throw new Error(result.error.message)
+      const provider = result.compiled.providerId
+      expect(provider).toMatch(/^qm-qm-prod-[0-9a-f]{8}$/)
+      ensurePrivateDir(join(providerPaths.models(), '..'))
+      writePrivateJson(providerPaths.models(), result.compiled.models)
+      writePrivateJson(providerPaths.config(), result.compiled.config)
+      const main = nodeMainModelSpec()!
+      expect(main.startsWith('qm-prod/')).toBe(true)
+      expect(runtimeModelCredential(main, 'dsh')).toMatchObject({
+        lane: 'openai-chat',
+        baseUrl: 'https://gateway.example.test/v1',
+      })
+      expect(
+        runtimeModelCredential(`${provider}/vendor-model-pro`, 'dsh').lane,
+      ).toBe('openai-chat')
     } finally {
       fixture.dispose()
     }

@@ -231,3 +231,258 @@ describe('node turn gate', () => {
     expect(ran).toBe(0)
   })
 })
+
+/** A turn the test ends by hand; `started` flips when the gate starts it. */
+function held(
+  gate: NodeTurnGate,
+  events: string[],
+  name: string,
+  request = {},
+) {
+  let release!: () => void
+  const gateOpen = new Promise<void>(resolve => {
+    release = resolve
+  })
+  const turn = { started: false, release, done: Promise.resolve() }
+  turn.done = gate.run(async () => {
+    turn.started = true
+    events.push(`${name}:start`)
+    await gateOpen
+    events.push(`${name}:end`)
+  }, request)
+  return turn
+}
+
+describe('re-entry along a verified call chain (P36.6)', () => {
+  test('a turn the running one is waiting on starts at once, nested in it', async () => {
+    const gate = new NodeTurnGate()
+    const events: string[] = []
+    const asker = held(gate, events, 'a', { key: 'task-a' })
+    const answer = held(gate, events, 'b', {
+      key: 'task-b',
+      chain: ['task-a'],
+    })
+    expect(answer.started).toBe(true)
+    expect(gate.depth).toBe(2)
+    expect(gate.queued).toBe(0)
+    answer.release()
+    await answer.done
+    expect(gate.depth).toBe(1)
+    asker.release()
+    await asker.done
+    expect(events).toEqual(['a:start', 'b:start', 'b:end', 'a:end'])
+    expect(gate.active).toBe(false)
+  })
+
+  test('a full queue does not refuse an answer that nests; it refuses one that would wait', async () => {
+    const gate = new NodeTurnGate()
+    const events: string[] = []
+    const asker = held(gate, events, 'a', { key: 'task-a' })
+    const backlog = Array.from({ length: LIMITS.maxQueuedTurns }, (_, i) =>
+      held(gate, events, `q${i}`),
+    )
+    expect(gate.saturated).toBe(true)
+    expect(gate.nestsNow(['task-a'])).toBe(true)
+    expect(gate.nestsNow(['task-x'])).toBe(false)
+    const answer = held(gate, events, 'b', { key: 'task-b', chain: ['task-a'] })
+    expect(answer.started).toBe(true)
+    expect(gate.queued).toBe(LIMITS.maxQueuedTurns)
+    await expect(
+      gate.run(async () => {}, { chain: ['task-x'] }),
+    ).rejects.toBeInstanceOf(NodeTurnQueueFullError)
+    answer.release()
+    await answer.done
+    asker.release()
+    await asker.done
+    for (const turn of backlog) {
+      while (!turn.started) await Promise.resolve()
+      turn.release()
+      await turn.done
+    }
+  })
+
+  test('a chain that does not name the running turn queues as ever', async () => {
+    const gate = new NodeTurnGate()
+    const events: string[] = []
+    const running = held(gate, events, 'a', { key: 'task-a' })
+    const other = held(gate, events, 'b', { chain: ['task-x'] })
+    // Keyless turns (local mail, watch jobs) cannot be named by a chain.
+    const keyless = held(gate, events, 'c')
+    const named = held(gate, events, 'd', { chain: ['task-c'] })
+    expect([other.started, keyless.started, named.started]).toEqual([
+      false,
+      false,
+      false,
+    ])
+    expect(gate.queued).toBe(3)
+    running.release()
+    await running.done
+    expect(other.started).toBe(true)
+    other.release()
+    keyless.release()
+    named.release()
+    await Promise.all([other.done, keyless.done, named.done])
+    expect(events).toEqual([
+      'a:start',
+      'a:end',
+      'b:start',
+      'b:end',
+      'c:start',
+      'c:end',
+      'd:start',
+      'd:end',
+    ])
+  })
+
+  test('a request without a chain (an unsigned one reaches the gate so) queues behind the asker', async () => {
+    const gate = new NodeTurnGate()
+    const events: string[] = []
+    const asker = held(gate, events, 'a', { key: 'task-a' })
+    const unsigned = held(gate, events, 'b', { key: 'task-b' })
+    expect(unsigned.started).toBe(false)
+    asker.release()
+    await asker.done
+    expect(unsigned.started).toBe(true)
+    unsigned.release()
+    await unsigned.done
+  })
+
+  test(`nesting stops at ${LIMITS.maxAskChain} turns inside the outermost, and a longer chain is ignored`, async () => {
+    const gate = new NodeTurnGate()
+    const events: string[] = []
+    const turns = [held(gate, events, 't0', { key: 'k0' })]
+    for (let depth = 1; depth <= LIMITS.maxAskChain; depth++)
+      turns.push(
+        held(gate, events, `t${depth}`, {
+          key: `k${depth}`,
+          chain: Array.from({ length: depth }, (_, i) => `k${i}`),
+        }),
+      )
+    expect(turns.every(turn => turn.started)).toBe(true)
+    expect(gate.depth).toBe(LIMITS.maxAskChain + 1)
+    // One deeper than the limit: queued, even though its chain names the
+    // innermost turn.
+    const tooDeep = held(gate, events, 'deep', {
+      chain: [`k${LIMITS.maxAskChain}`],
+    })
+    expect(tooDeep.started).toBe(false)
+    turns.at(-1)!.release()
+    await turns.at(-1)!.done
+    // Back at three nested: a chain longer than the limit still does not count.
+    const overlong = held(gate, events, 'long', {
+      chain: [
+        ...Array.from({ length: LIMITS.maxAskChain }, (_, i) => `x${i}`),
+        `k${LIMITS.maxAskChain - 1}`,
+      ],
+    })
+    expect(overlong.started).toBe(false)
+    for (const turn of turns.slice(0, -1).reverse()) {
+      turn.release()
+      await turn.done
+    }
+    tooDeep.release()
+    overlong.release()
+    await Promise.all([tooDeep.done, overlong.done])
+    expect(gate.active).toBe(false)
+  })
+
+  test('when the nested turn ends the gate goes back to the asker: its other answers first, nothing else in between', async () => {
+    const gate = new NodeTurnGate()
+    const events: string[] = []
+    const asker = held(gate, events, 'asker', { key: 'task-a' })
+    // A person's message and a background turn arrive while the asker waits.
+    const person = held(gate, events, 'person')
+    const background = held(gate, events, 'bg', { background: true })
+    // The asker asked two agents here; they answer one after the other.
+    const first = held(gate, events, 'first', { chain: ['task-a'] })
+    const second = held(gate, events, 'second', { chain: ['task-a'] })
+    expect(first.started).toBe(true)
+    expect(second.started).toBe(false)
+    first.release()
+    await first.done
+    expect(second.started).toBe(true)
+    expect(person.started).toBe(false)
+    second.release()
+    await second.done
+    // Back to the asker alone: still nothing else starts.
+    await Promise.resolve()
+    expect(person.started).toBe(false)
+    expect(background.started).toBe(false)
+    asker.release()
+    await asker.done
+    person.release()
+    background.release()
+    await Promise.all([person.done, background.done])
+    expect(events).toEqual([
+      'asker:start',
+      'first:start',
+      'first:end',
+      'second:start',
+      'second:end',
+      'asker:end',
+      'person:start',
+      'person:end',
+      'bg:start',
+      'bg:end',
+    ])
+  })
+
+  test('an asker that ends before its answer leaves the gate to the nested turn until it ends', async () => {
+    const gate = new NodeTurnGate()
+    const events: string[] = []
+    const asker = held(gate, events, 'asker', { key: 'task-a' })
+    const answer = held(gate, events, 'answer', { chain: ['task-a'] })
+    const next = held(gate, events, 'next')
+    asker.release()
+    await asker.done
+    expect(gate.depth).toBe(1)
+    expect(next.started).toBe(false)
+    answer.release()
+    await answer.done
+    expect(next.started).toBe(true)
+    next.release()
+    await next.done
+  })
+
+  test('a nested turn past its deadline is dropped, the next nested candidate taken', async () => {
+    let clock = 1_700_000_000_000
+    const gate = new NodeTurnGate({ now: () => clock })
+    const events: string[] = []
+    const asker = held(gate, events, 'asker', { key: 'task-a' })
+    const first = held(gate, events, 'first', { chain: ['task-a'] })
+    const stale = gate.run(async () => events.push('stale'), {
+      chain: ['task-a'],
+      deadlineAt: clock + 10,
+    })
+    const live = held(gate, events, 'live', { chain: ['task-a'] })
+    clock += 11
+    first.release()
+    await first.done
+    await expect(stale).rejects.toBeInstanceOf(NodeTurnExpiredError)
+    expect(live.started).toBe(true)
+    live.release()
+    asker.release()
+    await Promise.all([live.done, asker.done])
+    expect(events).not.toContain('stale')
+  })
+
+  test('nestsNow tells a host whether a chain would nest right now, without queueing anything', async () => {
+    const gate = new NodeTurnGate()
+    const events: string[] = []
+    // Nothing runs: nothing to nest in.
+    expect(gate.nestsNow(['task-a'])).toBe(false)
+    const asker = held(gate, events, 'a', { key: 'task-a' })
+    expect(gate.nestsNow(['task-a'])).toBe(true)
+    expect(gate.nestsNow(['task-x'])).toBe(false)
+    expect(gate.nestsNow([])).toBe(false)
+    const nested = held(gate, events, 'b', { key: 'task-b', chain: ['task-a'] })
+    // Only the innermost turn counts, as for a turn that arrives.
+    expect(gate.nestsNow(['task-a'])).toBe(false)
+    expect(gate.nestsNow(['task-a', 'task-b'])).toBe(true)
+    expect(gate.queued).toBe(0)
+    nested.release()
+    asker.release()
+    await Promise.all([nested.done, asker.done])
+    expect(gate.nestsNow(['task-a'])).toBe(false)
+  })
+})

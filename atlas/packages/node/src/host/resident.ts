@@ -17,8 +17,21 @@ import { MemoryControl } from './memoryControl.js'
 import { verifiedBackground, verifiedTaskOwner } from '@qianmo/capability'
 import { connectorTools, type ConnectorToolContext } from './connectorTools.js'
 import { taskTools, type TaskToolOrigin } from './taskTools.js'
+import {
+  askReentry,
+  NESTED_NO_ROOM_REASON,
+  peerTools,
+  type PeerToolOrigin,
+} from './peerTools.js'
+import { FALLBACK_RUNTIME } from './runtimes/catalog.js'
 import { NodeExtensions } from './extensions.js'
-import { runtimeBin, runtimeControl } from './runtimeUpdate.js'
+import { runtimeBin } from './runtimeUpdate.js'
+import { NodeRuntimes } from './runtimeConfig.js'
+import {
+  RUNTIME_CATALOG_CAPABILITY,
+  RUNTIME_EXT_OPS,
+  RUNTIME_OPS,
+} from './runtimes/contract.js'
 import { SelfUpgrader, systemControl } from './selfUpgradeRunner.js'
 import { residentToolSurface, type HostToolDefinition } from './notifyTool.js'
 import { buildVersion } from '../provenance.js'
@@ -145,6 +158,8 @@ import {
 } from './residentOmp.js'
 import type { ExternalRuntimeKind } from './runtimes/channel.js'
 import { ResidentRuntimePool } from './runtimes/composite.js'
+import { writeResidentRoster } from './runtimes/frontendLock.js'
+import { isNativeExtensionOp, NativeExtensions } from './runtimes/nativeExt.js'
 import {
   ExternalRuntimePool,
   type ExternalAgent,
@@ -161,7 +176,10 @@ import type { QianmoNotifyVerdict } from './notifyWire.js'
 interface QianmoResidentAgentConfig {
   readonly agent: string
   readonly cwd: string
-  /** Claude Code or Codex instead of qianmopi (`--agent-runtime`, P27). */
+  /**
+   * The external runtime it is configured on at start (P27, P36); where it
+   * runs turn by turn is `runtimes`' answer.
+   */
   readonly runtime?: ExternalRuntimeKind
   /** Shell access for an external runtime (`--agent-shell`). */
   readonly shell?: boolean
@@ -477,6 +495,11 @@ interface QianmoResidentOptions {
    */
   readonly resolveRuntimeLaunch?: (agent: ExternalAgent) => ExternalLaunch
   readonly runtimeBins?: Partial<Record<ExternalRuntimeKind, string>>
+  /**
+   * Per-agent runtime and model, qianmopi fallback and default installs
+   * (P36); the CLI passes one. Absent: agents run where `runtime` says.
+   */
+  readonly runtimes?: NodeRuntimes
   readonly spawnRuntime?: (input: ExternalRuntimeSpawn) => ChildProcess
   /** How an external runtime starts `qm runtime-mcp`; tests override it. */
   readonly runtimeMcpArgv?: (args: readonly string[]) => string[]
@@ -638,6 +661,9 @@ const BACKGROUND_STOP_GRACE_MS = 10_000
 /** Largest delay `setTimeout` takes before silently collapsing it to 1 ms. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
+/** The two process pools of a generation, each capped by `--omp-max-children`. */
+type RuntimePool = 'qianmopi' | 'external'
+
 interface ActiveResidentTask {
   owner?: string
   trust?: 'untrusted' | 'verified-capability'
@@ -774,6 +800,10 @@ export class QianmoResident {
   /** Operator-configured MCP servers, skills and plugins (P32). */
   readonly extensions: NodeExtensions
   readonly control: ControlRegistry
+  /** Where each agent runs and which runtimes are installed (P36). */
+  readonly runtimes: NodeRuntimes
+  /** The harnesses' own extension commands for the console (P36.7). */
+  readonly nativeExtensions: NativeExtensions
   /** Host tools answered by the hub: connectors (P25) and background tasks (P29). */
   readonly #hubHostTools: readonly HostToolDefinition[]
   readonly hubCall: HubCallClient
@@ -781,6 +811,13 @@ export class QianmoResident {
   /** `options.localCommandIssuers`, as the set it is looked up in. */
   readonly #localCommandIssuers: ReadonlySet<string>
   readonly #gate = new NodeTurnGate()
+  /**
+   * The process each running turn holds, by session: which pool it came from
+   * (qianmopi or an external runtime). Each pool starts at most
+   * `--omp-max-children` processes, and a turn's process stays busy until the
+   * turn ends — so this says when a nested answer would find none (P36.6).
+   */
+  readonly #held = new Map<string, RuntimePool>()
   readonly #mailbox = new BaseMailboxPort()
   readonly #deadlineClock = new ResidentDeadlineClock({ periodMs: 10_000 })
   readonly #adapter: InboundAdapter
@@ -925,6 +962,12 @@ export class QianmoResident {
           this.hubCall.call(op, args, callOptions),
         origin: ctx => this.#taskOrigin(ctx),
       }),
+      // The roster and synchronous questions between agents (P36.6).
+      ...peerTools({
+        call: (op, args, callOptions) =>
+          this.hubCall.call(op, args, callOptions),
+        origin: ctx => this.#peerOrigin(ctx),
+      }),
     ]
     residentToolSurface(options.authorization !== undefined, [
       ...this.#hubHostTools,
@@ -1011,19 +1054,49 @@ export class QianmoResident {
       },
       { estopAllowed: ['turn.stop'] },
     )
-    // Claude Code / Codex versions and updates (P31); reading works under ESTOP.
+    // Runtimes, installs and per-agent configuration (P31, P36); reading
+    // works under ESTOP. A change of where an agent runs recycles it.
+    this.runtimes =
+      options.runtimes ??
+      NodeRuntimes.unmanaged(options.agents, options.runtimeBins)
+    this.runtimes.onChange(agent => {
+      void this.#runtimeChild
+        ?.invalidateAgent(agent)
+        .catch(error => this.#options.onError?.(error))
+      this.#writeRuntimeRoster()
+    })
+    // Native extensions (P36.7) ride the `runtime` prefix: listing works
+    // under ESTOP and is not recorded; installs and removals are.
+    this.nativeExtensions = new NativeExtensions({
+      agents: options.agents.map(agent => ({
+        agent: agent.agent,
+        cwd: agent.cwd,
+      })),
+      runtimeOf: agent => this.runtimes.nativeRuntimeOf(agent),
+      ...(options.runtimeBins === undefined
+        ? {}
+        : { bins: options.runtimeBins }),
+      invalidate: async agent => {
+        await this.#runtimeChild?.invalidateAgent(agent)
+      },
+    })
+    const readOnly: readonly string[] = [
+      RUNTIME_OPS.versions,
+      RUNTIME_OPS.status,
+      RUNTIME_EXT_OPS.list,
+    ]
     this.control.register(
       'runtime',
-      runtimeControl({
-        ...(options.runtimeBins === undefined
-          ? {}
-          : { bins: options.runtimeBins }),
-      }),
+      (op, args, ctx) =>
+        isNativeExtensionOp(op)
+          ? this.nativeExtensions.control(op, args, ctx)
+          : this.runtimes.control(op, args, ctx),
       {
-        estopAllowed: ['runtime.versions'],
-        sideEffects: op => op === 'runtime.update',
+        estopAllowed: [...readOnly],
+        sideEffects: op => !readOnly.includes(op),
       },
     )
+    this.#writeRuntimeRoster()
     // qianmo's own in-place upgrade (P31 §5.2): stage, drain, swap, restart.
     this.control.register(
       'system',
@@ -1054,19 +1127,27 @@ export class QianmoResident {
                 node: options.node,
                 agents: options.agents.map(agent => agent.agent),
                 // Each agent's runtime, and an external one's model: what
-                // the hub's agent list says about them (P29).
+                // the hub's agent list says about them (P29). Both are the
+                // ones in effect now, which change with P36 configuration
+                // and fallback.
                 runtimes: Object.fromEntries(
                   options.agents.map(agent => [
                     agent.agent,
-                    agent.runtime ?? 'omp',
+                    this.runtimes.effectiveRuntime(agent.agent),
                   ]),
                 ),
                 models: Object.fromEntries(
-                  options.agents.flatMap(agent =>
-                    agent.runtime !== undefined && agent.model !== undefined
-                      ? [[agent.agent, agent.model]]
-                      : [],
-                  ),
+                  options.agents.flatMap(agent => {
+                    if (this.runtimes.effectiveRuntime(agent.agent) === 'omp')
+                      return []
+                    // The resolved model, else the configured one (flags
+                    // name a bare model; fallback off resolves none).
+                    const spec =
+                      this.runtimes.state(agent.agent)?.effective.model ??
+                      this.runtimes.configured(agent.agent).model
+                    if (spec === null || spec === 'auto') return []
+                    return [[agent.agent, spec.slice(spec.indexOf('/') + 1)]]
+                  }),
                 ),
                 version: buildVersion(),
                 platform: process.platform,
@@ -1183,7 +1264,11 @@ export class QianmoResident {
         channelFor: async (sessionId, signal) => {
           if (this.#runtimeChild === null)
             throw new Error('resident omp pool is not ready')
+          const owner = this.#turn.activeInput(sessionId)?.agent
+          const pool = owner === undefined ? undefined : this.#poolOf(owner)
           const child = await this.#runtimeChild.channelFor(sessionId, signal)
+          if (pool !== undefined && signal !== undefined)
+            this.#hold(sessionId, pool, signal)
           const active = this.#turn.activeInput(sessionId)
           if (active) {
             const pending = active.agent
@@ -1375,6 +1460,10 @@ export class QianmoResident {
     // Before the first omp RPC child: an intent a crash left behind is committed
     // now, while no child can be reading settings (§2.6 step 5).
     await this.#prepareProviderConfig()
+    // With the model service in place: where each agent runs (P36 §2).
+    // Waited for, so no turn is routed before Node.js was checked; the
+    // default installs go on in the background.
+    await this.runtimes.start().catch(error => this.#options.onError?.(error))
     this.#startProviderPoll()
     // The last extension set, laid out again for this start's agents with
     // every MCP server probed anew (P32); in the background, like the hub's.
@@ -1407,6 +1496,7 @@ export class QianmoResident {
         await this.#awaitStop()
       }
     } finally {
+      this.runtimes.stop()
       await this.desktop.close()
       await this.extensions.close()
       this.#stopping = true
@@ -1906,8 +1996,18 @@ export class QianmoResident {
     // the design asks for both "refuse before the write" and "`#receive` sees
     // it", which only a look-before-you-write satisfies. The gate keeps its
     // own bound as well; that one is the hard invariant, this one is what the
-    // sender hears about.
-    if (this.#gate.saturated) {
+    // sender hears about. A hub-signed answer to the turn running here starts
+    // nested at once and never waits in that queue (P36.6).
+    const nested =
+      message.type === MessageType.TaskRequest &&
+      this.#gate.nestsNow(
+        askReentry(
+          message,
+          this.#options.node,
+          this.#options.memoryControllers ?? new Map(),
+        )?.chain ?? [],
+      )
+    if (this.#gate.saturated && !nested) {
       const reason = `resident turn queue is full, ${this.#gate.queued} turns waiting`
       const code = errorCodeForPeer(
         ProtocolErrorCode.E_BUSY,
@@ -1940,6 +2040,26 @@ export class QianmoResident {
         this.#localCommandIssuers,
       )
       if (command !== undefined) task.localCommand = command
+      // A question that would nest in a turn here right now, with every
+      // process its runtime may start held by the turns it would nest in,
+      // could only wait for one none of them gives up. Answered at once and
+      // before the mailbox write: no turn, nothing left to recover later.
+      const crowded = this.#nestedWithoutRoom(message)
+      if (crowded !== undefined) {
+        task.delivering = false
+        void this.#settleTask(
+          task,
+          createTaskResult(task.envelope, task.envelope.to, {
+            outcome: 'failed',
+            code: errorCodeForPeer(
+              ProtocolErrorCode.E_TASK_FAILED,
+              task.channel.peerSupportedTypes,
+            ),
+            reason: crowded,
+          }),
+        ).catch(error => this.#options.onError?.(error))
+        return
+      }
     }
     try {
       // Both halves of the routing layer's finding travel together: who
@@ -1998,6 +2118,53 @@ export class QianmoResident {
     } finally {
       if (task !== undefined) task.delivering = false
     }
+  }
+
+  /** The pool `agent`'s next process comes from (`ResidentRuntimePool`). */
+  #poolOf(agent: string): RuntimePool {
+    return this.runtimes.effectiveRuntime(agent) === FALLBACK_RUNTIME
+      ? 'qianmopi'
+      : 'external'
+  }
+
+  /** `sessionId`'s turn holds a process of `pool` until `signal` aborts. */
+  #hold(sessionId: string, pool: RuntimePool, signal: AbortSignal): void {
+    if (signal.aborted) return
+    this.#held.set(sessionId, pool)
+    signal.addEventListener(
+      'abort',
+      () => {
+        if (this.#held.get(sessionId) === pool) this.#held.delete(sessionId)
+      },
+      { once: true },
+    )
+  }
+
+  /**
+   * Why a hub-signed question cannot run here now, or undefined (P36.6): it
+   * would nest in the running turn, and the turns running already hold every
+   * process its agent's runtime may start (`--omp-max-children`).
+   */
+  #nestedWithoutRoom(message: QianmoMessage): string | undefined {
+    const max = this.#options.ompMaxChildren
+    if (max === undefined) return undefined
+    const agent = parseAddress(message.to)?.agent
+    if (
+      agent === undefined ||
+      !this.#options.agents.some(row => row.agent === agent)
+    )
+      return undefined
+    const chain = askReentry(
+      message,
+      this.#options.node,
+      this.#options.memoryControllers ?? new Map(),
+    )?.chain
+    if (chain === undefined || !this.#gate.nestsNow(chain)) return undefined
+    const pool = this.#poolOf(agent)
+    let held = 0
+    for (const one of this.#held.values()) if (one === pool) held++
+    if (held < max) return undefined
+    return `${NESTED_NO_ROOM_REASON}: the turns it would nest in hold all ${max} ${pool} processes this node may start (--omp-max-children)`
   }
 
   #registerTask(
@@ -2077,6 +2244,24 @@ export class QianmoResident {
     const contextId = task.envelope.contextId
     if (typeof contextId !== 'string' || contextId === '') return null
     return { contextId, taskId: task.envelope.taskId }
+  }
+
+  /** The same turn, for a question that waits on other agents (P36.6). */
+  #peerOrigin(ctx: {
+    readonly agent: string
+    readonly sessionId: string
+  }): PeerToolOrigin | null {
+    const origin = this.#taskOrigin(ctx)
+    const input = this.#turn.activeInput(ctx.sessionId)
+    const task = input === undefined ? undefined : this.#taskFor(input)
+    if (origin === null || task === undefined) return null
+    return {
+      ...origin,
+      remainingMs:
+        taskExpiresAt(task.envelope) -
+        this.#deadlineClock.nowFor(task.envelope.createdAt),
+      keepAlive: () => this.#turn.touch(ctx.sessionId),
+    }
   }
 
   async #approveConnector(
@@ -3270,6 +3455,7 @@ export class QianmoResident {
         MessageType.AuthzRevoke,
         ...CONTROL_MESSAGE_TYPES,
         CONTROL_OPERATION_ID_CAPABILITY,
+        RUNTIME_CATALOG_CAPABILITY,
       ],
       onPeerDisconnect: () => this.hubCall.disconnected(),
       psk: this.#options.psk,
@@ -3337,15 +3523,58 @@ export class QianmoResident {
     }
   }
 
-  /** The external-runtime half of a generation, or nothing (P27). */
-  #externalPool(): ExternalRuntimePool | undefined {
-    const agents = this.#options.agents.filter(
-      (agent): agent is ExternalAgent => agent.runtime !== undefined,
+  /**
+   * The agents as `qm runtime open` needs them (P36.7, secret-free): the
+   * workspace, and the runtime and model their external sessions start with.
+   */
+  #writeRuntimeRoster(): void {
+    try {
+      writeResidentRoster(
+        this.#options.agents.map(agent => {
+          const runtime = this.runtimes.nativeRuntimeOf(agent.agent)
+          const state = this.runtimes.state(agent.agent)
+          return {
+            agent: agent.agent,
+            cwd: agent.cwd,
+            shell: agent.shell === true,
+            runtime,
+            bin: runtimeBin(runtime, this.#options.runtimeBins),
+            model:
+              state?.effective.runtime === runtime
+                ? (state.effective.model ?? null)
+                : null,
+          }
+        }),
+      )
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
+  }
+
+  /**
+   * The external-runtime half of a generation (P27). It knows every agent:
+   * which runtime one runs on is read when its process starts (P36).
+   */
+  #externalPool(): ExternalRuntimePool {
+    const runtimes = this.runtimes
+    const agents = this.#options.agents.map(
+      (agent): ExternalAgent => ({
+        agent: agent.agent,
+        cwd: agent.cwd,
+        ...(agent.shell === undefined ? {} : { shell: agent.shell }),
+        get runtime() {
+          return runtimes.externalRuntimeOf(agent.agent)
+        },
+      }),
     )
-    if (agents.length === 0) return undefined
     const resolve = this.#options.resolveRuntimeLaunch
-    return new ExternalRuntimePool({
+    // `runtimeOf` is the pool's spawn-time hook (P36.2); the getter above
+    // gives the same answer to a pool without it.
+    const options: ConstructorParameters<typeof ExternalRuntimePool>[0] & {
+      readonly runtimeOf?: (agent: string) => string
+    } = {
       agents,
+      runtimeOf: agent => runtimes.externalRuntimeOf(agent),
       resolveLaunch: agent => {
         if (resolve === undefined)
           throw new Error(
@@ -3394,7 +3623,8 @@ export class QianmoResident {
         : { maxChildren: this.#options.ompMaxChildren }),
       onActivity: active => this.#options.onActivity?.(active),
       onError: error => this.#options.onError?.(error),
-    })
+    }
+    return new ExternalRuntimePool(options)
   }
 
   async #spawnGeneration(): Promise<ResidentChildConnection> {
@@ -3425,7 +3655,7 @@ export class QianmoResident {
           },
         }),
       protectedRoots: this.#options.protectedRoots,
-      agents: this.#options.agents.filter(agent => agent.runtime === undefined),
+      agents: this.#options.agents,
       memoryRoot: this.#memoryRoot,
       allowWorkspaceEdits: this.#options.allowWorkspaceEdits,
       spawn: this.#options.spawnOmp,
@@ -3447,7 +3677,10 @@ export class QianmoResident {
       requestPermission: (sessionId: string, call: unknown) =>
         this.#requestPermission(sessionId, call),
     })
-    const child = new ResidentRuntimePool(ompPool, this.#externalPool())
+    const child = new ResidentRuntimePool(ompPool, this.#externalPool(), {
+      runtimeOf: agent => this.runtimes.effectiveRuntime(agent),
+      onError: error => this.#options.onError?.(error),
+    })
     const closed = child.closed
     void closed.catch(() => {})
     // Retire the runtime the moment the child is gone, not when the supervisor
@@ -3563,6 +3796,19 @@ export class QianmoResident {
             id !== undefined &&
             this.#tasksByMessage.get(id)?.background === true
           )
+        },
+        // A hub-signed question nests in the turn here that asked it (P36.6).
+        reentryOf: messages => {
+          const task = this.#tasksByMessage.get(
+            networkMessageId(messages) ?? '',
+          )
+          return task === undefined
+            ? undefined
+            : askReentry(
+                task.envelope,
+                this.#options.node,
+                this.#options.memoryControllers ?? new Map(),
+              )
         },
         sessions,
         timings: this.#timings,
@@ -3822,6 +4068,8 @@ export class QianmoResident {
   ): void {
     this.#applySessionPolicy(result.sessions)
     this.#providerWaiting = null
+    // A model an external runtime needs may have come or gone (P36 §3.3).
+    this.runtimes.recompute()
     this.#writeSwitchStatus({
       waiting: null,
       last: this.#switchOutcome(

@@ -139,6 +139,9 @@ else
   say 'WARN : 未给 QIANMO_REMOTE_ACTIVITY_URL —— 不上报活动，沙箱会照常冻结'
 fi
 
+# P36 §2：沙箱节点不下载底层（缺省底层 dsh 一次约 850 MB）。环境变量而不是
+# --no-runtime-autoinstall，理由同 beta-up.sh：旧产物不认识参数会退出；要装就先 export 别的值。
+export QIANMO_RUNTIME_AUTOINSTALL="${QIANMO_RUNTIME_AUTOINSTALL:-0}"
 say "命令 : qm $*"
 if [ "$FOREGROUND" = '1' ]; then
   exec env QIANMO_CONFIG_DIR="$CONFIG_DIR" bun "$QM" "$@"

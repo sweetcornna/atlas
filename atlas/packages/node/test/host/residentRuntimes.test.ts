@@ -106,7 +106,7 @@ function setup(
       launches.push(input)
       const child = spawn(
         process.execPath,
-        [FAKE[input.kind], ...input.argv.slice(1)],
+        [FAKE[input.kind as keyof typeof FAKE], ...input.argv.slice(1)],
         { cwd: input.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'] },
       )
       children.push(child)
@@ -158,10 +158,31 @@ test('Claude Code: a warm process answers consecutive turns, reports tools and c
   expect(argv).not.toContain('--safe-mode')
   expect(argv).not.toContain('--bare')
   expect(argv).not.toContain('--plugin-dir')
-  expect(
-    JSON.parse(argv[argv.indexOf('--settings') + 1]!).disableAllHooks,
-  ).toBe(true)
-  expect(argv).toContain('--strict-mcp-config')
+  // The pin layer (P36.7): hooks off, every effectful tool and every MCP
+  // tool asked, the gateway and an inert key helper over the agent's own
+  // settings; the agent's own MCP servers load (no --strict-mcp-config).
+  expect(JSON.parse(argv[argv.indexOf('--settings') + 1]!)).toEqual({
+    disableAllHooks: true,
+    permissions: {
+      ask: [
+        'Bash',
+        'Edit',
+        'Write',
+        'MultiEdit',
+        'NotebookEdit',
+        'Read',
+        'Grep',
+        'Glob',
+        'mcp__*',
+      ],
+    },
+    env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/v1' },
+    apiKeyHelper: '/usr/bin/true',
+  })
+  expect(argv).not.toContain('--strict-mcp-config')
+  expect(launches[0]!.env.CLAUDE_CONFIG_DIR).toBe(
+    join(root!.root, 'runtimes', 'claude-code', 'coder'),
+  )
   expect(argv[argv.indexOf('--permission-prompt-tool') + 1]).toBe(
     'mcp__qianmo__qianmo_permission',
   )
@@ -177,6 +198,8 @@ test('Claude Code: a warm process answers consecutive turns, reports tools and c
   expect(env.ANTHROPIC_API_KEY).toBe('sk-test-runtime')
   expect(env.CLAUDE_CONFIG_DIR).toStartWith(root!.root)
   expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1')
+  // Host tools can wait for a person (`qianmo_ask`, up to 1800 s).
+  expect(env.MCP_TOOL_TIMEOUT).toBe('1900000')
 })
 
 test('Claude Code: an idle-reaped session resumes the same conversation', async () => {
@@ -265,9 +288,10 @@ test('Codex: a thread is opened once, used for every turn and resumed after a re
     'skill_mcp_dependency_install',
   ])
     expect(disabled).toContain(feature)
-  expect(argv.find(arg => arg.startsWith('mcp_servers.qianmo='))).toContain(
-    '"default_tools_approval_mode" = "approve"',
-  )
+  const bridge = argv.find(arg => arg.startsWith('mcp_servers.qianmo='))
+  expect(bridge).toContain('"default_tools_approval_mode" = "approve"')
+  // Host tools can wait for a person (`qianmo_ask`, up to 1800 s).
+  expect(bridge).toContain('"tool_timeout_sec" = 1900')
   expect(launches[0]!.env.QIANMO_RUNTIME_KEY).toBe('sk-test-runtime')
   expect(launches[0]!.env.CODEX_HOME).toStartWith(root!.root)
 })
@@ -332,18 +356,20 @@ test('Claude Code: operator extensions load through --plugin-dir and the MCP con
   expect(argv[argv.indexOf('--setting-sources') + 1]).toBe('user')
   expect(argv).not.toContain('--bare')
   expect(argv).not.toContain('--safe-mode')
-  expect(argv).toContain('--strict-mcp-config')
+  expect(argv).not.toContain('--strict-mcp-config')
   expect(argv[argv.indexOf('--plugin-dir') + 1]).toBe(
     '/ext/agents/coder/plugins/qianmo',
   )
   const allowed = argv[argv.indexOf('--allowedTools') + 1]!.split(',')
   expect(allowed).toContain('Skill')
-  expect(allowed).toContain('mcp__docs')
-  expect(allowed).not.toContain('mcp__crm')
+  // Connectors under the reserved prefix (P36.7).
+  expect(allowed).toContain('mcp__qm-docs')
+  expect(allowed).not.toContain('mcp__qm-crm')
   const config = JSON.parse(
     readFileSync(argv[argv.indexOf('--mcp-config') + 1]!, 'utf8'),
   ).mcpServers
-  expect(config.docs).toEqual({
+  expect(Object.keys(config).sort()).toEqual(['qianmo', 'qm-crm', 'qm-docs'])
+  expect(config['qm-docs']).toEqual({
     type: 'stdio',
     command: 'docs-mcp',
     args: [],
@@ -353,7 +379,7 @@ test('Claude Code: operator extensions load through --plugin-dir and the MCP con
       DOCS_TOKEN: 'secret-value',
     },
   })
-  expect(config.crm).toEqual({
+  expect(config['qm-crm']).toEqual({
     type: 'http',
     url: 'https://crm.example/mcp',
     headers: { Authorization: 'Bearer t' },
@@ -543,7 +569,7 @@ test('Codex: asked about one of the host’s own tools, the node accepts without
   expect(asked).toEqual([])
 })
 
-test('Codex: an MCP elicitation for a server nobody configured is declined', async () => {
+test('Codex: an MCP elicitation for a connector nobody configured is declined', async () => {
   const { pool, agent, asked } = setup(
     { runtime: 'codex' },
     { permission: () => true },
@@ -556,10 +582,24 @@ test('Codex: an MCP elicitation for a server nobody configured is declined', asy
   expect(asked).toEqual([])
 })
 
+test('Codex: a tool of a server the agent installed itself is the operator’s call (P36.7)', async () => {
+  const { pool, agent, asked } = setup(
+    { runtime: 'codex' },
+    { permission: () => false },
+  )
+  const session = await pool.newSession(agent)
+  expect(await turn(pool, session, 'n', 'mcp-native')).toEqual({
+    outcome: 'completed',
+    content: 'codex(1): mcp-native action=decline',
+  })
+  expect(asked.map(call => call.toolName)).toEqual(['mcp__docs__search'])
+})
+
 test('external runtime arguments are explicit and testable', () => {
   const claude = claudeCodeArgv({
     bin: 'claude',
     model: 'claude-sonnet-5-5',
+    baseUrl: 'https://gw.example',
     sessionId: 'id',
     resume: false,
     systemPrompt: 'be brief',
@@ -577,6 +617,7 @@ test('external runtime arguments are explicit and testable', () => {
     baseUrl: 'https://api.example/v1',
     keyEnv: 'K',
     headers: { 'X-Team': 'a"b' },
+    workspace: '/w',
     mcp: { command: '/bin/qm', args: ['runtime-mcp', '--port', '1'] },
   })
   expect(codex).toContain(
@@ -618,12 +659,17 @@ test('resident flags pick a runtime and model per agent', () => {
     '--port=0',
     '--hostname=127.0.0.1',
   ]
+  // No --agent-model: the node's main model, else qianmopi meanwhile (P36).
+  expect(
+    parseResidentArgs([...base, '--agent-runtime=main=claude-code']).agents,
+  ).toEqual([{ agent: 'main', cwd: root.root, runtime: 'claude-code' }])
   expect(() =>
-    parseResidentArgs([...base, '--agent-runtime=main=claude-code']),
-  ).toThrow('needs --agent-model')
-  expect(() => parseResidentArgs([...base, '--agent-shell=main'])).toThrow(
-    'applies to claude-code and codex',
-  )
+    parseResidentArgs([
+      ...base,
+      '--agent-runtime=main=qianmopi',
+      '--agent-shell=main',
+    ]),
+  ).toThrow('applies to agents on an external runtime')
   expect(() =>
     parseResidentArgs([...base, '--agent-runtime=main=gpt']),
   ).toThrow('--agent-runtime must be')
@@ -741,7 +787,17 @@ test('runtime-mcp: the bridge lists host tools and applies the resident posture'
   // No --agent-shell: the shell is refused without asking.
   expect((await verdict('Bash', { command: 'id' })).behavior).toBe('deny')
   expect((await verdict('TodoWrite', { todos: [] })).behavior).toBe('allow')
+  // `permissions.ask: mcp__*` sends the bridge's own tools here; they pass.
+  expect(
+    (await verdict('mcp__qianmo__qianmo_notify', { summary: 'x' })).behavior,
+  ).toBe('allow')
+  // A connector nobody configured is refused by the posture.
+  expect((await verdict('mcp__qm-docs__search', {})).behavior).toBe('deny')
   expect(asked).toEqual([])
+  // A server the agent installed itself: the operator decides each call.
+  expect((await verdict('mcp__usermcp__ping', { a: 1 })).behavior).toBe('allow')
+  expect(asked).toEqual([{ toolName: 'mcp__usermcp__ping', input: { a: 1 } }])
+  asked.length = 0
 
   const notified = await mcp.call('qianmo_notify', {
     verdict: 'notify',

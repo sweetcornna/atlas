@@ -97,6 +97,8 @@ function submit(html: string): Sent[] {
     failTone: () => 'bad',
     loadHtml: () => Promise.resolve(''),
     refreshRegion: () => Promise.resolve(),
+    isExpired: () => false,
+    onExpire: idle,
     onAction: idle,
     onSubmit: (id: string, handler: (form: unknown) => void) => {
       if (id === 'magpie-form') onSubmit = handler
@@ -108,7 +110,7 @@ function submit(html: string): Sent[] {
   }
   new Function('window', 'document', MAGPIE_PAGE_JS)(
     { qianmoConsole: qc },
-    { addEventListener: idle },
+    { addEventListener: idle, querySelector: () => null },
   )
   if (onSubmit === undefined) throw new Error('the script took no form')
   onSubmit({ elements: fieldsOf(html) })

@@ -41,6 +41,7 @@ import {
   openConsoleProviders,
   type ProviderScheduler,
 } from '../../src/commands/consoleProviders.js'
+import { RUNTIME_CATALOG } from '../../src/host/runtimes/catalog.js'
 import { type FakeNode, fakeNode } from './consoleProvidersFakeNode.js'
 
 const OPS = 'u:0123456789abcdef'
@@ -463,6 +464,10 @@ describe('a gateway key for a node', () => {
     expect(profile.value.laneAddresses).toEqual({
       anthropic: fake.gatewayUrl,
       'openai-responses': `${fake.gatewayUrl}/v1`,
+      // Gemini's lane once the runtime catalog has a runtime on it (P36.5).
+      ...(RUNTIME_CATALOG.some(spec => spec.lanes.includes('gemini'))
+        ? { gemini: `${fake.gatewayUrl}/v1beta` }
+        : {}),
     })
     expect(profile.value.models[0]?.tiers).toEqual([
       'opus',

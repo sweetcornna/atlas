@@ -426,6 +426,25 @@ describe('resident mailbox admission', () => {
     expect(plain.requests).toEqual([{ sessionId: SESSION_ID }])
   })
 
+  test("hands the gate the host's re-entry key and verified chain (P36.6)", async () => {
+    const gate = new RecordingGate()
+    await reader(new MemoryMailbox([message()]), new MemoryTurn(), {
+      gate,
+      reentryOf: () => ({ key: 'task-b', chain: ['task-a'] }),
+    }).poll()
+    // An empty chain is no chain: the request stays as it always was.
+    const plain = new RecordingGate()
+    await reader(
+      new MemoryMailbox([message({ text: 'person' })]),
+      new MemoryTurn(),
+      { gate: plain, reentryOf: () => ({ chain: [] }) },
+    ).poll()
+    expect(gate.requests).toEqual([
+      { sessionId: SESSION_ID, key: 'task-b', chain: ['task-a'] },
+    ])
+    expect(plain.requests).toEqual([{ sessionId: SESSION_ID }])
+  })
+
   test('the recovery path submits without a deadline', async () => {
     const mailbox = new MemoryMailbox([message()])
     ledger.append({

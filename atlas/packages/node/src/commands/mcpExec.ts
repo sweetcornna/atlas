@@ -13,9 +13,10 @@
  * where that is unavailable or fails, the server runs as its child.
  */
 
+import { readFileSync } from 'node:fs'
 import { inheritedEnv } from '../host/runtimes/inheritedEnv.js'
 
-const USAGE = `Usage: qm mcp-exec [--keep NAME,NAME] -- <command> [args...]
+const USAGE = `Usage: qm mcp-exec [--keep NAME,NAME] [--env-file FILE] -- <command> [args...]
 
 Started by a resident node's agent runtime for an MCP server; not for direct use.
 `
@@ -27,12 +28,36 @@ export interface McpExecPlan {
   readonly env: Record<string, string>
 }
 
+/**
+ * The server's own variables from a file the node wrote for one process
+ * (a JSON object of strings; P36.7: a Codex connector's secrets stay off
+ * the command line and out of the agent's `config.toml`).
+ */
+function envFile(path: string): Record<string, string> | string {
+  let value: unknown
+  try {
+    value = JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return `--env-file ${path} is not readable JSON`
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    return '--env-file holds a JSON object'
+  const env: Record<string, string> = {}
+  for (const [name, entry] of Object.entries(value)) {
+    if (!ENV_NAME.test(name) || typeof entry !== 'string')
+      return '--env-file holds variable names and string values'
+    env[name] = entry
+  }
+  return env
+}
+
 /** What `argv` would start, from `source`; a string is the usage error. */
 export function mcpExecPlan(
   argv: readonly string[],
   source: Readonly<Record<string, string | undefined>> = process.env,
 ): McpExecPlan | string {
   const keep: string[] = []
+  const extra: Record<string, string> = {}
   let at = 0
   for (; at < argv.length && argv[at] !== '--'; at++) {
     if (argv[at] === '--keep' && argv[at + 1] !== undefined) {
@@ -40,6 +65,10 @@ export function mcpExecPlan(
       if (!names.every(name => ENV_NAME.test(name)))
         return '--keep takes variable names'
       keep.push(...names)
+    } else if (argv[at] === '--env-file' && argv[at + 1] !== undefined) {
+      const loaded = envFile(argv[++at]!)
+      if (typeof loaded === 'string') return loaded
+      Object.assign(extra, loaded)
     } else return `unknown argument: ${argv[at]}`
   }
   const command = argv[at + 1]
@@ -48,7 +77,7 @@ export function mcpExecPlan(
   return {
     command,
     args: argv.slice(at + 2),
-    env: inheritedEnv(source, keep),
+    env: { ...inheritedEnv(source, keep), ...extra },
   }
 }
 

@@ -26,6 +26,8 @@ let clock: number
 let requests: string[]
 let pushes: string[]
 let calls: string[]
+/** Nodes the gateway page was told to read the runtimes of again. */
+let changed: string[]
 let nodeVersions: Record<string, string>
 let failUpgrade: Set<string>
 
@@ -70,14 +72,42 @@ const control = {
     calls.push(
       `${node} ${op}${args['version'] ? ` ${String(args['version'])}` : ''}`,
     )
+    // tokyo-1 answers with the P36 catalog rows, osaka-1 is still on P31.
     if (op === 'runtime.versions')
-      return {
-        ok: true,
-        value: {
-          'claude-code': { version: '2.0.0', managed: true, pinned: false },
-          codex: { version: '0.50.0', managed: false, pinned: false },
-        },
-      }
+      return node === 'tokyo-1'
+        ? {
+            ok: true,
+            value: {
+              defaultRuntime: 'dsh',
+              runtimes: [
+                { id: 'dsh', installed: false, installing: true },
+                {
+                  id: 'claude-code',
+                  installed: true,
+                  version: '2.0.0',
+                  source: 'prefix',
+                  pin: '2.1.301',
+                  installing: false,
+                  verified: true,
+                },
+                {
+                  id: 'codex',
+                  installed: true,
+                  version: '0.50.0',
+                  source: 'flag',
+                  installing: false,
+                  verified: true,
+                },
+              ],
+            },
+          }
+        : {
+            ok: true,
+            value: {
+              'claude-code': { version: '2.0.0', managed: true, pinned: false },
+              codex: { version: '0.50.0', managed: false, pinned: false },
+            },
+          }
     if (op === 'runtime.update')
       return { ok: true, value: { version: args['version'] } }
     if (op === 'system.version')
@@ -115,6 +145,7 @@ function make(options: { self?: SelfUpgrader } = {}): ConsoleUpdates {
       },
     },
     self: options.self ?? new SelfUpgrader({ tree: null, version: '3.0.1' }),
+    runtimesChanged: node => changed.push(node),
     now: () => clock,
     sleep: async () => {
       clock += 5_000
@@ -140,6 +171,7 @@ beforeEach(() => {
   requests = []
   pushes = []
   calls = []
+  changed = []
   nodeVersions = { 'tokyo-1': '3.0.1', 'osaka-1': '3.1.0' }
   failUpgrade = new Set()
 })
@@ -235,6 +267,18 @@ test('a check writes one row per source; new versions are pushed and handled onc
   expect(calls.filter(one => one.includes('runtime.update'))).toEqual([
     'tokyo-1 runtime.update 2.1.0',
     'osaka-1 runtime.update 2.1.0',
+  ])
+  // The gateway page's cached versions of both are dropped (P36.5).
+  expect(changed).toEqual(['tokyo-1', 'osaka-1'])
+  // Both shapes read the same; a binary given by flag is pinned.
+  const source = (id: string) => value.sources.find(one => one.id === id)!
+  expect(source('claude-code').nodes).toEqual([
+    { node: 'tokyo-1', version: '2.0.0', managed: true, pinned: false },
+    { node: 'osaka-1', version: '2.0.0', managed: true, pinned: false },
+  ])
+  expect(source('codex').nodes).toEqual([
+    { node: 'tokyo-1', version: '0.50.0', managed: false, pinned: true },
+    { node: 'osaka-1', version: '0.50.0', managed: false, pinned: false },
   ])
   expect(pushes).toEqual([
     'nc-1 qianmopi 上游 有新版本 99.0.0',

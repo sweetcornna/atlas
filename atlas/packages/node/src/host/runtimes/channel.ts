@@ -9,19 +9,25 @@ import type {
   OmpRpcChannel,
   OmpRpcFrame,
 } from '@qianmo/resident'
+import { RUNTIME_CATALOG } from './catalog.js'
 
-/** The two runtimes a resident agent can run on besides qianmopi. */
-export type ExternalRuntimeKind = 'claude-code' | 'codex'
+/**
+ * A runtime a resident agent can run on besides qianmopi: a catalog id
+ * (`catalog.ts`) whose protocol is not `omp`.
+ */
+export type ExternalRuntimeKind = string
 
-export const EXTERNAL_RUNTIME_KINDS: readonly ExternalRuntimeKind[] = [
-  'claude-code',
-  'codex',
-]
+/** The external catalog ids, catalog order. */
+export const EXTERNAL_RUNTIME_KINDS: readonly ExternalRuntimeKind[] =
+  RUNTIME_CATALOG.filter(spec => spec.protocol !== 'omp').map(spec => spec.id)
 
 export function isExternalRuntimeKind(
   value: unknown,
 ): value is ExternalRuntimeKind {
-  return value === 'claude-code' || value === 'codex'
+  return (
+    typeof value === 'string' &&
+    RUNTIME_CATALOG.some(spec => spec.id === value && spec.protocol !== 'omp')
+  )
 }
 
 /** A token count the turn port can record (`message_end.usage`). */

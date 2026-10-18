@@ -897,7 +897,7 @@ export class ConsoleBilling implements BillingPort, GatewayProvisioner {
   }
 }
 
-/** A ledger writer for the hub's own lines (`system:billing`). */
+/** A ledger writer for the hub's own lines (`system:billing`, or `subject`). */
 export function systemRecorder(
   record: (entry: {
     readonly at: number
@@ -909,12 +909,14 @@ export function systemRecorder(
     readonly code?: string
   }) => Promise<{ readonly ok: boolean }>,
   now: () => number = Date.now,
+  subject = 'system:billing',
 ): SystemRecord {
+  const prefix = subject.slice('system:'.length)
   return async (action, target, outcome, code) => {
     const result = await record({
       at: now(),
-      requestId: `billing-${randomUUID()}`,
-      subject: 'system:billing',
+      requestId: `${prefix}-${randomUUID()}`,
+      subject,
       action,
       target,
       outcome,

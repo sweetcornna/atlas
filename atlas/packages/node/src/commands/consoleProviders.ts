@@ -102,6 +102,8 @@ import { ProviderSecretStore } from './consoleProvidersSecrets.js'
 const PERSONAL_SUBJECT = /^u:[0-9a-f]{16}$/
 /** The ledger subject of the hub's own provisioning writes (P35). */
 export const SYSTEM_BILLING_SUBJECT = 'system:billing'
+/** The ledger subject of the gateway page's own writes (P36.5): joining a node to magpie. */
+export const SYSTEM_MAGPIE_SUBJECT = 'system:magpie'
 /** §2.5 limits; `autocompact` is P18.7's and not in this build's table yet. */
 const TIMEOUTS = PROTOCOL_LIMITS.timeoutMs
 /** Repeated refreshes of one node inside this window are answered from cache. */
@@ -955,11 +957,15 @@ export class ConsoleProviders implements ProviderPort {
    * subscriber's gateway profile saved and delivered after a payment, with
    * nobody at the page. Its lines go to the ledger as `system:billing`
    * through `record`. Only an object made here passes the gate as it: the
-   * subject is not a credential, so no request can claim it.
+   * subject is not a credential, so no request can claim it. The gateway
+   * page's automatic join (P36.5) makes its own with `system:magpie`.
    */
-  systemCaller(record: ProviderCaller['record']): ProviderCaller {
+  systemCaller(
+    record: ProviderCaller['record'],
+    subject: string = SYSTEM_BILLING_SUBJECT,
+  ): ProviderCaller {
     const caller: ProviderCaller = {
-      subject: SYSTEM_BILLING_SUBJECT,
+      subject,
       role: null,
       breakGlass: false,
       record,

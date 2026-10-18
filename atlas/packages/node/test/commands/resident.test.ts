@@ -322,6 +322,122 @@ describe('--desktop-memory-mib', () => {
   })
 })
 
+describe('runtime flags (P36)', () => {
+  test('--default-runtime takes a catalog id, qianmopi meaning omp; absent means dsh', () => {
+    expect(parseResidentArgs(BASE).defaultRuntime).toBeUndefined()
+    expect(
+      parseResidentArgs([...BASE, '--default-runtime', 'qianmopi'])
+        .defaultRuntime,
+    ).toBe('omp')
+    expect(
+      parseResidentArgs([...BASE, '--default-runtime=codex']).defaultRuntime,
+    ).toBe('codex')
+    expect(() =>
+      parseResidentArgs([...BASE, '--default-runtime', 'vim']),
+    ).toThrow('--default-runtime must be')
+    expect(RESIDENT_HELP_TEXT).toContain('Default dsh')
+  })
+
+  test('QIANMO_DEFAULT_RUNTIME does what --default-runtime does; the flag wins; a bad value stops the start', () => {
+    // Older binaries refuse an unknown flag but ignore an unknown variable,
+    // so service units carry the choice here (rollback-safe).
+    const env = (value: string) => ({ QIANMO_DEFAULT_RUNTIME: value })
+    expect(parseResidentArgs(BASE, {}).defaultRuntime).toBeUndefined()
+    expect(parseResidentArgs(BASE, env('qianmopi')).defaultRuntime).toBe('omp')
+    expect(parseResidentArgs(BASE, env('omp')).defaultRuntime).toBe('omp')
+    expect(parseResidentArgs(BASE, env(' codex ')).defaultRuntime).toBe('codex')
+    // Empty is unset (a unit's `Environment=QIANMO_DEFAULT_RUNTIME=`).
+    expect(parseResidentArgs(BASE, env('')).defaultRuntime).toBeUndefined()
+    expect(
+      parseResidentArgs([...BASE, '--default-runtime', 'dsh'], env('qianmopi'))
+        .defaultRuntime,
+    ).toBe('dsh')
+    // The flag wins outright: the variable is not even read then.
+    expect(
+      parseResidentArgs([...BASE, '--default-runtime=omp'], env('vim'))
+        .defaultRuntime,
+    ).toBe('omp')
+    expect(() => parseResidentArgs(BASE, env('vim'))).toThrow(
+      'QIANMO_DEFAULT_RUNTIME must be omp (qianmopi), dsh',
+    )
+    // A default taken from the variable is a default like any other.
+    expect(() =>
+      parseResidentArgs(
+        [...BASE, '--agent-shell', 'reviewer'],
+        env('qianmopi'),
+      ),
+    ).toThrow('not qianmopi')
+    expect(RESIDENT_HELP_TEXT).toContain('QIANMO_DEFAULT_RUNTIME')
+  })
+
+  test('--runtime-bin names an installable runtime; the old flags are aliases', () => {
+    expect(
+      parseResidentArgs([
+        ...BASE,
+        '--runtime-bin',
+        'dsh=/opt/dsh/bin/dsh',
+        '--claude-code-bin',
+        'claude-next',
+        '--codex-bin=/opt/codex/bin/codex',
+      ]).runtimeBins,
+    ).toEqual({
+      dsh: '/opt/dsh/bin/dsh',
+      'claude-code': 'claude-next',
+      codex: '/opt/codex/bin/codex',
+    })
+    expect(() =>
+      parseResidentArgs([...BASE, '--runtime-bin', 'omp=/usr/bin/qm']),
+    ).toThrow('installable runtime')
+    expect(() =>
+      parseResidentArgs([...BASE, '--runtime-bin', 'dsh=bin/dsh']),
+    ).toThrow('command name or an absolute path')
+    expect(() => parseResidentArgs([...BASE, '--runtime-bin', 'dsh'])).toThrow(
+      '<agent>=<value>',
+    )
+  })
+
+  test('--no-runtime-autoinstall turns the default install off', () => {
+    expect(parseResidentArgs(BASE).runtimeAutoInstall).toBeUndefined()
+    expect(
+      parseResidentArgs([...BASE, '--no-runtime-autoinstall'])
+        .runtimeAutoInstall,
+    ).toBe(false)
+    expect(RESIDENT_HELP_TEXT).toContain('--no-runtime-autoinstall')
+  })
+
+  test('models and shells belong to agents on an external runtime, the default one included', () => {
+    const external = parseResidentArgs([
+      ...BASE,
+      '--agent-model',
+      'reviewer=magpie/deepseek-v4',
+      '--agent-shell',
+      'reviewer',
+    ])
+    expect(external.agents).toEqual([
+      { agent: 'reviewer', cwd: '/workspace', shell: true },
+    ])
+    expect(external.agentModels).toEqual([['reviewer', 'magpie/deepseek-v4']])
+    const pinned = parseResidentArgs([
+      ...BASE,
+      '--agent-runtime',
+      'reviewer=qianmopi',
+    ])
+    expect(pinned.agentRuntimes).toEqual([['reviewer', 'omp']])
+    expect(pinned.agents[0]!.runtime).toBeUndefined()
+    for (const omp of [
+      ['--agent-runtime', 'reviewer=omp'],
+      ['--default-runtime', 'omp'],
+    ]) {
+      expect(() =>
+        parseResidentArgs([...BASE, ...omp, '--agent-model', 'reviewer=a/b']),
+      ).toThrow('qianmopi agents follow the node model service')
+      expect(() =>
+        parseResidentArgs([...BASE, ...omp, '--agent-shell', 'reviewer']),
+      ).toThrow('not qianmopi')
+    }
+  })
+})
+
 describe('--local-commands-from (P18.20)', () => {
   const KEY = 'A'.repeat(43)
 

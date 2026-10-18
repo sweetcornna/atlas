@@ -42,13 +42,15 @@
 
 ## §1 P27 多底层并存与协作
 
+> **2026-10-17 起由 [`harness-backends.md`](./harness-backends.md)（P36）接续**：底层改为一份目录，缺省底层是 DeepSeek Harness（节点缺省安装），qianmopi 内置作退路；dsh 与其他 ACP harness 走一个 ACP 通道；`--agent-runtime` 收目录里的任何 id；每个智能体的底层与模型由节点的 `runtimes.json` 与 `runtime.configure` 管；Codex 的 P32 落地不再改写 `config.toml`（P36 §7）。本节以下是 P27 时的原文。
+
 ### 1.1 选择
 
 | 项 | 定案 |
 |---|---|
 | 粒度 | 每个智能体一种底层。`qm resident --agent <名>=<目录> --agent-runtime <名>=omp\|claude-code\|codex`，不写为 `omp` |
 | 模型 | `--agent-model <名>=<模型档案号>/<模型号>`：从模型服务下发到节点的档案里取地址、密钥与模型。Claude Code 只接受 Anthropic 消息接口的档案（`anthropic` 通道）；Codex 只接受 Responses 接口的档案（`openai-responses` 通道）；qianmopi 不受限。不写时 qianmopi 跟随节点主模型，外部底层报「未配置模型」拒绝启动 |
-| 程序位置 | `--claude-code-bin`（默认 `claude`）、`--codex-bin`（默认 `codex`）；P31 的节点升级把程序装到 `qianmoConfigPath('runtimes', 'npm')` 并优先使用（启动参数指定了路径的不管） |
+| 程序位置 | `--claude-code-bin`（默认 `claude`）、`--codex-bin`（默认 `codex`）；P31 的节点升级把程序装到节点自己的目录并优先使用（P36 起每个底层一棵树，在 `qianmoConfigPath('runtimes', 'trees')`，早先装在 `qianmoConfigPath('runtimes', 'npm')` 的照样能用；启动参数指定了路径的不管） |
 | 控制台 | 「智能体」页每个智能体显示底层与模型；运维改动经控制链路 `runtime.configure` 写节点的 `runtimes.json`，空闲时重启该智能体的子进程 |
 | 并存 | 进程池按会话归属的智能体分流：qianmopi 会话走原有 `ResidentOmpPool`，外部底层走 `ExternalRuntimePool`；两池共用最大子进程数、空闲回收与排队上限 |
 
@@ -187,7 +189,7 @@
 |---|---|
 | 设定 | 控制台「更新」页（`/admin/updates`，管理组）：检查时间（每天或每周几的 HH:MM，可设多条，时区默认 Asia/Shanghai）；每个来源各自的动作：只通知 / 自动处理；有新版本时推送到哪些通知渠道（P24 的平台级渠道）；阡陌所在的 GitHub 仓库。开关 `qm console --updates`，状态在 `qianmoConfigPath('qianmo','console','updates')`；中枢停机错过的检查在下次启动时补跑一次 |
 | 来源 | ① qianmopi 上游：GitHub `can1357/oh-my-pi` 最新发行 vs 中枢运行的 qianmopi 版本；② Claude Code：npm `@anthropic-ai/claude-code` 的 `latest` vs 各节点 `runtime.versions` 报告的版本；③ Codex：npm `@openai/codex` 同上；④ 阡陌：所设仓库的最新发行 vs 中枢与各节点 `system.version` 报告的版本，同时记下最近三个更旧的发行供回滚 |
-| 自动处理 | ① 经仓库连接（P26 的 `repo` 类连接，令牌需 `actions:write`）触发 `sync-omp.yml` 工作流，产出同步草稿 PR，**不自动合并**（成果边界与评审规则不变）；②③ 经控制链路 `runtime.update` 让节点把指定版本装进 `qianmoConfigPath('runtimes','npm')`（`npm install --prefix`，缓存与配置也在其下），先装进临时前缀，用节点自己的启动参数、真实的 `qm runtime-mcp` 工具桥与本机假模型接口过兼容检查（Claude Code：init 列出已连上的 qianmo 与工具、宿主工具调用到达节点、规则外的调用先经 `qianmo_permission`；Codex：app-server 列出 qianmo 与工具）；不通过就不装，节点留在原版本，答复写明原因；通过后新子进程用新版，启动参数指定了路径的节点不动；④ 逐台升级阡陌（§5.2） |
+| 自动处理 | ① 经仓库连接（P26 的 `repo` 类连接，令牌需 `actions:write`）触发 `sync-omp.yml` 工作流，产出同步草稿 PR，**不自动合并**（成果边界与评审规则不变）；②③ 经控制链路 `runtime.update` 让节点装指定版本（`npm install --prefix`，缓存与配置在 `qianmoConfigPath('runtimes','npm')`；P36 起先装进该底层的暂存树，通过检查的就是换上去的那棵树，见 `harness-backends.md` §2），用节点自己的启动参数、真实的 `qm runtime-mcp` 工具桥与本机假模型接口过兼容检查（Claude Code：init 列出已连上的 qianmo 与工具、宿主工具调用到达节点、规则外的调用先经 `qianmo_permission`；Codex：app-server 列出 qianmo 与工具）；不通过就不装，节点留在原版本，答复写明原因；通过后新子进程用新版，启动参数指定了路径的节点不动；④ 逐台升级阡陌（§5.2） |
 | 只处理一次 | 每个来源记住已通知或已自动处理过的最新版本；同一版本之后的检查照样记一行，不再推送、不再触发 |
 | 记录 | 每次检查每个来源记一行（时间、来源、当前版本、最新版本、结果、说明），保留 100 行；升级或回滚作业结束时另记一行并推送 |
 | 出站 | `api.github.com`、`registry.npmjs.org` 与 GitHub 的发行下载域；走 §7.2 出站策略 |
