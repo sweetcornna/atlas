@@ -66,6 +66,41 @@ function fact(key: string, value: string): string {
   return `<div class="ch-fact"><span class="note">${escapeHtml(key)}</span><span>${value}</span></div>`
 }
 
+/** Pending pairing requests, with the decisions for ops (hermes pairing). */
+function pairings(channel: ChannelView, model: ChannelsModel): string {
+  if (!model.ops || channel.pairingRequests.length === 0) return ''
+  const rows = channel.pairingRequests.map(request => {
+    const data = (decision: string) => ({
+      id: channel.id,
+      request: request.id,
+      decision,
+      name: request.userName,
+    })
+    return (
+      `<div class="ch-pair"><span class="ch-pair-who"><b>${escapeHtml(request.userName)}</b>` +
+      `<span class="kit-mono note">${escapeHtml(request.userId)}</span></span>` +
+      `<span class="note">${escapeHtml(formatRelative(request.createdAt, model.now))}</span>` +
+      `<span class="kit-acts">` +
+      actionButton('channel-pair', '设为主人', {
+        tone: 'ghost',
+        data: data('owner'),
+      }) +
+      (channel.memberTarget === null
+        ? ''
+        : actionButton('channel-pair', '设为成员', {
+            tone: 'ghost',
+            data: data('member'),
+          })) +
+      actionButton('channel-pair', '拒绝', {
+        tone: 'ghost',
+        data: data('deny'),
+      }) +
+      `</span></div>`
+    )
+  })
+  return `<div class="ch-pairs" aria-label="配对请求">${rows.join('')}</div>`
+}
+
 function card(
   channel: ChannelView,
   model: ChannelsModel,
@@ -123,11 +158,21 @@ function card(
     ) +
     fact('群里', channel.groupTrigger === 'all' ? '每条都回' : '@ 时回') +
     fact('会话', escapeHtml(String(channel.conversations))) +
+    (channel.pairingOpen
+      ? fact(
+          '配对',
+          channel.pairingRequests.length > 0
+            ? `${channel.pairingRequests.length} 条待处理`
+            : '接受申请',
+        )
+      : '') +
     fact(
       '凭据',
       channel.secretSet ? '已设置' : '<span class="note">未设置</span>',
     ) +
-    `</div><footer class="ch-foot"><span class="kit-row">${health}` +
+    `</div>` +
+    pairings(channel, model) +
+    `<footer class="ch-foot"><span class="kit-row">${health}` +
     `<span class="note">${escapeHtml(formatRelative(channel.health.since, model.now))}</span></span>${acts}</footer>` +
     `</article>`
   )
@@ -144,12 +189,16 @@ export function renderChannels(model: ChannelsModel): string {
   if (side.kind === 'unwired')
     body = unwiredCard(
       '聊天渠道',
-      'QQ、微信、Telegram、Discord、Slack 的消息交给智能体回复',
+      'QQ、微信、Telegram、Discord、Slack 等聊天软件的消息交给智能体回复',
       'qm console … --channels',
     )
   else if (side.kind === 'failed') body = failureBar(side.failure, '聊天渠道')
   else if (side.value.channels.length === 0)
-    body = emptyState('还没有渠道', 'QQ、微信、Telegram、Discord、Slack', add)
+    body = emptyState(
+      '还没有渠道',
+      side.value.platforms.map(one => one.name).join('、'),
+      add,
+    )
   else
     body = `<div class="ch-grid">${side.value.channels.map(one => card(one, model, side.value)).join('')}</div>`
   return (
@@ -274,6 +323,11 @@ export function renderChannelForm(input: {
     }) +
     `<label class="chk field-wide"><input type="checkbox" name="allowAll"${channel?.allowAll ? ' checked' : ''}>` +
     `<span class="bx">${icon('check', { small: true })}</span>不限人和群</label>` +
+    (platform.pairing
+      ? `<label class="chk field-wide"><input type="checkbox" name="pairing"${channel?.pairing ? ' checked' : ''}>` +
+        `<span class="bx">${icon('check', { small: true })}</span>陌生人私聊可申请配对</label>` +
+        `<p class="note field-wide">没填主人、也没放开任何人时自动接受申请；对方把配对码发给你，私聊机器人 /pair 配对码，或在这里批准</p>`
+      : '') +
     textArea('prompt', '渠道说明', {
       value: channel?.prompt ?? '',
       maxLength: 4000,
@@ -331,6 +385,9 @@ export const CHANNELS_PAGE_CSS = `
 .ch-facts { display: flex; flex-direction: column; gap: 6px; }
 .ch-fact { display: flex; justify-content: space-between; gap: var(--space-3); font-size: var(--text-13); min-width: 0; }
 .ch-fact .kit-mono { text-align: right; overflow-wrap: anywhere; }
+.ch-pairs { display: flex; flex-direction: column; gap: 6px; padding-top: var(--space-2); border-top: 1px solid var(--color-line, transparent); }
+.ch-pair { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: var(--text-13); }
+.ch-pair-who { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .ch-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; margin-top: auto; }
 .ch-platforms { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: var(--space-2); }
 .ch-platform { display: flex; align-items: center; gap: var(--space-2); padding: 8px 10px; border-radius: var(--radius-md); background: var(--color-bg); cursor: pointer; font-size: var(--text-13); border: 1px solid transparent; }

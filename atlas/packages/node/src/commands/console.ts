@@ -812,6 +812,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           ...(tenancy === undefined ? {} : { tenancy }),
           stopTask: stopTurn,
           ...(tasks === undefined ? {} : { tasks }),
+          // Personal QQ (SnowLuma) is non-commercial only: never on the paid edition.
+          publicEdition: config.edition === 'public',
           onError: message => process.stderr.write(`[channels] ${message}\n`),
         })
       : undefined

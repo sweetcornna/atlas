@@ -70,6 +70,7 @@ export const CHANNELS_PAGE_JS = `
       secrets: {}
     };
     if (form.elements.ownerIds) draft.ownerIds = split(form.elements.ownerIds.value);
+    if (form.elements.pairing) draft.pairing = !!form.elements.pairing.checked;
     var id = form.elements.channelId ? form.elements.channelId.value : '';
     if (id) draft.id = id;
     var settings = form.querySelectorAll('[data-setting]');
@@ -167,6 +168,20 @@ export const CHANNELS_PAGE_JS = `
       qc.toast((enabled ? '已启用 ' : '已停用 ') + name, 'ok');
       return refresh();
     }).catch(function (err) { qc.toast(qc.failLine(enabled ? '启用' : '停用', err), qc.failTone(err)); });
+  });
+
+  var DECIDED = { owner: '已设为主人', member: '已设为成员', deny: '已拒绝' };
+  qc.onAction('channel-pair', function (button) {
+    var id = button.getAttribute('data-id') || '';
+    var decision = button.getAttribute('data-decision') || '';
+    var name = button.getAttribute('data-name') || '';
+    qc.sendJson('POST', '/v0/im/' + encodeURIComponent(id) + '/pairing', {
+      requestId: button.getAttribute('data-request') || '',
+      decision: decision
+    }).then(function () {
+      qc.toast((DECIDED[decision] || '已处理') + ' ' + name, 'ok');
+      return refresh();
+    }).catch(function (err) { qc.toast(qc.failLine('配对', err), qc.failTone(err)); });
   });
 
   qc.onAction('channel-remove', function (button) {

@@ -20,6 +20,7 @@ import {
   type AgentRef,
   type ChannelDraft,
   type ChannelLoginView,
+  type ChannelPairingDecision,
   type ChannelPlatformView,
   type ChannelsPort,
   type ChannelsSnapshot,
@@ -1831,6 +1832,7 @@ export const CHANNEL_PLATFORMS: readonly ChannelPlatformView[] = [
     settings: [{ key: 'appId', label: 'AppID' }],
     secrets: [{ key: 'appSecret', label: 'AppSecret' }],
     qrLogin: false,
+    pairing: true,
     hint: 'QQ 开放平台机器人',
     evaluated: false,
   },
@@ -1840,6 +1842,7 @@ export const CHANNEL_PLATFORMS: readonly ChannelPlatformView[] = [
     settings: [],
     secrets: [],
     qrLogin: true,
+    pairing: true,
     hint: '用微信扫码授权',
     evaluated: false,
   },
@@ -1849,6 +1852,7 @@ export const CHANNEL_PLATFORMS: readonly ChannelPlatformView[] = [
     settings: [],
     secrets: [{ key: 'token', label: 'Bot Token' }],
     qrLogin: false,
+    pairing: true,
     hint: '@BotFather 创建',
     evaluated: false,
   },
@@ -1878,6 +1882,17 @@ export class FakeChannels implements ChannelsPort {
         groupTrigger: 'mention',
         replyWindowMs: 0,
         prompt: '',
+        pairing: true,
+        pairingOpen: true,
+        pairingRequests: [
+          {
+            id: 'pr-1',
+            userId: 'STRANGER-OPENID',
+            userName: '访客',
+            createdAt: at - 60_000,
+            expiresAt: at + 3_540_000,
+          },
+        ],
         settings: { appId: '102000001' },
         secretSet: true,
         health: { state: 'connected', since: at - 3_600_000 },
@@ -1923,6 +1938,9 @@ export class FakeChannels implements ChannelsPort {
       groupTrigger: draft.groupTrigger ?? old?.groupTrigger ?? 'mention',
       replyWindowMs: draft.replyWindowMs ?? old?.replyWindowMs ?? 0,
       prompt: draft.prompt ?? old?.prompt ?? '',
+      pairing: draft.pairing ?? old?.pairing ?? false,
+      pairingOpen: draft.pairing ?? old?.pairingOpen ?? false,
+      pairingRequests: old?.pairingRequests ?? [],
       settings: { ...old?.settings, ...draft.settings },
       secretSet:
         old?.secretSet === true || Object.keys(draft.secrets ?? {}).length > 0,
@@ -1984,6 +2002,32 @@ export class FakeChannels implements ChannelsPort {
     if (!this.#logins.has(loginId))
       return failed<string>('not_found', 'no such login')
     return ok(`https://liteapp.weixin.qq.com/q/${loginId}`)
+  }
+
+  async pair(
+    channelId: string,
+    requestId: string,
+    decision: ChannelPairingDecision,
+  ) {
+    this.calls.push(`pair ${channelId} ${requestId} ${decision}`)
+    const channel = this.channels.find(one => one.id === channelId)
+    const request = channel?.pairingRequests.find(one => one.id === requestId)
+    if (channel === undefined || request === undefined)
+      return failed<ChannelView>('not_found', 'no such request')
+    const view: ChannelView = {
+      ...channel,
+      pairingRequests: channel.pairingRequests.filter(one => one !== request),
+      ownerIds:
+        decision === 'owner'
+          ? [...channel.ownerIds, request.userId]
+          : channel.ownerIds,
+      allowUsers:
+        decision === 'member'
+          ? [...channel.allowUsers, request.userId]
+          : channel.allowUsers,
+    }
+    this.channels = this.channels.map(one => (one.id === channelId ? view : one))
+    return ok(view)
   }
 }
 

@@ -127,6 +127,9 @@ test('view reads; platform user ids only for ops', async () => {
     const ops = role === 'admin' || role === 'ops'
     expect(`${role} ${channel.ownerIds.length > 0}`).toBe(`${role} ${ops}`)
     expect(`${role} ${'appId' in channel.settings}`).toBe(`${role} ${ops}`)
+    expect(`${role} ${channel.pairingRequests.length > 0}`).toBe(
+      `${role} ${ops}`,
+    )
   }
   expect((await call('GET', '/v0/im', access('none'))).status).toBe(401)
   expect(admits).toBe(0)
@@ -144,6 +147,14 @@ test('only a personal ops account writes; nothing happens before the guard', asy
     expect((await call('DELETE', '/v0/im/ch-1', who)).status).toBe(403)
     expect(
       (await call('POST', '/v0/im/login', who, { platform: 'weixin' })).status,
+    ).toBe(403)
+    expect(
+      (
+        await call('POST', '/v0/im/ch-1/pairing', who, {
+          requestId: 'pr-1',
+          decision: 'owner',
+        })
+      ).status,
     ).toBe(403)
   }
   expect(port.calls).toEqual([])
@@ -182,6 +193,30 @@ test('save, login and remove are admitted and recorded with generated ids only',
     'login 微信',
     'remove ch-1',
   ])
+})
+
+test('a pairing request is decided by ops, validated and recorded', async () => {
+  const ops = access('ops')
+  for (const body of [
+    { requestId: 'pr-1', decision: 'admin' },
+    { requestId: '../x', decision: 'owner' },
+    { decision: 'owner' },
+  ])
+    expect((await call('POST', '/v0/im/ch-1/pairing', ops, body)).status).toBe(
+      400,
+    )
+  expect((await call('GET', '/v0/im/ch-1/pairing', ops)).status).toBe(405)
+  const decided = await call('POST', '/v0/im/ch-1/pairing', ops, {
+    requestId: 'pr-1',
+    decision: 'owner',
+  })
+  expect(decided.status).toBe(200)
+  expect(((await decided.json()) as { ownerIds: string[] }).ownerIds).toEqual([
+    'OWNER-OPENID',
+    'STRANGER-OPENID',
+  ])
+  expect(records).toEqual(['im.pair -'])
+  expect(port.calls).toEqual(['pair ch-1 pr-1 owner'])
 })
 
 test('without a channels port the API says so', async () => {
