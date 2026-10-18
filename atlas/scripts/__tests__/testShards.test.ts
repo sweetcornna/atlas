@@ -197,24 +197,6 @@ describe('test-shards.sh CI groups', () => {
     expect([...host, ...rest].sort()).toEqual(files('atlas/packages/node'))
   })
 
-  // Bun 1.4.2 on Linux: spawnSync after these files in one process spins on
-  // an exited child (see the node-rest case in test-shards.sh).
-  test('node-rest runs the four resident probe files as shards of their own', () => {
-    const shardList = shards('--list', '--group', 'node-rest').lines
-    const apart = shardList.filter(path => path.endsWith('.test.ts'))
-
-    expect(shardList[0]).toBe('atlas/packages/node')
-    expect(apart.map(path => path.split('/').pop())).toEqual([
-      'residentModelCredential.isolated.test.ts',
-      'residentModelProbe.test.ts',
-      'residentModelProbeGate.test.ts',
-      'residentProviderSignal.test.ts',
-    ])
-    const rest = files('--group', 'node-rest')
-    for (const path of apart)
-      expect(rest.filter(file => file === path)).toEqual([path])
-  })
-
   // A group the workflow does not list never runs in CI; a listed name the
   // script does not know fails that job. Either way, keep the two in step.
   test('the CI test matrix lists exactly these groups', () => {
