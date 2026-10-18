@@ -107,6 +107,8 @@ jobs:
               echo "A review issue for $branch is already open."
               return 0
             fi
+            # The backticks are Markdown for the issue body, not command substitution.
+            # shellcheck disable=SC2016
             {
               printf 'Candidate branch `%s` and snapshot `%s` are published and verified.\n\n' "$branch" "$snapshot"
               printf 'Open the draft pull request: %s/compare/%s...%s?expand=1\n\n' \
