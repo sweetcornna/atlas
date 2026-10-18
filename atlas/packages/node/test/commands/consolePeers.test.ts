@@ -222,6 +222,23 @@ describe('asking', () => {
     expect(stopped).toEqual([[CODER, chat.lastTask(coder)]])
   })
 
+  test('a turn that could not be stopped is reported so, and the next question opens a new conversation', async () => {
+    const book = peers({ stopTask: async () => false })
+    const caller = await conversation()
+    const pending = ask(book, caller, [CODER], { timeoutSec: 5 })
+    const coder = await askedIn(CODER)
+    const result = answers(await pending)[0]!
+    expect(result).toMatchObject({ agent: CODER, ok: false, code: 'timeout' })
+    expect(JSON.stringify(result)).toContain('没能停止它这一轮')
+    // Its late answer lands in the old conversation, not the next question's.
+    const next = ask(book, caller, [CODER])
+    await until(() => asked(CODER).length === 2)
+    const fresh = asked(CODER)[1]!
+    expect(fresh).not.toBe(coder)
+    chat.reply(fresh, '好')
+    expect(answers(await next)[0]).toMatchObject({ ok: true, reply: '好' })
+  })
+
   test("the node's own timeout answer also stops the turn it left running", async () => {
     const book = peers()
     const caller = await conversation()

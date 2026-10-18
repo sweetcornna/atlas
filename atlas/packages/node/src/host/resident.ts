@@ -1440,9 +1440,10 @@ export class QianmoResident {
     // Before the first omp RPC child: an intent a crash left behind is committed
     // now, while no child can be reading settings (§2.6 step 5).
     await this.#prepareProviderConfig()
-    // With the model service in place: where each agent runs, and the
-    // default installs, in the background (P36 §2).
-    void this.runtimes.start().catch(error => this.#options.onError?.(error))
+    // With the model service in place: where each agent runs (P36 §2).
+    // Waited for, so no turn is routed before Node.js was checked; the
+    // default installs go on in the background.
+    await this.runtimes.start().catch(error => this.#options.onError?.(error))
     this.#startProviderPoll()
     // The last extension set, laid out again for this start's agents with
     // every MCP server probed anew (P32); in the background, like the hub's.

@@ -242,6 +242,12 @@ function qwenPins(input: AcpLaunchInput): {
 } {
   if (input.lane !== 'openai-chat')
     throw new Error(`Qwen Code does not call the ${input.lane} lane`)
+  // Never launched without them: the runtime choice already refuses such a
+  // profile (catalog `customHeaders: false`).
+  if (Object.keys(input.headers ?? {}).length > 0)
+    throw new Error(
+      'Qwen Code cannot send the custom headers this profile needs',
+    )
   const settings = join(input.runDir, QWEN_SETTINGS_FILE)
   const allowed = [
     ...(input.bridge === undefined ? [] : [input.bridge.name]),

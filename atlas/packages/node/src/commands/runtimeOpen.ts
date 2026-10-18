@@ -35,6 +35,7 @@ import { claudeCodeOpenArgv } from '../host/runtimes/claudeCode.js'
 import { CODEX_KEY_ENV, codexOpenArgv } from '../host/runtimes/codex.js'
 import {
   acquireFrontendLock,
+  holdsFrontendLock,
   type FrontendLock,
   pidAlive,
   readFrontendAck,
@@ -282,6 +283,8 @@ export async function run(argv: string[]): Promise<number> {
       throw new OpenError(
         '常驻节点没有回应前端锁（它可能是不支持 qm runtime open 的旧版本）',
       )
+    if (!holdsFrontendLock(agent, lock))
+      throw new OpenError(`${agent} 的另一个前端正开着`)
     const opened = await frontendLaunch({
       agent,
       runtime: entry.runtime,

@@ -54,7 +54,11 @@ export interface AcpSessionSettings extends RuntimeChannelHooks {
   readonly mcpServers: readonly AcpMcpServer[]
   /** A native session to continue; omitted opens a new one. */
   readonly sessionId?: string
+  /** How many starts in a row failed to continue `sessionId` (default 0). */
+  readonly resumeFailures?: number
   readonly onSession: (sessionId: string) => void
+  /** A start could not continue `sessionId` and failed. */
+  readonly onResumeFailed?: () => void
   /** Sent ahead of the first prompt of a new native session. */
   readonly instructions?: string
   readonly effort?: string
@@ -81,6 +85,39 @@ interface TrackedTool {
 }
 
 const REQUEST_TIMEOUT_MS = 60_000
+/** Starts in a row that fail to continue a session before a new one opens. */
+export const ACP_RESUME_ATTEMPTS = 3
+
+/** An error answer to one of our requests. */
+export class AcpRpcError extends Error {
+  readonly code: number | undefined
+  readonly data: unknown
+  constructor(message: string, code: number | undefined, data: unknown) {
+    super(message)
+    this.code = code
+    this.data = data
+  }
+}
+
+/**
+ * Whether the harness answered that it has no such session: ACP's "resource
+ * not found", or an error naming the session as unknown (dsh, Qwen Code and
+ * Gemini CLI each word it their own way). A timeout or a transient failure
+ * is not: the conversation still exists.
+ */
+export function acpSessionGone(error: unknown): boolean {
+  if (!(error instanceof AcpRpcError)) return false
+  if (error.code === -32002) return true
+  let detail = error.message
+  try {
+    detail += ` ${JSON.stringify(error.data) ?? ''}`
+  } catch {
+    // Not serializable; the message alone decides.
+  }
+  return /not found|no such session|unknown session|invalid session|session does not exist/i.test(
+    detail,
+  )
+}
 const CANCEL_GRACE_MS = 5_000
 /** A `session/load` replay is over once updates stop this long… */
 const REPLAY_QUIET_MS = 200
@@ -242,9 +279,18 @@ export class AcpChannel extends RuntimeChannelBase {
         )
         this.#sessionId = settings.sessionId
         if (resume === 'session/load') await this.#replayed()
-      } catch {
+      } catch (error) {
         // The harness no longer has it (wiped home, another node): a new
-        // conversation, with the node's instructions again.
+        // conversation, with the node's instructions again. Anything else
+        // (a timeout, a passing failure) fails this start and keeps the
+        // conversation, unless it has kept failing.
+        if (
+          !acpSessionGone(error) &&
+          (settings.resumeFailures ?? 0) + 1 < ACP_RESUME_ATTEMPTS
+        ) {
+          settings.onResumeFailed?.()
+          throw error
+        }
         opened = undefined
       }
     }
@@ -553,8 +599,10 @@ export class AcpChannel extends RuntimeChannelBase {
       const error = toolArgs(message.error)
       if (Object.keys(error).length > 0)
         pending.reject(
-          new Error(
+          new AcpRpcError(
             `${this.runtimeName} ${pending.method}: ${String(error.message ?? 'error')}`,
+            typeof error.code === 'number' ? error.code : undefined,
+            error.data,
           ),
         )
       else pending.resolve(message.result)

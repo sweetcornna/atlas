@@ -15,6 +15,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -34,6 +35,7 @@ import {
 } from '../../src/host/runtimes/contract.js'
 import {
   acquireFrontendLock,
+  holdsFrontendLock,
   readFrontendAck,
   readFrontendLock,
   releaseFrontendLock,
@@ -880,6 +882,31 @@ test('native changes wait for the official frontend to close; listing does not',
   const taken = acquireFrontendLock('coder', 'gemini')
   expect(taken?.pid).toBe(process.pid)
   releaseFrontendLock('coder', taken!)
+})
+
+test('a frontend lock appears whole; an empty or dead one is taken over and its old holder learns it', () => {
+  scratch()
+  const dir = qianmoConfigPath('runtimes', 'locks')
+  mkdirSync(dir, { recursive: true })
+  // What a taker that died between creating and writing would leave.
+  writeFileSync(join(dir, 'coder.lock'), '')
+  const lock = acquireFrontendLock('coder', 'gemini')!
+  expect(lock.pid).toBe(process.pid)
+  expect(JSON.parse(readFileSync(join(dir, 'coder.lock'), 'utf8'))).toEqual(
+    lock,
+  )
+  expect(readdirSync(dir)).toEqual(['coder.lock'])
+  // A live holder is never moved aside.
+  expect(acquireFrontendLock('coder', 'gemini')).toBeUndefined()
+  expect(holdsFrontendLock('coder', lock)).toBe(true)
+  releaseFrontendLock('coder', lock)
+  const dead = { pid: 2 ** 22 + 7, nonce: 'old', runtime: 'gemini', at: 1 }
+  writeFileSync(join(dir, 'coder.lock'), JSON.stringify(dead))
+  const next = acquireFrontendLock('coder', 'gemini')!
+  expect(holdsFrontendLock('coder', dead)).toBe(false)
+  expect(holdsFrontendLock('coder', next)).toBe(true)
+  releaseFrontendLock('coder', next)
+  expect(readdirSync(dir)).toEqual([])
 })
 
 test('the pool yields an idle agent to the frontend, refuses a busy one, and starts nothing while the lock is held', async () => {

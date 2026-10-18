@@ -222,10 +222,13 @@ export function runtimeModelCredential(
   const model = spec.slice(slash + 1)
   const providers = readYaml(providerPaths.models()).providers
   const entries = isRecord(providers) ? Object.entries(providers) : []
-  const matches = entries.filter(([id]) =>
-    profile.startsWith('qm-')
-      ? id === profile
-      : id.startsWith(`qm-${profile}-`) && id.length === profile.length + 12,
+  // A managed provider id itself, or a profile's compiled
+  // `qm-<profile>-<hash>` (a profile id may itself begin with `qm-`).
+  const matches = entries.filter(
+    ([id]) =>
+      (profile.startsWith('qm-') && id === profile) ||
+      (id.startsWith(`qm-${profile}-`) &&
+        /^[0-9a-f]{8}$/.test(id.slice(profile.length + 4))),
   )
   if (matches.length === 0)
     throw new Error(

@@ -357,6 +357,40 @@ describe('omp compiler', () => {
       fixture.dispose()
     }
   })
+  test('a profile whose id begins with qm- is still found by its id, and by its provider id', () => {
+    const fixture = isolatedRoot()
+    try {
+      const result = compileProfile(
+        wireProfile(
+          {
+            id: 'qm-prod',
+            lane: 'openai-chat',
+            baseUrl: 'https://gateway.example.test/v1',
+            compat: {},
+          },
+          capabilities,
+        ),
+        { secret: CANARY_KEY, capabilities },
+      )
+      if (!result.ok) throw new Error(result.error.message)
+      const provider = result.compiled.providerId
+      expect(provider).toMatch(/^qm-qm-prod-[0-9a-f]{8}$/)
+      ensurePrivateDir(join(providerPaths.models(), '..'))
+      writePrivateJson(providerPaths.models(), result.compiled.models)
+      writePrivateJson(providerPaths.config(), result.compiled.config)
+      const main = nodeMainModelSpec()!
+      expect(main.startsWith('qm-prod/')).toBe(true)
+      expect(runtimeModelCredential(main, 'dsh')).toMatchObject({
+        lane: 'openai-chat',
+        baseUrl: 'https://gateway.example.test/v1',
+      })
+      expect(
+        runtimeModelCredential(`${provider}/vendor-model-pro`, 'dsh').lane,
+      ).toBe('openai-chat')
+    } finally {
+      fixture.dispose()
+    }
+  })
   test('URL changes create a different provider identity; model ids stay literal', () => {
     const a = compileProfile(wireProfile(), {
       secret: CANARY_KEY,

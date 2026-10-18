@@ -94,6 +94,11 @@ export interface RuntimeSpec {
   /** Default model family; `null` follows the node's main model. */
   readonly family: ModelFamily | null
   readonly acp?: AcpRuntime
+  /**
+   * `false`: it cannot send a profile's custom request headers, so a
+   * profile that needs them is no model for it (§3.3 `no-model`).
+   */
+  readonly customHeaders?: false
   /** A full turn was run on this build (§7); else the console says "未实测". */
   readonly verified: boolean
 }
@@ -290,6 +295,8 @@ export const RUNTIME_CATALOG: readonly RuntimeSpec[] = [
     lanes: ['openai-chat'],
     family: FAMILIES.qwen,
     acp: QWEN,
+    // Its OpenAI settings take an address, a key and a model, nothing more.
+    customHeaders: false,
     // `realAcpHarnesses.smoke.test.ts` on 0.25.2 (macOS arm64, 2026-10-17).
     verified: true,
   },

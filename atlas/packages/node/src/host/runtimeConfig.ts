@@ -342,7 +342,16 @@ export class NodeRuntimes {
       const spec = explicit ?? this.#options.mainModel?.()
       if (spec === undefined)
         return { error: '没有为它配置模型，节点也没有可用的主模型' }
-      return { model: spec, lane: credential(spec, runtime).lane }
+      const resolved = credential(spec, runtime)
+      const target = runtimeSpec(runtime)
+      if (
+        target?.customHeaders === false &&
+        Object.keys(resolved.headers ?? {}).length > 0
+      )
+        return {
+          error: `${target.label} 不能发送 ${spec.slice(0, spec.indexOf('/'))} 要求的自定义请求头`,
+        }
+      return { model: spec, lane: resolved.lane }
     } catch (error) {
       return { error: `没有可用模型：${errorText(error)}` }
     }

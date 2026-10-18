@@ -298,6 +298,29 @@ test('a failed compatibility check and a missing Node.js are reasons of their ow
   expect(state(runtimes, 'main').effective.runtime).toBe('dsh')
 })
 
+test('no model: a runtime that cannot send a profile’s custom headers does not run on it', async () => {
+  const { runtimes, npm } = setup({
+    agents: [{ agent: 'qw', runtime: 'qwen', model: 'gw/qwen3-coder' }],
+    credential: (spec, runtime) => ({
+      model: spec.slice(spec.indexOf('/') + 1),
+      baseUrl: 'http://127.0.0.1:9/v1',
+      apiKey: 'sk-test',
+      lane: runtimeSpec(runtime)!.lanes[0]!,
+      headers: { 'X-Route': 'team-a' },
+    }),
+  })
+  managed('qwen')
+  npm.node = 'v24.2.0'
+  await runtimes.start()
+  expect(state(runtimes, 'qw')).toMatchObject({
+    effective: { runtime: 'omp' },
+    reason: {
+      code: 'no-model',
+      message: expect.stringContaining('自定义请求头'),
+    },
+  })
+})
+
 test('no model: no --agent-model and no main model, or one the node does not have; back when the model service has it', async () => {
   const { runtimes, setMain, changed } = setup({
     agents: [

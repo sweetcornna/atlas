@@ -151,6 +151,8 @@ interface SessionRecord {
   nativeId?: string
   /** Claude Code: the conversation has a transcript to resume. */
   started?: boolean
+  /** ACP: starts in a row that failed to continue `nativeId`. */
+  resumeFailures?: number
 }
 
 const DEFAULT_IDLE_MS = 600_000
@@ -558,9 +560,8 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     const launch = this.#options.resolveLaunch(running)
     const record = this.#record(dir, runtime)
     const systemPrompt = this.#systemPrompt(dir, running)
-    const token = this.#toolHost.issue({ agent: agent.agent, sessionId })
+    // Its token is issued just before the process starts (below).
     const tokenFile = join(dir, 'runtime-mcp.token')
-    writeFileSync(tokenFile, token, { mode: 0o600 })
     const mcp = (this.#options.mcpArgv ?? qmArgv)([
       'runtime-mcp',
       '--port',
@@ -590,254 +591,283 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
         this.#options.onError?.(error)
       }
     }
-    let argv: string[]
-    let cwd = agent.cwd
-    let open: (child: ChildProcess) => ExternalRuntimeChannel
-    const extensions = this.#options.extensions?.(agent.agent) ?? null
-    switch (spec.protocol) {
-      case 'claude-stream': {
-        const mcpConfig = join(dir, 'runtime-mcp.json')
-        writeFileSync(
-          mcpConfig,
-          JSON.stringify({
-            mcpServers: {
-              ...Object.fromEntries(
-                (extensions?.mcp ?? []).map(server => [
-                  connectorName(server.name),
-                  server.transport === 'stdio'
-                    ? {
-                        type: 'stdio',
-                        command: server.command ?? '',
-                        args: server.args ?? [],
-                        // Claude Code passes its own environment on; the
-                        // agent's model key is not the server's business.
-                        env: {
-                          ANTHROPIC_API_KEY: '',
-                          ANTHROPIC_CUSTOM_HEADERS: '',
-                          ...server.env,
+    // Until the channel is registered, `gone` does not clean up after it: a
+    // failure here takes back the token and the launch files itself.
+    let token: string | undefined
+    let child: ChildProcess | undefined
+    let channel: ExternalRuntimeChannel
+    try {
+      let argv: string[]
+      let cwd = agent.cwd
+      let open: (child: ChildProcess) => ExternalRuntimeChannel
+      const extensions = this.#options.extensions?.(agent.agent) ?? null
+      switch (spec.protocol) {
+        case 'claude-stream': {
+          const mcpConfig = join(dir, 'runtime-mcp.json')
+          writeFileSync(
+            mcpConfig,
+            JSON.stringify({
+              mcpServers: {
+                ...Object.fromEntries(
+                  (extensions?.mcp ?? []).map(server => [
+                    connectorName(server.name),
+                    server.transport === 'stdio'
+                      ? {
+                          type: 'stdio',
+                          command: server.command ?? '',
+                          args: server.args ?? [],
+                          // Claude Code passes its own environment on; the
+                          // agent's model key is not the server's business.
+                          env: {
+                            ANTHROPIC_API_KEY: '',
+                            ANTHROPIC_CUSTOM_HEADERS: '',
+                            ...server.env,
+                          },
+                        }
+                      : {
+                          type: server.transport,
+                          url: server.url ?? '',
+                          headers: server.headers ?? {},
                         },
-                      }
-                    : {
-                        type: server.transport,
-                        url: server.url ?? '',
-                        headers: server.headers ?? {},
-                      },
-                ]),
-              ),
-              [RUNTIME_MCP_SERVER]: {
-                type: 'stdio',
-                command: mcp[0],
-                args: mcp.slice(1),
-              },
-            },
-          }),
-          { mode: 0o600 },
-        )
-        if (record.nativeId === undefined) {
-          record.nativeId = randomUUID()
-          record.started = false
-          this.#saveRecord(dir, record)
-        }
-        argv = claudeCodeArgv({
-          bin: runtimeBin('claude-code', this.#options.bins),
-          model: launch.model,
-          baseUrl: launch.baseUrl,
-          sessionId: record.nativeId,
-          resume: record.started === true,
-          systemPrompt,
-          mcpConfigPath: mcpConfig,
-          allowWorkspaceEdits: this.#options.allowWorkspaceEdits === true,
-          ...(agent.shell ? { shell: true } : {}),
-          ...(launch.effort ? { effort: launch.effort } : {}),
-          ...(extensions === null
-            ? {}
-            : {
-                pluginDirs: extensions.claudePluginDirs,
-                allowedMcpServers: extensions.mcp
-                  .filter(server => server.approval === 'allow')
-                  .map(server => connectorName(server.name)),
-              }),
-        })
-        open = child =>
-          new ClaudeCodeChannel(child, {
-            onAdmitted,
-            onSessionStarted: () => {
-              if (record.started) return
-              record.started = true
-              this.#saveRecord(dir, record)
-            },
-          })
-        break
-      }
-      case 'codex-app-server': {
-        const runDir = this.#launchDir(agent.agent, sessionId)
-        rmSync(runDir, { recursive: true, force: true })
-        mkdirSync(runDir, { recursive: true, mode: 0o700 })
-        const connectors = this.#codexConnectors(
-          extensions?.mcp ?? [],
-          runDir,
-          env,
-        )
-        argv = codexArgv({
-          bin: runtimeBin('codex', this.#options.bins),
-          model: launch.model,
-          baseUrl: launch.baseUrl,
-          keyEnv: CODEX_KEY_ENV,
-          ...(launch.headers ? { headers: launch.headers } : {}),
-          workspace: agent.cwd,
-          mcp: { command: mcp[0]!, args: mcp.slice(1) },
-          connectors,
-          ...(launch.effort ? { effort: launch.effort } : {}),
-          ...(agent.shell ? { shell: true } : {}),
-        })
-        open = child =>
-          new CodexChannel(child, {
-            onAdmitted,
-            cwd: agent.cwd,
-            developerInstructions: systemPrompt,
-            allowWorkspaceEdits: this.#options.allowWorkspaceEdits === true,
-            ...(record.nativeId === undefined
-              ? {}
-              : { threadId: record.nativeId }),
-            onThread: threadId => {
-              if (record.nativeId === threadId) return
-              record.nativeId = threadId
-              this.#saveRecord(dir, record)
-            },
-            permission: call => this.#codexPermission(agent, sessionId, call),
-          })
-        break
-      }
-      case 'acp': {
-        const acp = spec.acp
-        if (acp === undefined)
-          throw new Error(`${spec.label} has no ACP launch in the catalog`)
-        const runDir = this.#launchDir(agent.agent, sessionId)
-        rmSync(runDir, { recursive: true, force: true })
-        mkdirSync(runDir, { recursive: true, mode: 0o700 })
-        // Only what the catalog says it takes; P32 reports the rest.
-        const connectors = (extensions?.mcp ?? [])
-          .filter(server => acp.mcpTransports.includes(server.transport))
-          .map(server => this.#acpMcpServer(server))
-        const lane = launch.lane ?? spec.lanes[0]
-        if (lane === undefined)
-          throw new Error(`${spec.label} has no model lane`)
-        const bridge: AcpBridge = {
-          name: RUNTIME_MCP_SERVER,
-          command: absoluteCommand(mcp[0]!),
-          args: mcp.slice(1),
-          timeoutMs: RUNTIME_MCP_TIMEOUT_MS,
-        }
-        const plan = acp.launch({
-          bin: runtimeBin(runtime, this.#options.bins),
-          model: launch.model,
-          lane,
-          baseUrl: launch.baseUrl,
-          apiKey: launch.apiKey,
-          ...(launch.headers ? { headers: launch.headers } : {}),
-          ...(launch.effort ? { effort: launch.effort } : {}),
-          ...(launch.contextWindow === undefined
-            ? {}
-            : { contextWindow: launch.contextWindow }),
-          ...(launch.maxOutputTokens === undefined
-            ? {}
-            : { maxOutputTokens: launch.maxOutputTokens }),
-          home,
-          runDir,
-          cwd: agent.cwd,
-          bridge,
-          mcpNames: connectors.map(server => server.name),
-          ...(acp.needsPort === true ? { port: await freeLoopbackPort() } : {}),
-          secret: randomUUID(),
-        })
-        for (const path of [
-          ...(plan.dirs ?? []),
-          ...(plan.cwd === undefined ? [] : [plan.cwd]),
-        ])
-          mkdirSync(path, { recursive: true, mode: 0o700 })
-        for (const file of plan.files ?? []) {
-          if (!within(file.path, runDir) && !within(file.path, home))
-            throw new Error(
-              `${spec.label} would write a launch file outside its directories: ${file.path}`,
-            )
-          mkdirSync(dirname(file.path), { recursive: true, mode: 0o700 })
-          writeFileSync(file.path, file.content, { mode: 0o600 })
-          chmodSync(file.path, 0o600)
-        }
-        argv = [...plan.argv]
-        Object.assign(env, plan.env)
-        cwd = plan.cwd ?? agent.cwd
-        const servers: AcpMcpServer[] = [
-          ...(plan.mountsBridge === true
-            ? []
-            : [
-                {
-                  name: bridge.name,
-                  command: bridge.command,
-                  args: bridge.args,
-                  env: [],
+                  ]),
+                ),
+                [RUNTIME_MCP_SERVER]: {
+                  type: 'stdio',
+                  command: mcp[0],
+                  args: mcp.slice(1),
                 },
-              ]),
-          ...connectors,
-        ]
-        const usage = acp.usage
-        open = child =>
-          new AcpChannel(child, {
-            onAdmitted,
-            label: spec.label,
-            runtime: acp,
-            cwd: agent.cwd,
-            mcpServers: servers,
-            ...(record.nativeId === undefined
-              ? {}
-              : { sessionId: record.nativeId }),
-            onSession: id => {
-              if (record.nativeId === id) return
-              record.nativeId = id
-              this.#saveRecord(dir, record)
-            },
-            instructions: systemPrompt,
+              },
+            }),
+            { mode: 0o600 },
+          )
+          if (record.nativeId === undefined) {
+            record.nativeId = randomUUID()
+            record.started = false
+            this.#saveRecord(dir, record)
+          }
+          argv = claudeCodeArgv({
+            bin: runtimeBin('claude-code', this.#options.bins),
+            model: launch.model,
+            baseUrl: launch.baseUrl,
+            sessionId: record.nativeId,
+            resume: record.started === true,
+            systemPrompt,
+            mcpConfigPath: mcpConfig,
+            allowWorkspaceEdits: this.#options.allowWorkspaceEdits === true,
+            ...(agent.shell ? { shell: true } : {}),
             ...(launch.effort ? { effort: launch.effort } : {}),
-            permission: call =>
-              this.#acpPermission(running, sessionId, acp, call),
-            ...(usage === undefined
+            ...(extensions === null
               ? {}
               : {
-                  usage: (id: string) =>
-                    usage({ home, cwd: agent.cwd, sessionId: id }),
+                  pluginDirs: extensions.claudePluginDirs,
+                  allowedMcpServers: extensions.mcp
+                    .filter(server => server.approval === 'allow')
+                    .map(server => connectorName(server.name)),
                 }),
-            onMcpSkipped: names =>
-              this.#options.onError?.(
-                new Error(
-                  `${spec.label} does not take the transport of MCP servers ${names.join(', ')}`,
-                ),
-              ),
-            ...(this.#options.onError === undefined
-              ? {}
-              : { onError: this.#options.onError }),
           })
-        break
+          open = child =>
+            new ClaudeCodeChannel(child, {
+              onAdmitted,
+              onSessionStarted: () => {
+                if (record.started) return
+                record.started = true
+                this.#saveRecord(dir, record)
+              },
+            })
+          break
+        }
+        case 'codex-app-server': {
+          const runDir = this.#launchDir(agent.agent, sessionId)
+          rmSync(runDir, { recursive: true, force: true })
+          mkdirSync(runDir, { recursive: true, mode: 0o700 })
+          const connectors = this.#codexConnectors(
+            extensions?.mcp ?? [],
+            runDir,
+            env,
+          )
+          argv = codexArgv({
+            bin: runtimeBin('codex', this.#options.bins),
+            model: launch.model,
+            baseUrl: launch.baseUrl,
+            keyEnv: CODEX_KEY_ENV,
+            ...(launch.headers ? { headers: launch.headers } : {}),
+            workspace: agent.cwd,
+            mcp: { command: mcp[0]!, args: mcp.slice(1) },
+            connectors,
+            ...(launch.effort ? { effort: launch.effort } : {}),
+            ...(agent.shell ? { shell: true } : {}),
+          })
+          open = child =>
+            new CodexChannel(child, {
+              onAdmitted,
+              cwd: agent.cwd,
+              developerInstructions: systemPrompt,
+              allowWorkspaceEdits: this.#options.allowWorkspaceEdits === true,
+              ...(record.nativeId === undefined
+                ? {}
+                : { threadId: record.nativeId }),
+              onThread: threadId => {
+                if (record.nativeId === threadId) return
+                record.nativeId = threadId
+                this.#saveRecord(dir, record)
+              },
+              permission: call => this.#codexPermission(agent, sessionId, call),
+            })
+          break
+        }
+        case 'acp': {
+          const acp = spec.acp
+          if (acp === undefined)
+            throw new Error(`${spec.label} has no ACP launch in the catalog`)
+          const runDir = this.#launchDir(agent.agent, sessionId)
+          rmSync(runDir, { recursive: true, force: true })
+          mkdirSync(runDir, { recursive: true, mode: 0o700 })
+          // Only what the catalog says it takes; P32 reports the rest.
+          const connectors = (extensions?.mcp ?? [])
+            .filter(server => acp.mcpTransports.includes(server.transport))
+            .map(server => this.#acpMcpServer(server))
+          const lane = launch.lane ?? spec.lanes[0]
+          if (lane === undefined)
+            throw new Error(`${spec.label} has no model lane`)
+          const bridge: AcpBridge = {
+            name: RUNTIME_MCP_SERVER,
+            command: absoluteCommand(mcp[0]!),
+            args: mcp.slice(1),
+            timeoutMs: RUNTIME_MCP_TIMEOUT_MS,
+          }
+          const plan = acp.launch({
+            bin: runtimeBin(runtime, this.#options.bins),
+            model: launch.model,
+            lane,
+            baseUrl: launch.baseUrl,
+            apiKey: launch.apiKey,
+            ...(launch.headers ? { headers: launch.headers } : {}),
+            ...(launch.effort ? { effort: launch.effort } : {}),
+            ...(launch.contextWindow === undefined
+              ? {}
+              : { contextWindow: launch.contextWindow }),
+            ...(launch.maxOutputTokens === undefined
+              ? {}
+              : { maxOutputTokens: launch.maxOutputTokens }),
+            home,
+            runDir,
+            cwd: agent.cwd,
+            bridge,
+            mcpNames: connectors.map(server => server.name),
+            ...(acp.needsPort === true
+              ? { port: await freeLoopbackPort() }
+              : {}),
+            secret: randomUUID(),
+          })
+          for (const path of [
+            ...(plan.dirs ?? []),
+            ...(plan.cwd === undefined ? [] : [plan.cwd]),
+          ])
+            mkdirSync(path, { recursive: true, mode: 0o700 })
+          for (const file of plan.files ?? []) {
+            if (!within(file.path, runDir) && !within(file.path, home))
+              throw new Error(
+                `${spec.label} would write a launch file outside its directories: ${file.path}`,
+              )
+            mkdirSync(dirname(file.path), { recursive: true, mode: 0o700 })
+            writeFileSync(file.path, file.content, { mode: 0o600 })
+            chmodSync(file.path, 0o600)
+          }
+          argv = [...plan.argv]
+          Object.assign(env, plan.env)
+          cwd = plan.cwd ?? agent.cwd
+          const servers: AcpMcpServer[] = [
+            ...(plan.mountsBridge === true
+              ? []
+              : [
+                  {
+                    name: bridge.name,
+                    command: bridge.command,
+                    args: bridge.args,
+                    env: [],
+                  },
+                ]),
+            ...connectors,
+          ]
+          const usage = acp.usage
+          open = child =>
+            new AcpChannel(child, {
+              onAdmitted,
+              label: spec.label,
+              runtime: acp,
+              cwd: agent.cwd,
+              mcpServers: servers,
+              ...(record.nativeId === undefined
+                ? {}
+                : { sessionId: record.nativeId }),
+              ...(record.resumeFailures === undefined
+                ? {}
+                : { resumeFailures: record.resumeFailures }),
+              onSession: id => {
+                if (
+                  record.nativeId === id &&
+                  record.resumeFailures === undefined
+                )
+                  return
+                record.nativeId = id
+                delete record.resumeFailures
+                this.#saveRecord(dir, record)
+              },
+              onResumeFailed: () => {
+                record.resumeFailures = (record.resumeFailures ?? 0) + 1
+                this.#saveRecord(dir, record)
+              },
+              instructions: systemPrompt,
+              ...(launch.effort ? { effort: launch.effort } : {}),
+              permission: call =>
+                this.#acpPermission(running, sessionId, acp, call),
+              ...(usage === undefined
+                ? {}
+                : {
+                    usage: (id: string) =>
+                      usage({ home, cwd: agent.cwd, sessionId: id }),
+                  }),
+              onMcpSkipped: names =>
+                this.#options.onError?.(
+                  new Error(
+                    `${spec.label} does not take the transport of MCP servers ${names.join(', ')}`,
+                  ),
+                ),
+              ...(this.#options.onError === undefined
+                ? {}
+                : { onError: this.#options.onError }),
+            })
+          break
+        }
+        default:
+          throw new Error(`${spec.label} has no channel on this node`)
       }
-      default:
-        throw new Error(`${spec.label} has no channel on this node`)
-    }
-    const spawnInput: ExternalRuntimeSpawn = {
-      kind: runtime,
-      argv,
-      cwd,
-      env,
-      agent: agent.agent,
-      sessionId,
-      sessionDir: dir,
-    }
-    const child =
-      this.#options.spawn?.(spawnInput) ??
-      spawn(argv[0]!, argv.slice(1), {
+      const spawnInput: ExternalRuntimeSpawn = {
+        kind: runtime,
+        argv,
         cwd,
         env,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      })
-    const channel = open(child)
+        agent: agent.agent,
+        sessionId,
+        sessionDir: dir,
+      }
+      token = this.#toolHost.issue({ agent: agent.agent, sessionId })
+      writeFileSync(tokenFile, token, { mode: 0o600 })
+      child =
+        this.#options.spawn?.(spawnInput) ??
+        spawn(argv[0]!, argv.slice(1), {
+          cwd,
+          env,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        })
+      channel = open(child)
+    } catch (error) {
+      child?.kill()
+      if (token !== undefined) this.#toolHost.revoke(token)
+      rmSync(tokenFile, { force: true })
+      this.#removeLaunchFiles(agent.agent, sessionId)
+      throw error
+    }
     this.#tokens.set(sessionId, token)
     this.#channels.set(sessionId, channel)
     this.#running.set(sessionId, running)

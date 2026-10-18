@@ -24,7 +24,11 @@ import type {
   AgentExtensions,
   AgentExtensionsSource,
 } from '../../src/host/extensions.js'
-import { AcpChannel } from '../../src/host/runtimes/acp.js'
+import {
+  AcpChannel,
+  AcpRpcError,
+  acpSessionGone,
+} from '../../src/host/runtimes/acp.js'
 import {
   ExternalRuntimePool,
   type ExternalAgent,
@@ -76,6 +80,7 @@ function setup(
     extensions?: AgentExtensionsSource
     launch?: Partial<ExternalLaunch>
     runtimeOf?: () => string
+    spawnFails?: boolean
   } = {},
 ) {
   root ??= isolatedRoot()
@@ -131,6 +136,7 @@ function setup(
       : { extensions: options.extensions }),
     spawn: input => {
       launches.push(input)
+      if (options.spawnFails === true) throw new Error('spawn refused')
       const child = spawn(
         process.execPath,
         [FAKE[input.kind]!, ...input.argv.slice(1)],
@@ -444,6 +450,88 @@ test('dsh: a new process resumes the session; a crash is recovered; a lost sessi
   const last = requests('session/prompt').at(-1)!.params!
   expect(last.prompt).toHaveLength(2)
   expect(JSON.parse(readFileSync(record, 'utf8')).nativeId).toBe(last.sessionId)
+})
+
+test('a launch that fails before its process is running leaves no token or launch files behind', async () => {
+  const leftovers = (sessionDir: string) =>
+    ['runtime-mcp.token', 'runtime-launch'].filter(name =>
+      existsSync(join(sessionDir, name)),
+    )
+  // The launch plan refuses the lane: nothing was handed out yet.
+  const planned = setup({}, { launch: { lane: 'gemini' } })
+  const first = await planned.pool.newSession(planned.agent)
+  await expect(turn(planned.pool, first, 'p1', 'hello')).rejects.toThrow(
+    'cannot call the gemini lane',
+  )
+  const firstDir = qianmoConfigPath('resident', 'sessions', 'coder', first)
+  expect(leftovers(firstDir)).toEqual([])
+  // The process does not start: its token and launch files are taken back.
+  const spawned = setup({}, { spawnFails: true })
+  const second = await spawned.pool.newSession(spawned.agent)
+  await expect(turn(spawned.pool, second, 'p2', 'hello')).rejects.toThrow(
+    'spawn refused',
+  )
+  expect(launches.at(-1)?.sessionId).toBe(second)
+  expect(leftovers(launches.at(-1)!.sessionDir)).toEqual([])
+})
+
+test('a session the harness cannot open right now is kept; only an unknown one, or one failing three starts in a row, starts anew', async () => {
+  const { pool, agent, requests } = setup()
+  const session = await pool.newSession(agent)
+  expect((await turn(pool, session, 'f1', 'hello')).outcome).toBe('completed')
+  pool.closeSession(session)
+  await Bun.sleep(50)
+  const record = join(launches[0]!.sessionDir, 'runtime.json')
+  const saved = () =>
+    JSON.parse(readFileSync(record, 'utf8')) as {
+      kind: string
+      nativeId?: string
+      resumeFailures?: number
+    }
+  writeFileSync(record, JSON.stringify({ kind: 'dsh', nativeId: 'flaky-1' }))
+  for (const [id, failures] of [
+    ['f2', 1],
+    ['f3', 2],
+  ] as const) {
+    await expect(turn(pool, session, id, 'again')).rejects.toThrow(
+      'session/resume: Internal error',
+    )
+    expect(saved()).toEqual({
+      kind: 'dsh',
+      nativeId: 'flaky-1',
+      resumeFailures: failures,
+    })
+  }
+  const before = requests('session/new').length
+  expect((await turn(pool, session, 'f4', 'fresh')).outcome).toBe('completed')
+  expect(requests('session/new')).toHaveLength(before + 1)
+  expect(saved().nativeId).not.toBe('flaky-1')
+  expect(saved().resumeFailures).toBeUndefined()
+})
+
+test('only a not-found answer counts as a lost session', () => {
+  expect(acpSessionGone(new AcpRpcError('x', -32002, undefined))).toBe(true)
+  expect(
+    acpSessionGone(
+      new AcpRpcError('dsh session/resume: unknown session s1', -32602, {}),
+    ),
+  ).toBe(true)
+  // Gemini CLI: an internal error whose details name the session.
+  expect(
+    acpSessionGone(
+      new AcpRpcError('gemini session/load: Internal error', -32603, {
+        details: 'Invalid session identifier "s1".',
+      }),
+    ),
+  ).toBe(true)
+  expect(
+    acpSessionGone(
+      new AcpRpcError('qwen session/resume: Internal error', -32603, {
+        details: 'upstream unavailable',
+      }),
+    ),
+  ).toBe(false)
+  expect(acpSessionGone(new Error('dsh session/resume timed out'))).toBe(false)
 })
 
 const SERVERS: AgentExtensions = {

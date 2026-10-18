@@ -598,6 +598,14 @@ export class ConsolePeers {
     }
   }
 
+  /** Drops this caller's conversation with `target`, if it is `session`. */
+  #forget(caller: Caller, target: string, session: string): void {
+    const key = `${caller.session}\0${target}`
+    if (this.#conversations.get(key)?.session !== session) return
+    this.#conversations.delete(key)
+    this.#save()
+  }
+
   /** The conversation with `target` for this caller, opened when missing. */
   async #conversation(
     caller: Caller,
@@ -715,11 +723,20 @@ export class ConsolePeers {
       if (outcome.timedOut || (outcome.cancelled && !this.#closed)) {
         // A turn past its question is stopped natively, as a cancelled task's
         // is: an interactive turn's own deadline answers without stopping it.
-        if (flight.taskId !== null)
-          await this.#options
-            .stopTask?.(target, flight.taskId)
-            .catch(() => false)
-        return late()
+        const stopTask = this.#options.stopTask
+        const stopped =
+          flight.taskId !== null &&
+          stopTask !== undefined &&
+          (await stopTask(target, flight.taskId).catch(() => false))
+        if (stopped) return late()
+        // Still running there: whatever it answers later must not become the
+        // context of the next question, so that one opens a new conversation.
+        this.#forget(caller, target, conversation.id)
+        return failed(
+          target,
+          'timeout',
+          `${target} 在 ${asked.timeoutSec} 秒内没有回答，没能停止它这一轮（可能仍在进行）；下次提问会开新对话`,
+        )
       }
       if (outcome.cancelled) return failed(target, 'cancelled', '中枢正在关闭')
       return failed(

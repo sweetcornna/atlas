@@ -16,6 +16,9 @@
  * `mcp <tool>` asks to call an MCP tool; `crash` exits mid-turn; anything
  * else is echoed.
  *
+ * `session/resume` of a `gone-…` session answers that it is unknown; of a
+ * `flaky-…` one, a passing internal error.
+ *
  * `QIANMO_FIXTURE_LOG` (a file) gets one JSON line per event the test checks.
  * `QIANMO_FAKE_ACP_LOAD=late` offers `session/load` instead of
  * `session/resume` and, like Gemini CLI, replays the old conversation only
@@ -400,6 +403,18 @@ lines.on('line', line => {
     }
     case 'session/resume': {
       const sessionId = String(params.sessionId)
+      // A session the harness has but cannot open right now.
+      if (sessionId.startsWith('flaky-')) {
+        send({
+          id,
+          error: {
+            code: -32603,
+            message: 'Internal error',
+            data: { details: 'upstream unavailable' },
+          },
+        })
+        return
+      }
       if (!sessionId.startsWith('gone-')) {
         sessions.set(sessionId, {
           id: sessionId,

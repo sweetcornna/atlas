@@ -19,19 +19,21 @@
  * The pool looks every second. A lock it has not answered yet: a turn in
  * progress answers `busy` (the frontend refuses and lets go); otherwise the
  * agent's idle processes are closed first, then it answers free. A lock
- * whose process is gone counts as no lock. The resident also keeps a
+ * whose process is gone counts as no lock. A lock appears whole (written
+ * aside, then linked into place), and a dead one is moved aside and checked
+ * before it goes, so two takers never both win. The resident also keeps a
  * secret-free roster (`resident/runtime-agents.json`) for the frontend
  * command: each agent's workspace and where it runs.
  */
 
 import { randomUUID } from 'node:crypto'
 import {
-  closeSync,
+  linkSync,
   mkdirSync,
-  openSync,
   readFileSync,
+  renameSync,
   rmSync,
-  writeSync,
+  writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { qianmoConfigPath } from '@qianmo/paths'
@@ -94,9 +96,20 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
-function readJson(path: string): Record<string, unknown> | undefined {
+function readText(path: string): string | undefined {
   try {
-    const value: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    return readFileSync(path, 'utf8')
+  } catch {
+    return undefined
+  }
+}
+
+function parseJson(
+  text: string | undefined,
+): Record<string, unknown> | undefined {
+  if (text === undefined) return undefined
+  try {
+    const value: unknown = JSON.parse(text)
     return value !== null && typeof value === 'object' && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : undefined
@@ -105,9 +118,13 @@ function readJson(path: string): Record<string, unknown> | undefined {
   }
 }
 
-/** `agent`'s lock, when the process holding it is alive. */
-export function readFrontendLock(agent: string): FrontendLock | undefined {
-  const raw = readJson(lockPath(agent))
+function readJson(path: string): Record<string, unknown> | undefined {
+  return parseJson(readText(path))
+}
+
+/** The lock in `text`, when the process holding it is alive. */
+function liveLock(text: string | undefined): FrontendLock | undefined {
+  const raw = parseJson(text)
   if (
     raw === undefined ||
     typeof raw.pid !== 'number' ||
@@ -118,6 +135,11 @@ export function readFrontendLock(agent: string): FrontendLock | undefined {
   )
     return undefined
   return { pid: raw.pid, nonce: raw.nonce, runtime: raw.runtime, at: raw.at }
+}
+
+/** `agent`'s lock, when the process holding it is alive. */
+export function readFrontendLock(agent: string): FrontendLock | undefined {
+  return liveLock(readText(lockPath(agent)))
 }
 
 /** Whether an official frontend holds `agent`'s state now. */
@@ -133,6 +155,7 @@ export function acquireFrontendLock(
   agent: string,
   runtime: string,
 ): FrontendLock | undefined {
+  const path = lockPath(agent)
   mkdirSync(lockDir(), { recursive: true, mode: 0o700 })
   const lock: FrontendLock = {
     pid: process.pid,
@@ -140,26 +163,62 @@ export function acquireFrontendLock(
     runtime,
     at: Date.now(),
   }
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let fd: number
-    try {
-      fd = openSync(lockPath(agent), 'wx', 0o600)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      if (readFrontendLock(agent) !== undefined) return undefined
-      // Unreadable, or its process is gone.
-      rmSync(lockPath(agent), { force: true })
-      continue
+  // Written whole before it can be seen: a taker never finds it half done.
+  const staged = join(lockDir(), `.${agent}.${lock.nonce}.new`)
+  writeFileSync(staged, JSON.stringify(lock), { mode: 0o600, flag: 'wx' })
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        linkSync(staged, path)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+        if (!clearDeadLock(agent)) return undefined
+        continue
+      }
+      rmSync(ackPath(agent), { force: true })
+      return lock
     }
-    try {
-      writeSync(fd, JSON.stringify(lock))
-    } finally {
-      closeSync(fd)
-    }
-    rmSync(ackPath(agent), { force: true })
-    return lock
+    return undefined
+  } finally {
+    rmSync(staged, { force: true })
   }
-  return undefined
+}
+
+/**
+ * Removes `agent`'s lock unless a live process holds it (`false` then). It is
+ * moved aside first and compared with what was judged dead: a lock another
+ * taker put in place meanwhile is put back, not removed.
+ */
+function clearDeadLock(agent: string): boolean {
+  const path = lockPath(agent)
+  const seen = readText(path)
+  if (seen === undefined) return true
+  if (liveLock(seen) !== undefined) return false
+  const aside = join(lockDir(), `.${agent}.${randomUUID()}.dead`)
+  try {
+    renameSync(path, aside)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true
+    throw error
+  }
+  const moved = readText(aside)
+  if (moved === seen) {
+    rmSync(aside, { force: true })
+    return true
+  }
+  try {
+    linkSync(aside, path)
+  } catch {
+    // A third taker is in place already; the one moved aside learns it has
+    // lost the lock from `holdsFrontendLock` before it starts anything.
+  }
+  rmSync(aside, { force: true })
+  return false
+}
+
+/** Whether `lock` is still the one in place (checked before a frontend starts). */
+export function holdsFrontendLock(agent: string, lock: FrontendLock): boolean {
+  return readJson(lockPath(agent))?.nonce === lock.nonce
 }
 
 /** Lets go of `lock` (only if it is still this one). */
