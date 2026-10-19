@@ -98,6 +98,7 @@ import {
 import { ConsoleRegistrations, gateWakePort } from './consoleRegistrations.js'
 import { ServerNotesStore } from './consoleServerNotes.js'
 import { consoleAlertAcksPath } from './consoleAlertAcks.js'
+import { ConsoleMainAgent } from './consoleMainAgent.js'
 import { consoleAuditSources } from './consoleAuditSources.js'
 import {
   loadConsoleWakeIdentity,
@@ -1312,6 +1313,14 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(chat.hub === undefined || config.chatDefault === undefined
       ? {}
       : { chatDefault: config.chatDefault }),
+    // 主智能体可在初始化配置页改，存在中枢自己的配置目录里，盖过 --chat-default。
+    ...(chat.hub === undefined
+      ? {}
+      : {
+          mainAgent: new ConsoleMainAgent({
+            warn: line => process.stderr.write(`[console] ${line}\n`),
+          }),
+        }),
     ...(certificates === undefined ? {} : { certificates }),
     // 告警与值守作业两页（P18.15）：读本配置根下 `qm watch` 留在磁盘上的东西——
     // 审计链里的通知与触发、调度状态目录、ESTOP 文件。没在这里跑过 `qm watch`

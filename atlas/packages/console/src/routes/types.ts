@@ -68,6 +68,7 @@ export type AreaId =
   | 'usage'
   | 'updates'
   | 'settings'
+  | 'setup'
 
 /**
  * The two sidebar groups, in the order the sidebar draws them: the everyday

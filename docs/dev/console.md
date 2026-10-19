@@ -636,6 +636,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/admin/audit?…`、`/admin/audit/trace/<traceId>` | view | 消息链：最新 50 条、新的在上，表尾「加载更早」；查询参数同 `/v0/audit`，另有 `node=`（多链时收窄到一条，翻页要它）（§5.6）。单条消息链一页，轨迹里没有就是 404 页 |
 | GET | `/admin/servers` | view | 服务器归属与备注（§11） |
 | GET | `/admin/settings` | view | 设置与关于：实例标签、控制台身份、命令名；启动横幅里的构建（`sourceCommit`）、注册中心、审计链来源、唤醒与对话及其签名状态；各端口此刻是否可达；数据路径只给能写的人；以及协议与运行时上限（A4） |
+| GET | `/admin/setup` | **admin** | 初始化配置：一台新控制台还差哪几步才能对话。必需四步按依赖排（运维账号 → 接入模型 → 服务器与节点 → 主智能体），任务模型是建议项，渠道、云端电脑、邀请成员是可选项；每一步的状态当场从端口读，不另存进度。账号邀请、模型接入走各自已有的接口；还有能在页面上做的必需项时，侧栏把它挪到主区第一项并带数字。查看令牌与成员 404 |
 | GET | `/admin/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
 | GET | `/admin/jobs` | view | 主动执行：定时任务、最近运行、通知渠道（P24，`docs/dev/directions-2026-10.md` §7），其下是原来的值守作业：上次与下次触发、急停、调度器心跳（§10.4）；以及后台任务（P29）：主人自己的（ops 看全部）、阶段（含排队中；已安排的写「已安排 · 下次 HH:MM」，到点但会话已有 8 个在途时写「已安排 · 等名额」、不再写已过去的时间，重复任务带「剩 N 次」，排在进行中之后）、轮数、最近汇报与中断、子任务会话，未结束的（含已安排的）可以取消 |
 | GET | `/v0/connectors` | view | 连接、预设、最近调用与可授权智能体；只显示主机和打码账号，不显示凭据或 ICS URL。租户范围内过滤；未接端口时 501 |
@@ -741,6 +742,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/assets/app.css`、`/assets/app.js` | 公开 | 两个静态常量。`no-cache` 加内容哈希弱 ETag，`If-None-Match` 命中答 304（G1） |
 | GET | `/v0/health` | 公开 | `{ "status": "ok" }` |
 | GET | `/v0/limits` | view | 协议与运行时上限（§7.1） |
+| GET | `/v0/setup` | **admin** | 初始化配置页的同一份状态（`setupState.ts`） |
+| PUT | `/v0/setup/main` | **admin** | `{address}` 改主智能体（必须在名册里），`{address: null}` 回到 `--chat-default`；记 `chat.main`。宿主没接存储时 501 |
 | GET | `/v0/agents` | view | 名册 |
 | POST | `/v0/agents` | **admin** | 注册（发布）。先过登记簿的规矩——托管清单、退役与暂停的地址不收、登记簿读不出来不收（§7.3.1）——注册中心收下后入登记簿、记操作主体，由本控制台续租。响应体仍是注册中心那条记录 |
 | DELETE | `/v0/agents/<地址>` | **admin** | 注销。先出登记簿、停止续租，再删注册中心那条；暂停与退役的条目留在簿里 |
@@ -899,6 +902,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 | GET/POST/PUT/DELETE | `/extensions` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/magpie` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/billing` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/setup` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/access`、`/access/{invites,sessions,actions}` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/providers`、`/providers?node=<节点>` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/providers/new?q=`、`/providers/new?preset=<预设>&site=<站点>` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |

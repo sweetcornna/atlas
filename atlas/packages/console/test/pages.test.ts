@@ -241,6 +241,12 @@ const PAGES: readonly PageRow[] = [
     active: 'settings',
     reads: ['限额', 'id="limits"', LABEL, 'qianmo://tokyo-hub/console'],
   },
+  {
+    path: '/admin/setup',
+    title: '初始化配置',
+    active: 'setup',
+    reads: ['运维账号', '接入模型', '服务器与节点', '主智能体'],
+  },
 ]
 
 /**
@@ -460,13 +466,16 @@ describe('the doors in front of the pages', () => {
     }
   })
 
-  test('a view token reads every page except the conversation and memory', async () => {
+  test('a view token reads every page except the conversation, memory and setup', async () => {
     const { handle } = harness()
     for (const row of PAGES) {
       const response = await handle(browse(row.path, VIEW))
       // The front redirects a read-only caller to the management overview.
       const personal = row.active === 'chat' || row.active === 'memory'
-      const expected = row.path === '/' ? 303 : personal ? 403 : 200
+      // 初始化配置只给能管理这台控制台的人：对查看令牌不存在。
+      const adminOnly = row.active === 'setup'
+      const expected =
+        row.path === '/' ? 303 : personal ? 403 : adminOnly ? 404 : 200
       expect(`${row.path} ${response.status}`).toBe(`${row.path} ${expected}`)
     }
   })

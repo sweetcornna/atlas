@@ -728,6 +728,7 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'chat.command.thinking': '设置会话推理档位',
   'chat.command.effort': '设置会话推理强度',
   'chat.transcript.open': '打开转录',
+  'chat.main': '设置主智能体',
   'breakglass.request': 'break-glass 请求',
   'alert.ack': '确认告警',
   'handoff.accept': '登记接力',
