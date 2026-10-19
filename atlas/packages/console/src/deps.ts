@@ -23,6 +23,7 @@ import type {
   ChannelsPort,
   ConnectorsPort,
   DesktopPort,
+  ElevationPort,
   ExtensionsPort,
   FilesPort,
   HandoffDevicesPort,
@@ -1324,6 +1325,10 @@ export const CONSOLE_ACTIONS = [
   /** 云端电脑（P21），target 是智能体地址。 */
   'desktop.set',
   'desktop.recycle',
+  /** 高权限模式（P39），target 是智能体地址。 */
+  'elevation.enable',
+  'elevation.disable',
+  'elevation.revoke',
   /** 任务分工（P22），target 是节点名，默认为 `*`。 */
   'routing.save',
   'routing.clear',
@@ -2506,6 +2511,8 @@ export interface ConsoleDeps {
   readonly files?: FilesPort
   /** 云端电脑（P21）。 */
   readonly desktop?: DesktopPort
+  /** 高权限模式（P39）。 */
+  readonly elevation?: ElevationPort
   /** 任务分工（P22）；只在模型服务打开时接。 */
   readonly routing?: ModelRoutingPort
   /** 长期记忆（P23）。 */
