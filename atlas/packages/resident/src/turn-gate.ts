@@ -19,16 +19,18 @@ export interface NodeTurnRequest {
    */
   readonly deadlineAt?: number
   /**
-   * Which omp RPC session the turn will run in. Carried so a queued turn can be
+   * Which omp RPC session the turn will run in: the gate never runs two turns
+   * of one session at once (P38). Also carried so a queued turn can be
    * described without asking the reader that submitted it; `''` when the
-   * caller has no session to name.
+   * caller has no session to name, and such a turn waits for no session.
    */
   readonly sessionId?: string
   /**
-   * The turn is a hub's background sub-agent turn (P29). When the gate frees
-   * up it takes the oldest turn that is not one of these first, so a person's
-   * next message does not wait behind a queue of background work. A running
-   * turn is never interrupted. Absent means interactive.
+   * The turn is a hub's background sub-agent turn (P29). Such turns take at
+   * most the gate's background share of its places (P38), and when a place
+   * frees up the gate takes the oldest turn that is not one of these first,
+   * so a person's next message does not wait behind background work. A
+   * running turn is never interrupted. Absent means interactive.
    */
   readonly background?: boolean
   /**
@@ -42,10 +44,11 @@ export interface NodeTurnRequest {
    * `harness-backends.md` §6.2): the {@link key}s of the turns on this node
    * that asked the question this turn answers, outermost first. The host
    * passes only what it verified (`verifiedChain`); absent or empty means
-   * none. While the turn running now is in it, that turn is blocked on this
-   * one's answer, so this one starts at once, nested inside it, instead of
-   * queueing behind it forever. That is re-entry, not concurrency: the turn
-   * it nests in is waiting on its tool call and does nothing until it ends.
+   * none. While a running turn is in it, that turn is blocked on this one's
+   * answer, so this one starts at once, nested inside it and without a place
+   * of its own, instead of queueing behind it until the question times out.
+   * That is re-entry, not concurrency: the turn it nests in is waiting on its
+   * tool call and does nothing until it ends.
    */
   readonly chain?: readonly string[]
 }
@@ -103,40 +106,88 @@ interface QueuedTurn {
 /** A turn the gate started and that has not ended yet. */
 interface RunningTurn {
   readonly key: string | undefined
+  readonly sessionId: string
+  readonly background: boolean
+  /**
+   * The running turn this one nested in (P36.6), or undefined for a turn that
+   * holds a place of its own. A turn whose asker ended first is moved up to
+   * the asker's own host, so it holds the place its asker held.
+   */
+  host: RunningTurn | undefined
+}
+
+/** How many turns the gate runs at once; see {@link NodeTurnGate}. */
+export interface NodeTurnGateLimits {
+  /** Turns running at once, nested answers not counted. */
+  readonly maxTurns: number
+  /**
+   * Of those, background turns at most. Below {@link maxTurns} whenever that
+   * is two or more, so a foreground turn always finds a place.
+   */
+  readonly maxBackgroundTurns: number
 }
 
 /**
- * Node-level turn serialization, as an explicit bounded FIFO queue.
+ * The background share of `maxTurns`: what was asked for, but always one
+ * less than the whole when there is more than one place, so a person's turn
+ * never waits behind background work. With one place there is nothing to
+ * keep back: background turns share it and yield at the gate.
+ */
+function backgroundShare(maxTurns: number, asked: number | undefined): number {
+  if (maxTurns === 1) return 1
+  return Math.min(asked ?? maxTurns - 1, maxTurns - 1)
+}
+
+function positive(name: string, value: number | undefined): void {
+  if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
+    throw new Error(`node turn gate ${name} must be a positive integer`)
+}
+
+/**
+ * Node-level turn scheduling, as an explicit bounded queue.
  *
  * It used to be a promise tail chain, which serialized correctly but kept no
  * queue anyone could look at — so an upper bound, deadline culling and depth
- * instrumentation were all equally impossible. The queue below is the whole of
- * what changed; arrival order and "a failed turn still releases the next one"
- * are the same properties they always were.
+ * instrumentation were all equally impossible. A failed turn still releases
+ * the next one, and a turn whose deadline passed while it waited is dropped
+ * when its place comes up.
+ *
+ * **One session, one turn (P38).** A session never runs two turns at once:
+ * its next turn waits until the running one ends, in arrival order. Turns of
+ * different sessions run side by side, up to {@link NodeTurnGateLimits.maxTurns}
+ * of them; a session that is busy does not hold up the turns queued behind it
+ * for other sessions.
  *
  * **Two classes, not a priority table.** Turns a hub marked as background
- * sub-agent work ({@link NodeTurnRequest.background}) yield to every other
- * turn when the gate frees up; within each class the order is arrival order.
- * Nothing is preempted: a background turn already running finishes its turn
- * (the hub keeps those short, and its deadline stops one that is not). Watch
- * jobs, peers and local mail stay in the interactive class, so their relative
- * order is the FIFO it always was. A background turn can wait as long as
- * interactive turns keep arriving; at a person's pace that is a pause, not
- * starvation, and its own deadline still culls it at the head.
+ * sub-agent work ({@link NodeTurnRequest.background}) take at most
+ * {@link NodeTurnGateLimits.maxBackgroundTurns} places, which is always fewer
+ * than all of them when there are two or more: the rest is the foreground's,
+ * so a person's turn starts while background work fills its share. When a
+ * place frees up the gate takes the oldest turn that may run and is not
+ * background first; within each class the order is arrival order. Nothing is
+ * preempted: a background turn already running finishes its turn (the hub
+ * keeps those short, and its deadline stops one that is not). Watch jobs,
+ * peers and local mail stay in the interactive class. With a single place
+ * (`maxTurns` 1, the default) this is the serial gate it always was:
+ * background turns share the one place and yield to every other turn.
  *
  * **Re-entry along a call chain (P36.6).** A turn that asks another agent on
  * this node waits inside its tool call for that agent's turn, which would
- * otherwise queue behind it until the question times out. A request whose
- * verified {@link NodeTurnRequest.chain} names the turn running now (the
- * innermost one) starts at once, nested; at most `LIMITS.maxAskChain` turns
- * nest inside the outermost. While any turn runs, the gate starts nothing
- * but such nested turns: when a nested turn ends it goes back to the turn it
- * nested in, and ordinary turns wait until the outermost one has ended too.
+ * otherwise queue behind it until the question times out when every place
+ * is taken. A request whose verified {@link NodeTurnRequest.chain} names a
+ * running turn that has no nested turn of its own running (the innermost of
+ * its nest) starts at once, nested in it, without a place of its own; at most
+ * `LIMITS.maxAskChain` turns nest inside the outermost. When a nested turn
+ * ends the asker is the innermost again, so the asker's other answers come
+ * before anything else that waits for a place. An asker that ends before its
+ * answer hands its place to the answer.
  */
 export class NodeTurnGate {
   readonly #queue: QueuedTurn[] = []
   readonly #now: () => number
-  /** Turns started and not ended, outermost first; nested ones after it. */
+  readonly #maxTurns: number
+  readonly #maxBackground: number
+  /** Turns started and not ended, in start order. */
   readonly #running: RunningTurn[] = []
 
   constructor(
@@ -154,9 +205,31 @@ export class NodeTurnGate {
        * runner promises to advance monotonically.
        */
       readonly now?: () => number
+      /** Turns running at once (nested answers aside). Default 1: serial. */
+      readonly maxTurns?: number
+      /**
+       * Background turns among them. Default and ceiling: one fewer than
+       * {@link maxTurns} when that is two or more; 1 when it is 1.
+       */
+      readonly maxBackgroundTurns?: number
     } = {},
   ) {
+    positive('maxTurns', options.maxTurns)
+    positive('maxBackgroundTurns', options.maxBackgroundTurns)
     this.#now = options.now ?? Date.now
+    this.#maxTurns = options.maxTurns ?? 1
+    this.#maxBackground = backgroundShare(
+      this.#maxTurns,
+      options.maxBackgroundTurns,
+    )
+  }
+
+  /** The places in force, background share as applied. */
+  get limits(): NodeTurnGateLimits {
+    return {
+      maxTurns: this.#maxTurns,
+      maxBackgroundTurns: this.#maxBackground,
+    }
   }
 
   /** A turn is running right now. */
@@ -164,17 +237,34 @@ export class NodeTurnGate {
     return this.#running.length > 0
   }
 
-  /**
-   * Turns running now: 0 or 1, more only while turns nest along a call chain
-   * ({@link NodeTurnRequest.chain}).
-   */
+  /** Turns running now, nested ones included. */
   get depth(): number {
     return this.#running.length
   }
 
-  /** Turns waiting behind the running one. Excludes the running one. */
+  /** Places taken: running turns that are not nested in another. */
+  get running(): number {
+    return this.#running.filter(turn => turn.host === undefined).length
+  }
+
+  /** Places taken by background turns. */
+  get backgroundRunning(): number {
+    return this.#running.filter(
+      turn => turn.host === undefined && turn.background,
+    ).length
+  }
+
+  /** Turns waiting for a place or for their session. Excludes running ones. */
   get queued(): number {
     return this.#queue.length
+  }
+
+  /** A turn of `sessionId` is running now. */
+  sessionBusy(sessionId: string): boolean {
+    return (
+      sessionId !== '' &&
+      this.#running.some(turn => turn.sessionId === sessionId)
+    )
   }
 
   /**
@@ -191,7 +281,7 @@ export class NodeTurnGate {
 
   /**
    * A request carrying this verified {@link NodeTurnRequest.chain} would
-   * start right now, nested in the turn running innermost (P36.6).
+   * start right now, nested in the innermost turn of a running nest (P36.6).
    *
    * Exposed for the same reason as {@link saturated}: a host that cannot give
    * such a turn what it needs to run (a process, when every one it may start
@@ -199,7 +289,7 @@ export class NodeTurnGate {
    * instead of starting a turn that can only wait for them.
    */
   nestsNow(chain: readonly string[]): boolean {
-    return this.#running.length > 0 && this.#nests(chain)
+    return this.#hostFor(chain) !== undefined
   }
 
   run<T>(work: () => Promise<T>, request: NodeTurnRequest = {}): Promise<T> {
@@ -223,26 +313,20 @@ export class NodeTurnGate {
   }
 
   /**
-   * Start the next runnable turn, dropping expired ones on the way.
+   * Start every turn that may run now, dropping expired ones on the way.
    *
-   * The deadline is read **here**, at the head of the queue, and not at
-   * enqueue: however deep a turn sits, it is worth keeping as long as its
-   * deadline is still ahead, and only the moment its slot comes up can say
-   * whether it outlived it. "The head" is the oldest interactive turn when
-   * there is one, else the oldest background turn — or, while a turn is
-   * running, the oldest turn that may nest inside it ({@link #nests}).
+   * The deadline is read **here**, when a turn is picked, and not at enqueue:
+   * however long a turn waits, it is worth keeping as long as its deadline is
+   * still ahead, and only the moment its place comes up can say whether it
+   * outlived it. The pick is the oldest turn that would nest
+   * ({@link #hostFor}), else the oldest interactive turn that may run, else
+   * the oldest background one ({@link #place}).
    */
   #pump(): void {
     for (;;) {
-      let index: number
-      if (this.#running.length === 0) {
-        const interactive = this.#queue.findIndex(turn => !turn.background)
-        index = Math.max(0, interactive)
-      } else {
-        index = this.#queue.findIndex(turn => this.#nests(turn.chain))
-        if (index < 0) return
-      }
-      const next = this.#queue.splice(index, 1)[0]
+      const picked = this.#pick()
+      if (picked === undefined) return
+      const next = this.#queue.splice(picked.index, 1)[0]
       if (next === undefined) return
       const now = this.#now()
       if (now >= next.deadlineAt) {
@@ -255,31 +339,69 @@ export class NodeTurnGate {
         )
         continue
       }
-      this.#start(next)
-      return
+      this.#start(next, picked.host)
     }
   }
 
+  #pick(): { index: number; host: RunningTurn | undefined } | undefined {
+    let interactive: number | undefined
+    let background: number | undefined
+    for (let index = 0; index < this.#queue.length; index++) {
+      const turn = this.#queue[index]!
+      if (this.sessionBusy(turn.sessionId)) continue
+      const host = this.#hostFor(turn.chain)
+      if (host !== undefined) return { index, host }
+      if (!this.#place(turn)) continue
+      if (turn.background) background ??= index
+      else interactive ??= index
+    }
+    const index = interactive ?? background
+    return index === undefined ? undefined : { index, host: undefined }
+  }
+
+  /** There is a place for `turn` of its own. */
+  #place(turn: QueuedTurn): boolean {
+    if (this.running >= this.#maxTurns) return false
+    return !turn.background || this.backgroundRunning < this.#maxBackground
+  }
+
   /**
-   * The turn running innermost asked the question a turn with `chain`
-   * answers, and the nesting stays within `LIMITS.maxAskChain`. A chain
-   * longer than that is no chain: the host never passes one, and the gate
-   * does not read one.
+   * The running turn a request with `chain` nests in: one the chain names
+   * that has no nested turn of its own running, with the nesting still within
+   * `LIMITS.maxAskChain`. A chain longer than that is no chain: the host never
+   * passes one, and the gate does not read one.
    */
-  #nests(chain: readonly string[]): boolean {
-    const innermost = this.#running.at(-1)?.key
-    return (
-      innermost !== undefined &&
-      chain.length <= LIMITS.maxAskChain &&
-      this.#running.length <= LIMITS.maxAskChain &&
-      chain.includes(innermost)
+  #hostFor(chain: readonly string[]): RunningTurn | undefined {
+    if (chain.length === 0 || chain.length > LIMITS.maxAskChain)
+      return undefined
+    return this.#running.find(
+      turn =>
+        turn.key !== undefined &&
+        chain.includes(turn.key) &&
+        !this.#running.some(other => other.host === turn) &&
+        this.#depthOf(turn) <= LIMITS.maxAskChain,
     )
   }
 
-  #start(turn: QueuedTurn): void {
-    if (this.#running.length > 0 && !this.#nests(turn.chain))
+  /** 1 for a turn with a place of its own, one more per asker above it. */
+  #depthOf(turn: RunningTurn): number {
+    let depth = 1
+    for (let host = turn.host; host !== undefined; host = host.host) depth++
+    return depth
+  }
+
+  #start(turn: QueuedTurn, host: RunningTurn | undefined): void {
+    if (
+      this.sessionBusy(turn.sessionId) ||
+      (host === undefined && !this.#place(turn))
+    )
       throw new Error('node turn gate overlap')
-    const running: RunningTurn = { key: turn.key }
+    const running: RunningTurn = {
+      key: turn.key,
+      sessionId: turn.sessionId,
+      background: turn.background,
+      host,
+    }
     this.#running.push(running)
     void (async () => {
       try {
@@ -289,9 +411,11 @@ export class NodeTurnGate {
       } finally {
         // Released before pumping, and in a `finally`, because a node whose
         // first failing turn never releases the gate stops for good. By
-        // identity, not from the top: an asker stopped while its answer is
-        // still running ends first, and the nested turn keeps the gate.
+        // identity: an asker stopped while its answer is still running ends
+        // first, and the answer takes over the asker's place.
         this.#running.splice(this.#running.indexOf(running), 1)
+        for (const other of this.#running)
+          if (other.host === running) other.host = running.host
         this.#pump()
       }
     })()
