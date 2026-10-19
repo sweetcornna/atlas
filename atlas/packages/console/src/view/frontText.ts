@@ -165,6 +165,39 @@ export interface FrontText {
   readonly bypassBody: string
   readonly bypassConfirm: string
   readonly cancel: string
+
+  /** The session panel on the right (`frontPanel.ts`). */
+  readonly sessionPanel: string
+  readonly closePanel: string
+  readonly panelEmpty: string
+  readonly backgroundTasks: string
+  tasksRunning(count: number): string
+  tasksWaiting(count: number): string
+  tasksDone(count: number): string
+  readonly tasksEmpty: string
+  readonly taskStatus: Readonly<
+    Record<
+      | 'scheduled'
+      | 'queued'
+      | 'running'
+      | 'interrupted'
+      | 'completion_pending'
+      | 'needs_input_pending'
+      | 'needs_input'
+      | 'completed'
+      | 'cancelled',
+      string
+    >
+  >
+  readonly taskState: string
+  readonly taskAsk: string
+  readonly taskResult: string
+  readonly taskProgress: string
+  readonly taskError: string
+  readonly openWorker: string
+  readonly stop: string
+  readonly cloudComputer: string
+  readonly cloudComputerNote: string
   ago(at: number, now: number): string
 }
 
@@ -182,6 +215,8 @@ interface FrontClientText {
   readonly switchedTo: string
   readonly notWired: string
   readonly opsOnly: string
+  readonly stopping: string
+  readonly stopped: string
   readonly sent: string
   readonly sentRetrying: string
   readonly newReply: string
@@ -376,6 +411,34 @@ const ZH: FrontText = {
     '这个智能体之后执行命令 改文件 访问外部都不再问你 · 到期 用完次数或收回前一直有效',
   bypassConfirm: '跳过确认',
   cancel: '取消',
+  sessionPanel: '会话面板',
+  closePanel: '关闭会话面板',
+  panelEmpty: '这里会显示后台任务',
+  backgroundTasks: '后台任务',
+  tasksRunning: n => `${n} 个运行中`,
+  tasksWaiting: n => `${n} 项待你处理`,
+  tasksDone: n => `${n} 个已完成`,
+  tasksEmpty: '子智能体的任务会出现在这里',
+  taskStatus: {
+    scheduled: '已安排',
+    queued: '排队中',
+    running: '运行中',
+    interrupted: '失败',
+    completion_pending: '运行中',
+    needs_input_pending: '运行中',
+    needs_input: '待你处理',
+    completed: '已完成',
+    cancelled: '已停止',
+  },
+  taskState: '状态',
+  taskAsk: '要求',
+  taskResult: '结果',
+  taskProgress: '进度',
+  taskError: '原因',
+  openWorker: '打开子会话',
+  stop: '停止',
+  cloudComputer: '云端电脑',
+  cloudComputerNote: '浏览器与电脑的开关和画面',
   ago: (at, now) => {
     const { unit, n, ahead } = gap(at, now)
     const tail = ahead ? '后' : '前'
@@ -540,6 +603,34 @@ const EN: FrontText = {
     'This agent runs commands, edits files and reaches out without asking · until it expires, runs out or is revoked',
   bypassConfirm: 'Skip permissions',
   cancel: 'Cancel',
+  sessionPanel: 'Session panel',
+  closePanel: 'Close the session panel',
+  panelEmpty: 'Background tasks show up here',
+  backgroundTasks: 'Background tasks',
+  tasksRunning: n => `${n} running`,
+  tasksWaiting: n => `${n} need you`,
+  tasksDone: n => `${n} finished`,
+  tasksEmpty: "Sub-agents' tasks show up here",
+  taskStatus: {
+    scheduled: 'Scheduled',
+    queued: 'Queued',
+    running: 'Running',
+    interrupted: 'Failed',
+    completion_pending: 'Running',
+    needs_input_pending: 'Running',
+    needs_input: 'Needs you',
+    completed: 'Done',
+    cancelled: 'Stopped',
+  },
+  taskState: 'Status',
+  taskAsk: 'Asked',
+  taskResult: 'Result',
+  taskProgress: 'Progress',
+  taskError: 'Reason',
+  openWorker: "Open the worker's chat",
+  stop: 'Stop',
+  cloudComputer: 'Cloud computer',
+  cloudComputerNote: 'Browser and computer switches and screens',
   ago: (at, now) => {
     const { unit, n, ahead } = gap(at, now)
     if (unit === 'now') return 'just now'
@@ -703,6 +794,34 @@ const JA: FrontText = {
     'このエージェントはコマンド 編集 外部アクセスを確認なしで行います · 期限 回数切れ 取り消しまで有効',
   bypassConfirm: 'スキップする',
   cancel: 'キャンセル',
+  sessionPanel: 'セッションパネル',
+  closePanel: 'セッションパネルを閉じる',
+  panelEmpty: 'バックグラウンドタスクがここに表示されます',
+  backgroundTasks: 'バックグラウンドタスク',
+  tasksRunning: n => `${n} 件実行中`,
+  tasksWaiting: n => `${n} 件が対応待ち`,
+  tasksDone: n => `${n} 件完了`,
+  tasksEmpty: 'サブエージェントのタスクがここに表示されます',
+  taskStatus: {
+    scheduled: '予定済み',
+    queued: '待機中',
+    running: '実行中',
+    interrupted: '失敗',
+    completion_pending: '実行中',
+    needs_input_pending: '実行中',
+    needs_input: '対応待ち',
+    completed: '完了',
+    cancelled: '停止済み',
+  },
+  taskState: '状態',
+  taskAsk: '依頼',
+  taskResult: '結果',
+  taskProgress: '進捗',
+  taskError: '理由',
+  openWorker: 'サブセッションを開く',
+  stop: '停止',
+  cloudComputer: 'クラウド PC',
+  cloudComputerNote: 'ブラウザとコンピューターの切り替えと画面',
   ago: (at, now) => {
     const { unit, n, ahead } = gap(at, now)
     if (unit === 'now') return 'たった今'
@@ -729,6 +848,8 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     switchedTo: '已切换为 ',
     notWired: '未接入 · 一直是人工确认',
     opsOnly: '只有运维能切换',
+    stopping: '正在停止',
+    stopped: '已停止',
     sent: '已发送',
     sentRetrying: '已发送 · 刷新失败 · 自动重试中',
     newReply: '收到新回复 · ',
@@ -751,6 +872,8 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     switchedTo: 'Switched to ',
     notWired: 'Not connected · always Ask first',
     opsOnly: 'Only an operator can switch',
+    stopping: 'Stopping',
+    stopped: 'Stopped',
     sent: 'Sent',
     sentRetrying: 'Sent · refresh failed · retrying',
     newReply: 'New reply · ',
@@ -775,6 +898,8 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     switchedTo: '切り替えました：',
     notWired: '未接続 · 常に手動で確認',
     opsOnly: '切り替えは運用者のみ',
+    stopping: '停止しています',
+    stopped: '停止しました',
     sent: '送信済み',
     sentRetrying: '送信済み · 更新失敗 · 再試行中',
     newReply: '新しい返信 · ',

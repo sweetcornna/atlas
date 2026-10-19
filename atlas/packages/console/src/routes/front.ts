@@ -45,6 +45,8 @@ import {
   type FrontSideModel,
   type FrontViewModel,
 } from '../view/front.js'
+import { renderFrontPanel } from '../view/frontPanel.js'
+import { FRONT_TEXT } from '../view/frontText.js'
 import {
   chatFaces,
   chatTargets,
@@ -65,6 +67,7 @@ import {
   textParam,
   valueOf,
 } from './shared.js'
+import { taskActorOf } from './tasksApi.js'
 import type { RouteContext } from './types.js'
 
 /**
@@ -400,6 +403,20 @@ export async function dispatchFrontFragment(
     )
     await view.reading?.done(view.open)
     return html(renderFrontView(view.model), view.status ?? 200)
+  }
+  // The session panel (`view/frontPanel.ts`): the reader's background tasks
+  // by the port's own ownership rule, and the way to 云端电脑.
+  if (rest[0] === 'panel' && rest.length === 1) {
+    const tasks = ctx.deps.tasks
+    return html(
+      renderFrontPanel({
+        tasks: tasks === undefined ? null : tasks.list(taskActorOf(ctx)),
+        stop: guardChat(ctx.access, 'document') === null,
+        desktop: ctx.deps.desktop === undefined ? null : '/admin/desktop',
+        now: ctx.now,
+        t: FRONT_TEXT[langOf(ctx.request)],
+      }),
+    )
   }
   return notFound(`unknown path: ${ctx.url.pathname}`)
 }

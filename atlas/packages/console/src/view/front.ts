@@ -53,6 +53,7 @@ import {
   CONSOLE_CLIENT_JS_ACCOUNTS,
 } from '../assets/client.js'
 import { FRONT_JS } from '../assets/frontClient.js'
+import { FRONT_PANEL_JS } from '../assets/frontPanel.js'
 import { FRONT_TOOLS_JS } from '../assets/frontTools.js'
 import type { ConsoleRole } from '../auth.js'
 import { type Lang, LANG_NAMES, LANGS } from '../i18n.js'
@@ -95,6 +96,11 @@ import {
   type FrontReplicateMode,
   frontReplicateCard,
 } from './frontReplicate.js'
+import {
+  FRONT_PANEL_CSS,
+  frontPanelFrame,
+  frontPanelToggle,
+} from './frontPanel.js'
 import { FRONT_CSS } from './frontStyle.js'
 import {
   composerPickers,
@@ -1377,6 +1383,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     runtime +
     FRONT_JS +
     FRONT_TOOLS_JS +
+    FRONT_PANEL_JS +
     AVATAR_PAGE_JS +
     (replicate === 'off' ? '' : FRONT_REPLICATE_JS)
   const t = FRONT_TEXT[model.lang]
@@ -1385,6 +1392,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
       `${WORDMARK_CN} · ${t.chat} · ${model.label}`,
       FRONT_CSS +
         FRONT_TOOLS_CSS +
+        FRONT_PANEL_CSS +
         AVATAR_CSS +
         (replicate === 'off' ? '' : FRONT_REPLICATE_CSS),
       [script],
@@ -1420,7 +1428,9 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `<summary class="fx-icon-btn" aria-label="${attr(t.chatHistory)}">${icon('history', { small: true })}</summary>` +
     `<div class="fx-menu fx-hist-pop">${model.side.history}</div></details>` +
     `<button type="button" class="fx-icon-btn" data-action="fx-new" aria-label="${attr(t.newChat)}">` +
-    `${icon('square-pen', { small: true })}</button></div>` +
+    `${icon('square-pen', { small: true })}</button>` +
+    frontPanelToggle(t) +
+    `</div>` +
     `</header>` +
     viewerNotice(model.viewer) +
     `<div class="fx-scroll" id="fx-scroll"><div class="fx-column">${model.view.thread}</div></div>` +
@@ -1431,7 +1441,9 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     (replicate === 'off' ? '' : frontReplicateCard(replicate)) +
     composer(model.composerEnabled, model.admin, t) +
     `</div></div>` +
-    `</main></div>\n` +
+    `</main>` +
+    frontPanelFrame(t) +
+    `</div>\n` +
     sessionExpired(model.relogin, model.lang) +
     `<div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>\n` +
     `<p id="reply-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>` +
