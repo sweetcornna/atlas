@@ -225,6 +225,19 @@ jobs:
         group: [node-host, node-rest, ops, e2e, packages]
 
     steps:
+      # 新 runner 上浏览器安装目录第一次读是冷盘：chromium 667 MB，空闲机上它在
+      # DevTools 管道上的首次应答要 9–11 s，读过一遍后 0.4 s；分片里叠上别的 I/O
+      # 到过 31 s，超过真浏览器用例 30 s 的就绪预算（run 39128674734）。第一步
+      # 就在后台读一遍，与下面的安装重叠，任何预算都不改。
+      - name: Warm the browser installs
+        if: matrix.group == 'node-host' || matrix.group == 'packages'
+        run: |
+          for browser in chromium google-chrome; do
+            bin=$(command -v "$browser") || continue
+            dir=$(dirname "$(readlink -f "$bin")")
+            nohup find "$dir" -type f -exec cat {} + >/dev/null 2>&1 &
+          done
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
         with:
           # 与以前的单作业一样取全量历史与标签：测试看到的仓库与本地检出一致。
