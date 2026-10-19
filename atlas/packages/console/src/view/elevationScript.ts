@@ -17,9 +17,9 @@ export const ELEVATION_PAGE_JS = `
   var byId = qc.byId;
   var WORD = { off: '人工确认', 'accept-edits': '自动接受编辑', auto: '自动审批', 'full-access': '跳过权限确认' };
   var NOTE = {
-    'accept-edits': '工作区编辑直接执行；命令、联网、GitHub 逐次确认。',
-    auto: '沙箱内命令、工作区编辑、联网读取直接执行；GitHub 写操作逐次确认。',
-    'full-access': '不再逐次确认；红线与云端电脑设为「每一步都确认」的照旧拦。'
+    'accept-edits': '工作区编辑直接执行 · 命令 联网 GitHub 逐次确认',
+    auto: '沙箱内命令 工作区编辑 联网读取直接执行 · GitHub 写操作逐次确认',
+    'full-access': '不再逐次确认 · 红线与云端电脑「每一步都确认」照旧'
   };
   var pending = null;
 

@@ -49,6 +49,11 @@
  */
 
 import {
+  FRONT_APPROVAL_CSS,
+  FRONT_APPROVAL_JS,
+  frontApprovalDialog,
+} from './frontApproval.js'
+import {
   CONSOLE_CLIENT_JS,
   CONSOLE_CLIENT_JS_ACCOUNTS,
 } from '../assets/client.js'
@@ -1226,6 +1231,11 @@ export interface FrontDocumentModel {
    * under the side list's foot. Absent — the default edition — nothing.
    */
   readonly source?: SourceLinks
+  /**
+   * The front's own approval prompt (P39, `frontApproval.ts`): set when the
+   * console has approvals and the reader may approve. Absent, nothing changes.
+   */
+  readonly approvals?: boolean
 }
 
 function composer(enabled: boolean, t: FrontText): string {
@@ -1340,12 +1350,16 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     runtime +
     FRONT_JS +
     AVATAR_PAGE_JS +
-    (replicate === 'off' ? '' : FRONT_REPLICATE_JS)
+    (replicate === 'off' ? '' : FRONT_REPLICATE_JS) +
+    (model.approvals === true ? FRONT_APPROVAL_JS : '')
   const t = FRONT_TEXT[model.lang]
   return (
     documentHead(
       `${WORDMARK_CN} · ${t.chat} · ${model.label}`,
-      FRONT_CSS + AVATAR_CSS + (replicate === 'off' ? '' : FRONT_REPLICATE_CSS),
+      FRONT_CSS +
+        AVATAR_CSS +
+        (replicate === 'off' ? '' : FRONT_REPLICATE_CSS) +
+        (model.approvals === true ? FRONT_APPROVAL_CSS : ''),
       [script],
     ).replace('<html lang="zh-CN">', `<html lang="${attr(model.lang)}">`) +
     `<body class="fx-body">\n` +
@@ -1396,6 +1410,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `<p id="reply-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>` +
     keyboardHelp(t) +
     avatarDialog(model.lang) +
+    (model.approvals === true ? frontApprovalDialog(model.lang) : '') +
     `<script>${script}</script>\n` +
     `</body>\n</html>\n`
   )
