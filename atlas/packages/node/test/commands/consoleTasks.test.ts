@@ -52,7 +52,11 @@ function tasks(
     deliveryTimeoutMs?: number
     onError?: (message: string) => void
     stopTask?: (target: string, taskId: string) => Promise<boolean>
-    steerTask?: (target: string, taskId: string, text: string) => Promise<boolean>
+    steerTask?: (
+      target: string,
+      taskId: string,
+      text: string,
+    ) => Promise<boolean>
     workersPerNode?: number
     nodeTurns?: (node: string) => Promise<number | undefined>
     reportDelayMs?: number
@@ -2875,7 +2879,7 @@ describe('parallel sub-sessions and reports (P38)', () => {
     expect(outstanding('node-a')).toBe(3)
   })
 
-  test("a node that says it runs fewer background turns gets no more than that", async () => {
+  test('a node that says it runs fewer background turns gets no more than that', async () => {
     const asked: string[] = []
     const book = tasks({
       nodeTurns: async node => {
@@ -3027,9 +3031,9 @@ describe('parallel sub-sessions and reports (P38)', () => {
     )
     await new Promise(resolve => setTimeout(resolve, 150))
     expect(reports(parent)).toHaveLength(1)
-    expect(book.forSession(parent).find(task => task.id === followUp)?.status).toBe(
-      'completed',
-    )
+    expect(
+      book.forSession(parent).find(task => task.id === followUp)?.status,
+    ).toBe('completed')
   })
 
   test('a busy parent hears results and progress mid-turn; where its turn takes nothing, the result waits for the turn to end', async () => {
@@ -3042,7 +3046,9 @@ describe('parallel sub-sessions and reports (P38)', () => {
     })
     const parent = await foreground()
     const busy = chat.lastTask(parent)
-    value(await call(book, 'start', parent, { title: '周报', instructions: 'x' }))
+    value(
+      await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
+    )
     const worker = await workerTurn(1)
     value(
       await call(book, 'report', worker, {
@@ -3063,7 +3069,9 @@ describe('parallel sub-sessions and reports (P38)', () => {
     // A runtime that takes nothing mid-turn: the result waits for the end
     // of the turn and then comes in a turn of its own.
     parentTakes = false
-    value(await call(book, 'start', parent, { title: '月报', instructions: 'x' }))
+    value(
+      await call(book, 'start', parent, { title: '月报', instructions: 'x' }),
+    )
     await until(() => workerSessions().length === 2)
     await complete(book, await workerOf('月报'), '月报写好了')
     await until(() => steer.calls.length >= 4)
@@ -3086,10 +3094,15 @@ describe('parallel sub-sessions and reports (P38)', () => {
     })
     const channelChat = await foreground()
     value(
-      await call(book, 'start', channelChat, { title: '周报', instructions: 'x' }),
+      await call(book, 'start', channelChat, {
+        title: '周报',
+        instructions: 'x',
+      }),
     )
     const console = await foreground()
-    value(await call(book, 'start', console, { title: '月报', instructions: 'x' }))
+    value(
+      await call(book, 'start', console, { title: '月报', instructions: 'x' }),
+    )
     await until(() => workerSessions().length === 2)
     chat.reply(channelChat, '好')
     chat.reply(console, '好')

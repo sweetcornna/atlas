@@ -659,7 +659,9 @@ interface PendingReport {
   waits: number
 }
 
-function reportLines(items: readonly (readonly [string, ReportItem])[]): string {
+function reportLines(
+  items: readonly (readonly [string, ReportItem])[],
+): string {
   return items
     .map(
       ([id, item]) =>
@@ -2800,7 +2802,10 @@ export class ConsoleTasks implements BackgroundTasksPort {
       pending = { items: new Map(), timer: null, telling: false, waits: 0 }
       this.#reports.set(parent, pending)
     }
-    if (item.kind === 'progress' && pending.items.get(task.id)?.kind === 'result')
+    if (
+      item.kind === 'progress' &&
+      pending.items.get(task.id)?.kind === 'result'
+    )
       return
     pending.items.delete(task.id)
     pending.items.set(task.id, { ...item, at: this.#now() })
@@ -2940,8 +2945,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
     transcript: ChatTranscript,
     items: readonly (readonly [string, ReportItem])[],
   ): Promise<void> {
-    const owner =
-      this.#options.accounts?.book.ownerOf(parent) ?? 'legacy:admin'
+    const owner = this.#options.accounts?.book.ownerOf(parent) ?? 'legacy:admin'
     // Only the owner's own tasks, told in the owner's own conversation.
     const own = items.filter(([id]) => this.#tasks.get(id)?.owner === owner)
     if (own.length === 0 || !this.#foregroundSession(parent)) return
