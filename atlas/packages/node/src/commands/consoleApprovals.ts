@@ -93,6 +93,8 @@ export interface ConsoleApprovalsOptions {
   readonly now?: () => number
   /** Period of the redial and revoke check, 10 s; tests shorten it. */
   readonly checkEveryMs?: number
+  /** Link keep-alive period, the transport's 15 s; tests shorten it. */
+  readonly keepAliveIntervalMs?: number
   readonly onError?: (error: unknown) => void
 }
 const refusal = (
@@ -388,6 +390,9 @@ export class ConsoleApprovals implements ApprovalPort {
           ]),
           required: true,
         },
+        ...(this.#options.keepAliveIntervalMs === undefined
+          ? {}
+          : { keepAliveIntervalMs: this.#options.keepAliveIntervalMs }),
         onMessage: message => this.#receive(target, message),
         // Each (re)connection may land on a fresh channel at the node, so
         // this is when a subscription is owed — refusal back-off or not,

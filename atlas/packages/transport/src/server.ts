@@ -839,6 +839,15 @@ export function startTransportServer(
       if (ws.data.generation !== channel.connectionGeneration) return
       switch (frame.t) {
         case FrameType.KeepAlive:
+          // Answered in kind. The dialer's silence watchdog counts only what
+          // arrives, and the dialer's own keep-alives keep this socket from
+          // ever looking idle to Bun, so Bun never pings it either: a link
+          // with nothing to say used to be torn down by its own client every
+          // 45–60 s, and every caller that subscribes per connection
+          // (approvals, `hub.subscribe`) wrote one more audited envelope on
+          // each rebuild. One frame back per frame in; never an envelope, so
+          // nothing reaches the host, the receiver or the trail.
+          send(ws, { t: FrameType.KeepAlive, v: FRAME_VERSION })
           return
         case FrameType.Envelope: {
           const context: InboundContext = {
