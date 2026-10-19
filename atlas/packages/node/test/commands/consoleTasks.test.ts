@@ -238,6 +238,48 @@ describe('starting', () => {
     expect(workerSessions()).toEqual([])
   })
 
+  test('a task starts at a difficulty tier (medium when left out) and every worker turn asks for it', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    const started = value<{ id: string; difficulty: string }>(
+      await call(book, 'start', parent, {
+        title: '重构',
+        instructions: '把存储层拆成三个模块',
+        difficulty: 'complex',
+      }),
+    )
+    expect(started.difficulty).toBe('complex')
+    const worker = await workerTurn(1)
+    expect(chat.sentTo(worker)[0]).toMatchObject({
+      background: true,
+      direction: 'complex',
+    })
+    chat.reply(worker, '先拆了第一块')
+    await until(() => chat.sentTo(worker).length === 2)
+    expect(chat.sentTo(worker)[1]?.direction).toBe('complex')
+    // Left out, null or empty: medium, like any task from before P38.
+    for (const difficulty of [undefined, null, '']) {
+      const other = await foreground()
+      const plain = value<{ difficulty: string }>(
+        await call(book, 'start', other, {
+          title: 't',
+          instructions: 'i',
+          ...(difficulty === undefined ? {} : { difficulty }),
+        }),
+      )
+      expect(plain.difficulty).toBe('medium')
+    }
+    const other = await foreground()
+    const refused = await call(book, 'start', other, {
+      title: 't',
+      instructions: 'i',
+      difficulty: 'hard',
+    })
+    expect(refused.ok ? '' : refused.message).toBe(
+      'difficulty 只能是 complex、medium、simple',
+    )
+  })
+
   test('a task can run on another agent (another runtime or model)', async () => {
     const book = tasks()
     const parent = await foreground()
@@ -1049,6 +1091,30 @@ describe('durability', () => {
     const third = chat.sentTo(worker)[2]!.text
     expect(third.startsWith(`后台任务：旧账（${id}）`)).toBe(true)
     expect(third).not.toContain(WORKER_INSTRUCTIONS)
+  })
+
+  test('a ledger from before P38 runs its tasks at the medium tier', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    value(
+      await call(book, 'start', parent, {
+        title: '旧账',
+        instructions: 'x',
+        difficulty: 'simple',
+      }),
+    )
+    const worker = await workerTurn(1)
+    expect(chat.sentTo(worker)[0]?.direction).toBe('simple')
+    await book.close()
+    open = []
+    const file = path.join(root, 'tasks.json')
+    const ledger = JSON.parse(fs.readFileSync(file, 'utf8'))
+    expect(ledger.tasks[0].difficulty).toBe('simple')
+    delete ledger.tasks[0].difficulty
+    fs.writeFileSync(file, JSON.stringify(ledger), { mode: 0o600 })
+    tasks()
+    await until(() => chat.sentTo(worker).length === 2)
+    expect(chat.sentTo(worker)[1]?.direction).toBe('medium')
   })
 
   test('tasks follow a chat across /new (related sessions)', async () => {

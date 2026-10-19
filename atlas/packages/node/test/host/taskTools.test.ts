@@ -146,6 +146,39 @@ test('a start can be planned: after or at, everyMinutes with times, passed on as
   expect(calls[0]![1]).toMatchObject({ everyMinutes: 60, times: 3 })
 })
 
+test('a start takes a difficulty tier, says when to use which, and passes it on as given', async () => {
+  const { calls, byName } = tools({ contextId: 'c', taskId: 't' })
+  const start = byName('qianmo_task_start')
+  expect(start.parameters).toMatchObject({
+    properties: {
+      difficulty: { type: 'string', enum: ['complex', 'medium', 'simple'] },
+    },
+  })
+  const properties = start.parameters['properties'] as Record<
+    string,
+    { description?: string }
+  >
+  for (const cue of [
+    'complex: many steps or work that needs planning first',
+    'medium: ordinary implementation and changes',
+    'simple: small chores such as extracting, rewriting, classifying',
+    'leave out for medium',
+  ])
+    expect(properties['difficulty']!.description).toContain(cue)
+  expect(start.description).toContain(
+    "and the difficulty, which picks the sub-session's model",
+  )
+  await start.handler(
+    { title: '整理', instructions: '把清单归类', difficulty: 'simple' },
+    ctx,
+  )
+  expect(calls[0]![1]).toMatchObject({ difficulty: 'simple' })
+  // The roster no longer says a node runs one turn at a time (P29 parallel).
+  expect(byName('qianmo_task_agents').description).not.toContain(
+    'one turn at a time',
+  )
+})
+
 test('the optional fields say to leave them out; zeros go to the hub as sent', async () => {
   const { calls, byName } = tools({ contextId: 'c', taskId: 't' })
   const start = byName('qianmo_task_start')
@@ -157,7 +190,14 @@ test('the optional fields say to leave them out; zeros go to the hub as sent', a
     string,
     { description?: string }
   >
-  for (const name of ['agent', 'after', 'at', 'everyMinutes', 'times'])
+  for (const name of [
+    'difficulty',
+    'agent',
+    'after',
+    'at',
+    'everyMinutes',
+    'times',
+  ])
     expect(properties[name]!.description).toMatch(/^Optional\. .*leave out/)
   // What a model fills in for fields it does not mean (seen with gpt-6-luna):
   // the hub reads 0 and "" as not given.
