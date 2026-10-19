@@ -396,9 +396,7 @@ const KEEP_FINISHED_PER_OWNER = 200
  * a place left for the owner. A node that says it takes fewer
  * (`node.ping` `turns.background`) gets that many; the rest wait here.
  */
-export const DEFAULT_WORKERS_PER_NODE = 3
-/** The most `--task-workers` takes. */
-export const MAX_WORKERS_PER_NODE = 16
+const DEFAULT_WORKERS_PER_NODE = 3
 const DEFAULT_TURN_TTL_MS = 30 * 60_000
 /**
  * How much longer than the deadline the hub waits for a worker turn's answer:

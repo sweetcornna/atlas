@@ -117,7 +117,7 @@ interface RunningTurn {
 }
 
 /** How many turns the gate runs at once; see {@link NodeTurnGate}. */
-export interface NodeTurnGateLimits {
+interface NodeTurnGateLimits {
   /** Turns running at once, nested answers not counted. */
   readonly maxTurns: number
   /**
