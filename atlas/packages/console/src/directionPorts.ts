@@ -401,6 +401,11 @@ export interface ElevationNodeView extends AgentRef {
   readonly sandbox: boolean
   /** sandbox 为 false 时写明原因（没有 bubblewrap）。 */
   readonly sandboxReason: string | null
+  /**
+   * 放权在这个智能体上不生效的原因（它跑在不加载阡陌扩展的外部底层上）；能生效为 null。
+   * 旧节点不带这个字段。
+   */
+  readonly unsupportedReason?: string | null
   readonly enabledAt: number | null
   /** 开启放权的运维主体；`off` 时为 null。 */
   readonly enabledBy: string | null

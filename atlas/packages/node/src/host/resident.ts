@@ -106,6 +106,7 @@ import { FileMemoryStore, defaultMemoryRoot } from '@qianmo/memory'
 import {
   residentToolVerdict,
   residentApprovalInput,
+  residentApprovalMode,
 } from '@qianmo/extension/policy'
 import { parseMemoryWrite } from './residentMemoryWrite.js'
 import {
@@ -1041,6 +1042,16 @@ export class QianmoResident {
       changed: async agent => {
         await this.#runtimeChild?.invalidateAgent(agent)
       },
+      terminate: async agent => {
+        await this.#runtimeChild?.retireAgent(agent)
+      },
+      // Only qianmopi children load the extension that carries the grant.
+      unsupported: agent => {
+        const runtime = this.runtimes.effectiveRuntime(agent)
+        return runtime === FALLBACK_RUNTIME
+          ? undefined
+          : `该智能体运行在外部底层 ${runtime} 上：高权限模式只对 qianmopi 底层生效`
+      },
       workspace: agent => options.agents.find(a => a.agent === agent)?.cwd,
     })
     this.control.register('elevation', this.elevation.control, {
@@ -1103,6 +1114,8 @@ export class QianmoResident {
       void this.#runtimeChild
         ?.invalidateAgent(agent)
         .catch(error => this.#options.onError?.(error))
+      // A grant does not follow an agent onto an external runtime (P39).
+      void this.elevation.sweep().catch(error => this.#options.onError?.(error))
       this.#writeRuntimeRoster()
     })
     // Native extensions (P36.7) ride the `runtime` prefix: listing works
@@ -3751,7 +3764,8 @@ export class QianmoResident {
             edits: policy.edits,
             roots: JSON.stringify(policy.protectedRoots),
             hostTools: JSON.stringify(policy.hostTools),
-            approvalMode: policy.edits === 'workspace' ? 'write' : 'always-ask',
+            approvalMode: residentApprovalMode(policy),
+            elevation: policy.elevation?.tier ?? 'off',
             configHash,
             policy: JSON.stringify(policy),
           },

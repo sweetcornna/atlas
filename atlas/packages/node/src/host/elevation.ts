@@ -93,6 +93,17 @@ export interface NodeElevationOptions {
   readonly changed?: (agent: string) => Promise<void>
   /** Cancel pending elevated approvals for one agent on revoke/ESTOP. */
   readonly invalidated?: (agent: string) => void
+  /**
+   * Revoke and ESTOP: close the agent's children now, even mid-turn, so a
+   * running sandboxed command dies with its parent. Disable and expiry use
+   * {@link changed} and let the current turn finish.
+   */
+  readonly terminate?: (agent: string) => Promise<void>
+  /**
+   * Why a grant cannot take effect for this agent (it runs on an external
+   * runtime that does not load the qianmopi extension); `undefined` when it can.
+   */
+  readonly unsupported?: (agent: string) => string | undefined
   readonly now?: () => number
   readonly platform?: NodeJS.Platform
   /** For tests: whether a program is on PATH; whether a probe argv succeeds. */
@@ -137,6 +148,8 @@ export class NodeElevation {
   #sandbox: ElevationSandbox | null | undefined
   #sandboxProbe: Promise<ElevationSandbox | null> | undefined
   #closed = false
+  #sweeping = false
+  readonly #timer: Timer
 
   constructor(options: NodeElevationOptions) {
     if (
@@ -170,6 +183,10 @@ export class NodeElevation {
         enabledBy: null,
       })
     this.#save()
+    this.#timer = setInterval(() => {
+      void this.sweep().catch(() => {})
+    }, 2000)
+    this.#timer.unref()
   }
 
   resourcePath(agent: string): string {
@@ -206,10 +223,13 @@ export class NodeElevation {
       maxCalls: s.maxCalls,
       usedCalls: s.usedCalls,
       sandbox: this.#sandbox !== null && this.#sandbox !== undefined,
+      // Linux nodes are probed at the first grant; until then nothing is said.
       sandboxReason:
-        this.#sandbox === null && this.#sandbox !== undefined
+        (this.#options.platform ?? process.platform) !== 'linux' ||
+        this.#sandbox === null
           ? NO_SANDBOX_REASON
           : null,
+      unsupportedReason: this.#options.unsupported?.(s.agent) ?? null,
       enabledAt: s.enabledAt,
       enabledBy: s.enabledBy,
       actions24h: this.#actions.filter(
@@ -319,7 +339,33 @@ export class NodeElevation {
     } catch {
       /* Cancelling pending approvals must never block retirement. */
     }
-    await this.#options.changed?.(agent)
+    // Revoke and ESTOP stop what is running; disable and expiry let the
+    // current turn finish on a gate that already refuses every new call.
+    if ((kind === 'revoke' || kind === 'estop') && this.#options.terminate)
+      await this.#options.terminate(agent)
+    else await this.#options.changed?.(agent)
+  }
+
+  /**
+   * The periodic sweep: ESTOP clears every live grant for good, and a grant
+   * past its expiry goes back to `off` without waiting for the next call.
+   */
+  async sweep(): Promise<void> {
+    if (this.#sweeping || this.#closed) return
+    this.#sweeping = true
+    try {
+      const estop = this.#options.estop()
+      for (const s of [...this.#states.values()]) {
+        if (!isLiveTier(s.tier)) continue
+        if (estop) await this.#clear(s.agent, 'estop')
+        else if (s.expiresAt === null || this.#now() >= s.expiresAt)
+          await this.#clear(s.agent, 'expire')
+        else if (this.#options.unsupported?.(s.agent) !== undefined)
+          await this.#clear(s.agent, 'disable')
+      }
+    } finally {
+      this.#sweeping = false
+    }
   }
 
   /**
@@ -542,6 +588,12 @@ export class NodeElevation {
             code: 'rejected',
             message: 'Previous operation result unknown; inspect status',
           })
+    const unsupported =
+      op === 'elevation.enable' && isLiveTier(args.tier)
+        ? this.#options.unsupported?.(agent)
+        : undefined
+    if (unsupported !== undefined)
+      return { ok: false, code: 'rejected', message: unsupported }
     if (this.#closed || (this.#options.estop() && op === 'elevation.enable'))
       return { ok: false, code: 'rejected', message: '放权已停止或被急停拦下' }
     this.#operations.set(id, { digest })
@@ -600,5 +652,6 @@ export class NodeElevation {
 
   close(): void {
     this.#closed = true
+    clearInterval(this.#timer)
   }
 }

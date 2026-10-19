@@ -731,6 +731,20 @@ export class ResidentOmpPool
     for (const id of ids) this.#retireIfStale(id)
     await Promise.allSettled(ids.map(id => this.#retiring.get(id)))
   }
+  /**
+   * Emergency retirement (P39 revoke/ESTOP): unlike {@link invalidateAgent},
+   * close every child of `agent` now, including one running a turn. That
+   * turn fails ("child exited during the turn"), and a sandboxed command dies
+   * with its parent (`--die-with-parent`).
+   */
+  async retireAgent(agent: string): Promise<void> {
+    this.#epochs.set(agent, (this.#epochs.get(agent) ?? 0) + 1)
+    const ids = [...this.#owners]
+      .filter(([, owner]) => owner.agent === agent)
+      .map(([id]) => id)
+    for (const id of ids) this.closeSession(id)
+    await Promise.allSettled(ids.map(id => this.#retiring.get(id)))
+  }
   #stale(sessionId: string): boolean {
     const child = this.#children.get(sessionId)
     const owner = this.#owners.get(sessionId)

@@ -416,3 +416,70 @@ describe('approval helpers for elevated calls', () => {
     expect(freshApprovalTool('write')).toBe(false)
   })
 })
+
+describe('revoke, sweep and runtime support', () => {
+  test('revoke terminates running children; disable only recycles', async () => {
+    const terminated: string[] = []
+    const h = harness({
+      terminate: async agent => {
+        terminated.push(agent)
+      },
+    })
+    await enable(h, 'auto')
+    h.recycled.length = 0
+    await h.elevation.control(
+      'elevation.disable',
+      { agent: 'reviewer', operationId: 'd1' },
+      ctx('d1'),
+    )
+    expect(terminated).toEqual([])
+    expect(h.recycled).toEqual(['reviewer'])
+    await enable(h, 'auto')
+    await h.elevation.control(
+      'elevation.revoke',
+      { agent: 'reviewer', operationId: 'r1' },
+      ctx('r1'),
+    )
+    expect(terminated).toEqual(['reviewer'])
+  })
+  test('the sweep clears an expired grant and an ESTOP without waiting for a call', async () => {
+    const h = harness()
+    await enable(h, 'auto', { ttlMs: 5 * 60_000 })
+    h.now += 5 * 60_000
+    await h.elevation.sweep()
+    expect((await statusOf(h)).tier).toBe('off')
+    await enable(h, 'auto')
+    h.estopped = true
+    await h.elevation.sweep()
+    expect((await statusOf(h)).tier).toBe('off')
+    expect(h.audits.some(a => a.kind === 'elevation.estop')).toBe(true)
+    // ESTOP refuses a new grant until it is lifted.
+    expect((await enable(h, 'auto')).ok).toBe(false)
+  })
+  test('an agent on an external runtime cannot be elevated, and says why', async () => {
+    let external = true
+    const h = harness({
+      unsupported: () =>
+        external ? '该智能体运行在外部底层 dsh 上' : undefined,
+    })
+    const refused = await enable(h, 'auto')
+    expect(refused.ok).toBe(false)
+    expect((refused as { message: string }).message).toContain('dsh')
+    expect((await statusOf(h)) as unknown).toMatchObject({
+      unsupportedReason: '该智能体运行在外部底层 dsh 上',
+    })
+    external = false
+    expect((await enable(h, 'auto')).ok).toBe(true)
+    // Moving onto an external runtime withdraws a live grant at the next sweep.
+    external = true
+    await h.elevation.sweep()
+    expect((await statusOf(h)).tier).toBe('off')
+  })
+  test('macOS reports why commands are unavailable before any grant', async () => {
+    const h = harness()
+    expect((await statusOf(h)) as unknown).toMatchObject({
+      sandbox: false,
+      sandboxReason: expect.stringContaining('沙箱'),
+    })
+  })
+})

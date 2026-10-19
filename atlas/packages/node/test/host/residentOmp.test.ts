@@ -626,3 +626,57 @@ test('high-permission gate (P39): QIANMO_ELEVATION_V1 confirms go to requestElev
     root.dispose()
   }
 }, 6_000)
+
+test('retireAgent (P39 revoke) closes a child in use, where invalidateAgent waits for it', async () => {
+  const root = isolatedRoot()
+  const children: ChildProcess[] = []
+  const pool = new ResidentOmpPool({
+    agents: [{ agent: 'reviewer', cwd: root.root }],
+    memoryRoot: join(root.root, 'memory'),
+    announce: async () => ({ status: 'queued' }),
+    spawn: () => {
+      const child = spawn(
+        process.execPath,
+        [
+          '-e',
+          `
+          const {createInterface} = require('node:readline');
+          setInterval(() => {}, 1000);
+          createInterface({input:process.stdin}).on('line', line => {
+            const frame = JSON.parse(line);
+            if (frame.id !== undefined)
+              process.stdout.write(JSON.stringify({type:'response',id:frame.id,success:true})+'\\n');
+          });
+          process.stdin.on('end', () => process.exit(0));
+          process.stdout.write(JSON.stringify({type:'ready'})+'\\n');
+          `,
+        ],
+        { stdio: ['pipe', 'pipe', 'pipe'] },
+      )
+      children.push(child)
+      return child
+    },
+  })
+  const turn = new AbortController()
+  try {
+    const session = await pool.newSession({ agent: 'reviewer', cwd: root.root })
+    // A signal keeps the pin for the whole turn, as a real turn does.
+    const channel = await pool.channelFor(session, turn.signal)
+    let closed = false
+    void channel.closed.then(
+      () => (closed = true),
+      () => (closed = true),
+    )
+    await pool.invalidateAgent('reviewer')
+    expect(channel.alive).toBe(true)
+    await pool.retireAgent('reviewer')
+    await channel.closed.catch(() => {})
+    expect(closed).toBe(true)
+    expect(channel.alive).toBe(false)
+  } finally {
+    turn.abort()
+    for (const child of children) child.kill('SIGKILL')
+    await pool.stop()
+    root.dispose()
+  }
+}, 8_000)
