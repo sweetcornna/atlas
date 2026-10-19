@@ -100,6 +100,7 @@ import {
   type QianmoMessage,
 } from '@qianmo/protocol'
 import { QIANMO_WRAPPER_TYPE } from '@qianmo/adapter/wrapper'
+import { sanitizeRemoteText } from '@qianmo/adapter/sanitize'
 import { FileMemoryStore, defaultMemoryRoot } from '@qianmo/memory'
 import {
   residentToolVerdict,
@@ -679,6 +680,9 @@ const TASK_REPLY_RECEIPT_TIMEOUT_MS = 5_000
  */
 const BACKGROUND_STOP_GRACE_MS = 10_000
 
+/** The longest text `turn.steer` takes (P38): a report or an instruction. */
+const MAX_STEER_CHARS = 16_000
+
 /** Largest delay `setTimeout` takes before silently collapsing it to 1 ms. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
@@ -1063,23 +1067,33 @@ export class QianmoResident {
       sideEffects: op => op === 'extensions.apply',
     })
     // `/stop` from a chat channel: the hub names the task it is waiting on.
+    // `turn.steer` (P38): the hub's word for a turn it asked for, read by the
+    // model at its next step — an owner's instruction for a running
+    // sub-session, a sub-session's result for a busy main conversation.
     this.control.register(
       'turn',
-      async (op, args) => {
-        if (op !== 'turn.stop')
-          return { ok: false, code: 'unsupported', message: '不支持此回合操作' }
+      async (op, args, ctx) => {
         const task =
           typeof args.taskId === 'string'
             ? this.#tasksByTask.get(args.taskId)
             : undefined
-        return {
-          ok: true,
-          value: {
-            stopped: task !== undefined && this.#turn.stop(task.envelope.msgId),
-          },
-        }
+        if (op === 'turn.stop')
+          return {
+            ok: true,
+            value: {
+              stopped:
+                task !== undefined && this.#turn.stop(task.envelope.msgId),
+            },
+          }
+        if (op === 'turn.steer') return this.#steerTurn(task, args.text, ctx)
+        return { ok: false, code: 'unsupported', message: '不支持此回合操作' }
       },
-      { estopAllowed: ['turn.stop'] },
+      {
+        estopAllowed: ['turn.stop'],
+        // A steer said twice is said twice: a resent request answers from
+        // the ledger instead.
+        sideEffects: op => op === 'turn.steer',
+      },
     )
     // Runtimes, installs and per-agent configuration (P31, P36); reading
     // works under ESTOP. A change of where an agent runs recycles it.
@@ -2154,6 +2168,47 @@ export class QianmoResident {
       throw error
     } finally {
       if (task !== undefined) task.delivering = false
+    }
+  }
+
+  /**
+   * `turn.steer` (P38): `text` into the running turn of `task`, where its
+   * runtime takes input mid-turn. Only for a turn this very controller asked
+   * for and signed (`verified-capability`): the text then carries the same
+   * authority as the request it joins, and nobody steers someone else's turn.
+   * `steered: false` with a reason otherwise; the hub falls back to the next
+   * turn.
+   */
+  async #steerTurn(
+    task: ActiveResidentTask | undefined,
+    raw: unknown,
+    ctx: { readonly peer: string },
+  ): Promise<ControlOutcome> {
+    const text = typeof raw === 'string' ? raw.trim() : ''
+    if (text === '' || text.length > MAX_STEER_CHARS)
+      return {
+        ok: false,
+        code: 'invalid',
+        message: `补充内容需要 1–${MAX_STEER_CHARS} 字`,
+      }
+    if (
+      task === undefined ||
+      task.settled ||
+      parseAddress(task.envelope.from)?.node !== ctx.peer
+    )
+      return { ok: true, value: { steered: false, reason: 'not_running' } }
+    if (task.trust !== 'verified-capability')
+      return { ok: true, value: { steered: false, reason: 'unsigned' } }
+    const outcome = await this.#turn.steer(
+      task.envelope.msgId,
+      `[本轮补充] 来自这一轮的请求方 ${task.envelope.from}，经它签名的控制链路在本轮进行中送达：\n\n${sanitizeRemoteText(text)}`,
+    )
+    return {
+      ok: true,
+      value:
+        outcome === 'steered'
+          ? { steered: true }
+          : { steered: false, reason: outcome },
     }
   }
 

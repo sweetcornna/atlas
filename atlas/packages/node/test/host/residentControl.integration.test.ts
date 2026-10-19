@@ -215,6 +215,23 @@ test('signed hub and real resident complete control, upstream and appended omp t
         'channels',
       ),
     ).toEqual({ ok: true, value: { stopped: false } })
+    // Nothing runs under that task: the hub falls back to the next turn.
+    expect(
+      await hub.request(
+        'worker',
+        'turn.steer',
+        { taskId: 'not-running', text: '补充一句' },
+        'tasks',
+      ),
+    ).toEqual({ ok: true, value: { steered: false, reason: 'not_running' } })
+    expect(
+      await hub.request(
+        'worker',
+        'turn.steer',
+        { taskId: 'not-running', text: '   ' },
+        'tasks',
+      ),
+    ).toMatchObject({ ok: false, code: 'invalid' })
     expect(
       await hub.request('worker', 'turn.pause', {}, 'channels'),
     ).toMatchObject({ ok: false, code: 'unsupported' })
@@ -401,7 +418,21 @@ test('signed hub and real resident complete control, upstream and appended omp t
       type: MessageType.TaskRequest,
       payload: { text: 'Exercise the fixture host tools.' },
     })
+    // The model holds its answer until the turn has been asked to take more.
+    const release = harness.pauseResponses()
     await raw.sendAndWait(task, 10_000)
+    await until(() => resident.gate.active)
+    // Its request was not signed for this task: no word of the hub's joins
+    // it mid-turn, whoever relays it (P38).
+    expect(
+      await hub.request(
+        'worker',
+        'turn.steer',
+        { taskId: task.taskId, text: '补充一句' },
+        'tasks',
+      ),
+    ).toEqual({ ok: true, value: { steered: false, reason: 'unsigned' } })
+    release()
     await until(() =>
       received.some(
         message =>
