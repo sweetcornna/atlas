@@ -20,8 +20,17 @@ import {
   ResidentEstop,
   ResidentHardline,
 } from '@qianmo/resident'
-import { createMessage, MessageType } from '@qianmo/protocol'
-import { startTransportServer, type TransportChannel } from '@qianmo/transport'
+import type { ServerWebSocket } from 'bun'
+import { createMessage, MessageType, ProtocolErrorCode } from '@qianmo/protocol'
+import {
+  FRAME_VERSION,
+  FrameType,
+  parseFrame,
+  ReceiptStatus,
+  serializeFrame,
+  startTransportServer,
+  type TransportChannel,
+} from '@qianmo/transport'
 import { ConsoleApprovals } from '../../src/commands/consoleApprovals.js'
 import { FileLedger } from '../../src/commands/consoleAccountsStore.js'
 import {
@@ -56,6 +65,140 @@ async function until(check: () => boolean | Promise<boolean>): Promise<void> {
     if (Date.now() > end) throw new Error('condition timed out')
     await new Promise(resolve => setTimeout(resolve, 10))
   }
+}
+
+/**
+ * A hop in front of a real node. With `legacy` set it answers `authz.request`
+ * the way a build without approvals (v2.47.2) does — its validator does not
+ * know the type, so the receipt is rejected with E_BAD_TYPE — and `drop()`
+ * cuts every link the way a node restart does.
+ */
+function nodeHop(upstream: string) {
+  type Hop = { up?: WebSocket; early: string[] }
+  const sockets = new Set<ServerWebSocket<Hop>>()
+  const listener = Bun.serve<Hop, never>({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch(request, server) {
+      return server.upgrade(request, { data: { early: [] } })
+        ? undefined
+        : new Response('expected websocket', { status: 426 })
+    },
+    websocket: {
+      open(socket) {
+        sockets.add(socket)
+        const up = new WebSocket(upstream)
+        socket.data.up = up
+        up.onopen = () => {
+          for (const raw of socket.data.early.splice(0)) up.send(raw)
+        }
+        up.onmessage = event => {
+          socket.send(String(event.data))
+        }
+        up.onclose = event => {
+          socket.close(event.code === 4003 ? 4003 : 1000, event.reason)
+        }
+      },
+      message(socket, raw) {
+        const text = String(raw)
+        const frame = parseFrame(text)
+        const envelope = frame?.t === FrameType.Envelope ? frame.envelope : null
+        if (
+          hop.legacy &&
+          typeof envelope === 'object' &&
+          envelope !== null &&
+          'type' in envelope &&
+          envelope.type === MessageType.AuthzRequest &&
+          'msgId' in envelope &&
+          typeof envelope.msgId === 'string'
+        ) {
+          hop.refused++
+          socket.send(
+            serializeFrame({
+              t: FrameType.Receipt,
+              v: FRAME_VERSION,
+              msgId: envelope.msgId,
+              status: ReceiptStatus.Rejected,
+              code: ProtocolErrorCode.E_BAD_TYPE,
+              reason: 'invalid envelope',
+            }),
+          )
+          return
+        }
+        const up = socket.data.up
+        if (up?.readyState === WebSocket.OPEN) up.send(text)
+        else socket.data.early.push(text)
+      },
+      close(socket) {
+        sockets.delete(socket)
+        socket.data.up?.close()
+      },
+    },
+  })
+  const hop = {
+    url: `ws://127.0.0.1:${listener.port ?? 0}`,
+    legacy: false,
+    refused: 0,
+    drop(): void {
+      for (const socket of sockets) socket.close(1000, 'node restarted')
+    },
+    stop: (): Promise<void> => listener.stop(true),
+  }
+  return hop
+}
+
+/** A node fixture behind {@link nodeHop}, counting what reaches it. */
+function approvalNode(root: string) {
+  const nodeKeys = generateNodeKeyPair(),
+    commander = generateNodeKeyPair(),
+    approvalKeys = generateNodeKeyPair()
+  const grants = new FileGrantStore({
+    path: join(root, 'protected', 'node-authz.ndjson'),
+    node: 'worker',
+    approvers: new Map([['hub', approvalKeys.publicKey]]),
+    commanderKeys: () => [commander.publicKey],
+    hardline: new ResidentHardline({ stateRoots: [join(root, 'protected')] }),
+    estop: new ResidentEstop({ path: join(root, 'ESTOP') }),
+  })
+  const psk = 'approval-subscribe-psk-000000000000000'
+  const seen = {
+    subscriptions: [] as TransportChannel[],
+    decisions: 0,
+    revocations: 0,
+    refuseDecisions: false,
+  }
+  const server = startTransportServer({
+    hostname: '127.0.0.1',
+    port: 0,
+    psk,
+    signing: {
+      node: 'worker',
+      keys: nodeKeys,
+      directory: new StaticPublicKeyDirectory([['hub', commander.publicKey]]),
+      required: true,
+    },
+    supportedTypes: [
+      MessageType.AuthzRequest,
+      MessageType.AuthzDecision,
+      MessageType.AuthzRevoke,
+    ],
+    onMessage: (message, context) => {
+      const payload = message.payload as Record<string, unknown>
+      if (message.type === MessageType.AuthzRequest)
+        seen.subscriptions.push(context.channel)
+      else if (message.type === MessageType.AuthzDecision) {
+        if (seen.refuseDecisions) throw new Error('forced unavailable')
+        if (!grants.applyDecision(payload['decision']).ok)
+          throw new Error('refused decision')
+        seen.decisions++
+      } else if (message.type === MessageType.AuthzRevoke) {
+        if (!grants.applyRevoke(payload['revoke']).ok)
+          throw new Error('refused revoke')
+        seen.revocations++
+      }
+    },
+  })
+  return { nodeKeys, commander, approvalKeys, grants, psk, server, seen }
 }
 
 test('approval flags require accounts, signed named targets and locally pinned keys', () => {
@@ -409,5 +552,193 @@ test('real signed transport + FileGrantStore: ownership, digest, freshness, one-
     await hub.close()
     await server.stop()
     grants.close()
+  }
+}, 15_000)
+
+test('one subscription per connection: quiet periods send nothing, a reconnect or a dead link subscribes again, requests still flow', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'qm-console-authz-sub-'))
+  const node = approvalNode(root),
+    seen = node.seen
+  const hop = nodeHop(node.server.url!)
+  const book = new AccountBook({ accounts: ledger(), sessions: ledger() }),
+    alice = person(book)
+  expect(book.recordOwner('owned-chat', alice.subject).ok).toBe(true)
+  const errors: unknown[] = []
+  const hub = new ConsoleApprovals({
+    from: 'qianmo://hub/console',
+    accounts: book,
+    commandKeys: node.commander,
+    approvalKeys: node.approvalKeys,
+    targets: [
+      {
+        node: 'worker',
+        url: hop.url,
+        psk: node.psk,
+        publicKey: node.nodeKeys.publicKey,
+      },
+    ],
+    ledger: new FileLedger(join(root, 'console-authz.ndjson')),
+    checkEveryMs: 20,
+    onError: error => errors.push(error),
+  })
+  // About fifteen periods, after which nothing more may have reached the node.
+  const quiet = async (subscriptions: number) => {
+    await Bun.sleep(300)
+    expect(seen.subscriptions).toHaveLength(subscriptions)
+  }
+  const ask = (content: string) => {
+    const call = {
+      agent: 'main',
+      contextId: 'owned-chat',
+      toolName: 'Write',
+      input: { file_path: join(root, 'outside.txt'), content },
+    }
+    const result = node.grants.ask({
+      ...call,
+      origin: {
+        from: 'qianmo://hub/console',
+        taskId: null,
+        traceId: null,
+        trust: 'untrusted',
+      },
+    })
+    if (result.kind !== 'pending') throw new Error('not pending')
+    return { call, request: result.request }
+  }
+  try {
+    hub.start()
+    await until(() => seen.subscriptions.length >= 1)
+    await quiet(1)
+    // The socket drops: the client redials by itself and its onReady
+    // subscribes the node's new channel, once.
+    hop.drop()
+    await until(() => seen.subscriptions.length >= 2)
+    expect(seen.subscriptions[1]).not.toBe(seen.subscriptions[0])
+    await quiet(2)
+    // A link closed for good (4003): the periodic check dials a new one.
+    node.server.closePeers(['hub'])
+    await until(() => seen.subscriptions.length >= 3)
+    await quiet(3)
+    // The newest subscribed channel carries a request; decide and revoke flow.
+    const first = ask('after reconnect')
+    await seen.subscriptions[2]!.sendAndWait(
+      createMessage({
+        from: 'qianmo://worker/main',
+        to: 'qianmo://hub/console',
+        type: MessageType.AuthzRequest,
+        payload: { request: signAuthzRequest(node.nodeKeys, first.request) },
+        hops: ['worker'],
+      }),
+    )
+    const listed = await hub.list(alice)
+    expect(listed.ok && listed.value.map(row => row.requestId)).toEqual([
+      first.request.requestId,
+    ])
+    expect(
+      await hub.decide(alice, {
+        requestId: first.request.requestId,
+        digest: first.request.digest,
+        decision: 'allow-window',
+        windowMs: 60_000,
+      }),
+    ).toEqual({ ok: true, value: { delivered: true } })
+    expect(seen.decisions).toBe(1)
+    expect(node.grants.use(first.call).kind).toBe('hit')
+    expect(await hub.revoke(alice, first.request.requestId)).toEqual({
+      ok: true,
+      value: { delivered: true },
+    })
+    expect(seen.revocations).toBe(1)
+    expect(node.grants.use(first.call).kind).toBe('miss')
+    expect(errors).toEqual([])
+    // A failure on the way to a node says which node.
+    const second = ask('refused')
+    await seen.subscriptions[2]!.sendAndWait(
+      createMessage({
+        from: 'qianmo://worker/main',
+        to: 'qianmo://hub/console',
+        type: MessageType.AuthzRequest,
+        payload: { request: signAuthzRequest(node.nodeKeys, second.request) },
+        hops: ['worker'],
+      }),
+    )
+    seen.refuseDecisions = true
+    expect(
+      (
+        await hub.decide(alice, {
+          requestId: second.request.requestId,
+          digest: second.request.digest,
+          decision: 'allow-once',
+        })
+      ).ok,
+    ).toBe(false)
+    expect(errors).toHaveLength(1)
+    expect(String(errors[0])).toMatch(
+      /^节点 worker 未确认审批结果 · TransportReceiptError: .*E_UNDELIVERABLE/,
+    )
+    expect(seen.subscriptions).toHaveLength(3)
+  } finally {
+    await hub.close()
+    await hop.stop()
+    await node.server.stop()
+    node.grants.close()
+  }
+}, 15_000)
+
+test('a node without approvals (E_BAD_TYPE) is logged once by name, asked again after the back-off, and at once on reconnect', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'qm-console-authz-legacy-'))
+  const node = approvalNode(root),
+    seen = node.seen
+  const hop = nodeHop(node.server.url!)
+  hop.legacy = true
+  let clock = Date.now()
+  const errors: unknown[] = []
+  const hub = new ConsoleApprovals({
+    from: 'qianmo://hub/console',
+    accounts: new AccountBook({ accounts: ledger(), sessions: ledger() }),
+    commandKeys: node.commander,
+    approvalKeys: node.approvalKeys,
+    targets: [
+      {
+        node: 'worker',
+        url: hop.url,
+        psk: node.psk,
+        publicKey: node.nodeKeys.publicKey,
+      },
+    ],
+    ledger: ledger(),
+    now: () => clock,
+    checkEveryMs: 20,
+    onError: error => errors.push(error),
+  })
+  const unsupported =
+    '节点 worker 不支持审批（E_BAD_TYPE），10 分钟后或重连时再试'
+  try {
+    hub.start()
+    await until(() => hop.refused >= 1)
+    // The clock stands still: about fifteen periods ask nothing more.
+    await Bun.sleep(300)
+    expect(hop.refused).toBe(1)
+    expect(errors).toEqual([unsupported])
+    clock += 10 * 60_000
+    await until(() => hop.refused >= 2)
+    await Bun.sleep(300)
+    expect(hop.refused).toBe(2)
+    // The same refusal again is not a new line.
+    expect(errors).toEqual([unsupported])
+    // Upgraded and restarted: the reconnect subscribes at once, back-off or not.
+    hop.legacy = false
+    hop.drop()
+    await until(() => seen.subscriptions.length >= 1)
+    await until(() => errors.length >= 2)
+    expect(errors).toEqual([unsupported, '节点 worker 审批订阅已恢复'])
+    await Bun.sleep(300)
+    expect(seen.subscriptions).toHaveLength(1)
+    expect(hop.refused).toBe(2)
+  } finally {
+    await hub.close()
+    await hop.stop()
+    await node.server.stop()
+    node.grants.close()
   }
 }, 15_000)

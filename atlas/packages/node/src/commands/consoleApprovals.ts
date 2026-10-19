@@ -38,9 +38,10 @@ import {
   createMessage,
   LEGACY_MESSAGE_TYPES,
   MessageType,
+  ProtocolErrorCode,
   type QianmoMessage,
 } from '@qianmo/protocol'
-import { TransportClient } from '@qianmo/transport'
+import { TransportClient, TransportReceiptError } from '@qianmo/transport'
 import { NodeRouter } from '@qianmo/router'
 
 export interface ApprovalEndpoint {
@@ -60,6 +61,25 @@ interface CachedRequest {
   approvedAt?: number
   consumed?: boolean
 }
+/**
+ * One node's approval subscription, as far as the hub knows it.
+ *
+ * The node keeps a subscription on the logical channel it arrived on, with no
+ * expiry (`#approvalChannels` in `host/resident.ts`); the transport server
+ * drops that channel when its socket goes away with nothing unreceipted, and
+ * every reconnect calls `onReady`. So one accepted subscription per connection
+ * is all a node needs, and repeating it only writes the node's audit trail.
+ */
+interface Subscription {
+  /** The `connectionGeneration` the node accepted the subscription on. */
+  generation?: string
+  /** The subscription in flight, shared by the periodic check and `onReady`. */
+  running?: Promise<void>
+  /** After a refusal: no new subscription before this, save on reconnect. */
+  retryAt?: number
+  /** What was last logged, so the same problem is logged once. */
+  problem?: string
+}
 export interface ConsoleApprovalsOptions {
   readonly from: string
   readonly accounts: AccountBook
@@ -71,6 +91,8 @@ export interface ConsoleApprovalsOptions {
   readonly chat?: ChatPort
   readonly usage?: UsagePort
   readonly now?: () => number
+  /** Period of the redial and revoke check, 10 s; tests shorten it. */
+  readonly checkEveryMs?: number
   readonly onError?: (error: unknown) => void
 }
 const refusal = (
@@ -78,6 +100,8 @@ const refusal = (
   message: string,
 ): ConsoleResult<never> => ({ ok: false, failure: { code, message } })
 const freshMs = 30 * 60_000
+/** A refusing node is asked again after this, or when its link reconnects. */
+const refusedRetryMs = 10 * 60_000
 
 /** A durable approval index plus proactive, mutually authenticated node links. */
 export class ConsoleApprovals implements ApprovalPort {
@@ -87,6 +111,7 @@ export class ConsoleApprovals implements ApprovalPort {
   readonly #now: () => number
   readonly #requests = new Map<string, CachedRequest>()
   readonly #links = new Map<string, TransportClient>()
+  readonly #subscriptions = new Map<string, Subscription>()
   readonly #entries: LedgerEntry[] = []
   readonly #busy = new Set<string>()
   readonly #continuing = new Set<string>()
@@ -364,10 +389,11 @@ export class ConsoleApprovals implements ApprovalPort {
           required: true,
         },
         onMessage: message => this.#receive(target, message),
+        // Each (re)connection may land on a fresh channel at the node, so
+        // this is when a subscription is owed — refusal back-off or not,
+        // since a node that comes back may have been upgraded.
         onReady: () => {
-          void this.#subscribe(target).catch(error =>
-            this.#options.onError?.(error),
-          )
+          void this.#maintain(target, true)
           void this.#flushRevokes()
         },
       })
@@ -377,38 +403,109 @@ export class ConsoleApprovals implements ApprovalPort {
     return link
   }
 
-  async #subscribe(target: ApprovalEndpoint): Promise<void> {
-    const link = await this.#link(target)
-    const routed = this.#router.outbound(
-      createMessage({
-        from: this.#options.from,
-        to: `qianmo://${target.node}/console`,
-        type: MessageType.AuthzRequest,
-        payload: { subscribe: true },
-      }),
+  /** A line for the log that names the node it is about. */
+  #report(node: string, what: string, error?: unknown): void {
+    this.#options.onError?.(
+      error === undefined
+        ? `节点 ${node} ${what}`
+        : `节点 ${node} ${what} · ${String(error)}`,
     )
-    if (!routed.ok) throw new Error('approval subscription refused by router')
-    await link.sendAndWait(routed.message, 5_000)
+  }
+
+  /**
+   * Subscribe to `target` when this connection is not subscribed yet.
+   *
+   * The periodic check only redials a dead link: a link still reconnecting is
+   * its own client's job (and `onReady` subscribes), a live one already
+   * subscribed is left alone, and a node that refused is asked again after
+   * {@link refusedRetryMs}. Never rejects.
+   */
+  #maintain(target: ApprovalEndpoint, reconnected = false): Promise<void> {
+    if (this.#closed) return Promise.resolve()
+    const state = this.#subscriptions.get(target.node) ?? {}
+    this.#subscriptions.set(target.node, state)
+    if (state.running) return state.running
+    const link = this.#links.get(target.node)
+    if (!reconnected) {
+      if (
+        link &&
+        !link.isClosed() &&
+        (!link.isReady() || state.generation === link.connectionGeneration)
+      )
+        return Promise.resolve()
+      if (state.retryAt !== undefined && this.#now() < state.retryAt)
+        return Promise.resolve()
+    }
+    const running = this.#subscribe(target, state).finally(() => {
+      state.running = undefined
+    })
+    state.running = running
+    return running
+  }
+
+  async #subscribe(
+    target: ApprovalEndpoint,
+    state: Subscription,
+  ): Promise<void> {
+    try {
+      const link = await this.#link(target)
+      const generation = link.connectionGeneration
+      const routed = this.#router.outbound(
+        createMessage({
+          from: this.#options.from,
+          to: `qianmo://${target.node}/console`,
+          type: MessageType.AuthzRequest,
+          payload: { subscribe: true },
+        }),
+      )
+      if (!routed.ok) throw new Error('approval subscription refused by router')
+      await link.sendAndWait(routed.message, 5_000)
+      // A reconnect while waiting moved the node to a new channel; the next
+      // check subscribes that one unless its own `onReady` already did.
+      if (
+        generation !== null &&
+        this.#links.get(target.node) === link &&
+        link.connectionGeneration === generation
+      )
+        state.generation = generation
+      state.retryAt = undefined
+      if (state.problem !== undefined) {
+        state.problem = undefined
+        this.#report(target.node, '审批订阅已恢复')
+      }
+    } catch (error) {
+      if (this.#closed) return
+      // A rejected receipt says resending the same bytes will not help: an old
+      // build has no `authz.request` at all (E_BAD_TYPE), a new one refuses
+      // a hub that is not its approver. Anything else is the link.
+      const code =
+        error instanceof TransportReceiptError
+          ? (error.receiptCode ?? 'rejected')
+          : undefined
+      if (code !== undefined) state.retryAt = this.#now() + refusedRetryMs
+      const problem = code === undefined ? 'unreachable' : `refused:${code}`
+      if (state.problem === problem) return
+      state.problem = problem
+      const retry = `${refusedRetryMs / 60_000} 分钟后或重连时再试`
+      if (code === undefined) this.#report(target.node, '审批订阅失败', error)
+      else if (code === ProtocolErrorCode.E_BAD_TYPE)
+        this.#report(target.node, `不支持审批（E_BAD_TYPE），${retry}`)
+      else this.#report(target.node, `拒绝审批订阅（${code}），${retry}`)
+    }
   }
 
   start(): void {
     if (this.#timer || this.#closed) return
-    const connect = async (): Promise<void> => {
+    const check = async (): Promise<void> => {
       await Promise.all(
-        this.#options.targets.map(async target => {
-          try {
-            await this.#subscribe(target)
-          } catch (error) {
-            this.#options.onError?.(error)
-          }
-        }),
+        this.#options.targets.map(target => this.#maintain(target)),
       )
       await this.#flushRevokes()
     }
-    void connect()
+    void check()
     this.#timer = setInterval(() => {
-      void connect()
-    }, 10_000)
+      void check()
+    }, this.#options.checkEveryMs ?? 10_000)
     this.#timer.unref?.()
   }
 
@@ -513,7 +610,7 @@ export class ConsoleApprovals implements ApprovalPort {
       }
       return { ok: true, value: { delivered: true } }
     } catch (error) {
-      this.#options.onError?.(error)
+      this.#report(cached.request.iss, '未确认审批结果', error)
       return refusal('unreachable', '节点未确认审批结果 请检查节点状态')
     } finally {
       if (locked) this.#busy.delete(input.requestId)
@@ -700,7 +797,7 @@ export class ConsoleApprovals implements ApprovalPort {
         value: { sessionId: session.id, taskId: sent.value.taskId },
       }
     } catch (error) {
-      this.#options.onError?.(error)
+      this.#report(cached.request.iss, '审批后的继续任务未确认', error)
       return refusal(
         'unreachable',
         '继续任务结果未确认，请查看原会话；不会自动重发',
@@ -744,7 +841,7 @@ export class ConsoleApprovals implements ApprovalPort {
         this.#append('revoked', { requestId: id })
         cached.revokePending = false
       } catch (error) {
-        this.#options.onError?.(error)
+        this.#report(cached.request.iss, '撤销授权未完成', error)
       } finally {
         this.#busy.delete(id)
       }
