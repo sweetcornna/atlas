@@ -95,7 +95,10 @@ this repository.
   * 根 `LICENSE`：路径来自快照（omp 的 `LICENSE`），内容已整体换成自由软件
     基金会（FSF）的 AGPL-3.0 正文，没有一行上游内容。它就是那份许可文本本身，
     著作权属 FSF，只许逐字复制。omp 的 MIT 正文逐字移到了 `LICENSE.base`。
-  * `README.md`、`CONTRIBUTING.md`、`AGENTS.md`：上半部分是阡陌撰写的内容，
+  * 根 `README.md`：路径来自快照（omp 的 `README.md`），内容已整体换成阡陌撰写
+    的项目说明，没有一行上游内容，是阡陌作品（AGPL-3.0-or-later）。omp 的原文
+    仍在快照里：`git show base-snapshot/omp-v18.8.8:README.md`。
+  * `CONTRIBUTING.md`、`AGENTS.md`：上半部分是阡陌撰写的内容，
     分界标记 `<!-- base: oh-my-pi v18.8.8 <文件名>, verbatim below -->` 以下
     是 omp 原文、逐字未改。标记以下的部分按 MIT（`LICENSE.base`），标记以上的
     部分是阡陌作品（AGPL-3.0-or-later）。
@@ -589,7 +592,12 @@ that region on every sync. How they are distributed:
     text and contains no upstream line. It is that license text itself,
     copyright FSF, which may be copied only verbatim. omp's MIT text was moved
     verbatim to `LICENSE.base`.
-  * `README.md`, `CONTRIBUTING.md`, `AGENTS.md`: the upper part is written by
+  * Root `README.md`: the path comes from the snapshot (omp's `README.md`); its
+    content was replaced in full by a project description written by Qianmo
+    and contains no upstream line. It is a Qianmo work under
+    AGPL-3.0-or-later. omp's original text remains in the snapshot:
+    `git show base-snapshot/omp-v18.8.8:README.md`.
+  * `CONTRIBUTING.md`, `AGENTS.md`: the upper part is written by
     Qianmo; below the marker
     `<!-- base: oh-my-pi v18.8.8 <file name>, verbatim below -->` is omp's
     original text, unchanged. The part below the marker is under MIT
