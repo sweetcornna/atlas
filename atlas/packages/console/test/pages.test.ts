@@ -116,7 +116,7 @@ const PAGES: readonly PageRow[] = [
   },
   {
     path: '/admin/connect',
-    title: '连接',
+    title: '应用连接',
     active: 'connect',
     reads: ['工作邮箱', 'imap.qq.com', '我的 MacBook', 'id="connect"'],
   },

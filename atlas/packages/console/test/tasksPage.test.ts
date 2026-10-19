@@ -219,6 +219,35 @@ describe('background tasks in the console (P29)', () => {
   })
 })
 
+describe('the sidebar dot of 主动执行', () => {
+  const navJobs = (page: string) => {
+    const start = page.indexOf('id="nav-jobs"')
+    return page.slice(start, page.indexOf('</a>', start))
+  }
+
+  test('a task that waits for its owner is 待你处理 with how many; one that runs is grey', async () => {
+    const { h, tasks, member, other } = await setup()
+    const page = async (sid: string) =>
+      (await h.handle(asSession('GET', '/admin/jobs', sid))).text()
+    // task-mine runs; task-waiting is queued, which is not running yet.
+    let item = navJobs(await page(member.sid))
+    expect(item).toContain('nav-state-running')
+    expect(item).toContain('1 个运行中')
+    tasks.rows = tasks.rows.map(row =>
+      row.id === 'task-waiting' ? { ...row, status: 'needs_input' } : row,
+    )
+    item = navJobs(await page(member.sid))
+    expect(item).toContain('nav-state-attention')
+    expect(item).toContain('1 项待你处理')
+    expect(item).toContain('<span aria-hidden="true">1</span>')
+    // Somebody else's waiting task is not this reader's to handle.
+    item = navJobs(await page(other.sid))
+    expect(item).not.toContain('待你处理')
+    tasks.rows = tasks.rows.map(row => ({ ...row, status: 'completed' }))
+    expect(navJobs(await page(member.sid))).not.toContain('nav-state')
+  })
+})
+
 describe('planned tasks (主动任务)', () => {
   test('a delayed or repeating task reads 已安排 with its next start and the runs left; the API carries the fields', async () => {
     const tasks = new FakeTasks()

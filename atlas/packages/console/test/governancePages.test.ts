@@ -441,3 +441,53 @@ test('legacy wake binds its actual address node and unknown delivery keeps quota
     usage.close()
   }
 })
+
+describe('the sidebar dot of 审批', () => {
+  test('a member who may decide sees how many wait; a viewer sees none', async () => {
+    const pending = (id: string, status: 'pending' | 'allowed') => ({
+      requestId: id,
+      node: 'tokyo-1',
+      agent: 'planner',
+      contextId: `session-${id}`,
+      owner: 'someone',
+      toolName: 'write',
+      input: {},
+      digest: `digest-${id}`,
+      createdAt: START,
+      expiresAt: START + 3600000,
+      status,
+    })
+    const approvals: ApprovalPort = {
+      async list() {
+        return {
+          ok: true,
+          value: [
+            pending('a', 'pending'),
+            pending('b', 'pending'),
+            pending('c', 'allowed'),
+          ],
+        }
+      },
+      async decide() {
+        return { ok: true, value: { delivered: true } }
+      },
+      async revoke() {
+        return { ok: true, value: { delivered: true } }
+      },
+    }
+    const h = accountsHarness({ deps: { approvals } })
+    const member = await person(h.handle, 'member')
+    const viewer = await person(h.handle, 'viewer')
+    const item = async (sid: string) => {
+      const page = await (
+        await h.handle(asSession('GET', '/admin/overview', sid))
+      ).text()
+      const start = page.indexOf('id="nav-approvals"')
+      return page.slice(start, page.indexOf('</a>', start))
+    }
+    const mine = await item(member.sid)
+    expect(mine).toContain('nav-state-attention')
+    expect(mine).toContain('2 项待你处理')
+    expect(await item(viewer.sid)).not.toContain('nav-state')
+  })
+})
