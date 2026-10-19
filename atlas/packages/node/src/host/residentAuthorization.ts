@@ -30,7 +30,10 @@ export function freshApprovalTool(name: string): boolean {
     ].includes(name) ||
     // 云端电脑 (P21): every browser/computer action waits for its own approval.
     name.startsWith('qianmo_browser_') ||
-    name.startsWith('qianmo_computer_')
+    name.startsWith('qianmo_computer_') ||
+    // 高权限模式 (P39): an elevated command, network or GitHub call that the
+    // tier sends to the operator is approved exactly once, never windowed.
+    name.startsWith('qianmo_elevated_')
   )
 }
 
@@ -313,6 +316,18 @@ export class ResidentAuthorization {
           r.sub === `qianmo://${this.#options.node}/${agent}` &&
           (r.toolName.startsWith('qianmo_browser_') ||
             r.toolName.startsWith('qianmo_computer_')),
+      )
+    this.store.cancelRequests(requests.map(r => r.requestId))
+    for (const r of requests) this.#waiters.get(r.requestId)?.(false)
+  }
+  /** Revoke/ESTOP/regrant: drop every pending elevated approval for one agent. */
+  cancelElevation(agent: string): void {
+    const requests = this.store
+      .pending()
+      .filter(
+        r =>
+          r.sub === `qianmo://${this.#options.node}/${agent}` &&
+          r.toolName.startsWith('qianmo_elevated_'),
       )
     this.store.cancelRequests(requests.map(r => r.requestId))
     for (const r of requests) this.#waiters.get(r.requestId)?.(false)

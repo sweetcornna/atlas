@@ -6,6 +6,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
 import { ResidentSupervisor } from '@qianmo/resident'
 import { OmpRpcProcess, ResidentOmpPool } from '../../src/host/residentOmp.js'
+import { NodeElevation } from '../../src/host/elevation.js'
 import { isolatedRoot } from '../providers/fake.js'
 
 test('stderr after ready is forwarded unchanged and does not become a startup diagnostic', async () => {
@@ -519,6 +520,109 @@ test('authorization requests: confirm answers yes/no, the text request carries t
   } finally {
     for (const child of children) child.kill('SIGKILL')
     await pool.stop()
+    root.dispose()
+  }
+}, 6_000)
+
+test('high-permission gate (P39): QIANMO_ELEVATION_V1 confirms go to requestElevation, and a live grant shapes the launch', async () => {
+  const root = isolatedRoot()
+  const children: ChildProcess[] = []
+  const launches: string[][] = []
+  const elevation = new NodeElevation({
+    node: 'n1',
+    agents: ['reviewer'],
+    estop: () => false,
+    workspace: () => root.root,
+    platform: 'darwin',
+  })
+  const enabled = await elevation.control(
+    'elevation.enable',
+    { agent: 'reviewer', operationId: 'op-1', tier: 'auto' },
+    { actor: 'u:op', peer: 'console', taskId: 't' },
+  )
+  expect(enabled.ok).toBe(true)
+  const asks = [
+    { id: 'e1', answer: 'grant' },
+    { id: 'e2', answer: 'refuse' },
+    { id: 'e3', answer: 'throw' },
+  ].map(ask => ({
+    type: 'extension_ui_request',
+    method: 'confirm',
+    title: 'QIANMO_ELEVATION_V1',
+    id: ask.id,
+    message: JSON.stringify({ answer: ask.answer }),
+  }))
+  const seen: unknown[] = []
+  const pool = new ResidentOmpPool({
+    agents: [{ agent: 'reviewer', cwd: root.root }],
+    memoryRoot: join(root.root, 'memory'),
+    announce: async () => ({ status: 'queued' }),
+    elevation,
+    requestElevation: async (_sessionId, call) => {
+      seen.push(call)
+      const answer = (call as { answer: string }).answer
+      if (answer === 'throw') throw new Error('gate failed')
+      return answer === 'grant'
+    },
+    spawn: input => {
+      launches.push([...input.argv])
+      const child = spawn(
+        process.execPath,
+        [
+          '-e',
+          `
+          const {createInterface} = require('node:readline');
+          const asks = ${JSON.stringify(asks)};
+          setInterval(() => {}, 1000);
+          createInterface({input:process.stdin}).on('line', line => {
+            const frame = JSON.parse(line);
+            if (frame.type === 'ask')
+              for (const ask of asks) process.stdout.write(JSON.stringify(ask)+'\\n');
+            else if (frame.type === 'extension_ui_response')
+              process.stdout.write(JSON.stringify({type:'answered',frame})+'\\n');
+            else if (frame.id !== undefined)
+              process.stdout.write(JSON.stringify({type:'response',id:frame.id,success:true})+'\\n');
+          });
+          process.stdout.write(JSON.stringify({type:'ready'})+'\\n');
+          `,
+        ],
+        { stdio: ['pipe', 'pipe', 'pipe'] },
+      )
+      children.push(child)
+      return child
+    },
+  })
+  try {
+    const session = await pool.newSession({ agent: 'reviewer', cwd: root.root })
+    const channel = await pool.channelFor(session)
+    const answered = new Map<string, Record<string, unknown>>()
+    const all = Promise.withResolvers<void>()
+    channel.onFrame(frame => {
+      if (frame.type !== 'answered') return
+      const reply = frame.frame as Record<string, unknown>
+      answered.set(String(reply.id), reply)
+      if (answered.size === asks.length) all.resolve()
+    })
+    channel.send({ type: 'ask' })
+    await all.promise
+    expect(answered.get('e1')?.confirmed).toBe(true)
+    expect(answered.get('e2')?.confirmed).toBe(false)
+    expect(answered.get('e3')?.confirmed).toBe(false)
+    expect(seen.length).toBe(3)
+    const argv = launches[0]!
+    const mode = argv[argv.indexOf('--approval-mode') + 1]
+    expect(mode).toBe('write')
+    const tools = argv[argv.indexOf('--tools') + 1]!.split(',')
+    // macOS: no sandbox, so no bash; the typed network tools are offered.
+    expect(tools).toEqual(
+      expect.arrayContaining(['write', 'github', 'web_search']),
+    )
+    expect(tools).not.toContain('bash')
+    expect(argv).not.toContain('--no-ui')
+  } finally {
+    for (const child of children) child.kill('SIGKILL')
+    await pool.stop()
+    elevation.close()
     root.dispose()
   }
 }, 6_000)
