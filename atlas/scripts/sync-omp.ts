@@ -40,7 +40,14 @@ export interface CandidateResult {
   changedPaths?: string[]
   /** Upstream changed these base paths, which Atlas deleted; not applied. */
   removedLocally?: string[]
+  /** Upstream changed these base paths, which Atlas rewrote; not applied. */
+  replacedLocally?: string[]
 }
+/** Base paths whose content Atlas rewrote in full, keeping no upstream line
+ * (registered in docs/dev/base-modifications.md). A three-way apply could
+ * only conflict on them, so like deletions their upstream delta stays out of
+ * the applied patch and goes to review. */
+export const REPLACED_LOCALLY: readonly string[] = ['README.md']
 const IDENTITY = {
   GIT_AUTHOR_NAME: 'Atlas upstream bot',
   GIT_AUTHOR_EMAIL: 'upstream-bot@users.noreply.github.com',
@@ -272,13 +279,13 @@ export function updateProvenance(
         readFileSync(path, 'utf8').replaceAll(old.snapshot, next.snapshot),
       )
   }
-  // The other statements of the current base. In the three base files Atlas
+  // The other statements of the current base. In the base files Atlas
   // prefixes, only the Atlas preamble up to the "verbatim below" marker is
   // touched; the upstream text after it stays byte-for-byte.
   const bump = (text: string) =>
     text.replaceAll(`v${old.version}`, `v${next.version}`)
   const marker = 'verbatim below -->'
-  for (const file of ['README.md', 'AGENTS.md', 'CONTRIBUTING.md']) {
+  for (const file of ['AGENTS.md', 'CONTRIBUTING.md']) {
     const path = join(candidate, file)
     if (!existsSync(path)) continue
     const text = readFileSync(path, 'utf8')
@@ -366,6 +373,10 @@ export function prepareCandidate(
       .filter(Boolean),
   )
   const removedLocally = paths.filter(path => deleted.has(path))
+  const replacedLocally = paths.filter(
+    path => REPLACED_LOCALLY.includes(path) && !deleted.has(path),
+  )
+  const heldBack = [...removedLocally, ...replacedLocally]
   const literal = (path: string) => `:(literal)${path}`
   const patch = join(out, 'upstream.patch')
   // --output preserves exact binary bytes; stdout helpers must never trim a patch.
@@ -381,11 +392,16 @@ export function prepareCandidate(
       '--',
       ...pathspec,
     ])
-  diff(patch, ['.', ...removedLocally.map(path => `:(exclude,literal)${path}`)])
+  diff(patch, ['.', ...heldBack.map(path => `:(exclude,literal)${path}`)])
   if (removedLocally.length > 0)
     diff(
       join(out, 'upstream-removed-locally.patch'),
       removedLocally.map(literal),
+    )
+  if (replacedLocally.length > 0)
+    diff(
+      join(out, 'upstream-replaced-locally.patch'),
+      replacedLocally.map(literal),
     )
   try {
     git(candidate, ['apply', '--3way', '--index', '--whitespace=nowarn', patch])
@@ -422,6 +438,7 @@ export function prepareCandidate(
     upstreamTree: next.tree,
     changedPaths: paths,
     removedLocally,
+    replacedLocally,
   }
   writeJson(join(out, 'candidate.json'), result)
   writeFileSync(
@@ -429,7 +446,10 @@ export function prepareCandidate(
     `Updates the omp base from v${old.version} to v${version}.\n\nUpstream: https://github.com/${UPSTREAM}/releases/tag/${tag}\n\nThe first commit applies the upstream delta; the second records the new parentless snapshot and license boundary. Existing snapshot tags and Atlas changes remain intact.\n\nCompatibility results: see the attached workflow artifact. This draft requires review before merge. It does not deploy or update any node.\n` +
       (removedLocally.length === 0
         ? ''
-        : `\n## Upstream changes to base files Atlas deleted\n\nNot applied; the deletions are registered in docs/dev/base-modifications.md. Port anything still relevant by hand. The upstream delta is \`upstream-removed-locally.patch\` in the workflow artifact.\n\n${removedLocally.map(path => `- \`${path}\``).join('\n')}\n`),
+        : `\n## Upstream changes to base files Atlas deleted\n\nNot applied; the deletions are registered in docs/dev/base-modifications.md. Port anything still relevant by hand. The upstream delta is \`upstream-removed-locally.patch\` in the workflow artifact.\n\n${removedLocally.map(path => `- \`${path}\``).join('\n')}\n`) +
+      (replacedLocally.length === 0
+        ? ''
+        : `\n## Upstream changes to base files Atlas rewrote\n\nNot applied; Atlas replaced these files in full, as registered in docs/dev/base-modifications.md. Port anything still relevant by hand. The upstream delta is \`upstream-replaced-locally.patch\` in the workflow artifact.\n\n${replacedLocally.map(path => `- \`${path}\``).join('\n')}\n`),
   )
   return result
 }
