@@ -4,6 +4,7 @@
 import type { ChildProcess } from 'node:child_process'
 import type { OmpPromptAdmission } from '@qianmo/resident'
 import type { RuntimeRoute } from './acpSpec.js'
+import { CLAUDE_TIERS, type ClaudeTier, claudeName } from './modelFields.js'
 import {
   nonNegative,
   RuntimeChannelBase,
@@ -68,11 +69,14 @@ const ASKED_TOOLS = ['Bash', ...EDIT_TOOLS, 'Read', 'Grep', 'Glob', 'mcp__*']
  * the gateway (a user `env` would redirect it) and an inert `apiKeyHelper`
  * (a user one runs at startup even with a key in the environment).
  */
-export function claudeCodeSettings(baseUrl: string): Record<string, unknown> {
+export function claudeCodeSettings(
+  baseUrl: string,
+  env: Readonly<Record<string, string>> = {},
+): Record<string, unknown> {
   return {
     disableAllHooks: true,
     permissions: { ask: ASKED_TOOLS },
-    env: { ANTHROPIC_BASE_URL: baseUrl },
+    env: { ...env, ANTHROPIC_BASE_URL: baseUrl },
     apiKeyHelper: '/usr/bin/true',
   }
 }
@@ -121,10 +125,213 @@ export function claudeCodeEnv(
   }
 }
 
+/** Claude Code's variable for one tier's model. */
+export function claudeTierEnv(tier: ClaudeTier): string {
+  return `ANTHROPIC_DEFAULT_${tier.toUpperCase()}_MODEL`
+}
+
+/**
+ * The variables naming a model: set from the agent's fields, or emptied in
+ * the pin layer so the agent's own settings cannot name one instead.
+ */
+export const CLAUDE_CODE_MODEL_VARS: readonly string[] = [
+  ...CLAUDE_TIERS.map(claudeTierEnv),
+  'ANTHROPIC_SMALL_FAST_MODEL',
+]
+
+/** The longest reply Claude Code asks a model it does not know for. */
+const CLAUDE_CODE_UNKNOWN_OUTPUT = 32_000
+const ONE_MILLION = 1_000_000
+const CAPS_MAX = 8_000
+
+/** The facts {@link claudeCodeModelPlan} reads of a launch. */
+export interface ClaudeCodeModels {
+  readonly model: string
+  readonly effort?: string
+  readonly contextWindow?: number
+  readonly maxOutputTokens?: number
+  readonly efforts?: readonly string[]
+  readonly tiers?: Readonly<
+    Partial<
+      Record<
+        ClaudeTier,
+        {
+          readonly model: string
+          readonly effort?: string
+          readonly contextWindow?: number
+          readonly maxOutputTokens?: number
+          readonly efforts?: readonly string[]
+        }
+      >
+    >
+  >
+  readonly alias?: ClaudeTier
+}
+
+/** How Claude Code is told its models (`harness-backends.md` §11.2). */
+export interface ClaudeCodeModelPlan {
+  /** `--model`: the main model (`[1m]` at 1M and more), or the session's tier. */
+  readonly model: string
+  /** `--effort` (low…xhigh); `max` goes in `CLAUDE_CODE_EFFORT_LEVEL`. */
+  readonly effort?: string
+  /** Added to the process environment: only what is set. */
+  readonly env: Readonly<Record<string, string>>
+  /** The pin layer's: the same, and `''` for each model variable left out. */
+  readonly settingsEnv: Readonly<Record<string, string>>
+}
+
+function oneMillion(model: string, window: number | undefined): string {
+  return window !== undefined &&
+    window >= ONE_MILLION &&
+    !model.endsWith('[1m]')
+    ? `${model}[1m]`
+    : model
+}
+
+/** One of Anthropic's Claude models, by whichever provider it comes. */
+function isClaudeModel(model: string): boolean {
+  const bare = model.replace(/\[1m\]$/, '')
+  return bare
+    .slice(bare.lastIndexOf('/') + 1)
+    .toLowerCase()
+    .startsWith('claude')
+}
+
+/**
+ * `CLAUDE_CODE_MODEL_CAPABILITIES` for the models Claude Code does not know
+ * (another vendor's, through the gateway) that take efforts: without it
+ * Claude Code never sends one an effort.
+ */
+function capabilities(
+  models: readonly {
+    readonly id: string
+    readonly efforts?: readonly string[]
+  }[],
+): string {
+  const parts: string[] = []
+  let length = 0
+  for (const { id, efforts } of models) {
+    const name = id.replace(/\[1m\]$/, '').toLowerCase()
+    if (claudeName(name) !== '' || /[;=,*]/.test(name)) continue
+    if (efforts === undefined) continue
+    const levels = efforts.filter(level =>
+      ['low', 'medium', 'high', 'xhigh', 'max'].includes(level),
+    )
+    if (levels.length === 0) continue
+    const caps = [
+      'effort',
+      ...(levels.includes('xhigh') ? ['xhigh_effort'] : []),
+      ...(levels.includes('max') ? ['max_effort'] : []),
+    ].join(',')
+    const part = `${name}=${caps}`
+    if (parts.some(one => one.startsWith(`${name}=`))) continue
+    if (length + part.length + 1 > CAPS_MAX) break
+    parts.push(part)
+    length += part.length + 1
+  }
+  return parts.join(';')
+}
+
+/**
+ * The agent's models as Claude Code takes them (§11.2, as magpie's
+ * `writeTiers`): `--model` and `--effort`; each tier with a model in
+ * `ANTHROPIC_DEFAULT_<TIER>_MODEL` as `model:effort[1m]`, the haiku tier in
+ * `ANTHROPIC_SMALL_FAST_MODEL` too, a tier without one left out; `max` in
+ * `CLAUDE_CODE_EFFORT_LEVEL`; the window and the reply length Claude Code
+ * cannot know of another vendor's model in `CLAUDE_CODE_MAX_CONTEXT_TOKENS` and
+ * `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, and which of them take efforts in
+ * `CLAUDE_CODE_MODEL_CAPABILITIES`.
+ */
+export function claudeCodeModelPlan(
+  launch: ClaudeCodeModels,
+): ClaudeCodeModelPlan {
+  const main = oneMillion(launch.model, launch.contextWindow)
+  const env: Record<string, string> = {}
+  const tiers = CLAUDE_TIERS.flatMap(tier => {
+    const one = launch.tiers?.[tier]
+    return one === undefined ? [] : [{ tier, ...one }]
+  })
+  for (const one of tiers) {
+    const bare = one.effort ? `${one.model}:${one.effort}` : one.model
+    env[claudeTierEnv(one.tier)] = oneMillion(bare, one.contextWindow)
+  }
+  const haiku = env[claudeTierEnv('haiku')]
+  if (haiku !== undefined) env.ANTHROPIC_SMALL_FAST_MODEL = haiku
+  let effort: string | undefined
+  if (launch.effort === 'max') env.CLAUDE_CODE_EFFORT_LEVEL = 'max'
+  else if (
+    launch.effort !== undefined &&
+    ['low', 'medium', 'high', 'xhigh'].includes(launch.effort)
+  )
+    effort = launch.effort
+  // One window serves every model not marked [1m]: the main model's, or when
+  // that one is marked, the smallest of the unmarked tiers'.
+  let window = main.endsWith('[1m]') ? 0 : (launch.contextWindow ?? 0)
+  if (main.endsWith('[1m]'))
+    for (const one of tiers) {
+      if ((one.contextWindow ?? 0) >= ONE_MILLION) continue
+      const own = one.contextWindow ?? 0
+      if (own > 0 && (window === 0 || own < window)) window = own
+    }
+  if (window > 0) env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(window)
+  // The longest reply all of them can write, when it is past what Claude
+  // Code asks for anyway and none of them is unknown; a Claude main model
+  // Claude Code knows itself.
+  if (!isClaudeModel(launch.model)) {
+    let reply = 0
+    let known = true
+    for (const one of [
+      { model: launch.model, maxOutputTokens: launch.maxOutputTokens },
+      ...tiers,
+    ]) {
+      if (isClaudeModel(one.model)) continue
+      if (one.maxOutputTokens === undefined || one.maxOutputTokens <= 0) {
+        known = false
+        break
+      }
+      if (reply === 0 || one.maxOutputTokens < reply)
+        reply = one.maxOutputTokens
+    }
+    if (known && reply > CLAUDE_CODE_UNKNOWN_OUTPUT)
+      env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(reply)
+  }
+  const caps = capabilities([
+    {
+      id: launch.model,
+      ...(launch.efforts === undefined ? {} : { efforts: launch.efforts }),
+    },
+    ...tiers
+      .filter(one => !one.effort)
+      .map(one => ({
+        id: one.model,
+        ...(one.efforts === undefined ? {} : { efforts: one.efforts }),
+      })),
+  ])
+  if (caps !== '') env.CLAUDE_CODE_MODEL_CAPABILITIES = caps
+  const settingsEnv: Record<string, string> = { ...env }
+  for (const name of CLAUDE_CODE_MODEL_VARS)
+    if (settingsEnv[name] === undefined) settingsEnv[name] = ''
+  const alias =
+    launch.alias !== undefined && env[claudeTierEnv(launch.alias)] !== undefined
+      ? launch.alias
+      : undefined
+  return {
+    model: alias ?? main,
+    ...(effort === undefined ? {} : { effort }),
+    env,
+    settingsEnv,
+  }
+}
+
 /** What the frontend and the resident process share (P36.7 §7.2). */
 export interface ClaudeCodePins {
   /** The gateway, pinned over the agent's own settings. */
   readonly baseUrl: string
+  /**
+   * The model variables pinned over the agent's own settings
+   * ({@link claudeCodeModelPlan}'s `settingsEnv`, §11).
+   */
+  readonly settingsEnv?: Readonly<Record<string, string>>
   readonly mcpConfigPath?: string
   /** Plugins the operator installed for the agent (P32): `--plugin-dir`. */
   readonly pluginDirs?: readonly string[]
@@ -142,7 +349,7 @@ export function claudeCodePinArgs(pins: ClaudeCodePins): string[] {
     '--setting-sources',
     'user',
     '--settings',
-    JSON.stringify(claudeCodeSettings(pins.baseUrl)),
+    JSON.stringify(claudeCodeSettings(pins.baseUrl, pins.settingsEnv)),
     ...(pins.pluginDirs ?? []).flatMap(dir => ['--plugin-dir', dir]),
     ...(pins.mcpConfigPath === undefined
       ? []
@@ -173,6 +380,8 @@ export interface ClaudeCodeLaunch {
   readonly model: string
   /** The gateway (`ANTHROPIC_BASE_URL`), pinned in the settings layer too. */
   readonly baseUrl: string
+  /** The model variables of the pin layer (§11). */
+  readonly settingsEnv?: Readonly<Record<string, string>>
   /** The Claude Code conversation id (a UUID). */
   readonly sessionId: string
   /** Whether the conversation already has a transcript to resume. */
@@ -222,6 +431,9 @@ export function claudeCodeArgv(launch: ClaudeCodeLaunch): string[] {
     // skills.)
     ...claudeCodePinArgs({
       baseUrl: launch.baseUrl,
+      ...(launch.settingsEnv === undefined
+        ? {}
+        : { settingsEnv: launch.settingsEnv }),
       mcpConfigPath: launch.mcpConfigPath,
       ...(launch.pluginDirs === undefined
         ? {}

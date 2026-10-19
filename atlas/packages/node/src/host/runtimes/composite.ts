@@ -39,6 +39,8 @@ export interface ExternalSessionPool<
   owner(sessionId: string): { readonly agent: string } | undefined
   /** {@link ExternalRuntimePool.conversationSince}. */
   conversationSince?(sessionId: string): number | undefined
+  /** {@link ExternalRuntimePool.noteTier}. */
+  noteTier?(sessionId: string, tier: unknown): void
 }
 
 /** How sessions are routed between the pools. */
@@ -161,6 +163,16 @@ export class ResidentRuntimePool<
       this.omp.invalidateAgent(agent),
       this.external?.invalidateAgent(agent),
     ])
+  }
+  /**
+   * A turn's task tier (`harness-backends.md` §11.3), for a session that
+   * runs on an external runtime now; the external pool keeps the first.
+   */
+  noteTier(sessionId: string, tier: unknown): void {
+    const agent = this.#agentOf(sessionId)
+    if (agent === undefined || this.external?.noteTier === undefined) return
+    if (this.#pool(this.#runtime(agent)) === this.omp) return
+    this.external.noteTier(sessionId, tier)
   }
   async channelFor(sessionId: string, signal?: AbortSignal): Promise<O | E> {
     const agent = this.#agentOf(sessionId)

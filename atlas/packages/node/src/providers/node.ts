@@ -31,6 +31,7 @@ import {
   LANE_API,
 } from './compile.js'
 import { runtimeSpec, type RuntimeLane } from '../host/runtimes/catalog.js'
+import type { ModelFacts } from '../host/runtimes/modelFields.js'
 import { getModelCompatCapabilities } from './capabilities.js'
 import {
   diffKeyHashes,
@@ -186,6 +187,11 @@ export function nodeModelSelection(
       : undefined)
   return { provider, modelId, ...(thinkingLevel ? { thinkingLevel } : {}) }
 }
+/** `<profile>/<model>` for a model of the compiled provider `qm-<profile>-<hash>`. */
+function specOf(provider: string, modelId: string): string {
+  const profile = /^qm-(.+)-[0-9a-f]{8}$/.exec(provider)?.[1]
+  return `${profile ?? provider}/${modelId}`
+}
 /**
  * The node's main model as `<profile>/<model>` (P36 §3.2): the console
  * profile behind the provider `qm-<profile>-<hash>` of the default role.
@@ -193,8 +199,78 @@ export function nodeModelSelection(
 export function nodeMainModelSpec(): string | undefined {
   const selection = nodeModelSelection()
   if (selection === undefined) return undefined
-  const profile = /^qm-(.+)-[0-9a-f]{8}$/.exec(selection.provider)?.[1]
-  return `${profile ?? selection.provider}/${selection.modelId}`
+  return specOf(selection.provider, selection.modelId)
+}
+/**
+ * A model role's own model as `<profile>/<model>` (`harness-backends.md`
+ * §11.3): undefined when the role is not configured or is the main model's
+ * (it follows the agent's own model then).
+ */
+export function nodeRoleModelSpec(role: string): string | undefined {
+  if (role === 'default') return undefined
+  const selection = nodeModelSelection(role)
+  if (selection === undefined) return undefined
+  const main = nodeModelSelection()
+  if (
+    main !== undefined &&
+    main.provider === selection.provider &&
+    main.modelId === selection.modelId
+  )
+    return undefined
+  return specOf(selection.provider, selection.modelId)
+}
+/** The compiled providers of `profile` (a console id or a full `qm-…` id). */
+function profileProviders(
+  profile: string,
+): [string, Record<string, unknown>][] {
+  const providers = readYaml(providerPaths.models()).providers
+  const entries = isRecord(providers) ? Object.entries(providers) : []
+  return entries.filter(
+    (entry): entry is [string, Record<string, unknown>] =>
+      isRecord(entry[1]) &&
+      ((profile.startsWith('qm-') && entry[0] === profile) ||
+        (entry[0].startsWith(`qm-${profile}-`) &&
+          /^[0-9a-f]{8}$/.test(entry[0].slice(profile.length + 4)))),
+  )
+}
+/** What `models.yml` says of one chat model (§11): window, reply, efforts. */
+function modelFacts(raw: unknown): ModelFacts | undefined {
+  if (!isRecord(raw) || typeof raw.id !== 'string') return undefined
+  if (raw.kind !== undefined) return undefined
+  const thinking = isRecord(raw.thinking) ? raw.thinking : undefined
+  const efforts = Array.isArray(thinking?.efforts)
+    ? thinking.efforts.filter(
+        (level): level is string => typeof level === 'string',
+      )
+    : undefined
+  return {
+    id: raw.id,
+    ...(typeof raw.contextWindow === 'number'
+      ? { contextWindow: raw.contextWindow }
+      : {}),
+    ...(typeof raw.maxTokens === 'number'
+      ? { maxOutputTokens: raw.maxTokens }
+      : {}),
+    ...(efforts === undefined ? {} : { efforts }),
+    ...(raw.reasoning === false ? { reasoning: false } : {}),
+  }
+}
+/**
+ * qianmopi's `--model` for an agent's own `<profile>/<model>` (§11.2): the
+ * profile's provider the default role runs, else its first; undefined when
+ * the profile is not applied here.
+ */
+export function ompProviderModel(
+  spec: string,
+): { readonly provider: string; readonly modelId: string } | undefined {
+  const slash = spec.indexOf('/')
+  if (slash <= 0 || slash === spec.length - 1) return undefined
+  const matches = profileProviders(spec.slice(0, slash))
+  if (matches.length === 0) return undefined
+  const main = nodeModelSelection()?.provider
+  const provider =
+    matches.find(([id]) => id === main)?.[0] ?? matches[0]?.[0] ?? ''
+  return { provider, modelId: spec.slice(slash + 1) }
 }
 /**
  * Address, key and model for an external-runtime agent, read from the model
@@ -211,6 +287,10 @@ export function runtimeModelCredential(
   readonly apiKey: string
   readonly lane: RuntimeLane
   readonly headers?: Readonly<Record<string, string>>
+  /** What `models.yml` says of the model, when it lists it (§11). */
+  readonly facts?: ModelFacts
+  /** Every chat model the profile lists, for tiers that follow (§11). */
+  readonly siblings?: readonly ModelFacts[]
 } {
   const lanes = runtimeSpec(runtime)?.lanes ?? []
   if (lanes.length === 0)
@@ -220,16 +300,9 @@ export function runtimeModelCredential(
     throw new Error(`--agent-model must be <profile>/<model>, got ${spec}`)
   const profile = spec.slice(0, slash)
   const model = spec.slice(slash + 1)
-  const providers = readYaml(providerPaths.models()).providers
-  const entries = isRecord(providers) ? Object.entries(providers) : []
   // A managed provider id itself, or a profile's compiled
   // `qm-<profile>-<hash>` (a profile id may itself begin with `qm-`).
-  const matches = entries.filter(
-    ([id]) =>
-      (profile.startsWith('qm-') && id === profile) ||
-      (id.startsWith(`qm-${profile}-`) &&
-        /^[0-9a-f]{8}$/.test(id.slice(profile.length + 4))),
-  )
+  const matches: [string, unknown][] = profileProviders(profile)
   if (matches.length === 0)
     throw new Error(
       `model profile ${profile} is not applied on this node; apply it from the console's model service first`,
@@ -274,12 +347,18 @@ export function runtimeModelCredential(
         ),
       )
     : {}
+  const siblings = (Array.isArray(provider.models) ? provider.models : [])
+    .map(modelFacts)
+    .filter((one): one is ModelFacts => one !== undefined)
+  const facts = siblings.find(one => one.id === model)
   return {
     model,
     baseUrl: provider.baseUrl,
     apiKey,
     lane,
     ...(Object.keys(headers).length === 0 ? {} : { headers }),
+    ...(facts === undefined ? {} : { facts }),
+    siblings,
   }
 }
 export function resolveKeptSecret(fingerprint: string): string | undefined {

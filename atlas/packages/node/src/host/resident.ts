@@ -164,6 +164,7 @@ import {
   ExternalRuntimePool,
   type ExternalAgent,
   type ExternalLaunch,
+  type ExternalLaunchSession,
   type ExternalRuntimeSpawn,
 } from './runtimes/pool.js'
 import type { ChildProcess } from 'node:child_process'
@@ -493,7 +494,10 @@ interface QianmoResidentOptions {
    * The model and credentials an external-runtime agent starts with. The CLI
    * hands this over from the provider stack, which stays out of this module.
    */
-  readonly resolveRuntimeLaunch?: (agent: ExternalAgent) => ExternalLaunch
+  readonly resolveRuntimeLaunch?: (
+    agent: ExternalAgent,
+    session: ExternalLaunchSession,
+  ) => ExternalLaunch
   readonly runtimeBins?: Partial<Record<ExternalRuntimeKind, string>>
   /**
    * Per-agent runtime and model, qianmopi fallback and default installs
@@ -1276,25 +1280,18 @@ export class QianmoResident {
             throw new Error('resident omp pool is not ready')
           const owner = this.#turn.activeInput(sessionId)?.agent
           const pool = owner === undefined ? undefined : this.#poolOf(owner)
+          // A worker session's task tier picks its model on an external
+          // runtime (`harness-backends.md` §11.3); its first turn's counts.
+          const asked = this.#turnPayload(sessionId)
+          if (asked !== undefined)
+            this.#runtimeChild.noteTier(sessionId, asked.raw?.direction)
           const child = await this.#runtimeChild.channelFor(sessionId, signal)
           if (pool !== undefined && signal !== undefined)
             this.#hold(sessionId, pool, signal)
           const active = this.#turn.activeInput(sessionId)
           if (active) {
-            const pending = active.agent
-              ? this.#ledger(active.agent)
-                  .query()
-                  .pending.find(p => p.messageId === active.messageId)
-              : undefined
-            const envelope =
-              pending?.snapshot.length === 1
-                ? networkEnvelope(pending.snapshot[0])
-                : undefined
-            const payload = envelope?.payload
-            const raw =
-              payload && typeof payload === 'object' && !Array.isArray(payload)
-                ? (payload as Record<string, unknown>)
-                : undefined
+            const { pending, envelope, raw } =
+              this.#turnPayload(sessionId) ?? {}
             const text =
               typeof raw?.prompt === 'string'
                 ? raw.prompt
@@ -3574,6 +3571,38 @@ export class QianmoResident {
   }
 
   /**
+   * The mailbox entry of `sessionId`'s active turn and its payload, when the
+   * turn came as one network message.
+   */
+  #turnPayload(sessionId: string):
+    | {
+        readonly pending:
+          | ReturnType<FileAdmissionLedger['query']>['pending'][number]
+          | undefined
+        readonly envelope: ReturnType<typeof networkEnvelope>
+        readonly raw: Record<string, unknown> | undefined
+      }
+    | undefined {
+    const active = this.#turn.activeInput(sessionId)
+    if (!active) return undefined
+    const pending = active.agent
+      ? this.#ledger(active.agent)
+          .query()
+          .pending.find(p => p.messageId === active.messageId)
+      : undefined
+    const envelope =
+      pending?.snapshot.length === 1
+        ? networkEnvelope(pending.snapshot[0])
+        : undefined
+    const payload = envelope?.payload
+    const raw =
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? (payload as Record<string, unknown>)
+        : undefined
+    return { pending, envelope, raw }
+  }
+
+  /**
    * The external-runtime half of a generation (P27). It knows every agent:
    * which runtime one runs on is read when its process starts (P36).
    */
@@ -3597,12 +3626,12 @@ export class QianmoResident {
     } = {
       agents,
       runtimeOf: agent => runtimes.externalRuntimeOf(agent),
-      resolveLaunch: agent => {
+      resolveLaunch: (agent, session) => {
         if (resolve === undefined)
           throw new Error(
             `${agent.agent} runs on ${agent.runtime}, but this node has no model for it (--agent-model)`,
           )
-        return resolve(agent)
+        return resolve(agent, session)
       },
       ...(this.#options.runtimeBins === undefined
         ? {}
@@ -3678,6 +3707,10 @@ export class QianmoResident {
         }),
       protectedRoots: this.#options.protectedRoots,
       agents: this.#options.agents,
+      // An agent configured on qianmopi with a model or effort of its own
+      // (`harness-backends.md` §11.2).
+      agentModel: (agent, fallback) =>
+        this.runtimes.ompSelection(agent, fallback),
       memoryRoot: this.#memoryRoot,
       allowWorkspaceEdits: this.#options.allowWorkspaceEdits,
       spawn: this.#options.spawnOmp,

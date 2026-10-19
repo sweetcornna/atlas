@@ -48,6 +48,16 @@ export interface AcpLaunchInput {
   /** The model's context window and output ceiling, when the node knows them. */
   readonly contextWindow?: number
   readonly maxOutputTokens?: number
+  /**
+   * A small model of the same provider for the harness's background asks
+   * (opencode's `small_model`, `harness-backends.md` §11); absent: the
+   * model itself.
+   */
+  readonly small?: {
+    readonly model: string
+    readonly contextWindow?: number
+    readonly maxOutputTokens?: number
+  }
   /** This agent's private state directory for the harness (0700). */
   readonly home: string
   /**
@@ -176,6 +186,8 @@ export interface AcpRuntime {
   readonly resume?: 'session/resume' | 'session/load'
   /** The `session/set_config_option` id effort is set through, when offered. */
   readonly effortOption?: string
+  /** The field's effort (`modelFields.ts`) as that option spells it. */
+  readonly effortValue?: (effort: string) => string
   /**
    * `false` when the harness's `PromptResponse.usage` does not cover the
    * whole turn (opencode: its last model call only); the turn then counts 0

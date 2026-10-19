@@ -43,7 +43,26 @@ import {
   type RuntimeFallbackCode,
   type RuntimeStatusReply,
 } from './runtimes/contract.js'
-import type { ExternalLaunch } from './runtimes/pool.js'
+import {
+  CLAUDE_TIERS,
+  EXTRA_FIELD_KEYS,
+  effortChoices,
+  fieldValueProblem,
+  followTier,
+  MODEL_SPEC,
+  modelOf,
+  narrowEffort,
+  profileOf,
+  TASK_TIER_ALIAS,
+  TASK_TIER_ROLES,
+  type ClaudeTier,
+  type ModelFacts,
+} from './runtimes/modelFields.js'
+import type {
+  ExternalLaunch,
+  ExternalLaunchSession,
+  LaunchModel,
+} from './runtimes/pool.js'
 
 /** One agent as the start flags left it. */
 export interface RuntimeAgentFlags {
@@ -59,6 +78,23 @@ export interface RuntimeCredential extends ExternalLaunch {
   readonly lane: RuntimeLane
 }
 
+/**
+ * What the model service gives for one `<profile>/<model>`
+ * (`runtimeModelCredential`): the route, and what `models.yml` says of the
+ * model and of the profile's other models (§11).
+ */
+export interface RuntimeModelRoute extends RuntimeCredential {
+  readonly facts?: ModelFacts
+  readonly siblings?: readonly ModelFacts[]
+}
+
+/** qianmopi's `--model` and `--thinking` (`residentOmp.ts`). */
+export interface OmpModelSelection {
+  readonly provider: string
+  readonly modelId: string
+  readonly thinkingLevel?: string
+}
+
 export interface NodeRuntimesOptions {
   readonly agents: readonly RuntimeAgentFlags[]
   /** `--default-runtime`; default `dsh`. */
@@ -71,9 +107,18 @@ export interface NodeRuntimesOptions {
    */
   readonly fallback?: boolean
   /** `runtimeModelCredential` (`providers/node.ts`); throws when unresolvable. */
-  readonly credential?: (spec: string, runtime: string) => RuntimeCredential
+  readonly credential?: (spec: string, runtime: string) => RuntimeModelRoute
   /** The node's main model as `<profile>/<model>`, when one is applied. */
   readonly mainModel?: () => string | undefined
+  /**
+   * A model role's own model as `<profile>/<model>`, undefined when the
+   * role follows the main model (`nodeRoleModelSpec`, §11.3).
+   */
+  readonly roleModel?: (role: string) => string | undefined
+  /** qianmopi's provider and model for a `<profile>/<model>` (`ompProviderModel`). */
+  readonly ompModel?: (
+    spec: string,
+  ) => { readonly provider: string; readonly modelId: string } | undefined
   /** Install missing default runtimes at start (`--no-runtime-autoinstall` turns it off). */
   readonly autoInstall?: boolean
   /** Waits before each retry of a failed default install. */
@@ -100,6 +145,8 @@ export const RUNTIME_INSTALL_RETRY_MS: readonly number[] = [
 interface AgentEntry {
   runtime?: string
   model?: string
+  /** §11: the other native model fields (`modelFields.ts`), set ones only. */
+  fields?: Record<string, string>
 }
 
 interface RuntimesFile {
@@ -107,8 +154,26 @@ interface RuntimesFile {
   readonly agents: Readonly<Record<string, AgentEntry>>
 }
 
-/** `<profile>/<model>`; the model id may itself contain slashes. */
-const MODEL_SPEC = /^[^/\s]+\/\S+$/
+/** How many fields one agent may have (every runtime's together). */
+const MAX_FIELDS = 32
+
+/**
+ * `fields` as `runtimes.json` keeps them: known keys with valid values, the
+ * empty ones (following) left out; a string naming what is wrong otherwise.
+ */
+function parseFields(raw: unknown): Record<string, string> | string {
+  if (!isRecord(raw)) return '字段要是对象'
+  const entries = Object.entries(raw)
+  if (entries.length > MAX_FIELDS) return '字段太多'
+  const out: Record<string, string> = Object.create(null)
+  for (const [key, value] of entries) {
+    if (key === 'model') return '模型用 model 下发，不放在 fields 里'
+    const problem = fieldValueProblem(key, value)
+    if (problem !== null) return problem
+    if (value !== '') out[key] = value as string
+  }
+  return out
+}
 
 /**
  * An ACP runtime needs its catalog launcher (`acp`, filled in by P36.2);
@@ -224,9 +289,22 @@ export class NodeRuntimes {
           (value['model'] === 'auto' || MODEL_SPEC.test(value['model']))
             ? value['model']
             : undefined
+        // A field this build does not know (or a broken value) is dropped
+        // alone; the rest of the agent's entry stays.
+        const fields: Record<string, string> = Object.create(null)
+        if (isRecord(value['fields']))
+          for (const [key, one] of Object.entries(value['fields']))
+            if (
+              EXTRA_FIELD_KEYS.includes(key) &&
+              typeof one === 'string' &&
+              one !== '' &&
+              fieldValueProblem(key, one) === null
+            )
+              fields[key] = one
         agents[agent] = {
           ...(runtime === undefined ? {} : { runtime }),
           ...(model === undefined ? {} : { model }),
+          ...(Object.keys(fields).length === 0 ? {} : { fields }),
         }
       }
     return { v: 1, agents }
@@ -245,6 +323,7 @@ export class NodeRuntimes {
     return {
       ...runtime,
       model: entry?.model ?? flags?.model ?? null,
+      fields: { ...entry?.fields },
     }
   }
 
@@ -296,16 +375,171 @@ export class NodeRuntimes {
     }
   }
 
-  /** Address, key and model for `agent`'s effective external runtime. */
-  launch(agent: string): RuntimeCredential {
+  /**
+   * Address, key and model for `agent`'s effective external runtime, with
+   * its native model fields resolved (§11): the effort narrowed to the
+   * model, Claude Code's tiers, opencode's small model. A worker session's
+   * task tier (§11.3) runs it on that tier's model.
+   */
+  launch(agent: string, session?: ExternalLaunchSession): RuntimeCredential {
     const state = this.#states.get(agent)
     const runtime = state?.effective.runtime
     if (runtime === undefined || runtime === FALLBACK_RUNTIME)
       throw new Error(`${agent} runs on qianmopi now`)
     const model = state?.effective.model
-    if (model === undefined || this.#options.credential === undefined)
+    const credential = this.#options.credential
+    if (model === undefined || credential === undefined)
       throw new Error(`${agent} has no model for ${runtime}`)
-    return this.#options.credential(model, runtime)
+    let spec = model
+    let route = credential(model, runtime)
+    const tier = session?.tier
+    // Claude Code runs a tier through its own aliases (below); the others
+    // on the role's model, when it has one of its own that this runtime
+    // can call. Otherwise the agent's model.
+    if (tier !== undefined && runtime !== 'claude-code') {
+      const role = TASK_TIER_ROLES[tier]
+      const own =
+        role === 'default' ? undefined : this.#options.roleModel?.(role)
+      if (own !== undefined && own !== spec)
+        try {
+          const other = credential(own, runtime)
+          if (this.#headersProblem(other, runtime) === undefined) {
+            spec = own
+            route = other
+          }
+        } catch {
+          // Not callable here: the agent's own model.
+        }
+    }
+    return this.#withFields(agent, runtime, spec, route, tier)
+  }
+
+  /** The agent's fields of `runtime`, applied to the route of `spec`. */
+  #withFields(
+    agent: string,
+    runtime: string,
+    spec: string,
+    route: RuntimeModelRoute,
+    tier: ExternalLaunchSession['tier'],
+  ): RuntimeCredential {
+    const fields = this.#file.agents[agent]?.fields ?? {}
+    const { facts, siblings, ...base } = route
+    const main: ModelFacts = facts ?? { id: base.model }
+    const effort = narrowEffort(
+      fields['effort'],
+      effortChoices(runtime, 'effort', main),
+    )
+    const known = siblings ?? []
+    const factsOf = (id: string): ModelFacts =>
+      known.find(one => one.id === id) ?? { id }
+    // Another model of the same profile, as a launch carries it.
+    const launchModel = (id: string, level?: string): LaunchModel => {
+      const one = factsOf(id)
+      return {
+        model: id,
+        ...(level === undefined ? {} : { effort: level }),
+        ...(one.contextWindow === undefined
+          ? {}
+          : { contextWindow: one.contextWindow }),
+        ...(one.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: one.maxOutputTokens }),
+        ...(one.efforts === undefined ? {} : { efforts: one.efforts }),
+      }
+    }
+    // A tier or small model of another profile has another address and key:
+    // left out, so it follows.
+    const ownModel = (key: string): string | undefined => {
+      const value = fields[key]
+      return value !== undefined && profileOf(value) === profileOf(spec)
+        ? modelOf(value)
+        : undefined
+    }
+    let tiers: Partial<Record<ClaudeTier, LaunchModel>> | undefined
+    let alias: ClaudeTier | undefined
+    let small: LaunchModel | undefined
+    if (runtime === 'claude-code') {
+      tiers = {}
+      const ids = known.map(one => one.id)
+      for (const one of CLAUDE_TIERS) {
+        const asked = fields[`${one}_effort`]
+        const id =
+          ownModel(one) ??
+          followTier(one, base.model, ids) ??
+          (asked === undefined ? undefined : base.model)
+        if (id === undefined) continue
+        const level = narrowEffort(
+          asked,
+          effortChoices(runtime, `${one}_effort`, factsOf(id)),
+        )
+        tiers[one] = launchModel(id, level)
+      }
+      alias =
+        tier === undefined ? undefined : (TASK_TIER_ALIAS[tier] ?? undefined)
+    }
+    if (runtime === 'opencode') {
+      const id = ownModel('small')
+      if (id !== undefined && id !== base.model) small = launchModel(id)
+    }
+    return {
+      ...base,
+      ...(effort === undefined ? {} : { effort }),
+      ...(main.contextWindow === undefined
+        ? {}
+        : { contextWindow: main.contextWindow }),
+      ...(main.maxOutputTokens === undefined
+        ? {}
+        : { maxOutputTokens: main.maxOutputTokens }),
+      ...(main.efforts === undefined ? {} : { efforts: main.efforts }),
+      ...(tiers === undefined ? {} : { tiers }),
+      ...(alias === undefined ? {} : { alias }),
+      ...(small === undefined ? {} : { small }),
+    }
+  }
+
+  /**
+   * qianmopi's model and thinking for an agent configured on it (§11.2):
+   * its own `model` (`runtimes.json` only) and `effort` over `fallback`, the
+   * node's main model; undefined leaves `fallback` as it is.
+   */
+  ompSelection(
+    agent: string,
+    fallback?: OmpModelSelection,
+  ): OmpModelSelection | undefined {
+    if (this.configured(agent).runtime !== FALLBACK_RUNTIME) return undefined
+    const entry = this.#file.agents[agent]
+    const spec =
+      entry?.model !== undefined && entry.model !== 'auto'
+        ? entry.model
+        : undefined
+    const effort = entry?.fields?.['effort']
+    if (spec === undefined && effort === undefined) return undefined
+    const own = spec === undefined ? undefined : this.#options.ompModel?.(spec)
+    const target = own ?? fallback
+    if (target === undefined) return undefined
+    // qianmopi spells `none` as `off`; no effort keeps the node's level.
+    const thinking =
+      effort === undefined
+        ? fallback?.thinkingLevel
+        : effort === 'none'
+          ? 'off'
+          : effort
+    return {
+      provider: target.provider,
+      modelId: target.modelId,
+      ...(thinking === undefined ? {} : { thinkingLevel: thinking }),
+    }
+  }
+
+  #headersProblem(
+    route: RuntimeCredential,
+    runtime: string,
+  ): string | undefined {
+    const target = runtimeSpec(runtime)
+    return target?.customHeaders === false &&
+      Object.keys(route.headers ?? {}).length > 0
+      ? `${target.label} 不能发送这份档案要求的自定义请求头`
+      : undefined
   }
 
   #lastOkAt(kind: string): number {
@@ -618,9 +852,24 @@ export class NodeRuntimes {
           message: '模型要写成 <档案>/<模型号> 或 auto',
         }
     }
+    if ('fields' in args) {
+      const value = args['fields']
+      if (value === null) delete entry.fields
+      else {
+        const fields = parseFields(value)
+        if (typeof fields === 'string')
+          return { ok: false, code: RUNTIME_ERRORS.badModel, message: fields }
+        if (Object.keys(fields).length === 0) delete entry.fields
+        else entry.fields = fields
+      }
+    }
     const before = JSON.stringify(this.#file.agents[agent] ?? {})
     const agents: Record<string, AgentEntry> = { ...this.#file.agents }
-    if (entry.runtime === undefined && entry.model === undefined)
+    if (
+      entry.runtime === undefined &&
+      entry.model === undefined &&
+      entry.fields === undefined
+    )
       delete agents[agent]
     else agents[agent] = entry
     const next: RuntimesFile = { v: 1, agents }
