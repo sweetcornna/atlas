@@ -160,6 +160,7 @@ export class ResidentMailboxReader {
   readonly #options: ResidentMailboxReaderOptions
   readonly #gate: NodeTurnGate
   #polling: Promise<ResidentPollResult> | null = null
+  #queued: Promise<ResidentPollResult> | null = null
 
   constructor(options: ResidentMailboxReaderOptions) {
     this.#options = options
@@ -170,12 +171,31 @@ export class ResidentMailboxReader {
     return this.#gate
   }
 
+  /**
+   * One poll at a time. A call while one runs gets the next poll, not that
+   * one: it may already have read the mailbox, before what the caller just
+   * wrote there, and nothing else polls again until the next tick. That is
+   * how a task delivered during a new generation's first poll sat unread.
+   */
   poll(): Promise<ResidentPollResult> {
-    if (this.#polling !== null) return this.#polling
-    this.#polling = this.#poll().finally(() => {
+    if (this.#polling === null) return this.#begin()
+    if (this.#queued === null) {
+      // A poll begun in between started after this call; share it.
+      const next = (): Promise<ResidentPollResult> => {
+        this.#queued = null
+        return this.#polling ?? this.#begin()
+      }
+      this.#queued = this.#polling.then(next, next)
+    }
+    return this.#queued
+  }
+
+  #begin(): Promise<ResidentPollResult> {
+    const polling = this.#poll().finally(() => {
       this.#polling = null
     })
-    return this.#polling
+    this.#polling = polling
+    return polling
   }
 
   async #poll(): Promise<ResidentPollResult> {

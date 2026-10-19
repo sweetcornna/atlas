@@ -644,4 +644,46 @@ describe('resident mailbox admission', () => {
     )
     expect(ledger.query().pending[0]?.phase).toBe('admitted')
   })
+
+  test('a poll asked for while one runs sees mail written after that one read', async () => {
+    // A delivery writes, then polls; the running poll (a new generation's
+    // first) has already read the mailbox. Handing the delivery that poll
+    // left the task unread until the next tick (CI run 39144668006).
+    const mailbox = new MemoryMailbox([])
+    const turn = new MemoryTurn()
+    const readAll = mailbox.readAll.bind(mailbox)
+    let reads = 0
+    let release!: () => void
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+    mailbox.readAll = async () => {
+      const snapshot = await readAll()
+      if (++reads === 1) await held
+      return snapshot
+    }
+    const mailboxReader = reader(mailbox, turn)
+
+    const running = mailboxReader.poll()
+    while (reads === 0) await Promise.resolve()
+    mailbox.messages.push(message())
+    const asked = mailboxReader.poll()
+    release()
+
+    expect(await running).toEqual({
+      detected: 0,
+      recovered: 0,
+      read: 0,
+      abandoned: 0,
+    })
+    expect(await asked).toEqual({
+      detected: 1,
+      recovered: 0,
+      read: 1,
+      abandoned: 0,
+    })
+    await turnSettled(mailboxReader)
+    expect(turn.executeCalls).toHaveLength(1)
+    expect(reads).toBe(2)
+  })
 })

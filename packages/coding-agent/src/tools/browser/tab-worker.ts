@@ -1796,7 +1796,7 @@ export class WorkerCore {
 			// page later and holds up any interception restore below. Stopping is gated on
 			// that navigation because Page.stopLoading also cancels every fetch and subresource
 			// load in flight. A run that merely ended keeps an unawaited goto going.
-			if (ac.signal.aborted && this.#network?.hasPendingMainFrameNavigation()) await this.#stopLoading();
+			if (ac.signal.aborted) await this.#stopPendingNavigation();
 			try {
 				await runPage?.restoreInterception();
 			} catch (error) {
@@ -3106,6 +3106,29 @@ export class WorkerCore {
 		this.#elementCache.clear();
 		this.#elementCounter = 0;
 		for (const handle of handles) void handle.dispose().catch(() => undefined);
+	}
+
+	/**
+	 * `Page.stopLoading` only while a main-frame navigation is unanswered. Chrome reports the
+	 * request as it sends it, so a cancel can arrive while that event is still in transit; opening
+	 * the session is a round trip on the same connection, after which every event Chrome sent
+	 * earlier has been dispatched and the pending set is current.
+	 */
+	async #stopPendingNavigation(): Promise<void> {
+		const network = this.#network;
+		if (!network) return;
+		try {
+			const session = await this.#requirePage().createCDPSession();
+			try {
+				if (network.hasPendingMainFrameNavigation()) await session.send("Page.stopLoading");
+			} finally {
+				await session.detach().catch(() => undefined);
+			}
+		} catch (error) {
+			this.#log("debug", "Page.stopLoading failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
 	/** Best-effort `Page.stopLoading` so an abandoned navigation cannot stall later ops. */
