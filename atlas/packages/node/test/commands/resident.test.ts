@@ -38,6 +38,7 @@ import {
   parseResidentArgs,
   residentPriorLifeLine,
   residentTrustedIssuers,
+  residentTurnPlaces,
   warnMissingModelCredentials,
   warnUnselectedTaskPolicy,
 } from '../../src/commands/resident.js'
@@ -1133,6 +1134,55 @@ test('protected roots and M2 identity flags remain explicit CLI inputs', () => {
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+describe('turn places (P38)', () => {
+  test('a node runs four turns at once by default, three of them background, within --omp-max-children', () => {
+    const plain = parseResidentArgs(BASE)
+    expect(plain.maxTurns).toBeUndefined()
+    expect(residentTurnPlaces(plain)).toEqual({
+      maxTurns: 4,
+      maxBackgroundTurns: 3,
+    })
+    const given = parseResidentArgs([
+      ...BASE,
+      '--max-turns=6',
+      '--max-background-turns',
+      '2',
+    ])
+    expect([given.maxTurns, given.maxBackgroundTurns]).toEqual([6, 2])
+    expect(residentTurnPlaces(given)).toEqual({
+      maxTurns: 6,
+      maxBackgroundTurns: 2,
+    })
+    // Each running turn holds a process: a small node stays serial.
+    expect(
+      residentTurnPlaces(parseResidentArgs([...BASE, '--omp-max-children=1'])),
+    ).toEqual({ maxTurns: 1, maxBackgroundTurns: 3 })
+    expect(
+      residentTurnPlaces(
+        parseResidentArgs([...BASE, '--omp-max-children=2', '--max-turns=8']),
+      ).maxTurns,
+    ).toBe(2)
+  })
+  test('out-of-range places are refused before a node starts', () => {
+    for (const flag of ['--max-turns', '--max-background-turns'])
+      for (const value of ['0', '-1', '1.5', '65', ' ', 'x'])
+        expect(() => parseResidentArgs([...BASE, `${flag}=${value}`])).toThrow(
+          `${flag} must be an integer from 1 to 64`,
+        )
+    expect(() => parseResidentArgs([...BASE, '--max-turns'])).toThrow(
+      'requires a value',
+    )
+  })
+  test('help explains places, the foreground reserve and one turn per session', () => {
+    expect(RESIDENT_HELP_TEXT).toContain('--max-turns <n>')
+    expect(RESIDENT_HELP_TEXT).toContain('--max-background-turns <n>')
+    expect(RESIDENT_HELP_TEXT).toContain('kept for the foreground')
+    expect(RESIDENT_HELP_TEXT).toContain(
+      'A session never runs two turns at once',
+    )
+  })
 })
 
 describe('omp child resource flags', () => {

@@ -243,9 +243,9 @@ export interface ResidentProviderNode {
 
 /** What a provider switch would cut off if the omp RPC child stopped now. */
 interface ResidentInFlight {
-  /** A turn is running in the node gate. */
+  /** Turns running in the node gate. */
   readonly turns: number
-  /** Turns queued behind it. */
+  /** Turns waiting there for a place or for their session. */
   readonly queued: number
   /** Network tasks registered and not yet answered. */
   readonly tasks: number
@@ -488,6 +488,17 @@ interface QianmoResidentOptions {
   }) => void
   readonly ompIdleMs?: number
   readonly ompMaxChildren?: number
+  /**
+   * Turns the node runs at once, across sessions and agents (P38): the turn
+   * gate's places. Absent: 1, one turn at a time. The CLI keeps it within
+   * {@link ompMaxChildren}, since each running turn holds a process.
+   */
+  readonly maxTurns?: number
+  /**
+   * Of those, the hub's background sub-agent turns at most; the gate keeps
+   * one place for the foreground whenever there are two or more.
+   */
+  readonly maxBackgroundTurns?: number
   readonly spawnOmp?: (input: ResidentOmpSpawn) => ChildProcess
   /**
    * The model and credentials an external-runtime agent starts with. The CLI
@@ -820,7 +831,7 @@ export class QianmoResident {
   readonly #options: QianmoResidentOptions
   /** `options.localCommandIssuers`, as the set it is looked up in. */
   readonly #localCommandIssuers: ReadonlySet<string>
-  readonly #gate = new NodeTurnGate()
+  readonly #gate: NodeTurnGate
   /**
    * The process each running turn holds, by session: which pool it came from
    * (qianmopi or an external runtime). Each pool starts at most
@@ -929,6 +940,12 @@ export class QianmoResident {
   #switchStatus: ResidentProviderSwitchStatus | undefined
 
   constructor(options: QianmoResidentOptions) {
+    this.#gate = new NodeTurnGate({
+      ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
+      ...(options.maxBackgroundTurns === undefined
+        ? {}
+        : { maxBackgroundTurns: options.maxBackgroundTurns }),
+    })
     const files =
       options.controllers?.size &&
       (process.platform === 'darwin' || process.platform === 'linux')
@@ -1159,6 +1176,13 @@ export class QianmoResident {
                     return [[agent.agent, spec.slice(spec.indexOf('/') + 1)]]
                   }),
                 ),
+                // How many turns run here at once, and how many of them may
+                // be background sub-agent turns: the hub sends no more
+                // worker turns than that at a time (P38).
+                turns: {
+                  max: this.#gate.limits.maxTurns,
+                  background: this.#gate.limits.maxBackgroundTurns,
+                },
                 version: buildVersion(),
                 platform: process.platform,
                 now: Date.now(),
@@ -1688,9 +1712,9 @@ export class QianmoResident {
   /**
    * The node turn gate, for tests that need to observe or occupy it.
    *
-   * Saturating it is the only way to reach the `E_BUSY` refusal below from
-   * outside: the admission loop submits at most one turn per agent at a time,
-   * so no amount of traffic will fill a 32-deep queue through the front door.
+   * Saturating it is the most direct way to reach the `E_BUSY` refusal below
+   * from outside: through the front door it takes that many turns waiting for
+   * a place or for their sessions at once.
    */
   get gate(): NodeTurnGate {
     return this.#gate
@@ -4308,7 +4332,7 @@ export class QianmoResident {
       admissions = 1
     }
     const work: ResidentInFlight = {
-      turns: this.#gate.active ? 1 : 0,
+      turns: this.#gate.depth,
       queued: this.#gate.queued,
       tasks: this.#tasksByTask.size,
       deliveries: this.#deliveriesInFlight,

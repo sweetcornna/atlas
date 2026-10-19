@@ -76,6 +76,8 @@ test('signed hub and real resident complete control, upstream and appended omp t
     },
     controllers: new Set(['hub']),
     controlAudit: event => trail.append(event),
+    maxTurns: 3,
+    maxBackgroundTurns: 5,
     onReady: address => {
       url = address.url
     },
@@ -196,6 +198,9 @@ test('signed hub and real resident complete control, upstream and appended omp t
         // The hub's agent list reads runtimes (and external models) here.
         runtimes: { main: 'omp' },
         models: {},
+        // The hub sends no more worker turns at once than this (P38); the
+        // background share keeps a place for the foreground.
+        turns: { max: 3, background: 2 },
         platform: process.platform,
         version: '3.0.0-dev',
       },
