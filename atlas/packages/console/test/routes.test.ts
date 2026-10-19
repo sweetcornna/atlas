@@ -81,6 +81,7 @@ describe('the pages', () => {
     ['audit', '/admin/audit', 'manage', false],
     ['alerts', '/admin/alerts', 'manage', false],
     ['approvals', '/admin/approvals', 'manage', false],
+    ['elevation', '/admin/elevation', 'manage', false],
     ['servers', '/admin/servers', 'manage', false],
     ['access', '/admin/access', 'manage', false],
     ['usage', '/admin/usage', 'manage', false],

@@ -7,6 +7,7 @@
  * objects with state, no module mocking, the clock injected.
  */
 
+import { FakeElevation } from './elevationFake.js'
 import type {
   AvatarKey,
   AvatarRecord,
@@ -1822,6 +1823,7 @@ export const PREVIEW_PORTS: Readonly<
   connectors: now => new FakeConnectors(now),
   handoffDevices: now => new FakeHandoffDevices(now),
   desktop: now => new FakeDesktop(now),
+  elevation: now => new FakeElevation(now),
   files: now => new FakeFiles(now),
 }
 

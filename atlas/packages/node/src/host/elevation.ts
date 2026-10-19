@@ -114,7 +114,7 @@ const hash = (input: unknown) =>
   createHash('sha256').update(JSON.stringify(input)).digest('hex')
 
 /** Build the AuthzCall the host asks the operator to approve for one call. */
-export function elevatedAuthzCall(
+function elevatedAuthzCall(
   node: string,
   agent: string,
   contextId: string,

@@ -18,6 +18,7 @@ import {
   FakeUpdates,
   FakeChannels,
 } from './directionFakes.js'
+import { FakeElevation } from './elevationFake.js'
 import { describe, expect, test } from 'bun:test'
 import { AccountBook, type AccountRole } from '../src/accounts.js'
 import {
@@ -290,6 +291,7 @@ function fixture() {
   ]
   const files = new FakeFiles(() => 1),
     desktop = new FakeDesktop(() => 1),
+    elevation = new FakeElevation(() => 1),
     connectors = new FakeConnectors(() => 1),
     routing = new FakeRouting(() => 1),
     handoffDevices = new FakeHandoffDevices(() => 1),
@@ -305,6 +307,7 @@ function fixture() {
       schedules,
       files,
       desktop,
+      elevation,
       connectors,
       routing,
       handoffDevices,
@@ -326,6 +329,7 @@ function fixture() {
     schedules,
     files,
     desktop,
+    elevation,
     connectors,
     routing,
     handoffDevices,
@@ -784,6 +788,35 @@ describe('M2 request scopes', () => {
     expect(h.desktop.calls.filter(call => call.includes('berlin-1'))).toEqual(
       [],
     )
+  })
+  test("another tenant's agents are out of reach of 权限模式 (P39)", async () => {
+    const h = fixture()
+    const list = (await (
+      await h.handle(asBearer('GET', '/v0/elevation', h.alice.credential))
+    ).json()) as { node: string }[]
+    expect(list.map(one => one.node)).toEqual(['tokyo-1'])
+    for (const [method, path, body] of [
+      ['PUT', '/v0/elevation/berlin-1/helper', { tier: 'off' }],
+      ['POST', '/v0/elevation/berlin-1/helper/revoke', {}],
+      [
+        'GET',
+        '/v0/elevation/actions?agent=qianmo://berlin-1/helper',
+        undefined,
+      ],
+    ] as const) {
+      const response = await h.handle(
+        asBearer(method, path, h.alice.credential, body),
+      )
+      expect(`${path} ${response.status}`).toBe(`${path} 404`)
+    }
+    const all = await h.handle(
+      asBearer('POST', '/v0/elevation/revoke-all', h.alice.credential, {}),
+    )
+    expect(all.status).toBe(200)
+    expect(h.elevation.calls.some(call => call.includes('berlin-1'))).toBe(
+      false,
+    )
+    expect(h.elevation.calls).toContain('revoke tokyo-1/planner')
   })
   test('audit source selectors and server notes cannot reach an external tenant', async () => {
     const h = fixture()

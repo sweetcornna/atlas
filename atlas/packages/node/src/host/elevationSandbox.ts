@@ -48,7 +48,7 @@ const SYSTEM_ROOTS: readonly string[] = [
  * load as policy (hooks, extensions, settings). A command may read them but
  * never plant one.
  */
-export const SANDBOX_READONLY_WORKSPACE_DIRS: readonly string[] = [
+const SANDBOX_READONLY_WORKSPACE_DIRS: readonly string[] = [
   '.git',
   '.omp',
   '.claude',

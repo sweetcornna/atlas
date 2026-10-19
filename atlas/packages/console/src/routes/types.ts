@@ -62,6 +62,7 @@ export type AreaId =
   | 'alerts'
   | 'jobs'
   | 'approvals'
+  | 'elevation'
   | 'providers'
   | 'servers'
   | 'access'
