@@ -58,8 +58,8 @@ const SOURCE_WORD: Readonly<Record<RouteDecisionView['source'], string>> = {
   default: '主模型',
 }
 
-/** What {@link renderTaskModelsCard} draws from. */
-export interface TaskModelsCardModel {
+/** What {@link renderTaskModelsCard} draws from (`Parameters<typeof renderTaskModelsCard>[0]` outside). */
+interface TaskModelsCardModel {
   readonly snapshot: ModelRoutingSnapshot
   /** The scope shown: `null` for every node, else one node's name. */
   readonly node: string | null
