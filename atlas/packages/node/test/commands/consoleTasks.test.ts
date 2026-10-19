@@ -52,6 +52,9 @@ function tasks(
     deliveryTimeoutMs?: number
     onError?: (message: string) => void
     stopTask?: (target: string, taskId: string) => Promise<boolean>
+    steerTask?: (target: string, taskId: string, text: string) => Promise<boolean>
+    workersPerNode?: number
+    nodeTurns?: (node: string) => Promise<number | undefined>
     now?: () => number
     scheduled?: (id: string) => boolean
     accounts?: ConsoleAccounts
@@ -539,8 +542,8 @@ describe('the worker loop', () => {
     expect(chat.sentTo(worker)).toHaveLength(1)
   })
 
-  test('one worker turn per node: tasks on a node take turns, the slot is handed over, another node runs alongside', async () => {
-    const book = tasks()
+  test('one worker turn per node (--task-workers 1): tasks on a node take turns, the slot is handed over, another node runs alongside', async () => {
+    const book = tasks({ workersPerNode: 1 })
     const parent = await foreground()
     const ids: string[] = []
     for (const title of ['a', 'b', 'c'])
@@ -2802,5 +2805,166 @@ describe('keeping the main session free', () => {
       code: 'E_TASK_TIMEOUT',
     })
     expect(await book.reminderFor(parent)).toBeUndefined()
+  })
+})
+
+describe('parallel sub-sessions and reports (P38)', () => {
+  /** Steers the hub sent, and whether the node takes them. */
+  function steering(takes: (target: string, taskId: string) => boolean) {
+    const calls: { target: string; taskId: string; text: string }[] = []
+    return {
+      calls,
+      steerTask: async (target: string, taskId: string, text: string) => {
+        calls.push({ target, taskId, text })
+        return takes(target, taskId)
+      },
+    }
+  }
+
+  function sessionOf(title: string): string | undefined {
+    return workerSessions().find(
+      id => chat.sentTo(id)[0]?.text.includes(`任务：${title}`) === true,
+    )
+  }
+
+  /** The worker session of the task titled `title`, once it has its first line. */
+  async function workerOf(title: string): Promise<string> {
+    await until(() => sessionOf(title) !== undefined)
+    return sessionOf(title)!
+  }
+
+  test('three worker turns per node by default: the fourth waits as 排队中 and takes the first slot freed', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    for (const title of ['a', 'b', 'c', 'd'])
+      value(await call(book, 'start', parent, { title, instructions: 'x' }))
+    await until(() => workerSessions().length === 3)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(outstanding('node-a')).toBe(3)
+    expect(
+      book
+        .forSession(parent)
+        .filter(task => task.status === 'queued')
+        .map(task => task.title),
+    ).toEqual(['d'])
+    chat.reply(workerSessions()[0]!, '这一阶段做完了')
+    await until(() => workerSessions().length === 4)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(outstanding('node-a')).toBe(3)
+  })
+
+  test("a node that says it runs fewer background turns gets no more than that", async () => {
+    const asked: string[] = []
+    const book = tasks({
+      nodeTurns: async node => {
+        asked.push(node)
+        return node === 'node-a' ? 2 : undefined
+      },
+    })
+    const parent = await foreground()
+    for (const title of ['a', 'b', 'c'])
+      value(await call(book, 'start', parent, { title, instructions: 'x' }))
+    await until(() => workerSessions().length === 2)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(outstanding('node-a')).toBe(2)
+    expect(asked).toContain('node-a')
+  })
+
+  test('node.ping says the background share; an older node says nothing', async () => {
+    let answer: ControlOutcome = {
+      ok: true,
+      value: { runtimes: {}, turns: { max: 4, background: 3 } },
+    }
+    const profiles = new AgentProfiles({
+      ping: async () => answer,
+      nodeModel: async () => undefined,
+      now: () => 0,
+    })
+    expect(await profiles.backgroundTurns('node-a')).toBe(3)
+    answer = { ok: true, value: { runtimes: {} } }
+    expect(await profiles.backgroundTurns('node-b')).toBeUndefined()
+    answer = { ok: false, code: 'unreachable', message: 'down' }
+    expect(await profiles.backgroundTurns('node-c')).toBeUndefined()
+  })
+
+  test('an added instruction goes into the running worker turn at once and counts as read; one that cannot waits for the next turn', async () => {
+    let live = true
+    const steer = steering(() => live)
+    const book = tasks({ steerTask: steer.steerTask })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
+    )
+    const worker = await workerTurn(1)
+    // Only the hub's own record picks where it goes: arguments naming
+    // another agent or turn change nothing.
+    const sent = value<{ delivery: string; updateId: number }>(
+      await call(book, 'send', parent, {
+        id,
+        message: '顺便统计一下评审意见',
+        agent: CODER,
+        target: CODER,
+        nodeTaskId: 'forged',
+      }),
+    )
+    expect(sent.delivery).toBe('live')
+    expect(steer.calls).toHaveLength(1)
+    expect(steer.calls[0]).toMatchObject({
+      target: MAIN,
+      taskId: chat.lastTask(worker),
+    })
+    expect(steer.calls[0]!.text).toContain('顺便统计一下评审意见')
+    expect(steer.calls[0]!.text).toContain(`#${sent.updateId}`)
+    // Read already: the worker may finish without asking for updates.
+    value(
+      await call(book, 'report', worker, {
+        summary: '做完了，评审意见 4 条',
+        state: 'completed',
+      }),
+    )
+    // Not taken mid-turn: it waits for qianmo_task_updates.
+    live = false
+    const parent2 = await foreground()
+    const second = value<{ id: string }>(
+      await call(book, 'start', parent2, { title: '月报', instructions: 'x' }),
+    ).id
+    const worker2 = await workerOf('月报')
+    const late = value<{ delivery: string }>(
+      await call(book, 'send', parent2, { id: second, message: '加一页' }),
+    )
+    expect(late.delivery).toBe('next_turn')
+    const refused = await call(book, 'report', worker2, {
+      summary: '完成',
+      state: 'completed',
+    })
+    expect(refused.ok).toBe(false)
+  })
+
+  test('an instruction taken mid-turn after one that was not leaves the earlier one unread', async () => {
+    let live = false
+    const steer = steering(() => live)
+    const book = tasks({ steerTask: steer.steerTask })
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
+    )
+    const worker = await workerTurn(1)
+    value(await call(book, 'send', parent, { id, message: '第一条' }))
+    live = true
+    expect(
+      value<{ delivery: string }>(
+        await call(book, 'send', parent, { id, message: '第二条' }),
+      ).delivery,
+    ).toBe('live')
+    // 第一条 is still unread: no completion before reading it.
+    const early = await call(book, 'report', worker, {
+      summary: '完成',
+      state: 'completed',
+    })
+    expect(early.ok ? '' : early.message).toContain('qianmo_task_updates')
+    const read = value<{ updates: { message: string }[] }>(
+      await call(book, 'updates', worker),
+    )
+    expect(read.updates.map(one => one.message)).toEqual(['第一条', '第二条'])
   })
 })

@@ -81,7 +81,7 @@ const specs = [
     name: 'qianmo_task_agents',
     op: 'agents',
     description:
-      "Foreground only. List the agents you may hand a task to with qianmo_task_start's agent: address, name, runtime and model when known, whether it is you, and how busy it is — idle (nothing running on its node; a node runs one turn at a time), turns in flight, background tasks queued and running. Check it before handing simple but slow work to another agent, and prefer idle and cheaper ones. Does not wait.",
+      "Foreground only. List the agents you may hand a task to with qianmo_task_start's agent: address, name, runtime and model when known, whether it is you, and how busy it is — idle (nothing running on its node), turns in flight, background tasks queued and running. Check it before handing simple but slow work to another agent, and prefer idle and cheaper ones. Does not wait.",
     properties: {},
     required: [],
   },
@@ -97,7 +97,7 @@ const specs = [
     name: 'qianmo_task_send',
     op: 'send',
     description:
-      'Foreground only. Pass an extra instruction from the owner to one of this conversation’s background tasks; a task waiting for input resumes in the same sub-session, a scheduled one reads it when its next run starts. A new message from the owner cancels no task.',
+      'Foreground only. Pass an extra instruction from the owner to one of this conversation’s background tasks. A task running now reads it at its next step where its runtime allows (delivery live), otherwise at its next turn (next_turn); a task waiting for input resumes in the same sub-session, a scheduled one reads it when its next run starts. A new message from the owner cancels no task.',
     properties: { id: string, message: string },
     required: ['id', 'message'],
   },

@@ -765,6 +765,26 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       outcome.ok && (outcome.value as { stopped?: unknown }).stopped === true
     )
   }
+  // Words into a running turn, read at its next step (P38): a task's added
+  // instruction, or a result for the conversation that started it.
+  const steerTurn = async (
+    target: string,
+    taskId: string,
+    text: string,
+  ): Promise<boolean> => {
+    const node = parseAddress(target)?.node
+    if (control === undefined || node === undefined) return false
+    const outcome = await control.request(
+      node,
+      'turn.steer',
+      { taskId, text },
+      'system:tasks',
+      { timeoutMs: 10_000 },
+    )
+    return (
+      outcome.ok && (outcome.value as { steered?: unknown }).steered === true
+    )
+  }
   // Runtimes and models for `qianmo_task_agents`: each node's own word over
   // the control link, and a qianmopi agent's model from the model service.
   const agentProfiles = new AgentProfiles({
@@ -792,6 +812,11 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           ...(usage === undefined ? {} : { usage }),
           ...(tenancy === undefined ? {} : { tenancy }),
           stopTask: stopTurn,
+          steerTask: steerTurn,
+          ...(config.taskWorkers === undefined
+            ? {}
+            : { workersPerNode: config.taskWorkers }),
+          nodeTurns: node => agentProfiles.backgroundTurns(node),
           profile: address => agentProfiles.of(address),
           scheduled: (sessionId): boolean =>
             schedules?.owns(sessionId) ?? false,

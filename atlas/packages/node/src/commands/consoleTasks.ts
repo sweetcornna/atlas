@@ -26,12 +26,15 @@
  * console (ownership, tenancy, quota, audit), so a task cannot do anything
  * its owner could not.
  *
- * A node runs one turn at a time, so a worker turn is a turn the owner's
- * foreground is not getting. Three things keep the foreground responsive:
- * workers end their turn after each phase (the hub calls them again), at most
- * one worker turn per node is in flight, and every worker turn goes out marked
- * `background` with its own deadline, so the node lets interactive turns go
- * first and stops a worker turn that outlives it.
+ * Worker turns run beside the owner's foreground (P38): a node runs one turn
+ * per session and several sessions at once, and keeps a place for
+ * interactive turns that background ones never take. Every worker turn goes
+ * out marked `background` with its own deadline, so the node counts it
+ * against that share and stops it once it outlives it; workers end their
+ * turn after each phase (the hub calls them again); and at most
+ * {@link DEFAULT_WORKERS_PER_NODE} worker turns per node (`--task-workers`,
+ * never more than the node's own background share) are in flight, the rest
+ * queue here as 排队中.
  */
 
 import * as path from 'node:path'
@@ -290,6 +293,23 @@ export interface ConsoleTasksOptions {
   readonly now?: () => number
   /** Stops a worker's running turn on its node (`turn.stop`). */
   readonly stopTask?: (target: string, taskId: string) => Promise<boolean>
+  /**
+   * Hands text to a running turn on its node, read at its next step
+   * (`turn.steer`, P38); false when the turn is not running there or its
+   * runtime takes nothing mid-turn.
+   */
+  readonly steerTask?: (
+    target: string,
+    taskId: string,
+    text: string,
+  ) => Promise<boolean>
+  /** Worker turns in flight per node; default {@link DEFAULT_WORKERS_PER_NODE}. */
+  readonly workersPerNode?: number
+  /**
+   * How many background turns a node runs at once, as it says itself
+   * (`node.ping`), or undefined when it does not say.
+   */
+  readonly nodeTurns?: (node: string) => Promise<number | undefined>
   /** False for conversations that may not start tasks (channel groups, members). */
   readonly foreground?: (sessionId: string) => boolean
   /** True for a schedule's session (P24): its turns start no tasks. */
@@ -348,11 +368,14 @@ const RECENTLY_MS = 10 * 60_000
 const KEEP_FINISHED_MS = 30 * 24 * 60 * 60_000
 const KEEP_FINISHED_PER_OWNER = 200
 /**
- * Worker turns in flight per node. One: the node runs one turn at a time, and
- * a second worker turn would only queue there in front of the owner's next
- * message. Tasks on the same node take turns.
+ * Worker turns in flight per node by default (P38, `--task-workers`): the
+ * node's own default background share, so they run side by side there with
+ * a place left for the owner. A node that says it takes fewer
+ * (`node.ping` `turns.background`) gets that many; the rest wait here.
  */
-const MAX_RUNNING_PER_NODE = 1
+export const DEFAULT_WORKERS_PER_NODE = 3
+/** The most `--task-workers` takes. */
+export const MAX_WORKERS_PER_NODE = 16
 const DEFAULT_TURN_TTL_MS = 30 * 60_000
 /**
  * How much longer than the deadline the hub waits for a worker turn's answer:
@@ -713,6 +736,13 @@ const PROFILE_RETRY_MS = 60_000
 const pingSchema = z.object({
   runtimes: z.record(z.string(), z.string()).optional(),
   models: z.record(z.string(), z.string()).optional(),
+  /** The node's turn places (P38); older nodes do not say. */
+  turns: z
+    .object({
+      max: z.number().int().positive(),
+      background: z.number().int().positive(),
+    })
+    .optional(),
 })
 
 interface NodeProfiles {
@@ -720,6 +750,8 @@ interface NodeProfiles {
   /** Agent → `omp` / `claude-code` / `codex`; null when the node did not say. */
   readonly runtimes: Readonly<Record<string, string>> | null
   readonly models: Readonly<Record<string, string>>
+  /** Background turns the node runs at once; null when it did not say. */
+  readonly background: number | null
 }
 
 /**
@@ -764,6 +796,14 @@ export class AgentProfiles {
     return { runtime, ...(model ? { model: clip(model, 200) } : {}) }
   }
 
+  /**
+   * How many background turns `node` runs at once, as its `node.ping` says
+   * (P38); undefined from a node that did not answer or does not say.
+   */
+  async backgroundTurns(node: string): Promise<number | undefined> {
+    return (await this.#node(node)).background ?? undefined
+  }
+
   async #node(node: string): Promise<NodeProfiles> {
     const known = this.#nodes.get(node)
     const age = known === undefined ? Infinity : this.#now() - known.at
@@ -787,6 +827,9 @@ export class AgentProfiles {
       at: this.#now(),
       runtimes: parsed?.success ? (parsed.data.runtimes ?? null) : null,
       models: parsed?.success ? (parsed.data.models ?? {}) : {},
+      background: parsed?.success
+        ? (parsed.data.turns?.background ?? null)
+        : null,
     }
     this.#nodes.set(node, value)
     return value
@@ -811,9 +854,11 @@ export class ConsoleTasks implements BackgroundTasksPort {
   readonly #waits = new Map<string, () => void>()
   /** Tasks this process resumed from the ledger, until their first prompt. */
   readonly #resumed = new Set<string>()
-  /** Worker turns in flight by node; see {@link MAX_RUNNING_PER_NODE}. */
+  /** Worker turns in flight by node; see {@link DEFAULT_WORKERS_PER_NODE}. */
   readonly #slots = new Map<string, number>()
   readonly #slotQueue = new Map<string, (() => void)[]>()
+  /** Background turns each node said it runs at once (`node.ping`). */
+  readonly #nodeCaps = new Map<string, number>()
   readonly #listeners = new Map<
     string,
     (event: TaskFinished) => Promise<boolean | undefined>
@@ -1469,7 +1514,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       case 'send': {
         const task = owned(args['id'])
         if (typeof task === 'string') return refused(task)
-        return this.#send(task, args['message'])
+        return await this.#send(task, args['message'])
       }
       case 'cancel': {
         const task = owned(args['id'])
@@ -1777,7 +1822,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
     })
   }
 
-  #send(task: TaskRecord, raw: unknown): ControlOutcome {
+  async #send(task: TaskRecord, raw: unknown): Promise<ControlOutcome> {
     if (TERMINAL.has(task.status)) return refused('任务已结束；请创建新任务')
     const message = typeof raw === 'string' ? raw.trim() : ''
     if (message === '' || message.length > 4_000)
@@ -1814,7 +1859,43 @@ export class ConsoleTasks implements BackgroundTasksPort {
     this.#schedule(task.id)
     // A task waiting out a failure's backoff takes the instruction now.
     this.#waits.get(task.id)?.()
-    return ok({ updateId: update.id, task: this.#view(next) })
+    const live = await this.#steerWorker(task.id, update)
+    return ok({
+      updateId: update.id,
+      task: this.#view(this.#tasks.get(task.id) ?? next),
+      // `live`: read by the running turn at its next step (P38);
+      // `next_turn`: the worker reads it with qianmo_task_updates.
+      delivery: live ? 'live' : 'next_turn',
+    })
+  }
+
+  /**
+   * An instruction into the worker turn running now (P38), where its
+   * runtime takes input mid-turn; then it counts as read, and the worker's
+   * next report confirms it like one read with qianmo_task_updates.
+   */
+  async #steerWorker(id: string, update: TaskUpdate): Promise<boolean> {
+    const turn = this.#turns.get(id)
+    const steer = this.#options.steerTask
+    if (turn?.taskId == null || steer === undefined) return false
+    const text = [
+      `[追加指示 #${update.id}] 主人在任务进行中补充：`,
+      update.message,
+      `这条已送到本轮：照做，并在下一次 qianmo_task_report 里一并确认。qianmo_task_updates 里编号 ${update.id} 的就是这一条，不要重复执行。`,
+    ].join('\n\n')
+    const live = await steer(turn.target, turn.taskId, text).catch(() => false)
+    const task = this.#tasks.get(id)
+    if (!live || task === undefined || TERMINAL.has(task.status)) return false
+    // The read mark is a high-water mark: it moves only when nothing before
+    // this one is still unread, or those would count as read unseen.
+    if (
+      update.id > task.readUpdateId &&
+      this.#unread(task).every(
+        one => one.id === update.id || one.id <= task.readUpdateId,
+      )
+    )
+      this.#patch(id, { readUpdateId: update.id })
+    return true
   }
 
   async #cancel(task: TaskRecord): Promise<void> {
@@ -1948,17 +2029,29 @@ export class ConsoleTasks implements BackgroundTasksPort {
     this.#loops.set(id, loop)
   }
 
+  /** Worker turns `node` takes at once: the setting, or fewer if it says so. */
+  #capacity(node: string): number {
+    return Math.min(
+      this.#options.workersPerNode ?? DEFAULT_WORKERS_PER_NODE,
+      this.#nodeCaps.get(node) ?? Number.POSITIVE_INFINITY,
+    )
+  }
+
+  /** A loop asking now would get a slot at once, ahead of nobody. */
   #slotFree(node: string): boolean {
-    return (this.#slots.get(node) ?? 0) < MAX_RUNNING_PER_NODE
+    return (
+      (this.#slots.get(node) ?? 0) < this.#capacity(node) &&
+      (this.#slotQueue.get(node)?.length ?? 0) === 0
+    )
   }
 
   /**
-   * A worker-turn slot on `node`. Released with a waiter queued, the slot is
-   * handed straight to it and the count never drops, so a loop that comes
-   * straight back for another turn queues behind the others instead of
-   * slipping in before the waiter it just woke has counted itself.
+   * A worker-turn slot on `node`. A waiter is counted the moment it is woken,
+   * so a loop that comes straight back for another turn queues behind the
+   * others instead of slipping in before the waiter it just woke.
    */
   async #slot(node: string): Promise<() => void> {
+    await this.#learnCapacity(node)
     if (this.#slotFree(node))
       this.#slots.set(node, (this.#slots.get(node) ?? 0) + 1)
     else
@@ -1971,10 +2064,30 @@ export class ConsoleTasks implements BackgroundTasksPort {
     return () => {
       if (released) return
       released = true
-      const next = this.#slotQueue.get(node)?.shift()
-      if (next !== undefined) next()
-      else this.#slots.set(node, Math.max(0, (this.#slots.get(node) ?? 1) - 1))
+      this.#slots.set(node, Math.max(0, (this.#slots.get(node) ?? 1) - 1))
+      this.#wake(node)
     }
+  }
+
+  /** Hands free slots to the loops waiting for them, oldest first. */
+  #wake(node: string): void {
+    const queue = this.#slotQueue.get(node)
+    while (
+      queue !== undefined &&
+      queue.length > 0 &&
+      (this.#slots.get(node) ?? 0) < this.#capacity(node)
+    ) {
+      this.#slots.set(node, (this.#slots.get(node) ?? 0) + 1)
+      queue.shift()!()
+    }
+  }
+
+  /** What `node` says it takes; an answer kept by the profile cache. */
+  async #learnCapacity(node: string): Promise<void> {
+    const said = await this.#options.nodeTurns?.(node).catch(() => undefined)
+    if (said !== undefined && Number.isSafeInteger(said) && said > 0)
+      this.#nodeCaps.set(node, said)
+    this.#wake(node)
   }
 
   async #pause(id: string, ms: number): Promise<void> {
@@ -2113,7 +2226,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       let task = this.#tasks.get(id)
       if (task === undefined || !RESUMABLE.has(task.status)) break
       const node = parseAddress(task.target)?.node ?? task.target
-      // Waiting for the node's one worker turn reads as waiting, not running.
+      // Waiting for one of the node's worker slots reads as waiting.
       if (task.status === 'running' && !this.#slotFree(node))
         task = this.#patch(id, { status: 'queued' })
       const release = await this.#slot(node)

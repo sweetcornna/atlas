@@ -1446,6 +1446,22 @@ test('memory opt-in requires a pinned control endpoint', () => {
   ).toBe(true)
 })
 
+test('--task-workers sets the worker turns per node, 1 to 16, beside a control link (P38)', () => {
+  const key = generateNodeKeyPair().publicKey
+  const control = ['--control', 'worker=ws://127.0.0.1:1234', '--trust', `worker=${key}`]
+  expect(parseConsoleArgs(control).taskWorkers).toBeUndefined()
+  expect(parseConsoleArgs([...control, '--task-workers', '5']).taskWorkers).toBe(5)
+  expect(parseConsoleArgs([...control, '--task-workers=1']).taskWorkers).toBe(1)
+  for (const bad of ['0', '17', '2.5', 'x'])
+    expect(() =>
+      parseConsoleArgs([...control, '--task-workers', bad]),
+    ).toThrow('--task-workers must be an integer from 1 to 16')
+  expect(() => parseConsoleArgs(['--task-workers', '2'])).toThrow(
+    '--task-workers needs --control',
+  )
+  expect(CONSOLE_HELP_TEXT).toContain('--task-workers <n>')
+})
+
 test('extensions are opt-in and need a control link (P32 audit 11)', () => {
   expect(parseConsoleArgs([]).extensions).toBeUndefined()
   expect(() => parseConsoleArgs(['--extensions'])).toThrow(
