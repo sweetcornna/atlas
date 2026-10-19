@@ -22,6 +22,7 @@ import { ConsoleMemory } from './consoleMemory.js'
 
 import * as routingPath from 'node:path'
 import { ConsoleDesktop } from './consoleDesktop.js'
+import { ConsoleElevation } from './consoleElevation.js'
 import { ConsoleRouting, routingWire } from './consoleRouting.js'
 import { ConsoleAvatars } from './consoleAvatars.js'
 import { randomBytes } from 'node:crypto'
@@ -1168,6 +1169,10 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       : undefined
   const desktop =
     config.desktop && control ? new ConsoleDesktop(control, actions) : undefined
+  const elevation =
+    config.elevation && control
+      ? new ConsoleElevation(control, actions)
+      : undefined
   if (files) {
     // A repo that cannot be shown private (or a missing credential) stops
     // file exchange, not the console: every publish and fetch checks again
@@ -1331,6 +1336,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(handoffGit === undefined ? {} : { handoffGit }),
     ...(providersPort === undefined ? {} : { providers: providersPort }),
     ...(desktop === undefined ? {} : { desktop }),
+    ...(elevation === undefined ? {} : { elevation }),
     ...(routing === undefined ? {} : { routing }),
     binName: 'qm',
     // 横幅里那几条身份与接线事实，原样交给「设置与关于」（A4）：页面答得出

@@ -502,6 +502,8 @@ export interface ConsoleCliConfig {
   readonly files?: boolean
   readonly connectors?: boolean
   readonly desktop?: boolean
+  /** 高权限模式（P39）：按智能体放权命令、联网、GitHub。 */
+  readonly elevation?: boolean
   readonly schedules?: boolean
   /** 聊天渠道（P28）：QQ、微信、Telegram、Discord、Slack 接到智能体。 */
   readonly channels?: boolean
@@ -672,6 +674,7 @@ export function parseConsoleArgs(
   let files = false
   let connectors = false
   let desktop = false
+  let elevation = false
   let schedules = false
   let channels = false
   let updates = false
@@ -946,6 +949,8 @@ export function parseConsoleArgs(
       connectors = true
     } else if (arg === '--desktop') {
       desktop = true
+    } else if (arg === '--elevation') {
+      elevation = true
     } else if (arg === '--schedules') {
       schedules = true
     } else if (arg === '--channels') {
@@ -1380,6 +1385,10 @@ export function parseConsoleArgs(
     throw new Error('--connectors needs --accounts, --approvals and --control')
   if (desktop && controlTargets.length === 0)
     throw new Error('--desktop needs --control')
+  // High-permission mode asks the operator over the approval link and drives
+  // the node over its control link; both are required.
+  if (elevation && (!approvals || controlTargets.length === 0))
+    throw new Error('--elevation needs --approvals and --control')
   // Extensions reach a node only over its control link; without one the page
   // would show every entry as on its way, forever.
   if (extensions && controlTargets.length === 0)
@@ -1607,6 +1616,7 @@ export function parseConsoleArgs(
     ...(files ? { files: true } : {}),
     ...(connectors ? { connectors: true } : {}),
     ...(desktop ? { desktop: true } : {}),
+    ...(elevation ? { elevation: true } : {}),
     ...(filesExchangeRepo ? { filesExchangeRepo, filesExchangeRetainMs } : {}),
     ...(schedules ? { schedules: true } : {}),
     ...(channels ? { channels: true } : {}),
@@ -1639,7 +1649,9 @@ export function parseConsoleArgs(
           breakGlass,
         }
       : {}),
-    ...(accounts || verifyActions || desktop ? { actionsStorePath } : {}),
+    ...(accounts || verifyActions || desktop || elevation
+      ? { actionsStorePath }
+      : {}),
     ...(verifyActions ? { verifyActions } : {}),
     ...(providers
       ? { providers: { ...providerPaths, nodes: providerNodes } }
@@ -1802,6 +1814,9 @@ Options (each accepts both --name value and --name=value):
                            Outbound exceptions: <config root>/qianmo/console/outbound-policy.json.
   --desktop                Enable the cloud computer (browser/desktop per main
                            agent) and its action ledger; requires --control.
+  --elevation              Enable per-agent high-permission mode (P39): grant an
+                           agent sandboxed commands, network and GitHub for a
+                           bounded window. Needs --approvals and --control.
   --schedules             Enable console schedules; requires an active chat face.
                            Runs every 30 seconds; missed slots catch up once.
                            State: <config root>/qianmo/console/schedules/.
