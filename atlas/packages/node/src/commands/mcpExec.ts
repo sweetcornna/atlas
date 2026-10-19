@@ -14,6 +14,7 @@
  */
 
 import { readFileSync } from 'node:fs'
+import type { Subprocess } from 'bun'
 import { inheritedEnv } from '../host/runtimes/inheritedEnv.js'
 
 const USAGE = `Usage: qm mcp-exec [--keep NAME,NAME] [--env-file FILE] -- <command> [args...]
@@ -107,13 +108,16 @@ export async function run(argv: string[]): Promise<number> {
     }
   }
   // No execve, or one that failed: run it as a child and pass its exit on.
-  const child = Bun.spawn([file, ...plan.args], {
+  // Forwarding is in place before the child starts: a signal that came
+  // between the two would end this wrapper and leave the server running.
+  let child: Subprocess | undefined
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const)
+    process.on(signal, () => child?.kill(signal))
+  child = Bun.spawn([file, ...plan.args], {
     env: plan.env,
     stdin: 'inherit',
     stdout: 'inherit',
     stderr: 'inherit',
   })
-  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const)
-    process.on(signal, () => child.kill(signal))
   return await child.exited
 }
