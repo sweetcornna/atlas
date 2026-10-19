@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * 任务分工's script (`view/routing.ts`): the scope select swaps the card for
- * another node's, the form saves every direction at once, and a node's own
- * split can be dropped back to everyone's. The card is replaced whole after
- * each, from `/fragments/routing`.
+ * 任务模型's script (`view/routing.ts`): the scope select swaps the card for
+ * another node's, a tier's effort select follows the model picked beside it
+ * (narrowed to the efforts that model takes, hidden when it takes none), the
+ * form saves every direction at once, and a node's own split can be dropped
+ * back to everyone's. The card is replaced whole after each, from
+ * `/fragments/routing`.
  *
  * Saving changes the hub's book and nothing on a node, so a save or a clear
  * ends on 尚未下发 beside the card's 下发 button rather than on a line that
@@ -21,6 +23,7 @@ export const ROUTING_PAGE_JS = `
   if (!qc) return;
   var byId = qc.byId;
   var DIRECTIONS = ['complex', 'medium', 'simple', 'image', 'speech', 'video'];
+  var EFFORT_WORD = { none: '关闭', minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' };
 
   function scope() {
     var card = byId('routing');
@@ -73,8 +76,34 @@ export const ROUTING_PAGE_JS = `
       : '这几台没有下发成功 · ' + failed.join(' ') + ' · 原因看上方切换进度', failed.length === 0 ? 'ok' : 'bad');
   });
 
+  // The efforts the picked model takes, after 默认; the current choice is
+  // kept when the new model takes it too.
+  function followModel(direction) {
+    var select = byId('route-' + direction);
+    var effort = byId('effort-' + direction);
+    var box = byId('effort-box-' + direction);
+    if (!select || !effort || !box) return;
+    var option = select.options[select.selectedIndex];
+    var raw = option && option.value ? option.getAttribute('data-efforts') || '' : '';
+    var efforts = raw ? raw.split(' ') : [];
+    var keep = effort.value;
+    while (effort.options.length > 1) effort.remove(1);
+    for (var i = 0; i < efforts.length; i++) {
+      var one = document.createElement('option');
+      one.value = efforts[i];
+      one.textContent = EFFORT_WORD[efforts[i]] || efforts[i];
+      effort.appendChild(one);
+    }
+    effort.value = efforts.indexOf(keep) >= 0 ? keep : '';
+    box.hidden = efforts.length === 0;
+  }
+
   document.addEventListener('change', function (event) {
     var target = event.target;
+    if (target && target.id && target.id.indexOf('route-') === 0) {
+      followModel(target.id.slice('route-'.length));
+      return;
+    }
     if (!target || target.id !== 'routing-node') return;
     var node = target.value;
     reload(node).then(function () {
@@ -94,7 +123,10 @@ export const ROUTING_PAGE_JS = `
       var option = select.options[select.selectedIndex];
       var profile = option && option.value ? option.getAttribute('data-profile') : null;
       var model = option && option.value ? option.getAttribute('data-model') : null;
-      routes.push({ direction: DIRECTIONS[i], profileId: profile, modelId: model });
+      var effort = byId('effort-' + DIRECTIONS[i]);
+      var box = byId('effort-box-' + DIRECTIONS[i]);
+      var level = model && effort && box && !box.hidden && effort.value ? effort.value : null;
+      routes.push({ direction: DIRECTIONS[i], profileId: profile, modelId: model, effort: level });
     }
     var auto = byId('routing-auto');
     var node = scope();

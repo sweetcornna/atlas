@@ -147,8 +147,8 @@ import { renderNodePanel, renderNodePage } from '../view/providersNode.js'
 import { PROVIDERS_PAGE_JS } from '../view/providersScript.js'
 import {
   ROUTING_CSS,
-  renderRoutingCard,
-  renderRoutingFailure,
+  renderTaskModelsCard,
+  renderTaskModelsFailure,
 } from '../view/routing.js'
 import { ROUTING_PAGE_JS } from '../view/routingScript.js'
 import { guardRead } from './directionShared.js'
@@ -1226,13 +1226,13 @@ async function routingCard(
   const routing = ctx.deps.routing
   if (routing === undefined) return ''
   const snapshot = await routing.snapshot()
-  if (!snapshot.ok) return renderRoutingFailure(snapshot.failure)
+  if (!snapshot.ok) return renderTaskModelsFailure(snapshot.failure)
   const nodes = views.map(one => one.node)
   const node =
     asked !== null && NODE_NAME.test(asked) && nodes.includes(asked)
       ? asked
       : null
-  return renderRoutingCard({
+  return renderTaskModelsCard({
     snapshot: snapshot.value,
     node,
     nodes,
