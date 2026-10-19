@@ -1019,7 +1019,9 @@ export class TransportClient implements TransportChannel {
       }
       // Silence for three periods means the link is gone in a way TCP has not
       // noticed yet (NAT drop, frozen peer). Tearing it down is cheap: the
-      // outbox replays and the receiver dedups.
+      // outbox replays and the receiver dedups. A quiet link is not silent:
+      // the server echoes every keep-alive. One that does not (a build before
+      // the echo) still gets its quiet links rebuilt every 45–60 s here.
       if (now - this.lastInboundAt > this.keepAliveIntervalMs * 3) {
         socket.terminate()
         return

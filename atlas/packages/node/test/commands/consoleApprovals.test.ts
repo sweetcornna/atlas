@@ -579,6 +579,9 @@ test('one subscription per connection: quiet periods send nothing, a reconnect o
     ],
     ledger: new FileLedger(join(root, 'console-authz.ndjson')),
     checkEveryMs: 20,
+    // A quiet link must outlive the transport's silence watchdog (three
+    // keep-alive periods): each window below spans fifteen of them.
+    keepAliveIntervalMs: 20,
     onError: error => errors.push(error),
   })
   // About fifteen periods, after which nothing more may have reached the node.

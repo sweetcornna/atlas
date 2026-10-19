@@ -43,8 +43,8 @@ export enum FrameType {
   /** What became of one envelope on this hop, returned in either direction. */
   Receipt = 'receipt',
   /**
-   * Client → server: a data frame carrying nothing, sent to keep the socket
-   * from being reaped as idle.
+   * Client → server, echoed back: a data frame carrying nothing, sent to keep
+   * the socket from being reaped as idle.
    *
    * A WebSocket ping would be the obvious choice and is the wrong one: proxies
    * do not count control frames toward their idle timers, which is exactly why
@@ -52,6 +52,11 @@ export enum FrameType {
    * (`src/cli/transports/WebSocketTransport.ts:21, :775-800`). Bun's own server
    * default is a 10 s idle timeout, so without this a quiet link dies in ten
    * seconds.
+   *
+   * The server answers each one with one of its own, which is what the
+   * client's silence watchdog hears on a link with nothing else to say. A
+   * client of any build already takes it: it counts as inbound and is
+   * otherwise ignored.
    */
   KeepAlive = 'keep_alive',
 }

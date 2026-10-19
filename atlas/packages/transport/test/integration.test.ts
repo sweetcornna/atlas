@@ -187,6 +187,51 @@ describe('rule T-2 — thaw does not kill a healthy link', () => {
   })
 })
 
+describe('a quiet link stays up', () => {
+  test('the listener answers keep-alives, so the silence watchdog never fires on an idle link', async () => {
+    const socket = makeSocketPath()
+    cleanups.push(socket.cleanup)
+    const handled: QianmoMessage[] = []
+    const server = track(
+      startTransportServer({
+        unix: socket.path,
+        psk: TEST_PSK,
+        onMessage: message => {
+          handled.push(message)
+        },
+      }),
+    )
+    const client = trackClient(
+      new TransportClient({
+        endpoint: { unix: socket.path },
+        node: 'node-a',
+        psk: TEST_PSK,
+        keepAliveIntervalMs: 20,
+      }),
+    )
+    await client.connect()
+    const generation = client.connectionGeneration
+
+    // Three silent periods is the watchdog's limit; this is twelve, with
+    // nothing sent either way but keep-alives.
+    await sleep(240)
+
+    expect(client.isReady()).toBe(true)
+    expect(client.connectionGeneration).toBe(generation)
+    expect(client.events.byType(TransportEventType.ConnectionClosed)).toEqual(
+      [],
+    )
+    expect(server.events.byType(TransportEventType.ConnectionClosed)).toEqual(
+      [],
+    )
+    // Keep-alives are frames, not envelopes: nothing is handed to the host and
+    // nothing is recorded as a message on either side.
+    expect(handled).toEqual([])
+    for (const events of [client.events, server.events])
+      expect(events.byType(TransportEventType.MessageAccepted)).toEqual([])
+  })
+})
+
 describe('DoD 2 — three deliveries, one handling', () => {
   test('the same envelope sent three times is handled once', async () => {
     const socket = makeSocketPath()
