@@ -24,25 +24,21 @@ export interface SetupPageModel {
   readonly mainSettable: boolean
 }
 
-const KIND_WORD: Readonly<Record<SetupStep['kind'], string>> = {
-  required: '必需',
-  recommended: '建议',
-  optional: '可选',
-}
-
 const GROUP_WORD: Readonly<Record<string, string>> = {
   'cn-paygo': '国内按量',
   intl: '国际',
   plan: '套餐',
 }
 
-function mark(step: SetupStep, index: number): string {
+function mark(step: SetupStep, index: number | null): string {
   if (step.state === 'done')
     return `<span class="setup-mark" data-state="done" aria-label="已完成">${icon(
       'check',
       { small: true },
     )}</span>`
-  return `<span class="setup-mark" data-state="${attr(step.state)}" aria-hidden="true">${index + 1}</span>`
+  return `<span class="setup-mark" data-state="${attr(step.state)}" aria-hidden="true">${
+    index === null ? '' : index + 1
+  }</span>`
 }
 
 function linkButton(step: SetupStep, primary: boolean): string {
@@ -142,9 +138,10 @@ function panelOf(step: SetupStep, model: SetupPageModel): string {
   }
 }
 
+/** `index` 为 null 时是可选项：不编号、不标类别、入口一律是次要按钮。 */
 function stepItem(
   step: SetupStep,
-  index: number,
+  index: number | null,
   model: SetupPageModel,
   open: boolean,
 ): string {
@@ -156,12 +153,12 @@ function stepItem(
   const head =
     `<div class="setup-text">` +
     `<div class="setup-title"><span>${escapeHtml(step.title)}</span>` +
-    (step.kind === 'required'
-      ? ''
-      : `<span class="setup-kind">${KIND_WORD[step.kind]}</span>`) +
+    (step.kind === 'recommended'
+      ? `<span class="setup-kind">建议</span>`
+      : '') +
     `</div>` +
     `<p class="setup-sum">${escapeHtml(step.summary)}</p>${note}</div>`
-  const primary = step.state === 'todo' && panel === ''
+  const primary = index !== null && step.state === 'todo' && panel === ''
   const acts = `<div class="setup-acts">${linkButton(step, primary)}</div>`
   if (panel === '') {
     return (
@@ -221,9 +218,7 @@ export function renderSetup(model: SetupPageModel): string {
     `</ol>` +
     `<h2 class="setup-sub">可选</h2>` +
     `<ul class="setup-steps setup-optional card elev-sm">` +
-    optional
-      .map((step, index) => stepItem(step, main.length + index, model, false))
-      .join('') +
+    optional.map(step => stepItem(step, null, model, false)).join('') +
     `</ul></div>`
   )
 }
@@ -260,7 +255,7 @@ details[open] .setup-toggle { visibility: hidden; }
 .setup-form .field { max-width: 460px; }
 .setup-left { justify-content: flex-start; }
 .setup-sub { margin: var(--space-2) 0 0; font-size: var(--text-13); font-weight: 600; color: var(--color-muted); }
-.setup-optional .setup-mark { visibility: hidden; }
+.setup-optional .setup-mark:not([data-state="done"]) { width: 10px; height: 10px; margin: 7px 6px 0; }
 @media (max-width: 640px) {
   .setup-row { flex-direction: column; }
   .setup-head { grid-template-columns: 1fr; }
