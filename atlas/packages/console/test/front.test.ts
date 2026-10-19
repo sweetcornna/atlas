@@ -414,6 +414,30 @@ describe('front process steps', () => {
     expect(done).not.toContain('is-running')
     expect(done).toContain('已执行 · 1 步')
   })
+
+  test('a line sent while the agent is on an earlier one reads 排队中 until the node reads it', async () => {
+    const b = {
+      ...ask,
+      id: 'ask-b',
+      taskId: 'task-b',
+      text: '任务 B',
+      at: NOW - 2_000,
+    }
+    const waiting = await render([ask, b])
+    const article = (id: string, html: string) => {
+      const at = html.indexOf(id)
+      return html.slice(
+        html.lastIndexOf('<article', at),
+        html.indexOf('</article>', at),
+      )
+    }
+    expect(article('任务 B', waiting)).toContain('is-queued')
+    expect(article('任务 B', waiting)).toContain('排队中 · 下一步时送达')
+    // The line the agent is on is never the queued one.
+    expect(article('任务 A', waiting)).not.toContain('排队中')
+    const read = await render([ask, { ...b, readMs: 400 }])
+    expect(article('任务 B', read)).not.toContain('排队中')
+  })
 })
 
 describe('front transcript ledger and ownership', () => {

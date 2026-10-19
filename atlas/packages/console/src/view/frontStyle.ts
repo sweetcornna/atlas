@@ -258,7 +258,7 @@ button.fx-head-face:hover, button.fx-welcome-face:hover { background: var(--fx-h
   font-size: var(--text-11-5); color: var(--color-muted);
 }
 .fx-msg-user .fx-meta { justify-content: flex-end; }
-.fx-msg-user:not(.is-last):not(.is-failed):not(.is-sending) .fx-meta {
+.fx-msg-user:not(.is-last):not(.is-failed):not(.is-sending):not(.is-queued) .fx-meta {
   position: absolute; right: calc(100% + 6px); bottom: 2px; min-height: 0; white-space: nowrap; flex-wrap: nowrap;
   opacity: 0; pointer-events: none; transition: opacity 120ms ease;
 }
@@ -267,6 +267,7 @@ button.fx-head-face:hover, button.fx-welcome-face:hover { background: var(--fx-h
 .fx-id { font-size: var(--text-11); color: var(--color-muted); text-decoration: none; }
 a.fx-id:hover { color: var(--color-text); text-decoration: underline; }
 .fx-fail { color: var(--color-critical); font-weight: 500; }
+.fx-queued { color: var(--color-quiet); }
 .fx-chain { display: inline-flex; gap: 3px; align-items: center; }
 .fx-chain i { width: 5px; height: 5px; border-radius: 50%; background: color-mix(in srgb, var(--color-text) 16%, transparent); }
 .fx-chain i.on { background: var(--color-accent-2-500); }

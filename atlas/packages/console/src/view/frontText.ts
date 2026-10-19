@@ -77,6 +77,8 @@ export interface FrontText {
   receipt(id: string): string
   readonly receiptUnknown: string
   readonly awaitingDelivery: string
+  /** A line sent while the agent works on an earlier one. */
+  readonly queuedNext: string
   readonly read: string
   readonly unread: string
   readonly failed: string
@@ -143,6 +145,8 @@ interface FrontClientText {
   readonly pickAgent: string
   readonly noSession: string
   readonly sending: string
+  /** The line just sent while the agent works on an earlier one. */
+  readonly queuedNext: string
   readonly sent: string
   readonly sentRetrying: string
   readonly newReply: string
@@ -220,6 +224,7 @@ const ZH: FrontText = {
   receipt: id => `回执 ${id}`,
   receiptUnknown: '回执未知',
   awaitingDelivery: '待投递',
+  queuedNext: '排队中 · 下一步时送达',
   read: '已读',
   unread: '未读',
   failed: '失败',
@@ -349,6 +354,7 @@ const EN: FrontText = {
   receipt: id => `receipt ${id}`,
   receiptUnknown: 'Receipt unknown',
   awaitingDelivery: 'Awaiting delivery',
+  queuedNext: 'Queued · goes in at the next step',
   read: 'Read',
   unread: 'Unread',
   failed: 'Failed',
@@ -477,6 +483,7 @@ const JA: FrontText = {
   receipt: id => `受領 ${id}`,
   receiptUnknown: '受領不明',
   awaitingDelivery: '配信待ち',
+  queuedNext: '待機中 · 次のステップで届きます',
   read: '既読',
   unread: '未読',
   failed: '失敗',
@@ -582,6 +589,7 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     pickAgent: '先选一个智能体',
     noSession: '没能开出会话',
     sending: '发送中',
+    queuedNext: '排队中 · 下一步时送达',
     sent: '已发送',
     sentRetrying: '已发送 · 刷新失败 · 自动重试中',
     newReply: '收到新回复 · ',
@@ -600,6 +608,7 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     pickAgent: 'Pick an agent first',
     noSession: "Couldn't open a chat",
     sending: 'Sending',
+    queuedNext: 'Queued · goes in at the next step',
     sent: 'Sent',
     sentRetrying: 'Sent · refresh failed · retrying',
     newReply: 'New reply · ',
@@ -620,6 +629,7 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     pickAgent: '先にエージェントを選んでください',
     noSession: 'チャットを開けませんでした',
     sending: '送信中',
+    queuedNext: '待機中 · 次のステップで届きます',
     sent: '送信済み',
     sentRetrying: '送信済み · 更新失敗 · 再試行中',
     newReply: '新しい返信 · ',

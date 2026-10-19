@@ -770,21 +770,36 @@ function idMarks(turn: ChatTurn, admin: boolean, t: FrontText): string {
   return marks.join('')
 }
 
+/**
+ * A line sent while the agent was still on an earlier one: it waits on the
+ * node and goes in at the agent's next step, so it says that rather than a
+ * bare 待投递 that reads as stuck. Until the node reads it.
+ */
+function queuedMark(t: FrontText): string {
+  return (
+    `<span class="fx-chain" title="${attr(t.queuedNext)}"><i class="on"></i><i></i><i></i></span>` +
+    `<span class="fx-queued">${escapeHtml(t.queuedNext)}</span>`
+  )
+}
+
 function userTurn(
   turn: ChatTurn,
   admin: boolean,
   last: boolean,
+  queued: boolean,
   lang: Lang,
   t: FrontText,
 ): string {
   const cls =
     `fx-msg fx-msg-user${turn.state === 'failed' ? ' is-failed' : ''}` +
-    `${last ? ' is-last' : ''}`
+    `${last ? ' is-last' : ''}${queued ? ' is-queued' : ''}`
   return (
     `<article class="${cls}">` +
     `<div class="fx-bubble">${renderRichText(turn.text)}</div>` +
     `<div class="fx-meta"><span class="fx-meta-more">${timeTag(turn.at, 'clock', 'fx-when')}` +
-    `${idMarks(turn, admin, t)}</span>${deliveryMark(turn, lang, t)}</div></article>`
+    `${idMarks(turn, admin, t)}</span>${
+      queued ? queuedMark(t) : deliveryMark(turn, lang, t)
+    }</div></article>`
   )
 }
 
@@ -943,6 +958,13 @@ function renderMessages(
   }
   const unanswered = unansweredTurns(turns)
   const waiting = unanswered.length > 0
+  // Lines after the one the agent is on, that the node has not read yet.
+  const queued = new Set(
+    unanswered
+      .slice(1)
+      .filter(turn => turn.readMs === undefined)
+      .map(turn => turn.id),
+  )
   let lastOperator = ''
   for (const turn of turns) {
     if (turn.variant !== 'notice' && turn.author === 'operator') {
@@ -974,7 +996,14 @@ function renderMessages(
     pause(turn.at)
     out.push(
       turn.author === 'operator'
-        ? userTurn(turn, model.admin, turn.id === lastOperator, model.lang, t)
+        ? userTurn(
+            turn,
+            model.admin,
+            turn.id === lastOperator,
+            queued.has(turn.id),
+            model.lang,
+            t,
+          )
         : agentTurn(turn, model.admin, model.lang, t),
     )
   }

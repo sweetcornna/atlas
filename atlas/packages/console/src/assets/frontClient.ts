@@ -778,7 +778,10 @@ function frontScript(): string {
     bubble.appendChild(para);
     var meta = document.createElement('div');
     meta.className = 'fx-meta';
-    meta.textContent = tx('sending', '发送中');
+    // The agent is still on an earlier line: this one waits for its next step.
+    meta.textContent = thread.getAttribute('data-running') === '1'
+      ? tx('queuedNext', '排队中 · 下一步时送达')
+      : tx('sending', '发送中');
     article.appendChild(bubble);
     article.appendChild(meta);
     list.appendChild(article);
