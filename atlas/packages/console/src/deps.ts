@@ -527,6 +527,11 @@ export interface ChatTurn {
   readonly usageReservation?: string
   /** 操作者那一行是中枢派给后台子智能体的一轮（P29）。 */
   readonly background?: true
+  /**
+   * 操作者那一行是中枢替主人发起的回报回合（P38）：后台任务有了结果或在等
+   * 回复，主会话空着，中枢把它交给主智能体。这一轮里开的任务不再起回报回合。
+   */
+  readonly report?: true
   /** 智能体那一行：节点说这一轮压缩过上下文（`task.result` 的 `compacted`）。 */
   readonly compacted?: true
 }
@@ -599,6 +604,12 @@ export interface ChatSendInput {
    * the node lets interactive turns go first and stops it at its deadline.
    */
   readonly background?: true
+  /**
+   * Host-only, never read from HTTP JSON: the hub's report turn (P38), told
+   * a parent conversation's background results while it was idle. The
+   * transcript marks the line so the turn's own tasks start no report turn.
+   */
+  readonly report?: true
   /**
    * Host-only: the call chain of a synchronous question between agents
    * (P36.6) — the asking turns, outermost first, each its node and the

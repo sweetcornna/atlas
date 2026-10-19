@@ -55,6 +55,8 @@ function tasks(
     steerTask?: (target: string, taskId: string, text: string) => Promise<boolean>
     workersPerNode?: number
     nodeTurns?: (node: string) => Promise<number | undefined>
+    reportDelayMs?: number
+    reportRetryMs?: (attempts: number) => number
     now?: () => number
     scheduled?: (id: string) => boolean
     accounts?: ConsoleAccounts
@@ -2821,6 +2823,21 @@ describe('parallel sub-sessions and reports (P38)', () => {
     }
   }
 
+  /** Report turns the hub sent into a conversation. */
+  function reports(sessionId: string) {
+    return chat.sentTo(sessionId).filter(one => one.report === true)
+  }
+
+  /** A worker reports completed and ends its turn. */
+  async function complete(
+    book: ConsoleTasks,
+    worker: string,
+    summary: string,
+  ): Promise<void> {
+    value(await call(book, 'report', worker, { summary, state: 'completed' }))
+    chat.reply(worker, '完成')
+  }
+
   function sessionOf(title: string): string | undefined {
     return workerSessions().find(
       id => chat.sentTo(id)[0]?.text.includes(`任务：${title}`) === true,
@@ -2966,5 +2983,125 @@ describe('parallel sub-sessions and reports (P38)', () => {
       await call(book, 'updates', worker),
     )
     expect(read.updates.map(one => one.message)).toEqual(['第一条', '第二条'])
+  })
+
+  test('results that finish together reach an idle parent in one report turn; tasks started in it report by note only', async () => {
+    const book = tasks({ reportDelayMs: 300, reportRetryMs: () => 10 })
+    const parent = await foreground()
+    for (const title of ['周报', '月报'])
+      value(await call(book, 'start', parent, { title, instructions: 'x' }))
+    await until(() => workerSessions().length === 2)
+    // The foreground answered at once: it is idle when the results come.
+    chat.reply(parent, '已经交给后台')
+    await complete(book, await workerOf('周报'), '周报写好了')
+    // The second result comes in while the first waits for company.
+    await until(() => chat.notes.length === 1)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(reports(parent)).toEqual([])
+    await complete(book, await workerOf('月报'), '月报写好了')
+    await until(() => reports(parent).length === 1)
+    const line = reports(parent)[0]!
+    expect(line.text).toContain('周报 已完成')
+    expect(line.text).toContain('月报 已完成')
+    expect(line.context).toContain('[后台任务回报]')
+    expect(line.context).toContain('周报写好了')
+    expect(line.context).toContain('月报写好了')
+    expect(line.taskTtlMs).toBe(5 * 60_000)
+    expect(line.background).toBeUndefined()
+    // The notices in the transcript stay as they were.
+    expect(chat.notes.filter(one => one.sessionId === parent)).toHaveLength(2)
+    // In the report turn the main agent starts another task.
+    const followUp = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '复核', instructions: 'x' }),
+    ).id
+    await until(() => workerSessions().length === 3)
+    chat.reply(parent, '已安排复核')
+    await complete(book, await workerOf('复核'), '复核没问题')
+    await until(() =>
+      chat.notes.some(one => one.text.startsWith('复核：已完成')),
+    )
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(reports(parent)).toHaveLength(1)
+    expect(book.forSession(parent).find(task => task.id === followUp)?.status).toBe(
+      'completed',
+    )
+  })
+
+  test('a busy parent hears results and progress mid-turn; where its turn takes nothing, the result waits for the turn to end', async () => {
+    let parentTakes = true
+    const steer = steering(() => parentTakes)
+    const book = tasks({
+      steerTask: steer.steerTask,
+      reportDelayMs: 10,
+      reportRetryMs: () => 10,
+    })
+    const parent = await foreground()
+    const busy = chat.lastTask(parent)
+    value(await call(book, 'start', parent, { title: '周报', instructions: 'x' }))
+    const worker = await workerTurn(1)
+    value(
+      await call(book, 'report', worker, {
+        summary: '读完了 12 个提交',
+        state: 'working',
+      }),
+    )
+    await until(() => steer.calls.length === 1)
+    expect(steer.calls[0]).toMatchObject({ target: MAIN, taskId: busy })
+    expect(steer.calls[0]!.text).toContain('进展')
+    expect(steer.calls[0]!.text).toContain('读完了 12 个提交')
+    await complete(book, worker, '周报写好了')
+    await until(() => steer.calls.length === 2)
+    expect(steer.calls[1]).toMatchObject({ taskId: busy })
+    expect(steer.calls[1]!.text).toContain('周报写好了')
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(reports(parent)).toEqual([])
+    // A runtime that takes nothing mid-turn: the result waits for the end
+    // of the turn and then comes in a turn of its own.
+    parentTakes = false
+    value(await call(book, 'start', parent, { title: '月报', instructions: 'x' }))
+    await until(() => workerSessions().length === 2)
+    await complete(book, await workerOf('月报'), '月报写好了')
+    await until(() => steer.calls.length >= 4)
+    expect(reports(parent)).toEqual([])
+    chat.reply(parent, '先这样')
+    await until(() => reports(parent).length === 1)
+    // Only what is still owed: the result told mid-turn is not told again.
+    expect(reports(parent)[0]!.text).toBe('后台任务回报：月报 已完成')
+    expect(reports(parent)[0]!.context).toContain('月报写好了')
+  })
+
+  test('a chat a channel posted the result to gets no report turn, nor does one whose next line carried it', async () => {
+    const book = tasks({
+      reportDelayMs: 80,
+      reportRetryMs: () => 10,
+      listeners: {
+        channel: async event =>
+          event.parentSession === channelChat ? true : undefined,
+      },
+    })
+    const channelChat = await foreground()
+    value(
+      await call(book, 'start', channelChat, { title: '周报', instructions: 'x' }),
+    )
+    const console = await foreground()
+    value(await call(book, 'start', console, { title: '月报', instructions: 'x' }))
+    await until(() => workerSessions().length === 2)
+    chat.reply(channelChat, '好')
+    chat.reply(console, '好')
+    await complete(book, await workerOf('周报'), '周报写好了')
+    await complete(book, await workerOf('月报'), '月报写好了')
+    await until(() => chat.notes.length === 2)
+    // The owner writes again before the report goes out: the task note on
+    // that line tells the result, so no report turn follows.
+    const sent = await withTaskNotes(chat, book).send({
+      sessionId: console,
+      text: '还有别的吗',
+    })
+    expect(sent.ok).toBe(true)
+    expect(chat.sentTo(console).at(-1)?.context).toContain('月报')
+    chat.reply(console, '没有了')
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(reports(channelChat)).toEqual([])
+    expect(reports(console)).toEqual([])
   })
 })
