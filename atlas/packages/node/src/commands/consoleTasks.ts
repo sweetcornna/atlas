@@ -50,6 +50,7 @@ import { z } from 'zod'
 import {
   type BackgroundTaskReader,
   type BackgroundTasksPort,
+  type BackgroundTaskState,
   type BackgroundTaskView,
   ChatDispatch,
   type ChatPort,
@@ -191,6 +192,11 @@ const recordSchema = z.object({
   abnormal: z.boolean().default(false),
   /** The runtime compacted the worker's context: brief it again. */
   rebrief: z.boolean().default(false),
+  /**
+   * Paused after failing (refused, or too many failed turns in a row), not
+   * asking anything: the console shows it as 失败 until it goes on (P38).
+   */
+  failed: z.boolean().default(false),
   /**
    * Started in a report turn (P38): its results reach the parent by note
    * and mid-turn, never by a report turn of their own.
@@ -591,6 +597,20 @@ function defaultBackoff(failures: number): number {
 /** 1, 4, 16 then 30 minutes between delivery rounds. */
 function defaultDeliveryRetry(attempts: number): number {
   return Math.min(30 * 60_000, 4 ** (attempts - 1) * 60_000)
+}
+
+/** A task's state on the console's list (P38). */
+function consoleState(task: TaskRecord): BackgroundTaskState {
+  switch (task.status) {
+    case 'running':
+    case 'completion_pending':
+    case 'needs_input_pending':
+      return 'running'
+    case 'needs_input':
+      return task.failed ? 'failed' : 'needs_input'
+    default:
+      return task.status
+  }
 }
 
 /**
@@ -1304,12 +1324,14 @@ export class ConsoleTasks implements BackgroundTasksPort {
       owner: task.owner,
       target: task.target,
       status: task.status,
+      state: consoleState(task),
       phase: this.#waitingForPlace(task)
         ? `${PHASE.scheduled} · 等名额`
         : PHASE[task.status],
       progress: clip(task.progress, 2_000),
       lastError: clip(task.lastError, 1_000),
       turns: task.turns,
+      parentSession: task.parentSession,
       workerSession: task.workerSession,
       nextAt:
         task.status === 'scheduled' && task.plan !== null
@@ -1774,6 +1796,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       promptedProgress: '',
       abnormal: false,
       rebrief: false,
+      failed: false,
       fromReport: caller.report,
       quietTurns: 0,
       readUpdateId: 0,
@@ -1963,6 +1986,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
         notification: 'none',
         requestedState: '',
         quietTurns: 0,
+        failed: false,
       })
     else if (PENDING.has(task.status))
       // Amended while the worker finishes its turn: handle it before finishing.
@@ -2540,6 +2564,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       if (outcome.permanent) {
         this.#patch(id, {
           status: 'needs_input',
+          failed: true,
           result: `子任务已暂停：${clip(outcome.error ?? '派发被拒绝', 300)}。处理之后追加一条指示即可继续。`,
           notification: 'pending',
         })
@@ -2548,6 +2573,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       if (failures >= MAX_FAILURES) {
         this.#patch(id, {
           status: 'needs_input',
+          failed: true,
           result: `子任务连续 ${MAX_FAILURES} 轮失败，已暂停。最近的错误：${clip(outcome.error ?? '未知', 300)}`,
           notification: 'pending',
         })
@@ -2608,6 +2634,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       requestedState: '',
       quietTurns: 0,
       abnormal: false,
+      failed: false,
       lastError: '',
       notification: 'none',
       deliveries: {},

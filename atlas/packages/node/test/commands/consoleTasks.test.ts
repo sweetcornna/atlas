@@ -2864,6 +2864,11 @@ describe('parallel sub-sessions and reports (P38)', () => {
         .filter(task => task.status === 'queued')
         .map(task => task.title),
     ).toEqual(['d'])
+    expect(
+      book
+        .list({ subject: 'legacy:admin', role: null })
+        .find(task => task.title === 'd'),
+    ).toMatchObject({ state: 'queued', parentSession: parent })
     chat.reply(workerSessions()[0]!, '这一阶段做完了')
     await until(() => workerSessions().length === 4)
     await new Promise(resolve => setTimeout(resolve, 20))
@@ -3103,5 +3108,23 @@ describe('parallel sub-sessions and reports (P38)', () => {
     await new Promise(resolve => setTimeout(resolve, 200))
     expect(reports(channelChat)).toEqual([])
     expect(reports(console)).toEqual([])
+  })
+
+  test('a task paused after failing reads 失败 on the console list until it goes on', async () => {
+    const book = tasks()
+    const parent = await foreground()
+    const { id } = value<{ id: string }>(
+      await call(book, 'start', parent, { title: '周报', instructions: 'x' }),
+    )
+    const worker = await workerTurn(1)
+    for (let turn = 1; turn <= 10; turn++) {
+      await until(() => chat.sentTo(worker).length === turn)
+      chat.reply(worker, '出错了', 'failed')
+    }
+    await until(() => book.forSession(parent)[0]?.status === 'needs_input')
+    const owner = { subject: 'legacy:admin', role: null }
+    expect(book.list(owner)[0]).toMatchObject({ id, state: 'failed' })
+    value(await call(book, 'send', parent, { id, message: '换个办法再试' }))
+    expect(book.list(owner)[0]?.state).not.toBe('failed')
   })
 })
