@@ -20,7 +20,7 @@ export const ROUTING_PAGE_JS = `
   var qc = window.qianmoConsole;
   if (!qc) return;
   var byId = qc.byId;
-  var DIRECTIONS = ['code', 'chat', 'plan', 'fast', 'vision', 'image', 'speech', 'video'];
+  var DIRECTIONS = ['complex', 'medium', 'simple', 'image', 'speech', 'video'];
 
   function scope() {
     var card = byId('routing');

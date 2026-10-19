@@ -41,6 +41,7 @@ import {
   type UsagePort,
 } from '@qianmo/console'
 import { parseAddress } from '@qianmo/protocol'
+import { directionOf } from '@qianmo/providers'
 import {
   ChannelGateway,
   type ChannelConversation,
@@ -203,7 +204,12 @@ const conversationSchema = z.object({
   sessionId: z.string().nullable(),
   target: z.string(),
   turns: z.number().int().nonnegative(),
-  direction: z.enum(MODEL_DIRECTIONS).nullable(),
+  /** P38: a P22 name saved before reads as its tier (`chat` → medium). */
+  direction: z.preprocess(
+    value =>
+      typeof value === 'string' ? (directionOf(value) ?? value) : value,
+    z.enum(MODEL_DIRECTIONS).nullable(),
+  ),
   updatedAt: z.number(),
   /** Where the conversation is, for results that arrive outside a turn (P29). */
   lane: z.enum(['owner', 'member']).optional(),
@@ -287,6 +293,23 @@ export interface ConsoleChannelsOptions {
 
 /** Platforms the public edition leaves out. */
 const NOT_PUBLIC: ReadonlySet<ChannelPlatform> = new Set(['qq-personal'])
+
+/** `/model <名字>` in a chat: the names a person types, and how they are said back. */
+const DIRECTION_NAME: Readonly<Record<ModelDirection, string>> = {
+  complex: '复杂',
+  medium: '一般',
+  simple: '简单',
+  image: '生图',
+  speech: '语音',
+  video: '视频',
+}
+const CHAT_DIRECTION: Readonly<Record<string, ModelDirection>> =
+  Object.fromEntries(
+    Object.entries(DIRECTION_NAME).map(([direction, name]) => [
+      name,
+      direction as ModelDirection,
+    ]),
+  )
 
 const PAIRING_ANSWER = (code: string) =>
   `你还没有和这个机器人配对。请把配对码 ${formatPairingCode(code)} 发给机器人的主人，批准后就能对话；1 小时内有效。`
@@ -968,7 +991,7 @@ export class ConsoleChannels implements ChannelsPort {
           `智能体：${target ?? '未配置'}`,
           `会话：${row?.sessionId ?? '尚未开始'}`,
           `轮数：${row?.turns ?? 0}`,
-          `方向：${row?.direction ?? '默认'}`,
+          `方向：${row?.direction ? DIRECTION_NAME[row.direction] : '默认'}`,
           ...(cache === null ? [] : [`今日缓存命中：${cache}`]),
         ]
       },
@@ -976,17 +999,19 @@ export class ConsoleChannels implements ChannelsPort {
         const target = this.#targetOf(conversation)
         if (target === null) return '这个渠道没有可对话的智能体'
         const row = this.#conversation(conversation, target)
-        if (value === undefined) return `当前方向：${row.direction ?? '默认'}`
+        if (value === undefined)
+          return `当前方向：${row.direction === null ? '默认' : DIRECTION_NAME[row.direction]}`
         if (value === null) {
           row.direction = null
           this.#saveState()
           return '已恢复默认方向'
         }
-        if (!MODEL_DIRECTIONS.includes(value as ModelDirection))
-          return `可选方向：${MODEL_DIRECTIONS.join('、')}，或 default`
-        row.direction = value as ModelDirection
+        const direction = CHAT_DIRECTION[value] ?? directionOf(value)
+        if (direction === null)
+          return `可选：${Object.keys(CHAT_DIRECTION).join('、')}（或 ${MODEL_DIRECTIONS.join('、')}），或 default`
+        row.direction = direction
         this.#saveState()
-        return `这个会话改用「${value}」方向的模型`
+        return `这个会话改用「${DIRECTION_NAME[direction]}」的模型`
       },
     }
   }

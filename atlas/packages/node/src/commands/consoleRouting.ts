@@ -14,9 +14,15 @@ import type {
   RouteDecisionView,
 } from '@qianmo/console'
 import {
+  LEGACY_DIRECTIONS,
   MODEL_DIRECTIONS,
+  directionOf,
   isModelDirection,
+  isTierEffort,
+  migrateLegacyRoutes,
   routingProblem,
+  tierEffortChoices,
+  type LegacyDirection,
   type ModelRouting,
   type ProviderProfile,
 } from '@qianmo/providers'
@@ -26,8 +32,13 @@ import {
   writePrivateJson,
 } from '../providers/store.js'
 
+/**
+ * v2 (P38): the three tiers and three media, each with an effort. A v1 book
+ * (the eight P22 directions) is read and mapped, and written back as v2 on
+ * the next save or clear.
+ */
 type State = {
-  v: 1
+  v: 2
   defaults: ModelRoutingView
   nodes: ModelRoutingView[]
   revision: number
@@ -52,13 +63,14 @@ function empty(node: string | null = null, revision = 0): ModelRoutingView {
       direction,
       profileId: null,
       modelId: null,
+      effort: null,
     })),
     revision,
     updatedAt: null,
     updatedBy: null,
   }
 }
-function validView(raw: ModelRoutingView): boolean {
+function validHead(raw: ModelRoutingView): boolean {
   return (
     !!raw &&
     (raw.node === null || /^[a-z0-9][a-z0-9_-]{0,63}$/.test(raw.node)) &&
@@ -68,23 +80,76 @@ function validView(raw: ModelRoutingView): boolean {
     (raw.updatedAt === null ||
       (Number.isFinite(raw.updatedAt) && raw.updatedAt >= 0)) &&
     (raw.updatedBy === null || typeof raw.updatedBy === 'string') &&
-    Array.isArray(raw.routes) &&
+    Array.isArray(raw.routes)
+  )
+}
+function validView(raw: ModelRoutingView): boolean {
+  return (
+    validHead(raw) &&
     raw.routes.length === MODEL_DIRECTIONS.length &&
     new Set(raw.routes.map(r => r.direction)).size ===
       MODEL_DIRECTIONS.length &&
     raw.routes.every(validRoute)
   )
 }
+function validRef(raw: {
+  readonly profileId: unknown
+  readonly modelId: unknown
+}): boolean {
+  return (
+    (raw.profileId === null && raw.modelId === null) ||
+    (typeof raw.profileId === 'string' &&
+      /^[a-z0-9-]{1,48}$/.test(raw.profileId) &&
+      typeof raw.modelId === 'string' &&
+      raw.modelId.length > 0)
+  )
+}
 function validRoute(raw: ModelRouteView): boolean {
   return (
     !!raw &&
     isModelDirection(raw.direction) &&
-    ((raw.profileId === null && raw.modelId === null) ||
-      (typeof raw.profileId === 'string' &&
-        /^[a-z0-9-]{1,48}$/.test(raw.profileId) &&
-        typeof raw.modelId === 'string' &&
-        raw.modelId.length > 0))
+    validRef(raw) &&
+    // An effort belongs to a picked model; following the main model has none.
+    (raw.effort === null ||
+      (isTierEffort(raw.effort) && raw.profileId !== null))
   )
+}
+type LegacyRouteView = {
+  readonly direction: LegacyDirection
+  readonly profileId: string | null
+  readonly modelId: string | null
+}
+/** A v1 view (the eight P22 directions) as v2; `null` when it is not one. */
+function migratedView(raw: ModelRoutingView): ModelRoutingView | null {
+  if (!validHead(raw)) return null
+  const routes = raw.routes as unknown as readonly LegacyRouteView[]
+  if (
+    routes.length !== LEGACY_DIRECTIONS.length ||
+    new Set(routes.map(r => r.direction)).size !== LEGACY_DIRECTIONS.length ||
+    !routes.every(
+      r =>
+        !!r &&
+        (LEGACY_DIRECTIONS as readonly unknown[]).includes(r.direction) &&
+        validRef(r),
+    )
+  )
+    return null
+  const picked: Partial<
+    Record<LegacyDirection, { profileId: string; modelId: string }>
+  > = {}
+  for (const r of routes)
+    if (r.profileId !== null && r.modelId !== null)
+      picked[r.direction] = { profileId: r.profileId, modelId: r.modelId }
+  const tiers = migrateLegacyRoutes(picked)
+  return {
+    ...raw,
+    routes: MODEL_DIRECTIONS.map(direction => ({
+      direction,
+      profileId: tiers[direction]?.profileId ?? null,
+      modelId: tiers[direction]?.modelId ?? null,
+      effort: null,
+    })),
+  }
 }
 export function routingWire(view: ModelRoutingView): ModelRouting {
   const routes: ModelRouting['routes'] = {}
@@ -93,8 +158,32 @@ export function routingWire(view: ModelRoutingView): ModelRouting {
       routes[route.direction] = {
         profileId: route.profileId,
         modelId: route.modelId,
+        ...(route.effort === null ? {} : { effort: route.effort }),
       }
   return { auto: view.auto, routes }
+}
+/** The book as stored, either version, as v2; throws when it is neither. */
+function parseBook(text: string): State {
+  const raw = JSON.parse(text) as {
+    v?: unknown
+    defaults: ModelRoutingView
+    nodes: ModelRoutingView[]
+    revision: number
+  }
+  if (raw.v === 1) {
+    const defaults = migratedView(raw.defaults)
+    const nodes = Array.isArray(raw.nodes) ? raw.nodes.map(migratedView) : null
+    if (defaults === null || nodes === null || nodes.some(n => n === null))
+      throw new Error('invalid routing book')
+    return {
+      v: 2,
+      defaults,
+      nodes: nodes as ModelRoutingView[],
+      revision: raw.revision,
+    }
+  }
+  if (raw.v !== 2) throw new Error('invalid routing book')
+  return raw as State
 }
 /** Private atomic JSON; every operation re-reads, and writes hold an exclusive lock. */
 export class ConsoleRouting implements ModelRoutingPort {
@@ -105,10 +194,9 @@ export class ConsoleRouting implements ModelRoutingPort {
   #read(): State {
     const text = readTextIfExists(this.#options.path)
     if (text === undefined)
-      return { v: 1, defaults: empty(), nodes: [], revision: 0 }
-    const state = JSON.parse(text) as State
+      return { v: 2, defaults: empty(), nodes: [], revision: 0 }
+    const state = parseBook(text)
     if (
-      state.v !== 1 ||
       !validView(state.defaults) ||
       state.defaults.node !== null ||
       !Array.isArray(state.nodes) ||
@@ -165,9 +253,11 @@ export class ConsoleRouting implements ModelRoutingPort {
         for (const record of page.value.records) {
           if (record.kind !== 'model.route') continue
           const d = record.detail
+          // A node older than P38 records the P22 name.
+          const direction = directionOf(d?.direction)
           if (
             d &&
-            isModelDirection(d.direction) &&
+            direction !== null &&
             ['hint', 'auto', 'default'].includes(String(d.source)) &&
             typeof d.model === 'string' &&
             typeof d.agent === 'string'
@@ -176,7 +266,7 @@ export class ConsoleRouting implements ModelRoutingPort {
               node: source.node,
               agent: d.agent,
               at: record.at,
-              direction: d.direction,
+              direction,
               source: d.source as RouteDecisionView['source'],
               model: d.model,
             })
@@ -192,6 +282,7 @@ export class ConsoleRouting implements ModelRoutingPort {
             modelId: m.id,
             kind: m.kind ?? 'chat',
             evaluated: p.evaluated !== false,
+            efforts: tierEffortChoices(m, p),
           })),
         ),
         recent: recent.sort((a, b) => b.at - a.at).slice(0, 20),

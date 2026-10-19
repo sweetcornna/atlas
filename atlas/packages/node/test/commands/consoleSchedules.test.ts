@@ -44,7 +44,7 @@ function draft(patch: Partial<ScheduleDraft> = {}): ScheduleDraft {
     prompt: '请写简报',
     when: { kind: 'interval', everyMinutes: 15 },
     timezone: 'Asia/Shanghai',
-    direction: 'chat',
+    direction: 'medium',
     channels: [],
     notifyOnlyAgent: false,
     enabled: true,
@@ -364,12 +364,42 @@ describe('schedule book and secret boundary', () => {
     )
     expect(saved).toMatchObject({
       timezone: 'Asia/Shanghai',
-      direction: 'chat',
+      direction: 'medium',
       timeoutMs: 600_000,
     })
     book.close()
     fs.writeFileSync(path.join(root, 'schedules', 'schedules.json'), '{corrupt')
     expect(() => open()).toThrow('定时任务簿无法恢复')
+  })
+
+  test('P38: a schedule saved under a P22 direction reads as its tier, and so does an older page', async () => {
+    const saved = value(await book.save(draft({ direction: 'complex' }), actor))
+    book.close()
+    const file = path.join(root, 'schedules', 'schedules.json')
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8'))
+    stored.schedules[0].direction = 'plan'
+    fs.writeFileSync(file, JSON.stringify(stored), { mode: 0o600 })
+    book = open()
+    const reread = (await snapshot()).schedules.find(one => one.id === saved.id)
+    expect(reread?.direction).toBe('complex')
+    for (const [legacy, tier] of [
+      ['chat', 'medium'],
+      ['fast', 'simple'],
+      ['vision', 'medium'],
+    ] as const) {
+      const again = value(
+        await book.save(
+          draft({ direction: legacy as unknown as 'medium' }),
+          actor,
+        ),
+      )
+      expect(again.direction).toBe(tier)
+    }
+    const bad = await book.save(
+      draft({ direction: 'dance' as unknown as 'medium' }),
+      actor,
+    )
+    expect(bad.ok).toBe(false)
   })
 
   test('channels can edit without resubmitting URL, test, reject in-use deletion and remove without exposing addresses', async () => {
@@ -480,7 +510,7 @@ describe('execution through the conversation port', () => {
     )
     const job = value(
       await book.save(
-        draft({ channels: [channel.id], direction: 'plan' }),
+        draft({ channels: [channel.id], direction: 'complex' }),
         actor,
       ),
     )
@@ -496,7 +526,7 @@ describe('execution through the conversation port', () => {
     expect(chat.sent[0]).toMatchObject({
       text: job.prompt,
       onBehalfOf: actor.subject,
-      direction: 'plan',
+      direction: 'complex',
       taskTtlMs: job.timeoutMs,
     })
     const run = (await snapshot()).runs[0]!

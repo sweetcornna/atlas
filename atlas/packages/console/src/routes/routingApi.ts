@@ -17,7 +17,12 @@
  * therefore never calls `ctx.record`.
  */
 
-import { MODEL_DIRECTIONS, type ModelRouteView } from '../directionPorts.js'
+import {
+  MODEL_DIRECTIONS,
+  TIER_EFFORTS,
+  type ModelRouteView,
+  type TierEffort,
+} from '../directionPorts.js'
 import { fail, methodNotAllowed, notFound } from '../respond.js'
 import {
   actorOf,
@@ -32,7 +37,7 @@ import type { HeadRoute, RouteContext } from './types.js'
 
 const NODE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 const FIELDS = ['node', 'auto', 'routes', 'revision']
-const ROUTE_FIELDS = ['direction', 'profileId', 'modelId']
+const ROUTE_FIELDS = ['direction', 'profileId', 'modelId', 'effort']
 
 /** May this caller change the split? The same test as the 模型服务 writes. */
 export function routingWriter(ctx: RouteContext): boolean {
@@ -67,7 +72,21 @@ function routeOf(entry: unknown): ModelRouteView | null {
     typeof raw.modelId === 'string' &&
     raw.modelId !== ''
   if (!follows && !picked) return null
-  return raw as unknown as ModelRouteView
+  // P38: absent is the model's default effort; following the main model
+  // takes none (which model it is depends on the node).
+  const effort = raw.effort ?? null
+  if (
+    effort !== null &&
+    (follows || !(TIER_EFFORTS as readonly unknown[]).includes(effort))
+  ) {
+    return null
+  }
+  return {
+    direction: raw.direction as ModelRouteView['direction'],
+    profileId: raw.profileId as string | null,
+    modelId: raw.modelId as string | null,
+    effort: effort as TierEffort | null,
+  }
 }
 
 function inputOf(raw: Record<string, unknown>): RoutingInput | Response {
@@ -94,7 +113,9 @@ function inputOf(raw: Record<string, unknown>): RoutingInput | Response {
   const routes: ModelRouteView[] = []
   for (const entry of raw.routes) {
     const route = routeOf(entry)
-    if (route === null) return fail(400, 'invalid', '方向或模型引用不合法')
+    if (route === null) {
+      return fail(400, 'invalid', '方向、模型引用或推理强度不合法')
+    }
     routes.push(route)
   }
   return {

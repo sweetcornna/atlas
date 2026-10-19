@@ -19,6 +19,7 @@ const caps = {
   chatEffortHonorsOverride: true,
   replayFilter: true,
   laneAddresses: true,
+  tierRouting: true,
 }
 function compile(baseUrl: string) {
   const result = compileProfile(

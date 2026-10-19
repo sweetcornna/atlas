@@ -13,6 +13,7 @@ export const V1_CAPABILITIES: NodeCapabilities = {
   replayFilter: false,
   multiKey: false,
   laneAddresses: false,
+  tierRouting: false,
 }
 
 export function anthropicModel(

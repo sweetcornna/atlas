@@ -54,7 +54,7 @@ const draft: ScheduleDraft = {
   template: 'custom',
   when: { kind: 'interval', everyMinutes: 15 },
   timezone: 'UTC',
-  direction: 'chat',
+  direction: 'medium',
   channels: [],
   enabled: false,
   notifyOnlyAgent: false,

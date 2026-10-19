@@ -9,6 +9,9 @@ import {
   isDirectedTaskRequestPayload,
 } from '../src/index.js'
 for (const direction of [
+  'complex',
+  'medium',
+  'simple',
   'code',
   'chat',
   'plan',

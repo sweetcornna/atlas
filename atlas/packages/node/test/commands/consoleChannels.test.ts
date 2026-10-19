@@ -285,11 +285,12 @@ describe('conversations', () => {
     adapter.sink!(inbound({ text: '/compact' }))
     await until(() => adapter.sent.length === 1)
     expect(adapter.texts()).toEqual(['还没有可压缩的上下文。'])
+    // A P22 name still works and reads as its tier.
     adapter.sink!(inbound({ text: '/model fast' }))
     await until(() => adapter.sent.length === 2)
     adapter.sink!(inbound({ text: 'hi' }))
     await until(() => chat.sent.length === 1)
-    expect(chat.sent[0]!.direction).toBe('fast')
+    expect(chat.sent[0]!.direction).toBe('simple')
     chat.reply(chat.sent[0]!.sessionId, 'ok')
     await until(() => adapter.sent.length === 3)
     adapter.sink!(inbound({ text: '/compact' }))
@@ -298,9 +299,20 @@ describe('conversations', () => {
     chat.reply(chat.sent[1]!.sessionId, '已压缩')
     await until(() => adapter.sent.length === 4)
     expect(adapter.texts().slice(1)).toEqual([
-      '这个会话改用「fast」方向的模型',
+      '这个会话改用「简单」的模型',
       'ok',
       '上下文已压缩。',
+    ])
+    adapter.sink!(inbound({ text: '/model 复杂' }))
+    await until(() => adapter.sent.length === 5)
+    adapter.sink!(inbound({ text: '/model' }))
+    await until(() => adapter.sent.length === 6)
+    adapter.sink!(inbound({ text: '/model dance' }))
+    await until(() => adapter.sent.length === 7)
+    expect(adapter.texts().slice(4)).toEqual([
+      '这个会话改用「复杂」的模型',
+      '当前方向：复杂',
+      '可选：复杂、一般、简单、生图、语音、视频（或 complex、medium、simple、image、speech、video），或 default',
     ])
   })
 

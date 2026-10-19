@@ -120,7 +120,7 @@ function draft(target: string, channels: string[] = []): ScheduleDraft {
     prompt: '写一份简报',
     when: { kind: 'daily', time: '08:00' },
     timezone: 'Asia/Shanghai',
-    direction: 'chat',
+    direction: 'medium',
     channels,
     notifyOnlyAgent: false,
     enabled: true,

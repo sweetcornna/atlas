@@ -550,10 +550,9 @@ export function scheduleDialog(
       ? [['', '没有可选的智能体']]
       : snapshot.targets.map(target => [target, target] as const)
   const directions: readonly (readonly [string, string])[] = [
-    ['', '跟随任务分工的默认'],
+    ['', '不指定难度'],
     ...Object.entries(DIRECTION_WORD).filter(
-      ([key]) =>
-        key === 'chat' || key === 'code' || key === 'plan' || key === 'fast',
+      ([key]) => key === 'complex' || key === 'medium' || key === 'simple',
     ),
   ]
   const channels = snapshot.channels.map(one => [one.id, one.name] as const)
@@ -606,9 +605,9 @@ export function scheduleDialog(
       WEEKDAY.map((day, index) => [String(index + 1), `周${day}`] as const),
       ['1', '2', '3', '4', '5'],
     )}</div>` +
-    `<details class="adv"><summary>${icon('chevron-down', { small: true, cls: 'chev' })}更多 · 模型方向 通知 超时</summary>` +
+    `<details class="adv"><summary>${icon('chevron-down', { small: true, cls: 'chev' })}更多 · 难度 通知 超时</summary>` +
     `<div class="adv-body">` +
-    selectField('direction', '模型方向', directions) +
+    selectField('direction', '任务难度', directions) +
     textField('timeoutMinutes', '超时分钟', {
       type: 'number',
       value: '10',

@@ -27,11 +27,9 @@ import { DIRECTION_WORD, switchField } from './kit.js'
 
 /** What a person would send in each direction, one line. */
 const DIRECTION_HINT: Readonly<Record<ModelDirection, string>> = {
-  code: '写代码 修错 重构 跑测试',
-  chat: '日常对话 写简报 回消息',
-  plan: '拆解计划 分析方案 做取舍',
-  fast: '提取 改写 归类这类小活',
-  vision: '看截图 读图片里的内容',
+  complex: '多步骤 要规划的大活',
+  medium: '常规实现与修改',
+  simple: '提取 改写 归类这类小活',
   image: '画图 海报 配图',
   speech: '朗读 配音',
   video: '生成短片',
@@ -40,11 +38,9 @@ const DIRECTION_HINT: Readonly<Record<ModelDirection, string>> = {
 const MEDIA: readonly ModelDirection[] = ['image', 'speech', 'video']
 
 const KIND_OF: Readonly<Record<ModelDirection, RoutableModelView['kind']>> = {
-  code: 'chat',
-  chat: 'chat',
-  plan: 'chat',
-  fast: 'chat',
-  vision: 'chat',
+  complex: 'chat',
+  medium: 'chat',
+  simple: 'chat',
   image: 'image',
   speech: 'speech',
   video: 'video',

@@ -378,6 +378,7 @@ function capabilities(
     replayFilter: replay,
     multiKey,
     laneAddresses: multiKey,
+    tierRouting: multiKey,
   }
 }
 

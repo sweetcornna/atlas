@@ -48,11 +48,9 @@ describe('任务分工 · the card', () => {
     })
     const text = visibleText(html)
     for (const word of [
-      '编程',
-      '对话与简报',
-      '规划与推理',
-      '快速小任务',
-      '看图',
+      '复杂任务',
+      '一般任务',
+      '简单任务',
       '生图',
       '语音',
       '视频',
@@ -81,8 +79,8 @@ describe('任务分工 · the card', () => {
       now: START,
     })
     const code = html.slice(
-      html.indexOf('id="route-code"'),
-      html.indexOf('</select>', html.indexOf('id="route-code"')),
+      html.indexOf('id="route-medium"'),
+      html.indexOf('</select>', html.indexOf('id="route-medium"')),
     )
     expect(code).toContain('value="deepseek/deepseek-coder"')
     expect(code).toContain(' selected>deepseek-coder')
