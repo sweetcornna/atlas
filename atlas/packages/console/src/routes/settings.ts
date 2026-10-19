@@ -18,6 +18,7 @@ import { renderAbout } from '../view/about.js'
 import { sectionHead } from '../view/bits.js'
 import { rosterLease } from '../view/format.js'
 import { renderLimits } from '../view/limits.js'
+import { settingRow, settingsGroup } from '../view/settingRow.js'
 import {
   DEFAULT_BIN_NAME,
   DEFAULT_LABEL,
@@ -76,6 +77,37 @@ async function instanceFacts(
   })
 }
 
+/**
+ * 外观, for this browser: the same preference as the account menu's, as a
+ * setting row the shared runtime writes (`assets/client.ts`). Not a write to
+ * the console, so every reader may change it.
+ */
+function appearance(): string {
+  return settingsGroup(
+    '外观',
+    [
+      settingRow({
+        id: 'theme',
+        label: '主题',
+        description: '只对这个浏览器生效',
+        control: {
+          kind: 'segmented',
+          value: 'system',
+          default: 'system',
+          options: [
+            ['system', '跟随系统'],
+            ['light', '浅色'],
+            ['dark', '深色'],
+          ],
+        },
+        handler: 'theme',
+        write: false,
+      }),
+    ],
+    { id: 'appearance' },
+  )
+}
+
 export const settingsRoute: RouteModule = {
   area: {
     id: 'settings',
@@ -92,6 +124,7 @@ export const settingsRoute: RouteModule = {
       return {
         title: '设置与关于',
         body:
+          appearance() +
           `<section class="sec" id="instance-section">` +
           sectionHead('Instance', '实例', { headingId: 'h-instance' }) +
           `<div class="card elev-sm">${await instanceFacts(

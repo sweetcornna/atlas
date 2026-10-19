@@ -79,6 +79,7 @@
  */
 
 import { accentCss } from '../view/accent.js'
+import { SETTING_ROW_CSS } from '../view/settingRow.js'
 
 /**
  * A stylesheet without its comments (G1).
@@ -1443,4 +1444,4 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #111
 
 /** The shared sheet every document inlines, without the notes (G1). */
 export const CONSOLE_CSS =
-  stripCssComments(SOURCE_CSS + TOUCH_CSS) + accentCss()
+  stripCssComments(SOURCE_CSS + SETTING_ROW_CSS + TOUCH_CSS) + accentCss()

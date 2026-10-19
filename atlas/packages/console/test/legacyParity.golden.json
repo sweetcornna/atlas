@@ -51,7 +51,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-AUB66mLFx9ySeMB1dFbGqvNsDemFriSzmsXuVLXfQ+Q='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-ElpuDNtaFtEiTlgt8S90lXW0WP3QyccFvxYTS6Yh0R4='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -64,8 +64,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 208731,
-    "sha256": "393ffd5f54c9456640fb6dd2465c1cc37a9ba712770b55fdbadc6bf238a7564f"
+    "length": 216665,
+    "sha256": "7e425906b08c64d0ec7d21f9e34ef7ef47ab4e6c0bf272c0595613d04e93bf6c"
   },
   {
     "probe": "GET / as view-query",
@@ -85,7 +85,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-AUB66mLFx9ySeMB1dFbGqvNsDemFriSzmsXuVLXfQ+Q='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-ElpuDNtaFtEiTlgt8S90lXW0WP3QyccFvxYTS6Yh0R4='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -98,8 +98,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 208731,
-    "sha256": "393ffd5f54c9456640fb6dd2465c1cc37a9ba712770b55fdbadc6bf238a7564f"
+    "length": 216665,
+    "sha256": "7e425906b08c64d0ec7d21f9e34ef7ef47ab4e6c0bf272c0595613d04e93bf6c"
   },
   {
     "probe": "GET / as view-cookie",
@@ -119,7 +119,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-AUB66mLFx9ySeMB1dFbGqvNsDemFriSzmsXuVLXfQ+Q='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-ElpuDNtaFtEiTlgt8S90lXW0WP3QyccFvxYTS6Yh0R4='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -132,8 +132,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 208731,
-    "sha256": "393ffd5f54c9456640fb6dd2465c1cc37a9ba712770b55fdbadc6bf238a7564f"
+    "length": 216665,
+    "sha256": "7e425906b08c64d0ec7d21f9e34ef7ef47ab4e6c0bf272c0595613d04e93bf6c"
   },
   {
     "probe": "GET / as wrong-bearer",
@@ -180,8 +180,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 64113,
-    "sha256": "29758e6484d18ead8bb08b37b56a955ec1efc61f3819dc454b28c896165706a8"
+    "length": 66668,
+    "sha256": "526c9676a26675cd457f989815f9bb0b4ba403340fa5e98146272d0c6f0ab379"
   },
   {
     "probe": "GET /login?redirect=%2Fchat as none",
@@ -203,8 +203,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 64117,
-    "sha256": "ac5531f7617ec2f449fa2d39b6d6d8c9005970284fabb92494ab467e1f6d7428"
+    "length": 66672,
+    "sha256": "d17895c8875c7f659f1f767005d30b17e7174be2bfbcb273a62838c96ea08aae"
   },
   {
     "probe": "GET /login as admin-cookie",
@@ -250,8 +250,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 64426,
-    "sha256": "fef9e00f0d2803380c992d71f5d6abc8a551d9d0114cdfdf3ad38b578b352145"
+    "length": 66981,
+    "sha256": "03e73e7080fc27179091b027494640c6de62e4b926feac6fbaab3f002b56d8aa"
   },
   {
     "probe": "POST /login as none form={\"token\":\"view-token-000000000001\"}",
@@ -373,12 +373,12 @@
       ["cache-control", "no-cache"],
       ["content-type", "text/css; charset=utf-8"],
       ["cross-origin-resource-policy", "same-origin"],
-      ["etag", "W/\"944b751303b24742adc5469d75a9f10a\""],
+      ["etag", "W/\"208adbeb36f4d5b0758b086ec40c0c8b\""],
       ["vary", "accept-encoding"],
       ["x-content-type-options", "nosniff"]
     ],
-    "length": 57727,
-    "sha256": "944b751303b24742adc5469d75a9f10a66506196e57e2e720d86c56f814b64d5"
+    "length": 60282,
+    "sha256": "208adbeb36f4d5b0758b086ec40c0c8b7d0ac2b888b86740a340092ea42c244a"
   },
   {
     "probe": "GET /assets/app.js as none",
@@ -387,12 +387,12 @@
       ["cache-control", "no-cache"],
       ["content-type", "text/javascript; charset=utf-8"],
       ["cross-origin-resource-policy", "same-origin"],
-      ["etag", "W/\"87e706c05cad0051f56efa59c7d13434\""],
+      ["etag", "W/\"e322b6d04b26f59850fd242b89c51fcc\""],
       ["vary", "accept-encoding"],
       ["x-content-type-options", "nosniff"]
     ],
-    "length": 38643,
-    "sha256": "87e706c05cad0051f56efa59c7d13434813169172467cb44d7b0de1850c94cf9"
+    "length": 44022,
+    "sha256": "e322b6d04b26f59850fd242b89c51fcc831c9b73ed773c745f63ebee0b63dfe6"
   },
   {
     "probe": "GET /assets/nope.js as none",
@@ -1126,7 +1126,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-NF9Eer76XaVuas8tB88qkRpak3w/ZAQPc0EmXHvCmZw='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-dUXK08IhYjtedzFNlYhD7KTkP9O8SW6kJYfIlPwVrOg='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -1139,8 +1139,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 135277,
-    "sha256": "94c6afd58b2bcc85d5e0c0f560c02e12b3cd6c47a0134fe6a65ee89ac6adc80e"
+    "length": 143211,
+    "sha256": "5bcc7226e78e580b2eabf7e15f705a1b862f4c48a0744f3777d26a2f85561409"
   },
   {
     "probe": "GET /admin/nodes as none (html)",
@@ -1173,7 +1173,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-NF9Eer76XaVuas8tB88qkRpak3w/ZAQPc0EmXHvCmZw='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-dUXK08IhYjtedzFNlYhD7KTkP9O8SW6kJYfIlPwVrOg='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -1186,8 +1186,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 133903,
-    "sha256": "e2451e2e87a3b12527ff1be8abe85e22848c4339f9098da1734f714f991cae37"
+    "length": 141837,
+    "sha256": "318cbd6582e98f22e50d964d697a2aed7ca8c5bc7c64de91a41b01f5fd851903"
   },
   {
     "probe": "GET /admin/nodes/nowhere as admin-bearer (html)",
@@ -1196,7 +1196,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-h+cGwFytAFH1bvpZx9E0NIExaRckZ8tE17DeGFDJTPk='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-4yK20Esm9ZhQ/SQricUfzIMcm3Ptdzx0X2Pr7gtj3+Y='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -1209,8 +1209,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 119245,
-    "sha256": "fa93203873905dfb4c51b39740c6c5077200b2b7331efd3690ae6c1fff924ad4"
+    "length": 127179,
+    "sha256": "6b975825caecf24290fda9d2e66b75a2754bb999a74805b36b59a92ad973ab94"
   },
   {
     "probe": "GET /admin/audit?window=24h as view-bearer",
@@ -1219,7 +1219,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-f3WWdm/XHP7aAjpnJdUW3yGtdGDiZTsryzLkrGeJ02w='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-098PgVf95I6gnVPSwypDtsmTw/JmnXaF/K8ucJHG3KQ='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -1232,8 +1232,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 128290,
-    "sha256": "e54ce22955a00b1a7f37146638b901fd21df333ce1b7198a1754ec81962b27cb"
+    "length": 136224,
+    "sha256": "ec58385163bacfa7f8bafa432632d05a46960d9712342f70ae4ee0ead09755ad"
   },
   {
     "probe": "GET /admin/audit/trace/4bf92f3577b34da6a3ce929d0e0e4736 as view-bearer",
@@ -1242,7 +1242,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-f3WWdm/XHP7aAjpnJdUW3yGtdGDiZTsryzLkrGeJ02w='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-098PgVf95I6gnVPSwypDtsmTw/JmnXaF/K8ucJHG3KQ='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -1255,8 +1255,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 122759,
-    "sha256": "cad90589ff8ffb67515e26b1315cdacf2767aa66245301d0621a54d725da1285"
+    "length": 130693,
+    "sha256": "76c7a65d0f08486eeead47428c4bc2c035b954f52ba0986fc35071f2f7c4ce33"
   },
   {
     "probe": "GET /admin/servers as admin-bearer",
@@ -1265,7 +1265,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-76ontjxT6yvm5nhZmEdyhHXXKeasiKyLIm9Z9LE3SP8='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-pA5yb8KEPaZDbx6MtbIvBeMVwtAA/OH28pHeGJdE784='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -1278,8 +1278,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 131164,
-    "sha256": "265bc55577a9f6d8bc04cfd38ac6775769fdf8630bcd714c2836ae792d88823f"
+    "length": 139098,
+    "sha256": "0581ef97ce327c0fff4fbf76e33962a826b707f2cd66b864627069a66124bc15"
   },
   {
     "probe": "GET /admin/servers as view-bearer",
@@ -1288,7 +1288,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-76ontjxT6yvm5nhZmEdyhHXXKeasiKyLIm9Z9LE3SP8='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-pA5yb8KEPaZDbx6MtbIvBeMVwtAA/OH28pHeGJdE784='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -1301,8 +1301,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 130032,
-    "sha256": "0c92fd02d356cae24d68a159f34c22570e3da85961c977dbf1f9e38f3854fb9d"
+    "length": 137966,
+    "sha256": "25084be41312652351b200cdecd5dd1167fc41c09434711455853d6f70bd6d77"
   },
   {
     "probe": "GET /admin/settings as view-bearer",
@@ -1311,7 +1311,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-h+cGwFytAFH1bvpZx9E0NIExaRckZ8tE17DeGFDJTPk='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-4yK20Esm9ZhQ/SQricUfzIMcm3Ptdzx0X2Pr7gtj3+Y='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -1324,8 +1324,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 119918,
-    "sha256": "7dcdee9507b9afd18c0d383d2f0d59fbefd17131b8a5f27359a1c64848236b0e"
+    "length": 129077,
+    "sha256": "2a214b2b95706bb86f091357edb858cf146474583deb2a0286412f10fb6b00fd"
   },
   {
     "probe": "GET /admin/providers as view-bearer",
@@ -1334,7 +1334,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-M63VpVylcFveE1KzSZg8bUxkR5DS5HQHL0ooydF47rg='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-2O6zfscfIrjLiI4l+fpIV5cj7mWlMr1/ugnlrfGF67s='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -1347,8 +1347,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 178556,
-    "sha256": "a8947fd942dfbd490e7601790540db7b909e5e40ccc677708accea664ac306bd"
+    "length": 186490,
+    "sha256": "3dc4026608ed401e24cbcf2418fe913837826111b7cc046a2cf0b80b943d65c5"
   },
   {
     "probe": "GET /nope as admin-bearer (html)",
@@ -1357,7 +1357,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-h+cGwFytAFH1bvpZx9E0NIExaRckZ8tE17DeGFDJTPk='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-4yK20Esm9ZhQ/SQricUfzIMcm3Ptdzx0X2Pr7gtj3+Y='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -1370,7 +1370,7 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 119226,
-    "sha256": "8ed92171507726f736e4301d0b31724e51af35cbb1bc77dbe0573921875ea6d7"
+    "length": 127160,
+    "sha256": "09f679c96363860a0791ca895f003b650ab84d22fc148b81b22643755b2a8a57"
   }
 ]
