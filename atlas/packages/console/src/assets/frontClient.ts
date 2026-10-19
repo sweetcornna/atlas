@@ -182,6 +182,7 @@ function frontScript(): string {
       if (stick && scroller) scroller.scrollTop = scroller.scrollHeight;
       updateJump();
       askModel();
+      document.dispatchEvent(new CustomEvent('qianmo:front-view'));
       return true;
     });
   }
@@ -332,6 +333,9 @@ function frontScript(): string {
     if (plus) plus.disabled = !live;
     var mic = byId('fx-mic');
     if (mic) mic.disabled = !live;
+    // 模型 and 权限模式 act on the conversation open here (frontTools.ts).
+    var picks = document.querySelectorAll('.fx-pick-btn');
+    for (var i = 0; i < picks.length; i++) picks[i].disabled = !live;
     if (!live) { hideCommands(); stopVoice(); }
   }
 
@@ -552,11 +556,16 @@ function frontScript(): string {
     var old = document.querySelectorAll('#fx-thread [data-prov-chat]');
     for (var i = 0; i < old.length; i++) old[i].remove();
     if (slot) slot.textContent = '';
+    // The node's models, for the 模型 picker to list (frontTools.ts).
+    var shelf = byId('fx-model-data');
+    if (shelf) shelf.textContent = '';
     if (!slot || !thread || !model.html || thread.getAttribute('data-target') !== model.target) return;
     var tpl = document.createElement('template');
     tpl.innerHTML = model.html;
     var label = tpl.content.querySelector('#prov-chat-label');
     if (label) slot.appendChild(label);
+    var models = tpl.content.querySelector('#prov-chat-models');
+    if (models && shelf) shelf.appendChild(models);
     var divider = tpl.content.querySelector('#prov-chat-divider');
     var list = thread.querySelector('.fx-msgs');
     if (!divider || !list) return;
@@ -1265,6 +1274,15 @@ function frontScript(): string {
     askModel();
     qc.afterSession(startStream);
   }
+
+  // The composer's pickers send a pick as a line of the conversation, the
+  // way it would be typed; the model label is asked again after it.
+  window.qianmoFront = {
+    send: function (text) {
+      send(text);
+      model.at = 0;
+    }
+  };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', start);

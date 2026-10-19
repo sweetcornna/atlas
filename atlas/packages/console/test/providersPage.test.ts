@@ -1376,7 +1376,13 @@ describe('the chat label', () => {
         s.member,
       ),
     )
-    expect(html).toContain('模型 · deepseek-v4-pro')
+    expect(html).toContain('id="prov-chat-label"')
+    expect(html).toContain('>deepseek-v4-pro</span>')
+    // The composer's 模型 picker: the provider, the model, its effort, the list.
+    expect(html).toMatch(
+      /<span id="prov-chat-models" hidden data-provider="[^"]+" data-model="deepseek-v4-pro" data-effort="[a-z]*">/,
+    )
+    expect(html).toContain('<span data-model-id="deepseek-v4-pro"></span>')
     expect(html).toContain('已切换到 DeepSeek · deepseek-v4-pro')
     expect(html).toContain(`data-at="${NOW - 3_600_000}"`)
     const none = await text(

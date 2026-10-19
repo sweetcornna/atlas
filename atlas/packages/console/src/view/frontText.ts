@@ -134,6 +134,37 @@ export interface FrontText {
   readonly keyboardTitle: string
   readonly keyboardHelp: string
   readonly close: string
+
+  /** 模型 and 权限模式 under the composer's line (`frontTools.ts`). */
+  readonly model: string
+  readonly modelAuto: string
+  readonly modelAutoNote: string
+  readonly effort: string
+  readonly effortLevels: Readonly<
+    Record<
+      | 'inherit'
+      | 'off'
+      | 'minimal'
+      | 'low'
+      | 'medium'
+      | 'high'
+      | 'xhigh'
+      | 'max',
+      string
+    >
+  >
+  readonly permission: string
+  readonly permModes: Readonly<
+    Record<'off' | 'accept-edits' | 'auto' | 'full-access', string>
+  >
+  readonly permNotes: Readonly<
+    Record<'off' | 'accept-edits' | 'auto' | 'full-access', string>
+  >
+  readonly permDefaults: string
+  readonly bypassTitle: string
+  readonly bypassBody: string
+  readonly bypassConfirm: string
+  readonly cancel: string
   ago(at: number, now: number): string
 }
 
@@ -147,6 +178,10 @@ interface FrontClientText {
   readonly sending: string
   /** The line just sent while the agent works on an earlier one. */
   readonly queuedNext: string
+  /** A permission mode just switched: the lead before its name. */
+  readonly switchedTo: string
+  readonly notWired: string
+  readonly opsOnly: string
   readonly sent: string
   readonly sentRetrying: string
   readonly newReply: string
@@ -308,6 +343,39 @@ const ZH: FrontText = {
   keyboardHelp:
     'Enter 发送 · Shift Enter 换行 · / 搜索 · Ctrl Shift O 新对话 · Esc 关闭菜单 · ? 帮助',
   close: '关闭',
+  model: '模型',
+  modelAuto: '自动',
+  modelAutoNote: '按节点的配置选',
+  effort: '推理强度',
+  effortLevels: {
+    inherit: '默认',
+    off: '关闭',
+    minimal: '最低',
+    low: '低',
+    medium: '中',
+    high: '高',
+    xhigh: '超高',
+    max: '最高',
+  },
+  permission: '权限模式',
+  permModes: {
+    off: '人工确认',
+    'accept-edits': '自动接受编辑',
+    auto: '自动审批',
+    'full-access': '跳过权限确认',
+  },
+  permNotes: {
+    off: '有后果的操作逐次确认',
+    'accept-edits': '工作区编辑直接执行 · 命令 联网 GitHub 逐次确认',
+    auto: '沙箱命令 编辑 联网读取直接执行 · GitHub 写操作逐次确认',
+    'full-access': '不再逐次确认 · 红线与云端电脑「每一步都确认」照旧',
+  },
+  permDefaults: '开启后按节点缺省的时长与次数 · 到期回到人工确认',
+  bypassTitle: '跳过权限确认？',
+  bypassBody:
+    '这个智能体之后执行命令 改文件 访问外部都不再问你 · 到期 用完次数或收回前一直有效',
+  bypassConfirm: '跳过确认',
+  cancel: '取消',
   ago: (at, now) => {
     const { unit, n, ahead } = gap(at, now)
     const tail = ahead ? '后' : '前'
@@ -438,6 +506,40 @@ const EN: FrontText = {
   keyboardHelp:
     'Enter send · Shift Enter new line · / search · Ctrl Shift O new chat · Esc close menu · ? help',
   close: 'Close',
+  model: 'Model',
+  modelAuto: 'Auto',
+  modelAutoNote: "Follows the node's configuration",
+  effort: 'Reasoning effort',
+  effortLevels: {
+    inherit: 'Default',
+    off: 'Off',
+    minimal: 'Minimal',
+    low: 'Low',
+    medium: 'Medium',
+    high: 'High',
+    xhigh: 'Extra high',
+    max: 'Max',
+  },
+  permission: 'Permission mode',
+  permModes: {
+    off: 'Ask first',
+    'accept-edits': 'Accept edits',
+    auto: 'Auto approve',
+    'full-access': 'Skip permissions',
+  },
+  permNotes: {
+    off: 'Asks before anything with consequences',
+    'accept-edits': 'Workspace edits run · commands, web and GitHub ask',
+    auto: 'Sandboxed commands, edits and web reads run · GitHub writes ask',
+    'full-access': 'Stops asking · hard limits and computer step checks stay',
+  },
+  permDefaults:
+    "Uses the node's default time and call budget · then back to Ask first",
+  bypassTitle: 'Skip permissions?',
+  bypassBody:
+    'This agent runs commands, edits files and reaches out without asking · until it expires, runs out or is revoked',
+  bypassConfirm: 'Skip permissions',
+  cancel: 'Cancel',
   ago: (at, now) => {
     const { unit, n, ahead } = gap(at, now)
     if (unit === 'now') return 'just now'
@@ -567,6 +669,40 @@ const JA: FrontText = {
   keyboardHelp:
     'Enter 送信 · Shift Enter 改行 · / 検索 · Ctrl Shift O 新しいチャット · Esc メニューを閉じる · ? ヘルプ',
   close: '閉じる',
+  model: 'モデル',
+  modelAuto: '自動',
+  modelAutoNote: 'ノードの設定に従う',
+  effort: '推論の強さ',
+  effortLevels: {
+    inherit: '既定',
+    off: 'オフ',
+    minimal: '最小',
+    low: '低',
+    medium: '中',
+    high: '高',
+    xhigh: '超高',
+    max: '最大',
+  },
+  permission: '権限モード',
+  permModes: {
+    off: '手動で確認',
+    'accept-edits': '編集を自動承認',
+    auto: '自動承認',
+    'full-access': '権限確認をスキップ',
+  },
+  permNotes: {
+    off: '影響のある操作は毎回確認',
+    'accept-edits':
+      'ワークスペースの編集は実行 · コマンド ネット GitHub は確認',
+    auto: 'サンドボックスのコマンド 編集 ネット読み取りは実行 · GitHub の書き込みは確認',
+    'full-access': '確認しない · 禁止事項とクラウド PC の毎回確認はそのまま',
+  },
+  permDefaults: 'ノード既定の時間と回数 · 終わると手動で確認に戻る',
+  bypassTitle: '権限確認をスキップしますか',
+  bypassBody:
+    'このエージェントはコマンド 編集 外部アクセスを確認なしで行います · 期限 回数切れ 取り消しまで有効',
+  bypassConfirm: 'スキップする',
+  cancel: 'キャンセル',
   ago: (at, now) => {
     const { unit, n, ahead } = gap(at, now)
     if (unit === 'now') return 'たった今'
@@ -590,6 +726,9 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     noSession: '没能开出会话',
     sending: '发送中',
     queuedNext: '排队中 · 下一步时送达',
+    switchedTo: '已切换为 ',
+    notWired: '未接入 · 一直是人工确认',
+    opsOnly: '只有运维能切换',
     sent: '已发送',
     sentRetrying: '已发送 · 刷新失败 · 自动重试中',
     newReply: '收到新回复 · ',
@@ -609,6 +748,9 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     noSession: "Couldn't open a chat",
     sending: 'Sending',
     queuedNext: 'Queued · goes in at the next step',
+    switchedTo: 'Switched to ',
+    notWired: 'Not connected · always Ask first',
+    opsOnly: 'Only an operator can switch',
     sent: 'Sent',
     sentRetrying: 'Sent · refresh failed · retrying',
     newReply: 'New reply · ',
@@ -630,6 +772,9 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     noSession: 'チャットを開けませんでした',
     sending: '送信中',
     queuedNext: '待機中 · 次のステップで届きます',
+    switchedTo: '切り替えました：',
+    notWired: '未接続 · 常に手動で確認',
+    opsOnly: '切り替えは運用者のみ',
     sent: '送信済み',
     sentRetrying: '送信済み · 更新失敗 · 再試行中',
     newReply: '新しい返信 · ',

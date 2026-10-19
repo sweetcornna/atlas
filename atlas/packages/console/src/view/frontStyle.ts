@@ -164,7 +164,6 @@ button.fx-head-face:hover, button.fx-welcome-face:hover { background: var(--fx-h
 .fx-head-sub .state { font-size: var(--text-12); }
 .fx-head-sub .dot { width: 7px; height: 7px; }
 .fx-model:empty { display: none; }
-.fx-model .tag { font-size: var(--text-10-5); }
 .fx-info .fx-info-card { width: min(320px, 86vw); padding: 12px; gap: 10px; left: 0; right: auto; }
 .fx-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; margin: 0; font-size: var(--text-12-5); }
 .fx-facts dt { color: var(--color-muted); }

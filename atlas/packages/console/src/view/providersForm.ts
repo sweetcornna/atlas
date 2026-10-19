@@ -932,6 +932,51 @@ function nodeOfAddress(address: string): string | null {
 }
 
 /**
+ * What the composer's 模型 picker lists (`frontTools.ts`): the provider the
+ * node calls the model by, its model and effort now, and the chat models of
+ * the profile it runs — the ids `/model <provider>/<id>` takes. Data only,
+ * hidden; the picker draws it.
+ */
+function chatModels(
+  cells: ReturnType<typeof effectiveCells>,
+  profile: ProviderProfileView | undefined,
+): string {
+  if (!cells.reported) return ''
+  const effort =
+    cells.effortOn !== true
+      ? 'inherit'
+      : cells.effort === '关闭推理'
+        ? 'off'
+        : EFFORT_IDS.has(cells.effort)
+          ? cells.effort
+          : ''
+  const ids = [
+    ...new Set([
+      cells.model,
+      ...(profile?.models ?? [])
+        .filter(entry => entry.kind === undefined || entry.kind === 'chat')
+        .map(entry => entry.id),
+    ]),
+  ]
+  return (
+    `<span id="prov-chat-models" hidden data-provider="${attr(cells.apiProvider)}" ` +
+    `data-model="${attr(cells.model)}" data-effort="${attr(effort)}">` +
+    ids.map(id => `<span data-model-id="${attr(id)}"></span>`).join('') +
+    `</span>`
+  )
+}
+
+/** The levels a node reports that `/effort` takes by the same name. */
+const EFFORT_IDS: ReadonlySet<string> = new Set([
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+])
+
+/**
  * What the chat page shows of the target's model: a label with the model the
  * node computed, and the switch the node last committed, to be drawn into the
  * transcript where it happened. Nothing at all when the target's node is not
@@ -953,15 +998,20 @@ export function renderChatModel(
     `<span class="tag tag-neutral mono" id="prov-chat-label" data-node="${attr(
       name,
     )}" title="${attr(`节点 ${name} 当前生效的模型 · ${cells.lane}`)}">` +
-    `${escapeHtml(`模型 · ${cells.model}`)}</span>`
+    `${escapeHtml(cells.model)}</span>`
   const applied = node.actual?.applied ?? null
+  const profile =
+    applied === null
+      ? undefined
+      : overview.profiles.find(entry => entry.profile.id === applied.profileId)
+          ?.profile
+  const menu = chatModels(cells, profile)
   const at = applied === null ? Number.NaN : Date.parse(applied.at)
-  if (applied === null || !Number.isFinite(at) || at > now) return label
-  const profileName =
-    overview.profiles.find(entry => entry.profile.id === applied.profileId)
-      ?.profile.name ?? applied.profileId
+  if (applied === null || !Number.isFinite(at) || at > now) return label + menu
+  const profileName = profile?.name ?? applied.profileId
   return (
     label +
+    menu +
     `<div class="prov-chat-divider" id="prov-chat-divider" data-at="${attr(
       String(at),
     )}" role="separator">` +

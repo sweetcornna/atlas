@@ -53,6 +53,7 @@ import {
   CONSOLE_CLIENT_JS_ACCOUNTS,
 } from '../assets/client.js'
 import { FRONT_JS } from '../assets/frontClient.js'
+import { FRONT_TOOLS_JS } from '../assets/frontTools.js'
 import type { ConsoleRole } from '../auth.js'
 import { type Lang, LANG_NAMES, LANGS } from '../i18n.js'
 import {
@@ -95,6 +96,11 @@ import {
   frontReplicateCard,
 } from './frontReplicate.js'
 import { FRONT_CSS } from './frontStyle.js'
+import {
+  composerPickers,
+  FRONT_TOOLS_CSS,
+  permissionConfirm,
+} from './frontTools.js'
 import { FRONT_TEXT, frontClientText, type FrontText } from './frontText.js'
 import { qianmoMark } from './mark.js'
 import { renderRichText } from './richText.js'
@@ -1168,7 +1174,7 @@ function renderHead(model: FrontViewModel): string {
     `<span class="fx-head-name">${escapeHtml(agent)}</span>` +
     `<span class="fx-head-sub"><span class="mono">${escapeHtml(node)}</span>` +
     (verdict.tone === 'ok' ? '' : state(verdict.tone, verdict.text)) +
-    `<span class="fx-model" id="fx-model"></span></span>` +
+    `</span>` +
     headInfo(target, address, node, verdict, model) +
     `</div>`
   )
@@ -1257,7 +1263,7 @@ export interface FrontDocumentModel {
   readonly source?: SourceLinks
 }
 
-function composer(enabled: boolean, t: FrontText): string {
+function composer(enabled: boolean, admin: boolean, t: FrontText): string {
   const off = enabled ? '' : ' disabled'
   const commands = CHAT_LOCAL_COMMANDS.map(
     name =>
@@ -1268,17 +1274,19 @@ function composer(enabled: boolean, t: FrontText): string {
   return (
     `<form class="fx-composer" id="fx-composer" novalidate>` +
     `<div class="fx-cmds" id="fx-cmds" role="listbox" aria-label="${attr(t.localCommands)}" hidden>${commands}</div>` +
-    `<button type="button" class="fx-icon-btn fx-plus" id="fx-plus" data-action="fx-plus" ` +
-    `aria-label="${attr(t.commands)}" aria-controls="fx-cmds" aria-expanded="false"${off}>${icon('plus', { small: true })}</button>` +
     `<label class="sr-only" for="fx-text">${escapeHtml(t.message)}</label>` +
     `<textarea id="fx-text" rows="1" spellcheck="false" ` +
     `maxlength="${attr(String(MAX_CHAT_TEXT_LENGTH))}" aria-describedby="fx-status" ` +
     `aria-controls="fx-cmds" ` +
     `placeholder="${attr(t.placeholder)}"${off}></textarea>` +
+    `<div class="fx-tools">` +
+    `<button type="button" class="fx-icon-btn fx-plus" id="fx-plus" data-action="fx-plus" ` +
+    `aria-label="${attr(t.commands)}" aria-controls="fx-cmds" aria-expanded="false"${off}>${icon('plus', { small: true })}</button>` +
+    composerPickers(t, admin, enabled) +
     `<button type="button" class="fx-icon-btn fx-mic" id="fx-mic" data-action="fx-mic" ` +
     `aria-label="${attr(t.voiceInput)}" aria-pressed="false" hidden>${icon('mic', { small: true })}</button>` +
     `<button type="submit" class="fx-send" id="fx-send" aria-label="${attr(t.send)}"${off}>` +
-    `${icon('arrow-up', { small: true })}</button>` +
+    `${icon('arrow-up', { small: true })}</button></div>` +
     `<p class="fx-status" id="fx-status" role="status"></p>` +
     `</form>`
   )
@@ -1368,13 +1376,17 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
   const script =
     runtime +
     FRONT_JS +
+    FRONT_TOOLS_JS +
     AVATAR_PAGE_JS +
     (replicate === 'off' ? '' : FRONT_REPLICATE_JS)
   const t = FRONT_TEXT[model.lang]
   return (
     documentHead(
       `${WORDMARK_CN} · ${t.chat} · ${model.label}`,
-      FRONT_CSS + AVATAR_CSS + (replicate === 'off' ? '' : FRONT_REPLICATE_CSS),
+      FRONT_CSS +
+        FRONT_TOOLS_CSS +
+        AVATAR_CSS +
+        (replicate === 'off' ? '' : FRONT_REPLICATE_CSS),
       [script],
     ).replace('<html lang="zh-CN">', `<html lang="${attr(model.lang)}">`) +
     `<body class="fx-body">\n` +
@@ -1417,13 +1429,14 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `${icon('arrow-down', { small: true })}</button>` +
     model.side.stack +
     (replicate === 'off' ? '' : frontReplicateCard(replicate)) +
-    composer(model.composerEnabled, t) +
+    composer(model.composerEnabled, model.admin, t) +
     `</div></div>` +
     `</main></div>\n` +
     sessionExpired(model.relogin, model.lang) +
     `<div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>\n` +
     `<p id="reply-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>` +
     keyboardHelp(t) +
+    permissionConfirm(t) +
     avatarDialog(model.lang) +
     `<script>${script}</script>\n` +
     `</body>\n</html>\n`
