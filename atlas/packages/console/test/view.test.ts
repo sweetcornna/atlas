@@ -2308,15 +2308,17 @@ describe('assets', () => {
   })
 
   /**
-   * Colour is spent on facts, and on the primary action in the reader's theme
-   * colour. The focus ring is ink, as on the front (`view/frontStyle.ts`).
-   * What this checks is that both are *tokens*: no brand hex is hardcoded
-   * anywhere, and the focus machinery resolves through `var(--color-text)`.
+   * Colour is spent on facts, on interaction, and on the primary action in
+   * the reader's theme colour. The focus ring is the interaction colour, as on
+   * the front (`view/frontStyle.ts`). What this checks is that both are
+   * *tokens*: no brand hex is hardcoded in a rule, and the focus machinery
+   * resolves through `var(--color-focus)`.
    */
   test('focus rings and the primary action are driven by tokens, not a hardcoded hex', () => {
     expect(CONSOLE_CSS).not.toContain('#D77757')
-    expect(CONSOLE_CSS).toContain('outline: 2px solid var(--color-text);')
+    expect(CONSOLE_CSS).toContain('outline: 2px solid var(--color-focus);')
     expect(CONSOLE_CSS).not.toContain('outline: 2px solid var(--color-accent)')
+    expect(CONSOLE_CSS).not.toContain('outline: 2px solid var(--color-text)')
     const primary = ruleOf('.btn-primary')
     // The fill token: accent-700 in light, the accent in dark, so its light
     // label keeps 4.5:1 (B1, contrast.browser.test.ts).
@@ -2380,22 +2382,35 @@ describe('assets', () => {
     expect(ruleOf('.mono, code')).toContain('var(--font-mono)')
   })
 
-  test('body copy is 14px and no 11px-or-smaller size is load-bearing', () => {
-    // The previous sheet ran 11–13px and the roster was unreadable at arm's
-    // length. Everything that carries a value is now 12.5px or more; 10–11px
-    // survives only on uppercase kickers and micro-labels.
-    expect(ruleOf('body')).toContain('font-size: var(--text-14)')
-    expect(ruleOf('.input')).toContain('font-size: var(--text-14)')
-    expect(ruleOf('.btn')).toContain('font-size: var(--text-14)')
-    expect(ruleOf('.trail')).toContain('font-size: var(--text-13-5)')
+  test('the type is the compact scale: 11 caption, 12 footnote, 13 body, 14 heading, 20 title', () => {
+    // The management side reads like a settings window, not a document: body
+    // copy, fields, buttons and tables are 13px, headings 14px, the one title
+    // size 20px. The half sizes the pages were written with fold onto it.
+    expect(ruleOf('body')).toContain('font-size: var(--text-13)')
+    expect(ruleOf('.input')).toContain('font-size: var(--text-13)')
+    expect(ruleOf('.btn')).toContain('font-size: var(--text-13)')
+    expect(ruleOf('.trail')).toContain('font-size: var(--text-13)')
+    for (const [token, size] of [
+      ['--text-11', '11px'],
+      ['--text-12', '12px'],
+      ['--text-13', '13px'],
+      ['--text-14', '14px'],
+      ['--text-20', '20px'],
+      ['--text-12-5', '12px'],
+      ['--text-13-5', '13px'],
+    ] as const) {
+      expect(CONSOLE_CSS).toContain(`${token}: ${size};`)
+    }
   })
 
-  test('a section kicker is a small muted label, not a headline', () => {
+  test('a label is a small muted word, never capitals', () => {
     const kicker = ruleOf('.kicker')
     expect(kicker).toContain('font-size: var(--text-12)')
-    expect(kicker).toContain('text-transform: uppercase')
     // Muted ink, as the front labels things: amber is kept for a warning.
     expect(kicker).toContain('color: var(--color-muted)')
+    // A Latin label in capitals reads as a shout in a Chinese interface
+    // (DEFAULT, EFFORT): nothing in the sheet sets capitals any more.
+    expect(CONSOLE_CSS).not.toContain('text-transform: uppercase')
   })
 
   test('a closed dialog stays closed: display is only ever set on [open]', () => {
@@ -2448,6 +2463,13 @@ describe('assets', () => {
       '--color-accent',
       '--color-accent-2',
       '--color-divider',
+      '--color-side',
+      '--color-field',
+      '--color-interactive',
+      '--color-focus',
+      '--color-success-fill',
+      '--color-warning-fill',
+      '--color-danger-fill',
       '--color-scrim',
       '--shadow-sm',
       '--shadow-md',
@@ -2465,13 +2487,15 @@ describe('assets', () => {
       // that only happens to look right in one scheme.
       expect(dark).toContain(`${token}:`)
     }
-    expect(CONSOLE_CSS).toContain('--color-bg: #fcfcfb;')
+    // Warm grey grounds; the interaction colour is the one blue.
+    expect(CONSOLE_CSS).toContain('--color-bg: #f9f9f7;')
+    expect(CONSOLE_CSS).toContain('--color-interactive: #2a78d6;')
     expect(CONSOLE_CSS).toContain('--color-accent: #c98a2e;')
     // The ramps reverse their semantic direction, which is what lets every
     // component class ("background 100, text 800") stay byte-identical.
-    expect(dark).toContain('--color-bg: #111111;')
-    expect(dark).toContain('--color-neutral-100: #1c1c1c;')
-    expect(dark).toContain('--color-neutral-900: #e6e6e3;')
+    expect(dark).toContain('--color-bg: #1a1a19;')
+    expect(dark).toContain('--color-neutral-100: #242423;')
+    expect(dark).toContain('--color-neutral-900: #e6e4de;')
     // …and the accent is lifted a step so it stays legible on the dark ground.
     // The previous sheet's dark --primary was oklch(0.424 …) on an
     // oklch(0.145 …) page, which is the defect this replaces.

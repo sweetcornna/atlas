@@ -62,7 +62,7 @@ body.fx-body {
 .fx-agent:focus-visible, .fx-hitem:focus-visible,
 .fx-stack-row:focus-visible, .fx-send:focus-visible,
 .fx-steps-head:focus-visible, .fx-stack-head:focus-visible {
-  outline: 2px solid var(--color-text); outline-offset: 1px;
+  outline: 2px solid var(--color-focus); outline-offset: 1px;
 }
 .fx-pulse {
   display: inline-block; width: 6px; height: 6px; border-radius: 50%; flex: none;
@@ -74,7 +74,7 @@ body.fx-body {
 /* ---- the side list ---- */
 .fx-side {
   display: flex; flex-direction: column; gap: 10px; min-height: 0; min-width: 0;
-  padding: 10px 10px 8px; background: var(--color-surface); overflow: hidden;
+  padding: 10px 8px 8px; background: var(--color-side); overflow: hidden;
   box-shadow: inset -0.5px 0 0 var(--color-divider);
   transition: opacity 140ms ease;
 }
@@ -83,12 +83,12 @@ body.fx-body {
 .fx-brand-name { font-size: var(--text-15, 15px); font-weight: 600; letter-spacing: 0.06em; }
 /* The logo (its colours are the console's, assets/css.ts): the ridges between
    its plots widened in the panel's own ground so they stay open at this size. */
-.fx-brand .qm-mark path { stroke: var(--color-surface); stroke-width: 18px; stroke-linejoin: round; }
+.fx-brand .qm-mark path { stroke: var(--color-side); stroke-width: 18px; stroke-linejoin: round; }
 .fx-search {
   display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border-radius: 10px;
   background: var(--fx-field); box-shadow: inset 0 0 0 0.5px var(--fx-line); color: var(--color-muted);
 }
-.fx-search:focus-within { background: var(--color-bg); box-shadow: inset 0 0 0 1px var(--color-neutral-400); }
+.fx-search:focus-within { background: var(--color-field); box-shadow: inset 0 0 0 1px var(--color-focus); }
 .fx-search input {
   flex: 1; min-width: 0; border: 0; background: none; color: var(--color-text);
   font: inherit; font-size: var(--text-13); outline: none;
@@ -133,14 +133,14 @@ body.fx-body {
 .fx-agent-row.is-busy .fx-agent-sub { color: var(--color-quiet); }
 .fx-agent-sub .fx-live-dots { margin-right: 6px; vertical-align: 1px; }
 .fx-unread {
-  position: absolute; right: 12px; bottom: 15px; width: 8px; height: 8px; border-radius: 50%;
-  background: var(--fx-seal); opacity: 0; transform: scale(0.4); transition: opacity 160ms ease, transform 160ms ease;
+  position: absolute; right: 12px; bottom: 16px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--color-interactive); opacity: 0; transform: scale(0.4); transition: opacity 160ms ease, transform 160ms ease;
 }
 .fx-agent-row.is-unread .fx-unread { opacity: 1; transform: none; }
 .fx-agent-row.is-unread .fx-agent-name { font-weight: 600; }
 .fx-agent-row.is-unread .fx-agent-sub { color: var(--color-quiet); }
 .fx-agent-row > .fx-more { position: absolute; right: 6px; top: 6px; }
-.fx-agent-row .fx-more-btn { width: 26px; height: 26px; opacity: 0; background: var(--color-surface); }
+.fx-agent-row .fx-more-btn { width: 26px; height: 26px; opacity: 0; background: var(--color-side); }
 .fx-agent-row.is-current .fx-more-btn { background: transparent; }
 .fx-agent-row:hover .fx-more-btn, .fx-agent-row:focus-within .fx-more-btn, .fx-agent-row .fx-more[open] .fx-more-btn { opacity: 1; }
 .fx-agent-row:hover .fx-agent-when, .fx-agent-row:focus-within .fx-agent-when { visibility: hidden; }
@@ -500,7 +500,7 @@ a.fx-id:hover { color: var(--color-text); text-decoration: underline; }
   --fx-swatch: var(--color-text);
 }
 .fx-swatch-custom input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; border: 0; padding: 0; }
-.fx-swatch:focus-visible, .fx-swatch-custom:focus-within { outline: 2px solid var(--color-text); outline-offset: 2px; }
+.fx-swatch:focus-visible, .fx-swatch-custom:focus-within { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .fx-me-menu .fx-menu { min-width: 212px; }
 @media (prefers-reduced-motion: reduce) {
   .fx, .fx-side, .fx-scrim, .fx-unread { transition: none; }
