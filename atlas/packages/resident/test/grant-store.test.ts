@@ -729,3 +729,21 @@ test('host resource cancellation survives restart and makes a later signed decis
     reason: 'expired',
   })
 })
+test('elevated calls (P39) are approved exactly once: no window, no reuse', () => {
+  const store = open()
+  const call: AuthzCall = {
+    agent: 'main',
+    contextId: 'ctx',
+    toolName: 'qianmo_elevated_github',
+    input: { op: 'pr_create', title: 'x' },
+  }
+  const windowed = ask(store, call)
+  expect(
+    store.applyDecision(
+      decide(windowed, { decision: 'allow-window', windowMs: MINUTE }),
+    ).ok,
+  ).toBe(false)
+  expect(store.applyDecision(decide(windowed)).ok).toBe(true)
+  expect(store.use(call).kind).toBe('hit')
+  expect(store.use(call).kind).toBe('miss')
+})

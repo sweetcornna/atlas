@@ -55,6 +55,19 @@ const DEFAULT_REQUEST_TTL_MS = 10 * 60 * 1000
 /** D-5: an `allow-once` grant is consumed once or dies ten minutes on. */
 const ALLOW_ONCE_TTL_MS = 10 * 60 * 1000
 
+/**
+ * Tools approved exactly once, never on a standing window: the cloud computer
+ * (P21) and every elevated command/network/GitHub call (P39). A window grant
+ * never stands in for one of these, and the approval is clamped to the request.
+ */
+function oneShotOnlyTool(toolName: string): boolean {
+  return (
+    toolName.startsWith('qianmo_browser_') ||
+    toolName.startsWith('qianmo_computer_') ||
+    toolName.startsWith('qianmo_elevated_')
+  )
+}
+
 /** Why the store said no. `integrity` covers a ledger it cannot trust or write. */
 export type AuthzRefusal =
   | 'integrity'
@@ -582,8 +595,7 @@ export class FileGrantStore {
 
     if (
       decision.decision === 'allow-window' &&
-      (state.request.toolName.startsWith('qianmo_browser_') ||
-        state.request.toolName.startsWith('qianmo_computer_'))
+      oneShotOnlyTool(state.request.toolName)
     )
       return { ok: false, reason: 'malformed' }
     const allow = decision.decision !== 'deny'
@@ -607,9 +619,7 @@ export class FileGrantStore {
         .digest('hex'),
       grantId,
       expiresAt:
-        expiresAt !== null &&
-        (state.request.toolName.startsWith('qianmo_browser_') ||
-          state.request.toolName.startsWith('qianmo_computer_'))
+        expiresAt !== null && oneShotOnlyTool(state.request.toolName)
           ? Math.min(expiresAt, decision.exp, state.request.exp)
           : expiresAt,
     })
@@ -654,10 +664,7 @@ export class FileGrantStore {
     const matches = this.#live(now).filter(
       grant => grant.digest === digest && grant.contextId === call.contextId,
     )
-    const desktop =
-      call.toolName.startsWith('qianmo_browser_') ||
-      call.toolName.startsWith('qianmo_computer_')
-    const window = desktop
+    const window = oneShotOnlyTool(call.toolName)
       ? undefined
       : matches.find(grant => grant.scope === 'window')
     if (window !== undefined) return { kind: 'hit', grant: snapshot(window) }
