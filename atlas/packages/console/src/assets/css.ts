@@ -96,6 +96,16 @@ export function stripCssComments(css: string): string {
 }
 
 /** The sheet as written, comments and all; {@link CONSOLE_CSS} is what ships. */
+// P18.17: touch targets keep room for fingers. Last in the sheet, so the
+// compact sizes of buttons and fields above give way to it on a phone.
+const TOUCH_CSS = `
+@media (pointer: coarse), (max-width: 600px) {
+  button, .btn, .nav-item, summary, select, input:not([type=checkbox]):not([type=radio]), .linkish { min-height: 44px; }
+  button, .btn, .linkish { min-width: 44px; }
+  label:has(input[type=checkbox]), label:has(input[type=radio]) { min-height: 44px; display: inline-flex; align-items: center; }
+}
+`
+
 const SOURCE_CSS = `
 :root {
   color-scheme: light dark;
@@ -420,13 +430,8 @@ const SOURCE_CSS = `
 }
 :root[data-theme="light"] { color-scheme: light; }
 
-/* P18.17: nested detail panels are flat; touch targets keep room for fingers. */
+/* P18.17: nested detail panels are flat (touch targets: TOUCH_CSS, last). */
 .card .audit-source { border-radius: 0; box-shadow: none; background: transparent; border-top: 1px solid var(--color-divider); }
-@media (pointer: coarse), (max-width: 600px) {
-  button, .btn, .nav-item, summary, select, input:not([type=checkbox]):not([type=radio]), .linkish { min-height: 44px; }
-  button, .btn, .linkish { min-width: 44px; }
-  label:has(input[type=checkbox]), label:has(input[type=radio]) { min-height: 44px; display: inline-flex; align-items: center; }
-}
 
 /* ---- base ---- */
 *, *::before, *::after { box-sizing: border-box; }
@@ -1437,4 +1442,5 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #111
 `
 
 /** The shared sheet every document inlines, without the notes (G1). */
-export const CONSOLE_CSS = stripCssComments(SOURCE_CSS) + accentCss()
+export const CONSOLE_CSS =
+  stripCssComments(SOURCE_CSS + TOUCH_CSS) + accentCss()
