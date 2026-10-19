@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AuthzCall } from '@qianmo/resident'
@@ -11,7 +11,6 @@ import {
   NodeElevation,
   type NodeElevationOptions,
 } from '../../src/host/elevation.js'
-import { ELEVATION_BWRAP_PROBE } from '../../src/host/elevationSandbox.js'
 import type { ResidentAuthzEvent } from '../../src/host/residentAuthorization.js'
 
 const dirs: string[] = []
@@ -344,7 +343,16 @@ describe('NodeElevation sandbox on Linux', () => {
     })
     const view = viewOf(await enable(h, 'auto'))
     expect(view.sandbox).toBe(true)
-    expect(probed).toEqual(ELEVATION_BWRAP_PROBE)
+    // The probe is the agent's real argv running `<shell> -c true`.
+    expect(probed?.slice(-6)).toEqual([
+      '--chdir',
+      expect.any(String),
+      '--',
+      '/bin/bash',
+      '-c',
+      'true',
+    ])
+    expect(probed).toContain('--unshare-net')
     const resource = parseElevationResource(
       JSON.parse(readFileSync(h.elevation.resourcePath('reviewer'), 'utf8')),
     )
@@ -364,6 +372,44 @@ describe('NodeElevation sandbox on Linux', () => {
         )
       ).ok,
     ).toBe(true)
+  })
+})
+
+describe('per-agent sandboxes', () => {
+  test('each agent binds only its own workspace', async () => {
+    const roots: Record<string, string> = {
+      reviewer: mkdtempSync(join(tmpdir(), 'elevation-a-')),
+      writer: mkdtempSync(join(tmpdir(), 'elevation-b-')),
+    }
+    dirs.push(...Object.values(roots))
+    const h = harness({
+      agents: ['reviewer', 'writer'],
+      workspace: agent => roots[agent],
+      platform: 'linux',
+      bwrap: {
+        available: () => true,
+        probe: async () => true,
+        shell: () => '/bin/bash',
+      },
+    })
+    for (const agent of ['reviewer', 'writer']) {
+      const id = `op-${agent}`
+      const r = await h.elevation.control(
+        'elevation.enable',
+        { agent, operationId: id, tier: 'auto' },
+        ctx(id),
+      )
+      expect(r.ok).toBe(true)
+    }
+    const bindOf = (agent: string) => {
+      const argv =
+        parseElevationResource(
+          JSON.parse(readFileSync(h.elevation.resourcePath(agent), 'utf8')),
+        )?.sandbox?.argv ?? []
+      return argv.flatMap((word, i) => (word === '--bind' ? [argv[i + 1]] : []))
+    }
+    expect(bindOf('reviewer')).toEqual([realpathSync(roots.reviewer!)])
+    expect(bindOf('writer')).toEqual([realpathSync(roots.writer!)])
   })
 })
 

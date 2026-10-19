@@ -25,7 +25,7 @@ import type { ResidentAuthzEvent } from './residentAuthorization.js'
 import { readTextIfExists, writePrivateJson } from '../providers/store.js'
 import {
   defaultElevationBwrap,
-  ELEVATION_BWRAP_PROBE,
+  elevationProbeArgv,
   elevationSandboxArgv,
   type ElevationBwrap,
 } from './elevationSandbox.js'
@@ -145,8 +145,13 @@ export class NodeElevation {
   readonly #inflight = new Map<string, InFlight>()
   readonly #file = qianmoConfigPath('qianmo', 'elevation-ledger.json')
   /** Memoized sandbox probe: undefined until the first grant needs it. */
-  #sandbox: ElevationSandbox | null | undefined
-  #sandboxProbe: Promise<ElevationSandbox | null> | undefined
+  /**
+   * Each agent's sandbox, probed at its first grant: the argv binds that
+   * agent's own workspace, so it is never shared between agents. `null`:
+   * probed and unusable; absent: not probed yet.
+   */
+  readonly #sandboxes = new Map<string, ElevationSandbox | null>()
+  readonly #probes = new Map<string, Promise<ElevationSandbox | null>>()
   #closed = false
   #sweeping = false
   readonly #timer: Timer
@@ -207,7 +212,8 @@ export class NodeElevation {
       tier: s.tier,
       epoch: s.epoch,
       expiresAt: s.expiresAt ?? 0,
-      sandbox: live && s.tier !== 'off' ? (this.#sandbox ?? null) : null,
+      sandbox:
+        live && s.tier !== 'off' ? (this.#sandboxes.get(agent) ?? null) : null,
     }
   }
 
@@ -222,11 +228,11 @@ export class NodeElevation {
       expiresAt: s.expiresAt,
       maxCalls: s.maxCalls,
       usedCalls: s.usedCalls,
-      sandbox: this.#sandbox !== null && this.#sandbox !== undefined,
+      sandbox: Boolean(this.#sandboxes.get(s.agent)),
       // Linux nodes are probed at the first grant; until then nothing is said.
       sandboxReason:
         (this.#options.platform ?? process.platform) !== 'linux' ||
-        this.#sandbox === null
+        this.#sandboxes.get(s.agent) === null
           ? NO_SANDBOX_REASON
           : null,
       unsupportedReason: this.#options.unsupported?.(s.agent) ?? null,
@@ -249,32 +255,40 @@ export class NodeElevation {
       writePrivateJson(this.resourcePath(agent), this.resource(agent))
   }
 
-  /** Probe once for a usable bubblewrap; cache the result for the process. */
+  /**
+   * Probe bubblewrap for one agent with the very argv its commands will run
+   * under (`… -- <shell> -c true`), so a pass means the real launch works on
+   * this node — whatever its directory layout — and a failure leaves bash off.
+   */
   async #ensureSandbox(agent: string): Promise<ElevationSandbox | null> {
-    if (this.#sandbox !== undefined) return this.#sandbox
+    const known = this.#sandboxes.get(agent)
+    if (known !== undefined) return known
     const workspace = this.#options.workspace(agent)
     if (
       workspace === undefined ||
       (this.#options.platform ?? process.platform) !== 'linux'
     ) {
-      this.#sandbox = null
+      this.#sandboxes.set(agent, null)
       return null
     }
-    this.#sandboxProbe ??= (async () => {
-      const bwrap = this.#options.bwrap ?? defaultElevationBwrap
-      const shell = bwrap.shell()
-      if (
-        !bwrap.available('bwrap') ||
-        !(await bwrap.probe(ELEVATION_BWRAP_PROBE))
-      )
-        return null
-      return {
-        argv: elevationSandboxArgv({ bwrap: 'bwrap', shell, workspace }),
-        shell,
-      }
-    })()
-    this.#sandbox = await this.#sandboxProbe
-    return this.#sandbox
+    let probe = this.#probes.get(agent)
+    if (probe === undefined) {
+      probe = (async () => {
+        const bwrap = this.#options.bwrap ?? defaultElevationBwrap
+        const shell = bwrap.shell()
+        const argv = elevationSandboxArgv({ bwrap: 'bwrap', shell, workspace })
+        if (
+          !bwrap.available('bwrap') ||
+          !(await bwrap.probe(elevationProbeArgv(argv, workspace, shell)))
+        )
+          return null
+        return { argv, shell }
+      })()
+      this.#probes.set(agent, probe)
+    }
+    const sandbox = await probe
+    this.#sandboxes.set(agent, sandbox)
+    return sandbox
   }
 
   #record(
@@ -448,7 +462,7 @@ export class NodeElevation {
     if (typeof classified === 'string') return refuse(classified)
     // The authoritative layer refuses an unsandboxed command even if the
     // extension somehow offered one: bash runs only inside bubblewrap.
-    if (classified.tool === 'bash' && !this.#sandbox)
+    if (classified.tool === 'bash' && !this.#sandboxes.get(agent))
       return refuse('这台节点没有命令沙箱：放权期间不执行 bash')
 
     const needsApproval = elevationNeedsApproval(s.tier, classified.class)

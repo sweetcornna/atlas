@@ -57,28 +57,33 @@ const SANDBOX_READONLY_WORKSPACE_DIRS: readonly string[] = [
   '.qianmo',
 ]
 
+function real(file: string): string {
+  try {
+    return fs.realpathSync(file)
+  } catch {
+    return path.resolve(file)
+  }
+}
+
 /**
- * One bubblewrap run with the namespaces and clearenv every elevated command
- * gets, so a pass means the real launch can work: a user namespace, a fresh
- * pid namespace, an isolated network namespace, and `--clearenv`.
+ * The probe for one agent: its real sandbox argv running `<shell> -c true`
+ * in its workspace, without the program name (the probe spawns `bwrap`).
  */
-export const ELEVATION_BWRAP_PROBE: readonly string[] = [
-  ...NAMESPACES,
-  '--ro-bind',
-  '/usr',
-  '/usr',
-  '--proc',
-  '/proc',
-  '--dev',
-  '/dev',
-  '--tmpfs',
-  '/tmp',
-  '--clearenv',
-  '--setenv',
-  'PATH',
-  '/usr/bin:/bin',
-  'true',
-]
+export function elevationProbeArgv(
+  argv: readonly string[],
+  workspace: string,
+  shell: string,
+): string[] {
+  return [
+    ...argv.slice(1),
+    '--chdir',
+    real(workspace),
+    '--',
+    shell,
+    '-c',
+    'true',
+  ]
+}
 
 export interface ElevationSandboxInput {
   /** `bwrap` or an absolute path to it. */
@@ -98,10 +103,15 @@ export interface ElevationSandboxInput {
  */
 export function elevationSandboxArgv(input: ElevationSandboxInput): string[] {
   const exists = input.exists ?? fs.existsSync
-  const workspace = path.resolve(input.workspace)
+  // The extension hands bash a canonical cwd (`residentWorkspaceTarget`), so
+  // the workspace is mounted at its real path too.
+  const workspace = real(input.workspace)
   const argv: string[] = [
     input.bwrap,
     ...NAMESPACES,
+    // UTS is unshared anyway; do not show the node's own host name.
+    '--hostname',
+    'sandbox',
     '--proc',
     '/proc',
     '--dev',
