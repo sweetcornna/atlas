@@ -121,10 +121,10 @@ describe('elevated tool classification', () => {
     expect(elevatedCall('bash', { command: 'ls', pty: true })).toContain('pty')
     expect(elevatedCall('bash', {})).toBe('bash needs a command')
   })
-  test('task is local; web_search is read-out', () => {
-    expect(elevatedCall('task', { prompt: 'x' })).toMatchObject({
-      class: 'local',
-    })
+  test('web_search is read-out; task is never an elevated call', () => {
+    // No tier opens native subagents: task falls to the ordinary verdict,
+    // which refuses it.
+    expect(elevatedCall('task', { prompt: 'x' })).toBeUndefined()
     expect(elevatedCall('web_search', { query: 'x' })).toMatchObject({
       class: 'read-out',
     })
@@ -170,15 +170,9 @@ describe('sandbox command wrapping', () => {
 })
 
 describe('tool surface under a live grant', () => {
-  test('a live grant adds bash only with a sandbox, plus task/web_search/github', () => {
-    expect(elevatedTools(grant())).toEqual([
-      'bash',
-      'task',
-      'web_search',
-      'github',
-    ])
+  test('a live grant adds bash only with a sandbox, plus web_search/github, never task', () => {
+    expect(elevatedTools(grant())).toEqual(['bash', 'web_search', 'github'])
     expect(elevatedTools(grant({ sandbox: null }))).toEqual([
-      'task',
       'web_search',
       'github',
     ])
@@ -205,7 +199,7 @@ describe('tool surface under a live grant', () => {
       tools: { approvalMode: string; approval: Record<string, string> }
       web_search: { enabled: boolean }
       github: { enabled: boolean }
-      task: { maxRecursionDepth: number }
+      bash: { direnv: string; autoBackground: { enabled: boolean } }
     }
     expect(overlay.tools.approvalMode).toBe('write')
     expect(overlay.tools.approval.bash).toBe('allow')
@@ -213,7 +207,9 @@ describe('tool surface under a live grant', () => {
     expect(overlay.tools.approval.eval).toBe('deny')
     expect(overlay.web_search.enabled).toBe(true)
     expect(overlay.github.enabled).toBe(true)
-    expect(overlay.task.maxRecursionDepth).toBe(1)
+    expect(overlay.tools.approval.task).toBe('deny')
+    expect(overlay.bash.direnv).toBe('off')
+    expect(overlay.bash.autoBackground.enabled).toBe(false)
   })
   test('without a grant the denied table still denies the elevated tools', () => {
     const overlay = residentConfigOverlay({ edits: 'none' })

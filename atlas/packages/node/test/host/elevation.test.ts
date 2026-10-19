@@ -221,13 +221,17 @@ describe('NodeElevation gate (P39 §2)', () => {
     expect(
       (await gate(h, 'web_search', { query: 'x' }, epoch, s.allow)).ok,
     ).toBe(true)
-    expect((await gate(h, 'task', { prompt: 'x' }, epoch, s.allow)).ok).toBe(
-      true,
-    )
+    expect(
+      (await gate(h, 'github', { op: 'repo_view' }, epoch, s.allow)).ok,
+    ).toBe(true)
     expect(s.calls.map(c => c.toolName)).toEqual([
       'qianmo_elevated_web_search',
-      'qianmo_elevated_task',
+      'qianmo_elevated_github',
     ])
+    // task is never an elevated call at any tier.
+    expect((await gate(h, 'task', { prompt: 'x' }, epoch, s.allow)).ok).toBe(
+      false,
+    )
   })
   test('full-access runs act-out without asking', async () => {
     const h = harness()

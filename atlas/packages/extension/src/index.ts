@@ -25,17 +25,11 @@ import {
   type ResidentExtensionConfig,
 } from './policy.js'
 
-type Gate = (message: string) => Promise<boolean>
-
 /**
- * omp rebinds this factory into every subagent session and module globals are
- * shared between the bindings. A subagent has no UI of its own, so its
- * elevated calls reach the host gate through the main session's confirm; the
- * host attributes them to the main session's active turn.
+ * How long one gate phase may take: the host answers at once for a tier that
+ * runs a call directly, and waits up to its 60-second P14 budget for one that
+ * asks the operator.
  */
-let mainGate: Gate | undefined
-
-/** Children never wait for a person: this budget is the host's, not a human's. */
 const GATE_TIMEOUT_MS = 75_000
 
 const extension: ExtensionFactory = pi => {
@@ -119,12 +113,7 @@ const extension: ExtensionFactory = pi => {
     }
     throw new Error('Resident input did not reach the omp session transcript')
   })
-  pi.on('session_start', async (_event, ctx) => {
-    if (ctx.agent.kind === 'main')
-      mainGate = message =>
-        ctx.ui.confirm(ELEVATION_GATE_TITLE, message, {
-          timeout: GATE_TIMEOUT_MS,
-        })
+  pi.on('session_start', async () => {
     refreshDesktop()
     refreshElevation()
     await pi.setActiveTools(
@@ -199,16 +188,16 @@ const extension: ExtensionFactory = pi => {
           cwd = place.target
           bound = { ...input, cwd }
         }
-        const gate: Gate | undefined =
-          ctx.agent.kind === 'main'
-            ? message =>
-                ctx.ui.confirm(ELEVATION_GATE_TITLE, message, {
-                  timeout: GATE_TIMEOUT_MS,
-                })
-            : mainGate
-        const allowed =
-          gate !== undefined &&
-          (await gate(
+        // Only the main agent's turn has an owner the host can attribute to.
+        if (ctx.agent.kind !== 'main')
+          return {
+            block: true,
+            reason:
+              'Qianmo high-permission mode: available to the main agent only',
+          }
+        const allowed = await ctx.ui
+          .confirm(
+            ELEVATION_GATE_TITLE,
             JSON.stringify({
               toolName: event.toolName,
               input: {
@@ -219,12 +208,14 @@ const extension: ExtensionFactory = pi => {
                 args: bound,
               },
             }),
-          ).catch(() => false))
+            { timeout: GATE_TIMEOUT_MS },
+          )
+          .catch(() => false)
         if (!allowed)
           return {
             block: true,
             reason:
-              'Qianmo high-permission mode: the node refused this call (expired, revoked, over budget, ESTOP, needs approval a subagent cannot wait for, or not approved)',
+              'Qianmo high-permission mode: the node refused this call (expired, revoked, over budget, ESTOP, or not approved)',
           }
         elevatedPending.set(event.toolCallId, event.toolName)
         if (event.toolName === 'bash' && grant.sandbox !== null && cwd)
@@ -298,34 +289,26 @@ const extension: ExtensionFactory = pi => {
     const toolName = elevatedPending.get(event.toolCallId)
     if (toolName === undefined) return
     elevatedPending.delete(event.toolCallId)
-    const gate: Gate | undefined =
-      ctx.agent.kind === 'main'
-        ? message =>
-            ctx.ui.confirm(ELEVATION_GATE_TITLE, message, {
-              timeout: GATE_TIMEOUT_MS,
-            })
-        : mainGate
-    await gate?.(
-      JSON.stringify({
-        toolName,
-        input: {
-          phase: 'completed',
-          invocationId: event.toolCallId,
-          agentKind: ctx.agent.kind,
-          isError: event.isError,
-        },
-      }),
-    ).catch(() => false)
+    await ctx.ui
+      .confirm(
+        ELEVATION_GATE_TITLE,
+        JSON.stringify({
+          toolName,
+          input: {
+            phase: 'completed',
+            invocationId: event.toolCallId,
+            agentKind: ctx.agent.kind,
+            isError: event.isError,
+          },
+        }),
+        { timeout: GATE_TIMEOUT_MS },
+      )
+      .catch(() => false)
   })
-  // Subagents run only under a live grant; their every call is gated above.
-  pi.on('before_subagent_spawn', () => {
-    refreshElevation()
-    return elevationActive(config?.elevation)
-      ? undefined
-      : {
-          block: true,
-          reason: 'Resident turns cannot spawn unattended agents',
-        }
-  })
+  // No tier opens native subagents (P39 §2): the roster is the sub-agents.
+  pi.on('before_subagent_spawn', () => ({
+    block: true,
+    reason: 'Resident turns cannot spawn unattended agents',
+  }))
 }
 export default extension

@@ -14,6 +14,10 @@
  *
  * The tier ids are Claude Code's names: `accept-edits`, `auto`, `full-access`,
  * plus `off` for the default resident posture.
+ *
+ * No tier opens `task`: a node never spawns qianmopi-native subagents (the
+ * product's sub-agents are other agents on the roster, P29), so `task` stays
+ * in the denied table and `before_subagent_spawn` stays blocked.
  */
 
 export type ElevationTier = 'accept-edits' | 'auto' | 'full-access'
@@ -111,11 +115,11 @@ export function elevatedTools(
   now: number = Date.now(),
 ): string[] {
   if (!elevationActive(resource, now)) return []
-  return [...(resource.sandbox ? ['bash'] : []), 'task', 'web_search', 'github']
+  return [...(resource.sandbox ? ['bash'] : []), 'web_search', 'github']
 }
 
 /**
- * `local`: stays inside the node (sandboxed commands, subagents).
+ * `local`: stays inside the node (sandboxed commands).
  * `read-out`: reads from the network. `act-out`: changes something outside.
  */
 export type ElevationClass = 'local' | 'read-out' | 'act-out'
@@ -232,12 +236,6 @@ export function elevatedCall(
       args: without(input, [INTENT_FIELD]),
     }
   }
-  if (toolName === 'task')
-    return {
-      tool: 'task',
-      class: 'local',
-      args: without(input, [INTENT_FIELD]),
-    }
   if (toolName === 'web_search')
     return {
       tool: 'web_search',

@@ -472,11 +472,12 @@ export function residentConfigOverlay(options: {
           'fetch:',
           '  enabled: true',
           // direnv would run a workspace `.envrc` on the host before the
-          // sandbox; subagents may not spawn subagents of their own.
+          // sandbox; a long command stays in the foreground, where its result
+          // reaches the gate's completed phase.
           'bash:',
           '  direnv: off',
-          'task:',
-          '  maxRecursionDepth: 1',
+          '  autoBackground:',
+          '    enabled: false',
         ]
       : []),
     '',
