@@ -147,16 +147,22 @@ export const CONNECT_PAGE_JS = `
     qc.sendJson('POST', '/v0/handoff/devices/pairing', {}).then(function (answer) {
       var pairing = answer && answer.pairing ? answer.pairing : answer;
       if (!pairing || !pairing.code) throw new Error('没有拿到配对码');
+      var command = pairing.command || '';
+      var client = command.indexOf('qmo ') === 0 ? command : (pairing.clientCommand || '');
+      var handoff = command.indexOf('qmo ') === 0 ? '' : command;
       qc.setText('pairing-code', pairing.code);
-      qc.setText('pairing-command', pairing.command || '');
+      qc.setText('pairing-client-command', client);
+      qc.setText('pairing-command', handoff);
+      byId('pairing-client').hidden = !client;
+      byId('pairing-handoff').hidden = !handoff;
       countdown(Number(pairing.expiresAt) || Date.now());
       qc.openDialog('pairing-dialog', null);
       return refresh();
     }).catch(function (err) { qc.toast(qc.failLine('配对', err), qc.failTone(err)); });
   });
 
-  qc.onAction('pairing-copy', function () {
-    var line = byId('pairing-command');
+  qc.onAction('pairing-copy', function (button) {
+    var line = byId(button.getAttribute('data-target') || 'pairing-command');
     var text = line ? line.textContent : '';
     if (!text || !navigator.clipboard) return;
     navigator.clipboard.writeText(text).then(function () { qc.toast('已复制', 'ok'); }, function () {});

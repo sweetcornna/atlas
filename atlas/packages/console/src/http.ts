@@ -5,6 +5,7 @@ import { pairHandoffDevice } from './routes/handoffDevices.js'
 import { bearerOf } from './auth.js'
 import {
   ClientTickets,
+  clientCookieKey,
   closingClientSessions,
   isClientDoor,
   serveClientDoor,
@@ -70,7 +71,7 @@ import type { TenantScope } from './tenancy.js'
  * | GET, POST | `/invite` | public | accounts only — see `accountsHttp.ts` |
  * | * | `/v0/accounts/…` | admin | accounts only — see `accountsHttp.ts` |
  * | * | `/v0/client/…` | device | accounts only — see `clientDoor.ts` |
- * | GET | `/client/enter` | public | accounts only — see `clientDoor.ts` |
+ * | GET, POST | `/client/enter` | public | accounts only — see `clientDoor.ts` |
  *
  * The last four rows exist only on a console handed an `AccountBook`; without
  * one they are the plain 404 they always were.
@@ -283,7 +284,7 @@ import {
 } from './routes/shared.js'
 import type { ConsoleActionName, RouteContext } from './routes/types.js'
 import type { PageViewer } from './view/bits.js'
-import { renderLoginPage } from './view/login.js'
+import { renderClientEnterPage, renderLoginPage } from './view/login.js'
 import type { SourceLinks } from './view/source.js'
 import { renderStandalone } from './view/shell.js'
 import { LoginThrottle } from './throttle.js'
@@ -344,6 +345,28 @@ function loginRedirect(url: URL): Response {
  */
 function publicSource(deps: ConsoleDeps): { readonly source?: SourceLinks } {
   return deps.billing === undefined ? {} : { source: deps.billing.site() }
+}
+
+/** The confirmation a `qmo` window shows before a ticket signs it in. */
+function clientEnterPage(
+  deps: ConsoleDeps,
+  account: string,
+  device: string,
+  ticket: string,
+): Response {
+  const body = renderClientEnterPage({
+    label: deps.label ?? DEFAULT_LABEL,
+    account,
+    device,
+    ticket,
+    ...publicSource(deps),
+  })
+  return new Response(body, {
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      ...documentHeaders(body),
+    },
+  })
 }
 
 /** The login document, at whatever status the reason calls for. */
@@ -956,6 +979,7 @@ async function route(
   accounts: ConsoleAccounts | undefined,
   setAuthorizationCheck: (check: () => Response | null) => void,
   tickets: ClientTickets,
+  cookieKey: Buffer,
 ): Promise<Response> {
   const url = new URL(request.url)
   const segments = url.pathname.split('/').filter(s => s.length > 0)
@@ -1000,12 +1024,17 @@ async function route(
         url,
         devices: deps.handoffDevices,
         accounts,
+        tokens,
+        cookieKey,
         tickets,
         throttle,
         clientKey,
+        actions: deps.actions,
         now: now(),
         card: (status, error) =>
           loginPage(deps, { redirect: '/', status, error, accounts: true }),
+        confirm: (account, device, ticket) =>
+          clientEnterPage(deps, account, device, ticket),
       },
       segments,
     )
@@ -1420,6 +1449,10 @@ export function createConsoleHandler(
   const throttle = new LoginThrottle()
   signupThrottles.set(throttle, new RegistrationThrottle())
   const tickets = new ClientTickets(now)
+  const cookieKey = clientCookieKey(tokens)
+  // An account revoked or reset takes its devices' unspent tickets with it
+  // (the device ledger revokes the devices themselves).
+  accounts?.book.onAccountEnded(({ subject }) => tickets.endOwner(subject))
   // Revoking a device closes the sessions its client tickets opened.
   if (accounts !== undefined && deps.handoffDevices !== undefined) {
     deps = {
@@ -1451,6 +1484,7 @@ export function createConsoleHandler(
             authorizationCheck = check
           },
           tickets,
+          cookieKey,
         ),
       )
       const denied = authorizationCheck()

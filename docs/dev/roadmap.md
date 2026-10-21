@@ -1075,7 +1075,7 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 |---|---|---|
 | P37 | 桌面版与订阅迁移：个人电脑装阡陌桌面版，经 magpie 把网关里配好的模型套餐与 API 密钥接到本机 Claude Code、Codex 等智能体，换工具时模型、额度、用量记录跟着走；只放行 API key 类上游，不用个人订阅登录，不转售模型额度 | 拆成下列 P37.1–P37.9（v3.12） |
 | P37.1 | Windows 与 Linux 客户端外壳 `@qianmo/client`：`qmo sign-in / open / status / sign-out`，客户端状态目录（`clientStateDir()`），Windows DPAPI 与 Linux 0600 保管设备令牌，查找系统的 Chromium 内核浏览器，Windows 经命令行、Linux 经 DevTools 管道把票据送进应用窗口，`atlas:build:client` 与冒烟 | 实现完成，待合入；真机情况写在 PR 与 `clients.md` §8 |
-| P37.2 | 中枢设备票据：`/v0/client/tickets`、`/v0/client/device`、`/client/enter`，开了个人账号就建立设备账本（不再只跟着接力），吊销设备时关闭它开的会话 | 实现完成，待合入 |
+| P37.2 | 中枢设备票据：`/v0/client/tickets`、`/v0/client/device`、`/client/enter`。开了个人账号就建立设备账本，不再只跟着接力。只有客户端设备能要票据；不是客户端自己的窗口要先确认。吊销设备、账号吊销或重置时，关闭它开的会话 | 实现完成，待合入 |
 | P37.3 | 安装与系统集成：Windows 按用户安装、开始菜单、`qmo://`、无控制台窗口的启动器；Linux `.desktop` 与协议处理；配对对话框写 `qmo sign-in` | 规划 |
 | P37.4 | 系统钥匙串：Linux Secret Service，没有会话总线时退回 0600 文件 | 规划 |
 | P37.5 | 本机接力共用客户端的设备登记 | 规划 |
