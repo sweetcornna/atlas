@@ -50,7 +50,7 @@ this repository.
 
   * 按格式豁免：`.json`（JSON 语法没有注释；其中的 `package.json`、
     `tsconfig.json` 也是工具配置）、`.jpg`、`.png`、`.gif`、`.svg`、`.pdf`、
-    `.docx`。这一类是「带不了或不宜带」，门禁不禁止它们带头。
+    `.docx`、`.mp4`。这一类是「带不了或不宜带」，门禁不禁止它们带头。
   * 具名豁免，带了反而错，所以是双向的（不要求带，也不许带）：
       - `BASE.md`：基座溯源的唯一真源，只在「导入」与「上游同步」两类事件
         时改动，功能性提交不得触碰；
@@ -549,8 +549,8 @@ this file records the reasons:
 
   * By format: `.json` (JSON has no comment syntax; its `package.json` and
     `tsconfig.json` files are tool configuration as well), `.jpg`, `.png`,
-    `.gif`, `.svg`, `.pdf`, `.docx`. These cannot or should not carry a
-    header; the gate does not forbid one.
+    `.gif`, `.svg`, `.pdf`, `.docx`, `.mp4`. These cannot or should not carry
+    a header; the gate does not forbid one.
   * By name, where a header would be wrong, so the exemption is two-sided (a
     header is neither required nor allowed):
       - `BASE.md`: the single source of truth for base provenance, changed only
