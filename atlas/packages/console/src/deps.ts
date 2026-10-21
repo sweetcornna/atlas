@@ -18,6 +18,7 @@
  */
 
 import type {
+  AgentModelsPort,
   BackgroundTasksPort,
   BillingPort,
   ChannelsPort,
@@ -2561,6 +2562,11 @@ export interface ConsoleDeps {
   readonly extensions?: ExtensionsPort
   /** 平台模型网关 magpie（P33/P34）；只在模型服务与个人账号都打开时接。 */
   readonly magpie?: MagpiePort
+  /**
+   * 智能体按底层原生方式配模型（harness-backends.md §11）；有模型服务与节点控制
+   * 链路就接，不依赖 magpie。
+   */
+  readonly agentModels?: AgentModelsPort
   /**
    * 公开版订阅（P35）；只在公开版接。接了就有公开的套餐页、成员的订阅页与结账页、
    * 支付回调、「订阅」页，以及订阅闸门（没有有效订阅的成员写操作回 402）。缺席时

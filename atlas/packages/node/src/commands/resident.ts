@@ -1122,6 +1122,8 @@ function residentRuntimes(config: ResidentCliConfig): NodeRuntimes {
     credential: (spec, runtime) =>
       providers().runtimeModelCredential(spec, runtime),
     mainModel: () => providers().nodeMainModelSpec(),
+    roleModel: role => providers().nodeRoleModel(role),
+    ompModel: spec => providers().ompProviderModel(spec),
     onError: error =>
       process.stderr.write(
         `[resident runtimes] ${formatResidentError(error)}\n`,
@@ -2524,8 +2526,8 @@ export async function runResident(args: readonly string[]): Promise<void> {
         : { ...agent, runtime }
     }),
     runtimes,
-    resolveRuntimeLaunch: (agent: ExternalAgent) =>
-      runtimes.launch(agent.agent),
+    resolveRuntimeLaunch: (agent: ExternalAgent, session) =>
+      runtimes.launch(agent.agent, session),
     ...(config.runtimeBins === undefined
       ? {}
       : { runtimeBins: config.runtimeBins }),

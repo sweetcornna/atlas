@@ -176,7 +176,16 @@ test('Claude Code: a warm process answers consecutive turns, reports tools and c
         'mcp__*',
       ],
     },
-    env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/v1' },
+    // A launch without tiers: every model variable is emptied over the
+    // agent's own settings (harness-backends.md §11.2).
+    env: {
+      ANTHROPIC_DEFAULT_FABLE_MODEL: '',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: '',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: '',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: '',
+      ANTHROPIC_SMALL_FAST_MODEL: '',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/v1',
+    },
     apiKeyHelper: '/usr/bin/true',
   })
   expect(argv).not.toContain('--strict-mcp-config')

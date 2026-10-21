@@ -445,6 +445,14 @@ export class ConsoleMagpieAgents implements MagpieAgentsPort {
     this.#schedule()
   }
 
+  /**
+   * Every node's magpie standing (bound or not, its key's models): what the
+   * agents' model fields (`consoleAgentModels.ts`) offer on a bound node.
+   */
+  gateways(): Promise<MagpieAgentsGateways | null> {
+    return this.#gateways()
+  }
+
   /** What is installed on `node` changed elsewhere (an update): read it again. */
   runtimesChanged(node: string): void {
     this.#forget(node)

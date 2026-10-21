@@ -116,17 +116,27 @@ export function opencodePermission(bridge = 'qianmo'): Record<string, string> {
 export function opencodeConfig(input: AcpLaunchInput): string {
   const anthropic = input.lane === 'anthropic'
   const permission = opencodePermission(input.bridge?.name)
-  const limit =
-    input.contextWindow === undefined
+  const limitOf = (contextWindow?: number, maxOutputTokens?: number) =>
+    contextWindow === undefined
       ? undefined
       : {
-          context: input.contextWindow,
-          output:
-            input.maxOutputTokens ?? Math.min(32_000, input.contextWindow),
+          context: contextWindow,
+          output: maxOutputTokens ?? Math.min(32_000, contextWindow),
         }
+  const limit = limitOf(input.contextWindow, input.maxOutputTokens)
+  // The small model for its background asks (titles, summaries): the
+  // agent's `small` field, on the same provider (§11.2); else the model.
+  const small =
+    input.small === undefined || input.small.model === input.model
+      ? undefined
+      : input.small
+  const smallLimit =
+    small === undefined
+      ? undefined
+      : limitOf(small.contextWindow, small.maxOutputTokens)
   const config = {
     model: `${PROVIDER}/${input.model}`,
-    small_model: `${PROVIDER}/${input.model}`,
+    small_model: `${PROVIDER}/${small?.model ?? input.model}`,
     enabled_providers: [PROVIDER],
     provider: {
       [PROVIDER]: {
@@ -143,7 +153,15 @@ export function opencodeConfig(input: AcpLaunchInput): string {
             ? {}
             : { headers: input.headers }),
         },
-        models: { [input.model]: limit === undefined ? {} : { limit } },
+        models: {
+          [input.model]: limit === undefined ? {} : { limit },
+          ...(small === undefined
+            ? {}
+            : {
+                [small.model]:
+                  smallLimit === undefined ? {} : { limit: smallLimit },
+              }),
+        },
       },
     },
     default_agent: 'build',

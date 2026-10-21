@@ -2057,6 +2057,123 @@ export interface MagpieAgentsPort {
 }
 
 // ---------------------------------------------------------------------------
+// AgentModelsPort —— 智能体按底层原生方式配模型（harness-backends.md §11）
+// ---------------------------------------------------------------------------
+
+/**
+ * 每个智能体按它所用底层的原生字段配模型：模型、推理强度，Claude Code 的四档
+ * （fable opus sonnet haiku）与各档强度，opencode 的小模型。字段表在节点与中枢共用的
+ * `host/runtimes/modelFields.ts`；这里只是页面读写的形状。不依赖 magpie：模型候选
+ * 来自下发到这台节点的全部模型档案，magpie 密钥只是其中 `presetId: 'magpie'` 的一份；
+ * 中枢开着 magpie、节点接在它的 magpie 档案上时，`model` 字段交给网关页的智能体区块
+ * （自动按系列取与手选照旧）。写操作经 `runtime.configure` 下发，旧节点只收 `model`。
+ */
+
+/** 推理强度从低到高；`none` 关掉推理。空串是「默认」（底层自己的）。 */
+export const AGENT_EFFORT_VALUES = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const
+
+/** 推理强度的中文（页面统一用这一张表）。 */
+export const AGENT_EFFORT_WORDS: Readonly<Record<string, string>> = {
+  '': '默认',
+  none: '关闭',
+  minimal: '最低',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '超高',
+  max: '最高',
+}
+
+/** 一个模型来源（一份模型档案）里可选的模型。 */
+export interface AgentModelSourceView {
+  /** 档案 id；模型值写成 `<id>/<模型号>`。 */
+  readonly id: string
+  readonly name: string
+  /** magpie 网关密钥的档案。 */
+  readonly magpie: boolean
+  /** 模型号；路由组写成 `group/<id>`。 */
+  readonly models: readonly string[]
+}
+
+export interface AgentModelFieldView {
+  readonly key: string
+  readonly label: string
+  readonly kind: 'model' | 'effort'
+  /** Claude Code 分档面板里的一档；主行的字段为 null。 */
+  readonly tier: string | null
+  /** 当前值：模型 `<档案>/<模型号>`，强度见 {@link AGENT_EFFORT_VALUES}；空串是跟随或默认。 */
+  readonly value: string
+  /** 留空时实际用的模型（「同主模型（X）」的 X）；不设或不知道时为 null。 */
+  readonly follows: string | null
+  /** 强度字段可选的档（已按底层与模型收窄）；模型字段为空。 */
+  readonly levels: readonly string[]
+  /** 模型字段只能选主模型同一来源的（分档、小模型）。 */
+  readonly sameSource: boolean
+  /** 不能改的原因（例如这个来源不认按档强度）；能改时为 null。 */
+  readonly locked: string | null
+  /** 中枢记着、节点还没收到（旧节点只收模型）。 */
+  readonly pending: boolean
+}
+
+export interface AgentModelsAgentView {
+  readonly agent: string
+  /** 配置的底层（目录 id）。 */
+  readonly runtime: string
+  readonly runtimeLabel: string
+  readonly fields: readonly AgentModelFieldView[]
+  /** 主模型的候选，按来源分组；分档与小模型只用 `sameSource` 那一组。 */
+  readonly sources: readonly AgentModelSourceView[]
+  /** 主模型此刻的来源（档案 id）；不知道时为 null。 */
+  readonly source: string | null
+  /** 中枢最近一次下发：进行中，或失败（原因只给能写的人）。 */
+  readonly write: {
+    readonly state: 'pending' | 'failed'
+    readonly at: number
+    readonly message: string | null
+  } | null
+}
+
+export interface AgentModelsNodeView {
+  readonly node: string
+  /** `old`：节点不答 `runtime.status`，不给写控件。 */
+  readonly state: 'ok' | 'old' | 'unreachable'
+  /** 节点认 `fields`；为 false 时只下发模型，其余字段标「节点未收到」。 */
+  readonly fields: boolean
+  readonly agents: readonly AgentModelsAgentView[]
+  /** 读节点失败的原因；只给能写的人。 */
+  readonly error: string | null
+}
+
+export interface AgentModelsSnapshot {
+  readonly nodes: readonly AgentModelsNodeView[]
+}
+
+/** 改一个字段（照 magpie `POST /api/set {agent, field, value}`）；空串是跟随或默认。 */
+export interface AgentModelChange {
+  readonly node: string
+  readonly agent: string
+  readonly field: string
+  readonly value: string
+}
+
+export interface AgentModelsPort {
+  snapshot(): Promise<ConsoleResult<AgentModelsSnapshot>>
+  /** 写者照模型服务的规则（个人运维账号、非 break-glass）；端口自己再查一遍。 */
+  set(
+    change: AgentModelChange,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<AgentModelsAgentView>>
+}
+
+// ---------------------------------------------------------------------------
 // BillingPort —— 公开版订阅（P35）
 // ---------------------------------------------------------------------------
 

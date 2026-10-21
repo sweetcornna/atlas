@@ -557,6 +557,17 @@ interface PoolOptions {
   ) => void
   readonly protectedRoots?: readonly string[]
   readonly agents: readonly ResidentAgentSession[]
+  /**
+   * An agent's own model and thinking (`harness-backends.md` §11.2) over
+   * the node's main model `fallback`; undefined keeps `fallback`. A
+   * session's own pin (`manual-model.json`) still comes first.
+   */
+  readonly agentModel?: (
+    agent: string,
+    fallback:
+      | { provider: string; modelId: string; thinkingLevel?: string }
+      | undefined,
+  ) => { provider: string; modelId: string; thinkingLevel?: string } | undefined
   readonly memoryRoot: string
   readonly allowWorkspaceEdits?: boolean
   readonly spawn?: (input: ResidentOmpSpawn) => ChildProcess
@@ -1058,8 +1069,11 @@ export class ResidentOmpPool
     writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 })
     writeFileSync(overlay, residentConfigOverlay(config), { mode: 0o600 })
     const manualPath = join(sessionDir, 'manual-model.json')
+    const fallback = nodeModelSelection()
     const selection =
-      readResidentManualSelection(manualPath) ?? nodeModelSelection()
+      readResidentManualSelection(manualPath) ??
+      this.#options.agentModel?.(owner.agent, fallback) ??
+      fallback
     const argv = ompArgv([
       '--mode',
       'rpc',

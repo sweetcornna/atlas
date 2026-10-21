@@ -36,10 +36,12 @@ import { AcpChannel, type AcpMcpServer } from './acp.js'
 import { acpVerdictCalls } from './acpTools.js'
 import type { AcpBridge, AcpRuntime, AcpToolCall } from './acpSpec.js'
 import { type RuntimeLane, runtimeSpec } from './catalog.js'
+import { type ClaudeTier, type TaskTier, taskTierOf } from './modelFields.js'
 import type { ExternalRuntimeChannel, ExternalRuntimeKind } from './channel.js'
 import {
   ClaudeCodeChannel,
   claudeCodeArgv,
+  claudeCodeModelPlan,
   claudeCodeToolName,
   CONNECTOR_PREFIX,
   PERMISSION_TOOL,
@@ -79,12 +81,28 @@ export interface ExternalAgent extends ResidentAgentSession {
   readonly shell?: boolean
 }
 
+/**
+ * One more model a launch carries besides the main one (`harness-backends.md`
+ * §11): a Claude Code tier or opencode's small model, on the main model's
+ * address and key.
+ */
+export interface LaunchModel {
+  readonly model: string
+  /** The level the gateway holds it at (a Claude Code tier's `model:effort`). */
+  readonly effort?: string
+  readonly contextWindow?: number
+  readonly maxOutputTokens?: number
+  /** The efforts it takes, when the model service says. */
+  readonly efforts?: readonly string[]
+}
+
 /** The model and credentials one agent's runtime starts with. */
 export interface ExternalLaunch {
   readonly model: string
   readonly baseUrl: string
   readonly apiKey: string
   readonly headers?: Readonly<Record<string, string>>
+  /** The agent's effort field, narrowed to the model (`modelFields.ts`). */
   readonly effort?: string
   /**
    * The lane `baseUrl` speaks (P36). Claude Code and Codex have one each;
@@ -94,6 +112,23 @@ export interface ExternalLaunch {
   /** The model's context window and output ceiling, when known. */
   readonly contextWindow?: number
   readonly maxOutputTokens?: number
+  /** The efforts the main model takes, when the model service says. */
+  readonly efforts?: readonly string[]
+  /** Claude Code (§11): each tier's model; a tier left out here is unset. */
+  readonly tiers?: Readonly<Partial<Record<ClaudeTier, LaunchModel>>>
+  /** Claude Code: the session runs on this tier (`--model opus`, §11.3). */
+  readonly alias?: ClaudeTier
+  /** opencode: its `small_model`, on the same provider. */
+  readonly small?: LaunchModel
+}
+
+/**
+ * Which session a launch is for (§11.3): a worker session keeps the task
+ * tier of its first turn, so it starts on the same model every time.
+ */
+export interface ExternalLaunchSession {
+  readonly sessionId: string
+  readonly tier?: TaskTier
 }
 
 export interface ExternalRuntimeSpawn {
@@ -114,8 +149,14 @@ export interface ExternalRuntimePoolOptions {
    * native conversation is on another runtime starts a new one there.
    */
   readonly runtimeOf?: (agent: string) => string
-  /** Called with the agent as it runs now (`runtime` is the one starting). */
-  readonly resolveLaunch: (agent: ExternalAgent) => ExternalLaunch
+  /**
+   * Called with the agent as it runs now (`runtime` is the one starting)
+   * and the session the process is for.
+   */
+  readonly resolveLaunch: (
+    agent: ExternalAgent,
+    session: ExternalLaunchSession,
+  ) => ExternalLaunch
   readonly bins?: Partial<Record<ExternalRuntimeKind, string>>
   readonly memoryRoot: string
   readonly protectedRoots?: readonly string[]
@@ -155,6 +196,8 @@ interface SessionRecord {
   resumeFailures?: number
   /** When the conversation `nativeId` names began (epoch ms). */
   since?: number
+  /** A worker session's task tier, fixed by its first turn (§11.3). */
+  tier?: TaskTier
 }
 
 const DEFAULT_IDLE_MS = 600_000
@@ -528,12 +571,41 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
       ) as SessionRecord
       if (raw.kind === kind) return raw
       // The session moved to another runtime: a new native conversation,
-      // with the instructions of the runtime it runs on now.
+      // with the instructions of the runtime it runs on now. Its task tier
+      // is the session's, whichever runtime it is on.
       rmSync(join(dir, 'runtime-system.txt'), { force: true })
+      const tier = taskTierOf(raw.tier)
+      return tier === undefined ? { kind } : { kind, tier }
     } catch {
       // A first launch: start fresh.
     }
     return { kind }
+  }
+
+  /**
+   * A turn of `sessionId` asks for task tier `tier` (§11.3, a worker
+   * session's `direction`). Only the first one counts: once the session
+   * has a tier, or a process has started for it, its model stays.
+   */
+  noteTier(sessionId: string, tier: unknown): void {
+    const asked = taskTierOf(tier)
+    if (asked === undefined) return
+    const owner = this.owner(sessionId)
+    if (owner === undefined) return
+    const dir = this.#sessionDir(owner.agent, sessionId)
+    const saved = this.#savedRecord(dir)
+    if (saved !== undefined) return
+    if (this.#channels.has(sessionId) || this.#starting.has(sessionId)) return
+    try {
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      writeFileSync(
+        join(dir, 'runtime.json'),
+        JSON.stringify({ kind: this.#runtimeOf(owner), tier: asked }),
+        { mode: 0o600 },
+      )
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
   }
   #saveRecord(dir: string, record: SessionRecord): void {
     // A new native conversation: the turns before it are not in it. An id
@@ -607,8 +679,11 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
     // runtime, whatever it was configured with when the pool started.
     const running: ExternalAgent =
       agent.runtime === runtime ? agent : { ...agent, runtime }
-    const launch = this.#options.resolveLaunch(running)
     const record = this.#record(dir, runtime)
+    const launch = this.#options.resolveLaunch(running, {
+      sessionId,
+      ...(record.tier === undefined ? {} : { tier: record.tier }),
+    })
     const systemPrompt = this.#systemPrompt(dir, running)
     // Its token is issued just before the process starts (below).
     const tokenFile = join(dir, 'runtime-mcp.token')
@@ -695,9 +770,14 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
             record.started = false
             this.#saveRecord(dir, record)
           }
+          // The agent's tiers, effort and windows, written where Claude Code
+          // reads them (§11): its environment and the pin layer.
+          const models = claudeCodeModelPlan(launch)
+          Object.assign(env, models.env)
           argv = claudeCodeArgv({
             bin: runtimeBin('claude-code', this.#options.bins),
-            model: launch.model,
+            model: models.model,
+            settingsEnv: models.settingsEnv,
             baseUrl: launch.baseUrl,
             sessionId: record.nativeId,
             resume: record.started === true,
@@ -705,7 +785,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
             mcpConfigPath: mcpConfig,
             allowWorkspaceEdits: this.#options.allowWorkspaceEdits === true,
             ...(agent.shell ? { shell: true } : {}),
-            ...(launch.effort ? { effort: launch.effort } : {}),
+            ...(models.effort ? { effort: models.effort } : {}),
             ...(extensions === null
               ? {}
               : {
@@ -788,6 +868,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
           const plan = acp.launch({
             bin: runtimeBin(runtime, this.#options.bins),
             model: launch.model,
+            ...(launch.small === undefined ? {} : { small: launch.small }),
             lane,
             baseUrl: launch.baseUrl,
             apiKey: launch.apiKey,
@@ -868,7 +949,11 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
                 this.#saveRecord(dir, record)
               },
               instructions: systemPrompt,
-              ...(launch.effort ? { effort: launch.effort } : {}),
+              ...(launch.effort
+                ? {
+                    effort: acp.effortValue?.(launch.effort) ?? launch.effort,
+                  }
+                : {}),
               permission: call =>
                 this.#acpPermission(running, sessionId, acp, call),
               ...(usage === undefined

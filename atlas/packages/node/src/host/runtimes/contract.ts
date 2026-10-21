@@ -79,6 +79,13 @@ export interface AgentRuntimeState {
     readonly model: string | null
     /** Where `runtime` came from (§3.1). */
     readonly source: 'config' | 'flag' | 'default'
+    /**
+     * The agent's native model fields besides `model` (§11, `modelFields.ts`):
+     * efforts, Claude Code's tiers, opencode's small model. Always there on a
+     * node that takes them (`{}` for none); a node without it does not, and
+     * the hub sends such a node `model` alone.
+     */
+    readonly fields?: Readonly<Record<string, string>>
   }
   readonly effective: {
     readonly runtime: string
@@ -107,6 +114,11 @@ export interface RuntimeConfigureRequest {
   readonly runtime?: string | null
   /** `<profile>/<model>`, `auto`, or `null`. */
   readonly model?: string | null
+  /**
+   * §11: the agent's other model fields, the whole set (what is not in it
+   * follows); `null` clears them. A node that predates this ignores it.
+   */
+  readonly fields?: Readonly<Record<string, string>> | null
 }
 
 /** Refusal codes the ops answer with (besides the control link's own). */

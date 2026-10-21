@@ -20,6 +20,7 @@ import {
   DSH_QMO_SKILLS,
   dshLaunch,
   dshOpen,
+  dshThinkingLevel,
   dshToolCall,
   dshUsageReader,
 } from './dsh.js'
@@ -155,6 +156,7 @@ const DSH: AcpRuntime = {
   // No `session/load`; `session/resume` restores the history model-side.
   resume: 'session/resume',
   effortOption: 'reasoning_effort',
+  effortValue: effort => dshThinkingLevel(effort) ?? effort,
   // ACP carries no usage; the session log has the provider's.
   usage: dshUsageReader,
   toolCall: dshToolCall,
