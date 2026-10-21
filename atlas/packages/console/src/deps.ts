@@ -1236,6 +1236,13 @@ export interface ConsoleAction {
   /** Original schedule creator, retained for delegated administration. */
   readonly createdBy?: string
   /**
+   * 智能体改设置（P40，`agent-settings.md` §5.3）：提出这次更改的智能体地址
+   * `qianmo://<节点>/<智能体>`。`subject` 仍是点了批准的那个人。
+   */
+  readonly agent?: string
+  /** 与 {@link agent} 成对：那次单次批准的 requestId（32 位十六进制）。 */
+  readonly approval?: string
+  /**
    * 点分动词，见 {@link CONSOLE_ACTIONS}。前缀可筛：`agent.`、`chat.`。
    */
   readonly action: string

@@ -18,6 +18,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   ActionLedger,
   verifyActionLedger,
+  withAttribution,
   type ActionLedgerOptions,
 } from '../src/actionLedger.js'
 import type { ConsoleAction } from '../src/deps.js'
@@ -671,5 +672,91 @@ describe('the console writing into it', () => {
     )
     expect(wake.status).toBe(503)
     expect(h.wake.sent).toBe(0)
+  })
+})
+
+describe('a change an agent asked for (P40 §5)', () => {
+  const AGENT = 'qianmo://tokyo-1/main'
+  const APPROVAL = `0123abcd${'0'.repeat(24)}`
+
+  test('the agent and the approval land beside the person, and read back', async () => {
+    const { ledger, store } = open()
+    expect(
+      (
+        await ledger.record(
+          action({ subject: SUBJECT_A, agent: AGENT, approval: APPROVAL }),
+        )
+      ).ok,
+    ).toBe(true)
+    expect(store.lines()[1]?.data).toMatchObject({
+      subject: SUBJECT_A,
+      agent: AGENT,
+      approval: APPROVAL,
+    })
+    expect(verifyActionLedger(store.text)).toEqual({
+      chain: 'intact',
+      actions: 1,
+    })
+    const listed = await open(store).ledger.list({})
+    if (!listed.ok) throw new Error('list failed')
+    expect(listed.value.entries[0]).toMatchObject({
+      agent: AGENT,
+      approval: APPROVAL,
+    })
+  })
+
+  test('only as a pair, and only well formed', async () => {
+    const { ledger, store, alarms } = open()
+    for (const [over, message] of [
+      [{ agent: AGENT }, '智能体与审批要成对'],
+      [{ approval: APPROVAL }, '智能体与审批要成对'],
+      [
+        { agent: 'qianmo://Tokyo/main', approval: APPROVAL },
+        '智能体地址不合格',
+      ],
+      [{ agent: AGENT, approval: 'abc' }, '审批编号不合格'],
+    ] as const) {
+      const recorded = await ledger.record(action(over))
+      expect(recorded.ok ? '' : recorded.failure.message).toBe(message)
+    }
+    expect(store.lines()).toHaveLength(1)
+    expect(alarms).toHaveLength(4)
+  })
+
+  test('the verifier refuses half a pair even when the chain is intact', async () => {
+    const { ledger, store } = open()
+    await ledger.record(
+      action({ subject: SUBJECT_A, agent: AGENT, approval: APPROVAL }),
+    )
+    forge(store, 1, line => {
+      delete (line['data'] as Record<string, unknown>)['approval']
+    })
+    expect(verifyActionLedger(store.text).chain).toBe('broken')
+    expect(open(store).ledger.problem).toContain('agent 与 approval 要成对')
+  })
+
+  test('inside an attribution only the approver’s own lines carry it', async () => {
+    const { ledger, store } = open()
+    await withAttribution(
+      { subject: SUBJECT_A, agent: AGENT, approval: APPROVAL },
+      async () => {
+        await ledger.record(action({ subject: SUBJECT_A, requestId: 'r-a' }))
+        await ledger.record(
+          action({ subject: 'legacy:admin', requestId: 'r-b' }),
+        )
+      },
+    )
+    await ledger.record(action({ subject: SUBJECT_A, requestId: 'r-c' }))
+    const data = store
+      .lines()
+      .slice(1)
+      .map(line => line.data as Record<string, unknown>)
+    expect(
+      data.map(item => [item['requestId'], item['agent'] ?? null]),
+    ).toEqual([
+      ['r-a', AGENT],
+      ['r-b', null],
+      ['r-c', null],
+    ])
   })
 })
