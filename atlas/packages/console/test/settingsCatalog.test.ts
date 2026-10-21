@@ -21,6 +21,7 @@ import {
   schemaProblem,
   settingOperation,
   settingOperations,
+  settingRequestProblem,
   settingsBound,
   settingUnchanged,
 } from '../src/settingsCatalog.js'
@@ -392,6 +393,7 @@ describe('the entries (P40 §2)', () => {
       allowGroups: ['g'],
       pairing: 'auto',
       prompt: '简短',
+      settings: { proxy: 'http://10.0.0.2:8080' },
     }
     const same = { name: '值班', platform: 'telegram', target: now.target }
     const cases: [Record<string, unknown>, unknown, boolean][] = [
@@ -407,11 +409,87 @@ describe('the entries (P40 §2)', () => {
       [{ ...same, allowGroups: [] }, now, true],
       [{ ...same, pairing: 'on' }, now, true],
       [same, null, true],
+      // Where it connects and as whom: a new endpoint can claim the owner.
+      [{ ...same, settings: { proxy: 'http://10.0.0.2:8080' } }, now, false],
+      [{ ...same, secrets: { token: '' } }, now, false],
+      [{ ...same, settings: { proxy: 'http://evil.example' } }, now, true],
+      [{ ...same, settings: {} }, now, true],
+      [{ ...same, secrets: { token: 'bot-other' } }, now, true],
+      [{ ...same, platform: 'discord' }, now, true],
     ]
     for (const [input, current, expected] of cases)
       expect(`${JSON.stringify(input)} ${when(input, current)}`).toBe(
         `${JSON.stringify(input)} ${expected}`,
       )
+  })
+
+  test('an update change the agent may ask for takes releases from where it does', () => {
+    const op = settingOperation('updates.save')
+    const when = op?.personOnly?.when
+    if (when === undefined) throw new Error('updates.save has no rule')
+    expect(op?.personOnly?.note).toContain('/admin/updates')
+    const now = {
+      times: [],
+      timezone: 'Asia/Shanghai',
+      actions: { qianmo: 'notify', qianmopi: 'auto' },
+      channels: [],
+      repo: 'sweetcornna/atlas',
+    }
+    const cases: [Record<string, unknown>, unknown, boolean][] = [
+      [{ ...now, timezone: 'UTC' }, now, false],
+      [{ ...now, repo: null }, now, false],
+      [
+        { ...now, actions: { qianmo: 'notify', qianmopi: 'notify' } },
+        now,
+        false,
+      ],
+      [{ ...now, repo: 'someone/fork' }, now, true],
+      [{ ...now, repo: 'sweetcornna/atlas' }, { ...now, repo: null }, true],
+      [{ ...now, actions: { qianmo: 'auto', qianmopi: 'auto' } }, now, true],
+      [now, null, true],
+    ]
+    for (const [input, current, expected] of cases)
+      expect(
+        `${JSON.stringify([input, current])} ${when(input, current)}`,
+      ).toBe(`${JSON.stringify([input, current])} ${expected}`)
+  })
+
+  test('a target cannot walk a request onto another route', () => {
+    const clear = settingOperation('providers.key.clear')
+    if (clear === undefined) throw new Error('missing entry')
+    expect(
+      settingRequestProblem(
+        clear,
+        { profileId: 'gw', keyId: 'k1' },
+        { ifMatch: 3 },
+      ),
+    ).toBeNull()
+    for (const keyId of ['..', '.'])
+      expect(
+        settingRequestProblem(
+          clear,
+          { profileId: 'gw', keyId },
+          { ifMatch: 3 },
+        ),
+      ).toContain('target')
+    expect(
+      settingRequestProblem(
+        clear,
+        { profileId: '..', keyId: 'k1' },
+        { ifMatch: 3 },
+      ),
+    ).toContain('target')
+    // Encoded, a slash or a dot pair stays inside its segment.
+    expect(
+      settingRequestProblem(
+        clear,
+        { profileId: 'gw', keyId: '../x' },
+        { ifMatch: 3 },
+      ),
+    ).toBeNull()
+    expect(
+      clear.request({ profileId: 'gw', keyId: '../x' }, { ifMatch: 3 }).path,
+    ).toBe('/v0/providers/profiles/gw/keys/..%2Fx')
   })
 
   test('the words keep the console’s copy rules', () => {
@@ -529,5 +607,48 @@ describe('what an approval binds (P40 §4.2)', () => {
       'input.colour 不认识',
     )
     expect(schemaProblem(op.input, { apps: ['a', 'b'] }, 'input')).toBeNull()
+    // What every object inherits is not a field either.
+    for (const key of ['toString', 'constructor', 'valueOf', '__proto__'])
+      expect(
+        schemaProblem(
+          op.input,
+          JSON.parse(`{"confirm":"always",${JSON.stringify(key)}:"x"}`),
+          'input',
+        ),
+      ).toBe(`input.${key} 不认识`)
+  })
+
+  test('the whole value read before binds, not only what the card shows', () => {
+    const op = settingOperation('extensions.save')
+    if (op === undefined) throw new Error('missing entry')
+    const before = (command: string) => ({
+      description: 'd'.repeat(190),
+      command,
+      args: [],
+    })
+    const a = settingsBound(
+      op,
+      { id: 'x' },
+      { enabled: true },
+      before('npx tool'),
+    )
+    const b = settingsBound(
+      op,
+      { id: 'x' },
+      { enabled: true },
+      before('sh -c x'),
+    )
+    expect(a.card.current).toBe(b.card.current)
+    expect(a.currentSha256).not.toBe(b.currentSha256)
+    expect(a.currentSha256).toMatch(/^[0-9a-f]{64}$/)
+    // Key order is not a change.
+    expect(
+      settingsBound(op, { id: 'x' }, {}, { b: 1, a: [1, 2] }).currentSha256,
+    ).toBe(
+      settingsBound(op, { id: 'x' }, {}, { a: [1, 2], b: 1 }).currentSha256,
+    )
+    expect(
+      settingsBound(op, { id: 'x' }, {}, undefined).currentSha256,
+    ).toBeNull()
   })
 })

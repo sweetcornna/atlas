@@ -51,6 +51,7 @@ import {
   secretMark,
   settingOperation,
   settingOperations,
+  settingRequestProblem,
   settingsBound,
   settingUnchanged,
 } from '@qianmo/console'
@@ -326,6 +327,8 @@ export class ConsoleSettings {
       return op.role === 'ops'
         ? '这项更改需要运维 · 这个对话的主人不是运维'
         : '这项更改需要成员或运维账号'
+    const misrouted = settingRequestProblem(op, target, input)
+    if (misrouted !== null) return misrouted
     const reader = this.#reader(caller.owner)
     if (typeof reader === 'string') return reader
     let current: unknown

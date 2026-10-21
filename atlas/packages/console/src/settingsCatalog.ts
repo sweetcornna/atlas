@@ -290,9 +290,41 @@ const REVISION = whole('当前修订号 · 有人先改了就不符', 0)
 // Reading the value before a change
 // ---------------------------------------------------------------------------
 
-/** One path segment, encoded. */
+/**
+ * One path segment, encoded. `.` and `..` survive encoding and a URL folds
+ * them into the parent, so `keys/..` would land on the profile: refused.
+ */
 function seg(value: unknown): string {
-  return encodeURIComponent(String(value ?? ''))
+  const raw = String(value ?? '')
+  if (raw === '.' || raw === '..')
+    throw new SettingPathError(`路径段不能是 ${raw}`)
+  return encodeURIComponent(raw)
+}
+
+class SettingPathError extends Error {}
+
+/**
+ * Why the request a change would make is not the one its entry names, or
+ * null: a target that fails to build, or a path the URL parser would fold
+ * into another route.
+ */
+export function settingRequestProblem(
+  op: SettingOperation,
+  target: Args,
+  input: Args,
+): string | null {
+  let path: string
+  try {
+    path = op.request(target, input).path
+  } catch (error) {
+    if (error instanceof SettingPathError)
+      return `target 不对 · ${error.message}`
+    throw error
+  }
+  const bare = path.split('?')[0] ?? path
+  return new URL(bare, 'http://console.in-process').pathname === bare
+    ? null
+    : 'target 不对 · 路径会被改写'
 }
 
 function recordOf(value: unknown): Record<string, unknown> | null {
@@ -663,7 +695,9 @@ const PERSON_ONLY = {
   files: '文件申请在 /admin/files 由本人批准或拒绝',
   channel: '新建渠道与扫码登录在 /admin/im 由运维本人操作 · 扫码的人会成为主人',
   channelAccess:
-    '主人号 放行名单 配对档位与对话的智能体在 /admin/im 由运维本人改',
+    '主人号 放行名单 配对档位 对话的智能体 平台连接与凭据在 /admin/im 由运维本人改',
+  updates:
+    '更新仓库与自动处理在 /admin/updates 由运维本人改 · 改回只通知或不查可以申请',
   desktop:
     '在 /admin/desktop 由运维本人放宽 · 开浏览器 电脑或终端 少问人 多开应用 · 收紧可以申请',
 } as const
@@ -706,6 +740,57 @@ function channelAccessChanged(input: Args, current: unknown): boolean {
       input[key] !== undefined &&
       (before === null ||
         accessValue(key, input[key]) !== accessValue(key, before[key])),
+  )
+}
+
+/**
+ * Whether a channel change moves where it connects or as whom: the platform,
+ * its non-secret settings (a SnowLuma URL is one) or any credential. Whoever
+ * answers at a new endpoint can claim to be the owner (§2).
+ */
+function channelTransportChanged(input: Args, current: unknown): boolean {
+  const before = recordOf(current)
+  if (
+    input['platform'] !== undefined &&
+    input['platform'] !== before?.['platform']
+  )
+    return true
+  if (
+    input['settings'] !== undefined &&
+    stableJson(input['settings']) !== stableJson(before?.['settings'] ?? {})
+  )
+    return true
+  const secrets = recordOf(input['secrets'])
+  return (
+    secrets !== null &&
+    Object.values(secrets).some(
+      value => typeof value === 'string' && value !== '',
+    )
+  )
+}
+
+/**
+ * Whether an update change widens what runs unasked: another repository to
+ * take releases from, or a source that only notified now acting on its own.
+ * Stopping checks (`repo: null`) or going back to notify narrows (§2).
+ */
+function updatesWiden(input: Args, current: unknown): boolean {
+  const before = recordOf(current)
+  const repo = input['repo']
+  if (
+    repo !== undefined &&
+    repo !== null &&
+    repo !== '' &&
+    repo !== before?.['repo']
+  )
+    return true
+  const actions = recordOf(input['actions'])
+  const was = recordOf(before?.['actions'])
+  return (
+    actions !== null &&
+    Object.entries(actions).some(
+      ([source, action]) => action === 'auto' && was?.[source] !== 'auto',
+    )
   )
 }
 
@@ -1714,7 +1799,12 @@ const CATALOG: readonly SettingOperation[] = [
     description: '修改一个渠道 · 秘密字段留空保留原值 · 没给的字段保留原值',
     kind: 'update',
     role: 'ops',
-    personOnly: { note: PERSON_ONLY.channelAccess, when: channelAccessChanged },
+    personOnly: {
+      note: PERSON_ONLY.channelAccess,
+      when: (input, current) =>
+        channelAccessChanged(input, current) ||
+        channelTransportChanged(input, current),
+    },
     target: idTarget('渠道 id'),
     input: CHANNEL_INPUT,
     secrets: ['secrets.*'],
@@ -2420,6 +2510,7 @@ const CATALOG: readonly SettingOperation[] = [
     description: '检查时间 · 每个来源只通知或自动处理 · 通知渠道 · 仓库',
     kind: 'set',
     role: 'ops',
+    personOnly: { note: PERSON_ONLY.updates, when: updatesWiden },
     input: UPDATES_INPUT,
     route: 'POST /v0/updates',
     request: (_target, input) => ({
@@ -3045,7 +3136,11 @@ export function schemaProblem(
       if (object[key] === undefined) return `${where}.${key} 缺失`
     }
     for (const key of keys) {
-      const known = schema.properties?.[key]
+      // Own properties only: `toString` or `__proto__` is not a field.
+      const known =
+        schema.properties !== undefined && Object.hasOwn(schema.properties, key)
+          ? schema.properties[key]
+          : undefined
       if (known !== undefined) {
         const problem = schemaProblem(known, object[key], `${where}.${key}`)
         if (problem !== null) return problem
@@ -3141,6 +3236,12 @@ export interface SettingsBound {
   readonly id: string
   readonly target: Record<string, unknown> | null
   readonly input: unknown
+  /**
+   * The whole value read before the change, hashed: the card's `current` is
+   * cut short for a person, so a list or a long field changed by someone
+   * else would not show there, but it does here and voids the approval.
+   */
+  readonly currentSha256: string | null
   readonly card: SettingsCard
 }
 
@@ -3239,6 +3340,10 @@ export function settingsBound(
     id: op.id,
     target: target === null ? null : { ...target },
     input,
+    currentSha256:
+      current === undefined
+        ? null
+        : createHash('sha256').update(stableJson(current)).digest('hex'),
     card: {
       area: SETTING_AREAS[op.area],
       label: op.label,

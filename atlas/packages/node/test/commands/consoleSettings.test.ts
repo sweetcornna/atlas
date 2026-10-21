@@ -12,6 +12,7 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -408,6 +409,8 @@ describe('a change from preview to the ledger (P40 §§3, 5)', () => {
       id: 'servers.note',
       target: { server: 'p11' },
       input: { note: '换过硬盘' },
+      // The whole value read before (`{ note: '' }`), hashed.
+      currentSha256: createHash('sha256').update('{"note":""}').digest('hex'),
       card: {
         area: '服务器',
         label: '服务器备注',
@@ -674,6 +677,14 @@ describe('what may be asked for (P40 §§2, 8)', () => {
         input: { profileId: 'a' },
       }),
     ).toBe('这个设置项不收 target')
+    // A dot segment would fold `keys/..` onto the profile itself.
+    expect(
+      await preview({
+        id: 'providers.key.clear',
+        target: { profileId: 'gw', keyId: '..' },
+        input: { ifMatch: 3 },
+      }),
+    ).toBe('target 不对 · 路径段不能是 ..')
     expect(
       await f
         .call('settings.preview', {

@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v1.1（2026-10-21）：三块实现合入 `feat/agent-settings`；§2 只能本人操作的清单按实现回写（25 项、两项只许收紧） |
+| 文档版本 | v1.2（2026-10-21）：按合入前审查补四处：`im.save` 改平台、连接设置或凭据也只能本人操作；`updates.save` 只许收紧；`bound` 加 `currentSha256`；目标里的 `.` / `..` 拒绝（§2、§3、§4.2）。v1.1：三块实现合入 `feat/agent-settings`，§2 只能本人操作的清单按实现回写（25 项、两项只许收紧） |
 | 范围依据 | 负责人 10-21：「agent 应当可以更改一切设置，设置面板只是用来给人操作的而已，当 agent 要配置模型服务，更改设置等等极高危操作的时候，需要人的确认，具体参照 claudecode 和 claudedesktop，并保证原生化适配底层」 |
 | 状态 | 已实现（目录 99 项、20 个区域，智能体可申请 74 项），分支 `feat/agent-settings`，未合入 main、未部署、未在真机上跑过 |
 | 相关 | [`authorization-m1.md`](./authorization-m1.md)（P14 单次审批）、[`elevation.md`](./elevation.md)（P39）、[`console.md`](./console.md) §5 路由表、`atlas/packages/node/src/host/connectorTools.ts`（同一种「先批后做」的先例） |
@@ -49,7 +49,10 @@ interface SettingOperation {
   - 账号与凭据：`accounts.*`（邀请、重置、吊销、下线）、`connectors.device.pair` / `connectors.device.revoke`（接力设备）、`servers.replicate.inspect` / `servers.replicate.start`（SSH 密码或私钥）。
   - 给智能体加权限：`elevation.set`（升到 `off` 以外的档位）、`im.pairing`、`im.create`、`im.login`（扫码登录的人成为渠道主人）。
   - 花钱：`billing.*`。
-- **只许收紧的两项**：`desktop.set`（云端电脑）与 `im.save`（渠道）在 preview 与 apply 时都拿新值与当前值比，凡是放宽（确认档改成「无需确认」、开终端、加应用、改主人或成员）一律按只能本人操作拒绝；收紧照常走确认。
+- **只许收紧的三项**：`desktop.set`（云端电脑）、`im.save`（渠道）与 `updates.save`（更新设定）在 preview 与 apply 时都拿新值与当前值比，凡是放宽一律按只能本人操作拒绝，收紧照常走确认。放宽指：
+  - 云端电脑：确认档改成「无需确认」、开终端、加应用；
+  - 渠道：改主人、放行名单、配对档位或对话的智能体，以及改平台、平台连接设置（个人 QQ 的 SnowLuma 地址就在这里）或任何一项凭据，因为新连接那头可以冒充主人；
+  - 更新：换一个取发行的仓库，或把某个来源从只通知改成自动处理。改回只通知、`repo: null` 不查是收紧。
 - **降权**：`elevation.off`、`elevation.revoke`、`elevation.revoke-all` 照常走确认后执行。
 - **要确认但不拦**：`extensions.*`、`agents.extension.install`、连接器的 `agents`（把连接借给哪些智能体）也会扩大智能体能做的事，但它们正是负责人要求智能体能改的配置，按每次确认处理，卡片写明装什么、借给谁。理由与 Desktop 一致：智能体不能替人批准、不能拿到能冒充人的凭据、不能花钱、不能自己给自己放权。
 - **测试锁**：一条测试把目录与 `console.md` §5 的写接口对账，新增写接口没登记（也没写进豁免表）就红。
@@ -66,7 +69,7 @@ interface SettingOperation {
 
 参数 `{ id: string, target?: object, input?: object }`，一次一项。处理顺序（节点侧 handler）：
 
-1. 调中枢 `settings.preview`，拿回 `bound`（§4.2）。中枢在这一步拒绝：未知 id、只能本人操作（回去哪里改）、参数不合 schema、值没变、会话属主没有该角色、这个对话不是一个正在进行的人发起的回合。
+1. 调中枢 `settings.preview`，拿回 `bound`（§4.2）。中枢在这一步拒绝：未知 id、只能本人操作（回去哪里改）、参数不合 schema（只认 schema 自己的字段，`toString`、`__proto__` 这类继承来的名字也算不认识）、目标里有 `.` 或 `..` 路径段（URL 会把 `keys/..` 折回上一级，落到别的路由上）、值没变、会话属主没有该角色、这个对话不是一个正在进行的人发起的回合。
 2. 用 P14 申请单次批准：`toolName = 'qianmo_settings_change'`，`input = bound`。卡片按 `bound.card` 画（§6）。
 3. 批准后调中枢 `settings.apply`，带真实参数（含密钥）和 `approvalId`、`contextId`。中枢重算 `bound`，与批准时逐字节相同才消费批准、执行（§5）。
 4. 结果：
@@ -91,6 +94,7 @@ interface SettingsBound {
   readonly id: string
   readonly target: Record<string, unknown> | null
   readonly input: unknown          // 密钥字段换成 { $secret: '…abcd', sha256: '<hex>' }
+  readonly currentSha256: string | null  // 改之前的完整值（键序无关）的 sha256；没有读值的项为 null
   readonly card: {
     readonly area: string          // 区域名：「模型」
     readonly label: string         // 设置项：「默认模型服务」
@@ -103,7 +107,7 @@ interface SettingsBound {
 }
 ```
 
-摘要 `digest = authzDigest(node, agent, contextId, 'qianmo_settings_change', bound)`。`current` 进摘要，所以批准之后有人先改了这一项，apply 时重算出来的 `current` 不同，批准作废，要重新申请（与连接器的 revision 同一个道理）。
+摘要 `digest = authzDigest(node, agent, contextId, 'qianmo_settings_change', bound)`。改之前的值进摘要，所以批准之后有人先改了这一项，apply 时重算出来的值不同，批准作废，要重新申请（与连接器的 revision 同一个道理）。卡片上的 `current` 是截断过的、列表只写条数，别人改了列表里的一项或长字段的后半段，卡片看不出来，所以另有 `currentSha256` 绑定完整值。
 
 ## 5. 中枢侧
 

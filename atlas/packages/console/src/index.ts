@@ -227,6 +227,7 @@ export {
   secretMark,
   settingOperation,
   settingOperations,
+  settingRequestProblem,
   settingsBound,
   settingUnchanged,
   type JsonSchema,
