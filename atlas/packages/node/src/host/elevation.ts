@@ -106,7 +106,10 @@ export interface NodeElevationOptions {
   readonly unsupported?: (agent: string) => string | undefined
   readonly now?: () => number
   readonly platform?: NodeJS.Platform
-  /** For tests: whether a program is on PATH; whether a probe argv succeeds. */
+  /**
+   * For tests: whether a program (`bwrap`, `gh`) is on PATH; whether a probe
+   * argv succeeds.
+   */
   readonly bwrap?: ElevationBwrap
 }
 
@@ -214,7 +217,13 @@ export class NodeElevation {
       expiresAt: s.expiresAt ?? 0,
       sandbox:
         live && s.tier !== 'off' ? (this.#sandboxes.get(agent) ?? null) : null,
+      github: live && s.tier !== 'off' && this.#hasGh(),
     }
+  }
+
+  /** Whether the base will register its `github` tool on this node. */
+  #hasGh(): boolean {
+    return (this.#options.bwrap ?? defaultElevationBwrap).available('gh')
   }
 
   #view(s: ElevationStateRow): ElevationNodeView {
@@ -236,6 +245,7 @@ export class NodeElevation {
           ? NO_SANDBOX_REASON
           : null,
       unsupportedReason: this.#options.unsupported?.(s.agent) ?? null,
+      github: this.#hasGh(),
       enabledAt: s.enabledAt,
       enabledBy: s.enabledBy,
       actions24h: this.#actions.filter(

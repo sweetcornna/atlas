@@ -375,6 +375,41 @@ describe('NodeElevation sandbox on Linux', () => {
   })
 })
 
+describe('GitHub tool availability', () => {
+  test('github is offered only on a node with gh, and the view says so', async () => {
+    for (const gh of [true, false]) {
+      const h = harness({
+        bwrap: {
+          available: program => gh && program === 'gh',
+          probe: async () => false,
+          shell: () => '/bin/sh',
+        },
+      })
+      const view = viewOf(await enable(h, 'auto')) as View & {
+        github?: boolean
+      }
+      expect(view.github).toBe(gh)
+      const file = parseElevationResource(
+        JSON.parse(
+          readFileSync(h.elevation.resourcePath('reviewer'), 'utf8'),
+        ) as unknown,
+      )
+      expect(file?.github).toBe(gh)
+      h.elevation.close()
+    }
+    // An `off` agent never asks for github, whatever the node has.
+    const off = harness({
+      bwrap: {
+        available: () => true,
+        probe: async () => false,
+        shell: () => '/bin/sh',
+      },
+    })
+    expect(off.elevation.resource('reviewer')?.github).toBe(false)
+    off.elevation.close()
+  })
+})
+
 describe('per-agent sandboxes', () => {
   test('each agent binds only its own workspace', async () => {
     const roots: Record<string, string> = {

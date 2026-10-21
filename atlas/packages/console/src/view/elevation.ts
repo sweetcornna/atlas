@@ -46,22 +46,20 @@ export interface ElevationModel {
 }
 
 /** The mode names, as the page shows them (Claude Code's four modes). */
-const ELEVATION_TIER_WORD: Readonly<Record<ElevationTierName, string>> =
-  {
-    off: '人工确认',
-    'accept-edits': '自动接受编辑',
-    auto: '自动审批',
-    'full-access': '跳过权限确认',
-  }
+const ELEVATION_TIER_WORD: Readonly<Record<ElevationTierName, string>> = {
+  off: '人工确认',
+  'accept-edits': '自动接受编辑',
+  auto: '自动审批',
+  'full-access': '跳过权限确认',
+}
 
 /** One line under each mode: what runs without asking. */
-const ELEVATION_TIER_NOTE: Readonly<Record<ElevationTierName, string>> =
-  {
-    off: '有后果的操作逐次确认',
-    'accept-edits': '工作区编辑直接执行 · 命令 联网 GitHub 逐次确认',
-    auto: '沙箱命令 编辑 联网读取直接执行 · GitHub 写操作逐次确认',
-    'full-access': '不再逐次确认 · 红线与云端电脑「每一步都确认」照旧',
-  }
+const ELEVATION_TIER_NOTE: Readonly<Record<ElevationTierName, string>> = {
+  off: '有后果的操作逐次确认',
+  'accept-edits': '工作区编辑直接执行 · 命令 联网 GitHub 逐次确认',
+  auto: '沙箱命令 编辑 联网读取直接执行 · GitHub 写操作逐次确认',
+  'full-access': '不再逐次确认 · 红线与云端电脑「每一步都确认」照旧',
+}
 
 const TIERS: readonly ElevationTierName[] = [
   'off',
@@ -124,6 +122,13 @@ function grantFacts(one: ElevationNodeView, now: number): string {
         : `<span title="${attr(one.sandboxReason ?? '')}">${state('muted', '不提供')}</span>`,
     ),
   ]
+  if (one.github === false)
+    rows.push(
+      fact(
+        'GitHub',
+        `<span title="节点上没有 gh">${state('muted', '不提供')}</span>`,
+      ),
+    )
   if (live) {
     rows.push(
       fact(

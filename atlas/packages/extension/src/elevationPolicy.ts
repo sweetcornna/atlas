@@ -52,6 +52,12 @@ export interface ElevationResource {
   readonly epoch: number
   readonly expiresAt: number
   readonly sandbox: ElevationSandbox | null
+  /**
+   * Whether the node has `gh`, so the base registers its `github` tool. The
+   * base refuses to start a child whose `--tools` names a tool it did not
+   * register, so a node without `gh` must not ask for it.
+   */
+  readonly github: boolean
 }
 
 const isStrings = (value: unknown): value is string[] =>
@@ -67,7 +73,8 @@ export function parseElevationResource(
     r.v !== 1 ||
     (r.tier !== 'off' && !isElevationTier(r.tier)) ||
     !Number.isSafeInteger(r.epoch) ||
-    !Number.isSafeInteger(r.expiresAt)
+    !Number.isSafeInteger(r.expiresAt) ||
+    typeof r.github !== 'boolean'
   )
     return
   let sandbox: ElevationSandbox | null = null
@@ -90,6 +97,7 @@ export function parseElevationResource(
     epoch: r.epoch as number,
     expiresAt: r.expiresAt as number,
     sandbox,
+    github: r.github as boolean,
   }
 }
 
@@ -106,16 +114,21 @@ export function elevationActive(
 
 /**
  * Tools a live grant adds to `--tools` and `setActiveTools`. `bash` only when
- * the node has a sandbox: without one, commands are not offered at all. Every
- * tier offers the same surface; the host gate decides per call whether a tier
- * auto-runs it or sends it to the operator for one-shot approval.
+ * the node has a sandbox: without one, commands are not offered at all;
+ * `github` only when the node has `gh`. Every tier offers the same surface;
+ * the host gate decides per call whether a tier auto-runs it or sends it to
+ * the operator for one-shot approval.
  */
 export function elevatedTools(
   resource: ElevationResource | undefined,
   now: number = Date.now(),
 ): string[] {
   if (!elevationActive(resource, now)) return []
-  return [...(resource.sandbox ? ['bash'] : []), 'web_search', 'github']
+  return [
+    ...(resource.sandbox ? ['bash'] : []),
+    'web_search',
+    ...(resource.github ? ['github'] : []),
+  ]
 }
 
 /**

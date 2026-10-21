@@ -534,6 +534,12 @@ test('high-permission gate (P39): QIANMO_ELEVATION_V1 confirms go to requestElev
     estop: () => false,
     workspace: () => root.root,
     platform: 'darwin',
+    // gh on PATH, no bubblewrap: what a macOS developer machine reports.
+    bwrap: {
+      available: program => program === 'gh',
+      probe: async () => false,
+      shell: () => '/bin/sh',
+    },
   })
   const enabled = await elevation.control(
     'elevation.enable',

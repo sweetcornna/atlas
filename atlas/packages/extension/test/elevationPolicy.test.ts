@@ -34,6 +34,7 @@ function grant(
     epoch: 1,
     expiresAt: Date.now() + 3_600_000,
     sandbox: SANDBOX,
+    github: true,
     ...over,
   } as ElevationResource & {
     tier: 'accept-edits' | 'auto' | 'full-access'
@@ -53,21 +54,52 @@ describe('elevation grant file', () => {
         epoch: 2,
         expiresAt: 0,
         sandbox: null,
+        github: false,
       })?.tier,
     ).toBe('off')
     for (const bad of [
       null,
       [],
-      { v: 2, tier: 'auto', epoch: 1, expiresAt: 1, sandbox: null },
-      { v: 1, tier: 'confirm-each', epoch: 1, expiresAt: 1, sandbox: null },
-      { v: 1, tier: 'auto', epoch: 1.5, expiresAt: 1, sandbox: null },
-      { v: 1, tier: 'auto', epoch: 1, expiresAt: 1, sandbox: { argv: [] } },
+      {
+        v: 2,
+        tier: 'auto',
+        epoch: 1,
+        expiresAt: 1,
+        sandbox: null,
+        github: true,
+      },
+      {
+        v: 1,
+        tier: 'confirm-each',
+        epoch: 1,
+        expiresAt: 1,
+        sandbox: null,
+        github: true,
+      },
+      {
+        v: 1,
+        tier: 'auto',
+        epoch: 1.5,
+        expiresAt: 1,
+        sandbox: null,
+        github: true,
+      },
+      { v: 1, tier: 'auto', epoch: 1, expiresAt: 1, sandbox: null },
+      {
+        v: 1,
+        tier: 'auto',
+        epoch: 1,
+        expiresAt: 1,
+        sandbox: { argv: [] },
+        github: true,
+      },
       {
         v: 1,
         tier: 'auto',
         epoch: 1,
         expiresAt: 1,
         sandbox: { argv: ['x'], shell: 'bash' },
+        github: true,
       },
     ])
       expect(parseElevationResource(bad)).toBeUndefined()
@@ -84,6 +116,7 @@ describe('elevation grant file', () => {
           epoch: 1,
           expiresAt: now + 9,
           sandbox: null,
+          github: true,
         }),
         now,
       ),
@@ -170,11 +203,15 @@ describe('sandbox command wrapping', () => {
 })
 
 describe('tool surface under a live grant', () => {
-  test('a live grant adds bash only with a sandbox, plus web_search/github, never task', () => {
+  test('a live grant adds bash only with a sandbox, github only with gh, never task', () => {
     expect(elevatedTools(grant())).toEqual(['bash', 'web_search', 'github'])
     expect(elevatedTools(grant({ sandbox: null }))).toEqual([
       'web_search',
       'github',
+    ])
+    expect(elevatedTools(grant({ github: false }))).toEqual([
+      'bash',
+      'web_search',
     ])
     expect(elevatedTools(grant({ tier: 'off' }))).toEqual([])
   })
@@ -240,5 +277,19 @@ describe('tool surface under a live grant', () => {
     })
     expect(overlay).toContain('bash: deny')
     expect(overlay).toContain('github: allow')
+  })
+  test('a node without gh never names github in --tools (the base would refuse to start)', () => {
+    const noGh = grant({ github: false })
+    expect(
+      residentActiveTools('none', [], undefined, undefined, undefined, noGh),
+    ).not.toContain('github')
+    const overlay = Bun.YAML.parse(
+      residentConfigOverlay({ edits: 'none', elevation: noGh }),
+    ) as {
+      tools: { approval: Record<string, string> }
+      github: { enabled: boolean }
+    }
+    expect(overlay.tools.approval.github).toBe('deny')
+    expect(overlay.github.enabled).toBe(false)
   })
 })

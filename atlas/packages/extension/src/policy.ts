@@ -468,7 +468,7 @@ export function residentConfigOverlay(options: {
     ...(elevated.length > 0
       ? [
           'github:',
-          '  enabled: true',
+          `  enabled: ${elevated.includes('github')}`,
           'fetch:',
           '  enabled: true',
           // direnv would run a workspace `.envrc` on the host before the

@@ -58,6 +58,8 @@ describe('权限模式 page', () => {
     )
     expect(html).toContain('data-action="elevation-revoke-all"')
     expect(html).toContain('id="elevation-grant"')
+    // Only a node that reported no gh says GitHub is not offered.
+    expect(html.match(/节点上没有 gh/g)?.length).toBe(1)
   })
   test('a view token reads every state and changes none', async () => {
     const h = pageHarness({

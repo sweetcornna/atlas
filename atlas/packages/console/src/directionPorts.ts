@@ -406,6 +406,8 @@ export interface ElevationNodeView extends AgentRef {
    * 旧节点不带这个字段。
    */
   readonly unsupportedReason?: string | null
+  /** 节点上有没有 `gh`：没有时放权期间不提供 GitHub 工具。旧节点不带这个字段。 */
+  readonly github?: boolean
   readonly enabledAt: number | null
   /** 开启放权的运维主体；`off` 时为 null。 */
   readonly enabledBy: string | null
