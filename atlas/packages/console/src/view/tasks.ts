@@ -131,7 +131,7 @@ function taskRow(
     `<td class="tk-name"><b>${escapeHtml(task.title)}</b>` +
     `<span class="kit-mono note">${escapeHtml(task.id)}</span></td>` +
     (options.owners
-      ? `<td><span class="kit-mono">${escapeHtml(task.owner)}</span></td>`
+      ? `<td class="tk-tight"><span class="kit-mono">${escapeHtml(task.owner)}</span></td>`
       : '') +
     `<td>${address(task.target)}</td>` +
     stateCell(task, now) +
@@ -139,8 +139,8 @@ function taskRow(
     textCell(task.progress) +
     textCell(task.lastError, 'bad') +
     `<td class="when"><span class="note">${escapeHtml(formatRelative(task.updatedAt, now))}</span></td>` +
-    `<td>${sessionLink(task.parentSession, '主会话')}</td>` +
-    `<td>${sessionLink(task.workerSession, '子会话')}</td>` +
+    `<td class="tk-tight">${sessionLink(task.parentSession, '主会话')}` +
+    `<span class="sep">·</span>${sessionLink(task.workerSession, '子会话')}</td>` +
     `<td class="acts"><span class="kit-acts">${cancel}</span></td>` +
     `</tr>`
   )
@@ -176,8 +176,7 @@ export function renderTasks(
     '最近汇报',
     '最近中断',
     '更新',
-    '主会话',
-    '子会话',
+    '会话',
     '',
   ]
     .map(name => `<th scope="col">${escapeHtml(name)}</th>`)
@@ -260,5 +259,7 @@ export const TASKS_PAGE_CSS = `
 .tk-name { display: flex; flex-direction: column; gap: 2px; min-width: 10em; }
 .tk-text { max-width: 22em; }
 .tk-bad { color: var(--color-critical); font-size: var(--text-12-5); }
+.trail.tasks td.tk-tight, .trail.tasks td.when { white-space: nowrap; }
+.trail.tasks td.tk-tight .sep { margin: 0 6px; color: var(--color-quiet); }
 .trail.tasks td.num { font-variant-numeric: tabular-nums; }
 `

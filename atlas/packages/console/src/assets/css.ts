@@ -1090,6 +1090,13 @@ textarea.input { border-radius: var(--radius-md); padding: 7px 10px; line-height
 }
 .trail tbody tr:last-child td { border-bottom: 0; }
 .trail tbody tr:hover { background: var(--ui-hover); }
+/* Row actions stay out of the way until the row is pointed at or focused,
+   as Claude Desktop's lists do; a touch screen always shows them. */
+@media (hover: hover) and (pointer: fine) {
+  .trail tbody td.acts > * { opacity: 0; transition: opacity 120ms ease; }
+  .trail tbody tr:hover td.acts > *, .trail tbody tr:focus-within td.acts > * { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) { .trail tbody td.acts > * { transition: none; } }
 .trail td.when { white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-12); }
 .trail td.src, .trail td.result { white-space: nowrap; }
 /* break-word, not anywhere: wake_dispatch split as wake_dispat / ch reads as

@@ -1447,6 +1447,10 @@ export function progressPanel(): string {
 // ---------------------------------------------------------------------------
 
 export const PROVIDERS_PAGE_CSS = `
+.prov-toc { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 2px; padding: var(--space-2) 0; margin-bottom: var(--space-2); background: var(--color-bg); }
+.prov-toc a { padding: 4px 10px; border-radius: 999px; font-size: var(--text-13); color: var(--color-muted); text-decoration: none; }
+.prov-toc a:hover { color: var(--color-text); background: var(--color-interactive-soft); }
+#routing, #magpie, #magpie-agents, #agent-models, #magpie-usage, #prov-board { scroll-margin-top: 48px; }
 .prov-board-in { display: flex; flex-direction: column; gap: var(--space-6); }
 .prov-default { gap: var(--space-3); padding: var(--space-4); }
 .prov-default-name { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 20px; color: var(--color-text); }

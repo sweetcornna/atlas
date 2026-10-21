@@ -1266,6 +1266,21 @@ async function routingFragment(
   return html(await routingCard(ctx, nodes, ctx.url.searchParams.get('node')))
 }
 
+/**
+ * The 模型 page's own index (P38): one line of anchors to its blocks, kept
+ * on top while the page scrolls. Only the blocks this console draws.
+ */
+function modelToc(items: readonly (readonly [string, string])[]): string {
+  if (items.length < 3) return ''
+  return (
+    `<nav class="prov-toc" aria-label="本页">` +
+    items
+      .map(([id, label]) => `<a href="#${id}">${escapeHtml(label)}</a>`)
+      .join('') +
+    `</nav>`
+  )
+}
+
 async function boardPage(
   ctx: RouteContext,
   port: ProviderPort,
@@ -1297,6 +1312,30 @@ async function boardPage(
     poll: true,
     body:
       (reader.writer ? noScriptNote() + progressPanel() : '') +
+      (only === ''
+        ? modelToc([
+            ...(ctx.deps.routing === undefined
+              ? []
+              : [['routing', '任务模型'] as const]),
+            ...(panes === null || panes.agents === ''
+              ? []
+              : [
+                  [
+                    ctx.deps.magpie === undefined
+                      ? 'agent-models'
+                      : 'magpie-agents',
+                    '智能体',
+                  ] as const,
+                ]),
+            ...(panes === null || panes.gateway === ''
+              ? []
+              : [
+                  ['magpie', '网关'] as const,
+                  ['magpie-usage', '用量'] as const,
+                ]),
+            ['prov-board', '模型服务与节点'] as const,
+          ])
+        : '') +
       (only === ''
         ? await routingCard(
             ctx,

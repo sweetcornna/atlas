@@ -55,6 +55,9 @@ const port = Number(args.find(arg => /^\d+$/.test(arg)) ?? 38700)
 const withMagpie = !args.includes('--no-magpie')
 const now = (): number => Date.now()
 
+/** 初始化配置页的主智能体设置，只在内存里。 */
+let mainAddress: string | null = null
+
 const registry = new PageRegistry()
 registry.listResult = ok(TARGETS.map(target => agentAt(target.address)))
 
@@ -71,6 +74,13 @@ const deps: ConsoleDeps = {
   identity: 'qianmo://hub/console',
   chat: new PreviewChat(),
   chatDefault: 'qianmo://hub/ops',
+  mainAgent: {
+    get: () => mainAddress,
+    set: async address => {
+      mainAddress = address
+      return ok(null)
+    },
+  },
   nodeServers: [
     { node: 'hub', server: 'p5' },
     { node: 'beta-5', server: 'p3' },
