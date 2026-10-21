@@ -244,7 +244,8 @@ export class ClientTickets {
       if (now >= ticket.expiresAt) this.#pending.delete(ticket.hash)
     }
     for (const ticket of this.#byId.values()) {
-      if (now >= ticket.expiresAt + SETTLED_KEEP_MS) this.#byId.delete(ticket.id)
+      if (now >= ticket.expiresAt + SETTLED_KEEP_MS)
+        this.#byId.delete(ticket.id)
     }
   }
 }
@@ -308,7 +309,11 @@ interface ClientDoorContext {
   /** The login page with one sentence on it, for a window that was not signed in. */
   readonly card: (status: number, error: string) => Response
   /** The confirmation that spends `ticket` on a click. */
-  readonly confirm: (account: string, device: string, ticket: string) => Response
+  readonly confirm: (
+    account: string,
+    device: string,
+    ticket: string,
+  ) => Response
 }
 
 /** Whether `segments` name this door. */
@@ -381,7 +386,9 @@ async function enter(ctx: ClientDoorContext): Promise<Response> {
   const post = request.method === 'POST'
   if (!post && request.method !== 'GET')
     return methodNotAllowed(['GET', 'POST'])
-  if (post ? !isSameOriginPost(request, ctx.url) : isCrossOriginRequest(request))
+  if (
+    post ? !isSameOriginPost(request, ctx.url) : isCrossOriginRequest(request)
+  )
     return ctx.card(403, '阡陌客户端的票据只能由客户端自己打开')
   const wait = throttle.retryAfterSeconds(clientKey, now)
   if (wait > 0) return ctx.card(429, `尝试过多 · ${wait} 秒后再试`)

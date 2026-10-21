@@ -89,7 +89,10 @@ async function scene(devices = new Devices()) {
           actions.push(entry)
           return { ok: true, value: undefined }
         },
-        list: async () => ({ ok: true, value: { entries: [], next: null } }),
+        list: async () => ({
+          ok: true,
+          value: { entries: [], nextBeforeSeq: null },
+        }),
       },
     },
   })
@@ -218,9 +221,7 @@ describe('client tickets (clients.md §3.2)', () => {
     expect(Date.parse(issued.expiresAt) - s.clock.now()).toBe(60_000)
     expect(await stateOf(s.handle, issued.id)).toBe('pending')
 
-    const response = await s.handle(
-      enter(issued.ticket, { device: DEVICE_A }),
-    )
+    const response = await s.handle(enter(issued.ticket, { device: DEVICE_A }))
     expect(response.status).toBe(303)
     expect(response.headers.get('location')).toBe('/')
     expect(response.headers.get('referrer-policy')).toBe('no-referrer')
@@ -268,13 +269,14 @@ describe('client tickets (clients.md §3.2)', () => {
     expect(await stateOf(s.handle, issued.id)).toBe('pending')
 
     // The form is accepted from this console's own page and nowhere else.
-    for (const headers of [
+    const elsewhere: Record<string, string>[] = [
       { 'sec-fetch-site': 'cross-site' },
       { 'sec-fetch-site': 'same-site' },
       { 'sec-fetch-site': 'none' },
       {},
       { origin: 'https://elsewhere.example' },
-    ]) {
+    ]
+    for (const headers of elsewhere) {
       const refused = await s.handle(confirm(issued.ticket, headers))
       expect(`${JSON.stringify(headers)} ${refused.status}`).toBe(
         `${JSON.stringify(headers)} 403`,
@@ -415,7 +417,11 @@ describe('client tickets (clients.md §3.2)', () => {
     for (let i = 0; i < 250; i++) {
       const token = `qmd_${String(i).padStart(43, 'x')}`
       const id = `d-${String.fromCharCode(97 + (i % 26))}${'a'.repeat(9)}${String.fromCharCode(97 + Math.floor(i / 26))}${'b'}`
-      devices.byToken.set(token, { deviceId: id, owner: s.owner, kind: 'client' })
+      devices.byToken.set(token, {
+        deviceId: id,
+        owner: s.owner,
+        kind: 'client',
+      })
       tokens.push(token)
     }
     const held: string[] = []
@@ -463,12 +469,16 @@ describe('client tickets (clients.md §3.2)', () => {
     expect(await errorOf(unknown)).toBe('401 unauthorized')
     s.devices.inactive.add(s.owner)
     expect(
-      await errorOf(await s.handle(asDevice('GET', '/v0/client/device', TOKEN_A))),
+      await errorOf(
+        await s.handle(asDevice('GET', '/v0/client/device', TOKEN_A)),
+      ),
     ).toBe('401 owner_inactive')
     s.devices.inactive.delete(s.owner)
     s.devices.revoked.add(DEVICE_A)
     expect(
-      await errorOf(await s.handle(asDevice('GET', '/v0/client/device', TOKEN_A))),
+      await errorOf(
+        await s.handle(asDevice('GET', '/v0/client/device', TOKEN_A)),
+      ),
     ).toBe('401 device_revoked')
   })
 

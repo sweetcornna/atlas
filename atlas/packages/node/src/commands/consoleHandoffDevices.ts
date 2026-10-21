@@ -151,7 +151,11 @@ export function openConsoleHandoffDevices(
       )
     )
   }
-  const view = ({ hash: _hash, kind, ...device }: Device): HandoffDeviceView => ({
+  const view = ({
+    hash: _hash,
+    kind,
+    ...device
+  }: Device): HandoffDeviceView => ({
     ...device,
     kind: kind ?? 'handoff',
     tasks: options.taskCount?.(device.deviceId) ?? 0,
@@ -166,7 +170,9 @@ export function openConsoleHandoffDevices(
     persist({
       ...state,
       devices: state.devices.map(d =>
-        d.owner === subject && d.revokedAt === null ? { ...d, revokedAt: at } : d,
+        d.owner === subject && d.revokedAt === null
+          ? { ...d, revokedAt: at }
+          : d,
       ),
     })
   })

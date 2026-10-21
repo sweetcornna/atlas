@@ -82,6 +82,12 @@ const EXEMPT: readonly { readonly route: string; readonly why: string }[] = [
   },
   // The relay (P17, P19) is driven by paired devices, not by the panel.
   { route: 'POST /v0/handoff/pair', why: 'a device exchanging its code' },
+  // The qmo client (P37.2) signs in and out with its own device token.
+  {
+    route: 'POST /v0/client/tickets',
+    why: 'a client device asking to sign in',
+  },
+  { route: 'DELETE /v0/client/device', why: 'a client device signing out' },
   { route: 'POST /v0/handoff/projects', why: 'device workflow' },
   {
     route:

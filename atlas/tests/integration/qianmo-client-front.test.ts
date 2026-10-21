@@ -105,17 +105,42 @@ function hubScene(withAccounts = true) {
 /** What the stand-in window did: its first navigation and where it settled. */
 interface Visit {
   readonly site: string
+  /** Whether the window met the account confirmation and its 进入 was clicked. */
+  readonly confirmed: boolean
   readonly entered: number
   readonly cookie: string | null
   readonly landed: { status: number; location: string | null; body: string }
 }
 
 /** Navigate like a launched app window: user-initiated, redirects by hand. */
-async function navigate(url: string): Promise<Visit> {
-  const first = await fetch(url, {
+async function navigate(
+  url: string,
+  extra: Record<string, string> = {},
+): Promise<Visit> {
+  let first = await fetch(url, {
     redirect: 'manual',
-    headers: { 'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate' },
+    headers: {
+      'sec-fetch-site': 'none',
+      'sec-fetch-mode': 'navigate',
+      ...extra,
+    },
   })
+  // A fresh window profile meets the account confirmation; the person clicks.
+  const confirmed = first.status === 200 && url.includes('/client/enter')
+  if (confirmed) {
+    await first.body?.cancel()
+    first = await fetch(new URL('/client/enter', url), {
+      method: 'POST',
+      redirect: 'manual',
+      headers: {
+        'sec-fetch-site': 'same-origin',
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        ticket: new URL(url).searchParams.get('ticket') ?? '',
+      }),
+    })
+  }
   const line = first.headers
     .getSetCookie()
     .find(cookie => cookie.startsWith('qianmo_session='))
@@ -130,6 +155,7 @@ async function navigate(url: string): Promise<Visit> {
   })
   return {
     site: 'none',
+    confirmed,
     entered: first.status,
     cookie,
     landed: {
@@ -158,7 +184,7 @@ function clientScene(
     io: {
       out: line => out.push(line),
       err: line => err.push(line),
-      ask: () => null,
+      ask: async () => null,
     },
     fetch: (input, init) => fetch(input, init),
     hostname: () => 'ymy-pc',
@@ -167,9 +193,10 @@ function clientScene(
       launched.push(url)
       visits.push(navigate(url))
     },
-    async openOnPipe(_browser, _profile, _pipeDir, url) {
+    async openOnPipe(_browser, _profile, _pipeDir, url, deviceId) {
       launched.push('about:blank')
-      const visit = navigate(url)
+      // The header the real window gets over its pipe.
+      const visit = navigate(url, { 'x-qmo-device': deviceId })
       visits.push(visit)
       let closeWindow: (code: number) => void = () => {}
       const exited = new Promise<number>(resolve => {
@@ -206,9 +233,8 @@ describe('qmo against a console with personal accounts', () => {
       const owner = hub.member()
       const pairing = await hub.devices.issuePairing(owner, hub.hub)
       if (!pairing.ok) throw new Error('pairing')
-      expect(pairing.value.command).toBe(
-        `qmo sign-in ${hub.hub} --code ${pairing.value.code}`,
-      )
+      // The code is typed at the prompt, never put on the command line.
+      expect(pairing.value.command).toBe(`qmo sign-in ${hub.hub}`)
 
       const c = clientScene(platform)
       expect(
@@ -221,6 +247,7 @@ describe('qmo against a console with personal accounts', () => {
       expect(hub.devices.authenticate!(token)).toEqual({
         deviceId: state!.deviceId,
         owner: owner.subject,
+        kind: 'client',
       })
       const listed = await hub.devices.listDevices()
       expect(listed.ok && listed.value[0]?.platform).toBe(`${platform}-x64`)
@@ -231,9 +258,15 @@ describe('qmo against a console with personal accounts', () => {
       expect(await openFront(c.deps)).toBe(0)
       const [visit] = await Promise.all(c.visits)
       // Windows hands the window its ticket on the command line; Linux never does.
-      if (platform === 'win32')
+      // Its first window asks before signing in; the Linux window, whose
+      // navigation carries the device header, goes straight through.
+      if (platform === 'win32') {
         expect(c.launched[0]).toContain('/client/enter?ticket=qmt_')
-      else expect(c.launched).toEqual(['about:blank'])
+        expect(visit!.confirmed).toBe(true)
+      } else {
+        expect(c.launched).toEqual(['about:blank'])
+        expect(visit!.confirmed).toBe(false)
+      }
       expect(visit!.entered).toBe(303)
       expect(visit!.cookie).toMatch(/^qianmo_session=/)
       expect(visit!.landed.status).toBe(200)

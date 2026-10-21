@@ -144,7 +144,7 @@ export function renderLoginPage(model: LoginPageModel): string {
   )
 }
 
-export interface ClientEnterPageModel {
+interface ClientEnterPageModel {
   readonly label: string
   /** Who the window will be signed in as: the account's note, or its subject. */
   readonly account: string

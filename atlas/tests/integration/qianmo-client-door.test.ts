@@ -73,7 +73,10 @@ function scene() {
           actions.push(entry)
           return { ok: true, value: undefined }
         },
-        list: async () => ({ ok: true, value: { entries: [], next: null } }),
+        list: async () => ({
+          ok: true,
+          value: { entries: [], nextBeforeSeq: null },
+        }),
       },
     },
     TOKENS,
@@ -138,7 +141,9 @@ const session = (method: string, p: string, sid: string) =>
 const sessionOf = (response: Response): string | null => {
   const line = response.headers
     .getSetCookie()
-    .find(c => c.startsWith('qianmo_session=') && !c.startsWith('qianmo_session=;'))
+    .find(
+      c => c.startsWith('qianmo_session=') && !c.startsWith('qianmo_session=;'),
+    )
   return line === undefined
     ? null
     : line.split(';')[0]!.slice('qianmo_session='.length)
@@ -202,9 +207,7 @@ test('an account reset retires its devices; restoring the account does not bring
     ),
   ).toBe('401 device_revoked')
   // A ticket asked for before the reset opens nothing afterwards either.
-  expect(
-    (await s.handle(ownWindow(pending, device.deviceId))).status,
-  ).toBe(401)
+  expect((await s.handle(ownWindow(pending, device.deviceId))).status).toBe(401)
 })
 
 test("another account's ticket in a signed-in browser is refused and swaps nothing", async () => {
@@ -280,7 +283,11 @@ test('sign-out and the 连接 page both leave a revoke line; members see only th
   expect(
     (
       await s.handle(
-        session('DELETE', `/v0/handoff/devices/${fromPage.deviceId}`, member.sid),
+        session(
+          'DELETE',
+          `/v0/handoff/devices/${fromPage.deviceId}`,
+          member.sid,
+        ),
       )
     ).status,
   ).toBe(200)

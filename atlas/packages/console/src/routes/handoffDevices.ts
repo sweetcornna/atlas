@@ -81,7 +81,8 @@ export function visibleDevices(
   const principal = access.principal
   if (principal === null || principal.kind === 'legacy') return devices
   if (principal.kind === 'user' && principal.role === 'ops') return devices
-  const owner = principal.kind === 'device' ? principal.owner : principal.subject
+  const owner =
+    principal.kind === 'device' ? principal.owner : principal.subject
   return devices.filter(device => device.owner === owner)
 }
 
