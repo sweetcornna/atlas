@@ -102,6 +102,31 @@ const refusal = (
   message: string,
 ): ConsoleResult<never> => ({ ok: false, failure: { code, message } })
 const freshMs = 30 * 60_000
+/** The P40 change tool: one approval per change, bound to `SettingsBound`. */
+const SETTINGS_TOOL = 'qianmo_settings_change'
+const ROLE_RANK: Readonly<Record<string, number>> = {
+  viewer: 0,
+  member: 1,
+  ops: 2,
+}
+
+/** The role a settings change needs (`bound.card.role`), or null when unreadable. */
+function settingsRole(input: unknown): 'ops' | 'member' | null {
+  const card =
+    typeof input === 'object' && input !== null && 'card' in input
+      ? (input as { readonly card?: unknown }).card
+      : undefined
+  const role =
+    typeof card === 'object' && card !== null && 'role' in card
+      ? (card as { readonly role?: unknown }).role
+      : undefined
+  return role === 'ops' || role === 'member' ? role : null
+}
+
+/** Whether `role` is at least `needed`. */
+function roleCovers(role: string, needed: 'ops' | 'member'): boolean {
+  return (ROLE_RANK[role] ?? -1) >= (ROLE_RANK[needed] ?? 99)
+}
 /** A refusing node is asked again after this, or when its link reconnects. */
 const refusedRetryMs = 10 * 60_000
 
@@ -188,16 +213,25 @@ export class ConsoleApprovals implements ApprovalPort {
         )
           throw new Error('invalid approval receipt ledger')
         cached.status = entry.data['status'] as 'allowed' | 'denied'
-      } else if (entry.kind === 'connector-consumed') {
+      } else if (
+        entry.kind === 'connector-consumed' ||
+        entry.kind === 'settings-consumed'
+      ) {
         const cached =
           typeof id === 'string' ? this.#requests.get(id) : undefined
         if (
           !cached ||
           cached.consumed ||
           !cached.once ||
-          entry.data['digest'] !== cached.request.digest
+          entry.data['digest'] !== cached.request.digest ||
+          (entry.kind === 'settings-consumed') !==
+            (cached.request.toolName === SETTINGS_TOOL)
         )
-          throw new Error('invalid connector action ledger')
+          throw new Error(
+            entry.kind === 'settings-consumed'
+              ? 'invalid settings action ledger'
+              : 'invalid connector action ledger',
+          )
         cached.consumed = true
       } else if (entry.kind === 'continuation' || entry.kind === 'continued') {
         const cached =
@@ -565,6 +599,23 @@ export class ConsoleApprovals implements ApprovalPort {
         input.decision === 'allow-window'
       )
         return refusal('invalid', '此工具必须逐次批准，不支持授权窗口')
+      if (cached.request.toolName === SETTINGS_TOOL) {
+        // P40 §5.2: a change is approved once, by somebody who could make it.
+        if (input.decision === 'allow-window')
+          return refusal('invalid', '设置更改只能逐次批准 不支持授权窗口')
+        const needed = settingsRole(cached.request.input)
+        if (
+          needed === null ||
+          principal.kind !== 'user' ||
+          !roleCovers(principal.role, needed)
+        )
+          return refusal(
+            'refused',
+            needed === 'ops'
+              ? '这项更改需要运维批准'
+              : '这项更改需要成员或运维批准',
+          )
+      }
       const windowMs = input.windowMs ?? 0
       if (
         !['allow-once', 'allow-window', 'deny'].includes(input.decision) ||
@@ -681,6 +732,76 @@ export class ConsoleApprovals implements ApprovalPort {
       return true
     } catch {
       return false
+    }
+  }
+
+  /**
+   * The settings change's approval (P40 §5.2), consumed before the change is
+   * made: the same state checks as {@link consumeConnector}, a digest over the
+   * bound the hub has just computed again from the real arguments, and an
+   * approver who is still an active account with at least the role the change
+   * needs. Answers that approver, to make the change as; `null` for anything
+   * else, and nothing is consumed then.
+   */
+  consumeSettings(input: {
+    readonly requestId: string
+    readonly node: string
+    readonly agent: string
+    readonly contextId: string
+    readonly bound: unknown
+    readonly callId: string
+  }): Extract<ConsolePrincipal, { kind: 'user' }> | null {
+    const cached = this.#requests.get(input.requestId)
+    if (
+      !cached ||
+      !cached.once ||
+      cached.consumed ||
+      cached.revokePending ||
+      !['allowed', 'delivery-unknown'].includes(cached.status) ||
+      (cached.allowedUntil ?? 0) <= this.#now() ||
+      cached.request.exp <= this.#now() ||
+      cached.request.iss !== input.node ||
+      cached.request.sub !== `qianmo://${input.node}/${input.agent}` ||
+      cached.request.contextId !== input.contextId ||
+      cached.request.toolName !== SETTINGS_TOOL
+    )
+      return null
+    const digest = authzDigest({
+      node: input.node,
+      agent: input.agent,
+      contextId: input.contextId,
+      toolName: SETTINGS_TOOL,
+      input: input.bound,
+    })
+    if (cached.request.digest !== digest) return null
+    const needed = settingsRole(input.bound)
+    const subject = cached.approver?.slice(this.#node.length + 1)
+    const accounts = this.#options.accounts.list()
+    const account = accounts.ok
+      ? accounts.value.accounts.find(
+          row => row.subject === subject && row.state === 'active',
+        )
+      : undefined
+    if (!account || needed === null || !roleCovers(account.role, needed))
+      return null
+    const approver: Extract<ConsolePrincipal, { kind: 'user' }> = {
+      kind: 'user',
+      subject: account.subject,
+      role: account.role,
+      credential: 'approval-session',
+      authenticatedAt: cached.approvedAt ?? 0,
+    }
+    if (!this.#visible(approver, cached, true)) return null
+    try {
+      this.#append('settings-consumed', {
+        requestId: input.requestId,
+        digest,
+        callId: input.callId,
+      })
+      cached.consumed = true
+      return approver
+    } catch {
+      return null
     }
   }
 

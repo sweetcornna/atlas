@@ -33,7 +33,7 @@ import type {
   WakeOutcome,
   WakePort,
 } from '../src/deps.js'
-import { createConsoleHandler } from '../src/http.js'
+import { type ConsoleHandler, createConsoleHandler } from '../src/http.js'
 
 export const VIEW = 'view-token-000000000001'
 export const ADMIN = 'admin-token-00000000001'
@@ -264,7 +264,8 @@ export interface AccountsHarness {
   readonly wake: CountingWake
   readonly registry: QuietRegistry
   readonly alarms: string[]
-  readonly handle: (request: Request) => Promise<Response>
+  /** The handler, `as` included (P40: a change made in a person's name). */
+  readonly handle: ConsoleHandler
 }
 
 export function accountsHarness(

@@ -57,11 +57,13 @@ const ALLOW_ONCE_TTL_MS = 10 * 60 * 1000
 
 /**
  * Tools approved exactly once, never on a standing window: the cloud computer
- * (P21) and every elevated command/network/GitHub call (P39). A window grant
- * never stands in for one of these, and the approval is clamped to the request.
+ * (P21), every elevated command/network/GitHub call (P39) and every settings
+ * change an agent asks for (P40). A window grant never stands in for one of
+ * these, and the approval is clamped to the request.
  */
 function oneShotOnlyTool(toolName: string): boolean {
   return (
+    toolName === 'qianmo_settings_change' ||
     toolName.startsWith('qianmo_browser_') ||
     toolName.startsWith('qianmo_computer_') ||
     toolName.startsWith('qianmo_elevated_')

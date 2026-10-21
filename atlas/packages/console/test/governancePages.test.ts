@@ -228,7 +228,7 @@ describe('P18.16 approval authentication and real HTTP decisions', () => {
       await h.handle(asSession('GET', '/admin/approvals', alice.sid))
     ).text()
     expect(memoryPage).not.toContain('value="allow-window"')
-    expect(memoryPage).toContain('记忆写入每次单独审批')
+    expect(memoryPage).toContain('value="allow-once"')
     const refusedWindow = await h.handle(
       approving('/v0/approvals/request-1', 'POST', {
         decision: 'allow-window',
