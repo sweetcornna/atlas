@@ -35,6 +35,7 @@ import {
   dialogActions,
   dialogTop,
   emptyState,
+  moreMenu,
   segmented,
   selectField,
   switchField,
@@ -271,22 +272,23 @@ function providerRow(provider: MagpieProviderView, writer: boolean): string {
           tone: 'ghost',
           data: { id: provider.id, name: provider.name },
         }) +
-        actionButton(
-          'magpie-provider-toggle',
-          provider.enabled ? '停用' : '启用',
+        moreMenu(`provider:${provider.id}`, provider.name, [
           {
-            tone: 'ghost',
+            action: 'magpie-provider-toggle',
+            label: provider.enabled ? '停用' : '启用',
             data: {
               id: provider.id,
               name: provider.name,
               enabled: provider.enabled ? '0' : '1',
             },
           },
-        ) +
-        actionButton('magpie-provider-remove', '删除', {
-          tone: 'ghost',
-          data: { id: provider.id, name: provider.name },
-        }) +
+          {
+            action: 'magpie-provider-remove',
+            label: '删除',
+            data: { id: provider.id, name: provider.name },
+            danger: true,
+          },
+        ]) +
         `</span></td>`
       : writer
         ? '<td class="acts"></td>'
@@ -448,24 +450,32 @@ function keyRow(key: MagpieKeyView, writer: boolean): string {
         tone: 'ghost',
         data: { binding: id },
       }) +
-      (key.enabled === null
-        ? ''
-        : actionButton('magpie-key-toggle', key.enabled ? '停用' : '启用', {
-            tone: 'ghost',
-            data: {
-              binding: id,
-              name: bindingWord(key.binding),
-              enabled: key.enabled ? '0' : '1',
-            },
-          })) +
-      actionButton('magpie-key-rotate', '轮换', {
-        tone: 'ghost',
-        data: { binding: id, name: bindingWord(key.binding) },
-      }) +
-      actionButton('magpie-key-remove', '收回', {
-        tone: 'ghost',
-        data: { binding: id, name: bindingWord(key.binding) },
-      }) +
+      moreMenu(`key:${id}`, bindingWord(key.binding), [
+        ...(key.enabled === null
+          ? []
+          : [
+              {
+                action: 'magpie-key-toggle',
+                label: key.enabled ? '停用' : '启用',
+                data: {
+                  binding: id,
+                  name: bindingWord(key.binding),
+                  enabled: key.enabled ? '0' : '1',
+                },
+              },
+            ]),
+        {
+          action: 'magpie-key-rotate',
+          label: '轮换',
+          data: { binding: id, name: bindingWord(key.binding) },
+        },
+        {
+          action: 'magpie-key-remove',
+          label: '收回',
+          data: { binding: id, name: bindingWord(key.binding) },
+          danger: true,
+        },
+      ]) +
       `</span></td>`
     : ''
   return (

@@ -445,6 +445,11 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
         })
       }
       await tab.waitFor(`document.getElementById('fx-text').value === ''`)
+      // The box empties as the line goes out, before the POST lands: wait for
+      // the server to have it.
+      const deadline = Date.now() + 5_000
+      while (served.chat.sent.length === 0 && Date.now() < deadline)
+        await Bun.sleep(50)
       expect(served.chat.sent.map(one => [one.sessionId, one.text])).toEqual([
         ['session-2', '窄屏上发一条'],
       ])

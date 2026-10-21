@@ -21,7 +21,7 @@ import {
   type MagpieUsagePeriod,
 } from '../directionPorts.js'
 import { fail, html, methodNotAllowed, movedTo, notFound } from '../respond.js'
-import { KIT_CSS } from '../view/kit.js'
+import { KIT_CSS, MORE_MENU_JS } from '../view/kit.js'
 import {
   MAGPIE_PAGE_CSS,
   type MagpieModel,
@@ -254,7 +254,7 @@ export async function gatewayPanes(ctx: RouteContext): Promise<GatewayPanes> {
 /** The styles and script the gateway panes bring to the page that places them. */
 export const GATEWAY_PANES_CSS =
   KIT_CSS + MAGPIE_PAGE_CSS + MAGPIE_AGENTS_CSS + AGENT_MODELS_CSS
-export const GATEWAY_PANES_JS = MAGPIE_PAGE_JS + AGENT_MODELS_JS
+export const GATEWAY_PANES_JS = MAGPIE_PAGE_JS + AGENT_MODELS_JS + MORE_MENU_JS
 
 export const magpieRoute: RouteModule = {
   area: {

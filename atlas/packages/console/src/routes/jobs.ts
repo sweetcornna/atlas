@@ -29,7 +29,7 @@ import {
   renderJobs,
   renderJobsUnavailable,
 } from '../view/jobs.js'
-import { KIT_CSS, actionButton } from '../view/kit.js'
+import { KIT_CSS, MORE_MENU_JS, actionButton } from '../view/kit.js'
 import {
   channelDialog,
   renderSchedules,
@@ -188,7 +188,7 @@ export const jobsRoute: RouteModule = {
       }
     },
     css: JOBS_PAGE_CSS + KIT_CSS + SCHEDULES_PAGE_CSS + TASKS_PAGE_CSS,
-    script: SCHEDULES_PAGE_JS + TASKS_PAGE_JS,
+    script: SCHEDULES_PAGE_JS + TASKS_PAGE_JS + MORE_MENU_JS,
   },
   api: {
     heads: Object.keys(API),

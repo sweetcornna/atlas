@@ -461,6 +461,10 @@ function runtimeScript(guards: TokenGuards): string {
     var box = byId(id);
     if (!box) { if (run) run(); return; }
     var from = trigger || document.activeElement;
+    // A pick from a row's 更多 menu (view/kit.ts): the focus comes back to
+    // the menu's button.
+    var menu = from && from.closest && from.closest('.row-more-menu');
+    if (menu) from = document.querySelector('[popovertarget="' + menu.id + '"]');
     if (from && from !== document.body && !box.contains(from)) {
       var mount = from.closest('[data-poll]');
       openers[id] = { el: from, mount: mount, desc: describe(from, mount || document.body) };
@@ -1070,6 +1074,8 @@ function runtimeScript(guards: TokenGuards): string {
   function refreshRegion(mount) {
     var url = mount.getAttribute('data-poll');
     if (!url) return Promise.resolve();
+    // An open 更多 menu would go with the markup it sits in.
+    try { if (mount.querySelector('.row-more-menu:popover-open')) return Promise.resolve(); } catch (e) {}
     var ids = (mount.getAttribute('data-swap') || '').split(' ').filter(Boolean);
     return loadHtml(url).then(function (html) {
       var state = snapshot(mount);
