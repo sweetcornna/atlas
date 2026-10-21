@@ -24,12 +24,13 @@
  *
  * ## What a card says
  *
- * {@link APPROVAL_CARD_JS} is the per-tool table: a settings change (P40) is
- * drawn from the hub's card only — area · setting, the value now and the
- * value after, the role it needs, the panel it lives on — never from the raw
- * input; mail, calendar, 云端电脑, elevated commands and memory keep the
- * facts they always showed, in the same frame. A change that needs an
- * operator shows 需要运维批准 to anybody else, without buttons.
+ * The per-tool table is `approvalCard.ts`, shared with the approvals page:
+ * a settings change (P40) is drawn from the hub's card only — area ·
+ * setting, the value now and the value after, the role it needs, the panel
+ * it lives on — never from the raw input; mail, calendar, 云端电脑, elevated
+ * commands and memory keep the facts they always showed, in the same frame.
+ * A change that needs an operator shows 需要运维批准 to anybody else,
+ * without buttons.
  *
  * ## Deciding
  *
@@ -53,35 +54,11 @@
  */
 
 import type { Lang } from '../i18n.js'
+import { APPROVAL_CARD_JS, CARD_WORDS, type CardWords } from './approvalCard.js'
 import { attr, escapeHtml } from './escape.js'
 
-interface Verbs {
-  readonly settings: string
-  readonly command: string
-  readonly network: string
-  readonly github: string
-  readonly mail: string
-  readonly calendar: string
-  readonly desktop: string
-  readonly memory: string
-  readonly other: string
-}
-
-interface Words {
-  /** After the agent's name: 「ops 想更改设置」. */
-  readonly verbs: Verbs
-  readonly now: string
-  readonly next: string
-  readonly created: string
-  readonly panel: string
-  readonly needsOps: string
-  readonly opsTag: string
-  readonly incomplete: string
-  readonly to: string
-  readonly subject: string
-  readonly when: string
-  readonly where: string
-  readonly savedTo: string
+/** The card's own words (`approvalCard.ts`) and the front's around them. */
+interface FrontWords {
   readonly approve: string
   readonly deny: string
   readonly credential: string
@@ -101,31 +78,10 @@ interface Words {
   readonly region: string
 }
 
-const WORDS: Readonly<Record<Lang, Words>> = {
+type Words = CardWords & FrontWords
+
+const FRONT_WORDS: Readonly<Record<Lang, FrontWords>> = {
   'zh-CN': {
-    verbs: {
-      settings: '想更改设置',
-      command: '想执行命令',
-      network: '想联网读取',
-      github: '想操作 GitHub',
-      mail: '想发送邮件',
-      calendar: '想新建日程',
-      desktop: '想操作云端电脑',
-      memory: '想写入记忆',
-      other: '想调用工具',
-    },
-    now: '现在',
-    next: '改为',
-    created: '新建',
-    panel: '在面板里看',
-    needsOps: '需要运维批准',
-    opsTag: '需要运维',
-    incomplete: '内容不完整 · 只能拒绝',
-    to: '收件人',
-    subject: '主题',
-    when: '时间',
-    where: '地点',
-    savedTo: '写入',
     approve: '批准',
     deny: '拒绝',
     credential: '个人凭据',
@@ -142,29 +98,6 @@ const WORDS: Readonly<Record<Lang, Words>> = {
     region: '待你批准',
   },
   en: {
-    verbs: {
-      settings: 'wants to change a setting',
-      command: 'wants to run a command',
-      network: 'wants to read from the network',
-      github: 'wants a GitHub action',
-      mail: 'wants to send an email',
-      calendar: 'wants to create an event',
-      desktop: 'wants to use the cloud computer',
-      memory: 'wants to save a memory',
-      other: 'wants to use a tool',
-    },
-    now: 'Now',
-    next: 'Change to',
-    created: 'New',
-    panel: 'View in panel',
-    needsOps: 'Needs an operator to approve',
-    opsTag: 'Operator',
-    incomplete: 'Incomplete · deny only',
-    to: 'To',
-    subject: 'Subject',
-    when: 'When',
-    where: 'Where',
-    savedTo: 'Saved to',
     approve: 'Approve',
     deny: 'Deny',
     credential: 'Personal credential',
@@ -182,29 +115,6 @@ const WORDS: Readonly<Record<Lang, Words>> = {
     region: 'Waiting for your approval',
   },
   ja: {
-    verbs: {
-      settings: 'が設定の変更を求めています',
-      command: 'がコマンドの実行を求めています',
-      network: 'がネットワークの読み取りを求めています',
-      github: 'が GitHub の操作を求めています',
-      mail: 'がメールの送信を求めています',
-      calendar: 'が予定の作成を求めています',
-      desktop: 'がクラウド PC の操作を求めています',
-      memory: 'が記憶の保存を求めています',
-      other: 'がツールの呼び出しを求めています',
-    },
-    now: '現在',
-    next: '変更後',
-    created: '新規',
-    panel: 'パネルで見る',
-    needsOps: '運用者の承認が必要です',
-    opsTag: '運用者',
-    incomplete: '内容が不完全 · 拒否のみ',
-    to: '宛先',
-    subject: '件名',
-    when: '日時',
-    where: '場所',
-    savedTo: '保存先',
     approve: '承認',
     deny: '拒否',
     credential: '個人の認証情報',
@@ -225,7 +135,7 @@ const WORDS: Readonly<Record<Lang, Words>> = {
 
 /** The words the card script reads, for tests and the mount. */
 export function frontApprovalWords(lang: Lang): Words {
-  return WORDS[lang]
+  return { ...CARD_WORDS[lang], ...FRONT_WORDS[lang] }
 }
 
 /** The reader's account role, as far as approving goes. */
@@ -236,7 +146,7 @@ export type ApproverRole = 'member' | 'ops'
  * hidden until the script finds a request for the conversation on screen.
  */
 export function frontApprovalCards(lang: Lang, role: ApproverRole): string {
-  const w = WORDS[lang]
+  const w = frontApprovalWords(lang)
   return (
     `<section class="fx-asks" id="fx-asks" aria-label="${attr(w.region)}" ` +
     `aria-live="polite" data-role="${attr(role)}" ` +
@@ -246,7 +156,7 @@ export function frontApprovalCards(lang: Lang, role: ApproverRole): string {
 
 /** The line above the composer for requests in other conversations. */
 export function frontApprovalBar(lang: Lang): string {
-  const w = WORDS[lang]
+  const w = FRONT_WORDS[lang]
   return (
     `<div class="fx-ask-bar" id="fx-ask-bar" hidden>` +
     `<span class="fx-ask-bar-dot" aria-hidden="true"></span>` +
@@ -308,109 +218,6 @@ export const FRONT_APPROVAL_CSS = `
 .fx-ask-bar-go:hover { background: var(--fx-hover); }
 .fx-ask-bar-go:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { .fx-ask { animation: none; } }
-`
-
-/**
- * The per-tool table: `approvalCard(item, w, role)` says what one request's
- * card holds — the title after the agent's name, one line, label/value rows,
- * a preformatted detail, the panel link, a tag, a note, and which buttons it
- * offers. Kept apart from the page glue so the tests can run it alone.
- */
-export const APPROVAL_CARD_JS = `
-function approvalCard(item, w, role) {
-  var verbs = (w && w.verbs) || {};
-  var name = String(item.toolName || '');
-  var input = item.input && typeof item.input === 'object' ? item.input : {};
-  var agent = String(item.agent || '');
-  var who = agent.replace(/^qianmo:\\/\\/[^\\/]*\\//, '') || agent;
-  function str(value) { return typeof value === 'string' ? value : ''; }
-  function clip(value, n) { return value.length > n ? value.slice(0, n) + '…' : value; }
-  // A tool the node approves fresh on every call (its freshApprovalTool) is
-  // never carried into a continued turn: 批准 there stays allow-once.
-  var fresh = name === 'qianmo_memory_write' || name === 'qianmo_mail_send' ||
-    name === 'qianmo_calendar_create' || name.indexOf('qianmo_browser_') === 0 ||
-    name.indexOf('qianmo_computer_') === 0 || name.indexOf('qianmo_elevated_') === 0;
-  var card = { title: '', what: '', rows: [], detail: '', page: '', tag: '', note: '', summary: '', allow: true, deny: true, resume: !fresh };
-  function done(verb) {
-    card.title = who + ' ' + (verb || '');
-    if (!card.summary) card.summary = card.what || card.detail.slice(0, 120);
-    return card;
-  }
-  if (name === 'qianmo_settings_change') {
-    var c = input.card && typeof input.card === 'object' ? input.card : null;
-    var ok = !!c && typeof c.area === 'string' && typeof c.label === 'string' &&
-      typeof c.next === 'string' && (c.current === null || typeof c.current === 'string') &&
-      (c.role === 'ops' || c.role === 'member');
-    if (!ok) {
-      card.note = w.incomplete || '';
-      card.allow = false;
-      return done(verbs.settings);
-    }
-    card.what = clip(c.area, 400) + ' · ' + clip(c.label, 400);
-    card.rows = c.current === null ? [[w.created, clip(c.next, 400), 1]] :
-      [[w.now, clip(c.current, 400), 0], [w.next, clip(c.next, 400), 1]];
-    var page = str(c.page);
-    if (/^\\/(?![\\/\\\\])/.test(page) && !/[\\s\\x00-\\x1f\\x7f-\\x9f]/.test(page) && page.length <= 512) card.page = page;
-    card.summary = str(c.title) ? clip(c.title, 200) : card.what;
-    if (c.role === 'ops') card.tag = w.opsTag || '';
-    if (c.role === 'ops' && role !== 'ops') {
-      card.allow = false;
-      card.deny = false;
-      card.tag = '';
-      card.note = w.needsOps || '';
-    }
-    return done(verbs.settings);
-  }
-  if (name.indexOf('qianmo_browser_') === 0 || name.indexOf('qianmo_computer_') === 0) {
-    card.what = clip(str(input.summary) || str(input.op) || name, 400);
-    return done(verbs.desktop);
-  }
-  if (name === 'qianmo_mail_send') {
-    var to = Array.isArray(input.to) ? input.to.map(String).join(', ') : str(input.to);
-    card.rows = [[w.to, clip(to, 400), 0], [w.subject, clip(str(input.subject), 400), 0]];
-    card.detail = clip(str(input.body), 600);
-    return done(verbs.mail);
-  }
-  if (name === 'qianmo_calendar_create') {
-    card.what = clip(str(input.title), 400);
-    var span = str(input.start) + (str(input.end) ? ' – ' + str(input.end) : '');
-    card.rows = [[w.when, clip(span, 400), 0]];
-    if (str(input.location)) card.rows.push([w.where, clip(str(input.location), 400), 0]);
-    card.detail = clip(str(input.notes), 600);
-    return done(verbs.calendar);
-  }
-  if (name === 'qianmo_memory_write') {
-    card.what = clip(str(input.title), 400);
-    card.detail = clip(str(input.summary) + (str(input.body) ? '\\n\\n' + str(input.body) : ''), 600);
-    if (str(input.destination)) card.rows = [[w.savedTo, clip(str(input.destination), 400), 0]];
-    return done(verbs.memory);
-  }
-  var tool = name.indexOf('qianmo_elevated_') === 0 ? name.slice(16) : name;
-  if (tool === 'bash') {
-    card.detail = clip(str(input.command), 1200);
-    return done(verbs.command);
-  }
-  if (tool === 'web_search') {
-    card.what = clip(str(input.query), 400);
-    return done(verbs.network);
-  }
-  if (tool === 'read') {
-    card.what = clip(String(input.path || input.paths || input.url || ''), 400);
-    return done(verbs.network);
-  }
-  if (tool === 'github') {
-    var line = str(input.op);
-    if (input.repo) line += ' · ' + String(input.repo);
-    if (input.title) line += ' · ' + String(input.title);
-    card.what = clip(line, 400);
-    return done(verbs.github);
-  }
-  var json = '';
-  try { json = JSON.stringify(input, null, 2) || ''; } catch (e) { json = ''; }
-  card.what = name;
-  card.detail = clip(json, 1200);
-  return done(verbs.other);
-}
 `
 
 export const FRONT_APPROVAL_JS = `

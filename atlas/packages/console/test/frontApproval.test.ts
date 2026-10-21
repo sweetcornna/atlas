@@ -11,9 +11,12 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { ApprovalItem, ApprovalPort } from '../src/governance.js'
-import { settingsCardOf } from '../src/view/approvalCard.js'
 import {
   APPROVAL_CARD_JS,
+  approvalCard,
+  CARD_WORDS,
+} from '../src/view/approvalCard.js'
+import {
   FRONT_APPROVAL_JS,
   frontApprovalWords,
 } from '../src/view/frontApproval.js'
@@ -87,6 +90,7 @@ function port(
 }
 
 interface Card {
+  readonly kind: string
   readonly title: string
   readonly what: string
   readonly rows: readonly (readonly [string, string, number])[]
@@ -98,6 +102,7 @@ interface Card {
   readonly allow: boolean
   readonly deny: boolean
   readonly resume: boolean
+  readonly window: boolean
 }
 
 /** The page script's per-tool table, run alone with the Chinese words. */
@@ -264,31 +269,70 @@ describe('the settings change card', () => {
       expect(draw(settings({ ...CARD, page })).page).toBe('')
     }
   })
+})
 
-  test('the page script and the approvals page read a card the same way', () => {
-    const cases: (Record<string, unknown> | null)[] = [
-      CARD,
-      { ...CARD, current: null },
-      { ...CARD, role: 'member' },
-      { ...CARD, role: 'viewer' },
-      { ...CARD, label: null },
-      { ...CARD, area: 1 },
-      { ...CARD, title: undefined },
-      { ...CARD, page: '//evil.example' },
-      { ...CARD, page: undefined },
-      null,
-    ]
-    for (const card of cases) {
-      const one = settings(card)
-      const server = settingsCardOf(one.input)
-      const client = draw(one)
-      expect(client.note === '').toBe(server !== null)
-      if (server === null) continue
-      expect(client.what).toBe(`${server.area} · ${server.label}`)
-      expect(client.page).toBe(server.page ?? '')
-      expect(client.rows.map(row => row[1])).toEqual(
-        server.current === null ? [server.next] : [server.current, server.next],
-      )
+describe('one table on both sides of the wire', () => {
+  /** Every row of the table, and the edges of each. */
+  const corpus: ApprovalItem[] = [
+    settings(CARD),
+    settings({ ...CARD, current: null }),
+    settings({ ...CARD, role: 'member' }),
+    settings({ ...CARD, role: 'viewer' }),
+    settings({ ...CARD, label: null }),
+    settings({ ...CARD, area: 1 }),
+    settings({ ...CARD, title: undefined }),
+    settings({ ...CARD, page: '//evil.example' }),
+    settings({ ...CARD, page: '/admin/\u0085x' }),
+    settings({ ...CARD, page: '/admin/x\u3000y' }),
+    settings({ ...CARD, next: 'x'.repeat(500) }),
+    settings(null),
+    item({ toolName: 'qianmo_settings_change', input: { card: [] } }),
+    item({
+      toolName: 'qianmo_mail_send',
+      input: { to: ['a@example.com', 3], subject: '周报', body: 'b' },
+    }),
+    item({ toolName: 'qianmo_mail_send', input: { to: 'a@example.com' } }),
+    item({
+      toolName: 'qianmo_calendar_create',
+      input: { title: 't', start: 's', end: 'e', location: 'l', notes: 'n' },
+    }),
+    item({ toolName: 'qianmo_calendar_create', input: { start: 's' } }),
+    item({ toolName: 'qianmo_browser_click', input: { summary: '点击' } }),
+    item({ toolName: 'qianmo_computer_type', input: { op: 'type' } }),
+    item({ toolName: 'qianmo_computer_key', input: {} }),
+    item({
+      toolName: 'qianmo_memory_write',
+      input: { title: 't', summary: 's', body: 'b', destination: 'd' },
+    }),
+    item({ toolName: 'qianmo_memory_write', input: { title: 't' } }),
+    item({ toolName: 'qianmo_elevated_bash', input: { command: 'ls' } }),
+    item({ toolName: 'bash', input: { command: 'x'.repeat(2000) } }),
+    item({ toolName: 'qianmo_elevated_web_search', input: { query: 'q' } }),
+    item({ toolName: 'qianmo_elevated_read', input: { paths: ['a', 'b'] } }),
+    item({ toolName: 'read', input: { url: 'https://example.com' } }),
+    item({}),
+    item({ input: { op: 'issue_list' } }),
+    item({ toolName: 'write', input: { path: '/tmp/\u202ea', n: [1] } }),
+    item({ agent: 'planner', toolName: 'write', input: {} }),
+    item({ toolName: '', input: {} }),
+  ]
+
+  test('the page script and the server draw every request the same, in every language and role', () => {
+    for (const lang of LANGS) {
+      const words = frontApprovalWords(lang)
+      for (const role of ['ops', 'member']) {
+        for (const one of corpus) {
+          expect({
+            tool: one.toolName,
+            card: cardOf(one, words, role),
+          }).toEqual({
+            tool: one.toolName,
+            card: JSON.parse(
+              JSON.stringify(approvalCard(one, CARD_WORDS[lang], role)),
+            ),
+          })
+        }
+      }
     }
   })
 })
@@ -459,61 +503,152 @@ describe('the words', () => {
   })
 })
 
-describe('the approvals page draws a settings change from its card', () => {
-  async function page(role: 'member' | 'ops'): Promise<string[]> {
-    const h = accountsHarness({
-      deps: {
-        approvals: port(() => [
-          settings(CARD),
-          item({
-            requestId: 'r-2',
-            toolName: 'qianmo_mail_send',
-            input: { connectorId: 'c1', to: 'a@example.com', subject: 'S' },
-          }),
-          { ...settings(null), requestId: 'r-3' },
-        ]),
-      },
-    })
+describe('the approvals page', () => {
+  async function page(
+    role: 'member' | 'ops' | 'viewer',
+    items: (me: string) => readonly ApprovalItem[] = () => [
+      settings(CARD),
+      item({
+        requestId: 'r-2',
+        toolName: 'qianmo_mail_send',
+        input: { connectorId: 'c1', to: 'a@example.com', subject: 'S' },
+        createdAt: START + 1,
+      }),
+      { ...settings(null), requestId: 'r-3', createdAt: START + 2 },
+      item({
+        requestId: 'r-4',
+        toolName: 'write',
+        input: { path: '/tmp/a' },
+        createdAt: START + 3,
+      }),
+      item({ requestId: 'r-5', status: 'allowed', createdAt: START + 4 }),
+      item({ requestId: 'r-6', status: 'denied', createdAt: START + 5 }),
+    ],
+  ): Promise<{ readonly html: string; readonly cards: string[] }> {
+    const h = accountsHarness({ deps: { approvals: port(items) } })
     const who = await person(h.handle, role)
     const html = await (
       await h.handle(asSession('GET', '/admin/approvals', who.sid))
     ).text()
-    return html.split('<article class="sec">').slice(1)
+    return {
+      html,
+      cards: html.split('<article class="card elev-sm apv-card"').slice(1),
+    }
   }
 
-  test('area · setting, now and after, the role and the panel; never the raw input', async () => {
-    const [change] = await page('ops')
-    expect(change).toContain('<h2>设置更改 · 待审批</h2>')
-    expect(change).toContain('<b>把默认模型服务改成 Claude 网关</b>')
-    expect(change).toContain('模型 · 默认模型服务 · 需要运维批准')
-    expect(change).toContain(
-      '<span class="k">现在</span><span class="v">DeepSeek</span>',
+  test('pending first, one short note, the decided folded under 已处理', async () => {
+    const { html, cards } = await page('ops')
+    expect(html).toContain(
+      '<p class="apv-note">批准绑定确切参数 · 需 30 分钟内验证的个人凭据</p>',
     )
-    expect(change).toContain(
-      '<span class="k">改为</span><span class="v">Claude 网关</span>',
+    expect(cards.map(card => /data-key="apv:([^"]+)"/.exec(card)?.[1])).toEqual(
+      ['r-1', 'r-2', 'r-3', 'r-4', 'r-6', 'r-5'],
     )
-    expect(change).toContain('href="/admin/providers#routing">在面板里看</a>')
-    expect(change).toContain('<code>providers.default</code>')
-    expect(change).not.toContain('$secret')
-    expect(change).not.toContain('claude-gateway')
-    expect(change).not.toContain('查看完整参数')
-    // Approved once at a time: no window.
-    expect(change).toContain('value="allow-once"')
-    expect(change).toContain('value="continue"')
-    expect(change).toContain('value="deny"')
-    expect(change).not.toContain('value="allow-window"')
+    const done = html.slice(html.indexOf('<details class="apv-done"'))
+    expect(done).toContain('已处理 · 2')
+    expect(done).toContain('data-key="apv:r-6"')
+    expect(done.indexOf('data-key="apv:r-1"')).toBe(-1)
+    // The credential row is there, folded away until a decision needs it.
+    expect(html).toMatch(
+      /<form id="approval-auth" class="card elev-sm apv-auth" hidden>/,
+    )
+    expect(html).toContain('name="credential"')
   })
 
-  test('a member sees a change that needs ops without buttons; other tools are as they were', async () => {
-    const [change, mail, broken] = await page('member')
-    expect(change).toContain('<p class="bar">需要运维批准</p>')
+  test('a settings change: the figure and title, area · setting, now and after, the panel; never the raw input', async () => {
+    const [change = ''] = (await page('ops')).cards
+    expect(change).toContain('<svg class="avatar"')
+    expect(change).toContain('<h2 class="apv-title">ops 想更改设置</h2>')
+    expect(change).toContain('<span class="tag tag-neutral">需要运维</span>')
+    expect(change).toContain('<span class="tag tag-accent">待审批</span>')
+    expect(change).toContain('<p class="apv-what">模型 · 默认模型服务</p>')
+    expect(change).toContain('<dt>现在</dt><dd>DeepSeek</dd>')
+    expect(change).toContain(
+      '<dt>改为</dt><dd class="is-next">Claude 网关</dd>',
+    )
+    expect(change).toContain('href="/admin/providers#routing">在面板里看</a>')
+    // The meta line: node, the way back, when it lapses in words, not ISO.
+    expect(change).toContain(
+      '节点 tokyo-1 · <a href="/?session=session-1">查看原会话</a>',
+    )
+    expect(change).toMatch(
+      /<time datetime="[^"]+" title="[^"]+">10 分钟后<\/time>到期/,
+    )
+    // 详情: the id and the digest; no arguments.
+    expect(change).toContain(
+      '<dt>设置项</dt><dd class="mono">providers.default</dd>',
+    )
+    expect(change).toContain('<dt>摘要</dt><dd class="mono">digest-1</dd>')
+    expect(change).not.toContain('apv-json')
+    expect(change).not.toContain('$secret')
+    expect(change).not.toContain('claude-gateway')
+    // Approved once at a time: no window.
+    const buttons = [...change.matchAll(/value="([a-z-]+)"/g)].map(m => m[1])
+    expect(buttons).toEqual(['deny', 'continue', 'allow-once'])
+    expect(change).toContain(
+      'class="btn btn-ghost btn-danger" name="decision" value="deny"',
+    )
+    expect(change).toContain(
+      'class="btn btn-primary" name="decision" value="allow-once">批准</button>',
+    )
+  })
+
+  test('other tools: the same summary as the conversation, the arguments under 详情, a window only where the node allows one', async () => {
+    const { cards } = await page('ops')
+    const mail = cards[1] ?? ''
+    expect(mail).toContain('<h2 class="apv-title">planner 想发送邮件</h2>')
+    expect(mail).toContain('<dt>收件人</dt><dd>a@example.com</dd>')
+    expect(mail).toContain('<pre class="apv-json">')
+    expect(mail).not.toContain('value="allow-window"')
+    const write = cards[3] ?? ''
+    expect(write).toContain('<h2 class="apv-title">planner 想调用工具</h2>')
+    expect(write).toContain('<p class="apv-what">write</p>')
+    expect(write).not.toContain('apv-detail')
+    expect([...write.matchAll(/value="([a-z-]+)"/g)].map(m => m[1])).toEqual([
+      'deny',
+      'allow-window',
+      'continue',
+      'allow-once',
+    ])
+    // Allowed: the window can be revoked; refused: nothing to do.
+    expect(cards[5]).toContain('data-revoke="r-5">撤销授权窗口</button>')
+    expect(cards[5]).toContain('<span class="tag tag-accent-2">已批准</span>')
+    expect(cards[4]).not.toContain('<button')
+  })
+
+  test('a member sees a change that needs ops without buttons; a card that cannot be read can only be refused', async () => {
+    const { cards } = await page('member')
+    const [change = '', , broken = ''] = cards
+    expect(change).toContain('<p class="apv-hold">需要运维批准</p>')
     expect(change).not.toContain('data-approval=')
-    expect(mail).toContain('<h2>qianmo_mail_send · 待审批</h2>')
-    expect(mail).toContain('查看完整参数与摘要')
-    expect(mail).toContain('value="allow-window"')
-    // A card that cannot be read can only be refused.
-    expect(broken).toContain('设置更改的内容不完整 · 只能拒绝')
-    expect(broken).toContain('value="deny"')
-    expect(broken).not.toContain('value="allow-once"')
+    expect(change).not.toContain(
+      '<span class="tag tag-neutral">需要运维</span>',
+    )
+    expect(broken).toContain('内容不完整 · 只能拒绝')
+    expect([...broken.matchAll(/value="([a-z-]+)"/g)].map(m => m[1])).toEqual([
+      'deny',
+    ])
+  })
+
+  test('a reader who cannot decide gets the audit summary as one card', async () => {
+    const { html } = await page('viewer')
+    expect(html).toContain('<section class="card elev-sm apv-audit"')
+    expect(html).toContain('审计汇总')
+    expect(html).not.toContain('<article class="card elev-sm apv-card"')
+    expect(html).not.toContain('id="approval-auth"')
+  })
+
+  test('nothing on the page breaks the copy rule', async () => {
+    const { html } = await page('ops')
+    const readable = html
+      .replace(/<style>[\s\S]*?<\/style>/g, '')
+      .replace(/<script>[\s\S]*?<\/script>/g, '')
+      .replace(/<pre class="apv-json">[\s\S]*?<\/pre>/g, '')
+      .replace(/<[^>]*>/g, ' ')
+    for (const mark of ['。', '，', '、', '！', '!'])
+      expect({ mark, found: readable.includes(mark) }).toEqual({
+        mark,
+        found: false,
+      })
   })
 })
