@@ -97,6 +97,7 @@ interface Card {
   readonly summary: string
   readonly allow: boolean
   readonly deny: boolean
+  readonly resume: boolean
 }
 
 /** The page script's per-tool table, run alone with the Chinese words. */
@@ -396,6 +397,39 @@ describe('the other tools keep their facts in the same frame', () => {
     expect(card.title).toBe('planner 想调用工具')
     expect(card.what).toBe('write')
     expect(card.detail).toContain('"path": "/tmp/a"')
+  })
+})
+
+describe('批准 after the turn has ended', () => {
+  test('continues a request a new turn can carry, and keeps the ones the node approves fresh as allow-once', () => {
+    const resumes = (toolName: string) =>
+      draw(item({ toolName, input: {} })).resume
+    expect(resumes('qianmo_settings_change')).toBe(true)
+    expect(resumes('write')).toBe(true)
+    expect(resumes('bash')).toBe(true)
+    for (const fresh of [
+      'qianmo_mail_send',
+      'qianmo_calendar_create',
+      'qianmo_memory_write',
+      'qianmo_browser_click',
+      'qianmo_computer_type',
+      'qianmo_elevated_bash',
+      'qianmo_elevated_github',
+    ])
+      expect({ fresh, resume: resumes(fresh) }).toEqual({
+        fresh,
+        resume: false,
+      })
+  })
+
+  test('the page script picks the path at the moment of the click', () => {
+    expect(FRONT_APPROVAL_JS).toContain(
+      "var resume = choice === 'allow-once' && entry.card.resume && !running(item);",
+    )
+    expect(FRONT_APPROVAL_JS).toContain("(resume ? '/continue' : '')")
+    expect(FRONT_APPROVAL_JS).toContain(
+      "thread.getAttribute('data-running') === '1'",
+    )
   })
 })
 

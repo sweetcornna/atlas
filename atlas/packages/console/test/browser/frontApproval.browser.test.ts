@@ -3,19 +3,25 @@
 
 /**
  * The front's approval cards in a real browser (P40 §6, §8): a request for
- * the conversation on screen is a card at the end of the thread, 批准 sends
- * allow-once with the request's digest after the credential step, 拒绝 sends
- * deny, a decided card goes on the next poll, a request elsewhere is one
- * line above the composer that switches to its conversation, and a member
- * sees a change that needs ops without buttons.
+ * the conversation on screen is a card at the end of the thread; 批准 after
+ * the credential step continues the work when the agent's turn has ended
+ * (批准并继续) and is allow-once while the turn still runs or for a tool the
+ * node approves fresh every time; 拒绝 sends deny; a decided card goes on the
+ * next poll; a request elsewhere is one line above the composer that
+ * switches to its conversation; and a member sees a change that needs ops
+ * without buttons.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { APPROVAL_COOKIE } from '../../src/approvalSession.js'
+import type { ChatTranscript, ConsoleResult } from '../../src/deps.js'
 import type { ApprovalItem, ApprovalPort } from '../../src/governance.js'
 import {
   ADDRESS,
   accountsHarness,
   asSession,
+  cookieFrom,
+  CountingChat,
   person,
   START,
 } from '../accountsHarness.js'
@@ -60,11 +66,56 @@ function approvals(items: ApprovalItem[]): {
         }
       return { ok: true, value: { delivered: true } }
     },
+    async continue(principal, input) {
+      decisions.push({
+        requestId: input.requestId,
+        digest: input.digest,
+        decision: 'continue',
+        credential: principal.credential,
+      })
+      const at = items.findIndex(one => one.requestId === input.requestId)
+      const found = items[at]
+      if (found !== undefined)
+        items[at] = { ...found, status: 'allowed', continuation: 'sent' }
+      return {
+        ok: true,
+        value: { sessionId: found?.contextId ?? '', taskId: 'continued' },
+      }
+    },
     async revoke() {
       return { ok: true, value: { delivered: true } }
     },
   }
   return { port, decisions }
+}
+
+/** A chat whose listed sessions have the person's line still unanswered. */
+class RunningChat extends CountingChat {
+  readonly running = new Set<string>()
+
+  override async transcript(
+    sessionId: string,
+  ): Promise<ConsoleResult<ChatTranscript>> {
+    const read = await super.transcript(sessionId)
+    if (!read.ok || !this.running.has(sessionId)) return read
+    return {
+      ok: true,
+      value: {
+        ...read.value,
+        turns: [
+          {
+            id: `asked-${sessionId}`,
+            sessionId,
+            author: 'operator',
+            at: START,
+            text: '把默认模型服务换成 Claude 网关',
+            state: 'read',
+            taskId: 'task-running',
+          },
+        ],
+      },
+    }
+  }
 }
 
 function request(
@@ -126,7 +177,7 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
     await tab.goto(`${base}${path}`)
   }
 
-  test('the card is in the thread; 批准 sends allow-once with the digest after the credential, 拒绝 sends deny; the line leads to the other conversation', async () => {
+  test('the card is in the thread; on an idle conversation 批准 continues after the credential, 拒绝 sends deny; the line leads to the other conversation', async () => {
     const items: ApprovalItem[] = []
     const { port, decisions } = approvals(items)
     const h = accountsHarness({ deps: { approvals: port } })
@@ -252,11 +303,13 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
       await tab.waitFor(
         `document.querySelector('.fx-ask[data-request="set-1"]').classList.contains('is-done')`,
       )
+      // The agent's turn here has ended (nothing unanswered): 批准 is
+      // 批准并继续, with the digest and nothing else.
       expect(decisions).toEqual([
         {
           requestId: 'set-1',
           digest: 'digest-set-1',
-          decision: 'allow-once',
+          decision: 'continue',
           credential: 'approval-session',
         },
       ])
@@ -265,7 +318,7 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
           const card = document.querySelector('.fx-ask[data-request="set-1"]');
           return [card.querySelector('.fx-ask-status').textContent, card.querySelector('.fx-ask-auth input').value, String(card.querySelectorAll('[data-ask-choice]').length)];
         })()`),
-      ).toEqual(['已批准', '', '0'])
+      ).toEqual(['已批准 · 正在继续', '', '0'])
       // Gone on the next poll.
       await tab.waitFor(
         `document.querySelector('.fx-ask[data-request="set-1"]') === null`,
@@ -305,7 +358,8 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
           `document.querySelector('.fx-ask[data-request="mail-1"] .fx-ask-title').textContent`,
         ),
       ).toBe('planner 想发送邮件')
-      // Enter approves only on a focused 批准.
+      // Enter approves only on a focused 批准. Mail is approved fresh on
+      // every call, so on this idle conversation it stays allow-once.
       await tab.evaluate(
         `document.querySelector('.fx-ask[data-request="mail-1"] [data-ask-choice="allow-once"]').focus()`,
       )
@@ -332,6 +386,92 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
       server.stop(true)
     }
   }, 40_000)
+
+  test('while the agent turn runs 批准 is allow-once; once it has ended the next 批准 continues', async () => {
+    const items: ApprovalItem[] = []
+    const { port, decisions } = approvals(items)
+    const chat = new RunningChat()
+    const h = accountsHarness({ deps: { approvals: port, chat } })
+    const ops = await person(h.handle, 'ops')
+    const opened = await h.handle(
+      asSession('POST', '/v0/chat/sessions', ops.sid, {
+        body: { target: ADDRESS },
+      }),
+    )
+    const { id: a } = (await opened.json()) as { id: string }
+    chat.running.add(a)
+    items.push(
+      request('run-1', a, 'qianmo_settings_change', change('ops')),
+      request('run-2', a, 'qianmo_settings_change', change('ops'), 5),
+    )
+    // A fresh approval session, so 批准 goes straight out.
+    const authed = await h.handle(
+      asSession('POST', '/v0/approvals/auth', ops.sid, {
+        body: { credential: ops.credential },
+      }),
+    )
+    expect(authed.status).toBe(200)
+    const approval = cookieFrom(authed, APPROVAL_COOKIE) ?? ''
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: req => h.handle(req),
+    })
+    const base = `http://127.0.0.1:${server.port}`
+    const tab = await browser.tab()
+    try {
+      await tab.send('Network.setCookie', {
+        name: APPROVAL_COOKIE,
+        value: approval,
+        url: base,
+        // Where the console scopes it: it replaces one an earlier test's
+        // console left for this host (cookies do not tell ports apart).
+        path: '/v0/approvals',
+        httpOnly: true,
+        sameSite: 'Strict',
+      })
+      await open(tab, base, ops.sid, `/?session=${a}`)
+      await tab.waitFor(
+        `document.querySelectorAll('#fx-asks .fx-ask').length === 2 && document.getElementById('fx-thread').getAttribute('data-running') === '1'`,
+      )
+      await tab.evaluate(
+        `document.querySelector('.fx-ask[data-request="run-1"] [data-ask-choice="allow-once"]').click()`,
+      )
+      await tab.waitFor(
+        `document.querySelector('.fx-ask[data-request="run-1"] .fx-ask-status').textContent === '已批准'`,
+      )
+      expect(decisions).toEqual([
+        {
+          requestId: 'run-1',
+          digest: 'digest-run-1',
+          decision: 'allow-once',
+          credential: 'approval-session',
+        },
+      ])
+      // The node stopped waiting and the turn ended: the thread says so.
+      chat.running.delete(a)
+      chat.emit(a)
+      await tab.waitFor(
+        `document.getElementById('fx-thread').getAttribute('data-running') === null`,
+      )
+      await tab.evaluate(
+        `document.querySelector('.fx-ask[data-request="run-2"] [data-ask-choice="allow-once"]').click()`,
+      )
+      await tab.waitFor(
+        `document.querySelector('.fx-ask[data-request="run-2"] .fx-ask-status').textContent === '已批准 · 正在继续'`,
+      )
+      expect(decisions[1]).toEqual({
+        requestId: 'run-2',
+        digest: 'digest-run-2',
+        decision: 'continue',
+        credential: 'approval-session',
+      })
+      expect(decisions).toHaveLength(2)
+    } finally {
+      await tab.close()
+      server.stop(true)
+    }
+  }, 30_000)
 
   test('a member sees a change that needs ops without buttons, and it is not counted as waiting on them', async () => {
     const items: ApprovalItem[] = []

@@ -33,9 +33,16 @@
  *
  * ## Deciding
  *
- * A decision that needs a fresh personal credential asks for it inside the
- * card (`POST /v0/approvals/auth`, the approval session the admin approvals
- * page uses) and then sends the decision once more. A decided card says so
+ * 批准 does what the moment needs. The node waits on a decision for at most
+ * a minute: while the agent's turn in this conversation still runs
+ * (`#fx-thread[data-running]`), 批准 is allow-once and the waiting call goes
+ * on. Once the turn has ended, 批准 is the approvals page's 批准并继续
+ * (`POST /v0/approvals/<id>/continue`) for a request a new turn can carry,
+ * and stays allow-once for a tool the node approves fresh on every call
+ * (mail, calendar, memory, 云端电脑, elevated). A decision that needs a
+ * fresh personal credential asks for it inside the card
+ * (`POST /v0/approvals/auth`, the approval session the admin approvals page
+ * uses) and then sends the decision once more. A decided card says so
  * for a moment and goes on the next poll. Nothing takes focus when a card
  * arrives: Enter approves only on a focused 批准. A browser notification
  * goes out once per request the reader may decide, when they have allowed
@@ -82,6 +89,8 @@ interface Words {
   readonly verifyFailed: string
   readonly failed: string
   readonly approved: string
+  /** Approved, and the conversation's turn continued (批准并继续). */
+  readonly continuing: string
   readonly denied: string
   /** `{n}`: how many requests. */
   readonly elsewhere: string
@@ -124,6 +133,7 @@ const WORDS: Readonly<Record<Lang, Words>> = {
     verifyFailed: '验证失败 · 要用当前账号的个人凭据',
     failed: '没有完成 · 稍后再试',
     approved: '已批准',
+    continuing: '已批准 · 正在继续',
     denied: '已拒绝',
     elsewhere: '另一个对话有 {n} 项待你批准',
     elsewhereMany: '其他 {m} 个对话有 {n} 项待你批准',
@@ -163,6 +173,7 @@ const WORDS: Readonly<Record<Lang, Words>> = {
     verifyFailed: "Verification failed · use this account's credential",
     failed: 'Not completed · try again shortly',
     approved: 'Approved',
+    continuing: 'Approved · continuing',
     denied: 'Denied',
     elsewhere: 'Another chat has {n} waiting for your approval',
     elsewhereMany: '{m} other chats have {n} waiting for your approval',
@@ -202,6 +213,7 @@ const WORDS: Readonly<Record<Lang, Words>> = {
       '確認に失敗しました · このアカウントの認証情報を使ってください',
     failed: '完了しませんでした · しばらくしてから再試行してください',
     approved: '承認しました',
+    continuing: '承認しました · 続行しています',
     denied: '拒否しました',
     elsewhere: '別のチャットに承認待ちが {n} 件あります',
     elsewhereMany: 'ほかの {m} 件のチャットに承認待ちが {n} 件あります',
@@ -313,7 +325,12 @@ function approvalCard(item, w, role) {
   var who = agent.replace(/^qianmo:\\/\\/[^\\/]*\\//, '') || agent;
   function str(value) { return typeof value === 'string' ? value : ''; }
   function clip(value, n) { return value.length > n ? value.slice(0, n) + '…' : value; }
-  var card = { title: '', what: '', rows: [], detail: '', page: '', tag: '', note: '', summary: '', allow: true, deny: true };
+  // A tool the node approves fresh on every call (its freshApprovalTool) is
+  // never carried into a continued turn: 批准 there stays allow-once.
+  var fresh = name === 'qianmo_memory_write' || name === 'qianmo_mail_send' ||
+    name === 'qianmo_calendar_create' || name.indexOf('qianmo_browser_') === 0 ||
+    name.indexOf('qianmo_computer_') === 0 || name.indexOf('qianmo_elevated_') === 0;
+  var card = { title: '', what: '', rows: [], detail: '', page: '', tag: '', note: '', summary: '', allow: true, deny: true, resume: !fresh };
   function done(verb) {
     card.title = who + ' ' + (verb || '');
     if (!card.summary) card.summary = card.what || card.detail.slice(0, 120);
@@ -617,6 +634,18 @@ ${APPROVAL_CARD_JS}
     }, function () { /* the next tick tries again */ });
   }
 
+  // Whether the asking agent's turn in this conversation is still going:
+  // the node is then waiting on the decision itself (at most a minute).
+  function running(item) {
+    var thread = byId('fx-thread');
+    return !!thread && (thread.getAttribute('data-session') || '') === item.contextId &&
+      thread.getAttribute('data-running') === '1';
+  }
+
+  // 批准 does what the moment needs. While the turn runs it is allow-once;
+  // once the turn has ended (the node stopped waiting), a request that can
+  // be carried into a new turn is approved and continued (批准并继续), and
+  // one the node approves fresh every time stays allow-once.
   function decide(entry, choice, retried) {
     if (entry.sending || entry.doneAt) return;
     entry.sending = true;
@@ -624,9 +653,10 @@ ${APPROVAL_CARD_JS}
     hold(entry, true);
     status(entry, '');
     var item = entry.item;
-    qc.sendJson('POST', '/v0/approvals/' + encodeURIComponent(item.requestId), {
-      digest: item.digest, decision: choice
-    }).then(function () {
+    var resume = choice === 'allow-once' && entry.card.resume && !running(item);
+    var path = '/v0/approvals/' + encodeURIComponent(item.requestId) + (resume ? '/continue' : '');
+    var body = resume ? { digest: item.digest } : { digest: item.digest, decision: choice };
+    qc.sendJson('POST', path, body).then(function () {
       entry.sending = false;
       entry.doneAt = Date.now();
       entry.el.classList.add('is-done');
@@ -634,7 +664,7 @@ ${APPROVAL_CARD_JS}
       if (foot) foot.textContent = '';
       var auth = entry.el.querySelector('.fx-ask-auth');
       if (auth) auth.hidden = true;
-      status(entry, choice === 'deny' ? (w.denied || '') : (w.approved || ''));
+      status(entry, choice === 'deny' ? (w.denied || '') : resume ? (w.continuing || '') : (w.approved || ''));
       setTimeout(poll, HOLD_MS + 100);
     }, function (err) {
       entry.sending = false;
