@@ -335,7 +335,9 @@ export async function revokeDevice(
   hub: string,
   token: string,
   fetchImpl: Fetch = fetch,
-): Promise<'revoked' | 'owner_inactive' | 'unknown' | 'unsupported' | 'failed'> {
+): Promise<
+  'revoked' | 'owner_inactive' | 'unknown' | 'unsupported' | 'failed'
+> {
   let response: Response
   try {
     response = await call(fetchImpl, `${hub}/v0/client/device`, {

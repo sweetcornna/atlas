@@ -384,9 +384,7 @@ export function clearedClientCookieFor(
   request: Request,
   deviceId: string,
 ): string | null {
-  return cookieOf(request, deviceCookieName(request)).startsWith(
-    `${deviceId}.`,
-  )
+  return cookieOf(request, deviceCookieName(request)).startsWith(`${deviceId}.`)
     ? clearedClientCookie(request)
     : null
 }
@@ -485,10 +483,7 @@ async function enter(ctx: ClientDoorContext): Promise<Response> {
   if (fromClient(ctx, ticket.deviceId))
     response.headers.append(
       'set-cookie',
-      deviceCookie(
-        request,
-        deviceCookieValue(ctx.cookieKey, ticket.deviceId),
-      ),
+      deviceCookie(request, deviceCookieValue(ctx.cookieKey, ticket.deviceId)),
     )
   return response
 }
