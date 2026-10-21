@@ -12,6 +12,7 @@ import {
 import { ResidentEstop } from '@qianmo/resident'
 import {
   approvalWaitBudget,
+  freshApprovalTool,
   ResidentAuthorization,
   withDesktopSummary,
 } from '../../src/host/residentAuthorization.js'
@@ -200,4 +201,182 @@ test('a desktop approval carries a readable summary, signed with the arguments, 
       input: { args: { app: 'xterm' } },
     }).input.summary,
   ).toBe('打开应用 xterm')
+})
+
+test('an approval says how it ended: allowed, a person’s no, a wait that ran out, or withdrawn', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p40-outcome-'))
+  const approver = generateNodeKeyPair()
+  const auth = new ResidentAuthorization({
+    node: 'worker',
+    keys: generateNodeKeyPair(),
+    approvers: new Map([['hub', approver.publicKey]]),
+    commanderKeys: () => [],
+    memoryRoot: root,
+    estop: new ResidentEstop({ path: path.join(root, 'ESTOP') }),
+  })
+  const origin = {
+    from: 'qianmo://hub/console',
+    taskId: 't',
+    traceId: null,
+    trust: 'verified-capability' as const,
+  }
+  const decide = (request: AuthzRequest, kind: 'allow-once' | 'deny') =>
+    auth.decision(
+      signAuthzDecision(approver, {
+        v: 1,
+        requestId: request.requestId,
+        aud: request.iss,
+        sub: request.sub,
+        digest: request.digest,
+        decision: kind,
+        windowMs: 0,
+        approver: 'hub/u:0123456789abcdef',
+        nbf: Date.now(),
+        exp: Date.now() + 10000,
+        nonce: crypto.randomUUID(),
+      }),
+    )
+  const call = (n: number) => ({
+    toolName: 'qianmo_mail_send',
+    agent: 'main',
+    contextId: 'ctx',
+    input: { connectorId: 'c', operationId: `op-${n}`, revision: 1 },
+  })
+  const ask = (
+    n: number,
+    answer: (request: AuthzRequest) => void,
+    waitMs = 5000,
+  ) => {
+    const sent: AuthzRequest[] = []
+    const outcome = auth.requestOutcome(
+      call(n),
+      origin,
+      Date.now() + waitMs,
+      30000,
+      request => {
+        sent.push(request)
+        answer(request)
+      },
+    )
+    return { sent, outcome }
+  }
+  try {
+    const allowed = ask(1, request => decide(request, 'allow-once'))
+    expect(await allowed.outcome).toEqual({
+      kind: 'allowed',
+      requestId: allowed.sent[0]!.requestId,
+    })
+    const denied = ask(2, request => decide(request, 'deny'))
+    expect(await denied.outcome).toEqual({
+      kind: 'denied',
+      requestId: denied.sent[0]!.requestId,
+    })
+    const waited = ask(3, () => {}, 50)
+    expect(await waited.outcome).toEqual({
+      kind: 'pending',
+      requestId: waited.sent[0]!.requestId,
+    })
+    // The request is still open after the wait: a person can answer it.
+    expect(auth.store.pending().map(r => r.requestId)).toContain(
+      waited.sent[0]!.requestId,
+    )
+    const closed = ask(4, () => queueMicrotask(() => auth.close()))
+    expect(await closed.outcome).toEqual({ kind: 'refused' })
+    // `request` keeps its yes/no for every other caller.
+    expect(
+      await auth.request(
+        call(5),
+        { ...origin, trust: 'untrusted' },
+        Date.now() + 5000,
+        30000,
+        () => {},
+      ),
+    ).toBe(false)
+  } finally {
+    auth.close()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('settings changes (P40): never on a window, and a grant already given is used by the identical call, named, and only once', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p40-once-'))
+  const approver = generateNodeKeyPair()
+  const auth = new ResidentAuthorization({
+    node: 'worker',
+    keys: generateNodeKeyPair(),
+    approvers: new Map([['hub', approver.publicKey]]),
+    commanderKeys: () => [],
+    memoryRoot: root,
+    estop: new ResidentEstop({ path: path.join(root, 'ESTOP') }),
+  })
+  const origin = {
+    from: 'qianmo://hub/console',
+    taskId: 't',
+    traceId: null,
+    trust: 'verified-capability' as const,
+  }
+  const decision = (
+    request: AuthzRequest,
+    kind: 'allow-once' | 'allow-window',
+  ) =>
+    signAuthzDecision(approver, {
+      v: 1,
+      requestId: request.requestId,
+      aud: request.iss,
+      sub: request.sub,
+      digest: request.digest,
+      decision: kind,
+      windowMs: kind === 'allow-window' ? 60000 : 0,
+      approver: 'hub/u:0123456789abcdef',
+      nbf: Date.now(),
+      exp: Date.now() + 60000,
+      nonce: crypto.randomUUID(),
+    })
+  const call = {
+    toolName: 'qianmo_settings_change',
+    agent: 'ops',
+    contextId: 'ctx',
+    input: {
+      id: 'providers.default',
+      target: null,
+      input: { profileId: 'gw' },
+      card: { label: '默认模型服务', current: 'api2', next: 'gw' },
+    },
+  }
+  expect(freshApprovalTool(call.toolName)).toBe(false)
+  try {
+    const asked = auth.store.ask({ ...call, origin })
+    if (asked.kind !== 'pending') throw new Error('fixture request refused')
+    // No window, whichever way it arrives.
+    expect(auth.decision(decision(asked.request, 'allow-window'))).toBe(false)
+    expect(auth.decision(decision(asked.request, 'allow-once'))).toBe(true)
+    // The identical call in the 批准并继续 turn: no new request, the grant's id.
+    const sent: AuthzRequest[] = []
+    const used = await auth.requestOutcome(
+      call,
+      origin,
+      Date.now() + 50,
+      30000,
+      request => sent.push(request),
+    )
+    expect(used).toEqual({
+      kind: 'allowed',
+      requestId: asked.request.requestId,
+    })
+    expect(sent).toEqual([])
+    // Spent: the next identical call is a new request, which waits.
+    const next = await auth.requestOutcome(
+      call,
+      origin,
+      Date.now() + 50,
+      30000,
+      request => sent.push(request),
+    )
+    expect(sent).toHaveLength(1)
+    expect(next).toEqual({ kind: 'pending', requestId: sent[0]!.requestId })
+    expect(sent[0]!.requestId).not.toBe(asked.request.requestId)
+  } finally {
+    auth.close()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
