@@ -19,6 +19,11 @@ import { verifiedBackground, verifiedTaskOwner } from '@qianmo/capability'
 import { connectorTools, type ConnectorToolContext } from './connectorTools.js'
 import { taskTools, type TaskToolOrigin } from './taskTools.js'
 import {
+  settingsTools,
+  type SettingsApproval,
+  type SettingsUnavailable,
+} from './settingsTools.js'
+import {
   askReentry,
   NESTED_NO_ROOM_REASON,
   peerTools,
@@ -838,7 +843,10 @@ export class QianmoResident {
   readonly runtimes: NodeRuntimes
   /** The harnesses' own extension commands for the console (P36.7). */
   readonly nativeExtensions: NativeExtensions
-  /** Host tools answered by the hub: connectors (P25) and background tasks (P29). */
+  /**
+   * Host tools answered by the hub: connectors (P25), background tasks (P29),
+   * other agents (P36.6) and the hub's settings (P40).
+   */
   readonly #hubHostTools: readonly HostToolDefinition[]
   readonly hubCall: HubCallClient
   readonly #options: QianmoResidentOptions
@@ -1007,6 +1015,20 @@ export class QianmoResident {
         call: (op, args, callOptions) =>
           this.hubCall.call(op, args, callOptions),
         origin: ctx => this.#peerOrigin(ctx),
+      }),
+      // The hub's settings (P40): read without approval; every change is
+      // approved by a person in the conversation, once, before the hub makes it.
+      ...settingsTools({
+        call: (op, args, callOptions) =>
+          this.hubCall.call(op, args, callOptions),
+        origin: ctx => this.#taskOrigin(ctx),
+        unavailable: ctx => this.#settingsUnavailable(ctx),
+        approve: async (ctx, tool, args) => {
+          const unavailable = this.#settingsUnavailable(ctx)
+          return unavailable === null
+            ? await this.#approveInTurn(ctx, tool, args)
+            : { kind: 'unavailable', reason: unavailable }
+        },
       }),
     ]
     residentToolSurface(options.authorization !== undefined, [
@@ -2410,6 +2432,23 @@ export class QianmoResident {
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<{ contextId: string; requestId: string } | null> {
+    const approval = await this.#approveInTurn(ctx, toolName, args)
+    return approval.kind === 'allowed'
+      ? { contextId: approval.contextId, requestId: approval.requestId }
+      : null
+  }
+
+  /**
+   * One P14 approval of a host tool's exact input, asked in the turn behind
+   * `ctx`. A person's no is told apart from a wait that ran out, and an
+   * allowed call names the request whose grant let it through — one approved
+   * before included, which is how a 批准并继续 turn carries it on to the hub.
+   */
+  async #approveInTurn(
+    ctx: ConnectorToolContext,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<SettingsApproval> {
     const input = this.#turn.activeInput(ctx.sessionId)
     const task = input === undefined ? undefined : this.#taskFor(input)
     if (
@@ -2418,10 +2457,9 @@ export class QianmoResident {
       !this.#authorization ||
       input?.agent !== ctx.agent
     )
-      return null
+      return { kind: 'refused' }
     const contextId = task.envelope.contextId ?? 'default'
-    let requestId: string | undefined
-    const approved = await this.#authorization.request(
+    const outcome = await this.#authorization.requestOutcome(
       { toolName, input: args, agent: ctx.agent, contextId },
       {
         from: task.envelope.from,
@@ -2433,21 +2471,33 @@ export class QianmoResident {
         taskExpiresAt(task.envelope) -
         this.#deadlineClock.nowFor(task.envelope.createdAt),
       this.#turn.inactivityRemaining(ctx.sessionId),
-      (request, wire) => {
-        requestId = request.requestId
-        this.#sendAuthz(task.channel, request, wire)
-      },
+      (request, wire) => this.#sendAuthz(task.channel, request, wire),
     )
+    if (outcome.kind !== 'allowed') return outcome
     if (
-      !approved ||
-      !requestId ||
       task.settled ||
       this.#turn.activeInput(ctx.sessionId) !== input ||
       (this.#options.tenantGate &&
         !this.#options.tenantGate(task.channel.authenticatedPeerNode ?? null))
     )
-      return null
-    return { contextId, requestId }
+      return { kind: 'refused' }
+    return { kind: 'allowed', contextId, requestId: outcome.requestId }
+  }
+
+  /**
+   * Why the turn behind a settings change cannot have it approved (P40
+   * §4.1): no approval channel, no running turn, a turn no signed person
+   * started, or a hub's background turn (a task's sub-session, a schedule)
+   * with nobody there to ask. The hub checks the conversation again.
+   */
+  #settingsUnavailable(ctx: ConnectorToolContext): SettingsUnavailable | null {
+    if (this.#authorization === undefined) return 'no-approver'
+    const input = this.#turn.activeInput(ctx.sessionId)
+    const task = input === undefined ? undefined : this.#taskFor(input)
+    if (!task || task.settled || input?.agent !== ctx.agent) return 'no-turn'
+    if (task.trust !== 'verified-capability') return 'unsigned'
+    if (task.background === true) return 'background'
+    return null
   }
 
   async #writeMemory(

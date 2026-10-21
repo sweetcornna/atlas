@@ -21,6 +21,11 @@ import {
   isDesktopTool,
 } from '@qianmo/extension/desktopPolicy'
 
+/**
+ * Tools whose every call asks anew. A settings change (P40) is not one: the
+ * store takes it once and never on a window, but a 批准并继续 turn making the
+ * identical call uses the approval already given instead of asking again.
+ */
 export function freshApprovalTool(name: string): boolean {
   return (
     [
@@ -67,6 +72,21 @@ export function approvalWaitBudget(
   )
 }
 
+/**
+ * How one approval ended for the caller. `pending` is the wait running out
+ * with the request still open: a decision that comes later makes a grant the
+ * same call uses when it is made again (批准并继续). `requestId` names the
+ * request whose grant let the call through, a grant made before included.
+ */
+type AuthzOutcome =
+  | { readonly kind: 'allowed'; readonly requestId: string }
+  | { readonly kind: 'denied'; readonly requestId: string }
+  | { readonly kind: 'pending'; readonly requestId: string }
+  | { readonly kind: 'refused' }
+
+/** Why a wait ended: a decision, a revoke or shutdown, or the budget. */
+type WaitEnd = 'allowed' | 'denied' | 'cancelled' | 'timeout'
+
 export interface ResidentAuthzEvent {
   readonly kind: string
   readonly taskId?: string
@@ -91,7 +111,7 @@ export class ResidentAuthorization {
   readonly #options: ResidentAuthorizationOptions
   readonly #waiters = new Map<
     string,
-    (approved: boolean, expiresAt?: number) => void
+    (end: WaitEnd, expiresAt?: number) => void
   >()
   readonly #now: () => number
   constructor(options: ResidentAuthorizationOptions) {
@@ -168,6 +188,29 @@ export class ResidentAuthorization {
       valid?: () => boolean,
     ) => boolean,
   ): Promise<boolean> {
+    const outcome = await this.requestOutcome(
+      raw,
+      origin,
+      deadlineAt,
+      watchdogRemainingMs,
+      send,
+      beforeConsume,
+    )
+    return outcome.kind === 'allowed'
+  }
+  /** {@link request}, telling a person's no from a wait that ran out. */
+  async requestOutcome(
+    raw: AuthzCall,
+    origin: AuthzOrigin,
+    deadlineAt: number,
+    watchdogRemainingMs: number,
+    send: (request: AuthzRequest, wire: string) => void,
+    beforeConsume?: (
+      expiresAt?: number,
+      requestId?: string,
+      valid?: () => boolean,
+    ) => boolean,
+  ): Promise<AuthzOutcome> {
     // Asked, used and consumed as one input, so the summary is in the digest.
     const call = withDesktopSummary(raw)
     if (origin.trust !== 'verified-capability') {
@@ -175,7 +218,7 @@ export class ResidentAuthorization {
         status: 'unsigned-turn',
         tool: call.toolName,
       })
-      return false
+      return { kind: 'refused' }
     }
     const used = freshApprovalTool(call.toolName)
       ? { kind: 'miss' as const }
@@ -190,14 +233,14 @@ export class ResidentAuthorization {
         approver: used.grant.approver,
         expiresAt: used.grant.expiresAt,
       })
-      return true
+      return { kind: 'allowed', requestId: used.grant.requestId }
     }
     if (used.kind === 'refused') {
       this.#audit('authz.refused', undefined, {
         status: used.reason,
         tool: call.toolName,
       })
-      return false
+      return { kind: 'refused' }
     }
     const asked = this.store.ask({ ...call, origin })
     if (asked.kind !== 'pending') {
@@ -205,7 +248,7 @@ export class ResidentAuthorization {
         status: asked.reason,
         tool: call.toolName,
       })
-      return false
+      return { kind: 'refused' }
     }
     if (asked.created)
       this.#audit('authz.requested', asked.request, { status: 'pending' })
@@ -213,19 +256,28 @@ export class ResidentAuthorization {
       deadlineAt - this.#now(),
       watchdogRemainingMs,
     )
-    if (waitMs === 0) return false
-    return await new Promise<boolean>(resolve => {
-      const finish = (approved: boolean, expiresAt?: number) => {
+    if (waitMs === 0) return { kind: 'refused' }
+    const requestId = asked.request.requestId
+    return await new Promise<AuthzOutcome>(resolve => {
+      const finish = (end: WaitEnd, expiresAt?: number) => {
         clearTimeout(timer)
-        this.#waiters.delete(asked.request.requestId)
-        let allowed = false
+        this.#waiters.delete(requestId)
+        if (end !== 'allowed') {
+          resolve(
+            end === 'denied'
+              ? { kind: 'denied', requestId }
+              : end === 'timeout'
+                ? { kind: 'pending', requestId }
+                : { kind: 'refused' },
+          )
+          return
+        }
+        let outcome: AuthzOutcome = { kind: 'refused' }
         try {
           const result =
-            approved &&
-            (beforeConsume?.(expiresAt, asked.request.requestId, () =>
-              this.store.consumedGrantValid(asked.request.requestId),
-            ) ??
-              true)
+            (beforeConsume?.(expiresAt, requestId, () =>
+              this.store.consumedGrantValid(requestId),
+            ) ?? true)
               ? this.store.use(call)
               : undefined
           // A fresh-approval tool runs only on the grant made for this very
@@ -233,7 +285,7 @@ export class ResidentAuthorization {
           if (
             result?.kind === 'hit' &&
             (!freshApprovalTool(call.toolName) ||
-              (result.grant.requestId === asked.request.requestId &&
+              (result.grant.requestId === requestId &&
                 result.grant.scope === 'once'))
           ) {
             this.#audit('authz.grant_used', asked.request, {
@@ -241,19 +293,19 @@ export class ResidentAuthorization {
               approver: result.grant.approver,
               expiresAt: result.grant.expiresAt,
             })
-            allowed = true
+            outcome = { kind: 'allowed', requestId: result.grant.requestId }
           }
         } catch {
           /* An intent/audit write failure denies even a signed permit. */
         }
-        resolve(allowed)
+        resolve(outcome)
       }
-      const timer = setTimeout(() => finish(false), waitMs)
-      this.#waiters.set(asked.request.requestId, finish)
+      const timer = setTimeout(() => finish('timeout'), waitMs)
+      this.#waiters.set(requestId, finish)
       try {
         send(asked.request, this.signed(asked.request))
       } catch {
-        finish(false)
+        finish('cancelled')
       }
     })
   }
@@ -290,7 +342,7 @@ export class ResidentAuthorization {
           }),
     })
     this.#waiters.get(outcome.request.requestId)?.(
-      outcome.grant !== null,
+      outcome.grant === null ? 'denied' : 'allowed',
       outcome.grant?.expiresAt,
     )
     return true
@@ -305,7 +357,7 @@ export class ResidentAuthorization {
       requestId: outcome.requestId,
       status: 'revoked',
     })
-    this.#waiters.get(outcome.requestId)?.(false)
+    this.#waiters.get(outcome.requestId)?.('cancelled')
     return true
   }
   cancelDesktop(agent: string): void {
@@ -318,7 +370,7 @@ export class ResidentAuthorization {
             r.toolName.startsWith('qianmo_computer_')),
       )
     this.store.cancelRequests(requests.map(r => r.requestId))
-    for (const r of requests) this.#waiters.get(r.requestId)?.(false)
+    for (const r of requests) this.#waiters.get(r.requestId)?.('cancelled')
   }
   /** Revoke/ESTOP/regrant: drop every pending elevated approval for one agent. */
   cancelElevation(agent: string): void {
@@ -330,10 +382,10 @@ export class ResidentAuthorization {
           r.toolName.startsWith('qianmo_elevated_'),
       )
     this.store.cancelRequests(requests.map(r => r.requestId))
-    for (const r of requests) this.#waiters.get(r.requestId)?.(false)
+    for (const r of requests) this.#waiters.get(r.requestId)?.('cancelled')
   }
   close(): void {
-    for (const resolve of [...this.#waiters.values()]) resolve(false)
+    for (const resolve of [...this.#waiters.values()]) resolve('cancelled')
     this.store.close()
   }
 }

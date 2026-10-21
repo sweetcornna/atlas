@@ -995,6 +995,19 @@ function resultCell(entry: ActionRecord): string {
   )
 }
 
+/**
+ * A change an agent asked for and the person in the who column approved
+ * (P40): which agent, and the approval's first eight characters.
+ */
+function attributionNote(entry: ActionRow): string {
+  if (entry.agent === undefined || entry.approval === undefined) return ''
+  return (
+    ` <span class="note" data-agent="${attr(entry.agent)}">` +
+    `经 ${escapeHtml(entry.agent)} · 审批 ` +
+    `<span class="mono">${escapeHtml(entry.approval.slice(0, 8))}</span></span>`
+  )
+}
+
 function actionRow(
   entry: ActionRow,
   names: Names,
@@ -1011,6 +1024,7 @@ function actionRow(
     `<td class="act"><span>${escapeHtml(word)}</span>` +
     (entry.breakGlass === true ? ` ${tag('break-glass', 'warn')}` : '') +
     (isReadAction(entry.action) ? ` ${tag('只读', 'muted')}` : '') +
+    attributionNote(entry) +
     (word === entry.action
       ? ''
       : `<span class="note mono">${escapeHtml(entry.action)}</span>`) +

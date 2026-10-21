@@ -215,9 +215,26 @@ export {
   parseAuditFilter,
   startConsoleServer,
   type ClientAddressSource,
+  type ConsoleHandler,
   type ConsoleServerHandle,
   type ConsoleServerOptions,
 } from './http.js'
+// The settings catalog (P40): the hub's `settings.*` calls read and bind it.
+export {
+  SETTING_AREAS,
+  redactSecrets,
+  schemaProblem,
+  secretMark,
+  settingOperation,
+  settingOperations,
+  settingRequestProblem,
+  settingsBound,
+  settingUnchanged,
+  type JsonSchema,
+  type SettingOperation,
+  type SettingReader,
+  type SettingsBound,
+} from './settingsCatalog.js'
 
 export { BRAND, CSP, renderPage, type PageModel } from './view/page.js'
 export { renderLoginPage, type LoginPageModel } from './view/login.js'

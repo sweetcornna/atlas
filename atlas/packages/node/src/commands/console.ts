@@ -40,6 +40,7 @@ import { ConsoleSchedules } from './consoleSchedules.js'
 import { ConsoleChannels } from './consoleChannels.js'
 import { AgentProfiles, ConsoleTasks, withTaskNotes } from './consoleTasks.js'
 import { ConsolePeers } from './consolePeers.js'
+import { ConsoleSettings, settingsUnwired } from './consoleSettings.js'
 import { ConsoleExtensions } from './consoleExtensions.js'
 import { ConsoleAgentModels } from './consoleAgentModels.js'
 import { ConsoleMagpie } from './consoleMagpie.js'
@@ -69,6 +70,7 @@ import {
   type ConsoleAccounts,
   type ConsoleAuditSource,
   type ConsoleDeps,
+  type ConsoleHandler,
   type RegistryPort,
   type WakeTarget,
   type WakePort,
@@ -946,6 +948,30 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
       : undefined
   if (peers) control!.onHubCall('peers', peers.handle)
+  // An agent changing settings (P40, agent-settings.md §5): each change is one
+  // person's one-shot approval, made as that person through the console's own
+  // routes. The console's in-process door exists once the server is up.
+  let consoleAs: ConsoleHandler['as'] | undefined
+  if (control)
+    control.onHubCall(
+      'settings',
+      approvals && accounts && chat.hub
+        ? new ConsoleSettings({
+            chat: chat.hub,
+            accounts,
+            approvals,
+            console: () => consoleAs,
+            scheduled: (sessionId): boolean =>
+              schedules?.owns(sessionId) ?? false,
+            foreground: (sessionId): boolean =>
+              channels?.foreground(sessionId) ?? true,
+            worker: (sessionId): boolean =>
+              tasks
+                ?.list({ subject: 'legacy:admin', role: null })
+                .some(task => task.workerSession === sessionId) ?? false,
+          }).handle
+        : settingsUnwired,
+    )
 
   // Update checks and qianmo's own rolling upgrade (P31): nodes over the
   // control link, the hub itself in place (host/selfUpgrade.ts).
@@ -1459,6 +1485,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     tokens,
     ...(accounts === undefined ? {} : { accounts }),
   })
+  consoleAs = handle.as
   // After the port is bound: a console that failed to start must not have
   // re-announced anything on its way down.
   registrations.start()

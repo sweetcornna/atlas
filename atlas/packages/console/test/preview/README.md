@@ -19,6 +19,9 @@ bun atlas/packages/console/test/preview/serve.ts 38701 --no-magpie   # 不接网
 - 测试用的令牌（只在本预览里有效，不是任何真实控制台的令牌）：
   - 管理令牌 `preview-admin-6f1d3a8c27e4`
   - 只读令牌 `preview-view-0b7e52c41a9d`
+- 审批（`approvals.ts`）：`s1`（ops）里一项改默认模型服务、`s2`（reviewer）里一项新建飞书机器人、`s3`（planner）里一封邮件，
+  都算在登录者名下。打开 `/?session=s1` 看对话里的确认卡片，其余两项在输入框上方的横幅里。
+  批准或拒绝前卡片会要个人凭据，启动时打印在控制台输出里（每次启动都不同，只在内存里）。
 
 ## 截图
 

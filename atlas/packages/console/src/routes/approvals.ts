@@ -4,7 +4,6 @@
 import { usageDenial } from '../quota.js'
 import { approvalReport } from './approvalReport.js'
 import { approvalCookie, approvalSessions } from '../approvalSession.js'
-import type { ApprovalItem } from '../governance.js'
 import {
   fail,
   html,
@@ -13,49 +12,50 @@ import {
   notFound,
   readJsonObject,
 } from '../respond.js'
-import { attr, escapeHtml as htmlEscape } from '../view/escape.js'
+import { agentAvatarKey } from '../avatar.js'
+import {
+  APPROVALS_PAGE_CSS,
+  APPROVALS_PAGE_JS,
+  approvalsFrame,
+  renderApprovals,
+  renderApprovalsAudit,
+} from '../view/approvals.js'
+import { facesFor } from './avatars.js'
 import { failureResponse, guard, guardChat, underPath } from './shared.js'
 import type { RouteContext, RouteModule } from './types.js'
 
-/** Show invisible controls as literal codepoints, including inside paths and JSON. */
-function escapeHtml(value: string): string {
-  return htmlEscape(
-    [...String(value)]
-      .map(char => {
-        const code = char.codePointAt(0)!
-        return (code < 32 && code !== 10 && code !== 9) ||
-          (code >= 0x7f && code <= 0x9f) ||
-          code === 0x61c ||
-          code === 0x200e ||
-          code === 0x200f ||
-          (code >= 0x202a && code <= 0x202e) ||
-          (code >= 0x2066 && code <= 0x2069)
-          ? `\\u${code.toString(16).padStart(4, '0')}`
-          : char
-      })
-      .join(''),
+/** Whether this reader decides: a personal member or operator account. */
+function decides(ctx: RouteContext): boolean {
+  return (
+    ctx.deps.approvals !== undefined &&
+    ctx.access.principal?.kind === 'user' &&
+    ctx.access.principal.role !== 'viewer'
   )
 }
 
-function render(items: readonly ApprovalItem[]): string {
-  return `<p class="note">决定绑定节点 工具 参数摘要与会话 · 授权窗口最长 60 分钟 · 需要 30 分钟内验证过的个人凭据 · 批准并继续要等节点确认原任务结束 · 本地超时不算结束</p>${items.length === 0 ? '<p class="bar">还没有审批</p>' : items.map(item => `<article class="sec"><h2>${escapeHtml(item.toolName)} · ${escapeHtml(({ pending: '待审批', allowed: '已批准', denied: '已拒绝或撤销', expired: '已过期', 'delivery-unknown': '投递未确认' } as const)[item.status])}</h2><p>节点 ${escapeHtml(item.node)} · 智能体 ${escapeHtml(item.agent)} · 会话 ${escapeHtml(item.contextId)}</p><p>到期 ${escapeHtml(new Date(item.expiresAt).toISOString())} · <a href="/?session=${encodeURIComponent(item.contextId)}">查看原会话</a></p>${item.origin ? `<p>来源 ${escapeHtml(item.origin.from ?? '本地')} · 信任 ${escapeHtml(item.origin.trust)} · 任务 ${escapeHtml(item.origin.taskId ?? '无')} · 追踪 ${escapeHtml(item.origin.traceId ?? '无')}</p>` : ''}<details><summary>查看完整参数与摘要</summary><pre>${escapeHtml(JSON.stringify(item.input, null, 2))}</pre><code>${escapeHtml(item.digest)}</code></details>${item.continuation ? '<p class="bar">继续请求已记录 · 不会自动重发 · 结果见原会话</p>' : ''}${item.status === 'pending' && !item.continuation ? `<form data-approval="${attr(item.requestId)}" data-digest="${attr(item.digest)}"><button class="btn btn-primary" name="decision" value="allow-once">仅批准本次</button>${item.toolName === 'qianmo_memory_write' ? '<span class="quiet">记忆写入每次单独审批</span>' : '<button class="btn" name="decision" value="allow-window">批准 5 分钟</button>'}<button class="btn" name="decision" value="continue">批准并继续</button><button class="btn" name="decision" value="deny">拒绝</button></form>` : (item.status === 'allowed' || item.status === 'delivery-unknown') ? `<button class="btn" data-revoke="${attr(item.requestId)}">撤销授权窗口</button>` : ''}</article>`).join('')}`
-}
+/** The polled region (`view/approvals.ts`). */
 async function content(ctx: RouteContext): Promise<string> {
-  if (ctx.deps.approvals === undefined)
-    return '<p class="bar">审批未接入 · 没有可提交的审批动作</p>'
-  if (
-    ctx.access.principal?.kind !== 'user' ||
-    ctx.access.principal.role === 'viewer'
-  ) {
-    const report = await approvalReport(ctx)
-    return `<p class="bar">审批需要个人成员或运维账号 · 旧令牌与应急身份不能审批</p><h2>审计汇总</h2><p>每节点最近 500 条审计记录 · 只汇总完整审计链</p>${'summary' in report ? (report.summary ?? []).map(row => `<p>${escapeHtml(row.node)} · 请求 ${row.requests} · 已使用 ${row.used} · 拒绝 ${row.refused} · 待批 ${row.pending}</p>`).join('') : ''}${report.sources.map(source => `<p>${escapeHtml(source.node)} · ${source.integrity === 'intact' || source.integrity === 'empty' ? '审计链完整' : '审计不可用或未通过校验'}${source.truncated ? ' · 仅显示近期记录' : ''}</p>`).join('')}`
-  }
-  const result = await ctx.deps.approvals.list(ctx.access.principal)
-  return result.ok
-    ? render(result.value)
-    : '<p class="bar bar-bad" role="alert">审批来源不可用</p>'
+  const port = ctx.deps.approvals
+  if (port === undefined)
+    return '<p class="bar bar-muted">审批未接入 · 没有可提交的审批动作</p>'
+  const principal = ctx.access.principal
+  if (principal?.kind !== 'user' || principal.role === 'viewer')
+    return renderApprovalsAudit(await approvalReport(ctx))
+  const result = await port.list(principal)
+  if (!result.ok)
+    return '<p class="bar bar-bad" role="alert">审批来源不可用</p>'
+  const faces = await facesFor(
+    ctx,
+    result.value.map(item => agentAvatarKey(item.agent)),
+  )
+  return renderApprovals({
+    items: result.value,
+    role: principal.role,
+    now: ctx.now,
+    face: agent => faces.spec(agentAvatarKey(agent)),
+  })
 }
-const SCRIPT = `(function(){document.addEventListener('submit',function(e){var f=e.target;if(f.id==='approval-auth'){e.preventDefault();var credential=f.elements.credential.value;f.elements.credential.value='';window.qianmoConsole.sendJson('POST','/v0/approvals/auth',{credential:credential}).then(function(){document.getElementById('approval-status').textContent='已验证 · 可提交审批';}).catch(function(){document.getElementById('approval-status').textContent='验证失败 · 要用当前账号的个人凭据';});return;}if(!f.matches('[data-approval]'))return;e.preventDefault();var button=e.submitter;if(!button)return;var decision=button.value;var continuation=decision==='continue';var buttons=f.querySelectorAll('button');buttons.forEach(function(b){b.disabled=true;});window.qianmoConsole.sendJson('POST','/v0/approvals/'+encodeURIComponent(f.dataset.approval)+(continuation?'/continue':''),{digest:f.dataset.digest,decision:decision,...(decision==='allow-window'?{windowMs:300000}:{})}).then(function(){location.reload();}).catch(function(){document.getElementById('approval-status').textContent='审批未完成 · 刷新后重试';buttons.forEach(function(b){b.disabled=false;});});});document.addEventListener('click',function(e){var b=e.target.closest('[data-revoke]');if(!b)return;b.disabled=true;window.qianmoConsole.sendJson('DELETE','/v0/approvals/'+encodeURIComponent(b.dataset.revoke)).then(function(){location.reload();}).catch(function(){document.getElementById('approval-status').textContent='撤销未完成 · 刷新后重试';b.disabled=false;});});})();`
+
 export const approvalsRoute: RouteModule = {
   area: {
     id: 'approvals',
@@ -68,19 +68,14 @@ export const approvalsRoute: RouteModule = {
     match: underPath('approvals'),
     guard: 'view',
     async render(ctx) {
-      const authForm =
-        ctx.deps.approvals !== undefined &&
-        ctx.access.principal?.kind === 'user' &&
-        ctx.access.principal.role !== 'viewer'
-          ? `<form id="approval-auth"><label for="approval-credential">验证个人凭据后批准（30 分钟内有效）</label><input id="approval-credential" name="credential" type="password" class="input" autocomplete="off" required><button class="btn" type="submit">验证凭据</button></form>`
-          : ''
       return {
         title: '审批',
-        body: `${authForm}<p id="approval-status" role="status"></p><div data-poll="/fragments/approvals">${await content(ctx)}</div>`,
+        body: approvalsFrame(await content(ctx), decides(ctx)),
         poll: true,
       }
     },
-    script: SCRIPT,
+    css: APPROVALS_PAGE_CSS,
+    script: APPROVALS_PAGE_JS,
   },
   api: {
     heads: ['approvals'],

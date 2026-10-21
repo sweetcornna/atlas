@@ -224,6 +224,7 @@ import {
   type ConsoleAccounts,
 } from './access.js'
 import { assertTokensUnlikeAccountSecrets } from './accounts.js'
+import { withAttribution } from './actionLedger.js'
 import {
   accountLogin,
   accountLogout,
@@ -250,6 +251,7 @@ import {
   type ConsoleCredential,
   type ConsoleTokens,
 } from './auth.js'
+import type { ConsolePrincipal } from './contracts.js'
 import type { ActionOutcome, ConsoleAction, ConsoleDeps } from './deps.js'
 import {
   asset,
@@ -751,12 +753,15 @@ function outcomeOfStatus(status: number): readonly [ActionOutcome, string?] {
 /**
  * The ledger hooks for one request. Every entry it writes carries the same
  * request id, the subject the credential resolved to and the break-glass
- * mark; a console without `deps.actions` gets hooks that do nothing.
+ * mark — and, for a change an agent asked for, the agent and the approval
+ * ({@link ConsoleHandler.as}); a console without `deps.actions` gets hooks
+ * that do nothing.
  */
 function requestLedger(
   deps: ConsoleDeps,
   access: Access,
   now: () => number,
+  via?: ConsoleVia,
 ): RequestLedger {
   const port = deps.actions
   const requestId = crypto.randomUUID()
@@ -784,6 +789,9 @@ function requestLedger(
         requestId,
         subject: subjectOf(access),
         ...(access.breakGlass ? { breakGlass: true as const } : {}),
+        ...(via === undefined
+          ? {}
+          : { agent: via.agent, approval: via.approval }),
         action,
         target,
         outcome,
@@ -1062,6 +1070,42 @@ async function route(
       url.searchParams.get('token')?.startsWith('qmd_'))
   )
     return accessRefused(request, access.refusal, deps, url)
+  return await routeResolved(
+    request,
+    deps,
+    tokens,
+    throttle,
+    clientKey,
+    now,
+    accounts,
+    setAuthorizationCheck,
+    access,
+    url,
+    segments,
+  )
+}
+
+/**
+ * Everything after "who is asking": the authorization recheck, the tenant
+ * boundary and the subscription gate, the ledger, break-glass, the router and
+ * the error pages. {@link route} reaches it with the request's credential,
+ * {@link ConsoleHandler.as} with an approver's principal and the agent the
+ * change is for.
+ */
+async function routeResolved(
+  request: Request,
+  deps: ConsoleDeps,
+  tokens: ConsoleTokens,
+  throttle: LoginThrottle,
+  clientKey: string,
+  now: () => number,
+  accounts: ConsoleAccounts | undefined,
+  setAuthorizationCheck: (check: () => Response | null) => void,
+  access: Access,
+  url: URL,
+  segments: readonly string[],
+  via?: ConsoleVia,
+): Promise<Response> {
   const tenancy = deps.tenancy
   let revision: string | undefined
   let scope: TenantScope | undefined
@@ -1126,7 +1170,7 @@ async function route(
     )
     if (unpaid !== null) return unpaid
   }
-  const ledger = requestLedger(deps, access, now)
+  const ledger = requestLedger(deps, access, now, via)
   const breakGlass = access.breakGlass && accounts !== undefined
   if (breakGlass) {
     // Recorded before the route runs, so a request that fails still counts
@@ -1434,11 +1478,84 @@ async function finished(
   )
 }
 
+/**
+ * Who a change was made for, when an agent asked for it and a person
+ * approved it (P40, `agent-settings.md` §5.3).
+ */
+export interface ConsoleVia {
+  /** The agent's address, `qianmo://<node>/<agent>`. */
+  readonly agent: string
+  /** The P14 approval's `requestId`. */
+  readonly approval: string
+}
+
+/**
+ * The console's request handler, and its one door that no socket reaches.
+ *
+ * {@link ConsoleHandler.as} answers a request the way the network path does —
+ * the authorization recheck, the tenant boundary and the subscription gate,
+ * the route's own guard, `admit` and the action ledger — with `principal` in
+ * place of whatever credential the request carries. The hub uses it to make a
+ * change an agent asked for in the name of the person who approved it, and to
+ * read a setting as the conversation's owner (`consoleSettings.ts`). With
+ * `via`, every ledger line of the request names the agent and the approval as
+ * well as the person.
+ *
+ * Only personal accounts, only `/v0`: the doors that mint a credential
+ * (`/login`, `/invite`, `/signup`) and the pages are not reachable through it.
+ */
+export interface ConsoleHandler {
+  (request: Request, source?: ClientAddressSource): Promise<Response>
+  as(
+    principal: ConsolePrincipal,
+    request: Request,
+    via?: ConsoleVia,
+  ): Promise<Response>
+}
+
+/** What the login throttle would count an in-process request against. */
+const IN_PROCESS_CLIENT = 'in-process'
+
+/**
+ * A personal account as a request's access, for {@link ConsoleHandler.as}:
+ * a Bearer in every respect but the wire, rechecked against the account book
+ * after the route answers, as every personal credential is.
+ */
+function inProcessAccess(
+  principal: Extract<ConsolePrincipal, { kind: 'user' }>,
+  accounts: ConsoleAccounts,
+): Access {
+  return {
+    credential: {
+      role: principal.role === 'ops' ? 'admin' : 'view',
+      source: 'bearer',
+      header: true,
+      crossOrigin: false,
+    },
+    principal,
+    sid: null,
+    refusal: null,
+    breakGlass: false,
+    current: () => {
+      const listed = accounts.book.list()
+      return (
+        listed.ok &&
+        listed.value.accounts.some(
+          row =>
+            row.subject === principal.subject &&
+            row.state === 'active' &&
+            row.role === principal.role,
+        )
+      )
+    },
+  }
+}
+
 export function createConsoleHandler(
   deps: ConsoleDeps,
   tokens: ConsoleTokens,
   accounts?: ConsoleAccounts,
-): (request: Request, source?: ClientAddressSource) => Promise<Response> {
+): ConsoleHandler {
   if (accounts !== undefined) {
     assertTokensUnlikeAccountSecrets(tokens)
     // Once, at start: if the admin token last used as break-glass is not the
@@ -1464,28 +1581,19 @@ export function createConsoleHandler(
       ),
     }
   }
-  return async (
+  const serve = async (
     request: Request,
-    source?: ClientAddressSource,
+    answer: (
+      setAuthorizationCheck: (check: () => Response | null) => void,
+    ) => Promise<Response>,
   ): Promise<Response> => {
     let authorizationCheck: () => Response | null = () => null
     try {
       const response = await finished(
         request,
-        await route(
-          request,
-          deps,
-          tokens,
-          throttle,
-          clientKeyOf(request, source),
-          now,
-          accounts,
-          check => {
-            authorizationCheck = check
-          },
-          tickets,
-          cookieKey,
-        ),
+        await answer(check => {
+          authorizationCheck = check
+        }),
       )
       const denied = authorizationCheck()
       if (denied !== null) {
@@ -1521,6 +1629,61 @@ export function createConsoleHandler(
       )
     }
   }
+  const handler = (
+    request: Request,
+    source?: ClientAddressSource,
+  ): Promise<Response> =>
+    serve(request, setAuthorizationCheck =>
+      route(
+        request,
+        deps,
+        tokens,
+        throttle,
+        clientKeyOf(request, source),
+        now,
+        accounts,
+        setAuthorizationCheck,
+        tickets,
+        cookieKey,
+      ),
+    )
+  const as = async (
+    principal: ConsolePrincipal,
+    request: Request,
+    via?: ConsoleVia,
+  ): Promise<Response> => {
+    const url = new URL(request.url)
+    const segments = url.pathname.split('/').filter(s => s.length > 0)
+    if (segments[0] !== 'v0') return notFound(`unknown path: ${url.pathname}`)
+    if (accounts === undefined || principal.kind !== 'user') {
+      return fail(403, 'forbidden', '只有个人账号能在进程内代为执行')
+    }
+    const access = inProcessAccess(principal, accounts)
+    if (access.current?.() === false) {
+      return fail(403, 'forbidden', '账号已不可用或角色已变化')
+    }
+    const run = (): Promise<Response> =>
+      serve(request, setAuthorizationCheck =>
+        routeResolved(
+          request,
+          deps,
+          tokens,
+          throttle,
+          IN_PROCESS_CLIENT,
+          now,
+          accounts,
+          setAuthorizationCheck,
+          access,
+          url,
+          segments,
+          via,
+        ),
+      )
+    return via === undefined
+      ? await run()
+      : await withAttribution({ subject: principal.subject, ...via }, run)
+  }
+  return Object.assign(handler, { as })
 }
 
 export interface ConsoleServerOptions {
@@ -1534,6 +1697,8 @@ export interface ConsoleServerOptions {
 
 /** Live server handle returned by {@link startConsoleServer}. */
 export interface ConsoleServerHandle {
+  /** The handler's in-process door ({@link ConsoleHandler.as}). */
+  readonly as: ConsoleHandler['as']
   /** Port actually bound — meaningful when starting on port `0`. */
   readonly port: number
   /** Base URL, without a trailing slash and **without** the token. */
@@ -1555,6 +1720,7 @@ export function startConsoleServer(
   options: ConsoleServerOptions,
 ): ConsoleServerHandle {
   const hostname = options.hostname ?? '127.0.0.1'
+  const handler = createConsoleHandler(deps, options.tokens, options.accounts)
   const server = Bun.serve({
     port,
     hostname,
@@ -1570,7 +1736,7 @@ export function startConsoleServer(
       255,
       Math.ceil((CHAT_STREAM_HEARTBEAT_MS / 1_000) * 2),
     ),
-    fetch: createConsoleHandler(deps, options.tokens, options.accounts),
+    fetch: handler,
   })
 
   return {
@@ -1578,6 +1744,7 @@ export function startConsoleServer(
     // servers have no port. This server always binds TCP, so it is a number.
     port: server.port as number,
     url: `http://${hostname}:${server.port}`,
+    as: handler.as,
     stop: async (): Promise<void> => {
       await server.stop(true)
     },
