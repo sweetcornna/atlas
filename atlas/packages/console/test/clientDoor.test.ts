@@ -27,6 +27,7 @@ const TOKEN_A = `qmd_${'a'.repeat(43)}`
 const TOKEN_B = `qmd_${'b'.repeat(43)}`
 const TOKEN_LEGACY = `qmd_${'c'.repeat(43)}`
 const TOKEN_HANDOFF = `qmd_${'d'.repeat(43)}`
+const TOKEN_LABELLED = `qmd_${'e'.repeat(43)}`
 const DEVICE_A = 'd-aaaaaaaaaaaa'
 
 /** Devices by token; revoking one makes its token stop authenticating. */
@@ -231,10 +232,10 @@ describe('client tickets (clients.md §3.2)', () => {
       'HttpOnly; SameSite=Strict',
     )
     // The window is marked as this device's, for a long time.
-    const marked = setCookieLine(response, 'qianmo_client')!
-    expect(marked).toStartWith(`qianmo_client=${DEVICE_A}.`)
-    expect(marked).toContain('HttpOnly; SameSite=Strict')
-    expect(marked).toContain('Max-Age=34560000')
+    const line = setCookieLine(response, 'qianmo_client')!
+    expect(line).toStartWith(`qianmo_client=${DEVICE_A}.`)
+    expect(line).toContain('HttpOnly; SameSite=Strict')
+    expect(line).toContain('Max-Age=34560000')
     expect(await stateOf(s.handle, issued.id)).toBe('used')
 
     // The session is the owner's: the front opens for it like any login.
@@ -248,6 +249,24 @@ describe('client tickets (clients.md §3.2)', () => {
     expect(again.status).toBe(401)
     expect(cookieFrom(again, 'qianmo_session')).toBeNull()
     expect(await again.text()).toContain('票据无效或已经用过')
+
+    // A later navigation of that profile without the header goes straight
+    // through on the cookie, and marks nothing anew; another device's ticket,
+    // or a cookie the console did not sign, is asked about.
+    const marked = deviceCookie(response)
+    const next = await ticketFor(s.handle)
+    const straight = await s.handle(enter(next.ticket, { cookie: marked }))
+    expect(straight.status).toBe(303)
+    expect(setCookieLine(straight, 'qianmo_client')).toBeNull()
+    const other = await ticketFor(s.handle, TOKEN_B)
+    expect(
+      (await s.handle(enter(other.ticket, { cookie: marked }))).status,
+    ).toBe(200)
+    const forged = await ticketFor(s.handle)
+    const notOurs = await s.handle(
+      enter(forged.ticket, { cookie: `qianmo_client=${DEVICE_A}.forged` }),
+    )
+    expect(notOurs.status).toBe(200)
   })
 
   test('any other browser is asked first, and only that page’s form spends the ticket', async () => {
@@ -259,6 +278,8 @@ describe('client tickets (clients.md §3.2)', () => {
     expect(cookieFrom(page, 'qianmo_session')).toBeNull()
     const html = await page.text()
     expect(html).toContain(`以 ${s.owner} 身份进入`)
+    // No note: the subject is the name, and is not said twice.
+    expect(html.split(s.owner)).toHaveLength(2)
     expect(html).toContain('action="/client/enter"')
     expect(html).not.toContain('<script')
     expect(page.headers.get('content-security-policy')).toContain(
@@ -289,20 +310,32 @@ describe('client tickets (clients.md §3.2)', () => {
     expect(cookieFrom(accepted, 'qianmo_session')).toBeTruthy()
     expect(await stateOf(s.handle, issued.id)).toBe('used')
 
-    // From then on that window goes straight through; another device's does not.
-    const marked = deviceCookie(accepted)
+    // A click says nothing about which browser this is: it marks nothing,
+    // and the device's next ticket in this browser is asked about again.
+    expect(setCookieLine(accepted, 'qianmo_client')).toBeNull()
     const next = await ticketFor(s.handle)
-    const straight = await s.handle(enter(next.ticket, { cookie: marked }))
-    expect(straight.status).toBe(303)
-    const other = await ticketFor(s.handle, TOKEN_B)
-    const asked = await s.handle(enter(other.ticket, { cookie: marked }))
-    expect(asked.status).toBe(200)
-    // A cookie with this device's id but not the console's signature is nothing.
-    const forged = await ticketFor(s.handle)
-    const notOurs = await s.handle(
-      enter(forged.ticket, { cookie: `qianmo_client=${DEVICE_A}.forged` }),
-    )
-    expect(notOurs.status).toBe(200)
+    expect((await s.handle(enter(next.ticket))).status).toBe(200)
+  })
+
+  test('a note the person chose is shown with the subject beside it', async () => {
+    const s = await scene()
+    const invite = s.book.issueInvite({
+      role: 'member',
+      issuedBy: 'legacy:admin',
+      label: '运维值班',
+    })
+    if (!invite.ok) throw new Error('invite')
+    const user = s.book.acceptInvite(invite.value.token)
+    if (!user.ok) throw new Error('accept')
+    s.devices.byToken.set(TOKEN_LABELLED, {
+      deviceId: 'd-eeeeeeeeeeee',
+      owner: user.value.subject,
+      kind: 'client',
+    })
+    const issued = await ticketFor(s.handle, TOKEN_LABELLED)
+    const html = await (await s.handle(enter(issued.ticket))).text()
+    expect(html).toContain('以 运维值班 身份进入')
+    expect(html).toContain(`账号 ${user.value.subject}`)
   })
 
   test('a browser signed in as somebody else is refused, the ticket left unspent', async () => {
@@ -410,16 +443,48 @@ describe('client tickets (clients.md §3.2)', () => {
     await ticketFor(s.handle)
   })
 
+  test("one account's devices hold eight unspent tickets between them", async () => {
+    const s = await scene()
+    s.devices.byToken.set(TOKEN_LABELLED, {
+      deviceId: 'd-eeeeeeeeeeee',
+      owner: s.owner,
+      kind: 'client',
+    })
+    for (let i = 0; i < 4; i++) await ticketFor(s.handle)
+    for (let i = 0; i < 4; i++) await ticketFor(s.handle, TOKEN_B)
+    // A third device of the same account gets none until one is spent.
+    const third = await s.handle(
+      asDevice('POST', '/v0/client/tickets', TOKEN_LABELLED),
+    )
+    expect(await errorOf(third)).toBe('429 limit')
+    // Somebody else's device is not held up by it.
+    const other = await person(s.handle, 'member')
+    const principal = s.book.bearerPrincipal(other.credential)
+    if (!principal.ok || principal.value.kind !== 'user')
+      throw new Error('no subject')
+    s.devices.byToken.set(TOKEN_HANDOFF, {
+      deviceId: 'd-dddddddddddd',
+      owner: principal.value.subject,
+      kind: 'client',
+    })
+    await ticketFor(s.handle, TOKEN_HANDOFF)
+  })
+
   test('the console-wide cap counts unspent tickets only', async () => {
     const devices = new Devices()
     const s = await scene(devices)
     const tokens: string[] = []
+    // Two devices for each of 125 accounts: eight tickets an account.
     for (let i = 0; i < 250; i++) {
       const token = `qmd_${String(i).padStart(43, 'x')}`
       const id = `d-${String.fromCharCode(97 + (i % 26))}${'a'.repeat(9)}${String.fromCharCode(97 + Math.floor(i / 26))}${'b'}`
+      const account = Math.floor(i / 2)
       devices.byToken.set(token, {
         deviceId: id,
-        owner: s.owner,
+        owner:
+          account === 0
+            ? s.owner
+            : `u:${account.toString(16).padStart(16, '0')}`,
         kind: 'client',
       })
       tokens.push(token)
@@ -428,7 +493,15 @@ describe('client tickets (clients.md §3.2)', () => {
     for (const token of tokens)
       for (let i = 0; i < 4; i++)
         held.push((await ticketFor(s.handle, token)).ticket)
-    const full = await s.handle(asDevice('POST', '/v0/client/tickets', TOKEN_A))
+    // An account holding none of them is turned away all the same.
+    devices.byToken.set(TOKEN_LABELLED, {
+      deviceId: 'd-eeeeeeeeeeee',
+      owner: `u:${'f'.repeat(16)}`,
+      kind: 'client',
+    })
+    const full = await s.handle(
+      asDevice('POST', '/v0/client/tickets', TOKEN_LABELLED),
+    )
     expect(await errorOf(full)).toBe('503 unavailable')
     // Spending one makes room at once.
     expect((await s.handle(confirm(held[0]!))).status).toBe(303)
@@ -464,7 +537,7 @@ describe('client tickets (clients.md §3.2)', () => {
     )
     expect(await errorOf(handoff)).toBe('403 device_kind')
     const unknown = await s.handle(
-      asDevice('GET', '/v0/client/device', `qmd_${'e'.repeat(43)}`),
+      asDevice('GET', '/v0/client/device', `qmd_${'f'.repeat(43)}`),
     )
     expect(await errorOf(unknown)).toBe('401 unauthorized')
     s.devices.inactive.add(s.owner)

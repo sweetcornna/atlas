@@ -211,6 +211,91 @@ test('an account reset revokes its devices: the restored person comes back witho
   expect(restarted.authenticate!(other.value.token)).not.toBeNull()
 })
 
+test('a reset voids the codes the account had issued; a code from after the restore pairs', async () => {
+  const h = scene()
+  const ops = h.person('ops')
+  const stale = await h.issue(ops)
+  const reset = h.book.reset(ops.subject, 'legacy:admin')
+  if (!reset.ok) throw new Error('reset failed')
+  expect(h.book.acceptInvite(reset.value.token).ok).toBe(true)
+  // The account is active again, and the old code still opens nothing.
+  expect(
+    (
+      await h.devices.pair!(
+        { code: stale.code, name: 'late', platform: null, kind: 'client' },
+        'a',
+      )
+    ).ok,
+  ).toBe(false)
+  const fresh = await h.issue(ops)
+  expect(
+    (
+      await h.devices.pair!(
+        { code: fresh.code, name: 'new', platform: null, kind: 'client' },
+        'a',
+      )
+    ).ok,
+  ).toBe(true)
+})
+
+test('a reset the ledger missed is caught up on at the next start', async () => {
+  const h = scene()
+  const ops = h.person('ops')
+  const member = h.person('member')
+  const opsCode = await h.issue(ops)
+  const memberCode = await h.issue(member)
+  const opsDevice = await h.devices.pair!(
+    { code: opsCode.code, name: 'ops', platform: null, kind: 'client' },
+    'a',
+  )
+  const memberDevice = await h.devices.pair!(
+    { code: memberCode.code, name: 'member', platform: null, kind: 'client' },
+    'a',
+  )
+  if (!opsDevice.ok || !memberDevice.ok) throw new Error('pair failed')
+  const pending = await h.issue(ops)
+  // The ledger is closed while the account is reset and restored, so no
+  // listener writes the revocation down.
+  h.devices.close()
+  h.advance(1000)
+  const reset = h.book.reset(ops.subject, 'legacy:admin')
+  if (!reset.ok) throw new Error('reset failed')
+  expect(h.book.acceptInvite(reset.value.token).ok).toBe(true)
+  const file = path.join(h.root, 'devices.ndjson')
+  const reopened = openConsoleHandoffDevices({
+    path: file,
+    accounts: h.book,
+    now: () => 200_000,
+  })
+  cleanup.push(() => reopened.close())
+  expect(reopened.authenticate!(opsDevice.value.token)).toBeNull()
+  expect(reopened.refusalOf!(opsDevice.value.token)).toBe('device_revoked')
+  expect(reopened.authenticate!(memberDevice.value.token)).not.toBeNull()
+  // Written down, not only refused: the next start reads it as revoked.
+  const last = JSON.parse(
+    fs.readFileSync(file, 'utf8').trim().split('\n').at(-1)!,
+  ) as {
+    devices: { deviceId: string; revokedAt: number | null }[]
+    pairings: { owner: string }[]
+  }
+  expect(
+    last.devices.find(d => d.deviceId === opsDevice.value.deviceId)?.revokedAt,
+  ).toBe(200_000)
+  expect(
+    last.devices.find(d => d.deviceId === memberDevice.value.deviceId)
+      ?.revokedAt,
+  ).toBeNull()
+  expect(last.pairings.some(p => p.owner === ops.subject)).toBe(false)
+  expect(
+    (
+      await reopened.pair!(
+        { code: pending.code, name: 'late', platform: null, kind: 'client' },
+        'a',
+      )
+    ).ok,
+  ).toBe(false)
+})
+
 test('a client device says so, and a ledger without one keeps the old row shape', async () => {
   const h = scene()
   const first = await h.issue()

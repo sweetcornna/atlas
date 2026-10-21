@@ -39,6 +39,8 @@ interface Snapshot {
 }
 const digest = (value: string): string =>
   createHash('sha256').update(value).digest('hex')
+/** How long a pairing code waits to be typed in. */
+const PAIRING_TTL_MS = 10 * 60_000
 const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
 const base32 = (): string =>
   [...randomBytes(12)].map(byte => BASE32[byte & 31]).join('')
@@ -151,6 +153,49 @@ export function openConsoleHandoffDevices(
       )
     )
   }
+  /** Whether `owner`'s credential was voided after `at`, from the account ledger. */
+  const voidedAfter = (owner: string, at: number): boolean => {
+    const voided = options.accounts?.voidedAt(owner) ?? null
+    return voided !== null && voided > at
+  }
+  /**
+   * `from` without what a reset or revocation ended: the devices an account
+   * paired before its credential was last voided, or that a gone, revoked or
+   * still-reset account owns, are revoked at `time`, and the codes it issued
+   * are dropped. `null` when nothing changes, and while the account book
+   * cannot say, so a fault there revokes nothing.
+   */
+  const settled = (from: Snapshot, time: number): Snapshot | null => {
+    const listed = options.accounts?.list()
+    if (listed?.ok !== true) return null
+    const active = new Set<string>(
+      listed.value.accounts
+        .filter(a => a.state === 'active')
+        .map(a => a.subject),
+    )
+    const over = (owner: string, at: number): boolean =>
+      owner.startsWith('u:') && (!active.has(owner) || voidedAfter(owner, at))
+    let changed = false
+    const devices = from.devices.map(d => {
+      if (d.revokedAt !== null || !over(d.owner, d.createdAt)) return d
+      changed = true
+      return { ...d, revokedAt: time }
+    })
+    const pairings = from.pairings.filter(
+      p => !over(p.owner, p.expiresAt - PAIRING_TTL_MS),
+    )
+    if (pairings.length !== from.pairings.length) changed = true
+    return changed ? { ...from, devices, pairings } : null
+  }
+  // A restart catches up on what ended while no listener was writing it down.
+  const caughtUp = settled(state, now())
+  if (caughtUp !== null) {
+    try {
+      persist(caughtUp)
+    } catch {
+      // `failed` is set: every device is refused until the ledger is repaired.
+    }
+  }
   const view = ({
     hash: _hash,
     kind,
@@ -160,21 +205,13 @@ export function openConsoleHandoffDevices(
     kind: kind ?? 'handoff',
     tasks: options.taskCount?.(device.deviceId) ?? 0,
   })
-  // An account that is revoked or reset takes its devices with it: a reset
-  // person comes back with a new credential, never with the old devices.
-  const unsubscribe = options.accounts?.onAccountEnded(({ subject }) => {
-    if (failed) return
-    const at = now()
-    if (!state.devices.some(d => d.owner === subject && d.revokedAt === null))
-      return
-    persist({
-      ...state,
-      devices: state.devices.map(d =>
-        d.owner === subject && d.revokedAt === null
-          ? { ...d, revokedAt: at }
-          : d,
-      ),
-    })
+  // An account that is revoked or reset takes its devices and its open codes
+  // with it: a reset person comes back with a new credential, never with the
+  // old devices. A write that fails here throws to the account book, which
+  // raises the alarm, and the ledger refuses every device until repaired.
+  const unsubscribe = options.accounts?.onAccountEnded(() => {
+    const next = settled(state, now())
+    if (next !== null) persist(next)
   })
   const rates = new Map<string, { start: number; count: number }>()
   return {
@@ -210,7 +247,7 @@ export function openConsoleHandoffDevices(
         return refused('控制台地址不合法')
       const code = base32()
       const formatted = code.match(/.{4}/g)!.join('-')
-      const expiresAt = now() + 10 * 60_000
+      const expiresAt = now() + PAIRING_TTL_MS
       persist({
         ...state,
         pairings: [
@@ -303,7 +340,8 @@ export function openConsoleHandoffDevices(
         pairing.used ||
         pairing.attempts >= 5 ||
         time >= pairing.expiresAt ||
-        !activeOwner(pairing.owner)
+        !activeOwner(pairing.owner) ||
+        voidedAfter(pairing.owner, pairing.expiresAt - PAIRING_TTL_MS)
       )
         return refused()
       if (
@@ -354,7 +392,12 @@ export function openConsoleHandoffDevices(
     authenticate(token) {
       if (failed || !/^qmd_[A-Za-z0-9_-]{43}$/.test(token)) return null
       const device = state.devices.find(d => d.hash === digest(token))
-      if (!device || device.revokedAt !== null || !activeOwner(device.owner))
+      if (
+        !device ||
+        device.revokedAt !== null ||
+        voidedAfter(device.owner, device.createdAt) ||
+        !activeOwner(device.owner)
+      )
         return null
       if (device.lastSeenAt === null || now() - device.lastSeenAt >= 60_000) {
         try {
@@ -379,7 +422,11 @@ export function openConsoleHandoffDevices(
         ? state.devices.find(d => d.hash === digest(token))
         : undefined
       if (device === undefined) return 'unauthorized'
-      if (device.revokedAt !== null) return 'device_revoked'
+      if (
+        device.revokedAt !== null ||
+        voidedAfter(device.owner, device.createdAt)
+      )
+        return 'device_revoked'
       return activeOwner(device.owner) ? 'unauthorized' : 'owner_inactive'
     },
     async revokeDevice(deviceId, actor) {

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { type Access, subjectOf } from '../access.js'
+import { clearedClientCookieFor } from '../clientDoor.js'
 import type { HandoffDeviceView } from '../directionPorts.js'
 import { fail, json, methodNotAllowed, notFound } from '../respond.js'
 import { failureResponse, guard, outcomeOf, safeDecode } from './shared.js'
@@ -132,5 +133,12 @@ export async function handoffDevicesApi(
     ...outcomeOf(result),
   )
   if (!result.ok) return failureResponse(result.failure)
-  return json(pairing ? { pairing: result.value } : { device: result.value })
+  if (pairing) return json({ pairing: result.value })
+  // Revoked from the device's own window: its client cookie goes too.
+  const cleared = clearedClientCookieFor(ctx.request, id)
+  return json(
+    { device: result.value },
+    200,
+    cleared === null ? {} : { 'set-cookie': cleared },
+  )
 }

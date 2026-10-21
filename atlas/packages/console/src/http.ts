@@ -353,12 +353,14 @@ function publicSource(deps: ConsoleDeps): { readonly source?: SourceLinks } {
 function clientEnterPage(
   deps: ConsoleDeps,
   account: string,
+  subject: string,
   device: string,
   ticket: string,
 ): Response {
   const body = renderClientEnterPage({
     label: deps.label ?? DEFAULT_LABEL,
     account,
+    subject,
     device,
     ticket,
     ...publicSource(deps),
@@ -1041,8 +1043,8 @@ async function route(
         now: now(),
         card: (status, error) =>
           loginPage(deps, { redirect: '/', status, error, accounts: true }),
-        confirm: (account, device, ticket) =>
-          clientEnterPage(deps, account, device, ticket),
+        confirm: (account, subject, device, ticket) =>
+          clientEnterPage(deps, account, subject, device, ticket),
       },
       segments,
     )

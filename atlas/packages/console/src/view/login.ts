@@ -148,6 +148,8 @@ interface ClientEnterPageModel {
   readonly label: string
   /** Who the window will be signed in as: the account's note, or its subject. */
   readonly account: string
+  /** The account's subject, shown under a note the person chose themself. */
+  readonly subject: string
   /** The device the ticket came from, for the line under the button. */
   readonly device: string
   /** The unspent ticket the button spends. */
@@ -156,10 +158,10 @@ interface ClientEnterPageModel {
 }
 
 /**
- * The confirmation a `qmo` window shows the first time it opens on a browser
- * profile (clients.md §3.2). Like the login door it has no script and is
- * never submitted for the person: a ticket opened in somebody else's browser
- * would otherwise sign that browser in as the ticket's account.
+ * The confirmation a `qmo` ticket gets anywhere but the Linux client's own
+ * window, Windows included (clients.md §3.2). Like the login door it has no
+ * script and is never submitted for the person: a ticket opened in somebody
+ * else's browser would otherwise sign that browser in as the ticket's account.
  */
 export function renderClientEnterPage(model: ClientEnterPageModel): string {
   const title = `${BRAND} · 进入 · ${model.label}`
@@ -171,6 +173,9 @@ export function renderClientEnterPage(model: ClientEnterPageModel): string {
     `<div class="brand">${qianmoMark(28)}<div class="brand-cn">阡陌</div></div>` +
     `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
     `<h1 class="page-title" id="page-title">以 ${escapeHtml(model.account)} 身份进入</h1>` +
+    (model.account === model.subject
+      ? ''
+      : `<p class="inst">账号 ${escapeHtml(model.subject)}</p>`) +
     `<button type="submit" class="btn btn-primary btn-block">` +
     icon('log-out', { small: true }) +
     `${escapeHtml(SUBMIT_LABEL)}</button>` +

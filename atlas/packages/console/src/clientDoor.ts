@@ -35,11 +35,14 @@
  * `Sec-Fetch-Site: none` is not enough on its own, though: a link opened from
  * a mail or chat program is `none` too, and would sign whatever browser it
  * lands in into the ticket's account. So a ticket goes straight through only
- * in the window it was made for — one carrying this device's client cookie,
- * set by its first entry, or the `X-Qmo-Device` header the Linux client adds
- * over its DevTools pipe, which no page can put on a navigation. Anywhere
- * else the window shows who it will sign in as and waits for a click, and a
- * browser already signed in as somebody else is refused outright.
+ * in the window it was made for — one carrying the `X-Qmo-Device` header the
+ * Linux client adds over its DevTools pipe, which no page can put on a
+ * navigation, or the client cookie only such an entry sets. Anywhere else,
+ * the Windows client's window included, the window shows who it will sign in
+ * as and waits for a click, and the click sets no cookie: a ticket of the
+ * same device opened in that browser later asks again. A browser already
+ * signed in as somebody else is refused outright, and signing out or in, or
+ * revoking the device from the browser, takes the cookie away.
  */
 
 import {
@@ -89,6 +92,9 @@ const MAX_OPEN_CLIENT_TICKETS = 4
 
 /** Tickets one device may ask for in a minute, spent or not. */
 const MAX_CLIENT_TICKETS_PER_MINUTE = 20
+
+/** Unspent tickets all of one account's devices may hold at once. */
+const MAX_OPEN_TICKETS_PER_ACCOUNT = 8
 
 /** Unspent tickets the whole console holds before it stops issuing. */
 const MAX_PENDING_TICKETS = 1000
@@ -166,7 +172,7 @@ export class ClientTickets {
   /** A fresh ticket for `device`, or why there is none. */
   issue(
     device: HandoffDeviceIdentity,
-  ): IssuedClientTicket | 'too_many' | 'too_fast' | 'full' {
+  ): IssuedClientTicket | 'too_many' | 'account_full' | 'too_fast' | 'full' {
     const now = this.#now()
     this.#prune(now)
     let open = 0
@@ -176,7 +182,12 @@ export class ClientTickets {
       if (!ticket.used && now < ticket.expiresAt) open += 1
       if (now - ticket.issuedAt < 60_000) recent += 1
     }
+    // Pending is unspent and unexpired already: pruned above.
+    let owned = 0
+    for (const ticket of this.#pending.values())
+      if (ticket.owner === device.owner) owned += 1
     if (open >= MAX_OPEN_CLIENT_TICKETS) return 'too_many'
+    if (owned >= MAX_OPEN_TICKETS_PER_ACCOUNT) return 'account_full'
     if (recent >= MAX_CLIENT_TICKETS_PER_MINUTE) return 'too_fast'
     if (this.#pending.size >= MAX_PENDING_TICKETS) return 'full'
     const ticket = `qmt_${randomBytes(32).toString('base64url')}`
@@ -311,6 +322,7 @@ interface ClientDoorContext {
   /** The confirmation that spends `ticket` on a click. */
   readonly confirm: (
     account: string,
+    subject: string,
     device: string,
     ticket: string,
   ) => Response
@@ -349,9 +361,44 @@ function deviceCookieValue(key: Buffer, deviceId: string): string {
   return `${deviceId}.${mac}`
 }
 
+/** The client cookie, as a `Set-Cookie` line; `value` empty clears it. */
+function deviceCookie(request: Request, value: string): string {
+  const secure = isSecureRequest(request)
+  return [
+    `${deviceCookieName(request)}=${value}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Strict',
+    `Max-Age=${value === '' ? 0 : DEVICE_COOKIE_MAX_AGE_SECONDS}`,
+    ...(secure ? ['Secure'] : []),
+  ].join('; ')
+}
+
+/** The `Set-Cookie` that takes this browser's client cookie away, on sign-out and sign-in. */
+export function clearedClientCookie(request: Request): string {
+  return deviceCookie(request, '')
+}
+
+/** The same, when the cookie this browser carries is `deviceId`'s; else `null`. */
+export function clearedClientCookieFor(
+  request: Request,
+  deviceId: string,
+): string | null {
+  return cookieOf(request, deviceCookieName(request)).startsWith(
+    `${deviceId}.`,
+  )
+    ? clearedClientCookie(request)
+    : null
+}
+
+/** Whether the client itself put this navigation in `deviceId`'s window. */
+function fromClient(ctx: ClientDoorContext, deviceId: string): boolean {
+  return ctx.request.headers.get(DEVICE_HEADER) === deviceId
+}
+
 /** Whether this browser profile is `deviceId`'s own window. */
 function isDeviceWindow(ctx: ClientDoorContext, deviceId: string): boolean {
-  if (ctx.request.headers.get(DEVICE_HEADER) === deviceId) return true
+  if (fromClient(ctx, deviceId)) return true
   const presented = Buffer.from(
     cookieOf(ctx.request, deviceCookieName(ctx.request)),
   )
@@ -371,7 +418,11 @@ function signedInAsAnother(ctx: ClientDoorContext, owner: string): boolean {
   return current.ok && current.value.subject !== owner
 }
 
-/** The name the confirmation shows for `owner`: its note, else its subject. */
+/**
+ * The name the confirmation shows for `owner`: its note, else its subject.
+ * The note is whatever the person typed at signup, so the page shows the
+ * subject beside it as well.
+ */
 function accountName(ctx: ClientDoorContext, owner: string): string {
   const listed = ctx.accounts.book.list()
   const account = listed.ok
@@ -405,6 +456,7 @@ async function enter(ctx: ClientDoorContext): Promise<Response> {
   if (!post && !own)
     return ctx.confirm(
       accountName(ctx, ticket.owner),
+      ticket.owner,
       ticket.deviceId,
       presented,
     )
@@ -428,17 +480,16 @@ async function enter(ctx: ClientDoorContext): Promise<Response> {
     accountSessionCookie(opened.value.sid, secure),
   )
   response.headers.append('set-cookie', clearedSessionCookieHeader({ secure }))
-  response.headers.append(
-    'set-cookie',
-    [
-      `${deviceCookieName(request)}=${deviceCookieValue(ctx.cookieKey, ticket.deviceId)}`,
-      'Path=/',
-      'HttpOnly',
-      'SameSite=Strict',
-      `Max-Age=${DEVICE_COOKIE_MAX_AGE_SECONDS}`,
-      ...(secure ? ['Secure'] : []),
-    ].join('; '),
-  )
+  // Only the client's own navigation marks the profile; a click on the
+  // confirmation proves nothing about which browser it was.
+  if (fromClient(ctx, ticket.deviceId))
+    response.headers.append(
+      'set-cookie',
+      deviceCookie(
+        request,
+        deviceCookieValue(ctx.cookieKey, ticket.deviceId),
+      ),
+    )
   return response
 }
 
@@ -527,6 +578,8 @@ async function api(
   const issued = ctx.tickets.issue(device)
   if (issued === 'too_many')
     return fail(429, 'limit', '这台设备还有没用掉的票据，稍后再试')
+  if (issued === 'account_full')
+    return fail(429, 'limit', '这个账号的设备还有没用掉的票据，稍后再试')
   if (issued === 'too_fast')
     return fail(429, 'limit', '这台设备要票据太频繁，稍后再试')
   if (issued === 'full') return fail(503, 'unavailable', '票据太多，稍后再试')

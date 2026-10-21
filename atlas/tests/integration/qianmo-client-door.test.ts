@@ -4,8 +4,9 @@
 /**
  * The client door against the production account book and device ledger
  * (clients.md §3.2, §6): which devices may mint a ticket, what an account
- * reset leaves of them, a ticket in somebody else's browser, a ticket raced
- * for, and who sees which devices.
+ * reset leaves of them and of its codes, a ticket in somebody else's browser,
+ * what a click on the confirmation leaves behind, a ticket raced for, and who
+ * sees which devices.
  */
 
 import { afterEach, expect, test } from 'bun:test'
@@ -138,6 +139,15 @@ const session = (method: string, p: string, sid: string) =>
     },
   })
 
+/** The client cookie a response sets, as `name=value`; `''` when it clears it. */
+const clientCookieOf = (response: Response): string | null => {
+  const line = response.headers
+    .getSetCookie()
+    .find(c => c.startsWith('qianmo_client='))
+  if (line === undefined) return null
+  return /Max-Age=0(;|$)/.test(line) ? '' : line.split(';')[0]!
+}
+
 const sessionOf = (response: Response): string | null => {
   const line = response.headers
     .getSetCookie()
@@ -237,6 +247,123 @@ test("another account's ticket in a signed-in browser is refused and swaps nothi
   )
   expect(fresh.status).toBe(200)
   expect(sessionOf(fresh)).toBeNull()
+})
+
+test('a code issued before a reset pairs nothing after the restore', async () => {
+  const s = scene()
+  const ops = s.person('ops')
+  const stale = await s.devices.issuePairing(ops, BASE)
+  if (!stale.ok) throw new Error('pairing')
+  const reset = s.book.reset(ops.subject, 'legacy:admin')
+  if (!reset.ok) throw new Error('reset')
+  expect(s.book.acceptInvite(reset.value.token).ok).toBe(true)
+  const late = await s.handle(
+    new Request(`${BASE}/v0/handoff/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        code: stale.value.code,
+        name: 'late',
+        platform: 'linux-x64',
+        kind: 'client',
+      }),
+    }),
+  )
+  expect(late.status).toBeGreaterThanOrEqual(400)
+  expect(late.status).toBeLessThan(500)
+  // A code from after the restore is the way back.
+  const device = await s.pair(ops, 'client')
+  const ticket = await ticketOf(s, device.token)
+  expect((await s.handle(ownWindow(ticket, device.deviceId))).status).toBe(303)
+})
+
+test('a click on the confirmation marks nothing; signing out takes the mark away', async () => {
+  const s = scene()
+  const member = s.person('member')
+  const device = await s.pair(member, 'client')
+  // Somewhere that is not the client's own window: asked, then a click.
+  const first = await ticketOf(s, device.token)
+  expect(
+    (
+      await s.handle(
+        new Request(`${BASE}/client/enter?ticket=${first}`, {
+          headers: { 'sec-fetch-site': 'none' },
+        }),
+      )
+    ).status,
+  ).toBe(200)
+  const clicked = await s.handle(
+    new Request(`${BASE}/client/enter`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        'sec-fetch-site': 'same-origin',
+      },
+      body: `ticket=${first}`,
+    }),
+  )
+  expect(clicked.status).toBe(303)
+  expect(clientCookieOf(clicked)).toBeNull()
+  // So the device's next ticket in that browser, signed out, asks again.
+  const signOut = (sid: string, cookie: string) =>
+    s.handle(
+      new Request(`${BASE}/logout`, {
+        method: 'POST',
+        headers: {
+          cookie: `qianmo_session=${sid}; ${cookie}`.replace(/; $/, ''),
+          'sec-fetch-site': 'same-origin',
+          origin: BASE,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: '',
+      }),
+    )
+  await signOut(sessionOf(clicked)!, '')
+  const second = await ticketOf(s, device.token)
+  expect(
+    (
+      await s.handle(
+        new Request(`${BASE}/client/enter?ticket=${second}`, {
+          headers: { 'sec-fetch-site': 'none' },
+        }),
+      )
+    ).status,
+  ).toBe(200)
+
+  // The client's own window is marked, and signing out there unmarks it.
+  const own = await s.handle(ownWindow(second, device.deviceId))
+  expect(own.status).toBe(303)
+  const mark = clientCookieOf(own)!
+  expect(mark).toStartWith(`qianmo_client=${device.deviceId}.`)
+  const out = await signOut(sessionOf(own)!, mark)
+  expect(clientCookieOf(out)).toBe('')
+  // Revoking the device from a browser that carries its mark takes the mark
+  // away; revoking another device from there does not. (From the window the
+  // device's own ticket signed in, the revocation closes that very session,
+  // and the mark it leaves can match no ticket again.)
+  const marked = await s.handle(
+    ownWindow(await ticketOf(s, device.token), device.deviceId),
+  )
+  const browser = `qianmo_session=${member.sid}; ${clientCookieOf(marked)}`
+  const other = await s.pair(member, 'client')
+  const fromBrowser = (deviceId: string) =>
+    s.handle(
+      new Request(`${BASE}/v0/handoff/devices/${deviceId}`, {
+        method: 'DELETE',
+        headers: {
+          cookie: browser,
+          'x-qianmo-console': '1',
+          'sec-fetch-site': 'same-origin',
+          origin: BASE,
+        },
+      }),
+    )
+  const elsewhere = await fromBrowser(other.deviceId)
+  expect(elsewhere.status).toBe(200)
+  expect(clientCookieOf(elsewhere)).toBeNull()
+  const itself = await fromBrowser(device.deviceId)
+  expect(itself.status).toBe(200)
+  expect(clientCookieOf(itself)).toBe('')
 })
 
 test('eight windows racing for one ticket: one session', async () => {

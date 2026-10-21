@@ -386,6 +386,8 @@ interface AccountState {
   readonly label?: string
   credentialHash: string | null
   revoked: boolean
+  /** When a reset or the revocation last voided the credential. */
+  voidedAt?: number
 }
 
 interface SessionState {
@@ -776,6 +778,7 @@ export class AccountBook {
           this.#subjectByCredential.delete(account.credentialHash)
         }
         account.credentialHash = null
+        account.voidedAt = entry.at
         return null
       }
       case 'chat.owned': {
@@ -1422,6 +1425,18 @@ export class AccountBook {
     }
   }
 
+  /**
+   * When `subject`'s credential was last voided by a reset or the revocation,
+   * from the ledger, so it holds across a restart; `null` if it never was.
+   * What a device paired before then belonged to is over (clients.md §3.1).
+   */
+  voidedAt(subject: string): number | null {
+    const account = isSubject(subject)
+      ? this.#accountsBySubject.get(subject)
+      : undefined
+    return account?.voidedAt ?? null
+  }
+
   /** Close every session of `subject`, then every stream, then tell listeners. */
   #end(account: AccountState, reason: 'revoked' | 'reset'): boolean {
     for (const session of this.#sessions.values()) {
@@ -1463,10 +1478,12 @@ export class AccountBook {
     ) {
       // The file did not take it; the person is out of this process anyway.
       account.revoked = true
+      account.voidedAt = this.#now()
       this.#closeStreams(account.subject, null)
       return this.#unavailable()
     }
     account.revoked = true
+    account.voidedAt = this.#now()
     if (account.credentialHash !== null) {
       this.#subjectByCredential.delete(account.credentialHash)
     }
@@ -1508,6 +1525,7 @@ export class AccountBook {
       }
       this.#subjectByCredential.delete(account.credentialHash)
       account.credentialHash = null
+      account.voidedAt = this.#now()
     }
     if (!this.#end(account, 'reset')) return this.#unavailable()
     // An earlier reset link for the same person dies with this one: only the
