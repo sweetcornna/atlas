@@ -292,12 +292,15 @@ const REVISION = whole('当前修订号 · 有人先改了就不符', 0)
 
 /**
  * One path segment, encoded. `.` and `..` survive encoding and a URL folds
- * them into the parent, so `keys/..` would land on the profile: refused.
+ * them into the parent, so `keys/..` would land on the profile; the router
+ * drops an empty segment, so `keys/` would be another route too: refused.
  */
 function seg(value: unknown): string {
   const raw = String(value ?? '')
-  if (raw === '.' || raw === '..')
-    throw new SettingPathError(`路径段不能是 ${raw}`)
+  if (raw === '' || raw === '.' || raw === '..')
+    throw new SettingPathError(
+      raw === '' ? '路径段不能为空' : `路径段不能是 ${raw}`,
+    )
   return encodeURIComponent(raw)
 }
 
@@ -746,7 +749,9 @@ function channelAccessChanged(input: Args, current: unknown): boolean {
 /**
  * Whether a channel change moves where it connects or as whom: the platform,
  * its non-secret settings (a SnowLuma URL is one) or any credential. Whoever
- * answers at a new endpoint can claim to be the owner (§2).
+ * answers at a new endpoint can claim to be the owner (§2). `settings` is
+ * compared with what an ops reader sees: below ops `/v0/im` blanks it, and
+ * every save carrying settings would then count as a change.
  */
 function channelTransportChanged(input: Args, current: unknown): boolean {
   const before = recordOf(current)

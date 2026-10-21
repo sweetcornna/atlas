@@ -479,6 +479,14 @@ describe('the entries (P40 §2)', () => {
         { ifMatch: 3 },
       ),
     ).toContain('target')
+    // The router drops an empty segment: `keys/` is another route.
+    expect(
+      settingRequestProblem(
+        clear,
+        { profileId: 'gw', keyId: '' },
+        { ifMatch: 3 },
+      ),
+    ).toBe('target 不对 · 路径段不能为空')
     // Encoded, a slash or a dot pair stays inside its segment.
     expect(
       settingRequestProblem(
