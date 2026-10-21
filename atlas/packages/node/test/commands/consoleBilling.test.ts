@@ -977,9 +977,10 @@ describe('a tenant node holds its tenant’s profile or no model, nothing else',
         revision: 0,
         routes: [
           {
-            direction: 'fast',
+            direction: 'simple',
             profileId: platform.profileId,
             modelId: 'openai/gpt-6',
+            effort: null,
           },
         ],
       },

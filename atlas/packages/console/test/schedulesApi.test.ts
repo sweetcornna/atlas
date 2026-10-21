@@ -44,7 +44,7 @@ const schedule: ScheduleView = {
   prompt: '简报',
   when: { kind: 'daily', time: '08:00' },
   timezone: 'Asia/Shanghai',
-  direction: 'chat',
+  direction: 'medium',
   channels: [],
   notifyOnlyAgent: false,
   enabled: true,

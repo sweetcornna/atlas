@@ -222,4 +222,9 @@ export type NodeCapabilities = {
   multiKey: boolean
   /** P33: `laneAddresses` compiles to sibling providers. */
   laneAddresses: boolean
+  /**
+   * P38: routing speaks the three difficulty tiers and their effort. A node
+   * without it gets the P22 names back (`legacyModelRouting`).
+   */
+  tierRouting: boolean
 }

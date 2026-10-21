@@ -211,7 +211,7 @@ export class FakeSchedules implements SchedulesPort {
         prompt: TEMPLATES[0]?.prompt ?? '',
         when: { kind: 'daily', time: '08:00' },
         timezone: 'Asia/Shanghai',
-        direction: 'chat',
+        direction: 'medium',
         channels: ['ch-1'],
         notifyOnlyAgent: false,
         enabled: true,
@@ -702,11 +702,28 @@ export class FakeRouting implements ModelRoutingPort {
       node: null,
       auto: true,
       routes: MODEL_DIRECTIONS.map(direction =>
-        direction === 'code'
-          ? { direction, profileId: 'deepseek', modelId: 'deepseek-coder' }
-          : direction === 'image'
-            ? { direction, profileId: 'images', modelId: 'gpt-image-1' }
-            : { direction, profileId: null, modelId: null },
+        direction === 'complex'
+          ? {
+              direction,
+              profileId: 'chat-svc',
+              modelId: 'gpt-6-luna',
+              effort: 'xhigh' as const,
+            }
+          : direction === 'medium'
+            ? {
+                direction,
+                profileId: 'deepseek',
+                modelId: 'deepseek-coder',
+                effort: null,
+              }
+            : direction === 'image'
+              ? {
+                  direction,
+                  profileId: 'images',
+                  modelId: 'gpt-image-1',
+                  effort: null,
+                }
+              : { direction, profileId: null, modelId: null, effort: null },
       ),
       revision: this.revision,
       updatedAt: at - 3_600_000 * 5,
@@ -730,6 +747,7 @@ export class FakeRouting implements ModelRoutingPort {
           modelId: 'deepseek-coder',
           kind: 'chat',
           evaluated: true,
+          efforts: ['none', 'low', 'medium', 'high'],
         },
         {
           profileId: 'deepseek',
@@ -737,6 +755,7 @@ export class FakeRouting implements ModelRoutingPort {
           modelId: 'deepseek-chat',
           kind: 'chat',
           evaluated: true,
+          efforts: [],
         },
         {
           profileId: 'chat-svc',
@@ -744,6 +763,7 @@ export class FakeRouting implements ModelRoutingPort {
           modelId: 'gpt-6-luna',
           kind: 'chat',
           evaluated: true,
+          efforts: ['low', 'medium', 'high', 'xhigh'],
         },
         {
           profileId: 'images',
@@ -751,6 +771,7 @@ export class FakeRouting implements ModelRoutingPort {
           modelId: 'gpt-image-1',
           kind: 'image',
           evaluated: false,
+          efforts: [],
         },
         {
           profileId: 'video',
@@ -758,6 +779,7 @@ export class FakeRouting implements ModelRoutingPort {
           modelId: 'video-preview',
           kind: 'video',
           evaluated: false,
+          efforts: [],
         },
       ],
       recent: [
@@ -765,7 +787,7 @@ export class FakeRouting implements ModelRoutingPort {
           node: 'node-a',
           agent: 'planner',
           at: at - 120_000,
-          direction: 'code',
+          direction: 'medium',
           source: 'auto',
           model: 'qm-deepseek/deepseek-coder',
         },
@@ -781,7 +803,7 @@ export class FakeRouting implements ModelRoutingPort {
           node: 'node-a',
           agent: 'planner',
           at: at - 3_600_000,
-          direction: 'chat',
+          direction: 'simple',
           source: 'default',
           model: 'qm-deepseek/deepseek-chat',
         },

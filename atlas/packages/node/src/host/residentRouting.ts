@@ -4,7 +4,7 @@
 import {
   classifyDirection,
   DIRECTION_ROLES,
-  isModelDirection,
+  directionOf,
   type ModelDirection,
 } from '@qianmo/providers'
 import type { OmpRpcFrame } from '@qianmo/resident'
@@ -24,8 +24,11 @@ export function decideResidentRoute(input: {
   source: 'hint' | 'auto' | 'default'
   rule: string
 } | null {
-  if (isModelDirection(input.hint))
-    return { direction: input.hint, source: 'hint', rule: 'explicit-hint' }
+  // A hub sends a tier under its P22 name (`legacyDirectionOf`); both
+  // spellings name the same tier here.
+  const hint = directionOf(input.hint)
+  if (hint !== null)
+    return { direction: hint, source: 'hint', rule: 'explicit-hint' }
   if (input.auto) return { ...classifyDirection(input.text), source: 'auto' }
   return null
 }

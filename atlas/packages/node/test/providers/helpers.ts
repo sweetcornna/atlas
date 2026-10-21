@@ -20,6 +20,7 @@ export const V1: NodeCapabilities = {
   replayFilter: false,
   multiKey: false,
   laneAddresses: false,
+  tierRouting: false,
 }
 
 const CATALOG_DAY = new Date('2026-10-03T00:00:00Z')

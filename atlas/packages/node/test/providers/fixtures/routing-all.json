@@ -149,15 +149,14 @@
   },
   "config": {
     "modelRoles": {
-      "default": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
-      "task": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
+      "plan": "qm-vendor-paygo-87b56013/vendor-model-pro:high",
+      "slow": "qm-vendor-paygo-87b56013/vendor-model-pro:high",
+      "default": "qm-chat-f34ccf07/vendor-model-pro:max",
+      "task": "qm-chat-f34ccf07/vendor-model-pro:max",
       "chat": "qm-chat-f34ccf07/vendor-model-pro:max",
-      "plan": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
-      "slow": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
       "smol": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
       "commit": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
       "tiny": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
-      "vision": "qm-vendor-paygo-87b56013/vendor-model-pro:max",
       "image": "qm-openai-images-d9617135/gpt-image-2:off",
       "speech": "qm-openai-speech-d9617135/gpt-4o-mini-tts:off",
       "video": "qm-openrouter-video-76ef4ad6/google/veo-3.1:off"

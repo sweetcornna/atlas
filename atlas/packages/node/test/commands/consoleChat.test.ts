@@ -441,10 +441,12 @@ describe('chat send', () => {
     const sent = await h.hub.send({
       sessionId: opened.value.id,
       text: '规划',
-      direction: 'plan',
+      direction: 'complex',
       taskTtlMs: 3_600_000,
     })
     expect(sent.ok).toBe(true)
+    // P38: the tier travels under its P22 name, which a node older than
+    // P38 accepts; a newer node maps it back to complex.
     expect(h.dialer.last.sent[0]!.payload).toEqual({
       prompt: '规划',
       direction: 'plan',
@@ -455,7 +457,7 @@ describe('chat send', () => {
       await h.hub.send({
         sessionId: opened.value.id,
         text: '坏方向',
-        direction: 'unknown' as 'chat',
+        direction: 'unknown' as 'medium',
       }),
     ).toMatchObject({ ok: false, failure: { code: 'invalid' } })
     expect(
@@ -466,6 +468,29 @@ describe('chat send', () => {
       }),
     ).toMatchObject({ ok: false, failure: { code: 'invalid' } })
     expect(h.dialer.last.sent).toHaveLength(1)
+    // A P22 name is not a tier: the hub's own callers map before sending.
+    expect(
+      await h.hub.send({
+        sessionId: opened.value.id,
+        text: '旧方向',
+        direction: 'chat' as 'medium',
+      }),
+    ).toMatchObject({ ok: false, failure: { code: 'invalid' } })
+    for (const [direction, wire] of [
+      ['medium', 'code'],
+      ['simple', 'fast'],
+      ['video', 'video'],
+    ] as const) {
+      const one = await h.hub.send({
+        sessionId: opened.value.id,
+        text: direction,
+        direction,
+      })
+      expect(one.ok).toBe(true)
+      expect(h.dialer.last.sent.at(-1)!.payload).toMatchObject({
+        direction: wire,
+      })
+    }
   })
 
   test('refuses a target whose endpoint is off the allow list', async () => {

@@ -330,13 +330,11 @@ export const KIT_CSS = `
 .trail td.acts .kit-acts { flex-wrap: nowrap; }
 `
 
-/** The task directions as the pages name them (`directions-2026-10.md` §5.1). */
+/** The task directions as the pages name them (P38, `directions-2026-10.md` §5.1). */
 export const DIRECTION_WORD: Readonly<Record<string, string>> = {
-  code: '编程',
-  chat: '对话与简报',
-  plan: '规划与推理',
-  fast: '快速小任务',
-  vision: '看图',
+  complex: '复杂任务',
+  medium: '一般任务',
+  simple: '简单任务',
   image: '生图',
   speech: '语音',
   video: '视频',

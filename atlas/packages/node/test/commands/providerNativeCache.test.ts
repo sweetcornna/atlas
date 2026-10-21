@@ -27,6 +27,7 @@ function compiled(baseUrl: string) {
     chatEffortHonorsOverride: true,
     replayFilter: true,
     laneAddresses: true,
+    tierRouting: true,
   }
   const result = compileProfile(
     wireProfile({ lane: 'openai-chat', baseUrl, compat: {} }, capabilities),

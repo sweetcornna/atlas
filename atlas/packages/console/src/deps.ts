@@ -1898,6 +1898,8 @@ export interface ProviderNodeActual {
     readonly multiKey: boolean
     /** P33：档案的其他线路地址编成同密钥的兄弟 provider。 */
     readonly laneAddresses: boolean
+    /** P38：任务分工按三档难度与推理强度下发；没有时中枢转回 P22 的方向名。 */
+    readonly tierRouting: boolean
   }
   readonly lastResult: {
     readonly requestId: string

@@ -76,6 +76,7 @@ import {
   type ProviderProfile,
   type ProviderWarning,
   resolveBaseUrl,
+  routingForNode,
   type WireProfile,
 } from '@qianmo/providers'
 import type { ModelRouting } from '@qianmo/providers'
@@ -131,6 +132,7 @@ const FLOOR_CAPABILITIES: NodeCapabilities = {
   replayFilter: false,
   multiKey: false,
   laneAddresses: false,
+  tierRouting: false,
 }
 
 /** What a compile preview puts where the key would go; never sent anywhere. */
@@ -1868,12 +1870,18 @@ export class ConsoleProviders implements ProviderPort {
       profile,
       ...extraIds.map(id => this.#book.profile(id)),
     ].some(one => one?.laneAddresses !== undefined)
+    // P38: a tier's effort goes only to a node that says `tierRouting`; the
+    // same wait, so an unknown node does not lose it without a word.
+    const wantsEffort = Object.values(routing?.routes ?? {}).some(
+      ref => ref?.effort !== undefined,
+    )
     const known = () =>
       this.#cache.get(node)?.actual?.capabilities !== undefined
-    if (wantsLanes && !known()) {
+    if ((wantsLanes || wantsEffort) && !known()) {
       await this.#refreshing.get(node)
       if (!known()) await this.#refresh(node, false)
       if (!known()) {
+        const what = wantsLanes ? '附加通道' : '各档的推理强度'
         const last = this.#cache.get(node)?.lastStatus
         if (last?.ok === false)
           return {
@@ -1881,11 +1889,11 @@ export class ConsoleProviders implements ProviderPort {
             requestId,
             outcome: 'failed',
             code: 'unreachable',
-            message: `节点状态查询失败 · 无法确认附加通道能否编入 · ${last.message ?? '没有回应'}`,
+            message: `节点状态查询失败 · 无法确认${what}能否编入 · ${last.message ?? '没有回应'}`,
           }
         return refuse(
           'capabilities-unknown',
-          '节点尚未回报能力 · 无法确认附加通道能否编入 · 节点状态刷新后再下发',
+          `节点尚未回报能力 · 无法确认${what}能否编入 · 节点状态刷新后再下发`,
         )
       }
       // The scope and the routing were read before the node was asked: a
@@ -1907,7 +1915,8 @@ export class ConsoleProviders implements ProviderPort {
           '任务分工在下发途中又被改过 · 刷新后再下发',
         )
     }
-    const lanes = this.#capabilities(node).laneAddresses
+    const capabilities = this.#capabilities(node)
+    const lanes = capabilities.laneAddresses
     const wire = this.#wire(profile, secret, override, others, lanes)
     const profiles: WireProfile[] = []
     const routingSecrets: string[] = []
@@ -1926,7 +1935,10 @@ export class ConsoleProviders implements ProviderPort {
       node,
       expect: { ownedHash: this.#book.committed(node)?.appliedHash ?? null },
       profile: wire,
-      ...(routing ? { profiles, routing } : {}),
+      // A node older than P38 takes the split under the P22 names.
+      ...(routing
+        ? { profiles, routing: routingForNode(routing, capabilities) }
+        : {}),
       recycle: { sessions: sessions.value },
       dryRun: options.dryRun,
       force: options.force,

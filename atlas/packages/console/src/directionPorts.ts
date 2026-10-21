@@ -377,15 +377,14 @@ export interface DesktopPort {
 }
 
 // ---------------------------------------------------------------------------
-// P22 按任务匹配模型
+// P22 按任务匹配模型；P38 收成三档难度与三种媒体
 // ---------------------------------------------------------------------------
 
+/** 与 `@qianmo/providers` 的 `MODEL_DIRECTIONS` 同一份：三档难度在前，三种媒体在后。 */
 export const MODEL_DIRECTIONS = [
-  'code',
-  'chat',
-  'plan',
-  'fast',
-  'vision',
+  'complex',
+  'medium',
+  'simple',
   'image',
   'speech',
   'video',
@@ -393,11 +392,33 @@ export const MODEL_DIRECTIONS = [
 
 export type ModelDirection = (typeof MODEL_DIRECTIONS)[number]
 
-/** 一个方向选了哪个服务里的哪个模型。两个都为 null = 跟随主模型（生图、语音、视频为「不开」）。 */
+/** 任务难度（P38）：子会话按它选模型。 */
+export const TASK_TIERS = ['complex', 'medium', 'simple'] as const
+
+export type TaskTier = (typeof TASK_TIERS)[number]
+
+/** 一档的推理强度；`none` 是关掉推理。与 `@qianmo/providers` 的 `TIER_EFFORTS` 同一份。 */
+export const TIER_EFFORTS = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const
+
+export type TierEffort = (typeof TIER_EFFORTS)[number]
+
+/**
+ * 一个方向选了哪个服务里的哪个模型、用多大推理强度。两个引用都为 null = 跟随主模型
+ * （生图、语音、视频为「不开」），这时 `effort` 也是 null；`effort` 为 null 是模型的默认强度。
+ */
 export interface ModelRouteView {
   readonly direction: ModelDirection
   readonly profileId: string | null
   readonly modelId: string | null
+  readonly effort: TierEffort | null
 }
 
 export interface ModelRoutingView {
@@ -431,6 +452,8 @@ export interface RoutableModelView {
   /** `chat` / `image` / `speech` / `video`：决定它能出现在哪些方向下。 */
   readonly kind: 'chat' | 'image' | 'speech' | 'video'
   readonly evaluated: boolean
+  /** 这个模型能选的推理强度（按模型支持收窄）；空表示不给强度选择。 */
+  readonly efforts: readonly TierEffort[]
 }
 
 export interface ModelRoutingSnapshot {

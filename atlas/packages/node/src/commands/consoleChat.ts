@@ -45,6 +45,7 @@
 import { randomUUID } from 'node:crypto'
 import { signTaskOwner, type NodeKeyPair } from '@qianmo/capability'
 import { MODEL_DIRECTIONS, unansweredTurns } from '@qianmo/console'
+import { legacyDirectionOf } from '@qianmo/providers'
 import { parseTurnStepDedupKey } from '@qianmo/resident'
 import type {
   ChatLocalCommand,
@@ -1117,9 +1118,11 @@ export function createConsoleChatPort(
             ...(input.onBehalfOf === undefined
               ? {}
               : { onBehalfOf: input.onBehalfOf }),
+            // A node older than P38 refuses the whole envelope over a tier
+            // name; the P22 name means the same tier on either side.
             ...(input.direction === undefined
               ? {}
-              : { direction: input.direction }),
+              : { direction: legacyDirectionOf(input.direction) }),
             ...(input.command === undefined
               ? {}
               : { command: { name: input.command } }),

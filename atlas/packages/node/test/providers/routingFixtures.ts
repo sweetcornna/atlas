@@ -29,12 +29,14 @@ export function routingFixture() {
           ? media[1]!
           : direction === 'video'
             ? media[2]!
-            : direction === 'chat'
+            : direction === 'medium'
               ? chat
               : primary
     routes[direction] = {
       profileId: profile.id,
       modelId: profile.models[0]!.id,
+      // A tier's own effort rides on its roles (P38).
+      ...(direction === 'complex' ? { effort: 'high' as const } : {}),
     }
   }
   const profiles = [chat, ...media]

@@ -799,8 +799,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/providers/probe`、`/v0/providers/models`、`/v0/providers/preview` | **ops 个人账号** | 测连 / 测速 / 真实调用；拉模型列表；编译预览。可以带表单上未保存的档案与密钥，密钥不落盘 |
 | GET | `/v0/providers/export?id=<档案 id>…` | **ops 个人账号** | 导出文件（附件，`document` 级，链接可下），不含密钥与指纹 |
 | POST | `/v0/providers/import/preview`、`/v0/providers/import` | **ops 个人账号** | 导入预览、导入（撞 id 的用 `renames` 另存）；有目录不认识的键整份拒绝 |
-| GET | `/v0/routing` | view | 任务分工（P22，§13）：默认分工、各节点单独的分工、可选的模型（按对话 生图 语音 视频分类，带是否评估过）与最近 20 次分派。没接路由簿时 501 |
-| PUT | `/v0/routing` | **ops 个人账号** | `{ node, auto, routes, revision }` 改默认（`node: null`）或某个节点的分工；只给要改的方向，两个引用都为 null 是跟随主模型（生图 语音 视频为不开）。路由会让中枢把被引用服务的凭据也下发到节点，所以和模型服务的写操作同一条规矩：共用令牌与 break-glass 只能查看。revision 不符（有人先改了）400 |
+| GET | `/v0/routing` | view | 任务模型（P22、P38，§13）：默认设置、各节点单独的设置、可选的模型（按对话 生图 语音 视频分类，带是否评估过与可选的推理强度 `efforts`）与最近 20 次分派。没接路由簿时 501 |
+| PUT | `/v0/routing` | **ops 个人账号** | `{ node, auto, routes, revision }` 改默认（`node: null`）或某个节点的设置；方向是 `complex` `medium` `simple` `image` `speech` `video`，只给要改的方向，两个引用都为 null 是跟随主模型（生图 语音 视频为不开），`effort`（`none` `minimal` `low` `medium` `high` `xhigh` `max`，可省略即默认）只能配具体模型、且须在该模型的 `efforts` 里。路由会让中枢把被引用服务的凭据也下发到节点，所以和模型服务的写操作同一条规矩：共用令牌与 break-glass 只能查看。revision 不符（有人先改了）400 |
 | DELETE | `/v0/routing/nodes/<节点>` | **ops 个人账号** | 去掉这个节点单独的分工，回到默认 |
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段。`/fragments/audit` 带 `since` 时只回表头与自载入以来的新行（§5.6） |
 | GET | `/fragments/lifecycle/<节点>` | view | HTML 片段：生命周期页签被轮询的那一块（§5.5） |
@@ -822,7 +822,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/fragments/updates` | view | HTML 片段：更新页被轮询的版本表与记录 |
 | GET | `/fragments/updates/form` | **ops / admin** | HTML 片段：更新检查设定对话框的正文 |
 | GET | `/fragments/updates/rollback` | **ops / admin** | HTML 片段：回滚对话框的选项（本机备份与最近三个更旧的发行） |
-| GET | `/fragments/routing?node=<节点>` | view | HTML 片段：模型页的任务分工卡片，`node` 换成那个节点的范围（模型服务不认识的节点当作所有节点）；没接路由簿时为空 |
+| GET | `/fragments/routing?node=<节点>` | view | HTML 片段：模型页的任务模型卡片，`node` 换成那个节点的范围（模型服务不认识的节点当作所有节点）；没接路由簿时为空 |
 | GET | `/fragments/memory?…` | **成员** | HTML 片段：记忆页被轮询的列表（`#memory-list`），附带筛选条上各类别的新计数；页面只换这几块，不动搜索框 |
 | GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | HTML 片段，`/admin/access` 三个被轮询的页签 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |
@@ -2413,9 +2413,11 @@ HTTP 开会话/发消息与定时任务共用控制台包的 `chatDispatch.ts`�
 通过同一服务预查可拨性。`consoleSchedules.authorization.test.ts` 覆盖成员会话可见性、
 吊销/只读/范围撤回/白名单撤回、转录 I/O 期间吊销、个人配额拒绝和创建者的租户用量归属。
 
-提示词经原有 `send` 链路发出，方向为可选
-`code|chat|plan|fast|vision|image|speech|video`（缺省 `chat`，明确 `null` 不带方向），
-经 `task.request.payload.direction` 传给节点，与 P22 同一字段。任务期限同时传到信封与
+提示词经原有 `send` 链路发出，难度为可选
+`complex|medium|simple|image|speech|video`（缺省 `medium`，明确 `null` 不带方向；P38 之前存下的
+`code|chat|plan|fast|vision` 读时映射成对应的档，下次保存写回新名字），
+经 `task.request.payload.direction` 传给节点，与 P22 同一字段（线上仍用 P22 名字编码，见
+[模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22) 的线协议一段）。任务期限同时传到信封与
 对话端口本地超时；默认 10 分钟、最大 60 分钟。订阅对话更新并在调度检查时兜底读取转录，
 按 `taskId` 匹配终态，运行保留回复前 2000 个 Unicode 字符，全文仍在 `chat.ndjson`。
 
@@ -2484,17 +2486,17 @@ IPv4 映射/兼容 IPv6 按嵌入 IPv4 判断，IP 字面量同等处理。仅�
 | DELETE | `/v0/channels/<id>` | ops 或管理令牌 | 204；被引用时拒绝 |
 | POST | `/v0/channels/<id>/test` | ops 或管理令牌 | 测试成功后的 `NotifyChannelView`；失败 503 |
 
-## §13 任务分工 API（P22）
+## §13 任务分工 API（P22、P38）
 
 模型服务开启时 `ConsoleDeps.routing` 接路由簿；API-only `routingApi` 是导出的 HeadRoute，由模型服务区域挂入 API heads（不另建页面模块）。
 
 | 方法与路径 | 权限 | 作用 |
 |---|---|---|
-| GET `/v0/routing` | view 及以上 | 默认、节点覆盖、模型列表及最近 20 条归类 |
-| PUT `/v0/routing` | ops 个人账号（共用管理令牌只读） | `{node:null或节点名, auto, routes:[{direction,profileId,modelId}], revision}`；局部更新，revision 失配 rejected |
+| GET `/v0/routing` | view 及以上 | 默认、节点覆盖、模型列表（含每个模型可选的推理强度）及最近 20 条归类 |
+| PUT `/v0/routing` | ops 个人账号（共用管理令牌只读） | `{node:null或节点名, auto, routes:[{direction,profileId,modelId,effort?}], revision}`；局部更新，revision 失配 rejected |
 | DELETE `/v0/routing/nodes/<node>` | ops 个人账号（共用管理令牌只读） | 清除节点覆盖并跟随默认 |
 
-写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。保存与清除只改中枢的路由簿，节点要等下一次模型服务下发才按新分工派活：卡片保存后写「已保存 · 尚未下发」，旁边是「下发到 N 台节点」按钮（范围内跟随这份分工、受托管的节点），它走 `POST /v0/providers/apply` 并带上卡片画出时的 `routingRevision`；这期间有人又存过就整次 409、不下发，卡片换成最新分工，不给「重试」。路由簿写锁记录 PID、随机 nonce 与时间：活持有者拒绝并发写入，PID 消失或超过 5 分钟时回收，释放只删除仍匹配自身令牌的锁。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
+写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。保存与清除只改中枢的路由簿，节点要等下一次模型服务下发才按新分工派活：卡片保存后写「已保存 · 尚未下发」，旁边是「下发到 N 台节点」按钮（范围内跟随这份分工、受托管的节点），它走 `POST /v0/providers/apply` 并带上卡片画出时的 `routingRevision`；这期间有人又存过就整次 409、不下发，卡片换成最新分工，不给「重试」。路由簿写锁记录 PID、随机 nonce 与时间：活持有者拒绝并发写入，PID 消失或超过 5 分钟时回收，释放只删除仍匹配自身令牌的锁。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。P38 起方向是三档难度（complex、medium、simple）与三种媒体（image、speech、video），三档可各带推理强度；卡片改叫「任务模型」，分「任务难度」与「生成」两组，渲染函数为 `renderTaskModelsCard`。路由簿文件升为 v2，v1 读时映射。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
 
 
 ## 长期记忆（P23）

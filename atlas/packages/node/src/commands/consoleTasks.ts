@@ -52,6 +52,7 @@ import {
   type UsagePort,
 } from '@qianmo/console'
 import { parseAddress, type ControlOutcome } from '@qianmo/protocol'
+import { TASK_TIERS, type TaskTier } from '@qianmo/providers'
 import {
   acquirePrivateInstanceLock,
   ensurePrivateDir,
@@ -152,6 +153,11 @@ const recordSchema = z.object({
   parentSession: z.string(),
   parentTarget: z.string(),
   target: z.string(),
+  /**
+   * P38: the difficulty tier every worker turn asks the node for, which
+   * picks the sub-session's model. Medium in a ledger older than the field.
+   */
+  difficulty: z.enum(TASK_TIERS).default('medium'),
   workerSession: z.string().nullable(),
   status: z.enum(STATUSES),
   progress: z.string(),
@@ -1561,6 +1567,9 @@ export class ConsoleTasks implements BackgroundTasksPort {
       return refused('agent 不是有效的智能体地址')
     const plan = this.#plan(args)
     if (typeof plan === 'string') return refused(plan)
+    const difficulty = given(args['difficulty']) ?? 'medium'
+    if (!(TASK_TIERS as readonly unknown[]).includes(difficulty))
+      return refused('difficulty 只能是 complex、medium、simple')
     const later = plan !== null && plan.runs === 0
     const dispatch = this.#dispatch(caller.owner)
     if (typeof dispatch === 'string') return refused(dispatch)
@@ -1601,6 +1610,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       parentSession: session.id,
       parentTarget: session.target,
       target,
+      difficulty: difficulty as TaskTier,
       workerSession: null,
       status: later ? 'scheduled' : 'queued',
       progress: '',
@@ -1640,6 +1650,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       id: task.id,
       title,
       target,
+      difficulty: task.difficulty,
       status: task.status,
       ...this.#planFields(task),
     })
@@ -2194,6 +2205,8 @@ export class ConsoleTasks implements BackgroundTasksPort {
                   text: prompt,
                   taskTtlMs: ttl,
                   background: true,
+                  // P38: the tier picks the sub-session's model on the node.
+                  direction: task.difficulty,
                 },
                 baseline: new Set(session.transcript.turns.map(one => one.id)),
                 now: this.#now,

@@ -28,6 +28,7 @@ import {
   type TenantPort,
   type UsagePort,
 } from '@qianmo/console'
+import { directionOf } from '@qianmo/providers'
 import {
   acquirePrivateInstanceLock,
   ensurePrivateDir,
@@ -73,7 +74,15 @@ const draftSchema = z.object({
   prompt: z.string().trim().min(1).max(20_000),
   when: whenSchema,
   timezone: z.string().default('Asia/Shanghai'),
-  direction: z.enum(MODEL_DIRECTIONS).nullable().default('chat'),
+  // P38: a P22 name (a schedule saved before, an older page) reads as its
+  // tier, written back as that tier on the next save; none given is medium.
+  direction: z
+    .preprocess(
+      value =>
+        typeof value === 'string' ? (directionOf(value) ?? value) : value,
+      z.enum(MODEL_DIRECTIONS).nullable(),
+    )
+    .default('medium'),
   channels: z.array(z.string()).max(50),
   notifyOnlyAgent: z.boolean(),
   enabled: z.boolean(),

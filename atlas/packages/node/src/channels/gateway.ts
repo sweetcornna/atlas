@@ -437,7 +437,7 @@ const COMMANDS = new Set([
   'pair',
 ])
 const HELP =
-  '/new 新会话 · /stop 停止 · /status 状态 · /model [方向|default] · /compact 压缩上下文'
+  '/new 新会话 · /stop 停止 · /status 状态 · /model [复杂|一般|简单|default] · /compact 压缩上下文'
 const HELP_PAIR = ' · /pair 码 批准配对'
 
 export function conversationKey(channelId: string, chat: ChannelChat): string {
