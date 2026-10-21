@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import * as fs from 'node:fs'
+import * as dns from 'node:dns/promises'
+import * as net from 'node:net'
 import * as path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { qianmoConfigPath } from '@qianmo/paths'
@@ -23,6 +25,7 @@ import {
 import type { ControlHandler } from './control.js'
 import type { ResidentAuthzEvent } from './residentAuthorization.js'
 import { readTextIfExists, writePrivateJson } from '../providers/store.js'
+import { publicAddress } from '../commands/outboundPolicy.js'
 import {
   defaultElevationBwrap,
   elevationProbeArgv,
@@ -113,6 +116,8 @@ export interface NodeElevationOptions {
    * argv succeeds.
    */
   readonly bwrap?: ElevationBwrap
+  /** For tests: DNS for URL-read hosts (default `dns.lookup`, every address). */
+  readonly lookup?: (host: string) => Promise<readonly { address: string }[]>
 }
 
 const hash = (input: unknown) =>
@@ -476,6 +481,32 @@ export class NodeElevation {
     // extension somehow offered one: bash runs only inside bubblewrap.
     if (classified.tool === 'bash' && !this.#sandboxes.get(agent))
       return refuse('这台节点没有命令沙箱：放权期间不执行 bash')
+    // A URL read leaves through the base's own fetch, on the node: refuse
+    // one that names or resolves to this machine, a private network, the
+    // link-local metadata range or any other non-public address.
+    if (
+      classified.hosts !== undefined &&
+      !(await this.#publicHosts(classified.hosts))
+    ) {
+      this.#record(
+        s,
+        {
+          tool: classified.tool,
+          cls: classified.class,
+          op: classified.op ?? null,
+          host: classified.hosts.join(','),
+          approved: false,
+          outcome: 'refused',
+          digest: hash(classified.args),
+          ...(invocationId ? { invocationId } : {}),
+        },
+        taskId,
+      )
+      this.#save()
+      return refuse(
+        '网址指向本机、内网或保留地址（或解析不出）：放权期间只读公网网址',
+      )
+    }
 
     const needsApproval = elevationNeedsApproval(s.tier, classified.class)
     const digest = hash(classified.args)
@@ -535,6 +566,31 @@ export class NodeElevation {
     )
     this.#save()
     return GRANTED
+  }
+
+  /** Every host is a public address, or resolves only to public ones. */
+  async #publicHosts(hosts: readonly string[]): Promise<boolean> {
+    const lookup =
+      this.#options.lookup ?? (host => dns.lookup(host, { all: true }))
+    for (const raw of hosts) {
+      const host = raw.replace(/^\[|\]$/g, '')
+      if (net.isIP(host) !== 0) {
+        if (!publicAddress(host)) return false
+        continue
+      }
+      let addresses: readonly { address: string }[]
+      try {
+        addresses = await lookup(host)
+      } catch {
+        return false
+      }
+      if (
+        addresses.length === 0 ||
+        addresses.some(({ address }) => !publicAddress(address))
+      )
+        return false
+    }
+    return true
   }
 
   /** The control face the console drives (P39 §§4,5). */

@@ -39,7 +39,7 @@ afterEach(async () => {
   root = pool = elevation = harness = page = undefined
 })
 
-test('real qianmopi: a grant opens workspace edits and a URL read through the gate, accept-edits asks, revoke takes it back', async () => {
+test('real qianmopi: a grant opens workspace edits and a public-URL read through the gate, accept-edits asks, revoke takes it back', async () => {
   root = mkdtempSync(join(tmpdir(), 'qm-elevation-real-'))
   previous = process.env.QIANMO_CONFIG_DIR
   process.env.QIANMO_CONFIG_DIR = join(root, 'config')
@@ -53,7 +53,11 @@ test('real qianmopi: a grant opens workspace edits and a URL read through the ga
         headers: { 'Content-Type': 'text/plain' },
       }),
   })
-  const url = `http://127.0.0.1:${page.port}/probe.txt`
+  // The read goes by name; the stand-in DNS below answers that name with a
+  // public address, so the host guard lets it through to the local page. The
+  // literal loopback address needs no DNS and is refused.
+  const url = `http://localhost:${page.port}/probe.txt`
+  const loopback = `http://127.0.0.1:${page.port}/probe.txt`
   const h = new ResidentOmpHarness()
   harness = h
   // gh decides whether the base registers `github`; mirror this machine.
@@ -71,6 +75,10 @@ test('real qianmopi: a grant opens workspace edits and a URL read through the ga
       available: program => program === 'gh' && hasGh,
       probe: async () => false,
       shell: () => '/bin/sh',
+    },
+    lookup: async host => {
+      if (host !== 'localhost') throw new Error('ENOTFOUND')
+      return [{ address: '93.184.215.14' }]
     },
     changed: async agent => pool?.invalidateAgent(agent),
     terminate: async agent => pool?.retireAgent(agent),
@@ -145,10 +153,12 @@ test('real qianmopi: a grant opens workspace edits and a URL read through the ga
   expect(off.results.join('\n')).not.toContain('P39-MARKER')
   expect(gates).toEqual([])
 
-  // 2. 自动审批 (auto): workspace edits and the URL read run without asking.
+  // 2. 自动审批 (auto): workspace edits and the URL read run without asking;
+  // a read of this machine's own address is refused by the host guard.
   expect((await control('elevation.enable', { tier: 'auto' })).ok).toBe(true)
   const auto = await run([
     { name: 'write', input: { path: 'auto.txt', content: 'yes' } },
+    { name: 'read', input: { path: loopback } },
     { name: 'read', input: { path: url } },
   ])
   expect(auto.offered).toEqual(
@@ -158,11 +168,12 @@ test('real qianmopi: a grant opens workspace edits and a URL read through the ga
   expect(auto.offered.includes('github')).toBe(hasGh)
   expect(existsSync(join(workspace, 'auto.txt'))).toBe(true)
   expect(auto.results.join('\n')).toContain('P39-MARKER')
+  expect(auto.results.join('\n')).toContain('the node refused this call')
   const phases = gates.map(
     g =>
       `${String(g.toolName)}:${String((g.input as { phase?: unknown }).phase)}`,
   )
-  expect(phases).toEqual(['read:authorize', 'read:completed'])
+  expect(phases).toEqual(['read:authorize', 'read:authorize', 'read:completed'])
   expect(asked).toEqual([])
   const actions = await e.control(
     'elevation.actions',
@@ -179,8 +190,9 @@ test('real qianmopi: a grant opens workspace edits and a URL read through the ga
   expect(
     rows.map(r => `${r.tool}:${r.cls}:${r.outcome}:${r.host ?? ''}`),
   ).toEqual([
-    'read:read-out:completed:127.0.0.1',
-    'read:read-out:allowed:127.0.0.1',
+    'read:read-out:completed:localhost',
+    'read:read-out:allowed:localhost',
+    'read:read-out:refused:127.0.0.1',
   ])
 
   // 3. 自动接受编辑 (accept-edits): the same read now asks, and a refusal blocks it.

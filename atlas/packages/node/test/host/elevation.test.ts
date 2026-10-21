@@ -326,7 +326,7 @@ describe('NodeElevation gate (P39 §2)', () => {
     expect(rows.some(r => r.outcome === 'allowed')).toBe(true)
   })
   test('the completed row names the same host as the admitted one', async () => {
-    const h = harness()
+    const h = harness({ lookup: async () => [{ address: '93.184.215.14' }] })
     const epoch = viewOf(await enable(h, 'auto')).epoch
     await gate(h, 'read', { path: 'https://example.com/a' }, epoch, deny, 'r1')
     await h.elevation.decide(
@@ -353,6 +353,98 @@ describe('NodeElevation gate (P39 §2)', () => {
       'failed@example.com',
       'allowed@example.com',
     ])
+  })
+})
+
+describe('URL reads reach public addresses only', () => {
+  const deny = async () => false
+  async function read(h: Harness, url: string, epoch: number) {
+    return h.elevation.decide(
+      'reviewer',
+      'task-1',
+      'ctx',
+      authorize('read', { path: url }, epoch),
+      () => true,
+      deny,
+    )
+  }
+  test('loopback, private, link-local, CGNAT and mapped literals are refused without DNS', async () => {
+    const looked: string[] = []
+    const h = harness({
+      lookup: async host => {
+        looked.push(host)
+        return [{ address: '93.184.215.14' }]
+      },
+    })
+    const epoch = viewOf(await enable(h, 'full-access')).epoch
+    for (const url of [
+      'http://127.0.0.1:8080/x',
+      'http://0x7f000001/x',
+      'http://10.1.2.3/',
+      'http://192.168.1.1/',
+      'http://172.16.0.9/',
+      'http://169.254.169.254/latest/meta-data/',
+      'http://100.64.0.1/',
+      'http://[::1]:9000/',
+      'http://[::ffff:127.0.0.1]/',
+      'http://[fd00::1]/',
+      'http://0.0.0.0/',
+    ]) {
+      const decision = await read(h, url, epoch)
+      expect(`${url} ${decision.ok}`).toBe(`${url} false`)
+      expect(decision.reason).toContain('公网')
+    }
+    expect(looked).toEqual([])
+    expect((await read(h, 'https://93.184.215.14/x', epoch)).ok).toBe(true)
+  })
+  test('a name is checked against every address it resolves to; no answer refuses', async () => {
+    const answers: Record<string, readonly { address: string }[]> = {
+      'public.test': [{ address: '93.184.215.14' }],
+      'split.test': [{ address: '93.184.215.14' }, { address: '10.0.0.5' }],
+      'inside.test': [{ address: '127.0.0.1' }],
+      'empty.test': [],
+    }
+    const h = harness({
+      lookup: async host => {
+        const answer = answers[host]
+        if (answer === undefined) throw new Error('ENOTFOUND')
+        return answer
+      },
+    })
+    const epoch = viewOf(await enable(h, 'full-access')).epoch
+    expect((await read(h, 'https://public.test/a', epoch)).ok).toBe(true)
+    for (const host of ['split.test', 'inside.test', 'empty.test', 'nx.test'])
+      expect(`${host} ${(await read(h, `https://${host}/a`, epoch)).ok}`).toBe(
+        `${host} false`,
+      )
+    // Mixing a public URL with a private one in one read refuses the read.
+    expect(
+      (
+        await h.elevation.decide(
+          'reviewer',
+          'task-1',
+          'ctx',
+          authorize(
+            'read',
+            { path: 'https://public.test/a;https://inside.test/b' },
+            epoch,
+          ),
+          () => true,
+          deny,
+        )
+      ).ok,
+    ).toBe(false)
+    const actions = await h.elevation.control(
+      'elevation.actions',
+      { agent: 'reviewer', limit: 1 },
+      ctx('url'),
+    )
+    expect(
+      (actions as { value: { outcome: string; host: string }[] }).value[0],
+    ).toMatchObject({
+      outcome: 'refused',
+      host: 'inside.test,public.test',
+    })
   })
 })
 
