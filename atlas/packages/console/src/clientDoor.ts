@@ -48,10 +48,10 @@ import { fail, json, methodNotAllowed, notFound, seeOther } from './respond.js'
 import type { LoginThrottle } from './throttle.js'
 
 /** How long a ticket can wait for its window. */
-export const CLIENT_TICKET_TTL_MS = 60_000
+const CLIENT_TICKET_TTL_MS = 60_000
 
 /** Unspent tickets one device may hold at once. */
-export const MAX_OPEN_CLIENT_TICKETS = 4
+const MAX_OPEN_CLIENT_TICKETS = 4
 
 /** Tickets the whole console holds before it stops issuing. */
 const MAX_TICKETS = 1000
@@ -67,7 +67,7 @@ const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567'
 /** Where a redeemed window lands. */
 const FRONT = '/'
 
-export type ClientTicketState = 'pending' | 'used' | 'expired'
+type ClientTicketState = 'pending' | 'used' | 'expired'
 
 interface Ticket {
   readonly id: string
@@ -78,7 +78,7 @@ interface Ticket {
   used: boolean
 }
 
-export interface IssuedClientTicket {
+interface IssuedClientTicket {
   readonly id: string
   readonly ticket: string
   readonly expiresAt: number
@@ -225,7 +225,7 @@ export function closingClientSessions(
 }
 
 /** What one request to the door needs. */
-export interface ClientDoorContext {
+interface ClientDoorContext {
   readonly request: Request
   readonly url: URL
   readonly devices: HandoffDevicesPort | undefined
