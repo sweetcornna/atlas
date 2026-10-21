@@ -29,6 +29,8 @@ export interface OmpSessionPool<C extends OmpRpcChannel = OmpRpcProcess>
   extends SessionPool<C> {
   readonly closed: Promise<void>
   readonly parkedReason: string | undefined
+  /** Close every child of `agent` now, busy or not (P39 revoke/ESTOP). */
+  retireAgent?(agent: string): Promise<void>
 }
 
 /** The external pool (`ExternalRuntimePool`). */
@@ -159,6 +161,16 @@ export class ResidentRuntimePool<
   async invalidateAgent(agent: string): Promise<void> {
     await Promise.all([
       this.omp.invalidateAgent(agent),
+      this.external?.invalidateAgent(agent),
+    ])
+  }
+  /**
+   * High-permission revoke/ESTOP (P39): only qianmopi children carry a grant,
+   * so only they are closed at once; an external runtime is recycled as usual.
+   */
+  async retireAgent(agent: string): Promise<void> {
+    await Promise.all([
+      this.omp.retireAgent?.(agent) ?? this.omp.invalidateAgent(agent),
       this.external?.invalidateAgent(agent),
     ])
   }

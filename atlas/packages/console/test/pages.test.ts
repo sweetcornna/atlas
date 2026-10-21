@@ -35,6 +35,7 @@ import {
   FakeMemory,
 } from './directionFakes.js'
 import { FakeBilling } from './billingFake.js'
+import { FakeElevation } from './elevationFake.js'
 import {
   ADMIN,
   LABEL,
@@ -190,6 +191,12 @@ const PAGES: readonly PageRow[] = [
     reads: ['planner', '运行中', 'id="desktop"'],
   },
   {
+    path: '/admin/elevation',
+    title: '权限模式',
+    active: 'elevation',
+    reads: ['planner', '自动审批', '跳过权限确认', 'id="elevation"'],
+  },
+  {
     path: '/admin/files',
     title: '文件互通',
     active: 'files',
@@ -268,6 +275,7 @@ function harness(options: { readonly billing?: boolean } = {}) {
         : { billing: new FakeBilling(() => NOW) }),
       handoffDevices: new FakeHandoffDevices(() => NOW),
       desktop: new FakeDesktop(() => NOW),
+      elevation: new FakeElevation(() => NOW),
       files: new FakeFiles(() => NOW),
     },
     nodeServers: [

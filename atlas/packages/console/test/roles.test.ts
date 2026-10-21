@@ -27,6 +27,7 @@ import {
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
+import { FakeElevation } from './elevationFake.js'
 import { FakeBilling } from './billingFake.js'
 import {
   ADMIN,
@@ -100,6 +101,7 @@ function harness() {
       billing: new FakeBilling(() => NOW),
       handoffDevices: new FakeHandoffDevices(() => NOW),
       desktop: new FakeDesktop(() => NOW),
+      elevation: new FakeElevation(() => NOW),
       files: new FakeFiles(() => NOW),
     },
     nodeServers: [{ node: 'tokyo-1', server: 'p11' }],

@@ -133,8 +133,19 @@ export const approvalsRoute: RouteModule = {
       if (rest.length === 0) {
         if (ctx.request.method !== 'GET') return methodNotAllowed(['GET'])
         const result = await port.list(principal)
+        // `?mine=1` (the front's prompt, P39): only what waits on this person
+        // as the session's owner, not everything an ops account may see.
+        const mine = ctx.url.searchParams.get('mine') === '1'
         return result.ok
-          ? json({ approvals: result.value })
+          ? json({
+              approvals: mine
+                ? result.value.filter(
+                    item =>
+                      item.owner === principal.subject &&
+                      item.status === 'pending',
+                  )
+                : result.value,
+            })
           : failureResponse(result.failure)
       }
       if (rest.length !== 1 && !continuation)

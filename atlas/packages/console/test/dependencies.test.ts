@@ -27,6 +27,7 @@ import {
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
+import { FakeElevation } from './elevationFake.js'
 import { FakeBilling } from './billingFake.js'
 import { ADMIN, browse, NOW, pageHarness } from './pageHarness.js'
 
@@ -130,6 +131,7 @@ describe('assets', () => {
         billing: new FakeBilling(),
         handoffDevices: new FakeHandoffDevices(() => NOW),
         desktop: new FakeDesktop(() => NOW),
+        elevation: new FakeElevation(() => NOW),
         files: new FakeFiles(() => NOW),
       },
     })

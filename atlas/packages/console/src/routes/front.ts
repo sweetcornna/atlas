@@ -339,6 +339,12 @@ export async function renderFront(
           : canWrite(ctx.access)
             ? 'ops'
             : 'view',
+      // Approval prompts on the front (P39): only for a person who may approve.
+      ...(ctx.deps.approvals !== undefined &&
+      ctx.access.principal?.kind === 'user' &&
+      ctx.access.principal.role !== 'viewer'
+        ? { approvals: true }
+        : {}),
       // The public edition's source footer (AGPL §13, `view/source.ts`).
       ...(ctx.deps.billing === undefined
         ? {}

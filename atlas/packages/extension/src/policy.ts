@@ -30,6 +30,11 @@ import {
   isDesktopTool,
   type DesktopResource,
 } from './desktopPolicy.js'
+import {
+  elevatedTools,
+  elevationActive,
+  type ElevationResource,
+} from './elevationPolicy.js'
 
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -61,6 +66,10 @@ export interface ResidentExtensionConfig {
   readonly media?: { readonly image: boolean; readonly speech: boolean }
   readonly desktopPath?: string
   readonly desktop?: DesktopResource
+  /** High-permission grant file for this agent, re-read before each call (P39). */
+  readonly elevationPath?: string
+  /** The grant as it stood at launch; the host shapes the child from it. */
+  readonly elevation?: ElevationResource
   readonly approvals?: boolean
   /** MCP servers the operator configured for this agent (P32). */
   readonly mcp?: readonly ResidentMcpServer[]
@@ -184,6 +193,10 @@ export function readResidentExtensionConfig(
       : {}),
     ...(typeof record.desktopPath === 'string' && isAbsolute(record.desktopPath)
       ? { desktopPath: record.desktopPath }
+      : {}),
+    ...(typeof record.elevationPath === 'string' &&
+    isAbsolute(record.elevationPath)
+      ? { elevationPath: record.elevationPath }
       : {}),
     ...(record.approvals === true ? { approvals: true } : {}),
     ...(record.mcp === undefined ? {} : { mcp: parseMcpServers(record.mcp) }),
@@ -324,6 +337,25 @@ const READ_SCHEMES: ReadonlySet<string> = new Set([
   'rule',
 ])
 
+/**
+ * Workspace writes are on with `--allow-workspace-edits`, or while a
+ * high-permission grant is live (the sandboxed shell can write there anyway,
+ * and every live tier auto-accepts workspace edits — P39 §2).
+ */
+export function residentWritesWorkspace(
+  config: Pick<ResidentExtensionConfig, 'edits' | 'elevation'>,
+  now: number = Date.now(),
+): boolean {
+  return config.edits === 'workspace' || elevationActive(config.elevation, now)
+}
+
+/** `--approval-mode` for one child; the overlay restates it. */
+export function residentApprovalMode(
+  config: Pick<ResidentExtensionConfig, 'edits' | 'elevation'>,
+): 'write' | 'always-ask' {
+  return residentWritesWorkspace(config) ? 'write' : 'always-ask'
+}
+
 /** The active tool names for one posture (`--tools`, `setActiveTools`). */
 export function residentActiveTools(
   edits: ResidentExtensionConfig['edits'],
@@ -331,16 +363,20 @@ export function residentActiveTools(
   media?: ResidentExtensionConfig['media'],
   desktop?: ResidentExtensionConfig['desktop'],
   mcp?: ResidentExtensionConfig['mcp'],
+  elevation?: ResidentExtensionConfig['elevation'],
 ): string[] {
   return [
     ...RESIDENT_READ_TOOLS,
     ...RESIDENT_SESSION_TOOLS,
-    ...(edits === 'workspace' ? RESIDENT_WRITE_TOOLS : []),
+    ...(residentWritesWorkspace({ edits, elevation })
+      ? RESIDENT_WRITE_TOOLS
+      : []),
     ...hostTools,
     ...desktopTools(desktop),
     ...(media?.image ? ['generate_image'] : []),
     ...(media?.speech ? ['tts'] : []),
     ...(mcp ?? []).flatMap(server => server.tools),
+    ...elevatedTools(elevation),
   ]
 }
 
@@ -364,7 +400,12 @@ export function residentConfigOverlay(options: {
   readonly media?: ResidentExtensionConfig['media']
   readonly desktop?: ResidentExtensionConfig['desktop']
   readonly mcp?: ResidentExtensionConfig['mcp']
+  readonly elevation?: ResidentExtensionConfig['elevation']
 }): string {
+  // A live grant lets omp's approval gate pass the elevated tools; the
+  // extension's tool_call gate and the host decide each call. Everything else
+  // in the denied table stays denied, for subagents too.
+  const elevated = elevatedTools(options.elevation)
   const approvals: [string, string][] = [
     ...(options.media?.image
       ? [['generate_image', 'allow'] as [string, string]]
@@ -373,7 +414,10 @@ export function residentConfigOverlay(options: {
     ...desktopTools(options.desktop).map(
       name => [name, 'allow'] as [string, string],
     ),
-    ...RESIDENT_DENIED_TOOLS.map(name => [name, 'deny'] as [string, string]),
+    ...elevated.map(name => [name, 'allow'] as [string, string]),
+    ...RESIDENT_DENIED_TOOLS.filter(name => !elevated.includes(name)).map(
+      name => [name, 'deny'] as [string, string],
+    ),
     // A host tool has no approval tier, so omp treats it as `exec`, which
     // prompts — and fails — in both resident modes. The extension's allowlist
     // is what decides whether it runs.
@@ -390,7 +434,7 @@ export function residentConfigOverlay(options: {
     '# Qianmo resident overlay, written by the resident host. Do not edit:',
     '# it is regenerated for every omp child the node starts.',
     'tools:',
-    `  approvalMode: ${options.edits === 'workspace' ? 'write' : 'always-ask'}`,
+    `  approvalMode: ${residentApprovalMode(options)}`,
     '  approval:',
     ...approvals.map(([name, policy]) => `    ${yamlKey(name)}: ${policy}`),
     ...(options.media
@@ -420,7 +464,22 @@ export function residentConfigOverlay(options: {
     'browser:',
     '  enabled: false',
     'web_search:',
-    '  enabled: false',
+    `  enabled: ${elevated.includes('web_search')}`,
+    ...(elevated.length > 0
+      ? [
+          'github:',
+          `  enabled: ${elevated.includes('github')}`,
+          'fetch:',
+          '  enabled: true',
+          // direnv would run a workspace `.envrc` on the host before the
+          // sandbox; a long command stays in the foreground, where its result
+          // reaches the gate's completed phase.
+          'bash:',
+          '  direnv: off',
+          '  autoBackground:',
+          '    enabled: false',
+        ]
+      : []),
     '',
   ].join('\n')
 }
@@ -485,6 +544,16 @@ function realPath(target: string): string {
 function inside(child: string, root: string): boolean {
   const rel = relative(root, child)
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+/** Canonical target of a workspace-relative path and whether it stays inside. */
+export function residentWorkspaceTarget(
+  raw: string,
+  workspace: string,
+): { readonly target: string; readonly inside: boolean } {
+  const root = realPath(workspace)
+  const target = realPath(lexicalPath(raw, root))
+  return { target, inside: inside(target, root) }
 }
 
 /** The directory part of a path that may end in a glob. */
@@ -557,7 +626,7 @@ function writeTargets(
  * policy (hooks, extensions, settings), and VCS internals, where a hook script
  * is code that runs outside any turn.
  */
-const WORKSPACE_POLICY_DIRS: readonly string[] = Object.freeze([
+export const WORKSPACE_POLICY_DIRS: readonly string[] = Object.freeze([
   '.omp',
   '.claude',
   '.codex',
@@ -709,7 +778,7 @@ export function residentToolVerdict(
     return undefined
   }
   if (RESIDENT_WRITE_TOOLS.includes(toolName)) {
-    if (config.edits !== 'workspace') {
+    if (!residentWritesWorkspace(config)) {
       return block(
         `${toolName} is not available: this node runs read-only (start it with --allow-workspace-edits to allow edits inside the workspace)`,
       )

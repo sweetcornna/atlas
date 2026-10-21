@@ -701,6 +701,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/tasks/<任务 id>/cancel` | **成员** | 取消一个未结束的后台任务，和对话里的取消同一条路：任务停下，节点停掉在跑的那一轮。只有发起人或 ops；越权与不存在同为 404，已结束 400。记 `task.cancel` |
 | GET | `/admin/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 记忆（P23，`docs/dev/directions-2026-10.md`）：这个人在某个智能体那里的长期记忆，按偏好、计划、项目、日常分类，能找、改、忘记。长期记忆按「智能体 × 账号」分开（复核 D18），只给读者自己的，所以只读令牌没有这一页（403）；没接记忆端口时侧栏不出现、页面 404 |
 | GET | `/admin/desktop` | view | 云端电脑（P21）：每个节点主智能体的专属浏览器与电脑——开关、确认方式（只看自动其余逐次确认 / 每一步都确认）、运行状态、清空回收，与最近的操作（只记类别与主机名）。浏览与操作能力来自基座，阡陌管分配、授权与回收。没接端口时侧栏不出现、页面 404 |
+| GET | `/admin/elevation` | view | 权限模式（P39，`docs/dev/elevation.md`）：每个智能体的四种模式（人工确认 / 自动接受编辑 / 自动审批 / 跳过权限确认）、到期与次数、命令沙箱是否可用、收回与全部收回，与最近的高权限调用（只记工具、类别、目标与摘要）。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/files` | view | 文件互通（P20，管理组）：等人批准的取文件申请（可放宽到目录、选有效期）、传输与汇集（状态、目标摘要核对、失败可重试）、授权（有效期内可再取、可撤销）。发起传输时每个来源可以经 `/v0/files/browse` 浏览来源工作区。路径都是工作区内的相对路径，文件内容不上页面。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/connect` | view | 连接：应用连接（P25，邮箱与日历；凭据只在中枢，页面只给主机名、打码的账号与「已设置」）与本机工具（P19，配对的设备与接力插件）。两边都没接时侧栏不出现、页面 404；接了一边时另一边写「未接入」 |
 | GET | `/admin/im` | view | 渠道（P28）：QQ、个人 QQ、微信、Telegram、Discord、Slack 接到哪个智能体、在线状态与会话数；运维能添加、编辑、停用、删除，微信扫码接入，处理配对请求（设为主人、设为成员、拒绝）。没接端口时侧栏不出现、页面 404 |
@@ -720,6 +721,11 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/desktop/<节点>/<智能体>/screen` | view | 最近一张截图 `DesktopScreenView`（`{at, mimeType, data}`，data 为 base64）或 `null`；按租户过滤；经控制操作 `desktop.view`，节点不支持时 501 |
 | PUT | `/v0/desktop/<节点>/<智能体>` | **ops** | `{ browser?, computer?, confirm?, apps?, terminal? }`：confirm 为 sensitive/always/autonomous，apps 为 all/none/编号列表（至多 50），先 admit，再经签名控制链路，记 `desktop.set` |
 | POST | `/v0/desktop/<节点>/<智能体>/recycle` | **ops** | 停止并删除该智能体资料；先 admit，记 `desktop.recycle` |
+| GET | `/v0/elevation` | view | `ElevationNodeView[]`：模式、代次、到期、次数、沙箱与不生效原因；按租户过滤 |
+| GET | `/v0/elevation/actions?agent=<地址>&limit=50` | view | `ElevationActionView[]`，agent 可省，limit 1–200，按租户过滤；不含命令与网页内容 |
+| PUT | `/v0/elevation/<节点>/<智能体>` | **ops** | `{ tier, ttlMs?, maxCalls? }`：tier 为 off/accept-edits/auto/full-access，ttlMs 5 分钟–24 小时，maxCalls 1–2000；开启或改档还要 30 分钟内验证过的个人 ops 凭据（旧式令牌与应急身份 403），`off` 不设此门槛；先 admit，再经签名控制链路，记 `elevation.enable` / `elevation.disable` |
+| POST | `/v0/elevation/<节点>/<智能体>/revoke` | **ops** | 立即收回：回到人工确认、代次 +1、作废待批审批、中止在途回合；先 admit，记 `elevation.revoke` |
+| POST | `/v0/elevation/revoke-all` | **ops** | 对本租户可见、已放权的每个智能体各发一次收回，返回逐个结果 |
 | GET | `/admin/access`、`/admin/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/admin/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
 | GET | `/admin/providers`、`/admin/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
 | GET | `/admin/providers/new?q=`、`/admin/providers/new?preset=<预设>&site=<站点>` | view | 预设卡片（`q` 是 GET 搜索）；带 `preset` 时是从这份预设新建的表单 |
@@ -728,7 +734,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/admin/usage` | view | 东八区自然日用量；输入、输出、缓存写入、缓存读取四列，charged 排除 cacheRead；显示配额模式、在途、会话与可观测下界 |
 | GET | `/v0/usage` | view | 用量快照；普通个人账号只读自己，运维只能读取 tenant scope 内主体；未接入 501 |
 | GET | `/v0/approvals/report` | view | 最近每节点 500 条已验审计记录；附完整性与截断状态。viewer 仅聚合，member 仅本人会话，ops 沿当前租户范围 |
-| GET | `/v0/approvals` | member / ops | 可见审批列表 |
+| GET | `/v0/approvals` | member / ops | 可见审批列表；`?mine=1` 只列自己会话里待批的（对话前台 `/` 的确认框轮询它，P39） |
 | POST | `/v0/approvals/auth` | member / ops | 同账号个人凭据再验证，签发独立 HttpOnly 审批 cookie，30 分钟绝对期；普通登录 cookie 本身不能审批 |
 | POST | `/v0/approvals/<requestId>` | 本人 / ops + 审批凭据 | 决定 allow-once / allow-window / deny，绑定 digest，窗口最多 60 分钟；宿主再次核对归属、时效与摘要 |
 | POST | `/v0/approvals/<requestId>/continue` | 本人 + 审批凭据 | 节点已确认原任务终态且会话空闲后，原子计入个人/租户/全局配额，记录持久一次性意图，批准并发送新的签名入站任务；本地超时、重复提交与重启重发均拒绝 |
@@ -809,6 +815,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/fragments/lifecycle/<节点>` | view | HTML 片段：生命周期页签被轮询的那一块（§5.5） |
 | GET | `/fragments/alerts?level=&state=`、`/fragments/jobs`、`/fragments/schedules`、`/fragments/tasks` | view | HTML 片段 |
 | GET | `/fragments/desktop` | view | HTML 片段：云端电脑页被轮询的卡片与操作记录 |
+| GET | `/fragments/elevation` | view | HTML 片段：权限模式页被轮询的卡片与调用记录 |
 | GET | `/fragments/files` | view | HTML 片段：文件互通页被轮询的申请、传输与授权 |
 | GET | `/fragments/replicate/jobs` | view | HTML 片段：服务器页「添加服务器」下面的复制记录 |
 | GET | `/fragments/connect` | view | HTML 片段：连接页被轮询的两半 |
@@ -895,6 +902,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 | GET/POST/PUT/DELETE | `/jobs` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/memory?agent=<地址>&kind=&q=&retired=1` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/desktop` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/elevation` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/files` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/connect` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/im` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
@@ -2812,6 +2820,16 @@ ICS 与 CalDAV 返回的 RRULE 本轮均**不展开**，结果显式带 warning�
 接力 `git ls-remote` 与删引用走 git 子进程，不经过 HTTP 出站策略；
 生产地址只可能是固定的 `https://github.com/<owner>/<name>.git`，不能
 配置其他主机或远端 URL。本地远端映射只在测试注入端口里存在。
+
+## 高权限模式（P39）
+
+页面「权限模式」在侧栏管理一组，设计与边界见 [elevation.md](elevation.md)。中枢启用要同时有审批与控制链路：
+
+```bash
+bun run qm -- console --elevation --approvals --accounts --chat-sign --chat-url <node>=<url> --control <node>=ws://<node-host>:<port> --trust <node>=<publicKey>
+```
+
+`--elevation` 同时启用动作账本。节点常驻宿主已装配 `elevation` 控制处理器，所有智能体启动时都是人工确认，放权不跨重启。
 
 ## 云端电脑（P21）
 

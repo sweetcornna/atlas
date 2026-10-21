@@ -39,6 +39,7 @@ import { channelsRoute } from './im.js'
 import { chatRoute } from './chat.js'
 import { connectRoute } from './connect.js'
 import { desktopRoute } from './desktop.js'
+import { elevationRoute } from './elevation.js'
 import { extensionsRoute } from './extensions.js'
 import { filesRoute } from './files.js'
 import { jobsRoute } from './jobs.js'
@@ -86,6 +87,7 @@ export const ROUTES: readonly RouteModule[] = [
   auditRoute,
   alertsRoute,
   approvalsRoute,
+  elevationRoute,
   serversRoute,
   accessRoute,
   usageRoute,

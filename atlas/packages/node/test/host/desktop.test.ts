@@ -24,6 +24,8 @@ async function fixture(
     pair?: boolean
     /** Whether the launcher hands one out when asked. */
     devtools?: boolean
+    /** The agent's live high-permission tier (P39). */
+    tier?: () => 'accept-edits' | 'auto' | 'full-access' | undefined
   } = {},
 ) {
   const previous = process.env.QIANMO_CONFIG_DIR
@@ -125,6 +127,7 @@ async function fixture(
     tabLimit: 2,
     audit: e => audits.push(e),
     cdpBridge,
+    ...(opts.tier ? { elevationTier: opts.tier } : {}),
   })
   const enable = (
     operationId = 'enable',
@@ -382,6 +385,59 @@ test('sensitive observation bypasses approver; always observes through approval 
     await f.enable('policy', { confirm: 'always' })
     expect((await run('revoked', false)).authorized).toBe(false)
     expect(asks).toBe(1)
+  } finally {
+    await f.cleanup()
+  }
+})
+test('跳过权限确认 (P39) lifts per-step confirmation of a sensitive resource; always keeps asking', async () => {
+  let tier: 'accept-edits' | 'auto' | 'full-access' | undefined
+  const f = await fixture('darwin', { tier: () => tier })
+  try {
+    await f.enable()
+    let asks = 0
+    const click = async (id: string) => {
+      const call = callOf(f.node, 'qianmo_browser_click', undefined, id)
+      const gate = (phase: string) =>
+        f.node.gate(
+          'main',
+          's',
+          't',
+          'c',
+          {
+            ...call,
+            input: {
+              ...call.input,
+              phase,
+              observedTargetDigest: 'a'.repeat(64),
+            },
+          },
+          () => true,
+          async (_call, before) => {
+            asks++
+            return before(undefined, 'fixture-request', () => true)
+          },
+        )
+      expect(await gate('reserve')).toBe(true)
+      const authorized = await gate('authorize')
+      if (authorized) {
+        await gate('commit')
+        await gate('completed')
+      }
+      return authorized
+    }
+    for (const [id, now, expected] of [
+      ['off', undefined, 1],
+      ['auto', 'auto', 2],
+      ['full', 'full-access', 2],
+    ] as const) {
+      tier = now
+      expect(await click(id)).toBe(true)
+      expect(`${id} ${asks}`).toBe(`${id} ${expected}`)
+    }
+    await f.enable('policy', { confirm: 'always' })
+    tier = 'full-access'
+    expect(await click('always')).toBe(true)
+    expect(asks).toBe(3)
   } finally {
     await f.cleanup()
   }

@@ -377,6 +377,96 @@ export interface DesktopPort {
 }
 
 // ---------------------------------------------------------------------------
+// P39 高权限模式
+// ---------------------------------------------------------------------------
+
+/**
+ * 档位（`docs/dev/elevation.md`）：`off`（人工确认，缺省）、`accept-edits`（自动接受编辑）、
+ * `auto`（自动审批）、`full-access`（跳过权限确认）。
+ */
+export type ElevationTierName = 'off' | 'accept-edits' | 'auto' | 'full-access'
+
+/** 一个智能体当前的放权状态。 */
+export interface ElevationNodeView extends AgentRef {
+  /** 控制链路是否连着；断开时其余字段是最后一次知道的值。 */
+  readonly reachable: boolean
+  readonly tier: ElevationTierName
+  /** 代次：每次开/改/收回 +1，旧代次的在途调用会被拒。 */
+  readonly epoch: number
+  /** 到期毫秒时间戳；`off` 时为 null。 */
+  readonly expiresAt: number | null
+  readonly maxCalls: number
+  readonly usedCalls: number
+  /** 节点能否沙箱化命令；为 false 时 `bash` 不在工具面里。 */
+  readonly sandbox: boolean
+  /** sandbox 为 false 时写明原因（没有 bubblewrap）。 */
+  readonly sandboxReason: string | null
+  /**
+   * 放权在这个智能体上不生效的原因（它跑在不加载阡陌扩展的外部底层上）；能生效为 null。
+   * 旧节点不带这个字段。
+   */
+  readonly unsupportedReason?: string | null
+  /** 节点上有没有 `gh`：没有时放权期间不提供 GitHub 工具。旧节点不带这个字段。 */
+  readonly github?: boolean
+  readonly enabledAt: number | null
+  /** 开启放权的运维主体；`off` 时为 null。 */
+  readonly enabledBy: string | null
+  readonly actions24h: number
+}
+
+export type ElevationActionClass = 'local' | 'read-out' | 'act-out'
+
+export interface ElevationActionView {
+  readonly at: number
+  readonly node: string
+  readonly agent: string
+  /** `bash` / `task` / `web_search` / `github` / `read`。 */
+  readonly tool: string
+  readonly cls: ElevationActionClass
+  /** GitHub 操作名；其余为 null。 */
+  readonly op: string | null
+  /** 读网址的主机名；其余为 null。 */
+  readonly host: string | null
+  readonly approved: boolean
+  readonly outcome: 'allowed' | 'refused' | 'completed' | 'failed'
+  readonly taskId?: string
+  readonly invocationId?: string
+  readonly epoch: number
+  /** 参数摘要；不记命令正文与网页内容。 */
+  readonly digest?: string
+}
+
+/** 端口在实际下发前重验租户权限；此回调不进入控制消息。 */
+export interface ElevationActor extends DirectionActor {
+  readonly beforeDispatch?: () => void
+}
+
+export interface ElevationPort {
+  list(): Promise<ConsoleResult<readonly ElevationNodeView[]>>
+  /** 开启或改档。`off` 等同于关闭（不收回在途审批之外的记账）。 */
+  set(
+    ref: AgentRef,
+    change: {
+      readonly tier: ElevationTierName
+      /** 生效时长（毫秒）；缺省由节点定。 */
+      readonly ttlMs?: number
+      /** 次数上限；缺省由节点定。 */
+      readonly maxCalls?: number
+    },
+    actor: ElevationActor,
+  ): Promise<ConsoleResult<ElevationNodeView>>
+  /** 立刻收回：档位归零、代次 +1、撤销待批、回收子进程。 */
+  revoke(
+    ref: AgentRef,
+    actor: ElevationActor,
+  ): Promise<ConsoleResult<ElevationNodeView>>
+  actions(
+    ref: AgentRef | null,
+    limit: number,
+  ): Promise<ConsoleResult<readonly ElevationActionView[]>>
+}
+
+// ---------------------------------------------------------------------------
 // P22 按任务匹配模型；P38 收成三档难度与三种媒体
 // ---------------------------------------------------------------------------
 

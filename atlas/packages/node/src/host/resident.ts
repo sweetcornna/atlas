@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { NodeDesktop } from './desktop.js'
+import { NodeElevation } from './elevation.js'
 import { isDesktopTool } from '@qianmo/extension/desktopPolicy'
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -61,6 +62,7 @@ import {
   type ResidentUpstreamHealth,
 } from '@qianmo/resident'
 import type {
+  AuthzCall,
   DeliveryLedgerEntry,
   ResidentAssembledPrompt,
   ResidentChildConnection,
@@ -105,6 +107,7 @@ import { FileMemoryStore, defaultMemoryRoot } from '@qianmo/memory'
 import {
   residentToolVerdict,
   residentApprovalInput,
+  residentApprovalMode,
 } from '@qianmo/extension/policy'
 import { parseMemoryWrite } from './residentMemoryWrite.js'
 import {
@@ -822,6 +825,8 @@ const RUNTIME_WAIT_MS = 3_000
 
 export class QianmoResident {
   readonly desktop: NodeDesktop
+  /** Per-agent high-permission grants, gate and audit (P39). */
+  readonly elevation: NodeElevation
   /** Operator-configured MCP servers, skills and plugins (P32). */
   readonly extensions: NodeExtensions
   readonly control: ControlRegistry
@@ -1031,6 +1036,9 @@ export class QianmoResident {
         options.memoryRoot ?? defaultMemoryRoot(),
         ...(options.protectedRoots ?? []),
       ],
+      // 跳过权限确认 (P39) lifts the per-step confirmation of a `sensitive`
+      // resource; read per action, so a revoke or expiry applies at once.
+      elevationTier: agent => this.elevation.liveTier(agent),
       ...(options.desktopMemoryBytes === undefined
         ? {}
         : { memoryBytes: options.desktopMemoryBytes }),
@@ -1045,6 +1053,42 @@ export class QianmoResident {
         'desktop.disable',
         'desktop.recycle',
       ],
+    })
+    // High-permission mode (P39): per-agent grants, gate and audit. Under
+    // ESTOP a grant can be read and withdrawn but never opened; the gate
+    // itself clears every grant when ESTOP engages (host/elevation.ts).
+    this.elevation = new NodeElevation({
+      node: options.node,
+      agents: options.agents.map(a => a.agent),
+      estop: () => this.#estop.engaged(),
+      audit: options.runtimeAudit ?? options.authorization?.audit,
+      invalidated: agent => this.#authorization?.cancelElevation(agent),
+      changed: async agent => {
+        await this.#runtimeChild?.invalidateAgent(agent)
+      },
+      terminate: async agent => {
+        await this.#runtimeChild?.retireAgent(agent)
+      },
+      // Only qianmopi children load the extension that carries the grant.
+      unsupported: agent => {
+        const runtime = this.runtimes.effectiveRuntime(agent)
+        return runtime === FALLBACK_RUNTIME
+          ? undefined
+          : `该智能体运行在外部底层 ${runtime} 上：高权限模式只对 qianmopi 底层生效`
+      },
+      workspace: agent => options.agents.find(a => a.agent === agent)?.cwd,
+    })
+    this.control.register('elevation', this.elevation.control, {
+      estopAllowed: [
+        'elevation.status',
+        'elevation.actions',
+        'elevation.disable',
+        'elevation.revoke',
+      ],
+      sideEffects: op =>
+        op === 'elevation.enable' ||
+        op === 'elevation.disable' ||
+        op === 'elevation.revoke',
     })
     // MCP servers, skills and plugins the operator configures on the console
     // (P32): the hub sends the set, the node lays it out for each runtime.
@@ -1104,6 +1148,8 @@ export class QianmoResident {
       void this.#runtimeChild
         ?.invalidateAgent(agent)
         .catch(error => this.#options.onError?.(error))
+      // A grant does not follow an agent onto an external runtime (P39).
+      void this.elevation.sweep().catch(error => this.#options.onError?.(error))
       this.#writeRuntimeRoster()
     })
     // Native extensions (P36.7) ride the `runtime` prefix: listing works
@@ -1549,6 +1595,7 @@ export class QianmoResident {
     } finally {
       this.runtimes.stop()
       await this.desktop.close()
+      this.elevation.close()
       await this.extensions.close()
       this.#stopping = true
       this.#stopProviderPoll()
@@ -2605,6 +2652,53 @@ export class QianmoResident {
   }
 
   /**
+   * Answer one `QIANMO_ELEVATION_V1` gate phase for a high-permission call
+   * (P39). Attribution comes from the active turn, never the model; the tiers
+   * that ask the operator go through the same P14 one-shot path as the desktop.
+   */
+  async #requestElevation(sessionId: string, raw: unknown): Promise<boolean> {
+    const input = this.#turn.activeInput(sessionId)
+    const task = input === undefined ? undefined : this.#taskFor(input)
+    if (task === undefined || task.settled || input?.agent === undefined)
+      return false
+    const contextId = task.envelope.contextId ?? 'default'
+    const live = () =>
+      this.#turn.activeInput(sessionId) === input &&
+      !task.settled &&
+      !this.#stopping &&
+      this.#deadlineClock.nowFor(task.envelope.createdAt) <
+        taskExpiresAt(task.envelope)
+    const deadline =
+      Date.now() +
+      taskExpiresAt(task.envelope) -
+      this.#deadlineClock.nowFor(task.envelope.createdAt)
+    const approve = async (call: AuthzCall): Promise<boolean> =>
+      this.#authorization === undefined
+        ? false
+        : this.#authorization.request(
+            call,
+            {
+              from: task.envelope.from,
+              taskId: task.envelope.taskId,
+              traceId: task.envelope.traceId,
+              trust: task.trust ?? 'untrusted',
+            },
+            deadline,
+            this.#turn.inactivityRemaining(sessionId),
+            (request, wire) => this.#sendAuthz(task.channel, request, wire),
+          )
+    const decision = await this.elevation.decide(
+      input.agent,
+      task.envelope.taskId,
+      contextId,
+      raw,
+      live,
+      approve,
+    )
+    return decision.ok
+  }
+
+  /**
    * Assemble the user message one turn runs on.
    *
    * The work itself lives in `residentPrompt.ts`; this is the seam that gives
@@ -3343,6 +3437,7 @@ export class QianmoResident {
   stop(): void {
     this.hubCall.close()
     void this.desktop.close().catch(error => this.#options.onError?.(error))
+    this.elevation.close()
     this.#authorization?.close()
     this.#memoryIndex?.close()
     this.#approvalChannels.clear()
@@ -3731,6 +3826,7 @@ export class QianmoResident {
   async #spawnGeneration(): Promise<ResidentChildConnection> {
     const ompPool = new ResidentOmpPool({
       desktop: this.desktop,
+      elevation: this.elevation,
       extensions: agent => this.extensions.forAgent(agent),
       extraHostTools: [
         ...this.#hubHostTools,
@@ -3750,7 +3846,8 @@ export class QianmoResident {
             edits: policy.edits,
             roots: JSON.stringify(policy.protectedRoots),
             hostTools: JSON.stringify(policy.hostTools),
-            approvalMode: policy.edits === 'workspace' ? 'write' : 'always-ask',
+            approvalMode: residentApprovalMode(policy),
+            elevation: policy.elevation?.tier ?? 'off',
             configHash,
             policy: JSON.stringify(policy),
           },
@@ -3777,6 +3874,8 @@ export class QianmoResident {
         this.#turn.memoryAnswer(sessionId, args),
       requestPermission: (sessionId: string, call: unknown) =>
         this.#requestPermission(sessionId, call),
+      requestElevation: (sessionId: string, call: unknown) =>
+        this.#requestElevation(sessionId, call),
     })
     const child = new ResidentRuntimePool(ompPool, this.#externalPool(), {
       runtimeOf: agent => this.runtimes.effectiveRuntime(agent),
