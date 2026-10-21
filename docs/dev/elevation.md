@@ -7,7 +7,7 @@
 |---|---|
 | 文档版本 | v2.0（2026-10-20）：按分支 `feat/elevation-modes` 的实际实现重写。v1.x 是 P27 名下的设计稿，编号让给多底层后改为 P39 |
 | 范围依据 | 负责人 10-14：「bot的权限要很高，基本上能替用户完成任何事情」「不要把权限审批做得特别麻烦，分 auto、full-access、accept edits 几个档位让用户自行抉择，仿照 Claude Code」「遇到权限审批需求会发通知，前端跳确认框」。模式名按负责人 10-19 的要求取 Claude Code 的叫法 |
-| 状态 | 已在分支 `feat/elevation-modes` 实现并测试；**未合入 main、未部署**。roadmap 没有登记 P39，章程与 roadmap 的回写随合入 PR 做 |
+| 状态 | 已合入 main（#261），2026-10-21 随 20fa9bd9 部署到内测环境；内测中枢没开 `--elevation`，现网不生效。章程 v3.10 §2.9 与 roadmap P39 已登记 |
 | 相关 | `atlas/packages/extension/src/elevationPolicy.ts`（档位、工具面、分类、沙箱改写）、`atlas/packages/node/src/host/elevation.ts`（节点侧状态与闸门）、`elevationSandbox.ts`（bubblewrap 参数）、[`authorization-m1.md`](./authorization-m1.md)（P14 单次审批）、[`console.md`](./console.md)「高权限模式（P39）」、[`directions-2026-10.md`](./directions-2026-10.md) §4（P21 云端电脑） |
 | 一句话 | 运维在控制台给**某一个**智能体选权限模式，缺省是人工确认。放出去的是基座的命令行（只在沙箱里）、联网读取、GitHub 和工作区编辑；每次调用都经节点闸门，到期、限次、可单个或全部收回，急停时永久清零，审计只记摘要 |
 
