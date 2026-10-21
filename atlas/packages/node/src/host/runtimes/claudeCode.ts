@@ -86,9 +86,16 @@ export function claudeCodeSettings(
  * own would live under the protected config root), no self-update (P31
  * installs versions) and no traffic but the model's. MCP calls get the
  * bridge's timeout; Claude Code has one setting for every server.
+ *
+ * Tool search stays off: Claude Code 2.1.30x defers MCP tools behind its
+ * ToolSearch by default, and the host's own tools (`qianmo_task_*`,
+ * `qianmo_notify`, the browser and computer) must sit in every request the
+ * way they do on every other runtime. A gateway in front of the model may
+ * not take the deferred-tool blocks either.
  */
 export const CLAUDE_CODE_ENV: Readonly<Record<string, string>> = {
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+  ENABLE_TOOL_SEARCH: 'false',
   MCP_TOOL_TIMEOUT: String(RUNTIME_MCP_TIMEOUT_MS),
   DISABLE_AUTOUPDATER: '1',
   DISABLE_TELEMETRY: '1',
