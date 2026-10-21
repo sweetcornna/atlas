@@ -577,12 +577,22 @@ export class NodeDesktop {
       })
   }
   #supported(): boolean {
-    return (
-      this.#hostDesktop() ||
-      ((this.#options.platform ?? process.platform) === 'linux' &&
-        this.#launcher.available('Xvfb') &&
-        this.#launcher.available('xauth'))
+    return this.#unsupportedReason() === null
+  }
+  /**
+   * Why this node has no computer, in the words the console shows under the
+   * disabled switch: the system, or which of Xvfb and xauth is missing.
+   */
+  #unsupportedReason(): string | null {
+    if (this.#hostDesktop()) return null
+    if ((this.#options.platform ?? process.platform) !== 'linux')
+      return '这个系统不提供电脑 · 需要 Linux 或 macOS 节点'
+    const missing = ['Xvfb', 'xauth'].filter(
+      program => !this.#launcher.available(program),
     )
+    return missing.length === 0
+      ? null
+      : `节点缺少 ${missing.join(' 和 ')} · 装上后可用`
   }
   /**
    * The computer is this Mac's own desktop, limited to the applications the
@@ -620,12 +630,12 @@ export class NodeDesktop {
         supported: this.#supported(),
         state: s.computer ? s.state : s.state === 'failed' ? 'failed' : 'off',
         display: s.display,
-        reason: !this.#supported()
-          ? '需要 Linux（装有 Xvfb 和 xauth）或 macOS'
-          : (s.reason ??
-            s.notes?.computer ??
-            this.#viewReasons.get(s.agent) ??
-            null),
+        reason:
+          this.#unsupportedReason() ??
+          s.reason ??
+          s.notes?.computer ??
+          this.#viewReasons.get(s.agent) ??
+          null,
         ...(platform === 'linux'
           ? {
               mode: 'private' as const,

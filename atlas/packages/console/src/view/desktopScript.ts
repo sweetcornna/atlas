@@ -75,7 +75,7 @@ export const DESKTOP_PAGE_JS = `
         img.removeAttribute('src');
         img.hidden = true;
         empty.hidden = false;
-        empty.textContent = fault || '暂无画面';
+        empty.textContent = fault || '还没有截图';
         frame.classList.remove('dk-has');
         if (at) at.textContent = '';
       }
@@ -87,7 +87,7 @@ export const DESKTOP_PAGE_JS = `
     }
   }
 
-  function load(frame) {
+  function load(frame, then) {
     var key = keyOf(frame);
     if (loading[key]) return;
     loading[key] = true;
@@ -103,10 +103,12 @@ export const DESKTOP_PAGE_JS = `
         shots[key] = null;
       }
       paint(key);
+      if (then) then();
     }, function (err) {
       loading[key] = false;
       faults[key] = qc.message(err);
       paint(key);
+      if (then) then();
     });
   }
 
@@ -140,16 +142,43 @@ export const DESKTOP_PAGE_JS = `
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', begin);
   else begin();
 
-  qc.onAction('desktop-screen', function (frame) {
-    var key = keyOf(frame);
+  function openViewer(el) {
+    var key = keyOf(el);
     var shot = shots[key];
-    if (!shot) return;
+    if (!shot) return false;
     viewing = key;
     var big = byId('desktop-screen-img');
     if (big) big.setAttribute('src', shot.src);
-    qc.setText('desktop-screen-title', '屏幕 · ' + (frame.getAttribute('data-agent') || '') + ' · ' + (frame.getAttribute('data-node') || ''));
-    qc.setText('desktop-screen-at', qc.stamp(new Date(shot.at)));
+    qc.setText('desktop-screen-title', '画面 · ' + (el.getAttribute('data-agent') || '') + ' · ' + (el.getAttribute('data-node') || ''));
+    qc.setText('desktop-screen-at', '截于 ' + qc.stamp(new Date(shot.at)) + ' · 不是实时画面');
     qc.openDialog('desktop-screen', null);
+    return true;
+  }
+
+  qc.onAction('desktop-screen', function (frame) { openViewer(frame); });
+
+  // 查看画面: the latest screenshot of the browser or the computer, asked
+  // for now if this page has none yet.
+  qc.onAction('desktop-view', function (button) {
+    if (openViewer(button)) return;
+    var key = keyOf(button);
+    var frames = liveFrames();
+    var frame = null;
+    for (var i = 0; i < frames.length; i++) if (keyOf(frames[i]) === key) frame = frames[i];
+    if (!frame) { qc.toast('没有在运行 · 没有画面', 'warn'); return; }
+    load(frame, function () {
+      if (!openViewer(button)) qc.toast(faults[key] || '还没有截图 · 智能体操作后会有', 'warn');
+    });
+  });
+
+  // 打开浏览器: the one step from nothing to a browser the agent can use.
+  qc.onAction('desktop-open', function (button) {
+    var node = button.getAttribute('data-node') || '';
+    var agent = button.getAttribute('data-agent') || '';
+    qc.sendJson('PUT', path(node, agent), { browser: true }).then(function () {
+      qc.toast(agent + ' · 浏览器已打开', 'ok');
+      return refresh();
+    }).catch(function (err) { qc.toast(qc.failLine('打开', err), qc.failTone(err)); });
   });
 
   var viewer = byId('desktop-screen');
@@ -227,7 +256,7 @@ export const DESKTOP_PAGE_JS = `
     if (target.enable) change.computer = true;
     qc.sendJson('PUT', path(target.node, target.agent), change).then(function () {
       qc.closeDialog(byId('desktop-apps'));
-      qc.toast(target.agent + ' · ' + (target.enable ? '电脑开了' : '应用已改'), 'ok');
+      qc.toast(target.agent + ' · ' + (target.enable ? '电脑已打开' : '应用已改'), 'ok');
       return refresh();
     }).catch(function (err) {
       if (qc.fieldOf(err, ['apps'])) qc.markField(form, 'appsList', qc.message(err));
@@ -260,10 +289,10 @@ export const DESKTOP_PAGE_JS = `
       }
       change = {};
       change[unit] = target.checked;
-      word = (unit === 'browser' ? '浏览器' : '电脑') + (target.checked ? '开了' : '关了');
+      word = (unit === 'browser' ? '浏览器' : '电脑') + (target.checked ? '已打开' : '已关闭');
     } else if (target.hasAttribute('data-desktop-terminal')) {
       change = { terminal: target.checked };
-      word = target.checked ? '终端已允许' : '终端已关';
+      word = target.checked ? '终端已允许' : '终端已关闭';
     } else if (target.hasAttribute('data-desktop-confirm') && target.checked) {
       change = { confirm: target.value };
       word = '确认方式已改';

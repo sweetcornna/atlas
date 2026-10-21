@@ -699,7 +699,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/tasks` | view | 后台任务（P29，`docs/dev/runtimes-channels.md` §3）：`{ tasks }`，每条有标题、发起人、执行的智能体、状态与阶段（含排队中、已安排；到点但会话已有 8 个在途时为「已安排 · 等名额」）、轮数、最近汇报、最近中断、子任务会话，以及 `nextAt`（已安排的下次开始，epoch 毫秒；其他状态含已结束为 null）、`everyMinutes`（重复间隔，不重复为 null）、`runsLeft`（重复任务还没开始的次数；不重复或已结束为 null）。主人只看自己的，ops 和旧令牌看全部；开了租户时受限的调用方拿不到（端口还没有租户包装）。没接端口时 501 |
 | POST | `/v0/tasks/<任务 id>/cancel` | **成员** | 取消一个未结束的后台任务，和对话里的取消同一条路：任务停下，节点停掉在跑的那一轮。只有发起人或 ops；越权与不存在同为 404，已结束 400。记 `task.cancel` |
 | GET | `/admin/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 记忆（P23，`docs/dev/directions-2026-10.md`）：这个人在某个智能体那里的长期记忆，按偏好、计划、项目、日常分类，能找、改、忘记。长期记忆按「智能体 × 账号」分开（复核 D18），只给读者自己的，所以只读令牌没有这一页（403）；没接记忆端口时侧栏不出现、页面 404 |
-| GET | `/admin/desktop` | view | 云端电脑（P21）：每个节点主智能体的专属浏览器与电脑——开关、确认方式（只看自动其余逐次确认 / 每一步都确认）、运行状态、清空回收，与最近的操作（只记类别与主机名）。浏览与操作能力来自基座，阡陌管分配、授权与回收。没接端口时侧栏不出现、页面 404 |
+| GET | `/admin/desktop` | view | 云端电脑（P21）：每个节点主智能体的专属浏览器与电脑——开关、确认方式（每一步都确认 / 人工确认 / 只确认有后果的操作）、运行状态、最近的画面、清空回收，与最近的操作（只记类别与主机名）。卡片的主按钮在什么都没开时是「打开浏览器」，开着时是「查看画面」（最近一张截图，写明截于何时、不是实时画面）；节点没有电脑时开关照画但禁用，写出节点给的原因。浏览与操作能力来自基座，阡陌管分配、授权与回收。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/files` | view | 文件互通（P20，管理组）：等人批准的取文件申请（可放宽到目录、选有效期）、传输与汇集（状态、目标摘要核对、失败可重试）、授权（有效期内可再取、可撤销）。发起传输时每个来源可以经 `/v0/files/browse` 浏览来源工作区。路径都是工作区内的相对路径，文件内容不上页面。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/connect` | view | 应用连接（管理组）：应用连接（P25，邮箱与日历；凭据只在中枢，页面只给主机名、打码的账号与「已设置」）与本机工具（P19，配对的设备与接力插件）。两边都没接时侧栏不出现、页面 404；接了一边时另一边写「未接入」 |
 | GET | `/admin/im` | view | 渠道（P28）：QQ、个人 QQ、微信、Telegram、Discord、Slack 接到哪个智能体、在线状态与会话数；运维能添加、编辑、停用、删除，微信扫码接入，处理配对请求（设为主人、设为成员、拒绝）。没接端口时侧栏不出现、页面 404 |
@@ -2827,15 +2827,15 @@ bun run qm -- console --desktop --control <node>=ws://<node-host>:<port> --trust
 
 `sensitive` 默认仅截图、读页面、查元素、列 tab 自动放行；导航、点击、输入、按键与滚动逐次确认。`always` 连观察也确认。只认单次批准，正文可见于受保护审批材料，公共 `desktop.action` 不含正文，并关联审批 requestId。旧 tab 句柄、旧资源代次、已经消费的批准、结束的 turn 一律拒绝。`intent` 表示已持久化执行意图；`unknown` 表示结果未知，禁止自动重试。
 
-macOS 用 `/Applications/Google Chrome.app` 的无头 Chrome 提供**独立浏览器资料环境**，不提供电脑。资料目录 `<节点配置根>/qianmo/desktop/<agent>/browser`（0700），下载与截图目录独立；保留 Chromium 沙箱，内核分配 loopback CDP 端口。Linux 浏览器同样无头；电脑须 Xvfb+xauth（独立授权、1440×900×24、关闭 TCP），本机没有 Xvfb，完整原生电脑操作尚未验证，不能据此宣称 Linux 隔离已验收。
+macOS 用 `/Applications/Google Chrome.app` 的无头 Chrome 提供**独立浏览器资料环境**；电脑是这台 Mac 现有的桌面，只能操作运维列出的应用（[runtimes-channels.md §6.5](runtimes-channels.md#65-macos-本机桌面按应用授权)）。资料目录 `<节点配置根>/qianmo/desktop/<agent>/browser`（0700），下载与截图目录独立；保留 Chromium 沙箱，内核分配 loopback CDP 端口。Linux 浏览器同样无头；电脑须 Xvfb+xauth（独立授权、1440×900×24、关闭 TCP），本机没有 Xvfb，完整原生电脑操作尚未验证，不能据此宣称 Linux 隔离已验收。
 
 ### 支持的平台
 
 | 节点平台 | 专属浏览器 | 专属电脑 | 需要 |
 |---|---|---|---|
-| macOS | 支持（无头 Chrome，独立资料环境） | **不支持**：没有独立显示服务，不操作真实桌面 | `/Applications/Google Chrome.app` |
-| Linux | 支持（无头 Chromium/Chrome） | 支持 | 浏览器：`PATH` 上有 `google-chrome` 或 `chromium`；电脑：另装 `Xvfb` 与 `xauth` |
-| 其他（Windows 等） | 不支持 | 不支持 | — |
+| macOS | 支持（无头 Chrome，独立资料环境） | 本机桌面：操作这台节点现有的 Mac 桌面，只能用运维列出的应用（1–20 个 bundle id），不起私有显示 | `/Applications/Google Chrome.app`；电脑另需节点进程有「屏幕录制」与「辅助功能」权限 |
+| Linux | 支持（无头 Chromium/Chrome） | 私有桌面 | 浏览器：`PATH` 上有 `google-chrome` 或 `chromium`；电脑：另装 `Xvfb` 与 `xauth`（缺哪个，页面在禁用的开关下写哪个） |
+| 其他（Windows 等） | 不支持 | 不支持（页面写「这个系统不提供电脑」） | — |
 
 两项默认都关，由运维身份在「云端电脑」页为某个节点的主智能体打开。只有主智能体能调用 `qianmo_browser_*` / `qianmo_computer_*`，子智能体不能。
 
@@ -2846,7 +2846,7 @@ macOS 用 `/Applications/Google Chrome.app` 的无头 Chrome 提供**独立浏�
 | 报错 | 意思 | 怎么办 |
 |---|---|---|
 | `Desktop unavailable: 专属浏览器没有开启或已停用…` | 节点没为这个智能体开浏览器，或已因空闲、配额、急停停用 | 「云端电脑」页打开专属浏览器 |
-| `Desktop unavailable: 专属电脑只在 Linux 节点上提供…` | macOS 等平台没有专属电脑 | 改用专属浏览器，或换 Linux 节点 |
+| `Desktop unavailable: 专属电脑只在 Linux 与 macOS 节点上提供…` | Windows 等其他系统没有专属电脑 | 改用专属浏览器，或换 Linux / macOS 节点 |
 | `Desktop unavailable: 只有节点的主智能体能用…` | 子智能体调用 | 由主智能体调用 |
 | `Desktop lease refused: 这台专属浏览器上一项操作（…）还没结束…` | 同一资源同一时间只发一个租约；另一会话或另一回合的操作还没结束 | 等它结束再试。同一回合里并行的多个调用由扩展自动排队，不会互相拒绝 |
 | `Desktop lease refused: 急停已开启…` | ESTOP 期间不发租约 | 解除急停 |

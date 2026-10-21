@@ -292,7 +292,10 @@ export interface DesktopNodeView extends AgentRef {
   }
   readonly computer: {
     readonly enabled: boolean
-    /** macOS 节点与没有 Xvfb 的 Linux 节点为 false，页面不给开。 */
+    /**
+     * 没有 Xvfb 或 xauth 的 Linux 节点、其他系统、以及还没有本机桌面的旧 macOS 节点为 false；
+     * 页面照画开关但禁用，并写出 {@link reason}。macOS 节点提供本机桌面（`mode: 'host'`）。
+     */
     readonly supported: boolean
     readonly state: DesktopUnitState
     /** `:12` 这样的显示号。 */

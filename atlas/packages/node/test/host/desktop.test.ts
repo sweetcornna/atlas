@@ -522,6 +522,10 @@ test('macOS and Linux without Xvfb cannot open computer', async () => {
   const missing = await fixture('linux')
   try {
     expect((await missing.view()).value[0]?.computer.supported).toBe(false)
+    // The console shows this under the disabled switch: what to install.
+    expect((await missing.view()).value[0]?.computer.reason).toBe(
+      '节点缺少 Xvfb 和 xauth · 装上后可用',
+    )
     expect((await missing.enable('bad', { computer: true })).ok).toBe(false)
   } finally {
     await missing.cleanup()
