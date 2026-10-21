@@ -72,8 +72,13 @@ async function call(
   }
 }
 
-/** The `message` of a console error body, if the hub sent one. */
-async function messageOf(response: Response): Promise<string | null> {
+interface HubError {
+  readonly code: string | null
+  readonly message: string | null
+}
+
+/** The `code` and `message` of a console error body, as far as the hub sent them. */
+async function errorOf(response: Response): Promise<HubError> {
   try {
     const body: unknown = await response.json()
     if (
@@ -81,13 +86,42 @@ async function messageOf(response: Response): Promise<string | null> {
       body !== null &&
       'error' in body &&
       typeof body.error === 'object' &&
-      body.error !== null &&
-      'message' in body.error &&
-      typeof body.error.message === 'string'
-    )
-      return body.error.message
+      body.error !== null
+    ) {
+      const error: object = body.error
+      return {
+        code:
+          'code' in error && typeof error.code === 'string' ? error.code : null,
+        message:
+          'message' in error && typeof error.message === 'string'
+            ? error.message
+            : null,
+      }
+    }
   } catch {}
-  return null
+  return { code: null, message: null }
+}
+
+/** Why the hub turned the device token away: the `code` of a 401 on `/v0/client/*`. */
+type Refusal = 'device_revoked' | 'owner_inactive' | 'unauthorized'
+
+const REFUSALS: Readonly<Record<Refusal, string>> = {
+  device_revoked: '这台设备已被吊销，请 qmo sign-in --force 重新配对',
+  owner_inactive:
+    '这台设备所属的账号已停用或已重置 · 账号恢复或重新登录中枢后，再 qmo sign-in --force',
+  unauthorized: '设备令牌无效，请 qmo sign-in --force 重新配对',
+}
+
+/** A 401 without a code this client knows is an unknown token. */
+async function refusalOf(response: Response): Promise<Refusal> {
+  const { code } = await errorOf(response)
+  return code === 'device_revoked' || code === 'owner_inactive'
+    ? code
+    : 'unauthorized'
+}
+
+async function refused(response: Response): Promise<ClientError> {
+  return new ClientError(REFUSALS[await refusalOf(response)])
 }
 
 const bearer = (token: string): Record<string, string> => ({
@@ -100,7 +134,11 @@ export interface PairedDevice {
   readonly token: string
 }
 
-/** `POST /v0/handoff/pair`: trade a pairing code for this computer's device token. */
+/**
+ * `POST /v0/handoff/pair`: trade a pairing code for this computer's device
+ * token. `kind: 'client'` marks it a client device; one paired by
+ * `qm handoff` gets no tickets.
+ */
 export async function pairDevice(
   hub: string,
   input: {
@@ -113,13 +151,13 @@ export async function pairDevice(
   const response = await call(fetchImpl, `${hub}/v0/handoff/pair`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify({ ...input, kind: 'client' }),
   })
   if (response.status === 404 || response.status === 501)
     throw new ClientError('这台中枢没有设备配对（要开个人账号或接力）')
   if (response.status === 429) throw new ClientError('配对尝试过多，稍后再试')
   if (!response.ok) {
-    const message = await messageOf(response)
+    const { message } = await errorOf(response)
     throw new ClientError(
       message === null
         ? `配对失败（HTTP ${response.status}）`
@@ -153,11 +191,12 @@ export type TicketOutcome =
   /**
    * No ticket from this hub: it has no accounts, predates the client door
    * (both answer a device token there with 404 or 403), or the device has no
-   * account to sign in. `reason` is the hub's own sentence when it gave one.
+   * account to sign in. `reason` says which when the hub's answer tells.
    */
   | { readonly kind: 'unsupported'; readonly reason?: string }
 
-const REVOKED = '这台设备的令牌无效或已被吊销，请重新 qmo sign-in'
+/** What a hub without accounts, or from before the client door, says to a device token. */
+const HANDOFF_ONLY = '设备令牌只能访问接力接口'
 
 /** `POST /v0/client/tickets`: a one-time ticket for the window. */
 export async function requestTicket(
@@ -171,15 +210,25 @@ export async function requestTicket(
   })
   if (response.status === 404 || response.status === 501)
     return { kind: 'unsupported' }
-  if (response.status === 401) throw new ClientError(REVOKED)
+  if (response.status === 401) throw await refused(response)
   if (response.status === 403) {
-    const reason = await messageOf(response)
-    return reason === null
+    const { code, message } = await errorOf(response)
+    // Paired by `qm handoff`: re-pairing as a client is the only way to a window.
+    if (code === 'device_kind')
+      throw new ClientError(
+        `${message ?? '这台设备是 qm handoff 配对的'} · 请 qmo sign-in --force 重新配对`,
+      )
+    if (code === 'forbidden' && message === HANDOFF_ONLY)
+      return {
+        kind: 'unsupported',
+        reason: '这个中枢没开个人账号，只能在登录页登录',
+      }
+    return message === null
       ? { kind: 'unsupported' }
-      : { kind: 'unsupported', reason }
+      : { kind: 'unsupported', reason: message }
   }
   if (response.status !== 201) {
-    const message = await messageOf(response)
+    const { message } = await errorOf(response)
     throw new ClientError(
       message ?? `中枢没有给出票据（HTTP ${response.status}）`,
     )
@@ -226,7 +275,7 @@ export async function ticketState(
     `${hub}/v0/client/tickets/${encodeURIComponent(id)}`,
     { headers: bearer(token) },
   )
-  if (response.status === 401) throw new ClientError(REVOKED)
+  if (response.status === 401) throw await refused(response)
   if (!response.ok) return 'unknown'
   const value: unknown = await response.json()
   if (
@@ -241,7 +290,19 @@ export async function ticketState(
   return 'unknown'
 }
 
-export type DeviceStatus = 'active' | 'revoked' | 'unsupported' | 'unreachable'
+export type DeviceStatus =
+  | 'active'
+  | 'revoked'
+  | 'owner_inactive'
+  | 'invalid'
+  | 'unsupported'
+  | 'unreachable'
+
+const REFUSED_STATUS: Readonly<Record<Refusal, DeviceStatus>> = {
+  device_revoked: 'revoked',
+  owner_inactive: 'owner_inactive',
+  unauthorized: 'invalid',
+}
 
 /** `GET /v0/client/device`: whether the hub still knows this device. */
 export async function deviceStatus(
@@ -258,12 +319,15 @@ export async function deviceStatus(
     return 'unreachable'
   }
   if (response.ok) return 'active'
-  if (response.status === 401) return 'revoked'
+  if (response.status === 401) return REFUSED_STATUS[await refusalOf(response)]
   if (response.status === 404 || response.status === 501) return 'unsupported'
   return 'unreachable'
 }
 
-/** `DELETE /v0/client/device`: the device revokes itself on sign-out. */
+/**
+ * `DELETE /v0/client/device`: the device revokes itself on sign-out. Any 401
+ * counts as done: the token already opens nothing.
+ */
 export async function revokeDevice(
   hub: string,
   token: string,

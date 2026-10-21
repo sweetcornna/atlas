@@ -22,6 +22,7 @@ import {
   ticketState,
 } from './hub.js'
 import {
+  dropDeviceHeader,
   openDefault,
   openOnArgv,
   openOnPipe,
@@ -33,8 +34,11 @@ import {
 export interface ClientIO {
   out(line: string): void
   err(line: string): void
-  /** One line from the user, `null` when nobody can answer. */
-  ask(question: string): string | null
+  /**
+   * One line from the user: the answer to `question` at a terminal, else the
+   * first line of standard input; `null` when there is none.
+   */
+  ask(question: string): Promise<string | null>
 }
 
 export interface ClientDeps {
@@ -46,11 +50,13 @@ export interface ClientDeps {
   hostname(): string
   findBrowser(): Browser | null
   openOnArgv(browser: Browser, profile: string, url: string): void
+  /** `deviceId` goes with the navigation as `X-Qmo-Device`. */
   openOnPipe(
     browser: Browser,
     profile: string,
     pipeDir: string,
     url: string,
+    deviceId: string,
   ): Promise<PipeOpen>
   openDefault(url: string): void
   sleep(ms: number): Promise<void>
@@ -67,8 +73,8 @@ export function systemDeps(io: ClientIO): ClientDeps {
     findBrowser: () => findBrowser(),
     openOnArgv: (browser, profile, url) =>
       openOnArgv(browser, profile, url, [], process.platform),
-    openOnPipe: (browser, profile, pipeDir, url) =>
-      openOnPipe(browser, profile, pipeDir, url),
+    openOnPipe: (browser, profile, pipeDir, url, deviceId) =>
+      openOnPipe(browser, profile, pipeDir, url, deviceId),
     openDefault: url => openDefault(url, process.platform),
     sleep: ms => Bun.sleep(ms),
   }
@@ -78,6 +84,7 @@ const PAIRING_HINT = '配对码在中枢「连接」页「添加设备」里拿'
 
 export interface SignInOptions {
   readonly hub: string
+  /** From `--code`, which other users of the computer can read; else asked for. */
   readonly code?: string
   readonly name?: string
   readonly force?: boolean
@@ -95,7 +102,8 @@ export async function signIn(
       2,
     )
   const code =
-    options.code?.trim() || deps.io.ask(`配对码（${PAIRING_HINT}）：`)?.trim()
+    options.code?.trim() ||
+    (await deps.io.ask(`配对码（${PAIRING_HINT}）：`))?.trim()
   if (!code) throw new ClientError(`需要配对码：${PAIRING_HINT}`, 2)
   const name = options.name?.trim() || deps.hostname()
   const paired = await pairDevice(
@@ -157,7 +165,7 @@ export async function openFront(deps: ClientDeps): Promise<number> {
   const state = deps.home.load()
   if (state === undefined)
     throw new ClientError(
-      `还没登录：先 qmo sign-in <中枢地址> --code <配对码>（${PAIRING_HINT}）`,
+      `还没登录：先 qmo sign-in <中枢地址>（${PAIRING_HINT}）`,
     )
   const token = await deps.home.token()
   // No ticket for a window that will not be ours.
@@ -183,26 +191,35 @@ export async function openFront(deps: ClientDeps): Promise<number> {
 
   if (ticketRoute(deps.platform) === 'argv') {
     deps.openOnArgv(browser, profile, url)
+    // The hub asks a fresh window profile to confirm the account first.
+    deps.io.out('等窗口进入前台 · 第一次打开要在窗口里确认账号')
     const spent = await waitSpent(deps, state.hub, token, outcome.id, until)
     if (spent !== 'used') {
-      deps.io.err('窗口打开了，但没有用上票据 · 关掉窗口后重新 qmo open')
+      deps.io.err(
+        '窗口打开了，但没有用上票据（第一次打开要在一分钟内确认账号）· 关掉窗口后重新 qmo open',
+      )
       return 1
     }
     deps.io.out(`已在窗口里打开 ${state.hub}/`)
     return 0
   }
 
-  const open = await deps.openOnPipe(browser, profile, deps.home.pipeDir, url)
+  const open = await deps.openOnPipe(
+    browser,
+    profile,
+    deps.home.pipeDir,
+    url,
+    state.deviceId,
+  )
   try {
     const spent = await waitSpent(deps, state.hub, token, outcome.id, until)
-    if (spent !== 'used') {
+    const where = spent === 'used' ? await landing(deps, open) : null
+    await dropDeviceHeader(open)
+    if (spent !== 'used')
       deps.io.err('窗口打开了，但没有用上票据 · 关掉窗口后重新 qmo open')
-    } else {
-      const where = await landing(deps, open)
-      if (where === '/login')
-        deps.io.err('窗口停在登录页 · 这台设备的账号可能没有对话权限')
-      else deps.io.out(`已在窗口里打开 ${state.hub}/ · 关掉窗口后本命令退出`)
-    }
+    else if (where === '/login')
+      deps.io.err('窗口停在登录页 · 这台设备的账号可能没有对话权限')
+    else deps.io.out(`已在窗口里打开 ${state.hub}/ · 关掉窗口后本命令退出`)
     await open.window.exited
     return spent === 'used' ? 0 : 1
   } finally {
@@ -230,6 +247,9 @@ export async function status(deps: ClientDeps): Promise<number> {
       : {
           active: '有效',
           revoked: '已吊销，请 qmo sign-in --force',
+          owner_inactive:
+            '所属账号已停用或已重置 · 账号恢复或重新登录中枢后，再 qmo sign-in --force',
+          invalid: '令牌无效，请 qmo sign-in --force',
           unsupported: '这台中枢没有客户端接口',
           unreachable: '连不上中枢',
         }[await deviceStatus(state.hub, token, deps.fetch)]

@@ -15,11 +15,12 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { clientStateDir } from '@qianmo/paths'
+import { CLIENT_DIR_ENV, clientStateDir } from '@qianmo/paths'
 import { ClientError, DEVICE_ID, DEVICE_TOKEN, parseHubUrl } from './hub.js'
 import {
   deviceTokenStore,
   type Run,
+  readPrivateFile,
   runProgram,
   type SecretStore,
   writePrivateFile,
@@ -33,12 +34,26 @@ export interface PairedState {
   readonly pairedAt: string
 }
 
+/** The client state directory; a relative `QMO_CLIENT_DIR` is the user's to fix. */
+function stateDir(): string {
+  try {
+    return clientStateDir()
+  } catch (error) {
+    const configured = process.env[CLIENT_DIR_ENV]
+    if (!configured) throw error
+    throw new ClientError(
+      `${CLIENT_DIR_ENV} 要写绝对路径（现在是 ${configured}）`,
+      2,
+    )
+  }
+}
+
 export class ClientHome {
   readonly dir: string
   readonly secret: SecretStore
 
   constructor(
-    dir: string = clientStateDir(),
+    dir: string = stateDir(),
     platform: NodeJS.Platform = process.platform,
     run: Run = runProgram,
   ) {
@@ -60,13 +75,8 @@ export class ClientHome {
 
   /** The pairing on record, or `undefined` before the first sign-in. */
   load(): PairedState | undefined {
-    let raw: string
-    try {
-      raw = fs.readFileSync(this.statePath, 'utf8')
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
-      throw error
-    }
+    const raw = readPrivateFile(this.statePath)
+    if (raw === undefined) return undefined
     let value: unknown
     try {
       value = JSON.parse(raw)

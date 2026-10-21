@@ -16,10 +16,14 @@
  * browser, and a browser that never starts leaves nothing blocked. Messages
  * are JSON terminated by a NUL byte. A FIFO the client holds both ends of
  * never reaches end-of-file, so the browser's exit is read from its process.
+ * The FIFOs' names go as soon as the browser first answers: it holds both
+ * ends by then, the open descriptors outlive the names, and nothing else can
+ * open the pipe afterwards.
  */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { ensurePrivateDir } from './secret.js'
 
 type Message = {
   readonly id?: number
@@ -56,8 +60,7 @@ function errnoOf(error: unknown): string | undefined {
 
 /** Make the FIFO pair in a private directory. */
 export function makeFifos(dir: string): { input: string; output: string } {
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  fs.chmodSync(dir, 0o700)
+  ensurePrivateDir(dir)
   const input = path.join(dir, 'in')
   const output = path.join(dir, 'out')
   for (const file of [input, output]) fs.rmSync(file, { force: true })
@@ -117,7 +120,16 @@ export function launchOnPipe(
   let sequence = 0
   let buffered = Buffer.alloc(0)
   let closed = false
+  let named = true
   const chunk = Buffer.alloc(64 * 1024)
+
+  /** Remove the FIFOs' names; the descriptors already open keep working. */
+  const unname = () => {
+    if (!named) return
+    named = false
+    for (const file of [fifos.input, fifos.output])
+      fs.rmSync(file, { force: true })
+  }
 
   const failAll = (error: Error) => {
     for (const [id, entry] of waiting) {
@@ -155,6 +167,8 @@ export function launchOnPipe(
         return
       }
       if (read === 0) return
+      // The browser has written, so its shell opened both FIFOs before it.
+      unname()
       buffered = Buffer.concat([buffered, chunk.subarray(0, read)])
       if (buffered.length > MAX_BUFFER) {
         close()
@@ -197,8 +211,7 @@ export function launchOnPipe(
         fs.closeSync(fd)
       } catch {}
     }
-    for (const file of [fifos.input, fifos.output])
-      fs.rmSync(file, { force: true })
+    unname()
   }
 
   return {

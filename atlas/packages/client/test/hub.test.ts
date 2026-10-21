@@ -17,6 +17,9 @@ import {
 const TOKEN = `qmd_${'a'.repeat(43)}`
 const TICKET = `qmt_${'t'.repeat(43)}`
 
+const failure = (status: number, code: string, message: string) =>
+  Response.json({ error: { code, message } }, { status })
+
 const servers: { stop(force?: boolean): void }[] = []
 afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true)
@@ -67,7 +70,7 @@ describe('parseHubUrl', () => {
 })
 
 describe('pairDevice', () => {
-  test('posts the code, name and platform and checks what comes back', async () => {
+  test('posts the code, name and platform as a client device and checks what comes back', async () => {
     const h = hub(() =>
       Response.json({
         deviceId: 'd-abcdefghijkl',
@@ -93,6 +96,7 @@ describe('pairDevice', () => {
       code: 'ABCD-EFGH-IJKL',
       name: 'pc',
       platform: 'win32-x64',
+      kind: 'client',
     })
     expect(request!.headers.get('cookie')).toBeNull()
   })
@@ -168,7 +172,7 @@ describe('tickets and the device', () => {
     )
   })
 
-  test('a hub without tickets is "unsupported", a revoked device is an error', async () => {
+  test('a hub without tickets is "unsupported", a bad answer is an error', async () => {
     expect(
       await requestTicket(
         hub(() => new Response(null, { status: 404 })).url,
@@ -181,23 +185,37 @@ describe('tickets and the device', () => {
         TOKEN,
       ),
     ).toEqual({ kind: 'unsupported' })
-    // A hub from before the client door, or without accounts, says 403 here.
+    // A hub without accounts, or from before the client door, says 403 here.
     expect(
       await requestTicket(
-        hub(() =>
-          Response.json(
-            {
-              error: { code: 'forbidden', message: '设备令牌只能访问接力接口' },
-            },
-            { status: 403 },
-          ),
-        ).url,
+        hub(() => failure(403, 'forbidden', '设备令牌只能访问接力接口')).url,
         TOKEN,
       ),
-    ).toEqual({ kind: 'unsupported', reason: '设备令牌只能访问接力接口' })
+    ).toEqual({
+      kind: 'unsupported',
+      reason: '这个中枢没开个人账号，只能在登录页登录',
+    })
+    // Any other refusal keeps the hub's own sentence.
+    const legacy =
+      '这台设备由旧式令牌配对，没有可登录的账号；请用个人账号重新配对'
+    expect(
+      await requestTicket(
+        hub(() => failure(403, 'forbidden', legacy)).url,
+        TOKEN,
+      ),
+    ).toEqual({ kind: 'unsupported', reason: legacy })
+    expect(
+      await requestTicket(
+        hub(() => new Response(null, { status: 403 })).url,
+        TOKEN,
+      ),
+    ).toEqual({ kind: 'unsupported' })
     await expect(
-      requestTicket(hub(() => new Response(null, { status: 401 })).url, TOKEN),
-    ).rejects.toThrow(/重新 qmo sign-in/)
+      requestTicket(
+        hub(() => failure(429, 'limit', '这台设备要票据太频繁，稍后再试')).url,
+        TOKEN,
+      ),
+    ).rejects.toThrow('这台设备要票据太频繁，稍后再试')
     await expect(
       requestTicket(
         hub(() =>
@@ -211,6 +229,49 @@ describe('tickets and the device', () => {
     ).rejects.toThrow(/不合法/)
   })
 
+  test('a qm handoff device gets no ticket, and is told to pair again', async () => {
+    const said = '这台设备是用 qm handoff login 配对的接力设备，不能打开前台'
+    const h = hub(() => failure(403, 'device_kind', said))
+    const refused = requestTicket(h.url, TOKEN)
+    await expect(refused).rejects.toThrow(ClientError)
+    await expect(refused).rejects.toThrow(
+      `${said} · 请 qmo sign-in --force 重新配对`,
+    )
+  })
+
+  test('each 401 code says what to do, on every call that carries the token', async () => {
+    const cases: [() => Response, RegExp, DeviceStatus][] = [
+      [
+        () => failure(401, 'device_revoked', 'x'),
+        /已被吊销.*sign-in --force/,
+        'revoked',
+      ],
+      [
+        () => failure(401, 'owner_inactive', 'x'),
+        /账号已停用或已重置.*账号恢复或重新登录中枢后.*sign-in --force/,
+        'owner_inactive',
+      ],
+      [
+        () => failure(401, 'unauthorized', 'x'),
+        /令牌无效.*sign-in --force/,
+        'invalid',
+      ],
+      // No body, or a code this client does not know: an unknown token.
+      [() => new Response(null, { status: 401 }), /令牌无效/, 'invalid'],
+      [() => failure(401, 'something_new', 'x'), /令牌无效/, 'invalid'],
+    ]
+    for (const [answer, message, seen] of cases) {
+      const h = hub(answer)
+      await expect(requestTicket(h.url, TOKEN)).rejects.toThrow(message)
+      await expect(ticketState(h.url, TOKEN, 't-abcdefghijkl')).rejects.toThrow(
+        message,
+      )
+      expect(await deviceStatus(h.url, TOKEN)).toBe(seen)
+      // Signing out: whatever the reason, the token already opens nothing.
+      expect(await revokeDevice(h.url, TOKEN)).toBe('revoked')
+    }
+  })
+
   test('device status and self-revocation map the hub answers', async () => {
     const statuses: [
       number,
@@ -219,7 +280,8 @@ describe('tickets and the device', () => {
     ][] = [
       [200, 'active', 'failed'],
       [204, 'unreachable', 'revoked'],
-      [401, 'revoked', 'revoked'],
+      // A 401 without a code is an unknown token (the codes are above).
+      [401, 'invalid', 'revoked'],
       [404, 'unsupported', 'unsupported'],
       [500, 'unreachable', 'failed'],
     ]

@@ -152,7 +152,9 @@ export const CLIENT_DIR_ENV = 'QMO_CLIENT_DIR'
  * Not under the node config root: a client and a node on the same computer
  * keep separate state. The platform and environment are parameters so the
  * Windows answer can be checked on any host; the path flavour follows the
- * platform, not the host.
+ * platform, not the host. A relative `QMO_CLIENT_DIR` throws: resolved
+ * against whatever directory `qmo` was started in, it would move the device
+ * token around.
  */
 export function clientStateDir(
   platform: NodeJS.Platform = process.platform,
@@ -163,7 +165,13 @@ export function clientStateDir(
   const absolute = (value: string | undefined): value is string =>
     value !== undefined && value !== '' && flavour.isAbsolute(value)
   const configured = env[CLIENT_DIR_ENV]
-  if (configured) return flavour.resolve(configured).normalize('NFC')
+  if (configured) {
+    if (!absolute(configured))
+      throw new Error(
+        `${CLIENT_DIR_ENV} must be an absolute path, not ${JSON.stringify(configured)}`,
+      )
+    return flavour.resolve(configured).normalize('NFC')
+  }
   let dir: string
   if (platform === 'win32') {
     const local = env.LOCALAPPDATA

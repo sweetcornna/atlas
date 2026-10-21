@@ -10,6 +10,11 @@
  * spent. Linux: the ticket never touches a command line — the window starts
  * blank on a DevTools pipe and is navigated over it, and the client stays
  * with the pipe until the window closes.
+ *
+ * The first window on a fresh profile meets the hub's account confirmation,
+ * and the ticket is spent only when the user confirms. On the pipe the
+ * navigation carries `X-Qmo-Device` instead, which web content cannot put on
+ * a navigation, so the hub lets the device's own window straight through.
  */
 
 import { spawn } from 'node:child_process'
@@ -79,6 +84,9 @@ export function openOnArgv(
   ])
 }
 
+/** Sent with the pipe route's navigation: this device's id, which the ticket must match. */
+const DEVICE_HEADER = 'X-Qmo-Device'
+
 export interface PipeOpen {
   readonly window: PipeWindow
   /** The attached page, for the caller's later questions. */
@@ -107,25 +115,40 @@ async function firstPage(window: PipeWindow, ms: number): Promise<string> {
   throw new ClientError('窗口没有打开页面')
 }
 
+const failure = (error: unknown): ClientError =>
+  error instanceof ClientError
+    ? error
+    : new ClientError(
+        `窗口没有起来：${error instanceof Error ? error.message : String(error)}`,
+      )
+
 /**
- * Start the app window blank on a DevTools pipe and navigate it to `url`.
- * `startMs` covers a cold start: a browser launched for the first time from
- * a cold disk has taken over 10 s to answer its pipe.
+ * Start the app window blank on a DevTools pipe and navigate it to `url` as
+ * device `deviceId` (`X-Qmo-Device`); {@link dropDeviceHeader} stops the
+ * header once the window has landed. `startMs` covers a cold start: a browser
+ * launched for the first time from a cold disk has taken over 10 s to answer
+ * its pipe.
  */
 export async function openOnPipe(
   browser: Browser,
   profile: string,
   pipeDir: string,
   url: string,
+  deviceId: string,
   extra: readonly string[] = [],
   startMs = 45_000,
 ): Promise<PipeOpen> {
-  const window = launchOnPipe(pipeDir, browser.path, [
-    ...windowFlags(profile, 'linux'),
-    ...extra,
-    '--remote-debugging-pipe',
-    '--app=about:blank',
-  ])
+  let window: PipeWindow
+  try {
+    window = launchOnPipe(pipeDir, browser.path, [
+      ...windowFlags(profile, 'linux'),
+      ...extra,
+      '--remote-debugging-pipe',
+      '--app=about:blank',
+    ])
+  } catch (error) {
+    throw failure(error)
+  }
   try {
     // A second launch on a profile already in use hands over to the running
     // browser and exits at once; its pipe never answers.
@@ -144,6 +167,12 @@ export async function openOnPipe(
     })
     const sessionId = attached.sessionId
     if (typeof sessionId !== 'string') throw new ClientError('窗口的页面连不上')
+    await window.send('Network.enable', {}, { sessionId })
+    await window.send(
+      'Network.setExtraHTTPHeaders',
+      { headers: { [DEVICE_HEADER]: deviceId } },
+      { sessionId },
+    )
     const navigated = await window.send(
       'Page.navigate',
       { url },
@@ -154,12 +183,25 @@ export async function openOnPipe(
     return { window, sessionId }
   } catch (error) {
     window.close()
-    throw error instanceof ClientError
-      ? error
-      : new ClientError(
-          `窗口没有起来：${error instanceof Error ? error.message : String(error)}`,
-        )
+    throw failure(error)
   }
+}
+
+/**
+ * Once the window has landed: no more device header, and no more network
+ * events over the pipe for as long as the window stays open. A window already
+ * gone needs neither.
+ */
+export async function dropDeviceHeader(open: PipeOpen): Promise<void> {
+  const options = { sessionId: open.sessionId }
+  try {
+    await open.window.send(
+      'Network.setExtraHTTPHeaders',
+      { headers: {} },
+      options,
+    )
+    await open.window.send('Network.disable', {}, options)
+  } catch {}
 }
 
 /** The page's current path, `null` while the page cannot answer. */

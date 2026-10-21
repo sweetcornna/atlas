@@ -72,6 +72,23 @@ describe('clientStateDir', () => {
     for (const platform of ['linux', 'darwin', 'win32'] as const)
       expect(clientStateDir(platform, {}, '/home/ymy')).not.toContain('.qianmo')
   })
+
+  test('a relative QMO_CLIENT_DIR is refused, naming the variable', () => {
+    for (const [platform, dir] of [
+      ['linux', 'qmo-a'],
+      ['darwin', './qmo-a'],
+      ['win32', 'qmo'],
+      // A drive without a root is relative to that drive's current directory.
+      ['win32', 'D:qmo'],
+    ] as const)
+      expect(() =>
+        clientStateDir(platform, { QMO_CLIENT_DIR: dir }, '/home/ymy'),
+      ).toThrow(/QMO_CLIENT_DIR must be an absolute path/)
+    // An empty value is the same as none.
+    expect(clientStateDir('linux', { QMO_CLIENT_DIR: '' }, '/home/ymy')).toBe(
+      '/home/ymy/.config/qmo',
+    )
+  })
 })
 
 describe('ompChildEnv', () => {

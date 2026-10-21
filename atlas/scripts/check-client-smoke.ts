@@ -8,8 +8,10 @@
  * Runs the binary in a closed environment — an empty home, a fresh
  * `QMO_CLIENT_DIR`, a minimal `PATH`, no stdin — the way a new computer meets
  * it, and checks that its commands load and answer: the version line, the
- * usage, `status` before any sign-in, `open` refusing without a pairing, and
- * a plain-HTTP hub refused before anything is sent.
+ * usage, `status` before any sign-in, `open` refusing without a pairing, a
+ * plain-HTTP hub refused before anything is sent, a pairing code read from
+ * standard input rather than the command line, and a relative state
+ * directory refused.
  *
  * Usage:
  *   bun atlas/scripts/check-client-smoke.ts [<binary>]   default: dist/qmo-<host>
@@ -22,6 +24,9 @@ import { clientOutfile, hostTarget } from './build-client.ts'
 
 interface Probe {
   readonly args: readonly string[]
+  /** Fed to standard input; none when absent. */
+  readonly stdin?: string
+  readonly env?: Record<string, string>
   readonly exit: number
   readonly stdout?: RegExp
   readonly stderr?: RegExp
@@ -36,6 +41,19 @@ const PROBES: readonly Probe[] = [
     args: ['sign-in', 'http://hub.example', '--code', 'X'],
     exit: 2,
     stderr: /https/,
+  },
+  // The code arrives on stdin and the hub (nothing listens there) is tried.
+  {
+    args: ['sign-in', 'http://127.0.0.1:9'],
+    stdin: 'ABCD-EFGH-IJKL\n',
+    exit: 1,
+    stderr: /连不上中枢/,
+  },
+  {
+    args: ['status'],
+    env: { QMO_CLIENT_DIR: 'relative/qmo' },
+    exit: 2,
+    stderr: /绝对路径/,
   },
 ]
 
@@ -75,8 +93,8 @@ async function main(): Promise<number> {
   try {
     for (const probe of PROBES) {
       const proc = Bun.spawn([binary, ...probe.args], {
-        env: closedEnv(root),
-        stdin: 'ignore',
+        env: { ...closedEnv(root), ...probe.env },
+        stdin: probe.stdin === undefined ? 'ignore' : Buffer.from(probe.stdin),
         stdout: 'pipe',
         stderr: 'pipe',
       })

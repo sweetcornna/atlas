@@ -23,6 +23,9 @@ import { fakeHub, PAIRING_CODE } from './fakeHub.ts'
  * store (DPAPI on Windows), its own ticket route (the pipe on Linux, the
  * command line elsewhere) and a real browser, headless, against the stand-in
  * hub. Skipped where no Chromium-family browser exists.
+ *
+ * The stand-in hub has no account confirmation, so this checks how the
+ * window arrives (`X-Qmo-Device` on the pipe route only), not that page.
  */
 const browser = findBrowser()
 const linux = process.platform === 'linux'
@@ -73,6 +76,7 @@ test.skipIf(browser === null)(
     const out: string[] = []
     const err: string[] = []
     let piped: PipeOpen | undefined
+    let fifosLeft: string[] | undefined
     const deps: ClientDeps = {
       home: new ClientHome(
         path.join(root, 'client'),
@@ -84,7 +88,7 @@ test.skipIf(browser === null)(
       io: {
         out: line => out.push(line),
         err: line => err.push(line),
-        ask: () => null,
+        ask: async () => null,
       },
       fetch: (input, init) => fetch(input, init),
       hostname: () => 'ci-box',
@@ -97,8 +101,16 @@ test.skipIf(browser === null)(
             await Bun.sleep(500)
           })
       },
-      async openOnPipe(found, profile, pipeDir, url) {
-        piped = await openOnPipe(found, profile, pipeDir, url, HEADLESS)
+      async openOnPipe(found, profile, pipeDir, url, deviceId) {
+        piped = await openOnPipe(
+          found,
+          profile,
+          pipeDir,
+          url,
+          deviceId,
+          HEADLESS,
+        )
+        fifosLeft = fs.readdirSync(pipeDir)
         return piped
       },
       openDefault: url => err.push(`default ${url}`),
@@ -106,6 +118,8 @@ test.skipIf(browser === null)(
     }
 
     expect(await signIn(deps, { hub: hub.url, code: PAIRING_CODE })).toBe(0)
+    expect(hub.paired).toEqual(['client'])
+    const deviceId = deps.home.load()!.deviceId
     const token = await deps.home.token()
     const onDisk = fs.readFileSync(deps.home.secret.file, 'utf8')
     if (process.platform === 'win32') {
@@ -131,10 +145,17 @@ test.skipIf(browser === null)(
         ),
       ).toBe(true)
       await piped!.window.send('Browser.close').catch(() => {})
+      // The browser holds both ends of the pipe; the names are gone.
+      expect(fifosLeft).toEqual([])
     }
     expect(await opened).toBe(0)
+    if (!linux)
+      expect(out).toContain('等窗口进入前台 · 第一次打开要在窗口里确认账号')
     expect(err).toEqual([])
-    expect(hub.entered[0]).toEqual({ site: 'none' })
+    expect(hub.entered[0]).toEqual({
+      site: 'none',
+      device: linux ? deviceId : null,
+    })
     expect(await until(() => hub.front.includes('/'), 30_000)).toBe(true)
 
     expect(await signOut(deps)).toBe(0)

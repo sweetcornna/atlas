@@ -24,13 +24,15 @@ declare const QMO_SOURCE_COMMIT: string | undefined
 export const USAGE = `qmo — 阡陌客户端
 
 用法：
-  qmo sign-in <中枢地址> [--code <配对码>] [--name <设备名>] [--force]
+  qmo sign-in <中枢地址> [--name <设备名>] [--force]
   qmo open
   qmo status
   qmo sign-out
   qmo --version
 
-配对码在中枢「连接」页「添加设备」里拿；不带 --code 时会提示输入。`
+配对码在中枢「连接」页「添加设备」里拿。qmo sign-in 会提示输入；
+不在终端里运行时，从标准输入读一行。
+也可以用 --code <配对码>，但命令行对这台电脑上的其他用户可见。`
 
 export function versionLine(): string {
   const commit =
@@ -70,6 +72,32 @@ function parse(argv: readonly string[]): Parsed {
   return { positional, flags }
 }
 
+/** Longest line read from a pipe; a pairing code is 14 characters. */
+const MAX_LINE = 1024
+
+/** The first line of `input` without its line ending; `null` when it is empty. */
+export async function firstLine(
+  input: ReadableStream<Uint8Array>,
+): Promise<string | null> {
+  const reader = input.getReader()
+  const decoder = new TextDecoder()
+  let text = ''
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      text += decoder.decode(value, { stream: true })
+      const end = text.indexOf('\n')
+      if (end >= 0) return text.slice(0, end).replace(/\r$/, '')
+      if (text.length > MAX_LINE) break
+    }
+  } finally {
+    reader.cancel().catch(() => {})
+  }
+  text += decoder.decode()
+  return text === '' ? null : text.replace(/\r$/, '')
+}
+
 function value(parsed: Parsed, name: string): string | undefined {
   const found = parsed.flags.get(name)
   return typeof found === 'string' ? found : undefined
@@ -88,8 +116,9 @@ export async function main(
     io.out(USAGE)
     return 0
   }
-  const deps = systemDeps(io)
   try {
+    // A relative QMO_CLIENT_DIR fails here, as a message rather than a trace.
+    const deps = systemDeps(io)
     if (command === undefined) {
       if (deps.home.load() === undefined) {
         io.out(USAGE)
@@ -103,7 +132,7 @@ export async function main(
         const [hub, ...extra] = parsed.positional
         if (hub === undefined || extra.length > 0)
           throw new ClientError(
-            '用法：qmo sign-in <中枢地址> [--code <配对码>]',
+            '用法：qmo sign-in <中枢地址>（配对码随后输入）',
             2,
           )
         const code = value(parsed, '--code')
@@ -140,7 +169,9 @@ export async function main(
 const consoleIO: ClientIO = {
   out: line => console.log(line),
   err: line => console.error(line),
-  ask: question => (process.stdin.isTTY ? prompt(question) : null),
+  // Typed at a terminal, or piped in, so the pairing code is on no command line.
+  ask: async question =>
+    process.stdin.isTTY ? prompt(question) : firstLine(Bun.stdin.stream()),
 }
 
 if (import.meta.main) process.exit(await main(process.argv.slice(2), consoleIO))
