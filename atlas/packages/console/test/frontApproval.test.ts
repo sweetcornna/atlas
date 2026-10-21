@@ -200,11 +200,11 @@ describe('the prompt script', () => {
       item({ requestId: 'a', createdAt: START }),
     ]
     let decided = false
-    const page = runPrompt(async sent =>
-      sent.method === 'GET'
-        ? { approvals: decided ? [] : pending }
-        : ((decided = true), { delivered: true }),
-    )
+    const page = runPrompt(async sent => {
+      if (sent.method === 'GET') return { approvals: decided ? [] : pending }
+      decided = true
+      return { delivered: true }
+    })
     await flush()
     expect(page.dialog.open).toBe(true)
     expect(page.node('fx-approval-what').textContent).toBe('GH')
