@@ -5,9 +5,9 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v1.0（2026-10-21）：设计定稿，实现按 §9 分三块 |
+| 文档版本 | v1.1（2026-10-21）：三块实现合入 `feat/agent-settings`；§2 只能本人操作的清单按实现回写（25 项、两项只许收紧） |
 | 范围依据 | 负责人 10-21：「agent 应当可以更改一切设置，设置面板只是用来给人操作的而已，当 agent 要配置模型服务，更改设置等等极高危操作的时候，需要人的确认，具体参照 claudecode 和 claudedesktop，并保证原生化适配底层」 |
-| 状态 | 设计；分支 `feat/agent-settings`，未合入、未部署 |
+| 状态 | 已实现（目录 99 项、20 个区域，智能体可申请 74 项），分支 `feat/agent-settings`，未合入 main、未部署、未在真机上跑过 |
 | 相关 | [`authorization-m1.md`](./authorization-m1.md)（P14 单次审批）、[`elevation.md`](./elevation.md)（P39）、[`console.md`](./console.md) §5 路由表、`atlas/packages/node/src/host/connectorTools.ts`（同一种「先批后做」的先例） |
 | 一句话 | 控制台的每项配置都登记在一张设置目录里，面板和智能体用的是同一套操作；智能体能读全部设置，改任何一项都要一个人在对话里的确认卡片上点批准，批准只管这一次、绑定确切参数，中枢在动手前再核一遍 |
 
@@ -44,7 +44,14 @@ interface SettingOperation {
 
 - **执行就是调那个 `/v0` 接口**：校验、角色、租户、动作账本都走原路由，目录不复制一份业务逻辑。中枢在进程内用一个只对内的入口执行（§5.3），网络上没有新接口。
 - **覆盖范围**：凡是面板上能写的配置都登记，第一版按 [`console.md`](./console.md) §5 的写接口逐条过一遍；只读接口不登记（`qianmo_settings_list` 读当前值时用对应的 GET）。
-- **只能本人操作**（`human`）：`approvals.*`（决定、撤销、继续、换审批凭据）、`accounts.*`（邀请、重置、吊销、下线）、`elevation.set` 里除 `off` 以外的档位、`billing.*`、`im.pairing`、`handoff` 设备配对、`servers.replicate.*`（SSH 密码或私钥）。理由与 Desktop 一致：智能体不能给自己加权限、不能替人批准、不能拿到能冒充人的凭据、不能花钱。**降权**（`elevation.revoke`、`elevation.set {tier:'off'}`）照常走确认后执行。
+- **只能本人操作**（`human`，共 25 项，以目录为准）：
+  - 替人批准：`approvals.*`（决定、撤销、继续、换审批凭据）、`files.decide`（文件互通的访问申请）。
+  - 账号与凭据：`accounts.*`（邀请、重置、吊销、下线）、`connectors.device.pair` / `connectors.device.revoke`（接力设备）、`servers.replicate.inspect` / `servers.replicate.start`（SSH 密码或私钥）。
+  - 给智能体加权限：`elevation.set`（升到 `off` 以外的档位）、`im.pairing`、`im.create`、`im.login`（扫码登录的人成为渠道主人）。
+  - 花钱：`billing.*`。
+- **只许收紧的两项**：`desktop.set`（云端电脑）与 `im.save`（渠道）在 preview 与 apply 时都拿新值与当前值比，凡是放宽（确认档改成「无需确认」、开终端、加应用、改主人或成员）一律按只能本人操作拒绝；收紧照常走确认。
+- **降权**：`elevation.off`、`elevation.revoke`、`elevation.revoke-all` 照常走确认后执行。
+- **要确认但不拦**：`extensions.*`、`agents.extension.install`、连接器的 `agents`（把连接借给哪些智能体）也会扩大智能体能做的事，但它们正是负责人要求智能体能改的配置，按每次确认处理，卡片写明装什么、借给谁。理由与 Desktop 一致：智能体不能替人批准、不能拿到能冒充人的凭据、不能花钱、不能自己给自己放权。
 - **测试锁**：一条测试把目录与 `console.md` §5 的写接口对账，新增写接口没登记（也没写进豁免表）就红。
 
 ## 3. 两个工具
