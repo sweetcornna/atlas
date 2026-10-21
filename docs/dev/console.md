@@ -833,6 +833,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/fragments/chat/front/side?agent=&active=` | **成员 / ops / 管理令牌** | 智能体、按时间分组的会话、其他执行中的会话 |
 | GET | `/fragments/chat/front/view?agent=<地址>` | **成员 / ops / 管理令牌** | 智能体抬头与欢迎页 |
 | GET | `/fragments/chat/front/view/<会话 id>?open=1` | **成员 / ops / 管理令牌** | 抬头与转录；`open=1` 表示显式打开，不带它是刷新 |
+| GET | `/fragments/chat/front/panel` | **成员 / ops / 管理令牌** | 会话面板：这个人的后台任务（与 `/v0/tasks` 同一条归属规则）与云端电脑入口 |
 | GET | `/v0/chat/targets` | **成员 / ops / 管理令牌** | 能聊的对象，含可不可拨（§6.3） |
 | GET | `/v0/chat/sessions` | **成员 / ops / 管理令牌** | 会话列表 |
 | POST | `/v0/chat/sessions` | **成员 / ops / 管理令牌** | 开一条会话 |
@@ -1204,10 +1205,29 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
 
 操作者消息靠右，回复按正文列呈现，连续过程行折叠为步骤组。输入框固定在底部，欢迎页
 移到问候下；Enter 发送，Shift Enter 换行，`/` 打开本地命令选项。第一句先创建会话再发送。
-有转录且读取成功才启用会话输入框；失效书签与账本停用不会启用发送。
+有转录且读取成功才启用会话输入框；失效书签与账本停用不会启用发送。智能体还在处理上一句
+时发出的消息，节点读到之前写「排队中 · 下一步时送达」。
+
+输入框是上面一行字、下面一排控件（`view/frontTools.ts`、`assets/frontTools.ts`）：左边 `+`
+（本地命令），右边「模型」与「权限模式」两个菜单、语音、发送。「模型」列出目标节点在跑的
+档案里的对话模型（数据来自 `/fragments/providers/chat` 片段里隐藏的 `#prov-chat-models`）、
+「自动」与八档推理强度（默认 / 关闭 / 最低 / 低 / 中 / 高 / 超高 / 最高），选中后作为本会话
+的本地命令 `/model <provider>/<id>`、`/model auto`、`/effort <档>` 发出，结果写在转录里；没有
+模型服务时只给推理强度。「权限模式」按 P39 的 `GET /v0/elevation` 读这个智能体的模式，
+`PUT /v0/elevation/<节点>/<智能体> {tier}` 切换（人工确认 off、自动接受编辑 accept-edits、
+自动审批 auto、跳过权限确认 full-access，时长与次数用节点缺省），跳过权限确认先弹确认框；
+只有运维能切换（服务端还要求 30 分钟内验证过的个人凭据），中枢没有这个接口（404 / 501）时
+菜单写「未接入 · 一直是人工确认」，各项禁用。
+
+顶栏右侧的会话面板（`view/frontPanel.ts`、`assets/frontPanel.ts`）列这个人的后台任务：
+待你处理、运行中、排队中在前，每行状态点、标题、耗时与停止（`POST /v0/tasks/<id>/cancel`），
+展开看状态、要求、进度或结果与子会话链接，已完成与已停止的收进「N 个已完成」；中枢有云端电脑
+时另有入口。面板打开时每 5 秒取一次 `/fragments/chat/front/panel`，关着时每 30 秒只更新按钮上的
+点；没选过时宽屏（≥ 1101px）且有未结束的任务就自动打开，开关记在本浏览器。
 
 前台片段是 `/fragments/chat/front/side?agent=&active=`、
-`/fragments/chat/front/view?agent=<地址>`、`/fragments/chat/front/view/<会话 id>[?open=1]`。
+`/fragments/chat/front/view?agent=<地址>`、`/fragments/chat/front/view/<会话 id>[?open=1]`、
+`/fragments/chat/front/panel`。
 前台文档的 `/?session=`、`view/<id>?open=1` 与 JSON 转录读取各记一次显式打开，
 不带 `open=1` 的刷新复用同一主体与会话的 30 分钟读取窗口。窗口外必须重新记账，
 账本停用时答 503 并显示原因，读取转录的端口不被调用。成员只能看自己创建的会话，
