@@ -122,7 +122,7 @@ const PERSONAL_IN_QUERY =
   '个人凭据不能放在链接里：它已经进了浏览器历史与访问日志，请让运维重置。' +
   '浏览器请在登录页登录，脚本请用 Authorization: Bearer。'
 
-const PERSONAL_IN_QUERY_LINE = '个人凭据不能放进链接 · 请找运维重置'
+const PERSONAL_IN_QUERY_LINE = '个人凭据不能放进链接 · 找运维重置'
 
 const ADMIN_BEARER_ONLY =
   '管理令牌已转为 break-glass，只接受 Authorization: Bearer；' +
@@ -130,10 +130,10 @@ const ADMIN_BEARER_ONLY =
 
 /** Also what the login form says to the admin token in break-glass. */
 export const ADMIN_BEARER_ONLY_LINE =
-  '管理令牌只接受 Bearer 头 · 日常请用个人运维账号'
+  '管理令牌只接受 Bearer 头 · 日常用个人运维账号'
 
 /** What the login card says while the account book is closed. */
-export const ACCOUNTS_UNAVAILABLE_LINE = '个人账号暂停服务 · 请联系运维'
+export const ACCOUNTS_UNAVAILABLE_LINE = '个人账号暂停服务 · 联系运维'
 
 function legacyPrincipal(
   credential: ConsoleCredential,

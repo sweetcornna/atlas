@@ -83,6 +83,8 @@ export interface FrontText {
   readonly unread: string
   readonly failed: string
   readonly trace: string
+  /** The short task id a reply carries. */
+  readonly task: string
   readonly copyReply: string
 
   stepsDone(count: number): string
@@ -299,6 +301,7 @@ const ZH: FrontText = {
   unread: '未读',
   failed: '失败',
   trace: '链',
+  task: '任务',
   copyReply: '复制这条回复',
   stepsDone: n => `已执行 · ${n} 步`,
   stepsRunning: n => `进行中 · ${n} 步`,
@@ -490,6 +493,7 @@ const EN: FrontText = {
   unread: 'Unread',
   failed: 'Failed',
   trace: 'trace',
+  task: 'task',
   copyReply: 'Copy reply',
   stepsDone: n => `Done · ${n} ${n === 1 ? 'step' : 'steps'}`,
   stepsRunning: n => `In progress · ${n} ${n === 1 ? 'step' : 'steps'}`,
@@ -681,6 +685,7 @@ const JA: FrontText = {
   unread: '未読',
   failed: '失敗',
   trace: 'トレース',
+  task: 'タスク',
   copyReply: '返信をコピー',
   stepsDone: n => `完了 · ${n} ステップ`,
   stepsRunning: n => `進行中 · ${n} ステップ`,
@@ -853,7 +858,7 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     sent: '已发送',
     sentRetrying: '已发送 · 刷新失败 · 自动重试中',
     newReply: '收到新回复 · ',
-    seeChat: '请查看对话',
+    seeChat: '回到对话查看',
     polling: '轮询中',
     disconnected: '已断开',
     copied: '已复制',

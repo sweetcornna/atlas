@@ -762,7 +762,7 @@ function idMarks(turn: ChatTurn, admin: boolean, t: FrontText): string {
   if (turn.taskId !== undefined) {
     marks.push(
       `<span class="fx-id mono" title="${attr(turn.taskId)}">${escapeHtml(
-        `task ${turn.taskId.slice(0, 8)}`,
+        `${t.task} ${turn.taskId.slice(0, 8)}`,
       )}</span>`,
     )
   }

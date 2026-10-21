@@ -888,7 +888,7 @@ describe('renderServers', () => {
 
   test('names the missing flag rather than showing an empty section', () => {
     const html = renderServers(model({ cards: [] }))
-    expect(html).toContain('请联系运维设置')
+    expect(html).toContain('由运维设置')
     expect(html).not.toContain('--node-server')
   })
 })

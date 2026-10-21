@@ -942,7 +942,7 @@ describe('POST /login is throttled', () => {
     const blocked = await harness.handle(loginPost({ token: WRONG }))
     expect(blocked.status).toBe(429)
     expect(blocked.headers.get('retry-after')).toBe('1')
-    expect(await blocked.text()).toContain('尝试过多 · 请等 1 秒')
+    expect(await blocked.text()).toContain('尝试过多 · 1 秒后再试')
 
     // Blocked means blocked: the right token does not skip the queue, and the
     // throttle therefore cannot be used to test one guess per lockout.

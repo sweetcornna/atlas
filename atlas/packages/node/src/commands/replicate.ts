@@ -1420,7 +1420,7 @@ export async function runJob(request: RunRequest): Promise<number> {
       }, 90_000)
       // The node is up and wired either way; the profile can be applied later.
       if (!consoleUp)
-        job.emit('ready', 'info', '控制台还没回来 · 模型档案请稍后在模型页下发')
+        job.emit('ready', 'info', '控制台还没回来 · 稍后到模型页下发模型档案')
       else job.emit('ready', 'info', await shipModels(request))
     })
     const address = `qianmo://${request.node}/${request.agent}`
@@ -1460,7 +1460,7 @@ export async function shipModels(
   fetcher: typeof fetch = fetch,
 ): Promise<string> {
   if (request.models === undefined)
-    return '这次部署不是运维个人账号发起的 · 模型档案请运维在模型页下发'
+    return '这次部署不是运维个人账号发起的 · 由运维到模型页下发模型档案'
   let response: Response
   try {
     response = await fetcher(

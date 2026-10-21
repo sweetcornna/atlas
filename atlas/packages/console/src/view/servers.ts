@@ -198,7 +198,7 @@ export function renderServers(model: ServersModel): string {
     body.push(bar('muted', '以下服务器仍取自启动参数'))
   }
   if (model.cards.length === 0) {
-    body.push(`<p class="hint">未配置服务器归属 · 请联系运维设置</p>`)
+    body.push(`<p class="hint">未配置服务器归属 · 由运维设置</p>`)
     return (
       sectionHead('Servers', '服务器', { headingId: SERVERS_HEADING_ID }) +
       `<div class="pane">${body.join('')}</div>`

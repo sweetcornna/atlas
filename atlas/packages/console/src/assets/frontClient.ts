@@ -464,7 +464,7 @@ function frontScript(): string {
     var line = byId('reply-announcement');
     var replies = document.querySelectorAll('#fx-thread .fx-msg-agent:not(.fx-pending)');
     var last = replies.length ? replies[replies.length - 1].querySelector('.fx-text, .fx-pre') : null;
-    if (line) line.textContent = tx('newReply', '收到新回复 · ') + (last ? last.textContent.slice(0, 240) : tx('seeChat', '请查看对话'));
+    if (line) line.textContent = tx('newReply', '收到新回复 · ') + (last ? last.textContent.slice(0, 240) : tx('seeChat', '回到对话查看'));
     play([['speaking', 2400], ['happy', 5000], ['idle', 0]]);
   }
 
