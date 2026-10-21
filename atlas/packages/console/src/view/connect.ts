@@ -337,7 +337,12 @@ function deviceRow(device: HandoffDeviceView, model: ConnectModel): string {
   return (
     `<tr data-key="${attr(device.deviceId)}"${revoked ? ' class="dev-revoked"' : ''}>` +
     `<td><div class="kit-row"><span class="dev-glyph">${icon('laptop', { small: true })}</span>` +
-    `<b>${escapeHtml(device.name)}</b></div></td>` +
+    `<b>${escapeHtml(device.name)}</b>` +
+    // A client device can open the front; a handoff device only relays.
+    (device.kind === 'client'
+      ? `<span class="tag tag-neutral">客户端</span>`
+      : '') +
+    `</div></td>` +
     `<td>${
       device.platform === null
         ? absent()
@@ -660,20 +665,32 @@ export function renderConnectorForm(input: {
   )
 }
 
-/** The pairing dialog; the code arrives from `POST /v0/handoff/devices/pairing`. */
+/**
+ * The pairing dialog; the code arrives from `POST /v0/handoff/devices/pairing`.
+ * The client's steps show when the answer has a `qmo sign-in` line, the
+ * handoff steps when it has a `qm handoff login` one (clients.md §3.1).
+ */
 export function pairingDialog(): string {
+  const copy = (target: string) =>
+    `<button type="button" class="btn btn-secondary btn-small" data-action="pairing-copy" data-target="${target}">复制</button>`
   return (
     `<dialog class="dialog" id="pairing-dialog" aria-labelledby="pairing-title">` +
     `<div class="dialog-form">` +
     dialogTop('pairing-title', 'laptop', '添加设备') +
     `<div class="dialog-body pair-body">` +
     `<p class="pair-code" id="pairing-code" aria-label="配对码"></p>` +
-    `<ol class="pair-steps">` +
+    `<p class="note" id="pairing-expiry"></p>` +
+    `<ol class="pair-steps" id="pairing-client" hidden>` +
+    `<li><b>阡陌客户端</b><span class="note">在要用的电脑上运行下面这行 · 按提示输入上面的配对码 · 只能用一次</span>` +
+    `<code class="cmd mono pair-cmd" id="pairing-client-command" data-raw></code>` +
+    `<span class="kit-row">${copy('pairing-client-command')}</span></li>` +
+    `<li><b>打开前台</b><span class="note">之后运行 qmo open</span></li>` +
+    `</ol>` +
+    `<ol class="pair-steps" id="pairing-handoff" hidden>` +
     `<li><b>装插件</b><span class="note">在本机的 Claude Code 或 Codex 里装上阡陌插件</span></li>` +
     `<li><b>登录一次</b><span class="note">在本机终端运行下面这行 · 配对码只能用一次</span>` +
     `<code class="cmd mono pair-cmd" id="pairing-command" data-raw></code>` +
-    `<span class="kit-row"><button type="button" class="btn btn-secondary btn-small" data-action="pairing-copy">复制</button>` +
-    `<span class="note" id="pairing-expiry"></span></span></li>` +
+    `<span class="kit-row">${copy('pairing-command')}</span></li>` +
     `<li><b>开始接力</b><span class="note">在本机说「交给服务器接着做」· 回来时说「接回来」</span></li>` +
     `</ol>` +
     `</div>` +
@@ -750,6 +767,7 @@ export const CONNECT_PAGE_CSS = `
 .trail.devices { min-width: 640px; }
 .trail.devices td:first-child { min-width: 9em; }
 .pair-steps { margin: var(--space-3) 0 0; padding: 0; list-style: none; counter-reset: step; display: flex; flex-direction: column; gap: var(--space-3); }
+.pair-steps[hidden] { display: none; }
 .pair-steps li { counter-increment: step; display: flex; flex-direction: column; gap: 4px; position: relative; padding-left: 34px; }
 .pair-steps li::before { content: counter(step); position: absolute; left: 0; top: 0; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: var(--text-12); font-weight: 600; background: var(--color-accent-fill); color: var(--color-on-accent-fill); }
 .pair-cmd { display: block; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--color-bg); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-12); }

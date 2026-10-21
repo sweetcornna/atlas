@@ -38,6 +38,7 @@ import { CONNECT_PAGE_JS } from '../view/connectScript.js'
 import { KIT_CSS } from '../view/kit.js'
 import { connectorsApi } from './connectorsApi.js'
 import { canMember, canOps, guardRead } from './directionShared.js'
+import { visibleDevices } from './handoffDevices.js'
 import { failureResponse } from './shared.js'
 import type { RouteContext, RouteModule } from './types.js'
 
@@ -73,7 +74,14 @@ async function modelOf(ctx: RouteContext): Promise<ConnectModel> {
   const [connectorSide, deviceSide, relaySide] = await Promise.all([
     sideOf(connectors === undefined ? null : () => connectors.snapshot()),
     sideOf<readonly HandoffDeviceView[]>(
-      devices === undefined ? null : () => devices.listDevices(),
+      devices === undefined
+        ? null
+        : async () => {
+            const listed = await devices.listDevices()
+            return listed.ok
+              ? { ok: true, value: visibleDevices(listed.value, ctx.access) }
+              : listed
+          },
     ),
     sideOf<readonly HandoffTaskView[]>(
       handoff === undefined ? null : () => handoff.list(),

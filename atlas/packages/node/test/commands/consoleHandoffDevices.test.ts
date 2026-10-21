@@ -65,6 +65,8 @@ test('pairing is single use, secrets stay hashed, revocation and touches survive
   expect(pairing.command).toBe(
     `qm handoff login http://127.0.0.1:1234 --code ${pairing.code}`,
   )
+  // With accounts the dialog also has the client's line, without the code.
+  expect(pairing.clientCommand).toBe('qmo sign-in http://127.0.0.1:1234')
   const paired = await h.devices.pair!(
     { code: pairing.code, name: '本机', platform: 'darwin-arm64' },
     'a',
@@ -74,6 +76,7 @@ test('pairing is single use, secrets stay hashed, revocation and touches survive
   expect(h.devices.authenticate!(paired.value.token)).toEqual({
     deviceId: paired.value.deviceId,
     owner: pairing.actor.subject,
+    kind: 'handoff',
   })
   const before = fs.readFileSync(path.join(h.root, 'devices.ndjson'), 'utf8')
   h.devices.authenticate!(paired.value.token)
@@ -101,6 +104,7 @@ test('pairing is single use, secrets stay hashed, revocation and touches survive
     (await h.devices.revokeDevice(paired.value.deviceId, pairing.actor)).ok,
   ).toBe(true)
   expect(h.devices.authenticate!(paired.value.token)).toBeNull()
+  expect(h.devices.refusalOf!(paired.value.token)).toBe('device_revoked')
   h.devices.close()
   const restarted = openConsoleHandoffDevices({
     path: path.join(h.root, 'devices.ndjson'),
@@ -170,6 +174,159 @@ test('viewer cannot issue; revoked issuers invalidate otherwise active device to
   expect(h.devices.authenticate!(paired.value.token)).not.toBeNull()
   expect(h.book.revoke(pairing.actor.subject, 'legacy:admin').ok).toBe(true)
   expect(h.devices.authenticate!(paired.value.token)).toBeNull()
+  // The revocation took the device with it, not only its owner's standing.
+  expect(h.devices.refusalOf!(paired.value.token)).toBe('device_revoked')
+})
+
+test('an account reset revokes its devices: the restored person comes back without them', async () => {
+  const h = scene()
+  const pairing = await h.issue(h.person('ops'))
+  const kept = await h.issue()
+  const paired = await h.devices.pair!(
+    { code: pairing.code, name: 'ops', platform: null, kind: 'client' },
+    'a',
+  )
+  const other = await h.devices.pair!(
+    { code: kept.code, name: 'member', platform: null, kind: 'client' },
+    'a',
+  )
+  if (!paired.ok || !other.ok) throw new Error('pair failed')
+  const reset = h.book.reset(pairing.actor.subject, 'legacy:admin')
+  if (!reset.ok) throw new Error('reset failed')
+  // While the reset is open the owner is not active …
+  expect(h.devices.authenticate!(paired.value.token)).toBeNull()
+  expect(h.book.acceptInvite(reset.value.token).ok).toBe(true)
+  // … and once it is restored the old device stays revoked.
+  expect(h.devices.authenticate!(paired.value.token)).toBeNull()
+  expect(h.devices.refusalOf!(paired.value.token)).toBe('device_revoked')
+  expect(h.devices.authenticate!(other.value.token)).not.toBeNull()
+  // The revocation was written, so it holds across a restart.
+  h.devices.close()
+  const restarted = openConsoleHandoffDevices({
+    path: path.join(h.root, 'devices.ndjson'),
+    accounts: h.book,
+  })
+  cleanup.push(() => restarted.close())
+  expect(restarted.authenticate!(paired.value.token)).toBeNull()
+  expect(restarted.authenticate!(other.value.token)).not.toBeNull()
+})
+
+test('a reset voids the codes the account had issued; a code from after the restore pairs', async () => {
+  const h = scene()
+  const ops = h.person('ops')
+  const stale = await h.issue(ops)
+  const reset = h.book.reset(ops.subject, 'legacy:admin')
+  if (!reset.ok) throw new Error('reset failed')
+  expect(h.book.acceptInvite(reset.value.token).ok).toBe(true)
+  // The account is active again, and the old code still opens nothing.
+  expect(
+    (
+      await h.devices.pair!(
+        { code: stale.code, name: 'late', platform: null, kind: 'client' },
+        'a',
+      )
+    ).ok,
+  ).toBe(false)
+  const fresh = await h.issue(ops)
+  expect(
+    (
+      await h.devices.pair!(
+        { code: fresh.code, name: 'new', platform: null, kind: 'client' },
+        'a',
+      )
+    ).ok,
+  ).toBe(true)
+})
+
+test('a reset the ledger missed is caught up on at the next start', async () => {
+  const h = scene()
+  const ops = h.person('ops')
+  const member = h.person('member')
+  const opsCode = await h.issue(ops)
+  const memberCode = await h.issue(member)
+  const opsDevice = await h.devices.pair!(
+    { code: opsCode.code, name: 'ops', platform: null, kind: 'client' },
+    'a',
+  )
+  const memberDevice = await h.devices.pair!(
+    { code: memberCode.code, name: 'member', platform: null, kind: 'client' },
+    'a',
+  )
+  if (!opsDevice.ok || !memberDevice.ok) throw new Error('pair failed')
+  const pending = await h.issue(ops)
+  // The ledger is closed while the account is reset and restored, so no
+  // listener writes the revocation down.
+  h.devices.close()
+  h.advance(1000)
+  const reset = h.book.reset(ops.subject, 'legacy:admin')
+  if (!reset.ok) throw new Error('reset failed')
+  expect(h.book.acceptInvite(reset.value.token).ok).toBe(true)
+  const file = path.join(h.root, 'devices.ndjson')
+  const reopened = openConsoleHandoffDevices({
+    path: file,
+    accounts: h.book,
+    now: () => 200_000,
+  })
+  cleanup.push(() => reopened.close())
+  expect(reopened.authenticate!(opsDevice.value.token)).toBeNull()
+  expect(reopened.refusalOf!(opsDevice.value.token)).toBe('device_revoked')
+  expect(reopened.authenticate!(memberDevice.value.token)).not.toBeNull()
+  // Written down, not only refused: the next start reads it as revoked.
+  const last = JSON.parse(
+    fs.readFileSync(file, 'utf8').trim().split('\n').at(-1)!,
+  ) as {
+    devices: { deviceId: string; revokedAt: number | null }[]
+    pairings: { owner: string }[]
+  }
+  expect(
+    last.devices.find(d => d.deviceId === opsDevice.value.deviceId)?.revokedAt,
+  ).toBe(200_000)
+  expect(
+    last.devices.find(d => d.deviceId === memberDevice.value.deviceId)
+      ?.revokedAt,
+  ).toBeNull()
+  expect(last.pairings.some(p => p.owner === ops.subject)).toBe(false)
+  expect(
+    (
+      await reopened.pair!(
+        { code: pending.code, name: 'late', platform: null, kind: 'client' },
+        'a',
+      )
+    ).ok,
+  ).toBe(false)
+})
+
+test('a client device says so, and a ledger without one keeps the old row shape', async () => {
+  const h = scene()
+  const first = await h.issue()
+  const handoff = await h.devices.pair!(
+    { code: first.code, name: 'handoff', platform: null },
+    'a',
+  )
+  if (!handoff.ok) throw new Error('pair failed')
+  const file = path.join(h.root, 'devices.ndjson')
+  const lastRow = () => {
+    const lines = fs.readFileSync(file, 'utf8').trim().split('\n')
+    return JSON.parse(lines.at(-1)!) as { devices: Record<string, unknown>[] }
+  }
+  // Builds from before the client read exactly eight fields per device.
+  expect(Object.keys(lastRow().devices[0]!)).toHaveLength(8)
+  expect(lastRow().devices[0]).not.toHaveProperty('kind')
+  const second = await h.issue()
+  const client = await h.devices.pair!(
+    { code: second.code, name: 'client', platform: null, kind: 'client' },
+    'a',
+  )
+  if (!client.ok) throw new Error('pair failed')
+  expect(client.value.kind).toBe('client')
+  expect(h.devices.authenticate!(client.value.token)?.kind).toBe('client')
+  expect(lastRow().devices[1]?.kind).toBe('client')
+  const listed = await h.devices.listDevices()
+  expect(listed.ok && listed.value.map(d => d.kind)).toEqual([
+    'handoff',
+    'client',
+  ])
+  expect(h.devices.refusalOf!(`qmd_${'z'.repeat(43)}`)).toBe('unauthorized')
 })
 
 test('a member downgraded to viewer immediately loses device authentication', async () => {
@@ -199,4 +356,22 @@ test('a member downgraded to viewer immediately loses device authentication', as
   } finally {
     spy.mockRestore()
   }
+})
+
+test('on a console without handoff the pairing dialog spells out the qmo sign-in', async () => {
+  const h = scene()
+  const client = openConsoleHandoffDevices({
+    path: path.join(h.root, 'client-devices.ndjson'),
+    accounts: h.book,
+    pairWith: 'client',
+  })
+  cleanup.push(() => client.close())
+  const result = await client.issuePairing(
+    h.person('member'),
+    'https://hub.example/',
+  )
+  if (!result.ok) throw new Error('pairing failed')
+  // The code is typed at the client's prompt, never put on a command line.
+  expect(result.value.command).toBe('qmo sign-in https://hub.example')
+  expect(result.value.clientCommand).toBeUndefined()
 })

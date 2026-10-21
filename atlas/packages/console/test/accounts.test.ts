@@ -1135,3 +1135,39 @@ describe('every page the accounts add keeps to the console register', () => {
     }
   })
 })
+
+describe('when a credential was last voided (clients.md §3.1)', () => {
+  test('a reset and the revocation are remembered across a restart', async () => {
+    const h = accountsHarness()
+    const subjectOf = async () => {
+      const a = await person(h.handle, 'member')
+      const principal = h.book.bearerPrincipal(a.credential)
+      if (!principal.ok || principal.value.kind !== 'user')
+        throw new Error('no subject')
+      return principal.value.subject
+    }
+    const reset = await subjectOf()
+    const revoked = await subjectOf()
+    const untouched = await subjectOf()
+    expect(h.book.voidedAt(reset)).toBeNull()
+    h.clock.advance(1000)
+    const resetAt = h.clock.now()
+    const invite = h.book.reset(reset, 'legacy:admin')
+    if (!invite.ok) throw new Error('reset')
+    // Restoring the account does not undo when the old credential ended.
+    h.clock.advance(1000)
+    expect(h.book.acceptInvite(invite.value.token).ok).toBe(true)
+    h.clock.advance(1000)
+    const revokedAt = h.clock.now()
+    expect(h.book.revoke(revoked, 'legacy:admin').ok).toBe(true)
+    for (const book of [
+      h.book,
+      restart(h.ledger.text ?? '', h.sessions.text ?? '').book,
+    ]) {
+      expect(book.voidedAt(reset)).toBe(resetAt)
+      expect(book.voidedAt(revoked)).toBe(revokedAt)
+      expect(book.voidedAt(untouched)).toBeNull()
+      expect(book.voidedAt('legacy:admin')).toBeNull()
+    }
+  })
+})

@@ -6,6 +6,7 @@ import {
   type AccountBook,
   type ConsoleResult,
   type DirectionActor,
+  type HandoffDeviceRefusal,
   type HandoffDevicesPort,
   type HandoffDeviceView,
   type HandoffPairingResult,
@@ -14,8 +15,14 @@ import { qianmoConfigPath } from '@qianmo/paths'
 import { handoffShellArgument } from './handoffHub.js'
 import { FileLedger } from './consoleAccountsStore.js'
 
-interface Device extends Omit<HandoffDeviceView, 'tasks'> {
+/**
+ * `kind` is written only for a client device: a ledger without one stays
+ * readable by builds from before the client (P37.2), and a row without it is
+ * a `qm handoff` device.
+ */
+interface Device extends Omit<HandoffDeviceView, 'tasks' | 'kind'> {
   readonly hash: string
+  readonly kind?: 'client'
 }
 interface Pairing {
   readonly hash: string
@@ -32,6 +39,8 @@ interface Snapshot {
 }
 const digest = (value: string): string =>
   createHash('sha256').update(value).digest('hex')
+/** How long a pairing code waits to be typed in. */
+const PAIRING_TTL_MS = 10 * 60_000
 const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
 const base32 = (): string =>
   [...randomBytes(12)].map(byte => BASE32[byte & 31]).join('')
@@ -58,7 +67,8 @@ function isSnapshot(value: unknown): value is Snapshot {
   const devices = value.devices.every(
     (d: unknown) =>
       record(d) &&
-      Object.keys(d).length === 8 &&
+      (Object.keys(d).length === 8 ||
+        (Object.keys(d).length === 9 && d.kind === 'client')) &&
       typeof d.deviceId === 'string' &&
       /^d-[a-z2-7]{12}$/.test(d.deviceId) &&
       typeof d.hash === 'string' &&
@@ -97,6 +107,12 @@ export function openConsoleHandoffDevices(
     readonly accounts?: AccountBook
     readonly now?: () => number
     readonly taskCount?: (deviceId: string) => number
+    /**
+     * Which local command the pairing dialog spells out: `qm handoff login`
+     * (default) or, on a console without handoff, the `qmo` client's sign-in.
+     * With accounts the dialog shows the client's line either way.
+     */
+    readonly pairWith?: 'handoff' | 'client'
   } = {},
 ): HandoffDevicesPort & { close(): void } {
   const store = new FileLedger(
@@ -137,9 +153,65 @@ export function openConsoleHandoffDevices(
       )
     )
   }
-  const view = ({ hash: _hash, ...device }: Device): HandoffDeviceView => ({
+  /** Whether `owner`'s credential was voided after `at`, from the account ledger. */
+  const voidedAfter = (owner: string, at: number): boolean => {
+    const voided = options.accounts?.voidedAt(owner) ?? null
+    return voided !== null && voided > at
+  }
+  /**
+   * `from` without what a reset or revocation ended: the devices an account
+   * paired before its credential was last voided, or that a gone, revoked or
+   * still-reset account owns, are revoked at `time`, and the codes it issued
+   * are dropped. `null` when nothing changes, and while the account book
+   * cannot say, so a fault there revokes nothing.
+   */
+  const settled = (from: Snapshot, time: number): Snapshot | null => {
+    const listed = options.accounts?.list()
+    if (listed?.ok !== true) return null
+    const active = new Set<string>(
+      listed.value.accounts
+        .filter(a => a.state === 'active')
+        .map(a => a.subject),
+    )
+    const over = (owner: string, at: number): boolean =>
+      owner.startsWith('u:') && (!active.has(owner) || voidedAfter(owner, at))
+    let changed = false
+    const devices = from.devices.map(d => {
+      if (d.revokedAt !== null || !over(d.owner, d.createdAt)) return d
+      changed = true
+      return { ...d, revokedAt: time }
+    })
+    const pairings = from.pairings.filter(
+      p => !over(p.owner, p.expiresAt - PAIRING_TTL_MS),
+    )
+    if (pairings.length !== from.pairings.length) changed = true
+    return changed ? { ...from, devices, pairings } : null
+  }
+  // A restart catches up on what ended while no listener was writing it down.
+  const caughtUp = settled(state, now())
+  if (caughtUp !== null) {
+    try {
+      persist(caughtUp)
+    } catch {
+      // `failed` is set: every device is refused until the ledger is repaired.
+    }
+  }
+  const view = ({
+    hash: _hash,
+    kind,
+    ...device
+  }: Device): HandoffDeviceView => ({
     ...device,
+    kind: kind ?? 'handoff',
     tasks: options.taskCount?.(device.deviceId) ?? 0,
+  })
+  // An account that is revoked or reset takes its devices and its open codes
+  // with it: a reset person comes back with a new credential, never with the
+  // old devices. A write that fails here throws to the account book, which
+  // raises the alarm, and the ledger refuses every device until repaired.
+  const unsubscribe = options.accounts?.onAccountEnded(() => {
+    const next = settled(state, now())
+    if (next !== null) persist(next)
   })
   const rates = new Map<string, { start: number; count: number }>()
   return {
@@ -175,7 +247,7 @@ export function openConsoleHandoffDevices(
         return refused('控制台地址不合法')
       const code = base32()
       const formatted = code.match(/.{4}/g)!.join('-')
-      const expiresAt = now() + 10 * 60_000
+      const expiresAt = now() + PAIRING_TTL_MS
       persist({
         ...state,
         pairings: [
@@ -192,12 +264,23 @@ export function openConsoleHandoffDevices(
           },
         ],
       })
+      const hub = handoffShellArgument(url.toString().replace(/\/$/, ''))
+      // The client reads the code from its prompt: a command line is
+      // readable by every user of the computer (`/proc/*/cmdline`).
+      const client = `qmo sign-in ${hub}`
       return {
         ok: true,
         value: {
           code: formatted,
           expiresAt,
-          command: `qm handoff login ${handoffShellArgument(url.toString().replace(/\/$/, ''))} --code ${formatted}`,
+          ...(options.pairWith === 'client'
+            ? { command: client }
+            : {
+                command: `qm handoff login ${hub} --code ${formatted}`,
+                ...(options.accounts === undefined
+                  ? {}
+                  : { clientCommand: client }),
+              }),
         },
       }
     },
@@ -257,7 +340,8 @@ export function openConsoleHandoffDevices(
         pairing.used ||
         pairing.attempts >= 5 ||
         time >= pairing.expiresAt ||
-        !activeOwner(pairing.owner)
+        !activeOwner(pairing.owner) ||
+        voidedAfter(pairing.owner, pairing.expiresAt - PAIRING_TTL_MS)
       )
         return refused()
       if (
@@ -281,6 +365,7 @@ export function openConsoleHandoffDevices(
         platform: input.platform,
         owner: pairing.owner,
         hash: digest(token),
+        ...(input.kind === 'client' ? { kind: 'client' as const } : {}),
         createdAt: time,
         lastSeenAt: null,
         revokedAt: null,
@@ -297,6 +382,7 @@ export function openConsoleHandoffDevices(
         value: {
           deviceId,
           owner: pairing.owner,
+          kind: device.kind ?? 'handoff',
           name: device.name,
           token,
           console: pairing.console,
@@ -306,7 +392,12 @@ export function openConsoleHandoffDevices(
     authenticate(token) {
       if (failed || !/^qmd_[A-Za-z0-9_-]{43}$/.test(token)) return null
       const device = state.devices.find(d => d.hash === digest(token))
-      if (!device || device.revokedAt !== null || !activeOwner(device.owner))
+      if (
+        !device ||
+        device.revokedAt !== null ||
+        voidedAfter(device.owner, device.createdAt) ||
+        !activeOwner(device.owner)
+      )
         return null
       if (device.lastSeenAt === null || now() - device.lastSeenAt >= 60_000) {
         try {
@@ -320,7 +411,23 @@ export function openConsoleHandoffDevices(
           return null
         }
       }
-      return { deviceId: device.deviceId, owner: device.owner }
+      return {
+        deviceId: device.deviceId,
+        owner: device.owner,
+        kind: device.kind ?? 'handoff',
+      }
+    },
+    refusalOf(token): HandoffDeviceRefusal {
+      const device = /^qmd_[A-Za-z0-9_-]{43}$/.test(token)
+        ? state.devices.find(d => d.hash === digest(token))
+        : undefined
+      if (device === undefined) return 'unauthorized'
+      if (
+        device.revokedAt !== null ||
+        voidedAfter(device.owner, device.createdAt)
+      )
+        return 'device_revoked'
+      return activeOwner(device.owner) ? 'unauthorized' : 'owner_inactive'
     },
     async revokeDevice(deviceId, actor) {
       const device = state.devices.find(d => d.deviceId === deviceId)
@@ -346,6 +453,7 @@ export function openConsoleHandoffDevices(
       return { ok: true, value: view(revoked) }
     },
     close() {
+      unsubscribe?.()
       store.close()
     },
   }

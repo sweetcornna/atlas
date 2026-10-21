@@ -160,6 +160,7 @@ const LEDGER_FIELDS: ReadonlySet<string> = new Set([
   'path',
   'from',
   'to',
+  'device',
 ])
 
 export type {
@@ -172,6 +173,8 @@ const ROLES: ReadonlySet<string> = new Set(['viewer', 'member', 'ops'])
 const SUBJECT = /^u:[0-9a-f]{16}$/
 const INVITE_ID = /^[0-9a-f]{16}$/
 const DIGEST = /^[0-9a-f]{64}$/
+/** A paired device (`HandoffDeviceView.deviceId`). */
+const DEVICE_ID = /^d-[a-z2-7]{12}$/
 const FINGERPRINT = /^[0-9a-f]{16}$/
 /** Who may be named as the one who issued, withdrew or revoked something. */
 const ACTOR = /^(u:[0-9a-f]{16}|legacy:admin)$/
@@ -383,11 +386,15 @@ interface AccountState {
   readonly label?: string
   credentialHash: string | null
   revoked: boolean
+  /** When a reset or the revocation last voided the credential. */
+  voidedAt?: number
 }
 
 interface SessionState {
   readonly sidHash: string
   readonly subject: AccountSubject
+  /** The device whose client ticket opened this session (clients.md §3.2). */
+  readonly device?: string
   readonly createdAt: number
   lastSeenAt: number
   persistedAt: number
@@ -771,6 +778,7 @@ export class AccountBook {
           this.#subjectByCredential.delete(account.credentialHash)
         }
         account.credentialHash = null
+        account.voidedAt = entry.at
         return null
       }
       case 'chat.owned': {
@@ -831,13 +839,21 @@ export class AccountBook {
     switch (entry.kind) {
       case 'session.opened': {
         const subject = entry.data['subject']
+        const device = entry.data['device']
         if (this.#sessions.has(sidHash)) return 'sidHash 重复'
         if (!isSubject(subject) || !this.#accountsBySubject.has(subject)) {
           return '会话的主体不是已知账号'
         }
+        if (
+          device !== undefined &&
+          (typeof device !== 'string' || !DEVICE_ID.test(device))
+        ) {
+          return 'device 不对'
+        }
         this.#sessions.set(sidHash, {
           sidHash,
           subject,
+          ...(device === undefined ? {} : { device }),
           createdAt: entry.at,
           lastSeenAt: entry.at,
           persistedAt: entry.at,
@@ -1205,6 +1221,7 @@ export class AccountBook {
   #openSession(
     account: AccountState,
     previous: string,
+    device?: string,
   ): AccountOutcome<OpenedSession> {
     const prior = this.#sessionOf(previous)
     if (prior !== undefined && !this.#closeSession(prior, 'rotated')) {
@@ -1216,6 +1233,7 @@ export class AccountBook {
       !this.#append(this.#sessionsChain, 'session.opened', {
         sidHash,
         subject: account.subject,
+        ...(device === undefined ? {} : { device }),
       })
     ) {
       return this.#unavailable()
@@ -1224,6 +1242,7 @@ export class AccountBook {
     this.#sessions.set(sidHash, {
       sidHash,
       subject: account.subject,
+      ...(device === undefined ? {} : { device }),
       createdAt: now,
       lastSeenAt: now,
       persistedAt: now,
@@ -1254,15 +1273,44 @@ export class AccountBook {
     return this.#openSession(account, previous)
   }
 
-  /** The session a freshly redeemed invitation signs its browser in with. */
+  /**
+   * The session a freshly redeemed invitation signs its browser in with, or a
+   * client ticket does. `device` is the paired device behind the ticket: the
+   * session table keeps it, so revoking the device closes the session even
+   * after a restart ({@link endDeviceSessions}).
+   */
   sessionFor(
     subject: AccountSubject,
     previous: string,
+    device?: string,
   ): AccountOutcome<OpenedSession> {
     if (this.#problem !== null) return this.#unavailable()
+    if (device !== undefined && !DEVICE_ID.test(device)) {
+      return refuse('invalid', '设备号不合法')
+    }
     const account = this.#usable(subject)
     if (account === null) return refuse('refused', CREDENTIAL_REFUSED)
-    return this.#openSession(account, previous)
+    return this.#openSession(account, previous, device)
+  }
+
+  /**
+   * Close every session a device's client tickets opened, as `logout` (or
+   * `expired` when already past its limits), for the reason given at
+   * {@link endSessions}. The number of live sessions closed.
+   */
+  endDeviceSessions(deviceId: string): AccountOutcome<number> {
+    if (this.#problem !== null) return this.#unavailable()
+    const now = this.#now()
+    let closed = 0
+    for (const session of this.#sessions.values()) {
+      if (session.device !== deviceId || session.closed) continue
+      const live = this.#live(session, now)
+      if (!this.#closeSession(session, live ? 'logout' : 'expired')) {
+        return this.#unavailable()
+      }
+      if (live) closed += 1
+    }
+    return { ok: true, value: closed }
   }
 
   /**
@@ -1377,6 +1425,18 @@ export class AccountBook {
     }
   }
 
+  /**
+   * When `subject`'s credential was last voided by a reset or the revocation,
+   * from the ledger, so it holds across a restart; `null` if it never was.
+   * What a device paired before then belonged to is over (clients.md §3.1).
+   */
+  voidedAt(subject: string): number | null {
+    const account = isSubject(subject)
+      ? this.#accountsBySubject.get(subject)
+      : undefined
+    return account?.voidedAt ?? null
+  }
+
   /** Close every session of `subject`, then every stream, then tell listeners. */
   #end(account: AccountState, reason: 'revoked' | 'reset'): boolean {
     for (const session of this.#sessions.values()) {
@@ -1418,10 +1478,12 @@ export class AccountBook {
     ) {
       // The file did not take it; the person is out of this process anyway.
       account.revoked = true
+      account.voidedAt = this.#now()
       this.#closeStreams(account.subject, null)
       return this.#unavailable()
     }
     account.revoked = true
+    account.voidedAt = this.#now()
     if (account.credentialHash !== null) {
       this.#subjectByCredential.delete(account.credentialHash)
     }
@@ -1463,6 +1525,7 @@ export class AccountBook {
       }
       this.#subjectByCredential.delete(account.credentialHash)
       account.credentialHash = null
+      account.voidedAt = this.#now()
     }
     if (!this.#end(account, 'reset')) return this.#unavailable()
     // An earlier reset link for the same person dies with this one: only the

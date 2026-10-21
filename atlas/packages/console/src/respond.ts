@@ -163,6 +163,10 @@ type ConsoleErrorCode =
   | 'limit'
   | 'subscription_required'
   | 'E_SENDER_MISMATCH'
+  /** The `qmo` client's device door (`clientDoor.ts`). */
+  | 'device_revoked'
+  | 'owner_inactive'
+  | 'device_kind'
 
 export function json(
   body: unknown,

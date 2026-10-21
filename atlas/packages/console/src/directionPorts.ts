@@ -46,6 +46,12 @@ export interface HandoffDeviceView {
   readonly platform: string | null
   /** 签发配对码的主体；设备以它的身份行事。 */
   readonly owner: string
+  /**
+   * 谁配的对：`client` 是阡陌客户端 `qmo sign-in`，能换票据打开前台
+   * （clients.md §3.2）；`handoff` 是 `qm handoff login`，只能访问接力接口。
+   * 账本里没有这一项的旧设备算 `handoff`。
+   */
+  readonly kind: HandoffDeviceKind
   readonly createdAt: number
   readonly lastSeenAt: number | null
   readonly revokedAt: number | null
@@ -58,14 +64,28 @@ export interface HandoffPairingCode {
   /** `XXXX-XXXX-XXXX`，大写 base32。 */
   readonly code: string
   readonly expiresAt: number
-  /** 给本机照抄的一行命令（含控制台地址和配对码）。 */
+  /**
+   * 给本机照抄的一行命令。`qmo sign-in` 不带配对码，配对码另行输入（命令行
+   * 别的用户看得见）；`qm handoff login` 仍带 `--code`。
+   */
   readonly command: string
+  /** 开了个人账号、配对框写的又是接力命令时，阡陌客户端的那一行。 */
+  readonly clientCommand?: string
 }
+
+export type HandoffDeviceKind = 'client' | 'handoff'
 
 export interface HandoffDeviceIdentity {
   readonly deviceId: string
   readonly owner: string
+  readonly kind: HandoffDeviceKind
 }
+
+/** 设备令牌不能用的原因，给客户端说清楚该做什么。 */
+export type HandoffDeviceRefusal =
+  | 'device_revoked'
+  | 'owner_inactive'
+  | 'unauthorized'
 
 export interface HandoffPairingResult extends HandoffDeviceIdentity {
   readonly name: string
@@ -75,11 +95,15 @@ export interface HandoffPairingResult extends HandoffDeviceIdentity {
 
 export interface HandoffDevicesPort {
   authenticate?(token: string): HandoffDeviceIdentity | null
+  /** `authenticate` 返回 null 之后，问它为什么。 */
+  refusalOf?(token: string): HandoffDeviceRefusal
   pair?(
     input: {
       readonly code: string
       readonly name: string
       readonly platform: string | null
+      /** 没说就是 `handoff`。 */
+      readonly kind?: HandoffDeviceKind
     },
     remoteAddr: string,
   ): Promise<

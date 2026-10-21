@@ -75,6 +75,7 @@ import {
   readJsonObject,
   seeOther,
 } from './respond.js'
+import { clearedClientCookie } from './clientDoor.js'
 import { safeDecode } from './routes/shared.js'
 import type { LoginThrottle } from './throttle.js'
 import type { PageViewer } from './view/bits.js'
@@ -254,6 +255,7 @@ export function accountLogin(
     return seeOtherSetting(target, [
       accountSessionCookie(opened.value.sid, secure),
       clearedSessionCookieHeader({ secure }),
+      clearedClientCookie(request),
     ])
   }
 
@@ -276,12 +278,14 @@ export function accountLogin(
       maxAgeSeconds: SESSION_MAX_AGE_SECONDS,
     }),
     clearedAccountSessionCookie(secure),
+    clearedClientCookie(request),
   ])
 }
 
 /**
  * `POST /logout` on a console with accounts, after the method and origin
- * checks: close the server session and clear both cookies.
+ * checks: close the server session and clear both cookies, and the `qmo`
+ * client's, so a later ticket asks again (clients.md §3.2).
  */
 export function accountLogout(
   request: Request,
@@ -292,6 +296,7 @@ export function accountLogout(
   return seeOtherSetting(LOGIN_PATH, [
     clearedSessionCookieHeader({ secure }),
     clearedAccountSessionCookie(secure),
+    clearedClientCookie(request),
   ])
 }
 

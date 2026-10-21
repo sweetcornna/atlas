@@ -289,6 +289,12 @@ function ungated(method: string, path: string): boolean {
     parts[2] === 'models'
   )
     return true
+  // The `qmo` client's doors, answered before any credential is read like
+  // pairing (clients.md §3.2): a ticket signs in, a device revoking itself
+  // signs out, and the window's confirmation spends the ticket.
+  if (method === 'POST' && path === '/v0/client/tickets') return true
+  if (method === 'POST' && path === '/client/enter') return true
+  if (method === 'DELETE' && path === '/v0/client/device') return true
   return path === '/v0/handoff/pair'
 }
 

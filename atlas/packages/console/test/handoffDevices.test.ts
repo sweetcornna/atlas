@@ -17,7 +17,7 @@ const TOKEN = 'qmd_device-test-only'
 const devices: HandoffDevicesPort = {
   authenticate: token =>
     token === TOKEN
-      ? { deviceId: 'd-abcdefghijkl', owner: 'legacy:admin' }
+      ? { deviceId: 'd-abcdefghijkl', owner: 'legacy:admin', kind: 'handoff' }
       : null,
   pair: async input =>
     input.code === 'ABCD-EFGH-IJKL'
@@ -28,6 +28,7 @@ const devices: HandoffDevicesPort = {
             name: input.name,
             token: TOKEN,
             owner: 'legacy:admin',
+            kind: 'handoff',
             console: 'https://console.example',
           },
         }
@@ -47,6 +48,7 @@ const devices: HandoffDevicesPort = {
       deviceId: id,
       name: 'test',
       owner: 'legacy:admin',
+      kind: 'handoff',
       platform: null,
       createdAt: 1,
       lastSeenAt: null,

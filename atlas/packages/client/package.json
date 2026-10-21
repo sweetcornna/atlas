@@ -1,0 +1,24 @@
+{
+  "name": "@qianmo/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "description": "The qmo client for Windows and Linux: pairs a personal computer with a Qianmo hub and opens the conversation front in an app window.",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "bin": {
+    "qmo": "./src/cli.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@qianmo/paths": "workspace:*"
+  }
+}

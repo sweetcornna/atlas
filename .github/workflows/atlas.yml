@@ -228,11 +228,12 @@ jobs:
       # 新 runner 上浏览器安装目录第一次读是冷盘：chromium 667 MB，空闲机上它在
       # DevTools 管道上的首次应答要 9–11 s，读过一遍后 0.4 s；分片里叠上别的 I/O
       # 到过 31 s，超过真浏览器用例 30 s 的就绪预算（run 39128674734）。第一步
-      # 就在后台读一遍，与下面的安装重叠，任何预算都不改。
+      # 就在后台读一遍，与下面的安装重叠，任何预算都不改。客户端 qmo 的用例先找
+      # Edge，所以 Edge 也读。
       - name: Warm the browser installs
         if: matrix.group == 'node-host' || matrix.group == 'packages'
         run: |
-          for browser in chromium google-chrome; do
+          for browser in microsoft-edge-stable chromium google-chrome; do
             bin=$(command -v "$browser") || continue
             dir=$(dirname "$(readlink -f "$bin")")
             nohup find "$dir" -type f -exec cat {} + >/dev/null 2>&1 &
@@ -345,6 +346,53 @@ jobs:
       - name: Smoke the compiled qm
         run: bun run atlas:check:qm-smoke
 
+      - name: Build the qmo client
+        run: bun run atlas:build:client
+
+      - name: Smoke the compiled qmo client
+        run: bun run atlas:check:client-smoke
+
+  # 客户端 qmo 的 Windows 一半（clients.md §8）：真 DPAPI、真 Edge、在 Windows 上
+  # 编出的 qmo.exe。客户端只依赖 @qianmo/paths，两个包都只用内置模块，所以不做
+  # 整仓安装，只把这两个工作区包链进 node_modules。
+  client-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          bun-version-file: .tool-versions
+
+      - name: Link the client's workspace packages
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force node_modules\@qianmo | Out-Null
+          foreach ($name in 'paths', 'client') {
+            New-Item -ItemType Junction -Path "node_modules\@qianmo\$name" -Target "$PWD\atlas\packages\$name" | Out-Null
+          }
+
+      - name: Test the client
+        run: bun test --preload ./atlas/tests/preload.ts ./atlas/packages/client/test/
+
+      # paths 的其余用例按 POSIX 路径写，只跑客户端目录这一组。
+      - name: Test the client state directory
+        run: bun test --preload ./atlas/tests/preload.ts ./atlas/packages/paths/test/ -t clientStateDir
+
+      - name: Build qmo.exe
+        run: bun run atlas:build:client
+
+      - name: Smoke the compiled qmo.exe
+        run: bun run atlas:check:client-smoke
+
   # 改了基座快照路径才跑 omp 全量 `test:ts`（以前串行 21–26 分钟）。分片用 omp
   # 自己的 OMP_TEST_SHARD=i/n：把 test:ts 的 202 个块按序号轮转分给 n 片，每块恰好
   # 落一片，覆盖与不分片完全相同（含 CI 桶以外的 python/robomp/web），不改基座文件。
@@ -400,7 +448,7 @@ jobs:
   # （绿的作业不等于跑过测试，10-10 到 10-18 node 分片就是这样静默缺席的）。
   ci:
     if: always()
-    needs: [static, native, test, build-qm, omp-test]
+    needs: [static, native, test, build-qm, client-windows, omp-test]
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

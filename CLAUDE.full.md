@@ -61,6 +61,7 @@
 | omp 子进程的环境 | `ompChildEnv(base)`：去掉 `OMP_PROFILE`、`PI_PROFILE`、`PI_CODING_AGENT_DIR`、`XDG_{DATA,STATE,CACHE,CONFIG}_HOME`、`CLAUDE_CONFIG_DIR`，设置 `PI_CONFIG_DIR`（相对 home 指向 `ompConfigRoot()`）与 `PI_NATIVES_DIR` |
 | 记忆、CA、qmcode | `memoryBaseDir()`（`QIANMO_MEMORY_DIR`）、`caDir()`（`QIANMO_CA_DIR`，必须在任何配置根之外）、`qmcodeHome()`（`QMCODE_HOME`，只读引用） |
 | 受保护的用户根 | `protectedConfigRoots()`：`~/.qianmo`、`~/.omp`、`~/.claude`、`~/.codex`、`~/.qmcode` 与当前配置根 |
+| 客户端 `qmo` 的状态 | `clientStateDir()`：`QMO_CLIENT_DIR` > Windows `%LOCALAPPDATA%\Qmo` > Linux `$XDG_CONFIG_HOME/qmo` > macOS `~/Library/Application Support/Qmo`；不在节点配置根下（[docs/dev/clients.md](docs/dev/clients.md) §5.1） |
 
 - 不写 `join(homedir(), '.qianmo' | '.omp' | '.claude' | '.occ')` 或这些目录名字面量。门禁 `bun run atlas:check:identity-paths` 扫描阡陌生产代码，零容忍；允许写字面量的文件只有脚本里 `ALLOWLIST` 列出的几个，理由写在脚本里。
 - 节点、测试与演示都不得读写用户自己的 `~/.omp`、`~/.claude`、`~/.codex`。

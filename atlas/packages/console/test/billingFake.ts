@@ -535,7 +535,7 @@ export function publicConsole(
       const owner = owners.get(token)
       return owner === undefined
         ? null
-        : { deviceId: `d-${owner.slice(2, 14)}`, owner }
+        : { deviceId: `d-${owner.slice(2, 14)}`, owner, kind: 'handoff' }
     },
     listDevices: async () => ({ ok: true, value: [] }),
     issuePairing: async () => ({

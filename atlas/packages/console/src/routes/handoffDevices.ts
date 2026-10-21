@@ -1,7 +1,9 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { subjectOf } from '../access.js'
+import { type Access, subjectOf } from '../access.js'
+import { clearedClientCookieFor } from '../clientDoor.js'
+import type { HandoffDeviceView } from '../directionPorts.js'
 import { fail, json, methodNotAllowed, notFound } from '../respond.js'
 import { failureResponse, guard, outcomeOf, safeDecode } from './shared.js'
 import type { RouteContext } from './types.js'
@@ -49,6 +51,8 @@ export async function pairHandoffDevice(
       code: typeof body?.code === 'string' ? body.code : '',
       name: typeof body?.name === 'string' ? body.name : '',
       platform: typeof body?.platform === 'string' ? body.platform : null,
+      // `qmo sign-in` says so; `qm handoff login` never did.
+      kind: body?.kind === 'client' ? 'client' : 'handoff',
     },
     remoteAddr,
   )
@@ -67,6 +71,22 @@ export async function pairHandoffDevice(
     : failureResponse(result.failure)
 }
 
+/**
+ * The devices `access` may see: ops and the legacy tokens see every device,
+ * anyone else only the devices they own (a device: its owner's).
+ */
+export function visibleDevices(
+  devices: readonly HandoffDeviceView[],
+  access: Access,
+): readonly HandoffDeviceView[] {
+  const principal = access.principal
+  if (principal === null || principal.kind === 'legacy') return devices
+  if (principal.kind === 'user' && principal.role === 'ops') return devices
+  const owner =
+    principal.kind === 'device' ? principal.owner : principal.subject
+  return devices.filter(device => device.owner === owner)
+}
+
 export async function handoffDevicesApi(
   ctx: RouteContext,
   rest: readonly string[],
@@ -79,7 +99,7 @@ export async function handoffDevicesApi(
     if (!port) return fail(501, 'unsupported', '设备配对未接入')
     const result = await port.listDevices()
     return result.ok
-      ? json({ devices: result.value })
+      ? json({ devices: visibleDevices(result.value, ctx.access) })
       : failureResponse(result.failure)
   }
   if (ctx.access.principal?.kind === 'device')
@@ -113,5 +133,12 @@ export async function handoffDevicesApi(
     ...outcomeOf(result),
   )
   if (!result.ok) return failureResponse(result.failure)
-  return json(pairing ? { pairing: result.value } : { device: result.value })
+  if (pairing) return json({ pairing: result.value })
+  // Revoked from the device's own window: its client cookie goes too.
+  const cleared = clearedClientCookieFor(ctx.request, id)
+  return json(
+    { device: result.value },
+    200,
+    cleared === null ? {} : { 'set-cookie': cleared },
+  )
 }
