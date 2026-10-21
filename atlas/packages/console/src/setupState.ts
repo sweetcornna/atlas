@@ -323,7 +323,7 @@ function tasksStep(r: SetupReadings): SetupStep {
     id: 'tasks',
     title: '任务模型',
     kind: 'recommended',
-    link: { href: '/admin/providers#task-models', label: '去设置' },
+    link: { href: '/admin/providers#routing', label: '去设置' },
   } as const
   if (r.routing === undefined) {
     return {
