@@ -4,6 +4,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { spawn } from 'node:child_process'
+import { WORKSPACE_POLICY_DIRS } from '@qianmo/extension/policy'
 
 /**
  * The bubblewrap sandbox for a high-permission `bash` command (P39 §3).
@@ -43,19 +44,12 @@ const SYSTEM_ROOTS: readonly string[] = [
 ]
 
 /**
- * Workspace-relative directories made read-only inside the sandbox: VCS
- * internals and the per-project agent configuration a later host run would
- * load as policy (hooks, extensions, settings). A command may read them but
- * never plant one.
+ * Workspace-relative directories made read-only inside the sandbox: the same
+ * table the resident write verdict protects — VCS internals and the
+ * per-project agent configuration a later host run would load as policy
+ * (hooks, extensions, settings). A command may read them but never plant one.
  */
-const SANDBOX_READONLY_WORKSPACE_DIRS: readonly string[] = [
-  '.git',
-  '.omp',
-  '.claude',
-  '.codex',
-  '.gemini',
-  '.qianmo',
-]
+const SANDBOX_READONLY_WORKSPACE_DIRS = WORKSPACE_POLICY_DIRS
 
 function real(file: string): string {
   try {

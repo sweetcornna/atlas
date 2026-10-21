@@ -626,7 +626,7 @@ function writeTargets(
  * policy (hooks, extensions, settings), and VCS internals, where a hook script
  * is code that runs outside any turn.
  */
-const WORKSPACE_POLICY_DIRS: readonly string[] = Object.freeze([
+export const WORKSPACE_POLICY_DIRS: readonly string[] = Object.freeze([
   '.omp',
   '.claude',
   '.codex',

@@ -601,8 +601,8 @@ describe('elevation sandbox argv (P39 §3)', () => {
       '/usr',
       '/bin',
       '/etc',
-      '/work/.git',
       '/work/.omp',
+      '/work/.git',
     ])
     expect(pairs('--bind')).toEqual(['/work'])
     // The node's home and config root are never mounted, so they do not exist inside.
