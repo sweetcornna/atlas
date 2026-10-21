@@ -733,7 +733,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/admin/usage` | view | 东八区自然日用量；输入、输出、缓存写入、缓存读取四列，charged 排除 cacheRead；显示配额模式、在途、会话与可观测下界 |
 | GET | `/v0/usage` | view | 用量快照；普通个人账号只读自己，运维只能读取 tenant scope 内主体；未接入 501 |
 | GET | `/v0/approvals/report` | view | 最近每节点 500 条已验审计记录；附完整性与截断状态。viewer 仅聚合，member 仅本人会话，ops 沿当前租户范围 |
-| GET | `/v0/approvals` | member / ops | 可见审批列表 |
+| GET | `/v0/approvals` | member / ops | 可见审批列表；`?mine=1` 只列自己会话里待批的（对话前台 `/` 的确认框轮询它，P39） |
 | POST | `/v0/approvals/auth` | member / ops | 同账号个人凭据再验证，签发独立 HttpOnly 审批 cookie，30 分钟绝对期；普通登录 cookie 本身不能审批 |
 | POST | `/v0/approvals/<requestId>` | 本人 / ops + 审批凭据 | 决定 allow-once / allow-window / deny，绑定 digest，窗口最多 60 分钟；宿主再次核对归属、时效与摘要 |
 | POST | `/v0/approvals/<requestId>/continue` | 本人 + 审批凭据 | 节点已确认原任务终态且会话空闲后，原子计入个人/租户/全局配额，记录持久一次性意图，批准并发送新的签名入站任务；本地超时、重复提交与重启重发均拒绝 |
