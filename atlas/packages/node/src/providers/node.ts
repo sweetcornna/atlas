@@ -202,22 +202,37 @@ export function nodeMainModelSpec(): string | undefined {
   return specOf(selection.provider, selection.modelId)
 }
 /**
- * A model role's own model as `<profile>/<model>` (`harness-backends.md`
- * §11.3): undefined when the role is not configured or is the main model's
- * (it follows the agent's own model then).
+ * What a model role holds of its own for a task tier's sub-session
+ * (`harness-backends.md` §11.3), from its `<provider>/<model>:<level>`:
+ * `spec` (`<profile>/<model>`) when the role is on another model than the
+ * main one (on the main one it follows the agent's own model), `effort` its
+ * level (`off` as `none`) when the model is another one or the level is not
+ * the main role's. Undefined when the role is not configured or holds
+ * nothing of its own.
  */
-export function nodeRoleModelSpec(role: string): string | undefined {
+export function nodeRoleModel(
+  role: string,
+): { readonly spec?: string; readonly effort?: string } | undefined {
   if (role === 'default') return undefined
   const selection = nodeModelSelection(role)
   if (selection === undefined) return undefined
   const main = nodeModelSelection()
-  if (
+  const same =
     main !== undefined &&
     main.provider === selection.provider &&
     main.modelId === selection.modelId
-  )
-    return undefined
-  return specOf(selection.provider, selection.modelId)
+  const level = selection.thinkingLevel
+  const effort =
+    level === undefined || (same && level === main.thinkingLevel)
+      ? undefined
+      : level === 'off'
+        ? 'none'
+        : level
+  if (same && effort === undefined) return undefined
+  return {
+    ...(same ? {} : { spec: specOf(selection.provider, selection.modelId) }),
+    ...(effort === undefined ? {} : { effort }),
+  }
 }
 /** The compiled providers of `profile` (a console id or a full `qm-…` id). */
 function profileProviders(

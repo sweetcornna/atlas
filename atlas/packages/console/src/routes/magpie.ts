@@ -8,6 +8,7 @@
  * |---|---|
  * | `GET /admin/magpie`, `GET /fragments/magpie`, `GET /fragments/magpie/agents`, `GET /fragments/magpie/usage?period=` | view and up |
  * | `GET /fragments/magpie/form?kind=&id=` | gateway writers (`kind=ext&id=<node>/<agent>`: an agent's native extension, P36.7) |
+ * | `GET /fragments/agents/models` | view and up: 智能体模型 (`harness-backends.md` §11), with or without magpie |
  *
  * The JSON behind the buttons is `/v0/magpie` (`routes/magpieApi.ts`).
  */
@@ -34,8 +35,15 @@ import {
   renderMagpieExtensionForm,
 } from '../view/magpieAgents.js'
 import { MAGPIE_PAGE_JS } from '../view/magpieScript.js'
+import {
+  AGENT_MODELS_CSS,
+  AGENT_MODELS_JS,
+  type AgentModelsSectionModel,
+  renderAgentModelsSection,
+} from '../view/agentModels.js'
 import { guardRead } from './directionShared.js'
 import {
+  agentModelsForReader,
   bindingKey,
   bindingOf,
   magpieAgentsForReader,
@@ -67,14 +75,53 @@ async function agentsOf(ctx: RouteContext): Promise<MagpieAgentsModel> {
   const agents = ctx.deps.magpie?.agents
   if (agents === undefined)
     return { side: { kind: 'unwired' }, writer, mainAgent }
-  const snapshot = await agents.snapshot()
+  const [snapshot, models] = await Promise.all([
+    agents.snapshot(),
+    ctx.deps.agentModels?.snapshot(),
+  ])
   return {
     side: snapshot.ok
       ? { kind: 'ok', value: magpieAgentsForReader(snapshot.value, writer) }
       : { kind: 'failed', failure: snapshot.failure },
     writer,
     mainAgent,
+    models:
+      models?.ok === true ? agentModelsForReader(models.value, writer) : null,
   }
+}
+
+/**
+ * The 智能体模型 section (`harness-backends.md` §11) for any page that places
+ * it: it needs the model service and the control link, never magpie.
+ */
+export async function agentModelsModel(
+  ctx: RouteContext,
+): Promise<AgentModelsSectionModel> {
+  const writer = magpieWriter(ctx)
+  const mainAgent = ctx.deps.chatDefault ?? null
+  const port = ctx.deps.agentModels
+  if (port === undefined)
+    return { side: { kind: 'unwired' }, writer, mainAgent }
+  const snapshot = await port.snapshot()
+  return {
+    side: snapshot.ok
+      ? { kind: 'ok', value: agentModelsForReader(snapshot.value, writer) }
+      : { kind: 'failed', failure: snapshot.failure },
+    writer,
+    mainAgent,
+  }
+}
+
+async function agentModelsFragment(
+  ctx: RouteContext,
+  rest: readonly string[],
+): Promise<Response> {
+  if (ctx.request.method !== 'GET') return methodNotAllowed(['GET'])
+  const denied = guardRead(ctx)
+  if (denied !== null) return denied
+  if (rest.length === 1 && rest[0] === 'models')
+    return html(renderAgentModelsSection(await agentModelsModel(ctx)))
+  return notFound(`unknown path: ${ctx.url.pathname}`)
 }
 
 function periodOf(ctx: RouteContext): MagpieUsagePeriod | null {
@@ -194,12 +241,15 @@ export const magpieRoute: RouteModule = {
           (model.writer ? magpieDialogs() : ''),
       }
     },
-    css: KIT_CSS + MAGPIE_PAGE_CSS + MAGPIE_AGENTS_CSS,
-    script: MAGPIE_PAGE_JS,
+    css: KIT_CSS + MAGPIE_PAGE_CSS + MAGPIE_AGENTS_CSS + AGENT_MODELS_CSS,
+    script: MAGPIE_PAGE_JS + AGENT_MODELS_JS,
   },
   api: magpieApi,
   fragments: {
-    heads: ['magpie'],
-    handle: (ctx, _head, rest) => magpieFragment(ctx, rest),
+    heads: ['magpie', 'agents'],
+    handle: (ctx, head, rest) =>
+      head === 'agents'
+        ? agentModelsFragment(ctx, rest)
+        : magpieFragment(ctx, rest),
   },
 }

@@ -111,10 +111,12 @@ export interface NodeRuntimesOptions {
   /** The node's main model as `<profile>/<model>`, when one is applied. */
   readonly mainModel?: () => string | undefined
   /**
-   * A model role's own model as `<profile>/<model>`, undefined when the
-   * role follows the main model (`nodeRoleModelSpec`, §11.3).
+   * What a model role holds of its own (`nodeRoleModel`, §11.3): its model
+   * as `<profile>/<model>` and its effort; undefined when it holds nothing.
    */
-  readonly roleModel?: (role: string) => string | undefined
+  readonly roleModel?: (
+    role: string,
+  ) => { readonly spec?: string; readonly effort?: string } | undefined
   /** qianmopi's provider and model for a `<profile>/<model>` (`ompProviderModel`). */
   readonly ompModel?: (
     spec: string,
@@ -395,23 +397,27 @@ export class NodeRuntimes {
     const tier = session?.tier
     // Claude Code runs a tier through its own aliases (below); the others
     // on the role's model, when it has one of its own that this runtime
-    // can call. Otherwise the agent's model.
+    // can call, at the role's effort. Otherwise the agent's model, at the
+    // role's effort when the role is the agent's model or the main one.
+    let tierEffort: string | undefined
     if (tier !== undefined && runtime !== 'claude-code') {
       const role = TASK_TIER_ROLES[tier]
       const own =
         role === 'default' ? undefined : this.#options.roleModel?.(role)
-      if (own !== undefined && own !== spec)
+      if (own?.spec !== undefined && own.spec !== spec)
         try {
-          const other = credential(own, runtime)
+          const other = credential(own.spec, runtime)
           if (this.#headersProblem(other, runtime) === undefined) {
-            spec = own
+            spec = own.spec
             route = other
+            tierEffort = own.effort
           }
         } catch {
           // Not callable here: the agent's own model.
         }
+      else tierEffort = own?.effort
     }
-    return this.#withFields(agent, runtime, spec, route, tier)
+    return this.#withFields(agent, runtime, spec, route, tier, tierEffort)
   }
 
   /** The agent's fields of `runtime`, applied to the route of `spec`. */
@@ -421,12 +427,14 @@ export class NodeRuntimes {
     spec: string,
     route: RuntimeModelRoute,
     tier: ExternalLaunchSession['tier'],
+    tierEffort?: string,
   ): RuntimeCredential {
     const fields = this.#file.agents[agent]?.fields ?? {}
     const { facts, siblings, ...base } = route
     const main: ModelFacts = facts ?? { id: base.model }
+    // A task tier's own effort over the agent's (§11.3).
     const effort = narrowEffort(
-      fields['effort'],
+      tierEffort ?? fields['effort'],
       effortChoices(runtime, 'effort', main),
     )
     const known = siblings ?? []

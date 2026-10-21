@@ -1278,13 +1278,18 @@ export class QianmoResident {
         channelFor: async (sessionId, signal) => {
           if (this.#runtimeChild === null)
             throw new Error('resident omp pool is not ready')
-          const owner = this.#turn.activeInput(sessionId)?.agent
+          const first = this.#turn.activeInput(sessionId)
+          const owner = first?.agent
           const pool = owner === undefined ? undefined : this.#poolOf(owner)
           // A worker session's task tier picks its model on an external
           // runtime (`harness-backends.md` §11.3); its first turn's counts.
-          const asked = this.#turnPayload(sessionId)
-          if (asked !== undefined)
-            this.#runtimeChild.noteTier(sessionId, asked.raw?.direction)
+          // Only a hub's background turn, by its signed marker: a chat's
+          // direction leaves the agent's model as it is.
+          if (first !== undefined && this.#taskFor(first)?.background === true)
+            this.#runtimeChild.noteTier(
+              sessionId,
+              this.#turnPayload(sessionId)?.raw?.direction,
+            )
           const child = await this.#runtimeChild.channelFor(sessionId, signal)
           if (pool !== undefined && signal !== undefined)
             this.#hold(sessionId, pool, signal)

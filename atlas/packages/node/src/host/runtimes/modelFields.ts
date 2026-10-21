@@ -316,12 +316,12 @@ export function followTier(
   return main
 }
 
-// --- task tiers (P29 后续) ---------------------------------------------------
+// --- task tiers (P38, §11.3) -------------------------------------------------
 
 /**
  * A worker session's difficulty (`direction` of its first turn) and the
- * model role it runs on (`config.yml` `modelRoles`). Merged with the task
- * tiers' own table once that lands in `@qianmo/providers`.
+ * model role it runs on (`config.yml` `modelRoles`): the first role P38's
+ * `DIRECTION_ROLES` writes for each tier in `@qianmo/providers`.
  */
 export const TASK_TIER_ROLES = {
   complex: 'plan',
@@ -330,9 +330,25 @@ export const TASK_TIER_ROLES = {
 } as const
 export type TaskTier = keyof typeof TASK_TIER_ROLES
 
+/**
+ * The P22 names a hub sends a tier under (P38 `legacyDirectionOf`, which a
+ * node older than P38 still takes), mapped back as `directionOf` in
+ * `@qianmo/providers` maps them; replace with it once P38 is on this base.
+ */
+const LEGACY_TASK_TIERS: Readonly<Record<string, TaskTier>> = {
+  plan: 'complex',
+  code: 'medium',
+  chat: 'medium',
+  vision: 'medium',
+  fast: 'simple',
+}
+
+/** A turn's direction as a task tier: a P38 name, or the P22 one for it. */
 export function taskTierOf(value: unknown): TaskTier | undefined {
-  return typeof value === 'string' && Object.hasOwn(TASK_TIER_ROLES, value)
-    ? (value as TaskTier)
+  if (typeof value !== 'string') return undefined
+  if (Object.hasOwn(TASK_TIER_ROLES, value)) return value as TaskTier
+  return Object.hasOwn(LEGACY_TASK_TIERS, value)
+    ? LEGACY_TASK_TIERS[value]
     : undefined
 }
 

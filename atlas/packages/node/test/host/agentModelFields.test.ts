@@ -38,7 +38,7 @@ import { opencodeConfig } from '../../src/host/runtimes/opencode.js'
 import { qwenEnv } from '../../src/host/runtimes/qwen.js'
 import type { AcpLaunchInput } from '../../src/host/runtimes/acpSpec.js'
 import {
-  nodeRoleModelSpec,
+  nodeRoleModel,
   ompProviderModel,
   runtimeModelCredential,
 } from '../../src/providers/node.js'
@@ -98,8 +98,15 @@ test('every runtime has its native fields; values are <profile>/<model> or an ef
   expect(fieldValueProblem('effort', 'turbo')).toContain('只能是')
   expect(fieldValueProblem('subagent', 'a/b')).toContain('没有这个字段')
   expect(taskTierOf('complex')).toBe('complex')
-  expect(taskTierOf('code')).toBeUndefined()
+  // A hub sends a tier under its P22 name (P38 `legacyDirectionOf`).
+  expect(taskTierOf('plan')).toBe('complex')
+  expect(taskTierOf('code')).toBe('medium')
+  expect(taskTierOf('chat')).toBe('medium')
+  expect(taskTierOf('vision')).toBe('medium')
+  expect(taskTierOf('fast')).toBe('simple')
+  expect(taskTierOf('image')).toBeUndefined()
   expect(taskTierOf('__proto__')).toBeUndefined()
+  expect(taskTierOf('toString')).toBeUndefined()
 })
 
 test('efforts narrow to the runtime and the model, and only ever move down', () => {
@@ -363,7 +370,7 @@ function credential(spec: string, runtime: string): RuntimeModelRoute {
   }
 }
 
-function node(roles: Record<string, string> = {}) {
+function node(roles: Record<string, { spec?: string; effort?: string }> = {}) {
   const runtimes = new NodeRuntimes({
     agents: [
       {
@@ -514,19 +521,28 @@ test('launch: the effort narrowed to the model, every tier resolved (own, follow
 
 test('a worker session’s task tier: the role’s own model where this runtime can call it, else the agent’s; Claude Code by its own tier aliases', () => {
   const runtimes = node({
-    plan: 'mg/deepseek/deepseek-v4',
-    smol: 'mg/deepseek/deepseek-flash',
+    plan: { spec: 'mg/deepseek/deepseek-v4', effort: 'max' },
+    smol: { spec: 'mg/deepseek/deepseek-flash', effort: 'none' },
   })
+  runtimes.configure({ agent: 'cx', fields: { effort: 'medium' } })
+  // The role's model at the role's effort, narrowed to what Codex sends.
   expect(
-    runtimes.launch('cx', { sessionId: 's1', tier: 'complex' }).model,
-  ).toBe('deepseek/deepseek-v4')
-  expect(runtimes.launch('cx', { sessionId: 's2', tier: 'simple' }).model).toBe(
-    'deepseek/deepseek-flash',
-  )
-  // medium is the agent's own model.
-  expect(runtimes.launch('cx', { sessionId: 's3', tier: 'medium' }).model).toBe(
-    'openai/gpt-6',
-  )
+    runtimes.launch('cx', { sessionId: 's1', tier: 'complex' }),
+  ).toMatchObject({ model: 'deepseek/deepseek-v4', effort: 'high' })
+  expect(
+    runtimes.launch('cx', { sessionId: 's2', tier: 'simple' }),
+  ).toMatchObject({ model: 'deepseek/deepseek-flash', effort: 'none' })
+  // medium is the agent's own model at its own effort.
+  expect(
+    runtimes.launch('cx', { sessionId: 's3', tier: 'medium' }),
+  ).toMatchObject({ model: 'openai/gpt-6', effort: 'medium' })
+  // A role on the main model with a level of its own: the agent's model at it.
+  expect(
+    node({ plan: { effort: 'low' } }).launch('cx', {
+      sessionId: 's9',
+      tier: 'complex',
+    }),
+  ).toMatchObject({ model: 'openai/gpt-6', effort: 'low' })
   // Qwen cannot send the mg profile's headers: its own model.
   expect(
     runtimes.launch('qw', { sessionId: 's4', tier: 'complex' }).model,
@@ -616,6 +632,7 @@ test('the model service gives a model’s window, reply and efforts, its profile
     modelRoles: {
       default: 'qm-mg-0123abcd/deepseek-v4:high',
       plan: 'qm-mg-0123abcd/deepseek-v4:high',
+      task: 'qm-mg-0123abcd/deepseek-v4:max',
       smol: 'qm-mg-0123abcd/deepseek-flash:off',
     },
   })
@@ -631,11 +648,17 @@ test('the model service gives a model’s window, reply and efforts, its profile
     'deepseek-flash',
   ])
   expect(route.siblings?.[1]?.reasoning).toBe(false)
-  // The same as the main model: no model of its own.
-  expect(nodeRoleModelSpec('plan')).toBeUndefined()
-  expect(nodeRoleModelSpec('default')).toBeUndefined()
-  expect(nodeRoleModelSpec('smol')).toBe('mg/deepseek-flash')
-  expect(nodeRoleModelSpec('slow')).toBeUndefined()
+  // The main model at the main level: nothing of its own.
+  expect(nodeRoleModel('plan')).toBeUndefined()
+  expect(nodeRoleModel('default')).toBeUndefined()
+  // Another model: it and its level, `off` as `none`.
+  expect(nodeRoleModel('smol')).toEqual({
+    spec: 'mg/deepseek-flash',
+    effort: 'none',
+  })
+  // The main model at a level of its own (a P38 tier's effort).
+  expect(nodeRoleModel('task')).toEqual({ effort: 'max' })
+  expect(nodeRoleModel('slow')).toBeUndefined()
   expect(ompProviderModel('mg/deepseek-flash')).toEqual({
     provider: 'qm-mg-0123abcd',
     modelId: 'deepseek-flash',
@@ -699,9 +722,9 @@ test('the pool keeps a session’s first task tier, starts it with that tier eve
       ),
     )
     expect(record.tier).toBe('simple')
-    // A session without a tier (a chat) ignores directions that are not one.
+    // A direction that is not a tier leaves a session without one.
     const chat = await pool.newSession({ agent: 'cc', cwd })
-    pool.noteTier(chat, 'code')
+    pool.noteTier(chat, 'image')
     await pool.channelFor(chat)
     expect(asked.at(-1)).toEqual({ sessionId: chat })
   } finally {

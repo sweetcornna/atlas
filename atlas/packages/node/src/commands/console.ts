@@ -40,6 +40,7 @@ import { ConsoleChannels } from './consoleChannels.js'
 import { AgentProfiles, ConsoleTasks, withTaskNotes } from './consoleTasks.js'
 import { ConsolePeers } from './consolePeers.js'
 import { ConsoleExtensions } from './consoleExtensions.js'
+import { ConsoleAgentModels } from './consoleAgentModels.js'
 import { ConsoleMagpie } from './consoleMagpie.js'
 import {
   BillingStore,
@@ -1042,6 +1043,34 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           onError: message => process.stderr.write(`[magpie] ${message}\n`),
         })
       : undefined
+  // Each agent's model in its runtime's own fields (harness-backends.md §11):
+  // every deployment with the model service and the control link, magpie or
+  // not; on a node bound to magpie the model field stays the gateway's.
+  const agentModels =
+    control !== undefined && providersPort !== undefined
+      ? new ConsoleAgentModels({
+          control,
+          nodes: () => (config.controlTargets ?? []).map(target => target.node),
+          overview: () => providersPort.overview(),
+          routedProfiles: node => {
+            try {
+              return (
+                routing
+                  ?.effective(node)
+                  .routes.flatMap(route =>
+                    route.profileId === null ? [] : [route.profileId],
+                  ) ?? []
+              )
+            } catch {
+              return []
+            }
+          },
+          magpie: () => magpie?.agents,
+          statePath: qianmoConfigPath('qianmo', 'console', 'agent-models.json'),
+          onError: message =>
+            process.stderr.write(`[agent-models] ${message}\n`),
+        })
+      : undefined
   const billingStore =
     billingConfig !== undefined &&
     magpie !== undefined &&
@@ -1269,6 +1298,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(updates === undefined ? {} : { updates }),
     ...(extensions === undefined ? {} : { extensions }),
     ...(magpie === undefined ? {} : { magpie }),
+    ...(agentModels === undefined ? {} : { agentModels }),
     ...(billing === undefined ? {} : { billing }),
     ...(approvals === undefined ? {} : { approvals }),
     ...(usage === undefined ? {} : { usage }),

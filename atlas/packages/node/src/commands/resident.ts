@@ -1058,7 +1058,7 @@ function residentRuntimes(config: ResidentCliConfig): NodeRuntimes {
     credential: (spec, runtime) =>
       providers().runtimeModelCredential(spec, runtime),
     mainModel: () => providers().nodeMainModelSpec(),
-    roleModel: role => providers().nodeRoleModelSpec(role),
+    roleModel: role => providers().nodeRoleModel(role),
     ompModel: spec => providers().ompProviderModel(spec),
     onError: error =>
       process.stderr.write(

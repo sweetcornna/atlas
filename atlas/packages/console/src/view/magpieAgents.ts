@@ -18,6 +18,7 @@
 
 import type { ConsoleFailure } from '../deps.js'
 import type {
+  AgentModelsSnapshot,
   MagpieAgentModelView,
   MagpieAgentsNodeView,
   MagpieAgentsSnapshot,
@@ -39,6 +40,7 @@ import {
   state,
   tag,
 } from './bits.js'
+import { agentModelControls, agentModelsOf } from './agentModels.js'
 import { attr, escapeHtml } from './escape.js'
 import {
   actionButton,
@@ -59,6 +61,12 @@ export interface MagpieAgentsModel {
   readonly writer: boolean
   /** `--chat-default`: the main agent, marked 主. */
   readonly mainAgent: string | null
+  /**
+   * Each agent's native model fields (`view/agentModels.ts`, §11): where an
+   * agent is in it, its 模型 cell is the model picker, effort and 分档 of
+   * the model section instead of the gateway's own model select.
+   */
+  readonly models?: AgentModelsSnapshot | null
 }
 
 const GATEWAY_TAG: Readonly<Record<string, string>> = {
@@ -482,11 +490,18 @@ function agentRow(
     model.mainAgent === `qianmo://${node.node}/${agent.agent}`
       ? ` ${tag('主', 'ok')}`
       : ''
+  // The native fields when the hub has them for this agent (§11); the
+  // runtime select above may have just moved it, so the runtime must match.
+  const native = agentModelsOf(model.models ?? null, node.node, agent.agent)
+  const models =
+    native !== undefined && native.agent.runtime === agent.runtime
+      ? agentModelControls(native.node, native.agent, model.writer)
+      : modelCell(node, agent, model.writer)
   return (
     `<tr data-key="${attr(`${node.node}/${agent.agent}`)}">` +
     `<td>${mono(`${node.node} / ${agent.agent}`)}${main}</td>` +
     `<td>${runtimeCell(node, agent, catalog, model.writer)}</td>` +
-    `<td>${modelCell(node, agent, model.writer)}</td>` +
+    `<td>${models}</td>` +
     `<td>${statusCell(agent, catalog, model.writer)}</td>` +
     `</tr>` +
     extensionsRow(agent, model.writer)
