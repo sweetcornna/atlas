@@ -136,6 +136,8 @@ export interface ShellNavItem {
   readonly pending?: boolean
   /** Something there worth a glance, as a dot (see {@link ShellNavState}). */
   readonly state?: ShellNavState
+  /** Opens a new cluster in its group: space above it, nothing drawn. */
+  readonly gap?: boolean
 }
 
 /**
@@ -341,7 +343,7 @@ function navItem(item: ShellNavItem, active: string | undefined): string {
   // there is one: a top-level navigation carries no `Authorization` header
   // (`console.md` §6.8). A cookie session needs none of it.
   return (
-    `<a class="nav-item" id="nav-${attr(item.id)}" href="${attr(
+    `<a class="nav-item${item.gap === true ? ' nav-gap' : ''}" id="nav-${attr(item.id)}" href="${attr(
       item.href,
     )}" data-nav${current}>` +
     icon(item.icon) +

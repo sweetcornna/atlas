@@ -185,7 +185,11 @@ function table(caption: string, headers: readonly string[], rows: string) {
   )
 }
 
-/** A write button. Drawn only for a writer; `data-write` is what C7 scans. */
+/**
+ * A write button. Drawn only for a writer; `data-write` is what C7 scans. In a
+ * row it is quiet, red text for a destructive one: the filled red is the
+ * confirming dialog's.
+ */
 function writeButton(
   action: string,
   label: string,
@@ -197,7 +201,7 @@ function writeButton(
     .join('')
   return (
     `<button type="button" class="btn ${
-      danger ? 'btn-danger' : 'btn-secondary'
+      danger ? 'btn-ghost btn-danger' : 'btn-secondary'
     } btn-small" data-write data-action="${attr(action)}"${attrs}>` +
     `${escapeHtml(label)}</button>`
   )
@@ -297,7 +301,7 @@ function memberRow(
     `<td>${state(tone, word)}</td>` +
     whenCell(account.lastLoginAt, now, '从未登录') +
     `<td class="num">${escapeHtml(String(account.sessions))}</td>` +
-    `<td>${controls}</td>` +
+    `<td class="acts">${controls}</td>` +
     `</tr>`
   )
 }
@@ -486,7 +490,7 @@ function inviteRow(
     whenCell(invite.expiresAt, now) +
     `<td>${state(tone, word)}</td>` +
     `<td class="num">${escapeHtml(String(usesLeft(invite)))}</td>` +
-    `<td>${control}</td>` +
+    `<td class="acts">${control}</td>` +
     `</tr>`
   )
 }
@@ -564,7 +568,7 @@ function sessionRow(
     `<td class="num">${escapeHtml(String(account.streams))}</td>` +
     whenCell(account.lastLoginAt, now, '从未登录') +
     whenCell(account.lastSeenAt, now, '无活动会话') +
-    `<td>${
+    `<td class="acts">${
       controlsFor(account, canWrite, self)
         ? writeButton(
             'account-logout',

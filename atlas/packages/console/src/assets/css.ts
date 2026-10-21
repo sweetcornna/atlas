@@ -620,6 +620,7 @@ a.brand-cn:hover { color: var(--color-quiet); }
   transition: background-color 120ms ease, color 120ms ease;
 }
 .side svg.i, .side svg.i-sm { stroke-width: 1.9; }
+.nav-item.nav-gap { margin-top: var(--space-3); }
 .nav-item .i { width: 16px; height: 16px; color: var(--color-muted); }
 .nav-item:hover { background: var(--ui-hover); }
 .nav-item[aria-current="page"] { background: var(--ui-selected); font-weight: 500; }

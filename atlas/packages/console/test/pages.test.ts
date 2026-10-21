@@ -303,6 +303,19 @@ describe('every page', () => {
     expect(page).not.toContain('href="/admin/magpie"')
   })
 
+  test('the sidebar breaks a group into clusters with space alone, the way Claude Desktop does', async () => {
+    const page = await read('/admin/overview')
+    const gaps = [...page.matchAll(/class="nav-item nav-gap" id="nav-([a-z]+)"/g)]
+    expect(gaps.map(match => match[1])).toEqual([
+      'im',
+      'approvals',
+      'connect',
+      'usage',
+    ])
+    // A cluster that opens its group has nothing above it to part from.
+    expect(page).toMatch(/<a class="nav-item" id="nav-(setup|overview)"/)
+  })
+
   test('the home page serves the front to chat callers and redirects readers to the management overview', async () => {
     const chat = await read('/')
     expect(chat).toContain('<h1 class="sr-only">阡陌 · 对话</h1>')
