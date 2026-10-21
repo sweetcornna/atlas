@@ -257,7 +257,7 @@ export const MAGPIE_PAGE_JS = `
 
   qc.onAction('magpie-ext-copy', function (button) {
     var text = button.getAttribute('data-copy') || '';
-    var manual = function () { qc.toast('复制不了 · 请手动选中', 'bad'); };
+    var manual = function () { qc.toast('复制不了 · 手动选中', 'bad'); };
     if (!text || !navigator.clipboard) { manual(); return; }
     navigator.clipboard.writeText(text).then(function () { qc.toast('已复制', 'ok'); }, manual);
   });

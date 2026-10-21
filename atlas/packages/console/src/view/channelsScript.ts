@@ -101,7 +101,7 @@ export const CHANNELS_PAGE_JS = `
     });
   }
 
-  var WORDS = { wait: '用微信扫一扫', scanned: '已扫码，请在手机上确认', expired: '二维码已过期，请重新扫码', failed: '登录失败' };
+  var WORDS = { wait: '用微信扫一扫', scanned: '已扫码 · 在手机上确认', expired: '二维码已过期 · 重新扫码', failed: '登录失败' };
 
   function poll(loginId) {
     qc.sendJson('GET', '/v0/im/login/' + encodeURIComponent(loginId)).then(function (view) {
@@ -140,7 +140,7 @@ export const CHANNELS_PAGE_JS = `
     var status = byId('channel-status');
     var draft = draftOf(form);
     if (!draft.name) { qc.say(status, '名称必填', 'bad'); return; }
-    if (!draft.target) { qc.say(status, '请选主人对话的智能体', 'bad'); return; }
+    if (!draft.target) { qc.say(status, '先选主人对话的智能体', 'bad'); return; }
     var qr = form.elements.qrLogin && form.elements.qrLogin.value === '1';
     if (qr && !draft.id) {
       qc.say(status, '正在获取二维码', 'muted');

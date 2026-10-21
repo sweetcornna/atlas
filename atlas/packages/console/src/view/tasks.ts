@@ -61,7 +61,7 @@ const STATE_LABEL: Readonly<Record<BackgroundTaskState, string>> = {
   needs_input: '等你回复',
   failed: '失败',
   completed: '已完成',
-  cancelled: '已取消',
+  cancelled: '已停止',
 }
 
 const FINISHED: ReadonlySet<BackgroundTaskStatus> = new Set([

@@ -200,14 +200,14 @@ export function renderChannels(model: ChannelsModel): string {
   if (side.kind === 'unwired')
     body = unwiredCard(
       '聊天渠道',
-      'QQ、微信、Telegram、Discord、Slack 等聊天软件的消息交给智能体回复',
+      'QQ / 微信 / Telegram / Discord / Slack 的消息交给智能体回复',
       'qm console … --channels',
     )
   else if (side.kind === 'failed') body = failureBar(side.failure, '聊天渠道')
   else if (side.value.channels.length === 0)
     body = emptyState(
       '还没有渠道',
-      side.value.platforms.map(one => one.name).join('、'),
+      side.value.platforms.map(one => one.name).join(' / '),
       add,
     )
   else
@@ -397,7 +397,7 @@ export function renderChannelForm(input: {
           ],
           { wide: true, selected: channel?.pairing ?? 'auto' },
         ) +
-        `<p class="note field-wide">对方把配对码发给你：私聊机器人 /pair 配对码，或在渠道卡片上批准</p>`
+        `<p class="note field-wide">对方私聊机器人发 /pair 配对码 · 或在渠道卡片上批准</p>`
       : '') +
     `<label class="chk field-wide"><input type="checkbox" name="groupContext"${(channel?.groupContext ?? true) ? ' checked' : ''}>` +
     `<span class="bx">${icon('check', { small: true })}</span>群里被 @ 时带上最近的群聊</label>` +

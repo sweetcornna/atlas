@@ -466,7 +466,7 @@ export function renderMagpieExtensionForm(target: {
     }) +
     textArea('args', 'MCP 参数', {
       rows: 3,
-      help: '每行一个 · 密钥请用连接器',
+      help: '每行一个 · 密钥用连接器存',
     }) +
     textField('url', 'MCP 地址', {
       type: 'url',

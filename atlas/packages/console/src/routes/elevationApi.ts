@@ -94,7 +94,7 @@ function mayGrantElevation(ctx: RouteContext): string | null {
     return '开启高权限模式需要个人运维账号；旧式管理令牌只能关闭或收回'
   const age = ctx.now - principal.authenticatedAt
   if (age < 0 || age >= FRESH_MS)
-    return '开启高权限模式需要 30 分钟内验证过的个人凭据：请重新登录后再开'
+    return '开启高权限模式需要 30 分钟内验证过的个人凭据 · 重新登录后再开'
   return null
 }
 
