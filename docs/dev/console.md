@@ -788,8 +788,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/client/tickets` | **设备** | 阡陌客户端 `qmo` 打开前台用的一次性票据 `{id,ticket,expiresAt}`，201；60 秒、只能用一次、只存哈希。只有 `qmo sign-in` 配对的客户端设备能要，`qm handoff login` 的接力设备 403 `device_kind`，旧式令牌配对的设备 403。每台设备最多 4 张没用掉的、每分钟最多 20 张，超出 429；全台只算没用掉的票据。只认 `Authorization: Bearer` 的设备令牌，令牌不能用时 401 带原因：`device_revoked`、`owner_inactive` 或 `unauthorized`（[`clients.md`](./clients.md) §3.2） |
 | GET | `/v0/client/tickets/<票据 id>` | **设备** | `{id,state}`，`pending` / `used` / `expired`；别的设备的票据 404 |
 | GET、DELETE | `/v0/client/device` | **设备** | `GET` 回 `{deviceId,kind}`；`DELETE` 吊销这台设备自己（退出登录），204，动作账本记 `handoff.device.revoke` |
-| GET | `/client/enter?ticket=…` | 公开 | 客户端自己的窗口（带这台设备的客户端 cookie，或 Linux 客户端经管道加的 `X-Qmo-Device`）直接用掉票据：开属主的普通服务端会话，会话表记下设备号，303 到 `/` 并下发 `qianmo_session` 与客户端 cookie。别的浏览器先显示「以 <账号> 身份进入」确认页，票据不消耗。已以别的账号登录的浏览器 409；跨站来的 403；用错计入登录节流 |
-| POST | `/client/enter` | 公开，仅同源 | 确认页的表单：同源才受理，用掉票据，之后同 `GET`。吊销设备时，经它的票据开的会话一并关闭，重启之后也一样。以上五条只在开了 `--accounts` 时存在，没开时照旧 |
+| GET | `/client/enter?ticket=…` | 公开 | Linux 客户端自己的窗口（经管道加了 `X-Qmo-Device`，或带着只有这种进门才下发的客户端 cookie）直接用掉票据：开属主的普通服务端会话，会话表记下设备号，303 到 `/` 并下发 `qianmo_session`；带头的那次另下发客户端 cookie。别处（含 Windows 客户端的窗口）先显示「以 <账号> 身份进入」确认页，写明账号号码，票据不消耗。已以别的账号登录的浏览器 409；跨站来的 403；用错计入登录节流 |
+| POST | `/client/enter` | 公开，仅同源 | 确认页的表单：同源才受理，用掉票据，开会话同 `GET`，但不下发客户端 cookie。`/login`、`/logout` 和在浏览器里吊销这台设备都会清掉客户端 cookie。吊销设备时，经它的票据开的会话一并关闭，重启之后也一样。以上五条只在开了 `--accounts` 时存在，没开时照旧 |
 | POST | `/v0/handoff/projects` | 设备 | `{project}` 在 `--handoff-root` 建裸仓、装钩子并登记账号属主，幂等；其他账号 403，已有无属主的 SSH 仓库继续走原接法 |
 | GET | `/v0/handoff/git/<项目>.git/info/refs` | 设备 | 旧模式 smart HTTP advertisement（GitHub 模式 404）；查询 `service=git-upload-pack` 或 `git-receive-pack`；只允许访问自己账号的项目 |
 | POST | `/v0/handoff/git/<项目>.git/git-upload-pack`、`/v0/handoff/git/<项目>.git/git-receive-pack` | 设备 | 旧模式 smart HTTP RPC（GitHub 模式 404），支持 gzip 请求体与 Git-Protocol；receive-pack 只能写本设备的 wip / sessions 引用 |
