@@ -172,6 +172,13 @@ test('arguments are checked before the hub hears anything; null counts as left o
     { agent: 'ops' },
   ])
   // So does one that fills them with '' (gpt-6-luna on the beta fleet).
+  expect((await h.change({ ...CHANGE, target: '' })).ok).toBe(true)
+  expect(h.calls.at(-1)?.[0]).toBe('settings.apply')
+  expect(h.calls.filter(([op]) => op === 'settings.preview').at(-1)).toEqual([
+    'settings.preview',
+    { ...CHANGE, ...TURN },
+    { agent: 'ops' },
+  ])
   expect((await h.list({ area: '', id: 'servers.note' })).ok).toBe(true)
   expect(h.calls.at(-1)).toEqual([
     'settings.list',

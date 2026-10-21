@@ -213,10 +213,12 @@ test('a strict-mode call, every field filled, asks the one target it means', asy
     { agent: CODER, agents: [], message: 'q', timeoutSec: null },
     // gpt-6-luna on the beta fleet: the one address in both.
     { agent: CODER, agents: [CODER], message: 'q', timeoutSec: null },
+    { agent: CODER, agents: '', message: 'q', timeoutSec: '' },
+    { agent: ` ${CODER}`, agents: [CODER], message: 'q', timeoutSec: null },
   ])
     expect((await ask.handler(filled, ctx)).ok).toBe(true)
   expect(calls.map(([, args]) => args['agents'])).toEqual(
-    Array.from({ length: 5 }, () => [CODER]),
+    Array.from({ length: 7 }, () => [CODER]),
   )
   expect(
     calls.every(

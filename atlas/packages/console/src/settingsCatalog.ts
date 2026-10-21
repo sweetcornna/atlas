@@ -3338,12 +3338,17 @@ function nextOf(op: SettingOperation, input: unknown): string {
 export function settingsBound(
   op: SettingOperation,
   target: Args | null,
-  input: unknown,
-  current: unknown,
+  given: unknown,
+  read: unknown,
 ): SettingsBound {
+  // In key order, so the card's words (and with them the digest) do not
+  // depend on the order a model happened to write the fields in.
+  const where = target === null ? null : (sortedKeys(target) as Args)
+  const input = sortedKeys(given)
+  const current = sortedKeys(read)
   return {
     id: op.id,
-    target: target === null ? null : { ...target },
+    target: where,
     input,
     currentSha256:
       current === undefined
@@ -3352,7 +3357,7 @@ export function settingsBound(
     card: {
       area: SETTING_AREAS[op.area],
       label: op.label,
-      title: titleOf(op, target, input),
+      title: titleOf(op, where, input),
       current:
         op.kind === 'create' || current === undefined
           ? null
@@ -3383,6 +3388,18 @@ export function settingsCallOf(bound: unknown): Args | null {
     ...(target === null ? {} : { target }),
     ...(input === undefined || input === null ? {} : { input }),
   }
+}
+
+/** `value` with every object's keys in order; arrays keep theirs. */
+function sortedKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortedKeys)
+  const found = recordOf(value)
+  if (found === null) return value
+  return Object.fromEntries(
+    Object.keys(found)
+      .sort()
+      .map(key => [key, sortedKeys(found[key])]),
+  )
 }
 
 function hasSecretMark(value: unknown): boolean {
