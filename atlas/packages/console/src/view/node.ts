@@ -773,7 +773,7 @@ export function renderModelsTab(node: string): string {
       fragment,
     )}" data-poll="${attr(fragment)}" aria-live="polite">` +
     `<noscript><p class="note">这一页签的内容由模型服务页提供 · ` +
-    `无脚本时请用上方链接</p></noscript>` +
+    `无脚本时用上方链接</p></noscript>` +
     `</div></div></section>`
   )
 }

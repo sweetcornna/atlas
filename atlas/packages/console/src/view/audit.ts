@@ -100,12 +100,12 @@ const OUTCOME_TONE: Readonly<Record<string, Tone | undefined>> = {
  * empty state's 扩大时间范围 button steps one place along it.
  */
 export const AUDIT_WINDOWS: readonly (readonly [string, string, number])[] = [
-  ['1h', '最近 1h', 3_600_000],
-  ['24h', '最近 24h', 86_400_000],
-  ['7d', '最近 7d', 604_800_000],
+  ['1h', '最近 1 小时', 3_600_000],
+  ['24h', '最近 24 小时', 86_400_000],
+  ['7d', '最近 7 天', 604_800_000],
 ]
 
-/** Chinese name for each of the 12 layers; unknown values print raw. */
+/** Chinese name for each source; unknown values print raw. */
 const SOURCE_LABEL: Readonly<Record<string, string | undefined>> = {
   transport: '传输',
   router: '路由',
@@ -113,12 +113,16 @@ const SOURCE_LABEL: Readonly<Record<string, string | undefined>> = {
   activator: '唤醒',
   adapter: '适配',
   resident: '常驻',
+  control: '控制',
   negotiation: '协商',
   tunnel: '隧道',
   backup: '备份',
   diagnosis: '诊断',
   registry: '注册',
   capacity: '容量',
+  scheduler: '定时调度',
+  handoff: '接力',
+  a2a: '智能体间',
 }
 
 function sourceText(source: string): string {
@@ -218,7 +222,15 @@ function recordRow(
   )
 }
 
-const RECORD_HEADERS = ['时间', '来源', 'kind', '结果', 'trace', '节点', 'code']
+const RECORD_HEADERS = [
+  '时间',
+  '来源',
+  '类型',
+  '结果',
+  '追踪',
+  '节点',
+  '错误码',
+]
 
 /**
  * How the trail page lays one trail out for paging (D5).
@@ -480,7 +492,7 @@ function filterForm(
   const advanced =
     select(
       'source',
-      '来源 · 12 个可选',
+      '来源',
       option('', '全部', filter.source === undefined ? '' : filter.source) +
         sources,
       'f-source',
@@ -493,12 +505,12 @@ function filterForm(
     )}"></div>` +
     textField(
       'traceId',
-      'traceId',
+      '追踪 id',
       filter.traceId,
       'traceparent 或 trace 段',
       'f-trace',
     ) +
-    textField('taskId', 'taskId', filter.taskId, 'task id', 'f-task') +
+    textField('taskId', '任务 id', filter.taskId, '任务 id', 'f-task') +
     timeField('from', '起 · 自定义时间用', filter.from, 'f-from') +
     timeField('to', '止 · 自定义时间用', filter.to, 'f-to') +
     `<div class="field"><span>&nbsp;</span>` +
@@ -513,7 +525,7 @@ function filterForm(
     `<div class="field audit-search"><label for="f-q">搜索</label>` +
     `<input class="input" type="search" id="f-q" name="q" value="${attr(
       filter.q ?? '',
-    )}" placeholder="trace task kind code 节点" autocomplete="off" ` +
+    )}" placeholder="追踪 任务 类型 错误码 节点" autocomplete="off" ` +
     `spellcheck="false"></div>` +
     `<div class="field"><span>结果</span>` +
     segment('outcome', outcomes, filter.outcome ?? '') +
@@ -525,7 +537,7 @@ function filterForm(
     icon('refresh-cw', { small: true }) +
     `刷新</button>` +
     `</div>` +
-    `<details class="adv"><summary>${chevron()}高级筛选 · 来源 智能体 trace task 条数</summary>` +
+    `<details class="adv"><summary>${chevron()}高级筛选 · 来源 智能体 追踪 任务 条数</summary>` +
     `<div class="adv-body">${advanced}</div></details>` +
     `</form>`
   )
@@ -540,18 +552,28 @@ function activeChips(filter: AuditFilter): string {
   const pushTime = (key: string, at: number) => {
     chips.push(chip(withTimes(`${key} `, { at, fmt: 'datetime' })))
   }
-  push('q', filter.q)
-  push('source', filter.source)
-  push('outcome', filter.outcome)
-  push('window', filter.window)
-  push('trace', filter.traceId)
-  push('task', filter.taskId)
-  push('node', filter.agent)
+  push('搜索', filter.q)
+  push(
+    '来源',
+    filter.source === undefined ? undefined : sourceText(filter.source),
+  )
+  push(
+    '结果',
+    filter.outcome === undefined ? undefined : outcomeText(filter.outcome),
+  )
+  push(
+    '时间',
+    AUDIT_WINDOWS.find(([value]) => value === filter.window)?.[1] ??
+      filter.window,
+  )
+  push('追踪', filter.traceId)
+  push('任务', filter.taskId)
+  push('智能体', filter.agent)
   if (filter.window === undefined && filter.from !== undefined) {
-    pushTime('from', filter.from)
+    pushTime('起', filter.from)
   }
   if (filter.window === undefined && filter.to !== undefined) {
-    pushTime('to', filter.to)
+    pushTime('止', filter.to)
   }
   if (chips.length === 0) return ''
   return `<p class="chips">${chips.join('')}</p>`

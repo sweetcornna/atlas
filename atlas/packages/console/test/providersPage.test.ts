@@ -686,7 +686,8 @@ describe('display = the node', () => {
     expect([...touched]).toEqual(['effective'])
     expect(cells.lane).toBe('OpenAI Chat')
     expect(cells.model).toBe('glm-5.3')
-    expect(cells.effort).toBe('high')
+    expect(cells.effort).toBe('高')
+    expect(cells.effortLevel).toBe('high')
     expect(cells.context).toBe('128k')
     expect(cells.autoCompact).toBe('100k · 自动')
     expect(effectiveCells(null).model).toBe('未报告')
@@ -759,7 +760,7 @@ describe('display = the node', () => {
     )
     expect(cell(row(html, 'node-a'), 'model')).toBe('deepseek-flash')
     expect(cell(row(html, 'node-a'), 'context')).toBe('1M')
-    expect(cell(row(html, 'node-a'), 'effort')).toBe('low')
+    expect(cell(row(html, 'node-a'), 'effort')).toBe('低')
 
     // A node that reports nothing is shown as reporting nothing.
     s.providers.silence('node-a')
@@ -1274,7 +1275,7 @@ describe('what a line allows', () => {
       page('/admin/providers/new?preset=anthropic', s.ops),
     )
     expect(html).toContain(
-      '<p class="note prov-hint field-wide" data-family-note>自动模式按 omp 原生模型目录推断能力 · 实际 effort 以节点报告为准</p>',
+      '<p class="note prov-hint field-wide" data-family-note>自动模式按 qianmopi 原生模型目录推断能力 · 实际推理强度以节点报告为准</p>',
     )
     const other = await text(
       s.handle,
@@ -1336,7 +1337,9 @@ describe('what a line allows', () => {
     expect(html).toMatch(
       /<option value="always" data-chat-gate data-explicit disabled>/,
     )
-    expect(html).toContain('节点 node-b 报告 OpenAI Chat 线路发不了显式 effort')
+    expect(html).toContain(
+      '节点 node-b 报告 OpenAI Chat 线路发不了显式推理强度',
+    )
     // Once node-b reports it can, the choice opens; nothing here is a constant.
     const b = s.providers.nodes.get('node-b')
     const actual = b?.actual
@@ -1376,7 +1379,13 @@ describe('the chat label', () => {
         s.member,
       ),
     )
-    expect(html).toContain('模型 · deepseek-v4-pro')
+    expect(html).toContain('id="prov-chat-label"')
+    expect(html).toContain('>deepseek-v4-pro</span>')
+    // The composer's 模型 picker: the provider, the model, its effort, the list.
+    expect(html).toMatch(
+      /<span id="prov-chat-models" hidden data-provider="[^"]+" data-model="deepseek-v4-pro" data-effort="[a-z]*">/,
+    )
+    expect(html).toContain('<span data-model-id="deepseek-v4-pro"></span>')
     expect(html).toContain('已切换到 DeepSeek · deepseek-v4-pro')
     expect(html).toContain(`data-at="${NOW - 3_600_000}"`)
     const none = await text(
@@ -1717,7 +1726,7 @@ describe('several keys', () => {
     expect(cleared).toContain('data-action="prov-key-remove" data-key="k3"')
     const board = await text(s.handle, page('/admin/providers', s.viewer))
     expect(words(board)).toContain(
-      '密钥 3 把 · 已设置 2 把 · 原策略：轮流 · omp 按会话选钥',
+      '密钥 3 把 · 已设置 2 把 · 原策略：轮流 · qianmopi 按会话选钥',
     )
   })
 
@@ -1780,7 +1789,7 @@ describe('several keys', () => {
         page('/admin/providers/profiles/pool', s.ops),
       )
       expect(html).toContain('data-action="prov-key-add"')
-      expect(words(html)).toContain('omp 按会话固定选钥')
+      expect(words(html)).toContain('qianmopi 按会话固定选钥')
     }
 
     // Eight keys: full.

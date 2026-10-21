@@ -96,8 +96,8 @@ function nodeServersOf(deps: ConsoleDeps): readonly NodeServer[] {
 }
 
 const SERVERS_UNSUPPORTED =
-  '该控制台没有配置服务器归属（启动时缺少 --node-server），因此没有可看的服务器；' +
-  '请在启动 qm console 时用 --node-server <node>=<server> 指定后重试。'
+  '该控制台没有配置服务器归属 · 启动 qm console 时用 ' +
+  '--node-server <node>=<server> 指定'
 
 /** An empty string is a legitimate value: it is how an operator clears a note. */
 function parseServerNote(body: Record<string, unknown>): Parsed<string> {
@@ -324,16 +324,15 @@ const MODELS_GRANT = /^[A-Za-z0-9_-]{43}$/
  */
 function operatorStanding(ctx: RouteContext, subject: string): string | null {
   const book = ctx.accounts?.book
-  if (book === undefined)
-    return '这台控制台没有个人账号 · 模型档案请在模型页下发'
+  if (book === undefined) return '这台控制台没有个人账号 · 模型档案到模型页下发'
   const listed = book.list()
-  if (!listed.ok) return '个人账号暂停服务 · 模型档案请稍后在模型页下发'
+  if (!listed.ok) return '个人账号暂停服务 · 稍后到模型页下发模型档案'
   const account = listed.value.accounts.find(one => one.subject === subject)
   if (account === undefined || account.state !== 'active') {
-    return '发起部署的账号已不可用 · 模型档案请运维在模型页下发'
+    return '发起部署的账号已不可用 · 由运维到模型页下发模型档案'
   }
   if (account.role !== 'ops') {
-    return '发起部署的账号已不是运维角色 · 模型档案请运维在模型页下发'
+    return '发起部署的账号已不是运维角色 · 由运维到模型页下发模型档案'
   }
   const tenancy = ctx.deps.tenancy
   if (tenancy !== undefined) {
@@ -341,9 +340,9 @@ function operatorStanding(ctx: RouteContext, subject: string): string | null {
     try {
       platform = tenancy.read().config.platformSubjects.includes(subject)
     } catch {
-      return '租户配置不可用 · 模型档案请稍后在模型页下发'
+      return '租户配置不可用 · 稍后到模型页下发模型档案'
     }
-    if (!platform) return '模型档案需要平台管理身份下发 · 请在模型页下发'
+    if (!platform) return '模型档案需要平台管理身份下发 · 到模型页下发'
   }
   return null
 }

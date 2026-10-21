@@ -486,7 +486,7 @@ async function handleLogin(
     return loginPage(deps, {
       redirect: target,
       status: 429,
-      error: `尝试过多 · 请等 ${wait} 秒`,
+      error: `尝试过多 · ${wait} 秒后再试`,
       headers: { 'retry-after': String(wait) },
       ...(accountsOn ? { accounts: true } : {}),
       ...(accounts?.signup && deps.tenancy ? { signupEnabled: true } : {}),
@@ -796,7 +796,7 @@ const ERROR_PAGES: Readonly<Record<number, ErrorCopy>> = {
   405: { title: '不支持这个请求', line: '这个地址只接受页面读取' },
   500: {
     title: '控制台内部错误',
-    line: '这次请求没有完成 · 刷新重试 · 反复出现请查看控制台日志',
+    line: '这次请求没有完成 · 刷新重试 · 反复出现就看控制台日志',
   },
   501: { title: '此功能未接入', line: '这台控制台启动时没有配置这项功能' },
   503: { title: '暂时不可用', line: '这次请求没有完成 · 稍后刷新重试' },

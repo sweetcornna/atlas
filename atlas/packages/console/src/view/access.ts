@@ -445,7 +445,7 @@ export function inviteLinkPanel(): string {
     `data-action="invite-link-copy">复制</button>` +
     `<button type="button" class="btn btn-secondary btn-small" ` +
     `data-action="invite-link-close">关闭</button></div>` +
-    `<p class="note">链接里带着邀请码 · 请私下交给本人 · 关闭后不能再看到</p>` +
+    `<p class="note">链接里带着邀请码 · 私下交给本人 · 关闭后不能再看到</p>` +
     `</section>`
   )
 }
@@ -672,7 +672,7 @@ export function accessDialogs(): string {
       recapLabel: '成员',
       line:
         '结束该成员的全部登录会话与实时连接 · 个人凭据仍然有效 · ' +
-        '要阻止再次登录请吊销或重置',
+        '要阻止再次登录就吊销或重置',
       confirm: '强制下线',
     }) +
     confirmDialog({
@@ -780,7 +780,7 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'channel.save': '保存通知渠道',
   'channel.remove': '删除通知渠道',
   'channel.test': '测试通知渠道',
-  'task.cancel': '取消后台任务',
+  'task.cancel': '停止后台任务',
   'peer.ask': '智能体间问答',
   'connector.save': '保存应用连接',
   'connector.remove': '删除应用连接',

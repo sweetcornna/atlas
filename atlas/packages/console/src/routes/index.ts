@@ -23,11 +23,13 @@ import type { AvatarSpec } from '../avatar.js'
 import type { Tone } from '../view/bits.js'
 import { escapeHtml } from '../view/escape.js'
 import type { SourceLinks } from '../view/source.js'
+import type { BackgroundTaskStatus } from '../directionPorts.js'
 import {
   renderShell,
   type Crumb,
   type ShellHealth,
   type ShellNavGroup,
+  type ShellNavState,
 } from '../view/shell.js'
 import { accessRoute } from './access.js'
 import { alertsRoute } from './alerts.js'
@@ -51,6 +53,7 @@ import { providersRoute } from './providers.js'
 import { serversRoute } from './servers.js'
 import { settingsRoute } from './settings.js'
 import { setupPending, setupRoute } from './setup.js'
+import { taskActorOf } from './tasksApi.js'
 import { frontAvailable } from './front.js'
 import { ADMIN_HOME, DEFAULT_LABEL, guardChat, loginHref } from './shared.js'
 import type {
@@ -67,14 +70,14 @@ import { usageRoute } from './usage.js'
 /**
  * Every area, in the order the sidebar draws them: what a person uses every
  * day first (对话 is the conversation front at `/`, the rest live under
- * `/admin`), then the operator's areas under 管理. The page matcher walks the
- * same order, on the segments after `/admin`.
+ * `/admin`), then the operator's areas under 管理, the ones looked at most
+ * often first. The page matcher walks the same order, on the segments after
+ * `/admin`.
  */
 export const ROUTES: readonly RouteModule[] = [
   chatRoute,
   jobsRoute,
   memoryRoute,
-  connectRoute,
   channelsRoute,
   extensionsRoute,
   desktopRoute,
@@ -83,14 +86,15 @@ export const ROUTES: readonly RouteModule[] = [
   setupRoute,
   overviewRoute,
   nodesRoute,
-  filesRoute,
-  auditRoute,
-  alertsRoute,
   approvalsRoute,
   elevationRoute,
+  alertsRoute,
+  auditRoute,
+  connectRoute,
+  filesRoute,
+  usageRoute,
   serversRoute,
   accessRoute,
-  usageRoute,
   billingRoute,
   updatesRoute,
   settingsRoute,
@@ -192,48 +196,113 @@ function nodesCount(
   return listed.ok ? nodeCount(listed.value) : undefined
 }
 
+/** Background tasks that are working, not waiting or done (P29). */
+const RUNNING: ReadonlySet<BackgroundTaskStatus> = new Set([
+  'running',
+  'completion_pending',
+  'needs_input_pending',
+])
+
+/**
+ * 主动执行's dot: a task that waits for this reader (待你处理) before any
+ * that run. The list is the port's in-memory one, so asking costs nothing on
+ * every page.
+ */
+function tasksState(ctx: RouteContext): ShellNavState | undefined {
+  const port = ctx.deps.tasks
+  if (port === undefined) return undefined
+  const tasks = port.list(taskActorOf(ctx))
+  const waiting = tasks.filter(task => task.status === 'needs_input').length
+  if (waiting > 0)
+    return { tone: 'attention', label: `${waiting} 项待你处理`, count: waiting }
+  const running = tasks.filter(task => RUNNING.has(task.status)).length
+  return running > 0
+    ? { tone: 'running', label: `${running} 个运行中` }
+    : undefined
+}
+
+/**
+ * 审批's dot: requests this member may decide. Only a personal member or
+ * operator decides (`routes/approvals.ts`), so nobody else is shown one, and
+ * a source that cannot answer shows nothing rather than a 0.
+ */
+async function approvalsState(
+  ctx: RouteContext,
+): Promise<ShellNavState | undefined> {
+  const port = ctx.deps.approvals
+  const principal = ctx.access.principal
+  if (port === undefined || principal?.kind !== 'user') return undefined
+  if (principal.role === 'viewer') return undefined
+  const listed = await port.list(principal)
+  if (!listed.ok) return undefined
+  const pending = listed.value.filter(
+    item => item.status === 'pending' && item.continuation === undefined,
+  ).length
+  return pending > 0
+    ? { tone: 'attention', label: `${pending} 项待你处理`, count: pending }
+    : undefined
+}
+
+async function stateOf(
+  module: RouteModule,
+  ctx: RouteContext,
+): Promise<ShellNavState | undefined> {
+  if (module.area.id === 'jobs') return tasksState(ctx)
+  if (module.area.id === 'approvals') return approvalsState(ctx)
+  return undefined
+}
+
 /**
  * The sidebar for this caller, with the counts that are honest to show.
  *
  * 初始化配置还有能在页面上做的必需项时（`setupCount` > 0），它挪到主区第一
- * 项并带上数字；做完了回到「管理」里。
+ * 项并带上「还差 N 步」；做完了回到「管理」里。
  */
-function navFor(
+async function navFor(
   ctx: RouteContext,
   listed: ConsoleResult<readonly ConsoleAgent[]>,
   modules: readonly RouteModule[] = ROUTES,
   setupCount?: number,
-): readonly ShellNavGroup[] {
+): Promise<readonly ShellNavGroup[]> {
   const promoted = setupCount !== undefined && setupCount > 0
   const groupOf = (module: RouteModule): AreaGroup =>
     module.area.id === 'setup' && promoted ? 'main' : module.area.group
-  return GROUP_ORDER.map(group => ({
-    label: GROUP_LABELS[group],
-    ...(group === 'manage' ? { folded: true } : {}),
-    items: modules
-      .filter(module => groupOf(module) === group && visibleTo(module, ctx))
-      .sort(
-        (a, b) =>
-          Number(promoted && b.area.id === 'setup') -
-          Number(promoted && a.area.id === 'setup'),
-      )
-      .map(module => {
-        const count =
-          module.area.id === 'nodes'
-            ? nodesCount(listed)
-            : module.area.id === 'setup' && promoted
-              ? setupCount
-              : undefined
-        return {
-          id: module.area.id,
-          label: module.area.label,
-          href: module.area.href,
-          icon: module.area.icon,
-          ...(count === undefined ? {} : { count }),
-          ...(module.area.pending === true ? { pending: true } : {}),
-        }
-      }),
-  }))
+  return Promise.all(
+    GROUP_ORDER.map(async group => ({
+      label: GROUP_LABELS[group],
+      ...(group === 'manage' ? { folded: true } : {}),
+      items: await Promise.all(
+        modules
+          .filter(module => groupOf(module) === group && visibleTo(module, ctx))
+          .sort(
+            (a, b) =>
+              Number(promoted && b.area.id === 'setup') -
+              Number(promoted && a.area.id === 'setup'),
+          )
+          .map(async module => {
+            const count =
+              module.area.id === 'nodes' ? nodesCount(listed) : undefined
+            const state: ShellNavState | undefined =
+              module.area.id === 'setup' && promoted
+                ? {
+                    tone: 'attention',
+                    label: `还差 ${setupCount} 步`,
+                    count: setupCount,
+                  }
+                : await stateOf(module, ctx)
+            return {
+              id: module.area.id,
+              label: module.area.label,
+              href: module.area.href,
+              icon: module.area.icon,
+              ...(count === undefined ? {} : { count }),
+              ...(state === undefined ? {} : { state }),
+              ...(module.area.pending === true ? { pending: true } : {}),
+            }
+          }),
+      ),
+    })),
+  )
 }
 
 /**
@@ -293,7 +362,7 @@ export async function areaDocument(
     role: ctx.access.credential.role,
     ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
     self: await selfFace(ctx),
-    nav: navFor(ctx, listed, ROUTES, await setupPending(ctx)),
+    nav: await navFor(ctx, listed, ROUTES, await setupPending(ctx)),
     active: render.active ?? module.area.id,
     crumbs: crumbsOf(module, render),
     title: render.title,
@@ -322,7 +391,7 @@ export async function errorDocument(
     role: ctx.access.credential.role,
     ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
     self: await selfFace(ctx),
-    nav: navFor(ctx, listed, ROUTES, await setupPending(ctx)),
+    nav: await navFor(ctx, listed, ROUTES, await setupPending(ctx)),
     crumbs: [{ label: title }],
     title,
     body:

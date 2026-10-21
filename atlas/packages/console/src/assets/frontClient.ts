@@ -182,6 +182,7 @@ function frontScript(): string {
       if (stick && scroller) scroller.scrollTop = scroller.scrollHeight;
       updateJump();
       askModel();
+      document.dispatchEvent(new CustomEvent('qianmo:front-view'));
       return true;
     });
   }
@@ -332,6 +333,9 @@ function frontScript(): string {
     if (plus) plus.disabled = !live;
     var mic = byId('fx-mic');
     if (mic) mic.disabled = !live;
+    // 模型 and 权限模式 act on the conversation open here (frontTools.ts).
+    var picks = document.querySelectorAll('.fx-pick-btn');
+    for (var i = 0; i < picks.length; i++) picks[i].disabled = !live;
     if (!live) { hideCommands(); stopVoice(); }
   }
 
@@ -460,7 +464,7 @@ function frontScript(): string {
     var line = byId('reply-announcement');
     var replies = document.querySelectorAll('#fx-thread .fx-msg-agent:not(.fx-pending)');
     var last = replies.length ? replies[replies.length - 1].querySelector('.fx-text, .fx-pre') : null;
-    if (line) line.textContent = tx('newReply', '收到新回复 · ') + (last ? last.textContent.slice(0, 240) : tx('seeChat', '请查看对话'));
+    if (line) line.textContent = tx('newReply', '收到新回复 · ') + (last ? last.textContent.slice(0, 240) : tx('seeChat', '回到对话查看'));
     play([['speaking', 2400], ['happy', 5000], ['idle', 0]]);
   }
 
@@ -552,11 +556,16 @@ function frontScript(): string {
     var old = document.querySelectorAll('#fx-thread [data-prov-chat]');
     for (var i = 0; i < old.length; i++) old[i].remove();
     if (slot) slot.textContent = '';
+    // The node's models, for the 模型 picker to list (frontTools.ts).
+    var shelf = byId('fx-model-data');
+    if (shelf) shelf.textContent = '';
     if (!slot || !thread || !model.html || thread.getAttribute('data-target') !== model.target) return;
     var tpl = document.createElement('template');
     tpl.innerHTML = model.html;
     var label = tpl.content.querySelector('#prov-chat-label');
     if (label) slot.appendChild(label);
+    var models = tpl.content.querySelector('#prov-chat-models');
+    if (models && shelf) shelf.appendChild(models);
     var divider = tpl.content.querySelector('#prov-chat-divider');
     var list = thread.querySelector('.fx-msgs');
     if (!divider || !list) return;
@@ -778,7 +787,10 @@ function frontScript(): string {
     bubble.appendChild(para);
     var meta = document.createElement('div');
     meta.className = 'fx-meta';
-    meta.textContent = tx('sending', '发送中');
+    // The agent is still on an earlier line: this one waits for its next step.
+    meta.textContent = thread.getAttribute('data-running') === '1'
+      ? tx('queuedNext', '排队中 · 下一步时送达')
+      : tx('sending', '发送中');
     article.appendChild(bubble);
     article.appendChild(meta);
     list.appendChild(article);
@@ -1262,6 +1274,15 @@ function frontScript(): string {
     askModel();
     qc.afterSession(startStream);
   }
+
+  // The composer's pickers send a pick as a line of the conversation, the
+  // way it would be typed; the model label is asked again after it.
+  window.qianmoFront = {
+    send: function (text) {
+      send(text);
+      model.at = 0;
+    }
+  };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', start);

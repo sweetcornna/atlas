@@ -207,7 +207,7 @@ function parsePublishInput(
 // --- the lifecycle (P15.2) -------------------------------------------------
 
 const LIFECYCLE_UNSUPPORTED =
-  '该控制台没有接入登记簿的生命周期 · 不能暂停、恢复或退役'
+  '该控制台没有接入登记簿的生命周期 · 不能暂停 恢复或退役'
 
 /** The three lifecycle sub-routes and the verb each is written down under. */
 const LIFECYCLE_ACTIONS = {

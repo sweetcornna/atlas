@@ -675,7 +675,7 @@ describe('the last step, through the console', () => {
       h.fetcher,
     )
     expect(line).toBe(
-      '这次部署不是运维个人账号发起的 · 模型档案请运维在模型页下发',
+      '这次部署不是运维个人账号发起的 · 由运维到模型页下发模型档案',
     )
     expect(h.providers.calls).not.toContain('apply')
   })

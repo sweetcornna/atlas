@@ -288,7 +288,7 @@ function pushedLine(
 function resolveActions(run: ScheduleRunView): string {
   const data = { id: run.scheduleId, run: run.runId }
   return (
-    `<div class="run-unknown"><p class="note">没有收到这一次的结果（本地等待超时或服务重启过）。智能体可能还在做；确认之前，这个任务不会再发。</p>` +
+    `<div class="run-unknown"><p class="note">没有收到这次的结果 · 本地等待超时或服务重启过 · 智能体可能还在做 · 确认之前不会再发</p>` +
     `<span class="kit-acts">` +
     actionButton('run-resolve', '确认失败', {
       tone: 'ghost',
@@ -493,7 +493,7 @@ export function renderSchedules(
     snapshot.schedules.length === 0
       ? emptyState(
           '还没有定时任务',
-          '让智能体每天早上整理一份简报，或者定时跟进待办和邮件 · 结果会推送到通知渠道',
+          '让智能体每天早上整理简报 · 或定时跟进待办和邮件 · 结果推送到通知渠道',
           roles.member
             ? `<div>${actionButton('schedule-new', '新建定时任务', { glyph: 'plus', tone: 'primary', small: false })}</div>`
             : '',

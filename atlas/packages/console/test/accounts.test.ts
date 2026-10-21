@@ -486,7 +486,7 @@ describe('a personal credential never rides in a query string (invariant 4)', ()
       })
       fns.writeToken('qmu_abcdef')
       expect(store.size).toBe(0)
-      expect(said).toContain('个人凭据请在登录页填写')
+      expect(said).toContain('个人凭据在登录页填写')
       // Refused before anything else: not posted to the login door either.
       expect(fns.exchanged).toEqual([])
       fns.writeToken(ADMIN)
@@ -806,9 +806,7 @@ describe('break-glass (invariant 5)', () => {
       const html = await page.text()
       expect(html.includes('id="account-notice"')).toBe(true)
       expect(
-        html.includes(
-          'break-glass 会话 · 每次使用都有记录 · 用完请轮换管理令牌',
-        ),
+        html.includes('break-glass 会话 · 每次使用都有记录 · 用完轮换管理令牌'),
       ).toBe(true)
       expect(html.includes('>break-glass</span>')).toBe(true)
     }

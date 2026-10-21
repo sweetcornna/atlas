@@ -228,7 +228,7 @@ describe('the trail page lists newest first, one page at a time (D5)', () => {
     expect(seqs.every(seq => seq % 10 === 0)).toBe(true)
     expect(seqs[0]).toBe(300)
     expect(html).toContain('name="q" value="NEEDLE"')
-    expect(html).toContain('<span class="chip mono">q NEEDLE</span>')
+    expect(html).toContain('<span class="chip mono">搜索 NEEDLE</span>')
     expect(audit.filters.at(-1)?.q).toBe('NEEDLE')
     // Thirty matches is one page: nothing older, and the poll keeps the box.
     expect(html).toContain('已是最早的记录')

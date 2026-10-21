@@ -58,6 +58,8 @@ import {
   CONSOLE_CLIENT_JS_ACCOUNTS,
 } from '../assets/client.js'
 import { FRONT_JS } from '../assets/frontClient.js'
+import { FRONT_PANEL_JS } from '../assets/frontPanel.js'
+import { FRONT_TOOLS_JS } from '../assets/frontTools.js'
 import type { ConsoleRole } from '../auth.js'
 import { type Lang, LANG_NAMES, LANGS } from '../i18n.js'
 import {
@@ -99,7 +101,17 @@ import {
   type FrontReplicateMode,
   frontReplicateCard,
 } from './frontReplicate.js'
+import {
+  FRONT_PANEL_CSS,
+  frontPanelFrame,
+  frontPanelToggle,
+} from './frontPanel.js'
 import { FRONT_CSS } from './frontStyle.js'
+import {
+  composerPickers,
+  FRONT_TOOLS_CSS,
+  permissionConfirm,
+} from './frontTools.js'
 import { FRONT_TEXT, frontClientText, type FrontText } from './frontText.js'
 import { qianmoMark } from './mark.js'
 import { renderRichText } from './richText.js'
@@ -755,7 +767,7 @@ function idMarks(turn: ChatTurn, admin: boolean, t: FrontText): string {
   if (turn.taskId !== undefined) {
     marks.push(
       `<span class="fx-id mono" title="${attr(turn.taskId)}">${escapeHtml(
-        `task ${turn.taskId.slice(0, 8)}`,
+        `${t.task} ${turn.taskId.slice(0, 8)}`,
       )}</span>`,
     )
   }
@@ -775,21 +787,36 @@ function idMarks(turn: ChatTurn, admin: boolean, t: FrontText): string {
   return marks.join('')
 }
 
+/**
+ * A line sent while the agent was still on an earlier one: it waits on the
+ * node and goes in at the agent's next step, so it says that rather than a
+ * bare 待投递 that reads as stuck. Until the node reads it.
+ */
+function queuedMark(t: FrontText): string {
+  return (
+    `<span class="fx-chain" title="${attr(t.queuedNext)}"><i class="on"></i><i></i><i></i></span>` +
+    `<span class="fx-queued">${escapeHtml(t.queuedNext)}</span>`
+  )
+}
+
 function userTurn(
   turn: ChatTurn,
   admin: boolean,
   last: boolean,
+  queued: boolean,
   lang: Lang,
   t: FrontText,
 ): string {
   const cls =
     `fx-msg fx-msg-user${turn.state === 'failed' ? ' is-failed' : ''}` +
-    `${last ? ' is-last' : ''}`
+    `${last ? ' is-last' : ''}${queued ? ' is-queued' : ''}`
   return (
     `<article class="${cls}">` +
     `<div class="fx-bubble">${renderRichText(turn.text)}</div>` +
     `<div class="fx-meta"><span class="fx-meta-more">${timeTag(turn.at, 'clock', 'fx-when')}` +
-    `${idMarks(turn, admin, t)}</span>${deliveryMark(turn, lang, t)}</div></article>`
+    `${idMarks(turn, admin, t)}</span>${
+      queued ? queuedMark(t) : deliveryMark(turn, lang, t)
+    }</div></article>`
   )
 }
 
@@ -948,6 +975,13 @@ function renderMessages(
   }
   const unanswered = unansweredTurns(turns)
   const waiting = unanswered.length > 0
+  // Lines after the one the agent is on, that the node has not read yet.
+  const queued = new Set(
+    unanswered
+      .slice(1)
+      .filter(turn => turn.readMs === undefined)
+      .map(turn => turn.id),
+  )
   let lastOperator = ''
   for (const turn of turns) {
     if (turn.variant !== 'notice' && turn.author === 'operator') {
@@ -979,7 +1013,14 @@ function renderMessages(
     pause(turn.at)
     out.push(
       turn.author === 'operator'
-        ? userTurn(turn, model.admin, turn.id === lastOperator, model.lang, t)
+        ? userTurn(
+            turn,
+            model.admin,
+            turn.id === lastOperator,
+            queued.has(turn.id),
+            model.lang,
+            t,
+          )
         : agentTurn(turn, model.admin, model.lang, t),
     )
   }
@@ -1144,7 +1185,7 @@ function renderHead(model: FrontViewModel): string {
     `<span class="fx-head-name">${escapeHtml(agent)}</span>` +
     `<span class="fx-head-sub"><span class="mono">${escapeHtml(node)}</span>` +
     (verdict.tone === 'ok' ? '' : state(verdict.tone, verdict.text)) +
-    `<span class="fx-model" id="fx-model"></span></span>` +
+    `</span>` +
     headInfo(target, address, node, verdict, model) +
     `</div>`
   )
@@ -1238,7 +1279,7 @@ export interface FrontDocumentModel {
   readonly approvals?: boolean
 }
 
-function composer(enabled: boolean, t: FrontText): string {
+function composer(enabled: boolean, admin: boolean, t: FrontText): string {
   const off = enabled ? '' : ' disabled'
   const commands = CHAT_LOCAL_COMMANDS.map(
     name =>
@@ -1249,17 +1290,19 @@ function composer(enabled: boolean, t: FrontText): string {
   return (
     `<form class="fx-composer" id="fx-composer" novalidate>` +
     `<div class="fx-cmds" id="fx-cmds" role="listbox" aria-label="${attr(t.localCommands)}" hidden>${commands}</div>` +
-    `<button type="button" class="fx-icon-btn fx-plus" id="fx-plus" data-action="fx-plus" ` +
-    `aria-label="${attr(t.commands)}" aria-controls="fx-cmds" aria-expanded="false"${off}>${icon('plus', { small: true })}</button>` +
     `<label class="sr-only" for="fx-text">${escapeHtml(t.message)}</label>` +
     `<textarea id="fx-text" rows="1" spellcheck="false" ` +
     `maxlength="${attr(String(MAX_CHAT_TEXT_LENGTH))}" aria-describedby="fx-status" ` +
     `aria-controls="fx-cmds" ` +
     `placeholder="${attr(t.placeholder)}"${off}></textarea>` +
+    `<div class="fx-tools">` +
+    `<button type="button" class="fx-icon-btn fx-plus" id="fx-plus" data-action="fx-plus" ` +
+    `aria-label="${attr(t.commands)}" aria-controls="fx-cmds" aria-expanded="false"${off}>${icon('plus', { small: true })}</button>` +
+    composerPickers(t, admin, enabled) +
     `<button type="button" class="fx-icon-btn fx-mic" id="fx-mic" data-action="fx-mic" ` +
     `aria-label="${attr(t.voiceInput)}" aria-pressed="false" hidden>${icon('mic', { small: true })}</button>` +
     `<button type="submit" class="fx-send" id="fx-send" aria-label="${attr(t.send)}"${off}>` +
-    `${icon('arrow-up', { small: true })}</button>` +
+    `${icon('arrow-up', { small: true })}</button></div>` +
     `<p class="fx-status" id="fx-status" role="status"></p>` +
     `</form>`
   )
@@ -1349,6 +1392,8 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
   const script =
     runtime +
     FRONT_JS +
+    FRONT_TOOLS_JS +
+    FRONT_PANEL_JS +
     AVATAR_PAGE_JS +
     (replicate === 'off' ? '' : FRONT_REPLICATE_JS) +
     (model.approvals === true ? FRONT_APPROVAL_JS : '')
@@ -1357,6 +1402,8 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     documentHead(
       `${WORDMARK_CN} · ${t.chat} · ${model.label}`,
       FRONT_CSS +
+        FRONT_TOOLS_CSS +
+        FRONT_PANEL_CSS +
         AVATAR_CSS +
         (replicate === 'off' ? '' : FRONT_REPLICATE_CSS) +
         (model.approvals === true ? FRONT_APPROVAL_CSS : ''),
@@ -1393,7 +1440,9 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `<summary class="fx-icon-btn" aria-label="${attr(t.chatHistory)}">${icon('history', { small: true })}</summary>` +
     `<div class="fx-menu fx-hist-pop">${model.side.history}</div></details>` +
     `<button type="button" class="fx-icon-btn" data-action="fx-new" aria-label="${attr(t.newChat)}">` +
-    `${icon('square-pen', { small: true })}</button></div>` +
+    `${icon('square-pen', { small: true })}</button>` +
+    frontPanelToggle(t) +
+    `</div>` +
     `</header>` +
     viewerNotice(model.viewer) +
     `<div class="fx-scroll" id="fx-scroll"><div class="fx-column">${model.view.thread}</div></div>` +
@@ -1402,13 +1451,16 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `${icon('arrow-down', { small: true })}</button>` +
     model.side.stack +
     (replicate === 'off' ? '' : frontReplicateCard(replicate)) +
-    composer(model.composerEnabled, t) +
+    composer(model.composerEnabled, model.admin, t) +
     `</div></div>` +
-    `</main></div>\n` +
+    `</main>` +
+    frontPanelFrame(t) +
+    `</div>\n` +
     sessionExpired(model.relogin, model.lang) +
     `<div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>\n` +
     `<p id="reply-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>` +
     keyboardHelp(t) +
+    permissionConfirm(t) +
     avatarDialog(model.lang) +
     (model.approvals === true ? frontApprovalDialog(model.lang) : '') +
     `<script>${script}</script>\n` +

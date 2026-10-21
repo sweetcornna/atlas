@@ -38,7 +38,7 @@ describe('主动执行 · runs', () => {
     expect(text).toContain('晨间简报')
     expect(text).toContain('今天的重点有三件')
     expect(text).toContain('结果未知 · 待确认')
-    expect(text).toContain('确认之前，这个任务不会再发')
+    expect(text).toContain('确认之前不会再发')
   })
 
   test('the admin token can settle an unknown run; a view token only reads', async () => {

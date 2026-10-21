@@ -316,7 +316,7 @@ export function actionButton(
 /** Rules the kit's own markup needs beyond the shared sheet. */
 export const KIT_CSS = `
 .field-help { display: block; margin-top: 4px; }
-.flabel { font-size: var(--text-12-5); color: var(--color-quiet); }
+.flabel { font-size: var(--text-12); color: var(--color-quiet); }
 .wrap { flex-wrap: wrap; }
 .unwired { gap: var(--space-2); padding: var(--space-4); }
 .unwired .cmd { display: block; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--color-bg); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-12); }

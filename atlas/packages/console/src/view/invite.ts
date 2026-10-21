@@ -104,7 +104,7 @@ export function renderInvitePage(model: InvitePageModel): string {
     `<div class="tokrow">确认后生成个人凭据 · 只显示一次</div>` +
     `<div class="tokrow">邀请只能用一次 · 过期作废</div>` +
     `</div>` +
-    `<p class="foot">没有收到邀请请联系环境负责人</p>` +
+    `<p class="foot">没有收到邀请 · 联系环境负责人</p>` +
     footer(model.source) +
     `</form>\n</main>\n` +
     `<script>${FRAGMENT_SCRIPT}</script>\n` +

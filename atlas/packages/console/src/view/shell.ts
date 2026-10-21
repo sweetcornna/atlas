@@ -134,6 +134,21 @@ export interface ShellNavItem {
   readonly count?: number
   /** A placeholder area: the item carries the 未提供 tag. */
   readonly pending?: boolean
+  /** Something there worth a glance, as a dot (see {@link ShellNavState}). */
+  readonly state?: ShellNavState
+}
+
+/**
+ * A sidebar item's state, as a dot beside the label: 待你处理 in the warning
+ * colour with how many, 运行中 in grey, 未读 in the accent. The words are
+ * the dot's name for a screen reader and its tooltip; only the number shows.
+ */
+export interface ShellNavState {
+  readonly tone: 'attention' | 'running' | 'unread'
+  /** The whole state in words, `2 项待你处理`. */
+  readonly label: string
+  /** Drawn beside the dot when there is one. */
+  readonly count?: number
 }
 
 export interface ShellNavGroup {
@@ -301,14 +316,27 @@ function accountRow(model: ShellModel): string {
   )
 }
 
+function navState(state: ShellNavState | undefined): string {
+  if (state === undefined) return ''
+  return (
+    `<span class="nav-state nav-state-${state.tone}" title="${attr(state.label)}">` +
+    `<span class="nav-dot" aria-hidden="true"></span>` +
+    (state.count === undefined
+      ? ''
+      : `<span aria-hidden="true">${escapeHtml(String(state.count))}</span>`) +
+    `<span class="sr-only">${escapeHtml(state.label)}</span></span>`
+  )
+}
+
 function navItem(item: ShellNavItem, active: string | undefined): string {
   const current = item.id === active ? ' aria-current="page"' : ''
   const tail =
     item.pending === true
       ? `<span class="nav-tag">未提供</span>`
-      : item.count === undefined
-        ? ''
-        : `<span class="cnt">${escapeHtml(String(item.count))}</span>`
+      : navState(item.state) +
+        (item.count === undefined
+          ? ''
+          : `<span class="cnt">${escapeHtml(String(item.count))}</span>`)
   // `data-nav` marks the links the runtime signs with the stored token when
   // there is one: a top-level navigation carries no `Authorization` header
   // (`console.md` §6.8). A cookie session needs none of it.

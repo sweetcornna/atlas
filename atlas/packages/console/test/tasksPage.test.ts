@@ -295,6 +295,70 @@ describe('background tasks in the console (P29)', () => {
   })
 })
 
+describe('the sidebar dot of 主动执行', () => {
+  const navJobs = (page: string) => {
+    const start = page.indexOf('id="nav-jobs"')
+    return page.slice(start, page.indexOf('</a>', start))
+  }
+
+  test('a task that waits for its owner is 待你处理 with how many; one that runs is grey', async () => {
+    const { h, tasks, member, other } = await setup()
+    const page = async (sid: string) =>
+      (await h.handle(asSession('GET', '/admin/jobs', sid))).text()
+    // task-mine runs; task-waiting is queued, which is not running yet.
+    let item = navJobs(await page(member.sid))
+    expect(item).toContain('nav-state-running')
+    expect(item).toContain('1 个运行中')
+    tasks.rows = tasks.rows.map(row =>
+      row.id === 'task-waiting' ? { ...row, status: 'needs_input' } : row,
+    )
+    item = navJobs(await page(member.sid))
+    expect(item).toContain('nav-state-attention')
+    expect(item).toContain('1 项待你处理')
+    expect(item).toContain('<span aria-hidden="true">1</span>')
+    // Somebody else's waiting task is not this reader's to handle.
+    item = navJobs(await page(other.sid))
+    expect(item).not.toContain('待你处理')
+    tasks.rows = tasks.rows.map(row => ({ ...row, status: 'completed' }))
+    expect(navJobs(await page(member.sid))).not.toContain('nav-state')
+  })
+})
+
+describe("the front's session panel (后台任务)", () => {
+  test("the reader's own tasks, waiting first, with 停止 while they run and the finished folded", async () => {
+    const { h, tasks, member, viewer } = await setup()
+    tasks.rows = tasks.rows.map(row =>
+      row.id === 'task-waiting' ? { ...row, status: 'needs_input' } : row,
+    )
+    const panel = await (
+      await h.handle(
+        asSession('GET', '/fragments/chat/front/panel', member.sid),
+      )
+    ).text()
+    expect(panel).toContain('id="fx-panel-body"')
+    expect(panel).toContain('后台任务')
+    expect(panel).toContain('1 项待你处理')
+    // Waiting first, then running; the other member's task is not here.
+    expect(panel.indexOf('data-key="task:task-waiting"')).toBeLessThan(
+      panel.indexOf('data-key="task:task-mine"'),
+    )
+    expect(panel).not.toContain('别人的')
+    expect(panel).toContain('data-task-stop="task-mine"')
+    expect(panel).not.toContain('data-task-stop="task-done"')
+    expect(panel).toContain('1 个已完成')
+    expect(panel).toContain('已汇总 12 个提交')
+    expect(panel).toContain('href="/?session=worker-1"')
+    // The chat face's guard: a viewer has no conversation, so no panel.
+    expect(
+      (
+        await h.handle(
+          asSession('GET', '/fragments/chat/front/panel', viewer.sid),
+        )
+      ).status,
+    ).toBe(403)
+  })
+})
+
 describe('planned tasks (主动任务)', () => {
   test('a delayed or repeating task reads 已安排 with its next start and the runs left; the API carries the fields', async () => {
     const tasks = new FakeTasks()
