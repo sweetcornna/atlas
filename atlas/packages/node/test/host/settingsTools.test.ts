@@ -14,6 +14,7 @@ import { expect, test } from 'bun:test'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { adaptSchemaForStrict } from '@oh-my-pi/pi-ai'
 import {
   generateNodeKeyPair,
   signAuthzDecision,
@@ -435,4 +436,26 @@ test('with the real grant store: a wait that runs out names the request, the per
     auth.close()
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('target and input stay open maps through a provider’s strict rewrite', () => {
+  const change = harness().tools.find(
+    tool => tool.name === 'qianmo_settings_change',
+  )
+  if (change === undefined) throw new Error('no change tool')
+  // What OpenAI strict and the Anthropic normaliser would send: a closed
+  // `target` would let the model pass only `{}` (10-21 beta-5: `target.server 缺失`).
+  const { schema, strict } = adaptSchemaForStrict(
+    change.parameters as Record<string, unknown>,
+    true,
+  )
+  const properties = schema['properties'] as Record<
+    string,
+    Record<string, unknown>
+  >
+  for (const key of ['target', 'input']) {
+    expect(properties[key]?.['additionalProperties']).not.toBe(false)
+    expect(properties[key]?.['properties']).toBeUndefined()
+  }
+  expect(strict).toBe(false)
 })
