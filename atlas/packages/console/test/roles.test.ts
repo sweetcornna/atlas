@@ -119,13 +119,19 @@ describe('a read-only token', () => {
         expect(response.status).toBe(403)
         continue
       }
+      // 初始化配置只给能管理这台控制台的人，对查看令牌不存在。
+      if (path === '/admin/setup') {
+        expect(response.status).toBe(404)
+        continue
+      }
       expect(`${path} ${response.status}`).toBe(`${path} 200`)
       expect(`${path} ${writeMarks(await response.text()).join(',')}`).toBe(
         `${path} `,
       )
       read += 1
     }
-    expect(read).toBe(READABLE.length - CHAT_ONLY.length)
+    // 初始化配置对查看令牌不存在（上面单独断言了 404）。
+    expect(read).toBe(READABLE.length - CHAT_ONLY.length - 1)
   })
 
   test('is told, once, in the top bar of the page that would have had them', async () => {

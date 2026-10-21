@@ -62,6 +62,7 @@ import {
   guard,
   guardChat,
   loginHref,
+  preferredMainAgent,
   textParam,
   valueOf,
 } from './shared.js'
@@ -83,7 +84,7 @@ function mayAdmin(ctx: RouteContext): boolean {
   return guard(ctx.access.credential, 'view', 'document') === null
 }
 
-/** The main agent: `--chat-default` if listed, else the first dialable, else the first. */
+/** The main agent: the page's choice or `--chat-default` if listed, else the first dialable, else the first. */
 function mainAgentOf(
   targets: readonly ChatTarget[] | null,
   preferred: string | undefined,
@@ -125,7 +126,7 @@ async function frontData(
       scope.visible(session.id),
     ),
     sessionsFailure: failureOf(sessions),
-    main: mainAgentOf(targets, ctx.deps.chatDefault),
+    main: mainAgentOf(targets, preferredMainAgent(ctx.deps)),
   }
 }
 

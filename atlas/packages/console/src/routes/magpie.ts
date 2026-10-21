@@ -43,7 +43,7 @@ import {
   magpieForReader,
   magpieWriter,
 } from './magpieApi.js'
-import { failureResponse } from './shared.js'
+import { failureResponse, preferredMainAgent } from './shared.js'
 import type { RouteContext, RouteModule } from './types.js'
 
 const DEFAULT_PERIOD: MagpieUsagePeriod = '7d'
@@ -63,7 +63,7 @@ async function modelOf(ctx: RouteContext): Promise<MagpieModel> {
 
 async function agentsOf(ctx: RouteContext): Promise<MagpieAgentsModel> {
   const writer = magpieWriter(ctx)
-  const mainAgent = ctx.deps.chatDefault ?? null
+  const mainAgent = preferredMainAgent(ctx.deps) ?? null
   const agents = ctx.deps.magpie?.agents
   if (agents === undefined)
     return { side: { kind: 'unwired' }, writer, mainAgent }

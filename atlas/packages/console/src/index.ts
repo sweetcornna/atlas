@@ -55,6 +55,7 @@ export type {
   HandoffTaskState,
   HandoffTaskView,
   LimitsSnapshot,
+  MainAgentPort,
   NodeServer,
   RegisterAgentInput,
   RegistryPort,

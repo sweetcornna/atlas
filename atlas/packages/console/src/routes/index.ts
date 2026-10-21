@@ -49,6 +49,7 @@ import { overviewRoute } from './overview.js'
 import { providersRoute } from './providers.js'
 import { serversRoute } from './servers.js'
 import { settingsRoute } from './settings.js'
+import { setupPending, setupRoute } from './setup.js'
 import { frontAvailable } from './front.js'
 import { ADMIN_HOME, DEFAULT_LABEL, guardChat, loginHref } from './shared.js'
 import type {
@@ -78,6 +79,7 @@ export const ROUTES: readonly RouteModule[] = [
   desktopRoute,
   providersRoute,
   magpieRoute,
+  setupRoute,
   overviewRoute,
   nodesRoute,
   filesRoute,
@@ -188,20 +190,38 @@ function nodesCount(
   return listed.ok ? nodeCount(listed.value) : undefined
 }
 
-/** The sidebar for this caller, with the counts that are honest to show. */
+/**
+ * The sidebar for this caller, with the counts that are honest to show.
+ *
+ * 初始化配置还有能在页面上做的必需项时（`setupCount` > 0），它挪到主区第一
+ * 项并带上数字；做完了回到「管理」里。
+ */
 function navFor(
   ctx: RouteContext,
   listed: ConsoleResult<readonly ConsoleAgent[]>,
   modules: readonly RouteModule[] = ROUTES,
+  setupCount?: number,
 ): readonly ShellNavGroup[] {
+  const promoted = setupCount !== undefined && setupCount > 0
+  const groupOf = (module: RouteModule): AreaGroup =>
+    module.area.id === 'setup' && promoted ? 'main' : module.area.group
   return GROUP_ORDER.map(group => ({
     label: GROUP_LABELS[group],
     ...(group === 'manage' ? { folded: true } : {}),
     items: modules
-      .filter(module => module.area.group === group && visibleTo(module, ctx))
+      .filter(module => groupOf(module) === group && visibleTo(module, ctx))
+      .sort(
+        (a, b) =>
+          Number(promoted && b.area.id === 'setup') -
+          Number(promoted && a.area.id === 'setup'),
+      )
       .map(module => {
         const count =
-          module.area.id === 'nodes' ? nodesCount(listed) : undefined
+          module.area.id === 'nodes'
+            ? nodesCount(listed)
+            : module.area.id === 'setup' && promoted
+              ? setupCount
+              : undefined
         return {
           id: module.area.id,
           label: module.area.label,
@@ -271,7 +291,7 @@ export async function areaDocument(
     role: ctx.access.credential.role,
     ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
     self: await selfFace(ctx),
-    nav: navFor(ctx, listed),
+    nav: navFor(ctx, listed, ROUTES, await setupPending(ctx)),
     active: render.active ?? module.area.id,
     crumbs: crumbsOf(module, render),
     title: render.title,
@@ -300,7 +320,7 @@ export async function errorDocument(
     role: ctx.access.credential.role,
     ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
     self: await selfFace(ctx),
-    nav: navFor(ctx, listed),
+    nav: navFor(ctx, listed, ROUTES, await setupPending(ctx)),
     crumbs: [{ label: title }],
     title,
     body:

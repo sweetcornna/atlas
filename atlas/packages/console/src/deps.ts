@@ -1277,6 +1277,8 @@ export const CONSOLE_ACTIONS = [
   'chat.command.effort',
   /** 明确打开一份转录：整页带 `?session=`、JSON 读转录、片段带 `?open=1`。轮询与 SSE 不算。 */
   'chat.transcript.open',
+  /** 主智能体（初始化配置页），target 是地址或 `default`（清除）。 */
+  'chat.main',
   /** 账号 API 的写请求，`accounts.<方法>`，target 是 `/v0/accounts` 之后的路径。 */
   'accounts.post',
   'accounts.put',
@@ -2414,6 +2416,16 @@ export interface ConsoleAbout {
 }
 
 /** Everything a console instance needs. `wake` and `chat` are optional. */
+/**
+ * 主智能体的页面设置（初始化配置页）。宿主把它存在中枢自己的配置目录里；
+ * `get` 读内存里的当前值，不碰盘。值是 `qianmo://<node>/<agent>`，`null` 表示
+ * 回到启动参数 `--chat-default`。
+ */
+export interface MainAgentPort {
+  get(): string | null
+  set(address: string | null, by: string): Promise<ConsoleResult<null>>
+}
+
 export interface ConsoleDeps {
   readonly tenancy?: TenantPort
   readonly usage?: UsagePort
@@ -2442,6 +2454,11 @@ export interface ConsoleDeps {
    * or not in the roster, the home page opens the first dialable agent.
    */
   readonly chatDefault?: string
+  /**
+   * 主智能体在页面上改过的值（初始化配置页）。有值时盖过 {@link chatDefault}；
+   * 缺席时主智能体只能由启动参数定。
+   */
+  readonly mainAgent?: MainAgentPort
   /** Absent removes the certificate column entirely (§10.1). */
   readonly certificates?: CertificatePort
   /**

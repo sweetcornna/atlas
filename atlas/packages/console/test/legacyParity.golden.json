@@ -1209,8 +1209,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 116602,
-    "sha256": "ef34a70e15a2cf81fc2121be5f2c7fc9e178bdfb08296b95f36d449b795f08f4"
+    "length": 116975,
+    "sha256": "86cd2118cd8c036734ac8a83c76e3809b92305eda405e67f464ae11c2f1d3e7f"
   },
   {
     "probe": "GET /admin/audit?window=24h as view-bearer",
@@ -1278,8 +1278,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 128521,
-    "sha256": "4c3b8e972f95ad6958a1e5fff54e46c85c22be2c328fcf4dc953526ceadc57f1"
+    "length": 128894,
+    "sha256": "8bd80ba44f605dbc357ac7e82badbe309447c413c096a65e5ab7db94131f19b0"
   },
   {
     "probe": "GET /admin/servers as view-bearer",
@@ -1370,7 +1370,7 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 116583,
-    "sha256": "6ceeb813d468ad8827275e1dad097ee953fb1c2b3e3c391630a43776c55228bd"
+    "length": 116956,
+    "sha256": "caa7cb95673df90e8b8679d9c83880aad27470d15137d665c0cdebbbeb46cec0"
   }
 ]

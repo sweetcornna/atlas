@@ -327,6 +327,14 @@ export function outcomeOf(
  * read-only ({@link readOnlyNote}). Every write control a page does draw
  * carries `data-write`, which is what `test/roles.test.ts` scans for.
  */
+/**
+ * 主智能体的首选地址：页面上设过的（初始化配置页）先于启动参数
+ * `--chat-default`。都没有时 `undefined`，由调用方按名册取第一个。
+ */
+export function preferredMainAgent(deps: ConsoleDeps): string | undefined {
+  return deps.mainAgent?.get() ?? deps.chatDefault
+}
+
 export function canWrite(access: Access): boolean {
   return access.credential.role === 'admin'
 }
