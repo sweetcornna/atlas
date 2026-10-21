@@ -1095,9 +1095,15 @@ textarea.input { border-radius: var(--radius-md); padding: 7px 10px; line-height
    as Claude Desktop's lists do; a touch screen always shows them. */
 @media (hover: hover) and (pointer: fine) {
   .trail tbody td.acts > * { opacity: 0; transition: opacity 120ms ease; }
-  .trail tbody tr:hover td.acts > *, .trail tbody tr:focus-within td.acts > * { opacity: 1; }
+  .trail tbody tr:hover td.acts > *, .trail tbody tr:focus-within td.acts > *,
+  .trail tbody td.acts:has(:popover-open) > * { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) { .trail tbody td.acts > * { transition: none; } }
+/* A row's 更多 menu (view/kit.ts): a popover in the top layer, placed under
+   its button by the runtime. */
+.row-more-btn { width: 26px; height: 26px; }
+.row-more-menu[popover] { position: fixed; inset: auto; margin: 0; border: 0; min-width: 132px; }
+.fx-menu-danger { color: var(--color-danger-text); }
 .trail td.when { white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-12); }
 .trail td.src, .trail td.result { white-space: nowrap; }
 /* break-word, not anywhere: wake_dispatch split as wake_dispat / ch reads as

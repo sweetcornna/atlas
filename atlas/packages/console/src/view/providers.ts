@@ -1447,7 +1447,9 @@ export function progressPanel(): string {
 // ---------------------------------------------------------------------------
 
 export const PROVIDERS_PAGE_CSS = `
-.prov-toc { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 2px; padding: var(--space-2) 0; margin-bottom: var(--space-2); background: var(--color-bg); }
+/* The page's own column spaces its sections 32px apart; the table of contents
+   belongs to what follows, so it gives half of that back. */
+.prov-toc { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 2px; padding: var(--space-2) 0; margin-bottom: calc(-1 * var(--space-4)); background: var(--color-bg); }
 .prov-toc a { padding: 4px 10px; border-radius: 999px; font-size: var(--text-13); color: var(--color-muted); text-decoration: none; }
 .prov-toc a:hover { color: var(--color-text); background: var(--color-interactive-soft); }
 #routing, #magpie, #magpie-agents, #agent-models, #magpie-usage, #prov-board { scroll-margin-top: 48px; }

@@ -62,6 +62,7 @@ import {
   dialogActions,
   dialogTop,
   emptyState,
+  moreMenu,
   segmented,
   selectField,
   statCard,
@@ -215,14 +216,15 @@ function rowActions(schedule: ScheduleView, member: boolean): string {
       glyph: 'zap',
       data: { id: schedule.id, title: schedule.title },
     }) +
-    actionButton('schedule-edit', '编辑', {
-      tone: 'ghost',
-      data: { schedule: payload },
-    }) +
-    actionButton('schedule-remove', '删除', {
-      tone: 'ghost',
-      data: { id: schedule.id, title: schedule.title },
-    }) +
+    moreMenu(`schedule:${schedule.id}`, schedule.title, [
+      { action: 'schedule-edit', label: '编辑', data: { schedule: payload } },
+      {
+        action: 'schedule-remove',
+        label: '删除',
+        data: { id: schedule.id, title: schedule.title },
+        danger: true,
+      },
+    ]) +
     `</span></td>`
   )
 }
