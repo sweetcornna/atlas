@@ -150,7 +150,7 @@ test.skipIf(browser === null)(
     }
     expect(await opened).toBe(0)
     if (!linux)
-      expect(out).toContain('等窗口进入前台 · 第一次打开要在窗口里确认账号')
+      expect(out).toContain('等窗口进入前台 · 要在窗口里点「进入」确认账号')
     expect(err).toEqual([])
     expect(hub.entered[0]).toEqual({
       site: 'none',

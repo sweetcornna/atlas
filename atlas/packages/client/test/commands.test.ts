@@ -171,7 +171,7 @@ describe('open', () => {
     expect(await openFront(c.deps)).toBe(0)
     await Promise.all(c.visits)
     expect(c.launched[0]).toContain('/client/enter?ticket=qmt_')
-    expect(c.out).toContain('等窗口进入前台 · 第一次打开要在窗口里确认账号')
+    expect(c.out).toContain('等窗口进入前台 · 要在窗口里点「进入」确认账号')
     expect(c.out.at(-1)).toBe(`已在窗口里打开 ${c.hub.url}/`)
     expect(c.hub.entered).toEqual([{ site: 'none', device: null }])
     expect(c.err).toEqual([])
@@ -258,12 +258,14 @@ describe('status and sign-out', () => {
     }
   })
 
-  test('sign-out counts any refusal of the token as already revoked', async () => {
+  test('sign-out with an inactive account leaves the device to the 连接 page', async () => {
     const c = scene('linux')
     await signIn(c.deps, { hub: c.hub.url })
     c.hub.inactive.add(c.deps.home.load()!.deviceId)
-    expect(await signOut(c.deps)).toBe(0)
-    expect(c.out.at(-1)).toBe('已退出 · 中枢上的这台设备已吊销')
+    expect(await signOut(c.deps)).toBe(1)
+    expect(c.err.at(-1)).toContain('账号已停用')
+    expect(c.err.at(-1)).toContain('「连接」页手动吊销')
+    // This computer is signed out either way.
     expect(c.deps.home.load()).toBeUndefined()
   })
 })

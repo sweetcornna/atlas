@@ -240,35 +240,53 @@ describe('tickets and the device', () => {
   })
 
   test('each 401 code says what to do, on every call that carries the token', async () => {
-    const cases: [() => Response, RegExp, DeviceStatus][] = [
+    const cases: [
+      () => Response,
+      RegExp,
+      DeviceStatus,
+      Awaited<ReturnType<typeof revokeDevice>>,
+    ][] = [
       [
         () => failure(401, 'device_revoked', 'x'),
         /已被吊销.*sign-in --force/,
+        'revoked',
         'revoked',
       ],
       [
         () => failure(401, 'owner_inactive', 'x'),
         /账号已停用或已重置.*账号恢复或重新登录中枢后.*sign-in --force/,
         'owner_inactive',
+        'owner_inactive',
       ],
       [
         () => failure(401, 'unauthorized', 'x'),
         /令牌无效.*sign-in --force/,
         'invalid',
+        'unknown',
       ],
       // No body, or a code this client does not know: an unknown token.
-      [() => new Response(null, { status: 401 }), /令牌无效/, 'invalid'],
-      [() => failure(401, 'something_new', 'x'), /令牌无效/, 'invalid'],
+      [
+        () => new Response(null, { status: 401 }),
+        /令牌无效/,
+        'invalid',
+        'unknown',
+      ],
+      [
+        () => failure(401, 'something_new', 'x'),
+        /令牌无效/,
+        'invalid',
+        'unknown',
+      ],
     ]
-    for (const [answer, message, seen] of cases) {
+    for (const [answer, message, seen, revoked] of cases) {
       const h = hub(answer)
       await expect(requestTicket(h.url, TOKEN)).rejects.toThrow(message)
       await expect(ticketState(h.url, TOKEN, 't-abcdefghijkl')).rejects.toThrow(
         message,
       )
       expect(await deviceStatus(h.url, TOKEN)).toBe(seen)
-      // Signing out: whatever the reason, the token already opens nothing.
-      expect(await revokeDevice(h.url, TOKEN)).toBe('revoked')
+      // Signing out is done only when the hub says the device is revoked.
+      expect(await revokeDevice(h.url, TOKEN)).toBe(revoked)
     }
   })
 
@@ -281,7 +299,7 @@ describe('tickets and the device', () => {
       [200, 'active', 'failed'],
       [204, 'unreachable', 'revoked'],
       // A 401 without a code is an unknown token (the codes are above).
-      [401, 'invalid', 'revoked'],
+      [401, 'invalid', 'unknown'],
       [404, 'unsupported', 'unsupported'],
       [500, 'unreachable', 'failed'],
     ]

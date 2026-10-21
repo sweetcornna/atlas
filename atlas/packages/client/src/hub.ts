@@ -325,14 +325,17 @@ export async function deviceStatus(
 }
 
 /**
- * `DELETE /v0/client/device`: the device revokes itself on sign-out. Any 401
- * counts as done: the token already opens nothing.
+ * `DELETE /v0/client/device`: the device revokes itself on sign-out. A 401
+ * that says the device is revoked counts as done. One that says its account
+ * is inactive is not: the hub keeps the device, and the token may open it
+ * again once the account is back. Any other 401 is a token the hub does not
+ * know, which says nothing about the device.
  */
 export async function revokeDevice(
   hub: string,
   token: string,
   fetchImpl: Fetch = fetch,
-): Promise<'revoked' | 'unsupported' | 'failed'> {
+): Promise<'revoked' | 'owner_inactive' | 'unknown' | 'unsupported' | 'failed'> {
   let response: Response
   try {
     response = await call(fetchImpl, `${hub}/v0/client/device`, {
@@ -342,7 +345,15 @@ export async function revokeDevice(
   } catch {
     return 'failed'
   }
-  if (response.status === 204 || response.status === 401) return 'revoked'
+  if (response.status === 204) return 'revoked'
+  if (response.status === 401) {
+    const why = await refusalOf(response)
+    return why === 'device_revoked'
+      ? 'revoked'
+      : why === 'owner_inactive'
+        ? 'owner_inactive'
+        : 'unknown'
+  }
   if (response.status === 404 || response.status === 501) return 'unsupported'
   return 'failed'
 }

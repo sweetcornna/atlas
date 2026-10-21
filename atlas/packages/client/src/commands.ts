@@ -191,12 +191,12 @@ export async function openFront(deps: ClientDeps): Promise<number> {
 
   if (ticketRoute(deps.platform) === 'argv') {
     deps.openOnArgv(browser, profile, url)
-    // The hub asks a fresh window profile to confirm the account first.
-    deps.io.out('等窗口进入前台 · 第一次打开要在窗口里确认账号')
+    // Nothing can put a header on this window, so the hub asks every time.
+    deps.io.out('等窗口进入前台 · 要在窗口里点「进入」确认账号')
     const spent = await waitSpent(deps, state.hub, token, outcome.id, until)
     if (spent !== 'used') {
       deps.io.err(
-        '窗口打开了，但没有用上票据（第一次打开要在一分钟内确认账号）· 关掉窗口后重新 qmo open',
+        '窗口打开了，但没有用上票据（要在一分钟内点「进入」）· 关掉窗口后重新 qmo open',
       )
       return 1
     }
@@ -277,6 +277,12 @@ export async function signOut(deps: ClientDeps): Promise<number> {
     deps.io.out('已退出 · 中枢上的这台设备已吊销')
     return 0
   }
-  deps.io.err('已退出本机 · 中枢上的设备没能吊销，请在「连接」页手动吊销')
+  deps.io.err(
+    revoked === 'owner_inactive'
+      ? '已退出本机 · 设备所属的账号已停用，中枢上的设备没能吊销，请在「连接」页手动吊销'
+      : revoked === 'unknown'
+        ? '已退出本机 · 中枢不认识这台设备的令牌，请在「连接」页确认设备已不在'
+        : '已退出本机 · 中枢上的设备没能吊销，请在「连接」页手动吊销',
+  )
   return 1
 }
