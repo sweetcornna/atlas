@@ -434,6 +434,30 @@ describe('chat send', () => {
     })
   })
 
+  test("the hub's report turn is marked on its line and kept across a restart, not on the wire (P38)", async () => {
+    const h = harness()
+    const opened = await h.hub.open(TARGET)
+    if (!opened.ok) throw new Error('open failed')
+    const sent = await h.hub.send({
+      sessionId: opened.value.id,
+      text: '后台任务回报：周报 已完成',
+      context: '[后台任务回报] …',
+      report: true,
+    })
+    expect(sent.ok && sent.value.report).toBe(true)
+    const request = h.dialer.last.sent[0]!
+    expect(request.payload).toEqual({
+      prompt: '[后台任务回报] …\n\n后台任务回报：周报 已完成',
+      reportCompaction: true,
+    })
+    const again = harness({ storePath: h.storePath, idPrefix: 'replay' })
+    const replayed = await again.hub.transcript(opened.value.id)
+    if (!replayed.ok) throw new Error('unreachable')
+    expect(replayed.value.turns[0]?.report).toBe(true)
+    // An owner's line, not a sub-agent's: the session stays a foreground one.
+    expect(replayed.value.session.background).toBeUndefined()
+  })
+
   test('schedule direction and deadline reach task.request, invalid hints never send', async () => {
     const h = harness()
     const opened = await h.hub.open(TARGET)
@@ -441,10 +465,12 @@ describe('chat send', () => {
     const sent = await h.hub.send({
       sessionId: opened.value.id,
       text: '规划',
-      direction: 'plan',
+      direction: 'complex',
       taskTtlMs: 3_600_000,
     })
     expect(sent.ok).toBe(true)
+    // P38: the tier travels under its P22 name, which a node older than
+    // P38 accepts; a newer node maps it back to complex.
     expect(h.dialer.last.sent[0]!.payload).toEqual({
       prompt: '规划',
       direction: 'plan',
@@ -455,7 +481,7 @@ describe('chat send', () => {
       await h.hub.send({
         sessionId: opened.value.id,
         text: '坏方向',
-        direction: 'unknown' as 'chat',
+        direction: 'unknown' as 'medium',
       }),
     ).toMatchObject({ ok: false, failure: { code: 'invalid' } })
     expect(
@@ -466,6 +492,29 @@ describe('chat send', () => {
       }),
     ).toMatchObject({ ok: false, failure: { code: 'invalid' } })
     expect(h.dialer.last.sent).toHaveLength(1)
+    // A P22 name is not a tier: the hub's own callers map before sending.
+    expect(
+      await h.hub.send({
+        sessionId: opened.value.id,
+        text: '旧方向',
+        direction: 'chat' as 'medium',
+      }),
+    ).toMatchObject({ ok: false, failure: { code: 'invalid' } })
+    for (const [direction, wire] of [
+      ['medium', 'code'],
+      ['simple', 'fast'],
+      ['video', 'video'],
+    ] as const) {
+      const one = await h.hub.send({
+        sessionId: opened.value.id,
+        text: direction,
+        direction,
+      })
+      expect(one.ok).toBe(true)
+      expect(h.dialer.last.sent.at(-1)!.payload).toMatchObject({
+        direction: wire,
+      })
+    }
   })
 
   test('refuses a target whose endpoint is off the allow list', async () => {

@@ -9,7 +9,7 @@ import {
   AuthStorage,
   SqliteAuthCredentialStore,
 } from '@oh-my-pi/pi-coding-agent/session/auth-storage'
-import { LANE_KINDS } from '@qianmo/providers'
+import { LANE_KINDS, type ModelRouting } from '@qianmo/providers'
 import {
   compileProfile,
   compileRoutingProfiles,
@@ -24,7 +24,7 @@ import {
 } from '../../src/providers/node.js'
 import { providerPaths, writePrivateJson } from '../../src/providers/store.js'
 import { isolatedRoot } from './fake.js'
-import { applyRequest, CANARY_KEY, wireProfile } from './helpers.js'
+import { applyRequest, CANARY_KEY, model, wireProfile } from './helpers.js'
 import {
   capabilities,
   routingFixture,
@@ -194,12 +194,102 @@ test('a routed thinking extra obeys the shared lock even when the profile main i
     capabilities,
     routing: {
       auto: true,
-      routes: { chat: { profileId: profile.id, modelId: 'thinking-extra' } },
+      routes: {
+        complex: { profileId: profile.id, modelId: 'thinking-extra' },
+      },
     },
   })
   if (!result.ok) throw new Error(result.error.message)
-  expect(result.compiled.config.modelRoles.chat).toEndWith(
+  expect(result.compiled.config.modelRoles.plan).toEndWith(
     '/thinking-extra:high',
   )
   expect(result.compiled.config.modelRoles.default).toEndWith('/plain-main:off')
+})
+
+test('P38 tiers write their omp roles, an effort as the role suffix, an unset tier the main model', () => {
+  const profile = wireProfile({
+    models: [
+      model(),
+      model({
+        id: 'thinking-extra',
+        role: 'extra',
+        tiers: [],
+        capabilities: { mode: 'family' },
+        effort: { send: 'auto', levels: ['low', 'medium', 'high'] },
+      }),
+    ],
+  })
+  const ref = (effort?: 'none' | 'low') => ({
+    profileId: profile.id,
+    modelId: 'thinking-extra',
+    ...(effort === undefined ? {} : { effort }),
+  })
+  const result = compileRoutingProfiles(profile, {
+    secret: CANARY_KEY,
+    capabilities,
+    routing: {
+      auto: false,
+      routes: { simple: ref('none'), medium: ref('low') },
+    },
+  })
+  if (!result.ok) throw new Error(result.error.message)
+  const roles = result.compiled.config.modelRoles
+  for (const role of ['smol', 'commit', 'tiny'])
+    expect(roles[role]).toEndWith('/thinking-extra:off')
+  for (const role of ['default', 'task', 'chat'])
+    expect(roles[role]).toEndWith('/thinking-extra:low')
+  for (const role of ['plan', 'slow'])
+    expect(roles[role]).toEndWith('/vendor-model-pro:max')
+  expect(Object.keys(roles).sort()).toEqual(
+    [
+      'chat',
+      'commit',
+      'default',
+      'plan',
+      'slow',
+      'smol',
+      'task',
+      'tiny',
+    ].sort(),
+  )
+  // An effort the model does not take is refused, not clamped up.
+  const refused = compileRoutingProfiles(profile, {
+    secret: CANARY_KEY,
+    capabilities,
+    routing: {
+      auto: false,
+      routes: { complex: { ...ref(), effort: 'max' } },
+    },
+  })
+  expect(refused.ok).toBe(false)
+})
+
+test('a P22 split from an older hub is read as the tiers', async () => {
+  const root = isolatedRoot()
+  try {
+    const f = routingFixture()
+    const staged = stageProviderApply(
+      applyRequest({
+        profile: f.primary,
+        profiles: [f.profiles[0]!],
+        // What a hub older than P38 sends: the P22 names.
+        routing: {
+          auto: false,
+          routes: {
+            chat: { profileId: 'chat', modelId: 'vendor-model-pro' },
+            vision: { profileId: f.primary.id, modelId: 'vendor-model-flash' },
+            fast: { profileId: f.primary.id, modelId: 'vendor-model-flash' },
+          },
+        } as unknown as ModelRouting,
+      }),
+    )
+    expect(staged.ok).toBe(true)
+    expect((await commitPendingProviderConfig()).status).toBe('committed')
+    expect(nodeModelSelection('default')?.provider).toStartWith('qm-chat-')
+    expect(nodeModelSelection('smol')?.modelId).toBe('vendor-model-flash')
+    expect(nodeModelSelection('plan')?.modelId).toBe('vendor-model-pro')
+    expect(nodeModelSelection('vision')).toBeUndefined()
+  } finally {
+    root.dispose()
+  }
 })

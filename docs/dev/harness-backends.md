@@ -5,8 +5,8 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.0（生效）** |
-| 日期 | 2026-10-17 |
+| 文档版本 | **v1.1（生效）**：v1.0 之后补 §11 按底层原生方式配模型（P36 后续） |
+| 日期 | 2026-10-17（v1.1 2026-10-19） |
 | 核对基点 | 本仓库 `16c7be61`（`feat/magpie-gateway`，合并了 main `fdb77fc1`）；DeepSeek Harness 源码 `deepseek-ai/deepseek-harness@687f282e`（2026-10-17），npm `@deepseek-ai/dsh`；调研记录 `atlas-evidence/m1-work/2026-10-17/harness/`（仓库外） |
 | 范围依据 | 负责人 2026-10-17 决定（对话记录）：① 默认安装 DeepSeek Harness 作为后端，可选择性安装 qianmopi、Codex、Claude Code 等一众 harness 作为后端；② 后端之间联通交流性很高；③ 用户可直接在我们特化的 magpie 前端上进行各底层的智能体模型配置，用户接入 provider，智能体默认接入 magpie 并配置对应系列的模型（Claude Code 接 Claude、Codex 接 GPT） |
 | 编号 | P36（P36.1–P36.7，包表见 §8）；章程 v3.7 §2.8 |
@@ -109,7 +109,7 @@
 
 优先级从高到低：
 
-1. 节点的 `runtimes.json`（`qianmoConfigPath('qianmo','runtimes.json')`，0600 原子写，`{v:1, agents:{<智能体>:{runtime?, model?}}}`）：控制链路 `runtime.configure {agent, runtime, model}` 写入，`model` 是 `<档案>/<模型号>` 或 `auto`，传 `null` 清掉该字段；
+1. 节点的 `runtimes.json`（`qianmoConfigPath('qianmo','runtimes.json')`，0600 原子写，`{v:1, agents:{<智能体>:{runtime?, model?, fields?}}}`）：控制链路 `runtime.configure {agent, runtime, model, fields}` 写入，`model` 是 `<档案>/<模型号>` 或 `auto`，传 `null` 清掉该字段；`fields` 是推理强度、Claude Code 分档等原生字段（§11）；
 2. 启动参数 `--agent-runtime`、`--agent-model`（P27 原有）；
 3. 节点缺省底层 `--default-runtime <id>`，没给参数时取环境变量 `QIANMO_DEFAULT_RUNTIME`（取值相同，`qianmopi` 与 `omp` 同义；空串当没设；给了参数就不读它；非法值启动时报错并列出可选值），**都没有就是 `dsh`**。
 
@@ -205,7 +205,7 @@
 
 - **会话**：每对（发问的会话、被问的智能体）一条「对话」会话，长期复用，被问方记得之前问过什么；状态在 `qianmoConfigPath('qianmo','console','peers')`（0600，单实例锁），闲置 30 天清掉。第一行注明「来自 <发问方> 的提问」。
 - **身份与授权**：经中枢，以发问会话主人的身份走 `ChatDispatch`（租户、白名单、额度），核对调用来自这条会话里还在等回答的那一轮，与后台任务（P29）同一套；每个目标记一条 `peer.ask` 审计（`A → B`、结果与错误码，不记正文）。不新增节点间直连。渠道的群聊与其他人的私聊、定时任务的会话不能发问。
-- **防死锁（重入）**：节点一次只跑一轮（`NodeTurnGate`）。发问方的回合在等工具结果时占着闸门，被问方若在同一节点会永远排不上。所以中枢在发给被问方的 `task.request` 里签一条调用链 `chain: [{node, taskId}]`（由外到内，与任务主人证明一起签，`verifiedChain` 校验；没签或校验不过当没有链）。闸门维护一个正在运行的回合栈：栈不空时，只放行链里点名了**最内层**正在运行回合的那一轮（重入），其他回合一律等栈空；内层结束后回到发问方，发问方的其他回答先于排队的普通回合。链长受 `LIMITS.maxAskChain` 限制；被问的智能体已在链里（A 问 B、B 又问 A）对该目标拒绝（`cycle`）；被问方在链上某节点已有一条未答的中枢消息时立即拒绝（`busy`）——它的收件读取被那一轮卡着，重入也到不了它。跨节点的环同样靠链识别。会嵌套进去的回答不在等候队列里排，队列满了也照收（嵌套深度仍受限）。
+- **防死锁（重入）**：节点上每个会话一次一轮、全节点名额有限（`NodeTurnGate`；P38 起不再全节点串行，见 [runtimes-channels.md §3.1](runtimes-channels.md)）。发问方的回合在等工具结果时占着自己的名额，名额占满时被问方若在同一节点会永远排不上。所以中枢在发给被问方的 `task.request` 里签一条调用链 `chain: [{node, taskId}]`（由外到内，与任务主人证明一起签，`verifiedChain` 校验；没签或校验不过当没有链）。闸门给每个正在运行的根回合维护一条回合栈：链里点名了某条栈**最内层**正在运行回合的那一轮直接嵌进去（重入，不占名额），其他回合照常按名额与会话排队；内层结束后回到发问方，嵌套的回答先于排队的普通回合；发问方先结束时，嵌在里面的回合接过它的名额。链长受 `LIMITS.maxAskChain` 限制；被问的智能体已在链里（A 问 B、B 又问 A）对该目标拒绝（`cycle`）；被问方在链上某节点已有一条未答的中枢消息时立即拒绝（`busy`）——它的收件读取被那一轮卡着，重入也到不了它。跨节点的环同样靠链识别。会嵌套进去的回答不在等候队列里排，队列满了也照收（嵌套深度仍受限）。
 - **两条链交叉**：节点 1 的 A 问节点 2 的 B、同时节点 2 的 X 问节点 1 的 Y，两条链互不相干，B 排在 X 后面、Y 排在 A 后面，会互等到超时。中枢记着每个正在等回答的发问回合：目标节点上有一个**不在本链里**、正在等回答的发问回合时，对该目标立即拒绝（`busy`，提示先自己回答、稍后再问或改用后台任务）。检查与登记在同一个同步步骤里，两条交叉的提问后到的一方必然被拒，先到的照常答到。代价是保守：目标节点上另一条链在等一个本来会答完的问题时，这一问也被拒。
 - **进程上限**：节点带 `--omp-max-children` 时，被问的一轮若此刻会嵌套、而它所在进程池（qianmopi 或外部底层，各自计数）的名额全被正在跑的回合占着，就只能等一个谁也不会让出的名额。节点在写信箱之前判断，直接以 `task.result{failed}` 答复（原因以 `no room for a nested answer turn` 开头），不起回合、不多起进程，中枢把它读成 `busy`。
 - **发问方先结束**：中枢在提问期间盯着发问会话，发问那一轮有了终局答复（被停、失败或没等就结束）后，收回它还在外的提问：没发出的不再发，在跑的经 `turn.stop` 停掉（拿到任务号前就收回的，拿到时补停），答 `cancelled`；停不下来的同样丢掉这条对话。同节点上嵌套的那一轮因此随之结束，闸门不再为已停的发问方保留到时限。被问的一轮若在拿到进程、输入被接收之前被停，节点现有的恢复逻辑会在闸门空出后把这条输入当普通回合再跑一遍（结果没有人收），这是 `turn.stop` 的既有行为，未在本包修改。
@@ -321,3 +321,89 @@
 - 不收只能经第三方 ACP 适配器接入的 harness，不提供「任意命令当底层」（那等于让运维之外的人在节点上跑程序）。
 - 不替节点安装 Node.js、Python 等运行环境。
 - 不在中枢转发模型请求（N-5 不变）。
+
+---
+
+## §11 按底层原生方式配模型（P36 后续）
+
+参照 magpie 的智能体配置（它的智能体页一项一项改字段，`POST /api/set {agent, field, value}`）：每个智能体按它所在底层自己的字段配模型与推理强度，节点启动底层时写到这个底层原生认的位置；外部底层上的后台任务子会话按难度换模型。中枢的这一块不依赖 magpie：模型候选来自下发到节点的全部模型档案，magpie 网关密钥只是其中 `presetId: 'magpie'` 的一份。
+
+### 11.1 字段
+
+字段表只有一份，节点、中枢、页面共用（`host/runtimes/modelFields.ts` 的 `AGENT_MODEL_FIELDS`）：
+
+| 底层 | 字段 | 说明 |
+|---|---|---|
+| Claude Code | `model` `effort` `fable` `fable_effort` `opus` `opus_effort` `sonnet` `sonnet_effort` `haiku` `haiku_effort` | 主模型与主强度；四档各自的模型与强度（页面「分档」面板）；不设子代理字段 |
+| Codex | `model` `effort` | |
+| qianmopi | `model` `effort` | |
+| DeepSeek Harness | `model` `effort` | |
+| Gemini CLI、Qwen Code | `model` | 没有可写的推理强度 |
+| opencode | `model` `small` | `small` 是它的小模型 |
+
+- **值**：模型类写 `<档案>/<模型号>`；空串是「跟随」（分档、小模型）或「默认」（主模型、强度）。强度取 `none minimal low medium high xhigh max`，每个底层只收它说得通的：Claude Code 主强度 `low`–`max`（`--effort` 没有关闭与最低），各档强度七个全收（写进模型名后缀，见下）；Codex `none`–`xhigh`；qianmopi、dsh 七个全收；其余底层没有强度字段。
+- **按模型收窄**：候选再按模型收一次：模型服务里这个模型的 `effort.levels`（显式能力且会思考、没写档位时按 `low medium high`），`effort.send: never` 或显式不思考的模型只剩「默认」；Claude Code 再按它对 Claude 各型号发得出的档位收（`claude-opus-4-5` 只到 `high`，`claude-opus-4-6`、`claude-sonnet-4-6` 没有 `xhigh`，`claude-haiku-4-5`、`claude-sonnet-4-5` 及更早的不发）。`none` 只要模型会思考就保留。节点启动时再收一次，只往下收（`max` 在只到 `high` 的模型上按 `high` 发），收不到就不发。qianmopi 的强度交给它自己按模型收。
+- **跟随**：`opus`、`sonnet` 跟随主模型；`haiku` 跟随同一来源里最新的 Haiku（没有就是主模型）；`fable` 只在主模型本身是 fable 时跟随，否则不设，这一档的变量不写。只设了强度、没设模型的档按它跟随的模型加这个强度。
+- **同一来源**：分档与小模型走主模型的地址与密钥，所以只能选主模型同一档案里的模型；不同档案的值启动时当作没设（跟随）。
+- **档位强度只在 magpie 上开放**：档位强度写成 `模型号:强度` 后缀，只有 magpie 网关认，所以中枢只在主模型来自 magpie 档案时给这四项强度；节点照写不判。
+- **存放**：`model` 仍是 `runtimes.json` 的 `model`（旧节点也认）；其余字段在同一条目的 `fields`（扁平的键值）。读文件时不认识的键、不合格的值逐项丢掉，不连累整条。
+
+### 11.2 启动时写到原生位置
+
+全部经子进程的环境、参数或启动补丁写入，不改用户主目录里的任何配置：
+
+| 底层 | 写法 |
+|---|---|
+| Claude Code | `--model <主模型>`，窗口 ≥ 1M 的模型加客户端标记 `[1m]`；`--effort low…xhigh`，`max` 改写环境 `CLAUDE_CODE_EFFORT_LEVEL=max`；每个有模型的档写 `ANTHROPIC_DEFAULT_<FABLE/OPUS/SONNET/HAIKU>_MODEL=<模型号>[:<强度>][1m]`，`haiku` 档同时写 `ANTHROPIC_SMALL_FAST_MODEL`；不设的档不写。另写 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`（主模型的窗口；主模型带 `[1m]` 时取没带标记的各档里最小的窗口）、`CLAUDE_CODE_MAX_OUTPUT_TOKENS`（主模型不是 Claude、所有非 Claude 模型的回复上限都已知时取最小值，且超过 Claude Code 对未知模型自取的 32 000 才写）、`CLAUDE_CODE_MODEL_CAPABILITIES`（非 Claude 模型里有强度档位的，带强度后缀的档不列）。钉住层 `--settings` 的 `env` 写同一组变量，没设的模型变量写空串，遮住智能体自己 `settings.json` 里的同名项 |
+| Codex | `-c model=…`、`-c model_reasoning_effort=…` |
+| DeepSeek Harness | `--patch` 里 `agent-default-model` 的 `reasoningEffort`（`none` 写成它的 `off`）；模型的 `reasoning` 与 `reasoningEfforts` 同步（`off` 发给模型时是 `none`） |
+| Gemini CLI | `GEMINI_MODEL`（原有） |
+| Qwen Code | `OPENAI_MODEL`（原有） |
+| opencode | 配置里的 `model` 与 `small_model`，小模型同时加进该 provider 的模型表（带窗口与回复上限） |
+| qianmopi | 配在 qianmopi 上的智能体：它自己的 `model`（只认 `runtimes.json` 里的）与 `effort` 作为常驻进程的 `--model qm-<档案>-<哈希>/<模型号>` 与 `--thinking`（`none` 写成 `off`）；没设的项照旧跟随节点主模型与节点的思考档。优先级：会话里手动钉的 > 智能体字段 > 节点主模型 |
+
+强度从此真正进了外部底层的启动参数（以前 `ExternalLaunch.effort` 在生产里恒为空）。
+
+### 11.3 后台任务子会话按难度选模型
+
+- worker 会话首个回合的载荷 `direction` 给出难度。P38 的三档 `complex`、`medium`、`simple` 照收；中枢为了旧节点按 P22 的名字发（`legacyDirectionOf`），节点照 `directionOf` 的对应读回：`plan` 是 complex，`code`、`chat`、`vision` 是 medium，`fast` 是 simple，别的名字不算档。只认中枢签了后台标记的回合（`verifiedBackground`），对话里选的方向不改外部底层的模型。常驻进程在为这个会话起第一个外部子进程之前把档记进会话记录（`runtime.json` 的 `tier`），之后换底层、重启子进程都用同一档；会话起来之后不再换模型。
+- `resolveLaunch(agent, {sessionId, tier})`：
+  - 非 Claude Code：按 `complex → plan`、`medium → default`、`simple → smol` 取节点 `config.yml` 的 `modelRoles`，角色值 `<provider>/<模型号>:<档位>` 用 `nodeModelSelection(role)` 拆开。角色在另一个模型上、这个底层的线路说得通、请求头发得出去时用那个模型，推理强度取角色的档位（`off` 即 `none`，再按底层与模型收窄）；角色就是主模型时跟随智能体自己的模型，档位与主角色不同（P38 某一档单独定了强度）时用这个档位；其余情况是智能体自己的模型与强度。
+  - Claude Code：用它原生的分档别名，`complex` 起 `--model opus`、`simple` 起 `--model haiku`、`medium` 用主模型；别名指向的档要在环境里有模型（分档字段或跟随规则给的），否则用主模型。
+- Claude Code 选别名而不用 `modelRoles`：档模型与主模型同一地址同一密钥、按智能体配、页面上看得见，别名就是 Claude Code 自己的分档语义；`modelRoles` 是节点级的，可能指到别的档案、别的系列，Claude Code 说不通。
+
+### 11.4 契约与中枢
+
+- `runtime.configure` 加 `fields?: Record<string,string> | null`：整份替换，`null` 清空；不合格的整次拒收（`E_RUNTIME_MODEL`）。`runtime.status` 的 `configured` 加 `fields`：新节点总带（可以是空对象），没有这一项的是旧节点。
+- 中枢组件 `commands/consoleAgentModels.ts`（`ConsoleAgentModels`，接口 `AgentModelsPort`），开着模型服务与控制链路就有，不需要 `--magpie`：
+  - 来源：节点在用的档案、期望的档案、任务分工引用的档案；按底层的线路筛，qianmopi 收任何对话线路；每个来源列它的对话模型。
+  - 存放：`model` 以外的字段存在 `qianmoConfigPath('qianmo','console','agent-models.json')`（0600），整份经 `runtime.configure {agent, fields}` 下发；节点答的 `configured.fields` 与中枢记的不一致时（节点重装、文件丢了），读页面时后台重发，同一智能体十分钟至多一次。
+  - 旧节点：只发 `model`，其余字段记在中枢、页面标「节点未收到」，节点升级后读页面时补发。答不了 `runtime.status` 的节点显示「节点版本过旧」，不给写。
+  - 中枢开着 magpie、节点接在它自己的 magpie 档案上时：`model` 字段交给「网关」页的智能体区块（§4），空串即「自动」，手选的照旧存在 `magpie.json`，行为与以前一样；这份档案的候选是节点网关密钥能用的模型与路由组。qianmopi 在这样的节点上跟随节点主模型，不给选。
+- 接口：`GET /v0/magpie/agents/models`（view 及以上，读者看不到错误原文）；`POST /v0/magpie/agents/configure {node, agent, field, value}`（带 `field` 时走这条，不依赖 magpie；不带的仍是 §4 的 `{runtime, model}`）。写者与「网关」页相同：运维个人账号、非 break-glass、有租户时须是平台主体；每次记 `runtime.configure qianmo://<节点>/<智能体> <字段>`。
+- 片段 `GET /fragments/agents/models`：整块「智能体模型」，给要放它的页面轮询（view 及以上）。
+
+### 11.5 页面
+
+`view/agentModels.ts` 照 magpie 智能体页、按阡陌风格重画：
+
+- 一行一个智能体：名字（主智能体带「主」）· 底层 · 模型选择器（宽）· 推理强度（窄）· Claude Code 的「分档」按钮。opencode 的小模型放在强度那一格。
+- 模型选择器首项是「同主模型（X）」（分档、小模型）或「默认（X）」（主模型），然后按来源分组列模型；顶上的输入框「过滤或直接输入模型 id…」边打边筛，回车选中同名项，没有同名项就当作直接输入的模型号（不带来源时归到主模型的来源）；输入法组字中的回车不算。
+- 「分档」面板照 magpie 的顺序（opus、sonnet、haiku、fable）每档一行：模型或「同主模型（X）」，下面是这一档的推理强度；按钮上的摘要列出有自己设置的档（如「opus · haiku（低）」），都没有时是「同主模型」。
+- 强度的字：默认 · 关闭 · 最低 · 低 · 中 · 高 · 超高 · 最高。
+- 改了立即保存；失败时恢复原值，原因写在那一行下面。选择器或面板开着时这一块暂停轮询。读者只看到值。
+- 「网关」页智能体区块里，中枢有字段的智能体，模型一格换成这组控件；放进新模型页时用 `renderAgentModelsSection(model)` 或 `agentModelsMount(model)`，脚本 `AGENT_MODELS_JS`、样式 `AGENT_MODELS_CSS`。
+
+### 11.6 证据与未实测
+
+| 项 | 状态 |
+|---|---|
+| 字段表、强度收窄、跟随、各底层的参数与环境（含 `[1m]`、没设的档不写、钉住层空串） | 单元测试（`node/test/host/agentModelFields.test.ts`） |
+| 子会话的档记进会话、换进程后不变；P22 方向名读回三档；角色的模型与档位 | 假 Claude Code 子进程上的进程池测试与单元测试 |
+| 只认带签名后台标记的回合 | 未单测：改在 `host/resident.ts` 的回合入口，没有走常驻进程的整轮用例 |
+| 中枢存放、旧节点降级与补发、同一来源与 magpie 限制、写权限 | 单元测试（`node/test/commands/consoleAgentModels.test.ts`） |
+| 页面与接口 | 渲染与路由测试（`console/test/agentModels.test.ts`）；未在浏览器里点过 |
+| 真 Claude Code 对钉住层空串变量的处理（是否等同于没设） | 未实测 |
+| 各底层真进程按这些参数跑一轮 | 未实测 |
+| `qm runtime open` 的官方前端带上这些字段 | 未做：前端只带主模型与钉住层，强度、分档、小模型都没进它的参数与环境 |
+| 常驻进程按每回合路由选的模型与 qianmopi 智能体字段谁先 | 未核：`residentRouting` 每回合改路由时可能盖过智能体的 `model` |

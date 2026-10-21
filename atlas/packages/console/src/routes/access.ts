@@ -681,7 +681,7 @@ const ACCESS_PAGE_JS = `
     if (!field || !field.value) return;
     field.select();
     var done = function () { qc.toast('已复制', 'ok'); };
-    var manual = function () { qc.toast('复制没有成功 · 链接已选中 · 请手动复制', 'bad'); };
+    var manual = function () { qc.toast('复制没有成功 · 链接已选中 · 手动复制', 'bad'); };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(field.value).then(done, manual);
     } else {

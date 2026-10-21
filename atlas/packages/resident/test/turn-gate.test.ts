@@ -486,3 +486,209 @@ describe('re-entry along a verified call chain (P36.6)', () => {
     expect(gate.nestsNow(['task-a'])).toBe(false)
   })
 })
+
+describe('places: one turn per session, a bounded number at once (P38)', () => {
+  test('the background share is one fewer than all places, and a single place is shared', () => {
+    expect(new NodeTurnGate().limits).toEqual({
+      maxTurns: 1,
+      maxBackgroundTurns: 1,
+    })
+    expect(new NodeTurnGate({ maxTurns: 4 }).limits).toEqual({
+      maxTurns: 4,
+      maxBackgroundTurns: 3,
+    })
+    // Asked for more than leaves the foreground a place: clamped.
+    expect(
+      new NodeTurnGate({ maxTurns: 3, maxBackgroundTurns: 5 }).limits,
+    ).toEqual({ maxTurns: 3, maxBackgroundTurns: 2 })
+    expect(
+      new NodeTurnGate({ maxTurns: 3, maxBackgroundTurns: 1 }).limits,
+    ).toEqual({ maxTurns: 3, maxBackgroundTurns: 1 })
+    expect(
+      new NodeTurnGate({ maxTurns: 1, maxBackgroundTurns: 3 }).limits,
+    ).toEqual({ maxTurns: 1, maxBackgroundTurns: 1 })
+    expect(() => new NodeTurnGate({ maxTurns: 0 })).toThrow('positive integer')
+    expect(() => new NodeTurnGate({ maxBackgroundTurns: 1.5 })).toThrow(
+      'positive integer',
+    )
+  })
+
+  test('a person’s turn starts at once while background work fills its share', async () => {
+    const gate = new NodeTurnGate({ maxTurns: 3, maxBackgroundTurns: 2 })
+    const events: string[] = []
+    const bg = [1, 2, 3].map(n =>
+      held(gate, events, `bg-${n}`, {
+        background: true,
+        sessionId: `worker-${n}`,
+      }),
+    )
+    expect(bg.map(turn => turn.started)).toEqual([true, true, false])
+    expect(gate.backgroundRunning).toBe(2)
+    // The third background turn waits for the share, not for the place the
+    // foreground keeps.
+    const person = held(gate, events, 'person', { sessionId: 'main' })
+    expect(person.started).toBe(true)
+    expect(gate.running).toBe(3)
+    // Every place is taken now: another person waits for one.
+    const other = held(gate, events, 'other', { sessionId: 'channel-dm' })
+    expect(other.started).toBe(false)
+    person.release()
+    await person.done
+    // A freed place goes to the interactive turn, not the background one.
+    expect(other.started).toBe(true)
+    expect(bg[2]!.started).toBe(false)
+    bg[0]!.release()
+    await bg[0]!.done
+    expect(bg[2]!.started).toBe(true)
+    for (const turn of [other, bg[1]!, bg[2]!]) turn.release()
+    await Promise.all([other.done, bg[1]!.done, bg[2]!.done])
+    expect(gate.active).toBe(false)
+  })
+
+  test('two turns of one session never overlap; a busy session holds up nobody else', async () => {
+    const gate = new NodeTurnGate({ maxTurns: 4 })
+    const events: string[] = []
+    const first = held(gate, events, 'main-1', { sessionId: 'main' })
+    const second = held(gate, events, 'main-2', { sessionId: 'main' })
+    const elsewhere = held(gate, events, 'worker', {
+      sessionId: 'worker',
+      background: true,
+    })
+    const third = held(gate, events, 'main-3', { sessionId: 'main' })
+    expect([first.started, second.started, elsewhere.started]).toEqual([
+      true,
+      false,
+      true,
+    ])
+    expect(gate.sessionBusy('main')).toBe(true)
+    expect(gate.queued).toBe(2)
+    first.release()
+    await first.done
+    // In arrival order within the session.
+    expect(second.started).toBe(true)
+    expect(third.started).toBe(false)
+    second.release()
+    await second.done
+    expect(third.started).toBe(true)
+    third.release()
+    elsewhere.release()
+    await Promise.all([third.done, elsewhere.done])
+    expect(events.filter(event => event.startsWith('main'))).toEqual([
+      'main-1:start',
+      'main-1:end',
+      'main-2:start',
+      'main-2:end',
+      'main-3:start',
+      'main-3:end',
+    ])
+  })
+
+  test('with one place a background turn still takes it when nothing else waits, and never preempts', async () => {
+    const gate = new NodeTurnGate({ maxTurns: 1 })
+    const events: string[] = []
+    const bg = held(gate, events, 'bg', {
+      background: true,
+      sessionId: 'worker',
+    })
+    expect(bg.started).toBe(true)
+    const person = held(gate, events, 'person', { sessionId: 'main' })
+    expect(person.started).toBe(false)
+    bg.release()
+    await bg.done
+    expect(person.started).toBe(true)
+    person.release()
+    await person.done
+  })
+
+  test('an answer nests at once even when every place is taken, and takes none', async () => {
+    const gate = new NodeTurnGate({ maxTurns: 2 })
+    const events: string[] = []
+    const asker = held(gate, events, 'asker', {
+      key: 'task-a',
+      sessionId: 'main',
+    })
+    const busy = held(gate, events, 'busy', { sessionId: 'other' })
+    expect(gate.running).toBe(2)
+    const answer = held(gate, events, 'answer', {
+      key: 'task-b',
+      chain: ['task-a'],
+      sessionId: 'peer',
+    })
+    expect(answer.started).toBe(true)
+    expect(gate.running).toBe(2)
+    expect(gate.depth).toBe(3)
+    // A second question from the same asker waits for the first answer.
+    const again = held(gate, events, 'again', {
+      chain: ['task-a'],
+      sessionId: 'peer-2',
+    })
+    expect(again.started).toBe(false)
+    expect(gate.nestsNow(['task-a'])).toBe(false)
+    expect(gate.nestsNow(['task-a', 'task-b'])).toBe(true)
+    answer.release()
+    await answer.done
+    expect(again.started).toBe(true)
+    again.release()
+    await again.done
+    // The asker ends first while a later answer runs: the answer keeps the
+    // asker's place, so a newcomer still waits.
+    const late = held(gate, events, 'late', {
+      chain: ['task-a'],
+      sessionId: 'peer-3',
+    })
+    expect(late.started).toBe(true)
+    asker.release()
+    await asker.done
+    expect(gate.running).toBe(2)
+    const newcomer = held(gate, events, 'newcomer', { sessionId: 'new' })
+    expect(newcomer.started).toBe(false)
+    late.release()
+    await late.done
+    expect(newcomer.started).toBe(true)
+    newcomer.release()
+    busy.release()
+    await Promise.all([newcomer.done, busy.done])
+    expect(gate.active).toBe(false)
+  })
+
+  test('a nested answer for a busy session waits for it, as any turn of that session does', async () => {
+    const gate = new NodeTurnGate({ maxTurns: 3 })
+    const events: string[] = []
+    const asker = held(gate, events, 'asker', {
+      key: 'task-a',
+      sessionId: 'main',
+    })
+    const answer = held(gate, events, 'answer', {
+      chain: ['task-a'],
+      sessionId: 'main',
+    })
+    expect(answer.started).toBe(false)
+    asker.release()
+    await asker.done
+    expect(answer.started).toBe(true)
+    answer.release()
+    await answer.done
+  })
+
+  test('a turn whose deadline passed while it waited for a place is dropped when one frees up', async () => {
+    let clock = 1_700_000_000_000
+    const gate = new NodeTurnGate({ now: () => clock, maxTurns: 2 })
+    const events: string[] = []
+    const a = held(gate, events, 'a', { sessionId: 'a' })
+    const b = held(gate, events, 'b', { sessionId: 'b' })
+    const stale = gate.run(async () => events.push('stale'), {
+      sessionId: 'c',
+      deadlineAt: clock + 10,
+    })
+    const live = held(gate, events, 'live', { sessionId: 'd' })
+    clock += 11
+    a.release()
+    await a.done
+    await expect(stale).rejects.toBeInstanceOf(NodeTurnExpiredError)
+    expect(live.started).toBe(true)
+    live.release()
+    b.release()
+    await Promise.all([live.done, b.done])
+    expect(events).not.toContain('stale')
+  })
+})

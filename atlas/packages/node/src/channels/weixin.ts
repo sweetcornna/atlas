@@ -1,12 +1,15 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// 规则来源 NousResearch/hermes-agent `plugins/platforms/weixin/adapter.py:15`、`:56-78`、`:264-269`、`:394-518`、`:701-706`、`:716-737`、`:879-890`、`:965-975`、`:1205-1206`、`:1402-1407`，`gateway/platforms/helpers.py:548-570`，取于 `63220ae5`，取用日期 2026-10-19
 
 /**
  * WeChat through Tencent's iLink bot API (`ilinkai.weixin.qq.com`): the
  * owner scans a QR code to authorize a bot account, the hub long-polls
  * `getupdates`, and every reply echoes the peer's latest `context_token`
  * (WeChat refuses a reply without it). Typing uses the ticket `getconfig`
- * hands out. No reverse-engineered protocol and no client hooks.
+ * hands out. No reverse-engineered protocol and no client hooks. Groups,
+ * content dedup, Markdown and how a reply is cut follow hermes
+ * (`rules/weixin.ts`).
  */
 
 import { randomBytes, randomUUID } from 'node:crypto'
@@ -20,7 +23,17 @@ import {
   sendFailure,
   text,
 } from './net.js'
-import { plainText } from './text.js'
+import {
+  ContentDedup,
+  contentKey,
+  formatForWeixin,
+  splitForWeixin,
+  staleSession,
+  WEIXIN_MAX_MESSAGE_LENGTH,
+  WEIXIN_RATE_CIRCUIT_MS,
+  WEIXIN_TEXT_BATCH,
+  weixinChat,
+} from './rules/weixin.js'
 import type {
   ChannelAdapter,
   ChannelChat,
@@ -169,11 +182,12 @@ function quoteOf(items: readonly Record<string, unknown>[]): string {
 
 export class WeixinAdapter implements ChannelAdapter {
   readonly platform = 'weixin' as const
-  readonly chunkLimit = 1_800
+  readonly chunkLimit = WEIXIN_MAX_MESSAGE_LENGTH
   /** hermes `_SPLIT_THRESHOLD` for WeChat. */
   readonly inboundSplitAt = 1_800
   /** hermes waits 1.5 s between chunks to one peer. */
   readonly sendGapMs = 1_500
+  readonly textBatch = WEIXIN_TEXT_BATCH
   readonly #io: ChannelIo
   readonly #settings: WeixinSettings
   readonly #base: string
@@ -181,6 +195,9 @@ export class WeixinAdapter implements ChannelAdapter {
   readonly #contexts: Map<string, string>
   readonly #tickets = new Map<string, { ticket: string; at: number }>()
   readonly #typing: Debounce
+  readonly #dedup: ContentDedup
+  /** Sends are held until then after iLink's "too frequent" (hermes rate circuit). */
+  #circuitUntil = 0
   #cursor: string
 
   constructor(settings: WeixinSettings, io: ChannelIo) {
@@ -191,6 +208,7 @@ export class WeixinAdapter implements ChannelAdapter {
     this.#contexts = new Map(Object.entries(settings.contextTokens ?? {}))
     this.#cursor = settings.cursor ?? ''
     this.#typing = new Debounce(5_000, io.now)
+    this.#dedup = new ContentDedup(io.now)
   }
 
   health(): ChannelHealth {
@@ -300,15 +318,18 @@ export class WeixinAdapter implements ChannelAdapter {
       else if (type === ITEM_VIDEO)
         attachments.push({ name: '视频', kind: 'video' })
     }
-    if (body.trim() === '' && attachments.length === 0) return null
-    const room = text(message.room_id) || text(message.chat_room_id)
+    const said = body.trim()
+    if (said === '' && attachments.length === 0) return null
+    // iLink re-sends the same words under new ids (hermes content dedup).
+    const fingerprint = said === '' ? '' : contentKey(from, said)
+    if (fingerprint !== '' && this.#dedup.duplicate(fingerprint)) return null
     const quoted = quoteOf(items)
     return {
-      chat: room ? { type: 'group', id: room } : { type: 'dm', id: from },
-      messageId: text(message.message_id) || randomUUID(),
+      chat: weixinChat(message, this.#settings.accountId),
+      messageId: text(message.message_id) || fingerprint || randomUUID(),
       userId: from,
       userName: from,
-      text: body.trim(),
+      text: said,
       addressed: true,
       ...(quoted ? { quote: { text: quoted, own: false } } : {}),
       ...(attachments.length === 0 ? {} : { attachments }),
@@ -329,14 +350,23 @@ export class WeixinAdapter implements ChannelAdapter {
     }
   }
 
+  /** hermes `_split_text(format_message(…))`: the messages a reply becomes. */
+  chunks(markdown: string): string[] {
+    return splitForWeixin(formatForWeixin(markdown)).filter(
+      chunk => chunk.trim() !== '',
+    )
+  }
+
   /**
-   * An expired session with a context token is first taken as a stale token
-   * and the words resent without it (hermes); "too frequent" goes back to
-   * the gateway with a 30 s wait.
+   * One message, as {@link chunks} cut it. An expired session with a
+   * context token is first taken as a stale token and the words resent
+   * without it (hermes); "too frequent" holds every send for 30 s and goes
+   * back to the gateway with the wait.
    */
-  async send(chat: ChannelChat, markdown: string): Promise<ChannelSendResult> {
+  async send(chat: ChannelChat, words: string): Promise<ChannelSendResult> {
+    const held = this.#circuitUntil - this.#io.now()
+    if (held > 0) return { ok: false, error: '微信限流', retryAfterMs: held }
     const context = this.#contexts.get(chat.id)
-    const words = plainText(markdown)
     try {
       let reply = await this.#post(
         'sendmessage',
@@ -345,7 +375,10 @@ export class WeixinAdapter implements ChannelAdapter {
         undefined,
         context !== undefined,
       )
-      if (reply.code === SESSION_EXPIRED) {
+      const stale = (code: number) =>
+        code === SESSION_EXPIRED ||
+        staleSession(code, text(reply.body.errmsg) || text(reply.body.msg))
+      if (context !== undefined && stale(reply.code)) {
         this.#contexts.delete(chat.id)
         this.#persist()
         reply = await this.#post(
@@ -353,8 +386,21 @@ export class WeixinAdapter implements ChannelAdapter {
           this.#message(chat, words, undefined),
         )
       }
-      if (reply.code === RATE_LIMITED)
-        return { ok: false, error: '微信限流', retryAfterMs: 30_000 }
+      if (
+        staleSession(
+          reply.code,
+          text(reply.body.errmsg) || text(reply.body.msg),
+        )
+      )
+        return { ok: false, error: '微信会话还没就绪，请对方先发一条消息' }
+      if (reply.code === RATE_LIMITED) {
+        this.#circuitUntil = this.#io.now() + WEIXIN_RATE_CIRCUIT_MS
+        return {
+          ok: false,
+          error: '微信限流',
+          retryAfterMs: WEIXIN_RATE_CIRCUIT_MS,
+        }
+      }
       if (reply.status !== 200 || reply.code !== 0)
         return {
           ok: false,

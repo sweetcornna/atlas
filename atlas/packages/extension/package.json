@@ -11,7 +11,8 @@
     ".": "./src/index.ts",
     "./policy": "./src/policy.ts",
     "./desktopPolicy": "./src/desktopPolicy.ts",
-    "./desktopExec": "./src/desktopExec.ts"
+    "./desktopExec": "./src/desktopExec.ts",
+    "./elevationPolicy": "./src/elevationPolicy.ts"
   },
   "files": [
     "src"

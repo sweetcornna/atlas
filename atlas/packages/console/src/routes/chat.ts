@@ -112,7 +112,7 @@ function chatUnsupported(): Response {
   return fail(
     501,
     'unsupported',
-    '该控制台没有配置聊天通道；请在启动 qm console 时给 --chat-url 与传输层 PSK 后重试。',
+    '该控制台没有配置聊天通道 · 启动 qm console 时给 --chat-url 与传输层 PSK',
   )
 }
 
@@ -355,7 +355,7 @@ function parseChatText(body: Record<string, unknown>): Parsed<string> {
   if (PRIVATE_KEY_BLOCK.test(text.value)) {
     return {
       ok: false,
-      message: '消息里有私钥 · 没有发出 · 部署新服务器请用「添加服务器」',
+      message: '消息里有私钥 · 没有发出 · 部署新服务器用「添加服务器」',
     }
   }
   return text

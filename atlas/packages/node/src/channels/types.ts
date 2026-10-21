@@ -58,11 +58,56 @@ export interface ChannelInbound {
    */
   readonly addressed: boolean
   readonly quote?: ChannelQuote
+  /** Who else the message names, where the platform says (group rules, `rules/`). */
+  readonly mention?: ChannelMention
   /** Attachments the platform reported; the first version describes them only. */
   readonly attachments?: readonly {
     readonly name: string
     readonly kind: string
   }[]
+}
+
+/**
+ * Mentions of others, for the platform's group rules: hermes drops a
+ * message that names other bots and not this one (Telegram
+ * `exclusive_bot_mentions`, Discord admission), and one that names other
+ * people and not the bot (Discord `ignore_no_mention`).
+ */
+export interface ChannelMention {
+  /** It explicitly names another bot and not this one. */
+  readonly otherBots?: boolean
+  /** It names someone, but not the bot. */
+  readonly othersOnly?: boolean
+}
+
+/** How a group's own rules see a message (`gate.ts`). */
+export interface GroupPolicy {
+  /** `mention`: when addressed (or by the rules below); `all`: every message. */
+  readonly trigger: 'mention' | 'all'
+  /** Rooms answered without a mention (hermes `free_response_*`). */
+  readonly freeGroups: readonly string[]
+  /** Words that wake the bot without a mention (grantley group keywords, hermes `mention_patterns`). */
+  readonly keywords: readonly string[]
+  /** The message is in a thread the bot takes part in. */
+  readonly followed: boolean
+}
+
+/**
+ * `explicit`: the bot was named (a mention, a reply to it); `implicit`: the
+ * room's rules let the message in without that; null: it is not for the bot.
+ * Only implicit replies wait out a group's cooldown (grantley).
+ */
+export type GroupVerdict = 'explicit' | 'implicit' | null
+
+/**
+ * hermes text batching (`base.py` `_enqueue_text_event`): a quiet wait
+ * before a turn, longer after a piece as long as the client's own split.
+ */
+export interface ChannelTextBatch {
+  readonly quietMs: number
+  readonly splitMs: number
+  /** Shorter waits for short batches: `[up to characters, ms]` (Telegram). */
+  readonly fast?: readonly (readonly [number, number])[]
 }
 
 export interface ChannelSendOptions {
@@ -103,8 +148,6 @@ export interface ChannelAdapter {
    * room for escaping.
    */
   readonly chunkLimit: number
-  /** Replies longer than this go to {@link sendLong} first (default: {@link chunkLimit}). */
-  readonly longReplyAt?: number
   /**
    * The platform's client splits a long paste into messages of about this
    * length: an inbound text this long waits briefly for its continuation
@@ -120,6 +163,26 @@ export interface ChannelAdapter {
    * messages there need no @ (hermes thread participation, Slack).
    */
   readonly followsThreads?: boolean
+  /** The platform's text batching; none waits only for split pieces. */
+  readonly textBatch?: ChannelTextBatch
+  /** The platform's group rules (`rules/`); the default is `gate.ts`. */
+  readonly groupGate?: (
+    inbound: ChannelInbound,
+    policy: GroupPolicy,
+  ) => GroupVerdict
+  /**
+   * A group member whose question is pending or running is still heard
+   * without a mention (grantley `has_sender_work`, personal QQ).
+   */
+  readonly continuesSenders?: boolean
+  /**
+   * `owner-private`: commands run only in the owner's private chat; in a
+   * group, or from anyone else, a leading slash is ordinary text (grantley
+   * 主窗口). The default runs the owner's commands anywhere.
+   */
+  readonly commandScope?: 'owner-private'
+  /** How a reply is cut into messages (hermes per-platform `_split_text`); default `splitMessage`. */
+  chunks?(markdown: string): string[]
   start(sink: (message: ChannelInbound) => void): Promise<void>
   stop(): Promise<void>
   /** Sends one chunk of agent markdown, rendered the platform's own way. */
@@ -129,16 +192,16 @@ export interface ChannelAdapter {
     options?: ChannelSendOptions,
   ): Promise<ChannelSendResult>
   /**
-   * A reply longer than {@link chunkLimit} the platform can carry whole in
-   * its own way (a QQ merged-forward card; hermes `splits_long_messages`).
-   * Null declines; null and a failure both make the gateway send chunks, so
-   * an adapter that cannot tell whether the platform took it answers ok.
+   * A whole reply, shaped the platform's own way (grantley `send`: bubbles,
+   * a merged-forward card, the quote on the first message only). When
+   * present the gateway hands every reply here instead of chunking it; a
+   * failure is retryable only while nothing reached the chat.
    */
-  sendLong?(
+  sendReply?(
     chat: ChannelChat,
     markdown: string,
     options?: ChannelSendOptions,
-  ): Promise<ChannelSendResult | null>
+  ): Promise<ChannelSendResult>
   /**
    * The platform's native "typing" indicator. The gateway calls it every few
    * seconds while a turn runs; the adapter debounces to the platform's own

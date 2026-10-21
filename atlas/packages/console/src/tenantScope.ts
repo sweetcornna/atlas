@@ -1,7 +1,12 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { MemoryPort, DesktopPort, AgentRef } from './directionPorts.js'
+import type {
+  MemoryPort,
+  DesktopPort,
+  ElevationPort,
+  AgentRef,
+} from './directionPorts.js'
 import { scopedFiles } from './filesScope.js'
 import { scopedSchedules } from './schedulesScope.js'
 import { agentRefOf } from './routes/directionShared.js'
@@ -130,6 +135,47 @@ export function scopedConsoleDeps(
           }),
     }
   }
+  // High-permission mode (P39): the same scope as the agent's card, rechecked
+  // just before dispatch and after the node answers.
+  const guardedElevation = (
+    elevation: ElevationPort,
+    allowed: (ref: AgentRef) => boolean,
+  ): ElevationPort => {
+    const assert = (ref: AgentRef) => {
+      if (!allowed(ref)) throw new Error('E_AUTH_REVOKED: 资源不存在')
+    }
+    return {
+      async list() {
+        return filtered(await elevation.list(), allowed)
+      },
+      async actions(ref, limit) {
+        if (ref && !allowed(ref)) return hidden()
+        return filtered(await elevation.actions(ref, limit), allowed)
+      },
+      async set(ref, change, actor) {
+        if (!allowed(ref)) return hidden()
+        const r = await elevation.set(ref, change, {
+          ...actor,
+          beforeDispatch: () => {
+            assert(ref)
+            actor.beforeDispatch?.()
+          },
+        })
+        return allowed(ref) ? r : hidden()
+      },
+      async revoke(ref, actor) {
+        if (!allowed(ref)) return hidden()
+        const r = await elevation.revoke(ref, {
+          ...actor,
+          beforeDispatch: () => {
+            assert(ref)
+            actor.beforeDispatch?.()
+          },
+        })
+        return allowed(ref) ? r : hidden()
+      },
+    }
+  }
   // Platform membership can be withdrawn while the wake timer/handshake waits.
   // Preserve its broad scope only for the exact policy revision that granted it.
   if (scope.platform) {
@@ -154,6 +200,9 @@ export function scopedConsoleDeps(
           : { memory: scopedMemory(deps.memory, () => current()) }),
         ...(deps.desktop
           ? { desktop: guardedDesktop(deps.desktop, () => current()) }
+          : {}),
+        ...(deps.elevation
+          ? { elevation: guardedElevation(deps.elevation, () => current()) }
           : {}),
         ...(deps.wake === undefined ? {} : { wake: guarded(deps.wake) }),
         ...(deps.schedules === undefined
@@ -320,6 +369,15 @@ export function scopedConsoleDeps(
       ? {
           desktop: guardedDesktop(
             deps.desktop,
+            ref =>
+              node(ref.node) && address(`qianmo://${ref.node}/${ref.agent}`),
+          ),
+        }
+      : {}),
+    ...(deps.elevation
+      ? {
+          elevation: guardedElevation(
+            deps.elevation,
             ref =>
               node(ref.node) && address(`qianmo://${ref.node}/${ref.agent}`),
           ),
@@ -873,6 +931,16 @@ export async function tenantRequestDenial(
           return fail(404, 'not_found', '资源不存在')
       }
     }
+  }
+  if (head === 'elevation' && pieces[0] === 'v0') {
+    const target =
+      pieces[2] === 'actions'
+        ? url.searchParams.get('agent')
+        : pieces[2] && pieces[3]
+          ? `qianmo://${pieces[2]}/${pieces[3]}`
+          : null
+    if (target && !scope.address(target))
+      return fail(404, 'not_found', '资源不存在')
   }
   if (head === 'desktop' && pieces[0] === 'v0') {
     const target =

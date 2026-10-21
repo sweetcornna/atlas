@@ -9,6 +9,7 @@ import {
   DIRECTION_ROLES,
   MODEL_DIRECTIONS,
   LANE_KINDS,
+  ompThinkingLevel,
   routingProblem,
   type ModelRouting,
   checkModelEffort,
@@ -418,12 +419,18 @@ export function compileRoutingProfiles(
     if (ref) {
       const source = sources.get(ref.profileId)!
       const model = source.models.find(m => m.id === ref.modelId)!
-      const roleLevel = thinkingLevel(model, profileThinkingLock(source))
+      // A tier's own effort (P38) rides on the role, as omp reads a role
+      // value `<provider>/<model>:<level>`; routingProblem checked it fits.
+      const roleLevel =
+        ref.effort === undefined
+          ? thinkingLevel(model, profileThinkingLock(source))
+          : ompThinkingLevel(ref.effort)
       selector = `${ids.get(ref.profileId)}/${model.id}:${roleLevel}`
     } else if (
       LANE_KINDS[profile.lane] === 'chat' &&
       !['image', 'speech', 'video'].includes(direction)
     )
+      // An unset tier follows the main model.
       selector = mainSelector
     if (selector)
       for (const role of DIRECTION_ROLES[direction]) roles[role] = selector

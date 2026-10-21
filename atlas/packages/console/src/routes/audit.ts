@@ -620,7 +620,7 @@ async function auditPage(ctx: RouteContext): Promise<PageRender> {
     title: '消息链',
     body:
       `<section class="sec" id="trail-section">` +
-      `<div class="rowx gap-2"><span class="muted">导出当前筛选（每条链最多 500 条）</span>` +
+      `<div class="rowx gap-2"><span class="muted">导出当前筛选 · 每条链最多 500 条</span>` +
       ['ndjson', 'csv']
         .map(format => {
           const params = new URLSearchParams(ctx.url.searchParams)

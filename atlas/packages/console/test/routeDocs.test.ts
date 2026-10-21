@@ -42,6 +42,7 @@ import {
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
+import { FakeElevation } from './elevationFake.js'
 import { FakeBilling } from './billingFake.js'
 import { PageAudit, PageRegistry, TRACE } from './pageHarness.js'
 import { heavy } from './heavy.js'
@@ -167,6 +168,7 @@ async function wired(): Promise<{
       billing: new FakeBilling(undefined, true),
       handoffDevices: new FakeHandoffDevices(() => 1_700_000_000_000),
       desktop: new FakeDesktop(() => 1_700_000_000_000),
+      elevation: new FakeElevation(() => 1_700_000_000_000),
       files: new FakeFiles(() => 1_700_000_000_000),
       nodeServers: [{ node: 'tokyo-1', server: 'p11' }],
     },

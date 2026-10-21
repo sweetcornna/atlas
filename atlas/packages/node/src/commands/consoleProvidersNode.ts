@@ -267,6 +267,7 @@ export function parseNodeState(
       replayFilter: caps.replayFilter === true,
       multiKey: caps.multiKey === true,
       laneAddresses: caps.laneAddresses === true,
+      tierRouting: caps.tierRouting === true,
     },
     lastResult,
     ...(keys === undefined ? {} : { keys }),

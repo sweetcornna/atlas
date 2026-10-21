@@ -636,6 +636,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/admin/audit?…`、`/admin/audit/trace/<traceId>` | view | 消息链：最新 50 条、新的在上，表尾「加载更早」；查询参数同 `/v0/audit`，另有 `node=`（多链时收窄到一条，翻页要它）（§5.6）。单条消息链一页，轨迹里没有就是 404 页 |
 | GET | `/admin/servers` | view | 服务器归属与备注（§11） |
 | GET | `/admin/settings` | view | 设置与关于：实例标签、控制台身份、命令名；启动横幅里的构建（`sourceCommit`）、注册中心、审计链来源、唤醒与对话及其签名状态；各端口此刻是否可达；数据路径只给能写的人；以及协议与运行时上限（A4） |
+| GET | `/admin/setup` | **admin** | 初始化配置：一台新控制台还差哪几步才能对话。必需四步按依赖排（运维账号 → 接入模型 → 服务器与节点 → 主智能体），任务模型是建议项，渠道、云端电脑、邀请成员是可选项；每一步的状态当场从端口读，不另存进度。账号邀请、模型接入走各自已有的接口；还有能在页面上做的必需项时，侧栏把它挪到主区第一项并带数字。查看令牌与成员 404 |
 | GET | `/admin/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
 | GET | `/admin/jobs` | view | 主动执行：定时任务、最近运行、通知渠道（P24，`docs/dev/directions-2026-10.md` §7），其下是原来的值守作业：上次与下次触发、急停、调度器心跳（§10.4）；以及后台任务（P29）：主人自己的（ops 看全部）、阶段（含排队中；已安排的写「已安排 · 下次 HH:MM」，到点但会话已有 8 个在途时写「已安排 · 等名额」、不再写已过去的时间，重复任务带「剩 N 次」，排在进行中之后）、轮数、最近汇报与中断、子任务会话，未结束的（含已安排的）可以取消 |
 | GET | `/v0/connectors` | view | 连接、预设、最近调用与可授权智能体；只显示主机和打码账号，不显示凭据或 ICS URL。租户范围内过滤；未接端口时 501 |
@@ -664,7 +665,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST、DELETE | `/v0/magpie/keys/<绑定>` | **个人 ops** | POST `{ enabled?, limits?, models?, mainModel?, fastModel?, resetLimit? }` 修改，记 `magpie.key.update`；DELETE 先把节点换回原来的指派再删密钥与档案（档案仍有人用时保留，答 `profileKept`），记 `magpie.key.remove` |
 | POST | `/v0/magpie/keys/<绑定>/rotate` | **个人 ops** | magpie 生成新值，中枢写进档案再下发；id、限额与用量不变。记 `magpie.key.rotate` |
 | GET | `/v0/magpie/agents` | view | 「智能体」区块（P36.5）：`autoJoin`、`connected`、底层目录（id、名称、默认系列、是否内置）、每台控制链路上的节点——`state`（`ok` / `old` 答不了 `runtime.status` 的旧节点 / `unreachable`）、模型指派（`bound` 在本节点 magpie 档案上 / `inherit` / `profile` / `unmanaged` / `absent`）、租户、目录逐项的安装状态、逐个智能体的配置与实际底层、模型、选择（自动或手选）、自动会选的模型与是否系列外、退回原因、中枢最近一次下发，以及这把网关密钥能用的模型（带系列）与路由组。不能写的人拿不到任何失败原文（`message`、`error` 为 null），状态码照给。没接控制链路时 501 |
-| POST | `/v0/magpie/agents/{configure,install,remove,autojoin,join}` | **个人 ops** | `configure` `{ node, agent, runtime?, model? }`（`model` 是 magpie 模型号或 `auto`，至少给一样）经 `runtime.configure` 下发，改底层时同一次带上新底层的系列模型，记 `runtime.configure`（target 是智能体地址）；`install` / `remove` `{ node, runtime }` 发 `runtime.install` / `runtime.remove`，等几秒没有答复就答 `state: running`、页面跟着 `runtime.versions` 看进度，记 `runtime.install` / `runtime.remove`（target `<节点>/<底层>`）；`autojoin` `{ on }` 开关新节点自动接入，记 `magpie.autojoin`；`join` `{ node }` 走「为节点签发」同一条签发链接入 magpie，记 `magpie.key.issue`。写到旧节点答 501（`unsupported`）、节点连不上答 503、节点拒绝（如还有智能体配在要卸载的底层上）答 403（`refused`，带节点原话）；拒绝共用令牌与 break-glass，有租户时只收平台主体 |
+| GET | `/v0/magpie/agents/models` | view | 智能体模型（`harness-backends.md` §11，**不依赖 magpie**，有模型服务与控制链路就接）：每台控制链路上的节点——`state`（`ok` / `old` / `unreachable`）、`fields`（节点认不认 `runtime.configure` 的 `fields`，旧节点只收模型）、逐个智能体的底层与它的原生字段（`model`、`effort`，Claude Code 的 `fable` `opus` `sonnet` `haiku` 与 `<档>_effort`，opencode 的 `small`）：当前值（空串是跟随或默认）、留空时实际用的模型、按底层与模型收窄后的强度、能不能改及原因、是否中枢记着而节点未收到；模型候选按来源（下发到这台节点的模型档案，magpie 密钥是其中 `presetId: magpie` 的一份；节点接在 magpie 上时那份是这把密钥能用的模型与路由组）分组。不能写的人拿不到失败原文。没接时 501 |
+| POST | `/v0/magpie/agents/{configure,install,remove,autojoin,join}` | **个人 ops** | `configure` 带 `field` 时是改一个原生字段（§11，照 magpie `POST /api/set`）：`{ node, agent, field, value }`，`value` 是 `<来源>/<模型号>`、强度（`none` `minimal` `low` `medium` `high` `xhigh` `max`）或空串（跟随、默认），不依赖 magpie；模型以外的字段整份经 `runtime.configure {fields}` 下发并记在 `qianmoConfigPath('qianmo','console','agent-models.json')`，旧节点只收模型、其余记在中枢等它升级；分档与小模型只收主模型同一来源的，档位强度只在 magpie 档案上收；节点接在 magpie 上时 `model` 交给本区块原来的选择（空串即自动）；记 `runtime.configure`（target 是 `<智能体地址> <字段>`）。不带 `field` 时 `configure` `{ node, agent, runtime?, model? }`（`model` 是 magpie 模型号或 `auto`，至少给一样）经 `runtime.configure` 下发，改底层时同一次带上新底层的系列模型，记 `runtime.configure`（target 是智能体地址）；`install` / `remove` `{ node, runtime }` 发 `runtime.install` / `runtime.remove`，等几秒没有答复就答 `state: running`、页面跟着 `runtime.versions` 看进度，记 `runtime.install` / `runtime.remove`（target `<节点>/<底层>`）；`autojoin` `{ on }` 开关新节点自动接入，记 `magpie.autojoin`；`join` `{ node }` 走「为节点签发」同一条签发链接入 magpie，记 `magpie.key.issue`。写到旧节点答 501（`unsupported`）、节点连不上答 503、节点拒绝（如还有智能体配在要卸载的底层上）答 403（`refused`，带节点原话）；拒绝共用令牌与 break-glass，有租户时只收平台主体 |
 | GET | `/v0/magpie/agents/<节点>/<智能体>/extensions` | view | 一个智能体的原生扩展（P36.7）：`state`（`unread` / `ok` / `failed`）、`fresh`、底层、逐项（`kind` 为 `plugin` / `mcp` / `skill`、名字、版本、是否启用、来源、`notLoaded` 常驻运行时不加载的原因）、钉住层的说明、在节点上打开该底层官方前端的命令，以及进行中或失败的装卸。中枢缓存一分钟，过期才经 `runtime.ext.list` 问节点。不能写的人拿不到失败原文（`error`、`job.message` 为 null）。旧节点 501，节点上没有这个智能体 404 |
 | POST | `/v0/magpie/agents/<节点>/<智能体>/extensions/{install,remove}` | **个人 ops** | `install` `{ kind, source }`（插件：GitHub `owner/repo[#ref]` 或 `https://github.com/owner/repo`、npm `[@scope/]name[@x.y.z]`、`名字@市场`；技能只收 GitHub），或 `{ kind: "mcp", name, command, args? }` / `{ kind: "mcp", name, url }`（https，不带账号口令与查询参数；名字不以 `qm-` 开头、不是 `qianmo`）；别的主机、带凭据的地址、`..`、以 `-` 开头的一律 400，且不记账。经 `runtime.ext.install` 由该底层自己的命令安装，等几秒没有答复就答 `state: running`、页面跟着区块刷新，记 `runtime.ext.install`；`remove` `{ kind, name }` 经 `runtime.ext.remove`，记 `runtime.ext.remove`。target 是 `<节点>/<智能体> <种类>:<名字或来源>`，从不带参数与地址。官方前端开着答 403「该智能体的官方前端正开着」，底层不支持这类扩展答 501；拒绝共用令牌与 break-glass，有租户时只收平台主体 |
 | GET | `/plans` | 公开，公开版 | 套餐页（§4.3）：每个套餐的价格、周期、含几台托管节点与说明，一句「模型接入订阅者自有的 API 密钥」；已登录的给「我的订阅」，没登录的给登录与注册。页脚是源代码链接。没开 `--billing` 时 404 |
@@ -699,12 +701,13 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/tasks` | view | 后台任务（P29，`docs/dev/runtimes-channels.md` §3）：`{ tasks }`，每条有标题、发起人、执行的智能体、状态与阶段（含排队中、已安排；到点但会话已有 8 个在途时为「已安排 · 等名额」）、轮数、最近汇报、最近中断、子任务会话，以及 `nextAt`（已安排的下次开始，epoch 毫秒；其他状态含已结束为 null）、`everyMinutes`（重复间隔，不重复为 null）、`runsLeft`（重复任务还没开始的次数；不重复或已结束为 null）。主人只看自己的，ops 和旧令牌看全部；开了租户时受限的调用方拿不到（端口还没有租户包装）。没接端口时 501 |
 | POST | `/v0/tasks/<任务 id>/cancel` | **成员** | 取消一个未结束的后台任务，和对话里的取消同一条路：任务停下，节点停掉在跑的那一轮。只有发起人或 ops；越权与不存在同为 404，已结束 400。记 `task.cancel` |
 | GET | `/admin/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 记忆（P23，`docs/dev/directions-2026-10.md`）：这个人在某个智能体那里的长期记忆，按偏好、计划、项目、日常分类，能找、改、忘记。长期记忆按「智能体 × 账号」分开（复核 D18），只给读者自己的，所以只读令牌没有这一页（403）；没接记忆端口时侧栏不出现、页面 404 |
-| GET | `/admin/desktop` | view | 云端电脑（P21）：每个节点主智能体的专属浏览器与电脑——开关、确认方式（只看自动其余逐次确认 / 每一步都确认）、运行状态、清空回收，与最近的操作（只记类别与主机名）。浏览与操作能力来自基座，阡陌管分配、授权与回收。没接端口时侧栏不出现、页面 404 |
+| GET | `/admin/desktop` | view | 云端电脑（P21）：每个节点主智能体的专属浏览器与电脑——开关、确认方式（每一步都确认 / 动手前确认 / 只确认有后果的操作）、运行状态、最近的画面、清空回收，与最近的操作（只记类别与主机名）。卡片的主按钮在什么都没开时是「打开浏览器」，开着时是「查看画面」（最近一张截图，写明截于何时、不是实时画面）；节点没有电脑时开关照画但禁用，写出节点给的原因。浏览与操作能力来自基座，阡陌管分配、授权与回收。没接端口时侧栏不出现、页面 404 |
+| GET | `/admin/elevation` | view | 权限模式（P39，`docs/dev/elevation.md`）：每个智能体的四种模式（人工确认 / 自动接受编辑 / 自动审批 / 跳过权限确认）、到期与次数、命令沙箱是否可用、收回与全部收回，与最近的高权限调用（只记工具、类别、目标与摘要）。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/files` | view | 文件互通（P20，管理组）：等人批准的取文件申请（可放宽到目录、选有效期）、传输与汇集（状态、目标摘要核对、失败可重试）、授权（有效期内可再取、可撤销）。发起传输时每个来源可以经 `/v0/files/browse` 浏览来源工作区。路径都是工作区内的相对路径，文件内容不上页面。没接端口时侧栏不出现、页面 404 |
-| GET | `/admin/connect` | view | 连接：应用连接（P25，邮箱与日历；凭据只在中枢，页面只给主机名、打码的账号与「已设置」）与本机工具（P19，配对的设备与接力插件）。两边都没接时侧栏不出现、页面 404；接了一边时另一边写「未接入」 |
+| GET | `/admin/connect` | view | 应用连接（管理组）：应用连接（P25，邮箱与日历；凭据只在中枢，页面只给主机名、打码的账号与「已设置」）与本机工具（P19，配对的设备与接力插件）。两边都没接时侧栏不出现、页面 404；接了一边时另一边写「未接入」 |
 | GET | `/admin/im` | view | 渠道（P28）：QQ、个人 QQ、微信、Telegram、Discord、Slack 接到哪个智能体、在线状态与会话数；运维能添加、编辑、停用、删除，微信扫码接入，处理配对请求（设为主人、设为成员、拒绝）。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/extensions` | view | 扩展（P32，主组）：连接器、技能、插件三个分区，每条显示适用的智能体与在各节点是否生效；运维能添加、编辑、停用、删除。没接端口时侧栏不出现、页面 404 |
-| GET | `/admin/magpie` | view | 网关（P34，主组）：连接、上游、路由组、网关密钥、智能体（P36.5，每个智能体带「原生扩展」面板，P36.7）、用量六块；平台运维能连接、添加上游、编排路由组、为节点签发与轮换收回密钥、给智能体选底层与模型、在节点上装卸底层、开关新节点自动接入、给智能体装卸原生扩展。没接端口时侧栏不出现、页面 404 |
+| GET | `/admin/magpie` | view | 308 到 `/admin/providers#magpie`（P38 起网关并进「模型」页，侧栏不再单列）。下面这些块现在画在「模型」页上：网关（P34，主组）：连接、上游、路由组、网关密钥、智能体（P36.5，每个智能体带「原生扩展」面板，P36.7）、用量六块；平台运维能连接、添加上游、编排路由组、为节点签发与轮换收回密钥、给智能体选底层与模型、在节点上装卸底层、开关新节点自动接入、给智能体装卸原生扩展。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/billing` | 平台读者 | 订阅（P35，管理组）：订阅、订单、兑换码、账本四块，有待退款的订单时最上面多一块「待退款」；平台运维能手动开通或延期、登记退款、生成兑换码。只在公开版接入，没接时侧栏不出现、页面 404 |
 | GET | `/admin/updates` | view | 更新（P31，管理组）：各来源的版本、状态与检查记录，阡陌一行列出中枢与各节点的版本；运维能改检查时间、各来源动作、通知渠道与阡陌仓库，能立即检查，能把阡陌逐台升级到新版或回滚。没接端口时侧栏不出现、页面 404 |
 | GET | `/v0/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 同一份列表的 JSON：`{ agent, entries, total, counts }`。没接记忆端口时 501 |
@@ -719,15 +722,20 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/desktop/<节点>/<智能体>/screen` | view | 最近一张截图 `DesktopScreenView`（`{at, mimeType, data}`，data 为 base64）或 `null`；按租户过滤；经控制操作 `desktop.view`，节点不支持时 501 |
 | PUT | `/v0/desktop/<节点>/<智能体>` | **ops** | `{ browser?, computer?, confirm?, apps?, terminal? }`：confirm 为 sensitive/always/autonomous，apps 为 all/none/编号列表（至多 50），先 admit，再经签名控制链路，记 `desktop.set` |
 | POST | `/v0/desktop/<节点>/<智能体>/recycle` | **ops** | 停止并删除该智能体资料；先 admit，记 `desktop.recycle` |
+| GET | `/v0/elevation` | view | `ElevationNodeView[]`：模式、代次、到期、次数、沙箱与不生效原因；按租户过滤 |
+| GET | `/v0/elevation/actions?agent=<地址>&limit=50` | view | `ElevationActionView[]`，agent 可省，limit 1–200，按租户过滤；不含命令与网页内容 |
+| PUT | `/v0/elevation/<节点>/<智能体>` | **ops** | `{ tier, ttlMs?, maxCalls? }`：tier 为 off/accept-edits/auto/full-access，ttlMs 5 分钟–24 小时，maxCalls 1–2000；开启或改档还要 30 分钟内验证过的个人 ops 凭据（旧式令牌与应急身份 403），`off` 不设此门槛；先 admit，再经签名控制链路，记 `elevation.enable` / `elevation.disable` |
+| POST | `/v0/elevation/<节点>/<智能体>/revoke` | **ops** | 立即收回：回到人工确认、代次 +1、作废待批审批、中止在途回合；先 admit，记 `elevation.revoke` |
+| POST | `/v0/elevation/revoke-all` | **ops** | 对本租户可见、已放权的每个智能体各发一次收回，返回逐个结果 |
 | GET | `/admin/access`、`/admin/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/admin/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
-| GET | `/admin/providers`、`/admin/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
+| GET | `/admin/providers`、`/admin/providers?node=<节点>` | view | 模型（P38 起合一页）：自上而下是任务模型（三档难度与三种生成，`routing` 卡）、智能体（接了网关时是网关的智能体区块，没接时是「智能体模型」，`harness-backends.md` §11）、网关的连接 · 上游 · 路由组 · 密钥 · 用量（只在接了 magpie 时），最后是模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
 | GET | `/admin/providers/new?q=`、`/admin/providers/new?preset=<预设>&site=<站点>` | view | 预设卡片（`q` 是 GET 搜索）；带 `preset` 时是从这份预设新建的表单 |
 | GET | `/admin/providers/profiles/<档案 id>`、`/admin/providers/nodes/<节点>?do=`、`/admin/providers/import` | view | 一份档案（编辑、密钥三态或多把密钥逐把列表、在用节点）；节点「模型」页签（`do` 直接打开对应对话框）；导入 |
 | GET | `/admin/approvals` | view | 审批队列；未接审批端口时明确显示未接入。个人成员仅看自己会话，运维仍受租户 scope 限制；批准前须验证当前账号个人凭据 |
 | GET | `/admin/usage` | view | 东八区自然日用量；输入、输出、缓存写入、缓存读取四列，charged 排除 cacheRead；显示配额模式、在途、会话与可观测下界 |
 | GET | `/v0/usage` | view | 用量快照；普通个人账号只读自己，运维只能读取 tenant scope 内主体；未接入 501 |
 | GET | `/v0/approvals/report` | view | 最近每节点 500 条已验审计记录；附完整性与截断状态。viewer 仅聚合，member 仅本人会话，ops 沿当前租户范围 |
-| GET | `/v0/approvals` | member / ops | 可见审批列表 |
+| GET | `/v0/approvals` | member / ops | 可见审批列表；`?mine=1` 只列自己会话里待批的（对话前台 `/` 的确认框轮询它，P39） |
 | POST | `/v0/approvals/auth` | member / ops | 同账号个人凭据再验证，签发独立 HttpOnly 审批 cookie，30 分钟绝对期；普通登录 cookie 本身不能审批 |
 | POST | `/v0/approvals/<requestId>` | 本人 / ops + 审批凭据 | 决定 allow-once / allow-window / deny，绑定 digest，窗口最多 60 分钟；宿主再次核对归属、时效与摘要 |
 | POST | `/v0/approvals/<requestId>/continue` | 本人 + 审批凭据 | 节点已确认原任务终态且会话空闲后，原子计入个人/租户/全局配额，记录持久一次性意图，批准并发送新的签名入站任务；本地超时、重复提交与重启重发均拒绝 |
@@ -741,6 +749,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/assets/app.css`、`/assets/app.js` | 公开 | 两个静态常量。`no-cache` 加内容哈希弱 ETag，`If-None-Match` 命中答 304（G1） |
 | GET | `/v0/health` | 公开 | `{ "status": "ok" }` |
 | GET | `/v0/limits` | view | 协议与运行时上限（§7.1） |
+| GET | `/v0/setup` | **admin** | 初始化配置页的同一份状态（`setupState.ts`） |
+| PUT | `/v0/setup/main` | **admin** | `{address}` 改主智能体（必须在名册里），`{address: null}` 回到 `--chat-default`；记 `chat.main`。宿主没接存储时 501 |
 | GET | `/v0/agents` | view | 名册 |
 | POST | `/v0/agents` | **admin** | 注册（发布）。先过登记簿的规矩——托管清单、退役与暂停的地址不收、登记簿读不出来不收（§7.3.1）——注册中心收下后入登记簿、记操作主体，由本控制台续租。响应体仍是注册中心那条记录 |
 | DELETE | `/v0/agents/<地址>` | **admin** | 注销。先出登记簿、停止续租，再删注册中心那条；暂停与退役的条目留在簿里 |
@@ -799,13 +809,14 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/providers/probe`、`/v0/providers/models`、`/v0/providers/preview` | **ops 个人账号** | 测连 / 测速 / 真实调用；拉模型列表；编译预览。可以带表单上未保存的档案与密钥，密钥不落盘 |
 | GET | `/v0/providers/export?id=<档案 id>…` | **ops 个人账号** | 导出文件（附件，`document` 级，链接可下），不含密钥与指纹 |
 | POST | `/v0/providers/import/preview`、`/v0/providers/import` | **ops 个人账号** | 导入预览、导入（撞 id 的用 `renames` 另存）；有目录不认识的键整份拒绝 |
-| GET | `/v0/routing` | view | 任务分工（P22，§13）：默认分工、各节点单独的分工、可选的模型（按对话 生图 语音 视频分类，带是否评估过）与最近 20 次分派。没接路由簿时 501 |
-| PUT | `/v0/routing` | **ops 个人账号** | `{ node, auto, routes, revision }` 改默认（`node: null`）或某个节点的分工；只给要改的方向，两个引用都为 null 是跟随主模型（生图 语音 视频为不开）。路由会让中枢把被引用服务的凭据也下发到节点，所以和模型服务的写操作同一条规矩：共用令牌与 break-glass 只能查看。revision 不符（有人先改了）400 |
+| GET | `/v0/routing` | view | 任务模型（P22、P38，§13）：默认设置、各节点单独的设置、可选的模型（按对话 生图 语音 视频分类，带是否评估过与可选的推理强度 `efforts`）与最近 20 次分派。没接路由簿时 501 |
+| PUT | `/v0/routing` | **ops 个人账号** | `{ node, auto, routes, revision }` 改默认（`node: null`）或某个节点的设置；方向是 `complex` `medium` `simple` `image` `speech` `video`，只给要改的方向，两个引用都为 null 是跟随主模型（生图 语音 视频为不开），`effort`（`none` `minimal` `low` `medium` `high` `xhigh` `max`，可省略即默认）只能配具体模型、且须在该模型的 `efforts` 里。路由会让中枢把被引用服务的凭据也下发到节点，所以和模型服务的写操作同一条规矩：共用令牌与 break-glass 只能查看。revision 不符（有人先改了）400 |
 | DELETE | `/v0/routing/nodes/<节点>` | **ops 个人账号** | 去掉这个节点单独的分工，回到默认 |
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段。`/fragments/audit` 带 `since` 时只回表头与自载入以来的新行（§5.6） |
 | GET | `/fragments/lifecycle/<节点>` | view | HTML 片段：生命周期页签被轮询的那一块（§5.5） |
 | GET | `/fragments/alerts?level=&state=`、`/fragments/jobs`、`/fragments/schedules`、`/fragments/tasks` | view | HTML 片段 |
 | GET | `/fragments/desktop` | view | HTML 片段：云端电脑页被轮询的卡片与操作记录 |
+| GET | `/fragments/elevation` | view | HTML 片段：权限模式页被轮询的卡片与调用记录 |
 | GET | `/fragments/files` | view | HTML 片段：文件互通页被轮询的申请、传输与授权 |
 | GET | `/fragments/replicate/jobs` | view | HTML 片段：服务器页「添加服务器」下面的复制记录 |
 | GET | `/fragments/connect` | view | HTML 片段：连接页被轮询的两半 |
@@ -816,13 +827,14 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/fragments/extensions` | view | HTML 片段：扩展页被轮询的三个分区 |
 | GET | `/fragments/extensions/form?kind=<种类>&id=<条目 id>` | **ops / admin** | HTML 片段：添加或编辑扩展对话框的正文；秘密只列名称，没有这个条目 404 |
 | GET | `/fragments/magpie` | view | HTML 片段：网关页被轮询的连接、上游、路由组与网关密钥 |
-| GET | `/fragments/magpie/agents` | view | HTML 片段：网关页被轮询的「智能体」区块；只读角色没有下拉与按钮（只有复制命令），失败原文只给能写的人（折在「详情」下）；原生扩展只从中枢缓存渲染，轮询不问节点 |
+| GET | `/fragments/agents/models` | view | HTML 片段：「智能体模型」区块（§11，不依赖 magpie）：每个智能体一行，名称、底层、可过滤的模型选择、推理强度、Claude Code 的「分档」面板；只读角色只看值，失败原文只给能写的人 |
+| GET | `/fragments/magpie/agents` | view | HTML 片段：网关页被轮询的「智能体」区块（中枢有智能体模型配置时模型一列换成「智能体模型」的控件）；只读角色没有下拉与按钮（只有复制命令），失败原文只给能写的人（折在「详情」下）；原生扩展只从中枢缓存渲染，轮询不问节点 |
 | GET | `/fragments/magpie/usage?period=<today\|7d\|30d\|all>` | view | HTML 片段：网关页被轮询的用量 |
 | GET | `/fragments/magpie/form?kind=<connect\|provider\|group\|key\|ext>&id=<路由组 id、绑定或 节点/智能体>` | **个人 ops** | HTML 片段：网关页对话框的正文；密钥永不回显，没有这个路由组或密钥 404；`ext` 是给一个智能体装原生扩展（P36.7） |
 | GET | `/fragments/updates` | view | HTML 片段：更新页被轮询的版本表与记录 |
 | GET | `/fragments/updates/form` | **ops / admin** | HTML 片段：更新检查设定对话框的正文 |
 | GET | `/fragments/updates/rollback` | **ops / admin** | HTML 片段：回滚对话框的选项（本机备份与最近三个更旧的发行） |
-| GET | `/fragments/routing?node=<节点>` | view | HTML 片段：模型页的任务分工卡片，`node` 换成那个节点的范围（模型服务不认识的节点当作所有节点）；没接路由簿时为空 |
+| GET | `/fragments/routing?node=<节点>` | view | HTML 片段：模型页的任务模型卡片，`node` 换成那个节点的范围（模型服务不认识的节点当作所有节点）；没接路由簿时为空 |
 | GET | `/fragments/memory?…` | **成员** | HTML 片段：记忆页被轮询的列表（`#memory-list`），附带筛选条上各类别的新计数；页面只换这几块，不动搜索框 |
 | GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | HTML 片段，`/admin/access` 三个被轮询的页签 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |
@@ -833,6 +845,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/fragments/chat/front/side?agent=&active=` | **成员 / ops / 管理令牌** | 智能体、按时间分组的会话、其他执行中的会话 |
 | GET | `/fragments/chat/front/view?agent=<地址>` | **成员 / ops / 管理令牌** | 智能体抬头与欢迎页 |
 | GET | `/fragments/chat/front/view/<会话 id>?open=1` | **成员 / ops / 管理令牌** | 抬头与转录；`open=1` 表示显式打开，不带它是刷新 |
+| GET | `/fragments/chat/front/panel` | **成员 / ops / 管理令牌** | 会话面板：这个人的后台任务（与 `/v0/tasks` 同一条归属规则）与云端电脑入口 |
 | GET | `/v0/chat/targets` | **成员 / ops / 管理令牌** | 能聊的对象，含可不可拨（§6.3） |
 | GET | `/v0/chat/sessions` | **成员 / ops / 管理令牌** | 会话列表 |
 | POST | `/v0/chat/sessions` | **成员 / ops / 管理令牌** | 开一条会话 |
@@ -892,6 +905,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 | GET/POST/PUT/DELETE | `/jobs` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/memory?agent=<地址>&kind=&q=&retired=1` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/desktop` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/elevation` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/files` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/connect` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/im` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
@@ -899,6 +913,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 | GET/POST/PUT/DELETE | `/extensions` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/magpie` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/billing` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
+| GET/POST/PUT/DELETE | `/setup` | 无 | 与其他区域同一条规则：答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/access`、`/access/{invites,sessions,actions}` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/providers`、`/providers?node=<节点>` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
 | GET/POST/PUT/DELETE | `/providers/new?q=`、`/providers/new?preset=<预设>&site=<站点>` | 无 | 旧区域地址答 308 到 `/admin<原路径><原查询串>` |
@@ -945,9 +960,17 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 `admin`、`v0`、`fragments`、`assets`、`login`、`logout`、`invite`（`test/routes.test.ts` 钉住）。
 新区域的页面包只改自己的路由文件、视图文件和页面脚本，不碰 `http.ts` 与共享样式。
 
-**外壳**（`view/shell.ts`）：左侧三组导航、顶栏面包屑与页面动作、注册中心健康标记、
+**外壳**（`view/shell.ts`）：左侧导航、顶栏面包屑与页面动作、注册中心健康标记、
 用户菜单（令牌框与退出），以及每页都带的会话失效对话框和 toast 区。侧栏「节点」旁的数字是
 **节点数**（按地址里的节点段归组，与名册的节点卡片同一口径），不是智能体数。
+
+导航分两组：常用一组是对话、主动执行、记忆、渠道、扩展、云端电脑、模型；「管理」一组默认
+收起（当前页在组里时展开），按看得多少排：总览、节点、审批、告警、消息链、应用连接、文件互通、
+用量、服务器、账号与访问、订阅、更新、设置与关于。侧栏项可以带一个状态点：待你处理用警示色并
+写个数，运行中是灰点，未读用强调色；点旁的文字只给读屏与悬停提示。现在有点的两项是「主动执行」
+（这个人的后台任务里有等他回复的写待你处理，否则有在跑的写运行中）和「审批」（个人成员或运维
+能处理的待审批个数）。两者都读宿主内存里的列表，每页渲染时问一次不花代价；告警的未确认数仍不进
+侧栏（见下文告警一节）。后台的灰点不闪：共享样式表不带动画，脉动只在前台。
 
 **审批与用量**已提供真实页面：审批展示当前身份可见的请求、完整参数、摘要与状态，支持个人凭据再验证、批准、撤销和符合终态条件的「批准并继续」；用量展示东八区自然日的四列 token、消息及在途配额。没有接入相应宿主端口时明确显示未接入，不伪造可操作数据。
 
@@ -1196,10 +1219,29 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
 
 操作者消息靠右，回复按正文列呈现，连续过程行折叠为步骤组。输入框固定在底部，欢迎页
 移到问候下；Enter 发送，Shift Enter 换行，`/` 打开本地命令选项。第一句先创建会话再发送。
-有转录且读取成功才启用会话输入框；失效书签与账本停用不会启用发送。
+有转录且读取成功才启用会话输入框；失效书签与账本停用不会启用发送。智能体还在处理上一句
+时发出的消息，节点读到之前写「排队中 · 下一步时送达」。
+
+输入框是上面一行字、下面一排控件（`view/frontTools.ts`、`assets/frontTools.ts`）：左边 `+`
+（本地命令），右边「模型」与「权限模式」两个菜单、语音、发送。「模型」列出目标节点在跑的
+档案里的对话模型（数据来自 `/fragments/providers/chat` 片段里隐藏的 `#prov-chat-models`）、
+「自动」与八档推理强度（默认 / 关闭 / 最低 / 低 / 中 / 高 / 超高 / 最高），选中后作为本会话
+的本地命令 `/model <provider>/<id>`、`/model auto`、`/effort <档>` 发出，结果写在转录里；没有
+模型服务时只给推理强度。「权限模式」按 P39 的 `GET /v0/elevation` 读这个智能体的模式，
+`PUT /v0/elevation/<节点>/<智能体> {tier}` 切换（人工确认 off、自动接受编辑 accept-edits、
+自动审批 auto、跳过权限确认 full-access，时长与次数用节点缺省），跳过权限确认先弹确认框；
+只有运维能切换（服务端还要求 30 分钟内验证过的个人凭据），中枢没有这个接口（404 / 501）时
+菜单写「未接入 · 一直是人工确认」，各项禁用。
+
+顶栏右侧的会话面板（`view/frontPanel.ts`、`assets/frontPanel.ts`）列这个人的后台任务：
+待你处理、运行中、排队中在前，每行状态点、标题、耗时与停止（`POST /v0/tasks/<id>/cancel`），
+展开看状态、要求、进度或结果与子会话链接，已完成与已停止的收进「N 个已完成」；中枢有云端电脑
+时另有入口。面板打开时每 5 秒取一次 `/fragments/chat/front/panel`，关着时每 30 秒只更新按钮上的
+点；没选过时宽屏（≥ 1101px）且有未结束的任务就自动打开，开关记在本浏览器。
 
 前台片段是 `/fragments/chat/front/side?agent=&active=`、
-`/fragments/chat/front/view?agent=<地址>`、`/fragments/chat/front/view/<会话 id>[?open=1]`。
+`/fragments/chat/front/view?agent=<地址>`、`/fragments/chat/front/view/<会话 id>[?open=1]`、
+`/fragments/chat/front/panel`。
 前台文档的 `/?session=`、`view/<id>?open=1` 与 JSON 转录读取各记一次显式打开，
 不带 `open=1` 的刷新复用同一主体与会话的 30 分钟读取窗口。窗口外必须重新记账，
 账本停用时答 503 并显示原因，读取转录的端口不被调用。成员只能看自己创建的会话，
@@ -2413,9 +2455,11 @@ HTTP 开会话/发消息与定时任务共用控制台包的 `chatDispatch.ts`�
 通过同一服务预查可拨性。`consoleSchedules.authorization.test.ts` 覆盖成员会话可见性、
 吊销/只读/范围撤回/白名单撤回、转录 I/O 期间吊销、个人配额拒绝和创建者的租户用量归属。
 
-提示词经原有 `send` 链路发出，方向为可选
-`code|chat|plan|fast|vision|image|speech|video`（缺省 `chat`，明确 `null` 不带方向），
-经 `task.request.payload.direction` 传给节点，与 P22 同一字段。任务期限同时传到信封与
+提示词经原有 `send` 链路发出，难度为可选
+`complex|medium|simple|image|speech|video`（缺省 `medium`，明确 `null` 不带方向；P38 之前存下的
+`code|chat|plan|fast|vision` 读时映射成对应的档，下次保存写回新名字），
+经 `task.request.payload.direction` 传给节点，与 P22 同一字段（线上仍用 P22 名字编码，见
+[模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22) 的线协议一段）。任务期限同时传到信封与
 对话端口本地超时；默认 10 分钟、最大 60 分钟。订阅对话更新并在调度检查时兜底读取转录，
 按 `taskId` 匹配终态，运行保留回复前 2000 个 Unicode 字符，全文仍在 `chat.ndjson`。
 
@@ -2484,17 +2528,17 @@ IPv4 映射/兼容 IPv6 按嵌入 IPv4 判断，IP 字面量同等处理。仅�
 | DELETE | `/v0/channels/<id>` | ops 或管理令牌 | 204；被引用时拒绝 |
 | POST | `/v0/channels/<id>/test` | ops 或管理令牌 | 测试成功后的 `NotifyChannelView`；失败 503 |
 
-## §13 任务分工 API（P22）
+## §13 任务分工 API（P22、P38）
 
 模型服务开启时 `ConsoleDeps.routing` 接路由簿；API-only `routingApi` 是导出的 HeadRoute，由模型服务区域挂入 API heads（不另建页面模块）。
 
 | 方法与路径 | 权限 | 作用 |
 |---|---|---|
-| GET `/v0/routing` | view 及以上 | 默认、节点覆盖、模型列表及最近 20 条归类 |
-| PUT `/v0/routing` | ops 个人账号（共用管理令牌只读） | `{node:null或节点名, auto, routes:[{direction,profileId,modelId}], revision}`；局部更新，revision 失配 rejected |
+| GET `/v0/routing` | view 及以上 | 默认、节点覆盖、模型列表（含每个模型可选的推理强度）及最近 20 条归类 |
+| PUT `/v0/routing` | ops 个人账号（共用管理令牌只读） | `{node:null或节点名, auto, routes:[{direction,profileId,modelId,effort?}], revision}`；局部更新，revision 失配 rejected |
 | DELETE `/v0/routing/nodes/<node>` | ops 个人账号（共用管理令牌只读） | 清除节点覆盖并跟随默认 |
 
-写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。保存与清除只改中枢的路由簿，节点要等下一次模型服务下发才按新分工派活：卡片保存后写「已保存 · 尚未下发」，旁边是「下发到 N 台节点」按钮（范围内跟随这份分工、受托管的节点），它走 `POST /v0/providers/apply` 并带上卡片画出时的 `routingRevision`；这期间有人又存过就整次 409、不下发，卡片换成最新分工，不给「重试」。路由簿写锁记录 PID、随机 nonce 与时间：活持有者拒绝并发写入，PID 消失或超过 5 分钟时回收，释放只删除仍匹配自身令牌的锁。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
+写操作先 admit，端口经 DirectionActor 记录 routing.save / routing.clear；viewer/member 不能修改。保存与清除只改中枢的路由簿，节点要等下一次模型服务下发才按新分工派活：卡片保存后写「已保存 · 尚未下发」，旁边是「下发到 N 台节点」按钮（范围内跟随这份分工、受托管的节点），它走 `POST /v0/providers/apply` 并带上卡片画出时的 `routingRevision`；这期间有人又存过就整次 409、不下发，卡片换成最新分工，不给「重试」。路由簿写锁记录 PID、随机 nonce 与时间：活持有者拒绝并发写入，PID 消失或超过 5 分钟时回收，释放只删除仍匹配自身令牌的锁。两个模型引用同时 null 表示跟随主模型，媒体方向表示关闭。P38 起方向是三档难度（complex、medium、simple）与三种媒体（image、speech、video），三档可各带推理强度；卡片改叫「任务模型」，分「任务难度」与「生成」两组，渲染函数为 `renderTaskModelsCard`。路由簿文件升为 v2，v1 读时映射。详情见 [模型服务「任务分工（P22）」](providers-console-m1.md#任务分工p22)。
 
 
 ## 长期记忆（P23）
@@ -2807,6 +2851,16 @@ ICS 与 CalDAV 返回的 RRULE 本轮均**不展开**，结果显式带 warning�
 生产地址只可能是固定的 `https://github.com/<owner>/<name>.git`，不能
 配置其他主机或远端 URL。本地远端映射只在测试注入端口里存在。
 
+## 高权限模式（P39）
+
+页面「权限模式」在侧栏管理一组，设计与边界见 [elevation.md](elevation.md)。中枢启用要同时有审批与控制链路：
+
+```bash
+bun run qm -- console --elevation --approvals --accounts --chat-sign --chat-url <node>=<url> --control <node>=ws://<node-host>:<port> --trust <node>=<publicKey>
+```
+
+`--elevation` 同时启用动作账本。节点常驻宿主已装配 `elevation` 控制处理器，所有智能体启动时都是人工确认，放权不跨重启。
+
 ## 云端电脑（P21）
 
 页面「云端电脑」在侧栏常用一组。`--desktop` 同时启用动作账本，旧式 admin token 的资源变更也记账。中枢启用：
@@ -2819,15 +2873,15 @@ bun run qm -- console --desktop --control <node>=ws://<node-host>:<port> --trust
 
 `sensitive` 默认仅截图、读页面、查元素、列 tab 自动放行；导航、点击、输入、按键与滚动逐次确认。`always` 连观察也确认。只认单次批准，正文可见于受保护审批材料，公共 `desktop.action` 不含正文，并关联审批 requestId。旧 tab 句柄、旧资源代次、已经消费的批准、结束的 turn 一律拒绝。`intent` 表示已持久化执行意图；`unknown` 表示结果未知，禁止自动重试。
 
-macOS 用 `/Applications/Google Chrome.app` 的无头 Chrome 提供**独立浏览器资料环境**，不提供电脑。资料目录 `<节点配置根>/qianmo/desktop/<agent>/browser`（0700），下载与截图目录独立；保留 Chromium 沙箱，内核分配 loopback CDP 端口。Linux 浏览器同样无头；电脑须 Xvfb+xauth（独立授权、1440×900×24、关闭 TCP），本机没有 Xvfb，完整原生电脑操作尚未验证，不能据此宣称 Linux 隔离已验收。
+macOS 用 `/Applications/Google Chrome.app` 的无头 Chrome 提供**独立浏览器资料环境**；电脑是这台 Mac 现有的桌面，只能操作运维列出的应用（[runtimes-channels.md §6.5](runtimes-channels.md#65-macos-本机桌面按应用授权)）。资料目录 `<节点配置根>/qianmo/desktop/<agent>/browser`（0700），下载与截图目录独立；保留 Chromium 沙箱，内核分配 loopback CDP 端口。Linux 浏览器同样无头；电脑须 Xvfb+xauth（独立授权、1440×900×24、关闭 TCP），本机没有 Xvfb，完整原生电脑操作尚未验证，不能据此宣称 Linux 隔离已验收。
 
 ### 支持的平台
 
 | 节点平台 | 专属浏览器 | 专属电脑 | 需要 |
 |---|---|---|---|
-| macOS | 支持（无头 Chrome，独立资料环境） | **不支持**：没有独立显示服务，不操作真实桌面 | `/Applications/Google Chrome.app` |
-| Linux | 支持（无头 Chromium/Chrome） | 支持 | 浏览器：`PATH` 上有 `google-chrome` 或 `chromium`；电脑：另装 `Xvfb` 与 `xauth` |
-| 其他（Windows 等） | 不支持 | 不支持 | — |
+| macOS | 支持（无头 Chrome，独立资料环境） | 本机桌面：操作这台节点现有的 Mac 桌面，只能用运维列出的应用（1–20 个 bundle id），不起私有显示 | `/Applications/Google Chrome.app`；电脑另需节点进程有「屏幕录制」与「辅助功能」权限 |
+| Linux | 支持（无头 Chromium/Chrome） | 私有桌面 | 浏览器：`PATH` 上有 `google-chrome` 或 `chromium`；电脑：另装 `Xvfb` 与 `xauth`（缺哪个，页面在禁用的开关下写哪个） |
+| 其他（Windows 等） | 不支持 | 不支持（页面写「这个系统不提供电脑」） | — |
 
 两项默认都关，由运维身份在「云端电脑」页为某个节点的主智能体打开。只有主智能体能调用 `qianmo_browser_*` / `qianmo_computer_*`，子智能体不能。
 
@@ -2838,7 +2892,7 @@ macOS 用 `/Applications/Google Chrome.app` 的无头 Chrome 提供**独立浏�
 | 报错 | 意思 | 怎么办 |
 |---|---|---|
 | `Desktop unavailable: 专属浏览器没有开启或已停用…` | 节点没为这个智能体开浏览器，或已因空闲、配额、急停停用 | 「云端电脑」页打开专属浏览器 |
-| `Desktop unavailable: 专属电脑只在 Linux 节点上提供…` | macOS 等平台没有专属电脑 | 改用专属浏览器，或换 Linux 节点 |
+| `Desktop unavailable: 专属电脑只在 Linux 与 macOS 节点上提供…` | Windows 等其他系统没有专属电脑 | 改用专属浏览器，或换 Linux / macOS 节点 |
 | `Desktop unavailable: 只有节点的主智能体能用…` | 子智能体调用 | 由主智能体调用 |
 | `Desktop lease refused: 这台专属浏览器上一项操作（…）还没结束…` | 同一资源同一时间只发一个租约；另一会话或另一回合的操作还没结束 | 等它结束再试。同一回合里并行的多个调用由扩展自动排队，不会互相拒绝 |
 | `Desktop lease refused: 急停已开启…` | ESTOP 期间不发租约 | 解除急停 |

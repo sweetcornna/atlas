@@ -207,6 +207,33 @@ describe('resident queue governance', () => {
     expect(clashes).toEqual([])
   })
 
+  test('with places to spare, two turns of one session still never overlap (P38)', async () => {
+    const mailbox = new PerAgentMailbox()
+    for (const agent of AGENTS) mailbox.put(agent, message(`work for ${agent}`))
+    const turn = new SpanRecordingTurn()
+    const gate = new NodeTurnGate({ maxTurns: AGENTS.length })
+    const runtime = buildRuntime(
+      mailbox,
+      turn,
+      new ResidentTimingRecorder(),
+      gate,
+    )
+
+    await runtime.pollAll()
+    await drain(gate)
+
+    expect(turn.spans).toHaveLength(AGENTS.length)
+    const clashes = turn.spans.flatMap((first, index) =>
+      turn.spans
+        .slice(index + 1)
+        .filter(
+          second =>
+            second.sessionId === first.sessionId && overlap(first, second),
+        ),
+    )
+    expect(clashes).toEqual([])
+  })
+
   test('every turn is stamped with the queue position it took', async () => {
     const mailbox = new PerAgentMailbox()
     for (const agent of AGENTS) mailbox.put(agent, message(`work for ${agent}`))

@@ -17,6 +17,7 @@
  */
 
 import { html, methodNotAllowed, notFound } from '../respond.js'
+import { SETTING_ROW_CSS } from '../view/settingRow.js'
 import {
   DESKTOP_PAGE_CSS,
   type DesktopModel,
@@ -88,7 +89,8 @@ export const desktopRoute: RouteModule = {
           (canOps(ctx) ? desktopConfirms() : ''),
       }
     },
-    css: KIT_CSS + DESKTOP_PAGE_CSS,
+    // The card's rows are laid out as setting rows (view/settingRow.ts).
+    css: KIT_CSS + SETTING_ROW_CSS + DESKTOP_PAGE_CSS,
     script: DESKTOP_PAGE_JS,
   },
   api: desktopApi,

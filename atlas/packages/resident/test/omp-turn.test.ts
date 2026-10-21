@@ -377,3 +377,118 @@ test('plain assistant text cannot manufacture memory source citations', async ()
     content: 'I cite [unverified memory reference]',
   })
 })
+
+describe('steering a running turn (P38)', () => {
+  /** Lets the admission callback and the port's bookkeeping run. */
+  async function settleMicrotasks() {
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+  }
+
+  /** A turn that is running, its input durable, and its result watched. */
+  async function runningTurn(steer?: OmpRpcChannel['steer']): Promise<{
+    f: ReturnType<typeof fixture>
+    result: Promise<unknown>
+    ended: () => boolean
+  }> {
+    const f = fixture()
+    if (steer !== undefined) f.channel.steer = steer
+    let done = false
+    const result = f.port.execute(input, async () => {})
+    void result.finally(() => {
+      done = true
+    })
+    await started(f)
+    f.admit()
+    f.emit(user)
+    await settleMicrotasks()
+    return { f, result, ended: () => done }
+  }
+
+  test('the text reaches the turn, and the turn ends with both prompts’ results in', async () => {
+    const steer = mock(async () => ({ requestId: 's-1', agentInvoked: true }))
+    const { f, result, ended } = await runningTurn(steer)
+    expect(await f.port.steer('network-1', '再加一项')).toBe('steered')
+    expect(steer).toHaveBeenCalledWith({ text: '再加一项' })
+    f.emit(assistant('first part'))
+    f.emit(complete)
+    await settleMicrotasks()
+    // The turn's own prompt yielded, but the steered one has not answered.
+    expect(ended()).toBe(false)
+    // Yielded: nothing more goes into it.
+    expect(await f.port.steer('network-1', 'too late')).toBe('not_running')
+    expect(steer).toHaveBeenCalledTimes(1)
+    f.emit(assistant('second part'))
+    f.emit({ ...complete, id: 's-1' })
+    expect(await result).toEqual({
+      outcome: 'completed',
+      content: 'first part\n\nsecond part',
+    })
+  })
+
+  test('a steer still on its way when the run yields holds the end until omp answered it', async () => {
+    let admit!: (value: OmpPromptAdmission) => void
+    const steer = mock(
+      () =>
+        new Promise<OmpPromptAdmission>(resolve => {
+          admit = resolve
+        }),
+    )
+    const { f, result, ended } = await runningTurn(steer)
+    const steered = f.port.steer('network-1', '补充')
+    await settleMicrotasks()
+    f.emit(assistant('answer'))
+    f.emit(complete)
+    await settleMicrotasks()
+    expect(ended()).toBe(false)
+    // omp took it after the yield: it started the next run, which is this
+    // turn's too.
+    admit({ requestId: 's-2', agentInvoked: true })
+    expect(await steered).toBe('steered')
+    await settleMicrotasks()
+    expect(ended()).toBe(false)
+    f.emit(assistant('and the rest'))
+    f.emit({ ...complete, id: 's-2' })
+    expect(await result).toEqual({
+      outcome: 'completed',
+      content: 'answer\n\nand the rest',
+    })
+  })
+
+  test('a refused steer does not hold the turn', async () => {
+    const steer = mock(async (): Promise<OmpPromptAdmission> => {
+      throw new Error('omp RPC request failed')
+    })
+    const { f, result } = await runningTurn(steer)
+    expect(await f.port.steer('network-1', 'x')).toBe('not_running')
+    f.emit(assistant('answer'))
+    f.emit(complete)
+    expect(await result).toEqual({ outcome: 'completed', content: 'answer' })
+  })
+
+  test('nothing to steer: another message, input not durable yet, or a runtime without a way in', async () => {
+    const f = fixture()
+    f.channel.steer = mock(async () => ({
+      requestId: 's-1',
+      agentInvoked: true,
+    }))
+    expect(await f.port.steer('network-1', 'x')).toBe('not_running')
+    const result = f.port.execute(input, async () => {})
+    await started(f)
+    f.admit()
+    // The user message has not reached the transcript yet.
+    expect(await f.port.steer('network-1', 'x')).toBe('not_running')
+    f.emit(user)
+    await settleMicrotasks()
+    expect(await f.port.steer('network-other', 'x')).toBe('not_running')
+    expect(f.channel.steer).not.toHaveBeenCalled()
+    f.emit(assistant('answer'))
+    f.emit(complete)
+    await result
+
+    const external = await runningTurn()
+    expect(await external.f.port.steer('network-1', 'x')).toBe('unsupported')
+    external.f.emit(assistant('answer'))
+    external.f.emit(complete)
+    await external.result
+  })
+})

@@ -8,5 +8,6 @@ export function getModelCompatCapabilities() {
     replayFilter: true,
     multiKey: true,
     laneAddresses: true,
+    tierRouting: true,
   }
 }

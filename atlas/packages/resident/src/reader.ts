@@ -15,7 +15,10 @@ import type {
   ResidentTurnResult,
 } from './contracts.js'
 import { MAX_ADMISSION_RECOVERIES } from './ledger.js'
-import { readCountsByIdentity } from './mailbox-identity.js'
+import {
+  readCountsByIdentity,
+  residentMailboxIdentity,
+} from './mailbox-identity.js'
 import { NodeTurnGate, type NodeTurnRequest } from './turn-gate.js'
 
 /** See {@link ResidentMailboxReaderOptions.reentryOf}. */
@@ -161,6 +164,13 @@ export class ResidentMailboxReader {
   readonly #gate: NodeTurnGate
   #polling: Promise<ResidentPollResult> | null = null
   #queued: Promise<ResidentPollResult> | null = null
+  /**
+   * Batches this reader handed to the gate and has not read yet, by admission
+   * record id (P38). A turn waiting for a place or for its session no longer
+   * holds up this agent's next poll, so that poll must neither take those
+   * messages again nor recover their records as a previous life's.
+   */
+  readonly #inflight = new Map<string, readonly ResidentMailboxMessage[]>()
 
   constructor(options: ResidentMailboxReaderOptions) {
     this.#options = options
@@ -207,7 +217,12 @@ export class ResidentMailboxReader {
     let recovered = 0
     let read = 0
     let abandoned = 0
-    for (const pending of queried.pending) {
+    // Records of batches this reader already handed to the gate are this
+    // life's own; only the rest are left over from a previous one.
+    const leftOver = queried.pending.filter(
+      pending => !this.#inflight.has(pending.messageId),
+    )
+    for (const pending of leftOver) {
       if (await this.#abandonIfPoison(pending)) {
         abandoned += 1
         continue
@@ -222,7 +237,7 @@ export class ResidentMailboxReader {
     // tick — 500 ms later — finds a ledger with room in it. Detecting fresh
     // work in the same poll that just retired a poison record would put the
     // new batch behind the same turn the old one was failing in.
-    if (queried.pending.length > 0) {
+    if (leftOver.length > 0) {
       return { detected: 0, recovered, read, abandoned }
     }
 
@@ -235,9 +250,19 @@ export class ResidentMailboxReader {
     // by every reader cannot adopt one reader's notion of the time. One clock
     // for deadlines, the injected one for the stamps that go in the ledger.
     const now = Date.now()
+    // A message waiting in a batch at the gate is still unread here. Every
+    // unread copy of its identity waits with it: the read flip counts by
+    // identity, so a second batch holding an identical copy could otherwise
+    // flip the first batch's message, or find none left to flip.
+    const waiting = new Set(
+      [...this.#inflight.values()].flatMap(batch =>
+        batch.map(residentMailboxIdentity),
+      ),
+    )
     const eligible = mailbox.filter(
       message =>
         !message.read &&
+        !waiting.has(residentMailboxIdentity(message)) &&
         (this.#options.accepts?.(message) ?? true) &&
         now < (this.#options.deadlineOf?.(message) ?? Number.POSITIVE_INFINITY),
     )
@@ -443,9 +468,14 @@ export class ResidentMailboxReader {
       // because the gate may have started it synchronously.
       queueDepth: this.#gate.queued + 1,
     })
+    // Synchronous when the gate has a place for the turn now: `run` starts
+    // it before it returns.
+    let started = false
+    this.#inflight.set(pending.messageId, pending.snapshot)
     void this.#gate
       .run(
         async () => {
+          started = true
           const result = await this.#options.turn.execute(input, async () => {
             try {
               const admittedAt = this.#markAdmitted(pending)
@@ -485,8 +515,16 @@ export class ResidentMailboxReader {
         await this.#options.onTurnError?.(error, input)
       })
       .finally(() => {
+        this.#inflight.delete(pending.messageId)
         options.onSettled?.()
       })
+    if (!started) {
+      // Waiting for a place or for its session (P38): the poll returns now,
+      // so this agent's other mail is read meanwhile. The turn is admitted
+      // when it starts; a failure on the way reaches `onTurnError` as above.
+      void admission.catch(() => {})
+      return 0
+    }
     return await admission
   }
 
@@ -528,6 +566,8 @@ export class ResidentMailboxReader {
       messageId: pending.messageId,
       at: readAt,
     })
+    // Read now, so the next poll would not take them anyway.
+    this.#inflight.delete(pending.messageId)
     this.#options.timings?.record({
       stage: 'read',
       at: readAt,

@@ -10,6 +10,12 @@
  * | `GET /v0/magpie/agents`, `GET /v0/magpie/agents/{node}/{agent}/extensions` | view and up (failure details only for writers) |
  * | every `POST` and `DELETE` | personal ops, outside break-glass, a platform subject when there are tenants |
  *
+ * Each agent's native model fields (`harness-backends.md` §11) need no
+ * magpie: `GET /v0/magpie/agents/models` reads them and
+ * `POST /v0/magpie/agents/configure {node, agent, field, value}` sets one
+ * (as magpie's `POST /api/set`), on any console with the model service and
+ * the control link.
+ *
  * The agents section (P36.5) takes its writes as
  * `POST /v0/magpie/agents/{configure,install,remove,autojoin,join}`, and an
  * agent's native extensions (P36.7) as
@@ -23,6 +29,8 @@
  */
 
 import type {
+  AgentModelChange,
+  AgentModelsSnapshot,
   MagpieAgentChange,
   MagpieAgentsSnapshot,
   MagpieBinding,
@@ -172,6 +180,24 @@ function extensionsForReader(
     ...view,
     error: null,
     job: view.job === null ? null : { ...view.job, message: null },
+  }
+}
+
+/** The agent model fields for a reader: no failure text. */
+export function agentModelsForReader(
+  snapshot: AgentModelsSnapshot,
+  writer: boolean,
+): AgentModelsSnapshot {
+  if (writer) return snapshot
+  return {
+    nodes: snapshot.nodes.map(node => ({
+      ...node,
+      error: null,
+      agents: node.agents.map(agent => ({
+        ...agent,
+        write: agent.write === null ? null : { ...agent.write, message: null },
+      })),
+    })),
   }
 }
 
@@ -416,6 +442,25 @@ function agentChange(body: Record<string, unknown>): MagpieAgentChange {
   }
 }
 
+const FIELD_KEY = /^[a-z][a-z_]{0,31}$/
+
+/** `{node, agent, field, value}`: one native model field (§11). */
+function fieldChange(body: Record<string, unknown>): AgentModelChange {
+  const node = nodeOf(body)
+  const agent = str(body, 'agent')
+  if (!agent || !AGENT_ID.test(agent)) throw new Invalid('智能体名无效')
+  const field = str(body, 'field')
+  if (!field || !FIELD_KEY.test(field)) throw new Invalid('字段名无效')
+  const value = str(body, 'value') ?? ''
+  if (value.length > 256) throw new Invalid('值太长')
+  if (value !== '' && field !== 'effort' && !field.endsWith('_effort')) {
+    const slash = value.indexOf('/')
+    if (slash <= 0 || !MODEL_ID.test(value.slice(slash + 1)))
+      throw new Invalid('模型要写成 <来源>/<模型号>')
+  }
+  return { node, agent, field, value }
+}
+
 function extensionKindOf(body: Record<string, unknown>): MagpieExtensionKind {
   const kind = str(body, 'kind')
   const found = MAGPIE_EXTENSION_KINDS.find(one => one === kind)
@@ -492,6 +537,7 @@ type Name =
   | 'key'
   | 'key-rotate'
   | 'agents'
+  | 'agents-models'
   | `agents-${AgentAction}`
   | 'agents-ext'
   | `agents-ext-${ExtensionAction}`
@@ -504,6 +550,8 @@ function routeOf(
   if (rest.length === 0) return { name: 'snapshot', allowed: ['GET'] }
   if (head === 'agents') {
     if (rest.length === 1) return { name: 'agents', allowed: ['GET'] }
+    if (rest.length === 2 && id === 'models')
+      return { name: 'agents-models', allowed: ['GET'] }
     const action = AGENT_ACTIONS.find(one => one === id)
     if (rest.length === 2 && action !== undefined)
       return { name: `agents-${action}`, allowed: ['POST'] }
@@ -549,11 +597,10 @@ async function agentsWrite(
   name: Name,
   rest: readonly string[],
   caller: MagpieCaller,
+  body: Record<string, unknown>,
 ): Promise<Response> {
   const agents = ctx.deps.magpie?.agents
   if (agents === undefined) return unwired('节点控制链路')
-  const body = await bodyOf(ctx)
-  if (body instanceof Response) return body
   try {
     if (name === 'agents-ext-install' || name === 'agents-ext-remove') {
       const where = agentPathOf(rest)
@@ -633,6 +680,45 @@ export const magpieApi: HeadRoute = {
       )
     if (!route.allowed.includes(ctx.request.method))
       return methodNotAllowed([...route.allowed])
+
+    // Each agent's native model fields (§11): with or without magpie.
+    if (route.name === 'agents-models') {
+      const models = ctx.deps.agentModels
+      if (models === undefined) return unwired('智能体模型配置')
+      const snapshot = await models.snapshot()
+      return answer(
+        snapshot.ok
+          ? {
+              ok: true,
+              value: agentModelsForReader(snapshot.value, magpieWriter(ctx)),
+            }
+          : snapshot,
+      )
+    }
+    let agentsBody: Record<string, unknown> | undefined
+    if (route.name.startsWith('agents-') && route.name !== 'agents-ext') {
+      const body = await bodyOf(ctx)
+      if (body instanceof Response) return body
+      agentsBody = body
+      if (route.name === 'agents-configure' && 'field' in body) {
+        const models = ctx.deps.agentModels
+        if (models === undefined) return unwired('智能体模型配置')
+        let change: AgentModelChange
+        try {
+          change = fieldChange(body)
+        } catch (error) {
+          if (error instanceof Invalid) return invalid(error.message)
+          throw error
+        }
+        return write(
+          ctx,
+          'runtime.configure',
+          `qianmo://${change.node}/${change.agent} ${change.field}`,
+          () => models.set(change, callerOf(ctx)),
+        )
+      }
+    }
+
     const port = ctx.deps.magpie
     if (!port) return unwired('模型网关')
 
@@ -686,8 +772,8 @@ export const magpieApi: HeadRoute = {
 
     const caller = callerOf(ctx)
 
-    if (route.name.startsWith('agents-'))
-      return agentsWrite(ctx, route.name, rest, caller)
+    if (route.name.startsWith('agents-') && agentsBody !== undefined)
+      return agentsWrite(ctx, route.name, rest, caller, agentsBody)
 
     if (route.name === 'check')
       return write(ctx, 'magpie.check', 'magpie', () => port.check(caller))

@@ -22,6 +22,7 @@ import { ConsoleMemory } from './consoleMemory.js'
 
 import * as routingPath from 'node:path'
 import { ConsoleDesktop } from './consoleDesktop.js'
+import { ConsoleElevation } from './consoleElevation.js'
 import { ConsoleRouting, routingWire } from './consoleRouting.js'
 import { ConsoleAvatars } from './consoleAvatars.js'
 import { randomBytes } from 'node:crypto'
@@ -40,6 +41,7 @@ import { ConsoleChannels } from './consoleChannels.js'
 import { AgentProfiles, ConsoleTasks, withTaskNotes } from './consoleTasks.js'
 import { ConsolePeers } from './consolePeers.js'
 import { ConsoleExtensions } from './consoleExtensions.js'
+import { ConsoleAgentModels } from './consoleAgentModels.js'
 import { ConsoleMagpie } from './consoleMagpie.js'
 import {
   BillingStore,
@@ -98,6 +100,7 @@ import {
 import { ConsoleRegistrations, gateWakePort } from './consoleRegistrations.js'
 import { ServerNotesStore } from './consoleServerNotes.js'
 import { consoleAlertAcksPath } from './consoleAlertAcks.js'
+import { ConsoleMainAgent } from './consoleMainAgent.js'
 import { consoleAuditSources } from './consoleAuditSources.js'
 import {
   loadConsoleWakeIdentity,
@@ -765,6 +768,26 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       outcome.ok && (outcome.value as { stopped?: unknown }).stopped === true
     )
   }
+  // Words into a running turn, read at its next step (P38): a task's added
+  // instruction, or a result for the conversation that started it.
+  const steerTurn = async (
+    target: string,
+    taskId: string,
+    text: string,
+  ): Promise<boolean> => {
+    const node = parseAddress(target)?.node
+    if (control === undefined || node === undefined) return false
+    const outcome = await control.request(
+      node,
+      'turn.steer',
+      { taskId, text },
+      'system:tasks',
+      { timeoutMs: 10_000 },
+    )
+    return (
+      outcome.ok && (outcome.value as { steered?: unknown }).steered === true
+    )
+  }
   // Runtimes and models for `qianmo_task_agents`: each node's own word over
   // the control link, and a qianmopi agent's model from the model service.
   const agentProfiles = new AgentProfiles({
@@ -792,6 +815,11 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           ...(usage === undefined ? {} : { usage }),
           ...(tenancy === undefined ? {} : { tenancy }),
           stopTask: stopTurn,
+          steerTask: steerTurn,
+          ...(config.taskWorkers === undefined
+            ? {}
+            : { workersPerNode: config.taskWorkers }),
+          nodeTurns: node => agentProfiles.backgroundTurns(node),
           profile: address => agentProfiles.of(address),
           scheduled: (sessionId): boolean =>
             schedules?.owns(sessionId) ?? false,
@@ -1042,6 +1070,34 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           onError: message => process.stderr.write(`[magpie] ${message}\n`),
         })
       : undefined
+  // Each agent's model in its runtime's own fields (harness-backends.md §11):
+  // every deployment with the model service and the control link, magpie or
+  // not; on a node bound to magpie the model field stays the gateway's.
+  const agentModels =
+    control !== undefined && providersPort !== undefined
+      ? new ConsoleAgentModels({
+          control,
+          nodes: () => (config.controlTargets ?? []).map(target => target.node),
+          overview: () => providersPort.overview(),
+          routedProfiles: node => {
+            try {
+              return (
+                routing
+                  ?.effective(node)
+                  .routes.flatMap(route =>
+                    route.profileId === null ? [] : [route.profileId],
+                  ) ?? []
+              )
+            } catch {
+              return []
+            }
+          },
+          magpie: () => magpie?.agents,
+          statePath: qianmoConfigPath('qianmo', 'console', 'agent-models.json'),
+          onError: message =>
+            process.stderr.write(`[agent-models] ${message}\n`),
+        })
+      : undefined
   const billingStore =
     billingConfig !== undefined &&
     magpie !== undefined &&
@@ -1168,6 +1224,10 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       : undefined
   const desktop =
     config.desktop && control ? new ConsoleDesktop(control, actions) : undefined
+  const elevation =
+    config.elevation && control
+      ? new ConsoleElevation(control, actions)
+      : undefined
   if (files) {
     // A repo that cannot be shown private (or a missing credential) stops
     // file exchange, not the console: every publish and fetch checks again
@@ -1269,6 +1329,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(updates === undefined ? {} : { updates }),
     ...(extensions === undefined ? {} : { extensions }),
     ...(magpie === undefined ? {} : { magpie }),
+    ...(agentModels === undefined ? {} : { agentModels }),
     ...(billing === undefined ? {} : { billing }),
     ...(approvals === undefined ? {} : { approvals }),
     ...(usage === undefined ? {} : { usage }),
@@ -1312,6 +1373,14 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(chat.hub === undefined || config.chatDefault === undefined
       ? {}
       : { chatDefault: config.chatDefault }),
+    // 主智能体可在初始化配置页改，存在中枢自己的配置目录里，盖过 --chat-default。
+    ...(chat.hub === undefined
+      ? {}
+      : {
+          mainAgent: new ConsoleMainAgent({
+            warn: line => process.stderr.write(`[console] ${line}\n`),
+          }),
+        }),
     ...(certificates === undefined ? {} : { certificates }),
     // 告警与值守作业两页（P18.15）：读本配置根下 `qm watch` 留在磁盘上的东西——
     // 审计链里的通知与触发、调度状态目录、ESTOP 文件。没在这里跑过 `qm watch`
@@ -1331,6 +1400,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(handoffGit === undefined ? {} : { handoffGit }),
     ...(providersPort === undefined ? {} : { providers: providersPort }),
     ...(desktop === undefined ? {} : { desktop }),
+    ...(elevation === undefined ? {} : { elevation }),
     ...(routing === undefined ? {} : { routing }),
     binName: 'qm',
     // 横幅里那几条身份与接线事实，原样交给「设置与关于」（A4）：页面答得出

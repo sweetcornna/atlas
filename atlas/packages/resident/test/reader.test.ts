@@ -687,3 +687,134 @@ describe('resident mailbox admission', () => {
     expect(reads).toBe(2)
   })
 })
+
+describe('a batch waiting at the gate (P38)', () => {
+  const MAIN = SESSION_ID
+  const WORKER = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff'
+
+  /** Ids the ledger can tell apart, one per detected batch. */
+  function ids(): () => string {
+    let n = 0
+    return () => `11111111-2222-4333-8444-${String(++n).padStart(12, '0')}`
+  }
+
+  /** A turn of `sessionId` the test holds open on the gate, and its release. */
+  function occupy(gate: NodeTurnGate, sessionId: string) {
+    let release!: () => void
+    const done = gate.run(
+      () =>
+        new Promise<void>(resolve => {
+          release = resolve
+        }),
+      { sessionId },
+    )
+    return { release: () => release(), done }
+  }
+
+  test("does not hold up this agent's next poll, and its messages are not taken twice", async () => {
+    const worker = message({ text: 'for the worker session' })
+    const person = message({
+      text: 'for the main session',
+      timestamp: '2026-08-12T00:01:00.000Z',
+    })
+    const mailbox = new MemoryMailbox([worker, person])
+    const turn = new MemoryTurn()
+    const gate = new NodeTurnGate({ maxTurns: 3 })
+    const busy = occupy(gate, WORKER)
+    const mailboxReader = reader(mailbox, turn, {
+      gate,
+      newMessageId: ids(),
+      resolveSession: batch =>
+        batch[0]!.text.includes('worker') ? WORKER : MAIN,
+      selectSnapshot: batch => batch.slice(0, 1),
+    })
+
+    // The worker session is busy: its batch waits at the gate, and the poll
+    // returns instead of waiting with it.
+    expect(await mailboxReader.poll()).toEqual({
+      detected: 1,
+      recovered: 0,
+      read: 0,
+      abandoned: 0,
+    })
+    expect(gate.queued).toBe(1)
+    // The next poll neither recovers that batch nor takes it again: it reads
+    // the person's message and starts its turn at once.
+    expect(await mailboxReader.poll()).toEqual({
+      detected: 1,
+      recovered: 0,
+      read: 1,
+      abandoned: 0,
+    })
+    expect(turn.executeCalls.map(call => call.sessionId)).toEqual([MAIN])
+    expect(mailbox.messages.map(item => item.read)).toEqual([false, true])
+    // Nothing more to take while the worker's batch waits.
+    expect(await mailboxReader.poll()).toEqual({
+      detected: 0,
+      recovered: 0,
+      read: 0,
+      abandoned: 0,
+    })
+
+    busy.release()
+    await busy.done
+    await turnSettled(mailboxReader)
+    expect(turn.executeCalls.map(call => call.sessionId)).toEqual([
+      MAIN,
+      WORKER,
+    ])
+    expect(mailbox.messages.map(item => item.read)).toEqual([true, true])
+    expect(ledger.query().pending).toEqual([])
+  })
+
+  test('an identical copy waits until the batch holding the first one is read', async () => {
+    const mailbox = new MemoryMailbox([message(), message()])
+    const turn = new MemoryTurn()
+    const gate = new NodeTurnGate({ maxTurns: 2 })
+    const busy = occupy(gate, SESSION_ID)
+    const mailboxReader = reader(mailbox, turn, {
+      gate,
+      newMessageId: ids(),
+      selectSnapshot: batch => batch.slice(0, 1),
+    })
+
+    expect((await mailboxReader.poll()).detected).toBe(1)
+    expect((await mailboxReader.poll()).detected).toBe(0)
+    busy.release()
+    await busy.done
+    await turnSettled(mailboxReader)
+    expect(mailbox.messages.map(item => item.read)).toEqual([true, false])
+    // Read now: the copy is the next batch, and flips only itself.
+    expect(await mailboxReader.poll()).toMatchObject({ detected: 1, read: 1 })
+    expect(mailbox.messages.map(item => item.read)).toEqual([true, true])
+    expect(turn.executeCalls).toHaveLength(2)
+  })
+
+  test('a waiting batch the gate drops reaches the error callback, and a later poll recovers it', async () => {
+    let clock = Date.now()
+    const gate = new NodeTurnGate({ now: () => clock, maxTurns: 2 })
+    const busy = occupy(gate, SESSION_ID)
+    const mailbox = new MemoryMailbox([message()])
+    const turn = new MemoryTurn()
+    const errors: unknown[] = []
+    const mailboxReader = reader(mailbox, turn, {
+      gate,
+      newMessageId: ids(),
+      deadlineOf: () => clock + 10,
+      onTurnError: error => {
+        errors.push(error)
+      },
+    })
+
+    expect((await mailboxReader.poll()).read).toBe(0)
+    clock += 11
+    busy.release()
+    await busy.done
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(errors).toHaveLength(1)
+    expect((errors[0] as Error).name).toBe('NodeTurnExpiredError')
+    expect(turn.executeCalls).toHaveLength(0)
+    // No longer this life's own: the record is recovered as before.
+    expect((await mailboxReader.poll()).recovered).toBe(1)
+  })
+})

@@ -115,20 +115,45 @@ describe.skipIf(SKIP !== null)('云端电脑 in a browser', () => {
       ).toStartWith('data:image/png;base64,')
       expect(
         await tab.evaluate<string>(`${q('#desktop-screen-title')}.textContent`),
-      ).toBe('屏幕 · planner · tokyo-1')
+      ).toBe('画面 · planner · tokyo-1')
       await tab.evaluate(
         click('#desktop-screen [data-action="confirm-cancel"]'),
       )
       await tab.waitFor(`!${q('#desktop-screen')}.open`)
       // Closing lets go of the large copy (the close event comes a task later).
       await tab.waitFor(`!${q('#desktop-screen-img')}.hasAttribute('src')`)
+      // 查看画面 on the card opens the same picture, with how old it is.
+      await tab.evaluate(
+        click('[data-key="tokyo-1/planner"] [data-action="desktop-view"]'),
+      )
+      await tab.waitFor(`${q('#desktop-screen')}.open`)
+      expect(
+        await tab.evaluate<string>(`${q('#desktop-screen-at')}.textContent`),
+      ).toMatch(/^截于 \d\d:\d\d:\d\d · 不是实时画面$/)
+      await tab.evaluate(
+        click('#desktop-screen [data-action="confirm-cancel"]'),
+      )
+      await tab.waitFor(`!${q('#desktop-screen')}.open`)
+      // 打开浏览器 turns the browser on in one step.
+      await tab.evaluate(
+        click('[data-key="osaka-1/writer"] [data-action="desktop-open"]'),
+      )
+      const deadline = Date.now() + 5_000
+      while (
+        !s.desktop.calls.some(c => c.startsWith('set osaka-1/writer')) &&
+        Date.now() < deadline
+      )
+        await Bun.sleep(50)
+      expect(
+        s.desktop.calls.find(c => c.startsWith('set osaka-1/writer')),
+      ).toContain('"browser":true')
     } finally {
       await tab.close()
       s.stop()
     }
   }, 30_000)
 
-  test('no screenshot yet reads 暂无画面; a node too old for screens says so', async () => {
+  test('no screenshot yet reads 还没有截图; a node too old for screens says so', async () => {
     const s = await serve()
     s.desktop.screens.clear()
     const tab = await browser.tab()
@@ -145,7 +170,7 @@ describe.skipIf(SKIP !== null)('云端电脑 in a browser', () => {
         await tab.evaluate<string>(
           `${q(`${SHOT} .dk-shot-empty`)}.textContent`,
         ),
-      ).toBe('暂无画面')
+      ).toBe('还没有截图')
       expect(await tab.evaluate<boolean>(`${q(`${SHOT} img`)}.hidden`)).toBe(
         true,
       )

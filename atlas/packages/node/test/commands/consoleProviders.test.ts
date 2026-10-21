@@ -214,6 +214,7 @@ function compiledDefaultContext(wire: WireProfile): number | undefined {
       replayFilter: false,
       multiKey: false,
       laneAddresses: false,
+      tierRouting: false,
     },
   })
   if (!compiled.ok) throw new Error(JSON.stringify(compiled.error))
@@ -1023,7 +1024,7 @@ describe('P33: lane addresses', () => {
         revision: asked ? 2 : 1,
         routing: {
           auto: false,
-          routes: { fast: { profileId: 'luna', modelId: 'gpt-6-luna' } },
+          routes: { simple: { profileId: 'luna', modelId: 'gpt-6-luna' } },
         },
       }
     })
@@ -1852,7 +1853,7 @@ test('P22 apply sends routed profiles once with their own keys and reports an ol
     revision: 1,
     routing: {
       auto: true,
-      routes: { chat: { profileId: 'chat-other', modelId: 'gpt-6-luna' } },
+      routes: { medium: { profileId: 'chat-other', modelId: 'gpt-6-luna' } },
     },
   }))
   h.nodes['beta-1'].set(
@@ -1872,11 +1873,44 @@ test('P22 apply sends routed profiles once with their own keys and reports an ol
   const profiles = request.profiles as WireProfile[]
   expect(profiles.map(p => p.id)).toEqual(['chat-other'])
   expect(profiles[0]?.auth.keys[0]).toEqual({ id: 'k1', value: CANARY_2 })
+  // A node that has not said tierRouting (P38) takes the P22 names: the
+  // medium tier on both code and chat.
   expect(request.routing).toEqual({
     auto: true,
-    routes: { chat: { profileId: 'chat-other', modelId: 'gpt-6-luna' } },
+    routes: {
+      code: { profileId: 'chat-other', modelId: 'gpt-6-luna' },
+      chat: { profileId: 'chat-other', modelId: 'gpt-6-luna' },
+    },
   })
   expect(JSON.stringify(results)).not.toContain(CANARY_2)
+}, 30000)
+
+test('P38: a node that says tierRouting takes the tiers with their effort; one not heard from yet is asked first', async () => {
+  const h = harness()
+  await savedWithKey(h)
+  value(await h.port.setDefault({ profileId: 'luna' }, h.caller()))
+  const tiers = {
+    complex: { profileId: 'luna', modelId: 'gpt-6-luna', effort: 'high' },
+    simple: { profileId: 'luna', modelId: 'gpt-6-luna' },
+  } as const
+  h.port.configureRouting(() => ({
+    revision: 1,
+    routing: { auto: false, routes: tiers },
+  }))
+  const node = h.nodes['beta-1']
+  node.set('tier-routing', '1')
+  const [result] = value(await h.port.apply({ nodes: ['beta-1'] }, h.caller()))
+  expect(result?.outcome).toBe('ok')
+  // The effort made the hub ask for the capabilities before shipping.
+  const ops = node.requests().map(request => request.op)
+  expect(ops.indexOf('status')).toBeGreaterThanOrEqual(0)
+  expect(ops.indexOf('status')).toBeLessThan(ops.indexOf('apply'))
+  expect(
+    node
+      .requests()
+      .filter(request => request.op === 'apply')
+      .at(-1)?.routing,
+  ).toEqual({ auto: false, routes: tiers })
 }, 30000)
 
 test('P22 apply under a routing revision: a moved book is refused before any node is asked, a save mid-apply refuses the nodes after it', async () => {

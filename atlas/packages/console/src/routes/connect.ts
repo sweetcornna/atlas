@@ -190,8 +190,8 @@ async function connectFragment(
 export const connectRoute: RouteModule = {
   area: {
     id: 'connect',
-    label: '连接',
-    group: 'main',
+    label: '应用连接',
+    group: 'manage',
     href: '/admin/connect',
     icon: 'plug',
   },
@@ -209,7 +209,7 @@ export const connectRoute: RouteModule = {
       ) {
         return notFound(`unknown path: ${ctx.url.pathname}`)
       }
-      return { title: '连接', body: pageBody(await modelOf(ctx)) }
+      return { title: '应用连接', body: pageBody(await modelOf(ctx)) }
     },
     css: KIT_CSS + CONNECT_PAGE_CSS,
     script: CONNECT_PAGE_JS,

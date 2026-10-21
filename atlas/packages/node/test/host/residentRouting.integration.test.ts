@@ -50,10 +50,10 @@ async function runRouting(real = false) {
     async fetch(request) {
       const body = (await request.json()) as Record<string, unknown>
       const text = JSON.stringify(body.messages)
-      const marker = text.includes('P22_CHAT_MARKER')
-        ? 'chat'
-        : text.includes('P22_CODE_MARKER')
-          ? 'code'
+      const marker = text.includes('P38_SIMPLE_MARKER')
+        ? 'simple'
+        : text.includes('P38_MEDIUM_MARKER')
+          ? 'medium'
           : ''
       if (body.stream && marker)
         calls.push({ marker, effort: body.reasoning_effort, model: body.model })
@@ -129,17 +129,22 @@ async function runRouting(real = false) {
   const auditPath = path.join(config, 'audit.ndjson')
   const audit = new AuditTrail(auditPath)
   try {
-    const primary = profile('route-code', 'high')
+    const primary = profile('route-medium', 'high')
     const staged = stageProviderApply(
       applyRequest({
         node: 'node-b',
         profile: primary,
-        profiles: [profile('route-chat', 'low')],
+        // The simple tier's own effort (P38) wins over its profile's level.
+        profiles: [profile('route-simple', 'high')],
         routing: {
           auto: true,
           routes: {
-            code: { profileId: 'route-code', modelId: 'gpt-6-luna' },
-            chat: { profileId: 'route-chat', modelId: 'gpt-6-luna' },
+            medium: { profileId: 'route-medium', modelId: 'gpt-6-luna' },
+            simple: {
+              profileId: 'route-simple',
+              modelId: 'gpt-6-luna',
+              effort: 'low',
+            },
           },
         },
       }),
@@ -184,8 +189,8 @@ async function runRouting(real = false) {
     })
     await client.connect()
     for (const [marker, prompt] of [
-      ['code', 'P22_CODE_MARKER 修复代码：只回复 pong，不使用工具。'],
-      ['chat', 'P22_CHAT_MARKER 你好：只回复 pong。'],
+      ['medium', 'P38_MEDIUM_MARKER 修复代码：只回复 pong，不使用工具。'],
+      ['simple', 'P38_SIMPLE_MARKER 翻译成英文：只回复 pong。'],
     ] as const) {
       const message = createMessage({
         type: MessageType.TaskRequest,
@@ -210,15 +215,17 @@ async function runRouting(real = false) {
       expect(route.detail).toMatchObject({
         direction: marker,
         source: 'auto',
-        thinkingLevel: marker === 'code' ? 'high' : 'low',
+        thinkingLevel: marker === 'medium' ? 'high' : 'low',
       })
       expect(route.detail.model).toStartWith(`qm-route-${marker}-`)
       expect(calls.filter(c => c.marker === marker).at(-1)).toMatchObject({
-        effort: marker === 'code' ? 'high' : 'low',
+        effort: marker === 'medium' ? 'high' : 'low',
         model: 'gpt-6-luna',
       })
     }
-    expect(fs.readFileSync(auditPath, 'utf8')).not.toContain('P22_CODE_MARKER')
+    expect(fs.readFileSync(auditPath, 'utf8')).not.toContain(
+      'P38_MEDIUM_MARKER',
+    )
     expect(fs.readFileSync(auditPath, 'utf8')).not.toContain(key)
     expect(errors).toEqual([])
     // Safe evidence only: no endpoints, prompts or key values.
@@ -238,12 +245,12 @@ async function runRouting(real = false) {
   }
 }
 test(
-  'real resident RPC switches same-session code/chat providers and actual wire efforts',
+  'real resident RPC switches same-session medium/simple tier providers and actual wire efforts',
   () => runRouting(),
   180000,
 )
 test.skipIf(!realKey)(
-  'api2 real-key resident matches code/high and chat/low audit to wire',
+  'api2 real-key resident matches medium/high and simple/low audit to wire',
   () => runRouting(true),
   300000,
 )

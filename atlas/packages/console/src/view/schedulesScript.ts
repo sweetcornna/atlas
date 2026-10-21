@@ -135,7 +135,7 @@ export const SCHEDULES_PAGE_JS = `
   var TIME = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
   var RULES = {
     title: function (v) { return v ? '' : '必填'; },
-    target: function (v) { return v ? '' : '请选择智能体'; },
+    target: function (v) { return v ? '' : '选一个智能体'; },
     prompt: function (v) { return v ? '' : '必填'; }
   };
 

@@ -53,7 +53,12 @@ test('save is durable/private, preserves unpatched directions and records the Di
       auto: true,
       revision: 0,
       routes: [
-        { direction: 'chat', profileId: 'chat', modelId: 'vendor-model-pro' },
+        {
+          direction: 'medium',
+          profileId: 'chat',
+          modelId: 'vendor-model-pro',
+          effort: null,
+        },
       ],
     },
     actor,
@@ -64,7 +69,7 @@ test('save is durable/private, preserves unpatched directions and records the Di
   if (!snap.ok) throw new Error(snap.failure.message)
   expect(snap.value.defaults.auto).toBe(true)
   expect(
-    snap.value.defaults.routes.find(r => r.direction === 'chat')?.profileId,
+    snap.value.defaults.routes.find(r => r.direction === 'medium')?.profileId,
   ).toBe('chat')
   expect(
     snap.value.models.find(m => m.profileId === 'openai-images')?.kind,
@@ -95,9 +100,10 @@ test('stale revisions from another instance reject and node clear cannot resurre
     revision: 0,
     routes: [
       {
-        direction: 'chat' as const,
+        direction: 'medium' as const,
         profileId: 'chat',
         modelId: 'vendor-model-pro',
+        effort: null,
       },
     ],
   }
@@ -117,7 +123,12 @@ test('partial node routes inherit defaults, then explicit null clears just that 
       auto: true,
       revision: 0,
       routes: [
-        { direction: 'chat', profileId: 'chat', modelId: 'vendor-model-pro' },
+        {
+          direction: 'medium',
+          profileId: 'chat',
+          modelId: 'vendor-model-pro',
+          effort: null,
+        },
       ],
     },
     actor,
@@ -129,54 +140,103 @@ test('partial node routes inherit defaults, then explicit null clears just that 
       revision: 1,
       routes: [
         {
-          direction: 'code',
+          direction: 'complex',
           profileId: 'vendor-paygo',
           modelId: 'vendor-model-pro',
+          effort: 'high',
         },
       ],
     },
     actor,
   )
   if (!node.ok) throw new Error(node.failure.message)
-  expect(node.value.routes.find(r => r.direction === 'chat')?.profileId).toBe(
+  expect(node.value.routes.find(r => r.direction === 'medium')?.profileId).toBe(
     'chat',
+  )
+  expect(node.value.routes.find(r => r.direction === 'complex')?.effort).toBe(
+    'high',
   )
   const cleared = await port.save(
     {
       node: 'node-a',
       auto: false,
       revision: 2,
-      routes: [{ direction: 'chat', profileId: null, modelId: null }],
+      routes: [
+        { direction: 'medium', profileId: null, modelId: null, effort: null },
+      ],
     },
     actor,
   )
   if (!cleared.ok) throw new Error(cleared.failure.message)
   expect(
-    cleared.value.routes.find(r => r.direction === 'chat')?.profileId,
+    cleared.value.routes.find(r => r.direction === 'medium')?.profileId,
   ).toBeNull()
 })
 test('invalid references, kinds, half-null references, duplicate directions and unauthorized actors reject without changing the book', async () => {
   const { port, options } = setup()
+  const medium = 'medium' as const
   for (const routes of [
     [
       {
-        direction: 'chat' as const,
+        direction: medium,
         profileId: 'missing',
         modelId: 'vendor-model-pro',
+        effort: null,
       },
     ],
-    [{ direction: 'chat' as const, profileId: 'chat', modelId: 'missing' }],
     [
       {
-        direction: 'chat' as const,
-        profileId: 'openai-images',
-        modelId: 'gpt-image-2',
+        direction: medium,
+        profileId: 'chat',
+        modelId: 'missing',
+        effort: null,
       },
     ],
-    [{ direction: 'code' as const, profileId: null, modelId: 'x' }],
     [
-      { direction: 'chat' as const, profileId: null, modelId: null },
-      { direction: 'chat' as const, profileId: null, modelId: null },
+      {
+        direction: medium,
+        profileId: 'openai-images',
+        modelId: 'gpt-image-2',
+        effort: null,
+      },
+    ],
+    [
+      {
+        direction: 'complex' as const,
+        profileId: null,
+        modelId: 'x',
+        effort: null,
+      },
+    ],
+    [
+      { direction: medium, profileId: null, modelId: null, effort: null },
+      { direction: medium, profileId: null, modelId: null, effort: null },
+    ],
+    // P38: an effort the model does not take, an effort on following the
+    // main model, an effort on a media model.
+    [
+      {
+        direction: medium,
+        profileId: 'chat',
+        modelId: 'vendor-model-pro',
+        effort: 'medium' as const,
+      },
+    ],
+    [
+      {
+        direction: medium,
+        profileId: null,
+        modelId: null,
+        effort: 'high' as const,
+      },
+    ],
+    [
+      {
+        direction: 'image' as const,
+        profileId: 'openai-images',
+        modelId: 'gpt-image-2',
+        effort: 'high' as const,
+      },
     ],
   ])
     expect(
@@ -236,7 +296,8 @@ test('snapshot reads model.route from attached audit ports, keeps latest twenty 
                   outcome: 'ok' as const,
                   detail: {
                     agent: 'main',
-                    direction: 'chat',
+                    // A node older than P38 still writes the P22 name.
+                    direction: i % 2 === 0 ? 'chat' : 'plan',
                     source: 'auto',
                     model: 'qm-chat-1234/model',
                     prompt: 'must not be returned',
@@ -254,6 +315,10 @@ test('snapshot reads model.route from attached audit ports, keeps latest twenty 
   expect(snapshot.value.recent).toHaveLength(20)
   expect(snapshot.value.recent[0]?.at).toBe(24)
   expect(snapshot.value.recent[19]?.at).toBe(5)
+  expect(snapshot.value.recent.map(r => r.direction).slice(0, 2)).toEqual([
+    'medium',
+    'complex',
+  ])
   expect(JSON.stringify(snapshot.value)).not.toContain('must not')
 })
 
@@ -315,4 +380,88 @@ test('expired live locks recover and releasing an old owner preserves the replac
   fs.writeFileSync(lockPath, other)
   lock.release()
   expect(fs.readFileSync(lockPath, 'utf8')).toBe(other)
+})
+
+test('a v1 book (the eight P22 directions) reads as the tiers and is written back as v2', async () => {
+  const { port, options } = setup()
+  const v1 = (node: string | null, picks: Record<string, string>) => ({
+    node,
+    auto: true,
+    routes: [
+      'code',
+      'chat',
+      'plan',
+      'fast',
+      'vision',
+      'image',
+      'speech',
+      'video',
+    ].map(direction => ({
+      direction,
+      profileId: picks[direction] === undefined ? null : 'chat',
+      modelId: picks[direction] ?? null,
+    })),
+    revision: 3,
+    updatedAt: 500,
+    updatedBy: 'u:0123456789abcdef',
+  })
+  fs.writeFileSync(
+    options.path,
+    JSON.stringify({
+      v: 1,
+      defaults: v1(null, {
+        chat: 'vendor-model-pro',
+        plan: 'vendor-model-pro',
+        vision: 'vendor-model-pro',
+      }),
+      nodes: [
+        v1('node-a', { code: 'vendor-model-pro', fast: 'vendor-model-flash' }),
+      ],
+      revision: 3,
+    }),
+    { mode: 0o600 },
+  )
+  const snap = await port.snapshot()
+  if (!snap.ok) throw new Error(snap.failure.message)
+  const picked = (
+    routes: readonly { direction: string; modelId: string | null }[],
+  ) => Object.fromEntries(routes.map(r => [r.direction, r.modelId]))
+  expect(picked(snap.value.defaults.routes)).toEqual({
+    complex: 'vendor-model-pro',
+    medium: 'vendor-model-pro',
+    simple: null,
+    image: null,
+    speech: null,
+    video: null,
+  })
+  expect(picked(port.effective('node-a').routes)).toMatchObject({
+    complex: null,
+    medium: 'vendor-model-pro',
+    simple: 'vendor-model-flash',
+  })
+  // Reading leaves the file as it was; the next write moves it to v2.
+  expect(JSON.parse(fs.readFileSync(options.path, 'utf8')).v).toBe(1)
+  const saved = await port.save(
+    { node: null, auto: false, revision: 3, routes: [] },
+    actor,
+  )
+  expect(saved.ok).toBe(true)
+  const book = JSON.parse(fs.readFileSync(options.path, 'utf8'))
+  expect(book.v).toBe(2)
+  expect(
+    book.nodes[0].routes.map((r: { direction: string }) => r.direction),
+  ).toEqual(['complex', 'medium', 'simple', 'image', 'speech', 'video'])
+})
+test('the snapshot offers each model the efforts it takes', async () => {
+  const { port } = setup()
+  const snap = await port.snapshot()
+  if (!snap.ok) throw new Error(snap.failure.message)
+  expect(
+    snap.value.models.find(
+      m => m.profileId === 'chat' && m.modelId === 'vendor-model-pro',
+    )?.efforts,
+  ).toEqual(['low', 'high', 'max'])
+  expect(
+    snap.value.models.find(m => m.profileId === 'openai-images')?.efforts,
+  ).toEqual([])
 })

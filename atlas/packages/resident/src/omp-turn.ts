@@ -278,6 +278,16 @@ interface ActiveTurn {
   lastStopReason: string | undefined
   /** The runtime said it compacted the context during this turn. */
   compacted: boolean
+  /** The input is durable in the transcript and the reader was told. */
+  accepted: boolean
+  /** The turn's own prompt yielded: nothing more is steered into it. */
+  yielded: boolean
+  /**
+   * Counts a steer on its way to omp (P38): the turn does not end before omp
+   * answered it, nor before the `prompt_result` of every steered prompt it
+   * took. Set once the turn has a channel.
+   */
+  steering?: () => (requestId: string | undefined) => void
 }
 
 /**
@@ -328,9 +338,10 @@ function compactionFrame(frame: OmpRpcFrame): boolean {
  * | compaction        | `auto_compaction_end` with a result, or an external runtime's `runtime_status` (see {@link compactionFrame}) |
  * | crash recovery    | {@link OmpTurnRouter.isAccepted} (identity entry scan)        |
  *
- * The node gate already serializes turns, so a channel carries at most one
- * turn of ours at a time; frames that arrive while no turn is active (a late
- * frame of an aborted run) are ignored apart from touching the watchdog.
+ * The node gate never runs two turns of one session at once, so a channel
+ * carries at most one turn of ours at a time; frames that arrive while no
+ * turn is active (a late frame of an aborted run) are ignored apart from
+ * touching the watchdog.
  */
 export class OmpResidentTurnPort implements ResidentTurnPort {
   readonly #router: OmpTurnRouter
@@ -502,6 +513,44 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
     return false
   }
 
+  /**
+   * Hands `text` to the running turn admitted from network message
+   * `networkMsgId`, where its runtime takes input mid-turn (P38): the model
+   * reads it at its next step boundary and the turn's answer covers it.
+   * `not_running` when no such turn is running, its input is not durable
+   * yet, or it already yielded — the caller then waits for the next turn;
+   * `unsupported` when its runtime has no way in (an external runtime).
+   */
+  async steer(
+    networkMsgId: string,
+    text: string,
+  ): Promise<'steered' | 'not_running' | 'unsupported'> {
+    for (const [sessionId, active] of this.#active) {
+      if (active.input.networkMsgId !== networkMsgId) continue
+      const channel = this.#channels.get(sessionId)
+      if (
+        channel === undefined ||
+        active.steering === undefined ||
+        !active.accepted ||
+        active.yielded
+      )
+        return 'not_running'
+      if (channel.steer === undefined) return 'unsupported'
+      const done = active.steering()
+      let requestId: string | undefined
+      try {
+        const admitted = await channel.steer({ text })
+        if (admitted.agentInvoked) requestId = admitted.requestId
+        return 'steered'
+      } catch {
+        return 'not_running'
+      } finally {
+        done(requestId)
+      }
+    }
+    return 'not_running'
+  }
+
   async execute(
     input: ResidentTurnInput,
     onAccepted: () => Promise<void>,
@@ -532,6 +581,7 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
         if (!this.#active.has(input.sessionId))
           throw new Error('omp turn ended before durable input admission')
         await onAccepted()
+        active.accepted = true
       })()
       return admission
     }
@@ -546,6 +596,8 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
       announcedTools: new Set<string>(),
       lastStopReason: undefined,
       compacted: false,
+      accepted: false,
+      yielded: false,
     }
     const acquisition = new AbortController()
     this.#acquisitions.set(input.sessionId, acquisition)
@@ -622,6 +674,12 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
    * turn is missed, and resolve on this prompt's `prompt_result`. Results are
    * buffered by id until the prompt's own id is known: the response that
    * carries it and the `prompt_result` can be dispatched in the same tick.
+   *
+   * A prompt steered into the turn (P38, {@link OmpResidentTurnPort.steer})
+   * holds the end back until its own `prompt_result` is in as well: queued
+   * into the live run it completes at the same yield; arriving just after
+   * the yield it starts the next run, which then belongs to this turn too.
+   * Either way the session never runs a run nobody is waiting for.
    */
   #awaitOutcome(
     channel: OmpRpcChannel,
@@ -635,6 +693,9 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
     const sessionId = active.input.sessionId
     const results = new Map<string, OmpRpcFrame>()
     let requestId: string | undefined
+    /** Steered prompts omp took, and steers still on their way to it. */
+    const steered = new Set<string>()
+    let steering = 0
     let resolve!: (frame: OmpRpcFrame) => void
     let reject!: (error: unknown) => void
     const result = new Promise<OmpRpcFrame>((res, rej) => {
@@ -642,16 +703,32 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
       reject = rej
     })
     result.catch(() => {})
+    const settle = () => {
+      if (requestId === undefined || steering > 0) return
+      const own = results.get(requestId)
+      if (own === undefined) return
+      for (const id of steered) if (!results.has(id)) return
+      resolve(own)
+    }
     const unsubscribe = channel.onFrame(frame => {
       this.#inactivity?.touch(sessionId)
       if (frame.type === 'prompt_result') {
         if (typeof frame.id !== 'string') return
-        if (requestId === undefined) results.set(frame.id, frame)
-        else if (frame.id === requestId) resolve(frame)
+        results.set(frame.id, frame)
+        if (frame.id === requestId) active.yielded = true
+        settle()
         return
       }
       this.#handleFrame(active, frame, accept)
     })
+    active.steering = () => {
+      steering += 1
+      return id => {
+        steering -= 1
+        if (id !== undefined) steered.add(id)
+        settle()
+      }
+    }
     void channel.closed.then(
       () => reject(new Error('resident omp child exited during the turn')),
       error =>
@@ -665,9 +742,8 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
       result,
       admitted: id => {
         requestId = id
-        const early = results.get(id)
-        if (early !== undefined) resolve(early)
-        results.clear()
+        if (results.has(id)) active.yielded = true
+        settle()
       },
       unsubscribe,
     }

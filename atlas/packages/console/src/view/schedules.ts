@@ -288,7 +288,7 @@ function pushedLine(
 function resolveActions(run: ScheduleRunView): string {
   const data = { id: run.scheduleId, run: run.runId }
   return (
-    `<div class="run-unknown"><p class="note">没有收到这一次的结果（本地等待超时或服务重启过）。智能体可能还在做；确认之前，这个任务不会再发。</p>` +
+    `<div class="run-unknown"><p class="note">没有收到这次的结果 · 本地等待超时或服务重启过 · 智能体可能还在做 · 确认之前不会再发</p>` +
     `<span class="kit-acts">` +
     actionButton('run-resolve', '确认失败', {
       tone: 'ghost',
@@ -493,7 +493,7 @@ export function renderSchedules(
     snapshot.schedules.length === 0
       ? emptyState(
           '还没有定时任务',
-          '让智能体每天早上整理一份简报，或者定时跟进待办和邮件 · 结果会推送到通知渠道',
+          '让智能体每天早上整理简报 · 或定时跟进待办和邮件 · 结果推送到通知渠道',
           roles.member
             ? `<div>${actionButton('schedule-new', '新建定时任务', { glyph: 'plus', tone: 'primary', small: false })}</div>`
             : '',
@@ -550,10 +550,9 @@ export function scheduleDialog(
       ? [['', '没有可选的智能体']]
       : snapshot.targets.map(target => [target, target] as const)
   const directions: readonly (readonly [string, string])[] = [
-    ['', '跟随任务分工的默认'],
+    ['', '不指定难度'],
     ...Object.entries(DIRECTION_WORD).filter(
-      ([key]) =>
-        key === 'chat' || key === 'code' || key === 'plan' || key === 'fast',
+      ([key]) => key === 'complex' || key === 'medium' || key === 'simple',
     ),
   ]
   const channels = snapshot.channels.map(one => [one.id, one.name] as const)
@@ -606,9 +605,9 @@ export function scheduleDialog(
       WEEKDAY.map((day, index) => [String(index + 1), `周${day}`] as const),
       ['1', '2', '3', '4', '5'],
     )}</div>` +
-    `<details class="adv"><summary>${icon('chevron-down', { small: true, cls: 'chev' })}更多 · 模型方向 通知 超时</summary>` +
+    `<details class="adv"><summary>${icon('chevron-down', { small: true, cls: 'chev' })}更多 · 难度 通知 超时</summary>` +
     `<div class="adv-body">` +
-    selectField('direction', '模型方向', directions) +
+    selectField('direction', '任务难度', directions) +
     textField('timeoutMinutes', '超时分钟', {
       type: 'number',
       value: '10',

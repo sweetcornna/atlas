@@ -49,9 +49,18 @@ describe('云端电脑', () => {
     }
     expect(html).toContain('id="dk-browser-tokyo-1-planner"')
     expect(html).toContain('id="dk-computer-tokyo-1-planner"')
-    // macOS: a browser only, said so, no switch for a computer.
-    expect(html).not.toContain('id="dk-computer-osaka-1-writer"')
-    expect(text).toContain('macOS 节点只提供浏览器')
+    // An older macOS node has no computer: the switch stays, off and
+    // disabled, with why.
+    expect(html).toMatch(/id="dk-computer-osaka-1-writer"[^>]* disabled/)
+    expect(text).toContain('这台 macOS 节点的版本还不提供电脑 · 升级节点后可用')
+    // Nothing runs for writer: its one button turns the browser on.
+    expect(card(html, 'osaka-1/writer')).toContain(
+      'data-action="desktop-open" data-node="osaka-1" data-agent="writer" data-write>打开浏览器',
+    )
+    // Something runs for planner: its one button shows the picture, to anyone.
+    expect(card(html, 'tokyo-1/planner')).toMatch(
+      /data-action="desktop-view" data-node="tokyo-1" data-agent="planner">.*查看画面/,
+    )
     // An agent whose node is away cannot be switched.
     expect(html).toMatch(/id="dk-browser-berlin-1-helper"[^>]* disabled/)
     expect(text).toContain('连不上')
@@ -70,7 +79,13 @@ describe('云端电脑', () => {
     expect(html).not.toContain('data-desktop-confirm')
     expect(html).not.toContain('desktop-recycle')
     expect(html).not.toContain('data-write')
-    expect(visibleText(html)).toContain('只看自动 · 其余逐次确认')
+    expect(visibleText(html)).toContain('动手前确认')
+    expect(visibleText(html)).toContain(
+      '看屏幕不问 · 点击 输入 打开网址逐次问你',
+    )
+    // 查看画面 is for every reader; 打开浏览器 is a change.
+    expect(html).toContain('data-action="desktop-view"')
+    expect(html).not.toContain('data-action="desktop-open"')
   })
 
   test('the admin token gets switches, the confirmation choice and recycling for what is on', async () => {
@@ -125,14 +140,10 @@ describe('云端电脑 · 像人一样操作 (§6)', () => {
       /value="sensitive" data-desktop-confirm[^>]* checked/,
     )
     const text = visibleText(planner)
-    for (const word of [
-      '只看自动 · 其余逐次确认',
-      '每一步都确认',
-      '自主 · 只确认有后果的操作',
-    ])
+    for (const word of ['动手前确认', '每一步都确认', '只确认有后果的操作'])
       expect(text).toContain(word)
     expect(visibleText(card(html, 'kyoto-1/designer'))).toContain(
-      '自主 · 只确认有后果的操作',
+      '只确认有后果的操作',
     )
     // A node from before §6 refuses `autonomous`: not offered there.
     const old = card(html, 'osaka-1/writer')
@@ -140,7 +151,7 @@ describe('云端电脑 · 像人一样操作 (§6)', () => {
     expect(old).not.toContain('value="autonomous"')
     const view = withoutScripts(await read(handle, '/admin/desktop', VIEW))
     expect(visibleText(card(view, 'kyoto-1/designer'))).toContain(
-      '自主 · 只确认有后果的操作',
+      '只确认有后果的操作',
     )
   })
 
@@ -172,7 +183,7 @@ describe('云端电脑 · 像人一样操作 (§6)', () => {
     )
     expect(planner).not.toMatch(/data-desktop-terminal[^>]* checked/)
     expect(html).toContain('id="desktop-apps-form"')
-    expect(text).not.toContain('本机桌面只能操作列表里的应用')
+    expect(text).not.toContain('现有的 Mac 桌面')
   })
 
   test('a reader sees the same facts as words, and no control to change them', async () => {
@@ -236,7 +247,9 @@ describe('云端电脑 · 像人一样操作 (§6)', () => {
     const designer = card(html, 'kyoto-1/designer')
     const text = visibleText(designer).replace(/\s+/g, ' ')
     expect(text).toContain('桌面 本机桌面')
-    expect(text).toContain('本机桌面只能操作列表里的应用')
+    expect(text).toContain(
+      '操作的是这台节点现有的 Mac 桌面 · 只能用列表里的应用',
+    )
     expect(text).toContain('应用 未列出')
     expect(text).toContain('无障碍 不可用')
     // No private display: no window manager, no confinement, no terminal row.
@@ -259,12 +272,13 @@ describe('云端电脑 · 像人一样操作 (§6)', () => {
     expect(planner).toContain(
       'class="dk-shot" data-action="desktop-screen" data-node="tokyo-1" data-agent="planner" data-desktop-screen aria-label="放大查看"',
     )
-    expect(visibleText(planner)).toContain('屏幕')
-    expect(visibleText(planner)).toContain('暂无画面')
+    expect(visibleText(planner)).toContain('最近的画面')
+    expect(visibleText(planner)).toContain('还没有截图')
     // The fragment carries no picture: the page asks for it on its own.
     expect(planner).not.toContain('data:image')
-    // The computer is off: no frame. A browser alone has no screen here.
-    expect(card(html, 'kyoto-1/designer')).not.toContain('dk-shot')
+    // A browser alone has a picture too (desktop.view takes the newest of either).
+    expect(card(html, 'kyoto-1/designer')).toContain('data-desktop-screen')
+    // Nothing on: no frame.
     expect(card(html, 'osaka-1/writer')).not.toContain('dk-shot')
   })
 
@@ -273,6 +287,7 @@ describe('云端电脑 · 像人一样操作 (§6)', () => {
     const planner = desktop.units[0]!
     desktop.units[0] = {
       ...planner,
+      browser: { ...planner.browser, state: 'starting' },
       computer: { ...planner.computer, state: 'starting' },
     }
     const { handle } = wired(desktop)
@@ -282,7 +297,7 @@ describe('云端电脑 · 像人一样操作 (§6)', () => {
     )
     expect(planned).toContain('class="dk-shot"')
     expect(planned).not.toContain('data-desktop-screen')
-    expect(visibleText(planned)).toContain('暂无画面')
+    expect(visibleText(planned)).toContain('没有在运行')
   })
 
   test('a node from before §6 sends none of the new fields: the card is what it was, without errors', async () => {

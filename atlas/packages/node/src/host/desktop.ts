@@ -32,6 +32,10 @@ import {
   type DesktopResource,
   type DesktopTool,
 } from '@qianmo/extension/desktopPolicy'
+import {
+  elevationDesktopConfirm,
+  type ElevationTier,
+} from '@qianmo/extension/elevationPolicy'
 import { ResidentHardline, type AuthzCall } from '@qianmo/resident'
 import { isValidSegment, type ControlOutcome } from '@qianmo/protocol'
 import type { ControlHandler } from './control.js'
@@ -308,6 +312,8 @@ interface Options {
   readonly screenEncoders?: readonly ScreenEncoder[]
   /** How a browser's DevTools pipe is bridged to its executor (tests). */
   readonly cdpBridge?: CdpBridgeFactory
+  /** The agent's live high-permission tier (P39), read per action. */
+  readonly elevationTier?: (agent: string) => ElevationTier | undefined
 }
 const hash = (input: unknown) =>
   createHash('sha256').update(JSON.stringify(input)).digest('hex')
@@ -577,12 +583,22 @@ export class NodeDesktop {
       })
   }
   #supported(): boolean {
-    return (
-      this.#hostDesktop() ||
-      ((this.#options.platform ?? process.platform) === 'linux' &&
-        this.#launcher.available('Xvfb') &&
-        this.#launcher.available('xauth'))
+    return this.#unsupportedReason() === null
+  }
+  /**
+   * Why this node has no computer, in the words the console shows under the
+   * disabled switch: the system, or which of Xvfb and xauth is missing.
+   */
+  #unsupportedReason(): string | null {
+    if (this.#hostDesktop()) return null
+    if ((this.#options.platform ?? process.platform) !== 'linux')
+      return '这个系统不提供电脑 · 需要 Linux 或 macOS 节点'
+    const missing = ['Xvfb', 'xauth'].filter(
+      program => !this.#launcher.available(program),
     )
+    return missing.length === 0
+      ? null
+      : `节点缺少 ${missing.join(' 和 ')} · 装上后可用`
   }
   /**
    * The computer is this Mac's own desktop, limited to the applications the
@@ -620,12 +636,12 @@ export class NodeDesktop {
         supported: this.#supported(),
         state: s.computer ? s.state : s.state === 'failed' ? 'failed' : 'off',
         display: s.display,
-        reason: !this.#supported()
-          ? '需要 Linux（装有 Xvfb 和 xauth）或 macOS'
-          : (s.reason ??
-            s.notes?.computer ??
-            this.#viewReasons.get(s.agent) ??
-            null),
+        reason:
+          this.#unsupportedReason() ??
+          s.reason ??
+          s.notes?.computer ??
+          this.#viewReasons.get(s.agent) ??
+          null,
         ...(platform === 'linux'
           ? {
               mode: 'private' as const,
@@ -1756,7 +1772,14 @@ export class NodeDesktop {
       // On top of the shared rule the host always asks before a terminal
       // opens: in the private desktop it is a shell (§6.4).
       const needs =
-        desktopNeedsApproval(tool, args, s.confirm) ||
+        desktopNeedsApproval(
+          tool,
+          args,
+          elevationDesktopConfirm(
+            this.#options.elevationTier?.(s.agent),
+            s.confirm,
+          ),
+        ) ||
         (String(tool) === OPEN_APP_TOOL &&
           this.#catalog(s).some(app => app.id === args.app && app.terminal))
       const beforeConsume = (

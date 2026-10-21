@@ -21,6 +21,7 @@ const CAPS = {
   replayFilter: true,
   chatEffortHonorsOverride: true,
   laneAddresses: true,
+  tierRouting: true,
 }
 const KEY_ALIAS = 'AWS_SECRET_ACCESS_KEY'
 const HEADER_ALIAS = 'AWS_SESSION_TOKEN'

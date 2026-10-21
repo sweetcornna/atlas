@@ -318,7 +318,7 @@ test('real RPC manual model/effort choices persist across turns and child recycl
     writePrivateJson(providerPaths.config(), {
       modelRoles: {
         default: 'fake/fake-model',
-        chat: 'fake/fake-alt:off',
+        smol: 'fake/fake-alt:off',
         plan: 'fake/fake-alt:off',
       },
       qianmoRouting: { auto },
@@ -381,7 +381,8 @@ test('real RPC manual model/effort choices persist across turns and child recycl
     spy.mockRestore()
   }
   await channel.prompt({ messageId: 'clear-manual', text: '/model auto' })
-  expect((await channel.prepareRoute({ text: 'hello' }))?.actual.model).toBe(
-    'fake/fake-alt',
-  )
+  // Auto again: 翻译 is the simple tier, its smol role.
+  expect(
+    (await channel.prepareRoute({ text: '翻译成英文' }))?.actual.model,
+  ).toBe('fake/fake-alt')
 }, 30_000)

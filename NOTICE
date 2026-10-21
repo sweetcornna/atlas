@@ -338,20 +338,30 @@ MIT 授出；第三方不得依据本仓库的许可复用，需要使用该标�
 五.5 依据第三方开源项目整理的规则
 ----------------------------------------
 
-阡陌自有代码里有若干规则（凭据环境变量的后缀表、模型调用兼容规则等）依据
-NousResearch/hermes-agent（https://github.com/NousResearch/hermes-agent ，MIT
-许可，Copyright (c) 2025 Nous Research）整理。只取规则事实，代码是阡陌自己写的；
-hermes-agent 不是本项目的依赖，它的源代码不在本仓库里，也不随产物分发。
+阡陌自有代码里有若干规则（凭据环境变量的后缀表、模型调用兼容规则、聊天渠道的
+收发与群聊规则等）依据 NousResearch/hermes-agent（https://github.com/NousResearch/hermes-agent ，
+MIT 许可，Copyright (c) 2025 Nous Research）整理。hermes-agent 不是本项目的依赖，
+它的源代码不在本仓库里，也不随产物分发。
 
-  * 出处：取于提交 f9b29c49b6（负责人派生仓库上的提交；被引用的文件与上游
-    NousResearch/hermes-agent 提交 8911e2e0ed 逐字节相同），取用日期 2026-10-03。
-    每个相关文件的文件头逐条写明所依据的文件与行号。
+  * 出处分两批，每个相关文件的文件头逐条写明所依据的文件与行号：
+    - 取于提交 f9b29c49b6（负责人派生仓库上的提交；被引用的文件与上游
+      NousResearch/hermes-agent 提交 8911e2e0ed 逐字节相同），取用日期 2026-10-03。
+      只取规则事实，代码是阡陌自己写的。
+    - 取于上游提交 63220ae5，取用日期 2026-10-19：聊天渠道（atlas/packages/node/src/channels/）
+      里各平台的群聊判定、提及识别、话题与子区、文本合并、分段与发送失败的处理。其中
+      rules/ 下的规则文件按 hermes-agent 对应函数的结构用 TypeScript 重写，常量与判定
+      顺序与其一致，所以按 MIT 许可的「实质部分」对待；对应测试的用例依据 hermes-agent
+      的测试整理。适配器与网关只调用这些规则，文件头同样写明出处。
   * 涉及的文件以文件头为准，现列：
 
         git grep -l 'NousResearch/hermes-agent' -- atlas demo ':!atlas/packages/recall/eval/corpus'
 
-    2026-10-08 列出的是 atlas/tests/support/credentialEnv.ts。occ 时代模型调用兼容
-    层里依据它整理的规则文件已随基座切换在 d8594e4b 删除，仍可在此前的提交中查到。
+    2026-10-19 列出的是 atlas/tests/support/credentialEnv.ts，以及
+    atlas/packages/node/src/channels/ 下的 gateway.ts、discord.ts、qq.ts、slack.ts、
+    telegram.ts、weixin.ts 与 rules/ 下的 discord.ts、qq.ts、qqPersonal.ts、slack.ts、
+    telegram.ts、weixin.ts，atlas/packages/node/test/channels/ 下的 discordRules、
+    qqRules、slackRules、telegramRules、weixinRules 五个测试文件。occ 时代模型调用
+    兼容层里依据它整理的规则文件已随基座切换在 d8594e4b 删除，仍可在此前的提交中查到。
   * 许可声明：出于审慎，依 MIT 许可「在全部副本或实质部分中保留版权声明与许可
     声明」的条件，原样保留 hermes-agent 的版权声明与许可声明如下：
 
@@ -888,24 +898,39 @@ rights in the mark.
 ----------------------------------------
 
 Some rules in Qianmo's own code (the suffix list for credential environment
-variables, model-call compatibility rules and similar) were compiled from
-NousResearch/hermes-agent (https://github.com/NousResearch/hermes-agent, MIT
-License, Copyright (c) 2025 Nous Research). Only the rules as facts were taken;
-the code is Qianmo's own. hermes-agent is not a dependency of this project; its
-source code is not in this repository and is not distributed with its
-artifacts.
+variables, model-call compatibility rules, the chat channels' sending and
+group rules, and similar) were compiled from NousResearch/hermes-agent
+(https://github.com/NousResearch/hermes-agent, MIT License, Copyright (c) 2025
+Nous Research). hermes-agent is not a dependency of this project; its source
+code is not in this repository and is not distributed with its artifacts.
 
-  * Source: taken from commit f9b29c49b6 (a commit on the project lead's fork;
-    the cited files are byte-identical to upstream NousResearch/hermes-agent
-    commit 8911e2e0ed) on 2026-10-03. The header of each affected file names
-    the file and line numbers it relies on.
+  * Sources, in two batches; the header of each affected file names the file
+    and line numbers it relies on:
+    - taken from commit f9b29c49b6 (a commit on the project lead's fork; the
+      cited files are byte-identical to upstream NousResearch/hermes-agent
+      commit 8911e2e0ed) on 2026-10-03. Only the rules as facts were taken;
+      the code is Qianmo's own.
+    - taken from upstream commit 63220ae5 on 2026-10-19: in the chat channels
+      (atlas/packages/node/src/channels/), each platform's group admission,
+      mention detection, topics and threads, text batching, splitting and
+      send-failure handling. The rule files under rules/ are rewritten in
+      TypeScript following the structure of hermes-agent's corresponding
+      functions, with the same constants and order of decisions, so they are
+      treated as a substantial portion under the MIT License; the cases of
+      their tests follow hermes-agent's tests. The adapters and the gateway
+      only call these rules, and their headers name the sources as well.
   * The affected files are identified by their headers:
 
         git grep -l 'NousResearch/hermes-agent' -- atlas demo ':!atlas/packages/recall/eval/corpus'
 
-    On 2026-10-08 this lists atlas/tests/support/credentialEnv.ts. The
-    occ-era model-call compatibility files built on these rules were deleted
-    with the base switch in d8594e4b and remain available in earlier commits.
+    On 2026-10-19 this lists atlas/tests/support/credentialEnv.ts; under
+    atlas/packages/node/src/channels/, gateway.ts, discord.ts, qq.ts,
+    slack.ts, telegram.ts, weixin.ts and rules/discord.ts, rules/qq.ts,
+    rules/qqPersonal.ts, rules/slack.ts, rules/telegram.ts, rules/weixin.ts;
+    and the five test files discordRules, qqRules, slackRules, telegramRules
+    and weixinRules under atlas/packages/node/test/channels/. The occ-era
+    model-call compatibility files built on these rules were deleted with the
+    base switch in d8594e4b and remain available in earlier commits.
   * License notice: as a matter of caution, and per the MIT condition that the
     copyright and permission notices be included in all copies or substantial
     portions, hermes-agent's notices are reproduced here verbatim:

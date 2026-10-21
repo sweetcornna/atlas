@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * 任务分工 (P22) on the 模型 page: the card, its scope fragment, and who
+ * 任务模型 (P22, P38) on the 模型 page: the card, its scope fragment, and who
  * may change it — the 模型服务 rule, a personal ops account.
  */
 
 import { describe, expect, test } from 'bun:test'
-import { renderRoutingCard } from '../src/view/routing.js'
+import { renderTaskModelsCard } from '../src/view/routing.js'
 import {
   ADMIN,
   accountsHarness,
@@ -38,7 +38,7 @@ function wired() {
 describe('任务分工 · the card', () => {
   test('a reader sees every direction and what takes it, and nothing to change', async () => {
     const routing = new FakeRouting(() => START)
-    const html = renderRoutingCard({
+    const html = renderTaskModelsCard({
       snapshot: await snapshotOf(routing),
       node: null,
       nodes: ['node-a', 'node-b'],
@@ -48,18 +48,24 @@ describe('任务分工 · the card', () => {
     })
     const text = visibleText(html)
     for (const word of [
-      '编程',
-      '对话与简报',
-      '规划与推理',
-      '快速小任务',
-      '看图',
+      '任务模型',
+      '子会话按难度选模型；没设的跟随主模型',
+      '任务难度',
+      '复杂任务',
+      '一般任务',
+      '简单任务',
+      '生成',
       '生图',
       '语音',
       '视频',
     ]) {
       expect(text).toContain(word)
     }
+    // Two groups, tiers first.
+    expect(text.indexOf('简单任务')).toBeLessThan(text.indexOf('生成'))
     expect(text).toContain('deepseek-coder · DeepSeek')
+    // A tier's own effort reads beside its model.
+    expect(text).toContain('gpt-6-luna · 团队网关 · 超高')
     expect(text).toContain('跟随主模型')
     // An image model nobody has evaluated says so; media left unpicked is off.
     expect(text).toContain('gpt-image-1 · OpenAI Images')
@@ -72,7 +78,7 @@ describe('任务分工 · the card', () => {
 
   test('a writer picks per direction, among the models of the right kind only', async () => {
     const routing = new FakeRouting(() => START)
-    const html = renderRoutingCard({
+    const html = renderTaskModelsCard({
       snapshot: await snapshotOf(routing),
       node: null,
       nodes: [],
@@ -81,12 +87,37 @@ describe('任务分工 · the card', () => {
       now: START,
     })
     const code = html.slice(
-      html.indexOf('id="route-code"'),
-      html.indexOf('</select>', html.indexOf('id="route-code"')),
+      html.indexOf('id="route-medium"'),
+      html.indexOf('</select>', html.indexOf('id="route-medium"')),
     )
     expect(code).toContain('value="deepseek/deepseek-coder"')
     expect(code).toContain(' selected>deepseek-coder')
     expect(code).not.toContain('gpt-image-1')
+    // Each model says which efforts it takes; the effort select of a tier
+    // is narrowed to the picked model's.
+    expect(code).toContain('data-efforts="none low medium high"')
+    expect(code).toContain('data-model="deepseek-chat" data-efforts=""')
+    const effortOf = (direction: string) => {
+      const at = html.indexOf(`id="effort-box-${direction}"`)
+      return html.slice(
+        html.lastIndexOf('<span', at),
+        html.indexOf('</select>', at),
+      )
+    }
+    const complex = effortOf('complex')
+    expect(complex).not.toContain(' hidden')
+    expect(complex).toContain('<option value="xhigh" selected>超高</option>')
+    expect(complex).toContain('>默认</option><option value="low">低</option>')
+    expect(complex).not.toContain('value="none"')
+    expect(effortOf('medium')).toContain(
+      '<option value="" selected>默认</option>',
+    )
+    expect(effortOf('medium')).toContain('<option value="none">关闭</option>')
+    // Following the main model: nothing to narrow by, drawn hidden.
+    expect(effortOf('simple')).toContain(' hidden')
+    // Media have no effort at all.
+    expect(html).not.toContain('id="effort-image"')
+    expect(html).not.toContain('id="effort-video"')
     const image = html.slice(
       html.indexOf('id="route-image"'),
       html.indexOf('</select>', html.indexOf('id="route-image"')),
@@ -104,7 +135,7 @@ describe('任务分工 · the card', () => {
 
   test('a node scope says whether that node has its own split', async () => {
     const routing = new FakeRouting(() => START)
-    const first = renderRoutingCard({
+    const first = renderTaskModelsCard({
       snapshot: await snapshotOf(routing),
       node: 'node-a',
       nodes: ['node-a', 'node-b'],
@@ -112,13 +143,13 @@ describe('任务分工 · the card', () => {
       writer: true,
       now: START,
     })
-    expect(visibleText(first)).toContain('node-a 现在跟随所有节点的分工')
+    expect(visibleText(first)).toContain('node-a 现在跟随所有节点的设置')
     expect(first).not.toContain('data-action="routing-clear"')
     await routing.save(
       { node: 'node-a', auto: false, routes: [], revision: 3 },
       { subject: 'u:ops', role: 'ops', requestId: 'r' },
     )
-    const own = renderRoutingCard({
+    const own = renderTaskModelsCard({
       snapshot: await snapshotOf(routing),
       node: 'node-a',
       nodes: ['node-a', 'node-b'],
@@ -126,9 +157,21 @@ describe('任务分工 · the card', () => {
       writer: true,
       now: START,
     })
-    expect(visibleText(own)).toContain('node-a 用自己的分工')
+    expect(visibleText(own)).toContain('node-a 用自己的设置')
     expect(own).toContain('data-action="routing-clear"')
     expect(own).toContain('node-a · 单独设置')
+    expect(own).toContain('action="/admin/providers" id="routing-scope"')
+    // Another page that hosts the card points the no-script scope link at itself.
+    const elsewhere = renderTaskModelsCard({
+      snapshot: await snapshotOf(routing),
+      node: null,
+      nodes: ['node-a'],
+      managed: [],
+      writer: false,
+      now: START,
+      scopeAction: '/admin/models',
+    })
+    expect(elsewhere).toContain('action="/admin/models" id="routing-scope"')
   })
 })
 
@@ -156,12 +199,12 @@ describe('任务分工 · on the 模型 page', () => {
     const page = await (
       await h.handle(browse('/admin/providers?routing=node-b', ADMIN))
     ).text()
-    expect(page).toContain('node-b 现在跟随所有节点的分工')
+    expect(page).toContain('node-b 现在跟随所有节点的设置')
     // A node the 模型 service does not know is every node.
     const stray = await (
       await h.handle(browse('/admin/providers?routing=nowhere', ADMIN))
     ).text()
-    expect(stray).toContain('不同方向的任务交给不同模型')
+    expect(stray).toContain('子会话按难度选模型')
     const fragment = await h.handle(
       browse('/fragments/routing?node=node-a', ADMIN),
     )
@@ -179,7 +222,7 @@ describe('任务分工 · on the 模型 page', () => {
     const broken = await (
       await h.handle(browse('/fragments/routing', ADMIN))
     ).text()
-    expect(broken).toContain('任务分工')
+    expect(broken).toContain('任务模型')
     expect(broken).not.toContain('route-grid')
   })
 
@@ -209,7 +252,7 @@ describe('任务分工 · saved is not shipped', () => {
       { subject: 'u:ops', role: 'ops', requestId: 'r' },
     )
     const snapshot = await snapshotOf(routing)
-    const everyone = renderRoutingCard({
+    const everyone = renderTaskModelsCard({
       snapshot,
       node: null,
       nodes: ['node-a', 'node-b', 'node-c', 'node-d'],
@@ -223,13 +266,12 @@ describe('任务分工 · saved is not shipped', () => {
     expect(everyone).toContain('data-revision="4"')
     const text = visibleText(everyone)
     expect(text).toContain('下发到 2 台节点')
-    expect(text).toContain('保存只改中枢上的分工 · 下发之后节点才按它派活')
     // The button's revision is the form's: what is shipped is what was saved.
     expect(everyone).toContain(
       '<form id="routing-form" novalidate data-revision="4">',
     )
 
-    const own = renderRoutingCard({
+    const own = renderTaskModelsCard({
       snapshot,
       node: 'node-b',
       nodes: ['node-a', 'node-b', 'node-c'],
@@ -244,7 +286,7 @@ describe('任务分工 · saved is not shipped', () => {
   test('nothing to ship says why instead of drawing a button', async () => {
     const routing = new FakeRouting(() => START)
     const snapshot = await snapshotOf(routing)
-    const unmanaged = renderRoutingCard({
+    const unmanaged = renderTaskModelsCard({
       snapshot,
       node: 'node-c',
       nodes: ['node-a', 'node-c'],
@@ -256,7 +298,7 @@ describe('任务分工 · saved is not shipped', () => {
     expect(visibleText(unmanaged)).toContain(
       'node-c 不受托管 · 先给它指派模型服务',
     )
-    const none = renderRoutingCard({
+    const none = renderTaskModelsCard({
       snapshot,
       node: null,
       nodes: ['node-c'],

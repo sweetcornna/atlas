@@ -219,16 +219,19 @@ test('runtime comes from runtimes.json, then the flags, then the node default (d
     runtime: 'dsh',
     source: 'default',
     model: 'auto',
+    fields: {},
   })
   expect(runtimes.configured('coder')).toEqual({
     runtime: 'omp',
     source: 'config',
     model: 'luna/gpt-6',
+    fields: {},
   })
   expect(runtimes.configured('pi')).toEqual({
     runtime: 'omp',
     source: 'flag',
     model: null,
+    fields: {},
   })
   // `--default-runtime qianmopi` keeps everyone without a choice on omp.
   const kept = setup({ defaultRuntime: 'qianmopi' }).runtimes
@@ -243,7 +246,7 @@ test('not installed: on qianmopi with the reason; installed: back on its runtime
   const { runtimes, changed } = setup()
   expect(state(runtimes, 'main')).toEqual({
     agent: 'main',
-    configured: { runtime: 'dsh', source: 'default', model: null },
+    configured: { runtime: 'dsh', source: 'default', model: null, fields: {} },
     effective: { runtime: 'omp' },
     reason: { code: 'not-installed', message: '节点上没有 DeepSeek Harness' },
   })

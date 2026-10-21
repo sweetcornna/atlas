@@ -247,7 +247,7 @@ export function familyGoverned(
 }
 
 export const FAMILY_GOVERNED_LINE =
-  '自动模式按 omp 原生模型目录推断能力 · 实际 effort 以节点报告为准'
+  '自动模式按 qianmopi 原生模型目录推断能力 · 实际推理强度以节点报告为准'
 
 // ---------------------------------------------------------------------------
 // The node's own answer (§2.4 effective)
@@ -262,6 +262,8 @@ interface EffectiveCells {
   /** The id the lane puts on the wire, when it differs from {@link model}. */
   readonly wireModel: string | null
   readonly effort: string
+  /** The level id the node sends (`high`, `none` …), for code that needs the id. */
+  readonly effortLevel: string | null
   readonly effortOn: boolean | null
   readonly context: string
   readonly contextTokens: number | null
@@ -273,6 +275,17 @@ interface EffectiveCells {
 }
 
 const NOT_REPORTED = '未报告'
+
+/** A reported effort level in the words the composer's picker uses. */
+export const EFFORT_WORD: Readonly<Record<string, string>> = {
+  none: '关闭',
+  minimal: '最低',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '超高',
+  max: '最高',
+}
 
 /**
  * The only door from a node's report to a cell (AC-P4, the console half).
@@ -290,6 +303,7 @@ export function effectiveCells(
       model: NOT_REPORTED,
       wireModel: null,
       effort: NOT_REPORTED,
+      effortLevel: null,
       effortOn: null,
       context: NOT_REPORTED,
       contextTokens: null,
@@ -300,11 +314,14 @@ export function effectiveCells(
       apiProvider: NOT_REPORTED,
     }
   }
+  const effortLevel = effective.effortOnWire
+    ? (effective.effortLevel ?? null)
+    : null
   const effort = !effective.effortOnWire
     ? '不发'
-    : effective.effortLevel === 'none'
-      ? '关闭推理'
-      : (effective.effortLevel ?? '发送')
+    : effortLevel === null
+      ? '发送'
+      : (EFFORT_WORD[effortLevel] ?? effortLevel)
   const autoCompact =
     effective.autoCompactWindow === undefined
       ? NOT_REPORTED
@@ -319,6 +336,7 @@ export function effectiveCells(
     wireModel:
       effective.wireModel !== effective.model ? effective.wireModel : null,
     effort,
+    effortLevel,
     effortOn: effective.effortOnWire,
     context: tokens(effective.contextTokens),
     contextTokens: effective.contextTokens,
@@ -428,7 +446,7 @@ function driftWords(
       return {
         tone: 'warn',
         word: '模型将下线',
-        line: '档案里有模型已下线或 14 天内下线 · 请换用替代模型',
+        line: '档案里有模型已下线或 14 天内下线 · 换用替代模型',
       }
   }
 }
@@ -614,7 +632,7 @@ export function effectiveFields(actual: ProviderNodeActual | null): string {
     kvText('模型', cells.model) +
     kvText('线上模型名', cells.wireModel ?? cells.model) +
     kvText('生效槽位', cells.slot ?? '—') +
-    kvText('effort', cells.effort) +
+    kvText('推理强度', cells.effort) +
     kvText('上下文窗口', cells.context) +
     kvText('自动压缩阈值', cells.autoCompact) +
     `</div>`
@@ -820,7 +838,7 @@ function nodeRow(
     driftList(node, reader, now) +
     (mismatch
       ? `<p class="note" data-family-governed>${escapeHtml(
-          '节点算出的 effort 与档案的设置相反 · 请核对模型能力与节点版本',
+          '节点算出的推理强度与档案相反 · 先核对模型能力与节点版本',
         )}</p>`
       : '') +
     effectiveFields(node.actual) +
@@ -861,7 +879,7 @@ function matrixHead(): string {
       '状态',
       '线路',
       '模型',
-      'effort',
+      '推理强度',
       '上下文',
       '最近测连',
     ]
@@ -910,7 +928,7 @@ function matrix(
     sectionHead('Nodes', '节点', {
       headingId: 'h-prov-nodes',
       tail: `<span class="note">${escapeHtml(
-        `${overview.nodes.length} 个节点 · 有漂移 ${drifted} 个 · effort 与上下文取节点算出的值`,
+        `${overview.nodes.length} 个节点 · 有漂移 ${drifted} 个 · 推理强度与上下文取节点算出的值`,
       )}</span>`,
     }) +
     narrowed +
@@ -948,7 +966,7 @@ function defaultCard(
   if (summary === undefined) {
     return (
       `<section class="card elev-sm prov-default" id="prov-default">` +
-      `<div class="card-kicker">Default</div>` +
+      `<div class="card-kicker">全局默认</div>` +
       `<div class="prov-default-name">没有全局默认</div>` +
       `<p class="note">跟随默认的节点不受托管 · 设一份全局默认或给节点单独指定</p>` +
       `<div class="rowx">${change}</div>` +
@@ -963,16 +981,15 @@ function defaultCard(
   return (
     `<section class="card elev-sm prov-default" id="prov-default" ` +
     `data-profile="${attr(profile.id)}">` +
-    `<div class="card-kicker">Default</div>` +
+    `<div class="card-kicker">全局默认</div>` +
     `<div class="rowx"><a class="prov-default-name" href="/admin/providers/profiles/${attr(
       encodeURIComponent(profile.id),
     )}" data-nav>${escapeHtml(profile.name)}</a>` +
-    tag('全局默认', 'ok') +
     `</div>` +
     `<div class="prov-kvs">` +
     kvText('线路', laneWord(profile.lane)) +
     kvText('主模型', mainModel(profile)?.id ?? '—') +
-    kvText('effort · 节点算出', defaultEffort(overview, profile.id)) +
+    kvText('推理强度', defaultEffort(overview, profile.id)) +
     kvText('在用', `${following.length} 个节点 · 有漂移 ${drifted} 个`) +
     `</div>` +
     `<div class="rowx">${change}</div>` +
@@ -1008,7 +1025,7 @@ export function keyState(
           : set === 0
             ? '都未设置'
             : `已设置 ${set} 把`) +
-        ` · 原策略：${KEY_SELECTION_WORD[selection] ?? selection} · omp 按会话选钥`,
+        ` · 原策略：${KEY_SELECTION_WORD[selection] ?? selection} · qianmopi 按会话选钥`,
     )
   }
   const secret = summary.secrets[0]
@@ -1350,7 +1367,7 @@ export function boardDialogs(overview: ProviderOverview | null): string {
       confirm: '保存',
       body:
         recap('节点', 'prov-context-node') +
-        `<div class="field"><label for="prov-context-value">上下文窗口 token</label>` +
+        `<div class="field"><label for="prov-context-value">上下文窗口 · token 数</label>` +
         `<input class="input mono" type="text" inputmode="numeric" id="prov-context-value" ` +
         `autocomplete="off" spellcheck="false" placeholder="例如 200000 或 1M · 留空恢复默认"></div>` +
         `<p class="note">写入该节点的指派覆盖 · 优先于档案 · 随下一次下发生效 · 超过模型能力时由节点按能力夹取</p>`,
@@ -1430,6 +1447,10 @@ export function progressPanel(): string {
 // ---------------------------------------------------------------------------
 
 export const PROVIDERS_PAGE_CSS = `
+.prov-toc { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 2px; padding: var(--space-2) 0; margin-bottom: var(--space-2); background: var(--color-bg); }
+.prov-toc a { padding: 4px 10px; border-radius: 999px; font-size: var(--text-13); color: var(--color-muted); text-decoration: none; }
+.prov-toc a:hover { color: var(--color-text); background: var(--color-interactive-soft); }
+#routing, #magpie, #magpie-agents, #agent-models, #magpie-usage, #prov-board { scroll-margin-top: 48px; }
 .prov-board-in { display: flex; flex-direction: column; gap: var(--space-6); }
 .prov-default { gap: var(--space-3); padding: var(--space-4); }
 .prov-default-name { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 20px; color: var(--color-text); }

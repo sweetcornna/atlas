@@ -705,6 +705,7 @@ function fakeConsole(scenario: Scenario) {
           replayFilter: true,
           multiKey: true,
           laneAddresses: true,
+          tierRouting: true,
         },
         lastResult: null,
         ...(n.node === 'beta-2'

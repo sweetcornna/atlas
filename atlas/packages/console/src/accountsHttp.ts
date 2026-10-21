@@ -152,7 +152,7 @@ export async function handleInvite(
     const page = html(
       renderInvitePage({
         label: door.label,
-        error: `尝试过多 · 请等 ${wait} 秒`,
+        error: `尝试过多 · ${wait} 秒后再试`,
         ...source,
       }),
       429,
@@ -305,7 +305,7 @@ const ACCOUNT_ROLE_TEXT: Readonly<Record<AccountRole, string>> = {
 
 /** Lit on every page the admin token opens in break-glass (§3.4 ②). */
 const BREAK_GLASS_NOTICE =
-  'break-glass 会话 · 每次使用都有记录 · 用完请轮换管理令牌'
+  'break-glass 会话 · 每次使用都有记录 · 用完轮换管理令牌'
 
 /** Lit while the account book is closed, for whoever can still see a page. */
 const UNAVAILABLE_NOTICE =

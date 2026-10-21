@@ -639,7 +639,13 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
         await tab.evaluate<string>(
           `document.getElementById('prov-chat-label').textContent`,
         ),
-      ).toBe('模型 · deepseek-v4-pro')
+      ).toBe('deepseek-v4-pro')
+      // Inside the composer's 模型 picker, with the node's models beside it.
+      expect(
+        await tab.evaluate<boolean>(
+          `!!document.querySelector('#fx-model-btn #prov-chat-label') && !!document.querySelector('#fx-model-data #prov-chat-models')`,
+        ),
+      ).toBe(true)
       await tab.waitFor(`document.getElementById('prov-chat-divider') !== null`)
       // Between the second and the third turn: the switch was an hour ago.
       // (The pause's own time label is not a turn.)

@@ -292,7 +292,10 @@ export interface DesktopNodeView extends AgentRef {
   }
   readonly computer: {
     readonly enabled: boolean
-    /** macOS 节点与没有 Xvfb 的 Linux 节点为 false，页面不给开。 */
+    /**
+     * 没有 Xvfb 或 xauth 的 Linux 节点、其他系统、以及还没有本机桌面的旧 macOS 节点为 false；
+     * 页面照画开关但禁用，并写出 {@link reason}。macOS 节点提供本机桌面（`mode: 'host'`）。
+     */
     readonly supported: boolean
     readonly state: DesktopUnitState
     /** `:12` 这样的显示号。 */
@@ -377,15 +380,104 @@ export interface DesktopPort {
 }
 
 // ---------------------------------------------------------------------------
-// P22 按任务匹配模型
+// P39 高权限模式
 // ---------------------------------------------------------------------------
 
+/**
+ * 档位（`docs/dev/elevation.md`）：`off`（人工确认，缺省）、`accept-edits`（自动接受编辑）、
+ * `auto`（自动审批）、`full-access`（跳过权限确认）。
+ */
+export type ElevationTierName = 'off' | 'accept-edits' | 'auto' | 'full-access'
+
+/** 一个智能体当前的放权状态。 */
+export interface ElevationNodeView extends AgentRef {
+  /** 控制链路是否连着；断开时其余字段是最后一次知道的值。 */
+  readonly reachable: boolean
+  readonly tier: ElevationTierName
+  /** 代次：每次开/改/收回 +1，旧代次的在途调用会被拒。 */
+  readonly epoch: number
+  /** 到期毫秒时间戳；`off` 时为 null。 */
+  readonly expiresAt: number | null
+  readonly maxCalls: number
+  readonly usedCalls: number
+  /** 节点能否沙箱化命令；为 false 时 `bash` 不在工具面里。 */
+  readonly sandbox: boolean
+  /** sandbox 为 false 时写明原因（没有 bubblewrap）。 */
+  readonly sandboxReason: string | null
+  /**
+   * 放权在这个智能体上不生效的原因（它跑在不加载阡陌扩展的外部底层上）；能生效为 null。
+   * 旧节点不带这个字段。
+   */
+  readonly unsupportedReason?: string | null
+  /** 节点上有没有 `gh`：没有时放权期间不提供 GitHub 工具。旧节点不带这个字段。 */
+  readonly github?: boolean
+  readonly enabledAt: number | null
+  /** 开启放权的运维主体；`off` 时为 null。 */
+  readonly enabledBy: string | null
+  readonly actions24h: number
+}
+
+export type ElevationActionClass = 'local' | 'read-out' | 'act-out'
+
+export interface ElevationActionView {
+  readonly at: number
+  readonly node: string
+  readonly agent: string
+  /** `bash` / `task` / `web_search` / `github` / `read`。 */
+  readonly tool: string
+  readonly cls: ElevationActionClass
+  /** GitHub 操作名；其余为 null。 */
+  readonly op: string | null
+  /** 读网址的主机名；其余为 null。 */
+  readonly host: string | null
+  readonly approved: boolean
+  readonly outcome: 'allowed' | 'refused' | 'completed' | 'failed'
+  readonly taskId?: string
+  readonly invocationId?: string
+  readonly epoch: number
+  /** 参数摘要；不记命令正文与网页内容。 */
+  readonly digest?: string
+}
+
+/** 端口在实际下发前重验租户权限；此回调不进入控制消息。 */
+export interface ElevationActor extends DirectionActor {
+  readonly beforeDispatch?: () => void
+}
+
+export interface ElevationPort {
+  list(): Promise<ConsoleResult<readonly ElevationNodeView[]>>
+  /** 开启或改档。`off` 等同于关闭（不收回在途审批之外的记账）。 */
+  set(
+    ref: AgentRef,
+    change: {
+      readonly tier: ElevationTierName
+      /** 生效时长（毫秒）；缺省由节点定。 */
+      readonly ttlMs?: number
+      /** 次数上限；缺省由节点定。 */
+      readonly maxCalls?: number
+    },
+    actor: ElevationActor,
+  ): Promise<ConsoleResult<ElevationNodeView>>
+  /** 立刻收回：档位归零、代次 +1、撤销待批、回收子进程。 */
+  revoke(
+    ref: AgentRef,
+    actor: ElevationActor,
+  ): Promise<ConsoleResult<ElevationNodeView>>
+  actions(
+    ref: AgentRef | null,
+    limit: number,
+  ): Promise<ConsoleResult<readonly ElevationActionView[]>>
+}
+
+// ---------------------------------------------------------------------------
+// P22 按任务匹配模型；P38 收成三档难度与三种媒体
+// ---------------------------------------------------------------------------
+
+/** 与 `@qianmo/providers` 的 `MODEL_DIRECTIONS` 同一份：三档难度在前，三种媒体在后。 */
 export const MODEL_DIRECTIONS = [
-  'code',
-  'chat',
-  'plan',
-  'fast',
-  'vision',
+  'complex',
+  'medium',
+  'simple',
   'image',
   'speech',
   'video',
@@ -393,11 +485,33 @@ export const MODEL_DIRECTIONS = [
 
 export type ModelDirection = (typeof MODEL_DIRECTIONS)[number]
 
-/** 一个方向选了哪个服务里的哪个模型。两个都为 null = 跟随主模型（生图、语音、视频为「不开」）。 */
+/** 任务难度（P38）：子会话按它选模型。 */
+export const TASK_TIERS = ['complex', 'medium', 'simple'] as const
+
+export type TaskTier = (typeof TASK_TIERS)[number]
+
+/** 一档的推理强度；`none` 是关掉推理。与 `@qianmo/providers` 的 `TIER_EFFORTS` 同一份。 */
+export const TIER_EFFORTS = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const
+
+export type TierEffort = (typeof TIER_EFFORTS)[number]
+
+/**
+ * 一个方向选了哪个服务里的哪个模型、用多大推理强度。两个引用都为 null = 跟随主模型
+ * （生图、语音、视频为「不开」），这时 `effort` 也是 null；`effort` 为 null 是模型的默认强度。
+ */
 export interface ModelRouteView {
   readonly direction: ModelDirection
   readonly profileId: string | null
   readonly modelId: string | null
+  readonly effort: TierEffort | null
 }
 
 export interface ModelRoutingView {
@@ -431,6 +545,8 @@ export interface RoutableModelView {
   /** `chat` / `image` / `speech` / `video`：决定它能出现在哪些方向下。 */
   readonly kind: 'chat' | 'image' | 'speech' | 'video'
   readonly evaluated: boolean
+  /** 这个模型能选的推理强度（按模型支持收窄）；空表示不给强度选择。 */
+  readonly efforts: readonly TierEffort[]
 }
 
 export interface ModelRoutingSnapshot {
@@ -768,6 +884,20 @@ export type BackgroundTaskStatus =
   | 'cancelled'
 
 /**
+ * 任务页上的状态（P38）：`running` 含已汇报、等这一轮结束的；`failed` 是连续
+ * 失败或被拒后暂停、等主人处理的；`needs_input` 是它在等主人回复。
+ */
+export type BackgroundTaskState =
+  | 'scheduled'
+  | 'queued'
+  | 'running'
+  | 'interrupted'
+  | 'needs_input'
+  | 'failed'
+  | 'completed'
+  | 'cancelled'
+
+/**
  * 主智能体交给后台子智能体的一个任务，控制台列表里的一行。主会话的上下文和
  * 追加指示的原文不在这里。`scheduled` 是延时或重复的任务在等下一次开始。
  */
@@ -779,6 +909,7 @@ export interface BackgroundTaskView {
   /** 执行它的智能体，`qianmo://<node>/<agent>`。 */
   readonly target: string
   readonly status: BackgroundTaskStatus
+  readonly state: BackgroundTaskState
   /** 阶段的说法，含「排队中」。 */
   readonly phase: string
   /** 最近一次汇报。 */
@@ -786,6 +917,8 @@ export interface BackgroundTaskView {
   /** 最近一次中断的原因；正常时为空。 */
   readonly lastError: string
   readonly turns: number
+  /** 开这个任务的主会话。 */
+  readonly parentSession: string
   /** 子任务所在的会话；还没开时为 null。 */
   readonly workerSession: string | null
   /** 已安排的任务下次开始的时刻（epoch 毫秒）；不是已安排时为 null。 */
@@ -932,6 +1065,12 @@ export type ChannelPlatformId =
   | 'discord'
   | 'slack'
 
+/**
+ * 群规则的可调项：`freeGroups` 不用 @ 的群（hermes free_response_chats），
+ * `keywords` 唤醒词，`budget` 群冷却与发言上限（grantley，只有个人 QQ）。
+ */
+export type ChannelGroupOption = 'freeGroups' | 'keywords' | 'budget'
+
 /** 一个平台要填什么。只列官方接口需要的字段。 */
 export interface ChannelPlatformView {
   readonly id: ChannelPlatformId
@@ -944,6 +1083,8 @@ export interface ChannelPlatformView {
   readonly qrLogin: boolean
   /** 陌生人私聊可以申请配对（hermes 配对码）；个人 QQ 不做。 */
   readonly pairing: boolean
+  /** 该平台群规则可调的项（`runtimes-channels.md` §2.6）。 */
+  readonly groupOptions: readonly ChannelGroupOption[]
   readonly hint: string
   /** 没有用真实账号跑过：一律 false。 */
   readonly evaluated: boolean
@@ -989,6 +1130,15 @@ export interface ChannelView {
   readonly pairingOpen: boolean
   /** 群里被 @ 时带上最近的群聊（主人群只带主人自己的话）。 */
   readonly groupContext: boolean
+  /** 不用 @ 也回的群（Telegram 可写 `群号:话题号`）。 */
+  readonly freeGroups: readonly string[]
+  /** 群里出现就回的词，不分大小写。 */
+  readonly keywords: readonly string[]
+  /** 没被点名时，同一个群两次回复至少隔这么久；0 不限。 */
+  readonly groupCooldownSeconds: number
+  /** 同一个群每 `groupSpeechMinutes` 分钟最多回这么多条；任一为 0 不限。 */
+  readonly groupSpeechMax: number
+  readonly groupSpeechMinutes: number
   readonly pairingRequests: readonly ChannelPairingRequest[]
   readonly settings: Readonly<Record<string, string>>
   readonly secretSet: boolean
@@ -1021,6 +1171,11 @@ export interface ChannelDraft {
   readonly prompt?: string
   readonly pairing?: ChannelPairingMode
   readonly groupContext?: boolean
+  readonly freeGroups?: readonly string[]
+  readonly keywords?: readonly string[]
+  readonly groupCooldownSeconds?: number
+  readonly groupSpeechMax?: number
+  readonly groupSpeechMinutes?: number
   readonly settings?: Readonly<Record<string, string>>
   readonly secrets?: Readonly<Record<string, string>>
 }
@@ -1899,6 +2054,123 @@ export interface MagpieAgentsPort {
     input: MagpieExtensionRemove,
     caller: MagpieCaller,
   ): Promise<ConsoleResult<MagpieExtensionJobView>>
+}
+
+// ---------------------------------------------------------------------------
+// AgentModelsPort —— 智能体按底层原生方式配模型（harness-backends.md §11）
+// ---------------------------------------------------------------------------
+
+/**
+ * 每个智能体按它所用底层的原生字段配模型：模型、推理强度，Claude Code 的四档
+ * （fable opus sonnet haiku）与各档强度，opencode 的小模型。字段表在节点与中枢共用的
+ * `host/runtimes/modelFields.ts`；这里只是页面读写的形状。不依赖 magpie：模型候选
+ * 来自下发到这台节点的全部模型档案，magpie 密钥只是其中 `presetId: 'magpie'` 的一份；
+ * 中枢开着 magpie、节点接在它的 magpie 档案上时，`model` 字段交给网关页的智能体区块
+ * （自动按系列取与手选照旧）。写操作经 `runtime.configure` 下发，旧节点只收 `model`。
+ */
+
+/** 推理强度从低到高；`none` 关掉推理。空串是「默认」（底层自己的）。 */
+export const AGENT_EFFORT_VALUES = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const
+
+/** 推理强度的中文（页面统一用这一张表）。 */
+export const AGENT_EFFORT_WORDS: Readonly<Record<string, string>> = {
+  '': '默认',
+  none: '关闭',
+  minimal: '最低',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '超高',
+  max: '最高',
+}
+
+/** 一个模型来源（一份模型档案）里可选的模型。 */
+export interface AgentModelSourceView {
+  /** 档案 id；模型值写成 `<id>/<模型号>`。 */
+  readonly id: string
+  readonly name: string
+  /** magpie 网关密钥的档案。 */
+  readonly magpie: boolean
+  /** 模型号；路由组写成 `group/<id>`。 */
+  readonly models: readonly string[]
+}
+
+export interface AgentModelFieldView {
+  readonly key: string
+  readonly label: string
+  readonly kind: 'model' | 'effort'
+  /** Claude Code 分档面板里的一档；主行的字段为 null。 */
+  readonly tier: string | null
+  /** 当前值：模型 `<档案>/<模型号>`，强度见 {@link AGENT_EFFORT_VALUES}；空串是跟随或默认。 */
+  readonly value: string
+  /** 留空时实际用的模型（「同主模型（X）」的 X）；不设或不知道时为 null。 */
+  readonly follows: string | null
+  /** 强度字段可选的档（已按底层与模型收窄）；模型字段为空。 */
+  readonly levels: readonly string[]
+  /** 模型字段只能选主模型同一来源的（分档、小模型）。 */
+  readonly sameSource: boolean
+  /** 不能改的原因（例如这个来源不认按档强度）；能改时为 null。 */
+  readonly locked: string | null
+  /** 中枢记着、节点还没收到（旧节点只收模型）。 */
+  readonly pending: boolean
+}
+
+export interface AgentModelsAgentView {
+  readonly agent: string
+  /** 配置的底层（目录 id）。 */
+  readonly runtime: string
+  readonly runtimeLabel: string
+  readonly fields: readonly AgentModelFieldView[]
+  /** 主模型的候选，按来源分组；分档与小模型只用 `sameSource` 那一组。 */
+  readonly sources: readonly AgentModelSourceView[]
+  /** 主模型此刻的来源（档案 id）；不知道时为 null。 */
+  readonly source: string | null
+  /** 中枢最近一次下发：进行中，或失败（原因只给能写的人）。 */
+  readonly write: {
+    readonly state: 'pending' | 'failed'
+    readonly at: number
+    readonly message: string | null
+  } | null
+}
+
+export interface AgentModelsNodeView {
+  readonly node: string
+  /** `old`：节点不答 `runtime.status`，不给写控件。 */
+  readonly state: 'ok' | 'old' | 'unreachable'
+  /** 节点认 `fields`；为 false 时只下发模型，其余字段标「节点未收到」。 */
+  readonly fields: boolean
+  readonly agents: readonly AgentModelsAgentView[]
+  /** 读节点失败的原因；只给能写的人。 */
+  readonly error: string | null
+}
+
+export interface AgentModelsSnapshot {
+  readonly nodes: readonly AgentModelsNodeView[]
+}
+
+/** 改一个字段（照 magpie `POST /api/set {agent, field, value}`）；空串是跟随或默认。 */
+export interface AgentModelChange {
+  readonly node: string
+  readonly agent: string
+  readonly field: string
+  readonly value: string
+}
+
+export interface AgentModelsPort {
+  snapshot(): Promise<ConsoleResult<AgentModelsSnapshot>>
+  /** 写者照模型服务的规则（个人运维账号、非 break-glass）；端口自己再查一遍。 */
+  set(
+    change: AgentModelChange,
+    caller: MagpieCaller,
+  ): Promise<ConsoleResult<AgentModelsAgentView>>
 }
 
 // ---------------------------------------------------------------------------

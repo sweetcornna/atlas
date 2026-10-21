@@ -25,6 +25,7 @@ import {
   ChatDispatch,
   MODEL_DIRECTIONS,
   type ChannelDraft,
+  type ChannelGroupOption,
   type ChannelLoginView,
   type ChannelPairingDecision,
   type ChannelPairingMode,
@@ -41,6 +42,7 @@ import {
   type UsagePort,
 } from '@qianmo/console'
 import { parseAddress } from '@qianmo/protocol'
+import { directionOf } from '@qianmo/providers'
 import {
   ChannelGateway,
   type ChannelConversation,
@@ -91,6 +93,7 @@ export const CHANNEL_PLATFORM_VIEWS: readonly ChannelPlatformView[] = [
     secrets: [{ key: 'appSecret', label: 'AppSecret' }],
     qrLogin: false,
     pairing: true,
+    groupOptions: [],
     hint: '在 QQ 开放平台创建机器人并开通单聊、群聊消息；群里只有 @ 机器人的消息会送达',
     evaluated: false,
   },
@@ -101,6 +104,7 @@ export const CHANNEL_PLATFORM_VIEWS: readonly ChannelPlatformView[] = [
     secrets: [{ key: 'accessToken', label: 'OneBot 访问令牌' }],
     qrLogin: false,
     pairing: false,
+    groupOptions: ['keywords', 'budget'],
     hint: '在自己的电脑上运行 SnowLuma 并扫码登录 QQ（建议小号），开一个正向 WebSocket 并设好 accessToken；阡陌只连接，不安装、不配置它。个人号接入不是 QQ 官方接口，有封号风险',
     evaluated: false,
   },
@@ -111,6 +115,7 @@ export const CHANNEL_PLATFORM_VIEWS: readonly ChannelPlatformView[] = [
     secrets: [],
     qrLogin: true,
     pairing: true,
+    groupOptions: [],
     hint: '用微信扫码授权一个机器人账号（腾讯 iLink 机器人接口）；扫码的人记为主人',
     evaluated: false,
   },
@@ -121,6 +126,7 @@ export const CHANNEL_PLATFORM_VIEWS: readonly ChannelPlatformView[] = [
     secrets: [{ key: 'token', label: 'Bot Token' }],
     qrLogin: false,
     pairing: true,
+    groupOptions: ['freeGroups', 'keywords'],
     hint: '找 @BotFather 创建机器人；群里 @ 机器人或回复它的消息才会送达，除非关掉隐私模式',
     evaluated: false,
   },
@@ -131,6 +137,7 @@ export const CHANNEL_PLATFORM_VIEWS: readonly ChannelPlatformView[] = [
     secrets: [{ key: 'token', label: 'Bot Token' }],
     qrLogin: false,
     pairing: true,
+    groupOptions: ['freeGroups'],
     hint: '在开发者后台创建机器人，开启 Message Content 意图后邀请进服务器',
     evaluated: false,
   },
@@ -144,6 +151,7 @@ export const CHANNEL_PLATFORM_VIEWS: readonly ChannelPlatformView[] = [
     ],
     qrLogin: false,
     pairing: true,
+    groupOptions: ['freeGroups', 'keywords'],
     hint: '开启 Socket Mode，订阅 message.im、message.channels、app_mention 事件',
     evaluated: false,
   },
@@ -186,6 +194,12 @@ const storedSchema = z.object({
   pairing: z.enum(['auto', 'on', 'off']).default('off'),
   /** Addressed group turns carry the room's recent lines. */
   groupContext: z.boolean().default(true),
+  /** Group rules (`runtimes-channels.md` §2.6); channels saved before them have none. */
+  freeGroups: z.array(z.string()).default([]),
+  keywords: z.array(z.string()).default([]),
+  groupCooldownSeconds: z.number().int().min(0).max(86_400).default(0),
+  groupSpeechMax: z.number().int().min(0).max(1_000).default(0),
+  groupSpeechMinutes: z.number().int().min(0).max(1_440).default(0),
   settings: z.record(z.string(), z.string()),
   secret: secretSchema.nullable(),
   createdAt: z.number(),
@@ -203,7 +217,12 @@ const conversationSchema = z.object({
   sessionId: z.string().nullable(),
   target: z.string(),
   turns: z.number().int().nonnegative(),
-  direction: z.enum(MODEL_DIRECTIONS).nullable(),
+  /** P38: a P22 name saved before reads as its tier (`chat` → medium). */
+  direction: z.preprocess(
+    value =>
+      typeof value === 'string' ? (directionOf(value) ?? value) : value,
+    z.enum(MODEL_DIRECTIONS).nullable(),
+  ),
   updatedAt: z.number(),
   /** Where the conversation is, for results that arrive outside a turn (P29). */
   lane: z.enum(['owner', 'member']).optional(),
@@ -287,6 +306,23 @@ export interface ConsoleChannelsOptions {
 
 /** Platforms the public edition leaves out. */
 const NOT_PUBLIC: ReadonlySet<ChannelPlatform> = new Set(['qq-personal'])
+
+/** `/model <名字>` in a chat: the names a person types, and how they are said back. */
+const DIRECTION_NAME: Readonly<Record<ModelDirection, string>> = {
+  complex: '复杂',
+  medium: '一般',
+  simple: '简单',
+  image: '生图',
+  speech: '语音',
+  video: '视频',
+}
+const CHAT_DIRECTION: Readonly<Record<string, ModelDirection>> =
+  Object.fromEntries(
+    Object.entries(DIRECTION_NAME).map(([direction, name]) => [
+      name,
+      direction as ModelDirection,
+    ]),
+  )
 
 const PAIRING_ANSWER = (code: string) =>
   `你还没有和这个机器人配对。请把配对码 ${formatPairingCode(code)} 发给机器人的主人，批准后就能对话；1 小时内有效。`
@@ -393,6 +429,82 @@ function cleanList(value: unknown, field: string): string[] {
       }),
     ),
   ]
+}
+
+/** Wake words: spaces inside allowed, commas separate them in the form. */
+function cleanWords(value: unknown): string[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 50)
+    throw new Error('唤醒词最多 50 个')
+  return [
+    ...new Set(
+      value.map(item => {
+        const word = String(item).trim()
+        if (word === '' || [...word].length > 32)
+          throw new Error('唤醒词需要 1–32 个字')
+        return word
+      }),
+    ),
+  ]
+}
+
+function wholeNumber(raw: unknown, max: number, message: string): number {
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 0 || value > max)
+    throw new Error(message)
+  return value
+}
+
+type GroupRules = Pick<
+  StoredChannel,
+  | 'freeGroups'
+  | 'keywords'
+  | 'groupCooldownSeconds'
+  | 'groupSpeechMax'
+  | 'groupSpeechMinutes'
+>
+
+/**
+ * The group rules a draft sets, only those its platform offers
+ * (`ChannelPlatformView.groupOptions`); the rest stay off.
+ */
+function groupRules(
+  platform: ChannelPlatformView,
+  draft: ChannelDraft,
+  previous: StoredChannel | undefined,
+): GroupRules {
+  const offers = (option: ChannelGroupOption) =>
+    platform.groupOptions.includes(option)
+  const budget = offers('budget')
+  return {
+    freeGroups: offers('freeGroups')
+      ? cleanList(draft.freeGroups ?? previous?.freeGroups, '不用 @ 的群')
+      : [],
+    keywords: offers('keywords')
+      ? cleanWords(draft.keywords ?? previous?.keywords)
+      : [],
+    groupCooldownSeconds: budget
+      ? wholeNumber(
+          draft.groupCooldownSeconds ?? previous?.groupCooldownSeconds ?? 0,
+          86_400,
+          '群冷却需在 0–86400 秒之间',
+        )
+      : 0,
+    groupSpeechMax: budget
+      ? wholeNumber(
+          draft.groupSpeechMax ?? previous?.groupSpeechMax ?? 0,
+          1_000,
+          '发言上限需在 0–1000 条之间',
+        )
+      : 0,
+    groupSpeechMinutes: budget
+      ? wholeNumber(
+          draft.groupSpeechMinutes ?? previous?.groupSpeechMinutes ?? 0,
+          1_440,
+          '发言上限的时段需在 0–1440 分钟之间',
+        )
+      : 0,
+  }
 }
 
 function address(raw: unknown, field: string): string {
@@ -752,6 +864,11 @@ export class ConsoleChannels implements ChannelsPort {
       allowGroups: channel.allowGroups,
       groupTrigger: channel.groupTrigger,
       replyWindowMs: channel.replyWindowMs,
+      freeGroups: channel.freeGroups,
+      keywords: channel.keywords,
+      groupCooldownMs: channel.groupCooldownSeconds * 1_000,
+      groupSpeechMax: channel.groupSpeechMax,
+      groupSpeechMinutes: channel.groupSpeechMinutes,
       ...(channel.prompt ? { prompt: channel.prompt } : {}),
     }
   }
@@ -968,7 +1085,7 @@ export class ConsoleChannels implements ChannelsPort {
           `智能体：${target ?? '未配置'}`,
           `会话：${row?.sessionId ?? '尚未开始'}`,
           `轮数：${row?.turns ?? 0}`,
-          `方向：${row?.direction ?? '默认'}`,
+          `方向：${row?.direction ? DIRECTION_NAME[row.direction] : '默认'}`,
           ...(cache === null ? [] : [`今日缓存命中：${cache}`]),
         ]
       },
@@ -976,17 +1093,19 @@ export class ConsoleChannels implements ChannelsPort {
         const target = this.#targetOf(conversation)
         if (target === null) return '这个渠道没有可对话的智能体'
         const row = this.#conversation(conversation, target)
-        if (value === undefined) return `当前方向：${row.direction ?? '默认'}`
+        if (value === undefined)
+          return `当前方向：${row.direction === null ? '默认' : DIRECTION_NAME[row.direction]}`
         if (value === null) {
           row.direction = null
           this.#saveState()
           return '已恢复默认方向'
         }
-        if (!MODEL_DIRECTIONS.includes(value as ModelDirection))
-          return `可选方向：${MODEL_DIRECTIONS.join('、')}，或 default`
-        row.direction = value as ModelDirection
+        const direction = CHAT_DIRECTION[value] ?? directionOf(value)
+        if (direction === null)
+          return `可选：${Object.keys(CHAT_DIRECTION).join('、')}（或 ${MODEL_DIRECTIONS.join('、')}），或 default`
+        row.direction = direction
         this.#saveState()
-        return `这个会话改用「${value}」方向的模型`
+        return `这个会话改用「${DIRECTION_NAME[direction]}」的模型`
       },
     }
   }
@@ -1079,6 +1198,11 @@ export class ConsoleChannels implements ChannelsPort {
       pairing: channel.pairing,
       pairingOpen: this.#pairingOpen(channel),
       groupContext: channel.groupContext,
+      freeGroups: channel.freeGroups,
+      keywords: channel.keywords,
+      groupCooldownSeconds: channel.groupCooldownSeconds,
+      groupSpeechMax: channel.groupSpeechMax,
+      groupSpeechMinutes: channel.groupSpeechMinutes,
       pairingRequests: (this.#state.pairing[channel.id] === undefined
         ? []
         : this.#pairing(channel.id).pending()
@@ -1163,6 +1287,7 @@ export class ConsoleChannels implements ChannelsPort {
       throw new Error('回复窗口需在 0–60000 毫秒之间')
     const prompt = String(draft.prompt ?? previous?.prompt ?? '').trim()
     if (prompt.length > 4_000) throw new Error('渠道说明最多 4000 字')
+    const group = groupRules(platform, draft, previous)
     const settings: Record<string, string> = {
       ...previous?.settings,
       ...credentials?.settings,
@@ -1251,6 +1376,7 @@ export class ConsoleChannels implements ChannelsPort {
       prompt,
       pairing: pairingMode(platform.pairing, draft.pairing, previous?.pairing),
       groupContext: draft.groupContext ?? previous?.groupContext ?? true,
+      ...group,
       settings,
       secret: secret as StoredChannel['secret'],
       createdAt: previous?.createdAt ?? now,

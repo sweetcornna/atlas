@@ -27,6 +27,7 @@ import {
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
+import { FakeElevation } from './elevationFake.js'
 import { FakeBilling } from './billingFake.js'
 import { ADMIN, browse, NOW, pageHarness } from './pageHarness.js'
 
@@ -130,13 +131,19 @@ describe('assets', () => {
         billing: new FakeBilling(),
         handoffDevices: new FakeHandoffDevices(() => NOW),
         desktop: new FakeDesktop(() => NOW),
+        elevation: new FakeElevation(() => NOW),
         files: new FakeFiles(() => NOW),
       },
     })
     // The login door is read signed out: signed in, it sends you on. So is
     // the public edition's plans page, the one public page with a port.
     const signedOut = ['/login', '/plans']
-    const paths = [...ROUTES.map(module => module.area.href), ...signedOut]
+    const paths = [
+      ...ROUTES.filter(module => module.area.moved !== true).map(
+        module => module.area.href,
+      ),
+      ...signedOut,
+    ]
     for (const path of paths) {
       const response = await h.handle(
         browse(path, signedOut.includes(path) ? undefined : ADMIN),

@@ -92,6 +92,9 @@ export class FakeChat implements ChatPort {
       taskId: crypto.randomUUID(),
       // A local command's line says so, as the hub's transcript does.
       ...(input.command === undefined ? {} : { command: input.command }),
+      // So does a background turn's, and a report turn's (P38).
+      ...(input.background === true ? { background: true as const } : {}),
+      ...(input.report === true ? { report: true as const } : {}),
     }
     this.#add(turn)
     return { ok: true, value: turn }

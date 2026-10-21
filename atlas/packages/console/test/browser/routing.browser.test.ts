@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * 任务分工 (P22) in a real browser: saving a split says it is saved and not
+ * 任务模型 (P22, P38) in a real browser: saving a split says it is saved and not
  * shipped, 下发 ships it under the revision the card was drawn with and the
  * card says how that went, and a split saved again in between is refused
  * rather than shipped unseen. The HTTP half is `routingCard.test.ts`.
@@ -114,6 +114,76 @@ describe.skipIf(SKIP !== null)('任务分工 in a browser', () => {
           `Array.from(document.querySelectorAll('#prov-progress-list li')).map(li => li.getAttribute('data-node'))`,
         ),
       ).toEqual(['node-a', 'node-b'])
+    } finally {
+      await tab.close()
+      s.stop()
+    }
+  }, 30_000)
+
+  test('the effort select of a tier follows the model picked beside it, and the save carries the effort', async () => {
+    const s = await serve()
+    const tab = await browser.tab()
+    const pick = (id: string, value: string) =>
+      `(function () { var el = document.getElementById(${JSON.stringify(id)}); el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event('change', { bubbles: true })); })()`
+    const options = (id: string) =>
+      `Array.from(document.getElementById(${JSON.stringify(id)}).options).map(o => o.textContent)`
+    const hidden = (direction: string) =>
+      `document.getElementById('effort-box-${direction}').hidden`
+    try {
+      await tab.send('Network.enable')
+      await signIn(tab, s.base, s.ops)
+      await tab.goto(`${s.base}/admin/providers`)
+      await tab.waitFor(`document.getElementById('routing-form')`)
+      // Drawn: complex on gpt-6-luna at 超高; simple follows the main model.
+      expect(
+        await tab.evaluate<string>(
+          `document.getElementById('effort-complex').value`,
+        ),
+      ).toBe('xhigh')
+      expect(await tab.evaluate<boolean>(hidden('simple'))).toBe(true)
+      await tab.evaluate(pick('route-simple', 'chat-svc/gpt-6-luna'))
+      expect(await tab.evaluate<boolean>(hidden('simple'))).toBe(false)
+      expect(await tab.evaluate<string[]>(options('effort-simple'))).toEqual([
+        '默认',
+        '低',
+        '中',
+        '高',
+        '超高',
+      ])
+      await tab.evaluate(pick('effort-simple', 'medium'))
+      // A model without efforts hides the select; 超高 is not carried over.
+      await tab.evaluate(pick('route-complex', 'deepseek/deepseek-chat'))
+      expect(await tab.evaluate<boolean>(hidden('complex'))).toBe(true)
+      await tab.evaluate(pick('route-medium', ''))
+      expect(await tab.evaluate<boolean>(hidden('medium'))).toBe(true)
+      expect(
+        await tab.evaluate<boolean>(
+          `document.getElementById('effort-image') === null`,
+        ),
+      ).toBe(true)
+      await tab.evaluate(click('#routing-form button[type="submit"]'))
+      await tab.waitFor(`(${STATUS}).includes('尚未下发')`)
+      const saved = Object.fromEntries(
+        s.routing.defaults.routes.map(one => [one.direction, one]),
+      )
+      expect(saved.simple).toEqual({
+        direction: 'simple',
+        profileId: 'chat-svc',
+        modelId: 'gpt-6-luna',
+        effort: 'medium',
+      })
+      expect(saved.complex).toEqual({
+        direction: 'complex',
+        profileId: 'deepseek',
+        modelId: 'deepseek-chat',
+        effort: null,
+      })
+      expect(saved.medium).toEqual({
+        direction: 'medium',
+        profileId: null,
+        modelId: null,
+        effort: null,
+      })
     } finally {
       await tab.close()
       s.stop()

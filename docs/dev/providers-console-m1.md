@@ -1603,24 +1603,34 @@ v1.0 写成时这四点待定，负责人当天拍板，结果记为 §0.1 的 D
 
 ## 任务分工（P22）
 
-目录与确定性规则的真源是 `atlas/packages/providers/src/directions.ts`（从 `@qianmo/providers` 主入口导出），控制台契约仍在 `directionPorts.ts`。八个方向与 omp 角色如下：
+目录与确定性规则的真源是 `atlas/packages/providers/src/directions.ts`（从 `@qianmo/providers` 主入口导出），控制台契约仍在 `directionPorts.ts`。
 
-| 方向 | 角色 | 允许 kind |
-|---|---|---|
-| 编程 `code` | `default`、`task` | chat |
-| 对话与简报 `chat` | 自定义 `chat` | chat |
-| 规划与推理 `plan` | `plan`、`slow` | chat |
-| 快速小任务 `fast` | `smol`、`commit`、`tiny` | chat |
-| 看图 `vision` | `vision` | chat |
-| 生图 `image` | `image` | image |
-| 语音 `speech` | `speech` | speech（omp 写 tts） |
-| 视频 `video` | 自定义 `video` | video |
+**P38（2026-10-19）把方向收成三档难度与三种媒体**（负责人：任务分成复杂、一般、低难度几个阶层，在控制台给每档配模型，按难度开子会话；生图、语音、视频单独配）。原来的编程、对话、规划、快速小任务合并进三档，看图不再单列（跟随主模型）。六个方向与 omp 角色如下：
+
+| 方向 | 角色 | 允许 kind | 没选时 |
+|---|---|---|---|
+| 复杂任务 `complex` | `plan`、`slow` | chat | 跟随主模型 |
+| 一般任务 `medium` | `default`、`task`、`chat` | chat | 跟随主模型 |
+| 简单任务 `simple` | `smol`、`commit`、`tiny` | chat | 跟随主模型 |
+| 生图 `image` | `image` | image | 不开 |
+| 语音 `speech` | `speech` | speech（omp 写 tts） | 不开 |
+| 视频 `video` | 自定义 `video` | video | 不开 |
+
+外部底层（Claude Code、Codex、dsh 等）按难度换模型时读节点 `config.yml` 的 `plan`、`default`、`smol` 三个角色作为三档模型。
+
+**每档的推理强度。**三档各自可以带一个推理强度：`none`（关闭）、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，不设是模型自己的默认。只有选了具体模型才能设；跟随主模型时没有强度（主模型因节点而异，无从收窄）。可选的强度按模型收窄（`tierEffortChoices`）：媒体模型、`effort.send` 为 `never` 的模型、设了 `effortLock` 的档案没有强度可选；模型列了 `levels` 时只给这些档（`send` 不是 `always` 时另有「关闭」）；没列时七档都给。中枢保存与节点编译都用同一个 `routingProblem` 核对，不在可选范围内的拒绝，不往上夹。编译成 omp 角色值的 `:<level>` 后缀（`<provider>/<model>:<level>`，`none` 写 `off`；omp 的角色解析接受这个后缀，见 `packages/coding-agent/src/config/model-resolver.ts` 的 `splitThinkingSuffix`），回合切换时由 `nodeModelSelection` 读出后经 `set_thinking_level` 生效。没设强度时照旧取模型档位（`level` / `effortLock`）。
+
+**旧数据迁移（读时映射，写回新格式）。**`plan`→complex；`code` 有值取 `code`，否则取 `chat`→medium；`fast`→simple；`vision` 在路由簿里丢弃；媒体原样。中枢 `routing.json` 升为 `v: 2`：读到 v1 时按上面映射，下一次保存或清除时写回 v2（只读不改文件）。单个方向的值（回合提示、定时任务 `schedules.json`、渠道 `state.json` 里会话的方向、渠道里 `/model` 的参数）按 `directionOf` 映射，其中 `vision`、`chat`、`code` 都是 medium；定时任务没给方向时缺省 medium。节点的 `config.yml` 在下一次下发时整份重写 `modelRoles`，旧的 `vision` 角色随之消失。
+
+**线协议。**节点能力新增 `tierRouting`。对没有这个能力的节点（含还没回报能力的），中枢下发前用 `legacyModelRouting` 转回 P22 名字：complex→`plan`，medium→`code` 与 `chat` 两项，simple→`fast`，媒体同名，去掉推理强度，旧节点的封闭 schema 照常接受；路由里带了推理强度而节点能力未知时，先问一次节点（与 `laneAddresses` 同一处等待）。新节点的 `parseModelRouting` 既收 v2（可带 `effort`），也收整份 P22 路由并映射，两套名字混在一份里拒绝。回合里的方向提示（`task.request.payload.direction`）另有一层：协议包对它是封闭枚举，旧节点见到 `medium` 会整条信封拒收（`E_BAD_ENVELOPE`），所以中枢仍按 P22 名字发（`legacyDirectionOf`：complex→`plan`、medium→`code`、simple→`fast`，往返无损），新节点经 `directionOf` 归一；协议枚举同时收三档名字，留给以后全舰升级后直接发。节点侧凡是读 `payload.direction` 的都要经 `directionOf`。
 
 `ProviderModel.kind` 缺省为 chat。为避免媒体传输被误用为对话，媒体使用独立 lane：`openai-images`、`openrouter-images`、`gemini-images`、`openai-speech`、`openrouter-video`。媒体档案只允许 extra，不要求 main；对话档案保留恰好一个 main。媒体模型带每模型 `api`、`kind`、`input`；omp 的 provider 级 api 只接受对话传输，因此媒体 provider 使用合法的占位传输，每模型 api 指向实际媒体客户端。
 
-自动归类按固定优先级首条匹配：视频 → 语音 → 看图 → 生图 → 规划 → 代码块 → 文件扩展名 → 报错栈 → 编程关键词 → 对话。关键词同时识别中英文，英文按词边界匹配；全部规则见目录包，不由模型猜测。多关键词时以该优先级为准。快速小任务没有文字推断规则，通过显式 direction 或角色路由使用。请求带 direction 优先于 auto；auto 关时走 default（审计 direction 为 code、source 为 default）。带 direction 的 task.request 载荷封闭为 `{prompt, direction}`；不带 direction 的历史载荷仍按旧协议处理。
+自动归类（P38）按固定优先级首条匹配：视频 → 语音 → 看图（截图、这张图、图片里，归一般，挡住「this image」被当成生图）→ 生图 → 复杂（规划、计划、方案、架构、重构、调研、拆解、评估、多步、跨文件、大改，及 plan、architecture、refactor、research、investigate、multi-step、redesign）→ 简单关键词（提取、摘出、改写、润色、归类、分类、翻译、格式化，及 extract、rewrite、rephrase、classify、categorize、translate、format、reformat）→ 短问句（一行、不超过 40 字、问句，且不带代码块、文件名、报错栈）归简单 → 其余一般。复杂排在简单前面：把大活错派给小模型的代价大于反过来。关键词同时识别中英文，英文按词边界匹配；全部规则是 `classifyDirection` 这个纯函数，不由模型猜测。请求带 direction 优先于 auto；auto 关时不切换。task.request 载荷里的 direction 只是提示，其余字段照旧开放。
 
-路由簿在 `providers.ndjson` 同目录的 `routing.json`，0600、原子替换、排他写锁。snapshot 提供默认、节点覆盖、模型 kind 与最近 20 条节点归类；revision 是整本的乐观并发号。save 的 routes 是局部补丁；首次建立节点覆盖从默认拷贝，其后为完整覆盖，清除覆盖重新跟随默认。节点清除也递增 revision，旧编辑不能复活已经清除的覆盖。`routing.save` / `routing.clear` 经 DirectionActor 记动作账本。保存修改期望状态；经现有模型服务 apply 动作下发后节点生效。卡片在保存后明说「尚未下发」并给出下发按钮；按钮的 apply 带 `routingRevision`，中枢在发出前与逐节点读取时各核对一次，路由簿已前进就拒绝（整次 409 / 单台 `routing-conflict`），不会把操作者没看过的分工下发出去。
+控制台的卡片叫「任务模型」（`view/routing.ts` 的 `renderTaskModelsCard`），顶部一句「子会话按难度选模型；没设的跟随主模型」，分两组：「任务难度」三行（复杂任务、一般任务、简单任务，各一个模型选择，选了具体模型且它接受推理强度时旁边多一个强度选择：默认 / 关闭 / 最低 / 低 / 中 / 高 / 超高 / 最高，按模型收窄，换模型时页面脚本重排选项）与「生成」三行（生图、语音、视频，只选模型，没选写「不开」）。
+
+路由簿在 `providers.ndjson` 同目录的 `routing.json`，0600、原子替换、排他写锁。snapshot 提供默认、节点覆盖、模型 kind、每个模型可选的推理强度（`efforts`）与最近 20 条节点归类（旧节点记的 P22 方向名映射后展示）；revision 是整本的乐观并发号。save 的 routes 是局部补丁；首次建立节点覆盖从默认拷贝，其后为完整覆盖，清除覆盖重新跟随默认。节点清除也递增 revision，旧编辑不能复活已经清除的覆盖。`routing.save` / `routing.clear` 经 DirectionActor 记动作账本。保存修改期望状态；经现有模型服务 apply 动作下发后节点生效。卡片在保存后明说「尚未下发」并给出下发按钮；按钮的 apply 带 `routingRevision`，中枢在发出前与逐节点读取时各核对一次，路由簿已前进就拒绝（整次 409 / 单台 `routing-conflict`），不会把操作者没看过的分工下发出去。
 
 apply 保持 v1 与原来的 64 KiB 限额；新请求在主 profile 外带：
 
@@ -1630,17 +1640,19 @@ apply 保持 v1 与原来的 64 KiB 限额；新请求在主 profile 外带：
   "routing": {
     "auto": true,
     "routes": {
-      "code": {"profileId": "code-service", "modelId": "chat-model"},
-      "chat": {"profileId": "brief-service", "modelId": "chat-model"}
+      "complex": {"profileId": "big-service", "modelId": "chat-model", "effort": "xhigh"},
+      "simple": {"profileId": "brief-service", "modelId": "small-model"}
     }
   }
 }
 ```
 
-仅引用过的附加档案生成 qm-* provider，密钥按各档案写入对应 provider 的凭据池。旧的仅单 profile 请求保持旧编译字节；新节点接受旧请求。旧节点的封闭 schema 会拒绝 profiles/routing；中枢明确提示 P22/节点版本，不会重试成只用主档案。超出 64 KiB 在中枢拒绝，不发送。未配置路由的对话方向跟随主模型；image/speech/video 不写角色、不开工具。
+上例是给有 `tierRouting` 的节点的；没有这个能力的节点收到的是同一份分工的 P22 写法（见上「线协议」）。仅引用过的附加档案生成 qm-* provider，密钥按各档案写入对应 provider 的凭据池。旧的仅单 profile 请求保持旧编译字节；新节点接受旧请求。比 P22 还旧的节点的封闭 schema 会拒绝 profiles/routing；中枢明确提示 P22/节点版本，不会重试成只用主档案。超出 64 KiB 在中枢拒绝，不发送。未配置的难度档跟随主模型；image/speech/video 不写角色、不开工具。
+
+**子会话按难度开（P38）。**前台调 `qianmo_task_start` 时给 `difficulty`（`complex` / `medium` / `simple`，缺省 medium；工具说明写着：多步骤或要先规划的大活用 complex，常规实现与修改用 medium，提取、改写、归类、翻译、格式化这类小活用 simple）。中枢任务账本记下它（旧账本读作 medium），子会话的每一轮把它作为方向提示发给节点，节点按该档的角色换模型与推理强度、这一轮结束后恢复。
 
 常驻主智能体在这一轮前通过 RPC get_state / set_model / set_thinking_level 切换对话模型与档位，保留同一会话；omp 的 replayFilter 能力仍用于换端点的历史回放。媒体方向让主智能体继续用 default 对话模型，对应 runner 经角色选择媒体模型。image/speech 路由分别打开 generate_image / tts；扩展只对主智能体放行，并检查媒体文件路径及禁止生图临时模型覆盖。视频由独立宿主模块 `host/videoTool.ts` 的 `qianmo_generate_video {prompt, seconds?, aspect?}` 生成，输出到 `outputs/videos/<时间>-<短id>.mp4`；默认请求 8 秒视频、十分钟超时；返回 seconds 是请求时长（基座视频 API 不提供实际时长元数据），失败区分提交、轮询、下载、文件写入且不回显凭据。真实轮询状态经 host_tool_update 回给主智能体，避免等待正常异步任务时触发两分钟空闲看门狗；取消与子进程退出会中止客户端。当前通过 residentOmp 的宿主注册方式接入，供主导者迁入 S0 通用扩展点。
 
 每次归类写 `model.route`：agent、direction、source（hint/auto/default）、rule、实际模型引用及档位；媒体另记 mediaModel；不记提示正文。中枢读取已挂载的 `--audit <node>=<path>` 审计端口，无审计挂载时 recent 是空数组；损坏的审计链不展示归类。
 
-2026-10-11 仅核实官方 id：[OpenAI Images](https://developers.openai.com/api/docs/models/gpt-image-2) `gpt-image-2`、[Gemini 图片](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-image) `gemini-2.5-flash-image`、[OpenRouter 图片](https://openrouter.ai/docs/guides/overview/multimodal/image-generation) `openai/gpt-image-2`、[OpenAI Speech](https://developers.openai.com/api/docs/models/gpt-4o-mini-tts) `gpt-4o-mini-tts`、[OpenRouter 视频](https://openrouter.ai/docs/guides/overview/multimodal/video-generation) `google/veo-3.1`。全部 evaluated: false；生图、语音、视频均未使用真实密钥生成或评估。看图的 chat kind 是类型约束，不能代替模型输入能力评估。
+2026-10-11 仅核实官方 id：[OpenAI Images](https://developers.openai.com/api/docs/models/gpt-image-2) `gpt-image-2`、[Gemini 图片](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-image) `gemini-2.5-flash-image`、[OpenRouter 图片](https://openrouter.ai/docs/guides/overview/multimodal/image-generation) `openai/gpt-image-2`、[OpenAI Speech](https://developers.openai.com/api/docs/models/gpt-4o-mini-tts) `gpt-4o-mini-tts`、[OpenRouter 视频](https://openrouter.ai/docs/guides/overview/multimodal/video-generation) `google/veo-3.1`。全部 evaluated: false；生图、语音、视频均未使用真实密钥生成或评估。看图自 P38 起跟随主模型、不再单配；主模型是否接受图片输入没有评估。

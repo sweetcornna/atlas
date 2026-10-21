@@ -20,10 +20,11 @@
  * the question is stopped on its node (`turn.stop`, as task cancellation
  * does) and reported as timed out.
  *
- * A node runs one turn at a time, and the asking turn holds it while it waits.
- * So every ask turn carries a signed call chain — the asking turns, outermost
- * first — and a node whose running turn is in it lets the ask turn nest
- * instead of queueing it (`NodeTurnGate`). The hub keeps the chain of every
+ * A node runs one turn per session and only so many at once (P38), and the
+ * asking turn holds its place while it waits. So every ask turn carries a
+ * signed call chain — the asking turns, outermost first — and a node whose
+ * running turn is in it lets the ask turn nest instead of queueing it
+ * (`NodeTurnGate`). The hub keeps the chain of every
  * ask in flight, extends it when an asked agent asks in turn, refuses a
  * question to an agent already asking in it (A→B→A, on one node or across
  * nodes) and stops it at `LIMITS.maxAskChain` levels.

@@ -43,7 +43,7 @@ export const UPDATES_PAGE_JS = `
     var raw = form.elements.times ? form.elements.times.value : '';
     var times = raw.split(/[\\s,，、]+/).filter(Boolean);
     for (var i = 0; i < times.length; i++) {
-      if (!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(times[i])) { qc.say(status, '时间写成 HH:MM，如 08:00', 'bad'); return; }
+      if (!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(times[i])) { qc.say(status, '时间写成 HH:MM · 例如 08:00', 'bad'); return; }
     }
     var days = checked(form, 'days').map(Number);
     var draft = {

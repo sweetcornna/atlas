@@ -119,7 +119,7 @@ async function setup(messages = 10, withTenancy = false) {
     prompt: '写简报',
     when: { kind: 'interval', everyMinutes: 15 },
     timezone: 'Asia/Shanghai',
-    direction: 'chat',
+    direction: 'medium',
     channels: [],
     notifyOnlyAgent: false,
     enabled: true,

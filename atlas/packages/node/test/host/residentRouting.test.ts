@@ -14,13 +14,32 @@ import { writePrivateJson, providerPaths } from '../../src/providers/store.js'
 
 test('explicit direction overrides automatic text; auto off preserves the current model', () => {
   expect(
-    decideResidentRoute({ text: '视频代码', hint: 'chat', auto: true }),
-  ).toEqual({ direction: 'chat', source: 'hint', rule: 'explicit-hint' })
+    decideResidentRoute({ text: '视频代码', hint: 'complex', auto: true }),
+  ).toEqual({ direction: 'complex', source: 'hint', rule: 'explicit-hint' })
   expect(decideResidentRoute({ text: '修复代码', auto: true })).toMatchObject({
-    direction: 'code',
+    direction: 'medium',
     source: 'auto',
   })
   expect(decideResidentRoute({ text: '你好', auto: false })).toBeNull()
+})
+test('a hint under its P22 name (what a hub sends, what an older hub sent) names the same tier', () => {
+  for (const [hint, direction] of [
+    ['plan', 'complex'],
+    ['code', 'medium'],
+    ['chat', 'medium'],
+    ['vision', 'medium'],
+    ['fast', 'simple'],
+    ['image', 'image'],
+  ] as const)
+    expect(decideResidentRoute({ text: '视频', hint, auto: false })).toEqual({
+      direction,
+      source: 'hint',
+      rule: 'explicit-hint',
+    })
+  // Not a direction at all: no hint, the text decides when auto is on.
+  expect(
+    decideResidentRoute({ text: '翻译成英文', hint: 'dance', auto: true }),
+  ).toMatchObject({ direction: 'simple', source: 'auto' })
 })
 test('chat selectors and effort suffixes resolve from config; media keeps a chat main and routes its runner separately', () => {
   const f = isolatedRoot()
@@ -28,7 +47,8 @@ test('chat selectors and effort suffixes resolve from config; media keeps a chat
     writePrivateJson(providerPaths.config(), {
       modelRoles: {
         default: 'qm-code-12345678/main:high',
-        chat: 'qm-chat-12345678/model:low',
+        chat: 'qm-code-12345678/main:high',
+        smol: 'qm-fast-12345678/model:low',
         video: 'qm-video-12345678/google/veo-3.1:off',
         image: 'qm-image-12345678/gpt-image-2:off',
       },
@@ -36,13 +56,26 @@ test('chat selectors and effort suffixes resolve from config; media keeps a chat
       generate_image: { enabled: true },
     })
     expect(residentRouteSelection({ text: 'hello' })).toMatchObject({
-      direction: 'chat',
+      direction: 'medium',
       source: 'auto',
       selection: {
-        provider: 'qm-chat-12345678',
+        provider: 'qm-code-12345678',
+        modelId: 'main',
+        thinkingLevel: 'high',
+      },
+    })
+    expect(residentRouteSelection({ text: '翻译成英文' })).toMatchObject({
+      direction: 'simple',
+      selection: {
+        provider: 'qm-fast-12345678',
         modelId: 'model',
         thinkingLevel: 'low',
       },
+    })
+    // No plan role written: the complex tier follows the main model.
+    expect(residentRouteSelection({ text: '重构整个模块' })).toMatchObject({
+      direction: 'complex',
+      selection: { provider: 'qm-code-12345678', modelId: 'main' },
     })
     expect(residentRouteSelection({ text: 'video' })).toMatchObject({
       direction: 'video',
@@ -155,7 +188,7 @@ test('manual choice persists for two turns, wins over auto and survives a reopen
     for (const auto of [false, true]) {
       writePrivateJson(providerPaths.config(), {
         qianmoRouting: { auto },
-        modelRoles: { chat: 'auto/chat:low', plan: 'hint/plan:off' },
+        modelRoles: { default: 'auto/chat:low', plan: 'hint/plan:off' },
       })
       rpc.calls.length = 0
       for (let round = 0; round < 2; round++) {
@@ -200,7 +233,7 @@ test('query and manual local commands perform zero routing mutations, even with 
   try {
     writePrivateJson(providerPaths.config(), {
       qianmoRouting: { auto: true },
-      modelRoles: { chat: 'auto/chat:low', video: 'media/video:off' },
+      modelRoles: { default: 'auto/chat:low', video: 'media/video:off' },
     })
     const rpc = routingFake()
     const router = new ResidentModelRouter()

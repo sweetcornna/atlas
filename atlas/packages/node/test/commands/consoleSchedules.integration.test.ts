@@ -220,7 +220,7 @@ test(
             prompt: '写一份今天的简报',
             when: { kind: 'interval', everyMinutes: 15 },
             timezone: 'Asia/Shanghai',
-            direction: 'chat',
+            direction: 'medium',
             channels: [],
             notifyOnlyAgent: false,
             enabled: true,

@@ -18,11 +18,13 @@
  */
 
 import type {
+  AgentModelsPort,
   BackgroundTasksPort,
   BillingPort,
   ChannelsPort,
   ConnectorsPort,
   DesktopPort,
+  ElevationPort,
   ExtensionsPort,
   FilesPort,
   HandoffDevicesPort,
@@ -527,6 +529,11 @@ export interface ChatTurn {
   readonly usageReservation?: string
   /** 操作者那一行是中枢派给后台子智能体的一轮（P29）。 */
   readonly background?: true
+  /**
+   * 操作者那一行是中枢替主人发起的回报回合（P38）：后台任务有了结果或在等
+   * 回复，主会话空着，中枢把它交给主智能体。这一轮里开的任务不再起回报回合。
+   */
+  readonly report?: true
   /** 智能体那一行：节点说这一轮压缩过上下文（`task.result` 的 `compacted`）。 */
   readonly compacted?: true
 }
@@ -599,6 +606,12 @@ export interface ChatSendInput {
    * the node lets interactive turns go first and stops it at its deadline.
    */
   readonly background?: true
+  /**
+   * Host-only, never read from HTTP JSON: the hub's report turn (P38), told
+   * a parent conversation's background results while it was idle. The
+   * transcript marks the line so the turn's own tasks start no report turn.
+   */
+  readonly report?: true
   /**
    * Host-only: the call chain of a synchronous question between agents
    * (P36.6) — the asking turns, outermost first, each its node and the
@@ -1266,6 +1279,8 @@ export const CONSOLE_ACTIONS = [
   'chat.command.effort',
   /** 明确打开一份转录：整页带 `?session=`、JSON 读转录、片段带 `?open=1`。轮询与 SSE 不算。 */
   'chat.transcript.open',
+  /** 主智能体（初始化配置页），target 是地址或 `default`（清除）。 */
+  'chat.main',
   /** 账号 API 的写请求，`accounts.<方法>`，target 是 `/v0/accounts` 之后的路径。 */
   'accounts.post',
   'accounts.put',
@@ -1324,6 +1339,10 @@ export const CONSOLE_ACTIONS = [
   /** 云端电脑（P21），target 是智能体地址。 */
   'desktop.set',
   'desktop.recycle',
+  /** 高权限模式（P39），target 是智能体地址。 */
+  'elevation.enable',
+  'elevation.disable',
+  'elevation.revoke',
   /** 任务分工（P22），target 是节点名，默认为 `*`。 */
   'routing.save',
   'routing.clear',
@@ -1898,6 +1917,8 @@ export interface ProviderNodeActual {
     readonly multiKey: boolean
     /** P33：档案的其他线路地址编成同密钥的兄弟 provider。 */
     readonly laneAddresses: boolean
+    /** P38：任务分工按三档难度与推理强度下发；没有时中枢转回 P22 的方向名。 */
+    readonly tierRouting: boolean
   }
   readonly lastResult: {
     readonly requestId: string
@@ -2401,6 +2422,16 @@ export interface ConsoleAbout {
 }
 
 /** Everything a console instance needs. `wake` and `chat` are optional. */
+/**
+ * 主智能体的页面设置（初始化配置页）。宿主把它存在中枢自己的配置目录里；
+ * `get` 读内存里的当前值，不碰盘。值是 `qianmo://<node>/<agent>`，`null` 表示
+ * 回到启动参数 `--chat-default`。
+ */
+export interface MainAgentPort {
+  get(): string | null
+  set(address: string | null, by: string): Promise<ConsoleResult<null>>
+}
+
 export interface ConsoleDeps {
   readonly tenancy?: TenantPort
   readonly usage?: UsagePort
@@ -2429,6 +2460,11 @@ export interface ConsoleDeps {
    * or not in the roster, the home page opens the first dialable agent.
    */
   readonly chatDefault?: string
+  /**
+   * 主智能体在页面上改过的值（初始化配置页）。有值时盖过 {@link chatDefault}；
+   * 缺席时主智能体只能由启动参数定。
+   */
+  readonly mainAgent?: MainAgentPort
   /** Absent removes the certificate column entirely (§10.1). */
   readonly certificates?: CertificatePort
   /**
@@ -2506,6 +2542,8 @@ export interface ConsoleDeps {
   readonly files?: FilesPort
   /** 云端电脑（P21）。 */
   readonly desktop?: DesktopPort
+  /** 高权限模式（P39）。 */
+  readonly elevation?: ElevationPort
   /** 任务分工（P22）；只在模型服务打开时接。 */
   readonly routing?: ModelRoutingPort
   /** 长期记忆（P23）。 */
@@ -2524,6 +2562,11 @@ export interface ConsoleDeps {
   readonly extensions?: ExtensionsPort
   /** 平台模型网关 magpie（P33/P34）；只在模型服务与个人账号都打开时接。 */
   readonly magpie?: MagpiePort
+  /**
+   * 智能体按底层原生方式配模型（harness-backends.md §11）；有模型服务与节点控制
+   * 链路就接，不依赖 magpie。
+   */
+  readonly agentModels?: AgentModelsPort
   /**
    * 公开版订阅（P35）；只在公开版接。接了就有公开的套餐页、成员的订阅页与结账页、
    * 支付回调、「订阅」页，以及订阅闸门（没有有效订阅的成员写操作回 402）。缺席时

@@ -24,11 +24,14 @@ import { redactHandoffText } from '@qianmo/handoff'
 import {
   markResidentInput,
   residentActiveTools,
+  residentApprovalMode,
   residentConfigOverlay,
   residentInputIdentityOf,
   RESIDENT_EXTENSION_CONFIG_ENV,
   type ResidentExtensionConfig,
 } from '@qianmo/extension/policy'
+import type { NodeElevation } from './elevation.js'
+import { ELEVATION_GATE_TITLE } from './elevation.js'
 import type {
   OmpRpcChannel,
   OmpRpcFrame,
@@ -462,6 +465,24 @@ export class OmpRpcProcess implements OmpRpcChannel {
       agentInvoked: data?.agentInvoked !== false,
     }
   }
+  /**
+   * More input for the running turn (P38): a `prompt` queued with
+   * `streamingBehavior: 'steer'`, so it is read at the next step boundary
+   * and completes with a `prompt_result` of its own (`docs/rpc.md` "While
+   * streaming"). Unmarked on purpose: the turn's own input already carries
+   * the admission identity, and nothing recovers a steer after a crash.
+   */
+  async steer(input: { text: string }): Promise<OmpPromptAdmission> {
+    const response = await this.request('prompt', {
+      message: input.text,
+      streamingBehavior: 'steer',
+    })
+    const data = response.data as { agentInvoked?: boolean } | undefined
+    return {
+      requestId: String(response.id),
+      agentInvoked: data?.agentInvoked !== false,
+    }
+  }
   async abort(): Promise<void> {
     await this.request('abort')
   }
@@ -524,6 +545,8 @@ interface PoolOptions {
   /** Internal startup budget; the production default remains 30 seconds. */
   readonly readyTimeoutMs?: number
   readonly desktop?: NodeDesktop
+  /** High-permission grant state and gate for each agent (P39). */
+  readonly elevation?: NodeElevation
   /** Operator-configured MCP servers, skills and plugins (P32). */
   readonly extensions?: AgentExtensionsSource
   readonly extraHostTools?: readonly HostToolDefinition[]
@@ -534,6 +557,17 @@ interface PoolOptions {
   ) => void
   readonly protectedRoots?: readonly string[]
   readonly agents: readonly ResidentAgentSession[]
+  /**
+   * An agent's own model and thinking (`harness-backends.md` §11.2) over
+   * the node's main model `fallback`; undefined keeps `fallback`. A
+   * session's own pin (`manual-model.json`) still comes first.
+   */
+  readonly agentModel?: (
+    agent: string,
+    fallback:
+      | { provider: string; modelId: string; thinkingLevel?: string }
+      | undefined,
+  ) => { provider: string; modelId: string; thinkingLevel?: string } | undefined
   readonly memoryRoot: string
   readonly allowWorkspaceEdits?: boolean
   readonly spawn?: (input: ResidentOmpSpawn) => ChildProcess
@@ -561,6 +595,11 @@ interface PoolOptions {
     sessionId: string,
     call: unknown,
   ) => Promise<ResidentPermission>
+  /** Answers one `QIANMO_ELEVATION_V1` gate phase for a high-permission call. */
+  readonly requestElevation?: (
+    sessionId: string,
+    call: unknown,
+  ) => Promise<boolean>
 }
 
 /**
@@ -719,6 +758,20 @@ export class ResidentOmpPool
       .filter(([, owner]) => owner.agent === agent)
       .map(([id]) => id)
     for (const id of ids) this.#retireIfStale(id)
+    await Promise.allSettled(ids.map(id => this.#retiring.get(id)))
+  }
+  /**
+   * Emergency retirement (P39 revoke/ESTOP): unlike {@link invalidateAgent},
+   * close every child of `agent` now, including one running a turn. That
+   * turn fails ("child exited during the turn"), and a sandboxed command dies
+   * with its parent (`--die-with-parent`).
+   */
+  async retireAgent(agent: string): Promise<void> {
+    this.#epochs.set(agent, (this.#epochs.get(agent) ?? 0) + 1)
+    const ids = [...this.#owners]
+      .filter(([, owner]) => owner.agent === agent)
+      .map(([id]) => id)
+    for (const id of ids) this.closeSession(id)
     await Promise.allSettled(ids.map(id => this.#retiring.get(id)))
   }
   #stale(sessionId: string): boolean {
@@ -986,6 +1039,12 @@ export class ResidentOmpPool
             ),
           }
         : {}),
+      ...(this.#options.elevation
+        ? {
+            elevationPath: this.#options.elevation.resourcePath(owner.agent),
+            elevation: this.#options.elevation.resource(owner.agent),
+          }
+        : {}),
       ...(this.#options.requestPermission === undefined
         ? {}
         : { approvals: true }),
@@ -1010,19 +1069,25 @@ export class ResidentOmpPool
     writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 })
     writeFileSync(overlay, residentConfigOverlay(config), { mode: 0o600 })
     const manualPath = join(sessionDir, 'manual-model.json')
+    const fallback = nodeModelSelection()
     const selection =
-      readResidentManualSelection(manualPath) ?? nodeModelSelection()
+      readResidentManualSelection(manualPath) ??
+      this.#options.agentModel?.(owner.agent, fallback) ??
+      fallback
     const argv = ompArgv([
       '--mode',
       'rpc',
-      ...(this.#options.requestPermission === undefined ? ['--no-ui'] : []),
+      ...(this.#options.requestPermission === undefined &&
+      this.#options.requestElevation === undefined
+        ? ['--no-ui']
+        : []),
       '--no-extensions',
       '--extension',
       this.#options.extensionPath ?? residentExtensionPath(sessionDir),
       '--config',
       overlay,
       '--approval-mode',
-      config.edits === 'workspace' ? 'write' : 'always-ask',
+      residentApprovalMode(config),
       ...(extensions?.ompPluginDirs ?? []).flatMap(dir => [
         '--plugin-dir',
         dir,
@@ -1034,6 +1099,7 @@ export class ResidentOmpPool
         config.media,
         config.desktop,
         config.mcp,
+        config.elevation,
       ).join(','),
       ...(selection
         ? ['--model', `${selection.provider}/${selection.modelId}`]
@@ -1097,6 +1163,35 @@ export class ResidentOmpPool
     child.onFrame(frame => {
       if (this.#children.get(sessionId) !== child) return
       this.#touch(sessionId)
+      // High-permission gate (P39): a yes/no confirm, answered by the host's
+      // authoritative reclassifier. A missing channel or any error denies.
+      if (
+        frame.type === 'extension_ui_request' &&
+        frame.method === 'confirm' &&
+        frame.title === ELEVATION_GATE_TITLE
+      ) {
+        void (async () => {
+          let granted = false
+          try {
+            granted =
+              typeof frame.message === 'string' &&
+              this.#options.requestElevation !== undefined &&
+              (await this.#options.requestElevation(
+                sessionId,
+                JSON.parse(frame.message),
+              ))
+          } catch {
+            granted = false
+          }
+          if (child.alive)
+            child.send({
+              type: 'extension_ui_response',
+              id: frame.id,
+              confirmed: granted,
+            })
+        })()
+        return
+      }
       // `confirm` answers yes/no. `input` carries the same request and is
       // answered with `{ ok, reason }`, so a refused desktop lease can say why.
       const authzInput =

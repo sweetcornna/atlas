@@ -15,8 +15,16 @@ import { LIMITS } from './limits.js'
 /** Envelope version currently spoken on the network. */
 export const ENVELOPE_VERSION = 0
 
-/** Optional task.request hint shared with P22 model routing. Other payload fields stay open. */
+/**
+ * Optional task.request hint shared with model routing. Other payload fields
+ * stay open. The P38 tiers (`complex`, `medium`, `simple`) are accepted
+ * beside the P22 names; a hub still sends the P22 name of a tier, which a
+ * node older than P38 knows (`legacyDirectionOf` in `@qianmo/providers`).
+ */
 export const TASK_DIRECTIONS = [
+  'complex',
+  'medium',
+  'simple',
   'code',
   'chat',
   'plan',

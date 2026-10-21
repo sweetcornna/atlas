@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * 后台任务's script on the 主动执行 page (`view/tasks.ts`): 取消, after the
+ * 后台任务's script on the 主动执行 page (`view/tasks.ts`): 停止, after the
  * confirmation, then a refresh of the list.
  *
  * The runtime's rules hold (`assets/client.ts`): the write is `sendJson`, the
@@ -27,10 +27,10 @@ export const TASKS_PAGE_JS = `
     qc.setText('confirm-task-cancel-name', title);
     qc.openDialog('confirm-task-cancel', function () {
       qc.sendJson('POST', '/v0/tasks/' + encodeURIComponent(id) + '/cancel').then(function () {
-        qc.toast('已取消 ' + title, 'ok');
+        qc.toast('已停止 ' + title, 'ok');
         return refresh();
       }).catch(function (err) {
-        qc.toast(qc.failLine('取消', err), qc.failTone(err));
+        qc.toast(qc.failLine('停止', err), qc.failTone(err));
         return refresh();
       });
     });

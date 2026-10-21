@@ -141,18 +141,29 @@ const DISABLED_ROWS = [
   'auto-review',
 ]
 
+/** The field's effort as one of dsh's thinking levels. */
+export function dshThinkingLevel(
+  effort: string | undefined,
+): string | undefined {
+  if (effort === undefined || effort === '') return undefined
+  return effort === 'none' ? 'off' : effort
+}
+
 /** The patch layer for one dsh process. */
 export function dshPatch(input: AcpLaunchInput): string {
   const anthropic = input.lane === 'anthropic'
   if (!anthropic && input.lane !== 'openai-chat')
     throw new Error(`DeepSeek Harness cannot call the ${input.lane} lane`)
+  // dsh's thinking levels are pi-ai's (`off` … `max`); the field's `none`
+  // is its `off`, sent to the model as `none` (§11.2).
+  const level = dshThinkingLevel(input.effort)
   const efforts =
-    input.effort === undefined
+    level === undefined
       ? undefined
       : Object.fromEntries(
-          [...new Set(['low', 'medium', 'high', input.effort])].map(level => [
-            level,
-            level,
+          [...new Set(['low', 'medium', 'high', level])].map(one => [
+            one,
+            one === 'off' ? 'none' : one,
           ]),
         )
   const headers =
@@ -171,7 +182,7 @@ export function dshPatch(input: AcpLaunchInput): string {
             baseURL: input.baseUrl,
             apiKeyEnv: DSH_KEY_ENV,
             headers,
-            reasoning: input.effort,
+            reasoning: level,
             models: [
               {
                 id: input.model,
@@ -193,7 +204,12 @@ export function dshPatch(input: AcpLaunchInput): string {
           config: route,
           inject: [ACP_STARTUP_SERVICE, BRIDGE_READY_SERVICE],
         },
-    { id: 'agent-default-model', config: route },
+    // The effort sessions start with (`harness-backends.md` §11.2).
+    {
+      id: 'agent-default-model',
+      config:
+        level === undefined ? route : { ...route, reasoningEffort: level },
+    },
     // No AGENTS.md / CLAUDE.md from the workspace, its parents or any home.
     { id: 'agent-instructions', config: { maxBytes: 0 } },
     // Skills from this agent's dsh home only: the operator's (`qmo/`), the

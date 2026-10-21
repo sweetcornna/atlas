@@ -9,6 +9,7 @@
 
 import type { ConsoleFailure } from '../deps.js'
 import type {
+  ChannelGroupOption,
   ChannelPlatformView,
   ChannelsSnapshot,
   ChannelView,
@@ -78,7 +79,7 @@ function pairings(channel: ChannelView, model: ChannelsModel): string {
     })
     return (
       `<div class="ch-pair"><span class="ch-pair-who"><b>${escapeHtml(request.userName)}</b>` +
-      `<span class="kit-mono note">${escapeHtml(request.userId)}</span></span>` +
+      `<span class="kit-mono note" title="${attr(request.userId)}">${escapeHtml(request.userId)}</span></span>` +
       `<span class="note">${escapeHtml(formatRelative(request.createdAt, model.now))}</span>` +
       `<span class="kit-acts">` +
       actionButton('channel-pair', '设为主人', {
@@ -199,14 +200,14 @@ export function renderChannels(model: ChannelsModel): string {
   if (side.kind === 'unwired')
     body = unwiredCard(
       '聊天渠道',
-      'QQ、微信、Telegram、Discord、Slack 等聊天软件的消息交给智能体回复',
+      'QQ / 微信 / Telegram / Discord / Slack 的消息交给智能体回复',
       'qm console … --channels',
     )
   else if (side.kind === 'failed') body = failureBar(side.failure, '聊天渠道')
   else if (side.value.channels.length === 0)
     body = emptyState(
       '还没有渠道',
-      side.value.platforms.map(one => one.name).join('、'),
+      side.value.platforms.map(one => one.name).join(' / '),
       add,
     )
   else
@@ -226,6 +227,57 @@ export function renderChannels(model: ChannelsModel): string {
 
 function list(values: readonly string[] | undefined): string {
   return (values ?? []).join(', ')
+}
+
+/** The group rules the platform offers (`ChannelPlatformView.groupOptions`). */
+function groupRuleFields(
+  platform: ChannelPlatformView,
+  channel: ChannelView | null,
+): string {
+  const offers = (option: ChannelGroupOption) =>
+    platform.groupOptions.includes(option)
+  return (
+    (offers('freeGroups')
+      ? textField('freeGroups', '不用 @ 的群', {
+          wide: true,
+          mono: true,
+          value: list(channel?.freeGroups),
+          help:
+            platform.id === 'telegram'
+              ? '逗号分隔 · 话题写 群号:话题号'
+              : '逗号分隔',
+        })
+      : '') +
+    (offers('keywords')
+      ? textField('keywords', '唤醒词', {
+          wide: true,
+          value: list(channel?.keywords),
+          help: '逗号分隔 · 群里出现就回',
+        })
+      : '') +
+    (offers('budget')
+      ? textField('groupCooldownSeconds', '群冷却（秒）', {
+          type: 'number',
+          min: 0,
+          max: 86400,
+          value: String(channel?.groupCooldownSeconds ?? 0),
+          help: '没被 @ 时两次回复的间隔',
+        }) +
+        textField('groupSpeechMax', '发言上限（条）', {
+          type: 'number',
+          min: 0,
+          max: 1000,
+          value: String(channel?.groupSpeechMax ?? 0),
+        }) +
+        textField('groupSpeechMinutes', '上限时段（分钟）', {
+          type: 'number',
+          min: 0,
+          max: 1440,
+          value: String(channel?.groupSpeechMinutes ?? 0),
+          help: '0 不限',
+        })
+      : '')
+  )
 }
 
 /** The add / edit form body for one platform. */
@@ -325,6 +377,7 @@ export function renderChannelForm(input: {
       value: list(channel?.allowGroups),
       help: '逗号分隔',
     }) +
+    groupRuleFields(platform, channel) +
     textField('allowUsers', '允许私聊的人', {
       wide: true,
       mono: true,
@@ -344,7 +397,7 @@ export function renderChannelForm(input: {
           ],
           { wide: true, selected: channel?.pairing ?? 'auto' },
         ) +
-        `<p class="note field-wide">对方把配对码发给你：私聊机器人 /pair 配对码，或在渠道卡片上批准</p>`
+        `<p class="note field-wide">对方私聊机器人发 /pair 配对码 · 或在渠道卡片上批准</p>`
       : '') +
     `<label class="chk field-wide"><input type="checkbox" name="groupContext"${(channel?.groupContext ?? true) ? ' checked' : ''}>` +
     `<span class="bx">${icon('check', { small: true })}</span>群里被 @ 时带上最近的群聊</label>` +
@@ -407,7 +460,8 @@ export const CHANNELS_PAGE_CSS = `
 .ch-fact .kit-mono { text-align: right; overflow-wrap: anywhere; }
 .ch-pairs { display: flex; flex-direction: column; gap: 6px; padding-top: var(--space-2); border-top: 1px solid var(--color-line, transparent); }
 .ch-pair { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: var(--text-13); }
-.ch-pair-who { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ch-pair-who { display: flex; flex-direction: column; gap: 1px; flex: 1 1 8em; min-width: 0; }
+.ch-pair-who .kit-mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
 .ch-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; margin-top: auto; }
 .ch-platforms { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: var(--space-2); }
 .ch-platform { display: flex; align-items: center; gap: var(--space-2); padding: 8px 10px; border-radius: var(--radius-md); background: var(--color-bg); cursor: pointer; font-size: var(--text-13); border: 1px solid transparent; }

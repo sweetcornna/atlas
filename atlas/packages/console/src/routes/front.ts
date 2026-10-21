@@ -45,6 +45,8 @@ import {
   type FrontSideModel,
   type FrontViewModel,
 } from '../view/front.js'
+import { renderFrontPanel } from '../view/frontPanel.js'
+import { FRONT_TEXT } from '../view/frontText.js'
 import {
   chatFaces,
   chatTargets,
@@ -62,9 +64,11 @@ import {
   guard,
   guardChat,
   loginHref,
+  preferredMainAgent,
   textParam,
   valueOf,
 } from './shared.js'
+import { taskActorOf } from './tasksApi.js'
 import type { RouteContext } from './types.js'
 
 /**
@@ -83,7 +87,7 @@ function mayAdmin(ctx: RouteContext): boolean {
   return guard(ctx.access.credential, 'view', 'document') === null
 }
 
-/** The main agent: `--chat-default` if listed, else the first dialable, else the first. */
+/** The main agent: the page's choice or `--chat-default` if listed, else the first dialable, else the first. */
 function mainAgentOf(
   targets: readonly ChatTarget[] | null,
   preferred: string | undefined,
@@ -125,7 +129,7 @@ async function frontData(
       scope.visible(session.id),
     ),
     sessionsFailure: failureOf(sessions),
-    main: mainAgentOf(targets, ctx.deps.chatDefault),
+    main: mainAgentOf(targets, preferredMainAgent(ctx.deps)),
   }
 }
 
@@ -338,6 +342,12 @@ export async function renderFront(
           : canWrite(ctx.access)
             ? 'ops'
             : 'view',
+      // Approval prompts on the front (P39): only for a person who may approve.
+      ...(ctx.deps.approvals !== undefined &&
+      ctx.access.principal?.kind === 'user' &&
+      ctx.access.principal.role !== 'viewer'
+        ? { approvals: true }
+        : {}),
       // The public edition's source footer (AGPL §13, `view/source.ts`).
       ...(ctx.deps.billing === undefined
         ? {}
@@ -400,6 +410,20 @@ export async function dispatchFrontFragment(
     )
     await view.reading?.done(view.open)
     return html(renderFrontView(view.model), view.status ?? 200)
+  }
+  // The session panel (`view/frontPanel.ts`): the reader's background tasks
+  // by the port's own ownership rule, and the way to 云端电脑.
+  if (rest[0] === 'panel' && rest.length === 1) {
+    const tasks = ctx.deps.tasks
+    return html(
+      renderFrontPanel({
+        tasks: tasks === undefined ? null : tasks.list(taskActorOf(ctx)),
+        stop: guardChat(ctx.access, 'document') === null,
+        desktop: ctx.deps.desktop === undefined ? null : '/admin/desktop',
+        now: ctx.now,
+        t: FRONT_TEXT[langOf(ctx.request)],
+      }),
+    )
   }
   return notFound(`unknown path: ${ctx.url.pathname}`)
 }

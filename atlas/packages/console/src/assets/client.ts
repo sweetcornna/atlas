@@ -131,7 +131,7 @@ const PERSONAL_GUARDS: TokenGuards = {
     `window.localStorage.removeItem(TOKEN_KEY); } catch (e) { /* none held */ }`,
   write:
     `\n    if (value && String(value).indexOf('${PERSONAL_CREDENTIAL_PREFIX}') === 0) {` +
-    `\n      say(byId('token-state'), '个人凭据请在登录页填写', 'warn');` +
+    `\n      say(byId('token-state'), '个人凭据在登录页填写', 'warn');` +
     `\n      return;` +
     `\n    }`,
 }
@@ -919,7 +919,7 @@ function runtimeScript(guards: TokenGuards): string {
     if (!url) return;
     button.disabled = true;
     fetch(url, { credentials: 'same-origin', headers: authHeaders({}) }).then(checked).then(function (response) {
-      if (!response.ok) throw new Error('导出失败 · 请稍后重试');
+      if (!response.ok) throw new Error('导出失败 · 稍后重试');
       return response.blob();
     }).then(function (blob) {
       var objectUrl = URL.createObjectURL(blob);
@@ -1165,6 +1165,20 @@ function runtimeScript(guards: TokenGuards): string {
     tick(true).then(arm);
   }
 
+  // 外观: the menu's select and the settings page's row are one preference,
+  // kept in a cookie the server reads for the first paint (preferences.ts).
+  // A page that draws the preference elsewhere listens for qianmo:theme
+  // (view/settingRow.ts).
+  function applyTheme(value) {
+    if (['system', 'light', 'dark'].indexOf(value) < 0) return false;
+    document.documentElement.setAttribute('data-theme', value);
+    document.cookie = 'qianmo_theme=' + value + '; Path=/; Max-Age=31536000; SameSite=Strict' + (location.protocol === 'https:' ? '; Secure' : '');
+    var pick = byId('theme-choice');
+    if (pick) pick.value = value;
+    document.dispatchEvent(new CustomEvent('qianmo:theme', { detail: { value: value } }));
+    return true;
+  }
+
   /* ---------------- wiring ---------------- */
 
   document.addEventListener('click', function (event) {
@@ -1298,12 +1312,7 @@ function runtimeScript(guards: TokenGuards): string {
     var theme = byId('theme-choice');
     if (theme) {
       theme.value = document.documentElement.getAttribute('data-theme') || 'system';
-      theme.addEventListener('change', function () {
-        var value = theme.value;
-        if (['system', 'light', 'dark'].indexOf(value) < 0) return;
-        document.documentElement.setAttribute('data-theme', value);
-        document.cookie = 'qianmo_theme=' + value + '; Path=/; Max-Age=31536000; SameSite=Strict' + (location.protocol === 'https:' ? '; Secure' : '');
-      });
+      theme.addEventListener('change', function () { applyTheme(theme.value); });
     }
     if (document.querySelector('[data-poll]') && typeof EventSource === 'function') afterSession(function () {
       revisionStream = new EventSource('/v0/events');
@@ -1364,6 +1373,7 @@ function runtimeScript(guards: TokenGuards): string {
     refreshRegion: refreshRegion,
     onAction: function (name, run) { actions[name] = run; },
     onSubmit: function (id, run) { submits[id] = run; },
+    applyTheme: applyTheme,
     // A page script's own pollers and streams stop here, with the runtime's.
     onExpire: function (run) { expireHooks.push(run); },
     expire: expire,

@@ -109,7 +109,16 @@ async function setup() {
 const input = {
   node: null,
   auto: true,
-  routes: [{ direction: 'chat', profileId: 'chat', modelId: 'model' }],
+  routes: [
+    {
+      direction: 'medium',
+      profileId: 'chat',
+      modelId: 'model',
+      effort: 'high',
+    },
+    // An older page leaves effort out: the model's default.
+    { direction: 'simple', profileId: 'chat', modelId: 'model' },
+  ],
   revision: 0,
 }
 test('viewers and members can read, but cannot save or clear; legacy view also rejects writes', async () => {
@@ -130,7 +139,17 @@ test('viewers and members can read, but cannot save or clear; legacy view also r
 test('a personal ops account writes, admitted first, as itself; the shared admin token only reads', async () => {
   const h = await setup()
   const ops = h.users.ops.credential
-  expect((await h.send('PUT', ops, input)).status).toBe(200)
+  const saved = await h.send('PUT', ops, input)
+  expect(saved.status).toBe(200)
+  expect(((await saved.json()) as ModelRoutingView).routes).toEqual([
+    {
+      direction: 'medium',
+      profileId: 'chat',
+      modelId: 'model',
+      effort: 'high',
+    },
+    { direction: 'simple', profileId: 'chat', modelId: 'model', effort: null },
+  ])
   expect(
     (await h.send('DELETE', ops, undefined, ['nodes', 'node-a'])).status,
   ).toBe(200)
@@ -156,7 +175,24 @@ test('ledger refusal prevents mutation, unwired port is 501 and fields remain cl
   for (const patch of [
     { unknown: 1 },
     { routes: [{ direction: 'dance', profileId: null, modelId: null }] },
-    { routes: [{ direction: 'chat', profileId: null, modelId: 'model' }] },
+    { routes: [{ direction: 'medium', profileId: null, modelId: 'model' }] },
+    // P22 names are gone from the API; P38 effort is closed and needs a model.
+    { routes: [{ direction: 'chat', profileId: 'chat', modelId: 'model' }] },
+    {
+      routes: [
+        {
+          direction: 'medium',
+          profileId: 'chat',
+          modelId: 'm',
+          effort: 'turbo',
+        },
+      ],
+    },
+    {
+      routes: [
+        { direction: 'medium', profileId: null, modelId: null, effort: 'high' },
+      ],
+    },
   ])
     expect((await h.send('PUT', ADMIN, { ...input, ...patch })).status).toBe(
       400,

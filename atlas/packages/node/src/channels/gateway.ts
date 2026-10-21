@@ -1,5 +1,6 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// 规则来源 NousResearch/hermes-agent `gateway/platforms/base.py:2467-2482`、`:2499-2505`、`:2523-2547`（文本合并），取于 `63220ae5`，取用日期 2026-10-19
 
 /**
  * Chat messages → agent turns → replies (P28, `runtimes-channels.md` §2.3).
@@ -18,6 +19,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import { defaultGroupGate, RoomBudget } from './gate.js'
 import { extractMedia, isSilence, splitMessage } from './text.js'
 import type {
   ChannelAdapter,
@@ -26,6 +28,7 @@ import type {
   ChannelPlatform,
   ChannelSendOptions,
   ChannelSendResult,
+  GroupVerdict,
 } from './types.js'
 
 export type ChannelLane = 'owner' | 'member'
@@ -40,8 +43,20 @@ export interface ChannelRules {
   readonly allowAll: boolean
   readonly allowUsers: readonly string[]
   readonly allowGroups: readonly string[]
-  /** In groups: answer only when addressed (`mention`) or every message. */
+  /**
+   * In groups: answer when addressed (`mention`) or every message; the
+   * platform's rules (`rules/`) decide what counts as addressed.
+   */
   readonly groupTrigger: 'mention' | 'all'
+  /** Rooms answered without a mention (hermes `free_response_*`; Telegram also `<chat>:<topic>`). */
+  readonly freeGroups?: readonly string[]
+  /** Words that wake the bot in a group without a mention (grantley group keywords). */
+  readonly keywords?: readonly string[]
+  /** Least time between two implicit replies in one group; a summons restarts it (grantley). */
+  readonly groupCooldownMs?: number
+  /** At most this many turns per {@link groupSpeechMinutes} in one group (grantley speech cap; 0 off). */
+  readonly groupSpeechMax?: number
+  readonly groupSpeechMinutes?: number
   /** Collect one sender's consecutive messages for this long before a turn. */
   readonly replyWindowMs: number
   /** Fixed framing the operator wrote for this channel; sticky. */
@@ -182,6 +197,8 @@ interface ChannelEvent {
   readonly merged: number
   /** The platform message ids folded into this event. */
   readonly ids: readonly string[]
+  /** Heard only because the sender's earlier question is still pending or running. */
+  readonly continuation?: boolean
 }
 
 const PLATFORM_NAMES: Record<ChannelPlatform, string> = {
@@ -193,11 +210,15 @@ const PLATFORM_NAMES: Record<ChannelPlatform, string> = {
   slack: 'Slack',
 }
 
+/**
+ * How each platform shows a reply (hermes `_PLATFORM_HINT`; personal QQ is
+ * grantley `features/core.py` `PLATFORM_HINTS["onebot"]`).
+ */
 const FORMAT_HINTS: Record<ChannelPlatform, string> = {
-  qq: 'QQ 按纯文本显示，不要用 Markdown 表格和标题',
+  qq: 'QQ 支持常见 Markdown 和表情',
   'qq-personal':
-    'QQ 按纯文本显示，不要用 Markdown 表格和标题；像人聊天一样简短，很长的内容会折成一张聊天记录卡片',
-  weixin: '微信按纯文本显示，不要用 Markdown 表格和标题，每段不要太长',
+    'QQ 只显示纯文本，Markdown 样式和链接预览都不会渲染，按手机屏幕来写；日常聊天通常发一条简短消息，只有一个想法自然要分开说时才分两三条，条与条之间写 [MSG_BREAK]（只放在两条之间，不要为了凑条数）；复杂的问题和任务要完整回答，带上必要的代码、步骤和出处，并以 [LONG_REPLY] 开头，整段会折成一张可以点开的聊天记录卡片，不要为了像聊天而缩短任务答案；在群里你是众多成员之一，被点名时才回答，不要旁白',
+  weixin: '微信支持常见 Markdown，需要时可以用，但消息要紧凑、像聊天',
   telegram: '可以用常见 Markdown（粗体、代码、链接）',
   discord: '可以用 Markdown',
   slack: '可以用常见 Markdown，会转成 Slack 的格式',
@@ -237,7 +258,6 @@ const TRUNCATED = '（回复太长，后面的部分没有发出，完整内容�
  * batching, `_SPLIT_THRESHOLD`).
  */
 const SPLIT_WAIT_MS = 1_000
-const SPLIT_WAIT_CAP_MS = 4_000
 
 /**
  * Turns one group room may start in five minutes before it is paused
@@ -247,6 +267,9 @@ const ROOM_TURNS = 20
 const ROOM_WINDOW_MS = 5 * 60_000
 const ROOM_PAUSE_MS = 10 * 60_000
 
+/** The longest a text batch may grow from its first message (hermes `_TEXT_BATCH_MAX_SPLIT_DELAY_S`). */
+const BATCH_CAP_MS = 4_000
+
 /** How long a message id is remembered against redelivery (hermes `MessageDeduplicator`). */
 const DEDUP_MS = 300_000
 /** Threads per adapter the bot is known to take part in. */
@@ -255,6 +278,8 @@ const THREADS_KEPT = 2_000
 interface ReplyWindow {
   timer: ReturnType<typeof setTimeout>
   readonly opened: number
+  /** The operator's reply window ends here; batching only ever adds to it. */
+  readonly fixedUntil: number
   deadline: number
   readonly fire: () => void
 }
@@ -425,7 +450,8 @@ export interface ChannelGatewayOptions {
   readonly onError?: (message: string) => void
 }
 
-const COMMANDS = new Set([
+/** Commands the gateway runs; anything else after a slash is text. */
+export const CHANNEL_COMMANDS: ReadonlySet<string> = new Set([
   'new',
   'reset',
   'clear',
@@ -437,7 +463,7 @@ const COMMANDS = new Set([
   'pair',
 ])
 const HELP =
-  '/new 新会话 · /stop 停止 · /status 状态 · /model [方向|default] · /compact 压缩上下文'
+  '/new 新会话 · /stop 停止 · /status 状态 · /model [复杂|一般|简单|default] · /compact 压缩上下文'
 const HELP_PAIR = ' · /pair 码 批准配对'
 
 export function conversationKey(channelId: string, chat: ChannelChat): string {
@@ -475,6 +501,10 @@ export class ChannelGateway {
   >()
   /** Threads the bot answered in, per adapter, for `followsThreads`. */
   readonly #followed = new WeakMap<ChannelAdapter, Set<string>>()
+  /** Group cooldowns and speech caps (grantley). */
+  readonly #budget: RoomBudget
+  /** Whose question each running conversation is answering. */
+  readonly #runningSenders = new Map<string, string>()
   #closed = false
 
   constructor(options: ChannelGatewayOptions) {
@@ -485,6 +515,7 @@ export class ChannelGateway {
     this.#typingMs = options.typingIntervalMs ?? 4_500
     this.#sticky = new StickyContext(options.stickyRefreshTurns ?? 40)
     this.#onError = options.onError
+    this.#budget = new RoomBudget(this.#now)
   }
 
   /** Whether a turn is running or queued for this conversation. */
@@ -563,9 +594,10 @@ export class ChannelGateway {
     adapter: ChannelAdapter,
     message: ChannelInbound,
   ): ChannelEvent | 'pair' | null {
-    let inbound = message
+    const inbound = message
     const fromOwner = rules.ownerIds.includes(inbound.userId)
     let lane: ChannelLane
+    let continuation = false
     if (inbound.chat.type === 'dm') {
       if (fromOwner) lane = 'owner'
       else if (
@@ -586,12 +618,41 @@ export class ChannelGateway {
       // words reach the owner's agent.
       if (rules.groupContext !== false && (rules.members || fromOwner))
         this.#remember(rules.id, inbound)
-      // A thread the bot answered in is a conversation with it (hermes,
-      // Slack): no mention needed there.
-      if (!inbound.addressed && this.#follows(adapter, inbound.chat))
-        inbound = { ...inbound, addressed: true }
-      if (rules.groupTrigger === 'mention' && !inbound.addressed) return null
+      // grantley: once a sender's question is in, what they add while it is
+      // pending or running needs no new mention, and skips the room's
+      // cooldown and speech cap.
+      continuation =
+        adapter.continuesSenders === true &&
+        this.#senderBusy(
+          conversationKey(rules.id, inbound.chat),
+          inbound.userId,
+        )
+      let verdict: GroupVerdict = null
+      if (!continuation) {
+        verdict = (adapter.groupGate ?? defaultGroupGate)(inbound, {
+          trigger: rules.groupTrigger,
+          freeGroups: rules.freeGroups ?? [],
+          keywords: rules.keywords ?? [],
+          // A thread the bot takes part in is a conversation with it
+          // (hermes thread participation).
+          followed: this.#follows(adapter, inbound.chat),
+        })
+        if (verdict === null) return null
+      }
       if (!fromOwner && !rules.members) return null
+      // After the lane check, so nobody the room does not hear moves its clock.
+      if (
+        verdict !== null &&
+        !this.#budget.admit(
+          this.#roomKey(rules.id, inbound.chat),
+          verdict,
+          rules.groupCooldownMs ?? 0,
+        )
+      )
+        return null
+      // hermes marks a thread when it handles a message there (Discord) or
+      // is named in it (Slack); later messages there need no mention.
+      this.#joined(adapter, inbound.chat)
       lane = rules.members ? 'member' : 'owner'
     }
     return {
@@ -610,7 +671,17 @@ export class ChannelGateway {
       prefixed: false,
       merged: 1,
       ids: [inbound.messageId],
+      ...(continuation ? { continuation } : {}),
     }
+  }
+
+  /** A turn for this sender's question is running or waiting here (grantley `has_sender_work`). */
+  #senderBusy(key: string, userId: string): boolean {
+    if (this.#active.has(key) && this.#runningSenders.get(key) === userId)
+      return true
+    return (this.#pending.get(key)?.events ?? []).some(
+      event => event.inbound.userId === userId,
+    )
   }
 
   #roomKey(channelId: string, chat: ChannelChat): string {
@@ -754,7 +825,12 @@ export class ChannelGateway {
     const command = /^\/([a-z]+)(?:@\S+)?(?:\s+([\s\S]*))?$/i.exec(
       event.inbound.text.trim(),
     )
-    if (command && COMMANDS.has(command[1]!.toLowerCase())) {
+    if (
+      command &&
+      CHANNEL_COMMANDS.has(command[1]!.toLowerCase()) &&
+      (adapter.commandScope !== 'owner-private' ||
+        (event.fromOwner && event.conversation.chat.type === 'dm'))
+    ) {
       const name = command[1]!.toLowerCase()
       // Members cannot steer the agent; their commands are ordinary text.
       if (event.fromOwner || name === 'help') {
@@ -783,10 +859,23 @@ export class ChannelGateway {
       }
     }
     if (this.#paused(conversation)) return
+    // grantley speech cap: a hard budget per room that an @ does not get
+    // around; commands (above) and continuations are not counted.
+    if (
+      conversation.chat.type === 'group' &&
+      event.continuation !== true &&
+      !this.#budget.speak(
+        this.#roomKey(conversation.channelId, conversation.chat),
+        rules.groupSpeechMax ?? 0,
+        (rules.groupSpeechMinutes ?? 0) * 60_000,
+      )
+    ) {
+      this.#onError?.(
+        `渠道 ${conversation.channelId} 的群 ${conversation.chat.id} 已到发言上限，这条不回`,
+      )
+      return
+    }
     const key = conversation.key
-    const split =
-      adapter.inboundSplitAt !== undefined &&
-      inbound.text.length >= adapter.inboundSplitAt
     if (this.#active.has(key)) {
       this.#queue(key).add(event)
       return
@@ -794,13 +883,15 @@ export class ChannelGateway {
     const window = this.#windows.get(key)
     if (window !== undefined) {
       this.#queue(key).add(event)
-      if (split) {
-        // Another full-length piece: the paste goes on. The wait only ever
-        // grows, so the operator's reply window is never cut short.
+      const wait = this.#batchWait(adapter, event, key)
+      if (wait > 0) {
+        // More of the same batch: wait for quiet again. The wait only ever
+        // grows, never past the cap, so the operator's reply window is
+        // never cut short.
         const now = this.#now()
-        const target = Math.min(
-          now + SPLIT_WAIT_MS,
-          window.opened + SPLIT_WAIT_CAP_MS,
+        const target = Math.max(
+          window.fixedUntil,
+          Math.min(now + wait, window.opened + BATCH_CAP_MS),
         )
         if (target > window.deadline) {
           clearTimeout(window.timer)
@@ -810,7 +901,10 @@ export class ChannelGateway {
       }
       return
     }
-    const waitMs = Math.max(rules.replyWindowMs, split ? SPLIT_WAIT_MS : 0)
+    const waitMs = Math.max(
+      rules.replyWindowMs,
+      this.#batchWait(adapter, event, key),
+    )
     if (waitMs > 0) {
       this.#queue(key).add(event)
       const fire = () => {
@@ -823,12 +917,46 @@ export class ChannelGateway {
       this.#windows.set(key, {
         timer: setTimeout(fire, waitMs),
         opened,
+        fixedUntil: opened + rules.replyWindowMs,
         deadline: opened + waitMs,
         fire,
       })
       return
     }
     this.#start(rules, adapter, key, event)
+  }
+
+  /**
+   * hermes `_text_batch_delay_for`: after a piece as long as the client's
+   * own split, wait for the rest; otherwise the platform's quiet period,
+   * shorter for a short batch. Messages with attachments are not held.
+   */
+  #batchWait(
+    adapter: ChannelAdapter,
+    event: ChannelEvent,
+    key: string,
+  ): number {
+    const { text, attachments } = event.inbound
+    if (
+      adapter.inboundSplitAt !== undefined &&
+      text.length >= adapter.inboundSplitAt
+    )
+      return adapter.textBatch?.splitMs ?? SPLIT_WAIT_MS
+    const batch = adapter.textBatch
+    if (batch === undefined || (attachments?.length ?? 0) > 0) return 0
+    // The batch is this sender's queued text (a private chat's, all of it).
+    const sender = senderKey(event)
+    let length = 0
+    let counted = false
+    for (const one of this.#pending.get(key)?.events ?? [])
+      if (senderKey(one) === sender) {
+        length += one.inbound.text.length
+        if (one.ids.includes(event.inbound.messageId)) counted = true
+      }
+    if (!counted) length += text.length
+    for (const [upTo, ms] of batch.fast ?? [])
+      if (length <= upTo) return Math.min(batch.quietMs, ms)
+    return batch.quietMs
   }
 
   #queue(key: string): Pending {
@@ -867,6 +995,7 @@ export class ChannelGateway {
         }
       } finally {
         this.#active.delete(key)
+        this.#runningSenders.delete(key)
       }
     })()
     this.#active.set(key, loop)
@@ -883,6 +1012,7 @@ export class ChannelGateway {
     event: ChannelEvent,
   ): Promise<void> {
     const { conversation, inbound } = event
+    this.#runningSenders.set(conversation.key, inbound.userId)
     this.#countTurn(conversation)
     const generation = this.#generations.get(conversation.key) ?? 0
     const session = this.#turns.sessionOf(conversation)
@@ -901,12 +1031,15 @@ export class ChannelGateway {
       session,
       [...this.#stickyParts(rules, conversation), ...(extra?.sticky ?? [])],
     )
+    const room = rules.groupContext === false ? null : this.#roomContext(event)
+    const said = [...this.#notes(event), this.#body(event)]
+      .filter(Boolean)
+      .join('\n\n')
     const text = [
       ...texts,
       extra?.note ?? '',
-      (rules.groupContext === false ? null : this.#roomContext(event)) ?? '',
-      ...this.#notes(event),
-      this.#body(event),
+      // hermes and grantley close the room's lines with `[New message]`.
+      room === null ? said : `${room}\n\n[新消息]\n${said}`,
     ]
       .filter(Boolean)
       .join('\n\n')
@@ -1086,25 +1219,27 @@ export class ChannelGateway {
     text: string,
     replyTo?: string,
   ): Promise<boolean> {
-    if (
-      text.length > (adapter.longReplyAt ?? adapter.chunkLimit) &&
-      adapter.sendLong !== undefined
-    ) {
-      const whole = await adapter
-        .sendLong(chat, text, replyTo ? { replyTo } : {})
-        .catch(() => null)
-      if (whole?.ok) {
-        this.#joined(adapter, chat)
-        return true
+    const sendReply = adapter.sendReply?.bind(adapter)
+    if (sendReply !== undefined) {
+      // The platform shapes the whole reply (personal QQ: bubbles, a card).
+      const sent = await this.#attempt(adapter, chat, () =>
+        sendReply(chat, text, replyTo ? { replyTo } : {}).catch(error => ({
+          ok: false,
+          error: String((error as Error)?.message ?? error),
+        })),
+      )
+      if (!sent.ok) {
+        this.#onError?.(`渠道发送失败：${sent.error ?? '未知原因'}`)
+        return false
       }
+      this.#joined(adapter, chat)
+      return true
     }
     let first = true
-    for (const chunk of this.#chunks(text, adapter.chunkLimit)) {
-      const sent = await this.#sendChunk(
-        adapter,
-        chat,
-        chunk,
-        first && replyTo ? { replyTo } : {},
+    for (const chunk of this.#chunks(adapter, text)) {
+      const options: ChannelSendOptions = first && replyTo ? { replyTo } : {}
+      const sent = await this.#attempt(adapter, chat, () =>
+        adapter.send(chat, chunk, options),
       )
       first = false
       if (!sent.ok) {
@@ -1117,8 +1252,11 @@ export class ChannelGateway {
   }
 
   /** At most {@link MAX_CHUNKS}: a longer reply is cut at a line and says so. */
-  #chunks(text: string, limit: number): string[] {
-    const chunks = splitMessage(text, limit)
+  #chunks(adapter: ChannelAdapter, text: string): string[] {
+    const limit = adapter.chunkLimit
+    const split = (body: string) =>
+      adapter.chunks?.(body) ?? splitMessage(body, limit)
+    const chunks = split(text)
     if (chunks.length <= MAX_CHUNKS) return chunks
     for (
       let budget = limit * (MAX_CHUNKS - 1);
@@ -1128,23 +1266,22 @@ export class ChannelGateway {
       let head = text.slice(0, budget)
       const line = head.lastIndexOf('\n')
       if (line > budget / 2) head = head.slice(0, line)
-      const kept = splitMessage(head.trimEnd(), limit)
+      const kept = split(head.trimEnd())
       if (kept.length < MAX_CHUNKS) return [...kept, TRUNCATED]
     }
     return [...chunks.slice(0, MAX_CHUNKS - 1), TRUNCATED]
   }
 
   /**
-   * One chunk, sent again when the platform throttled it (after the wait it
+   * One send, made again when the platform throttled it (after the wait it
    * named) or failed before reaching it (2 s, then 4 s, as hermes `_send_with_retry`);
    * three attempts at most. A failure that may already have delivered the
    * text is not marked retryable by the adapters, so nobody gets it twice.
    */
-  async #sendChunk(
+  async #attempt(
     adapter: ChannelAdapter,
     chat: ChannelChat,
-    chunk: string,
-    options: ChannelSendOptions,
+    send: () => Promise<ChannelSendResult>,
   ): Promise<ChannelSendResult> {
     const gap = adapter.sendGapMs ?? 0
     const chatKey = `${chat.id}:${chat.threadId ?? ''}`
@@ -1159,7 +1296,7 @@ export class ChannelGateway {
         const wait = last + gap - this.#now()
         if (wait > 0) await this.#sleep(wait)
       }
-      const sent = await adapter.send(chat, chunk, options)
+      const sent = await send()
       sends.delete(chatKey)
       sends.set(chatKey, this.#now())
       if (sends.size > 1_000) sends.delete(sends.keys().next().value!)

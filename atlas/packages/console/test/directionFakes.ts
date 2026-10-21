@@ -7,6 +7,7 @@
  * objects with state, no module mocking, the clock injected.
  */
 
+import { FakeElevation } from './elevationFake.js'
 import type {
   AvatarKey,
   AvatarRecord,
@@ -211,7 +212,7 @@ export class FakeSchedules implements SchedulesPort {
         prompt: TEMPLATES[0]?.prompt ?? '',
         when: { kind: 'daily', time: '08:00' },
         timezone: 'Asia/Shanghai',
-        direction: 'chat',
+        direction: 'medium',
         channels: ['ch-1'],
         notifyOnlyAgent: false,
         enabled: true,
@@ -702,11 +703,28 @@ export class FakeRouting implements ModelRoutingPort {
       node: null,
       auto: true,
       routes: MODEL_DIRECTIONS.map(direction =>
-        direction === 'code'
-          ? { direction, profileId: 'deepseek', modelId: 'deepseek-coder' }
-          : direction === 'image'
-            ? { direction, profileId: 'images', modelId: 'gpt-image-1' }
-            : { direction, profileId: null, modelId: null },
+        direction === 'complex'
+          ? {
+              direction,
+              profileId: 'chat-svc',
+              modelId: 'gpt-6-luna',
+              effort: 'xhigh' as const,
+            }
+          : direction === 'medium'
+            ? {
+                direction,
+                profileId: 'deepseek',
+                modelId: 'deepseek-coder',
+                effort: null,
+              }
+            : direction === 'image'
+              ? {
+                  direction,
+                  profileId: 'images',
+                  modelId: 'gpt-image-1',
+                  effort: null,
+                }
+              : { direction, profileId: null, modelId: null, effort: null },
       ),
       revision: this.revision,
       updatedAt: at - 3_600_000 * 5,
@@ -730,6 +748,7 @@ export class FakeRouting implements ModelRoutingPort {
           modelId: 'deepseek-coder',
           kind: 'chat',
           evaluated: true,
+          efforts: ['none', 'low', 'medium', 'high'],
         },
         {
           profileId: 'deepseek',
@@ -737,6 +756,7 @@ export class FakeRouting implements ModelRoutingPort {
           modelId: 'deepseek-chat',
           kind: 'chat',
           evaluated: true,
+          efforts: [],
         },
         {
           profileId: 'chat-svc',
@@ -744,6 +764,7 @@ export class FakeRouting implements ModelRoutingPort {
           modelId: 'gpt-6-luna',
           kind: 'chat',
           evaluated: true,
+          efforts: ['low', 'medium', 'high', 'xhigh'],
         },
         {
           profileId: 'images',
@@ -751,6 +772,7 @@ export class FakeRouting implements ModelRoutingPort {
           modelId: 'gpt-image-1',
           kind: 'image',
           evaluated: false,
+          efforts: [],
         },
         {
           profileId: 'video',
@@ -758,6 +780,7 @@ export class FakeRouting implements ModelRoutingPort {
           modelId: 'video-preview',
           kind: 'video',
           evaluated: false,
+          efforts: [],
         },
       ],
       recent: [
@@ -765,7 +788,7 @@ export class FakeRouting implements ModelRoutingPort {
           node: 'node-a',
           agent: 'planner',
           at: at - 120_000,
-          direction: 'code',
+          direction: 'medium',
           source: 'auto',
           model: 'qm-deepseek/deepseek-coder',
         },
@@ -781,7 +804,7 @@ export class FakeRouting implements ModelRoutingPort {
           node: 'node-a',
           agent: 'planner',
           at: at - 3_600_000,
-          direction: 'chat',
+          direction: 'simple',
           source: 'default',
           model: 'qm-deepseek/deepseek-chat',
         },
@@ -1822,6 +1845,7 @@ export const PREVIEW_PORTS: Readonly<
   connectors: now => new FakeConnectors(now),
   handoffDevices: now => new FakeHandoffDevices(now),
   desktop: now => new FakeDesktop(now),
+  elevation: now => new FakeElevation(now),
   files: now => new FakeFiles(now),
 }
 
@@ -1833,6 +1857,7 @@ export const CHANNEL_PLATFORMS: readonly ChannelPlatformView[] = [
     secrets: [{ key: 'appSecret', label: 'AppSecret' }],
     qrLogin: false,
     pairing: true,
+    groupOptions: [],
     hint: 'QQ 开放平台机器人',
     evaluated: false,
   },
@@ -1843,6 +1868,7 @@ export const CHANNEL_PLATFORMS: readonly ChannelPlatformView[] = [
     secrets: [],
     qrLogin: true,
     pairing: true,
+    groupOptions: [],
     hint: '用微信扫码授权',
     evaluated: false,
   },
@@ -1853,6 +1879,7 @@ export const CHANNEL_PLATFORMS: readonly ChannelPlatformView[] = [
     secrets: [{ key: 'token', label: 'Bot Token' }],
     qrLogin: false,
     pairing: true,
+    groupOptions: ['freeGroups', 'keywords'],
     hint: '@BotFather 创建',
     evaluated: false,
   },
@@ -1885,6 +1912,11 @@ export class FakeChannels implements ChannelsPort {
         pairing: 'on',
         pairingOpen: true,
         groupContext: true,
+        freeGroups: [],
+        keywords: [],
+        groupCooldownSeconds: 0,
+        groupSpeechMax: 0,
+        groupSpeechMinutes: 0,
         pairingRequests: [
           {
             id: 'pr-1',
@@ -1942,6 +1974,13 @@ export class FakeChannels implements ChannelsPort {
       pairing: draft.pairing ?? old?.pairing ?? 'auto',
       pairingOpen: (draft.pairing ?? old?.pairing) === 'on',
       groupContext: draft.groupContext ?? old?.groupContext ?? true,
+      freeGroups: draft.freeGroups ?? old?.freeGroups ?? [],
+      keywords: draft.keywords ?? old?.keywords ?? [],
+      groupCooldownSeconds:
+        draft.groupCooldownSeconds ?? old?.groupCooldownSeconds ?? 0,
+      groupSpeechMax: draft.groupSpeechMax ?? old?.groupSpeechMax ?? 0,
+      groupSpeechMinutes:
+        draft.groupSpeechMinutes ?? old?.groupSpeechMinutes ?? 0,
       pairingRequests: old?.pairingRequests ?? [],
       settings: { ...old?.settings, ...draft.settings },
       secretSet:

@@ -27,6 +27,7 @@ import {
   FakeHandoffDevices,
   FakeMemory,
 } from './directionFakes.js'
+import { FakeElevation } from './elevationFake.js'
 import { FakeBilling } from './billingFake.js'
 import {
   ADMIN,
@@ -69,9 +70,9 @@ function writeMarks(html: string): readonly string[] {
 
 /** Every path a caller can read: the pages, two sub-pages, the fragments. */
 const READABLE = [
-  ...ROUTES.filter(module => module.area.front !== true).map(
-    module => module.area.href,
-  ),
+  ...ROUTES.filter(
+    module => module.area.front !== true && module.area.moved !== true,
+  ).map(module => module.area.href),
   '/admin',
   '/admin/nodes/tokyo-1',
   `/admin/audit/trace/${TRACE}`,
@@ -100,6 +101,7 @@ function harness() {
       billing: new FakeBilling(() => NOW),
       handoffDevices: new FakeHandoffDevices(() => NOW),
       desktop: new FakeDesktop(() => NOW),
+      elevation: new FakeElevation(() => NOW),
       files: new FakeFiles(() => NOW),
     },
     nodeServers: [{ node: 'tokyo-1', server: 'p11' }],
@@ -119,13 +121,19 @@ describe('a read-only token', () => {
         expect(response.status).toBe(403)
         continue
       }
+      // 初始化配置只给能管理这台控制台的人，对查看令牌不存在。
+      if (path === '/admin/setup') {
+        expect(response.status).toBe(404)
+        continue
+      }
       expect(`${path} ${response.status}`).toBe(`${path} 200`)
       expect(`${path} ${writeMarks(await response.text()).join(',')}`).toBe(
         `${path} `,
       )
       read += 1
     }
-    expect(read).toBe(READABLE.length - CHAT_ONLY.length)
+    // 初始化配置对查看令牌不存在（上面单独断言了 404）。
+    expect(read).toBe(READABLE.length - CHAT_ONLY.length - 1)
   })
 
   test('is told, once, in the top bar of the page that would have had them', async () => {

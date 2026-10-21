@@ -45,10 +45,16 @@ const specs = [
     name: 'qianmo_task_start',
     op: 'start',
     description:
-      "Foreground only. Keep this conversation free for the owner's next message: hand work to a background task and return at once with its task id; never wait for it here. Do it yourself when one or two steps finish it (an answer, a question back, one lookup, one simple tool call, reading one file). Start a task without agent, in your own sub-session, for anything that takes several steps or more than a minute or two: research, writing or changing code, long commands, trial and error. Simple but slow work with clear edges (bulk tidying, checking against a list, collecting material, waiting on a result to check it) may go to another agent: give agent, a qianmo://node/agent address from qianmo_task_agents, preferring idle and cheaper ones. Split independent parts into separate tasks that run in parallel. Give a short title and complete instructions (the task sees no more of this conversation than its last few messages). Leave out (or give null) every optional field you do not need: no agent runs it in your own sub-session, no after or at starts it now, no everyMinutes runs it once; 0 and empty strings count as left out. To run it later give after (minutes, 1-10080) or at (an ISO time with its zone, at most 7 days ahead), not both; to repeat it give everyMinutes (30-10080) with times (1-100). Plan this way what should be looked at again later or done periodically. A planned task waits as scheduled, runs in the same sub-session each time and its result comes back here after every run; at most 20 planned per owner. Tell the owner what you started or planned, and when it runs.",
+      "Foreground only. Keep this conversation free for the owner's next message: hand work to a background task and return at once with its task id; never wait for it here. Do it yourself when one or two steps finish it (an answer, a question back, one lookup, one simple tool call, reading one file). Start a task without agent, in your own sub-session, for anything that takes several steps or more than a minute or two: research, writing or changing code, long commands, trial and error. Simple but slow work with clear edges (bulk tidying, checking against a list, collecting material, waiting on a result to check it) may go to another agent: give agent, a qianmo://node/agent address from qianmo_task_agents, preferring idle and cheaper ones. Split independent parts into separate tasks that run in parallel. Give a short title and complete instructions (the task sees no more of this conversation than its last few messages), and the difficulty, which picks the sub-session's model. Leave out (or give null) every optional field you do not need: no agent runs it in your own sub-session, no after or at starts it now, no everyMinutes runs it once; 0 and empty strings count as left out. To run it later give after (minutes, 1-10080) or at (an ISO time with its zone, at most 7 days ahead), not both; to repeat it give everyMinutes (30-10080) with times (1-100). Plan this way what should be looked at again later or done periodically. A planned task waits as scheduled, runs in the same sub-session each time and its result comes back here after every run; at most 20 planned per owner. Tell the owner what you started or planned, and when it runs.",
     properties: {
       title: string,
       instructions: string,
+      difficulty: {
+        type: 'string',
+        enum: ['complex', 'medium', 'simple'],
+        description:
+          "Optional. How hard the work is; it picks the sub-session's model. complex: many steps or work that needs planning first (architecture, refactors, research, large changes across files). medium: ordinary implementation and changes. simple: small chores such as extracting, rewriting, classifying, translating or reformatting. A one-step chore you do yourself; leave out for medium.",
+      },
       agent: {
         ...string,
         description:
@@ -81,7 +87,7 @@ const specs = [
     name: 'qianmo_task_agents',
     op: 'agents',
     description:
-      "Foreground only. List the agents you may hand a task to with qianmo_task_start's agent: address, name, runtime and model when known, whether it is you, and how busy it is — idle (nothing running on its node; a node runs one turn at a time), turns in flight, background tasks queued and running. Check it before handing simple but slow work to another agent, and prefer idle and cheaper ones. Does not wait.",
+      "Foreground only. List the agents you may hand a task to with qianmo_task_start's agent: address, name, runtime and model when known, whether it is you, and how busy it is — idle (nothing in flight or queued on its node right now), turns in flight, background tasks queued and running. Check it before handing simple but slow work to another agent, and prefer idle and cheaper ones. Does not wait.",
     properties: {},
     required: [],
   },
@@ -97,7 +103,7 @@ const specs = [
     name: 'qianmo_task_send',
     op: 'send',
     description:
-      'Foreground only. Pass an extra instruction from the owner to one of this conversation’s background tasks; a task waiting for input resumes in the same sub-session, a scheduled one reads it when its next run starts. A new message from the owner cancels no task.',
+      'Foreground only. Pass an extra instruction from the owner to one of this conversation’s background tasks. A task running now reads it at its next step where its runtime allows (delivery live), otherwise at its next turn (next_turn); a task waiting for input resumes in the same sub-session, a scheduled one reads it when its next run starts. A new message from the owner cancels no task.',
     properties: { id: string, message: string },
     required: ['id', 'message'],
   },

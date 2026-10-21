@@ -99,7 +99,7 @@ function contextSetting(model: NodePanelModel): string {
     : ''
   return (
     `<article class="card elev-sm prov-setting" data-setting="context">` +
-    `<div class="card-kicker">Context</div>` +
+    `<div class="card-kicker">上下文</div>` +
     `<div class="prov-kvs">` +
     kvText('上下文窗口 · 节点算出', cells.context) +
     kvText(
@@ -136,7 +136,7 @@ function autoCompactSetting(model: NodePanelModel): string {
   const pinned = cells.autoCompactSource === 'env'
   return (
     `<article class="card elev-sm prov-setting" data-setting="autocompact">` +
-    `<div class="card-kicker">Auto compact</div>` +
+    `<div class="card-kicker">自动压缩</div>` +
     `<div class="prov-kvs">` +
     kvText('自动压缩阈值 · 节点算出', value) +
     kvText('来源 · 节点', source) +

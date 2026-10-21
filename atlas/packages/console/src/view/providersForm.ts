@@ -46,6 +46,7 @@ import { chevron, hint, icon, sectionHead, state, tag } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import {
   CACHE_LINE,
+  EFFORT_WORD,
   FAMILY_GOVERNED_LINE,
   GROUP_WORD,
   LANE_WORD,
@@ -157,7 +158,7 @@ function chatAlwaysGate(
   if (unable.length > 0) {
     return {
       open: false,
-      reason: `节点 ${unable.join(' ')} 报告 OpenAI Chat 线路发不了显式 effort · 总是发送不可选`,
+      reason: `节点 ${unable.join(' ')} 报告 OpenAI Chat 线路发不了显式推理强度 · 总是发送不可选`,
     }
   }
   return { open: true, reason: '' }
@@ -349,7 +350,7 @@ function modelBlock(
       check(`data-f="tier" value="${tier}"`, tier, tiers.has(tier)),
     ).join('') +
     `</div></div>` +
-    `<label class="field"><span>effort</span>` +
+    `<label class="field"><span>推理强度</span>` +
     select('data-f="send"', sends) +
     `</label>` +
     `<label class="field"><span>默认档位</span>` +
@@ -357,14 +358,22 @@ function modelBlock(
       'data-f="level"',
       option('', '不指定', model?.effort.level === undefined) +
         EFFORT_LEVELS.map(level =>
-          option(level, level, model?.effort.level === level),
+          option(
+            level,
+            EFFORT_WORD[level] ?? level,
+            model?.effort.level === level,
+          ),
         ).join(''),
     ) +
     `</label>` +
     `<div class="field" data-when="explicit"${send === 'auto' ? ' hidden' : ''}>` +
     `<span>可选档位</span><div class="chips">` +
     EFFORT_LEVELS.map(level =>
-      check(`data-f="levels" value="${level}"`, level, levels.has(level)),
+      check(
+        `data-f="levels" value="${level}"`,
+        EFFORT_WORD[level] ?? level,
+        levels.has(level),
+      ),
     ).join('') +
     `</div></div>` +
     `<div class="field" data-when="explicit"${send === 'auto' ? ' hidden' : ''}>` +
@@ -543,7 +552,7 @@ function termsNote(profile: ProviderProfileView): string {
   return (
     `<p class="bar bar-warn prov-terms">${icon('alert-triangle', { small: true })}<span>` +
     escapeHtml(
-      '套餐条款多限定用于交互式编程工具 · 远端智能体代为调用可能不符合条款 · 请对照官方条款自行判断',
+      '套餐条款多限定用于交互式编程工具 · 远端智能体代为调用可能不符合条款 · 以官方条款为准',
     ) +
     `</span></p>` +
     (profile.terms.note === ''
@@ -566,7 +575,7 @@ function advanced(model: EditorModel, gate: ChatGate): string {
   )
   return (
     `<details class="adv" id="prov-adv"${open ? ' open' : ''}>` +
-    `<summary>${chevron()}高级 · 线路 地址 模型 effort 与兼容开关</summary>` +
+    `<summary>${chevron()}高级 · 线路 地址 模型 推理强度与兼容开关</summary>` +
     `<div class="adv-body prov-adv-body">` +
     `<div class="field"><label for="prov-lane">线路</label>` +
     select('id="prov-lane"', laneOptions(profile.lane)) +
@@ -585,12 +594,16 @@ function advanced(model: EditorModel, gate: ChatGate): string {
       ) + option('x-api-key', 'x-api-key', profile.auth.scheme === 'x-api-key'),
     ) +
     `</div>` +
-    `<div class="field"><label for="prov-lock">effort 上限</label>` +
+    `<div class="field"><label for="prov-lock">推理强度上限</label>` +
     select(
       'id="prov-lock"',
       option('', '不限', (profile.effortLock ?? null) === null) +
         EFFORT_LEVELS.map(level =>
-          option(level, level, profile.effortLock === level),
+          option(
+            level,
+            EFFORT_WORD[level] ?? level,
+            profile.effortLock === level,
+          ),
         ).join(''),
     ) +
     `</div>` +
@@ -641,7 +654,7 @@ function checks(model: EditorModel): string {
         `</div>`
   return (
     `<section class="card elev-sm" aria-labelledby="h-prov-checks">` +
-    `<div class="card-kicker" id="h-prov-checks">Checks</div>` +
+    `<div class="card-kicker" id="h-prov-checks">检查</div>` +
     nodeSelect +
     `<ul class="prov-plan">` +
     CHECKS.map(
@@ -742,7 +755,7 @@ export function renderEditor(model: EditorModel): string {
     `data-chat-always="${gate.open ? '1' : '0'}" ` +
     `data-chat-reason="${attr(gate.reason)}">` +
     `<section class="card elev-sm" aria-labelledby="h-prov-basic">` +
-    `<div class="card-kicker" id="h-prov-basic">Service</div>` +
+    `<div class="card-kicker" id="h-prov-basic">服务</div>` +
     head +
     termsNote(profile) +
     `<div class="prov-field-row">` +
@@ -800,7 +813,7 @@ export function renderProfileReadOnly(model: {
   const main = mainModel(profile)
   return (
     `<section class="card elev-sm prov-editor" aria-labelledby="h-prov-profile">` +
-    `<div class="card-kicker" id="h-prov-profile">Service</div>` +
+    `<div class="card-kicker" id="h-prov-profile">服务</div>` +
     `<div class="rowx">${profileTags(profile)}` +
     (summary?.isDefault === true ? tag('全局默认', 'ok') : '') +
     `</div>` +
@@ -862,7 +875,7 @@ export function renderProfileNodes(
               state(status.tone, status.word) +
               `<span>${escapeHtml(cells.lane)}</span>` +
               `<span class="mono">${escapeHtml(cells.model)}</span>` +
-              `<span>effort ${escapeHtml(cells.effort)}</span>` +
+              `<span>推理强度 ${escapeHtml(cells.effort)}</span>` +
               `<span data-cell="context">上下文 ${escapeHtml(cells.context)}</span>` +
               (node.actual?.applied?.profileId === id
                 ? nodeKeysLine(node.actual)
@@ -891,7 +904,7 @@ export function renderProfileNodes(
     `<section class="sec" id="prov-on" aria-labelledby="h-prov-on">` +
     sectionHead('Nodes', '在用节点', {
       headingId: 'h-prov-on',
-      tail: `<span class="note">线路 模型 effort 与上下文取节点算出的值</span>`,
+      tail: `<span class="note">线路 模型 推理强度与上下文取节点算出的值</span>`,
     }) +
     body +
     `</section>`
@@ -905,7 +918,7 @@ export function renderProfileNodes(
 export function renderImportPage(): string {
   return (
     `<section class="card elev-sm prov-editor" id="prov-import" aria-labelledby="h-prov-import">` +
-    `<div class="card-kicker" id="h-prov-import">Import</div>` +
+    `<div class="card-kicker" id="h-prov-import">导入</div>` +
     `<p class="note">导入的档案不带密钥 · 一律未评估 · 有中枢不认识的键时整份拒绝 · 与现有档案撞 id 的要另起新 id</p>` +
     `<div class="field"><label for="prov-import-file">选择导出文件</label>` +
     `<input class="input" type="file" id="prov-import-file" accept="application/json,.json"></div>` +
@@ -932,6 +945,51 @@ function nodeOfAddress(address: string): string | null {
 }
 
 /**
+ * What the composer's 模型 picker lists (`frontTools.ts`): the provider the
+ * node calls the model by, its model and effort now, and the chat models of
+ * the profile it runs — the ids `/model <provider>/<id>` takes. Data only,
+ * hidden; the picker draws it.
+ */
+function chatModels(
+  cells: ReturnType<typeof effectiveCells>,
+  profile: ProviderProfileView | undefined,
+): string {
+  if (!cells.reported) return ''
+  const effort =
+    cells.effortOn !== true
+      ? 'inherit'
+      : cells.effortLevel === 'none'
+        ? 'off'
+        : cells.effortLevel !== null && EFFORT_IDS.has(cells.effortLevel)
+          ? cells.effortLevel
+          : ''
+  const ids = [
+    ...new Set([
+      cells.model,
+      ...(profile?.models ?? [])
+        .filter(entry => entry.kind === undefined || entry.kind === 'chat')
+        .map(entry => entry.id),
+    ]),
+  ]
+  return (
+    `<span id="prov-chat-models" hidden data-provider="${attr(cells.apiProvider)}" ` +
+    `data-model="${attr(cells.model)}" data-effort="${attr(effort)}">` +
+    ids.map(id => `<span data-model-id="${attr(id)}"></span>`).join('') +
+    `</span>`
+  )
+}
+
+/** The levels a node reports that `/effort` takes by the same name. */
+const EFFORT_IDS: ReadonlySet<string> = new Set([
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+])
+
+/**
  * What the chat page shows of the target's model: a label with the model the
  * node computed, and the switch the node last committed, to be drawn into the
  * transcript where it happened. Nothing at all when the target's node is not
@@ -953,15 +1011,20 @@ export function renderChatModel(
     `<span class="tag tag-neutral mono" id="prov-chat-label" data-node="${attr(
       name,
     )}" title="${attr(`节点 ${name} 当前生效的模型 · ${cells.lane}`)}">` +
-    `${escapeHtml(`模型 · ${cells.model}`)}</span>`
+    `${escapeHtml(cells.model)}</span>`
   const applied = node.actual?.applied ?? null
+  const profile =
+    applied === null
+      ? undefined
+      : overview.profiles.find(entry => entry.profile.id === applied.profileId)
+          ?.profile
+  const menu = chatModels(cells, profile)
   const at = applied === null ? Number.NaN : Date.parse(applied.at)
-  if (applied === null || !Number.isFinite(at) || at > now) return label
-  const profileName =
-    overview.profiles.find(entry => entry.profile.id === applied.profileId)
-      ?.profile.name ?? applied.profileId
+  if (applied === null || !Number.isFinite(at) || at > now) return label + menu
+  const profileName = profile?.name ?? applied.profileId
   return (
     label +
+    menu +
     `<div class="prov-chat-divider" id="prov-chat-divider" data-at="${attr(
       String(at),
     )}" role="separator">` +
