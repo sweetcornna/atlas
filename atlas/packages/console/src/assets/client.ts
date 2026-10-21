@@ -1165,154 +1165,19 @@ function runtimeScript(guards: TokenGuards): string {
     tick(true).then(arm);
   }
 
-  /* ---------------- setting rows (view/settingRow.ts) ---------------- */
-
-  // A row writes itself: a switch, a select or a segmented choice on change,
-  // a text box on blur or Enter. A refused write puts the control back to
-  // the value the server has and says why under the row. Enter that ends an
-  // input method's composition is the reader choosing characters, not
-  // asking to save: it is ignored (isComposing, and the 229 of browsers that
-  // do not set it).
-  var settingHandlers = {};
-
-  function settingInputs(row) { return row.querySelectorAll('[data-setting-input]'); }
-
-  function settingRead(row) {
-    var kind = row.getAttribute('data-setting-kind');
-    var inputs = settingInputs(row);
-    if (kind === 'switch') return inputs[0] && inputs[0].checked ? 'true' : 'false';
-    if (kind === 'segmented') {
-      for (var i = 0; i < inputs.length; i++) if (inputs[i].checked) return inputs[i].value;
-      return '';
-    }
-    return inputs[0] ? String(inputs[0].value).trim() : '';
-  }
-
-  function settingPut(row, value) {
-    var kind = row.getAttribute('data-setting-kind');
-    var inputs = settingInputs(row);
-    if (kind === 'switch') { if (inputs[0]) inputs[0].checked = value === 'true'; return; }
-    if (kind === 'segmented') {
-      for (var i = 0; i < inputs.length; i++) inputs[i].checked = inputs[i].value === value;
-      return;
-    }
-    if (inputs[0]) inputs[0].value = value;
-  }
-
-  function settingMark(row) {
-    var fallback = row.getAttribute('data-setting-default');
-    if (fallback !== null && row.getAttribute('data-setting-value') !== fallback) row.setAttribute('data-changed', '');
-    else row.removeAttribute('data-changed');
-  }
-
-  function settingError(row, text) {
-    var err = row.querySelector('.setting-error');
-    if (!err) return;
-    err.textContent = text || '';
-    err.hidden = !text;
-  }
-
-  function settingWire(row, value) {
-    if (row.getAttribute('data-setting-kind') === 'switch') return value === 'true';
-    if (row.querySelector('[data-setting-numeric]') && value !== '' && isFinite(Number(value))) return Number(value);
-    return value;
-  }
-
-  function settingSend(row, value) {
-    var name = row.getAttribute('data-setting-handler');
-    if (name) {
-      var run = settingHandlers[name];
-      if (typeof run !== 'function') return Promise.reject({ human: '这一项需要页面脚本' });
-      return Promise.resolve().then(function () { return run(settingWire(row, value), row); });
-    }
-    var endpoint = row.getAttribute('data-setting-endpoint');
-    if (!endpoint) return Promise.reject({ human: '这一项是只读的' });
-    var body = {};
-    try { body = JSON.parse(row.getAttribute('data-setting-extra') || '{}') || {}; } catch (e) { body = {}; }
-    body[row.getAttribute('data-setting-field') || ''] = settingWire(row, value);
-    return sendJson(row.getAttribute('data-setting-method') || 'PUT', endpoint, body);
-  }
-
-  function settingCommit(row, value) {
-    var was = row.getAttribute('data-setting-value') || '';
-    if (value === was || row.getAttribute('aria-busy') === 'true') return;
-    row.setAttribute('aria-busy', 'true');
-    settingError(row, '');
-    settingSend(row, value).then(function () {
-      row.setAttribute('data-setting-value', value);
-      settingMark(row);
-      row.dispatchEvent(new CustomEvent('qianmo:setting', { bubbles: true, detail: { value: value } }));
-    }, function (err) {
-      settingPut(row, was);
-      settingError(row, failLine('保存', err));
-    }).then(function () { row.removeAttribute('aria-busy'); });
-  }
-
-  function settingOf(el) {
-    if (!el || !el.closest || !el.hasAttribute || !el.hasAttribute('data-setting-input')) return null;
-    return el.closest('.setting[data-setting]');
-  }
-
-  document.addEventListener('change', function (event) {
-    var row = settingOf(event.target);
-    if (!row || row.getAttribute('data-setting-kind') === 'text') return;
-    settingCommit(row, settingRead(row));
-  });
-
-  document.addEventListener('focusout', function (event) {
-    var row = settingOf(event.target);
-    if (row && row.getAttribute('data-setting-kind') === 'text') settingCommit(row, settingRead(row));
-  });
-
-  document.addEventListener('keydown', function (event) {
-    var row = settingOf(event.target);
-    if (!row || row.getAttribute('data-setting-kind') !== 'text') return;
-    if (event.isComposing || event.keyCode === 229) return;
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      settingCommit(row, settingRead(row));
-    } else if (event.key === 'Escape') {
-      settingPut(row, row.getAttribute('data-setting-value') || '');
-      settingError(row, '');
-    }
-  });
-
-  document.addEventListener('click', function (event) {
-    var button = event.target && event.target.closest ? event.target.closest('[data-setting-reset]') : null;
-    if (!button) return;
-    var row = button.closest('.setting[data-setting]');
-    if (!row) return;
-    event.preventDefault();
-    var fallback = row.getAttribute('data-setting-default');
-    if (fallback === null) return;
-    settingPut(row, fallback);
-    settingCommit(row, fallback);
-  });
-
   // 外观: the menu's select and the settings page's row are one preference,
   // kept in a cookie the server reads for the first paint (preferences.ts).
-  function showTheme(value) {
-    var pick = byId('theme-choice');
-    if (pick) pick.value = value;
-    var rows = document.querySelectorAll('.setting[data-setting-handler="theme"]');
-    for (var i = 0; i < rows.length; i++) {
-      settingPut(rows[i], value);
-      rows[i].setAttribute('data-setting-value', value);
-      settingMark(rows[i]);
-    }
-  }
-
+  // A page that draws the preference elsewhere listens for qianmo:theme
+  // (view/settingRow.ts).
   function applyTheme(value) {
     if (['system', 'light', 'dark'].indexOf(value) < 0) return false;
     document.documentElement.setAttribute('data-theme', value);
     document.cookie = 'qianmo_theme=' + value + '; Path=/; Max-Age=31536000; SameSite=Strict' + (location.protocol === 'https:' ? '; Secure' : '');
-    showTheme(value);
+    var pick = byId('theme-choice');
+    if (pick) pick.value = value;
+    document.dispatchEvent(new CustomEvent('qianmo:theme', { detail: { value: value } }));
     return true;
   }
-
-  settingHandlers.theme = function (value) {
-    if (!applyTheme(String(value))) throw { human: '外观只认跟随系统 浅色 深色' };
-  };
 
   /* ---------------- wiring ---------------- */
 
@@ -1449,7 +1314,6 @@ function runtimeScript(guards: TokenGuards): string {
       theme.value = document.documentElement.getAttribute('data-theme') || 'system';
       theme.addEventListener('change', function () { applyTheme(theme.value); });
     }
-    showTheme(document.documentElement.getAttribute('data-theme') || 'system');
     if (document.querySelector('[data-poll]') && typeof EventSource === 'function') afterSession(function () {
       revisionStream = new EventSource('/v0/events');
       revisionStream.addEventListener('open', function () { revisionsLive = true; refreshNow(); });
@@ -1509,8 +1373,7 @@ function runtimeScript(guards: TokenGuards): string {
     refreshRegion: refreshRegion,
     onAction: function (name, run) { actions[name] = run; },
     onSubmit: function (id, run) { submits[id] = run; },
-    // A setting row's own writer (view/settingRow.ts): run(value, row) -> promise.
-    onSetting: function (name, run) { settingHandlers[name] = run; },
+    applyTheme: applyTheme,
     // A page script's own pollers and streams stop here, with the runtime's.
     onExpire: function (run) { expireHooks.push(run); },
     expire: expire,

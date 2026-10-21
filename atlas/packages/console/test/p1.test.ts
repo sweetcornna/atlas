@@ -811,9 +811,7 @@ describe('G1 · documents travel compressed, sheets without notes, assets revali
       expect(() => new Function(runtime)).not.toThrow()
       expect(runtime).toContain('/* humanize:start */')
       expect(runtime).toContain('/* humanize:end */')
-      // 48 000 since the setting rows (view/settingRow.ts) write themselves
-      // from the shared runtime; it was 40 000 before them.
-      expect(runtime.length).toBeLessThan(48_000)
+      expect(runtime.length).toBeLessThan(40_000)
     }
   })
 

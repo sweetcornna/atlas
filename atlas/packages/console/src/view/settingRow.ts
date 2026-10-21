@@ -5,7 +5,11 @@
  * One setting as a row, declared rather than hand-built: the label and one
  * grey line on the left, the control on the right, the way a settings window
  * lays them out. A page lists its rows; this module draws them, and the
- * shared runtime (`assets/client.ts`, 设置行) makes each one write itself.
+ * page's copy of {@link SETTING_ROW_JS} makes each one write itself. A page
+ * that draws rows adds {@link SETTING_ROW_CSS} to its `css` and
+ * {@link SETTING_ROW_JS} to its `script`: the shared sheet and runtime ride
+ * every document, and most pages have no row (`test/p1.test.ts` G1 keeps
+ * them small).
  *
  * ## What a row promises
  *
@@ -30,6 +34,7 @@
  * choices are better as a segmented control.
  */
 
+import { stripJsLineComments } from '../assets/client.js'
 import { chevron } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 
@@ -262,7 +267,7 @@ export function settingsGroup(
   )
 }
 
-/** The rows' own rules, appended to the shared sheet (`assets/css.ts`). */
+/** The rows' own rules, for the `css` of a page that draws rows. */
 export const SETTING_ROW_CSS = `
 /* ---- setting rows (view/settingRow.ts) ---- */
 .settings-group { display: flex; flex-direction: column; gap: var(--space-2); }
@@ -307,3 +312,163 @@ input.setting-input { width: 220px; }
   .setting-sel, .setting-sel-wide, input.setting-input { width: 100%; }
 }
 `
+
+/**
+ * The rows' runtime, for the `script` of a page that draws rows: writes on
+ * change, blur or Enter (never the Enter that ends a composition), puts a
+ * refused value back with the reason under the row, 恢复默认, and the theme
+ * row kept in step with the account menu. Pages with their own writer
+ * register it with `qianmoConsole.onSetting(name, run)`.
+ */
+export const SETTING_ROW_JS = stripJsLineComments(`
+(function () {
+  'use strict';
+  var qc = window.qianmoConsole;
+  if (!qc || qc.onSetting) return;
+
+  // A row writes itself: a switch, a select or a segmented choice on change,
+  // a text box on blur or Enter. A refused write puts the control back to
+  // the value the server has and says why under the row. Enter that ends an
+  // input method's composition is the reader choosing characters, not
+  // asking to save: it is ignored (isComposing, and the 229 of browsers that
+  // do not set it).
+  var settingHandlers = {};
+
+  function settingInputs(row) { return row.querySelectorAll('[data-setting-input]'); }
+
+  function settingRead(row) {
+    var kind = row.getAttribute('data-setting-kind');
+    var inputs = settingInputs(row);
+    if (kind === 'switch') return inputs[0] && inputs[0].checked ? 'true' : 'false';
+    if (kind === 'segmented') {
+      for (var i = 0; i < inputs.length; i++) if (inputs[i].checked) return inputs[i].value;
+      return '';
+    }
+    return inputs[0] ? String(inputs[0].value).trim() : '';
+  }
+
+  function settingPut(row, value) {
+    var kind = row.getAttribute('data-setting-kind');
+    var inputs = settingInputs(row);
+    if (kind === 'switch') { if (inputs[0]) inputs[0].checked = value === 'true'; return; }
+    if (kind === 'segmented') {
+      for (var i = 0; i < inputs.length; i++) inputs[i].checked = inputs[i].value === value;
+      return;
+    }
+    if (inputs[0]) inputs[0].value = value;
+  }
+
+  function settingMark(row) {
+    var fallback = row.getAttribute('data-setting-default');
+    if (fallback !== null && row.getAttribute('data-setting-value') !== fallback) row.setAttribute('data-changed', '');
+    else row.removeAttribute('data-changed');
+  }
+
+  function settingError(row, text) {
+    var err = row.querySelector('.setting-error');
+    if (!err) return;
+    err.textContent = text || '';
+    err.hidden = !text;
+  }
+
+  function settingWire(row, value) {
+    if (row.getAttribute('data-setting-kind') === 'switch') return value === 'true';
+    if (row.querySelector('[data-setting-numeric]') && value !== '' && isFinite(Number(value))) return Number(value);
+    return value;
+  }
+
+  function settingSend(row, value) {
+    var name = row.getAttribute('data-setting-handler');
+    if (name) {
+      var run = settingHandlers[name];
+      if (typeof run !== 'function') return Promise.reject({ human: '这一项需要页面脚本' });
+      return Promise.resolve().then(function () { return run(settingWire(row, value), row); });
+    }
+    var endpoint = row.getAttribute('data-setting-endpoint');
+    if (!endpoint) return Promise.reject({ human: '这一项是只读的' });
+    var body = {};
+    try { body = JSON.parse(row.getAttribute('data-setting-extra') || '{}') || {}; } catch (e) { body = {}; }
+    body[row.getAttribute('data-setting-field') || ''] = settingWire(row, value);
+    return qc.sendJson(row.getAttribute('data-setting-method') || 'PUT', endpoint, body);
+  }
+
+  function settingCommit(row, value) {
+    var was = row.getAttribute('data-setting-value') || '';
+    if (value === was || row.getAttribute('aria-busy') === 'true') return;
+    row.setAttribute('aria-busy', 'true');
+    settingError(row, '');
+    settingSend(row, value).then(function () {
+      row.setAttribute('data-setting-value', value);
+      settingMark(row);
+      row.dispatchEvent(new CustomEvent('qianmo:setting', { bubbles: true, detail: { value: value } }));
+    }, function (err) {
+      settingPut(row, was);
+      settingError(row, qc.failLine('保存', err));
+    }).then(function () { row.removeAttribute('aria-busy'); });
+  }
+
+  function settingOf(el) {
+    if (!el || !el.closest || !el.hasAttribute || !el.hasAttribute('data-setting-input')) return null;
+    return el.closest('.setting[data-setting]');
+  }
+
+  document.addEventListener('change', function (event) {
+    var row = settingOf(event.target);
+    if (!row || row.getAttribute('data-setting-kind') === 'text') return;
+    settingCommit(row, settingRead(row));
+  });
+
+  document.addEventListener('focusout', function (event) {
+    var row = settingOf(event.target);
+    if (row && row.getAttribute('data-setting-kind') === 'text') settingCommit(row, settingRead(row));
+  });
+
+  document.addEventListener('keydown', function (event) {
+    var row = settingOf(event.target);
+    if (!row || row.getAttribute('data-setting-kind') !== 'text') return;
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      settingCommit(row, settingRead(row));
+    } else if (event.key === 'Escape') {
+      settingPut(row, row.getAttribute('data-setting-value') || '');
+      settingError(row, '');
+    }
+  });
+
+  document.addEventListener('click', function (event) {
+    var button = event.target && event.target.closest ? event.target.closest('[data-setting-reset]') : null;
+    if (!button) return;
+    var row = button.closest('.setting[data-setting]');
+    if (!row) return;
+    event.preventDefault();
+    var fallback = row.getAttribute('data-setting-default');
+    if (fallback === null) return;
+    settingPut(row, fallback);
+    settingCommit(row, fallback);
+  });
+
+  // 外观: the row and the account menu's select are one preference; the
+  // runtime writes it (applyTheme) and says so (qianmo:theme).
+  function showTheme(value) {
+    var rows = document.querySelectorAll('.setting[data-setting-handler="theme"]');
+    for (var i = 0; i < rows.length; i++) {
+      settingPut(rows[i], value);
+      rows[i].setAttribute('data-setting-value', value);
+      settingMark(rows[i]);
+    }
+  }
+
+  settingHandlers.theme = function (value) {
+    if (!qc.applyTheme(String(value))) throw { human: '外观只认跟随系统 浅色 深色' };
+  };
+
+  document.addEventListener('qianmo:theme', function (event) {
+    showTheme(event.detail && event.detail.value ? String(event.detail.value) : 'system');
+  });
+  showTheme(document.documentElement.getAttribute('data-theme') || 'system');
+
+  // A setting row's own writer: run(value, row) -> a value or a promise.
+  qc.onSetting = function (name, run) { settingHandlers[name] = run; };
+})();
+`)

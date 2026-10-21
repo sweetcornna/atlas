@@ -18,7 +18,12 @@ import { renderAbout } from '../view/about.js'
 import { sectionHead } from '../view/bits.js'
 import { rosterLease } from '../view/format.js'
 import { renderLimits } from '../view/limits.js'
-import { settingRow, settingsGroup } from '../view/settingRow.js'
+import {
+  SETTING_ROW_CSS,
+  SETTING_ROW_JS,
+  settingRow,
+  settingsGroup,
+} from '../view/settingRow.js'
 import {
   DEFAULT_BIN_NAME,
   DEFAULT_LABEL,
@@ -141,6 +146,8 @@ export const settingsRoute: RouteModule = {
           )}</div></section>`,
       }
     },
+    css: SETTING_ROW_CSS,
+    script: SETTING_ROW_JS,
   },
   api: {
     heads: ['limits'],

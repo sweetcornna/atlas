@@ -10,8 +10,14 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { CONSOLE_CLIENT_JS } from '../src/assets/client.js'
 import { CONSOLE_CSS } from '../src/assets/css.js'
-import { settingRow, settingsGroup } from '../src/view/settingRow.js'
+import {
+  SETTING_ROW_CSS,
+  SETTING_ROW_JS,
+  settingRow,
+  settingsGroup,
+} from '../src/view/settingRow.js'
 
 describe('settingRow', () => {
   test('a switch row carries where it writes and its default', () => {
@@ -156,8 +162,14 @@ describe('settingRow', () => {
     )
   })
 
-  test('the rows ride the shared sheet', () => {
-    expect(CONSOLE_CSS).toContain('.setting-reset')
-    expect(CONSOLE_CSS).toContain('.setting-sel { width: 160px; }')
+  test('the rows are a page asset, not the shared sheet and runtime every page carries', () => {
+    expect(SETTING_ROW_CSS).toContain('.setting-sel { width: 160px; }')
+    expect(CONSOLE_CSS).not.toContain('.setting-reset')
+    expect(CONSOLE_CLIENT_JS).not.toContain('data-setting-input')
+    expect(SETTING_ROW_JS).toContain('qc.onSetting = function')
+    expect(
+      SETTING_ROW_JS.split('\n').filter(line => /^\s*\/\//.test(line)),
+    ).toEqual([])
+    expect(() => new Function(SETTING_ROW_JS)).not.toThrow()
   })
 })
