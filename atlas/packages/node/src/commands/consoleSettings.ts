@@ -17,7 +17,9 @@
  * schedule's and a channel conversation that is not the owner's private chat
  * may not change settings at all. The conversation's owner is who the values
  * are read as, and the owner must hold the role the change needs before
- * anybody is asked to approve it.
+ * anybody is asked to approve it. What only a person may do is refused with
+ * where to do it: whole entries (`human`), and the changes of an entry that
+ * would give an agent more than the value read says it has (`personOnly`).
  *
  * ## What is approved, and what is done
  *
@@ -333,6 +335,9 @@ export class ConsoleSettings {
     } catch (error) {
       return `读不到现在的值 · ${error instanceof Error ? error.message : String(error)}`
     }
+    // §2: what would give an agent more than it has is a person's to change.
+    if (op.personOnly?.when(input, current) === true)
+      return `只能本人操作 · ${op.personOnly.note}`
     const redacted = redactSecrets(input, op.secrets)
     if (preview && settingUnchanged(op, redacted, current))
       return '值没变 · 不用改'
@@ -450,6 +455,9 @@ export class ConsoleSettings {
       kind: op.kind,
       role: op.role,
       ...(op.human === undefined ? {} : { human: op.human }),
+      ...(op.personOnly === undefined
+        ? {}
+        : { personOnly: op.personOnly.note }),
     })
     if (area === undefined && id === undefined) {
       const areas = Object.entries(SETTING_AREAS).map(([key, label]) => ({

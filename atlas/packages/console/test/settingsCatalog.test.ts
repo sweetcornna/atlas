@@ -305,7 +305,11 @@ describe('the entries (P40 §2)', () => {
       id.startsWith('servers.replicate.') ||
       id.startsWith('connectors.device.') ||
       id === 'elevation.set' ||
-      id === 'im.pairing'
+      id === 'files.decide' ||
+      // A channel's owners: pairing, and the two other doors to it.
+      id === 'im.pairing' ||
+      id === 'im.create' ||
+      id === 'im.login'
     expect(ops.filter(op => op.human !== undefined).map(op => op.id)).toEqual(
       ops.filter(op => personal(op.id)).map(op => op.id),
     )
@@ -328,9 +332,96 @@ describe('the entries (P40 §2)', () => {
     ).toEqual({ tier: 'off' })
   })
 
+  test('a desktop change the agent may ask for only narrows what it has', () => {
+    const op = settingOperation('desktop.set')
+    const when = op?.personOnly?.when
+    if (when === undefined) throw new Error('desktop.set has no rule')
+    expect(op?.personOnly?.note).toContain('/admin/desktop')
+    const now = {
+      browser: true,
+      computer: false,
+      confirm: 'sensitive',
+      apps: ['a', 'b'],
+      terminal: false,
+    }
+    const raises: [Record<string, unknown>, unknown, boolean][] = [
+      // Lowering.
+      [{ browser: false, computer: false, terminal: false }, now, false],
+      [{ confirm: 'always' }, now, false],
+      [{ confirm: 'sensitive' }, now, false],
+      [{ apps: 'none' }, now, false],
+      [{ apps: ['b'] }, now, false],
+      [{ browser: true }, now, false],
+      [{ confirm: 'sensitive' }, { ...now, confirm: 'autonomous' }, false],
+      [{ apps: ['x'] }, { ...now, apps: 'all' }, false],
+      [{ apps: ['x'] }, { ...now, apps: null }, false],
+      // Raising.
+      [{ computer: true }, now, true],
+      [{ terminal: true }, now, true],
+      [{ terminal: true }, { ...now, terminal: null }, true],
+      [{ confirm: 'autonomous' }, now, true],
+      [{ confirm: 'sensitive' }, { ...now, confirm: 'always' }, true],
+      [{ apps: 'all' }, now, true],
+      [{ apps: ['a', 'c'] }, now, true],
+      [{ apps: ['a'] }, { ...now, apps: 'none' }, true],
+      // Nothing read: only what grants nothing.
+      [{ browser: false, apps: 'none', confirm: 'always' }, null, false],
+      [{ browser: true }, null, true],
+      [{ confirm: 'sensitive' }, null, true],
+      [{ apps: ['a'] }, null, true],
+    ]
+    for (const [input, current, expected] of raises)
+      expect(
+        `${JSON.stringify([input, current])} ${when(input, current)}`,
+      ).toBe(`${JSON.stringify([input, current])} ${expected}`)
+  })
+
+  test('a channel change the agent may ask for leaves who reaches whom alone', () => {
+    const op = settingOperation('im.save')
+    const when = op?.personOnly?.when
+    if (when === undefined) throw new Error('im.save has no rule')
+    expect(op?.personOnly?.note).toContain('/admin/im')
+    const now = {
+      name: '值班',
+      platform: 'telegram',
+      target: 'qianmo://tokyo-1/main',
+      memberTarget: null,
+      ownerIds: ['1', '2'],
+      allowAll: false,
+      allowUsers: [],
+      allowGroups: ['g'],
+      pairing: 'auto',
+      prompt: '简短',
+    }
+    const same = { name: '值班', platform: 'telegram', target: now.target }
+    const cases: [Record<string, unknown>, unknown, boolean][] = [
+      [{ ...same, prompt: '更短', groupTrigger: 'all' }, now, false],
+      [{ ...same, ownerIds: ['2', '1', '1'], memberTarget: '' }, now, false],
+      [{ ...same, allowAll: false, pairing: 'auto' }, now, false],
+      [{ ...same, target: 'qianmo://tokyo-1/ops' }, now, true],
+      [{ ...same, memberTarget: 'qianmo://tokyo-1/main' }, now, true],
+      [{ ...same, ownerIds: ['1'] }, now, true],
+      [{ ...same, ownerIds: ['1', '2', '3'] }, now, true],
+      [{ ...same, allowAll: true }, now, true],
+      [{ ...same, allowUsers: ['9'] }, now, true],
+      [{ ...same, allowGroups: [] }, now, true],
+      [{ ...same, pairing: 'on' }, now, true],
+      [same, null, true],
+    ]
+    for (const [input, current, expected] of cases)
+      expect(`${JSON.stringify(input)} ${when(input, current)}`).toBe(
+        `${JSON.stringify(input)} ${expected}`,
+      )
+  })
+
   test('the words keep the console’s copy rules', () => {
     for (const op of ops)
-      for (const words of [op.label, op.description, op.human ?? ''])
+      for (const words of [
+        op.label,
+        op.description,
+        op.human ?? '',
+        op.personOnly?.note ?? '',
+      ])
         expect(`${op.id} ${/[。，、！!]/.test(words)}`).toBe(`${op.id} false`)
   })
 })

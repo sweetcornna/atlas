@@ -60,6 +60,7 @@ import {
   TIER_EFFORTS,
   UPDATE_SOURCES,
 } from './directionPorts.js'
+import { baseUrlFor } from './view/providers.js'
 
 export type SettingArea =
   | 'providers'
@@ -174,6 +175,15 @@ export interface SettingOperation {
   readonly role: SettingRole
   /** Set: only a person does this, and this is where. */
   readonly human?: string
+  /**
+   * Set: some changes of this entry are a person's alone (§2), the ones that
+   * give an agent more than it has now. `when` reads the change against the
+   * value before it; `note` is where the person goes.
+   */
+  readonly personOnly?: {
+    readonly note: string
+    readonly when: (input: Args, current: unknown) => boolean
+  }
   /** What the change is about (profile, node, agent, id); absent when nothing. */
   readonly target?: JsonSchema
   /** What it becomes: the route's request body, less what the target says. */
@@ -650,7 +660,93 @@ const PERSON_ONLY = {
   elevation:
     '在 /admin/elevation 由运维本人开启 · 降回人工确认用 elevation.off 或 elevation.revoke',
   ssh: '添加服务器在 /admin/servers 由运维本人填写 SSH 凭据',
+  files: '文件申请在 /admin/files 由本人批准或拒绝',
+  channel: '新建渠道与扫码登录在 /admin/im 由运维本人操作 · 扫码的人会成为主人',
+  channelAccess:
+    '主人号 放行名单 配对档位与对话的智能体在 /admin/im 由运维本人改',
+  desktop:
+    '在 /admin/desktop 由运维本人放宽 · 开浏览器 电脑或终端 少问人 多开应用 · 收紧可以申请',
 } as const
+
+/** The fields of a channel that say who reaches which agent through it. */
+const CHANNEL_ACCESS = [
+  'target',
+  'memberTarget',
+  'ownerIds',
+  'allowAll',
+  'allowUsers',
+  'allowGroups',
+  'pairing',
+] as const
+
+/** A channel field as the port keeps it: lists as sets, no address as null. */
+function accessValue(key: string, value: unknown): string {
+  if (Array.isArray(value))
+    return JSON.stringify(
+      [...new Set(value.map(item => String(item).trim()))]
+        .filter(item => item !== '')
+        .sort(),
+    )
+  if (key === 'memberTarget' && (value === undefined || value === ''))
+    return 'null'
+  if (key === 'allowAll' && value === undefined) return 'false'
+  return JSON.stringify(value ?? null)
+}
+
+/**
+ * Whether a channel change touches who may reach an agent through it: the
+ * owner ids, the allow lists, the pairing mode or the two agent addresses.
+ * Fields left out keep their value (`consoleChannels.ts`); a channel that
+ * cannot be read counts as touched.
+ */
+function channelAccessChanged(input: Args, current: unknown): boolean {
+  const before = recordOf(current)
+  return CHANNEL_ACCESS.some(
+    key =>
+      input[key] !== undefined &&
+      (before === null ||
+        accessValue(key, input[key]) !== accessValue(key, before[key])),
+  )
+}
+
+/** How often each mode asks a person first: the more, the narrower. */
+const CONFIRM_RANK: Readonly<Record<string, number>> = {
+  autonomous: 0,
+  sensitive: 1,
+  always: 2,
+}
+
+/** Whether `next` lets more apps open than `before` (absent is `all`). */
+function appsWiden(next: unknown, before: unknown): boolean {
+  if (next === 'none') return false
+  const was = before === null || before === undefined ? 'all' : before
+  if (was === 'all') return false
+  if (!Array.isArray(next)) return true
+  if (!Array.isArray(was)) return true
+  return next.some(id => !was.includes(id))
+}
+
+/**
+ * Whether a desktop change gives the agent more than it has (§2): a unit or
+ * the terminal switched on, fewer questions asked first, more apps allowed.
+ * Switching off, asking more and narrowing the apps stay the agent's to ask
+ * for. An agent the console cannot read counts as having nothing.
+ */
+function desktopRaises(input: Args, current: unknown): boolean {
+  const before = recordOf(current)
+  for (const unit of ['browser', 'computer', 'terminal'])
+    if (input[unit] === true && before?.[unit] !== true) return true
+  const confirm = input['confirm']
+  if (
+    confirm !== undefined &&
+    (CONFIRM_RANK[String(confirm)] ?? 0) <
+      (CONFIRM_RANK[String(before?.['confirm'])] ?? 2)
+  )
+    return true
+  const apps = input['apps']
+  if (apps === undefined) return false
+  return before === null ? apps !== 'none' : appsWiden(apps, before['apps'])
+}
 
 /** The `/v0` body for an op whose target rides in the body too. */
 function withTarget(target: Args, input: Args): Record<string, unknown> {
@@ -1600,6 +1696,7 @@ const CATALOG: readonly SettingOperation[] = [
     description: '新建一个聊天渠道并连上平台',
     kind: 'create',
     role: 'ops',
+    human: PERSON_ONLY.channel,
     input: CHANNEL_INPUT,
     secrets: ['secrets.*'],
     route: 'POST /v0/im',
@@ -1614,9 +1711,10 @@ const CATALOG: readonly SettingOperation[] = [
     id: 'im.save',
     area: 'im',
     label: '聊天渠道',
-    description: '修改一个渠道 · 秘密字段留空保留原值',
+    description: '修改一个渠道 · 秘密字段留空保留原值 · 没给的字段保留原值',
     kind: 'update',
     role: 'ops',
+    personOnly: { note: PERSON_ONLY.channelAccess, when: channelAccessChanged },
     target: idTarget('渠道 id'),
     input: CHANNEL_INPUT,
     secrets: ['secrets.*'],
@@ -1665,6 +1763,7 @@ const CATALOG: readonly SettingOperation[] = [
     description: '向官方接口取二维码 · 扫码人记为主人',
     kind: 'run',
     role: 'ops',
+    human: PERSON_ONLY.channel,
     input: shape(
       {
         id: text('已有渠道的 id'),
@@ -2107,9 +2206,11 @@ const CATALOG: readonly SettingOperation[] = [
     id: 'desktop.set',
     area: 'desktop',
     label: '云端电脑',
-    description: '专属浏览器与电脑的开关 · 什么时候先问人 · 能开哪些应用',
+    description:
+      '专属浏览器与电脑的开关 · 什么时候先问人 · 能开哪些应用 · 只能申请收紧',
     kind: 'set',
     role: 'ops',
+    personOnly: { note: PERSON_ONLY.desktop, when: desktopRaises },
     target: AGENT_TARGET,
     input: DESKTOP_INPUT,
     route: 'PUT /v0/desktop/<节点>/<智能体>',
@@ -2411,6 +2512,7 @@ const CATALOG: readonly SettingOperation[] = [
     description: '批准或拒绝一个智能体的文件申请 · 可收窄范围与时限',
     kind: 'update',
     role: 'member',
+    human: PERSON_ONLY.files,
     target: idTarget('申请 id'),
     input: shape(
       {
@@ -2732,13 +2834,26 @@ const CATALOG: readonly SettingOperation[] = [
 
 // --- reads shared by several entries ---------------------------------------
 
+/**
+ * A profile in a few fields. The base URL is its host, as any reader below a
+ * writer sees it (`baseUrlFor`): the path may carry a token, and this brief
+ * goes to the agent and into the approval it asks for.
+ */
 function profileBrief(view: unknown): unknown {
   const profile = recordOf(view)
   if (profile === null) return null
+  const baseUrl = profile['baseUrl']
+  const values = recordOf(profile['templateValues'])
+  const templateValues: Record<string, string> = {}
+  for (const [name, value] of Object.entries(values ?? {}))
+    if (typeof value === 'string') templateValues[name] = value
   return {
     name: profile['name'] ?? null,
     revision: profile['revision'] ?? null,
-    baseUrl: profile['baseUrl'] ?? null,
+    host:
+      typeof baseUrl === 'string'
+        ? baseUrlFor({ baseUrl, templateValues }, false)
+        : null,
     models: rowsOf(profile, 'models').map(row => row['id']),
     keys: rowsOf(profile, 'keys').map(row => row['id']),
   }

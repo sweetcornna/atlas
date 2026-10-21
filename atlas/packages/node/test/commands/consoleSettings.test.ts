@@ -647,7 +647,14 @@ describe('what may be asked for (P40 §§2, 8)', () => {
     expect(await preview({ id: 'servers.nope' })).toBe(
       '没有这个设置项 servers.nope',
     )
-    for (const id of ['approvals.decide', 'elevation.set', 'accounts.invite']) {
+    for (const id of [
+      'approvals.decide',
+      'elevation.set',
+      'accounts.invite',
+      'files.decide',
+      'im.create',
+      'im.login',
+    ]) {
       const said = await preview({ id })
       expect(said.startsWith('只能本人操作 · ')).toBe(true)
       expect(said).toContain('/admin/')
