@@ -94,7 +94,7 @@ async function readings(
 }
 
 /** 整页状态。 */
-export async function setupOf(ctx: RouteContext): Promise<SetupSnapshot> {
+async function setupOf(ctx: RouteContext): Promise<SetupSnapshot> {
   return setupSnapshot(await readings(ctx, true))
 }
 

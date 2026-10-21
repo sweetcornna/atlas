@@ -98,7 +98,7 @@ async function agentsOf(ctx: RouteContext): Promise<MagpieAgentsModel> {
  * The 智能体模型 section (`harness-backends.md` §11) for any page that places
  * it: it needs the model service and the control link, never magpie.
  */
-export async function agentModelsModel(
+async function agentModelsModel(
   ctx: RouteContext,
 ): Promise<AgentModelsSectionModel> {
   const writer = magpieWriter(ctx)
@@ -215,7 +215,7 @@ async function magpieFragment(
 }
 
 /** What the 模型 page places from here (`routes/providers.ts`). */
-export interface GatewayPanes {
+interface GatewayPanes {
   /** 智能体: the gateway's agents section, or 智能体模型 without a gateway. */
   readonly agents: string
   /** 网关: connection, upstreams, routing groups, keys and usage; empty without one. */

@@ -14,7 +14,7 @@ import { icon } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { selectField, textField } from './kit.js'
 
-export interface SetupPageModel {
+interface SetupPageModel {
   readonly snapshot: SetupSnapshot
   /** 能做账号、主智能体这类写操作（管理令牌或运维账号）。 */
   readonly admin: boolean

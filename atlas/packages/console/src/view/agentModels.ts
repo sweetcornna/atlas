@@ -56,7 +56,7 @@ export interface AgentModelsSectionModel {
 }
 
 /** The polled mount's id and fragment, for pages that place the section. */
-export const AGENT_MODELS_MOUNT = 'agent-models'
+const AGENT_MODELS_MOUNT = 'agent-models'
 export const AGENT_MODELS_FRAGMENT = '/fragments/agents/models'
 
 function mono(text: string): string {
