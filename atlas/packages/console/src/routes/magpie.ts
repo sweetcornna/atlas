@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * 网关 (P34): the platform's magpie model gateway.
+ * 网关 (P34): the platform's magpie model gateway, drawn on the 模型 page
+ * (`routes/providers.ts`) since P38. `/admin/magpie` is a 308 to that page's
+ * gateway pane, and the sidebar no longer lists it.
  *
  * | Route | Who |
  * |---|---|
- * | `GET /admin/magpie`, `GET /fragments/magpie`, `GET /fragments/magpie/agents`, `GET /fragments/magpie/usage?period=` | view and up |
+ * | `GET /admin/magpie` | 308 to `/admin/providers#magpie` |
+ * | `GET /fragments/magpie`, `GET /fragments/magpie/agents`, `GET /fragments/magpie/usage?period=` | view and up |
  * | `GET /fragments/magpie/form?kind=&id=` | gateway writers (`kind=ext&id=<node>/<agent>`: an agent's native extension, P36.7) |
  * | `GET /fragments/agents/models` | view and up: 智能体模型 (`harness-backends.md` §11), with or without magpie |
  *
@@ -17,7 +20,7 @@ import {
   MAGPIE_USAGE_PERIODS,
   type MagpieUsagePeriod,
 } from '../directionPorts.js'
-import { fail, html, methodNotAllowed, notFound } from '../respond.js'
+import { fail, html, methodNotAllowed, movedTo, notFound } from '../respond.js'
 import { KIT_CSS } from '../view/kit.js'
 import {
   MAGPIE_PAGE_CSS,
@@ -39,6 +42,7 @@ import {
   AGENT_MODELS_CSS,
   AGENT_MODELS_JS,
   type AgentModelsSectionModel,
+  agentModelsMount,
   renderAgentModelsSection,
 } from '../view/agentModels.js'
 import { guardRead } from './directionShared.js'
@@ -98,7 +102,7 @@ export async function agentModelsModel(
   ctx: RouteContext,
 ): Promise<AgentModelsSectionModel> {
   const writer = magpieWriter(ctx)
-  const mainAgent = ctx.deps.chatDefault ?? null
+  const mainAgent = preferredMainAgent(ctx.deps) ?? null
   const port = ctx.deps.agentModels
   if (port === undefined)
     return { side: { kind: 'unwired' }, writer, mainAgent }
@@ -210,6 +214,48 @@ async function magpieFragment(
   return notFound(`unknown path: ${ctx.url.pathname}`)
 }
 
+/** What the 模型 page places from here (`routes/providers.ts`). */
+export interface GatewayPanes {
+  /** 智能体: the gateway's agents section, or 智能体模型 without a gateway. */
+  readonly agents: string
+  /** 网关: connection, upstreams, routing groups, keys and usage; empty without one. */
+  readonly gateway: string
+  readonly dialogs: string
+}
+
+/**
+ * The gateway's panes for the 模型 page, each in its own polled mount. With
+ * no gateway the agents' native models (`harness-backends.md` §11) still
+ * show, since they need only the model service and the control link.
+ */
+export async function gatewayPanes(ctx: RouteContext): Promise<GatewayPanes> {
+  if (ctx.deps.magpie === undefined) {
+    const agents =
+      ctx.deps.agentModels === undefined
+        ? ''
+        : agentModelsMount(await agentModelsModel(ctx))
+    return { agents, gateway: '', dialogs: '' }
+  }
+  const [model, agents, usage] = await Promise.all([
+    modelOf(ctx),
+    agentsOf(ctx),
+    usageOf(ctx, DEFAULT_PERIOD),
+  ])
+  return {
+    agents: `<div class="kit-pane" id="magpie-agents" data-poll="/fragments/magpie/agents">${renderMagpieAgents(agents)}</div>`,
+    gateway:
+      `<div class="kit-pane" id="magpie" data-poll="/fragments/magpie">${renderMagpie(model)}</div>` +
+      `<div class="kit-pane" id="magpie-usage" data-poll="/fragments/magpie/usage?period=${DEFAULT_PERIOD}">` +
+      `${renderMagpieUsage(usage, DEFAULT_PERIOD)}</div>`,
+    dialogs: model.writer ? magpieDialogs() : '',
+  }
+}
+
+/** The styles and script the gateway panes bring to the page that places them. */
+export const GATEWAY_PANES_CSS =
+  KIT_CSS + MAGPIE_PAGE_CSS + MAGPIE_AGENTS_CSS + AGENT_MODELS_CSS
+export const GATEWAY_PANES_JS = MAGPIE_PAGE_JS + AGENT_MODELS_JS
+
 export const magpieRoute: RouteModule = {
   area: {
     id: 'magpie',
@@ -217,32 +263,15 @@ export const magpieRoute: RouteModule = {
     group: 'main',
     href: '/admin/magpie',
     icon: 'waypoints',
+    moved: true,
   },
   page: {
     match: segments =>
       segments.length === 1 && segments[0] === 'magpie' ? [] : null,
     guard: 'view',
-    available: ctx => ctx.deps.magpie !== undefined,
-    async render(ctx) {
-      if (ctx.deps.magpie === undefined)
-        return notFound(`unknown path: ${ctx.url.pathname}`)
-      const [model, agents, usage] = await Promise.all([
-        modelOf(ctx),
-        agentsOf(ctx),
-        usageOf(ctx, DEFAULT_PERIOD),
-      ])
-      return {
-        title: '网关',
-        body:
-          `<div class="kit-pane" id="magpie" data-poll="/fragments/magpie">${renderMagpie(model)}</div>` +
-          `<div class="kit-pane" id="magpie-agents" data-poll="/fragments/magpie/agents">${renderMagpieAgents(agents)}</div>` +
-          `<div class="kit-pane" id="magpie-usage" data-poll="/fragments/magpie/usage?period=${DEFAULT_PERIOD}">` +
-          `${renderMagpieUsage(usage, DEFAULT_PERIOD)}</div>` +
-          (model.writer ? magpieDialogs() : ''),
-      }
+    async render() {
+      return movedTo('/admin/providers#magpie')
     },
-    css: KIT_CSS + MAGPIE_PAGE_CSS + MAGPIE_AGENTS_CSS + AGENT_MODELS_CSS,
-    script: MAGPIE_PAGE_JS + AGENT_MODELS_JS,
   },
   api: magpieApi,
   fragments: {

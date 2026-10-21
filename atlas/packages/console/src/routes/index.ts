@@ -177,6 +177,7 @@ const GROUP_ORDER: readonly AreaGroup[] = ['main', 'manage']
  */
 function visibleTo(module: RouteModule, ctx: RouteContext): boolean {
   if (module.area.front === true) return frontAvailable(ctx)
+  if (module.area.moved === true) return false
   const page = module.page
   if (page === undefined) return false
   if (page.available?.(ctx) === false) return false

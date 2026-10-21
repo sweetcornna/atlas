@@ -138,7 +138,12 @@ describe('assets', () => {
     // The login door is read signed out: signed in, it sends you on. So is
     // the public edition's plans page, the one public page with a port.
     const signedOut = ['/login', '/plans']
-    const paths = [...ROUTES.map(module => module.area.href), ...signedOut]
+    const paths = [
+      ...ROUTES.filter(module => module.area.moved !== true).map(
+        module => module.area.href,
+      ),
+      ...signedOut,
+    ]
     for (const path of paths) {
       const response = await h.handle(
         browse(path, signedOut.includes(path) ? undefined : ADMIN),

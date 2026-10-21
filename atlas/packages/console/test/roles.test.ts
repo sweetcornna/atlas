@@ -70,9 +70,9 @@ function writeMarks(html: string): readonly string[] {
 
 /** Every path a caller can read: the pages, two sub-pages, the fragments. */
 const READABLE = [
-  ...ROUTES.filter(module => module.area.front !== true).map(
-    module => module.area.href,
-  ),
+  ...ROUTES.filter(
+    module => module.area.front !== true && module.area.moved !== true,
+  ).map(module => module.area.href),
   '/admin',
   '/admin/nodes/tokyo-1',
   `/admin/audit/trace/${TRACE}`,

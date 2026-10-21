@@ -101,6 +101,11 @@ export interface Area {
    * sidebar offers it to whoever the front would admit.
    */
   readonly front?: true
+  /**
+   * The area's page moved into another one: its address answers a 308 there
+   * and its API and fragments stay, but the sidebar no longer lists it.
+   */
+  readonly moved?: true
 }
 
 /** Everything a handler is handed. Built once per request by `http.ts`. */

@@ -707,7 +707,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/admin/connect` | view | 应用连接（管理组）：应用连接（P25，邮箱与日历；凭据只在中枢，页面只给主机名、打码的账号与「已设置」）与本机工具（P19，配对的设备与接力插件）。两边都没接时侧栏不出现、页面 404；接了一边时另一边写「未接入」 |
 | GET | `/admin/im` | view | 渠道（P28）：QQ、个人 QQ、微信、Telegram、Discord、Slack 接到哪个智能体、在线状态与会话数；运维能添加、编辑、停用、删除，微信扫码接入，处理配对请求（设为主人、设为成员、拒绝）。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/extensions` | view | 扩展（P32，主组）：连接器、技能、插件三个分区，每条显示适用的智能体与在各节点是否生效；运维能添加、编辑、停用、删除。没接端口时侧栏不出现、页面 404 |
-| GET | `/admin/magpie` | view | 网关（P34，主组）：连接、上游、路由组、网关密钥、智能体（P36.5，每个智能体带「原生扩展」面板，P36.7）、用量六块；平台运维能连接、添加上游、编排路由组、为节点签发与轮换收回密钥、给智能体选底层与模型、在节点上装卸底层、开关新节点自动接入、给智能体装卸原生扩展。没接端口时侧栏不出现、页面 404 |
+| GET | `/admin/magpie` | view | 308 到 `/admin/providers#magpie`（P38 起网关并进「模型」页，侧栏不再单列）。下面这些块现在画在「模型」页上：网关（P34，主组）：连接、上游、路由组、网关密钥、智能体（P36.5，每个智能体带「原生扩展」面板，P36.7）、用量六块；平台运维能连接、添加上游、编排路由组、为节点签发与轮换收回密钥、给智能体选底层与模型、在节点上装卸底层、开关新节点自动接入、给智能体装卸原生扩展。没接端口时侧栏不出现、页面 404 |
 | GET | `/admin/billing` | 平台读者 | 订阅（P35，管理组）：订阅、订单、兑换码、账本四块，有待退款的订单时最上面多一块「待退款」；平台运维能手动开通或延期、登记退款、生成兑换码。只在公开版接入，没接时侧栏不出现、页面 404 |
 | GET | `/admin/updates` | view | 更新（P31，管理组）：各来源的版本、状态与检查记录，阡陌一行列出中枢与各节点的版本；运维能改检查时间、各来源动作、通知渠道与阡陌仓库，能立即检查，能把阡陌逐台升级到新版或回滚。没接端口时侧栏不出现、页面 404 |
 | GET | `/v0/memory?agent=<地址>&kind=&q=&retired=1` | **成员** | 同一份列表的 JSON：`{ agent, entries, total, counts }`。没接记忆端口时 501 |
@@ -728,7 +728,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/elevation/<节点>/<智能体>/revoke` | **ops** | 立即收回：回到人工确认、代次 +1、作废待批审批、中止在途回合；先 admit，记 `elevation.revoke` |
 | POST | `/v0/elevation/revoke-all` | **ops** | 对本租户可见、已放权的每个智能体各发一次收回，返回逐个结果 |
 | GET | `/admin/access`、`/admin/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/admin/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
-| GET | `/admin/providers`、`/admin/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
+| GET | `/admin/providers`、`/admin/providers?node=<节点>` | view | 模型（P38 起合一页）：自上而下是任务模型（三档难度与三种生成，`routing` 卡）、智能体（接了网关时是网关的智能体区块，没接时是「智能体模型」，`harness-backends.md` §11）、网关的连接 · 上游 · 路由组 · 密钥 · 用量（只在接了 magpie 时），最后是模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
 | GET | `/admin/providers/new?q=`、`/admin/providers/new?preset=<预设>&site=<站点>` | view | 预设卡片（`q` 是 GET 搜索）；带 `preset` 时是从这份预设新建的表单 |
 | GET | `/admin/providers/profiles/<档案 id>`、`/admin/providers/nodes/<节点>?do=`、`/admin/providers/import` | view | 一份档案（编辑、密钥三态或多把密钥逐把列表、在用节点）；节点「模型」页签（`do` 直接打开对应对话框）；导入 |
 | GET | `/admin/approvals` | view | 审批队列；未接审批端口时明确显示未接入。个人成员仅看自己会话，运维仍受租户 scope 限制；批准前须验证当前账号个人凭据 |

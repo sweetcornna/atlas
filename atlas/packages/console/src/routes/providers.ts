@@ -152,6 +152,7 @@ import {
 } from '../view/routing.js'
 import { ROUTING_PAGE_JS } from '../view/routingScript.js'
 import { guardRead } from './directionShared.js'
+import { GATEWAY_PANES_CSS, GATEWAY_PANES_JS, gatewayPanes } from './magpie.js'
 import { routingApi, routingWriter } from './routingApi.js'
 import { guard, safeDecode, underPath } from './shared.js'
 import type { PageRender, RouteContext, RouteModule } from './types.js'
@@ -1271,7 +1272,10 @@ async function boardPage(
 ): Promise<PageRender> {
   const reader = readerOf(ctx)
   const only = ctx.url.searchParams.get('node') ?? ''
-  const overview = await port.overview()
+  const [overview, panes] = await Promise.all([
+    port.overview(),
+    only === '' ? gatewayPanes(ctx) : null,
+  ])
   const poll = `/fragments/providers/board${
     only === '' ? '' : `?node=${encodeURIComponent(only)}`
   }`
@@ -1284,6 +1288,9 @@ async function boardPage(
         ...(only === '' ? {} : { only }),
       })
     : renderBoardFailure(overview.failure)
+  // One 模型 page (P38): what each task and each agent runs on first, then
+  // where the models come from (the gateway, then the providers it and the
+  // nodes reach directly), then the nodes and usage.
   return {
     title: '模型',
     ...(reader.writer ? { actions: boardActions() } : frame(ctx)),
@@ -1297,10 +1304,13 @@ async function boardPage(
             ctx.url.searchParams.get('routing'),
           )
         : '') +
+      (panes?.agents ?? '') +
+      (panes?.gateway ?? '') +
       `<div class="prov-board" id="prov-board" data-poll="${escapeHtml(
         poll,
       )}">${board}</div>` +
-      (reader.writer ? boardDialogs(overview.ok ? overview.value : null) : ''),
+      (reader.writer ? boardDialogs(overview.ok ? overview.value : null) : '') +
+      (panes?.dialogs ?? ''),
   }
 }
 
@@ -1502,7 +1512,16 @@ async function providersPage(
 ): Promise<PageRender | Response> {
   const port = ctx.deps.providers
   if (port === undefined) {
-    return { title: '模型', body: renderProvidersOff() }
+    // The gateway's panes stand on their own (P38): a console with magpie
+    // and no direct model services still shows them under the off line.
+    const panes = rest.length === 0 ? await gatewayPanes(ctx) : null
+    return {
+      title: '模型',
+      ...(panes === null || panes.gateway === '' ? {} : { poll: true }),
+      body:
+        renderProvidersOff() +
+        (panes === null ? '' : panes.agents + panes.gateway + panes.dialogs),
+    }
   }
   const [first, second] = rest
   if (rest.length === 0) return await boardPage(ctx, port)
@@ -1534,8 +1553,8 @@ export const providersRoute: RouteModule = {
     async render(ctx, rest) {
       return await providersPage(ctx, rest)
     },
-    css: PROVIDERS_PAGE_CSS + ROUTING_CSS,
-    script: PROVIDERS_PAGE_JS + ROUTING_PAGE_JS,
+    css: PROVIDERS_PAGE_CSS + ROUTING_CSS + GATEWAY_PANES_CSS,
+    script: PROVIDERS_PAGE_JS + ROUTING_PAGE_JS + GATEWAY_PANES_JS,
   },
   api: {
     heads: ['providers', ...routingApi.heads],

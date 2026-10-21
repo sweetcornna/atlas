@@ -143,29 +143,6 @@ const PAGES: readonly PageRow[] = [
     ],
   },
   {
-    path: '/admin/magpie',
-    title: '网关',
-    active: 'magpie',
-    reads: [
-      'gw.tokyo.example:8443',
-      '已连接 · 0.1.1268',
-      '订阅账号 · 阡陌不用',
-      'group/fast',
-      '节点 tokyo-1',
-      '已用完',
-      '估算 $0.42',
-      'id="magpie"',
-      'id="magpie-usage"',
-      // 智能体 (P36.5): states for everyone, the runtime names the catalog gives.
-      'id="magpie-agents"',
-      '新节点自动接入',
-      '暂用 qianmopi · 未安装',
-      '节点版本过旧',
-      '已装 v0.2.0-rc.2 · 未实测',
-      '跟随节点主模型',
-    ],
-  },
-  {
     path: '/admin/billing',
     title: '订阅',
     active: 'billing',
@@ -218,7 +195,26 @@ const PAGES: readonly PageRow[] = [
     path: '/admin/providers',
     title: '模型',
     active: 'providers',
-    reads: ['模型服务未开启'],
+    reads: [
+      '模型服务未开启',
+      // 网关 (P34) lives on this page since P38; /admin/magpie is a 308 here.
+      'gw.tokyo.example:8443',
+      '已连接 · 0.1.1268',
+      '订阅账号 · 阡陌不用',
+      'group/fast',
+      '节点 tokyo-1',
+      '已用完',
+      '估算 $0.42',
+      'id="magpie"',
+      'id="magpie-usage"',
+      // 智能体 (P36.5): states for everyone, the runtime names the catalog gives.
+      'id="magpie-agents"',
+      '新节点自动接入',
+      '暂用 qianmopi · 未安装',
+      '节点版本过旧',
+      '已装 v0.2.0-rc.2 · 未实测',
+      '跟随节点主模型',
+    ],
   },
   {
     path: '/admin/servers',
@@ -294,8 +290,17 @@ async function read(path: string, token = ADMIN): Promise<string> {
 describe('every page', () => {
   test('every area of the route table has a row here', () => {
     for (const module of ROUTES) {
+      if (module.area.moved === true) continue
       expect(PAGES.some(row => row.path === module.area.href)).toBe(true)
     }
+  })
+
+  test('a moved area answers a 308 to where it went and is off the sidebar', async () => {
+    const response = await harness().handle(browse('/admin/magpie', VIEW))
+    expect(response.status).toBe(308)
+    expect(response.headers.get('location')).toBe('/admin/providers#magpie')
+    const page = await read('/admin/providers')
+    expect(page).not.toContain('href="/admin/magpie"')
   })
 
   test('the home page serves the front to chat callers and redirects readers to the management overview', async () => {
@@ -357,6 +362,7 @@ describe('every page', () => {
       // Every area is a plain link to its own path: navigation is the
       // browser's, not the script's.
       for (const module of ROUTES) {
+        if (module.area.moved === true) continue
         expect(bare).toContain(
           `id="nav-${module.area.id}" href="${module.area.href}"`,
         )

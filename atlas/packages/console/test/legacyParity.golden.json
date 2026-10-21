@@ -1334,7 +1334,7 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-jDwQBHQoGZa3Mnbw098M3A9dm8EXEbKr/KVhI1k3Q7A='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-CMTe4kLED3rWXILhO8nesgafJ8EGKdyMcZQgVhzgMSE='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
       ["cross-origin-opener-policy", "same-origin"],
@@ -1347,8 +1347,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 180536,
-    "sha256": "1045b3a9675e1f7f5344ccd6252e77e11db508c2c7b28fd7db87b96a9b5c04fb"
+    "length": 210435,
+    "sha256": "09be71904365be245ea16462e375af99fe5ffcb2d4bacffbe903f4691f7c52ce"
   },
   {
     "probe": "GET /nope as admin-bearer (html)",
