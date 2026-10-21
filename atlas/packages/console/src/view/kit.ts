@@ -314,7 +314,7 @@ export function actionButton(
 }
 
 /** One entry of a row's 更多 menu: what its button would have carried. */
-export interface MoreItem {
+interface MoreItem {
   readonly action: string
   readonly label: string
   readonly data?: Readonly<Record<string, string>>
