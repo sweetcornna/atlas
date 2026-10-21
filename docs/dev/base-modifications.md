@@ -33,7 +33,7 @@ git diff --name-status --no-renames base-snapshot/omp-v18.8.8 HEAD | awk '$1!="A
 | `packages/coding-agent/src/tools/browser/tab-worker.ts` | 运行被取消后要不要 `Page.stopLoading`，改为先开 CDP 会话（一次同连接往返）再看主框架导航是否还在等应答（新增 `#stopPendingNavigation`）；判据、只停未应答导航的语义不变 | 原判据只看 puppeteer 已处理的 `request` 事件，取消落在该事件还在路上时就漏停，页面一直加载（CI run 39128660205「stops the page load when a run is cancelled mid-goto」）。逻辑在 tab worker 的私有收尾里，没有扩展点；上游 v18.12.2 仍是原写法，同步吸收后删本行 |
 | `bun.lock` | 随根工作区追加阡陌包与其依赖而重新生成；P22 为 node 宿主视频工具登记 pi-ai 直接工作区依赖；P21 为受限扩展与资源看护登记 omptype、pi-utils、pi-natives 直接工作区依赖（不改基座执行器） | 生成文件，跟随 `package.json` |
 | `AGENTS.md` | 文件顶部插入一段阡陌指针（指向 `CLAUDE.md`、`CLAUDE.full.md`、`CONTRIBUTING.md`）和标记 `<!-- base: oh-my-pi v18.8.8 AGENTS.md, verbatim below -->`，标记以下是 omp 原文，逐字未改 | 跨工具约定只认这个文件名；纯插入在同步时不与上游 hunk 冲突 |
-| `README.md` | 文件顶部插入阡陌部分（项目简介、基座说明、仓库布局、快速开始、成果边界、许可）和标记 `<!-- base: oh-my-pi v18.8.8 README.md, verbatim below -->`，标记以下是 omp 原文 | GitHub 首页只渲染根 `README.md`；纯插入 |
+| `README.md` | 内容整体换成阡陌撰写的项目说明（定位、能力、架构、快速开始、开发与贡献、文档索引、来源与许可），不再保留 omp 原文；原文在快照里（`git show base-snapshot/omp-v18.8.8:README.md`）。上游同步时它的上游差异不应用，单独存补丁交评审（`atlas/scripts/sync-omp.ts` 的 `REPLACED_LOCALLY`） | GitHub 首页只渲染根 `README.md`；负责人要求 README 全部由阡陌书写，omp 原文里的安装方式、产品链接与发布命令描述的是上游，不适用于本仓库 |
 | `CONTRIBUTING.md` | 同上，顶部插入阡陌贡献指南和标记 `<!-- base: oh-my-pi v18.8.8 CONTRIBUTING.md, verbatim below -->`，标记以下是 omp 原文 | 贡献入口只有这一个文件名；纯插入 |
 | `LICENSE` | 内容整体换成 AGPL-3.0 正文；omp 的 MIT 原文逐字移到新路径 `LICENSE.base` | 章程 v2.16：阡陌自有层以 AGPL 发布，根 `LICENSE` 是该层的许可文件 |
 | `.gitignore` | 末尾追加「阡陌（atlas/）追加」一段：`.playwright-mcp/`、`.demo-env/`、`/test-reports/`、`/.source-commit` | 只有一个根忽略文件；纯追加 |
@@ -52,7 +52,7 @@ git diff --name-status --no-renames base-snapshot/omp-v18.8.8 HEAD | awk '$1!="A
 
 1. 改或删 omp 文件之前，先确认 omp 的扩展点（`--mode rpc`、扩展 API 的 `tool_call` 等事件、host tools、`--config` 覆盖层、`models.yml`）确实不够用（章程 §5.4、§7.2⑦）。
 2. 每一处改动在**同一个 PR** 里登记到 §2，写明改了什么与理由；PR 描述同样写明「为什么扩展点不够用」。
-3. 能做成纯插入或纯追加的，就不要就地改写上游的行，这样选择性同步（章程 §5.7）时差异不会撞上游的 hunk。`AGENTS.md`、`README.md`、`CONTRIBUTING.md` 的「阡陌在上、omp 原文在标记之下」就是这条规则的例子：标记以下不要就地改，要更新等上游同步带进来。
+3. 能做成纯插入或纯追加的，就不要就地改写上游的行，这样选择性同步（章程 §5.7）时差异不会撞上游的 hunk。`AGENTS.md`、`CONTRIBUTING.md` 的「阡陌在上、omp 原文在标记之下」就是这条规则的例子：标记以下不要就地改，要更新等上游同步带进来。整体换写、不留上游内容的基座文件（如 `README.md`）登记进 `sync-omp.ts` 的 `REPLACED_LOCALLY`，否则上游一改它，三方应用就会冲突。
 4. omp 文件不加 SPDX 头，改过也不加（判据是路径，见 `NOTICE` 一）。
 5. 改了 omp 文件的 PR 要跑 omp 自己的 `bun run test:ts`（`base-switch-omp.md` §6）。
 6. 每次上游同步后，用 §1 的命令重算，把已被上游吸收或已撤回的行从 §2 删掉。

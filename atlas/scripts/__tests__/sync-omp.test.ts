@@ -50,6 +50,7 @@ function fixture() {
       Array.from({ length: 30 }, (_, i) => `// stable line ${i}\n`).join(''),
   )
   write(upstream, 'packages/deleted.ts', 'obsolete upstream\n')
+  write(upstream, 'README.md', '# upstream readme\n')
   commit(upstream, 'upstream initial')
   git(upstream, ['tag', 'v1.0.0'])
   const first = join(root, 'first')
@@ -218,15 +219,17 @@ describe('isolated omp candidate sync', () => {
     const f = fixture()
     write(
       f.source,
-      'README.md',
-      '当前基座固定为 **omp v1.0.0**。\n<!-- base: oh-my-pi v1.0.0 README.md, verbatim below -->\nupstream mentions v1.0.0\n',
+      'CONTRIBUTING.md',
+      '当前基座固定为 **omp v1.0.0**。\n<!-- base: oh-my-pi v1.0.0 CONTRIBUTING.md, verbatim below -->\nupstream mentions v1.0.0\n',
     )
     write(f.source, 'CLAUDE.full.md', '| 仓库性质 | omp v1.0.0 的下游 fork |\n')
     commit(f.source, 'atlas notes')
     next(f.upstream)
     const result = prepareCandidate(f.source, f.upstream, 'v1.1.0', f.out)
-    expect(readFileSync(join(result.candidate!, 'README.md'), 'utf8')).toBe(
-      '当前基座固定为 **omp v1.1.0**。\n<!-- base: oh-my-pi v1.1.0 README.md, verbatim below -->\nupstream mentions v1.0.0\n',
+    expect(
+      readFileSync(join(result.candidate!, 'CONTRIBUTING.md'), 'utf8'),
+    ).toBe(
+      '当前基座固定为 **omp v1.1.0**。\n<!-- base: oh-my-pi v1.1.0 CONTRIBUTING.md, verbatim below -->\nupstream mentions v1.0.0\n',
     )
     expect(
       readFileSync(join(result.candidate!, 'CLAUDE.full.md'), 'utf8'),
@@ -328,6 +331,55 @@ describe('isolated omp candidate sync', () => {
       '- `packages/deleted.ts`',
     )
     expect(git(result.candidate!, ['status', '--porcelain'])).toBe('')
+  })
+  test('upstream edits to a base file Atlas rewrote in full stay out and go to review', () => {
+    const f = fixture()
+    write(f.source, 'README.md', '# 阡陌 Qmo\n\nAtlas text only.\n')
+    commit(f.source, 'atlas rewrites the README')
+    write(
+      f.upstream,
+      'README.md',
+      '# upstream readme\n\nupstream keeps editing\n',
+    )
+    write(f.upstream, 'packages/example.ts', 'const original = 2\n')
+    next(f.upstream)
+    const result = prepareCandidate(f.source, f.upstream, 'v1.1.0', f.out)
+    expect(result.status).toBe('prepared')
+    expect(result.replacedLocally).toEqual(['README.md'])
+    expect(result.removedLocally).toEqual([])
+    expect(readFileSync(join(result.candidate!, 'README.md'), 'utf8')).toBe(
+      '# 阡陌 Qmo\n\nAtlas text only.\n',
+    )
+    expect(
+      readFileSync(join(result.candidate!, 'packages/example.ts'), 'utf8'),
+    ).toContain('= 2')
+    expect(readFileSync(join(f.out, 'upstream.patch'), 'utf8')).not.toContain(
+      'README.md',
+    )
+    expect(
+      readFileSync(join(f.out, 'upstream-replaced-locally.patch'), 'utf8'),
+    ).toContain('+upstream keeps editing')
+    expect(existsSync(join(f.out, 'upstream-removed-locally.patch'))).toBe(
+      false,
+    )
+    expect(readFileSync(join(f.out, 'review.md'), 'utf8')).toContain(
+      '- `README.md`',
+    )
+    expect(git(result.candidate!, ['status', '--porcelain'])).toBe('')
+  })
+  test('a base file Atlas rewrote and upstream left alone is not reported', () => {
+    const f = fixture()
+    write(f.source, 'README.md', '# 阡陌 Qmo\n')
+    commit(f.source, 'atlas rewrites the README')
+    next(f.upstream)
+    const result = prepareCandidate(f.source, f.upstream, 'v1.1.0', f.out)
+    expect(result.replacedLocally).toEqual([])
+    expect(existsSync(join(f.out, 'upstream-replaced-locally.patch'))).toBe(
+      false,
+    )
+    expect(readFileSync(join(f.out, 'review.md'), 'utf8')).not.toContain(
+      'Atlas rewrote',
+    )
   })
   test('an upstream deletion of a base file Atlas already deleted is a no-op', () => {
     const f = fixture()

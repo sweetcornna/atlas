@@ -5,8 +5,8 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v3.9** |
-| 生效日期 | 2026-10-18 |
+| 文档版本 | **v3.9.1** |
+| 生效日期 | 2026-10-19 |
 | 覆盖阶段 | M0 历史记录、M1 内测与 M2 公测开发 |
 | 撰写 | 喻永昌（项目负责人） |
 | 评审 | 全体成员集体评审通过后生效；**v2.1 的全部变更为负责人决议（2026-08-11），未经全员评审，S0 可复核**；**v2.2 中 D-1 ~ D-3（AC-2 / AC-3 判据修订）为负责人拍板、待 S0（P0.8）评审 —— 负责人已于 2026-08-12 确认通过，修订判据自此生效、不再回退**，其余为负责人决议（2026-08-12）；**v2.3 的分工调整为负责人决议（2026-08-12）**；**v3.0 的基座路线变更为负责人决议（2026-10-07），非全员评审结论** |
@@ -16,6 +16,7 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| **v3.9.1** | **2026-10-19** | **补注，不扩大范围**（负责人要求根 `README.md` 全部由阡陌书写、不再附 omp 原文；本条出处回写由实施方作出，非全员评审结论）：§3 P-1 行与 §5.1「名称」行的核实出处由「根 `README.md` 下半部分」改为基座快照里的 `README.md`；§5.3 布局图把 `README.md` 与 `CONTRIBUTING.md` 分开写。 |
 | **v3.9** | **2026-10-18** | **补注，不扩大范围**（实施方按负责人 10-03 常设委托作出，非全员评审结论）：§8「工具链」一格的 `.tool-versions` 由 1.4.2 改为 1.4.3，与 #244 已升的版本一致（1.4.3 修了 Linux 上 spawnSync 收不回子进程的空转）。 |
 | **v3.8** | **2026-10-18** | **负责人 10-17 决定：社交平台接入参照 hermes-agent，个人 QQ 对接 SnowLuma**。① **规则例外**：§7.2 第 8 条加 v3.8 例外——新增「个人 QQ」渠道，经 SnowLuma（在用户自己电脑上注入 QQNT 客户端的 OneBot 11 实现）接入普通 QQ 号；这是该条「不用模拟客户端、协议逆向或 hook 的第三方实现」的唯一例外，只限个人 QQ。QQ 开放平台机器人仍是 QQ 群与频道的官方接入，原 QQ 渠道不变。阡陌只作 OneBot 客户端连接用户自备的 SnowLuma，不分发、不安装、不配置、不代为登录；公开版不提供（SnowLuma 许可非商用）。② **口径**：§2.6 第 2 条加指针；§6.2 新增 L-7（个人号封号与 SnowLuma 许可风险）。③ 六个平台的发送重试、长回复、群聊上下文、配对码、防机器人互回等做法参照 hermes-agent（MIT）重写，不拷代码。设计见 [`runtimes-channels.md`](./runtimes-channels.md) §2.5。负责人决议，不冒称全员评审；§4 验收判据不变。 |
 | **v3.7** | **2026-10-17** | **负责人 10-17 决定底层改为目录、默认 DeepSeek Harness**。① **范围**：新增 §2.8——节点缺省安装 DeepSeek Harness（dsh，DeepSeek 发布的开源 harness，MIT）作为智能体的默认底层；qianmopi 内置、作退路；Claude Code、Codex 与其他官方自带 ACP 服务端的 harness 由用户按需安装；后端之间高度互通（同一套宿主工具、同步问答、换底层对话接续）；用户在「网关」页直接为各底层的智能体配模型，智能体默认经 magpie 取各自系列的模型。设计见 [`harness-backends.md`](./harness-backends.md)，编号 P36。② **口径**：N-9 的 v3.4 补注扩到 dsh 与目录里的 harness（官方发行版原样运行，只经公开的非交互接口接入，状态与凭据由阡陌隔离）；§2.6 第 1 条「默认 qianmopi」由本版 §2.8 取代，原文保留。负责人决议，不冒称全员评审；§4 验收判据不变。 |
@@ -244,7 +245,7 @@ M0 的产出是**可演示、可复现、可测量的原型**，不是可交付�
 | A-2 多模型适配 | 已有 | **已有**：内置多家 provider 与 `models.yml` 自定义 provider；M1 的模型服务改为编译到 omp 的 `models.yml` / `config.yml`（[`base-switch-omp.md`](./base-switch-omp.md) §5） | `docs/providers.md`、`docs/models.md` |
 | C-2 按名寻址（节点内一跳） | 部分 | **自研**：omp 没有 occ 的 Agent Teams 文件信箱；节点内最后一跳由独立重写的 `@qianmo/mailbox` 承接，对外行为与旧信箱一致 | `base-switch-omp.md` §3.2 |
 | C-5 权限分级 | 部分 | **部分**：工具按 `read` / `write` / `exec` 分级，`tools.approvalMode` 三档，扩展的 `tool_call` 拦截对超时与异常 fail-closed；跨节点身份与授权仍是自研 | `docs/approval-mode.md`、`docs/extensions.md` |
-| P-1 编程智能体 | 已有 | **已有**：omp 本身是编程智能体 CLI（读、改、跑命令、子任务） | 根 `README.md` 下半部分（omp 原文） |
+| P-1 编程智能体 | 已有 | **已有**：omp 本身是编程智能体 CLI（读、改、跑命令、子任务） | 基座快照里的 `README.md`（omp 原文） |
 | P-3 MCP client | 已有 | **已有**：支持 stdio / http / sse 传输的 MCP server 配置；常驻节点是否开放 MCP 由节点覆盖层决定，**待核** | `docs/mcp-config.md` |
 | E-1 基座导入 | — | 在 omp 上重做：快照 `base-snapshot/omp-v18.8.4`、导入提交 `c9a87c8c`，`@qianmo/*` 接入根工作区的 `atlas/packages/*`；开发环境全员跑通**待复核** | `BASE.md`、根 `package.json` |
 | E-2 身份隔离与门禁 | — | 原文所依的 `src/config/paths.ts` 已随 occ 删除；身份与路径改由 `@qianmo/paths` 派生，omp 子进程状态经 `ompChildEnv()` 隔离到 `<配置根>/omp`；门禁改为根 `package.json` 的 `precheck` / `verify` 与 `.github/workflows/atlas.yml`，移植进行中 | `base-switch-omp.md` §3.1、§6 |
@@ -351,7 +352,7 @@ M0 的产出是**可演示、可复现、可测量的原型**，不是可交付�
 
 | 项 | 内容 | 核实出处 |
 |---|---|---|
-| 名称 | oh-my-pi，CLI 名 `omp` | 根 `README.md` 下半部分（omp 原文）、`packages/coding-agent/package.json` |
+| 名称 | oh-my-pi，CLI 名 `omp` | 基座快照里的 `README.md`（omp 原文）、`packages/coding-agent/package.json` |
 | 来源 | Pi（`badlogic/pi-mono`，作者 Mario Zechner）的 fork，由 Stencil Labs 维护；原创开源项目，不是对任何商业产品的逆向复原 | omp README「Built by Stencil Labs · Fork of Pi by @mariozechner」（Pi 链接到 `github.com/badlogic/pi-mono`） |
 | 归属 | 第三方开源项目，与阡陌团队无隶属关系 | 同上 |
 | 许可 | **MIT**，版权行：Mario Zechner（2025）、Can Bölük（2025-2026）、Stencil Labs, Inc.（2026） | 快照 `LICENSE`，本仓库逐字保存为 `LICENSE.base`（`git show base-snapshot/omp-v18.8.4:LICENSE \| cmp - LICENSE.base`） |
@@ -396,7 +397,8 @@ atlas/                        仓库根 = omp v18.8.4 基座树
 ├── BASE.md                   基座溯源记录（上游、pin、快照、同步历史）       ✅ 入库，见 §5.6
 ├── CLAUDE.md  CLAUDE.full.md 本仓库对 AI 代理的工程约定                    ✅ 入库
 ├── AGENTS.md                 阡陌指针 + omp AGENTS.md 原文                  ✅ 入库
-├── README.md  CONTRIBUTING.md 阡陌部分在上，omp 原文附在标记之下            ✅ 入库
+├── README.md                 阡陌撰写的项目说明（路径来自基座，不含 omp 原文） ✅ 入库
+├── CONTRIBUTING.md           阡陌部分在上，omp 原文附在标记之下              ✅ 入库
 ├── packages/ crates/ scripts/ python/ sdk/ docs/*.md …  omp 基座原样       ✅ 入库
 ├── atlas/                    阡陌自有代码：packages/<domain>（@qianmo/*）、scripts/、tests/  ✅ 入库
 ├── demo/                     阡陌演示与验收脚本                            ✅ 入库
