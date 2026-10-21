@@ -28,7 +28,7 @@ import { attr, escapeHtml } from './escape.js'
 import { formatShortDuration } from './format.js'
 import type { FrontText } from './frontText.js'
 
-export interface FrontPanelModel {
+interface FrontPanelModel {
   /** `null` when the hub has no background tasks. */
   readonly tasks: readonly BackgroundTaskView[] | null
   /** May this reader stop a task (a member; the port still checks ownership). */
