@@ -932,6 +932,12 @@ export type ChannelPlatformId =
   | 'discord'
   | 'slack'
 
+/**
+ * 群规则的可调项：`freeGroups` 不用 @ 的群（hermes free_response_chats），
+ * `keywords` 唤醒词，`budget` 群冷却与发言上限（grantley，只有个人 QQ）。
+ */
+export type ChannelGroupOption = 'freeGroups' | 'keywords' | 'budget'
+
 /** 一个平台要填什么。只列官方接口需要的字段。 */
 export interface ChannelPlatformView {
   readonly id: ChannelPlatformId
@@ -944,6 +950,8 @@ export interface ChannelPlatformView {
   readonly qrLogin: boolean
   /** 陌生人私聊可以申请配对（hermes 配对码）；个人 QQ 不做。 */
   readonly pairing: boolean
+  /** 该平台群规则可调的项（`runtimes-channels.md` §2.6）。 */
+  readonly groupOptions: readonly ChannelGroupOption[]
   readonly hint: string
   /** 没有用真实账号跑过：一律 false。 */
   readonly evaluated: boolean
@@ -989,6 +997,15 @@ export interface ChannelView {
   readonly pairingOpen: boolean
   /** 群里被 @ 时带上最近的群聊（主人群只带主人自己的话）。 */
   readonly groupContext: boolean
+  /** 不用 @ 也回的群（Telegram 可写 `群号:话题号`）。 */
+  readonly freeGroups: readonly string[]
+  /** 群里出现就回的词，不分大小写。 */
+  readonly keywords: readonly string[]
+  /** 没被点名时，同一个群两次回复至少隔这么久；0 不限。 */
+  readonly groupCooldownSeconds: number
+  /** 同一个群每 `groupSpeechMinutes` 分钟最多回这么多条；任一为 0 不限。 */
+  readonly groupSpeechMax: number
+  readonly groupSpeechMinutes: number
   readonly pairingRequests: readonly ChannelPairingRequest[]
   readonly settings: Readonly<Record<string, string>>
   readonly secretSet: boolean
@@ -1021,6 +1038,11 @@ export interface ChannelDraft {
   readonly prompt?: string
   readonly pairing?: ChannelPairingMode
   readonly groupContext?: boolean
+  readonly freeGroups?: readonly string[]
+  readonly keywords?: readonly string[]
+  readonly groupCooldownSeconds?: number
+  readonly groupSpeechMax?: number
+  readonly groupSpeechMinutes?: number
   readonly settings?: Readonly<Record<string, string>>
   readonly secrets?: Readonly<Record<string, string>>
 }

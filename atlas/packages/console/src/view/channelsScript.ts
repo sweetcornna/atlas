@@ -53,6 +53,10 @@ export const CHANNELS_PAGE_JS = `
     return String(value || '').split(/[\\s,，]+/).filter(Boolean);
   }
 
+  function words(value) {
+    return String(value || '').split(/[,，、\\n]+/).map(function (one) { return one.trim(); }).filter(Boolean);
+  }
+
   function draftOf(form) {
     var platform = form.querySelector('input[name="platform"]:checked') || form.querySelector('input[type="hidden"][name="platform"]');
     var draft = {
@@ -72,6 +76,11 @@ export const CHANNELS_PAGE_JS = `
     if (form.elements.ownerIds) draft.ownerIds = split(form.elements.ownerIds.value);
     if (form.elements.pairing) draft.pairing = form.elements.pairing.value;
     if (form.elements.groupContext) draft.groupContext = !!form.elements.groupContext.checked;
+    if (form.elements.freeGroups) draft.freeGroups = split(form.elements.freeGroups.value);
+    if (form.elements.keywords) draft.keywords = words(form.elements.keywords.value);
+    if (form.elements.groupCooldownSeconds) draft.groupCooldownSeconds = Number(form.elements.groupCooldownSeconds.value || 0);
+    if (form.elements.groupSpeechMax) draft.groupSpeechMax = Number(form.elements.groupSpeechMax.value || 0);
+    if (form.elements.groupSpeechMinutes) draft.groupSpeechMinutes = Number(form.elements.groupSpeechMinutes.value || 0);
     var id = form.elements.channelId ? form.elements.channelId.value : '';
     if (id) draft.id = id;
     var settings = form.querySelectorAll('[data-setting]');

@@ -834,6 +834,114 @@ describe('personal QQ (SnowLuma)', () => {
       )
   })
 
+  test('group rules from grantley: wake words, cooldown and speech cap are saved, checked and applied', async () => {
+    const book = channels()
+    const saved = value(
+      await book.save(
+        {
+          ...PERSONAL,
+          memberTarget: MEMBER_AGENT,
+          allowGroups: ['20001'],
+          keywords: [' 小阡 ', '小阡', 'hey bot'],
+          freeGroups: ['20001'],
+          groupCooldownSeconds: 60,
+          groupSpeechMax: 3,
+          groupSpeechMinutes: 10,
+        },
+        ACTOR,
+      ),
+    )
+    // Personal QQ has no free groups (hermes); the rest is kept, deduplicated.
+    expect(saved).toMatchObject({
+      freeGroups: [],
+      keywords: ['小阡', 'hey bot'],
+      groupCooldownSeconds: 60,
+      groupSpeechMax: 3,
+      groupSpeechMinutes: 10,
+    })
+    const edited = value(
+      await book.save({ ...PERSONAL, id: saved.id, name: '改名' }, ACTOR),
+    )
+    expect(edited).toMatchObject({ keywords: ['小阡', 'hey bot'] })
+    const refused = async (draft: Partial<ChannelDraft>) => {
+      const result = await book.save(
+        { ...PERSONAL, id: saved.id, ...draft },
+        ACTOR,
+      )
+      return result.ok ? 'saved' : result.failure.message
+    }
+    expect(await refused({ groupCooldownSeconds: -1 })).toBe(
+      '群冷却需在 0–86400 秒之间',
+    )
+    expect(await refused({ groupSpeechMax: 1.5 })).toBe(
+      '发言上限需在 0–1000 条之间',
+    )
+    expect(await refused({ groupSpeechMinutes: 1_441 })).toBe(
+      '发言上限的时段需在 0–1440 分钟之间',
+    )
+    expect(await refused({ keywords: ['   '] })).toBe('唤醒词需要 1–32 个字')
+    // The gateway gets them: a wake word answers, a plain line does not.
+    const adapter = adapters.at(-1)!.adapter
+    const group = { type: 'group' as const, id: '20001' }
+    adapter.sink!(
+      inbound({
+        chat: group,
+        userId: '30001',
+        text: '今天天气',
+        addressed: false,
+      }),
+    )
+    adapter.sink!(
+      inbound({
+        chat: group,
+        userId: '30001',
+        text: '小阡在吗',
+        addressed: false,
+      }),
+    )
+    await until(() => chat.sent.length === 1)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(chat.sent).toHaveLength(1)
+    expect(chat.sent[0]!.text).toContain('小阡在吗')
+  })
+
+  test('platforms keep only the group rules they offer', async () => {
+    const book = channels()
+    const saved = value(
+      await book.save(
+        {
+          ...TELEGRAM,
+          freeGroups: ['-1001', '-1002:7'],
+          keywords: ['阡陌'],
+          groupCooldownSeconds: 60,
+          groupSpeechMax: 3,
+          groupSpeechMinutes: 10,
+        },
+        ACTOR,
+      ),
+    )
+    expect(saved).toMatchObject({
+      freeGroups: ['-1001', '-1002:7'],
+      keywords: ['阡陌'],
+      groupCooldownSeconds: 0,
+      groupSpeechMax: 0,
+      groupSpeechMinutes: 0,
+    })
+    const snapshot = value(await book.snapshot())
+    expect(
+      Object.fromEntries(
+        snapshot.platforms.map(one => [one.id, one.groupOptions]),
+      ),
+    ).toEqual({
+      qq: [],
+      'qq-personal': ['keywords', 'budget'],
+      weixin: [],
+      telegram: ['freeGroups', 'keywords'],
+      discord: ['freeGroups'],
+      slack: ['freeGroups', 'keywords'],
+    })
+  })
+
   test('the public edition neither offers, saves nor starts it', async () => {
     const book = channels()
     value(await book.save(PERSONAL, ACTOR))
@@ -949,6 +1057,14 @@ describe('pairing (hermes)', () => {
     const disk = JSON.parse(fs.readFileSync(file, 'utf8'))
     delete disk.channels[0].pairing
     delete disk.channels[0].groupContext
+    for (const field of [
+      'freeGroups',
+      'keywords',
+      'groupCooldownSeconds',
+      'groupSpeechMax',
+      'groupSpeechMinutes',
+    ])
+      delete disk.channels[0][field]
     fs.writeFileSync(file, JSON.stringify(disk))
     const upgraded = channels()
     const view = value(await upgraded.snapshot()).channels[0]!
@@ -956,6 +1072,11 @@ describe('pairing (hermes)', () => {
       pairing: 'off',
       pairingOpen: false,
       groupContext: true,
+      freeGroups: [],
+      keywords: [],
+      groupCooldownSeconds: 0,
+      groupSpeechMax: 0,
+      groupSpeechMinutes: 0,
     })
     const adapter = adapters[0]!.adapter
     adapter.sink!(stranger('s9'))
