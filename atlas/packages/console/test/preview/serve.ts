@@ -35,6 +35,7 @@ import {
 import { MemoryActionLedger } from '../memoryActions.js'
 import { agentAt, LIMITS, PageAudit, PageRegistry } from '../pageHarness.js'
 import { FakeProviders } from '../providersFake.js'
+import { PreviewApprovals } from './approvals.js'
 import { PreviewChat, TARGETS } from './chat.js'
 import { PreviewTasks } from './tasks.js'
 
@@ -93,6 +94,7 @@ const deps: ConsoleDeps = {
   channels: new FakeChannels(now),
   updates: new FakeUpdates(now),
   extensions: new FakeExtensions(),
+  approvals: new PreviewApprovals(Date.now()),
   ...(withMagpie ? { magpie: new FakeMagpie() } : {}),
   ...ports,
 }
@@ -105,7 +107,9 @@ const book = new AccountBook({
 const handle = createConsoleHandler(deps, PREVIEW_TOKENS, { book })
 
 /** Invite with the management token and redeem: a signed-in person. */
-async function signUp(role: Role): Promise<string> {
+async function signUp(
+  role: Role,
+): Promise<{ readonly sid: string; readonly credential: string }> {
   const invited = await handle(
     new Request(`${BASE}/v0/accounts/invites`, {
       method: 'POST',
@@ -119,13 +123,16 @@ async function signUp(role: Role): Promise<string> {
   const { link } = (await invited.json()) as { link: string }
   const token = link.slice(link.indexOf('#') + 1)
   const redeemed = await handle(formPost('/invite', { invite: token }))
-  credentialOn(await redeemed.text())
+  const credential = credentialOn(await redeemed.text())
   const sid = cookieFrom(redeemed, 'qianmo_session')
   if (sid === null || sid === '') throw new Error(`no session for ${role}`)
-  return sid
+  return { sid, credential }
 }
 
-const sessions: Record<Role, string> = {
+const people: Record<
+  Role,
+  { readonly sid: string; readonly credential: string }
+> = {
   ops: await signUp('ops'),
   member: await signUp('member'),
   viewer: await signUp('viewer'),
@@ -141,7 +148,7 @@ function previewLogin(url: URL): Response {
     status: 302,
     headers: {
       location: next.startsWith('/') ? next : '/',
-      'set-cookie': accountSessionCookie(sessions[role], false),
+      'set-cookie': accountSessionCookie(people[role].sid, false),
     },
   })
 }
@@ -159,5 +166,7 @@ Bun.serve({
 
 process.stdout.write(
   `console preview on http://127.0.0.1:${port}/__preview/login?as=ops` +
-    `${withMagpie ? '' : ' (no magpie)'}\n`,
+    `${withMagpie ? '' : ' (no magpie)'}\n` +
+    // What an approval card asks for before it decides (in memory only).
+    `personal credentials · ops ${people.ops.credential} · member ${people.member.credential}\n`,
 )

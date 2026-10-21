@@ -79,12 +79,23 @@ describe.skipIf(SKIP !== null)('personal approvals in a real browser', () => {
       await tab.waitFor(
         "document.querySelector('[data-approval]') !== null && window.qianmoConsole !== undefined",
       )
+      // The credential row stays folded until a decision needs it.
+      expect(
+        await tab.evaluate<boolean>(
+          "document.getElementById('approval-auth').hidden",
+        ),
+      ).toBe(true)
       await tab.evaluate(
-        "document.querySelector('[data-approval] button').click()",
+        "document.querySelector('[data-approval] button[value=allow-once]').click()",
       )
       await tab.waitFor(
         "document.getElementById('approval-status').textContent.includes('审批未完成')",
       )
+      expect(
+        await tab.evaluate<boolean>(
+          "document.getElementById('approval-auth').hidden",
+        ),
+      ).toBe(false)
       expect(decisions).toHaveLength(0)
       expect(
         await tab.evaluate<boolean>(
@@ -113,7 +124,7 @@ describe.skipIf(SKIP !== null)('personal approvals in a real browser', () => {
         ),
       ).toBe(false)
       await tab.evaluate(
-        "document.querySelector('[data-approval] button').click()",
+        "document.querySelector('[data-approval] button[value=allow-once]').click()",
       )
       await tab.waitFor("document.querySelector('[data-revoke]') !== null")
       expect(decisions).toEqual(['approval-session'])
