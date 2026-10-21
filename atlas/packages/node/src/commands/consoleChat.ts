@@ -1177,6 +1177,8 @@ export function createConsoleChatPort(
         traceId: message.traceId,
         ...(input.command === undefined ? {} : { command: input.command }),
         ...(input.background === true ? { background: true as const } : {}),
+        // The hub's report turn (P38): its tasks start no report turn.
+        ...(input.report === true ? { report: true as const } : {}),
       })
 
       const task: PendingTask = {

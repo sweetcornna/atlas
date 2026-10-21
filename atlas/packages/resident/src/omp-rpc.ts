@@ -48,6 +48,14 @@ export interface OmpRpcChannel {
     readonly messageId: string
     readonly text: string
   }): Promise<OmpPromptAdmission>
+  /**
+   * More input for the turn running on this child, taken at its next step
+   * boundary (P38): RPC `prompt` with `streamingBehavior: 'steer'`, so omp
+   * answers it with a `prompt_result` of its own even when the run yielded
+   * just before it arrived and it starts the next one. Resolves once omp
+   * admitted it. Absent on a runtime that cannot take input mid-turn.
+   */
+  steer?(input: { readonly text: string }): Promise<OmpPromptAdmission>
   /** RPC `abort`. Best effort: the watchdog has already failed the turn. */
   abort(): Promise<void>
   /** Every outbound frame, in wire order. Returns an unsubscribe. */

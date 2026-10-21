@@ -452,6 +452,11 @@ export interface ConsoleCliConfig {
   readonly memory?: boolean
   readonly controlTargets?: readonly ConsoleNodeTarget[]
   /**
+   * Background task turns in flight per node (P38, `--task-workers`); the
+   * hub's default of 3 when absent, never more than the node's own share.
+   */
+  readonly taskWorkers?: number
+  /**
    * CA 根证书的绝对路径。**给了才有证书栏**（key-distribution.md §10.1）。
    *
    * 是根证书而不是证书目录：控制台要做的那一次判定是 F-2——「这张证书是不是本
@@ -654,6 +659,7 @@ export function parseConsoleArgs(
   let approvals = false
   let memory = false
   const controlTargets: ConsoleNodeTarget[] = []
+  let taskWorkers: number | undefined
   let trustCa: string | undefined
   const trusted = new Map<string, string>()
   let registryTokenFile: string | undefined
@@ -856,6 +862,13 @@ export function parseConsoleArgs(
       signChats = true
     } else if (arg === '--memory') {
       memory = true
+    } else if (arg === '--task-workers' || arg?.startsWith('--task-workers=')) {
+      const parsed = residentOptionValue(args, index, '--task-workers')
+      const value = Number(parsed.value)
+      if (!Number.isSafeInteger(value) || value < 1 || value > 16)
+        throw new Error('--task-workers must be an integer from 1 to 16')
+      taskWorkers = value
+      index = parsed.next
     } else if (arg === '--control' || arg?.startsWith('--control=')) {
       const parsed = residentOptionValue(args, index, '--control')
       const named = parseNamedValue(parsed.value, '--control')
@@ -1395,6 +1408,8 @@ export function parseConsoleArgs(
   // 上线，而页面上什么都没变。
   if (memory && controlTargets.length === 0)
     throw new Error('--memory needs --control')
+  if (taskWorkers !== undefined && controlTargets.length === 0)
+    throw new Error('--task-workers needs --control')
   if (controlTargets.some(target => !trusted.has(target.node)))
     throw new Error('--control needs explicit --trust for every control node')
   if (
@@ -1594,6 +1609,7 @@ export function parseConsoleArgs(
     ...(approvals ? { approvals } : {}),
     ...(memory ? { memory: true } : {}),
     ...(controlTargets.length === 0 ? {} : { controlTargets }),
+    ...(taskWorkers === undefined ? {} : { taskWorkers }),
     ...(trustCa === undefined ? {} : { trustCa }),
     label: label ?? `${hostname}:${port}`,
     ...(viewToken === undefined ? {} : { viewToken }),
@@ -1894,6 +1910,9 @@ Options (each accepts both --name value and --name=value):
   --control <node>=<ws(s)://url>
                            Signed control link (repeatable). Requires --trust
                            for each node; uses the --print-wake-identity key.
+  --task-workers <n>       Background task turns in flight per node, 1-16
+                           (default 3, never more than the node's own
+                           background share); the rest wait as 排队中.
   --print-approver-identity Print the separate approval public key and exit.
   --tenancy <path>          Enable node-granular tenant policy (absolute JSON path).
   --usage-policy <path>     Optional quota policy; default shadow without limits.

@@ -289,6 +289,10 @@ export const DEFAULT_REGISTRY_POLL_INTERVAL_MS = 3_600_000
 export interface ResidentCliConfig {
   readonly ompIdleMs?: number
   readonly ompMaxChildren?: number
+  /** `--max-turns`, as given; see {@link residentTurnPlaces}. */
+  readonly maxTurns?: number
+  /** `--max-background-turns`, as given. */
+  readonly maxBackgroundTurns?: number
   readonly controllers?: readonly (readonly [string, string])[]
   readonly approvers?: readonly (readonly [string, string])[]
   readonly protectedRoots?: readonly string[]
@@ -419,12 +423,47 @@ export interface ResidentCliConfig {
  */
 export const DEFAULT_RUNTIME_ENV = 'QIANMO_DEFAULT_RUNTIME'
 
+/**
+ * Turns a node runs at once by default (P38): the owner's conversation keeps
+ * a place while up to {@link DEFAULT_MAX_BACKGROUND_TURNS} sub-session turns
+ * run beside it. Each running turn holds an omp process (about 240 MB beside
+ * the resident's 135 MB), so a small node caps this with `--omp-max-children`.
+ */
+export const DEFAULT_MAX_TURNS = 4
+export const DEFAULT_MAX_BACKGROUND_TURNS = 3
+/** The most either flag takes: a node is not a farm. */
+const MAX_TURN_PLACES = 64
+
+/**
+ * The turn gate's places from the flags: `--max-turns` (default
+ * {@link DEFAULT_MAX_TURNS}) within `--omp-max-children`, since a turn holds
+ * a process until it ends; the background share is what the gate makes of
+ * `--max-background-turns` (one place is always the foreground's when there
+ * are two or more).
+ */
+export function residentTurnPlaces(config: {
+  readonly ompMaxChildren?: number
+  readonly maxTurns?: number
+  readonly maxBackgroundTurns?: number
+}): { readonly maxTurns: number; readonly maxBackgroundTurns: number } {
+  return {
+    maxTurns: Math.min(
+      config.maxTurns ?? DEFAULT_MAX_TURNS,
+      config.ompMaxChildren ?? Number.POSITIVE_INFINITY,
+    ),
+    maxBackgroundTurns:
+      config.maxBackgroundTurns ?? DEFAULT_MAX_BACKGROUND_TURNS,
+  }
+}
+
 export function parseResidentArgs(
   args: readonly string[],
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): ResidentCliConfig {
   let ompIdleMs: number | undefined
   let ompMaxChildren: number | undefined
+  let maxTurns: number | undefined
+  let maxBackgroundTurns: number | undefined
   let node: string | undefined
   let team: string | undefined
   let port: number | undefined
@@ -500,6 +539,29 @@ export function parseResidentArgs(
       ompMaxChildren = Number(parsed.value)
       if (!Number.isSafeInteger(ompMaxChildren) || ompMaxChildren <= 0)
         throw new Error('--omp-max-children must be a positive integer')
+      index = parsed.next
+    } else if (
+      arg === '--max-turns' ||
+      arg?.startsWith('--max-turns=') ||
+      arg === '--max-background-turns' ||
+      arg?.startsWith('--max-background-turns=')
+    ) {
+      const flag = arg.startsWith('--max-turns')
+        ? '--max-turns'
+        : '--max-background-turns'
+      const parsed = residentOptionValue(args, index, flag)
+      const value = Number(parsed.value)
+      if (
+        parsed.value.trim() === '' ||
+        !Number.isSafeInteger(value) ||
+        value < 1 ||
+        value > MAX_TURN_PLACES
+      )
+        throw new Error(
+          `${flag} must be an integer from 1 to ${MAX_TURN_PLACES}`,
+        )
+      if (flag === '--max-turns') maxTurns = value
+      else maxBackgroundTurns = value
       index = parsed.next
     } else if (arg === '--node' || arg?.startsWith('--node=')) {
       const parsed = residentOptionValue(args, index, '--node')
@@ -981,6 +1043,8 @@ export function parseResidentArgs(
     ...(Object.keys(runtimeBins).length === 0 ? {} : { runtimeBins }),
     ...(ompIdleMs === undefined ? {} : { ompIdleMs }),
     ...(ompMaxChildren === undefined ? {} : { ompMaxChildren }),
+    ...(maxTurns === undefined ? {} : { maxTurns }),
+    ...(maxBackgroundTurns === undefined ? {} : { maxBackgroundTurns }),
     ...(tenancyPath === undefined ? {} : { tenancyPath, tenantHubPeers }),
     ...(approvers.length === 0 ? {} : { approvers }),
     ...(controllers.length === 0 ? {} : { controllers }),
@@ -1175,10 +1239,19 @@ omp child processes (started on first delivery, never prestarted):
                            ${DEFAULT_OMP_QUEUE_TIMEOUT_MS} ms, then fail with a capacity reason.
                            This is the pool's session-start capacity queue.
 
-  Node turns run serially, with at most ${LIMITS.maxQueuedTurns} waiting turns at the
-  shared turn gate. Ordinary tasks wait for the previous turn first; the
-  pool's ${DEFAULT_OMP_QUEUE_TIMEOUT_MS} ms capacity timer starts only when acquiring a child
-  at a full pool, not when the task arrives at the node.
+  --max-turns <n>          Turns the node runs at once, across sessions and
+                           agents, 1-${MAX_TURN_PLACES}; default ${DEFAULT_MAX_TURNS}, never above
+                           --omp-max-children. 1 runs one turn at a time.
+  --max-background-turns <n>
+                           Of those, the hub's background sub-session turns at
+                           most; default ${DEFAULT_MAX_BACKGROUND_TURNS}. With two or more places one
+                           is always kept for the foreground.
+
+  A session never runs two turns at once: its next turn waits for the one
+  running. Other sessions' turns run beside it while places are free; at most
+  ${LIMITS.maxQueuedTurns} waiting turns at the shared turn gate. Background turns yield
+  and never preempt. The pool's ${DEFAULT_OMP_QUEUE_TIMEOUT_MS} ms capacity timer starts only when
+  acquiring a child at a full pool, not when the task arrives at the node.
 
 Authorization:
 
@@ -2458,6 +2531,7 @@ export async function runResident(args: readonly string[]): Promise<void> {
       : { runtimeBins: config.runtimeBins }),
     ompIdleMs: config.ompIdleMs,
     ompMaxChildren: config.ompMaxChildren,
+    ...residentTurnPlaces(config),
     controllers: new Set(config.controllers?.map(([node]) => node)),
     memoryControllers: new Map(config.controllers),
     controlAudit: event => trail.append(event),

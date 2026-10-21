@@ -462,6 +462,24 @@ export class OmpRpcProcess implements OmpRpcChannel {
       agentInvoked: data?.agentInvoked !== false,
     }
   }
+  /**
+   * More input for the running turn (P38): a `prompt` queued with
+   * `streamingBehavior: 'steer'`, so it is read at the next step boundary
+   * and completes with a `prompt_result` of its own (`docs/rpc.md` "While
+   * streaming"). Unmarked on purpose: the turn's own input already carries
+   * the admission identity, and nothing recovers a steer after a crash.
+   */
+  async steer(input: { text: string }): Promise<OmpPromptAdmission> {
+    const response = await this.request('prompt', {
+      message: input.text,
+      streamingBehavior: 'steer',
+    })
+    const data = response.data as { agentInvoked?: boolean } | undefined
+    return {
+      requestId: String(response.id),
+      agentInvoked: data?.agentInvoked !== false,
+    }
+  }
   async abort(): Promise<void> {
     await this.request('abort')
   }

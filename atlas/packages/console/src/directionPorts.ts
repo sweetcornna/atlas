@@ -791,6 +791,20 @@ export type BackgroundTaskStatus =
   | 'cancelled'
 
 /**
+ * 任务页上的状态（P38）：`running` 含已汇报、等这一轮结束的；`failed` 是连续
+ * 失败或被拒后暂停、等主人处理的；`needs_input` 是它在等主人回复。
+ */
+export type BackgroundTaskState =
+  | 'scheduled'
+  | 'queued'
+  | 'running'
+  | 'interrupted'
+  | 'needs_input'
+  | 'failed'
+  | 'completed'
+  | 'cancelled'
+
+/**
  * 主智能体交给后台子智能体的一个任务，控制台列表里的一行。主会话的上下文和
  * 追加指示的原文不在这里。`scheduled` 是延时或重复的任务在等下一次开始。
  */
@@ -802,6 +816,7 @@ export interface BackgroundTaskView {
   /** 执行它的智能体，`qianmo://<node>/<agent>`。 */
   readonly target: string
   readonly status: BackgroundTaskStatus
+  readonly state: BackgroundTaskState
   /** 阶段的说法，含「排队中」。 */
   readonly phase: string
   /** 最近一次汇报。 */
@@ -809,6 +824,8 @@ export interface BackgroundTaskView {
   /** 最近一次中断的原因；正常时为空。 */
   readonly lastError: string
   readonly turns: number
+  /** 开这个任务的主会话。 */
+  readonly parentSession: string
   /** 子任务所在的会话；还没开时为 null。 */
   readonly workerSession: string | null
   /** 已安排的任务下次开始的时刻（epoch 毫秒）；不是已安排时为 null。 */

@@ -7,7 +7,7 @@
 
 ## 当前接线（2026-10-08）
 
-- `ResidentNodeRuntime` 将任务按智能体分给 `ResidentMailboxReader`，通过 `NodeTurnGate` 在节点内串行执行。`OmpResidentTurnPort` 对接 RPC 消息、错误归因、进度和终态。
+- `ResidentNodeRuntime` 将任务按智能体分给 `ResidentMailboxReader`，通过 `NodeTurnGate` 调度：同一会话串行，不同会话在节点名额内并行，后台回合只占后台份额（P38）。`OmpResidentTurnPort` 对接 RPC 消息、错误归因、进度和终态。
 - `atlas/packages/node/src/host/residentOmp.ts` 的 `ResidentOmpPool` 为每个 `(agent, contextId)` 持有独立 omp 进程。源码模式直接启动 omp CLI，编译模式由同一二进制的 `qm agent --mode rpc` 启动；显式模型和隔离配置来自节点档案，`open_session` 恢复同一会话目录。
 - 准入不是只收到 RPC 事件就发 ACK。扩展写入带 `messageId`、`userEntryId` 的身份条目；宿主确认对应用户条目与身份条目已写入同一个 JSONL 后，才让 reader 记录 admitted、翻转 read 并发 ACK。重启按该身份查询，避免已受理输入再次执行。
 - `FileAdmissionLedger` 与 `FileDeliveryLedger` 分别持久化准入和结果投递；超时、无文本的空应答、上游凭据错误、进程退出都有失败归因。取消使用 RPC `abort`，`qianmo_notify` 通过 host tool 回到宿主。
@@ -47,7 +47,7 @@ bun run precheck
 flowchart TD
   poller["poller.ts · ResidentPoller<br/>从完成处重排，不补跑漏掉的 tick"]
   runtime["runtime.ts · ResidentNodeRuntime<br/>按 to 的 agent 段分发；每 agent 一个 reader"]
-  gate["turn-gate.ts · NodeTurnGate<br/>跨会话按到达顺序串行<br/>有界 FIFO · 出队剔过期"]
+  gate["turn-gate.ts · NodeTurnGate<br/>会话内串行 · 名额内并行 · 前台留位<br/>有界队列 · 出队剔过期"]
   reader["reader.ts · ResidentMailboxReader<br/>#poll → 恢复 pending → 读信箱 → 记 detected<br/>→ submit turn → onAccepted 时 markAdmitted + markRead"]
   ledger["ledger.ts · FileAdmissionLedger<br/>NDJSON · 0700/0600 · fsync · 有界压实"]
   contracts["contracts.ts（端口）<br/>ResidentMailboxPort · ResidentTurnPort<br/>AdmissionLedger · 三相记录类型"]
@@ -116,9 +116,9 @@ flowchart TD
 读 `src/index.ts`（另有 `./activity` 与 `./timings` 两个子入口，供宿主侧的 `@qianmo/activator` 单独引用）：
 
 - **`ResidentNodeRuntime` / `ResidentAgentBinding`** —— 节点级门面：`deliver(message)` 按收件地址的 agent 段选 reader，`pollAll()` 全量轮询；`assertDeliverable(message)` 是 `deliver` 的同步半边，供宿主在**落盘之前**问「这条本节点收不收」。
-- **`ResidentMailboxReader` / `ResidentMailboxReaderOptions` / `ResidentPollResult`** —— 一个 agent 的准入循环，单飞（同一时刻只有一次 `poll` 在跑）。
+- **`ResidentMailboxReader` / `ResidentMailboxReaderOptions` / `ResidentPollResult`** —— 一个 agent 的准入循环，单飞（同一时刻只有一次 `poll` 在跑）；交给闸门后还在等名额或等会话的批次不挡下一次 `poll`，下一次只是不再取它的消息、也不把它的记录当上一代的来恢复（P38）。
 - **`ResidentPoller` / `DEFAULT_RESIDENT_POLL_INTERVAL_MS`** —— 驱动轮询的定时器，从**完成**处重排。
-- **`NodeTurnGate` / `NodeTurnRequest` / `NodeTurnQueueFullError` / `NodeTurnExpiredError`** —— 节点级 turn 串行闸门：显式有界 FIFO 队列，上界取 `LIMITS.maxQueuedTurns`，出队时按 `deadlineAt` 剔除过期项。
+- **`NodeTurnGate` / `NodeTurnRequest` / `NodeTurnQueueFullError` / `NodeTurnExpiredError`** —— 节点级 turn 闸门：同一会话不并发，至多 `maxTurns` 个回合同时跑（缺省 1，即串行），后台回合至多 `maxBackgroundTurns` 个且总给前台留一个；显式有界队列，上界取 `LIMITS.maxQueuedTurns`，出队时按 `deadlineAt` 剔除过期项；问答链上的回答嵌套进发问方、不占名额（P36.6）。
 - **`FileAdmissionLedger`** 与端口类型 **`AdmissionLedger` / `AdmissionRecord`（`detected` / `admitted` / `read`）/ `PendingAdmission` / `AdmissionQueryResult` / `AdmissionIntegrityIssue`** —— 崩溃恢复账本。
 - **`ResidentMailboxPort` / `ResidentTurnPort` / `ResidentTurnInput` / `ResidentTurnResult` / `ResidentMailboxMessage`** —— 两个端口，让整包不依赖任何具体信箱或 ACP 实现。
 - **`AcpResidentTurnPort` / `AcpPromptConnection` / `ACP_INPUT_ACCEPTED_METHOD` / `ACP_INPUT_STATUS_METHOD` / `ACP_SESSION_ACTIVITY_METHOD`** —— `ResidentTurnPort` 的 ACP 实现与三个扩展方法名。
@@ -170,7 +170,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | 1 | **ack 必须晚于 durable read**：账本三相 `detected → admitted → read` 只能单向推进，`onRead` 是唯一的 ack 钩子（接线在 `src/services/qianmo/resident.ts` 的 `#ackTask`） | 提前发 ack，AC-2 独立核验里「每条 ack 都晚于沙箱内的 durable read」这条就不成立，且崩溃后无法判断消息到底进没进模型输入 | `test/ledger.test.ts`「advances detected to admitted to read without going backwards」；`test/reader.test.ts`「fsyncs detection before prompt and flips read from the admission callback」「the read callback fires after the flip, the terminal one after the turn」 |
 | 2 | **turn 在输入被受理之前就结束 = 失败，不是空成功**；取消 / 拒答 / 触顶都是失败；不认识的 stop reason **不许**被编成失败 | 把它们报成 `completed`，请求方会收到一个它区分不出真假的成功 `task.result` | `test/reader.test.ts`「fails promptly when a turn completes before admission」；`test/acp-turn.test.ts`「a cancelled turn is a failed result, not an empty completed one」「refusals and ceiling stops are failures too, not truncated successes」「an unfamiliar stop reason is not invented into a failure」 |
-| 3 | **节点级 turn 串行，且失败的 turn 也必须放行下一个** | 并行开 turn 会让同一节点的两个会话互相踩；失败不释放则整个节点在第一个异常上永久停摆 | `test/turn-gate.test.ts` 两条；`test/reader.test.ts`「returns after admission while retaining the gate until turn completion」 |
+| 3 | **同一会话的 turn 不并发、节点名额有界，且失败的 turn 也必须放行下一个** | 同一会话并发两轮会让 RPC 子进程上的两个回合互相踩；不设上界会把进程与内存吃满；失败不释放则整个节点在第一个异常上永久停摆 | `test/turn-gate.test.ts`「serializes turns…」「a failed turn still releases the next one」「two turns of one session never overlap…」；`test/queue-governance.test.ts`「two turns of one session never overlap」；`test/reader.test.ts`「returns after admission while retaining the gate until turn completion」 |
 | 4 | **账本损坏是报错，不是跳过**：`poll()` 一旦查到 integrity issue 直接抛，压实也拒绝在损坏上进行 | 静默跳过损坏行 = 悄悄丢一条已经承诺过要处理的消息，而这正是账本存在的理由 | `test/ledger.test.ts`「reports a torn tail and refuses to compact damage」「rejects malformed records and unknown fields at runtime」 |
 | 5 | **定时器从完成处重排、不补跑漏掉的 tick；截止时间按冻结重叠段扣除** | 冻结期间定时器不补跑（E4），补跑会在解冻瞬间打出一串堆积调用；不扣冻结段则所有「距上次多久」的判据会在同一毫秒一起越阈 | `test/poller.test.ts`「reschedules after each completed poll instead of replaying missed ticks」；`test/deadline-clock.test.ts`「the first deadline query after thaw observes the freeze」「excludes only the overlapping parts of multiple freezes」 |
 | 6 | **传输回执与协议 ack 是两层，不许合并**（P13.3）：链路回执只承诺「已落盘」，在 `adapter.deliver` 返回处就发；协议 `ack` 承诺「已进模型输入」，仍只在 `markRead` 翻转成功之后由 `#ackTask` 发出。`#receive` **不再 await 轮询** | 合成一层有两种错法，各错一个方向：让回执等 turn ＝ 排队顶穿发送方 5 s 预算，一个忙节点在每个对端眼里等同于失联（H-3 本身）；让 ack 跟着回执提前 ＝ 基座信箱按「丢消息（未读也丢）」执行配额，写完即回的 ack 会替一条可能被驱逐的消息背书 | `src/services/qianmo/__tests__/resident.integration.test.ts`「a second request is receipted inside the budget while a turn holds the gate」（占门时第二条 5 s 内 Accepted，且该 taskId 的 ack **没有**发出）、「an ACP crash while busy comes back as a failed task.result」（回执 Accepted 之后的失败仍从 `task.result` 回去） |

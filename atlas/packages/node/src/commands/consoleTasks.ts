@@ -26,12 +26,22 @@
  * console (ownership, tenancy, quota, audit), so a task cannot do anything
  * its owner could not.
  *
- * A node runs one turn at a time, so a worker turn is a turn the owner's
- * foreground is not getting. Three things keep the foreground responsive:
- * workers end their turn after each phase (the hub calls them again), at most
- * one worker turn per node is in flight, and every worker turn goes out marked
- * `background` with its own deadline, so the node lets interactive turns go
- * first and stops a worker turn that outlives it.
+ * Worker turns run beside the owner's foreground (P38): a node runs one turn
+ * per session and several sessions at once, and keeps a place for
+ * interactive turns that background ones never take. Every worker turn goes
+ * out marked `background` with its own deadline, so the node counts it
+ * against that share and stops it once it outlives it; workers end their
+ * turn after each phase (the hub calls them again); and at most
+ * {@link DEFAULT_WORKERS_PER_NODE} worker turns per node (`--task-workers`,
+ * never more than the node's own background share) are in flight, the rest
+ * queue here as 排队中.
+ *
+ * The foreground hears back without asking (P38): a result or a question is
+ * steered into the parent's running turn where its runtime can take it, and
+ * otherwise starts a turn of its own there once the parent is free (a
+ * channel chat queues it like a message). Results that arrive together go in
+ * one report, a report turn never reports itself, and the notice in the
+ * parent's transcript stays as it was.
  */
 
 import * as path from 'node:path'
@@ -40,6 +50,7 @@ import { z } from 'zod'
 import {
   type BackgroundTaskReader,
   type BackgroundTasksPort,
+  type BackgroundTaskState,
   type BackgroundTaskView,
   ChatDispatch,
   type ChatPort,
@@ -49,6 +60,7 @@ import {
   type ConsoleResult,
   type DirectionActor,
   type TenantPort,
+  unansweredTurns,
   type UsagePort,
 } from '@qianmo/console'
 import { parseAddress, type ControlOutcome } from '@qianmo/protocol'
@@ -186,6 +198,16 @@ const recordSchema = z.object({
   abnormal: z.boolean().default(false),
   /** The runtime compacted the worker's context: brief it again. */
   rebrief: z.boolean().default(false),
+  /**
+   * Paused after failing (refused, or too many failed turns in a row), not
+   * asking anything: the console shows it as 失败 until it goes on (P38).
+   */
+  failed: z.boolean().default(false),
+  /**
+   * Started in a report turn (P38): its results reach the parent by note
+   * and mid-turn, never by a report turn of their own.
+   */
+  fromReport: z.boolean().default(false),
   quietTurns: z.number().int().nonnegative(),
   readUpdateId: z.number().int().nonnegative(),
   notification: z.enum([
@@ -296,6 +318,27 @@ export interface ConsoleTasksOptions {
   readonly now?: () => number
   /** Stops a worker's running turn on its node (`turn.stop`). */
   readonly stopTask?: (target: string, taskId: string) => Promise<boolean>
+  /**
+   * Hands text to a running turn on its node, read at its next step
+   * (`turn.steer`, P38); false when the turn is not running there or its
+   * runtime takes nothing mid-turn.
+   */
+  readonly steerTask?: (
+    target: string,
+    taskId: string,
+    text: string,
+  ) => Promise<boolean>
+  /** Worker turns in flight per node; default {@link DEFAULT_WORKERS_PER_NODE}. */
+  readonly workersPerNode?: number
+  /**
+   * How many background turns a node runs at once, as it says itself
+   * (`node.ping`), or undefined when it does not say.
+   */
+  readonly nodeTurns?: (node: string) => Promise<number | undefined>
+  /** How long results wait to be told together; tests shorten it. */
+  readonly reportDelayMs?: number
+  /** How long to wait before looking at a busy parent again; tests shorten it. */
+  readonly reportRetryMs?: (attempts: number) => number
   /** False for conversations that may not start tasks (channel groups, members). */
   readonly foreground?: (sessionId: string) => boolean
   /** True for a schedule's session (P24): its turns start no tasks. */
@@ -354,11 +397,12 @@ const RECENTLY_MS = 10 * 60_000
 const KEEP_FINISHED_MS = 30 * 24 * 60 * 60_000
 const KEEP_FINISHED_PER_OWNER = 200
 /**
- * Worker turns in flight per node. One: the node runs one turn at a time, and
- * a second worker turn would only queue there in front of the owner's next
- * message. Tasks on the same node take turns.
+ * Worker turns in flight per node by default (P38, `--task-workers`): the
+ * node's own default background share, so they run side by side there with
+ * a place left for the owner. A node that says it takes fewer
+ * (`node.ping` `turns.background`) gets that many; the rest wait here.
  */
-const MAX_RUNNING_PER_NODE = 1
+const DEFAULT_WORKERS_PER_NODE = 3
 const DEFAULT_TURN_TTL_MS = 30 * 60_000
 /**
  * How much longer than the deadline the hub waits for a worker turn's answer:
@@ -559,6 +603,108 @@ function defaultDeliveryRetry(attempts: number): number {
   return Math.min(30 * 60_000, 4 ** (attempts - 1) * 60_000)
 }
 
+/** A task's state on the console's list (P38). */
+function consoleState(task: TaskRecord): BackgroundTaskState {
+  switch (task.status) {
+    case 'running':
+    case 'completion_pending':
+    case 'needs_input_pending':
+      return 'running'
+    case 'needs_input':
+      return task.failed ? 'failed' : 'needs_input'
+    default:
+      return task.status
+  }
+}
+
+/**
+ * How long results wait to be told together (P38): what else finishes in
+ * this window goes in the same report.
+ */
+const REPORT_DELAY_MS = 2_000
+/**
+ * A report turn's deadline: it tells and hands on, and the owner's next
+ * line in that conversation waits behind it.
+ */
+const REPORT_TURN_TTL_MS = 5 * 60_000
+/**
+ * Looks at a parent whose turn takes nothing mid-turn before the report is
+ * left to its next line's task note; about half an hour at the cap below.
+ */
+const MAX_REPORT_WAITS = 60
+const REPORT_BODY_CHARS = 2_000
+
+/** 5, 10, 20 then 30 seconds between looks at a busy parent. */
+function defaultReportRetry(attempts: number): number {
+  return Math.min(30_000, 2 ** (attempts - 1) * 5_000)
+}
+
+/** One thing a parent conversation is owed (P38). */
+interface ReportItem {
+  readonly kind: 'result' | 'progress'
+  readonly title: string
+  /** 已完成, 需要你的补充, a repeat's run, or 进展. */
+  readonly label: string
+  readonly body: string
+  /** When it came in; a task note given after it already told it. */
+  readonly at: number
+  /**
+   * May start a report turn: a result, from a task not started in one, that
+   * no channel posted to its chat.
+   */
+  readonly turn: boolean
+}
+
+/** What a parent conversation is owed, by task, and its report's state. */
+interface PendingReport {
+  readonly items: Map<string, ReportItem>
+  timer: ReturnType<typeof setTimeout> | null
+  /** Being told: what comes in meanwhile waits for the next report. */
+  telling: boolean
+  /** Looks at the parent, busy with a turn that took nothing mid-turn. */
+  waits: number
+}
+
+function reportLines(
+  items: readonly (readonly [string, ReportItem])[],
+): string {
+  return items
+    .map(
+      ([id, item]) =>
+        `- 「${item.title}」（${id}）：${item.label}\n${clip(item.body, REPORT_BODY_CHARS)}`,
+    )
+    .join('\n\n')
+}
+
+/** What a busy parent's running turn reads at its next step. */
+function reportSteerText(
+  items: readonly (readonly [string, ReportItem])[],
+): string {
+  return [
+    '[后台任务回报] 这一轮进行中，下面的后台任务有了进展或结果（结果已经显示在会话里）。和这一轮相关就用上；需要你回复的，这一轮结束前处理或告诉主人；不必整段复述。',
+    reportLines(items),
+  ].join('\n\n')
+}
+
+/** The paragraph ahead of a report turn's line. */
+function reportContext(
+  items: readonly (readonly [string, ReportItem])[],
+): string {
+  return [
+    '[后台任务回报] 这一轮由宿主发起，不是主人发来的消息：下面的后台任务刚有了结果或在等回复，结果已经显示在会话里。',
+    reportLines(items),
+    '已完成的，用一两句话告诉主人结论；还要接着做的，用 qianmo_task_start 安排。等回复的，你能答就用 qianmo_task_send 回给它，不能就把问题转给主人。不要整段复述，这一轮里不做费时的工作。',
+  ].join('\n\n')
+}
+
+/** The line a report turn shows in the parent conversation. */
+function reportLine(items: readonly (readonly [string, ReportItem])[]): string {
+  return clip(
+    `后台任务回报：${items.map(([, item]) => `${item.title} ${item.label}`).join('；')}`,
+    300,
+  )
+}
+
 /** The task note a console line carries, and the mark that it went out. */
 export interface TaskNote {
   readonly text: string
@@ -702,6 +848,8 @@ interface Caller {
   readonly transcript: ChatTranscript
   readonly owner: string
   readonly worker: TaskRecord | undefined
+  /** The calling turn is the hub's report turn (P38). */
+  readonly report: boolean
 }
 
 /** An agent's runtime and model as far as the hub knows them. */
@@ -719,6 +867,13 @@ const PROFILE_RETRY_MS = 60_000
 const pingSchema = z.object({
   runtimes: z.record(z.string(), z.string()).optional(),
   models: z.record(z.string(), z.string()).optional(),
+  /** The node's turn places (P38); older nodes do not say. */
+  turns: z
+    .object({
+      max: z.number().int().positive(),
+      background: z.number().int().positive(),
+    })
+    .optional(),
 })
 
 interface NodeProfiles {
@@ -726,6 +881,8 @@ interface NodeProfiles {
   /** Agent → `omp` / `claude-code` / `codex`; null when the node did not say. */
   readonly runtimes: Readonly<Record<string, string>> | null
   readonly models: Readonly<Record<string, string>>
+  /** Background turns the node runs at once; null when it did not say. */
+  readonly background: number | null
 }
 
 /**
@@ -770,6 +927,14 @@ export class AgentProfiles {
     return { runtime, ...(model ? { model: clip(model, 200) } : {}) }
   }
 
+  /**
+   * How many background turns `node` runs at once, as its `node.ping` says
+   * (P38); undefined from a node that did not answer or does not say.
+   */
+  async backgroundTurns(node: string): Promise<number | undefined> {
+    return (await this.#node(node)).background ?? undefined
+  }
+
   async #node(node: string): Promise<NodeProfiles> {
     const known = this.#nodes.get(node)
     const age = known === undefined ? Infinity : this.#now() - known.at
@@ -793,6 +958,9 @@ export class AgentProfiles {
       at: this.#now(),
       runtimes: parsed?.success ? (parsed.data.runtimes ?? null) : null,
       models: parsed?.success ? (parsed.data.models ?? {}) : {},
+      background: parsed?.success
+        ? (parsed.data.turns?.background ?? null)
+        : null,
     }
     this.#nodes.set(node, value)
     return value
@@ -817,9 +985,11 @@ export class ConsoleTasks implements BackgroundTasksPort {
   readonly #waits = new Map<string, () => void>()
   /** Tasks this process resumed from the ledger, until their first prompt. */
   readonly #resumed = new Set<string>()
-  /** Worker turns in flight by node; see {@link MAX_RUNNING_PER_NODE}. */
+  /** Worker turns in flight by node; see {@link DEFAULT_WORKERS_PER_NODE}. */
   readonly #slots = new Map<string, number>()
   readonly #slotQueue = new Map<string, (() => void)[]>()
+  /** Background turns each node said it runs at once (`node.ping`). */
+  readonly #nodeCaps = new Map<string, number>()
   readonly #listeners = new Map<
     string,
     (event: TaskFinished) => Promise<boolean | undefined>
@@ -834,6 +1004,10 @@ export class ConsoleTasks implements BackgroundTasksPort {
   readonly #noted = new Map<string, { text: string; at: number }>()
   /** The long foreground turn each conversation was last reminded of. */
   readonly #reminded = new Map<string, string>()
+  /** What each parent conversation is owed (P38); see {@link #tell}. */
+  readonly #reports = new Map<string, PendingReport>()
+  /** Report turns out, to stop waiting for on close. */
+  readonly #reportTurns = new Set<ChatTurnHandle>()
   #closed = false
 
   constructor(options: ConsoleTasksOptions) {
@@ -910,6 +1084,10 @@ export class ConsoleTasks implements BackgroundTasksPort {
     for (const turn of this.#turns.values()) turn.handle.cancel()
     for (const queue of this.#slotQueue.values())
       for (const wake of queue.splice(0)) wake()
+    for (const pending of this.#reports.values())
+      if (pending.timer !== null) clearTimeout(pending.timer)
+    this.#reports.clear()
+    for (const handle of this.#reportTurns) handle.cancel()
     await Promise.allSettled([...this.#loops.values()])
     for (const task of this.#tasks.values())
       if (task.status === 'running')
@@ -1152,12 +1330,14 @@ export class ConsoleTasks implements BackgroundTasksPort {
       owner: task.owner,
       target: task.target,
       status: task.status,
+      state: consoleState(task),
       phase: this.#waitingForPlace(task)
         ? `${PHASE.scheduled} · 等名额`
         : PHASE[task.status],
       progress: clip(task.progress, 2_000),
       lastError: clip(task.lastError, 1_000),
       turns: task.turns,
+      parentSession: task.parentSession,
       workerSession: task.workerSession,
       nextAt:
         task.status === 'scheduled' && task.plan !== null
@@ -1475,7 +1655,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       case 'send': {
         const task = owned(args['id'])
         if (typeof task === 'string') return refused(task)
-        return this.#send(task, args['message'])
+        return await this.#send(task, args['message'])
       }
       case 'cancel': {
         const task = owned(args['id'])
@@ -1510,9 +1690,10 @@ export class ConsoleTasks implements BackgroundTasksPort {
     if (transcript.value.session.target !== `qianmo://${ctx.node}/${ctx.agent}`)
       return '会话不属于这个智能体'
     const turns = transcript.value.turns
-    const asked = turns.some(
+    const line = turns.find(
       turn => turn.author === 'operator' && turn.taskId === taskId,
     )
+    const asked = line !== undefined
     // The same terminal rule the worker loop waits on: the chat face's local
     // timeout guess is not the node's answer, and until the node answers the
     // turn may still be running and reporting.
@@ -1524,6 +1705,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       worker: [...this.#tasks.values()].find(
         task => task.workerSession === contextId,
       ),
+      report: line?.report === true,
     }
   }
 
@@ -1624,6 +1806,8 @@ export class ConsoleTasks implements BackgroundTasksPort {
       promptedProgress: '',
       abnormal: false,
       rebrief: false,
+      failed: false,
+      fromReport: caller.report,
       quietTurns: 0,
       readUpdateId: 0,
       notification: 'none',
@@ -1788,7 +1972,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
     })
   }
 
-  #send(task: TaskRecord, raw: unknown): ControlOutcome {
+  async #send(task: TaskRecord, raw: unknown): Promise<ControlOutcome> {
     if (TERMINAL.has(task.status)) return refused('任务已结束；请创建新任务')
     const message = typeof raw === 'string' ? raw.trim() : ''
     if (message === '' || message.length > 4_000)
@@ -1813,6 +1997,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
         notification: 'none',
         requestedState: '',
         quietTurns: 0,
+        failed: false,
       })
     else if (PENDING.has(task.status))
       // Amended while the worker finishes its turn: handle it before finishing.
@@ -1825,7 +2010,43 @@ export class ConsoleTasks implements BackgroundTasksPort {
     this.#schedule(task.id)
     // A task waiting out a failure's backoff takes the instruction now.
     this.#waits.get(task.id)?.()
-    return ok({ updateId: update.id, task: this.#view(next) })
+    const live = await this.#steerWorker(task.id, update)
+    return ok({
+      updateId: update.id,
+      task: this.#view(this.#tasks.get(task.id) ?? next),
+      // `live`: read by the running turn at its next step (P38);
+      // `next_turn`: the worker reads it with qianmo_task_updates.
+      delivery: live ? 'live' : 'next_turn',
+    })
+  }
+
+  /**
+   * An instruction into the worker turn running now (P38), where its
+   * runtime takes input mid-turn; then it counts as read, and the worker's
+   * next report confirms it like one read with qianmo_task_updates.
+   */
+  async #steerWorker(id: string, update: TaskUpdate): Promise<boolean> {
+    const turn = this.#turns.get(id)
+    const steer = this.#options.steerTask
+    if (turn?.taskId == null || steer === undefined) return false
+    const text = [
+      `[追加指示 #${update.id}] 主人在任务进行中补充：`,
+      update.message,
+      `这条已送到本轮：照做，并在下一次 qianmo_task_report 里一并确认。qianmo_task_updates 里编号 ${update.id} 的就是这一条，不要重复执行。`,
+    ].join('\n\n')
+    const live = await steer(turn.target, turn.taskId, text).catch(() => false)
+    const task = this.#tasks.get(id)
+    if (!live || task === undefined || TERMINAL.has(task.status)) return false
+    // The read mark is a high-water mark: it moves only when nothing before
+    // this one is still unread, or those would count as read unseen.
+    if (
+      update.id > task.readUpdateId &&
+      this.#unread(task).every(
+        one => one.id === update.id || one.id <= task.readUpdateId,
+      )
+    )
+      this.#patch(id, { readUpdateId: update.id })
+    return true
   }
 
   async #cancel(task: TaskRecord): Promise<void> {
@@ -1909,6 +2130,16 @@ export class ConsoleTasks implements BackgroundTasksPort {
         ? {}
         : { result: clip(summary, 8_000), notification: 'none' as const }),
     })
+    // New progress reaches a parent busy with a turn (P38); an idle one reads
+    // it in its next line's task note.
+    if (state === 'working' && progress !== task.progress)
+      this.#queueReport(task, {
+        kind: 'progress',
+        title: task.title,
+        label: '进展',
+        body: progress,
+        turn: false,
+      })
     // Spares the worker a qianmo_task_updates call that would find nothing.
     const newUpdates = this.#unread(task).filter(
       one => one.id > task.readUpdateId,
@@ -1959,17 +2190,29 @@ export class ConsoleTasks implements BackgroundTasksPort {
     this.#loops.set(id, loop)
   }
 
+  /** Worker turns `node` takes at once: the setting, or fewer if it says so. */
+  #capacity(node: string): number {
+    return Math.min(
+      this.#options.workersPerNode ?? DEFAULT_WORKERS_PER_NODE,
+      this.#nodeCaps.get(node) ?? Number.POSITIVE_INFINITY,
+    )
+  }
+
+  /** A loop asking now would get a slot at once, ahead of nobody. */
   #slotFree(node: string): boolean {
-    return (this.#slots.get(node) ?? 0) < MAX_RUNNING_PER_NODE
+    return (
+      (this.#slots.get(node) ?? 0) < this.#capacity(node) &&
+      (this.#slotQueue.get(node)?.length ?? 0) === 0
+    )
   }
 
   /**
-   * A worker-turn slot on `node`. Released with a waiter queued, the slot is
-   * handed straight to it and the count never drops, so a loop that comes
-   * straight back for another turn queues behind the others instead of
-   * slipping in before the waiter it just woke has counted itself.
+   * A worker-turn slot on `node`. A waiter is counted the moment it is woken,
+   * so a loop that comes straight back for another turn queues behind the
+   * others instead of slipping in before the waiter it just woke.
    */
   async #slot(node: string): Promise<() => void> {
+    await this.#learnCapacity(node)
     if (this.#slotFree(node))
       this.#slots.set(node, (this.#slots.get(node) ?? 0) + 1)
     else
@@ -1982,10 +2225,30 @@ export class ConsoleTasks implements BackgroundTasksPort {
     return () => {
       if (released) return
       released = true
-      const next = this.#slotQueue.get(node)?.shift()
-      if (next !== undefined) next()
-      else this.#slots.set(node, Math.max(0, (this.#slots.get(node) ?? 1) - 1))
+      this.#slots.set(node, Math.max(0, (this.#slots.get(node) ?? 1) - 1))
+      this.#wake(node)
     }
+  }
+
+  /** Hands free slots to the loops waiting for them, oldest first. */
+  #wake(node: string): void {
+    const queue = this.#slotQueue.get(node)
+    while (
+      queue !== undefined &&
+      queue.length > 0 &&
+      (this.#slots.get(node) ?? 0) < this.#capacity(node)
+    ) {
+      this.#slots.set(node, (this.#slots.get(node) ?? 0) + 1)
+      queue.shift()!()
+    }
+  }
+
+  /** What `node` says it takes; an answer kept by the profile cache. */
+  async #learnCapacity(node: string): Promise<void> {
+    const said = await this.#options.nodeTurns?.(node).catch(() => undefined)
+    if (said !== undefined && Number.isSafeInteger(said) && said > 0)
+      this.#nodeCaps.set(node, said)
+    this.#wake(node)
   }
 
   async #pause(id: string, ms: number): Promise<void> {
@@ -2124,7 +2387,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       let task = this.#tasks.get(id)
       if (task === undefined || !RESUMABLE.has(task.status)) break
       const node = parseAddress(task.target)?.node ?? task.target
-      // Waiting for the node's one worker turn reads as waiting, not running.
+      // Waiting for one of the node's worker slots reads as waiting.
       if (task.status === 'running' && !this.#slotFree(node))
         task = this.#patch(id, { status: 'queued' })
       const release = await this.#slot(node)
@@ -2314,6 +2577,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       if (outcome.permanent) {
         this.#patch(id, {
           status: 'needs_input',
+          failed: true,
           result: `子任务已暂停：${clip(outcome.error ?? '派发被拒绝', 300)}。处理之后追加一条指示即可继续。`,
           notification: 'pending',
         })
@@ -2322,6 +2586,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       if (failures >= MAX_FAILURES) {
         this.#patch(id, {
           status: 'needs_input',
+          failed: true,
           result: `子任务连续 ${MAX_FAILURES} 轮失败，已暂停。最近的错误：${clip(outcome.error ?? '未知', 300)}`,
           notification: 'pending',
         })
@@ -2382,6 +2647,7 @@ export class ConsoleTasks implements BackgroundTasksPort {
       requestedState: '',
       quietTurns: 0,
       abnormal: false,
+      failed: false,
       lastError: '',
       notification: 'none',
       deliveries: {},
@@ -2448,7 +2714,8 @@ export class ConsoleTasks implements BackgroundTasksPort {
     if (!first && !this.#redeliverable(task)) return
     this.#delivering.add(id)
     try {
-      const text = `${task.title}：${this.#resultLabel(task)}\n\n${task.result}`
+      const label = this.#resultLabel(task)
+      const text = `${task.title}：${label}\n\n${task.result}`
       const deliveries: Record<string, DeliveryState> = first
         ? {}
         : { ...task.deliveries }
@@ -2499,6 +2766,20 @@ export class ConsoleTasks implements BackgroundTasksPort {
           listener({ parentSession: task.parentSession, taskId: id, text }),
         )
       if (!holding()) return
+      // The foreground hears it too (P38), once per result; a chat a channel
+      // posted it to hears it mid-turn only, its next line carries the rest.
+      if (first)
+        this.#queueReport(task, {
+          kind: 'result',
+          title: task.title,
+          label,
+          body: task.result,
+          turn:
+            !task.fromReport &&
+            !Object.entries(deliveries).some(
+              ([key, state]) => key !== 'note' && state !== 'skipped',
+            ),
+        })
       const states = Object.values(deliveries)
       const next = this.#patch(id, {
         notification: states.includes('failed')
@@ -2514,6 +2795,217 @@ export class ConsoleTasks implements BackgroundTasksPort {
     } finally {
       this.#delivering.delete(id)
       if (this.#tasks.get(id)?.notification === 'pending') void this.#notify(id)
+    }
+  }
+
+  // -- reports (P38) ----------------------------------------------------------
+
+  /**
+   * Owes `task`'s parent conversation a result or progress: told after
+   * {@link REPORT_DELAY_MS} with whatever else comes in by then. A newer
+   * result replaces the one owed for the task; progress never does.
+   */
+  #queueReport(task: TaskRecord, item: Omit<ReportItem, 'at'>): void {
+    if (this.#closed || !this.#lock?.owned()) return
+    // Nothing could carry it: no turn of its own and nothing mid-turn.
+    if (!item.turn && this.#options.steerTask === undefined) return
+    const parent = task.parentSession
+    let pending = this.#reports.get(parent)
+    if (pending === undefined) {
+      pending = { items: new Map(), timer: null, telling: false, waits: 0 }
+      this.#reports.set(parent, pending)
+    }
+    if (
+      item.kind === 'progress' &&
+      pending.items.get(task.id)?.kind === 'result'
+    )
+      return
+    pending.items.delete(task.id)
+    pending.items.set(task.id, { ...item, at: this.#now() })
+    this.#tellLater(parent, this.#options.reportDelayMs ?? REPORT_DELAY_MS)
+  }
+
+  /** Tells `parent` in `ms`, unless a look is already due or under way. */
+  #tellLater(parent: string, ms: number): void {
+    const pending = this.#reports.get(parent)
+    if (
+      pending === undefined ||
+      pending.timer !== null ||
+      pending.telling ||
+      this.#closed
+    )
+      return
+    pending.timer = setTimeout(() => {
+      pending.timer = null
+      void this.#flushReport(parent)
+    }, ms)
+    pending.timer.unref?.()
+  }
+
+  async #flushReport(parent: string): Promise<void> {
+    const pending = this.#reports.get(parent)
+    if (pending === undefined || pending.telling || this.#closed) return
+    pending.telling = true
+    let retry: number | undefined
+    try {
+      retry = await this.#tell(parent, pending)
+    } catch (error) {
+      this.#options.onError?.(
+        `后台任务回报失败：${String((error as Error)?.message ?? error)}`,
+      )
+    } finally {
+      pending.telling = false
+      if (this.#closed || pending.items.size === 0) {
+        if (this.#reports.get(parent) === pending && pending.items.size === 0)
+          this.#reports.delete(parent)
+      } else
+        this.#tellLater(
+          parent,
+          retry ?? this.#options.reportDelayMs ?? REPORT_DELAY_MS,
+        )
+    }
+  }
+
+  /**
+   * One report to `parent`. A parent with a turn running gets it there, at
+   * the turn's next step, where its runtime takes input mid-turn; where it
+   * does not, a result waits for the turn to end (the delay returned) and
+   * progress is dropped. An idle parent gets one report turn for the
+   * results that may start one. What a task note told since it came in, or
+   * a task no longer owing it, is dropped first.
+   */
+  async #tell(
+    parent: string,
+    pending: PendingReport,
+  ): Promise<number | undefined> {
+    const noted = this.#noted.get(parent)?.at
+    for (const [id, item] of pending.items) {
+      const task = this.#tasks.get(id)
+      if (
+        task === undefined ||
+        (noted !== undefined && noted >= item.at) ||
+        (item.kind === 'result'
+          ? task.notification === 'none' || task.status === 'cancelled'
+          : TERMINAL.has(task.status))
+      )
+        pending.items.delete(id)
+    }
+    if (pending.items.size === 0) return undefined
+    const transcript = await this.#transcriptOf(parent)
+    if (transcript === undefined || this.#closed) {
+      pending.items.clear()
+      return undefined
+    }
+    const items = [...pending.items]
+    const running = unansweredTurns(transcript.turns).filter(
+      turn => turn.taskId !== undefined && turn.command === undefined,
+    )
+    if (running.length > 0) {
+      if (
+        await this.#steerParent(
+          transcript.session.target,
+          running,
+          reportSteerText(items),
+        )
+      ) {
+        for (const [id, item] of items)
+          if (pending.items.get(id) === item) pending.items.delete(id)
+        pending.waits = 0
+        return undefined
+      }
+      for (const [id, item] of items)
+        if (!item.turn && pending.items.get(id) === item)
+          pending.items.delete(id)
+      if (pending.items.size === 0) return undefined
+      // The turn may never end in this transcript: its next line's note
+      // carries the results then.
+      if (++pending.waits > MAX_REPORT_WAITS) {
+        pending.items.clear()
+        return undefined
+      }
+      return (this.#options.reportRetryMs ?? defaultReportRetry)(pending.waits)
+    }
+    pending.waits = 0
+    for (const [id, item] of items)
+      if (pending.items.get(id) === item) pending.items.delete(id)
+    const told = items.filter(([, item]) => item.turn)
+    if (told.length > 0) await this.#reportTurn(parent, transcript, told)
+    return undefined
+  }
+
+  /** Into the parent's running turn: the oldest line waiting is the one running. */
+  async #steerParent(
+    target: string,
+    running: readonly ChatTurn[],
+    text: string,
+  ): Promise<boolean> {
+    const steer = this.#options.steerTask
+    if (steer === undefined) return false
+    for (const turn of running)
+      if (await steer(target, turn.taskId!, text).catch(() => false))
+        return true
+    return false
+  }
+
+  /**
+   * A turn of the idle parent's own, for its owner (P38): the line says
+   * what came back, the paragraph ahead of it the results and what to do
+   * with them, with the conversation's task note. One at a time per
+   * parent; it is not tried again, the results being in the transcript.
+   */
+  async #reportTurn(
+    parent: string,
+    transcript: ChatTranscript,
+    items: readonly (readonly [string, ReportItem])[],
+  ): Promise<void> {
+    const owner = this.#options.accounts?.book.ownerOf(parent) ?? 'legacy:admin'
+    // Only the owner's own tasks, told in the owner's own conversation.
+    const own = items.filter(([id]) => this.#tasks.get(id)?.owner === owner)
+    if (own.length === 0 || !this.#foregroundSession(parent)) return
+    const dispatch = this.#dispatch(owner)
+    if (typeof dispatch === 'string') return
+    const target = transcript.session.target
+    const denied =
+      dispatch.preflightUsage(target, parent) ??
+      (await dispatch.authorizeTarget(target)) ??
+      dispatch.claimSession(parent)
+    if (denied) {
+      this.#options.onError?.(
+        `后台任务回报没有发出：${(await refusal(denied)).error ?? denied.status}`,
+      )
+      return
+    }
+    if (this.#closed) return
+    const note = await this.noteFor(parent).catch(() => undefined)
+    const handle = sendAndWait({
+      chat: this.#options.chat,
+      dispatch,
+      target,
+      input: {
+        sessionId: parent,
+        text: reportLine(own),
+        context: [reportContext(own), note?.text]
+          .filter(part => part !== undefined)
+          .join('\n\n'),
+        taskTtlMs: REPORT_TURN_TTL_MS,
+        report: true,
+      },
+      baseline: new Set(transcript.turns.map(turn => turn.id)),
+      now: this.#now,
+      timeoutMs: REPORT_TURN_TTL_MS + TURN_WAIT_SLACK_MS,
+      // Checked against the dial list just above.
+      authorized: true,
+      onTask: () => note?.sent(),
+    })
+    this.#reportTurns.add(handle)
+    try {
+      const outcome = await handle.outcome
+      if (!outcome.ok && !outcome.cancelled)
+        this.#options.onError?.(
+          `后台任务回报回合没有完成：${outcome.error ?? '未知'}`,
+        )
+    } finally {
+      this.#reportTurns.delete(handle)
     }
   }
 }

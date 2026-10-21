@@ -103,7 +103,7 @@ const specs = [
     name: 'qianmo_task_send',
     op: 'send',
     description:
-      'Foreground only. Pass an extra instruction from the owner to one of this conversation’s background tasks; a task waiting for input resumes in the same sub-session, a scheduled one reads it when its next run starts. A new message from the owner cancels no task.',
+      'Foreground only. Pass an extra instruction from the owner to one of this conversation’s background tasks. A task running now reads it at its next step where its runtime allows (delivery live), otherwise at its next turn (next_turn); a task waiting for input resumes in the same sub-session, a scheduled one reads it when its next run starts. A new message from the owner cancels no task.',
     properties: { id: string, message: string },
     required: ['id', 'message'],
   },
