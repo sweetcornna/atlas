@@ -747,3 +747,28 @@ test('elevated calls (P39) are approved exactly once: no window, no reuse', () =
   expect(store.use(call).kind).toBe('hit')
   expect(store.use(call).kind).toBe('miss')
 })
+test('settings changes (P40) are approved exactly once and clamped to the request', () => {
+  const store = open()
+  const call: AuthzCall = {
+    agent: 'ops',
+    contextId: 'ctx',
+    toolName: 'qianmo_settings_change',
+    input: { id: 'providers.default', input: { profileId: 'gw' } },
+  }
+  const request = ask(store, call)
+  expect(
+    store.applyDecision(
+      decide(request, { decision: 'allow-window', windowMs: 30 * MINUTE }),
+    ),
+  ).toMatchObject({ ok: false })
+  const decided = store.applyDecision(decide(request))
+  if (!decided.ok || decided.grant === null) throw new Error('not granted')
+  // The decision's own life (one minute here), not allow-once's ten.
+  expect(decided.grant.expiresAt).toBe(now + MINUTE)
+  const hit = store.use(call)
+  expect(hit).toMatchObject({
+    kind: 'hit',
+    grant: { requestId: request.requestId, scope: 'once' },
+  })
+  expect(store.use(call).kind).toBe('miss')
+})
