@@ -761,10 +761,14 @@ test('settings changes (P40) are approved exactly once and clamped to the reques
       decide(request, { decision: 'allow-window', windowMs: 30 * MINUTE }),
     ),
   ).toMatchObject({ ok: false })
+  // Approved three minutes on; the 批准并继续 turn calls again after the
+  // decision's one minute has passed.
+  now += 3 * MINUTE
   const decided = store.applyDecision(decide(request))
   if (!decided.ok || decided.grant === null) throw new Error('not granted')
-  // The decision's own life (one minute here), not allow-once's ten.
-  expect(decided.grant.expiresAt).toBe(now + MINUTE)
+  // The request's life, neither the decision's minute nor allow-once's ten.
+  expect(decided.grant.expiresAt).toBe(request.exp)
+  now += 2 * MINUTE
   const hit = store.use(call)
   expect(hit).toMatchObject({
     kind: 'hit',

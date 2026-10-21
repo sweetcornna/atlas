@@ -23,6 +23,7 @@ import {
   settingOperations,
   settingRequestProblem,
   settingsBound,
+  settingsCallOf,
   settingUnchanged,
 } from '../src/settingsCatalog.js'
 
@@ -635,8 +636,9 @@ describe('what an approval binds (P40 §4.2)', () => {
   test('the whole value read before binds, not only what the card shows', () => {
     const op = settingOperation('extensions.save')
     if (op === undefined) throw new Error('missing entry')
+    // The card reads fields in key order; `about` comes first and fills it.
     const before = (command: string) => ({
-      description: 'd'.repeat(190),
+      about: 'd'.repeat(190),
       command,
       args: [],
     })
@@ -664,5 +666,61 @@ describe('what an approval binds (P40 §4.2)', () => {
     expect(
       settingsBound(op, { id: 'x' }, {}, undefined).currentSha256,
     ).toBeNull()
+  })
+
+  test('the arguments come back from a bound, unless a secret is only its mark', () => {
+    const note = settingOperation('servers.note')!
+    const bound = settingsBound(
+      note,
+      { server: 'p4' },
+      { note: 'P40 冒烟' },
+      { note: '' },
+    )
+    expect(settingsCallOf(bound)).toEqual({
+      id: 'servers.note',
+      target: { server: 'p4' },
+      input: { note: 'P40 冒烟' },
+    })
+    // Clearing the note is a value, not a gap.
+    expect(
+      settingsCallOf(settingsBound(note, { server: 'p4' }, { note: '' }, {})),
+    ).toEqual({
+      id: 'servers.note',
+      target: { server: 'p4' },
+      input: { note: '' },
+    })
+    // Nothing is invented for what the bound does not have.
+    expect(settingsCallOf({ ...bound, target: null, input: null })).toEqual({
+      id: 'servers.note',
+    })
+    const secret = settingsBound(
+      note,
+      null,
+      redactSecrets({ auth: { kind: 'key', secret: 'a-long-private-key' } }, [
+        'auth.secret',
+      ]),
+      undefined,
+    )
+    expect(settingsCallOf(secret)).toBeNull()
+    expect(settingsCallOf(null)).toBeNull()
+    expect(settingsCallOf({ target: null })).toBeNull()
+  })
+
+  test('the order a model writes fields in changes neither the card nor the bound', () => {
+    const op = settingOperation('servers.note')!
+    const a = settingsBound(
+      op,
+      { profileId: 'gw', keyId: 'k1' },
+      { model: 'm', lane: { tier: 'opus', effort: 'high' } },
+      { model: 'old', lane: { tier: 'sonnet', effort: 'low' } },
+    )
+    const b = settingsBound(
+      op,
+      { keyId: 'k1', profileId: 'gw' },
+      { lane: { effort: 'high', tier: 'opus' }, model: 'm' },
+      { lane: { effort: 'low', tier: 'sonnet' }, model: 'old' },
+    )
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b))
+    expect(settingsCallOf(a)).toEqual(settingsCallOf(b))
   })
 })

@@ -177,7 +177,7 @@ test('refused before the hub: bad arguments, no running conversation turn', asyn
     { message: 'no target' },
     { agent: CODER },
     { agent: CODER, message: '   ' },
-    { agent: CODER, agents: [CODER], message: 'both' },
+    { agent: CODER, agents: ['qianmo://node-c/reviewer'], message: 'both' },
     { agents: [], message: 'none' },
     { agents: [CODER, CODER], message: 'twice' },
     {
@@ -201,6 +201,30 @@ test('refused before the hub: bad arguments, no running conversation turn', asyn
     .handler({ agent: CODER, message: 'q' }, ctx)
   expect(result.text).toContain('only available in a console')
   expect(outside.calls).toEqual([])
+})
+
+test('a strict-mode call, every field filled, asks the one target it means', async () => {
+  const { calls, byName } = tools()
+  const ask = byName('qianmo_ask')
+  for (const filled of [
+    { agent: CODER, agents: null, message: 'q', timeoutSec: null },
+    { agent: null, agents: [CODER], message: 'q', timeoutSec: null },
+    { agent: '', agents: [CODER], message: 'q', timeoutSec: null },
+    { agent: CODER, agents: [], message: 'q', timeoutSec: null },
+    // gpt-6-luna on the beta fleet: the one address in both.
+    { agent: CODER, agents: [CODER], message: 'q', timeoutSec: null },
+    { agent: CODER, agents: '', message: 'q', timeoutSec: '' },
+    { agent: ` ${CODER}`, agents: [CODER], message: 'q', timeoutSec: null },
+  ])
+    expect((await ask.handler(filled, ctx)).ok).toBe(true)
+  expect(calls.map(([, args]) => args['agents'])).toEqual(
+    Array.from({ length: 7 }, () => [CODER]),
+  )
+  expect(
+    calls.every(
+      ([, args]) => args['timeoutSec'] === PEER_ASK.defaultTimeoutSec,
+    ),
+  ).toBe(true)
 })
 
 test('a refusal is shown as such; a hub that never answered says the outcome is unknown', async () => {
