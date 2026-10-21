@@ -1101,8 +1101,9 @@ textarea.input { border-radius: var(--radius-md); padding: 7px 10px; line-height
 @media (prefers-reduced-motion: reduce) { .trail tbody td.acts > * { transition: none; } }
 /* A row's 更多 menu (view/kit.ts): a popover in the top layer, placed under
    its button by the runtime. */
-.row-more-btn { width: 26px; height: 26px; }
+.row-more-btn, .row-icon-btn { width: 26px; height: 26px; }
 .row-more-menu[popover] { position: fixed; inset: auto; margin: 0; border: 0; min-width: 132px; }
+.row-more-menu[popover]:not(:popover-open) { display: none; }
 .fx-menu-danger { color: var(--color-danger-text); }
 .trail td.when { white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-12); }
 .trail td.src, .trail td.result { white-space: nowrap; }

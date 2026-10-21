@@ -54,7 +54,7 @@ import {
   type Tone,
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
-import { formatDuration, formatRelative } from './format.js'
+import { formatDateTime, formatDuration, formatRelative } from './format.js'
 import {
   actionButton,
   checkGroup,
@@ -178,10 +178,13 @@ function nextCell(schedule: ScheduleView, now: number, estop: boolean): string {
   if (!schedule.enabled)
     return `<td class="when"><span class="note">已停用</span></td>`
   if (schedule.nextRunAt === null) return `<td class="when">${absent()}</td>`
-  const note = estop
-    ? toned('critical', '急停中 · 到点跳过')
-    : `<span class="note">${escapeHtml(formatRelative(schedule.nextRunAt, now))}</span>`
-  return `<td class="when"><span class="sch-when">${timeTag(schedule.nextRunAt, 'datetime')}${note}</span></td>`
+  // How soon, the way the run history says it; the instant on hover, so the
+  // column stays narrow enough for the switch and the actions to show.
+  const soon =
+    `<span title="${attr(formatDateTime(schedule.nextRunAt))}">` +
+    `${escapeHtml(formatRelative(schedule.nextRunAt, now))}</span>`
+  const note = estop ? toned('critical', '急停中 · 到点跳过') : ''
+  return `<td class="when"><span class="sch-when">${soon}${note}</span></td>`
 }
 
 function lastCell(schedule: ScheduleView, now: number): string {
@@ -212,10 +215,12 @@ function rowActions(schedule: ScheduleView, member: boolean): string {
   })
   return (
     `<td class="acts"><span class="kit-acts">` +
-    actionButton('schedule-run', '立即运行', {
-      glyph: 'zap',
-      data: { id: schedule.id, title: schedule.title },
-    }) +
+    // 立即运行 as its glyph alone, named for a screen reader and on hover:
+    // the row has six columns of facts to fit beside it.
+    `<button type="button" class="btn btn-ghost btn-small btn-icon row-icon-btn" ` +
+    `data-action="schedule-run" data-id="${attr(schedule.id)}" data-title="${attr(schedule.title)}" ` +
+    `data-write aria-label="${attr(`立即运行 · ${schedule.title}`)}" title="立即运行">` +
+    `${icon('zap', { small: true })}</button>` +
     moreMenu(`schedule:${schedule.id}`, schedule.title, [
       { action: 'schedule-edit', label: '编辑', data: { schedule: payload } },
       {
@@ -446,7 +451,7 @@ function stats(snapshot: SchedulesSnapshot, now: number): string {
         ? toned('warn', `调度 ${formatRelative(snapshot.tickAt, now)}`)
         : toned('ok', '调度正常')
   return (
-    `<div class="kit-cards">` +
+    `<div class="cards g4">` +
     statCard({
       kicker: '启用的任务',
       value: String(enabled.length),
@@ -687,7 +692,9 @@ export function scheduleConfirms(): string {
 /** The page's own rules. */
 export const SCHEDULES_PAGE_CSS = `
 .trail.schedules td, .trail.channels td { vertical-align: middle; }
-.sch-name { display: flex; flex-direction: column; gap: 4px; min-width: 12em; }
+.sch-name { min-width: 6em; }
+.sch-name > b { display: block; }
+.sch-name > .kit-row { margin-top: 4px; }
 .sch-when { display: inline-flex; flex-direction: column; gap: 2px; white-space: nowrap; }
 .run-grid { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
 .run-card { gap: var(--space-2); padding: var(--space-4); }

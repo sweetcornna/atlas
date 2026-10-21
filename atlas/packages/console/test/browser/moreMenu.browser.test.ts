@@ -82,7 +82,10 @@ describe.skipIf(SKIP !== null)('a row’s 更多 menu in a browser', () => {
     await browser?.close()
   }, 30_000)
 
-  test('opens under its button, right edges lined up', async () => {
+  test('stays out of sight until opened, then opens under its button, right edges lined up', async () => {
+    expect(
+      await tab.evaluate<string>(`getComputedStyle(${MENU}).display`),
+    ).toBe('none')
     await tab.evaluate(`${BUTTON}.click()`)
     await tab.waitFor(`${MENU}.matches(':popover-open')`)
     const [button, menu] = await tab.evaluate<[number[], number[]]>(
