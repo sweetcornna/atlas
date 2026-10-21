@@ -70,7 +70,7 @@ const STATE_WORD: Readonly<Record<DesktopUnitState, readonly [Tone, string]>> =
 /** The three ways to confirm, from the strictest (runtimes-channels.md §6.4). */
 const CONFIRM_WORD: Readonly<Record<DesktopConfirm, string>> = {
   always: '每一步都确认',
-  sensitive: '人工确认',
+  sensitive: '动手前确认',
   autonomous: '只确认有后果的操作',
 }
 

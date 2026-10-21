@@ -79,7 +79,7 @@ function pairings(channel: ChannelView, model: ChannelsModel): string {
     })
     return (
       `<div class="ch-pair"><span class="ch-pair-who"><b>${escapeHtml(request.userName)}</b>` +
-      `<span class="kit-mono note">${escapeHtml(request.userId)}</span></span>` +
+      `<span class="kit-mono note" title="${attr(request.userId)}">${escapeHtml(request.userId)}</span></span>` +
       `<span class="note">${escapeHtml(formatRelative(request.createdAt, model.now))}</span>` +
       `<span class="kit-acts">` +
       actionButton('channel-pair', '设为主人', {
@@ -460,7 +460,8 @@ export const CHANNELS_PAGE_CSS = `
 .ch-fact .kit-mono { text-align: right; overflow-wrap: anywhere; }
 .ch-pairs { display: flex; flex-direction: column; gap: 6px; padding-top: var(--space-2); border-top: 1px solid var(--color-line, transparent); }
 .ch-pair { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: var(--text-13); }
-.ch-pair-who { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ch-pair-who { display: flex; flex-direction: column; gap: 1px; flex: 1 1 8em; min-width: 0; }
+.ch-pair-who .kit-mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
 .ch-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; margin-top: auto; }
 .ch-platforms { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: var(--space-2); }
 .ch-platform { display: flex; align-items: center; gap: var(--space-2); padding: 8px 10px; border-radius: var(--radius-md); background: var(--color-bg); cursor: pointer; font-size: var(--text-13); border: 1px solid transparent; }

@@ -79,7 +79,7 @@ describe('云端电脑', () => {
     expect(html).not.toContain('data-desktop-confirm')
     expect(html).not.toContain('desktop-recycle')
     expect(html).not.toContain('data-write')
-    expect(visibleText(html)).toContain('人工确认')
+    expect(visibleText(html)).toContain('动手前确认')
     expect(visibleText(html)).toContain(
       '看屏幕不问 · 点击 输入 打开网址逐次问你',
     )
@@ -140,7 +140,7 @@ describe('云端电脑 · 像人一样操作 (§6)', () => {
       /value="sensitive" data-desktop-confirm[^>]* checked/,
     )
     const text = visibleText(planner)
-    for (const word of ['人工确认', '每一步都确认', '只确认有后果的操作'])
+    for (const word of ['动手前确认', '每一步都确认', '只确认有后果的操作'])
       expect(text).toContain(word)
     expect(visibleText(card(html, 'kyoto-1/designer'))).toContain(
       '只确认有后果的操作',
