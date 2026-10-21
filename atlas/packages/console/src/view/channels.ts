@@ -9,6 +9,7 @@
 
 import type { ConsoleFailure } from '../deps.js'
 import type {
+  ChannelGroupOption,
   ChannelPlatformView,
   ChannelsSnapshot,
   ChannelView,
@@ -228,6 +229,57 @@ function list(values: readonly string[] | undefined): string {
   return (values ?? []).join(', ')
 }
 
+/** The group rules the platform offers (`ChannelPlatformView.groupOptions`). */
+function groupRuleFields(
+  platform: ChannelPlatformView,
+  channel: ChannelView | null,
+): string {
+  const offers = (option: ChannelGroupOption) =>
+    platform.groupOptions.includes(option)
+  return (
+    (offers('freeGroups')
+      ? textField('freeGroups', '不用 @ 的群', {
+          wide: true,
+          mono: true,
+          value: list(channel?.freeGroups),
+          help:
+            platform.id === 'telegram'
+              ? '逗号分隔 · 话题写 群号:话题号'
+              : '逗号分隔',
+        })
+      : '') +
+    (offers('keywords')
+      ? textField('keywords', '唤醒词', {
+          wide: true,
+          value: list(channel?.keywords),
+          help: '逗号分隔 · 群里出现就回',
+        })
+      : '') +
+    (offers('budget')
+      ? textField('groupCooldownSeconds', '群冷却（秒）', {
+          type: 'number',
+          min: 0,
+          max: 86400,
+          value: String(channel?.groupCooldownSeconds ?? 0),
+          help: '没被 @ 时两次回复的间隔',
+        }) +
+        textField('groupSpeechMax', '发言上限（条）', {
+          type: 'number',
+          min: 0,
+          max: 1000,
+          value: String(channel?.groupSpeechMax ?? 0),
+        }) +
+        textField('groupSpeechMinutes', '上限时段（分钟）', {
+          type: 'number',
+          min: 0,
+          max: 1440,
+          value: String(channel?.groupSpeechMinutes ?? 0),
+          help: '0 不限',
+        })
+      : '')
+  )
+}
+
 /** The add / edit form body for one platform. */
 export function renderChannelForm(input: {
   readonly platforms: readonly ChannelPlatformView[]
@@ -325,6 +377,7 @@ export function renderChannelForm(input: {
       value: list(channel?.allowGroups),
       help: '逗号分隔',
     }) +
+    groupRuleFields(platform, channel) +
     textField('allowUsers', '允许私聊的人', {
       wide: true,
       mono: true,

@@ -19,9 +19,13 @@
  *   the account is logged in, and a logged-out account refuses sends;
  * - only the actions in {@link ACTIONS} are ever called: a OneBot token also
  *   unlocks cookies, credentials and raw packets, none of which the hub needs;
- * - sends are spaced (SnowLuma itself does not rate limit), wait for the
- *   echo-correlated answer, and a reply too long for a chat bubble goes out
- *   whole as a merged-forward card.
+ * - sends are spaced (SnowLuma itself does not rate limit) and wait for
+ *   the echo-correlated answer.
+ *
+ * When to answer in a group and how a reply is shaped follow the owner's
+ * grantley (`rules/qqPersonal.ts`): keywords, the cooldown and the speech
+ * cap, a sender's follow-ups heard without a new @, commands only in the
+ * owner's private chat, `[MSG_BREAK]` bubbles and merged-forward cards.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -34,6 +38,17 @@ import {
   runSocket,
   text,
 } from './net.js'
+import {
+  capBubbles,
+  chunkText,
+  classifyOnebotError,
+  FORWARD_LEAD_TEXT,
+  MAX_BUBBLES_PER_REPLY,
+  MAX_MESSAGE_LENGTH,
+  planReply,
+  qqPersonalGroupGate,
+  type SendErrorKind,
+} from './rules/qqPersonal.js'
 import { plainText } from './text.js'
 import type {
   ChannelAdapter,
@@ -92,6 +107,19 @@ const REJECTED =
 
 type Segment = { type: string; data: Record<string, unknown> }
 type Answer = Record<string, unknown>
+/** A send and, when it failed, what kind of failure (grantley's vocabulary). */
+interface Delivery {
+  readonly result: ChannelSendResult
+  readonly kind: SendErrorKind | null
+}
+
+/** A failure after part of the reply went out: sending it again would repeat that part. */
+function final(result: ChannelSendResult): ChannelSendResult {
+  return {
+    ok: false,
+    ...(result.error === undefined ? {} : { error: result.error }),
+  }
+}
 
 /** OneBot ids are integers; QQ numbers fit a double exactly. */
 function numeric(id: string): number | string {
@@ -197,9 +225,12 @@ interface Pending {
 
 export class QqPersonalAdapter implements ChannelAdapter {
   readonly platform = 'qq-personal' as const
-  readonly chunkLimit = 3_000
-  /** Past this a reply goes out as one merged-forward card (hermes `forward_threshold`). */
-  readonly longReplyAt = 1_000
+  readonly chunkLimit = MAX_MESSAGE_LENGTH
+  readonly groupGate = qqPersonalGroupGate
+  /** grantley `has_sender_work`: a sender's follow-ups need no new @. */
+  readonly continuesSenders = true
+  /** grantley 主窗口: a group is not a console. */
+  readonly commandScope = 'owner-private' as const
   readonly #io: ChannelIo
   readonly #settings: QqPersonalSettings
   readonly #loop: ChannelLoop
@@ -592,54 +623,74 @@ export class QqPersonalAdapter implements ChannelAdapter {
     return null
   }
 
-  /** The answer to a send; no answer in time counts as sent (hermes: a missing echo is not a failure). */
-  #result(
-    answer: Answer | null | typeof UNSENT,
-    remember: string,
-  ): ChannelSendResult {
-    if (answer === UNSENT) return DISCONNECTED
-    if (answer === null) {
-      this.#io.onError?.('SnowLuma 没有确认这条消息，按已发送处理')
-      return { ok: true }
-    }
-    if (!this.#ok(answer)) {
-      const code = Number(answer.retcode)
-      const said = [...(text(answer.wording) || text(answer.message))]
-        .slice(0, 80)
-        .join('')
-      return {
+  /**
+   * A OneBot refusal, with the backend's words; trying again helps only a
+   * transient or throttled one (grantley `classify_onebot_error`).
+   */
+  #refused(answer: Answer): Delivery {
+    const code = Number(answer.retcode)
+    const words = text(answer.wording) || text(answer.message)
+    const said = [...words].slice(0, 80).join('')
+    const kind = classifyOnebotError(
+      Number.isFinite(code) ? code : undefined,
+      words,
+    )
+    return {
+      kind,
+      result: {
         ok: false,
         error: `QQ 发送失败（${Number.isFinite(code) ? code : '未知'}${said ? ` ${said}` : ''}）`,
-      }
+        ...(kind === 'transient' || kind === 'rate_limited'
+          ? { retryable: true }
+          : {}),
+      },
     }
+  }
+
+  /** The answer to a send; no answer in time counts as sent (hermes: a missing echo is not a failure). */
+  #result(answer: Answer | null | typeof UNSENT, remember: string): Delivery {
+    if (answer === UNSENT) return { result: DISCONNECTED, kind: 'transient' }
+    if (answer === null) {
+      this.#io.onError?.('SnowLuma 没有确认这条消息，按已发送处理')
+      return { result: { ok: true }, kind: null }
+    }
+    if (!this.#ok(answer)) return this.#refused(answer)
     const id = text(record(answer.data).message_id)
     if (id) {
       this.#own.set(id, [...remember].slice(0, 500).join(''))
       if (this.#own.size > 500) this.#own.delete(this.#own.keys().next().value!)
     }
-    return { ok: true, ...(id ? { messageId: id } : {}) }
+    return {
+      result: { ok: true, ...(id ? { messageId: id } : {}) },
+      kind: null,
+    }
   }
 
-  async send(
+  /**
+   * One chat message: the quote (and in a group the @) when this is the
+   * first of a reply, then the words (grantley `_lead_segments`).
+   */
+  #text(
     chat: ChannelChat,
-    markdown: string,
-    options: ChannelSendOptions = {},
-  ): Promise<ChannelSendResult> {
-    const refused = this.#refusal()
-    if (refused !== null) return refused
-    const content = plainText(markdown)
+    content: string,
+    replyTo: string | undefined,
+  ): Promise<Delivery> {
     return this.#paced(async () => {
       const late = this.#refusal()
-      if (late !== null) return late
+      if (late !== null)
+        return {
+          result: late,
+          kind: late === DISCONNECTED ? 'transient' : 'unknown',
+        }
+      const lead = this.#lead(chat, replyTo)
+      const words =
+        lead.length > 0 && chat.type === 'group' ? ` ${content}` : content
       return this.#result(
         await this.#call(
           chat.type === 'group' ? 'send_group_msg' : 'send_private_msg',
           {
             ...this.#target(chat),
-            message: [
-              ...this.#lead(chat, options.replyTo),
-              { type: 'text', data: { text: content } },
-            ],
+            message: [...lead, { type: 'text', data: { text: words } }],
           },
         ),
         content,
@@ -647,49 +698,120 @@ export class QqPersonalAdapter implements ChannelAdapter {
     })
   }
 
-  /**
-   * A long reply as one merged-forward ("聊天记录") card. In a group a short
-   * quoted line goes first, since a card can neither quote nor @. Nodes carry
-   * both key dialects (`name`/`uin` and `nickname`/`user_id`).
-   */
-  async sendLong(
+  /** One message of agent markdown, as plain text. */
+  async send(
     chat: ChannelChat,
     markdown: string,
     options: ChannelSendOptions = {},
-  ): Promise<ChannelSendResult | null> {
-    if (this.#refusal() !== null || this.#selfId === '') return null
-    const content = plainText(markdown)
-    const name = this.#nickname || 'Qmo'
-    if (chat.type === 'group' && options.replyTo !== undefined) {
-      const lead = await this.send(
-        chat,
-        '内容较长，整理成了下面的聊天记录。',
-        options,
-      )
-      if (!lead.ok) return null
+  ): Promise<ChannelSendResult> {
+    const refused = this.#refusal()
+    if (refused !== null) return refused
+    return (await this.#text(chat, plainText(markdown), options.replyTo)).result
+  }
+
+  /**
+   * One merged-forward ("聊天记录") card, a node per bubble (a bubble past
+   * 1500 characters over several). A card can neither quote nor @, so in a
+   * group a quoted lead line with the @ goes first (grantley
+   * `_deliver_forward`). Nodes carry both key dialects (`name`/`uin` and
+   * `nickname`/`user_id`).
+   */
+  async #card(
+    chat: ChannelChat,
+    bodies: readonly string[],
+    replyTo: string | undefined,
+  ): Promise<Delivery & { readonly leadSent: boolean }> {
+    if (this.#selfId === '')
+      return {
+        result: {
+          ok: false,
+          error: '还不知道本号的 QQ 号，发不了聊天记录卡片',
+        },
+        kind: 'unknown',
+        leadSent: false,
+      }
+    let leadSent = false
+    const author =
+      replyTo === undefined ? undefined : this.#senders.get(replyTo)
+    if (
+      chat.type === 'group' &&
+      author !== undefined &&
+      author !== this.#selfId
+    ) {
+      const lead = await this.#text(chat, FORWARD_LEAD_TEXT, replyTo)
+      if (!lead.result.ok) return { ...lead, leadSent }
+      leadSent = true
     }
-    const answer = await this.#paced(() =>
-      this.#call(
+    const name = this.#nickname || 'Qmo'
+    const whole = bodies.join('\n')
+    const answer = await this.#paced(async () => {
+      if (this.#refusal() !== null) return UNSENT
+      return this.#call(
         chat.type === 'group'
           ? 'send_group_forward_msg'
           : 'send_private_forward_msg',
         {
           ...this.#target(chat),
-          messages: forwardNodes(content).map(node => ({
-            type: 'node',
-            data: {
-              name,
-              uin: this.#selfId,
-              nickname: name,
-              user_id: this.#selfId,
-              content: [{ type: 'text', data: { text: node } }],
-            },
-          })),
+          messages: bodies
+            .flatMap(body => forwardNodes(body))
+            .map(node => ({
+              type: 'node',
+              data: {
+                name,
+                uin: this.#selfId,
+                nickname: name,
+                user_id: this.#selfId,
+                content: [{ type: 'text', data: { text: node } }],
+              },
+            })),
         },
-      ),
-    )
-    if (answer === UNSENT || (answer !== null && !this.#ok(answer))) return null
-    return this.#result(answer, content)
+      )
+    })
+    return { ...this.#result(answer, whole), leadSent }
+  }
+
+  /**
+   * A whole reply, grantley `send`: decided once on the finished text, it
+   * is a card (too long, too many bubbles, `[LONG_REPLY]`) or up to three
+   * bubbles. A card the backend refuses falls back to bubbles, capped and
+   * after the lead line if that went out; a forbidden or vanished chat
+   * cannot take bubbles either. Only the first message quotes and @s.
+   */
+  async sendReply(
+    chat: ChannelChat,
+    markdown: string,
+    options: ChannelSendOptions = {},
+  ): Promise<ChannelSendResult> {
+    const refused = this.#refusal()
+    if (refused !== null) return refused
+    const plan = planReply(markdown)
+    if (plan.bubbles.length === 0) return { ok: true }
+    let delivered = false
+    let bubbles = plan.bubbles
+    if (plan.card) {
+      const card = await this.#card(chat, plan.bubbles, options.replyTo)
+      if (card.result.ok) return card.result
+      delivered = card.leadSent
+      if (card.kind === 'forbidden' || card.kind === 'not_found')
+        return delivered ? final(card.result) : card.result
+      this.#io.onError?.('聊天记录卡片没有发出，改为分条发送')
+      bubbles = capBubbles(plan.bubbles, MAX_BUBBLES_PER_REPLY)
+    }
+    let first = !delivered
+    let last: ChannelSendResult = { ok: true }
+    for (const bubble of bubbles)
+      for (const chunk of chunkText(bubble, MAX_MESSAGE_LENGTH)) {
+        const sent = await this.#text(
+          chat,
+          chunk,
+          first ? options.replyTo : undefined,
+        )
+        if (!sent.result.ok) return delivered ? final(sent.result) : sent.result
+        delivered = true
+        first = false
+        last = sent.result
+      }
+    return last
   }
 
   /** Private chats only: QQ groups show no typing state. */

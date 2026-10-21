@@ -477,38 +477,48 @@ describe('delivery (hermes send retry and long replies)', () => {
     expect(adapter.sent).toHaveLength(0)
   })
 
-  test('an adapter that delivers long replies whole gets the whole reply; one that declines gets chunks', async () => {
+  test('an adapter that shapes whole replies gets every reply whole, retried only while retryable', async () => {
     const turns = new FakeTurns()
-    const longs: string[] = []
-    let accept = true
+    const whole: { text: string; replyTo?: string }[] = []
+    const answers: { ok: boolean; retryable?: boolean; error?: string }[] = []
     const adapter = Object.assign(new FakeAdapter('qq-personal', 40), {
-      sendLong: async (_chat: unknown, text: string) => {
-        longs.push(text)
-        return accept ? { ok: true } : null
+      sendReply: async (
+        _chat: unknown,
+        text: string,
+        options: { replyTo?: string } = {},
+      ) => {
+        whole.push({ text, ...options })
+        return answers.shift() ?? { ok: true }
       },
     })
-    const gateway = new ChannelGateway({ turns })
+    const waits: number[] = []
+    const gateway = new ChannelGateway({
+      turns,
+      sleep: async ms => {
+        waits.push(ms)
+      },
+    })
     const reply = Array.from({ length: 8 }, (_, i) => `第${i}行内容`).join('\n')
     gateway.handle(RULES, adapter, inbound({ id: 'm-1' }))
     await until(() => turns.calls.length === 1)
     turns.answer(0, reply)
     await gateway.idle()
-    expect(longs).toEqual([reply])
+    expect(whole).toEqual([{ text: reply, replyTo: 'm-1' }])
     expect(adapter.sent).toHaveLength(0)
-    accept = false
+    // A failure that may be retried is; one after part went out is not.
+    answers.push({ ok: false, retryable: true }, { ok: true })
     gateway.handle(RULES, adapter, inbound({ id: 'm-2' }))
     await until(() => turns.calls.length === 2)
-    turns.answer(1, reply)
+    turns.answer(1, '短')
     await gateway.idle()
-    expect(longs).toHaveLength(2)
-    expect(adapter.sent.length).toBeGreaterThan(1)
-    expect(adapter.sent[0]!.replyTo).toBe('m-2')
-    // Short replies never take the long path.
-    gateway.handle(RULES, adapter, inbound())
+    expect(whole.slice(1).map(one => one.text)).toEqual(['短', '短'])
+    expect(waits).toEqual([2_000])
+    answers.push({ ok: false, error: '发了一半' })
+    gateway.handle(RULES, adapter, inbound({ id: 'm-3' }))
     await until(() => turns.calls.length === 3)
-    turns.answer(2, '短')
+    turns.answer(2, '再来')
     await gateway.idle()
-    expect(longs).toHaveLength(2)
+    expect(whole).toHaveLength(4)
   })
 })
 
@@ -1233,5 +1243,194 @@ describe('pairing (hermes)', () => {
     await until(() => adapter.sent.length === 2)
     expect(adapter.texts()[1]).toBe('这个渠道没有开配对。')
     expect(turns.approved).toHaveLength(1)
+  })
+})
+
+describe('group rules from grantley, batching from hermes', () => {
+  const room = { ...RULES, members: true, allowGroups: ['g-1'] }
+  /** An adapter that hears a sender's follow-ups and keeps commands private (personal QQ). */
+  function personal() {
+    return Object.assign(new FakeAdapter('qq-personal'), {
+      continuesSenders: true,
+      commandScope: 'owner-private' as const,
+    })
+  }
+  const say = (
+    userId: string,
+    text: string,
+    addressed = false,
+    chat: { type: 'group'; id: string } = GROUP,
+  ) => inbound({ chat, userId, userName: userId, text, addressed })
+  const settle = () => new Promise(resolve => setTimeout(resolve, 20))
+
+  test('cooldown: keyword replies wait it out, a mention is answered and restarts it, per group', async () => {
+    const { turns, gateway } = setup()
+    const adapter = personal()
+    const rules = {
+      ...room,
+      allowGroups: ['g-1', 'g-2'],
+      keywords: ['天气'],
+      groupCooldownMs: 3_600_000,
+    }
+    gateway.handle(rules, adapter, say('a', '天气咋样'))
+    await until(() => turns.calls.length === 1)
+    gateway.handle(rules, adapter, say('b', '又问天气'))
+    gateway.handle(rules, adapter, say('c', '@bot 天气', true))
+    gateway.handle(
+      rules,
+      adapter,
+      say('d', '天气', false, { type: 'group', id: 'g-2' }),
+    )
+    await until(() => turns.calls.length === 2)
+    turns.answer(0, '晴')
+    await until(() => turns.calls.length === 3)
+    expect(turns.calls.map(call => call.text.split('\n').at(-1))).toEqual([
+      '[a] 天气咋样',
+      '[d] 天气',
+      '[c] @bot 天气',
+    ])
+    // The mention restarted the clock: the next keyword line waits.
+    gateway.handle(rules, adapter, say('e', '天气呢'))
+    await settle()
+    expect(turns.calls).toHaveLength(3)
+    turns.answer(1, '晴')
+    turns.answer(2, '晴')
+    await gateway.idle()
+  })
+
+  test('speech cap: an @ does not get around it; commands and continuations are not counted', async () => {
+    const { turns, adapter, gateway, errors } = setup()
+    const rules = {
+      ...room,
+      ownerIds: ['owner'],
+      groupSpeechMax: 1,
+      groupSpeechMinutes: 10,
+    }
+    gateway.handle(rules, adapter, say('a', '第一个', true))
+    await until(() => turns.calls.length === 1)
+    gateway.handle(rules, adapter, say('b', '第二个', true))
+    await settle()
+    expect(turns.calls).toHaveLength(1)
+    expect(errors.some(line => line.includes('发言上限'))).toBe(true)
+    // The owner's command still runs in a group on a platform that allows it.
+    gateway.handle(rules, adapter, say('owner', '/status', true))
+    await until(() => adapter.texts().some(text => text.includes('会话键')))
+    turns.answer(0, '好')
+    await gateway.idle()
+  })
+
+  test("grantley continuation: a sender's follow-up needs no @ while their question is in", async () => {
+    const { turns, gateway } = setup()
+    const adapter = personal()
+    const rules = { ...room, groupSpeechMax: 1, groupSpeechMinutes: 10 }
+    gateway.handle(rules, adapter, say('u7', '帮我看看', true))
+    await until(() => turns.calls.length === 1)
+    gateway.handle(rules, adapter, say('u7', '还有这个'))
+    gateway.handle(rules, adapter, say('u8', '路过'))
+    turns.answer(0, '好')
+    await until(() => turns.calls.length === 2)
+    expect(turns.calls[1]!.text.endsWith('[u7] 还有这个')).toBe(true)
+    turns.answer(1, '也看了')
+    await gateway.idle()
+    // Nothing of u7's is in any more: a new line needs the @ again.
+    gateway.handle(rules, adapter, say('u7', '再问一个'))
+    await settle()
+    expect(turns.calls).toHaveLength(2)
+  })
+
+  test('grantley 主窗口: commands run only in the owner private chat', async () => {
+    const { turns, gateway, adapter: plain } = setup()
+    const adapter = personal()
+    const rules = { ...room, allowUsers: ['friend'] }
+    gateway.handle(rules, adapter, say('owner', '/new', true))
+    await until(() => turns.calls.length === 1)
+    expect(turns.calls[0]!.text.endsWith('[owner] /new')).toBe(true)
+    turns.answer(0, '这是群聊')
+    gateway.handle(
+      rules,
+      adapter,
+      inbound({
+        chat: { type: 'dm', id: 'friend' },
+        userId: 'friend',
+        text: '/help',
+      }),
+    )
+    await until(() => turns.calls.length === 2)
+    expect(turns.calls[1]!.text.endsWith('/help')).toBe(true)
+    turns.answer(1, '帮助')
+    gateway.handle(rules, adapter, inbound({ text: '/status' }))
+    await until(() => adapter.texts().some(text => text.includes('会话键')))
+    expect(turns.calls).toHaveLength(2)
+    await gateway.idle()
+    expect(plain.sent).toHaveLength(0)
+  })
+
+  test('the room’s lines are closed with [新消息] before the message itself', async () => {
+    const { turns, adapter, gateway } = setup()
+    gateway.handle(room, adapter, say('a', '这个报错怎么修'))
+    gateway.handle(room, adapter, say('b', '@bot 你觉得呢', true))
+    await until(() => turns.calls.length === 1)
+    expect(turns.calls[0]!.text).toContain(
+      '[群里最近的消息]\n[a] 这个报错怎么修\n\n[新消息]\n[b] @bot 你觉得呢',
+    )
+    turns.answer(0, '看日志')
+    await gateway.idle()
+  })
+
+  test('an addressed message in a thread marks it for the follow-ups (hermes)', async () => {
+    const { turns, gateway } = setup()
+    const adapter = Object.assign(new FakeAdapter('discord'), {
+      followsThreads: true,
+    })
+    const rules = { ...room, allowGroups: ['C1'] }
+    const thread = { type: 'group', id: 'C1', threadId: 't1' } as const
+    gateway.handle(
+      rules,
+      adapter,
+      inbound({
+        chat: thread,
+        userId: 'u1',
+        text: '@bot 看看',
+        addressed: true,
+      }),
+    )
+    gateway.handle(
+      rules,
+      adapter,
+      inbound({
+        chat: thread,
+        userId: 'u2',
+        text: '我也想问',
+        addressed: false,
+      }),
+    )
+    await until(() => turns.calls.length === 1)
+    turns.answer(0, '好')
+    await until(() => turns.calls.length === 2)
+    turns.answer(1, '好')
+    await gateway.idle()
+  })
+
+  test('hermes text batching: quick lines wait for quiet and become one turn; attachments do not wait', async () => {
+    const { turns, gateway } = setup()
+    const adapter = Object.assign(new FakeAdapter('telegram'), {
+      textBatch: { quietMs: 40, splitMs: 200 },
+    })
+    gateway.handle(RULES, adapter, inbound({ text: '一' }))
+    gateway.handle(RULES, adapter, inbound({ text: '二' }))
+    await settle()
+    expect(turns.calls).toHaveLength(0)
+    await until(() => turns.calls.length === 1)
+    expect(turns.calls[0]!.text.endsWith('一\n二')).toBe(true)
+    turns.answer(0, '好')
+    await gateway.idle()
+    gateway.handle(
+      RULES,
+      adapter,
+      inbound({ text: '图', attachments: [{ name: 'a.png', kind: 'image' }] }),
+    )
+    await until(() => turns.calls.length === 2, 30)
+    turns.answer(1, '好')
+    await gateway.idle()
   })
 })

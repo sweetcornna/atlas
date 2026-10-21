@@ -1,10 +1,13 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// 规则来源 NousResearch/hermes-agent `plugins/platforms/telegram/adapter.py:528`、`:547-552`、`:625-636`、`:1091-1102`、`:5781-5796`、`:5863-5890`、`:5952-6067`、`:6085-6119`、`:6379-6413`、`:6578-6589`，取于 `63220ae5`，取用日期 2026-10-19
 
 /**
  * Telegram through the official Bot API: `getUpdates` long polling,
  * `sendMessage` with MarkdownV2 (plain text when Telegram rejects the
  * entities), native replies and forum topics, `sendChatAction` typing.
+ * Who is addressed, which topic a message is in and when a group message
+ * is for the bot follow hermes (`rules/telegram.ts`).
  */
 
 import {
@@ -18,6 +21,17 @@ import {
   sendFailure,
   text,
 } from './net.js'
+import {
+  cleanTriggerText,
+  isReplyToBot,
+  mentionsBot,
+  mentionsOnlyOtherBots,
+  TELEGRAM_TEXT_BATCH,
+  telegramGroupGate,
+  telegramSendThreadId,
+  telegramThreadId,
+  telegramTypingThreadId,
+} from './rules/telegram.js'
 import { plainText, telegramMarkdownV2 } from './text.js'
 import type {
   ChannelAdapter,
@@ -47,6 +61,8 @@ export class TelegramAdapter implements ChannelAdapter {
   readonly inboundSplitAt = 4_000
   /** One message per chat per second (hermes per-chat budget). */
   readonly sendGapMs = 1_000
+  readonly textBatch = TELEGRAM_TEXT_BATCH
+  readonly groupGate = telegramGroupGate
   readonly #io: ChannelIo
   readonly #settings: TelegramSettings
   readonly #loop: ChannelLoop
@@ -142,20 +158,18 @@ export class TelegramAdapter implements ChannelAdapter {
       (kind !== 'private' && kind !== 'group' && kind !== 'supergroup')
     )
       return null
-    let body = text(message.text) || text(message.caption)
-    const entities = list(message.entities ?? message.caption_entities).map(
-      record,
-    )
-    const mention = `@${this.#username}`.toLowerCase()
+    const group = kind !== 'private'
     const reply = record(message.reply_to_message)
     const replyFrom = record(reply.from)
     const addressed =
-      kind === 'private' ||
-      (this.#username !== '' && body.toLowerCase().includes(mention)) ||
-      entities.some(entity => text(record(entity.user).id) === this.#botId) ||
-      (this.#botId !== '' && text(replyFrom.id) === this.#botId)
-    if (this.#username !== '')
-      body = body.replace(new RegExp(`@${this.#username}\\b`, 'gi'), '').trim()
+      !group ||
+      mentionsBot(message, { id: this.#botId, username: this.#username }) ||
+      isReplyToBot(message, this.#botId)
+    const otherBots = group && mentionsOnlyOtherBots(message, this.#username)
+    const body = cleanTriggerText(
+      text(message.text) || text(message.caption),
+      this.#username,
+    ).trim()
     const attachments: { name: string; kind: string }[] = []
     if (list(message.photo).length > 0)
       attachments.push({ name: '图片', kind: 'image' })
@@ -172,8 +186,7 @@ export class TelegramAdapter implements ChannelAdapter {
     const name = [text(from.first_name), text(from.last_name)]
       .filter(Boolean)
       .join(' ')
-    const thread =
-      message.is_topic_message === true ? text(message.message_thread_id) : ''
+    const thread = telegramThreadId(message)
     const chatRef: ChannelChat = {
       type: kind === 'private' ? 'dm' : 'group',
       id: text(chat.id),
@@ -187,6 +200,7 @@ export class TelegramAdapter implements ChannelAdapter {
       userName: name || text(from.username) || text(from.id),
       text: body,
       addressed,
+      ...(otherBots ? { mention: { otherBots } } : {}),
       ...(quoteText
         ? {
             quote: {
@@ -208,9 +222,10 @@ export class TelegramAdapter implements ChannelAdapter {
     markdown: string,
     options: ChannelSendOptions = {},
   ): Promise<ChannelSendResult> {
+    const topic = telegramSendThreadId(chat.threadId)
     const base: Record<string, unknown> = {
       chat_id: chat.id,
-      ...(chat.threadId ? { message_thread_id: Number(chat.threadId) } : {}),
+      ...(topic === undefined ? {} : { message_thread_id: topic }),
       ...(options.replyTo
         ? {
             reply_parameters: {
@@ -243,10 +258,11 @@ export class TelegramAdapter implements ChannelAdapter {
 
   async typing(chat: ChannelChat): Promise<void> {
     if (!this.#typing.due(`${chat.id}:${chat.threadId ?? ''}`)) return
+    const topic = telegramTypingThreadId(chat.threadId)
     await this.#call('sendChatAction', {
       chat_id: chat.id,
       action: 'typing',
-      ...(chat.threadId ? { message_thread_id: Number(chat.threadId) } : {}),
+      ...(topic === undefined ? {} : { message_thread_id: topic }),
     }).catch(() => {})
   }
 

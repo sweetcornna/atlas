@@ -5,8 +5,8 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.12（生效）**；v1.12 按负责人 2026-10-19「主线程始终即时响应，子会话可以并行，做完回报主对话，主对话与子对话工作时可以互相交流」新增 §3.1（P38 并行子会话）：节点闸门改为会话内串行、名额内并行并给交互回合留名额，中枢每节点子任务名额可配，追加指示即时送进在跑的子会话，完成即回报主智能体，控制台任务页逐行显示状态；§3「名册与忙闲」「追加与查询」「回报」「名额」与 §8 相应回写；v1.11 按负责人 2026-10-17「社交平台接入参考 hermes agent，个人 QQ 对接 SnowLuma」新增 §2.5：六个平台的发送重试、长回复、分块上限、发送间隔、长粘贴续段、群聊上下文、防机器人互回、去重、线程参与、静默标记与配对码对齐 hermes-agent，新增「个人 QQ」渠道经 SnowLuma 接入（章程 v3.8 例外），§0、§2.1、§2.4、§7、§8 相应回写；v1.10 按 2026-10-17 舰上实测回写 §3「派活」「主动任务」（gpt-6-luna 把可选参数填成零值，0 原先被拒、绕成「1 分钟后、共 1 次」的安排：现在 0 与空字符串、null 一样当没给，不重复时 `times` 只能是 1）；v1.9 合入 main 上 #233 对 §6.3 的回写（浏览器调试入口按智能体隔开，同节点的智能体都能开终端）；v1.8 把 main 上 #232 的审查修复（续跑时的取消不被覆盖、投递只在仍是发送中时记账、结束时间 `finishedAt`、每会话至多 32 个等待补充）与 v1.7 的审计修正（到点的安排也等名额、开任务的上限在写入前才数、`at` 拒不存在的日期、`/stop` 只停重复任务的当前一次、投递每路至多等 5 分钟、附注取不到照常发送）合进 §3；v1.7 按负责人 2026-10-17 定的前台任务逻辑回写 §3（主会话保持空闲、短活当场做、长活交子会话、简单长活交名册智能体、名册与忙闲、延时与重复的主动任务、过长提醒、网页前台的任务附注）；v1.6 按 P21+ 落地与 Linux、macOS 实测回写 §6.3、§6.5–§6.7；v1.5 改写 §6（专属电脑补全：外部底层共用执行器、参照 Codex computer use 的人类式操作、私有桌面隔离、自主确认、macOS 按应用授权）；v1.4 新增 §9 P32 扩展（连接器、技能与插件由用户自配置）；v1.2 按 P28 落地回写 §2（QQ 改官方 WebSocket 网关、各平台格式与正在输入、控制台入口）；v1.3 按 P31 落地回写 §5，新增 §5.2 阡陌自身的优雅升级（复刻 sub2api） |
-| 日期 | 2026-10-15（v1.5–v1.10 于 2026-10-17，v1.11 于 2026-10-18，v1.12 于 2026-10-19） |
+| 文档版本 | **v1.13（生效）**；v1.13 按负责人 2026-10-19「个人 qq 的响应逻辑从 grantley 项目迁移过来，其他社交平台的响应逻辑和代码复刻 hermes agent」新增 §2.6：个人 QQ 的群准入、冷却、发言上限、续问、主窗口命令与回复成形迁自格兰，Telegram、Discord、Slack、QQ 官方机器人、微信的提及识别、群规则、话题与线程、文本合并、格式与分段按 hermes `63220ae5` 重写为纯函数（`channels/rules/`），渠道新增免 @ 群、唤醒词、群冷却与发言上限四类配置，§2.2、§2.3、§2.4、§2.5、§2.5.1、§8 相应回写；v1.12 按负责人 2026-10-19「主线程始终即时响应，子会话可以并行，做完回报主对话，主对话与子对话工作时可以互相交流」新增 §3.1（P38 并行子会话）：节点闸门改为会话内串行、名额内并行并给交互回合留名额，中枢每节点子任务名额可配，追加指示即时送进在跑的子会话，完成即回报主智能体，控制台任务页逐行显示状态；§3「名册与忙闲」「追加与查询」「回报」「名额」与 §8 相应回写；v1.11 按负责人 2026-10-17「社交平台接入参考 hermes agent，个人 QQ 对接 SnowLuma」新增 §2.5：六个平台的发送重试、长回复、分块上限、发送间隔、长粘贴续段、群聊上下文、防机器人互回、去重、线程参与、静默标记与配对码对齐 hermes-agent，新增「个人 QQ」渠道经 SnowLuma 接入（章程 v3.8 例外），§0、§2.1、§2.4、§7、§8 相应回写；v1.10 按 2026-10-17 舰上实测回写 §3「派活」「主动任务」（gpt-6-luna 把可选参数填成零值，0 原先被拒、绕成「1 分钟后、共 1 次」的安排：现在 0 与空字符串、null 一样当没给，不重复时 `times` 只能是 1）；v1.9 合入 main 上 #233 对 §6.3 的回写（浏览器调试入口按智能体隔开，同节点的智能体都能开终端）；v1.8 把 main 上 #232 的审查修复（续跑时的取消不被覆盖、投递只在仍是发送中时记账、结束时间 `finishedAt`、每会话至多 32 个等待补充）与 v1.7 的审计修正（到点的安排也等名额、开任务的上限在写入前才数、`at` 拒不存在的日期、`/stop` 只停重复任务的当前一次、投递每路至多等 5 分钟、附注取不到照常发送）合进 §3；v1.7 按负责人 2026-10-17 定的前台任务逻辑回写 §3（主会话保持空闲、短活当场做、长活交子会话、简单长活交名册智能体、名册与忙闲、延时与重复的主动任务、过长提醒、网页前台的任务附注）；v1.6 按 P21+ 落地与 Linux、macOS 实测回写 §6.3、§6.5–§6.7；v1.5 改写 §6（专属电脑补全：外部底层共用执行器、参照 Codex computer use 的人类式操作、私有桌面隔离、自主确认、macOS 按应用授权）；v1.4 新增 §9 P32 扩展（连接器、技能与插件由用户自配置）；v1.2 按 P28 落地回写 §2（QQ 改官方 WebSocket 网关、各平台格式与正在输入、控制台入口）；v1.3 按 P31 落地回写 §5，新增 §5.2 阡陌自身的优雅升级（复刻 sub2api） |
+| 日期 | 2026-10-15（v1.5–v1.10 于 2026-10-17，v1.11 于 2026-10-18，v1.12、v1.13 于 2026-10-19） |
 | 核对基点 | 本仓库 `be15f741`（main，#226 合并提交，基座 qianmopi v18.8.8）；本机 Claude Code 2.1.296、`codex-cli 0.162.0` |
 | 范围依据 | 负责人 2026-10-15 决定（对话记录）：① 参照格兰（Grantley）项目接入 QQ、微信、Telegram、Discord、Slack 等聊天软件；② 把专属电脑做完整；③ 底层不固定，默认 qianmopi，用户可为每个智能体选 Claude Code 或 Codex，多个底层可同时运行、各配各的模型并互相协作；④ 用户可设定时间检查更新、同步官方上游；⑤ 同日追加：把格兰的回复逻辑、主线程常驻、任务分派给子智能体、复用对话、加强缓存命中整套迁移过来；⑥ 同日追加：参照 sub2api 的优雅升级，把那套逻辑复刻到阡陌自身；⑦ 同日追加：让阡陌支持连接器的接入和技能、插件的加入，用户可自己配置，MCP 也自配置；⑧ 2026-10-17：「主线程会话始终保持空闲，遇到主线程可短时间解决的任务就直接解决，如遇到长过程任务派给子会话（非子 agent）进行解决，如果是比较简单的长任务可交给子 agent，并且 agent 会有意识的安排任务，主动任务」 |
 | 编号 | P27 ~ P32，另有 P21 补全与 P38 的并行部分（§3.1）；包表见 §8 |
@@ -109,8 +109,10 @@
 | `target` | 主人通道对话的智能体 `qianmo://<节点>/<智能体>` |
 | `memberTarget` | 群聊与其他人私聊对话的智能体；空则不回应非主人 |
 | `allowUsers` / `allowGroups` | 允许的私聊用户与群；`allowAll` 关闭名单 |
-| `groupTrigger` | 群里何时回：`mention`（@ 或回复机器人，默认）、`all` |
+| `groupTrigger` | 群里何时回：`mention`（@ 或回复机器人，默认）、`all`；什么算点名由各平台的规则决定（§2.6） |
 | `replyWindowMs` | 回复窗口，默认 0（格兰 QQ 用 5000） |
+| `freeGroups` / `keywords`（v1.12） | 不用 @ 也回的群（Telegram 可写 `群号:话题号`）、群里出现就回的唤醒词；只对提供它们的平台生效（§2.6） |
+| `groupCooldownSeconds` / `groupSpeechMax` / `groupSpeechMinutes`（v1.12，个人 QQ） | 格兰的群冷却与发言上限，0 为不限（§2.6） |
 
 主人通道与成员通道发到不同的智能体，这样成员通道可以挂一个没有 shell 与文件工具的智能体（格兰的 `member` 通道只给 MCP 工具）。
 
@@ -121,21 +123,21 @@
 - **回复窗口**：`replyWindowMs > 0` 时同一发言人的连续消息在窗口内收齐再发。
 - **群聊前缀**：群里每条消息前加 `[昵称(用户号)]`，合并时每行各带。
 - **引用**：回复的是机器人自己的消息时加 `[在回复你之前说的："…"]`，否则 `[在回复 某人 的消息："…"]`，截 500 字。
-- **命令**（只主人）：`/new` 换新会话、`/stop` 停止本轮（中枢经签名控制链路发 `turn.stop`，节点按任务找到回合，交给底层原生中止）、`/status` 状态（智能体、会话、轮数、方向、排队数）、`/model <方向|default>`（本会话改用的模型方向）、`/compact` 压缩（走对话面的本地命令）、`/help`。成员发命令当普通文字，`/help` 除外。
+- **命令**（只主人）：`/new` 换新会话、`/stop` 停止本轮（中枢经签名控制链路发 `turn.stop`，节点按任务找到回合，交给底层原生中止）、`/status` 状态（智能体、会话、轮数、方向、排队数）、`/model <方向|default>`（本会话改用的模型方向）、`/compact` 压缩（走对话面的本地命令）、`/help`。成员发命令当普通文字，`/help` 除外。v1.12：个人 QQ 的命令只在主人私聊里生效（格兰主窗口，§2.6）。
 - **粘性说明**：「这段对话来自哪个平台的私聊或群、对方是不是主人、格式怎么写、不回就答 `[SILENT]`」与运营写的渠道说明只在会话第一轮、内容变了、`/new`、`/compact` 或节点报告本轮底层自动压缩之后、以及每 40 轮发一次；按指纹记，回合成功才算送达（格兰 `sticky_context.py`，P30）。
 - **静默**：回复是空、`[SILENT]`、`NO_REPLY` 等标记（允许两边带标点）时不发；正文里提到标记不算。v1.11 补齐 hermes 的中文标记（§2.5）。
 - **附件**：入站的图片、文件写成一行说明交给智能体；回复里的 `MEDIA:<路径>` 行删掉，主人通道补一句「渠道暂不转交附件」。附件收发等节点出盒与取回（P20）打通后再做。
 - **失败**：主人通道的回合失败回一条简短说明（超时与中断分开说）；成员通道静默；`/stop` 停下的回合不再报失败。智能体中途的通知只转给主人通道。
 - **去重**：同一渠道同一消息号 5 分钟内只处理一次（平台重投）；v1.11 起 Slack 为 1 小时（§2.5）。
 - **正在输入**：回合进行中每 4.5 秒触发一次，各平台用自己的方式并各自限频：QQ 只有单聊（`msg_type` 6，60 秒一次）、微信用 `getconfig` 给的票据调 `sendtyping`、Telegram `sendChatAction`、Discord 频道 typing 接口、Slack `assistant.threads.setStatus`（应用没有该权限就不再请求）。
-- **格式**：Telegram 转 MarkdownV2，被拒时同一段文字改纯文本重发；Slack 转 mrkdwn；Discord 原样；QQ 与微信转纯文本。表格一律改成「标题 + 条目」。
+- **格式**：Telegram 转 MarkdownV2，被拒时同一段文字改纯文本重发；Slack 转 mrkdwn；Discord 原样；QQ 与微信转纯文本。表格一律改成「标题 + 条目」。v1.12：QQ 官方机器人改发 QQ Markdown（被拒退回纯文本），微信保留 Markdown，个人 QQ 按格兰去 Markdown（§2.6）。
 - **话题**：Telegram 论坛话题与 Slack 线程各自是一个会话；Slack 频道里的顶层消息开一个线程，回复进线程。
-- **长消息**：按平台上限切块（QQ 3000、微信 1800、Telegram 3500、Discord 1900、Slack 3500，按 UTF-16 计），代码块跨块时先闭合再在下一块以同一语言重开，多块带 `(i/n)`。
+- **长消息**：按平台上限切块（QQ 3000、微信 1800、Telegram 3500、Discord 1900、Slack 3500，按 UTF-16 计），代码块跨块时先闭合再在下一块以同一语言重开，多块带 `(i/n)`。v1.12：QQ 4000、微信 2000 并按 Markdown 块装箱，个人 QQ 由适配器整条成形（§2.6）。
 
 ### 2.4 落点
 
 - 渠道协议：`atlas/packages/node/src/channels/{qq,qqPersonal,weixin,telegram,discord,slack}.ts`，各自实现 `ChannelAdapter`（`start`、`stop`、`send`、`typing`、`health`）并把平台事件归一成 `ChannelInbound`；断线按 2、5、10、30、60 秒退避重连，凭据被拒、机器人被封等不可恢复的错误停在「失败」并写明原因。
-- 回复逻辑：`channels/gateway.ts`（准入、排队合并、回复窗口、粘性说明、命令、静默、失败说明、切块；v1.11 起还有发送重试、长回复、续段合并、群聊上下文、群回合上限、线程参与，§2.5）；文本规则 `channels/text.ts`；配对码 `channels/pairing.ts`。
+- 回复逻辑：`channels/gateway.ts`（准入、排队合并、回复窗口、粘性说明、命令、静默、失败说明、切块；v1.11 起还有发送重试、长回复、续段合并、群聊上下文、群回合上限、线程参与，§2.5）；文本规则 `channels/text.ts`；配对码 `channels/pairing.ts`；v1.12 起各平台的响应规则在 `channels/rules/*.ts`，共用的群规则（冷却、发言上限）在 `channels/gate.ts`（§2.6）。
 - 中枢：`commands/consoleChannels.ts`（渠道账本 `channels.json`、密封凭据、会话映射与游标 `state.json`、单实例锁，目录 `qianmoConfigPath('qianmo','console','channels')`）；`qm console --channels` 开启，须同时接了对话面。
 - 控制台：「渠道」页 `/admin/im`（`routes/im.ts`），接口 `/v0/im`（`routes/imApi.ts`），写操作只给运维个人账号并记 `im.save` / `im.remove` / `im.login` / `im.pair`。微信在页面上扫码：中枢取二维码并在后台轮询（二维码由服务端画成内联 SVG，`console/src/qr.ts`），确认后把 bot token 密封进渠道，扫码的人记为主人。
 - 回复的取得沿用定时任务的做法：发出后读会话记录，等到同一 `taskId` 的智能体终态回合；智能体中途的通知（`qianmo_notify`）也转发给主人。
@@ -150,7 +152,7 @@
 | 机制 | hermes 的做法 | 阡陌的落点 |
 |---|---|---|
 | 发送重试 | `_send_with_retry`：只重试连接级错误与限流，读写超时不重试（可能已送达）；退避 2 s、4 s；平台要求的等待超过 60 s 不原地等 | 适配器把失败分成三类：带 `retryAfterMs` 的限流、`retryable` 的未送达（连接被拒、DNS、5xx 中 hermes 认定可重试的）、其余；网关对前两类最多试 3 次，等平台给的时间或 2 s、4 s，超过 60 s 直接报失败。超时一律不重试 |
-| 长回复 | `splits_long_messages`：平台自己能整段承载的不再切 | 适配器可实现 `sendLong`，长过 `longReplyAt` 时先整段交给它（个人 QQ 用合并转发卡片）；它拒绝或失败再按块发 |
+| 长回复 | `splits_long_messages`：平台自己能整段承载的不再切 | 适配器可实现 `sendLong`，长过 `longReplyAt` 时先整段交给它（个人 QQ 用合并转发卡片）；它拒绝或失败再按块发。**v1.12 取代**：改成 `sendReply`，整条回复交给适配器成形，个人 QQ 按格兰的发送管线（§2.6） |
 | 分块上限 | Discord `MAX_SPLIT_MESSAGES=8` | 每条回复最多 8 块，超出在行边界截断，最后一块写明「完整内容在控制台对话页」 |
 | 同一聊天的发送间隔 | Telegram 每聊天 1 s、微信每块 1.5 s | 适配器声明 `sendGapMs`，网关按聊天排队、一条发完再发下一条，并按上次发送时间补足间隔 |
 | 长粘贴续段 | 文本批合并：上一段接近客户端切分阈值（Telegram 4000、Discord 1900、微信 1800）时多等 1 s，最多 4 s | 适配器声明 `inboundSplitAt`；达到这个长度的消息开一个 1 s 的窗口，又来一段满长的就再延，最长 4 s，窗口里的同一发言人合并成一轮 |
@@ -191,7 +193,7 @@
 
 - 每个动作带 `echo`，等对应应答（15 秒）；应答失败写成「QQ 发送失败（retcode 原因）」。轮到发送时连接不在（排队期间 SnowLuma 断开），这条没写出去，回「SnowLuma 未连接」交网关重试；写出去了但没等到应答才按已发送处理（hermes：缺 echo 不算失败，免得重发两遍）。
 - 群回复第一块引用原消息并 @ 发言人，私聊只引用。
-- 长于 1000 字的回复整段发成一张合并转发卡片（每个节点 ≤1500 字，节点同时带 `name` / `uin` 与 `nickname` / `user_id` 两种键）；群里先发一句带引用的「内容较长，整理成了下面的聊天记录」。卡片被拒就退回按块发（每块 ≤3000 字）。
+- 长于 1000 字的回复整段发成一张合并转发卡片（每个节点 ≤1500 字，节点同时带 `name` / `uin` 与 `nickname` / `user_id` 两种键）；群里先发一句带引用的「内容较长，整理成了下面的聊天记录」。卡片被拒就退回按块发（每块 ≤3000 字）。**v1.12 改为格兰的发送管线**：`[LONG_REPLY]` 强制卡片、`[MSG_BREAK]` 分条、超过 1000 字或多于 3 条发卡片、群里先发「完整回复在下面。」、卡片被拒（禁止或找不到）报失败、其余退回最多 3 条且按 3800 字切块（§2.6）。
 - 同一个号的所有发送排成一队，两次之间至少 0.8 秒：SnowLuma 自己不限速，连发最容易触发风控。
 - 正在输入只在私聊，用 `set_input_status {user_id, event_type: 1}`，约 9 秒一次（网关每 4.5 秒触发，适配器 5 秒内不重复）；后端答 1404（没有这个动作）就不再请求。
 - **动作白名单**：只调 `get_login_info`、`get_status`、`get_msg`、`send_private_msg`、`send_group_msg`、`send_private_forward_msg`、`send_group_forward_msg`、`set_input_status`。OneBot 令牌在 SnowLuma 上还能取 cookies、凭据、解密密钥、发原始包、退出账号，这些一律不碰，白名单在适配器里强制。
@@ -203,6 +205,70 @@
 **风险**（章程 §6.2 L-7）：腾讯的服务协议不允许这类第三方程序，账号可能被限制或封禁；页面上明写，建议用小号、低频、只在私聊和被 @ 时回。SnowLuma 按 QQ 版本做注入，QQ 自动更新后可能失效（要用户自己冻结 QQ 版本）。
 
 **证据**：OneBot 帧与动作只在脚本化的假 SnowLuma 上测过（握手头、令牌被拒、账号离线与恢复、收发映射、合并转发、白名单）；**未用真号实测**，页面与接口标「未评估」。
+
+### 2.6 响应逻辑对齐：个人 QQ 迁格兰，其余平台复刻 hermes（v1.12）
+
+负责人 2026-10-19：「个人 qq 的响应逻辑从 grantley 项目迁移过来，其他社交平台的响应逻辑和代码复刻 hermes agent 即可」。
+
+**来源与取用**
+
+- **个人 QQ**：格兰 `src/grantley/platforms/onebot/`（`router.py`、`adapter.py`、`rate_limit.py`），取于 `81fbbd77` 和当时的工作区，取用日期 2026-10-19。格兰是负责人自己的项目，它的测试用例（`test_hermes_router.py`、发送管线各用例）当作行为规格。
+- **其余五个平台**：NousResearch/hermes-agent `63220ae5`（MIT），取用日期 2026-10-19。这一版按 hermes 对应函数的结构用 TypeScript 重写：常量、判定顺序和边界情况都与 hermes 一致；文件头写明「规则来源 NousResearch/hermes-agent `文件:行号`」，对应用例按 hermes 的测试整理。因为改写贴得很近，许可上按 MIT 的「实质部分」对待，MIT 声明见 `NOTICE` 五.5 / 5.5。这一点比章程 v3.8 ③ 的「参照重写，不拷代码」走得更远，见下文「遗留」。
+- **落点**：各平台的判定都收成纯函数，放在 `channels/rules/{qqPersonal,telegram,discord,slack,qq,weixin}.ts`；各平台共用的群规则（默认判定、冷却、发言上限）放在 `channels/gate.ts`；适配器和网关只负责调用。
+
+**网关新增的接缝**（`types.ts`，适配器按需声明）
+
+| 接缝 | 作用 |
+|---|---|
+| `groupGate(inbound, policy)` | 返回 `'explicit'`（被点名）、`'implicit'`（没点名但该回）或 `null`（不回）。`policy` 里有 `trigger`、`freeGroups`、`keywords`、`followed`（机器人参与过的线程）。不声明就用 `defaultGroupGate` |
+| `textBatch {quietMs, splitMs, fast}` | hermes 的文本合并节奏：消息停顿多久才开一轮；上一段达到客户端切分长度时多等多久；短消息按长度阶梯缩短等待。从第一段算起最多等 4 s，运营设的回复窗口只会加长、不会被缩短；带附件的消息不等 |
+| `continuesSenders` | 格兰的 `has_sender_work`：同一发言人前面的问题还在排队或正在回答，他接着说的话不用再 @，也不计冷却和发言上限 |
+| `commandScope: 'owner-private'` | 格兰的主窗口：命令只在主人私聊里生效，群里的 `/new` 之类按普通文字交给智能体 |
+| `sendReply(chat, markdown, options)` | 整条回复由适配器成形（个人 QQ：分条、卡片、退回分块），取代 v1.11 的 `sendLong` / `longReplyAt`。网关按适配器给的失败分类决定是否重试 |
+| `chunks(markdown)` | 适配器自己的切法（微信按 Markdown 块）；不声明就用 `splitMessage` |
+| `inbound.mention {otherBots, othersOnly}` | 平台识别出的提及：点名了别的机器人、只 @ 了别人 |
+
+另外两处在网关里统一处理：冷却与发言上限（`RoomBudget`，在通道判定之后才计时，网关不会回应的人不会推动计时）；群聊上下文后面接 `[新消息]`，再接本轮的话（hermes 与格兰都这样收尾）。
+
+**对照表**
+
+| 平台 | 格兰 / hermes 的行为 | 阡陌原来（v1.11） | 本次改动 |
+|---|---|---|---|
+| 个人 QQ · 群准入 | 格兰 `_group_reply_allowed`：@ 或引用机器人的消息必回，并重置本群冷却；命中关键词（不分大小写的子串）或群策略的消息，要等冷却过了才回 | 只看 @ 和引用；`groupTrigger` 只有 `mention` / `all` 两档 | `qqPersonalGroupGate`：被点名记 explicit；命中唤醒词记 implicit；`all` 且没设唤醒词时每条都回。新增 `groupCooldownSeconds`（只限 implicit；explicit 重新计时） |
+| 个人 QQ · 发言上限 | 格兰 `SlidingWindowCounter`：每群每 M 分钟最多 N 条，@ 也绕不过；命令和续问不计 | 没有（只有防互回的 5 分钟 20 轮暂停） | `groupSpeechMax` / `groupSpeechMinutes` 滑动窗口，到上限时不回，写中枢日志，不在群里提示。原有的防互回暂停保留 |
+| 个人 QQ · 续问 | 格兰 `has_sender_work`：同一个人前一个问题没答完，接着说的话不用 @ | 不 @ 的补充会被丢掉 | `continuesSenders = true` |
+| 个人 QQ · 命令 | 格兰主窗口：只有主人私聊能操作网关 | 主人在群里也能用 `/new`、`/stop` 等命令 | `commandScope = 'owner-private'` |
+| 个人 QQ · 回复成形 | 格兰 `send`：`[LONG_REPLY]` 开头强制发卡片；卡片里保留 Markdown，只去掉代码围栏行；聊天消息去 Markdown（链接只留文字）；按 `[MSG_BREAK]` 分条；超过 1000 字或多于 3 条就发合并转发卡片；群里先发一条带引用和 @ 的「完整回复在下面。」；卡片被拒（forbidden / not_found）就报失败，其他失败退回最多 3 条、每条按 3800 字切块，块头 `(n/N)`；引用和 @ 只在第一条 | 超过 1000 字发卡片，群里先发「内容较长，整理成了下面的聊天记录」；卡片失败按 3000 字切块；没有分条和强制卡片 | `planReply` 加 `sendReply` 全部照格兰实现；格式提示换成格兰的 `PLATFORM_HINTS["onebot"]`，告诉智能体 `[MSG_BREAK]` 和 `[LONG_REPLY]` 的用法。群里带 @ 的消息正文前补一个空格 |
+| 个人 QQ · 失败分类 | 格兰 `classify_send_error`：先看 retcode，再看中文措辞，分成过长、格式、被禁言、找不到、限流、暂时性、未知；只有限流和暂时性可以重试 | 失败一律交给网关的三类（限流、未送达、其他） | `classifyOnebotError` 加 `classifySendError`；只有 `transient` 和 `rate_limited` 带 `retryable`。已经发出一部分后再失败的不重试，免得对方收到重复内容 |
+| Telegram | hermes：提及只认实体（`mention`、`text_mention`、`/cmd@bot`），没有实体时才窄范围看原文；点名了别的机器人而没点名自己的，即使是回复它也不回（`exclusive_bot_mentions`）；`free_response_chats` 和 `<群>:<话题>` 不用 @；论坛的 General 话题号是 `1`，发消息时省略、发正在输入时带上；文本合并 300 ms（≤320 字 180 ms、≤1024 字 240 ms），上一段达到切分长度时等 1 s | 原文里包含 `@用户名` 就算提及；General 话题没有话题号；没有免 @ 群；文本只按满长续段合并 | `rules/telegram.ts`：`mentionsBot`、`mentionedBotHandles`、`mentionsOnlyOtherBots`、`isReplyToBot`、`cleanTriggerText`、`telegramThreadId` 系列、`telegramGroupGate`、`TELEGRAM_TEXT_BATCH`。新增 `freeGroups`、`keywords` |
+| Discord | hermes：只收普通消息和回复（type 0 / 19）；回复机器人但没 ping 不算点名；@ 了别的机器人而没 @ 自己的不回；只 @ 了别人的，除非在免 @ 频道或已参与的线程里，否则不回；线程按父频道下的子会话处理，机器人参与过的线程不用再 @；文本合并 600 ms，续段 2 s | 回复机器人就算点名；没有消息类型过滤；线程当成独立频道；没有免 @ 频道 | `rules/discord.ts`：`discordMentions`、`discordGroupGate`、`DISCORD_MESSAGE_TYPES` / `DISCORD_THREAD_TYPES`、`DISCORD_TEXT_BATCH`。适配器从 `GUILD_CREATE`、`THREAD_LIST_SYNC`、`THREAD_CREATE/UPDATE/DELETE` 记下线程和父频道的对应（最多 5000 条），线程消息记作 `{父频道, threadId}`；`followsThreads = true`。新增 `freeGroups` |
+| Slack | hermes：只收 `''`、`file_share`、`thread_broadcast`、`me_message`、`document_mention` 这几种 subtype；`<@U>` 和 `<@U|名字>` 都算提及；线程里的 `!new` 当成 `/new`（Slack 不许在线程里用斜杠命令）；免 @ 频道和 `all` 时不 @ 也回；参与过的线程不用 @ | subtype 白名单只有前三种；只认 `<@U>`；没有 `!` 命令 | `rules/slack.ts`：`SLACK_SUBTYPES`、`slackMentionsBot`、`stripSlackMention`、`rewriteBangCommand`、`slackGroupGate`。新增 `freeGroups`、`keywords` |
+| QQ（官方机器人） | hermes `qqbot`：群 @ 消息去掉开头的 `@机器人`；默认发 QQ Markdown（`msg_type` 2），单条 4000 字；`invalid`、`forbidden`、`not found`、`bad request` 一类错误不重试 | 发纯文本（`msg_type` 0），3000 字一块；群消息开头带着 @ | `rules/qq.ts`：`stripAtMention`、`qqMessageBody`、`QQ_MAX_MESSAGE_LENGTH`。4xx（429 除外）按状态码判定，不重试。**与 hermes 不同的一处**：Markdown 被拒（4xx）时同一段文字改纯文本再发一次，成功后本次连接一直发纯文本，并写日志提示（hermes 没有这一步，没有 Markdown 权限的机器人会什么都发不出去）。格式提示改为「QQ 支持常见 Markdown 和表情」 |
+| 微信（iLink） | hermes `weixin`：`room_id` / `chat_room_id` 或「用户消息里 `to_user_id` 不是机器人自己」算群（`_guess_chat_type`）；同一发言人的同一段文字 5 分钟内只算一次（iLink 会换消息号重投）；保留 Markdown，压缩连续空行，长于 120 字的正文行折行（代码和表格不动）；一条装得下就一条发，2 到 6 行的短聊天逐行发，更长的按 Markdown 块装箱，每条不超过 2000 字；`-2` 加上 `unknown error` / `prepare failed` 当会话过期，和 `-14` 一样处理；`-2` 限频时熔断 30 s；文本合并 300 ms / 1 s | 只看 `room_id`；只按消息号去重；转纯文本，1800 字一块；`-2` 一律当限流 | `rules/weixin.ts`：`weixinChat`、`contentKey` 加 `ContentDedup`、`formatForWeixin`、`splitForWeixin`、`staleSession`、`WEIXIN_TEXT_BATCH`。适配器实现 `chunks`；熔断期间所有发送都返回 `retryAfterMs`（hermes 是直接失败）。去掉 `context_token` 重发后仍然是过期，就回「微信会话还没就绪，请对方先发一条消息」。格式提示改为可以用 Markdown |
+
+**新配置项**（渠道账本 `channels.json`，加在控制台渠道表单「更多」里，布局不变）
+
+| 字段 | 表单标签 | 哪些平台有 | 缺省 / 范围 |
+|---|---|---|---|
+| `freeGroups` | 不用 @ 的群（Telegram 可写 `群号:话题号`） | Telegram、Discord、Slack | `[]`；最多 200 项，不含空白 |
+| `keywords` | 唤醒词（逗号分隔，不分大小写） | 个人 QQ、Telegram、Slack | `[]`；最多 50 个，每个 1 到 32 字，可以带空格 |
+| `groupCooldownSeconds` | 群冷却（秒） | 个人 QQ | 0（不限），0 到 86400 |
+| `groupSpeechMax` / `groupSpeechMinutes` | 发言上限（条）/ 上限时段（分钟） | 个人 QQ | 0（不限），0 到 1000 / 0 到 1440，任一为 0 即不限 |
+
+哪个平台有哪些项由 `ChannelPlatformView.groupOptions` 决定。平台没有的项，保存时一律清成空或 0，网关也就不会生效。升级前保存的渠道读作缺省值，行为不变。QQ 官方机器人在群里只收得到 @ 消息，微信 iLink 一般收不到普通群的消息，所以这两个平台不提供群规则项。
+
+**有意的偏离**
+
+- 默认的 `groupTrigger` 仍是 `mention`。hermes Telegram 的 `require_mention` 缺省是 false，阡陌不跟：升级不能让机器人突然在群里每条都回。
+- 冷却放在通道判定之后才计时（格兰放在之前）：没有成员智能体时，别人的话不会推动群冷却。
+- 唤醒词是每个渠道一份列表，不像格兰那样按群分别设置。匹配方式是不分大小写的子串，不用 hermes 的正则 `mention_patterns`。
+- 个人 QQ 保留阡陌原有的做法：卡片节点 ≤1500 字、同号发送间隔 0.8 秒；没等到 echo 的发送按已送达处理（格兰在超时后退回分块，可能让对方收到两遍）。
+- 文本合并从第一段算起最多等 4 s（hermes 每来一段就重新计时，没有总上限），免得有人一直在打字时永远不回。
+- Telegram 论坛的 General 话题现在有话题号 `1`，这些聊天的会话键会变，已有的 General 对话从新会话开始。Discord 线程改记在父频道名下，已有的线程会话同样从新会话开始。Discord 线程和父频道的对应只来自网关事件（连上时 `GUILD_CREATE` 带来的活跃线程，加上之后的线程事件），不额外调 REST 查询；不在其中的线程，消息仍按独立频道处理。
+
+**没有迁移的部分**：格兰的令牌桶限速（缺省关闭）、用模型判断是不是在跟机器人说话、主动发言、表情包、语音、内容审核闸门、群聊归档、`bubble_overflow` 合并表、`reply_debounce_mode` / `scope`（缺省 quiet / sender，和阡陌的回复窗口一致）；hermes 的 `guest_mode`、`allowed_topics` / `ignored_threads`、`allow_bots` 的其他档位（只做了缺省的 `none`）、重启后保留线程参与记录、Discord 自动开线程（`auto_thread`，它会改变会话模型、需要建线程的权限，而且没有真号验证过）。
+
+**证据**：纯函数和适配器接线都在脚本化的假网络和假 SnowLuma 上测过（`node/test/channels/*Rules.test.ts`、`gate.test.ts`、`gateway.test.ts`、`qqPersonal.test.ts`、`adapters.test.ts`），中枢配置项也测过（`consoleChannels.test.ts`、`console/test/channelsView.test.ts`）。**六个平台都没有用真实账号实测**，页面仍标「未评估」。
 
 ---
 
@@ -407,6 +473,7 @@ Linux 真机：本机 lima 虚拟机（Debian 12 arm64，内核 6.1，bubblewrap
 | P27.3 | 常驻宿主接线与命令行 | `host/resident.ts`、`commands/resident.ts` | `--agent-runtime` 混用两种底层的节点在进程内跑通各一轮 |
 | P28 | 渠道协议与网关 | `channels/*.ts`、`consoleChannels.ts`、控制台页 | 五种协议的夹具测试（入站归一、出站形状、切块）；网关排队合并、命令、静默、失败说明的单测；对话经假对话端口往返 |
 | P28.1 | hermes 对齐与个人 QQ（§2.5） | `channels/{gateway,net,text,pairing,qqPersonal,telegram,discord,slack,qq,weixin}.ts`、`consoleChannels.ts`、`console.ts`、控制台渠道页与 `/v0/im` | 网关：限流按平台给的时间重试、未送达退避 2 s / 4 s、超时不重试、长回复先整段、最多 8 块、发送间隔、续段合并、群聊上下文只给一次、群回合上限、线程参与、按平台去重、配对钩子与 `/pair`；各平台失败分类；假 SnowLuma 上的握手头、令牌被拒、账号离线与恢复、收发映射、合并转发、白名单；中枢的个人 QQ 校验、公开版闸门、配对码只存散列与三种处理；**未用真号实测** |
+| P28.2 | 响应逻辑对齐（§2.6） | `channels/{gate,gateway,types}.ts`、`channels/rules/*.ts`、六个适配器、`consoleChannels.ts`、控制台渠道表单 | 各平台规则的纯函数用例（个人 QQ 按格兰用例，其余按 hermes 用例）；网关的冷却、发言上限、续问、主窗口命令、文本合并、`[新消息]`；个人 QQ 的分条、卡片、退回与失败分类；QQ Markdown 退回纯文本；微信内容去重、熔断与分段；中枢四类新配置的保存、校验、按平台裁剪与旧账本缺省；**未用真号实测** |
 | P29 | 后台任务 | `consoleTasks.ts`、`chatTurn.ts`、`host/taskTools.ts` | 开任务、子任务多轮直到 completed、追加指示、取消、重启续跑、防空转、回报父会话与渠道；v1.7：前台规则与工具说明、名册与忙闲（主人、租户、不可拨的不列）、延时任务到点才开、取消不复活、重复次数用完即停、重启恢复与错过只补一次、限额、子任务与定时任务会话被拒、过长提醒只在超阈值后出现一次、网页附注 |
 | P38 | 并行子会话与主子互通（§3.1） | `resident/src/{turn-gate,reader,omp-turn,omp-rpc}.ts`、`host/resident.ts`、`host/residentOmp.ts`、`commands/resident.ts`、`consoleTasks.ts`、`console.ts`、`consoleArgs.ts`、`consoleChat.ts`、`consoleChatStore.ts`、`host/taskTools.ts`、控制台任务页 | 闸门并发矩阵（后台占满时前台立即开跑、同会话不并发、会话忙不挡别人、单名额共用、问答链嵌入不占名额与发问方先结束时交接、名额空出时到点丢弃）；排队批次不堵读信；节点名额参数与 `node.ping`；真 qianmopi RPC 上 steer 送进在跑的一轮、这一轮等两次提示都有结果；`turn.steer` 的未在跑、无效、未签名；中枢默认 3 名额与节点自报上限、`--task-workers 1` 退回逐个；追加指示即时送达与已读位置；回报合并、回报回合里开的任务不再起回报回合、忙时送进在跑的回合、收不进时等这一轮结束、渠道与附注已带的不重复；任务页状态与主会话链接；**外部底层与渠道主会话的 steer 未端到端实测** |
 | P30 | 复用与缓存 | 网关、外部底层池 | 粘性块只在变化时重发；热进程复用；冻结系统提示；用量带缓存字段 |

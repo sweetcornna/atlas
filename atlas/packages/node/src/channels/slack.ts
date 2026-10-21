@@ -1,14 +1,17 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// 规则来源 NousResearch/hermes-agent `plugins/platforms/slack/adapter.py:395-411`、`:4098-4148`、`:4187-4222`、`:4510-4533`、`:4555-4572`、`:4584-4590`、`:4632-4640`、`:6385-6419`，取于 `63220ae5`，取用日期 2026-10-19
 
 /**
  * Slack through Socket Mode (`apps.connections.open`, app-level `xapp-`
  * token) and the Web API (`chat.postMessage`, bot `xoxb-` token). Channel
  * conversations live in threads, the Slack way: a top-level message starts a
  * thread and the reply goes into it. The "thinking" status uses
- * `assistant.threads.setStatus` where the app has that scope.
+ * `assistant.threads.setStatus` where the app has that scope. Which
+ * messages are for the bot follows hermes (`rules/slack.ts`).
  */
 
+import { CHANNEL_COMMANDS } from './gateway.js'
 import {
   ChannelFatalError,
   ChannelLoop,
@@ -22,6 +25,13 @@ import {
   sendFrame,
   text,
 } from './net.js'
+import {
+  rewriteBangCommand,
+  SLACK_SUBTYPES,
+  slackGroupGate,
+  slackMentionsBot,
+  stripSlackMention,
+} from './rules/slack.js'
 import { slackMrkdwn } from './text.js'
 import type {
   ChannelAdapter,
@@ -55,6 +65,7 @@ export class SlackAdapter implements ChannelAdapter {
   readonly followsThreads = true
   /** Socket Mode redelivers unacknowledged events; hermes keeps Slack ids an hour. */
   readonly dedupTtlMs = 3_600_000
+  readonly groupGate = slackGroupGate
   readonly #io: ChannelIo
   readonly #settings: SlackSettings
   readonly #loop: ChannelLoop
@@ -173,13 +184,7 @@ export class SlackAdapter implements ChannelAdapter {
   ): Promise<ChannelInbound | null> {
     const type = text(event.type)
     if (type !== 'message' && type !== 'app_mention') return null
-    const subtype = text(event.subtype)
-    if (
-      subtype !== '' &&
-      subtype !== 'file_share' &&
-      subtype !== 'thread_broadcast'
-    )
-      return null
+    if (!SLACK_SUBTYPES.has(text(event.subtype))) return null
     const user = text(event.user)
     // Bots and apps, the hermes way: a bot id or profile, or an app post
     // that no person's client sent.
@@ -193,13 +198,14 @@ export class SlackAdapter implements ChannelAdapter {
       return null
     const channelType = text(event.channel_type)
     const dm = channelType === 'im'
-    let body = text(event.text)
-    const mention = `<@${this.#botUser}>`
+    const raw = text(event.text)
     const addressed =
-      dm ||
-      type === 'app_mention' ||
-      (this.#botUser !== '' && body.includes(mention))
-    if (this.#botUser !== '') body = body.split(mention).join('').trim()
+      dm || type === 'app_mention' || slackMentionsBot(raw, this.#botUser)
+    // Slack refuses slash commands in threads: `!new` is the way to say it.
+    const body = rewriteBangCommand(
+      stripSlackMention(raw, this.#botUser),
+      CHANNEL_COMMANDS,
+    ).trim()
     const attachments = list(event.files).map(item => {
       const file = record(item)
       return {

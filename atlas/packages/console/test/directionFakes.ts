@@ -1855,6 +1855,7 @@ export const CHANNEL_PLATFORMS: readonly ChannelPlatformView[] = [
     secrets: [{ key: 'appSecret', label: 'AppSecret' }],
     qrLogin: false,
     pairing: true,
+    groupOptions: [],
     hint: 'QQ 开放平台机器人',
     evaluated: false,
   },
@@ -1865,6 +1866,7 @@ export const CHANNEL_PLATFORMS: readonly ChannelPlatformView[] = [
     secrets: [],
     qrLogin: true,
     pairing: true,
+    groupOptions: [],
     hint: '用微信扫码授权',
     evaluated: false,
   },
@@ -1875,6 +1877,7 @@ export const CHANNEL_PLATFORMS: readonly ChannelPlatformView[] = [
     secrets: [{ key: 'token', label: 'Bot Token' }],
     qrLogin: false,
     pairing: true,
+    groupOptions: ['freeGroups', 'keywords'],
     hint: '@BotFather 创建',
     evaluated: false,
   },
@@ -1907,6 +1910,11 @@ export class FakeChannels implements ChannelsPort {
         pairing: 'on',
         pairingOpen: true,
         groupContext: true,
+        freeGroups: [],
+        keywords: [],
+        groupCooldownSeconds: 0,
+        groupSpeechMax: 0,
+        groupSpeechMinutes: 0,
         pairingRequests: [
           {
             id: 'pr-1',
@@ -1964,6 +1972,13 @@ export class FakeChannels implements ChannelsPort {
       pairing: draft.pairing ?? old?.pairing ?? 'auto',
       pairingOpen: (draft.pairing ?? old?.pairing) === 'on',
       groupContext: draft.groupContext ?? old?.groupContext ?? true,
+      freeGroups: draft.freeGroups ?? old?.freeGroups ?? [],
+      keywords: draft.keywords ?? old?.keywords ?? [],
+      groupCooldownSeconds:
+        draft.groupCooldownSeconds ?? old?.groupCooldownSeconds ?? 0,
+      groupSpeechMax: draft.groupSpeechMax ?? old?.groupSpeechMax ?? 0,
+      groupSpeechMinutes:
+        draft.groupSpeechMinutes ?? old?.groupSpeechMinutes ?? 0,
       pairingRequests: old?.pairingRequests ?? [],
       settings: { ...old?.settings, ...draft.settings },
       secretSet:
