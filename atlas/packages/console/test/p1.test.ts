@@ -1055,7 +1055,7 @@ describe("时区 · every instant names its zone, and can be redrawn in the read
     )
     // The chip that echoes it is a <time> too.
     expect(page).toContain(
-      `<span class="chip mono">from <time datetime="${new Date(from).toISOString()}" data-fmt="datetime">`,
+      `<span class="chip mono">起 <time datetime="${new Date(from).toISOString()}" data-fmt="datetime">`,
     )
     // And the poll carries the instant, not a wall-clock string.
     expect(page).toContain(`from=${from}`)
