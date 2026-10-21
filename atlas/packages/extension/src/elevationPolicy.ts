@@ -20,6 +20,8 @@
  * in the denied table and `before_subagent_spawn` stays blocked.
  */
 
+import type { DesktopConfirmMode } from './desktopPolicy.js'
+
 export type ElevationTier = 'accept-edits' | 'auto' | 'full-access'
 
 const ELEVATION_TIERS: readonly ElevationTier[] = Object.freeze([
@@ -159,6 +161,21 @@ export function elevationNeedsApproval(
   if (tier === 'full-access') return false
   if (tier === 'auto') return cls === 'act-out'
   return true
+}
+
+/**
+ * The confirmation mode a cloud-computer action (P21) runs under while a grant
+ * is live. 跳过权限确认 lifts the per-step confirmation of a `sensitive`
+ * resource, as Claude Code's bypass mode does; a resource the operator set to
+ * `always` keeps asking at every tier, and the other tiers leave the
+ * resource's own mode alone (`sensitive` already lets observation through and
+ * asks before navigating, clicking or typing).
+ */
+export function elevationDesktopConfirm(
+  tier: ElevationTier | undefined,
+  mode: DesktopConfirmMode,
+): DesktopConfirmMode {
+  return tier === 'full-access' && mode === 'sensitive' ? 'autonomous' : mode
 }
 
 const GITHUB_READ_OPS: ReadonlySet<string> = new Set([

@@ -689,3 +689,24 @@ describe('revoke, sweep and runtime support', () => {
     })
   })
 })
+
+describe('liveTier (read by the cloud computer per action)', () => {
+  test('a live grant names its tier; off, expiry, ESTOP and an external runtime name none', async () => {
+    let external = false
+    const h = harness({
+      unsupported: () => (external ? '外部底层' : undefined),
+    })
+    expect(h.elevation.liveTier('reviewer')).toBeUndefined()
+    await enable(h, 'full-access', { ttlMs: 10 * 60_000 })
+    expect(h.elevation.liveTier('reviewer')).toBe('full-access')
+    h.estopped = true
+    expect(h.elevation.liveTier('reviewer')).toBeUndefined()
+    h.estopped = false
+    external = true
+    expect(h.elevation.liveTier('reviewer')).toBeUndefined()
+    external = false
+    h.now += 10 * 60_000
+    expect(h.elevation.liveTier('reviewer')).toBeUndefined()
+    expect(h.elevation.liveTier('nobody')).toBeUndefined()
+  })
+})

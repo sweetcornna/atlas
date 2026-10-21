@@ -1015,6 +1015,9 @@ export class QianmoResident {
         options.memoryRoot ?? defaultMemoryRoot(),
         ...(options.protectedRoots ?? []),
       ],
+      // 跳过权限确认 (P39) lifts the per-step confirmation of a `sensitive`
+      // resource; read per action, so a revoke or expiry applies at once.
+      elevationTier: agent => this.elevation.liveTier(agent),
       ...(options.desktopMemoryBytes === undefined
         ? {}
         : { memoryBytes: options.desktopMemoryBytes }),

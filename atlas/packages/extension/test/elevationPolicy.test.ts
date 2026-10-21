@@ -6,6 +6,7 @@ import {
   elevatedCall,
   elevatedTools,
   elevationActive,
+  elevationDesktopConfirm,
   elevationNeedsApproval,
   parseElevationResource,
   sandboxedCommand,
@@ -199,6 +200,18 @@ describe('sandbox command wrapping', () => {
     expect(unsandboxedCommand(`${wrapped} ; rm -rf /`, SANDBOX)).toBe(
       `${wrapped} ; rm -rf /`,
     )
+  })
+})
+
+describe('cloud computer confirmation under a grant', () => {
+  test('only 跳过权限确认 lifts sensitive; always stays always', () => {
+    expect(elevationDesktopConfirm('full-access', 'sensitive')).toBe(
+      'autonomous',
+    )
+    expect(elevationDesktopConfirm('full-access', 'always')).toBe('always')
+    for (const tier of ['accept-edits', 'auto', undefined] as const)
+      expect(elevationDesktopConfirm(tier, 'sensitive')).toBe('sensitive')
+    expect(elevationDesktopConfirm(undefined, 'autonomous')).toBe('autonomous')
   })
 })
 

@@ -32,6 +32,10 @@ import {
   type DesktopResource,
   type DesktopTool,
 } from '@qianmo/extension/desktopPolicy'
+import {
+  elevationDesktopConfirm,
+  type ElevationTier,
+} from '@qianmo/extension/elevationPolicy'
 import { ResidentHardline, type AuthzCall } from '@qianmo/resident'
 import { isValidSegment, type ControlOutcome } from '@qianmo/protocol'
 import type { ControlHandler } from './control.js'
@@ -308,6 +312,8 @@ interface Options {
   readonly screenEncoders?: readonly ScreenEncoder[]
   /** How a browser's DevTools pipe is bridged to its executor (tests). */
   readonly cdpBridge?: CdpBridgeFactory
+  /** The agent's live high-permission tier (P39), read per action. */
+  readonly elevationTier?: (agent: string) => ElevationTier | undefined
 }
 const hash = (input: unknown) =>
   createHash('sha256').update(JSON.stringify(input)).digest('hex')
@@ -1756,7 +1762,14 @@ export class NodeDesktop {
       // On top of the shared rule the host always asks before a terminal
       // opens: in the private desktop it is a shell (§6.4).
       const needs =
-        desktopNeedsApproval(tool, args, s.confirm) ||
+        desktopNeedsApproval(
+          tool,
+          args,
+          elevationDesktopConfirm(
+            this.#options.elevationTier?.(s.agent),
+            s.confirm,
+          ),
+        ) ||
         (String(tool) === OPEN_APP_TOOL &&
           this.#catalog(s).some(app => app.id === args.app && app.terminal))
       const beforeConsume = (

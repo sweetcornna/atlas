@@ -228,6 +228,24 @@ export class NodeElevation {
     }
   }
 
+  /**
+   * The agent's tier while its grant is live (not expired, no ESTOP);
+   * `undefined` otherwise. The cloud computer reads it per action.
+   */
+  liveTier(agent: string): ElevationTier | undefined {
+    const s = this.#states.get(agent)
+    if (
+      !s ||
+      !isLiveTier(s.tier) ||
+      s.expiresAt === null ||
+      this.#now() >= s.expiresAt ||
+      this.#options.estop() ||
+      this.#options.unsupported?.(agent) !== undefined
+    )
+      return undefined
+    return s.tier
+  }
+
   /** Whether the base will register its `github` tool on this node. */
   #hasGh(): boolean {
     return (this.#options.bwrap ?? defaultElevationBwrap).available('gh')
