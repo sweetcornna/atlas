@@ -178,7 +178,7 @@ export function keyList(profile: ProviderProfileView): string {
       ? ''
       : `<p class="note prov-rule" data-tone="warn">自定义 Anthropic 网关的 x-api-key 仅支持单钥 · 保留一把或使用网关支持的 Bearer 鉴权</p>`) +
     selectionField(profile) +
-    `<p class="note">omp 按会话固定选钥 · 额度耗尽后轮换 · 瞬时限流只退避 · 原档案策略保留但不决定新节点选钥 · 测连使用主密钥</p>` +
+    `<p class="note">qianmopi 按会话固定选钥 · 额度耗尽后轮换 · 瞬时限流只退避 · 原档案策略保留但不决定新节点选钥 · 测连使用主密钥</p>` +
     `<p class="note">${escapeHtml(`增删和重新填写都要下发才生效 · 换到另一把时${CACHE_LINE}`)}</p>` +
     `<div class="prov-actions">` +
     addKeyButton(profile) +
