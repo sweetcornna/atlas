@@ -29,7 +29,8 @@
  * convention: it is what refuses a `--actions-store` pointed at the account
  * book by mistake. Every later line's `kind` is the action's verb and its data
  * is exactly `requestId`, `subject`, `target`, `outcome`, and `code` /
- * `breakGlass` / `createdBy` when present — nothing else is accepted on either side. The
+ * `breakGlass` / `createdBy` / `agent` + `approval` when present — nothing else is
+ * accepted on either side. The
  * port carries no payload to begin with (`deps.ts`, `ConsoleAction`); `target`
  * and `code` are in addition cleaned before they are written, because one of
  * them is a URL path and a token pasted into a path is the one way a secret
@@ -54,6 +55,7 @@
  * the file each time it is asked, which is also what makes every read strict.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import {
   type ActionLedgerPort,
   type ActionOutcome,
@@ -112,6 +114,11 @@ const ACTION_NAME = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/
 const SUBJECT =
   /^(?:u:[0-9a-f]{16}|legacy:admin|legacy:view|anonymous|system:billing|system:magpie)$/
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/
+/** The agent that asked for a change (P40): the registry's address grammar. */
+const AGENT_ADDRESS =
+  /^qianmo:\/\/[a-z0-9][a-z0-9_-]{0,63}\/[a-z0-9][a-z0-9_-]{0,63}$/
+/** The P14 approval it was made under: `AuthzRequest.requestId`. */
+const APPROVAL_ID = /^[0-9a-f]{32}$/
 const CODE = /^[a-z0-9][a-z0-9_.-]{0,39}$/
 const OUTCOMES: ReadonlySet<string> = new Set(['ok', 'refused', 'failed'])
 const REQUIRED_KEYS = ['outcome', 'requestId', 'subject', 'target'] as const
@@ -120,6 +127,8 @@ const DATA_KEYS: ReadonlySet<string> = new Set([
   'code',
   'breakGlass',
   'createdBy',
+  'agent',
+  'approval',
 ])
 
 /**
@@ -134,6 +143,42 @@ const REDACTED = '***'
 const MIN_KNOWN_SECRET_LENGTH = 8
 
 const OK: ConsoleResult<void> = { ok: true, value: undefined }
+
+/**
+ * A change an agent asked for and a person approved (P40,
+ * `agent-settings.md` §5.3): the hub runs the `/v0` write as the approver,
+ * and every line that write leaves names the agent and the approval as well.
+ */
+interface ActionAttribution {
+  /** The approver. Only lines in their name are attributed. */
+  readonly subject: string
+  readonly agent: string
+  readonly approval: string
+}
+
+/**
+ * Carried through the async work of one approved write, so the lines a port
+ * writes itself — the desktop and elevation ports, schedules, a revoke-all
+ * that gives each revoke a request id of its own — are attributed as well as
+ * the route's own `ctx.record`.
+ */
+const ATTRIBUTION = new AsyncLocalStorage<ActionAttribution>()
+
+/** Run `work` with every line its approver writes attributed to `attribution`. */
+export function withAttribution<T>(
+  attribution: ActionAttribution,
+  work: () => Promise<T>,
+): Promise<T> {
+  return ATTRIBUTION.run(attribution, work)
+}
+
+/** `entry`, with the attribution of the approved write it belongs to. */
+function attributed(entry: ConsoleAction): ConsoleAction {
+  if (entry.agent !== undefined || entry.approval !== undefined) return entry
+  const found = ATTRIBUTION.getStore()
+  if (found === undefined || found.subject !== entry.subject) return entry
+  return { ...entry, agent: found.agent, approval: found.approval }
+}
 
 /**
  * `unreachable` because it is the failure that means "the store behind this
@@ -262,6 +307,12 @@ function encodeAction(
   if (!SUBJECT.test(entry.subject)) return '主体不合格'
   if (entry.createdBy !== undefined && !SUBJECT.test(entry.createdBy))
     return '创建者不合格'
+  if ((entry.agent === undefined) !== (entry.approval === undefined))
+    return '智能体与审批要成对'
+  if (entry.agent !== undefined && !AGENT_ADDRESS.test(entry.agent))
+    return '智能体地址不合格'
+  if (entry.approval !== undefined && !APPROVAL_ID.test(entry.approval))
+    return '审批编号不合格'
   if (!REQUEST_ID.test(entry.requestId)) return 'requestId 不合格'
   if (!isOutcome(entry.outcome)) return '结果不合格'
   const at = Math.floor(entry.at)
@@ -276,6 +327,10 @@ function encodeAction(
   if (code !== null) data['code'] = code
   if (entry.breakGlass === true) data['breakGlass'] = true
   if (entry.createdBy !== undefined) data['createdBy'] = entry.createdBy
+  if (entry.agent !== undefined && entry.approval !== undefined) {
+    data['agent'] = entry.agent
+    data['approval'] = entry.approval
+  }
   return { kind: entry.action, at, data }
 }
 
@@ -302,8 +357,17 @@ function decodeAction(entry: LedgerEntry): ActionRecord | string {
   for (const key of REQUIRED_KEYS) {
     if (data[key] === undefined) return `缺字段 ${key}`
   }
-  const { requestId, subject, target, outcome, code, breakGlass, createdBy } =
-    data
+  const {
+    requestId,
+    subject,
+    target,
+    outcome,
+    code,
+    breakGlass,
+    createdBy,
+    agent,
+    approval,
+  } = data
   if (typeof requestId !== 'string' || !REQUEST_ID.test(requestId)) {
     return 'requestId 不对'
   }
@@ -326,6 +390,18 @@ function decodeAction(entry: LedgerEntry): ActionRecord | string {
     (typeof createdBy !== 'string' || !SUBJECT.test(createdBy))
   )
     return 'createdBy 不对'
+  if ((agent === undefined) !== (approval === undefined))
+    return 'agent 与 approval 要成对'
+  if (
+    agent !== undefined &&
+    (typeof agent !== 'string' || !AGENT_ADDRESS.test(agent))
+  )
+    return 'agent 不对'
+  if (
+    approval !== undefined &&
+    (typeof approval !== 'string' || !APPROVAL_ID.test(approval))
+  )
+    return 'approval 不对'
   return {
     seq: entry.seq - 1,
     at: entry.at,
@@ -337,6 +413,9 @@ function decodeAction(entry: LedgerEntry): ActionRecord | string {
     outcome,
     ...(code === undefined ? {} : { code }),
     ...(createdBy === undefined ? {} : { createdBy }),
+    ...(typeof agent === 'string' && typeof approval === 'string'
+      ? { agent, approval }
+      : {}),
   }
 }
 
@@ -488,7 +567,7 @@ export class ActionLedger implements ActionLedgerPort {
   }
 
   record(entry: ConsoleAction): Promise<ConsoleResult<void>> {
-    const encoded = encodeAction(entry, this.#secrets)
+    const encoded = encodeAction(attributed(entry), this.#secrets)
     if (typeof encoded === 'string') {
       // A caller's bug, not the ledger's state: refuse this one entry and say
       // so loudly, but keep taking the rest.
