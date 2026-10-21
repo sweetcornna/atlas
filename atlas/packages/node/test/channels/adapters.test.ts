@@ -480,7 +480,7 @@ describe('QQ', () => {
       d: {
         id: 'q2',
         group_openid: 'G1',
-        content: '这个',
+        content: '@小阡 这个',
         message_type: 103,
         msg_elements: [{ content: '原话' }],
         author: { member_openid: 'M1' },
@@ -498,7 +498,8 @@ describe('QQ', () => {
       ['dm', 'OPEN1', 'OPEN1', '你好', undefined],
       ['group', 'G1', 'M1', '这个', '原话'],
     ])
-    // Passive replies: bound to the triggering message, msg_seq counting up.
+    // Passive replies: bound to the triggering message, msg_seq counting
+    // up; QQ Markdown, as hermes sends it.
     await adapter.send({ type: 'dm', id: 'OPEN1' }, '**一**')
     await adapter.send({ type: 'dm', id: 'OPEN1' }, '二', { replyTo: 'q1' })
     await adapter.send({ type: 'group', id: 'G1' }, '三')
@@ -512,15 +513,20 @@ describe('QQ', () => {
     ).toEqual([
       [
         '/v2/users/OPEN1/messages',
-        { content: '一', msg_type: 0, msg_id: 'q1', msg_seq: 1 },
+        {
+          markdown: { content: '**一**' },
+          msg_type: 2,
+          msg_id: 'q1',
+          msg_seq: 1,
+        },
       ],
       [
         '/v2/users/OPEN1/messages',
-        { content: '二', msg_type: 0, msg_id: 'q1', msg_seq: 2 },
+        { markdown: { content: '二' }, msg_type: 2, msg_id: 'q1', msg_seq: 2 },
       ],
       [
         '/v2/groups/G1/messages',
-        { content: '三', msg_type: 0, msg_id: 'q2', msg_seq: 1 },
+        { markdown: { content: '三' }, msg_type: 2, msg_id: 'q2', msg_seq: 1 },
       ],
     ])
     // The typing notice exists for private chats only.
@@ -678,6 +684,8 @@ describe('WeChat (iLink)', () => {
       ['wx-a', '你好', undefined],
       ['wx-b', '', 'image'],
     ])
+    // Markdown stays: WeChat renders it (hermes `format_message`).
+    expect(adapter.chunks('**收到**\n\n\n\n好')).toEqual(['**收到**\n\n好'])
     expect(await adapter.send({ type: 'dm', id: 'wx-a' }, '**收到**')).toEqual({
       ok: true,
     })
@@ -688,7 +696,7 @@ describe('WeChat (iLink)', () => {
       to_user_id: 'wx-a',
       message_type: 2,
       context_token: 'CTX-A',
-      item_list: [{ type: 1, text_item: { text: '收到' } }],
+      item_list: [{ type: 1, text_item: { text: '**收到**' } }],
     })
   })
 
@@ -892,11 +900,21 @@ describe('failure classes (hermes)', () => {
       error: '微信限流',
       retryAfterMs: 30_000,
     })
+    // The circuit is open: the next send waits without asking iLink.
+    const held = await adapter.send({ type: 'dm', id: 'wx-a' }, '在')
+    expect(held).toMatchObject({ ok: false, error: '微信限流' })
+    expect(held.retryAfterMs).toBeGreaterThan(0)
+    expect(held.retryAfterMs).toBeLessThanOrEqual(30_000)
+    expect(sends).toHaveLength(3)
     // Without a context token, an expired session is the login itself.
+    const fresh = new WeixinAdapter(
+      { accountId: 'b', token: 'BT', baseUrl: ILINK_BASE_URL },
+      net.io(),
+    )
     answers = [{ errcode: -14 }]
-    const result = await adapter.send({ type: 'dm', id: 'wx-a' }, '在')
+    const result = await fresh.send({ type: 'dm', id: 'wx-a' }, '在')
     expect(result).toMatchObject({ ok: false })
-    expect(adapter.health().state).toBe('failed')
+    expect(fresh.health().state).toBe('failed')
     expect(adapter.sendGapMs).toBe(1_500)
   })
 })

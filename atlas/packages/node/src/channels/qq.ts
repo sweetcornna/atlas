@@ -1,5 +1,6 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// 规则来源 NousResearch/hermes-agent `plugins/platforms/qqbot/adapter.py:151`、`:762-769`、`:1374-1396`、`:1507-1515`、`:1639-1641`、`:1655-1657`，`plugins/platforms/qqbot/constants.py:29`、`:34-35`，取于 `63220ae5`，取用日期 2026-10-19
 
 /**
  * QQ through the QQ Open Platform bot API (v2): AppID + AppSecret exchanged
@@ -10,7 +11,9 @@
  * notice (`msg_type` 6).
  *
  * Group messages only reach a bot when it is @-mentioned; that is the
- * platform's rule, so every group message here is addressed.
+ * platform's rule, so every group message here is addressed. Replies are
+ * QQ Markdown and the leading `@bot` is taken off, as in hermes
+ * (`rules/qq.ts`).
  */
 
 import {
@@ -27,6 +30,11 @@ import {
   sendFrame,
   text,
 } from './net.js'
+import {
+  QQ_MAX_MESSAGE_LENGTH,
+  qqMessageBody,
+  stripAtMention,
+} from './rules/qq.js'
 import { plainText } from './text.js'
 import type {
   ChannelAdapter,
@@ -86,7 +94,7 @@ const QUICK_PAUSE_MS = 5 * 60_000
 
 export class QqAdapter implements ChannelAdapter {
   readonly platform = 'qq' as const
-  readonly chunkLimit = 3_000
+  readonly chunkLimit = QQ_MAX_MESSAGE_LENGTH
   readonly #io: ChannelIo
   readonly #settings: QqSettings
   readonly #loop: ChannelLoop
@@ -97,6 +105,8 @@ export class QqAdapter implements ChannelAdapter {
   #token: { value: string; expiresAt: number } | null = null
   #session: { id: string; seq: number | null } | null = null
   #quickCloses = 0
+  /** Off once QQ refused Markdown and took the same words as plain text. */
+  #markdown = true
 
   constructor(settings: QqSettings, io: ChannelIo) {
     this.#settings = settings
@@ -270,7 +280,9 @@ export class QqAdapter implements ChannelAdapter {
     } else return
     if (user === '' || chat.id === '') return
     const messageId = text(data.id)
-    const body = text(data.content).trim()
+    const content = text(data.content)
+    const body =
+      chat.type === 'group' ? stripAtMention(content) : content.trim()
     const attachments = list(data.attachments).map(item => {
       const file = record(item)
       return {
@@ -320,14 +332,38 @@ export class QqAdapter implements ChannelAdapter {
   ): Promise<ChannelSendResult> {
     const replyTo =
       options.replyTo ?? this.#lastInbound.get(`${chat.type}:${chat.id}`)
+    const body = (rich: boolean) => ({
+      ...qqMessageBody(rich ? markdown : plainText(markdown), rich),
+      ...(replyTo ? { msg_id: replyTo, msg_seq: this.#nextSeq(replyTo) } : {}),
+    })
     try {
-      const reply = await this.#api('POST', this.#path(chat), {
-        content: plainText(markdown),
-        msg_type: 0,
-        ...(replyTo
-          ? { msg_id: replyTo, msg_seq: this.#nextSeq(replyTo) }
-          : {}),
-      })
+      const rich = this.#markdown
+      let reply = await this.#api('POST', this.#path(chat), body(rich))
+      if (
+        rich &&
+        reply.status >= 400 &&
+        reply.status < 500 &&
+        reply.status !== 429
+      ) {
+        // The bot may lack the Markdown permission: the same words, plain.
+        reply = await this.#api('POST', this.#path(chat), body(false))
+        if (reply.status === 200) {
+          this.#markdown = false
+          this.#io.onError?.('QQ 拒绝了 Markdown 消息，本次连接改发纯文本')
+        }
+      }
+      if (reply.status === 429)
+        return {
+          ok: false,
+          error: 'QQ 限流',
+          retryAfterMs: reply.retryAfterMs ?? 1_000,
+        }
+      if (reply.status >= 500)
+        return {
+          ok: false,
+          error: `QQ 发送失败（${reply.status}）`,
+          retryable: true,
+        }
       if (reply.status !== 200)
         return {
           ok: false,
