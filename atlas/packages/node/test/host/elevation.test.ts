@@ -325,6 +325,35 @@ describe('NodeElevation gate (P39 §2)', () => {
     expect(rows.some(r => r.outcome === 'completed')).toBe(true)
     expect(rows.some(r => r.outcome === 'allowed')).toBe(true)
   })
+  test('the completed row names the same host as the admitted one', async () => {
+    const h = harness()
+    const epoch = viewOf(await enable(h, 'auto')).epoch
+    await gate(h, 'read', { path: 'https://example.com/a' }, epoch, deny, 'r1')
+    await h.elevation.decide(
+      'reviewer',
+      'task-1',
+      'ctx',
+      {
+        toolName: 'read',
+        input: { phase: 'completed', invocationId: 'r1', isError: true },
+      },
+      () => true,
+      deny,
+    )
+    const actions = await h.elevation.control(
+      'elevation.actions',
+      { agent: 'reviewer' },
+      ctx('b'),
+    )
+    const rows = (
+      actions as { value: { outcome: string; host: string | null }[] }
+    ).value
+    // Newest first; earlier tests in this file share the ledger.
+    expect(rows.slice(0, 2).map(r => `${r.outcome}@${r.host}`)).toEqual([
+      'failed@example.com',
+      'allowed@example.com',
+    ])
+  })
 })
 
 describe('NodeElevation sandbox on Linux', () => {

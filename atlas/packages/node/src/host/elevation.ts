@@ -73,6 +73,8 @@ interface Operation {
 interface InFlight {
   readonly cls: ElevationActionClass
   readonly epoch: number
+  readonly op: string | null
+  readonly host: string | null
 }
 
 /** The decision a gate phase reaches. */
@@ -431,8 +433,8 @@ export class NodeElevation {
         {
           tool: String(call.toolName),
           cls: pending.cls,
-          op: null,
-          host: null,
+          op: pending.op,
+          host: pending.host,
           approved: false,
           outcome: input.isError === true ? 'failed' : 'completed',
           ...(invocationId ? { invocationId } : {}),
@@ -508,14 +510,22 @@ export class NodeElevation {
     }
     // Admit: count the call and remember it so a repeat is not recounted.
     s.usedCalls++
-    if (key) this.#inflight.set(key, { cls: classified.class, epoch: s.epoch })
+    const op = classified.op ?? null
+    const host = classified.hosts?.join(',') ?? null
+    if (key)
+      this.#inflight.set(key, {
+        cls: classified.class,
+        epoch: s.epoch,
+        op,
+        host,
+      })
     this.#record(
       s,
       {
         tool: classified.tool,
         cls: classified.class,
-        op: classified.op ?? null,
-        host: classified.hosts?.join(',') ?? null,
+        op,
+        host,
         approved,
         outcome: 'allowed',
         digest,
