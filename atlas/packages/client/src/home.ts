@@ -1,0 +1,134 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+/**
+ * The client's state directory (clients.md §5.1): which hub this computer is
+ * paired with, its device token, and the window's browser profile.
+ *
+ * | Path | What |
+ * | --- | --- |
+ * | `client.json` | hub, device id and name, when paired |
+ * | `device.token` / `device.token.dpapi` | the device token (Linux, macOS / Windows) |
+ * | `window/` | the app window's browser profile, apart from the user's own |
+ * | `pipe/` | the window's two DevTools FIFOs (Linux) |
+ */
+
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import { clientStateDir } from '@qianmo/paths'
+import { ClientError, DEVICE_ID, DEVICE_TOKEN, parseHubUrl } from './hub.js'
+import {
+  deviceTokenStore,
+  type Run,
+  runProgram,
+  type SecretStore,
+  writePrivateFile,
+} from './secret.js'
+
+export interface PairedState {
+  readonly version: 1
+  readonly hub: string
+  readonly deviceId: string
+  readonly name: string
+  readonly pairedAt: string
+}
+
+export class ClientHome {
+  readonly dir: string
+  readonly secret: SecretStore
+
+  constructor(
+    dir: string = clientStateDir(),
+    platform: NodeJS.Platform = process.platform,
+    run: Run = runProgram,
+  ) {
+    this.dir = dir
+    this.secret = deviceTokenStore(dir, platform, run)
+  }
+
+  get statePath(): string {
+    return path.join(this.dir, 'client.json')
+  }
+
+  get windowProfile(): string {
+    return path.join(this.dir, 'window')
+  }
+
+  get pipeDir(): string {
+    return path.join(this.dir, 'pipe')
+  }
+
+  /** The pairing on record, or `undefined` before the first sign-in. */
+  load(): PairedState | undefined {
+    let raw: string
+    try {
+      raw = fs.readFileSync(this.statePath, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw error
+    }
+    let value: unknown
+    try {
+      value = JSON.parse(raw)
+    } catch {
+      value = null
+    }
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('version' in value) ||
+      value.version !== 1 ||
+      !('hub' in value) ||
+      typeof value.hub !== 'string' ||
+      !('deviceId' in value) ||
+      typeof value.deviceId !== 'string' ||
+      !DEVICE_ID.test(value.deviceId) ||
+      !('name' in value) ||
+      typeof value.name !== 'string' ||
+      !('pairedAt' in value) ||
+      typeof value.pairedAt !== 'string'
+    )
+      throw new ClientError(
+        `${this.statePath} 损坏，请 qmo sign-in --force 重新配对`,
+      )
+    return {
+      version: 1,
+      hub: parseHubUrl(value.hub),
+      deviceId: value.deviceId,
+      name: value.name,
+      pairedAt: value.pairedAt,
+    }
+  }
+
+  /** Record a pairing: the token first, so a record never points at no token. */
+  async save(state: PairedState, token: string): Promise<void> {
+    await this.secret.write(token)
+    writePrivateFile(this.statePath, `${JSON.stringify(state, null, 2)}\n`)
+  }
+
+  /** The device token; a pairing without one is a broken pairing. */
+  async token(): Promise<string> {
+    const token = await this.secret.read()
+    if (token === undefined || !DEVICE_TOKEN.test(token))
+      throw new ClientError(
+        '这台电脑的设备令牌不见了或不完整，请 qmo sign-in --force 重新配对',
+      )
+    return token
+  }
+
+  /**
+   * Forget the pairing. The window profile goes too, since it holds the
+   * session; an open window keeps its files locked on Windows, and then the
+   * profile stays until the next sign-out (the session in it is closed on the
+   * hub either way when the device is revoked).
+   */
+  clear(): void {
+    fs.rmSync(this.statePath, { force: true })
+    this.secret.remove()
+    for (const dir of [this.windowProfile, this.pipeDir]) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true })
+      } catch {}
+    }
+  }
+}

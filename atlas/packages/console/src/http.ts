@@ -4,6 +4,12 @@
 import { pairHandoffDevice } from './routes/handoffDevices.js'
 import { bearerOf } from './auth.js'
 import {
+  ClientTickets,
+  closingClientSessions,
+  isClientDoor,
+  serveClientDoor,
+} from './clientDoor.js'
+import {
   notifyChannelOf,
   provisioningPath,
   publicFrontDoor,
@@ -63,8 +69,10 @@ import type { TenantScope } from './tenancy.js'
  * | GET | `/fragments/chat/thread/<enc id>` | **admin** | `text/html` fragment |
  * | GET, POST | `/invite` | public | accounts only — see `accountsHttp.ts` |
  * | * | `/v0/accounts/…` | admin | accounts only — see `accountsHttp.ts` |
+ * | * | `/v0/client/…` | device | accounts only — see `clientDoor.ts` |
+ * | GET | `/client/enter` | public | accounts only — see `clientDoor.ts` |
  *
- * The last two rows exist only on a console handed an `AccountBook`; without
+ * The last four rows exist only on a console handed an `AccountBook`; without
  * one they are the plain 404 they always were.
  *
  * ## Where the handlers live
@@ -947,6 +955,7 @@ async function route(
   now: () => number,
   accounts: ConsoleAccounts | undefined,
   setAuthorizationCheck: (check: () => Response | null) => void,
+  tickets: ClientTickets,
 ): Promise<Response> {
   const url = new URL(request.url)
   const segments = url.pathname.split('/').filter(s => s.length > 0)
@@ -979,6 +988,27 @@ async function route(
     !url.searchParams.get('token')?.startsWith('qmd_')
   ) {
     return pairHandoffDevice(request, deps.handoffDevices, clientKey)
+  }
+
+  // The `qmo` client's tickets (clients.md §3.2): a device credential of its
+  // own, so it is read here and never by `access.ts`. Without accounts these
+  // paths are the 404 they always were.
+  if (accounts !== undefined && isClientDoor(segments)) {
+    return serveClientDoor(
+      {
+        request,
+        url,
+        devices: deps.handoffDevices,
+        accounts,
+        tickets,
+        throttle,
+        clientKey,
+        now: now(),
+        card: (status, error) =>
+          loginPage(deps, { redirect: '/', status, error, accounts: true }),
+      },
+      segments,
+    )
   }
 
   // The payment platforms' notifications (public edition): no credential, no
@@ -1389,6 +1419,18 @@ export function createConsoleHandler(
   const now = deps.now ?? Date.now
   const throttle = new LoginThrottle()
   signupThrottles.set(throttle, new RegistrationThrottle())
+  const tickets = new ClientTickets(now)
+  // Revoking a device closes the sessions its client tickets opened.
+  if (accounts !== undefined && deps.handoffDevices !== undefined) {
+    deps = {
+      ...deps,
+      handoffDevices: closingClientSessions(
+        deps.handoffDevices,
+        tickets,
+        accounts,
+      ),
+    }
+  }
   return async (
     request: Request,
     source?: ClientAddressSource,
@@ -1408,6 +1450,7 @@ export function createConsoleHandler(
           check => {
             authorizationCheck = check
           },
+          tickets,
         ),
       )
       const denied = authorizationCheck()

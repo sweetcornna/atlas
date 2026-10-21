@@ -11,7 +11,7 @@
  */
 
 import { homedir } from 'node:os'
-import { join, relative, resolve } from 'node:path'
+import { join, posix, relative, resolve, win32 } from 'node:path'
 
 /** The node identity. Names the config root, the CA directory and the CA CN prefix. */
 export const IDENTITY = 'qianmo'
@@ -138,6 +138,50 @@ export function claudeProjectsDir(): string {
  */
 export function claudeStateFile(configDir: string): string {
   return join(configDir, '.claude.json')
+}
+
+/** Environment variable that overrides the `qmo` client's state root. */
+export const CLIENT_DIR_ENV = 'QMO_CLIENT_DIR'
+
+/**
+ * State root of the `qmo` client on a personal computer (clients.md §5.1):
+ * `QMO_CLIENT_DIR`, else the platform's per-user application directory —
+ * `%LOCALAPPDATA%\Qmo` on Windows, `$XDG_CONFIG_HOME/qmo` (default
+ * `~/.config/qmo`) on Linux, `~/Library/Application Support/Qmo` on macOS.
+ *
+ * Not under the node config root: a client and a node on the same computer
+ * keep separate state. The platform and environment are parameters so the
+ * Windows answer can be checked on any host; the path flavour follows the
+ * platform, not the host.
+ */
+export function clientStateDir(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): string {
+  const flavour = platform === 'win32' ? win32 : posix
+  const absolute = (value: string | undefined): value is string =>
+    value !== undefined && value !== '' && flavour.isAbsolute(value)
+  const configured = env[CLIENT_DIR_ENV]
+  if (configured) return flavour.resolve(configured).normalize('NFC')
+  let dir: string
+  if (platform === 'win32') {
+    const local = env.LOCALAPPDATA
+    dir = flavour.join(
+      absolute(local) ? local : flavour.join(home, 'AppData', 'Local'),
+      'Qmo',
+    )
+  } else if (platform === 'darwin') {
+    dir = flavour.join(home, 'Library', 'Application Support', 'Qmo')
+  } else {
+    // The XDG base directory spec says a relative value is to be ignored.
+    const config = env.XDG_CONFIG_HOME
+    dir = flavour.join(
+      absolute(config) ? config : flavour.join(home, '.config'),
+      'qmo',
+    )
+  }
+  return dir.normalize('NFC')
 }
 
 /** User-level config roots that agents and sandboxed commands must never modify. */

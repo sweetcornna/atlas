@@ -97,6 +97,11 @@ export function openConsoleHandoffDevices(
     readonly accounts?: AccountBook
     readonly now?: () => number
     readonly taskCount?: (deviceId: string) => number
+    /**
+     * Which local command the pairing dialog spells out: `qm handoff login`
+     * (default) or, on a console without handoff, the `qmo` client's sign-in.
+     */
+    readonly pairWith?: 'handoff' | 'client'
   } = {},
 ): HandoffDevicesPort & { close(): void } {
   const store = new FileLedger(
@@ -197,7 +202,7 @@ export function openConsoleHandoffDevices(
         value: {
           code: formatted,
           expiresAt,
-          command: `qm handoff login ${handoffShellArgument(url.toString().replace(/\/$/, ''))} --code ${formatted}`,
+          command: `${options.pairWith === 'client' ? 'qmo sign-in' : 'qm handoff login'} ${handoffShellArgument(url.toString().replace(/\/$/, ''))} --code ${formatted}`,
         },
       }
     },

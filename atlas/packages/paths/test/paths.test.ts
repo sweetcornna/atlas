@@ -4,7 +4,12 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { ompChildEnv, ompConfigRoot, qianmoConfigDir } from '../src/index.ts'
+import {
+  clientStateDir,
+  ompChildEnv,
+  ompConfigRoot,
+  qianmoConfigDir,
+} from '../src/index.ts'
 
 const saved = process.env.QIANMO_CONFIG_DIR
 
@@ -19,6 +24,53 @@ describe('qianmoConfigDir', () => {
     expect(qianmoConfigDir()).toBe(join(homedir(), '.qianmo'))
     process.env.QIANMO_CONFIG_DIR = '/srv/node-a'
     expect(qianmoConfigDir()).toBe('/srv/node-a')
+  })
+})
+
+describe('clientStateDir', () => {
+  test('Windows uses LOCALAPPDATA with backslashes, whatever the host', () => {
+    expect(
+      clientStateDir(
+        'win32',
+        { LOCALAPPDATA: 'C:\\Users\\ymy\\AppData\\Local' },
+        'C:\\Users\\ymy',
+      ),
+    ).toBe('C:\\Users\\ymy\\AppData\\Local\\Qmo')
+    // Without the variable, or with a relative one, the profile's own folder.
+    for (const env of [{}, { LOCALAPPDATA: 'AppData' }]) {
+      expect(clientStateDir('win32', env, 'C:\\Users\\ymy')).toBe(
+        'C:\\Users\\ymy\\AppData\\Local\\Qmo',
+      )
+    }
+  })
+
+  test('Linux follows an absolute XDG_CONFIG_HOME and ignores a relative one', () => {
+    expect(clientStateDir('linux', {}, '/home/ymy')).toBe(
+      '/home/ymy/.config/qmo',
+    )
+    expect(
+      clientStateDir('linux', { XDG_CONFIG_HOME: '/srv/cfg' }, '/home/ymy'),
+    ).toBe('/srv/cfg/qmo')
+    expect(
+      clientStateDir('linux', { XDG_CONFIG_HOME: 'cfg' }, '/home/ymy'),
+    ).toBe('/home/ymy/.config/qmo')
+  })
+
+  test('macOS uses Application Support', () => {
+    expect(clientStateDir('darwin', {}, '/Users/ymy')).toBe(
+      '/Users/ymy/Library/Application Support/Qmo',
+    )
+  })
+
+  test('QMO_CLIENT_DIR wins on every platform and stays out of the node root', () => {
+    expect(
+      clientStateDir('linux', { QMO_CLIENT_DIR: '/tmp/qmo-a' }, '/home/ymy'),
+    ).toBe('/tmp/qmo-a')
+    expect(
+      clientStateDir('win32', { QMO_CLIENT_DIR: 'D:\\qmo' }, 'C:\\Users\\ymy'),
+    ).toBe('D:\\qmo')
+    for (const platform of ['linux', 'darwin', 'win32'] as const)
+      expect(clientStateDir(platform, {}, '/home/ymy')).not.toContain('.qianmo')
   })
 })
 

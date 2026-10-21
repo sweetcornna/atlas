@@ -785,6 +785,10 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/handoff/devices` | view | `{devices}`，名称、属主、平台、最近使用、吊销时间与任务数；无令牌和哈希 |
 | POST | `/v0/handoff/devices/pairing` | **成员** | `{pairing:{code,expiresAt,command}}`；12 位 base32，10 分钟、一次性，错误 5 次失效；管理令牌也可签发 |
 | DELETE | `/v0/handoff/devices/<设备 id>` | **成员** | 只可吊销自己签发的设备；ops / 管理令牌可以吊销任何设备；设备令牌不能管理配对与吊销 |
+| POST | `/v0/client/tickets` | **设备** | 阡陌客户端 `qmo` 打开前台用的一次性票据 `{id,ticket,expiresAt}`，201；60 秒、只能用一次、只存哈希；每台设备最多 4 张没用掉的，超出 429；旧式令牌配对的设备 403。只认 `Authorization: Bearer` 的设备令牌（[`clients.md`](./clients.md) §3.2） |
+| GET | `/v0/client/tickets/<票据 id>` | **设备** | `{id,state}`，`pending` / `used` / `expired`；别的设备的票据 404 |
+| GET、DELETE | `/v0/client/device` | **设备** | `GET` 回 `{deviceId}`；`DELETE` 吊销这台设备自己（退出登录），204 |
+| GET | `/client/enter?ticket=…` | 公开 | 票据换属主的普通服务端会话，303 到 `/` 并下发 `qianmo_session`；跨站来的 403、票据不消耗；用错计入登录节流。吊销设备时，经它的票据开的会话一并关闭。以上四条只在开了 `--accounts` 时存在，没开时照旧 |
 | POST | `/v0/handoff/projects` | 设备 | `{project}` 在 `--handoff-root` 建裸仓、装钩子并登记账号属主，幂等；其他账号 403，已有无属主的 SSH 仓库继续走原接法 |
 | GET | `/v0/handoff/git/<项目>.git/info/refs` | 设备 | 旧模式 smart HTTP advertisement（GitHub 模式 404）；查询 `service=git-upload-pack` 或 `git-receive-pack`；只允许访问自己账号的项目 |
 | POST | `/v0/handoff/git/<项目>.git/git-upload-pack`、`/v0/handoff/git/<项目>.git/git-receive-pack` | 设备 | 旧模式 smart HTTP RPC（GitHub 模式 404），支持 gzip 请求体与 Git-Protocol；receive-pack 只能写本设备的 wip / sessions 引用 |

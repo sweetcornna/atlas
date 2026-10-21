@@ -200,3 +200,21 @@ test('a member downgraded to viewer immediately loses device authentication', as
     spy.mockRestore()
   }
 })
+
+test('on a console without handoff the pairing dialog spells out the qmo sign-in', async () => {
+  const h = scene()
+  const client = openConsoleHandoffDevices({
+    path: path.join(h.root, 'client-devices.ndjson'),
+    accounts: h.book,
+    pairWith: 'client',
+  })
+  cleanup.push(() => client.close())
+  const result = await client.issuePairing(
+    h.person('member'),
+    'https://hub.example/',
+  )
+  if (!result.ok) throw new Error('pairing failed')
+  expect(result.value.command).toBe(
+    `qmo sign-in https://hub.example --code ${result.value.code}`,
+  )
+})

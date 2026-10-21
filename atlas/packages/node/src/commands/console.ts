@@ -624,12 +624,16 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
       : undefined
 
+  // 设备账本：开了接力或开了个人账号就有。阡陌客户端 qmo 用同一本配对
+  // （clients.md §3.1）；没开接力时配对框写的是 qmo 的登录命令。
   const handoffDevices =
-    handoff === undefined
+    handoff === undefined && accounts === undefined
       ? undefined
       : openConsoleHandoffDevices({
           accounts: accounts?.book,
-          taskCount: handoff.taskCount,
+          ...(handoff === undefined
+            ? { pairWith: 'client' as const }
+            : { taskCount: handoff.taskCount }),
         })
 
   // 动作账本跟着个人账号走（P15.9）：记的是「哪个人」做了什么、读了谁的转录。
