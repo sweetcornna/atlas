@@ -190,3 +190,16 @@
 - 状态文件属主不对的情形：要用另一个用户建文件，本机和 CI 都没有做，只测了权限位和软链。
 - Windows 上随机名 `wx` 写入和 `O_NOFOLLOW` 读取，只在 CI 的 Windows 作业里跑过。
 - `qm handoff login` 的配对对话框照旧带 `--code`，那是接力的老用法，这一轮没有动。
+
+### v1.2 第二轮复核修改后
+
+| 环境 | 跑了什么 | 结果 |
+|---|---|---|
+| macOS 本机 | 生产账本上的 `qianmo-client-door`：新增「点确认页不留 cookie，退出和吊销清 cookie」「重置前签发的码恢复后配不上」两条；设备账本新增「重置作废配对码」「漏写的重置在下次启动补上」；账号账本新增「作废时间重启后还在」；票据入口新增「同一账号 8 张」「确认页写出账号号码」；客户端按 401 原因判断退出；`bun run precheck`、`bun run verify` 全绿（617 个测试文件各跑一次，含 `ATLAS_TEST_HEAVY=all`；registry-ha；`qm` 冒烟 7/7、`qmo` 冒烟 7/7） | 通过 |
+| Debian 12 arm64 容器，真 Chromium | 客户端与路径用例，含管道路线 | 通过（64 过，DPAPI 1 条跳过） |
+| GitHub `windows-latest` / `ubuntu-latest` | 同上一轮的作业 | 见 PR 的 CI |
+
+没有验证：
+
+- Windows 上每次都停在确认页，这一点只有用例，没有在真窗口里点过。
+- 上一轮列出的几项照旧没有验证。
