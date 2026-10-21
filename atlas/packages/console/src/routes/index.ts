@@ -58,6 +58,7 @@ import { frontAvailable } from './front.js'
 import { ADMIN_HOME, DEFAULT_LABEL, guardChat, loginHref } from './shared.js'
 import type {
   AreaGroup,
+  AreaId,
   HeadRoute,
   PageRender,
   PageRoute,
@@ -92,9 +93,9 @@ export const ROUTES: readonly RouteModule[] = [
   auditRoute,
   connectRoute,
   filesRoute,
-  usageRoute,
   serversRoute,
   accessRoute,
+  usageRoute,
   billingRoute,
   updatesRoute,
   settingsRoute,
@@ -254,6 +255,19 @@ async function stateOf(
 }
 
 /**
+ * The areas that open a new cluster in their group: a little space above
+ * them, no heading and no rule, the way Claude Desktop breaks its settings
+ * list. 渠道 starts what the agents reach; 审批 the oversight; 应用连接 the
+ * hub's own connections; 用量 the books and the instance itself.
+ */
+const CLUSTER_STARTS: ReadonlySet<AreaId> = new Set<AreaId>([
+  'im',
+  'approvals',
+  'connect',
+  'usage',
+])
+
+/**
  * The sidebar for this caller, with the counts that are honest to show.
  *
  * 初始化配置还有能在页面上做的必需项时（`setupCount` > 0），它挪到主区第一
@@ -280,7 +294,7 @@ async function navFor(
               Number(promoted && b.area.id === 'setup') -
               Number(promoted && a.area.id === 'setup'),
           )
-          .map(async module => {
+          .map(async (module, index) => {
             const count =
               module.area.id === 'nodes' ? nodesCount(listed) : undefined
             const state: ShellNavState | undefined =
@@ -299,6 +313,9 @@ async function navFor(
               ...(count === undefined ? {} : { count }),
               ...(state === undefined ? {} : { state }),
               ...(module.area.pending === true ? { pending: true } : {}),
+              ...(index > 0 && CLUSTER_STARTS.has(module.area.id)
+                ? { gap: true }
+                : {}),
             }
           }),
       ),

@@ -313,6 +313,95 @@ export function actionButton(
   )
 }
 
+/** One entry of a row's 更多 menu: what its button would have carried. */
+interface MoreItem {
+  readonly action: string
+  readonly label: string
+  readonly data?: Readonly<Record<string, string>>
+  /** Undoes something: drawn in the danger colour. */
+  readonly danger?: boolean
+}
+
+/** A short stable tag for an element id: FNV-1a of the text, base 36. */
+function idTag(text: string): string {
+  let hash = 0x811c9dc5
+  for (const char of text) {
+    hash ^= char.codePointAt(0) ?? 0
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(36)
+}
+
+/**
+ * A row's rarer actions behind one ⋯ button, the way Claude Desktop folds
+ * them. The menu is a native popover: it opens in the top layer, so the
+ * table's scroll box never clips it, and the browser closes it on Escape and
+ * on a click elsewhere. A page that draws one adds {@link MORE_MENU_JS} to its
+ * script. `key` tells this row from the others on the page; `name` is what
+ * the row is, for the button's label.
+ */
+export function moreMenu(
+  key: string,
+  name: string,
+  items: readonly MoreItem[],
+): string {
+  if (items.length === 0) return ''
+  const id = `more-${idTag(key)}`
+  const entries = items
+    .map(item => {
+      const data = Object.entries(item.data ?? {})
+        .map(([field, value]) => ` data-${field}="${attr(value)}"`)
+        .join('')
+      return (
+        `<button type="button" class="fx-menu-item${item.danger === true ? ' fx-menu-danger' : ''}" ` +
+        `role="menuitem" data-action="${attr(item.action)}"${data} data-write>` +
+        `${escapeHtml(item.label)}</button>`
+      )
+    })
+    .join('')
+  return (
+    `<button type="button" class="btn btn-ghost btn-small btn-icon row-more-btn" ` +
+    `popovertarget="${id}" aria-haspopup="menu" aria-label="${attr(`更多操作 · ${name}`)}">` +
+    `${icon('ellipsis', { small: true })}</button>` +
+    `<div class="fx-menu row-more-menu" id="${id}" popover role="menu" ` +
+    `aria-label="${attr(name)}">${entries}</div>`
+  )
+}
+
+/**
+ * What a page with {@link moreMenu} adds to the runtime. The browser opens
+ * and closes the popover; this puts it under its button, above it when there
+ * is no room (an item is 31px), and on a pick closes it with the focus back
+ * on the button before the page's own handler runs, so a dialog the pick
+ * opens hands the focus back there. The runtime gives a dialog's focus back
+ * to the button too, and holds a refresh while a menu is open. Toggle events
+ * do not bubble; the capture phase sees them.
+ */
+export const MORE_MENU_JS = `
+(function () {
+  'use strict';
+  function button(menu) {
+    return document.querySelector('[popovertarget="' + menu.id + '"]');
+  }
+  document.addEventListener('beforetoggle', function (event) {
+    var menu = event.target;
+    if (event.newState !== 'open' || !menu.matches || !menu.matches('.row-more-menu')) return;
+    var at = button(menu).getBoundingClientRect();
+    var high = menu.children.length * 31 + 8;
+    menu.style.right = Math.max(8, window.innerWidth - at.right) + 'px';
+    menu.style.top = (at.bottom + high > window.innerHeight ? Math.max(8, at.top - high) : at.bottom + 4) + 'px';
+  }, true);
+  document.addEventListener('click', function (event) {
+    var item = event.target && event.target.closest ? event.target.closest('.row-more-menu [data-action]') : null;
+    if (!item) return;
+    var menu = item.closest('.row-more-menu');
+    if (typeof menu.hidePopover === 'function') menu.hidePopover();
+    var opener = button(menu);
+    if (opener) opener.focus();
+  }, true);
+})();
+`
+
 /** Rules the kit's own markup needs beyond the shared sheet. */
 export const KIT_CSS = `
 .field-help { display: block; margin-top: 4px; }
@@ -322,7 +411,6 @@ export const KIT_CSS = `
 .unwired .cmd { display: block; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--color-bg); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-12); }
 .kit-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .kit-acts { display: flex; gap: var(--space-2); justify-content: flex-end; flex-wrap: wrap; }
-.kit-cards { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
 .kit-pane { display: flex; flex-direction: column; gap: var(--space-3); }
 .kit-excerpt { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-13); color: var(--color-quiet); max-height: 12em; overflow: auto; }
 .kit-mono { font-family: var(--font-mono); font-size: var(--text-12); overflow-wrap: anywhere; }

@@ -122,6 +122,13 @@ describe.skipIf(SKIP !== null)('the composer pickers', () => {
       while (!sent().includes('/effort high') && Date.now() < deadline)
         await Bun.sleep(50)
       expect(sent()).toEqual(['/effort high'])
+      // Nothing to read the node's level back from: the menu ticks the pick.
+      await tab.evaluate(`document.getElementById('fx-model-btn').click()`)
+      expect(
+        await tab.evaluate<string[]>(
+          `[...document.querySelectorAll('#fx-model-menu [data-effort][aria-checked="true"]')].map(b => b.getAttribute('data-effort'))`,
+        ),
+      ).toEqual(['high'])
     } finally {
       await tab.close()
       stop()

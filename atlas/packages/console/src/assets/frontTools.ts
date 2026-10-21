@@ -74,6 +74,11 @@ function toolsScript(): string {
 
   function check(button, on) { button.setAttribute('aria-checked', on ? 'true' : 'false'); }
 
+  // The level last picked per conversation in this page. Only shown with no
+  // model service to read the node's own back from: then it is the one thing
+  // known, and the transcript has the node's answer to it.
+  var picked = {};
+
   function paintModels() {
     var data = byId('prov-chat-models');
     var group = byId('fx-model-group');
@@ -81,7 +86,8 @@ function toolsScript(): string {
     var menu = byId('fx-model-menu');
     if (!group || !list || !menu) return;
     while (list.firstChild) list.removeChild(list.firstChild);
-    var effort = data ? data.getAttribute('data-effort') || '' : '';
+    var where = target();
+    var effort = data ? data.getAttribute('data-effort') || '' : (where && picked[where.address]) || '';
     var levels = menu.querySelectorAll('[data-effort]');
     for (var i = 0; i < levels.length; i++) check(levels[i], levels[i].getAttribute('data-effort') === effort);
     group.hidden = !data;
@@ -202,7 +208,12 @@ function toolsScript(): string {
       if (item.disabled) return;
       if (item.hasAttribute('data-model-cmd')) command('/model ' + item.getAttribute('data-model-cmd'));
       else if (item.hasAttribute('data-model-auto')) command('/model auto');
-      else if (item.hasAttribute('data-effort')) command('/effort ' + item.getAttribute('data-effort'));
+      else if (item.hasAttribute('data-effort')) {
+        var level = item.getAttribute('data-effort');
+        var here = target();
+        if (here) picked[here.address] = level;
+        command('/effort ' + level);
+      }
       else if (item.hasAttribute('data-perm')) {
         var tier = item.getAttribute('data-perm');
         if (tier === 'full-access') { close(true); qc.openDialog('fx-perm-confirm', function () { setPerm(tier); }); }
