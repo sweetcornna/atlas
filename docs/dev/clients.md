@@ -139,7 +139,7 @@
 | macOS 本机，真 Chrome | 客户端与路径用例（含真浏览器的命令行路线、`sign-in → open → sign-out` 端到端）；控制台分片；进程内端到端 `qianmo-client-front`；本机编出的 `qmo` 冒烟；交叉编出 `windows-x64`（PE32+ 控制台程序）与 `linux-arm64` | 通过 |
 | macOS 本机，真中枢 | 本分支 `qm console --accounts`，编出的 `qmo` 走完配对、开窗口进前台、退出吊销 | 通过 |
 | Debian 12 arm64 容器，真 Chromium | 客户端与路径用例（含管道路线：票据不出现在任何进程命令行、FIFO 0700/0600）；Xvfb 下有界面的 Chromium 对上面那台真中枢走完整流程，Linux 上编出的 `qmo` | 通过 |
-| GitHub `windows-latest` | CI 作业 `client-windows`：客户端用例（真 DPAPI 往返、真 Edge 命令行路线、端到端）、`clientStateDir`、Windows 上编出的 `qmo.exe` 冒烟 | 见 PR 的 CI |
+| GitHub `windows-latest` | CI 作业 `client-windows`：客户端用例（真 DPAPI 往返、真 Edge 命令行路线、无头 Edge 下 `sign-in → open → sign-out` 端到端）、`clientStateDir`、Windows 上编出的 `qmo.exe` 冒烟 | 通过（24 过、2 个 Linux 专属跳过） |
 | GitHub `ubuntu-latest` | `packages` 组跑客户端用例（真浏览器）；`build-qm` 作业编 Linux `qmo` 并冒烟 | 见 PR 的 CI |
 
 没有验证：
