@@ -49,9 +49,11 @@
  */
 
 import {
+  type ApproverRole,
   FRONT_APPROVAL_CSS,
   FRONT_APPROVAL_JS,
-  frontApprovalDialog,
+  frontApprovalBar,
+  frontApprovalCards,
 } from './frontApproval.js'
 import {
   CONSOLE_CLIENT_JS,
@@ -1273,10 +1275,11 @@ export interface FrontDocumentModel {
    */
   readonly source?: SourceLinks
   /**
-   * The front's own approval prompt (P39, `frontApproval.ts`): set when the
-   * console has approvals and the reader may approve. Absent, nothing changes.
+   * The front's approval cards (P39, P40 §6, `frontApproval.ts`): the
+   * reader's account role, set when the console has approvals and the reader
+   * may approve. Absent, nothing changes.
    */
-  readonly approvals?: boolean
+  readonly approvals?: ApproverRole
 }
 
 function composer(enabled: boolean, admin: boolean, t: FrontText): string {
@@ -1396,7 +1399,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     FRONT_PANEL_JS +
     AVATAR_PAGE_JS +
     (replicate === 'off' ? '' : FRONT_REPLICATE_JS) +
-    (model.approvals === true ? FRONT_APPROVAL_JS : '')
+    (model.approvals === undefined ? '' : FRONT_APPROVAL_JS)
   const t = FRONT_TEXT[model.lang]
   return (
     documentHead(
@@ -1406,7 +1409,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
         FRONT_PANEL_CSS +
         AVATAR_CSS +
         (replicate === 'off' ? '' : FRONT_REPLICATE_CSS) +
-        (model.approvals === true ? FRONT_APPROVAL_CSS : ''),
+        (model.approvals === undefined ? '' : FRONT_APPROVAL_CSS),
       [script],
     ).replace('<html lang="zh-CN">', `<html lang="${attr(model.lang)}">`) +
     `<body class="fx-body">\n` +
@@ -1445,12 +1448,17 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `</div>` +
     `</header>` +
     viewerNotice(model.viewer) +
-    `<div class="fx-scroll" id="fx-scroll"><div class="fx-column">${model.view.thread}</div></div>` +
+    `<div class="fx-scroll" id="fx-scroll"><div class="fx-column">${model.view.thread}` +
+    (model.approvals === undefined
+      ? ''
+      : frontApprovalCards(model.lang, model.approvals)) +
+    `</div></div>` +
     `<div class="fx-dock"><div class="fx-column">` +
     `<button type="button" class="fx-jump" id="fx-jump" data-action="fx-jump" aria-label="${attr(t.jumpToLatest)}" hidden>` +
     `${icon('arrow-down', { small: true })}</button>` +
     model.side.stack +
     (replicate === 'off' ? '' : frontReplicateCard(replicate)) +
+    (model.approvals === undefined ? '' : frontApprovalBar(model.lang)) +
     composer(model.composerEnabled, model.admin, t) +
     `</div></div>` +
     `</main>` +
@@ -1462,7 +1470,6 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     keyboardHelp(t) +
     permissionConfirm(t) +
     avatarDialog(model.lang) +
-    (model.approvals === true ? frontApprovalDialog(model.lang) : '') +
     `<script>${script}</script>\n` +
     `</body>\n</html>\n`
   )

@@ -342,11 +342,12 @@ export async function renderFront(
           : canWrite(ctx.access)
             ? 'ops'
             : 'view',
-      // Approval prompts on the front (P39): only for a person who may approve.
+      // Approval cards on the front (P39, P40 §6): only for a person who may
+      // approve, with their role, which decides who sees 需要运维批准.
       ...(ctx.deps.approvals !== undefined &&
       ctx.access.principal?.kind === 'user' &&
       ctx.access.principal.role !== 'viewer'
-        ? { approvals: true }
+        ? { approvals: ctx.access.principal.role }
         : {}),
       // The public edition's source footer (AGPL §13, `view/source.ts`).
       ...(ctx.deps.billing === undefined

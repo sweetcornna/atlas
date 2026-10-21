@@ -2,254 +2,698 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The conversation front's own approval prompt (P39 §2.1).
+ * The conversation front's approval cards (P39 §2.1, P40 §6).
  *
  * `/` does not poll approvals (its client refreshes only the chat panels and
  * the stream), so this is a separate, small flow: while the page is visible
  * it asks `GET /v0/approvals?mine=1` every few seconds for requests waiting on
- * this person, and shows the oldest as a dialog — what the agent wants to do,
- * 批准本次 or 拒绝. A decision that needs a fresh personal credential asks for
- * it in the same dialog (`POST /v0/approvals/auth`, the approval session the
- * admin approvals page uses) and then sends the decision. A browser
- * notification goes out too when the reader has allowed them. Nothing of the
- * front's layout changes: one dialog and one script, both only when the
- * console has approvals and the reader may approve.
+ * this person.
+ *
+ * ## Where a request shows
+ *
+ * A request's `contextId` is the chat session it was asked in (the node
+ * reads the transcript by it when the request is continued, and the console
+ * keeps a session's owner under the same id). So a request for the
+ * conversation on screen — `#fx-thread[data-session]` — is drawn as a card
+ * at the end of the message flow, the way Claude Desktop puts its permission
+ * prompt in the conversation: who asks (the agent's figure and name), what,
+ * and 拒绝 / 批准. Requests for other conversations are one line above the
+ * composer with the way to the oldest of them. The cards live in their own
+ * mount after `#fx-thread` (`#fx-asks`), which the front's client never
+ * swaps, so a redraw of the thread leaves a half-typed credential alone.
+ *
+ * ## What a card says
+ *
+ * {@link APPROVAL_CARD_JS} is the per-tool table: a settings change (P40) is
+ * drawn from the hub's card only — area · setting, the value now and the
+ * value after, the role it needs, the panel it lives on — never from the raw
+ * input; mail, calendar, 云端电脑, elevated commands and memory keep the
+ * facts they always showed, in the same frame. A change that needs an
+ * operator shows 需要运维批准 to anybody else, without buttons.
+ *
+ * ## Deciding
+ *
+ * A decision that needs a fresh personal credential asks for it inside the
+ * card (`POST /v0/approvals/auth`, the approval session the admin approvals
+ * page uses) and then sends the decision once more. A decided card says so
+ * for a moment and goes on the next poll. Nothing takes focus when a card
+ * arrives: Enter approves only on a focused 批准. A browser notification
+ * goes out once per request the reader may decide, when they have allowed
+ * them.
+ *
+ * Every string goes in as text (`textContent`), with invisible controls
+ * shown as their codepoints, as on the approvals page.
  */
 
 import type { Lang } from '../i18n.js'
 import { attr, escapeHtml } from './escape.js'
 
-interface Words {
-  readonly title: string
-  readonly approve: string
-  readonly deny: string
-  readonly later: string
-  readonly credential: string
-  readonly verify: string
-  readonly needCredential: string
-  readonly failed: string
-  readonly agent: string
-  readonly expires: string
+interface Verbs {
+  readonly settings: string
   readonly command: string
   readonly network: string
   readonly github: string
+  readonly mail: string
+  readonly calendar: string
+  readonly desktop: string
+  readonly memory: string
   readonly other: string
+}
+
+interface Words {
+  /** After the agent's name: 「ops 想更改设置」. */
+  readonly verbs: Verbs
+  readonly now: string
+  readonly next: string
+  readonly created: string
+  readonly panel: string
+  readonly needsOps: string
+  readonly opsTag: string
+  readonly incomplete: string
+  readonly to: string
+  readonly subject: string
+  readonly when: string
+  readonly where: string
+  readonly savedTo: string
+  readonly approve: string
+  readonly deny: string
+  readonly credential: string
+  readonly needCredential: string
+  readonly verifyFailed: string
+  readonly failed: string
+  readonly approved: string
+  readonly denied: string
+  /** `{n}`: how many requests. */
+  readonly elsewhere: string
+  /** `{m}`: how many conversations, `{n}`: how many requests. */
+  readonly elsewhereMany: string
+  readonly open: string
+  readonly notifyTitle: string
+  readonly region: string
 }
 
 const WORDS: Readonly<Record<Lang, Words>> = {
   'zh-CN': {
-    title: '需要你确认',
-    approve: '批准本次',
+    verbs: {
+      settings: '想更改设置',
+      command: '想执行命令',
+      network: '想联网读取',
+      github: '想操作 GitHub',
+      mail: '想发送邮件',
+      calendar: '想新建日程',
+      desktop: '想操作云端电脑',
+      memory: '想写入记忆',
+      other: '想调用工具',
+    },
+    now: '现在',
+    next: '改为',
+    created: '新建',
+    panel: '在面板里看',
+    needsOps: '需要运维批准',
+    opsTag: '需要运维',
+    incomplete: '内容不完整 · 只能拒绝',
+    to: '收件人',
+    subject: '主题',
+    when: '时间',
+    where: '地点',
+    savedTo: '写入',
+    approve: '批准',
     deny: '拒绝',
-    later: '稍后',
     credential: '个人凭据',
-    verify: '验证并批准',
     needCredential: '批准需要 30 分钟内验证过的个人凭据',
-    failed: '没有完成 · 请稍后再试',
-    agent: '智能体',
-    expires: '到期',
-    command: '执行命令',
-    network: '联网读取',
-    github: 'GitHub 操作',
-    other: '工具调用',
+    verifyFailed: '验证失败 · 要用当前账号的个人凭据',
+    failed: '没有完成 · 稍后再试',
+    approved: '已批准',
+    denied: '已拒绝',
+    elsewhere: '另一个对话有 {n} 项待你批准',
+    elsewhereMany: '其他 {m} 个对话有 {n} 项待你批准',
+    open: '打开',
+    notifyTitle: '需要你确认',
+    region: '待你批准',
   },
   en: {
-    title: 'Needs your confirmation',
-    approve: 'Approve once',
+    verbs: {
+      settings: 'wants to change a setting',
+      command: 'wants to run a command',
+      network: 'wants to read from the network',
+      github: 'wants a GitHub action',
+      mail: 'wants to send an email',
+      calendar: 'wants to create an event',
+      desktop: 'wants to use the cloud computer',
+      memory: 'wants to save a memory',
+      other: 'wants to use a tool',
+    },
+    now: 'Now',
+    next: 'Change to',
+    created: 'New',
+    panel: 'View in panel',
+    needsOps: 'Needs an operator to approve',
+    opsTag: 'Operator',
+    incomplete: 'Incomplete · deny only',
+    to: 'To',
+    subject: 'Subject',
+    when: 'When',
+    where: 'Where',
+    savedTo: 'Saved to',
+    approve: 'Approve',
     deny: 'Deny',
-    later: 'Later',
     credential: 'Personal credential',
-    verify: 'Verify and approve',
     needCredential:
       'Approving needs a personal credential verified in the last 30 minutes',
-    failed: 'Not completed. Try again shortly.',
-    agent: 'Agent',
-    expires: 'Expires',
-    command: 'Run a command',
-    network: 'Read from the network',
-    github: 'GitHub action',
-    other: 'Tool call',
+    verifyFailed: "Verification failed · use this account's credential",
+    failed: 'Not completed · try again shortly',
+    approved: 'Approved',
+    denied: 'Denied',
+    elsewhere: 'Another chat has {n} waiting for your approval',
+    elsewhereMany: '{m} other chats have {n} waiting for your approval',
+    open: 'Open',
+    notifyTitle: 'Needs your confirmation',
+    region: 'Waiting for your approval',
   },
   ja: {
-    title: '確認が必要です',
-    approve: '今回のみ承認',
+    verbs: {
+      settings: 'が設定の変更を求めています',
+      command: 'がコマンドの実行を求めています',
+      network: 'がネットワークの読み取りを求めています',
+      github: 'が GitHub の操作を求めています',
+      mail: 'がメールの送信を求めています',
+      calendar: 'が予定の作成を求めています',
+      desktop: 'がクラウド PC の操作を求めています',
+      memory: 'が記憶の保存を求めています',
+      other: 'がツールの呼び出しを求めています',
+    },
+    now: '現在',
+    next: '変更後',
+    created: '新規',
+    panel: 'パネルで見る',
+    needsOps: '運用者の承認が必要です',
+    opsTag: '運用者',
+    incomplete: '内容が不完全 · 拒否のみ',
+    to: '宛先',
+    subject: '件名',
+    when: '日時',
+    where: '場所',
+    savedTo: '保存先',
+    approve: '承認',
     deny: '拒否',
-    later: 'あとで',
     credential: '個人の認証情報',
-    verify: '確認して承認',
     needCredential: '承認には 30 分以内に確認した個人の認証情報が必要です',
-    failed: '完了しませんでした。しばらくしてから再試行してください',
-    agent: 'エージェント',
-    expires: '期限',
-    command: 'コマンドの実行',
-    network: 'ネットワークの読み取り',
-    github: 'GitHub の操作',
-    other: 'ツールの呼び出し',
+    verifyFailed:
+      '確認に失敗しました · このアカウントの認証情報を使ってください',
+    failed: '完了しませんでした · しばらくしてから再試行してください',
+    approved: '承認しました',
+    denied: '拒否しました',
+    elsewhere: '別のチャットに承認待ちが {n} 件あります',
+    elsewhereMany: 'ほかの {m} 件のチャットに承認待ちが {n} 件あります',
+    open: '開く',
+    notifyTitle: '確認が必要です',
+    region: '承認待ち',
   },
 }
 
-/** The dialog, closed; the script fills it. */
-export function frontApprovalDialog(lang: Lang): string {
+/** The words the card script reads, for tests and the mount. */
+export function frontApprovalWords(lang: Lang): Words {
+  return WORDS[lang]
+}
+
+/** The reader's account role, as far as approving goes. */
+export type ApproverRole = 'member' | 'ops'
+
+/**
+ * The cards' mount, right after `#fx-thread` in the scroll column. Empty and
+ * hidden until the script finds a request for the conversation on screen.
+ */
+export function frontApprovalCards(lang: Lang, role: ApproverRole): string {
   const w = WORDS[lang]
   return (
-    `<dialog class="dialog fx-approval" id="fx-approval" aria-labelledby="fx-approval-title" ` +
-    `data-words="${attr(JSON.stringify(w))}">` +
-    `<h2 id="fx-approval-title">${escapeHtml(w.title)}</h2>` +
-    `<p class="fx-approval-what" id="fx-approval-what"></p>` +
-    `<pre class="fx-approval-detail" id="fx-approval-detail"></pre>` +
-    `<p class="fx-approval-meta" id="fx-approval-meta"></p>` +
-    `<form class="fx-approval-auth" id="fx-approval-auth" hidden>` +
-    `<label for="fx-approval-credential">${escapeHtml(w.needCredential)}</label>` +
-    `<input id="fx-approval-credential" name="credential" type="password" class="input" autocomplete="off" required>` +
-    `</form>` +
-    `<p class="fx-approval-status" id="fx-approval-status" role="status"></p>` +
-    `<div class="dialog-actions">` +
-    `<button type="button" class="btn btn-secondary" data-approval-choice="later">${escapeHtml(w.later)}</button>` +
-    `<button type="button" class="btn btn-secondary" data-approval-choice="deny">${escapeHtml(w.deny)}</button>` +
-    `<button type="button" class="btn btn-primary" data-approval-choice="allow-once">${escapeHtml(w.approve)}</button>` +
-    `</div></dialog>`
+    `<section class="fx-asks" id="fx-asks" aria-label="${attr(w.region)}" ` +
+    `aria-live="polite" data-role="${attr(role)}" ` +
+    `data-words="${attr(JSON.stringify(w))}" hidden></section>`
+  )
+}
+
+/** The line above the composer for requests in other conversations. */
+export function frontApprovalBar(lang: Lang): string {
+  const w = WORDS[lang]
+  return (
+    `<div class="fx-ask-bar" id="fx-ask-bar" hidden>` +
+    `<span class="fx-ask-bar-dot" aria-hidden="true"></span>` +
+    `<span class="fx-ask-bar-text" id="fx-ask-bar-text" role="status"></span>` +
+    `<a class="fx-ask-bar-go" id="fx-ask-bar-go" href="/" data-action="fx-open" data-session="">` +
+    `${escapeHtml(w.open)}</a></div>`
   )
 }
 
 export const FRONT_APPROVAL_CSS = `
-.fx-approval { width: min(520px, calc(100% - 32px)); }
-.fx-approval h2 { margin: 0 0 8px; font-size: 16px; }
-.fx-approval-what { margin: 0 0 8px; font-weight: 600; }
-.fx-approval-detail { max-height: 180px; overflow: auto; margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--color-bg); font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
-.fx-approval-detail:empty { display: none; }
-.fx-approval-meta, .fx-approval-status { margin: 0 0 8px; font-size: 12.5px; color: var(--color-quiet); }
-.fx-approval-auth { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; font-size: 12.5px; }
-.fx-approval-auth[hidden] { display: none; }
+.fx-asks { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 0 0 24px; margin-top: -14px; }
+.fx-ask {
+  display: grid; gap: 8px; width: min(100%, 560px); box-sizing: border-box; padding: 12px 14px;
+  border-radius: 14px; background: var(--color-surface);
+  box-shadow: inset 0 0 0 0.5px var(--fx-line), var(--shadow-sm);
+  animation: fx-ask-in 180ms ease-out;
+}
+.fx-ask-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fx-ask-face { display: inline-flex; flex: none; }
+.fx-ask-face .avatar { display: block; width: 20px; height: 20px; }
+.fx-ask-title { min-width: 0; font-size: var(--text-13-5); font-weight: 600; overflow-wrap: anywhere; }
+.fx-ask-tag {
+  flex: none; margin-left: auto; padding: 0 6px; border-radius: 4px; font-size: var(--text-11); line-height: 18px;
+  background: var(--fx-field); color: var(--color-muted);
+}
+.fx-ask-what { margin: 0; font-size: var(--text-13); overflow-wrap: anywhere; }
+.fx-ask-rows {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; margin: 0; padding: 8px 10px;
+  border-radius: 10px; background: var(--fx-field); font-size: var(--text-13);
+}
+.fx-ask-rows dt { color: var(--color-muted); white-space: nowrap; }
+.fx-ask-rows dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.fx-ask-rows dd.is-next { font-weight: 500; }
+.fx-ask-detail {
+  max-height: 180px; overflow: auto; margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--fx-field);
+  font-family: var(--font-mono); font-size: var(--text-12); white-space: pre-wrap; word-break: break-word;
+}
+.fx-ask-link { justify-self: start; font-size: var(--text-12); color: var(--color-quiet); }
+.fx-ask-link:hover { color: var(--color-text); }
+.fx-ask-auth { display: grid; gap: 6px; font-size: var(--text-12); color: var(--color-quiet); }
+.fx-ask-status { margin: 0; font-size: var(--text-12); color: var(--color-quiet); }
+.fx-ask-status:empty { display: none; }
+.fx-ask-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.fx-ask-foot:empty { display: none; }
+.fx-ask-note { margin-right: auto; font-size: var(--text-12); color: var(--color-muted); }
+.fx-ask.is-done { opacity: 0.72; transition: opacity 160ms ease; }
+@keyframes fx-ask-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.fx-ask-bar {
+  display: flex; align-items: center; gap: 8px; width: fit-content; max-width: 100%; box-sizing: border-box;
+  margin-bottom: 8px; padding: 4px 4px 4px 12px; border-radius: 999px;
+  background: var(--fx-field); font-size: var(--text-12); color: var(--color-quiet);
+}
+.fx-ask-bar-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--color-interactive); }
+.fx-ask-bar-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-ask-bar-go {
+  flex: none; padding: 2px 10px; border-radius: 999px; color: var(--color-text); font-weight: 500; text-decoration: none;
+  transition: background-color 120ms ease;
+}
+.fx-ask-bar-go:hover { background: var(--fx-hover); }
+.fx-ask-bar-go:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .fx-ask { animation: none; } }
+`
+
+/**
+ * The per-tool table: `approvalCard(item, w, role)` says what one request's
+ * card holds — the title after the agent's name, one line, label/value rows,
+ * a preformatted detail, the panel link, a tag, a note, and which buttons it
+ * offers. Kept apart from the page glue so the tests can run it alone.
+ */
+export const APPROVAL_CARD_JS = `
+function approvalCard(item, w, role) {
+  var verbs = (w && w.verbs) || {};
+  var name = String(item.toolName || '');
+  var input = item.input && typeof item.input === 'object' ? item.input : {};
+  var agent = String(item.agent || '');
+  var who = agent.replace(/^qianmo:\\/\\/[^\\/]*\\//, '') || agent;
+  function str(value) { return typeof value === 'string' ? value : ''; }
+  function clip(value, n) { return value.length > n ? value.slice(0, n) + '…' : value; }
+  var card = { title: '', what: '', rows: [], detail: '', page: '', tag: '', note: '', summary: '', allow: true, deny: true };
+  function done(verb) {
+    card.title = who + ' ' + (verb || '');
+    if (!card.summary) card.summary = card.what || card.detail.slice(0, 120);
+    return card;
+  }
+  if (name === 'qianmo_settings_change') {
+    var c = input.card && typeof input.card === 'object' ? input.card : null;
+    var ok = !!c && typeof c.area === 'string' && typeof c.label === 'string' &&
+      typeof c.next === 'string' && (c.current === null || typeof c.current === 'string') &&
+      (c.role === 'ops' || c.role === 'member');
+    if (!ok) {
+      card.note = w.incomplete || '';
+      card.allow = false;
+      return done(verbs.settings);
+    }
+    card.what = clip(c.area, 400) + ' · ' + clip(c.label, 400);
+    card.rows = c.current === null ? [[w.created, clip(c.next, 400), 1]] :
+      [[w.now, clip(c.current, 400), 0], [w.next, clip(c.next, 400), 1]];
+    var page = str(c.page);
+    if (/^\\/(?![\\/\\\\])/.test(page) && !/[\\s\\x00-\\x1f\\x7f-\\x9f]/.test(page) && page.length <= 512) card.page = page;
+    card.summary = str(c.title) ? clip(c.title, 200) : card.what;
+    if (c.role === 'ops') card.tag = w.opsTag || '';
+    if (c.role === 'ops' && role !== 'ops') {
+      card.allow = false;
+      card.deny = false;
+      card.tag = '';
+      card.note = w.needsOps || '';
+    }
+    return done(verbs.settings);
+  }
+  if (name.indexOf('qianmo_browser_') === 0 || name.indexOf('qianmo_computer_') === 0) {
+    card.what = clip(str(input.summary) || str(input.op) || name, 400);
+    return done(verbs.desktop);
+  }
+  if (name === 'qianmo_mail_send') {
+    var to = Array.isArray(input.to) ? input.to.map(String).join(', ') : str(input.to);
+    card.rows = [[w.to, clip(to, 400), 0], [w.subject, clip(str(input.subject), 400), 0]];
+    card.detail = clip(str(input.body), 600);
+    return done(verbs.mail);
+  }
+  if (name === 'qianmo_calendar_create') {
+    card.what = clip(str(input.title), 400);
+    var span = str(input.start) + (str(input.end) ? ' – ' + str(input.end) : '');
+    card.rows = [[w.when, clip(span, 400), 0]];
+    if (str(input.location)) card.rows.push([w.where, clip(str(input.location), 400), 0]);
+    card.detail = clip(str(input.notes), 600);
+    return done(verbs.calendar);
+  }
+  if (name === 'qianmo_memory_write') {
+    card.what = clip(str(input.title), 400);
+    card.detail = clip(str(input.summary) + (str(input.body) ? '\\n\\n' + str(input.body) : ''), 600);
+    if (str(input.destination)) card.rows = [[w.savedTo, clip(str(input.destination), 400), 0]];
+    return done(verbs.memory);
+  }
+  var tool = name.indexOf('qianmo_elevated_') === 0 ? name.slice(16) : name;
+  if (tool === 'bash') {
+    card.detail = clip(str(input.command), 1200);
+    return done(verbs.command);
+  }
+  if (tool === 'web_search') {
+    card.what = clip(str(input.query), 400);
+    return done(verbs.network);
+  }
+  if (tool === 'read') {
+    card.what = clip(String(input.path || input.paths || input.url || ''), 400);
+    return done(verbs.network);
+  }
+  if (tool === 'github') {
+    var line = str(input.op);
+    if (input.repo) line += ' · ' + String(input.repo);
+    if (input.title) line += ' · ' + String(input.title);
+    card.what = clip(line, 400);
+    return done(verbs.github);
+  }
+  var json = '';
+  try { json = JSON.stringify(input, null, 2) || ''; } catch (e) { json = ''; }
+  card.what = name;
+  card.detail = clip(json, 1200);
+  return done(verbs.other);
+}
 `
 
 export const FRONT_APPROVAL_JS = `
 (function () {
   'use strict';
+${APPROVAL_CARD_JS}
   var qc = window.qianmoConsole;
-  var dialog = document.getElementById('fx-approval');
-  if (!qc || !dialog) return;
+  var mount = document.getElementById('fx-asks');
+  if (!qc || !mount) return;
   var w = {};
-  try { w = JSON.parse(dialog.getAttribute('data-words') || '{}'); } catch (e) { w = {}; }
-  var current = null;
-  var dismissed = {};
+  try { w = JSON.parse(mount.getAttribute('data-words') || '{}') || {}; } catch (e) { w = {}; }
+  var role = mount.getAttribute('data-role') || 'member';
+  var HOLD_MS = 1500;
+  var items = [];
+  var cards = {};
   var notified = {};
-  var busy = false;
+  var seq = 0;
+  var uid = 0;
+  var shownSession = null;
 
-  function text(id, value) {
-    var el = document.getElementById(id);
-    if (el) el.textContent = value;
-  }
-  function describe(item) {
-    var name = String(item.toolName || '');
-    var input = item.input || {};
-    var tool = name.indexOf('qianmo_elevated_') === 0 ? name.slice(16) : name;
-    if (tool === 'bash') return [w.command, String(input.command || '')];
-    if (tool === 'web_search') return [w.network, String(input.query || '')];
-    if (tool === 'read') return [w.network, String(input.path || input.paths || '')];
-    if (tool === 'github') {
-      var line = String(input.op || '');
-      if (input.repo) line += ' · ' + input.repo;
-      if (input.title) line += ' · ' + input.title;
-      return [w.github, line];
+  function byId(id) { return document.getElementById(id); }
+  // Invisible controls read as their codepoints, as on the approvals page.
+  function shown(value) {
+    var s = String(value == null ? '' : value);
+    var out = '';
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if ((c < 32 && c !== 10 && c !== 9) || (c >= 0x7f && c <= 0x9f) || c === 0x61c ||
+          c === 0x200e || c === 0x200f || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)) {
+        out += '\\\\u' + ('000' + c.toString(16)).slice(-4);
+      } else {
+        out += s.charAt(i);
+      }
     }
-    var detail = '';
-    try { detail = JSON.stringify(input, null, 2); } catch (e) { detail = ''; }
-    if (detail.length > 1200) detail = detail.slice(0, 1200) + '…';
-    return [(w.other || '') + ' · ' + name, detail];
+    return out;
   }
-  function show(item) {
-    current = item;
-    var parts = describe(item);
-    text('fx-approval-what', parts[0]);
-    text('fx-approval-detail', parts[1]);
-    var agent = String(item.agent || '').replace(/^qianmo:\\/\\//, '');
-    text('fx-approval-meta', (w.agent || '') + ' ' + agent + ' · ' + (w.expires || '') + ' ' +
-      new Date(item.expiresAt).toLocaleTimeString());
-    text('fx-approval-status', '');
-    var auth = document.getElementById('fx-approval-auth');
-    if (auth) auth.hidden = true;
-    if (!dialog.open) dialog.showModal();
-    if (!notified[item.requestId] && 'Notification' in window && Notification.permission === 'granted') {
+  function add(parent, tag, cls, text) {
+    var el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text !== undefined) el.textContent = shown(text);
+    parent.appendChild(el);
+    return el;
+  }
+  function openSession() {
+    var thread = byId('fx-thread');
+    return (thread && thread.getAttribute('data-session')) || '';
+  }
+  // The agent's figure as the head draws it, still: it is the agent of the
+  // conversation on screen, which is the one the card is in.
+  function face() {
+    var figure = document.querySelector('#fx-head .fx-head-face .avatar');
+    if (!figure) return null;
+    var copy = figure.cloneNode(true);
+    copy.classList.remove('av-live');
+    copy.removeAttribute('role');
+    copy.removeAttribute('aria-label');
+    copy.setAttribute('aria-hidden', 'true');
+    copy.setAttribute('data-state', 'idle');
+    var looks = copy.querySelectorAll('.av-look');
+    for (var i = 0; i < looks.length; i++) looks[i].remove();
+    return copy;
+  }
+
+  function build(item, card) {
+    var el = document.createElement('article');
+    el.className = 'fx-ask';
+    el.setAttribute('data-request', item.requestId);
+    var titleId = 'fx-ask-title-' + (++uid);
+    el.setAttribute('role', 'group');
+    el.setAttribute('aria-labelledby', titleId);
+    var head = add(el, 'header', 'fx-ask-head');
+    var figure = face();
+    if (figure) add(head, 'span', 'fx-ask-face').appendChild(figure);
+    var title = add(head, 'span', 'fx-ask-title', card.title);
+    title.id = titleId;
+    if (card.tag) add(head, 'span', 'fx-ask-tag', card.tag);
+    if (card.what) add(el, 'p', 'fx-ask-what', card.what);
+    if (card.rows.length) {
+      var list = add(el, 'dl', 'fx-ask-rows');
+      for (var i = 0; i < card.rows.length; i++) {
+        add(list, 'dt', '', card.rows[i][0]);
+        add(list, 'dd', card.rows[i][2] ? 'is-next' : '', card.rows[i][1]);
+      }
+    }
+    if (card.detail) add(el, 'pre', 'fx-ask-detail', card.detail);
+    if (card.page) {
+      var link = add(el, 'a', 'fx-ask-link', w.panel || '');
+      link.href = card.page;
+      link.target = '_blank';
+      link.rel = 'noopener';
+    }
+    if (card.allow || card.deny) {
+      var form = add(el, 'form', 'fx-ask-auth');
+      form.hidden = true;
+      var field = 'fx-ask-cred-' + uid;
+      var label = add(form, 'label', '', w.needCredential || '');
+      label.htmlFor = field;
+      var input = add(form, 'input', 'input');
+      input.id = field;
+      input.type = 'password';
+      input.name = 'credential';
+      input.autocomplete = 'off';
+      input.setAttribute('aria-label', w.credential || '');
+    }
+    add(el, 'p', 'fx-ask-status').setAttribute('role', 'status');
+    var foot = add(el, 'div', 'fx-ask-foot');
+    if (card.note) add(foot, 'span', 'fx-ask-note', card.note);
+    if (card.deny) choice(foot, 'deny', w.deny, 'btn btn-secondary btn-small');
+    if (card.allow) choice(foot, 'allow-once', w.approve, 'btn btn-primary btn-small');
+    return el;
+  }
+  function choice(parent, value, text, cls) {
+    var button = add(parent, 'button', cls, text || '');
+    button.type = 'button';
+    button.setAttribute('data-ask-choice', value);
+    return button;
+  }
+  function status(entry, text) {
+    var line = entry.el.querySelector('.fx-ask-status');
+    if (line) line.textContent = shown(text);
+  }
+  function hold(entry, on) {
+    var buttons = entry.el.querySelectorAll('[data-ask-choice]');
+    for (var i = 0; i < buttons.length; i++) buttons[i].disabled = on;
+  }
+
+  function stuck() {
+    var scroller = byId('fx-scroll');
+    return !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 96;
+  }
+
+  // Cards for the conversation on screen, the line for the others.
+  function place() {
+    var here = openSession();
+    var moved = here !== shownSession;
+    shownSession = here;
+    var mine = [];
+    var others = [];
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      if (here && item.contextId === here) mine.push(item);
+      else if (approvalCard(item, w, role).allow) others.push(item);
+    }
+    var stick = stuck();
+    var keep = {};
+    var now = Date.now();
+    for (var m = 0; m < mine.length; m++) keep[mine[m].requestId] = true;
+    for (var id in cards) {
+      if (!Object.prototype.hasOwnProperty.call(cards, id)) continue;
+      var entry = cards[id];
+      var fresh = entry.doneAt && now - entry.doneAt < HOLD_MS;
+      if (keep[id] || (fresh && !moved)) continue;
+      entry.el.remove();
+      delete cards[id];
+    }
+    var added = false;
+    for (var n = 0; n < mine.length; n++) {
+      var one = mine[n];
+      if (cards[one.requestId]) continue;
+      var card = approvalCard(one, w, role);
+      var el = build(one, card);
+      mount.appendChild(el);
+      cards[one.requestId] = { el: el, item: one, card: card, doneAt: 0, sending: false, pending: 'allow-once' };
+      added = true;
+    }
+    mount.hidden = !mount.firstChild;
+    if (added && stick) {
+      var scroller = byId('fx-scroll');
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    }
+    banner(others);
+  }
+
+  function banner(others) {
+    var bar = byId('fx-ask-bar');
+    if (!bar) return;
+    if (!others.length) { bar.hidden = true; return; }
+    var sessions = {};
+    var count = 0;
+    for (var i = 0; i < others.length; i++) {
+      if (!sessions[others[i].contextId]) { sessions[others[i].contextId] = true; count++; }
+    }
+    var text = (count > 1 ? (w.elsewhereMany || '') : (w.elsewhere || ''))
+      .replace('{m}', String(count)).replace('{n}', String(others.length));
+    var line = byId('fx-ask-bar-text');
+    // Written only when it changes: the line is a status a reader hears.
+    if (line && line.textContent !== text) line.textContent = text;
+    var go = byId('fx-ask-bar-go');
+    if (go) {
+      var first = String(others[0].contextId || '');
+      go.setAttribute('href', '/?session=' + encodeURIComponent(first));
+      go.setAttribute('data-session', first);
+    }
+    bar.hidden = false;
+  }
+
+  function notify(list) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i];
+      if (notified[item.requestId]) continue;
       notified[item.requestId] = true;
-      try { new Notification(w.title || '', { body: parts[0] + (parts[1] ? ' · ' + parts[1].slice(0, 120) : ''), tag: item.requestId }); } catch (e) { /* not shown */ }
+      var card = approvalCard(item, w, role);
+      if (!card.allow) continue;
+      try { new Notification(w.notifyTitle || '', { body: shown(card.title + (card.summary ? ' · ' + card.summary : '')), tag: item.requestId }); } catch (e) { /* not shown */ }
     }
   }
-  function close() {
-    current = null;
-    if (dialog.open) dialog.close();
-  }
+
   function poll() {
-    if (busy || document.visibilityState !== 'visible') return;
+    if (document.visibilityState !== 'visible' || (qc.isExpired && qc.isExpired())) return;
+    var mine = ++seq;
     qc.sendJson('GET', '/v0/approvals?mine=1').then(function (answer) {
-      var items = ((answer && answer.approvals) || []).filter(function (item) {
-        return item.status === 'pending' && !item.continuation && !dismissed[item.requestId];
+      if (mine !== seq) return;
+      var list = ((answer && answer.approvals) || []).filter(function (item) {
+        return item && item.status === 'pending' && !item.continuation;
       });
-      items.sort(function (a, b) { return a.createdAt - b.createdAt; });
-      if (current && !items.some(function (item) { return item.requestId === current.requestId; })) close();
-      if (!current && items.length > 0) show(items[0]);
+      list.sort(function (a, b) { return a.createdAt - b.createdAt; });
+      items = list;
+      place();
+      notify(list);
     }, function () { /* the next tick tries again */ });
   }
-  function decide(choice, retried) {
-    if (!current) return;
-    var item = current;
-    busy = true;
+
+  function decide(entry, choice, retried) {
+    if (entry.sending || entry.doneAt) return;
+    entry.sending = true;
+    entry.pending = choice;
+    hold(entry, true);
+    status(entry, '');
+    var item = entry.item;
     qc.sendJson('POST', '/v0/approvals/' + encodeURIComponent(item.requestId), {
       digest: item.digest, decision: choice
     }).then(function () {
-      busy = false;
-      dismissed[item.requestId] = true;
-      close();
-      poll();
+      entry.sending = false;
+      entry.doneAt = Date.now();
+      entry.el.classList.add('is-done');
+      var foot = entry.el.querySelector('.fx-ask-foot');
+      if (foot) foot.textContent = '';
+      var auth = entry.el.querySelector('.fx-ask-auth');
+      if (auth) auth.hidden = true;
+      status(entry, choice === 'deny' ? (w.denied || '') : (w.approved || ''));
+      setTimeout(poll, HOLD_MS + 100);
     }, function (err) {
-      busy = false;
-      var auth = document.getElementById('fx-approval-auth');
-      var status = err && err.status;
-      if (status === 403 && !retried && auth) {
+      entry.sending = false;
+      hold(entry, false);
+      var auth = entry.el.querySelector('.fx-ask-auth');
+      if (err && err.status === 403 && !retried && auth) {
         auth.hidden = false;
-        var input = document.getElementById('fx-approval-credential');
-        if (input) input.focus();
-        text('fx-approval-status', w.needCredential || '');
-        dialog.setAttribute('data-pending-choice', choice);
+        var field = auth.querySelector('input');
+        if (field) field.focus({ preventScroll: true });
+        // The whole card in view: the field and the buttons under it.
+        if (entry.el.scrollIntoView) entry.el.scrollIntoView({ block: 'nearest' });
+        status(entry, '');
         return;
       }
-      text('fx-approval-status', w.failed || '');
+      status(entry, (w.failed || '') + (err && err.human ? ' · ' + err.human : ''));
     });
   }
-  function verifyThenDecide() {
-    var input = document.getElementById('fx-approval-credential');
-    var choice = dialog.getAttribute('data-pending-choice') || 'allow-once';
-    if (!input || !input.value) return;
-    var credential = input.value;
-    input.value = '';
+
+  function verify(entry, choice) {
+    var field = entry.el.querySelector('.fx-ask-auth input');
+    if (!field) return;
+    if (!field.value) { field.focus(); return; }
+    var credential = field.value;
+    field.value = '';
+    hold(entry, true);
     qc.sendJson('POST', '/v0/approvals/auth', { credential: credential }).then(function () {
-      decide(choice, true);
+      var auth = entry.el.querySelector('.fx-ask-auth');
+      if (auth) auth.hidden = true;
+      hold(entry, false);
+      decide(entry, choice, true);
     }, function () {
-      text('fx-approval-status', w.failed || '');
+      hold(entry, false);
+      status(entry, w.verifyFailed || '');
+      field.focus();
     });
   }
-  dialog.addEventListener('click', function (event) {
-    var button = event.target && event.target.closest ? event.target.closest('[data-approval-choice]') : null;
-    if (!button || !current) return;
-    var choice = button.getAttribute('data-approval-choice');
-    if (choice === 'later') {
-      dismissed[current.requestId] = true;
-      close();
-      return;
-    }
-    var auth = document.getElementById('fx-approval-auth');
-    if (auth && !auth.hidden && choice === 'allow-once') {
-      verifyThenDecide();
-      return;
-    }
-    decide(choice, false);
+
+  function entryOf(target) {
+    var el = target && target.closest ? target.closest('.fx-ask') : null;
+    return el ? cards[el.getAttribute('data-request') || ''] || null : null;
+  }
+
+  mount.addEventListener('click', function (event) {
+    var button = event.target && event.target.closest ? event.target.closest('[data-ask-choice]') : null;
+    var entry = button ? entryOf(button) : null;
+    if (!entry) return;
+    var picked = button.getAttribute('data-ask-choice') || '';
+    var auth = entry.el.querySelector('.fx-ask-auth');
+    if (auth && !auth.hidden) verify(entry, picked);
+    else decide(entry, picked, false);
   });
-  dialog.addEventListener('submit', function (event) {
+  mount.addEventListener('submit', function (event) {
     event.preventDefault();
-    verifyThenDecide();
+    var entry = entryOf(event.target);
+    if (entry) verify(entry, entry.pending || 'allow-once');
   });
-  dialog.addEventListener('cancel', function () {
-    if (current) dismissed[current.requestId] = true;
-    current = null;
+  // Another conversation on screen: its cards now, without waiting a tick.
+  document.addEventListener('qianmo:front-view', function () {
+    if (openSession() !== shownSession) place();
   });
   document.addEventListener('visibilitychange', poll);
   window.addEventListener('focus', poll);
