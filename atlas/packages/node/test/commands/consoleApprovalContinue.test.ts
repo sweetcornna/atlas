@@ -153,6 +153,11 @@ for (const terminal of [
             }),
           )
         } else {
+          // The continuing turn may run in a session that never saw the call:
+          // it is told which tool to call again.
+          expect((message.payload as { prompt: string }).prompt).toBe(
+            `Continue the operation associated with approval ${request!.requestId}: call write again with the arguments it was approved with. Keep the approved tool and arguments unchanged.`,
+          )
           expect(grants.use(call).kind).toBe('hit')
           // Keep the continuation in flight until the test sends its terminal result.
           original = message

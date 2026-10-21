@@ -99,7 +99,23 @@ function askArguments(raw: unknown): AskArguments | string {
   const known = new Set(['agent', 'agents', 'message', 'timeoutSec'])
   if (Object.keys(params).some(key => !known.has(key)))
     return 'Invalid arguments.'
-  const { agent, agents, message, timeoutSec } = params
+  // A provider's strict mode makes every field required: a model fills the
+  // ones it does not mean with null or '', or repeats agent inside agents.
+  const message = params['message']
+  const timeoutSec = params['timeoutSec'] ?? undefined
+  const agent =
+    params['agent'] === '' ? undefined : (params['agent'] ?? undefined)
+  let agents =
+    Array.isArray(params['agents']) && params['agents'].length === 0
+      ? undefined
+      : (params['agents'] ?? undefined)
+  if (
+    typeof agent === 'string' &&
+    Array.isArray(agents) &&
+    agents.length === 1 &&
+    agents[0] === agent
+  )
+    agents = undefined
   let targets: string[]
   if (agent !== undefined && agents !== undefined)
     return 'Give either agent or agents, not both.'

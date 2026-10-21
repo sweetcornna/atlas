@@ -104,7 +104,12 @@ function name(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 200
 }
 
-/** The arguments with only known keys, `null` read as left out. */
+/**
+ * The arguments with only known keys, `null` and `''` read as left out: a
+ * provider's strict mode makes every field required, and a model fills the
+ * ones it does not mean with either. (A value inside `input` is untouched:
+ * `''` there can be the new value.)
+ */
 function known(
   raw: unknown,
   keys: readonly string[],
@@ -112,7 +117,7 @@ function known(
   if (!plain(raw) || Object.keys(raw).some(key => !keys.includes(key)))
     return null
   return Object.fromEntries(
-    Object.entries(raw).filter(([, value]) => value !== null),
+    Object.entries(raw).filter(([, value]) => value !== null && value !== ''),
   )
 }
 

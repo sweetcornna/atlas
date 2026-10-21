@@ -153,12 +153,7 @@ test('arguments are checked before the hub hears anything; null counts as left o
       ok: false,
       text: 'Invalid arguments.',
     })
-  for (const bad of [
-    null,
-    { area: 7 },
-    { area: '' },
-    { area: 'providers', extra: 1 },
-  ])
+  for (const bad of [null, { area: 7 }, { area: 'providers', extra: 1 }])
     expect(await h.list(bad)).toEqual({ ok: false, text: 'Invalid arguments.' })
   expect(h.calls).toEqual([])
   expect(h.approvals).toEqual([])
@@ -176,6 +171,15 @@ test('arguments are checked before the hub hears anything; null counts as left o
     { area: 'providers', ...TURN },
     { agent: 'ops' },
   ])
+  // So does one that fills them with '' (gpt-6-luna on the beta fleet).
+  expect((await h.list({ area: '', id: 'servers.note' })).ok).toBe(true)
+  expect(h.calls.at(-1)).toEqual([
+    'settings.list',
+    { id: 'servers.note', ...TURN },
+    { agent: 'ops' },
+  ])
+  expect((await h.list({ area: '', id: '' })).ok).toBe(true)
+  expect(h.calls.at(-1)).toEqual(['settings.list', TURN, { agent: 'ops' }])
 })
 
 test('listing forwards area and id and returns what the hub said', async () => {
@@ -354,6 +358,7 @@ test('apply: the hub’s refusal is passed on; an unknown outcome is never to be
 test('with the real grant store: a wait that runs out names the request, the person approves, the 批准并继续 turn applies on that approval without a second card, and only once', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p40-settings-'))
   const approver = generateNodeKeyPair()
+  let skew = 0
   const auth = new ResidentAuthorization({
     node: 'worker',
     keys: generateNodeKeyPair(),
@@ -361,6 +366,7 @@ test('with the real grant store: a wait that runs out names the request, the per
     commanderKeys: () => [],
     memoryRoot: root,
     estop: new ResidentEstop({ path: path.join(root, 'ESTOP') }),
+    now: () => Date.now() + skew,
   })
   const origin = {
     from: 'qianmo://hub/console',
@@ -414,8 +420,11 @@ test('with the real grant store: a wait that runs out names the request, the per
     // The person approves it after the wait (the hub's 批准并继续 decides
     // allow-once, then starts the next turn).
     expect(auth.decision(decision(first, 'allow-once'))).toBe(true)
-    // Turn 2: the identical call. No second card; apply carries the grant's id.
+    // Turn 2, two minutes on (past the decision's own minute): the identical
+    // call. No second card; apply carries the grant's id.
+    skew = 2 * 60_000
     const applied = await h.change(CHANGE)
+    skew = 0
     expect(applied.ok).toBe(true)
     expect(sent).toHaveLength(1)
     const apply = h.calls.filter(([op]) => op === 'settings.apply')

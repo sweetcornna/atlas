@@ -3364,6 +3364,34 @@ export function settingsBound(
   }
 }
 
+/**
+ * The `qianmo_settings_change` arguments that bind `bound` again, or `null`
+ * when the bound cannot give them back: a secret is in it only as its mark.
+ */
+export function settingsCallOf(bound: unknown): Args | null {
+  const found = recordOf(bound)
+  if (
+    found === null ||
+    typeof found['id'] !== 'string' ||
+    hasSecretMark(found['input'])
+  )
+    return null
+  const target = recordOf(found['target'])
+  const input = found['input']
+  return {
+    id: found['id'],
+    ...(target === null ? {} : { target }),
+    ...(input === undefined || input === null ? {} : { input }),
+  }
+}
+
+function hasSecretMark(value: unknown): boolean {
+  if (isSecretMark(value)) return true
+  if (Array.isArray(value)) return value.some(hasSecretMark)
+  const found = recordOf(value)
+  return found !== null && Object.values(found).some(hasSecretMark)
+}
+
 /** Key order does not matter to an equality of settings. */
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`

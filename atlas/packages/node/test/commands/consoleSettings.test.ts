@@ -758,10 +758,24 @@ describe('what an approval is good for (P40 §§5, 8)', () => {
     expect(f.notes.stored.get('p11')?.note).toBe('有人先改了')
   })
 
-  test('not after its minute, and not once the approver is gone', async () => {
+  test('past the decision’s minute but not past its request, and not once the approver is gone', async () => {
     const f = await fixture()
-    const late = await approved(f, { note: 'late' })
+    // The 批准并继续 turn makes the call after the decision's minute on the wire.
+    const later = await approved(f, { note: 'later' })
     f.skew.ms = 61_000
+    expect(
+      valueOf(
+        await f.call('settings.apply', {
+          ...NOTE,
+          input: { note: 'later' },
+          approvalId: later.requestId,
+        }),
+      )['summary'],
+    ).toBe('已更改 服务器 · 服务器备注')
+    f.skew.ms = 0
+
+    const late = await approved(f, { note: 'late' })
+    f.skew.ms = late.exp - Date.now() + 1_000
     expect(
       refusal(
         await f.call('settings.apply', {
@@ -785,7 +799,7 @@ describe('what an approval is good for (P40 §§5, 8)', () => {
         }),
       ),
     ).toBe(SPENT_OR_WRONG)
-    expect(f.notes.stored.size).toBe(0)
+    expect(f.notes.stored.get('p11')?.note).toBe('later')
   })
 
   test('one approval at a time, by somebody who could make the change', async () => {

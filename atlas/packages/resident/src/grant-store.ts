@@ -70,6 +70,25 @@ function oneShotOnlyTool(toolName: string): boolean {
   )
 }
 
+/**
+ * When a one-shot grant dies: never after its request, and at the signed
+ * decision's own end for the tools whose waiting call takes it. A settings
+ * change (P40) is taken by the identical call in the turn 批准并继续 starts,
+ * which comes after the decision's minute on the wire, so it lives as long as
+ * its request does.
+ */
+function oneShotEnd(
+  toolName: string,
+  expiresAt: number,
+  decisionExp: number,
+  requestExp: number,
+): number {
+  const end = Math.min(expiresAt, requestExp)
+  return toolName === 'qianmo_settings_change'
+    ? end
+    : Math.min(end, decisionExp)
+}
+
 /** Why the store said no. `integrity` covers a ledger it cannot trust or write. */
 export type AuthzRefusal =
   | 'integrity'
@@ -622,7 +641,12 @@ export class FileGrantStore {
       grantId,
       expiresAt:
         expiresAt !== null && oneShotOnlyTool(state.request.toolName)
-          ? Math.min(expiresAt, decision.exp, state.request.exp)
+          ? oneShotEnd(
+              state.request.toolName,
+              expiresAt,
+              decision.exp,
+              state.request.exp,
+            )
           : expiresAt,
     })
     if (!recorded) return { ok: false, reason: 'integrity' }

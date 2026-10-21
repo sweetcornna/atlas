@@ -229,6 +229,7 @@ export {
   settingOperations,
   settingRequestProblem,
   settingsBound,
+  settingsCallOf,
   settingUnchanged,
   type JsonSchema,
   type SettingOperation,
