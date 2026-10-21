@@ -107,18 +107,20 @@ describe.skipIf(SKIP !== null)('a row’s 更多 menu in a browser', () => {
         `document.getElementById('more-probe').innerHTML`,
       ),
     ).toBe(before)
-    expect(await tab.evaluate<boolean>(`${MENU}.matches(':popover-open')`)).toBe(
-      true,
-    )
+    expect(
+      await tab.evaluate<boolean>(`${MENU}.matches(':popover-open')`),
+    ).toBe(true)
   })
 
   test('a pick closes it, runs the action and leaves the focus on the button', async () => {
-    await tab.evaluate(`${MENU}.querySelector('[data-action="probe-edit"]').click()`)
+    await tab.evaluate(
+      `${MENU}.querySelector('[data-action="probe-edit"]').click()`,
+    )
     await tab.waitFor(`window.__calls.length === 1`)
     expect(await tab.evaluate<string[]>('window.__calls')).toEqual(['edit a'])
-    expect(await tab.evaluate<boolean>(`${MENU}.matches(':popover-open')`)).toBe(
-      false,
-    )
+    expect(
+      await tab.evaluate<boolean>(`${MENU}.matches(':popover-open')`),
+    ).toBe(false)
     expect(
       await tab.evaluate<boolean>(`document.activeElement === ${BUTTON}`),
     ).toBe(true)

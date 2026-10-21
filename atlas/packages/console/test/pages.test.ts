@@ -305,7 +305,9 @@ describe('every page', () => {
 
   test('the sidebar breaks a group into clusters with space alone, the way Claude Desktop does', async () => {
     const page = await read('/admin/overview')
-    const gaps = [...page.matchAll(/class="nav-item nav-gap" id="nav-([a-z]+)"/g)]
+    const gaps = [
+      ...page.matchAll(/class="nav-item nav-gap" id="nav-([a-z]+)"/g),
+    ]
     expect(gaps.map(match => match[1])).toEqual([
       'im',
       'approvals',
