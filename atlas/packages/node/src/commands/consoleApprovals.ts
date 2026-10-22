@@ -44,6 +44,7 @@ import {
 } from '@qianmo/protocol'
 import { TransportClient, TransportReceiptError } from '@qianmo/transport'
 import { NodeRouter } from '@qianmo/router'
+import type { LiveTurnCall, LiveTurnOwner } from './liveTurn.js'
 
 export interface ApprovalEndpoint {
   readonly node: string
@@ -91,6 +92,12 @@ export interface ConsoleApprovalsOptions {
   readonly tenancy?: TenantPort
   readonly chat?: ChatPort
   readonly usage?: UsagePort
+  /**
+   * The owner of the person's own running turn a request names, or why it is
+   * not one (`liveTurn.ts`). Given, such a request is decided by that
+   * person's request at once, and no card is shown (owner, 2026-10-22).
+   */
+  readonly liveTurn?: (call: LiveTurnCall) => Promise<LiveTurnOwner | string>
   readonly now?: () => number
   /** Period of the redial and revoke check, 10 s; tests shorten it. */
   readonly checkEveryMs?: number
@@ -437,6 +444,52 @@ export class ConsoleApprovals implements ApprovalPort {
     }
     this.#append('request', { wire: wire as string, node: target.node })
     this.#requests.set(request.requestId, { request, status: 'pending' })
+    // Off the socket's message handler: deciding sends on the same link.
+    if (this.#options.liveTurn)
+      queueMicrotask(() => void this.#decideForTurn(request.requestId))
+  }
+
+  /**
+   * A call the agent makes inside a person's own running turn is authorized
+   * by that person's request (owner, 2026-10-22: no step-by-step approval):
+   * the hub decides it allow-once as the conversation's owner, signed like a
+   * click, while the node is still waiting, so the call goes ahead in the
+   * same turn. Everything a click checks is checked the same way (`decide`):
+   * the owner's account and tenant, and for a settings change the role it
+   * needs. A request from anywhere else, or one `decide` refuses, stays
+   * pending for a person to decide on a card as before.
+   */
+  async #decideForTurn(requestId: string): Promise<void> {
+    const cached = this.#requests.get(requestId)
+    const liveTurn = this.#options.liveTurn
+    if (!cached || !liveTurn || cached.status !== 'pending') return
+    const { request } = cached
+    const { origin } = request
+    if (
+      origin.from !== this.#options.from ||
+      origin.trust !== 'verified-capability' ||
+      !origin.taskId
+    )
+      return
+    try {
+      const owner = await liveTurn({
+        contextId: request.contextId,
+        taskId: origin.taskId,
+        address: request.sub,
+      })
+      if (typeof owner === 'string') return
+      const decided = await this.decide(
+        owner,
+        { requestId, digest: request.digest, decision: 'allow-once' },
+        'chat-turn',
+      )
+      if (!decided.ok && decided.failure.code === 'unreachable')
+        this.#options.onError?.(
+          new Error(`turn approval not delivered: ${decided.failure.message}`),
+        )
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
   }
 
   async #link(target: ApprovalEndpoint): Promise<TransportClient> {
@@ -605,9 +658,14 @@ export class ConsoleApprovals implements ApprovalPort {
     await link.sendAndWait(routed.message, 5_000)
   }
 
+  /**
+   * `basis` is `chat-turn` when the person's own request decided it
+   * (`#decideForTurn`); a click leaves it out.
+   */
   async decide(
     principal: ConsolePrincipal,
     input: ApprovalDecisionInput,
+    basis?: 'chat-turn',
   ): Promise<ConsoleResult<{ readonly delivered: boolean }>> {
     const cached = this.#requests.get(input.requestId)
     if (!cached) return refusal('not_found', '没有这条审批请求')
@@ -674,7 +732,11 @@ export class ConsoleApprovals implements ApprovalPort {
         exp,
         nonce: randomBytes(24).toString('base64url'),
       })
-      this.#append('decision', { requestId: input.requestId, wire: decision })
+      this.#append('decision', {
+        requestId: input.requestId,
+        wire: decision,
+        ...(basis === undefined ? {} : { basis }),
+      })
       cached.approver = approver
       cached.once = input.decision === 'allow-once'
       cached.allowedUntil = allowedUntil(cached.request, exp)

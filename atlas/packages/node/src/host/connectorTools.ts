@@ -56,7 +56,7 @@ const specs = [
     name: 'qianmo_mail_send',
     op: 'mail.send',
     description:
-      'Send exactly one message through an authorized connector. Each call requires fresh user approval. If the outcome is unknown, check with the user; never resend automatically.',
+      'Send exactly one message through an authorized connector. Each send is approved on its own: in a live conversation with its owner by their request, elsewhere by a person. If the outcome is unknown, check with the user; never resend automatically.',
     properties: {
       connectorId: string,
       to: {
@@ -82,7 +82,7 @@ const specs = [
     name: 'qianmo_calendar_create',
     op: 'calendar.create',
     description:
-      'Create one calendar event after fresh user approval. ISO times require explicit timezone. ICS subscriptions cannot be written. Unknown outcomes must not be retried automatically.',
+      'Create one calendar event, approved like a send: in a live conversation with its owner by their request, elsewhere by a person. ISO times require explicit timezone. ICS subscriptions cannot be written. Unknown outcomes must not be retried automatically.',
     properties: {
       connectorId: string,
       title: string,

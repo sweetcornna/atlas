@@ -568,6 +568,178 @@ test('real signed transport + FileGrantStore: ownership, digest, a login of any 
   }
 }, 15_000)
 
+test("a call inside the owner's own running turn is decided by that request: no card, signed as the owner", async () => {
+  const root = mkdtempSync(join(tmpdir(), 'qm-console-turn-'))
+  const nodeKeys = generateNodeKeyPair(),
+    commander = generateNodeKeyPair(),
+    approvalKeys = generateNodeKeyPair()
+  const book = new AccountBook({ accounts: ledger(), sessions: ledger() }),
+    alice = person(book)
+  expect(book.recordOwner('owned-chat', alice.subject).ok).toBe(true)
+  const grants = new FileGrantStore({
+    path: join(root, 'protected', 'node-authz.ndjson'),
+    node: 'worker',
+    approvers: new Map([['hub', approvalKeys.publicKey]]),
+    commanderKeys: () => [commander.publicKey],
+    hardline: new ResidentHardline({ stateRoots: [join(root, 'protected')] }),
+    estop: new ResidentEstop({ path: join(root, 'ESTOP') }),
+  })
+  const ask = (
+    content: string,
+    taskId: string,
+    trust: 'verified-capability' | 'untrusted' = 'verified-capability',
+    toolName = 'Write',
+  ) => {
+    const call = {
+      agent: 'main',
+      contextId: 'owned-chat',
+      toolName,
+      input: { file_path: join(root, 'outside.txt'), content },
+    }
+    const result = grants.ask({
+      ...call,
+      origin: { from: 'qianmo://hub/console', taskId, traceId: null, trust },
+    })
+    if (result.kind !== 'pending') throw new Error('not pending')
+    return { call, request: result.request }
+  }
+  let channel: TransportChannel | undefined
+  let decisions = 0
+  const server = startTransportServer({
+    hostname: '127.0.0.1',
+    port: 0,
+    psk: 'approval-turn-psk-0000000000000000000000',
+    signing: {
+      node: 'worker',
+      keys: nodeKeys,
+      directory: new StaticPublicKeyDirectory([['hub', commander.publicKey]]),
+      required: true,
+    },
+    supportedTypes: [
+      MessageType.AuthzRequest,
+      MessageType.AuthzDecision,
+      MessageType.AuthzRevoke,
+    ],
+    onMessage: (message, context) => {
+      channel = context.channel
+      const payload = message.payload as Record<string, unknown>
+      if (message.type === MessageType.AuthzDecision) {
+        if (!grants.applyDecision(payload['decision']).ok)
+          throw new Error('refused decision')
+        decisions++
+      }
+    },
+  })
+  // The live turn is `turn-live`; anything else reads as a schedule's turn.
+  const asked: { contextId: string; taskId: string; address: string }[] = []
+  const hub = new ConsoleApprovals({
+    from: 'qianmo://hub/console',
+    accounts: book,
+    commandKeys: commander,
+    approvalKeys,
+    targets: [
+      {
+        node: 'worker',
+        url: server.url!,
+        psk: 'approval-turn-psk-0000000000000000000000',
+        publicKey: nodeKeys.publicKey,
+      },
+    ],
+    ledger: new FileLedger(join(root, 'console-authz.ndjson')),
+    liveTurn: async call => {
+      asked.push({ ...call })
+      return call.taskId === 'turn-live'
+        ? alice
+        : '定时任务的会话不能改设置 · 没有人在看这一轮'
+    },
+  })
+  const raise = async (request: AuthzRequest) =>
+    await channel!.sendAndWait(
+      createMessage({
+        from: 'qianmo://worker/main',
+        to: 'qianmo://hub/console',
+        type: MessageType.AuthzRequest,
+        payload: { request: signAuthzRequest(nodeKeys, request) },
+        hops: ['worker'],
+      }),
+    )
+  const status = async (requestId: string) => {
+    const list = await hub.list(alice)
+    return list.ok
+      ? list.value.find(row => row.requestId === requestId)?.status
+      : undefined
+  }
+  try {
+    hub.start()
+    await until(() => channel !== undefined)
+    // In the owner's live turn: decided at once, nobody clicks.
+    const live = ask('live', 'turn-live')
+    await raise(live.request)
+    await until(() => decisions === 1)
+    expect(grants.use(live.call).kind).toBe('hit')
+    expect(await status(live.request.requestId)).toBe('allowed')
+    expect(asked).toEqual([
+      {
+        contextId: 'owned-chat',
+        taskId: 'turn-live',
+        address: 'qianmo://worker/main',
+      },
+    ])
+    const rows = readFileSync(join(root, 'console-authz.ndjson'), 'utf8')
+      .trim()
+      .split('\n')
+      .map(
+        line =>
+          JSON.parse(line) as {
+            kind: string
+            data: { requestId?: string; basis?: string; wire?: string }
+          },
+      )
+      .filter(row => row.kind === 'decision')
+    expect(rows.map(row => [row.data.requestId, row.data.basis])).toEqual([
+      [live.request.requestId, 'chat-turn'],
+    ])
+    // Signed like a click, with the conversation's owner as the approver.
+    const signed = JSON.parse(
+      Buffer.from(rows[0]!.data.wire!.split('.')[0]!, 'base64url').toString(),
+    ) as { approver: string; decision: string }
+    expect(signed).toMatchObject({
+      approver: `hub/${alice.subject}`,
+      decision: 'allow-once',
+    })
+    // A fresh-approval tool is decided the same way, once per call.
+    const memory = ask(
+      'note',
+      'turn-live',
+      'verified-capability',
+      'qianmo_memory_write',
+    )
+    await raise(memory.request)
+    await until(() => decisions === 2)
+    expect(grants.use(memory.call).kind).toBe('hit')
+    expect(grants.use(memory.call).kind).toBe('miss')
+    // A schedule's turn has nobody in it: it waits for a card.
+    const scheduled = ask('scheduled', 'turn-scheduled')
+    await raise(scheduled.request)
+    await until(() => asked.length === 3)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(await status(scheduled.request.requestId)).toBe('pending')
+    // A request the node did not tie to a verified console turn is not even
+    // looked up.
+    const unverified = ask('unverified', 'turn-live', 'untrusted')
+    await raise(unverified.request)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(asked).toHaveLength(3)
+    expect(await status(unverified.request.requestId)).toBe('pending')
+    expect(decisions).toBe(2)
+    expect(grants.use(scheduled.call).kind).toBe('miss')
+  } finally {
+    await hub.close()
+    await server.stop()
+    grants.close()
+  }
+}, 15_000)
+
 test('one subscription per connection: quiet periods send nothing, a reconnect or a dead link subscribes again, requests still flow', async () => {
   const root = mkdtempSync(join(tmpdir(), 'qm-console-authz-sub-'))
   const node = approvalNode(root),

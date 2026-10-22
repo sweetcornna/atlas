@@ -37,7 +37,6 @@
 
 import {
   type ChatPort,
-  type ChatTranscript,
   type ConsoleAccounts,
   type ConsoleHandler,
   type ConsolePrincipal,
@@ -56,9 +55,9 @@ import {
   settingUnchanged,
 } from '@qianmo/console'
 import type { ControlOutcome } from '@qianmo/protocol'
-import { terminalReply } from './chatTurn.js'
 import type { ConsoleApprovals } from './consoleApprovals.js'
 import type { HubCallHandler } from './consoleControl.js'
+import { liveTurnOwner } from './liveTurn.js'
 
 type User = Extract<ConsolePrincipal, { kind: 'user' }>
 
@@ -218,9 +217,8 @@ export class ConsoleSettings {
   }
 
   /**
-   * Who is calling: the conversation named by `contextId` must be with this
-   * very agent, a foreground one, and `taskId` must be a turn a person
-   * started there that is still waiting for its answer.
+   * Who is calling: a person's own turn with this very agent, still running
+   * ({@link liveTurnOwner}), and its owner as an active account.
    */
   async #caller(
     args: Record<string, unknown>,
@@ -234,54 +232,24 @@ export class ConsoleSettings {
       !ctx.agent
     )
       return '缺少会话信息'
-    let transcript: ChatTranscript
-    try {
-      const read = await this.#options.chat.transcript(contextId)
-      if (!read.ok) return '会话不存在'
-      transcript = read.value
-    } catch {
-      return '会话不存在'
-    }
     const address = `qianmo://${ctx.node}/${ctx.agent}`
-    if (transcript.session.target !== address) return '会话不属于这个智能体'
-    if (
-      transcript.session.background === true ||
-      this.#options.worker?.(contextId) === true
-    )
-      return '后台子任务不能改设置 · 交回发起它的对话去做'
-    if (this.#options.scheduled?.(contextId) === true)
-      return '定时任务的会话不能改设置 · 没有人在看这一轮'
-    if (this.#options.foreground?.(contextId) === false)
-      return '只有主人的私聊和控制台对话能改设置'
-    const turns = transcript.turns
-    const asked = turns.some(
-      turn => turn.author === 'operator' && turn.taskId === taskId,
-    )
-    // The same terminal rule the task worker waits on (`consoleTasks.ts`).
-    if (!asked || terminalReply(turns, taskId) !== undefined)
-      return '这一轮不在进行中 · 只有人发起的一轮能改设置'
-    const subject = this.#options.accounts.book.ownerOf(contextId)
-    if (subject === null) return '这个对话没有个人账号主人'
-    const listed = this.#options.accounts.book.list()
-    const account = listed.ok
-      ? listed.value.accounts.find(
-          row => row.subject === subject && row.state === 'active',
-        )
-      : undefined
-    if (account === undefined) return '对话主人的账号已不可用'
-    return {
-      contextId,
-      node: ctx.node,
-      agent: ctx.agent,
-      address,
-      owner: {
-        kind: 'user',
-        subject: account.subject,
-        role: account.role,
-        credential: 'bearer',
-        authenticatedAt: this.#now(),
+    const owner = await liveTurnOwner(
+      {
+        chat: this.#options.chat,
+        book: this.#options.accounts.book,
+        ...(this.#options.scheduled
+          ? { scheduled: this.#options.scheduled }
+          : {}),
+        ...(this.#options.foreground
+          ? { foreground: this.#options.foreground }
+          : {}),
+        ...(this.#options.worker ? { worker: this.#options.worker } : {}),
+        now: this.#now,
       },
-    }
+      { contextId, taskId, address },
+    )
+    if (typeof owner === 'string') return owner
+    return { contextId, node: ctx.node, agent: ctx.agent, address, owner }
   }
 
   /** Reads through the console as the conversation's owner. */
