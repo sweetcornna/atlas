@@ -803,6 +803,21 @@ describe('the error mapping (C5)', () => {
     ).toBe('请求内容不合法')
   })
 
+  test('an approval refusal reaches the page as written, not as the bare code', () => {
+    // 2026-10-22 P40: 批准并继续 before the agent's turn ended read only
+    // 对端拒绝执行, because the reason carried a ，and so was never shown.
+    const source = readFileSync(
+      join(SOURCES[1] as string, 'consoleApprovals.ts'),
+      'utf8',
+    )
+    const refusals = [
+      ...source.matchAll(/refusal\(\s*'(\w+)',\s*'([^'\n]+)'/g),
+    ].map(([, code, message]) => [code, message] as const)
+    expect(refusals.length).toBeGreaterThan(15)
+    for (const [code, message] of refusals)
+      expect(humanizeError({ code, message }).text).toBe(message)
+  })
+
   test('the browser runtime maps every string exactly as the server does', () => {
     const start = CONSOLE_CLIENT_JS.indexOf('/* humanize:start */')
     const end = CONSOLE_CLIENT_JS.indexOf('/* humanize:end */')

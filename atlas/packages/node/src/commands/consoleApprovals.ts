@@ -618,7 +618,7 @@ export class ConsoleApprovals implements ApprovalPort {
     let locked = false
     try {
       if (!this.#visible(principal, cached, true))
-        return refusal('refused', '审批需要有效的本人凭据与会话权限')
+        return refusal('refused', '这个账户不能批准这条请求')
       if (
         cached.status !== 'pending' ||
         cached.request.exp <= this.#now() ||
@@ -630,7 +630,7 @@ export class ConsoleApprovals implements ApprovalPort {
         freshApprovalTool(cached.request.toolName) &&
         input.decision === 'allow-window'
       )
-        return refusal('invalid', '此工具必须逐次批准，不支持授权窗口')
+        return refusal('invalid', '此工具必须逐次批准 · 不支持授权窗口')
       if (cached.request.toolName === SETTINGS_TOOL) {
         // P40 §5.2: a change is approved once, by somebody who could make it.
         if (input.decision === 'allow-window')
@@ -846,7 +846,7 @@ export class ConsoleApprovals implements ApprovalPort {
     const cached = this.#requests.get(input.requestId),
       chat = this.#options.chat
     if (!cached || !chat || !this.#options.usage)
-      return refusal('not_found', '审批请求、原会话或用量记录不可用')
+      return refusal('not_found', '审批请求 · 原会话或用量记录不可用')
     let reservation: string | undefined
     let accepted = false
     let locked = false
@@ -864,7 +864,7 @@ export class ConsoleApprovals implements ApprovalPort {
         this.#continuing.has(input.requestId) ||
         !authorized()
       )
-        return refusal('refused', '审批继续已提交或权限已变化，请查看原会话')
+        return refusal('refused', '这条审批已继续过或已失效 · 请查看原会话')
       this.#continuing.add(input.requestId)
       locked = true
       const original = cached.request.origin.taskId
@@ -903,7 +903,10 @@ export class ConsoleApprovals implements ApprovalPort {
             !completed.has(row.taskId),
         )
       )
-        return refusal('refused', '原任务尚未终止或会话忙碌，请等待原任务结束')
+        return refusal(
+          'refused',
+          '原任务还没结束或会话正忙 · 等智能体回复后再点',
+        )
       const tenant = this.#options.tenancy
         ?.read()
         .config.nodes.find(row => row.nodeId === cached.request.iss)?.tenant
@@ -932,7 +935,7 @@ export class ConsoleApprovals implements ApprovalPort {
         if (!decision.ok) return decision
       }
       if (!authorized())
-        return refusal('refused', '审批权限已变化，继续任务未发送')
+        return refusal('refused', '审批权限已变化 · 继续任务未发送')
       const sent = await chat.send({
         sessionId: session.id,
         text: continuationText(cached.request),
@@ -944,7 +947,7 @@ export class ConsoleApprovals implements ApprovalPort {
       if (sent.value.deliveryUnknown || !sent.value.taskId)
         return refusal(
           'unreachable',
-          '继续任务结果未确认，请查看原会话；不会自动重发',
+          '继续任务结果未确认 · 不会自动重发 · 请查看原会话',
         )
       this.#append('continued', {
         requestId: input.requestId,
@@ -959,7 +962,7 @@ export class ConsoleApprovals implements ApprovalPort {
       this.#report(cached.request.iss, '审批后的继续任务未确认', error)
       return refusal(
         'unreachable',
-        '继续任务结果未确认，请查看原会话；不会自动重发',
+        '继续任务结果未确认 · 不会自动重发 · 请查看原会话',
       )
     } finally {
       if (locked) this.#continuing.delete(input.requestId)
@@ -1016,7 +1019,7 @@ export class ConsoleApprovals implements ApprovalPort {
       return refusal('not_found', '没有这条已签发授权')
     try {
       if (!this.#visible(principal, cached, true))
-        return refusal('refused', '撤销需要有效的本人凭据与会话权限')
+        return refusal('refused', '这个账户不能撤销这条授权')
       this.#queueRevoke(cached)
       await this.#flushRevokes()
       return cached.revokePending

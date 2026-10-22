@@ -1064,7 +1064,7 @@ export function createConsoleChatPort(
         )
       }
       if (!continuationAllowed())
-        return fail('refused', '原任务尚未结束、会话忙碌或审批权限已变化')
+        return fail('refused', '原任务未结束 会话忙碌或审批权限已变化')
 
       let message: QianmoMessage
       try {
