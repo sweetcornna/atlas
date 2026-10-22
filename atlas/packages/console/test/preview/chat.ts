@@ -67,21 +67,80 @@ export class PreviewChat implements ChatPort {
         '已整理成三步 · 见下\n\n1. 冻结分支\n2. 跑全量门禁\n3. 灰度两台节点',
       ],
     ])
+    // `/app`'s list (P37.10): conversations across agents and days, one long
+    // conversation with steps and a pause, and one agent working a computer.
+    const hour = 3_600_000
+    const day = 24 * hour
+    this.#seed('qianmo://hub/ops', now - 70 * 60_000, [
+      ['operator', '把桌面版的发布清单整理出来 · 按平台分开'],
+      ['notice', '读：docs/dev/qmo-app.md'],
+      ['notice', '搜：P37.8 · 包表'],
+      ['notice', '执行：git log --oneline -20 -- atlas/apps/qmo'],
+      [
+        'agent',
+        '按平台整理如下\n\n**macOS**\n\n- 本机构建 `bun run atlas:build:app`\n- 走完配对 · 进门 · 对话 · 退出\n- 红绿灯位置与 48 px 顶栏对齐\n\n**Windows 与 Linux**\n\n- 至少编译通过\n- 安装包放到 P37.12\n\n签名 公证与自动更新不在本轮',
+      ],
+      ['operator', '再核对一下中枢这边的路由有没有写进路由表', 25 * 60_000],
+      ['notice', '读：docs/dev/console.md'],
+      ['warn', '执行：bun test atlas/packages/console/test/routeDocs.test.ts'],
+      ['notice', '改：docs/dev/console.md'],
+      [
+        'agent',
+        '路由表补了两行\n\n```\nGET /app\nGET /app/quick\n```\n\n路由文档用例已过 · 反向扫描也没有多出的路径',
+      ],
+    ])
+    this.#seed('qianmo://beta-5/coder', now - 3 * 60_000, [
+      ['operator', '在云端电脑上打开控制台 · 截一张对话页的图给我'],
+      ['notice', '读：atlas/packages/console/test/preview/README.md'],
+      ['notice', 'computer：打开 http://127.0.0.1:38700/app'],
+    ])
+    this.#seed('qianmo://beta-5/coder', now - 2 * hour, [
+      ['operator', '修一下 mailbox 持锁用例的偶发失败'],
+      ['notice', '读：atlas/packages/node/src/mailbox.ts'],
+      ['notice', '改：atlas/packages/node/src/mailbox.ts'],
+      ['agent', '已改成先进队再建目录 · 本地连跑 200 次全绿'],
+    ])
+    this.#seed('qianmo://hub/ops', now - day - 2 * hour, [
+      ['operator', '复盘昨晚 beta-4 的唤醒失败'],
+      ['agent', 'beta-4 在 23:40 断开控制链路 · 唤醒请求在队列里超时 · 已重连'],
+    ])
+    this.#seed('qianmo://beta-4/writer', now - 2 * day, [
+      ['operator', '起草十月的运维周报'],
+      ['agent', '初稿已写好 · 等你补充两条事故记录'],
+    ])
+    this.#seed('qianmo://beta-1/planner', now - 5 * day, [
+      ['operator', '排一下下周的值守表'],
+      ['agent', '已按三人轮值排好 · 周三需要换班'],
+    ])
+    this.#seed('qianmo://hub/ops', now - 12 * day, [
+      ['operator', '核对 magpie 网关的限额'],
+      ['agent', '三把密钥都在限额内 · 最高用到 62%'],
+    ])
+    this.#seed('qianmo://beta-5/reviewer', now - 20 * day, [
+      ['operator', '审一下 feat/harness-backends 的第 6 条'],
+      ['agent', '第 6 条通过 · 留了两条建议'],
+    ])
+    this.#seed('qianmo://hub/ops', now - 45 * day, [
+      ['operator', '清理 p5 上的旧备份'],
+      ['agent', '只留最近三代 · 释放 2.9 GB'],
+    ])
   }
 
   #seed(
     target: string,
     at: number,
-    lines: readonly (readonly [string, string])[],
+    lines: readonly (readonly [string, string, number?])[],
   ): void {
     const session = this.#make(target, at)
     const turns: ChatTurn[] = []
-    lines.forEach(([kind, text], index) => {
+    let when = at
+    lines.forEach(([kind, text, after], index) => {
+      when += index === 0 ? 0 : (after ?? 4_000)
       turns.push({
         id: `seed-${session.id}-${index}`,
         sessionId: session.id,
         author: kind === 'operator' ? 'operator' : 'agent',
-        at: at + index * 4_000,
+        at: when,
         text,
         state: kind === 'operator' ? 'read' : 'done',
         ...(kind === 'operator'
@@ -95,11 +154,12 @@ export class PreviewChat implements ChatPort {
                 '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
             }
           : {}),
-        ...(kind === 'notice'
+        ...(kind === 'notice' || kind === 'warn'
           ? {
               variant: 'notice' as const,
-              severity: 'info' as const,
+              severity: kind === 'warn' ? ('warn' as const) : ('info' as const),
               noticeSource: 'step' as const,
+              ...(kind === 'warn' ? { detail: '1 skip · 用例数 431 行' } : {}),
             }
           : {}),
       })
