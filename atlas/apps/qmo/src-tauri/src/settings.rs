@@ -23,10 +23,12 @@ pub struct Settings {
     pub device_name: Option<String>,
 }
 
-/// ⌥Space on macOS, Ctrl+Alt+Space elsewhere (qmo-app.md §6).
+/// ⌥⇧Space on macOS, Ctrl+Alt+Space elsewhere (qmo-app.md §6). Plain ⌥Space
+/// is what ChatGPT and Gemini launchers already hold, and ⌃⌥Space is the
+/// system's next-input-source key, which anyone typing Chinese uses.
 pub fn default_shortcut() -> &'static str {
     if cfg!(target_os = "macos") {
-        "Alt+Space"
+        "Alt+Shift+Space"
     } else {
         "Control+Alt+Space"
     }

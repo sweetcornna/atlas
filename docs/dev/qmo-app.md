@@ -58,7 +58,7 @@
 
 1. 首次打开显示本地登录页：中枢地址、配对码两栏，下方一行说明配对码在中枢「连接 › 本机工具 › 添加设备」里拿。提交后壳运行 `qmo sign-in <地址> --name <主机名>`，配对码从标准输入送进去，不上命令行。
 2. 打开中枢时壳运行 `qmo session --json`。`qmo` 换一张票据，自己带 `X-Qmo-Device` 和 `Sec-Fetch-Site: none` 请求 `/client/enter`，不跟随 303，把响应里的会话 cookie 与客户端 cookie 原样（名字、值、Path、Secure、HttpOnly、SameSite、Max-Age）写到标准输出的 JSON 里，再按 clients.md §3.2 第 5 步核对票据已用掉。这与 Linux 管道路线等价：头由客户端进程加，网页加不了。
-3. 壳把 cookie 写进 WebView 的 cookie 库，再加一枚 `qianmo_shell=<macos|windows|linux>`（非 HttpOnly，供服务端渲染壳专属的边距），然后打开 `/app`。
+3. 壳把 cookie 写进 WebView 的 cookie 库，再加一枚 `qianmo_shell=<macos|windows|linux>`（非 HttpOnly，供服务端渲染壳专属的边距），然后打开 `/app`。从本地页面（`tauri://localhost`）或别的中枢跳过去时，WebKit 把这次导航当作跨站，不带 `SameSite=Strict` 的会话 cookie，中枢会把人打回 `/login`；所以壳先载入 `about:blank`、写进骨架，再从那里打开中枢。这是实测到的 WebKit 行为，不是文档承诺，WebKitGTK 上还没验证。快速输入窗换中枢时直接重建。
 4. 页面导航到 `/login`（会话过期、在别处退出）时，壳拦下，重走第 2 步后回到原地址；`qmo` 报设备已吊销时回到登录页。
 5. 退出登录在壳里是吊销这台设备：页面账号菜单的「退出登录」在桌面版里调用壳的 `qmo_sign_out`，壳运行 `qmo sign-out`、清掉 WebView 的 cookie，回到登录页。只在网页上退出没有意义，壳会马上重新进门。
 6. 中枢没开个人账号（`/v0/client/tickets` 为 404）时，壳直接打开 `/login`，由人贴凭据，和 `qmo open` 一致。
@@ -136,7 +136,7 @@
 |---|---|---|---|
 | 主窗口 | 1200×800，最小 600×400（未登录时 600×600）；标题栏叠加在内容上、隐藏标题，红绿灯约在 (17, 17)，落在侧栏顶部 48 px 那一行里；窗口底色取页面底色，不闪白 | 原生标题栏 | 原生标题栏，`WM_CLASS` 为 `Qmo` |
 | 快速输入 | 约 606 px 宽、高度随内容、16 px 圆角；无边框、透明、置顶、不进程序坞；屏幕上方三分之一处居中 | 同左，不进任务栏 | 同左（合成器不支持透明时退回不透明卡片） |
-| 快速输入快捷键 | ⌥Space | Ctrl+Alt+Space | Ctrl+Alt+Space |
+| 快速输入快捷键 | ⌥⇧Space（⌥Space 常被 ChatGPT、Gemini 占用，⌃⌥Space 是系统切换输入法），设置里可改 | Ctrl+Alt+Space | Ctrl+Alt+Space |
 | 菜单 | 应用菜单（关于、设置 ⌘,、退出）、文件（新对话 ⌘N、快速输入）、编辑、视图（重新载入、缩放、全屏）、窗口、帮助 | 托盘菜单为主 | 托盘菜单为主 |
 | 托盘 | 菜单栏模板图标：左键唤出快速输入，右键菜单（显示阡陌、新对话、设置、退出） | 通知区域图标，单击显示主窗口 | 状态图标（有 AppIndicator 时） |
 | 关窗 | 关主窗口只是隐藏，程序坞或托盘再打开；⌘Q 退出 | 关窗口隐藏到托盘 | 同 Windows |
