@@ -505,9 +505,11 @@ const BLANK_WAIT: Duration = Duration::from_secs(1);
 /// no session and send the window to `/login` for good. From a blank page the
 /// cookie goes. WebView2 does not need the step; it costs nothing there.
 fn needs_blank_step(window: &WebviewWindow, to: &Url) -> bool {
-    window
-        .url()
-        .is_ok_and(|from| from.as_str() != BLANK && from.origin() != to.origin())
+    window.url().is_ok_and(|from| blank_step_between(&from, to))
+}
+
+fn blank_step_between(from: &Url, to: &Url) -> bool {
+    from.as_str() != BLANK && from.origin() != to.origin()
 }
 
 /// Load the hub's `url` in the main window, through `about:blank` when coming
@@ -1116,6 +1118,27 @@ mod tests {
         assert!(script.contains("skeleton-side"));
         assert!(script.contains("<style>"));
         assert!(!script.contains("href=\\\"app.css\\\""));
+    }
+
+    #[test]
+    fn only_a_step_from_another_origin_goes_through_blank() {
+        let url = |s: &str| Url::parse(s).unwrap();
+        let app = url("https://hub.example.com/app");
+        for from in [
+            "tauri://localhost/skeleton.html",
+            "http://tauri.localhost/offline.html",
+            "https://other.example.com/app",
+            "https://hub.example.com:8443/app",
+        ] {
+            assert!(blank_step_between(&url(from), &app), "{from}");
+        }
+        for from in [
+            "https://hub.example.com/app?session=a",
+            "https://hub.example.com/",
+            BLANK,
+        ] {
+            assert!(!blank_step_between(&url(from), &app), "{from}");
+        }
     }
 
     #[test]
