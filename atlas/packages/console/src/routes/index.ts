@@ -127,6 +127,7 @@ export function headIndex(
  */
 export const RESERVED_PAGE_HEADS: readonly string[] = [
   'admin',
+  'app',
   'v0',
   'fragments',
   'assets',

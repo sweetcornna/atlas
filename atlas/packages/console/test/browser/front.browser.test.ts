@@ -397,5 +397,129 @@ describe.skipIf(SKIP !== null)(
         server.stop(true)
       }
     }, 30_000)
+
+    test('/app: the welcome sends to the picked agent, recents open in place, the keys reach search, sidebar and panel, and quick entry lands on the conversation', async () => {
+      const h = accountsHarness()
+      const member = await person(h.handle, 'member')
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        fetch: request => h.handle(request),
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      const press = async (
+        key: string,
+        code: string,
+        vk: number,
+        modifiers: number,
+      ) => {
+        for (const type of ['rawKeyDown', 'keyUp']) {
+          await tab.send('Input.dispatchKeyEvent', {
+            type,
+            key,
+            code,
+            windowsVirtualKeyCode: vk,
+            modifiers,
+          })
+        }
+      }
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await observeChatStream(tab)
+        await tab.goto(`${base}/app`)
+        await tab.waitFor(`window.__chatStreamOpen === true`)
+        expect(
+          await tab.evaluate<string>(
+            `document.querySelector('[data-greet]').textContent`,
+          ),
+        ).toMatch(/^(早上好|下午好|晚上好)$/)
+        expect(
+          await tab.evaluate<string>(
+            `document.querySelector('#fx-agent-menu [aria-checked="true"]').getAttribute('data-agent-pick')`,
+          ),
+        ).toBe(ADDRESS)
+        await tab.evaluate(`(() => {
+          document.getElementById('fx-text').value = '整理一下今天的告警';
+          document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        })()`)
+        await tab.waitFor(
+          `location.pathname === '/app' && location.search === '?session=session-1' && document.getElementById('fx-text').value === ''`,
+        )
+        expect(h.chat.sent.map(input => [input.sessionId, input.text])).toEqual(
+          [['session-1', '整理一下今天的告警']],
+        )
+        await tab.waitFor(
+          `!!document.querySelector('#fx-recents .fx-ritem-row.is-current[data-session="session-1"]')`,
+        )
+
+        // A new conversation, then back through the recents, without a load.
+        await tab.evaluate(`window.__sameDocument = true`)
+        await tab.evaluate(
+          `document.querySelector('#fx-side [data-action="fx-new"]').click()`,
+        )
+        await tab.waitFor(`!!document.querySelector('#fx-thread .fx-greet')`)
+        await tab.evaluate(
+          `document.querySelector('#fx-recents .fx-ritem[data-session="session-1"]').click()`,
+        )
+        await tab.waitFor(
+          `location.search === '?session=session-1' && !document.querySelector('#fx-thread .fx-greet')`,
+        )
+        expect(
+          await tab.evaluate<boolean>(`window.__sameDocument === true`),
+        ).toBe(true)
+
+        // ⌘K / Ctrl K, ⌘⇧S / Ctrl Shift S, ⌘. / Ctrl .
+        await press('k', 'KeyK', 75, 2)
+        await tab.waitFor(
+          `document.activeElement && document.activeElement.id === 'fx-search'`,
+        )
+        await tab.evaluate(`document.activeElement.blur()`)
+        await press('S', 'KeyS', 83, 10)
+        await tab.waitFor(
+          `document.getElementById('fx').getAttribute('data-side') === 'closed'`,
+        )
+        await press('S', 'KeyS', 83, 10)
+        await tab.waitFor(
+          `document.getElementById('fx').getAttribute('data-side') === 'open'`,
+        )
+        const before = await tab.evaluate<string>(
+          `document.getElementById('fx-panel-toggle').getAttribute('aria-expanded')`,
+        )
+        await press('.', 'Period', 190, 2)
+        await tab.waitFor(
+          `document.getElementById('fx-panel-toggle').getAttribute('aria-expanded') !== ${JSON.stringify(before)}`,
+        )
+
+        // Quick entry in a browser: Enter sends and the page goes to the
+        // conversation on the 对话 face.
+        await tab.goto(`${base}/app/quick`)
+        await tab.waitFor(
+          `document.activeElement && document.activeElement.id === 'fx-quick-text'`,
+        )
+        await tab.send('Input.insertText', { text: '查一下各节点的内存' })
+        await press('Enter', 'Enter', 13, 0)
+        await tab.waitFor(
+          `location.pathname === '/app' && location.search === '?session=session-2'`,
+          10_000,
+        )
+        expect(h.chat.sent.map(input => [input.sessionId, input.text])).toEqual(
+          [
+            ['session-1', '整理一下今天的告警'],
+            ['session-2', '查一下各节点的内存'],
+          ],
+        )
+        expect(h.chat.opened).toBe(2)
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
   },
 )

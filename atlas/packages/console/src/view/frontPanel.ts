@@ -26,6 +26,7 @@ import type {
 import { chevron, icon } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { formatShortDuration } from './format.js'
+import { FRONT_NARROW_PX } from './frontStyle.js'
 import type { FrontText } from './frontText.js'
 
 interface FrontPanelModel {
@@ -189,9 +190,18 @@ export function frontPanelFrame(t: FrontText): string {
   )
 }
 
-/** The bar's button that opens and closes the panel. */
+/**
+ * The bar's button that opens and closes the panel, and beside it the
+ * computer's status (Grok Bot's title-bar mark, `qmo-app.md` §4.2): a dot in
+ * the reader's 主题色 while the conversation on screen has its agent working
+ * a computer or a browser. The page lights it from the live line
+ * (`assets/frontClient.ts`); the panel it opens leads to 云端电脑.
+ */
 export function frontPanelToggle(t: FrontText): string {
   return (
+    `<button type="button" class="fx-icon-btn fx-computer" id="fx-computer" data-action="fx-panel" ` +
+    `aria-controls="fx-panel" aria-label="${attr(t.computerInUse)}" title="${attr(t.computerInUse)}" hidden>` +
+    `${icon('monitor', { small: true })}</button>` +
     `<button type="button" class="fx-icon-btn fx-panel-toggle" id="fx-panel-toggle" data-action="fx-panel" ` +
     `aria-label="${attr(t.sessionPanel)}" aria-controls="fx-panel" aria-expanded="false">` +
     `${icon('panel-right', { small: true })}<span class="fx-panel-badge" id="fx-panel-badge" hidden></span></button>`
@@ -208,7 +218,7 @@ export const FRONT_PANEL_CSS = `
   display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden;
   background: var(--color-side); border-left: 1px solid var(--color-divider);
 }
-.fx-panel-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 52px; padding: 0 8px 0 16px; flex: none; }
+.fx-panel-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: var(--fx-top-h); padding: 0 10px 0 16px; flex: none; box-sizing: border-box; }
 .fx-panel-name { font-size: var(--text-13); font-weight: 600; }
 .fx-panel-body { flex: 1 1 auto; overflow-y: auto; padding: 0 8px 16px; display: flex; flex-direction: column; gap: 16px; }
 .fx-panel-sec { display: flex; flex-direction: column; gap: 2px; }
@@ -272,7 +282,7 @@ export const FRONT_PANEL_CSS = `
   .fx[data-panel="open"][data-side="closed"] { grid-template-columns: 0 minmax(0, 1fr); }
   .fx-panel { position: fixed; inset: 0 0 0 auto; z-index: 36; width: min(320px, 90vw); box-shadow: var(--shadow-lg); }
 }
-@media (max-width: 900px) {
+@media (max-width: ${FRONT_NARROW_PX}px) {
   .fx[data-panel="open"], .fx[data-panel="open"][data-side="closed"] { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) { .fx-task-running .fx-task-dot { animation: none; } }

@@ -79,6 +79,8 @@ const PAGES = [
   '/admin/nodes',
   '/admin/nodes/tokyo-1',
   '/?session=session-1',
+  '/app',
+  '/app?session=session-1',
   '/admin/audit',
   '/admin/alerts',
   '/admin/jobs',
@@ -246,6 +248,27 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
     }
     expect(found).toEqual([])
   }, 120_000)
+
+  test('quick entry fits a phone: the card inside the width, nothing scrolls sideways', async () => {
+    const tab = await phone(browser)
+    try {
+      await open(tab, served.base, '/app/quick')
+      const fit = await tab.evaluate<{
+        scrollWidth: number
+        clientWidth: number
+        left: number
+        right: number
+      }>(`(() => {
+        const r = document.getElementById('fx-quick-form').getBoundingClientRect();
+        return { scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth, left: r.left, right: r.right };
+      })()`)
+      expect(fit.scrollWidth).toBeLessThanOrEqual(fit.clientWidth)
+      expect(fit.left).toBeGreaterThanOrEqual(0)
+      expect(fit.right).toBeLessThanOrEqual(WIDTH)
+    } finally {
+      await tab.close()
+    }
+  }, 30_000)
 
   test('the key state of the two busiest pages is on the first screen', async () => {
     const tab = await phone(browser)

@@ -37,6 +37,19 @@ interface ActivityWords {
   readonly failed: string
 }
 
+/** The keyboard help's rows, by what the keys do. */
+interface KeyWords {
+  readonly send: string
+  readonly newline: string
+  readonly newChat: string
+  readonly search: string
+  readonly side: string
+  readonly panel: string
+  readonly close: string
+  readonly help: string
+  readonly quick: string
+}
+
 export interface FrontText {
   readonly agents: string
   readonly rosterDown: string
@@ -134,8 +147,34 @@ export interface FrontText {
   readonly send: string
   readonly commandWords: Readonly<Record<string, string>>
   readonly keyboardTitle: string
-  readonly keyboardHelp: string
+  /** What each shortcut in the keyboard help does (`front.ts`, `keyboardHelp`). */
+  readonly keys: KeyWords
   readonly close: string
+
+  /**
+   * The two faces of the front and the switch between them (`qmo-app.md`
+   * §1): 对话 at `/app`, 智能体 at `/`.
+   */
+  readonly faces: string
+  readonly faceChat: string
+  readonly faceAgents: string
+  /** `/app`'s side list: every conversation, by calendar day. */
+  readonly recents: string
+  readonly dayGroups: readonly [string, string, string, string]
+  readonly noConversations: string
+  /** Over a new conversation, by the reader's hour: morning, afternoon, evening. */
+  readonly greetings: readonly [string, string, string]
+  readonly pickAgent: string
+  readonly openInAgents: string
+  sessionActions(title: string): string
+  /** The thin line at the top while the network is gone. */
+  readonly offline: string
+  readonly loading: string
+  /** The dot by the panel button while an agent works a computer or browser. */
+  readonly computerInUse: string
+  /** 快速输入 (`/app/quick`). */
+  readonly quickEntry: string
+  readonly switchAgent: string
 
   /** 模型 and 权限模式 under the composer's line (`frontTools.ts`). */
   readonly model: string
@@ -378,9 +417,33 @@ const ZH: FrontText = {
     autocompact: '自动压缩阈值',
   },
   keyboardTitle: '快捷键',
-  keyboardHelp:
-    'Enter 发送 · Shift Enter 换行 · / 搜索 · Ctrl Shift O 新对话 · Esc 关闭菜单 · ? 帮助',
+  keys: {
+    send: '发送',
+    newline: '换行',
+    newChat: '新对话',
+    search: '搜索',
+    side: '收起或展开侧栏',
+    panel: '会话面板',
+    close: '关闭弹层',
+    help: '快捷键',
+    quick: '快速输入',
+  },
   close: '关闭',
+  faces: '界面',
+  faceChat: '对话',
+  faceAgents: '智能体',
+  recents: '最近对话',
+  dayGroups: ['今天', '昨天', '过去 7 天', '更早'],
+  noConversations: '暂无对话',
+  greetings: ['早上好', '下午好', '晚上好'],
+  pickAgent: '选择智能体',
+  openInAgents: '在智能体界面打开',
+  sessionActions: title => `${title} 的操作`,
+  offline: '网络已断开 · 恢复后自动重连',
+  loading: '加载中',
+  computerInUse: '云端电脑使用中',
+  quickEntry: '快速输入',
+  switchAgent: '换智能体',
   model: '模型',
   modelAuto: '自动',
   modelAutoNote: '按节点的配置选',
@@ -570,9 +633,33 @@ const EN: FrontText = {
     autocompact: 'Auto-compact threshold',
   },
   keyboardTitle: 'Keyboard shortcuts',
-  keyboardHelp:
-    'Enter send · Shift Enter new line · / search · Ctrl Shift O new chat · Esc close menu · ? help',
+  keys: {
+    send: 'Send',
+    newline: 'New line',
+    newChat: 'New chat',
+    search: 'Search',
+    side: 'Collapse or expand the sidebar',
+    panel: 'Session panel',
+    close: 'Close menus',
+    help: 'Keyboard shortcuts',
+    quick: 'Quick entry',
+  },
   close: 'Close',
+  faces: 'View',
+  faceChat: 'Chat',
+  faceAgents: 'Agents',
+  recents: 'Recent chats',
+  dayGroups: ['Today', 'Yesterday', 'Previous 7 days', 'Older'],
+  noConversations: 'No chats yet',
+  greetings: ['Good morning', 'Good afternoon', 'Good evening'],
+  pickAgent: 'Choose an agent',
+  openInAgents: 'Open in Agents',
+  sessionActions: title => `Actions for ${title}`,
+  offline: 'Offline · reconnects when the network is back',
+  loading: 'Loading',
+  computerInUse: 'Cloud computer in use',
+  quickEntry: 'Quick entry',
+  switchAgent: 'Switch agent',
   model: 'Model',
   modelAuto: 'Auto',
   modelAutoNote: "Follows the node's configuration",
@@ -762,9 +849,33 @@ const JA: FrontText = {
     autocompact: '自動圧縮のしきい値',
   },
   keyboardTitle: 'キーボードショートカット',
-  keyboardHelp:
-    'Enter 送信 · Shift Enter 改行 · / 検索 · Ctrl Shift O 新しいチャット · Esc メニューを閉じる · ? ヘルプ',
+  keys: {
+    send: '送信',
+    newline: '改行',
+    newChat: '新しいチャット',
+    search: '検索',
+    side: 'サイドバーの開閉',
+    panel: 'セッションパネル',
+    close: 'メニューを閉じる',
+    help: 'キーボードショートカット',
+    quick: 'クイック入力',
+  },
   close: '閉じる',
+  faces: '表示',
+  faceChat: 'チャット',
+  faceAgents: 'エージェント',
+  recents: '最近のチャット',
+  dayGroups: ['今日', '昨日', '過去 7 日間', 'それ以前'],
+  noConversations: 'チャットはまだありません',
+  greetings: ['おはようございます', 'こんにちは', 'こんばんは'],
+  pickAgent: 'エージェントを選択',
+  openInAgents: 'エージェント表示で開く',
+  sessionActions: title => `${title} の操作`,
+  offline: 'オフライン · 回復すると自動で再接続します',
+  loading: '読み込み中',
+  computerInUse: 'クラウド PC を使用中',
+  quickEntry: 'クイック入力',
+  switchAgent: 'エージェントを切り替え',
   model: 'モデル',
   modelAuto: '自動',
   modelAutoNote: 'ノードの設定に従う',
@@ -920,7 +1031,15 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
   },
 }
 
-/** The page script's words, as JSON for a data attribute. */
+/**
+ * The page script's words, as JSON for a data attribute. The greetings go
+ * along: the server draws one by its own clock, the page redraws it by the
+ * reader's (`assets/frontClient.ts`).
+ */
 export function frontClientText(lang: Lang): string {
-  return JSON.stringify(CLIENT[lang])
+  return JSON.stringify({
+    ...CLIENT[lang],
+    greetings: FRONT_TEXT[lang].greetings,
+    switchAgent: FRONT_TEXT[lang].switchAgent,
+  })
 }
