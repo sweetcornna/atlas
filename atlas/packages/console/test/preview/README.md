@@ -34,3 +34,5 @@ bun atlas/packages/console/test/preview/shoot.ts --out <目录> [--as ops] [--wi
 用的是浏览器测试同一套驱动（`../browser/cdp.ts`），找不到 Chrome 时设 `QIANMO_CHROME`。
 
 `../frontPreview.ts` 是只有对话前台的旧预览，仍可单独起。
+
+`../appPreview.ts` 是给桌面版配对用的中枢（`/app`、设备配对与票据，默认端口 38691），用法见 `atlas/apps/qmo/README.md`。
