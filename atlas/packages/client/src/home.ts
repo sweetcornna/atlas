@@ -100,6 +100,8 @@ export class ClientHome {
     )
       throw new ClientError(
         `${this.statePath} 损坏，请 qmo sign-in --force 重新配对`,
+        1,
+        'invalid',
       )
     return {
       version: 1,
@@ -122,6 +124,8 @@ export class ClientHome {
     if (token === undefined || !DEVICE_TOKEN.test(token))
       throw new ClientError(
         '这台电脑的设备令牌不见了或不完整，请 qmo sign-in --force 重新配对',
+        1,
+        'invalid',
       )
     return token
   }

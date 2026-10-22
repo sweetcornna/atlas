@@ -187,6 +187,8 @@
 		"atlas:build:public": "bun atlas/scripts/build-qm.ts --edition public",
 		"atlas:check:qm-smoke": "bun atlas/scripts/check-qm-smoke.ts",
 		"atlas:build:client": "bun atlas/scripts/build-client.ts",
+		"atlas:build:app": "bun atlas/scripts/build-app.ts",
+		"atlas:dev:app": "bun atlas/scripts/build-app.ts --dev",
 		"atlas:check:client-smoke": "bun atlas/scripts/check-client-smoke.ts",
 		"qm": "bun atlas/packages/node/src/cli.ts",
 		"qianmo:acceptance": "bun atlas/scripts/qianmo-acceptance.ts",

@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "local",
+  "description": "The shell's own pages (sign-in, skeleton, offline, settings, about). Local URLs only; the hub's origin gets its six commands at run time.",
+  "local": true,
+  "windows": ["main", "signin", "settings", "about"],
+  "permissions": [
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "allow-local-state",
+    "allow-local-sign-in",
+    "allow-local-retry",
+    "allow-local-settings",
+    "allow-local-set-shortcut",
+    "allow-local-set-autostart",
+    "allow-local-set-keep-in-background",
+    "allow-local-sign-out",
+    "allow-local-open",
+    "allow-local-close"
+  ]
+}

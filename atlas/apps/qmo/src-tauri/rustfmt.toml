@@ -1,0 +1,7 @@
+# Copyright 2026 Qianmo AgentNest Team
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# The app's own Rust style: rustfmt's defaults, not the omp tree's
+# rustfmt.toml at the repository root, which this crate is no part of.
+edition = "2021"
+max_width = 100

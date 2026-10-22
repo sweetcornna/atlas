@@ -103,6 +103,7 @@
 - **Windows**：票据写在 Edge 的命令行上。别的普通用户读不到你的进程命令行，只有管理员可以。命令行上加不了请求头，所以每次进门都停在确认页，要点一次「进入」。Windows 上也能走管道，但要把两个继承句柄交给浏览器，这一轮没有做，也没有验证；原生窗口（P37.8）做好以后就不再需要这一步。
 - **Linux**：`/proc/<pid>/cmdline` 对所有用户可读，所以票据不能出现在命令行上。窗口先以 `about:blank` 启动，带 `--remote-debugging-pipe`；两条 0600 FIFO 放在 0700 的状态目录里，不监听端口，浏览器一接上就把两个文件删掉。客户端经这条管道先给页面加上 `X-Qmo-Device` 头，再 `Page.navigate` 到票据地址，这种导航的 `Sec-Fetch-Site` 是 `none`；进门之后撤掉这个头。窗口关闭之前，客户端一直守着管道。
 - **macOS** 只用于开发，按 Windows 的方式启动，不是发行目标。
+- **桌面版**（P37.8，[`qmo-app.md`](./qmo-app.md) §3）：不经浏览器。`qmo session --json` 自己带 `X-Qmo-Device` 与 `Sec-Fetch-Site: none` 请求票据地址，不跟随 303，把响应里的 cookie 打成一行 JSON 交给壳，核对票据已用掉后退出；壳把 cookie 写进 WebView 再打开 `/app`。`--json` 时标准输出只有这一行，出错时是 `{"error":{"kind","message"}}`，退出码按 `kind` 区分。
 - 找不到能用的 Chromium 内核浏览器时（比如 Ubuntu 默认的 snap 版 Chromium，它读不了家目录下的隐藏目录），用系统默认浏览器打开 `/`，不带票据，由控制台登录页登录。
 
 ## §4 本机的运行时与节点部件（后续包）
