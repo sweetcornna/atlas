@@ -10,29 +10,38 @@
 
 import pkg from '../package.json' with { type: 'json' }
 import {
+  type ClientDeps,
   type ClientIO,
+  enterSession,
+  forgetDevice,
   openFront,
   signIn,
   signOut,
   status,
+  statusReport,
   systemDeps,
 } from './commands.js'
-import { ClientError } from './hub.js'
+import { ClientError, type ClientErrorKind } from './hub.js'
 
 declare const QMO_SOURCE_COMMIT: string | undefined
 
 export const USAGE = `qmo — 阡陌客户端
 
 用法：
-  qmo sign-in <中枢地址> [--name <设备名>] [--force]
+  qmo sign-in <中枢地址> [--name <设备名>] [--force] [--json]
   qmo open
-  qmo status
-  qmo sign-out
+  qmo status [--json]
+  qmo sign-out [--json]
+  qmo session --json
   qmo --version
 
 配对码在中枢「连接」页「添加设备」里拿。qmo sign-in 会提示输入；
 不在终端里运行时，从标准输入读一行。
-也可以用 --code <配对码>，但命令行对这台电脑上的其他用户可见。`
+也可以用 --code <配对码>，但命令行对这台电脑上的其他用户可见。
+
+--json 给桌面版读：标准输出只有一行 JSON，出错时是
+{"error":{"kind":…,"message":…}}，退出码按 kind 区分。
+qmo session --json 打开一个会话，输出它的 cookie，只给桌面版用。`
 
 export function versionLine(): string {
   const commit =
@@ -48,7 +57,26 @@ interface Parsed {
 }
 
 const VALUE_FLAGS = new Set(['--code', '--name'])
-const BOOLEAN_FLAGS = new Set(['--force'])
+const BOOLEAN_FLAGS = new Set(['--force', '--json'])
+
+/**
+ * The exit code of a `--json` run, one per kind of error, for a caller that
+ * reads only the code. Without `--json` the codes stay 0, 1 and 2.
+ */
+export const JSON_EXIT_CODES: Readonly<Record<ClientErrorKind, number>> = {
+  refused: 1,
+  usage: 2,
+  signed_in: 2,
+  signed_out: 3,
+  revoked: 4,
+  invalid: 4,
+  device_kind: 4,
+  owner_inactive: 5,
+  unsupported: 6,
+  network: 7,
+  bad_code: 8,
+  throttled: 9,
+}
 
 function parse(argv: readonly string[]): Parsed {
   const positional: string[] = []
@@ -103,6 +131,21 @@ function value(parsed: Parsed, name: string): string | undefined {
   return typeof found === 'string' ? found : undefined
 }
 
+/** Only these commands answer in JSON. */
+const JSON_COMMANDS = new Set(['sign-in', 'status', 'sign-out', 'session'])
+
+/** The device a `--json` error was about, when this computer is signed in. */
+function deviceOf(deps: ClientDeps | undefined): Record<string, string> {
+  try {
+    const state = deps?.home.load()
+    return state === undefined
+      ? {}
+      : { hub: state.hub, deviceId: state.deviceId, name: state.name }
+  } catch {
+    return {}
+  }
+}
+
 export async function main(
   argv: readonly string[],
   io: ClientIO,
@@ -116,9 +159,24 @@ export async function main(
     io.out(USAGE)
     return 0
   }
+  const json =
+    command !== undefined &&
+    JSON_COMMANDS.has(command) &&
+    rest.includes('--json')
+  let deps: ClientDeps | undefined
   try {
     // A relative QMO_CLIENT_DIR fails here, as a message rather than a trace.
-    const deps = systemDeps(io)
+    // With --json the person-facing lines stay off standard output, and the
+    // pairing code is read from standard input without a prompt.
+    deps = systemDeps(
+      json
+        ? {
+            out: () => {},
+            err: line => io.err(line),
+            ask: question => (io.readLine ?? io.ask)(question),
+          }
+        : io,
+    )
     if (command === undefined) {
       if (deps.home.load() === undefined) {
         io.out(USAGE)
@@ -137,28 +195,63 @@ export async function main(
           )
         const code = value(parsed, '--code')
         const name = value(parsed, '--name')
-        return await signIn(deps, {
+        const exit = await signIn(deps, {
           hub,
           ...(code === undefined ? {} : { code }),
           ...(name === undefined ? {} : { name }),
           force: parsed.flags.get('--force') === true,
         })
+        if (json) io.out(JSON.stringify(deviceOf(deps)))
+        return exit
       }
+      case 'session':
+        if (!json || parsed.positional.length > 0 || parsed.flags.size > 1)
+          throw new ClientError(
+            'qmo session 只给桌面版用：qmo session --json',
+            2,
+          )
+        io.out(JSON.stringify(await enterSession(deps)))
+        return 0
       case 'open':
       case 'status':
-      case 'sign-out':
-        if (parsed.positional.length > 0 || parsed.flags.size > 0)
-          throw new ClientError(`qmo ${command} 不带参数`, 2)
-        return command === 'open'
-          ? await openFront(deps)
-          : command === 'status'
-            ? await status(deps)
-            : await signOut(deps)
+      case 'sign-out': {
+        const extra = parsed.flags.size - (json ? 1 : 0)
+        if (
+          parsed.positional.length > 0 ||
+          extra > 0 ||
+          (json && command === 'open')
+        )
+          throw new ClientError(
+            command === 'open'
+              ? 'qmo open 不带参数'
+              : `qmo ${command} 只接受 --json`,
+            2,
+          )
+        if (command === 'open') return await openFront(deps)
+        if (command === 'status') {
+          if (!json) return await status(deps)
+          io.out(JSON.stringify(await statusReport(deps)))
+          return 0
+        }
+        if (!json) return await signOut(deps)
+        // Signed out here whatever the hub said; `result` says what it said.
+        io.out(JSON.stringify({ result: await forgetDevice(deps) }))
+        return 0
+      }
       default:
         throw new ClientError(`不认识的命令：${command}\n\n${USAGE}`, 2)
     }
   } catch (error) {
     if (error instanceof ClientError) {
+      if (json) {
+        io.out(
+          JSON.stringify({
+            error: { kind: error.kind, message: error.message },
+            ...deviceOf(deps),
+          }),
+        )
+        return JSON_EXIT_CODES[error.kind]
+      }
       io.err(error.message)
       return error.exitCode
     }
@@ -172,6 +265,7 @@ const consoleIO: ClientIO = {
   // Typed at a terminal, or piped in, so the pairing code is on no command line.
   ask: async question =>
     process.stdin.isTTY ? prompt(question) : firstLine(Bun.stdin.stream()),
+  readLine: async () => firstLine(Bun.stdin.stream()),
 }
 
 if (import.meta.main) process.exit(await main(process.argv.slice(2), consoleIO))

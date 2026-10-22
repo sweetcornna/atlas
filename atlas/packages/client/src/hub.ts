@@ -10,14 +10,47 @@
  * a hub, or anything in front of it, cannot point the token at another host.
  */
 
+/**
+ * What went wrong, for a program reading `--json` rather than a person
+ * reading the message: the desktop shell (qmo-app.md §3) picks its next page
+ * from it.
+ */
+export type ClientErrorKind =
+  /** The command line, or what was typed at it, was wrong. */
+  | 'usage'
+  /** This computer is not signed in. */
+  | 'signed_out'
+  /** This computer is signed in already; re-pairing takes `--force`. */
+  | 'signed_in'
+  /** The hub revoked this device. */
+  | 'revoked'
+  /** The hub does not know the token, or the pairing on record is broken. */
+  | 'invalid'
+  /** The device was paired by `qm handoff`, which opens no window. */
+  | 'device_kind'
+  /** The device's account is revoked, reset or read-only for now. */
+  | 'owner_inactive'
+  /** The hub has no pairing or no client tickets: no accounts, or older. */
+  | 'unsupported'
+  /** The hub could not be reached. */
+  | 'network'
+  /** The hub turned the pairing code down. */
+  | 'bad_code'
+  /** Too many attempts; later. */
+  | 'throttled'
+  /** Anything else the hub refused or answered wrongly. */
+  | 'refused'
+
 /** A failure the user can act on; `exitCode` 2 means the command line was wrong. */
 export class ClientError extends Error {
   readonly exitCode: number
+  readonly kind: ClientErrorKind
 
-  constructor(message: string, exitCode = 1) {
+  constructor(message: string, exitCode = 1, kind?: ClientErrorKind) {
     super(message)
     this.name = 'ClientError'
     this.exitCode = exitCode
+    this.kind = kind ?? (exitCode === 2 ? 'usage' : 'refused')
   }
 }
 
@@ -68,7 +101,7 @@ async function call(
     })
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
-    throw new ClientError(`连不上中枢（${reason}）`)
+    throw new ClientError(`连不上中枢（${reason}）`, 1, 'network')
   }
 }
 
@@ -105,6 +138,13 @@ async function errorOf(response: Response): Promise<HubError> {
 /** Why the hub turned the device token away: the `code` of a 401 on `/v0/client/*`. */
 type Refusal = 'device_revoked' | 'owner_inactive' | 'unauthorized'
 
+/** The kind of error each refusal is, for `--json`. */
+const REFUSAL_KINDS: Readonly<Record<Refusal, ClientErrorKind>> = {
+  device_revoked: 'revoked',
+  owner_inactive: 'owner_inactive',
+  unauthorized: 'invalid',
+}
+
 const REFUSALS: Readonly<Record<Refusal, string>> = {
   device_revoked: '这台设备已被吊销，请 qmo sign-in --force 重新配对',
   owner_inactive:
@@ -121,7 +161,8 @@ async function refusalOf(response: Response): Promise<Refusal> {
 }
 
 async function refused(response: Response): Promise<ClientError> {
-  return new ClientError(REFUSALS[await refusalOf(response)])
+  const why = await refusalOf(response)
+  return new ClientError(REFUSALS[why], 1, REFUSAL_KINDS[why])
 }
 
 const bearer = (token: string): Record<string, string> => ({
@@ -154,14 +195,22 @@ export async function pairDevice(
     body: JSON.stringify({ ...input, kind: 'client' }),
   })
   if (response.status === 404 || response.status === 501)
-    throw new ClientError('这台中枢没有设备配对（要开个人账号或接力）')
-  if (response.status === 429) throw new ClientError('配对尝试过多，稍后再试')
+    throw new ClientError(
+      '这台中枢没有设备配对（要开个人账号或接力）',
+      1,
+      'unsupported',
+    )
+  if (response.status === 429)
+    throw new ClientError('配对尝试过多，稍后再试', 1, 'throttled')
   if (!response.ok) {
     const { message } = await errorOf(response)
     throw new ClientError(
       message === null
         ? `配对失败（HTTP ${response.status}）`
         : `配对失败：${message}`,
+      1,
+      // A 4xx is the code: wrong, used or expired. A 5xx is the hub.
+      response.status < 500 ? 'bad_code' : 'refused',
     )
   }
   const value: unknown = await response.json()
@@ -217,6 +266,8 @@ export async function requestTicket(
     if (code === 'device_kind')
       throw new ClientError(
         `${message ?? '这台设备是 qm handoff 配对的'} · 请 qmo sign-in --force 重新配对`,
+        1,
+        'device_kind',
       )
     if (code === 'forbidden' && message === HANDOFF_ONLY)
       return {
@@ -231,6 +282,8 @@ export async function requestTicket(
     const { message } = await errorOf(response)
     throw new ClientError(
       message ?? `中枢没有给出票据（HTTP ${response.status}）`,
+      1,
+      response.status === 429 ? 'throttled' : 'refused',
     )
   }
   const value: unknown = await response.json()
