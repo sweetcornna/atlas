@@ -158,7 +158,8 @@ describe('--json, for the desktop shell (qmo-app.md §3)', () => {
       hub: hub.url,
       deviceId: paired.deviceId,
       name: 'mac',
-      token: 'file',
+      // Windows keeps the token under DPAPI (clients.md §5.2).
+      token: process.platform === 'win32' ? 'dpapi' : 'file',
       device: 'active',
     })
 
