@@ -366,7 +366,7 @@ M1 提供两条写入路径：
 | # | 路径 | 谁用 | 写到哪 | 来源标记 | 开放时机 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | 节点本机的 `qm memory add / list / revoke` | 持有该机器权限的运维或用户 | 显式给出的 `--agent` 与 `--context` 所对应的 working 分区，也就是常驻链路实际读的那个分区（`residentRecallScope`，`memory-sidecar.ts:106-114`）；不给不写 | `source.kind = 'user'`，`source.id` 记操作者与 `qm-cli` | P16.0 合入后 |
-| 2 | agent 侧的写入工具（经 `residentToolSurface` 注入，与 P16.5 同一座 `extMethod` 桥） | 常驻 agent | 当前轮的 `(agent, contextId)` 分区 | `source.kind = 'agent'`，`source.id` 记 P14 的 `requestId` | **P14.4 落地之前只开第 1 条**；之后它属于 P14 定义的「需确认动作」，每次写入都要经过用户审批 |
+| 2 | agent 侧的写入工具（经 `residentToolSurface` 注入，与 P16.5 同一座 `extMethod` 桥） | 常驻 agent | 当前轮的 `(agent, contextId)` 分区 | `source.kind = 'agent'`，`source.id` 记 P14 的 `requestId` | **P14.4 落地之前只开第 1 条**；之后它属于 P14 定义的「需确认动作」，每次写入都要经过用户审批（2026-10-22 起主人自己进行中的回合里由这一轮的请求当场批准，`authorization-m1.md` §3.6） |
 
 - 两条路径写入的正文都走 P16.0 的中和（I-8）。
 - **记忆根进 hardline**：agent 用 `Write` / `Bash` 直接改 `<memoryRoot>` 下的文件会绕过上表的全部治理（评审 hardline 探针显示 `<cfg>/memory/` 今天判 `clear`，`authorization-m1.md` F-25）。P16.W 把记忆根加进 hardline，file 与 shell 双面各一条负向用例。

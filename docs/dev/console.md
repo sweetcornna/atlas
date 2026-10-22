@@ -201,7 +201,7 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--sessions-store <绝对路径>` | `occConfigPath('qianmo','console','sessions.ndjson')` | 会话表。同上 |
 | `--legacy-view-token on\|off` | `on` | 迁移期 view token 还认不认（M-2b）。`off` 以后 view token 在三个入口一律失效，横幅的 `open` 行改为登录页。只在 `--accounts` 下有效 |
 | `--break-glass` | 关 | admin token 转为 break-glass（M-3）：只收 `Authorization: Bearer`、页面常亮提示、每次使用记账、永远不能当审批人。只在 `--accounts` 下有效 |
-| `--approvals` | 关 | 启用个人审批；需要 accounts、chat-sign、命名 chat-url 和每节点固定 trust 公钥。节点需 require-signed-handshake 和独立 approver 公钥 |
+| `--approvals` | 关 | 启用个人审批；需要 accounts、chat-sign、命名 chat-url 和每节点固定 trust 公钥。节点需 require-signed-handshake 和独立 approver 公钥。主人自己进行中的回合里的请求由中枢以主人身份当场批准，不出卡片（负责人 2026-10-22，`authorization-m1.md` §3.6） |
 | `--print-approver-identity` | 关 | 打印独立审批公钥并退出；不监听、不拨号。公钥用于节点 approver，不能与命令 trust 密钥共用 |
 | `--tenancy <绝对路径>` | 关 | 启用 M2 tenant JSON；必须同时启用 accounts。读坏或缺失即关闭数据访问，不回退 M1；契约见 tenancy-m2.md |
 | `--open-registration` | 关 | 开放 /signup；必须同时给 --tenancy 和 --registration-max-accounts |

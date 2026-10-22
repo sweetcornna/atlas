@@ -41,6 +41,7 @@ import { ConsoleChannels } from './consoleChannels.js'
 import { AgentProfiles, ConsoleTasks, withTaskNotes } from './consoleTasks.js'
 import { ConsolePeers } from './consolePeers.js'
 import { ConsoleSettings, settingsUnwired } from './consoleSettings.js'
+import { liveTurnOwner, type LiveTurnCall } from './liveTurn.js'
 import { ConsoleExtensions } from './consoleExtensions.js'
 import { ConsoleAgentModels } from './consoleAgentModels.js'
 import { ConsoleMagpie } from './consoleMagpie.js'
@@ -878,6 +879,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     config.memory && control
       ? new ConsoleMemory({ links: control, registry })
       : undefined
+  const hubChat = chat.hub
   const approvals =
     approvalIdentity === undefined || accounts === undefined
       ? undefined
@@ -892,6 +894,31 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           ...(tenancy === undefined ? {} : { tenancy }),
           ...(chat.hub === undefined ? {} : { chat: chat.hub }),
           ...(usage === undefined ? {} : { usage }),
+          // A person's own running turn authorizes the calls the agent makes
+          // in it (owner, 2026-10-22); schedules, background workers and
+          // channel chats that are not the owner's still wait for a card.
+          ...(hubChat === undefined
+            ? {}
+            : {
+                liveTurn: (call: LiveTurnCall) =>
+                  liveTurnOwner(
+                    {
+                      chat: hubChat,
+                      book: accounts.book,
+                      scheduled: sessionId =>
+                        schedules?.owns(sessionId) ?? false,
+                      foreground: sessionId =>
+                        channels?.foreground(sessionId) ?? true,
+                      worker: sessionId =>
+                        tasks
+                          ?.list({ subject: 'legacy:admin', role: null })
+                          .some(task => task.workerSession === sessionId) ??
+                        false,
+                      now: Date.now,
+                    },
+                    call,
+                  ),
+              }),
           targets: config.chatTargets.map(target => {
             const publicKey = new Map(config.trusted).get(target.node)
             if (publicKey === undefined)
