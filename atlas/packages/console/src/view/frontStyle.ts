@@ -408,6 +408,9 @@ button.fx-head-face:hover, button.fx-welcome-face:hover { background: var(--fx-h
 }
 .fx-bubble .turn-p { margin: 0; }
 .fx-bubble .turn-p + .turn-p, .fx-bubble .turn-list, .fx-bubble .turn-code { margin-top: 8px; }
+/* A line after a list or a code block opens the next part (often its bold
+   heading): a little more room than between two paragraphs. */
+.fx-bubble .turn-list + .turn-p, .fx-bubble .turn-code + .turn-p { margin-top: 12px; }
 .fx-msg-user {
   position: relative; align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end;
   max-width: min(78%, 560px); margin-top: 6px;
@@ -666,14 +669,19 @@ a.fx-id:hover { color: var(--color-text); text-decoration: underline; }
 .fx[data-layout="chat"] .fx-msg-agent, .fx[data-layout="chat"] .fx-steps { max-width: 100%; margin-top: 0; }
 .fx[data-layout="chat"] .fx-msg-agent { align-self: stretch; }
 .fx[data-layout="chat"] .fx-msg-agent .fx-msg-body { gap: 4px; }
+/* The answer is the column's width, like a page: a code block runs from
+   edge to edge and scrolls inside itself when a line is longer. */
 .fx[data-layout="chat"] .fx-bubble-agent {
-  width: auto; padding: 0; border-radius: 0; background: none;
+  align-self: stretch; width: auto; padding: 0; border-radius: 0; background: none;
   font-size: var(--fx-prose); line-height: var(--fx-prose-lh);
 }
 .fx[data-layout="chat"] .fx-bubble-agent .fx-text > * + * { margin-top: 12px; }
+.fx[data-layout="chat"] .fx-bubble-agent .fx-text > .turn-list + .turn-p,
+.fx[data-layout="chat"] .fx-bubble-agent .fx-text > .turn-code + .turn-p { margin-top: 20px; }
 .fx[data-layout="chat"] .fx-bubble-agent .turn-list { padding-left: 22px; }
 .fx[data-layout="chat"] .fx-bubble-agent .turn-list li + li { margin-top: 4px; }
 .fx[data-layout="chat"] .fx-bubble-agent .turn-code {
+  display: block; width: 100%; box-sizing: border-box; overflow-x: auto;
   padding: 12px 16px; border-radius: var(--fx-r-panel); font-size: var(--fx-footnote); line-height: 19px;
   background: var(--fx-user-block);
 }

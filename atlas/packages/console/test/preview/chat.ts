@@ -86,7 +86,7 @@ export class PreviewChat implements ChatPort {
       ['notice', '改：docs/dev/console.md'],
       [
         'agent',
-        '路由表补了两行\n\n```\nGET /app\nGET /app/quick\n```\n\n路由文档用例已过 · 反向扫描也没有多出的路径',
+        "路由表补了两行\n\n```\nGET /app\nGET /app/quick\ncurl -fsS -o /dev/null -w '%{http_code} %{time_total}' -H 'cookie: qianmo_shell=macos' http://127.0.0.1:38700/app/quick\n```\n\n路由文档用例已过 · 反向扫描也没有多出的路径",
       ],
     ])
     this.#seed('qianmo://beta-5/coder', now - 3 * 60_000, [
