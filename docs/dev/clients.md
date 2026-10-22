@@ -155,7 +155,7 @@
 | P37.5 | 本机接力共用客户端的设备登记 | `qm handoff` 不再单独配对 | 规划 |
 | P37.6 | 订阅迁移：设备的 magpie 网关密钥，`qmo run claude / codex` | 一把密钥、两种工具，用量归到同一把密钥；用户配置文件不变 | 规划 |
 | P37.7 | 本机节点：Windows 构建 `qm`、原生插件、隔离与受保护目录 | Windows 上节点跑通一轮对话 | 规划 |
-| P37.8 | 原生窗口：WebView2 / WebKitGTK | 不依赖系统浏览器即可登录并打开前台 | 规划 |
+| P37.8 | 原生窗口：WebView2 / WebKitGTK（2026-10-22 起由桌面版落实，设计见 [`qmo-app.md`](./qmo-app.md)） | 不依赖系统浏览器即可登录并打开前台 | 本轮（见 `qmo-app.md` §9） |
 | P37.9 | 构建与发行：在 Windows 上编 Windows 产物、在 Linux 上编 Linux 产物，CI 矩阵，代码签名 | CI 出两种系统的产物并冒烟 | 规划 |
 
 ## §8 本轮验证
