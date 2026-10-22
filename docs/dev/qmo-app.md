@@ -192,4 +192,22 @@ Grok Bot 只读了公开页面（xAI 的设计文章与文档），取的是：�
 
 ### 10.2 验证
 
-（实现后回写。）
+2026-10-22，macOS 本机（Apple Silicon），`feat/desktop-app`。
+
+| 跑了什么 | 结果 |
+|---|---|
+| `bun run precheck`、`bun run verify`（五组测试各跑一次、`qm` 与 `qmo` 构建冒烟） | 均退出 0，precheck 没有改动任何文件 |
+| 控制台用例（含 Chrome 驱动的浏览器用例：`/app` 发送、最近对话、快捷键、快速输入、明暗对比、窄屏、代码块宽度） | 1576 过 |
+| 客户端用例（`qmo session / sign-in / status / sign-out --json`） | 66 过、2 个跳过（DPAPI 与 Linux 管道） |
+| 壳：`cargo test`、`cargo clippy -D warnings`、`cargo fmt --check`、`cargo deny … licenses`（`src-tauri/deny.toml`） | 35 过；其余均退出 0 |
+| `bun run atlas:build:app` | 产出 Qmo.app（约 73 MB，其中 `qmo` 71 MB） |
+| 预览中枢 `test/appPreview.ts` 加随包的 `qmo` | 配对、`session --json` 拿到三枚 cookie；带 cookie 与 `qianmo_shell=macos` 取 `/app`、`/app/quick`、`/` 均为 200，`<html>` 带 `data-shell="macos"`；`sign-out` 后设备吊销 |
+| 壳对着测试中枢（实施方，调试版与发布版） | 六个命令的合法与非法参数、中枢页面调不到本地命令与插件、`/login` 拦截与重进、`qmo_open_session`、角标、退出登录、离线页重试、深链进已运行实例、快速输入的唤出与失焦隐藏 |
+| 截图（无头 Chrome，预览环境） | `/app` 欢迎、对话、执行中、收起侧栏、选择智能体、搜索、键盘帮助、390 px 窄屏；`/` 明暗；模拟 macOS 红绿灯；快速输入，共 38 张，放在负责人本机证据目录 |
+
+没有验证：
+
+- 真窗口里的 `/app`：中枢页面在 WKWebView 里的观感、红绿灯与拖动区的实际位置、快速输入窗的透明效果，都只在 Chrome 里模拟过。
+- Windows、Linux 的构建与行为；WebKitGTK 上「经 about:blank 进门」是否同样需要、是否同样有效。
+- 系统通知的弹出与点击（会触发系统授权）、托盘图标的真实点击、设置与关于两页、开机启动。
+- 签名、公证、安装包（P37.9、P37.12）。壳的 Rust 依赖还没写进 NOTICE 与 SBOM，发行前补。
