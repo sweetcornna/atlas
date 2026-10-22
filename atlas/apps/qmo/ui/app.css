@@ -1,0 +1,527 @@
+/* Copyright 2026 Qianmo AgentNest Team */
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/*
+ * The shell's own pages: sign-in, the skeleton, offline, settings, about.
+ * The tokens are the console's (atlas/packages/console/src/assets/css.ts and
+ * view/frontStyle.ts), copied by value: these pages ship inside the app and
+ * show before any hub page exists, so they cannot load the hub's sheet. Keep
+ * them in step with that file when its palette moves.
+ */
+
+:root {
+  color-scheme: light dark;
+  --color-bg: #f9f9f7;
+  --color-side: #f3f2ee;
+  --color-surface: #fdfdfc;
+  --color-field: #ffffff;
+  --color-text: #141413;
+  --color-divider: rgba(20, 20, 19, 0.09);
+  --color-focus: #2a78d6;
+  --color-interactive: #2a78d6;
+  --color-interactive-soft: rgba(42, 120, 214, 0.12);
+  --color-danger-text: #a53322;
+  --color-danger-bg: #fbece8;
+  --color-warning-text: #7a4f12;
+  --color-warning-bg: #fbf2e3;
+  --color-accent-fill: #141413;
+  --color-accent-fill-hover: color-mix(
+    in srgb,
+    var(--color-accent-fill) 86%,
+    var(--color-bg)
+  );
+  --color-on-accent-fill: #fafaf9;
+  --color-muted: color-mix(in srgb, var(--color-text) 68%, transparent);
+  --color-quiet: color-mix(in srgb, var(--color-text) 78%, transparent);
+  --qm-ink: #222623;
+  --ui-hover: rgba(20, 20, 19, 0.05);
+  --ui-selected: rgba(20, 20, 19, 0.08);
+  --ui-field: rgba(20, 20, 19, 0.04);
+  --ui-line: rgba(20, 20, 19, 0.14);
+  --ui-menu: #ffffff;
+  --shadow-sm:
+    0 0 0 0.5px rgba(20, 20, 19, 0.12), 0 1px 2px rgba(0, 0, 0, 0.03);
+  --font-body:
+    system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    "Noto Sans SC", sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 18px;
+  --header: 48px;
+  --side-w: 288px;
+  --ease: cubic-bezier(0.165, 0.84, 0.44, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #1a1a19;
+    --color-side: #121211;
+    --color-surface: #20201f;
+    --color-field: #262625;
+    --color-text: #f0efec;
+    --color-divider: rgba(240, 239, 236, 0.09);
+    --color-focus: #5c9ce6;
+    --color-interactive: #4a90e2;
+    --color-interactive-soft: rgba(74, 144, 226, 0.2);
+    --color-danger-text: #ff9a86;
+    --color-danger-bg: #36201b;
+    --color-warning-text: #efc386;
+    --color-warning-bg: #2e2416;
+    --color-accent-fill: #f0efec;
+    --color-on-accent-fill: #141413;
+    --qm-ink: #e6ebe7;
+    --ui-hover: rgba(240, 239, 236, 0.05);
+    --ui-selected: rgba(240, 239, 236, 0.08);
+    --ui-field: rgba(240, 239, 236, 0.05);
+    --ui-line: rgba(240, 239, 236, 0.14);
+    --ui-menu: #262625;
+    --shadow-sm: 0 0 0 0.5px rgba(240, 239, 236, 0.1);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+body {
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+}
+input,
+textarea,
+.selectable {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Pages wait for their words, so nothing shows in the wrong language. */
+main,
+.page {
+  transition: opacity 120ms var(--ease);
+}
+body.loading main,
+body.loading .page {
+  opacity: 0;
+}
+
+/* The 48 px header row the window is dragged by (`data-tauri-drag-region`);
+   on macOS the traffic lights sit in it, 17 px in, so nothing goes under
+   them. */
+.drag {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: var(--header);
+  z-index: 1;
+}
+
+/* ---- the mark ---- */
+.qm-mark {
+  display: block;
+}
+.qm-mark .qm-ink {
+  fill: var(--qm-ink);
+}
+
+/* ---- controls ---- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field > label {
+  font-size: 12px;
+  color: var(--color-quiet);
+}
+.input {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 11px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--color-text);
+  caret-color: var(--color-text);
+  background: var(--color-field);
+  border: 1px solid var(--ui-line);
+  border-radius: var(--radius-md);
+  outline: none;
+}
+.input:hover {
+  border-color: color-mix(in srgb, var(--color-text) 28%, transparent);
+}
+.input:focus-visible {
+  border-color: var(--color-focus);
+  box-shadow: 0 0 0 3px var(--color-interactive-soft);
+}
+.input[readonly] {
+  color: var(--color-muted);
+  background: var(--ui-field);
+}
+.input::placeholder {
+  color: color-mix(in srgb, var(--color-text) 40%, transparent);
+}
+.mono {
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--color-text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 120ms var(--ease),
+    color 120ms var(--ease);
+}
+.btn:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btn-primary {
+  background: var(--color-accent-fill);
+  color: var(--color-on-accent-fill);
+}
+.btn-primary:not(:disabled):hover {
+  background: var(--color-accent-fill-hover);
+}
+.btn-secondary {
+  border-color: var(--ui-line);
+  background: var(--color-field);
+}
+.btn-secondary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--color-text) 5%, var(--color-field));
+}
+.btn-ghost:not(:disabled):hover {
+  background: var(--ui-hover);
+}
+.btn-danger {
+  color: var(--color-danger-text);
+}
+.btn-danger:not(:disabled):hover {
+  background: var(--color-danger-bg);
+}
+.btn-block {
+  width: 100%;
+  min-height: 38px;
+  font-size: 14px;
+}
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--color-muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.link:hover {
+  color: var(--color-text);
+}
+
+.note {
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.alert {
+  padding: 8px 11px;
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  color: var(--color-danger-text);
+  background: var(--color-danger-bg);
+}
+.alert.notice {
+  color: var(--color-warning-text);
+  background: var(--color-warning-bg);
+}
+.alert .detail {
+  display: block;
+  margin-top: 2px;
+  opacity: 0.8;
+  font-size: 12px;
+}
+
+.switch {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  border-radius: 999px;
+  background: var(--ui-line);
+  transition: background-color 150ms var(--ease);
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform var(--move, 150ms) var(--ease);
+}
+.switch:checked {
+  background: var(--color-interactive);
+}
+.switch:checked::after {
+  transform: translateX(14px);
+}
+.switch:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* Reduced motion: nothing moves, only fades (qmo-app.md §4.4). */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --move: 0ms;
+  }
+}
+
+/* ---- sign-in ---- */
+.signin {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: min(360px, calc(100% - 48px));
+  height: 100%;
+  margin: 0 auto;
+  padding: var(--header) 0 24px;
+}
+.signin-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 28px;
+}
+.signin-head h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.signin form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.signin .note {
+  margin: -6px 0 0;
+}
+.signin .alert {
+  margin-top: -4px;
+}
+
+/* ---- the skeleton: the front's frame before its page paints ---- */
+.skeleton {
+  display: grid;
+  grid-template-columns: var(--side-w) minmax(0, 1fr);
+  height: 100%;
+}
+.skeleton-side {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: calc(var(--header) + 4px) 10px 12px;
+  background: color-mix(in srgb, var(--color-side) 60%, var(--color-bg));
+  box-shadow: inset -0.5px 0 0 var(--color-divider);
+}
+.skeleton-row {
+  height: 30px;
+  border-radius: var(--radius-md);
+  background: var(--ui-hover);
+}
+.skeleton-row.short {
+  width: 62%;
+}
+.skeleton-row.gap {
+  margin-top: 18px;
+  height: 14px;
+  width: 34%;
+  background: transparent;
+}
+.skeleton-row.label {
+  height: 12px;
+  width: 30%;
+  margin: 10px 0 2px 6px;
+}
+.skeleton-main {
+  background: var(--color-bg);
+}
+@media (max-width: 700px) {
+  .skeleton {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .skeleton-side {
+    display: none;
+  }
+}
+
+/* ---- offline ---- */
+.offline {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  padding: var(--header) 32px 32px;
+  text-align: center;
+}
+.offline h1 {
+  margin: 10px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.offline p {
+  margin: 0;
+  max-width: 420px;
+  color: var(--color-muted);
+}
+.offline .detail {
+  font-size: 12px;
+  color: var(--color-muted);
+  max-width: 460px;
+  overflow-wrap: anywhere;
+}
+.offline .actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* ---- settings ---- */
+.settings {
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--header) 28px 28px;
+}
+.settings h1 {
+  margin: 0 0 18px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.group {
+  margin: 0 0 18px;
+  padding: 4px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+.group-title {
+  margin: 0 0 6px 2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-muted);
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 0;
+}
+.row + .row {
+  box-shadow: inset 0 0.5px 0 var(--color-divider);
+}
+.row-label {
+  flex: 1;
+  min-width: 0;
+}
+.row-label .note {
+  display: block;
+  margin-top: 1px;
+}
+.row-value {
+  max-width: 60%;
+  color: var(--color-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.keys {
+  min-width: 120px;
+  padding: 5px 10px;
+  text-align: center;
+  font: inherit;
+  font-size: 13px;
+  color: var(--color-text);
+  background: var(--color-field);
+  border: 1px solid var(--ui-line);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.keys.recording {
+  border-color: var(--color-focus);
+  box-shadow: 0 0 0 3px var(--color-interactive-soft);
+  color: var(--color-muted);
+}
+.row .error {
+  color: var(--color-danger-text);
+  font-size: 12px;
+}
+
+/* ---- about ---- */
+.about {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 100%;
+  padding: var(--header) 24px 24px;
+  text-align: center;
+}
+.about h1 {
+  margin: 12px 0 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.about .note {
+  line-height: 1.6;
+}
+
+/* Last, so it wins over every display rule above at the same specificity. */
+[hidden] {
+  display: none;
+}

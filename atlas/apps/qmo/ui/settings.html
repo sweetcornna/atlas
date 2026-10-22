@@ -1,0 +1,58 @@
+<!doctype html>
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title></title>
+<link rel="stylesheet" href="app.css">
+<script type="module" src="settings.js"></script>
+</head>
+<body class="loading">
+<div class="drag" data-tauri-drag-region></div>
+<main class="settings">
+  <h1 data-i18n="settings.title"></h1>
+
+  <h2 class="group-title" data-i18n="settings.account" id="account-title"></h2>
+  <section class="group" id="account">
+    <div class="row"><span class="row-label" data-i18n="settings.hub"></span><span class="row-value selectable" id="hub"></span></div>
+    <div class="row"><span class="row-label" data-i18n="settings.device"></span><span class="row-value selectable" id="device"></span></div>
+    <div class="row">
+      <span class="row-label"><span class="note" data-i18n="settings.signout.note"></span></span>
+      <button class="btn btn-ghost btn-danger" id="signout" type="button" data-i18n="settings.signout"></button>
+    </div>
+  </section>
+
+  <h2 class="group-title" data-i18n="settings.quick"></h2>
+  <section class="group">
+    <div class="row">
+      <span class="row-label"><span data-i18n="settings.shortcut"></span><span class="note error" id="shortcut-error" role="alert"></span></span>
+      <button class="link" id="shortcut-reset" type="button" data-i18n="settings.shortcut.reset"></button>
+      <button class="keys" id="shortcut" type="button"></button>
+    </div>
+  </section>
+
+  <h2 class="group-title" data-i18n="settings.startup"></h2>
+  <section class="group">
+    <div class="row">
+      <label class="row-label" for="autostart" data-i18n="settings.autostart"></label>
+      <input class="switch" id="autostart" type="checkbox" role="switch">
+    </div>
+    <div class="row" id="background-row">
+      <label class="row-label" for="background"><span data-i18n="settings.background"></span><span class="note" data-i18n="settings.background.note"></span></label>
+      <input class="switch" id="background" type="checkbox" role="switch">
+    </div>
+  </section>
+
+  <h2 class="group-title" data-i18n="settings.about"></h2>
+  <section class="group">
+    <div class="row">
+      <span class="row-label" data-i18n="settings.version"></span>
+      <span class="row-value selectable" id="version"></span>
+      <button class="link" id="about" type="button" data-i18n="settings.about"></button>
+    </div>
+  </section>
+</main>
+</body>
+</html>
