@@ -142,6 +142,7 @@ describe('exemption predicates', () => {
     expect(isExemptByExtension('a/b.png')).toBe(true)
     expect(isExemptByExtension('a/b.pdf')).toBe(true)
     expect(isExemptByExtension('a/b.docx')).toBe(true)
+    expect(isExemptByExtension('docs/assets/readme/x.mp4')).toBe(true)
   })
 
   test('extensions that carry headers today are NOT exempt', () => {

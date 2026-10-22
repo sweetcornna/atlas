@@ -50,7 +50,7 @@ this repository.
 
   * 按格式豁免：`.json`（JSON 语法没有注释；其中的 `package.json`、
     `tsconfig.json` 也是工具配置）、`.jpg`、`.png`、`.gif`、`.svg`、`.pdf`、
-    `.docx`。这一类是「带不了或不宜带」，门禁不禁止它们带头。
+    `.docx`、`.mp4`。这一类是「带不了或不宜带」，门禁不禁止它们带头。
   * 具名豁免，带了反而错，所以是双向的（不要求带，也不许带）：
       - `BASE.md`：基座溯源的唯一真源，只在「导入」与「上游同步」两类事件
         时改动，功能性提交不得触碰；
@@ -112,8 +112,9 @@ this repository.
 ----------------------------------------
 
 路径判据把 `docs/assets/` 下的图片划进了阡陌层，而 AGPL-3.0 是软件许可，套不到
-图片与文书上。它们全部是申报材料，由立项初始化提交 `67f6081` 入库，与运行时
-代码零耦合。按用途分三类：
+图片、影片与文书上。`brand/` 与 `charts/` 是申报材料，由立项初始化提交 `67f6081`
+入库；`readme/` 是 README 的配图与宣传片。它们都与运行时代码零耦合。按用途分
+三类：
 
     # 当前版本里的资产清单
     git -c core.quotePath=false ls-files docs/assets
@@ -122,7 +123,8 @@ this repository.
     https://creativecommons.org/licenses/by-sa/4.0/）：`docs/assets/charts/`
     下的全部信息图，以及 `docs/assets/brand/正文页背景.jpg`、
     `docs/assets/brand/愿景水墨图.jpg`、
-    `docs/assets/brand/ChatGPT Image Aug 10, 2026, 07_23_41 PM.png`。
+    `docs/assets/brand/ChatGPT Image Aug 10, 2026, 07_23_41 PM.png`，以及
+    `docs/assets/readme/` 下的 README 配图与宣传片。
     CC BY-SA 4.0 §3(a)(1) 只要求保留指向许可的 URI，许可全文不入库。
     那张 `.png` 是 AI 生成件：它内嵌 OpenAI 的 C2PA Content Credentials。
     AI 生成物的可版权性在部分法域存疑，我方只就实际享有的权利授出，不因这条
@@ -131,6 +133,13 @@ this repository.
     断言。
 
         git -c core.quotePath=false grep -lai c2pa -- docs/assets
+
+    `docs/assets/readme/` 里的控制台截图取自本地预览服务
+    （`atlas/packages/console/test/preview/`），画面里是测试数据；示意图
+    `connect.svg` 是手写的 SVG。宣传片片头写明由 cornna 使用 Qmo 与
+    Claude Opus 5.5 协同创作：画面由代码渲染，其中照片质感的画面由图像生成
+    模型生成，上面关于 AI 生成物的说明同样适用。宣传片配乐里的第三方录音不随
+    本仓库的任何许可授出，各自适用原许可，来源与署名见五.9。
 
   * B 类，第三方标识，不随本仓库任何许可授出：`docs/assets/brand/大赛logo大图.png`、
     `docs/assets/brand/大赛logo横版.png`、`docs/assets/brand/封面.jpg`（封面画面
@@ -490,6 +499,37 @@ MIT 许可，Copyright (c) Project Nayuki）相同。qrcodegen 不是本项目�
   * occ 安装时从 microsoft/ripgrep-prebuilt 下载 ripgrep 的 postinstall 行为随 occ
     一并删除。
 
+五.9 宣传片配乐里的第三方录音
+----------------------------------------
+
+`docs/assets/readme/qmo-film-720p.mp4` 的配乐由代码合成，所用采样库里有下列需要
+署名的录音（CC BY），署名照原文给出：
+
+  * "Salamander Grand Piano V3" by Alexander Holm, licensed under CC BY 3.0
+    (https://creativecommons.org/licenses/by/3.0/); SFZ mapping from
+    sfzinstruments/SalamanderGrandPiano.
+  * "VocalSet: A Singing Voice Dataset" by Julia Wilkins, Prem Seetharaman,
+    Alison Wahl and Bryan Pardo (ISMIR 2018),
+    https://doi.org/10.5281/zenodo.1442513, licensed under CC BY 4.0
+    (https://creativecommons.org/licenses/by/4.0/). Changes: cut into notes,
+    resynthesised with the WORLD vocoder, re-pitched, spliced and mixed.
+  * "20060824.forest03" by dobroide
+    (https://freesound.org/people/dobroide/sounds/22384/), via Wikimedia
+    Commons, licensed CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/).
+    Changes: resampled to 48 kHz, 20 Hz high-pass, cut into random segments and
+    re-joined with crossfades, loudness-normalised.
+  * "Gryllus campestris, BioAcoustica 991-1 (142r1)", recorded 1975-06-11,
+    (c) Natural History Museum (London), via BioAcoustica
+    (http://bio.acousti.ca/node/11117) and Wikimedia Commons, licensed CC BY 3.0
+    (https://creativecommons.org/licenses/by/3.0/). Changes: first 44.5 s
+    removed, resampled to 48 kHz, re-segmented, pitch-shifted +-6 %, filtered,
+    layered as four individuals.
+
+采样库里其余的录音是 CC0 或公有领域，不要求署名：Versilian Studios 的
+Versilian Community Sample Library 与 VSCO 2: Community Edition（CC0）、
+Freesound 上的若干拟音（CC0），以及 Wikimedia Commons 上的若干野外录音（CC0 或
+公有领域）。合唱、合成音效与混响由代码生成，不是外部素材。
+
 
 ================================================================================
 ================================================================================
@@ -549,8 +589,8 @@ this file records the reasons:
 
   * By format: `.json` (JSON has no comment syntax; its `package.json` and
     `tsconfig.json` files are tool configuration as well), `.jpg`, `.png`,
-    `.gif`, `.svg`, `.pdf`, `.docx`. These cannot or should not carry a
-    header; the gate does not forbid one.
+    `.gif`, `.svg`, `.pdf`, `.docx`, `.mp4`. These cannot or should not carry
+    a header; the gate does not forbid one.
   * By name, where a header would be wrong, so the exemption is two-sided (a
     header is neither required nor allowed):
       - `BASE.md`: the single source of truth for base provenance, changed only
@@ -625,9 +665,11 @@ that region on every sync. How they are distributed:
 ----------------------------------------
 
 The path test places the images under `docs/assets/` in the Qianmo layer, but
-AGPL-3.0 is a software license and does not fit images or documents. All of
-them are application materials, added by the project-initialisation commit
-`67f6081`, with no coupling to runtime code. They fall into three classes:
+AGPL-3.0 is a software license and does not fit images, films or documents.
+`brand/` and `charts/` are application materials, added by the
+project-initialisation commit `67f6081`; `readme/` holds the README's
+illustrations and the promo film. None of them is coupled to runtime code.
+They fall into three classes:
 
     # assets in the current version
     git -c core.quotePath=false ls-files docs/assets
@@ -635,8 +677,9 @@ them are application materials, added by the project-initialisation commit
   * Class A, own works, licensed under CC BY-SA 4.0 (SPDX `CC-BY-SA-4.0`,
     license URI https://creativecommons.org/licenses/by-sa/4.0/): every
     infographic under `docs/assets/charts/`, plus
-    `docs/assets/brand/正文页背景.jpg`, `docs/assets/brand/愿景水墨图.jpg` and
-    `docs/assets/brand/ChatGPT Image Aug 10, 2026, 07_23_41 PM.png`.
+    `docs/assets/brand/正文页背景.jpg`, `docs/assets/brand/愿景水墨图.jpg`,
+    `docs/assets/brand/ChatGPT Image Aug 10, 2026, 07_23_41 PM.png`, and the
+    README illustrations and promo film under `docs/assets/readme/`.
     CC BY-SA 4.0 §3(a)(1) only requires a URI to the license, so the full text
     is not added. That `.png` is AI-generated: it embeds OpenAI C2PA Content
     Credentials. The copyrightability of AI output is doubtful in some
@@ -647,6 +690,16 @@ them are application materials, added by the project-initialisation commit
     no claim about their origin.
 
         git -c core.quotePath=false grep -lai c2pa -- docs/assets
+
+    The console screenshots in `docs/assets/readme/` were taken from the local
+    preview server (`atlas/packages/console/test/preview/`) and show test data;
+    the diagram `connect.svg` is hand-written SVG. The promo film's opening
+    card credits it as made by cornna with Qmo and Claude Opus 5.5: the
+    pictures are rendered by code, the photographic shots among them were made
+    by an image-generation model, and the note on AI output above applies to
+    it as well. The third-party recordings in the film's soundtrack are not
+    granted under any license of this repository; each stays under its own
+    license, with sources and attributions in 5.9.
 
   * Class B, third-party marks, not granted under any license of this
     repository: `docs/assets/brand/大赛logo大图.png`,
@@ -1082,3 +1135,37 @@ distributed as described by the NOTICE of that time
     (`grep -c claude-agent-sdk bun.lock` prints 0);
   * occ's install-time download of ripgrep from microsoft/ripgrep-prebuilt
     went away with occ.
+
+5.9 Third-party recordings in the promo film's soundtrack
+----------------------------------------
+
+The soundtrack of `docs/assets/readme/qmo-film-720p.mp4` is synthesised by
+code. The sample library it draws on contains the following recordings that
+require attribution (CC BY); the attributions are given as written:
+
+  * "Salamander Grand Piano V3" by Alexander Holm, licensed under CC BY 3.0
+    (https://creativecommons.org/licenses/by/3.0/); SFZ mapping from
+    sfzinstruments/SalamanderGrandPiano.
+  * "VocalSet: A Singing Voice Dataset" by Julia Wilkins, Prem Seetharaman,
+    Alison Wahl and Bryan Pardo (ISMIR 2018),
+    https://doi.org/10.5281/zenodo.1442513, licensed under CC BY 4.0
+    (https://creativecommons.org/licenses/by/4.0/). Changes: cut into notes,
+    resynthesised with the WORLD vocoder, re-pitched, spliced and mixed.
+  * "20060824.forest03" by dobroide
+    (https://freesound.org/people/dobroide/sounds/22384/), via Wikimedia
+    Commons, licensed CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/).
+    Changes: resampled to 48 kHz, 20 Hz high-pass, cut into random segments and
+    re-joined with crossfades, loudness-normalised.
+  * "Gryllus campestris, BioAcoustica 991-1 (142r1)", recorded 1975-06-11,
+    (c) Natural History Museum (London), via BioAcoustica
+    (http://bio.acousti.ca/node/11117) and Wikimedia Commons, licensed CC BY 3.0
+    (https://creativecommons.org/licenses/by/3.0/). Changes: first 44.5 s
+    removed, resampled to 48 kHz, re-segmented, pitch-shifted +-6 %, filtered,
+    layered as four individuals.
+
+The rest of the library is CC0 or public domain and needs no attribution: the
+Versilian Community Sample Library and VSCO 2: Community Edition by Versilian
+Studios (CC0), a number of foley recordings from Freesound (CC0), and a number
+of field recordings from Wikimedia Commons (CC0 or public domain). The choir,
+the synthesised effects and the reverb are generated by code and are not
+external material.

@@ -6,6 +6,12 @@
 
 项目处于内测阶段，公开版尚未开放。下文描述的是主线代码已经实现的能力，并不都在真实环境中验证过：尚未用真实账号或真实环境测过的主要部分随文注明，逐项的验证范围以[路线图](docs/dev/roadmap.md)为准。本仓库代号 atlas。
 
+<p align="center">
+  <a href="docs/assets/readme/qmo-film-720p.mp4?raw=true"><img src="docs/assets/readme/film-poster.jpg" alt="阡陌宣传片封面：QIANMO · QMO，能替你做到一切事情的智能体" width="720"></a>
+  <br>
+  <sub>宣传片，90 秒。点击封面下载 mp4（720p，约 7.7 MB），GitHub 页面里不能直接播放。</sub>
+</p>
+
 ## 目录
 
 - [能力](#能力)
@@ -18,6 +24,14 @@
 
 ## 能力
 
+本节的控制台截图取自本地预览服务（[`atlas/packages/console/test/preview/`](atlas/packages/console/test/preview/README.md)），节点、智能体、对话和任务都是测试数据，不是真实部署的画面。
+
+<p align="center">
+  <img src="docs/assets/readme/chat.png" alt="控制台对话前台：左侧是智能体列表，中间是与主智能体的对话和一张待批准的改设置卡片，右侧是后台任务面板" width="900">
+  <br>
+  <sub>对话前台：左侧是智能体，中间是对话，需要确认的动作以卡片形式出现，右侧是这段对话派出的后台任务。</sub>
+</p>
+
 ### 能做到一切
 
 - 智能体常驻在节点上：空闲时回收底层进程，来消息时唤醒，会话保存在节点上，进程退出后从原处续接。长期记忆按智能体和账号保存，可以在控制台查看和修改；语义检索增强没有通过质量闸门，默认关闭。
@@ -26,6 +40,17 @@
 - 所有底层拿到同一套宿主工具。智能体之间除了派任务，还可以经中枢同步提问（跨节点尚未做端到端实测）；换底层时，已有对话带着前情继续。
 - 需要确认的动作走个人审批，智能体之间的消息不能替用户授权。消息与动作写入按节点保存的审计链，只增不改。
 
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/readme/tasks.png" alt="后台「主动执行」页：定时任务列表与两次运行记录"></td>
+    <td width="50%"><img src="docs/assets/readme/harnesses.png" alt="后台「模型」页的智能体一栏：每个智能体各自选择底层与模型"></td>
+  </tr>
+  <tr>
+    <td><sub>主动执行：定时任务、运行记录和后台任务都在这一页。</sub></td>
+    <td><sub>每个智能体选自己的底层和模型，同一节点上可以混用。</sub></td>
+  </tr>
+</table>
+
 ### 有自己的电脑和浏览器
 
 - 每个智能体可以分到专属的浏览器和电脑，用点击、输入、拖拽、按键、截图这类动作操作网页和桌面程序。Linux 节点上每个智能体有自己的私有桌面会话，在沙箱里运行；macOS 上只开放运维列出的应用。
@@ -33,6 +58,17 @@
 - 资源按智能体设内存上限，超限停用，回收时进程和目录一并清理；控制台「云端电脑」页能看到最近的截图。
 - Claude Code、Codex 等外部底层经 MCP 使用同一套工具。
 - 操作浏览器和电脑的能力来自基座 qianmopi，阡陌负责分配、授权、隔离、回收与审计。Linux 私有桌面在虚拟机上连续测过多轮；macOS 后台输入和内存超限停用还没有在真机上测过。
+
+<table>
+  <tr>
+    <td width="55%"><img src="docs/assets/readme/computer.png" alt="后台「云端电脑」页：Linux 节点上的智能体开着专属浏览器和私有桌面，可选确认方式，列出桌面、隔离、内存与可用应用"></td>
+    <td width="45%"><img src="docs/assets/readme/film-computer.jpg" alt="宣传片画面：智能体住在服务器上，旁边是它自己的电脑和浏览器"></td>
+  </tr>
+  <tr>
+    <td><sub>云端电脑：按智能体开关专属浏览器和电脑，选确认方式，看隔离与内存。</sub></td>
+    <td><sub>宣传片里的同一件事：每个智能体都有自己的电脑和浏览器。</sub></td>
+  </tr>
+</table>
 
 ### 能接入一切
 
@@ -45,6 +81,16 @@
 - 协议：MCP 用于工具接入；`qm a2a` 提供 A2A 1.0 边界网关，支持单回合文本任务，已与官方 SDK 在本机互通。
 
 接入外部系统一律走对方的官方接口和原生机制，阡陌只补身份、授权、隔离、调度、计量与审计。个人 QQ 是唯一的例外，依据见[章程](docs/dev/charter.md) §7.2。
+
+<p align="center">
+  <img src="docs/assets/readme/connect.svg" alt="阡陌接入的外部系统：聊天渠道、本机编程工具、节点间文件互通、应用连接、扩展、模型服务，协议用 MCP 与 A2A" width="900">
+</p>
+
+<p align="center">
+  <img src="docs/assets/readme/apps.png" alt="后台「应用连接」页：一个邮箱连接、一个 GitHub 交换仓库，以及已配对的本机编程工具设备列表" width="900">
+  <br>
+  <sub>应用连接：邮箱和 GitHub 仓库的凭据由中枢保管；下方是装了阡陌插件、可以接力的本机设备。</sub>
+</p>
 
 ## 架构
 
@@ -182,6 +228,6 @@ bun test --preload ./atlas/tests/preload.ts ./atlas/packages/<包>/test/<名>.te
 - 阡陌自有代码适用 [AGPL-3.0-or-later](LICENSE)，包括 `atlas/`、`demo/`、`docs/dev/` 与阡陌撰写的其他文档。阡陌新增的文件带 `SPDX-License-Identifier: AGPL-3.0-or-later` 文件头，JSON、图片等带不了注释的格式除外。
 - 由基座导入的代码适用 MIT，许可正文是上游 `LICENSE` 的逐字副本，见 [LICENSE.base](LICENSE.base)，上游版权声明一并保留。
 - 阡陌改动过的基座文件不加文件头，逐条登记在[基座改动清单](docs/dev/base-modifications.md)，各自适用的许可在 NOTICE 一.4 逐类说明。本文件的路径来自基座，内容全部由阡陌撰写，属于阡陌作品。
-- `docs/assets/` 下的图片与申报材料另有许可规则。
+- `docs/assets/` 下的图片、宣传片与申报材料另有许可规则；宣传片配乐所用第三方录音的署名列在 NOTICE 五.9。
 
 用户通过网络与本程序交互时（控制台与常驻节点都属于这种情况），运营方须向用户提供对应源代码，依据是 AGPL-3.0 第 13 条，见 NOTICE 一.6。文件归属判据、非代码资产的许可与商标说明以 [NOTICE](NOTICE) 为准。文中提到的 DeepSeek、Claude Code、Codex、Gemini 等名称归各自的权利人所有，属于指称性使用；本项目与 DeepSeek、Anthropic、OpenAI、Google、Stencil Labs 及 Pi 的作者无关联，未获其背书。

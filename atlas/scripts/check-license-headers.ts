@@ -106,8 +106,8 @@ const READ_CHUNK_BYTES = 4096
 /**
  * 扩展名豁免：这些格式**带不了**注释头。
  *
- * `.jpg` / `.png` / `.pdf` / `.docx` —— 二进制或纯数据格式，语法上就没有注释，
- * 无处安放这两行。
+ * `.jpg` / `.png` / `.pdf` / `.docx` / `.mp4` —— 二进制或纯数据格式，语法上就没有
+ * 注释，无处安放这两行。
  *
  * `.json` 是**两种理由合成一条**（判定结果相同，理由必须分开记）：
  *   ① JSON 语法本身不含注释（28 个，其中 20 个是 `package.json`）——同上，
@@ -126,6 +126,7 @@ const EXEMPT_EXTENSIONS: Record<string, true> = {
   '.svg': true,
   '.pdf': true,
   '.docx': true,
+  '.mp4': true,
   '.json': true,
 }
 

@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="1200" height="600" role="img" aria-label="阡陌能接入的外部系统：聊天渠道、本机编程工具、节点间文件互通、应用连接、扩展与模型服务">
+  <style>
+    text { font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif; }
+    .title { font-size: 21px; font-weight: 600; fill: #1f1d1a; }
+    .body { font-size: 15.5px; fill: #6b645a; }
+    .hub { font-size: 30px; font-weight: 600; fill: #f7f5f0; letter-spacing: 6px; }
+    .hubsub { font-size: 15px; fill: #d8d1c4; }
+    .tag { font-size: 15px; fill: #3f6b4f; }
+    .card { fill: #fffdf9; stroke: #ddd5c7; stroke-width: 1.5; }
+    .wire { stroke: #c4b8a3; stroke-width: 1.6; stroke-dasharray: 5 6; fill: none; }
+    .dot { fill: #3f6b4f; }
+  </style>
+  <rect x="0.75" y="0.75" width="1198.5" height="598.5" rx="22" fill="#f7f5f0" stroke="#e4ded2" stroke-width="1.5"/>
+
+  <path class="wire" d="M 470 255 C 420 255, 420 115, 380 115"/>
+  <path class="wire" d="M 470 300 L 380 300"/>
+  <path class="wire" d="M 470 345 C 420 345, 420 485, 380 485"/>
+  <path class="wire" d="M 730 255 C 780 255, 780 115, 820 115"/>
+  <path class="wire" d="M 730 300 L 820 300"/>
+  <path class="wire" d="M 730 345 C 780 345, 780 485, 820 485"/>
+  <circle class="dot" cx="380" cy="115" r="4"/>
+  <circle class="dot" cx="380" cy="300" r="4"/>
+  <circle class="dot" cx="380" cy="485" r="4"/>
+  <circle class="dot" cx="820" cy="115" r="4"/>
+  <circle class="dot" cx="820" cy="300" r="4"/>
+  <circle class="dot" cx="820" cy="485" r="4"/>
+
+  <rect x="470" y="215" width="260" height="170" rx="20" fill="#24211e"/>
+  <text class="hub" x="600" y="283" text-anchor="middle">阡陌</text>
+  <text class="hubsub" x="600" y="317" text-anchor="middle">中枢：账号、授权、凭据</text>
+  <text class="hubsub" x="600" y="343" text-anchor="middle">节点：常驻的智能体</text>
+
+  <rect class="card" x="40" y="50" width="340" height="130" rx="16"/>
+  <text class="title" x="64" y="90">聊天渠道</text>
+  <text class="body" x="64" y="124">QQ 官方机器人 · 微信 · Telegram</text>
+  <text class="body" x="64" y="150">Discord · Slack，回复送回原聊天</text>
+
+  <rect class="card" x="40" y="235" width="340" height="130" rx="16"/>
+  <text class="title" x="64" y="275">本机编程工具</text>
+  <text class="body" x="64" y="309">Claude Code、Codex 装阡陌插件后</text>
+  <text class="body" x="64" y="335">把会话交给节点续跑，再接回本机</text>
+
+  <rect class="card" x="40" y="420" width="340" height="130" rx="16"/>
+  <text class="title" x="64" y="460">节点间文件互通</text>
+  <text class="body" x="64" y="494">按范围和有效期授权</text>
+  <text class="body" x="64" y="520">经私有 GitHub 交换仓库传送</text>
+
+  <rect class="card" x="820" y="50" width="340" height="130" rx="16"/>
+  <text class="title" x="844" y="90">应用连接</text>
+  <text class="body" x="844" y="124">邮件 · 日历 · GitHub 仓库</text>
+  <text class="body" x="844" y="150">发信、建日程每次都要批准</text>
+
+  <rect class="card" x="820" y="235" width="340" height="130" rx="16"/>
+  <text class="title" x="844" y="275">扩展</text>
+  <text class="body" x="844" y="309">MCP 连接器 · 技能 · 插件</text>
+  <text class="body" x="844" y="335">各底层按自己的原生方式加载</text>
+
+  <rect class="card" x="820" y="420" width="340" height="130" rx="16"/>
+  <text class="title" x="844" y="460">模型服务</text>
+  <text class="body" x="844" y="494">magpie 网关或多家供应商 API key</text>
+  <text class="body" x="844" y="520">每个智能体选自己的底层和模型</text>
+
+  <text class="tag" x="600" y="430" text-anchor="middle">协议：MCP · A2A 1.0</text>
+</svg>
