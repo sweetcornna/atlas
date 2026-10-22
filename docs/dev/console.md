@@ -629,6 +629,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | 方法 | 路径 | 角色 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/` | 成员 / ops / 管理令牌 | 对话前台：默认主智能体欢迎页；`?agent=<地址>` 选智能体，`?session=<会话 id>` 打开会话。已登录但不能对话或未接聊天通道时答 303 到 `/admin`；匿名导航到登录门并回跳 `/`；已登录的非 GET 答 405。公开版（`--billing`）先看订阅：匿名是套餐页；个人账号没有有效订阅时是一张指向 `/subscription` 的卡片，订阅有效而租户还没有节点时是「节点分配中」；平台主体与 break-glass 照旧 |
+| GET | `/app` | 成员 / ops / 管理令牌 | 前台的「对话」界面（桌面版主窗口的首页，[qmo-app.md](qmo-app.md) §4）：左侧是这个人能看到的全部会话，按今天、昨天、过去 7 天、更早分组；新对话是问候语加大输入框，在输入框里选智能体（默认主智能体）。`?session=`、`?agent=` 与 `/` 相同；门禁、公开版的订阅判断、303 / 登录门 / 405 都与 `/` 相同 |
+| GET | `/app/quick` | 成员 / ops / 管理令牌 | 快速输入：一张浮卡，主智能体形象（点它换智能体）、自动增高的输入框、发送；回车开会话发出这一行后在桌面版交给主窗口（`qmo_open_session`），浏览器里转到 `/app?session=<会话 id>`。门禁与 `/` 相同；`/app` 下其他路径 404 |
 | GET | `/admin` | view | 管理后台总览，区域页面都在 `/admin/…` |
 | GET | `/admin/overview` | view | 总览：会变的卡（智能体总数与在线、滞后、过期；消息链记录数与完整性；近 1 小时拒绝与丢弃；第四张是证书，没接证书源而接了对话时是近 1 小时会话，两样都没有就只有三张）与每个节点一行（A2）。原先的两项协议常量卡移到设置页 |
 | GET | `/admin/nodes?q=&state=&server=` | view | 节点名册。`q` 按地址或端点搜（不分大小写），`state` 是 `live` / `stale` / `expired`（与行上的判法同一个函数），`server` 按 `--node-server` 归属；原生 GET 表单，轮询的 `/fragments/roster` 带同样的查询串，计数「筛选后 n · 共 m」在片段里随刷新重算（D6）。接了登记簿时名册下另列「名册上没有的节点」：登记簿或托管清单里有、名册上没有的节点，链到它的生命周期页签（§5.5） |
@@ -847,9 +849,9 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/fragments/providers/node/<节点>` | view | HTML 片段，节点「模型」页签的正文；节点详情页的「模型」页签加载它 |
 | GET | `/fragments/providers/chat?target=<地址>` | view | HTML 片段，对话页线程头的模型标签与切换分隔线；没开模型服务或这个节点不托管时为空 |
 | GET/POST/PUT/DELETE | `/chat` | 无 | 旧对话地址答 308 到 `/`，原查询串完整保留，如 `/chat?session=x` → `/?session=x` |
-| GET | `/fragments/chat/front/side?agent=&active=` | **成员 / ops / 管理令牌** | 智能体、按时间分组的会话、其他执行中的会话 |
-| GET | `/fragments/chat/front/view?agent=<地址>` | **成员 / ops / 管理令牌** | 智能体抬头与欢迎页 |
-| GET | `/fragments/chat/front/view/<会话 id>?open=1` | **成员 / ops / 管理令牌** | 抬头与转录；`open=1` 表示显式打开，不带它是刷新 |
+| GET | `/fragments/chat/front/side?agent=&active=` | **成员 / ops / 管理令牌** | 智能体、按时间分组的会话、其他执行中的会话；带 `layout=chat` 时是 `/app` 的按天分组的会话与输入框里的智能体选单 |
+| GET | `/fragments/chat/front/view?agent=<地址>` | **成员 / ops / 管理令牌** | 智能体抬头与欢迎页；带 `layout=chat` 时是 `/app` 的问候语 |
+| GET | `/fragments/chat/front/view/<会话 id>?open=1` | **成员 / ops / 管理令牌** | 抬头与转录；`open=1` 表示显式打开，不带它是刷新；带 `layout=chat` 时按 `/app` 的阅读栏画 |
 | GET | `/fragments/chat/front/panel` | **成员 / ops / 管理令牌** | 会话面板：这个人的后台任务（与 `/v0/tasks` 同一条归属规则）与云端电脑入口 |
 | GET | `/v0/chat/targets` | **成员 / ops / 管理令牌** | 能聊的对象，含可不可拨（§6.3） |
 | GET | `/v0/chat/sessions` | **成员 / ops / 管理令牌** | 会话列表 |

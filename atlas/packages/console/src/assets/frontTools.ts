@@ -15,6 +15,9 @@
  *   the port (404 or 501) leaves 人工确认 and says 未接入; a refusal is said in
  *   the composer's status line.
  *
+ * - **智能体** (`/app` only) picks who a new conversation goes to, through the
+ *   front's own switch (`window.qianmoFront.pickAgent`).
+ *
  * One menu is open at a time; Escape or a click elsewhere closes it, and the
  * arrow keys move between its items.
  */
@@ -191,14 +194,14 @@ function toolsScript(): string {
   document.addEventListener('click', function (event) {
     var el = event.target && event.target.closest ? event.target : null;
     if (!el) return;
-    var button = el.closest('#fx-model-btn, #fx-perm-btn');
+    var button = el.closest('#fx-model-btn, #fx-perm-btn, #fx-agent-btn');
     if (button) {
       event.preventDefault();
       var menu = byId(button.getAttribute('aria-controls') || '');
       if (!menu) return;
       if (open && open.menu === menu) { close(true); return; }
       if (button.id === 'fx-model-btn') paintModels();
-      else if (target()) readPerm();
+      else if (button.id === 'fx-perm-btn' && target()) readPerm();
       show(button, menu);
       return;
     }
@@ -206,7 +209,12 @@ function toolsScript(): string {
     if (item && open && open.menu.contains(item)) {
       event.preventDefault();
       if (item.disabled) return;
-      if (item.hasAttribute('data-model-cmd')) command('/model ' + item.getAttribute('data-model-cmd'));
+      if (item.hasAttribute('data-agent-pick')) {
+        close(true);
+        var front = window.qianmoFront;
+        if (front && typeof front.pickAgent === 'function') front.pickAgent(item.getAttribute('data-agent-pick') || '');
+      }
+      else if (item.hasAttribute('data-model-cmd')) command('/model ' + item.getAttribute('data-model-cmd'));
       else if (item.hasAttribute('data-model-auto')) command('/model auto');
       else if (item.hasAttribute('data-effort')) {
         var level = item.getAttribute('data-effort');

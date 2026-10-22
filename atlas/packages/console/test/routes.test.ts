@@ -145,6 +145,7 @@ describe('the pages', () => {
     }
     expect(RESERVED_PAGE_HEADS).toEqual([
       'admin',
+      'app',
       'v0',
       'fragments',
       'assets',

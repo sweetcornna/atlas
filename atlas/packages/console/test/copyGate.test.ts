@@ -124,7 +124,10 @@ function cjkLiterals(script: string): string[] {
   return out
 }
 
-/** Real front documents for the roles allowed to converse, welcome and loaded session. */
+/**
+ * Real front documents for the roles allowed to converse, welcome and loaded
+ * session, on both faces, and quick entry.
+ */
 async function frontDocuments(): Promise<[string, string][]> {
   const out: [string, string][] = []
   const h = accountsHarness()
@@ -152,11 +155,19 @@ async function frontDocuments(): Promise<[string, string][]> {
       title: '检查运行状态',
       running: true,
     })
-    for (const path of ['/', `/?session=${id}`]) {
+    for (const path of [
+      '/',
+      `/?session=${id}`,
+      '/app',
+      `/app?session=${id}`,
+      '/app/quick',
+    ]) {
       const response = await h.handle(request(path))
       expect(response.status).toBe(200)
       const html = await response.text()
-      expect(html).toContain('id="fx-thread"')
+      expect(html).toContain(
+        path === '/app/quick' ? 'id="fx-quick-form"' : 'id="fx-thread"',
+      )
       out.push([`front ${role} ${path}`, html])
     }
   }

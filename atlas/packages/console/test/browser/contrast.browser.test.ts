@@ -180,6 +180,8 @@ const PAGES = [
   '/admin/nodes/tokyo-1',
   '/',
   '/?session=session-1',
+  '/app',
+  '/app?session=session-1',
   '/admin/audit',
   '/admin/alerts',
   '/admin/jobs',
@@ -299,6 +301,17 @@ describe.skipIf(SKIP !== null)('WCAG AA contrast, light and dark (B1)', () => {
         seen.set('toasts', toasts.total)
         for (const one of toasts.short) found.push({ ...one, page: 'toasts' })
 
+        // Quick entry: the card and its roster, open.
+        await tab.goto(`${served.base}/app/quick`)
+        await tab.waitFor('window.qianmoConsole !== undefined')
+        await tab.evaluate(`document.getElementById('fx-quick-agent').click()`)
+        await tab.waitFor(`!document.getElementById('fx-quick-menu').hidden`)
+        const quick = await tab.evaluate<Probe>(probe('document.body'))
+        total += quick.total
+        seen.set('#quick-entry', quick.total)
+        for (const one of quick.short)
+          found.push({ ...one, page: '/app/quick' })
+
         // Signed out: the login door.
         const door = await browser.tab()
         try {
@@ -322,7 +335,7 @@ describe.skipIf(SKIP !== null)('WCAG AA contrast, light and dark (B1)', () => {
         ([where, count]) => count < (where.startsWith('/') ? 8 : 2),
       )
       expect(thin).toEqual([])
-      expect(seen.size).toBe(PAGES.length + 4)
+      expect(seen.size).toBe(PAGES.length + 5)
       expect(total).toBeGreaterThan(400)
       expect(report(found)).toEqual([])
     }, 120_000)

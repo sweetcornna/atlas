@@ -2,16 +2,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * 对话前台 — `/`, and its fragments under `/fragments/chat/front/…`.
+ * 对话前台 — `/` (智能体) and `/app` (对话), the desktop app's quick entry at
+ * `/app/quick`, and their fragments under `/fragments/chat/front/…`.
  *
- * The page and its parts (`view/front.ts`):
+ * The pages and their parts (`view/front.ts`, `view/frontQuick.ts`,
+ * `docs/dev/qmo-app.md` §4):
  *
  * | Path | What |
  * | --- | --- |
- * | `GET /` | the whole front: the main agent's welcome, `?agent=<address>` another agent's, `?session=<id>` an open conversation |
- * | `GET /fragments/chat/front/side?agent=&active=` | the side panel's agents, sessions and the running strip |
- * | `GET /fragments/chat/front/view?agent=<address>` | the head and the welcome for one agent |
- * | `GET /fragments/chat/front/view/<id>[?open=1]` | the head and one conversation |
+ * | `GET /` | the front's 智能体 face: the main agent's welcome, `?agent=<address>` another agent's, `?session=<id>` an open conversation |
+ * | `GET /app` | the front's 对话 face, the desktop app's home: a new conversation with the main agent, `?agent=<address>` with another, `?session=<id>` an open conversation |
+ * | `GET /app/quick` | quick entry: one card that opens a conversation and hands it to the main window |
+ * | `GET /fragments/chat/front/side?agent=&active=[&layout=chat]` | the side panel's agents, sessions and the running strip; `/app`'s conversations by day and its agent picker |
+ * | `GET /fragments/chat/front/view?agent=<address>[&layout=chat]` | the head and the welcome for one agent |
+ * | `GET /fragments/chat/front/view/<id>[?open=1][&layout=chat]` | the head and one conversation |
+ *
+ * The two faces are one front: the same guard, the same reading gate, the
+ * same fragments with `layout=chat` choosing `/app`'s face of them. Quick
+ * entry has the same guard and reads only the roster.
  *
  * Everything else the front does goes through the chat routes it always went
  * through (`routes/chat.ts`): `POST /v0/chat/sessions` to open a session,
@@ -37,6 +45,7 @@ import type {
 } from '../deps.js'
 import { html, notFound } from '../respond.js'
 import {
+  type FrontLayout,
   frontSideParts,
   frontViewParts,
   renderFrontDocument,
@@ -45,6 +54,7 @@ import {
   type FrontSideModel,
   type FrontViewModel,
 } from '../view/front.js'
+import { renderQuickDocument } from '../view/frontQuick.js'
 import { renderFrontPanel } from '../view/frontPanel.js'
 import { FRONT_TEXT } from '../view/frontText.js'
 import {
@@ -155,6 +165,7 @@ async function sideModel(
   activeId: string | null,
   scope: ChatScope,
   look: FaceLookup,
+  layout: FrontLayout,
 ): Promise<FrontSideModel> {
   const addresses = new Set<string>([
     ...(data.targets ?? []).map(target => target.address),
@@ -172,6 +183,7 @@ async function sideModel(
     admin: mayAdmin(ctx),
     now: ctx.now,
     lang: langOf(ctx.request),
+    layout,
   }
 }
 
@@ -205,10 +217,17 @@ async function viewFor(
   asked: string | undefined,
   explicitOpen: boolean,
   look: FaceLookup,
+  layout: FrontLayout,
 ): Promise<FrontViewRender> {
   const admin = mayAdmin(ctx)
   const registryDown = data.targets === null
-  const base = { admin, registryDown, now: ctx.now, lang: langOf(ctx.request) }
+  const base = {
+    admin,
+    registryDown,
+    now: ctx.now,
+    lang: langOf(ctx.request),
+    layout,
+  }
   if (sessionId !== null && sessionId !== '') {
     const faces = chatFaces(await look([]))
     if (!scope.visible(sessionId)) {
@@ -299,9 +318,13 @@ async function viewFor(
   }
 }
 
-/** `/`: the whole front. The caller has already applied the chat guard. */
+/**
+ * `/` or `/app`: the whole front, in either face. The caller has already
+ * applied the chat guard.
+ */
 export async function renderFront(
   ctx: RouteContext,
+  layout: FrontLayout = 'agents',
 ): Promise<{ readonly html: string; readonly status: number } | Response> {
   const chat = ctx.deps.chat
   if (chat === undefined) return notFound(`unknown path: ${ctx.url.pathname}`)
@@ -320,8 +343,17 @@ export async function renderFront(
     asked,
     true,
     look,
+    layout,
   )
-  const side = await sideModel(ctx, data, view.selected, sessionId, scope, look)
+  const side = await sideModel(
+    ctx,
+    data,
+    view.selected,
+    sessionId,
+    scope,
+    look,
+    layout,
+  )
   await view.reading?.done(view.open)
   return {
     html: renderFrontDocument({
@@ -353,8 +385,43 @@ export async function renderFront(
       ...(ctx.deps.billing === undefined
         ? {}
         : { source: ctx.deps.billing.site() }),
+      layout,
+      picked: view.selected,
     }),
     status: view.status ?? 200,
+  }
+}
+
+/**
+ * `/app/quick`: the desktop app's quick entry (`qmo-app.md` §4.3), one
+ * card that opens a conversation with the main agent, or the agent picked
+ * on it, and hands it to the main window. It reads the roster and the
+ * figures and nothing else: no transcript, no session list. The caller has
+ * already applied the chat guard.
+ */
+export async function renderQuick(
+  ctx: RouteContext,
+): Promise<{ readonly html: string; readonly status: number } | Response> {
+  const chat = ctx.deps.chat
+  if (chat === undefined) return notFound(`unknown path: ${ctx.url.pathname}`)
+  const targets = await chatTargets(chat)
+  const main = mainAgentOf(targets, preferredMainAgent(ctx.deps))
+  const faces = chatFaces(
+    await lookFaces(ctx)(
+      (targets ?? []).map(target => agentAvatarKey(target.address)),
+    ),
+  )
+  return {
+    html: renderQuickDocument({
+      label: ctx.deps.label ?? DEFAULT_LABEL,
+      targets,
+      main,
+      faces,
+      relogin: loginHref(ctx.url),
+      lang: langOf(ctx.request),
+      accounts: ctx.viewer !== undefined,
+    }),
+    status: 200,
   }
 }
 
@@ -371,6 +438,9 @@ export async function dispatchFrontFragment(
 ): Promise<Response> {
   const look = lookFaces(ctx)
   const params = ctx.url.searchParams
+  // `?layout=chat` is `/app` asking for its own face of the same parts.
+  const layout: FrontLayout =
+    params.get('layout') === 'chat' ? 'chat' : 'agents'
   if (rest[0] === 'side' && rest.length === 1) {
     const data = await frontData(ctx, chat, scope)
     const active = textParam(params, 'active') ?? null
@@ -382,7 +452,7 @@ export async function dispatchFrontFragment(
       activeTarget ?? pickedAgent(data, textParam(params, 'agent'))
     return html(
       renderFrontSide(
-        await sideModel(ctx, data, selected, active, scope, look),
+        await sideModel(ctx, data, selected, active, scope, look, layout),
       ),
     )
   }
@@ -408,6 +478,7 @@ export async function dispatchFrontFragment(
       textParam(params, 'agent'),
       params.get('open') === '1',
       look,
+      layout,
     )
     await view.reading?.done(view.open)
     return html(renderFrontView(view.model), view.status ?? 200)

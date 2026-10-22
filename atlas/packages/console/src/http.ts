@@ -275,10 +275,11 @@ import {
   pageOf,
   type PageMatch,
 } from './routes/index.js'
-import { renderFront } from './routes/front.js'
+import { renderFront, renderQuick } from './routes/front.js'
 import {
   ADMIN_HOME,
   ADMIN_SEGMENT,
+  APP_SEGMENT,
   DEFAULT_LABEL,
   guard,
   guardChat,
@@ -620,17 +621,21 @@ async function servePage(
 }
 
 /**
- * `/`: the conversation front for whoever may hold a conversation here.
+ * `/`, `/app` and `/app/quick`: the conversation front for whoever may hold
+ * a conversation here — its 智能体 face, its 对话 face (the desktop app's
+ * home) and the desktop app's quick entry (`docs/dev/qmo-app.md` §1).
  *
  * Somebody signed in who may not — a view token, a viewer account — or a
  * console with no chat channel sends its caller to the management side,
  * which is theirs; somebody not signed in gets the login door, which comes
  * back here. The front is decided by the same rule as the 对话 item in the
- * management sidebar (`routes/front.ts`, `frontAvailable`).
+ * management sidebar (`routes/front.ts`, `frontAvailable`), and all three
+ * addresses keep it alike.
  */
 async function serveFrontDoor(
   ctx: RouteContext,
   denial: Access | undefined,
+  page: 'agents' | 'chat' | 'quick' = 'agents',
 ): Promise<Response> {
   const { request, deps, url, access } = ctx
   // The public edition decides first: signed out is the plans page, and a
@@ -652,7 +657,8 @@ async function serveFrontDoor(
       ? seeOther(ADMIN_HOME)
       : documentDenial(request, chatDenied, deps, url, denial)
   }
-  const rendered = await renderFront(ctx)
+  const rendered =
+    page === 'quick' ? await renderQuick(ctx) : await renderFront(ctx, page)
   return rendered instanceof Response
     ? rendered
     : html(rendered.html, rendered.status)
@@ -1360,6 +1366,25 @@ async function routeAs(
     return await serveFrontDoor(
       routeContext(request, url, deps, access, accounts, now(), viewer, ledger),
       denial,
+    )
+  }
+  // The front's 对话 face and the desktop app's quick entry: the same door
+  // as `/`.
+  if (segments[0] === APP_SEGMENT) {
+    const page =
+      segments.length === 1
+        ? ('chat' as const)
+        : segments.length === 2 && segments[1] === 'quick'
+          ? ('quick' as const)
+          : undefined
+    if (page === undefined) return notFound(`unknown path: ${url.pathname}`)
+    const exchanged =
+      accounts === undefined ? tokenInAddressBar(request, url, tokens) : null
+    if (exchanged !== null) return exchanged
+    return await serveFrontDoor(
+      routeContext(request, url, deps, access, accounts, now(), viewer, ledger),
+      denial,
+      page,
     )
   }
   if (segments[0] === ADMIN_SEGMENT) {
