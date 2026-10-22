@@ -6,6 +6,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileUsageStore } from '../src/usage.js'
+import type { ConsolePrincipal } from '../src/contracts.js'
 import type { ApprovalPort } from '../src/governance.js'
 import { APPROVAL_COOKIE } from '../src/approvalSession.js'
 import {
@@ -121,51 +122,199 @@ describe('P18.16 quota and usage through HTTP', () => {
   })
 })
 
-describe('P18.16 approval authentication and real HTTP decisions', () => {
-  test('ambient session cannot approve; same-account reauthentication issues a separate expiring cookie', async () => {
-    const calls: string[] = []
-    let toolName = 'write'
-    const approvals: ApprovalPort = {
-      async list(principal) {
-        return {
-          ok: true,
-          value: [
-            {
-              requestId: 'request-1',
-              node: 'tokyo-1',
-              agent: 'planner',
-              contextId: 'session-1',
-              owner: principal.subject,
-              toolName,
-              input: { path: '<unsafe>', content: 'hello' },
-              digest: 'digest-1',
-              createdAt: START,
-              expiresAt: START + 3600000,
-              status: 'pending',
-            },
-          ],
-        }
-      },
-      async decide(principal, input) {
-        calls.push(`${principal.credential}:${input.decision}:${input.digest}`)
-        return { ok: true, value: { delivered: true } }
-      },
-      async revoke(principal) {
-        calls.push(`${principal.credential}:revoke`)
-        return { ok: true, value: { delivered: true } }
-      },
+/** One pending request owned by whoever asks, and every call the port gets. */
+function approvalPort(): {
+  readonly port: ApprovalPort
+  readonly calls: string[]
+  readonly seen: ConsolePrincipal[]
+  setTool(name: string): void
+} {
+  const calls: string[] = []
+  const seen: ConsolePrincipal[] = []
+  let toolName = 'write'
+  const port: ApprovalPort = {
+    async list(principal) {
+      return {
+        ok: true,
+        value: [
+          {
+            requestId: 'request-1',
+            node: 'tokyo-1',
+            agent: 'planner',
+            contextId: 'session-1',
+            owner: principal.subject,
+            toolName,
+            input: { path: '<unsafe>', content: 'hello' },
+            digest: 'digest-1',
+            createdAt: START,
+            expiresAt: START + 6 * 3600000,
+            status: 'pending',
+          },
+        ],
+      }
+    },
+    async decide(principal, input) {
+      seen.push(principal)
+      calls.push(`${principal.credential}:${input.decision}:${input.digest}`)
+      return { ok: true, value: { delivered: true } }
+    },
+    async revoke(principal) {
+      seen.push(principal)
+      calls.push(`${principal.credential}:revoke`)
+      return { ok: true, value: { delivered: true } }
+    },
+  }
+  return {
+    port,
+    calls,
+    seen,
+    setTool: name => {
+      toolName = name
+    },
+  }
+}
+
+describe('P18.16 approval decisions over real HTTP (no step-up since 2026-10-22)', () => {
+  const body = { decision: 'allow-once', digest: 'digest-1' }
+
+  test('a signed-in session decides on its own conversation directly; a viewer session, the admin token and a request without the console header cannot', async () => {
+    const { port, calls, setTool } = approvalPort()
+    const h = accountsHarness({ deps: { approvals: port } }),
+      alice = await person(h.handle),
+      viewer = await person(h.handle, 'viewer')
+    const deciding = (method = 'POST', value: unknown = body) =>
+      asSession(method, '/v0/approvals/request-1', alice.sid, { body: value })
+    expect((await h.handle(deciding())).status).toBe(200)
+    expect(calls).toEqual(['session:allow-once:digest-1'])
+    expect((await h.handle(deciding('DELETE'))).status).toBe(200)
+    expect(calls).toEqual(['session:allow-once:digest-1', 'session:revoke'])
+    expect(
+      (
+        await h.handle(
+          deciding('POST', {
+            decision: 'allow-window',
+            digest: 'digest-1',
+            windowMs: 3600001,
+          }),
+        )
+      ).status,
+    ).toBe(400)
+    expect(calls).toHaveLength(2)
+    const page = await (
+      await h.handle(asSession('GET', '/admin/approvals', alice.sid))
+    ).text()
+    // Nothing to verify first: no credential row and no call for one.
+    expect(page).not.toContain('approval-auth')
+    expect(page).not.toContain('name="credential"')
+    expect(page).not.toContain('/v0/approvals/auth')
+    expect(page).not.toContain('先验证个人凭据')
+    expect(page).toContain('<p class="apv-note">批准绑定确切参数</p>')
+    expect(page).toContain('&lt;unsafe&gt;')
+    expect(page).not.toContain('<unsafe>')
+    expect(page).toContain('value="allow-window"')
+    setTool('qianmo_memory_write')
+    const memoryPage = await (
+      await h.handle(asSession('GET', '/admin/approvals', alice.sid))
+    ).text()
+    expect(memoryPage).not.toContain('value="allow-window"')
+    expect(memoryPage).toContain('value="allow-once"')
+    const refusedWindow = await h.handle(
+      deciding('POST', {
+        decision: 'allow-window',
+        digest: 'digest-1',
+        windowMs: 300_000,
+      }),
+    )
+    expect(refusedWindow.status).toBe(400)
+    expect(await refusedWindow.text()).toContain('逐次批准')
+    expect(calls).toHaveLength(2)
+
+    // A viewer is signed in too, and still never decides.
+    for (const method of ['POST', 'DELETE'])
+      expect(
+        (
+          await h.handle(
+            asSession(method, '/v0/approvals/request-1', viewer.sid, {
+              body,
+            }),
+          )
+        ).status,
+      ).toBe(403)
+    expect(
+      (await h.handle(asAdmin('POST', '/v0/approvals/request-1', body))).status,
+    ).toBe(403)
+    const noCsrf = deciding()
+    noCsrf.headers.delete(CONSOLE_HEADER)
+    expect((await h.handle(noCsrf)).status).toBe(403)
+    expect(calls).toHaveLength(2)
+  })
+
+  test('a cross-origin cookie POST to an approval is refused and reaches no port', async () => {
+    const { port, calls } = approvalPort()
+    const h = accountsHarness({ deps: { approvals: port } }),
+      alice = await person(h.handle)
+    // What a page on another origin gets the browser to send: the cookie,
+    // never the console header.
+    for (const path of [
+      '/v0/approvals/request-1',
+      '/v0/approvals/request-1/continue',
+    ]) {
+      const forged = asSession('POST', path, alice.sid, {
+        body,
+        header: false,
+        extra: { 'sec-fetch-site': 'cross-site', origin: 'https://evil.test' },
+      })
+      expect((await h.handle(forged)).status).toBe(403)
     }
-    const h = accountsHarness({ deps: { approvals } }),
+    const revoke = asSession('DELETE', '/v0/approvals/request-1', alice.sid, {
+      header: false,
+      extra: { 'sec-fetch-site': 'cross-site' },
+    })
+    expect((await h.handle(revoke)).status).toBe(403)
+    expect(calls).toEqual([])
+    // The same request from the console's own page goes through.
+    expect(
+      (
+        await h.handle(
+          asSession('POST', '/v0/approvals/request-1', alice.sid, {
+            body,
+            extra: { 'sec-fetch-site': 'same-origin' },
+          }),
+        )
+      ).status,
+    ).toBe(200)
+    expect(calls).toEqual(['session:allow-once:digest-1'])
+  })
+
+  test('a login hours old still decides, and an approval session from an older page is still taken', async () => {
+    const { port, calls, seen } = approvalPort()
+    const h = accountsHarness({ deps: { approvals: port } }),
       alice = await person(h.handle),
       bob = await person(h.handle)
-    const body = { decision: 'allow-once', digest: 'digest-1' }
+    // Three hours of use, never idle for the session's two: the login is
+    // as old as that, and no credential has been shown since.
+    for (let hour = 0; hour < 3; hour++) {
+      h.clock.advance(3600000)
+      expect(
+        (await h.handle(asSession('GET', '/v0/approvals', alice.sid))).status,
+      ).toBe(200)
+    }
     expect(
       (
         await h.handle(
           asSession('POST', '/v0/approvals/request-1', alice.sid, { body }),
         )
       ).status,
-    ).toBe(403)
+    ).toBe(200)
+    expect(calls).toEqual(['session:allow-once:digest-1'])
+    expect(seen[0]).toMatchObject({
+      kind: 'user',
+      credential: 'session',
+      authenticatedAt: START,
+    })
+
+    // An older page verifies first. It still may, with the right credential
+    // only, and the decision then rides that approval session.
     expect(
       (
         await h.handle(
@@ -175,7 +324,6 @@ describe('P18.16 approval authentication and real HTTP decisions', () => {
         )
       ).status,
     ).toBe(403)
-    expect(calls).toEqual([])
     const authenticated = await h.handle(
       asSession('POST', '/v0/approvals/auth', alice.sid, {
         body: { credential: alice.credential },
@@ -189,67 +337,22 @@ describe('P18.16 approval authentication and real HTTP decisions', () => {
     )
     expect(authenticated.headers.get('set-cookie')).toContain('; Secure')
     expect(h.ledger.text).not.toContain(cookie!)
-    function approving(path: string, method = 'POST', value: unknown = body) {
-      const request = asSession(method, path, alice.sid, { body: value })
+    const withCookie = () => {
+      const request = asSession('POST', '/v0/approvals/request-1', alice.sid, {
+        body,
+      })
       request.headers.set(
         'cookie',
         `${request.headers.get('cookie')}; ${APPROVAL_COOKIE}=${cookie}`,
       )
       return request
     }
-    expect((await h.handle(approving('/v0/approvals/request-1'))).status).toBe(
-      200,
-    )
-    expect(calls).toEqual(['approval-session:allow-once:digest-1'])
-    expect(
-      (await h.handle(approving('/v0/approvals/request-1', 'DELETE'))).status,
-    ).toBe(200)
-    expect(
-      (
-        await h.handle(
-          approving('/v0/approvals/request-1', 'POST', {
-            decision: 'allow-window',
-            digest: 'digest-1',
-            windowMs: 3600001,
-          }),
-        )
-      ).status,
-    ).toBe(400)
-    expect(calls).toHaveLength(2)
-    const page = await (
-      await h.handle(asSession('GET', '/admin/approvals', alice.sid))
-    ).text()
-    expect(page).toContain('approval-auth')
-    expect(page).toContain('&lt;unsafe&gt;')
-    expect(page).not.toContain('<unsafe>')
-    expect(page).toContain('value="allow-window"')
-    toolName = 'qianmo_memory_write'
-    const memoryPage = await (
-      await h.handle(asSession('GET', '/admin/approvals', alice.sid))
-    ).text()
-    expect(memoryPage).not.toContain('value="allow-window"')
-    expect(memoryPage).toContain('value="allow-once"')
-    const refusedWindow = await h.handle(
-      approving('/v0/approvals/request-1', 'POST', {
-        decision: 'allow-window',
-        digest: 'digest-1',
-        windowMs: 300_000,
-      }),
-    )
-    expect(refusedWindow.status).toBe(400)
-    expect(await refusedWindow.text()).toContain('逐次批准')
-    expect(calls).toHaveLength(2)
+    expect((await h.handle(withCookie())).status).toBe(200)
+    expect(calls[1]).toBe('approval-session:allow-once:digest-1')
+    // Once it lapses the session decides on its own; nothing asks again.
     h.clock.advance(1800000)
-    expect((await h.handle(approving('/v0/approvals/request-1'))).status).toBe(
-      403,
-    )
-    expect(calls).toHaveLength(2)
-    expect(
-      (await h.handle(asAdmin('POST', '/v0/approvals/request-1', body))).status,
-    ).toBe(403)
-    const noCsrf = approving('/v0/approvals/request-1')
-    noCsrf.headers.delete(CONSOLE_HEADER)
-    expect((await h.handle(noCsrf)).status).toBe(403)
+    expect((await h.handle(withCookie())).status).toBe(200)
+    expect(calls[2]).toBe('session:allow-once:digest-1')
   })
 })
 

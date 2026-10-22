@@ -14,6 +14,11 @@ interface Grant {
   readonly authenticatedAt: number
 }
 
+/**
+ * What `POST /v0/approvals/auth` issues: a 30-minute proof of the personal
+ * credential. Since 2026-10-22 a decision no longer needs one (`mayApprove`);
+ * it stays for pages from before then, and is still taken while it lasts.
+ */
 class ApprovalSessions {
   readonly #grants = new Map<string, Grant>()
   readonly #throttle = new RegistrationThrottle()

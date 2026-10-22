@@ -20,7 +20,7 @@
  * and 拒绝 / 批准. Requests for other conversations are one line above the
  * composer with the way to the oldest of them. The cards live in their own
  * mount after `#fx-thread` (`#fx-asks`), which the front's client never
- * swaps, so a redraw of the thread leaves a half-typed credential alone.
+ * swaps, so a redraw of the thread leaves a card being decided alone.
  *
  * ## What a card says
  *
@@ -40,14 +40,13 @@
  * on. Once the turn has ended, 批准 is the approvals page's 批准并继续
  * (`POST /v0/approvals/<id>/continue`) for a request a new turn can carry,
  * and stays allow-once for a tool the node approves fresh on every call
- * (mail, calendar, memory, 云端电脑, elevated). A decision that needs a
- * fresh personal credential asks for it inside the card
- * (`POST /v0/approvals/auth`, the approval session the admin approvals page
- * uses) and then sends the decision once more. A decided card says so
- * for a moment and goes on the next poll. Nothing takes focus when a card
- * arrives: Enter approves only on a focused 批准. A browser notification
- * goes out once per request the reader may decide, when they have allowed
- * them.
+ * (mail, calendar, memory, 云端电脑, elevated). The signed-in person
+ * decides directly, as in a Claude Code permission prompt: no credential is
+ * asked for (owner, 2026-10-22), and a refused decision says why in the
+ * card. A decided card says so for a moment and goes on the next poll.
+ * Nothing takes focus when a card arrives: Enter approves only on a focused
+ * 批准. A browser notification goes out once per request the reader may
+ * decide, when they have allowed them.
  *
  * Every string goes in as text (`textContent`), with invisible controls
  * shown as their codepoints, as on the approvals page.
@@ -61,9 +60,6 @@ import { attr, escapeHtml } from './escape.js'
 interface FrontWords {
   readonly approve: string
   readonly deny: string
-  readonly credential: string
-  readonly needCredential: string
-  readonly verifyFailed: string
   readonly failed: string
   readonly approved: string
   /** Approved, and the conversation's turn continued (批准并继续). */
@@ -84,9 +80,6 @@ const FRONT_WORDS: Readonly<Record<Lang, FrontWords>> = {
   'zh-CN': {
     approve: '批准',
     deny: '拒绝',
-    credential: '个人凭据',
-    needCredential: '批准需要 30 分钟内验证过的个人凭据',
-    verifyFailed: '验证失败 · 要用当前账号的个人凭据',
     failed: '没有完成 · 稍后再试',
     approved: '已批准',
     continuing: '已批准 · 正在继续',
@@ -100,10 +93,6 @@ const FRONT_WORDS: Readonly<Record<Lang, FrontWords>> = {
   en: {
     approve: 'Approve',
     deny: 'Deny',
-    credential: 'Personal credential',
-    needCredential:
-      'Approving needs a personal credential verified in the last 30 minutes',
-    verifyFailed: "Verification failed · use this account's credential",
     failed: 'Not completed · try again shortly',
     approved: 'Approved',
     continuing: 'Approved · continuing',
@@ -117,10 +106,6 @@ const FRONT_WORDS: Readonly<Record<Lang, FrontWords>> = {
   ja: {
     approve: '承認',
     deny: '拒否',
-    credential: '個人の認証情報',
-    needCredential: '承認には 30 分以内に確認した個人の認証情報が必要です',
-    verifyFailed:
-      '確認に失敗しました · このアカウントの認証情報を使ってください',
     failed: '完了しませんでした · しばらくしてから再試行してください',
     approved: '承認しました',
     continuing: '承認しました · 続行しています',
@@ -196,7 +181,6 @@ export const FRONT_APPROVAL_CSS = `
 }
 .fx-ask-link { justify-self: start; font-size: var(--text-12); color: var(--color-quiet); }
 .fx-ask-link:hover { color: var(--color-text); }
-.fx-ask-auth { display: grid; gap: 6px; font-size: var(--text-12); color: var(--color-quiet); }
 .fx-ask-status { margin: 0; font-size: var(--text-12); color: var(--color-quiet); }
 .fx-ask-status:empty { display: none; }
 .fx-ask-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
@@ -309,19 +293,6 @@ ${APPROVAL_CARD_JS}
       link.target = '_blank';
       link.rel = 'noopener';
     }
-    if (card.allow || card.deny) {
-      var form = add(el, 'form', 'fx-ask-auth');
-      form.hidden = true;
-      var field = 'fx-ask-cred-' + uid;
-      var label = add(form, 'label', '', w.needCredential || '');
-      label.htmlFor = field;
-      var input = add(form, 'input', 'input');
-      input.id = field;
-      input.type = 'password';
-      input.name = 'credential';
-      input.autocomplete = 'off';
-      input.setAttribute('aria-label', w.credential || '');
-    }
     add(el, 'p', 'fx-ask-status').setAttribute('role', 'status');
     var foot = add(el, 'div', 'fx-ask-foot');
     if (card.note) add(foot, 'span', 'fx-ask-note', card.note);
@@ -380,7 +351,7 @@ ${APPROVAL_CARD_JS}
       var card = approvalCard(one, w, role);
       var el = build(one, card);
       mount.appendChild(el);
-      cards[one.requestId] = { el: el, item: one, card: card, doneAt: 0, sending: false, pending: 'allow-once' };
+      cards[one.requestId] = { el: el, item: one, card: card, doneAt: 0, sending: false };
       added = true;
     }
     mount.hidden = !mount.firstChild;
@@ -453,10 +424,9 @@ ${APPROVAL_CARD_JS}
   // once the turn has ended (the node stopped waiting), a request that can
   // be carried into a new turn is approved and continued (批准并继续), and
   // one the node approves fresh every time stays allow-once.
-  function decide(entry, choice, retried) {
+  function decide(entry, choice) {
     if (entry.sending || entry.doneAt) return;
     entry.sending = true;
-    entry.pending = choice;
     hold(entry, true);
     status(entry, '');
     var item = entry.item;
@@ -469,43 +439,12 @@ ${APPROVAL_CARD_JS}
       entry.el.classList.add('is-done');
       var foot = entry.el.querySelector('.fx-ask-foot');
       if (foot) foot.textContent = '';
-      var auth = entry.el.querySelector('.fx-ask-auth');
-      if (auth) auth.hidden = true;
       status(entry, choice === 'deny' ? (w.denied || '') : resume ? (w.continuing || '') : (w.approved || ''));
       setTimeout(poll, HOLD_MS + 100);
     }, function (err) {
       entry.sending = false;
       hold(entry, false);
-      var auth = entry.el.querySelector('.fx-ask-auth');
-      if (err && err.status === 403 && !retried && auth) {
-        auth.hidden = false;
-        var field = auth.querySelector('input');
-        if (field) field.focus({ preventScroll: true });
-        // The whole card in view: the field and the buttons under it.
-        if (entry.el.scrollIntoView) entry.el.scrollIntoView({ block: 'nearest' });
-        status(entry, '');
-        return;
-      }
       status(entry, (w.failed || '') + (err && err.human ? ' · ' + err.human : ''));
-    });
-  }
-
-  function verify(entry, choice) {
-    var field = entry.el.querySelector('.fx-ask-auth input');
-    if (!field) return;
-    if (!field.value) { field.focus(); return; }
-    var credential = field.value;
-    field.value = '';
-    hold(entry, true);
-    qc.sendJson('POST', '/v0/approvals/auth', { credential: credential }).then(function () {
-      var auth = entry.el.querySelector('.fx-ask-auth');
-      if (auth) auth.hidden = true;
-      hold(entry, false);
-      decide(entry, choice, true);
-    }, function () {
-      hold(entry, false);
-      status(entry, w.verifyFailed || '');
-      field.focus();
     });
   }
 
@@ -518,15 +457,7 @@ ${APPROVAL_CARD_JS}
     var button = event.target && event.target.closest ? event.target.closest('[data-ask-choice]') : null;
     var entry = button ? entryOf(button) : null;
     if (!entry) return;
-    var picked = button.getAttribute('data-ask-choice') || '';
-    var auth = entry.el.querySelector('.fx-ask-auth');
-    if (auth && !auth.hidden) verify(entry, picked);
-    else decide(entry, picked, false);
-  });
-  mount.addEventListener('submit', function (event) {
-    event.preventDefault();
-    var entry = entryOf(event.target);
-    if (entry) verify(entry, entry.pending || 'allow-once');
+    decide(entry, button.getAttribute('data-ask-choice') || '');
   });
   // Another conversation on screen: its cards now, without waiting a tick.
   document.addEventListener('qianmo:front-view', function () {

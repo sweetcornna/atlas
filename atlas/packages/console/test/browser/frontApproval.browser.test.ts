@@ -3,24 +3,23 @@
 
 /**
  * The front's approval cards in a real browser (P40 §6, §8): a request for
- * the conversation on screen is a card at the end of the thread; 批准 after
- * the credential step continues the work when the agent's turn has ended
- * (批准并继续) and is allow-once while the turn still runs or for a tool the
- * node approves fresh every time; 拒绝 sends deny; a decided card goes on the
- * next poll; a request elsewhere is one line above the composer that
- * switches to its conversation; and a member sees a change that needs ops
- * without buttons.
+ * the conversation on screen is a card at the end of the thread; 批准 goes
+ * straight out on the login session (no credential step since 2026-10-22),
+ * continues the work when the agent's turn has ended (批准并继续) and is
+ * allow-once while the turn still runs or for a tool the node approves fresh
+ * every time; 拒绝 sends deny; a refused decision says why in the card; a
+ * decided card goes on the next poll; a request elsewhere is one line above
+ * the composer that switches to its conversation; and a member sees a change
+ * that needs ops without buttons.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { APPROVAL_COOKIE } from '../../src/approvalSession.js'
 import type { ChatTranscript, ConsoleResult } from '../../src/deps.js'
 import type { ApprovalItem, ApprovalPort } from '../../src/governance.js'
 import {
   ADDRESS,
   accountsHarness,
   asSession,
-  cookieFrom,
   CountingChat,
   person,
   START,
@@ -37,12 +36,25 @@ interface Decision {
   readonly credential: string
 }
 
-/** Requests that wait on whoever asks, and the decisions they get. */
-function approvals(items: ApprovalItem[]): {
+/** What the hub answers for a request in `refuse`. */
+const REFUSED = '审批请求已变化或失效'
+
+/**
+ * Requests that wait on whoever asks, and the decisions they get. A request
+ * in `refuse` is refused the way the hub refuses one, and is not counted.
+ */
+function approvals(
+  items: ApprovalItem[],
+  refuse: ReadonlySet<string> = new Set(),
+): {
   readonly port: ApprovalPort
   readonly decisions: Decision[]
 } {
   const decisions: Decision[] = []
+  const refused = {
+    ok: false,
+    failure: { code: 'refused', message: REFUSED },
+  } as const
   const port: ApprovalPort = {
     async list(principal) {
       return {
@@ -51,6 +63,7 @@ function approvals(items: ApprovalItem[]): {
       }
     },
     async decide(principal, input) {
+      if (refuse.has(input.requestId)) return refused
       decisions.push({
         requestId: input.requestId,
         digest: input.digest,
@@ -67,6 +80,7 @@ function approvals(items: ApprovalItem[]): {
       return { ok: true, value: { delivered: true } }
     },
     async continue(principal, input) {
+      if (refuse.has(input.requestId)) return refused
       decisions.push({
         requestId: input.requestId,
         digest: input.digest,
@@ -177,7 +191,7 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
     await tab.goto(`${base}${path}`)
   }
 
-  test('the card is in the thread; on an idle conversation 批准 continues after the credential, 拒绝 sends deny; the line leads to the other conversation', async () => {
+  test('the card is in the thread; on an idle conversation 批准 continues at once, 拒绝 sends deny; the line leads to the other conversation', async () => {
     const items: ApprovalItem[] = []
     const { port, decisions } = approvals(items)
     const h = accountsHarness({ deps: { approvals: port } })
@@ -275,18 +289,9 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
         })()`),
       ).toEqual(['另一个对话有 1 项待你批准', `/?session=${b}`, b])
 
-      // 批准 without a fresh credential: the step comes up in the card.
-      await tab.evaluate(
-        `document.querySelector('.fx-ask[data-request="set-1"] [data-ask-choice="allow-once"]').click()`,
-      )
-      await tab.waitFor(
-        `!document.querySelector('.fx-ask[data-request="set-1"] .fx-ask-auth').hidden`,
-      )
-      expect(decisions).toEqual([])
-      // A redraw of the thread leaves the card, and what is typed in it, alone.
+      // A redraw of the thread leaves the card alone.
       await tab.evaluate(`(() => {
         window.__card = document.querySelector('.fx-ask[data-request="set-1"]');
-        window.__card.querySelector('.fx-ask-auth input').value = ${JSON.stringify(ops.credential)};
         window.__viewed = false;
         document.addEventListener('qianmo:front-view', () => { window.__viewed = true; }, { once: true });
       })()`)
@@ -294,11 +299,12 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
       await tab.waitFor(`window.__viewed === true`)
       expect(
         await tab.evaluate<boolean>(
-          `document.querySelector('.fx-ask[data-request="set-1"]') === window.__card && window.__card.querySelector('.fx-ask-auth input').value.length > 0`,
+          `document.querySelector('.fx-ask[data-request="set-1"]') === window.__card && window.__card.querySelector('input, form') === null`,
         ),
       ).toBe(true)
+      // 批准 goes straight out on the login session: nothing asks first.
       await tab.evaluate(
-        `document.querySelector('.fx-ask[data-request="set-1"] .fx-ask-auth').requestSubmit()`,
+        `document.querySelector('.fx-ask[data-request="set-1"] [data-ask-choice="allow-once"]').click()`,
       )
       await tab.waitFor(
         `document.querySelector('.fx-ask[data-request="set-1"]').classList.contains('is-done')`,
@@ -310,22 +316,22 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
           requestId: 'set-1',
           digest: 'digest-set-1',
           decision: 'continue',
-          credential: 'approval-session',
+          credential: 'session',
         },
       ])
       expect(
         await tab.evaluate<string[]>(`(() => {
           const card = document.querySelector('.fx-ask[data-request="set-1"]');
-          return [card.querySelector('.fx-ask-status').textContent, card.querySelector('.fx-ask-auth input').value, String(card.querySelectorAll('[data-ask-choice]').length)];
+          return [card.querySelector('.fx-ask-status').textContent, String(card.querySelectorAll('[data-ask-choice]').length)];
         })()`),
-      ).toEqual(['已批准 · 正在继续', '', '0'])
+      ).toEqual(['已批准 · 正在继续', '0'])
       // Gone on the next poll.
       await tab.waitFor(
         `document.querySelector('.fx-ask[data-request="set-1"]') === null`,
         8_000,
       )
 
-      // 拒绝 on the next card: the credential is fresh now, no step.
+      // 拒绝 on the next card, the same way.
       await tab.evaluate(
         `document.querySelector('.fx-ask[data-request="cal-1"] [data-ask-choice="deny"]').click()`,
       )
@@ -336,7 +342,7 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
         requestId: 'cal-1',
         digest: 'digest-cal-1',
         decision: 'deny',
-        credential: 'approval-session',
+        credential: 'session',
       })
       await tab.waitFor(
         `document.querySelector('#fx-asks .fx-ask') === null && document.getElementById('fx-asks').hidden`,
@@ -378,7 +384,7 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
         requestId: 'mail-1',
         digest: 'digest-mail-1',
         decision: 'allow-once',
-        credential: 'approval-session',
+        credential: 'session',
       })
       expect(decisions).toHaveLength(3)
     } finally {
@@ -404,14 +410,6 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
       request('run-1', a, 'qianmo_settings_change', change('ops')),
       request('run-2', a, 'qianmo_settings_change', change('ops'), 5),
     )
-    // A fresh approval session, so 批准 goes straight out.
-    const authed = await h.handle(
-      asSession('POST', '/v0/approvals/auth', ops.sid, {
-        body: { credential: ops.credential },
-      }),
-    )
-    expect(authed.status).toBe(200)
-    const approval = cookieFrom(authed, APPROVAL_COOKIE) ?? ''
     const server = Bun.serve({
       hostname: '127.0.0.1',
       port: 0,
@@ -420,16 +418,6 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
     const base = `http://127.0.0.1:${server.port}`
     const tab = await browser.tab()
     try {
-      await tab.send('Network.setCookie', {
-        name: APPROVAL_COOKIE,
-        value: approval,
-        url: base,
-        // Where the console scopes it: it replaces one an earlier test's
-        // console left for this host (cookies do not tell ports apart).
-        path: '/v0/approvals',
-        httpOnly: true,
-        sameSite: 'Strict',
-      })
       await open(tab, base, ops.sid, `/?session=${a}`)
       await tab.waitFor(
         `document.querySelectorAll('#fx-asks .fx-ask').length === 2 && document.getElementById('fx-thread').getAttribute('data-running') === '1'`,
@@ -445,7 +433,7 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
           requestId: 'run-1',
           digest: 'digest-run-1',
           decision: 'allow-once',
-          credential: 'approval-session',
+          credential: 'session',
         },
       ])
       // The node stopped waiting and the turn ended: the thread says so.
@@ -464,7 +452,7 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
         requestId: 'run-2',
         digest: 'digest-run-2',
         decision: 'continue',
-        credential: 'approval-session',
+        credential: 'session',
       })
       expect(decisions).toHaveLength(2)
     } finally {
@@ -473,9 +461,9 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
     }
   }, 30_000)
 
-  test('a member sees a change that needs ops without buttons, and it is not counted as waiting on them', async () => {
+  test('a member sees a change that needs ops without buttons, and it is not counted as waiting on them; a refused decision says why in the card', async () => {
     const items: ApprovalItem[] = []
-    const { port, decisions } = approvals(items)
+    const { port, decisions } = approvals(items, new Set(['mine-1']))
     const h = accountsHarness({ deps: { approvals: port } })
     const member = await person(h.handle, 'member')
     const ids: string[] = []
@@ -530,6 +518,35 @@ describe.skipIf(SKIP !== null)('approval cards on the front', () => {
         tag: false,
         mine: ['deny', 'allow-once'],
         bar: true,
+      })
+      // The hub refuses: the card says why, asks for nothing, and can be
+      // tried again.
+      await tab.evaluate(
+        `document.querySelector('.fx-ask[data-request="mine-1"] [data-ask-choice="allow-once"]').click()`,
+      )
+      await tab.waitFor(
+        `document.querySelector('.fx-ask[data-request="mine-1"] .fx-ask-status').textContent !== ''`,
+      )
+      expect(
+        await tab.evaluate<{
+          status: string
+          fields: number
+          done: boolean
+          enabled: boolean
+        }>(`(() => {
+          const card = document.querySelector('.fx-ask[data-request="mine-1"]');
+          return {
+            status: card.querySelector('.fx-ask-status').textContent,
+            fields: card.querySelectorAll('input, form').length,
+            done: card.classList.contains('is-done'),
+            enabled: [...card.querySelectorAll('[data-ask-choice]')].every(el => !el.disabled),
+          };
+        })()`),
+      ).toEqual({
+        status: `没有完成 · 稍后再试 · ${REFUSED}`,
+        fields: 0,
+        done: false,
+        enabled: true,
       })
       expect(decisions).toEqual([])
     } finally {

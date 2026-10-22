@@ -17,9 +17,10 @@ describe.skipIf(SKIP !== null)('personal approvals in a real browser', () => {
   afterAll(async () => {
     await browser?.close()
   }, 30_000)
-  test('ordinary login cannot approve; reauthentication clears the secret and permits bound approval and revocation', async () => {
+  test('an ordinary login approves, revokes and continues directly; a refusal says why on the status line', async () => {
     const actions = new MemoryActionLedger()
     let status: ApprovalItem['status'] = 'pending'
+    let refuse = true
     const decisions: string[] = []
     const port: ApprovalPort = {
       async list() {
@@ -43,6 +44,13 @@ describe.skipIf(SKIP !== null)('personal approvals in a real browser', () => {
         }
       },
       async decide(principal) {
+        if (refuse) {
+          refuse = false
+          return {
+            ok: false,
+            failure: { code: 'refused', message: '审批请求已变化或失效' },
+          }
+        }
         decisions.push(principal.credential)
         status = 'allowed'
         return { ok: true, value: { delivered: true } }
@@ -79,12 +87,14 @@ describe.skipIf(SKIP !== null)('personal approvals in a real browser', () => {
       await tab.waitFor(
         "document.querySelector('[data-approval]') !== null && window.qianmoConsole !== undefined",
       )
-      // The credential row stays folded until a decision needs it.
+      // No credential row: the page has nothing to verify first.
       expect(
         await tab.evaluate<boolean>(
-          "document.getElementById('approval-auth').hidden",
+          "document.getElementById('approval-auth') === null && document.querySelector('.apv-page input') === null",
         ),
       ).toBe(true)
+      // The hub refuses the first one: the status line says why, and
+      // asks for nothing.
       await tab.evaluate(
         "document.querySelector('[data-approval] button[value=allow-once]').click()",
       )
@@ -92,10 +102,15 @@ describe.skipIf(SKIP !== null)('personal approvals in a real browser', () => {
         "document.getElementById('approval-status').textContent.includes('审批未完成')",
       )
       expect(
-        await tab.evaluate<boolean>(
-          "document.getElementById('approval-auth').hidden",
+        await tab.evaluate<string>(
+          "document.getElementById('approval-status').textContent",
         ),
-      ).toBe(false)
+      ).toBe('审批未完成 · 审批请求已变化或失效')
+      expect(
+        await tab.evaluate<boolean>(
+          "document.querySelector('.apv-page input') === null && !document.querySelector('[data-approval] button[value=allow-once]').disabled",
+        ),
+      ).toBe(true)
       expect(decisions).toHaveLength(0)
       expect(
         await tab.evaluate<boolean>(
@@ -107,30 +122,15 @@ describe.skipIf(SKIP !== null)('personal approvals in a real browser', () => {
           "document.body.textContent.includes('\\u202e')",
         ),
       ).toBe(false)
-      await tab.evaluate(
-        `document.getElementById('approval-credential').value=${JSON.stringify(alice.credential)}; document.getElementById('approval-auth').requestSubmit()`,
-      )
-      await tab.waitFor(
-        "document.getElementById('approval-status').textContent.includes('已验证')",
-      )
-      expect(
-        await tab.evaluate<string>(
-          "document.getElementById('approval-credential').value",
-        ),
-      ).toBe('')
-      expect(
-        await tab.evaluate<boolean>(
-          "document.cookie.includes('qianmo_approval')",
-        ),
-      ).toBe(false)
+      // The next click goes straight through, on the login session.
       await tab.evaluate(
         "document.querySelector('[data-approval] button[value=allow-once]').click()",
       )
       await tab.waitFor("document.querySelector('[data-revoke]') !== null")
-      expect(decisions).toEqual(['approval-session'])
+      expect(decisions).toEqual(['session'])
       await tab.evaluate("document.querySelector('[data-revoke]').click()")
       await tab.waitFor("document.body.textContent.includes('已拒绝或撤销')")
-      expect(decisions).toEqual(['approval-session', 'revoke:approval-session'])
+      expect(decisions).toEqual(['session', 'revoke:session'])
       expect(
         actions.entries.filter(row => row.action === 'approval.decide')[0]
           ?.target,
@@ -145,9 +145,9 @@ describe.skipIf(SKIP !== null)('personal approvals in a real browser', () => {
       )
       await tab.waitFor("document.querySelector('[data-revoke]') !== null")
       expect(decisions).toEqual([
-        'approval-session',
-        'revoke:approval-session',
-        'continue:approval-session',
+        'session',
+        'revoke:session',
+        'continue:session',
       ])
       expect(
         actions.entries.find(row => row.action === 'approval.continue')?.target,

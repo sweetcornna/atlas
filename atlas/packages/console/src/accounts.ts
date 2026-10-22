@@ -253,16 +253,19 @@ export function tokenFingerprint(token: string): string {
  *   with no owner (`DEFAULT_CONTEXT`, a watch job, a peer's request) only ops
  *   may approve. `legacy:view` never, and the admin token never — as
  *   break-glass or otherwise (D7 ③).
- * - **with what** — an approval session or the personal credential itself. A
- *   plain browser session is ambient and long-lived, which is exactly what an
- *   approval must not ride on; P14 mints approval sessions for this.
+ * - **with what** — any way a person is signed in: the browser session, the
+ *   personal credential as Bearer, or an approval session an older page
+ *   still asks for. Since the owner's decision of 2026-10-22 a signed-in
+ *   person approves directly, the way a Claude Code permission prompt does,
+ *   with no second credential and no age limit on the login. What guards a
+ *   decision is the rest: the CSRF rules a cookie request meets, the digest
+ *   it is bound to, single use, and the hub checking the account again.
  */
 export function mayApprove(
   principal: ConsolePrincipal,
   owner: AccountSubject | null,
 ): boolean {
   if (principal.kind !== 'user') return false
-  if (principal.credential === 'session') return false
   if (principal.role === 'ops') return true
   return (
     principal.role === 'member' && owner !== null && owner === principal.subject

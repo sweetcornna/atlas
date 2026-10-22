@@ -1020,7 +1020,7 @@ describe('principalOf / mayApprove (tenancy-m1.md §3.5)', () => {
     })
   })
 
-  test('approves by owner or ops, never on a plain browser session, never a legacy token', () => {
+  test('approves by owner or ops on any sign-in, the browser session included; never a viewer or a legacy token', () => {
     const owner = 'u:0123456789abcdef' as const
     const other = 'u:fedcba9876543210' as const
     const user = (
@@ -1034,19 +1034,26 @@ describe('principalOf / mayApprove (tenancy-m1.md §3.5)', () => {
       authenticatedAt: 0,
       credential,
     })
-    expect(mayApprove(user('member', 'approval-session'), owner)).toBe(true)
-    expect(mayApprove(user('member', 'bearer'), owner)).toBe(true)
-    expect(mayApprove(user('member', 'session'), owner)).toBe(false)
-    expect(mayApprove(user('member', 'approval-session'), other)).toBe(false)
-    expect(mayApprove(user('member', 'approval-session'), null)).toBe(false)
-    expect(mayApprove(user('ops', 'approval-session', other), owner)).toBe(true)
-    expect(mayApprove(user('ops', 'approval-session', other), null)).toBe(true)
-    expect(mayApprove(user('ops', 'session', other), owner)).toBe(false)
-    expect(mayApprove(user('viewer', 'approval-session'), owner)).toBe(false)
+    // 2026-10-22: the way the person signed in no longer matters, nor how
+    // long ago (`authenticatedAt` is 0 throughout); the role rules do.
+    for (const credential of [
+      'session',
+      'approval-session',
+      'bearer',
+    ] as const) {
+      expect(mayApprove(user('member', credential), owner)).toBe(true)
+      expect(mayApprove(user('member', credential), other)).toBe(false)
+      expect(mayApprove(user('member', credential), null)).toBe(false)
+      expect(mayApprove(user('ops', credential, other), owner)).toBe(true)
+      expect(mayApprove(user('ops', credential, other), null)).toBe(true)
+      expect(mayApprove(user('viewer', credential), owner)).toBe(false)
+      expect(mayApprove(user('viewer', credential), null)).toBe(false)
+    }
     for (const subject of ['legacy:view', 'legacy:admin'] as const) {
-      expect(
-        mayApprove({ kind: 'legacy', subject, credential: 'bearer' }, null),
-      ).toBe(false)
+      for (const credential of ['session', 'bearer'] as const)
+        expect(mayApprove({ kind: 'legacy', subject, credential }, null)).toBe(
+          false,
+        )
     }
   })
 })

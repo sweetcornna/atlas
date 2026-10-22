@@ -15,8 +15,9 @@ export type AccountSubject = `u:${string}`
  * `credential` says how the person got here: a browser session, a personal
  * credential presented as `Authorization: Bearer`, or — reserved for P14 — an
  * approval session. `authenticatedAt` is when that credential was last proven:
- * the login for a session, the request itself for a bearer. P14 reads both to
- * decide what may approve (`authorization-m1.md` §3.3).
+ * the login for a session, the request itself for a bearer. Since 2026-10-22
+ * approving reads neither, only the role rules (`authorization-m1.md` §3.3);
+ * opening an elevated mode still wants one proven in the last 30 minutes.
  *
  * The legacy tokens are principals too, so that code downstream asks one
  * question; they are never people, never own a session and never approve.

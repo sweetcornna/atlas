@@ -102,7 +102,6 @@ const refusal = (
   code: 'refused' | 'unreachable' | 'invalid' | 'not_found',
   message: string,
 ): ConsoleResult<never> => ({ ok: false, failure: { code, message } })
-const freshMs = 30 * 60_000
 /** The P40 change tool: one approval per change, bound to `SettingsBound`. */
 const SETTINGS_TOOL = 'qianmo_settings_change'
 const ROLE_RANK: Readonly<Record<string, number>> = {
@@ -364,8 +363,10 @@ export class ConsoleApprovals implements ApprovalPort {
     }
     const owner = this.#options.accounts.ownerOf(cached.request.contextId)
     if (!approve) return principal.role === 'ops' || owner === principal.subject
-    const age = this.#now() - principal.authenticatedAt
-    return age >= 0 && age < freshMs && mayApprove(principal, owner)
+    // No age on the login (owner, 2026-10-22): a signed-in person decides
+    // directly. The approver `consumeConnector` and `consumeSettings` rebuild
+    // from the decision is bounded by the request's own expiry instead.
+    return mayApprove(principal, owner)
   }
 
   async list(

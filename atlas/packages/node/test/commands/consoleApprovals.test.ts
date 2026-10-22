@@ -268,7 +268,7 @@ test('approval identity is separate, persistent, private and refuses corrupt or 
   writeFileSync(path, raw)
 })
 
-test('real signed transport + FileGrantStore: ownership, digest, freshness, one-use and durable account revocation', async () => {
+test('real signed transport + FileGrantStore: ownership, digest, a login of any age, one-use and durable account revocation', async () => {
   const root = mkdtempSync(join(tmpdir(), 'qm-console-authz-'))
   const nodeKeys = generateNodeKeyPair(),
     commander = generateNodeKeyPair(),
@@ -393,23 +393,29 @@ test('real signed transport + FileGrantStore: ownership, digest, freshness, one-
       digest: first.request.digest,
       decision: 'allow-once' as const,
     }
-    expect(
-      (await hub.decide({ ...alice, credential: 'session' }, input)).ok,
-    ).toBe(false)
+    // Not the owner: refused however bob is signed in.
     expect((await hub.decide(bob, input)).ok).toBe(false)
     expect(
-      (
-        await hub.decide(
-          { ...alice, authenticatedAt: Date.now() - 1_800_001 },
-          input,
-        )
-      ).ok,
+      (await hub.decide({ ...bob, credential: 'session' }, input)).ok,
     ).toBe(false)
+    // A role the account does not have, claimed: refused before anything.
+    expect((await hub.decide({ ...alice, role: 'ops' }, input)).ok).toBe(false)
     expect(
       (await hub.decide(alice, { ...input, digest: '0'.repeat(64) })).ok,
     ).toBe(false)
     expect(decisions).toBe(0)
-    expect(await hub.decide(alice, input)).toEqual({
+    // 2026-10-22: the owner's plain browser session decides, and a login
+    // hours old is as good as a fresh one.
+    expect(
+      await hub.decide(
+        {
+          ...alice,
+          credential: 'session',
+          authenticatedAt: Date.now() - 5 * 3_600_000,
+        },
+        input,
+      ),
+    ).toEqual({
       ok: true,
       value: { delivered: true },
     })
