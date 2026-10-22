@@ -24,15 +24,6 @@ import { facesFor } from './avatars.js'
 import { failureResponse, guard, guardChat, underPath } from './shared.js'
 import type { RouteContext, RouteModule } from './types.js'
 
-/** Whether this reader decides: a personal member or operator account. */
-function decides(ctx: RouteContext): boolean {
-  return (
-    ctx.deps.approvals !== undefined &&
-    ctx.access.principal?.kind === 'user' &&
-    ctx.access.principal.role !== 'viewer'
-  )
-}
-
 /** The polled region (`view/approvals.ts`). */
 async function content(ctx: RouteContext): Promise<string> {
   const port = ctx.deps.approvals
@@ -70,7 +61,7 @@ export const approvalsRoute: RouteModule = {
     async render(ctx) {
       return {
         title: '审批',
-        body: approvalsFrame(await content(ctx), decides(ctx)),
+        body: approvalsFrame(await content(ctx)),
         poll: true,
       }
     },
@@ -91,6 +82,8 @@ export const approvalsRoute: RouteModule = {
       const principal = ctx.access.principal
       if (principal?.kind !== 'user')
         return fail(403, 'forbidden', '审批需要个人账号')
+      // Kept for pages from before 2026-10-22, which verify first; a decision
+      // no longer needs it.
       if (rest.length === 1 && rest[0] === 'auth') {
         if (ctx.request.method !== 'POST') return methodNotAllowed(['POST'])
         if (ctx.accounts === undefined)
@@ -157,17 +150,17 @@ export const approvalsRoute: RouteModule = {
       if (!visible.ok) return failureResponse(visible.failure)
       const item = visible.value.find(v => v.requestId === requestId)
       if (!item) return notFound('资源不存在')
+      // The person decides as they are signed in, session or Bearer (owner,
+      // 2026-10-22). An approval session an older page verified is still
+      // taken while it lasts; it is no longer needed.
       const approving =
-        ctx.accounts === undefined
-          ? principal.credential === 'bearer'
-            ? principal
-            : null
+        (ctx.accounts === undefined
+          ? null
           : approvalSessions(ctx.accounts.book).principal(
               ctx.request,
               principal,
               ctx.now,
-            )
-      if (approving === null) return fail(403, 'forbidden', '先验证个人凭据')
+            )) ?? principal
       const blocked = await ctx.admit()
       if (blocked) return blocked
       if (ctx.request.method === 'DELETE') {

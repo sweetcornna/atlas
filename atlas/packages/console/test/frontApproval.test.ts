@@ -5,7 +5,7 @@
  * The front's approval cards (P39 §2.1, P40 §6): the API filter, the mounts,
  * the per-tool table the card script draws from, and the approvals page's
  * settings card. The script's behaviour on a page — the card in the thread,
- * the credential step, the line for other conversations — is in
+ * deciding on one click, the line for other conversations — is in
  * `browser/frontApproval.browser.test.ts`.
  */
 
@@ -16,6 +16,7 @@ import {
   approvalCard,
   CARD_WORDS,
 } from '../src/view/approvalCard.js'
+import { APPROVALS_PAGE_JS } from '../src/view/approvals.js'
 import {
   FRONT_APPROVAL_JS,
   frontApprovalWords,
@@ -180,6 +181,19 @@ describe('the front document', () => {
     expect(composer).toBeGreaterThan(bar)
     expect(member).toContain('data-role="member"')
     expect(await front('ops', true)).toContain('data-role="ops"')
+  })
+
+  test('a card decides on the click: no credential field, no verification call', () => {
+    expect(FRONT_APPROVAL_JS).not.toContain('/v0/approvals/auth')
+    expect(FRONT_APPROVAL_JS).not.toContain('fx-ask-auth')
+    expect(FRONT_APPROVAL_JS).not.toContain('password')
+    expect(FRONT_APPROVAL_JS).not.toContain("addEventListener('submit'")
+    expect(FRONT_APPROVAL_JS).toContain(
+      "decide(entry, button.getAttribute('data-ask-choice') || '');",
+    )
+    expect(APPROVALS_PAGE_JS).not.toContain('/v0/approvals/auth')
+    expect(APPROVALS_PAGE_JS).not.toContain('approval-auth')
+    expect(APPROVALS_PAGE_JS).not.toContain('个人凭据')
   })
 
   test('nothing in the cards takes focus or the Enter key by itself', () => {
@@ -488,6 +502,9 @@ describe('the words', () => {
           )
         : []
     const reference = keys(frontApprovalWords('zh-CN')).sort()
+    // The credential step's words went with it (2026-10-22).
+    for (const gone of ['credential', 'needCredential', 'verifyFailed'])
+      expect(reference).not.toContain(gone)
     for (const lang of LANGS) {
       const words = frontApprovalWords(lang)
       expect(keys(words).sort()).toEqual(reference)
@@ -538,9 +555,7 @@ describe('the approvals page', () => {
 
   test('pending first, one short note, the decided folded under 已处理', async () => {
     const { html, cards } = await page('ops')
-    expect(html).toContain(
-      '<p class="apv-note">批准绑定确切参数 · 需 30 分钟内验证的个人凭据</p>',
-    )
+    expect(html).toContain('<p class="apv-note">批准绑定确切参数</p>')
     expect(cards.map(card => /data-key="apv:([^"]+)"/.exec(card)?.[1])).toEqual(
       ['r-1', 'r-2', 'r-3', 'r-4', 'r-6', 'r-5'],
     )
@@ -548,11 +563,14 @@ describe('the approvals page', () => {
     expect(done).toContain('已处理 · 2')
     expect(done).toContain('data-key="apv:r-6"')
     expect(done.indexOf('data-key="apv:r-1"')).toBe(-1)
-    // The credential row is there, folded away until a decision needs it.
-    expect(html).toMatch(
-      /<form id="approval-auth" class="card elev-sm apv-auth" hidden>/,
+    // A signed-in person decides directly (2026-10-22): the status line is
+    // there for what a refusal says, and no credential row is.
+    expect(html).toContain(
+      '<p id="approval-status" class="apv-status" role="status"></p>',
     )
-    expect(html).toContain('name="credential"')
+    expect(html).not.toContain('id="approval-auth"')
+    expect(html).not.toContain('name="credential"')
+    expect(html).not.toContain('apv-auth')
   })
 
   test('a settings change: the figure and title, area · setting, now and after, the panel; never the raw input', async () => {

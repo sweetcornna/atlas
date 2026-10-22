@@ -59,7 +59,7 @@ Models：tenant store/policy、控制台 scope/HTTP、开放注册、usage/appro
 
 `--approvals` 复用固定 `--chat-url node=url` 和本地 `--trust node=publicKey`，通过已签名握手主动订阅节点；注册中心的公钥或端点不参与信任决定。控制台命令密钥与独立 `console-keys/<console>.approver.json` 必须不同。节点由 `--approver` 独立接受审批公钥。
 
-普通会话仅能查看本人待办；提交前须重新验证同账号个人凭据，得到 30 分钟绝对期的独立 HttpOnly、Secure、SameSite=Strict cookie。每次决定由宿主再次检查 live 账号、角色、属主、当前 tenant、凭据时效与 digest。窗口最多 60 分钟，界面默认提供 5 分钟。旧 token 不能审批。
+普通登录会话可查看本人待办并直接提交决定（2026-10-22 起，负责人决定），不再重新验证同账号个人凭据。旧页面经 `POST /v0/approvals/auth` 换得的 30 分钟绝对期独立 HttpOnly、Secure、SameSite=Strict cookie 仍被接受。每次决定由宿主再次检查 live 账号、角色、属主、当前 tenant 与 digest，不看登录了多久。窗口最多 60 分钟，界面默认提供 5 分钟。旧 token 不能审批。
 
 控制台在发送前将决定写入私有哈希链，只有节点成功回执并完成本地记账才显示已批准；超时或拒收显示投递未确认，不自动再签一个决定。账号 reset/revoke 会把该人的已发授权列入持久撤销队列；离线重试。重启会保守撤销所有历史未撤销窗口，包括投递未确认项；需要重新申请，不承诺跨重启保留窗口。节点最终授权账本仍为真源。
 

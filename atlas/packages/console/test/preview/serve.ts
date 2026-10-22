@@ -167,6 +167,6 @@ Bun.serve({
 process.stdout.write(
   `console preview on http://127.0.0.1:${port}/__preview/login?as=ops` +
     `${withMagpie ? '' : ' (no magpie)'}\n` +
-    // What an approval card asks for before it decides (in memory only).
+    // For `Authorization: Bearer` calls; approving needs none (in memory only).
     `personal credentials · ops ${people.ops.credential} · member ${people.member.credential}\n`,
 )

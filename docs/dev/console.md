@@ -731,15 +731,15 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/admin/providers`、`/admin/providers?node=<节点>` | view | 模型（P38 起合一页）：自上而下是任务模型（三档难度与三种生成，`routing` 卡）、智能体（接了网关时是网关的智能体区块，没接时是「智能体模型」，`harness-backends.md` §11）、网关的连接 · 上游 · 路由组 · 密钥 · 用量（只在接了 magpie 时），最后是模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
 | GET | `/admin/providers/new?q=`、`/admin/providers/new?preset=<预设>&site=<站点>` | view | 预设卡片（`q` 是 GET 搜索）；带 `preset` 时是从这份预设新建的表单 |
 | GET | `/admin/providers/profiles/<档案 id>`、`/admin/providers/nodes/<节点>?do=`、`/admin/providers/import` | view | 一份档案（编辑、密钥三态或多把密钥逐把列表、在用节点）；节点「模型」页签（`do` 直接打开对应对话框）；导入 |
-| GET | `/admin/approvals` | view | 审批队列；未接审批端口时明确显示未接入。个人成员仅看自己会话，运维仍受租户 scope 限制；批准前须验证当前账号个人凭据 |
+| GET | `/admin/approvals` | view | 审批队列；未接审批端口时明确显示未接入。个人成员仅看自己会话，运维仍受租户 scope 限制；登录后直接批准，不再验证个人凭据（负责人 2026-10-22） |
 | GET | `/admin/usage` | view | 东八区自然日用量；输入、输出、缓存写入、缓存读取四列，charged 排除 cacheRead；显示配额模式、在途、会话与可观测下界 |
 | GET | `/v0/usage` | view | 用量快照；普通个人账号只读自己，运维只能读取 tenant scope 内主体；未接入 501 |
 | GET | `/v0/approvals/report` | view | 最近每节点 500 条已验审计记录；附完整性与截断状态。viewer 仅聚合，member 仅本人会话，ops 沿当前租户范围 |
 | GET | `/v0/approvals` | member / ops | 可见审批列表；`?mine=1` 只列自己会话里待批的（对话前台 `/` 的确认框轮询它，P39） |
-| POST | `/v0/approvals/auth` | member / ops | 同账号个人凭据再验证，签发独立 HttpOnly 审批 cookie，30 分钟绝对期；普通登录 cookie 本身不能审批 |
-| POST | `/v0/approvals/<requestId>` | 本人 / ops + 审批凭据 | 决定 allow-once / allow-window / deny，绑定 digest，窗口最多 60 分钟；宿主再次核对归属、时效与摘要 |
-| POST | `/v0/approvals/<requestId>/continue` | 本人 + 审批凭据 | 节点已确认原任务终态且会话空闲后，原子计入个人/租户/全局配额，记录持久一次性意图，批准并发送新的签名入站任务；本地超时、重复提交与重启重发均拒绝 |
-| DELETE | `/v0/approvals/<requestId>` | 本人 / ops + 审批凭据 | 撤销授权窗口 |
+| POST | `/v0/approvals/auth` | member / ops | 为旧页面保留：同账号个人凭据再验证，签发独立 HttpOnly 审批 cookie，30 分钟绝对期。2026-10-22 起审批不再需要它，登录 cookie 本身就能审批 |
+| POST | `/v0/approvals/<requestId>` | 本人 / ops | 决定 allow-once / allow-window / deny，绑定 digest，窗口最多 60 分钟；登录会话或个人凭据 Bearer 即可，不看登录了多久；宿主再次核对账号、归属与摘要 |
+| POST | `/v0/approvals/<requestId>/continue` | 本人 | 节点已确认原任务终态且会话空闲后，原子计入个人/租户/全局配额，记录持久一次性意图，批准并发送新的签名入站任务；本地超时、重复提交与重启重发均拒绝 |
+| DELETE | `/v0/approvals/<requestId>` | 本人 / ops | 撤销授权窗口 |
 | GET | `/fragments/usage`、`/fragments/approvals` | view | 对应页面的当前服务端片段 |
 | GET、POST | `/signup` | 公开，显式开启 | M2 开放注册；GET不开户，POST同源、socket来源限速、全局账号容量内创建随机新 member，凭据只显示一次且不落明文；未映射租户零节点可见性 |
 | GET | `/login` | 公开 | 登录页：一个框、一个按钮，**没有 `<script>`** |
@@ -977,7 +977,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 能处理的待审批个数）。两者都读宿主内存里的列表，每页渲染时问一次不花代价；告警的未确认数仍不进
 侧栏（见下文告警一节）。后台的灰点不闪：共享样式表不带动画，脉动只在前台。
 
-**审批与用量**已提供真实页面：审批展示当前身份可见的请求、完整参数、摘要与状态，支持个人凭据再验证、批准、撤销和符合终态条件的「批准并继续」；用量展示东八区自然日的四列 token、消息及在途配额。没有接入相应宿主端口时明确显示未接入，不伪造可操作数据。
+**审批与用量**已提供真实页面：审批展示当前身份可见的请求、完整参数、摘要与状态，登录后直接批准、拒绝、撤销和符合终态条件的「批准并继续」（2026-10-22 起不再先验证个人凭据），被拒时状态行写明原因；用量展示东八区自然日的四列 token、消息及在途配额。没有接入相应宿主端口时明确显示未接入，不伪造可操作数据。
 
 **响应头**（`respond.ts`）：每个 HTML 文档都带 `Content-Security-Policy`（`<meta>` 那份
 策略加 `frame-ancestors 'none'`）和 `X-Frame-Options: DENY`；`<meta>` 里那份保留不动。

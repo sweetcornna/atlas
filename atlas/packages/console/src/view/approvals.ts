@@ -17,9 +17,9 @@
  * The actions sit on the right: 批准 (allow-once), 批准 5 分钟 where a
  * window is allowed, 批准并继续, and 拒绝; 撤销授权窗口 once allowed. A
  * member looking at a change that needs ops reads 需要运维批准 and gets no
- * buttons. The personal credential a decision needs is asked for in one
- * compact row at the top, and only once a decision has been refused for want
- * of it.
+ * buttons. A signed-in member or operator decides directly (owner,
+ * 2026-10-22): no credential is asked for, and a refused decision says why
+ * on the status line.
  *
  * A reader who cannot decide (a viewer, a token) gets the audit summary,
  * one card, one row per node.
@@ -191,8 +191,7 @@ function itemCard(item: ApprovalItem, model: ApprovalsModel): string {
   )
 }
 
-const NOTE =
-  '<p class="apv-note">批准绑定确切参数 · 需 30 分钟内验证的个人凭据</p>'
+const NOTE = '<p class="apv-note">批准绑定确切参数</p>'
 
 /** The polled region for a reader who may decide. */
 export function renderApprovals(model: ApprovalsModel): string {
@@ -283,19 +282,10 @@ export function renderApprovalsAudit(report: AuditReport): string {
   )
 }
 
-/** The page's frame around the polled region: the credential row, the status line. */
-export function approvalsFrame(content: string, decider: boolean): string {
+/** The page's frame around the polled region: the status line. */
+export function approvalsFrame(content: string): string {
   return (
     `<div class="apv-page">` +
-    (decider
-      ? `<form id="approval-auth" class="card elev-sm apv-auth" hidden>` +
-        `<label class="apv-auth-text" for="approval-credential">` +
-        `<span class="apv-auth-label">个人凭据</span>` +
-        `<span class="apv-auth-desc">批准前验证 · 30 分钟内有效</span></label>` +
-        `<div class="apv-auth-ctl">` +
-        `<input id="approval-credential" name="credential" type="password" class="input" autocomplete="off" required>` +
-        `<button class="btn btn-primary" type="submit">验证</button></div></form>`
-      : '') +
     `<p id="approval-status" class="apv-status" role="status"></p>` +
     `<div class="apv" data-poll="/fragments/approvals">${content}</div>` +
     `</div>`
@@ -345,13 +335,6 @@ export const APPROVALS_PAGE_CSS = `
 .apv-done > summary { font-size: var(--text-13); }
 .apv-done[open] > summary { margin-bottom: var(--space-3); }
 .apv-done[open] > .apv-note { margin-bottom: var(--space-2); }
-.apv-auth { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2) var(--space-4); padding: var(--space-3) var(--space-4); }
-.apv-auth[hidden] { display: none; }
-.apv-auth-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.apv-auth-label { font-size: var(--text-13); font-weight: 500; }
-.apv-auth-desc { font-size: var(--text-12); color: var(--color-muted); }
-.apv-auth-ctl { display: flex; align-items: center; gap: var(--space-2); }
-.apv-auth-ctl .input { width: 240px; }
 .apv-audit { gap: 0; padding-top: var(--space-3); padding-bottom: var(--space-2); }
 .apv-audit-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; padding-bottom: var(--space-2); }
 .apv-audit-row {
@@ -362,17 +345,15 @@ export const APPROVALS_PAGE_CSS = `
 .apv-audit-state { display: inline-flex; align-items: center; gap: var(--space-2); }
 @media (max-width: 720px) {
   .apv-body, .apv-foot { padding-left: 0; }
-  .apv-foot, .apv-auth, .apv-audit-row { grid-template-columns: minmax(0, 1fr); }
+  .apv-foot, .apv-audit-row { grid-template-columns: minmax(0, 1fr); }
   .apv-acts { justify-content: flex-start; }
-  .apv-auth-ctl .input { width: 100%; }
 }
 `
 
 /**
- * The page script: the credential row, each decision and each revocation.
- * A refusal for want of a fresh credential opens the row and says so; any
- * other refusal is said on the status line. Field names and data attributes
- * are the page's contract with this script.
+ * The page script: each decision and each revocation. A refusal is said on
+ * the status line, with the reason the console gave. Field names and data
+ * attributes are the page's contract with this script.
  */
 export const APPROVALS_PAGE_JS = `(function () {
   'use strict';
@@ -381,35 +362,11 @@ export const APPROVALS_PAGE_JS = `(function () {
     var line = document.getElementById('approval-status');
     if (line) line.textContent = text;
   }
-  function askCredential() {
-    var form = document.getElementById('approval-auth');
-    if (!form) return;
-    form.hidden = false;
-    var input = document.getElementById('approval-credential');
-    if (input) input.focus();
-  }
   function refused(verb, err) {
-    if (err && err.status === 403) {
-      status(verb + '未完成 · 先验证个人凭据');
-      askCredential();
-      return;
-    }
     status(verb + '未完成 · ' + (err && err.human ? err.human : '刷新后重试'));
   }
   document.addEventListener('submit', function (e) {
     var f = e.target;
-    if (f.id === 'approval-auth') {
-      e.preventDefault();
-      var credential = f.elements.credential.value;
-      f.elements.credential.value = '';
-      qc.sendJson('POST', '/v0/approvals/auth', { credential: credential }).then(function () {
-        status('已验证 · 可提交审批');
-        f.hidden = true;
-      }).catch(function () {
-        status('验证失败 · 要用当前账号的个人凭据');
-      });
-      return;
-    }
     if (!f.matches('[data-approval]')) return;
     e.preventDefault();
     var button = e.submitter;

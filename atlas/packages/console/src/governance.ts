@@ -147,7 +147,7 @@ export type ApprovalContinueResult =
       readonly quota: Extract<UsageAdmission, { readonly ok: false }>
     }
 
-/** The host rechecks ownership, credential freshness and digest on every call. */
+/** The host rechecks the live account, role, ownership and digest on every call. */
 export interface ApprovalPort {
   continue?(
     principal: ConsolePrincipal,
