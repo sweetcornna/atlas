@@ -980,6 +980,37 @@ describe('the 对话 face at /app and quick entry at /app/quick', () => {
   })
 })
 
+test('previews are plain text on every face: agent rows, the running strip, recents and the notification body', async () => {
+  const h = front()
+  const answer =
+    '## 路由\n- 补了 `GET /app`\n\n```ts\nGET /app/quick\n```\n见 [文档](https://example.com) **完**'
+  h.chat.seed('talk', MAIN, 0)
+  h.chat.seed('sub', REVIEWER, 1, true, '看下 `bun test` **为啥** 红')
+  for (const [id, preview] of [
+    ['talk', answer],
+    ['sub', answer],
+  ] as const) {
+    const session = h.chat.sessionsById.get(id)
+    if (session === undefined) throw new Error('seed missing')
+    h.chat.sessionsById.set(id, { ...session, preview })
+  }
+  const plain = '路由 补了 GET /app GET /app/quick 见 文档 完'
+  const agents = await (await h.handle(browse('/', ADMIN))).text()
+  const main = region(agents, 'fx-agents', '</section>')
+  expect(main).toContain(`>${plain}<`)
+  const stack = region(agents, 'fx-stack', '</details>')
+  expect(stack).toContain('>看下 bun test 为啥 红<')
+  const app = await (await h.handle(browse('/app', ADMIN))).text()
+  const recents = region(app, 'fx-recents', '</section>')
+  expect(recents).toContain(`data-preview="${plain}"`)
+  expect(recents).toContain('>看下 bun test 为啥 红<')
+  for (const html of [main, stack, recents]) {
+    expect(html).not.toContain('```')
+    expect(html).not.toContain('**')
+    expect(html).not.toContain('](')
+  }
+})
+
 describe("the desktop app's platform on the page", () => {
   async function tag(path: string, cookie: string): Promise<string> {
     const plain = browse(path, ADMIN)

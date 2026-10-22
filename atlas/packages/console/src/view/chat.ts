@@ -104,13 +104,45 @@ function truncate(text: string, limit: number): string {
 }
 
 /**
- * A session's last turn as the list shows it: one line, at most
- * {@link PREVIEW_LENGTH} characters. The rail and `GET /v0/chat/sessions` both
- * hand it out, so the list is a summary on either surface and the transcript
- * — the thing the action ledger counts — stays behind its own route.
+ * A turn's words without their markdown: what one line of plain text keeps
+ * of the closed subset `richText.ts` draws, and of the marks an agent writes
+ * beyond it. Fence lines go with their info string and the code in them
+ * stays; every backtick goes; heading hashes, quote marks and list bullets go
+ * from the start of a line; `**`, `*`, `_` and `~~` go from around the words
+ * they mark, and an underscore that is part of a name (`snake_case`,
+ * `__init__`) stays; a link or an image keeps only its text.
  */
-export function chatPreview(text: string): string {
-  return truncate(text, PREVIEW_LENGTH)
+function plainText(text: string): string {
+  return text
+    .split('\n')
+    .filter(line => !/^\s*(?:```|~~~)/.test(line))
+    .map(line =>
+      line
+        .replace(/^\s{0,3}#{1,6}\s+/, '')
+        .replace(/^\s{0,3}>\s?/, '')
+        .replace(/^\s*(?:[-*+]|\d{1,9}[.)])\s+/, ''),
+    )
+    .join('\n')
+    .replace(/!\[([^\]\n]*)\]\([^)\n]*\)/g, '$1')
+    .replace(/\[([^\]\n]+)\]\([^)\n]*\)/g, '$1')
+    .replace(/<((?:https?:\/\/|mailto:)[^>\s]+)>/g, '$1')
+    .replace(/`+/g, '')
+    .replace(/\*\*(?=\S)([^\n]*?\S)\*\*/g, '$1')
+    .replace(/(^|[^\w*])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![\w*])/g, '$1$2')
+    .replace(/(^|[^\w])_(?=[^\s_])([^_\n]*?[^\s_])_(?!\w)/g, '$1$2')
+    .replace(/~~(?=\S)([^~\n]*?\S)~~/g, '$1')
+}
+
+/**
+ * A session's last turn as the list shows it: one line of plain text, at
+ * most {@link PREVIEW_LENGTH} characters (or `limit`, for a title). The rail,
+ * the front's rows, its running strip, the desktop app's notification and
+ * `GET /v0/chat/sessions` all hand it out, so the list is a summary on every
+ * surface and the transcript — the thing the action ledger counts — stays
+ * behind its own route.
+ */
+export function chatPreview(text: string, limit = PREVIEW_LENGTH): string {
+  return truncate(plainText(text), limit)
 }
 
 /** A value pill: a task id, a trace segment. Monospaced, never toned. */

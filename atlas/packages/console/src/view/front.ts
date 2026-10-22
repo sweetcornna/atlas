@@ -355,7 +355,7 @@ function failText(code: string | undefined, lang: Lang, t: FrontText): string {
 
 function sessionTitle(session: ChatSession, t: FrontText): string {
   const title = session.title ?? ''
-  if (title.trim() !== '') return truncate(title, TITLE_LENGTH)
+  if (title.trim() !== '') return chatPreview(title, TITLE_LENGTH)
   if (session.preview.trim() !== '') return chatPreview(session.preview)
   return t.newChat
 }
