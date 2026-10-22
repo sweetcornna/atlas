@@ -143,6 +143,15 @@ describe('exemption predicates', () => {
     expect(isExemptByExtension('a/b.pdf')).toBe(true)
     expect(isExemptByExtension('a/b.docx')).toBe(true)
     expect(isExemptByExtension('docs/assets/readme/x.mp4')).toBe(true)
+    expect(
+      isExemptByExtension('atlas/apps/qmo/src-tauri/icons/icon.icns'),
+    ).toBe(true)
+    expect(isExemptByExtension('atlas/apps/qmo/src-tauri/icons/icon.ico')).toBe(
+      true,
+    )
+    expect(isExemptByExtension('atlas/apps/qmo/src-tauri/Cargo.lock')).toBe(
+      true,
+    )
   })
 
   test('extensions that carry headers today are NOT exempt', () => {

@@ -107,7 +107,10 @@ const READ_CHUNK_BYTES = 4096
  * 扩展名豁免：这些格式**带不了**注释头。
  *
  * `.jpg` / `.png` / `.pdf` / `.docx` / `.mp4` —— 二进制或纯数据格式，语法上就没有
- * 注释，无处安放这两行。
+ * 注释，无处安放这两行。`.icns` / `.ico`（桌面版的应用图标）同理。
+ *
+ * `.lock` —— 工具整份重写的锁文件（桌面版的 `Cargo.lock`）：cargo 每次解析依赖
+ * 都按自己的格式重写全文，加进去的两行下一次就没了，留不住。
  *
  * `.json` 是**两种理由合成一条**（判定结果相同，理由必须分开记）：
  *   ① JSON 语法本身不含注释（28 个，其中 20 个是 `package.json`）——同上，
@@ -127,6 +130,9 @@ const EXEMPT_EXTENSIONS: Record<string, true> = {
   '.pdf': true,
   '.docx': true,
   '.mp4': true,
+  '.icns': true,
+  '.ico': true,
+  '.lock': true,
   '.json': true,
 }
 
