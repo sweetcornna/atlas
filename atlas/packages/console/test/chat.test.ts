@@ -31,6 +31,7 @@ import type {
 import { readFileSync } from 'node:fs'
 import { createConsoleHandler } from '../src/http.js'
 import {
+  chatPreview,
   MAX_CHAT_TEXT_LENGTH,
   renderChatSessions,
   renderChatThread,
@@ -870,5 +871,78 @@ describe('chat routes', () => {
 
     await reader.cancel()
     expect(chat.listeners.size).toBe(0)
+  })
+})
+
+describe('a preview is one line of plain text', () => {
+  test('code fences go with their info string, the code stays, and every backtick goes', () => {
+    expect(
+      chatPreview(
+        '路由表补了两行\n\n```ts\nGET /app\nGET /app/quick\n```\n\n已过',
+        200,
+      ),
+    ).toBe('路由表补了两行 GET /app GET /app/quick 已过')
+    expect(chatPreview('跑 `bun test` 看看 ``a`b`` 呢')).toBe(
+      '跑 bun test 看看 ab 呢',
+    )
+    expect(chatPreview('~~~\nls -la\n~~~')).toBe('ls -la')
+  })
+
+  test('headings, quotes and list bullets go from the start of a line', () => {
+    expect(
+      chatPreview(
+        '## macOS\n- 本机构建\n* 走完配对\n+ 退出\n1. 第一\n2) 第二\n> 引一句',
+        200,
+      ),
+    ).toBe('macOS 本机构建 走完配对 退出 第一 第二 引一句')
+    // Not a heading or a list: no space after the mark, or not at the start.
+    expect(chatPreview('#123 号工单 · 第 2-3 步 · a - b')).toBe(
+      '#123 号工单 · 第 2-3 步 · a - b',
+    )
+  })
+
+  test('emphasis marks go, a name with underscores or a lone asterisk stays', () => {
+    expect(chatPreview('**Windows 与 Linux** 要 *先* 编 _译_ ~~不~~ 过')).toBe(
+      'Windows 与 Linux 要 先 编 译 不 过',
+    )
+    expect(
+      chatPreview('改 snake_case_name 与 __init__ · 2 * 3 * 4 · **/*.ts', 200),
+    ).toBe('改 snake_case_name 与 __init__ · 2 * 3 * 4 · **/*.ts')
+  })
+
+  test('a link or an image keeps its text, an autolink its address', () => {
+    expect(
+      chatPreview(
+        '见 [设计文档](https://example.com/a) 与 ![截图](x.png) 或 <https://example.com/b>',
+        200,
+      ),
+    ).toBe('见 设计文档 与 截图 或 https://example.com/b')
+  })
+
+  test('whitespace collapses, and the cut is counted on the plain text', () => {
+    expect(chatPreview('  第一行\n\n\t第二行   第三行  ')).toBe(
+      '第一行 第二行 第三行',
+    )
+    const cut = chatPreview(`**${'很长'.repeat(40)}**`)
+    expect(cut.length).toBe(46)
+    expect(cut.startsWith('很长很长')).toBe(true)
+    expect(cut.endsWith('…')).toBe(true)
+  })
+
+  test('the rail, the session list JSON and the front draw the plain line', async () => {
+    const chat = new FakeChat()
+    const raw = '路由表补了两行\n```\nGET /app\n```'
+    chat.sessionsResult = ok([
+      { ...SESSION, preview: raw, title: '看下 `bun test`' },
+    ])
+    const handler = createConsoleHandler(depsWith(chat), TOKENS)
+    const { sessions } = (await (
+      await handler(get('/v0/chat/sessions'))
+    ).json()) as { sessions: { preview: string; title: string }[] }
+    expect(sessions[0]?.preview).toBe('路由表补了两行 GET /app')
+    expect(sessions[0]?.title).toBe('看下 bun test')
+    const rail = await (await handler(get('/fragments/chat/sessions'))).text()
+    expect(rail).toContain('路由表补了两行 GET /app')
+    expect(rail).not.toContain('```')
   })
 })

@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title></title>
+<link rel="stylesheet" href="app.css">
+<script type="module" src="signin.js"></script>
+</head>
+<body class="loading">
+<div class="drag" data-tauri-drag-region></div>
+<main class="signin">
+  <div class="signin-head">
+    <span id="mark"></span>
+    <h1 data-i18n="signin.title"></h1>
+  </div>
+  <form id="form" novalidate>
+    <p id="notice" class="alert notice" role="status" hidden></p>
+    <div class="field">
+      <label for="hub" data-i18n="signin.hub"></label>
+      <input class="input" id="hub" name="hub" type="url" inputmode="url" autocomplete="url" spellcheck="false" autocapitalize="off" placeholder="https://" required>
+    </div>
+    <div class="field">
+      <label for="code" data-i18n="signin.code"></label>
+      <input class="input mono" id="code" name="code" type="text" autocomplete="off" spellcheck="false" autocapitalize="characters" placeholder="ABCD-EFGH-IJKL" maxlength="64" required>
+    </div>
+    <p class="note" data-i18n="signin.hint"></p>
+    <p id="error" class="alert" role="alert" hidden><span id="error-text"></span><span id="error-detail" class="detail selectable"></span></p>
+    <button class="btn btn-primary btn-block" id="submit" type="submit" data-i18n="signin.submit"></button>
+  </form>
+</main>
+</body>
+</html>

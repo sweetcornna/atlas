@@ -103,6 +103,7 @@
 - **Windows**：票据写在 Edge 的命令行上。别的普通用户读不到你的进程命令行，只有管理员可以。命令行上加不了请求头，所以每次进门都停在确认页，要点一次「进入」。Windows 上也能走管道，但要把两个继承句柄交给浏览器，这一轮没有做，也没有验证；原生窗口（P37.8）做好以后就不再需要这一步。
 - **Linux**：`/proc/<pid>/cmdline` 对所有用户可读，所以票据不能出现在命令行上。窗口先以 `about:blank` 启动，带 `--remote-debugging-pipe`；两条 0600 FIFO 放在 0700 的状态目录里，不监听端口，浏览器一接上就把两个文件删掉。客户端经这条管道先给页面加上 `X-Qmo-Device` 头，再 `Page.navigate` 到票据地址，这种导航的 `Sec-Fetch-Site` 是 `none`；进门之后撤掉这个头。窗口关闭之前，客户端一直守着管道。
 - **macOS** 只用于开发，按 Windows 的方式启动，不是发行目标。
+- **桌面版**（P37.8，[`qmo-app.md`](./qmo-app.md) §3）：不经浏览器。`qmo session --json` 自己带 `X-Qmo-Device` 与 `Sec-Fetch-Site: none` 请求票据地址，不跟随 303，把响应里的 cookie 打成一行 JSON 交给壳，核对票据已用掉后退出；壳把 cookie 写进 WebView 再打开 `/app`。`--json` 时标准输出只有这一行，出错时是 `{"error":{"kind","message"}}`，退出码按 `kind` 区分。
 - 找不到能用的 Chromium 内核浏览器时（比如 Ubuntu 默认的 snap 版 Chromium，它读不了家目录下的隐藏目录），用系统默认浏览器打开 `/`，不带票据，由控制台登录页登录。
 
 ## §4 本机的运行时与节点部件（后续包）
@@ -155,7 +156,7 @@
 | P37.5 | 本机接力共用客户端的设备登记 | `qm handoff` 不再单独配对 | 规划 |
 | P37.6 | 订阅迁移：设备的 magpie 网关密钥，`qmo run claude / codex` | 一把密钥、两种工具，用量归到同一把密钥；用户配置文件不变 | 规划 |
 | P37.7 | 本机节点：Windows 构建 `qm`、原生插件、隔离与受保护目录 | Windows 上节点跑通一轮对话 | 规划 |
-| P37.8 | 原生窗口：WebView2 / WebKitGTK | 不依赖系统浏览器即可登录并打开前台 | 规划 |
+| P37.8 | 原生窗口：WebView2 / WebKitGTK（2026-10-22 起由桌面版落实，设计见 [`qmo-app.md`](./qmo-app.md)） | 不依赖系统浏览器即可登录并打开前台 | 本轮（见 `qmo-app.md` §9） |
 | P37.9 | 构建与发行：在 Windows 上编 Windows 产物、在 Linux 上编 Linux 产物，CI 矩阵，代码签名 | CI 出两种系统的产物并冒烟 | 规划 |
 
 ## §8 本轮验证

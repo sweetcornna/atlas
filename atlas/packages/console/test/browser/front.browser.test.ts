@@ -2,13 +2,65 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import type { ChatTranscript, ConsoleResult } from '../../src/deps.js'
+import { createConsoleHandler } from '../../src/http.js'
 import {
   ADDRESS,
+  CountingChat,
   accountsHarness,
   asSession,
   person,
 } from '../accountsHarness.js'
+import { ADMIN, NOW, TOKENS, pageHarness } from '../pageHarness.js'
 import { Browser, observeChatStream, skipReason } from './cdp.js'
+
+/**
+ * One answer with a list, the bold line after it and a short code block (the
+ * one that would shrink to its text), then one whose line is longer than any
+ * column.
+ */
+class CodeChat extends CountingChat {
+  override async transcript(
+    sessionId: string,
+  ): Promise<ConsoleResult<ChatTranscript>> {
+    const read = await super.transcript(sessionId)
+    if (!read.ok) return read
+    return {
+      ok: true,
+      value: {
+        session: read.value.session,
+        turns: [
+          {
+            id: 'ask',
+            sessionId,
+            author: 'operator',
+            at: NOW - 60_000,
+            text: '把路由列一下',
+            state: 'read',
+          },
+          {
+            id: 'answer',
+            sessionId,
+            author: 'agent',
+            at: NOW - 30_000,
+            text:
+              '**macOS**\n\n- 本机构建\n- 走完配对\n\n**Windows 与 Linux**\n\n' +
+              '```\nGET /app\n```\n\n已过',
+            state: 'done',
+          },
+          {
+            id: 'command',
+            sessionId,
+            author: 'agent',
+            at: NOW - 20_000,
+            text: `\`\`\`\ncurl -fsS ${'-H x '.repeat(60)}http://127.0.0.1:38700/app/quick\n\`\`\``,
+            state: 'done',
+          },
+        ],
+      },
+    }
+  }
+}
 
 const SKIP = skipReason()
 if (SKIP !== null) console.warn(`[front browser tests] skipped: ${SKIP}`)
@@ -392,6 +444,192 @@ describe.skipIf(SKIP !== null)(
         ).toEqual([])
         expect(seen).toContain('/fragments/chat/front/side')
         expect(seen).toContain('/fragments/chat/front/view/session-1')
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
+    test('/app: the welcome sends to the picked agent, recents open in place, the keys reach search, sidebar and panel, and quick entry lands on the conversation', async () => {
+      const h = accountsHarness()
+      const member = await person(h.handle, 'member')
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        fetch: request => h.handle(request),
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      const press = async (
+        key: string,
+        code: string,
+        vk: number,
+        modifiers: number,
+      ) => {
+        for (const type of ['rawKeyDown', 'keyUp']) {
+          await tab.send('Input.dispatchKeyEvent', {
+            type,
+            key,
+            code,
+            windowsVirtualKeyCode: vk,
+            modifiers,
+          })
+        }
+      }
+      try {
+        await tab.send('Network.setCookie', {
+          name: 'qianmo_session',
+          value: member.sid,
+          url: base,
+          httpOnly: true,
+          sameSite: 'Strict',
+        })
+        await observeChatStream(tab)
+        await tab.goto(`${base}/app`)
+        await tab.waitFor(`window.__chatStreamOpen === true`)
+        expect(
+          await tab.evaluate<string>(
+            `document.querySelector('[data-greet]').textContent`,
+          ),
+        ).toMatch(/^(早上好|下午好|晚上好)$/)
+        expect(
+          await tab.evaluate<string>(
+            `document.querySelector('#fx-agent-menu [aria-checked="true"]').getAttribute('data-agent-pick')`,
+          ),
+        ).toBe(ADDRESS)
+        await tab.evaluate(`(() => {
+          document.getElementById('fx-text').value = '整理一下今天的告警';
+          document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        })()`)
+        await tab.waitFor(
+          `location.pathname === '/app' && location.search === '?session=session-1' && document.getElementById('fx-text').value === ''`,
+        )
+        expect(h.chat.sent.map(input => [input.sessionId, input.text])).toEqual(
+          [['session-1', '整理一下今天的告警']],
+        )
+        await tab.waitFor(
+          `!!document.querySelector('#fx-recents .fx-ritem-row.is-current[data-session="session-1"]')`,
+        )
+
+        // A new conversation, then back through the recents, without a load.
+        await tab.evaluate(`window.__sameDocument = true`)
+        await tab.evaluate(
+          `document.querySelector('#fx-side [data-action="fx-new"]').click()`,
+        )
+        await tab.waitFor(`!!document.querySelector('#fx-thread .fx-greet')`)
+        await tab.evaluate(
+          `document.querySelector('#fx-recents .fx-ritem[data-session="session-1"]').click()`,
+        )
+        await tab.waitFor(
+          `location.search === '?session=session-1' && !document.querySelector('#fx-thread .fx-greet')`,
+        )
+        expect(
+          await tab.evaluate<boolean>(`window.__sameDocument === true`),
+        ).toBe(true)
+
+        // ⌘K / Ctrl K, ⌘⇧S / Ctrl Shift S, ⌘. / Ctrl .
+        await press('k', 'KeyK', 75, 2)
+        await tab.waitFor(
+          `document.activeElement && document.activeElement.id === 'fx-search'`,
+        )
+        await tab.evaluate(`document.activeElement.blur()`)
+        await press('S', 'KeyS', 83, 10)
+        await tab.waitFor(
+          `document.getElementById('fx').getAttribute('data-side') === 'closed'`,
+        )
+        await press('S', 'KeyS', 83, 10)
+        await tab.waitFor(
+          `document.getElementById('fx').getAttribute('data-side') === 'open'`,
+        )
+        const before = await tab.evaluate<string>(
+          `document.getElementById('fx-panel-toggle').getAttribute('aria-expanded')`,
+        )
+        await press('.', 'Period', 190, 2)
+        await tab.waitFor(
+          `document.getElementById('fx-panel-toggle').getAttribute('aria-expanded') !== ${JSON.stringify(before)}`,
+        )
+
+        // Quick entry in a browser: Enter sends and the page goes to the
+        // conversation on the 对话 face.
+        await tab.goto(`${base}/app/quick`)
+        await tab.waitFor(
+          `document.activeElement && document.activeElement.id === 'fx-quick-text'`,
+        )
+        await tab.send('Input.insertText', { text: '查一下各节点的内存' })
+        await press('Enter', 'Enter', 13, 0)
+        await tab.waitFor(
+          `location.pathname === '/app' && location.search === '?session=session-2'`,
+          10_000,
+        )
+        expect(h.chat.sent.map(input => [input.sessionId, input.text])).toEqual(
+          [
+            ['session-1', '整理一下今天的告警'],
+            ['session-2', '查一下各节点的内存'],
+          ],
+        )
+        expect(h.chat.opened).toBe(2)
+      } finally {
+        await tab.close()
+        server.stop(true)
+      }
+    }, 30_000)
+
+    test('a code block is the reading column wide on /app and the bubble wide on /, and a line after a list stands apart', async () => {
+      const harness = pageHarness({ chat: true })
+      const chat = new CodeChat()
+      void chat.open(ADDRESS)
+      const handle = createConsoleHandler({ ...harness.deps, chat }, TOKENS)
+      const server = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        fetch: request => handle(request),
+      })
+      const base = `http://127.0.0.1:${server.port}`
+      const tab = await browser.tab()
+      const measure = `(() => {
+        const msgs = document.querySelectorAll('#fx-thread .fx-msg-agent');
+        const msg = msgs[0];
+        const bubble = msg.querySelector('.fx-bubble-agent');
+        const pre = bubble.querySelector('.turn-code');
+        const long = msgs[msgs.length - 1].querySelector('.turn-code');
+        const after = bubble.querySelector('.turn-list + .turn-p');
+        const pad = parseFloat(getComputedStyle(bubble).paddingLeft) + parseFloat(getComputedStyle(bubble).paddingRight);
+        return {
+          msg: msg.getBoundingClientRect().width,
+          inner: bubble.getBoundingClientRect().width - pad,
+          pre: pre.getBoundingClientRect().width,
+          scrolls: long !== pre && long.scrollWidth > long.clientWidth,
+          gap: parseFloat(getComputedStyle(after).marginTop),
+          page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        };
+      })()`
+      try {
+        await tab.goto(`${base}/app?session=session-1&token=${ADMIN}`)
+        await tab.waitFor(`!!document.querySelector('#fx-thread .turn-code')`)
+        const chatFace = await tab.evaluate<{
+          msg: number
+          inner: number
+          pre: number
+          scrolls: boolean
+          gap: number
+          page: number
+        }>(measure)
+        // The column is 768 wide less its gutters; the block runs across it.
+        expect(chatFace.msg).toBeGreaterThan(600)
+        expect(Math.abs(chatFace.pre - chatFace.msg)).toBeLessThanOrEqual(1)
+        expect(chatFace.scrolls).toBe(true)
+        expect(chatFace.page).toBe(0)
+        expect(chatFace.gap).toBeGreaterThanOrEqual(16)
+
+        await tab.goto(`${base}/?session=session-1&token=${ADMIN}`)
+        await tab.waitFor(`!!document.querySelector('#fx-thread .turn-code')`)
+        const agentsFace = await tab.evaluate<typeof chatFace>(measure)
+        expect(Math.abs(agentsFace.pre - agentsFace.inner)).toBeLessThanOrEqual(
+          1,
+        )
+        expect(agentsFace.scrolls).toBe(true)
+        expect(agentsFace.page).toBe(0)
+        expect(agentsFace.gap).toBeGreaterThanOrEqual(12)
       } finally {
         await tab.close()
         server.stop(true)

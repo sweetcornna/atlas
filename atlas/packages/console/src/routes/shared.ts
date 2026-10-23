@@ -53,6 +53,13 @@ export const ADMIN_SEGMENT = 'admin'
 export const ADMIN_HOME = `/${ADMIN_SEGMENT}`
 
 /**
+ * The front's 对话 face, the desktop app's home (`/app`), and its quick entry
+ * under it (`/app/quick`, `docs/dev/qmo-app.md` §1). Not an area: the same
+ * door as `/` (`http.ts`, `serveFrontDoor`).
+ */
+export const APP_SEGMENT = 'app'
+
+/**
  * The CLI name §10.2's copyable `ca issue` line is written under, when the
  * host did not say.
  *

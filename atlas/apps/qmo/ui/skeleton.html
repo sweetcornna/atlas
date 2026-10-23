@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title></title>
+<link rel="stylesheet" href="app.css">
+</head>
+<!--
+  What the main window shows while `qmo` opens a session and the hub's page
+  loads: the front's frame (a 288 px side list and an empty column) in the
+  front's colours, so the hub's page paints over the same shapes instead of
+  a blank window.
+-->
+<body>
+<div class="drag" data-tauri-drag-region></div>
+<div class="skeleton" aria-hidden="true">
+  <div class="skeleton-side">
+    <div class="skeleton-row short"></div>
+    <div class="skeleton-row"></div>
+    <div class="skeleton-row label"></div>
+    <div class="skeleton-row"></div>
+    <div class="skeleton-row"></div>
+    <div class="skeleton-row short"></div>
+    <div class="skeleton-row"></div>
+    <div class="skeleton-row label"></div>
+    <div class="skeleton-row"></div>
+    <div class="skeleton-row short"></div>
+  </div>
+  <div class="skeleton-main"></div>
+</div>
+</body>
+</html>

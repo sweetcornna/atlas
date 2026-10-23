@@ -11,6 +11,7 @@ import { type Browser, findBrowser } from './browser.js'
 import { ClientHome } from './home.js'
 import {
   ClientError,
+  type DeviceStatus,
   deviceStatus,
   enterUrl,
   type Fetch,
@@ -21,6 +22,7 @@ import {
   type TicketState,
   ticketState,
 } from './hub.js'
+import { enterWithTicket, type SessionCookie } from './session.js'
 import {
   dropDeviceHeader,
   openDefault,
@@ -39,6 +41,12 @@ export interface ClientIO {
    * first line of standard input; `null` when there is none.
    */
   ask(question: string): Promise<string | null>
+  /**
+   * The first line of standard input, without a prompt: what `--json` reads
+   * the pairing code from, so nothing but JSON reaches standard output. When
+   * absent, `ask` stands in.
+   */
+  readLine?(question: string): Promise<string | null>
 }
 
 export interface ClientDeps {
@@ -82,6 +90,13 @@ export function systemDeps(io: ClientIO): ClientDeps {
 
 const PAIRING_HINT = '配对码在中枢「连接」页「添加设备」里拿'
 
+const notSignedIn = (): ClientError =>
+  new ClientError(
+    `还没登录：先 qmo sign-in <中枢地址>（${PAIRING_HINT}）`,
+    1,
+    'signed_out',
+  )
+
 export interface SignInOptions {
   readonly hub: string
   /** From `--code`, which other users of the computer can read; else asked for. */
@@ -100,6 +115,7 @@ export async function signIn(
     throw new ClientError(
       `这台电脑已经登录 ${previous.hub}（设备 ${previous.deviceId}）；重新配对用 --force`,
       2,
+      'signed_in',
     )
   const code =
     options.code?.trim() ||
@@ -163,10 +179,7 @@ async function landing(
 
 export async function openFront(deps: ClientDeps): Promise<number> {
   const state = deps.home.load()
-  if (state === undefined)
-    throw new ClientError(
-      `还没登录：先 qmo sign-in <中枢地址>（${PAIRING_HINT}）`,
-    )
+  if (state === undefined) throw notSignedIn()
   const token = await deps.home.token()
   // No ticket for a window that will not be ours.
   const browser = deps.findBrowser()
@@ -227,6 +240,83 @@ export async function openFront(deps: ClientDeps): Promise<number> {
   }
 }
 
+/** What `qmo session --json` prints: the device, and the cookies its entry set. */
+export interface EnteredSession {
+  readonly hub: string
+  readonly deviceId: string
+  readonly name: string
+  readonly cookies: readonly SessionCookie[]
+}
+
+/**
+ * Open a session for the desktop shell (qmo-app.md §3): a ticket, spent by
+ * this process on `/client/enter` with the device header, and the cookies
+ * the hub answered with. Done only once the hub says the ticket was spent
+ * (clients.md §3.2 step 5); a hub without client tickets is `unsupported`,
+ * for the shell to open `/login` instead.
+ */
+export async function enterSession(deps: ClientDeps): Promise<EnteredSession> {
+  const state = deps.home.load()
+  if (state === undefined) throw notSignedIn()
+  const token = await deps.home.token()
+  const outcome = await requestTicket(state.hub, token, deps.fetch)
+  if (outcome.kind === 'unsupported')
+    throw new ClientError(
+      outcome.reason ?? '这台中枢没有客户端票据（没开个人账号，或版本较旧）',
+      1,
+      'unsupported',
+    )
+  const cookies = await enterWithTicket(
+    enterUrl(state.hub, outcome.ticket),
+    state.deviceId,
+    deps.fetch,
+  )
+  const spent = await ticketState(state.hub, token, outcome.id, deps.fetch)
+  if (spent !== 'used')
+    throw new ClientError('中枢没有记下票据已经用掉', 1, 'refused')
+  return {
+    hub: state.hub,
+    deviceId: state.deviceId,
+    name: state.name,
+    cookies,
+  }
+}
+
+/** What `qmo status --json` prints. */
+export interface StatusReport {
+  readonly dir: string
+  readonly signedIn: boolean
+  readonly hub?: string
+  readonly deviceId?: string
+  readonly name?: string
+  readonly pairedAt?: string
+  /** Where the token is kept: DPAPI on Windows, a 0600 file elsewhere. */
+  readonly token?: 'dpapi' | 'file'
+  /** What the hub says of the device; `missing` when the token is gone. */
+  readonly device?: DeviceStatus | 'missing'
+}
+
+/** {@link status}, for a program. */
+export async function statusReport(deps: ClientDeps): Promise<StatusReport> {
+  const { home } = deps
+  const state = home.load()
+  if (state === undefined) return { dir: home.dir, signedIn: false }
+  const token = await home.secret.read()
+  return {
+    dir: home.dir,
+    signedIn: true,
+    hub: state.hub,
+    deviceId: state.deviceId,
+    name: state.name,
+    pairedAt: state.pairedAt,
+    token: home.secret.kind,
+    device:
+      token === undefined
+        ? 'missing'
+        : await deviceStatus(state.hub, token, deps.fetch),
+  }
+}
+
 export async function status(deps: ClientDeps): Promise<number> {
   const { home, io } = deps
   const state = home.load()
@@ -261,18 +351,33 @@ export async function status(deps: ClientDeps): Promise<number> {
   return 0
 }
 
-export async function signOut(deps: ClientDeps): Promise<number> {
+/** How a sign-out went: the hub's answer to the revocation, or `signed_out` for nothing to do. */
+export type SignOutResult =
+  | Awaited<ReturnType<typeof revokeDevice>>
+  | 'signed_out'
+
+/**
+ * Revoke this device on the hub and forget it here. This computer is signed
+ * out whatever the hub says; the result says whether the device is gone there.
+ */
+export async function forgetDevice(deps: ClientDeps): Promise<SignOutResult> {
   const state = deps.home.load()
-  if (state === undefined) {
-    deps.io.out('本来就没有登录')
-    return 0
-  }
+  if (state === undefined) return 'signed_out'
   const token = await deps.home.secret.read().catch(() => undefined)
   const revoked =
     token === undefined
       ? 'failed'
       : await revokeDevice(state.hub, token, deps.fetch)
   deps.home.clear()
+  return revoked
+}
+
+export async function signOut(deps: ClientDeps): Promise<number> {
+  const revoked = await forgetDevice(deps)
+  if (revoked === 'signed_out') {
+    deps.io.out('本来就没有登录')
+    return 0
+  }
   if (revoked === 'revoked') {
     deps.io.out('已退出 · 中枢上的这台设备已吊销')
     return 0

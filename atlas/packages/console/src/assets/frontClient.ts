@@ -3,6 +3,9 @@
 
 /**
  * The conversation front's script, on top of the shared runtime (`client.ts`).
+ * One script draws both faces (`view/front.ts`): 智能体 at `/`, the agents
+ * down the side, and 对话 at `/app`, the conversations down the side grouped
+ * by day. Where they differ it asks which face it is on (`CHAT`).
  *
  * It keeps the runtime's two rules and adds nothing that bends them: the only
  * HTML it puts on the page is a fragment the server rendered (`view/front.ts`),
@@ -14,15 +17,23 @@
  *
  * - **Switches without navigating.** Picking an agent opens its latest
  *   conversation (its welcome when it has none); opening a session from the
- *   history menu and starting a new conversation do the same swap of the
- *   head, the thread and the side list, and push the address (`/?session=`,
- *   `/?agent=`), so the back button walks the conversations and a reload
- *   lands on the same one. A top-level navigation is never needed after the
- *   first load.
- * - **Marks what is unread.** Each agent row carries when its agent last
- *   spoke; the page remembers, per agent and in this browser only, the last
- *   time it was looked at, and dots the rows that moved since. The tab's
- *   title counts them.
+ *   history menu or the recents and starting a new conversation do the same
+ *   swap of the head, the thread and the side list, and push the address
+ *   (`/?session=`, `/?agent=`, or the same under `/app`), so the back button
+ *   walks the conversations and a reload lands on the same one. A top-level
+ *   navigation is never needed after the first load.
+ * - **Marks what is unread.** Each agent row, and on `/app` each
+ *   conversation row, carries when it last moved; the page remembers, per row
+ *   and in this browser only, the last time it was looked at, and dots the
+ *   rows that moved since. The tab's title counts them; in the desktop app so
+ *   does the badge, and an agent finishing while the window is elsewhere is
+ *   a notification (`assets/frontShell.ts`).
+ * - **Keeps the recents in their days.** Rows are grouped 今天 · 昨天 · 过去
+ *   7 天 · 更早 by this browser's clock, and the search line filters them by
+ *   title and agent.
+ * - **Keys**: ⌘N or Ctrl N a new conversation (⌘⇧O in a browser), ⌘K the
+ *   search line, ⌘⇧S the sidebar, ⌘. the session panel; in a narrow window
+ *   the sidebar is a drawer.
  * - **Paints the person's line first.** A sent line shows in the thread at
  *   once, marked as on its way, and is replaced by the server's rendering when
  *   the send returns; a failed send takes it back out and puts the text back
@@ -42,6 +53,7 @@
  *   voice alone.
  */
 
+import { FRONT_NARROW_PX } from '../view/frontStyle.js'
 import { stripJsLineComments } from './client.js'
 
 function frontScript(): string {
@@ -54,6 +66,13 @@ function frontScript(): string {
   var byId = qc.byId;
   var say = qc.say;
 
+  // Which face this page is (view/front.ts): '/' draws the agents, '/app'
+  // the conversations. The same script runs both; the few things that differ
+  // ask CHAT.
+  var CHAT = !!byId('fx') && byId('fx').getAttribute('data-layout') === 'chat';
+  var HOME = CHAT ? '/app' : '/';
+  var LAYOUT_QUERY = CHAT ? 'layout=chat' : '';
+  var NARROW = '(max-width: ${FRONT_NARROW_PX}px)';
   var ROUTES = {
     side: '/fragments/chat/front/side',
     view: '/fragments/chat/front/view',
@@ -106,7 +125,7 @@ function frontScript(): string {
     try { window.localStorage.setItem(STORE + key, value); } catch (e) { /* a convenience only */ }
   }
   function narrow() {
-    return !!(window.matchMedia && window.matchMedia('(max-width: 900px)').matches);
+    return !!(window.matchMedia && window.matchMedia(NARROW).matches);
   }
 
   /* ---------------- fragments ---------------- */
@@ -150,10 +169,14 @@ function frontScript(): string {
   }
 
   function viewUrl(opening) {
+    var query = [];
+    var path = ROUTES.view;
     if (state.active) {
-      return ROUTES.view + '/' + encodeURIComponent(state.active) + (opening ? '?open=1' : '');
-    }
-    return ROUTES.view + (state.agent ? '?agent=' + encodeURIComponent(state.agent) : '');
+      path += '/' + encodeURIComponent(state.active);
+      if (opening) query.push('open=1');
+    } else if (state.agent) query.push('agent=' + encodeURIComponent(state.agent));
+    if (LAYOUT_QUERY) query.push(LAYOUT_QUERY);
+    return path + (query.length ? '?' + query.join('&') : '');
   }
 
   // opening marks the fetch that is somebody switching to a conversation: the
@@ -273,6 +296,7 @@ function frontScript(): string {
     var query = [];
     if (state.agent) query.push('agent=' + encodeURIComponent(state.agent));
     if (state.active) query.push('active=' + encodeURIComponent(state.active));
+    if (LAYOUT_QUERY) query.push(LAYOUT_QUERY);
     var scroller = byId('fx-side-scroll');
     var top = scroller ? scroller.scrollTop : 0;
     var list = document.querySelector('#fx-history .fx-hist-list');
@@ -280,8 +304,17 @@ function frontScript(): string {
     return qc.loadHtml(ROUTES.side + (query.length ? '?' + query.join('&') : '')).then(function (html) {
       if (seq !== sideSeq || qc.isExpired()) return;
       // A menu somebody has open is not swapped out from under the pointer.
-      var menuOpen = document.querySelector('#fx-agents .fx-more[open]');
-      adopt(html, menuOpen ? ['fx-history', 'fx-stack'] : ['fx-agents', 'fx-history', 'fx-stack']);
+      if (CHAT) {
+        var ids = [];
+        if (!document.querySelector('#fx-recents .fx-more[open]')) ids.push('fx-recents');
+        var picker = byId('fx-agent-menu');
+        if (!picker || picker.hidden) ids.push('fx-agent-menu');
+        adopt(html, ids);
+        regroup();
+      } else {
+        var menuOpen = document.querySelector('#fx-agents .fx-more[open]');
+        adopt(html, menuOpen ? ['fx-history', 'fx-stack'] : ['fx-agents', 'fx-history', 'fx-stack']);
+      }
       keepChoices(byId('fx-agents'));
       keepChoices(byId('fx-stack'));
       if (scroller) scroller.scrollTop = top;
@@ -290,6 +323,7 @@ function frontScript(): string {
       markCurrent();
       applyHistory();
       applyAgents();
+      paintPicker();
     });
   }
 
@@ -333,8 +367,9 @@ function frontScript(): string {
     if (plus) plus.disabled = !live;
     var mic = byId('fx-mic');
     if (mic) mic.disabled = !live;
-    // 模型 and 权限模式 act on the conversation open here (frontTools.ts).
-    var picks = document.querySelectorAll('.fx-pick-btn');
+    // 模型 and 权限模式 act on the conversation open here (frontTools.ts);
+    // /app's agent picker is how a held welcome gets an agent it can start.
+    var picks = document.querySelectorAll('.fx-pick-btn:not(#fx-agent-btn)');
     for (var i = 0; i < picks.length; i++) picks[i].disabled = !live;
     if (!live) { hideCommands(); stopVoice(); }
   }
@@ -352,6 +387,69 @@ function frontScript(): string {
     var box = byId('fx-text');
     if (box) box.setAttribute('placeholder', open || start ? tx('messageTo', '发消息给 ') + name : tx('unavailable', '暂不可对话'));
     markCurrent();
+    paintGreeting();
+    paintPicker();
+    paintComputer();
+    paintModes();
+  }
+
+  // The greeting over a new conversation, by the reader's own clock: the
+  // server drew it by its own.
+  function paintGreeting() {
+    var line = document.querySelector('#fx-thread [data-greet]');
+    var list = words.greetings;
+    if (!line || !list || !list.length) return;
+    var hour = new Date().getHours();
+    var said = list[hour >= 5 && hour < 12 ? 0 : hour >= 12 && hour < 18 ? 1 : 2];
+    if (typeof said === 'string' && line.textContent !== said) line.textContent = said;
+  }
+
+  // /app's agent picker: shown over a new conversation only, holding the
+  // agent it goes to - the figure and the name copied from its menu row.
+  function paintPicker() {
+    var pick = byId('fx-agent-pick');
+    if (!pick) return;
+    var thread = byId('fx-thread');
+    pick.hidden = !(thread && thread.getAttribute('data-welcome') === '1');
+    var rows = document.querySelectorAll('#fx-agent-menu [data-agent-pick]');
+    var chosen = null;
+    for (var i = 0; i < rows.length; i++) {
+      var on = rows[i].getAttribute('data-agent-pick') === state.agent;
+      rows[i].setAttribute('aria-checked', on ? 'true' : 'false');
+      if (on) chosen = rows[i];
+    }
+    var face = byId('fx-agent-face');
+    var name = byId('fx-agent-name');
+    if (!chosen || !face || !name) return;
+    var figure = chosen.querySelector('.avatar');
+    var shown = face.querySelector('.avatar');
+    if (figure && (!shown || shown.getAttribute('data-face') !== figure.getAttribute('data-face'))) {
+      var copy = figure.cloneNode(true);
+      copy.setAttribute('width', '18');
+      copy.setAttribute('height', '18');
+      while (face.firstChild) face.removeChild(face.firstChild);
+      face.appendChild(copy);
+    }
+    name.textContent = chosen.getAttribute('data-name') || '';
+  }
+
+  // 云端电脑 in use: the conversation on screen has its agent working a
+  // computer or a browser right now (the live line's kind, view/front.ts).
+  function paintComputer() {
+    var mark = byId('fx-computer');
+    if (mark) mark.hidden = !document.querySelector('#fx-thread .fx-typing[data-kind="screen"]');
+  }
+
+  // 对话 · 智能体 carries the conversation on screen across.
+  function paintModes() {
+    var links = document.querySelectorAll('.fx-mode-item[data-mode]');
+    for (var i = 0; i < links.length; i++) {
+      var to = links[i].getAttribute('data-mode') === 'chat' ? '/app' : '/';
+      var query = state.active
+        ? '?session=' + encodeURIComponent(state.active)
+        : state.agent && state.agent !== mainAgent ? '?agent=' + encodeURIComponent(state.agent) : '';
+      links[i].setAttribute('href', to + query);
+    }
   }
 
   function markCurrent() {
@@ -363,6 +461,16 @@ function frontScript(): string {
       if (button) {
         if (here) button.setAttribute('aria-current', 'true');
         else button.removeAttribute('aria-current');
+      }
+    }
+    var recents = document.querySelectorAll('#fx-recents .fx-ritem-row');
+    for (var r = 0; r < recents.length; r++) {
+      var current = !!state.active && recents[r].getAttribute('data-session') === state.active;
+      recents[r].classList.toggle('is-current', current);
+      var open = recents[r].querySelector('.fx-ritem');
+      if (open) {
+        if (current) open.setAttribute('aria-current', 'true');
+        else open.removeAttribute('aria-current');
       }
     }
     var items = document.querySelectorAll('#fx-history .fx-hitem');
@@ -392,9 +500,45 @@ function frontScript(): string {
     seenHere[key] = at;
     keep(key, String(at));
   }
-  function markUnread() {
-    var rows = document.querySelectorAll('#fx-agents .fx-agent-row');
+  // In the desktop app, an answer that lands out of sight is a system
+  // notification (assets/frontShell.ts): a row that moved since this page
+  // last drew it, that no longer waits for an answer, while the window is
+  // not in front or shows another conversation. A row seen for the first
+  // time is never news.
+  var drawnAt = {};
+  function noteMoved(key, updated, waiting, title, body, session) {
+    var before = Object.prototype.hasOwnProperty.call(drawnAt, key) ? drawnAt[key] : null;
+    drawnAt[key] = updated;
+    if (before === null || !(updated > before) || waiting || !window.qianmoShell) return;
+    var away = document.hidden || !document.hasFocus() || !session || session !== state.active;
+    if (away) window.qianmoShell.notify(title, body, session);
+  }
+
+  // /app's rows are conversations: one is unread when it moved after this
+  // browser last had it on screen.
+  function markUnreadSessions() {
+    var rows = document.querySelectorAll('#fx-recents .fx-ritem-row');
     var count = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var id = rows[i].getAttribute('data-session') || '';
+      var updated = Number(rows[i].getAttribute('data-updated')) || 0;
+      var key = 'seen.s.' + id;
+      var seen = seenOf(key);
+      var here = !!id && id === state.active && showsState() && !document.hidden;
+      if (updated && (here || seen === null)) { markSeen(key, updated); seen = updated; }
+      var unread = !!updated && updated > (seen || 0);
+      rows[i].classList.toggle('is-unread', unread);
+      if (unread) count++;
+      noteMoved(key, updated, rows[i].getAttribute('data-running') === '1',
+        rows[i].getAttribute('data-agent') || '', rows[i].getAttribute('data-preview') || '', id);
+    }
+    return count;
+  }
+
+  function markUnread() {
+    var count = 0;
+    if (CHAT) count = markUnreadSessions();
+    var rows = document.querySelectorAll('#fx-agents .fx-agent-row');
     for (var i = 0; i < rows.length; i++) {
       var address = rows[i].getAttribute('data-address') || '';
       var updated = Number(rows[i].getAttribute('data-updated')) || 0;
@@ -406,11 +550,76 @@ function frontScript(): string {
       var unread = !!updated && updated > (seen || 0);
       rows[i].classList.toggle('is-unread', unread);
       if (unread) count++;
+      var name = rows[i].querySelector('.fx-agent-name');
+      var said = rows[i].querySelector('.fx-agent-sub');
+      noteMoved(key, updated, rows[i].classList.contains('is-busy'),
+        name ? name.textContent : '', said ? said.textContent : '', latest);
     }
     document.title = count ? '(' + count + ') ' + baseTitle : baseTitle;
+    if (window.qianmoShell) window.qianmoShell.badge(count);
+  }
+
+  // /app's list, by the reader's calendar: each row goes to its day's
+  // group by the reader's own midnight (the server grouped by its own).
+  function dayGroupOf(at, now) {
+    var midnight = new Date(now);
+    midnight.setHours(0, 0, 0, 0);
+    var before = function (days) {
+      var day = new Date(midnight.getTime());
+      day.setDate(day.getDate() - days);
+      return day.getTime();
+    };
+    if (at >= midnight.getTime()) return 'today';
+    if (at >= before(1)) return 'yesterday';
+    if (at >= before(7)) return 'week';
+    return 'older';
+  }
+  function regroup() {
+    var section = byId('fx-recents');
+    if (!section) return;
+    var now = Date.now();
+    var groups = {};
+    var list = section.querySelectorAll('.fx-rgroup');
+    for (var g = 0; g < list.length; g++) groups[list[g].getAttribute('data-group')] = list[g];
+    var rows = section.querySelectorAll('.fx-ritem-row');
+    var homes = [];
+    var moved = false;
+    for (var i = 0; i < rows.length; i++) {
+      homes.push(groups[dayGroupOf(Number(rows[i].getAttribute('data-updated')) || 0, now)] || null);
+      if (homes[i] && rows[i].parentElement !== homes[i]) moved = true;
+    }
+    // The rows are newest first in the document: put back in that order,
+    // each group stays newest first. Nothing moves when nothing has to (a
+    // moved row would lose the focus).
+    if (moved) {
+      for (var j = 0; j < rows.length; j++) if (homes[j]) homes[j].appendChild(rows[j]);
+    }
+    applyRecents();
+  }
+
+  // The search in /app: titles and agents' names.
+  function applyRecents() {
+    var section = byId('fx-recents');
+    if (!section) return;
+    var search = byId('fx-search');
+    var q = search ? search.value.trim().toLowerCase() : '';
+    var rows = section.querySelectorAll('.fx-ritem-row');
+    var shown = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var text = (rows[i].querySelector('.fx-ritem-title') || rows[i]).textContent + ' ' + (rows[i].getAttribute('data-agent') || '');
+      rows[i].hidden = !!q && text.toLowerCase().indexOf(q) < 0;
+      if (!rows[i].hidden) shown++;
+    }
+    var groups = section.querySelectorAll('.fx-rgroup');
+    for (var g = 0; g < groups.length; g++) {
+      groups[g].hidden = !groups[g].querySelector('.fx-ritem-row:not([hidden])');
+    }
+    var none = section.querySelector('[data-empty="search"]');
+    if (none) none.hidden = !(q && rows.length && !shown);
   }
 
   function applyAgents() {
+    applyRecents();
     var section = byId('fx-agents');
     if (!section) return;
     var search = byId('fx-search');
@@ -563,6 +772,9 @@ function frontScript(): string {
     var tpl = document.createElement('template');
     tpl.innerHTML = model.html;
     var label = tpl.content.querySelector('#prov-chat-label');
+    // /app's head chip names the model too, as text.
+    var chip = byId('fx-chip-model');
+    if (chip) chip.textContent = label ? label.textContent.trim() : '';
     if (label) slot.appendChild(label);
     var models = tpl.content.querySelector('#prov-chat-models');
     if (models && shelf) shelf.appendChild(models);
@@ -603,10 +815,10 @@ function frontScript(): string {
 
   function setAddress(replace) {
     var url = state.active
-      ? '/?session=' + encodeURIComponent(state.active)
+      ? HOME + '?session=' + encodeURIComponent(state.active)
       : state.agent && state.agent !== mainAgent
-        ? '/?agent=' + encodeURIComponent(state.agent)
-        : '/';
+        ? HOME + '?agent=' + encodeURIComponent(state.agent)
+        : HOME;
     try {
       var entry = { active: state.active, agent: state.agent };
       if (window.location.pathname + window.location.search === url) history.replaceState(entry, '', url);
@@ -651,7 +863,7 @@ function frontScript(): string {
   // Widened past the drawer breakpoint with the drawer open: it closes, so
   // the page it made inert comes back.
   if (window.matchMedia) {
-    var wide = window.matchMedia('(max-width: 900px)');
+    var wide = window.matchMedia(NARROW);
     var onWidth = function () { if (!wide.matches) setDrawer(false); };
     if (wide.addEventListener) wide.addEventListener('change', onWidth);
     else if (wide.addListener) wide.addListener(onWidth);
@@ -665,6 +877,16 @@ function frontScript(): string {
   // One move to another conversation: the composer is held until the view
   // that move asked for is on screen, so a line can never be sent to a
   // session other than the one shown.
+  // A view on its way: the thread dims and a thin line runs under the bar,
+  // both only after a moment (view/frontStyle.ts), so a quick switch shows
+  // neither.
+  function busyView(on) {
+    var main = byId('fx-main');
+    if (!main) return;
+    if (on) main.setAttribute('aria-busy', 'true');
+    else main.removeAttribute('aria-busy');
+  }
+
   function go(opening) {
     nav++;
     var mine = nav;
@@ -675,17 +897,20 @@ function frontScript(): string {
     applyHistory();
     say(byId('fx-status'), '', 'muted');
     soonSide();
+    busyView(true);
     // Unheld when this fetch settles, drawn or not; the composer itself waits
     // for the thread on screen to be this conversation (showsState), which a
     // fetch that was overtaken leaves to the one that overtook it.
     return refreshView(opening, true).then(function () {
       if (mine !== nav) return;
       switching = false;
+      busyView(false);
       paint();
       if (showsState()) focusBox();
     }, function (err) {
       if (mine !== nav) return;
       switching = false;
+      busyView(false);
       paint();
       say(byId('fx-status'), failText('open', err), qc.failTone(err));
     });
@@ -723,10 +948,13 @@ function frontScript(): string {
     go(true);
   }
 
+  // 新对话: on / a new conversation with the agent in focus; on /app with
+  // the main agent, the picker's default.
   function newChat() {
     setDrawer(false);
     closeMenus();
     state.active = '';
+    if (CHAT && mainAgent) state.agent = mainAgent;
     setAddress(false);
     go(false);
   }
@@ -1084,14 +1312,25 @@ function frontScript(): string {
     keep('scope', state.scope);
     applyHistory();
   });
-  qc.onAction('fx-side', function () {
+  function toggleSide(open) {
     var root = byId('fx');
     if (!root) return;
-    if (narrow()) { setDrawer(root.getAttribute('data-drawer') !== 'open'); return; }
+    if (narrow()) { setDrawer(open === undefined ? root.getAttribute('data-drawer') !== 'open' : open); return; }
     var closed = root.getAttribute('data-side') === 'closed';
-    root.setAttribute('data-side', closed ? 'open' : 'closed');
-    keep('side', closed ? 'open' : 'closed');
-  });
+    var next = open === undefined ? closed : open;
+    root.setAttribute('data-side', next ? 'open' : 'closed');
+    keep('side', next ? 'open' : 'closed');
+  }
+  qc.onAction('fx-side', function () { toggleSide(); });
+
+  // ⌘K: the search, with the side list brought into view first.
+  function focusSearch() {
+    var search = byId('fx-search');
+    if (!search) return;
+    toggleSide(true);
+    search.focus();
+    search.select();
+  }
   qc.onAction('fx-side-close', function () { setDrawer(false); });
 
   function copy(text) {
@@ -1189,6 +1428,12 @@ function frontScript(): string {
   document.addEventListener('click', function (event) {
     var target = event.target;
     if (!target || !target.closest) return;
+    // A worker's conversation from the panel opens here, in /app's face.
+    var worker = CHAT ? target.closest('a.fx-task-open') : null;
+    if (worker && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+      var id = new URL(worker.href, window.location.href).searchParams.get('session') || '';
+      if (id) { event.preventDefault(); openSession(id); return; }
+    }
     if (!target.closest('details.fx-more')) closeMenus();
     var row = target.closest('.fx-cmd');
     if (row) useCommand(row);
@@ -1225,6 +1470,20 @@ function frontScript(): string {
       newChat();
       return;
     }
+    // The front's shortcuts (qmo-app.md §4.4), ⌘ on a Mac and Ctrl elsewhere;
+    // an open dialog keeps the keys.
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.isComposing && !document.querySelector('dialog[open]')) {
+      var key = String(event.key || '').toLowerCase();
+      if (!event.shiftKey && key === 'n') { event.preventDefault(); newChat(); return; }
+      if (!event.shiftKey && key === 'k') { event.preventDefault(); focusSearch(); return; }
+      if (event.shiftKey && key === 's') { event.preventDefault(); toggleSide(); return; }
+      if (!event.shiftKey && (key === '.' || event.code === 'Period')) {
+        event.preventDefault();
+        var panel = byId('fx-panel-toggle');
+        if (panel) panel.click();
+        return;
+      }
+    }
     if (event.key === 'Escape') {
       // The topmost surface owns Esc: an open dialog is the runtime's.
       if (document.querySelector('dialog[open]')) return;
@@ -1244,13 +1503,21 @@ function frontScript(): string {
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden && !qc.isExpired()) { markUnread(); refreshAll(); }
   });
+  // Back online (assets/frontShell.ts): catch up on what was missed.
+  document.addEventListener('qianmo:online', function () {
+    if (!qc.isExpired()) refreshAll();
+  });
+  // The thread's live line decides the computer's mark; a refresh may change it.
+  document.addEventListener('qianmo:front-view', paintComputer);
 
   function start() {
     var thread = byId('fx-thread');
     state.active = (thread && thread.getAttribute('data-session')) || '';
     state.agent = (thread && thread.getAttribute('data-target')) || '';
     var mainRow = document.querySelector('#fx-agents .fx-agent-main');
-    mainAgent = mainRow ? mainRow.getAttribute('data-address') || '' : '';
+    var mainPick = document.querySelector('#fx-agent-menu [data-main]');
+    mainAgent = mainRow ? mainRow.getAttribute('data-address') || ''
+      : mainPick ? mainPick.getAttribute('data-agent-pick') || '' : '';
     state.scope = stored('scope') === 'all' ? 'all' : 'agent';
     var root = byId('fx');
     if (root && stored('side') === 'closed' && !narrow()) root.setAttribute('data-side', 'closed');
@@ -1260,6 +1527,7 @@ function frontScript(): string {
     var mic = byId('fx-mic');
     if (mic && Recognition) mic.hidden = false;
     markAccent();
+    regroup();
     paint();
     applyHistory();
     applyAgents();
@@ -1281,6 +1549,12 @@ function frontScript(): string {
     send: function (text) {
       send(text);
       model.at = 0;
+    },
+    // /app's agent picker (frontTools.ts): the agent a new conversation goes to.
+    pickAgent: function (address) {
+      if (!address) return;
+      if (state.active || address !== state.agent) selectAgent(address);
+      else paintPicker();
     }
   };
 

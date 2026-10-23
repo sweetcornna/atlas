@@ -158,14 +158,15 @@ export function permissionConfirm(t: FrontText): string {
 export const FRONT_TOOLS_CSS = `
 /* ---- composer pickers (view/frontTools.ts) ---- */
 /* The line on top, the row of controls under it. */
-.fx-composer { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 8px 8px 6px; border-radius: 20px; }
+.fx-composer { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 8px 8px 6px; border-radius: var(--fx-r-composer); }
 .fx-composer textarea { padding: 4px 8px; }
 .fx-tools { display: flex; align-items: center; gap: 2px; min-width: 0; }
-.fx-composer .fx-tools .fx-icon-btn, .fx-composer .fx-send { width: 30px; height: 30px; }
+.fx-composer .fx-tools .fx-icon-btn, .fx-composer .fx-send { flex: none; width: 30px; height: 30px; }
 .fx-tools-gap { flex: 1 1 auto; }
-.fx-pick { position: relative; flex: none; }
+/* A narrow row gives the pickers' words up before it pushes send out. */
+.fx-pick { position: relative; flex: 0 1 auto; min-width: 0; }
 .fx-pick-btn {
-  display: inline-flex; align-items: center; gap: 4px; height: 28px; max-width: 220px; padding: 0 6px 0 8px;
+  display: inline-flex; align-items: center; gap: 4px; height: 28px; max-width: min(220px, 100%); padding: 0 6px 0 8px;
   border: 0; border-radius: 8px; background: none; color: var(--color-quiet); cursor: pointer;
   font: inherit; font-size: var(--text-12);
 }
@@ -173,7 +174,9 @@ export const FRONT_TOOLS_CSS = `
 .fx-pick-btn:disabled { opacity: .5; cursor: not-allowed; }
 .fx-pick-btn:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 .fx-pick-btn .chev { width: 12px; height: 12px; color: var(--color-muted); }
-.fx-pick-btn .i-sm { width: 14px; height: 14px; }
+.fx-pick-btn .i-sm { width: 14px; height: 14px; flex: none; }
+.fx-pick-btn .chev { flex: none; }
+.fx-pick-word, .fx-perm-word { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fx-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fx-model .tag { all: unset; font-family: var(--font-mono); font-size: var(--text-12); }
 .fx-model:not(:empty) + .fx-pick-word { display: none; }
@@ -182,7 +185,7 @@ export const FRONT_TOOLS_CSS = `
 .fx-pick-menu {
   position: absolute; right: 0; top: auto; bottom: calc(100% + 8px); z-index: var(--z-menu);
   display: flex; flex-direction: column; gap: 1px; width: 280px; max-height: 420px; overflow-y: auto; padding: 6px;
-  background: var(--fx-composer); border-radius: 12px; box-shadow: var(--shadow-lg);
+  background: var(--fx-composer); border-radius: var(--fx-r-panel); box-shadow: var(--fx-shadow-pop);
 }
 .fx-pick-menu[hidden] { display: none; }
 .fx-pick-group { display: flex; flex-direction: column; gap: 1px; }
