@@ -1474,14 +1474,12 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #111
 .mt-2 { margin-top: var(--space-2); }
 
 /* ---- P37.13 nav: moving between areas in place (assets/nav.ts) ----
-   While the next area is on its way the card's page dims (view/frontStyle.ts,
-   .set[data-busy]); an area swapped in fades in over 120ms where the browser
-   has View Transitions. A data-write control says 保存中 or why it went back
-   on the line beside it. */
+   While the next area is on its way the card's page dims, and an area
+   swapped in comes up from there over 120ms (view/frontStyle.ts,
+   .set[data-busy], .set[data-arriving]). A data-write control says 保存中 or
+   why it went back on the line beside it. */
 .refresh-row[hidden] { display: none; }
 .nav-note[hidden] { display: none; }
-html.nav-fade::view-transition-old(root),
-html.nav-fade::view-transition-new(root) { animation-duration: var(--motion-snap); animation-timing-function: var(--ease-out); }
 .write-note { margin-left: var(--space-2); font-size: var(--text-small); line-height: var(--lh-small); color: var(--color-muted); }
 .write-note:empty { display: none; }
 .write-note[data-tone="bad"], .write-note[data-tone="warn"] { color: var(--color-danger-text); }

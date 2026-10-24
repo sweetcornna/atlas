@@ -560,6 +560,51 @@ describe.skipIf(SKIP !== null)('the settings card', () => {
     }
   }, 30_000)
 
+  test('a press right after moving to another area lands: the scrim closes the card at once', async () => {
+    const tab = await browser.tab()
+    try {
+      await open(tab, served.base, '/')
+      await tab.evaluate(`${q('.fx-side-foot a[data-settings]')}.click()`)
+      await cardOn(tab, '/admin/jobs')
+      for (let i = 0; i < 3; i += 1) {
+        // A real press on a list item, then one on the scrim while the area
+        // it brought is still coming up: nothing in between eats it.
+        const to = i % 2 === 0 ? '#nav-audit' : '#nav-nodes'
+        const at = await tab.evaluate<{ x: number; y: number }>(
+          `(() => { const r = ${q(to)}.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`,
+        )
+        for (const type of ['mousePressed', 'mouseReleased']) {
+          await tab.send('Input.dispatchMouseEvent', {
+            type,
+            x: at.x,
+            y: at.y,
+            button: 'left',
+            clickCount: 1,
+          })
+        }
+        await tab.waitFor(
+          `${q(to)}.getAttribute('aria-current') === 'page' && !${q('#settings')}.hasAttribute('data-busy')`,
+        )
+        if (i < 2) continue
+        for (const type of ['mousePressed', 'mouseReleased']) {
+          await tab.send('Input.dispatchMouseEvent', {
+            type,
+            x: 8,
+            y: 8,
+            button: 'left',
+            clickCount: 1,
+          })
+        }
+        await tab.waitFor(
+          `!${q('#settings')}.open && location.pathname === '/'`,
+          2_000,
+        )
+      }
+    } finally {
+      await tab.close()
+    }
+  }, 30_000)
+
   test('taking over the card the document came with closes nothing, and a stale close changes nothing', async () => {
     const tab = await browser.tab()
     const state = `({

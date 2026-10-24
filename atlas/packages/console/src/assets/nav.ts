@@ -456,17 +456,16 @@ function navSource(key: string): string {
     return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   }
 
+  // The area swapped in comes up from the dimmed state over a moment
+  // (data-arriving, view/frontStyle.ts). Not a View Transition: while one
+  // runs every press lands on the root element under its snapshots, so a
+  // second click in the list, the × or the scrim in those frames was lost,
+  // and on a slow machine those frames ran on past the card closing.
   function fade(apply) {
-    if (typeof document.startViewTransition !== 'function' || still() || !card.hasAttribute('data-shown')) { apply(); return; }
-    var root = document.documentElement;
-    root.classList.add('nav-fade');
-    var off = function () { root.classList.remove('nav-fade'); };
-    try {
-      var t = document.startViewTransition(apply);
-      t.finished.then(off, off);
-      if (t.ready) t.ready.then(null, function () {});
-      if (t.updateCallbackDone) t.updateCallbackDone.then(null, function () {});
-    } catch (e) { off(); apply(); }
+    apply();
+    if (still() || !card.hasAttribute('data-shown')) return;
+    card.setAttribute('data-arriving', '');
+    requestAnimationFrame(function () { requestAnimationFrame(function () { card.removeAttribute('data-arriving'); }); });
   }
 
   // Leaving the page in the card: its script's work stops, its dialogs close.

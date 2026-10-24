@@ -83,7 +83,7 @@
 | 外壳键 | `shell` 是共享样式表、两份运行时、头像样式与导航运行时（去掉键本身）的 SHA-256 前 16 位，写进文档里的导航运行时。答案的键对不上（中枢换了版本而页面还开着）就整页导航，免得新页面配旧样式或旧运行时 |
 | 页面脚本的进出 | 见下文「与设计的偏离」 |
 | 失败 | 网络不通或 5xx：保留当前页，`#conn` 下方出一行细提示「页面没有打开 · 正在重试」，1.2 秒后自动重试一次；仍失败就写明原因（`HTTP 503`、无法连接、浏览器离线）并给「重试」按钮。401、跳去登录门的重定向、403、页面自己的 404、不是本协议的答案、外壳键或哈希对不上：一律整页导航（`location.assign`；前进后退时 `location.reload`），401 因此落到登录门，桌面壳在那里重新进门（`qmo-app.md` §3 第 4 步）。会话已失效的页面不再局部换页 |
-| 过渡 | 卡片开着时，支持 View Transitions 的内核（Chromium；WKWebView 视版本）用 `document.startViewTransition`，`html.nav-fade` 下根元素的新旧快照动画 120 ms；`prefers-reduced-motion` 或不支持时直接换。取页期间卡片带 `data-busy`：区域降到 55% 不透明（`view/frontStyle.ts` 的 `.set[data-busy]`，共享样式表仍无 `@keyframes`） |
+| 过渡 | 取页期间卡片带 `data-busy`：区域降到 55% 不透明；换上的区域从 55% 用 120 ms 回到不透明（卡片带两帧 `data-arriving`，`view/frontStyle.ts` 的 `.set[data-busy]`、`.set[data-arriving]`，共享样式表仍无 `@keyframes`）；`prefers-reduced-motion` 时直接换。不用 View Transitions：过渡期间所有按下都落在根元素上（快照盖在上面），列表里紧接着的第二下、×、遮罩都会丢，慢机器上过渡还会拖过卡片关闭（Chrome 155 在 macOS 与 Linux 上实测） |
 
 **与设计的偏离：页面脚本没有各自导出 `mount` / `unmount`。** 后台二十个页面脚本（约 190 KB）都写成立即执行的函数，直接往 `document`、`window` 挂监听、开定时器、向运行时注册动作。逐个改写成导出 `mount` / `unmount` 等于重写全部页面脚本，风险与收益不相称。改为由导航运行时给页面脚本套一个「录制作用域」：脚本执行的那一段同步时间里，它往 `document`、`window` 加的监听、开的 `setTimeout` / `setInterval`、经运行时注册的动作（`onAction`）、提交（`onSubmit`）与失效钩子（`onExpire`）、新加到 `window` 和运行时对象上的属性都记下来；离开这一页时先跑它的失效钩子（页面就是靠这个停轮询的），再逐项撤销。执行脚本就是 `mount`，撤销就是 `unmount`。页面在点击之后才开始的轮询，由它注册的 `qc.onExpire` 停，或注册 `qianmoNav.onLeave`；本包给缺这一步的四处补上了（`connectScript` 的配对倒计时、`updatesScript` 的升级跟踪、`channelsScript` 的扫码轮询；`replicate`、`magpie`、`providers` 原本就有）。浏览器用例核对同一页来回进出两轮后 `document` / `window` 上的监听逐类计数不变。没有覆盖的：脚本在某个回调里（而不是执行当时）直接挂到 `document` / `window` 上的监听——目前的页面脚本没有这种写法，新写的页面脚本要遵守。
 
@@ -360,13 +360,13 @@ P37.13 已有的用例（`atlas/packages/console/test/`）：
 - `nav.test.ts`：带与不带 `X-Qianmo-Partial` 的两种答案；部件就是整页在那几处画的内容；守卫不变（无凭据 401、只读令牌读对话类页面 403、cookie 不带控制台头 403、非 GET 405），拒绝是 JSON 而不是登录卡或重定向；策略只在 `script-src` 增长、列出读者可去页面的脚本哈希且不列进不去的、`<meta>` 与响应头一致，Work 与 Code 文档列的与区域文档相同；导航运行时的体积与写法。
 - `view.test.ts`、`pages.test.ts`、`front.test.ts`、`p1.test.ts`、`chat.test.ts`：卡片的标记（开着带区域、关着只有列表；一列、组间与簇首只留空白；跳到正文、搜索、桌面版一项）；区域地址的文档是 Work 面加开着的卡片、首帧就有区域且不读转录；404 画在卡片里；对话不在卡片里；读者不能对话时接没接聊天通道 Work 面逐字相同。
 - `browser/nav.browser.test.ts`（真 Chrome）：卡片列表切页不重载文档（`window` 上的标记还在、请求是部件请求、没有 CSP 违规、设置页脚本加到运行时的东西离开时撤掉）；前进后退；同一页来回两轮监听逐类计数不变；按下即预取、点击复用，指针扫过列表各项不发请求；无答案时保留当前页、细提示、自动重试一次、「重试」生效；会话失效与外壳键不符时整页导航（前者落到登录门）；卡片里指向前台的链接先关卡片再导航；`data-write` 开关被拒时退回并就地写原因；发送失败留下「未送达 · 重试」，重试后发出；首帧：用一个没有 `qmo_boot_layout` 命令（`invoke` 一律拒绝）的假壳，区域地址上报的是卡片底下的面（`agents`，颜色为 `#rrggbb`），卡片里换区域与关卡片都不报，换深色、窄窗口、收起前台侧栏各报一次，页面上没有未处理的拒绝或报错。
-- `browser/modes.browser.test.ts`（真 Chrome）：Work | Code 切换与 Work 的两种地址；Code 在浏览器、带 agent 的假壳、没有命令的旧壳、qmo 答不上来的壳四种情形；卡片经滑杆、⋯ 菜单、⌘,、`__qmoOpenSettings` 打开，已开时只取焦点、不多 push；Esc、×、遮罩关闭，焦点回到打开者；60 次 Tab / Shift+Tab 焦点不出卡片；搜索筛选与回车；区域地址首帧即模态卡片、减弱动效下关闭不等动画，接管不关任何东西、过时的 close 不改状态；脚本打开的卡片内对话框按 Esc 只关它、卡片留下；桌面版一项调 `qmo_open_local_settings`。
+- `browser/modes.browser.test.ts`（真 Chrome）：Work | Code 切换与 Work 的两种地址；Code 在浏览器、带 agent 的假壳、没有命令的旧壳、qmo 答不上来的壳四种情形；卡片经滑杆、⋯ 菜单、⌘,、`__qmoOpenSettings` 打开，已开时只取焦点、不多 push；Esc、×、遮罩关闭，焦点回到打开者；60 次 Tab / Shift+Tab 焦点不出卡片；搜索筛选与回车；区域地址首帧即模态卡片、减弱动效下关闭不等动画，接管不关任何东西、过时的 close 不改状态；脚本打开的卡片内对话框按 Esc 只关它、卡片留下；换区域后紧接着的真实按下（列表下一项、遮罩）不丢；桌面版一项调 `qmo_open_local_settings`。
 - `browser/narrow.browser.test.ts`：375 px 时卡片铺满窗口、列表一行横向滚动且当前项在视野里、底部在区域下面、Esc 回到 Work 面；不跑脚本时卡片就是页面。
 - `browser/frontTools.browser.test.ts`：权限模式先显示新值，中枢拒绝时退回并写原因。
 
 壳侧（`cd atlas/apps/qmo/src-tauri && cargo test`）：`qmo_boot_layout`、`qmo_local_agents`、`qmo_open_local_settings` 的参数逐项校验与调用方同源判定，三条命令只在中枢的 remote 能力里、不在本地页面的能力里；设置文件里布局与颜色的读写（旧的 `admin`、越界、坏颜色只丢那一块）；骨架计划（哪一面亮、行与标题的排法、两套颜色与缺省）和它交给骨架页的 JSON；`qmo agents` 同一时刻只跑一个。
 
-未验证：WKWebView（桌面壳）里的 View Transitions、局部换页与 `<dialog>` 设置卡片；壳里真实的首帧（骨架页只在无头 Chromium 里按三份计划看过）与菜单「设置」接上后的整体；Firefox、Safari。
+未验证：WKWebView（桌面壳）里的局部换页与 `<dialog>` 设置卡片；壳里真实的首帧（骨架页只在无头 Chromium 里按三份计划看过）与菜单「设置」接上后的整体；Firefox、Safari。
 
 `qmo agents`（§4.2）：
 

@@ -178,7 +178,7 @@ async function onPage(tab: Tab, path: string, nav: string): Promise<void> {
     `location.pathname === ${JSON.stringify(path)} && ` +
       `${q(`#${nav}`)}.getAttribute('aria-current') === 'page' && ` +
       `!${q('#settings')}.hasAttribute('data-busy') && ` +
-      `!document.documentElement.classList.contains('nav-fade')`,
+      `!${q('#settings')}.hasAttribute('data-arriving')`,
   )
 }
 
