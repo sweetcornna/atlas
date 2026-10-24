@@ -11,6 +11,7 @@
  * | `device.token` / `device.token.dpapi` | the device token (Linux, macOS / Windows) |
  * | `window/` | the app window's browser profile, apart from the user's own |
  * | `pipe/` | the window's two DevTools FIFOs (Linux) |
+ * | `agents.json` | what `qmo agents` learned by running something (versions, the login shell's PATH) |
  */
 
 import * as fs from 'node:fs'
@@ -71,6 +72,11 @@ export class ClientHome {
 
   get pipeDir(): string {
     return path.join(this.dir, 'pipe')
+  }
+
+  /** `qmo agents`' answers; kept across sign-outs, since they are of this computer. */
+  get agentsCache(): string {
+    return path.join(this.dir, 'agents.json')
   }
 
   /** The pairing on record, or `undefined` before the first sign-in. */

@@ -10,8 +10,9 @@
  * it, and checks that its commands load and answer: the version line, the
  * usage, `status` before any sign-in, `open` refusing without a pairing, a
  * plain-HTTP hub refused before anything is sent, a pairing code read from
- * standard input rather than the command line, and a relative state
- * directory refused.
+ * standard input rather than the command line, a relative state
+ * directory refused, and `agents --json` answering with one line that lists
+ * the built-in qianmopi first (what else it finds depends on the computer).
  *
  * Usage:
  *   bun atlas/scripts/check-client-smoke.ts [<binary>]   default: dist/qmo-<host>
@@ -54,6 +55,11 @@ const PROBES: readonly Probe[] = [
     env: { QMO_CLIENT_DIR: 'relative/qmo' },
     exit: 2,
     stderr: /绝对路径/,
+  },
+  {
+    args: ['agents', '--json'],
+    exit: 0,
+    stdout: /^\{"agents":\[\{"id":"omp","name":"qianmopi",[^\n]*\}\r?\n$/,
   },
 ]
 
