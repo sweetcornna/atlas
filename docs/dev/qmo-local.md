@@ -174,7 +174,7 @@ qianmopi 内置在本机节点的 `qm` 里，恒为列表第一项（`id: omp`�
 
 **能不能用**：
 
-- 有命令可用：`available: true`。dsh 逐个候选跑 `dsh --help`，标准输出里有「DeepSeek Harness」的第一个才采用（Debian 的 dsh、pdsh 也叫 dsh，它的 `--version` 只打版本号，区分不了）；判据与节点是同一份（底层目录 `NpmInstall.identity`）。
+- 有命令可用：`available: true`。dsh 逐个候选判别，第一个是 DeepSeek Harness 的才采用（Debian 的 dsh、pdsh 也叫 dsh）：是它官方 npm 包 `@deepseek-ai/dsh` 里的程序（经链接或 Windows 垫片读到包清单）就直接认，不运行；否则跑 `dsh --help`，标准输出里要有「DeepSeek Harness」（它的 `--version` 只打版本号，区分不了），判据与节点是同一份（底层目录 `NpmInstall.identity`）。
 - 没有可用的命令：同名程序都不是它，`reason` 写「<路径> 不是 DeepSeek Harness（它的 --help 里没有这个名字）」；问不出来（超时、起不来）写「<路径> 核对不了是不是 DeepSeek Harness（…）」；只有桌面 App 写「CLI 未找到（只装了桌面 App）」；其余写「CLI 未找到（有 <配置目录>，但 PATH 与常见安装位置里都没有 <命令>）」。
 - 不设最低版本：底层目录只有节点安装时钉住的版本，没有「太旧」的依据；版本只作展示。
 
@@ -211,7 +211,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
   - nvm 不读 `alias/default`，列出每个 Node 版本目录（新的在前）。
   - 登录 shell 的 PATH 排在常见目录之前（magpie 在后），找到的是终端里会先找到的那一个。
   - 厂商安装位置算识别证据（magpie 只用它判断「CLI 未找到」）；不查 IDE 扩展、编辑器、Codex 桌面 App 这类「还有别的程序在用这个目录」的信号（magpie 的 `cliHeld`），我们要的是能驱动的命令行程序。
-  - dsh 判别是我们节点的规则（magpie 没有），同名的多个候选逐个判别；读 npm 包版本时核对包名。
+  - dsh 判别是我们节点的规则（magpie 没有），同名的多个候选逐个判别，官方 npm 包里的程序不用问；读 npm 包版本时核对包名。
   - 只收底层目录的六项与五个常见的不能驱动的 agent（magpie 有几十个）；不识别 WSL 里的 agent。
 
 ### 4.3 本机节点

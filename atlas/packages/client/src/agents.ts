@@ -657,6 +657,23 @@ function stampOf(fsx: AgentFs, bin: string): string | null {
 }
 
 /**
+ * The version of the agent's own npm package `bin` is a program of (through
+ * its links, or a Windows shim), read rather than run; `null` when it is in
+ * none of them. Such a program is the agent, whatever its name is shared with.
+ */
+function packagedVersion(
+  scan: Scan,
+  spec: AgentSpec,
+  bin: string,
+): string | null {
+  const { fsx } = scan
+  return (
+    npmVersion(fsx, fsx.realpath(bin) ?? bin, spec.npm) ??
+    (scan.place.platform === 'win32' ? shimVersion(fsx, bin, spec.npm) : null)
+  )
+}
+
+/**
  * The agent's version: its npm package's, read; else what `--version`
  * prints, kept while the program's file is the same.
  */
@@ -666,10 +683,7 @@ async function versionOf(
   bin: string,
 ): Promise<string | null> {
   const { fsx, cache } = scan
-  const real = fsx.realpath(bin) ?? bin
-  const read =
-    npmVersion(fsx, real, spec.npm) ??
-    (scan.place.platform === 'win32' ? shimVersion(fsx, bin, spec.npm) : null)
+  const read = packagedVersion(scan, spec, bin)
   if (read !== null) return read
   const stamp = stampOf(fsx, bin)
   if (stamp === null) return null
@@ -773,7 +787,11 @@ async function inspect(
   if (spec.identity === undefined) chosen = candidates[0]
   else
     for (const candidate of candidates) {
-      const why = await identify(scan, spec, spec.identity, candidate.bin)
+      // A program of its own npm package needs no asking.
+      const why =
+        packagedVersion(scan, spec, candidate.bin) !== null
+          ? null
+          : await identify(scan, spec, spec.identity, candidate.bin)
       if (why === null) {
         chosen = candidate
         break

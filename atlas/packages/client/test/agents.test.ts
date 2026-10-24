@@ -522,6 +522,32 @@ describe('DeepSeek Harness, told from other programs named dsh', () => {
     expect(probes.asked).toEqual(['dsh --help'])
   })
 
+  test('a program of its own npm package needs no asking', async () => {
+    const box = sandbox()
+    const pkg = path.join(
+      box.root,
+      'npm',
+      'node_modules',
+      '@deepseek-ai',
+      'dsh',
+    )
+    put(
+      path.join(pkg, 'package.json'),
+      JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.1-rc.2' }),
+    )
+    const dsh = fakeBin(path.join(pkg, 'bin'), 'dsh')
+    const probes = fakeRun(() => ({ stdout: DEBIAN }))
+    const report = await scanAgents(
+      base(box, { env: { PATH: path.join(pkg, 'bin') }, run: probes.run }),
+    )
+    expect(agent(report, 'dsh')).toMatchObject({
+      available: true,
+      path: dsh,
+      version: '0.2.1-rc.2',
+    })
+    expect(probes.asked).toEqual([])
+  })
+
   test('one that cannot be asked is not taken either', async () => {
     const box = sandbox()
     const dsh = fakeBin(box.bin, 'dsh')
