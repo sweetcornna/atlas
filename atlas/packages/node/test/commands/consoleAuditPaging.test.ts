@@ -309,7 +309,11 @@ describe('100 000 records: the first screen is bounded (D5, G2)', () => {
     expect(rowCount(warm.body, 'audit-rows')).toBe(50)
     expect(reader.stats.linesChecked - afterCold.linesChecked).toBe(0)
     expect(reader.stats.bytesRead - afterCold.bytesRead).toBe(0)
-    expect(warm.body.length).toBeLessThan(160_000)
+    // The bound is on the page, not on the shell under it: about 150 KB of
+    // styles and runtimes (22 KB of it the partial-navigation runtime, P37.13)
+    // is the same on every page, and the fifty rows add some 30 KB. A page
+    // that drew the trail instead of its first screen would be megabytes.
+    expect(warm.body.length).toBeLessThan(190_000)
 
     // The poll the page set up: since the head it was drawn at.
     const poll = /data-poll="([^"]+)"/

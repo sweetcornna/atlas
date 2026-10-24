@@ -117,6 +117,7 @@ function submitted(html: string): Record<string, unknown> {
     loadHtml: () => Promise.resolve(''),
     refreshRegion: () => Promise.resolve(),
     onAction: idle,
+    onExpire: idle,
     onSubmit: (id: string, handler: (form: unknown) => void) => {
       if (id === 'channel-form') onSubmit = handler
     },
