@@ -40,6 +40,16 @@
  * `connect-src 'self'` for polling. A console that reaches out to a CDN is a
  * console whose contents depend on a third party's good behaviour while it
  * holds a registry token.
+ *
+ * ## Moving between pages does not load another document (P37.13)
+ *
+ * The shell is drawn once. After that, the navigation runtime
+ * (`assets/nav.ts`) asks each next page for its parts — {@link shellPartial}
+ * over the same model — and puts them in place. So the document carries the
+ * shared sheet and the page's own sheet as two `<style>`s (the second is the
+ * one a move replaces), the runtime, the navigation runtime and the page's
+ * script in one `<script>`, and a policy that also allows the page scripts of
+ * every area its reader can move to (`ShellModel.navScripts`, `respond.ts`).
  */
 
 import {
@@ -47,9 +57,10 @@ import {
   CONSOLE_CLIENT_JS_ACCOUNTS,
 } from '../assets/client.js'
 import { CONSOLE_CSS, stripCssComments } from '../assets/css.js'
+import { NAV_MOUNTED_JS, PARTIAL_VERSION, navScript } from '../assets/nav.js'
 import type { ConsoleRole } from '../auth.js'
 import type { Lang } from '../i18n.js'
-import { cspFor } from '../respond.js'
+import { cspFor, scriptHash } from '../respond.js'
 import {
   chevron,
   icon,
@@ -96,14 +107,25 @@ function pageSheet(css: string): string {
 }
 
 /**
- * `scripts` are the inline scripts the document will carry, exactly: the
+ * `scripts` are the inline scripts the document will carry, exactly, then
+ * any it may run later (a management page's swappable page scripts): the
  * policy allows those by hash and nothing else (`respond.ts`, H2).
+ *
+ * `apart` draws the page's own sheet as a second `<style>` after the shared
+ * one (with `shared`, more rules every page of this frame has): the shell's
+ * documents, where moving to another page replaces that second sheet.
  */
 export function documentHead(
   title: string,
   pageCss = '',
   scripts: readonly string[] = [],
+  apart?: { readonly shared: string },
 ): string {
+  const sheets =
+    apart === undefined
+      ? `<style>${CONSOLE_CSS}${pageSheet(pageCss)}</style>\n`
+      : `<style>${CONSOLE_CSS}${pageSheet(apart.shared)}</style>\n` +
+        `<style>${pageSheet(pageCss)}</style>\n`
   return (
     `<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n` +
     `<meta charset="utf-8">\n` +
@@ -113,7 +135,7 @@ export function documentHead(
     `<meta http-equiv="Content-Security-Policy" content="${attr(cspFor(scripts))}">\n` +
     `<link rel="icon" href="${attr(QIANMO_ICON_HREF)}">\n` +
     `<title>${escapeHtml(title)}</title>\n` +
-    `<style>${CONSOLE_CSS}${pageSheet(pageCss)}</style>\n` +
+    sheets +
     `</head>\n`
   )
 }
@@ -212,6 +234,12 @@ export interface ShellModel {
    * default edition — the document is what it was.
    */
   readonly source?: SourceLinks
+  /**
+   * The page scripts of the other areas this reader can move to in place
+   * (`assets/nav.ts`): the document's policy allows them by hash, so the one
+   * a move brings runs. Only the areas the sidebar offers this reader.
+   */
+  readonly navScripts?: readonly string[]
 }
 
 const REFRESH_CHOICES: readonly (readonly [string, string])[] = [
@@ -353,8 +381,9 @@ function navItem(item: ShellNavItem, active: string | undefined): string {
   )
 }
 
-function sidebar(model: ShellModel): string {
-  const groups = model.nav
+/** The sidebar's groups, the inside of its `<nav>`. */
+function navGroups(model: ShellModel): string {
+  return model.nav
     .filter(group => group.items.length > 0)
     .map(group => {
       const items = group.items
@@ -379,6 +408,10 @@ function sidebar(model: ShellModel): string {
       )
     })
     .join('')
+}
+
+function sidebar(model: ShellModel): string {
+  const groups = navGroups(model)
   // Below 1000px the panel is a drawer (E1): a native popover the top bar's
   // menu button opens, with no script — the UA gives it the top layer, Esc
   // and a tap outside. Above it the attribute is inert and the panel is the
@@ -397,6 +430,13 @@ function sidebar(model: ShellModel): string {
     (model.poll === true ? refreshControl() : '') +
     accountRow(model) +
     `</div></aside>`
+  )
+}
+
+/** The inside of `<main>`: the page, then the public edition's footer. */
+function mainBody(model: ShellModel): string {
+  return (
+    model.body + (model.source === undefined ? '' : sourceFooter(model.source))
   )
 }
 
@@ -430,6 +470,16 @@ function healthStrip(health: readonly ShellHealth[] | undefined): string {
   )
 }
 
+/** What the top bar holds on the right: the page's actions, the health strip. */
+function topTail(model: ShellModel): string {
+  return (
+    (model.actions === undefined || model.actions === ''
+      ? ''
+      : `<div class="top-actions">${model.actions}</div>`) +
+    healthStrip(model.health)
+  )
+}
+
 function topBar(model: ShellModel): string {
   return (
     `<header class="top" data-tauri-drag-region>` +
@@ -442,10 +492,7 @@ function topBar(model: ShellModel): string {
     `<h1 class="page-title" id="page-title">${escapeHtml(model.title)}</h1>` +
     `</div>` +
     `<div class="top-tail">` +
-    (model.actions === undefined || model.actions === ''
-      ? ''
-      : `<div class="top-actions">${model.actions}</div>`) +
-    healthStrip(model.health) +
+    topTail(model) +
     `</div></header>`
   )
 }
@@ -502,16 +549,60 @@ export function sessionExpired(relogin: string, lang: Lang = 'zh-CN'): string {
   )
 }
 
+/**
+ * Which frame a document is: the sheet and both runtimes it carries, and the
+ * navigation runtime without its key. A page's parts name it
+ * ({@link shellPartial}), and the navigation runtime loads a whole document
+ * for parts that name another (a release with another sheet or runtime).
+ */
+const SHELL_KEY = new Bun.CryptoHasher('sha256')
+  .update(
+    [
+      CONSOLE_CSS,
+      AVATAR_CSS,
+      CONSOLE_CLIENT_JS,
+      CONSOLE_CLIENT_JS_ACCOUNTS,
+      navScript(''),
+    ].join('\u0000'),
+  )
+  .digest('hex')
+  .slice(0, 16)
+
+/** The navigation runtime every shell document carries (`assets/nav.ts`). */
+export const CONSOLE_NAV_JS = navScript(SHELL_KEY)
+
+/** The page's title as the document's `<title>` says it. */
+function documentTitle(model: ShellModel): string {
+  return `${BRAND} · ${model.title} · ${model.label}`
+}
+
+/**
+ * The scripts a shell document allows beyond the one it carries: its own
+ * page script on its own (moving back to this page runs it again alone),
+ * then those of the areas its reader can move to. What `html()` must be
+ * handed with {@link renderShell}'s output, so the header and the `<meta>`
+ * state one policy (`respond.ts`).
+ */
+export function shellScripts(model: ShellModel): readonly string[] {
+  return [model.pageScript ?? '', ...(model.navScripts ?? [])].filter(
+    script => script !== '',
+  )
+}
+
 /** A whole console document. Self-contained: nothing is fetched from anywhere. */
 export function renderShell(model: ShellModel): string {
   const runtime =
     model.viewer === undefined ? CONSOLE_CLIENT_JS : CONSOLE_CLIENT_JS_ACCOUNTS
-  const script = runtime + (model.pageScript ?? '')
+  // The page script runs inside the navigation runtime's scope, which the
+  // line after it closes (`assets/nav.ts`): leaving the page undoes it.
+  const script =
+    runtime + CONSOLE_NAV_JS + (model.pageScript ?? '') + NAV_MOUNTED_JS
   return (
     documentHead(
-      `${BRAND} · ${model.title} · ${model.label}`,
-      (model.self === undefined ? '' : AVATAR_CSS) + (model.pageCss ?? ''),
-      [script],
+      documentTitle(model),
+      model.pageCss ?? '',
+      [script, ...shellScripts(model)],
+      { shared: model.self === undefined ? '' : AVATAR_CSS },
     ) +
     `<body>\n` +
     // The first stop for a keyboard: past the sidebar to the page (F1).
@@ -525,8 +616,7 @@ export function renderShell(model: ShellModel): string {
     // Outside every polled region, so the failure it reports cannot take it.
     `<p class="bar bar-warn conn" id="conn" role="status" hidden></p>` +
     `\n<main class="main" id="main" tabindex="-1" aria-labelledby="page-title">\n` +
-    model.body +
-    (model.source === undefined ? '' : sourceFooter(model.source)) +
+    mainBody(model) +
     `\n</main>\n</div>\n</div>\n` +
     (model.relogin === undefined ? '' : sessionExpired(model.relogin)) +
     // Where an action's result is said (`assets/client.ts`, D2): outside
@@ -540,6 +630,63 @@ export function renderShell(model: ShellModel): string {
     `<script>${script}</script>\n` +
     `</body>\n</html>\n`
   )
+}
+
+/**
+ * One page's parts, for a move inside the shell (`assets/nav.ts`): what
+ * {@link renderShell} draws that changes from page to page, and nothing it
+ * draws once. Markup fields are the same view output the document carries.
+ */
+export interface ShellPartial {
+  /** {@link PARTIAL_VERSION}: the client loads a whole document for another. */
+  readonly v: number
+  /** {@link SHELL_KEY}: the frame these parts belong in. */
+  readonly shell: string
+  /** The document's `<title>`. */
+  readonly documentTitle: string
+  /** The `<h1>`, as text. */
+  readonly title: string
+  /** The breadcrumb's `<nav>`, or empty for none. */
+  readonly crumbs: string
+  /** The inside of the top bar's tail: the page's actions and the health strip. */
+  readonly actions: string
+  /** The inside of `<main>`: the page, then the public edition's footer. */
+  readonly main: string
+  /** The inside of the sidebar's `<nav>`, the current item marked. */
+  readonly nav: string
+  /** The current sidebar item, or empty. */
+  readonly active: string
+  /** True when the page has polled regions: the refresh switch is shown. */
+  readonly poll: boolean
+  /** The refresh switch, for a document that has not drawn it yet; else empty. */
+  readonly refresh: string
+  /** The page's own sheet, comments stripped. */
+  readonly css: string
+  /** The page's own script, exactly as the policy hashed it; empty for none. */
+  readonly script: string
+  /** `'sha256-…'` of {@link ShellPartial.script}, empty for none. */
+  readonly hash: string
+}
+
+/** The parts of the page {@link renderShell} would draw for `model`. */
+export function shellPartial(model: ShellModel): ShellPartial {
+  const script = model.pageScript ?? ''
+  return {
+    v: PARTIAL_VERSION,
+    shell: SHELL_KEY,
+    documentTitle: documentTitle(model),
+    title: model.title,
+    crumbs: breadcrumb(model.crumbs),
+    actions: topTail(model),
+    main: mainBody(model),
+    nav: navGroups(model),
+    active: model.active ?? '',
+    poll: model.poll === true,
+    refresh: model.poll === true ? refreshControl() : '',
+    css: pageSheet(model.pageCss ?? ''),
+    script,
+    hash: script === '' ? '' : scriptHash(script),
+  }
 }
 
 /** What a page outside the shell says: an error with nowhere else to go. */

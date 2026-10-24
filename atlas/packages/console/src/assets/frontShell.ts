@@ -23,8 +23,15 @@
  *   elsewhere.
  * - **Offline**: a thin line under the bar while the browser says the network
  *   is gone; it goes by itself when it is back, and the front catches up.
+ * - **The first frame** (`docs/dev/qmo-local.md` §3.5): whenever the side
+ *   panel's layout changes — open or closed, its width, how many rows and
+ *   day headings it shows, the theme — it is reported with
+ *   `qmo_boot_layout`, so the app's skeleton can draw the same shapes next
+ *   time. An app without the command makes it a no-op. The management side
+ *   reports the same fields (`assets/nav.ts`).
  */
 
+import { FRONT_NARROW_PX } from '../view/frontStyle.js'
 import { stripJsLineComments } from './client.js'
 
 function shellScript(): string {
@@ -121,10 +128,54 @@ function shellScript(): string {
     document.dispatchEvent(new CustomEvent('qianmo:online'));
   });
 
+  var laidOut = '';
+  var layoutTimer = null;
+  function visible(list) {
+    var n = 0;
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i];
+      if (typeof el.checkVisibility === 'function' ? el.checkVisibility() : el.getClientRects().length > 0) n++;
+    }
+    return n;
+  }
+  function layoutNow() {
+    var root = byId('fx');
+    var side = byId('fx-side');
+    if (!root || !side) return;
+    var open = root.getAttribute('data-side') !== 'closed' &&
+      !(window.matchMedia && window.matchMedia('(max-width: ${FRONT_NARROW_PX}px)').matches);
+    var info = {
+      page: root.getAttribute('data-layout') === 'chat' ? 'chat' : 'agents',
+      side: open ? 'open' : 'closed',
+      sideWidth: Math.round(side.getBoundingClientRect().width),
+      rows: Math.min(60, visible(side.querySelectorAll('.fx-ritem-row, .fx-agent-row'))),
+      labels: Math.min(20, visible(side.querySelectorAll('.fx-rgroup-name'))),
+      theme: document.documentElement.getAttribute('data-theme') || 'system'
+    };
+    var text = JSON.stringify(info);
+    if (text === laidOut) return;
+    laidOut = text;
+    invoke('qmo_boot_layout', { layout: info });
+  }
+  function layout() {
+    if (!shell || !core) return;
+    if (layoutTimer) clearTimeout(layoutTimer);
+    layoutTimer = setTimeout(function () { layoutTimer = null; layoutNow(); }, 400);
+  }
+
   function start() {
     namePlatformKeys();
     paintOnline();
     if (core) quickShortcut();
+    if (!shell || !core) return;
+    layout();
+    window.addEventListener('resize', layout);
+    document.addEventListener('qianmo:theme', layout);
+    var root = byId('fx');
+    var list = byId('fx-side-scroll');
+    if (typeof MutationObserver !== 'function') return;
+    if (root) new MutationObserver(layout).observe(root, { attributes: true, attributeFilter: ['data-side'] });
+    if (list) new MutationObserver(layout).observe(list, { childList: true, subtree: true });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();

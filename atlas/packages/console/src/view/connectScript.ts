@@ -142,6 +142,8 @@ export const CONNECT_PAGE_JS = `
     tick();
     expiryTimer = setInterval(tick, 1000);
   }
+  // Stopped with the page: a lapsed session, or a move to another page.
+  qc.onExpire(function () { if (expiryTimer) clearInterval(expiryTimer); expiryTimer = null; });
 
   qc.onAction('device-pair', function () {
     qc.sendJson('POST', '/v0/handoff/devices/pairing', {}).then(function (answer) {

@@ -12,8 +12,10 @@
  * - **权限模式** reads `/v0/elevation` for the agent in focus when it opens,
  *   and writes `PUT /v0/elevation/<node>/<agent>` with the mode alone (the
  *   node's default time and calls). 跳过权限确认 asks first. A hub without
- *   the port (404 or 501) leaves 人工确认 and says 未接入; a refusal is said in
- *   the composer's status line.
+ *   the port (404 or 501) leaves 人工确认 and says 未接入. A pick shows at
+ *   once (P37.13, 先改后同步): the menu and the button say the new mode while
+ *   the write is out, and a refusal puts the mode the hub still has back and
+ *   says why in the composer's status line.
  *
  * - **智能体** (`/app` only) picks who a new conversation goes to, through the
  *   front's own switch (`window.qianmoFront.pickAgent`).
@@ -124,7 +126,10 @@ function toolsScript(): string {
 
   /* ---------------- 权限模式 ---------------- */
 
-  var perm = { address: '', tier: 'off', wired: false, asking: false };
+  // tier is what the menu shows; held is what the hub last said, which a
+  // refused write goes back to. writes counts picks, so only the latest
+  // one's answer is painted.
+  var perm = { address: '', tier: 'off', held: 'off', wired: false, asking: false, writes: 0 };
 
   function paintPerm(note) {
     var pick = byId('fx-perm-pick');
@@ -157,7 +162,8 @@ function toolsScript(): string {
       for (var i = 0; i < rows.length; i++) {
         if (rows[i] && rows[i].node === where.node && rows[i].agent === where.agent) one = rows[i];
       }
-      perm = { address: where.address, tier: one && one.tier ? String(one.tier) : 'off', wired: !!one, asking: false };
+      var tier = one && one.tier ? String(one.tier) : 'off';
+      perm = { address: where.address, tier: tier, held: tier, wired: !!one, asking: false, writes: perm.writes };
       var pick = byId('fx-perm-pick');
       var note = !one
         ? tx('notWired', '未接入 · 一直是人工确认')
@@ -169,22 +175,37 @@ function toolsScript(): string {
       if (one && one.unsupportedReason) perm.wired = false;
       paintPerm(note);
     }, function (err) {
-      perm = { address: where.address, tier: 'off', wired: false, asking: false };
+      perm = { address: where.address, tier: 'off', held: 'off', wired: false, asking: false, writes: perm.writes };
       paintPerm(err && (err.status === 404 || err.status === 501) ? tx('notWired', '未接入 · 一直是人工确认') : qc.failLine('读取', err));
     });
   }
 
+  // The new mode shows before the hub answers; a refusal puts back the one
+  // it still has. An answer for another agent, or for a pick since
+  // overtaken, changes nothing on screen.
   function setPerm(tier) {
     var where = target();
     if (!where) return;
     close(true);
+    var mine = ++perm.writes;
+    var current = function () { return perm.address === where.address && perm.writes === mine; };
+    perm.tier = tier;
+    paintPerm();
+    status('', 'muted');
     qc.sendJson('PUT', '/v0/elevation/' + encodeURIComponent(where.node) + '/' + encodeURIComponent(where.agent), { tier: tier })
       .then(function (view) {
-        perm.tier = view && view.tier ? String(view.tier) : tier;
+        var held = view && view.tier ? String(view.tier) : tier;
+        if (perm.address === where.address) perm.held = held;
+        if (!current()) return;
+        perm.tier = held;
         paintPerm();
         var word = byId('fx-perm-word');
         qc.toast(tx('switchedTo', '已切换为 ') + (word ? word.textContent : tier), 'ok');
       }, function (err) {
+        if (current()) {
+          perm.tier = perm.held;
+          paintPerm();
+        }
         status(qc.failLine('切换', err), qc.failTone(err));
       });
   }
@@ -248,7 +269,7 @@ function toolsScript(): string {
   function follow() {
     var where = target();
     if (where && where.address === perm.address) return;
-    perm = { address: where ? where.address : '', tier: 'off', wired: false, asking: false };
+    perm = { address: where ? where.address : '', tier: 'off', held: 'off', wired: false, asking: false, writes: perm.writes };
     paintPerm();
     if (where && byId('fx-perm-btn')) readPerm();
   }

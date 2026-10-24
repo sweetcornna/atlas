@@ -267,9 +267,11 @@ import {
   seeOther,
 } from './respond.js'
 import { CHAT_STREAM_HEARTBEAT_MS } from './routes/chat.js'
+import { PARTIAL_HEADER } from './assets/nav.js'
 import {
   ROUTES,
   areaDocument,
+  areaPartial,
   errorDocument,
   headIndex,
   pageOf,
@@ -594,6 +596,12 @@ function handleLogout(
  * this console, then the method, then the render — the order `/` and `/chat`
  * have always kept (`test/legacyParity.test.ts`). The module returns its own
  * part; the frame around it is `routes/index.ts`'s.
+ *
+ * A `GET` with `X-Qianmo-Partial: 1` is the navigation runtime moving
+ * between pages in place (`assets/nav.ts`, P37.13): the same guard, the same
+ * render, answered as the page's parts in JSON instead of a document. It is
+ * a script's read, so a cookie must come with the console header, as on a
+ * fragment. Both answers vary on the header.
  */
 async function servePage(
   ctx: RouteContext,
@@ -601,10 +609,13 @@ async function servePage(
   denial: Access | undefined,
 ): Promise<Response> {
   const { request, deps, url, access } = ctx
+  const partial =
+    request.method === 'GET' && request.headers.get(PARTIAL_HEADER) === '1'
+  const protection = partial ? 'guarded' : 'document'
   const denied =
     match.page.guard === 'chat'
-      ? guardChat(access, 'document')
-      : guard(access.credential, 'view', 'document')
+      ? guardChat(access, protection)
+      : guard(access.credential, 'view', protection)
   if (denied !== null) {
     return documentDenial(request, denied, deps, url, denial)
   }
@@ -614,10 +625,15 @@ async function servePage(
   if (request.method !== 'GET') return methodNotAllowed(['GET'])
   const rendered = await match.page.render(ctx, match.rest)
   if (rendered instanceof Response) return rendered
-  return html(
-    await areaDocument(ctx, match.module, rendered),
-    rendered.status ?? 200,
-  )
+  const status = rendered.status ?? 200
+  const vary = { vary: PARTIAL_HEADER }
+  if (partial) {
+    return json(await areaPartial(ctx, match.module, rendered), status, vary)
+  }
+  const page = await areaDocument(ctx, match.module, rendered)
+  const response = html(page.body, status, page.allow)
+  response.headers.set('vary', PARTIAL_HEADER)
+  return response
 }
 
 /**
@@ -889,17 +905,19 @@ async function errorPage(
   const title = copy?.title ?? ''
   const line = copy?.line ?? ''
   const signedIn = access.refusal === null && access.credential.role !== 'none'
-  const page = html(
-    signedIn
-      ? await errorDocument(context(), title, line)
-      : renderStandalone({
-          label: deps.label ?? DEFAULT_LABEL,
-          title,
-          line,
-          link: { href: LOGIN_PATH, label: '去登录' },
-        }),
-    response.status,
-  )
+  const shell = signedIn ? await errorDocument(context(), title, line) : null
+  const page =
+    shell === null
+      ? html(
+          renderStandalone({
+            label: deps.label ?? DEFAULT_LABEL,
+            title,
+            line,
+            link: { href: LOGIN_PATH, label: '去登录' },
+          }),
+          response.status,
+        )
+      : html(shell.body, response.status, shell.allow)
   const allow = response.headers.get('allow')
   if (allow !== null) page.headers.set('allow', allow)
   return page

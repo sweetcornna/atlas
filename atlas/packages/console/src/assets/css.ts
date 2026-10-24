@@ -1463,6 +1463,28 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #111
 .audit-filter-row { gap: var(--space-6); align-items: flex-end; }
 .push-right { margin-left: auto; }
 .mt-2 { margin-top: var(--space-2); }
+
+/* ---- P37.13 nav: moving between pages in place (assets/nav.ts) ----
+   While the next page is on its way the page under the bar dims and a thin
+   line shows at the top; a page swapped in fades in over 120ms where the
+   browser has View Transitions. A data-write control says 保存中 or why it
+   went back on the line beside it. */
+.refresh-row[hidden] { display: none; }
+.nav-note[hidden] { display: none; }
+html[data-nav-busy] .main { opacity: .55; transition: opacity 120ms ease; }
+html[data-nav-busy] .frame::before {
+  content: ""; position: fixed; top: 0; left: 0; right: 0; height: 2px; z-index: 60;
+  background: var(--color-interactive); pointer-events: none;
+}
+html.nav-fade::view-transition-old(root),
+html.nav-fade::view-transition-new(root) { animation-duration: 120ms; }
+.write-note { margin-left: var(--space-2); font-size: var(--text-12); color: var(--color-muted); }
+.write-note:empty { display: none; }
+.write-note[data-tone="bad"], .write-note[data-tone="warn"] { color: var(--color-danger-text); }
+.fx-retry {
+  border: 0; background: none; padding: 0 2px; font: inherit; color: var(--color-interactive-text);
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
 `
 
 /** The shared sheet every document inlines, without the notes (G1). */

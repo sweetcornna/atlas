@@ -303,8 +303,10 @@ export const DESKTOP_PAGE_JS = `
       qc.toast(agent + ' · ' + word, 'ok');
       return refresh();
     }).catch(function (err) {
+      // The switch went back already, with the reason beside it
+      // (data-write, assets/nav.ts); the next refresh confirms it.
+      target.disabled = false;
       qc.toast(qc.failLine('切换', err), qc.failTone(err));
-      return refresh();
     });
   });
 

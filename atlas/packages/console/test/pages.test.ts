@@ -21,7 +21,9 @@ import {
   documentCspFor,
   html,
   inlineScripts,
+  scriptHash,
 } from '../src/respond.js'
+import { CONSOLE_NAV_JS } from '../src/view/shell.js'
 import { ROUTES } from '../src/routes/index.js'
 import {
   FakeChannels,
@@ -397,7 +399,7 @@ describe('every page', () => {
     }
   })
 
-  test('loads nothing from anywhere, and carries one style and one script', async () => {
+  test('loads nothing from anywhere, and carries the shared and the page sheet and one script', async () => {
     for (const row of PAGES) {
       const html = await read(row.path)
       // The public edition's source footer (AGPL §13, `view/source.ts`) is
@@ -414,7 +416,12 @@ describe('every page', () => {
       expect(stripped).not.toContain('https://')
       expect(stripped).not.toContain('src="')
       expect(stripped).not.toContain('<iframe')
-      expect(html.split('<style>')).toHaveLength(2)
+      // A management page: the shared sheet, then the page's own, the one
+      // a move between pages replaces (P37.13, view/shell.ts). The front
+      // keeps its one sheet.
+      expect(`${row.path} ${html.split('<style>').length}`).toBe(
+        `${row.path} ${row.path.startsWith('/admin') ? 3 : 2}`,
+      )
       expect(html.split('<script>')).toHaveLength(2)
     }
   })
@@ -428,7 +435,9 @@ describe('every page', () => {
     expect(audit).not.toContain("qc.onSubmit('register-form'")
     expect(audit).toContain("qc.onAction('chain', openChain)")
     expect(servers).toContain("qc.onAction('server-note', onServerNote)")
-    expect(overview).not.toContain('qc.onAction(')
+    // The navigation runtime undoes a page's actions when it leaves; past
+    // it, the overview registers none.
+    expect(overview.replace(CONSOLE_NAV_JS, '')).not.toContain('qc.onAction(')
   })
 
   test('every section is a stacked header over its own body', async () => {
@@ -667,6 +676,27 @@ describe('the shell around every page', () => {
 })
 
 describe('framing (H1)', () => {
+  const PAGE_SCRIPT_HASHES = new Set(
+    ROUTES.flatMap(module =>
+      module.page?.script === undefined ? [] : [scriptHash(module.page.script)],
+    ),
+  )
+
+  /** script-src's first source, and the rest. */
+  function scriptSources(policy: string): readonly [string, readonly string[]] {
+    const directive =
+      policy.split('; ').find(one => one.startsWith('script-src ')) ?? ''
+    const [, first = '', ...rest] = directive.split(' ')
+    return [first, rest]
+  }
+
+  function withoutScriptSrc(policy: string): string {
+    return policy
+      .split('; ')
+      .filter(one => !one.startsWith('script-src '))
+      .join('; ')
+  }
+
   function framingOf(response: Response): readonly [string, string] {
     return [
       response.headers.get('content-security-policy') ?? '',
@@ -680,10 +710,20 @@ describe('framing (H1)', () => {
       const response = await handle(browse(row.path, ADMIN))
       const [policy, xfo] = framingOf(response)
       const body = await response.text()
-      // The page's own scripts by hash, and frame-ancestors (H2, H1).
-      expect(`${row.path} ${policy}`).toBe(
-        `${row.path} ${documentCspFor(inlineScripts(body))}`,
+      // The page's own scripts by hash, and frame-ancestors (H2, H1). The
+      // page scripts a move can swap in (P37.13) only add to script-src.
+      const [carried, swappable] = scriptSources(policy)
+      expect(`${row.path} ${carried}`).toBe(
+        `${row.path} ${scriptSources(documentCspFor(inlineScripts(body)))[0]}`,
       )
+      expect(`${row.path} ${withoutScriptSrc(policy)}`).toBe(
+        `${row.path} ${withoutScriptSrc(documentCspFor(inlineScripts(body)))}`,
+      )
+      for (const hash of swappable) {
+        expect(`${row.path} ${PAGE_SCRIPT_HASHES.has(hash)}`).toBe(
+          `${row.path} true`,
+        )
+      }
       expect(policy.endsWith("; frame-ancestors 'none'")).toBe(true)
       expect(`${row.path} ${xfo}`).toBe(`${row.path} DENY`)
       // The <meta> says the same, less the directive a meta cannot carry.

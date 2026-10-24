@@ -7,7 +7,8 @@
  * as the conversation's own `/effort` line; 权限模式 reads and writes
  * `/v0/elevation` in the shape P39 answers (stubbed in the page, since this
  * hub has no such port), asks before 跳过权限确认, and says 未接入 where the
- * hub answers 404.
+ * hub answers 404. A pick shows before the hub answers, and a refusal puts
+ * the mode the hub still has back with the reason (P37.13, 先改后同步).
  *
  * Skipped, with the reason, where no Chrome is installed.
  */
@@ -26,7 +27,7 @@ if (SKIP !== null) console.warn(`[front tools browser tests] skipped: ${SKIP}`)
 
 /** `/v0/elevation` as P39 answers it, kept in the page. */
 const ELEVATION_STUB = `
-  window.__elevation = { tier: 'off', puts: [] };
+  window.__elevation = { tier: 'off', puts: [], refuse: false };
   const realFetch = window.fetch;
   window.fetch = function (url, options) {
     const path = String(url);
@@ -37,6 +38,12 @@ const ELEVATION_STUB = `
     }
     if (path === '/v0/elevation/tokyo-1/planner' && method === 'PUT') {
       const body = JSON.parse(options.body);
+      if (window.__elevation.refuse) {
+        window.__elevation.puts.push('refused ' + body.tier);
+        return new Promise(resolve => setTimeout(resolve, 400)).then(() => new Response(
+          JSON.stringify({ error: { code: 'conflict', message: '节点拒绝了这次切换' } }),
+          { status: 409, headers: { 'content-type': 'application/json' } }));
+      }
       window.__elevation.puts.push(body.tier);
       window.__elevation.tier = body.tier;
       return reply({ node: 'tokyo-1', agent: 'planner', reachable: true, tier: body.tier });
@@ -182,6 +189,46 @@ describe.skipIf(SKIP !== null)('the composer pickers', () => {
       expect(await tab.evaluate<string[]>(`window.__elevation.puts`)).toEqual([
         'auto',
         'full-access',
+      ])
+    } finally {
+      await tab.close()
+      stop()
+    }
+  }, 60_000)
+
+  test('权限模式 shows the pick at once and puts the mode back when the hub refuses', async () => {
+    const { tab, stop } = await opened(browser, true)
+    try {
+      await tab.waitFor(
+        `document.getElementById('fx-perm-word').textContent === '人工确认'`,
+      )
+      await tab.evaluate(`window.__elevation.refuse = true`)
+      await tab.evaluate(`document.getElementById('fx-perm-btn').click()`)
+      await tab.waitFor(
+        `!document.querySelector('#fx-perm-menu [data-perm="auto"]').disabled`,
+      )
+      // Before any answer: the menu and the button say the new mode.
+      const shown = await tab.evaluate<{ word: string; tier: string }>(
+        `(() => { document.querySelector('#fx-perm-menu [data-perm="auto"]').click(); ` +
+          `return { word: document.getElementById('fx-perm-word').textContent, ` +
+          `tier: document.getElementById('fx-perm-pick').getAttribute('data-tier') }; })()`,
+      )
+      expect(shown).toEqual({ word: '自动审批', tier: 'auto' })
+      await tab.waitFor(
+        `document.getElementById('fx-perm-word').textContent === '人工确认'`,
+      )
+      expect(
+        await tab.evaluate<string>(
+          `document.getElementById('fx-perm-pick').getAttribute('data-tier')`,
+        ),
+      ).toBe('off')
+      expect(
+        await tab.evaluate<string>(
+          `document.getElementById('fx-status').textContent`,
+        ),
+      ).toStartWith('切换失败')
+      expect(await tab.evaluate<string[]>(`window.__elevation.puts`)).toEqual([
+        'refused auto',
       ])
     } finally {
       await tab.close()

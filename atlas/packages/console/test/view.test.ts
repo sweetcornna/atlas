@@ -1707,7 +1707,7 @@ describe('the shell', () => {
     expect(html).toContain('font-src &#39;none&#39;')
   })
 
-  test('inlines exactly one stylesheet and one script, with the page parts after the shared ones', () => {
+  test('inlines the shared sheet, the page sheet and one script, with the page parts after the shared ones', () => {
     for (const html of [
       build(),
       build({
@@ -1715,7 +1715,9 @@ describe('the shell', () => {
         pageScript: 'var pageOnly;',
       }),
     ]) {
-      expect(html.split('<style>')).toHaveLength(2)
+      // The page's own sheet apart, so a move between pages swaps it alone
+      // (P37.13): two sheets, and still one script.
+      expect(html.split('<style>')).toHaveLength(3)
       expect(html.split('<script>')).toHaveLength(2)
       // Nothing in the script can close the tag early.
       const script = html.slice(html.indexOf('<script>'))
