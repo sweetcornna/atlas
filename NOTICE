@@ -432,6 +432,15 @@ MIT 许可，Copyright (c) 2025 Nous Research）整理。hermes-agent 不是本�
     密钥前缀、空白名单即全部模型），出处同上；magpie 预设
     （atlas/packages/providers/src/presets.ts）的线路与模型号写法依据 magpie 的公开
     文档，出处记在该预设的 `source` 字段。
+  * 客户端 `qmo agents`（atlas/packages/client/src/agents.ts、computer.ts，2026-10-23）
+    识别本机编程 agent 的规则参照 magpie 的识别逻辑整理，代码是阡陌自己写的，没有复制
+    magpie 的代码：各 agent 的命令名、配置目录与配置文件、改目录的环境变量，只剩残留
+    就不算数的目录名（skills、logs、log、debug、diagnostics、cache），与别的应用共用
+    的目录，厂商安装位置，向登录 shell 要 PATH 的做法与等待时长，版本先读 npm 包再跑
+    `--version` 及其缓存时长。依据 magpie 提交 1747389（经 sweetcornna/magpie-openasi
+    检出）的 internal/agent/agent.go、agents.go、gone.go、cliupdate.go 与
+    internal/proc/look.go、path_other.go、version.go；整理结果与不同之处写在
+    docs/dev/qmo-local.md §4.2.1。
   * 许可声明：出于审慎，依 MIT 许可「在全部副本或实质部分中保留版权声明与许可
     声明」的条件，原样保留 magpie 的版权声明与许可声明如下：
 

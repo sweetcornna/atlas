@@ -65,7 +65,7 @@ function rows(text: string): Row[] {
   return Bun.YAML.parse(text) as Row[]
 }
 
-test('the dsh catalog entry is pinned, needs Node 22.19+, and speaks ACP through dsh.ts', () => {
+test('the dsh catalog entry is pinned, needs Node 22.19+, names itself in --help, and speaks ACP through dsh.ts', () => {
   const spec = runtimeSpec('dsh')!
   expect(spec.protocol).toBe('acp')
   expect(spec.install).toEqual({
@@ -74,6 +74,8 @@ test('the dsh catalog entry is pinned, needs Node 22.19+, and speaks ACP through
     command: 'dsh',
     pin: '0.2.1-rc.2',
     needsNode: '^22.19.0 || >=24',
+    // Debian's and pdsh's `dsh` share its name (runtimeUpdate.ts, qmo agents).
+    identity: { args: ['--help'], name: /DeepSeek Harness/ },
   })
   expect(spec.lanes).toEqual(['openai-chat', 'anthropic'])
   expect(spec.acp?.mcpTransports).toEqual(['stdio', 'http'])
