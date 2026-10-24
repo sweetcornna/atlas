@@ -15,6 +15,12 @@
  * page's own CSS and script. A page module therefore never draws any of the
  * frame, and two page packages never edit the same file to change their own
  * page.
+ *
+ * The same model is drawn two ways (P37.13): the whole document, for a
+ * browser that navigates, and the page's parts, for the navigation runtime
+ * that moves between pages in place (`assets/nav.ts`, `X-Qianmo-Partial`).
+ * Who may see what is decided once, before either: the guard, the sidebar's
+ * areas and the page itself are the same for both.
  */
 
 import type { ConsoleAgent, ConsoleResult } from '../deps.js'
@@ -26,10 +32,14 @@ import type { SourceLinks } from '../view/source.js'
 import type { BackgroundTaskStatus } from '../directionPorts.js'
 import {
   renderShell,
+  shellPartial,
+  shellScripts,
   type Crumb,
   type ShellHealth,
+  type ShellModel,
   type ShellNavGroup,
   type ShellNavState,
+  type ShellPartial,
 } from '../view/shell.js'
 import { accessRoute } from './access.js'
 import { alertsRoute } from './alerts.js'
@@ -369,14 +379,38 @@ function shellSource(ctx: RouteContext): { readonly source?: SourceLinks } {
   return billing === undefined ? {} : { source: billing.site() }
 }
 
-/** One page, drawn in the shell. */
-export async function areaDocument(
+/**
+ * The page scripts of the areas this reader can move to in place: the ones
+ * the sidebar offers them (`visibleTo`), so a document's policy names no
+ * script for a page its reader cannot open.
+ */
+function navScriptsFor(ctx: RouteContext): readonly string[] {
+  return ROUTES.filter(
+    module =>
+      module.area.front !== true &&
+      module.page?.script !== undefined &&
+      visibleTo(module, ctx),
+  ).map(module => module.page?.script ?? '')
+}
+
+/** A shell document, with the scripts its policy allows beyond its own. */
+interface ShellDocument {
+  readonly body: string
+  /** Hand to `html()` with the body (`respond.ts`, `documentHeaders`). */
+  readonly allow: readonly string[]
+}
+
+function shellDocument(model: ShellModel): ShellDocument {
+  return { body: renderShell(model), allow: shellScripts(model) }
+}
+
+async function areaModel(
   ctx: RouteContext,
   module: RouteModule,
   render: PageRender,
-): Promise<string> {
+): Promise<ShellModel> {
   const listed = await ctx.roster()
-  return renderShell({
+  return {
     label: ctx.deps.label ?? DEFAULT_LABEL,
     role: ctx.access.credential.role,
     ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
@@ -395,7 +429,26 @@ export async function areaDocument(
       ? {}
       : { pageScript: module.page.script }),
     ...shellSource(ctx),
-  })
+    navScripts: navScriptsFor(ctx),
+  }
+}
+
+/** One page, drawn in the shell. */
+export async function areaDocument(
+  ctx: RouteContext,
+  module: RouteModule,
+  render: PageRender,
+): Promise<ShellDocument> {
+  return shellDocument(await areaModel(ctx, module, render))
+}
+
+/** One page's parts, for a move inside the shell (`assets/nav.ts`). */
+export async function areaPartial(
+  ctx: RouteContext,
+  module: RouteModule,
+  render: PageRender,
+): Promise<ShellPartial> {
+  return shellPartial(await areaModel(ctx, module, render))
 }
 
 /** One error, as the shell draws it: the nav, the title, one line, the way back. */
@@ -403,9 +456,9 @@ export async function errorDocument(
   ctx: RouteContext,
   title: string,
   line: string,
-): Promise<string> {
+): Promise<ShellDocument> {
   const listed = await ctx.roster()
-  return renderShell({
+  return shellDocument({
     label: ctx.deps.label ?? DEFAULT_LABEL,
     role: ctx.access.credential.role,
     ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
@@ -421,5 +474,6 @@ export async function errorDocument(
     health: healthOf(listed),
     relogin: loginHref(ctx.url),
     ...shellSource(ctx),
+    navScripts: navScriptsFor(ctx),
   })
 }

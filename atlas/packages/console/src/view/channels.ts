@@ -449,31 +449,43 @@ export function channelDialogs(): string {
 }
 
 export const CHANNELS_PAGE_CSS = `
-.ch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: var(--space-3); }
-.ch-card { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
-.ch-head { display: flex; align-items: center; gap: var(--space-3); }
-.ch-title { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
-.ch-title b { font-size: var(--text-14, 14px); overflow-wrap: anywhere; }
-.ch-glyph { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: var(--ui-field); color: var(--color-quiet); flex: none; }
-.ch-facts { display: flex; flex-direction: column; gap: 6px; }
-.ch-fact { display: flex; justify-content: space-between; gap: var(--space-3); font-size: var(--text-13); min-width: 0; }
-.ch-fact .kit-mono { text-align: right; overflow-wrap: anywhere; }
-.ch-pairs { display: flex; flex-direction: column; gap: 6px; padding-top: var(--space-2); border-top: 1px solid var(--color-line, transparent); }
-.ch-pair { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: var(--text-13); }
+/* One channel per row (qmo-local.md §3.4): the name and its platform, the
+   state and the actions on the right, the facts on one wrapped line under
+   the name, a hairline between rows. */
+.ch-grid { display: flex; flex-direction: column; }
+.ch-grid > .ch-card {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  column-gap: var(--space-6); row-gap: var(--space-2); padding: var(--space-3) 0;
+}
+.ch-grid > .ch-card + .ch-card { border-top: var(--hairline); }
+.ch-head { display: flex; align-items: center; gap: var(--space-3); grid-column: 1; grid-row: 1; min-width: 0; }
+.ch-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 var(--space-2); flex: 1; min-width: 0; }
+.ch-title b { font-size: var(--text-ui); font-weight: var(--weight-semibold); overflow-wrap: anywhere; }
+.ch-glyph { display: inline-grid; place-items: center; width: var(--control-h); height: var(--control-h); border-radius: var(--radius-control); background: var(--ui-field); color: var(--color-quiet); flex: none; }
+.ch-facts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px var(--space-5); padding-left: calc(var(--control-h) + var(--space-3)); }
+.ch-fact { display: flex; align-items: baseline; gap: 6px; font-size: var(--text-ui); min-width: 0; }
+.ch-fact .kit-mono { overflow-wrap: anywhere; }
+.ch-pairs { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; padding-left: calc(var(--control-h) + var(--space-3)); }
+.ch-pair { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: var(--text-ui); }
 .ch-pair-who { display: flex; flex-direction: column; gap: 1px; flex: 1 1 8em; min-width: 0; }
 .ch-pair-who .kit-mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
-.ch-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; margin-top: auto; }
+.ch-foot { grid-column: 2; grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: var(--space-3); flex-wrap: wrap; }
 .ch-platforms { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: var(--space-2); }
-.ch-platform { display: flex; align-items: center; gap: var(--space-2); padding: 8px 10px; border-radius: var(--radius-md); background: var(--color-bg); cursor: pointer; font-size: var(--text-13); border: 1px solid transparent; }
+.ch-platform { display: flex; align-items: center; gap: var(--space-2); min-height: var(--control-h); padding: 0 10px; border-radius: var(--radius-control); background: var(--color-field); cursor: pointer; font-size: var(--text-ui); border: 1px solid var(--ui-line); }
 .ch-platform input { position: absolute; opacity: 0; pointer-events: none; }
-.ch-platform:has(input:checked) { border-color: var(--color-text); background: var(--color-surface); }
-.ch-platform:has(input:focus-visible) { outline: 2px solid var(--color-text); outline-offset: 2px; }
+.ch-platform:has(input:checked) { border-color: var(--color-text); background: var(--color-field); }
+.ch-platform:has(input:focus-visible) { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .ch-hint { display: flex; gap: 6px; align-items: flex-start; }
-.ch-more > summary { cursor: pointer; font-size: var(--text-12-5); color: var(--color-muted); padding: 4px 0; }
+.ch-more > summary { cursor: pointer; font-size: var(--text-small); color: var(--color-muted); padding: 4px 0; }
 .ch-more > .form-grid { margin-top: var(--space-2); }
 .ch-status:empty { display: none; }
 .ch-dialog .dialog-body { max-height: min(70vh, 640px); overflow: auto; }
 .ch-qr { display: grid; place-items: center; padding: var(--space-3); }
-.ch-qr svg { width: min(240px, 70vw); height: auto; border-radius: var(--radius-md); }
+.ch-qr svg { width: min(240px, 70vw); height: auto; border-radius: var(--radius-control); }
 .ch-login-state { text-align: center; }
+@media (max-width: 720px) {
+  .ch-grid > .ch-card { grid-template-columns: minmax(0, 1fr); }
+  .ch-foot { grid-column: 1; grid-row: auto; justify-content: space-between; }
+  .ch-facts, .ch-pairs { padding-left: 0; }
+}
 `

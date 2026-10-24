@@ -22,6 +22,7 @@ import type {
   ConsoleCertificate,
 } from '../src/deps.js'
 import { createConsoleHandler } from '../src/http.js'
+import { ROUTES } from '../src/routes/index.js'
 import { renderCredentialPage, renderInvitePage } from '../src/view/invite.js'
 import { renderLoginPage } from '../src/view/login.js'
 import { formatDateTime, formatTime, zoneLabelOf } from '../src/view/format.js'
@@ -383,10 +384,10 @@ describe('A4 · the settings page says which console this is', () => {
     const html = await (await h.handle(browse('/admin/settings', ADMIN))).text()
     const health = html.slice(html.indexOf('about-health'))
     expect(health).toMatch(
-      /注册中心<\/dt><dd class="plain"><span class="tag[^"]*">不可达/,
+      /注册中心<\/dt><dd class="plain"><span class="state"><span class="dot dot-bad"><\/span>不可达/,
     )
     expect(health).toMatch(
-      /审计链 · [^<]+<\/dt><dd class="plain"><span class="tag[^"]*">可达/,
+      /审计链 · [^<]+<\/dt><dd class="plain"><span class="state"><span class="dot dot-ok"><\/span>可达/,
     )
   })
 
@@ -723,7 +724,10 @@ describe('G1 · documents travel compressed, sheets without notes, assets revali
     const response = await h.handle(withHeaders('/admin/nodes', GZIP))
     expect(response.status).toBe(200)
     expect(response.headers.get('content-encoding')).toBe('gzip')
-    expect(response.headers.get('vary')).toBe('accept-encoding')
+    // A page also varies on the navigation runtime's header (P37.13).
+    expect(response.headers.get('vary')).toBe(
+      'x-qianmo-partial, accept-encoding',
+    )
     expect(response.headers.get('cache-control')).toBe('no-store')
     expect(response.headers.get('content-security-policy')).not.toBeNull()
     const packed = new Uint8Array(await response.arrayBuffer())
@@ -863,6 +867,14 @@ describe('H2 · scripts by hash, and the headers that were missing', () => {
     )
   }
 
+  const PAGE_SCRIPT_HASHES = new Set(
+    ROUTES.flatMap(module =>
+      module.page?.script === undefined
+        ? []
+        : [`'sha256-${sha256(module.page.script)}'`],
+    ),
+  )
+
   test('every page allows its own script by hash and nothing inline besides', async () => {
     const h = pageHarness({ chat: true })
     await h.chat.open('qianmo://tokyo-1/planner')
@@ -885,10 +897,21 @@ describe('H2 · scripts by hash, and the headers that were missing', () => {
       )
       expect([path, scripts.length]).toEqual([path, 1])
       const policy = response.headers.get('content-security-policy') ?? ''
-      expect([path, scriptSrc(policy)]).toEqual([
+      // The one script the document carries, first. A management page also
+      // allows the page scripts it can swap in (P37.13, assets/nav.ts):
+      // each of them one of the route table's compile-time page scripts.
+      const [, carried, ...swappable] = scriptSrc(policy).split(' ')
+      expect([path, carried]).toEqual([
         path,
-        `script-src 'sha256-${sha256(scripts[0] ?? '')}'`,
+        `'sha256-${sha256(scripts[0] ?? '')}'`,
       ])
+      expect([path, swappable.length > 0]).toEqual([
+        path,
+        path.startsWith('/admin'),
+      ])
+      for (const hash of swappable) {
+        expect([path, PAGE_SCRIPT_HASHES.has(hash)]).toEqual([path, true])
+      }
       expect(policy).not.toContain("script-src 'unsafe-inline'")
       // Styles keep it: the one <style> and the style="" attributes.
       expect(policy).toContain("style-src 'unsafe-inline'")

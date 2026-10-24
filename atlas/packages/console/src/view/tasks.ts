@@ -258,7 +258,7 @@ export const TASKS_PAGE_CSS = `
 .trail.tasks td { vertical-align: middle; }
 .tk-name { display: flex; flex-direction: column; gap: 2px; min-width: 10em; }
 .tk-text { max-width: 22em; }
-.tk-bad { color: var(--color-critical); font-size: var(--text-12-5); }
+.tk-bad { color: var(--color-critical); font-size: var(--text-small); }
 .trail.tasks td.tk-tight, .trail.tasks td.when { white-space: nowrap; }
 .trail.tasks td.tk-tight .sep { margin: 0 6px; color: var(--color-quiet); }
 .trail.tasks td.num { font-variant-numeric: tabular-nums; }

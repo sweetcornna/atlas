@@ -271,29 +271,31 @@ export function settingsGroup(
 export const SETTING_ROW_CSS = `
 /* ---- setting rows (view/settingRow.ts) ---- */
 .settings-group { display: flex; flex-direction: column; gap: var(--space-2); }
-.settings-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; padding: 0 2px; }
-.settings-title { font-size: var(--text-14); font-weight: 600; margin: 0; }
+.settings-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; padding: 0; }
+.settings-title { font-size: var(--text-ui); font-weight: var(--weight-semibold); margin: 0; }
+/* A group of settings is a list, not a box (qmo-local.md §3.4): one row per
+   setting, a hairline between rows. */
 .settings-card {
-  display: flex; flex-direction: column; padding: 0 var(--space-4);
-  background: var(--color-surface); border-radius: var(--radius-xl); box-shadow: var(--shadow-sm);
+  display: flex; flex-direction: column; padding: 0;
+  background: none; border-radius: 0;
 }
 .setting {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
   gap: 2px var(--space-4); padding: var(--space-3) 0; min-height: 52px;
-  border-bottom: 1px solid var(--color-divider);
+  border-bottom: var(--hairline);
 }
 .setting:last-child { border-bottom: 0; }
 .setting-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .setting-head { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
-.setting-label { font-size: var(--text-13); font-weight: 500; color: var(--color-text); }
-.setting-desc { font-size: var(--text-12); color: var(--color-muted); margin: 0; }
+.setting-label { font-size: var(--text-ui); font-weight: var(--weight-medium); color: var(--color-text); }
+.setting-desc { font-size: var(--text-small); line-height: var(--lh-small); color: var(--color-muted); margin: 0; }
 .setting-dot { display: none; width: 6px; height: 6px; border-radius: 50%; background: var(--color-interactive); flex: none; }
 .setting[data-changed] .setting-dot { display: inline-block; }
 .setting-scope { margin-left: 2px; }
 .setting-reset {
   border: 0; background: none; padding: 0 2px; cursor: pointer; font: inherit;
-  font-size: var(--text-12); color: var(--color-interactive-text);
-  visibility: hidden; opacity: 0; transition: opacity 120ms ease;
+  font-size: var(--text-small); color: var(--color-interactive-text);
+  visibility: hidden; opacity: 0; transition: opacity var(--motion-snap) var(--ease-out);
 }
 .setting[data-changed]:hover .setting-reset, .setting[data-changed]:focus-within .setting-reset { visibility: visible; opacity: 1; }
 .setting-reset:hover { text-decoration: underline; }
@@ -304,7 +306,7 @@ export const SETTING_ROW_CSS = `
 input.setting-input { width: 220px; }
 .setting[aria-busy="true"] .setting-control { opacity: .6; }
 .setting.is-disabled .setting-label { color: var(--color-muted); }
-.setting-error { grid-column: 1 / -1; margin: 2px 0 0; font-size: var(--text-12); color: var(--color-danger-text); }
+.setting-error { grid-column: 1 / -1; margin: 2px 0 0; font-size: var(--text-small); color: var(--color-danger-text); }
 .setting-error[hidden] { display: none; }
 @media (max-width: 620px) {
   .setting { grid-template-columns: minmax(0, 1fr); }

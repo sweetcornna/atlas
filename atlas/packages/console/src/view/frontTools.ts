@@ -158,7 +158,7 @@ export function permissionConfirm(t: FrontText): string {
 export const FRONT_TOOLS_CSS = `
 /* ---- composer pickers (view/frontTools.ts) ---- */
 /* The line on top, the row of controls under it. */
-.fx-composer { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 8px 8px 6px; border-radius: var(--fx-r-composer); }
+.fx-composer { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 8px 8px 6px; border-radius: var(--radius-composer); }
 .fx-composer textarea { padding: 4px 8px; }
 .fx-tools { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .fx-composer .fx-tools .fx-icon-btn, .fx-composer .fx-send { flex: none; width: 30px; height: 30px; }
@@ -166,9 +166,9 @@ export const FRONT_TOOLS_CSS = `
 /* A narrow row gives the pickers' words up before it pushes send out. */
 .fx-pick { position: relative; flex: 0 1 auto; min-width: 0; }
 .fx-pick-btn {
-  display: inline-flex; align-items: center; gap: 4px; height: 28px; max-width: min(220px, 100%); padding: 0 6px 0 8px;
-  border: 0; border-radius: 8px; background: none; color: var(--color-quiet); cursor: pointer;
-  font: inherit; font-size: var(--text-12);
+  display: inline-flex; align-items: center; gap: 4px; height: var(--control-h-sm); max-width: min(220px, 100%); padding: 0 6px 0 8px;
+  border: 0; border-radius: var(--radius-control); background: none; color: var(--color-quiet); cursor: pointer;
+  font: inherit; font-size: var(--text-small);
 }
 .fx-pick-btn:hover:not(:disabled), .fx-pick-btn[aria-expanded="true"] { background: var(--fx-hover); color: var(--color-text); }
 .fx-pick-btn:disabled { opacity: .5; cursor: not-allowed; }
@@ -178,26 +178,26 @@ export const FRONT_TOOLS_CSS = `
 .fx-pick-btn .chev { flex: none; }
 .fx-pick-word, .fx-perm-word { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fx-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fx-model .tag { all: unset; font-family: var(--font-mono); font-size: var(--text-12); }
+.fx-model .tag { all: unset; font-family: var(--font-mono); font-size: var(--text-small); }
 .fx-model:not(:empty) + .fx-pick-word { display: none; }
 .fx-pick[data-tier="full-access"] .fx-pick-btn { color: var(--color-danger-text); }
 .fx-pick[data-tier="auto"] .fx-pick-btn, .fx-pick[data-tier="accept-edits"] .fx-pick-btn { color: var(--color-warning-text); }
 .fx-pick-menu {
   position: absolute; right: 0; top: auto; bottom: calc(100% + 8px); z-index: var(--z-menu);
   display: flex; flex-direction: column; gap: 1px; width: 280px; max-height: 420px; overflow-y: auto; padding: 6px;
-  background: var(--fx-composer); border-radius: var(--fx-r-panel); box-shadow: var(--fx-shadow-pop);
+  background: var(--fx-composer); border-radius: var(--radius-panel); box-shadow: var(--shadow-lg);
 }
 .fx-pick-menu[hidden] { display: none; }
 .fx-pick-group { display: flex; flex-direction: column; gap: 1px; }
-.fx-pick-group:not([hidden]) + .fx-pick-group { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--color-divider); }
-.fx-pick-head { margin: 4px 8px 2px; font-size: var(--text-11); color: var(--color-muted); }
+.fx-pick-group:not([hidden]) + .fx-pick-group { margin-top: 4px; padding-top: 4px; border-top: var(--hairline); }
+.fx-pick-head { margin: 4px 8px 2px; font-size: var(--text-small); color: var(--color-muted); }
 .fx-pick-item {
   display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; column-gap: 8px;
-  padding: 6px 8px; border: 0; border-radius: 8px; background: none; color: var(--color-text); cursor: pointer;
-  font: inherit; font-size: var(--text-13); text-align: left;
+  padding: 6px 8px; border: 0; border-radius: var(--radius-control); background: none; color: var(--color-text); cursor: pointer;
+  font: inherit; font-size: var(--text-ui); text-align: left;
 }
 .fx-pick-item > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fx-pick-item small { grid-column: 2; font-size: var(--text-11); color: var(--color-muted); white-space: normal; }
+.fx-pick-item small { grid-column: 2; font-size: var(--text-small); color: var(--color-muted); white-space: normal; }
 .fx-pick-item .i-sm { width: 14px; height: 14px; visibility: hidden; }
 .fx-pick-item[aria-checked="true"] .i-sm, .fx-pick-item[data-model-auto] .i-sm { visibility: visible; }
 .fx-pick-item[aria-checked="true"] .i-sm { color: var(--color-interactive); }
@@ -205,9 +205,9 @@ export const FRONT_TOOLS_CSS = `
 .fx-pick-item:disabled { cursor: default; color: var(--color-muted); }
 .fx-pick-item.is-danger > span { color: var(--color-danger-text); }
 .fx-pick-item.is-danger:disabled > span { color: var(--color-muted); }
-.fx-pick-note { margin: 4px 8px 2px; font-size: var(--text-11); color: var(--color-muted); }
+.fx-pick-note { margin: 4px 8px 2px; font-size: var(--text-small); color: var(--color-muted); }
 .fx-pick-note:empty { display: none; }
-.fx-pick-link { margin: 4px 0 0; padding: 6px 8px; border-top: 1px solid var(--color-divider); font-size: var(--text-12); color: var(--color-interactive-text); text-decoration: none; }
+.fx-pick-link { margin: 4px 0 0; padding: 6px 8px; border-top: var(--hairline); font-size: var(--text-small); color: var(--color-interactive-text); text-decoration: none; }
 .fx-pick-link:hover { text-decoration: underline; }
 @media (max-width: 600px) {
   .fx-pick-btn { max-width: 132px; }

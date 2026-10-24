@@ -591,15 +591,25 @@ export function desktopViewer(): string {
 }
 
 export const DESKTOP_PAGE_CSS = `
-.dk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: var(--space-3); }
-.dk-card { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
+/* One agent per row (qmo-local.md §3.4): its switches, facts and the day's
+   count on the left, the latest picture on the right, a hairline between
+   rows. */
+.dk-grid { display: flex; flex-direction: column; }
+.dk-grid > .dk-card {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 300px); align-items: start;
+  column-gap: var(--space-8); row-gap: var(--space-2); padding: var(--space-4) 0;
+}
+.dk-grid > .dk-card + .dk-card { border-top: var(--hairline); }
+.dk-grid > .dk-card > * { grid-column: 1; }
+.dk-grid > .dk-card > .dk-field { grid-column: 2; grid-row: 1 / span 5; }
+.dk-grid > .dk-card:not(:has(> .dk-field)) { grid-template-columns: minmax(0, 1fr); }
 .dk-head { display: flex; align-items: center; gap: var(--space-3); }
-.dk-title { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
-.dk-title b { font-size: var(--text-14, 14px); }
-.dk-screen { position: relative; display: inline-grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: var(--color-bg); color: var(--color-muted); flex: none; }
+.dk-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 var(--space-2); flex: 1; min-width: 0; }
+.dk-title b { font-size: var(--text-ui); font-weight: var(--weight-semibold); }
+.dk-screen { position: relative; display: inline-grid; place-items: center; width: var(--control-h); height: var(--control-h); border-radius: var(--radius-control); background: var(--ui-field); color: var(--color-muted); flex: none; }
 .dk-screen.dk-live { color: var(--color-accent-2); }
-.dk-screen.dk-live::after { content: ''; position: absolute; right: 5px; top: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--color-ok, #6f8f5f); box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-ok, #6f8f5f) 60%, transparent); animation: dk-pulse 2.4s ease-out infinite; }
-@keyframes dk-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-ok, #6f8f5f) 55%, transparent); } 70%, 100% { box-shadow: 0 0 0 7px transparent; } }
+.dk-screen.dk-live::after { content: ''; position: absolute; right: 5px; top: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--color-success-fill); box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success-fill) 60%, transparent); animation: dk-pulse 2.4s ease-out infinite; }
+@keyframes dk-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success-fill) 55%, transparent); } 70%, 100% { box-shadow: 0 0 0 7px transparent; } }
 @media (prefers-reduced-motion: reduce) { .dk-screen.dk-live::after { animation: none; } }
 .dk-head > .btn { margin-left: auto; flex: none; }
 .dk-head > .state + .btn { margin-left: var(--space-2); }
@@ -607,22 +617,25 @@ export const DESKTOP_PAGE_CSS = `
 .dk-rows .setting { padding: var(--space-2) 0; min-height: 44px; }
 .dk-rows .setting-desc { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; }
 .dk-field { display: flex; flex-direction: column; gap: 6px; }
-.dk-confirm { flex-direction: column; min-width: 148px; }
-.dk-confirm .seg-opt { justify-content: flex-start; font-size: var(--text-12); }
-.dk-confirm-word { font-size: var(--text-13); }
-.dk-facts { display: flex; flex-direction: column; gap: 6px; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--color-divider); }
-.dk-fact { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-13); min-height: 24px; }
+.dk-confirm { justify-content: flex-end; }
+.dk-confirm-word { font-size: var(--text-ui); }
+.dk-facts { display: flex; flex-direction: column; gap: 2px; padding: var(--space-2) 0; border-bottom: var(--hairline); }
+.dk-fact { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-ui); min-height: var(--control-h-sm); }
 .dk-fact > .note:first-child { width: 5.5em; flex: none; }
 .dk-fact-v { display: flex; align-items: center; flex-wrap: wrap; gap: 4px var(--space-2); min-width: 0; flex: 1; }
 .dk-apps, .dk-apps .chips { display: contents; }
 .dk-edit { margin-left: auto; flex: none; }
 .dk-shot-at { margin-left: var(--space-2); font-weight: normal; }
-.dk-shot { position: relative; display: grid; place-items: center; width: 100%; aspect-ratio: 16 / 10; padding: 0; border: 1px solid var(--color-divider); border-radius: var(--radius-md); background: var(--color-bg); overflow: hidden; cursor: zoom-in; color: inherit; font: inherit; }
+.dk-shot { position: relative; display: grid; place-items: center; width: 100%; aspect-ratio: 16 / 10; padding: 0; border: var(--hairline); border-radius: var(--radius-control); background: var(--ui-field); overflow: hidden; cursor: zoom-in; color: inherit; font: inherit; }
 .dk-shot:not(.dk-has) { cursor: default; }
 .dk-shot img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .dk-shot img[hidden], .dk-shot-empty[hidden], #desktop-apps .seg-opt[hidden] { display: none; }
-.dk-shot:focus-visible { outline: 2px solid var(--color-text); outline-offset: 2px; }
+.dk-shot:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 dialog.dk-viewer { width: min(1480px, calc(100% - var(--space-8))); }
-.dk-viewer-img { width: 100%; height: auto; max-height: 76vh; object-fit: contain; border-radius: var(--radius-md); background: var(--color-bg); }
-.dk-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; margin-top: auto; }
+.dk-viewer-img { width: 100%; height: auto; max-height: 76vh; object-fit: contain; border-radius: var(--radius-control); background: var(--color-bg); }
+.dk-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
+@media (max-width: 860px) {
+  .dk-grid > .dk-card { grid-template-columns: minmax(0, 1fr); }
+  .dk-grid > .dk-card > .dk-field { grid-column: 1; grid-row: auto; }
+}
 `

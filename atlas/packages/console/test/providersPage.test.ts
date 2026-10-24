@@ -14,6 +14,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { CONSOLE_CLIENT_JS_ACCOUNTS } from '../src/assets/client.js'
+import { CONSOLE_NAV_JS } from '../src/view/shell.js'
 import type { ProviderNodeActual } from '../src/deps.js'
 import { effectiveCells, effectiveFields } from '../src/view/providers.js'
 import {
@@ -1903,10 +1904,15 @@ describe('the model service pages after P18.14 (时区, H5)', () => {
         path,
         false,
       ])
-      // The page's own scripts, the shared runtime taken out: none of them
-      // reads the stored token at all.
+      // The page's own scripts, the shared runtime and the navigation
+      // runtime taken out (that one sends a stored token as a Bearer header
+      // on a move between pages, never in a URL): none of them reads the
+      // stored token at all.
       expect(scripts).toContain(CONSOLE_CLIENT_JS_ACCOUNTS)
-      const own = scripts.replace(CONSOLE_CLIENT_JS_ACCOUNTS, '')
+      expect(scripts).toContain(CONSOLE_NAV_JS)
+      const own = scripts
+        .replace(CONSOLE_CLIENT_JS_ACCOUNTS, '')
+        .replace(CONSOLE_NAV_JS, '')
       expect(own.length).toBeGreaterThan(0)
       expect([path, own.includes('readToken')]).toEqual([path, false])
     }

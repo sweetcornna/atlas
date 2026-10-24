@@ -608,12 +608,12 @@ export function renderMagpieAgents(model: MagpieAgentsModel): string {
 export const MAGPIE_AGENTS_CSS = `
 .mg-agents .mg-node th { text-align: left; font-weight: normal; white-space: nowrap; }
 .mg-rts { display: inline-flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
-.mg-rt { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-13); }
+.mg-rt { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-ui); }
 .mg-sel { display: inline-block; min-width: 9rem; max-width: 18rem; }
 .mg-sel select { width: 100%; }
 .mg-ext-row td { padding-top: 0; }
-.mg-ext summary { cursor: pointer; display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-13); }
-.mg-ext-body { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2) 0 var(--space-2) var(--space-4); font-size: var(--text-13); }
+.mg-ext summary { cursor: pointer; display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-ui); }
+.mg-ext-body { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2) 0 var(--space-2) var(--space-4); font-size: var(--text-ui); }
 .mg-ext-group ul, .mg-ext-notes { margin: 0; padding-left: var(--space-4); }
 .mg-ext-item { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 .mg-ext-off { font-style: italic; }

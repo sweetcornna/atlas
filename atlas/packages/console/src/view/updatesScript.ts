@@ -84,6 +84,8 @@ export const UPDATES_PAGE_JS = `
     }
     watching = setTimeout(tick, 2000);
   }
+  // Stopped with the page: a lapsed session, or a move to another page.
+  qc.onExpire(function () { if (watching) clearTimeout(watching); watching = null; });
 
   qc.onAction('updates-upgrade', function (button) {
     var version = button.getAttribute('data-version') || '';

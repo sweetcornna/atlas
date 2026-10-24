@@ -240,14 +240,14 @@ export function renderReplicate(model: ReplicateModel): string {
 /** Rules only this section needs. */
 export const REPLICATE_CSS = `
 #replicate-section [hidden] { display: none; }
-.rp-card { padding: var(--space-4); display: grid; gap: var(--space-3); }
+.rp-card { padding: var(--space-3) 0; display: grid; gap: var(--space-3); }
 .rp-card .seg { justify-self: start; align-self: flex-start; width: max-content; }
 .rp-grid .field-wide, .rp-auth { grid-column: 1 / -1; }
 .rp-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-2) var(--space-4); margin: 0; }
-.rp-facts dt { font-size: var(--text-12); color: var(--color-muted); }
+.rp-facts dt { font-size: var(--text-small); color: var(--color-muted); }
 .rp-facts dd { margin: 2px 0 0; overflow-wrap: anywhere; color: var(--color-text); }
 .rp-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
-.rp-steps li { display: grid; grid-template-columns: 12px auto minmax(0, 1fr); align-items: center; gap: var(--space-3); font-size: var(--text-13); }
+.rp-steps li { display: grid; grid-template-columns: 12px auto minmax(0, 1fr); align-items: center; gap: var(--space-3); font-size: var(--text-ui); }
 .rp-mark { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--color-divider); box-sizing: border-box; }
 .rp-steps li[data-state="todo"] .rp-label { color: var(--color-muted); }
 .rp-steps li[data-state="start"] .rp-mark { border-color: var(--color-text); animation: rp-pulse 1.2s ease-in-out infinite; }
@@ -256,7 +256,7 @@ export const REPLICATE_CSS = `
 .rp-detail { overflow-wrap: anywhere; }
 .rp-progress-head { display: flex; gap: var(--space-3); align-items: baseline; flex-wrap: wrap; }
 .rp-jobs { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
-.rp-job { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); align-items: baseline; font-size: var(--text-13); }
+.rp-job { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); align-items: baseline; font-size: var(--text-ui); }
 .rp-job-main { display: inline-flex; gap: var(--space-2); align-items: baseline; }
 @keyframes rp-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .rp-steps li[data-state="start"] .rp-mark { animation: none; } }

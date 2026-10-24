@@ -418,11 +418,11 @@ export function renderJobsUnavailable(failure: ConsoleFailure | null): string {
 
 /** The page's own rules (`routes/types.ts`, `PageRoute.css`). */
 export const JOBS_PAGE_CSS = `
-.sched { padding: var(--space-1) var(--space-4); }
+.sched { padding: 0; }
 .sched .lim-row dd { margin: 0; text-align: right; }
 .sched-when { display: inline-flex; flex-direction: column; gap: 2px; }
 .trail.jobs td { vertical-align: top; }
 .trail.jobs td.when { white-space: nowrap; }
-.trail.jobs td.when time { font-family: var(--font-mono); font-size: 12px; }
+.trail.jobs td.when time { font-family: var(--font-mono); font-size: var(--text-small); }
 .job-name { display: inline-flex; flex-direction: column; gap: 2px; margin-right: var(--space-2); }
 `

@@ -377,7 +377,7 @@ export const UPDATES_PAGE_CSS = `
 .up-node { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: baseline; }
 .up-status:empty { display: none; }
 #updates-dialog .dialog-body { max-height: min(70vh, 640px); overflow: auto; }
-.up-job { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--space-4); margin-top: var(--space-3); }
+.up-job { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) 0; margin-top: var(--space-3); border-top: var(--hairline); }
 .up-steps { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 4px; }
 .up-steps li { display: flex; gap: var(--space-2); align-items: baseline; flex-wrap: wrap; }
 `

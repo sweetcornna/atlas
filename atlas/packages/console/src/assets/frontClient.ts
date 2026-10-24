@@ -195,6 +195,7 @@ function frontScript(): string {
       stopRetry();
       keepFigure(figure);
       if (!opening) easeRedraw(was);
+      keepUnsent();
       keepChoices(byId('fx-thread'));
       var thread = byId('fx-thread');
       var target = thread ? thread.getAttribute('data-target') : '';
@@ -1027,6 +1028,47 @@ function frontScript(): string {
     return article;
   }
 
+  // Lines that did not go, by conversation: a redraw of that conversation
+  // keeps them at its end until they are sent again or the page goes.
+  var unsent = [];
+
+  // Drawn the way the server draws a line that was not delivered
+  // (is-failed, fx-fail), with 重试 beside the words.
+  function unsentLine(line, text, session) {
+    line.classList.remove('is-sending');
+    line.classList.add('is-failed');
+    var meta = line.querySelector('.fx-meta');
+    if (meta) {
+      meta.textContent = '';
+      var words = document.createElement('span');
+      words.className = 'fx-fail';
+      words.textContent = tx('notDelivered', '未送达');
+      meta.appendChild(words);
+      var again = document.createElement('button');
+      again.type = 'button';
+      again.className = 'fx-retry';
+      again.textContent = tx('retry', '重试');
+      again.addEventListener('click', function () {
+        if (state.busy) return;
+        unsent = unsent.filter(function (one) { return one.line !== line; });
+        line.remove();
+        send(text);
+      });
+      meta.appendChild(again);
+    }
+    unsent.push({ line: line, session: session });
+  }
+
+  function keepUnsent() {
+    var thread = byId('fx-thread');
+    var list = thread ? thread.querySelector('.fx-msgs') : null;
+    if (!list) return;
+    var session = thread.getAttribute('data-session') || '';
+    for (var i = 0; i < unsent.length; i++) {
+      if (unsent[i].session === session && !list.contains(unsent[i].line)) list.appendChild(unsent[i].line);
+    }
+  }
+
   function send(given) {
     var box = byId('fx-text');
     var status = byId('fx-status');
@@ -1065,11 +1107,15 @@ function frontScript(): string {
     }).then(function () {
       sent = true;
     }, function (err) {
-      // The send itself failed: the line comes back out, the text goes back
-      // into the box, and a welcome that the line replaced is drawn again.
-      if (ghost) ghost.remove();
+      // The send itself failed. In a conversation that was already open the
+      // line stays where it was, marked 未送达 with 重试 (P37.13, 先改后同步).
+      // On a welcome the line replaced, the welcome is drawn again and the
+      // text goes back into the box: there is no conversation to keep it in.
+      var keepLine = !!ghost && !welcome && pin.nav === nav;
+      if (keepLine) unsentLine(ghost, text, pin.active);
+      else if (ghost) ghost.remove();
       if (pin.nav === nav) {
-        if (typeof given !== 'string' && !box.value) box.value = kept;
+        if (!keepLine && typeof given !== 'string' && !box.value) box.value = kept;
         autosize();
         play([['error', 2400], ['idle', 0]]);
         say(status, failText('send', err), qc.failTone(err));

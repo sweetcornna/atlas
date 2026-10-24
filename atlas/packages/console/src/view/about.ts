@@ -13,7 +13,7 @@
  */
 
 import type { ConsoleAbout, ConsoleFailure } from '../deps.js'
-import { tag } from './bits.js'
+import { state } from './bits.js'
 import { escapeHtml } from './escape.js'
 
 /** One port the page just asked, and what came back. */
@@ -49,7 +49,7 @@ function list(values: readonly string[]): string {
 /** A wire as a word, and the banner's own line beside it for whoever needs it. */
 function wired(on: boolean, line: string): string {
   return (
-    tag(on ? '已开启' : '未开启', on ? 'ok' : 'muted') +
+    state(on ? 'ok' : 'muted', on ? '已开启' : '未开启') +
     ` <span class="mono note">${escapeHtml(line)}</span>`
   )
 }
@@ -71,17 +71,17 @@ export function renderAbout(model: AboutModel): string {
       row(
         '唤醒签名',
         about.wakeSigning === undefined
-          ? tag('未开启', 'muted')
-          : tag('已开启', 'ok') +
+          ? state('muted', '未开启')
+          : state('ok', '已开启') +
               ` <span class="mono note">${escapeHtml(about.wakeSigning)}</span>`,
         false,
       ),
       row('对话', wired(!about.chat.startsWith('disabled'), about.chat), false),
       row(
         '对话签名',
-        tag(
-          about.chat.includes('(signed)') ? '已开启' : '未开启',
+        state(
           about.chat.includes('(signed)') ? 'ok' : 'muted',
+          about.chat.includes('(signed)') ? '已开启' : '未开启',
         ),
         false,
       ),
@@ -97,7 +97,9 @@ export function renderAbout(model: AboutModel): string {
           .map(port =>
             row(
               port.name,
-              port.failure === null ? tag('可达', 'ok') : tag('不可达', 'bad'),
+              port.failure === null
+                ? state('ok', '可达')
+                : state('bad', '不可达'),
               false,
             ),
           )

@@ -1225,27 +1225,27 @@ export function renderReads(model: {
 
 /** The page's own rules (`routes/types.ts`, `PageRoute.css`). */
 export const ACCESS_PAGE_CSS = `
-.access-tabs { display: flex; gap: var(--space-1); flex-wrap: wrap; border-bottom: 1px solid var(--color-divider); }
+.access-tabs { display: flex; gap: var(--space-1); flex-wrap: wrap; border-bottom: var(--hairline); }
 .access-tab {
-  padding: var(--space-2) var(--space-4); color: var(--color-muted); text-decoration: none;
-  border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 600;
+  padding: var(--space-2) var(--space-3); color: var(--color-muted); text-decoration: none;
+  border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: var(--weight-medium);
 }
 .access-tab:hover { color: var(--color-text); }
 .access-tab[aria-current="page"] { color: var(--color-text); border-bottom-color: var(--color-text); }
 .access-table td { vertical-align: top; }
 .access-table td.when { white-space: nowrap; }
-.access-table td.when time { display: block; font-family: var(--font-mono); font-size: 12px; }
+.access-table td.when time { display: block; font-family: var(--font-mono); font-size: var(--text-small); }
 .access-table td.who { display: table-cell; }
 .access-table .who-name { display: block; font-weight: 600; }
 .access-table td.num { font-variant-numeric: tabular-nums; }
-.access-table td.target, .access-table td.rid { overflow-wrap: anywhere; font-size: 12px; }
+.access-table td.target, .access-table td.rid { overflow-wrap: anywhere; font-size: var(--text-small); }
 .access-table td.act .note { display: block; }
 .access-table tr[data-state="revoked"] td { color: var(--color-muted); }
 .row-actions { gap: var(--space-2); flex-wrap: nowrap; }
-.invite-form { padding: var(--space-4); }
+.invite-form { padding: var(--space-2) 0; }
 .invite-fields { gap: var(--space-4); align-items: flex-end; }
 .invite-label { flex: 1 1 14rem; }
-.invite-link { padding: var(--space-4); }
+.invite-link { padding: var(--space-2) 0; }
 .invite-link[hidden] { display: none; }
 .pager { justify-content: flex-end; gap: var(--space-2); padding-top: var(--space-2); }
 #actions-refresh { display: inline-flex; align-items: center; gap: 4px; }

@@ -696,10 +696,12 @@ export const SCHEDULES_PAGE_CSS = `
 .sch-name > b { display: block; }
 .sch-name > .kit-row { margin-top: 4px; }
 .sch-when { display: inline-flex; flex-direction: column; gap: 2px; white-space: nowrap; }
-.run-grid { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
-.run-card { gap: var(--space-2); padding: var(--space-4); }
-.run-head { display: flex; flex-direction: column; gap: 4px; }
-.run-unknown { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--color-bg); }
+/* The recent runs: one per row (qmo-local.md §3.4), a hairline between. */
+.run-grid { display: flex; flex-direction: column; }
+.run-card { gap: var(--space-2); padding: var(--space-3) 0; }
+.run-grid > .run-card + .run-card { border-top: var(--hairline); }
+.run-head { display: flex; flex-direction: column; gap: 2px; }
+.run-unknown { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-radius: var(--radius-control); background: var(--ui-field); }
 .run-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
 #schedule-form [data-when][hidden] { display: none; }
 .jobs-legacy { margin-top: var(--space-4); }

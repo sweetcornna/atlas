@@ -264,6 +264,9 @@ interface FrontClientText {
   readonly stopped: string
   readonly sent: string
   readonly sentRetrying: string
+  /** A line whose send failed, kept in the conversation with 重试 (P37.13). */
+  readonly notDelivered: string
+  readonly retry: string
   readonly newReply: string
   readonly seeChat: string
   readonly polling: string
@@ -974,6 +977,8 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     stopped: '已停止',
     sent: '已发送',
     sentRetrying: '已发送 · 刷新失败 · 自动重试中',
+    notDelivered: '未送达',
+    retry: '重试',
     newReply: '收到新回复 · ',
     seeChat: '回到对话查看',
     polling: '轮询中',
@@ -1000,6 +1005,8 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     stopped: 'Stopped',
     sent: 'Sent',
     sentRetrying: 'Sent · refresh failed · retrying',
+    notDelivered: 'Not delivered',
+    retry: 'Retry',
     newReply: 'New reply · ',
     seeChat: 'see the chat',
     polling: 'Polling',
@@ -1028,6 +1035,8 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     stopped: '停止しました',
     sent: '送信済み',
     sentRetrying: '送信済み · 更新失敗 · 再試行中',
+    notDelivered: '未送信',
+    retry: '再試行',
     newReply: '新しい返信 · ',
     seeChat: 'チャットを確認してください',
     polling: 'ポーリング中',

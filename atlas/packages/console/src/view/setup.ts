@@ -226,16 +226,17 @@ export function renderSetup(model: SetupPageModel): string {
 /** 本页自己的样式。 */
 export const SETUP_CSS = `
 .setup { display: flex; flex-direction: column; gap: var(--space-4); max-width: 760px; }
-.setup-head { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: var(--space-3); padding: var(--space-4); }
+.setup-head { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: var(--space-3); padding: 0 0 var(--space-2); }
 .setup-head-text { display: flex; flex-direction: column; gap: 2px; }
-.setup-count { margin: 0; font-size: var(--text-20); font-weight: 600; font-variant-numeric: tabular-nums; }
+.setup-count { margin: 0; font-size: var(--text-title); line-height: var(--lh-title); font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; }
 .setup-head .note { margin: 0; }
 .setup-bar { grid-column: 1 / -1; height: 4px; border-radius: var(--radius-pill); background: var(--color-divider); overflow: hidden; }
-.setup-bar > span { display: block; height: 100%; background: var(--color-accent-fill); border-radius: inherit; transition: width .2s ease; }
+.setup-bar > span { display: block; height: 100%; background: var(--color-accent-fill); border-radius: inherit; transition: width var(--motion-base) var(--ease-out); }
 .setup-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.setup-step { display: grid; grid-template-columns: 28px 1fr; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-divider); }
+.setup-steps.card { padding-block: 0; }
+.setup-step { display: grid; grid-template-columns: 28px 1fr; gap: var(--space-3); padding: var(--space-3) 0; border-bottom: var(--hairline); }
 .setup-step:last-child { border-bottom: 0; }
-.setup-mark { width: 22px; height: 22px; margin-top: 1px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: var(--text-12); font-weight: 600; color: var(--color-quiet); border: 1.5px solid var(--color-divider); font-variant-numeric: tabular-nums; }
+.setup-mark { width: 20px; height: 20px; margin-top: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: var(--text-small); font-weight: var(--weight-semibold); color: var(--color-quiet); border: 1.5px solid var(--ui-line); font-variant-numeric: tabular-nums; }
 .setup-mark[data-state="done"] { border-color: transparent; background: var(--color-accent-2-600); color: #fff; }
 .setup-mark[data-state="blocked"] { border-style: dashed; }
 .setup-main { min-width: 0; }
@@ -243,9 +244,9 @@ export const SETUP_CSS = `
 details.setup-main > summary { cursor: pointer; }
 details.setup-main > summary::-webkit-details-marker { display: none; }
 .setup-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.setup-title { display: flex; align-items: center; gap: var(--space-2); font-weight: 600; font-size: var(--text-14); }
-.setup-kind { font-weight: 400; font-size: var(--text-11-5); color: var(--color-quiet); border: 1px solid var(--color-divider); border-radius: var(--radius-pill); padding: 0 6px; }
-.setup-sum { margin: 0; font-size: var(--text-13); color: var(--color-muted); overflow-wrap: anywhere; }
+.setup-title { display: flex; align-items: center; gap: var(--space-2); font-weight: var(--weight-semibold); font-size: var(--text-ui); }
+.setup-kind { font-weight: 400; font-size: var(--text-small); color: var(--color-quiet); border: var(--hairline); border-radius: var(--radius-pill); padding: 0 6px; }
+.setup-sum { margin: 0; font-size: var(--text-ui); color: var(--color-muted); overflow-wrap: anywhere; }
 .setup-step[data-state="done"] .setup-sum { color: var(--color-quiet); }
 .setup-note { margin: 0; }
 .setup-acts { display: flex; gap: var(--space-2); flex: none; align-items: center; }
@@ -254,8 +255,8 @@ details[open] .setup-toggle { visibility: hidden; }
 .setup-panel > .note { margin: 0; }
 .setup-form .field { max-width: 460px; }
 .setup-left { justify-content: flex-start; }
-.setup-sub { margin: var(--space-2) 0 0; font-size: var(--text-13); font-weight: 600; color: var(--color-muted); }
-.setup-optional .setup-mark:not([data-state="done"]) { width: 10px; height: 10px; margin: 7px 6px 0; }
+.setup-sub { margin: var(--space-4) 0 0; font-size: var(--text-ui); font-weight: var(--weight-semibold); color: var(--color-text); }
+.setup-optional .setup-mark:not([data-state="done"]) { width: 10px; height: 10px; margin: 5px 5px 0; }
 @media (max-width: 640px) {
   .setup-row { flex-direction: column; }
   .setup-head { grid-template-columns: 1fr; }
