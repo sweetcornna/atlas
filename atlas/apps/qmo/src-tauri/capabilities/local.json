@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "local",
-  "description": "The shell's own pages (sign-in, skeleton, offline, settings, about). Local URLs only; the hub's origin gets its six commands at run time.",
+  "description": "The shell's own pages (sign-in, skeleton, offline, settings, about). Local URLs only; the hub's origin gets its nine commands at run time.",
   "local": true,
   "windows": ["main", "signin", "settings", "about"],
   "permissions": [
@@ -16,6 +16,7 @@
     "allow-local-set-keep-in-background",
     "allow-local-sign-out",
     "allow-local-open",
-    "allow-local-close"
+    "allow-local-close",
+    "allow-local-boot"
   ]
 }

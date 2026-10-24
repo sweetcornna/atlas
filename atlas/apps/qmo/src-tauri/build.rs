@@ -3,7 +3,7 @@
 
 //! The app's commands go into the ACL manifest, so each needs a capability
 //! that names it: the local pages' are in `capabilities/local.json`, the hub's
-//! six are granted at run time to the signed-in hub's origin only.
+//! nine are granted at run time to the signed-in hub's origin only.
 
 fn main() {
     let commands = &[
@@ -14,6 +14,9 @@ fn main() {
         "qmo_open_session",
         "qmo_quick_hide",
         "qmo_sign_out",
+        "qmo_local_agents",
+        "qmo_boot_layout",
+        "qmo_open_local_settings",
         // The local pages'.
         "local_state",
         "local_sign_in",
@@ -25,6 +28,7 @@ fn main() {
         "local_sign_out",
         "local_open",
         "local_close",
+        "local_boot",
     ];
     tauri_build::try_build(
         tauri_build::Attributes::new()
