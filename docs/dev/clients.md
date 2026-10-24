@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.2（生效）**；v1.1、v1.0 同日 |
+| 文档版本 | **v1.3（生效）**：v1.2 之后 §5.1 补 `qmo agents` 的缓存文件与它对 agent 目录只看不读（[`qmo-local.md`](./qmo-local.md) §4.2.1）；v1.1、v1.0 与 v1.2 同日 |
 | 日期 | 2026-10-21 |
 | 核对基点 | 本仓库 `baf0048c`（main，#262 合并提交，基座 qianmopi v18.8.8） |
 | 范围依据 | 负责人 2026-10-21：开始开发 Windows 与 Linux 客户端；负责人 2026-10-17 提出的 P37 桌面版与订阅迁移（[`magpie-gateway.md`](./magpie-gateway.md) §6）。章程 v3.12 §2.11 |
@@ -118,8 +118,8 @@
 ### 5.1 路径
 
 - 客户端的状态目录由 `@qianmo/paths` 的 `clientStateDir()` 给出，优先级依次为：`QMO_CLIENT_DIR`（必须是绝对路径，相对路径直接报错）、Windows `%LOCALAPPDATA%\Qmo`、Linux `$XDG_CONFIG_HOME/qmo`（缺省 `~/.config/qmo`）、macOS `~/Library/Application Support/Qmo`。它不放在 `~/.qianmo` 下面，因为那是节点的配置根；同一台电脑上客户端和节点各管各的。
-- 目录下的布局固定：`client.json`（中枢地址、设备号、设备名）、`device.token`（Linux 与 macOS，0600）或 `device.token.dpapi`（Windows）、`window/`（浏览器资料目录）、`pipe/`（Linux 的两条 FIFO）。
-- 客户端不读写用户自己的 `~/.qianmo`、`~/.omp`、`~/.claude`、`~/.codex`，也不碰用户浏览器的资料目录。每个 `qmo` 窗口都用状态目录下自己的 `window/` 资料目录。身份路径门禁照常扫描客户端代码。
+- 目录下的布局固定：`client.json`（中枢地址、设备号、设备名）、`device.token`（Linux 与 macOS，0600）或 `device.token.dpapi`（Windows）、`window/`（浏览器资料目录）、`pipe/`（Linux 的两条 FIFO）、`agents.json`（`qmo agents` 跑程序问来的版本与登录 shell 的 PATH，0600；退出登录不删）。
+- 客户端不读写用户自己的 `~/.qianmo`、`~/.omp`、`~/.claude`、`~/.codex`，也不碰用户浏览器的资料目录。`qmo agents` 识别本机 agent 时对这些 agent 的目录只 stat 配置文件、列目录条目名，不打开其中任何文件（`qmo-local.md` §4.2.1）。每个 `qmo` 窗口都用状态目录下自己的 `window/` 资料目录。身份路径门禁照常扫描客户端代码。
 - Linux 与 macOS 上，写文件先在同目录建一个随机名的临时文件（`O_EXCL`，0600）再改名；写之前核对目录是真目录、属于当前用户、组和其他人没有权限。读 `client.json` 和设备令牌时，文件必须是普通文件（不跟随软链）、属于当前用户、0600。
 
 ### 5.2 Windows
