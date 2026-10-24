@@ -592,6 +592,12 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible,
   color: var(--color-text); text-decoration: none;
 }
 a.brand-cn:hover { color: var(--color-quiet); }
+/* Inside the desktop app (<html data-shell>, qmo-app.md §5.1) the brand row and
+   the top bar are where the window is dragged from. On macOS the traffic
+   lights sit in the window's top 48px, 17px from the left, over the brand: it
+   starts past them, as the front's side top does (--fx-shell-x). */
+:root[data-shell] .side .brand, :root[data-shell] .top { -webkit-user-select: none; user-select: none; }
+:root[data-shell="macos"] .side .brand { min-height: 38px; padding-left: 80px; }
 .qm-mark { display: block; flex: none; }
 .qm-mark .qm-ink { fill: var(--qm-ink); }
 
@@ -1420,6 +1426,9 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #111
 /* ---- narrow ---- */
 @media (max-width: 1000px) {
   .shell { grid-template-columns: minmax(0, 1fr); }
+  /* The top bar is at the window's left edge now: its menu button clears the
+     macOS traffic lights. */
+  :root[data-shell="macos"] .top { padding-left: 80px; }
   .side {
     position: static; height: auto; gap: var(--space-4);
     border-right: 0; border-bottom: 1px solid var(--color-divider);
