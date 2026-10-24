@@ -261,6 +261,10 @@ export class SessionManager {
               code: 'E_NOT_SENT',
             })
         }
+        session.header = {
+          ...session.header,
+          lastSeq: session.transcript.lastSeq,
+        }
       } catch (error) {
         this.#log(`could not repair ${session.header.id}: ${String(error)}`)
       }

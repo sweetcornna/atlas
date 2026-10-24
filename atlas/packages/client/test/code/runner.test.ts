@@ -754,6 +754,29 @@ describe.skipIf(!posix)('the runner', () => {
     ).toBe('auto')
   })
 
+  test('a conversation at 64 MiB is still read, and takes no more lines', async () => {
+    const at = box()
+    const first = runner(at)
+    const folder = await pick(first, at.work)
+    const id = await begin(first, folder, 'hello')
+    await first.stop()
+    // Grown to the limit; a line the reader cannot use counts all the same.
+    fs.appendFileSync(
+      path.join(at.code, 'sessions', id, 'events.ndjson'),
+      `${'x'.repeat(64 * 1024 * 1024)}\n`,
+    )
+    const r = runner(at)
+    expect(
+      await refused(
+        r.call('session.send', { session: id, text: 'more', clientId: 'c' }),
+      ),
+    ).toBe('E_LIMIT')
+    const read = await r.call('session.read', { session: id })
+    expect(
+      (read.records as Message[]).map(one => (one.turn as Message).text),
+    ).toEqual(['hello', 'echo(1): hello'])
+  })
+
   test('idle ten minutes (here: a moment): the process ends; the next line resumes it', async () => {
     const at = box()
     const r = runner(at, { limits: { idleMs: 200 } })

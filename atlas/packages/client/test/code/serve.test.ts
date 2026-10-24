@@ -223,6 +223,15 @@ describe.skipIf(!posix)('qmo code serve', () => {
       },
     ])
     const agent = Number(children[0]!.pid)
+    // A line queued behind it, not yet sent.
+    expect(
+      await first.call('session.send', {
+        session: id,
+        text: 'queued',
+        clientId: 'q',
+        origin: 'local',
+      }),
+    ).toMatchObject({ queued: true })
     first.proc.kill('SIGKILL')
     await first.proc.exited
     // Left running: the agent and what it started.
@@ -233,6 +242,14 @@ describe.skipIf(!posix)('qmo code serve', () => {
       id,
       state: 'interrupted',
     })
+    // The queued line is marked 未发出, and the summary counts that write.
+    const repaired = await second.call('session.read', { session: id })
+    expect((repaired.records as Message[]).at(-1)!.turn).toMatchObject({
+      text: 'queued',
+      state: 'failed',
+      code: 'E_NOT_SENT',
+    })
+    expect((listed.sessions as Message[])[0]!.lastSeq).toBe(repaired.lastSeq)
     const gone = (pid: number) => {
       try {
         process.kill(pid, 0)
@@ -273,6 +290,6 @@ describe.skipIf(!posix)('qmo code serve', () => {
     const texts = (read.records as Message[]).map(
       one => (one.turn as Message).text,
     )
-    expect(texts).toEqual(['spawn', 'after', 'echo(2): after'])
+    expect(texts).toEqual(['spawn', 'queued', 'after', 'echo(2): after'])
   }, 30_000)
 })
