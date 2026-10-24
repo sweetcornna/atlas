@@ -21,7 +21,8 @@
  *
  * Prompts: `edit <file>` writes the file in its working folder (asked in
  * `default`); `bash <cmd>` pretends to run it (asked in `default` and
- * `acceptEdits`); `think` thinks first; `sub` has a sub-agent speak; `long
+ * `acceptEdits`), `say-bash <cmd>` with a sentence in the same message;
+ * `think` thinks first; `sub` has a sub-agent speak; `long
  * <n>` answers n characters; `hang` waits for an interrupt; `deaf` ignores
  * one; `spawn` starts a `sleep` in its process group and ignores
  * interrupts; `slow` answers after 400 ms; `fail` and `login` end in an error;
@@ -31,8 +32,8 @@
  * `FAKE_CLAUDE_NO_AUTO=1` (switching to `auto` is refused),
  * `FAKE_CLAUDE_AUTO_EXIT=1` (starting in `auto` fails at once),
  * `FAKE_CLAUDE_INIT_MODE` (the mode `init` reports, `none` for none),
- * `FAKE_CLAUDE_IGNORE_TERM=1` (SIGTERM is ignored), `FAKE_CLAUDE_ENV_LOG`
- * (where to write the environment it got).
+ * `FAKE_CLAUDE_IGNORE_TERM=1` (SIGTERM is ignored, by what `spawn` starts
+ * too), `FAKE_CLAUDE_ENV_LOG` (where to write the environment it got).
  */
 
 import { spawn } from 'node:child_process'
@@ -217,6 +218,7 @@ async function useTool(
   tool: string,
   input: Record<string, unknown>,
   run: () => string,
+  words?: string,
 ) {
   const id = `tool-${turn}-${++control}`
   emit({
@@ -225,7 +227,10 @@ async function useTool(
     message: {
       id: `msg-${id}`,
       role: 'assistant',
-      content: [{ type: 'tool_use', id, name: tool, input }],
+      content: [
+        ...(words === undefined ? [] : [{ type: 'text', text: words }]),
+        { type: 'tool_use', id, name: tool, input },
+      ],
     },
   })
   const verdict = await permitted(tool, input, id)
@@ -270,7 +275,13 @@ async function onUser(text: string) {
   }
   if (word === 'spawn') {
     // A program it started, in its process group, outlives it unless the group is stopped.
-    const sleeper = spawn('/bin/sleep', ['30'], { stdio: 'ignore' })
+    // With FAKE_CLAUDE_IGNORE_TERM it ignores SIGTERM too.
+    const sleeper =
+      process.env.FAKE_CLAUDE_IGNORE_TERM === '1'
+        ? spawn('/bin/sh', ['-c', 'trap "" TERM; exec /bin/sleep 30'], {
+            stdio: 'ignore',
+          })
+        : spawn('/bin/sleep', ['30'], { stdio: 'ignore' })
     log('grandchild.ndjson', sleeper.pid)
     hanging = 'deaf'
     return
@@ -306,6 +317,8 @@ async function onUser(text: string) {
   }
   if (word === 'bash')
     await useTool('Bash', { command: arg }, () => `ran: ${arg}`)
+  if (word === 'say-bash')
+    await useTool('Bash', { command: arg }, () => `ran: ${arg}`, 'Running it.')
   if (word === 'sub') say('a sub-agent speaks', 'tool-parent')
   if (word === 'fail') return result('upstream exploded', true)
   if (word === 'login')

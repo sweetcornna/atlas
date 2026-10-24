@@ -241,6 +241,20 @@ describe('details', () => {
         .filter(frame => frame.type === 'tool_execution_start')
         .map(frame => frame.toolName),
     ).toEqual(['write'])
+    // Words and a tool in one message: the words first, as they read.
+    const before = opened.details.length
+    await turn(opened, 'say-bash ls')
+    expect(
+      opened.details
+        .slice(before)
+        .flatMap(detail =>
+          detail.kind === 'tool'
+            ? [`${detail.phase} ${detail.name}`]
+            : detail.kind === 'message'
+              ? [detail.text]
+              : [],
+        ),
+    ).toEqual(['Running it.', 'start Bash', 'end Bash', 'echo(2): say-bash ls'])
     await turn(opened, 'sub')
     expect(opened.details).toContainEqual({
       kind: 'message',

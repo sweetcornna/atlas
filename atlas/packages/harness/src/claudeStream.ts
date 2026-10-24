@@ -477,6 +477,7 @@ export class ClaudeCodeChannel extends RuntimeChannelBase {
   ): void {
     const blocks = Array.isArray(message.content) ? message.content : []
     let text = ''
+    const started: ClaudeDetail[] = []
     for (const raw of blocks) {
       const block = toolArgs(raw)
       if (block.type === 'text' && typeof block.text === 'string')
@@ -487,7 +488,7 @@ export class ClaudeCodeChannel extends RuntimeChannelBase {
         this.#tools.set(block.id, name)
         this.toolStart(block.id, name, toolArgs(block.input))
         if (this.#onDetail !== undefined) this.#toolNames.set(block.id, own)
-        this.#detail({
+        started.push({
           kind: 'tool',
           phase: 'start',
           id: block.id,
@@ -502,8 +503,10 @@ export class ClaudeCodeChannel extends RuntimeChannelBase {
         message.stop_reason === 'max_tokens' ? 'length' : message.stop_reason
     if (text !== '') {
       this.assistantMessage(text)
+      // A message's words come before the tools it calls, as it reads.
       this.#detail({ kind: 'message', text, ...parent })
     }
+    for (const detail of started) this.#detail(detail)
   }
 
   #toolResults(
