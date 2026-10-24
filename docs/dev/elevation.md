@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v2.2.1（2026-10-24）：默认档随 c560b987 部署到内测环境；§10 舰队节点没有命令沙箱改为实测结论。v2.2（2026-10-24）：按负责人 10-24「自动审批是默认最佳权限模式」加中枢默认档（§8.1）：开了 `--elevation` 的中枢把处在人工确认的智能体开成自动审批，到期、用尽或节点重启后再开；有人手动关掉或收回的不再自动开。节点侧规则不变。v2.1（2026-10-22）：§5 第 3 条按负责人 10-22 的决定改为登录即可批准，不再要个人凭据；开启或改模式的门槛（§7）不变。v2.0（2026-10-20）：按分支 `feat/elevation-modes` 的实际实现重写。v1.x 是 P27 名下的设计稿，编号让给多底层后改为 P39 |
+| 文档版本 | v2.2.1（2026-10-24）：默认档随 c560b987 部署到内测环境；§8.1、§9、§10 写入舰队实测：节点原先没装 bubblewrap，补装后三个节点都有命令沙箱。v2.2（2026-10-24）：按负责人 10-24「自动审批是默认最佳权限模式」加中枢默认档（§8.1）：开了 `--elevation` 的中枢把处在人工确认的智能体开成自动审批，到期、用尽或节点重启后再开；有人手动关掉或收回的不再自动开。节点侧规则不变。v2.1（2026-10-22）：§5 第 3 条按负责人 10-22 的决定改为登录即可批准，不再要个人凭据；开启或改模式的门槛（§7）不变。v2.0（2026-10-20）：按分支 `feat/elevation-modes` 的实际实现重写。v1.x 是 P27 名下的设计稿，编号让给多底层后改为 P39 |
 | 范围依据 | 负责人 10-14：「bot的权限要很高，基本上能替用户完成任何事情」「不要把权限审批做得特别麻烦，分 auto、full-access、accept edits 几个档位让用户自行抉择，仿照 Claude Code」「遇到权限审批需求会发通知，前端跳确认框」。模式名按负责人 10-19 的要求取 Claude Code 的叫法 |
 | 状态 | 已合入 main（#261），2026-10-21 随 20fa9bd9 部署到内测环境；2026-10-24 05:18Z 内测中枢开了 `--elevation`。默认档（§8.1）已合入（#278），2026-10-24 10:00Z 随 c560b987 部署：内测六个智能体由中枢（`system:elevation`）开成自动审批。章程 v3.10 §2.9（v3.15 改第 5 条）与 roadmap P39 已登记 |
 | 相关 | `atlas/packages/extension/src/elevationPolicy.ts`（档位、工具面、分类、沙箱改写）、`atlas/packages/node/src/host/elevation.ts`（节点侧状态与闸门）、`elevationSandbox.ts`（bubblewrap 参数）、[`authorization-m1.md`](./authorization-m1.md)（P14 单次审批）、[`console.md`](./console.md)「高权限模式（P39）」、[`directions-2026-10.md`](./directions-2026-10.md) §4（P21 云端电脑） |
@@ -130,7 +130,7 @@
 - 公开版开了 `--elevation` 时，默认档同样对所有租户的智能体生效；租户内的运维可以逐个固定为人工确认。
 - 连同一批节点的多个中枢各自按自己的默认档与记录开启，互不知道对方的「已手动关闭」。
 - 急停期间每个智能体每 10 分钟记一行失败的 `elevation.enable`；每轮核对对每个节点发一次状态查询，节点审计链每天约多 1440 行。
-- 默认档放出去的能力与 §2 同档一样；舰队节点缺省 AppArmor 下没有命令沙箱，`bash` 不提供（§3）。
+- 默认档放出去的能力与 §2 同档一样；节点上没有可用的 bubblewrap 时 `bash` 不提供（§3）。内测三个节点（Debian 12、13）10-24 补装 bubblewrap 后都有命令沙箱。
 - 关闭或收回发出去但节点没回话（超时）时，界面可能同时显示「已手动关闭」与原来的档位，节点状态读回来后一致。
 
 ## 9. 验证记录
@@ -140,10 +140,11 @@
 | 单元测试：扩展 `elevationPolicy.test.ts`、节点 `elevation.test.ts`、`residentOmp.test.ts`、`desktop.test.ts`、`consoleElevation.test.ts`、resident `grant-store.test.ts`、控制台 `elevation.test.ts` / `frontApproval.test.ts` 与清单类测试 | 全绿（数字见合入 PR） |
 | 真 qianmopi 子进程（`elevation.integration.test.ts`，macOS，假模型服务、本机网页） | 人工确认下不给编辑与联网；自动审批下工作区写入、按域名读本机网页直接放行，闸门收到授权与完成两段，字面回环地址被宿主拒；自动接受编辑下同一读取要单次批准，拒绝即挡；收回后下一个子进程回到人工确认 |
 | 真 bubblewrap（colima 里 Ubuntu 24.04 内核 6.8 + Alpine 3.20 容器 + bubblewrap 0.10.0，非 root，临时放开 AppArmor 限制后已恢复为 1） | 探测通过；TCP 出站被挡；工作区可写；`.git/hooks`、`.omp` 写入被拒；配置根与 `/home` 不可见；`/usr` 只读；主机名 `sandbox`；环境变量只有 `HOME LANG PATH PWD SHLVL _`；单引号原样保留。限制为 1 时非特权 bwrap 失败，探测不过，`bash` 不提供 |
+| 内测舰队节点（10-24；p3 Debian 13 + 用户目录里的 bubblewrap 0.12.0，p8 Debian 12 + bubblewrap 0.8.0，节点单元 `PrivateUsers=yes`） | 补装前探测失败（没装 bubblewrap）；补装并重启节点后六个智能体都报 `sandbox: true`。`PrivateUsers=yes` 单元里嵌套建用户命名空间可行，沙箱里网络不可达、单元隐藏的路径仍读不了。beta-6/planner 在自动审批下执行 `uname -a`：命令被改写进 bwrap、主机名 `sandbox`，次数 0→1，节点审计链记 `elevation.action` 的 allowed 与 completed，不记命令正文 |
 
 ## 10. 未覆盖与残余风险
 
-- **舰队节点没有命令沙箱**：真 bubblewrap 只在本机 colima 里跑过。10-24 部署默认档后，内测三个节点（beta-4、beta-5、beta-6）在 `/v0/elevation` 上都报 `sandbox: false`，自动审批下 `bash` 不提供，联网读取与工作区编辑照常；GitHub 也没开（节点上没有 `gh`）。
+- **舰队节点的命令沙箱靠节点上装好 bubblewrap**：内测节点是 Debian，原先没装，探测失败，自动审批下 `bash` 不提供。10-24 补装（p3 没有 root，装在用户目录、节点 PATH 前置）后三个节点都有沙箱（§9）。新节点要先装 bubblewrap；Ubuntu 24.04 另有 §3 的 AppArmor 限制。GitHub 仍没开：节点上没有 `gh` 和令牌。
 - **浏览器里的界面脚本没在真浏览器里点过**：权限模式页与前台确认框的脚本只在测试里的假 DOM 上验证过。
 - **`web_search` 和 GitHub 没有真调用**：测试里网络读取只读过本机网页；搜索后端、`gh` 的真实请求没跑。
 - DNS 重绑定与跳转（§4）。
