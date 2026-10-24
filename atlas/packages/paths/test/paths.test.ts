@@ -5,7 +5,9 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
+  claudeConfigDir,
   clientStateDir,
+  codexHome,
   ompChildEnv,
   ompConfigRoot,
   qianmoConfigDir,
@@ -87,6 +89,23 @@ describe('clientStateDir', () => {
     // An empty value is the same as none.
     expect(clientStateDir('linux', { QMO_CLIENT_DIR: '' }, '/home/ymy')).toBe(
       '/home/ymy/.config/qmo',
+    )
+  })
+})
+
+describe('third-party agent roots, located for another environment', () => {
+  test('CLAUDE_CONFIG_DIR and CODEX_HOME win over the home defaults', () => {
+    expect(claudeConfigDir({}, '/home/ymy')).toBe('/home/ymy/.claude')
+    expect(
+      claudeConfigDir({ CLAUDE_CONFIG_DIR: '/srv/claude' }, '/home/ymy'),
+    ).toBe('/srv/claude')
+    expect(codexHome({}, '/home/ymy')).toBe('/home/ymy/.codex')
+    expect(codexHome({ CODEX_HOME: '/srv/codex' }, '/home/ymy')).toBe(
+      '/srv/codex',
+    )
+    // An empty value is the same as none.
+    expect(claudeConfigDir({ CLAUDE_CONFIG_DIR: '' }, '/home/ymy')).toBe(
+      '/home/ymy/.claude',
     )
   })
 })

@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.2（生效）**：新增 §3.6 两种模式与设置卡片（负责人 10-24 追加，分支 `feat/p37-13-modes`），§3.2、§3.5、§4.1 随之改写；v1.1：§3.2、§3.3、§3.5 按 P37.13 局部导航与先改后同步的实现回写（分支 `feat/p37-13-nav`） |
+| 文档版本 | **v1.3（生效）**：新增 §3.6 两种模式与设置卡片（负责人 10-24 追加），§3.2、§3.5、§4.1 随之改写，§3.5 写入壳侧实现；v1.2：§3.2–§3.5 按 P37.13 局部导航、先改后同步与外观的实现回写，§4.2.1 补识别细则（`qmo agents` 已实现） |
 | 日期 | 2026-10-24 |
 | 核对基点 | 本仓库 `b0a8789a`（main，#276 之后） |
 | 范围依据 | 负责人 2026-10-24 四条要求，原话见 §0。章程 v3.16 §2.13 |
@@ -210,17 +210,94 @@
 
 | 字段 | 含义 |
 |---|---|
-| `id` | 与底层目录一致：`claude-code`、`codex`、`gemini`、`qwen`、`opencode`、`dsh` 等 |
-| `name`、`version` | 显示名；版本取该程序自己的 `--version` |
-| `path` | 实际可执行文件路径 |
-| `protocol` | 与底层目录一致：`claude-stream`、`codex-app-server`、`acp` |
-| `available` | 能不能用；不能时 `reason` 写原因（版本太旧、不是同名的另一个程序等） |
-
-细则（候选清单、判定顺序、跨平台路径、缓存与刷新）写在 §4.2.1，按 magpie 源码核对后填写。
+| `id` | 与底层目录一致：`omp`（内置的 qianmopi）、`claude-code`、`codex`、`gemini`、`qwen`、`opencode`、`dsh`；不能驱动的另有自己的 id（§4.2.1） |
+| `name`、`version` | 显示名；版本先读它的 npm 包，否则取它自己的 `--version`，取不到为 `null` |
+| `path` | 实际可执行文件路径；没找到为 `null` |
+| `protocol` | 与底层目录一致：`omp`、`claude-stream`、`codex-app-server`、`acp`；不能驱动的为 `null` |
+| `available` | 能不能用；不能时 `reason` 写原因（找不到命令行程序、不是同名的另一个程序、暂不支持接入等） |
+| `source` | 程序从哪里找到的：`builtin`（qianmopi）、`path`（查找目录里按命令名找到）、`vendor`（厂商安装器的固定位置）、`brew`（命令名与别的工具同名时，只认该 agent 的 Homebrew 包装的） |
+| `configFound` | 它的配置文件、或它自己的配置目录在这台电脑上 |
+| `signedIn` | 本版恒为 `null`（未知），见 §4.2.1 |
 
 #### 4.2.1 判定细则
 
-（待按 magpie 源码核对后补全；见 §9。）
+参照 magpie（yetone/magpie，MIT）的识别逻辑，代码为本项目自写（`atlas/packages/client/src/agents.ts`、`computer.ts`）；依据的 magpie 源文件与提交记在 NOTICE 五.6。
+
+**只做什么**（章程 §2.13 第 3 条；负责人 10-24 补充）：
+
+- 只做：stat 配置文件与配置目录、列配置目录的条目名（判断是不是只剩残留，不打开其中任何文件）；在查找目录里找可执行文件；读 npm 包的 `package.json`（Windows 上还有 npm 的 `.cmd` 垫片）；运行 `<程序> --version`；对 dsh 运行 `dsh --help` 判别。
+- 不做：读取或复制任何 agent 的凭据与登录文件（`~/.claude.json`、`.credentials.json`、`auth.json`、`oauth_creds.json`、Keychain 等），连 stat 都不做；不读配置文件内容；不写、不改任何 agent 的目录与配置；不以服务或协议模式启动 agent（不跑 `gemini --acp`、`codex app-server`、`claude -p`，不发 ACP `initialize`）——Gemini CLI 一启动就会自动登录。
+- 登录状态本版不做，每项 `signedIn` 恒为 `null`。以后若做，只用文档写明只读的状态命令：`claude auth status --json` 只取 `loggedIn`、`authMethod`、`apiProvider`，丢掉邮箱与组织；`codex login status`。
+
+**候选清单**（写死在代码里；前六项与底层目录 `catalog.ts` 的 id、名称、协议、命令、npm 包一致，由 `qianmo-client-agents-catalog.test.ts` 核对）：
+
+| id | 名称 | 命令 | `protocol` | 配置目录（环境变量优先） | 配置文件 | 特例 |
+|---|---|---|---|---|---|---|
+| `claude-code` | Claude Code | `claude` | `claude-stream` | `CLAUDE_CONFIG_DIR` > `~/.claude` | `settings.json` | 厂商位置 `<配置目录>/local/claude`、`~/.claude/local/claude` |
+| `codex` | Codex | `codex` | `codex-app-server` | `CODEX_HOME` > `~/.codex` | `config.toml` | |
+| `gemini` | Gemini CLI | `gemini` | `acp` | `$GEMINI_CLI_HOME/.gemini` > `~/.gemini` | `settings.json` | 只认命令：`~/.gemini` 是 Antigravity 也写的目录 |
+| `qwen` | Qwen Code | `qwen` | `acp` | `QWEN_HOME` > `~/.qwen` | `settings.json` | |
+| `opencode` | opencode | `opencode` | `acp` | `OPENCODE_CONFIG_DIR` > `$XDG_CONFIG_HOME/opencode` > `~/.config/opencode` | `opencode.jsonc`、`opencode.json`、`config.json` | 厂商位置 `~/.opencode/bin/opencode` |
+| `dsh` | DeepSeek Harness | `dsh` | `acp` | `DSH_HOME` > `~/.dsh` | `config.yaml` | macOS 桌面 App `DeepSeek Harness.app`；`dsh --help` 判别 |
+| `cursor` | Cursor CLI | `cursor-agent` | — | `~/.cursor` | `cli-config.json` | 目录与 Cursor 编辑器共用 |
+| `kimi` | Kimi Code | `kimi` | — | `KIMI_CODE_HOME` > `~/.kimi-code`（只有旧版目录时 `KIMI_SHARE_DIR` > `~/.kimi`） | `config.toml` | |
+| `droid` | Droid | `droid` | — | `$FACTORY_HOME_OVERRIDE/.factory` > `~/.factory` | `settings.json`、`config.json` | |
+| `copilot` | Copilot CLI | `copilot` | — | `~/.copilot` | `settings.json` | 目录与 GitHub Copilot 编辑器插件共用 |
+| `goose` | Goose | `goose` | — | Windows `%APPDATA%\Block\goose\config`；其他 `$XDG_CONFIG_HOME/goose` > `~/.config/goose` | `config.yaml` | 与 pressly 的数据库迁移工具同名：命令只认 Homebrew `block-goose-cli` 装的与厂商位置 `~/.local/bin/goose` |
+
+qianmopi 内置在本机节点的 `qm` 里，恒为列表第一项（`id: omp`、`source: builtin`、`available: true`）。后五项我们不能驱动，照样识别，`protocol: null`、`available: false`、`reason: 暂不支持接入`，找到的路径与版本照报。只列识别到的；没装的不列。环境变量只认绝对路径，相对路径当没设。
+
+**判定顺序**（每项依次，前一步有结论就不往下）：
+
+1. 自定义：Gemini CLI 只看命令（目录位置没被文件占时）；Goose 的命令只认上表两处。
+2. 配置目录的位置（或它的某级上级）被普通文件占了：不是（它建不了自己的目录，如 shell 的 `~/.dsh` 文件）。
+3. 配置文件存在：是，`configFound`。
+4. 配置目录存在，且不只剩 `skills/`、`.DS_Store` 与名为 `logs`、`log`、`debug`、`diagnostics`、`cache` 的目录（不分大小写；同名的普通文件照算）：是，`configFound`。与别的应用共用的目录（`~/.cursor`、`~/.copilot`，以及 Gemini CLI 的）不作证据。
+5. macOS 上装了它的桌面 App（目前只有 DeepSeek Harness）：是。
+6. 命令在查找目录里：是。
+7. 命令在厂商安装位置：是。
+
+**能不能用**：
+
+- 有命令可用：`available: true`。dsh 逐个候选判别，第一个是 DeepSeek Harness 的才采用（Debian 的 dsh、pdsh 也叫 dsh）：是它官方 npm 包 `@deepseek-ai/dsh` 里的程序（经链接或 Windows 垫片读到包清单）就直接认，不运行；否则跑 `dsh --help`，标准输出里要有「DeepSeek Harness」（它的 `--version` 只打版本号，区分不了），判据与节点是同一份（底层目录 `NpmInstall.identity`）。
+- 没有可用的命令：同名程序都不是它，`reason` 写「<路径> 不是 DeepSeek Harness（它的 --help 里没有这个名字）」；问不出来（超时、起不来）写「<路径> 核对不了是不是 DeepSeek Harness（…）」；只有桌面 App 写「CLI 未找到（只装了桌面 App）」；其余写「CLI 未找到（有 <配置目录>，但 PATH 与常见安装位置里都没有 <命令>）」。
+- 不设最低版本：底层目录只有节点安装时钉住的版本，没有「太旧」的依据；版本只作展示。
+
+**查找目录**（按顺序、去重、只留存在的目录；同名命令取第一个）：
+
+1. 本进程的 PATH。
+2. 登录 shell 的 PATH。桌面版从 Dock 或登录项启动时 PATH 只有 launchd 给的几项，装在 npm 前缀、nvm、bun 里的 agent 都找不到。先 `$SHELL -ilc`（很多人把 PATH 写在 `.zshrc`），没有答案再 `-lc`（profile 里 `exec tmux` 之类会让交互式 shell 答不出）；`$SHELL` 不是绝对路径时用 `/bin/sh`。子进程自成进程组、不接终端、标准输入为空，带 `QMO_SHELL_PROBE=1` 让 profile 认得出；它让 `/bin/sh` 的 `printf` 打出导出的 PATH 与 agent 的目录变量（NUL 分隔、前后两个标记夹住，profile 打印的别的东西不影响），nushell 前面加 `^`。最多等 2 秒（`--rescan` 等 5 秒），到时杀掉整个进程组。agent 的目录变量（上表各列与 nvm、fnm、bun、Volta、pnpm、npm 前缀的变量）本进程没有时取登录 shell 的。
+3. 常见用户目录：`~/.local/bin`、npm 前缀（`NPM_CONFIG_PREFIX`）与 `~/.npm-global/bin`、bun（`BUN_INSTALL`）、Volta（`VOLTA_HOME`）、pnpm（`PNPM_HOME`，否则 macOS `~/Library/pnpm`、Linux `~/.local/share/pnpm`）、asdf 与 mise 的 shims、nvm（`NVM_DIR`）/ fnm（`FNM_DIR`）/ mise 装的每个 Node（新版本在前）、cargo、deno。
+4. 系统目录：macOS `/opt/homebrew/bin`、`/usr/local/bin`；Linux `/usr/local/bin`、`/home/linuxbrew/.linuxbrew/bin`。
+
+Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE;.BAT;.CMD`）补扩展名找；常见目录 `%APPDATA%\npm`、`~\.local\bin`、`~\.bun\bin`、Volta、pnpm、`~\scoop\shims`、cargo、deno；厂商位置加 `.exe`。不问登录 shell，不查桌面 App，**注册表里的 PATH 本版不读**（PATH 比注册表旧时会漏掉刚装的程序）。
+
+**版本**：
+
+- 先读 npm 包：从程序的真实路径往上找到 `node_modules/<包>`，包名须是该 agent 的官方包，读 `package.json` 的 `version`，不运行程序。Windows 上 npm 装的是 `.cmd` 垫片，读垫片里写的包路径再读同一个 `package.json`。
+- 否则运行 `<程序> --version`：标准输入为空，`NO_COLOR=1`，在系统临时目录里起（dsh 会读启动目录的 `.env`），PATH 用上面的查找目录（`#!/usr/bin/env node` 的程序要找得到 Node），10 秒超时；取标准输出与标准错误里第一个版本号。
+
+**缓存与刷新**（`<客户端目录>/agents.json`，客户端目录按 `clientStateDir()`；0600、原子写）：
+
+- `--version` 的结果与 dsh 判别的结果按「真实路径 + 大小 + 修改时间」记：成功留 24 小时，失败（含超时）留 10 分钟；程序文件变了立即重问。npm 包的版本每次现读。
+- 登录 shell 的回答（含没答上）留 10 分钟，按 `$SHELL` 区分。
+- `qmo agents --rescan` 不用缓存，全部重问，结果重写进缓存。缓存损坏、不属于本人、权限过宽或是链接时当作没有，扫完原子替换。客户端目录本身不是本人独占（不是 0700、不属于当前用户）时不写缓存，也不替用户改权限，每次都重新问；扫描结果照常输出。退出登录不删它：它是这台电脑的事实，与账号无关。
+- 同一次扫描里每个命令只查一次。magpie 把 PATH 查找结果在进程内留 2 秒，`qmo` 每次是新进程，这一层没有意义，不做。
+
+**输出**：`qmo agents --json` 标准输出一行 `{"agents":[…]}`，每项是 §4.2 表的字段；用法错误是 `{"error":{"kind":"usage","message":…}}`、退出码 2（与 `qmo` 其他 `--json` 命令同一约定）。不带 `--json` 时每个 agent 一行：名称、版本、可用与否（不可用写原因）、路径。
+
+**与 magpie 的异同**：
+
+- 相同：注册表写死在代码里；判定顺序（自定义、被文件占、配置文件、去掉残留的配置目录、额外信号、PATH）；残留目录名与共用目录的处理；Gemini CLI 只认命令；向登录 shell 要 PATH 的做法（`-ilc` 再 `-lc`、自成会话、最多等 2 秒）；版本先读 npm 包、再跑 `--version`（10 秒）；成功 24 小时、失败 10 分钟。
+- 不同：
+  - 不读任何 agent 的凭据与登录状态（magpie 读 `.claude.json`、Keychain、`auth.json` 等判断是否登录），不写 agent 的配置（magpie 会改写它们接网关）。
+  - 不读 `~/.npmrc` 找 npm 前缀（里面可能有 npm 令牌），改看 `NPM_CONFIG_PREFIX`、常见目录与登录 shell 的 PATH。
+  - 不读程序的二进制内容（magpie 读 Go 构建信息分辨 pressly 的 goose），Goose 只认 Homebrew `block-goose-cli` 与厂商位置。
+  - nvm 不读 `alias/default`，列出每个 Node 版本目录（新的在前）。
+  - 登录 shell 的 PATH 排在常见目录之前（magpie 在后），找到的是终端里会先找到的那一个。
+  - 厂商安装位置算识别证据（magpie 只用它判断「CLI 未找到」）；不查 IDE 扩展、编辑器、Codex 桌面 App 这类「还有别的程序在用这个目录」的信号（magpie 的 `cliHeld`），我们要的是能驱动的命令行程序。
+  - dsh 判别是我们节点的规则（magpie 没有），同名的多个候选逐个判别，官方 npm 包里的程序不用问；读 npm 包版本时核对包名。
+  - 只收底层目录的六项与五个常见的不能驱动的 agent（magpie 有几十个）；不识别 WSL 里的 agent。
 
 ### 4.3 本机节点
 
@@ -270,13 +347,13 @@ Cowork 式虚拟机、模拟器、Office 插件；把整个网页应用另带一
 | 包 | 内容 | 完成标准 | 状态 |
 |---|---|---|---|
 | P37.13 | 局部导航、先改后同步、外观收成一套、首帧按上次布局、两种模式与设置卡片（§3） | 后台与两种前台切页不重载文档；§3.3 的操作失败能回到原样；明暗对比、三种语言、窄屏的现有用例全过；预览环境截图核对 | 局部导航、§3.3 中代码里存在的操作、外观（§3.4）、首帧的页面侧与壳侧、两种模式与设置卡片（§3.6）已实现；两种前台之间仍整页导航；未在真壳里联调 |
-| P37.14 | 「开发」页、`qmo agents --json` 识别本机 agent、本机节点 sidecar、选文件夹、按项目分组的会话、变更面板（§4.1–§4.4） | macOS 本机识别出已装的 agent；用 Claude Code 与 Codex 各在一个本机项目里跑通一轮（改一个文件、看到变更）；其余 agent 标未实测 | 设计 |
+| P37.14 | 「开发」页、`qmo agents --json` 识别本机 agent、本机节点 sidecar、选文件夹、按项目分组的会话、变更面板（§4.1–§4.4） | macOS 本机识别出已装的 agent；用 Claude Code 与 Codex 各在一个本机项目里跑通一轮（改一个文件、看到变更）；其余 agent 标未实测 | 进行中：`qmo agents` 已实现（§9），其余为设计 |
 | P37.15 | 设备链路 `qmo link` 与中枢 `/v0/client/link`、设备节点、会话同步与续写（§5） | 本机会话在浏览器里看得到；设备在线时从浏览器续写一轮；吊销设备后链路断开 | 设计 |
 | P37.16 | 本机直连 `qmo_local_*`（§4.5） | 拔掉网络后本机会话照样跑完一轮，恢复后中枢补齐 | 设计 |
 
 ## §9 验证
 
-§4.2.1 的判定细则待按 magpie 源码核对后补全。
+§4.1、§4.3–§5 只有设计。
 
 P37.13 已有的用例（`atlas/packages/console/test/`）：
 
@@ -290,3 +367,9 @@ P37.13 已有的用例（`atlas/packages/console/test/`）：
 壳侧（`cd atlas/apps/qmo/src-tauri && cargo test`）：`qmo_boot_layout`、`qmo_local_agents`、`qmo_open_local_settings` 的参数逐项校验与调用方同源判定，三条命令只在中枢的 remote 能力里、不在本地页面的能力里；设置文件里布局与颜色的读写（旧的 `admin`、越界、坏颜色只丢那一块）；骨架计划（哪一面亮、行与标题的排法、两套颜色与缺省）和它交给骨架页的 JSON；`qmo agents` 同一时刻只跑一个。
 
 未验证：WKWebView（桌面壳）里的 View Transitions、局部换页与 `<dialog>` 设置卡片；壳里真实的首帧（骨架页只在无头 Chromium 里按三份计划看过）与菜单「设置」接上后的整体；Firefox、Safari。
+
+`qmo agents`（§4.2）：
+
+- 单元测试（`atlas/packages/client/test/agents.test.ts`）用临时 HOME、临时 PATH 与假程序覆盖判定顺序、残留目录、共用目录、环境变量与登录 shell 给的变量、CLI 未找到与厂商位置、dsh 同名判别（含问不出来）、版本缓存的有效期与失效、`--rescan`、登录 shell 的 PATH（注入的与真起一个假 shell 的）、Windows 的 `PATHEXT` 与 npm 垫片（在 macOS 上按 `win32` 跑），并经可计数的文件探针确认凭据文件连 stat 都没有、读过的文件只有 `node_modules` 里的 `package.json`、HOME 下没有任何文件被改动。`qianmo-client-agents-catalog.test.ts` 核对与底层目录一致。
+- 本机（macOS arm64）真跑一次，识别出 Claude Code、Codex、Gemini CLI（可用，带版本），opencode 与 DeepSeek Harness 有配置目录、没有命令行程序（CLI 未找到）；`~/.qwen` 等只剩 `skills/` 的目录没有列出。
+- 未实测：Linux 真机、Windows 真机（Windows 的查找只在 macOS 上按 `win32` 模拟过；Windows 上直接运行 `.cmd` 取 `--version` 没验证过，npm 垫片走读包的路径不运行）；登录 shell 为 fish、nushell 的情况；macOS 桌面 App 那一路只在测试里模拟过。

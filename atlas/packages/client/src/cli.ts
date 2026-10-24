@@ -9,6 +9,7 @@
  */
 
 import pkg from '../package.json' with { type: 'json' }
+import { formatAgents, scanAgents } from './agents.js'
 import {
   type ClientDeps,
   type ClientIO,
@@ -33,6 +34,7 @@ export const USAGE = `qmo — 阡陌客户端
   qmo status [--json]
   qmo sign-out [--json]
   qmo session --json
+  qmo agents [--json] [--rescan]
   qmo --version
 
 配对码在中枢「连接」页「添加设备」里拿。qmo sign-in 会提示输入；
@@ -41,7 +43,9 @@ export const USAGE = `qmo — 阡陌客户端
 
 --json 给桌面版读：标准输出只有一行 JSON，出错时是
 {"error":{"kind":…,"message":…}}，退出码按 kind 区分。
-qmo session --json 打开一个会话，输出它的 cookie，只给桌面版用。`
+qmo session --json 打开一个会话，输出它的 cookie，只给桌面版用。
+qmo agents 列出这台电脑上装了的编程 agent；版本等结果会缓存，
+--rescan 全部重新查。`
 
 export function versionLine(): string {
   const commit =
@@ -57,7 +61,7 @@ interface Parsed {
 }
 
 const VALUE_FLAGS = new Set(['--code', '--name'])
-const BOOLEAN_FLAGS = new Set(['--force', '--json'])
+const BOOLEAN_FLAGS = new Set(['--force', '--json', '--rescan'])
 
 /**
  * The exit code of a `--json` run, one per kind of error, for a caller that
@@ -132,7 +136,13 @@ function value(parsed: Parsed, name: string): string | undefined {
 }
 
 /** Only these commands answer in JSON. */
-const JSON_COMMANDS = new Set(['sign-in', 'status', 'sign-out', 'session'])
+const JSON_COMMANDS = new Set([
+  'sign-in',
+  'status',
+  'sign-out',
+  'session',
+  'agents',
+])
 
 /** The device a `--json` error was about, when this computer is signed in. */
 function deviceOf(deps: ClientDeps | undefined): Record<string, string> {
@@ -149,6 +159,7 @@ function deviceOf(deps: ClientDeps | undefined): Record<string, string> {
 export async function main(
   argv: readonly string[],
   io: ClientIO,
+  agents: typeof scanAgents = scanAgents,
 ): Promise<number> {
   const [command, ...rest] = argv
   if (command === '--version' || command === '-v' || command === 'version') {
@@ -212,6 +223,19 @@ export async function main(
           )
         io.out(JSON.stringify(await enterSession(deps)))
         return 0
+      case 'agents': {
+        const rescan = parsed.flags.get('--rescan') === true
+        const extra = parsed.flags.size - (json ? 1 : 0) - (rescan ? 1 : 0)
+        if (parsed.positional.length > 0 || extra > 0)
+          throw new ClientError('qmo agents 只接受 --json 与 --rescan', 2)
+        const report = await agents({
+          cacheFile: deps.home.agentsCache,
+          rescan,
+        })
+        if (json) io.out(JSON.stringify(report))
+        else for (const line of formatAgents(report)) io.out(line)
+        return 0
+      }
       case 'open':
       case 'status':
       case 'sign-out': {
