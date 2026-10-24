@@ -876,15 +876,21 @@ describe('an agent’s credentials and login files', () => {
     // Not even looked at: their names are only seen in a folder's listing.
     for (const secret of secrets)
       expect(calls.filter(call => call.file === secret)).toEqual([])
-    // The only files read are npm manifests, none under the home folder.
+    // The only files read are npm manifests and, on Windows, the npm shims
+    // found on PATH (the shim names the package); none under the home folder.
+    const pathDirs = [box.bin, path.join(pkg, 'bundle')]
     const reads = calls
       .filter(call => call.op === 'read')
       .map(call => call.file)
     expect(reads.length).toBeGreaterThan(0)
     for (const file of reads) {
+      expect(file.startsWith(home)).toBe(false)
+      if (!posix && path.extname(file).toLowerCase() === '.cmd') {
+        expect(pathDirs).toContain(path.dirname(file))
+        continue
+      }
       expect(path.basename(file)).toBe('package.json')
       expect(file.split(path.sep)).toContain('node_modules')
-      expect(file.startsWith(home)).toBe(false)
     }
     expect(snapshot()).toEqual(before)
   })
