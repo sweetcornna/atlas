@@ -451,32 +451,86 @@ export function stringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
  * it: interactive first, since many set PATH in `.zshrc`; a profile that
  * hands the shell over to something else (`exec tmux`) never answers that,
  * and is asked again as a login shell only. `QMO_SHELL_PROBE=1` lets a
- * profile tell the question from a terminal.
+ * profile tell the question from a terminal. `parse` finds the answer in
+ * what the shell printed; `null` when it has none.
  */
-export function loginShellAsker(
+function askLoginShell<T>(
   env: NodeJS.ProcessEnv,
-  run: RunProbe = runProbe,
-): AskLoginShell {
+  run: RunProbe,
+  command: (shell: string) => string,
+  parse: (output: string) => T | null,
+): (timeoutMs: number) => Promise<T | null> {
   const configured = env.SHELL
   const shell =
     configured !== undefined && path.isAbsolute(configured)
       ? configured
       : '/bin/sh'
   const probeEnv = { ...stringEnv(env), QMO_SHELL_PROBE: '1' }
-  return async (names, timeoutMs) => {
+  return async timeoutMs => {
     const until = Date.now() + timeoutMs
     for (const flags of ['-ilc', '-lc']) {
       const left = until - Date.now()
       if (left <= 0) break
-      const result = await run(
-        [shell, flags, shellProbe(shell, names)],
-        probeEnv,
-        left,
-      )
-      const answer = parseShellProbe(result.stdout, names)
+      const result = await run([shell, flags, command(shell)], probeEnv, left)
+      const answer = parse(result.stdout)
       if (answer !== null) return answer
       if (result.timedOut) break
     }
     return null
   }
+}
+
+/** The login shell's PATH and `names` (`qmo agents`). */
+export function loginShellAsker(
+  env: NodeJS.ProcessEnv,
+  run: RunProbe = runProbe,
+): AskLoginShell {
+  return (names, timeoutMs) =>
+    askLoginShell(
+      env,
+      run,
+      shell => shellProbe(shell, names),
+      output => parseShellProbe(output, names),
+    )(timeoutMs)
+}
+
+/** The login shell's whole exported environment; `null` when it does not say in time. */
+export type AskLoginEnv = (
+  timeoutMs: number,
+) => Promise<Record<string, string> | null>
+
+/**
+ * What `env -0` prints in the login shell, inside the same two marks: the
+ * environment a program started from a terminal gets (qmo-local.md §4.3.4).
+ * Kept in memory only by its caller.
+ */
+export function loginEnvAsker(
+  env: NodeJS.ProcessEnv,
+  run: RunProbe = runProbe,
+): AskLoginEnv {
+  return askLoginShell(
+    env,
+    run,
+    shell => {
+      const command = `/bin/sh -c 'printf "${SHELL_MARK}"; env -0; printf "${SHELL_MARK}"'`
+      return path.basename(shell) === 'nu' ? `^${command}` : command
+    },
+    parseEnvProbe,
+  )
+}
+
+/** The variables between the marks, `NAME=value` with NUL after each. */
+export function parseEnvProbe(output: string): Record<string, string> | null {
+  const start = output.indexOf(SHELL_MARK)
+  if (start < 0) return null
+  const rest = output.slice(start + SHELL_MARK.length)
+  const end = rest.lastIndexOf(SHELL_MARK)
+  if (end < 0) return null
+  const vars: Record<string, string> = {}
+  for (const entry of rest.slice(0, end).split('\0')) {
+    const eq = entry.indexOf('=')
+    if (eq <= 0) continue
+    vars[entry.slice(0, eq)] = entry.slice(eq + 1)
+  }
+  return vars
 }

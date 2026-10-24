@@ -5,9 +5,9 @@
  * `qmo agents` (`@qianmo/client`) and the node's runtime catalog
  * (`@qianmo/node`, harness-backends.md §1) name the same agents the same
  * way: the client cannot import the node (its Windows build links only
- * `@qianmo/paths`), so its table is its own and this test keeps the two
- * together — ids, protocols, names, commands, npm packages, and the rule
- * that tells DeepSeek Harness from Debian's `dsh`.
+ * `@qianmo/paths` and `@qianmo/harness`), so its table is its own and this
+ * test keeps the two together — ids, protocols, names, commands, npm
+ * packages, and the rule that tells DeepSeek Harness from Debian's `dsh`.
  */
 
 import { afterEach, expect, test } from 'bun:test'

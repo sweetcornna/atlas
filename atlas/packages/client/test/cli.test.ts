@@ -266,6 +266,34 @@ describe('--json, for the desktop shell (qmo-app.md §3)', () => {
     expect(await main(['status', '--force'], io)).toBe(2)
   })
 
+  test('code serve takes nothing else, and runs on the client folder', async () => {
+    const io: ClientIO = { out: () => {}, err: () => {}, ask: async () => null }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qmo-code-cli-'))
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
+    process.env.QMO_CLIENT_DIR = dir
+    const served: unknown[] = []
+    const code = async (options: unknown) => {
+      served.push(options)
+      return 0
+    }
+    for (const argv of [
+      ['code'],
+      ['code', 'run'],
+      ['code', 'serve', 'x'],
+      ['code', 'serve', '--json'],
+    ])
+      expect(await main(argv, io, undefined, code)).toBe(2)
+    expect(served).toEqual([])
+    expect(await main(['code', 'serve'], io, undefined, code)).toBe(0)
+    expect(served).toEqual([
+      {
+        codeDir: path.join(dir, 'code'),
+        clientDir: dir,
+        agentsCache: path.join(dir, 'agents.json'),
+      },
+    ])
+  })
+
   test('every kind has its own code, apart from those that mean the same', () => {
     expect(JSON_EXIT_CODES).toEqual({
       refused: 1,
