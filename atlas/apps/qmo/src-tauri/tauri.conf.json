@@ -42,8 +42,14 @@
       "icons/icon.ico"
     ],
     "externalBin": ["binaries/qmo"],
+    "resources": {
+      "THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt",
+      "../../../../LICENSE": "LICENSE"
+    },
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-",
+      "hardenedRuntime": false
     }
   },
   "plugins": {

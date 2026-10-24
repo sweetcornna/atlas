@@ -27,6 +27,28 @@ cd atlas/apps/qmo/src-tauri && cargo test
 
 `build-app.ts` 先照 `atlas:build:client` 编出本机的 `qmo`，复制到 `src-tauri/binaries/qmo-<目标三元组>`，再 `cargo tauri build`。需要 Rust 与 `cargo install tauri-cli`；Linux 另要 WebKitGTK 开发包。各系统在本系统上构建，没有交叉构建。
 
+## 打包与签名
+
+`bun run atlas:build:app` 只出 `Qmo.app`。macOS 的 `.dmg` 在本机用 `ditto` 和 `hdiutil` 做（`ditto` 保住签名与资源封印，别用 `cp -R`）：
+
+```sh
+APP=atlas/apps/qmo/src-tauri/target/release/bundle/macos/Qmo.app
+STAGE=$(mktemp -d)
+ditto "$APP" "$STAGE/Qmo.app"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -volname Qmo -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov Qmo-0.1.0-macos-arm64.dmg
+```
+
+- `tauri.conf.json` 里 `signingIdentity` 是 `-`：整包 ad-hoc 签名，`codesign --verify --deep --strict Qmo.app` 应通过。`hardenedRuntime` 关着：没有公证它没有用处，随包的 `qmo` 是 Bun 编译产物，开着它要另给 JIT 等授权。有 Developer ID 与公证时，用 `APPLE_SIGNING_IDENTITY` 与 `APPLE_*` 环境变量覆盖，并重新决定授权项。
+- `Qmo.app/Contents/Resources/` 里随包 `LICENSE` 与 `THIRD-PARTY-NOTICES.txt`。后者由 cargo-about 生成，改了 `Cargo.lock` 要重新生成（`cargo install cargo-about --locked --features cli`）：
+
+```sh
+cd atlas/apps/qmo/src-tauri
+cargo about generate --locked --config about.toml about.hbs -o THIRD-PARTY-NOTICES.txt
+```
+
+- 安装包只在 Apple 芯片的 macOS 上做，里面是 arm64。发给别人的包要在标签所在的干净提交上构建，随包 `qmo` 的 `--version` 末尾不带 `-dirty`。
+
 ## 对着预览中枢跑
 
 没有真中枢也能在壳里看 `/app`。`atlas/packages/console/test/appPreview.ts` 在本机起一个开了个人账号的控制台：一个运维账号，五个会回话的预览智能体，设备配对在内存里（配对码、客户端配对、票据、吊销），不写盘。
