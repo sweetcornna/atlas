@@ -129,7 +129,7 @@ function grantFacts(one: ElevationNodeView, now: number): string {
         `<span title="节点上没有 gh">${state('muted', '不提供')}</span>`,
       ),
     )
-  if (one.defaultTier !== undefined)
+  if (one.defaultTier !== undefined && (one.unsupportedReason ?? null) === null)
     rows.push(
       fact(
         '默认',
@@ -183,6 +183,18 @@ function agentCard(one: ElevationNodeView, model: ElevationModel): string {
           data: { node: one.node, agent: one.agent },
         })
       : ''
+  // At 人工确认 under a hub default (§8.1): the next pass would open it again.
+  const hold =
+    model.ops &&
+    !live &&
+    one.reachable &&
+    one.defaultTier !== undefined &&
+    one.defaultHeld !== true &&
+    (one.unsupportedReason ?? null) === null
+      ? actionButton('elevation-hold', '保持人工确认', {
+          data: { node: one.node, agent: one.agent },
+        })
+      : ''
   const activity = `<span class="note">24 小时 ${escapeHtml(String(one.actions24h))} 次高权限调用</span>`
   return (
     `<article class="card elev-sm el-card${live ? ' el-on' : ''}" data-key="${attr(keyOf(one))}">` +
@@ -191,7 +203,7 @@ function agentCard(one: ElevationNodeView, model: ElevationModel): string {
     `<span class="note">${escapeHtml(ELEVATION_TIER_NOTE[one.tier])}</span></div>` +
     unsupported +
     grantFacts(one, model.now) +
-    `<footer class="el-foot">${activity}${revoke}</footer>` +
+    `<footer class="el-foot">${activity}${hold}${revoke}</footer>` +
     `</article>`
   )
 }

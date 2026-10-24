@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { generateNodeKeyPair } from '@qianmo/capability'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'bun:test'
@@ -366,6 +373,7 @@ test('a person turning an agent off or revoking it holds it off across restarts,
     })
 
     // A restarted hub reads the holds back.
+    d.close()
     const again = new ElevationDefaults(f.port, {
       tier: 'auto',
       statePath,
@@ -397,25 +405,188 @@ test('a person turning an agent off or revoking it holds it off across restarts,
   }
 })
 
-test('a sweep that read before a person changed the agent leaves it alone', async () => {
+/** A node that applies a write when it arrives and answers when released. */
+function slowElevation(rows: ElevationNodeView[]) {
+  const gates: (() => void)[] = []
+  const writes: string[] = []
+  const at = (ref: AgentRef) =>
+    rows.findIndex(r => r.node === ref.node && r.agent === ref.agent)
+  const port: ElevationPort = {
+    async list() {
+      return { ok: true, value: rows.map(r => ({ ...r })) }
+    },
+    set(ref, change, actor) {
+      writes.push(`${ref.agent} ${change.tier} ${actor.subject}`)
+      const i = at(ref)
+      rows[i] = { ...rows[i]!, tier: change.tier, enabledBy: actor.subject }
+      const value = { ...rows[i]! }
+      return new Promise(resolve =>
+        gates.push(() => resolve({ ok: true, value })),
+      )
+    },
+    revoke(ref, actor) {
+      writes.push(`${ref.agent} revoke ${actor.subject}`)
+      const i = at(ref)
+      rows[i] = { ...rows[i]!, tier: 'off', enabledBy: null }
+      const value = { ...rows[i]! }
+      return new Promise(resolve =>
+        gates.push(() => resolve({ ok: true, value })),
+      )
+    },
+    async actions() {
+      return { ok: true, value: [] }
+    },
+  }
+  return { port, gates, writes, rows }
+}
+const settle = async () => {
+  for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0))
+}
+
+test('a person picking a tier while the sweep is busy with another agent is not overwritten', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'elev-default-'))
   try {
-    const f = fakeElevation([offRow('main')])
-    const now = 5000
-    const d = new ElevationDefaults(f.port, {
+    const n = slowElevation([offRow('a'), offRow('b')])
+    let now = 1000
+    const d = new ElevationDefaults(n.port, {
       tier: 'auto',
       statePath: join(dir, 'elevation-default.json'),
       now: () => now,
     })
-    // The person's pick and the sweep share one instant: the person wins.
-    await d.set(
-      { node: 'worker', agent: 'main' },
-      { tier: 'accept-edits' },
+    const sweep = d.sweep() // reads a=off b=off, opens a, waits for the node
+    await settle()
+    now += 5
+    const mine = d.set(
+      { node: 'worker', agent: 'b' },
+      { tier: 'full-access', ttlMs: 3_600_000 },
       person,
     )
-    f.rows[0] = { ...f.rows[0]!, tier: 'off' }
+    await settle()
+    // The node answers a; the sweep reaches b while the person's pick is out.
+    while (n.gates.length > 0 || n.writes.length < 2) {
+      n.gates.shift()?.()
+      await settle()
+    }
+    await Promise.all([sweep, mine])
+    expect(n.writes).toEqual([
+      `a auto ${SYSTEM_ELEVATION_SUBJECT}`,
+      `b full-access ${person.subject}`,
+    ])
+    expect(n.rows[1]?.tier).toBe('full-access')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('holding an agent already at off is the whole change: no node call', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'elev-default-'))
+  try {
+    const f = fakeElevation([offRow('main')])
+    const d = new ElevationDefaults(f.port, {
+      tier: 'auto',
+      statePath: join(dir, 'elevation-default.json'),
+    })
+    const r = await d.set(
+      { node: 'worker', agent: 'main' },
+      { tier: 'off' },
+      person,
+    )
+    expect(r.ok && r.value.defaultHeld).toBe(true)
+    expect(f.writes).toHaveLength(0)
     await d.sweep()
-    expect(f.writes.map(w => w.actor.subject)).toEqual([person.subject])
+    expect(f.writes).toHaveLength(0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a hold that cannot be written still reaches the node and still holds in this process', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'elev-default-'))
+  try {
+    // The state's directory cannot be made under a read-only parent.
+    const config = join(dir, 'console')
+    mkdirSync(config)
+    chmodSync(config, 0o500)
+    const f = fakeElevation([
+      offRow('a', { tier: 'auto' }),
+      offRow('b', { tier: 'auto' }),
+    ])
+    const errors: string[] = []
+    const d = new ElevationDefaults(f.port, {
+      tier: 'auto',
+      statePath: join(config, 'not-yet', 'elevation-default.json'),
+      onError: message => errors.push(message),
+    })
+    d.start()
+    d.close()
+    expect(errors[0]).toContain('建不出来')
+    const revoked = await d.revoke({ node: 'worker', agent: 'a' }, person)
+    const off = await d.set(
+      { node: 'worker', agent: 'b' },
+      { tier: 'off' },
+      person,
+    )
+    expect(revoked.ok && off.ok).toBe(true)
+    expect(f.writes.map(w => `${w.op} ${w.ref.agent}`)).toEqual([
+      'revoke a',
+      'set b',
+    ])
+    expect(errors.some(e => e.includes('写不进'))).toBe(true)
+    f.rows[0] = { ...f.rows[0]!, tier: 'off' }
+    f.rows[1] = { ...f.rows[1]!, tier: 'off' }
+    await d.sweep()
+    expect(f.writes).toHaveLength(2)
+  } finally {
+    chmodSync(join(dir, 'console'), 0o700)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a hold file that cannot be read at all pauses the default and the hub still starts', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'elev-default-'))
+  try {
+    const statePath = join(dir, 'elevation-default.json')
+    mkdirSync(statePath)
+    const f = fakeElevation([offRow('main')])
+    const errors: string[] = []
+    const d = new ElevationDefaults(f.port, {
+      tier: 'auto',
+      statePath,
+      onError: message => errors.push(message),
+    })
+    d.start()
+    d.close()
+    await d.sweep()
+    expect(f.writes).toHaveLength(0)
+    expect(errors[0]).toContain('默认档暂停')
+    // Paused, the rows promise nothing about a default.
+    const list = await d.list()
+    expect(list.ok && list.value[0]?.defaultTier).toBeUndefined()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a second hub process on the same state file opens nothing', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'elev-default-'))
+  try {
+    const statePath = join(dir, 'elevation-default.json')
+    const f = fakeElevation([offRow('main')])
+    const first = new ElevationDefaults(f.port, { tier: 'auto', statePath })
+    const errors: string[] = []
+    const second = new ElevationDefaults(f.port, {
+      tier: 'auto',
+      statePath,
+      onError: message => errors.push(message),
+    })
+    second.start()
+    second.close()
+    await second.sweep()
+    expect(f.writes).toHaveLength(0)
+    expect(errors[0]).toContain('另一个中枢进程')
+    await first.sweep()
+    expect(f.writes).toHaveLength(1)
+    first.close()
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -340,6 +340,30 @@ describe('the entries (P40 §2)', () => {
     ).toEqual({ tier: 'off' })
   })
 
+  test('under a hub default, turning off an agent nobody held is a change; a held one is not', async () => {
+    const off = settingOperation('elevation.off')
+    if (off?.current === undefined)
+      throw new Error('elevation.off reads nothing')
+    const target = { node: 'n', agent: 'a' }
+    const reader = (row: Record<string, unknown>) => ({
+      get: async () => [{ node: 'n', agent: 'a', tier: 'off', ...row }],
+    })
+    const free = await off.current(
+      reader({ defaultTier: 'auto', defaultHeld: false }),
+      target,
+    )
+    expect(settingUnchanged(off, { tier: 'off' }, free)).toBe(false)
+    expect(JSON.stringify(free)).toContain('未固定')
+    for (const row of [{ defaultTier: 'auto', defaultHeld: true }, {}])
+      expect(
+        settingUnchanged(
+          off,
+          { tier: 'off' },
+          await off.current(reader(row), target),
+        ),
+      ).toBe(true)
+  })
+
   test('a desktop change the agent may ask for only narrows what it has', () => {
     const op = settingOperation('desktop.set')
     const when = op?.personOnly?.when

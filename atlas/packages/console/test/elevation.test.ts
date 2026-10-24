@@ -70,10 +70,28 @@ describe('权限模式 page', () => {
     }))
     const h = pageHarness({ ports: { elevation: port } })
     const text = visibleText(await read(h.handle, '/admin/elevation'))
-    expect(text.match(/自动审批 · 到期后自动再开/g)?.length).toBe(
-      port.agents.length - 1,
-    )
+    // Index 1 is held; berlin-1 runs on an external runtime the default cannot reach.
+    expect(text.match(/自动审批 · 到期后自动再开/g)?.length).toBe(1)
     expect(text).toContain('已手动关闭 · 不自动开启')
+  })
+  test('under a hub default an unheld agent at 人工确认 offers 保持人工确认; held or unreachable ones do not', async () => {
+    const port = new FakeElevation(() => NOW)
+    port.agents = port.agents.map(one => ({
+      ...one,
+      defaultTier: 'auto' as const,
+      defaultHeld: false,
+    }))
+    const h = pageHarness({ ports: { elevation: port } })
+    const html = await read(h.handle, '/admin/elevation')
+    const holds = [
+      ...html.matchAll(/data-action="elevation-hold"[^>]*data-node="([^"]+)"/g),
+    ].map(m => m[1])
+    // osaka-1/writer is off; tokyo-1 is live; berlin-1 runs on an external runtime.
+    expect(holds).toEqual(['osaka-1'])
+    expect(visibleText(html).match(/到期后自动再开/g)?.length).toBe(2)
+    port.agents = port.agents.map(one => ({ ...one, defaultHeld: true }))
+    const held = await read(h.handle, '/admin/elevation')
+    expect(held).not.toContain('data-action="elevation-hold"')
   })
   test('a view token reads every state and changes none', async () => {
     const h = pageHarness({
@@ -168,6 +186,29 @@ describe('/v0/elevation (P39 §5)', () => {
       )
     }
     expect(h.elevation.calls).toEqual([])
+  })
+  test('under a hub default revoke-all also holds agents at 人工确认', async () => {
+    const h = wired()
+    h.elevation.agents = h.elevation.agents.map(one => ({
+      ...one,
+      defaultTier: 'auto' as const,
+      defaultHeld: one.agent === 'helper',
+    }))
+    const r = await h.handle(asAdmin('POST', '/v0/elevation/revoke-all', {}))
+    expect(r.status).toBe(200)
+    const body = (await r.json()) as {
+      revoked: { address: string; ok: boolean }[]
+    }
+    expect(body.revoked.map(one => one.address)).toEqual([
+      'qianmo://tokyo-1/planner',
+      'qianmo://osaka-1/writer',
+    ])
+    // The fake's revoke is its own off; the agent at off is only set off.
+    expect(h.elevation.calls).toEqual([
+      'revoke tokyo-1/planner',
+      'set tokyo-1/planner off',
+      'set osaka-1/writer off',
+    ])
   })
   test('revoke-all withdraws every live grant and reports each', async () => {
     const h = wired()

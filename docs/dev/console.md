@@ -2868,7 +2868,7 @@ bun run qm -- console --elevation --approvals --accounts --chat-sign --chat-url 
 
 `--elevation` 同时启用动作账本。节点常驻宿主已装配 `elevation` 控制处理器，所有智能体启动时都是人工确认，放权不跨重启。
 
-`--elevation-default <off|accept-edits|auto|full-access>`（开了 `--elevation` 时缺省 `auto`）：中枢每 30 秒把处在人工确认的智能体按这一档开启（24 小时、2000 次），主体 `system:elevation`；有人手动关掉或收回的不再自动开，记在 `<配置根>/qianmo/console/elevation-default.json`。规则见 [elevation.md §8.1](elevation.md#81-默认档)。
+`--elevation-default <off|accept-edits|auto|full-access>`（开了 `--elevation` 时缺省 `auto`）：中枢每 60 秒把处在人工确认的智能体按这一档开启（24 小时、2000 次），主体 `system:elevation`；有人手动关掉或收回的不再自动开，记在 `<配置根>/qianmo/console/elevation-default.json`。规则见 [elevation.md §8.1](elevation.md#81-默认档)。
 
 ## 云端电脑（P21）
 
