@@ -593,10 +593,10 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible,
 }
 a.brand-cn:hover { color: var(--color-quiet); }
 /* Inside the desktop app (<html data-shell>, qmo-app.md §5.1) the brand row and
-   the top bar are where the window is dragged from. On macOS the traffic
-   lights sit in the window's top 48px, 17px from the left, over the brand: it
-   starts past them, as the front's side top does (--fx-shell-x). */
-:root[data-shell] .side .brand, :root[data-shell] .top { -webkit-user-select: none; user-select: none; }
+   the top bar are where the window is dragged from; their text stays
+   selectable (D7). On macOS the traffic lights sit in the window's top 48px,
+   17px from the left, over the brand: it starts past them, as the front's side
+   top does (--fx-shell-x). */
 :root[data-shell="macos"] .side .brand { min-height: 38px; padding-left: 80px; }
 .qm-mark { display: block; flex: none; }
 .qm-mark .qm-ink { fill: var(--qm-ink); }
