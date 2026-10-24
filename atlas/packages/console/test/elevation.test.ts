@@ -61,6 +61,20 @@ describe('权限模式 page', () => {
     // Only a node that reported no gh says GitHub is not offered.
     expect(html.match(/节点上没有 gh/g)?.length).toBe(1)
   })
+  test('the hub default (--elevation-default) shows on every card, held ones as held', async () => {
+    const port = new FakeElevation(() => NOW)
+    port.agents = port.agents.map((one, i) => ({
+      ...one,
+      defaultTier: 'auto' as const,
+      defaultHeld: i === 1,
+    }))
+    const h = pageHarness({ ports: { elevation: port } })
+    const text = visibleText(await read(h.handle, '/admin/elevation'))
+    expect(text.match(/自动审批 · 到期后自动再开/g)?.length).toBe(
+      port.agents.length - 1,
+    )
+    expect(text).toContain('已手动关闭 · 不自动开启')
+  })
   test('a view token reads every state and changes none', async () => {
     const h = pageHarness({
       ports: { elevation: new FakeElevation(() => NOW) },

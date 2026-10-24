@@ -22,7 +22,7 @@ import { ConsoleMemory } from './consoleMemory.js'
 
 import * as routingPath from 'node:path'
 import { ConsoleDesktop } from './consoleDesktop.js'
-import { ConsoleElevation } from './consoleElevation.js'
+import { ConsoleElevation, ElevationDefaults } from './consoleElevation.js'
 import { ConsoleRouting, routingWire } from './consoleRouting.js'
 import { ConsoleAvatars } from './consoleAvatars.js'
 import { randomBytes } from 'node:crypto'
@@ -1281,10 +1281,25 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       : undefined
   const desktop =
     config.desktop && control ? new ConsoleDesktop(control, actions) : undefined
-  const elevation =
+  const elevationLinks =
     config.elevation && control
       ? new ConsoleElevation(control, actions)
       : undefined
+  const elevationDefaults =
+    elevationLinks &&
+    config.elevationDefault !== undefined &&
+    config.elevationDefault !== 'off'
+      ? new ElevationDefaults(elevationLinks, {
+          tier: config.elevationDefault,
+          statePath: qianmoConfigPath(
+            'qianmo',
+            'console',
+            'elevation-default.json',
+          ),
+          onError: message => process.stderr.write(`[elevation] ${message}\n`),
+        })
+      : undefined
+  const elevation = elevationDefaults ?? elevationLinks
   if (files) {
     // A repo that cannot be shown private (or a missing credential) stops
     // file exchange, not the console: every publish and fetch checks again
@@ -1742,6 +1757,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   approvals?.start()
   control?.start()
   files?.start()
+  elevationDefaults?.start()
   const usageCollection =
     usage === undefined
       ? undefined
@@ -1751,6 +1767,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
 
   const stop = (): void => {
     files?.close()
+    elevationDefaults?.close()
     schedules?.close()
     void channels?.close()
     void tasks?.close()

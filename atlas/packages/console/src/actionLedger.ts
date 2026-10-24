@@ -110,9 +110,11 @@ const ACTION_NAME = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/
  * behalf, and those lines must name a subject that no request can claim.
  * `system:magpie` is the gateway page's (P36.5): joining a node to magpie on
  * its own and writing each agent's family model.
+ * `system:elevation` is the hub's default permission mode (P39,
+ * `--elevation-default`): opening it again on an agent that went back to 人工确认.
  */
 const SUBJECT =
-  /^(?:u:[0-9a-f]{16}|legacy:admin|legacy:view|anonymous|system:billing|system:magpie)$/
+  /^(?:u:[0-9a-f]{16}|legacy:admin|legacy:view|anonymous|system:billing|system:magpie|system:elevation)$/
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/
 /** The agent that asked for a change (P40): the registry's address grammar. */
 const AGENT_ADDRESS =

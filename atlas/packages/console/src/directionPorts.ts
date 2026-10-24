@@ -439,6 +439,13 @@ export interface ElevationNodeView extends AgentRef {
   /** 开启放权的运维主体；`off` 时为 null。 */
   readonly enabledBy: string | null
   readonly actions24h: number
+  /**
+   * 中枢的默认档（`--elevation-default`），由中枢补上；没设时不出现。处在 `off`
+   * 的智能体由中枢按它开启，到期、用尽或节点重启后再开。
+   */
+  readonly defaultTier?: ElevationTierName
+  /** 有人手动关掉或收回过：中枢不再按默认档开启，直到有人再选一个档位。 */
+  readonly defaultHeld?: boolean
 }
 
 export type ElevationActionClass = 'local' | 'read-out' | 'act-out'

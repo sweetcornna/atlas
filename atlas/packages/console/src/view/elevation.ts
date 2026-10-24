@@ -129,6 +129,17 @@ function grantFacts(one: ElevationNodeView, now: number): string {
         `<span title="节点上没有 gh">${state('muted', '不提供')}</span>`,
       ),
     )
+  if (one.defaultTier !== undefined)
+    rows.push(
+      fact(
+        '默认',
+        one.defaultHeld
+          ? state('muted', '已手动关闭 · 不自动开启')
+          : escapeHtml(
+              `${ELEVATION_TIER_WORD[one.defaultTier]} · 到期后自动再开`,
+            ),
+      ),
+    )
   if (live) {
     rows.push(
       fact(
