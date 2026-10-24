@@ -5,9 +5,9 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.5（生效）**：§4.3–§4.5 改成可实现的设计——本机节点改由随包的 `qmo` 里的本机运行器实现、不带 `qm`（§4.3.1 有量到的数与备选），三种协议的驱动抽成本机与常驻共用的 `@qianmo/harness`，会话记录与前台的会话同形，四档权限逐个 agent 落到原生设置，页面经壳的命令与有序通道直达运行器，转录由 Code 页用 DOM 自己画；原 P37.16「本机直连」并入 P37.14，§8 拆成 P37.14a–d，P37.16 改为离线打开 Code；§2、§4.1、§4.2、§5.0、§5.1、§5.3、§6、§7、§9 随之改；v1.4：§5 改成按会话的 Remote 开关（负责人 10-24：「可以选择开启 remote 按钮，以实现多端消息同步」，章程 v3.17），§4.1 随之加开关；v1.3：新增 §3.6 两种模式与设置卡片（负责人 10-24 追加），§3.2、§3.5、§4.1 随之改写，§3.5 写入壳侧实现；v1.2：§3.2–§3.5 按 P37.13 局部导航、先改后同步与外观的实现回写，§4.2.1 补识别细则（`qmo agents` 已实现） |
+| 文档版本 | **v1.6（生效）**：P37.14a 合流后回写——§4.5.1 写明字数按 UTF-16 码元计（壳、运行器、页面同一种算法）、对话框插件为什么套一层去掉它的页面脚本，三方的参数约定落成共用的用例数据；§4.5.2 `runner` 事件只由壳发；§8 P37.14a 的状态；§9 P37.14a 的用例与未实测项；v1.5：§4.3–§4.5 改成可实现的设计——本机节点改由随包的 `qmo` 里的本机运行器实现、不带 `qm`（§4.3.1 有量到的数与备选），三种协议的驱动抽成本机与常驻共用的 `@qianmo/harness`，会话记录与前台的会话同形，四档权限逐个 agent 落到原生设置，页面经壳的命令与有序通道直达运行器，转录由 Code 页用 DOM 自己画；原 P37.16「本机直连」并入 P37.14，§8 拆成 P37.14a–d，P37.16 改为离线打开 Code；§2、§4.1、§4.2、§5.0、§5.1、§5.3、§6、§7、§9 随之改；v1.4：§5 改成按会话的 Remote 开关（负责人 10-24：「可以选择开启 remote 按钮，以实现多端消息同步」，章程 v3.17），§4.1 随之加开关；v1.3：新增 §3.6 两种模式与设置卡片（负责人 10-24 追加），§3.2、§3.5、§4.1 随之改写，§3.5 写入壳侧实现；v1.2：§3.2–§3.5 按 P37.13 局部导航、先改后同步与外观的实现回写，§4.2.1 补识别细则（`qmo agents` 已实现） |
 | 日期 | 2026-10-24 |
-| 核对基点 | 本仓库 `b1403211`（`feat/p37-14-local`，基于 #281 的 `feat/p37-13-modes`）；v1.4 及以前为 `b0a8789a`（main，#276 之后） |
+| 核对基点 | v1.6：`feat/p37-14a`（P37.14a 三路合流，基于 `feat/p37-14-local`）；v1.5：本仓库 `b1403211`（`feat/p37-14-local`，基于 #281 的 `feat/p37-13-modes`）；v1.4 及以前为 `b0a8789a`（main，#276 之后） |
 | 范围依据 | 负责人 2026-10-24 的要求，原话见 §0。章程 v3.17 §2.13 |
 | 编号 | P37.13–P37.16（包表见 §8），P37.14 分 a–d 四包。P37.7「本机节点」并入 P37.14；原 P37.16「本机直连」并入 P37.14a |
 | 依赖 | [`qmo-app.md`](./qmo-app.md)（壳、进门、IPC）、[`clients.md`](./clients.md)（`qmo`、设备令牌）、[`harness-backends.md`](./harness-backends.md)（底层目录与各底层的原生接口）、[`console.md`](./console.md)（前台与后台） |
@@ -487,9 +487,10 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 | `qmo_local_set_remote` | `session`、`on` | P37.15 前一律拒绝 `E_REMOTE` | 接口先留（§4.5.6） |
 
 - 类型：`Folder = {id, name, path, git}`（`path` 只供显示）；`Summary = {id, title, folder: {id | null, name}, agent: {id, name}, mode, state: 'idle' | 'running' | 'waiting' | 'interrupted' | 'failed', worktree?: {branch}, remote: false, createdAt, updatedAt, lastSeq}`；`Record = {seq, kind: 'turn', turn}`（§4.3.6）。
-- 校验：会话 `cs_[A-Za-z0-9_-]{22}`；文件夹 `[0-9a-f]{16}`；征询 `[A-Za-z0-9_.:-]{1,128}`；`clientId` `[A-Za-z0-9_-]{1,64}`；`agent` 只收底层目录的六个 id；`mode` 只收四档的标识；`text` 1–65,536 个字符、不含 NUL；`message` 至多 500 字、`title` 至多 120 字，都不含控制字符；`path` 见 §4.5.3；`before` 正整数；`worktree`、`on` 布尔。
+- 校验：会话 `cs_[A-Za-z0-9_-]{22}`；文件夹 `[0-9a-f]{16}`；征询 `[A-Za-z0-9_.:-]{1,128}`；`clientId` `[A-Za-z0-9_-]{1,64}`；`agent` 只收底层目录的六个 id；`mode` 只收四档的标识；`text` 1–65,536 个字符、不含 NUL；`message` 至多 500 字、`title` 至多 120 字，都不含控制字符；`path` 见 §4.5.3；`before` 正整数；`worktree`、`on` 布尔。这里的「字」一律按 UTF-16 码元计，即 JavaScript 字符串的 `length`：页面输入框的 `maxLength`、壳的 `ipc::units`、运行器的检查是同一种算法（P37.14a 合流时运行器原按 Unicode 标量计，已改；一个表情符号算两个字）。
+- 约定：每条命令页面传哪些键、哪些可缺省、壳交给运行器的方法与参数，写成一份数据 `atlas/tests/integration/fixtures/qmo-local-calls.json`，三方的用例都读它——壳的 `ipc.rs` 用例核对按它得出同样的调用、少一个必需键或多一个键都拒绝；页面的假壳（`console/test/browser/codeShell.ts`）按它核对页面每次调用的键与类型；编出来的 `qmo` 的用例把其中每组参数交给运行器，形状都收、多一个键都拒（`E_ARGS`）。改命令的参数要先改这份数据。
 - 失败：Promise 以一行字符串拒绝，壳与运行器自己的一律以 `qmo local ` 开头：`qmo local <代码>: <说明>`，代码有 `E_ARGS`、`E_RUNNER`、`E_FOLDER`、`E_AGENT`、`E_SESSION`、`E_BUSY`、`E_LIMIT`、`E_ASK`、`E_GIT`、`E_REMOTE`。其他拒绝是 Tauri 的（壳里没有这条命令或不许这个页面调），页面当作壳早于本功能，写「更新桌面版后可开本机会话」。
-- 选文件夹用 `tauri-plugin-dialog` 的 Rust 接口（在工作线程里阻塞调用）；它的 JS 命令不进任何能力，页面调不到。事件通道的取数命令（`plugin:__TAURI_CHANNEL__|fetch`）在 Tauri 2.12.5 里不经 ACL（`webview/mod.rs` 写明的特例），不用再开权限，也不开 `core:event` 一类。
+- 选文件夹用 `tauri-plugin-dialog` 的 Rust 接口（在工作线程里阻塞调用）；它的 JS 命令不进任何能力，页面调不到。插件注册时套一层 `code::Quiet`，只去掉插件自带的页面脚本，其余照转：这段脚本（2.8.3 的 `init-iife.js`）会给每个页面、含中枢页面，把 `window.alert` 与 `window.confirm` 换成它的 `plugin:dialog|message` 命令，而这条命令不给任何页面，`alert` 就静默失效；`confirm` 还变成返回 Promise 的异步函数，同步写法 `if (!confirm(…)) return` 拿到的 Promise 恒为真，确认被直接跳过（后台计费页删除上游就是这样写的）。壳的用例核对注册处只有这一处、包了这一层、`Quiet` 的页面脚本为空。事件通道的取数命令（`plugin:__TAURI_CHANNEL__|fetch`）在 Tauri 2.12.5 里不经 ACL（`webview/mod.rs` 写明的特例），不用再开权限，也不开 `core:event` 一类。
 
 #### 4.5.2 事件通道
 
@@ -502,7 +503,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 | `delta` | `session`、`turn`、`offset`、`text` | 正文增量；运行器每 50 ms 合并一次，一条至多 4 KiB |
 | `activity` | `session`、`kind`、`words` | 思考中、在调哪个工具，给等待行用；不落盘 |
 | `removed` | `session` | 会话删了 |
-| `runner` | `state: 'up' \| 'down'`、`reason?` | 运行器起停 |
+| `runner` | `state: 'up' \| 'down'`、`reason?` | 运行器起停，只由壳发：`up` 在壳接受了 `hello` 的答复（协议是 1）之后，`down` 在运行器结束或没起来时（带原因，一次故障只说一次）。运行器自己不发这种事件（P37.14a 合流前两边都发 `up`，页面收到两次） |
 
 - 每条带 `v: 1`。页面按会话记已画到的 `seq`，重复的丢掉，见到跳号就 `qmo_local_read` 补；`delta` 的 `offset` 与已画的长度对不上时不接，等这一条的 `record`。页面打开一个会话的顺序：先登记通道，再读，读到的 `lastSeq` 之前的事件丢掉。
 - 体积：一条事件尽量小于 8 KiB（Tauri 在这以上改走取数命令）。`record` 的 JSON 超过 8 KiB 时只发 `{session, seq, trimmed: true}`，页面展开或画到它时再读。
@@ -537,7 +538,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 #### 4.5.6 给 Remote（P37.15）留的接口
 
 - 记录：`events.ndjson` 与中枢对话存储同形（§4.3.6），推的时候原样推；`session.json` 里的 `remote {on, pushedSeq}` 记推到哪一条，断线后从那里接着推。
-- 运行器：写记录处经一个出口（`RecordSink`，P37.14 为空实现）；发话的方法带 `origin: 'local' | 'remote'`，P37.14 只收 `local`。
+- 运行器：写记录处经一个出口（`RecordSink`）；发话的方法带 `origin: 'local' | 'remote'`，P37.14 只收 `local`。P37.14a 没有留空的 `RecordSink`（一个没人传的选项只是死代码）：运行器的记录除重起时的修补外都经 `SessionManager.#write` 一处写出，P37.15 在那里接上出口，并按 `pushedSeq` 从 `events.ndjson` 补推，修补的几行也就带上了。
 - 壳与页面：`qmo_local_set_remote` 与 `features.remote` 已在命令表里；`features.remote` 为 `false` 时页面不画 Remote 开关。
 - 链路：在运行器这个进程里拨（它就是 `qmo`，设备令牌本来就在这里），不另开回环。
 
@@ -607,7 +608,7 @@ Cowork 式虚拟机、模拟器、Office 插件；把整个网页应用另带一
 |---|---|---|---|
 | P37.13 | 局部导航、先改后同步、外观收成一套、首帧按上次布局、两种模式与设置卡片（§3） | 后台与两种前台切页不重载文档；§3.3 的操作失败能回到原样；明暗对比、三种语言、窄屏的现有用例全过；预览环境截图核对 | 局部导航、§3.3 中代码里存在的操作、外观（§3.4）、首帧的页面侧与壳侧、两种模式与设置卡片（§3.6）已实现；两种前台之间仍整页导航；未在真壳里联调 |
 | P37.14 | `qmo agents --json` 识别本机 agent（§4.2） | macOS 本机识别出已装的 agent | 已实现（§9） |
-| P37.14a | 本机会话第一轮，Claude Code：`@qianmo/harness`（进程基类与 Claude Code 通道搬家，加 §4.3.3 的附加项）；运行器 `qmo code serve`（§4.3.2、§4.3.4–§4.3.6 的 Claude Code 部分，§4.4 的四档）；壳的运行器桥、选文件夹与 §4.5.1 的命令（改名、删除留给 d，`qmo_local_set_remote` 先一律拒绝）；Code 页的会话列表（按文件夹分组）、新会话、转录（§4.5.5）、征询卡片、权限菜单、Git 文件夹的变更面板；`qmo agents` 不再列 qianmopi。原 P37.16「本机直连」并入这里 | macOS 本机经 Qmo.app 用 Claude Code 在一个文件夹里：发一句 → 流式回答 → 改一个文件 → 变更面板看到这个文件的 diff；页面载入后断网，同一会话再跑一轮；退出 Qmo 再开，接着说；节点两组测试与 `qm` 构建冒烟不变；富文本一致性用例、脚本预算与「没有 innerHTML」用例 | 设计 |
+| P37.14a | 本机会话第一轮，Claude Code：`@qianmo/harness`（进程基类与 Claude Code 通道搬家，加 §4.3.3 的附加项）；运行器 `qmo code serve`（§4.3.2、§4.3.4–§4.3.6 的 Claude Code 部分，§4.4 的四档）；壳的运行器桥、选文件夹与 §4.5.1 的命令（改名、删除留给 d，`qmo_local_set_remote` 先一律拒绝）；Code 页的会话列表（按文件夹分组）、新会话、转录（§4.5.5）、征询卡片、权限菜单、Git 文件夹的变更面板；`qmo agents` 不再列 qianmopi。原 P37.16「本机直连」并入这里 | macOS 本机经 Qmo.app 用 Claude Code 在一个文件夹里：发一句 → 流式回答 → 改一个文件 → 变更面板看到这个文件的 diff；页面载入后断网，同一会话再跑一轮；退出 Qmo 再开，接着说；节点两组测试与 `qm` 构建冒烟不变；富文本一致性用例、脚本预算与「没有 innerHTML」用例 | 已实现，三路（`@qianmo/harness` 与运行器、壳、Code 页）合流在 `feat/p37-14a`，未合入；用例与门禁见 §9。真机这一条（Qmo.app 里用真的 Claude Code 走一轮、断网再跑、退出再开）未实测；`RecordSink` 没留（§4.5.6） |
 | P37.14b | Codex：`CodexChannel` 搬进 `@qianmo/harness` 并加附加项；运行器的 Codex 驱动（§4.3.5、§4.4 的 Codex 列，`turn/diff/updated`） | 用 Codex 在一个本机文件夹里跑通一轮（改一个文件、看到变更）；四档在假 app-server 上各一轮；常驻 Codex 用例不变 | 设计 |
 | P37.14c | ACP：`AcpChannel` 搬进 `@qianmo/harness` 并加附加项；Gemini CLI、Qwen Code、opencode、dsh 的本机起法、模式映射与会话级「允许」的认法 | Gemini CLI 在本机文件夹里跑通一轮；其余三个在假 ACP 上过，真机标未实测；常驻 ACP 用例不变 | 设计 |
 | P37.14d | 独立工作树（§4.3.7）；变更面板补全（非 Git 文件夹、未跟踪、二进制、大文件）；改名、删除（含工作树的去留）；窗口不在前面时的系统通知（一轮完成、等你确认）与角标；退出 Qmo 时有会话在跑先问；壳设置窗「Code」一节（新会话的缺省权限模式、新会话开 Remote 的缺省） | 在 Git 仓库里开工作树会话、改文件、主检出不受影响，删会话时干净的工作树被移除、不干净的留下；通知点开回到那个会话；以上在 macOS 本机走一遍 | 设计 |
@@ -630,6 +631,21 @@ P37.13 已有的用例（`atlas/packages/console/test/`）：
 壳侧（`cd atlas/apps/qmo/src-tauri && cargo test`）：`qmo_boot_layout`、`qmo_local_agents`、`qmo_open_local_settings` 的参数逐项校验与调用方同源判定，三条命令只在中枢的 remote 能力里、不在本地页面的能力里；设置文件里布局与颜色的读写（旧的 `admin`、越界、坏颜色只丢那一块）；骨架计划（哪一面亮、行与标题的排法、两套颜色与缺省）和它交给骨架页的 JSON；`qmo agents` 同一时刻只跑一个。
 
 未验证：WKWebView（桌面壳）里的 View Transitions、局部换页与 `<dialog>` 设置卡片；壳里真实的首帧（骨架页只在无头 Chromium 里按三份计划看过）与菜单「设置」接上后的整体；Firefox、Safari。
+
+P37.14a（本机会话第一轮，Claude Code）的用例，全部用假进程，从不启动真的 agent：
+
+- `@qianmo/harness`（`atlas/packages/harness/test/claudeStream.test.ts`，假进程 `test/fixtures/fake-claude-stream.runner.ts`）：帧与常驻时相同、流式事件只喂看门狗；正文增量、整条消息、思考与模式经 `onDetail` 交出；工具的完整输入与结果、子 agent 标记；征询的允许一次（原样带回输入、不留权限）、本会话都允许（`permission_suggestions` 的 `destination` 一律改成 `session`）、拒绝附言、答不了按拒绝、中止时未答的按拒绝且迟到的答复丢掉；`set_permission_mode` 按 id 配对、被拒则拒绝；`interrupt` 的答复。节点两组测试与 `qm` 构建冒烟照旧（搬家单独一个提交）。
+- 运行器（`atlas/packages/client/test/code/`）：`runner.test.ts` 在本进程里走各方法——`hello`、选文件夹与受保护根、一轮的流式与记录、`start` 不支持的（工作树、Remote、别的 agent）、四档的原生值与 `auto` 没开通的三种退法（起不来、`init` 报的不是、切换被拒）、跳过权限确认的重起、人工确认的征询、本会话都允许与拒绝附言、中止时未答的征询、五条队列与中止撤下、排队按序、失败的原话与登录提示、崩溃后续接、对话在 Claude Code 那边没了、两种起不来的原因不分先后、64 MiB 只读、空闲回收、进程上限、中止升级到整个进程组、agent 自己的目录从不打开、环境过滤与登录 shell 环境不落盘、Git 变更与差异、落盘的权限位与信封；字数按 UTF-16 计（表情符号算两个）、运行器自己不发 `runner` 事件。`serve.test.ts` 把源码的 `qmo code serve` 当子进程：标准输出只有协议、标准输入结束即退、`shutdown` 在 3 s 内结束连忽略 SIGTERM 的 agent、一个客户端目录一个运行器、被杀后下一个接管锁并结束残留、会话标「已中断」、下一句按原会话号续上。另有 `store`、`git`、`paths`、`env`、`diff` 的单元用例；`agents.test.ts` 与 `qianmo-client-agents-catalog.test.ts` 核对不再列 qianmopi。
+- 编出来的 `qmo`：`atlas/tests/integration/qianmo-client-code-serve.test.ts`（e2e 分片）用 `build-client.ts` 的 `buildClient` 当场编一个，按壳的说法（补 `origin: 'local'`、`remote: false`）在临时 Git 仓库里走完 `hello` → `folders.add` → 人工确认档 `session.start` → 征询 → `answer` → 改文件 → 流式 → `changes` / `diff` → `session.mode` → 第二句 → `shutdown`，核对事件的先后（记录、增量在它的记录之前、会话状态 运行中 → 等你确认 → 运行中 → 完成）、`seq` 逐一、`events.ndjson` 每行与发出的记录逐字相同、0700/0600、运行器不发 `runner` 事件、日志里没有说的话；并把三方约定（§4.5.1）里的每组参数交给它，形状都收、多一个键都拒。`check-client-smoke.ts` 对编出来的 `qmo` 跑 `code serve` 的 `hello` 与 `shutdown`。`qianmo-client-code-store.test.ts` 用中枢的 `ChatStore` 读运行器写的记录，与本机读出的逐条相同。
+- 壳（`cargo test`）：十三条命令的合法与非法参数（多键、类型、超长、越界、`../`、`-` 开头、控制字符、坏的会话 id / 文件夹 id / 通道串）、按三方约定得出的调用；中枢源以外、快速输入窗、本地页面调用被拒；命令只在 remote 能力里，对话框插件的权限不在任何能力里、它的页面脚本被去掉；对着内存管道上的假运行器：按 id 配对、并发、事件按序进通道、运行器的杂讯被丢、页面重新载入丢通道、退出后在途的被拒并退避重起、一次故障只说一次 `down`、`hello` 超时与协议不对被结束、调用超时不杀运行器、`shutdown` 的三种收尾；一个真的子进程起、重起与退出。`qmo agents` 的用例数据不再有 qianmopi。
+- Code 页（`atlas/packages/console/test/`）：`code.test.ts` 核对两段脚本的预算（`CODE_RENDER_JS` < 14,000、`CODE_JS` < 34,000）、能解析、没有 `innerHTML` 一类、`/code` 的 CSP 哈希；`browser/codeRender.browser.test.ts` 在真 Chrome 里核对富文本与服务端逐字相同；`browser/code.browser.test.ts` 对着页面里的假壳（`codeShell.ts`，按三方约定核对每次调用的键与类型）走端到端、跳号补读与重复不重画、运行器起停、停止与排队、征询的焦点、权限模式、发送与开会话失败、选文件夹、前进后退与翻页、重新检测、旧壳与浏览器、三种语言、明暗对比、375 px，全程不向中枢发一个请求。
+- 体积：`qmo`（macOS arm64，`--minify`）从基点 `af43e20d` 的 70,895,474 字节到 70,961,522 字节，多 66,048 字节；打包进来的模块只有 `client`、`harness`、`paths`，没有 omp 的代码。
+
+P37.14a 未实测（要在负责人的机器上用 Qmo.app 与真的 Claude Code 核）：
+
+- 真的 Claude Code：`--permission-prompt-tool stdio` 是否仍有效（无效就换 `--permission-prompts host`，§4.6）；以 `--permission-mode auto` 启动在没开通的账号上怎么报（运行器认的两句原话「Session ID … is already in use」「No conversation found」也是按现有提示写的，没对过）；`init` 里有没有 `permissionMode`；`stream_event` 增量的实际形状；登录失效时的原话。
+- Qmo.app 里的整条路：WKWebView 里 `Channel` 经 `postMessage` 回退的顺序与延迟、长转录的 DOM；页面载入后断网同一会话再跑一轮；退出 Qmo 再开接着说；系统选择框；`runner.log` 的内容。`bun run atlas:build:app` 只编过，没有打开。
+- Windows、Linux：运行器的锁在 Windows 上没有启动时刻核对（总被接管）、进程树与 npm 垫片、壳在这两个系统上都没编过。
 
 `qmo agents`（§4.2）：
 

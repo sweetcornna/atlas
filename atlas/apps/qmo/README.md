@@ -131,7 +131,8 @@ atlas/apps/qmo/src-tauri/target/release/bundle/macos/Qmo.app/Contents/MacOS/qmo-
 
 - 第一次调用时起，标准输入输出上一行一个 JSON：请求 `{id, method, params}`，应答 `{id, result}` 或 `{id, error: {code, message}}`，事件 `{method: "event", params}`。起来先发 `hello`，2 秒内答 `{version, protocol: 1, features, codeDir?}` 才算起来；`protocol` 不是 1 就结束它。
 - 应答按 `id` 配给等待的调用，30 秒没答复的调用以 `qmo local E_RUNNER` 拒绝（运行器不动）。运行器的 `error` 原样变成 `qmo local <code>: <message>`（代码不是 `E_` 加大写字母时换成 `E_RUNNER`，说明压成一行、至多 500 字）。
-- 事件只转给主窗口页面登记的那一条 `Channel`，按收到的顺序、原文转发；壳自己发 `{v: 1, type: "runner", state: "up" | "down", reason?}`。
+- 事件只转给主窗口页面登记的那一条 `Channel`，按收到的顺序、原文转发；`{v: 1, type: "runner", state: "up" | "down", reason?}` 只由壳发（运行器自己不发）。
+- 每条命令的参数：键、可缺省的键、交给运行器的方法与参数写在 `atlas/tests/integration/fixtures/qmo-local-calls.json`，`ipc.rs` 的用例、页面的假壳与编出来的 `qmo` 的用例都核它；「字」按 UTF-16 码元计，与页面、运行器一致。
 - 运行器退出：在途的调用以 `E_RUNNER` 拒绝，页面收到 `down`；1、2、5、10 秒后重起，之后每 30 秒一次（活过 60 秒的那次之后从 1 秒重来）；等待期间到的调用立即拒绝。
 - 标准错误的最后 64 KiB 连同壳记的起停写进 `<codeDir>/runner.log`（0600）；运行器没报 `codeDir` 时只留在内存。
 - 退出 Qmo（`RunEvent::Exit`）：不再重起，发 `shutdown` 等 3 秒，关掉它的标准输入，5 秒还在就结束进程。
