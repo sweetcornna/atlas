@@ -129,7 +129,9 @@ function toolsScript(): string {
   // tier is what the menu shows; held is what the hub last said, which a
   // refused write goes back to. writes counts picks, so only the latest
   // one's answer is painted.
-  var perm = { address: '', tier: 'off', held: 'off', wired: false, asking: false, writes: 0 };
+  var perm = { address: '', tier: 'off', held: 'off', wired: false, pinnable: false, writes: 0 };
+  // Only the latest read paints: an answer to an older one is dropped.
+  var permRead = 0;
 
   function paintPerm(note) {
     var pick = byId('fx-perm-pick');
@@ -143,7 +145,9 @@ function toolsScript(): string {
     for (var i = 0; i < rows.length; i++) {
       var tier = rows[i].getAttribute('data-perm');
       check(rows[i], tier === perm.tier);
-      rows[i].disabled = !ops || tier === perm.tier;
+      // 人工确认 stays pickable while a hub default would open the agent again:
+      // picking it holds the agent there.
+      rows[i].disabled = !ops || (tier === perm.tier && !(tier === 'off' && perm.pinnable));
       if (tier === perm.tier && word) {
         var label = rows[i].querySelector('span');
         word.textContent = label ? label.textContent : tier;
@@ -154,30 +158,47 @@ function toolsScript(): string {
 
   function readPerm() {
     var where = target();
-    if (!where || perm.asking) return Promise.resolve();
-    perm.asking = true;
+    if (!where) return Promise.resolve();
+    var mine = ++permRead;
     return qc.sendJson('GET', '/v0/elevation').then(function (list) {
+      if (mine !== permRead) return;
       var one = null;
       var rows = Array.isArray(list) ? list : [];
       for (var i = 0; i < rows.length; i++) {
         if (rows[i] && rows[i].node === where.node && rows[i].agent === where.agent) one = rows[i];
       }
       var tier = one && one.tier ? String(one.tier) : 'off';
-      perm = { address: where.address, tier: tier, held: tier, wired: !!one, asking: false, writes: perm.writes };
+      perm = {
+        address: where.address,
+        tier: tier,
+        held: tier,
+        wired: !!one,
+        pinnable: !!(one && one.tier === 'off' && one.defaultTier && !one.defaultHeld && !one.unsupportedReason),
+        writes: perm.writes
+      };
       var pick = byId('fx-perm-pick');
       var note = !one
         ? tx('notWired', '未接入 · 一直是人工确认')
         : one.unsupportedReason
           ? String(one.unsupportedReason)
           : pick && pick.getAttribute('data-ops') === '1'
-            ? (byId('fx-perm-note') && byId('fx-perm-note').getAttribute('data-defaults')) || ''
+            ? defaultLine(one) || (byId('fx-perm-note') && byId('fx-perm-note').getAttribute('data-defaults')) || ''
             : tx('opsOnly', '只有运维能切换');
       if (one && one.unsupportedReason) perm.wired = false;
       paintPerm(note);
     }, function (err) {
-      perm = { address: where.address, tier: 'off', held: 'off', wired: false, asking: false, writes: perm.writes };
+      if (mine !== permRead) return;
+      perm = { address: where.address, tier: 'off', held: 'off', wired: false, pinnable: false, writes: perm.writes };
       paintPerm(err && (err.status === 404 || err.status === 501) ? tx('notWired', '未接入 · 一直是人工确认') : qc.failLine('读取', err));
     });
+  }
+
+  // The hub's default mode (--elevation-default), when it has one.
+  function defaultLine(one) {
+    if (!one.defaultTier) return '';
+    if (one.defaultHeld) return tx('defaultHeld', '已手动关闭 · 不再自动开启默认档');
+    var row = byId('fx-perm-menu') && byId('fx-perm-menu').querySelector('[data-perm="' + one.defaultTier + '"] span');
+    return tx('defaultOn', '默认{mode} · 到期后自动再开').replace('{mode}', row ? row.textContent : String(one.defaultTier));
   }
 
   // The new mode shows before the hub answers; a refusal puts back the one
@@ -189,6 +210,8 @@ function toolsScript(): string {
     close(true);
     var mine = ++perm.writes;
     var current = function () { return perm.address === where.address && perm.writes === mine; };
+    // A read that started before this change must not paint over it.
+    permRead++;
     perm.tier = tier;
     paintPerm();
     status('', 'muted');
@@ -199,6 +222,7 @@ function toolsScript(): string {
         if (!current()) return;
         perm.tier = held;
         paintPerm();
+        readPerm();
         var word = byId('fx-perm-word');
         qc.toast(tx('switchedTo', '已切换为 ') + (word ? word.textContent : tier), 'ok');
       }, function (err) {
@@ -269,7 +293,8 @@ function toolsScript(): string {
   function follow() {
     var where = target();
     if (where && where.address === perm.address) return;
-    perm = { address: where ? where.address : '', tier: 'off', held: 'off', wired: false, asking: false, writes: perm.writes };
+    permRead++;
+    perm = { address: where ? where.address : '', tier: 'off', held: 'off', wired: false, pinnable: false, writes: perm.writes };
     paintPerm();
     if (where && byId('fx-perm-btn')) readPerm();
   }

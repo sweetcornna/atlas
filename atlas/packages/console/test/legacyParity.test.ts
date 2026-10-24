@@ -528,7 +528,7 @@ afterAll(() => {
   else process.env['TZ'] = previousTz
 })
 
-// Golden regenerated for the front/admin route split; legacy API and fragment contracts stay pinned.
+// Golden regenerated for the desktop app's admin chrome (drag regions, traffic-light margin); legacy API and fragment contracts stay pinned.
 describe('a console without accounts', () => {
   test('pins legacy APIs and the approved front/admin split byte for byte', async () => {
     const shots = await shoot()
