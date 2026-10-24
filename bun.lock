@@ -130,6 +130,10 @@
         "@qianmo/protocol": "workspace:*",
       },
     },
+    "atlas/packages/harness": {
+      "name": "@qianmo/harness",
+      "version": "0.0.0",
+    },
     "atlas/packages/magpie": {
       "name": "@qianmo/magpie",
       "version": "0.0.0",
@@ -188,6 +192,7 @@
         "@qianmo/elastic": "workspace:*",
         "@qianmo/extension": "workspace:*",
         "@qianmo/handoff": "workspace:*",
+        "@qianmo/harness": "workspace:*",
         "@qianmo/magpie": "workspace:*",
         "@qianmo/mailbox": "workspace:*",
         "@qianmo/memory": "workspace:*",
@@ -1296,6 +1301,8 @@
     "@qianmo/extension": ["@qianmo/extension@workspace:atlas/packages/extension"],
 
     "@qianmo/handoff": ["@qianmo/handoff@workspace:atlas/packages/handoff"],
+
+    "@qianmo/harness": ["@qianmo/harness@workspace:atlas/packages/harness"],
 
     "@qianmo/magpie": ["@qianmo/magpie@workspace:atlas/packages/magpie"],
 
