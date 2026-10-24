@@ -126,13 +126,13 @@
 | 动效 | 60 / 120 / 200 / 300 ms（`--motion-fast` / `--motion-snap` / `--motion-base` / `--motion-sheet`），`cubic-bezier(.165,.84,.44,1)`（`--ease-out`）；后台样式里的过渡不超过 200，300 只给整块换入与前台抽屉；原前台的 450 并入 300；减弱动效时照旧关掉 |
 | 后台页 | 不再一页一堆卡片：卡片去底色和圆角，同类条目排成列表，行间 0.5 px 线；总览的统计格改成一条横排数字。说明文字只留一行；状态用一个点加一个词（`state()`），黄、红两种需要注意的状态词带颜色，其余是安静的墨色 |
 
-未做完的（P37.13 第一轮之后）：说明文字的「?」提示还没有做，现有多行说明是删短或保留；`tag()` 小标签里有一部分是状态（「可达」「链完整」「待审批」等），只有设置页的实例一节改成了点加词，其余仍是带底色的小标签；总览与审计页的页内样式写在 `routes/overview.ts`、`routes/audit.ts` 里，这一轮没动，只随公共变量变化。桌面版本地骨架页（`apps/qmo/ui/app.css`）按值抄这套颜色，已对齐；壳在页面到之前画的窗口底色（`src-tauri/src/shell.rs` 的 `page_background`）深色仍是 `#1a1a19`，待壳里核对。
+未做完的（P37.13 第一轮之后）：说明文字的「?」提示还没有做，现有多行说明是删短或保留；`tag()` 小标签里有一部分是状态（「可达」「链完整」「待审批」等），只有设置页的实例一节改成了点加词，其余仍是带底色的小标签；总览与审计页的页内样式写在 `routes/overview.ts`、`routes/audit.ts` 里，这一轮没动，只随公共变量变化。桌面版本地骨架页（`apps/qmo/ui/app.css`）按值抄这套颜色，已对齐；壳在页面到之前画的窗口底色（`src-tauri/src/shell.rs` 的 `page_background`）取页面上次报的页面色，没报过时是 `#f9f9f7` / `#0b0b0b`（§3.5）。
 
 ### 3.5 首帧
 
 页面每次布局变化经命令 `qmo_boot_layout` 报给壳，壳存在设置里；下次启动骨架页按它画，和真实页面对得上。
 
-页面侧在本仓库；壳侧命令在 `feat/p37-13-shell`（约定见那边的设计记录）。只在 `window.__QMO_SHELL__` 是对象且 `window.__TAURI__.core.invoke` 可用时调用；调用包在 `try` 里、返回的 Promise 吞掉拒绝，壳里没有这条命令时什么也不发生。布局稳定 400 ms 后才报，和上一次报的一样就不报。
+页面侧与壳侧都已实现。页面只在 `window.__QMO_SHELL__` 是对象且 `window.__TAURI__.core.invoke` 可用时调用；调用包在 `try` 里、返回的 Promise 吞掉拒绝，壳里没有这条命令时什么也不发生。布局稳定 400 ms 后才报，和上一次报的一样就不报。
 
 调用：`invoke('qmo_boot_layout', { layout })`，`layout` 字段：
 
@@ -146,11 +146,19 @@
 | `theme` | `'system'` \| `'light'` \| `'dark'` | `<html data-theme>`，缺省 `system` |
 | `colors` | `{ dark: boolean, page: '#rrggbb', sidebar: '#rrggbb' }` | 此刻的明暗（`data-theme` 或跟随系统时的 `prefers-color-scheme`）与页面底色、侧栏底色：取计算样式（`body` 与 `#fx-side` 的 `background-color`），在 1×1 画布上画一下再读回成 `#rrggbb`，画布不可用时按 `rgb()` 解析。壳那边可省，页面总是给 |
 
-全部由 `assets/frontShell.ts` 报：启动、窗口改变大小、侧栏开合、侧栏列表变化、换外观、系统明暗变化时。设置卡片自己什么也不报。壳侧要做的：命令只对中枢源开放、逐字段校验类型与范围（照 `qmo-app.md` §7），存进设置，骨架页按它画侧栏宽度、行、标题与两种底色。
+全部由 `assets/frontShell.ts` 报：启动、窗口改变大小、侧栏开合、侧栏列表变化、换外观、系统明暗变化时。设置卡片自己什么也不报。
+
+壳侧（`atlas/apps/qmo/src-tauri/src/layout.rs`、`ipc.rs`、`ui/skeleton.js`）：
+
+
+- 命令只给中枢源（remote 能力，另在命令里核一次调用方页面与中枢同源），逐字段校验：`page` 只收 `chat` / `agents` / `code`，`side`、`theme` 只收表里的词，`sideWidth` 0–1000、`rows` 0–60、`labels` 0–20 的整数，多键、类型不对、越界整次拒绝；`theme`、`colors` 可省。`colors` 是 `{ dark, page, sidebar }`，两色必须是 7 位 `#rrggbb`。
+- 存进壳的设置文件（`settings.json` 的 `layout` 与 `colors`），颜色按 `dark` 分浅、深两套各存一份；与已存的相同就不写盘。读时 `layout`、两套颜色各自坏了只丢那一块；旧文件里的 `page: 'admin'` 读成 `chat`。
+- 骨架页：壳把布局与颜色算成一份计划（Work \| Code 里亮哪一面：`code` 亮 Code，其余亮 Work；侧栏宽或收起；`rows` 行均分到 `labels` 组、每组前一个标题；浅、深两套颜色，没报过的那套用缺省：浅页面 `#f9f9f7`、侧栏 `#fcfcfb`，深页面 `#0b0b0b`、侧栏为页面色混 20% 黑），经主窗口的初始化脚本以 JSON 交给本地页面（只在 `tauri:` / `tauri.localhost` 上定义 `window.__QMO_BOOT__`，不拼进 HTML），`skeleton.js` 在首帧前画，再向壳要一次最新的计划（`local_boot`），不同就重画；经 `about:blank` 进中枢时，壳把同一份计划随骨架写进去。页面上再核一遍颜色与数字，不合格的用样式表的缺省。颜色按系统当前外观选那一套；页面强制了与系统相反的明暗时，骨架用的是系统那套，页面到了会换一次色。
+- 主窗口的底色（页面画出来之前看到的）取当前外观那套的页面色。
 
 ### 3.6 两种模式与设置卡片
 
-负责人 2026-10-24 追加：「学习成claude desktop那种模式，设置页单独成一个单独卡片」「主页面只显示work和code两个模式」。控制台侧在 `feat/p37-13-modes`；壳侧（菜单「设置」、`qmo_local_agents`、`qmo_open_local_settings`、骨架页按 `colors` 画）在 `feat/p37-13-shell`。
+负责人 2026-10-24 追加：「学习成claude desktop那种模式，设置页单独成一个单独卡片」「主页面只显示work和code两个模式」。壳侧对应的是菜单「设置」、`qmo_local_agents`、`qmo_open_local_settings` 与骨架页按 `colors` 画（§3.5）。
 
 **两种模式。** 侧栏顶部是品牌与收起按钮一行，下面是占满侧栏宽度的 Work | Code 分段切换（两个词三种语言都不译）。
 
@@ -261,7 +269,7 @@ Cowork 式虚拟机、模拟器、Office 插件；把整个网页应用另带一
 
 | 包 | 内容 | 完成标准 | 状态 |
 |---|---|---|---|
-| P37.13 | 局部导航、先改后同步、外观收成一套、首帧按上次布局、两种模式与设置卡片（§3） | 后台与两种前台切页不重载文档；§3.3 的操作失败能回到原样；明暗对比、三种语言、窄屏的现有用例全过；预览环境截图核对 | 局部导航、§3.3 中代码里存在的操作、首帧的页面侧已在 `feat/p37-13-nav` 实现；两种模式与设置卡片的控制台侧在 `feat/p37-13-modes`（卡片里各区域、前台到卡片都不重载）；Work 与 Code 之间、两种前台之间仍整页导航；壳侧命令在 `feat/p37-13-shell` |
+| P37.13 | 局部导航、先改后同步、外观收成一套、首帧按上次布局、两种模式与设置卡片（§3） | 后台与两种前台切页不重载文档；§3.3 的操作失败能回到原样；明暗对比、三种语言、窄屏的现有用例全过；预览环境截图核对 | 局部导航、§3.3 中代码里存在的操作、外观（§3.4）、首帧的页面侧与壳侧、两种模式与设置卡片（§3.6）已实现；两种前台之间仍整页导航；未在真壳里联调 |
 | P37.14 | 「开发」页、`qmo agents --json` 识别本机 agent、本机节点 sidecar、选文件夹、按项目分组的会话、变更面板（§4.1–§4.4） | macOS 本机识别出已装的 agent；用 Claude Code 与 Codex 各在一个本机项目里跑通一轮（改一个文件、看到变更）；其余 agent 标未实测 | 设计 |
 | P37.15 | 设备链路 `qmo link` 与中枢 `/v0/client/link`、设备节点、会话同步与续写（§5） | 本机会话在浏览器里看得到；设备在线时从浏览器续写一轮；吊销设备后链路断开 | 设计 |
 | P37.16 | 本机直连 `qmo_local_*`（§4.5） | 拔掉网络后本机会话照样跑完一轮，恢复后中枢补齐 | 设计 |
@@ -279,4 +287,6 @@ P37.13 已有的用例（`atlas/packages/console/test/`）：
 - `browser/narrow.browser.test.ts`：375 px 时卡片铺满窗口、列表一行横向滚动且当前项在视野里、底部在区域下面、Esc 回到 Work 面；不跑脚本时卡片就是页面。
 - `browser/frontTools.browser.test.ts`：权限模式先显示新值，中枢拒绝时退回并写原因。
 
-未验证：WKWebView（桌面壳）里的 View Transitions、局部换页与 `<dialog>` 设置卡片；壳侧三条命令与菜单「设置」接上之后的整体（本仓库只用页面里的假壳测）；Firefox、Safari。
+壳侧（`cd atlas/apps/qmo/src-tauri && cargo test`）：`qmo_boot_layout`、`qmo_local_agents`、`qmo_open_local_settings` 的参数逐项校验与调用方同源判定，三条命令只在中枢的 remote 能力里、不在本地页面的能力里；设置文件里布局与颜色的读写（旧的 `admin`、越界、坏颜色只丢那一块）；骨架计划（哪一面亮、行与标题的排法、两套颜色与缺省）和它交给骨架页的 JSON；`qmo agents` 同一时刻只跑一个。
+
+未验证：WKWebView（桌面壳）里的 View Transitions、局部换页与 `<dialog>` 设置卡片；壳里真实的首帧（骨架页只在无头 Chromium 里按三份计划看过）与菜单「设置」接上后的整体；Firefox、Safari。

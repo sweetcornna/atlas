@@ -3,11 +3,13 @@
 
 //! The commands web content can invoke.
 //!
-//! The six `qmo_*` commands are the hub's (qmo-app.md §5.2): they reach the
+//! The nine `qmo_*` commands are the hub's (qmo-app.md §5.2): they reach the
 //! hub's origin through the remote capability `shell::grant` adds, and read
-//! their arguments from the raw body through `ipc.rs`. The `local_*` commands
-//! are the shell's own pages' (`capabilities/local.json`), never the hub's.
-//! Nothing else — no file system, shell or HTTP plugin — is exposed.
+//! their arguments from the raw body through `ipc.rs`; the three added for
+//! P37.13 also check that the calling page is on the hub's origin. The
+//! `local_*` commands are the shell's own pages' (`capabilities/local.json`),
+//! never the hub's. Nothing else — no file system, shell or HTTP plugin — is
+//! exposed.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -17,7 +19,9 @@ use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tauri_plugin_notification::NotificationExt;
 
 use crate::{
+    agents::Agents,
     ipc,
+    layout::Plan,
     settings::normalize_shortcut,
     shell::{self, Phase, Problem, Shell, SignOutReport, MAIN},
     text::Lang,
@@ -119,6 +123,56 @@ pub async fn qmo_sign_out(
     tauri::async_runtime::spawn_blocking(move || shell::sign_out(&app))
         .await
         .map_err(|e| e.to_string())
+}
+
+/// The calling page is on the signed-in hub's origin (`ipc::from_hub`).
+fn from_hub(shell: &Shell, webview: &tauri::Webview) -> Result<(), String> {
+    let page = webview.url().ok();
+    ipc::from_hub(page.as_ref(), shell.hub().as_ref()).map_err(|e| e.to_string())
+}
+
+/// The coding agents on this computer, as `qmo agents --json [--rescan]`
+/// lists them (qmo-local.md §4.2): `{agents: [...]}`. One run at a time; a
+/// call during a run gets that run's answer (`agents.rs`). At most 30 s.
+#[tauri::command]
+pub async fn qmo_local_agents(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Value, String> {
+    from_hub(&app.state::<Shell>(), &webview)?;
+    let rescan = ipc::local_agents(&body(&request)?).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || app.state::<Agents>().scan(rescan))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The page's side panel and colours, for the skeleton next time
+/// (qmo-local.md §3.5).
+#[tauri::command]
+pub fn qmo_boot_layout(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    from_hub(&app.state::<Shell>(), &webview)?;
+    let reported = ipc::boot_layout(&body(&request)?).map_err(|e| e.to_string())?;
+    shell::remember_layout(&app, reported);
+    Ok(())
+}
+
+/// The shell's own settings window, from the page's settings card. Async: a
+/// window made from a synchronous command can deadlock on Windows.
+#[tauri::command]
+pub async fn qmo_open_local_settings(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    from_hub(&app.state::<Shell>(), &webview)?;
+    ipc::no_arguments(&body(&request)?).map_err(|e| e.to_string())?;
+    shell::open_settings(&app);
+    Ok(())
 }
 
 // ---- the local pages ----------------------------------------------------
@@ -271,4 +325,11 @@ pub fn local_open(app: AppHandle, target: String) -> Result<(), String> {
 #[tauri::command]
 pub fn local_close(window: tauri::WebviewWindow) {
     let _ = window.close();
+}
+
+/// What the skeleton page draws: the hub page's last layout and colours, as
+/// they are now (the copy the window was made with may be older).
+#[tauri::command]
+pub fn local_boot(shell: tauri::State<'_, Shell>) -> Plan {
+    shell.skeleton_plan()
 }
