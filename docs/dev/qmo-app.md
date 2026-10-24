@@ -111,7 +111,7 @@
 
 ### 5.2 页面请壳做的事
 
-经 Tauri IPC（`window.__TAURI__.core.invoke`）调用。只有中枢源与本地页面能调；参数在 Rust 里逐项校验，超长、类型不对、越界一律拒绝。P37.13 加的后三条另在命令里核一次调用方页面与登录的中枢同源，本地页面和别的源调用都拒绝。
+经 Tauri IPC（`window.__TAURI__.core.invoke`）调用。只有中枢源与本地页面能调；参数在 Rust 里逐项校验，超长、类型不对、越界一律拒绝。P37.13 加的三条（`qmo_local_agents`、`qmo_boot_layout`、`qmo_open_local_settings`）另在命令里核一次调用方页面与登录的中枢同源，本地页面和别的源调用都拒绝；P37.14a 加的十三条本机会话命令（表末）同样核同源，并且只收主窗口（快速输入窗调用也拒绝），失败一律以 `qmo local <代码>: <说明>` 拒绝，规则见 [`qmo-local.md`](./qmo-local.md) §4.5。
 
 | 命令 | 参数 | 作用 |
 |---|---|---|
@@ -124,6 +124,19 @@
 | `qmo_local_agents` | `rescan?`（布尔，缺省 false） | 跑随包的 `qmo agents --json`（`rescan` 时加 `--rescan`），返回 `{ agents: [...] }`，每项原样是 [`qmo-local.md`](./qmo-local.md) §4.2 的字段。30 秒超时；同一时刻只跑一个，后到的调用等正在跑的那次的结果（正在跑的不是 rescan 而后到的是时，等它结束再跑一次 rescan）。失败时 Promise 以一行说明拒绝 |
 | `qmo_boot_layout` | `layout`：`page`（`chat` \| `agents` \| `code`）、`side`（`open` \| `closed`）、`sideWidth` 0–1000、`rows` 0–60、`labels` 0–20 的整数，`theme?`（`system` \| `light` \| `dark`，缺省 `system`），`colors?`（`{ dark, page, sidebar }`，两色都是 `#rrggbb`） | 记下页面的布局与颜色，下次骨架页按它画（[`qmo-local.md`](./qmo-local.md) §3.5）；颜色按 `dark` 分浅、深两套存，没带 `colors` 时不动已存的 |
 | `qmo_open_local_settings` | 无 | 打开壳自己的设置窗，给页面设置卡片里的「桌面版」一项用；也是菜单「设置」在没有设置卡片的旧中枢页面上的回退（§6） |
+| `qmo_local_list` | 无 | 本机会话：运行器的 `list`，`{v, features, folders, sessions}`；第一次调用时壳起运行器 `qmo code serve` |
+| `qmo_local_watch` | `channel`（`__CHANNEL__:<数字>`，即 `window.__TAURI__.core.Channel`） | 登记本页的事件通道，再调换掉旧的；主窗口开始载入页面时壳丢掉它 |
+| `qmo_local_pick_folder` | 无 | 弹系统文件夹选择框（同一时刻一个），取真实路径交给运行器 `folders.add`；取消答 `null` |
+| `qmo_local_forget_folder` | `folder`（`[0-9a-f]{16}`） | 运行器 `folders.forget` |
+| `qmo_local_start` | `folder`、`agent`（六个 id 之一）、`mode`（四档之一）、`worktree`、`text`（1–65,536 字、不含 NUL）、`clientId`（`[A-Za-z0-9_-]{1,64}`）、`remote?`（只收 `false`） | 运行器 `session.start`，壳补 `remote: false` |
+| `qmo_local_send` | `session`（`cs_` 加 22 位）、`text`、`clientId` | 运行器 `session.send`，壳补 `origin: 'local'` |
+| `qmo_local_stop` | `session` | 运行器 `session.stop` |
+| `qmo_local_answer` | `session`、`ask`（`[A-Za-z0-9_.:-]{1,128}`）、`decision`（`once` \| `session` \| `deny`）、`message?`（≤ 500 字、无控制字符） | 运行器 `session.answer` |
+| `qmo_local_set_mode` | `session`、`mode` | 运行器 `session.mode` |
+| `qmo_local_read` | `session`、`before?`（正整数）、`limit?`（1–200） | 运行器 `session.read` |
+| `qmo_local_changes` | `session` | 运行器 `session.changes` |
+| `qmo_local_diff` | `session`、`path`（相对路径，≤ 1024 字，不以 `/`、`\`、`-` 开头，没有空段、`.`、`..`，无控制字符） | 运行器 `session.diff` |
+| `qmo_local_set_remote` | `session`、`on` | 校验后一律拒绝 `qmo local E_REMOTE: 未开放`（P37.15 前） |
 
 页面什么时候发：智能体回复了一条不在眼前的对话（窗口不在前台或打开的是别的对话）时 `qmo_notify`；未读数变化时 `qmo_badge`。
 
@@ -152,7 +165,7 @@
 ## §7 安全边界
 
 - 设备令牌只在 `qmo` 进程与它的状态文件里，壳与 WebView 都拿不到。壳只经管道收一次会话 cookie，用完即丢，不落盘（WebView 自己的 cookie 库除外，与浏览器保存登录状态是同一条边界）。
-- IPC 只对中枢源开放：运行时按登录时的中枢地址加一条 remote 能力，只含 §5.2 的九个命令；不开放文件系统、shell、HTTP 等插件给网页。`qmo_local_agents` 只让页面拿到 `qmo agents` 的识别结果（只 stat、查 PATH、跑 `--version`，不以服务或协议模式启动任何 agent），页面不能传路径、命令或别的参数。
+- IPC 只对中枢源开放：运行时按登录时的中枢地址加一条 remote 能力，只含 §5.2 的二十二个命令；不开放文件系统、shell、HTTP、对话框等插件给网页（对话框插件只用它的 Rust 接口，它给页面加的脚本也去掉了）。本机会话的命令只收主窗口，页面传不了路径与命令行：路径只从系统选择框进来（[`qmo-local.md`](./qmo-local.md) §4.5.3）。`qmo_local_agents` 只让页面拿到 `qmo agents` 的识别结果（只 stat、查 PATH、跑 `--version`，不以服务或协议模式启动任何 agent），页面不能传路径、命令或别的参数。
 - 导航白名单是中枢源；其他地址交系统浏览器。正式版关闭开发者工具。
 - 本地页面的 CSP 只允许自身脚本与样式；中枢页面的 CSP 不因壳改变。
 - `qianmo_shell` 只影响边距与拖动区，服务端只接受三个枚举值。

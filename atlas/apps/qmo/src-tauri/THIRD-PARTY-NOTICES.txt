@@ -4446,6 +4446,35 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
+  - rfd 0.16.1 (https://github.com/PolyMeilex/rfd)
+
+MIT License
+
+Copyright (c) 2022 Bartłomiej Maryńczak
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+-------------------------------------------------------------------------------
+MIT License (MIT)
+
+Used by:
   - jsonptr 0.7.1 (https://github.com/chanced/jsonptr)
 
 MIT License
@@ -4748,6 +4777,8 @@ Used by:
   - r-efi 6.0.0 (https://github.com/r-efi/r-efi)
   - tauri-plugin-autostart 2.7.0 (https://github.com/tauri-apps/plugins-workspace)
   - tauri-plugin-deep-link 2.6.2 (https://github.com/tauri-apps/plugins-workspace)
+  - tauri-plugin-dialog 2.8.3 (https://github.com/tauri-apps/plugins-workspace)
+  - tauri-plugin-fs 2.7.1 (https://github.com/tauri-apps/plugins-workspace)
   - tauri-plugin-global-shortcut 2.4.1 (https://github.com/tauri-apps/plugins-workspace)
   - tauri-plugin-notification 2.7.0 (https://github.com/tauri-apps/plugins-workspace)
   - tauri-plugin-opener 2.7.2 (https://github.com/tauri-apps/plugins-workspace)
@@ -4771,27 +4802,37 @@ Used by:
   - windows-strings 0.5.1 (https://github.com/microsoft/windows-rs)
   - windows-sys 0.45.0 (https://github.com/microsoft/windows-rs)
   - windows-sys 0.59.0 (https://github.com/microsoft/windows-rs)
+  - windows-sys 0.60.2 (https://github.com/microsoft/windows-rs)
   - windows-sys 0.61.2 (https://github.com/microsoft/windows-rs)
   - windows-targets 0.42.2 (https://github.com/microsoft/windows-rs)
   - windows-targets 0.52.6 (https://github.com/microsoft/windows-rs)
+  - windows-targets 0.53.5 (https://github.com/microsoft/windows-rs)
   - windows-threading 0.2.1 (https://github.com/microsoft/windows-rs)
   - windows-version 0.1.7 (https://github.com/microsoft/windows-rs)
   - windows 0.62.2 (https://github.com/microsoft/windows-rs)
   - windows_aarch64_gnullvm 0.42.2 (https://github.com/microsoft/windows-rs)
   - windows_aarch64_gnullvm 0.52.6 (https://github.com/microsoft/windows-rs)
+  - windows_aarch64_gnullvm 0.53.1 (https://github.com/microsoft/windows-rs)
   - windows_aarch64_msvc 0.42.2 (https://github.com/microsoft/windows-rs)
   - windows_aarch64_msvc 0.52.6 (https://github.com/microsoft/windows-rs)
+  - windows_aarch64_msvc 0.53.1 (https://github.com/microsoft/windows-rs)
   - windows_i686_gnu 0.42.2 (https://github.com/microsoft/windows-rs)
   - windows_i686_gnu 0.52.6 (https://github.com/microsoft/windows-rs)
+  - windows_i686_gnu 0.53.1 (https://github.com/microsoft/windows-rs)
   - windows_i686_gnullvm 0.52.6 (https://github.com/microsoft/windows-rs)
+  - windows_i686_gnullvm 0.53.1 (https://github.com/microsoft/windows-rs)
   - windows_i686_msvc 0.42.2 (https://github.com/microsoft/windows-rs)
   - windows_i686_msvc 0.52.6 (https://github.com/microsoft/windows-rs)
+  - windows_i686_msvc 0.53.1 (https://github.com/microsoft/windows-rs)
   - windows_x86_64_gnu 0.42.2 (https://github.com/microsoft/windows-rs)
   - windows_x86_64_gnu 0.52.6 (https://github.com/microsoft/windows-rs)
+  - windows_x86_64_gnu 0.53.1 (https://github.com/microsoft/windows-rs)
   - windows_x86_64_gnullvm 0.42.2 (https://github.com/microsoft/windows-rs)
   - windows_x86_64_gnullvm 0.52.6 (https://github.com/microsoft/windows-rs)
+  - windows_x86_64_gnullvm 0.53.1 (https://github.com/microsoft/windows-rs)
   - windows_x86_64_msvc 0.42.2 (https://github.com/microsoft/windows-rs)
   - windows_x86_64_msvc 0.52.6 (https://github.com/microsoft/windows-rs)
+  - windows_x86_64_msvc 0.53.1 (https://github.com/microsoft/windows-rs)
 
 MIT License
 
