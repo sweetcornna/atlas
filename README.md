@@ -73,7 +73,7 @@
 
 ### 能接入一切
 
-- 客户端：除了浏览器，Windows 与 Linux 上有客户端 `qmo`，配对后一条命令打开前台；macOS 上有桌面版 Qmo，原生窗口里是对话界面 `/app` 与智能体界面 `/`，另有全局快捷键唤出的快速输入。桌面版只在 macOS 本机构建和运行过，还没有签名与安装包；`qmo` 在 Windows 上只在 CI 里跑过。
+- 客户端：除了浏览器，Windows 与 Linux 上有客户端 `qmo`，配对后一条命令打开前台；macOS 上有桌面版 Qmo，原生窗口里是对话界面 `/app` 与智能体界面 `/`，另有全局快捷键唤出的快速输入。桌面版只在 macOS 本机构建和运行过，v3.1.1 起在 GitHub 发行页附 macOS（Apple 芯片）的 `.dmg`，没有 Developer ID 签名与公证，Windows 与 Linux 还没有安装包；`qmo` 在 Windows 上只在 CI 里跑过。
 - 聊天渠道：QQ（开放平台官方机器人）、微信、Telegram、Discord、Slack。消息进对应智能体的会话，回复送回原聊天；连接都由中枢拨出，不开入站端口。个人 QQ 经用户自己运行的 SnowLuma（OneBot 11）接入，SnowLuma 本身限非商用，公开版不提供这个渠道。各渠道都还没有用真实账号实测。
 - 扩展：在控制台给智能体装 MCP 连接器、技能与插件，各底层按自己的原生方式加载，密钥由中枢封存。还没有用真实的 MCP 服务和插件仓库跑过整轮。
 - 应用连接：邮件、日历与 GitHub 仓库。邮件与日历的凭据只留在中枢，节点上的智能体经中枢调用，发信、建日程每次都要批准；目前只对测试服务器验证过。
@@ -219,7 +219,8 @@ bun test --preload ./atlas/tests/preload.ts ./atlas/packages/<包>/test/<名>.te
 | [接力接法](docs/dev/handoff-usage.md) | 本机编程工具与节点的配对和接力 |
 | [演示环境](docs/dev/demo-env.md) | 本地演示拓扑 |
 | [基座改动清单](docs/dev/base-modifications.md) | 对基座文件的修改与删除登记 |
-| [v3.1.0 发行说明](docs/dev/release-v3.1.0.md) | 最近一次 GitHub 发行的改动、部署与已知问题 |
+| [v3.1.1 发行说明](docs/dev/release-v3.1.1.md) | 最近一次 GitHub 发行：桌面版 macOS 安装包与壳的许可声明 |
+| [v3.1.0 发行说明](docs/dev/release-v3.1.0.md) | 上一次完整发行的改动、部署与已知问题 |
 
 ## 安全
 

@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.1（生效）** |
+| 文档版本 | **v1.2（生效）** |
 | 日期 | 2026-10-24（v1.0 为 2026-10-22） |
 | 核对基点 | 本仓库 `14526490`（main，#273 之后） |
 | 范围依据 | 负责人 2026-10-22：开始桌面端开发，参照 Claude Desktop，另有一个类似 Grok Bot 的界面，风格统一；用 REA 参照，做到商业级完成度和效果。章程 v3.14 §2.12 |
@@ -158,7 +158,8 @@
 - `bun run atlas:build:app` 先用 `atlas:build:client` 的办法编出本机目标的 `qmo` 放进 `src-tauri/binaries/qmo-<目标三元组>`，再 `cargo tauri build`。开发时 `bun run atlas:dev:app`。
 - 与 `qmo` 同一条规矩：各系统的安装包在本系统上构建。macOS 版的 `qmo` 只能在 macOS 上编；`qmo` 不用 WebSocket，不受 macOS 构建内联 ws 的问题影响。
 - 图标由阡陌标生成（`cargo tauri icon`）。
-- 代码签名、公证、自动更新不在本轮（P37.9）。
+- 安装包：macOS 在本机用 `hdiutil` 把 `Qmo.app` 与 `Applications` 快捷方式压成 `.dmg`（做法见 `atlas/apps/qmo/README.md`「打包」）。`tauri.conf.json` 的 `signingIdentity` 为 `-`（整包 ad-hoc 签名，资源封印）、`hardenedRuntime` 为 `false`（没有公证它没有用，随包的 `qmo` 是 Bun 编译产物，开着要另给 JIT 授权）；有 Developer ID 时用 `APPLE_SIGNING_IDENTITY` 覆盖。Rust 依赖的许可声明由 cargo-about 生成到 `src-tauri/THIRD-PARTY-NOTICES.txt`，随 `.app` 放进 `Resources/`。
+- Developer ID 签名、公证、自动更新不在本轮（P37.9）。
 
 ## §9 包表
 
@@ -167,7 +168,7 @@
 | P37.8 | 原生壳 `atlas/apps/qmo`：主窗口、本地登录 / 离线 / 设置页、`qmo session` 进门、导航白名单、六个 IPC 命令、构建脚本 | macOS 本机构建并走完「配对 → 进门 → 对话 → 退出」；Linux、Windows 至少编译通过 | 已合入（#274）；macOS 部分达标，Linux、Windows 还没编过 |
 | P37.10 | 对话界面 `/app` 与两种界面的统一 | 用例覆盖路由、角色、三种语言、明暗对比、窄屏；预览环境里截图核对 | 已合入（#274），10-23 部署到内测环境（§10.3） |
 | P37.11 | 快速输入 `/app/quick`、全局快捷键、托盘、菜单、通知、角标、单实例、深链、开机启动 | macOS 本机逐项走一遍 | 已合入（#274）；页面侧 10-23 部署到内测环境；壳侧通知、托盘点击、开机启动没走（§10.2） |
-| P37.12 | Windows 自绘标题栏、Linux 透明卡片退回、各系统安装包 | 两种系统真机各装卸一轮 | 规划 |
+| P37.12 | Windows 自绘标题栏、Linux 透明卡片退回、各系统安装包 | 两种系统真机各装卸一轮 | macOS arm64 `.dmg` 已随 v3.1.1 发行（ad-hoc 签名、未公证，没有在干净机器上装过）；Windows、Linux 规划 |
 
 ## §10 视觉参照与验证
 
@@ -210,7 +211,7 @@ Grok Bot 只读了公开页面（xAI 的设计文章与文档），取的是：�
 - 真窗口里的 `/app`：中枢页面在 WKWebView 里的观感、红绿灯与拖动区的实际位置、快速输入窗的透明效果，都只在 Chrome 里模拟过。
 - Windows、Linux 的构建与行为；WebKitGTK 上「经 about:blank 进门」是否同样需要、是否同样有效。
 - 系统通知的弹出与点击（会触发系统授权）、托盘图标的真实点击、设置与关于两页、开机启动。
-- 签名、公证、安装包（P37.9、P37.12）。壳的 Rust 依赖还没写进 NOTICE 与 SBOM，发行前补。
+- Developer ID 签名与公证（P37.9）、Windows 与 Linux 的安装包（P37.12）；macOS `.dmg` 没有在干净机器上装过，也没看过下载后 Gatekeeper 的提示。壳的 Rust 依赖已写进随包的 `THIRD-PARTY-NOTICES.txt` 与 NOTICE，随包 `qmo` 里 Bun 运行时的声明还没放进去。
 
 ### 10.3 内测环境
 
