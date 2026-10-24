@@ -7,10 +7,9 @@
  *
  * 1. **Work | Code.** The switch under the brand moves between the two
  *    faces; Work is `/` in a browser and `/app` in the desktop app.
- * 2. **Code.** In a browser, and in an app without `qmo_local_agents`, one
- *    line and nothing to start; in an app with it, the agents it found, the
- *    ready ones to pick and 开始 held shut; an app whose qmo cannot answer
- *    says why in the status line.
+ * 2. **Code.** In a browser one line and nothing to start; in an app from
+ *    before local sessions (no `qmo_local_watch` / `qmo_local_list`) the line
+ *    to update it. Local sessions themselves are `code.browser.test.ts`'s.
  * 3. **The card.** The slider, the ⋯ menu's 设置, ⌘, and the app's
  *    `window.__qmoOpenSettings` open it where it was last; already open,
  *    they only take the focus. Esc, the ×, and a press on the scrim close
@@ -83,9 +82,10 @@ const AGENTS = {
 }
 
 /**
- * The desktop app as the page sees it. `agents` is what `qmo_local_agents`
- * answers, or the string it refuses with; every other command but the
- * settings window is refused the way an app without it does.
+ * The desktop app as the page sees it, Tauri's `Channel` included. `agents`
+ * is what `qmo_local_agents` answers, or the string it refuses with; every
+ * other command but the settings window is refused the way an app without
+ * it does.
  */
 function shellStub(agents: object | string): string {
   return `
@@ -99,7 +99,7 @@ function shellStub(agents: object | string): string {
       }
       if (command === 'qmo_open_local_settings') return Promise.resolve(null);
       return Promise.reject('Command ' + command + ' not found');
-    } } };
+    }, Channel: function Channel() { this.onmessage = null; } } };
   `
 }
 
@@ -245,95 +245,30 @@ describe.skipIf(SKIP !== null)('Work and Code', () => {
     }
   }, 30_000)
 
-  test('Code in the app: the agents it found, the ready ones to pick, 开始 held shut; 重新检测 asks again', async () => {
-    const tab = await browser.tab()
-    try {
-      await open(tab, served.base, '/code', AGENTS)
-      await tab.waitFor(
-        `document.querySelectorAll('#code-agents li').length === 3`,
-      )
-      expect(
-        await tab.evaluate<unknown>(`({
-          web: ${q('#code-web')}.hidden,
-          rows: [...document.querySelectorAll('#code-agents li')].map(li => li.textContent),
-          off: [...document.querySelectorAll('#code-agents li.is-off .fx-code-name')].map(el => el.textContent),
-          picks: [...${q('#code-agent')}.options].map(o => o.value),
-          go: ${q('#code-go')}.disabled,
-          closed: ${q('.fx-code-closed')}.textContent,
-          state: ${q('#code-state')}.textContent,
-        })`),
-      ).toEqual({
-        web: true,
-        rows: [
-          'Claude Code2.1.4可用',
-          'Codex0.48.0可用',
-          'Gemini CLI0.9.0版本太旧 · 需要 0.12 以上',
-        ],
-        off: ['Gemini CLI'],
-        picks: ['claude-code', 'codex'],
-        go: true,
-        closed: '本机会话未开放',
-        state: '',
-      })
-      await tab.evaluate(`${q('#code-rescan')}.click()`)
-      await tab.waitFor(
-        `window.__calls.filter(c => c[0] === 'qmo_local_agents').length === 2`,
-      )
-      expect(
-        await tab.evaluate<unknown[]>(
-          `window.__calls.filter(c => c[0] === 'qmo_local_agents').map(c => c[1])`,
-        ),
-      ).toEqual([{ rescan: false }, { rescan: true }])
-      // The answer is drawn as text, never as markup.
-      expect(
-        await tab.evaluate<number>(
-          `document.querySelectorAll('#code-agents li *').length`,
-        ),
-      ).toBeLessThanOrEqual(3 * 5)
-    } finally {
-      await tab.close()
-    }
-  }, 30_000)
-
-  test('an app older than the command gets the one line; an app whose qmo cannot answer says why', async () => {
-    const old = await browser.tab()
-    try {
-      await open(
-        old,
-        served.base,
-        '/code',
-        'Command qmo_local_agents not found',
-      )
-      await old.waitFor(
-        `!${q('#code-web')}.hidden && ${q('#code-local')}.hidden`,
-      )
-      expect(await old.evaluate<boolean>(`${q('#code-new')}.disabled`)).toBe(
-        true,
-      )
-    } finally {
-      await old.close()
-    }
-    const failing = await browser.tab()
-    try {
-      // The app has the command; its qmo has no `agents` (§3.6).
-      await open(
-        failing,
-        served.base,
-        '/code',
-        'qmo agents: unknown command "agents"',
-      )
-      await failing.waitFor(
-        `${q('#code-state')}.textContent === 'qmo agents: unknown command "agents"'`,
-      )
-      expect(
-        await failing.evaluate<unknown>(`({
-          web: ${q('#code-web')}.hidden,
-          local: ${q('#code-local')}.hidden,
-          again: ${q('#code-rescan')}.disabled,
-        })`),
-      ).toEqual({ web: true, local: false, again: false })
-    } finally {
-      await failing.close()
+  test('Code in an app from before local sessions: the line to update it, nothing to start', async () => {
+    // P37.13's app: it finds the agents, but has no runner to drive them.
+    for (const shell of [AGENTS, 'Command qmo_local_agents not found']) {
+      const tab = await browser.tab()
+      try {
+        await open(tab, served.base, '/code', shell)
+        await tab.waitFor(
+          `!${q('#code-web')}.hidden && ${q('#code-local')}.hidden`,
+        )
+        expect(
+          await tab.evaluate<unknown>(`({
+            line: ${q('#code-web')}.textContent,
+            start: ${q('#code-new')}.disabled,
+            asked: window.__calls.map(c => c[0]).filter(c => c.indexOf('qmo_local_') === 0).sort(),
+          })`),
+        ).toEqual({
+          line: '更新桌面版后可开本机会话',
+          start: true,
+          // The channel first, then the list; the agents for the picker.
+          asked: ['qmo_local_agents', 'qmo_local_watch'],
+        })
+      } finally {
+        await tab.close()
+      }
     }
   }, 30_000)
 })

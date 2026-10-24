@@ -79,6 +79,7 @@ import {
   CONSOLE_CLIENT_JS_ACCOUNTS,
 } from '../assets/client.js'
 import { CODE_JS } from '../assets/codeClient.js'
+import { CODE_RENDER_JS } from '../assets/codeRender.js'
 import { FRONT_JS } from '../assets/frontClient.js'
 import { NAV_MOUNTED_JS } from '../assets/nav.js'
 import { FRONT_PANEL_JS } from '../assets/frontPanel.js'
@@ -140,7 +141,7 @@ import { FRONT_TEXT, frontClientText, type FrontText } from './frontText.js'
 import { qianmoMark } from './mark.js'
 import { renderRichText } from './richText.js'
 import { type SourceLinks, sourceFooter } from './source.js'
-import { codeMain, codeSide } from './frontCode.js'
+import { codeHead, codeMain, codeSide, codeTail } from './frontCode.js'
 import {
   CONSOLE_NAV_JS,
   documentHead,
@@ -2005,7 +2006,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     FRONT_SHELL_JS +
     // The figure editor's script goes with the editor (below).
     (model.faces.editable ? AVATAR_PAGE_JS : '') +
-    (code ? CODE_JS : '') +
+    (code ? CODE_RENDER_JS + CODE_JS : '') +
     (replicate === 'off' ? '' : FRONT_REPLICATE_JS) +
     (approvals === undefined ? '' : FRONT_APPROVAL_JS) +
     (card === undefined
@@ -2028,8 +2029,9 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
       ? `<button type="button" class="fx-icon-btn fx-top-new" data-action="fx-new" aria-label="${attr(t.newChat)}">` +
         `${icon('square-pen', { small: true })}</button>`
       : '') +
-    `<div class="fx-head-mount" data-tauri-drag-region>${code ? '' : model.view.head}</div>` +
+    `<div class="fx-head-mount" data-tauri-drag-region>${code ? codeHead() : model.view.head}</div>` +
     `<div class="fx-top-tail"><span class="fx-live" id="fx-live"></span>` +
+    (code ? codeTail(t) : '') +
     (chat || chatless
       ? ''
       : `<details class="fx-more fx-hist-menu">` +
@@ -2041,7 +2043,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `</div>` +
     `</header>`
   const page = code
-    ? codeMain(t, model.code?.desktop === true)
+    ? codeMain(t, model.lang, model.code?.desktop === true)
     : `<div class="fx-scroll" id="fx-scroll"><div class="fx-column">${model.view.thread}` +
       (approvals === undefined
         ? ''
@@ -2092,7 +2094,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
       : sourceFooter(model.source, 'foot fx-source')) +
     `</aside>` +
     `<button type="button" class="fx-scrim" data-action="fx-side-close" aria-label="${attr(t.closeSide)}" tabindex="-1"></button>` +
-    `<main class="fx-main${model.welcome || chatless ? ' is-welcome' : ''}${code ? ' fx-code' : ''}" id="fx-main">` +
+    `<main class="fx-main${model.welcome || (chatless && !code) ? ' is-welcome' : ''}${code ? ' fx-code' : ''}" id="fx-main">` +
     top +
     `<p class="fx-offline" id="fx-offline" role="status" hidden>${escapeHtml(t.offline)}</p>` +
     `<div class="fx-progress" aria-hidden="true"></div>` +

@@ -2,29 +2,40 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Code — the second mode of the console's main window (`/code`, P37.13,
- * `docs/dev/qmo-local.md` §3.6 and §4.1): work on this computer, with the
- * agents installed on it.
+ * Code — the second mode of the console's main window (`/code`, P37.13 and
+ * P37.14a, `docs/dev/qmo-local.md` §3.6, §4.1 and §4.5): work on this
+ * computer, with the agents installed on it.
  *
- * The sessions themselves are P37.14's (the local node); this is the face
- * they will live in. Its side list has 新代码会话 and the code sessions, of
- * which there are none yet. Its page, inside the desktop app, lists the
- * agents the app found on this computer (the shell's `qmo_local_agents`,
- * which runs `qmo agents --json`; `assets/codeClient.ts` asks and draws) and
- * the shape of a new session — a folder and an agent — with 开始 held shut
- * and the one word why. In a browser, and in an app too old to have the
- * command, it says Code is the desktop app's, and nothing else: no download
- * link.
+ * Local sessions live on this computer, run by the desktop app's runner; the
+ * hub never sees them. So the server draws only empty frames — the side
+ * list's container, the box a session starts from and continues in (folder,
+ * agent, permission mode, Remote held off, send and stop), the transcript's
+ * container, the changes panel's — and the page script fills them through
+ * the shell (`assets/codeClient.ts`, `assets/codeRender.ts`). The icons the
+ * script needs are the server's own SVG in a `<template>`, cloned, never
+ * parsed from a string.
  *
- * What the server cannot know is whether the page has the app around it;
- * the app's cookie (`preferences.ts`, `qianmo_shell`) is the best guess, so
- * the first paint draws the panel for it and the line for a browser, and the
- * page script settles it.
+ * In a browser, and in an app too old for local sessions, it says Code is
+ * the desktop app's (or that the app wants updating), and nothing else: no
+ * download link. What the server cannot know is whether the page has the app
+ * around it; the app's cookie (`preferences.ts`, `qianmo_shell`) is the best
+ * guess, so the first paint draws the box for it and the line for a browser,
+ * and the page script settles it.
  */
 
+import type { Lang } from '../i18n.js'
 import { chevron, icon } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
-import type { FrontText } from './frontText.js'
+import { codeClientText, type FrontText } from './frontText.js'
+
+/** The four permission modes, in the order the menu lists them (§4.4). */
+const MODES = ['off', 'accept-edits', 'auto', 'full-access'] as const
+
+/** A new session's mode until the person picks another (§4.4). */
+const DEFAULT_MODE = 'auto'
+
+/** Longest line the runner takes (`qmo-local.md` §4.5.1). */
+const MAX_LINE = 65_536
 
 /** The side list's rows and list under Work | Code. */
 export function codeSide(t: FrontText): string {
@@ -35,31 +46,105 @@ export function codeSide(t: FrontText): string {
     `</div>` +
     `<div class="fx-list-head"><span class="fx-list-title">${escapeHtml(t.codeSessions)}</span></div>` +
     `<div class="fx-side-scroll" id="fx-side-scroll">` +
-    `<section class="fx-code-sessions" id="code-sessions" aria-label="${attr(t.codeSessions)}">` +
+    `<section class="fx-recents fx-code-sessions" id="code-sessions" aria-label="${attr(t.codeSessions)}">` +
     `<p class="fx-none">${escapeHtml(t.noCodeSessions)}</p></section></div>`
   )
 }
 
-/** The page: the local agents and a new session's shape, or the browser's one line. */
-export function codeMain(t: FrontText, desktop: boolean): string {
+/** The bar's head over an open session: its title, and folder · agent. */
+export function codeHead(): string {
   return (
-    `<div class="fx-scroll" id="fx-scroll"><div class="fx-column fx-code-column">` +
+    `<div class="fx-head fx-code-head" id="code-head" hidden>` +
+    `<span class="fx-head-name" id="code-title"></span>` +
+    `<span class="fx-head-sub" id="code-sub"></span></div>`
+  )
+}
+
+/** The bar's button for the changes panel, over an open session. */
+export function codeTail(t: FrontText): string {
+  return (
+    `<button type="button" class="fx-icon-btn fx-code-toggle" id="code-changes-btn" data-action="code-changes" ` +
+    `aria-label="${attr(t.changes)}" aria-controls="code-changes" aria-pressed="false" hidden>` +
+    `${icon('git-branch', { small: true })}</button>`
+  )
+}
+
+/** The icons the page script clones (`assets/codeRender.ts`). */
+function icons(): string {
+  const one = (name: string, svg: string): string =>
+    `<i data-i="${attr(name)}">${svg}</i>`
+  return (
+    `<template id="code-icons">` +
+    ['check', 'x', 'alert-triangle', 'list-checks', 'copy']
+      .map(name => one(name, icon(name, { small: true })))
+      .join('') +
+    one('chev', chevron()) +
+    `</template>`
+  )
+}
+
+function box(t: FrontText): string {
+  const modes = MODES.map(
+    mode =>
+      `<option value="${attr(mode)}"${mode === DEFAULT_MODE ? ' selected' : ''}>${escapeHtml(t.permModes[mode])}</option>`,
+  ).join('')
+  return (
+    `<form class="fx-composer fx-code-box" id="code-box" novalidate>` +
+    `<label class="sr-only" for="code-text">${escapeHtml(t.message)}</label>` +
+    `<textarea id="code-text" rows="1" spellcheck="false" maxlength="${attr(String(MAX_LINE))}" ` +
+    `aria-describedby="code-say" placeholder="${attr(t.codeFirst)}" ` +
+    `data-first="${attr(t.codeFirst)}" data-reply="${attr(t.codeReply)}"></textarea>` +
+    `<div class="fx-code-tools">` +
+    `<span class="sel fx-code-pill fx-code-blank-only"><select id="code-folder" aria-label="${attr(t.folder)}"></select>${chevron()}</span>` +
+    `<span class="sel fx-code-pill fx-code-blank-only"><select id="code-agent" aria-label="${attr(t.agentWord)}"></select>${chevron()}</span>` +
+    `<button type="button" class="fx-icon-btn fx-code-blank-only" id="code-rescan" data-action="code-rescan" ` +
+    `aria-label="${attr(t.rescan)}" title="${attr(t.rescan)}">${icon('refresh-cw', { small: true })}</button>` +
+    `<span class="sel fx-code-pill"><select id="code-mode" aria-label="${attr(t.permission)}">${modes}</select>${chevron()}</span>` +
+    `<span class="fx-code-gap"></span>` +
+    `<label class="sw fx-code-remote fx-code-blank-only" title="${attr(t.remoteLater)}">` +
+    `<input type="checkbox" role="switch" id="code-remote" disabled><span class="trk"></span><span>Remote</span></label>` +
+    `<button type="button" class="fx-send fx-code-stop" id="code-stop" data-action="code-stop" aria-label="${attr(t.stop)}" hidden>` +
+    `${icon('square', { small: true })}</button>` +
+    `<button type="submit" class="fx-send" id="code-go" aria-label="${attr(t.send)}">${icon('arrow-up', { small: true })}</button>` +
+    `</div>` +
+    `<p class="fx-status" id="code-say" role="status"></p>` +
+    `</form>` +
+    `<p class="fx-code-confirm" id="code-bypass" role="alert" hidden>` +
+    `<span>${escapeHtml(t.bypassLine)}</span>` +
+    `<button type="button" class="btn btn-small btn-danger" data-action="code-bypass-ok">${escapeHtml(t.confirm)}</button>` +
+    `<button type="button" class="btn btn-ghost btn-small" data-action="code-bypass-no">${escapeHtml(t.cancel)}</button></p>`
+  )
+}
+
+function changesPanel(t: FrontText): string {
+  return (
+    `<aside class="fx-code-changes" id="code-changes" aria-labelledby="code-changes-title" hidden>` +
+    `<header class="fx-code-changes-head"><h2 id="code-changes-title">${escapeHtml(t.changes)}</h2>` +
+    `<span class="fx-code-count" id="code-count"></span>` +
+    `<button type="button" class="fx-icon-btn" data-action="code-refresh" aria-label="${attr(t.refresh)}" title="${attr(t.refresh)}">` +
+    `${icon('refresh-cw', { small: true })}</button>` +
+    `<button type="button" class="fx-icon-btn fx-code-shut" data-action="code-changes" aria-label="${attr(t.close)}">` +
+    `${icon('x', { small: true })}</button></header>` +
+    `<p class="fx-code-note" id="code-note" role="status"></p>` +
+    `<ul class="fx-code-files" id="code-files"></ul></aside>`
+  )
+}
+
+/**
+ * The page: in the desktop app the box a session starts from, the
+ * transcript and the changes panel, all empty until the page script fills
+ * them; in a browser the one line.
+ */
+export function codeMain(t: FrontText, lang: Lang, desktop: boolean): string {
+  return (
     `<p class="fx-code-web" id="code-web"${desktop ? ' hidden' : ''}>${escapeHtml(t.codeInApp)}</p>` +
-    `<section class="fx-code-local" id="code-local" aria-labelledby="code-local-title"${desktop ? '' : ' hidden'}>` +
-    `<div class="fx-code-head"><h2 id="code-local-title">${escapeHtml(t.localAgents)}</h2>` +
-    `<button type="button" class="btn btn-secondary btn-small" id="code-rescan" data-action="code-rescan">` +
-    `${escapeHtml(t.rescan)}</button></div>` +
-    `<p class="fx-code-state" id="code-state" role="status"></p>` +
-    `<ul class="fx-code-agents" id="code-agents"></ul>` +
-    `<form class="fx-code-start" id="code-start" novalidate>` +
-    `<label class="fx-code-field"><span>${escapeHtml(t.folder)}</span>` +
-    `<input class="input" id="code-folder" placeholder="${attr(t.pickFolder)}" readonly></label>` +
-    `<label class="fx-code-field"><span>${escapeHtml(t.agentWord)}</span>` +
-    `<span class="sel"><select class="input" id="code-agent" disabled></select>${chevron()}</span></label>` +
-    `<div class="fx-code-go"><button type="submit" class="btn btn-primary" id="code-go" disabled>` +
-    `${escapeHtml(t.startSession)}</button>` +
-    `<span class="fx-code-closed">${escapeHtml(t.localClosed)}</span></div>` +
-    `</form></section>` +
-    `</div></div>`
+    `<div class="fx-code-local" id="code-local" data-view="blank" data-text="${attr(codeClientText(lang))}"${desktop ? '' : ' hidden'}>` +
+    `<div class="fx-code-chat">` +
+    `<div class="fx-scroll" id="code-scroll"><div class="fx-column"><div class="fx-msgs" id="code-msgs"></div></div></div>` +
+    `<div class="fx-dock"><div class="fx-column">${box(t)}</div></div>` +
+    `</div>` +
+    changesPanel(t) +
+    icons() +
+    `</div>`
   )
 }
