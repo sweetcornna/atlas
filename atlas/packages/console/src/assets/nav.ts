@@ -47,9 +47,12 @@
  *
  * ## Speed
  *
- * A link is fetched when the pointer goes down on it, or after it has been
- * hovered for 80 ms; the answer is reused for five seconds. The last twenty
- * pages are kept in memory: going back, or to a page seen before, shows the
+ * A link is fetched when the pointer goes down on it, so the time to the
+ * button coming up is already spent loading. Hovering fetches nothing: every
+ * answer is a roster read and a page render on the hub, and a pointer
+ * crossing the side panel would ask for pages nobody opens. An answer is
+ * reused for five seconds. The last twenty pages are kept in memory: going
+ * back, or to a page seen before, shows the
  * kept copy at once and asks again in the background, replacing the copy
  * only if it changed and the reader has not touched the page since. Nothing
  * is written to storage; signing out, switching tokens and a lapsed session
@@ -97,7 +100,6 @@ function navSource(key: string): string {
   var VERSION = ${PARTIAL_VERSION};
   var KEEP = 20;
   var FRESH_MS = 5000;
-  var HOVER_MS = 80;
   var RETRY_MS = 1200;
   var byId = qc.byId;
   var later = window.setTimeout;
@@ -513,23 +515,6 @@ function navSource(key: string): string {
     if (event.button !== 0) return;
     var hit = linkOf(event.target);
     if (hit && admin(hit.url.pathname)) warm(keyOf(hit.url));
-  }, true);
-
-  var hover = null;
-  document.addEventListener('pointerover', function (event) {
-    var hit = linkOf(event.target);
-    if (!hit || !admin(hit.url.pathname)) return;
-    var key = keyOf(hit.url);
-    if (hover && hover.key === key) return;
-    if (hover) never(hover.timer);
-    hover = { key: key, timer: later(function () { hover = null; warm(key); }, HOVER_MS) };
-  }, true);
-  document.addEventListener('pointerout', function (event) {
-    if (!hover) return;
-    var hit = linkOf(event.relatedTarget);
-    if (hit && keyOf(hit.url) === hover.key) return;
-    never(hover.timer);
-    hover = null;
   }, true);
 
   window.addEventListener('popstate', function () {

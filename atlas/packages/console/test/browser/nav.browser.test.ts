@@ -13,8 +13,9 @@
  * 3. **Nothing piles up.** Visiting the same pages again leaves the same
  *    listeners on `document` and `window`, and what a page script added to
  *    the runtime goes with it.
- * 4. **Prefetch.** Hovering 80 ms or pressing the pointer asks for the page
- *    before the click; the click uses that answer.
+ * 4. **Prefetch.** Pressing the pointer asks for the page before the click,
+ *    and the click uses that answer; a pointer crossing the side panel asks
+ *    for nothing.
  * 5. **Failure.** No answer keeps the page with one line and one retry; a
  *    lapsed session and another release's parts load a whole document.
  * 6. **Leaving for the front** marks the item and dims the page at once.
@@ -351,40 +352,40 @@ describe.skipIf(SKIP !== null)('moving between pages in place', () => {
     }
   }, 60_000)
 
-  test('hovering or pressing on a link asks for the page before the click', async () => {
+  test('pressing on a link asks for the page before the click; hovering asks nothing', async () => {
     const served = serveConsole()
     const tab = await browser.tab()
     try {
       await openConsole(tab, served, '/admin/nodes')
+      const asked = () => served.wrapper.seen.filter(one => one.partial).length
+
+      // A pointer crossing the side panel: every item under it, none asked.
+      const items = await tab.evaluate<{ x: number; y: number }[]>(
+        `[...document.querySelectorAll('.nav-item')].filter(a => a.getClientRects().length > 0)` +
+          `.map(a => { const r = a.getBoundingClientRect(); ` +
+          `return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })`,
+      )
+      expect(items.length).toBeGreaterThan(3)
+      for (const at of items) await mouse(tab, 'mouseMoved', at)
       await mouse(tab, 'mouseMoved', await centre(tab, '#nav-audit'))
-      const deadline = Date.now() + 3_000
-      while (partials(served, '/admin/audit') === 0 && Date.now() < deadline) {
-        await Bun.sleep(25)
+      await Bun.sleep(400)
+      expect(asked()).toBe(0)
+
+      const audit = await centre(tab, '#nav-audit')
+      await mouse(tab, 'mousePressed', audit)
+      const pressed = Date.now() + 3_000
+      while (partials(served, '/admin/audit') === 0 && Date.now() < pressed) {
+        await Bun.sleep(10)
       }
       expect(partials(served, '/admin/audit')).toBe(1)
       expect(await tab.evaluate<string>('location.pathname')).toBe(
         '/admin/nodes',
       )
-      await tab.evaluate(`${q('#nav-audit')}.click()`)
+      await mouse(tab, 'mouseReleased', audit)
       await onPage(tab, '/admin/audit', 'nav-audit')
       expect(partials(served, '/admin/audit')).toBe(1)
-
-      await tab.evaluate(`${q('details.nav-fold')}.open = true`)
-      const settings = await centre(tab, '#nav-settings')
-      await mouse(tab, 'mouseMoved', { x: settings.x, y: settings.y - 400 })
-      await mouse(tab, 'mousePressed', settings)
-      const pressed = Date.now() + 3_000
-      while (
-        partials(served, '/admin/settings') === 0 &&
-        Date.now() < pressed
-      ) {
-        await Bun.sleep(10)
-      }
-      expect(partials(served, '/admin/settings')).toBe(1)
-      await mouse(tab, 'mouseReleased', settings)
-      await onPage(tab, '/admin/settings', 'nav-settings')
-      expect(partials(served, '/admin/settings')).toBe(1)
-      expect(documents(served, '/admin/settings')).toBe(0)
+      expect(documents(served, '/admin/audit')).toBe(0)
+      expect(asked()).toBe(1)
     } finally {
       await tab.close()
       served.stop()
