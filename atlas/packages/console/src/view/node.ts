@@ -853,22 +853,22 @@ export function renderLedgerOnly(
 
 /** The node pages' own rules (`routes/types.ts`, `PageRoute.css`). */
 export const NODE_PAGE_CSS = `
-.node-tabs { display: flex; gap: var(--space-1); flex-wrap: wrap; border-bottom: 1px solid var(--color-divider); }
+.node-tabs { display: flex; gap: var(--space-1); flex-wrap: wrap; border-bottom: var(--hairline); }
 .node-tab {
-  padding: var(--space-2) var(--space-4); color: var(--color-muted); text-decoration: none;
-  border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 600;
+  padding: var(--space-2) var(--space-3); color: var(--color-muted); text-decoration: none;
+  border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: var(--weight-medium);
 }
 .node-tab:hover { color: var(--color-text); }
 .node-tab[aria-current="page"] { color: var(--color-text); border-bottom-color: var(--color-text); }
-.node-facts { padding: var(--space-4); display: grid; gap: var(--space-2); }
+.node-facts { padding: var(--space-2) 0; display: grid; gap: var(--space-2); }
 .node-facts .kv { display: flex; flex-direction: row; gap: var(--space-4); align-items: baseline; flex-wrap: wrap; }
-.node-facts .k { color: var(--color-muted); min-width: 5rem; font-size: 12px; }
-.node-facts .v { font-size: 14px; }
+.node-facts .k { color: var(--color-muted); min-width: 5rem; font-size: var(--text-small); }
+.node-facts .v { font-size: var(--text-ui); }
 .node-facts .sep { margin: 0 var(--space-2); }
 .node-facts .v .jump:not(:first-child) { margin-left: var(--space-3); }
 .node-life td { vertical-align: top; }
 .node-life td.reach .note { display: block; }
-.node-life td.when time, .node-life td.when .who { display: block; font-size: 12px; }
+.node-life td.when time, .node-life td.when .who { display: block; font-size: var(--text-small); }
 .node-life td.acts { white-space: nowrap; }
 .node-life td.acts .btn + .btn { margin-left: var(--space-2); }
 .node-life tr[data-state="retired"] td { color: var(--color-muted); }

@@ -383,10 +383,10 @@ describe('A4 · the settings page says which console this is', () => {
     const html = await (await h.handle(browse('/admin/settings', ADMIN))).text()
     const health = html.slice(html.indexOf('about-health'))
     expect(health).toMatch(
-      /注册中心<\/dt><dd class="plain"><span class="tag[^"]*">不可达/,
+      /注册中心<\/dt><dd class="plain"><span class="state"><span class="dot dot-bad"><\/span>不可达/,
     )
     expect(health).toMatch(
-      /审计链 · [^<]+<\/dt><dd class="plain"><span class="tag[^"]*">可达/,
+      /审计链 · [^<]+<\/dt><dd class="plain"><span class="state"><span class="dot dot-ok"><\/span>可达/,
     )
   })
 

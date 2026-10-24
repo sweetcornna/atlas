@@ -155,49 +155,49 @@ export const FRONT_APPROVAL_CSS = `
 .fx-asks { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 0 0 24px; margin-top: -14px; }
 .fx-ask {
   display: grid; gap: 8px; width: min(100%, 560px); box-sizing: border-box; padding: 12px 14px;
-  border-radius: 14px; background: var(--color-surface);
-  box-shadow: inset 0 0 0 0.5px var(--fx-line), var(--shadow-sm);
-  animation: fx-ask-in 180ms ease-out;
+  border-radius: var(--radius-panel); background: var(--color-surface);
+  box-shadow: inset 0 0 0 0.5px var(--fx-line);
+  animation: fx-ask-in var(--motion-base) var(--ease-out);
 }
 .fx-ask-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .fx-ask-face { display: inline-flex; flex: none; }
 .fx-ask-face .avatar { display: block; width: 20px; height: 20px; }
-.fx-ask-title { min-width: 0; font-size: var(--text-13-5); font-weight: 600; overflow-wrap: anywhere; }
+.fx-ask-title { min-width: 0; font-size: var(--text-ui); font-weight: var(--weight-semibold); overflow-wrap: anywhere; }
 .fx-ask-tag {
-  flex: none; margin-left: auto; padding: 0 6px; border-radius: 4px; font-size: var(--text-11); line-height: 18px;
+  flex: none; margin-left: auto; padding: 0 6px; border-radius: var(--radius-xs); font-size: var(--text-small); line-height: var(--lh-small);
   background: var(--fx-field); color: var(--color-muted);
 }
-.fx-ask-what { margin: 0; font-size: var(--text-13); overflow-wrap: anywhere; }
+.fx-ask-what { margin: 0; font-size: var(--text-ui); overflow-wrap: anywhere; }
 .fx-ask-rows {
   display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; margin: 0; padding: 8px 10px;
-  border-radius: 10px; background: var(--fx-field); font-size: var(--text-13);
+  border-radius: var(--radius-control); background: var(--fx-field); font-size: var(--text-ui);
 }
 .fx-ask-rows dt { color: var(--color-muted); white-space: nowrap; }
 .fx-ask-rows dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .fx-ask-rows dd.is-next { font-weight: 500; }
 .fx-ask-detail {
-  max-height: 180px; overflow: auto; margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--fx-field);
-  font-family: var(--font-mono); font-size: var(--text-12); white-space: pre-wrap; word-break: break-word;
+  max-height: 180px; overflow: auto; margin: 0; padding: 8px 10px; border-radius: var(--radius-control); background: var(--fx-field);
+  font-family: var(--font-mono); font-size: var(--text-small); white-space: pre-wrap; word-break: break-word;
 }
-.fx-ask-link { justify-self: start; font-size: var(--text-12); color: var(--color-quiet); }
+.fx-ask-link { justify-self: start; font-size: var(--text-small); color: var(--color-quiet); }
 .fx-ask-link:hover { color: var(--color-text); }
-.fx-ask-status { margin: 0; font-size: var(--text-12); color: var(--color-quiet); }
+.fx-ask-status { margin: 0; font-size: var(--text-small); color: var(--color-quiet); }
 .fx-ask-status:empty { display: none; }
 .fx-ask-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .fx-ask-foot:empty { display: none; }
-.fx-ask-note { margin-right: auto; font-size: var(--text-12); color: var(--color-muted); }
-.fx-ask.is-done { opacity: 0.72; transition: opacity 160ms ease; }
+.fx-ask-note { margin-right: auto; font-size: var(--text-small); color: var(--color-muted); }
+.fx-ask.is-done { opacity: 0.72; transition: opacity var(--motion-base) var(--ease-out); }
 @keyframes fx-ask-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .fx-ask-bar {
   display: flex; align-items: center; gap: 8px; width: fit-content; max-width: 100%; box-sizing: border-box;
-  margin-bottom: 8px; padding: 4px 4px 4px 12px; border-radius: 999px;
-  background: var(--fx-field); font-size: var(--text-12); color: var(--color-quiet);
+  margin-bottom: 8px; padding: 4px 4px 4px 12px; border-radius: var(--radius-pill);
+  background: var(--fx-field); font-size: var(--text-small); color: var(--color-quiet);
 }
 .fx-ask-bar-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--color-interactive); }
 .fx-ask-bar-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fx-ask-bar-go {
-  flex: none; padding: 2px 10px; border-radius: 999px; color: var(--color-text); font-weight: 500; text-decoration: none;
-  transition: background-color 120ms ease;
+  flex: none; padding: 2px 10px; border-radius: var(--radius-pill); color: var(--color-text); font-weight: 500; text-decoration: none;
+  transition: background-color var(--motion-snap) var(--ease-out);
 }
 .fx-ask-bar-go:hover { background: var(--fx-hover); }
 .fx-ask-bar-go:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }

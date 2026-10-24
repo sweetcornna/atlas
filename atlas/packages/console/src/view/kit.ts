@@ -405,15 +405,15 @@ export const MORE_MENU_JS = `
 /** Rules the kit's own markup needs beyond the shared sheet. */
 export const KIT_CSS = `
 .field-help { display: block; margin-top: 4px; }
-.flabel { font-size: var(--text-12); color: var(--color-quiet); }
+.flabel { font-size: var(--text-small); color: var(--color-quiet); }
 .wrap { flex-wrap: wrap; }
-.unwired { gap: var(--space-2); padding: var(--space-4); }
-.unwired .cmd { display: block; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--color-bg); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-12); }
+.unwired { gap: var(--space-2); padding: var(--space-3) 0; }
+.unwired .cmd { display: block; padding: var(--space-2) var(--space-3); border-radius: var(--radius-control); background: var(--ui-field); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-small); }
 .kit-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .kit-acts { display: flex; gap: var(--space-2); justify-content: flex-end; flex-wrap: wrap; }
 .kit-pane { display: flex; flex-direction: column; gap: var(--space-3); }
-.kit-excerpt { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-13); color: var(--color-quiet); max-height: 12em; overflow: auto; }
-.kit-mono { font-family: var(--font-mono); font-size: var(--text-12); overflow-wrap: anywhere; }
+.kit-excerpt { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-ui); color: var(--color-quiet); max-height: 12em; overflow: auto; }
+.kit-mono { font-family: var(--font-mono); font-size: var(--text-small); overflow-wrap: anywhere; }
 .trail td.acts { text-align: right; white-space: nowrap; }
 .trail td.acts .kit-acts { flex-wrap: nowrap; }
 `

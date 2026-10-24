@@ -112,7 +112,7 @@ export function frontReplicateCard(mode: FrontReplicateMode): string {
 }
 
 export const FRONT_REPLICATE_CSS = `
-.fx-rp { margin-bottom: 8px; padding: 12px 14px; border: 1px solid var(--fx-line, var(--color-divider)); border-radius: 14px; background: var(--color-surface); box-shadow: var(--shadow-sm); display: grid; gap: 10px; }
+.fx-rp { margin-bottom: 8px; padding: 12px 14px; border: var(--hairline); border-radius: var(--radius-panel); background: var(--color-surface); display: grid; gap: 10px; }
 .fx-rp[hidden] { display: none; }
 .fx-rp-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .fx-rp-head .fx-rp-x { margin-left: auto; }
@@ -123,11 +123,11 @@ export const FRONT_REPLICATE_CSS = `
 .fx-rp-acts[hidden] { display: none; }
 .fx-rp .rp-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px 14px; margin: 0; }
 .fx-rp .rp-facts[hidden] { display: none; }
-.fx-rp .rp-facts dt { font-size: var(--text-12); color: var(--color-muted); }
-.fx-rp .rp-facts dd { margin: 2px 0 0; overflow-wrap: anywhere; color: var(--color-text); font-size: var(--text-13); }
+.fx-rp .rp-facts dt { font-size: var(--text-small); color: var(--color-muted); }
+.fx-rp .rp-facts dd { margin: 2px 0 0; overflow-wrap: anywhere; color: var(--color-text); font-size: var(--text-ui); }
 .fx-rp .rp-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .fx-rp .rp-steps[hidden] { display: none; }
-.fx-rp .rp-steps li { display: grid; grid-template-columns: 12px auto minmax(0, 1fr); align-items: center; gap: 10px; font-size: var(--text-13); }
+.fx-rp .rp-steps li { display: grid; grid-template-columns: 12px auto minmax(0, 1fr); align-items: center; gap: 10px; font-size: var(--text-ui); }
 .fx-rp .rp-mark { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--color-divider); box-sizing: border-box; }
 .fx-rp .rp-steps li[data-state="todo"] .rp-label { color: var(--color-muted); }
 .fx-rp .rp-steps li[data-state="start"] .rp-mark { border-color: var(--color-text); animation: fx-rp-pulse 1.2s ease-in-out infinite; }

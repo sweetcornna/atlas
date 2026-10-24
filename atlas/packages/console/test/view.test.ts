@@ -2371,10 +2371,12 @@ describe('assets', () => {
     expect(body).toContain('font-variant-numeric: tabular-nums')
     // Neither of Organic's display faces carries CJK, so the interface was
     // already on the system stack; headings buy their hierarchy back with
-    // weight and size instead.
+    // weight and size instead. No face is borrowed from the reference the
+    // measures came from (qmo-local.md §3.4).
     expect(CONSOLE_CSS).toContain(
-      '--font-body: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;',
+      '--font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans", "Microsoft YaHei", "Noto Sans SC", sans-serif;',
     )
+    expect(CONSOLE_CSS).not.toMatch(/anthropic/i)
     expect(CONSOLE_CSS).toContain('--font-heading: var(--font-body);')
     expect(CONSOLE_CSS).toContain('--font-heading-weight: 600;')
     // Mono is confined to the elements the view layer tags for exactly this
@@ -2382,30 +2384,46 @@ describe('assets', () => {
     expect(ruleOf('.mono, code')).toContain('var(--font-mono)')
   })
 
-  test('the type is the compact scale: 11 caption, 12 footnote, 13 body, 14 heading, 20 title', () => {
-    // The management side reads like a settings window, not a document: body
-    // copy, fields, buttons and tables are 13px, headings 14px, the one title
-    // size 20px. The half sizes the pages were written with fold onto it.
-    expect(ruleOf('body')).toContain('font-size: var(--text-13)')
-    expect(ruleOf('.input')).toContain('font-size: var(--text-13)')
-    expect(ruleOf('.btn')).toContain('font-size: var(--text-13)')
-    expect(ruleOf('.trail')).toContain('font-size: var(--text-13)')
+  test('the type is one scale for both sides: 12/17 caption, 13/17 footnote, 14/20 interface, 15/20 heading, 16/24 conversation, 22/28 title, 24/32 page head', () => {
+    // The management side and the fronts read alike (qmo-local.md §3.4):
+    // body copy, fields, buttons and tables are interface text, 14/20; the
+    // conversation is 16/24; labels and facts 12/17, notes 13/17; a
+    // section's heading 15/20; a page's head 24/32.
+    expect(ruleOf('body')).toContain('font-size: var(--text-ui)')
+    expect(ruleOf('body')).toContain('line-height: calc(20 / 14)')
+    expect(ruleOf('.input')).toContain('font-size: var(--text-ui)')
+    expect(ruleOf('.btn')).toContain('font-size: var(--text-ui)')
+    expect(ruleOf('.trail')).toContain('font-size: var(--text-ui)')
     for (const [token, size] of [
-      ['--text-11', '11px'],
-      ['--text-12', '12px'],
-      ['--text-13', '13px'],
-      ['--text-14', '14px'],
-      ['--text-20', '20px'],
-      ['--text-12-5', '12px'],
-      ['--text-13-5', '13px'],
+      ['--text-small', '12px'],
+      ['--lh-small', '17px'],
+      ['--text-ui', '14px'],
+      ['--lh-ui', '20px'],
+      ['--text-prose', '16px'],
+      ['--lh-prose', '24px'],
+      ['--text-footnote', '13px'],
+      ['--lh-footnote', '17px'],
+      ['--text-heading', '15px'],
+      ['--lh-heading', '20px'],
+      ['--text-title', '22px'],
+      ['--lh-title', '28px'],
+      ['--text-page', '24px'],
+      ['--lh-page', '32px'],
     ] as const) {
       expect(CONSOLE_CSS).toContain(`${token}: ${size};`)
     }
+    // The old pixel-named sizes (--text-13 …) are gone: every sheet names a
+    // step of this scale, so a calibration changes one token.
+    expect(CONSOLE_CSS).not.toMatch(/--text-\d/)
+    // Three weights.
+    expect(CONSOLE_CSS).toContain('--weight-regular: 400;')
+    expect(CONSOLE_CSS).toContain('--weight-medium: 500;')
+    expect(CONSOLE_CSS).toContain('--weight-semibold: 600;')
   })
 
   test('a label is a small muted word, never capitals', () => {
     const kicker = ruleOf('.kicker')
-    expect(kicker).toContain('font-size: var(--text-12)')
+    expect(kicker).toContain('font-size: var(--text-small)')
     // Muted ink, as the front labels things: amber is kept for a warning.
     expect(kicker).toContain('color: var(--color-muted)')
     // A Latin label in capitals reads as a shout in a Chinese interface
@@ -2423,9 +2441,12 @@ describe('assets', () => {
   })
 
   test('the shell is two columns that collapse, and wide content scrolls in its own box', () => {
+    // The side panel is the fronts' width (qmo-local.md §3.4), so moving
+    // between / and /admin does not move the page.
     expect(ruleOf('.shell')).toContain(
-      'grid-template-columns: 272px minmax(0, 1fr)',
+      'grid-template-columns: var(--side-w) minmax(0, 1fr)',
     )
+    expect(CONSOLE_CSS).toContain('--side-w: 288px;')
     // No --rail: the noun column it sized is gone.
     expect(CONSOLE_CSS).not.toContain('--rail')
     const narrow = CONSOLE_CSS.slice(CONSOLE_CSS.indexOf('max-width: 1000px'))
@@ -2440,12 +2461,28 @@ describe('assets', () => {
   })
 
   test('the only motion is a transition of at most 200ms', () => {
+    // The durations are the shared motion tokens (qmo-local.md §3.4); the
+    // management side spends only the three short ones on a transition.
+    const motion = new Map(
+      [...CONSOLE_CSS.matchAll(/--(motion-[a-z]+): (\d+)ms;/g)].map(
+        match => [match[1] ?? '', Number(match[2])] as const,
+      ),
+    )
+    expect([...motion.values()]).toEqual([60, 120, 200, 300])
+    expect(CONSOLE_CSS).toContain(
+      '--ease-out: cubic-bezier(0.165, 0.84, 0.44, 1);',
+    )
     for (const transition of CONSOLE_CSS.match(/transition:[^;}]*/g) ?? []) {
       if (transition.includes('none')) continue
-      const durations = transition.match(/(\d+)ms/g) ?? []
+      const durations = [
+        ...[...transition.matchAll(/(\d+)ms/g)].map(match => Number(match[1])),
+        ...[...transition.matchAll(/var\(--(motion-[a-z]+)\)/g)].map(
+          match => motion.get(match[1] ?? '') ?? Number.NaN,
+        ),
+      ]
       expect(durations.length).toBeGreaterThan(0)
       for (const duration of durations) {
-        expect(Number(duration.replace('ms', ''))).toBeLessThanOrEqual(200)
+        expect(duration).toBeLessThanOrEqual(200)
       }
     }
     expect(CONSOLE_CSS).toContain('@media (prefers-reduced-motion: reduce)')
@@ -2487,13 +2524,20 @@ describe('assets', () => {
       // that only happens to look right in one scheme.
       expect(dark).toContain(`${token}:`)
     }
-    // Warm grey grounds; the interaction colour is the one blue.
+    // Warm grey grounds (qmo-local.md §3.4); the interaction colour is the
+    // one blue, and the reference's brand clay is nowhere.
     expect(CONSOLE_CSS).toContain('--color-bg: #f9f9f7;')
+    expect(CONSOLE_CSS).toContain('--color-surface-1: #fcfcfb;')
+    expect(CONSOLE_CSS).not.toMatch(/#d97757|#c6613f/i)
     expect(CONSOLE_CSS).toContain('--color-interactive: #2a78d6;')
     expect(CONSOLE_CSS).toContain('--color-accent: #c98a2e;')
     // The ramps reverse their semantic direction, which is what lets every
     // component class ("background 100, text 800") stay byte-identical.
-    expect(dark).toContain('--color-bg: #1a1a19;')
+    expect(dark).toContain('--color-bg: #0b0b0b;')
+    expect(dark).toContain('--color-surface-1: #151515;')
+    // A rule between rows is the ink at 10%, in both schemes.
+    expect(CONSOLE_CSS).toContain('--color-divider: rgba(11, 11, 11, 0.1);')
+    expect(dark).toContain('--color-divider: rgba(240, 239, 236, 0.1);')
     expect(dark).toContain('--color-neutral-100: #242423;')
     expect(dark).toContain('--color-neutral-900: #e6e4de;')
     // …and the accent is lifted a step so it stays legible on the dark ground.
@@ -2761,8 +2805,16 @@ describe('selection (D7)', () => {
     )
     const controls = ruleOf('.nav-item, .nav-group-name, .btn, .sw, .seg-opt')
     expect(controls).toContain('user-select: none')
-    // Nothing else in the sheet switches selection off.
-    expect(CONSOLE_CSS.match(/user-select:\s*none/g)).toHaveLength(1)
+    // Nothing else in the sheet switches selection off, but for the desktop
+    // app's drag strips (`<html data-shell>`, qmo-app.md §5.1), which are
+    // where the window is moved from and never there in a browser.
+    const shell =
+      ':root[data-shell] .side .brand, :root[data-shell] .top ' +
+      '{ -webkit-user-select: none; user-select: none; }'
+    expect(CONSOLE_CSS).toContain(shell)
+    expect(
+      CONSOLE_CSS.replace(shell, '').match(/user-select:\s*none/g),
+    ).toHaveLength(1)
   })
 })
 

@@ -152,56 +152,52 @@ body.fx-quick-body { margin: 0; overflow: hidden; background: var(--color-bg); -
 :root[data-shell][data-theme="light"] .fx-quick { color-scheme: light; }
 .fx-quick-body [hidden], .fx-quick-body dialog:not([open]) { display: none !important; }
 .fx-quick {
-  --fx-q-ease: cubic-bezier(0.165, 0.84, 0.44, 1);
-  --fx-q-shadow: 0 0 0 0.5px rgba(20, 20, 19, 0.16), 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08);
   display: flex; justify-content: center; padding: max(16px, 18vh) 16px 16px;
 }
 :root[data-shell] .fx-quick { padding: 16px 16px 32px; }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .fx-quick { --fx-q-shadow: 0 0 0 0.5px rgba(240, 239, 236, 0.2), 0 8px 24px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3); }
-}
-:root[data-theme="dark"] .fx-quick { --fx-q-shadow: 0 0 0 0.5px rgba(240, 239, 236, 0.2), 0 8px 24px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3); }
+/* The card's size and corner are the quick window's own (qmo-app.md §4.3);
+   its ground, shadow, type and motion are the shared tokens. */
 .fx-quick-card {
   position: relative; display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: start;
   width: min(606px, 100%); min-height: 56px;
-  border-radius: 16px; background: var(--ui-menu); color: var(--color-text); box-shadow: var(--fx-q-shadow);
+  border-radius: var(--radius-quick); background: var(--ui-menu); color: var(--color-text); box-shadow: var(--shadow-lg);
 }
 .fx-quick-who { position: relative; width: 56px; height: 56px; }
 .fx-quick-face {
   display: grid; place-items: center; width: 56px; height: 56px; padding: 0; border: 0;
-  border-radius: 16px 0 0 16px; background: none; color: var(--color-muted); cursor: pointer;
+  border-radius: var(--radius-quick) 0 0 var(--radius-quick); background: none; color: var(--color-muted); cursor: pointer;
 }
-.fx-quick-face .avatar { display: block; transition: transform 120ms var(--fx-q-ease); }
+.fx-quick-face .avatar { display: block; transition: transform var(--motion-snap) var(--ease-out); }
 .fx-quick-face:hover .avatar, .fx-quick-face[aria-expanded="true"] .avatar { transform: scale(1.06); }
 .fx-quick-face:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -4px; }
 .fx-quick-card textarea {
   display: block; width: 100%; min-height: 56px; max-height: 128px; margin: 0; padding: 16px 4px; resize: none;
   border: 0; background: none; color: var(--color-text); outline: none;
-  font: inherit; font-size: 16px; line-height: 24px;
+  font: inherit; font-size: var(--text-prose); line-height: var(--lh-prose);
 }
 .fx-quick-card textarea::placeholder { color: var(--color-muted); }
 .fx-quick-send {
   display: inline-grid; place-items: center; width: 32px; height: 32px; margin: 12px 12px 12px 8px; padding: 0;
   border: 0; border-radius: 50%; cursor: pointer;
   background: var(--color-accent-fill); color: var(--color-on-accent-fill);
-  transition: opacity 120ms var(--fx-q-ease), transform 120ms var(--fx-q-ease);
+  transition: opacity var(--motion-snap) var(--ease-out), transform var(--motion-snap) var(--ease-out);
 }
 .fx-quick-send .i-sm { width: 16px; height: 16px; stroke-width: 2.4; }
 .fx-quick-send:active:not(:disabled) { transform: scale(0.94); }
 .fx-quick-send:disabled { opacity: 0.22; cursor: not-allowed; }
 .fx-quick-send:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .fx-quick[aria-busy="true"] .fx-quick-send { opacity: 0.5; }
-.fx-quick-status { grid-column: 2 / -1; margin: -6px 16px 12px 4px; font-size: 12px; line-height: 17px; }
+.fx-quick-status { grid-column: 2 / -1; margin: -6px 16px 12px 4px; font-size: var(--text-small); line-height: var(--lh-small); }
 .fx-quick-status:empty { display: none; }
 .fx-quick-menu {
   position: absolute; left: 6px; top: calc(100% + 4px); z-index: 30;
   display: flex; flex-direction: column; gap: 1px; width: 260px; max-height: min(280px, calc(100vh - 96px)); overflow-y: auto;
-  padding: 6px; border-radius: 12px; background: var(--ui-menu); box-shadow: var(--fx-q-shadow);
+  padding: 6px; border-radius: var(--radius-panel); background: var(--ui-menu); box-shadow: var(--shadow-lg);
 }
 .fx-quick-item {
   display: grid; grid-template-columns: 24px minmax(0, 1fr) auto 14px; align-items: center; gap: 10px;
-  height: 36px; padding: 0 8px; border: 0; border-radius: 8px; background: none; color: var(--color-text);
-  cursor: pointer; font: inherit; font-size: 14px; text-align: left;
+  height: 36px; padding: 0 8px; border: 0; border-radius: var(--radius-control); background: none; color: var(--color-text);
+  cursor: pointer; font: inherit; font-size: var(--text-ui); text-align: left;
 }
 .fx-quick-item:hover:not(:disabled), .fx-quick-item:focus-visible { background: var(--ui-hover); outline: none; }
 .fx-quick-item:disabled { cursor: default; color: var(--color-muted); }
@@ -209,10 +205,10 @@ body.fx-quick-body { margin: 0; overflow: hidden; background: var(--color-bg); -
 .fx-quick-item-face { display: inline-flex; }
 .fx-quick-item-face .avatar { display: block; }
 .fx-quick-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fx-quick-item small { font-size: 12px; color: var(--color-muted); }
+.fx-quick-item small { font-size: var(--text-small); color: var(--color-muted); }
 .fx-quick-item .i-sm { width: 14px; height: 14px; visibility: hidden; color: var(--color-interactive); }
 .fx-quick-item[aria-checked="true"] .i-sm { visibility: visible; }
-.fx-quick-none { margin: 4px 8px; font-size: 12px; color: var(--color-muted); }
+.fx-quick-none { margin: 4px 8px; font-size: var(--text-small); color: var(--color-muted); }
 @media (prefers-reduced-motion: reduce) {
   .fx-quick-face .avatar, .fx-quick-send { transition: none; }
 }

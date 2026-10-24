@@ -302,21 +302,36 @@ export function elevationDialogs(): string {
 }
 
 export const ELEVATION_PAGE_CSS = `
-.el-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: var(--space-3); }
-.el-card { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
-.el-head { display: flex; align-items: center; gap: var(--space-3); }
-.el-title { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
-.el-title b { font-size: var(--text-14, 14px); }
-.el-mark { display: inline-grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: var(--color-bg); color: var(--color-muted); flex: none; }
+/* One agent per row (qmo-local.md §3.4): who it is on the left, the four
+   modes as one segmented switch on the right, what the chosen mode allows on
+   the line under the name, the grant's facts and the day's count under that;
+   a hairline between rows. */
+.el-grid { display: flex; flex-direction: column; }
+.el-grid > .el-card {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  column-gap: var(--space-6); row-gap: var(--space-2); padding: var(--space-3) 0;
+}
+.el-grid > .el-card + .el-card { border-top: var(--hairline); }
+.el-head { display: flex; align-items: center; gap: var(--space-3); grid-column: 1; grid-row: 1; min-width: 0; }
+.el-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 var(--space-2); flex: 1; min-width: 0; }
+.el-title b { font-size: var(--text-ui); font-weight: var(--weight-semibold); }
+.el-mark { display: inline-grid; place-items: center; width: var(--control-h); height: var(--control-h); border-radius: var(--radius-control); background: var(--ui-field); color: var(--color-muted); flex: none; }
 .el-mark.el-live { color: var(--color-accent-2); }
-.el-field { display: flex; flex-direction: column; gap: 6px; }
-.el-tiers { flex-direction: column; border-radius: var(--radius-md); }
-.el-tiers .seg-opt { font-size: var(--text-12-5); }
-.el-tiers .seg-opt + .seg-opt { border-left: 0; border-top: 1px solid var(--color-divider); }
-.el-why { margin: 0; font-size: var(--text-12); }
-.el-facts { display: flex; flex-direction: column; gap: 6px; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--color-bg); }
-.el-fact { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-13); min-height: 22px; }
-.el-fact > .note:first-child { width: 4.5em; flex: none; }
-.el-fact-v { display: flex; align-items: center; gap: var(--space-2); min-width: 0; flex: 1; }
-.el-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; margin-top: auto; }
+.el-field { display: contents; }
+.el-field > .flabel { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.el-field > .seg, .el-field > .flabel + .note { grid-column: 2; grid-row: 1; justify-self: end; }
+.el-field > .note:last-child { grid-column: 1; grid-row: 2; padding-left: calc(var(--control-h) + var(--space-3)); }
+.el-tiers { flex-wrap: nowrap; }
+.el-why { grid-column: 1 / -1; margin: 0; font-size: var(--text-small); padding-left: calc(var(--control-h) + var(--space-3)); }
+.el-facts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px var(--space-5); padding-left: calc(var(--control-h) + var(--space-3)); }
+.el-fact { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-ui); min-height: var(--lh-ui); }
+.el-fact-v { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.el-foot { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; padding-left: calc(var(--control-h) + var(--space-3)); }
+@media (max-width: 860px) {
+  .el-grid > .el-card { grid-template-columns: minmax(0, 1fr); }
+  .el-field > .seg, .el-field > .flabel + .note { grid-column: 1; grid-row: auto; justify-self: start; }
+  .el-field > .note:last-child { grid-row: auto; }
+  .el-tiers { flex-wrap: wrap; }
+  .el-field > .note:last-child, .el-why, .el-facts, .el-foot { padding-left: 0; }
+}
 `

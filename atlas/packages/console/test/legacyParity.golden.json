@@ -64,8 +64,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 273206,
-    "sha256": "1ac15dd4b04f2b870146f38c007c361983cfda36886ab577a17dc1abf70e993c"
+    "length": 273980,
+    "sha256": "58f2cbbdfd39d870dcaf2e17604ab85611291d9509d5e23cccd1c7ee3a1cb4ad"
   },
   {
     "probe": "GET / as view-query",
@@ -98,8 +98,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 273206,
-    "sha256": "1ac15dd4b04f2b870146f38c007c361983cfda36886ab577a17dc1abf70e993c"
+    "length": 273980,
+    "sha256": "58f2cbbdfd39d870dcaf2e17604ab85611291d9509d5e23cccd1c7ee3a1cb4ad"
   },
   {
     "probe": "GET / as view-cookie",
@@ -132,8 +132,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 273206,
-    "sha256": "1ac15dd4b04f2b870146f38c007c361983cfda36886ab577a17dc1abf70e993c"
+    "length": 273980,
+    "sha256": "58f2cbbdfd39d870dcaf2e17604ab85611291d9509d5e23cccd1c7ee3a1cb4ad"
   },
   {
     "probe": "GET / as wrong-bearer",
@@ -180,8 +180,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 64789,
-    "sha256": "86d72d6145be0fbcaf1b1ace5bbef2afcd29a509e9b2349082b7d0bafa8da138"
+    "length": 66807,
+    "sha256": "3b189e621cbd20379e2549cbdca0de753e5f6791899b9d8e77527583b82073ed"
   },
   {
     "probe": "GET /login?redirect=%2Fchat as none",
@@ -203,8 +203,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 64793,
-    "sha256": "979717599ff75a80093bf7ef054340ee2edc675aa11e444657350502b5628db6"
+    "length": 66811,
+    "sha256": "ffcea64d2762aeaf809f1fda74a987233631e8c659d784ee8e1f6633378ecf8e"
   },
   {
     "probe": "GET /login as admin-cookie",
@@ -250,8 +250,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 65102,
-    "sha256": "583639cd793754a623cf7a7369d1758bb1ea9fc8b6cd5d2e4b67281b6f0098b4"
+    "length": 67120,
+    "sha256": "b6b0ff3e5a642301b4d50691d498d39075ec98735af38935f23068a04f7a0d45"
   },
   {
     "probe": "POST /login as none form={\"token\":\"view-token-000000000001\"}",
@@ -373,12 +373,12 @@
       ["cache-control", "no-cache"],
       ["content-type", "text/css; charset=utf-8"],
       ["cross-origin-resource-policy", "same-origin"],
-      ["etag", "W/\"2597a8df4ca56e7944250d179af4ff63\""],
+      ["etag", "W/\"12bcdb3fb6a2e4a2c921a6ba1ef1e321\""],
       ["vary", "accept-encoding"],
       ["x-content-type-options", "nosniff"]
     ],
-    "length": 58403,
-    "sha256": "2597a8df4ca56e7944250d179af4ff6307ca74972fadf7f2f12fabb8c43942ff"
+    "length": 60421,
+    "sha256": "12bcdb3fb6a2e4a2c921a6ba1ef1e32167725d1e1c32c7395df8e292c3269f91"
   },
   {
     "probe": "GET /assets/app.js as none",
@@ -1139,8 +1139,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 136451,
-    "sha256": "3be46665d549bd2d217434bc7ed5f5e0186b4b2a64700ed6e967812e952e87e3"
+    "length": 138505,
+    "sha256": "351780e59a11a582f349578e6f46141b4bbbddb11e373580368346b5290e4e83"
   },
   {
     "probe": "GET /admin/nodes as none (html)",
@@ -1186,8 +1186,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 135071,
-    "sha256": "037a0980142404a1d254b6ed3de96e072e8a289db4f57251ce5d97a27277b09a"
+    "length": 137125,
+    "sha256": "8070faad8f737a025ab931f3336753ba318aa62818ab82092659b9100211de40"
   },
   {
     "probe": "GET /admin/nodes/nowhere as admin-bearer (html)",
@@ -1209,8 +1209,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 120792,
-    "sha256": "86dbfe77515f3ade95add6ce7b56271c8611109e1af0779d97bcece534d27517"
+    "length": 122813,
+    "sha256": "564774c6b6b3bc44e691993885bcfd2a4c3e1af504d9dbcd164b7087b809e8ac"
   },
   {
     "probe": "GET /admin/audit?window=24h as view-bearer",
@@ -1232,8 +1232,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 129424,
-    "sha256": "69605cd9065d4be065d6c20ba32c0b4ad18a2d9321ee3c424b97b0db9d55e1cf"
+    "length": 131445,
+    "sha256": "1b02d4d0ed3bead64861d6d3e5aab1ff0f6d82fcf7417141159b5f99e8eaae15"
   },
   {
     "probe": "GET /admin/audit/trace/4bf92f3577b34da6a3ce929d0e0e4736 as view-bearer",
@@ -1255,8 +1255,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 123933,
-    "sha256": "50e3df67f9fa8cf55730f7ff905472e9de3b8482ae142cf81dd6d6b45910c983"
+    "length": 125954,
+    "sha256": "e89a36777fea1335ac2b82ba32b4348aed57138eee6fb1aef974e7da43c510bc"
   },
   {
     "probe": "GET /admin/servers as admin-bearer",
@@ -1278,8 +1278,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 132711,
-    "sha256": "cda4fdbc7560b90416d6eb921608393f3e5f1c3051f548abe4a1135c75c98485"
+    "length": 134737,
+    "sha256": "e1c541faa5b1bd8d902522d5aca1bee5a1ed98f8308cd92eef0de6e0c1f2155f"
   },
   {
     "probe": "GET /admin/servers as view-bearer",
@@ -1301,8 +1301,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 131206,
-    "sha256": "44f8125713cf67bf6b077fb331a6b2cbe60908555273be4cbc147e9c5400545c"
+    "length": 133232,
+    "sha256": "2e652421dc3b7647d734076ad4efd7df763d97602df717ac7d83dd28947d00cc"
   },
   {
     "probe": "GET /admin/settings as view-bearer",
@@ -1324,8 +1324,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 130325,
-    "sha256": "71d6e9ed8f25319d0376f22fbf474f90efe0d55a7ac20b85a258abcea316a8da"
+    "length": 132359,
+    "sha256": "41d8f7882726933ff535a488692c06aa836ad38c86177608d0db167249308b85"
   },
   {
     "probe": "GET /admin/providers as view-bearer",
@@ -1347,8 +1347,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 212804,
-    "sha256": "e524bf76960aadd8a6ef13e24c3e6474f18f8c7be078dbbbf8db1aece2747148"
+    "length": 215528,
+    "sha256": "9c800ab4ecbae3ec26b1ea0748ccb14fb280a7d1063e0189f739499e0175d14f"
   },
   {
     "probe": "GET /nope as admin-bearer (html)",
@@ -1370,7 +1370,7 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 120773,
-    "sha256": "2009f733e089b1110a4ac580c61fc129ef72870d1eb34054e7b59c3e34d31d82"
+    "length": 122794,
+    "sha256": "b267469b565f3bcde11a13a988399df69c2883af8784b03b9bf4379975b43280"
   }
 ]

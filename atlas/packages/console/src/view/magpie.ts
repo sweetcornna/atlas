@@ -945,15 +945,15 @@ export function magpieDialogs(): string {
 }
 
 export const MAGPIE_PAGE_CSS = `
-.mg-card { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
+.mg-card { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-2) 0; }
 .mg-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 6px var(--space-4); }
-.mg-fact { display: flex; justify-content: space-between; gap: var(--space-3); font-size: var(--text-13); min-width: 0; }
+.mg-fact { display: flex; justify-content: space-between; gap: var(--space-3); font-size: var(--text-ui); min-width: 0; }
 .mg-fact .kit-mono { overflow-wrap: anywhere; }
 .mg-foot { display: flex; justify-content: flex-end; }
 .mg-problem { margin: 0; }
 .mg-table td { vertical-align: top; }
-.mg-limit { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: var(--text-13); }
-.mg-totals { margin: 0; font-size: var(--text-13); }
+.mg-limit { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: var(--text-ui); }
+.mg-totals { margin: 0; font-size: var(--text-ui); }
 .mg-limits { gap: var(--space-2); }
 .mg-limit-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--space-2); }
 .mg-status:empty { display: none; }

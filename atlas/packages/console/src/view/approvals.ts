@@ -294,52 +294,56 @@ export function approvalsFrame(content: string): string {
 
 export const APPROVALS_PAGE_CSS = `
 .apv-page, .apv, .apv-list { display: flex; flex-direction: column; gap: var(--space-3); max-width: 880px; }
-.apv-note { margin: 0; font-size: var(--text-12); color: var(--color-muted); }
-.apv-status { margin: 0; font-size: var(--text-12); color: var(--color-quiet); }
+/* One request per row (qmo-local.md §3.4), a hairline between rows. */
+.apv-list { gap: 0; }
+.apv-note { margin: 0; font-size: var(--text-small); color: var(--color-muted); }
+.apv-status { margin: 0; font-size: var(--text-small); color: var(--color-quiet); }
 .apv-status:empty { display: none; }
 .apv-card { gap: var(--space-3); }
+.apv-list > .apv-card { padding: var(--space-4) 0; }
+.apv-list > .apv-card + .apv-card { border-top: var(--hairline); }
 .apv-head { display: flex; align-items: flex-start; gap: var(--space-3); min-width: 0; }
 .apv-face { display: inline-flex; flex: none; }
 .apv-heading { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-.apv-title { margin: 0; font-size: var(--text-14); font-weight: 600; overflow-wrap: anywhere; }
-.apv-meta { margin: 0; font-size: var(--text-12); color: var(--color-muted); }
+.apv-title { margin: 0; font-size: var(--text-ui); font-weight: var(--weight-semibold); overflow-wrap: anywhere; }
+.apv-meta { margin: 0; font-size: var(--text-small); color: var(--color-muted); }
 .apv-meta a { color: var(--color-quiet); }
 .apv-meta a:hover { color: var(--color-text); }
 .apv-head .tags { flex: none; }
 .apv-body, .apv-foot { padding-left: 40px; }
 .apv-body { display: flex; flex-direction: column; gap: var(--space-2); }
-.apv-what { margin: 0; font-size: var(--text-13); overflow-wrap: anywhere; }
+.apv-what { margin: 0; font-size: var(--text-ui); overflow-wrap: anywhere; }
 .apv-rows, .apv-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; margin: 0; }
-.apv-rows { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--ui-field); font-size: var(--text-13); }
+.apv-rows { padding: var(--space-2) var(--space-3); border-radius: var(--radius-control); background: var(--ui-field); font-size: var(--text-ui); }
 .apv-rows dt, .apv-facts dt { color: var(--color-muted); white-space: nowrap; }
 .apv-rows dd, .apv-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .apv-rows dd.is-next { font-weight: 500; }
 .apv-detail, .apv-json {
   margin: 0; max-height: 180px; overflow: auto; padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md); background: var(--ui-field);
-  font-family: var(--font-mono); font-size: var(--text-12); white-space: pre-wrap; word-break: break-word;
+  border-radius: var(--radius-control); background: var(--ui-field);
+  font-family: var(--font-mono); font-size: var(--text-small); white-space: pre-wrap; word-break: break-word;
 }
-.apv-link { align-self: flex-start; font-size: var(--text-12); color: var(--color-quiet); }
+.apv-link { align-self: flex-start; font-size: var(--text-small); color: var(--color-quiet); }
 .apv-link:hover { color: var(--color-text); }
-.apv-hold { margin: 0; display: inline-flex; align-items: center; min-height: 32px; font-size: var(--text-12); color: var(--color-muted); }
+.apv-hold { margin: 0; display: inline-flex; align-items: center; min-height: var(--control-h); font-size: var(--text-small); color: var(--color-muted); }
 .apv-foot { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--space-3); }
 .apv-more > summary, .apv-done > summary {
-  display: inline-flex; align-items: center; gap: 4px; min-height: 32px; cursor: pointer; list-style: none;
-  font-size: var(--text-12); color: var(--color-muted); transition: color 120ms ease;
+  display: inline-flex; align-items: center; gap: 4px; min-height: var(--control-h); cursor: pointer; list-style: none;
+  font-size: var(--text-small); color: var(--color-muted); transition: color var(--motion-snap) var(--ease-out);
 }
 .apv-more > summary::-webkit-details-marker, .apv-done > summary::-webkit-details-marker { display: none; }
 .apv-more > summary:hover, .apv-done > summary:hover { color: var(--color-text); }
 .apv-more[open] { display: flex; flex-direction: column; gap: var(--space-2); }
-.apv-facts { font-size: var(--text-12); }
+.apv-facts { font-size: var(--text-small); }
 .apv-acts { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); flex-wrap: wrap; }
-.apv-done > summary { font-size: var(--text-13); }
+.apv-done > summary { font-size: var(--text-ui); }
 .apv-done[open] > summary { margin-bottom: var(--space-3); }
 .apv-done[open] > .apv-note { margin-bottom: var(--space-2); }
-.apv-audit { gap: 0; padding-top: var(--space-3); padding-bottom: var(--space-2); }
+.apv-audit { gap: 0; padding-top: var(--space-3); padding-bottom: var(--space-2); border-top: var(--hairline); }
 .apv-audit-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; padding-bottom: var(--space-2); }
 .apv-audit-row {
   display: grid; grid-template-columns: minmax(96px, auto) minmax(0, 1fr) auto; align-items: center; gap: var(--space-3);
-  padding: var(--space-2) 0; border-top: 1px solid var(--color-divider); font-size: var(--text-13);
+  padding: var(--space-2) 0; border-top: var(--hairline); font-size: var(--text-ui);
 }
 .apv-audit-counts { color: var(--color-quiet); }
 .apv-audit-state { display: inline-flex; align-items: center; gap: var(--space-2); }

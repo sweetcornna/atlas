@@ -302,20 +302,28 @@ export const MEMORY_PAGE_CSS = `
 .mem-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); margin-bottom: var(--space-4); }
 .mem-bar .sel { min-width: 200px; }
 .mem-q { flex: 1 1 180px; min-width: 140px; max-width: 280px; }
-.mem-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--space-3); }
-.mem-card { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-4); transition: transform 150ms ease, box-shadow 150ms ease; }
-.mem-card:hover { transform: translateY(-1px); }
-.mem-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
-.mem-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: var(--text-15, 15px); line-height: 1.4; }
-.mem-summary { font-size: var(--text-13-5, 13.5px); line-height: 1.6; color: var(--color-muted); }
-.mem-body { white-space: pre-wrap; font-size: var(--text-13); line-height: 1.6; padding-top: var(--space-2); }
-.mem-more > summary { list-style: none; cursor: pointer; font-size: var(--text-12); color: var(--color-muted); display: inline-flex; align-items: center; gap: 4px; min-height: 0; }
+/* One memory per row (qmo-local.md §3.4): its title and summary on the left,
+   its kind and age on the right, where it came from and the actions under
+   it; a hairline between rows. */
+.mem-grid { display: flex; flex-direction: column; }
+.mem-grid > .mem-card {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline;
+  column-gap: var(--space-6); row-gap: 2px; padding: var(--space-3) 0;
+}
+.mem-grid > .mem-card + .mem-card { border-top: var(--hairline); }
+.mem-grid > .mem-card > * { grid-column: 1; }
+.mem-grid > .mem-card > .mem-head { grid-column: 2; grid-row: 1; }
+.mem-grid > .mem-card > .mem-foot { grid-column: 1 / -1; }
+.mem-head { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
+.mem-title { margin: 0; font-family: var(--font-heading); font-weight: var(--weight-semibold); font-size: var(--text-ui); line-height: var(--lh-ui); }
+.mem-summary { margin: 0; font-size: var(--text-ui); line-height: var(--lh-ui); color: var(--color-muted); }
+.mem-body { white-space: pre-wrap; font-size: var(--text-ui); line-height: var(--lh-ui); padding-top: var(--space-2); }
+.mem-more > summary { list-style: none; cursor: pointer; font-size: var(--text-small); color: var(--color-muted); display: inline-flex; align-items: center; gap: 4px; min-height: 0; }
 .mem-more > summary::-webkit-details-marker { display: none; }
 .mem-more[open] > summary svg { transform: rotate(180deg); }
-.mem-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-top: auto; padding-top: var(--space-2); }
+.mem-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding-top: var(--space-1); }
 .mem-n { color: var(--color-muted); font-variant-numeric: tabular-nums; }
 .seg-opt:has(input:checked) .mem-n { color: inherit; opacity: .8; }
 .mem-retired { opacity: .55; }
-.mem-retired:hover { transform: none; }
 @media (max-width: 700px) { .mem-q { max-width: none; } }
 `

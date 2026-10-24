@@ -309,7 +309,10 @@ describe('100 000 records: the first screen is bounded (D5, G2)', () => {
     expect(rowCount(warm.body, 'audit-rows')).toBe(50)
     expect(reader.stats.linesChecked - afterCold.linesChecked).toBe(0)
     expect(reader.stats.bytesRead - afterCold.bytesRead).toBe(0)
-    expect(warm.body.length).toBeLessThan(160_000)
+    // Fifty rows plus the page's shell, most of which is the one shared
+    // sheet with the whole token set of /admin and the fronts (qmo-local.md
+    // §3.4). A page that drew every record would be megabytes.
+    expect(warm.body.length).toBeLessThan(164_000)
 
     // The poll the page set up: since the head it was drawn at.
     const poll = /data-poll="([^"]+)"/

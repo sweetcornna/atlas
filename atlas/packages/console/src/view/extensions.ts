@@ -39,10 +39,10 @@ export interface ExtensionsModel {
   readonly ops: boolean
 }
 
-const KINDS: readonly (readonly [ExtensionKind, string, string, string])[] = [
-  ['mcp', 'Connectors', '连接器', 'plug'],
-  ['skill', 'Skills', '技能', 'sparkles'],
-  ['plugin', 'Plugins', '插件', 'puzzle'],
+const KINDS: readonly (readonly [ExtensionKind, string, string])[] = [
+  ['mcp', 'Connectors', '连接器'],
+  ['skill', 'Skills', '技能'],
+  ['plugin', 'Plugins', '插件'],
 ]
 
 const TRANSPORT: Readonly<Record<string, string>> = {
@@ -181,7 +181,7 @@ export function renderExtensions(model: ExtensionsModel): string {
       'qm console … --extensions',
     )
   if (side.kind === 'failed') return failureBar(side.failure, '扩展')
-  return KINDS.map(([kind, kicker, name, glyph]) => {
+  return KINDS.map(([kind, kicker, name]) => {
     const rows = side.value.extensions.filter(one => one.kind === kind)
     const add = model.ops
       ? actionButton('extension-new', `添加${name}`, {
@@ -197,9 +197,7 @@ export function renderExtensions(model: ExtensionsModel): string {
       `<section class="sec" aria-labelledby="h-ex-${kind}">` +
       sectionHead(kicker, name, {
         headingId: `h-ex-${kind}`,
-        tail: `<div class="kit-row">${icon(glyph, { small: true })}${
-          rows.length > 0 ? add : ''
-        }</div>`,
+        tail: rows.length > 0 ? `<div class="kit-row">${add}</div>` : '',
       }) +
       body +
       `</section>`
@@ -408,24 +406,35 @@ export function extensionDialogs(): string {
 }
 
 export const EXTENSIONS_PAGE_CSS = `
-.ex-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: var(--space-3); }
-.ex-card { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
-.ex-head { display: flex; align-items: center; gap: var(--space-3); }
-.ex-title { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
-.ex-title b { font-size: var(--text-14, 14px); overflow-wrap: anywhere; }
-.ex-facts { display: flex; flex-direction: column; gap: 6px; }
-.ex-fact { display: flex; justify-content: space-between; gap: var(--space-3); font-size: var(--text-13); min-width: 0; }
-.ex-fact .kit-mono { text-align: right; overflow-wrap: anywhere; }
-.ex-landing { margin-top: auto; }
-.ex-nodes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: var(--text-13); }
+/* One entry per row (qmo-local.md §3.4): the name and what it is for, the
+   actions on the right; the facts on one wrapped line, then where it landed,
+   one node after another; a hairline between rows. */
+.ex-grid { display: flex; flex-direction: column; }
+.ex-grid > .ex-card {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  column-gap: var(--space-6); row-gap: var(--space-2); padding: var(--space-3) 0;
+}
+.ex-grid > .ex-card + .ex-card { border-top: var(--hairline); }
+.ex-head { display: flex; align-items: center; gap: var(--space-3); grid-column: 1; grid-row: 1; min-width: 0; }
+.ex-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 var(--space-2); flex: 1; min-width: 0; }
+.ex-title b { font-size: var(--text-ui); font-weight: var(--weight-semibold); overflow-wrap: anywhere; }
+.ex-facts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px var(--space-5); }
+.ex-fact { display: flex; align-items: baseline; gap: 6px; font-size: var(--text-ui); min-width: 0; }
+.ex-fact .kit-mono { overflow-wrap: anywhere; }
+.ex-landing { grid-column: 1 / -1; }
+.ex-nodes { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 2px var(--space-5); font-size: var(--text-ui); }
 .ex-node { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.ex-node-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.ex-node-head { display: flex; align-items: center; gap: var(--space-2); }
 .ex-why { overflow-wrap: anywhere; }
-.ex-foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); flex-wrap: wrap; }
+.ex-foot { grid-column: 2; grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); flex-wrap: wrap; }
 .ex-agents { border: 0; padding: 0; margin: 0; }
 .ex-agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--space-2); }
 .ex-hint { display: flex; gap: 6px; align-items: flex-start; }
 .ex-status:empty { display: none; }
 .ex-dialog .dialog-body { max-height: min(70vh, 640px); overflow: auto; }
 [data-when][hidden] { display: none; }
+@media (max-width: 720px) {
+  .ex-grid > .ex-card { grid-template-columns: minmax(0, 1fr); }
+  .ex-foot { grid-column: 1; grid-row: auto; justify-content: flex-start; }
+}
 `

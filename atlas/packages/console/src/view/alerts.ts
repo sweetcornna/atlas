@@ -846,25 +846,25 @@ export function renderAlertSources(sources: readonly AlertSource[]): string {
 
 /** The page's own rules (`routes/types.ts`, `PageRoute.css`). */
 export const ALERTS_PAGE_CSS = `
-.alert-list { list-style: none; margin: 0; padding: var(--space-1) var(--space-4); }
+.alert-list { list-style: none; margin: 0; padding: 0; }
 .alert-row {
   display: grid; grid-template-columns: 5.5rem minmax(0, 1fr) auto 7.5rem;
   gap: var(--space-3); align-items: center;
-  padding: var(--space-3) 0; border-bottom: 1px solid var(--color-divider);
+  padding: var(--space-3) 0; border-bottom: var(--hairline);
 }
 .alert-row:last-child { border-bottom: 0; }
 .alert-row[data-acked="1"] .alert-title { font-weight: 400; color: var(--color-muted); }
 .alert-title { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
 .alert-meta { margin: 0; overflow-wrap: anywhere; }
-.alert-when { display: flex; flex-direction: column; align-items: flex-end; white-space: nowrap; font-family: var(--font-mono); font-size: 12px; }
+.alert-when { display: flex; flex-direction: column; align-items: flex-end; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-small); }
 .alert-ack { display: flex; justify-content: flex-end; }
 .unread {
-  display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 999px;
-  font-size: 12px; font-weight: 700;
+  display: inline-flex; align-items: center; padding: 0 8px; border-radius: var(--radius-pill);
+  font-size: var(--text-small); line-height: var(--lh-small); font-weight: var(--weight-semibold);
   background: color-mix(in srgb, var(--color-critical) 14%, var(--color-bg)); color: var(--color-critical);
 }
 .unread[data-zero] { background: var(--color-neutral-100); color: var(--color-neutral-700); font-weight: 600; }
-.alert-sources { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-6); font-size: 13px; }
+.alert-sources { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-6); font-size: var(--text-ui); }
 .alert-sources .k { color: var(--color-muted); margin-right: var(--space-2); }
 @media (max-width: 720px) {
   .alert-row { grid-template-columns: minmax(0, 1fr); }
