@@ -900,6 +900,25 @@ describe.skipIf(SKIP !== null)('Code: local sessions', () => {
     } finally {
       await tab.close()
     }
+    // Cancelled: the shell answers null and the folder before stays chosen.
+    const cancelled = await open(browser, served.base, {})
+    try {
+      await cancelled.tab.evaluate(
+        `(() => { const s = ${q('#code-folder')}; s.value = 'pick'; s.dispatchEvent(new Event('change')); })()`,
+      )
+      await cancelled.tab.waitFor(
+        `${calls('qmo_local_pick_folder')}.length === 1`,
+      )
+      await cancelled.tab.evaluate(`new Promise(r => setTimeout(r, 50))`)
+      expect(
+        await cancelled.tab.evaluate<unknown>(`({
+          value: ${q('#code-folder')}.value,
+          say: ${q('#code-say')}.textContent,
+        })`),
+      ).toEqual({ value: FOLDER.id, say: '' })
+    } finally {
+      await cancelled.tab.close()
+    }
   }, 30_000)
 
   test('back and forward move between sessions; the top of a long one reads the rest; Shift+Enter and a composition do not send', async () => {
