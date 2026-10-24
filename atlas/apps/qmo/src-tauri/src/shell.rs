@@ -1316,7 +1316,9 @@ mod tests {
         let started = shell
             .find("if payload.event() == PageLoadEvent::Started {")
             .unwrap();
-        assert!(shell[started..started + 400].contains(
+        let branch = &shell[started..];
+        let branch = &branch[..branch.find("let url = payload.url().clone();").unwrap()];
+        assert!(branch.contains(
             "if label == MAIN {\n                    crate::code::forget_watcher(&load_app);"
         ));
         // Every local-session command checks its caller and its arguments.

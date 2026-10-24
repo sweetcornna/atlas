@@ -177,7 +177,7 @@ pub fn local_caller(page: Option<&Url>, hub: Option<&Hub>, window: &str) -> Resu
     }
 }
 
-/// What a checked call asks the runner: one of its methods (task book §3)
+/// What a checked call asks the runner: one of its methods (qmo-local.md §4.3.2)
 /// and the parameters, built afresh from the checked values.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Call {

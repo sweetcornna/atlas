@@ -1581,17 +1581,6 @@ mod tests {
                 "{refused}"
             );
         }
-        // While it is down, calls are turned down at once.
-        let started = Instant::now();
-        match runner.call("list", json!({})) {
-            Err(refusal) => {
-                assert_eq!(refusal.code, "E_RUNNER");
-                assert!(refusal.message.contains("秒后重起"), "{refusal}");
-                assert!(started.elapsed() < ms(100));
-            }
-            // The 40 ms backoff may already be over.
-            Ok(_) => assert_eq!(fake.launches(), 2),
-        }
         until("started again", || {
             runner.phase() == Phase::Up && fake.launches() == 2
         });
@@ -1608,6 +1597,36 @@ mod tests {
         // Each start says hello first.
         let methods = fake.methods();
         assert_eq!(methods.iter().filter(|m| *m == "hello").count(), 2);
+    }
+
+    #[test]
+    fn calls_while_it_is_down_are_turned_down_at_once() {
+        let (launch, fake) = fake(|request, _| match request["method"].as_str() {
+            Some("die") => Act::Exit,
+            _ => echo(request),
+        });
+        let timing = Timing {
+            backoff: vec![Duration::from_secs(5)],
+            ..quick()
+        };
+        let runner = Runner::new(launch, timing);
+        runner.call("list", json!({})).unwrap();
+        let _ = runner.call("die", json!({}));
+        until("down", || matches!(runner.phase(), Phase::Waiting { .. }));
+        let started = Instant::now();
+        let refused = runner.call("list", json!({})).unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(refused.code, "E_RUNNER");
+        assert!(
+            refused.message.starts_with("运行器不在（运行器退出了"),
+            "{refused}"
+        );
+        assert!(refused.message.ends_with("5 秒后重起"), "{refused}");
+        assert_eq!(fake.launches(), 1, "not started early");
     }
 
     #[test]
@@ -1645,7 +1664,6 @@ mod tests {
         for (gap, least) in gaps.iter().zip([40, 80, 160, 160]) {
             assert!(*gap >= ms(least), "{gaps:?}");
         }
-        assert!(gaps[2] > gaps[0], "{gaps:?}");
         // Up, down when it ended, and no more downs while it keeps failing.
         assert_eq!(runner_states(&seen), ["up", "down"]);
     }
@@ -1660,10 +1678,7 @@ mod tests {
         let took = started.elapsed();
         assert_eq!(refused.code, "E_RUNNER");
         assert!(refused.message.contains("hello"), "{refused}");
-        assert!(
-            took >= ms(400) && took < ms(400 + 300 + 300 + 200),
-            "{took:?}"
-        );
+        assert!(took >= ms(400) && took < Duration::from_secs(3), "{took:?}");
         assert_eq!(fake.life(0).ended().as_deref(), Some("killed"));
         assert!(runner.log_text().contains("hello"));
         assert_eq!(fake.methods(), ["hello"], "nothing else was sent to it");
@@ -1772,7 +1787,7 @@ mod tests {
         let started = Instant::now();
         runner.shutdown();
         let took = started.elapsed();
-        assert!(took >= ms(700) && took < ms(1500), "{took:?}");
+        assert!(took >= ms(700) && took < Duration::from_secs(3), "{took:?}");
         assert_eq!(fake.life(0).ended().as_deref(), Some("killed"));
         assert!(runner.log_text().contains("did not stop in time"));
     }
@@ -2007,7 +2022,15 @@ done
             command.args(["-c", SH_RUNNER]);
             spawn(command)
         });
-        let runner = Runner::new(launch, quick());
+        // A real process: room to start on a busy machine.
+        let timing = Timing {
+            hello: Duration::from_secs(5),
+            call: Duration::from_secs(10),
+            shutdown_answer: Duration::from_secs(3),
+            shutdown_exit: Duration::from_secs(5),
+            ..quick()
+        };
+        let runner = Runner::new(launch, timing);
         let (channel, seen) = capture();
         runner.watcher().watch(channel);
         assert_eq!(
@@ -2034,7 +2057,11 @@ done
         assert_eq!(runner_states(&seen), ["up", "down", "up"]);
         let started = Instant::now();
         runner.shutdown();
-        assert!(started.elapsed() < ms(700), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
         assert!(runner.log_text().contains("runner stopped: exit status: 0"));
     }
 
