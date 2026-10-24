@@ -101,7 +101,9 @@ export class RunnerLock {
 
   /** The lock, or the pid of the live runner that holds it. */
   static acquire(file: string): RunnerLock | { readonly heldBy: number } {
-    const startedAt = Date.now()
+    // When this process started, as another runner's `ps` will see it; not
+    // when it got here, so a slow start cannot make a live runner look gone.
+    const startedAt = Math.round(performance.timeOrigin)
     const content = `${JSON.stringify({ pid: process.pid, startedAt })}\n`
     try {
       fs.writeFileSync(file, content, { flag: 'wx', mode: 0o600 })

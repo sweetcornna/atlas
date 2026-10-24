@@ -576,7 +576,10 @@ export class SessionManager {
   }): Promise<{ mode: Mode; applies: 'now' | 'next-turn' }> {
     const session = this.#session(input.session)
     let result: { mode: Mode; applies: 'now' | 'next-turn' }
-    if (session.agent?.alive === true)
+    // An agent, even one between processes (a turn may be about to start
+    // one), takes the mode itself: dropping it would leave that process to
+    // nobody.
+    if (session.agent !== undefined)
       result = await session.agent.setMode(input.mode)
     else {
       const noAuto =
@@ -584,9 +587,8 @@ export class SessionManager {
         session.program !== undefined &&
         this.#noAuto.has(session.program)
       if (noAuto) this.#notice(session, NO_AUTO, 'warn')
-      result = { mode: noAuto ? 'accept-edits' : input.mode, applies: 'now' }
       // The next process starts in it.
-      session.agent = undefined
+      result = { mode: noAuto ? 'accept-edits' : input.mode, applies: 'now' }
     }
     if (result.mode !== session.header.mode)
       this.#header(session, { mode: result.mode })
