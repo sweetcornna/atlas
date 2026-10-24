@@ -11,7 +11,7 @@
 //! | `settings`, `about` | local pages | fixed |
 //!
 //! Getting in is `qmo session --json` (§3): the cookies it prints go into the
-//! WebView's store, the hub's origin gets the nine commands of §5.2 as a remote
+//! WebView's store, the hub's origin gets the commands of §5.2 as a remote
 //! capability, and the main window opens `/app`. A page that lands on the
 //! hub's `/login` lost its session; the shell gets a new one and goes back.
 
@@ -48,11 +48,12 @@ pub const QUICK: &str = "quick";
 pub const SETTINGS: &str = "settings";
 pub const ABOUT: &str = "about";
 
-/// What the hub's pages may call: the nine commands of qmo-app.md §5.2, and
-/// the two the window's own drag regions need (§5.1: the page marks its header
-/// `data-tauri-drag-region`; a drag or a double-click there moves or zooms
-/// this window and nothing else).
-pub const HUB_PERMISSIONS: [&str; 11] = [
+/// What the hub's pages may call: the twenty-two commands of qmo-app.md
+/// §5.2, and the two the window's own drag regions need (§5.1: the page marks
+/// its header `data-tauri-drag-region`; a drag or a double-click there moves
+/// or zooms this window and nothing else). The local-session commands check
+/// the window themselves: the main one only.
+pub const HUB_PERMISSIONS: [&str; 24] = [
     "allow-qmo-shell-info",
     "allow-qmo-notify",
     "allow-qmo-badge",
@@ -62,13 +63,27 @@ pub const HUB_PERMISSIONS: [&str; 11] = [
     "allow-qmo-local-agents",
     "allow-qmo-boot-layout",
     "allow-qmo-open-local-settings",
+    "allow-qmo-local-list",
+    "allow-qmo-local-watch",
+    "allow-qmo-local-pick-folder",
+    "allow-qmo-local-forget-folder",
+    "allow-qmo-local-start",
+    "allow-qmo-local-send",
+    "allow-qmo-local-stop",
+    "allow-qmo-local-answer",
+    "allow-qmo-local-set-mode",
+    "allow-qmo-local-read",
+    "allow-qmo-local-changes",
+    "allow-qmo-local-diff",
+    "allow-qmo-local-set-remote",
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
 ];
 
-/// The nine commands the hub's pages may call (qmo-app.md §5.2).
+/// The twenty-two commands the hub's pages may call (qmo-app.md §5.2): nine,
+/// and the thirteen of local sessions (qmo-local.md §4.5.1).
 #[cfg(test)]
-const HUB_COMMANDS: [&str; 9] = [
+const HUB_COMMANDS: [&str; 22] = [
     "qmo_shell_info",
     "qmo_notify",
     "qmo_badge",
@@ -78,6 +93,19 @@ const HUB_COMMANDS: [&str; 9] = [
     "qmo_local_agents",
     "qmo_boot_layout",
     "qmo_open_local_settings",
+    "qmo_local_list",
+    "qmo_local_watch",
+    "qmo_local_pick_folder",
+    "qmo_local_forget_folder",
+    "qmo_local_start",
+    "qmo_local_send",
+    "qmo_local_stop",
+    "qmo_local_answer",
+    "qmo_local_set_mode",
+    "qmo_local_read",
+    "qmo_local_changes",
+    "qmo_local_diff",
+    "qmo_local_set_remote",
 ];
 
 /// Where the traffic lights sit on macOS: the close button's left edge 17 px
@@ -392,6 +420,11 @@ fn guarded<'a>(
             // A server redirect the navigation hook did not see still lands
             // here; the hub's `/login` is the only page that matters.
             if payload.event() == PageLoadEvent::Started {
+                // The page going away had the local sessions' event channel;
+                // the next one registers its own (qmo-local.md §4.5.2).
+                if label == MAIN {
+                    crate::code::forget_watcher(&load_app);
+                }
                 let url = payload.url().clone();
                 let (hub, login_page) = shell(&load_app).with(|s| (s.hub.clone(), s.login_page));
                 if let Navigation::Reenter { back } = hub::decide(&url, hub.as_ref(), login_page) {
@@ -1196,7 +1229,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_hub_gets_its_nine_commands_and_the_drag_regions_only() {
+    fn the_hub_gets_its_commands_and_the_drag_regions_only() {
         let commands: Vec<String> = HUB_COMMANDS
             .iter()
             .map(|c| format!("allow-{}", c.replace('_', "-")))
@@ -1237,6 +1270,128 @@ mod tests {
         for command in HUB_COMMANDS {
             assert!(build.contains(&format!("\"{command}\"")), "{command}");
         }
+    }
+
+    #[test]
+    fn local_sessions_are_the_hubs_and_registered_everywhere_they_must_be() {
+        let local: Vec<&str> = HUB_COMMANDS
+            .iter()
+            .copied()
+            .filter(|c| c.starts_with("qmo_local_") && *c != "qmo_local_agents")
+            .collect();
+        assert_eq!(
+            local,
+            [
+                "qmo_local_list",
+                "qmo_local_watch",
+                "qmo_local_pick_folder",
+                "qmo_local_forget_folder",
+                "qmo_local_start",
+                "qmo_local_send",
+                "qmo_local_stop",
+                "qmo_local_answer",
+                "qmo_local_set_mode",
+                "qmo_local_read",
+                "qmo_local_changes",
+                "qmo_local_diff",
+                "qmo_local_set_remote",
+            ]
+        );
+        let lib = include_str!("lib.rs");
+        let commands = include_str!("commands.rs");
+        for command in HUB_COMMANDS {
+            assert!(
+                HUB_PERMISSIONS.contains(&format!("allow-{}", command.replace('_', "-")).as_str()),
+                "{command}"
+            );
+            assert!(lib.contains(&format!("commands::{command},")), "{command}");
+            assert!(
+                commands.contains(&format!("pub async fn {command}("))
+                    || commands.contains(&format!("pub fn {command}(")),
+                "{command}"
+            );
+        }
+        // The main window's page loads drop its channel.
+        let shell = include_str!("shell.rs");
+        let started = shell
+            .find("if payload.event() == PageLoadEvent::Started {")
+            .unwrap();
+        assert!(shell[started..started + 400].contains(
+            "if label == MAIN {\n                    crate::code::forget_watcher(&load_app);"
+        ));
+        // Every local-session command checks its caller and its arguments.
+        for command in &local {
+            let start = commands.find(&format!("pub async fn {command}(")).unwrap();
+            let body = &commands[start..];
+            let end = body[1..]
+                .find("\n#[tauri::command]")
+                .map_or(body.len(), |e| e + 1);
+            let flat: String = body[..end].split_whitespace().collect();
+            assert!(
+                flat.contains("local_body(&app,&webview,&request"),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_hub_permission_is_one_the_build_made() {
+        // `tauri-build` writes the manifest from `build.rs`'s command list
+        // before this compiles; a name missing there would only show when the
+        // capability is added at run time.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("gen")
+            .join("schemas")
+            .join("acl-manifests.json");
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+        let app = &manifest["__app-acl__"]["permissions"];
+        for permission in HUB_PERMISSIONS.iter().filter(|p| !p.starts_with("core:")) {
+            assert!(app.get(*permission).is_some(), "{permission}");
+        }
+        assert!(
+            manifest.get("fs").is_none(),
+            "the file system plugin is not registered"
+        );
+    }
+
+    #[test]
+    fn no_page_gets_the_dialog_or_any_other_plugin() {
+        let plugin = |p: &str| {
+            p.contains(':')
+                && !matches!(
+                    p,
+                    "core:window:allow-start-dragging"
+                        | "core:window:allow-internal-toggle-maximize"
+                )
+        };
+        assert!(
+            !HUB_PERMISSIONS.iter().any(|p| plugin(p)),
+            "{HUB_PERMISSIONS:?}"
+        );
+        assert!(!HUB_PERMISSIONS
+            .iter()
+            .any(|p| p.contains("dialog") || p.contains("fs")));
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+        let mut files = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let capability: serde_json::Value = serde_json::from_str(&text).unwrap();
+            for permission in capability["permissions"].as_array().unwrap() {
+                let permission = permission.as_str().unwrap();
+                assert!(!plugin(permission), "{path:?}: {permission}");
+                assert!(!permission.contains("qmo-local"), "{path:?}: {permission}");
+            }
+            assert!(!text.contains("dialog:"), "{path:?}");
+            assert!(!text.contains("fs:"), "{path:?}");
+            files += 1;
+        }
+        assert_eq!(files, 1, "local.json is the only static capability");
+        // The plugin is there for its Rust picker, without its page script.
+        let lib = include_str!("lib.rs");
+        assert!(lib.contains(".plugin(code::Quiet(tauri_plugin_dialog::init()))"));
+        assert_eq!(lib.matches("tauri_plugin_dialog::init()").count(), 1);
     }
 
     #[test]
