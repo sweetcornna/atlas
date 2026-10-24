@@ -15,7 +15,16 @@
  * a piece of the answer as a `delta`, `state` a session, `emit` any event,
  * `skip` a record without telling the page (a gap), `set` an option. Every
  * call the page makes is in `window.__calls`. No app window, runner or agent is started.
+ *
+ * The arguments are checked as the real shell checks their keys and types,
+ * from the contract its own tests read too (`qmo-local-calls.json`; `ipc.rs`
+ * `the_shared_contract_is_what_the_shell_checks`): a call out of shape is
+ * refused with `qmo local E_ARGS` and kept in `window.__badArgs`.
  */
+
+import contract from '../../../../tests/integration/fixtures/qmo-local-calls.json' with {
+  type: 'json',
+}
 
 /** A folder as the runner answers it (§4.5.1). */
 export interface FakeFolder {
@@ -80,6 +89,22 @@ export const AGENTS = [
   },
 ]
 
+/** Each command's keys, the optional ones, and each key's JSON type. */
+const SHAPES: Record<
+  string,
+  { readonly keys: Record<string, string>; readonly optional: string[] }
+> = Object.fromEntries(
+  contract.calls.map(call => [
+    call.command,
+    {
+      keys: Object.fromEntries(
+        Object.entries(call.args).map(([key, value]) => [key, typeof value]),
+      ),
+      optional: 'optional' in call ? [...call.optional] : [],
+    },
+  ]),
+)
+
 /** The page-side script: the shell, the channel and the runner. */
 export function fakeShell(options: FakeShellOptions = {}): string {
   const config = {
@@ -93,6 +118,7 @@ export function fakeShell(options: FakeShellOptions = {}): string {
   return `
 (function () {
   var config = ${JSON.stringify(config)};
+  var shapes = ${JSON.stringify(SHAPES)};
   var KEY = '__qmoFakeRunner';
   var state = null;
   try { state = JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch (e) { state = null; }
@@ -213,10 +239,32 @@ export function fakeShell(options: FakeShellOptions = {}): string {
     if (command === 'qmo_boot_layout') return null;
     throw 'Command ' + command + ' not found';
   }
+  window.__badArgs = [];
+  // What the shell would refuse: a key it does not take, one it needs left
+  // out, a value of another JSON type (as Tauri sends them: a Channel is its string).
+  function misshapen(command, args) {
+    var shape = shapes[command];
+    if (!shape) return '';
+    var sent = JSON.parse(JSON.stringify(args === undefined ? {} : args));
+    if (!sent || typeof sent !== 'object' || Array.isArray(sent)) return 'arguments must be an object';
+    for (var k in sent) {
+      if (!Object.prototype.hasOwnProperty.call(shape.keys, k)) return 'unknown argument ' + k;
+      if (sent[k] === null ? shape.optional.indexOf(k) === -1 : typeof sent[k] !== shape.keys[k]) return k + ' is not a ' + shape.keys[k];
+    }
+    for (var key in shape.keys) {
+      if (shape.optional.indexOf(key) === -1 && !(key in sent)) return key + ' is required';
+    }
+    return '';
+  }
   function invoke(command, args) {
     window.__calls.push([command, args === undefined ? null : JSON.parse(JSON.stringify(args, function (k, v) {
       return v instanceof Channel ? 'channel' : v;
     }))]);
+    var bad = misshapen(command, args);
+    if (bad) {
+      window.__badArgs.push([command, bad]);
+      return Promise.reject('qmo local E_ARGS: ' + bad);
+    }
     var later = (config.delays && config.delays[command]) || 0;
     return new Promise(function (resolve, reject) {
       function run() { try { resolve(answer(command, args || {})); } catch (e) { reject(e); } }

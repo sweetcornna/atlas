@@ -69,12 +69,26 @@ const DIFF = [
   ' serve({ port })',
 ].join('\n')
 
+/** As the runner answers (`git.ts`: a word for each status). */
 const CHANGES = {
   source: 'git',
+  base: 'HEAD',
   truncated: false,
   files: [
-    { path: 'src/app.ts', status: 'M', added: 1, removed: 1, binary: false },
-    { path: 'README.md', status: '?', added: 4, removed: 0, binary: false },
+    {
+      path: 'src/app.ts',
+      status: 'modified',
+      added: 1,
+      removed: 1,
+      binary: false,
+    },
+    {
+      path: 'README.md',
+      status: 'untracked',
+      added: 4,
+      removed: 0,
+      binary: false,
+    },
   ],
 }
 
@@ -170,6 +184,16 @@ async function open(
   }
   // The token's exchange for a session cookie is behind us.
   await tab.waitFor('window.__inflight === 0')
+  if (shell !== null) {
+    // Every call the page made had the shape the real shell takes
+    // (`codeShell.ts`, from the contract the shell's own tests read).
+    const close = tab.close.bind(tab)
+    tab.close = async () => {
+      const bad = await tab.evaluate<unknown>('window.__badArgs || []')
+      await close()
+      expect(bad).toEqual([])
+    }
+  }
   return {
     tab,
     requests,
@@ -515,12 +539,16 @@ describe.skipIf(SKIP !== null)('Code: local sessions', () => {
       expect(
         await tab.evaluate<unknown>(`({
           files: [...document.querySelectorAll('#code-files .fx-code-frow')].map(r => r.textContent),
+          marks: [...document.querySelectorAll('#code-files .fx-code-fstat')].map(m => m.title),
           count: ${q('#code-count')}.textContent,
           diff: ${calls('qmo_local_diff')}[0][1],
           lines: ${q('#code-files .fx-diff')}.children.length,
         })`),
       ).toEqual({
-        files: ['Msrc/app.ts+1\u22121', '?README.md+4\u22120'],
+        // The runner's status words, marked by their first letter (M, A, D,
+        // R, U, C — an editor's source-control letters).
+        files: ['Msrc/app.ts+1\u22121', 'UREADME.md+4\u22120'],
+        marks: ['modified', 'untracked'],
         count: '2',
         diff: { session: id, path: 'src/app.ts' },
         lines: DIFF.split('\n').length,

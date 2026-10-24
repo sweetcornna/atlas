@@ -83,7 +83,7 @@ pub const HUB_PERMISSIONS: [&str; 24] = [
 /// The twenty-two commands the hub's pages may call (qmo-app.md §5.2): nine,
 /// and the thirteen of local sessions (qmo-local.md §4.5.1).
 #[cfg(test)]
-const HUB_COMMANDS: [&str; 22] = [
+pub(crate) const HUB_COMMANDS: [&str; 22] = [
     "qmo_shell_info",
     "qmo_notify",
     "qmo_badge",

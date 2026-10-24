@@ -1582,6 +1582,80 @@ mod tests {
         assert!(local_diff(&json!({"session": SESSION, "path": "a", "base": "HEAD"})).is_err());
     }
 
+    /// The page's calls and what the shell asks the runner for each, shared
+    /// with the page's fake shell (`console/test/browser/codeShell.ts`) and
+    /// the compiled runner's test (`qianmo-client-code-serve.test.ts`), so a
+    /// key one side adds or drops is caught on the other two.
+    const CONTRACT: &str =
+        include_str!("../../../../tests/integration/fixtures/qmo-local-calls.json");
+
+    /// A call checked as its command checks it: the call to the runner, if
+    /// it makes one.
+    fn checked_call(command: &str, args: &Value) -> Result<Option<Call>, Invalid> {
+        match command {
+            "qmo_local_agents" => local_agents(args).map(|_| None),
+            "qmo_local_list" => local_list(args).map(Some),
+            "qmo_local_watch" => local_watch(args).map(|_| None),
+            "qmo_local_pick_folder" => no_arguments(args).map(|()| None),
+            "qmo_local_forget_folder" => local_forget_folder(args).map(Some),
+            "qmo_local_start" => local_start(args).map(Result::ok),
+            "qmo_local_send" => local_send(args).map(Some),
+            "qmo_local_stop" => local_stop(args).map(Some),
+            "qmo_local_answer" => local_answer(args).map(Some),
+            "qmo_local_set_mode" => local_set_mode(args).map(Some),
+            "qmo_local_read" => local_read(args).map(Some),
+            "qmo_local_changes" => local_changes(args).map(Some),
+            "qmo_local_diff" => local_diff(args).map(Some),
+            "qmo_local_set_remote" => local_set_remote(args).map(|()| None),
+            other => panic!("{other} is not a local-session command"),
+        }
+    }
+
+    #[test]
+    fn the_shared_contract_is_what_the_shell_checks() {
+        let contract: Value = serde_json::from_str(CONTRACT).unwrap();
+        let mut commands = Vec::new();
+        for entry in contract["calls"].as_array().unwrap() {
+            let command = entry["command"].as_str().unwrap();
+            commands.push(command);
+            let args = &entry["args"];
+            let made = checked_call(command, args).unwrap_or_else(|e| panic!("{command}: {e}"));
+            match (made, entry.get("method")) {
+                (Some(call), Some(method)) => {
+                    assert_eq!(call.method, method.as_str().unwrap(), "{command}");
+                    assert_eq!(call.params, entry["params"], "{command}");
+                }
+                (None, None) => {}
+                (made, method) => panic!("{command}: made {made:?}, the contract says {method:?}"),
+            }
+            let optional: Vec<&str> = entry
+                .get("optional")
+                .and_then(Value::as_array)
+                .map(|keys| keys.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            for key in args.as_object().unwrap().keys() {
+                let left_out = checked_call(command, &without(args, key));
+                if optional.contains(&key.as_str()) {
+                    assert!(left_out.is_ok(), "{command} without {key}");
+                } else {
+                    assert!(left_out.is_err(), "{command} without {key}");
+                }
+            }
+            assert!(
+                checked_call(command, &with(args, "extra", json!(1))).is_err(),
+                "{command} with a key more"
+            );
+        }
+        let mut local: Vec<&str> = crate::shell::HUB_COMMANDS
+            .iter()
+            .copied()
+            .filter(|c| c.starts_with("qmo_local_"))
+            .collect();
+        local.sort_unstable();
+        commands.sort_unstable();
+        assert_eq!(commands, local, "the contract has every local command once");
+    }
+
     #[test]
     fn set_remote_checks_then_is_closed() {
         assert!(local_set_remote(&json!({"session": SESSION, "on": true})).is_ok());
