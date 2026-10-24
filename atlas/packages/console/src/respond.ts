@@ -45,6 +45,12 @@ const JSON_HEADERS = {
  * it: the `<meta>` in every document (`view/shell.ts`) and the response header
  * on every document ({@link documentHeaders}), both from {@link cspFor} over
  * the same scripts, so the two cannot drift.
+ *
+ * A management page lists more scripts than it carries (P37.13): the page
+ * scripts of every area its reader can move to without loading another
+ * document (`assets/nav.ts`), so the one swapped in runs and nothing else
+ * does. Those are compile-time constants too, and only `script-src` grows:
+ * every other directive is the same string for every document.
  */
 export function cspFor(scripts: readonly string[]): string {
   const hashes = [...new Set(scripts.map(scriptHash))]
@@ -66,7 +72,7 @@ export function cspFor(scripts: readonly string[]): string {
 const scriptHashes = new Map<string, string>()
 
 /** `'sha256-…'` of one inline script's text, as the browser hashes it. */
-function scriptHash(script: string): string {
+export function scriptHash(script: string): string {
   let hash = scriptHashes.get(script)
   if (hash === undefined) {
     const digest = new Bun.CryptoHasher('sha256')
@@ -138,13 +144,23 @@ const PERMISSIONS_POLICY = [
  * opened the console in a window keeps no handle on it; a resource policy of
  * `same-origin`, so no other origin can load the document as a subresource;
  * and the {@link PERMISSIONS_POLICY}.
+ *
+ * `allow` are scripts the document does not carry but may run later, after
+ * its own: the page scripts a management page swaps in place (P37.13). The
+ * document's `<meta>` lists the same ones (`view/shell.ts`).
  */
-export function documentHeaders(body: string): Record<string, string> {
+export function documentHeaders(
+  body: string,
+  allow: readonly string[] = [],
+): Record<string, string> {
   return {
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
-    'content-security-policy': documentCspFor(inlineScripts(body)),
+    'content-security-policy': documentCspFor([
+      ...inlineScripts(body),
+      ...allow,
+    ]),
     'x-frame-options': 'DENY',
     'cross-origin-opener-policy': 'same-origin',
     'cross-origin-resource-policy': 'same-origin',
@@ -188,12 +204,17 @@ export function fail(
   return json({ error: { code, message } }, status, headers)
 }
 
-export function html(body: string, status = 200): Response {
+/** A document; `allow` as in {@link documentHeaders}. */
+export function html(
+  body: string,
+  status = 200,
+  allow: readonly string[] = [],
+): Response {
   return new Response(body, {
     status,
     headers: {
       'content-type': 'text/html; charset=utf-8',
-      ...documentHeaders(body),
+      ...documentHeaders(body, allow),
     },
   })
 }

@@ -93,6 +93,8 @@ export const CHANNELS_PAGE_JS = `
   var polling = null;
   var shownQr = '';
   function stopPolling() { if (polling) { clearTimeout(polling); polling = null; } }
+  // Stopped with the page: a lapsed session, or a move to another page.
+  qc.onExpire(stopPolling);
 
   function showQr(loginId) {
     return qc.loadHtml('/fragments/im/qr/' + encodeURIComponent(loginId)).then(function (html) {

@@ -250,6 +250,10 @@ const SOURCE_CSS = `
   --z-menu: 30;
   --z-toast: 40;
   --z-skip: 50;
+  /* The line across the top while the next page loads (P37.13 nav). */
+  --z-progress: 60;
+  /* The page under it, dimmed while it waits. */
+  --opacity-busy: 0.55;
   /* The system's own faces; YaHei and Noto for Chinese where the first
      ones are missing. */
   --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans", "Microsoft YaHei", "Noto Sans SC", sans-serif;
@@ -671,10 +675,10 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible,
 }
 a.brand-cn:hover { color: var(--color-quiet); }
 /* Inside the desktop app (<html data-shell>, qmo-app.md §5.1) the brand row and
-   the top bar are where the window is dragged from. On macOS the traffic
-   lights sit in the window's top 48px, 17px from the left, over the brand: it
-   starts past them, as the front's side top does (--fx-shell-x). */
-:root[data-shell] .side .brand, :root[data-shell] .top { -webkit-user-select: none; user-select: none; }
+   the top bar are where the window is dragged from; their text stays
+   selectable (D7). On macOS the traffic lights sit in the window's top 48px,
+   17px from the left, over the brand: it starts past them, as the front's side
+   top does (--fx-shell-x). */
 :root[data-shell="macos"] .side .brand { padding-left: var(--shell-lights-x); }
 .qm-mark { display: block; flex: none; }
 .qm-mark .qm-ink { fill: var(--qm-ink); }
@@ -1579,6 +1583,28 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #111
 .audit-filter-row { gap: var(--space-6); align-items: flex-end; }
 .push-right { margin-left: auto; }
 .mt-2 { margin-top: var(--space-2); }
+
+/* ---- P37.13 nav: moving between pages in place (assets/nav.ts) ----
+   While the next page is on its way the page under the bar dims and a thin
+   line shows at the top; a page swapped in fades in over 120ms where the
+   browser has View Transitions. A data-write control says 保存中 or why it
+   went back on the line beside it. */
+.refresh-row[hidden] { display: none; }
+.nav-note[hidden] { display: none; }
+html[data-nav-busy] .main { opacity: var(--opacity-busy); transition: opacity var(--motion-snap) var(--ease-out); }
+html[data-nav-busy] .frame::before {
+  content: ""; position: fixed; top: 0; left: 0; right: 0; height: 2px; z-index: var(--z-progress);
+  background: var(--color-interactive); pointer-events: none;
+}
+html.nav-fade::view-transition-old(root),
+html.nav-fade::view-transition-new(root) { animation-duration: var(--motion-snap); animation-timing-function: var(--ease-out); }
+.write-note { margin-left: var(--space-2); font-size: var(--text-small); line-height: var(--lh-small); color: var(--color-muted); }
+.write-note:empty { display: none; }
+.write-note[data-tone="bad"], .write-note[data-tone="warn"] { color: var(--color-danger-text); }
+.fx-retry {
+  border: 0; background: none; padding: 0 2px; font: inherit; color: var(--color-interactive-text);
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
 `
 
 /** The shared sheet every document inlines, without the notes (G1). */

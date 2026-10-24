@@ -97,6 +97,18 @@ export const ELEVATION_PAGE_JS = `
     });
   });
 
+  // Under a hub default an agent at 人工确认 is opened again on the next pass;
+  // choosing 人工确认 once more holds it there.
+  qc.onAction('elevation-hold', function (button) {
+    var node = button.getAttribute('data-node') || '';
+    var agent = button.getAttribute('data-agent') || '';
+    button.disabled = true;
+    put(node, agent, { tier: 'off' }, '已固定为人工确认').catch(function (err) {
+      qc.toast(qc.failLine('固定', err), qc.failTone(err));
+      return refresh();
+    });
+  });
+
   qc.onAction('elevation-revoke-all', function () {
     qc.openDialog('confirm-elevation-revoke-all', function () {
       qc.sendJson('POST', '/v0/elevation/revoke-all', {}).then(function (answer) {

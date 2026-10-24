@@ -256,10 +256,17 @@ interface FrontClientText {
   readonly switchedTo: string
   readonly notWired: string
   readonly opsOnly: string
+  /** The hub's default mode; `{mode}` is its name. */
+  readonly defaultOn: string
+  /** A person turned the agent off: the default stays off. */
+  readonly defaultHeld: string
   readonly stopping: string
   readonly stopped: string
   readonly sent: string
   readonly sentRetrying: string
+  /** A line whose send failed, kept in the conversation with 重试 (P37.13). */
+  readonly notDelivered: string
+  readonly retry: string
   readonly newReply: string
   readonly seeChat: string
   readonly polling: string
@@ -964,10 +971,14 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     switchedTo: '已切换为 ',
     notWired: '未接入 · 一直是人工确认',
     opsOnly: '只有运维能切换',
+    defaultOn: '默认{mode} · 到期后自动再开',
+    defaultHeld: '已手动关闭 · 不再自动开启默认档',
     stopping: '正在停止',
     stopped: '已停止',
     sent: '已发送',
     sentRetrying: '已发送 · 刷新失败 · 自动重试中',
+    notDelivered: '未送达',
+    retry: '重试',
     newReply: '收到新回复 · ',
     seeChat: '回到对话查看',
     polling: '轮询中',
@@ -988,10 +999,14 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     switchedTo: 'Switched to ',
     notWired: 'Not connected · always Ask first',
     opsOnly: 'Only an operator can switch',
+    defaultOn: 'Default: {mode} · reopens when it expires',
+    defaultHeld: 'Turned off by hand · the default stays off',
     stopping: 'Stopping',
     stopped: 'Stopped',
     sent: 'Sent',
     sentRetrying: 'Sent · refresh failed · retrying',
+    notDelivered: 'Not delivered',
+    retry: 'Retry',
     newReply: 'New reply · ',
     seeChat: 'see the chat',
     polling: 'Polling',
@@ -1014,10 +1029,14 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     switchedTo: '切り替えました：',
     notWired: '未接続 · 常に手動で確認',
     opsOnly: '切り替えは運用者のみ',
+    defaultOn: '既定：{mode} · 期限が切れると再開',
+    defaultHeld: '手動でオフ · 既定では開きません',
     stopping: '停止しています',
     stopped: '停止しました',
     sent: '送信済み',
     sentRetrying: '送信済み · 更新失敗 · 再試行中',
+    notDelivered: '未送信',
+    retry: '再試行',
     newReply: '新しい返信 · ',
     seeChat: 'チャットを確認してください',
     polling: 'ポーリング中',

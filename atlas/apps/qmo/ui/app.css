@@ -12,11 +12,11 @@
 :root {
   color-scheme: light dark;
   --color-bg: #f9f9f7;
-  --color-side: #f3f2ee;
-  --color-surface: #fdfdfc;
+  --color-side: #fcfcfb;
+  --color-surface: #ffffff;
   --color-field: #ffffff;
-  --color-text: #141413;
-  --color-divider: rgba(20, 20, 19, 0.09);
+  --color-text: #0b0b0b;
+  --color-divider: rgba(11, 11, 11, 0.1);
   --color-focus: #2a78d6;
   --color-interactive: #2a78d6;
   --color-interactive-soft: rgba(42, 120, 214, 0.12);
@@ -24,7 +24,7 @@
   --color-danger-bg: #fbece8;
   --color-warning-text: #7a4f12;
   --color-warning-bg: #fbf2e3;
-  --color-accent-fill: #141413;
+  --color-accent-fill: #0b0b0b;
   --color-accent-fill-hover: color-mix(
     in srgb,
     var(--color-accent-fill) 86%,
@@ -32,15 +32,14 @@
   );
   --color-on-accent-fill: #fafaf9;
   --color-muted: color-mix(in srgb, var(--color-text) 68%, transparent);
-  --color-quiet: color-mix(in srgb, var(--color-text) 78%, transparent);
+  --color-quiet: #52514e;
   --qm-ink: #222623;
-  --ui-hover: rgba(20, 20, 19, 0.05);
-  --ui-selected: rgba(20, 20, 19, 0.08);
-  --ui-field: rgba(20, 20, 19, 0.04);
-  --ui-line: rgba(20, 20, 19, 0.14);
+  --ui-hover: rgba(11, 11, 11, 0.05);
+  --ui-selected: rgba(11, 11, 11, 0.1);
+  --ui-field: rgba(11, 11, 11, 0.04);
+  --ui-line: rgba(11, 11, 11, 0.2);
   --ui-menu: #ffffff;
-  --shadow-sm:
-    0 0 0 0.5px rgba(20, 20, 19, 0.12), 0 1px 2px rgba(0, 0, 0, 0.03);
+  --shadow-sm: 0 0 0 0.5px rgba(11, 11, 11, 0.1), 0 1px 2px rgba(0, 0, 0, 0.03);
   --font-body:
     system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei",
     "Noto Sans SC", sans-serif;
@@ -56,12 +55,13 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-bg: #1a1a19;
-    --color-side: #121211;
-    --color-surface: #20201f;
-    --color-field: #262625;
+    --color-bg: #0b0b0b;
+    --color-side: color-mix(in srgb, var(--color-bg) 80%, #000000);
+    --color-surface: #1a1a19;
+    --color-field: #20201f;
     --color-text: #f0efec;
-    --color-divider: rgba(240, 239, 236, 0.09);
+    --color-quiet: #c3c2b7;
+    --color-divider: rgba(240, 239, 236, 0.1);
     --color-focus: #5c9ce6;
     --color-interactive: #4a90e2;
     --color-interactive-soft: rgba(74, 144, 226, 0.2);
@@ -70,13 +70,13 @@
     --color-warning-text: #efc386;
     --color-warning-bg: #2e2416;
     --color-accent-fill: #f0efec;
-    --color-on-accent-fill: #141413;
+    --color-on-accent-fill: #0b0b0b;
     --qm-ink: #e6ebe7;
-    --ui-hover: rgba(240, 239, 236, 0.05);
-    --ui-selected: rgba(240, 239, 236, 0.08);
+    --ui-hover: rgba(240, 239, 236, 0.075);
+    --ui-selected: rgba(240, 239, 236, 0.15);
     --ui-field: rgba(240, 239, 236, 0.05);
-    --ui-line: rgba(240, 239, 236, 0.14);
-    --ui-menu: #262625;
+    --ui-line: rgba(240, 239, 236, 0.2);
+    --ui-menu: #20201f;
     --shadow-sm: 0 0 0 0.5px rgba(240, 239, 236, 0.1);
   }
 }

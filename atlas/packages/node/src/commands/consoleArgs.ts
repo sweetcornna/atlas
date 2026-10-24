@@ -21,6 +21,7 @@ import {
   isValidSegment,
   MAX_SEGMENT_LENGTH,
 } from '@qianmo/protocol'
+import type { ElevationTierName } from '@qianmo/console'
 import { PSK_ENV_VAR } from '@qianmo/transport'
 import { qianmoConfigPath } from '@qianmo/paths'
 import { auditTrailPath } from '../host/auditTrail.js'
@@ -509,6 +510,11 @@ export interface ConsoleCliConfig {
   readonly desktop?: boolean
   /** 高权限模式（P39）：按智能体放权命令、联网、GitHub。 */
   readonly elevation?: boolean
+  /**
+   * 默认档（P39）：中枢把处在人工确认的智能体按它开启，有人手动关掉的除外。
+   * 开了 `--elevation` 时缺省 `auto`；`off` 表示不自动开启。
+   */
+  readonly elevationDefault?: ElevationTierName
   readonly schedules?: boolean
   /** 聊天渠道（P28）：QQ、微信、Telegram、Discord、Slack 接到智能体。 */
   readonly channels?: boolean
@@ -681,6 +687,7 @@ export function parseConsoleArgs(
   let connectors = false
   let desktop = false
   let elevation = false
+  let elevationDefault: ElevationTierName | undefined
   let schedules = false
   let channels = false
   let updates = false
@@ -964,6 +971,23 @@ export function parseConsoleArgs(
       desktop = true
     } else if (arg === '--elevation') {
       elevation = true
+    } else if (
+      arg === '--elevation-default' ||
+      arg?.startsWith('--elevation-default=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--elevation-default')
+      if (elevationDefault) throw new Error('--elevation-default 重复')
+      if (
+        parsed.value !== 'off' &&
+        parsed.value !== 'accept-edits' &&
+        parsed.value !== 'auto' &&
+        parsed.value !== 'full-access'
+      )
+        throw new Error(
+          '--elevation-default must be off, accept-edits, auto or full-access',
+        )
+      elevationDefault = parsed.value
+      index = parsed.next
     } else if (arg === '--schedules') {
       schedules = true
     } else if (arg === '--channels') {
@@ -1402,6 +1426,8 @@ export function parseConsoleArgs(
   // the node over its control link; both are required.
   if (elevation && (!approvals || controlTargets.length === 0))
     throw new Error('--elevation needs --approvals and --control')
+  if (elevationDefault && !elevation)
+    throw new Error('--elevation-default needs --elevation')
   // Extensions reach a node only over its control link; without one the page
   // would show every entry as on its way, forever.
   if (extensions && controlTargets.length === 0)
@@ -1632,7 +1658,9 @@ export function parseConsoleArgs(
     ...(files ? { files: true } : {}),
     ...(connectors ? { connectors: true } : {}),
     ...(desktop ? { desktop: true } : {}),
-    ...(elevation ? { elevation: true } : {}),
+    ...(elevation
+      ? { elevation: true, elevationDefault: elevationDefault ?? 'auto' }
+      : {}),
     ...(filesExchangeRepo ? { filesExchangeRepo, filesExchangeRetainMs } : {}),
     ...(schedules ? { schedules: true } : {}),
     ...(channels ? { channels: true } : {}),
@@ -1833,6 +1861,13 @@ Options (each accepts both --name value and --name=value):
   --elevation              Enable per-agent high-permission mode (P39): grant an
                            agent sandboxed commands, network and GitHub for a
                            bounded window. Needs --approvals and --control.
+  --elevation-default <mode>
+                           With --elevation (default auto): open every agent
+                           found at 人工确认 at this mode (24 h, 2000 calls),
+                           again after expiry or a node restart, unless a
+                           person turned it off; off leaves agents at 人工确认.
+                           Ledger subject system:elevation.
+                           State: <config root>/qianmo/console/elevation-default.json.
   --schedules             Enable console schedules; requires an active chat face.
                            Runs every 30 seconds; missed slots catch up once.
                            State: <config root>/qianmo/console/schedules/.

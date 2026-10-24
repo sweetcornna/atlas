@@ -1350,7 +1350,8 @@ function runtimeScript(guards: TokenGuards): string {
     } else if (event.key === '?') { event.preventDefault(); openDialog('keyboard-help', el); }
     else if (event.key === 'g') goAt = Date.now();
     else if (Date.now() - goAt < 1000 && (event.key === 'n' || event.key === 'a')) {
-      event.preventDefault(); location.href = event.key === 'n' ? '/admin/nodes' : '/admin/audit'; goAt = 0;
+      event.preventDefault(); var to = event.key === 'n' ? '/admin/nodes' : '/admin/audit'; goAt = 0;
+      if (window.qianmoNav) window.qianmoNav.go(to); else location.href = to;
     } else goAt = 0;
   });
 
@@ -1377,6 +1378,8 @@ function runtimeScript(guards: TokenGuards): string {
     closeDialogs: closeDialogs,
     closeDrawer: closeDrawer,
     refreshRegion: refreshRegion,
+    // Polling picks up the regions a page swapped in place brought (nav.ts).
+    schedule: schedule,
     onAction: function (name, run) { actions[name] = run; },
     onSubmit: function (id, run) { submits[id] = run; },
     applyTheme: applyTheme,

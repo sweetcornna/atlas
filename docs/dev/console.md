@@ -613,6 +613,10 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 每个区域一个模块（`packages/console/src/routes/`，约定见 §5.2）；下表的页面行就是那张
 路由表的十六个区域。
 
+`/admin/…` 的每个页面行另接受带 `X-Qianmo-Partial: 1` 的 `GET`（P37.13，[qmo-local.md](qmo-local.md) §3.2）：
+同一道守卫、同一次渲染，答的是这一页的部件（JSON：标题、面包屑、顶栏右侧、主区、侧栏项、本页样式与脚本及其哈希），
+不是整页；cookie 会话要带控制台头，拒绝一律答 JSON。后台的导航运行时（`assets/nav.ts`）用它在后台各页之间换页而不重载文档。
+
 下表每一个页面行（`GET`，`Accept` 含 `text/html`）在未开 `--accounts` 时都多一条行为：
 地址带 `?token=` 且令牌有效时，先答 **303**，`Set-Cookie` 下发会话，`Location` 是去掉
 `token` 的同一地址（H5，`http.ts` 的 `tokenInAddressBar`，§4.1、§6.8）；令牌无效就照常
@@ -985,8 +989,10 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 策略加 `frame-ancestors 'none'`）和 `X-Frame-Options: DENY`；`<meta>` 里那份保留不动。
 **脚本按哈希放行**（H2）：每份文档内联的脚本都是编译期常量，`cspFor` 对文档实际携带的
 那段脚本算 SHA-256，写成 `script-src 'sha256-…'`，没有脚本的文档写 `script-src 'none'`；
-`'unsafe-inline'` 只留给样式（那一个 `<style>` 和 `style=""` 属性）。头与 `<meta>` 由
-同一个函数、同一组脚本算出，不会漂移（`test/pages.test.ts` 逐页核对）。文档另带
+`'unsafe-inline'` 只留给样式（`<style>` 和 `style=""` 属性）。头与 `<meta>` 由
+同一个函数、同一组脚本算出，不会漂移（`test/pages.test.ts` 逐页核对）。后台页（P37.13）的
+`script-src` 还列出这个读者能去的各区域页面脚本的哈希，局部换页时换进来的那段才能执行；其余指令不变，
+读者进不去的页面的脚本不列（`test/nav.test.ts`）。后台页因此带两个 `<style>`：共享样式表和本页样式表，换页只换后者。文档另带
 `Cross-Origin-Opener-Policy: same-origin`、`Cross-Origin-Resource-Policy: same-origin`
 和关掉摄像头、麦克风、定位等能力的 `Permissions-Policy`（剪贴板不在其中，复制按钮要用）；
 JSON 与两个资产带 `Cross-Origin-Resource-Policy: same-origin`。请求经 TLS 到达（直连，或
@@ -1994,6 +2000,7 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `packages/console/src/routes/` | 每个区域一个模块：页面、`/v0` 与 `/fragments` 的 head；`index.ts` 是路由表与外壳拼装；`approvals.ts` 与 `usage.ts` 接真实审批和用量端口（§5.2） |
 | `packages/console/src/view/shell.ts` | 外壳：侧栏、顶栏、面包屑、用户菜单、会话失效对话框、toast 区（§5.2） |
 | `packages/console/src/assets/client.ts`、`pageScripts.ts` | 共享运行时 `window.qianmoConsole`（轮询保态、对话框、toast、401 处理）与各区域的页面脚本 |
+| `packages/console/src/assets/nav.ts` | 后台的导航运行时 `window.qianmoNav`：局部换页（`X-Qianmo-Partial`）、预取与内存缓存、页面脚本的录制作用域、`data-write` 控件的先改后同步、首帧布局上报（[qmo-local.md](qmo-local.md) §3） |
 | `packages/console/test/browser/` | 浏览器级测试与它的 DevTools 协议驱动（§5.2） |
 | `packages/console/src/view/` | 服务端渲染 |
 | `packages/console/src/routes/access.ts`、`view/access.ts` | 账号与访问 · 操作记录页：四个页签、谁看见哪个页签与哪些写控件、`/v0/actions` 的两条读（§5.3） |
@@ -2867,6 +2874,8 @@ bun run qm -- console --elevation --approvals --accounts --chat-sign --chat-url 
 ```
 
 `--elevation` 同时启用动作账本。节点常驻宿主已装配 `elevation` 控制处理器，所有智能体启动时都是人工确认，放权不跨重启。
+
+`--elevation-default <off|accept-edits|auto|full-access>`（开了 `--elevation` 时缺省 `auto`）：中枢每 60 秒把处在人工确认的智能体按这一档开启（24 小时、2000 次），主体 `system:elevation`；有人手动关掉或收回的不再自动开，记在 `<配置根>/qianmo/console/elevation-default.json`。规则见 [elevation.md §8.1](elevation.md#81-默认档)。
 
 ## 云端电脑（P21）
 

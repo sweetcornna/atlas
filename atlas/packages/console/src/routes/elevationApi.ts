@@ -136,14 +136,22 @@ export const elevationApi: HeadRoute = {
       if (busy) return busy
       const list = await port.list()
       if (!list.ok) return answer(list)
-      const live = list.value.filter(v => v.tier !== 'off')
+      // Under a hub default (P39 §8.1) an agent at 人工确认 would be opened
+      // again on the next pass: it is held there too, without a node call.
+      const chosen = list.value.filter(
+        v =>
+          v.tier !== 'off' ||
+          (v.defaultTier !== undefined && v.defaultHeld !== true),
+      )
       const results = []
-      for (const one of live) {
+      for (const one of chosen) {
+        const ref = { node: one.node, agent: one.agent }
         // Every revoke is its own operation with its own id on the node.
-        const r = await port.revoke(
-          { node: one.node, agent: one.agent },
-          { ...actorOf(ctx), requestId: crypto.randomUUID() },
-        )
+        const actor = { ...actorOf(ctx), requestId: crypto.randomUUID() }
+        const r =
+          one.tier === 'off'
+            ? await port.set(ref, { tier: 'off' }, actor)
+            : await port.revoke(ref, actor)
         results.push({
           address: `qianmo://${one.node}/${one.agent}`,
           ok: r.ok,

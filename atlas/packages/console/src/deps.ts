@@ -1228,7 +1228,8 @@ export interface ConsoleAction {
    * 主体：个人账号的 `u:…`，或 `legacy:admin` / `legacy:view`；没有任何凭据时
    * 为 `anonymous`（只会出现在 break-glass 之外的公开路由上，今天没有）；公开版
    * 付款后中枢自己做的动作是 `system:billing`（P35）；网关页「智能体」区块里中枢
-   * 自己的接入与按系列下发是 `system:magpie`（P36.5）。
+   * 自己的接入与按系列下发是 `system:magpie`（P36.5）；按默认权限模式重新开启
+   * 智能体是 `system:elevation`（P39）。
    */
   readonly subject: string
   /** admin 令牌以 break-glass 方式使用时为 `true`（`tenancy-m1.md` §3.4）。 */

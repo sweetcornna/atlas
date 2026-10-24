@@ -214,7 +214,8 @@ export const SCHEDULES_PAGE_JS = `
   });
 
   // The switch is a checkbox inside the polled table: a click flips it at
-  // once, and the refresh after the answer puts it back if the write failed.
+  // once; a refused write puts it back with the reason beside it
+  // (data-write, assets/nav.ts), and the next refresh confirms it.
   document.addEventListener('change', function (event) {
     var el = event.target;
     if (!el || el.getAttribute('data-action') !== 'schedule-toggle') return;
@@ -225,7 +226,6 @@ export const SCHEDULES_PAGE_JS = `
       return refresh();
     }).catch(function (err) {
       qc.toast(qc.failLine('切换', err), qc.failTone(err));
-      return refresh();
     });
   });
 

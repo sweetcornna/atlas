@@ -1707,7 +1707,7 @@ describe('the shell', () => {
     expect(html).toContain('font-src &#39;none&#39;')
   })
 
-  test('inlines exactly one stylesheet and one script, with the page parts after the shared ones', () => {
+  test('inlines the shared sheet, the page sheet and one script, with the page parts after the shared ones', () => {
     for (const html of [
       build(),
       build({
@@ -1715,7 +1715,9 @@ describe('the shell', () => {
         pageScript: 'var pageOnly;',
       }),
     ]) {
-      expect(html.split('<style>')).toHaveLength(2)
+      // The page's own sheet apart, so a move between pages swaps it alone
+      // (P37.13): two sheets, and still one script.
+      expect(html.split('<style>')).toHaveLength(3)
       expect(html.split('<script>')).toHaveLength(2)
       // Nothing in the script can close the tag early.
       const script = html.slice(html.indexOf('<script>'))
@@ -2805,16 +2807,8 @@ describe('selection (D7)', () => {
     )
     const controls = ruleOf('.nav-item, .nav-group-name, .btn, .sw, .seg-opt')
     expect(controls).toContain('user-select: none')
-    // Nothing else in the sheet switches selection off, but for the desktop
-    // app's drag strips (`<html data-shell>`, qmo-app.md §5.1), which are
-    // where the window is moved from and never there in a browser.
-    const shell =
-      ':root[data-shell] .side .brand, :root[data-shell] .top ' +
-      '{ -webkit-user-select: none; user-select: none; }'
-    expect(CONSOLE_CSS).toContain(shell)
-    expect(
-      CONSOLE_CSS.replace(shell, '').match(/user-select:\s*none/g),
-    ).toHaveLength(1)
+    // Nothing else in the sheet switches selection off.
+    expect(CONSOLE_CSS.match(/user-select:\s*none/g)).toHaveLength(1)
   })
 })
 
