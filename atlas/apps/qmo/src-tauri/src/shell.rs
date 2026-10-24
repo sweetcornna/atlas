@@ -1096,6 +1096,40 @@ pub fn sign_out(app: &AppHandle) -> SignOutReport {
     SignOutReport { revoked, result }
 }
 
+/// What the page runs to open its settings card, as Claude Desktop's ⌘,
+/// does; a hub too old to define `window.__qmoOpenSettings` gets the shell's
+/// settings window instead, through the command its page may call. A fixed
+/// string: nothing is ever put into it.
+pub const OPEN_PAGE_SETTINGS: &str = "(window.__qmoOpenSettings||function(){window.__TAURI__.core.invoke('qmo_open_local_settings')})()";
+
+/// Whether the menu's Settings goes to the page: the main window shows a page
+/// of the hub the shell is signed in to. On a local page (sign-in, offline,
+/// the skeleton), `about:blank` or with no main window, it is the shell's own
+/// settings window.
+pub fn settings_in_page(main: Option<&Url>, hub: Option<&Hub>, phase: Phase) -> bool {
+    phase == Phase::Hub && crate::ipc::from_hub(main, hub).is_ok()
+}
+
+/// The menu bar's Settings… (⌘,) and the tray's Settings: the page's settings
+/// card in the main window, brought to the front, when it shows the hub's
+/// page; the shell's settings window otherwise.
+pub fn open_settings_from_menu(app: &AppHandle) {
+    let s = shell(app);
+    let main = app.get_webview_window(MAIN);
+    let page = main.as_ref().and_then(|window| window.url().ok());
+    match main {
+        Some(window) if settings_in_page(page.as_ref(), s.hub().as_ref(), s.phase()) => {
+            s.unhide();
+            show(&window);
+            if let Err(e) = window.eval(OPEN_PAGE_SETTINGS) {
+                eprintln!("qmo: page settings: {e}");
+                open_settings(app);
+            }
+        }
+        _ => open_settings(app),
+    }
+}
+
 /// Settings and About open as their own small windows.
 pub fn open_settings(app: &AppHandle) {
     shell(app).unhide();
@@ -1305,6 +1339,66 @@ mod tests {
         ] {
             assert!(!blank_step_between(&url(from), &app), "{from}");
         }
+    }
+
+    #[test]
+    fn the_menus_settings_go_to_the_page_only_on_the_signed_in_hubs_page() {
+        let hub = parse_hub("https://hub.example.com").unwrap();
+        let url = |s: &str| Url::parse(s).unwrap();
+        for page in [
+            "https://hub.example.com/app",
+            "https://hub.example.com/",
+            "https://hub.example.com/code",
+            "https://hub.example.com/admin/models",
+        ] {
+            assert!(
+                settings_in_page(Some(&url(page)), Some(&hub), Phase::Hub),
+                "{page}"
+            );
+        }
+        for page in [
+            "tauri://localhost/skeleton.html",
+            "tauri://localhost/offline.html",
+            "tauri://localhost/index.html",
+            "http://tauri.localhost/skeleton.html",
+            "about:blank",
+            "https://other.example.com/app",
+            "https://hub.example.com:8443/app",
+        ] {
+            assert!(
+                !settings_in_page(Some(&url(page)), Some(&hub), Phase::Hub),
+                "{page}"
+            );
+        }
+        // No main window, or no hub.
+        assert!(!settings_in_page(None, Some(&hub), Phase::Hub));
+        assert!(!settings_in_page(
+            Some(&url("https://hub.example.com/app")),
+            None,
+            Phase::Hub
+        ));
+        // Not signed in: the hub's address may still be on the window.
+        for phase in [
+            Phase::Starting,
+            Phase::SignedOut,
+            Phase::Entering,
+            Phase::Offline,
+        ] {
+            assert!(
+                !settings_in_page(Some(&url("https://hub.example.com/app")), Some(&hub), phase),
+                "{phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_page_settings_script_is_the_fixed_one() {
+        assert_eq!(
+            OPEN_PAGE_SETTINGS,
+            "(window.__qmoOpenSettings||function(){window.__TAURI__.core.invoke('qmo_open_local_settings')})()"
+        );
+        // Its fallback is a command the hub's page may call.
+        assert!(HUB_COMMANDS.contains(&"qmo_open_local_settings"));
     }
 
     #[test]
