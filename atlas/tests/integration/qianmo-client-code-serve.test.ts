@@ -6,7 +6,8 @@
  * §4.5): built here the way `bun run atlas:build:client` builds it
  * (`buildClient`), started as `qmo code serve` on pipes, and spoken to the
  * way the shell speaks (`ipc.rs`: `origin: 'local'` and `remote: false`
- * added, the calls of `fixtures/qmo-local-calls.json`). The agent is the
+ * added, the calls of the contract `qmo-local-calls.json` beside the page's
+ * fake shell in `@qianmo/console`'s tests). The agent is the
  * harness package's fake Claude Code, the folder a temporary Git
  * repository; HOME and the client folder are temporary. No real agent is
  * started.
@@ -36,9 +37,18 @@ import {
   fakeClaude,
 } from '../../packages/client/test/code/helpers.ts'
 import { buildClient } from '../../scripts/build-client.ts'
-import contract from './fixtures/qmo-local-calls.json' with { type: 'json' }
+import contract from '../../packages/console/test/browser/qmo-local-calls.json' with {
+  type: 'json',
+}
 
 type Message = Record<string, unknown>
+
+/** One call of the contract: what the shell asks the runner, when it asks. */
+interface ContractCall {
+  readonly command: string
+  readonly method?: string
+  readonly params?: Readonly<Record<string, unknown>>
+}
 
 const posix = process.platform !== 'win32'
 
@@ -341,7 +351,7 @@ describe.skipIf(!posix)('the compiled qmo as the shell runs it', () => {
       expect(delta.offset).toBe(offset)
       offset += String(delta.text).length
     }
-    expect(deltas.map(one => one.text).join('')).toBe(answer.text)
+    expect(deltas.map(one => one.text).join('')).toBe(String(answer.text))
     // The session's states: running, waiting for the answer, running, idle.
     const states = events
       .filter(one => one.type === 'session')
@@ -469,17 +479,25 @@ describe.skipIf(!posix)('the compiled qmo as the shell runs it', () => {
     const at = box()
     const r = serve(at)
     await r.call('hello')
-    for (const entry of contract.calls) {
-      if (!('method' in entry)) continue
-      const answer = await r.ask(entry.method, entry.params)
+    let asked = 0
+    for (const {
+      method,
+      params,
+    } of contract.calls as readonly ContractCall[]) {
+      if (method === undefined || params === undefined) continue
+      asked += 1
+      const answer = await r.ask(method, params)
       const code = (answer.error as Message | undefined)?.code
       // The ids are made up: an unknown folder or session, never the shape.
-      expect([entry.method, code]).not.toEqual([entry.method, 'E_ARGS'])
-      const more = await r.ask(entry.method, { ...entry.params, extra: 1 })
-      expect([entry.method, (more.error as Message | undefined)?.code]).toEqual(
-        [entry.method, 'E_ARGS'],
-      )
+      expect([method, code]).not.toEqual([method, 'E_ARGS'])
+      const more = await r.ask(method, { ...params, extra: 1 })
+      expect([method, (more.error as Message | undefined)?.code]).toEqual([
+        method,
+        'E_ARGS',
+      ])
     }
+    // list, folders.forget and the eight session methods a page reaches.
+    expect(asked).toBe(10)
     expect(await r.call('shutdown')).toEqual({})
     expect(await r.exited()).toBe(0)
   }, 30_000)

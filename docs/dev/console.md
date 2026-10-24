@@ -2012,7 +2012,7 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `packages/console/src/view/frontCode.ts`、`assets/codeRender.ts`、`assets/codeClient.ts` | Code 面：侧栏、标题栏与主区的空框和图标模板；富文本与记录的 DOM 画法（`CODE_RENDER_JS`，预算 14,000 字符，`test/browser/codeRender.browser.test.ts` 核对与服务端逐字一致）；会话列表、输入框、事件通道、征询与变更面板的页面脚本（`CODE_JS`，预算 34,000 字符），都只经壳的 `qmo_local_*` 命令（[qmo-local.md](qmo-local.md) §3.6、§4.5） |
 | `packages/console/src/assets/client.ts`、`pageScripts.ts` | 共享运行时 `window.qianmoConsole`（轮询保态、对话框、toast、401 处理）与各区域的页面脚本 |
 | `packages/console/src/assets/nav.ts` | 设置卡片的运行时 `window.qianmoNav`：开关卡片（含 `window.__qmoOpenSettings`、⌘, / Ctrl+,、焦点回环与归还、地址与前进后退）、卡片里的局部换页（`X-Qianmo-Partial`）、预取与内存缓存、页面脚本的录制作用域、`data-write` 控件的先改后同步（[qmo-local.md](qmo-local.md) §3） |
-| `packages/console/test/browser/` | 浏览器级测试与它的 DevTools 协议驱动（§5.2）；Code 面的用例对着页面里的假壳 `codeShell.ts`，它按壳与运行器共用的参数约定（`atlas/tests/integration/fixtures/qmo-local-calls.json`，[qmo-local.md](qmo-local.md) §4.5.1）核对页面每次调用的键与类型 |
+| `packages/console/test/browser/` | 浏览器级测试与它的 DevTools 协议驱动（§5.2）；Code 面的用例对着页面里的假壳 `codeShell.ts`，它按壳与运行器共用的参数约定（`atlas/packages/console/test/browser/qmo-local-calls.json`，[qmo-local.md](qmo-local.md) §4.5.1）核对页面每次调用的键与类型 |
 | `packages/console/src/view/` | 服务端渲染 |
 | `packages/console/src/routes/access.ts`、`view/access.ts` | 账号与访问 · 操作记录页：四个页签、谁看见哪个页签与哪些写控件、`/v0/actions` 的两条读（§5.3） |
 | `packages/console/src/routes/nodes.ts`、`view/node.ts` | 节点详情四个页签、生命周期页签：能否拨号的判法、只画会成功的动作、四个确认框、「模型」页签的装载与 404 降级（§5.5） |

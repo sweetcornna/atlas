@@ -113,7 +113,7 @@
 
 ### 5.2 页面请壳做的事
 
-经 Tauri IPC（`window.__TAURI__.core.invoke`）调用。只有中枢源与本地页面能调；参数在 Rust 里逐项校验，超长、类型不对、越界一律拒绝。P37.13 加的三条（`qmo_local_agents`、`qmo_boot_layout`、`qmo_open_local_settings`）另在命令里核一次调用方页面与登录的中枢同源，本地页面和别的源调用都拒绝；P37.14a 加的十三条本机会话命令（表末）同样核同源，并且只收主窗口（快速输入窗调用也拒绝），失败一律以 `qmo local <代码>: <说明>` 拒绝，规则见 [`qmo-local.md`](./qmo-local.md) §4.5。表里的「字」按 UTF-16 码元计（JavaScript 字符串的 `length`），与页面、运行器同一种算法；每条命令的键、可缺省的键与交给运行器的参数写在 `atlas/tests/integration/fixtures/qmo-local-calls.json`，壳、页面、运行器三方的用例都核它。
+经 Tauri IPC（`window.__TAURI__.core.invoke`）调用。只有中枢源与本地页面能调；参数在 Rust 里逐项校验，超长、类型不对、越界一律拒绝。P37.13 加的三条（`qmo_local_agents`、`qmo_boot_layout`、`qmo_open_local_settings`）另在命令里核一次调用方页面与登录的中枢同源，本地页面和别的源调用都拒绝；P37.14a 加的十三条本机会话命令（表末）同样核同源，并且只收主窗口（快速输入窗调用也拒绝），失败一律以 `qmo local <代码>: <说明>` 拒绝，规则见 [`qmo-local.md`](./qmo-local.md) §4.5。表里的「字」按 UTF-16 码元计（JavaScript 字符串的 `length`），与页面、运行器同一种算法；每条命令的键、可缺省的键与交给运行器的参数写在 `atlas/packages/console/test/browser/qmo-local-calls.json`，壳、页面、运行器三方的用例都核它。
 
 | 命令 | 参数 | 作用 |
 |---|---|---|

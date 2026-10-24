@@ -1582,12 +1582,13 @@ mod tests {
         assert!(local_diff(&json!({"session": SESSION, "path": "a", "base": "HEAD"})).is_err());
     }
 
-    /// The page's calls and what the shell asks the runner for each, shared
-    /// with the page's fake shell (`console/test/browser/codeShell.ts`) and
-    /// the compiled runner's test (`qianmo-client-code-serve.test.ts`), so a
+    /// The page's calls and what the shell asks the runner for each, kept
+    /// beside the page's fake shell (`console/test/browser/codeShell.ts`,
+    /// whose package loads nothing from outside itself) and read by the
+    /// compiled runner's test (`qianmo-client-code-serve.test.ts`) too, so a
     /// key one side adds or drops is caught on the other two.
     const CONTRACT: &str =
-        include_str!("../../../../tests/integration/fixtures/qmo-local-calls.json");
+        include_str!("../../../../packages/console/test/browser/qmo-local-calls.json");
 
     /// A call checked as its command checks it: the call to the runner, if
     /// it makes one.

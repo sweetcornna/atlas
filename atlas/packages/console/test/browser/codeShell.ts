@@ -17,13 +17,20 @@
  * call the page makes is in `window.__calls`. No app window, runner or agent is started.
  *
  * The arguments are checked as the real shell checks their keys and types,
- * from the contract its own tests read too (`qmo-local-calls.json`; `ipc.rs`
- * `the_shared_contract_is_what_the_shell_checks`): a call out of shape is
- * refused with `qmo local E_ARGS` and kept in `window.__badArgs`.
+ * from the contract beside this file (`qmo-local-calls.json`), which the
+ * shell's own tests (`ipc.rs` `the_shared_contract_is_what_the_shell_checks`)
+ * and the compiled runner's (`qianmo-client-code-serve.test.ts`) read too:
+ * a call out of shape is refused with `qmo local E_ARGS` and kept in
+ * `window.__badArgs`.
  */
 
-import contract from '../../../../tests/integration/fixtures/qmo-local-calls.json' with {
-  type: 'json',
+import contract from './qmo-local-calls.json' with { type: 'json' }
+
+/** One call of the contract: what the page passes, which of it may be left out. */
+interface ContractCall {
+  readonly command: string
+  readonly args: Readonly<Record<string, unknown>>
+  readonly optional?: readonly string[]
 }
 
 /** A folder as the runner answers it (§4.5.1). */
@@ -94,13 +101,13 @@ const SHAPES: Record<
   string,
   { readonly keys: Record<string, string>; readonly optional: string[] }
 > = Object.fromEntries(
-  contract.calls.map(call => [
+  (contract.calls as readonly ContractCall[]).map(call => [
     call.command,
     {
       keys: Object.fromEntries(
         Object.entries(call.args).map(([key, value]) => [key, typeof value]),
       ),
-      optional: 'optional' in call ? [...call.optional] : [],
+      optional: [...(call.optional ?? [])],
     },
   ]),
 )
