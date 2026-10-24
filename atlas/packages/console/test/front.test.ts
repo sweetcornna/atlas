@@ -10,7 +10,8 @@ import type {
 } from '../src/deps.js'
 import { FRONT_JS } from '../src/assets/frontClient.js'
 import { createConsoleHandler } from '../src/http.js'
-import { documentCspFor, inlineScripts } from '../src/respond.js'
+import { documentCspFor, inlineScripts, scriptHash } from '../src/respond.js'
+import { ROUTES } from '../src/routes/index.js'
 import {
   ADDRESS,
   CountingChat,
@@ -18,6 +19,7 @@ import {
   asSession,
   person,
 } from './accountsHarness.js'
+import { FakeAvatars } from './directionFakes.js'
 import { MemoryActionLedger } from './memoryActions.js'
 import { ADMIN, VIEW, TOKENS, NOW, browse, pageHarness } from './pageHarness.js'
 
@@ -107,6 +109,33 @@ function front(chat = new FrontChat(), preferred?: string) {
   return { ...h, chat }
 }
 
+/**
+ * A document's policy: its own scripts by hash, and beyond them only the page
+ * scripts of areas the settings card can open in place (`assets/nav.ts`);
+ * every other directive is a scriptless document's.
+ */
+function expectOwnPolicy(policy: string, html: string): void {
+  const own = inlineScripts(html)
+  const sources =
+    policy
+      .split('; ')
+      .find(one => one.startsWith('script-src '))
+      ?.split(' ')
+      .slice(1) ?? []
+  const pages = ROUTES.flatMap(module =>
+    module.page?.script === undefined ? [] : [scriptHash(module.page.script)],
+  )
+  for (const script of own) expect(sources).toContain(scriptHash(script))
+  for (const hash of sources)
+    expect([...own.map(scriptHash), ...pages]).toContain(hash)
+  const rest = (text: string): string =>
+    text
+      .split('; ')
+      .filter(one => !one.startsWith('script-src '))
+      .join('; ')
+  expect(rest(policy)).toBe(rest(documentCspFor(own)))
+}
+
 /** A rendered region, including its opening tag. */
 function region(html: string, id: string, end: string): string {
   const at = html.indexOf(`id="${id}"`)
@@ -185,14 +214,25 @@ describe('front door and management routes', () => {
       const response = await h.handle(browse(path ?? '', ADMIN))
       expect(response.status).toBe(200)
       const page = await response.text()
-      expect(page).toContain(`id="page-title">${heading}</h1>`)
-      expect(page).toContain('class="brand-cn" href="/admin"')
-      expect(page).toContain('id="nav-chat" href="/"')
+      // The card is drawn open with the area in it, over the Work face.
+      expect(page).toContain('<dialog class="set" id="settings"')
+      expect(page).toMatch(
+        /<dialog class="set" id="settings"[^>]* open data-shown>/,
+      )
+      expect(page).toContain(`id="page-title">${heading}</h2>`)
+      expect(page).toMatch(
+        /<a class="fx-switch-item" href="\/" data-to="work" aria-current="page">/,
+      )
+      // 对话 is the face under the card, not one of its areas.
+      expect(page).not.toContain('id="nav-chat"')
     }
-    expect((await h.handle(browse('/admin/unknown', ADMIN))).status).toBe(404)
-    expect(await (await h.handle(browse('/admin', VIEW))).text()).not.toContain(
-      'id="nav-chat"',
+    const unknown = await h.handle(browse('/admin/unknown', ADMIN))
+    expect(unknown.status).toBe(404)
+    expect(await unknown.text()).toMatch(
+      /<dialog class="set" id="settings"[^>]* open data-shown>/,
     )
+    // Opening an area reads no conversation.
+    expect(h.chat.transcripts).toBe(0)
   })
 
   test('front fragments keep the chat guard and GET-only contract', async () => {
@@ -561,7 +601,7 @@ test('front document and fragments escape remote names, titles and body; CSP adm
     expect(html).toContain('&lt;script&gt;&quot;x&quot;&lt;/script&gt;')
     if (path.startsWith('/?')) {
       const policy = response.headers.get('content-security-policy') ?? ''
-      expect(policy).toBe(documentCspFor(inlineScripts(html)))
+      expectOwnPolicy(policy, html)
       expect(policy).toContain("'sha256-")
       expect(policy).not.toContain("script-src 'unsafe-inline'")
       expect(policy).toContain("connect-src 'self'")
@@ -643,7 +683,12 @@ describe("the front in the reader's language reaches its shared pieces", () => {
   }
 
   test('the expire dialog, the avatar dialog and the theme colours speak English', async () => {
-    const page = await (await front().handle(withLang('/', 'en'))).text()
+    // The figure editor is drawn for a reader who may dress a figure.
+    const h = pageHarness({
+      chat: true,
+      ports: { chat: new FrontChat(), avatars: new FakeAvatars(() => NOW) },
+    })
+    const page = await (await h.handle(withLang('/', 'en'))).text()
     const expired = region(page, 'session-expired', '</dialog>')
     expect(expired).toContain('Session expired')
     expect(expired).toContain('Sign in again')
@@ -656,7 +701,7 @@ describe("the front in the reader's language reaches its shared pieces", () => {
     expect(page).toMatch(/aria-label="planner · [A-Z][a-z]+ [a-z]+"/)
   })
 
-  test('the editor fragment follows ?lang=, and the management side keeps 简体中文', async () => {
+  test("the editor fragment follows ?lang=, and the settings card's areas keep 简体中文", async () => {
     const h = front()
     const key = encodeURIComponent('agent:qianmo://tokyo-1/planner')
     const en = await (
@@ -676,9 +721,12 @@ describe("the front in the reader's language reaches its shared pieces", () => {
       await h.handle(browse(`/fragments/avatar?key=${key}&lang=%22%3E`, ADMIN))
     ).text()
     expect(odd).toContain('>形态<')
-    // The admin document draws the dialog without a language: Chinese.
+    // An area's address is the Work face in the reader's language with the
+    // card open over it; the area in the card is in 简体中文.
     const admin = await (await h.handle(withLang('/admin', 'en'))).text()
-    expect(admin).not.toContain('Session expired')
+    expect(admin).toContain('Session expired')
+    expect(admin).toContain('placeholder="Search settings"')
+    expect(admin).toContain('id="page-title">总览</h2>')
   })
 })
 
@@ -944,7 +992,7 @@ describe('the 对话 face at /app and quick entry at /app/quick', () => {
       expect(html).toContain('&lt;script&gt;&quot;x&quot;&lt;/script&gt;')
       if (!path.startsWith('/fragments/')) {
         const policy = response.headers.get('content-security-policy') ?? ''
-        expect(policy).toBe(documentCspFor(inlineScripts(html)))
+        expectOwnPolicy(policy, html)
         expect(policy).not.toContain("script-src 'unsafe-inline'")
       }
     }

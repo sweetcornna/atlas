@@ -118,21 +118,38 @@ body.fx-body {
    its plots widened in the panel's own ground so they stay open at this size. */
 .fx-brand .qm-mark path { stroke: var(--color-side); stroke-width: 18px; stroke-linejoin: round; }
 
-/* 对话 · 智能体: one switch, the same size and place on both faces. */
-.fx-mode {
+/* Work | Code (P37.13, qmo-local.md §3.6): one switch the width of the
+   side list, under the brand, the same on every face. */
+.fx-switch {
   display: grid; grid-template-columns: 1fr 1fr; gap: 2px; flex: none;
   height: var(--control-h); padding: 2px; box-sizing: border-box;
   border-radius: var(--radius-control); background: var(--fx-hover);
 }
-.fx-mode-item {
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 0;
+.fx-switch-item {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 0;
   border-radius: var(--radius-sm); color: var(--color-muted); text-decoration: none;
-  font-size: var(--text-ui); font-weight: 500;
+  font-size: var(--text-ui); font-weight: var(--weight-medium);
+  transition: background-color var(--motion-snap) var(--ease-out), color var(--motion-snap) var(--ease-out);
+}
+.fx-switch-item:hover { color: var(--color-text); }
+.fx-switch-item[aria-current="page"] { background: var(--ui-raised); color: var(--color-text); box-shadow: var(--shadow-sm); }
+.fx-switch-item:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+
+/* Over the list: what it lists; on Work, 对话 and 智能体 as two small icons. */
+.fx-list-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex: none;
+  min-height: var(--control-h-sm); padding: 0 var(--space-1) 0 10px;
+}
+.fx-list-title { font-size: var(--text-small); line-height: var(--lh-small); font-weight: var(--weight-medium); color: var(--color-muted); }
+.fx-mode { display: inline-flex; gap: 2px; flex: none; }
+.fx-mode-item {
+  display: inline-grid; place-items: center; width: var(--control-h-xs); height: var(--control-h-xs);
+  border-radius: var(--radius-xs); color: var(--color-muted); text-decoration: none;
   transition: background-color var(--motion-snap) var(--ease-out), color var(--motion-snap) var(--ease-out);
 }
 .fx-mode-item .i-sm { width: 14px; height: 14px; }
-.fx-mode-item:hover { color: var(--color-text); }
-.fx-mode-item[aria-current="page"] { background: var(--ui-raised); color: var(--color-text); box-shadow: var(--shadow-sm); }
+.fx-mode-item:hover { background: var(--fx-hover); color: var(--color-text); }
+.fx-mode-item[aria-current="page"] { background: var(--fx-selected); color: var(--color-text); }
 
 /* 新对话 and 搜索: rows, the height of every control. */
 .fx-side-rows { display: flex; flex-direction: column; gap: 1px; flex: none; }
@@ -143,6 +160,7 @@ body.fx-body {
   transition: background-color var(--motion-snap) var(--ease-out);
 }
 .fx-row:hover { background: var(--fx-hover); }
+.fx-row:disabled { color: var(--color-quiet); cursor: default; background: none; }
 .fx-row > .i-sm { flex: none; width: var(--icon-sm); height: var(--icon-sm); color: var(--color-quiet); }
 .fx-row-word { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fx-row-keys { display: inline-flex; gap: 2px; flex: none; opacity: 0; transition: opacity var(--motion-snap) var(--ease-out); }
@@ -757,7 +775,118 @@ a.fx-id:hover { color: var(--color-text); text-decoration: underline; }
 .fx-key dd { display: inline-flex; gap: 3px; margin: 0; color: var(--color-muted); }
 .fx-key[hidden], :root[data-shell] .fx-key-web, :root:not([data-shell]) .fx-key-shell { display: none; }
 
+/* ---- the settings card (P37.13, qmo-local.md §3.6, view/shell.ts): the
+   dialog is the window-sized scrim, the card sits in its middle ---- */
+.set {
+  position: fixed; inset: 0; z-index: var(--z-menu); box-sizing: border-box;
+  width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 0; border: 0;
+  display: grid; place-items: center; overflow: hidden;
+  background: transparent; color: var(--color-text);
+  transition: background-color var(--motion-base) var(--ease-out);
+}
+.set::backdrop { background: transparent; }
+.set[data-shown] { background: var(--settings-scrim); }
+.set-card {
+  display: grid; grid-template-columns: var(--settings-side-w) minmax(0, 1fr);
+  width: min(var(--settings-w), calc(100vw - var(--settings-inset)));
+  height: min(var(--settings-h), calc(100vh - var(--settings-inset)));
+  border-radius: var(--radius-panel); background: var(--color-surface); box-shadow: var(--shadow-lg);
+  position: relative; overflow: hidden; opacity: 0; transform: scale(var(--settings-from));
+  transition: opacity var(--motion-base) var(--ease-out), transform var(--motion-base) var(--ease-out);
+}
+.set[data-shown] .set-card { opacity: 1; transform: none; }
+.set-side {
+  display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; min-height: 0;
+  padding: var(--space-3) var(--space-2) var(--space-2); background: var(--color-side);
+  box-shadow: inset -0.5px 0 0 var(--color-divider);
+}
+.set-search {
+  display: flex; align-items: center; gap: var(--space-2); flex: none; height: var(--control-h);
+  padding: 0 10px; box-sizing: border-box; border-radius: var(--radius-control);
+  background: var(--ui-field); color: var(--color-quiet); cursor: text;
+}
+.set-search:focus-within { background: var(--color-field); box-shadow: inset 0 0 0 1px var(--color-focus); }
+.set-search input {
+  flex: 1; min-width: 0; height: 100%; border: 0; padding: 0; background: none; color: var(--color-text);
+  font: inherit; font-size: var(--text-ui); outline: none;
+}
+.set-search input::placeholder { color: var(--color-quiet); }
+.set-search input::-webkit-search-cancel-button { display: none; }
+.set-side [hidden] { display: none !important; }
+.set-nav { gap: 1px; }
+.set-nav.is-filtering .nav-gap { margin-top: 0; }
+.set-none { margin: 0; padding: 6px 10px; font-size: var(--text-small); color: var(--color-muted); }
+.set-desktop { flex: none; width: 100%; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; }
+.set-foot { display: flex; flex-direction: column; gap: var(--space-2); flex: none; padding-top: var(--space-2); border-top: var(--hairline); }
+.set-zone { margin: 0; padding: 0 6px; font-size: var(--text-small); line-height: var(--lh-small); }
+.set-foot .adv { margin: 0; }
+.set-foot .adv > summary { padding: 0 6px; }
+.set-body { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.set-top {
+  display: flex; align-items: center; gap: var(--space-3); flex: none; flex-wrap: wrap;
+  min-height: var(--top-h); padding: var(--space-2) var(--space-3) var(--space-2) var(--space-6); box-sizing: border-box;
+}
+.set-lead { display: flex; align-items: baseline; gap: var(--space-2); flex: 1; min-width: 0; }
+.set-lead > nav:has(li:only-child) { display: none; }
+.set-title { margin: 0; font-size: var(--text-page); line-height: var(--lh-page); font-weight: var(--weight-semibold); }
+.set-close { flex: none; margin-left: auto; }
+.set-body > .conn { margin: 0 var(--space-6); }
+.set-main {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+  padding: var(--space-2) var(--space-6) var(--space-8); outline: none;
+  transition: opacity var(--motion-snap) var(--ease-out);
+}
+/* While the next area is on its way it dims; the one swapped in comes up
+   from there (assets/nav.ts, fade). */
+.set[data-busy] .set-main { opacity: var(--opacity-busy); }
+.set[data-arriving] .set-main { opacity: var(--opacity-busy); transition: none; }
+@media (max-width: ${FRONT_NARROW_PX}px) {
+  /* Narrow: the card is the window. Over the area, the search and one row
+     of areas that scrolls sideways; the foot goes under the area. */
+  .set-card {
+    width: 100vw; height: 100vh; height: 100dvh; border-radius: 0;
+    display: flex; flex-direction: column;
+  }
+  .set-side { display: contents; }
+  .set-search { margin: var(--space-3) var(--space-3) 0; }
+  .set-nav {
+    flex: none; flex-direction: row; gap: var(--space-1); margin: var(--space-2) 0 0; padding: 0 var(--space-3) var(--space-2);
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none; box-shadow: inset 0 -0.5px 0 var(--color-divider);
+  }
+  .set-nav .nav-item { flex: none; }
+  .set-nav .nav-gap { margin-top: 0; margin-left: var(--space-2); }
+  .set-none, .set-desktop { margin: 0 var(--space-3); width: auto; }
+  .set-body { flex: 1; }
+  .set-foot { order: 1; flex-direction: row; flex-wrap: wrap; align-items: center; column-gap: var(--space-3); padding: var(--space-2) var(--space-3); }
+  .set-top, .set-main { padding-left: var(--space-4); padding-right: var(--space-4); }
+  .set-top { row-gap: var(--space-2); }
+  .set-tail { order: 1; flex-basis: 100%; justify-content: flex-start; }
+  .set-body > .conn { margin: 0 var(--space-4); }
+  :root[data-shell="macos"] .set-search { margin-top: var(--top-h); }
+}
+
+/* ---- Code (/code, view/frontCode.ts) ---- */
+.fx[data-layout="code"] .fx-scroll { justify-content: flex-start; }
+.fx-code-column { display: flex; flex-direction: column; gap: var(--space-5); padding-top: var(--space-8); padding-bottom: var(--space-8); }
+.fx-code-web { margin: 0; padding: var(--space-8) 0; text-align: center; font-size: var(--text-prose); line-height: var(--lh-prose); color: var(--color-quiet); }
+.fx-code-local { display: flex; flex-direction: column; gap: var(--space-3); }
+.fx-code-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.fx-code-head h2 { margin: 0; font-size: var(--text-heading); line-height: var(--lh-heading); font-weight: var(--weight-semibold); }
+.fx-code-state { margin: 0; font-size: var(--text-small); color: var(--color-muted); }
+.fx-code-state:empty { display: none; }
+.fx-code-agents { list-style: none; margin: 0; padding: 0; }
+.fx-code-agent { display: flex; align-items: center; gap: var(--space-3); min-height: var(--control-h-lg); border-bottom: var(--hairline); font-size: var(--text-ui); }
+.fx-code-name { font-weight: var(--weight-medium); }
+.fx-code-ver { font-size: var(--text-small); color: var(--color-muted); }
+.fx-code-ready { margin-left: auto; font-size: var(--text-small); color: var(--color-quiet); }
+.fx-code-agent.is-off .fx-code-name { color: var(--color-muted); }
+.fx-code-start { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: var(--space-3); align-items: end; margin-top: var(--space-3); }
+.fx-code-field { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-small); color: var(--color-muted); }
+.fx-code-go { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--space-3); }
+.fx-code-closed { font-size: var(--text-small); color: var(--color-muted); }
+
 @media (prefers-reduced-motion: reduce) {
+  .set, .set-card, .set-main, .fx-switch-item { transition: none; }
   .fx, .fx-side, .fx-scrim, .fx-unread, .fx-mode-item, .fx-row, .fx-meta-more, .fx-mini { transition: none; }
   .fx-pulse, .fx-spin, .fx-live-dots i, .fx-typing-word.is-swap, .fx-msgs > .is-arriving,
   .fx-act-slot.is-swap, .fx-act *, .fx-computer::after, .fx-main[aria-busy="true"] .fx-progress::before { animation: none; }

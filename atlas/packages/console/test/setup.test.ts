@@ -312,23 +312,27 @@ describe('the page and its API', () => {
     expect(api.status).toBe(403)
   })
 
-  test('the sidebar raises it with a count while there is work to do', async () => {
+  test("the card's list raises it with a count while there is work to do", async () => {
     const main = new FakeMain()
     const h = pageHarness({ chat: true, ports: { mainAgent: main } })
     // No --chat-default and no page choice: the main agent step is open.
     const page = await (await h.handle(browse('/admin/overview', ADMIN))).text()
-    const nav = page.slice(page.indexOf('<nav class="nav"'))
+    const nav = page.slice(page.indexOf('<nav class="nav set-nav"'))
     const setupAt = nav.indexOf('id="nav-setup"')
     expect(setupAt).toBeGreaterThan(-1)
+    // First in the list, with the count, ahead of every other area.
+    expect(nav).toMatch(
+      /^<nav class="nav set-nav"[^>]*><a class="nav-item" id="nav-setup"/,
+    )
     expect(setupAt).toBeLessThan(nav.indexOf('id="nav-overview"'))
     main.value = 'qianmo://tokyo-1/planner'
     const done = await (await h.handle(browse('/admin/overview', ADMIN))).text()
-    const after = done.slice(done.indexOf('<nav class="nav"'))
-    // Back in 管理, after the main group's items.
-    expect(after.indexOf('id="nav-setup"')).toBeGreaterThan(
-      after.indexOf('id="nav-desktop"') === -1
-        ? after.indexOf('class="nav-group-name"')
-        : after.indexOf('id="nav-desktop"'),
+    const after = done.slice(done.indexOf('<nav class="nav set-nav"'))
+    // Back in 管理: the first of the operator's group, parted from the
+    // daily ones by a gap.
+    expect(after).toContain('class="nav-item nav-gap" id="nav-setup"')
+    expect(after.indexOf('id="nav-setup"')).toBeLessThan(
+      after.indexOf('id="nav-overview"'),
     )
   })
 

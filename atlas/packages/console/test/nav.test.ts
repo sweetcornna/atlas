@@ -14,17 +14,24 @@
  *   refusal is the JSON a script can act on, never a page: no credential is
  *   401, a view token on a chat page is 403, a cookie without the console
  *   header is 403 (the parts are a script's read, like a fragment).
- * - **The policy only grows in `script-src`.** A document allows by hash the
- *   page scripts its reader can move to, and only those; the parts carry the
- *   hash of their script, which is in that list; every other directive is
- *   the same string as before.
+ * - **The policy only grows in `script-src`.** A document that carries the
+ *   settings card — an area's address, an error in the card, and the front's
+ *   Work and Code faces, from which the card opens — allows by hash the page
+ *   scripts its reader can move to, and only those; the parts carry the hash
+ *   of their script, which is in that list; every other directive is the
+ *   same string as before.
  */
 
 import { describe, expect, test } from 'bun:test'
 import { CONSOLE_HEADER, SESSION_COOKIE } from '../src/auth.js'
 import { CONSOLE_CLIENT_JS } from '../src/assets/client.js'
 import { PARTIAL_HEADER, PARTIAL_VERSION } from '../src/assets/nav.js'
-import { cspFor, documentCspFor, scriptHash } from '../src/respond.js'
+import {
+  cspFor,
+  documentCspFor,
+  inlineScripts,
+  scriptHash,
+} from '../src/respond.js'
 import { ROUTES } from '../src/routes/index.js'
 import { CONSOLE_NAV_JS } from '../src/view/shell.js'
 import { FakeMemory } from './directionFakes.js'
@@ -132,7 +139,9 @@ describe('a page asked for its parts', () => {
     expect(body).toContain(page.main)
     expect(body).toContain(page.nav)
     expect(body).toContain(page.crumbs)
-    expect(body).toContain(`<div class="top-tail">${page.actions}</div>`)
+    expect(body).toContain(
+      `<div class="top-tail set-tail" id="set-tail">${page.actions}</div>`,
+    )
     expect(body).toContain(`<style>${page.css}</style>`)
     expect(body).toContain(`<title>${page.documentTitle}</title>`)
     // The frame the parts belong in is the one this document carries.
@@ -265,17 +274,32 @@ describe('the policy of a page that swaps pages in place', () => {
     expect(scriptSources(adminPolicy)).toContain(page.hash)
   })
 
-  test('an error page in the shell allows them too, and a front page does not', async () => {
-    const h = pageHarness({ chat: true })
+  test('an error in the card and the faces the card opens over allow them too', async () => {
+    const h = pageHarness({
+      chat: true,
+      ports: { memory: new FakeMemory(() => 0) },
+    })
+    // What a document allows beyond the scripts it carries.
+    const beyond = async (response: Response): Promise<string[]> => {
+      const own = inlineScripts(await response.text()).map(scriptHash)
+      return scriptSources(
+        response.headers.get('content-security-policy') ?? '',
+      ).filter(hash => !own.includes(hash))
+    }
     const missing = await h.handle(browse('/admin/nodes/nowhere', ADMIN))
     expect(missing.status).toBe(404)
-    expect(
-      scriptSources(missing.headers.get('content-security-policy') ?? ''),
-    ).toContain(scriptHash(pageScriptOf('nodes')))
-    const front = await h.handle(browse('/', ADMIN))
-    expect(
-      scriptSources(front.headers.get('content-security-policy') ?? ''),
-    ).toHaveLength(1)
+    const reachable = await beyond(missing)
+    expect(reachable).toContain(scriptHash(pageScriptOf('nodes')))
+    expect(reachable).toContain(scriptHash(pageScriptOf('memory')))
+    // Work and Code carry one script of their own, and allow the same ones.
+    for (const path of ['/', '/code']) {
+      const face = await h.handle(browse(path, ADMIN))
+      expect([path, face.status]).toEqual([path, 200])
+      expect([path, (await beyond(face)).sort()]).toEqual([
+        path,
+        [...reachable].sort(),
+      ])
+    }
   })
 
   test('cspFor over the same scripts in another order is the same set', () => {
@@ -286,7 +310,10 @@ describe('the policy of a page that swaps pages in place', () => {
 
 describe('the navigation runtime', () => {
   test('stays small, parses, and never puts a token in a URL', () => {
-    expect(CONSOLE_NAV_JS.length).toBeLessThan(24_000)
+    // 28.1 KB at P37.13's two modes: moving in place, the page scripts'
+    // scope and 先改后同步 (21.8 KB before the card), and the card's
+    // opening, closing, address, focus and its wrap, and search (6.2 KB).
+    expect(CONSOLE_NAV_JS.length).toBeLessThan(30_000)
     expect(() => new Function(CONSOLE_NAV_JS)).not.toThrow()
     expect(
       CONSOLE_NAV_JS.split('\n').filter(line => /^\s*\/\//.test(line)),

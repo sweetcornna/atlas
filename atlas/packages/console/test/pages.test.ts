@@ -44,6 +44,7 @@ import {
   NOW,
   TRACE,
   VIEW,
+  areaOf,
   browse,
   pageHarness,
   visibleText,
@@ -305,19 +306,24 @@ describe('every page', () => {
     expect(page).not.toContain('href="/admin/magpie"')
   })
 
-  test('the sidebar breaks a group into clusters with space alone, the way Claude Desktop does', async () => {
+  test("the card's list breaks into clusters with space alone, the way Claude Desktop does", async () => {
     const page = await read('/admin/overview')
     const gaps = [
       ...page.matchAll(/class="nav-item nav-gap" id="nav-([a-z]+)"/g),
     ]
+    // One list, no headings: the operator's group opens with a gap of its
+    // own (初始化配置 here, nothing pending), then its clusters.
     expect(gaps.map(match => match[1])).toEqual([
       'im',
+      'setup',
       'approvals',
       'connect',
       'usage',
     ])
-    // A cluster that opens its group has nothing above it to part from.
-    expect(page).toMatch(/<a class="nav-item" id="nav-(setup|overview)"/)
+    // The list's first item has nothing above it to part from.
+    expect(page).toMatch(
+      /<nav class="nav set-nav" id="set-nav"[^>]*><a class="nav-item" id="nav-/,
+    )
   })
 
   test('the home page serves the front to chat callers and redirects readers to the management overview', async () => {
@@ -327,7 +333,9 @@ describe('every page', () => {
     expect(redirected.status).toBe(303)
     expect(redirected.headers.get('location')).toBe('/admin')
     const view = await read('/admin', VIEW)
-    expect(view).toContain('<h1 class="page-title" id="page-title">总览</h1>')
+    expect(view).toContain(
+      '<h2 class="page-title set-title" id="page-title">总览</h2>',
+    )
     expect(view).not.toContain('id="nav-chat"')
   })
 
@@ -349,8 +357,12 @@ describe('every page', () => {
       expect(html).toContain(
         `<title>阡陌控制台 · ${row.title} · ${LABEL}</title>`,
       )
+      // The settings card, drawn open with the area in it.
+      expect(html).toMatch(
+        /<dialog class="set" id="settings"[^>]* open data-shown>/,
+      )
       expect(html).toContain(
-        `<h1 class="page-title" id="page-title">${row.title}</h1>`,
+        `<h2 class="page-title set-title" id="page-title">${row.title}</h2>`,
       )
       expect(html).toContain(`id="nav-${row.active}" href="`)
       expect(
@@ -372,14 +384,13 @@ describe('every page', () => {
           `${row.path} true ${text}`,
         )
       }
-      if (row.active === 'chat') {
-        expect(bare).toContain('href="/admin" aria-label="管理后台"')
-        continue
-      }
+      // The way to the card is a link to its first area's address.
+      expect(bare).toContain('href="/admin" data-settings aria-label="设置"')
+      if (row.active === 'chat') continue
       // Every area is a plain link to its own path: navigation is the
-      // browser's, not the script's.
+      // browser's, not the script's. 对话 is the face under the card.
       for (const module of ROUTES) {
-        if (module.area.moved === true) continue
+        if (module.area.moved === true || module.area.front === true) continue
         expect(bare).toContain(
           `id="nav-${module.area.id}" href="${module.area.href}"`,
         )
@@ -405,10 +416,11 @@ describe('every page', () => {
       // The public edition's source footer (AGPL §13, `view/source.ts`) is
       // the one place a page names another site: two links a reader may
       // follow, nothing the page loads.
+      // The front's side list and the area in the card each carry it.
       const stripped = html
         .replace(/<link rel="icon"[^>]*>\n?/, '')
         .replace(
-          /<footer class="[^"]*"><a href="[^"]*" rel="noopener" data-source>[\s\S]*?<\/footer>/,
+          /<footer class="[^"]*"><a href="[^"]*" rel="noopener" data-source>[\s\S]*?<\/footer>/g,
           '',
         )
       expect(stripped).not.toContain('<link')
@@ -416,11 +428,10 @@ describe('every page', () => {
       expect(stripped).not.toContain('https://')
       expect(stripped).not.toContain('src="')
       expect(stripped).not.toContain('<iframe')
-      // A management page: the shared sheet, then the page's own, the one
-      // a move between pages replaces (P37.13, view/shell.ts). The front
-      // keeps its one sheet.
+      // The shared sheet, then the page's own, the one a move inside the
+      // settings card replaces (P37.13, view/shell.ts); empty on the front.
       expect(`${row.path} ${html.split('<style>').length}`).toBe(
-        `${row.path} ${row.path.startsWith('/admin') ? 3 : 2}`,
+        `${row.path} 3`,
       )
       expect(html.split('<script>')).toHaveLength(2)
     }
@@ -435,9 +446,14 @@ describe('every page', () => {
     expect(audit).not.toContain("qc.onSubmit('register-form'")
     expect(audit).toContain("qc.onAction('chain', openChain)")
     expect(servers).toContain("qc.onAction('server-note', onServerNote)")
-    // The navigation runtime undoes a page's actions when it leaves; past
-    // it, the overview registers none.
-    expect(overview.replace(CONSOLE_NAV_JS, '')).not.toContain('qc.onAction(')
+    // The overview has no script of its own, and carries no area's.
+    for (const module of ROUTES) {
+      const script = module.page?.script
+      if (script === undefined) continue
+      expect(`${module.area.id} ${overview.includes(script)}`).toBe(
+        `${module.area.id} false`,
+      )
+    }
   })
 
   test('every section is a stacked header over its own body', async () => {
@@ -447,8 +463,8 @@ describe('every page', () => {
       ['/admin/audit', ['消息链']],
       ['/admin/settings', ['实例', '限额']],
     ] as const) {
-      const html = await read(path)
-      const body = html.slice(html.indexOf('<main'))
+      const card = areaOf(await read(path))
+      const body = card.slice(card.indexOf('id="main"'))
       expect(body).not.toContain('class="rail"')
       for (const heading of headings) {
         expect(
@@ -668,10 +684,20 @@ describe('the shell around every page', () => {
 
   test('the conversation is not offered to a token that may not open it', async () => {
     const h = harness()
+    // Under the card is the Work face: a view token's has no conversation
+    // in it, only the one line why, and nothing of the chat is read.
     const asView = await (await h.handle(browse('/admin', VIEW))).text()
-    expect(asView).not.toContain('id="nav-chat"')
+    const chatless = /<div class="fx" id="fx"[^>]* data-chatless /
+    expect(asView).toMatch(chatless)
+    expect(asView).toContain('这个身份不能在这里对话')
+    expect(asView).not.toContain('id="fx-composer"')
     const asAdmin = await (await h.handle(browse('/admin', ADMIN))).text()
-    expect(asAdmin).toContain('id="nav-chat"')
+    expect(asAdmin).not.toMatch(chatless)
+    expect(asAdmin).toContain('id="fx-composer"')
+    // 对话 is never one of the card's areas.
+    for (const page of [asView, asAdmin]) {
+      expect(page).not.toContain('id="nav-chat"')
+    }
   })
 })
 
@@ -777,17 +803,24 @@ describe('errors a browser navigates into are pages (C3)', () => {
     )
     expect(response.headers.get('x-frame-options')).toBe('DENY')
     const html = await response.text()
+    // The card, drawn open over the Work face, with the error in it.
+    expect(html).toMatch(
+      /<dialog class="set" id="settings"[^>]* open data-shown>/,
+    )
     expect(html).toContain(
-      '<h1 class="page-title" id="page-title">页面不存在</h1>',
+      '<h2 class="page-title set-title" id="page-title">页面不存在</h2>',
     )
     expect(html).toContain('class="nav-item"')
     expect(html).toContain(
       '<a class="jump" href="/admin" data-nav>回到总览</a>',
     )
     // No area is marked current on a page that is no area's.
-    expect(
-      html.slice(html.indexOf('<body>'), html.indexOf('<script>')),
-    ).not.toContain('data-nav aria-current="page"')
+    const card = html.slice(
+      html.indexOf('<dialog class="set"'),
+      html.indexOf('</dialog>', html.indexOf('<dialog class="set"')),
+    )
+    expect(card).toContain('id="set-nav"')
+    expect(card).not.toContain('data-nav aria-current="page"')
   })
 
   test('an unknown path, signed out: the same page on the login panel, no sidebar', async () => {

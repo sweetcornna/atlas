@@ -72,38 +72,39 @@ export type AreaId =
   | 'setup'
 
 /**
- * The two sidebar groups, in the order the sidebar draws them: the everyday
- * areas with no heading, then 管理, folded until opened.
+ * The two groups of the settings card's list, in its order: the everyday
+ * areas, then the operator's. The card draws one list with no headings,
+ * parting the groups with a gap (`view/shell.ts`).
  */
 export type AreaGroup = 'main' | 'manage'
 
-/** An area as the sidebar and the breadcrumb name it. */
+/** An area as the card's list and the breadcrumb name it. */
 export interface Area {
   readonly id: AreaId
-  /** The noun on the sidebar and at the head of the breadcrumb. */
+  /** The noun in the card's list and at the head of the breadcrumb. */
   readonly label: string
   readonly group: AreaGroup
   /**
-   * Where the sidebar item points. A path this module's page answers under
+   * Where the list item points. A path this module's page answers under
    * `/admin`, or `/` for the one area that is the conversation front.
    */
   readonly href: string
   /** One of the inline Lucide shapes in `view/bits.ts`. */
   readonly icon: string
   /**
-   * True while the area is a placeholder. The sidebar marks it, and the page
+   * True while the area is a placeholder. The list marks it, and the page
    * says so in one line rather than pretending to be empty.
    */
   readonly pending?: true
   /**
-   * The area is the conversation front at `/` (`routes/front.ts`), drawn
-   * outside the management shell: it has no page in the area table, and the
-   * sidebar offers it to whoever the front would admit.
+   * The area is the conversation front at `/` (`routes/front.ts`), the Work
+   * face under the settings card: it has no page in the area table and is
+   * not in the card's list.
    */
   readonly front?: true
   /**
    * The area's page moved into another one: its address answers a 308 there
-   * and its API and fragments stay, but the sidebar no longer lists it.
+   * and its API and fragments stay, but the card's list no longer has it.
    */
   readonly moved?: true
 }

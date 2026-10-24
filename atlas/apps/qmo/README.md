@@ -10,7 +10,7 @@
 | 路径 | 内容 |
 |---|---|
 | `src-tauri/` | Rust 壳，自成 Cargo 工作区（`[workspace]` 为空），不并入仓库根的工作区；`Cargo.lock` 入库 |
-| `src-tauri/capabilities/local.json` | 本地页面的能力：十个 `local_*` 命令与两个拖动权限，只对随壳打包的页面生效 |
+| `src-tauri/capabilities/local.json` | 本地页面的能力：十一个 `local_*` 命令与两个拖动权限，只对随壳打包的页面生效 |
 | `src-tauri/icons/` | 应用图标与菜单栏模板图标（见末节） |
 | `ui/` | 本地页面：登录、骨架、离线、设置、关于。纯 HTML/CSS/JS，中英日三语按系统语言 |
 
@@ -81,6 +81,7 @@ atlas/apps/qmo/src-tauri/target/release/bundle/macos/Qmo.app/Contents/MacOS/qmo-
 | `qmo sign-in <中枢> --force --json` | `{hub, deviceId, name}`；配对码从标准输入读一行 |
 | `qmo sign-out --json` | `{result}` |
 | `qmo status --json` | `{dir, signedIn, hub?, deviceId?, name?, pairedAt?, token?, device?}` |
+| `qmo agents --json [--rescan]` | `{agents: [...]}`，字段见 `qmo-local.md` §4.2；页面经 `qmo_local_agents` 要，壳原样转过去 |
 
 出错时输出 `{"error":{"kind","message"}, hub?, deviceId?, name?}`，退出码按 `kind`：
 
@@ -100,7 +101,7 @@ atlas/apps/qmo/src-tauri/target/release/bundle/macos/Qmo.app/Contents/MacOS/qmo-
 
 ## 壳与中枢页面
 
-中枢源（登录时的地址）在运行时得到一条 remote 能力，只含下面六个命令和两个拖动权限；本地命令、文件系统、shell、HTTP 等插件都不给网页。参数按原始请求体逐项校验，多一个键、类型不对、超长都拒绝。
+中枢源（登录时的地址）在运行时得到一条 remote 能力，只含下面九个命令和两个拖动权限；本地命令、文件系统、shell、HTTP 等插件都不给网页。参数按原始请求体逐项校验，多一个键、类型不对、超长、越界都拒绝；后三条另在命令里核一次调用方页面与中枢同源。
 
 | 命令 | 参数 |
 |---|---|
@@ -110,6 +111,9 @@ atlas/apps/qmo/src-tauri/target/release/bundle/macos/Qmo.app/Contents/MacOS/qmo-
 | `qmo_open_session` | `session`（`[A-Za-z0-9_-]{1,128}`）；主窗口打开 `/app?session=<id>` |
 | `qmo_quick_hide` | 无 |
 | `qmo_sign_out` | 无；返回 `{revoked, result}` |
+| `qmo_local_agents` | `rescan?`（布尔）；返回 `{agents}`。30 秒超时，同一时刻只跑一个 `qmo agents`，后到的等同一个结果；失败时以一行说明拒绝 |
+| `qmo_boot_layout` | `layout`：`page`（`chat`、`agents`、`code`）、`side`、`sideWidth` 0–1000、`rows` 0–60、`labels` 0–20、`theme?`、`colors?`（`{dark, page, sidebar}`，`#rrggbb`）；存进设置，骨架页按它画 |
+| `qmo_open_local_settings` | 无；打开壳的设置窗 |
 
 页面这一侧要做的：
 
@@ -117,12 +121,13 @@ atlas/apps/qmo/src-tauri/target/release/bundle/macos/Qmo.app/Contents/MacOS/qmo-
 - 服务端看 `qianmo_shell` 渲染 `<html data-shell>`；顶栏与侧栏顶部写 `data-tauri-drag-region`。macOS 上红绿灯在左上 48 px 高的一行里，左缘 17 px。
 - 中枢页面的 CSP 若写了 `connect-src`，加上 `ipc: http://ipc.localhost`，否则 IPC 退回 `postMessage`（照样能用，慢一些）。
 - 快速输入页 `/app/quick` 背景透明，卡片画在 606 px 宽的窗口上部；点卡片外面时调用 `qmo_quick_hide`。失焦时壳自己隐藏窗口。
+- 定义 `window.__qmoOpenSettings()`，打开页面里的设置卡片：菜单「设置… ⌘,」和托盘「设置」在主窗口显示中枢页面时由壳执行一段固定脚本调它；没有它时那段脚本回退为 `qmo_open_local_settings`（壳的设置窗）。
 - 主窗口落到 `/login` 时壳拦下来重新进门，60 秒内第四次就停在离线页（`loop`）。
 
 ## 几处取舍
 
 - **经 `about:blank` 进中枢。** WebKit 对从另一个站点的页面出发的导航不带 `SameSite=Strict` 的 cookie，壳自己发起的也一样；骨架页在 `tauri://localhost`，直接跳过去中枢收不到会话，会一直被送去 `/login`。所以从本地页面或别的中枢去中枢时，先载入 `about:blank`、把骨架写进去，再跳。快速输入窗换中枢时直接重建，它的第一次载入本来就带得上。
-- **主窗口骨架与透明窗口。** macOS 上窗口透明、背景色取页面底色（明暗随系统），页面画出来之前不会闪白。
+- **主窗口骨架与透明窗口。** macOS 上窗口透明、背景色取页面底色（明暗随系统；页面报过颜色就用报的），页面画出来之前不会闪白。骨架页的布局与颜色由壳算成一份计划（`layout.rs`），经主窗口的初始化脚本以 JSON 交给本地页面的 `window.__QMO_BOOT__`，`skeleton.js` 在首帧前画；不拼进 HTML。
 - **托盘菜单只有一处监听。** Tauri 托盘的 `on_menu_event` 也是全局的，再加应用菜单的监听，每一项会执行两次，所以只在应用上注册一次。
 - **cookie 的 `Secure`、`HttpOnly` 只在为真时写。** WKWebView 把这两个键的出现当作开启，写「否」会把 `qianmo_shell` 也变成 HttpOnly。
 

@@ -8,7 +8,7 @@
 - **看**：在线节点名册（能力、心跳、租约到期）与每台节点的详情页（概览、智能体、生命周期、模型四个页签）、审计轨迹（最新的在上、游标翻页、一个搜索框、可按 trace / task / agent / 时间窗过滤，可按 `traceId` 还原完整消息链）、告警、值守作业、审批申请、用量与配额、协议与运行时的各项上限。
 - **做**：注册 / 注销一个节点、补一次心跳、发起一次唤醒，以及生命周期的发布、暂停、恢复、退役（每个都先过确认框）。页面上注册成功的条目由 host 侧的 `qm console` 记进登记簿并持续续租，直到在页面上注销或暂停（`docs/dev/console.md` §7.3）；本包只看到 `RegistryPort` 与 `LifecyclePort`。
 
-页面由服务端渲染。`/` 是对话前台，`/admin` 是管理后台，后台区域共用外壳，前台使用自己的智能体与会话侧栏。旧 `/chat` 与旧区域地址答 308 并保留查询串；API 与片段路径不变。没有构建步骤、没有第三方依赖、不打包外部资源（`test/dependencies.test.ts` 钉住）。
+页面由服务端渲染。主窗口只有 Work（浏览器里 `/`，桌面版里 `/app`）与 Code（`/code`）两种模式；管理后台的各区域在主窗口上方的设置卡片里，`/admin/…` 打开的是 Work 面加画开着的卡片（`docs/dev/qmo-local.md` §3.6）。旧 `/chat` 与旧区域地址答 308 并保留查询串；API 与片段路径不变。没有构建步骤、没有第三方依赖、不打包外部资源（`test/dependencies.test.ts` 钉住）。
 
 ## 怎么起
 
@@ -89,8 +89,8 @@ M0 内没有 TLS（章程 N-3），所以第 2 种用法的前提是外面已经
 src/deps.ts     端口契约（控制台能看到的全部东西）
 src/auth.ts     双 token、角色判定、token 来源策略
 src/http.ts     鉴权接线、登录与邀请、错误页、把请求分给区域模块、Bun.serve
-src/routes/     每个区域一个模块（页面 + 它的 /v0 与 /fragments），index.ts 是路由表与外壳拼装
-src/view/       服务端 HTML 渲染（shell.ts 是外壳）
+src/routes/     每个区域一个模块（页面 + 它的 /v0 与 /fragments），index.ts 是路由表与设置卡片的拼装
+src/view/       服务端 HTML 渲染（shell.ts 是设置卡片，front.ts 是 Work 与 Code 两个面）
 src/assets/     编译进来的 CSS、共享运行时与各页脚本常量
 test/           路由 / 鉴权矩阵 / 页面 / 角色扫描，全部用手写假端口
 test/browser/   浏览器级测试：经 DevTools 协议驱动无头 Chrome，没有 Chrome 时跳过

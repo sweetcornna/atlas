@@ -6,11 +6,13 @@
 //! notifications and the way in; the pages are the hub's; the device token is
 //! `qmo`'s alone.
 
+mod agents;
 mod commands;
 mod deeplink;
 mod hub;
 mod icons;
 mod ipc;
+mod layout;
 mod menu;
 mod qmo;
 mod settings;
@@ -60,7 +62,8 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         WindowEvent::ThemeChanged(theme)
             if [MAIN, SIGNIN, SETTINGS, ABOUT].contains(&window.label()) =>
         {
-            let _ = window.set_background_color(Some(shell::page_background(*theme)));
+            let colour = shell::background(app, window.label(), *theme);
+            let _ = window.set_background_color(Some(colour));
         }
         _ => {}
     }
@@ -111,6 +114,9 @@ pub fn run() {
             commands::qmo_open_session,
             commands::qmo_quick_hide,
             commands::qmo_sign_out,
+            commands::qmo_local_agents,
+            commands::qmo_boot_layout,
+            commands::qmo_open_local_settings,
             commands::local_state,
             commands::local_sign_in,
             commands::local_retry,
@@ -121,6 +127,7 @@ pub fn run() {
             commands::local_sign_out,
             commands::local_open,
             commands::local_close,
+            commands::local_boot,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -131,6 +138,7 @@ pub fn run() {
                 settings_path,
                 hidden,
             ));
+            app.manage(agents::Agents::default());
 
             #[cfg(target_os = "macos")]
             app.set_menu(menu::app_menu(&handle)?)?;

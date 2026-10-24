@@ -2,35 +2,33 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The frame every console page is drawn in.
+ * The frame every management page is drawn in: the settings card.
  *
- * The conversation front's frame (`view/front.ts`), drawn for the management
- * side: the same side panel — the brand row, quiet rows with the current one
- * tinted, the reader's figure and role at the foot with the account menu
- * behind ⋯ — and a one-line top bar with where you are, the page's title, its
- * main actions and the registry's health. Everything a page does not own
- * lives here exactly once: the navigation, the role, the way out, the refresh
- * switch, the document head (`providers-console-m1.md` §6.1).
+ * There is no management document of its own any more (P37.13,
+ * `qmo-local.md` §3.6). The console's main window is the front — Work at
+ * `/` and `/app`, Code at `/code` (`view/front.ts`) — and every area
+ * under `/admin` opens as a card over it, the way a desktop app opens its
+ * settings: a search line and the areas down the left, the area's title,
+ * actions and page on the right. The card is a native modal `<dialog>`:
+ * the page behind is inert, focus stays inside, Esc closes it. Drawn closed
+ * (and empty) into every front document for a reader who may see the
+ * management side; drawn open on an area when the document was asked for
+ * that area's address, so a bookmark, a reload and an old link paint the
+ * card in the first frame.
  *
- * ## Every area is in the sidebar, including the ones that are not built
+ * Everything an area does not own lives here exactly once: the areas'
+ * list, the refresh switch, the token box, where the times' zone is said,
+ * the title row with the page's actions and the registry's health.
+ *
+ * ## Every area is in the list, including the ones that are not built
  *
  * A placeholder area is a real URL that renders one line saying the page is
- * not there yet, and its sidebar item carries a small
- * 未提供 tag. Leaving it out would make the console's shape change every time
- * a page lands; drawing it as if it worked would make an operator click into
- * an empty page and wonder what failed.
+ * not there yet, and its item carries a small 未提供 tag. Leaving it out would
+ * make the console's shape change every time a page lands; drawing it as if
+ * it worked would make an operator click into an empty page and wonder what
+ * failed.
  *
- * The one item that is hidden rather than marked is 对话: a view token must
- * not even learn that a conversation channel exists (`routes/chat.ts`), so the
- * route table hands the shell a nav without it.
- *
- * ## The role is always on screen
- *
- * The line under 我 at the foot of the side panel states which credential this
- * page was rendered for.
- * The admin token is a strict superset of the view token, so without it an
- * operator holding the smaller one cannot tell "restricted" from "broken"
- * until a control they remember is not there (`console.md` §4.1).
+ * 对话 is not in the list at all: it is the window under the card.
  *
  * ## The page loads nothing
  *
@@ -41,15 +39,14 @@
  * console whose contents depend on a third party's good behaviour while it
  * holds a registry token.
  *
- * ## Moving between pages does not load another document (P37.13)
+ * ## Moving between areas does not load another document (P37.13)
  *
- * The shell is drawn once. After that, the navigation runtime
- * (`assets/nav.ts`) asks each next page for its parts — {@link shellPartial}
- * over the same model — and puts them in place. So the document carries the
- * shared sheet and the page's own sheet as two `<style>`s (the second is the
- * one a move replaces), the runtime, the navigation runtime and the page's
- * script in one `<script>`, and a policy that also allows the page scripts of
- * every area its reader can move to (`ShellModel.navScripts`, `respond.ts`).
+ * The card is drawn once. After that, the navigation runtime
+ * (`assets/nav.ts`) asks each next area for its parts — {@link shellPartial}
+ * over the same model — and puts them in the card. So the document carries
+ * the area's own sheet as the last `<style>` (the one a move replaces), and a
+ * policy that also allows the page scripts of every area its reader can move
+ * to (`ShellModel.navScripts`, `respond.ts`).
  */
 
 import {
@@ -57,20 +54,12 @@ import {
   CONSOLE_CLIENT_JS_ACCOUNTS,
 } from '../assets/client.js'
 import { CONSOLE_CSS, stripCssComments } from '../assets/css.js'
-import { NAV_MOUNTED_JS, PARTIAL_VERSION, navScript } from '../assets/nav.js'
-import type { ConsoleRole } from '../auth.js'
+import { PARTIAL_VERSION, navScript } from '../assets/nav.js'
 import type { Lang } from '../i18n.js'
 import { cspFor, scriptHash } from '../respond.js'
-import {
-  chevron,
-  icon,
-  state,
-  viewerNotice,
-  type PageViewer,
-  type Tone,
-} from './bits.js'
-import type { AvatarSpec } from '../avatar.js'
-import { AVATAR_CSS, avatarSvg } from './avatar.js'
+import { chevron, icon, state, type Tone } from './bits.js'
+import { AVATAR_CSS } from './avatar.js'
+import { FRONT_CSS } from './frontStyle.js'
 import { attr, escapeHtml } from './escape.js'
 import { zoneLabel } from './format.js'
 import { QIANMO_ICON_HREF, qianmoMark } from './mark.js'
@@ -146,7 +135,7 @@ export interface Crumb {
   readonly href?: string
 }
 
-/** One sidebar item, already decided on (visibility is the caller's call). */
+/** One item of the card's list, already decided on (visibility is the caller's call). */
 export interface ShellNavItem {
   readonly id: string
   readonly label: string
@@ -163,7 +152,7 @@ export interface ShellNavItem {
 }
 
 /**
- * A sidebar item's state, as a dot beside the label: 待你处理 in the warning
+ * An item's state, as a dot beside the label: 待你处理 in the warning
  * colour with how many, 运行中 in grey, 未读 in the accent. The words are
  * the dot's name for a screen reader and its tooltip; only the number shows.
  */
@@ -175,19 +164,15 @@ export interface ShellNavState {
   readonly count?: number
 }
 
+/**
+ * One group of the list: the everyday areas, or the operator's. A group is
+ * drawn as a break of space before its first item, with no heading.
+ */
 export interface ShellNavGroup {
-  /** The group's heading; empty draws the items with no heading at all. */
-  readonly label: string
   readonly items: readonly ShellNavItem[]
-  /**
-   * Folded away behind its heading until somebody opens it, or until the
-   * current page is one of its items: the everyday areas stay in view, the
-   * operator's ones are one click off.
-   */
-  readonly folded?: boolean
 }
 
-/** One badge in the top bar's health strip. */
+/** One badge in the title row's health strip. */
 export interface ShellHealth {
   readonly label: string
   readonly tone: Tone
@@ -196,22 +181,12 @@ export interface ShellHealth {
 export interface ShellModel {
   /** The instance's own name (`--label`), so two consoles are never confused. */
   readonly label: string
-  /** Which credential this render is for; the chip in the top bar states it. */
-  readonly role: ConsoleRole
-  /**
-   * Who this page is for, when personal accounts are on. Its presence also
-   * picks the runtime that refuses to keep a personal credential
-   * (`assets/client.ts`).
-   */
-  readonly viewer?: PageViewer
-  /** The reader's figure, drawn beside 我 as on the front; absent draws none. */
-  readonly self?: AvatarSpec
   readonly nav: readonly ShellNavGroup[]
-  /** The sidebar item to mark current; absent on a page that is no area's. */
+  /** The item to mark current; absent on a page that is no area's. */
   readonly active?: string
   /** The whole breadcrumb, from the group down to the page. */
   readonly crumbs: readonly Crumb[]
-  /** The `<h1>`, and the head of the document title. */
+  /** The card's title, and the head of the document title. */
   readonly title: string
   /** The page's main actions, markup the page rendered. */
   readonly actions?: string
@@ -223,21 +198,15 @@ export interface ShellModel {
   readonly pageCss?: string
   readonly pageScript?: string
   /**
-   * The login door with the way back to this page (`routes/shared.ts`,
-   * `loginHref`): where the session-expired dialog sends the operator.
-   * Absent draws no such dialog.
-   */
-  readonly relogin?: string
-  /**
    * The public edition's source and terms links (AGPL §13, `source.ts`),
    * under the page body and outside every polled region. Absent — the
-   * default edition — the document is what it was.
+   * default edition — the card is what it was.
    */
   readonly source?: SourceLinks
   /**
    * The page scripts of the other areas this reader can move to in place
    * (`assets/nav.ts`): the document's policy allows them by hash, so the one
-   * a move brings runs. Only the areas the sidebar offers this reader.
+   * a move brings runs. Only the areas the card offers this reader.
    */
   readonly navScripts?: readonly string[]
 }
@@ -269,7 +238,7 @@ function refreshControl(): string {
 }
 
 /**
- * The token box, folded away inside the user menu.
+ * The token box, folded away at the foot of the card.
  *
  * A console reached with a cookie never needs it, and one reached with a
  * `?token=` link has already stored the token by the time the page paints — so
@@ -291,58 +260,6 @@ function tokenControl(): string {
     `data-action="token-clear">清除</button>` +
     `<span id="token-state"></span></div>` +
     `</div></details>`
-  )
-}
-
-/** The two legacy roles, in the console's own words. */
-const ROLE_TEXT: Readonly<Record<ConsoleRole, string>> = {
-  admin: '管理',
-  view: '只读',
-  none: '',
-}
-
-/**
- * The account row at the foot of the side panel, and the menu behind ⋯.
- *
- * The front's own row (`view/front.ts`): the reader's figure, 我 and the role.
- * The menu is a native `<details>`, so it opens with script disabled; it holds
- * the instance and its time zone, 外观, the folded token box and `退出` — a
- * native `POST /logout` form rather than a button the script wires up, since
- * it has to work on the same terms as the login page it leads back to
- * (`view/login.ts`).
- */
-function accountRow(model: ShellModel): string {
-  if (model.role === 'none') return ''
-  const role = model.viewer?.roleText ?? ROLE_TEXT[model.role]
-  const face =
-    model.self === undefined ? '' : avatarSvg(model.self, { size: 28 })
-  return (
-    `<div class="fx-side-foot">` +
-    `<span class="fx-me">${face}<span class="fx-me-text"><b>我</b>` +
-    `<span id="role">${escapeHtml(role)}</span></span></span>` +
-    `<details class="fx-more usermenu">` +
-    `<summary class="fx-icon-btn" aria-label="身份与退出">` +
-    icon('ellipsis', { small: true }) +
-    `</summary>` +
-    `<div class="fx-menu fx-menu-up usermenu-body">` +
-    `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
-    // Which zone the page's times are in: the server's as drawn, the
-    // reader's once the runtime has redrawn them (时区).
-    `<p class="note" id="tz-note">时间 · ${escapeHtml(
-      zoneLabel(Date.now()),
-    )} · 服务器时区</p>` +
-    `<div class="fx-menu-sep"></div>` +
-    `<label class="fx-menu-item fx-menu-field">外观` +
-    `<select id="theme-choice" aria-label="外观">` +
-    `<option value="system">跟随系统</option><option value="light">浅色</option>` +
-    `<option value="dark">深色</option></select></label>` +
-    tokenControl() +
-    `<div class="fx-menu-sep"></div>` +
-    `<form id="logout-form" method="post" action="/logout" class="fx-menu-form">` +
-    `<button type="submit" class="fx-menu-item">` +
-    icon('log-out', { small: true }) +
-    `退出</button></form>` +
-    `</div></details></div>`
   )
 }
 
@@ -381,59 +298,31 @@ function navItem(item: ShellNavItem, active: string | undefined): string {
   )
 }
 
-/** The sidebar's groups, the inside of its `<nav>`. */
-function navGroups(model: ShellModel): string {
+/**
+ * The card's list, the inside of its `<nav>`: every area this reader may
+ * open, the everyday ones first and the operator's after them, in one list.
+ * Clusters are breaks of space with nothing drawn (the operator's start one
+ * of their own), the way a desktop app breaks its settings list.
+ */
+function cardNav(model: ShellModel): string {
   return model.nav
     .filter(group => group.items.length > 0)
-    .map(group => {
-      const items = group.items
-        .map(item => navItem(item, model.active))
-        .join('')
-      if (group.folded === true) {
-        const open = group.items.some(item => item.id === model.active)
-        return (
-          `<details class="nav-fold"${open ? ' open' : ''}>` +
-          `<summary class="nav-group-name">${escapeHtml(group.label)}${chevron()}</summary>` +
-          `<div class="nav-group">${items}</div>` +
-          `</details>`
+    .map((group, index) =>
+      group.items
+        .map((item, at) =>
+          navItem(
+            index > 0 && at === 0 && item.gap !== true
+              ? { ...item, gap: true }
+              : item,
+            model.active,
+          ),
         )
-      }
-      return (
-        `<div class="nav-group">` +
-        (group.label === ''
-          ? ''
-          : `<p class="nav-group-name">${escapeHtml(group.label)}</p>`) +
-        items +
-        `</div>`
-      )
-    })
+        .join(''),
+    )
     .join('')
 }
 
-function sidebar(model: ShellModel): string {
-  const groups = navGroups(model)
-  // Below 1000px the panel is a drawer (E1): a native popover the top bar's
-  // menu button opens, with no script — the UA gives it the top layer, Esc
-  // and a tap outside. Above it the attribute is inert and the panel is the
-  // left column it always was (`assets/css.ts`, drawers).
-  return (
-    `<aside class="side drawer" id="side" popover>` +
-    `<button type="button" class="btn btn-ghost btn-icon drawer-close" ` +
-    `popovertarget="side" popovertargetaction="hide" aria-label="关闭菜单">` +
-    icon('x') +
-    `</button>` +
-    `<div class="brand" data-tauri-drag-region>${qianmoMark(22)}` +
-    `<a class="brand-cn" href="/admin" data-nav>${escapeHtml(WORDMARK_CN)}</a>` +
-    `</div>` +
-    `<nav class="nav" aria-label="导航">${groups}</nav>` +
-    `<div class="side-foot">` +
-    (model.poll === true ? refreshControl() : '') +
-    accountRow(model) +
-    `</div></aside>`
-  )
-}
-
-/** The inside of `<main>`: the page, then the public edition's footer. */
+/** The inside of the card's page: the page, then the public edition's footer. */
 function mainBody(model: ShellModel): string {
   return (
     model.body + (model.source === undefined ? '' : sourceFooter(model.source))
@@ -480,24 +369,8 @@ function topTail(model: ShellModel): string {
   )
 }
 
-function topBar(model: ShellModel): string {
-  return (
-    `<header class="top" data-tauri-drag-region>` +
-    `<div class="top-lead">` +
-    `<button type="button" class="btn btn-ghost btn-icon drawer-open" ` +
-    `popovertarget="side" aria-label="菜单">` +
-    icon('menu') +
-    `</button>` +
-    breadcrumb(model.crumbs) +
-    `<h1 class="page-title" id="page-title">${escapeHtml(model.title)}</h1>` +
-    `</div>` +
-    `<div class="top-tail">` +
-    topTail(model) +
-    `</div></header>`
-  )
-}
-
 /**
+ * What a page says when its credential stops working under it (C1)./**
  * What a page says when its credential stops working under it (C1).
  *
  * Rendered closed on every page, outside every polled region. The runtime
@@ -559,6 +432,7 @@ const SHELL_KEY = new Bun.CryptoHasher('sha256')
   .update(
     [
       CONSOLE_CSS,
+      FRONT_CSS,
       AVATAR_CSS,
       CONSOLE_CLIENT_JS,
       CONSOLE_CLIENT_JS_ACCOUNTS,
@@ -568,20 +442,20 @@ const SHELL_KEY = new Bun.CryptoHasher('sha256')
   .digest('hex')
   .slice(0, 16)
 
-/** The navigation runtime every shell document carries (`assets/nav.ts`). */
+/** The navigation runtime every document with the card carries (`assets/nav.ts`). */
 export const CONSOLE_NAV_JS = navScript(SHELL_KEY)
 
-/** The page's title as the document's `<title>` says it. */
-function documentTitle(model: ShellModel): string {
+/** The area's title as the document's `<title>` says it. */
+export function documentTitle(model: ShellModel): string {
   return `${BRAND} · ${model.title} · ${model.label}`
 }
 
 /**
- * The scripts a shell document allows beyond the one it carries: its own
- * page script on its own (moving back to this page runs it again alone),
- * then those of the areas its reader can move to. What `html()` must be
- * handed with {@link renderShell}'s output, so the header and the `<meta>`
- * state one policy (`respond.ts`).
+ * The scripts a document with the card allows beyond the one it carries:
+ * the open area's page script on its own (moving back to it runs it again
+ * alone), then those of the areas its reader can move to. What `html()`
+ * must be handed with the document, so the header and the `<meta>` state
+ * one policy (`respond.ts`).
  */
 export function shellScripts(model: ShellModel): readonly string[] {
   return [model.pageScript ?? '', ...(model.navScripts ?? [])].filter(
@@ -589,53 +463,87 @@ export function shellScripts(model: ShellModel): readonly string[] {
   )
 }
 
-/** A whole console document. Self-contained: nothing is fetched from anywhere. */
-export function renderShell(model: ShellModel): string {
-  const runtime =
-    model.viewer === undefined ? CONSOLE_CLIENT_JS : CONSOLE_CLIENT_JS_ACCOUNTS
-  // The page script runs inside the navigation runtime's scope, which the
-  // line after it closes (`assets/nav.ts`): leaving the page undoes it.
-  const script =
-    runtime + CONSOLE_NAV_JS + (model.pageScript ?? '') + NAV_MOUNTED_JS
+/** The card's own words, in the reader's language (`view/frontText.ts`). */
+export interface SettingsWords {
+  readonly settings: string
+  readonly search: string
+  readonly close: string
+  readonly noMatch: string
+  readonly desktop: string
+  /** The skip link's words: past the list to the area. */
+  readonly skip: string
+}
+
+/** The card a front document carries (`view/front.ts`). */
+export interface SettingsCard {
+  readonly model: ShellModel
+  /**
+   * The document is this area's (`/admin/…`): the card is drawn open with
+   * the page in it. Otherwise it is drawn closed, with the list and nothing
+   * else, for the page to open.
+   */
+  readonly open: boolean
+  /** The token box at the foot: legacy tokens only, the accounts runtime keeps none. */
+  readonly tokens: boolean
+}
+
+/**
+ * The card: a native `<dialog>` the size of the window, which is the scrim,
+ * around the card itself. `open` is drawn as the attribute, so the first
+ * paint has it; the runtime makes it modal as soon as it starts.
+ * `workTitle` is the document's title under the card, put back when it
+ * closes.
+ */
+export function renderSettings(
+  card: SettingsCard,
+  words: SettingsWords,
+  workTitle: string,
+): string {
+  const { model, open } = card
+  const page = open ? model : undefined
   return (
-    documentHead(
-      documentTitle(model),
-      model.pageCss ?? '',
-      [script, ...shellScripts(model)],
-      { shared: model.self === undefined ? '' : AVATAR_CSS },
-    ) +
-    `<body>\n` +
-    // The first stop for a keyboard: past the sidebar to the page (F1).
-    `<a class="skip-link" href="#main">跳到正文</a>\n` +
-    `<div class="shell">\n` +
-    sidebar(model) +
-    `\n<div class="frame">\n` +
-    topBar(model) +
-    viewerNotice(model.viewer) +
+    `<dialog class="set" id="settings" aria-labelledby="page-title" data-work-title="${attr(workTitle)}"${open ? ' open data-shown' : ''}>` +
+    `<div class="set-card">` +
+    // The way past the list (F1); the search, not this, is where the card
+    // opens (autofocus).
+    `<a class="skip-link" href="#main">${escapeHtml(words.skip)}</a>` +
+    `<div class="set-side">` +
+    `<label class="set-search">${icon('search', { small: true })}` +
+    `<span class="sr-only">${escapeHtml(words.search)}</span>` +
+    `<input type="search" id="set-search" placeholder="${attr(words.search)}" autocomplete="off" spellcheck="false" autofocus></label>` +
+    `<nav class="nav set-nav" id="set-nav" aria-label="${attr(words.settings)}">${cardNav(model)}</nav>` +
+    `<p class="set-none" id="set-none" hidden>${escapeHtml(words.noMatch)}</p>` +
+    // The desktop app's own window (shortcuts, start at login, sign out),
+    // shown by the runtime only inside the app (`qmo_open_local_settings`).
+    `<button type="button" class="nav-item nav-gap set-desktop" id="set-desktop" data-action="settings-desktop" hidden>` +
+    `${icon('laptop')}<span class="nav-label">${escapeHtml(words.desktop)}</span></button>` +
+    `<div class="set-foot">` +
+    (page?.poll === true ? refreshControl() : '') +
+    // Which zone the page's times are in: the server's as drawn, the
+    // reader's once the runtime has redrawn them (时区).
+    `<p class="note set-zone" id="tz-note">时间 · ${escapeHtml(zoneLabel(Date.now()))} · 服务器时区</p>` +
+    (card.tokens ? tokenControl() : '') +
+    `</div></div>` +
+    `<div class="set-body">` +
+    `<header class="set-top">` +
+    `<div class="set-lead">${page === undefined ? '' : breadcrumb(page.crumbs)}` +
+    `<h2 class="page-title set-title" id="page-title">${page === undefined ? '' : escapeHtml(page.title)}</h2></div>` +
+    `<div class="top-tail set-tail" id="set-tail">${page === undefined ? '' : topTail(page)}</div>` +
+    `<button type="button" class="fx-icon-btn set-close" data-action="settings-close" aria-label="${attr(words.close)}">` +
+    `${icon('x', { small: true })}</button></header>` +
     // Lit by the runtime when a refresh fails, with how old the page is (C2).
     // Outside every polled region, so the failure it reports cannot take it.
     `<p class="bar bar-warn conn" id="conn" role="status" hidden></p>` +
-    `\n<main class="main" id="main" tabindex="-1" aria-labelledby="page-title">\n` +
-    mainBody(model) +
-    `\n</main>\n</div>\n</div>\n` +
-    (model.relogin === undefined ? '' : sessionExpired(model.relogin)) +
-    // Where an action's result is said (`assets/client.ts`, D2): outside
-    // every polled region, so a refresh never takes a message with it.
-    `<div class="toasts" id="toasts" aria-live="polite" ` +
-    `aria-relevant="additions"></div>\n` +
-    `<p id="reply-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>` +
-    `<dialog class="dialog" id="keyboard-help" aria-labelledby="keyboard-help-title">` +
-    `<h2 id="keyboard-help-title">快捷键</h2><p>/ 搜索 · g n 节点 · g a 消息链 · ? 帮助</p>` +
-    `<button class="btn" type="button" data-action="confirm-cancel">关闭</button></dialog>` +
-    `<script>${script}</script>\n` +
-    `</body>\n</html>\n`
+    `<div class="main set-main" id="main" tabindex="-1" role="region" aria-labelledby="page-title">` +
+    (page === undefined ? '' : mainBody(page)) +
+    `</div></div></div></dialog>`
   )
 }
 
 /**
- * One page's parts, for a move inside the shell (`assets/nav.ts`): what
- * {@link renderShell} draws that changes from page to page, and nothing it
- * draws once. Markup fields are the same view output the document carries.
+ * One area's parts, for a move inside the card (`assets/nav.ts`): what
+ * {@link renderSettings} draws open that changes from area to area, and
+ * nothing it draws once. Markup fields are the same view output the document carries.
  */
 export interface ShellPartial {
   /** {@link PARTIAL_VERSION}: the client loads a whole document for another. */
@@ -644,17 +552,17 @@ export interface ShellPartial {
   readonly shell: string
   /** The document's `<title>`. */
   readonly documentTitle: string
-  /** The `<h1>`, as text. */
+  /** The card's title, as text. */
   readonly title: string
   /** The breadcrumb's `<nav>`, or empty for none. */
   readonly crumbs: string
-  /** The inside of the top bar's tail: the page's actions and the health strip. */
+  /** The inside of the title row's tail: the page's actions and the health strip. */
   readonly actions: string
-  /** The inside of `<main>`: the page, then the public edition's footer. */
+  /** The inside of the card's page: the page, then the public edition's footer. */
   readonly main: string
-  /** The inside of the sidebar's `<nav>`, the current item marked. */
+  /** The inside of the card's list, the current item marked. */
   readonly nav: string
-  /** The current sidebar item, or empty. */
+  /** The current item, or empty. */
   readonly active: string
   /** True when the page has polled regions: the refresh switch is shown. */
   readonly poll: boolean
@@ -668,7 +576,7 @@ export interface ShellPartial {
   readonly hash: string
 }
 
-/** The parts of the page {@link renderShell} would draw for `model`. */
+/** The parts of the area {@link renderSettings} would draw open for `model`. */
 export function shellPartial(model: ShellModel): ShellPartial {
   const script = model.pageScript ?? ''
   return {
@@ -679,7 +587,7 @@ export function shellPartial(model: ShellModel): ShellPartial {
     crumbs: breadcrumb(model.crumbs),
     actions: topTail(model),
     main: mainBody(model),
-    nav: navGroups(model),
+    nav: cardNav(model),
     active: model.active ?? '',
     poll: model.poll === true,
     refresh: model.poll === true ? refreshControl() : '',
@@ -689,7 +597,7 @@ export function shellPartial(model: ShellModel): ShellPartial {
   }
 }
 
-/** What a page outside the shell says: an error with nowhere else to go. */
+/** What a page outside the card says: an error with nowhere else to go. */
 interface StandaloneModel {
   readonly label: string
   readonly title: string

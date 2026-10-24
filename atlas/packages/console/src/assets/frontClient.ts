@@ -70,6 +70,10 @@ function frontScript(): string {
   // the conversations. The same script runs both; the few things that differ
   // ask CHAT.
   var CHAT = !!byId('fx') && byId('fx').getAttribute('data-layout') === 'chat';
+  // A frame with no conversation in it (view/front.ts): Code at /code, or
+  // Work for a reader who may not hold one here. The side list, the menus
+  // and the keys work; nothing asks the conversation routes.
+  var CHATLESS = !!byId('fx') && byId('fx').hasAttribute('data-chatless');
   var HOME = CHAT ? '/app' : '/';
   var LAYOUT_QUERY = CHAT ? 'layout=chat' : '';
   var NARROW = '(max-width: ${FRONT_NARROW_PX}px)';
@@ -102,7 +106,9 @@ function frontScript(): string {
   var retryDelay = 0;
   var choices = {};
   var model = { target: '', html: '', at: 0, asking: false };
-  var baseTitle = document.title;
+  // The front's own title, also when the document came for an area and
+  // the settings card is up over it (assets/nav.ts).
+  var baseTitle = (byId('settings') && byId('settings').getAttribute('data-work-title')) || document.title;
 
   // The page's words in the reader's language, sent with the page
   // (view/frontText.ts); Chinese when they are missing.
@@ -182,7 +188,7 @@ function frontScript(): string {
   // opening marks the fetch that is somebody switching to a conversation: the
   // server writes a ledger line for it (P15.9), and never for a refresh.
   function refreshView(opening, toBottom) {
-    if (qc.isExpired()) return Promise.resolve();
+    if (CHATLESS || qc.isExpired()) return Promise.resolve();
     var seq = ++viewSeq;
     var scroller = byId('fx-scroll');
     var stick = toBottom === true || atBottom(scroller);
@@ -292,7 +298,7 @@ function frontScript(): string {
   }
 
   function refreshSide() {
-    if (qc.isExpired()) return Promise.resolve();
+    if (CHATLESS || qc.isExpired()) return Promise.resolve();
     var seq = ++sideSeq;
     var query = [];
     if (state.agent) query.push('agent=' + encodeURIComponent(state.agent));
@@ -556,7 +562,8 @@ function frontScript(): string {
       noteMoved(key, updated, rows[i].classList.contains('is-busy'),
         name ? name.textContent : '', said ? said.textContent : '', latest);
     }
-    document.title = count ? '(' + count + ') ' + baseTitle : baseTitle;
+    // The card names its area in the title while it is up.
+    if (!(byId('settings') && byId('settings').open)) document.title = count ? '(' + count + ') ' + baseTitle : baseTitle;
     if (window.qianmoShell) window.qianmoShell.badge(count);
   }
 
@@ -814,7 +821,14 @@ function frontScript(): string {
 
   /* ---------------- moving between conversations ---------------- */
 
+  // The settings card is up (assets/nav.ts): the address is the card's.
+  function carded() {
+    var card = byId('settings');
+    return !!card && card.open;
+  }
+
   function setAddress(replace) {
+    if (carded()) return;
     var url = state.active
       ? HOME + '?session=' + encodeURIComponent(state.active)
       : state.agent && state.agent !== mainAgent
@@ -889,6 +903,7 @@ function frontScript(): string {
   }
 
   function go(opening) {
+    if (CHATLESS) return Promise.resolve();
     nav++;
     var mine = nav;
     switching = true;
@@ -952,6 +967,7 @@ function frontScript(): string {
   // 新对话: on / a new conversation with the agent in focus; on /app with
   // the main agent, the picker's default.
   function newChat() {
+    if (CHATLESS) return;
     setDrawer(false);
     closeMenus();
     state.active = '';
@@ -962,6 +978,10 @@ function frontScript(): string {
 
   window.addEventListener('popstate', function (event) {
     var entry = event.state;
+    // The settings card's own moves (assets/nav.ts): the conversation under
+    // the card did not change.
+    if (CHATLESS || window.location.pathname.indexOf('/admin') === 0 || (entry && entry.qianmoNav)) return;
+    if (entry && (entry.active || '') === state.active && (entry.agent || state.agent) === state.agent) return;
     if (!entry) {
       var params = new URLSearchParams(window.location.search);
       entry = { active: params.get('session') || '', agent: params.get('agent') || mainAgent };
@@ -1567,9 +1587,13 @@ function frontScript(): string {
     state.scope = stored('scope') === 'all' ? 'all' : 'agent';
     var root = byId('fx');
     if (root && stored('side') === 'closed' && !narrow()) root.setAttribute('data-side', 'closed');
-    try {
-      history.replaceState({ active: state.active, agent: state.agent }, '', window.location.pathname + window.location.search);
-    } catch (e) { /* cosmetic */ }
+    // Under the settings card (an area's address, or an error drawn in it)
+    // the entry is the card's (assets/nav.ts).
+    if (!carded()) {
+      try {
+        history.replaceState({ active: state.active, agent: state.agent }, '', window.location.pathname + window.location.search);
+      } catch (e) { /* cosmetic */ }
+    }
     var mic = byId('fx-mic');
     if (mic && Recognition) mic.hidden = false;
     markAccent();
@@ -1584,6 +1608,7 @@ function frontScript(): string {
       scroller.scrollTop = scroller.scrollHeight;
       scroller.addEventListener('scroll', updateJump, { passive: true });
     }
+    if (CHATLESS) return;
     focusBox();
     askModel();
     qc.afterSession(startStream);

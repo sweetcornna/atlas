@@ -36,7 +36,9 @@ pub fn on_menu(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
         NEW_CHAT => shell::new_chat(app),
         QUICK => shell::toggle_quick(app),
-        SETTINGS => shell::open_settings(app),
+        // The page's settings card when the main window shows the hub's
+        // page, the shell's own window otherwise (menu bar ⌘, and tray alike).
+        SETTINGS => shell::open_settings_from_menu(app),
         ABOUT => shell::open_about(app),
         SHOW => shell::show_app(app),
         QUIT => app.exit(0),

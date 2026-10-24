@@ -36,6 +36,7 @@ import {
   renderChatSessions,
   renderChatThread,
 } from '../src/view/chat.js'
+import { areaOf } from './pageHarness.js'
 
 const VIEW = 'view-token-000000000001'
 const ADMIN = 'admin-token-00000000001'
@@ -618,7 +619,7 @@ describe('front document', () => {
   test('its management links rely on the cookie and carry no token', async () => {
     const handler = createConsoleHandler(depsWith(new FakeChat()), TOKENS)
     const html = await (await handler(get('/'))).text()
-    expect(html).toContain('href="/admin" aria-label="管理后台"')
+    expect(html).toContain('href="/admin" data-settings aria-label="设置"')
     expect(html.slice(0, html.indexOf('<script>'))).not.toContain('token=')
   })
 })
@@ -656,17 +657,25 @@ describe('chat routes', () => {
     // A view token must not be able to tell a chat-enabled console apart
     // from one with no channel at all — a visible link that 403s on click
     // would leak exactly the fact the admin-only routes are built to hide.
+    // The management side is a card over the Work face (P37.13): its list
+    // never has 对话, and the face under it is the same markup, byte for
+    // byte, whether a channel is wired or not.
     const viewerPage = await (await wired(get('/admin', VIEW))).text()
     expect(viewerPage).not.toContain('id="nav-chat"')
     expect(viewerPage).not.toContain('>对话<')
+    expect(viewerPage).toContain('这个身份不能在这里对话')
+    const viewerNoChat = await (await unwired(get('/admin', VIEW))).text()
+    const face = (html: string): string => html.replace(areaOf(html), '')
+    expect(face(viewerNoChat)).toBe(face(viewerPage))
 
+    // Admin gets the conversation under the card when there is one, and
+    // is told there is none when there is not.
     const adminPage = await (await wired(get('/admin', ADMIN))).text()
-    expect(adminPage).toContain('id="nav-chat"')
-
-    // Admin alone is not enough either: with no channel wired there is
-    // nothing behind the link, so it stays hidden even for admin.
+    expect(adminPage).not.toContain('id="nav-chat"')
+    expect(adminPage).toContain('id="fx-composer"')
     const adminNoChat = await (await unwired(get('/admin', ADMIN))).text()
-    expect(adminNoChat).not.toContain('id="nav-chat"')
+    expect(adminNoChat).not.toContain('id="fx-composer"')
+    expect(adminNoChat).toContain('这里没有接入对话')
   })
 
   test('hides the page and explains the API when there is no chat channel', async () => {

@@ -24,11 +24,12 @@
  * - **Offline**: a thin line under the bar while the browser says the network
  *   is gone; it goes by itself when it is back, and the front catches up.
  * - **The first frame** (`docs/dev/qmo-local.md` §3.5): whenever the side
- *   panel's layout changes — open or closed, its width, how many rows and
- *   day headings it shows, the theme — it is reported with
+ *   panel's layout changes — which face (Work's two, or Code), open or
+ *   closed, its width, how many rows and day headings it shows, the theme
+ *   and the page's and the side panel's colours — it is reported with
  *   `qmo_boot_layout`, so the app's skeleton can draw the same shapes next
- *   time. An app without the command makes it a no-op. The management side
- *   reports the same fields (`assets/nav.ts`).
+ *   time. An app without the command makes it a no-op. The settings card
+ *   reports nothing of its own: under it the face is what is reported.
  */
 
 import { FRONT_NARROW_PX } from '../view/frontStyle.js'
@@ -138,19 +139,49 @@ function shellScript(): string {
     }
     return n;
   }
+  // A computed colour as #rrggbb, whatever form the engine gives it in
+  // (rgb(), or color(srgb …) for a mixed one): painted and read back.
+  var paintCtx = null;
+  function hex(color) {
+    try {
+      if (!paintCtx) paintCtx = document.createElement('canvas').getContext('2d');
+      if (paintCtx) {
+        paintCtx.clearRect(0, 0, 1, 1);
+        paintCtx.fillStyle = '#000';
+        paintCtx.fillStyle = color;
+        paintCtx.fillRect(0, 0, 1, 1);
+        var px = paintCtx.getImageData(0, 0, 1, 1).data;
+        return '#' + [px[0], px[1], px[2]].map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('');
+      }
+    } catch (e) { /* the pattern below */ }
+    var m = /rgba?\\(\\s*(\\d+)[,\\s]+(\\d+)[,\\s]+(\\d+)/.exec(color || '');
+    return m ? '#' + [m[1], m[2], m[3]].map(function (v) { var n = Number(v); return (n < 16 ? '0' : '') + n.toString(16); }).join('') : '#000000';
+  }
+  function darkNow() {
+    var theme = document.documentElement.getAttribute('data-theme');
+    if (theme === 'dark') return true;
+    if (theme === 'light') return false;
+    return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  }
   function layoutNow() {
     var root = byId('fx');
     var side = byId('fx-side');
     if (!root || !side) return;
     var open = root.getAttribute('data-side') !== 'closed' &&
       !(window.matchMedia && window.matchMedia('(max-width: ${FRONT_NARROW_PX}px)').matches);
+    var face = root.getAttribute('data-layout');
     var info = {
-      page: root.getAttribute('data-layout') === 'chat' ? 'chat' : 'agents',
+      page: face === 'chat' || face === 'code' ? face : 'agents',
       side: open ? 'open' : 'closed',
-      sideWidth: Math.round(side.getBoundingClientRect().width),
+      sideWidth: Math.max(0, Math.min(1000, Math.round(side.getBoundingClientRect().width))),
       rows: Math.min(60, visible(side.querySelectorAll('.fx-ritem-row, .fx-agent-row'))),
       labels: Math.min(20, visible(side.querySelectorAll('.fx-rgroup-name'))),
-      theme: document.documentElement.getAttribute('data-theme') || 'system'
+      theme: document.documentElement.getAttribute('data-theme') || 'system',
+      colors: {
+        dark: darkNow(),
+        page: hex(getComputedStyle(document.body).backgroundColor),
+        sidebar: hex(getComputedStyle(side).backgroundColor)
+      }
     };
     var text = JSON.stringify(info);
     if (text === laidOut) return;
@@ -171,6 +202,8 @@ function shellScript(): string {
     layout();
     window.addEventListener('resize', layout);
     document.addEventListener('qianmo:theme', layout);
+    var scheme = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    if (scheme && scheme.addEventListener) scheme.addEventListener('change', layout);
     var root = byId('fx');
     var list = byId('fx-side-scroll');
     if (typeof MutationObserver !== 'function') return;
