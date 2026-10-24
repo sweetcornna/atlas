@@ -136,7 +136,11 @@ export interface CodeRecord {
   readonly turn: CodeTurn
 }
 
-/** What goes to the page's channel (§4.5.2), `v: 1` added on the way out. */
+/**
+ * What goes to the page's channel (§4.5.2), `v: 1` added on the way out. The
+ * `runner` event (`up` after a `hello` it accepts, `down` when the runner
+ * ends) is the shell's alone: only the shell knows when a runner is usable.
+ */
 export type CodeEvent =
   | { readonly type: 'session'; readonly session: Summary }
   | {
@@ -159,11 +163,6 @@ export type CodeEvent =
       readonly kind: 'thinking' | 'tool' | 'waiting' | 'queued' | 'starting'
       readonly words: string
     }
-  | {
-      readonly type: 'runner'
-      readonly state: 'up' | 'down'
-      readonly reason?: string
-    }
 
 // ---- checks ------------------------------------------------------------------
 
@@ -185,13 +184,6 @@ type Params = Readonly<Record<string, unknown>>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** Characters as the shell counts them (Unicode scalar values). */
-function chars(text: string): number {
-  let count = 0
-  for (const _ of text) count++
-  return count
 }
 
 function bad(message: string): CodeError {
@@ -254,12 +246,15 @@ export function decisionOf(value: unknown): AskDecision {
   return value
 }
 
-/** What a person typed: 1–65,536 characters, no NUL. */
+/**
+ * What a person typed: 1–65,536 characters, no NUL. Characters here, in the
+ * shell and on the page are UTF-16 code units, a JavaScript string's
+ * `length` (the shell's `ipc::units`, the page's `maxLength`).
+ */
 export function textOf(value: unknown): string {
   if (typeof value !== 'string' || value === '') throw bad('text 不能为空')
   if (value.includes('\0')) throw bad('text 里不能有 NUL')
-  if (value.length > MAX_TEXT * 2 || chars(value) > MAX_TEXT)
-    throw bad(`text 至多 ${MAX_TEXT} 个字符`)
+  if (value.length > MAX_TEXT) throw bad(`text 至多 ${MAX_TEXT} 个字符`)
   return value
 }
 
@@ -267,7 +262,7 @@ export function textOf(value: unknown): string {
 function lineOf(value: unknown, name: string, max: number): string {
   if (typeof value !== 'string') throw bad(`${name} 要是字符串`)
   if (CONTROL.test(value)) throw bad(`${name} 里不能有控制字符`)
-  if (chars(value) > max) throw bad(`${name} 至多 ${max} 个字符`)
+  if (value.length > max) throw bad(`${name} 至多 ${max} 个字符`)
   return value
 }
 
@@ -309,7 +304,7 @@ export function relativePathOf(
   platform: NodeJS.Platform = process.platform,
 ): string {
   if (typeof value !== 'string' || value === '') throw bad('path 不能为空')
-  if (chars(value) > 1_024) throw bad('path 至多 1024 个字符')
+  if (value.length > 1_024) throw bad('path 至多 1024 个字符')
   if (CONTROL.test(value)) throw bad('path 里不能有控制字符')
   if (value.startsWith('/') || value.startsWith('-'))
     throw bad('path 不能以 / 或 - 开头')

@@ -334,7 +334,6 @@ export async function serve(options: ServeOptions): Promise<number> {
     })
     return closing
   }
-  let greeted = false
   const handle = async (request: Request): Promise<void> => {
     if (request.method === 'shutdown') {
       try {
@@ -367,10 +366,6 @@ export async function serve(options: ServeOptions): Promise<number> {
         }),
       ])
       send({ id: request.id, result })
-      if (request.method === 'hello' && !greeted) {
-        greeted = true
-        emit({ type: 'runner', state: 'up' })
-      }
     } catch (error) {
       const refusal = codeError(error)
       if (refusal.code === 'E_RUNNER')

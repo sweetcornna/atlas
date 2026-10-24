@@ -66,7 +66,6 @@ describe.skipIf(!posix)('the runner', () => {
       },
       codeDir: at.code,
     })
-    await r.event(one => one.type === 'runner' && one.state === 'up')
     expect(await refused(r.call('hello', { extra: 1 }))).toBe('E_ARGS')
     expect(await refused(r.call('nonsense'))).toBe('E_ARGS')
     expect(await refused(r.call('session.rename', {}))).toBe('E_ARGS')
@@ -84,6 +83,9 @@ describe.skipIf(!posix)('the runner', () => {
     r.send(JSON.stringify({ id: 9, method: 'hello', params: {}, more: 1 }))
     expect(await r.call('list')).toMatchObject({ v: 1, sessions: [] })
     expect(r.out.some(one => one.id === 0 || one.id === 9)).toBe(false)
+    // `runner` events are the shell's (up once it accepts the hello, down
+    // when the runner ends); one from here too would reach the page twice.
+    expect(r.events('runner')).toEqual([])
   })
 
   test('folders: picked, resolved, remembered newest first; guarded roots refused', async () => {
@@ -263,6 +265,13 @@ describe.skipIf(!posix)('the runner', () => {
     expect(
       await refused(
         r.call('session.start', { ...base, text: 'x'.repeat(65_537) }),
+      ),
+    ).toBe('E_ARGS')
+    // Characters are UTF-16 code units, as the shell and the page count them:
+    // 32,769 emoji are 65,538.
+    expect(
+      await refused(
+        r.call('session.start', { ...base, text: '😀'.repeat(32_769) }),
       ),
     ).toBe('E_ARGS')
     expect(
@@ -529,16 +538,17 @@ describe.skipIf(!posix)('the runner', () => {
       )
     ).record as Message
     const secondAsk = (second.turn as Message).ask as Message
-    expect(
-      await refused(
-        r.call('session.answer', {
-          session: id,
-          ask: secondAsk.id,
-          decision: 'deny',
-          message: 'a\nb',
-        }),
-      ),
-    ).toBe('E_ARGS')
+    for (const message of ['a\nb', '😀'.repeat(251)])
+      expect(
+        await refused(
+          r.call('session.answer', {
+            session: id,
+            ask: secondAsk.id,
+            decision: 'deny',
+            message,
+          }),
+        ),
+      ).toBe('E_ARGS')
     await r.call('session.answer', {
       session: id,
       ask: secondAsk.id,
@@ -1049,6 +1059,12 @@ describe.skipIf(!posix)('the runner', () => {
     ).toBe('E_ARGS')
     expect(
       await refused(r.call('session.diff', { session: id, path: '-p' })),
+    ).toBe('E_ARGS')
+    // 1024 UTF-16 code units, as the shell counts: 513 emoji are 1026.
+    expect(
+      await refused(
+        r.call('session.diff', { session: id, path: '😀'.repeat(513) }),
+      ),
     ).toBe('E_ARGS')
     const other = path.join(at.root, 'plain')
     fs.mkdirSync(other)
