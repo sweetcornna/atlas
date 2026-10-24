@@ -78,6 +78,18 @@ export interface NpmInstall {
   readonly pin: string
   /** Needs Node.js on the node at run time (not only npm at install). */
   readonly needsNode?: string
+  /**
+   * How its binary is told from another program of the same name on PATH:
+   * run with `args`, its standard output matches `name`. Debian's `dsh`
+   * (distributed shell) and pdsh's `dsh` are not DeepSeek Harness, whose
+   * `--help` names it (its `--version` prints a bare version number, which
+   * proves nothing). The node (`runtimeUpdate.ts`) and `qmo agents`
+   * (`@qianmo/client`) ask the same.
+   */
+  readonly identity?: {
+    readonly args: readonly string[]
+    readonly name: RegExp
+  }
 }
 
 export type RuntimeInstall = { readonly kind: 'builtin' } | NpmInstall
@@ -216,6 +228,7 @@ export const RUNTIME_CATALOG: readonly RuntimeSpec[] = [
       command: 'dsh',
       pin: '0.2.1-rc.2',
       needsNode: '^22.19.0 || >=24',
+      identity: { args: ['--help'], name: /DeepSeek Harness/ },
     },
     default: true,
     lanes: ['openai-chat', 'anthropic'],
