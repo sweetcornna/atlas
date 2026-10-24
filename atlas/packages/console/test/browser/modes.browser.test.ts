@@ -125,11 +125,23 @@ async function open(
   await tab.goto(
     `${base}${path}${path.includes('?') ? '&' : '?'}token=${ADMIN}`,
   )
-  await tab.waitFor('window.qianmoConsole !== undefined')
+  // An area's address comes with the card drawn open: its runtime has
+  // taken it over (modal, its history entry marked).
+  await tab.waitFor(
+    `window.qianmoConsole !== undefined && (() => {
+      const card = document.getElementById('settings');
+      return !card || !card.open ||
+        (card.matches(':modal') && history.state !== null && history.state.qianmoNav === 1);
+    })()`,
+  )
 }
 
 const q = (selector: string) =>
   `document.querySelector(${JSON.stringify(selector)})`
+
+function pause(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
 
 async function key(
   tab: Tab,
@@ -543,6 +555,54 @@ describe.skipIf(SKIP !== null)('the settings card', () => {
         true,
       )
       expect(await tab.evaluate<string>('document.title')).toContain('对话')
+    } finally {
+      await tab.close()
+    }
+  }, 30_000)
+
+  test('taking over the card the document came with closes nothing, and a stale close changes nothing', async () => {
+    const tab = await browser.tab()
+    const state = `({
+      open: ${q('#settings')}.open,
+      path: location.pathname,
+      title: ${q('#page-title')}.textContent,
+      area: ${q('#main')}.childElementCount > 0,
+    })`
+    const up = { open: true, path: '/admin/nodes', title: '节点', area: true }
+    try {
+      await open(tab, served.base, '/admin/nodes')
+      await pause(300)
+      expect(await tab.evaluate<unknown>(state)).toEqual(up)
+      await tab.evaluate(`${q('#settings')}.dispatchEvent(new Event('close'))`)
+      await pause(100)
+      expect(await tab.evaluate<unknown>(state)).toEqual(up)
+    } finally {
+      await tab.close()
+    }
+  }, 30_000)
+
+  test('one Escape closes one layer: a dialog a script opened in the card goes, the card stays', async () => {
+    const tab = await browser.tab()
+    try {
+      await open(tab, served.base, '/admin/nodes')
+      // Opened without a click, so Chrome groups it with the card; a key
+      // pressed since lets the card keep itself.
+      await tab.evaluate(`${q('[data-open-dialog="register-dialog"]')}.click()`)
+      await tab.waitFor(`${q('#register-dialog')}.open`)
+      await key(tab, 'Tab', 'Tab', 9)
+      await key(tab, 'Escape', 'Escape', 27)
+      await tab.waitFor(`!${q('#register-dialog')}.open`)
+      await pause(400)
+      expect(
+        await tab.evaluate<unknown>(`({
+          open: ${q('#settings')}.open,
+          path: location.pathname,
+          form: ${q('#register-dialog')} !== null,
+        })`),
+      ).toEqual({ open: true, path: '/admin/nodes', form: true })
+      // The next Escape is the card's.
+      await key(tab, 'Escape', 'Escape', 27)
+      await cardClosed(tab, '/')
     } finally {
       await tab.close()
     }
