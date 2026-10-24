@@ -23,6 +23,7 @@ import {
   person,
 } from './accountsHarness.js'
 import { publicConsole, type PublicPerson } from './billingFake.js'
+import { areaOf } from './pageHarness.js'
 
 const SOURCE =
   'https://github.com/sweetcornna/atlas/tree/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
@@ -126,9 +127,16 @@ describe('every public-edition page carries the source link', () => {
       '/admin/nope',
     ]) {
       const response = await f.handle(page(path, f.paid))
+      // The area in the settings card, over the Work face: both carry it.
       const html = await response.text()
-      expect(`${path} ${html.includes('class="shell"')}`).toBe(`${path} true`)
-      expect(`${path} ${html.includes(LINK)}`).toBe(`${path} true`)
+      const card = areaOf(html)
+      expect(`${path} ${card.startsWith('<dialog class="set"')}`).toBe(
+        `${path} true`,
+      )
+      expect(`${path} ${card.includes(LINK)}`).toBe(`${path} true`)
+      expect(`${path} ${html.replace(card, '').includes(LINK)}`).toBe(
+        `${path} true`,
+      )
     }
   })
 
@@ -204,7 +212,7 @@ describe('the default edition is unchanged', () => {
       asSession('GET', '/admin/overview', member.sid, { header: false }),
     )
     const html = await response.text()
-    expect(html).toContain('class="shell"')
+    expect(html).toContain('<dialog class="set" id="settings"')
     expect(html).not.toContain('data-source')
   })
 })

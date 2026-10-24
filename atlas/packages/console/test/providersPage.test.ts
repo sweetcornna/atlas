@@ -28,7 +28,7 @@ import {
   type Person,
 } from './accountsHarness.js'
 import { MemoryActionLedger } from './memoryActions.js'
-import { visibleText, withoutScripts } from './pageHarness.js'
+import { areaOf, visibleText, withoutScripts } from './pageHarness.js'
 import {
   CHAT_URL,
   FINGERPRINT,
@@ -156,7 +156,8 @@ const JSON_READS = [
 
 /** Everything in a document that would let its reader change something (`roles.test.ts`). */
 function writeMarks(html: string): readonly string[] {
-  const markup = html.replace(/<script>[\s\S]*?<\/script>/g, '')
+  // The area itself; the Work face under the card is the reader's own.
+  const markup = areaOf(html).replace(/<script>[\s\S]*?<\/script>/g, '')
   const found: string[] = []
   if (/\sdata-write[\s>=]/.test(markup)) found.push('data-write')
   for (const action of markup.match(/data-action="confirm-[a-z-]+"/g) ?? []) {
@@ -167,7 +168,8 @@ function writeMarks(html: string): readonly string[] {
   }
   for (const form of markup.match(/<form[^>]*>/g) ?? []) {
     const plainGet = /method="get"/i.test(form)
-    const logout = form.includes('id="logout-form"')
+    const logout =
+      form.includes('id="logout-form"') || form.includes('fx-sign-out')
     if (!plainGet && !logout) found.push(form)
   }
   return found
@@ -294,7 +296,8 @@ describe('the pages, for ops', () => {
     expect(key).toContain('type="password"')
     expect(key).toContain('autocomplete="off"')
     expect(key).not.toContain('name=')
-    const main = html.slice(html.indexOf('<main'), html.indexOf('</main>'))
+    const card = areaOf(html)
+    const main = card.slice(card.indexOf('id="main"'))
     expect(main).not.toMatch(/<form(?![^>]*method="get")/)
     expect(main).not.toMatch(/<button(?![^>]*type="button")[^>]*>/)
     // The advanced half is folded for an untouched preset.

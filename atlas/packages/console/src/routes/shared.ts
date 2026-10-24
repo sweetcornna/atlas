@@ -60,6 +60,12 @@ export const ADMIN_HOME = `/${ADMIN_SEGMENT}`
 export const APP_SEGMENT = 'app'
 
 /**
+ * Code, the main window's second mode (`/code`, P37.13, `qmo-local.md`
+ * §3.6). Not an area either: a page of the front (`routes/front.ts`).
+ */
+export const CODE_SEGMENT = 'code'
+
+/**
  * The CLI name §10.2's copyable `ca issue` line is written under, when the
  * host did not say.
  *

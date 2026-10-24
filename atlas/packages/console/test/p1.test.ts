@@ -636,7 +636,7 @@ describe('F1 · every document has one h1, a main, and a way past the sidebar', 
     ['/admin/settings', 'settings'],
   ]
 
-  test('each area: one h1, the skip link first, its target there, and the sidebar marks this area alone', async () => {
+  test("each area: one h1, the skip link first, its target there, and the card's list marks this area alone", async () => {
     const h = pageHarness({ chat: true })
     await h.chat.open('qianmo://tokyo-1/planner')
     for (const [path, area] of AREAS) {
@@ -651,13 +651,17 @@ describe('F1 · every document has one h1, a main, and a way past the sidebar', 
         expect(body).toContain('id="fx-agents"')
         continue
       }
+      // The area is in the settings card over the Work face: the card's
+      // first stop is the way past its list, to the area.
       expect([
         path,
-        body.startsWith(
-          '<body>\n<a class="skip-link" href="#main">跳到正文</a>',
+        body.includes(
+          '<div class="set-card"><a class="skip-link" href="#main">跳到正文</a>',
         ),
       ]).toEqual([path, true])
-      expect(body).toContain('<main class="main" id="main" tabindex="-1"')
+      expect(body).toContain(
+        '<div class="main set-main" id="main" tabindex="-1"',
+      )
       const current = [
         ...body.matchAll(
           /id="nav-([a-z]+)" href="[^"]*" data-nav aria-current="page"/g,
@@ -897,18 +901,16 @@ describe('H2 · scripts by hash, and the headers that were missing', () => {
       )
       expect([path, scripts.length]).toEqual([path, 1])
       const policy = response.headers.get('content-security-policy') ?? ''
-      // The one script the document carries, first. A management page also
-      // allows the page scripts it can swap in (P37.13, assets/nav.ts):
-      // each of them one of the route table's compile-time page scripts.
+      // The one script the document carries, first. A document with the
+      // settings card — every one here — also allows the page scripts the
+      // card can swap in (P37.13, assets/nav.ts): each of them one of the
+      // route table's compile-time page scripts.
       const [, carried, ...swappable] = scriptSrc(policy).split(' ')
       expect([path, carried]).toEqual([
         path,
         `'sha256-${sha256(scripts[0] ?? '')}'`,
       ])
-      expect([path, swappable.length > 0]).toEqual([
-        path,
-        path.startsWith('/admin'),
-      ])
+      expect([path, swappable.length > 0]).toEqual([path, true])
       for (const hash of swappable) {
         expect([path, PAGE_SCRIPT_HASHES.has(hash)]).toEqual([path, true])
       }
@@ -1044,7 +1046,7 @@ describe("时区 · every instant names its zone, and can be redrawn in the read
       `<time datetime="${ISO}" data-fmt="datetime">2023-11-14 22:13:15</time>`,
     )
     expect(utc).toContain(
-      '<p class="note" id="tz-note">时间 · UTC · 服务器时区</p>',
+      '<p class="note set-zone" id="tz-note">时间 · UTC · 服务器时区</p>',
     )
     const shanghai = await pageIn('Asia/Shanghai', '/admin/audit')
     expect(shanghai).toContain(

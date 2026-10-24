@@ -13,6 +13,8 @@
  * | `GET /` | the front's 智能体 face: the main agent's welcome, `?agent=<address>` another agent's, `?session=<id>` an open conversation |
  * | `GET /app` | the front's 对话 face, the desktop app's home: a new conversation with the main agent, `?agent=<address>` with another, `?session=<id>` an open conversation |
  * | `GET /app/quick` | quick entry: one card that opens a conversation and hands it to the main window |
+ * | `GET /code` | Code, the main window's second mode: the agents on this computer, inside the desktop app (`view/frontCode.ts`) |
+ * | `GET /admin/…` (as a document) | the Work face with nothing open, under the settings card drawn open on the area (`routes/index.ts`) |
  * | `GET /fragments/chat/front/side?agent=&active=[&layout=chat]` | the side panel's agents, sessions and the running strip; `/app`'s conversations by day and its agent picker |
  * | `GET /fragments/chat/front/view?agent=<address>[&layout=chat]` | the head and the welcome for one agent |
  * | `GET /fragments/chat/front/view/<id>[?open=1][&layout=chat]` | the head and one conversation |
@@ -20,6 +22,13 @@
  * The two faces are one front: the same guard, the same reading gate, the
  * same fragments with `layout=chat` choosing `/app`'s face of them. Quick
  * entry has the same guard and reads only the roster.
+ *
+ * Every document here carries the settings card for a reader who may see
+ * the management side (`view/shell.ts`): closed on `/`, `/app` and
+ * `/code`, open on an area's address. Under an open card the Work face is
+ * drawn as `/` (`/app` inside the desktop app) with nothing asked for — the
+ * welcome, never a transcript, so opening a settings page reads no
+ * conversation and marks none as read.
  *
  * Everything else the front does goes through the chat routes it always went
  * through (`routes/chat.ts`): `POST /v0/chat/sessions` to open a session,
@@ -43,8 +52,12 @@ import type {
   ChatTarget,
   ConsoleFailure,
 } from '../deps.js'
+import { inDesktopApp } from '../preferences.js'
 import { html, notFound } from '../respond.js'
 import {
+  chatlessParts,
+  frontAllow,
+  type FrontDocumentModel,
   type FrontLayout,
   frontSideParts,
   frontViewParts,
@@ -54,6 +67,7 @@ import {
   type FrontSideModel,
   type FrontViewModel,
 } from '../view/front.js'
+import type { SettingsCard } from '../view/shell.js'
 import { renderQuickDocument } from '../view/frontQuick.js'
 import { renderFrontPanel } from '../view/frontPanel.js'
 import { FRONT_TEXT } from '../view/frontText.js'
@@ -318,29 +332,61 @@ async function viewFor(
   }
 }
 
-/**
- * `/` or `/app`: the whole front, in either face. The caller has already
- * applied the chat guard.
- */
-export async function renderFront(
+/** A front document, and the scripts its policy allows beyond its own (`respond.ts`). */
+interface FrontRender {
+  readonly html: string
+  readonly status: number
+  readonly allow: readonly string[]
+}
+
+/** What every front document says about its reader, whichever face it is. */
+function readerOf(
   ctx: RouteContext,
-  layout: FrontLayout = 'agents',
-): Promise<{ readonly html: string; readonly status: number } | Response> {
-  const chat = ctx.deps.chat
-  if (chat === undefined) return notFound(`unknown path: ${ctx.url.pathname}`)
+  card: SettingsCard | undefined,
+): Pick<
+  FrontDocumentModel,
+  'label' | 'role' | 'viewer' | 'relogin' | 'source' | 'settings'
+> {
+  return {
+    label: ctx.deps.label ?? DEFAULT_LABEL,
+    role: ctx.access.credential.role,
+    ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
+    relogin: loginHref(ctx.url),
+    // The public edition's source footer (AGPL §13, `view/source.ts`).
+    ...(ctx.deps.billing === undefined
+      ? {}
+      : { source: ctx.deps.billing.site() }),
+    ...(card === undefined ? {} : { settings: card }),
+  }
+}
+
+function drawn(model: FrontDocumentModel, status: number): FrontRender {
+  return { html: renderFrontDocument(model), status, allow: frontAllow(model) }
+}
+
+/**
+ * One Work face. `opened` says what the address asked for: on `/` and
+ * `/app` the query's session or agent, a session read through the gate; under
+ * an open settings card nothing, so no transcript is read at all.
+ */
+async function workFace(
+  ctx: RouteContext,
+  chat: ChatPort,
+  layout: FrontLayout,
+  card: SettingsCard | undefined,
+  opened: { readonly session: string | null; readonly agent?: string },
+): Promise<FrontRender> {
   const scope = chatScopeOf(ctx.access, ctx.accounts)
   const look = lookFaces(ctx)
   const data = await frontData(ctx, chat, scope)
-  const sessionId = textParam(ctx.url.searchParams, 'session') ?? null
-  const asked = textParam(ctx.url.searchParams, 'agent')
   // A page that opens with a conversation in it is one reading.
   const view = await viewFor(
     ctx,
     chat,
     data,
     scope,
-    sessionId,
-    asked,
+    opened.session,
+    opened.agent,
     true,
     look,
     layout,
@@ -349,24 +395,21 @@ export async function renderFront(
     ctx,
     data,
     view.selected,
-    sessionId,
+    opened.session,
     scope,
     look,
     layout,
   )
   await view.reading?.done(view.open)
-  return {
-    html: renderFrontDocument({
-      label: ctx.deps.label ?? DEFAULT_LABEL,
-      role: ctx.access.credential.role,
-      ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
+  return drawn(
+    {
+      ...readerOf(ctx, card),
       side: frontSideParts(side),
       view: frontViewParts(view.model),
       welcome: view.welcome,
       composerEnabled: view.open || view.startable,
       admin: side.admin,
       faces: side.faces,
-      relogin: loginHref(ctx.url),
       lang: side.lang,
       replicate:
         ctx.deps.replicate === undefined
@@ -381,15 +424,100 @@ export async function renderFront(
       ctx.access.principal.role !== 'viewer'
         ? { approvals: ctx.access.principal.role }
         : {}),
-      // The public edition's source footer (AGPL §13, `view/source.ts`).
-      ...(ctx.deps.billing === undefined
-        ? {}
-        : { source: ctx.deps.billing.site() }),
       layout,
       picked: view.selected,
-    }),
-    status: view.status ?? 200,
+    },
+    view.status ?? 200,
+  )
+}
+
+/**
+ * `/` or `/app`: the whole front, in either face. The caller has already
+ * applied the chat guard.
+ */
+export async function renderFront(
+  ctx: RouteContext,
+  layout: FrontLayout = 'agents',
+  card?: SettingsCard,
+): Promise<FrontRender | Response> {
+  const chat = ctx.deps.chat
+  if (chat === undefined) return notFound(`unknown path: ${ctx.url.pathname}`)
+  const agent = textParam(ctx.url.searchParams, 'agent')
+  return await workFace(ctx, chat, layout, card, {
+    session: textParam(ctx.url.searchParams, 'session') ?? null,
+    ...(agent === undefined ? {} : { agent }),
+  })
+}
+
+/**
+ * An area's address as a document: the Work face under the settings card,
+ * drawn open (`routes/index.ts`). The face is `/app`'s inside the desktop
+ * app and `/`'s elsewhere, with nothing asked for. A reader who may not hold
+ * a conversation here — no chat channel, a view token, a viewer — gets the
+ * same frame with one line saying so in place of the conversation.
+ */
+export async function renderUnderCard(
+  ctx: RouteContext,
+  card: SettingsCard,
+  status: number,
+): Promise<FrontRender> {
+  const layout: FrontLayout = inDesktopApp(ctx.request) ? 'chat' : 'agents'
+  const chat = ctx.deps.chat
+  if (chat !== undefined && frontAvailable(ctx)) {
+    const face = await workFace(ctx, chat, layout, card, { session: null })
+    return { ...face, status }
   }
+  const lang = langOf(ctx.request)
+  const t = FRONT_TEXT[lang]
+  // One line for a reader who may not chat, wired or not: whether this
+  // console has a conversation channel is not theirs to learn
+  // (`routes/chat.ts`). Only one who could chat is told there is none.
+  const line =
+    guardChat(ctx.access, 'document') === null ? t.noChatChannel : t.noChatRole
+  const parts = chatlessParts(layout, line)
+  return drawn(
+    {
+      ...readerOf(ctx, card),
+      ...parts,
+      welcome: true,
+      composerEnabled: false,
+      admin: mayAdmin(ctx),
+      faces: chatFaces(await lookFaces(ctx)([])),
+      lang,
+      layout,
+      chatless: line,
+    },
+    status,
+  )
+}
+
+/**
+ * `/code`: Code, the main window's second mode (`view/frontCode.ts`). It
+ * reads nothing of the conversations; the agents it lists are the desktop
+ * app's to find (`assets/codeClient.ts`). The caller has already checked
+ * that the reader is signed in.
+ */
+export async function renderCode(
+  ctx: RouteContext,
+  card: SettingsCard | undefined,
+): Promise<FrontRender> {
+  const lang = langOf(ctx.request)
+  const desktop = inDesktopApp(ctx.request)
+  const empty = chatlessParts('agents', '')
+  return drawn(
+    {
+      ...readerOf(ctx, card),
+      ...empty,
+      welcome: false,
+      composerEnabled: false,
+      admin: mayAdmin(ctx),
+      faces: chatFaces(await lookFaces(ctx)([])),
+      lang,
+      code: { desktop },
+      workHome: desktop ? '/app' : '/',
+    },
+    200,
+  )
 }
 
 /**

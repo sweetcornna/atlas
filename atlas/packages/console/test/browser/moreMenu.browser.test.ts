@@ -47,7 +47,7 @@ const TABLE =
 
 async function mount(tab: Tab): Promise<void> {
   await tab.evaluate(`(() => {
-    document.querySelector('main').insertAdjacentHTML('afterbegin', ${JSON.stringify(TABLE)});
+    document.getElementById('main').insertAdjacentHTML('afterbegin', ${JSON.stringify(TABLE)});
     window.__calls = [];
     window.qianmoConsole.onAction('probe-edit', function (el) {
       window.__calls.push('edit ' + el.getAttribute('data-id'));
@@ -72,7 +72,7 @@ describe.skipIf(SKIP !== null)('a row’s 更多 menu in a browser', () => {
     site = serve()
     tab = await browser.tab()
     await tab.goto(`${site.base}/admin/jobs?token=${ADMIN}`)
-    await tab.waitFor(`window.qianmoConsole && document.querySelector('main')`)
+    await tab.waitFor(`window.qianmoConsole && document.getElementById('main')`)
     await mount(tab)
   }, 30_000)
 

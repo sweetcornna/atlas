@@ -67,3 +67,14 @@ function shellOf(cookie: string): 'macos' | 'windows' | 'linux' | undefined {
     ? value
     : undefined
 }
+
+/**
+ * Whether this request came from inside the desktop app, by the same cookie
+ * the first paint is drawn with: where Work goes (`/app` there, `/` in a
+ * browser) and whether `/code` draws its local panel first (P37.13,
+ * `qmo-local.md` §3.6). Cosmetic, like the rest of this file: it decides no
+ * access.
+ */
+export function inDesktopApp(request: Request): boolean {
+  return shellOf(request.headers.get('cookie') ?? '') !== undefined
+}

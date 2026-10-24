@@ -237,7 +237,7 @@ export {
   type SettingsBound,
 } from './settingsCatalog.js'
 
-export { BRAND, CSP, renderPage, type PageModel } from './view/page.js'
+export { BRAND, CSP } from './view/page.js'
 export { renderLoginPage, type LoginPageModel } from './view/login.js'
 export {
   agentFilterOptions,

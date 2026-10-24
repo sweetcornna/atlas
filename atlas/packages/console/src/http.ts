@@ -276,12 +276,14 @@ import {
   headIndex,
   pageOf,
   type PageMatch,
+  settingsCard,
 } from './routes/index.js'
-import { renderFront, renderQuick } from './routes/front.js'
+import { renderCode, renderFront, renderQuick } from './routes/front.js'
 import {
   ADMIN_HOME,
   ADMIN_SEGMENT,
   APP_SEGMENT,
+  CODE_SEGMENT,
   DEFAULT_LABEL,
   guard,
   guardChat,
@@ -597,11 +599,13 @@ function handleLogout(
  * have always kept (`test/legacyParity.test.ts`). The module returns its own
  * part; the frame around it is `routes/index.ts`'s.
  *
- * A `GET` with `X-Qianmo-Partial: 1` is the navigation runtime moving
- * between pages in place (`assets/nav.ts`, P37.13): the same guard, the same
- * render, answered as the page's parts in JSON instead of a document. It is
- * a script's read, so a cookie must come with the console header, as on a
- * fragment. Both answers vary on the header.
+ * As a document the area is drawn in the settings card, open over the Work
+ * face (P37.13, `routes/index.ts`, `areaDocument`). A `GET` with
+ * `X-Qianmo-Partial: 1` is the card's runtime moving between areas in place
+ * (`assets/nav.ts`): the same guard, the same render, answered as the area's
+ * parts in JSON instead of a document. It is a script's read, so a cookie
+ * must come with the console header, as on a fragment. Both answers vary on
+ * the header.
  */
 async function servePage(
   ctx: RouteContext,
@@ -630,7 +634,7 @@ async function servePage(
   if (partial) {
     return json(await areaPartial(ctx, match.module, rendered), status, vary)
   }
-  const page = await areaDocument(ctx, match.module, rendered)
+  const page = await areaDocument(ctx, match.module, rendered, status)
   const response = html(page.body, status, page.allow)
   response.headers.set('vary', PARTIAL_HEADER)
   return response
@@ -673,11 +677,33 @@ async function serveFrontDoor(
       ? seeOther(ADMIN_HOME)
       : documentDenial(request, chatDenied, deps, url, denial)
   }
-  const rendered =
-    page === 'quick' ? await renderQuick(ctx) : await renderFront(ctx, page)
+  if (page === 'quick') {
+    const quick = await renderQuick(ctx)
+    return quick instanceof Response ? quick : html(quick.html, quick.status)
+  }
+  const rendered = await renderFront(ctx, page, await settingsCard(ctx))
   return rendered instanceof Response
     ? rendered
-    : html(rendered.html, rendered.status)
+    : html(rendered.html, rendered.status, rendered.allow)
+}
+
+/**
+ * `/code`: Code, the main window's second mode (P37.13, `routes/front.ts`,
+ * `renderCode`). It holds no conversation, so it asks only that the reader
+ * is signed in; the public edition decides first, as on `/`.
+ */
+async function serveCodeDoor(
+  ctx: RouteContext,
+  denial: Access | undefined,
+): Promise<Response> {
+  const { request, deps, url, access } = ctx
+  const gated = await publicFrontDoor(ctx)
+  if (gated !== null) return gated
+  const denied = guard(access.credential, 'view', 'document')
+  if (denied !== null) return documentDenial(request, denied, deps, url, denial)
+  if (request.method !== 'GET') return methodNotAllowed(['GET'])
+  const rendered = await renderCode(ctx, await settingsCard(ctx))
+  return html(rendered.html, rendered.status, rendered.allow)
 }
 
 /**
@@ -891,9 +917,10 @@ function pageWorthy(
 /**
  * The page for a JSON error a browser navigated into, at the same status.
  *
- * Drawn in the shell for a signed-in caller, so the way on is the same
- * sidebar as everywhere else; on the login panel for anybody else, so the
- * sidebar is never drawn for a caller who has not shown a credential.
+ * Drawn in the settings card over the Work face for a signed-in caller, so
+ * the way on is the card's list as everywhere else; on the login panel for
+ * anybody else, so the list is never drawn for a caller who has not shown a
+ * credential.
  */
 async function errorPage(
   response: Response,
@@ -905,7 +932,9 @@ async function errorPage(
   const title = copy?.title ?? ''
   const line = copy?.line ?? ''
   const signedIn = access.refusal === null && access.credential.role !== 'none'
-  const shell = signedIn ? await errorDocument(context(), title, line) : null
+  const shell = signedIn
+    ? await errorDocument(context(), title, line, response.status)
+    : null
   const page =
     shell === null
       ? html(
@@ -1403,6 +1432,16 @@ async function routeAs(
       routeContext(request, url, deps, access, accounts, now(), viewer, ledger),
       denial,
       page,
+    )
+  }
+  if (segments[0] === CODE_SEGMENT) {
+    if (segments.length !== 1) return notFound(`unknown path: ${url.pathname}`)
+    const exchanged =
+      accounts === undefined ? tokenInAddressBar(request, url, tokens) : null
+    if (exchanged !== null) return exchanged
+    return await serveCodeDoor(
+      routeContext(request, url, deps, access, accounts, now(), viewer, ledger),
+      denial,
     )
   }
   if (segments[0] === ADMIN_SEGMENT) {
