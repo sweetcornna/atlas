@@ -11,8 +11,9 @@
  * usage, `status` before any sign-in, `open` refusing without a pairing, a
  * plain-HTTP hub refused before anything is sent, a pairing code read from
  * standard input rather than the command line, a relative state
- * directory refused, and `agents --json` answering with one line that lists
- * the built-in qianmopi first (what else it finds depends on the computer).
+ * directory refused, and `agents --json` answering with one line (what it
+ * lists depends on the computer; the catalog's built-in qianmopi never, since
+ * the desktop app carries no `qm`).
  *
  * Usage:
  *   bun atlas/scripts/check-client-smoke.ts [<binary>]   default: dist/qmo-<host>
@@ -59,7 +60,7 @@ const PROBES: readonly Probe[] = [
   {
     args: ['agents', '--json'],
     exit: 0,
-    stdout: /^\{"agents":\[\{"id":"omp","name":"qianmopi",[^\n]*\}\r?\n$/,
+    stdout: /^\{"agents":\[(?![^\n]*"id":"omp")[^\n]*\]\}\r?\n$/,
   },
 ]
 

@@ -30,10 +30,12 @@ test('every catalog runtime the node installs is one qmo agents knows, the same 
     if (runtime.install.kind !== 'npm') continue
     const agent = AGENT_SPECS.find(spec => spec.id === runtime.id)
     expect(agent).toBeDefined()
+    // The catalog has one more protocol (its built-in `omp`) than qmo lists.
+    const protocol: string | null = agent!.protocol
     expect({
       id: agent!.id,
       name: agent!.name,
-      protocol: agent!.protocol,
+      protocol,
       command: agent!.command,
       packaged: agent!.npm.includes(runtime.install.package),
       identity: agent!.identity && {
@@ -60,8 +62,9 @@ test('every catalog runtime the node installs is one qmo agents knows, the same 
   ).toEqual(external.map(spec => spec.id).sort())
 })
 
-test('the built-in qianmopi is the catalog’s', async () => {
+test('the catalog’s built-in qianmopi is not listed: the desktop app has no qm', async () => {
   const builtin = RUNTIME_CATALOG.find(spec => spec.install.kind === 'builtin')!
+  expect(AGENT_SPECS.some(spec => spec.id === builtin.id)).toBe(false)
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'qmo-agents-catalog-'))
   roots.push(home)
   const report = await scanAgents({
@@ -71,11 +74,5 @@ test('the built-in qianmopi is the catalog’s', async () => {
     appDirs: [],
     loginShell: null,
   })
-  expect(report.agents[0]).toMatchObject({
-    id: builtin.id,
-    name: builtin.label,
-    protocol: builtin.protocol,
-    source: 'builtin',
-    available: true,
-  })
+  expect(report.agents).toEqual([])
 })
