@@ -2761,8 +2761,15 @@ describe('selection (D7)', () => {
     )
     const controls = ruleOf('.nav-item, .nav-group-name, .btn, .sw, .seg-opt')
     expect(controls).toContain('user-select: none')
-    // Nothing else in the sheet switches selection off.
-    expect(CONSOLE_CSS.match(/user-select:\s*none/g)).toHaveLength(1)
+    // Nothing else in the sheet switches selection off, but the desktop
+    // app's drag regions (the brand row and the top bar, where the window is
+    // dragged from, qmo-app.md §5.1), and only inside the app.
+    const drag = ruleOf(
+      ':root[data-shell] .side .brand, :root[data-shell] .top',
+    )
+    expect(drag).toContain('user-select: none')
+    const off = CONSOLE_CSS.replace(drag, '').match(/user-select:\s*none/g)
+    expect(off).toHaveLength(1)
   })
 })
 
