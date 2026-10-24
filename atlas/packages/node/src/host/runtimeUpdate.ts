@@ -434,26 +434,17 @@ export interface RuntimeAvailability {
 }
 
 /**
- * Runtimes told apart from other programs of the same name on PATH, by what
- * the runtime prints itself. Debian's `dsh` (distributed shell) and pdsh's
- * `dsh` are not DeepSeek Harness, whose `--help` names it (its `--version`
- * prints a bare version number, which proves nothing). A binary given by
- * flag is the operator's and is not asked; the managed prefix only holds
- * what passed the compatibility check.
+ * How a runtime is told apart from other programs of the same name on PATH,
+ * by what the runtime prints itself (the catalog's `install.identity`: only
+ * DeepSeek Harness, whose name Debian's and pdsh's `dsh` share). A binary
+ * given by flag is the operator's and is not asked; the managed prefix only
+ * holds what passed the compatibility check.
  */
-const PATH_IDENTITY: Readonly<
-  Record<string, { readonly args: readonly string[]; readonly name: RegExp }>
-> = {
-  dsh: { args: ['--help'], name: /DeepSeek Harness/ },
+function identityRule(kind: string): NpmInstall['identity'] {
+  return npmRuntime(kind)?.install.identity
 }
 
-function identityRule(
-  kind: string,
-): (typeof PATH_IDENTITY)[string] | undefined {
-  return Object.hasOwn(PATH_IDENTITY, kind) ? PATH_IDENTITY[kind] : undefined
-}
-
-/** One PATH binary checked against {@link PATH_IDENTITY}. */
+/** One PATH binary checked against its {@link identityRule}. */
 interface PathCheck {
   readonly bin: string
   /** `null`: it is the runtime; a string: why it is not; absent: running. */
@@ -627,7 +618,7 @@ export class RuntimeInstaller {
    * disk they read as an unfinished one (see `#attempt`), here they do not.
    */
   readonly #unfinished = new Map<string, RuntimeInstallRecord | undefined>()
-  /** PATH binaries checked against {@link PATH_IDENTITY}, by runtime. */
+  /** PATH binaries checked against their {@link identityRule}, by runtime. */
   readonly #onPath = new Map<string, PathCheck>()
   /** The leftover sweeps under way: an install checks the disk after them. */
   #sweeping: Promise<unknown> = Promise.resolve()
@@ -709,7 +700,7 @@ export class RuntimeInstaller {
 
   /**
    * Asks the PATH binary of `kind` who it is, for the runtimes that need it
-   * ({@link PATH_IDENTITY}); until then, and when it is another program, it
+   * ({@link identityRule}); until then, and when it is another program, it
    * does not count as installed. Once per binary path; callers at the same
    * time share the one check. Nothing to do for a runtime given by flag or
    * in the managed prefix.

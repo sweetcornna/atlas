@@ -22,8 +22,12 @@ export const CONFIG_DIR_BASENAME = '.qianmo'
 /** Environment variable that overrides the config root. */
 export const CONFIG_DIR_ENV = 'QIANMO_CONFIG_DIR'
 
-function fromEnv(name: string, fallback: string): string {
-  const configured = process.env[name]
+function fromEnv(
+  name: string,
+  fallback: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const configured = env[name]
   return (configured ? resolve(configured) : fallback).normalize('NFC')
 }
 
@@ -118,17 +122,32 @@ export function qmcodeHome(): string {
   return fromEnv('QMCODE_HOME', join(homedir(), '.qmcode'))
 }
 
-/** Official Codex session root; reads are allowed, writes require an isolated home. */
-export function codexHome(): string {
-  return fromEnv('CODEX_HOME', join(homedir(), '.codex'))
+/**
+ * Official Codex session root (`CODEX_HOME`, else `~/.codex`); reads are
+ * allowed, writes require an isolated home. The environment and home are
+ * parameters for `qmo agents`, which locates it for another environment.
+ */
+export function codexHome(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): string {
+  return fromEnv('CODEX_HOME', join(home, '.codex'), env)
+}
+
+/**
+ * Claude Code's configuration root as the user runs it: `CLAUDE_CONFIG_DIR`,
+ * else `~/.claude`. Located, never written (it is a protected root).
+ */
+export function claudeConfigDir(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): string {
+  return fromEnv('CLAUDE_CONFIG_DIR', join(home, '.claude'), env)
 }
 
 /** Claude Code hook transcripts, respecting its isolated configuration root. */
 export function claudeProjectsDir(): string {
-  return join(
-    fromEnv('CLAUDE_CONFIG_DIR', join(homedir(), '.claude')),
-    'projects',
-  )
+  return join(claudeConfigDir(), 'projects')
 }
 
 /**
