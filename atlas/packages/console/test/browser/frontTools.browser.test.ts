@@ -33,7 +33,9 @@ const ELEVATION_STUB = `
     const method = (options && options.method) || 'GET';
     const reply = body => Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }));
     if (path === '/v0/elevation' && method === 'GET') {
-      return reply([{ node: 'tokyo-1', agent: 'planner', reachable: true, tier: window.__elevation.tier }]);
+      const row = { node: 'tokyo-1', agent: 'planner', reachable: true, tier: window.__elevation.tier };
+      if (window.__elevation.defaultTier) Object.assign(row, { defaultTier: window.__elevation.defaultTier, defaultHeld: !!window.__elevation.defaultHeld });
+      return reply([row]);
     }
     if (path === '/v0/elevation/tokyo-1/planner' && method === 'PUT') {
       const body = JSON.parse(options.body);
@@ -183,6 +185,30 @@ describe.skipIf(SKIP !== null)('the composer pickers', () => {
         'auto',
         'full-access',
       ])
+    } finally {
+      await tab.close()
+      stop()
+    }
+  }, 60_000)
+
+  test('a hub default (--elevation-default) is said under the modes, and a held agent says so', async () => {
+    const { tab, stop } = await opened(browser, true)
+    try {
+      await tab.evaluate(
+        `Object.assign(window.__elevation, { tier: 'auto', defaultTier: 'auto' })`,
+      )
+      await tab.evaluate(`document.getElementById('fx-perm-btn').click()`)
+      await tab.waitFor(
+        `document.getElementById('fx-perm-note').textContent === '默认自动审批 · 到期后自动再开'`,
+      )
+      await tab.evaluate(
+        `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`,
+      )
+      await tab.evaluate(`window.__elevation.defaultHeld = true`)
+      await tab.evaluate(`document.getElementById('fx-perm-btn').click()`)
+      await tab.waitFor(
+        `document.getElementById('fx-perm-note').textContent === '已手动关闭 · 不再自动开启默认档'`,
+      )
     } finally {
       await tab.close()
       stop()

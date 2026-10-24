@@ -2376,7 +2376,8 @@ const CATALOG: readonly SettingOperation[] = [
     id: 'elevation.off',
     area: 'elevation',
     label: '高权限模式',
-    description: '关闭高权限模式 · 回到人工确认',
+    description:
+      '关闭高权限模式 · 回到人工确认 · 有默认档时同时固定为人工确认 · 中枢不再自动开启',
     kind: 'set',
     role: 'ops',
     target: AGENT_TARGET,
@@ -2411,7 +2412,8 @@ const CATALOG: readonly SettingOperation[] = [
     id: 'elevation.revoke-all',
     area: 'elevation',
     label: '全部收回高权限',
-    description: '对本租户每个已放权的智能体各收回一次',
+    description:
+      '对本租户每个已放权的智能体各收回一次 · 有默认档时人工确认的也一并固定',
     kind: 'run',
     role: 'ops',
     route: 'POST /v0/elevation/revoke-all',
@@ -3036,7 +3038,18 @@ function agentRowOf(
 
 async function tierOf(read: SettingReader, target: Args): Promise<unknown> {
   const found = agentRowOf(await read.get('/v0/elevation'), target)
-  return found === null ? null : { tier: found['tier'] }
+  if (found === null) return null
+  // Under a hub default (P39 §8.1) an agent at off that nobody held is opened
+  // again on the next pass, so turning it off still changes something.
+  if (
+    found['tier'] === 'off' &&
+    typeof found['defaultTier'] === 'string' &&
+    found['defaultHeld'] !== true
+  )
+    return {
+      tier: `off（未固定 · 中枢会按默认档 ${found['defaultTier']} 开启）`,
+    }
+  return { tier: found['tier'] }
 }
 
 const BY_ID: ReadonlyMap<string, SettingOperation> = new Map(

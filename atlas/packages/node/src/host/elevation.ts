@@ -162,6 +162,12 @@ export class NodeElevation {
    */
   readonly #sandboxes = new Map<string, ElevationSandbox | null>()
   readonly #probes = new Map<string, Promise<ElevationSandbox | null>>()
+  /**
+   * One agent's enable / disable / revoke, one at a time in arrival order: an
+   * enable waits for its first sandbox probe before it writes the grant, and a
+   * revoke that arrived meanwhile must not be undone by it.
+   */
+  readonly #changes = new Map<string, Promise<unknown>>()
   #closed = false
   #sweeping = false
   readonly #timer: Timer
@@ -471,7 +477,9 @@ export class NodeElevation {
     // ESTOP clears grants for good, then refuses.
     if (this.#options.estop()) {
       await this.#clear(agent, 'estop')
-      return refuse('急停已开启：放权已清除，解除急停后需要重新开启')
+      return refuse(
+        '急停已开启：放权已清除，解除急停后由运维或中枢默认档重新开启',
+      )
     }
     if (!isLiveTier(s.tier)) return refuse('这台智能体没有开启高权限模式')
     if (s.expiresAt === null || this.#now() >= s.expiresAt) {
@@ -706,6 +714,41 @@ export class NodeElevation {
       return { ok: false, code: 'rejected', message: '放权已停止或被急停拦下' }
     this.#operations.set(id, { digest })
     this.#save()
+    const before = this.#changes.get(agent) ?? Promise.resolve()
+    const mine = before.then(() =>
+      this.#change(op, agent, args, ctx.actor, id, digest),
+    )
+    const settled = mine.then(
+      () => undefined,
+      () => undefined,
+    )
+    this.#changes.set(agent, settled)
+    void settled.then(() => {
+      if (this.#changes.get(agent) === settled) this.#changes.delete(agent)
+    })
+    return mine
+  }
+
+  /** The body of one control change, under the agent's turn. */
+  async #change(
+    op: string,
+    agent: string,
+    args: Readonly<Record<string, unknown>>,
+    actor: string,
+    id: string,
+    digest: string,
+  ): Promise<ControlOutcome> {
+    // Looked at again here: the turn may have waited on an earlier change.
+    if (this.#closed || (this.#options.estop() && op === 'elevation.enable')) {
+      const result: ControlOutcome = {
+        ok: false,
+        code: 'rejected',
+        message: '放权已停止或被急停拦下',
+      }
+      this.#operations.set(id, { digest, result })
+      this.#save()
+      return result
+    }
     let result: ControlOutcome
     try {
       const s = this.#states.get(agent)!
@@ -720,7 +763,7 @@ export class NodeElevation {
           args.maxCalls === undefined ? DEFAULT_CALLS : Number(args.maxCalls)
         s.usedCalls = 0
         s.enabledAt = this.#now()
-        s.enabledBy = ctx.actor
+        s.enabledBy = actor
         for (const k of [...this.#inflight.keys()])
           if (k.startsWith(`${agent}:`)) this.#inflight.delete(k)
         this.#save()
@@ -729,7 +772,7 @@ export class NodeElevation {
           kind: 'elevation.grant',
           detail: {
             agent,
-            actor: ctx.actor,
+            actor,
             tier: s.tier,
             epoch: s.epoch,
             expiresAt: s.expiresAt,

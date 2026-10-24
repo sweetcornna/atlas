@@ -710,3 +710,40 @@ describe('liveTier (read by the cloud computer per action)', () => {
     expect(h.elevation.liveTier('nobody')).toBeUndefined()
   })
 })
+
+test('a revoke that lands while the first grant probes the sandbox is not undone by it', async () => {
+  let release!: () => void
+  const gate = new Promise<void>(resolve => {
+    release = resolve
+  })
+  const h = harness({
+    platform: 'linux',
+    bwrap: {
+      available: () => true,
+      probe: async () => {
+        await gate
+        return true
+      },
+      shell: () => '/bin/sh',
+    },
+  })
+  try {
+    const opened = enable(h, 'auto', {}, 'enable-1')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const revoked = h.elevation.control(
+      'elevation.revoke',
+      { agent: 'reviewer', operationId: 'revoke-1' },
+      ctx('revoke-1'),
+    )
+    release()
+    expect((await opened).ok).toBe(true)
+    const r = await revoked
+    expect(r.ok && (r.value as { tier: string }).tier).toBe('off')
+    const status = await h.elevation.control('elevation.status', {}, ctx('s'))
+    expect(status.ok && (status.value as { tier: string }[])[0]?.tier).toBe(
+      'off',
+    )
+  } finally {
+    h.elevation.close()
+  }
+})
