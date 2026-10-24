@@ -389,7 +389,7 @@ function sidebar(model: ShellModel): string {
     `popovertarget="side" popovertargetaction="hide" aria-label="关闭菜单">` +
     icon('x') +
     `</button>` +
-    `<div class="brand">${qianmoMark(22)}` +
+    `<div class="brand" data-tauri-drag-region>${qianmoMark(22)}` +
     `<a class="brand-cn" href="/admin" data-nav>${escapeHtml(WORDMARK_CN)}</a>` +
     `</div>` +
     `<nav class="nav" aria-label="导航">${groups}</nav>` +
@@ -432,7 +432,7 @@ function healthStrip(health: readonly ShellHealth[] | undefined): string {
 
 function topBar(model: ShellModel): string {
   return (
-    `<header class="top">` +
+    `<header class="top" data-tauri-drag-region>` +
     `<div class="top-lead">` +
     `<button type="button" class="btn btn-ghost btn-icon drawer-open" ` +
     `popovertarget="side" aria-label="菜单">` +
