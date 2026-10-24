@@ -230,10 +230,13 @@ mod tests {
 
     #[test]
     fn a_report_passes_the_list_on() {
-        let out = r#"{"agents":[{"id":"omp","name":"qianmopi","version":"18.8.8","path":null,"protocol":"omp","available":true,"source":"builtin","configFound":false,"signedIn":null},{"id":"cursor","name":"Cursor CLI","available":false,"reason":"暂不支持接入"}],"extra":1}"#;
+        // As `qmo agents --json` prints them (qmo-local.md §4.2); the
+        // catalog's built-in qianmopi is not among them since P37.14a.
+        let out = r#"{"agents":[{"id":"claude-code","name":"Claude Code","version":"2.1.310","path":"/opt/homebrew/bin/claude","protocol":"claude-stream","available":true,"reason":null,"source":"brew","configFound":true,"signedIn":null},{"id":"cursor","name":"Cursor CLI","version":null,"path":null,"protocol":null,"available":false,"reason":"暂不支持接入","source":null,"configFound":true,"signedIn":null}],"extra":1}"#;
         let value = report(&run(Some(0), out, "", false)).unwrap();
         assert_eq!(value.as_object().unwrap().len(), 1, "only agents");
-        assert_eq!(value["agents"][0]["id"], "omp");
+        assert_eq!(value["agents"][0]["id"], "claude-code");
+        assert_eq!(value["agents"][0]["protocol"], "claude-stream");
         assert_eq!(value["agents"][0]["signedIn"], Value::Null);
         assert_eq!(value["agents"][1]["reason"], "暂不支持接入");
         assert_eq!(
@@ -254,7 +257,7 @@ mod tests {
             "{}",
             r#"{"agents":{}}"#,
             r#"{"agents":[1]}"#,
-            r#"{"agents":["omp"]}"#,
+            r#"{"agents":["claude-code"]}"#,
             "[]",
         ] {
             assert_eq!(
