@@ -689,6 +689,42 @@ describe.skipIf(!posix)('the runner', () => {
     ])
   })
 
+  test('the conversation gone and `auto` not enabled: both found, in either order, the line sent once', async () => {
+    const at = box()
+    const first = runner(at)
+    const folder = await pick(first, at.work)
+    const id = await begin(first, folder, 'hello', 'auto')
+    await first.stop()
+    const native = argvs(at)[0]!.at(-1)!
+    fs.rmSync(path.join(at.state, `${native}.count`))
+    // This fake says `auto` first, the conversation second.
+    const r = runner(at, { fake: { FAKE_CLAUDE_AUTO_EXIT: '1' } })
+    await r.say(id, 'again')
+    const read = await r.call('session.read', { session: id })
+    expect(
+      (read.records as Message[]).map(one => (one.turn as Message).text),
+    ).toEqual([
+      'hello',
+      'echo(1): hello',
+      'again',
+      '上次的对话 Claude Code 那边已经没有了，这一句从新对话开始',
+      '这个 Claude Code 没有自动模式，命令仍会问你',
+      'echo(1): again',
+    ])
+    expect((read.session as Message).mode).toBe('accept-edits')
+    expect(
+      argvs(at).map(argv => [
+        argv[argv.indexOf('--permission-mode') + 1],
+        argv.at(-2),
+      ]),
+    ).toEqual([
+      ['auto', '--session-id'],
+      ['auto', '--resume'],
+      ['acceptEdits', '--resume'],
+      ['acceptEdits', '--session-id'],
+    ])
+  })
+
   test('a start that fails for another reason: tried once without `auto`, the mode kept, its words', async () => {
     const at = box()
     const broken = path.join(at.bin, 'broken-claude')

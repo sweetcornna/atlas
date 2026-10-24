@@ -451,31 +451,47 @@ export class ClaudeAgent implements AgentProcess {
     // 「跳过权限确认」 needs a flag this process was not started with.
     if (this.alive && this.#mode === 'full-access' && !this.#dangerous)
       await this.stop()
-    let outcome = await this.#once(text, this.#started)
-    if (!this.#endedEarly(outcome)) return outcome
-    // Whether the conversation exists is only known for sure by Claude Code:
-    // a runner that went away mid-turn may have left either guess behind.
-    const said = outcome.message ?? ''
-    if (!this.#started && /already in use/i.test(said)) {
-      this.#markStarted()
-      outcome = await this.#once(text, true)
-    } else if (this.#started && /no conversation found/i.test(said)) {
-      this.#hooks.notice(LOST, 'warn')
-      outcome = await this.#once(text, false)
+    // Failed before it said anything: what it printed may say why. Whether
+    // the conversation exists is only known for sure by Claude Code (a runner
+    // that went away mid-turn may have left either guess behind); `auto` it
+    // may not have. Each is tried once; the line is sent once, by the start
+    // that gets going.
+    let resume = this.#started
+    let swapped = false
+    let failed: TurnOutcome | undefined
+    for (;;) {
+      const outcome = await this.#once(text, resume)
+      if (!this.#endedEarly(outcome)) {
+        this.#endTrial()
+        return outcome
+      }
+      if (!this.#trial) failed = outcome
+      const said = outcome.message ?? ''
+      if (!swapped && !resume && /already in use/i.test(said)) {
+        swapped = true
+        this.#markStarted()
+        resume = true
+      } else if (!swapped && resume && /no conversation found/i.test(said)) {
+        swapped = true
+        this.#hooks.notice(LOST, 'warn')
+        resume = false
+      } else if (!this.#trial && this.#spawnedNative === 'auto') {
+        // In `acceptEdits`: if it gets going, `auto` is not enabled here
+        // (said once it has); if not, `auto` was not why.
+        this.#trial = true
+        this.#noAuto = true
+      } else {
+        this.#endTrial()
+        return failed ?? outcome
+      }
     }
-    if (!this.#endedEarly(outcome) || this.#spawnedNative !== 'auto')
-      return outcome
-    // Would not start in `auto`: if it does in `acceptEdits`, `auto` is not
-    // enabled here (said once it has started); if not, `auto` was not why.
-    this.#trial = true
-    this.#noAuto = true
-    const tried = await this.#once(text, this.#started)
-    if (this.#trial) {
-      this.#trial = false
-      this.#noAuto = false
-      if (tried.status !== 'aborted') return outcome
-    }
-    return tried
+  }
+
+  /** A trial start in `acceptEdits` that did not get going: `auto` stays. */
+  #endTrial(): void {
+    if (!this.#trial) return
+    this.#trial = false
+    this.#noAuto = false
   }
 
   /** Failed before Claude Code said anything, and it is gone. */
