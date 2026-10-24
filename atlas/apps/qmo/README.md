@@ -121,6 +121,7 @@ atlas/apps/qmo/src-tauri/target/release/bundle/macos/Qmo.app/Contents/MacOS/qmo-
 - 服务端看 `qianmo_shell` 渲染 `<html data-shell>`；顶栏与侧栏顶部写 `data-tauri-drag-region`。macOS 上红绿灯在左上 48 px 高的一行里，左缘 17 px。
 - 中枢页面的 CSP 若写了 `connect-src`，加上 `ipc: http://ipc.localhost`，否则 IPC 退回 `postMessage`（照样能用，慢一些）。
 - 快速输入页 `/app/quick` 背景透明，卡片画在 606 px 宽的窗口上部；点卡片外面时调用 `qmo_quick_hide`。失焦时壳自己隐藏窗口。
+- 定义 `window.__qmoOpenSettings()`，打开页面里的设置卡片：菜单「设置… ⌘,」和托盘「设置」在主窗口显示中枢页面时由壳执行一段固定脚本调它；没有它时那段脚本回退为 `qmo_open_local_settings`（壳的设置窗）。
 - 主窗口落到 `/login` 时壳拦下来重新进门，60 秒内第四次就停在离线页（`loop`）。
 
 ## 几处取舍

@@ -123,7 +123,7 @@
 | `qmo_sign_out` | 无 | 吊销这台设备、清 cookie、回到登录页 |
 | `qmo_local_agents` | `rescan?`（布尔，缺省 false） | 跑随包的 `qmo agents --json`（`rescan` 时加 `--rescan`），返回 `{ agents: [...] }`，每项原样是 [`qmo-local.md`](./qmo-local.md) §4.2 的字段。30 秒超时；同一时刻只跑一个，后到的调用等正在跑的那次的结果（正在跑的不是 rescan 而后到的是时，等它结束再跑一次 rescan）。失败时 Promise 以一行说明拒绝 |
 | `qmo_boot_layout` | `layout`：`page`（`chat` \| `agents` \| `code`）、`side`（`open` \| `closed`）、`sideWidth` 0–1000、`rows` 0–60、`labels` 0–20 的整数，`theme?`（`system` \| `light` \| `dark`，缺省 `system`），`colors?`（`{ dark, page, sidebar }`，两色都是 `#rrggbb`） | 记下页面的布局与颜色，下次骨架页按它画（[`qmo-local.md`](./qmo-local.md) §3.5）；颜色按 `dark` 分浅、深两套存，没带 `colors` 时不动已存的 |
-| `qmo_open_local_settings` | 无 | 打开壳自己的设置窗（同菜单「设置」），给页面设置卡片里的「桌面版」一项用 |
+| `qmo_open_local_settings` | 无 | 打开壳自己的设置窗，给页面设置卡片里的「桌面版」一项用；也是菜单「设置」在没有设置卡片的旧中枢页面上的回退（§6） |
 
 页面什么时候发：智能体回复了一条不在眼前的对话（窗口不在前台或打开的是别的对话）时 `qmo_notify`；未读数变化时 `qmo_badge`。
 
@@ -145,7 +145,9 @@
 | 关窗 | 关主窗口只是隐藏，程序坞或托盘再打开；⌘Q 退出 | 关窗口隐藏到托盘 | 同 Windows |
 | 其他 | 单实例（第二次启动聚焦已有窗口）、深链 `qmo://`、记住窗口大小位置、开机启动开关、系统通知、角标 | 同左 | 同左 |
 
-本地设置页（⌘,）：中枢地址与设备名（只读）、快速输入快捷键（可改）、开机启动、关窗口时留在后台、退出登录、版本。
+本地设置页：中枢地址与设备名（只读）、快速输入快捷键（可改）、开机启动、关窗口时留在后台、退出登录、版本。
+
+菜单的「设置… ⌘,」与托盘的「设置」照 Claude Desktop：主窗口显示的是已登录中枢的页面时，壳把主窗口带到前台，在里面执行一段固定的脚本 `(window.__qmoOpenSettings||function(){window.__TAURI__.core.invoke('qmo_open_local_settings')})()`（不拼任何变量），打开页面里的设置卡片；旧中枢的页面没有 `window.__qmoOpenSettings` 时，这段脚本回退为调 `qmo_open_local_settings`，开壳自己的设置窗。主窗口在本地页（登录、离线、骨架）、`about:blank` 或不存在时，直接开壳的设置窗。
 
 ## §7 安全边界
 
