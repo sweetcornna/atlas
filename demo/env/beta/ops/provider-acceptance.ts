@@ -1545,6 +1545,26 @@ class Round {
     }
     const session = opened.json as unknown as ChatSession
     moment.sessionId = session.id
+    // 中枢对同一个账号与智能体答的是它那一条常驻会话（P37.17）：几次尝试、每一轮都在这一条
+    // 里接着说，replyOf 按这一轮的 id 与 taskId 认回复。上一句还没答完时新的一句会排在它
+    // 后面、测不到在途，所以先等它答完。
+    if (session.running === true) {
+      moment.busyBefore = true
+      const idle = await this.#until(timing.inflightTimeoutMs, async () => {
+        const read = await this.#api(
+          'GET',
+          `/v0/chat/sessions/${encodeURIComponent(session.id)}`,
+        )
+        if (!isRecord(read.json) || !isRecord(read.json.session)) return null
+        return read.json.session.running === true ? null : true
+      })
+      if (idle === null) {
+        return {
+          kind: 'busy',
+          detail: [`${timing.inflightTimeoutMs} ms 内这条会话的上一句没有答完`],
+        }
+      }
+    }
     const sent = await this.#api(
       'POST',
       `/v0/chat/sessions/${encodeURIComponent(session.id)}/messages`,

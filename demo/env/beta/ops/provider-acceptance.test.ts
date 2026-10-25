@@ -577,6 +577,8 @@ interface Scenario {
   psLeak?: boolean
   /** 前两次 /v0/health 回空体（过程失败，按规则重试）。 */
   flakyHealth?: boolean
+  /** 这条常驻会话里上一轮的话还没答完（过一会儿才答）。 */
+  staleTurn?: boolean
 }
 
 interface FakeNode {
@@ -652,6 +654,27 @@ function fakeConsole(scenario: Scenario) {
     })
   }
   const sessions = new Map<string, { target: string; turns: ChatTurn[] }>()
+  /** 每个智能体那一条常驻会话（P37.17）：开会话答的总是它。 */
+  const residents = new Map<string, string>()
+  const sessionOf = (id: string) => {
+    const s = sessions.get(id)
+    const said = (s?.turns ?? []).filter(t => t.variant !== 'notice')
+    const last = said[said.length - 1]
+    return {
+      id,
+      target: s?.target ?? '',
+      node: 'beta-2',
+      agent: 'planner',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      turnCount: said.length,
+      preview: '',
+      resident: true as const,
+      ...(last?.author === 'operator' && last.state !== 'failed'
+        ? { running: true as const }
+        : {}),
+    }
+  }
   const expectedOf = (n: FakeNode) =>
     n.assignment.mode === 'profile' ? n.assignment.profileId : 'luna'
 
@@ -1010,18 +1033,38 @@ function fakeConsole(scenario: Scenario) {
         })
       }
       if (path === '/v0/chat/sessions' && request.method === 'POST') {
-        const id = `s${++seq}`
-        sessions.set(id, { target: String(body.target), turns: [] })
-        return json({
-          id,
-          target: body.target,
-          node: 'beta-2',
-          agent: 'planner',
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          turnCount: 0,
-          preview: '',
-        })
+        const target = String(body.target)
+        let id = residents.get(target)
+        if (id === undefined) {
+          id = `s${++seq}`
+          residents.set(target, id)
+          const turns: ChatTurn[] = []
+          sessions.set(id, { target, turns })
+          if (scenario.staleTurn === true) {
+            const taskId = `t${++seq}`
+            turns.push({
+              id: `u${++seq}`,
+              sessionId: id,
+              author: 'operator',
+              at: Date.now(),
+              text: '上一轮的话',
+              state: 'read',
+              taskId,
+            })
+            setTimeout(() => {
+              turns.push({
+                id: `a${++seq}`,
+                sessionId: id ?? '',
+                author: 'agent',
+                at: Date.now(),
+                text: '（上一轮的回复）',
+                state: 'done',
+                taskId,
+              })
+            }, 400)
+          }
+        }
+        return json(sessionOf(id))
       }
       const chatMatch = /^\/v0\/chat\/sessions\/([^/]+)(\/messages)?$/.exec(
         path,
@@ -1031,7 +1074,10 @@ function fakeConsole(scenario: Scenario) {
         if (s === undefined)
           return fail(404, 'not_found', '这条会话不在本控制台的记录里')
         if (chatMatch[2] === undefined)
-          return json({ session: { id: chatMatch[1] }, turns: s.turns })
+          return json({
+            session: sessionOf(decodeURIComponent(chatMatch[1] ?? '')),
+            turns: s.turns,
+          })
         const n = nodes.get('beta-2') as FakeNode
         const taskId = `t${++seq}`
         const operator: ChatTurn = {
@@ -1223,6 +1269,19 @@ describe('一轮', () => {
   )
 
   test(
+    '常驻会话里上一句还没答完：先等它答完，再测在途，仍零红',
+    async () => {
+      const run = await round(makeFleet(), { staleTurn: true }, 'stale-turn')
+      expect(run.verdict?.red).toEqual([])
+      expect(run.code).toBe(0)
+      const a6 = run.verdict?.moments.find(m => m.item === 'A6')
+      expect(a6?.busyBefore).toBe(true)
+      expect(a6?.waitingTurns).toBe(1)
+    },
+    SLOW,
+  )
+
+  test(
     '金丝雀真下发（realApply）：切到金丝雀档案再切回，仍零红',
     async () => {
       const run = await round(makeFleet({ realApply: true }), {}, 'real-apply')
@@ -1318,6 +1377,14 @@ describe('一轮', () => {
         expect(run.verdict?.green).toBe(false)
         expect(run.verdict?.red).toContain(id)
         expect(itemOf(run, id)?.class).toBe(kind)
+        if (kind === 'inconclusive') {
+          // 两次尝试说在同一条会话里：中枢那一条常驻会话（P37.17）。
+          const tries = (run.verdict?.moments ?? []).filter(
+            m => m.item === 'A6',
+          )
+          expect(tries).toHaveLength(2)
+          expect(new Set(tries.map(m => m.sessionId)).size).toBe(1)
+        }
         if (id === 'P0') {
           expect(
             run.verdict?.items
