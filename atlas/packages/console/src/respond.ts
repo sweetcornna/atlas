@@ -263,6 +263,10 @@ export async function compressed(
 ): Promise<Response> {
   if (request.method !== 'GET' || response.body === null) return response
   if (response.headers.has('content-encoding')) return response
+  // A body streamed from elsewhere, byte for byte (work outputs, P37.17 B):
+  // compressing it here would hold the whole of it first.
+  if (/\bno-transform\b/.test(response.headers.get('cache-control') ?? ''))
+    return response
   if (!COMPRESSIBLE.test(response.headers.get('content-type') ?? '')) {
     return response
   }
