@@ -846,7 +846,14 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
                 record.nativeId = threadId
                 this.#saveRecord(dir, record)
               },
-              permission: call => this.#codexPermission(agent, sessionId, call),
+              // Allowed or not, as the node decides; never for the session.
+              ask: async call =>
+                (await this.#codexPermission(agent, sessionId, {
+                  toolName: call.toolName,
+                  input: call.input,
+                }))
+                  ? 'once'
+                  : 'deny',
             })
           break
         }

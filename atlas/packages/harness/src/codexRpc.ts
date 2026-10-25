@@ -12,11 +12,60 @@ import {
   toolArgs,
 } from './process.js'
 
-/** The answer to an approval the app-server asks the client for. */
-export type CodexPermission = (call: {
+/**
+ * What a caller that shows the turn as it happens learns beyond the turn
+ * port's frames (qmo-local.md §4.3.3, §4.3.5). Tool items are the four the
+ * frames know (`commandExecution`, `fileChange`, `mcpToolCall`,
+ * `webSearch`), as the app-server sent them.
+ */
+export type CodexDetail =
+  | {
+      readonly kind: 'text-delta' | 'message'
+      /** The `agentMessage` item. */
+      readonly item: string
+      readonly text: string
+    }
+  | { readonly kind: 'thinking'; readonly text: string }
+  | {
+      readonly kind: 'tool'
+      readonly phase: 'start' | 'end'
+      readonly id: string
+      readonly item: Readonly<Record<string, unknown>>
+    }
+  /** `item/commandExecution/outputDelta`: a command's output as it comes. */
+  | { readonly kind: 'tool-output'; readonly id: string; readonly text: string }
+  /** `turn/diff/updated`: the turn's changes so far, one unified diff. */
+  | { readonly kind: 'turn-diff'; readonly turn: string; readonly diff: string }
+  /** A turn that did not complete: its `error` as Codex gave it. */
+  | {
+      readonly kind: 'turn-error'
+      readonly error: Readonly<Record<string, unknown>>
+    }
+
+export type CodexAskDecision = 'once' | 'session' | 'deny'
+
+/** An approval the app-server asks the client for. */
+export interface CodexAsk {
+  readonly kind: 'command' | 'file-change' | 'mcp-tool'
+  /** The resident's names for it: `bash`, `edit`, `mcp__<server>__<tool>`. */
   readonly toolName: string
+  /** What the resident's policy reads. */
   readonly input: Record<string, unknown>
-}) => Promise<boolean>
+  /** The item it is about, when Codex says (`itemId`). */
+  readonly itemId?: string
+  /** The request's params as they came. */
+  readonly params: Readonly<Record<string, unknown>>
+  /**
+   * The answers it takes: `session` only where Codex has one for the
+   * session (`acceptForSession`).
+   */
+  readonly options: readonly CodexAskDecision[]
+  /**
+   * Aborted once Codex no longer waits for the answer: resolved
+   * (`serverRequest/resolved`), the turn over, the process gone.
+   */
+  readonly signal: AbortSignal
+}
 
 /** One request of the channel's own to the app-server, answered by its `result`. */
 export type CodexRequest = (method: string, params: unknown) => Promise<unknown>
@@ -32,7 +81,24 @@ export interface CodexChannelOptions extends RuntimeChannelHooks {
   /** A thread to resume; omitted starts a new one. */
   readonly threadId?: string
   readonly onThread: (threadId: string) => void
-  readonly permission: CodexPermission
+  /**
+   * Answers the app-server's approvals: `once` is `accept`, `session` is
+   * `acceptForSession`, `deny` is `decline`. Never an execpolicy or a
+   * network policy amendment, which would write into the agent's own
+   * rules. Without it every approval is declined.
+   */
+  readonly ask?: (request: CodexAsk) => Promise<CodexAskDecision>
+  readonly onDetail?: (detail: CodexDetail) => void
+}
+
+/** Codex's own answers for the session: what `availableDecisions` lists. */
+function commandOptions(
+  params: Record<string, unknown>,
+): readonly CodexAskDecision[] {
+  const listed = params.availableDecisions
+  return Array.isArray(listed) && !listed.includes('acceptForSession')
+    ? ['once', 'deny']
+    : ['once', 'session', 'deny']
 }
 
 interface Pending {
@@ -79,6 +145,8 @@ export class CodexChannel extends RuntimeChannelBase {
   #threadId: string | undefined
   #turnId: string | undefined
   #aborting = false
+  /** Approvals not answered yet, by request id. */
+  readonly #asks = new Map<string, AbortController>()
   /** Thread token totals when the current turn started. */
   #baseline: RuntimeUsage | undefined
   #latest: RuntimeUsage | undefined
@@ -90,6 +158,23 @@ export class CodexChannel extends RuntimeChannelBase {
       () => this.#failPending('Codex app-server exited'),
       () => this.#failPending('Codex app-server exited'),
     )
+    void this.closed.catch(() => {}).finally(() => this.#endAsks())
+  }
+
+  #detail(detail: CodexDetail): void {
+    try {
+      this.#settings.onDetail?.(detail)
+    } catch {
+      // A watcher's failure must not stop the turn.
+    }
+  }
+
+  /** Every approval still open is no longer waited for. */
+  #endAsks(): void {
+    for (const [id, controller] of this.#asks) {
+      this.#asks.delete(id)
+      controller.abort()
+    }
   }
 
   get threadId(): string | undefined {
@@ -126,9 +211,15 @@ export class CodexChannel extends RuntimeChannelBase {
     this.markReady()
   }
 
+  /**
+   * Starts a turn. `approvalPolicy` and `sandboxPolicy`, when given, go in
+   * this `turn/start` (Codex's own overrides, from this turn on).
+   */
   async prompt(input: {
     readonly messageId: string
     readonly text: string
+    readonly approvalPolicy?: string
+    readonly sandboxPolicy?: Readonly<Record<string, unknown>>
   }): Promise<HarnessPromptAdmission> {
     const threadId = this.#threadId
     if (threadId === undefined) throw new Error('Codex thread is not open')
@@ -141,6 +232,12 @@ export class CodexChannel extends RuntimeChannelBase {
         threadId,
         clientUserMessageId: input.messageId,
         input: [{ type: 'text', text: input.text, text_elements: [] }],
+        ...(input.approvalPolicy === undefined
+          ? {}
+          : { approvalPolicy: input.approvalPolicy }),
+        ...(input.sandboxPolicy === undefined
+          ? {}
+          : { sandboxPolicy: input.sandboxPolicy }),
       })
     } catch (error) {
       if (this.currentRequest === requestId) this.currentRequest = undefined
@@ -251,13 +348,78 @@ export class CodexChannel extends RuntimeChannelBase {
       case 'turn/completed':
         this.#turnCompleted(toolArgs(params.turn))
         return
+      case 'item/agentMessage/delta':
+        if (
+          typeof params.itemId === 'string' &&
+          typeof params.delta === 'string'
+        )
+          this.#detail({
+            kind: 'text-delta',
+            item: params.itemId,
+            text: params.delta,
+          })
+        break
+      case 'item/reasoning/summaryTextDelta':
+      case 'item/reasoning/textDelta':
+        if (typeof params.delta === 'string')
+          this.#detail({ kind: 'thinking', text: params.delta })
+        break
+      case 'item/commandExecution/outputDelta':
+        if (
+          typeof params.itemId === 'string' &&
+          typeof params.delta === 'string'
+        )
+          this.#detail({
+            kind: 'tool-output',
+            id: params.itemId,
+            text: params.delta,
+          })
+        break
+      case 'turn/diff/updated':
+        if (typeof params.diff === 'string')
+          this.#detail({
+            kind: 'turn-diff',
+            turn: typeof params.turnId === 'string' ? params.turnId : '',
+            diff: params.diff,
+          })
+        break
+      case 'serverRequest/resolved': {
+        // Answered or withdrawn on Codex's side: no longer waited for.
+        const id = params.requestId
+        const open =
+          typeof id === 'string' || typeof id === 'number'
+            ? this.#asks.get(String(id))
+            : undefined
+        if (open !== undefined) {
+          this.#asks.delete(String(id))
+          open.abort()
+        }
+        break
+      }
     }
     this.emit({ type: 'runtime_status', subtype: method })
+  }
+
+  /** The tool items the frames know, for `onDetail`. */
+  #toolDetail(phase: 'start' | 'end', item: Record<string, unknown>): void {
+    if (
+      typeof item.id === 'string' &&
+      (item.type === 'commandExecution' ||
+        item.type === 'fileChange' ||
+        item.type === 'mcpToolCall' ||
+        item.type === 'webSearch')
+    )
+      this.#detail({ kind: 'tool', phase, id: item.id, item })
   }
 
   #itemStarted(item: Record<string, unknown>): void {
     const id = typeof item.id === 'string' ? item.id : undefined
     if (id === undefined) return
+    this.#frameStarted(id, item)
+    this.#toolDetail('start', item)
+  }
+
+  #frameStarted(id: string, item: Record<string, unknown>): void {
     switch (item.type) {
       case 'commandExecution':
         this.toolStart(id, 'bash', { command: item.command })
@@ -285,6 +447,18 @@ export class CodexChannel extends RuntimeChannelBase {
   }
 
   #itemCompleted(item: Record<string, unknown>): void {
+    this.#frameCompleted(item)
+    if (
+      item.type === 'agentMessage' &&
+      typeof item.id === 'string' &&
+      typeof item.text === 'string' &&
+      item.text !== ''
+    )
+      this.#detail({ kind: 'message', item: item.id, text: item.text })
+    else this.#toolDetail('end', item)
+  }
+
+  #frameCompleted(item: Record<string, unknown>): void {
     const id = typeof item.id === 'string' ? item.id : undefined
     switch (item.type) {
       case 'agentMessage':
@@ -333,9 +507,13 @@ export class CodexChannel extends RuntimeChannelBase {
     )
       return
     this.#turnId = undefined
+    // Nothing of a turn that is over is waited for.
+    this.#endAsks()
     if (this.#latest !== undefined)
       this.assistantMessage('', minus(this.#latest, this.#baseline))
     const error = toolArgs(turn.error)
+    if (turn.status !== 'completed' && Object.keys(error).length > 0)
+      this.#detail({ kind: 'turn-error', error })
     if (turn.status === 'completed') this.endTurn('completed')
     else if (turn.status === 'interrupted' || this.#aborting)
       this.endTurn('aborted')
@@ -354,49 +532,85 @@ export class CodexChannel extends RuntimeChannelBase {
     params: Record<string, unknown>,
   ): Promise<void> {
     const ask = async (
-      toolName: string,
-      input: Record<string, unknown>,
-    ): Promise<boolean> => {
+      request: Omit<CodexAsk, 'params' | 'signal'>,
+    ): Promise<CodexAskDecision> => {
+      const answer = this.#settings.ask
+      if (answer === undefined) return 'deny'
+      const key = String(id)
+      const controller = new AbortController()
+      this.#asks.set(key, controller)
       try {
-        return await this.#settings.permission({ toolName, input })
+        return await answer({ ...request, params, signal: controller.signal })
       } catch {
-        return false
+        return 'deny'
+      } finally {
+        if (this.#asks.get(key) === controller) this.#asks.delete(key)
       }
     }
+    const itemId =
+      typeof params.itemId === 'string' ? { itemId: params.itemId } : {}
+    // `session` only where it was offered; otherwise it is `once`.
+    const decision = (
+      answer: CodexAskDecision,
+      options: readonly CodexAskDecision[],
+    ) =>
+      answer === 'deny'
+        ? 'decline'
+        : answer === 'session' && options.includes('session')
+          ? 'acceptForSession'
+          : 'accept'
     switch (method) {
       case 'item/commandExecution/requestApproval': {
-        const granted = await ask('bash', {
-          command: params.command ?? '',
-          ...(typeof params.cwd === 'string' ? { cwd: params.cwd } : {}),
-          ...(typeof params.reason === 'string'
-            ? { reason: params.reason }
-            : {}),
+        const options = commandOptions(params)
+        const answer = await ask({
+          kind: 'command',
+          toolName: 'bash',
+          input: {
+            command: params.command ?? '',
+            ...(typeof params.cwd === 'string' ? { cwd: params.cwd } : {}),
+            ...(typeof params.reason === 'string'
+              ? { reason: params.reason }
+              : {}),
+          },
+          ...itemId,
+          options,
         })
-        this.#reply(id, { decision: granted ? 'accept' : 'decline' })
+        this.#reply(id, { decision: decision(answer, options) })
         return
       }
       case 'item/fileChange/requestApproval': {
-        const granted = await ask('edit', {
-          ...(typeof params.reason === 'string'
-            ? { reason: params.reason }
-            : {}),
-          ...(typeof params.grantRoot === 'string'
-            ? { path: params.grantRoot }
-            : {}),
+        const answer = await ask({
+          kind: 'file-change',
+          toolName: 'edit',
+          input: {
+            ...(typeof params.reason === 'string'
+              ? { reason: params.reason }
+              : {}),
+            ...(typeof params.grantRoot === 'string'
+              ? { path: params.grantRoot }
+              : {}),
+          },
+          ...itemId,
+          options: ['once', 'session', 'deny'],
         })
-        this.#reply(id, { decision: granted ? 'accept' : 'decline' })
+        this.#reply(id, {
+          decision: decision(answer, ['once', 'session', 'deny']),
+        })
         return
       }
       case 'execCommandApproval':
       case 'applyPatchApproval': {
-        const granted = await ask(
-          method === 'execCommandApproval' ? 'bash' : 'edit',
-          { command: params.command ?? '', reason: params.reason ?? '' },
-        )
+        const answer = await ask({
+          kind: method === 'execCommandApproval' ? 'command' : 'file-change',
+          toolName: method === 'execCommandApproval' ? 'bash' : 'edit',
+          input: { command: params.command ?? '', reason: params.reason ?? '' },
+          options: ['once', 'deny'],
+        })
         this.#reply(id, {
-          decision: granted
-            ? 'approved'
-            : { denied: { rejection: 'refused by the qianmo node' } },
+          decision:
+            answer !== 'deny'
+              ? 'approved'
+              : { denied: { rejection: 'refused by the qianmo node' } },
         })
         return
       }
@@ -416,13 +630,19 @@ export class CodexChannel extends RuntimeChannelBase {
               : typeof meta.tool_title === 'string'
                 ? meta.tool_title
                 : 'tool'
-          const granted = await ask(`mcp__${server}__${tool}`, {
-            server,
-            tool,
-            ...(typeof params.message === 'string'
-              ? { message: params.message }
-              : {}),
-          })
+          const granted =
+            (await ask({
+              kind: 'mcp-tool',
+              toolName: `mcp__${server}__${tool}`,
+              input: {
+                server,
+                tool,
+                ...(typeof params.message === 'string'
+                  ? { message: params.message }
+                  : {}),
+              },
+              options: ['once', 'deny'],
+            })) !== 'deny'
           this.#reply(id, {
             action: granted ? 'accept' : 'decline',
             content: granted ? {} : null,
