@@ -17,7 +17,6 @@ import type {
   ChatTurn,
   ConsoleResult,
   WorkDownload,
-  WorkOutput,
   WorkPort,
   WorkResult,
 } from '../src/deps.js'
@@ -28,6 +27,7 @@ import {
   workflowPrompt,
   WORKFLOWS,
   type WorkFileRef,
+  type WorkOutput,
 } from '../src/work.js'
 import {
   ADDRESS,
