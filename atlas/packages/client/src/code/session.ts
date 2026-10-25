@@ -9,7 +9,7 @@
  * happens. A record goes to the file first, then to the page.
  */
 
-import { randomBytes, randomUUID } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import * as path from 'node:path'
 import type {
   AgentHooks,
@@ -18,7 +18,8 @@ import type {
   AskView,
   ToolView,
 } from './drivers/agent.js'
-import { ClaudeAgent, NO_AUTO } from './drivers/claude.js'
+import { NO_AUTO } from './drivers/claude.js'
+import { driverFor } from './drivers/registry.js'
 import {
   type Changes,
   diff as fileDiff,
@@ -150,7 +151,7 @@ class Session {
   readonly asks = new Map<string, OpenAsk>()
   /** Tool call id → its process line. */
   readonly tools = new Map<string, string>()
-  readonly approved = new Map<string, 'user' | 'session'>()
+  readonly approved = new Map<string, 'user' | 'session' | 'mode'>()
   readonly denied = new Set<string>()
   /** Settles a wait for room with `false` when the turn is stopped. */
   cancelWait: ((go: boolean) => void) | undefined
@@ -432,6 +433,7 @@ export class SessionManager {
     const root = sessionRoot(folder.path)
     const found = await this.#options.findAgent(input.agent)
     if (!found.ok) throw new CodeError('E_AGENT', found.reason)
+    const driver = driverFor(found.protocol)
     const id = newSessionId()
     const now = this.#now()
     const noAuto = input.mode === 'auto' && this.#noAuto.has(found.path)
@@ -451,7 +453,11 @@ export class SessionManager {
       mode: noAuto ? 'accept-edits' : input.mode,
       state: 'running',
       lastSeq: 0,
-      native: { kind: 'claude-session', id: randomUUID(), started: false },
+      native: {
+        kind: driver.nativeKind,
+        id: driver.firstNativeId(),
+        started: false,
+      },
       remote: { on: false, pushedSeq: 0 },
     }
     this.#options.store.ensure()
@@ -756,12 +762,13 @@ export class SessionManager {
       throw new CodeError('E_AGENT', found.reason)
     }
     session.program = found.path
-    session.agent = new ClaudeAgent({
+    session.agent = driverFor(session.header.agent.protocol).start({
+      agentId: session.header.agent.id,
+      name: session.header.agent.name,
       program: found.path,
       root: session.header.root,
       env: await this.#options.agentEnv(),
-      sessionId: session.header.native.id,
-      started: session.header.native.started,
+      native: session.header.native,
       mode: session.header.mode,
       noAuto: this.#noAuto.has(found.path),
       hooks: this.#hooks(session),
@@ -877,14 +884,21 @@ export class SessionManager {
       },
       activity: (kind, words) => this.#activity(session, kind, words),
       toolStart: tool => this.#toolStart(session, tool),
-      toolEnd: (toolId, isError, output) =>
-        this.#toolEnd(session, toolId, isError, output),
+      toolEnd: (toolId, isError, output, diff) =>
+        this.#toolEnd(session, toolId, isError, output, diff),
       ask: (view, signal) => this.#ask(session, view, signal),
+      approvedByMode: toolId => session.approved.set(toolId, 'mode'),
       notice: (text, severity) => this.#notice(session, text, severity),
-      started: () =>
+      started: nativeId =>
         this.#header(
           session,
-          { native: { ...session.header.native, started: true } },
+          {
+            native: {
+              ...session.header.native,
+              ...(nativeId === undefined ? {} : { id: nativeId }),
+              started: true,
+            },
+          },
           false,
         ),
       modeChanged: mode => this.#header(session, { mode }),
@@ -928,6 +942,7 @@ export class SessionManager {
     toolId: string,
     isError: boolean,
     output: string,
+    diff?: ToolView['diff'],
   ): void {
     const turnId = session.tools.get(toolId)
     session.tools.delete(toolId)
@@ -938,10 +953,14 @@ export class SessionManager {
     const approvedBy = session.approved.get(toolId)
     session.approved.delete(toolId)
     const status = denied ? 'denied' : isError ? 'failed' : 'done'
+    // A diff told only at the end (ACP) is the line's detail.
+    const late = diff !== undefined && diff.text !== '' ? diff : undefined
     const detail =
-      turn.tool.detailKind === 'output' && output.trim() !== ''
-        ? clipDetail(output, 'output')
-        : turn.detail
+      late !== undefined
+        ? clipDetail(late.text, 'diff')
+        : turn.tool.detailKind === 'output' && output.trim() !== ''
+          ? clipDetail(output, 'output')
+          : turn.detail
     this.#write(session, {
       ...turn,
       at: turn.at,
@@ -951,6 +970,13 @@ export class SessionManager {
       tool: {
         ...turn.tool,
         status,
+        ...(late === undefined
+          ? {}
+          : {
+              detailKind: 'diff' as const,
+              added: late.added,
+              removed: late.removed,
+            }),
         ...(approvedBy === undefined ? {} : { approvedBy }),
       },
     })

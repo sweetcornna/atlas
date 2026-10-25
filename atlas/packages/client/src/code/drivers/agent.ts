@@ -64,13 +64,24 @@ export interface AgentHooks {
   /** For the waiting line: thinking, or a tool of a sub-agent's. */
   activity(kind: 'thinking' | 'tool', words: string): void
   toolStart(tool: ToolView): void
-  toolEnd(id: string, isError: boolean, output: string): void
+  /** `diff`: what the call changed, when the agent says so only at its end (ACP). */
+  toolEnd(
+    id: string,
+    isError: boolean,
+    output: string,
+    diff?: ToolView['diff'],
+  ): void
   /** Settles with the person's answer; a `signal` abort means it was denied already. */
   ask(ask: AskView, signal: AbortSignal): Promise<AskAnswer>
+  /** The runner answered a question about this call by the mode (§4.4). */
+  approvedByMode(toolId: string): void
   /** A line of the runner's own in the conversation. */
   notice(text: string, severity: 'info' | 'warn' | 'error'): void
-  /** The agent's own conversation exists: the next process resumes it. */
-  started(): void
+  /**
+   * The agent's own conversation exists: the next process resumes it.
+   * `nativeId`: its id, where the agent gives it (an ACP session).
+   */
+  started(nativeId?: string): void
   /** The mode in effect changed by itself (a fallback). */
   modeChanged(mode: Mode): void
   /** The agent has no mode `auto` (this program, for the runner's life). */

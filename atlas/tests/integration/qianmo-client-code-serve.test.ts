@@ -222,7 +222,7 @@ describe.skipIf(!posix)('the compiled qmo as the shell runs it', () => {
     expect(hello).toMatchObject({
       protocol: 1,
       features: {
-        protocols: ['claude-stream'],
+        protocols: ['claude-stream', 'acp'],
         worktree: false,
         remote: false,
       },

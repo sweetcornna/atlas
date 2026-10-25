@@ -34,7 +34,7 @@ export class CodeError extends Error {
 
 /** What this runner drives; the page offers only agents whose protocol is here. */
 export const FEATURES = {
-  protocols: ['claude-stream'],
+  protocols: ['claude-stream', 'acp'],
   worktree: false,
   remote: false,
 } as const
