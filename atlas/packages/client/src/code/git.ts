@@ -3,26 +3,34 @@
 
 /**
  * The 「变更」 panel of a session in a Git folder (qmo-local.md §4.3.7): the
- * working tree against `HEAD`, as a file list and one file's diff. Read
+ * working tree against a base, as a file list and one file's diff. The base
+ * is `HEAD` for a session in the picked folder (the empty tree before the
+ * first commit) and the commit its worktree was made from for a session in a
+ * worktree of its own, so what the agent committed there counts too. Read
  * only: nothing is staged, committed or restored. Each command runs with no
  * prompt, no optional locks and the C locale, at most 10 s; paths go after
  * `--`, taken literally. `status` and `diff` run no hooks; the repository's
  * file-system monitor is turned off for them too.
+ *
+ * Past the limits only the counts are given: a file's diff over 256 KiB is
+ * not shown (`large`), an untracked file over 1 MiB is not read (`large`),
+ * and past 1,000 files the rest are only counted (`omitted`).
  */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { resolveInRoot, sessionRoot } from './paths.js'
+import { killGroup } from './processes.js'
 import { CodeError } from './protocol.js'
 
 const GIT_TIMEOUT_MS = 10_000
 /** At most this many files are listed. */
 const MAX_FILES = 1_000
-/** One file's diff is cut here. */
+/** A file's diff larger than this is not shown, only counted. */
 const MAX_DIFF_BYTES = 256 * 1024
 /** A file list or numstat larger than this is cut (truncated). */
 const MAX_LIST_BYTES = 4 * 1024 * 1024
-/** An untracked file larger than this is counted as binary, unread. */
+/** An untracked file larger than this is not read: large, its lines uncounted. */
 const MAX_COUNTED_BYTES = 1024 * 1024
 
 export type ChangeStatus =
@@ -40,6 +48,8 @@ export interface ChangedFile {
   readonly added: number
   readonly removed: number
   readonly binary: boolean
+  /** Over a limit: the counts only, no diff (an untracked one is not even read). */
+  readonly large?: true
 }
 
 export interface Changes {
@@ -47,6 +57,8 @@ export interface Changes {
   readonly base?: string
   readonly files: readonly ChangedFile[]
   readonly truncated: boolean
+  /** How many files past the first 1,000 were not listed. */
+  readonly omitted?: number
 }
 
 export interface FileDiff {
@@ -54,6 +66,8 @@ export interface FileDiff {
   readonly text: string
   readonly truncated: boolean
   readonly binary: boolean
+  /** Over 256 KiB: not shown, the list's counts are what there is. */
+  readonly large?: true
 }
 
 /** Where git is and the environment it runs in (the login shell's PATH). */
@@ -85,10 +99,38 @@ export function gitEnv(
   }
 }
 
-interface GitRun {
+/** A git command that did not do its job, and how it ended. */
+export class GitError extends CodeError {
+  readonly ended: 'start' | 'exit' | 'timeout' | 'abort'
+
+  constructor(ended: GitError['ended'], message: string) {
+    super('E_GIT', message)
+    this.name = 'GitError'
+    this.ended = ended
+  }
+}
+
+export interface GitRun {
   readonly code: number
   readonly stdout: Buffer
   readonly truncated: boolean
+}
+
+export interface RunOptions {
+  /** Exit codes that are not a failure (default: 0). */
+  readonly ok?: readonly number[]
+  /** Standard output kept, in bytes; the rest is read and dropped (`truncated`). */
+  readonly max?: number
+  readonly timeoutMs?: number
+  /** Ends the command (SIGKILL), as a refusal. */
+  readonly signal?: AbortSignal
+  /**
+   * As a person's terminal runs it, for a command that runs the repository's
+   * hooks (`worktree add`): only no prompt is added to the environment, no
+   * `-c` settings, no C locale, no literal pathspecs. It leads a process
+   * group of its own, so a timeout or an abort ends its hooks too.
+   */
+  readonly terminal?: boolean
 }
 
 async function readCapped(
@@ -115,58 +157,93 @@ async function readCapped(
     : { data, truncated }
 }
 
-/** Runs git in `cwd`; refuses on an exit code not in `ok` or a timeout. */
-async function run(
+/**
+ * Runs git in `cwd`; refuses (`E_GIT`) on an exit code not in `ok`, a
+ * timeout (10 s unless said) or an abort, with the first line git wrote.
+ */
+export async function run(
   context: GitContext,
   cwd: string,
   args: readonly string[],
-  options: { readonly ok?: readonly number[]; readonly max?: number } = {},
+  options: RunOptions = {},
 ): Promise<GitRun> {
+  if (options.signal?.aborted)
+    throw new GitError('abort', `git ${args[0]} 已中止`)
   let proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>
   try {
     proc = Bun.spawn(
-      [
-        context.git,
-        '--no-optional-locks',
-        '-c',
-        'core.fsmonitor=false',
-        '-c',
-        'core.quotepath=off',
-        ...args,
-      ],
+      options.terminal === true
+        ? [context.git, ...args]
+        : [
+            context.git,
+            '--no-optional-locks',
+            '-c',
+            'core.fsmonitor=false',
+            '-c',
+            'core.quotepath=off',
+            ...args,
+          ],
       {
         cwd,
-        env: gitEnv(context.env),
+        env:
+          options.terminal === true
+            ? { ...context.env, GIT_TERMINAL_PROMPT: '0' }
+            : gitEnv(context.env),
         stdin: 'ignore',
         stdout: 'pipe',
         stderr: 'pipe',
+        detached: options.terminal === true && process.platform !== 'win32',
       },
     )
   } catch (error) {
-    throw new CodeError('E_GIT', `git 起不来：${String(error)}`)
+    throw new GitError('start', `git 起不来：${String(error)}`)
   }
-  let timedOut = false
-  const timer = setTimeout(() => {
-    timedOut = true
-    proc.kill('SIGKILL')
-  }, GIT_TIMEOUT_MS)
+  const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS
+  let ended: 'timeout' | 'abort' | undefined
+  const end = (why: 'timeout' | 'abort') => {
+    ended ??= why
+    if (options.terminal === true) killGroup(proc.pid, 'SIGKILL')
+    else proc.kill('SIGKILL')
+  }
+  const timer = setTimeout(() => end('timeout'), timeoutMs)
+  const aborted = () => end('abort')
+  options.signal?.addEventListener('abort', aborted, { once: true })
   try {
     const [out, err, code] = await Promise.all([
       readCapped(proc.stdout, options.max ?? MAX_LIST_BYTES),
       new Response(proc.stderr).text(),
       proc.exited,
     ])
-    if (timedOut)
-      throw new CodeError('E_GIT', `git ${args[0]} 超过 10 秒没有结束`)
+    if (ended === 'timeout')
+      throw new GitError(
+        'timeout',
+        `git ${args[0]} 超过 ${Math.ceil(timeoutMs / 1000)} 秒没有结束`,
+      )
+    if (ended === 'abort') throw new GitError('abort', `git ${args[0]} 已中止`)
     if (!(options.ok ?? [0]).includes(code))
-      throw new CodeError(
-        'E_GIT',
-        `git ${args[0]} 失败：${err.trim().split('\n')[0] ?? code}`,
+      throw new GitError(
+        'exit',
+        `git ${args[0]} 失败：${lastLine(err) || code}`,
       )
     return { code, stdout: out.data, truncated: out.truncated }
   } finally {
     clearTimeout(timer)
+    options.signal?.removeEventListener('abort', aborted)
   }
+}
+
+/**
+ * The last line git wrote that says something: `fatal: …` comes last, and
+ * so do a failed hook's own words, after git's 「Preparing worktree」.
+ */
+function lastLine(text: string): string {
+  return (
+    text
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line !== '')
+      .pop() ?? ''
+  )
 }
 
 /** What the working tree is compared with: `HEAD`, or the empty tree before the first commit. */
@@ -198,7 +275,7 @@ interface StatusEntry {
   readonly status: ChangeStatus
 }
 
-/** `status --porcelain=v2 -z` records. */
+/** `status --porcelain=v2 -z`: the untracked files and the conflicted ones. */
 function parseStatus(raw: string): StatusEntry[] {
   const tokens = raw.split('\0')
   const out: StatusEntry[] = []
@@ -207,26 +284,47 @@ function parseStatus(raw: string): StatusEntry[] {
     if (token === '') continue
     const kind = token[0]
     if (kind === '?') out.push({ path: token.slice(2), status: 'untracked' })
-    else if (kind === '1') {
-      const fields = token.split(' ')
-      const xy = fields[1] ?? '..'
-      const file = fields.slice(8).join(' ')
-      if (xy[0] === 'A' && xy[1] === 'D') continue // Added, then removed: no change.
-      out.push({
-        path: file,
-        status:
-          xy[0] === 'A' ? 'added' : xy.includes('D') ? 'deleted' : 'modified',
-      })
-    } else if (kind === '2') {
-      const fields = token.split(' ')
-      out.push({ path: fields.slice(9).join(' '), status: 'renamed' })
-      i++ // The original path.
-    } else if (kind === 'u') {
+    else if (kind === 'u') {
       const fields = token.split(' ')
       out.push({ path: fields.slice(10).join(' '), status: 'conflicted' })
-    }
+    } else if (kind === '2') i++ // A rename's original path.
   }
   return out
+}
+
+/**
+ * `diff --name-status -z <base>`: each tracked file that differs from the
+ * base, by what happened to it. A rename or copy is followed by two paths,
+ * the original and the new one.
+ */
+function parseNameStatus(raw: string): StatusEntry[] {
+  const tokens = raw.split('\0')
+  const out: StatusEntry[] = []
+  for (let i = 0; i < tokens.length; i++) {
+    const letter = tokens[i]?.[0]
+    if (letter === undefined) continue
+    if (letter === 'R' || letter === 'C') {
+      i += 2
+      out.push({
+        path: tokens[i] ?? '',
+        status: letter === 'R' ? 'renamed' : 'added',
+      })
+      continue
+    }
+    i++
+    out.push({
+      path: tokens[i] ?? '',
+      status:
+        letter === 'A'
+          ? 'added'
+          : letter === 'D'
+            ? 'deleted'
+            : letter === 'U'
+              ? 'conflicted'
+              : 'modified',
+    })
+  }
+  return out.filter(entry => entry.path !== '')
 }
 
 /** `diff --numstat -z`: added and removed lines by path (`-` for a binary file). */
@@ -258,12 +356,20 @@ function parseNumstat(
   return out
 }
 
-/** Lines of a new file, or binary: a NUL early on, or too large to read. */
-function countUntracked(file: string): { added: number; binary: boolean } {
+/**
+ * Lines of a new file, or binary: a NUL early on. One too large to read is
+ * only said to be large.
+ */
+function countUntracked(file: string): {
+  added: number
+  binary: boolean
+  large?: true
+} {
   try {
     const stat = fs.statSync(file)
-    if (!stat.isFile() || stat.size > MAX_COUNTED_BYTES)
-      return { added: 0, binary: true }
+    if (!stat.isFile()) return { added: 0, binary: true }
+    if (stat.size > MAX_COUNTED_BYTES)
+      return { added: 0, binary: false, large: true }
     const data = fs.readFileSync(file)
     if (data.subarray(0, 8_000).includes(0)) return { added: 0, binary: true }
     if (data.length === 0) return { added: 0, binary: false }
@@ -276,24 +382,31 @@ function countUntracked(file: string): { added: number; binary: boolean } {
   }
 }
 
-/** Changes under the session's root; not a Git folder: none (P37.14d adds the session's own). */
+/**
+ * Changes under the session's root against `base` (default: `HEAD`, or the
+ * empty tree before the first commit). Not a Git folder, or no git: none,
+ * `source: 'session'` (the session's own records say what changed then,
+ * `recorded.ts`).
+ */
 export async function changes(
   context: GitContext | undefined,
   root: string,
+  base?: string,
 ): Promise<Changes> {
   const top = sessionRoot(root)
   if (gitTop(top) === undefined || context === undefined)
     return { source: 'session', files: [], truncated: false }
-  const [base, prefix] = await Promise.all([
-    baseOf(context, top),
+  const [against, prefix] = await Promise.all([
+    base ?? baseOf(context, top),
     prefixOf(context, top),
   ])
-  const [status, numstat] = await Promise.all([
+  const [names, numstat, status] = await Promise.all([
     run(context, top, [
-      'status',
-      '--porcelain=v2',
+      'diff',
+      '--name-status',
       '-z',
-      '--untracked-files=all',
+      '--no-color',
+      against,
       '--',
       '.',
     ]),
@@ -302,60 +415,89 @@ export async function changes(
       '--numstat',
       '-z',
       '--no-color',
-      base,
+      against,
+      '--',
+      '.',
+    ]),
+    run(context, top, [
+      'status',
+      '--porcelain=v2',
+      '-z',
+      '--untracked-files=all',
       '--',
       '.',
     ]),
   ])
   const counts = parseNumstat(numstat.stdout.toString())
-  const entries = parseStatus(status.stdout.toString())
+  const fromStatus = parseStatus(status.stdout.toString())
+  const conflicted = new Set(
+    fromStatus.filter(one => one.status === 'conflicted').map(one => one.path),
+  )
+  const entries = [
+    ...parseNameStatus(names.stdout.toString()).map(entry =>
+      conflicted.has(entry.path)
+        ? { path: entry.path, status: 'conflicted' as const }
+        : entry,
+    ),
+    ...fromStatus.filter(one => one.status === 'untracked'),
+  ].filter(entry => entry.path.startsWith(prefix))
   const files: ChangedFile[] = []
-  for (const entry of entries) {
-    if (files.length >= MAX_FILES) break
-    if (!entry.path.startsWith(prefix)) continue
+  for (const entry of entries.slice(0, MAX_FILES)) {
     const relative = entry.path.slice(prefix.length)
     const counted =
       entry.status === 'untracked'
         ? { ...countUntracked(path.join(top, relative)), removed: 0 }
         : counts.get(entry.path)
-    if (counted === undefined && entry.status === 'modified') continue // Mode or stat only.
     files.push({
       path: relative,
       status: entry.status,
       added: counted?.added ?? 0,
       removed: counted?.removed ?? 0,
       binary: counted?.binary ?? false,
+      ...(counted !== undefined && 'large' in counted && counted.large === true
+        ? { large: true as const }
+        : {}),
     })
   }
+  const omitted = entries.length - files.length
   return {
     source: 'git',
-    base,
+    base: against,
     files,
     truncated:
-      status.truncated || numstat.truncated || entries.length > files.length,
+      names.truncated || numstat.truncated || status.truncated || omitted > 0,
+    ...(omitted > 0 ? { omitted } : {}),
   }
 }
 
-/** `data` without a UTF-8 character its cut left unfinished at the end. */
-function wholeChars(data: Buffer): Buffer {
-  let start = data.length - 1
-  while (start > 0 && (data[start]! & 0xc0) === 0x80) start--
-  const lead = data[start] ?? 0
-  const size = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1
-  return start + size > data.length ? data.subarray(0, start) : data
+/** Whether a session's root is in a repository git here can read. */
+export function inGit(
+  context: GitContext | undefined,
+  root: string,
+): context is GitContext {
+  if (context === undefined) return false
+  try {
+    return gitTop(sessionRoot(root)) !== undefined
+  } catch {
+    return false
+  }
 }
 
-/** One file's unified diff against the base; an untracked file against nothing. */
+/**
+ * One file's unified diff against `base` (as {@link changes}); an untracked
+ * file against nothing. Over 256 KiB only the counts are given (`large`).
+ */
 export async function diff(
   context: GitContext | undefined,
   root: string,
   relative: string,
+  base?: string,
 ): Promise<FileDiff> {
   const top = sessionRoot(root)
   if (gitTop(top) === undefined || context === undefined)
-    throw new CodeError('E_GIT', '不是 Git 仓库，变更在后续版本补上')
+    throw new CodeError('E_GIT', '不是 Git 仓库')
   const target = resolveInRoot(top, relative)
-  const base = await baseOf(context, top)
+  const against = base ?? (await baseOf(context, top))
   const status = await run(context, top, [
     'status',
     '--porcelain=v2',
@@ -391,20 +533,26 @@ export async function diff(
           '--no-ext-diff',
           '--no-textconv',
           '-U3',
-          base,
+          against,
           '--',
           target.relative,
         ],
         { max: MAX_DIFF_BYTES },
       )
-  const text = (out.truncated ? wholeChars(out.stdout) : out.stdout).toString(
-    'utf8',
-  )
+  if (out.truncated)
+    return {
+      path: target.relative,
+      text: '',
+      truncated: true,
+      binary: false,
+      large: true,
+    }
+  const text = out.stdout.toString('utf8')
   const binary = /^Binary files .* differ$/m.test(text)
   return {
     path: target.relative,
     text: binary ? '' : text,
-    truncated: out.truncated,
+    truncated: false,
     binary,
   }
 }

@@ -61,7 +61,7 @@ describe.skipIf(!posix)('the runner', () => {
       protocol: 1,
       features: {
         protocols: ['claude-stream'],
-        worktree: false,
+        worktree: true,
         remote: false,
       },
       codeDir: at.code,
@@ -238,8 +238,12 @@ describe.skipIf(!posix)('the runner', () => {
       text: 'hi',
       clientId: 'c',
     }
+    // A worktree of its own needs a Git folder (worktree.test.ts has the rest).
     expect(
       await refused(r.call('session.start', { ...base, worktree: true })),
+    ).toBe('E_GIT')
+    expect(
+      await refused(r.call('session.start', { ...base, worktree: 'yes' })),
     ).toBe('E_ARGS')
     expect(
       await refused(r.call('session.start', { ...base, remote: true })),

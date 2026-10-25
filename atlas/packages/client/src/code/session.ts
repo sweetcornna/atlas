@@ -6,7 +6,9 @@
  * (idle, running, waiting, interrupted, failed), a queue of at most five
  * lines, one agent process each, at most four running at once, ten idle
  * minutes before a process is ended, and the conversation written as it
- * happens. A record goes to the file first, then to the page.
+ * happens. A record goes to the file first, then to the page. A session may
+ * run in a worktree of its own (worktree.ts), made before its first turn;
+ * deleting a session removes that worktree when it is clean.
  */
 
 import { randomBytes, randomUUID } from 'node:crypto'
@@ -26,10 +28,12 @@ import {
   type GitContext,
   changes as gitChanges,
   gitTop,
+  inGit,
 } from './git.js'
 import { DEFAULT_MODE, type Mode } from './modes.js'
 import { checkPickedFolder, sessionRoot } from './paths.js'
 import type { ChildRegistry } from './processes.js'
+import { recordedChanges, recordedDiff } from './recorded.js'
 import {
   type AskDecision,
   type AskInfo,
@@ -55,6 +59,12 @@ import {
   type StoredFolder,
   Transcript,
 } from './store.js'
+import {
+  makeWorktree,
+  planWorktree,
+  removeWorktree,
+  WORKTREE_ADD_MS,
+} from './worktree.js'
 
 /** An agent the runner may start, as `qmo agents` found it. */
 export type FoundAgent =
@@ -79,6 +89,8 @@ export interface Limits {
   readonly deltaMs: number
   readonly interruptGraceMs: number
   readonly termGraceMs: number
+  /** `git worktree add` may take this long. */
+  readonly worktreeMs: number
 }
 
 export const DEFAULT_LIMITS: Limits = {
@@ -88,6 +100,7 @@ export const DEFAULT_LIMITS: Limits = {
   deltaMs: 50,
   interruptGraceMs: 5_000,
   termGraceMs: 3_000,
+  worktreeMs: WORKTREE_ADD_MS,
 }
 
 /** A `delta` event's text is at most this many UTF-8 bytes. */
@@ -95,6 +108,8 @@ const MAX_DELTA_BYTES = 4 * 1024
 /** A `record` event larger than this is sent as `trimmed` (§4.5.2). */
 const MAX_EVENT_BYTES = 8 * 1024
 const MAX_TITLE = 120
+/** A running session being deleted is stopped first, waited for this long. */
+const DELETE_WAIT_MS = 10_000
 
 export interface SessionManagerOptions {
   readonly store: CodeStore
@@ -154,6 +169,11 @@ class Session {
   readonly denied = new Set<string>()
   /** Settles a wait for room with `false` when the turn is stopped. */
   cancelWait: ((go: boolean) => void) | undefined
+  /** Ends the `git worktree add` under way. */
+  making: AbortController | undefined
+  /** Woken when the turns in flight have ended. */
+  readonly settled: (() => void)[] = []
+  deleting = false
   readonly store: CodeStore
 
   constructor(store: CodeStore, header: SessionHeader, now: number) {
@@ -293,6 +313,9 @@ export class SessionManager {
       agent: { id: header.agent.id, name: header.agent.name },
       mode: header.mode,
       state: header.state,
+      ...(header.worktree === undefined
+        ? {}
+        : { worktree: { branch: header.worktree.branch } }),
       remote: false,
       createdAt: header.createdAt,
       updatedAt: header.updatedAt,
@@ -302,7 +325,9 @@ export class SessionManager {
 
   #header(
     session: Session,
-    change: Partial<Pick<SessionHeader, 'state' | 'mode' | 'native'>>,
+    change: Partial<
+      Pick<SessionHeader, 'state' | 'mode' | 'native' | 'title' | 'worktree'>
+    >,
     announce = true,
   ): void {
     session.header = { ...session.header, ...change, updatedAt: this.#now() }
@@ -425,23 +450,39 @@ export class SessionManager {
     readonly mode: Mode
     readonly text: string
     readonly clientId: string
+    /** In a worktree of its own (worktree.ts). */
+    readonly worktree?: boolean
   }): Promise<{ session: Summary; turn: CodeTurn }> {
     if (this.#closing) throw new CodeError('E_RUNNER', '运行器正在退出')
     const folder = this.#folders.find(one => one.id === input.folder)
     if (folder === undefined) throw new CodeError('E_FOLDER', '没有这个文件夹')
-    const root = sessionRoot(folder.path)
+    const picked = sessionRoot(folder.path)
     const found = await this.#options.findAgent(input.agent)
     if (!found.ok) throw new CodeError('E_AGENT', found.reason)
     const id = newSessionId()
     const now = this.#now()
+    const title = titleOf(input.text)
+    // Checked and named now; made before the first turn.
+    const own =
+      input.worktree === true
+        ? await planWorktree({
+            context: await this.#options.git(),
+            folder: picked,
+            worktreesDir: this.#options.store.worktreesDir,
+            session: id,
+            title,
+            now,
+          })
+        : undefined
     const noAuto = input.mode === 'auto' && this.#noAuto.has(found.path)
     const header: SessionHeader = {
       id,
-      title: titleOf(input.text),
+      title,
       createdAt: now,
       updatedAt: now,
       folder: { path: folder.path, name: folder.name },
-      root,
+      root: own?.root ?? picked,
+      ...(own === undefined ? {} : { worktree: own.worktree }),
       agent: {
         id: found.id,
         name: found.name,
@@ -500,16 +541,19 @@ export class SessionManager {
   }): Promise<{ turn: CodeTurn; queued: boolean }> {
     if (this.#closing) throw new CodeError('E_RUNNER', '运行器正在退出')
     const session = this.#session(input.session)
+    if (session.deleting) throw new CodeError('E_SESSION', '这个会话正在删除')
     if (session.transcript.full)
       throw new CodeError(
         'E_LIMIT',
         '这个会话的记录到了 64 MiB，开一个新会话接着做',
       )
-    try {
-      sessionRoot(session.header.root)
-    } catch {
-      throw new CodeError('E_FOLDER', '文件夹不在了，这个会话只能看')
-    }
+    // A worktree not made yet is made before the turn.
+    if (session.header.worktree?.ready !== false)
+      try {
+        sessionRoot(session.header.root)
+      } catch {
+        throw new CodeError('E_FOLDER', '文件夹不在了，这个会话只能看')
+      }
     const busy = session.active || session.queue.length > 0
     if (busy && session.queue.length >= this.#limits.queue)
       throw new CodeError(
@@ -539,6 +583,7 @@ export class SessionManager {
     for (const ask of [...session.asks.values()])
       ask.settle({ decision: 'deny' }, by)
     session.cancelWait?.(false)
+    session.making?.abort()
     session.agent?.abort()
   }
 
@@ -623,14 +668,82 @@ export class SessionManager {
     }
   }
 
+  /**
+   * The 「变更」 panel: against `HEAD` in a Git folder, against its base in
+   * a worktree of its own, from the session's records elsewhere (no Git, no
+   * git, or a worktree not made yet).
+   */
   async changes(id: string): Promise<Changes> {
     const session = this.#session(id)
-    return gitChanges(await this.#options.git(), session.header.root)
+    const { root, worktree } = session.header
+    const context =
+      worktree?.ready === false ? undefined : await this.#options.git()
+    if (!inGit(context, root))
+      return recordedChanges(session.transcript.turns())
+    return gitChanges(context, root, worktree?.base)
   }
 
   async diff(id: string, relative: string): Promise<FileDiff> {
     const session = this.#session(id)
-    return fileDiff(await this.#options.git(), session.header.root, relative)
+    const { root, worktree } = session.header
+    const context =
+      worktree?.ready === false ? undefined : await this.#options.git()
+    if (!inGit(context, root))
+      return recordedDiff(session.transcript.turns(), relative)
+    return fileDiff(context, root, relative, worktree?.base)
+  }
+
+  /** A new title, said to the page. */
+  rename(id: string, title: string): void {
+    const session = this.#session(id)
+    const next = title.trim()
+    if (next === '') throw new CodeError('E_ARGS', '标题不能为空')
+    if (next !== session.header.title) this.#header(session, { title: next })
+  }
+
+  /**
+   * Deletes a session: its turn stopped and its agent ended first, its
+   * worktree removed when clean (else kept and named), its folder of records
+   * gone. The agent's own files are the agent's and stay.
+   */
+  async delete(
+    id: string,
+  ): Promise<{ worktree?: 'removed' | 'kept'; path?: string }> {
+    const session = this.#session(id)
+    if (session.deleting) throw new CodeError('E_SESSION', '这个会话正在删除')
+    session.deleting = true
+    try {
+      if (session.active || session.queue.length > 0) {
+        const settled = new Promise<boolean>(resolve =>
+          session.settled.push(() => resolve(true)),
+        )
+        this.stop(id)
+        const stopped = await Promise.race([
+          settled,
+          Bun.sleep(DELETE_WAIT_MS).then(() => false),
+        ])
+        if (!stopped && session.active)
+          throw new CodeError('E_BUSY', '会话还没停下，稍后再删')
+      }
+      clearTimeout(session.idleTimer)
+      clearTimeout(session.flushTimer)
+      await session.agent?.stop()
+      this.#release(session)
+    } catch (error) {
+      session.deleting = false
+      throw error
+    }
+    const left =
+      session.header.worktree === undefined
+        ? {}
+        : await removeWorktree(
+            await this.#options.git(),
+            session.header.worktree,
+          )
+    this.#sessions.delete(id)
+    this.#options.store.removeSession(id)
+    this.#options.emit({ type: 'removed', session: id })
+    return left
   }
 
   // ---- turns -------------------------------------------------------------------
@@ -664,6 +777,7 @@ export class SessionManager {
             ? 'interrupted'
             : 'failed',
       )
+      for (const wake of session.settled.splice(0)) wake()
       if (session.agent?.alive !== true) this.#release(session)
       else if (this.#waiting.length > 0)
         // Another session waits for room: this process goes now (its exit
@@ -677,6 +791,12 @@ export class SessionManager {
     session: Session,
     text: string,
   ): Promise<'completed' | 'error' | 'aborted'> {
+    if (!(await this.#ensureWorktree(session))) {
+      if (session.stopping) return 'aborted'
+      // The lines behind it would only try again.
+      this.#withdraw(session)
+      return 'error'
+    }
     let agent: AgentProcess | undefined
     try {
       agent = await this.#acquire(session)
@@ -710,6 +830,42 @@ export class SessionManager {
     } else if (outcome.status === 'aborted')
       this.#notice(session, '已中断', 'warn')
     return outcome.status
+  }
+
+  /** The session's worktree, made now when it is not yet; `false` when it could not be. */
+  async #ensureWorktree(session: Session): Promise<boolean> {
+    const worktree = session.header.worktree
+    if (worktree === undefined || worktree.ready) return true
+    const making = new AbortController()
+    session.making = making
+    this.#activity(session, 'starting', '正在建独立工作树')
+    let made: { readonly warning?: string }
+    try {
+      made = await makeWorktree(
+        await this.#options.git(),
+        worktree,
+        making.signal,
+        this.#limits.worktreeMs,
+      )
+    } catch (error) {
+      if (!session.stopping)
+        this.#write(session, {
+          id: newTurnId(),
+          sessionId: session.header.id,
+          author: 'agent',
+          at: this.#now(),
+          text: `没能建独立工作树：${(error as Error).message}`,
+          state: 'failed',
+          code: 'E_GIT',
+        })
+      return false
+    } finally {
+      session.making = undefined
+    }
+    this.#header(session, { worktree: { ...worktree, ready: true } })
+    if (made.warning !== undefined)
+      this.#notice(session, `独立工作树建好了，但 ${made.warning}`, 'warn')
+    return true
   }
 
   /** A process slot for the session's agent, and the agent; `undefined` when stopped first. */

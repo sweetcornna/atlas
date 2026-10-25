@@ -35,7 +35,7 @@ export class CodeError extends Error {
 /** What this runner drives; the page offers only agents whose protocol is here. */
 export const FEATURES = {
   protocols: ['claude-stream'],
-  worktree: false,
+  worktree: true,
   remote: false,
 } as const
 
@@ -163,6 +163,7 @@ export type CodeEvent =
       readonly kind: 'thinking' | 'tool' | 'waiting' | 'queued' | 'starting'
       readonly words: string
     }
+  | { readonly type: 'removed'; readonly session: string }
 
 // ---- checks ------------------------------------------------------------------
 

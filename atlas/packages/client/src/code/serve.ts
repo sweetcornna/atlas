@@ -42,6 +42,7 @@ import {
   relativePathOf,
   sessionId,
   textOf,
+  titleOf,
 } from './protocol.js'
 import { type FoundAgent, type Limits, SessionManager } from './session.js'
 import { CodeStore } from './store.js'
@@ -162,11 +163,17 @@ async function dispatch(
       const mode = modeOf(p.mode)
       const text = textOf(p.text)
       const client = clientId(p.clientId)
-      if (booleanOf(p.worktree, 'worktree'))
-        throw new CodeError('E_ARGS', '独立工作树在后续版本开放')
+      const worktree = booleanOf(p.worktree, 'worktree')
       if (p.remote !== undefined && booleanOf(p.remote, 'remote'))
         throw new CodeError('E_REMOTE', 'Remote 在后续版本开放')
-      return manager.start({ folder, agent, mode, text, clientId: client })
+      return manager.start({
+        folder,
+        agent,
+        mode,
+        text,
+        clientId: client,
+        worktree,
+      })
     }
     case 'session.send': {
       const p = keys(params, ['session', 'text', 'clientId'], ['origin'])
@@ -227,9 +234,15 @@ async function dispatch(
       booleanOf(p.on, 'on')
       throw new CodeError('E_REMOTE', 'Remote 在后续版本开放')
     }
-    case 'session.rename':
-    case 'session.delete':
-      throw new CodeError('E_ARGS', '后续版本支持')
+    case 'session.rename': {
+      const p = keys(params, ['session', 'title'])
+      manager.rename(sessionId(p.session), titleOf(p.title))
+      return {}
+    }
+    case 'session.delete': {
+      const p = keys(params, ['session'])
+      return manager.delete(sessionId(p.session))
+    }
     default:
       throw new CodeError('E_ARGS', `不认识的方法：${method}`)
   }
