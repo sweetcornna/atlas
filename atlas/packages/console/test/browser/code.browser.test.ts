@@ -19,9 +19,13 @@
  * 4. **Stop and the queue**, **the permission mode** (跳过权限确认 asks once
  *    more, a refusal goes back and says why, 下一轮生效), **a send or a start
  *    that fails**, **picking a folder**.
- * 5. **Other homes**: an app older than local sessions, an app whose runner
+ * 5. **Managing them** (P37.14d): a worktree of its own for a Git folder
+ *    only; the shell's defaults; a row's ⋯ renames in place and deletes with
+ *    ten seconds to undo; the changes panel outside Git and past its limits;
+ *    the shell's `open` event from a notification.
+ * 6. **Other homes**: an app older than local sessions, an app whose runner
  *    refuses, a browser.
- * 6. **Three languages, light and dark contrast, 375 px.**
+ * 7. **Three languages, light and dark contrast, 375 px.**
  *
  * No app window, runner or agent is started. Skipped, with the reason
  * printed, on a machine without Chrome.
@@ -1059,6 +1063,395 @@ describe.skipIf(SKIP !== null)('Code: local sessions', () => {
       ).toEqual({ local: false, again: false })
     } finally {
       await failing.tab.close()
+    }
+  }, 30_000)
+
+  test('a worktree of its own: a Git folder only, where the runner can; the line says what it means; it goes with the start', async () => {
+    const plain = {
+      id: 'fedcba9876543210',
+      name: 'notes',
+      path: '/Users/me/notes',
+      git: false,
+    }
+    const { tab } = await open(browser, served.base, {
+      folders: [FOLDER, plain],
+    })
+    try {
+      const state = () =>
+        tab.evaluate<unknown>(`({
+          disabled: ${q('#code-worktree')}.disabled,
+          checked: ${q('#code-worktree')}.checked,
+          hint: ${q('#code-wt-hint')}.hidden,
+          title: ${q('#code-worktree')}.parentNode.title,
+        })`)
+      const folder = (id: string) =>
+        tab.evaluate(
+          `(() => { const s = ${q('#code-folder')}; s.value = '${id}'; s.dispatchEvent(new Event('change')); })()`,
+        )
+      const hint = '从当前提交开始，没提交的改动不带过去'
+      expect(await state()).toEqual({
+        disabled: false,
+        checked: false,
+        hint: true,
+        title: hint,
+      })
+      await tab.evaluate(`${q('#code-worktree')}.click()`)
+      expect(await state()).toEqual({
+        disabled: false,
+        checked: true,
+        hint: false,
+        title: hint,
+      })
+      expect(
+        await tab.evaluate<string>(`${q('#code-wt-hint')}.textContent`),
+      ).toBe(hint)
+      // A folder that is not Git: off, and why.
+      await folder(plain.id)
+      expect(await state()).toEqual({
+        disabled: true,
+        checked: false,
+        hint: true,
+        title: 'Git 仓库才能开',
+      })
+      await folder(FOLDER.id)
+      await tab.evaluate(`${q('#code-worktree')}.click()`)
+      await begin(tab, '在独立工作树里改')
+      expect(
+        await tab.evaluate<boolean>(
+          `${calls('qmo_local_start')}[0][1].worktree`,
+        ),
+      ).toBe(true)
+      // In a session the switch and its line are the new session's only.
+      expect(
+        await tab.evaluate<unknown>(`({
+          wt: getComputedStyle(${q('#code-worktree')}.parentNode).display,
+          hint: getComputedStyle(${q('#code-wt-hint')}).display,
+        })`),
+      ).toEqual({ wt: 'none', hint: 'none' })
+    } finally {
+      await tab.close()
+    }
+    // A runner that cannot make one: held off, as Remote is.
+    const older = await open(browser, served.base, {
+      features: {
+        protocols: ['claude-stream'],
+        worktree: false,
+        remote: false,
+      },
+    })
+    try {
+      expect(
+        await older.tab.evaluate<unknown>(
+          `[${q('#code-worktree')}.disabled, ${q('#code-worktree')}.parentNode.title]`,
+        ),
+      ).toEqual([true, '后续版本支持'])
+      await begin(older.tab, '不开工作树')
+      expect(
+        await older.tab.evaluate<boolean>(
+          `${calls('qmo_local_start')}[0][1].worktree`,
+        ),
+      ).toBe(false)
+    } finally {
+      await older.tab.close()
+    }
+  }, 30_000)
+
+  test('the shell’s defaults: the mode a new session starts in; Remote’s only where the runner can', async () => {
+    const { tab } = await open(browser, served.base, {
+      defaults: { mode: 'accept-edits', remote: true },
+    })
+    try {
+      expect(
+        await tab.evaluate<unknown>(
+          `[${q('#code-mode')}.value, ${q('#code-remote')}.checked]`,
+        ),
+      ).toEqual(['accept-edits', false])
+      await begin(tab, '按缺省开')
+      expect(
+        await tab.evaluate<unknown>(
+          `(() => { const a = ${calls('qmo_local_start')}[0][1]; return [a.mode, a.remote]; })()`,
+        ),
+      ).toEqual(['accept-edits', false])
+    } finally {
+      await tab.close()
+    }
+    const remote = await open(browser, served.base, {
+      features: { protocols: ['claude-stream'], worktree: true, remote: true },
+      defaults: { mode: 'off', remote: true },
+    })
+    try {
+      expect(
+        await remote.tab.evaluate<unknown>(
+          `[${q('#code-mode')}.value, ${q('#code-remote')}.checked]`,
+        ),
+      ).toEqual(['off', true])
+    } finally {
+      await remote.tab.close()
+    }
+  }, 30_000)
+
+  test('a row’s ⋯ renames in place: Enter or leaving keeps it, Esc does not, a refusal goes back', async () => {
+    const { tab } = await open(browser, served.base, {})
+    try {
+      const id = await begin(tab, '原来的标题')
+      await fake(tab, `state('${id}', 'idle')`)
+      const row = `#code-sessions .fx-ritem-row`
+      await tab.evaluate(`${q(`${row} .fx-more-btn`)}.click()`)
+      expect(
+        await tab.evaluate<unknown>(`({
+          open: ${q(`${row} .fx-more`)}.open,
+          items: [...document.querySelectorAll('${row} .fx-menu-item')].map(b => b.textContent),
+          label: ${q(`${row} .fx-more-btn`)}.getAttribute('aria-label'),
+        })`),
+      ).toEqual({
+        open: true,
+        items: ['改名', '删除'],
+        label: '会话操作 · 原来的标题',
+      })
+      const rename = async (text: string, how: 'Enter' | 'Escape' | 'blur') => {
+        await tab.evaluate(`${q(`${row} [data-action="code-rename"]`)}.click()`)
+        await tab.waitFor(
+          `document.activeElement && document.activeElement.classList.contains('fx-code-rename')`,
+        )
+        await tab.evaluate(
+          `document.activeElement.value = ${JSON.stringify(text)}`,
+        )
+        if (how === 'Enter') await enter(tab)
+        else if (how === 'Escape') await key(tab, 'Escape', 'Escape', 27)
+        else await tab.evaluate(`${q('#code-text')}.focus()`)
+      }
+      await rename('新标题', 'Enter')
+      await tab.waitFor(`${calls('qmo_local_rename')}.length === 1`)
+      expect(
+        await tab.evaluate<unknown>(`({
+          call: ${calls('qmo_local_rename')}[0][1],
+          row: ${q(`${row} .fx-ritem-title`)}.textContent,
+          head: ${q('#code-title')}.textContent,
+          field: ${q('.fx-code-rename')},
+          menu: ${q(`${row} .fx-more`)}.open,
+        })`),
+      ).toEqual({
+        call: { session: id, title: '新标题' },
+        row: '新标题',
+        head: '新标题',
+        field: null,
+        menu: false,
+      })
+      // Esc keeps the old one and asks nothing.
+      await rename('不要这个', 'Escape')
+      await tab.waitFor(`${q('.fx-code-rename')} === null`)
+      expect(
+        await tab.evaluate<unknown>(
+          `[${calls('qmo_local_rename')}.length, ${q(`${row} .fx-ritem-title`)}.textContent]`,
+        ),
+      ).toEqual([1, '新标题'])
+      // Leaving the field keeps what is in it; only spaces is no title.
+      await rename('  ', 'blur')
+      await tab.waitFor(`${q('.fx-code-rename')} === null`)
+      await rename('离开时保存', 'blur')
+      await tab.waitFor(`${calls('qmo_local_rename')}.length === 2`)
+      expect(
+        await tab.evaluate<string>(`${calls('qmo_local_rename')}[1][1].title`),
+      ).toBe('离开时保存')
+      // Refused: back to what it was, and why.
+      await fake(
+        tab,
+        `set('renameRefusal', 'qmo local E_SESSION: 没有这个会话')`,
+      )
+      await rename('不会成', 'Enter')
+      await tab.waitFor(
+        `${q('#code-say')}.textContent === 'qmo local E_SESSION: 没有这个会话' && ${q(`${row} .fx-ritem-title`)}.textContent === '离开时保存'`,
+      )
+    } finally {
+      await tab.close()
+    }
+  }, 30_000)
+
+  test('删除 hides the row with 撤销 for ten seconds, then the runner deletes it; a worktree with changes is named', async () => {
+    const { tab } = await open(browser, served.base, {
+      deleted: {
+        worktree: 'kept',
+        path: '/Users/me/.qianmo/client/code/worktrees/atlas-0123abcd/x',
+      },
+    })
+    try {
+      const first = await begin(tab, '第一个')
+      await tab.evaluate(`${q('#code-new')}.click()`)
+      const second = await begin(tab, '第二个')
+      const remove = (id: string) =>
+        tab.evaluate(
+          `(() => { const r = ${q(`[data-session="${id}"]`)}.closest('.fx-ritem-row'); r.querySelector('.fx-more-btn').click(); r.querySelector('[data-action="code-delete"]').click(); })()`,
+        )
+      const rows = () =>
+        tab.evaluate<string[]>(
+          `[...document.querySelectorAll('#code-sessions .fx-ritem-title')].map(t => t.textContent)`,
+        )
+      // The open one: hidden at once, the page back to a new session.
+      await remove(second)
+      expect(
+        await tab.evaluate<unknown>(`({
+          undo: ${q('#code-undo')}.hidden,
+          word: ${q('#code-undo .fx-code-undo-word')}.textContent,
+          view: ${q('#code-local')}.getAttribute('data-view'),
+          search: location.search,
+          deletes: ${calls('qmo_local_delete')}.length,
+        })`),
+      ).toEqual({
+        undo: false,
+        word: '已删除「第二个」',
+        view: 'blank',
+        search: '',
+        deletes: 0,
+      })
+      expect(await rows()).toEqual(['第一个'])
+      // 撤销: back, and nothing asked.
+      await tab.evaluate(`${q('[data-action="code-undo"]')}.click()`)
+      expect(await rows()).toEqual(['第二个', '第一个'])
+      expect(
+        await tab.evaluate<unknown>(
+          `[${q('#code-undo')}.hidden, ${calls('qmo_local_delete')}.length]`,
+        ),
+      ).toEqual([true, 0])
+      // A second delete sends the first at once.
+      await remove(second)
+      await remove(first)
+      await tab.waitFor(`${calls('qmo_local_delete')}.length === 1`)
+      expect(
+        await tab.evaluate<unknown>(`${calls('qmo_local_delete')}[0][1]`),
+      ).toEqual({ session: second })
+      expect(
+        await tab.evaluate<string>(
+          `${q('#code-undo .fx-code-undo-word')}.textContent`,
+        ),
+      ).toBe('已删除「第一个」')
+      // Ten seconds on, the runner is asked, and what it kept is named.
+      const asked = Date.now()
+      await tab.waitFor(`${calls('qmo_local_delete')}.length === 2`, 12_000)
+      expect(Date.now() - asked).toBeGreaterThan(8_000)
+      await tab.waitFor(
+        `${q('#code-undo')}.hidden && document.querySelectorAll('#code-sessions .fx-ritem-row').length === 0`,
+      )
+      expect(
+        await tab.evaluate<unknown>(`({
+          call: ${calls('qmo_local_delete')}[1][1],
+          say: ${q('#code-say')}.textContent,
+          left: window.__fake.sessions(),
+        })`),
+      ).toEqual({
+        call: { session: first },
+        say: '工作树里有没提交的改动，留在 /Users/me/.qianmo/client/code/worktrees/atlas-0123abcd/x',
+        left: [],
+      })
+    } finally {
+      await tab.close()
+    }
+    // Refused: the row comes back, and why.
+    const refused = await open(browser, served.base, {
+      deleteRefusal: 'qmo local E_BUSY: 会话还没停下，稍后再删',
+    })
+    try {
+      const id = await begin(refused.tab, '删不掉')
+      await refused.tab.evaluate(
+        `(() => { const r = ${q(`[data-session="${id}"]`)}.closest('.fx-ritem-row'); r.querySelector('.fx-more-btn').click(); r.querySelector('[data-action="code-delete"]').click(); })()`,
+      )
+      await refused.tab.waitFor(
+        `${q('#code-say')}.textContent === 'qmo local E_BUSY: 会话还没停下，稍后再删'`,
+        12_000,
+      )
+      expect(
+        await refused.tab.evaluate<number>(
+          `document.querySelectorAll('#code-sessions .fx-ritem-row').length`,
+        ),
+      ).toBe(1)
+    } finally {
+      await refused.tab.close()
+    }
+  }, 60_000)
+
+  test('the changes panel outside Git and past the limits: the records, only counts, the files not listed', async () => {
+    const { tab } = await open(browser, served.base, {
+      changes: {
+        source: 'session',
+        truncated: true,
+        omitted: 3,
+        files: [
+          {
+            path: 'notes.md',
+            status: 'added',
+            added: 2,
+            removed: 0,
+            binary: false,
+          },
+          {
+            path: 'dump.log',
+            status: 'untracked',
+            added: 0,
+            removed: 0,
+            binary: false,
+            large: true,
+          },
+        ],
+      },
+      diffs: {
+        'dump.log': {
+          path: 'dump.log',
+          text: '',
+          truncated: true,
+          binary: false,
+          large: true,
+        },
+      },
+    })
+    try {
+      const id = await begin(tab, '记一笔')
+      await fake(tab, `state('${id}', 'idle')`)
+      await tab.waitFor(
+        `document.querySelectorAll('#code-files .fx-code-file').length === 2`,
+      )
+      expect(
+        await tab.evaluate<unknown>(`({
+          note: ${q('#code-note')}.textContent,
+          count: ${q('#code-count')}.textContent,
+          files: [...document.querySelectorAll('#code-files .fx-code-frow')].map(r => r.textContent),
+        })`),
+      ).toEqual({
+        note: '不是 Git 仓库 · 按会话记录列出 · 还有 3 个文件没列出',
+        count: '5',
+        files: ['Anotes.md+2−0', 'Udump.log过大'],
+      })
+      await tab.evaluate(
+        `document.querySelectorAll('#code-files .fx-code-frow')[1].click()`,
+      )
+      await tab.waitFor(
+        `${q('#code-files .fx-code-file:nth-child(2) .fx-diff')}.textContent === '差异太大 · 只给统计'`,
+      )
+    } finally {
+      await tab.close()
+    }
+  }, 30_000)
+
+  test('a notification clicked: the shell’s open event opens that session', async () => {
+    const { tab } = await open(browser, served.base, {})
+    try {
+      const first = await begin(tab, '通知里的会话')
+      await tab.evaluate(`${q('#code-new')}.click()`)
+      const second = await begin(tab, '眼前的会话')
+      await fake(tab, `emit({ type: 'open', session: '${first}' })`)
+      await tab.waitFor(
+        `location.search === '?session=${first}' && ${q('#code-title')}.textContent === '通知里的会话'`,
+      )
+      // One it does not know: nothing moves.
+      await fake(
+        tab,
+        `emit({ type: 'open', session: 'cs_NotKnownNotKnownNotKn' })`,
+      )
+      await Bun.sleep(100)
+      expect(await tab.evaluate<string>('location.search')).toBe(
+        `?session=${first}`,
+      )
+      expect(second).not.toBe(first)
+    } finally {
+      await tab.close()
     }
   }, 30_000)
 

@@ -79,6 +79,7 @@ import {
   CONSOLE_CLIENT_JS_ACCOUNTS,
 } from '../assets/client.js'
 import { CODE_JS } from '../assets/codeClient.js'
+import { CODE_MANAGE_JS } from '../assets/codeManage.js'
 import { CODE_RENDER_JS } from '../assets/codeRender.js'
 import { FRONT_JS } from '../assets/frontClient.js'
 import { NAV_MOUNTED_JS } from '../assets/nav.js'
@@ -2006,7 +2007,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     FRONT_SHELL_JS +
     // The figure editor's script goes with the editor (below).
     (model.faces.editable ? AVATAR_PAGE_JS : '') +
-    (code ? CODE_RENDER_JS + CODE_JS : '') +
+    (code ? CODE_RENDER_JS + CODE_JS + CODE_MANAGE_JS : '') +
     (replicate === 'off' ? '' : FRONT_REPLICATE_JS) +
     (approvals === undefined ? '' : FRONT_APPROVAL_JS) +
     (card === undefined

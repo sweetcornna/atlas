@@ -188,6 +188,11 @@ export interface FrontText {
   readonly rescan: string
   /** Remote, held off until P37.15: why it cannot be turned on. */
   readonly remoteLater: string
+  /** A new session in a worktree of its own (P37.14d), and what that means. */
+  readonly worktree: string
+  readonly worktreeHint: string
+  /** A deleted session's 10 s to come back. */
+  readonly undo: string
   /** 跳过权限确认 asks once more, in a line under the box. */
   readonly bypassLine: string
   readonly confirm: string
@@ -501,6 +506,9 @@ const ZH: FrontText = {
   agentWord: 'agent',
   rescan: '重新检测',
   remoteLater: '后续版本开放',
+  worktree: '独立工作树',
+  worktreeHint: '从当前提交开始，没提交的改动不带过去',
+  undo: '撤销',
   bypassLine: 'agent 将不经确认执行任何命令与改动',
   confirm: '确认',
   changes: '变更',
@@ -741,6 +749,10 @@ const EN: FrontText = {
   agentWord: 'Agent',
   rescan: 'Scan again',
   remoteLater: 'Coming in a later version',
+  worktree: 'Worktree',
+  worktreeHint:
+    'Starts from the current commit · uncommitted changes stay behind',
+  undo: 'Undo',
   bypassLine:
     'The agent will run any command and make any change without asking',
   confirm: 'Confirm',
@@ -982,6 +994,10 @@ const JA: FrontText = {
   agentWord: 'agent',
   rescan: '再検出',
   remoteLater: '今後のバージョンで対応',
+  worktree: '専用ワークツリー',
+  worktreeHint:
+    '現在のコミットから開始 · コミットしていない変更は持ち込みません',
+  undo: '元に戻す',
   bypassLine: 'agent は確認なしであらゆるコマンドの実行と変更を行います',
   confirm: '確認',
   changes: '変更',
@@ -1206,6 +1222,19 @@ interface CodeClientText {
   readonly clean: string
   readonly binary: string
   readonly cut: string
+  /** Past the limits only the counts (P37.14d): a file, a diff, the files past 1,000. */
+  readonly large: string
+  readonly tooBig: string
+  readonly omitted: string
+  /** A row's ⋯ (P37.14d). */
+  readonly actions: string
+  readonly rename: string
+  readonly remove: string
+  /** `{t}` is the title. */
+  readonly removed: string
+  /** A worktree with changes is left; `{p}` is where. */
+  readonly kept: string
+  readonly gitOnly: string
   /** The runner went away; the shell starts it again. */
   readonly down: string
   /** A run of steps; `{n}` is how many, `{s}` the plural ending where there is one. */
@@ -1236,10 +1265,19 @@ const CODE_CLIENT: Readonly<Record<Lang, CodeClientText>> = {
     denied: '已拒绝',
     now: '已生效',
     next: '下一轮生效',
-    notGit: '不是 Git 仓库，变更面板在后续版本补上',
+    notGit: '不是 Git 仓库 · 按会话记录列出',
     clean: '没有改动',
     binary: '二进制文件',
     cut: '只显示一部分',
+    large: '过大',
+    tooBig: '差异太大 · 只给统计',
+    omitted: '还有 {n} 个文件没列出',
+    actions: '会话操作',
+    rename: '改名',
+    remove: '删除',
+    removed: '已删除「{t}」',
+    kept: '工作树里有没提交的改动，留在 {p}',
+    gitOnly: 'Git 仓库才能开',
     down: '运行器已停止 · 正在重启',
     done: '已执行 · {n} 步',
     doing: '进行中 · {n} 步',
@@ -1266,10 +1304,19 @@ const CODE_CLIENT: Readonly<Record<Lang, CodeClientText>> = {
     denied: 'Denied',
     now: 'In effect',
     next: 'From the next turn',
-    notGit: 'Not a Git repository · the changes panel comes in a later version',
+    notGit: 'Not a Git repository · from the session’s records',
     clean: 'No changes',
     binary: 'Binary file',
     cut: 'Showing part of it',
+    large: 'Too large',
+    tooBig: 'Diff too large · counts only',
+    omitted: '{n} more files not listed',
+    actions: 'Session actions',
+    rename: 'Rename',
+    remove: 'Delete',
+    removed: 'Deleted “{t}”',
+    kept: 'The worktree has uncommitted changes and stays at {p}',
+    gitOnly: 'Git repositories only',
     down: 'Runner stopped · restarting',
     done: 'Done · {n} step{s}',
     doing: 'In progress · {n} step{s}',
@@ -1296,10 +1343,19 @@ const CODE_CLIENT: Readonly<Record<Lang, CodeClientText>> = {
     denied: '拒否しました',
     now: '反映しました',
     next: '次のターンから反映',
-    notGit: 'Git リポジトリではありません · 変更パネルは今後のバージョンで対応',
+    notGit: 'Git リポジトリではありません · セッションの記録から表示',
     clean: '変更はありません',
     binary: 'バイナリファイル',
     cut: '一部のみ表示',
+    large: '大きすぎます',
+    tooBig: '差分が大きすぎます · 件数のみ',
+    omitted: 'ほかに {n} 件のファイルは表示していません',
+    actions: 'セッションの操作',
+    rename: '名前を変更',
+    remove: '削除',
+    removed: '「{t}」を削除しました',
+    kept: 'ワークツリーにコミットしていない変更があるため {p} に残しました',
+    gitOnly: 'Git リポジトリのみ',
     down: 'ランナーが停止しました · 再起動中',
     done: '完了 · {n} ステップ',
     doing: '進行中 · {n} ステップ',

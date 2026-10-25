@@ -2,16 +2,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Code — the second mode of the console's main window (`/code`, P37.13 and
- * P37.14a, `docs/dev/qmo-local.md` §3.6, §4.1 and §4.5): work on this
- * computer, with the agents installed on it.
+ * Code — the second mode of the console's main window (`/code`, P37.13,
+ * P37.14a and P37.14d, `docs/dev/qmo-local.md` §3.6, §4.1 and §4.5): work on
+ * this computer, with the agents installed on it.
  *
  * Local sessions live on this computer, run by the desktop app's runner; the
  * hub never sees them. So the server draws only empty frames — the side
- * list's container, the box a session starts from and continues in (folder,
- * agent, permission mode, Remote held off, send and stop), the transcript's
- * container, the changes panel's — and the page script fills them through
- * the shell (`assets/codeClient.ts`, `assets/codeRender.ts`). The icons the
+ * list's container and the line a deleted session can come back from, the
+ * box a session starts from and continues in (folder, agent, permission
+ * mode, a worktree of its own, Remote held off, send and stop), the
+ * transcript's container, the changes panel's — and the page scripts fill
+ * them through the shell (`assets/codeClient.ts`, `assets/codeRender.ts`,
+ * `assets/codeManage.ts`). The icons the
  * script needs are the server's own SVG in a `<template>`, cloned, never
  * parsed from a string.
  *
@@ -47,7 +49,9 @@ export function codeSide(t: FrontText): string {
     `<div class="fx-list-head"><span class="fx-list-title">${escapeHtml(t.codeSessions)}</span></div>` +
     `<div class="fx-side-scroll" id="fx-side-scroll">` +
     `<section class="fx-recents fx-code-sessions" id="code-sessions" aria-label="${attr(t.codeSessions)}">` +
-    `<p class="fx-none">${escapeHtml(t.noCodeSessions)}</p></section></div>`
+    `<p class="fx-none">${escapeHtml(t.noCodeSessions)}</p></section></div>` +
+    `<div class="fx-code-undo" id="code-undo" role="status" hidden><span class="fx-code-undo-word"></span>` +
+    `<button type="button" class="btn btn-ghost btn-small" data-action="code-undo">${escapeHtml(t.undo)}</button></div>`
   )
 }
 
@@ -75,7 +79,16 @@ function icons(): string {
     `<i data-i="${attr(name)}">${svg}</i>`
   return (
     `<template id="code-icons">` +
-    ['check', 'x', 'alert-triangle', 'list-checks', 'copy']
+    [
+      'check',
+      'x',
+      'alert-triangle',
+      'list-checks',
+      'copy',
+      'ellipsis',
+      'pencil',
+      'trash-2',
+    ]
       .map(name => one(name, icon(name, { small: true })))
       .join('') +
     one('chev', chevron()) +
@@ -101,6 +114,9 @@ function box(t: FrontText): string {
     `aria-label="${attr(t.rescan)}" title="${attr(t.rescan)}">${icon('refresh-cw', { small: true })}</button>` +
     `<span class="sel fx-code-pill"><select id="code-mode" aria-label="${attr(t.permission)}">${modes}</select>${chevron()}</span>` +
     `<span class="fx-code-gap"></span>` +
+    `<label class="sw fx-code-remote fx-code-blank-only" title="${attr(t.worktreeHint)}">` +
+    `<input type="checkbox" role="switch" id="code-worktree" aria-describedby="code-wt-hint" disabled>` +
+    `<span class="trk"></span><span>${escapeHtml(t.worktree)}</span></label>` +
     `<label class="sw fx-code-remote fx-code-blank-only" title="${attr(t.remoteLater)}">` +
     `<input type="checkbox" role="switch" id="code-remote" disabled><span class="trk"></span><span>Remote</span></label>` +
     `<button type="button" class="fx-send fx-code-stop" id="code-stop" data-action="code-stop" aria-label="${attr(t.stop)}" hidden>` +
@@ -108,6 +124,7 @@ function box(t: FrontText): string {
     `<button type="submit" class="fx-send" id="code-go" aria-label="${attr(t.send)}">${icon('arrow-up', { small: true })}</button>` +
     `</div>` +
     `<p class="fx-status" id="code-say" role="status"></p>` +
+    `<p class="fx-code-hint fx-code-blank-only" id="code-wt-hint" hidden>${escapeHtml(t.worktreeHint)}</p>` +
     `</form>` +
     `<p class="fx-code-confirm" id="code-bypass" role="alert" hidden>` +
     `<span>${escapeHtml(t.bypassLine)}</span>` +

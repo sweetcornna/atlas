@@ -59,9 +59,17 @@ export interface FakeShellOptions {
   readonly refuseMode?: string
   /** `qmo_local_set_mode` answers `next-turn` instead of `now`. */
   readonly modeNextTurn?: boolean
-  /** The changes panel's answer, and each file's diff. */
+  /** The changes panel's answer, and each file's diff (a whole answer where it is not a string). */
   readonly changes?: object
-  readonly diffs?: Readonly<Record<string, string>>
+  readonly diffs?: Readonly<Record<string, string | object>>
+  /** `features` and the shell's `defaults` in `qmo_local_list`'s answer. */
+  readonly features?: object
+  readonly defaults?: object
+  /** `qmo_local_rename` / `qmo_local_delete` refuse with this line. */
+  readonly renameRefusal?: string
+  readonly deleteRefusal?: string
+  /** What `qmo_local_delete` answers. */
+  readonly deleted?: object
 }
 
 export const FOLDER: FakeFolder = {
@@ -120,6 +128,9 @@ export function fakeShell(options: FakeShellOptions = {}): string {
     pick: null,
     changes: { source: 'git', files: [], truncated: false },
     diffs: {},
+    features: { protocols: ['claude-stream'], worktree: true, remote: false },
+    defaults: { mode: 'auto', remote: false },
+    deleted: {},
     ...options,
   }
   return `
@@ -142,8 +153,10 @@ export function fakeShell(options: FakeShellOptions = {}): string {
     if (channel && typeof channel.onmessage === 'function') channel.onmessage(event);
   }
   function summary(s) {
-    return { id: s.id, title: s.title, folder: { id: s.folder.id, name: s.folder.name }, agent: s.agent,
+    var out = { id: s.id, title: s.title, folder: { id: s.folder.id, name: s.folder.name }, agent: s.agent,
       mode: s.mode, state: s.state, remote: false, createdAt: s.createdAt, updatedAt: s.updatedAt, lastSeq: s.seq };
+    if (s.worktree) out.worktree = s.worktree;
+    return out;
   }
   function touch(s) { s.updatedAt = Date.now(); save(); emit({ type: 'session', session: summary(s) }); }
   function write(s, turn, quiet) {
@@ -177,7 +190,7 @@ export function fakeShell(options: FakeShellOptions = {}): string {
       if (config.listRefusal) throw config.listRefusal;
       var all = [];
       for (var k in state.sessions) all.push(summary(state.sessions[k]));
-      return { v: 1, features: { protocols: ['claude-stream'], worktree: false, remote: false }, folders: state.folders, sessions: all };
+      return { v: 1, features: config.features, folders: state.folders, sessions: all, defaults: config.defaults };
     }
     if (command === 'qmo_local_agents') {
       if (typeof config.agents === 'string') throw config.agents;
@@ -194,7 +207,7 @@ export function fakeShell(options: FakeShellOptions = {}): string {
       if (!folder) throw 'qmo local E_FOLDER: 文件夹不在了';
       var s = { id: id('cs_', 22), title: args.text.split('\\n')[0].slice(0, 40), folder: folder,
         agent: { id: args.agent, name: 'Claude Code' }, mode: args.mode, state: 'running', seq: 0, records: [], live: null,
-        createdAt: Date.now(), updatedAt: Date.now() };
+        createdAt: Date.now(), updatedAt: Date.now(), worktree: args.worktree ? { branch: 'qmo/20261025-test-abcd' } : null };
       state.sessions[s.id] = s;
       touch(s);
       var first = write(s, turn(s, { author: 'operator', text: args.text, state: 'read', clientId: args.clientId }));
@@ -240,7 +253,24 @@ export function fakeShell(options: FakeShellOptions = {}): string {
     }
     if (command === 'qmo_local_changes') { find(args.session); return config.changes; }
     if (command === 'qmo_local_diff') {
-      return { path: args.path, text: config.diffs[args.path] || '', truncated: false, binary: false };
+      var given = config.diffs[args.path];
+      if (given && typeof given === 'object') return given;
+      return { path: args.path, text: given || '', truncated: false, binary: false };
+    }
+    if (command === 'qmo_local_rename') {
+      if (config.renameRefusal) throw config.renameRefusal;
+      var named = find(args.session);
+      named.title = args.title.trim();
+      touch(named);
+      return {};
+    }
+    if (command === 'qmo_local_delete') {
+      if (config.deleteRefusal) throw config.deleteRefusal;
+      find(args.session);
+      delete state.sessions[args.session];
+      save();
+      emit({ type: 'removed', session: args.session });
+      return config.deleted;
     }
     if (command === 'qmo_local_set_remote') throw 'qmo local E_REMOTE: 未开放';
     if (command === 'qmo_boot_layout') return null;
