@@ -198,7 +198,7 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
       )
       // The rule is said once, before and after the press: the press turns
       // that same line into the warning instead of adding a second one.
-      const ruleCount = `document.querySelector('main').innerText.split('保存并切换要求本页测连可用').length - 1`
+      const ruleCount = `document.getElementById('main').innerText.split('保存并切换要求本页测连可用').length - 1`
       expect(await tab.evaluate<number>(ruleCount)).toBe(1)
       await tab.evaluate(click('[data-action="prov-save-switch"]'))
       expect(

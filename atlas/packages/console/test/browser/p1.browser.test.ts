@@ -101,13 +101,19 @@ async function openConsole(tab: Tab, served: Served, path: string) {
 }
 
 /** One key, pressed and released, as the keyboard sends it. */
-async function key(tab: Tab, name: string, code: number): Promise<void> {
+async function key(
+  tab: Tab,
+  name: string,
+  code: number,
+  modifiers = 0,
+): Promise<void> {
   for (const type of ['rawKeyDown', 'keyUp']) {
     await tab.send('Input.dispatchKeyEvent', {
       type,
       key: name,
       code: name,
       windowsVirtualKeyCode: code,
+      modifiers,
     })
   }
 }
@@ -672,7 +678,7 @@ describe.skipIf(SKIP !== null)(
         )
         expect(
           await tab.evaluate<string>(
-            `document.querySelector('h1').textContent`,
+            `document.getElementById('page-title').textContent`,
           ),
         ).toContain('消息链')
         const later = served.wrapper.seen.slice(first)
@@ -872,15 +878,15 @@ describe.skipIf(SKIP !== null)(
       }
     }, 30_000)
 
-    test('the first Tab reaches the skip link, on screen, and Enter puts the page next (F1)', async () => {
+    test('the card opens on its search, the skip link is the one stop before it, on screen, and Enter puts the page next (F1)', async () => {
       const served = serveConsole()
       const tab = await browser.tab()
       try {
         await openConsole(tab, served, '/admin/nodes')
-        await tab.evaluate(
-          `document.activeElement && document.activeElement.blur()`,
-        )
-        await key(tab, 'Tab', 9)
+        await tab.waitFor(`document.activeElement.id === 'set-search'`)
+        // Shift+Tab: the card is modal, so the stop before the search is
+        // its own first one, not the page under it.
+        await key(tab, 'Tab', 9, 8)
         const link = await tab.evaluate<{
           cls: string
           top: number

@@ -19,6 +19,7 @@ import type {
 } from '../src/deps.js'
 import { accountsHarness, asSession, person } from './accountsHarness.js'
 import {
+  areaOf,
   ADMIN,
   AGENTS,
   NOW,
@@ -43,9 +44,12 @@ function ok<T>(value: T): ConsoleResult<T> {
   return { ok: true, value }
 }
 
-/** Does this markup let its reader change something? (`roles.test.ts`) */
+/**
+ * Does this area let its reader change something? (`roles.test.ts`) The
+ * area alone: the Work face under the card is the reader's conversation.
+ */
 function hasWriteControl(html: string): boolean {
-  return /\sdata-write[\s>=]/.test(withoutScripts(html))
+  return /\sdata-write[\s>=]/.test(withoutScripts(areaOf(html)))
 }
 
 function freshNotify(): MemoryNotify {

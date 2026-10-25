@@ -6,12 +6,12 @@
 //! | Window | Shows | Size |
 //! | --- | --- | --- |
 //! | `signin` | the local sign-in page | 600 × 600, fixed |
-//! | `main` | the local skeleton, then the hub's `/app`; the offline page when the hub is out of reach | 1200 × 800, at least 600 × 400, remembered |
+//! | `main` | the local skeleton (drawn in the hub page's last layout and colours, qmo-local.md §3.5), then the hub's `/app`; the offline page when the hub is out of reach | 1200 × 800, at least 600 × 400, remembered |
 //! | `quick` | the hub's `/app/quick` on a transparent, frameless window | 606 × 470, hidden until the shortcut |
 //! | `settings`, `about` | local pages | fixed |
 //!
 //! Getting in is `qmo session --json` (§3): the cookies it prints go into the
-//! WebView's store, the hub's origin gets the six commands of §5.2 as a remote
+//! WebView's store, the hub's origin gets the nine commands of §5.2 as a remote
 //! capability, and the main window opens `/app`. A page that lands on the
 //! hub's `/login` lost its session; the shell gets a new one and goes back.
 
@@ -34,6 +34,8 @@ use tauri_plugin_opener::OpenerExt;
 use crate::{
     deeplink::DeepLink,
     hub::{self, parse_hub, Hub, Navigation},
+    ipc::Reported,
+    layout::{self, PageColours, Plan},
     qmo::{self, CookieAction, ErrorKind, Failure, Paired, Session, SignedOut},
     settings::Settings,
     sidecar,
@@ -46,30 +48,36 @@ pub const QUICK: &str = "quick";
 pub const SETTINGS: &str = "settings";
 pub const ABOUT: &str = "about";
 
-/// What the hub's pages may call: the six commands of qmo-app.md §5.2, and
+/// What the hub's pages may call: the nine commands of qmo-app.md §5.2, and
 /// the two the window's own drag regions need (§5.1: the page marks its header
 /// `data-tauri-drag-region`; a drag or a double-click there moves or zooms
 /// this window and nothing else).
-pub const HUB_PERMISSIONS: [&str; 8] = [
+pub const HUB_PERMISSIONS: [&str; 11] = [
     "allow-qmo-shell-info",
     "allow-qmo-notify",
     "allow-qmo-badge",
     "allow-qmo-open-session",
     "allow-qmo-quick-hide",
     "allow-qmo-sign-out",
+    "allow-qmo-local-agents",
+    "allow-qmo-boot-layout",
+    "allow-qmo-open-local-settings",
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
 ];
 
-/// The six commands the hub's pages may call (qmo-app.md §5.2).
+/// The nine commands the hub's pages may call (qmo-app.md §5.2).
 #[cfg(test)]
-const HUB_COMMANDS: [&str; 6] = [
+const HUB_COMMANDS: [&str; 9] = [
     "qmo_shell_info",
     "qmo_notify",
     "qmo_badge",
     "qmo_open_session",
     "qmo_quick_hide",
     "qmo_sign_out",
+    "qmo_local_agents",
+    "qmo_boot_layout",
+    "qmo_open_local_settings",
 ];
 
 /// Where the traffic lights sit on macOS: the close button's left edge 17 px
@@ -193,16 +201,25 @@ impl Shell {
         self.with(|s| s.settings.clone())
     }
 
-    /// Change the settings and write them; a write that fails is logged, not fatal.
+    /// Change the settings and write them when they changed; a write that
+    /// fails is logged, not fatal.
     pub fn update_settings(&self, f: impl FnOnce(&mut Settings)) -> Settings {
-        let settings = self.with(|s| {
+        let (settings, changed) = self.with(|s| {
+            let before = s.settings.clone();
             f(&mut s.settings);
-            s.settings.clone()
+            (s.settings.clone(), s.settings != before)
         });
-        if let Err(e) = settings.save(&self.settings_path) {
-            eprintln!("qmo: settings not saved: {e}");
+        if changed {
+            if let Err(e) = settings.save(&self.settings_path) {
+                eprintln!("qmo: settings not saved: {e}");
+            }
         }
         settings
+    }
+
+    /// What the skeleton draws now: the hub page's last layout and colours.
+    pub fn skeleton_plan(&self) -> Plan {
+        self.with(|s| layout::plan(s.settings.layout.as_ref(), &s.settings.colors))
     }
 
     pub fn hub(&self) -> Option<Hub> {
@@ -266,11 +283,23 @@ pub fn keeps_running(app: &AppHandle) -> bool {
     cfg!(target_os = "macos") || shell(app).settings().keep_in_background
 }
 
-/// The page colour, light or dark, so a window never flashes white.
-pub fn page_background(theme: Theme) -> tauri::window::Color {
-    match theme {
-        Theme::Dark => tauri::window::Color(0x1a, 0x1a, 0x19, 0xff),
-        _ => tauri::window::Color(0xf9, 0xf9, 0xf7, 0xff),
+/// The page colour of `theme`, so a window never flashes white: the one the
+/// hub's page last reported for that appearance (`reported`), else the
+/// console's `--color-bg`, `#f9f9f7` light and `#0b0b0b` dark
+/// (qmo-local.md §3.4).
+pub fn page_background(theme: Theme, reported: &PageColours) -> tauri::window::Color {
+    let palette = layout::palette(reported, theme == Theme::Dark);
+    let (r, g, b) = layout::rgb(&palette.page);
+    tauri::window::Color(r, g, b, 0xff)
+}
+
+/// The colour for `label`'s window: the main window shows the hub's page, in
+/// the colours it reported; the small local windows draw the defaults.
+pub fn background(app: &AppHandle, label: &str, theme: Theme) -> tauri::window::Color {
+    if label == MAIN {
+        page_background(theme, &shell(app).settings().colors)
+    } else {
+        page_background(theme, &PageColours::default())
     }
 }
 
@@ -278,6 +307,18 @@ fn init_script(platform: &str, window: &str, version: &str) -> String {
     let info = serde_json::json!({ "platform": platform, "window": window, "version": version });
     format!(
         "Object.defineProperty(window, '__QMO_SHELL__', {{ value: Object.freeze({info}), \
+         writable: false, configurable: false, enumerable: false }});"
+    )
+}
+
+/// The skeleton's plan for the shell's own pages in the main window
+/// (`ui/skeleton.js` reads it as it loads), as JSON in a script, never in the
+/// markup. The hub's pages do not get it.
+fn boot_script(plan: &Plan) -> String {
+    let plan = serde_json::to_string(plan).expect("a plan is JSON");
+    format!(
+        "if (location.protocol === 'tauri:' || location.hostname === 'tauri.localhost') \
+         Object.defineProperty(window, '__QMO_BOOT__', {{ value: Object.freeze({plan}), \
          writable: false, configurable: false, enumerable: false }});"
     )
 }
@@ -387,7 +428,8 @@ fn chrome(
 /// Paint the window in the page colour of its current theme.
 pub fn paint(window: &WebviewWindow) {
     let theme = window.theme().unwrap_or(Theme::Light);
-    let _ = window.set_background_color(Some(page_background(theme)));
+    let colour = background(window.app_handle(), window.label(), theme);
+    let _ = window.set_background_color(Some(colour));
 }
 
 fn local_window(
@@ -415,7 +457,9 @@ fn local_window(
     Ok(window)
 }
 
-/// The main window, made on first use with the skeleton showing.
+/// The main window, made on first use with the skeleton showing: in the
+/// page colour before anything paints, and drawn in the hub page's last
+/// layout from its first frame.
 pub fn ensure_main(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     if let Some(window) = app.get_webview_window(MAIN) {
         return Ok(window);
@@ -427,7 +471,8 @@ pub fn ensure_main(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .min_inner_size(600.0, 400.0)
         .center()
         .visible(false)
-        .initialization_script(init_script(s.platform, "main", &s.version));
+        .initialization_script(init_script(s.platform, "main", &s.version))
+        .initialization_script(boot_script(&s.skeleton_plan()));
     let window = guarded(chrome(builder), app, MAIN).build()?;
     paint(&window);
     let zoom = s.settings().zoom;
@@ -524,7 +569,7 @@ fn load_in_main(app: &AppHandle, window: &WebviewWindow, url: Url) {
             .is_ok()
             && loaded.recv_timeout(BLANK_WAIT).is_ok()
         {
-            let _ = window.eval(skeleton_script());
+            let _ = window.eval(skeleton_script(&shell(app).skeleton_plan()));
         }
         shell(app).with(|s| s.blank = None);
     }
@@ -533,17 +578,51 @@ fn load_in_main(app: &AppHandle, window: &WebviewWindow, url: Url) {
     }
 }
 
-/// The skeleton page, with its style sheet inline, written into `about:blank`.
-fn skeleton_script() -> &'static str {
-    static SCRIPT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    SCRIPT.get_or_init(|| {
-        let page = include_str!("../../ui/skeleton.html").replace(
-            r#"<link rel="stylesheet" href="app.css">"#,
-            &format!("<style>{}</style>", include_str!("../../ui/app.css")),
-        );
-        let page = serde_json::to_string(&page).expect("a string");
-        format!("document.open();document.write({page});document.close();")
+/// The skeleton page's own script (`ui/skeleton.js`).
+const SKELETON_JS: &str = include_str!("../../ui/skeleton.js");
+
+/// The skeleton page as `about:blank` gets it: its style sheet inline, its
+/// script tag taken out (the script runs after, from here).
+fn skeleton_page() -> &'static str {
+    static PAGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PAGE.get_or_init(|| {
+        let page = include_str!("../../ui/skeleton.html")
+            .replace(
+                r#"<link rel="stylesheet" href="app.css">"#,
+                &format!("<style>{}</style>", include_str!("../../ui/app.css")),
+            )
+            .replace(r#"<script src="skeleton.js"></script>"#, "");
+        serde_json::to_string(&page).expect("a string")
     })
+}
+
+/// The skeleton written into `about:blank`, then drawn to `plan`: the plan
+/// goes in as JSON, the page's markup is the shell's own.
+fn skeleton_script(plan: &Plan) -> String {
+    let plan = serde_json::to_string(plan).expect("a plan is JSON");
+    format!(
+        "document.open();document.write({page});document.close();\
+         window.__QMO_BOOT__={plan};\n{SKELETON_JS}",
+        page = skeleton_page(),
+    )
+}
+
+/// `qmo_boot_layout`: keep what the page reported, and paint the main window
+/// in its colours from now on.
+pub fn remember_layout(app: &AppHandle, reported: Reported) {
+    let s = shell(app);
+    let before = s.settings().colors;
+    let settings = s.update_settings(|settings| {
+        settings.layout = Some(reported.layout);
+        if let Some((dark, palette)) = reported.colours {
+            settings.colors.set(dark, palette);
+        }
+    });
+    if settings.colors != before {
+        if let Some(window) = app.get_webview_window(MAIN) {
+            paint(&window);
+        }
+    }
 }
 
 /// Show a local page in the main window: `offline.html` and the like.
@@ -1017,6 +1096,40 @@ pub fn sign_out(app: &AppHandle) -> SignOutReport {
     SignOutReport { revoked, result }
 }
 
+/// What the page runs to open its settings card, as Claude Desktop's ⌘,
+/// does; a hub too old to define `window.__qmoOpenSettings` gets the shell's
+/// settings window instead, through the command its page may call. A fixed
+/// string: nothing is ever put into it.
+pub const OPEN_PAGE_SETTINGS: &str = "(window.__qmoOpenSettings||function(){window.__TAURI__.core.invoke('qmo_open_local_settings')})()";
+
+/// Whether the menu's Settings goes to the page: the main window shows a page
+/// of the hub the shell is signed in to. On a local page (sign-in, offline,
+/// the skeleton), `about:blank` or with no main window, it is the shell's own
+/// settings window.
+pub fn settings_in_page(main: Option<&Url>, hub: Option<&Hub>, phase: Phase) -> bool {
+    phase == Phase::Hub && crate::ipc::from_hub(main, hub).is_ok()
+}
+
+/// The menu bar's Settings… (⌘,) and the tray's Settings: the page's settings
+/// card in the main window, brought to the front, when it shows the hub's
+/// page; the shell's settings window otherwise.
+pub fn open_settings_from_menu(app: &AppHandle) {
+    let s = shell(app);
+    let main = app.get_webview_window(MAIN);
+    let page = main.as_ref().and_then(|window| window.url().ok());
+    match main {
+        Some(window) if settings_in_page(page.as_ref(), s.hub().as_ref(), s.phase()) => {
+            s.unhide();
+            show(&window);
+            if let Err(e) = window.eval(OPEN_PAGE_SETTINGS) {
+                eprintln!("qmo: page settings: {e}");
+                open_settings(app);
+            }
+        }
+        _ => open_settings(app),
+    }
+}
+
 /// Settings and About open as their own small windows.
 pub fn open_settings(app: &AppHandle) {
     shell(app).unhide();
@@ -1083,7 +1196,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_hub_gets_its_six_commands_and_the_drag_regions_only() {
+    fn the_hub_gets_its_nine_commands_and_the_drag_regions_only() {
         let commands: Vec<String> = HUB_COMMANDS
             .iter()
             .map(|c| format!("allow-{}", c.replace('_', "-")))
@@ -1099,7 +1212,31 @@ mod tests {
                 "core:window:allow-internal-toggle-maximize"
             ]
         );
-        assert!(HUB_PERMISSIONS.iter().all(|p| !p.contains("local")));
+        assert!(HUB_PERMISSIONS.iter().all(|p| !p.contains("allow-local-")));
+    }
+
+    #[test]
+    fn the_local_pages_get_none_of_the_hubs_commands() {
+        let local: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/local.json")).unwrap();
+        assert_eq!(local["local"], true);
+        assert!(local.get("remote").is_none());
+        let permissions: Vec<&str> = local["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p.as_str().unwrap())
+            .collect();
+        for command in HUB_COMMANDS {
+            let permission = format!("allow-{}", command.replace('_', "-"));
+            assert!(!permissions.contains(&permission.as_str()), "{command}");
+        }
+        assert!(permissions.contains(&"allow-local-boot"));
+        // Every command the shell declares is the hub's or a local page's.
+        let build = include_str!("../build.rs");
+        for command in HUB_COMMANDS {
+            assert!(build.contains(&format!("\"{command}\"")), "{command}");
+        }
     }
 
     #[test]
@@ -1112,12 +1249,75 @@ mod tests {
 
     #[test]
     fn the_blank_page_gets_the_skeleton_with_its_styles_inline() {
-        let script = skeleton_script();
+        let plan = layout::plan(None, &PageColours::default());
+        let script = skeleton_script(&plan);
         assert!(script.starts_with("document.open();document.write(\""));
-        assert!(script.ends_with(");document.close();"));
+        assert!(script.contains(");document.close();window.__QMO_BOOT__={\"mode\":\"work\""));
+        assert!(script.ends_with(SKELETON_JS));
         assert!(script.contains("skeleton-side"));
+        assert!(script.contains("skeleton-modes"));
         assert!(script.contains("<style>"));
         assert!(!script.contains("href=\\\"app.css\\\""));
+        assert!(!script.contains("src=\\\"skeleton.js\\\""));
+    }
+
+    #[test]
+    fn the_plan_goes_to_the_skeleton_as_json_only() {
+        let mut colours = PageColours::default();
+        colours.set(true, layout::Palette::new("#101112", "#0d0e0f").unwrap());
+        let reported = layout::BootLayout {
+            page: layout::Page::Code,
+            side: layout::Side::Closed,
+            side_width: 300,
+            rows: 2,
+            labels: 1,
+            theme: layout::ThemeChoice::Dark,
+        };
+        let plan = layout::plan(Some(&reported), &colours);
+        let json = serde_json::to_string(&plan).unwrap();
+        let script = boot_script(&plan);
+        assert!(script.starts_with(
+            "if (location.protocol === 'tauri:' || location.hostname === 'tauri.localhost') "
+        ));
+        assert!(script.contains(&format!("value: Object.freeze({json})")));
+        assert!(json.contains(r#""mode":"code""#));
+        assert!(json.contains(r#""side":"closed""#));
+        assert!(json.contains(r#""sideWidth":300"#));
+        assert!(json.contains(r#""items":["label","row","row"]"#));
+        assert!(json.contains(r##""dark":{"page":"#101112","sidebar":"#0d0e0f"}"##));
+        assert!(skeleton_script(&plan).contains(&format!("window.__QMO_BOOT__={json};")));
+    }
+
+    #[test]
+    fn the_skeleton_page_has_what_its_script_draws_into() {
+        let page = include_str!("../../ui/skeleton.html");
+        for hook in [
+            r#"class="skeleton-side""#,
+            r#"class="skeleton-modes""#,
+            r#"data-mode="work""#,
+            r#"data-mode="code""#,
+            r#"class="skeleton-list""#,
+            r#"<script src="skeleton.js"></script>"#,
+        ] {
+            assert!(page.contains(hook), "{hook}");
+        }
+        // The script comes after what it draws into, so it draws before the
+        // first paint instead of after it.
+        let list = page.find(r#"class="skeleton-list""#).unwrap();
+        let script = page.find(r#"<script src="skeleton.js">"#).unwrap();
+        assert!(list < script);
+        for name in [
+            "__QMO_BOOT__",
+            "sideWidth",
+            "items",
+            "local_boot",
+            "prefers-color-scheme",
+            "--color-bg",
+            "--color-side",
+            "--skeleton-side-w",
+        ] {
+            assert!(SKELETON_JS.contains(name), "{name}");
+        }
     }
 
     #[test]
@@ -1142,14 +1342,86 @@ mod tests {
     }
 
     #[test]
-    fn page_colours() {
+    fn the_menus_settings_go_to_the_page_only_on_the_signed_in_hubs_page() {
+        let hub = parse_hub("https://hub.example.com").unwrap();
+        let url = |s: &str| Url::parse(s).unwrap();
+        for page in [
+            "https://hub.example.com/app",
+            "https://hub.example.com/",
+            "https://hub.example.com/code",
+            "https://hub.example.com/admin/models",
+        ] {
+            assert!(
+                settings_in_page(Some(&url(page)), Some(&hub), Phase::Hub),
+                "{page}"
+            );
+        }
+        for page in [
+            "tauri://localhost/skeleton.html",
+            "tauri://localhost/offline.html",
+            "tauri://localhost/index.html",
+            "http://tauri.localhost/skeleton.html",
+            "about:blank",
+            "https://other.example.com/app",
+            "https://hub.example.com:8443/app",
+        ] {
+            assert!(
+                !settings_in_page(Some(&url(page)), Some(&hub), Phase::Hub),
+                "{page}"
+            );
+        }
+        // No main window, or no hub.
+        assert!(!settings_in_page(None, Some(&hub), Phase::Hub));
+        assert!(!settings_in_page(
+            Some(&url("https://hub.example.com/app")),
+            None,
+            Phase::Hub
+        ));
+        // Not signed in: the hub's address may still be on the window.
+        for phase in [
+            Phase::Starting,
+            Phase::SignedOut,
+            Phase::Entering,
+            Phase::Offline,
+        ] {
+            assert!(
+                !settings_in_page(Some(&url("https://hub.example.com/app")), Some(&hub), phase),
+                "{phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_page_settings_script_is_the_fixed_one() {
         assert_eq!(
-            page_background(Theme::Light),
+            OPEN_PAGE_SETTINGS,
+            "(window.__qmoOpenSettings||function(){window.__TAURI__.core.invoke('qmo_open_local_settings')})()"
+        );
+        // Its fallback is a command the hub's page may call.
+        assert!(HUB_COMMANDS.contains(&"qmo_open_local_settings"));
+    }
+
+    #[test]
+    fn page_colours() {
+        let none = PageColours::default();
+        assert_eq!(
+            page_background(Theme::Light, &none),
             tauri::window::Color(0xf9, 0xf9, 0xf7, 0xff)
         );
         assert_eq!(
-            page_background(Theme::Dark),
-            tauri::window::Color(0x1a, 0x1a, 0x19, 0xff)
+            page_background(Theme::Dark, &none),
+            tauri::window::Color(0x0b, 0x0b, 0x0b, 0xff)
+        );
+        let mut reported = PageColours::default();
+        reported.set(true, layout::Palette::new("#121314", "#0e0f10").unwrap());
+        assert_eq!(
+            page_background(Theme::Dark, &reported),
+            tauri::window::Color(0x12, 0x13, 0x14, 0xff)
+        );
+        // Only the appearance it was reported for.
+        assert_eq!(
+            page_background(Theme::Light, &reported),
+            tauri::window::Color(0xf9, 0xf9, 0xf7, 0xff)
         );
     }
 }

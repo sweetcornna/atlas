@@ -22,13 +22,26 @@ if (SKIP !== null) console.warn(`[more menu browser tests] skipped: ${SKIP}`)
 
 function serve() {
   const h = pageHarness()
+  // How long the schedules fragment takes to answer, when a test wants it slow.
+  const delay = { ms: 0 }
   const server = Bun.serve({
     port: 0,
     hostname: '127.0.0.1',
-    fetch: request => h.handle(request),
+    async fetch(request) {
+      const path = new URL(request.url).pathname
+      // Polling stands in for the revision stream, as in the other suites:
+      // the stream's first refresh would put the fragment's own markup over
+      // the probe table this suite mounts.
+      if (path === '/v0/events') return new Response(null, { status: 503 })
+      if (path === '/fragments/schedules' && delay.ms > 0) {
+        await new Promise(resolve => setTimeout(resolve, delay.ms))
+      }
+      return h.handle(request)
+    },
   })
   return {
     base: `http://127.0.0.1:${server.port}`,
+    delay,
     stop: () => {
       server.stop(true)
     },
@@ -47,7 +60,7 @@ const TABLE =
 
 async function mount(tab: Tab): Promise<void> {
   await tab.evaluate(`(() => {
-    document.querySelector('main').insertAdjacentHTML('afterbegin', ${JSON.stringify(TABLE)});
+    document.getElementById('main').insertAdjacentHTML('afterbegin', ${JSON.stringify(TABLE)});
     window.__calls = [];
     window.qianmoConsole.onAction('probe-edit', function (el) {
       window.__calls.push('edit ' + el.getAttribute('data-id'));
@@ -72,7 +85,7 @@ describe.skipIf(SKIP !== null)('a row’s 更多 menu in a browser', () => {
     site = serve()
     tab = await browser.tab()
     await tab.goto(`${site.base}/admin/jobs?token=${ADMIN}`)
-    await tab.waitFor(`window.qianmoConsole && document.querySelector('main')`)
+    await tab.waitFor(`window.qianmoConsole && document.getElementById('main')`)
     await mount(tab)
   }, 30_000)
 
@@ -102,6 +115,32 @@ describe.skipIf(SKIP !== null)('a row’s 更多 menu in a browser', () => {
     await tab.evaluate(
       `window.qianmoConsole.refreshRegion(document.getElementById('more-probe'))`,
     )
+    expect(
+      await tab.evaluate<string>(
+        `document.getElementById('more-probe').innerHTML`,
+      ),
+    ).toBe(before)
+    expect(
+      await tab.evaluate<boolean>(`${MENU}.matches(':popover-open')`),
+    ).toBe(true)
+  })
+
+  test('a refresh already on its way when the menu opens waits too', async () => {
+    await tab.evaluate(`${MENU}.hidePopover()`)
+    const before = await tab.evaluate<string>(
+      `document.getElementById('more-probe').innerHTML`,
+    )
+    site.delay.ms = 400
+    try {
+      await tab.evaluate(
+        `window.__refresh = window.qianmoConsole.refreshRegion(document.getElementById('more-probe')); 1`,
+      )
+      await tab.evaluate(`${BUTTON}.click()`)
+      await tab.waitFor(`${MENU}.matches(':popover-open')`)
+      await tab.evaluate('window.__refresh')
+    } finally {
+      site.delay.ms = 0
+    }
     expect(
       await tab.evaluate<string>(
         `document.getElementById('more-probe').innerHTML`,

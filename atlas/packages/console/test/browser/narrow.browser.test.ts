@@ -10,7 +10,10 @@
  *
  * Before E1 the sidebar sat above every page at this width — the roster
  * started at y≈792 and the composer at y≈1514 on an 812-tall screen — and the
- * delivery chain ran off the right edge with its last fact clipped.
+ * delivery chain ran off the right edge with its last fact clipped. Since
+ * P37.13 a management area is the settings card over the Work face; at this
+ * width the card is the window, its list one row over the area that scrolls
+ * sideways, its foot under the area.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -142,6 +145,10 @@ interface Layout {
   readonly clientWidth: number
   readonly titleBottom: number
   readonly front: boolean
+  /** The settings card is up, the area in it (an `/admin` address). */
+  readonly card: boolean
+  /** The card's list on the first screen, inside the width. */
+  readonly listShown: boolean
   readonly role: { top: number; bottom: number; right: number } | null
   readonly mainTop: number
   readonly sideShown: boolean
@@ -162,8 +169,10 @@ const LAYOUT = `(() => {
     }
     return false;
   }
+  const card = document.querySelector('dialog.set[open]');
+  const page = card ? '#main *' : 'main *';
   const cut = [];
-  const all = document.querySelectorAll('main *, .top *, #conn');
+  const all = document.querySelectorAll(card ? '#main *, .set-top *, #conn' : 'main *, .top *, #conn');
   for (const el of all) {
     if (!shown(el) || el.closest('[hidden], dialog:not([open]), details:not([open]) > :not(summary)')) continue;
     const own = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim() !== '');
@@ -177,7 +186,7 @@ const LAYOUT = `(() => {
   // What scrolls sideways inside the page, and why: a wide table in its own
   // scroller is a choice; a transcript that does is the chain overflowing.
   const scrollers = [];
-  for (const el of document.querySelectorAll('main *')) {
+  for (const el of document.querySelectorAll(page)) {
     if (el.classList.contains('scroll') && el.querySelector(':scope > table')) continue;
     const x = getComputedStyle(el).overflowX;
     if ((x === 'auto' || x === 'scroll') && el.scrollWidth > el.clientWidth + 1) {
@@ -186,8 +195,12 @@ const LAYOUT = `(() => {
   }
   const role = document.getElementById('role') || document.querySelector('.fx-me-text');
   const r = role ? rect(role) : null;
+  const list = document.getElementById('set-nav');
+  const l = list ? rect(list) : null;
   return {
     front: !!document.getElementById('fx'),
+    card: !!card,
+    listShown: !!l && l.width > 0 && l.top >= 0 && l.bottom <= innerHeight / 4 && l.right <= innerWidth + 0.5,
     scrollWidth: document.documentElement.scrollWidth,
     clientWidth: document.documentElement.clientWidth,
     titleBottom: rect(document.getElementById('page-title') || document.getElementById('fx-head')).bottom,
@@ -227,11 +240,14 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
           say(`scrolls sideways ${layout.scrollWidth} > ${layout.clientWidth}`)
         }
         if (layout.sideShown) say('sidebar drawn above the page')
-        if (!layout.menuShown) say('no menu button')
+        if (layout.card) {
+          if (!layout.listShown) say("the card's list not on the first screen")
+        } else if (!layout.menuShown) say('no menu button')
         if (layout.titleBottom > HEIGHT / 4)
           say(`title at ${layout.titleBottom}`)
         if (
           !layout.front &&
+          !layout.card &&
           (layout.role === null ||
             layout.role.top < 0 ||
             layout.role.bottom > HEIGHT / 3 ||
@@ -276,7 +292,7 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
       await open(tab, served.base, '/admin/overview')
       // The four health cards' first one, whole.
       const card = await tab.evaluate<{ top: number; bottom: number }>(
-        `(() => { const r = document.querySelector('main .card').getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; })()`,
+        `(() => { const r = document.querySelector('#main .card').getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; })()`,
       )
       expect(card.top).toBeGreaterThanOrEqual(0)
       expect(card.bottom).toBeLessThanOrEqual(HEIGHT)
@@ -296,36 +312,36 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
     }
   }, 30_000)
 
-  test('the menu opens the navigation as a drawer, Esc closes it, and focus goes back to the menu', async () => {
+  test('the card is the window: its list a row that keeps the current area in sight, its foot under the area, and Esc goes to the Work face', async () => {
     const tab = await phone(browser)
     try {
-      await open(tab, served.base, '/admin/nodes')
-      await tab.evaluate(`document.querySelector('.top .drawer-open').focus()`)
-      await tab.evaluate(`document.querySelector('.top .drawer-open').click()`)
-      await tab.waitFor(
-        `document.getElementById('side').matches(':popover-open')`,
-      )
-      const drawer = await tab.evaluate<{
-        left: number
-        right: number
-        nav: number
-        current: string
+      await open(tab, served.base, '/admin/settings')
+      const card = await tab.evaluate<{
+        card: number[]
+        list: { scrolls: boolean; bottom: number }
+        current: number[]
+        foot: number[]
+        main: number[]
       }>(`(() => {
-        const r = document.getElementById('side').getBoundingClientRect();
-        const link = document.getElementById('nav-audit').getBoundingClientRect();
-        return { left: r.left, right: r.right, nav: link.bottom,
-          current: document.querySelector('#side [aria-current="page"]').textContent };
+        const box = el => { const r = el.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)]; };
+        const list = document.getElementById('set-nav');
+        return {
+          card: box(document.querySelector('.set-card')),
+          list: { scrolls: list.scrollWidth > list.clientWidth, bottom: list.getBoundingClientRect().bottom },
+          current: box(document.querySelector('#set-nav [aria-current="page"]')),
+          foot: box(document.querySelector('.set-foot')),
+          main: box(document.getElementById('main')),
+        };
       })()`)
-      expect(drawer.left).toBe(0)
-      expect(drawer.right).toBeLessThanOrEqual(WIDTH)
-      expect(drawer.nav).toBeLessThanOrEqual(HEIGHT)
-      expect(drawer.current).toContain('节点')
-      // The refresh switch went with it.
-      expect(
-        await tab.evaluate<boolean>(
-          `(() => { const r = document.getElementById('refresh-interval').getBoundingClientRect(); return r.width > 0 && r.right <= innerWidth && r.bottom <= innerHeight; })()`,
-        ),
-      ).toBe(true)
+      expect(card.card).toEqual([0, 0, WIDTH, HEIGHT])
+      // More areas than the width holds: the row scrolls, and the current
+      // one (设置与关于, the last) was brought into sight.
+      expect(card.list.scrolls).toBe(true)
+      expect(card.current[0]).toBeGreaterThanOrEqual(0)
+      expect(card.current[2]).toBeLessThanOrEqual(WIDTH)
+      // The foot, with the refresh switch, under the area.
+      expect(card.foot[1]).toBeGreaterThanOrEqual(card.main[3])
+      expect(card.foot[3]).toBeLessThanOrEqual(HEIGHT)
       await tab.send('Input.dispatchKeyEvent', {
         type: 'rawKeyDown',
         key: 'Escape',
@@ -339,11 +355,12 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
         windowsVirtualKeyCode: 27,
       })
       await tab.waitFor(
-        `!document.getElementById('side').matches(':popover-open')`,
+        `!document.getElementById('settings').open && location.pathname === '/'`,
       )
+      // The Work face, on a phone: the menu button, no sideways scroll.
       expect(
         await tab.evaluate<boolean>(
-          `document.activeElement === document.querySelector('.top .drawer-open')`,
+          `document.documentElement.scrollWidth <= innerWidth && getComputedStyle(document.querySelector('.fx-top .fx-side-open')).display !== 'none'`,
         ),
       ).toBe(true)
     } finally {
@@ -351,7 +368,7 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
     }
   }, 30_000)
 
-  test('the drawer opens with scripts disabled', async () => {
+  test('without scripts the card is the page: the area in it, its list plain links', async () => {
     const tab = await phone(browser)
     try {
       // Signed in first: the cookie is what a script-less page rides on.
@@ -361,22 +378,31 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
       expect(
         await tab.evaluate<boolean>(`window.qianmoConsole === undefined`),
       ).toBe(true)
-      const at = await tab.evaluate<{ x: number; y: number }>(`(() => {
-        const r = document.querySelector('.top .drawer-open').getBoundingClientRect();
-        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      const seen = await tab.evaluate<{
+        open: boolean
+        title: string
+        card: number[]
+        audit: string
+      }>(`(() => {
+        const r = document.querySelector('.set-card').getBoundingClientRect();
+        return {
+          open: document.getElementById('settings').open,
+          title: document.getElementById('page-title').textContent,
+          card: [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)],
+          audit: document.getElementById('nav-audit').getAttribute('href'),
+        };
       })()`)
-      for (const type of ['mousePressed', 'mouseReleased']) {
-        await tab.send('Input.dispatchMouseEvent', {
-          type,
-          x: at.x,
-          y: at.y,
-          button: 'left',
-          clickCount: 1,
-        })
-      }
-      await tab.waitFor(
-        `document.getElementById('side').matches(':popover-open')`,
-      )
+      expect(seen).toEqual({
+        open: true,
+        title: '节点',
+        card: [0, 0, WIDTH, HEIGHT],
+        audit: '/admin/audit',
+      })
+      expect(
+        await tab.evaluate<boolean>(
+          `document.getElementById('roster').getBoundingClientRect().top < innerHeight`,
+        ),
+      ).toBe(true)
     } finally {
       await tab.close()
     }

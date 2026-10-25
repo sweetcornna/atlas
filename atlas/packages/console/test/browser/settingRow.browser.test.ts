@@ -70,7 +70,7 @@ const ROWS = settingsGroup('测试', [
 /** Put the rows on the page and a handler that records and refuses `bad`. */
 async function mount(tab: Tab): Promise<void> {
   await tab.evaluate(`(() => {
-    document.querySelector('main').insertAdjacentHTML('afterbegin', ${JSON.stringify(ROWS)});
+    document.getElementById('main').insertAdjacentHTML('afterbegin', ${JSON.stringify(ROWS)});
     window.__calls = [];
     window.qianmoConsole.onSetting('probe', function (value, row) {
       window.__calls.push(row.getAttribute('data-setting') + '=' + String(value));
@@ -104,7 +104,7 @@ describe.skipIf(SKIP !== null)('setting rows in a browser', () => {
     site = serve()
     tab = await browser.tab()
     await tab.goto(`${site.base}/admin/settings?token=${ADMIN}`)
-    await tab.waitFor(`window.qianmoConsole && document.querySelector('main')`)
+    await tab.waitFor(`window.qianmoConsole && document.getElementById('main')`)
     await mount(tab)
   }, 30_000)
 

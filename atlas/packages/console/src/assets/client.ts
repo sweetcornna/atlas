@@ -84,7 +84,7 @@
  *
  * ## One place an action reports back (D2)
  *
- * `toast(text, tone)` puts one line in the shell's `#toasts` region, bottom
+ * `toast(text, tone)` puts one line in the document's `#toasts` region, bottom
  * right, through `textContent` like every other string here. The region is
  * `aria-live="polite"`; a failure is additionally `role="alert"`, so a screen
  * reader interrupts for it. A line leaves on its own after a few seconds, or
@@ -801,8 +801,10 @@ function runtimeScript(guards: TokenGuards): string {
     }
     // A modal dialog makes the rest of the page inert, so a stop button in
     // the corner would be out of reach behind the dialog that asked. Inside
-    // that dialog, above its buttons, instead.
-    var box = job.el.isConnected ? job.el.closest('dialog[open]') : null;
+    // that dialog, above its buttons, instead. The settings card is a dialog
+    // too (view/shell.ts), but the page in it is the page: the toasts are
+    // in it while it is up.
+    var box = job.el.isConnected ? job.el.closest('dialog[open]:not(.set)') : null;
     if (box) {
       line.className = 'progress';
       var row = job.el.closest('.dialog-actions');
@@ -1071,13 +1073,18 @@ function runtimeScript(guards: TokenGuards): string {
     for (var i = 0; i < marks.length; i++) marks[i].remove();
   }
 
+  // An open 更多 menu would go with the markup it sits in: the region waits,
+  // also when the menu opened while the answer was on its way.
+  function held(mount) {
+    try { return !!mount.querySelector('.row-more-menu:popover-open'); } catch (e) { return false; }
+  }
+
   function refreshRegion(mount) {
     var url = mount.getAttribute('data-poll');
-    if (!url) return Promise.resolve();
-    // An open 更多 menu would go with the markup it sits in.
-    try { if (mount.querySelector('.row-more-menu:popover-open')) return Promise.resolve(); } catch (e) {}
+    if (!url || held(mount)) return Promise.resolve();
     var ids = (mount.getAttribute('data-swap') || '').split(' ').filter(Boolean);
     return loadHtml(url).then(function (html) {
+      if (held(mount)) return;
       var state = snapshot(mount);
       if (!(ids.length > 0 && swapRegions(html, ids) > 0)) mount.innerHTML = html;
       restore(mount, state);
@@ -1210,12 +1217,12 @@ function runtimeScript(guards: TokenGuards): string {
       // Closes the dialog the button is in and nothing else: 返回修改 on a
       // confirmation has to land back on the form that asked for it.
       event.preventDefault();
-      closeDialog(el.closest('dialog'));
+      closeDialog(el.closest('dialog:not(.set)'));
     } else if (action && action.indexOf('confirm-') === 0) {
       event.preventDefault();
       var run = pending;
       var opener = openerOf(pendingFor);
-      closeDialog(el.closest('dialog'));
+      closeDialog(el.closest('dialog:not(.set)'));
       pending = null;
       pendingFor = '';
       if (run) within(opener, run);
@@ -1343,9 +1350,10 @@ function runtimeScript(guards: TokenGuards): string {
     var el = event.target;
     if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing ||
         (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) ||
-        document.querySelector('dialog[open]')) return;
+        document.querySelector('dialog[open]:not(.set)')) return;
     if (event.key === '/') {
-      var search = document.querySelector('input[type="search"], input[name="q"], input[name="search"]');
+      var search = (document.querySelector('dialog.set[open]') ? byId('main') : document)
+        .querySelector('input[type="search"], input[name="q"], input[name="search"]');
       if (search) { event.preventDefault(); search.focus(); }
     } else if (event.key === '?') { event.preventDefault(); openDialog('keyboard-help', el); }
     else if (event.key === 'g') goAt = Date.now();

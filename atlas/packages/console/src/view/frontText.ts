@@ -48,6 +48,7 @@ interface KeyWords {
   readonly close: string
   readonly help: string
   readonly quick: string
+  readonly settings: string
 }
 
 export interface FrontText {
@@ -119,7 +120,6 @@ export interface FrontText {
   readonly roleAdmin: string
   readonly roleView: string
   readonly me: string
-  readonly adminConsole: string
   readonly accountMenu: string
   readonly changeMyLook: string
   readonly appearance: string
@@ -158,6 +158,38 @@ export interface FrontText {
   readonly faces: string
   readonly faceChat: string
   readonly faceAgents: string
+
+  /**
+   * The two modes over the side list (P37.13, qmo-local.md §3.6): Work is the
+   * conversations, Code the work on this computer. The two words are the
+   * modes' names and stay as they are in every language.
+   */
+  readonly modes: string
+  readonly work: string
+  readonly code: string
+  /** The settings card: every management area, over the page. */
+  readonly settings: string
+  readonly settingsSearch: string
+  readonly closeSettings: string
+  /** The settings card's skip link, past its list to the area. */
+  readonly skipToArea: string
+  /** The desktop app's own settings window, from the card. */
+  readonly desktopApp: string
+  /** `/code`: its side list, and what its page says in a browser. */
+  readonly newCodeSession: string
+  readonly codeSessions: string
+  readonly noCodeSessions: string
+  readonly codeInApp: string
+  readonly localAgents: string
+  readonly rescan: string
+  readonly folder: string
+  readonly pickFolder: string
+  readonly agentWord: string
+  readonly startSession: string
+  readonly localClosed: string
+  /** The Work face without a conversation: no channel, or an identity that may not hold one. */
+  readonly noChatChannel: string
+  readonly noChatRole: string
   /** `/app`'s side list: every conversation, by calendar day. */
   readonly recents: string
   readonly dayGroups: readonly [string, string, string, string]
@@ -267,6 +299,11 @@ interface FrontClientText {
   /** A line whose send failed, kept in the conversation with 重试 (P37.13). */
   readonly notDelivered: string
   readonly retry: string
+  /** `/code`: the agents on this computer (`qmo agents --json`). */
+  readonly scanning: string
+  readonly noLocalAgents: string
+  readonly agentReady: string
+  readonly agentNotReady: string
   readonly newReply: string
   readonly seeChat: string
   readonly polling: string
@@ -383,7 +420,6 @@ const ZH: FrontText = {
   roleAdmin: '管理',
   roleView: '只读',
   me: '我',
-  adminConsole: '管理后台',
   accountMenu: '账号与外观',
   changeMyLook: '换我的形象',
   appearance: '外观',
@@ -434,11 +470,33 @@ const ZH: FrontText = {
     close: '关闭弹层',
     help: '快捷键',
     quick: '快速输入',
+    settings: '设置',
   },
   close: '关闭',
   faces: '界面',
   faceChat: '对话',
   faceAgents: '智能体',
+  modes: '模式',
+  work: 'Work',
+  code: 'Code',
+  settings: '设置',
+  settingsSearch: '搜索设置',
+  closeSettings: '关闭设置',
+  skipToArea: '跳到正文',
+  desktopApp: '桌面版',
+  newCodeSession: '新代码会话',
+  codeSessions: '代码会话',
+  noCodeSessions: '还没有代码会话',
+  codeInApp: 'Code 在 Qmo 桌面版里用',
+  localAgents: '本机 agent',
+  rescan: '重新检测',
+  folder: '文件夹',
+  pickFolder: '选择文件夹',
+  agentWord: 'agent',
+  startSession: '开始',
+  localClosed: '本机会话未开放',
+  noChatChannel: '这里没有接入对话',
+  noChatRole: '这个身份不能在这里对话',
   recents: '最近对话',
   dayGroups: ['今天', '昨天', '过去 7 天', '更早'],
   noConversations: '暂无对话',
@@ -599,7 +657,6 @@ const EN: FrontText = {
   roleAdmin: 'Admin',
   roleView: 'Read-only',
   me: 'Me',
-  adminConsole: 'Admin console',
   accountMenu: 'Account and appearance',
   changeMyLook: 'Change my look',
   appearance: 'Appearance',
@@ -650,11 +707,33 @@ const EN: FrontText = {
     close: 'Close menus',
     help: 'Keyboard shortcuts',
     quick: 'Quick entry',
+    settings: 'Settings',
   },
   close: 'Close',
   faces: 'View',
   faceChat: 'Chat',
   faceAgents: 'Agents',
+  modes: 'Mode',
+  work: 'Work',
+  code: 'Code',
+  settings: 'Settings',
+  settingsSearch: 'Search settings',
+  closeSettings: 'Close settings',
+  skipToArea: 'Skip to content',
+  desktopApp: 'Desktop app',
+  newCodeSession: 'New code session',
+  codeSessions: 'Code sessions',
+  noCodeSessions: 'No code sessions yet',
+  codeInApp: 'Code runs in the Qmo desktop app',
+  localAgents: 'Agents on this computer',
+  rescan: 'Scan again',
+  folder: 'Folder',
+  pickFolder: 'Choose a folder',
+  agentWord: 'Agent',
+  startSession: 'Start',
+  localClosed: 'Local sessions are not open yet',
+  noChatChannel: 'No conversation channel here',
+  noChatRole: 'This identity cannot hold conversations here',
   recents: 'Recent chats',
   dayGroups: ['Today', 'Yesterday', 'Previous 7 days', 'Older'],
   noConversations: 'No chats yet',
@@ -815,7 +894,6 @@ const JA: FrontText = {
   roleAdmin: '管理者',
   roleView: '閲覧のみ',
   me: '自分',
-  adminConsole: '管理画面',
   accountMenu: 'アカウントと外観',
   changeMyLook: '自分の見た目を変更',
   appearance: '外観',
@@ -866,11 +944,33 @@ const JA: FrontText = {
     close: 'メニューを閉じる',
     help: 'キーボードショートカット',
     quick: 'クイック入力',
+    settings: '設定',
   },
   close: '閉じる',
   faces: '表示',
   faceChat: 'チャット',
   faceAgents: 'エージェント',
+  modes: 'モード',
+  work: 'Work',
+  code: 'Code',
+  settings: '設定',
+  settingsSearch: '設定を検索',
+  closeSettings: '設定を閉じる',
+  skipToArea: '本文へ移動',
+  desktopApp: 'デスクトップ版',
+  newCodeSession: '新しいコードセッション',
+  codeSessions: 'コードセッション',
+  noCodeSessions: 'コードセッションはまだありません',
+  codeInApp: 'Code は Qmo デスクトップ版で使えます',
+  localAgents: 'このコンピュータの agent',
+  rescan: '再検出',
+  folder: 'フォルダ',
+  pickFolder: 'フォルダを選択',
+  agentWord: 'agent',
+  startSession: '開始',
+  localClosed: 'ローカルセッションはまだ使えません',
+  noChatChannel: 'ここには会話チャネルがありません',
+  noChatRole: 'この ID ではここで会話できません',
   recents: '最近のチャット',
   dayGroups: ['今日', '昨日', '過去 7 日間', 'それ以前'],
   noConversations: 'チャットはまだありません',
@@ -979,6 +1079,10 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     sentRetrying: '已发送 · 刷新失败 · 自动重试中',
     notDelivered: '未送达',
     retry: '重试',
+    scanning: '正在检测',
+    noLocalAgents: '这台电脑上没有找到 agent',
+    agentReady: '可用',
+    agentNotReady: '不可用',
     newReply: '收到新回复 · ',
     seeChat: '回到对话查看',
     polling: '轮询中',
@@ -1007,6 +1111,10 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     sentRetrying: 'Sent · refresh failed · retrying',
     notDelivered: 'Not delivered',
     retry: 'Retry',
+    scanning: 'Looking',
+    noLocalAgents: 'No agents found on this computer',
+    agentReady: 'Ready',
+    agentNotReady: 'Not available',
     newReply: 'New reply · ',
     seeChat: 'see the chat',
     polling: 'Polling',
@@ -1037,6 +1145,10 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     sentRetrying: '送信済み · 更新失敗 · 再試行中',
     notDelivered: '未送信',
     retry: '再試行',
+    scanning: '検出中',
+    noLocalAgents: 'このコンピュータに agent が見つかりません',
+    agentReady: '利用可能',
+    agentNotReady: '利用不可',
     newReply: '新しい返信 · ',
     seeChat: 'チャットを確認してください',
     polling: 'ポーリング中',

@@ -22,6 +22,8 @@ pub struct Run {
     pub code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
+    /// Stopped by the shell for taking longer than allowed.
+    pub timed_out: bool,
 }
 
 /// `qmo` beside the shell's own executable, where the bundle puts it
@@ -87,5 +89,6 @@ pub fn run(args: &[&str], input: Option<&str>, timeout: Duration) -> std::io::Re
         code: status.and_then(|s| s.code()),
         stdout: stdout.join().unwrap_or_default(),
         stderr: stderr.join().unwrap_or_default(),
+        timed_out: status.is_none(),
     })
 }

@@ -8,8 +8,9 @@
  * held everything: overview, roster, servers, wake, trail, register, limits.
  * Each of those now has its own address (`routes/`), and what is left here is
  * the overview itself plus the names the package entry has always exported —
- * `renderPage`, `PageModel`, `BRAND`, `CSP`, `documentHead` — now pointing at
- * the shell they moved into.
+ * `BRAND`, `CSP`, `documentHead` — now pointing at the shell they moved into.
+ * (`renderPage` went with the management document itself, P37.13: every
+ * area is drawn in the settings card over the front.)
  *
  * ## The overview cards read the fragments, not a second copy of the data
  *
@@ -40,21 +41,8 @@ import type {
 import { icon, sectionHead, tag } from './bits.js'
 import { certificateTally } from './certificates.js'
 import { attr, escapeHtml } from './escape.js'
-import { renderShell, type ShellModel } from './shell.js'
-
 export { CSP } from '../respond.js'
 export { BRAND, documentHead } from './shell.js'
-
-/** A whole console page, as the shell draws it. */
-export type PageModel = ShellModel
-
-/**
- * A whole console document. Kept under its historic name because the package
- * entry exports it; every page — this one included — is drawn by the shell.
- */
-export function renderPage(model: PageModel): string {
-  return renderShell(model)
-}
 
 export interface OverviewModel {
   /** Output of `renderRoster`; only its header numbers are read. */

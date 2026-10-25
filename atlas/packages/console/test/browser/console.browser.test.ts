@@ -119,10 +119,42 @@ function pause(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-/** Open a console page signed in with the admin token, runtime started. */
+/**
+ * Open a console page signed in with the admin token, runtime started. An
+ * area's address comes with the settings card drawn open; the card's
+ * runtime has taken it over (modal, its history entry marked) before
+ * anything is pressed.
+ */
 async function openConsole(tab: Tab, served: Served, path: string) {
   await tab.goto(`${served.base}${path}?token=${ADMIN}`)
-  await tab.waitFor('window.qianmoConsole !== undefined')
+  await tab.waitFor(
+    `window.qianmoConsole !== undefined && (() => {
+      const card = document.getElementById('settings');
+      return !card || !card.open ||
+        (card.matches(':modal') && history.state !== null && history.state.qianmoNav === 1);
+    })()`,
+  )
+}
+
+/**
+ * Press an element with the mouse, the way a person does: a click from a
+ * script carries no user activation, and Chrome then groups the dialog it
+ * opens with the card, so that one Escape closes both (`assets/nav.ts`).
+ */
+async function press(tab: Tab, selector: string): Promise<void> {
+  const at = await tab.evaluate<{ x: number; y: number }>(`(() => {
+    const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await tab.send('Input.dispatchMouseEvent', {
+      type,
+      x: at.x,
+      y: at.y,
+      button: 'left',
+      clickCount: 1,
+    })
+  }
 }
 
 /** Press and release Escape, the way a keyboard would. */
@@ -337,11 +369,7 @@ describe.skipIf(SKIP !== null)('the console in a browser', () => {
     const tab = await browser.tab()
     try {
       await openConsole(tab, served, '/admin/nodes')
-      await tab.evaluate(`(() => {
-          const opener = document.querySelector('[data-open-dialog="register-dialog"]');
-          opener.focus();
-          opener.click();
-        })()`)
+      await press(tab, '[data-open-dialog="register-dialog"]')
       await tab.waitFor(`document.getElementById('register-dialog').open`)
       // Modal: the rest of the page is inert while it is open.
       expect(
@@ -356,6 +384,16 @@ describe.skipIf(SKIP !== null)('the console in a browser', () => {
           `document.activeElement.getAttribute('data-open-dialog')`,
         ),
       ).toBe('register-dialog')
+      // That Escape was the form's: the card it sits in stays, past the
+      // card's own closing time.
+      await pause(400)
+      expect(
+        await tab.evaluate<unknown>(`({
+          card: document.getElementById('settings').open,
+          path: location.pathname,
+          focus: document.activeElement.getAttribute('data-open-dialog'),
+        })`),
+      ).toEqual({ card: true, path: '/admin/nodes', focus: 'register-dialog' })
     } finally {
       await tab.close()
       served.stop()

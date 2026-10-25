@@ -39,6 +39,7 @@ import {
 } from './lifecycleFake.js'
 import { MemoryActionLedger } from './memoryActions.js'
 import {
+  areaOf,
   AGENTS,
   PageAudit,
   PageRegistry,
@@ -102,7 +103,8 @@ function rowOf(html: string, address: string): string {
 
 /** Everything in a document that would let its reader change something. */
 function writeMarks(html: string): readonly string[] {
-  const markup = html.replace(/<script>[\s\S]*?<\/script>/g, '')
+  // The area itself; the Work face under the card is the reader's own.
+  const markup = areaOf(html).replace(/<script>[\s\S]*?<\/script>/g, '')
   const found: string[] = []
   if (/\sdata-write[\s>=]/.test(markup)) found.push('data-write')
   for (const marker of [
@@ -117,7 +119,8 @@ function writeMarks(html: string): readonly string[] {
   }
   for (const form of markup.match(/<form[^>]*>/g) ?? []) {
     const plainGet = /method="get"/i.test(form)
-    const logout = form.includes('id="logout-form"')
+    const logout =
+      form.includes('id="logout-form"') || form.includes('fx-sign-out')
     if (!plainGet && !logout) found.push(form)
   }
   return found
