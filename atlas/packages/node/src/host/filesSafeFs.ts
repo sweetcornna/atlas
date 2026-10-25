@@ -292,6 +292,21 @@ export class FileDirectory {
       throw new FileFault('rename-collision')
     fs.fsyncSync(this.fd)
   }
+  /**
+   * Rename over whatever `to` names now (P37.17 work outputs: a document made
+   * again under its old name). The old entry is replaced, never followed: a
+   * link there is the thing replaced, and a directory there makes it fail.
+   */
+  replace(from: string, to: string): void {
+    this.#checkName(to, false)
+    const source = cstring(from),
+      target = cstring(to)
+    const rename =
+      symbols()[process.platform === 'darwin' ? 'renameatx_np' : 'renameat2']!
+    if (rename(this.fd, ptr(source), this.fd, ptr(target), 0) !== 0)
+      throw new FileFault('rename-failed')
+    fs.fsyncSync(this.fd)
+  }
   remove(name: string): void {
     if (!this.names().includes(name)) return
     const fd = this.open(name),
