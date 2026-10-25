@@ -364,15 +364,11 @@ pub fn local_forget_folder(body: &Value) -> Result<Call, Invalid> {
     ))
 }
 
-/// Why `qmo_local_start` with `remote: true` is turned down: Remote comes
-/// with P37.15 (qmo-local.md §4.5.6).
-pub const REMOTE_CLOSED: &str = "未开放";
-
 /// `qmo_local_start`: `folder`, `agent`, `mode`, `worktree`, `text`,
 /// `clientId`, `remote?`. The runner answers a `worktree: true` it cannot
-/// make yet; `remote` is `false` until P37.15, so the shell sends `false`.
-/// `Ok(Err(..))` is a well-formed call asking for Remote.
-pub fn local_start(body: &Value) -> Result<Result<Call, &'static str>, Invalid> {
+/// make yet; `remote` absent is `false`, and `true` asks the runner to sync
+/// the session from its first line (P37.15, qmo-local.md §5.0).
+pub fn local_start(body: &Value) -> Result<Call, Invalid> {
     let map = object(
         body,
         &[
@@ -385,10 +381,8 @@ pub fn local_start(body: &Value) -> Result<Result<Call, &'static str>, Invalid> 
     let worktree = boolean(map, "worktree")?.ok_or_else(|| invalid("worktree is required"))?;
     let text = prompt(map)?;
     let client_id = token(map, "clientId", valid_client_id, "[A-Za-z0-9_-]{1,64}")?;
-    if boolean(map, "remote")? == Some(true) {
-        return Ok(Err(REMOTE_CLOSED));
-    }
-    Ok(Ok(call(
+    let remote = boolean(map, "remote")?.unwrap_or(false);
+    Ok(call(
         "session.start",
         serde_json::json!({
             "folder": folder,
@@ -397,9 +391,9 @@ pub fn local_start(body: &Value) -> Result<Result<Call, &'static str>, Invalid> 
             "worktree": worktree,
             "text": text,
             "clientId": client_id,
-            "remote": false,
+            "remote": remote,
         }),
-    )))
+    ))
 }
 
 /// `qmo_local_send`: `session`, `text`, `clientId`; the shell adds
@@ -496,13 +490,15 @@ pub fn local_diff(body: &Value) -> Result<Call, Invalid> {
     ))
 }
 
-/// `qmo_local_set_remote`: `session`, `on`. Checked, then turned down until
-/// P37.15.
-pub fn local_set_remote(body: &Value) -> Result<(), Invalid> {
+/// `qmo_local_set_remote`: `session`, `on` (P37.15, qmo-local.md §5.0).
+pub fn local_set_remote(body: &Value) -> Result<Call, Invalid> {
     let map = object(body, &["session", "on"])?;
-    local_session(map)?;
-    boolean(map, "on")?.ok_or_else(|| invalid("on is required"))?;
-    Ok(())
+    let session = local_session(map)?;
+    let on = boolean(map, "on")?.ok_or_else(|| invalid("on is required"))?;
+    Ok(call(
+        "session.remote",
+        serde_json::json!({ "session": session, "on": on }),
+    ))
 }
 
 /// The colours a layout report carries: the page and side panel colours of
@@ -1243,7 +1239,7 @@ mod tests {
     #[test]
     fn start_reads_field_by_field() {
         assert_eq!(
-            local_start(&start_body()).unwrap().unwrap(),
+            local_start(&start_body()).unwrap(),
             Call {
                 method: "session.start",
                 params: json!({
@@ -1266,25 +1262,20 @@ mod tests {
                     "mode",
                     json!(mode),
                 );
-                let call = local_start(&body).unwrap().unwrap();
+                let call = local_start(&body).unwrap();
                 assert_eq!(call.params["agent"], agent);
                 assert_eq!(call.params["mode"], mode);
             }
         }
-        let worktree = local_start(&with(&start_body(), "worktree", json!(true)))
-            .unwrap()
-            .unwrap();
+        let worktree = local_start(&with(&start_body(), "worktree", json!(true))).unwrap();
         assert_eq!(worktree.params["worktree"], true);
         for remote in [json!(false), Value::Null] {
-            let call = local_start(&with(&start_body(), "remote", remote))
-                .unwrap()
-                .unwrap();
+            let call = local_start(&with(&start_body(), "remote", remote)).unwrap();
             assert_eq!(call.params["remote"], false);
         }
-        assert_eq!(
-            local_start(&with(&start_body(), "remote", json!(true))).unwrap(),
-            Err(REMOTE_CLOSED)
-        );
+        // Remote on from the first line (P37.15).
+        let remote = local_start(&with(&start_body(), "remote", json!(true))).unwrap();
+        assert_eq!(remote.params["remote"], true);
         // Text: 1 to 65,536 UTF-16 code units, line breaks and tabs fine.
         for text in [
             "x".to_string(),
@@ -1599,7 +1590,7 @@ mod tests {
             "qmo_local_watch" => local_watch(args).map(|_| None),
             "qmo_local_pick_folder" => no_arguments(args).map(|()| None),
             "qmo_local_forget_folder" => local_forget_folder(args).map(Some),
-            "qmo_local_start" => local_start(args).map(Result::ok),
+            "qmo_local_start" => local_start(args).map(Some),
             "qmo_local_send" => local_send(args).map(Some),
             "qmo_local_stop" => local_stop(args).map(Some),
             "qmo_local_answer" => local_answer(args).map(Some),
@@ -1607,7 +1598,7 @@ mod tests {
             "qmo_local_read" => local_read(args).map(Some),
             "qmo_local_changes" => local_changes(args).map(Some),
             "qmo_local_diff" => local_diff(args).map(Some),
-            "qmo_local_set_remote" => local_set_remote(args).map(|()| None),
+            "qmo_local_set_remote" => local_set_remote(args).map(Some),
             other => panic!("{other} is not a local-session command"),
         }
     }
@@ -1658,9 +1649,16 @@ mod tests {
     }
 
     #[test]
-    fn set_remote_checks_then_is_closed() {
-        assert!(local_set_remote(&json!({"session": SESSION, "on": true})).is_ok());
-        assert!(local_set_remote(&json!({"session": SESSION, "on": false})).is_ok());
+    fn set_remote_reads_field_by_field() {
+        for on in [true, false] {
+            assert_eq!(
+                local_set_remote(&json!({"session": SESSION, "on": on})).unwrap(),
+                Call {
+                    method: "session.remote",
+                    params: json!({"session": SESSION, "on": on}),
+                }
+            );
+        }
         for bad in [
             json!({ "session": SESSION }),
             json!({"session": SESSION, "on": "true"}),

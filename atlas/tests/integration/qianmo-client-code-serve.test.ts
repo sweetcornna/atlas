@@ -496,8 +496,8 @@ describe.skipIf(!posix)('the compiled qmo as the shell runs it', () => {
         'E_ARGS',
       ])
     }
-    // list, folders.forget and the eight session methods a page reaches.
-    expect(asked).toBe(10)
+    // list, folders.forget and the nine session methods a page reaches.
+    expect(asked).toBe(11)
     expect(await r.call('shutdown')).toEqual({})
     expect(await r.exited()).toBe(0)
   }, 30_000)
