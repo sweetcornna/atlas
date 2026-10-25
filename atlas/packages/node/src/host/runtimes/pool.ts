@@ -19,6 +19,7 @@ import {
   claudeCodeToolName,
   RUNTIME_MCP_SERVER,
 } from '@qianmo/harness/claudeStream.ts'
+import { CodexChannel } from '@qianmo/harness/codexRpc.ts'
 import { qianmoConfigPath } from '@qianmo/paths'
 import {
   residentApprovalInput,
@@ -50,7 +51,7 @@ import {
   PERMISSION_TOOL,
   RUNTIME_MCP_TIMEOUT_MS,
 } from './claudeCode.js'
-import { CODEX_KEY_ENV, CodexChannel, codexArgv } from './codex.js'
+import { CODEX_KEY_ENV, codexArgv, codexResidentThread } from './codex.js'
 import {
   frontendHolds,
   readFrontendAck,
@@ -832,9 +833,11 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
           open = child =>
             new CodexChannel(child, {
               onAdmitted,
-              cwd: agent.cwd,
-              developerInstructions: systemPrompt,
-              allowWorkspaceEdits: this.#options.allowWorkspaceEdits === true,
+              thread: codexResidentThread({
+                cwd: agent.cwd,
+                developerInstructions: systemPrompt,
+                allowWorkspaceEdits: this.#options.allowWorkspaceEdits === true,
+              }),
               ...(record.nativeId === undefined
                 ? {}
                 : { threadId: record.nativeId }),
