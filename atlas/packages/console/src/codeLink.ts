@@ -45,6 +45,9 @@ import {
   codeHeaderOf,
   codeRecordOf,
   type CodeCopy,
+  type CodeLinksPort,
+  type LinkReply,
+  type LinkRequest,
 } from './codeRemote.js'
 import type { BillingPort, HandoffDevicesPort } from './directionPorts.js'
 import { fail } from './respond.js'
@@ -53,7 +56,7 @@ import type { TenantPort } from './tenancy.js'
 const DEVICE_TOKEN = /^qmd_[A-Za-z0-9_-]{43}$/
 
 /** How often every link's token and subscription are checked again. */
-export const CODE_LINK_RECHECK_MS = 30_000
+const CODE_LINK_RECHECK_MS = 30_000
 
 /** How long a line, an answer or a stop waits for the runner's reply. */
 export const CODE_LINK_REPLY_MS = 10_000
@@ -81,7 +84,7 @@ const REFUSAL_WORDS = {
 } as const
 
 /** Just enough of a Bun server for an upgrade. */
-export interface LinkUpgradeServer {
+interface LinkUpgradeServer {
   upgrade(
     request: Request,
     options: { data: LinkData; headers?: Record<string, string> },
@@ -89,7 +92,7 @@ export interface LinkUpgradeServer {
 }
 
 /** Just enough of a Bun server-side WebSocket. */
-export interface LinkSocket {
+interface LinkSocket {
   readonly data: LinkData
   send(data: string): unknown
   close(code?: number, reason?: string): void
@@ -120,34 +123,7 @@ interface Link {
   >
 }
 
-/** The runner's answer to a request sent down a link. */
-export type LinkReply =
-  | { readonly ok: true; readonly result: unknown }
-  | {
-      readonly ok: false
-      /** `offline` and `timeout` are the hub's own; the rest the runner's `E_…`. */
-      readonly code: string
-      readonly message: string
-    }
-
-/** A request sent down a link: a line, an answer, a stop. */
-export type LinkRequest =
-  | {
-      readonly t: 'send'
-      readonly session: string
-      readonly text: string
-      readonly clientId: string
-    }
-  | {
-      readonly t: 'answer'
-      readonly session: string
-      readonly ask: string
-      readonly decision: 'once' | 'session' | 'deny'
-      readonly message?: string
-    }
-  | { readonly t: 'stop'; readonly session: string }
-
-export interface CodeLinksOptions {
+interface CodeLinksOptions {
   readonly devices: HandoffDevicesPort
   readonly accounts: ConsoleAccounts
   readonly copies: CodeCopiesPort
@@ -164,7 +140,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** The frames a runner sends; anything else closes the link. */
 const UP = ['hello', 'session', 'records', 'gone', 'reply'] as const
 
-export class CodeLinks {
+export class CodeLinks implements CodeLinksPort {
   readonly #options: CodeLinksOptions
   readonly #links = new Map<string, Link>()
   readonly #listeners = new Map<string, Set<() => void>>()

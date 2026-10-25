@@ -28,8 +28,10 @@ import {
   CODE_READ_MAX,
   CODE_SESSION_ID,
   type CodeCopy,
+  type CodeLinksPort,
+  type LinkReply,
+  type LinkRequest,
 } from '../codeRemote.js'
-import type { CodeLinks, LinkReply, LinkRequest } from '../codeLink.js'
 import {
   fail,
   json,
@@ -124,7 +126,7 @@ async function deviceNames(
 
 async function list(
   ctx: RouteContext,
-  links: CodeLinks,
+  links: CodeLinksPort,
   owner: string,
 ): Promise<Response> {
   const names = await deviceNames(ctx, owner)
@@ -158,7 +160,11 @@ function positive(value: string | null): number | undefined | null {
   return Number.isSafeInteger(n) ? n : null
 }
 
-function stream(ctx: RouteContext, links: CodeLinks, owner: string): Response {
+function stream(
+  ctx: RouteContext,
+  links: CodeLinksPort,
+  owner: string,
+): Response {
   const scope = streamScopeOf(ctx.access, ctx.accounts)
   const encoder = new TextEncoder()
   let unsubscribe: (() => void) | null = null
@@ -235,7 +241,7 @@ function textOf(value: unknown): string | null {
 
 async function write(
   ctx: RouteContext,
-  links: CodeLinks,
+  links: CodeLinksPort,
   owner: string,
   copy: CodeCopy,
   verb: 'messages' | 'answer' | 'stop',

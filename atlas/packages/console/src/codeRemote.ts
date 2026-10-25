@@ -192,6 +192,52 @@ export interface CodeCopiesPort {
   note?(line: string): void
 }
 
+/** The runner's answer to a request sent down a link. */
+export type LinkReply =
+  | { readonly ok: true; readonly result: unknown }
+  | {
+      readonly ok: false
+      /** `offline` and `timeout` are the hub's own; the rest the runner's `E_…`. */
+      readonly code: string
+      readonly message: string
+    }
+
+/** A request sent down a link: a line, an answer, a stop. */
+export type LinkRequest =
+  | {
+      readonly t: 'send'
+      readonly session: string
+      readonly text: string
+      readonly clientId: string
+    }
+  | {
+      readonly t: 'answer'
+      readonly session: string
+      readonly ask: string
+      readonly decision: 'once' | 'session' | 'deny'
+      readonly message?: string
+    }
+  | { readonly t: 'stop'; readonly session: string }
+
+/**
+ * What the routes and the device door use of the links (`codeLink.ts`
+ * holds them), so the handler's dependencies name a port, not the class.
+ */
+export interface CodeLinksPort {
+  /** Whether the device has a link up (after its hello). */
+  online(deviceId: string): boolean
+  /** The copies of `owner`'s devices. */
+  copies(owner: string): readonly CodeCopy[]
+  /** Sends `request` to `owner`'s device and waits for the runner's reply. */
+  ask(owner: string, deviceId: string, request: LinkRequest): Promise<LinkReply>
+  /** Hears about every change to `owner`'s copies and devices. */
+  subscribe(owner: string, listener: (rev: number) => void): () => void
+  /** A copy was dropped by a person elsewhere. */
+  changed(owner: string): void
+  /** A device revoked: its link closes and its copies go. */
+  endDevice(deviceId: string, owner: string): void
+}
+
 /** The folder name an account's copies live under: no subject in a path. */
 export function codeOwnerKey(subject: string): string {
   return createHash('sha256').update(subject).digest('hex').slice(0, 32)
@@ -346,10 +392,7 @@ function askOf(value: unknown): CodeAsk | undefined {
 }
 
 /** A turn of `session`, rebuilt from what checks; `undefined` for anything else. */
-export function codeTurnOf(
-  value: unknown,
-  session: string,
-): CodeCopyTurn | undefined {
+function codeTurnOf(value: unknown, session: string): CodeCopyTurn | undefined {
   if (!isRecord(value)) return undefined
   const id =
     typeof value.id === 'string' && TURN_ID.test(value.id)

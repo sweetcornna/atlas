@@ -36,8 +36,7 @@ import type {
   UpdatesPort,
 } from './directionPorts.js'
 import type { AvatarsPort } from './avatar.js'
-import type { CodeLinks } from './codeLink.js'
-import type { CodeCopiesPort } from './codeRemote.js'
+import type { CodeCopiesPort, CodeLinksPort } from './codeRemote.js'
 import type { ConsoleFailure, ConsoleResult } from './contracts.js'
 
 import type { AuditRecord, MessageChain } from '@qianmo/audit'
@@ -2602,5 +2601,5 @@ export interface ConsoleDeps {
    * 设备链路的表（`codeLink.ts`）。由 `createConsoleHandler` 按 `codeCopies` 建好放进
    * 来，调用方不传。
    */
-  readonly codeLinks?: CodeLinks
+  readonly codeLinks?: CodeLinksPort
 }

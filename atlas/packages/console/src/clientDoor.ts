@@ -67,7 +67,7 @@ import {
   roleOfToken,
   SESSION_COOKIE,
 } from './auth.js'
-import type { CodeLinks } from './codeLink.js'
+import type { CodeLinksPort } from './codeRemote.js'
 import type { ActionLedgerPort } from './deps.js'
 import type {
   HandoffDeviceIdentity,
@@ -273,7 +273,7 @@ export function closingClientSessions(
   devices: HandoffDevicesPort,
   tickets: ClientTickets,
   accounts: ConsoleAccounts,
-  links?: CodeLinks,
+  links?: CodeLinksPort,
 ): HandoffDevicesPort {
   return {
     ...(devices.authenticate === undefined
@@ -318,7 +318,7 @@ interface ClientDoorContext {
   readonly cookieKey: Buffer
   readonly tickets: ClientTickets
   /** The device link's table, when this hub has Remote (P37.15). */
-  readonly links: CodeLinks | undefined
+  readonly links: CodeLinksPort | undefined
   readonly throttle: LoginThrottle
   readonly clientKey: string
   readonly actions: ActionLedgerPort | undefined
