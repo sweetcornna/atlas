@@ -795,6 +795,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/client/tickets` | **设备** | 阡陌客户端 `qmo` 打开前台用的一次性票据 `{id,ticket,expiresAt}`，201；60 秒、只能用一次、只存哈希。只有 `qmo sign-in` 配对的客户端设备能要，`qm handoff login` 的接力设备 403 `device_kind`，旧式令牌配对的设备 403。每台设备最多 4 张没用掉的、每分钟最多 20 张，超出 429；全台只算没用掉的票据。只认 `Authorization: Bearer` 的设备令牌，令牌不能用时 401 带原因：`device_revoked`、`owner_inactive` 或 `unauthorized`（[`clients.md`](./clients.md) §3.2） |
 | GET | `/v0/client/tickets/<票据 id>` | **设备** | `{id,state}`，`pending` / `used` / `expired`；别的设备的票据 404 |
 | GET、DELETE | `/v0/client/device` | **设备** | `GET` 回 `{deviceId,kind}`；`DELETE` 吊销这台设备自己（退出登录），204，动作账本记 `handoff.device.revoke` |
+| GET | `/v0/client/link` | **设备** | 设备链路（P37.15，[qmo-local.md](qmo-local.md) §5.1）：桌面版的运行器在有会话开着 Remote 时主动拨的 WebSocket，子协议 `qmo-link.1`，只认 `Authorization: Bearer` 的设备令牌；只有个人账号名下、状态正常的客户端设备能升级（接力设备 403 `device_kind`、旧式令牌配对 403、公开版没有有效订阅 402、地址里带 query 400）。吊销设备或停用账号时链路立刻以 4401 断开，账号只读或订阅到期由每 30 秒一次的复查断开（4403 / 4402）。不带升级的请求：有 Remote 的中枢 426 `upgrade_required`，没开 Remote 的 501 |
 | GET | `/client/enter?ticket=…` | 公开 | Linux 客户端自己的窗口（经管道加了 `X-Qmo-Device`，或带着只有这种进门才下发的客户端 cookie）直接用掉票据：开属主的普通服务端会话，会话表记下设备号，303 到 `/` 并下发 `qianmo_session`；带头的那次另下发客户端 cookie。别处（含 Windows 客户端的窗口）先显示「以 <账号> 身份进入」确认页，写明账号号码，票据不消耗。已以别的账号登录的浏览器 409；跨站来的 403；用错计入登录节流 |
 | POST | `/client/enter` | 公开，仅同源 | 确认页的表单：同源才受理，用掉票据，开会话同 `GET`，但不下发客户端 cookie。`/login`、`/logout` 和在浏览器里吊销这台设备都会清掉客户端 cookie。吊销设备时，经它的票据开的会话一并关闭，重启之后也一样。以上五条只在开了 `--accounts` 时存在，没开时照旧 |
 | POST | `/v0/handoff/projects` | 设备 | `{project}` 在 `--handoff-root` 建裸仓、装钩子并登记账号属主，幂等；其他账号 403，已有无属主的 SSH 仓库继续走原接法 |
@@ -869,6 +870,10 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/fragments/chat/greet?target=<地址>` | **成员 / ops / 管理令牌** | 旧问候片段保持兼容；前台使用 `front/view` |
 | GET | `/v0/avatars?key=<键>`（可重复） | view | 形象（`packages/console/src/avatar.ts`）：每个键的 `{ spec, saved, updatedAt }` 与 `editable`。键是 `agent:<地址>` 或 `user:<主体>`；没存过的给按地址或主体算出的默认形象。没接形象存储时也答，全是默认、`editable: false` |
 | PUT、DELETE | `/v0/avatars/<键>` | **成员** | 保存一个形象（七项都必须在固定清单里，否则 400），`DELETE` 回到默认；`user:` 键只能改自己的，ops 可以改任何人的。记 `avatar.save`。没接形象存储时 501 |
+| GET | `/v0/code/sessions` | **个人账号** | 本账号别的电脑开着 Remote 的本机会话副本（P37.15，[qmo-local.md](qmo-local.md) §5.2）：`{devices:[{id,name,online}], sessions:[…]}`，会话键是 `<设备 id>.<会话 id>`；本浏览器会话所在的那台设备自己的副本不列。两枚旧令牌与 break-glass 403；没开 Remote 的控制台 501 |
+| GET、DELETE | `/v0/code/sessions/<设备 id>/<会话 id>?before=&limit=` | **个人账号**（删除要成员或 ops） | `GET` 一页记录 `{session,records,more,lastSeq}`，与 `qmo_local_read` 同形；`DELETE` 从中枢删除这个副本，只在那台电脑把 Remote 关掉之后（开着 409 `remote_on`），204，记 `code.remote.drop`。别的账号的设备一律 404 |
+| POST | `/v0/code/sessions/<设备 id>/<会话 id>/<messages\|answer\|stop>` | **成员 / ops** | 经设备链路交给那台电脑的运行器：续写 `{text,clientId}`、答复征询 `{ask,decision,message?}`、停下；设备离线 409 `offline`，Remote 已关 409 `remote_off`，运行器 10 秒不答 504，运行器拒绝时带它的 `E_…` 码 409。记 `code.remote.send` / `answer` / `stop` |
+| GET | `/v0/code/stream` | **个人账号** | SSE，事件 `code` 只带 `{rev}`，本账号的副本或设备在线状态变了就发，页面据此重取 |
 | GET | `/fragments/avatar?key=<键>&spec=<草稿>&default=1` | view | HTML 片段：形象编辑器的正文（舞台、七种状态试看、每个选项一枚小图）。`spec` 是 JSON 草稿，不在清单里就当没给；`default=1` 画默认形象 |
 
 `qm console` 默认把形象存入 `<配置根>/qianmo/console/avatars.json`（文件 0600、父目录 0700）；文件损坏或权限不是 0600 时读写失败关闭，不覆盖原文件，页面照常显示默认形象。
