@@ -456,17 +456,16 @@ function navSource(key: string): string {
     return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   }
 
+  // The area swapped in comes up from the dimmed state over a moment
+  // (data-arriving, view/frontStyle.ts). Not a View Transition: while one
+  // runs every press lands on the root element under its snapshots, so a
+  // second click in the list, the × or the scrim in those frames was lost,
+  // and on a slow machine those frames ran on past the card closing.
   function fade(apply) {
-    if (typeof document.startViewTransition !== 'function' || still() || !card.hasAttribute('data-shown')) { apply(); return; }
-    var root = document.documentElement;
-    root.classList.add('nav-fade');
-    var off = function () { root.classList.remove('nav-fade'); };
-    try {
-      var t = document.startViewTransition(apply);
-      t.finished.then(off, off);
-      if (t.ready) t.ready.then(null, function () {});
-      if (t.updateCallbackDone) t.updateCallbackDone.then(null, function () {});
-    } catch (e) { off(); apply(); }
+    apply();
+    if (still() || !card.hasAttribute('data-shown')) return;
+    card.setAttribute('data-arriving', '');
+    requestAnimationFrame(function () { requestAnimationFrame(function () { card.removeAttribute('data-arriving'); }); });
   }
 
   // Leaving the page in the card: its script's work stops, its dialogs close.
@@ -615,6 +614,7 @@ function navSource(key: string): string {
 
   function openCard(from) {
     if (card.open) return;
+    closing = false;
     opener = from && from !== document.body ? from : document.activeElement;
     var menus = document.querySelectorAll('details.fx-more[open]');
     for (var i = 0; i < menus.length; i++) menus[i].open = false;
@@ -633,8 +633,13 @@ function navSource(key: string): string {
 
   // However the card closed (the × or the scrim, Esc, back, an expired
   // session closing every dialog): the page in it stops, and the address
-  // goes back to the page under it.
+  // goes back to the page under it. A 'close' that comes when the card is
+  // up again is stale and changes nothing: taking over the card the
+  // document came with (below) removes its open attribute, which fires no
+  // event (the dialog cleanup steps), and an engine that did would land
+  // here after showModal.
   function closed() {
+    if (card.open) return;
     closing = false;
     card.removeAttribute('data-shown');
     leave();
@@ -662,8 +667,22 @@ function navSource(key: string): string {
   card.addEventListener('close', closed);
 
   // Esc: the same way out as the ×. A browser that will not let the page
-  // hold Esc closes it at once, and 'close' does the rest.
-  card.addEventListener('cancel', function (event) { event.preventDefault(); closeCard(); });
+  // hold Esc closes it at once, and 'close' does the rest. One Esc is one
+  // layer, though: Chrome puts a dialog opened without a click (a page
+  // script's own) in one group with the card, and sends the card the same
+  // close request right after the dialog's. An Esc pressed over a dialog
+  // inside the card is that dialog's; the card stays when it may.
+  var escInner = false;
+  window.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape' || !card.open) return;
+    try { escInner = !!card.querySelector('dialog:modal'); } catch (e) { escInner = !!card.querySelector('dialog[open]'); }
+    if (escInner) later(function () { escInner = false; }, 0);
+  }, true);
+  card.addEventListener('cancel', function (event) {
+    event.preventDefault();
+    if (escInner) { escInner = false; return; }
+    closeCard();
+  });
 
   // Tab past the card's last stop comes back to its first, and Shift+Tab
   // the other way round: a modal dialog alone lets the focus leave for the

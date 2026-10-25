@@ -1073,13 +1073,18 @@ function runtimeScript(guards: TokenGuards): string {
     for (var i = 0; i < marks.length; i++) marks[i].remove();
   }
 
+  // An open 更多 menu would go with the markup it sits in: the region waits,
+  // also when the menu opened while the answer was on its way.
+  function held(mount) {
+    try { return !!mount.querySelector('.row-more-menu:popover-open'); } catch (e) { return false; }
+  }
+
   function refreshRegion(mount) {
     var url = mount.getAttribute('data-poll');
-    if (!url) return Promise.resolve();
-    // An open 更多 menu would go with the markup it sits in.
-    try { if (mount.querySelector('.row-more-menu:popover-open')) return Promise.resolve(); } catch (e) {}
+    if (!url || held(mount)) return Promise.resolve();
     var ids = (mount.getAttribute('data-swap') || '').split(' ').filter(Boolean);
     return loadHtml(url).then(function (html) {
+      if (held(mount)) return;
       var state = snapshot(mount);
       if (!(ids.length > 0 && swapRegions(html, ids) > 0)) mount.innerHTML = html;
       restore(mount, state);

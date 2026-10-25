@@ -834,8 +834,12 @@ a.fx-id:hover { color: var(--color-text); text-decoration: underline; }
 .set-main {
   flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
   padding: var(--space-2) var(--space-6) var(--space-8); outline: none;
+  transition: opacity var(--motion-snap) var(--ease-out);
 }
-.set[data-busy] .set-main { opacity: var(--opacity-busy); transition: opacity var(--motion-snap) var(--ease-out); }
+/* While the next area is on its way it dims; the one swapped in comes up
+   from there (assets/nav.ts, fade). */
+.set[data-busy] .set-main { opacity: var(--opacity-busy); }
+.set[data-arriving] .set-main { opacity: var(--opacity-busy); transition: none; }
 @media (max-width: ${FRONT_NARROW_PX}px) {
   /* Narrow: the card is the window. Over the area, the search and one row
      of areas that scrolls sideways; the foot goes under the area. */
