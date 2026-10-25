@@ -2,21 +2,69 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { ChildProcess } from 'node:child_process'
-import { RUNTIME_MCP_SERVER } from '@qianmo/harness/claudeStream.ts'
+import { RUNTIME_MCP_SERVER } from './claudeStream.js'
 import {
+  type HarnessPromptAdmission,
   nonNegative,
   RuntimeChannelBase,
-  toolArgs,
   type RuntimeChannelHooks,
-} from '@qianmo/harness/process.ts'
-import type { OmpPromptAdmission } from '@qianmo/resident'
-import type {
-  AcpRuntime,
-  AcpToolCall,
-  AcpUsage,
-  AcpUsageReader,
-} from './acpSpec.js'
-import { acpVerdictCalls } from './acpTools.js'
+  type RuntimeUsage,
+  toolArgs,
+} from './process.js'
+
+/**
+ * A tool call as ACP shows it (`tool_call` plus later updates). The same
+ * shape as the node catalog's `AcpToolCall`, defined here so the desktop
+ * app's runner can use the channel without the node package.
+ */
+export interface AcpToolCall {
+  /** ACP `title`; dsh puts the tool name there. */
+  readonly title: string
+  /** ACP `kind`: read, edit, delete, move, search, execute, think, fetch, switch_mode, other. */
+  readonly kind?: string
+  readonly rawInput: Readonly<Record<string, unknown>>
+  /** ACP `locations[].path`. */
+  readonly paths: readonly string[]
+  /** ACP `_meta`, where a harness adds its own facts (Qwen: `toolName`). */
+  readonly meta?: Readonly<Record<string, unknown>>
+}
+
+/** Where a harness keeps the provider's real usage of one session. */
+export interface AcpUsageReader {
+  /** Called as a turn starts: where its records will begin. */
+  start(): number
+  /**
+   * The usage the harness recorded since `from`, once the turn's records
+   * are complete (bounded wait); `undefined` when it recorded none.
+   */
+  read(from: number): Promise<RuntimeUsage | undefined>
+}
+
+/**
+ * What the channel reads of the caller's catalog entry for the harness. The
+ * caller passes its whole entry (how to start it, its tools and skills),
+ * which is not the channel's business.
+ */
+export interface AcpChannelRuntime {
+  /**
+   * How a conversation continues in a new process. Absent: `session/resume`
+   * when advertised, else `session/load` when advertised, else a new one.
+   */
+  readonly resume?: 'session/resume' | 'session/load'
+  /** The `session/set_config_option` id effort is set through, when offered. */
+  readonly effortOption?: string
+  /**
+   * `false` when the harness's `PromptResponse.usage` does not cover the
+   * whole turn; the turn then counts 0 and says so rather than undercount.
+   */
+  readonly promptUsage?: false
+}
+
+/** A call as the progress line names it, in the caller's vocabulary. */
+export interface AcpProgressCall {
+  readonly toolName: string
+  readonly input: Record<string, unknown>
+}
 
 /** The ACP major version this client speaks. */
 export const ACP_PROTOCOL_VERSION = 1
@@ -45,10 +93,11 @@ export function acpMcpTransport(
   return 'type' in server ? server.type : 'stdio'
 }
 
-export interface AcpSessionSettings extends RuntimeChannelHooks {
+export interface AcpSessionSettings<R extends object = object>
+  extends RuntimeChannelHooks {
   /** Shown in errors: the catalog label. */
   readonly label: string
-  readonly runtime: AcpRuntime
+  readonly runtime: R & AcpChannelRuntime
   /** The agent's workspace: `session/new {cwd}`. */
   readonly cwd: string
   readonly mcpServers: readonly AcpMcpServer[]
@@ -64,6 +113,11 @@ export interface AcpSessionSettings extends RuntimeChannelHooks {
   readonly effort?: string
   /** The node's answer to `session/request_permission`. */
   readonly permission: (call: AcpToolCall) => Promise<boolean>
+  /**
+   * The call as the progress line names it (the resident: the first call of
+   * `acpVerdictCalls`); absent or `undefined`: ACP's `title` and `rawInput`.
+   */
+  readonly progress?: (call: AcpToolCall) => AcpProgressCall | undefined
   /** Where the provider's usage of the native session is, if anywhere. */
   readonly usage?: (sessionId: string) => AcpUsageReader | undefined
   /** Servers left out: the harness does not take their transport. */
@@ -123,7 +177,7 @@ const CANCEL_GRACE_MS = 5_000
 const REPLAY_QUIET_MS = 200
 /** …or after this long at most. */
 const REPLAY_WAIT_MS = 5_000
-const ZERO_USAGE: AcpUsage = {
+const ZERO_USAGE: RuntimeUsage = {
   input: 0,
   output: 0,
   cacheRead: 0,
@@ -169,7 +223,7 @@ function toolCallOf(
 }
 
 /** The draft `PromptResponse.usage`, where a harness fills it. */
-function promptUsage(value: unknown): AcpUsage | undefined {
+function promptUsage(value: unknown): RuntimeUsage | undefined {
   const usage = toolArgs(value)
   if (Object.keys(usage).length === 0) return undefined
   const cached = nonNegative(usage.cachedReadTokens)
@@ -197,9 +251,9 @@ function promptUsage(value: unknown): AcpUsage | undefined {
  * work, and every one it asks about goes to the node
  * (`session/request_permission`), answered with a one-time option only.
  */
-export class AcpChannel extends RuntimeChannelBase {
+export class AcpChannel<R extends object = object> extends RuntimeChannelBase {
   protected readonly runtimeName: string
-  readonly #settings: AcpSessionSettings
+  readonly #settings: AcpSessionSettings<R>
   readonly #pending = new Map<number, Pending>()
   readonly #tools = new Map<string, TrackedTool>()
   /** Permission requests not answered yet, by JSON-RPC id. */
@@ -216,7 +270,7 @@ export class AcpChannel extends RuntimeChannelBase {
   /** When the last `session/update` arrived (ms epoch). */
   #lastUpdate = 0
 
-  constructor(child: ChildProcess, settings: AcpSessionSettings) {
+  constructor(child: ChildProcess, settings: AcpSessionSettings<R>) {
     super(child, settings)
     this.runtimeName = settings.label
     this.#settings = settings
@@ -363,7 +417,7 @@ export class AcpChannel extends RuntimeChannelBase {
   async prompt(input: {
     readonly messageId: string
     readonly text: string
-  }): Promise<OmpPromptAdmission> {
+  }): Promise<HarnessPromptAdmission> {
     const sessionId = this.#sessionId
     if (sessionId === undefined)
       throw new Error(`${this.runtimeName} session is not open`)
@@ -440,7 +494,7 @@ export class AcpChannel extends RuntimeChannelBase {
   }
 
   async #turnUsage(answer: Record<string, unknown>): Promise<{
-    usage: AcpUsage
+    usage: RuntimeUsage
     reported: boolean
   }> {
     if (this.#usage !== undefined) {
@@ -461,7 +515,11 @@ export class AcpChannel extends RuntimeChannelBase {
   }
 
   /** The turn's usage: never estimated; 0 and marked when not reported. */
-  #usageMessage(usage: AcpUsage, reported: boolean, stopReason?: string): void {
+  #usageMessage(
+    usage: RuntimeUsage,
+    reported: boolean,
+    stopReason?: string,
+  ): void {
     this.emit({
       type: 'message_end',
       message: {
@@ -645,7 +703,7 @@ export class AcpChannel extends RuntimeChannelBase {
         }
         if (known !== undefined) tool.call = toolCallOf(update, known.call)
         this.#tools.set(id, tool)
-        const [first] = acpVerdictCalls(this.#settings.runtime, tool.call)
+        const first = this.#settings.progress?.(tool.call)
         const name = progressName(first?.toolName ?? tool.call.title)
         if (!tool.started) {
           tool.started = true

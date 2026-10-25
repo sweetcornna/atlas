@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { dirname, isAbsolute, join, relative } from 'node:path'
+import { AcpChannel, type AcpMcpServer } from '@qianmo/harness/acpClient.ts'
 import {
   ClaudeCodeChannel,
   claudeCodeToolName,
@@ -37,7 +38,6 @@ import {
 } from '../hostToolDispatch.js'
 import { residentToolSurface } from '../notifyTool.js'
 import type { ResidentPermission } from '../residentOmp.js'
-import { AcpChannel, type AcpMcpServer } from './acp.js'
 import { acpVerdictCalls } from './acpTools.js'
 import type { AcpBridge, AcpRuntime, AcpToolCall } from './acpSpec.js'
 import { type RuntimeLane, runtimeSpec } from './catalog.js'
@@ -958,6 +958,7 @@ export class ExternalRuntimePool implements ResidentSessionConnection {
                 : {}),
               permission: call =>
                 this.#acpPermission(running, sessionId, acp, call),
+              progress: call => acpVerdictCalls(acp, call)[0],
               ...(usage === undefined
                 ? {}
                 : {
