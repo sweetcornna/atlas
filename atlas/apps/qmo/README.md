@@ -101,7 +101,7 @@ atlas/apps/qmo/src-tauri/target/release/bundle/macos/Qmo.app/Contents/MacOS/qmo-
 
 ## 壳与中枢页面
 
-中枢源（登录时的地址）在运行时得到一条 remote 能力，只含下面九个命令和两个拖动权限；本地命令、文件系统、shell、HTTP 等插件都不给网页。参数按原始请求体逐项校验，多一个键、类型不对、超长、越界都拒绝；后三条另在命令里核一次调用方页面与中枢同源。
+中枢源（登录时的地址）在运行时得到一条 remote 能力，只含下面二十二个命令和两个拖动权限；本地命令、文件系统、shell、HTTP、对话框等插件都不给网页。参数按原始请求体逐项校验，多一个键、类型不对、超长、越界都拒绝；`qmo_local_agents`、`qmo_boot_layout`、`qmo_open_local_settings` 与十三条本机会话命令另在命令里核一次调用方页面与中枢同源，本机会话命令还只收主窗口。
 
 | 命令 | 参数 |
 |---|---|
@@ -114,6 +114,7 @@ atlas/apps/qmo/src-tauri/target/release/bundle/macos/Qmo.app/Contents/MacOS/qmo-
 | `qmo_local_agents` | `rescan?`（布尔）；返回 `{agents}`。30 秒超时，同一时刻只跑一个 `qmo agents`，后到的等同一个结果；失败时以一行说明拒绝 |
 | `qmo_boot_layout` | `layout`：`page`（`chat`、`agents`、`code`）、`side`、`sideWidth` 0–1000、`rows` 0–60、`labels` 0–20、`theme?`、`colors?`（`{dark, page, sidebar}`，`#rrggbb`）；存进设置，骨架页按它画 |
 | `qmo_open_local_settings` | 无；打开壳的设置窗 |
+| `qmo_local_list`、`qmo_local_watch`、`qmo_local_pick_folder`、`qmo_local_forget_folder`、`qmo_local_start`、`qmo_local_send`、`qmo_local_stop`、`qmo_local_answer`、`qmo_local_set_mode`、`qmo_local_read`、`qmo_local_changes`、`qmo_local_diff`、`qmo_local_set_remote` | 本机会话，见下节与 `qmo-app.md` §5.2 |
 
 页面这一侧要做的：
 
@@ -124,11 +125,24 @@ atlas/apps/qmo/src-tauri/target/release/bundle/macos/Qmo.app/Contents/MacOS/qmo-
 - 定义 `window.__qmoOpenSettings()`，打开页面里的设置卡片：菜单「设置… ⌘,」和托盘「设置」在主窗口显示中枢页面时由壳执行一段固定脚本调它；没有它时那段脚本回退为 `qmo_open_local_settings`（壳的设置窗）。
 - 主窗口落到 `/login` 时壳拦下来重新进门，60 秒内第四次就停在离线页（`loop`）。
 
+## 壳与运行器（本机会话）
+
+本机会话的命令由 `src/code.rs` 转给运行器 `qmo code serve`（[`qmo-local.md`](../../../docs/dev/qmo-local.md) §4.3.2、§4.5）：
+
+- 第一次调用时起，标准输入输出上一行一个 JSON：请求 `{id, method, params}`，应答 `{id, result}` 或 `{id, error: {code, message}}`，事件 `{method: "event", params}`。起来先发 `hello`，2 秒内答 `{version, protocol: 1, features, codeDir?}` 才算起来；`protocol` 不是 1 就结束它。
+- 应答按 `id` 配给等待的调用，30 秒没答复的调用以 `qmo local E_RUNNER` 拒绝（运行器不动）。运行器的 `error` 原样变成 `qmo local <code>: <message>`（代码不是 `E_` 加大写字母时换成 `E_RUNNER`，说明压成一行、至多 500 字）。
+- 事件只转给主窗口页面登记的那一条 `Channel`，按收到的顺序、原文转发；`{v: 1, type: "runner", state: "up" | "down", reason?}` 只由壳发（运行器自己不发）。
+- 每条命令的参数：键、可缺省的键、交给运行器的方法与参数写在 `atlas/packages/console/test/browser/qmo-local-calls.json`，`ipc.rs` 的用例、页面的假壳与编出来的 `qmo` 的用例都核它；「字」按 UTF-16 码元计，与页面、运行器一致。
+- 运行器退出：在途的调用以 `E_RUNNER` 拒绝，页面收到 `down`；1、2、5、10 秒后重起，之后每 30 秒一次（活过 60 秒的那次之后从 1 秒重来）；等待期间到的调用立即拒绝。
+- 标准错误的最后 64 KiB 连同壳记的起停写进 `<codeDir>/runner.log`（0600）；运行器没报 `codeDir` 时只留在内存。
+- 退出 Qmo（`RunEvent::Exit`）：不再重起，发 `shutdown` 等 3 秒，关掉它的标准输入，5 秒还在就结束进程。
+
 ## 几处取舍
 
 - **经 `about:blank` 进中枢。** WebKit 对从另一个站点的页面出发的导航不带 `SameSite=Strict` 的 cookie，壳自己发起的也一样；骨架页在 `tauri://localhost`，直接跳过去中枢收不到会话，会一直被送去 `/login`。所以从本地页面或别的中枢去中枢时，先载入 `about:blank`、把骨架写进去，再跳。快速输入窗换中枢时直接重建，它的第一次载入本来就带得上。
 - **主窗口骨架与透明窗口。** macOS 上窗口透明、背景色取页面底色（明暗随系统；页面报过颜色就用报的），页面画出来之前不会闪白。骨架页的布局与颜色由壳算成一份计划（`layout.rs`），经主窗口的初始化脚本以 JSON 交给本地页面的 `window.__QMO_BOOT__`，`skeleton.js` 在首帧前画；不拼进 HTML。
 - **托盘菜单只有一处监听。** Tauri 托盘的 `on_menu_event` 也是全局的，再加应用菜单的监听，每一项会执行两次，所以只在应用上注册一次。
+- **对话框插件不带页面脚本。** `tauri-plugin-dialog` 的 `init()` 会给每个页面（含中枢页面）加一段脚本，把 `window.alert`、`window.confirm` 换成它的命令；这些命令没给任何页面，`confirm` 又变成返回 Promise，同步写法 `if (!confirm(…))` 会一律当作确认（后台计费页删除上游就是这样写的）。所以注册时套一层 `code::Quiet`，只去掉这段脚本，选文件夹照用它的 Rust 接口。
 - **cookie 的 `Secure`、`HttpOnly` 只在为真时写。** WKWebView 把这两个键的出现当作开启，写「否」会把 `qianmo_shell` 也变成 HttpOnly。
 
 ## 图标

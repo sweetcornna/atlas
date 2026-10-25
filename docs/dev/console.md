@@ -635,7 +635,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/` | 成员 / ops / 管理令牌 | 对话前台：默认主智能体欢迎页；`?agent=<地址>` 选智能体，`?session=<会话 id>` 打开会话。已登录但不能对话或未接聊天通道时答 303 到 `/admin`；匿名导航到登录门并回跳 `/`；已登录的非 GET 答 405。公开版（`--billing`）先看订阅：匿名是套餐页；个人账号没有有效订阅时是一张指向 `/subscription` 的卡片，订阅有效而租户还没有节点时是「节点分配中」；平台主体与 break-glass 照旧 |
 | GET | `/app` | 成员 / ops / 管理令牌 | 前台的「对话」界面（桌面版主窗口的首页，[qmo-app.md](qmo-app.md) §4）：左侧是这个人能看到的全部会话，按今天、昨天、过去 7 天、更早分组；新对话是问候语加大输入框，在输入框里选智能体（默认主智能体）。`?session=`、`?agent=` 与 `/` 相同；门禁、公开版的订阅判断、303 / 登录门 / 405 都与 `/` 相同 |
 | GET | `/app/quick` | 成员 / ops / 管理令牌 | 快速输入：一张浮卡，主智能体形象（点它换智能体）、自动增高的输入框、发送；回车开会话发出这一行后在桌面版交给主窗口（`qmo_open_session`），浏览器里转到 `/app?session=<会话 id>`。门禁与 `/` 相同；`/app` 下其他路径 404 |
-| GET | `/code` | view | 主窗口的 Code 面（[qmo-local.md](qmo-local.md) §3.6）：侧栏是 Work \| Code、「新代码会话」、代码会话列表（本包为空）；主区在桌面版里列出壳经 `qmo_local_agents` 找到的本机 agent、文件夹与 agent 两项和关着的「开始」（本机会话随 P37.14 开放），在浏览器与没有这条命令的旧壳里只有一行「Code 在 Qmo 桌面版里用」。不读任何会话；`/code` 下其他路径 404；公开版的订阅判断与 `/` 相同；已登录的非 GET 答 405 |
+| GET | `/code` | view | 主窗口的 Code 面，即本机会话（[qmo-local.md](qmo-local.md) §3.6、§4.1、§4.5）：服务端只画空框（侧栏的会话列表、新会话与续写共用的输入框——文件夹、agent、权限模式缺省自动审批、Remote 占位关着、发送与停止——转录区、变更面板），页面脚本 `CODE_RENDER_JS` + `CODE_JS` 经壳的 `qmo_local_*` 命令与事件通道直达运行器填它们，按文件夹分组列会话、`/code?session=<id>` 切换、转录用 DOM 画（与 `renderRichText` 逐字一致）、征询卡片、Git 变更面板；载入之后不再向中枢发任何请求。浏览器里只有一行「Code 在 Qmo 桌面版里用」，早于本机会话的壳里是「更新桌面版后可开本机会话」。不读任何中枢会话；`?session=` 只给页面脚本用；`/code` 下其他路径 404；公开版的订阅判断与 `/` 相同；已登录的非 GET 答 405 |
 | GET | `/admin` | view | 设置卡片的总览。`/admin` 与 `/admin/…` 的文档都是 Work 面（带桌面版 cookie 时画成 `/app`，否则 `/`）加上画开着的设置卡片，区域在卡片里，首帧就有；Work 面不读对话（不过 `chatReads` 门），关卡片后经原有片段取默认对话。读者不能对话时 Work 面只写一行原因，接没接聊天通道都是同一行。守卫与 401 / 403 / 404 不变，404 画在卡片里（§5.2） |
 | GET | `/admin/overview` | view | 总览：会变的卡（智能体总数与在线、滞后、过期；消息链记录数与完整性；近 1 小时拒绝与丢弃；第四张是证书，没接证书源而接了对话时是近 1 小时会话，两样都没有就只有三张）与每个节点一行（A2）。原先的两项协议常量卡移到设置页 |
 | GET | `/admin/nodes?q=&state=&server=` | view | 节点名册。`q` 按地址或端点搜（不分大小写），`state` 是 `live` / `stale` / `expired`（与行上的判法同一个函数），`server` 按 `--node-server` 归属；原生 GET 表单，轮询的 `/fragments/roster` 带同样的查询串，计数「筛选后 n · 共 m」在片段里随刷新重算（D6）。接了登记簿时名册下另列「名册上没有的节点」：登记簿或托管清单里有、名册上没有的节点，链到它的生命周期页签（§5.5） |
@@ -2009,10 +2009,10 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `packages/console/src/http.ts` | 鉴权门、三个保护等级的分派（§5.1）、登录与邀请两道门、HTML 错误页、把请求分给区域模块 |
 | `packages/console/src/routes/` | 每个区域一个模块：页面、`/v0` 与 `/fragments` 的 head；`index.ts` 是路由表与设置卡片的拼装（区域地址的文档是 Work 面加画开着的卡片）；`front.ts` 画 Work 与 Code 两个面；`approvals.ts` 与 `usage.ts` 接真实审批和用量端口（§5.2） |
 | `packages/console/src/view/shell.ts` | 设置卡片（`renderSettings`）：搜索、区域列表、左栏底部、标题行与区域；局部换页的部件（`shellPartial`）；会话失效对话框（§5.2） |
-| `packages/console/src/view/frontCode.ts`、`assets/codeClient.ts` | Code 面：侧栏与主区的标记；向壳要本机 agent（`qmo_local_agents`）并画出来的页面脚本（[qmo-local.md](qmo-local.md) §3.6） |
+| `packages/console/src/view/frontCode.ts`、`assets/codeRender.ts`、`assets/codeClient.ts` | Code 面：侧栏、标题栏与主区的空框和图标模板；富文本与记录的 DOM 画法（`CODE_RENDER_JS`，预算 14,000 字符，`test/browser/codeRender.browser.test.ts` 核对与服务端逐字一致）；会话列表、输入框、事件通道、征询与变更面板的页面脚本（`CODE_JS`，预算 34,000 字符），都只经壳的 `qmo_local_*` 命令（[qmo-local.md](qmo-local.md) §3.6、§4.5） |
 | `packages/console/src/assets/client.ts`、`pageScripts.ts` | 共享运行时 `window.qianmoConsole`（轮询保态、对话框、toast、401 处理）与各区域的页面脚本 |
 | `packages/console/src/assets/nav.ts` | 设置卡片的运行时 `window.qianmoNav`：开关卡片（含 `window.__qmoOpenSettings`、⌘, / Ctrl+,、焦点回环与归还、地址与前进后退）、卡片里的局部换页（`X-Qianmo-Partial`）、预取与内存缓存、页面脚本的录制作用域、`data-write` 控件的先改后同步（[qmo-local.md](qmo-local.md) §3） |
-| `packages/console/test/browser/` | 浏览器级测试与它的 DevTools 协议驱动（§5.2） |
+| `packages/console/test/browser/` | 浏览器级测试与它的 DevTools 协议驱动（§5.2）；Code 面的用例对着页面里的假壳 `codeShell.ts`，它按壳与运行器共用的参数约定（`atlas/packages/console/test/browser/qmo-local-calls.json`，[qmo-local.md](qmo-local.md) §4.5.1）核对页面每次调用的键与类型 |
 | `packages/console/src/view/` | 服务端渲染 |
 | `packages/console/src/routes/access.ts`、`view/access.ts` | 账号与访问 · 操作记录页：四个页签、谁看见哪个页签与哪些写控件、`/v0/actions` 的两条读（§5.3） |
 | `packages/console/src/routes/nodes.ts`、`view/node.ts` | 节点详情四个页签、生命周期页签：能否拨号的判法、只画会成功的动作、四个确认框、「模型」页签的装载与 404 降级（§5.5） |

@@ -22,6 +22,7 @@ import {
   statusReport,
   systemDeps,
 } from './commands.js'
+import { serveStdio } from './code/serve.js'
 import { ClientError, type ClientErrorKind } from './hub.js'
 
 declare const QMO_SOURCE_COMMIT: string | undefined
@@ -35,6 +36,7 @@ export const USAGE = `qmo — 阡陌客户端
   qmo sign-out [--json]
   qmo session --json
   qmo agents [--json] [--rescan]
+  qmo code serve
   qmo --version
 
 配对码在中枢「连接」页「添加设备」里拿。qmo sign-in 会提示输入；
@@ -45,7 +47,8 @@ export const USAGE = `qmo — 阡陌客户端
 {"error":{"kind":…,"message":…}}，退出码按 kind 区分。
 qmo session --json 打开一个会话，输出它的 cookie，只给桌面版用。
 qmo agents 列出这台电脑上装了的编程 agent；版本等结果会缓存，
---rescan 全部重新查。`
+--rescan 全部重新查。
+qmo code serve 是本机会话的运行器，只给桌面版用。`
 
 export function versionLine(): string {
   const commit =
@@ -160,6 +163,7 @@ export async function main(
   argv: readonly string[],
   io: ClientIO,
   agents: typeof scanAgents = scanAgents,
+  code: typeof serveStdio = serveStdio,
 ): Promise<number> {
   const [command, ...rest] = argv
   if (command === '--version' || command === '-v' || command === 'version') {
@@ -235,6 +239,20 @@ export async function main(
         if (json) io.out(JSON.stringify(report))
         else for (const line of formatAgents(report)) io.out(line)
         return 0
+      }
+      case 'code': {
+        // Standard output is the runner's protocol from here on.
+        if (
+          parsed.positional.length !== 1 ||
+          parsed.positional[0] !== 'serve' ||
+          parsed.flags.size > 0
+        )
+          throw new ClientError('用法：qmo code serve（只给桌面版用）', 2)
+        return await code({
+          codeDir: deps.home.codeDir,
+          clientDir: deps.home.dir,
+          agentsCache: deps.home.agentsCache,
+        })
       }
       case 'open':
       case 'status':

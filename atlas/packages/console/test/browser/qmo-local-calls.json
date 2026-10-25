@@ -1,0 +1,133 @@
+{
+  "calls": [
+    {
+      "command": "qmo_local_agents",
+      "args": { "rescan": false },
+      "optional": ["rescan"]
+    },
+    {
+      "command": "qmo_local_list",
+      "args": {},
+      "method": "list",
+      "params": {}
+    },
+    {
+      "command": "qmo_local_watch",
+      "args": { "channel": "__CHANNEL__:7" }
+    },
+    {
+      "command": "qmo_local_pick_folder",
+      "args": {}
+    },
+    {
+      "command": "qmo_local_forget_folder",
+      "args": { "folder": "0123456789abcdef" },
+      "method": "folders.forget",
+      "params": { "folder": "0123456789abcdef" }
+    },
+    {
+      "command": "qmo_local_start",
+      "args": {
+        "folder": "0123456789abcdef",
+        "agent": "claude-code",
+        "mode": "auto",
+        "worktree": false,
+        "text": "改一下 README",
+        "clientId": "c-1",
+        "remote": false
+      },
+      "optional": ["remote"],
+      "method": "session.start",
+      "params": {
+        "folder": "0123456789abcdef",
+        "agent": "claude-code",
+        "mode": "auto",
+        "worktree": false,
+        "text": "改一下 README",
+        "clientId": "c-1",
+        "remote": false
+      }
+    },
+    {
+      "command": "qmo_local_send",
+      "args": {
+        "session": "cs_AbCdEfGhIjKlMnOpQrSt_-",
+        "text": "继续",
+        "clientId": "c-2"
+      },
+      "method": "session.send",
+      "params": {
+        "session": "cs_AbCdEfGhIjKlMnOpQrSt_-",
+        "text": "继续",
+        "clientId": "c-2",
+        "origin": "local"
+      }
+    },
+    {
+      "command": "qmo_local_stop",
+      "args": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-" },
+      "method": "session.stop",
+      "params": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-" }
+    },
+    {
+      "command": "qmo_local_answer",
+      "args": {
+        "session": "cs_AbCdEfGhIjKlMnOpQrSt_-",
+        "ask": "ask_0123456789ab",
+        "decision": "deny",
+        "message": "别动这个文件"
+      },
+      "optional": ["message"],
+      "method": "session.answer",
+      "params": {
+        "session": "cs_AbCdEfGhIjKlMnOpQrSt_-",
+        "ask": "ask_0123456789ab",
+        "decision": "deny",
+        "message": "别动这个文件"
+      }
+    },
+    {
+      "command": "qmo_local_set_mode",
+      "args": {
+        "session": "cs_AbCdEfGhIjKlMnOpQrSt_-",
+        "mode": "accept-edits"
+      },
+      "method": "session.mode",
+      "params": {
+        "session": "cs_AbCdEfGhIjKlMnOpQrSt_-",
+        "mode": "accept-edits"
+      }
+    },
+    {
+      "command": "qmo_local_read",
+      "args": {
+        "session": "cs_AbCdEfGhIjKlMnOpQrSt_-",
+        "before": 7,
+        "limit": 200
+      },
+      "optional": ["before", "limit"],
+      "method": "session.read",
+      "params": {
+        "session": "cs_AbCdEfGhIjKlMnOpQrSt_-",
+        "before": 7,
+        "limit": 200
+      }
+    },
+    {
+      "command": "qmo_local_changes",
+      "args": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-" },
+      "method": "session.changes",
+      "params": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-" }
+    },
+    {
+      "command": "qmo_local_diff",
+      "args": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-", "path": "src/app.ts" },
+      "method": "session.diff",
+      "params": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-", "path": "src/app.ts" }
+    },
+    {
+      "command": "qmo_local_set_remote",
+      "args": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-", "on": false }
+    }
+  ]
+}

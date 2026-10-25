@@ -35,6 +35,7 @@
     "@qianmo/console": "workspace:*",
     "@qianmo/extension": "workspace:*",
     "@qianmo/handoff": "workspace:*",
+    "@qianmo/harness": "workspace:*",
     "@qianmo/mailbox": "workspace:*",
     "@qianmo/magpie": "workspace:*",
     "@qianmo/memory": "workspace:*",

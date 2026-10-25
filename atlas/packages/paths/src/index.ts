@@ -211,9 +211,28 @@ export function clientStateDir(
   return dir.normalize('NFC')
 }
 
-/** User-level config roots that agents and sandboxed commands must never modify. */
-export function protectedConfigRoots(): string[] {
-  const home = nodeHomeDir()
+/**
+ * The other local agents' own config roots (`~/.gemini`, `~/.qwen`,
+ * `~/.config/opencode`, `~/.dsh`): the desktop app's runner never takes one,
+ * or a folder in one, as a session's folder (qmo-local.md §4.5.3). Located,
+ * never opened.
+ */
+export function agentConfigRoots(home: string = nodeHomeDir()): string[] {
+  return [
+    join(home, '.gemini'),
+    join(home, '.qwen'),
+    join(home, '.config', 'opencode'),
+    join(home, '.dsh'),
+  ].map(p => p.normalize('NFC'))
+}
+
+/**
+ * User-level config roots that agents and sandboxed commands must never
+ * modify. `home` stands in for the home folder in the roots named under it
+ * (the desktop runner's tests); `QIANMO_CONFIG_DIR`, `QMCODE_HOME` and
+ * `CODEX_HOME` still win when set.
+ */
+export function protectedConfigRoots(home: string = nodeHomeDir()): string[] {
   return [
     ...new Set(
       [
@@ -223,7 +242,7 @@ export function protectedConfigRoots(): string[] {
         join(home, '.claude'),
         join(home, '.codex'),
         qmcodeHome(),
-        codexHome(),
+        codexHome(process.env, home),
       ].map(p => p.normalize('NFC')),
     ),
   ]

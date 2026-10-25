@@ -32,6 +32,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { qianmoConfigPath } from '@qianmo/paths'
+import { RUNTIME_MCP_SERVER } from '@qianmo/harness/claudeStream.ts'
 import type { OmpRpcFrame } from '@qianmo/resident'
 import { qmArgv } from '../../omp/launch.js'
 import { AcpChannel } from './acp.js'
@@ -42,7 +43,6 @@ import {
   CLAUDE_CODE_ENV,
   claudeCodeArgv,
   PERMISSION_TOOL,
-  RUNTIME_MCP_SERVER,
   RUNTIME_MCP_TIMEOUT_MS,
 } from './claudeCode.js'
 import { CODEX_KEY_ENV, codexArgv } from './codex.js'

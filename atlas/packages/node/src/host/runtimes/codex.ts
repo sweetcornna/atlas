@@ -4,20 +4,17 @@
 import type { ChildProcess } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { OmpPromptAdmission } from '@qianmo/resident'
+import { RUNTIME_MCP_SERVER } from '@qianmo/harness/claudeStream.ts'
 import {
   nonNegative,
   RuntimeChannelBase,
   toolArgs,
   type RuntimeChannelHooks,
   type RuntimeUsage,
-} from './channel.js'
+} from '@qianmo/harness/process.ts'
+import type { OmpPromptAdmission } from '@qianmo/resident'
 import type { RuntimeRoute } from './acpSpec.js'
-import {
-  CONNECTOR_PREFIX,
-  RUNTIME_MCP_SERVER,
-  RUNTIME_MCP_TIMEOUT_MS,
-} from './claudeCode.js'
+import { CONNECTOR_PREFIX, RUNTIME_MCP_TIMEOUT_MS } from './claudeCode.js'
 
 /** A TOML literal for one `-c key=value` override. */
 export function toml(value: unknown): string {

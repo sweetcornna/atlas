@@ -12,6 +12,7 @@
  * | `window/` | the app window's browser profile, apart from the user's own |
  * | `pipe/` | the window's two DevTools FIFOs (Linux) |
  * | `agents.json` | what `qmo agents` learned by running something (versions, the login shell's PATH) |
+ * | `code/` | the local sessions of `qmo code serve` (qmo-local.md §4.3.6) |
  */
 
 import * as fs from 'node:fs'
@@ -77,6 +78,11 @@ export class ClientHome {
   /** `qmo agents`' answers; kept across sign-outs, since they are of this computer. */
   get agentsCache(): string {
     return path.join(this.dir, 'agents.json')
+  }
+
+  /** Local sessions; kept across sign-outs, since they are of this computer. */
+  get codeDir(): string {
+    return path.join(this.dir, 'code')
   }
 
   /** The pairing on record, or `undefined` before the first sign-in. */

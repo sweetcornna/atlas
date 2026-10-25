@@ -79,11 +79,16 @@ function targetArg(argv: readonly string[]): string {
   return named
 }
 
-function main(): number {
-  const target = targetArg(process.argv.slice(2))
-  const outfile = clientOutfile(target)
+/**
+ * Compiles `qmo` for `target` into `outfile`, as `main` does into `dist/`;
+ * the exit status of `bun build`. Tests build the one they run this way.
+ */
+export function buildClient(
+  outfile: string,
+  target: string = hostTarget(),
+  stdio: 'inherit' | 'ignore' = 'inherit',
+): number {
   const cross = target !== hostTarget()
-  mkdirSync(join(REPO_ROOT, 'dist'), { recursive: true })
   const args = [
     'build',
     '--compile',
@@ -95,11 +100,16 @@ function main(): number {
     outfile,
     ENTRY,
   ]
-  const result = spawnSync(process.execPath, args, {
-    cwd: REPO_ROOT,
-    stdio: 'inherit',
-  })
-  if (result.status !== 0) return result.status ?? 1
+  const result = spawnSync(process.execPath, args, { cwd: REPO_ROOT, stdio })
+  return result.status ?? 1
+}
+
+function main(): number {
+  const target = targetArg(process.argv.slice(2))
+  const outfile = clientOutfile(target)
+  mkdirSync(join(REPO_ROOT, 'dist'), { recursive: true })
+  const status = buildClient(outfile, target)
+  if (status !== 0) return status
   console.log(`[build-client] ${outfile}`)
   return 0
 }

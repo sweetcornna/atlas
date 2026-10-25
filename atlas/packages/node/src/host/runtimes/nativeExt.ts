@@ -48,6 +48,7 @@ import {
   rmSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import { RUNTIME_MCP_SERVER } from '@qianmo/harness/claudeStream.ts'
 import { claudeStateFile } from '@qianmo/paths'
 import type { ControlOutcome } from '@qianmo/protocol'
 import { OutboundPolicy } from '../../commands/outboundPolicy.js'
@@ -61,7 +62,7 @@ import { fetchGithubDir, GITHUB_REPO, resolveCommit } from '../githubDir.js'
 import { runtimeBin } from '../runtimeUpdate.js'
 import { runtimeSpec } from './catalog.js'
 import type { ExternalRuntimeKind } from './channel.js'
-import { CONNECTOR_PREFIX, RUNTIME_MCP_SERVER } from './claudeCode.js'
+import { CONNECTOR_PREFIX } from './claudeCode.js'
 import {
   type NativeExtensionKind,
   type NativeExtensionRow,

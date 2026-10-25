@@ -7,6 +7,7 @@
 //! `qmo`'s alone.
 
 mod agents;
+mod code;
 mod commands;
 mod deeplink;
 mod hub;
@@ -20,9 +21,7 @@ mod shell;
 mod sidecar;
 mod text;
 
-#[cfg(target_os = "macos")]
-use tauri::RunEvent;
-use tauri::{Manager, WindowEvent};
+use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -86,6 +85,9 @@ pub fn run() {
             shell::show_app(app);
         }))
         .plugin(tauri_plugin_deep_link::init())
+        // The folder picker of local sessions, from Rust only: no page is
+        // granted its commands, and its page script stays out (`code::Quiet`).
+        .plugin(code::Quiet(tauri_plugin_dialog::init()))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
@@ -117,6 +119,19 @@ pub fn run() {
             commands::qmo_local_agents,
             commands::qmo_boot_layout,
             commands::qmo_open_local_settings,
+            commands::qmo_local_list,
+            commands::qmo_local_watch,
+            commands::qmo_local_pick_folder,
+            commands::qmo_local_forget_folder,
+            commands::qmo_local_start,
+            commands::qmo_local_send,
+            commands::qmo_local_stop,
+            commands::qmo_local_answer,
+            commands::qmo_local_set_mode,
+            commands::qmo_local_read,
+            commands::qmo_local_changes,
+            commands::qmo_local_diff,
+            commands::qmo_local_set_remote,
             commands::local_state,
             commands::local_sign_in,
             commands::local_retry,
@@ -139,6 +154,7 @@ pub fn run() {
                 hidden,
             ));
             app.manage(agents::Agents::default());
+            app.manage(code::Code::new());
 
             #[cfg(target_os = "macos")]
             app.set_menu(menu::app_menu(&handle)?)?;
@@ -187,11 +203,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("the Qmo shell could not start");
 
-    app.run(|_app, _event| {
+    app.run(|app, event| match event {
         // The Dock icon clicked with no window open.
         #[cfg(target_os = "macos")]
-        if let RunEvent::Reopen { .. } = _event {
-            shell::show_app(_app);
-        }
+        RunEvent::Reopen { .. } => shell::show_app(app),
+        // Local sessions end their turns and the runner goes (qmo-local.md
+        // §4.3.2): at most 5 s.
+        RunEvent::Exit => code::shutdown(app),
+        _ => {}
     });
 }

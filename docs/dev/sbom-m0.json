@@ -44,7 +44,7 @@
       },
       {
         "name": "qianmo:lockfileSha256",
-        "value": "ed6d797c28970e1477ceb947347baf280f14940648f60e37a2ed315f666674c9"
+        "value": "e4bceab141154458a8f3a8057896f62859cff2b8a08bd9359edf64bf45b0a2e3"
       },
       {
         "name": "qianmo:deterministic",
@@ -8947,6 +8947,35 @@
       "version": "0.0.0",
       "scope": "required",
       "purl": "pkg:npm/%40qianmo/handoff@0.0.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "AGPL-3.0-or-later"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "network-copyleft"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "workspace"
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "bom-ref": "pkg:npm/%40qianmo/harness@0.0.0",
+      "name": "@qianmo/harness",
+      "version": "0.0.0",
+      "scope": "required",
+      "purl": "pkg:npm/%40qianmo/harness@0.0.0",
       "licenses": [
         {
           "license": {
