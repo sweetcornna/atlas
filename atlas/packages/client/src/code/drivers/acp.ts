@@ -126,6 +126,22 @@ const MODE_NAMES: Readonly<Record<Mode, string>> = {
   auto: '自动审批',
   'full-access': '跳过权限确认',
 }
+/**
+ * Starts in a row that failed to continue a conversation, by its id, for
+ * the runner's life: a process (and its driver) may go between them.
+ */
+const RESUME_FAILURES = new Map<string, number>()
+
+/** The mode an agent's own ACP mode id is (`auto` is never told apart). */
+function tierOf(
+  table: Readonly<Record<Mode, readonly string[]>>,
+  modeId: string | undefined,
+): Mode | undefined {
+  if (modeId === undefined) return undefined
+  return (['off', 'accept-edits', 'full-access'] as const).find(mode =>
+    table[mode].includes(modeId),
+  )
+}
 
 function one(text: string, max = MAX_SUMMARY): string {
   const line = text.split('\n', 1)[0]!.trim()
@@ -325,8 +341,6 @@ export class AcpAgent implements AgentProcess {
   #mode: Mode
   #nativeId: string
   #started: boolean
-  /** Starts in a row that failed to continue the conversation. */
-  #resumeFailures = 0
   #channel: AcpChannel | undefined
   #child: ChildProcess | undefined
   /** Channels whose `initialize` succeeded. */
@@ -375,17 +389,22 @@ export class AcpAgent implements AgentProcess {
       cwd: root,
       // The agent's own MCP servers, as it has them configured.
       mcpServers: [],
-      ...(this.#started ? { sessionId: this.#nativeId } : {}),
-      resumeFailures: this.#resumeFailures,
+      ...(this.#started
+        ? {
+            sessionId: this.#nativeId,
+            resumeFailures: RESUME_FAILURES.get(this.#nativeId) ?? 0,
+          }
+        : {}),
       onSession: id => {
+        RESUME_FAILURES.delete(this.#nativeId)
         if (this.#started && id !== this.#nativeId)
           this.#hooks.notice(acpLost(name), 'warn')
         if (id !== this.#nativeId) this.#started = false
         this.#nativeId = id
-        this.#resumeFailures = 0
       },
       onResumeFailed: () => {
-        this.#resumeFailures++
+        const id = this.#nativeId
+        RESUME_FAILURES.set(id, (RESUME_FAILURES.get(id) ?? 0) + 1)
       },
       clientInfo: { name: 'qmo', title: 'Qmo', version: pkg.version },
       onDetail: detail => this.#detail(detail),
@@ -445,9 +464,7 @@ export class AcpAgent implements AgentProcess {
   #agentMode(modeId: string): void {
     const modes = this.#profile.modes
     if (modes === undefined || modes[this.#mode].includes(modeId)) return
-    const now = (['off', 'accept-edits', 'full-access'] as const).find(mode =>
-      modes[mode].includes(modeId),
-    )
+    const now = tierOf(modes, modeId)
     if (now === undefined) return
     this.#mode = now
     this.#hooks.modeChanged(now)
@@ -468,11 +485,18 @@ export class AcpAgent implements AgentProcess {
   }
 
   /**
-   * Puts the agent in `mode`'s ACP mode. Where it has none, or will not
-   * switch, the runner answers by the mode, unless that leaves it looser than
-   * asked: then this throws, and no line is sent in it.
+   * Puts the agent in `mode`'s ACP mode. Where it offers no such mode, the
+   * runner answers by the mode, unless that leaves it looser than asked:
+   * then this throws, and no line is sent in it. Where it refuses the
+   * switch (an untrusted folder, a policy of its own), the runner does not
+   * go around it: a change of mode (`change`) is refused; before a line it
+   * stays in its own mode, says so, and what it asks is the person's.
    */
-  async #applyMode(channel: AcpChannel, mode: Mode): Promise<void> {
+  async #applyMode(
+    channel: AcpChannel,
+    mode: Mode,
+    change = false,
+  ): Promise<void> {
     const table = this.#profile.modes
     const offered = channel.modes
     if (table === undefined || offered === undefined) return
@@ -499,11 +523,16 @@ export class AcpAgent implements AgentProcess {
     try {
       await channel.setMode(target)
     } catch (error) {
-      if (looser)
-        throw new CodeError(
-          'E_AGENT',
-          `${name} 没有切到 ${target}：${(error as Error).message}`,
-        )
+      const why = (error as Error).message
+      if (looser || change)
+        throw new CodeError('E_AGENT', `${name} 没有切到 ${target}：${why}`)
+      const now = tierOf(table, current) ?? 'off'
+      this.#mode = now
+      this.#hooks.modeChanged(now)
+      this.#hooks.notice(
+        `${name} 没有切到 ${target}（${why}），按「${MODE_NAMES[now]}」继续`,
+        'warn',
+      )
     }
   }
 
@@ -603,7 +632,7 @@ export class AcpAgent implements AgentProcess {
     // Set first: the agent's word that it switched is then not news.
     this.#mode = mode
     try {
-      await this.#applyMode(channel, mode)
+      await this.#applyMode(channel, mode, true)
     } catch (error) {
       this.#mode = before
       throw error

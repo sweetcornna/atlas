@@ -38,7 +38,8 @@
  * `FAKE_ACP_SWITCH_ON_ALWAYS=1` (an edit allowed for the session switches it
  * to `autoEdit` / `auto-edit` and says so in `current_mode_update`),
  * `FAKE_ACP_AUTH=required` (`session/new` and continuing answer that it
- * must be signed in), `FAKE_ACP_IGNORE_TERM=1`, `FAKE_ACP_ENV_LOG` (where to
+ * must be signed in), `FAKE_ACP_RESUME_FAIL=1` (continuing fails with a
+ * passing internal error), `FAKE_ACP_IGNORE_TERM=1`, `FAKE_ACP_ENV_LOG` (where to
  * write the environment it got).
  */
 
@@ -519,6 +520,14 @@ lines.on('line', line => {
         return
       }
       const sessionId = String(params.sessionId)
+      if (process.env.FAKE_ACP_RESUME_FAIL === '1') {
+        // It has the conversation but cannot open it now.
+        send({
+          id,
+          error: { code: -32603, message: 'Internal error', data: null },
+        })
+        return
+      }
       const session = recall(sessionId, String(params.cwd))
       if (session === undefined) {
         send({

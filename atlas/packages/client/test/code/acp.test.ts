@@ -397,6 +397,35 @@ describe.skipIf(!posix)('the runner with ACP agents', () => {
     expect(modesSet(ok)).toEqual(['default'])
   })
 
+  test('a looser mode the agent refuses: it stays in its own, says so, and what it asks is the person’s', async () => {
+    const at = box()
+    const r = runner(at, 'gemini', { agent: { FAKE_ACP_SET_MODE_FAIL: '1' } })
+    const folder = await pick(r, at.work)
+    const id = await begin(r, folder, 'gemini', 'bash ls', 'auto', 'waiting')
+    // Asked for once, refused; not asked again before the line.
+    expect(modesSet(at)).toEqual(['autoEdit'])
+    expect(
+      r
+        .turns(id)
+        .map(one => String(one.text))
+        .find(text => text.startsWith('Gemini CLI 没有切到 autoEdit')),
+    ).toBe(
+      'Gemini CLI 没有切到 autoEdit（Gemini CLI session/set_mode: Cannot change the approval mode in an untrusted folder），按「人工确认」继续',
+    )
+    expect(((await r.call('list')).sessions as Message[])[0]!.mode).toBe('off')
+    await answer(r, id, 'once')
+    expect(r.turns(id).find(one => one.tool !== undefined)!.tool).toMatchObject(
+      { status: 'done', approvedBy: 'user' },
+    )
+    // Asked for again, it is refused, and the mode stays.
+    expect(
+      await refused(
+        r.call('session.mode', { session: id, mode: 'full-access' }),
+      ),
+    ).toBe('E_AGENT')
+    expect(((await r.call('list')).sessions as Message[])[0]!.mode).toBe('off')
+  })
+
   test('跳过权限确认 where the agent has no yolo: the runner allows every call itself', async () => {
     const at = box()
     const r = runner(at, 'gemini', { agent: { FAKE_ACP_NO_YOLO: '1' } })
@@ -599,6 +628,30 @@ describe.skipIf(!posix)('the runner with ACP agents', () => {
     const now = String((header(at, id).native as Message).id)
     expect(now).not.toBe(old)
     expect(now).not.toBe('')
+  })
+
+  test('a conversation it keeps failing to open: the line fails twice, the third starts a new one', async () => {
+    const at = box()
+    const first = runner(at, 'dsh')
+    const folder = await pick(first, at.work)
+    const id = await begin(first, folder, 'dsh', 'hello')
+    await first.stop()
+    running.length = 0
+    const r = runner(at, 'dsh', { agent: { FAKE_ACP_RESUME_FAIL: '1' } })
+    for (const line of ['one', 'two']) {
+      await r.say(id, line, 'failed')
+      expect(String(r.turns(id).at(-1)!.text)).toContain(
+        'DeepSeek Harness session/resume: Internal error',
+      )
+    }
+    await r.say(id, 'three')
+    expect(texts(r, id).slice(-2)).toEqual([
+      '上次的对话 DeepSeek Harness 那边已经没有了，这一句从新对话开始',
+      'acp(1): three',
+    ])
+    expect(
+      methods(at).filter(one => one.method === 'session/resume'),
+    ).toHaveLength(3)
   })
 
   test('not signed in: its own words and how to sign in; authenticate is never sent', async () => {
