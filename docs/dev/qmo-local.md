@@ -390,7 +390,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 | 征询 | `control_request`（`can_use_tool`）→ `control_response` 的 `allow` / `deny` | `item/commandExecution/requestApproval`、`item/fileChange/requestApproval` → `accept` / `acceptForSession` / `decline` | `session/request_permission` → 所选项的 `optionId` |
 | 一轮结束 | `result`（`is_error`、`subtype`） | `turn/completed`（`completed` / `interrupted` / 失败） | `session/prompt` 的 `stopReason` |
 | 中止 | `control_request`（`interrupt`） | `turn/interrupt` | `session/cancel` |
-| 续接 | `--resume <uuid>`（同一个工作目录） | `thread/resume` | 有 `session/resume` 用它，否则 `session/load`（Gemini CLI 等回放停下再发） |
+| 续接 | `--resume <uuid>`（同一个工作目录） | `thread/resume` | 有 `session/resume` 用它，否则 `session/load`（Gemini CLI 等回放停下再发）；续接报错时这一句失败、原话照写，同一个会话号连着两句续不上（换了进程也算）后第三句从新对话开始并写明 |
 | 改模式 | `set_permission_mode`，立即生效 | 下一轮的 `turn/start` 带新值 | 有对应模式时 `session/set_mode`，立即生效；没有时运行器换答法（§4.4） |
 
 - **一次一轮**：在跑时再发的话进运行器的队列（每会话至多 5 条），本轮结束后按顺序发；页面上标「排队中」。中止时队列里的一并撤下，留在记录里标「未发出」。
@@ -448,7 +448,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 
 - **选「跳过权限确认」要再确认一次**：页面上就地出一行「agent 将不经确认执行任何命令与改动 · 确认 / 取消」，不弹窗。
 - **改档**：Claude Code 用 `set_permission_mode` 立即改；改到 `bypassPermissions` 而进程启动时没带 `--allow-dangerously-skip-permissions` 的，在下一轮开始前按原会话号带上它重起。Codex 下一轮生效。Gemini、Qwen 用 `session/set_mode` 立即改。页面按命令的答复写「已生效」或「下一轮生效」，被拒时退回原值并写原因（§3.3 的规矩）。
-- **Gemini、Qwen 的模式只按它们答复里有的 id 对**：每一句发出前核对 agent 现在的模式（用户自己的设置可能让它一开就在 `yolo`），不对就 `session/set_mode`。要的档比它现在的更严而切不过去（没有这个 id、切换被拒）时这一句不发，写明原因；改档时同样被拒并退回原值。要的档更松而它没有（例如没给 `yolo`）时由运行器按档答。agent 自己换了档（例如人选了「本会话都允许」编辑后它切到 `autoEdit`），会话跟着显示新档。
+- **Gemini、Qwen 的模式只按它们答复里有的 id 对**：每一句发出前核对 agent 现在的模式（用户自己的设置可能让它一开就在 `yolo`），不对就 `session/set_mode`。要的档比它现在的更严而切不过去（没有这个 id、切换被拒）时这一句不发，写明原因。要的档更松而它不肯切（例如文件夹没被它信任）时运行器不绕过它：留在它自己的档，会话显示那一档并写明，这一句照发，它问的交给人。会话中途改档被拒时一律退回原值。要的档更松而它没有这个 id（例如没给 `yolo`）时由运行器按档答。agent 自己换了档（例如人选了「本会话都允许」编辑后它切到 `autoEdit`），会话跟着显示新档。
 - **运行器按档答的边界**：跳过权限确认一律允许一次；自动接受编辑、自动审批只放行 ACP `kind` 是 `edit` / `delete` / `move`、至少带一个路径、全部路径（`locations`、`diff.path`、输入里的 `file_path` 一类）按 realpath 都在会话根里、输入里没有 `command` 的；其余与人工确认一样交给人。答的总是 `allow_once`，不替人建长期规则。
 - **征询卡片**：在转录里，对应那条工具行的位置。写 agent 给的说明（Claude Code 的 `description` 或工具名加摘要、Codex 的命令与理由、ACP 的 `title`）和涉及的路径；三个按钮「允许一次」「本会话都允许」「拒绝」（拒绝可附一句话，交回给 agent；ACP 的答复没有附言的位置，这句话运行器收下、不交给 agent）。`Enter` 不默认批准，焦点放在「允许一次」上，要按空格或点击。
 - **本会话都允许**只用会话级的原生选项：Claude Code 把 `permission_suggestions` 原样带回，但每条的 `destination` 一律改成 `session`；Codex 答 `acceptForSession`；ACP 只在 agent 给的 `allow_always` 选项里能认出会话级的那一个时才提供（Gemini CLI 是 `proceed_always`；Qwen Code 沿用 gemini-cli 的同一组 id，按同一个认；opencode 的 `always` 是否只在会话内没有依据、dsh 不给 `allow_always`，都不提供），认不出就只给另两个。从不选会写进 agent 设置的「以后都允许」（Gemini 的 `proceed_always_and_save`、Claude Code 的 `localSettings` / `userSettings`、Codex 的 `acceptWithExecpolicyAmendment`）：要长期放行，人在 agent 自己的界面里设。
@@ -646,7 +646,7 @@ P37.14a（本机会话第一轮，Claude Code）的用例，全部用假进程�
 P37.14c（ACP：Gemini CLI、Qwen Code、opencode、dsh）的用例，全部用假进程（`atlas/packages/harness/test/fixtures/fake-acp-agent.runner.ts`，按四个 agent 的答法），从不启动真的 agent：
 
 - `@qianmo/harness`（`test/acpClient.test.ts`）：带与不带本机附加项，同一轮的帧逐条相同，常驻的答复仍只是一次性的选项；`modes` 与 `session/set_mode`、被拒、`current_mode_update`；增量、整条正文、思考；Gemini 式先征询后宣告的调用（先交出 start，差异随 start 与 end）；「本会话都允许」在 Gemini、Qwen 的选项组里只选 `proceed_always`，从不选排在前面、会写设置的 `proceed_always_and_save`；认不出不给 `session`，硬要也只答一次；拒绝答 `reject_once`；征询中中止答 `cancelled` 并中止 signal；没登录时原样报 `-32000`，收到的方法只有 `initialize` 与 `session/new`；`session/load`（回放等过）与 `session/resume` 的续接，全程没有 `authenticate`。节点 `acpRuntimes`、`acpHarnesses`、`dshRuntime` 不改（搬家单独一个提交），`node-host`、`node-rest` 全绿。
-- 运行器（`atlas/packages/client/test/code/acp.test.ts`）：四个 agent 的起法只有 `--acp` / `acp` / `--profile acp`、`session/new {cwd, mcpServers: []}`、`clientInfo` 与不开 `fs`、`terminal`、会话号记进 `session.json`；Gemini、Qwen 四档各一轮（编辑与命令各问不问、设的模式 id）；opencode、dsh 四档各一轮（运行器按档答、会话根外的编辑交给人、命令只在跳过权限确认时放行、从不提供「本会话都允许」、从不切 opencode 的子 agent 模式）；更严的档切不过去时这一句不发、能切时切回；没有 `yolo` 时运行器放行；改档与被拒退回；会话级认法与 agent 自己换档；拒绝；征询中中止后续写；崩溃后经 `session/load`、`session/resume` 续上且回放不算答复；对话那边没了从新开并写明；没登录的原话加登录提示；`qmo agents` 说「CLI 未找到」的答 `E_AGENT` 带原因；进程组；agent 的目录从不打开；环境过滤与登录 shell 的环境不落盘。
+- 运行器（`atlas/packages/client/test/code/acp.test.ts`）：四个 agent 的起法只有 `--acp` / `acp` / `--profile acp`、`session/new {cwd, mcpServers: []}`、`clientInfo` 与不开 `fs`、`terminal`、会话号记进 `session.json`；Gemini、Qwen 四档各一轮（编辑与命令各问不问、设的模式 id）；opencode、dsh 四档各一轮（运行器按档答、会话根外的编辑交给人、命令只在跳过权限确认时放行、从不提供「本会话都允许」、从不切 opencode 的子 agent 模式）；更严的档切不过去时这一句不发、能切时切回；更松的档被拒时留在它自己的档、写明、征询交给人，之后改档被拒退回；没有 `yolo` 时运行器放行；改档与被拒退回；会话级认法与 agent 自己换档；拒绝；征询中中止后续写；崩溃后经 `session/load`、`session/resume` 续上且回放不算答复；换了进程续接仍连着失败两句，第三句从新对话开始；对话那边没了从新开并写明；没登录的原话加登录提示；`qmo agents` 说「CLI 未找到」的答 `E_AGENT` 带原因；进程组；agent 的目录从不打开；环境过滤与登录 shell 的环境不落盘。
 - 编出来的 `qmo`（`atlas/tests/integration/qianmo-client-code-serve-acp.test.ts`，e2e 分片）：PATH 上的 `gemini` 是假 agent，`qmo agents` 按命令认出它、只问 `--version`；人工确认档编辑被问、允许、写下、带差异；改档走 `session/set_mode`；命令「本会话都允许」答 `proceed_always`；没有 `authenticate`；`shutdown` 退出码 0。
 
 P37.14c 未实测：真的 Gemini CLI（0.64.0 在负责人的电脑上）的 `session/new` 是否带 `modes`、模式 id、`proceed_always` 是否只在会话内、`session/load` 的回放、未登录时的原话、要确认的调用是否真的不先发 `tool_call`；Qwen Code、opencode、dsh 整条（这台电脑上没有它们的命令行程序）：Qwen 的模式 id 与征询 id 按 gemini-cli 推的，opencode 的 `always` 没有提供，dsh 在它自己的沙箱里多半不问。
