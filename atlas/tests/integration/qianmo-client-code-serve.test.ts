@@ -531,7 +531,9 @@ describe.skipIf(!posix)('the compiled qmo as the shell runs it', () => {
     )
     const state = path.join(at.state, 'codex')
     const requests = logged(path.join(state, 'requests.ndjson'))
-    expect(logged(path.join(state, 'argv.ndjson'))).toEqual([['app-server']])
+    expect(
+      logged(path.join(state, 'argv.ndjson')) as unknown as string[][],
+    ).toEqual([['app-server']])
     expect(
       requests
         .filter(one => one.method === 'thread/start')
