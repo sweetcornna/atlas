@@ -318,13 +318,19 @@ describe.skipIf(SKIP !== null)('Code: Remote', () => {
           box: ${q('#code-text')}.disabled,
           go: ${q('#code-go')}.disabled,
           badge: ${q(`${rowFor(KEY)} .fx-code-badge`)}?.textContent,
+          ask: [...document.querySelectorAll('.fx-perm button')].map(b => b.disabled),
         })`),
-      ).toEqual({
+      ).toMatchObject({
         sub: 'MacBook · atlas · Claude Code · 离线 · 只读',
         box: true,
         go: true,
         badge: '离线',
       })
+      const ask = await tab.evaluate<boolean[]>(
+        `[...document.querySelectorAll('.fx-perm button')].map(b => b.disabled)`,
+      )
+      expect(ask.length).toBeGreaterThan(0)
+      expect(ask.every(Boolean)).toBe(true)
 
       // Back with Remote off: 「从中枢删除副本」 deletes the copy.
       const back = new Runner(h.url)

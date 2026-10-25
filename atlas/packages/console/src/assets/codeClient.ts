@@ -546,6 +546,7 @@ function codeScript(): string {
     for (var key in v.cache) if (Object.prototype.hasOwnProperty.call(v.cache, key)) { v.cache[key].used = false; v.cache[key].fresh = false; }
     var all = values(v.turns).sort(function (a, b) { return a.f - b.f; });
     var lastUser = '';
+    var shut = readOnly(sessions[current]);
     var since = 0;
     for (var k = 0; k < all.length; k++) {
       if (all[k].t.author === 'operator' && all[k].t.variant !== 'notice') { lastUser = all[k].t.id; since = all[k].t.at; }
@@ -573,7 +574,7 @@ function codeScript(): string {
         continue;
       }
       group = null;
-      want.push(cached('turn:' + t.id, entry.s + '|' + (t.id === lastUser), turnOf(t, t.id === lastUser)));
+      want.push(cached('turn:' + t.id, entry.s + '|' + (t.id === lastUser) + '|' + shut, turnOf(t, t.id === lastUser, shut)));
     }
     for (var g = 0; g < groups.length; g++) steps(groups[g], g === groups.length - 1 && group === groups[g] && running());
     if (v.live) {
@@ -609,9 +610,14 @@ function codeScript(): string {
   }
 
   function sepOf(at, before) { return function () { return R.sep(at, before); }; }
-  function turnOf(t, last) {
+  function turnOf(t, last, shut) {
     return function () {
-      if (R.asking(t)) return R.ask(t);
+      if (R.asking(t)) {
+        var card = R.ask(t);
+        var buttons = shut ? card.querySelectorAll('button') : [];
+        for (var i = 0; i < buttons.length; i++) buttons[i].disabled = true;
+        return card;
+      }
       if (t.author === 'operator') return R.user(t, how(t), last);
       return R.agent(t, false);
     };
