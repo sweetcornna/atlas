@@ -44,11 +44,25 @@
 
 import { randomUUID } from 'node:crypto'
 import { signTaskOwner, type NodeKeyPair } from '@qianmo/capability'
-import { MODEL_DIRECTIONS, unansweredTurns } from '@qianmo/console'
+import {
+  isWorkflowId,
+  MODEL_DIRECTIONS,
+  parseProgressItems,
+  parseReportedContext,
+  parseWorkFileRef,
+  progressOf,
+  unansweredTurns,
+  workflowOfSkill,
+  workflowPrompt,
+  type WorkActivity,
+  type WorkFileRef,
+  type WorkflowId,
+} from '@qianmo/console'
 import { legacyDirectionOf } from '@qianmo/providers'
 import { parseTurnStepDedupKey } from '@qianmo/resident'
 import type {
   ChatLocalCommand,
+  ChatOpenOptions,
   ChatPort,
   ChatSendInput,
   ChatSession,
@@ -321,6 +335,13 @@ const MAX_STEPS_PER_SESSION = 200
  */
 const MAX_AGENT_NOTICES_PER_SESSION = 2_000
 
+/**
+ * 一条会话最多多少行文件卡（P37.17 B，`work-tasks.md` §3.2）、一次交付最多
+ * 几个文件。理由同上：写它的是节点，不是人。
+ */
+const MAX_FILE_CARDS_PER_SESSION = 200
+const MAX_FILES_PER_DELIVERY = 20
+
 const STATE_RANK: Readonly<Record<ChatTurn['state'], number>> = {
   pending: 0,
   delivered: 1,
@@ -333,10 +354,36 @@ const STATE_RANK: Readonly<Record<ChatTurn['state'], number>> = {
 // hub
 // ---------------------------------------------------------------------------
 
+/** 节点经上行调用报来的一件事，以及它是谁报的（`work-tasks.md` §5.4）。 */
+export interface WorkCallInput {
+  /** 发起调用的节点与智能体：控制链路认出来的，不是参数里说的。 */
+  readonly node: string
+  readonly agent: string | undefined
+  readonly contextId: unknown
+  readonly taskId: unknown
+}
+
 /** {@link createConsoleChatPort} 返回的东西：一个 `ChatPort`，外加一个关。 */
 export interface ConsoleChatHub extends ChatPort {
   /** 关掉全部链路与计时器。`occ console` 收到信号时调用。 */
   close(): Promise<void>
+  /**
+   * 智能体交付文件（`work.deliver`）：会话的执行者正是调用方、`taskId` 是这条
+   * 会话里还没结束的一轮，才加一行文件卡。
+   */
+  deliverFiles(
+    input: WorkCallInput & { readonly files: unknown },
+  ): ConsoleResult<ChatTurn>
+  /**
+   * 节点报进度与上下文（`work.activity`）：执行者正是调用方、`taskId` 是这条
+   * 会话里的一轮（不要求没结束）。
+   */
+  reportActivity(
+    input: WorkCallInput & {
+      readonly todo?: unknown
+      readonly context: unknown
+    },
+  ): ConsoleResult<WorkActivity>
 }
 
 export function createConsoleChatPort(
@@ -399,6 +446,10 @@ export function createConsoleChatPort(
   const stepCount = new Map<string, number>()
   /** 每条会话已经收下的智能体通知数，见 {@link MAX_AGENT_NOTICES_PER_SESSION}。 */
   const noticeCount = new Map<string, number>()
+  /** 每条会话的文件卡行数，见 {@link MAX_FILE_CARDS_PER_SESSION}。 */
+  const fileCardCount = new Map<string, number>()
+  /** 每条会话最后一份进度与上下文（P37.17 B）。 */
+  const activity = new Map<string, WorkActivity>()
   const links = new Map<string, ChatLink>()
   const listeners = new Set<(update: ChatUpdate) => void>()
   let revision = 0
@@ -422,10 +473,17 @@ export function createConsoleChatPort(
     // 正是「一台被授权的机器一直往里写」，那种情形跨得过重启。宿主自己写的
     // 后台任务通知不算；分不出来源的旧行按工具步骤算。
     if (turn.variant === 'notice' && turn.noticeSource !== 'task') {
-      const counts = turn.noticeSource === 'agent' ? noticeCount : stepCount
+      const counts =
+        turn.noticeSource === 'agent'
+          ? noticeCount
+          : turn.noticeSource === 'files'
+            ? fileCardCount
+            : stepCount
       counts.set(turn.sessionId, (counts.get(turn.sessionId) ?? 0) + 1)
     }
   }
+  for (const [sessionId, last] of snapshot.activity ?? [])
+    if (sessions.has(sessionId)) activity.set(sessionId, last)
   settleRestartOrphans()
 
   // --- notification ------------------------------------------------------
@@ -845,7 +903,66 @@ export function createConsoleChatPort(
       ...(title === undefined ? {} : { title }),
       ...(running ? { running: true } : {}),
       ...(background ? { background: true } : {}),
+      ...(stored.work === true ? { work: true as const } : {}),
+      ...(stored.workflow === undefined ? {} : { workflow: stored.workflow }),
     }
+  }
+
+  /**
+   * The session a node's work call is about, when the caller is the agent
+   * that runs it and the turn is this session's (`work-tasks.md` §5.4).
+   */
+  function workCaller(
+    input: WorkCallInput,
+    running: boolean,
+  ):
+    | { readonly stored: StoredChatSession; readonly taskId: string }
+    | ConsoleResult<never> {
+    const contextId = input.contextId
+    const taskId = input.taskId
+    if (typeof contextId !== 'string' || typeof taskId !== 'string')
+      return fail('invalid', 'contextId 与 taskId 必须是字符串')
+    const stored = sessions.get(contextId)
+    // A session that is not this caller's reads as one that does not exist.
+    if (
+      stored === undefined ||
+      stored.node !== input.node ||
+      stored.agent !== input.agent
+    )
+      return fail('not_found', '这条会话不在本控制台的记录里')
+    const own = running
+      ? [...pending.values()].some(
+          task => task.taskId === taskId && task.sessionId === stored.id,
+        )
+      : (order.get(stored.id) ?? []).some(
+          id => turns.get(id)?.taskId === taskId,
+        )
+    if (!own)
+      return fail(
+        'rejected',
+        running ? '这一轮已经结束，不能再交付文件' : '这一轮不属于这条会话',
+      )
+    return { stored, taskId }
+  }
+
+  /** The turn's workflows: the session's, the line's, and skills it read. */
+  function turnWorkflows(
+    stored: StoredChatSession,
+    taskId: string,
+    skills: readonly string[],
+  ): WorkflowId[] {
+    const out: WorkflowId[] = []
+    const add = (id: WorkflowId | undefined): void => {
+      if (id !== undefined && !out.includes(id)) out.push(id)
+    }
+    add(stored.workflow)
+    for (const id of order.get(stored.id) ?? []) {
+      const turn = turns.get(id)
+      if (turn?.author === 'operator' && turn.taskId === taskId)
+        add(turn.workflow)
+    }
+    for (const skill of skills) add(workflowOfSkill(skill))
+    return out
   }
 
   async function endpointFor(
@@ -932,19 +1049,30 @@ export function createConsoleChatPort(
       return { ok: true, value: out }
     },
 
-    async open(target: string): Promise<ConsoleResult<ChatSession>> {
+    async open(
+      target: string,
+      openOptions?: ChatOpenOptions,
+    ): Promise<ConsoleResult<ChatSession>> {
       let parsed
       try {
         parsed = assertAddress(target, 'target')
       } catch (error) {
         return fail('invalid', messageOf(error))
       }
+      const workflow = openOptions?.workflow
+      if (
+        workflow !== undefined &&
+        (openOptions?.work !== true || !isWorkflowId(workflow))
+      )
+        return fail('invalid', '工作流只用在工作会话上')
       const stored: StoredChatSession = {
         id: newId(),
         target,
         node: parsed.node,
         agent: parsed.agent,
         createdAt: now(),
+        ...(openOptions?.work === true ? { work: true as const } : {}),
+        ...(workflow === undefined ? {} : { workflow }),
       }
       try {
         store.appendSession(stored)
@@ -970,7 +1098,89 @@ export function createConsoleChatPort(
         const turn = turns.get(id)
         if (turn !== undefined) list.push(turn)
       }
-      return { ok: true, value: { session: sessionView(stored), turns: list } }
+      const state = activity.get(sessionId)
+      return {
+        ok: true,
+        value: {
+          session: sessionView(stored),
+          turns: list,
+          ...(state === undefined ? {} : { activity: state }),
+        },
+      }
+    },
+
+    deliverFiles(input): ConsoleResult<ChatTurn> {
+      const caller = workCaller(input, true)
+      if ('ok' in caller) return caller
+      const { stored, taskId } = caller
+      if (
+        !Array.isArray(input.files) ||
+        input.files.length === 0 ||
+        input.files.length > MAX_FILES_PER_DELIVERY
+      )
+        return fail('invalid', `一次交付 1–${MAX_FILES_PER_DELIVERY} 个文件`)
+      const files: WorkFileRef[] = []
+      for (const one of input.files) {
+        const file = parseWorkFileRef(one)
+        if (file === null || files.some(seen => seen.name === file.name))
+          return fail('invalid', '文件描述不合格')
+        files.push(file)
+      }
+      const counted = fileCardCount.get(stored.id) ?? 0
+      if (counted >= MAX_FILE_CARDS_PER_SESSION)
+        return fail('rejected', '这条会话的文件卡已到上限')
+      fileCardCount.set(stored.id, counted + 1)
+      const names = files.map(file => file.name)
+      return {
+        ok: true,
+        value: addTurn({
+          id: newId(),
+          sessionId: stored.id,
+          author: 'agent',
+          at: now(),
+          text: `交付了 ${files.length} 个文件：${names.join('、')}`,
+          state: 'done',
+          variant: 'notice',
+          noticeSource: 'files',
+          severity: 'info',
+          taskId,
+          files,
+        }),
+      }
+    },
+
+    reportActivity(input): ConsoleResult<WorkActivity> {
+      const caller = workCaller(input, false)
+      if ('ok' in caller) return caller
+      const { stored, taskId } = caller
+      const reported = parseReportedContext(input.context)
+      if (reported === null) return fail('invalid', '上下文不合格')
+      const items =
+        input.todo === undefined ? undefined : parseProgressItems(input.todo)
+      if (items === null) return fail('invalid', '待办清单不合格')
+      const at = now()
+      const previous = activity.get(stored.id)
+      const next: WorkActivity = {
+        // The list is the session's: kept across turns, null once emptied.
+        progress:
+          items === undefined
+            ? (previous?.progress ?? null)
+            : progressOf(taskId, at, items),
+        context: {
+          taskId,
+          at,
+          workflows: turnWorkflows(stored, taskId, reported.skills),
+          ...reported,
+        },
+      }
+      activity.set(stored.id, next)
+      try {
+        store.appendActivity(stored.id, next)
+      } catch (error) {
+        options.onError?.(error)
+      }
+      notify(stored.id)
+      return { ok: true, value: next }
     },
 
     async note(
@@ -1010,6 +1220,17 @@ export function createConsoleChatPort(
       }
       const text = input.text.trim()
       if (text === '') return fail('invalid', '消息不能为空')
+      if (
+        input.workflow !== undefined &&
+        (!isWorkflowId(input.workflow) || input.command !== undefined)
+      )
+        return fail('invalid', '工作流不能与本地命令一起发')
+      // The workflow's skill command goes in front of the line (P37.17 B,
+      // `work-tasks.md` §2.2); the transcript keeps the line as typed.
+      const line =
+        input.workflow === undefined
+          ? text
+          : workflowPrompt(input.workflow, text)
       // 本地命令只认签名（P18.20）：节点只把控制台签过的那一条当命令跑。不签就发
       // 出去，对面会把它当一句话交给模型，而这边会把模型的回答画成「命令输出」——
       // 两头都不对，所以在这里就说清楚。
@@ -1113,8 +1334,8 @@ export function createConsoleChatPort(
             // below keeps the line as typed.
             prompt:
               input.context === undefined || input.command !== undefined
-                ? text
-                : `${input.context}\n\n${text}`,
+                ? line
+                : `${input.context}\n\n${line}`,
             ...(input.onBehalfOf === undefined
               ? {}
               : { onBehalfOf: input.onBehalfOf }),
@@ -1179,6 +1400,7 @@ export function createConsoleChatPort(
         ...(input.background === true ? { background: true as const } : {}),
         // The hub's report turn (P38): its tasks start no report turn.
         ...(input.report === true ? { report: true as const } : {}),
+        ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
       })
 
       const task: PendingTask = {
