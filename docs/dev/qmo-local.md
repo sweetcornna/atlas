@@ -106,7 +106,7 @@
 | 后台开关（带 `data-write` 的复选框、单选、下拉） | 控件立即变；旁边一行「保存中…」 | 退回原值，旁边写「保存失败 · 原因」（`role="alert"`），并照旧弹出提示。这一行在所在区域下一次轮询刷新时随区域一起换掉 | 已做，通用（`assets/nav.ts`，包住 `sendJson`）。云端电脑与定时任务两处开关失败时不再刷新整个区域 |
 | 设置行（`view/settingRow.ts`） | 控件立即变 | 退回服务端的值，原因写在行下 | 原本如此，未改 |
 | 后台表单的「保存」 | 带 `data-write`、纯文字、以「保存」开头的提交按钮在写出去期间显示「保存中…」（运行时原有的禁用与 `aria-busy` 不变） | 恢复按钮文字；字段级原因照旧由页面写在字段下（`markField`） | 已做 |
-| 置顶、改名、归档、删除会话 | — | — | 代码里没有这些操作：会话的 ⋯ 菜单只有「在智能体里打开」「复制地址」，会话接口只有列出、新建、读取、发消息。删除的「先藏 10 秒可撤销」待这些操作出现时再做 |
+| 改名、删除会话 | 本机会话（Code，P37.14d）：会话行的 ⋯ 菜单有「改名」「删除」。改名就地把标题换成输入框，回车或离开输入框即用新标题，Esc 不改（输入期间列表不重画）；删除先把这一行藏起来，侧栏底部写「已删除「标题」 · 撤销」，10 秒后才交给运行器，期间再删一个时上一个立即交出 | 改名被拒：退回原标题，原因写在输入框下的状态行。删除被拒：那一行回来，原因写在状态行；工作树因有改动留下时，状态行写它的路径（§4.3.7）。10 秒内离开或重载页面就不删（宁可留着） | 本机会话已做（`assets/codeManage.ts`）。对话（Work）的会话没有这些操作：⋯ 菜单只有「在智能体里打开」「复制地址」，会话接口只有列出、新建、读取、发消息；置顶、归档两边都没有 |
 
 ### 3.4 外观
 
@@ -404,7 +404,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 | 路径 | 内容 |
 |---|---|
 | `folders.json` | 选过的文件夹：`{id, path, name, pickedAt}`，至多 20 个，id 是 16 位十六进制随机数 |
-| `sessions/<id>/session.json` | 会话抬头：`id`、`title`、`createdAt`、`updatedAt`、`folder {path, name}`、`root`（agent 的工作目录）、`worktree? {path, branch, base, repo}`、`agent {id, name, protocol, version}`、`mode`、`state`、`lastSeq`、`native {kind, id, started}`（Claude Code 会话号、Codex 线程号、ACP 会话号）、`remote {on: false, pushedSeq: 0}`（P37.15 用） |
+| `sessions/<id>/session.json` | 会话抬头：`id`、`title`、`createdAt`、`updatedAt`、`folder {path, name}`、`root`（agent 的工作目录）、`worktree? {path, branch, base, repo, ready}`（`base` 是建树时的提交号，`ready` 是 `git worktree add` 已做完）、`agent {id, name, protocol, version}`、`mode`、`state`、`lastSeq`、`native {kind, id, started}`（Claude Code 会话号、Codex 线程号、ACP 会话号）、`remote {on: false, pushedSeq: 0}`（P37.15 用） |
 | `sessions/<id>/events.ndjson` | 对话记录，只追加 |
 | `worktrees/` | 运行器建的工作树（§4.3.7） |
 | `runner.lock`、`children.json`、`runner.log` | §4.3.2 |
@@ -421,23 +421,24 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 - 同一个 `turn.id` 会被重写（工具从 `running` 到 `done`、征询从未答到已答），读时同一 id 取最后一条、位置取第一次出现，与 `ChatStore` 相同。`seq` 每会话单调递增，每写一行加一。
 - 正文增量不落盘：一条正文在 agent 说完时整条写一次；运行器在内存里留着正在流的那一条（`qmo_local_read` 的 `live`），进程中途没了这一条就没了，原生会话里仍有，续接不受影响。
 - 上限：人的一句至多 65,536 个字符；正文一条至多 256 KiB（超出截断并标明）；`detail` 至多 16 KiB（输出留尾部，差异留头部）；一个会话的记录文件到 64 MiB 后会话只读，提示开新会话。
-- 删除会话（P37.14d）删掉这个目录；agent 自己的会话文件不动（那是 agent 的）。退出登录不删：本机会话是这台电脑的，与账号无关。
+- 删除会话（P37.14d）：在跑的这一轮先停下（至多等 10 s，停不下答 `E_BUSY`「会话还没停下，稍后再删」），结束它的 agent 进程，按 §4.3.7 处理工作树，再删掉这个目录，发 `removed`；agent 自己的会话文件不动（那是 agent 的）。退出登录不删：本机会话是这台电脑的，与账号无关。
 
 #### 4.3.7 工作树与变更
 
 | 项 | 做法 |
 |---|---|
-| 工作树 | 新会话可选「独立工作树」（文件夹在 Git 仓库里才可选）。运行器在仓库根上 `git worktree add -b qmo/<日期>-<短名> <路径> HEAD`，路径在 `<客户端目录>/code/worktrees/<仓库名>-<8 位哈希>/<会话 id>`；选的文件夹若是仓库里的子目录，agent 的工作目录是工作树里的同一子目录。底是选时的 `HEAD`：主检出里没提交的改动不带过去，选项旁写明 |
+| 工作树 | 新会话可选「独立工作树」（`session.start` 的 `worktree: true`，`features.worktree: true`；页面上文件夹是 Git 仓库才可选）。开会话时只做快检：有 git、文件夹在仓库里、仓库有提交、选的子目录在当前提交里，任一不满足答 `E_GIT` 并写原因（「这个文件夹不在 Git 仓库里」「仓库还没有提交，开不了独立工作树」「选的文件夹不在当前提交里，独立工作树里没有它」）；底取这时 `HEAD` 的提交号，不传 `HEAD` 这个名字，免得开会话与建树之间主检出动了。真正的 `git worktree add -b <分支> <路径> <提交号>` 在仓库根上、第一轮开始前跑（等待行写「正在建独立工作树」），至多 5 分钟，「停止」随时结束它；建不成写一条失败记录「没能建独立工作树：<原因>」，这一轮与排着的句子一起撤下。路径 `<客户端目录>/code/worktrees/<仓库名>-<8 位哈希>/<会话 id>`；分支 `qmo/<YYYYMMDD>-<标题里的 ASCII 词，至多 24 个字符>-<会话 id 哈希的 4 位>`，只含 `[a-z0-9-]`，大小写不敏感的文件系统上也不撞。选的文件夹若是仓库里的子目录，agent 的工作目录是工作树里的同一子目录。主检出里没提交的改动不带过去，选项旁写「从当前提交开始，没提交的改动不带过去」 |
+| 钩子 | `worktree add` 照终端里的样子跑：不加 `-c`、不改语言环境，只加 `GIT_TERMINAL_PROMPT=0`，仓库自己的 `post-checkout` 钩子照常运行；它自成一个进程组，超时与停止连钩子一起结束。钩子失败而检出已完整（`HEAD` 在底上、跟踪的文件没有缺改）时会话照常继续，转录里写一条「独立工作树建好了，但 <git 的最后一行>」；不完整的按建不成处理 |
 | 不放在哪 | 不放进用户的仓库（`<仓库>/.claude/worktrees` 是 Claude Code 的项目配置目录，阡陌不写；也会让 `git status` 多出未跟踪目录），不放在仓库旁边 |
-| 删会话 | 工作树干净时 `git worktree remove`，分支留着（上面有 agent 的提交）；不干净就留下并写明路径。从不 `--force` |
-| 变更 | 文件夹会话：工作区相对 `HEAD`（没提交的改动，含未跟踪文件）；工作树会话：相对建树时的底（含 agent 的提交）。`git --no-optional-locks status --porcelain=v2 -z --untracked-files=all` 加 `git diff --numstat -z <底>` 列文件；点开一个文件 `git diff --no-color --no-ext-diff --no-textconv -U3 <底> -- <路径>`，未跟踪的用 `git diff --no-index -- /dev/null <路径>` |
-| 不是 Git 仓库 | 列这个会话的工具记录里改过的文件，差异取记录里的（不读磁盘） |
+| 删会话 | 工作树里没有任何改动（含未跟踪文件）时 `git worktree remove`（从不 `--force`），分支留着（上面有 agent 的提交），仓库那一层的空目录一并去掉，答 `{worktree: 'removed'}`；有改动或 git 不肯删就留下，答 `{worktree: 'kept', path}`，页面在状态行写明路径；工作树还没建出来的答 `{}` |
+| 变更 | 文件夹会话：工作区相对 `HEAD`（第一次提交前相对空树）；工作树会话：相对建树时的提交（agent 在工作树里的提交也算，主检出之后再动不影响）。`git diff --name-status -z <底>` 与 `git diff --numstat -z <底>` 列跟踪的文件（改名记 `renamed`，复制当新增），`git --no-optional-locks status --porcelain=v2 -z --untracked-files=all` 补未跟踪的与冲突的；点开一个文件 `git diff --no-color --no-ext-diff --no-textconv -U3 <底> -- <路径>`，未跟踪的用 `git diff --no-index -- /dev/null <路径>`。工作树还没建好时按下一行 |
+| 不是 Git 仓库 | 没装 git 时也一样，答 `source: 'session'`：列这个会话的工具记录里改过的文件——带差异（`detailKind: 'diff'`）、已完成（`done`）、路径是会话根里的相对路径的工具行；被拒、失败、还在跑的不算。计数取工具行自己的（`detail` 截在 16 KiB 的也是全数）；差异是这些工具行的差异按先后接起来，行号是那次编辑的，不是文件的；第一段差异是 `@@ -0,0` 的记新增，`+0,0 @@` 的记删空，其余记修改，三种协议的差异都这样认。一条工具行涉及几个文件时每个都列，差异是整条的、不给计数。不读磁盘，页面写「不是 Git 仓库 · 按会话记录列出」 |
 | 刷新 | 一个编辑或命令类工具结束后 1 s 内刷一次，另有手动刷新 |
-| 边界 | 只读：不暂存、不提交、不还原（以后要做的「撤销改动」另立包）。git 用登录 shell 的 PATH 找；环境 `GIT_TERMINAL_PROMPT=0`、`GIT_OPTIONAL_LOCKS=0`、`LC_ALL=C`；每条 10 s 超时；至多列 1000 个文件，一个文件的差异至多 256 KiB，二进制文件只给统计。路径参数一律放在 `--` 之后，先过 §4.5.3 的检查。`worktree add` 会照常触发仓库自己的 `post-checkout` 钩子（与用户在终端里运行同一条命令一样）；`status` 与 `diff` 不触发钩子 |
+| 边界 | 只读：不暂存、不提交、不还原（以后要做的「撤销改动」另立包）。git 用登录 shell 的 PATH 找；环境 `GIT_TERMINAL_PROMPT=0`、`GIT_OPTIONAL_LOCKS=0`、`LC_ALL=C`；每条 10 s 超时（`worktree add` 5 分钟）。超过上限的只给统计：至多列 1000 个文件，其余只数个数（`omitted`，`truncated: true`）；一个文件的差异超过 256 KiB 不给正文（`large: true`、`text: ''`、`truncated: true`）；未跟踪而超过 1 MiB 的文件不读，标 `large`、不数行；二进制只给统计。路径参数一律放在 `--` 之后，先过 §4.5.3 的检查。`status` 与 `diff` 不触发钩子，也关掉仓库的文件系统监视（`core.fsmonitor=false`） |
 
 ### 4.4 权限
 
-本机会话的权限模式沿用四档，缺省「自动审批」（负责人 10-24「自动审批是默认最佳权限模式」，`elevation.md` §8.1）。每档用 agent 自己的权限设置表达；agent 没有对应档时由运行器按档回答它的征询。运行器自己从不放行 shell 命令，除非在「跳过权限确认」下。
+本机会话的权限模式沿用四档，缺省「自动审批」（负责人 10-24「自动审批是默认最佳权限模式」，`elevation.md` §8.1）。新会话的缺省档可在壳设置窗的「Code」一节改（P37.14d，存在壳的 `settings.json`，`qmo_local_list` 的答复里由壳加上 `defaults`，§4.5.1）；在那里选「跳过权限确认」同样要再确认一次。每档用 agent 自己的权限设置表达；agent 没有对应档时由运行器按档回答它的征询。运行器自己从不放行 shell 命令，除非在「跳过权限确认」下。
 
 | 档 | Claude Code `--permission-mode` | Codex `approvalPolicy` · `sandbox` | Gemini CLI / Qwen Code 的 ACP 模式 | opencode、dsh |
 |---|---|---|---|---|
@@ -470,20 +471,20 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 
 | 命令 | 参数 | 答复 | 说明 |
 |---|---|---|---|
-| `qmo_local_list` | 无 | `{v: 1, features: {protocols, worktree, remote: false}, folders: [Folder], sessions: [Summary]}` | 打开 Code 面先调；也是能力探测：`protocols` 列本版能驱动的协议（P37.14a 只有 `claude-stream`），其余 agent 在选择里写「后续版本支持」 |
+| `qmo_local_list` | 无 | `{v: 1, features: {protocols, worktree, remote}, folders: [Folder], sessions: [Summary], defaults: {mode, remote}}` | 打开 Code 面先调；也是能力探测：`protocols` 列本版能驱动的协议（P37.14a 只有 `claude-stream`），其余 agent 在选择里写「后续版本支持」；`worktree` 自 P37.14d 为 `true`。`defaults` 由壳加（壳设置窗「Code」一节，运行器不知道它）：页面第一次读到时用 `defaults.mode` 作新会话的档，`defaults.remote` 只在 `features.remote` 为真时用 |
 | `qmo_local_watch` | `channel`：`window.__TAURI__.core.Channel` | `{}` | 登记本页的事件通道（§4.5.2）；再调就换掉旧的 |
 | `qmo_local_pick_folder` | 无 | `Folder` 或 `null`（取消了） | 壳弹系统的文件夹选择框，把选中的路径交给运行器的 `folders.add`；这是路径进入系统的唯一入口 |
 | `qmo_local_forget_folder` | `folder` | `{}` | 从最近列表去掉；不碰磁盘，已有会话照旧能开 |
-| `qmo_local_start` | `folder`、`agent`、`mode`、`worktree`、`text`、`clientId`；`remote?`（P37.15 前只收 `false`） | `{session: Summary, turn}` | 开会话就是发第一句 |
+| `qmo_local_start` | `folder`、`agent`、`mode`、`worktree`、`text`、`clientId`；`remote?`（P37.15 前只收 `false`） | `{session: Summary, turn}` | 开会话就是发第一句；`worktree: true` 按 §4.3.7 开独立工作树，`Summary.worktree` 是 `{branch}` |
 | `qmo_local_send` | `session`、`text`、`clientId` | `{turn, queued}` | 在跑时进队列（§4.3.5） |
 | `qmo_local_stop` | `session` | `{}` | 中止本轮，撤下队列 |
 | `qmo_local_answer` | `session`、`ask`、`decision`（`once` \| `session` \| `deny`）、`message?` | `{}` | 已答过或已失效的拒绝 `E_ASK` |
 | `qmo_local_set_mode` | `session`、`mode` | `{mode, applies: 'now' \| 'next-turn'}` | §4.4 |
 | `qmo_local_read` | `session`、`before?`（seq）、`limit?`（1–200，缺省 100） | `{session: Summary, records: [Record], more, lastSeq, live?: {turn, text}}` | 从新往旧翻页；`live` 是正在流的那一条已到的文字 |
-| `qmo_local_changes` | `session` | `{source: 'git' \| 'session', base?, files: [{path, status, added, removed, binary}], truncated}` | §4.3.7 |
-| `qmo_local_diff` | `session`、`path` | `{path, text, truncated, binary}` | 一个文件的统一格式差异 |
-| `qmo_local_rename` | `session`、`title` | `{}` | P37.14d |
-| `qmo_local_delete` | `session` | `{worktree?: 'removed' \| 'kept'}` | P37.14d |
+| `qmo_local_changes` | `session` | `{source: 'git' \| 'session', base?, files: [{path, status, added, removed, binary, large?}], truncated, omitted?}` | §4.3.7；`omitted` 是超过 1000 个没列的文件数 |
+| `qmo_local_diff` | `session`、`path` | `{path, text, truncated, binary, large?}` | 一个文件的统一格式差异；`large` 时只给统计 |
+| `qmo_local_rename` | `session`、`title`（至多 120 字、一行、去掉首尾空白后不空） | `{}` | P37.14d；运行器去掉首尾空白后写进 `session.json`，发 `session` 事件 |
+| `qmo_local_delete` | `session` | `{}`、`{worktree: 'removed'}` 或 `{worktree: 'kept', path}` | P37.14d；在跑的先停下（§4.3.6），工作树的去留见 §4.3.7，发 `removed` |
 | `qmo_local_set_remote` | `session`、`on` | P37.15 前一律拒绝 `E_REMOTE` | 接口先留（§4.5.6） |
 
 - 类型：`Folder = {id, name, path, git}`（`path` 只供显示）；`Summary = {id, title, folder: {id | null, name}, agent: {id, name}, mode, state: 'idle' | 'running' | 'waiting' | 'interrupted' | 'failed', worktree?: {branch}, remote: false, createdAt, updatedAt, lastSeq}`；`Record = {seq, kind: 'turn', turn}`（§4.3.6）。
@@ -503,8 +504,10 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 | `delta` | `session`、`turn`、`offset`、`text` | 正文增量；运行器每 50 ms 合并一次，一条至多 4 KiB |
 | `activity` | `session`、`kind`、`words` | 思考中、在调哪个工具，给等待行用；不落盘 |
 | `removed` | `session` | 会话删了 |
+| `open` | `session` | 只由壳发（P37.14d）：本机会话的系统通知被点开，而主窗口正显示中枢的 `/code` 并登记了通道时；页面打开这个会话，不认识的不动。主窗口不在 `/code` 时壳改为导航到 `/code?session=<id>` |
 | `runner` | `state: 'up' \| 'down'`、`reason?` | 运行器起停，只由壳发：`up` 在壳接受了 `hello` 的答复（协议是 1）之后，`down` 在运行器结束或没起来时（带原因，一次故障只说一次）。运行器自己不发这种事件（P37.14a 合流前两边都发 `up`，页面收到两次） |
 
+- 壳自己也读这条流（P37.14d，`attention.rs`）：`session` 事件里状态从运行中或等你确认到完成或失败、或到等你确认时，主窗口不在前面或页面没登记通道就发系统通知；等你确认的本机会话数加进角标；退出 Qmo 时据此问。规则见 [`qmo-app.md`](./qmo-app.md) §6。
 - 每条带 `v: 1`。页面按会话记已画到的 `seq`，重复的丢掉，见到跳号就 `qmo_local_read` 补；`delta` 的 `offset` 与已画的长度对不上时不接，等这一条的 `record`。页面打开一个会话的顺序：先登记通道，再读，读到的 `lastSeq` 之前的事件丢掉。
 - 体积：一条事件尽量小于 8 KiB（Tauri 在这以上改走取数命令）。`record` 的 JSON 超过 8 KiB 时只发 `{session, seq, trimmed: true}`，页面展开或画到它时再读。
 - 中枢页面的 CSP（`connect-src 'self'`）挡住 Tauri 的自定义协议取数，Tauri 自动退回 `postMessage`（`ipc-protocol.js` 的回退，现有的 `qmo_*` 命令已走这条路）；每页第一次会在控制台留一条警告，不影响功能。
@@ -531,7 +534,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 - **同一套规则**：把 `view/richText.ts` 的封闭子集（围栏代码、行内代码、一级列表、加粗、段落；不认链接、图片、表格、嵌套列表、原始 HTML；未配对的反引号与 `**` 按原文）移植成页面脚本里的一个函数，直接用 `createElement` 与 `textContent` 建节点，不先拼字符串、不转义后再插入。没有可插入的 HTML，也就没有转义顺序的问题。
 - **同样的外观**：元素与类名照服务端画法（`fx-msg`、`fx-msg-user`、`fx-bubble`、`fx-msg-agent`、`fx-text`、`turn-p`、`turn-list`、`turn-code`、`fx-steps`、`fx-step`、`fx-pending`、`fx-sep`），沿用前台已有样式。新加的只有工具行里的差异块（`+` / `-` 行着色，不做语法高亮）、征询卡片、变更面板，样式进 `view/frontStyle.ts`。
 - **一致性用例**：在真 Chrome 里拿同一组输入（围栏、未闭合的围栏、各种反引号与 `**`、列表、`<script>`、`&amp;`、引号、中日文、空串）分别跑服务端的 `renderRichText` 与页面的函数，两边都经同一个 `<template>` 序列化后逐字相同。另有静态用例：Code 的脚本里没有 `innerHTML`、`outerHTML`、`insertAdjacentHTML`、`document.write`、`eval`、`new Function`。
-- **脚本与预算**：共享运行时 `client.ts` 已到 39,331 字符（预算 40,000，余 669），不往里放。Code 的脚本分两段：`assets/codeRender.ts`（`CODE_RENDER_JS`：富文本与记录画法，预算 14,000）、`assets/codeClient.ts`（`CODE_JS`：会话列表、地址、输入框、事件通道、变更面板，预算 34,000，现在 3,929），仍只拼进 `/code` 文档那一段内联脚本，CSP 照旧按哈希列出。零新运行时依赖。
+- **脚本与预算**：共享运行时 `client.ts` 已到 39,331 字符（预算 40,000，余 669），不往里放。Code 的脚本分三段：`assets/codeRender.ts`（`CODE_RENDER_JS`：富文本与记录画法，预算 14,000，现在 13,325）、`assets/codeClient.ts`（`CODE_JS`：会话列表、地址、输入框、事件通道、变更面板，预算 34,000，现在 33,550）、`assets/codeManage.ts`（`CODE_MANAGE_JS`，P37.14d：独立工作树开关、会话行 ⋯ 的改名与删除、10 秒撤销，预算 8,000，现在 4,884；`CODE_JS` 经 `R.host` 把要用的交给它，自己只留几处钩子），按这个顺序只拼进 `/code` 文档那一段内联脚本，CSP 照旧按哈希列出。零新运行时依赖。
 - **流式**：正在流的那一条先按纯文字追加，每个动画帧至多重画一次富文本；说完换成记录。只画最近 200 条，往上滚到顶再读更早的。
 - **Remote 开着时别的设备**：中枢上的副本就是 `ChatTurn` 记录（§4.3.6），浏览器里的 Code 面用前台现有的服务端转录画法（`renderMessages`、步骤折叠）画，工具行显示 `text` 与 `detail`，征询显示为一条待确认的过程行。本机上的 Code 页始终画运行器的记录，不画中枢的副本。
 
@@ -566,7 +569,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 
 | 项 | 做法 |
 |---|---|
-| 在哪 | 每个本机会话标题栏右侧一个 Remote 开关；新会话输入框上也有一个，缺省取壳设置窗「Code」一节的「新会话开启 Remote」（缺省关；设置卡片里的「桌面版」一项打开这个窗，这是这台电脑的设置，不随账号走）。会话行上开着的有一个小标 |
+| 在哪 | 每个本机会话标题栏右侧一个 Remote 开关；新会话输入框上也有一个，缺省取壳设置窗「Code」一节的「新会话开 Remote」（缺省关，存在壳的 `settings.json`，经 `qmo_local_list` 的 `defaults.remote` 交给页面；设置卡片里的「桌面版」一项打开这个窗，这是这台电脑的设置，不随账号走）。运行器报 `features.remote: true` 之前设置窗里这一项灰着、写「还没开放」（运行器还没起过时写「打开一次 Code 后可设」），页面也不用它（P37.14d 已做设置项与存盘）。会话行上开着的有一个小标 |
 | 关 | 会话只在这台电脑上：页面经 `qmo_local_*` 直达运行器（§4.5），中枢不知道它存在 |
 | 开 | 运行器经设备链路（§5.1）把这个会话按 §5.3 同步到中枢；同一账号的别的设备（浏览器、手机上的网页、另一台桌面版）在 Code 列表里看到它，标明在哪台设备、是否在线；设备在线时可以续写、回答权限征询、中止，离线时只读 |
 | 再关 | 立刻停止推送，别的设备发来的消息不再收；中枢上已有的副本留作只读、行上标「Remote 已关」，会话的 ⋯ 菜单里可「从中枢删除副本」 |
@@ -611,7 +614,7 @@ Cowork 式虚拟机、模拟器、Office 插件；把整个网页应用另带一
 | P37.14a | 本机会话第一轮，Claude Code：`@qianmo/harness`（进程基类与 Claude Code 通道搬家，加 §4.3.3 的附加项）；运行器 `qmo code serve`（§4.3.2、§4.3.4–§4.3.6 的 Claude Code 部分，§4.4 的四档）；壳的运行器桥、选文件夹与 §4.5.1 的命令（改名、删除留给 d，`qmo_local_set_remote` 先一律拒绝）；Code 页的会话列表（按文件夹分组）、新会话、转录（§4.5.5）、征询卡片、权限菜单、Git 文件夹的变更面板；`qmo agents` 不再列 qianmopi。原 P37.16「本机直连」并入这里 | macOS 本机经 Qmo.app 用 Claude Code 在一个文件夹里：发一句 → 流式回答 → 改一个文件 → 变更面板看到这个文件的 diff；页面载入后断网，同一会话再跑一轮；退出 Qmo 再开，接着说；节点两组测试与 `qm` 构建冒烟不变；富文本一致性用例、脚本预算与「没有 innerHTML」用例 | 已实现，三路（`@qianmo/harness` 与运行器、壳、Code 页）合流在 `feat/p37-14a`，未合入；用例与门禁见 §9。真机这一条（Qmo.app 里用真的 Claude Code 走一轮、断网再跑、退出再开）未实测；`RecordSink` 没留（§4.5.6） |
 | P37.14b | Codex：`CodexChannel` 搬进 `@qianmo/harness` 并加附加项；运行器的 Codex 驱动（§4.3.5、§4.4 的 Codex 列，`turn/diff/updated`） | 用 Codex 在一个本机文件夹里跑通一轮（改一个文件、看到变更）；四档在假 app-server 上各一轮；常驻 Codex 用例不变 | 设计 |
 | P37.14c | ACP：`AcpChannel` 搬进 `@qianmo/harness` 并加附加项；Gemini CLI、Qwen Code、opencode、dsh 的本机起法、模式映射与会话级「允许」的认法 | Gemini CLI 在本机文件夹里跑通一轮；其余三个在假 ACP 上过，真机标未实测；常驻 ACP 用例不变 | 设计 |
-| P37.14d | 独立工作树（§4.3.7）；变更面板补全（非 Git 文件夹、未跟踪、二进制、大文件）；改名、删除（含工作树的去留）；窗口不在前面时的系统通知（一轮完成、等你确认）与角标；退出 Qmo 时有会话在跑先问；壳设置窗「Code」一节（新会话的缺省权限模式、新会话开 Remote 的缺省） | 在 Git 仓库里开工作树会话、改文件、主检出不受影响，删会话时干净的工作树被移除、不干净的留下；通知点开回到那个会话；以上在 macOS 本机走一遍 | 设计 |
+| P37.14d | 独立工作树（§4.3.7）；变更面板补全（非 Git 文件夹、未跟踪、二进制、大文件）；改名、删除（含工作树的去留）；窗口不在前面时的系统通知（一轮完成、等你确认）与角标；退出 Qmo 时有会话在跑先问；壳设置窗「Code」一节（新会话的缺省权限模式、新会话开 Remote 的缺省） | 在 Git 仓库里开工作树会话、改文件、主检出不受影响，删会话时干净的工作树被移除、不干净的留下；通知点开回到那个会话；以上在 macOS 本机走一遍 | 已实现，在 `feat/p37-14d-worktree`（基点 `3247b9b2a`），未合入；用例与门禁见 §9。真机这一条（Qmo.app 里在 Git 仓库开工作树会话、通知点开、退出确认、设置窗）未实测 |
 | P37.15 | 设备链路与中枢 `/v0/client/link`、设备节点、开着 Remote 的会话同步与续写（§5）；用 P37.14a 留好的接口（§4.5.6） | 本机会话在浏览器里看得到；设备在线时从浏览器续写一轮；吊销设备后链路断开；断网期间的记录在恢复后按 `seq` 补齐 | 设计 |
 | P37.16 | 离线打开 Code（原「本机直连」已并入 P37.14a）：中枢连不上时，壳的离线页给「打开本机会话」，进壳自带的精简本机页（只画本机会话，富文本画法在构建时从控制台的 `CODE_RENDER_JS` 拷入，不是网页应用的副本），本地页面的能力加上运行器的命令 | 断网冷启动 Qmo，能看本机会话、跑完一轮；联网后回到中枢页面 | 设计 |
 
@@ -646,6 +649,20 @@ P37.14a 未实测（要在负责人的机器上用 Qmo.app 与真的 Claude Code
 - 真的 Claude Code：`--permission-prompt-tool stdio` 是否仍有效（无效就换 `--permission-prompts host`，§4.6）；以 `--permission-mode auto` 启动在没开通的账号上怎么报（运行器认的两句原话「Session ID … is already in use」「No conversation found」也是按现有提示写的，没对过）；`init` 里有没有 `permissionMode`；`stream_event` 增量的实际形状；登录失效时的原话。
 - Qmo.app 里的整条路：WKWebView 里 `Channel` 经 `postMessage` 回退的顺序与延迟、长转录的 DOM；页面载入后断网同一会话再跑一轮；退出 Qmo 再开接着说；系统选择框；`runner.log` 的内容。`bun run atlas:build:app` 只编过，没有打开。
 - Windows、Linux：运行器的锁在 Windows 上没有启动时刻核对（总被接管）、进程树与 npm 垫片、壳在这两个系统上都没编过。
+
+P37.14d（工作树、变更补全、改名删除、通知与角标、退出确认、壳设置「Code」）的用例，同样只用假进程；工作树都建在临时目录里新建的临时仓库上：
+
+- 运行器（`atlas/packages/client/test/code/`）：`worktree.test.ts`——干净的工作树会话：agent 的改动只在工作树里、主检出 `git status` 为空，删会话移除工作树、分支留着；底之后主检出又提交，工作树会话的变更仍相对建树时的提交并含 agent 的提交，不干净的工作树删会话时留下并答路径；选的是子目录时 agent 在工作树里的同一子目录，选的子目录没提交、仓库没有提交时拒绝；`post-checkout` 钩子失败而检出完整时会话继续并写一条提醒，钩子挂住时「停止」结束它（连钩子的进程），5 分钟上限缩成 300 ms 时这一轮失败、排着的句子撤下；改名的校验、重起后标题与分支还在；删正在跑的会话、删非 Git 会话。`recorded.test.ts`——非 Git 的变更：一个文件分几次写、新增、修改、删空；被拒、失败、在跑的、绝对路径、`..`、输出类的不列；16 KiB 截断的计数仍是全数，超过 256 KiB 只给统计；一条工具行多个文件；超过 1000 个只数个数；对着运行器在普通文件夹里写再改一个文件，列出的来自记录、之后磁盘再变不影响。`git.test.ts`——超过 256 KiB 的差异、超过 1 MiB 的未跟踪文件、超过 1000 个文件只给统计；相对给定提交的变更与差异。`runner.test.ts`——`features.worktree: true`，非 Git 文件夹开工作树会话答 `E_GIT`，`worktree` 不是布尔答 `E_ARGS`。
+- 编出来的 `qmo`（`qianmo-client-code-serve.test.ts`）：`hello` 报 `worktree: true`；三方约定里的十二个方法；在临时仓库里开工作树会话、agent 改文件、主检出不变、变更面板看到这个文件，提交后删会话，工作树没了、分支还在、`git worktree list` 里没有它。
+- 壳（`cargo test`，123 条）：`qmo_local_rename`（至多 120 个 UTF-16 码元、一行、不能只有空白）与 `qmo_local_delete` 的参数与三方约定；命令表 24 条、remote 能力 26 项、`build.rs`、`lib.rs` 都登记了；`attention.rs`——一轮完成、失败、等你确认各发一次，中止不发，先听到的是完成不发，主窗口在前面且 Code 页登记了通道才不发；角标是页面数加等你确认的会话数、至多 999、删会话与运行器停下时减掉；退出时数运行中与等你确认的、同一时刻只问一次；通知的标题与 agent 名截成一行；`code.rs`——壳的旁听按序看到每条事件与运行器停下，`ask_if_up` 不起运行器、自己的等待时间，`features.remote` 取自 `hello`，`qmo_local_list` 的答复加上 `defaults`，`open` 事件只送给登记了通道的页面；`shell.rs`——通知点开按种类（对话 / 本机会话）记、取一次就没，只有主窗口正显示 `/code` 时才发 `open`；设置文件的 `code` 一节单独读，坏了只丢它、档不认识回到自动审批；三种语言的退出问句都带个数。
+- Code 页（`atlas/packages/console/test/`）：`code.test.ts` 核对三段脚本的预算与写法、`CODE_MANAGE_JS` 只用改名与删除两条命令、三段在 `/code` 的内联脚本里按序相接、Work 的文档不带它们，空框里有工作树开关（关着）、说明行（藏着）、撤销行（藏着）与新图标。`browser/code.browser.test.ts` 新增六条：工作树开关只在运行器能建、文件夹是 Git 时可开，说明行随开关出现，开着开会话时带 `worktree: true`；壳的缺省档开新会话、Remote 的缺省只在 `features.remote` 为真时用；⋯ 里改名——回车与离开保存、Esc 不改、只有空白不改、被拒退回并写原因；删除——藏起这一行与撤销行、撤销回来且不调命令、再删一个时上一个立即交出、10 秒后才调 `qmo_local_delete`、留下的工作树路径写在状态行、被拒时那一行回来；变更面板的非 Git 来源、只给统计的文件与差异、没列出的个数；壳的 `open` 事件打开那个会话、不认识的不动。`legacyParity.golden.json` 随前台样式表重新生成（只有各前台文档的长度、哈希与第一段脚本的哈希变了）。
+
+P37.14d 未实测（要在负责人的机器上用 Qmo.app 核）：
+
+- 真仓库与真的 agent：Qmo.app 里在一个 Git 仓库开工作树会话、用真的 Claude Code 改文件、主检出 `git status` 不变、删会话时干净的移除不干净的留下；大仓库与慢钩子下建树的耗时；agent 在 `~/Library/Application Support/Qmo/code/worktrees/…` 下工作时它自己的沙箱与 macOS 隐私授权的表现。
+- 系统通知与角标：macOS 通知中心里通知的样子、点开回到那个会话（经 `open` 事件或导航）、通知权限没给时的样子；程序坞角标的数；Windows 的任务栏圆点、Linux 都没编过。
+- 退出确认：⌘Q、托盘「退出」时系统对话框的样子与按钮；从托盘退出而主窗口藏着时对话框是否到前面；程序坞的「退出」、注销与关机不经过这条路（tao 不给拦截点）。
+- 壳设置窗的「Code」一节：在 WKWebView 里的样子与 560 × 560 窗里要不要滚动。`bun run atlas:build:app` 只编过，没有打开。
 
 `qmo agents`（§4.2）：
 

@@ -113,20 +113,20 @@
 
 ### 5.2 页面请壳做的事
 
-经 Tauri IPC（`window.__TAURI__.core.invoke`）调用。只有中枢源与本地页面能调；参数在 Rust 里逐项校验，超长、类型不对、越界一律拒绝。P37.13 加的三条（`qmo_local_agents`、`qmo_boot_layout`、`qmo_open_local_settings`）另在命令里核一次调用方页面与登录的中枢同源，本地页面和别的源调用都拒绝；P37.14a 加的十三条本机会话命令（表末）同样核同源，并且只收主窗口（快速输入窗调用也拒绝），失败一律以 `qmo local <代码>: <说明>` 拒绝，规则见 [`qmo-local.md`](./qmo-local.md) §4.5。表里的「字」按 UTF-16 码元计（JavaScript 字符串的 `length`），与页面、运行器同一种算法；每条命令的键、可缺省的键与交给运行器的参数写在 `atlas/packages/console/test/browser/qmo-local-calls.json`，壳、页面、运行器三方的用例都核它。
+经 Tauri IPC（`window.__TAURI__.core.invoke`）调用。只有中枢源与本地页面能调；参数在 Rust 里逐项校验，超长、类型不对、越界一律拒绝。P37.13 加的三条（`qmo_local_agents`、`qmo_boot_layout`、`qmo_open_local_settings`）另在命令里核一次调用方页面与登录的中枢同源，本地页面和别的源调用都拒绝；P37.14a 加的十三条与 P37.14d 加的两条（改名、删除）本机会话命令（表末）同样核同源，并且只收主窗口（快速输入窗调用也拒绝），失败一律以 `qmo local <代码>: <说明>` 拒绝，规则见 [`qmo-local.md`](./qmo-local.md) §4.5。表里的「字」按 UTF-16 码元计（JavaScript 字符串的 `length`），与页面、运行器同一种算法；每条命令的键、可缺省的键与交给运行器的参数写在 `atlas/packages/console/test/browser/qmo-local-calls.json`，壳、页面、运行器三方的用例都核它。
 
 | 命令 | 参数 | 作用 |
 |---|---|---|
 | `qmo_shell_info` | 无 | 返回 `{ platform, version, quickShortcut }`，页面用它在键盘帮助里写快速输入的快捷键 |
 | `qmo_notify` | `title` ≤ 120 字，`body` ≤ 300 字，`session?` | 主窗口不在前台时发系统通知；点通知回到主窗口并打开该对话 |
-| `qmo_badge` | `count` 0–999 | 程序坞或任务栏角标，0 清除 |
+| `qmo_badge` | `count` 0–999 | 程序坞或任务栏角标，0 清除。显示的数是页面报的这个数加上等你确认的本机会话数，至多 999（§6） |
 | `qmo_open_session` | `session`（`[A-Za-z0-9_-]{1,128}`） | 显示并聚焦主窗口，打开 `/app?session=<id>`，隐藏快速输入窗 |
 | `qmo_quick_hide` | 无 | 隐藏快速输入窗 |
 | `qmo_sign_out` | 无 | 吊销这台设备、清 cookie、回到登录页 |
 | `qmo_local_agents` | `rescan?`（布尔，缺省 false） | 跑随包的 `qmo agents --json`（`rescan` 时加 `--rescan`），返回 `{ agents: [...] }`，每项原样是 [`qmo-local.md`](./qmo-local.md) §4.2 的字段。30 秒超时；同一时刻只跑一个，后到的调用等正在跑的那次的结果（正在跑的不是 rescan 而后到的是时，等它结束再跑一次 rescan）。失败时 Promise 以一行说明拒绝 |
 | `qmo_boot_layout` | `layout`：`page`（`chat` \| `agents` \| `code`）、`side`（`open` \| `closed`）、`sideWidth` 0–1000、`rows` 0–60、`labels` 0–20 的整数，`theme?`（`system` \| `light` \| `dark`，缺省 `system`），`colors?`（`{ dark, page, sidebar }`，两色都是 `#rrggbb`） | 记下页面的布局与颜色，下次骨架页按它画（[`qmo-local.md`](./qmo-local.md) §3.5）；颜色按 `dark` 分浅、深两套存，没带 `colors` 时不动已存的 |
 | `qmo_open_local_settings` | 无 | 打开壳自己的设置窗，给页面设置卡片里的「桌面版」一项用；也是菜单「设置」在没有设置卡片的旧中枢页面上的回退（§6） |
-| `qmo_local_list` | 无 | 本机会话：运行器的 `list`，`{v, features, folders, sessions}`；第一次调用时壳起运行器 `qmo code serve` |
+| `qmo_local_list` | 无 | 本机会话：运行器的 `list`，`{v, features, folders, sessions}`，壳加上 `defaults: {mode, remote}`（设置窗「Code」一节，§6）；第一次调用时壳起运行器 `qmo code serve` |
 | `qmo_local_watch` | `channel`（`__CHANNEL__:<数字>`，即 `window.__TAURI__.core.Channel`） | 登记本页的事件通道，再调换掉旧的；主窗口开始载入页面时壳丢掉它 |
 | `qmo_local_pick_folder` | 无 | 弹系统文件夹选择框（同一时刻一个），取真实路径交给运行器 `folders.add`；取消答 `null` |
 | `qmo_local_forget_folder` | `folder`（`[0-9a-f]{16}`） | 运行器 `folders.forget` |
@@ -139,8 +139,10 @@
 | `qmo_local_changes` | `session` | 运行器 `session.changes` |
 | `qmo_local_diff` | `session`、`path`（相对路径，≤ 1024 字，不以 `/`、`\`、`-` 开头，没有空段、`.`、`..`，无控制字符） | 运行器 `session.diff` |
 | `qmo_local_set_remote` | `session`、`on` | 校验后一律拒绝 `qmo local E_REMOTE: 未开放`（P37.15 前） |
+| `qmo_local_rename` | `session`、`title`（≤ 120 字、无控制字符、去掉首尾空白后不空） | 运行器 `session.rename`（P37.14d） |
+| `qmo_local_delete` | `session` | 运行器 `session.delete`：答 `{}`、`{worktree: 'removed'}` 或 `{worktree: 'kept', path}`（P37.14d） |
 
-页面什么时候发：智能体回复了一条不在眼前的对话（窗口不在前台或打开的是别的对话）时 `qmo_notify`；未读数变化时 `qmo_badge`。
+页面什么时候发：智能体回复了一条不在眼前的对话（窗口不在前台或打开的是别的对话）时 `qmo_notify`；未读数变化时 `qmo_badge`。本机会话的通知不由页面发：壳自己读运行器的事件（§6），页面换到 Work 时也照样有。
 
 ### 5.3 壳替页面做的事
 
@@ -157,17 +159,23 @@
 | 快速输入快捷键 | ⌥⇧Space（⌥Space 常被 ChatGPT、Gemini 占用，⌃⌥Space 是系统切换输入法），设置里可改 | Ctrl+Alt+Space | Ctrl+Alt+Space |
 | 菜单 | 应用菜单（关于、设置 ⌘,、退出）、文件（新对话 ⌘N、快速输入）、编辑、视图（重新载入、缩放、全屏）、窗口、帮助 | 托盘菜单为主 | 托盘菜单为主 |
 | 托盘 | 菜单栏模板图标：左键唤出快速输入，右键菜单（显示阡陌、新对话、设置、退出） | 通知区域图标，单击显示主窗口 | 状态图标（有 AppIndicator 时） |
-| 关窗 | 关主窗口只是隐藏，程序坞或托盘再打开；⌘Q 退出 | 关窗口隐藏到托盘 | 同 Windows |
+| 关窗 | 关主窗口只是隐藏，程序坞或托盘再打开；⌘Q 退出（有本机会话在跑先问，见下） | 关窗口隐藏到托盘；设置里关掉「关闭窗口后留在后台」时关窗即退出，同样先问 | 同 Windows |
 | 其他 | 单实例（第二次启动聚焦已有窗口）、深链 `qmo://`、记住窗口大小位置、开机启动开关、系统通知、角标 | 同左 | 同左 |
 
-本地设置页：中枢地址与设备名（只读）、快速输入快捷键（可改）、开机启动、关窗口时留在后台、退出登录、版本。
+本地设置页：中枢地址与设备名（只读）、快速输入快捷键（可改）、开机启动、关窗口时留在后台、退出登录、「Code」一节、版本。「Code」一节（P37.14d）是本机会话新开时的缺省：权限模式（四档，缺省自动审批；选「跳过权限确认」就地再确认一次）与「新会话开 Remote」（缺省关；运行器的 `hello` 报 `features.remote: true` 之前灰着，写「还没开放」，运行器没起过时写「打开一次 Code 后可设」）。两项存进壳的 `settings.json` 的 `code` 一节（读坏了只丢这一节，档不认识时回到自动审批），`qmo_local_list` 的答复里由壳加上 `defaults: {mode, remote}`；页面只在第一次读到列表时用它，Remote 的缺省只在 `features.remote` 为真时用。
+
+本机会话的通知、角标与退出确认（P37.14d，`src-tauri/src/attention.rs`）：
+
+- 壳旁听运行器的事件（页面登记的通道照旧收到同样的事件）。`session` 事件里一个本机会话从运行中或等你确认变成完成或失败（一轮结束），或变成等你确认（新的征询）时，发一条系统通知：标题是会话标题，正文是「<agent> · 完成 / 出错 / 等你确认」。被人中止（已中断）的不发；主窗口在前面并且页面登记了通道（Code 页开着）时不发。点开通知：主窗口正显示 `/code` 且有通道时壳发 `{v: 1, type: 'open', session}` 让页面打开它，否则主窗口导航到 `/code?session=<id>`。
+- 角标 = 页面经 `qmo_badge` 报的数 + 等你确认的本机会话数，至多 999；会话删掉、运行器停下时那一份减掉。
+- 退出 Qmo（菜单 ⌘Q、托盘「退出」，以及不留后台时关主窗口）：运行器起着就问它 `list`（至多 2 s，不为此起运行器），数运行中与等你确认的会话；问不到就用旁听记下的数。是 0 直接退出；否则系统对话框「退出阡陌？」「有 N 个会话在运行，退出会中止它们」，按钮「退出」「取消」，同一时刻只问一次。程序坞的「退出」、注销与关机不经过这条路（tao 不给拦截点），直接按 `qmo-local.md` §4.3.2 收尾。
 
 菜单的「设置… ⌘,」与托盘的「设置」照 Claude Desktop：主窗口显示的是已登录中枢的页面时，壳把主窗口带到前台，在里面执行一段固定的脚本 `(window.__qmoOpenSettings||function(){window.__TAURI__.core.invoke('qmo_open_local_settings')})()`（不拼任何变量），打开页面里的设置卡片；旧中枢的页面没有 `window.__qmoOpenSettings` 时，这段脚本回退为调 `qmo_open_local_settings`，开壳自己的设置窗。主窗口在本地页（登录、离线、骨架）、`about:blank` 或不存在时，直接开壳的设置窗。
 
 ## §7 安全边界
 
 - 设备令牌只在 `qmo` 进程与它的状态文件里，壳与 WebView 都拿不到。壳只经管道收一次会话 cookie，用完即丢，不落盘（WebView 自己的 cookie 库除外，与浏览器保存登录状态是同一条边界）。
-- IPC 只对中枢源开放：运行时按登录时的中枢地址加一条 remote 能力，只含 §5.2 的二十二个命令；不开放文件系统、shell、HTTP、对话框等插件给网页（对话框插件只用它的 Rust 接口，它给页面加的脚本也去掉了）。本机会话的命令只收主窗口，页面传不了路径与命令行：路径只从系统选择框进来（[`qmo-local.md`](./qmo-local.md) §4.5.3）。`qmo_local_agents` 只让页面拿到 `qmo agents` 的识别结果（只 stat、查 PATH、跑 `--version`，不以服务或协议模式启动任何 agent），页面不能传路径、命令或别的参数。
+- IPC 只对中枢源开放：运行时按登录时的中枢地址加一条 remote 能力，只含 §5.2 的二十四个命令；不开放文件系统、shell、HTTP、对话框等插件给网页（对话框插件只用它的 Rust 接口，它给页面加的脚本也去掉了）。本机会话的命令只收主窗口，页面传不了路径与命令行：路径只从系统选择框进来（[`qmo-local.md`](./qmo-local.md) §4.5.3）。`qmo_local_agents` 只让页面拿到 `qmo agents` 的识别结果（只 stat、查 PATH、跑 `--version`，不以服务或协议模式启动任何 agent），页面不能传路径、命令或别的参数。
 - 导航白名单是中枢源；其他地址交系统浏览器。正式版关闭开发者工具。
 - 本地页面的 CSP 只允许自身脚本与样式；中枢页面的 CSP 不因壳改变。
 - `qianmo_shell` 只影响边距与拖动区，服务端只接受三个枚举值。
