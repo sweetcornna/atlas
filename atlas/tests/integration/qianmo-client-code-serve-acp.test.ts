@@ -237,7 +237,9 @@ describe.skipIf(!posix)('the compiled qmo with an ACP agent', () => {
       false,
     )
     // `qmo agents` asked its version; the session started it with --acp only.
-    const argvs = logged(path.join(at.state, 'argv.ndjson'))
+    const argvs = logged(
+      path.join(at.state, 'argv.ndjson'),
+    ) as unknown as string[][]
     expect(argvs.at(-1)).toEqual(['--acp'])
     for (const argv of argvs)
       expect([['--version'], ['--acp']]).toContainEqual(argv)

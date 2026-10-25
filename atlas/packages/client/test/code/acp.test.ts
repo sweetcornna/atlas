@@ -212,9 +212,9 @@ describe.skipIf(!posix)('the runner with ACP agents', () => {
       const folder = await pick(r, at.work)
       const id = await begin(r, folder, profile, 'hello')
       expect(texts(r, id)).toEqual(['hello', 'acp(1): hello'])
-      expect(logged(path.join(at.state, 'argv.ndjson'))).toEqual([
-        AGENTS[profile].argv,
-      ])
+      expect(
+        logged(path.join(at.state, 'argv.ndjson')) as unknown as string[][],
+      ).toEqual([AGENTS[profile].argv])
       const sent = methods(at)
       expect(sent.map(one => one.method)).not.toContain('authenticate')
       expect(sent[0]).toMatchObject({
