@@ -159,7 +159,7 @@ async function readCapped(
 
 /**
  * Runs git in `cwd`; refuses (`E_GIT`) on an exit code not in `ok`, a
- * timeout (10 s unless said) or an abort, with the first line git wrote.
+ * timeout (10 s unless said) or an abort, with the last line git wrote.
  */
 export async function run(
   context: GitContext,
