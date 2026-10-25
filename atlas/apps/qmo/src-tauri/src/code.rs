@@ -21,6 +21,10 @@
 //! Quitting Qmo asks it to `shutdown`, waits 3 s for the answer and ends it
 //! if it is still there 5 s on.
 //!
+//! The shell reads the stream too (`Runner::tap`, `attention.rs`): which
+//! sessions ended a turn or wait for the person, for notifications, the
+//! badge and the question on quitting.
+//!
 //! The transport is a pair of pipes and a process handle (`Pipes`), so the
 //! tests drive a fake runner over in-memory pipes.
 
@@ -211,6 +215,8 @@ struct Hello {
     version: Option<Value>,
     #[serde(default)]
     code_dir: Option<Value>,
+    #[serde(default)]
+    features: Option<Value>,
 }
 
 /// One line from the runner, whatever it turns out to be.
@@ -266,6 +272,8 @@ struct State {
     failures: usize,
     /// Why the live runner is being ended, when the shell ends it.
     ending: Option<String>,
+    /// `features.remote` of the last `hello`; `None` before the first.
+    remote: Option<bool>,
 }
 
 /// The tail of the runner's log, and where it goes.
@@ -361,17 +369,63 @@ impl Watcher {
         lock(&self.channel).take();
     }
 
-    fn send(&self, event: &RawValue) {
+    /// A page has a channel now.
+    pub fn watching(&self) -> bool {
+        lock(&self.channel).is_some()
+    }
+
+    /// Send the shell's own event to the page; whether it went.
+    pub fn tell(&self, event: &RawValue) -> bool {
+        self.send(event)
+    }
+
+    fn send(&self, event: &RawValue) -> bool {
         let Some(channel) = lock(&self.channel).clone() else {
-            return;
+            return false;
         };
         if channel.send(event.to_owned()).is_err() {
             let mut current = lock(&self.channel);
             if current.as_ref().is_some_and(|c| c.id() == channel.id()) {
                 current.take();
             }
+            return false;
         }
+        true
     }
+}
+
+/// What the shell itself is shown of the runner's stream (`Runner::tap`).
+pub enum Seen<'a> {
+    /// An event, as the page gets it.
+    Event(&'a RawValue),
+    /// The runner is gone: its sessions with it, until it is back.
+    Down,
+}
+
+type Tap = Arc<dyn Fn(Seen<'_>) + Send + Sync>;
+
+/// The shell's event telling the page to open a session (a notification
+/// was clicked): `{v: 1, type: "open", session}`.
+pub fn open_event(session: &str) -> Box<RawValue> {
+    serde_json::value::to_raw_value(&serde_json::json!({
+        "v": 1,
+        "type": "open",
+        "session": session,
+    }))
+    .expect("an event is JSON")
+}
+
+/// The answer to `list` with what new sessions start with, from the
+/// shell's settings (qmo-local.md §4.5.1): `defaults: {mode, remote}`.
+pub fn with_defaults(answer: Box<RawValue>, mode: &str, remote: bool) -> Box<RawValue> {
+    let Ok(Value::Object(mut map)) = serde_json::from_str::<Value>(answer.get()) else {
+        return answer;
+    };
+    map.insert(
+        "defaults".into(),
+        serde_json::json!({ "mode": mode, "remote": remote }),
+    );
+    serde_json::value::to_raw_value(&map).unwrap_or(answer)
 }
 
 /// The shell's own event about the runner: `{v: 1, type: "runner", state, reason?}`.
@@ -481,6 +535,7 @@ struct Inner {
     changed: Condvar,
     watcher: Watcher,
     log: Mutex<Log>,
+    tap: Mutex<Option<Tap>>,
 }
 
 /// The shell's runner; see the module comment.
@@ -502,10 +557,12 @@ impl Runner {
                     pending: HashMap::new(),
                     failures: 0,
                     ending: None,
+                    remote: None,
                 }),
                 changed: Condvar::new(),
                 watcher: Watcher::default(),
                 log: Mutex::new(Log::default()),
+                tap: Mutex::new(None),
             }),
         }
     }
@@ -514,11 +571,32 @@ impl Runner {
         &self.inner.watcher
     }
 
+    /// Show the shell each event as it passes, and the runner going down.
+    /// Called on the reader's thread: `tap` must not call the runner.
+    pub fn tap(&self, tap: impl Fn(Seen<'_>) + Send + Sync + 'static) {
+        *lock(&self.inner.tap) = Some(Arc::new(tap));
+    }
+
+    /// Whether the runner said it can do Remote; `None` before it first came up.
+    pub fn remote_supported(&self) -> Option<bool> {
+        lock(&self.inner.state).remote
+    }
+
+    /// Ask the runner only if it is up, never starting it, and wait at most
+    /// `wait`. `None` when it is not up.
+    pub fn ask_if_up(&self, method: &str, params: Value, wait: Duration) -> Option<Answer> {
+        let st = lock(&self.inner.state);
+        if st.phase != Phase::Up {
+            return None;
+        }
+        Some(self.exchange(st, method, &params, wait))
+    }
+
     /// Ask the runner `method` with `params` and wait for its answer, starting
     /// it first when it is not running yet. Blocking: call from a worker.
     pub fn call(&self, method: &str, params: Value) -> Answer {
         let inner = &self.inner;
-        let (id, input, answer) = {
+        let st = {
             let mut st = lock(&inner.state);
             let deadline =
                 Instant::now() + inner.timing.hello + inner.timing.reap + inner.timing.reap;
@@ -547,25 +625,42 @@ impl Runner {
                     Phase::Stopped => return Err(Refusal::runner("Qmo 正在退出")),
                 }
             }
+            st
+        };
+        self.exchange(st, method, &params, inner.timing.call)
+    }
+
+    /// Send one request to the runner that is up (`st` says so) and wait
+    /// for its answer at most `wait`.
+    fn exchange(
+        &self,
+        mut st: MutexGuard<'_, State>,
+        method: &str,
+        params: &Value,
+        wait: Duration,
+    ) -> Answer {
+        let inner = &self.inner;
+        let (id, input, answer) = {
             let live = st.live.as_ref().expect("a runner that is up is live");
             let (generation, input) = (live.generation, live.input.clone());
             let id = st.next_id;
             st.next_id += 1;
             let (tx, rx) = mpsc::channel();
             st.pending.insert(id, (generation, tx));
+            drop(st);
             (id, input, rx)
         };
-        if let Err(e) = Inner::send(&input, id, method, &params) {
+        if let Err(e) = Inner::send(&input, id, method, params) {
             lock(&inner.state).pending.remove(&id);
             return Err(Refusal::runner(format!("没能交给运行器：{e}")));
         }
-        match answer.recv_timeout(inner.timing.call) {
+        match answer.recv_timeout(wait) {
             Ok(answer) => answer,
             Err(_) => {
                 lock(&inner.state).pending.remove(&id);
                 Err(Refusal::runner(format!(
                     "运行器 {} 秒没有答复",
-                    inner.timing.call.as_secs()
+                    wait.as_secs()
                 )))
             }
         }
@@ -639,6 +734,14 @@ impl Runner {
 }
 
 impl Inner {
+    /// Hand `seen` to the shell's tap, if there is one.
+    fn show(&self, seen: Seen<'_>) {
+        let tap = lock(&self.tap).clone();
+        if let Some(tap) = tap {
+            tap(seen);
+        }
+    }
+
     /// Write one request line.
     fn send(
         input: &Mutex<Option<Box<dyn Write + Send>>>,
@@ -747,6 +850,7 @@ impl Inner {
         if was_up || st.failures == 1 {
             this.watcher.send(&runner_event(false, Some(reason)));
         }
+        this.show(Seen::Down);
         let generation = st.generation;
         let timer = this.clone();
         thread::spawn(move || {
@@ -787,6 +891,7 @@ impl Inner {
                 Some(event) if is_object(&event) && event.get().len() <= EVENT_MAX => {
                     if lock(&self.state).generation == generation {
                         self.watcher.send(&event);
+                        self.show(Seen::Event(&event));
                     }
                 }
                 _ => lock(&self.log).note("an event that is not an object was dropped"),
@@ -851,6 +956,14 @@ impl Inner {
         if let Some(live) = st.live.as_mut() {
             live.up_since = Some(Instant::now());
         }
+        st.remote = Some(
+            hello
+                .features
+                .as_ref()
+                .and_then(|f| f.get("remote"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        );
         st.phase = Phase::Up;
         self.changed.notify_all();
         let version = hello
@@ -1549,6 +1662,122 @@ mod tests {
         until("fourth event", || events(&third_seen).len() == 1);
         assert_eq!(events(&second_seen).len(), 1);
         assert_eq!(fake.launches(), 1);
+    }
+
+    #[test]
+    fn the_shell_sees_each_event_and_the_runner_going_down() {
+        let (launch, _fake) = fake(|request, life| {
+            if request["method"] == "die" {
+                return Act::Exit;
+            }
+            life.send(&json!({"method": "event", "params": {"v": 1, "type": "session", "n": request["params"]["n"]}}));
+            echo(request)
+        });
+        let runner = Runner::new(launch, quick());
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        runner.tap(move |what| {
+            lock(&sink).push(match what {
+                Seen::Event(event) => event.get().to_string(),
+                Seen::Down => "down".to_string(),
+            })
+        });
+        // No page watching: the shell sees them all the same.
+        assert!(!runner.watcher().watching());
+        runner.call("ping", json!({"n": 1})).unwrap();
+        runner.call("ping", json!({"n": 2})).unwrap();
+        until("two events", || lock(&seen).len() == 2);
+        assert!(runner.call("die", json!({})).is_err());
+        until("down", || lock(&seen).len() == 3);
+        let seen = lock(&seen).clone();
+        assert_eq!(
+            seen[2], "down",
+            "the shell's own runner events are not the runner's"
+        );
+        for (n, event) in seen[..2].iter().enumerate() {
+            let event: Value = serde_json::from_str(event).unwrap();
+            assert_eq!(event, json!({"v": 1, "type": "session", "n": n + 1}));
+        }
+    }
+
+    #[test]
+    fn asking_if_up_never_starts_it_and_gives_up_on_time() {
+        let (launch, fake) = fake(|request, _| match request["method"].as_str() {
+            Some("hang") => Act::Silent,
+            _ => echo(request),
+        });
+        let runner = Runner::new(launch, quick());
+        assert!(runner.ask_if_up("list", json!({}), ms(200)).is_none());
+        assert_eq!(fake.launches(), 0, "not started for a question");
+        assert_eq!(runner.remote_supported(), None, "never up");
+        runner.call("list", json!({})).unwrap();
+        assert_eq!(runner.remote_supported(), Some(false), "from hello");
+        let answer = runner
+            .ask_if_up("list", json!({}), ms(200))
+            .unwrap()
+            .unwrap();
+        assert_eq!(value(answer)["method"], "list");
+        let started = Instant::now();
+        let late = runner.ask_if_up("hang", json!({}), ms(200)).unwrap();
+        assert!(late.is_err());
+        assert!(started.elapsed() < ms(1000), "its own wait, not a call's");
+        runner.shutdown();
+        assert!(runner.ask_if_up("list", json!({}), ms(200)).is_none());
+    }
+
+    #[test]
+    fn remote_is_what_hello_said() {
+        let fake = Arc::new(Fake::default());
+        let handler: Arc<Handler> = Arc::new(|request, _| {
+            if request["method"] == "hello" {
+                return Act::Answer(json!({"id": request["id"], "result": {
+                    "protocol": 1,
+                    "features": {"remote": true},
+                }}));
+            }
+            echo(request)
+        });
+        let runner = Runner::new(launcher(fake, handler), quick());
+        runner.call("list", json!({})).unwrap();
+        assert_eq!(runner.remote_supported(), Some(true));
+    }
+
+    #[test]
+    fn the_list_gets_the_shells_defaults() {
+        let raw = |text: &str| RawValue::from_string(text.to_string()).unwrap();
+        let answer = with_defaults(
+            raw(
+                r#"{"v":1,"features":{"remote":false},"folders":[],"sessions":[],"defaults":{"mode":"off"}}"#,
+            ),
+            "accept-edits",
+            true,
+        );
+        let answer = value(answer);
+        assert_eq!(
+            answer["defaults"],
+            json!({"mode": "accept-edits", "remote": true})
+        );
+        assert_eq!(answer["features"], json!({"remote": false}));
+        assert_eq!(answer["v"], 1);
+        // What is not an object goes through as it is.
+        assert_eq!(with_defaults(raw("[1]"), "auto", false).get(), "[1]");
+    }
+
+    #[test]
+    fn the_open_event_goes_to_the_page_watching_only() {
+        let watcher = Watcher::default();
+        assert!(!watcher.watching());
+        assert!(!watcher.tell(&open_event("cs_AbCdEfGhIjKlMnOpQrSt_-")));
+        let (channel, seen) = capture();
+        watcher.watch(channel);
+        assert!(watcher.watching());
+        assert!(watcher.tell(&open_event("cs_AbCdEfGhIjKlMnOpQrSt_-")));
+        assert_eq!(
+            events(&seen),
+            [json!({"v": 1, "type": "open", "session": "cs_AbCdEfGhIjKlMnOpQrSt_-"})]
+        );
+        watcher.forget();
+        assert!(!watcher.watching());
     }
 
     #[test]

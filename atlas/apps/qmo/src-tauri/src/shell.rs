@@ -48,12 +48,12 @@ pub const QUICK: &str = "quick";
 pub const SETTINGS: &str = "settings";
 pub const ABOUT: &str = "about";
 
-/// What the hub's pages may call: the twenty-two commands of qmo-app.md
+/// What the hub's pages may call: the twenty-four commands of qmo-app.md
 /// §5.2, and the two the window's own drag regions need (§5.1: the page marks
 /// its header `data-tauri-drag-region`; a drag or a double-click there moves
 /// or zooms this window and nothing else). The local-session commands check
 /// the window themselves: the main one only.
-pub const HUB_PERMISSIONS: [&str; 24] = [
+pub const HUB_PERMISSIONS: [&str; 26] = [
     "allow-qmo-shell-info",
     "allow-qmo-notify",
     "allow-qmo-badge",
@@ -76,14 +76,16 @@ pub const HUB_PERMISSIONS: [&str; 24] = [
     "allow-qmo-local-changes",
     "allow-qmo-local-diff",
     "allow-qmo-local-set-remote",
+    "allow-qmo-local-rename",
+    "allow-qmo-local-delete",
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
 ];
 
-/// The twenty-two commands the hub's pages may call (qmo-app.md §5.2): nine,
-/// and the thirteen of local sessions (qmo-local.md §4.5.1).
+/// The twenty-four commands the hub's pages may call (qmo-app.md §5.2): nine,
+/// and the fifteen of local sessions (qmo-local.md §4.5.1).
 #[cfg(test)]
-pub(crate) const HUB_COMMANDS: [&str; 22] = [
+pub(crate) const HUB_COMMANDS: [&str; 24] = [
     "qmo_shell_info",
     "qmo_notify",
     "qmo_badge",
@@ -106,6 +108,8 @@ pub(crate) const HUB_COMMANDS: [&str; 22] = [
     "qmo_local_changes",
     "qmo_local_diff",
     "qmo_local_set_remote",
+    "qmo_local_rename",
+    "qmo_local_delete",
 ];
 
 /// Where the traffic lights sit on macOS: the close button's left edge 17 px
@@ -166,13 +170,21 @@ struct State {
     reentries: Vec<Instant>,
     /// Origins that have the remote capability already.
     granted: HashSet<String>,
-    /// Notification id → conversation, for a click on the notification.
-    notifications: HashMap<i32, String>,
+    /// Notification id → what a click on it opens.
+    notifications: HashMap<i32, Opened>,
     next_notification: i32,
     /// Started at login: no window until the person asks for one.
     hidden: bool,
     /// Told when the main window has finished loading `about:blank`.
     blank: Option<mpsc::Sender<()>>,
+}
+
+/// What a click on a notification opens: a conversation (`qmo_notify`) or
+/// a local session (`attention.rs`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Opened {
+    Chat(String),
+    Code(String),
 }
 
 pub struct Shell {
@@ -272,8 +284,8 @@ impl Shell {
         })
     }
 
-    /// Remember a notification's conversation, for a click on it.
-    pub fn remember_notification(&self, session: Option<String>) -> i32 {
+    /// Remember what a notification opens, for a click on it.
+    pub fn remember_notification(&self, session: Option<Opened>) -> i32 {
         self.with(|s| {
             let id = s.next_notification;
             s.next_notification = s.next_notification.wrapping_add(1).max(1);
@@ -287,7 +299,7 @@ impl Shell {
         })
     }
 
-    pub fn notification_session(&self, id: i32) -> Option<String> {
+    pub fn notification_session(&self, id: i32) -> Option<Opened> {
         self.with(|s| s.notifications.remove(&id))
     }
 
@@ -705,6 +717,42 @@ pub fn open_session(app: &AppHandle, id: &str) {
         }
         _ => show_app(app),
     }
+}
+
+/// Whether the main window shows the signed-in hub's Code page, which
+/// opens a session it is told of (`open` event).
+pub fn on_code_page(main: Option<&Url>, hub: Option<&Hub>) -> bool {
+    match (main, hub) {
+        (Some(url), Some(hub)) => hub.same_origin(url) && url.path() == "/code",
+        _ => false,
+    }
+}
+
+/// A local session's notification clicked: the main window comes forward
+/// on that session. The Code page on screen with its channel is told to
+/// open it; otherwise the main window opens `/code?session=<id>`.
+pub fn open_code_session(app: &AppHandle, id: &str) {
+    shell(app).unhide();
+    hide_quick(app);
+    let hub = shell(app).hub();
+    let hub = match hub {
+        Some(hub) if crate::ipc::valid_local_session(id) && shell(app).phase() == Phase::Hub => hub,
+        _ => return show_app(app),
+    };
+    show_app(app);
+    let page = app
+        .get_webview_window(MAIN)
+        .and_then(|window| window.url().ok());
+    if on_code_page(page.as_ref(), Some(&hub))
+        && app
+            .state::<crate::code::Code>()
+            .runner
+            .watcher()
+            .tell(&crate::code::open_event(id))
+    {
+        return;
+    }
+    navigate_main(app, hub.join(&format!("/code?session={id}")));
 }
 
 /// A `qmo://` link: now when the hub is open, else once it is.
@@ -1295,6 +1343,8 @@ mod tests {
                 "qmo_local_changes",
                 "qmo_local_diff",
                 "qmo_local_set_remote",
+                "qmo_local_rename",
+                "qmo_local_delete",
             ]
         );
         let lib = include_str!("lib.rs");
@@ -1546,6 +1596,49 @@ mod tests {
                 "{phase:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_notification_opens_its_session_in_the_code_page_on_screen_only() {
+        let hub = parse_hub("https://hub.example.com").unwrap();
+        let url = |s: &str| Url::parse(s).unwrap();
+        for page in [
+            "https://hub.example.com/code",
+            "https://hub.example.com/code?session=cs_AbCdEfGhIjKlMnOpQrSt_-",
+        ] {
+            assert!(on_code_page(Some(&url(page)), Some(&hub)), "{page}");
+        }
+        for page in [
+            "https://hub.example.com/app",
+            "https://hub.example.com/codes",
+            "https://hub.example.com/code/x",
+            "https://other.example.com/code",
+            "tauri://localhost/skeleton.html",
+        ] {
+            assert!(!on_code_page(Some(&url(page)), Some(&hub)), "{page}");
+        }
+        assert!(!on_code_page(None, Some(&hub)));
+        assert!(!on_code_page(
+            Some(&url("https://hub.example.com/code")),
+            None
+        ));
+        // What a click opens is remembered by kind and given back once.
+        let dir = std::env::temp_dir().join(format!("qmo-opened-{}", std::process::id()));
+        let shell = Shell::new(Lang::En, "0".into(), dir.join("settings.json"), false);
+        let chat = shell.remember_notification(Some(Opened::Chat("s-1".into())));
+        let code =
+            shell.remember_notification(Some(Opened::Code("cs_AbCdEfGhIjKlMnOpQrSt_-".into())));
+        let none = shell.remember_notification(None);
+        assert_eq!(
+            shell.notification_session(code),
+            Some(Opened::Code("cs_AbCdEfGhIjKlMnOpQrSt_-".into()))
+        );
+        assert_eq!(
+            shell.notification_session(chat),
+            Some(Opened::Chat("s-1".into()))
+        );
+        assert_eq!(shell.notification_session(none), None);
+        assert_eq!(shell.notification_session(code), None);
     }
 
     #[test]

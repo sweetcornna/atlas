@@ -14,6 +14,8 @@
     "allow-local-set-shortcut",
     "allow-local-set-autostart",
     "allow-local-set-keep-in-background",
+    "allow-local-set-code-mode",
+    "allow-local-set-code-remote",
     "allow-local-sign-out",
     "allow-local-open",
     "allow-local-close",

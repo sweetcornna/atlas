@@ -5,8 +5,9 @@
 //! quick entry shortcut, whether closing the window keeps the app running,
 //! the page zoom, and the last hub and device name so the next start can paint
 //! the right window before `qmo` answers; and the hub page's last layout and
-//! colours, so that window is drawn in the page's shapes (qmo-local.md §3.5).
-//! No credential is kept here; those stay with `qmo`. Launching at login is
+//! colours, so that window is drawn in the page's shapes (qmo-local.md §3.5);
+//! and what the Code page's new sessions start with (the settings window's
+//! Code group). No credential is kept here; those stay with `qmo`. Launching at login is
 //! the operating system's own record, kept by the autostart plugin.
 
 use std::{fs, io, path::Path};
@@ -33,6 +34,29 @@ pub struct Settings {
     /// apart; each read on its own as well.
     #[serde(deserialize_with = "lenient_or_default")]
     pub colors: PageColours,
+    /// New local sessions' permission mode and Remote, read on their own.
+    #[serde(deserialize_with = "lenient_or_default")]
+    pub code: CodeDefaults,
+}
+
+/// What a new session on the Code page starts with (qmo-local.md §4.4,
+/// §4.5.1 `defaults`): one of the four permission modes, `auto` unless
+/// changed, and whether Remote is on, which the page uses only where the
+/// runner can do Remote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CodeDefaults {
+    pub mode: String,
+    pub remote: bool,
+}
+
+impl Default for CodeDefaults {
+    fn default() -> CodeDefaults {
+        CodeDefaults {
+            mode: "auto".to_string(),
+            remote: false,
+        }
+    }
 }
 
 /// ⌥⇧Space on macOS, Ctrl+Alt+Space elsewhere (qmo-app.md §6). Plain ⌥Space
@@ -56,6 +80,7 @@ impl Default for Settings {
             device_name: None,
             layout: None,
             colors: PageColours::default(),
+            code: CodeDefaults::default(),
         }
     }
 }
@@ -135,6 +160,9 @@ impl Settings {
         }
         settings.layout = settings.layout.filter(BootLayout::in_range);
         settings.colors = settings.colors.sanitized();
+        if !crate::ipc::MODES.contains(&settings.code.mode.as_str()) {
+            settings.code.mode = CodeDefaults::default().mode;
+        }
         settings
     }
 
@@ -246,6 +274,10 @@ mod tests {
                 light: Palette::new("#f9f9f7", "#fcfcfb"),
                 dark: Palette::new("#0b0b0b", "#090909"),
             },
+            code: CodeDefaults {
+                mode: "full-access".into(),
+                remote: true,
+            },
         };
         mine.save(&path).unwrap();
         assert_eq!(Settings::load(&path), mine);
@@ -321,6 +353,54 @@ mod tests {
         ] {
             let settings = load_text("colours", broken);
             assert_eq!(settings.colors, PageColours::default(), "{broken}");
+            assert_eq!(
+                settings.hub.as_deref(),
+                Some("https://hub.example.com"),
+                "{broken}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_defaults_read_on_their_own() {
+        assert_eq!(
+            Settings::default().code,
+            CodeDefaults {
+                mode: "auto".into(),
+                remote: false
+            }
+        );
+        let kept = load_text(
+            "code",
+            r#"{"hub":"https://hub.example.com","code":{"mode":"off","remote":true}}"#,
+        );
+        assert_eq!(kept.code.mode, "off");
+        assert!(kept.code.remote);
+        for (name, broken, remote) in [
+            (
+                "mode",
+                r#"{"hub":"https://hub.example.com","code":{"mode":"yolo","remote":true}}"#,
+                true,
+            ),
+            (
+                "type",
+                r#"{"hub":"https://hub.example.com","code":{"mode":3}}"#,
+                false,
+            ),
+            (
+                "shape",
+                r#"{"hub":"https://hub.example.com","code":"auto"}"#,
+                false,
+            ),
+            (
+                "half",
+                r#"{"hub":"https://hub.example.com","code":{"remote":true}}"#,
+                true,
+            ),
+        ] {
+            let settings = load_text(name, broken);
+            assert_eq!(settings.code.mode, "auto", "{broken}");
+            assert_eq!(settings.code.remote, remote, "{broken}");
             assert_eq!(
                 settings.hub.as_deref(),
                 Some("https://hub.example.com"),

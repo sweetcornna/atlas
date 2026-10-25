@@ -541,6 +541,12 @@ body.loading .page {
   border-radius: var(--radius-md);
   cursor: pointer;
 }
+.choice {
+  max-width: 55%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--color-text);
+}
 .keys.recording {
   border-color: var(--color-focus);
   box-shadow: 0 0 0 3px var(--color-interactive-soft);
