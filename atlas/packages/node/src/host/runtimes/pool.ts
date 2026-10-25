@@ -14,6 +14,11 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { dirname, isAbsolute, join, relative } from 'node:path'
+import {
+  ClaudeCodeChannel,
+  claudeCodeToolName,
+  RUNTIME_MCP_SERVER,
+} from '@qianmo/harness/claudeStream.ts'
 import { qianmoConfigPath } from '@qianmo/paths'
 import {
   residentApprovalInput,
@@ -39,13 +44,10 @@ import { type RuntimeLane, runtimeSpec } from './catalog.js'
 import { type ClaudeTier, type TaskTier, taskTierOf } from './modelFields.js'
 import type { ExternalRuntimeChannel, ExternalRuntimeKind } from './channel.js'
 import {
-  ClaudeCodeChannel,
   claudeCodeArgv,
   claudeCodeModelPlan,
-  claudeCodeToolName,
   CONNECTOR_PREFIX,
   PERMISSION_TOOL,
-  RUNTIME_MCP_SERVER,
   RUNTIME_MCP_TIMEOUT_MS,
 } from './claudeCode.js'
 import { CODEX_KEY_ENV, CodexChannel, codexArgv } from './codex.js'

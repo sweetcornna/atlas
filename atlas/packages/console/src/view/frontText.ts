@@ -180,13 +180,20 @@ export interface FrontText {
   readonly codeSessions: string
   readonly noCodeSessions: string
   readonly codeInApp: string
-  readonly localAgents: string
-  readonly rescan: string
+  /** A local session's box: the first line, and every line after it (P37.14a). */
+  readonly codeFirst: string
+  readonly codeReply: string
   readonly folder: string
-  readonly pickFolder: string
   readonly agentWord: string
-  readonly startSession: string
-  readonly localClosed: string
+  readonly rescan: string
+  /** Remote, held off until P37.15: why it cannot be turned on. */
+  readonly remoteLater: string
+  /** 跳过权限确认 asks once more, in a line under the box. */
+  readonly bypassLine: string
+  readonly confirm: string
+  /** The changes panel (Git). */
+  readonly changes: string
+  readonly refresh: string
   /** The Work face without a conversation: no channel, or an identity that may not hold one. */
   readonly noChatChannel: string
   readonly noChatRole: string
@@ -488,13 +495,16 @@ const ZH: FrontText = {
   codeSessions: '代码会话',
   noCodeSessions: '还没有代码会话',
   codeInApp: 'Code 在 Qmo 桌面版里用',
-  localAgents: '本机 agent',
-  rescan: '重新检测',
+  codeFirst: '描述要做的事',
+  codeReply: '接着说',
   folder: '文件夹',
-  pickFolder: '选择文件夹',
   agentWord: 'agent',
-  startSession: '开始',
-  localClosed: '本机会话未开放',
+  rescan: '重新检测',
+  remoteLater: '后续版本开放',
+  bypassLine: 'agent 将不经确认执行任何命令与改动',
+  confirm: '确认',
+  changes: '变更',
+  refresh: '刷新',
   noChatChannel: '这里没有接入对话',
   noChatRole: '这个身份不能在这里对话',
   recents: '最近对话',
@@ -725,13 +735,17 @@ const EN: FrontText = {
   codeSessions: 'Code sessions',
   noCodeSessions: 'No code sessions yet',
   codeInApp: 'Code runs in the Qmo desktop app',
-  localAgents: 'Agents on this computer',
-  rescan: 'Scan again',
+  codeFirst: 'Describe a task',
+  codeReply: 'Reply',
   folder: 'Folder',
-  pickFolder: 'Choose a folder',
   agentWord: 'Agent',
-  startSession: 'Start',
-  localClosed: 'Local sessions are not open yet',
+  rescan: 'Scan again',
+  remoteLater: 'Coming in a later version',
+  bypassLine:
+    'The agent will run any command and make any change without asking',
+  confirm: 'Confirm',
+  changes: 'Changes',
+  refresh: 'Refresh',
   noChatChannel: 'No conversation channel here',
   noChatRole: 'This identity cannot hold conversations here',
   recents: 'Recent chats',
@@ -962,13 +976,16 @@ const JA: FrontText = {
   codeSessions: 'コードセッション',
   noCodeSessions: 'コードセッションはまだありません',
   codeInApp: 'Code は Qmo デスクトップ版で使えます',
-  localAgents: 'このコンピュータの agent',
-  rescan: '再検出',
+  codeFirst: 'やることを入力',
+  codeReply: '続けて入力',
   folder: 'フォルダ',
-  pickFolder: 'フォルダを選択',
   agentWord: 'agent',
-  startSession: '開始',
-  localClosed: 'ローカルセッションはまだ使えません',
+  rescan: '再検出',
+  remoteLater: '今後のバージョンで対応',
+  bypassLine: 'agent は確認なしであらゆるコマンドの実行と変更を行います',
+  confirm: '確認',
+  changes: '変更',
+  refresh: '更新',
   noChatChannel: 'ここには会話チャネルがありません',
   noChatRole: 'この ID ではここで会話できません',
   recents: '最近のチャット',
@@ -1160,6 +1177,151 @@ const CLIENT: Readonly<Record<Lang, FrontClientText>> = {
     sendFailed: '送信に失敗しました',
     voiceLang: 'ja-JP',
   },
+}
+
+/** What Code's page script says (`assets/codeClient.ts`, `codeRender.ts`). */
+interface CodeClientText {
+  readonly updateApp: string
+  readonly pickFolder: string
+  readonly noFolder: string
+  readonly later: string
+  readonly running: string
+  readonly waiting: string
+  readonly idle: string
+  readonly interrupted: string
+  readonly failed: string
+  readonly queued: string
+  readonly notSent: string
+  readonly once: string
+  readonly always: string
+  readonly deny: string
+  readonly note: string
+  readonly allowed: string
+  readonly allowedAll: string
+  readonly denied: string
+  /** A permission mode's answer: in effect now, or from the next turn. */
+  readonly now: string
+  readonly next: string
+  readonly notGit: string
+  readonly clean: string
+  readonly binary: string
+  readonly cut: string
+  /** The runner went away; the shell starts it again. */
+  readonly down: string
+  /** A run of steps; `{n}` is how many, `{s}` the plural ending where there is one. */
+  readonly done: string
+  readonly doing: string
+  readonly untitled: string
+}
+
+const CODE_CLIENT: Readonly<Record<Lang, CodeClientText>> = {
+  'zh-CN': {
+    updateApp: '更新桌面版后可开本机会话',
+    pickFolder: '选择文件夹…',
+    noFolder: '先选一个文件夹',
+    later: '后续版本支持',
+    running: '运行中',
+    waiting: '等你确认',
+    idle: '完成',
+    interrupted: '已中断',
+    failed: '失败',
+    queued: '排队中',
+    notSent: '未发出',
+    once: '允许一次',
+    always: '本会话都允许',
+    deny: '拒绝',
+    note: '附一句话（可不填）',
+    allowed: '已允许',
+    allowedAll: '本会话已允许',
+    denied: '已拒绝',
+    now: '已生效',
+    next: '下一轮生效',
+    notGit: '不是 Git 仓库，变更面板在后续版本补上',
+    clean: '没有改动',
+    binary: '二进制文件',
+    cut: '只显示一部分',
+    down: '运行器已停止 · 正在重启',
+    done: '已执行 · {n} 步',
+    doing: '进行中 · {n} 步',
+    untitled: '新会话',
+  },
+  en: {
+    updateApp: 'Update the desktop app to open local sessions',
+    pickFolder: 'Choose a folder…',
+    noFolder: 'Choose a folder first',
+    later: 'In a later version',
+    running: 'Running',
+    waiting: 'Needs you',
+    idle: 'Done',
+    interrupted: 'Interrupted',
+    failed: 'Failed',
+    queued: 'Queued',
+    notSent: 'Not sent',
+    once: 'Allow once',
+    always: 'Allow for this session',
+    deny: 'Deny',
+    note: 'Add a note (optional)',
+    allowed: 'Allowed',
+    allowedAll: 'Allowed for this session',
+    denied: 'Denied',
+    now: 'In effect',
+    next: 'From the next turn',
+    notGit: 'Not a Git repository · the changes panel comes in a later version',
+    clean: 'No changes',
+    binary: 'Binary file',
+    cut: 'Showing part of it',
+    down: 'Runner stopped · restarting',
+    done: 'Done · {n} step{s}',
+    doing: 'In progress · {n} step{s}',
+    untitled: 'New session',
+  },
+  ja: {
+    updateApp: 'デスクトップ版を更新するとローカルセッションを開けます',
+    pickFolder: 'フォルダを選択…',
+    noFolder: '先にフォルダを選んでください',
+    later: '今後のバージョンで対応',
+    running: '実行中',
+    waiting: '確認待ち',
+    idle: '完了',
+    interrupted: '中断',
+    failed: '失敗',
+    queued: '待機中',
+    notSent: '未送信',
+    once: '今回だけ許可',
+    always: 'このセッションでは許可',
+    deny: '拒否',
+    note: 'ひとこと添える（任意）',
+    allowed: '許可しました',
+    allowedAll: 'このセッションでは許可',
+    denied: '拒否しました',
+    now: '反映しました',
+    next: '次のターンから反映',
+    notGit: 'Git リポジトリではありません · 変更パネルは今後のバージョンで対応',
+    clean: '変更はありません',
+    binary: 'バイナリファイル',
+    cut: '一部のみ表示',
+    down: 'ランナーが停止しました · 再起動中',
+    done: '完了 · {n} ステップ',
+    doing: '進行中 · {n} ステップ',
+    untitled: '新しいセッション',
+  },
+}
+
+/**
+ * Code's words, as JSON for its data attribute (`view/frontCode.ts`); the
+ * front's own words (`#fx`) are read beside them. The few the server also
+ * draws travel along.
+ */
+export function codeClientText(lang: Lang): string {
+  const t = FRONT_TEXT[lang]
+  return JSON.stringify({
+    ...CODE_CLIENT[lang],
+    none: t.noCodeSessions,
+    folder: t.folder,
+    thinking: t.activity.thinking,
+    details: t.details,
+    copy: t.copyReply,
+  })
 }
 
 /**

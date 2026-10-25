@@ -109,15 +109,16 @@ function ids(report: AgentsReport): string[] {
   return report.agents.map(one => one.id)
 }
 
-const QIANMOPI: LocalAgent = {
-  id: 'omp',
-  name: 'qianmopi',
-  version: null,
-  path: null,
-  protocol: 'omp',
+/** A listed agent, for the table test to vary. */
+const CODEX: LocalAgent = {
+  id: 'codex',
+  name: 'Codex',
+  version: '0.163.0',
+  path: '/opt/homebrew/bin/codex',
+  protocol: 'codex-app-server',
   available: true,
   reason: null,
-  source: 'builtin',
+  source: 'path',
   configFound: false,
   signedIn: null,
 }
@@ -163,9 +164,9 @@ describe('the registry', () => {
 })
 
 describe('what says an agent is here, in order', () => {
-  test('nothing: only qianmopi, built in', async () => {
+  test('nothing: nothing listed, not even the catalog’s built-in qianmopi', async () => {
     const box = sandbox()
-    expect(await scanAgents(base(box))).toEqual({ agents: [QIANMOPI] })
+    expect(await scanAgents(base(box))).toEqual({ agents: [] })
   })
 
   test('its command on PATH: available, the version read from its npm package', async () => {
@@ -864,7 +865,6 @@ describe('an agent’s credentials and login files', () => {
       }),
     )
     expect(ids(report)).toEqual([
-      'omp',
       'claude-code',
       'codex',
       'gemini',
@@ -974,7 +974,6 @@ describe('qmo agents', () => {
     expect(json.out).toHaveLength(1)
     expect(JSON.parse(json.out[0]!)).toEqual({
       agents: [
-        QIANMOPI,
         {
           id: 'claude-code',
           name: 'Claude Code',
@@ -1001,8 +1000,8 @@ describe('qmo agents', () => {
     expect(await main(['agents', '--rescan'], person.io, scan)).toBe(0)
     expect(seen[1]?.rescan).toBe(true)
     expect(person.out).toEqual(formatAgents(await scan()))
-    expect(person.out[1]).toContain('2.1.309')
-    expect(person.out[1]).toContain(claude)
+    expect(person.out[0]).toContain('2.1.309')
+    expect(person.out[0]).toContain(claude)
 
     const wrong = io()
     expect(await main(['agents', 'all', '--json'], wrong.io, scan)).toBe(2)
@@ -1015,20 +1014,13 @@ describe('qmo agents', () => {
     expect(
       formatAgents({
         agents: [
-          QIANMOPI,
+          CODEX,
           {
-            ...QIANMOPI,
-            id: 'codex',
-            name: 'Codex',
-            version: '0.163.0',
-            path: '/opt/homebrew/bin/codex',
-            protocol: 'codex-app-server',
-            source: 'path',
-          },
-          {
-            ...QIANMOPI,
+            ...CODEX,
             id: 'cursor',
             name: 'Cursor CLI',
+            version: null,
+            path: null,
             protocol: null,
             available: false,
             reason: '暂不支持接入',
@@ -1037,7 +1029,6 @@ describe('qmo agents', () => {
         ],
       }),
     ).toEqual([
-      'qianmopi    内置     可用',
       'Codex       0.163.0  可用  /opt/homebrew/bin/codex',
       'Cursor CLI  —        不可用 · 暂不支持接入',
     ])

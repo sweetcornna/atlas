@@ -46,11 +46,15 @@ import {
 } from './computer.js'
 import { readPrivateFile, writePrivateFile } from './secret.js'
 
-/** How the local node drives an agent; the runtime catalog's protocols. */
-type AgentProtocol = 'omp' | 'claude-stream' | 'codex-app-server' | 'acp'
+/**
+ * How the local runner drives an agent; the runtime catalog's protocols. The
+ * catalog's built-in qianmopi (`omp`) is not listed: the desktop app carries
+ * no `qm` (qmo-local.md §4.3.1).
+ */
+type AgentProtocol = 'claude-stream' | 'codex-app-server' | 'acp'
 
 /** Where its program was found. */
-type AgentSource = 'builtin' | 'path' | 'vendor' | 'brew'
+type AgentSource = 'path' | 'vendor' | 'brew'
 
 /** One agent found here, as `qmo agents --json` prints it. */
 export interface LocalAgent {
@@ -308,20 +312,6 @@ export const AGENT_SPECS: readonly AgentSpec[] = [
     vendor: at => [path.join(at.home, '.local', 'bin', at.exe('goose'))],
   },
 ]
-
-/** qianmopi, built into the local node's `qm`. */
-const QIANMOPI: LocalAgent = {
-  id: 'omp',
-  name: 'qianmopi',
-  version: null,
-  path: null,
-  protocol: 'omp',
-  available: true,
-  reason: null,
-  source: 'builtin',
-  configFound: false,
-  signedIn: null,
-}
 
 // ---- this computer -------------------------------------------------------
 
@@ -823,7 +813,7 @@ async function inspect(
   }
 }
 
-/** The agents installed on this computer, qianmopi first. */
+/** The agents installed on this computer, in {@link AGENT_SPECS}' order. */
 export async function scanAgents(
   options: ScanOptions = {},
 ): Promise<AgentsReport> {
@@ -903,9 +893,7 @@ export async function scanAgents(
   }
   const found = await Promise.all(AGENT_SPECS.map(spec => inspect(scan, spec)))
   cache.save()
-  return {
-    agents: [QIANMOPI, ...found.filter(agent => agent !== null)],
-  }
+  return { agents: found.filter(agent => agent !== null) }
 }
 
 /** Columns a terminal gives `text`: two for each wide (CJK) character. */
@@ -925,11 +913,7 @@ function columns(text: string): number {
 export function formatAgents(report: AgentsReport): string[] {
   const rows = report.agents.map(agent => [
     agent.name,
-    agent.source === 'builtin'
-      ? '内置'
-      : agent.path === null
-        ? '—'
-        : (agent.version ?? '版本不明'),
+    agent.path === null ? '—' : (agent.version ?? '版本不明'),
     agent.available ? '可用' : `不可用 · ${agent.reason}`,
     agent.path ?? '',
   ])

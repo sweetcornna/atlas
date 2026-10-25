@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { ChildProcess } from 'node:child_process'
+import { RUNTIME_MCP_SERVER } from '@qianmo/harness/claudeStream.ts'
+import {
+  nonNegative,
+  RuntimeChannelBase,
+  toolArgs,
+  type RuntimeChannelHooks,
+} from '@qianmo/harness/process.ts'
 import type { OmpPromptAdmission } from '@qianmo/resident'
 import type {
   AcpRuntime,
@@ -10,13 +17,6 @@ import type {
   AcpUsageReader,
 } from './acpSpec.js'
 import { acpVerdictCalls } from './acpTools.js'
-import {
-  nonNegative,
-  RuntimeChannelBase,
-  toolArgs,
-  type RuntimeChannelHooks,
-} from './channel.js'
-import { RUNTIME_MCP_SERVER } from './claudeCode.js'
 
 /** The ACP major version this client speaks. */
 export const ACP_PROTOCOL_VERSION = 1

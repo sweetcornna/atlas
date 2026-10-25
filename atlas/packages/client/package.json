@@ -19,6 +19,7 @@
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
+    "@qianmo/harness": "workspace:*",
     "@qianmo/paths": "workspace:*"
   }
 }

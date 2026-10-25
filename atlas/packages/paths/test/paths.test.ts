@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
+  agentConfigRoots,
   claudeConfigDir,
   clientStateDir,
   codexHome,
@@ -108,6 +109,16 @@ describe('third-party agent roots, located for another environment', () => {
       '/home/ymy/.claude',
     )
   })
+})
+
+test('the other local agents’ roots are under the given home', () => {
+  expect(agentConfigRoots('/home/u')).toEqual([
+    '/home/u/.gemini',
+    '/home/u/.qwen',
+    '/home/u/.config/opencode',
+    '/home/u/.dsh',
+  ])
+  expect(agentConfigRoots()[0]).toBe(join(homedir(), '.gemini'))
 })
 
 describe('ompChildEnv', () => {

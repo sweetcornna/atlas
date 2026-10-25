@@ -3,23 +3,31 @@
 
 //! The commands web content can invoke.
 //!
-//! The nine `qmo_*` commands are the hub's (qmo-app.md §5.2): they reach the
-//! hub's origin through the remote capability `shell::grant` adds, and read
-//! their arguments from the raw body through `ipc.rs`; the three added for
-//! P37.13 also check that the calling page is on the hub's origin. The
-//! `local_*` commands are the shell's own pages' (`capabilities/local.json`),
-//! never the hub's. Nothing else — no file system, shell or HTTP plugin — is
-//! exposed.
+//! The twenty-two `qmo_*` commands are the hub's (qmo-app.md §5.2): they
+//! reach the hub's origin through the remote capability `shell::grant` adds,
+//! and read their arguments from the raw body through `ipc.rs`; the three
+//! added for P37.13 also check that the calling page is on the hub's origin,
+//! and the thirteen `qmo_local_*` of local sessions (P37.14a) that it is the
+//! main window's. The `local_*` commands are the shell's own pages'
+//! (`capabilities/local.json`), never the hub's. Nothing else — no file
+//! system, shell, dialog or HTTP plugin — is exposed.
+
+use std::str::FromStr;
 
 use serde::Serialize;
-use serde_json::Value;
-use tauri::{ipc::InvokeBody, AppHandle, Manager, Runtime};
+use serde_json::{value::RawValue, Value};
+use tauri::{
+    ipc::{InvokeBody, JavaScriptChannelId},
+    AppHandle, Manager, Runtime,
+};
 use tauri_plugin_autostart::ManagerExt as _;
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tauri_plugin_notification::NotificationExt;
 
 use crate::{
     agents::Agents,
+    code::{self, Code, Refusal},
     ipc,
     layout::Plan,
     settings::normalize_shortcut,
@@ -173,6 +181,217 @@ pub async fn qmo_open_local_settings(
     ipc::no_arguments(&body(&request)?).map_err(|e| e.to_string())?;
     shell::open_settings(&app);
     Ok(())
+}
+
+// ---- local sessions (qmo-local.md §4.5) -----------------------------------
+
+/// Every `qmo_local_*` call: from the hub's page in the main window, with a
+/// JSON body. Failures read `qmo local <code>: <message>`.
+fn local_body(
+    app: &AppHandle,
+    webview: &tauri::Webview,
+    request: &tauri::ipc::Request<'_>,
+) -> Result<Value, String> {
+    let shell = app.state::<Shell>();
+    let page = webview.url().ok();
+    ipc::local_caller(page.as_ref(), shell.hub().as_ref(), webview.label())
+        .and_then(|()| match request.body() {
+            InvokeBody::Json(value) => Ok(value.clone()),
+            InvokeBody::Raw(_) => Err(ipc::Invalid("arguments must be JSON".into())),
+        })
+        .map_err(|e| Refusal::from(e).to_string())
+}
+
+fn checked<T>(checked: Result<T, ipc::Invalid>) -> Result<T, String> {
+    checked.map_err(|e| Refusal::from(e).to_string())
+}
+
+/// Pass a checked call to the runner, on a worker: it may have to be
+/// started first, and the answer may take a while.
+async fn forward(app: AppHandle, call: ipc::Call) -> Result<Box<RawValue>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Code>().runner.call(call.method, call.params)
+    })
+    .await
+    .map_err(|e| Refusal::new("E_RUNNER", e.to_string()).to_string())?
+    .map_err(|refusal| refusal.to_string())
+}
+
+/// `{v, features, folders, sessions}`: what the runner can drive and what
+/// it has. The first call starts it.
+#[tauri::command]
+pub async fn qmo_local_list(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Box<RawValue>, String> {
+    let call = checked(ipc::local_list(&local_body(&app, &webview, &request)?))?;
+    forward(app, call).await
+}
+
+/// Register the page's event channel, replacing the one before. The channel
+/// sends to the page that made this call, in order.
+#[tauri::command]
+pub async fn qmo_local_watch(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Value, String> {
+    let channel = checked(ipc::local_watch(&local_body(&app, &webview, &request)?))?;
+    let id = JavaScriptChannelId::from_str(&channel)
+        .map_err(|e| Refusal::new("E_ARGS", e).to_string())?;
+    app.state::<Code>()
+        .runner
+        .watcher()
+        .watch(id.channel_on(webview));
+    Ok(Value::Object(Default::default()))
+}
+
+/// The system's folder picker, then the runner's `folders.add` with the
+/// folder's real path: the only way a path gets in (§4.5.3). `null` when the
+/// picker was cancelled.
+#[tauri::command]
+pub async fn qmo_local_pick_folder(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Option<Box<RawValue>>, String> {
+    checked(ipc::no_arguments(&local_body(&app, &webview, &request)?))?;
+    tauri::async_runtime::spawn_blocking(move || pick_folder(&app))
+        .await
+        .map_err(|e| Refusal::new("E_RUNNER", e.to_string()).to_string())?
+        .map_err(|refusal| refusal.to_string())
+}
+
+/// Blocking: the picker waits for the person.
+fn pick_folder(app: &AppHandle) -> Result<Option<Box<RawValue>>, Refusal> {
+    let code = app.state::<Code>();
+    let _open = code.picker.open()?;
+    let mut dialog = app.dialog().file().set_can_create_directories(true);
+    if let Some(main) = app.get_webview_window(MAIN) {
+        dialog = dialog.set_parent(&main);
+    }
+    let Some(picked) = dialog.blocking_pick_folder() else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .map_err(|_| Refusal::new("E_FOLDER", "选中的不是这台电脑上的文件夹"))?;
+    let path = code::picked_folder(&path)?;
+    code.runner
+        .call("folders.add", serde_json::json!({ "path": path }))
+        .map(Some)
+}
+
+#[tauri::command]
+pub async fn qmo_local_forget_folder(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Box<RawValue>, String> {
+    let call = checked(ipc::local_forget_folder(&local_body(
+        &app, &webview, &request,
+    )?))?;
+    forward(app, call).await
+}
+
+/// A new session is its first message: `{session, turn}`.
+#[tauri::command]
+pub async fn qmo_local_start(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Box<RawValue>, String> {
+    let call = checked(ipc::local_start(&local_body(&app, &webview, &request)?))?
+        .map_err(|closed| Refusal::new("E_REMOTE", closed).to_string())?;
+    forward(app, call).await
+}
+
+/// `{turn, queued}`.
+#[tauri::command]
+pub async fn qmo_local_send(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Box<RawValue>, String> {
+    let call = checked(ipc::local_send(&local_body(&app, &webview, &request)?))?;
+    forward(app, call).await
+}
+
+#[tauri::command]
+pub async fn qmo_local_stop(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Box<RawValue>, String> {
+    let call = checked(ipc::local_stop(&local_body(&app, &webview, &request)?))?;
+    forward(app, call).await
+}
+
+#[tauri::command]
+pub async fn qmo_local_answer(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Box<RawValue>, String> {
+    let call = checked(ipc::local_answer(&local_body(&app, &webview, &request)?))?;
+    forward(app, call).await
+}
+
+/// `{mode, applies: 'now' | 'next-turn'}`.
+#[tauri::command]
+pub async fn qmo_local_set_mode(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Box<RawValue>, String> {
+    let call = checked(ipc::local_set_mode(&local_body(&app, &webview, &request)?))?;
+    forward(app, call).await
+}
+
+/// `{session, records, more, lastSeq, live?}`, newest first.
+#[tauri::command]
+pub async fn qmo_local_read(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Box<RawValue>, String> {
+    let call = checked(ipc::local_read(&local_body(&app, &webview, &request)?))?;
+    forward(app, call).await
+}
+
+#[tauri::command]
+pub async fn qmo_local_changes(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Box<RawValue>, String> {
+    let call = checked(ipc::local_changes(&local_body(&app, &webview, &request)?))?;
+    forward(app, call).await
+}
+
+#[tauri::command]
+pub async fn qmo_local_diff(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Box<RawValue>, String> {
+    let call = checked(ipc::local_diff(&local_body(&app, &webview, &request)?))?;
+    forward(app, call).await
+}
+
+/// Remote comes with P37.15: checked, then turned down without asking the
+/// runner.
+#[tauri::command]
+pub async fn qmo_local_set_remote(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Value, String> {
+    checked(ipc::local_set_remote(&local_body(
+        &app, &webview, &request,
+    )?))?;
+    Err(Refusal::new("E_REMOTE", ipc::REMOTE_CLOSED).to_string())
 }
 
 // ---- the local pages ----------------------------------------------------

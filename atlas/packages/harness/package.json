@@ -1,0 +1,18 @@
+{
+  "name": "@qianmo/harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "description": "The native agent protocols (Claude Code stream-json) as process channels, shared by the resident node and the desktop app's local runner.",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsgo --noEmit"
+  }
+}
