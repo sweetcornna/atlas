@@ -356,7 +356,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 | `onDetail(detail)` | 正文增量 `text-delta`、思考 `thinking`（只给等待行用）、工具的输入与结果 `tool`（输出、文件差异）、agent 自报的模式变化 `mode` |
 | `ask(request)` → `'once'` \| `'session'` \| `'deny'` | 取代 `permission → boolean`，多一个「本会话都允许」；常驻的适配把 `true` / `false` 映射成 `once` / `deny` |
 | Claude Code | 解析 `stream_event`、`control_request`（`can_use_tool`）、`control_response`；`setPermissionMode(mode)`（发 `set_permission_mode`）；工具结果的文字 |
-| Codex | 线程参数由调用方给（常驻把现在的 `#nativeState` 与 `codexThreadConfig` 作为参数传入）；`prompt` 可带本轮的 `approvalPolicy`、`sandboxPolicy`；处理 `item/agentMessage/delta`、`item/commandExecution/outputDelta`、`turn/diff/updated` |
+| Codex | 线程参数由调用方给（常驻把现在的 `#nativeState` 与 `codexThreadConfig` 作为参数传入）；`prompt` 可带本轮的 `approvalPolicy`、`sandboxPolicy`；处理 `item/agentMessage/delta`、`item/commandExecution/outputDelta`、`turn/diff/updated`。P37.14b 实现：`ask` 取代 `permission`（`once` / `session` / `deny` → `accept` / `acceptForSession` / `decline`；命令的 `availableDecisions` 里没有 `acceptForSession` 时不给 `session`；MCP 征询与旧版请求只有允许一次与拒绝），征询带一个 `signal`，`serverRequest/resolved`、这一轮结束、进程没了时中止；常驻的适配把节点的允许与否映射成 `once` / `deny`，线上逐字不变 |
 | ACP | `setMode(id)`（`session/set_mode`）与 `session/new` 答复里的 `modes`；`agent_message_chunk` 的文字随增量交出；`tool_call` 的 `content`（文字与 `diff`）；征询可选 agent 给的会话级 `allow_always`；进度行的工具名由调用方给的函数算（常驻传 `acpVerdictCalls` 那一套） |
 
 #### 4.3.4 怎么起本机 agent
@@ -406,6 +406,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 | `folders.json` | 选过的文件夹：`{id, path, name, pickedAt}`，至多 20 个，id 是 16 位十六进制随机数 |
 | `sessions/<id>/session.json` | 会话抬头：`id`、`title`、`createdAt`、`updatedAt`、`folder {path, name}`、`root`（agent 的工作目录）、`worktree? {path, branch, base, repo}`、`agent {id, name, protocol, version}`、`mode`、`state`、`lastSeq`、`native {kind, id, started}`（Claude Code 会话号、Codex 线程号、ACP 会话号）、`remote {on: false, pushedSeq: 0}`（P37.15 用） |
 | `sessions/<id>/events.ndjson` | 对话记录，只追加 |
+| `sessions/<id>/turn-diff.json` | Codex 最近一次 `turn/diff/updated` 的整轮差异（`{v, at, truncated, diff}`，至多 1 MiB，按行截断），只给不是 Git 仓库时的变更面板用（§4.3.7）；P37.14b |
 | `worktrees/` | 运行器建的工作树（§4.3.7） |
 | `runner.lock`、`children.json`、`runner.log` | §4.3.2 |
 
@@ -431,7 +432,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 | 不放在哪 | 不放进用户的仓库（`<仓库>/.claude/worktrees` 是 Claude Code 的项目配置目录，阡陌不写；也会让 `git status` 多出未跟踪目录），不放在仓库旁边 |
 | 删会话 | 工作树干净时 `git worktree remove`，分支留着（上面有 agent 的提交）；不干净就留下并写明路径。从不 `--force` |
 | 变更 | 文件夹会话：工作区相对 `HEAD`（没提交的改动，含未跟踪文件）；工作树会话：相对建树时的底（含 agent 的提交）。`git --no-optional-locks status --porcelain=v2 -z --untracked-files=all` 加 `git diff --numstat -z <底>` 列文件；点开一个文件 `git diff --no-color --no-ext-diff --no-textconv -U3 <底> -- <路径>`，未跟踪的用 `git diff --no-index -- /dev/null <路径>` |
-| 不是 Git 仓库 | 列这个会话的工具记录里改过的文件，差异取记录里的（不读磁盘） |
+| 不是 Git 仓库 | 列这个会话的工具记录里改过的文件，差异取记录里的（不读磁盘）。P37.14b 先做了 Codex 那一份：有 `turn-diff.json` 时按它答（`source: 'session'`，文件取差异头里的路径，绝对路径在会话根里的改成相对、在根外的不列），页面照 Git 的画法列出并写「最近一轮的改动（不是 Git 仓库）」；它只是最近一轮，不是会话以来的全部，其余由 P37.14d 补 |
 | 刷新 | 一个编辑或命令类工具结束后 1 s 内刷一次，另有手动刷新 |
 | 边界 | 只读：不暂存、不提交、不还原（以后要做的「撤销改动」另立包）。git 用登录 shell 的 PATH 找；环境 `GIT_TERMINAL_PROMPT=0`、`GIT_OPTIONAL_LOCKS=0`、`LC_ALL=C`；每条 10 s 超时；至多列 1000 个文件，一个文件的差异至多 256 KiB，二进制文件只给统计。路径参数一律放在 `--` 之后，先过 §4.5.3 的检查。`worktree add` 会照常触发仓库自己的 `post-checkout` 钩子（与用户在终端里运行同一条命令一样）；`status` 与 `diff` 不触发钩子 |
 
@@ -448,6 +449,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 
 - **选「跳过权限确认」要再确认一次**：页面上就地出一行「agent 将不经确认执行任何命令与改动 · 确认 / 取消」，不弹窗。
 - **改档**：Claude Code 用 `set_permission_mode` 立即改；改到 `bypassPermissions` 而进程启动时没带 `--allow-dangerously-skip-permissions` 的，在下一轮开始前按原会话号带上它重起。Codex 下一轮生效。Gemini、Qwen 用 `session/set_mode` 立即改。页面按命令的答复写「已生效」或「下一轮生效」，被拒时退回原值并写原因（§3.3 的规矩）。
+- **Codex 的细节**（P37.14b）：线程按档开（`thread/start` / `thread/resume` 的 `approvalPolicy`、`sandbox`，人工确认与自动接受编辑另带 `approvalsReviewer: 'user'`，征询不交给 Codex 自己的审查 agent）。进程在跑时改档答 `next-turn`：下一轮的 `turn/start` 带新的 `approvalPolicy`，改到跳过权限确认另带 `sandboxPolicy: {type: 'dangerFullAccess'}`，只要与开线程时不同就每轮都带（Codex 是否把本轮的值留给以后各轮都不影响）。两种改法本轮的值说不清，下一轮前在原线程上重起进程：转进要人确认的档而进程开线程时没带 `approvalsReviewer`；从完全访问回到 workspace 沙箱（`turn/start` 只能给一个缺省的 `workspaceWrite`，会盖掉用户自己 `sandbox_workspace_write` 里的可写目录与联网设置，`thread/resume` 带 `sandbox` 则照用户的设置）。没有进程时答 `now`，下一个进程按新档开线程。自动接受编辑由运行器答的只有文件改动：这一项的 `fileChange` 条目先到（app-server 在征询前发 `item/started`），列出的文件与它要的 `grantRoot` 解开链接后都在会话根里才答 `accept`，条目没见到、有一个在根外都交给人；命令一律交给人。跳过权限确认下 Codex 不问（`never`），万一仍来的征询运行器答 `accept`。Codex 的 `decline` 收不了附言，拒绝时写的那句话只留在本机记录里。
 - **征询卡片**：在转录里，对应那条工具行的位置。写 agent 给的说明（Claude Code 的 `description` 或工具名加摘要、Codex 的命令与理由、ACP 的 `title`）和涉及的路径；三个按钮「允许一次」「本会话都允许」「拒绝」（拒绝可附一句话，交回给 agent）。`Enter` 不默认批准，焦点放在「允许一次」上，要按空格或点击。
 - **本会话都允许**只用会话级的原生选项：Claude Code 把 `permission_suggestions` 原样带回，但每条的 `destination` 一律改成 `session`；Codex 答 `acceptForSession`；ACP 只在 agent 给的 `allow_always` 选项里能认出会话级的那一个时才提供（Gemini CLI 是 `proceed_always`），认不出就只给另两个。从不选会写进 agent 设置的「以后都允许」（Gemini 的 `proceed_always_and_save`、Claude Code 的 `localSettings` / `userSettings`、Codex 的 `acceptWithExecpolicyAmendment`）：要长期放行，人在 agent 自己的界面里设。
 - **记录**：征询是一条过程行，`ask` 为 `{id, tool, title, paths?, input?（摘要，至多 2 KiB）, options, decision?, by?: 'user' | 'stop' | 'shutdown', at?}`，答了就重写这一条。运行器按档自动答掉的不单独记，只在那条工具行上记 `approvedBy: 'mode'`。
@@ -470,7 +472,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 
 | 命令 | 参数 | 答复 | 说明 |
 |---|---|---|---|
-| `qmo_local_list` | 无 | `{v: 1, features: {protocols, worktree, remote: false}, folders: [Folder], sessions: [Summary]}` | 打开 Code 面先调；也是能力探测：`protocols` 列本版能驱动的协议（P37.14a 只有 `claude-stream`），其余 agent 在选择里写「后续版本支持」 |
+| `qmo_local_list` | 无 | `{v: 1, features: {protocols, worktree, remote: false}, folders: [Folder], sessions: [Summary]}` | 打开 Code 面先调；也是能力探测：`protocols` 列本版能驱动的协议（P37.14a 只有 `claude-stream`，P37.14b 加 `codex-app-server`），其余 agent 在选择里写「后续版本支持」 |
 | `qmo_local_watch` | `channel`：`window.__TAURI__.core.Channel` | `{}` | 登记本页的事件通道（§4.5.2）；再调就换掉旧的 |
 | `qmo_local_pick_folder` | 无 | `Folder` 或 `null`（取消了） | 壳弹系统的文件夹选择框，把选中的路径交给运行器的 `folders.add`；这是路径进入系统的唯一入口 |
 | `qmo_local_forget_folder` | `folder` | `{}` | 从最近列表去掉；不碰磁盘，已有会话照旧能开 |
@@ -609,7 +611,7 @@ Cowork 式虚拟机、模拟器、Office 插件；把整个网页应用另带一
 | P37.13 | 局部导航、先改后同步、外观收成一套、首帧按上次布局、两种模式与设置卡片（§3） | 后台与两种前台切页不重载文档；§3.3 的操作失败能回到原样；明暗对比、三种语言、窄屏的现有用例全过；预览环境截图核对 | 局部导航、§3.3 中代码里存在的操作、外观（§3.4）、首帧的页面侧与壳侧、两种模式与设置卡片（§3.6）已实现；两种前台之间仍整页导航；未在真壳里联调 |
 | P37.14 | `qmo agents --json` 识别本机 agent（§4.2） | macOS 本机识别出已装的 agent | 已实现（§9） |
 | P37.14a | 本机会话第一轮，Claude Code：`@qianmo/harness`（进程基类与 Claude Code 通道搬家，加 §4.3.3 的附加项）；运行器 `qmo code serve`（§4.3.2、§4.3.4–§4.3.6 的 Claude Code 部分，§4.4 的四档）；壳的运行器桥、选文件夹与 §4.5.1 的命令（改名、删除留给 d，`qmo_local_set_remote` 先一律拒绝）；Code 页的会话列表（按文件夹分组）、新会话、转录（§4.5.5）、征询卡片、权限菜单、Git 文件夹的变更面板；`qmo agents` 不再列 qianmopi。原 P37.16「本机直连」并入这里 | macOS 本机经 Qmo.app 用 Claude Code 在一个文件夹里：发一句 → 流式回答 → 改一个文件 → 变更面板看到这个文件的 diff；页面载入后断网，同一会话再跑一轮；退出 Qmo 再开，接着说；节点两组测试与 `qm` 构建冒烟不变；富文本一致性用例、脚本预算与「没有 innerHTML」用例 | 已实现，三路（`@qianmo/harness` 与运行器、壳、Code 页）合流在 `feat/p37-14a`，未合入；用例与门禁见 §9。真机这一条（Qmo.app 里用真的 Claude Code 走一轮、断网再跑、退出再开）未实测；`RecordSink` 没留（§4.5.6） |
-| P37.14b | Codex：`CodexChannel` 搬进 `@qianmo/harness` 并加附加项；运行器的 Codex 驱动（§4.3.5、§4.4 的 Codex 列，`turn/diff/updated`） | 用 Codex 在一个本机文件夹里跑通一轮（改一个文件、看到变更）；四档在假 app-server 上各一轮；常驻 Codex 用例不变 | 设计 |
+| P37.14b | Codex：`CodexChannel` 搬进 `@qianmo/harness` 并加附加项；运行器的 Codex 驱动（§4.3.5、§4.4 的 Codex 列，`turn/diff/updated`） | 用 Codex 在一个本机文件夹里跑通一轮（改一个文件、看到变更）；四档在假 app-server 上各一轮；常驻 Codex 用例不变 | 已实现，在 `feat/p37-14b-codex-local`（基于 main `3247b9b2a`），未合入；只在假 app-server 上验过，Qmo.app 里用真的 Codex 未实测（§9） |
 | P37.14c | ACP：`AcpChannel` 搬进 `@qianmo/harness` 并加附加项；Gemini CLI、Qwen Code、opencode、dsh 的本机起法、模式映射与会话级「允许」的认法 | Gemini CLI 在本机文件夹里跑通一轮；其余三个在假 ACP 上过，真机标未实测；常驻 ACP 用例不变 | 设计 |
 | P37.14d | 独立工作树（§4.3.7）；变更面板补全（非 Git 文件夹、未跟踪、二进制、大文件）；改名、删除（含工作树的去留）；窗口不在前面时的系统通知（一轮完成、等你确认）与角标；退出 Qmo 时有会话在跑先问；壳设置窗「Code」一节（新会话的缺省权限模式、新会话开 Remote 的缺省） | 在 Git 仓库里开工作树会话、改文件、主检出不受影响，删会话时干净的工作树被移除、不干净的留下；通知点开回到那个会话；以上在 macOS 本机走一遍 | 设计 |
 | P37.15 | 设备链路与中枢 `/v0/client/link`、设备节点、开着 Remote 的会话同步与续写（§5）；用 P37.14a 留好的接口（§4.5.6） | 本机会话在浏览器里看得到；设备在线时从浏览器续写一轮；吊销设备后链路断开；断网期间的记录在恢复后按 `seq` 补齐 | 设计 |
@@ -646,6 +648,19 @@ P37.14a 未实测（要在负责人的机器上用 Qmo.app 与真的 Claude Code
 - 真的 Claude Code：`--permission-prompt-tool stdio` 是否仍有效（无效就换 `--permission-prompts host`，§4.6）；以 `--permission-mode auto` 启动在没开通的账号上怎么报（运行器认的两句原话「Session ID … is already in use」「No conversation found」也是按现有提示写的，没对过）；`init` 里有没有 `permissionMode`；`stream_event` 增量的实际形状；登录失效时的原话。
 - Qmo.app 里的整条路：WKWebView 里 `Channel` 经 `postMessage` 回退的顺序与延迟、长转录的 DOM；页面载入后断网同一会话再跑一轮；退出 Qmo 再开接着说；系统选择框；`runner.log` 的内容。`bun run atlas:build:app` 只编过，没有打开。
 - Windows、Linux：运行器的锁在 Windows 上没有启动时刻核对（总被接管）、进程树与 npm 垫片、壳在这两个系统上都没编过。
+
+P37.14b（Codex）的用例，全部用假进程（`@qianmo/harness` 的 `test/fixtures/fake-codex-app-server.runner.ts`，从节点的 `fake-codex.runner.ts` 扩展），从不启动真的 Codex：
+
+- 搬家单独一个提交（`CodexChannel` 到 `harness/src/codexRpc.ts`，线程参数改由调用方给，常驻的 `codexResidentThread` 键序不变）；节点三组 Codex 用例（`residentRuntimes`、`runtimeNative`、`settingsToolsRuntimes`）不改照过。
+- `@qianmo/harness`（`test/codexRpc.test.ts`）：帧与常驻时相同、增量只喂看门狗；调用方给的线程参数（可先问 app-server）、续接带同样的参数、线程没了另开；没有 `ask` 一律 `decline`；正文增量、整条正文、推理、命令开始与输出增量与结束、文件改动的原样条目、整轮差异、失败的 `error`；`once` / `session` / `deny` 的三种答复、没有 `acceptForSession` 时不给也不发、MCP 征询、撤回的征询中止 `signal`、从不发 amendment；本轮的 `approvalPolicy` / `sandboxPolicy` 写进 `turn/start`。
+- 运行器（`atlas/packages/client/test/code/codex.test.ts`）：命令行只有 `app-server`、四档开线程的原生值（两档带 `approvalsReviewer`）、改档的三种走法（本轮的值、重起后 `thread/resume`、没有进程时 `now`）与同一线程上的计数、人工确认的征询与允许、本会话都允许与拒绝（文件没改、附言不发）、自动接受编辑的界线（根里的文件由档允许、命令与根外的交给人）、自动审批只在越界时问、跳过权限确认什么都不问、中止与开着的征询、空闲回收后续接、崩溃后续接、线程没了、失败原话与 `codex login` 提示（没有任何登录方法）、非 Git 文件夹的变更与差异（只读记录、0600）、环境与 `~/.codex` 从不打开；驱动登记与 `features.protocols` 一一对应。
+- 编出来的 `qmo`（`qianmo-client-code-serve.test.ts`）多一轮 Codex：假 app-server 在 PATH 上、文件夹不是 Git 仓库，人工确认的征询、改文件、变更来自整轮差异、改档下一轮生效、第二句、`shutdown`。Code 页的浏览器用例多一条：不是 Git 仓库时列最近一轮的改动。
+- 体积：`qmo`（macOS arm64，`--minify`）从基点 `3247b9b2a` 的 70,961,522 字节到 70,978,034 字节，多 16,512 字节；打包进来的模块仍只有 `client`、`harness`、`paths`。
+
+P37.14b 未实测（要在负责人的机器上用 Qmo.app 与真的 Codex 核）：
+
+- 真的 Codex 0.164.0：`item/agentMessage/delta`、`item/commandExecution/outputDelta`、`turn/diff/updated` 的实际形状（尤其整轮差异里的路径在不是 Git 仓库时是绝对还是相对）；`fileChange` 条目是否在征询之前到（不是的话自动接受编辑会退成交给人）；`thread/start` 是否收 `approvalsReviewer`、`turn/start` 的 `approvalPolicy` / `sandboxPolicy` 是否留给以后各轮；没登录时的原话与 `codexErrorInfo`；拒绝后的命令有没有 `item/started`；npm 装的 `codex` 起子进程时 `children.json` 的残留清理。
+- Qmo.app 里的整条路：在一个本机文件夹里用 Codex 改一个文件、变更面板看到它。
 
 `qmo agents`（§4.2）：
 
