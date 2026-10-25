@@ -111,8 +111,12 @@ export interface AcpSessionSettings<R extends object = object>
   /** Sent ahead of the first prompt of a new native session. */
   readonly instructions?: string
   readonly effort?: string
-  /** The node's answer to `session/request_permission`. */
-  readonly permission: (call: AcpToolCall) => Promise<boolean>
+  /**
+   * The node's answer to `session/request_permission`: `true` is allow
+   * once, `false` reject once. Without it and without {@link ask}, every
+   * question is rejected.
+   */
+  readonly permission?: (call: AcpToolCall) => Promise<boolean>
   /**
    * The call as the progress line names it (the resident: the first call of
    * `acpVerdictCalls`); absent or `undefined`: ACP's `title` and `rawInput`.
@@ -123,6 +127,94 @@ export interface AcpSessionSettings<R extends object = object>
   /** Servers left out: the harness does not take their transport. */
   readonly onMcpSkipped?: (names: readonly string[]) => void
   readonly onError?: (error: unknown) => void
+  // ---- the desktop app's runner (qmo-local.md §4.3.3); the resident passes none
+  /** `initialize`'s `clientInfo` (default: the resident's). */
+  readonly clientInfo?: {
+    readonly name: string
+    readonly title: string
+    readonly version: string
+  }
+  /** What a caller that shows the turn as it happens learns beyond the frames. */
+  readonly onDetail?: (detail: AcpDetail) => void
+  /**
+   * Answers `session/request_permission` with three choices; takes the
+   * place of {@link permission}. The answer is the option of that kind the
+   * agent offered: `once` its `allow_once`, `deny` its `reject_once`,
+   * `session` the one {@link sessionOption} recognized.
+   */
+  readonly ask?: (request: AcpAsk) => Promise<AcpAskDecision>
+  /**
+   * Which of the agent's `allow_always` options keeps to this session (not
+   * one written into its settings). Absent, or none recognized: `session`
+   * is not offered.
+   */
+  readonly sessionOption?: (option: AcpPermissionOption) => boolean
+}
+
+/** One option of `session/request_permission`, as the agent offers it. */
+export interface AcpPermissionOption {
+  readonly optionId: string
+  readonly name: string
+  /** `allow_once`, `allow_always`, `reject_once`, `reject_always`. */
+  readonly kind: string
+}
+
+/** A tool call's content (ACP `ToolCallContent`): its text, or a file's change. */
+export type AcpToolContent =
+  | { readonly type: 'text'; readonly text: string }
+  | {
+      readonly type: 'diff'
+      readonly path: string
+      /** `null`: a new file. */
+      readonly oldText: string | null
+      readonly newText: string
+    }
+
+/** One of the agent's ACP modes (`session/new`'s `modes.availableModes`). */
+export interface AcpMode {
+  readonly id: string
+  readonly name: string
+}
+
+export interface AcpModes {
+  readonly current: string | undefined
+  readonly available: readonly AcpMode[]
+}
+
+/**
+ * What the local runner learns beyond the frames: text as it streams, a
+ * whole message, thoughts, a tool call with its content as it starts,
+ * changes and ends, and the agent's own word that its mode changed.
+ */
+export type AcpDetail =
+  | {
+      readonly kind: 'text-delta' | 'message' | 'thinking'
+      readonly text: string
+    }
+  | {
+      readonly kind: 'tool'
+      readonly phase: 'start' | 'update' | 'end'
+      readonly id: string
+      readonly call: AcpToolCall
+      /** The latest content (ACP replaces it with each update). */
+      readonly content: readonly AcpToolContent[]
+      /** At the end: it failed. */
+      readonly isError?: boolean
+    }
+  | { readonly kind: 'mode'; readonly modeId: string }
+
+export type AcpAskDecision = 'once' | 'session' | 'deny'
+
+/** A `session/request_permission`, as {@link AcpSessionSettings.ask} gets it. */
+export interface AcpAsk {
+  /** The tool call it is about (a `start` detail came first). */
+  readonly toolCallId?: string
+  readonly call: AcpToolCall
+  readonly content: readonly AcpToolContent[]
+  /** What may be answered: `session` only when an option was recognized. */
+  readonly decisions: readonly AcpAskDecision[]
+  /** Aborted once the question is answered without the caller (a stop, the exit). */
+  readonly signal: AbortSignal
 }
 
 interface Pending {
@@ -235,6 +327,52 @@ function promptUsage(value: unknown): RuntimeUsage | undefined {
   }
 }
 
+/** A tool call's `content`, the parts the runner shows; `undefined` when absent. */
+function toolContent(value: unknown): AcpToolContent[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out: AcpToolContent[] = []
+  for (const raw of value) {
+    const part = toolArgs(raw)
+    if (part.type === 'diff' && typeof part.path === 'string') {
+      if (typeof part.newText !== 'string') continue
+      out.push({
+        type: 'diff',
+        path: part.path,
+        oldText: typeof part.oldText === 'string' ? part.oldText : null,
+        newText: part.newText,
+      })
+    } else if (part.type === 'content') {
+      const block = toolArgs(part.content)
+      if (block.type === 'text' && typeof block.text === 'string')
+        out.push({ type: 'text', text: block.text })
+    }
+  }
+  return out
+}
+
+/** An answer's `modes` (`SessionModeState`), when it has some. */
+function modesOf(value: unknown): AcpModes | undefined {
+  const modes = toolArgs(value)
+  if (!Array.isArray(modes.availableModes)) return undefined
+  return {
+    current: text(modes.currentModeId),
+    available: modes.availableModes
+      .map(toolArgs)
+      .filter(one => typeof one.id === 'string')
+      .map(one => ({
+        id: String(one.id),
+        name: text(one.name) ?? String(one.id),
+      })),
+  }
+}
+
+/** The local runner's view of one tool call: separate from the frames'. */
+interface ShownTool {
+  call: AcpToolCall
+  content: AcpToolContent[]
+  ended: boolean
+}
+
 /**
  * One ACP agent (`harness-backends.md` §5) over stdio, holding one native
  * session for one resident session. JSON-RPC 2.0, newline-delimited.
@@ -250,14 +388,25 @@ function promptUsage(value: unknown): RuntimeUsage | undefined {
  * The client offers no `fs` or `terminal`: the harness's own tools do the
  * work, and every one it asks about goes to the node
  * (`session/request_permission`), answered with a one-time option only.
+ *
+ * The desktop app's runner adds `onDetail`, `ask` and `sessionOption`
+ * (qmo-local.md §4.3.3): details are kept apart from the frames, which are
+ * the same with them as without; `session/set_mode` through {@link setMode}.
+ * It never sends `authenticate`: an agent that is not signed in says so,
+ * and the person signs in in a terminal.
  */
 export class AcpChannel<R extends object = object> extends RuntimeChannelBase {
   protected readonly runtimeName: string
   readonly #settings: AcpSessionSettings<R>
   readonly #pending = new Map<number, Pending>()
   readonly #tools = new Map<string, TrackedTool>()
+  /** The calls as `onDetail` shows them, by tool call id. */
+  readonly #shown = new Map<string, ShownTool>()
   /** Permission requests not answered yet, by JSON-RPC id. */
   readonly #asks = new Map<string, () => void>()
+  /** Of those, the ones put to {@link AcpSessionSettings.ask}. */
+  readonly #asking = new Map<string, AbortController>()
+  #modes: AcpModes | undefined
   #sequence = 0
   #sessionId: string | undefined
   #instructionsPending = false
@@ -278,10 +427,42 @@ export class AcpChannel<R extends object = object> extends RuntimeChannelBase {
       () => this.#failPending(`${settings.label} exited`),
       () => this.#failPending(`${settings.label} exited`),
     )
+    void this.closed
+      .catch(() => {})
+      .finally(() => {
+        // No one is left to hear an answer.
+        for (const [key, controller] of this.#asking) {
+          this.#asking.delete(key)
+          controller.abort()
+        }
+      })
   }
 
   get sessionId(): string | undefined {
     return this.#sessionId
+  }
+
+  /** The agent's ACP modes, as the session's opening answer gave them. */
+  get modes(): AcpModes | undefined {
+    return this.#modes
+  }
+
+  /** Switches the agent's ACP mode (`session/set_mode`); rejects when it refuses. */
+  async setMode(modeId: string): Promise<void> {
+    const sessionId = this.#sessionId
+    if (sessionId === undefined)
+      throw new Error(`${this.runtimeName} session is not open`)
+    await this.#request('session/set_mode', { sessionId, modeId }, 15_000)
+    if (this.#modes !== undefined)
+      this.#modes = { ...this.#modes, current: modeId }
+  }
+
+  #detail(detail: AcpDetail): void {
+    try {
+      this.#settings.onDetail?.(detail)
+    } catch {
+      // A watcher's failure must not stop the turn.
+    }
   }
 
   async initialize(): Promise<void> {
@@ -295,7 +476,11 @@ export class AcpChannel<R extends object = object> extends RuntimeChannelBase {
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
         },
-        clientInfo: { name: 'qianmo', title: 'Qianmo resident', version: '1' },
+        clientInfo: settings.clientInfo ?? {
+          name: 'qianmo',
+          title: 'Qianmo resident',
+          version: '1',
+        },
       }),
     )
     if (init.protocolVersion !== ACP_PROTOCOL_VERSION)
@@ -361,6 +546,7 @@ export class AcpChannel<R extends object = object> extends RuntimeChannelBase {
       this.#sessionId = id
       this.#instructionsPending = settings.instructions !== undefined
     }
+    this.#modes = modesOf(opened?.modes)
     settings.onSession(this.#sessionId)
     this.#usage = settings.usage?.(this.#sessionId)
     await this.#applyEffort(opened ?? {})
@@ -426,6 +612,7 @@ export class AcpChannel<R extends object = object> extends RuntimeChannelBase {
     this.#text = ''
     this.#textMessage = undefined
     this.#tools.clear()
+    this.#shown.clear()
     try {
       this.#usageFrom = this.#usage?.start() ?? 0
     } catch {
@@ -488,7 +675,10 @@ export class AcpChannel<R extends object = object> extends RuntimeChannelBase {
 
   /** The turn's text so far, as one assistant message. */
   #flushText(): void {
-    if (this.#text !== '') this.assistantMessage(this.#text)
+    if (this.#text !== '') {
+      this.assistantMessage(this.#text)
+      this.#detail({ kind: 'message', text: this.#text })
+    }
     this.#text = ''
     this.#textMessage = undefined
   }
@@ -674,6 +864,7 @@ export class AcpChannel<R extends object = object> extends RuntimeChannelBase {
   }
 
   #update(params: Record<string, unknown>): void {
+    if (params.sessionId === this.#sessionId) this.#modeUpdate(params.update)
     if (params.sessionId !== this.#sessionId || !this.busy) return
     const update = toolArgs(params.update)
     const kind = update.sessionUpdate
@@ -687,6 +878,7 @@ export class AcpChannel<R extends object = object> extends RuntimeChannelBase {
           this.#textMessage = message
         }
         this.#text += content.text
+        this.#detail({ kind: 'text-delta', text: content.text })
         this.emit({ type: 'message_update', message: { role: 'assistant' } })
         return
       }
@@ -714,14 +906,71 @@ export class AcpChannel<R extends object = object> extends RuntimeChannelBase {
           tool.ended = true
           this.toolEnd(id, name, status === 'failed')
         }
+        this.#showTool(id, update, true)
         return
       }
       default:
+        if (kind === 'agent_thought_chunk') {
+          const content = toolArgs(update.content)
+          if (content.type === 'text' && typeof content.text === 'string')
+            this.#detail({ kind: 'thinking', text: content.text })
+        }
         // Thoughts, usage pressure, plans, modes, commands: signs of life
         // only. `usage_update.used` is an estimate and never counted.
         if (typeof kind === 'string')
           this.emit({ type: 'runtime_status', subtype: kind })
     }
+  }
+
+  /** `current_mode_update`, in a turn or not: the agent switched itself. */
+  #modeUpdate(value: unknown): void {
+    const update = toolArgs(value)
+    const modeId = update.currentModeId
+    if (update.sessionUpdate !== 'current_mode_update') return
+    if (typeof modeId !== 'string') return
+    if (this.#modes !== undefined)
+      this.#modes = { ...this.#modes, current: modeId }
+    this.#detail({ kind: 'mode', modeId })
+  }
+
+  /**
+   * The call as `onDetail` shows it: a `start` the first time it is heard
+   * of (in an update, or in a question about it, which Gemini CLI sends
+   * before announcing the call), `update` as its content changes, `end`
+   * once an update says it completed or failed.
+   */
+  #showTool(id: string, update: Record<string, unknown>, ends: boolean): void {
+    if (this.#settings.onDetail === undefined) return
+    const known = this.#shown.get(id)
+    const content = toolContent(update.content)
+    const shown: ShownTool = known ?? {
+      call: toolCallOf(update),
+      content: content ?? [],
+      ended: false,
+    }
+    if (known !== undefined) {
+      shown.call = toolCallOf(update, known.call)
+      if (content !== undefined) shown.content = content
+    }
+    this.#shown.set(id, shown)
+    const view = { kind: 'tool', id, call: shown.call } as const
+    if (known === undefined)
+      this.#detail({ ...view, phase: 'start', content: shown.content })
+    const status = update.status
+    if (
+      ends &&
+      !shown.ended &&
+      (status === 'completed' || status === 'failed')
+    ) {
+      shown.ended = true
+      this.#detail({
+        ...view,
+        phase: 'end',
+        content: shown.content,
+        isError: status === 'failed',
+      })
+    } else if (known !== undefined && !shown.ended && content !== undefined)
+      this.#detail({ ...view, phase: 'update', content: shown.content })
   }
 
   async #permission(
@@ -739,12 +988,12 @@ export class AcpChannel<R extends object = object> extends RuntimeChannelBase {
     const option = (kind: string) =>
       text(options.find(one => one.kind === kind)?.optionId)
     let answered = false
-    const answer = (granted: boolean) => {
+    /** The option chosen; `undefined`: cancelled. */
+    const reply = (chosen: string | undefined) => {
       if (answered) return
       answered = true
       this.#asks.delete(key)
-      // Only ever once: never a standing rule inside the harness.
-      const chosen = option(granted ? 'allow_once' : 'reject_once')
+      this.#asking.delete(key)
       this.#reply(id, {
         result: {
           outcome:
@@ -754,23 +1003,91 @@ export class AcpChannel<R extends object = object> extends RuntimeChannelBase {
         },
       })
     }
+    // Only ever once: never a standing rule inside the harness.
+    const answer = (granted: boolean) =>
+      reply(option(granted ? 'allow_once' : 'reject_once'))
     if (params.sessionId !== this.#sessionId || !this.busy || this.#aborting) {
       answer(false)
       return
     }
+    const ask = this.#settings.ask
+    if (ask !== undefined) {
+      await this.#askLocal(key, ask, callId, requested, call, options, reply)
+      return
+    }
     // An abort answers it at once; the node's late answer is dropped.
-    this.#asks.set(key, () => {
-      if (answered) return
-      answered = true
-      this.#asks.delete(key)
-      this.#reply(id, { result: { outcome: { outcome: 'cancelled' } } })
-    })
+    this.#asks.set(key, () => reply(undefined))
     let granted = false
     try {
-      granted = await this.#settings.permission(call)
+      granted = (await this.#settings.permission?.(call)) ?? false
     } catch {
       granted = false
     }
     answer(granted && !this.#aborting)
+  }
+
+  /**
+   * A question put to the local runner: once, for the session (only the
+   * `allow_always` option {@link AcpSessionSettings.sessionOption}
+   * recognizes, never another), or no. A stop or the process's end cancels
+   * it and aborts the request's signal.
+   */
+  async #askLocal(
+    key: string,
+    ask: (request: AcpAsk) => Promise<AcpAskDecision>,
+    callId: string | undefined,
+    requested: Record<string, unknown>,
+    call: AcpToolCall,
+    options: readonly Record<string, unknown>[],
+    reply: (chosen: string | undefined) => void,
+  ): Promise<void> {
+    // The words before the call, then the call, then the question.
+    if (this.#settings.onDetail !== undefined) this.#flushText()
+    if (callId !== undefined) this.#showTool(callId, requested, false)
+    const shown = callId === undefined ? undefined : this.#shown.get(callId)
+    const recognize = this.#settings.sessionOption
+    const forSession =
+      recognize === undefined
+        ? undefined
+        : options.find(
+            one =>
+              one.kind === 'allow_always' &&
+              typeof one.optionId === 'string' &&
+              recognize({
+                optionId: one.optionId,
+                name: text(one.name) ?? '',
+                kind: 'allow_always',
+              }),
+          )
+    const controller = new AbortController()
+    this.#asking.set(key, controller)
+    this.#asks.set(key, () => {
+      controller.abort()
+      reply(undefined)
+    })
+    let decision: AcpAskDecision = 'deny'
+    try {
+      decision = await ask({
+        ...(callId === undefined ? {} : { toolCallId: callId }),
+        call: shown?.call ?? call,
+        content: shown?.content ?? toolContent(requested.content) ?? [],
+        decisions:
+          forSession === undefined
+            ? ['once', 'deny']
+            : ['once', 'session', 'deny'],
+        signal: controller.signal,
+      })
+    } catch {
+      decision = 'deny'
+    }
+    const option = (kind: string) =>
+      text(options.find(one => one.kind === kind)?.optionId)
+    reply(
+      decision === 'deny'
+        ? option('reject_once')
+        : decision === 'session' && forSession !== undefined
+          ? text(forSession.optionId)
+          : option('allow_once'),
+    )
   }
 }
