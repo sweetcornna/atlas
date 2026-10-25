@@ -7,6 +7,9 @@ import { isDesktopTool } from '@qianmo/extension/desktopPolicy'
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { NodeFiles } from './files.js'
+import { WorkActivityTracker } from './workActivity.js'
+import { layOutWorkSkills, withWorkSkills } from './workSkills.js'
+import { NodeWork } from './workTools.js'
 import type { AuditInput } from '@qianmo/audit'
 import { AuditSource } from '@qianmo/audit'
 import {
@@ -848,6 +851,13 @@ export class QianmoResident {
    * other agents (P36.6) and the hub's settings (P40).
    */
   readonly #hubHostTools: readonly HostToolDefinition[]
+  /** Work outputs and their activity account (P37.17 B); with a hub only. */
+  readonly #work: {
+    readonly files: NodeWork
+    readonly activity: WorkActivityTracker
+  } | null
+  /** The six workflow skills' plugin folder, once laid out. */
+  readonly #workSkills: string | undefined
   readonly hubCall: HubCallClient
   readonly #options: QianmoResidentOptions
   /** `options.localCommandIssuers`, as the set it is looked up in. */
@@ -998,6 +1008,42 @@ export class QianmoResident {
         ...options,
         extraHostTools: [...(options.extraHostTools ?? []), files.tool()],
       }
+    // Work outputs (P37.17 B, `work-tasks.md` §5): the same hub gate as files.
+    this.#work =
+      options.controllers?.size &&
+      (process.platform === 'darwin' || process.platform === 'linux')
+        ? {
+            files: new NodeWork({
+              agents: () => options.agents,
+              call: (op, args, callOptions) =>
+                this.hubCall.call(op, args, callOptions),
+              origin: ctx => this.#taskOrigin(ctx),
+              stopped: () => this.#estop.engaged(),
+              audit: (kind, detail) =>
+                options.controlAudit?.({
+                  at: Date.now(),
+                  source: AuditSource.Control,
+                  node: options.node,
+                  kind,
+                  outcome: 'ok',
+                  detail,
+                }),
+            }),
+            activity: new WorkActivityTracker({
+              call: (op, args, callOptions) =>
+                this.hubCall.call(op, args, callOptions),
+              origin: input => this.#workOrigin(input),
+            }),
+          }
+        : null
+    let workSkills: string | undefined
+    if (this.#work !== null)
+      try {
+        workSkills = layOutWorkSkills()
+      } catch (error) {
+        options.onError?.(error)
+      }
+    this.#workSkills = workSkills
     this.#options = options
     this.#hubHostTools = [
       ...connectorTools({
@@ -1030,6 +1076,8 @@ export class QianmoResident {
             : { kind: 'unavailable', reason: unavailable }
         },
       }),
+      // Make, write and deliver work files (P37.17 B).
+      ...(this.#work?.files.tools() ?? []),
     ]
     residentToolSurface(options.authorization !== undefined, [
       ...this.#hubHostTools,
@@ -1045,6 +1093,7 @@ export class QianmoResident {
       ),
     })
     files?.register(this.control)
+    this.#work?.files.register(this.control)
     this.desktop = new NodeDesktop({
       node: options.node,
       agents: options.agents.map(a => a.agent),
@@ -1477,6 +1526,13 @@ export class QianmoResident {
         // 就是拿 omp RPC 流的实时性换一条装饰行。先同步登记到本任务，
         // 一轮的过程行在其结果之前交给通知器；交接仍在下一 tick 执行。
         onProgress: progress => this.#queueProgress(progress),
+        // 工作面板的进度与上下文（P37.17 B §5.5）：只记账，不碍这一轮。
+        ...(this.#work === null
+          ? {}
+          : {
+              onToolEvent: (input, event) =>
+                this.#work?.activity.onToolEvent(input, event),
+            }),
         onUsage: (input, usage, sequence) => {
           const task =
             input.networkMsgId === undefined
@@ -2404,6 +2460,19 @@ export class QianmoResident {
     const input = this.#turn.activeInput(ctx.sessionId)
     const task = input === undefined ? undefined : this.#taskFor(input)
     if (!task || task.settled || input?.agent !== ctx.agent) return null
+    const contextId = task.envelope.contextId
+    if (typeof contextId !== 'string' || contextId === '') return null
+    return { contextId, taskId: task.envelope.taskId }
+  }
+
+  /**
+   * The console conversation and turn of a resident input, for the work
+   * activity account: like {@link #taskOrigin}, but read from the input
+   * itself, so the turn's end (after the port let go of it) still finds it.
+   */
+  #workOrigin(input: ResidentTurnInput): TaskToolOrigin | null {
+    const task = this.#taskFor(input)
+    if (task === undefined || input.agent === undefined) return null
     const contextId = task.envelope.contextId
     if (typeof contextId !== 'string' || contextId === '') return null
     return { contextId, taskId: task.envelope.taskId }
@@ -3487,6 +3556,7 @@ export class QianmoResident {
   }
 
   stop(): void {
+    this.#work?.activity.close()
     this.hubCall.close()
     void this.desktop.close().catch(error => this.#options.onError?.(error))
     this.elevation.close()
@@ -3908,10 +3978,18 @@ export class QianmoResident {
   }
 
   async #spawnGeneration(): Promise<ResidentChildConnection> {
+    const workSkills = this.#workSkills
     const ompPool = new ResidentOmpPool({
       desktop: this.desktop,
       elevation: this.elevation,
-      extensions: agent => this.extensions.forAgent(agent),
+      // The six work skills ride on every qianmopi child (P37.17 B §2.4).
+      extensions:
+        workSkills === undefined
+          ? agent => this.extensions.forAgent(agent)
+          : withWorkSkills(
+              agent => this.extensions.forAgent(agent),
+              workSkills,
+            ),
       extraHostTools: [
         ...this.#hubHostTools,
         ...(this.#options.extraHostTools ?? []),
