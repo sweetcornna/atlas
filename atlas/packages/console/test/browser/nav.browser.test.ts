@@ -2,23 +2,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Moving between management pages in place, in a real browser
- * (`assets/nav.ts`, `docs/dev/qmo-local.md` §3.2–§3.3):
+ * Moving between management areas in place, in a real browser
+ * (`assets/nav.ts`, `docs/dev/qmo-local.md` §3.2–§3.3, §3.6). The areas live
+ * in the settings card over the main window's Work face; an area's address
+ * opens the document with the card drawn open on it.
  *
- * 1. **No new document.** A sidebar link swaps the page under the frame: a
- *    mark left on `window` is still there, the request was the partial one,
- *    the swapped page's script ran under the document's hash policy, and no
- *    policy violation was reported.
+ * 1. **No new document.** A link in the card's list swaps the area in the
+ *    card: a mark left on `window` is still there, the request was the
+ *    partial one, the swapped page's script ran under the document's hash
+ *    policy, and no policy violation was reported.
  * 2. **Back and forward** move between the swapped pages the same way.
  * 3. **Nothing piles up.** Visiting the same pages again leaves the same
  *    listeners on `document` and `window`, and what a page script added to
  *    the runtime goes with it.
  * 4. **Prefetch.** Pressing the pointer asks for the page before the click,
- *    and the click uses that answer; a pointer crossing the side panel asks
- *    for nothing.
+ *    and the click uses that answer; a pointer crossing the list asks for
+ *    nothing.
  * 5. **Failure.** No answer keeps the page with one line and one retry; a
  *    lapsed session and another release's parts load a whole document.
- * 6. **Leaving for the front** marks the item and dims the page at once.
+ * 6. **Leaving for the front.** A link out of `/admin` in the card closes
+ *    the card first, and then the browser follows it.
  * 7. **先改后同步.** A `data-write` switch whose write is refused goes back,
  *    with the reason beside it; a failed send stays as 未送达 with 重试.
  *
@@ -169,13 +172,13 @@ async function openConsole(tab: Tab, served: Served, path: string) {
 const q = (selector: string) =>
   `document.querySelector(${JSON.stringify(selector)})`
 
-/** The page under the frame is `path`, swapped in and settled. */
+/** The area in the card is `path`, swapped in and settled. */
 async function onPage(tab: Tab, path: string, nav: string): Promise<void> {
   await tab.waitFor(
     `location.pathname === ${JSON.stringify(path)} && ` +
       `${q(`#${nav}`)}.getAttribute('aria-current') === 'page' && ` +
-      `!document.documentElement.hasAttribute('data-nav-busy') && ` +
-      `!document.documentElement.classList.contains('nav-fade')`,
+      `!${q('#settings')}.hasAttribute('data-busy') && ` +
+      `!${q('#settings')}.hasAttribute('data-arriving')`,
   )
 }
 
@@ -241,7 +244,7 @@ describe.skipIf(SKIP !== null)('moving between pages in place', () => {
     await browser?.close()
   }, 30_000)
 
-  test('a sidebar link swaps the page and keeps the document', async () => {
+  test("a link in the card's list swaps the area and keeps the document", async () => {
     const served = serveConsole()
     const tab = await browser.tab()
     try {
@@ -262,9 +265,7 @@ describe.skipIf(SKIP !== null)('moving between pages in place', () => {
       expect(documents(served, '/admin/audit')).toBe(0)
       // The settings page's script runs under the hash policy, and what it
       // added to the runtime goes when the page does.
-      await tab.evaluate(
-        `${q('details.nav-fold')}.open = true; ${q('#nav-settings')}.click()`,
-      )
+      await tab.evaluate(`${q('#nav-settings')}.click()`)
       await onPage(tab, '/admin/settings', 'nav-settings')
       expect(
         await tab.evaluate<string>('typeof window.qianmoConsole.onSetting'),
@@ -289,9 +290,7 @@ describe.skipIf(SKIP !== null)('moving between pages in place', () => {
       await openConsole(tab, served, '/admin/nodes')
       await tab.evaluate(`${q('#nav-audit')}.click()`)
       await onPage(tab, '/admin/audit', 'nav-audit')
-      await tab.evaluate(
-        `${q('details.nav-fold')}.open = true; ${q('#nav-settings')}.click()`,
-      )
+      await tab.evaluate(`${q('#nav-settings')}.click()`)
       await onPage(tab, '/admin/settings', 'nav-settings')
       await tab.evaluate('history.back()')
       await onPage(tab, '/admin/audit', 'nav-audit')
@@ -319,9 +318,7 @@ describe.skipIf(SKIP !== null)('moving between pages in place', () => {
     try {
       await openConsole(tab, served, '/admin/nodes')
       const first = await listeners(tab)
-      await tab.evaluate(
-        `${q('details.nav-fold')}.open = true; ${q('#nav-settings')}.click()`,
-      )
+      await tab.evaluate(`${q('#nav-settings')}.click()`)
       await onPage(tab, '/admin/settings', 'nav-settings')
       const atSettings = await listeners(tab)
       await tab.evaluate(`${q('#nav-nodes')}.click()`)
@@ -359,7 +356,7 @@ describe.skipIf(SKIP !== null)('moving between pages in place', () => {
       await openConsole(tab, served, '/admin/nodes')
       const asked = () => served.wrapper.seen.filter(one => one.partial).length
 
-      // A pointer crossing the side panel: every item under it, none asked.
+      // A pointer crossing the card's list: every item in it, none asked.
       const items = await tab.evaluate<{ x: number; y: number }[]>(
         `[...document.querySelectorAll('.nav-item')].filter(a => a.getClientRects().length > 0)` +
           `.map(a => { const r = a.getBoundingClientRect(); ` +
@@ -416,7 +413,7 @@ describe.skipIf(SKIP !== null)('moving between pages in place', () => {
       ).toBe('节点')
       expect(
         await tab.evaluate<boolean>(
-          `document.documentElement.hasAttribute('data-nav-busy')`,
+          `${q('#settings')}.hasAttribute('data-busy')`,
         ),
       ).toBe(false)
       served.wrapper.partialStatus = 0
@@ -476,7 +473,7 @@ describe.skipIf(SKIP !== null)('moving between pages in place', () => {
     }
   }, 60_000)
 
-  test('leaving for the front marks the item and dims the page at once', async () => {
+  test('a link out of /admin in the card closes the card first, then is followed', async () => {
     const served = serveConsole()
     const tab = await browser.tab()
     try {
@@ -484,14 +481,24 @@ describe.skipIf(SKIP !== null)('moving between pages in place', () => {
       served.wrapper.delay.set('/', 1_500)
       // Read in the same task as the click: the protocol's next command
       // already waits for the next document.
-      const at = await tab.evaluate<{ busy: boolean; current: string | null }>(
-        `(() => { ${q('#nav-chat')}.click(); ` +
-          `return { busy: document.documentElement.hasAttribute('data-nav-busy'), ` +
-          `current: ${q('#nav-chat')}.getAttribute('aria-current') }; })()`,
+      const at = await tab.evaluate<{ open: boolean; prevented: boolean }>(
+        `(() => {
+          ${q('#main')}.insertAdjacentHTML('afterbegin', '<a id="probe-front" href="/?agent=qianmo%3A%2F%2Ftokyo-1%2Fplanner">planner</a>');
+          const link = ${q('#probe-front')};
+          let prevented = null;
+          window.addEventListener('click', e => { prevented = e.defaultPrevented; });
+          link.click();
+          return { open: ${q('#settings')}.open, prevented };
+        })()`,
       )
-      expect(at).toEqual({ busy: true, current: 'page' })
-      await tab.waitFor(`document.getElementById('fx') !== null`, 10_000)
-      expect(await tab.evaluate<string>('location.pathname')).toBe('/')
+      expect(at).toEqual({ open: false, prevented: false })
+      await tab.waitFor(
+        `document.getElementById('fx') !== null && location.pathname === '/' && typeof window.__mark === 'undefined'`,
+        10_000,
+      )
+      expect(await tab.evaluate<string>('location.search')).toBe(
+        '?agent=qianmo%3A%2F%2Ftokyo-1%2Fplanner',
+      )
     } finally {
       await tab.close()
       served.stop()
@@ -554,6 +561,11 @@ interface Layout {
   readonly rows: number
   readonly labels: number
   readonly theme: string
+  readonly colors: {
+    readonly dark: boolean
+    readonly page: string
+    readonly sidebar: string
+  }
 }
 
 describe.skipIf(SKIP !== null)('the first frame (§3.5)', () => {
@@ -567,37 +579,47 @@ describe.skipIf(SKIP !== null)('the first frame (§3.5)', () => {
     await browser?.close()
   }, 30_000)
 
-  test('a management page reports its side panel once per change, and a shell without the command is no error', async () => {
+  test('under the card the face is what is reported, once per change, and a shell without the command is no error', async () => {
     const served = serveConsole()
     const tab = await browser.tab()
     try {
       await tab.send('Page.addScriptToEvaluateOnNewDocument', {
         source: SHELL_WITHOUT_COMMAND,
       })
+      // An area's address: the card is up over the Work face (no app
+      // cookie here, so the browser's face, 智能体).
       await openConsole(tab, served, '/admin/nodes')
       await tab.waitFor('window.__layouts.length === 1')
       const first = await tab.evaluate<Layout>('window.__layouts[0]')
-      expect(first.page).toBe('admin')
+      expect(first.page).toBe('agents')
       expect(first.side).toBe('open')
       expect(first.sideWidth).toBeGreaterThan(200)
-      expect(first.rows).toBeGreaterThan(3)
-      expect(first.labels).toBeGreaterThanOrEqual(1)
+      expect(first.sideWidth).toBeLessThanOrEqual(1000)
+      expect(first.rows).toBeGreaterThanOrEqual(1)
       expect(first.theme).toBe('system')
-      // A move that changes nothing on the side reports nothing.
+      // The face's colours as #rrggbb, light here.
+      expect(first.colors.dark).toBe(false)
+      expect(first.colors.page).toMatch(/^#[0-9a-f]{6}$/)
+      expect(first.colors.sidebar).toMatch(/^#[0-9a-f]{6}$/)
+      expect(first.colors.page).not.toBe('#000000')
+      // A move in the card, and closing it, change nothing on the side.
       await tab.evaluate(`${q('#nav-audit')}.click()`)
       await onPage(tab, '/admin/audit', 'nav-audit')
+      await tab.evaluate(`${q('.set-close')}.click()`)
+      await tab.waitFor(`!${q('#settings')}.open && location.pathname === '/'`)
       await Bun.sleep(600)
       expect(await tab.evaluate<number>('window.__layouts.length')).toBe(1)
-      // Folding 管理 away (it is open: these pages live in it) shows fewer
-      // rows: reported.
-      await tab.evaluate(`${q('details.nav-fold')}.open = false`)
+      // Dark: the colours change, and are reported.
+      await tab.evaluate(
+        `document.documentElement.setAttribute('data-theme', 'dark'); document.dispatchEvent(new CustomEvent('qianmo:theme'))`,
+      )
       await tab.waitFor('window.__layouts.length === 2')
-      expect(
-        (await tab.evaluate<Layout>('window.__layouts[1]')).rows,
-      ).toBeLessThan(first.rows)
-      // Narrow: the side panel is a drawer.
+      const dark = await tab.evaluate<Layout>('window.__layouts[1]')
+      expect(dark.colors.dark).toBe(true)
+      expect(dark.colors.page).not.toBe(first.colors.page)
+      // Narrow (the front's 700 px): the side panel is a drawer.
       await tab.send('Emulation.setDeviceMetricsOverride', {
-        width: 800,
+        width: 600,
         height: 900,
         deviceScaleFactor: 1,
         mobile: false,

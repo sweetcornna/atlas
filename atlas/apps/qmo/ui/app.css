@@ -39,6 +39,7 @@
   --ui-field: rgba(11, 11, 11, 0.04);
   --ui-line: rgba(11, 11, 11, 0.2);
   --ui-menu: #ffffff;
+  --ui-raised: #ffffff;
   --shadow-sm: 0 0 0 0.5px rgba(11, 11, 11, 0.1), 0 1px 2px rgba(0, 0, 0, 0.03);
   --font-body:
     system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei",
@@ -77,6 +78,7 @@
     --ui-field: rgba(240, 239, 236, 0.05);
     --ui-line: rgba(240, 239, 236, 0.2);
     --ui-menu: #20201f;
+    --ui-raised: #3a3a37;
     --shadow-sm: 0 0 0 0.5px rgba(240, 239, 236, 0.1);
   }
 }
@@ -349,21 +351,70 @@ body.loading .page {
   margin-top: -4px;
 }
 
-/* ---- the skeleton: the front's frame before its page paints ---- */
+/* ---- the skeleton: the front's frame before its page paints ----
+   `skeleton.js` sets the side panel's width (`--skeleton-side-w`), the page
+   and side panel colours (`--color-bg`, `--color-side`) and, on <html>,
+   `data-side` and `data-mode` from the hub page's last layout. */
+:root {
+  --skeleton-side-w: var(--side-w);
+}
 .skeleton {
   display: grid;
-  grid-template-columns: var(--side-w) minmax(0, 1fr);
+  grid-template-columns: var(--skeleton-side-w) minmax(0, 1fr);
   height: 100%;
 }
 .skeleton-side {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
+  overflow: hidden;
   padding: calc(var(--header) + 4px) 10px 12px;
-  background: color-mix(in srgb, var(--color-side) 60%, var(--color-bg));
+  background: var(--color-side);
   box-shadow: inset -0.5px 0 0 var(--color-divider);
 }
+:root[data-side="closed"] .skeleton {
+  grid-template-columns: minmax(0, 1fr);
+}
+:root[data-side="closed"] .skeleton-side {
+  display: none;
+}
+/* Work | Code, the last face lit (Work unless it was Code). */
+.skeleton-modes {
+  display: grid;
+  flex: none;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  height: 32px;
+  margin-bottom: 8px;
+  padding: 2px;
+  border-radius: var(--radius-md);
+  background: var(--ui-hover);
+}
+.skeleton-mode {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-muted);
+}
+:root:not([data-mode="code"]) .skeleton-mode[data-mode="work"],
+:root[data-mode="code"] .skeleton-mode[data-mode="code"] {
+  color: var(--color-text);
+  background: var(--ui-raised);
+  box-shadow: var(--shadow-sm);
+}
+.skeleton-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow: hidden;
+}
 .skeleton-row {
+  flex: none;
   height: 30px;
   border-radius: var(--radius-md);
   background: var(--ui-hover);

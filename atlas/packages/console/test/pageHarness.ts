@@ -237,6 +237,19 @@ export function withoutScripts(html: string): string {
   return html.replace(/<script>[\s\S]*?<\/script>/g, '')
 }
 
+/**
+ * An area's own markup: in a document drawn with the settings card open (an
+ * area's address, `view/shell.ts` `renderSettings`), the card — its list, its
+ * foot and the area — without the Work face under it, whose controls are the
+ * reader's conversation (`view/front.ts`); any other document whole.
+ */
+export function areaOf(html: string): string {
+  const start = html.search(/<dialog class="set" id="settings"[^>]* open[ >]/)
+  if (start < 0) return html
+  const end = html.indexOf('<dialog class="dialog" id="session-expired"', start)
+  return html.slice(start, end < 0 ? undefined : end)
+}
+
 /** Server notes in memory. */
 export class PageNotes implements ServerNotesPort {
   readonly stored = new Map<string, ServerNote>()

@@ -304,6 +304,7 @@ function roots(rows: readonly Row[]): readonly Root[] {
   // The doors and the heads `http.ts` keeps for itself.
   for (const prefix of [
     ['app'],
+    ['code'],
     ['login'],
     ['logout'],
     ['invite'],

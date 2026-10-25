@@ -32,11 +32,13 @@
  * new conversation opens on a greeting with a large composer that picks its
  * agent; the transcript reads as a column of prose — the person's lines in a
  * quiet block at the right, the agent's unboxed under its figure and name.
- * Both faces share the bar, the sidebar's head (brand, the 对话 · 智能体
- * switch, 新对话, 搜索) and its metrics, the session panel, the approvals and
- * the gate, and each is one renderer here with a layout switch, so the two
- * read as one product. Quick entry (`/app/quick`) is a page of its own
- * (`view/frontQuick.ts`).
+ * Both faces share the bar, the sidebar's head (brand, the Work | Code
+ * switch, 新对话, 搜索, the list title with 对话 · 智能体 as two icons) and
+ * its metrics, the session panel, the approvals and the gate, and each is
+ * one renderer here with a layout switch, so the two read as one product.
+ * Code (`/code`, `view/frontCode.ts`) is the second mode, and the settings
+ * card (`view/shell.ts`) opens over any of them. Quick entry (`/app/quick`)
+ * is a page of its own (`view/frontQuick.ts`).
  *
  * ## 主智能体 and 子智能体
  *
@@ -76,7 +78,9 @@ import {
   CONSOLE_CLIENT_JS,
   CONSOLE_CLIENT_JS_ACCOUNTS,
 } from '../assets/client.js'
+import { CODE_JS } from '../assets/codeClient.js'
 import { FRONT_JS } from '../assets/frontClient.js'
+import { NAV_MOUNTED_JS } from '../assets/nav.js'
 import { FRONT_PANEL_JS } from '../assets/frontPanel.js'
 import { FRONT_SHELL_JS } from '../assets/frontShell.js'
 import { FRONT_TOOLS_JS } from '../assets/frontTools.js'
@@ -136,9 +140,22 @@ import { FRONT_TEXT, frontClientText, type FrontText } from './frontText.js'
 import { qianmoMark } from './mark.js'
 import { renderRichText } from './richText.js'
 import { type SourceLinks, sourceFooter } from './source.js'
-import { documentHead, sessionExpired, WORDMARK_CN } from './shell.js'
+import { codeMain, codeSide } from './frontCode.js'
+import {
+  CONSOLE_NAV_JS,
+  documentHead,
+  documentTitle,
+  renderSettings,
+  sessionExpired,
+  type SettingsCard,
+  shellScripts,
+  WORDMARK_CN,
+} from './shell.js'
 
-/** The management side's home, where the panel's admin links point. */
+/**
+ * The management side's home. Its links open the settings card over the
+ * page (`assets/nav.ts`); in a browser without script they load the area.
+ */
 const ADMIN = '/admin'
 
 /**
@@ -545,12 +562,7 @@ function renderAgents(model: FrontSideModel): string {
   }
   if (model.targets.length === 0) {
     return (
-      open +
-      `<p class="fx-none">${escapeHtml(t.noAgents)}</p>` +
-      (model.admin
-        ? `<a class="fx-side-link" href="${ADMIN}/nodes">${icon('server', { small: true })}${escapeHtml(t.manageNodes)}</a>`
-        : '') +
-      `</section>`
+      open + `<p class="fx-none">${escapeHtml(t.noAgents)}</p>` + `</section>`
     )
   }
   const lines = linesOf(model.sessions, model.activeId)
@@ -1325,15 +1337,9 @@ function greeting(model: FrontViewModel): string {
   const t = FRONT_TEXT[model.lang]
   const address = model.agent
   if (address === null) {
-    return (
-      `<div class="fx-welcome fx-greet"><h2 class="fx-greet-title">${escapeHtml(
-        model.registryDown ? t.rosterDown : t.noAgents,
-      )}</h2>` +
-      (model.admin
-        ? `<a class="btn btn-secondary btn-small" href="${ADMIN}/nodes">${escapeHtml(t.manageNodes)}</a>`
-        : '') +
-      `</div>`
-    )
+    return `<div class="fx-welcome fx-greet"><h2 class="fx-greet-title">${escapeHtml(
+      model.registryDown ? t.rosterDown : t.noAgents,
+    )}</h2></div>`
   }
   const target = model.target
   const names = target ?? namesOf(address)
@@ -1374,15 +1380,9 @@ function welcome(model: FrontViewModel): string {
   const t = FRONT_TEXT[model.lang]
   const address = model.agent
   if (address === null) {
-    return (
-      `<div class="fx-welcome"><h2 class="fx-welcome-title">${escapeHtml(
-        model.registryDown ? t.rosterDown : t.noAgents,
-      )}</h2>` +
-      (model.admin
-        ? `<a class="btn btn-secondary btn-small" href="${ADMIN}/nodes">${escapeHtml(t.manageNodes)}</a>`
-        : '') +
-      `</div>`
-    )
+    return `<div class="fx-welcome"><h2 class="fx-welcome-title">${escapeHtml(
+      model.registryDown ? t.rosterDown : t.noAgents,
+    )}</h2></div>`
   }
   const target = model.target
   const names = target ?? namesOf(address)
@@ -1659,6 +1659,24 @@ export interface FrontDocumentModel {
   readonly layout?: FrontLayout
   /** `/app`: the agent a new conversation goes to, for the composer's picker. */
   readonly picked?: string | null
+  /**
+   * The settings card (`view/shell.ts`): drawn closed on every front a reader
+   * who may see the management side gets, open on an area's address.
+   */
+  readonly settings?: SettingsCard
+  /**
+   * A Work face with no conversation in it, and the one line that says why:
+   * no chat channel here, or an identity that may not hold one. The side
+   * list and the page say it; there is no composer.
+   */
+  readonly chatless?: string
+  /**
+   * The Code face (`/code`) instead of a Work face: `desktop` is the desktop
+   * app's cookie, which draws the local agents' panel from the first paint.
+   */
+  readonly code?: { readonly desktop: boolean }
+  /** Where Work goes from Code: `/app` in the desktop app, `/` in a browser. */
+  readonly workHome?: string
 }
 
 function composer(
@@ -1749,17 +1767,25 @@ function langField(lang: Lang, t: FrontText): string {
   )
 }
 
+/**
+ * The foot of the side list: 我 and the role, the slider that opens the
+ * settings card, and the account menu behind ⋯ (外观, 主题色, 语言, 设置,
+ * 退出). The two ways into the card are links to `/admin`, which the card's
+ * runtime takes (`data-settings`); a browser without script loads the area.
+ */
 function sideFoot(model: FrontDocumentModel): string {
   const t = FRONT_TEXT[model.lang]
   const me = avatarSvg(model.faces.self, { size: 28 })
   const role = model.viewer?.roleText ?? roleText(model.role, t)
+  const settings = model.settings !== undefined
   return (
     `<div class="fx-side-foot">` +
     `<span class="fx-me">${me}<span class="fx-me-text"><b>${escapeHtml(t.me)}</b><span>${escapeHtml(
       role,
     )}</span></span></span>` +
-    (model.admin
-      ? `<a class="fx-icon-btn" href="${ADMIN}" aria-label="${attr(t.adminConsole)}">${icon('settings', { small: true })}</a>`
+    (settings
+      ? `<a class="fx-icon-btn" href="${ADMIN}" data-settings aria-label="${attr(t.settings)}" title="${attr(t.settings)}">` +
+        `${icon('settings', { small: true })}</a>`
       : '') +
     `<details class="fx-more fx-me-menu">` +
     `<summary class="fx-icon-btn" aria-label="${attr(t.accountMenu)}">${icon('ellipsis', { small: true })}</summary>` +
@@ -1773,8 +1799,8 @@ function sideFoot(model: FrontDocumentModel): string {
     `<option value="light">${escapeHtml(t.themeLight)}</option><option value="dark">${escapeHtml(t.themeDark)}</option></select></label>` +
     accentField(t) +
     langField(model.lang, t) +
-    (model.admin
-      ? `<a class="fx-menu-item" role="menuitem" href="${ADMIN}">${icon('layout-dashboard', { small: true })}${escapeHtml(t.adminConsole)}</a>`
+    (settings
+      ? `<a class="fx-menu-item" role="menuitem" href="${ADMIN}" data-settings>${icon('settings', { small: true })}${escapeHtml(t.settings)}</a>`
       : '') +
     // In the desktop app this form is the device's sign-out instead
     // (`assets/frontShell.ts`, `qmo_sign_out`).
@@ -1785,20 +1811,44 @@ function sideFoot(model: FrontDocumentModel): string {
 }
 
 /**
- * 对话 · 智能体: the same two links at the same place on both faces, so
- * switching reads as changing tabs. The page carries the open conversation
- * across (`assets/frontClient.ts`).
+ * Work | Code: the two modes, one switch the width of the side list, under
+ * the brand (P37.13, `qmo-local.md` §3.6). Work is the conversations — the
+ * face this document is, or from Code the desktop app's `/app` (`/` in a
+ * browser); Code is `/code`. The current mode is not a link anywhere else.
  */
-function faceSwitch(layout: FrontLayout, t: FrontText): string {
-  const item = (to: FrontLayout, name: string, mark: string): string =>
-    `<a class="fx-mode-item" href="${FRONT_HOME[to]}" data-mode="${to}"` +
-    `${to === layout ? ' aria-current="page"' : ''}>${icon(mark, { small: true })}` +
-    `<span>${escapeHtml(name)}</span></a>`
+function modeSwitch(
+  current: 'work' | 'code',
+  work: string,
+  t: FrontText,
+): string {
+  const item = (mode: 'work' | 'code', href: string, name: string): string =>
+    `<a class="fx-switch-item" href="${attr(href)}" data-to="${mode}"` +
+    `${mode === current ? ' aria-current="page"' : ''}>${escapeHtml(name)}</a>`
   return (
+    `<nav class="fx-switch" aria-label="${attr(t.modes)}">` +
+    item('work', work, t.work) +
+    item('code', '/code', t.code) +
+    `</nav>`
+  )
+}
+
+/**
+ * Over Work's list: what it lists, and the two lists as two small icons —
+ * 对话 (`/app`, the conversations by day) and 智能体 (`/`, the agents). They
+ * behave as the old 对话 · 智能体 switch did: the page carries the open
+ * conversation across (`assets/frontClient.ts`, `.fx-mode-item`).
+ */
+function listHead(layout: FrontLayout, t: FrontText): string {
+  const item = (to: FrontLayout, name: string, mark: string): string =>
+    `<a class="fx-mode-item" href="${FRONT_HOME[to]}" data-mode="${to}" aria-label="${attr(name)}" title="${attr(name)}"` +
+    `${to === layout ? ' aria-current="page"' : ''}>${icon(mark, { small: true })}</a>`
+  return (
+    `<div class="fx-list-head">` +
+    `<span class="fx-list-title">${escapeHtml(layout === 'chat' ? t.faceChat : t.faceAgents)}</span>` +
     `<nav class="fx-mode" aria-label="${attr(t.faces)}">` +
     item('chat', t.faceChat, 'messages-square') +
     item('agents', t.faceAgents, 'bot') +
-    `</nav>`
+    `</nav></div>`
   )
 }
 
@@ -1817,20 +1867,29 @@ function keyCaps(keys: string): string {
 }
 
 /**
- * The side's head, the same on both faces: the brand and the collapse
+ * The side's head, the same on every face: the brand and the collapse
  * button (the window's drag strip in the desktop app, its traffic lights
- * at the left on macOS), the switch, 新对话 and 搜索. 新对话 on `/` is a new
- * conversation with the agent in focus; on `/app`, with the agent the picker
- * holds.
+ * at the left on macOS), then Work | Code.
  */
-function sideHead(layout: FrontLayout, t: FrontText): string {
+function sideHead(
+  home: string,
+  mode: 'work' | 'code',
+  work: string,
+  t: FrontText,
+): string {
   return (
     `<div class="fx-side-top" data-tauri-drag-region>` +
-    `<a class="fx-brand" href="${FRONT_HOME[layout]}">${qianmoMark(22)}` +
+    `<a class="fx-brand" href="${attr(home)}">${qianmoMark(22)}` +
     `<b class="fx-brand-name">${escapeHtml(WORDMARK_CN)}</b></a>` +
     `<button type="button" class="fx-icon-btn" data-action="fx-side" aria-label="${attr(t.collapseSide)}" aria-controls="fx-side">` +
     `${icon('panel-left', { small: true })}</button></div>` +
-    faceSwitch(layout, t) +
+    modeSwitch(mode, work, t)
+  )
+}
+
+/** Work's rows under the switch: 新对话 and 搜索. */
+function workRows(t: FrontText): string {
+  return (
     `<div class="fx-side-rows">` +
     `<button type="button" class="fx-row fx-new" data-action="fx-new">${icon('square-pen', { small: true })}` +
     `<span class="fx-row-word">${escapeHtml(t.newChat)}</span>` +
@@ -1856,7 +1915,7 @@ function keyRow(keys: string, what: string, only = ''): string {
  * stays ⌘⇧O. The quick-entry row is filled in by the desktop app
  * (`qmo_shell_info`).
  */
-function keyboardHelp(t: FrontText): string {
+function keyboardHelp(t: FrontText, settings: boolean): string {
   const k = t.keys
   return (
     `<dialog class="dialog fx-keys" id="keyboard-help" aria-labelledby="keyboard-help-title">` +
@@ -1869,6 +1928,7 @@ function keyboardHelp(t: FrontText): string {
     keyRow('Mod K', k.search) +
     keyRow('Mod Shift S', k.side) +
     keyRow('Mod .', k.panel) +
+    (settings ? keyRow('Mod ,', k.settings) : '') +
     keyRow('Esc', k.close) +
     keyRow('?', k.help) +
     `<div class="fx-key" id="fx-key-quick" hidden><dt>${escapeHtml(k.quick)}</dt>` +
@@ -1878,100 +1938,190 @@ function keyboardHelp(t: FrontText): string {
   )
 }
 
-/** The whole front document, either face. */
+/**
+ * A Work face with no conversation in it: the side list and the page each
+ * say the one line why (`FrontDocumentModel.chatless`). Drawn for a reader
+ * who may see the management side but not hold a conversation here, under
+ * the settings card.
+ */
+export function chatlessParts(
+  layout: FrontLayout,
+  line: string,
+): { readonly side: FrontSideParts; readonly view: FrontViewParts } {
+  const none = `<p class="fx-none">${escapeHtml(line)}</p>`
+  return {
+    side: {
+      agents:
+        layout === 'chat'
+          ? ''
+          : `<section class="fx-agents" id="fx-agents">${none}</section>`,
+      history: '',
+      stack: '',
+      recents:
+        layout === 'chat'
+          ? `<section class="fx-recents" id="fx-recents">${none}</section>`
+          : '',
+      roster: '',
+    },
+    view: {
+      head: '',
+      thread:
+        `<div class="fx-thread" id="fx-thread" data-target="" data-open="0" data-welcome="1">` +
+        `<div class="fx-welcome"><h2 class="fx-welcome-title">${escapeHtml(line)}</h2></div></div>`,
+    },
+  }
+}
+
+/**
+ * What the document's policy allows beyond the one script it carries: the
+ * open area's page script and those of the areas its reader can move to in
+ * the card (`view/shell.ts`, `shellScripts`). Hand it to `html()` with the
+ * document.
+ */
+export function frontAllow(model: FrontDocumentModel): readonly string[] {
+  return model.settings === undefined ? [] : shellScripts(model.settings.model)
+}
+
+/** The whole front document: a Work face (`/`, `/app`) or Code (`/code`). */
 export function renderFrontDocument(model: FrontDocumentModel): string {
   const layout = model.layout ?? 'agents'
-  const chat = layout === 'chat'
+  const code = model.code !== undefined
+  const chat = !code && layout === 'chat'
+  const chatless = code || model.chatless !== undefined
   const runtime =
     model.viewer === undefined ? CONSOLE_CLIENT_JS : CONSOLE_CLIENT_JS_ACCOUNTS
   // 部署到新服务器 rides only on a console that has it: everyone else's page
   // stays byte for byte what it was.
-  const replicate = model.replicate ?? 'off'
+  const replicate = chatless ? 'off' : (model.replicate ?? 'off')
+  const approvals = chatless ? undefined : model.approvals
+  const card = model.settings
+  const open = card?.open === true ? card.model : undefined
+  // The card's runtime after the front's own, then the open area's script
+  // inside its recording scope (`assets/nav.ts`).
   const script =
     runtime +
     FRONT_JS +
-    FRONT_TOOLS_JS +
-    FRONT_PANEL_JS +
+    (chatless ? '' : FRONT_TOOLS_JS + FRONT_PANEL_JS) +
     FRONT_SHELL_JS +
-    AVATAR_PAGE_JS +
+    // The figure editor's script goes with the editor (below).
+    (model.faces.editable ? AVATAR_PAGE_JS : '') +
+    (code ? CODE_JS : '') +
     (replicate === 'off' ? '' : FRONT_REPLICATE_JS) +
-    (model.approvals === undefined ? '' : FRONT_APPROVAL_JS)
-  const t = FRONT_TEXT[model.lang]
-  const name = chat ? t.faceChat : t.chat
-  return (
-    documentHead(
-      `${WORDMARK_CN} · ${name} · ${model.label}`,
-      FRONT_CSS +
-        FRONT_TOOLS_CSS +
-        FRONT_PANEL_CSS +
-        AVATAR_CSS +
-        (replicate === 'off' ? '' : FRONT_REPLICATE_CSS) +
-        (model.approvals === undefined ? '' : FRONT_APPROVAL_CSS),
-      [script],
-    ).replace('<html lang="zh-CN">', `<html lang="${attr(model.lang)}">`) +
-    `<body class="fx-body">\n` +
-    `<a class="skip-link" href="#fx-text">${escapeHtml(t.skipToBox)}</a>\n` +
-    `<h1 class="sr-only">${escapeHtml(`${WORDMARK_CN} · ${name}`)}</h1>` +
-    `<div class="fx" id="fx" data-layout="${layout}" data-side="open" data-text="${attr(frontClientText(model.lang))}">` +
-    `<aside class="fx-side" id="fx-side" aria-label="${attr(chat ? t.recents : t.agents)}">` +
-    sideHead(layout, t) +
-    `<div class="fx-side-scroll" id="fx-side-scroll">${chat ? model.side.recents : model.side.agents}</div>` +
-    sideFoot(model) +
-    (model.source === undefined
+    (approvals === undefined ? '' : FRONT_APPROVAL_JS) +
+    (card === undefined
       ? ''
-      : sourceFooter(model.source, 'foot fx-source')) +
-    `</aside>` +
-    `<button type="button" class="fx-scrim" data-action="fx-side-close" aria-label="${attr(t.closeSide)}" tabindex="-1"></button>` +
-    `<main class="fx-main${model.welcome ? ' is-welcome' : ''}" id="fx-main">` +
+      : CONSOLE_NAV_JS + (open?.pageScript ?? '') + NAV_MOUNTED_JS)
+  const t = FRONT_TEXT[model.lang]
+  const name = code ? t.code : chat ? t.faceChat : t.chat
+  const workTitle = `${WORDMARK_CN} · ${name} · ${model.label}`
+  const home = code ? '/code' : FRONT_HOME[layout]
+  const work = code ? (model.workHome ?? FRONT_HOME.agents) : home
+  const sideList = code
+    ? codeSide(t)
+    : listHead(layout, t) +
+      `<div class="fx-side-scroll" id="fx-side-scroll">${chat ? model.side.recents : model.side.agents}</div>`
+  const top =
     `<header class="fx-top" data-tauri-drag-region>` +
     `<button type="button" class="fx-icon-btn fx-side-open" data-action="fx-side" aria-label="${attr(t.expandSide)}" aria-controls="fx-side">` +
     `${icon('panel-left', { small: true })}</button>` +
-    (chat
+    (chat && !chatless
       ? `<button type="button" class="fx-icon-btn fx-top-new" data-action="fx-new" aria-label="${attr(t.newChat)}">` +
         `${icon('square-pen', { small: true })}</button>`
       : '') +
-    `<div class="fx-head-mount" data-tauri-drag-region>${model.view.head}</div>` +
+    `<div class="fx-head-mount" data-tauri-drag-region>${code ? '' : model.view.head}</div>` +
     `<div class="fx-top-tail"><span class="fx-live" id="fx-live"></span>` +
-    (chat
+    (chat || chatless
       ? ''
       : `<details class="fx-more fx-hist-menu">` +
         `<summary class="fx-icon-btn" aria-label="${attr(t.chatHistory)}">${icon('history', { small: true })}</summary>` +
         `<div class="fx-menu fx-hist-pop">${model.side.history}</div></details>` +
         `<button type="button" class="fx-icon-btn" data-action="fx-new" aria-label="${attr(t.newChat)}">` +
         `${icon('square-pen', { small: true })}</button>`) +
-    frontPanelToggle(t) +
+    (chatless ? '' : frontPanelToggle(t)) +
     `</div>` +
-    `</header>` +
+    `</header>`
+  const page = code
+    ? codeMain(t, model.code?.desktop === true)
+    : `<div class="fx-scroll" id="fx-scroll"><div class="fx-column">${model.view.thread}` +
+      (approvals === undefined
+        ? ''
+        : frontApprovalCards(model.lang, approvals)) +
+      `</div></div>` +
+      (chatless
+        ? ''
+        : `<div class="fx-dock"><div class="fx-column">` +
+          `<button type="button" class="fx-jump" id="fx-jump" data-action="fx-jump" aria-label="${attr(t.jumpToLatest)}" hidden>` +
+          `${icon('arrow-down', { small: true })}</button>` +
+          model.side.stack +
+          (replicate === 'off' ? '' : frontReplicateCard(replicate)) +
+          (approvals === undefined ? '' : frontApprovalBar(model.lang)) +
+          composer(
+            model.composerEnabled,
+            model.admin,
+            t,
+            chat ? agentPicker(model, t) : '',
+          ) +
+          `</div></div>`)
+  return (
+    documentHead(
+      open === undefined ? workTitle : documentTitle(open),
+      open?.pageCss ?? '',
+      [script, ...frontAllow(model)],
+      {
+        shared:
+          FRONT_CSS +
+          (chatless ? '' : FRONT_TOOLS_CSS + FRONT_PANEL_CSS) +
+          AVATAR_CSS +
+          (replicate === 'off' ? '' : FRONT_REPLICATE_CSS) +
+          (approvals === undefined ? '' : FRONT_APPROVAL_CSS),
+      },
+    ).replace('<html lang="zh-CN">', `<html lang="${attr(model.lang)}">`) +
+    `<body class="fx-body">\n` +
+    (code || chatless
+      ? ''
+      : `<a class="skip-link" href="#fx-text">${escapeHtml(t.skipToBox)}</a>\n`) +
+    `<h1 class="sr-only">${escapeHtml(`${WORDMARK_CN} · ${name}`)}</h1>` +
+    `<div class="fx" id="fx" data-layout="${code ? 'code' : layout}"${chatless ? ' data-chatless' : ''} data-side="open" data-text="${attr(frontClientText(model.lang))}">` +
+    `<aside class="fx-side" id="fx-side" aria-label="${attr(code ? t.codeSessions : chat ? t.recents : t.agents)}">` +
+    sideHead(home, code ? 'code' : 'work', work, t) +
+    (code || chatless ? '' : workRows(t)) +
+    sideList +
+    sideFoot(model) +
+    (model.source === undefined
+      ? ''
+      : sourceFooter(model.source, 'foot fx-source')) +
+    `</aside>` +
+    `<button type="button" class="fx-scrim" data-action="fx-side-close" aria-label="${attr(t.closeSide)}" tabindex="-1"></button>` +
+    `<main class="fx-main${model.welcome || chatless ? ' is-welcome' : ''}${code ? ' fx-code' : ''}" id="fx-main">` +
+    top +
     `<p class="fx-offline" id="fx-offline" role="status" hidden>${escapeHtml(t.offline)}</p>` +
     `<div class="fx-progress" aria-hidden="true"></div>` +
     viewerNotice(model.viewer) +
-    `<div class="fx-scroll" id="fx-scroll"><div class="fx-column">${model.view.thread}` +
-    (model.approvals === undefined
-      ? ''
-      : frontApprovalCards(model.lang, model.approvals)) +
-    `</div></div>` +
-    `<div class="fx-dock"><div class="fx-column">` +
-    `<button type="button" class="fx-jump" id="fx-jump" data-action="fx-jump" aria-label="${attr(t.jumpToLatest)}" hidden>` +
-    `${icon('arrow-down', { small: true })}</button>` +
-    model.side.stack +
-    (replicate === 'off' ? '' : frontReplicateCard(replicate)) +
-    (model.approvals === undefined ? '' : frontApprovalBar(model.lang)) +
-    composer(
-      model.composerEnabled,
-      model.admin,
-      t,
-      chat ? agentPicker(model, t) : '',
-    ) +
-    `</div></div>` +
+    page +
     `</main>` +
-    frontPanelFrame(t) +
+    (chatless ? '' : frontPanelFrame(t)) +
     `</div>\n` +
+    (card === undefined
+      ? ''
+      : renderSettings(
+          card,
+          {
+            settings: t.settings,
+            search: t.settingsSearch,
+            close: t.closeSettings,
+            noMatch: t.noMatch,
+            desktop: t.desktopApp,
+            skip: t.skipToArea,
+          },
+          workTitle,
+        )) +
     sessionExpired(model.relogin, model.lang) +
     `<div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>\n` +
     `<p id="reply-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>` +
-    keyboardHelp(t) +
-    permissionConfirm(t) +
-    avatarDialog(model.lang) +
+    keyboardHelp(t, card !== undefined) +
+    (chatless ? '' : permissionConfirm(t)) +
+    // The figure editor, for a reader who may dress a figure (`routes/avatars.ts`).
+    (model.faces.editable ? avatarDialog(model.lang) : '') +
     `<script>${script}</script>\n` +
     `</body>\n</html>\n`
   )

@@ -4,14 +4,17 @@
 //! The shell's own preferences (qmo-app.md §6, the local settings page): the
 //! quick entry shortcut, whether closing the window keeps the app running,
 //! the page zoom, and the last hub and device name so the next start can paint
-//! the right window before `qmo` answers. No credential is kept here; those
-//! stay with `qmo`. Launching at login is the operating system's own record,
-//! kept by the autostart plugin.
+//! the right window before `qmo` answers; and the hub page's last layout and
+//! colours, so that window is drawn in the page's shapes (qmo-local.md §3.5).
+//! No credential is kept here; those stay with `qmo`. Launching at login is
+//! the operating system's own record, kept by the autostart plugin.
 
 use std::{fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
 use tauri_plugin_global_shortcut::{Modifiers, Shortcut};
+
+use crate::layout::{lenient, lenient_or_default, BootLayout, PageColours};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -21,6 +24,15 @@ pub struct Settings {
     pub zoom: f64,
     pub hub: Option<String>,
     pub device_name: Option<String>,
+    /// The side panel as the hub's page last reported it (`qmo_boot_layout`).
+    /// Read on its own: a layout that does not parse is no layout, and takes
+    /// nothing else in the file with it.
+    #[serde(deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub layout: Option<BootLayout>,
+    /// The page and side panel colours it last reported, light and dark kept
+    /// apart; each read on its own as well.
+    #[serde(deserialize_with = "lenient_or_default")]
+    pub colors: PageColours,
 }
 
 /// ⌥⇧Space on macOS, Ctrl+Alt+Space elsewhere (qmo-app.md §6). Plain ⌥Space
@@ -42,6 +54,8 @@ impl Default for Settings {
             zoom: 1.0,
             hub: None,
             device_name: None,
+            layout: None,
+            colors: PageColours::default(),
         }
     }
 }
@@ -119,6 +133,8 @@ impl Settings {
         {
             settings.hub = None;
         }
+        settings.layout = settings.layout.filter(BootLayout::in_range);
+        settings.colors = settings.colors.sanitized();
         settings
     }
 
@@ -139,6 +155,7 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::{Page, Palette, Side, ThemeChoice};
 
     #[test]
     fn shortcuts_are_kept_in_one_spelling() {
@@ -217,10 +234,105 @@ mod tests {
             zoom: 1.25,
             hub: Some("https://hub.example.com".into()),
             device_name: Some("pc".into()),
+            layout: Some(BootLayout {
+                page: Page::Code,
+                side: Side::Closed,
+                side_width: 300,
+                rows: 9,
+                labels: 2,
+                theme: ThemeChoice::Dark,
+            }),
+            colors: PageColours {
+                light: Palette::new("#f9f9f7", "#fcfcfb"),
+                dark: Palette::new("#0b0b0b", "#090909"),
+            },
         };
         mine.save(&path).unwrap();
         assert_eq!(Settings::load(&path), mine);
         assert!(!dir.join("settings.json.tmp").exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn load_text(name: &str, text: &str) -> Settings {
+        let dir = std::env::temp_dir().join(format!("qmo-settings-{name}-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, text).unwrap();
+        let settings = Settings::load(&path);
+        fs::remove_dir_all(&dir).unwrap();
+        settings
+    }
+
+    #[test]
+    fn a_layout_saved_before_reads_admin_as_chat() {
+        let settings = load_text(
+            "admin",
+            r#"{"hub":"https://hub.example.com","layout":{"page":"admin","side":"open","sideWidth":272,"rows":14,"labels":3,"theme":"system"}}"#,
+        );
+        let layout = settings.layout.unwrap();
+        assert_eq!(layout.page, Page::Chat);
+        assert_eq!(
+            (layout.side_width, layout.rows, layout.labels),
+            (272, 14, 3)
+        );
+        assert_eq!(settings.hub.as_deref(), Some("https://hub.example.com"));
+    }
+
+    #[test]
+    fn a_broken_layout_or_colour_is_dropped_alone() {
+        let text = r##"{
+            "quickShortcut": "Control+Shift+Space",
+            "hub": "https://hub.example.com",
+            "deviceName": "pc",
+            "layout": {"page": "chat", "side": "open", "sideWidth": 288, "rows": 61, "labels": 3, "theme": "system"},
+            "colors": {"light": {"page": "#fff", "sidebar": "#fcfcfb"}, "dark": {"page": "#0B0B0B", "sidebar": "#090909"}}
+        }"##;
+        let settings = load_text("range", text);
+        // Rows over 60: no layout; a three-digit colour: no light palette.
+        assert_eq!(settings.layout, None);
+        assert_eq!(settings.colors.light, None);
+        // An upper-case colour written by hand reads in lower case.
+        assert_eq!(settings.colors.dark, Palette::new("#0b0b0b", "#090909"));
+        // And the rest of the file is as it was.
+        assert_eq!(settings.quick_shortcut, "Control+Shift+Space");
+        assert_eq!(settings.hub.as_deref(), Some("https://hub.example.com"));
+        assert_eq!(settings.device_name.as_deref(), Some("pc"));
+
+        for broken in [
+            r#"{"hub":"https://hub.example.com","layout":{"page":"settings","side":"open","sideWidth":288,"rows":1,"labels":0,"theme":"system"}}"#,
+            r#"{"hub":"https://hub.example.com","layout":{"page":"chat","side":"open","sideWidth":-5,"rows":1,"labels":0,"theme":"system"}}"#,
+            r#"{"hub":"https://hub.example.com","layout":"chat"}"#,
+            r#"{"hub":"https://hub.example.com","layout":null}"#,
+            r#"{"hub":"https://hub.example.com","layout":{"page":"chat"}}"#,
+        ] {
+            let settings = load_text("broken", broken);
+            assert_eq!(settings.layout, None, "{broken}");
+            assert_eq!(
+                settings.hub.as_deref(),
+                Some("https://hub.example.com"),
+                "{broken}"
+            );
+        }
+        for broken in [
+            r#"{"hub":"https://hub.example.com","colors":"dark"}"#,
+            r##"{"hub":"https://hub.example.com","colors":{"light":{"page":"red","sidebar":"#ffffff"}}}"##,
+            r##"{"hub":"https://hub.example.com","colors":{"dark":{"page":"#000000"}}}"##,
+            r#"{"hub":"https://hub.example.com","colors":{"light":7,"dark":[]}}"#,
+        ] {
+            let settings = load_text("colours", broken);
+            assert_eq!(settings.colors, PageColours::default(), "{broken}");
+            assert_eq!(
+                settings.hub.as_deref(),
+                Some("https://hub.example.com"),
+                "{broken}"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_reported_writes_nothing_extra() {
+        let text = serde_json::to_value(Settings::default()).unwrap();
+        assert!(text.get("layout").is_none());
+        assert_eq!(text["colors"], serde_json::json!({}));
     }
 }

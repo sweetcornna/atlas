@@ -9,32 +9,31 @@
  * matches it. A head claimed twice is a bug the table refuses at load time
  * rather than a route that silently goes to whichever module came first.
  *
- * This file also turns a page's {@link PageRender} into the whole document:
- * the sidebar (which areas this caller may see, with their counts), the
- * breadcrumb (group, area, then the page's own), the health strip, and the
- * page's own CSS and script. A page module therefore never draws any of the
- * frame, and two page packages never edit the same file to change their own
- * page.
+ * This file also turns a page's {@link PageRender} into what the settings
+ * card shows (`view/shell.ts`): the list (which areas this caller may see,
+ * with their counts), the breadcrumb (group, area, then the page's own), the
+ * health strip, and the page's own CSS and script. A page module therefore
+ * never draws any of the frame, and two page packages never edit the same
+ * file to change their own page.
  *
- * The same model is drawn two ways (P37.13): the whole document, for a
- * browser that navigates, and the page's parts, for the navigation runtime
- * that moves between pages in place (`assets/nav.ts`, `X-Qianmo-Partial`).
- * Who may see what is decided once, before either: the guard, the sidebar's
- * areas and the page itself are the same for both.
+ * The same model is drawn two ways (P37.13): the whole document — the Work
+ * face with the card open on the area (`routes/front.ts`, `renderUnderCard`)
+ * — for a browser that navigates, and the area's parts, for the card's
+ * runtime that moves between areas in place (`assets/nav.ts`,
+ * `X-Qianmo-Partial`). Who may see what is decided once, before either: the
+ * guard, the card's areas and the page itself are the same for both.
  */
 
 import type { ConsoleAgent, ConsoleResult } from '../deps.js'
 import { nodeCount } from '../view/agents.js'
-import type { AvatarSpec } from '../avatar.js'
 import type { Tone } from '../view/bits.js'
 import { escapeHtml } from '../view/escape.js'
 import type { SourceLinks } from '../view/source.js'
 import type { BackgroundTaskStatus } from '../directionPorts.js'
 import {
-  renderShell,
   shellPartial,
-  shellScripts,
   type Crumb,
+  type SettingsCard,
   type ShellHealth,
   type ShellModel,
   type ShellNavGroup,
@@ -43,7 +42,6 @@ import {
 } from '../view/shell.js'
 import { accessRoute } from './access.js'
 import { alertsRoute } from './alerts.js'
-import { facesFor } from './avatars.js'
 import { approvalsRoute } from './approvals.js'
 import { auditRoute } from './audit.js'
 import { billingRoute } from './billing.js'
@@ -64,8 +62,8 @@ import { serversRoute } from './servers.js'
 import { settingsRoute } from './settings.js'
 import { setupPending, setupRoute } from './setup.js'
 import { taskActorOf } from './tasksApi.js'
-import { frontAvailable } from './front.js'
-import { ADMIN_HOME, DEFAULT_LABEL, guardChat, loginHref } from './shared.js'
+import { frontAvailable, renderUnderCard } from './front.js'
+import { ADMIN_HOME, DEFAULT_LABEL, guard, guardChat } from './shared.js'
 import type {
   AreaGroup,
   AreaId,
@@ -79,11 +77,11 @@ import { updatesRoute } from './updates.js'
 import { usageRoute } from './usage.js'
 
 /**
- * Every area, in the order the sidebar draws them: what a person uses every
- * day first (对话 is the conversation front at `/`, the rest live under
- * `/admin`), then the operator's areas under 管理, the ones looked at most
- * often first. The page matcher walks the same order, on the segments after
- * `/admin`.
+ * Every area, in the order the settings card lists them: what a person uses
+ * every day first (对话 is the conversation front at `/`, the Work face under
+ * the card, and not in its list; the rest live under `/admin`), then the
+ * operator's areas, the ones looked at most often first. The page matcher
+ * walks the same order, on the segments after `/admin`.
  */
 export const ROUTES: readonly RouteModule[] = [
   chatRoute,
@@ -138,6 +136,7 @@ export function headIndex(
 export const RESERVED_PAGE_HEADS: readonly string[] = [
   'admin',
   'app',
+  'code',
   'v0',
   'fragments',
   'assets',
@@ -171,6 +170,7 @@ export function pageOf(
   return undefined
 }
 
+/** The breadcrumb's first step for an area of the group, none for the everyday ones. */
 const GROUP_LABELS: Readonly<Record<AreaGroup, string>> = {
   main: '',
   manage: '管理',
@@ -179,9 +179,9 @@ const GROUP_LABELS: Readonly<Record<AreaGroup, string>> = {
 const GROUP_ORDER: readonly AreaGroup[] = ['main', 'manage']
 
 /**
- * Whether this caller sees an area in the sidebar at all.
+ * Whether this caller sees an area in the card at all.
  *
- * Decided by the page's own rules, so the sidebar and the URL cannot
+ * Decided by the page's own rules, so the card and the URL cannot
  * disagree: an area whose page does not exist here (`available`) or whose
  * guard would refuse this caller is not offered. 对话 is the case that matters
  * — a view token must not learn that a conversation channel exists
@@ -267,8 +267,8 @@ async function stateOf(
 
 /**
  * The areas that open a new cluster in their group: a little space above
- * them, no heading and no rule, the way Claude Desktop breaks its settings
- * list. 渠道 starts what the agents reach; 审批 the oversight; 应用连接 the
+ * them, no heading and no rule, the way a desktop app breaks its settings
+ * list (the operator's group starts one of its own, `view/shell.ts`). 渠道 starts what the agents reach; 审批 the oversight; 应用连接 the
  * hub's own connections; 用量 the books and the instance itself.
  */
 const CLUSTER_STARTS: ReadonlySet<AreaId> = new Set<AreaId>([
@@ -279,10 +279,11 @@ const CLUSTER_STARTS: ReadonlySet<AreaId> = new Set<AreaId>([
 ])
 
 /**
- * The sidebar for this caller, with the counts that are honest to show.
+ * The card's list for this caller, with the counts that are honest to show.
+ * 对话 is not in it: it is the main window's Work face, under the card.
  *
- * 初始化配置还有能在页面上做的必需项时（`setupCount` > 0），它挪到主区第一
- * 项并带上「还差 N 步」；做完了回到「管理」里。
+ * 初始化配置还有能在页面上做的必需项时（`setupCount` > 0），它挪到日常一组的
+ * 第一项并带上「还差 N 步」；做完了回到「管理」一组里。
  */
 async function navFor(
   ctx: RouteContext,
@@ -295,11 +296,14 @@ async function navFor(
     module.area.id === 'setup' && promoted ? 'main' : module.area.group
   return Promise.all(
     GROUP_ORDER.map(async group => ({
-      label: GROUP_LABELS[group],
-      ...(group === 'manage' ? { folded: true } : {}),
       items: await Promise.all(
         modules
-          .filter(module => groupOf(module) === group && visibleTo(module, ctx))
+          .filter(
+            module =>
+              module.area.front !== true &&
+              groupOf(module) === group &&
+              visibleTo(module, ctx),
+          )
           .sort(
             (a, b) =>
               Number(promoted && b.area.id === 'setup') -
@@ -335,8 +339,8 @@ async function navFor(
 }
 
 /**
- * The top bar's health strip. The registry is the one dependency every page
- * already read for the sidebar, so it is the one badge that costs nothing and
+ * The title row's health strip. The registry is the one dependency every page
+ * already read for the list, so it is the one badge that costs nothing and
  * is never stale against the page under it.
  */
 function healthOf(
@@ -363,14 +367,8 @@ function crumbsOf(module: RouteModule, render: PageRender): readonly Crumb[] {
   ]
 }
 
-/** The reader's own figure, the one the front draws beside 我. */
-async function selfFace(ctx: RouteContext): Promise<AvatarSpec> {
-  const faces = await facesFor(ctx, [])
-  return faces.spec(faces.self)
-}
-
 /**
- * The public edition's source footer for a page in the shell (AGPL §13,
+ * The public edition's source footer for a page in the card (AGPL §13,
  * `view/source.ts`): there whenever the billing port is, which is exactly
  * the public edition, where a subscriber without a chat channel lands here.
  */
@@ -381,7 +379,7 @@ function shellSource(ctx: RouteContext): { readonly source?: SourceLinks } {
 
 /**
  * The page scripts of the areas this reader can move to in place: the ones
- * the sidebar offers them (`visibleTo`), so a document's policy names no
+ * the card offers them (`visibleTo`), so a document's policy names no
  * script for a page its reader cannot open.
  */
 function navScriptsFor(ctx: RouteContext): readonly string[] {
@@ -393,15 +391,26 @@ function navScriptsFor(ctx: RouteContext): readonly string[] {
   ).map(module => module.page?.script ?? '')
 }
 
-/** A shell document, with the scripts its policy allows beyond its own. */
-interface ShellDocument {
+/** A document, with the scripts its policy allows beyond its own. */
+interface CardDocument {
   readonly body: string
   /** Hand to `html()` with the body (`respond.ts`, `documentHeaders`). */
   readonly allow: readonly string[]
 }
 
-function shellDocument(model: ShellModel): ShellDocument {
-  return { body: renderShell(model), allow: shellScripts(model) }
+/** The card's frame for this caller: the list, and nothing open in it. */
+async function frameModel(ctx: RouteContext): Promise<ShellModel> {
+  const listed = await ctx.roster()
+  return {
+    label: ctx.deps.label ?? DEFAULT_LABEL,
+    nav: await navFor(ctx, listed, ROUTES, await setupPending(ctx)),
+    crumbs: [],
+    title: '',
+    body: '',
+    health: healthOf(listed),
+    ...shellSource(ctx),
+    navScripts: navScriptsFor(ctx),
+  }
 }
 
 async function areaModel(
@@ -409,40 +418,63 @@ async function areaModel(
   module: RouteModule,
   render: PageRender,
 ): Promise<ShellModel> {
-  const listed = await ctx.roster()
+  const frame = await frameModel(ctx)
   return {
-    label: ctx.deps.label ?? DEFAULT_LABEL,
-    role: ctx.access.credential.role,
-    ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
-    self: await selfFace(ctx),
-    nav: await navFor(ctx, listed, ROUTES, await setupPending(ctx)),
+    ...frame,
     active: render.active ?? module.area.id,
     crumbs: crumbsOf(module, render),
     title: render.title,
     ...(render.actions === undefined ? {} : { actions: render.actions }),
     body: render.body,
-    health: healthOf(listed),
-    relogin: loginHref(ctx.url),
     ...(render.poll === true ? { poll: true } : {}),
     ...(module.page?.css === undefined ? {} : { pageCss: module.page.css }),
     ...(module.page?.script === undefined
       ? {}
       : { pageScript: module.page.script }),
-    ...shellSource(ctx),
-    navScripts: navScriptsFor(ctx),
   }
 }
 
-/** One page, drawn in the shell. */
+/** The token box goes into the card only for the two legacy tokens. */
+function card(
+  ctx: RouteContext,
+  model: ShellModel,
+  open: boolean,
+): SettingsCard {
+  return { model, open, tokens: ctx.viewer === undefined }
+}
+
+/**
+ * The card a front document carries, closed (`/`, `/app`, `/code`): for a
+ * reader the management side's guard lets in, else none.
+ */
+export async function settingsCard(
+  ctx: RouteContext,
+): Promise<SettingsCard | undefined> {
+  if (guard(ctx.access.credential, 'view', 'document') !== null)
+    return undefined
+  return card(ctx, await frameModel(ctx), false)
+}
+
+async function underCard(
+  ctx: RouteContext,
+  model: ShellModel,
+  status: number,
+): Promise<CardDocument> {
+  const drawn = await renderUnderCard(ctx, card(ctx, model, true), status)
+  return { body: drawn.html, allow: drawn.allow }
+}
+
+/** One area's address as a document: the Work face, the card open on the area. */
 export async function areaDocument(
   ctx: RouteContext,
   module: RouteModule,
   render: PageRender,
-): Promise<ShellDocument> {
-  return shellDocument(await areaModel(ctx, module, render))
+  status: number,
+): Promise<CardDocument> {
+  return await underCard(ctx, await areaModel(ctx, module, render), status)
 }
 
-/** One page's parts, for a move inside the shell (`assets/nav.ts`). */
+/** One area's parts, for a move inside the card (`assets/nav.ts`). */
 export async function areaPartial(
   ctx: RouteContext,
   module: RouteModule,
@@ -451,29 +483,26 @@ export async function areaPartial(
   return shellPartial(await areaModel(ctx, module, render))
 }
 
-/** One error, as the shell draws it: the nav, the title, one line, the way back. */
+/** One error, in the card: the title, one line, the way back. */
 export async function errorDocument(
   ctx: RouteContext,
   title: string,
   line: string,
-): Promise<ShellDocument> {
-  const listed = await ctx.roster()
-  return shellDocument({
-    label: ctx.deps.label ?? DEFAULT_LABEL,
-    role: ctx.access.credential.role,
-    ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
-    self: await selfFace(ctx),
-    nav: await navFor(ctx, listed, ROUTES, await setupPending(ctx)),
-    crumbs: [{ label: title }],
-    title,
-    body:
-      `<section class="card elev-sm stub" aria-labelledby="page-title">` +
-      `<p class="note">${escapeHtml(line)}</p>` +
-      `<p><a class="jump" href="${ADMIN_HOME}" data-nav>回到总览</a></p>` +
-      `</section>`,
-    health: healthOf(listed),
-    relogin: loginHref(ctx.url),
-    ...shellSource(ctx),
-    navScripts: navScriptsFor(ctx),
-  })
+  status: number,
+): Promise<CardDocument> {
+  const frame = await frameModel(ctx)
+  return await underCard(
+    ctx,
+    {
+      ...frame,
+      crumbs: [{ label: title }],
+      title,
+      body:
+        `<section class="card elev-sm stub" aria-labelledby="page-title">` +
+        `<p class="note">${escapeHtml(line)}</p>` +
+        `<p><a class="jump" href="${ADMIN_HOME}" data-nav>回到总览</a></p>` +
+        `</section>`,
+    },
+    status,
+  )
 }

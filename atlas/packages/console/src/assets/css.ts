@@ -9,7 +9,7 @@
  * There is no web build in this repository — `vite.config.ts` bundles the CLI,
  * and `src/components/**` is Ink, which is terminal output that happens to be
  * written in JSX. Adding a second front-end pipeline to serve one operator page
- * would cost more than the page. So: a constant, inlined by `renderPage`, no
+ * would cost more than the page. So: a constant, inlined in every document, no
  * asset route, no cache-busting, no `<link>`.
  *
  * That is also a security property. The page loads **nothing** from anywhere —
@@ -250,9 +250,7 @@ const SOURCE_CSS = `
   --z-menu: 30;
   --z-toast: 40;
   --z-skip: 50;
-  /* The line across the top while the next page loads (P37.13 nav). */
-  --z-progress: 60;
-  /* The page under it, dimmed while it waits. */
+  /* The area in the settings card, dimmed while the next one loads (P37.13 nav). */
   --opacity-busy: 0.55;
   /* The system's own faces; YaHei and Noto for Chinese where the first
      ones are missing. */
@@ -301,6 +299,15 @@ const SOURCE_CSS = `
   /* Room the brand row and the header keep for the macOS window buttons,
      which the shell draws about 17px in from the window's corner. */
   --shell-lights-x: 80px;
+  /* The settings card (P37.13, qmo-local.md §3.6): at most 1080 by 800,
+     32px clear of the window on every side; its list 220 wide; it grows
+     from 98% as it opens, over a scrim of black at 40% (50% in dark). */
+  --settings-w: 1080px;
+  --settings-h: 800px;
+  --settings-inset: 64px;
+  --settings-side-w: 220px;
+  --settings-from: 0.98;
+  --settings-scrim: rgba(0, 0, 0, 0.4);
 
   /* Motion: four durations and one curve. */
   --motion-fast: 60ms;
@@ -418,6 +425,7 @@ const SOURCE_CSS = `
     --color-seal: #f0644a;
     --color-agent-bubble: rgba(255, 255, 255, 0.065);
     --color-user-block: rgba(255, 255, 255, 0.075);
+    --settings-scrim: rgba(0, 0, 0, 0.5);
   }
 }
 
@@ -502,6 +510,7 @@ const SOURCE_CSS = `
     --color-seal: #f0644a;
     --color-agent-bubble: rgba(255, 255, 255, 0.065);
     --color-user-block: rgba(255, 255, 255, 0.075);
+    --settings-scrim: rgba(0, 0, 0, 0.5);
   color-scheme: dark;
 }
 :root[data-theme="light"] { color-scheme: light; }
@@ -582,139 +591,58 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible,
   outline-offset: 2px;
 }
 
-/* ---- shell: the side panel on the left, the page on the right ---- */
-.shell {
-  display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr);
-  gap: 0; padding: 0; width: 100%;
-  align-items: stretch; min-height: 100vh;
-}
-/* The side panel is the conversation front's: flush with the window's edge,
-   half a step darker than the page, a hairline between them. */
-.side {
-  background: var(--color-side);
-  border-radius: 0;
-  padding: 0 var(--space-2) var(--space-2);
-  display: flex; flex-direction: column; gap: var(--space-3);
-  min-width: 0;
-  /* Sticky and exactly one viewport tall. Stretching it to the document — the
-     way the design mock shows it — works at the mock's height and leaves the
-     nav two screens above the operator on a real ledger. Fixing the height to
-     the viewport keeps the left column a full panel at every scroll position
-     and keeps the nav where it can be reached. */
-  position: sticky; inset: auto; top: 0;
-  height: 100vh;
-  overflow: hidden;
-  /* It is a popover too (E1, drawers below): what the UA sheet gives one is
-     undone here, so above 1000px it is the column above and nothing else. */
-  margin: 0; border: 0; border-right: var(--hairline);
-  width: auto; color: inherit;
-}
-/* The right column: the top bar, the notice line when there is one, the page. */
-.frame {
-  display: flex; flex-direction: column; gap: var(--space-4); min-width: 0;
-  width: min(1100px, 100%); margin-inline: auto; box-sizing: border-box;
-  padding: 0 var(--space-6) var(--space-8);
-}
+/* ---- the area in the settings card (view/shell.ts) ---- */
 .main {
   display: flex; flex-direction: column; gap: var(--space-8);
   padding: 0 0 var(--space-8);
   min-width: 0;
 }
 
-/* ---- top bar: one line, as on the front — where you are, then the page,
-   its actions and the registry's health. Who you are sits at the foot of the
-   side panel. The crumb for the page itself is not drawn: the title is it. */
-.top {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: var(--space-2) var(--space-4); flex-wrap: wrap;
-  min-height: var(--top-h); padding: var(--space-2) 0 0;
-}
-.top-lead { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; }
-.top-lead > .drawer-open { align-self: center; }
+/* ---- the card's title row (view/shell.ts): where you are, then the page,
+   its actions and the registry's health. The crumb for the page itself is
+   not drawn: the title is it. */
 .crumbs {
   list-style: none; margin: 0; padding: 0;
   display: flex; flex-wrap: wrap; gap: 6px;
   font-size: var(--text-ui); color: var(--color-muted);
 }
 .crumbs li[aria-current="page"] { display: none; }
-/* A top-level page's trail is only itself: drop it, so the title keeps
-   the column's left edge instead of a gap's width in from it. */
-.top-lead > nav:has(li:only-child) { display: none; }
 .crumbs li::after { content: "/"; margin-left: 6px; opacity: .6; }
 .crumbs a { color: inherit; text-decoration: none; }
 .crumbs a:hover { color: var(--color-text); }
 .page-title { font-size: var(--text-title); line-height: var(--lh-title); overflow-wrap: anywhere; }
-.top .page-title { font-size: var(--text-page); line-height: var(--lh-page); font-weight: var(--weight-semibold); }
 .main h2 { font-size: var(--text-ui); line-height: var(--lh-ui); font-weight: var(--weight-semibold); }
 .main h3 { font-size: var(--text-ui); line-height: var(--lh-ui); font-weight: var(--weight-semibold); }
 .top-tail { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .top-actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .health { display: flex; align-items: center; gap: var(--space-3); font-size: var(--text-small); color: var(--color-muted); }
 .health .state { font-size: var(--text-small); }
-/* The account menu at the foot of the side panel: the front's menu (below),
-   with the console's own entries — the instance, 外观, the token, 退出. */
-.usermenu-body { width: min(248px, 80vw); }
-.usermenu-body .inst { padding: 6px 9px 0; }
-.usermenu-body #tz-note { padding: 2px 9px 4px; }
-.usermenu-body .adv { margin: 0; }
-.usermenu-body .adv > summary { width: 100%; margin: 0; padding: 0 8px; color: inherit; }
-.usermenu-body .adv-body { padding: 4px 8px 8px; border-left: 0; }
 
 /* ---- brand: the logo (view/mark.ts), the wordmark beside it ---- */
 .brand { display: flex; align-items: center; gap: 10px; }
-/* In the side panel, the front's brand row: the mark at 22px and 阡陌 beside
-   it in the header row's height, the ridges between the plots widened in the
-   panel's own ground. */
-.side .brand { gap: 9px; flex: none; min-height: var(--top-h); padding: 0 0 0 6px; }
-.side .brand-cn { font-size: var(--text-brand); letter-spacing: .06em; }
-.side .brand .qm-mark path { stroke: var(--color-side); stroke-width: 18px; stroke-linejoin: round; }
 .brand-cn {
   font-family: var(--font-heading); font-size: var(--text-prose); font-weight: 600;
   line-height: 1.15; letter-spacing: .06em;
   color: var(--color-text); text-decoration: none;
 }
 a.brand-cn:hover { color: var(--color-quiet); }
-/* Inside the desktop app (<html data-shell>, qmo-app.md §5.1) the brand row and
-   the top bar are where the window is dragged from; their text stays
-   selectable (D7). On macOS the traffic lights sit in the window's top 48px,
-   17px from the left, over the brand: it starts past them, as the front's side
-   top does (--fx-shell-x). */
-:root[data-shell="macos"] .side .brand { padding-left: var(--shell-lights-x); }
 .qm-mark { display: block; flex: none; }
 .qm-mark .qm-ink { fill: var(--qm-ink); }
 
-/* ---- nav: the everyday areas, then the operator's folded under 管理 ----
-   The list scrolls inside the panel, so the account row at its foot stays
-   where it is however many areas there are (the fronts' side list does the
-   same). */
+/* ---- nav: the settings card's list of areas (view/shell.ts) ----
+   The list scrolls inside the card's left column, so its foot stays where it
+   is however many areas there are. */
 .nav {
   display: flex; flex-direction: column; gap: var(--space-3);
   flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   margin: 0 calc(-1 * var(--space-1)); padding: 0 var(--space-1); scrollbar-width: thin;
 }
-.nav-group { display: flex; flex-direction: column; gap: 1px; }
-.nav-group-name {
-  padding: 0 10px 4px;
-  font-size: var(--text-small); line-height: var(--lh-small); font-weight: var(--weight-medium);
-  color: var(--color-muted);
-}
-.nav-fold > summary {
-  display: flex; align-items: center; justify-content: space-between;
-  list-style: none; cursor: pointer; border-radius: var(--radius-control);
-  padding-top: var(--space-1);
-}
-.nav-fold > summary::-webkit-details-marker { display: none; }
-.nav-fold > summary:hover { color: var(--color-text); }
-.nav-fold > summary svg { width: 14px; height: 14px; transition: transform var(--motion-base) var(--ease-out); }
-.nav-fold[open] > summary svg { transform: rotate(180deg); }
-.nav-fold > .nav-group { padding-top: var(--space-1); }
 .nav-item {
   display: flex; align-items: center; gap: 10px; min-height: var(--control-h);
   padding: 0 10px; border-radius: var(--radius-control);
   font-size: var(--text-ui); color: var(--color-text); text-decoration: none;
   transition: background-color var(--motion-snap) var(--ease-out), color var(--motion-snap) var(--ease-out);
 }
-.side svg.i, .side svg.i-sm { stroke-width: 1.9; }
 .nav-item.nav-gap { margin-top: var(--space-3); }
 .nav-item .i { width: var(--icon); height: var(--icon); color: var(--color-quiet); }
 .nav-item:hover { background: var(--ui-hover); }
@@ -790,9 +718,7 @@ a.brand-cn:hover { color: var(--color-quiet); }
 }
 .stub-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: var(--text-ui); }
 
-/* ---- sidebar foot ---- */
-.side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 4px; }
-/* The refresh switch, one quiet line over the account row. */
+/* ---- the settings card's foot: the refresh switch, one quiet line ---- */
 .refresh-row {
   display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
   padding: 4px 6px; font-size: var(--text-small); color: var(--color-muted);
@@ -1514,43 +1440,8 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #111
 .tokrow .tag { flex: none; }
 .foot { font-size: var(--text-small); color: var(--color-muted); }
 
-/* ---- drawers (E1) ----
-   Below 1000px the sidebar and the chat page's session list are native
-   popovers: opened by a button with popovertarget and no script, put in the
-   top layer by the browser, closed by Esc, a tap outside or their own close
-   button, and focus goes back to the button. A browser without popovers
-   keeps the stacked layout and never sees the buttons. */
-.drawer-open, .drawer-close { display: none; }
-@supports selector(:popover-open) {
-  @media (max-width: 1000px) {
-    .drawer:not(:popover-open) { display: none; }
-    .drawer:popover-open {
-      display: flex; flex-direction: column; gap: var(--space-4);
-      position: fixed; inset: 0 auto 0 0; z-index: auto;
-      width: min(var(--side-w), 86vw); height: 100dvh; max-height: none; margin: 0;
-      padding: 0 var(--space-2) var(--space-2); overflow-y: auto;
-      background: var(--color-side); color: var(--color-text);
-      border-radius: 0;
-      box-shadow: var(--shadow-lg);
-    }
-    .drawer::backdrop { background: color-mix(in srgb, var(--color-scrim, #111110) 45%, transparent); }
-    .drawer-open { display: inline-flex; }
-    .drawer-close { display: inline-flex; align-self: flex-end; flex: none; }
-  }
-}
-
 /* ---- narrow ---- */
 @media (max-width: 1000px) {
-  .shell { grid-template-columns: minmax(0, 1fr); }
-  /* The top bar is at the window's left edge now: its menu button clears the
-     macOS traffic lights. */
-  :root[data-shell="macos"] .top { padding-left: var(--shell-lights-x); }
-  .side {
-    position: static; height: auto; gap: var(--space-4);
-    border-right: 0; border-bottom: var(--hairline);
-  }
-  .nav-group { flex-direction: row; flex-wrap: wrap; gap: var(--space-1); }
-  .nav-group-name { width: 100%; }
   .g4, .g3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cards > .card.stat:nth-child(odd) { border-left: 0; padding-left: 0; }
   .cards > .card.stat:nth-child(n + 3) { border-top: var(--hairline); }
@@ -1560,8 +1451,6 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #111
   .empty-art { justify-self: start; }
 }
 @media (max-width: 620px) {
-  .shell { padding: 0; gap: 0; }
-  .frame { padding: var(--space-2) var(--space-3) var(--space-6); }
   .main { padding: var(--space-1); }
   .g4, .g3 { grid-template-columns: minmax(0, 1fr); }
   .cards > .card.stat { border-left: 0; padding-left: 0; }
@@ -1584,20 +1473,13 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #111
 .push-right { margin-left: auto; }
 .mt-2 { margin-top: var(--space-2); }
 
-/* ---- P37.13 nav: moving between pages in place (assets/nav.ts) ----
-   While the next page is on its way the page under the bar dims and a thin
-   line shows at the top; a page swapped in fades in over 120ms where the
-   browser has View Transitions. A data-write control says 保存中 or why it
-   went back on the line beside it. */
+/* ---- P37.13 nav: moving between areas in place (assets/nav.ts) ----
+   While the next area is on its way the card's page dims, and an area
+   swapped in comes up from there over 120ms (view/frontStyle.ts,
+   .set[data-busy], .set[data-arriving]). A data-write control says 保存中 or
+   why it went back on the line beside it. */
 .refresh-row[hidden] { display: none; }
 .nav-note[hidden] { display: none; }
-html[data-nav-busy] .main { opacity: var(--opacity-busy); transition: opacity var(--motion-snap) var(--ease-out); }
-html[data-nav-busy] .frame::before {
-  content: ""; position: fixed; top: 0; left: 0; right: 0; height: 2px; z-index: var(--z-progress);
-  background: var(--color-interactive); pointer-events: none;
-}
-html.nav-fade::view-transition-old(root),
-html.nav-fade::view-transition-new(root) { animation-duration: var(--motion-snap); animation-timing-function: var(--ease-out); }
 .write-note { margin-left: var(--space-2); font-size: var(--text-small); line-height: var(--lh-small); color: var(--color-muted); }
 .write-note:empty { display: none; }
 .write-note[data-tone="bad"], .write-note[data-tone="warn"] { color: var(--color-danger-text); }

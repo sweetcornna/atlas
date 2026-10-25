@@ -309,14 +309,16 @@ describe('100 000 records: the first screen is bounded (D5, G2)', () => {
     expect(rowCount(warm.body, 'audit-rows')).toBe(50)
     expect(reader.stats.linesChecked - afterCold.linesChecked).toBe(0)
     expect(reader.stats.bytesRead - afterCold.bytesRead).toBe(0)
-    // The bound is on the page, not on the shell under it. Measured at
-    // 183 394 bytes: the shell every page carries (about 68 KB of styles,
-    // the whole token set of /admin and the fronts, qmo-local.md §3.4; 64 KB
-    // of runtime, 21.9 KB of it the partial-navigation runtime, P37.13; the
-    // rest markup) plus some 29 KB for the fifty rows. The bound is that
-    // plus about 4%. A page that drew the trail instead of its first screen
-    // would be megabytes.
-    expect(warm.body.length).toBeLessThan(191_000)
+    // The bound is on the page, not on the frame around it. Measured at
+    // 309 362 bytes: since P37.13 an area's address is the Work face with
+    // the settings card open on the area (qmo-local.md §3.6), so the frame
+    // is the front's document — about 118 KB of styles (the whole token set,
+    // §3.4, the front's sheet and the area's) and 132 KB of runtime (the
+    // console's, the front's, the card's 27 KB and the area's), 17 KB of the
+    // face's markup — and the card is its list, its foot and the area, some
+    // 29 KB of it the fifty rows. The bound is that plus about 4%. A page
+    // that drew the trail instead of its first screen would be megabytes.
+    expect(warm.body.length).toBeLessThan(322_000)
 
     // The poll the page set up: since the head it was drawn at.
     const poll = /data-poll="([^"]+)"/

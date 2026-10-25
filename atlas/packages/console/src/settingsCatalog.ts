@@ -89,7 +89,7 @@ export type SettingKind = 'set' | 'create' | 'update' | 'remove' | 'run'
 /** The personal account role the `/v0` write's own guard asks for. */
 export type SettingRole = 'ops' | 'member'
 
-/** Each area in the panel's words, in the sidebar's order. */
+/** Each area in the panel's words, in the settings card's order. */
 export const SETTING_AREAS: Readonly<Record<SettingArea, string>> = {
   providers: '模型',
   routing: '任务模型',

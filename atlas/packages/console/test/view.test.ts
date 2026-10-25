@@ -29,6 +29,7 @@ import { AuditSource, type AuditRecord, type MessageChain } from '@qianmo/audit'
 import { FRONT_JS } from '../src/assets/frontClient.js'
 import { CONSOLE_CLIENT_JS } from '../src/assets/client.js'
 import { CONSOLE_CSS } from '../src/assets/css.js'
+import { FRONT_CSS } from '../src/view/frontStyle.js'
 import {
   AUDIT_PAGE_JS,
   NODES_PAGE_JS,
@@ -66,13 +67,11 @@ import {
 } from '../src/view/format.js'
 import { renderLimits } from '../src/view/limits.js'
 import { renderMagpieForm } from '../src/view/magpie.js'
+import { renderOverview, type OverviewModel } from '../src/view/page.js'
 import {
-  renderOverview,
-  renderPage,
-  type OverviewModel,
-} from '../src/view/page.js'
-import {
-  renderShell,
+  documentTitle,
+  renderSettings,
+  type SettingsWords,
   type ShellModel,
   type ShellNavGroup,
 } from '../src/view/shell.js'
@@ -86,6 +85,7 @@ import type {
   ServerNote,
 } from '../src/deps.js'
 import { FakeMagpie } from './directionFakes.js'
+import { ADMIN, browse, pageHarness } from './pageHarness.js'
 
 const NOW = 1_760_000_000_000
 const TTL = 300_000
@@ -185,21 +185,6 @@ function expectInert(html: string): void {
   }
   expect(html).not.toContain('<script>alert')
   expect(html).not.toContain('<img')
-}
-
-/**
- * The document with its favicon link removed.
- *
- * The `<link rel="icon">` in the head is the one element on these pages that is
- * not markup the view layer wrote from data — it is a self-contained `data:`
- * URI, no host, no request. The "loads nothing" assertions are about *hosts*,
- * so they run against the document with that one line lifted out rather than
- * being weakened to allow a `<link>` anywhere.
- */
-function withoutFavicon(markup: string): string {
-  const stripped = markup.replace(/<link rel="icon"[^>]*>\n?/, '')
-  expect(stripped).not.toBe(markup)
-  return stripped
 }
 
 /**
@@ -1613,12 +1598,26 @@ describe('renderLimits', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('the shell', () => {
+/** The card's words in 简体中文 (`view/frontText.ts`). */
+const WORDS: SettingsWords = {
+  settings: '设置',
+  search: '搜索设置',
+  close: '关闭设置',
+  noMatch: '无匹配',
+  desktop: '桌面版',
+  skip: '跳到正文',
+}
+
+describe('the settings card', () => {
   const NAV: readonly ShellNavGroup[] = [
     {
-      label: '运行',
       items: [
-        { id: 'overview', label: '总览', href: '/', icon: 'layout-dashboard' },
+        {
+          id: 'overview',
+          label: '总览',
+          href: '/admin/overview',
+          icon: 'layout-dashboard',
+        },
         {
           id: 'nodes',
           label: '节点',
@@ -1632,12 +1631,12 @@ describe('the shell', () => {
           href: '/admin/alerts',
           icon: 'bell',
           pending: true,
+          gap: true,
         },
       ],
     },
-    { label: '配置', items: [] },
+    { items: [] },
     {
-      label: '管理',
       items: [
         {
           id: 'settings',
@@ -1648,156 +1647,93 @@ describe('the shell', () => {
       ],
     },
   ]
-
-  function build(over: Partial<ShellModel> = {}): string {
-    return renderShell({
+  function model(over: Partial<ShellModel> = {}): ShellModel {
+    return {
       label: 'node-a 本机',
-      role: 'admin',
       nav: NAV,
       active: 'nodes',
-      crumbs: [{ label: '运行' }, { label: '节点' }],
+      crumbs: [{ label: '管理' }, { label: '节点' }],
       title: '节点',
       body: '<p id="probe">名册在这里</p>',
       poll: true,
       ...over,
-    })
+    }
   }
 
-  test('is a complete document that follows the system theme', () => {
-    const html = build()
-    expect(html.startsWith('<!DOCTYPE html>')).toBe(true)
-    expect(html).toContain('<meta name="color-scheme" content="light dark">')
-    expect(html).toContain('prefers-color-scheme: dark')
-    expect(html).toContain('color-scheme: light dark')
-    expect(html).toContain('</html>')
-    expect(html).toContain('lang="zh-CN"')
-  })
-
-  test('loads nothing from anywhere — no scheme appears in the document', () => {
-    const html = withoutFavicon(build())
-    expect(html).not.toContain('http://')
-    expect(html).not.toContain('https://')
-    expect(html).not.toContain('//cdn')
-    expect(html).not.toContain('<link')
-    expect(html).not.toContain('src="')
-    expect(html).not.toContain('@import')
-    expect(html).not.toContain('url(')
-  })
-
-  test('the one link is a self-contained data URI, not a host', () => {
-    // The favicon is the single loosening of the policy this page allows.
-    // `data:` is not an origin: nothing is fetched, and no third party can put
-    // anything there — which is why the assertion above still holds for
-    // everything else in the document.
-    const html = build()
-    expect(html).toContain('<link rel="icon" href="data:image/svg+xml,')
-    // Percent-encoded, so even the SVG namespace is not a live scheme in the
-    // document text.
-    expect(html).not.toContain('http://')
-  })
-
-  test('states the same rule in a CSP the browser enforces', () => {
-    const html = build()
-    expect(html).toContain('Content-Security-Policy')
-    expect(html).toContain('default-src &#39;none&#39;')
-    expect(html).toContain('connect-src &#39;self&#39;')
-    // The favicon needs exactly this and nothing else. Every *host* directive
-    // is still 'none'.
-    expect(html).toContain('img-src data:')
-    expect(html).toContain('font-src &#39;none&#39;')
-  })
-
-  test('inlines the shared sheet, the page sheet and one script, with the page parts after the shared ones', () => {
-    for (const html of [
-      build(),
-      build({
-        pageCss: '.page-only { gap: 1px; }',
-        pageScript: 'var pageOnly;',
-      }),
-    ]) {
-      // The page's own sheet apart, so a move between pages swaps it alone
-      // (P37.13): two sheets, and still one script.
-      expect(html.split('<style>')).toHaveLength(3)
-      expect(html.split('<script>')).toHaveLength(2)
-      // Nothing in the script can close the tag early.
-      const script = html.slice(html.indexOf('<script>'))
-      expect(script.split('</script>')).toHaveLength(2)
-    }
-    const withPage = build({
-      pageCss: '.page-only { gap: 1px; }',
-      pageScript: 'var pageOnly;',
-    })
-    expect(withPage.indexOf('.page-only')).toBeGreaterThan(
-      withPage.indexOf('--color-bg'),
+  function build(
+    over: Partial<ShellModel> = {},
+    open = true,
+    tokens = true,
+  ): string {
+    return renderSettings(
+      { model: model(over), open, tokens },
+      WORDS,
+      '阡陌 · 对话 · node-a 本机',
     )
-    expect(withPage.indexOf('var pageOnly;')).toBeGreaterThan(
-      withPage.indexOf('window.qianmoConsole ='),
+  }
+
+  test('an area address draws it open with the area in it; the front draws it closed and empty', () => {
+    const open = build()
+    expect(
+      open.startsWith(
+        '<dialog class="set" id="settings" aria-labelledby="page-title" data-work-title="阡陌 · 对话 · node-a 本机" open data-shown>',
+      ),
+    ).toBe(true)
+    expect(open.endsWith('</dialog>')).toBe(true)
+    expect(open).toContain('<p id="probe">名册在这里</p>')
+    expect(open).toContain(
+      '<h2 class="page-title set-title" id="page-title">节点</h2>',
     )
+    const closed = build({}, false)
+    expect(closed).not.toContain(' open')
+    expect(closed).not.toContain('id="probe"')
+    expect(closed).toContain(
+      '<h2 class="page-title set-title" id="page-title"></h2>',
+    )
+    // The list is there either way: the card opens on it.
+    expect(closed).toContain('id="nav-nodes" href="/admin/nodes" data-nav')
+    // Nothing of a page in a closed card: no crumbs, no actions, no foot switch.
+    expect(closed).not.toContain('class="crumbs"')
+    expect(closed).not.toContain('id="auto-refresh"')
   })
 
-  test('the sidebar carries the brand, the label and the refresh switch — and no clock', () => {
+  test('one list, no headings: the groups and the clusters are parted by space, the current area marked', () => {
     const html = build()
-    expect(html).toContain('阡陌控制台')
-    // The front's brand row: the mark and 阡陌, no English line over it.
+    expect(html).not.toContain('nav-group-name')
+    expect(html.match(/class="nav-item[ "]/g)).toHaveLength(5)
+    // The first item has nothing above it; a cluster start keeps its gap;
+    // the next group's first item gets one; an empty group draws nothing.
     expect(html).toContain(
-      '<a class="brand-cn" href="/admin" data-nav>阡陌</a>',
+      '<nav class="nav set-nav" id="set-nav" aria-label="设置"><a class="nav-item" id="nav-overview"',
     )
-    expect(html.slice(html.indexOf('<body>'))).not.toContain('class="brand-en"')
-    expect(html).toContain('node-a 本机')
-    expect(html).toContain('id="auto-refresh"')
-    expect(html).toContain('id="refresh-interval"')
-    expect(html).toContain('value="5000" selected')
-    expect(html).toContain('id="token"')
-    // The clock restated the operating system's own menu bar once a second.
-    // Element and interval went together — an element-only deletion leaves a
-    // timer writing into a node that is not there.
-    expect(html).not.toContain('id="clock"')
-    const script = html.slice(html.indexOf('<script>'))
-    expect(script).not.toContain("byId('clock')")
-    // A page with nothing to poll does not offer a switch that does nothing.
-    expect(build({ poll: false })).not.toContain('id="auto-refresh"')
-  })
-
-  test('the sidebar is every area in three groups, the current one marked', () => {
-    const html = build()
-    expect(html).toContain('class="shell"')
-    // A column above 1000px, a drawer below it: a native popover the top
-    // bar's menu button opens without script (E1, `narrow.browser.test.ts`).
-    expect(html).toContain('<aside class="side drawer" id="side" popover>')
-    expect(html).toContain(
-      '<button type="button" class="btn btn-ghost btn-icon drawer-open" popovertarget="side" aria-label="菜单">',
-    )
-    expect(html).toContain('class="main"')
-    expect(html).not.toContain('class="topbar"')
-    // Group names in order; a group with nothing in it is not drawn.
-    const names = [...html.matchAll(/<p class="nav-group-name">([^<]*)<\/p>/g)]
-    expect(names.map(match => match[1])).toEqual(['运行', '管理'])
-    expect(html.match(/class="nav-item"/g)).toHaveLength(4)
-    // Every item is a plain link the browser follows without script, and one
-    // the runtime may sign with the stored token (`data-nav`).
+    expect(html).toContain('class="nav-item nav-gap" id="nav-alerts"')
+    expect(html).toContain('class="nav-item nav-gap" id="nav-settings"')
     expect(html).toContain(
       '<a class="nav-item" id="nav-nodes" href="/admin/nodes" data-nav aria-current="page">',
     )
     expect(html).toContain(
-      '<a class="nav-item" id="nav-overview" href="/" data-nav>',
-    )
-    // One in the sidebar, one on the last crumb; the stylesheet's selectors
-    // are not counted.
-    const markup = html.slice(html.indexOf('<body>'), html.indexOf('<script>'))
-    expect(markup.match(/aria-current="page"/g)).toHaveLength(2)
-    expect(html).toContain(
       '<span class="nav-label">节点</span><span class="cnt">2</span>',
     )
-    // A placeholder area is offered and marked, never drawn as if it worked.
     expect(html).toContain(
       '<span class="nav-label">告警</span><span class="nav-tag">未提供</span>',
     )
+    // The search over it, which the card opens on; nothing matches yet.
+    expect(html).toContain(
+      '<input type="search" id="set-search" placeholder="搜索设置" autocomplete="off" spellcheck="false" autofocus>',
+    )
+    expect(html).toContain(
+      '<p class="set-none" id="set-none" hidden>无匹配</p>',
+    )
+    // The way past the list, first in the card (F1).
+    expect(html).toContain(
+      '<div class="set-card"><a class="skip-link" href="#main">跳到正文</a>',
+    )
   })
 
-  test('the top bar says where you are, what this is, and who you are', () => {
+  test('the title row says where you are, what this is, and closes', () => {
     const html = build({
       crumbs: [
-        { label: '运行' },
+        { label: '管理' },
         { label: '节点', href: '/admin/nodes' },
         { label: 'tokyo-1' },
       ],
@@ -1806,55 +1742,56 @@ describe('the shell', () => {
       health: [{ label: '注册中心', tone: 'ok' }],
     })
     expect(html).toContain('<nav aria-label="位置"><ol class="crumbs">')
-    expect(html).toContain('<li>运行</li>')
     expect(html).toContain('<li><a href="/admin/nodes" data-nav>节点</a></li>')
     expect(html).toContain('<li aria-current="page">tokyo-1</li>')
     expect(html).toContain(
-      '<h1 class="page-title" id="page-title">tokyo-1</h1>',
+      '<h2 class="page-title set-title" id="page-title">tokyo-1</h2>',
     )
-    expect(html).toContain('<title>阡陌控制台 · tokyo-1 · node-a 本机</title>')
     expect(html).toContain('<div class="top-actions"><button')
     expect(html).toContain(
       '<div class="health" role="group" aria-label="健康">',
     )
-    expect(html).toContain('id="role">')
-    // Focusable, so the skip link's target is where the next Tab starts (F1).
     expect(html).toContain(
-      '<main class="main" id="main" tabindex="-1" aria-labelledby="page-title">',
+      '<button type="button" class="fx-icon-btn set-close" data-action="settings-close" aria-label="关闭设置">',
     )
-    expect(html).toContain('<p id="probe">名册在这里</p>')
+    // Focusable, so the skip link's target is where the next Tab starts.
+    expect(html).toContain(
+      '<div class="main set-main" id="main" tabindex="-1" role="region" aria-labelledby="page-title">',
+    )
   })
 
-  test('the token box is folded away inside the user menu, beside the way out', () => {
+  test('the foot: the refresh switch for a page that polls, the zone, the token box for the legacy tokens alone', () => {
     const html = build()
-    // Still one click from "look at this console as the other role"; no longer
-    // a password field whose everyday function is to be ignored.
-    const menu = html.indexOf('<details class="fx-more usermenu">')
-    expect(menu).toBeGreaterThan(-1)
-    const summary = html.indexOf('换令牌')
-    expect(summary).toBeGreaterThan(menu)
-    expect(html.indexOf('id="token"')).toBeGreaterThan(summary)
+    expect(html).toContain('id="auto-refresh"')
+    expect(html).toContain('value="5000" selected')
+    expect(html).toContain('id="tz-note"')
+    expect(html).toContain('id="token"')
     expect(html).toContain('data-action="token-save"')
-    expect(html).toContain('data-action="token-clear"')
-    expect(html.indexOf('action="/logout"')).toBeGreaterThan(menu)
+    expect(build({ poll: false })).not.toContain('id="auto-refresh"')
+    expect(build({}, true, false)).not.toContain('id="token"')
+    // No clock restating the system's menu bar.
+    expect(html).not.toContain('id="clock"')
   })
 
-  test('the label is escaped like any other value', () => {
-    const html = build({ label: ATTACKS.handler })
+  test("the desktop app's own settings are one hidden item the runtime shows inside the app", () => {
+    const html = build()
+    expect(html).toContain(
+      '<button type="button" class="nav-item nav-gap set-desktop" id="set-desktop" data-action="settings-desktop" hidden>',
+    )
+  })
+
+  test('the title under it is escaped like any other value', () => {
+    const html = renderSettings(
+      { model: model(), open: true, tokens: false },
+      WORDS,
+      ATTACKS.handler,
+    )
     expect(html).not.toContain('" onload="')
     expect(html).toContain('&quot; onload=&quot;')
   })
 
-  test('renderPage, the historic export, is the shell', () => {
-    const model: ShellModel = {
-      label: 'x',
-      role: 'view',
-      nav: NAV,
-      crumbs: [{ label: '总览' }],
-      title: '总览',
-      body: '',
-    }
-    expect(renderPage(model)).toBe(renderShell(model))
+  test("the document's title names the area, the console and the label", () => {
+    expect(documentTitle(model())).toBe('阡陌控制台 · 节点 · node-a 本机')
   })
 })
 
@@ -2442,18 +2379,35 @@ describe('assets', () => {
     expect(CONSOLE_CSS).not.toContain('.dialog-backdrop')
   })
 
-  test('the shell is two columns that collapse, and wide content scrolls in its own box', () => {
-    // The side panel is the fronts' width (qmo-local.md §3.4), so moving
-    // between / and /admin does not move the page.
-    expect(ruleOf('.shell')).toContain(
-      'grid-template-columns: var(--side-w) minmax(0, 1fr)',
+  test('the settings card is two columns that become one, and wide content scrolls in its own box', () => {
+    // The card's list and the area (qmo-local.md §3.6); the fronts' side
+    // list keeps its width (§3.4).
+    const card = FRONT_CSS.slice(FRONT_CSS.indexOf('\n.set-card {'))
+    expect(card.slice(0, card.indexOf('}'))).toContain(
+      'grid-template-columns: var(--settings-side-w) minmax(0, 1fr)',
     )
+    expect(CONSOLE_CSS).toContain('--settings-side-w: 220px;')
     expect(CONSOLE_CSS).toContain('--side-w: 288px;')
     // No --rail: the noun column it sized is gone.
     expect(CONSOLE_CSS).not.toContain('--rail')
-    const narrow = CONSOLE_CSS.slice(CONSOLE_CSS.indexOf('max-width: 1000px'))
-    expect(narrow).toContain('grid-template-columns: minmax(0, 1fr)')
+    // Narrow: one column, the list a row over the area.
+    const narrow = FRONT_CSS.slice(
+      FRONT_CSS.indexOf('Narrow: the card is the window'),
+    )
+    expect(narrow).toContain('display: flex; flex-direction: column;')
     expect(ruleOf('.scroll')).toContain('overflow-x: auto')
+    // The retired management frame's rules went with it.
+    for (const gone of [
+      '\n.shell {',
+      '\n.side {',
+      '\n.frame {',
+      '.drawer',
+      'usermenu',
+      'nav-fold',
+      'data-nav-busy',
+    ]) {
+      expect(`${gone} ${CONSOLE_CSS.includes(gone)}`).toBe(`${gone} false`)
+    }
   })
 
   test('the lease fill is display:block, or its width is ignored outright', () => {
@@ -2595,36 +2549,49 @@ describe('copy discipline', () => {
     WRITER,
   )
   const limits = renderLimits(LIMITS)
-  const rendered = renderShell({
-    label: 'node-a',
-    role: 'admin',
-    nav: [
+  const rendered =
+    renderSettings(
       {
-        label: '运行',
-        items: [
-          { id: 'nodes', label: '节点', href: '/admin/nodes', icon: 'server' },
-        ],
+        model: {
+          label: 'node-a',
+          nav: [
+            {
+              items: [
+                {
+                  id: 'nodes',
+                  label: '节点',
+                  href: '/admin/nodes',
+                  icon: 'server',
+                },
+              ],
+            },
+          ],
+          crumbs: [{ label: '管理' }, { label: '节点' }],
+          title: '节点',
+          body:
+            renderOverview({
+              roster,
+              audit,
+              recent: { refused: 0, dropped: 0, more: false },
+              now: NOW,
+              nodes: renderNodeSummary([agent()], null, NOW, TTL),
+            }) +
+            roster +
+            registerDialog() +
+            wakeDialog({ enabled: true, targetOptions: '' }) +
+            deregisterConfirm() +
+            wakeConfirm() +
+            audit +
+            limits,
+        },
+        open: true,
+        tokens: true,
       },
-    ],
-    crumbs: [{ label: '运行' }, { label: '节点' }],
-    title: '节点',
-    body:
-      renderOverview({
-        roster,
-        audit,
-        recent: { refused: 0, dropped: 0, more: false },
-        now: NOW,
-        nodes: renderNodeSummary([agent()], null, NOW, TTL),
-      }) +
-      roster +
-      registerDialog() +
-      wakeDialog({ enabled: true, targetOptions: '' }) +
-      deregisterConfirm() +
-      wakeConfirm() +
-      audit +
-      limits,
-    pageScript: NODES_PAGE_JS,
-  })
+      WORDS,
+      '阡陌 · 对话 · node-a',
+    ) +
+    // The page's script travels with the area: the words it says after an action.
+    `<script>${NODES_PAGE_JS}</script>`
 
   /** Visible text only: markup, attributes, the inline style and script out. */
   function visibleText(html: string): string {
@@ -2752,7 +2719,9 @@ describe('copy discipline', () => {
   })
 
   test('no off-origin reference of any kind', () => {
-    const html = withoutFavicon(rendered)
+    // The card carries no favicon of its own; the document's is checked
+    // where the document is (`pages.test.ts`).
+    const html = rendered
     expect(html).not.toContain('http://')
     expect(html).not.toContain('https://')
     expect(html).not.toContain('<link')
@@ -2843,19 +2812,20 @@ describe('a refresh keeps what the reader was doing (D1)', () => {
 })
 
 describe('one place an action reports back (D2)', () => {
-  test('every shell page has the toast region, polite, outside the polled regions', () => {
-    const html = renderShell({
-      label: 'x',
-      role: 'admin',
-      nav: [],
-      crumbs: [{ label: '节点' }],
-      title: '节点',
-      body: '<div id="roster" data-poll="/fragments/roster"></div>',
-    })
+  test('every document has the toast region, polite, outside the polled regions', async () => {
+    // An area's address: the Work face with the card open over it. The
+    // runtime moves the region into the card while it is up (assets/nav.ts).
+    const html = await (
+      await pageHarness().handle(browse('/admin/nodes', ADMIN))
+    ).text()
     expect(html).toContain(
       '<div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>',
     )
-    expect(html.indexOf('id="toasts"')).toBeGreaterThan(html.indexOf('</main>'))
+    const card = html.indexOf('<dialog class="set" id="settings"')
+    expect(card).toBeGreaterThan(-1)
+    expect(html.indexOf('id="toasts"')).toBeGreaterThan(
+      html.indexOf('<dialog class="dialog" id="session-expired"', card),
+    )
   })
 
   test('a toast is text, and a failure interrupts', () => {

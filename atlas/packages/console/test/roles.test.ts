@@ -35,6 +35,7 @@ import {
   PageNotes,
   TRACE,
   VIEW,
+  areaOf,
   browse,
   pageHarness,
 } from './pageHarness.js'
@@ -62,7 +63,8 @@ function writeMarks(html: string): readonly string[] {
   }
   for (const form of markup.match(/<form[^>]*>/g) ?? []) {
     const plainGet = /method="get"/i.test(form)
-    const logout = form.includes('id="logout-form"')
+    const logout =
+      form.includes('id="logout-form"') || form.includes('fx-sign-out')
     if (!plainGet && !logout) found.push(form)
   }
   return found
@@ -195,7 +197,11 @@ describe('personal accounts', () => {
         }),
       )
       if (response.status !== 200) continue
-      marks[path] = writeMarks(await response.text())
+      // A member's area documents have their conversation under the card
+      // (the Work face): its controls are theirs, so the card alone is
+      // scanned. A viewer has no conversation, and the whole document is.
+      const html = await response.text()
+      marks[path] = writeMarks(role === 'member' ? areaOf(html) : html)
     }
     return { marks, h, who }
   }
