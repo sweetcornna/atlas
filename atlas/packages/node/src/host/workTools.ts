@@ -145,7 +145,7 @@ export function fileNameOf(title: string, extension: string): string {
     [
       ...[...title]
         .map(char =>
-          char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 ? '-' : char,
+          char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 ? '/' : char,
         )
         .join('')
         .replace(/[\\/:*?"<>|]+/g, '-'),
