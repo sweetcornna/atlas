@@ -8,10 +8,10 @@
  * Inside the desktop app — `window.__QMO_SHELL__` an object and Tauri's
  * `invoke` and `Channel` both there — it drives local sessions through the
  * shell's `qmo_local_*` commands and one ordered event channel, straight to
- * the runner (`qmo-local.md` §4.5). It never asks the hub for anything: no
- * `fetch`, no `EventSource`, no fragment. Once the page is loaded the hub
- * can go away and a session keeps streaming, opens, sends and shows its
- * changes.
+ * the runner (`qmo-local.md` §4.5). It never asks the hub for anything
+ * itself: no `fetch`, no `EventSource`, no fragment (Remote's copies come
+ * through `CODE_HUB_JS`, below). Once the page is loaded the hub can go away
+ * and a local session keeps streaming, opens, sends and shows its changes.
  *
  * - **Start.** `qmo_local_watch` first, then `qmo_local_list` (the
  *   features, the folders, the sessions) and `qmo_local_agents` for the
@@ -24,8 +24,8 @@
  *   forward move between sessions.
  * - **A new session.** A recent folder or 选择文件夹… (the shell's native
  *   picker), the agent, the permission mode (自动审批 unless changed; 跳过权限确认
- *   asks once more in a line under the box), Remote held off until P37.15,
- *   and the first line. Sent at once: the line is drawn first, and a start
+ *   asks once more in a line under the box), Remote (once the runner says
+ *   `features.remote`), and the first line. Sent at once: the line is drawn first, and a start
  *   that fails puts it back in the box (§3.3, a new conversation).
  * - **A session.** `qmo_local_read` (the newest 200 records; the rest when
  *   the reader scrolls to the top). Every event carries `seq`: one already
@@ -37,6 +37,16 @@
  *   下一轮生效, or goes back and says why. An ask is answered from its card.
  * - **Changes.** `qmo_local_changes` lists the files, `qmo_local_diff`
  *   shows one; read again within a second of a tool finishing, and by hand.
+ *
+ * - **Remote (P37.15).** Over this computer's own session a switch and the
+ *   device link's state (`qmo_local_set_remote`, the runner's `link`
+ *   events); a row with Remote on carries a badge. On a hub with Remote,
+ *   `CODE_HUB_JS` adds the account's copies from its other computers: a
+ *   session whose id has a dot is one of them, and what the page asks of it
+ *   goes to the hub (`window.qianmoCodeHub`) instead of the shell. A copy
+ *   whose computer is offline, or whose Remote is off, is read-only, the
+ *   latter with 「从中枢删除副本」; it has no changes panel and no mode. In a
+ *   browser the copies are all there is, and no new session starts there.
  *
  * All text goes in with `textContent`; nothing here turns a string into
  * markup.
@@ -72,6 +82,9 @@ function codeScript(): string {
   var shell = !!window.__QMO_SHELL__ && typeof window.__QMO_SHELL__ === 'object' && !!core &&
     typeof core.invoke === 'function' && typeof core.Channel === 'function';
   var newRow = byId('code-new');
+  // Remote's copies (P37.15): from the hub, beside this computer's sessions or alone in a browser.
+  var hub = window.qianmoCodeHub || null;
+  var link = null;
 
   function elsewhere(line) {
     local.hidden = true;
@@ -79,9 +92,10 @@ function codeScript(): string {
     if (line) web.textContent = line;
     if (newRow) newRow.disabled = true;
   }
-  if (!shell) { elsewhere(''); return; }
+  if (!shell && !hub) { elsewhere(''); return; }
   local.hidden = false;
   web.hidden = true;
+  if (!shell) { local.setAttribute('data-web', '1'); if (newRow) newRow.disabled = true; }
 
   var PICK = 'pick';
   var KEY = 'qianmo.code.';
@@ -98,6 +112,8 @@ function codeScript(): string {
   var scroller = byId('code-scroll');
   var panel = byId('code-changes');
   var toggle = byId('code-changes-btn');
+  var remoteBox = byId('code-remote');
+  var remoteHead = byId('code-remote-head');
 
   var features = { protocols: [] };
   var folders = [];
@@ -119,8 +135,11 @@ function codeScript(): string {
   var soonTimer = null;
 
   function call(command, args) {
+    if (hub && (!shell || hub.mine(args))) return hub.call(command, args);
     try { return Promise.resolve(core.invoke(command, args || {})); } catch (e) { return Promise.reject(e); }
   }
+  function copyOf(s) { return !!(s && s.device); }
+  function readOnly(s) { return copyOf(s) && (!s.device.online || !s.remote); }
   function why(err) { return typeof err === 'string' ? err : err && err.message ? String(err.message) : String(err || ''); }
   function tell(text, tone) { qc.say(say, text || '', tone || 'muted'); }
   function stored(key) { try { return window.localStorage.getItem(KEY + key) || ''; } catch (e) { return ''; } }
@@ -182,6 +201,8 @@ function codeScript(): string {
         button.appendChild(dot);
         button.appendChild(el('span', 'fx-ritem-title', s.title || tx('untitled', '')));
         button.appendChild(el('span', 'fx-code-tag', (s.agent && s.agent.name) || ''));
+        var badge = copyOf(s) ? (!s.device.online ? tx('offline', '') : !s.remote ? tx('remoteOff', '') : '') : s.remote ? 'Remote' : '';
+        if (badge) button.appendChild(el('span', 'fx-code-badge', badge));
         row.appendChild(button);
         block.appendChild(row);
       }
@@ -270,10 +291,27 @@ function codeScript(): string {
     var sub = byId('code-sub');
     if (title) title.textContent = s ? (s.title || tx('untitled', '')) : view && view.title ? view.title : '';
     if (sub) {
-      sub.textContent = s ? [s.folder && s.folder.name, s.agent && s.agent.name].filter(Boolean).join(' \\u00b7 ') : '';
+      sub.textContent = s ? [s.folder && s.folder.name, s.agent && s.agent.name,
+        readOnly(s) && (s.device.online ? tx('remoteOff', '') : tx('offline', '')) + ' \\u00b7 ' + tx('readOnly', '')].filter(Boolean).join(' \\u00b7 ') : '';
     }
-    if (toggle) toggle.hidden = !s;
-    if (panel) panel.hidden = !s || !changesOpen();
+    if (toggle) toggle.hidden = !s || copyOf(s);
+    if (panel) panel.hidden = !s || copyOf(s) || !changesOpen();
+    remoteBar(s);
+  }
+
+  function remoteBar(s) {
+    var mine = !!s && !copyOf(s) && features.remote === true;
+    if (remoteHead) { remoteHead.hidden = !mine; byId('code-remote-on').checked = mine && !!s.remote; }
+    var drop = byId('code-drop');
+    if (drop) drop.hidden = !(copyOf(s) && !s.remote);
+    var line = byId('code-link');
+    if (!line) return;
+    var state = link && link.state;
+    line.hidden = !mine || !s.remote || !state || state === 'off';
+    if (line.hidden) return;
+    line.textContent = state === 'up' ? tx('linkUp', '') : state === 'connecting' ? tx('linkConnecting', '') :
+      (state === 'retrying' ? tx('linkRetrying', '') : tx('linkRefused', '')) + (link.reason ? ' \\u00b7 ' + link.reason : '');
+    line.className = 'fx-code-link' + (state === 'refused' ? ' is-bad' : state === 'up' ? '' : ' is-wait');
   }
 
   function composer() {
@@ -281,6 +319,9 @@ function codeScript(): string {
     go.hidden = busy;
     stop.hidden = !busy;
     box.placeholder = current || view ? box.getAttribute('data-reply') || '' : box.getAttribute('data-first') || '';
+    var shut = readOnly(current && sessions[current]);
+    box.disabled = go.disabled = stop.disabled = shut;
+    modePick.disabled = copyOf(current && sessions[current]);
     var mode = current && sessions[current] ? sessions[current].mode : blankMode;
     if (mode && !modeWant && modePick.value !== mode && byId('code-bypass').hidden) modePick.value = mode;
   }
@@ -305,6 +346,7 @@ function codeScript(): string {
     view = null;
     if (push) history.pushState(null, '', '/code');
     clear(msgs);
+    if (!shell) msgs.appendChild(el('p', 'fx-none fx-code-hub-line', tx(values(sessions).length ? 'hubBlank' : 'hubNone', '')));
     show('blank');
     head();
     side();
@@ -467,6 +509,7 @@ function codeScript(): string {
       }
       return;
     }
+    if (type === 'link') { link = event; head(); return; }
     if (type === 'removed') {
       delete sessions[event.session];
       side();
@@ -642,7 +685,8 @@ function codeScript(): string {
     tell('', 'muted');
     paint(true);
     call('qmo_local_start', {
-      folder: folder, agent: agent, mode: mode, worktree: false, text: text, clientId: line.clientId, remote: false
+      folder: folder, agent: agent, mode: mode, worktree: false, text: text, clientId: line.clientId,
+      remote: !!(remoteBox && !remoteBox.disabled && remoteBox.checked)
     }).then(function (data) {
       var s = data && data.session;
       if (!s || typeof s.id !== 'string') throw new Error('');
@@ -796,7 +840,7 @@ function codeScript(): string {
   }
 
   function changes() {
-    if (!current || !changesOpen()) return;
+    if (!current || !changesOpen() || copyOf(sessions[current])) return;
     var id = current;
     var mine = ++changesAsk;
     call('qmo_local_changes', { session: id }).then(function (data) {
@@ -869,6 +913,31 @@ function codeScript(): string {
   });
   qc.onAction('code-refresh', changes);
 
+  // ---- Remote ----
+
+  if (remoteHead) byId('code-remote-on').addEventListener('change', function (event) {
+    var s = current && sessions[current];
+    if (!s || copyOf(s)) return;
+    var id = s.id;
+    var on = event.target.checked;
+    call('qmo_local_set_remote', { session: id, on: on }).then(function (data) {
+      if (data && data.session) sessions[id] = data.session;
+      side();
+      if (current === id) head();
+    }, function (err) {
+      if (current === id) { head(); tell(why(err), 'warn'); }
+    });
+  });
+  qc.onAction('code-drop', function () {
+    var id = current;
+    if (!hub || !copyOf(sessions[id])) return;
+    hub.drop(id).then(function () {
+      delete sessions[id];
+      blank(true);
+      tell(tx('dropped', ''), 'muted');
+    }, function (err) { if (current === id) tell(why(err), 'warn'); });
+  });
+
   // ---- moving around ----
 
   qc.onAction('code-open', function (button) {
@@ -893,8 +962,12 @@ function codeScript(): string {
   function list(route) {
     listing = true;
     return call('qmo_local_list', {}).then(function (data) {
+      return shell && hub && data ? hub.add(data) : data;
+    }).then(function (data) {
       listing = false;
       features = (data && data.features) || { protocols: [] };
+      if (data && data.link) link = data.link;
+      if (remoteBox) { remoteBox.disabled = features.remote !== true; if (!remoteBox.disabled) remoteBox.parentNode.title = remoteHead ? remoteHead.title : ''; }
       folders = data && Array.isArray(data.folders) ? data.folders : [];
       var all = data && Array.isArray(data.sessions) ? data.sessions : [];
       sessions = {};
@@ -914,17 +987,18 @@ function codeScript(): string {
   // from before local sessions.
   function refused(err) {
     listing = false;
-    if (!/^qmo /.test(why(err))) { elsewhere(tx('updateApp', '')); return; }
+    if (shell && !/^qmo /.test(why(err))) { elsewhere(tx('updateApp', '')); return; }
     tell(why(err), 'warn');
   }
 
-  var channel = new core.Channel();
-  channel.onmessage = function (event) { onEvent(event); };
+  var channel = shell ? new core.Channel() : null;
+  if (channel) channel.onmessage = function (event) { onEvent(event); };
   showChanges(narrow() ? false : stored('changes') !== 'shut');
   show('blank');
   listing = true;
   call('qmo_local_watch', { channel: channel }).then(function () { return list(true); }).then(null, refused);
-  scan(false);
+  if (shell) scan(false);
+  if (hub) hub.watch(onEvent);
 })();
 `
 }

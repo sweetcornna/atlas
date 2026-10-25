@@ -5,7 +5,8 @@
  * The Remote copies in memory (P37.15), for the hub's tests: the same
  * semantics as the node's file store (`consoleCodeCopies.ts`) — a turn's
  * last line at the place of its first, `full` without writing — with the
- * limits a test can make small.
+ * limits a test can make small. Beside it, a device ledger that
+ * authenticates tokens, for the link.
  */
 
 import {
@@ -17,6 +18,13 @@ import {
   type CodeCopyRecord,
   codeOwnerKey,
 } from '../src/codeRemote.js'
+import type {
+  DirectionActor,
+  HandoffDeviceIdentity,
+  HandoffDeviceRefusal,
+  HandoffDevicesPort,
+  HandoffDeviceView,
+} from '../src/directionPorts.js'
 
 interface Entry {
   readonly owner: string
@@ -173,5 +181,71 @@ export class MemoryCopies implements CodeCopiesPort {
 
   note(line: string): void {
     this.notes.push(line)
+  }
+}
+
+/** The device ledger: identities by token, revocable, with a name each. */
+export class LinkDevices implements HandoffDevicesPort {
+  readonly revoked = new Set<string>()
+  readonly inactive = new Set<string>()
+  readonly byToken = new Map<string, HandoffDeviceIdentity & { name: string }>()
+
+  authenticate(token: string): HandoffDeviceIdentity | null {
+    const device = this.byToken.get(token)
+    if (
+      device === undefined ||
+      this.revoked.has(device.deviceId) ||
+      this.inactive.has(device.owner)
+    )
+      return null
+    return { deviceId: device.deviceId, owner: device.owner, kind: device.kind }
+  }
+
+  refusalOf(token: string): HandoffDeviceRefusal {
+    const device = this.byToken.get(token)
+    if (device === undefined) return 'unauthorized'
+    if (this.revoked.has(device.deviceId)) return 'device_revoked'
+    return this.inactive.has(device.owner) ? 'owner_inactive' : 'unauthorized'
+  }
+
+  #view(device: HandoffDeviceIdentity & { name: string }): HandoffDeviceView {
+    return {
+      deviceId: device.deviceId,
+      name: device.name,
+      platform: 'darwin-arm64',
+      owner: device.owner,
+      kind: device.kind,
+      createdAt: 0,
+      lastSeenAt: null,
+      revokedAt: this.revoked.has(device.deviceId) ? 1 : null,
+      tasks: 0,
+    }
+  }
+
+  async listDevices() {
+    return {
+      ok: true as const,
+      value: [...this.byToken.values()].map(device => this.#view(device)),
+    }
+  }
+
+  async issuePairing() {
+    return {
+      ok: false as const,
+      failure: { code: 'unsupported' as const, message: 'not here' },
+    }
+  }
+
+  async revokeDevice(deviceId: string, _actor: DirectionActor) {
+    this.revoked.add(deviceId)
+    const device = [...this.byToken.values()].find(
+      one => one.deviceId === deviceId,
+    )
+    if (device === undefined)
+      return {
+        ok: false as const,
+        failure: { code: 'not_found' as const, message: 'no such device' },
+      }
+    return { ok: true as const, value: this.#view(device) }
   }
 }

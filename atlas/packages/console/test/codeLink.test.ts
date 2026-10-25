@@ -22,13 +22,6 @@ import {
 import { CHAT_STREAM_HEARTBEAT_MS } from '../src/routes/chat.js'
 import { CODE_STREAM_HEARTBEAT_MS } from '../src/routes/codeApi.js'
 import type { ConsoleAction } from '../src/deps.js'
-import type {
-  DirectionActor,
-  HandoffDeviceIdentity,
-  HandoffDeviceRefusal,
-  HandoffDevicesPort,
-  HandoffDeviceView,
-} from '../src/directionPorts.js'
 import {
   accountsHarness,
   asAdmin,
@@ -37,7 +30,7 @@ import {
   person,
 } from './accountsHarness.js'
 import { FakeBilling } from './billingFake.js'
-import { MemoryCopies } from './codeCopiesFake.js'
+import { LinkDevices as Devices, MemoryCopies } from './codeCopiesFake.js'
 
 const TOKEN_A = `qmd_${'a'.repeat(43)}`
 const TOKEN_A2 = `qmd_${'f'.repeat(43)}`
@@ -49,72 +42,6 @@ const DEVICE_A2 = 'd-ffffffffffff'
 const DEVICE_B = 'd-bbbbbbbbbbbb'
 const SESSION = 'cs_AbCdEfGhIjKlMnOpQrSt_-'
 const SESSION_2 = 'cs_ZyXwVuTsRqPoNmLkJiHg_-'
-
-/** The device ledger: identities by token, revocable, with a name each. */
-class Devices implements HandoffDevicesPort {
-  readonly revoked = new Set<string>()
-  readonly inactive = new Set<string>()
-  readonly byToken = new Map<string, HandoffDeviceIdentity & { name: string }>()
-
-  authenticate(token: string): HandoffDeviceIdentity | null {
-    const device = this.byToken.get(token)
-    if (
-      device === undefined ||
-      this.revoked.has(device.deviceId) ||
-      this.inactive.has(device.owner)
-    )
-      return null
-    return { deviceId: device.deviceId, owner: device.owner, kind: device.kind }
-  }
-
-  refusalOf(token: string): HandoffDeviceRefusal {
-    const device = this.byToken.get(token)
-    if (device === undefined) return 'unauthorized'
-    if (this.revoked.has(device.deviceId)) return 'device_revoked'
-    return this.inactive.has(device.owner) ? 'owner_inactive' : 'unauthorized'
-  }
-
-  #view(device: HandoffDeviceIdentity & { name: string }): HandoffDeviceView {
-    return {
-      deviceId: device.deviceId,
-      name: device.name,
-      platform: 'darwin-arm64',
-      owner: device.owner,
-      kind: device.kind,
-      createdAt: 0,
-      lastSeenAt: null,
-      revokedAt: this.revoked.has(device.deviceId) ? 1 : null,
-      tasks: 0,
-    }
-  }
-
-  async listDevices() {
-    return {
-      ok: true as const,
-      value: [...this.byToken.values()].map(device => this.#view(device)),
-    }
-  }
-
-  async issuePairing() {
-    return {
-      ok: false as const,
-      failure: { code: 'unsupported' as const, message: 'not here' },
-    }
-  }
-
-  async revokeDevice(deviceId: string, _actor: DirectionActor) {
-    this.revoked.add(deviceId)
-    const device = [...this.byToken.values()].find(
-      one => one.deviceId === deviceId,
-    )
-    if (device === undefined)
-      return {
-        ok: false as const,
-        failure: { code: 'not_found' as const, message: 'no such device' },
-      }
-    return { ok: true as const, value: this.#view(device) }
-  }
-}
 
 const servers: { stop(force?: boolean): unknown }[] = []
 const sockets: WebSocket[] = []
