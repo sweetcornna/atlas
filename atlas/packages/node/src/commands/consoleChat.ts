@@ -49,6 +49,7 @@ import { legacyDirectionOf } from '@qianmo/providers'
 import { parseTurnStepDedupKey } from '@qianmo/resident'
 import type {
   ChatLocalCommand,
+  ChatOpenOptions,
   ChatPort,
   ChatSendInput,
   ChatSession,
@@ -845,6 +846,7 @@ export function createConsoleChatPort(
       ...(title === undefined ? {} : { title }),
       ...(running ? { running: true } : {}),
       ...(background ? { background: true } : {}),
+      ...(stored.resident === true ? { resident: true } : {}),
     }
   }
 
@@ -932,7 +934,10 @@ export function createConsoleChatPort(
       return { ok: true, value: out }
     },
 
-    async open(target: string): Promise<ConsoleResult<ChatSession>> {
+    async open(
+      target: string,
+      options?: ChatOpenOptions,
+    ): Promise<ConsoleResult<ChatSession>> {
       let parsed
       try {
         parsed = assertAddress(target, 'target')
@@ -945,6 +950,9 @@ export function createConsoleChatPort(
         node: parsed.node,
         agent: parsed.agent,
         createdAt: now(),
+        // P37.17: a person's one conversation with this agent. Which existing
+        // session that is, the console decides before it gets here.
+        ...(options?.resident === true ? { resident: true as const } : {}),
       }
       try {
         store.appendSession(stored)

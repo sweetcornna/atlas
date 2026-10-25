@@ -24,6 +24,7 @@ export type {
   ChatAuthor,
   ChatLocalCommand,
   ChatNoticeSeverity,
+  ChatOpenOptions,
   ChatPort,
   ChatSendInput,
   ChatSession,

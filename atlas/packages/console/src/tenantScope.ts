@@ -727,8 +727,8 @@ export function scopedConsoleDeps(
           v => node(v.node) && address(v.target),
         )
       },
-      async open(target) {
-        return address(target) ? chat.open(target) : hidden()
+      async open(target, options) {
+        return address(target) ? chat.open(target, options) : hidden()
       },
       async transcript(id) {
         return (await visible(id)) ? chat.transcript(id) : hidden()

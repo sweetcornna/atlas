@@ -97,15 +97,21 @@ describe('a closed ledger: no transcript is opened', () => {
     expect(response.status).toBe(503)
     const page = await response.text()
     expect(page).toContain(CLOSED_TEXT)
-    // The rest of the page is there: the conversation list with this one in it.
-    expect(page).toContain('id="fx-history"')
-    expect(page).toContain(id)
+    // The rest of the page is there: the agent's row is this conversation.
+    expect(page).toContain('id="fx-agents"')
+    expect(page).toContain(`data-latest="${id}"`)
     expect(h.chat.transcripts).toBe(0)
     expect(actions.entries.length).toBe(before)
-    // Without a conversation named, nothing is opened and nothing is asked.
+    // Without a conversation named, the main agent's own conversation is the
+    // one the page opens (P37.17), through the same gate: refused alike.
     const plain = await h.handle(browse('/', ADMIN))
-    expect(plain.status).toBe(200)
+    expect(plain.status).toBe(503)
+    expect(await plain.text()).toContain(CLOSED_TEXT)
+    // Under the settings card nothing is asked at all.
+    const card = await h.handle(browse('/admin/nodes', ADMIN))
+    expect(card.status).toBe(200)
     expect(h.chat.transcripts).toBe(0)
+    expect(actions.entries.length).toBe(before)
   })
 
   test('an open ledger is asked once per opening and the opening goes ahead', async () => {

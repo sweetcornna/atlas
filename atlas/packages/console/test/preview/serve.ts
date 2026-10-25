@@ -36,7 +36,7 @@ import { MemoryActionLedger } from '../memoryActions.js'
 import { agentAt, LIMITS, PageAudit, PageRegistry } from '../pageHarness.js'
 import { FakeProviders } from '../providersFake.js'
 import { PreviewApprovals } from './approvals.js'
-import { PreviewChat, TARGETS } from './chat.js'
+import { PreviewChat, TARGETS, ownResidents } from './chat.js'
 import { PreviewTasks } from './tasks.js'
 
 /** Test values, printed in `README.md`. Never a real console's tokens. */
@@ -66,6 +66,7 @@ const ports = Object.fromEntries(
   Object.entries(PREVIEW_PORTS).map(([name, make]) => [name, make(now)]),
 ) as Partial<ConsoleDeps>
 
+const chat = new PreviewChat()
 const deps: ConsoleDeps = {
   registry,
   audit: new PageAudit(),
@@ -73,7 +74,7 @@ const deps: ConsoleDeps = {
   now,
   label: 'preview-hub',
   identity: 'qianmo://hub/console',
-  chat: new PreviewChat(),
+  chat,
   chatDefault: 'qianmo://hub/ops',
   mainAgent: {
     get: () => mainAddress,
@@ -137,6 +138,7 @@ const people: Record<
   member: await signUp('member'),
   viewer: await signUp('viewer'),
 }
+ownResidents(chat, book, people.ops.credential)
 
 /** `/__preview/login?as=<role>&next=<path>`: the cookie, then the page. */
 function previewLogin(url: URL): Response {

@@ -199,8 +199,16 @@ body.fx-body {
   padding: 8px 10px 8px 8px; border: 0; border-radius: var(--radius-control); background: none; color: inherit;
   cursor: pointer; font: inherit; text-align: left;
 }
-.fx-agent-face { display: inline-flex; flex: none; }
+.fx-agent-face { position: relative; display: inline-flex; flex: none; }
 .fx-agent-face .avatar { display: block; }
+/* The roster's verdict on the agent, a dot on its figure (P37.17): the
+   success colour when it is online, the quiet neutral otherwise. */
+.fx-presence {
+  position: absolute; right: -1px; bottom: -1px; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--color-neutral-500); box-shadow: 0 0 0 2px var(--color-side);
+}
+.fx-presence[data-tone="ok"] { background: var(--color-success-fill); }
+.fx-presence[data-tone="warn"] { background: var(--color-warning-fill); }
 .fx-agent-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .fx-agent-line { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .fx-agent-name { font-size: var(--text-ui); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -275,8 +283,8 @@ body.fx-body {
   content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 14px; pointer-events: none;
   background: linear-gradient(var(--color-bg), color-mix(in srgb, var(--color-bg) 0%, transparent));
 }
-.fx-side-open, .fx-top-new { display: none; }
-.fx[data-side="closed"] .fx-side-open, .fx[data-side="closed"] .fx-top-new { display: inline-grid; }
+.fx-side-open { display: none; }
+.fx[data-side="closed"] .fx-side-open { display: inline-grid; }
 .fx[data-side="closed"] .fx-top { padding-left: calc(10px + var(--fx-shell-x)); }
 .fx-head-mount { flex: 1; min-width: 0; align-self: stretch; display: flex; align-items: center; }
 .fx-head { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
@@ -330,9 +338,13 @@ button.fx-head-face:hover, button.fx-welcome-face:hover { background: var(--fx-h
 .fx-chip .chev { width: 12px; height: 12px; flex: none; color: var(--color-muted); }
 .fx-chip .state { font-size: var(--text-small); }
 
-/* The history menu (智能体). */
-.fx-hist-pop { width: min(340px, 88vw); max-height: min(62vh, 520px); padding: 0; overflow: hidden; }
-.fx-history { display: flex; flex-direction: column; min-height: 0; max-height: inherit; }
+/* 其他对话 (P37.17): an agent's other conversations, in a dialog its ⋯ opens. */
+dialog.dialog.fx-others { width: min(400px, calc(100% - var(--space-8))); padding: var(--space-1) var(--space-1) var(--space-4); gap: var(--space-2); overflow: hidden; }
+.fx-others > .btn { align-self: flex-end; margin-right: var(--space-3); }
+/* The dialog sits outside .fx, whose [hidden] rule the list's flex rows would beat. */
+.fx-others [hidden] { display: none !important; }
+.fx-history { display: flex; flex-direction: column; min-height: 0; max-height: min(62vh, 520px); }
+.fx-menu-count { margin-left: auto; padding-left: var(--space-3); color: var(--color-muted); font-size: var(--text-small); }
 .fx-sec-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 10px 6px 12px; }
 .fx-sec-title { margin: 0; font-size: var(--text-ui); font-weight: 600; }
 .fx-hist-list { overflow-y: auto; padding: 0 5px 6px; scrollbar-width: thin; }
@@ -355,6 +367,18 @@ button.fx-head-face:hover, button.fx-welcome-face:hover { background: var(--fx-h
 .fx-hitem-meta { display: flex; align-items: center; gap: 6px; font-size: var(--text-small); color: var(--color-muted); }
 .fx-history:not([data-scope="all"]) .fx-hitem-who { display: none; }
 .fx-hitem-who::after { content: "·"; margin-left: 6px; }
+
+/* A conversation read here and not written in (P37.17): the line takes the
+   composer's place, held at the foot of the transcript however far it is read. */
+.fx-main:has(#fx-thread[data-readonly="1"]) .fx-composer { display: none; }
+.fx-readonly {
+  position: sticky; bottom: 0; z-index: 1;
+  display: flex; align-items: center; justify-content: center; gap: var(--space-3);
+  margin-top: var(--space-4); padding: var(--space-3) 0 var(--space-4); background: var(--color-bg);
+  font-size: var(--text-small); color: var(--color-muted);
+}
+.fx-readonly .btn { display: inline-flex; align-items: center; gap: var(--space-2); }
+.fx-readonly .avatar { display: block; flex: none; }
 
 /* The thin lines under the bar: offline, and a view on its way. */
 .fx-offline {
@@ -735,7 +759,7 @@ a.fx-id:hover { color: var(--color-text); text-decoration: underline; }
     opacity: 0; pointer-events: none; transition: opacity var(--motion-sheet) var(--ease-out);
   }
   .fx[data-drawer="open"] .fx-scrim { opacity: 1; pointer-events: auto; }
-  .fx-side-open, .fx[data-side="closed"] .fx-side-open, .fx-top-new { display: inline-grid; }
+  .fx-side-open, .fx[data-side="closed"] .fx-side-open { display: inline-grid; }
   .fx-top, .fx[data-side="closed"] .fx-top { padding: 0 8px 0 calc(8px + var(--fx-shell-x)); }
   .fx-column { padding: 0 var(--space-4); }
   .fx-msg-user { max-width: 86%; }

@@ -46,7 +46,7 @@ import { MemoryActionLedger } from './memoryActions.js'
 import { agentAt, LIMITS, PageAudit, PageRegistry } from './pageHarness.js'
 import { FakeProviders } from './providersFake.js'
 import { PreviewApprovals } from './preview/approvals.js'
-import { PreviewChat, TARGETS } from './preview/chat.js'
+import { PreviewChat, TARGETS, ownResidents } from './preview/chat.js'
 import { PreviewTasks } from './preview/tasks.js'
 
 /** Test values, valid only in this preview. Never a real console's tokens. */
@@ -204,6 +204,7 @@ const ports = Object.fromEntries(
   Object.entries(PREVIEW_PORTS).map(([name, make]) => [name, make(now)]),
 ) as Partial<ConsoleDeps>
 
+const chat = new PreviewChat()
 const deps: ConsoleDeps = {
   ...ports,
   registry,
@@ -212,7 +213,7 @@ const deps: ConsoleDeps = {
   now,
   label: 'app-preview',
   identity: 'qianmo://hub/console',
-  chat: new PreviewChat(),
+  chat,
   chatDefault: 'qianmo://hub/ops',
   nodeServers: [
     { node: 'hub', server: 'p5' },
@@ -259,6 +260,7 @@ async function signUpOwner(): Promise<{
   const principal = book.bearerPrincipal(credential)
   if (sid === null || !principal.ok || principal.value.kind !== 'user')
     throw new Error('the preview could not sign its owner up')
+  ownResidents(chat, book, credential)
   return {
     sid,
     actor: {

@@ -593,7 +593,10 @@ describe('chat session rail', () => {
 
 describe('front document', () => {
   test('inlines its resources and enables the composer for a loaded transcript', async () => {
-    const handler = createConsoleHandler(depsWith(new FakeChat()), TOKENS)
+    const chat = new FakeChat()
+    // The reader's own conversation with the agent (P37.17).
+    chat.sessionsResult = ok([{ ...SESSION, resident: true }])
+    const handler = createConsoleHandler(depsWith(chat), TOKENS)
     const html = await (await handler(get(`/?session=${SESSION.id}`))).text()
     const stripped = html.replace(/<link rel="icon"[^>]*>\n?/, '')
     expect(stripped).not.toBe(html)
@@ -603,6 +606,25 @@ describe('front document', () => {
     expect(html).toContain('connect-src &#39;self&#39;')
     expect(html).toContain(`maxlength="${MAX_CHAT_TEXT_LENGTH}"`)
     expect(html).not.toContain('aria-label="发送" disabled')
+    const thread = /<div class="fx-thread" id="fx-thread"[^>]*>/.exec(html)?.[0]
+    expect(thread).toContain('data-resident="1"')
+    expect(thread).not.toContain('data-readonly')
+  })
+
+  test("a conversation that is not the reader's own with its agent is read here, not written in", async () => {
+    const handler = createConsoleHandler(depsWith(new FakeChat()), TOKENS)
+    const html = await (await handler(get(`/?session=${SESSION.id}`))).text()
+    expect(
+      /<div class="fx-thread" id="fx-thread"[^>]*>/.exec(html)?.[0],
+    ).toContain('data-readonly="1"')
+    expect(html).toContain('aria-label="发送" disabled')
+    expect(html).toMatch(/<textarea id="fx-text"[^>]* disabled>/)
+    expect(html).toContain(
+      `<div class="fx-readonly" role="note"><span class="fx-readonly-word">只读</span>`,
+    )
+    expect(html).toContain(
+      `data-action="fx-agent" data-address="${SESSION.target}"`,
+    )
   })
 
   test('a failed transcript leaves both composer controls disabled', async () => {

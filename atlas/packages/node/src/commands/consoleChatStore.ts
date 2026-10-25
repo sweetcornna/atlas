@@ -50,6 +50,13 @@ export interface StoredChatSession {
   readonly node: string
   readonly agent: string
   readonly createdAt: number
+  /**
+   * A person's one conversation with this agent (P37.17, `@qianmo/console`'s
+   * `ChatSession.resident`). Written with the session and never again; whose
+   * it is lives in the account book, not here. Absent on every record written
+   * before it existed, which is what those sessions are: not resident.
+   */
+  readonly resident?: true
 }
 
 /** Everything a replay yields, in write order. */
@@ -197,7 +204,14 @@ function toSession(value: unknown): StoredChatSession | null {
   ) {
     return null
   }
-  return { id, target, node, agent, createdAt }
+  return {
+    id,
+    target,
+    node,
+    agent,
+    createdAt,
+    ...(value['resident'] === true ? { resident: true as const } : {}),
+  }
 }
 
 export class ChatStore {

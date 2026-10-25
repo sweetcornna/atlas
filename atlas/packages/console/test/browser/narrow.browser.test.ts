@@ -104,8 +104,9 @@ function serve() {
     ],
   })
   const chat = new LongChat()
+  // An older conversation, then planner's resident one (P37.17).
   void chat.open('qianmo://tokyo-1/planner')
-  void chat.open('qianmo://tokyo-1/planner')
+  void chat.open('qianmo://tokyo-1/planner', { resident: true })
   const handle = createConsoleHandler({ ...harness.deps, chat }, TOKENS)
   const server = Bun.serve({
     port: 0,
@@ -408,11 +409,11 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
     }
   }, 30_000)
 
-  test('the conversation: composer and connection on the first screen, the list in a drawer, and a message goes out', async () => {
+  test('the conversation: composer and connection on the first screen, the list in a drawer, an older conversation in a dialog that fits, and a message goes out', async () => {
     const tab = await phone(browser)
     try {
       await observeChatStream(tab)
-      await open(tab, served.base, '/?session=session-1')
+      await open(tab, served.base, '/')
       await tab.waitFor(`window.__chatStreamOpen === true`, 10_000)
       const first = await tab.evaluate<{
         composerTop: number
@@ -469,15 +470,50 @@ describe.skipIf(SKIP !== null)('the console at 375 px (E1)', () => {
           `document.querySelector('.fx-me-text').textContent`,
         ),
       ).toContain('管理')
+      // planner's ⋯ → 其他对话: the dialog fits the width.
+      const row = `#fx-agents .fx-agent-row[data-address="qianmo://tokyo-1/planner"]`
       await tab.evaluate(
-        `document.querySelector('#fx-history [data-session="session-2"]').click()`,
+        `document.querySelector('${row} .fx-more-btn').click()`,
+      )
+      await tab.evaluate(
+        `document.querySelector('${row} [data-action="fx-others"]').click()`,
+      )
+      await tab.waitFor(`document.getElementById('fx-others').open`)
+      const others = await tab.evaluate<{
+        left: number
+        right: number
+        items: string[]
+      }>(`(() => {
+        const box = document.getElementById('fx-others').getBoundingClientRect();
+        const items = [...document.querySelectorAll('#fx-others .fx-hitem')].filter(el => el.getClientRects().length > 0);
+        return { left: box.left, right: box.right, items: items.map(el => el.getAttribute('data-session')) };
+      })()`)
+      expect(others.left).toBeGreaterThanOrEqual(0)
+      expect(others.right).toBeLessThanOrEqual(WIDTH)
+      expect(others.items).toEqual(['session-1'])
+      await tab.evaluate(
+        `document.querySelector('#fx-others [data-session="session-1"]').click()`,
       )
       await tab.waitFor(
-        `document.getElementById('fx').getAttribute('data-drawer') !== 'open' && location.search === '?session=session-2'`,
+        `document.getElementById('fx').getAttribute('data-drawer') !== 'open' && location.search === '?session=session-1' && document.getElementById('fx-thread').getAttribute('data-readonly') === '1'`,
       )
-      // The composer stays held until session-2 is the thread on screen.
+      // Read only: the line and its way back fit the screen.
+      const line = await tab.evaluate<{
+        right: number
+        bottom: number
+        disabled: boolean
+      }>(`(() => {
+        const box = document.querySelector('.fx-readonly').getBoundingClientRect();
+        return { right: box.right, bottom: box.bottom, disabled: document.getElementById('fx-text').disabled };
+      })()`)
+      expect(line.right).toBeLessThanOrEqual(WIDTH)
+      expect(line.bottom).toBeLessThanOrEqual(HEIGHT)
+      expect(line.disabled).toBe(true)
+      await tab.evaluate(
+        `document.querySelector('.fx-readonly [data-action="fx-agent"]').click()`,
+      )
       await tab.waitFor(
-        `document.getElementById('fx-thread').getAttribute('data-session') === 'session-2' && !document.getElementById('fx-text').disabled`,
+        `location.search === '' && document.getElementById('fx-thread').getAttribute('data-session') === 'session-2' && !document.getElementById('fx-text').disabled`,
       )
       // Mobile keeps the keyboard closed until the reader taps the input.
       await tab.evaluate(`document.getElementById('fx-text').focus()`)

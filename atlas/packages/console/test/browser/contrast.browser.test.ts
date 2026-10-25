@@ -112,7 +112,10 @@ function serve() {
     ],
   })
   const chat = new TurnsChat()
+  // An older conversation (read only on the front) and planner's resident
+  // one, which `/` and `/app` open (P37.17).
   void chat.open('qianmo://tokyo-1/planner')
+  void chat.open('qianmo://tokyo-1/planner', { resident: true })
   const handle = createConsoleHandler({ ...harness.deps, chat }, TOKENS)
   const server = Bun.serve({
     port: 0,
@@ -186,6 +189,28 @@ describe.skipIf(SKIP !== null)('WCAG AA contrast, light and dark (B1)', () => {
           seen.set(path, result.total)
           for (const one of result.short) found.push({ ...one, page: path })
         }
+        // An agent's ⋯ and the 其他对话 it opens (P37.17).
+        await tab.goto(`${served.base}/?token=${ADMIN}`)
+        await tab.waitFor('window.qianmoConsole !== undefined')
+        const row = `#fx-agents .fx-agent-row[data-address="qianmo://tokyo-1/planner"]`
+        await tab.evaluate(
+          `document.querySelector('${row} .fx-more-btn').click()`,
+        )
+        for (const [where, root] of [
+          ['#agent-menu', `document.querySelector('${row} .fx-menu')`],
+          ['#fx-others', `document.getElementById('fx-others')`],
+        ] as const) {
+          if (where === '#fx-others') {
+            await tab.evaluate(
+              `document.querySelector('${row} [data-action="fx-others"]').click()`,
+            )
+            await tab.waitFor(`document.getElementById('fx-others').open`)
+          }
+          const result = await tab.evaluate<Probe>(probe(root))
+          total += result.total
+          seen.set(where, result.total)
+          for (const one of result.short) found.push({ ...one, page: where })
+        }
         // The two dialogs a writer opens most, and a failure toast.
         await tab.goto(`${served.base}/admin/nodes`)
         await tab.waitFor('window.qianmoConsole !== undefined')
@@ -245,7 +270,7 @@ describe.skipIf(SKIP !== null)('WCAG AA contrast, light and dark (B1)', () => {
         ([where, count]) => count < (where.startsWith('/') ? 8 : 2),
       )
       expect(thin).toEqual([])
-      expect(seen.size).toBe(PAGES.length + 5)
+      expect(seen.size).toBe(PAGES.length + 7)
       expect(total).toBeGreaterThan(400)
       expect(report(found)).toEqual([])
     }, 120_000)

@@ -6,9 +6,12 @@ import type { ChatTranscript, ConsoleResult } from '../../src/deps.js'
 import { createConsoleHandler } from '../../src/http.js'
 import {
   ADDRESS,
+  type AccountsHarness,
   CountingChat,
+  type Person,
   accountsHarness,
   asSession,
+  olderSession,
   person,
 } from '../accountsHarness.js'
 import { ADMIN, NOW, TOKENS, pageHarness } from '../pageHarness.js'
@@ -65,6 +68,49 @@ class CodeChat extends CountingChat {
 const SKIP = skipReason()
 if (SKIP !== null) console.warn(`[front browser tests] skipped: ${SKIP}`)
 
+const REVIEWER = 'qianmo://tokyo-1/reviewer'
+const REVIEWER_ROW = `document.querySelector('#fx-agents .fx-agent[data-address="${REVIEWER}"]')`
+
+/** The harness with a second agent on the roster: planner is the main one. */
+function twoAgents(): AccountsHarness {
+  const h = accountsHarness()
+  h.chat.moreTargets.push({
+    address: REVIEWER,
+    node: 'tokyo-1',
+    agent: 'reviewer',
+    endpoint: 'ws://127.0.0.1:38611/',
+    status: 'online',
+    dialable: true,
+  })
+  return h
+}
+
+/** `who`'s resident conversations with planner and with reviewer. */
+async function residents(
+  h: AccountsHarness,
+  who: Person,
+): Promise<[string, string]> {
+  const ids: string[] = []
+  for (const target of [ADDRESS, REVIEWER]) {
+    const response = await h.handle(
+      asSession('POST', '/v0/chat/sessions', who.sid, { body: { target } }),
+    )
+    expect(response.status).toBe(200)
+    ids.push(((await response.json()) as { id: string }).id)
+  }
+  const [a = '', b = ''] = ids
+  return [a, b]
+}
+
+/** The view fetch a click on reviewer's row makes. */
+function viewsReviewer(request: Request): boolean {
+  const url = new URL(request.url)
+  return (
+    url.pathname === '/fragments/chat/front/view' &&
+    url.searchParams.get('agent') === REVIEWER
+  )
+}
+
 describe.skipIf(SKIP !== null)(
   'front interaction with a personal session',
   () => {
@@ -76,20 +122,10 @@ describe.skipIf(SKIP !== null)(
       await browser?.close()
     }, 30_000)
 
-    test('sending during a held session switch cannot post into the session that is not yet on screen', async () => {
-      const h = accountsHarness()
+    test('sending during a held switch to another agent cannot post into the conversation that is not yet on screen', async () => {
+      const h = twoAgents()
       const member = await person(h.handle, 'member')
-      const ids: string[] = []
-      for (let i = 0; i < 2; i++) {
-        const response = await h.handle(
-          asSession('POST', '/v0/chat/sessions', member.sid, {
-            body: { target: ADDRESS },
-          }),
-        )
-        expect(response.status).toBe(200)
-        ids.push(((await response.json()) as { id: string }).id)
-      }
-      const [a, b] = ids
+      const [a, b] = await residents(h, member)
       const gate = Promise.withResolvers<void>()
       const requested = Promise.withResolvers<void>()
       let hold = false
@@ -97,10 +133,7 @@ describe.skipIf(SKIP !== null)(
         port: 0,
         hostname: '127.0.0.1',
         async fetch(request) {
-          if (
-            hold &&
-            new URL(request.url).pathname === `/fragments/chat/front/view/${b}`
-          ) {
+          if (hold && viewsReviewer(request)) {
             requested.resolve()
             await gate.promise
           }
@@ -128,12 +161,10 @@ describe.skipIf(SKIP !== null)(
           `,
         })
         await observeChatStream(tab)
-        await tab.goto(`${base}/?session=${a}`)
+        await tab.goto(`${base}/`)
         await tab.waitFor(`window.__chatStreamOpen === true`)
         hold = true
-        await tab.evaluate(
-          `document.querySelector('.fx-hitem[data-session="${b}"]').click()`,
-        )
+        await tab.evaluate(`${REVIEWER_ROW}.click()`)
         await requested.promise
         expect(
           await tab.evaluate<string>(
@@ -182,28 +213,15 @@ describe.skipIf(SKIP !== null)(
     }, 30_000)
 
     test('a switch whose view fails leaves the shown conversation unsendable until the target is opened', async () => {
-      const h = accountsHarness()
+      const h = twoAgents()
       const member = await person(h.handle, 'member')
-      const ids: string[] = []
-      for (let i = 0; i < 2; i++) {
-        const response = await h.handle(
-          asSession('POST', '/v0/chat/sessions', member.sid, {
-            body: { target: ADDRESS },
-          }),
-        )
-        expect(response.status).toBe(200)
-        ids.push(((await response.json()) as { id: string }).id)
-      }
-      const [a, b] = ids
+      const [a, b] = await residents(h, member)
       let failB = false
       const server = Bun.serve({
         port: 0,
         hostname: '127.0.0.1',
         async fetch(request) {
-          if (
-            failB &&
-            new URL(request.url).pathname === `/fragments/chat/front/view/${b}`
-          )
+          if (failB && viewsReviewer(request))
             return new Response('测试打开失败', { status: 503 })
           return h.handle(request)
         },
@@ -219,12 +237,10 @@ describe.skipIf(SKIP !== null)(
           sameSite: 'Strict',
         })
         await observeChatStream(tab)
-        await tab.goto(`${base}/?session=${a}`)
+        await tab.goto(`${base}/`)
         await tab.waitFor(`window.__chatStreamOpen === true`)
         failB = true
-        await tab.evaluate(
-          `document.querySelector('.fx-hitem[data-session="${b}"]').click()`,
-        )
+        await tab.evaluate(`${REVIEWER_ROW}.click()`)
         await tab.waitFor(
           `document.getElementById('fx-status').textContent.includes('打开')`,
         )
@@ -249,9 +265,7 @@ describe.skipIf(SKIP !== null)(
         )
         expect(h.chat.sent).toEqual([])
         failB = false
-        await tab.evaluate(
-          `document.querySelector('.fx-hitem[data-session="${b}"]').click()`,
-        )
+        await tab.evaluate(`${REVIEWER_ROW}.click()`)
         await tab.waitFor(
           `document.getElementById('fx-thread').getAttribute('data-session') === '${b}' && !document.getElementById('fx-text').disabled`,
         )
@@ -406,9 +420,15 @@ describe.skipIf(SKIP !== null)(
         document.getElementById('fx-text').value = '检查节点运行状态';
         document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       })()`)
+        // The main agent's conversation is the page's own: no query.
         await tab.waitFor(
-          `location.search === '?session=session-1' && document.getElementById('fx-text').value === ''`,
+          `location.search === '' && document.getElementById('fx-thread').getAttribute('data-session') === 'session-1' && document.getElementById('fx-text').value === ''`,
         )
+        expect(
+          await tab.evaluate<string | null>(
+            `document.getElementById('fx-thread').getAttribute('data-resident')`,
+          ),
+        ).toBe('1')
         expect(h.chat.opened).toBe(1)
         expect(h.chat.sent.map(input => [input.sessionId, input.text])).toEqual(
           [['session-1', '检查节点运行状态']],
@@ -450,8 +470,8 @@ describe.skipIf(SKIP !== null)(
       }
     }, 30_000)
 
-    test('/app: the welcome sends to the picked agent, recents open in place, the keys reach search, sidebar and panel, and quick entry lands on the conversation', async () => {
-      const h = accountsHarness()
+    test('/app: the welcome sends to the picked agent, an older conversation is under ⋯ and read only, the keys reach search, sidebar and panel, and quick entry lands on the conversation', async () => {
+      const h = twoAgents()
       const member = await person(h.handle, 'member')
       const server = Bun.serve({
         port: 0,
@@ -476,6 +496,7 @@ describe.skipIf(SKIP !== null)(
           })
         }
       }
+      const row = `#fx-agents .fx-agent-row[data-address="${ADDRESS}"]`
       try {
         await tab.send('Network.setCookie', {
           name: 'qianmo_session',
@@ -497,31 +518,91 @@ describe.skipIf(SKIP !== null)(
             `document.querySelector('#fx-agent-menu [aria-checked="true"]').getAttribute('data-agent-pick')`,
           ),
         ).toBe(ADDRESS)
+        // No new-conversation entry: talking to a bot is picking it.
+        expect(
+          await tab.evaluate<number>(
+            `document.querySelectorAll('[data-action="fx-new"], [data-action="fx-agent-new"], #fx-top-new').length`,
+          ),
+        ).toBe(0)
         await tab.evaluate(`(() => {
           document.getElementById('fx-text').value = '整理一下今天的告警';
           document.getElementById('fx-composer').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
         })()`)
         await tab.waitFor(
-          `location.pathname === '/app' && location.search === '?session=session-1' && document.getElementById('fx-text').value === ''`,
+          `location.pathname === '/app' && location.search === '' && document.getElementById('fx-thread').getAttribute('data-session') === 'session-1' && document.getElementById('fx-text').value === ''`,
         )
         expect(h.chat.sent.map(input => [input.sessionId, input.text])).toEqual(
           [['session-1', '整理一下今天的告警']],
         )
+        // The agent's row is that conversation; the dated list under it
+        // holds only work that is not with a bot, and there is none yet.
         await tab.waitFor(
-          `!!document.querySelector('#fx-recents .fx-ritem-row.is-current[data-session="session-1"]')`,
+          `!!document.querySelector('${row}.is-current[data-latest="session-1"]')`,
         )
+        expect(
+          await tab.evaluate<number>(
+            `document.querySelectorAll('#fx-recents .fx-ritem-row:not([hidden])').length`,
+          ),
+        ).toBe(0)
 
-        // A new conversation, then back through the recents, without a load.
+        // A conversation from before: under the agent's ⋯, 其他对话, read
+        // only, and one click back to the agent — all without a load.
+        const older = await olderSession(h, member)
+        const reviewers = await olderSession(h, member, REVIEWER)
+        h.chat.emit(older)
+        await tab.waitFor(
+          `!!document.querySelector('${row} [data-action="fx-others"]')`,
+        )
         await tab.evaluate(`window.__sameDocument = true`)
         await tab.evaluate(
-          `document.querySelector('#fx-side [data-action="fx-new"]').click()`,
+          `document.querySelector('${row} .fx-more-btn').click()`,
         )
-        await tab.waitFor(`!!document.querySelector('#fx-thread .fx-greet')`)
         await tab.evaluate(
-          `document.querySelector('#fx-recents .fx-ritem[data-session="session-1"]').click()`,
+          `document.querySelector('${row} [data-action="fx-others"]').click()`,
+        )
+        await tab.waitFor(`document.getElementById('fx-others').open`)
+        expect(
+          await tab.evaluate<string[]>(
+            `[...document.querySelectorAll('#fx-others .fx-hitem')].filter(el => el.getClientRects().length > 0).map(el => el.getAttribute('data-session'))`,
+          ),
+        ).toEqual([older])
+        // 全部: every other conversation, reviewer's too.
+        await tab.evaluate(
+          `document.querySelector('#fx-others [data-action="fx-scope"][data-scope="all"]').click()`,
+        )
+        expect(
+          await tab.evaluate<string[]>(
+            `[...document.querySelectorAll('#fx-others .fx-hitem')].filter(el => el.getClientRects().length > 0).map(el => el.getAttribute('data-session')).sort()`,
+          ),
+        ).toEqual([older, reviewers].sort())
+        await tab.evaluate(
+          `document.querySelector('#fx-others .fx-hitem[data-session="${older}"]').click()`,
         )
         await tab.waitFor(
-          `location.search === '?session=session-1' && !document.querySelector('#fx-thread .fx-greet')`,
+          `location.search === '?session=${older}' && document.getElementById('fx-thread').getAttribute('data-readonly') === '1' && !document.getElementById('fx-others').open`,
+        )
+        expect(
+          await tab.evaluate<[boolean, string, string]>(
+            `[document.getElementById('fx-text').disabled, document.querySelector('.fx-readonly-word').textContent, document.querySelector('.fx-readonly [data-action="fx-agent"]').textContent]`,
+          ),
+        ).toEqual([true, '只读', '回到 planner'])
+        await tab.evaluate(
+          `document.querySelector('.fx-readonly [data-action="fx-agent"]').click()`,
+        )
+        await tab.waitFor(
+          `location.search === '' && document.getElementById('fx-thread').getAttribute('data-session') === 'session-1' && !document.getElementById('fx-text').disabled`,
+        )
+        // ⌘⇧O / Ctrl Shift O (a browser keeps ⌘N): the main agent, from
+        // wherever the reader is.
+        await tab.evaluate(
+          `document.querySelector('#fx-history .fx-hitem[data-session="${older}"]').click()`,
+        )
+        await tab.waitFor(
+          `document.getElementById('fx-thread').getAttribute('data-readonly') === '1'`,
+        )
+        await press('O', 'KeyO', 79, 10)
+        await tab.waitFor(
+          `location.search === '' && document.getElementById('fx-thread').getAttribute('data-session') === 'session-1' && !document.getElementById('fx-text').disabled`,
         )
         expect(
           await tab.evaluate<boolean>(`window.__sameDocument === true`),
@@ -557,17 +638,22 @@ describe.skipIf(SKIP !== null)(
         )
         await tab.send('Input.insertText', { text: '查一下各节点的内存' })
         await press('Enter', 'Enter', 13, 0)
+        // The agent's conversation again, not a new one.
         await tab.waitFor(
-          `location.pathname === '/app' && location.search === '?session=session-2'`,
+          `location.pathname === '/app' && location.search === '?session=session-1'`,
           10_000,
+        )
+        await tab.waitFor(
+          `document.getElementById('fx-thread').getAttribute('data-resident') === '1' && !document.getElementById('fx-text').disabled`,
         )
         expect(h.chat.sent.map(input => [input.sessionId, input.text])).toEqual(
           [
             ['session-1', '整理一下今天的告警'],
-            ['session-2', '查一下各节点的内存'],
+            ['session-1', '查一下各节点的内存'],
           ],
         )
-        expect(h.chat.opened).toBe(2)
+        // The resident one and the two older ones; quick entry opened none.
+        expect(h.chat.opened).toBe(3)
       } finally {
         await tab.close()
         server.stop(true)

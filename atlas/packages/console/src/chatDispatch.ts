@@ -3,7 +3,13 @@
 
 import { type Access, type ConsoleAccounts, subjectOf } from './access.js'
 import { chatScopeOf } from './accountsHttp.js'
+import {
+  oneAtATime,
+  residentOwnerOf,
+  residentSessions,
+} from './chatResident.js'
 import type {
+  ChatOpenOptions,
   ChatSendInput,
   ChatSession,
   ChatTarget,
@@ -203,9 +209,52 @@ export class ChatDispatch {
     return this.#recordOwner(sessionId)
   }
 
+  /**
+   * The reader's resident session with `target` (P37.17, `chatResident.ts`):
+   * the one they already have, as it is — nothing written, no new session
+   * counted, no ledger line, because nothing was opened — or else a new one
+   * carrying the mark, opened the way {@link open} opens any session after
+   * `admit` lets it. One resolution at a time per reader and agent.
+   */
+  async resident(
+    target: string,
+    hooks: {
+      /** The action ledger's say, asked only before a session is opened. */
+      readonly admit: () => Promise<Response | null>
+      readonly recorded?: (result: ConsoleResult<ChatSession>) => Promise<void>
+    },
+  ): Promise<ConsoleResult<ChatSession> | Response> {
+    const denied = this.authorize(target)
+    if (denied) return denied
+    const ctx = this.#ctx
+    const owner = residentOwnerOf(ctx.access, ctx.accounts)
+    return await oneAtATime(`${owner?.opener ?? ''}\n${target}`, async () => {
+      // With the book unavailable nobody's sessions can be told apart: a
+      // person's open is refused below as before, and a legacy token opens
+      // a new one rather than take somebody else's.
+      if (owner !== null) {
+        const listed = await ctx.deps.chat!.sessions()
+        if (!listed.ok) return listed
+        const scope = chatScopeOf(ctx.access, ctx.accounts)
+        const held = residentSessions(
+          listed.value.filter(session => scope.visible(session.id)),
+          owner,
+        ).get(target)
+        if (held !== undefined) {
+          // The account may have changed while the list was read.
+          return this.authorize(target) ?? { ok: true, value: held }
+        }
+      }
+      const blocked = await hooks.admit()
+      if (blocked !== null) return blocked
+      return await this.open(target, hooks.recorded, { resident: true })
+    })
+  }
+
   async open(
     target: string,
     recorded?: (result: ConsoleResult<ChatSession>) => Promise<void>,
+    options?: ChatOpenOptions,
   ): Promise<ConsoleResult<ChatSession> | Response> {
     const denied = this.authorize(target)
     if (denied) return denied
@@ -220,7 +269,7 @@ export class ChatDispatch {
     if (reservation instanceof Response) return reservation
     let result: ConsoleResult<ChatSession>
     try {
-      result = await ctx.deps.chat!.open(target)
+      result = await ctx.deps.chat!.open(target, options)
       if (typeof reservation === 'string' && result.ok)
         ctx.deps.usage?.adoptSession(reservation, result.value.id)
     } catch (error) {
