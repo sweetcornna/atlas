@@ -9,7 +9,7 @@
  * happens. A record goes to the file first, then to the page.
  */
 
-import { randomBytes, randomUUID } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import * as path from 'node:path'
 import type {
   AgentHooks,
@@ -18,7 +18,8 @@ import type {
   AskView,
   ToolView,
 } from './drivers/agent.js'
-import { ClaudeAgent, NO_AUTO } from './drivers/claude.js'
+import { NO_AUTO } from './drivers/claude.js'
+import { driverFor } from './drivers/index.js'
 import {
   type Changes,
   diff as fileDiff,
@@ -55,6 +56,7 @@ import {
   type StoredFolder,
   Transcript,
 } from './store.js'
+import { turnDiffChanges, turnDiffFile } from './turnDiff.js'
 
 /** An agent the runner may start, as `qmo agents` found it. */
 export type FoundAgent =
@@ -150,7 +152,7 @@ class Session {
   readonly asks = new Map<string, OpenAsk>()
   /** Tool call id → its process line. */
   readonly tools = new Map<string, string>()
-  readonly approved = new Map<string, 'user' | 'session'>()
+  readonly approved = new Map<string, 'mode' | 'user' | 'session'>()
   readonly denied = new Set<string>()
   /** Settles a wait for room with `false` when the turn is stopped. */
   cancelWait: ((go: boolean) => void) | undefined
@@ -432,6 +434,7 @@ export class SessionManager {
     const root = sessionRoot(folder.path)
     const found = await this.#options.findAgent(input.agent)
     if (!found.ok) throw new CodeError('E_AGENT', found.reason)
+    const driver = driverFor(found.protocol)
     const id = newSessionId()
     const now = this.#now()
     const noAuto = input.mode === 'auto' && this.#noAuto.has(found.path)
@@ -451,7 +454,11 @@ export class SessionManager {
       mode: noAuto ? 'accept-edits' : input.mode,
       state: 'running',
       lastSeq: 0,
-      native: { kind: 'claude-session', id: randomUUID(), started: false },
+      native: {
+        kind: driver.nativeKind,
+        id: driver.newNativeId(),
+        started: false,
+      },
       remote: { on: false, pushedSeq: 0 },
     }
     this.#options.store.ensure()
@@ -623,14 +630,34 @@ export class SessionManager {
     }
   }
 
+  /** Git's view of the session's folder; outside Git, the agent's last turn diff (Codex). */
   async changes(id: string): Promise<Changes> {
     const session = this.#session(id)
-    return gitChanges(await this.#options.git(), session.header.root)
+    const found = await gitChanges(
+      await this.#options.git(),
+      session.header.root,
+    )
+    if (found.source === 'git') return found
+    return (
+      turnDiffChanges(
+        this.#options.store.readTurnDiff(id),
+        session.header.root,
+      ) ?? found
+    )
   }
 
   async diff(id: string, relative: string): Promise<FileDiff> {
     const session = this.#session(id)
-    return fileDiff(await this.#options.git(), session.header.root, relative)
+    const { root } = session.header
+    if (gitTop(root) === undefined) {
+      const kept = turnDiffFile(
+        this.#options.store.readTurnDiff(id),
+        root,
+        relative,
+      )
+      if (kept !== undefined) return kept
+    }
+    return fileDiff(await this.#options.git(), root, relative)
   }
 
   // ---- turns -------------------------------------------------------------------
@@ -756,12 +783,11 @@ export class SessionManager {
       throw new CodeError('E_AGENT', found.reason)
     }
     session.program = found.path
-    session.agent = new ClaudeAgent({
+    session.agent = driverFor(session.header.agent.protocol).start({
       program: found.path,
       root: session.header.root,
       env: await this.#options.agentEnv(),
-      sessionId: session.header.native.id,
-      started: session.header.native.started,
+      native: session.header.native,
       mode: session.header.mode,
       noAuto: this.#noAuto.has(found.path),
       hooks: this.#hooks(session),
@@ -881,10 +907,16 @@ export class SessionManager {
         this.#toolEnd(session, toolId, isError, output),
       ask: (view, signal) => this.#ask(session, view, signal),
       notice: (text, severity) => this.#notice(session, text, severity),
-      started: () =>
+      started: nativeId =>
         this.#header(
           session,
-          { native: { ...session.header.native, started: true } },
+          {
+            native: {
+              ...session.header.native,
+              ...(nativeId === undefined ? {} : { id: nativeId }),
+              started: true,
+            },
+          },
           false,
         ),
       modeChanged: mode => this.#header(session, { mode }),
@@ -896,6 +928,14 @@ export class SessionManager {
         this.#options.children.remove(pid)
         // Gone between turns (idle, crashed): the slot is free.
         if (!session.active) this.#release(session)
+      },
+      approvedByMode: toolId => session.approved.set(toolId, 'mode'),
+      turnDiff: diff => {
+        try {
+          this.#options.store.writeTurnDiff(id, diff, this.#now())
+        } catch (error) {
+          this.#log(`could not keep the turn diff of ${id}: ${String(error)}`)
+        }
       },
     }
   }
