@@ -25,7 +25,7 @@ export type WorkflowId = (typeof WORKFLOWS)[number]['id']
 
 export interface Workflow {
   readonly id: WorkflowId
-  /** omp 的技能名，首条消息带 `/skill:<它>`。 */
+  /** omp 的技能名；带着工作流发的那一句点名它（{@link workflowPrompt}）。 */
   readonly skill: string
   readonly outputs: readonly string[]
 }
@@ -46,11 +46,17 @@ export function workflowOfSkill(skill: string): WorkflowId | undefined {
 }
 
 /**
- * 发给节点的那句话：中枢把工作流写成 omp 的技能命令放在原文前面（§2.2）。
- * 转录里留的是原文，这一句只进信封。
+ * 发给节点的那句话：原文前面一行点名工作流的技能、让智能体先读它（§2.2）。
+ * 转录里留的是原文，这一行只进信封。
+ *
+ * 不写成 omp 的技能命令 `/skill:<名>`：常驻侧把这句话包进 teammate 块里交给
+ * omp，命令不在行首、前面是引号，omp 不认；而把命令挪到包好的消息末行时，
+ * omp 把这一轮改成技能消息，常驻侧等的那条用户消息不再出现，这一轮收不进来。
+ * 读 `skill://<名>` 走的是 omp 自己的技能目录，与命令展开读的是同一份文件。
  */
 export function workflowPrompt(id: WorkflowId, text: string): string {
-  return `/skill:${workflowOf(id).skill} ${text}`
+  const { skill } = workflowOf(id)
+  return `[工作流 ${skill}] 先读 skill://${skill}，按里面的步骤做。\n${text}`
 }
 
 export type WorkFileKind =

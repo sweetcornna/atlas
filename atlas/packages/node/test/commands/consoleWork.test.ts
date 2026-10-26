@@ -3,8 +3,8 @@
 
 /**
  * P37.17 B — the hub's side of work (`work-tasks.md` §3, §4.3, §5.4): the
- * session kind and workflow in the chat store, the skill command in front
- * of a line, file cards and activity from the node's hub calls (and who may
+ * session kind and workflow in the chat store, the line naming the skill
+ * in front of what was typed, file cards and activity from the node's hub calls (and who may
  * make them), and the paced, chunked fetch over the control link.
  */
 
@@ -165,11 +165,11 @@ describe('work sessions in the chat store', () => {
     ).toBeUndefined()
   })
 
-  test('the node is sent the skill command; the transcript keeps the line as typed', async () => {
+  test('the node is sent the line naming the skill; the transcript keeps the line as typed', async () => {
     const h = hub()
     const { session } = await workSession(h)
     expect((h.sent[0]?.payload as { prompt: string }).prompt).toBe(
-      '/skill:qmo-slides 做一份季度汇报',
+      '[工作流 qmo-slides] 先读 skill://qmo-slides，按里面的步骤做。\n做一份季度汇报',
     )
     const read = await h.hub.transcript(session.id)
     if (!read.ok) throw new Error('transcript')

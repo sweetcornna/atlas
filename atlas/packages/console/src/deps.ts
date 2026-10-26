@@ -655,8 +655,8 @@ export interface ChatSendInput {
    */
   readonly context?: string
   /**
-   * 这一句带着工作流发（work-tasks.md §2.2）：发给节点的 prompt 前面加
-   * `/skill:<技能名>`，转录里操作者那一行仍是原文、另带 `workflow`。
+   * 这一句带着工作流发（work-tasks.md §2.2）：发给节点的 prompt 前面加一行
+   * 点名技能（`workflowPrompt`），转录里操作者那一行仍是原文、另带 `workflow`。
    */
   readonly workflow?: WorkflowId
 }

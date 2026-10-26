@@ -220,9 +220,9 @@ describe('the workflow table', () => {
     expect(WORKFLOWS.every(one => one.skill === `qmo-${one.id}`)).toBe(true)
   })
 
-  test('the skill command goes in front of the line', () => {
+  test('a line naming the skill goes in front of the text', () => {
     expect(workflowPrompt('slides', '做一份季度汇报')).toBe(
-      '/skill:qmo-slides 做一份季度汇报',
+      '[工作流 qmo-slides] 先读 skill://qmo-slides，按里面的步骤做。\n做一份季度汇报',
     )
   })
 })
