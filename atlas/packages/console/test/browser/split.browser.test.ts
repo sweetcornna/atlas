@@ -290,12 +290,15 @@ async function besideFrom(
   row: string,
   to: 'right' | 'below',
 ): Promise<void> {
-  await tab.evaluate(`(() => {
-    const row = ${q(row)};
-    const more = row.querySelector('details.fx-more');
-    more.open = true;
-    more.querySelector('.fx-split-item[data-split-to="${to}"]').click();
-  })()`)
+  const more = `${q(row)}.querySelector('details.fx-more')`
+  await tab.evaluate(`${more}.open = true`)
+  // The two are copied in as it opens, after the row's own items.
+  await tab.waitFor(
+    `${more}.querySelector('.fx-menu > .fx-split-item[data-split-to="${to}"]') !== null`,
+  )
+  await tab.evaluate(
+    `${more}.querySelector('.fx-split-item[data-split-to="${to}"]').click()`,
+  )
 }
 
 const ROW = (address: string) =>
@@ -862,6 +865,44 @@ describe.skipIf(SKIP !== null)('分栏 on Work', () => {
     }
   }, 30_000)
 
+  test('/app, the desktop app’s face: the same panes on the same kept layout', async () => {
+    const tab = await open(browser, served, '/app')
+    try {
+      await paneKey(tab, 'right')
+      await tab.waitFor(READY(2), 10_000)
+      expect(await tab.evaluate<string[]>(ADDRESSES)).toEqual([
+        '/app?pane=1',
+        '/app?work=new&pane=1',
+      ])
+      expect(await tab.evaluate<string>('location.search')).toBe('?work=new')
+      // A conversation from the list opens in the focused pane.
+      const id = await tab.evaluate<string>(
+        `${q('#fx-recents [data-action="fx-open"]')}.getAttribute('data-session')`,
+      )
+      await tab.evaluate(`${q('#fx-recents [data-action="fx-open"]')}.click()`)
+      await tab.waitFor(
+        inPane(
+          1,
+          `return this.document.getElementById('fx-thread').getAttribute('data-session') === ${JSON.stringify(id)}`,
+        ),
+        10_000,
+      )
+      expect(await tab.evaluate<string>('location.search')).toBe(
+        `?session=${id}`,
+      )
+      expect(await tab.evaluate<unknown>(KEPT('work'))).toEqual({
+        v: 1,
+        cols: [
+          { w: 0.5, rows: [{ h: 1, q: '' }] },
+          { w: 0.5, rows: [{ h: 1, q: `session=${id}` }] },
+        ],
+        focus: 1,
+      })
+    } finally {
+      await tab.close()
+    }
+  }, 30_000)
+
   test('⌄ lists the row’s own items, then 只留这一栏 and 关闭分栏', async () => {
     const tab = await open(browser, served, '/', {
       store: layout([[''], [agent(REVIEWER)], [agent(PLANNER)]], 0),
@@ -1059,16 +1100,26 @@ describe.skipIf(SKIP !== null)('the side list’s peek', () => {
     })
     try {
       // From the page's start (its skip link) Tab reaches the button: out at
-      // once. First the list is put away (from the next frame, as above).
+      // once. First the list is put away: under reduced motion every
+      // transition is 0.01 ms, so its rows are hidden from the next frame.
       await tab.waitFor(SETTLED)
       await tab.waitFor(
-        `getComputedStyle(${q('#fx-search')}).visibility === 'hidden'`,
+        `[...document.querySelectorAll('#fx-side button, #fx-side a, #fx-side input')].every(e => getComputedStyle(e).visibility === 'hidden')`,
       )
+      // The page puts the focus in its box once it is up; after that, the start.
+      await tab.waitFor(`document.activeElement === ${q('#fx-text')}`)
       await tab.evaluate(`${q('.skip-link')}.focus()`)
+      expect(
+        await tab.evaluate<boolean>(
+          `document.activeElement === ${q('.skip-link')}`,
+        ),
+      ).toBe(true)
       await key(tab, 'tab')
       expect(
-        await tab.evaluate<boolean>(`document.activeElement === ${q(OPENER)}`),
-      ).toBe(true)
+        await tab.evaluate<string>(
+          `document.activeElement === ${q(OPENER)} ? 'opener' : document.activeElement.outerHTML.slice(0, 120)`,
+        ),
+      ).toBe('opener')
       expect(await tab.evaluate<string | null>(PEEK)).toBe('key')
       // Shift+Tab goes into the list, out over the content: it stays. (Under
       // reduced motion every transition is 0.01 ms, so the list is focusable
@@ -1377,6 +1428,22 @@ describe.skipIf(SKIP !== null)('one connection for the window', () => {
         b.dispatchEvent(new this.Event('input', { bubbles: true })); b.form.requestSubmit();`,
         ),
       )
+      // And an approval in reviewer's pane, decided while the answers stream.
+      const ask = `[...this.document.querySelectorAll('#fx-asks .fx-ask')].find(a => [...a.querySelectorAll('button')].some(b => b.textContent.trim() === '批准'))`
+      await tab.waitFor(inPane(2, `return !!${ask}`), 10_000)
+      await tab.evaluate(
+        inPane(
+          2,
+          `const a = ${ask}; this.__ask = a.getAttribute('data-request'); [...a.querySelectorAll('button')].find(b => b.textContent.trim() === '批准').click();`,
+        ),
+      )
+      await tab.waitFor(
+        inPane(
+          2,
+          `const a = this.document.querySelector('.fx-ask[data-request="' + this.__ask + '"]'); return !a || /已批准/.test(a.textContent);`,
+        ),
+        10_000,
+      )
       for (const i of [0, 1, 2, 3]) {
         await tab.waitFor(
           inPane(
@@ -1402,11 +1469,14 @@ describe.skipIf(SKIP !== null)('one connection for the window', () => {
       )
       expect(sends.length).toBe(5)
       const approvals = waits.filter(w => w.url.includes('/v0/approvals'))
+      expect(
+        waits.filter(w => /\/v0\/approvals\/.+/.test(w.url)).length,
+      ).toBeGreaterThan(0)
       expect(approvals.length).toBeGreaterThan(0)
       const slowest = waits.reduce((max, w) => Math.max(max, w.ms), 0)
       console.log(
         `[split connections] ${waits.length} requests answered, slowest ${slowest} ms, ` +
-          `${sends.length} sends, ${approvals.length} approvals reads, ${connections.size} connections used in turn, ` +
+          `${sends.length} sends, ${approvals.length} approvals requests (reads and a decision), ${connections.size} connections used in turn, ` +
           `streams open ${after.open}, asked ${after.asked}`,
       )
       expect(slowest).toBeLessThan(1_500)
