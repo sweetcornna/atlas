@@ -82,7 +82,15 @@ export interface SessionHeader {
     readonly id: string
     readonly started: boolean
   }
-  readonly remote: { readonly on: false; readonly pushedSeq: number }
+  /**
+   * Remote (§5): on or off, how far the hub has acknowledged, and the device
+   * id it was turned on under (a later pairing does not inherit it).
+   */
+  readonly remote: {
+    readonly on: boolean
+    readonly pushedSeq: number
+    readonly device?: string
+  }
 }
 
 /** The `session` line, the chat store's `StoredChatSession`. */
@@ -230,11 +238,19 @@ function headerOf(value: unknown): SessionHeader | undefined {
     lastSeq: value.lastSeq,
     native: { kind: native.kind, id: native.id, started: native.started },
     remote: {
-      on: false,
+      on: isRecord(remote) && remote.on === true,
       pushedSeq:
-        isRecord(remote) && typeof remote.pushedSeq === 'number'
+        isRecord(remote) &&
+        typeof remote.pushedSeq === 'number' &&
+        Number.isSafeInteger(remote.pushedSeq) &&
+        remote.pushedSeq >= 0
           ? remote.pushedSeq
           : 0,
+      ...(isRecord(remote) &&
+      typeof remote.device === 'string' &&
+      /^d-[a-z2-7]{12}$/.test(remote.device)
+        ? { device: remote.device }
+        : {}),
     },
   }
 }

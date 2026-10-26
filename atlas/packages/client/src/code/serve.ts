@@ -18,9 +18,11 @@
 import { createInterface } from 'node:readline'
 import pkg from '../../package.json' with { type: 'json' }
 import { type AgentsReport, scanAgents } from '../agents.js'
-import { ClientError } from '../hub.js'
+import { ClientHome } from '../home.js'
+import { ClientError, type Fetch } from '../hub.js'
 import { agentEnv, LoginEnvironment, loginEnvFor } from './env.js'
 import type { GitContext } from './git.js'
+import { type LinkPairing, type LinkSocketFactory, RemoteLink } from './link.js'
 import { ChildRegistry, RunnerLock } from './processes.js'
 import {
   agentId,
@@ -77,6 +79,31 @@ export interface ServeOptions {
   /** The user's home (default: this process's). */
   readonly home?: string
   readonly limits?: Partial<Limits>
+  /**
+   * Tests: this computer's pairing (default: read from the client folder,
+   * `client.json` and the device token, each time the link dials), the
+   * link's socket, its HTTP and its waits.
+   */
+  readonly pairing?: () => Promise<LinkPairing | undefined>
+  readonly linkSocket?: LinkSocketFactory
+  readonly linkFetch?: Fetch
+  readonly linkBackoffMs?: readonly number[]
+}
+
+/** This computer's pairing, from the client folder (clients.md §5.1). */
+function pairingFrom(
+  clientDir: string,
+): () => Promise<LinkPairing | undefined> {
+  return async () => {
+    const home = new ClientHome(clientDir)
+    const state = home.load()
+    if (state === undefined) return undefined
+    return {
+      hub: state.hub,
+      deviceId: state.deviceId,
+      token: await home.token(),
+    }
+  }
 }
 
 function codeError(error: unknown): { code: string; message: string } {
@@ -123,9 +150,32 @@ function agentFinder(
   }
 }
 
+/** The device id Remote is turned on under; a refusal when signed out. */
+async function remoteDevice(
+  pairing: () => Promise<LinkPairing | undefined>,
+): Promise<string> {
+  let paired: LinkPairing | undefined
+  try {
+    paired = await pairing()
+  } catch (error) {
+    throw new CodeError(
+      'E_REMOTE',
+      `读不到这台电脑的登录：${String((error as Error)?.message ?? error)}`,
+    )
+  }
+  if (paired === undefined)
+    throw new CodeError(
+      'E_REMOTE',
+      '这台电脑没有登录中枢 · 在 Qmo 里登录后再开',
+    )
+  return paired.deviceId
+}
+
 /** Runs one method; throws a {@link CodeError} for a refusal. */
 async function dispatch(
   manager: SessionManager,
+  link: RemoteLink,
+  pairing: () => Promise<LinkPairing | undefined>,
   codeDir: string,
   method: string,
   params: unknown,
@@ -141,7 +191,7 @@ async function dispatch(
       }
     case 'list':
       keys(params, [])
-      return manager.list()
+      return { ...manager.list(), link: link.state }
     case 'folders.add': {
       const p = keys(params, ['path'])
       return manager.addFolder(pickedPathOf(p.path))
@@ -164,17 +214,23 @@ async function dispatch(
       const client = clientId(p.clientId)
       if (booleanOf(p.worktree, 'worktree'))
         throw new CodeError('E_ARGS', '独立工作树在后续版本开放')
-      if (p.remote !== undefined && booleanOf(p.remote, 'remote'))
-        throw new CodeError('E_REMOTE', 'Remote 在后续版本开放')
-      return manager.start({ folder, agent, mode, text, clientId: client })
+      const remote = p.remote !== undefined && booleanOf(p.remote, 'remote')
+      const started = await manager.start({
+        folder,
+        agent,
+        mode,
+        text,
+        clientId: client,
+        ...(remote ? { remoteDevice: await remoteDevice(pairing) } : {}),
+      })
+      if (remote) link.update(true)
+      return started
     }
     case 'session.send': {
       const p = keys(params, ['session', 'text', 'clientId'], ['origin'])
-      if (p.origin !== undefined && p.origin !== 'local') {
-        if (p.origin === 'remote')
-          throw new CodeError('E_REMOTE', 'Remote 在后续版本开放')
+      // A line from elsewhere comes over the device link, never this pipe.
+      if (p.origin !== undefined && p.origin !== 'local')
         throw new CodeError('E_ARGS', 'origin 只能是 local')
-      }
       return manager.send({
         session: sessionId(p.session),
         text: textOf(p.text),
@@ -223,9 +279,15 @@ async function dispatch(
     }
     case 'session.remote': {
       const p = keys(params, ['session', 'on'])
-      sessionId(p.session)
-      booleanOf(p.on, 'on')
-      throw new CodeError('E_REMOTE', 'Remote 在后续版本开放')
+      const session = sessionId(p.session)
+      const on = booleanOf(p.on, 'on')
+      const summary = manager.setRemote({
+        session,
+        on,
+        ...(on ? { device: await remoteDevice(pairing) } : {}),
+      })
+      link.update(on)
+      return { session: summary }
     }
     case 'session.rename':
     case 'session.delete':
@@ -325,13 +387,57 @@ export async function serve(options: ServeOptions): Promise<number> {
     ...(options.limits === undefined ? {} : { limits: options.limits }),
     log: line => io.log(`[runner] ${line}`),
   })
+  const pairing = options.pairing ?? pairingFrom(options.clientDir)
+  const link = new RemoteLink({
+    host: {
+      pairing,
+      heads: () => manager.heads(),
+      recordsAfter: (id, seq) => manager.recordsAfter(id, seq),
+      pushed: (id, seq) => manager.pushed(id, seq),
+      off: (id, why) => manager.remoteOff(id, why),
+      // What comes over the link is checked as what comes over the pipe is.
+      send: input =>
+        manager.send({
+          session: sessionId(input.session),
+          text: textOf(input.text),
+          clientId: clientId(input.clientId),
+          origin: 'remote',
+        }),
+      answer: input =>
+        manager.answer({
+          session: sessionId(input.session),
+          ask: askId(input.ask),
+          decision: decisionOf(input.decision),
+          ...(input.message === undefined
+            ? {}
+            : { message: messageOf(input.message) }),
+        }),
+      stop: id => manager.stop(sessionId(id)),
+      state: state => emit({ type: 'link', ...state }),
+      log: line => io.log(line),
+    },
+    env,
+    ...(options.linkSocket === undefined ? {} : { socket: options.linkSocket }),
+    ...(options.linkFetch === undefined ? {} : { fetch: options.linkFetch }),
+    ...(options.linkBackoffMs === undefined
+      ? {}
+      : { backoffMs: options.linkBackoffMs }),
+  })
+  manager.attachRemote(link)
+  // Sessions left with Remote on dial as soon as the runner is up.
+  link.update()
 
   const { promise: done, resolve: finish } = Promise.withResolvers<void>()
   let closing: Promise<void> | undefined
   const close = (): Promise<void> => {
-    closing ??= manager.shutdown().catch(error => {
-      io.log(`[runner] shutdown: ${codeError(error).message}`)
-    })
+    // The link goes first and alongside: what the shutdown writes is in the
+    // files, and the next link pushes it.
+    closing ??= Promise.all([
+      link.close(),
+      manager.shutdown().catch(error => {
+        io.log(`[runner] shutdown: ${codeError(error).message}`)
+      }),
+    ]).then(() => {})
     return closing
   }
   const handle = async (request: Request): Promise<void> => {
@@ -357,7 +463,14 @@ export async function serve(options: ServeOptions): Promise<number> {
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       const result = await Promise.race([
-        dispatch(manager, options.codeDir, request.method, request.params),
+        dispatch(
+          manager,
+          link,
+          pairing,
+          options.codeDir,
+          request.method,
+          request.params,
+        ),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new CodeError('E_RUNNER', '超过 25 秒没有做完')),

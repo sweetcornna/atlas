@@ -30,6 +30,7 @@ import type { TenantPort } from '../tenancy.js'
  */
 
 import { avatarFragmentRoute, avatarsApiRoute } from './avatars.js'
+import { codeApiRoute } from './codeApi.js'
 import {
   chatScopeOf,
   streamScopeOf,
@@ -617,13 +618,16 @@ export const chatRoute: RouteModule = {
     front: true,
   },
   // 形象 lives with 对话, the page that draws and edits figures
-  // (`routes/avatars.ts`); its heads guard themselves.
+  // (`routes/avatars.ts`), and so do the Remote copies of Code sessions
+  // (`routes/codeApi.ts`, P37.15); their heads guard themselves.
   api: {
-    heads: ['chat', ...avatarsApiRoute.heads],
+    heads: ['chat', ...avatarsApiRoute.heads, ...codeApiRoute.heads],
     handle: (ctx, head, rest) =>
       head === 'chat'
         ? dispatchChatApi(ctx, rest)
-        : avatarsApiRoute.handle(ctx, head, rest),
+        : head === 'code'
+          ? codeApiRoute.handle(ctx, head, rest)
+          : avatarsApiRoute.handle(ctx, head, rest),
   },
   fragments: {
     heads: ['chat', ...avatarFragmentRoute.heads],

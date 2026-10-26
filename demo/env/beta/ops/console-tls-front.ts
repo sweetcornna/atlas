@@ -40,6 +40,12 @@
  *  - **客户端断开时一并断开上游**（把 `request.signal` 交给上游请求），否则控制台那边
  *    的 SSE 流会一直挂着，心跳写给一个已经没人读的连接。
  *
+ * 唯一的 WebSocket：桌面版 qmo 的设备链路 `/v0/client/link`（qmo-local.md §5.1）。
+ * `fetch` 转发会删掉 `Upgrade`，链路到不了控制台；所以这一条路径单独接：先替设备
+ * 向上游拨一条链路，上游 101 了才给设备 101，之后逐帧对转、关闭码原样带回。上游
+ * 拒绝时设备拿到的是 502，它随后用两条普通请求自己问清原因（见 {@link createLinkRelay}）。
+ * 其余路径上的升级请求照旧走 `fetch`，不会被升级。
+ *
  * 证书只在启动时读。续期之后要重启本进程（`console-cert.sh` 的部署钩子做这件事）。
  * 本文件刻意只依赖 Bun 与 `node:` 内建：它要能直接从一棵只有 `demo/` 的交付树里跑。
  */
@@ -372,6 +378,196 @@ export function createFrontHandler(
   }
 }
 
+/**
+ * 设备链路的路径与一帧的上限：`@qianmo/console` 的 `CODE_LINK_PATH` 与
+ * `CODE_LINK_MAX_FRAME` 的抄本（本文件不能 import 仓库代码），用例断言两边相等。
+ */
+export const LINK_PATH = '/v0/client/link'
+export const LINK_MAX_FRAME = 1024 * 1024
+/** 等上游答复握手的时限。 */
+export const LINK_OPEN_MS = 10_000
+/** 链路空闲多久算断：控制台那一侧是 120 s 且会发 ping，这里同数。 */
+export const LINK_IDLE_TIMEOUT_S = 120
+
+/** 一条被对转的链路：设备那一端（升级之后才有）与上游那一端。 */
+export interface LinkRelayData {
+  readonly upstream: WebSocket
+  /** 设备那一端打开之前，上游已经送来的帧。 */
+  readonly pending: (string | ArrayBuffer)[]
+  device: LinkRelaySocket | undefined
+  /** 上游先关了：设备那一端一打开就照这个关。 */
+  closed: { code: number; reason: string } | undefined
+}
+
+export interface LinkRelaySocket {
+  readonly data: LinkRelayData
+  send(message: string | ArrayBuffer | Uint8Array): unknown
+  close(code?: number, reason?: string): void
+}
+
+export interface LinkRelayServer extends PeerSource {
+  upgrade(
+    request: Request,
+    options: { data: LinkRelayData; headers: Record<string, string> },
+  ): boolean
+}
+
+/** 这个请求是不是要升级成设备链路：路径、方法、`Upgrade` 都对，且不带 query。 */
+export function isLinkUpgrade(request: Request): boolean {
+  const url = new URL(request.url)
+  return (
+    request.method === 'GET' &&
+    url.pathname === LINK_PATH &&
+    url.search === '' &&
+    request.headers.get('upgrade')?.toLowerCase() === 'websocket'
+  )
+}
+
+/**
+ * 能原样交给对端 `close()` 的关闭码。1005/1006/1015 只能出现在本地报告里，不能发；
+ * 客户端那一侧的 `WebSocket.close()` 只收 1000 与 3000–4999。设备拿到不认识的码一律
+ * 按「断了、退避重连」处理，所以换成 1001 不丢信息。
+ */
+function relayCode(code: number, toUpstream: boolean): number {
+  if (code === 1000 || (code >= 3000 && code <= 4999)) return code
+  if (toUpstream) return 1000
+  return code >= 1001 && code <= 1014 && code !== 1005 && code !== 1006
+    ? code
+    : 1001
+}
+
+export interface LinkRelay {
+  /** 先拨上游、再升级设备；`undefined` 表示已经升级。 */
+  upgrade(
+    request: Request,
+    server: LinkRelayServer,
+  ): Promise<Response | undefined>
+  readonly websocket: {
+    readonly maxPayloadLength: number
+    readonly idleTimeout: number
+    open(ws: LinkRelaySocket): void
+    message(ws: LinkRelaySocket, message: string | Uint8Array): void
+    close(ws: LinkRelaySocket, code: number, reason: string): void
+  }
+}
+
+/**
+ * 设备链路的对转。**先拨上游、上游 101 了才升级设备**：反过来做，鉴权失败的设备会
+ * 先看到一次成功的握手、再看到一个说不清来由的关闭，它分不清「被拒」与「断线」。
+ * 上游的拒绝（401/402/403/426）经 WebSocket 客户端只剩一句「没有 101」，所以这里
+ * 统一回 502；设备随后自己 `GET /v0/client/device` 与不带升级的 `GET /v0/client/link`
+ * 问清原因（`packages/client/src/code/link.ts` 的 `#diagnose`），那两条走的是上面的
+ * `fetch` 转发。
+ *
+ * 发往上游的头只有三个：设备的 `Authorization`、这里设的 `X-Forwarded-Proto: https`
+ * 与这里看到的对端地址；子协议照设备给的列表转交，上游选中哪个就回哪个。
+ * 访问日志与普通请求同一行格式：只有路径，101 或 502。
+ */
+export function createLinkRelay(
+  upstream: URL,
+  log: (line: string) => void,
+): LinkRelay {
+  const target = new URL(LINK_PATH, upstream)
+  target.protocol = 'ws:'
+  return {
+    upgrade: async (request, server) => {
+      const started = performance.now()
+      const peer = server.requestIP(request)?.address ?? ''
+      const finish = (status: number): void =>
+        log(
+          accessLogLine({
+            at: new Date(),
+            peer,
+            method: request.method,
+            pathname: LINK_PATH,
+            status,
+            ms: Math.round(performance.now() - started),
+          }),
+        )
+      const headers: Record<string, string> = { 'x-forwarded-proto': 'https' }
+      const authorization = request.headers.get('authorization')
+      if (authorization !== null) headers.authorization = authorization
+      if (peer !== '') headers['x-forwarded-for'] = peer
+      const protocols = (request.headers.get('sec-websocket-protocol') ?? '')
+        .split(',')
+        .map(one => one.trim())
+        .filter(one => one !== '')
+      const socket = new WebSocket(target.href, { headers, protocols })
+      socket.binaryType = 'arraybuffer'
+      const data: LinkRelayData = {
+        upstream: socket,
+        pending: [],
+        device: undefined,
+        closed: undefined,
+      }
+      socket.onmessage = event => {
+        const message = event.data as string | ArrayBuffer
+        if (data.device === undefined) data.pending.push(message)
+        else data.device.send(message)
+      }
+      const opened = await new Promise<boolean>(resolve => {
+        const timer = setTimeout(() => resolve(false), LINK_OPEN_MS)
+        socket.onopen = () => {
+          clearTimeout(timer)
+          resolve(true)
+        }
+        socket.onclose = event => {
+          clearTimeout(timer)
+          data.closed = { code: event.code, reason: event.reason }
+          resolve(false)
+        }
+      })
+      if (!opened) {
+        try {
+          socket.close()
+        } catch {}
+        finish(502)
+        return new Response('upstream refused the link\n', { status: 502 })
+      }
+      socket.onclose = event => {
+        if (data.device === undefined)
+          data.closed = { code: event.code, reason: event.reason }
+        else data.device.close(relayCode(event.code, false), event.reason)
+      }
+      const chosen = socket.protocol
+      const upgraded = server.upgrade(request, {
+        data,
+        headers: chosen === '' ? {} : { 'sec-websocket-protocol': chosen },
+      })
+      if (!upgraded) {
+        socket.close(1000, 'device side did not upgrade')
+        finish(400)
+        return new Response('upgrade failed\n', { status: 400 })
+      }
+      finish(101)
+      return undefined
+    },
+    websocket: {
+      maxPayloadLength: LINK_MAX_FRAME,
+      idleTimeout: LINK_IDLE_TIMEOUT_S,
+      open(ws) {
+        const { data } = ws
+        data.device = ws
+        for (const message of data.pending.splice(0)) ws.send(message)
+        if (data.closed !== undefined)
+          ws.close(relayCode(data.closed.code, false), data.closed.reason)
+      },
+      message(ws, message) {
+        const { upstream: socket } = ws.data
+        if (socket.readyState === WebSocket.OPEN) socket.send(message)
+      },
+      close(ws, code, reason) {
+        const { upstream: socket } = ws.data
+        if (
+          socket.readyState === WebSocket.OPEN ||
+          socket.readyState === WebSocket.CONNECTING
+        )
+          socket.close(relayCode(code, true), reason)
+      },
+    },
+  }
+}
+
 export interface FrontHandle {
   readonly port: number
   stop(): Promise<void>
@@ -383,7 +579,8 @@ export function startFront(
 ): FrontHandle {
   assertPrivateKeyFile(config.keyFile)
   const handler = createFrontHandler(config.upstream, log)
-  const server = Bun.serve({
+  const relay = createLinkRelay(config.upstream, log)
+  const server = Bun.serve<LinkRelayData>({
     hostname: config.listenHost,
     port: config.listenPort,
     idleTimeout: IDLE_TIMEOUT_S,
@@ -392,7 +589,11 @@ export function startFront(
     // 的 chunked 请求在 Bun 1.4 也可提前拒绝；进入 handler 的流仍由 readCappedBody 限制。
     maxRequestBodySize: MAX_BODY_BYTES,
     tls: { cert: Bun.file(config.certFile), key: Bun.file(config.keyFile) },
-    fetch: (request, bunServer) => handler(request, bunServer),
+    fetch: (request, bunServer) =>
+      isLinkUpgrade(request)
+        ? relay.upgrade(request, bunServer)
+        : handler(request, bunServer),
+    websocket: relay.websocket,
   })
   return {
     port: server.port as number,

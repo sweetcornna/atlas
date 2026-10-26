@@ -5,8 +5,8 @@
  * The compiled `qmo` as the desktop shell runs it (qmo-local.md §4.3.2,
  * §4.5): built here the way `bun run atlas:build:client` builds it
  * (`buildClient`), started as `qmo code serve` on pipes, and spoken to the
- * way the shell speaks (`ipc.rs`: `origin: 'local'` and `remote: false`
- * added, the calls of the contract `qmo-local-calls.json` beside the page's
+ * way the shell speaks (`ipc.rs`: `origin: 'local'` added, `remote`
+ * passed as the page set it, the calls of the contract `qmo-local-calls.json` beside the page's
  * fake shell in `@qianmo/console`'s tests). The agent is the
  * harness package's fake Claude Code, the folder a temporary Git
  * repository; HOME and the client folder are temporary. No real agent is
@@ -230,7 +230,7 @@ describe.skipIf(!posix)('the compiled qmo as the shell runs it', () => {
       features: {
         protocols: ['claude-stream', 'codex-app-server'],
         worktree: false,
-        remote: false,
+        remote: true,
       },
       codeDir: path.join(at.client, 'code'),
     })
@@ -634,8 +634,8 @@ describe.skipIf(!posix)('the compiled qmo as the shell runs it', () => {
         'E_ARGS',
       ])
     }
-    // list, folders.forget and the eight session methods a page reaches.
-    expect(asked).toBe(10)
+    // list, folders.forget and the nine session methods a page reaches.
+    expect(asked).toBe(11)
     expect(await r.call('shutdown')).toEqual({})
     expect(await r.exited()).toBe(0)
   }, 30_000)

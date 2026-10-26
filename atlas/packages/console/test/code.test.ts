@@ -6,25 +6,33 @@
  * `docs/dev/qmo-local.md` §4.5.5):
  *
  * - **Budgets.** `CODE_RENDER_JS` under 14,000 characters, `CODE_JS` under
- *   34,000; both parse, both ship without their line comments.
- * - **No markup from strings, no hub.** Neither script names `innerHTML`,
- *   `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval` or
- *   `new Function`; neither asks the hub for anything (`fetch`,
- *   `EventSource`, `XMLHttpRequest`, the runtime's `sendJson` / `loadHtml`).
+ *   37,000, `CODE_HUB_JS` under 7,000; all parse, all ship without their
+ *   line comments.
+ * - **No markup from strings, no hub but Remote's.** None of the three names
+ *   `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`
+ *   or `new Function`; the first two never ask the hub for anything (`fetch`,
+ *   `EventSource`, `XMLHttpRequest`, the runtime's `sendJson` / `loadHtml`),
+ *   and `CODE_HUB_JS` asks only `/v0/code/…` (P37.15).
  * - **The policy.** `/code` carries the two in its one inline script, and
  *   its policy lists that script's hash; every other directive is the same
  *   string as the Work face's.
  * - **The frames.** Inside the app the box, the transcript and the changes
- *   panel are there and empty, the mode is 自动审批, Remote is held off, the
- *   icons sit in a template; in a browser the one line. The words travel
- *   with the page in each language.
+ *   panel are there and empty, the mode is 自动审批, Remote's switch waits for
+ *   the runner to say it has Remote, the icons sit in a template; in a
+ *   browser the one line. A personal account on a hub with Remote gets
+ *   `data-remote` and `CODE_HUB_JS` too; anyone else's page is without them.
+ *   The words travel with the page in each language.
  */
 
 import { describe, expect, test } from 'bun:test'
 import { CODE_JS } from '../src/assets/codeClient.js'
+import { CODE_HUB_JS } from '../src/assets/codeHub.js'
 import { CODE_RENDER_JS } from '../src/assets/codeRender.js'
 import { inlineScripts, scriptHash } from '../src/respond.js'
 import { ADMIN, BASE, pageHarness } from './pageHarness.js'
+import { accountsHarness, asSession, person } from './accountsHarness.js'
+import { MemoryCopies } from './codeCopiesFake.js'
+import { FakeHandoffDevices } from './directionFakes.js'
 
 function page(path: string, cookie = ''): Request {
   const headers: Record<string, string> = {
@@ -46,8 +54,9 @@ function otherDirectives(policy: string): string {
 describe("Code's page scripts", () => {
   test('stay inside their budgets, parse, and ship without line comments', () => {
     expect(CODE_RENDER_JS.length).toBeLessThan(14_000)
-    expect(CODE_JS.length).toBeLessThan(34_000)
-    for (const script of [CODE_RENDER_JS, CODE_JS]) {
+    expect(CODE_JS.length).toBeLessThan(37_000)
+    expect(CODE_HUB_JS.length).toBeLessThan(7_000)
+    for (const script of [CODE_RENDER_JS, CODE_JS, CODE_HUB_JS]) {
       expect(() => new Function(script)).not.toThrow()
       expect(script.split('\n').filter(line => /^\s*\/\//.test(line))).toEqual(
         [],
@@ -74,6 +83,25 @@ describe("Code's page scripts", () => {
         expect(`${banned} ${script.includes(banned)}`).toBe(`${banned} false`)
       }
     }
+    for (const banned of [
+      'innerHTML',
+      'outerHTML',
+      'insertAdjacentHTML',
+      'document.write',
+      'eval(',
+      'new Function',
+      'XMLHttpRequest',
+      'sendJson',
+      'loadHtml',
+    ])
+      expect(`${banned} ${CODE_HUB_JS.includes(banned)}`).toBe(
+        `${banned} false`,
+      )
+    // Remote's script asks the hub one place only: `/v0/code/…`.
+    expect(
+      [...CODE_HUB_JS.matchAll(/'\/v0\/[a-z]+\//g)].map(m => m[0]),
+    ).toEqual(["'/v0/code/"])
+    expect(CODE_HUB_JS.match(/fetch\(/g)).toHaveLength(1)
     // The runner is reached through the shell alone, by these commands.
     const commands = [...CODE_JS.matchAll(/'(qmo_[a-z_]+)'/g)].map(m => m[1])
     expect([...new Set(commands)].sort()).toEqual([
@@ -86,6 +114,7 @@ describe("Code's page scripts", () => {
       'qmo_local_read',
       'qmo_local_send',
       'qmo_local_set_mode',
+      'qmo_local_set_remote',
       'qmo_local_start',
       'qmo_local_stop',
       'qmo_local_watch',
@@ -114,9 +143,66 @@ describe('the /code document', () => {
     )
     // Work's documents do not carry Code's scripts.
     expect(inlineScripts(await work.text())[0]).not.toContain(CODE_JS)
+    // Nor does a console without Remote carry Remote's.
+    expect(script).not.toContain(CODE_HUB_JS)
+    expect(html).not.toContain('data-remote')
   })
 
-  test('inside the app: empty frames, 自动审批, Remote held off, the icons in a template', async () => {
+  test('a personal account on a hub with Remote: data-remote, and Remote\u2019s script first', async () => {
+    const h = accountsHarness({
+      deps: {
+        handoffDevices: new FakeHandoffDevices(() => 1_700_000_000_000),
+        codeCopies: new MemoryCopies(),
+      },
+    })
+    // The fake ledger cannot authenticate a token: no link, no Remote.
+    expect(h.handle.links).toBeUndefined()
+    const ledger = new FakeHandoffDevices(() => 1_700_000_000_000)
+    const devices = Object.assign(ledger, {
+      authenticate: () => null,
+      refusalOf: () => 'unauthorized' as const,
+    })
+    const remote = accountsHarness({
+      deps: { handoffDevices: devices, codeCopies: new MemoryCopies() },
+    })
+    expect(remote.handle.links).toBeDefined()
+    const member = await person(remote.handle, 'member')
+    const code = await remote.handle(
+      asSession('GET', '/code', member.sid, {
+        accept: 'text/html',
+        extra: { cookie: `qianmo_session=${member.sid}; qianmo_shell=macos` },
+      }),
+    )
+    expect(code.status).toBe(200)
+    const html = await code.text()
+    expect(html).toMatch(
+      /id="code-local" data-view="blank" data-text="[^"]+" data-remote="1">/,
+    )
+    const script = inlineScripts(html)[0] ?? ''
+    const hub = script.indexOf(CODE_HUB_JS)
+    expect(hub).toBeGreaterThan(0)
+    expect(script.indexOf(CODE_RENDER_JS)).toBe(hub + CODE_HUB_JS.length)
+    expect(code.headers.get('content-security-policy')).toContain(
+      scriptHash(script),
+    )
+    // The switch over a session, the link's state and the drop, all waiting.
+    expect(html).toMatch(
+      /<label class="sw fx-code-remote-head" id="code-remote-head" title="[^"]+" hidden>/,
+    )
+    expect(html).toContain(
+      '<span class="fx-code-link" id="code-link" role="status" hidden></span>',
+    )
+    expect(html).toContain(
+      'id="code-drop" data-action="code-drop" hidden>从中枢删除副本</button>',
+    )
+    // The legacy admin token on the same hub: no copies to draw.
+    const admin = await (
+      await remote.handle(page('/code', 'qianmo_shell=macos'))
+    ).text()
+    expect(admin).not.toContain('data-remote')
+  })
+
+  test('inside the app: empty frames, 自动审批, Remote off until the runner says, the icons in a template', async () => {
     const h = pageHarness({ chat: true })
     const html = await (
       await h.handle(page('/code', 'qianmo_shell=macos'))

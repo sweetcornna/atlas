@@ -472,11 +472,11 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 
 | 命令 | 参数 | 答复 | 说明 |
 |---|---|---|---|
-| `qmo_local_list` | 无 | `{v: 1, features: {protocols, worktree, remote: false}, folders: [Folder], sessions: [Summary]}` | 打开 Code 面先调；也是能力探测：`protocols` 列本版能驱动的协议（P37.14a 只有 `claude-stream`，P37.14b 加 `codex-app-server`），其余 agent 在选择里写「后续版本支持」 |
+| `qmo_local_list` | 无 | `{v: 1, features: {protocols, worktree, remote}, folders: [Folder], sessions: [Summary], link: {state, reason?}}` | 打开 Code 面先调；也是能力探测：`protocols` 列本版能驱动的协议（P37.14a 只有 `claude-stream`，P37.14b 加 `codex-app-server`），其余 agent 在选择里写「后续版本支持」 |
 | `qmo_local_watch` | `channel`：`window.__TAURI__.core.Channel` | `{}` | 登记本页的事件通道（§4.5.2）；再调就换掉旧的 |
 | `qmo_local_pick_folder` | 无 | `Folder` 或 `null`（取消了） | 壳弹系统的文件夹选择框，把选中的路径交给运行器的 `folders.add`；这是路径进入系统的唯一入口 |
 | `qmo_local_forget_folder` | `folder` | `{}` | 从最近列表去掉；不碰磁盘，已有会话照旧能开 |
-| `qmo_local_start` | `folder`、`agent`、`mode`、`worktree`、`text`、`clientId`；`remote?`（P37.15 前只收 `false`） | `{session: Summary, turn}` | 开会话就是发第一句 |
+| `qmo_local_start` | `folder`、`agent`、`mode`、`worktree`、`text`、`clientId`；`remote?`（缺省 `false`） | `{session: Summary, turn}` | 开会话就是发第一句；`remote: true` 从第一句起同步（§5.0），这台电脑没登录时 `E_REMOTE` |
 | `qmo_local_send` | `session`、`text`、`clientId` | `{turn, queued}` | 在跑时进队列（§4.3.5） |
 | `qmo_local_stop` | `session` | `{}` | 中止本轮，撤下队列 |
 | `qmo_local_answer` | `session`、`ask`、`decision`（`once` \| `session` \| `deny`）、`message?` | `{}` | 已答过或已失效的拒绝 `E_ASK` |
@@ -486,9 +486,9 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 | `qmo_local_diff` | `session`、`path` | `{path, text, truncated, binary}` | 一个文件的统一格式差异 |
 | `qmo_local_rename` | `session`、`title` | `{}` | P37.14d |
 | `qmo_local_delete` | `session` | `{worktree?: 'removed' \| 'kept'}` | P37.14d |
-| `qmo_local_set_remote` | `session`、`on` | P37.15 前一律拒绝 `E_REMOTE` | 接口先留（§4.5.6） |
+| `qmo_local_set_remote` | `session`、`on` | `{session: Summary}` | 运行器 `session.remote`（§5.0）；打开要这台电脑已登录中枢，否则 `E_REMOTE` |
 
-- 类型：`Folder = {id, name, path, git}`（`path` 只供显示）；`Summary = {id, title, folder: {id | null, name}, agent: {id, name}, mode, state: 'idle' | 'running' | 'waiting' | 'interrupted' | 'failed', worktree?: {branch}, remote: false, createdAt, updatedAt, lastSeq}`；`Record = {seq, kind: 'turn', turn}`（§4.3.6）。
+- 类型：`Folder = {id, name, path, git}`（`path` 只供显示）；`Summary = {id, title, folder: {id | null, name}, agent: {id, name}, mode, state: 'idle' | 'running' | 'waiting' | 'interrupted' | 'failed', worktree?: {branch}, remote: boolean, createdAt, updatedAt, lastSeq}`；`Record = {seq, kind: 'turn', turn}`（§4.3.6）。
 - 校验：会话 `cs_[A-Za-z0-9_-]{22}`；文件夹 `[0-9a-f]{16}`；征询 `[A-Za-z0-9_.:-]{1,128}`；`clientId` `[A-Za-z0-9_-]{1,64}`；`agent` 只收底层目录的六个 id；`mode` 只收四档的标识；`text` 1–65,536 个字符、不含 NUL；`message` 至多 500 字、`title` 至多 120 字，都不含控制字符；`path` 见 §4.5.3；`before` 正整数；`worktree`、`on` 布尔。这里的「字」一律按 UTF-16 码元计，即 JavaScript 字符串的 `length`：页面输入框的 `maxLength`、壳的 `ipc::units`、运行器的检查是同一种算法（P37.14a 合流时运行器原按 Unicode 标量计，已改；一个表情符号算两个字）。
 - 约定：每条命令页面传哪些键、哪些可缺省、壳交给运行器的方法与参数，写成一份数据 `atlas/packages/console/test/browser/qmo-local-calls.json`，三方的用例都读它——壳的 `ipc.rs` 用例核对按它得出同样的调用、少一个必需键或多一个键都拒绝；页面的假壳（`console/test/browser/codeShell.ts`）按它核对页面每次调用的键与类型；编出来的 `qmo` 的用例把其中每组参数交给运行器，形状都收、多一个键都拒（`E_ARGS`）。改命令的参数要先改这份数据。
 - 失败：Promise 以一行字符串拒绝，壳与运行器自己的一律以 `qmo local ` 开头：`qmo local <代码>: <说明>`，代码有 `E_ARGS`、`E_RUNNER`、`E_FOLDER`、`E_AGENT`、`E_SESSION`、`E_BUSY`、`E_LIMIT`、`E_ASK`、`E_GIT`、`E_REMOTE`。其他拒绝是 Tauri 的（壳里没有这条命令或不许这个页面调），页面当作壳早于本功能，写「更新桌面版后可开本机会话」。
@@ -505,6 +505,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 | `delta` | `session`、`turn`、`offset`、`text` | 正文增量；运行器每 50 ms 合并一次，一条至多 4 KiB |
 | `activity` | `session`、`kind`、`words` | 思考中、在调哪个工具，给等待行用；不落盘 |
 | `removed` | `session` | 会话删了 |
+| `link` | `state`、`reason?` | 设备链路的状态变了（§5.1「状态」） |
 | `runner` | `state: 'up' \| 'down'`、`reason?` | 运行器起停，只由壳发：`up` 在壳接受了 `hello` 的答复（协议是 1）之后，`down` 在运行器结束或没起来时（带原因，一次故障只说一次）。运行器自己不发这种事件（P37.14a 合流前两边都发 `up`，页面收到两次） |
 
 - 每条带 `v: 1`。页面按会话记已画到的 `seq`，重复的丢掉，见到跳号就 `qmo_local_read` 补；`delta` 的 `offset` 与已画的长度对不上时不接，等这一条的 `record`。页面打开一个会话的顺序：先登记通道，再读，读到的 `lastSeq` 之前的事件丢掉。
@@ -533,9 +534,9 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 - **同一套规则**：把 `view/richText.ts` 的封闭子集（围栏代码、行内代码、一级列表、加粗、段落；不认链接、图片、表格、嵌套列表、原始 HTML；未配对的反引号与 `**` 按原文）移植成页面脚本里的一个函数，直接用 `createElement` 与 `textContent` 建节点，不先拼字符串、不转义后再插入。没有可插入的 HTML，也就没有转义顺序的问题。
 - **同样的外观**：元素与类名照服务端画法（`fx-msg`、`fx-msg-user`、`fx-bubble`、`fx-msg-agent`、`fx-text`、`turn-p`、`turn-list`、`turn-code`、`fx-steps`、`fx-step`、`fx-pending`、`fx-sep`），沿用前台已有样式。新加的只有工具行里的差异块（`+` / `-` 行着色，不做语法高亮）、征询卡片、变更面板，样式进 `view/frontStyle.ts`。
 - **一致性用例**：在真 Chrome 里拿同一组输入（围栏、未闭合的围栏、各种反引号与 `**`、列表、`<script>`、`&amp;`、引号、中日文、空串）分别跑服务端的 `renderRichText` 与页面的函数，两边都经同一个 `<template>` 序列化后逐字相同。另有静态用例：Code 的脚本里没有 `innerHTML`、`outerHTML`、`insertAdjacentHTML`、`document.write`、`eval`、`new Function`。
-- **脚本与预算**：共享运行时 `client.ts` 已到 39,331 字符（预算 40,000，余 669），不往里放。Code 的脚本分两段：`assets/codeRender.ts`（`CODE_RENDER_JS`：富文本与记录画法，预算 14,000）、`assets/codeClient.ts`（`CODE_JS`：会话列表、地址、输入框、事件通道、变更面板，预算 34,000，现在 3,929），仍只拼进 `/code` 文档那一段内联脚本，CSP 照旧按哈希列出。零新运行时依赖。
+- **脚本与预算**：共享运行时 `client.ts` 已到 39,331 字符（预算 40,000，余 669），不往里放。Code 的脚本分两段：`assets/codeRender.ts`（`CODE_RENDER_JS`：富文本与记录画法，预算 14,000）、`assets/codeClient.ts`（`CODE_JS`：会话列表、地址、输入框、事件通道、变更面板，预算 34,000；P37.15 加上 Remote 的开关、链路状态、只读与浏览器里的情形后放到 37,000，现在 35,908），仍只拼进 `/code` 文档那一段内联脚本，CSP 照旧按哈希列出。P37.15 另加第三段 `assets/codeHub.ts`（`CODE_HUB_JS`，预算 7,000，现在 5,617），只在个人账号、中枢开了 Remote 时拼在最前（§5.2）。零新运行时依赖。
 - **流式**：正在流的那一条先按纯文字追加，每个动画帧至多重画一次富文本；说完换成记录。只画最近 200 条，往上滚到顶再读更早的。
-- **Remote 开着时别的设备**：中枢上的副本就是 `ChatTurn` 记录（§4.3.6），浏览器里的 Code 面用前台现有的服务端转录画法（`renderMessages`、步骤折叠）画，工具行显示 `text` 与 `detail`，征询显示为一条待确认的过程行。本机上的 Code 页始终画运行器的记录，不画中枢的副本。
+- **Remote 开着时别的设备**：同一套 `CODE_RENDER_JS` 画中枢上的副本，换一条路取数（§5.2，P37.15 定稿时放弃了原写的 `renderMessages`）。本机上的 Code 页始终画运行器的记录，不画这台电脑自己的副本。
 
 #### 4.5.6 给 Remote（P37.15）留的接口
 
@@ -543,6 +544,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 - 运行器：写记录处经一个出口（`RecordSink`）；发话的方法带 `origin: 'local' | 'remote'`，P37.14 只收 `local`。P37.14a 没有留空的 `RecordSink`（一个没人传的选项只是死代码）：运行器的记录除重起时的修补外都经 `SessionManager.#write` 一处写出，P37.15 在那里接上出口，并按 `pushedSeq` 从 `events.ndjson` 补推，修补的几行也就带上了。
 - 壳与页面：`qmo_local_set_remote` 与 `features.remote` 已在命令表里；`features.remote` 为 `false` 时页面不画 Remote 开关。
 - 链路：在运行器这个进程里拨（它就是 `qmo`，设备令牌本来就在这里），不另开回环。
+- P37.15 用上了这些接口：出口接在 `SessionManager.#write`（`RemoteSink`，`code/session.ts`），链路在 `code/link.ts`；补推的起点以中枢 `welcome` 里报的为准，`pushedSeq` 是这台电脑记下的「中枢确认到哪」（§5.3）。
 
 ### 4.6 风险与未知
 
@@ -562,35 +564,138 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 
 ## §5 设备外连与同步（P37.15）
 
+负责人 2026-10-24：「可以选择开启remote按钮，以实现多端消息同步」；10-25：「而且我现在remote都开不了」。P37.14a 留好了接口（§4.5.6），本节定下 P37.15 开工前要定的五件事：链路上的帧（§5.1）、中枢副本怎么存、按账号怎么隔离（§5.3）、别的设备上 Code 面怎么画（§5.2）、推之前工具行 `detail` 怎么取舍（§5.3）、macOS 编出来的 `qmo` 里 Bun 自带的 WebSocket 能不能握手、怎么验（§5.4）。放弃的做法在 §5.5。
+
 ### 5.0 Remote 开关
 
-负责人 2026-10-24：「可以选择开启remote按钮，以实现多端消息同步」。参照 Claude Desktop 给本机 Code 会话的 Remote Control：按会话由人选择，缺省关。
+参照 Claude Desktop 给本机 Code 会话的 Remote Control：按会话由人选择，缺省关。
 
 | 项 | 做法 |
 |---|---|
-| 在哪 | 每个本机会话标题栏右侧一个 Remote 开关；新会话输入框上也有一个，缺省取壳设置窗「Code」一节的「新会话开启 Remote」（缺省关；设置卡片里的「桌面版」一项打开这个窗，这是这台电脑的设置，不随账号走）。会话行上开着的有一个小标 |
+| 在哪 | 每个本机会话标题栏右侧一个 Remote 开关，旁边写链路的状态；新会话输入框上也有一个，缺省取壳设置窗「Code」一节的「新会话开启 Remote」（缺省关，P37.14d；这是这台电脑的设置，不随账号走；P37.15 本身的页面在这一项合入前缺省关）。会话行上开着的有一个「Remote」小标。运行器的 `features.remote` 为真才画这两个开关 |
+| 前提 | 这台电脑用 `qmo` 登录过一台开了个人账号的中枢（Qmo.app 本来就是）。没登录时打开被拒（`E_REMOTE`「这台电脑没有登录中枢」）；中枢不认这台设备、或中枢没有 Remote 时，开关照样开着，开关旁写链路的状态与原因（§5.1「状态」） |
 | 关 | 会话只在这台电脑上：页面经 `qmo_local_*` 直达运行器（§4.5），中枢不知道它存在 |
 | 开 | 运行器经设备链路（§5.1）把这个会话按 §5.3 同步到中枢；同一账号的别的设备（浏览器、手机上的网页、另一台桌面版）在 Code 列表里看到它，标明在哪台设备、是否在线；设备在线时可以续写、回答权限征询、中止，离线时只读 |
-| 再关 | 立刻停止推送，别的设备发来的消息不再收；中枢上已有的副本留作只读、行上标「Remote 已关」，会话的 ⋯ 菜单里可「从中枢删除副本」 |
-| 链路 | 只要还有一个会话开着 Remote，`qmo link` 就保持连接；最后一个关掉后断开，设备在中枢上显示离线 |
+| 再关 | 立刻停止推送，别的设备发来的消息不再收；中枢上已有的副本留作只读，行上标「Remote 已关」，在别的设备上打开它时标题栏有「从中枢删除副本」 |
+| 换了登录 | 会话记着它是在哪个设备号下开的 Remote（`session.json` 的 `remote.device`）。重新配对（换了中枢或账号）后，原来开着的会话不往新中枢推：运行器把它关掉，在会话里写一条过程行「Remote 是在上一次登录时开的，已关上」 |
+| 链路 | 只要还有一个会话开着 Remote（或还有一个刚关的会话没把「已关」告诉中枢），链路就保持；都没有了就断开，设备在中枢上显示离线 |
 | Work | Work 的对话本来就在中枢、各设备共用，没有这个开关 |
-| 本版不做 | 从别的设备在这台电脑上新开本机会话（只能续写已开 Remote 的会话） |
+| 别处做不了的 | 从别的设备在这台电脑上新开本机会话、改权限模式、看变更面板与差异、删本机会话。续写、答征询、中止之外的事都只在这台电脑上做 |
 
 ### 5.1 设备链路
 
-- 有会话开着 Remote 时（§5.0），`qmo link` 用设备令牌向中枢 `wss://<中枢>/v0/client/link` 拨号，只有个人账号名下、状态正常的客户端设备能连；中枢把它登记成一台**设备节点**（名字是设备名，归属这个账号），节点主动拨号只对这种节点成立。服务器节点「中枢建链、节点零拨号」（H-2）不变。
-- 链路由运行器这个进程自己拨（它就是 `qmo`，§4.5.6），不经回环。运行器不是常驻节点、不实现节点的任务协议，链路上的帧集合在 P37.15 定；倾向一组专用的帧（推会话与记录、收续写、征询的回答与中止），记录用 §4.3.6 的同形格式。
-- 断线 1、2、5、10、30 秒退避重连；设备吊销、账号停用时中枢立即断开并拒绝重连。
+**握手。** 运行器（就是 `qmo`，设备令牌本来就在这个进程里，§4.5.6）用 Bun 自带的 `WebSocket` 拨 `wss://<中枢>/v0/client/link`（回环上的中枢是 `ws://`，与 `parseHubUrl` 同一条规矩），请求头 `Authorization: Bearer <设备令牌>`，子协议 `qmo-link.1`。中枢在升级之前逐条核对，任何一条不过都答普通的 HTTP 错误、不升级：
+
+| 条件 | 不过时 |
+|---|---|
+| 这台中枢开了个人账号，接了设备账本与 Remote 副本 | 没开账号 404（与 `/v0/client/*` 相同）；开了账号、没接 Remote 副本时不升级，答 501 `unsupported` |
+| 令牌放在 `Authorization` 里，地址不带查询串 | 400 |
+| 设备账本认这枚令牌（`authenticate`：没吊销、属主账号在用、不是只读账号、配对之后没被重置） | 401，`code` 与 `/v0/client/*` 一致：`device_revoked`、`owner_inactive`、`unauthorized` |
+| 设备是 `qmo sign-in` 配的客户端设备，属主是个人账号（`u:`） | 403 `device_kind` / `forbidden` |
+| 公开版：属主有有效订阅 | 402 `subscription_required` |
+| 带着 `Upgrade: websocket` 与上面的子协议 | 426 |
+
+浏览器的 WebSocket 加不了 `Authorization`，中枢也不看 cookie，所以别的网站开不了这条链路（没有跨站 WebSocket 劫持）。只有个人账号名下、状态正常的客户端设备能主动拨号；服务器节点「中枢建链、节点零拨号」（H-2）不变。
+
+**设备节点。** 中枢把握手成功的链路记进它自己的一张表：设备号 → 属主、建链时刻。这就是这台设备的「设备节点」：名字是设备账本里的设备名，只对它的属主可见，在线就是链路在。它**不进注册中心的名册**：运行器不服务智能体、不收信箱、不实现节点的任务协议，名册上的东西会被整个网络寻址，而一台个人电脑只该被它的主人碰到。同一台设备第二条链路握手成功时，旧的那条以 4409 关掉（换了网络之后的重连不用等旧连接超时）。
+
+**帧。** 文本帧，一帧一个 JSON 对象，`t` 是帧名，中枢一帧至多收 1 MiB，运行器一帧记录至多 256 KiB（一条记录本身更大时单独一帧）。不认识的帧、字段不对、会话号不归这台设备的，中枢以 4400 关掉链路；运行器丢掉不认识的帧，答 `reply` 的错误。
+
+上行（运行器 → 中枢）：
+
+| 帧 | 字段 | 什么时候 |
+|---|---|---|
+| `hello` | `v: 1`、`version`（`qmo` 的版本） | 连上后第一帧 |
+| `session` | `session`：`id`、`title`、`folder`（只有名字）、`agent {id, name}`、`mode`、`state`、`remote`（布尔）、`createdAt`、`updatedAt`、`lastSeq` | 开 Remote 时、开着时抬头每变一次、关 Remote 时最后一次（`remote: false`） |
+| `records` | `session`、`records: [{seq, turn}]`，`seq` 严格递增、都大于中枢已有的 | 每写一行记录；补推时成批 |
+| `gone` | `session` | 本机删了这个会话（P37.14d）：中枢删副本 |
+| `reply` | `id`、`ok: true` 与 `result`，或 `ok: false` 与 `code`、`message` | 答下行的 `send` / `answer` / `stop` |
+
+下行（中枢 → 运行器）：
+
+| 帧 | 字段 | 什么时候 |
+|---|---|---|
+| `welcome` | `v: 1`、`device {id, name}`、`have: {<会话号>: {seq, remote}}`（中枢上这台设备每个副本存到哪一条、中枢以为它开没开） | 收到 `hello` 之后 |
+| `ack` | `session`、`seq` | 这个副本已经落盘到 `seq` |
+| `refuse` | `session`、`code`（`full`）、`message` | 副本或账号到了上限（§5.3）：运行器把这个会话的 Remote 关上并写一条过程行 |
+| `send` | `id`、`session`、`text`、`clientId` | 别的设备续写一句 |
+| `answer` | `id`、`session`、`ask`、`decision`、`message?` | 别的设备答一条征询 |
+| `stop` | `id`、`session` | 别的设备中止本轮 |
+
+- 记录就是 `events.ndjson` 里 `seq` 0 以后的行（§4.3.6），`turn` 照原样带上 `tool`、`ask`、`clientId`（页面要靠 `ask` 画征询卡片、靠 `clientId` 认出先画的那一行），只按 §5.3 截短 `detail`。`seq` 0 的会话行不推，`session` 帧代替它。
+- `send` 进运行器就是 `session.send`，与本机发的一样排队（至多 5 条）、一样的错误码；人的那一行多一个本机字段 `origin: 'remote'`。`answer` 就是 `session.answer`（`by` 照旧记 `user`），`stop` 就是 `session.stop`。中枢等 `reply` 至多 10 s。
+
+**状态。** 运行器的 `list` 答复多一个 `link: {state, reason?}`，变化时发一个 `{type: 'link', state, reason?}` 事件（§4.5.2 的表加一行）：
+
+| `state` | 意思 |
+|---|---|
+| `off` | 没有会话要它，不连 |
+| `connecting` | 正在握手 |
+| `up` | 收到了 `welcome` |
+| `retrying` | 断了或没连上，按退避等下一次，`reason` 写原因 |
+| `refused` | 不再自动重试：这台电脑没登录、设备被吊销、属主账号停用、中枢没有 Remote。再开一个会话的 Remote 或重新登录后再试 |
+
+**断线与重连。** 断线后 1、2、5、10、30 秒退避重连，之后每 30 秒一次，收到 `welcome` 就从 1 秒重新算。握手没成功时（Bun 的 WebSocket 不交出 HTTP 状态码），运行器先问 `GET /v0/client/device`：吊销、属主停用、令牌无效就转 `refused`；再不带升级头问一次 `GET /v0/client/link`：404 是中枢版本早于 Remote、501 是中枢没开 Remote（都 `refused`），426 说明中枢有、升级被中间的反向代理挡了（`retrying`，原因写明）。
+
+**反向代理。** 中枢前面的反向代理要把 `/v0/client/link` 的升级转过去。内测中枢的 TLS 前置（`demo/env/beta/ops/console-tls-front.ts`）只为这一条路径做了：先替设备向回环上的控制台拨一条链路，控制台 101 了才给设备 101，之后逐帧对转、关闭码原样带回；控制台拒绝时设备拿到 502，随后按上面两条普通请求问清原因。别的路径上的升级照旧走普通转发、不会被升级。
+
+**吊销与停用。** 吊销设备（「连接」页、`qmo sign-out`，都经设备端口的 `revokeDevice`）、属主账号被吊销或重置（`onAccountEnded`）时，中枢当场以 4401 关掉这台设备（或这个账号所有设备）的链路，并删掉它们的副本（§5.3）；之后的握手按上表 401。账号降成只读、订阅到期这类没有事件的变化，由中枢每 30 秒用同一个 `authenticate`（与订阅）对每条链路复核一次，不过就以 4403 / 4402 关掉。为了复核，中枢在链路存在期间把这枚令牌留在内存里，不落盘、不进日志。运行器收到 4401 / 4403 / 4402 不重连，转 `refused`。
 
 ### 5.2 别的设备怎么看到
 
-开着 Remote 的本机会话出现在这个账号别的设备的 Code 列表里（浏览器里同一个 `/code`），标明在哪台设备、是否在线。在线时别的设备发的消息经中枢转给运行器，和在本机发的一样进同一个会话；离线时只读。
+**列表。** 开着 Remote 的本机会话出现在同一账号别的设备的 `/code`：浏览器里的 Code 面、另一台桌面版 Code 面的侧栏（本机会话的文件夹分组之后）。按「设备名 · 项目文件夹名」分组；离线的、Remote 已关的，行上的小标写「离线」「Remote 已关」。一台桌面版自己的副本不出现在它自己的 Code 面里：它的页面是用这台设备的票据进门的（会话表记着设备号，clients.md §3.2），中枢据此把这台设备的副本去掉，这台电脑上画的始终是运行器的记录（§4.5.5）。
+
+**画法。** 别的设备上的会话用同一个 Code 页脚本、同一套 `CODE_RENDER_JS` 画，只是换一条路：页面多一段脚本 `CODE_HUB_JS`（`assets/codeHub.ts`；`codeRemote.ts` 这个名字给了中枢侧的副本类型与校验），只在个人账号、中枢开了 Remote 时随页面下发（`#code-local` 带 `data-remote="1"`），它把 Code 页对运行器的那几条调用（`qmo_local_read`、`qmo_local_send`、`qmo_local_answer`、`qmo_local_stop`）换成下面的中枢接口，把中枢的事件流翻译成 §4.5.2 的事件（列表变了就是 `session`，打开的副本多了记录就是一条 `trimmed` 的 `record`，页面照原有的补读逻辑去读）。会话的键是 `<设备号>.<会话号>`，地址 `/code?session=<键>`，与本机会话的 `cs_…` 不会相撞。
+
+- 不用前台现有的服务端转录画法（`renderMessages`）：副本的记录会被重写（工具从运行中到结束、征询从未答到已答），服务端片段要整段换进页面才能跟上，前台是用 `innerHTML` 换的，而 Code 页的脚本不许有任何把字符串变成标记的路（§4.5.5）；`CODE_RENDER_JS` 的富文本与 `renderRichText` 逐字相同（真 Chrome 用例核对）、类名照前台，外观一样；本机与别处同一种画法，征询卡片、步骤折叠、差异块都是一份代码。`renderMessages` 不认 `tool`、`ask`，画出来的征询没有按钮。代价：不跑脚本时浏览器里只有「Code 在 Qmo 桌面版里用」那一行。
+- 在线时可以续写（输入框、`Enter` 发、先画再同步，§3.3）、答征询（同一张卡片）、中止（停止按钮）；设备离线时输入框、发送、停止与卡片的按钮都关着，标题栏的副标题写「<设备名> · <文件夹> · <agent> · 离线 · 只读」；Remote 已关的副本写「Remote 已关 · 只读」，标题栏有「从中枢删除副本」。设备离线时副本若停在「运行中」「等你确认」，画成「已中断」。别处的会话的权限模式菜单关着（只显示当前的档）、没有变更面板、没有 Remote 开关。
+- 浏览器里没有壳：Code 面只有这些副本，「新代码会话」关着，空白处写「这里是你在别的电脑上开了 Remote 的会话 · 新会话在 Qmo 桌面版里开」（一个都没有时写怎么开）；中枢没开 Remote 或读者不是个人账号时照旧只有「Code 在 Qmo 桌面版里用」那一行。
+- 正文增量本版不转发：别的设备上 agent 说完一条才出现一条，其间是「思考中」的等待行与计时。
+
+**中枢接口**（都只给个人账号，只看得到、碰得到自己账号的设备；旧式令牌与 break-glass 没有这些接口，答 403；读要能进前台，写要成员或运维，只读账号不能写）：
+
+| 方法 | 路径 | 内容 |
+|---|---|---|
+| GET | `/v0/code/sessions` | `{devices: [{id, name, online}], sessions: [副本的抬头，带 device]}`：这个账号的副本，去掉发起请求的这台设备自己的 |
+| GET | `/v0/code/sessions/<设备号>/<会话号>?before=&limit=` | 与 `qmo_local_read` 同形：`{session, records, more, lastSeq}`，最近的至多 200 条 |
+| POST | `/v0/code/sessions/<设备号>/<会话号>/messages` | `{text, clientId}` → 转成 `send`，答 `{turn, queued}`；设备离线 409 `offline`，Remote 已关 409 `remote_off`，运行器拒绝 409 带它的代码，10 s 没答 504。记 `code.remote.send` |
+| POST | `…/answer` | `{ask, decision, message?}` → `answer`。记 `code.remote.answer` |
+| POST | `…/stop` | `{}` → `stop`。记 `code.remote.stop` |
+| DELETE | `/v0/code/sessions/<设备号>/<会话号>` | 删副本，只在 Remote 已关时（开着时 409，先在那台电脑上关）。成功 204，记 `code.remote.drop` |
+| GET | `/v0/code/stream` | Server-Sent Events，与 `/v0/chat/stream` 同样的心跳、同样随账号吊销与会话过期关掉；事件 `code` 只有一个递增的 `rev`，不带内容（`console.md` §6.6 的理由），页面拿到就重读列表（合并 150 ms 内的），打开的副本有新记录再读它；另每 30 s 重读一次列表，防事件流被中间挡住 |
+
+公开版的订阅闸照常管这些写接口（`http.ts` 一处）。
 
 ### 5.3 同步什么
 
-- 运行器把每个开着 Remote 的会话的标题、项目文件夹名（不含完整路径）、agent、状态与对话记录（`events.ndjson` 的行，与前台现有的会话记录同一格式，§4.3.6）按 `seq` 顺序推给中枢，中枢存一份副本，供离线时读与新设备补历史。单一写入者是运行器，不会冲突。
-- 不同步文件内容与变更面板，只同步对话记录里本来就有的文字（工具行的 `detail` 里的输出与差异摘录在内，推之前可按设置去掉）。Remote 关着的会话，中枢连它存在都不知道。
-- 副本存在中枢配置根下，按账号隔离；删除会话或吊销设备时一起删。
+- **推什么。** 会话抬头（标题、项目文件夹名、agent、权限模式、状态、时刻、`lastSeq`、Remote 开没开）与对话记录（`events.ndjson` 的行，与前台的会话记录同一格式，§4.3.6），按 `seq` 顺序。不推：完整路径、agent 的工作目录、工作树、agent 的原生会话号、文件内容、变更面板、正文增量。单一写入者是运行器：别的设备发的话经中枢转给运行器，运行器写下那一行，再作为记录推回中枢，中枢自己从不往副本里写记录。
+- **`detail` 的取舍。** 推之前每条记录的 `detail` 截到 4 KiB（差异留头、输出留尾，规则同 §4.3.6，截了就在末尾写「（更多在那台电脑上）」）；征询的 `ask`（说明、路径、至多 2 KiB 的输入摘要）与征询那一行的 `detail`（要改什么的差异）照推，不然别处答不了征询。本版不设开关：开 Remote 本来就是这个人对这个会话的选择，§5.0 已写明会同步对话；4 KiB 足够在别处看懂改了什么、答得了征询，又让一个副本的体积受控（下一条）。以后要「不推工具输出」，在壳设置窗的「Code」一节加一项，帧格式不变（`detail` 本来就可缺）。
+- **顺序与补推。** 运行器每推一批，中枢落盘后答 `ack`；运行器把它记进 `session.json` 的 `remote.pushedSeq`（至多每 2 s 写一次盘，关 Remote 与运行器退出时写完）。重连时中枢在 `welcome` 里报每个副本存到哪一条，运行器从那里接着推（以中枢报的为准，`pushedSeq` 只是这台电脑记下的确认点）：断网期间写下的记录在恢复后按 `seq` 补齐；中枢丢了副本（被删、换了机器）就从头推。一个会话一次只有一批在路上，等到 `ack` 再推下一批；推的时候又写的新记录排在后面。中枢上的副本与本机同样「同一 id 取最后一条、位置取第一次出现」。
+- **存放与按账号隔离。** 副本在中枢配置根下：`qianmoConfigPath('qianmo', 'console', 'code-remote', <账号键>, <设备号>, <会话号>)`，里面 `session.json`（中枢收到的抬头，原子写）与 `events.ndjson`（只追加，与本机同一种信封）。账号键是属主 `subject` 的 SHA-256 前 32 位十六进制，路径里不出现账号名；设备号与会话号都按格式核对过才进路径。目录 0700，文件 0600。每一次读写都从这次请求自己的主体出发：链路上的是 `authenticate` 认出的属主与设备，浏览器来的是会话的主体，中枢再核一次设备账本里这台设备的属主就是他。中枢存的是它逐字段核对后重新序列化的记录，不是收到的原文。
+- **上限。** 一个副本至多 16 MiB，一个账号至多 100 个副本、合计 256 MiB；到了就答 `refuse`，那个会话的 Remote 由运行器关上（副本留着、只读）。一帧至多 1 MiB。
+- **什么时候删。** 吊销设备时删这台设备的全部副本；属主账号被吊销或重置时删这个账号的全部副本；本机删了会话（`gone`）删那一个；别的设备上「从中枢删除副本」删那一个。中枢启动时再核对一遍：设备账本里已吊销、已不存在、或属主对不上的设备，它的副本删掉（停机期间发生的吊销也补上）。
+
+### 5.4 macOS 构建的 `qmo` 与 WebSocket
+
+历史上 macOS 编出来的 `qm` 内联了纯 JS 的 npm `ws`，在 Bun 下握手静默失败（30 s 超时）。`qmo` 用的是 Bun 运行时自带的 `WebSocket`（原生实现，Linux 与 macOS 同一份），客户端的依赖只有 `@qianmo/paths` 与 `@qianmo/harness`，图里没有 `ws`。不靠推断，靠实测：
+
+1. 端到端用例 `atlas/tests/integration/qianmo-client-remote.test.ts`（e2e 分片）：用 `buildClient` 在跑用例的这台机器上当场编出 `qmo`（本机是 macOS，CI 是 Linux），在本进程起一台真的中枢（`startConsoleServer`，个人账号、设备账本、Remote 副本都用生产实现，配置根是临时目录，`127.0.0.1`），配对一台客户端设备，以 `qmo code serve` 跑一个假 Claude Code 的会话、打开 Remote，核对：握手成功（链路 `up`）、副本的记录与本机 `events.ndjson` 逐条相同、从中枢续写一句经链路进了会话、断线期间写的记录重连后按 `seq` 补齐、吊销设备后链路当场断开且重连被拒。
+2. 再用 `bun run atlas:build:client` 出的 `dist/qmo-darwin-arm64` 本身对同样起的一台中枢手跑一遍握手与一轮推送，输出记在 §9。
+3. 编出来的 `qmo` 里不该有 `ws` 包：用例把同一个入口不压缩地打包一份，核对里面有 `qmo-link.1`、没有 `node_modules/ws/`。
+
+握手失败时运行器在标准错误（壳写进 `runner.log`）记一行关闭码与原因，页面的开关旁写链路状态（§5.1），不会静默。
+
+### 5.5 放弃的做法
+
+| 做法 | 为什么不用 |
+|---|---|
+| 让运行器当一台常驻节点，走节点的控制链路与任务协议 | 节点协议是中枢拨节点（H-2），运行器在 NAT 后面拨不进来；任务协议、信箱、名册都是为服务智能体设计的，个人电脑进名册会被整个网络寻址。专用的几种帧更小，校验也写得全 |
+| 不用 WebSocket，改长轮询或 SSE 加 POST | 续写要中枢主动推给运行器，长轮询每一句话多一个往返，还要自己做顺序与重传；WebSocket 在 Bun 两头都是原生的，一条连接上双向有序 |
+| 浏览器里用 `renderMessages` 画副本 | §5.2：跟不上重写的记录，前台的片段换法要 `innerHTML`；也画不出征询的按钮 |
+| 设备令牌放在 WebSocket 地址的查询串里 | 会进反向代理与访问日志；Bun 的 WebSocket 可以带请求头 |
+| 推之前把 `detail` 全去掉 | 别处答不了征询（看不到要改什么），也看不懂一个工具做了什么 |
+| 中枢副本存进前台的对话存储（`chat.ndjson`） | 那是中枢与节点之间的会话，所有账号一份文件；副本要按账号、按设备删，要有自己的上限 |
+| 别的设备续写时由中枢先写下那一行再转给运行器 | 两个写入者就要合并规则；单一写入者让副本永远是本机记录的前缀加截短 |
 
 ## §6 安全
 
@@ -599,6 +704,7 @@ Windows：PATH（变量名不分大小写）里按 `PATHEXT`（缺省 `.COM;.EXE
 - 本机 agent 的权限模式默认自动审批，但命令执行仍由 agent 自己的沙箱与权限机制把关；运行器只在「跳过权限确认」下替 agent 放行命令；跳过权限确认要再确认一次（§4.4）。
 - 壳新增的命令（`qmo_boot_layout`、`qmo_local_*`，选文件夹是 `qmo_local_pick_folder`）照 `qmo-app.md` §7 的规矩：只给中枢源与主窗口、参数逐项校验、路径只认选过的文件夹（§4.5.3）。
 - 运行器的日志不记消息正文；会话记录 0600、目录 0700；登录 shell 的完整环境只在内存里、只交给 agent 子进程。
+- Remote（§5）：设备令牌只在运行器的 `Authorization` 头里，不进地址、不进日志；中枢为 30 s 复查在链路存在期间把它留在内存里，不落盘。只有个人账号名下、状态正常的客户端设备能升级（§5.1 的表），吊销设备、吊销或重置账号当场以 4401 断开并删副本，降成只读、订阅到期在下一次复查时断开。中枢存的副本按账号键（`subject` 的哈希）分目录、0700/0600，逐字段核对后重新序列化，没有路径与原生会话号；浏览器与别的设备只能读写自己账号的副本，链路下来的请求只送到本账号的设备。`CODE_HUB_JS` 只请求 `/v0/code/…`、带控制台头；三段 Code 脚本都没有把字符串变成标记的路。
 
 ## §7 不做（本轮）
 
@@ -614,7 +720,7 @@ Cowork 式虚拟机、模拟器、Office 插件；把整个网页应用另带一
 | P37.14b | Codex：`CodexChannel` 搬进 `@qianmo/harness` 并加附加项；运行器的 Codex 驱动（§4.3.5、§4.4 的 Codex 列，`turn/diff/updated`） | 用 Codex 在一个本机文件夹里跑通一轮（改一个文件、看到变更）；四档在假 app-server 上各一轮；常驻 Codex 用例不变 | 已实现，已合入 main，未部署；只在假 app-server 上验过，Qmo.app 里用真的 Codex 未实测（§9） |
 | P37.14c | ACP：`AcpChannel` 搬进 `@qianmo/harness` 并加附加项；Gemini CLI、Qwen Code、opencode、dsh 的本机起法、模式映射与会话级「允许」的认法 | Gemini CLI 在本机文件夹里跑通一轮；其余三个在假 ACP 上过，真机标未实测；常驻 ACP 用例不变 | 设计 |
 | P37.14d | 独立工作树（§4.3.7）；变更面板补全（非 Git 文件夹、未跟踪、二进制、大文件）；改名、删除（含工作树的去留）；窗口不在前面时的系统通知（一轮完成、等你确认）与角标；退出 Qmo 时有会话在跑先问；壳设置窗「Code」一节（新会话的缺省权限模式、新会话开 Remote 的缺省） | 在 Git 仓库里开工作树会话、改文件、主检出不受影响，删会话时干净的工作树被移除、不干净的留下；通知点开回到那个会话；以上在 macOS 本机走一遍 | 设计 |
-| P37.15 | 设备链路与中枢 `/v0/client/link`、设备节点、开着 Remote 的会话同步与续写（§5）；用 P37.14a 留好的接口（§4.5.6） | 本机会话在浏览器里看得到；设备在线时从浏览器续写一轮；吊销设备后链路断开；断网期间的记录在恢复后按 `seq` 补齐 | 设计 |
+| P37.15 | 设备链路与中枢 `/v0/client/link`、设备节点、开着 Remote 的会话同步与续写（§5）；用 P37.14a 留好的接口（§4.5.6） | 本机会话在浏览器里看得到；设备在线时从浏览器续写一轮；吊销设备后链路断开；断网期间的记录在恢复后按 `seq` 补齐 | 已实现并合入 main，未部署；用例与实测见 §9。编出来的 macOS `qmo` 对本机中枢的握手与推送已实测；Qmo.app 里的整条路（真壳、真 Claude Code、真浏览器对内测中枢）未实测 |
 | P37.16 | 离线打开 Code（原「本机直连」已并入 P37.14a）：中枢连不上时，壳的离线页给「打开本机会话」，进壳自带的精简本机页（只画本机会话，富文本画法在构建时从控制台的 `CODE_RENDER_JS` 拷入，不是网页应用的副本），本地页面的能力加上运行器的命令 | 断网冷启动 Qmo，能看本机会话、跑完一轮；联网后回到中枢页面 | 设计 |
 
 ## §9 验证
@@ -661,6 +767,17 @@ P37.14b 未实测（要在负责人的机器上用 Qmo.app 与真的 Codex 核�
 
 - 真的 Codex 0.164.0：`item/agentMessage/delta`、`item/commandExecution/outputDelta`、`turn/diff/updated` 的实际形状（尤其整轮差异里的路径在不是 Git 仓库时是绝对还是相对）；`fileChange` 条目是否在征询之前到（不是的话自动接受编辑会退成交给人）；`thread/start` 是否收 `approvalsReviewer`、`turn/start` 的 `approvalPolicy` / `sandboxPolicy` 是否留给以后各轮；没登录时的原话与 `codexErrorInfo`；拒绝后的命令有没有 `item/started`；npm 装的 `codex` 起子进程时 `children.json` 的残留清理。
 - Qmo.app 里的整条路：在一个本机文件夹里用 Codex 改一个文件、变更面板看到它。
+
+P37.15（Remote）的用例与实测，全部用假进程与回环上的中枢，不连舰队、不启动真的 agent：
+
+- 中枢（`atlas/packages/console/test/codeLink.test.ts`，真 `Bun.serve` 上的真 WebSocket、内存里的副本）：谁能升级（个人账号的客户端设备才行；无令牌、坏令牌、吊销、属主停用 401，接力设备与旧式令牌配对 403，不带子协议 426，地址带查询串 400，公开版没订阅 402）与真拨号的 101 / 非 101；`hello` → `welcome`（设备名、`have`），抬头与记录的 `ack`、再拨时 `have` 报存到哪；帧不对、`hello` 之前的帧、`seq` 不递增、二进制帧 4400；抬头里多出来的路径不进副本；账号满了 `refuse`；同一设备第二条链路把第一条以 4409 换掉；`gone` 删副本；`/v0/code` 的列表与读页只给本账号（别的账号同一路径 404、旧令牌 403），续写、答复、停下经链路到运行器、按运行器的答复回 HTTP 并记动作账本，离线 409、Remote 已关 409、开着时不能删、关了能删；事件流只带 `rev`；`DELETE /v0/client/device` 当场 4401 并删副本、重拨被拒，账号吊销关掉它所有设备的链路、不碰别人的，复查把降成只读的以 4403、订阅到期的以 4402 关掉；没接副本的中枢 501。`consoleCodeCopies.test.ts`（node）：落盘的目录 0700、文件 0600、路径里没有账号名，重开后读回、每个 turn 取最后一行放在第一次的位置，100 个副本与 16 MiB 的上限、满了之后重开仍是满的、拒收的那批一个字节也没写，删一个、一台设备、一个账号，启动时按设备账本清理，不是 id 的路径段一律拒绝。另 `routeDocs`、`actionWords`、`settingsCatalog` 跟着新路由与动作更新。
+- 运行器（`atlas/packages/client/test/code/remote.test.ts`，本进程的运行器加一个回环上的假中枢）：开 Remote 才拨、抬头不带路径、记录按序推完、`pushedSeq` 落盘；中枢断开期间写的记录在重连后补上、没有重复；别处的一句以 `origin: 'remote'` 跑完；没开 Remote 的会话从别处够不着，`origin: 'remote'` 不能从管道来；最后一个 Remote 关掉就断、再开再拨；4401 不再重试并写原因，再开一次时握手被拒、问出「已吊销」；中枢没有 Remote 时写明；副本满了 Remote 关上并写一条过程行；没登录开不了，换了登录后旧的 Remote 关上并写明；`detail` 截到 4 KiB（差异留头、输出留尾、不切半个字），征询的字段照推。`runner.test.ts` 的 `hello` 改为 `remote: true`。
+- 页面（`code.test.ts`、`browser/codeRemote.browser.test.ts`）：三段脚本的预算与「没有 innerHTML」、`CODE_HUB_JS` 只请求 `/v0/code/`、命令表加上 `qmo_local_set_remote`；个人账号在开了 Remote 的中枢上才有 `data-remote` 与 `CODE_HUB_JS`，旧令牌与没开的中枢逐字照旧。真 Chrome 里：浏览器列出 MacBook · atlas 的副本、读出记录与征询卡片、续写一句经链路到运行器再以记录回来（只画一次）、答征询、离线时副标题写「离线 · 只读」且输入框、发送与卡片按钮都关着、Remote 关着时「从中枢删除副本」删掉它；桌面版的假壳上新会话的 Remote 开关把 `remote: true` 交给 `qmo_local_start`、标题栏开关与行上小标、链路状态「已同步」「正在重连 · 原因」、关掉时调 `qmo_local_set_remote`、另一台电脑的副本列在旁边且读它不经壳。原有的 `code.browser.test.ts` 全过。
+- TLS 前置（`demo/env/beta/ops/console-tls-front.test.ts`）：只有 `/v0/client/link` 升级、上游先送的帧不丢、子协议照上游选的回、4401 原样带回、设备关了上游也关、上游拒绝时 502 且同一路径的普通 GET 拿到上游自己的应答、真 TLS（`wss`）上同样对转。
+- 编出来的 `qmo`（`atlas/tests/integration/qianmo-client-remote.test.ts`，e2e 分片）：`buildClient` 当场编出、按壳的说法跑 `qmo code serve`，对本进程起的中枢（`startConsoleServer`、生产的账号库、设备账本与副本存储，临时目录，`127.0.0.1`）：经 `/v0/handoff/pair` 配对客户端设备、`remote: true` 开会话，链路 `up`、副本每个 turn 与 `events.ndjson` 一致、路径不进副本；浏览器那边续写一句、以 `origin: 'remote'` 落在本机；中枢停掉、其间本机说一句、在同一端口重起（副本从盘上读回），链路回到 `up`、补齐且没有重复；`DELETE /v0/client/device` 后链路 `refused`、副本没了，再开一次 Remote 被拒并写「这台设备已被吊销 · 在 Qmo 里重新登录」；日志里没有令牌。同一入口不压缩打包的结果里有 `qmo-link.1`、没有 `node_modules/ws/`。本机 Bun 1.4.3 下两条都过（用例本身约 3.3 s，编译另算）。
+- 手跑（2026-10-25 14:17Z，本机 macOS arm64，记录在 `~/atlas-evidence/2026-10-25/p37-15/manual-remote.log`，脚本同目录）：`bun run atlas:build:client` 出的 `dist/qmo-darwin-arm64`（70,978,034 字节，提交 `03f85c736`，比 P37.14a 记的 70,961,522 多 16,512）对 `qm console --accounts`（临时配置根、`127.0.0.1`）：受邀成员登录、领配对码，`qmo sign-in <中枢> --code` 配对成功；`qmo code serve` 的 `hello` 报 `remote: true`；`remote: true` 开会话后 412 ms 链路 `connecting` → `up`，中枢日志 `[code-link] up d-…`；`/v0/code/sessions` 列出这台设备在线、会话 `lastSeq` 2，副本两条记录与本机 `events.ndjson` 的 seq 1、2 相同；中枢上的两个文件在 `qianmo/console/code-remote/<32 位账号键>/<设备号>/<会话号>/` 下，都是 0600。
+
+P37.15 未实测：Qmo.app 里的整条路（真壳的 `qmo_local_set_remote`、WKWebView 里 `CODE_HUB_JS` 的 `fetch` 与 `EventSource`、真 Claude Code 的一轮经链路推到中枢）；内测中枢的 TLS 前置与真证书下设备对 `wss://` 握手（只在用例里用自签证书过了 `wss`）；经系统 HTTP 代理拨链路（`proxy` 选项按环境变量选，没有真代理测过）；Windows、Linux 编出的 `qmo` 的链路（CI 的 Linux 只跑 e2e 用例，Windows 没有）；手机浏览器上的画法；正文增量不转发，别处要等一条说完。
 
 `qmo agents`（§4.2）：
 

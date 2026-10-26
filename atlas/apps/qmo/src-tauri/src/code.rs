@@ -1234,7 +1234,7 @@ mod tests {
         let mut result = json!({
             "version": "0.0.0-test",
             "protocol": 1,
-            "features": {"protocols": ["claude-stream"], "worktree": false, "remote": false},
+            "features": {"protocols": ["claude-stream"], "worktree": false, "remote": true},
         });
         if let Some(dir) = code_dir {
             result["codeDir"] = json!(dir.to_str().unwrap());

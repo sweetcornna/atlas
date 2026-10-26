@@ -36,6 +36,7 @@ import type {
   UpdatesPort,
 } from './directionPorts.js'
 import type { AvatarsPort } from './avatar.js'
+import type { CodeCopiesPort, CodeLinksPort } from './codeRemote.js'
 import type { ConsoleFailure, ConsoleResult } from './contracts.js'
 
 import type { AuditRecord, MessageChain } from '@qianmo/audit'
@@ -1339,6 +1340,14 @@ export const CONSOLE_ACTIONS = [
   /** 接力设备（P19）：签发配对码、吊销设备，target 是设备号；签发时是签发人。 */
   'handoff.device.pair',
   'handoff.device.revoke',
+  /**
+   * 本机会话的 Remote 副本（P37.15，`qmo-local.md` §5.2）：别的设备续写一句、答一条
+   * 征询、中止一轮、从中枢删除副本。target 是 `<设备号>/<会话号>`，不记正文。
+   */
+  'code.remote.send',
+  'code.remote.answer',
+  'code.remote.stop',
+  'code.remote.drop',
   /** 文件互通（P20），target 是申请、授权、传输或汇集组的 id。 */
   'files.decide',
   'files.grant.revoke',
@@ -2583,4 +2592,14 @@ export interface ConsoleDeps {
   readonly billing?: BillingPort
   /** 形象（`avatar.ts`）。缺席时人人用按地址或主体算出的默认形象，不能改。 */
   readonly avatars?: AvatarsPort
+  /**
+   * 本机会话的 Remote 副本（P37.15，`qmo-local.md` §5.3）。只在开了个人账号、接了
+   * 设备账本时接；缺席时 `/v0/client/link` 与 `/v0/code/*` 照旧是 404 / 501。
+   */
+  readonly codeCopies?: CodeCopiesPort
+  /**
+   * 设备链路的表（`codeLink.ts`）。由 `createConsoleHandler` 按 `codeCopies` 建好放进
+   * 来，调用方不传。
+   */
+  readonly codeLinks?: CodeLinksPort
 }

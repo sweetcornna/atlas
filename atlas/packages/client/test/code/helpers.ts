@@ -328,6 +328,10 @@ export interface StartOptions {
   readonly login?: Record<string, string> | null
   readonly env?: NodeJS.ProcessEnv
   readonly scan?: ServeOptions['scan']
+  /** The device link's pairing, HTTP and waits (P37.15). */
+  readonly pairing?: ServeOptions['pairing']
+  readonly linkFetch?: ServeOptions['linkFetch']
+  readonly linkBackoffMs?: ServeOptions['linkBackoffMs']
 }
 
 /** A runner with a fake Claude Code at `<bin>/claude`. */
@@ -348,6 +352,13 @@ export function startRunner(at: Box, options: StartOptions = {}): TestRunner {
     }),
     scan: options.scan ?? (async () => claudeReport(claude)),
     limits: { deltaMs: 10, ...options.limits },
+    ...(options.pairing === undefined ? {} : { pairing: options.pairing }),
+    ...(options.linkFetch === undefined
+      ? {}
+      : { linkFetch: options.linkFetch }),
+    ...(options.linkBackoffMs === undefined
+      ? {}
+      : { linkBackoffMs: options.linkBackoffMs }),
   })
 }
 

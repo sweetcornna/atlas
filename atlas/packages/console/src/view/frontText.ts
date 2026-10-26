@@ -1312,6 +1312,79 @@ const CODE_CLIENT: Readonly<Record<Lang, CodeClientText>> = {
   },
 }
 
+/** Remote's words on Code (P37.15, `qmo-local.md` §5.2): the page's and the few the server draws. */
+interface CodeRemoteText {
+  /** The switch's hint, in the box and over a session. */
+  readonly remoteHint: string
+  readonly offline: string
+  readonly readOnly: string
+  readonly remoteOff: string
+  /** 「从中枢删除副本」, and what is said after. */
+  readonly drop: string
+  readonly dropped: string
+  /** The device link's state, beside the switch over a session. */
+  readonly linkUp: string
+  readonly linkConnecting: string
+  readonly linkRetrying: string
+  readonly linkRefused: string
+  /** A browser's blank view: with copies, and without. */
+  readonly hubBlank: string
+  readonly hubNone: string
+}
+
+export const CODE_REMOTE_TEXT: Readonly<Record<Lang, CodeRemoteText>> = {
+  'zh-CN': {
+    remoteHint:
+      '同步到中枢：同一账号在浏览器或别的电脑上能看到这个会话，这台电脑在线时还能在那边续写',
+    offline: '离线',
+    readOnly: '只读',
+    remoteOff: 'Remote 已关',
+    drop: '从中枢删除副本',
+    dropped: '副本已从中枢删除',
+    linkUp: '已同步',
+    linkConnecting: '正在连接中枢',
+    linkRetrying: '正在重连',
+    linkRefused: '同步已停',
+    hubBlank:
+      '这里是你在别的电脑上开了 Remote 的会话 · 新会话在 Qmo 桌面版里开',
+    hubNone: '还没有开着 Remote 的会话 · 在 Qmo 桌面版里打开一个会话的 Remote',
+  },
+  en: {
+    remoteHint:
+      'Sync to the hub: this account sees the session in a browser or on another computer, and can continue it there while this computer is online',
+    offline: 'Offline',
+    readOnly: 'Read-only',
+    remoteOff: 'Remote off',
+    drop: 'Delete the copy from the hub',
+    dropped: 'The copy is deleted from the hub',
+    linkUp: 'Synced',
+    linkConnecting: 'Connecting to the hub',
+    linkRetrying: 'Reconnecting',
+    linkRefused: 'Sync stopped',
+    hubBlank:
+      'Sessions with Remote on from your other computers · New sessions start in the Qmo desktop app',
+    hubNone:
+      'No sessions with Remote on yet · Turn Remote on for a session in the Qmo desktop app',
+  },
+  ja: {
+    remoteHint:
+      'ハブに同期：同じアカウントでブラウザや他のコンピューターからこのセッションを見られ、このコンピューターがオンラインの間は続きも送れます',
+    offline: 'オフライン',
+    readOnly: '閲覧のみ',
+    remoteOff: 'Remote オフ',
+    drop: 'ハブからコピーを削除',
+    dropped: 'コピーをハブから削除しました',
+    linkUp: '同期済み',
+    linkConnecting: 'ハブに接続中',
+    linkRetrying: '再接続中',
+    linkRefused: '同期は停止中',
+    hubBlank:
+      '他のコンピューターで Remote をオンにしたセッションです · 新しいセッションは Qmo デスクトップ版で始めます',
+    hubNone:
+      'Remote がオンのセッションはまだありません · Qmo デスクトップ版でセッションの Remote をオンにします',
+  },
+}
+
 /**
  * Code's words, as JSON for its data attribute (`view/frontCode.ts`); the
  * front's own words (`#fx`) are read beside them. The few the server also
@@ -1321,6 +1394,7 @@ export function codeClientText(lang: Lang): string {
   const t = FRONT_TEXT[lang]
   return JSON.stringify({
     ...CODE_CLIENT[lang],
+    ...CODE_REMOTE_TEXT[lang],
     none: t.noCodeSessions,
     folder: t.folder,
     thinking: t.activity.thinking,
