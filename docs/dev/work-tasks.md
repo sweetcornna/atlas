@@ -94,20 +94,21 @@ interface ChatOpenOptions {
 
 ### 2.1 名字
 
-| `WorkflowId` | 中文名 | 技能名（omp） | 首条消息带的命令 | 主要产出 |
+| `WorkflowId` | 中文名 | 技能名（omp） | 智能体先读 | 主要产出 |
 |---|---|---|---|---|
-| `slides` | 演示文稿 | `qmo-slides` | `/skill:qmo-slides` | `.pptx`（另可 `.pdf`） |
-| `document` | 文档 | `qmo-document` | `/skill:qmo-document` | `.docx`（另可 `.pdf`） |
-| `sheet` | 表格 | `qmo-sheet` | `/skill:qmo-sheet` | `.xlsx` |
-| `research` | 调研报告 | `qmo-research` | `/skill:qmo-research` | `.docx`（含来源一节） |
-| `webpage` | 网页 | `qmo-webpage` | `/skill:qmo-webpage` | 自包含 `.html` |
-| `analysis` | 数据分析 | `qmo-analysis` | `/skill:qmo-analysis` | `.xlsx` 加 `.pptx` 或 `.docx` |
+| `slides` | 演示文稿 | `qmo-slides` | `skill://qmo-slides` | `.pptx`（另可 `.pdf`） |
+| `document` | 文档 | `qmo-document` | `skill://qmo-document` | `.docx`（另可 `.pdf`） |
+| `sheet` | 表格 | `qmo-sheet` | `skill://qmo-sheet` | `.xlsx` |
+| `research` | 调研报告 | `qmo-research` | `skill://qmo-research` | `.docx`（含来源一节） |
+| `webpage` | 网页 | `qmo-webpage` | `skill://qmo-webpage` | 自包含 `.html` |
+| `analysis` | 数据分析 | `qmo-analysis` | `skill://qmo-analysis` | `.xlsx` 加 `.pptx` 或 `.docx` |
 
 表的顺序就是卡片顺序。三种语言的名称与说明是界面文案，归界面一路（`frontText.ts`）。
 
 ### 2.2 触发
 
-- **点名**：卡片与 `/` 菜单都把选中的 `WorkflowId` 放进请求的 `workflow` 字段——开会话时是 `POST /v0/work/sessions` 的 `workflow`，会话里再点一次是 `POST /v0/chat/sessions/<id>/messages` 的可选 `workflow`（本路给这个路由加这一个键）。中枢据此把发给节点的 prompt 写成 `/skill:<技能名> <原文>`，转录里操作者那一行仍是人打的原文，另带 `workflow`（§3.1）。节点上 omp 照自己的技能命令展开（`/skill:` 记号在常驻侧拼好的消息里不在行首，omp 的句中记号形式照样认，§5.2 有用例）。
+- **点名**：卡片与 `/` 菜单都把选中的 `WorkflowId` 放进请求的 `workflow` 字段——开会话时是 `POST /v0/work/sessions` 的 `workflow`，会话里再点一次是 `POST /v0/chat/sessions/<id>/messages` 的可选 `workflow`（本路给这个路由加这一个键）。中枢据此在发给节点的 prompt 里、原文前面加一行 `[工作流 <技能名>] 先读 skill://<技能名>，按里面的步骤做。`，转录里操作者那一行仍是人打的原文，另带 `workflow`（§3.1）。智能体照这一行用 `read` 读技能，omp 从自己的技能目录取这份文件（§2.4），技能里再指向同目录的参考资料。
+- **为什么不用 omp 的技能命令 `/skill:<技能名>`**（v0.1 原写法，实测后改）：常驻侧把一句话包成 teammate 块（JSON 信封）交给 omp，命令落在引号后面，omp 的行首与句中两种认法都不认；把命令挪到包好的消息末行时，omp 把这一轮改成技能消息，常驻侧轮次端口等的那条用户消息不再出现，这一轮以「completed before input admission」收不进来（§8 的端到端记录）。点名一行只是文字，不改常驻侧收轮次的方式；代价是靠模型照做，而不是 omp 直接把技能正文放进这一轮。
 - **自动匹配**：六个技能的 `description` 写清用途与中英文关键词，omp 把它们列进系统提示，模型按描述自己去读（`read skill://qmo-slides`）。人没选工作流也能用上。
 - 本地命令（`/compact` 等）与工作流互斥：一句话认成本地命令时 `workflow` 答 400。
 
@@ -276,7 +277,7 @@ interface WorkOutput {
 ### 4.3 下载
 
 - 成功：`200`，正文是文件原样字节。头：`content-type` 为 §3.2 的 `mime`（认不出的一律 `application/octet-stream`）、`content-length`、`content-disposition: attachment; filename="<ASCII 退化名>"; filename*=UTF-8''<百分号编码>`、`cache-control: no-store`、`x-content-type-options: nosniff`、`cross-origin-resource-policy: same-origin`、`content-security-policy: default-src 'none'; sandbox`、`referrer-policy: no-referrer`。
-- 中枢不落盘：从节点按块取（每块原始字节 160 KiB、base64 后在 256 KiB 信封内），边取边写给浏览器。每个节点的取块速度限在每分钟 150 块（控制链路出站预算 300 的一半，`directions-2026-10.md` §1.1），约 400 KiB/s；50 MiB 的文件约两分钟。界面靠 `content-length` 画进度。
+- 中枢不落盘：从节点按块取（每块原始字节 160 KiB、base64 后在 256 KiB 信封内），边取边写给浏览器。每个节点的取块速度限在每分钟 150 块（控制链路出站预算 300 的一半，`directions-2026-10.md` §1.1），约 400 KiB/s；50 MiB 的文件约两分钟。路由设了 `content-length`，但 Bun 1.4.3 的服务端对边取边写的正文一律改用分块传输、把这个头丢掉（本机实测，§8），浏览器拿不到总长；界面要画进度用文件卡或列产出里的 `size`。
 - 中途文件被改（节点按设备号、inode、大小、修改时间核对每一块）或节点断开：响应体在中途报错断开，浏览器得到一个不完整的下载；不会把两个版本拼在一起。
 
 ### 4.4 预览
