@@ -60,7 +60,7 @@ describe.skipIf(!posix)('the runner', () => {
       version: expect.any(String),
       protocol: 1,
       features: {
-        protocols: ['claude-stream', 'codex-app-server'],
+        protocols: ['claude-stream', 'codex-app-server', 'acp'],
         worktree: true,
         remote: true,
       },

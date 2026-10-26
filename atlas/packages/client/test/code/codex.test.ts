@@ -128,7 +128,8 @@ describe('the drivers', () => {
   test('one for every protocol the page may offer, and none else', () => {
     expect(Object.keys(DRIVERS).sort()).toEqual([...FEATURES.protocols].sort())
     expect(driverFor('codex-app-server').nativeKind).toBe('codex-thread')
-    expect(() => driverFor('acp')).toThrow('后续版本支持')
+    expect(driverFor('acp').nativeKind).toBe('acp-session')
+    expect(() => driverFor('no-such-protocol')).toThrow('后续版本支持')
     expect(() => driverFor('toString')).toThrow('后续版本支持')
   })
 })

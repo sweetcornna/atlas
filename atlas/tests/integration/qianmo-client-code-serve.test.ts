@@ -251,7 +251,7 @@ describe.skipIf(!posix)('the compiled qmo as the shell runs it', () => {
     expect(hello).toMatchObject({
       protocol: 1,
       features: {
-        protocols: ['claude-stream', 'codex-app-server'],
+        protocols: ['claude-stream', 'codex-app-server', 'acp'],
         worktree: true,
         remote: true,
       },
@@ -509,7 +509,7 @@ describe.skipIf(!posix)('the compiled qmo as the shell runs it', () => {
     fakeCodex(at)
     const r = serve(at)
     expect((await r.call('hello')).features).toMatchObject({
-      protocols: ['claude-stream', 'codex-app-server'],
+      protocols: ['claude-stream', 'codex-app-server', 'acp'],
     })
     const folder = await r.call('folders.add', { path: at.work })
     expect(folder.git).toBe(false)
