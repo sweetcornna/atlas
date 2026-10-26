@@ -21,7 +21,7 @@
  *   stay.
  * - **Opening one.** A row dragged onto the content (its right third is a
  *   pane to the right, its bottom third one below, the rest that pane), a
- *   row's ⋯ (Code's gains the two as it opens) or right-click 在右侧打开 /
+ *   row's ⋯ (the two copied in as it opens) or right-click 在右侧打开 /
  *   在下方打开, and ⌃⌘\ / ⌃⌘- (Ctrl+Alt off
  *   a Mac) for a new one — 开始一项工作 on Work, a new session on Code. With
  *   panes up a row picked in the side list opens in the focused pane, and
@@ -1139,19 +1139,19 @@ function splitScript(): string {
       side.addEventListener('scroll', hideCtx, true);
     }
 
-    // Code's rows draw their own ⋯ (assets/codeManage.ts): the two go in as it opens.
+    // A side row's ⋯ (Code's is assets/codeManage.ts'): the right-click menu's two go in as it opens.
     document.addEventListener('toggle', function (event) {
       var more = event.target;
-      if (!CODE || !ctx || !more || !more.open || !more.matches || !more.matches('details.fx-more') || !side.contains(more)) return;
+      if (!SPLITS || !ctx || !more || !more.open || !more.matches || !more.matches('details.fx-more') || !side.contains(more)) return;
       var menu = more.querySelector('.fx-menu');
-      var pick = more.parentNode ? more.parentNode.querySelector('[data-action="code-open"]') : null;
+      var pick = more.parentNode ? more.parentNode.querySelector(ROW) : null;
       var q = pick ? rowQuery(pick) : null;
       if (!menu || q === null || menu.querySelector('.fx-split-item')) return;
       var line = document.createElement('div');
       line.className = 'fx-menu-sep fx-split-item';
       line.setAttribute('role', 'separator');
       menu.appendChild(line);
-      var picks = ctx.querySelectorAll('[data-action="fx-split"]');
+      var picks = ctx.querySelectorAll(':scope > [data-action="fx-split"]');
       for (var i = 0; i < picks.length; i++) {
         var copy = picks[i].cloneNode(true);
         copy.setAttribute('data-split-q', q);

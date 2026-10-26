@@ -13,10 +13,10 @@
  *   two more things in its bar — ⌄, the conversation's menu, after the
  *   title, and × at the end. Only these documents may be framed, and only
  *   by this origin (`respond.ts`, `documentHeaders`).
- * - **A row opens beside.** Every row's ⋯ menu on Work gains 在右侧打开 and
- *   在下方打开, carrying the pane's query (`agent=` or `session=`, the
- *   value encoded as `encodeURIComponent` does). Code's rows are the page
- *   script's; their right-click menu is the window's `#fx-split-ctx`.
+ * - **A row opens beside.** `#fx-split-ctx` is the window's right-click
+ *   menu for a side row, and its two items, 在右侧打开 and 在下方打开, are
+ *   what the script copies into a row's ⋯ as it opens, on Work and Code
+ *   alike: one copy in the document, not two buttons in every row.
  * - **The words** travel as `data-split-text` on `#fx`, in the reader's
  *   language; the keyboard help's rows are the front's (`view/front.ts`).
  *
@@ -133,29 +133,6 @@ function splitItem(
     `data-split-to="${to}" data-split-q="${attr(query)}">` +
     `${icon(to === 'right' ? 'columns-2' : 'rows-2', { small: true })}${escapeHtml(label)}</button>`
   )
-}
-
-/**
- * A row's 在右侧打开 and 在下方打开, for its ⋯ menu: `query` is the pane's,
- * `agent=<address>` or `session=<id>`, each encoded.
- */
-export function splitItems(query: string, lang: Lang): string {
-  const t = SPLIT_TEXT[lang]
-  return (
-    `<div class="fx-menu-sep fx-split-item" role="separator"></div>` +
-    splitItem('right', query, t.openRight) +
-    splitItem('below', query, t.openBelow)
-  )
-}
-
-/** The pane query of an agent's own conversation. */
-export function agentQuery(address: string): string {
-  return `agent=${encodeURIComponent(address)}`
-}
-
-/** The pane query of any other conversation. */
-export function sessionQuery(id: string): string {
-  return `session=${encodeURIComponent(id)}`
 }
 
 /**

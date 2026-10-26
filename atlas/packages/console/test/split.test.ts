@@ -16,9 +16,9 @@
  *   origin alone (`frame-ancestors 'self'`, `SAMEORIGIN`). Any other value
  *   of `pane`, any other page, the login door and the errors on a pane's
  *   address keep `'none'` and `DENY`.
- * - **The rows.** Each agent row's and work row's ⋯ ends with 在右侧打开 and
- *   在下方打开, carrying the pane's query, encoded; the words and the
- *   keyboard help's rows in each language.
+ * - **The rows.** 在右侧打开 and 在下方打开 are drawn once, in the window's
+ *   right-click menu, for the script to copy into a row's ⋯; the words and
+ *   the keyboard help's rows in each language.
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -257,30 +257,25 @@ describe('a pane’s document', () => {
 })
 
 describe('the rows and the words', () => {
-  test('every agent row and work row offers 在右侧打开 and 在下方打开 with its query', async () => {
+  test('the two items are drawn once, in the right-click menu, not in every row', async () => {
     const { h, work } = await seeded()
     const html = await (await h.handle(get('/'))).text()
-    for (const [query, count] of [
-      [`agent=${encodeURIComponent(ADDRESS)}`, 1],
-      [`agent=${encodeURIComponent(REVIEWER.address)}`, 1],
-      [`session=${encodeURIComponent(work)}`, 1],
-    ] as const) {
-      for (const to of ['right', 'below']) {
-        const items = html.match(
-          new RegExp(
-            `<button type="button" class="fx-menu-item fx-split-item" role="menuitem" data-action="fx-split" ` +
-              `data-split-to="${to}" data-split-q="${query}">`,
-            'g',
-          ),
-        )
-        expect(`${query} ${to} ${items?.length ?? 0}`).toBe(
-          `${query} ${to} ${count}`,
-        )
-      }
-    }
-    // The right-click menu the window's script fills.
-    expect(html).toContain('id="fx-split-ctx"')
-    expect(html).toMatch(/<div class="fx-menu fx-split-ctx"[^>]*hidden/)
+    // The script copies them into a row's ⋯ as it opens (assets/frontSplit.ts).
+    const ctx =
+      /<div class="fx-menu fx-split-ctx" id="fx-split-ctx" role="menu" hidden>[\s\S]*?<\/button><\/div>/.exec(
+        html,
+      )?.[0]
+    expect(ctx).toBeDefined()
+    expect(
+      (ctx ?? '').match(
+        /<button type="button" class="fx-menu-item fx-split-item" role="menuitem" data-action="fx-split" data-split-to="(right|below)" data-split-q="">/g,
+      ),
+    ).toHaveLength(2)
+    expect(html.match(/<button[^>]*data-action="fx-split"/g)).toHaveLength(2)
+    expect(html).toContain(`data-session="${work}"`)
+    // A pane's document has no side list of its own to open beside from.
+    const pane = await (await h.handle(get('/?pane=1'))).text()
+    expect(pane).not.toMatch(/<button[^>]*data-action="fx-split"/)
   })
 
   test('the words and the keys, in each language', async () => {

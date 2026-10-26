@@ -166,14 +166,11 @@ import { renderRichText } from './richText.js'
 import { type SourceLinks, sourceFooter } from './source.js'
 import { codeHead, codeMain, codeSide, codeTail } from './frontCode.js'
 import {
-  agentQuery,
   FRONT_SPLIT_CSS,
   paneClose,
   paneMenu,
   SPLIT_TEXT,
-  sessionQuery,
   splitFrame,
-  splitItems,
   splitText,
 } from './frontSplit.js'
 import {
@@ -502,7 +499,6 @@ function agentMenu(
   faces: ChatFaces,
   admin: boolean,
   t: FrontText,
-  lang: Lang,
 ): string {
   const node = encodeURIComponent(who.node)
   const items =
@@ -523,9 +519,7 @@ function agentMenu(
         `${icon('server', { small: true })}${escapeHtml(t.nodeDetails)}</a>` +
         `<a class="fx-menu-item" role="menuitem" href="${attr(`${ADMIN}/providers/nodes/${node}`)}">` +
         `${icon('cpu', { small: true })}${escapeHtml(t.modelSettings)}</a>`
-      : '') +
-    // Beside the panes already up (P37.18, view/frontSplit.ts).
-    splitItems(agentQuery(who.address), lang)
+      : '')
   return (
     `<details class="fx-more">` +
     `<summary class="fx-icon-btn fx-more-btn" aria-label="${attr(t.actionsFor(who.agent))}">` +
@@ -601,7 +595,7 @@ function agentRow(
     `<span class="fx-agent-sub">${running > 0 ? LIVE_DOTS : ''}${escapeHtml(preview)}</span></span>` +
     `<span class="fx-unread" aria-hidden="true"></span>` +
     `</button>` +
-    agentMenu(who, line?.others ?? 0, model.faces, model.admin, t, model.lang) +
+    agentMenu(who, line?.others ?? 0, model.faces, model.admin, t) +
     `</div>`
   )
 }
@@ -890,15 +884,13 @@ function sessionMenu(
   session: ChatSession,
   title: string,
   t: FrontText,
-  lang: Lang,
 ): string {
   const items =
     `<a class="fx-menu-item" role="menuitem" href="${attr(
       `${FRONT_HOME.agents}?session=${encodeURIComponent(session.id)}`,
     )}">${icon('bot', { small: true })}${escapeHtml(t.openInAgents)}</a>` +
     `<button type="button" class="fx-menu-item" role="menuitem" data-action="fx-copy" ` +
-    `data-copy="${attr(session.target)}">${icon('copy', { small: true })}${escapeHtml(t.copyAddress)}</button>` +
-    splitItems(sessionQuery(session.id), lang)
+    `data-copy="${attr(session.target)}">${icon('copy', { small: true })}${escapeHtml(t.copyAddress)}</button>`
   return (
     `<details class="fx-more">` +
     `<summary class="fx-icon-btn fx-more-btn" aria-label="${attr(t.sessionActions(title))}">` +
@@ -936,7 +928,7 @@ function recentItem(session: ChatSession, model: FrontSideModel): string {
     `</button>` +
     workRowState(model.lang) +
     `<span class="fx-unread" aria-hidden="true"></span>` +
-    sessionMenu(session, title, t, model.lang) +
+    sessionMenu(session, title, t) +
     `</div>`
   )
 }
