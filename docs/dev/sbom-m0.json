@@ -44,7 +44,7 @@
       },
       {
         "name": "qianmo:lockfileSha256",
-        "value": "e4bceab141154458a8f3a8057896f62859cff2b8a08bd9359edf64bf45b0a2e3"
+        "value": "fde51f2eea77b948f7613b3e7e281de4cb262c68aa11a98de23c83698d1afa7e"
       },
       {
         "name": "qianmo:deterministic",
@@ -10805,6 +10805,35 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/%40types/node@22.20.5",
+      "name": "@types/node",
+      "version": "22.20.5",
+      "scope": "required",
+      "purl": "pkg:npm/%40types/node@22.20.5",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/%40types/node@26.6.2",
       "name": "@types/node",
       "version": "26.6.2",
@@ -13949,6 +13978,35 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/core-util-is@1.0.3",
+      "name": "core-util-is",
+      "version": "1.0.3",
+      "scope": "required",
+      "purl": "pkg:npm/core-util-is@1.0.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/cors@2.8.6",
       "name": "cors",
       "version": "2.8.6",
@@ -14886,6 +14944,35 @@
         {
           "license": {
             "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/docx@9.14.0",
+      "name": "docx",
+      "version": "9.14.0",
+      "scope": "required",
+      "purl": "pkg:npm/docx@9.14.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
           }
         }
       ],
@@ -16124,6 +16211,35 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/fflate@0.8.3",
+      "name": "fflate",
+      "version": "0.8.3",
+      "scope": "required",
+      "purl": "pkg:npm/fflate@0.8.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/filing-cabinet@5.5.1",
       "name": "filing-cabinet",
       "version": "5.5.1",
@@ -17081,6 +17197,35 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/hash.js@1.1.7",
+      "name": "hash.js",
+      "version": "1.1.7",
+      "scope": "required",
+      "purl": "pkg:npm/hash.js@1.1.7",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/hasown@2.0.4",
       "name": "hasown",
       "version": "2.0.4",
@@ -17197,6 +17342,35 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/https@1.0.0",
+      "name": "https",
+      "version": "1.0.0",
+      "scope": "required",
+      "purl": "pkg:npm/https@1.0.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/husky@9.1.7",
       "name": "husky",
       "version": "9.1.7",
@@ -17284,10 +17458,68 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/image-size@1.2.1",
+      "name": "image-size",
+      "version": "1.2.1",
+      "scope": "required",
+      "purl": "pkg:npm/image-size@1.2.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/immediate@3.0.6",
+      "name": "immediate",
+      "version": "3.0.6",
+      "scope": "required",
+      "purl": "pkg:npm/immediate@3.0.6",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/inherits@2.0.4",
       "name": "inherits",
       "version": "2.0.4",
-      "scope": "optional",
+      "scope": "required",
       "purl": "pkg:npm/inherits@2.0.4",
       "licenses": [
         {
@@ -17299,7 +17531,7 @@
       "properties": [
         {
           "name": "qianmo:reach",
-          "value": "dev"
+          "value": "runtime"
         },
         {
           "name": "qianmo:licenseTier",
@@ -17806,6 +18038,35 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/isarray@1.0.0",
+      "name": "isarray",
+      "version": "1.0.0",
+      "scope": "required",
+      "purl": "pkg:npm/isarray@1.0.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/isexe@2.0.0",
       "name": "isexe",
       "version": "2.0.0",
@@ -18210,6 +18471,33 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/jszip@3.10.2",
+      "name": "jszip",
+      "version": "3.10.2",
+      "scope": "required",
+      "purl": "pkg:npm/jszip@3.10.2",
+      "licenses": [
+        {
+          "expression": "(MIT OR GPL-3.0-or-later)"
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/katex@0.18.7",
       "name": "katex",
       "version": "0.18.7",
@@ -18284,6 +18572,35 @@
         {
           "name": "qianmo:reach",
           "value": "dev"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/lie@3.3.0",
+      "name": "lie",
+      "version": "3.3.0",
+      "scope": "required",
+      "purl": "pkg:npm/lie@3.3.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
         },
         {
           "name": "qianmo:licenseTier",
@@ -19513,6 +19830,35 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/minimalistic-assert@1.0.1",
+      "name": "minimalistic-assert",
+      "version": "1.0.1",
+      "scope": "required",
+      "purl": "pkg:npm/minimalistic-assert@1.0.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/minimatch@10.2.6",
       "name": "minimatch",
       "version": "10.2.6",
@@ -19964,6 +20310,35 @@
         {
           "name": "qianmo:reach",
           "value": "dev"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/nanoid@6.0.2",
+      "name": "nanoid",
+      "version": "6.0.2",
+      "scope": "required",
+      "purl": "pkg:npm/nanoid@6.0.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
         },
         {
           "name": "qianmo:licenseTier",
@@ -20702,6 +21077,33 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/pako@1.0.11",
+      "name": "pako",
+      "version": "1.0.11",
+      "scope": "required",
+      "purl": "pkg:npm/pako@1.0.11",
+      "licenses": [
+        {
+          "expression": "(MIT AND Zlib)"
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/parse-ms@2.1.0",
       "name": "parse-ms",
       "version": "2.1.0",
@@ -21166,6 +21568,35 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/pptxgenjs@4.0.1",
+      "name": "pptxgenjs",
+      "version": "4.0.1",
+      "scope": "required",
+      "purl": "pkg:npm/pptxgenjs@4.0.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/precinct@12.3.2",
       "name": "precinct",
       "version": "12.3.2",
@@ -21269,6 +21700,35 @@
         {
           "name": "qianmo:reach",
           "value": "dev"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/process-nextick-args@2.0.1",
+      "name": "process-nextick-args",
+      "version": "2.0.1",
+      "scope": "required",
+      "purl": "pkg:npm/process-nextick-args@2.0.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
         },
         {
           "name": "qianmo:licenseTier",
@@ -21485,6 +21945,35 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/queue@6.0.2",
+      "name": "queue",
+      "version": "6.0.2",
+      "scope": "required",
+      "purl": "pkg:npm/queue@6.0.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/quote-unquote@1.0.0",
       "name": "quote-unquote",
       "version": "1.0.0",
@@ -21662,6 +22151,35 @@
       "version": "19.2.7",
       "scope": "required",
       "purl": "pkg:npm/react@19.2.7",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/readable-stream@2.3.8",
+      "name": "readable-stream",
+      "version": "2.3.8",
+      "scope": "required",
+      "purl": "pkg:npm/readable-stream@2.3.8",
       "licenses": [
         {
           "license": {
@@ -22179,6 +22697,35 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/safe-buffer@5.1.2",
+      "name": "safe-buffer",
+      "version": "5.1.2",
+      "scope": "required",
+      "purl": "pkg:npm/safe-buffer@5.1.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/safe-buffer@5.2.1",
       "name": "safe-buffer",
       "version": "5.2.1",
@@ -22543,6 +23090,35 @@
         {
           "name": "qianmo:reach",
           "value": "dev"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/setimmediate@1.0.5",
+      "name": "setimmediate",
+      "version": "1.0.5",
+      "scope": "required",
+      "purl": "pkg:npm/setimmediate@1.0.5",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
         },
         {
           "name": "qianmo:licenseTier",
@@ -23340,6 +23916,35 @@
         {
           "name": "qianmo:reach",
           "value": "dev"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/string_decoder@1.1.1",
+      "name": "string_decoder",
+      "version": "1.1.1",
+      "scope": "required",
+      "purl": "pkg:npm/string_decoder@1.1.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
         },
         {
           "name": "qianmo:licenseTier",
@@ -24480,6 +25085,35 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/undici-types@6.21.0",
+      "name": "undici-types",
+      "version": "6.21.0",
+      "scope": "required",
+      "purl": "pkg:npm/undici-types@6.21.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/undici-types@8.9.0",
       "name": "undici-types",
       "version": "8.9.0",
@@ -24599,7 +25233,7 @@
       "bom-ref": "pkg:npm/util-deprecate@1.0.2",
       "name": "util-deprecate",
       "version": "1.0.2",
-      "scope": "optional",
+      "scope": "required",
       "purl": "pkg:npm/util-deprecate@1.0.2",
       "licenses": [
         {
@@ -24611,7 +25245,7 @@
       "properties": [
         {
           "name": "qianmo:reach",
-          "value": "dev"
+          "value": "runtime"
         },
         {
           "name": "qianmo:licenseTier",
@@ -25018,6 +25652,35 @@
         {
           "name": "qianmo:reach",
           "value": "dev"
+        },
+        {
+          "name": "qianmo:licenseTier",
+          "value": "permissive"
+        },
+        {
+          "name": "qianmo:origin",
+          "value": "registry"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/write-excel-file@4.1.1",
+      "name": "write-excel-file",
+      "version": "4.1.1",
+      "scope": "required",
+      "purl": "pkg:npm/write-excel-file@4.1.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "qianmo:reach",
+          "value": "runtime"
         },
         {
           "name": "qianmo:licenseTier",
