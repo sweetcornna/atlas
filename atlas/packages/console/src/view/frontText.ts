@@ -1203,6 +1203,8 @@ interface CodeClientText {
   readonly now: string
   readonly next: string
   readonly notGit: string
+  /** Outside Git: the files the agent reported for its last turn. */
+  readonly lastTurn: string
   readonly clean: string
   readonly binary: string
   readonly cut: string
@@ -1237,6 +1239,7 @@ const CODE_CLIENT: Readonly<Record<Lang, CodeClientText>> = {
     now: '已生效',
     next: '下一轮生效',
     notGit: '不是 Git 仓库，变更面板在后续版本补上',
+    lastTurn: '最近一轮的改动（不是 Git 仓库）',
     clean: '没有改动',
     binary: '二进制文件',
     cut: '只显示一部分',
@@ -1267,6 +1270,7 @@ const CODE_CLIENT: Readonly<Record<Lang, CodeClientText>> = {
     now: 'In effect',
     next: 'From the next turn',
     notGit: 'Not a Git repository · the changes panel comes in a later version',
+    lastTurn: 'The last turn’s changes (not a Git repository)',
     clean: 'No changes',
     binary: 'Binary file',
     cut: 'Showing part of it',
@@ -1297,6 +1301,7 @@ const CODE_CLIENT: Readonly<Record<Lang, CodeClientText>> = {
     now: '反映しました',
     next: '次のターンから反映',
     notGit: 'Git リポジトリではありません · 変更パネルは今後のバージョンで対応',
+    lastTurn: '直近のターンの変更（Git リポジトリではありません）',
     clean: '変更はありません',
     binary: 'バイナリファイル',
     cut: '一部のみ表示',

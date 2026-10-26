@@ -37,6 +37,7 @@
  *   下一轮生效, or goes back and says why. An ask is answered from its card.
  * - **Changes.** `qmo_local_changes` lists the files, `qmo_local_diff`
  *   shows one; read again within a second of a tool finishing, and by hand.
+ *   Outside Git the files are the agent's last turn (Codex), said so.
  *
  * - **Remote (P37.15).** Over this computer's own session a switch and the
  *   device link's state (`qmo_local_set_remote`, the runner's `link`
@@ -862,8 +863,9 @@ function codeScript(): string {
     var note = byId('code-note');
     clear(list);
     byId('code-count').textContent = files.length ? String(files.length) : '';
-    if (data.source !== 'git') { qc.say(note, tx('notGit', ''), 'muted'); return; }
-    qc.say(note, !files.length ? tx('clean', '') : data.truncated ? tx('cut', '') : '', 'muted');
+    var git = data.source === 'git';
+    if (!git && !files.length) { qc.say(note, tx('notGit', ''), 'muted'); return; }
+    qc.say(note, !files.length ? tx('clean', '') : data.truncated ? tx('cut', '') : git ? '' : tx('lastTurn', ''), 'muted');
     for (var i = 0; i < files.length; i++) {
       var f = files[i];
       var path = String(f.path || '');

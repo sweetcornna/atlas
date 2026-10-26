@@ -60,7 +60,7 @@ describe.skipIf(!posix)('the runner', () => {
       version: expect.any(String),
       protocol: 1,
       features: {
-        protocols: ['claude-stream'],
+        protocols: ['claude-stream', 'codex-app-server'],
         worktree: false,
         remote: true,
       },
@@ -246,9 +246,7 @@ describe.skipIf(!posix)('the runner', () => {
     expect(
       await refused(r.call('session.start', { ...base, remote: true })),
     ).toBe('E_REMOTE')
-    expect(
-      await refused(r.call('session.start', { ...base, agent: 'codex' })),
-    ).toBe('E_AGENT')
+    // Codex is driven since P37.14b (`codex.test.ts`); an agent not found is not.
     expect(
       await refused(r.call('session.start', { ...base, agent: 'gemini' })),
     ).toBe('E_AGENT')

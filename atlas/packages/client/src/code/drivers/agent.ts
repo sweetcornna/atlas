@@ -69,14 +69,21 @@ export interface AgentHooks {
   ask(ask: AskView, signal: AbortSignal): Promise<AskAnswer>
   /** A line of the runner's own in the conversation. */
   notice(text: string, severity: 'info' | 'warn' | 'error'): void
-  /** The agent's own conversation exists: the next process resumes it. */
-  started(): void
+  /**
+   * The agent's own conversation exists: the next process resumes it, by
+   * `nativeId` where the agent gave the id (a Codex thread).
+   */
+  started(nativeId?: string): void
   /** The mode in effect changed by itself (a fallback). */
   modeChanged(mode: Mode): void
   /** The agent has no mode `auto` (this program, for the runner's life). */
   noAuto(): void
   childStarted(child: ChildInfo): void
   childGone(pid: number): void
+  /** The runner answered the agent's question about this tool by the mode. */
+  approvedByMode(toolId: string): void
+  /** The turn's changes so far, as the agent reports them (one unified diff). */
+  turnDiff(diff: string): void
 }
 
 export interface TurnOutcome {
@@ -98,4 +105,30 @@ export interface AgentProcess {
   abort(): void
   /** Ends the process (idle, out of room, shutdown). */
   stop(): Promise<void>
+}
+
+/** What a driver starts a session's agent with. */
+export interface AgentStart {
+  readonly program: string
+  /** The agent's working folder. */
+  readonly root: string
+  readonly env: Readonly<Record<string, string>>
+  /** The agent's own conversation: its id (`''` until the agent gives one), and whether it exists. */
+  readonly native: { readonly id: string; readonly started: boolean }
+  readonly mode: Mode
+  /** Known already: this program has no `auto` (Claude Code). */
+  readonly noAuto: boolean
+  readonly hooks: AgentHooks
+  /** How long an interrupt has before the group gets SIGTERM, then SIGKILL. */
+  readonly interruptGraceMs: number
+  readonly termGraceMs: number
+}
+
+/** One native protocol's driver (§4.3.5), registered in `drivers/index.ts`. */
+export interface Driver {
+  /** `session.json`'s `native.kind`. */
+  readonly nativeKind: string
+  /** A new session's native id: chosen here, or `''` where the agent gives it. */
+  newNativeId(): string
+  start(input: AgentStart): AgentProcess
 }

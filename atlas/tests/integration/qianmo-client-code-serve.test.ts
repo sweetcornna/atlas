@@ -19,7 +19,11 @@
  *    one, every record on disk as it was sent, no `runner` event from the
  *    runner (those are the shell's), standard output protocol only and the
  *    log without what was said.
- * 2. Every call of the shared contract reaches the runner in a shape it
+ * 2. Codex (P37.14b), the harness package's fake app-server on PATH, in a
+ *    folder that is not a Git repository: the thread opened in 人工确认 with
+ *    the questions to the person, an edit asked about and made, the changes
+ *    from Codex's turn diff, the mode for the next turn, a second line.
+ * 3. Every call of the shared contract reaches the runner in a shape it
  *    takes; one key more is refused.
  *
  * POSIX only: the fake is a shell script and the agent runs in a process
@@ -35,6 +39,8 @@ import {
   box,
   cleanBoxes,
   fakeClaude,
+  fakeCodex,
+  logged,
 } from '../../packages/client/test/code/helpers.ts'
 import { buildClient } from '../../scripts/build-client.ts'
 import contract from '../../packages/console/test/browser/qmo-local-calls.json' with {
@@ -222,7 +228,7 @@ describe.skipIf(!posix)('the compiled qmo as the shell runs it', () => {
     expect(hello).toMatchObject({
       protocol: 1,
       features: {
-        protocols: ['claude-stream'],
+        protocols: ['claude-stream', 'codex-app-server'],
         worktree: false,
         remote: true,
       },
@@ -473,6 +479,138 @@ describe.skipIf(!posix)('the compiled qmo as the shell runs it', () => {
     expect(r.stderr).toContain('[runner] down')
     // The log says what happened, never what was said.
     expect(r.stderr).not.toContain('sentinel-4c1d')
+  }, 60_000)
+
+  test('Codex: the thread in its mode, an edit asked about, the changes from its turn diff', async () => {
+    const at = box()
+    fakeCodex(at)
+    const r = serve(at)
+    expect((await r.call('hello')).features).toMatchObject({
+      protocols: ['claude-stream', 'codex-app-server'],
+    })
+    const folder = await r.call('folders.add', { path: at.work })
+    expect(folder.git).toBe(false)
+    const mark = r.mark
+    const started = await r.call('session.start', {
+      folder: folder.id,
+      agent: 'codex',
+      mode: 'off',
+      worktree: false,
+      text: 'edit notes.md',
+      clientId: 'c-1',
+      remote: false,
+    })
+    const id = String((started.session as Message).id)
+    expect(started.session).toMatchObject({
+      agent: { id: 'codex', name: 'Codex' },
+      mode: 'off',
+    })
+    await r.state(id, 'waiting', mark)
+    const turnsOf = (after = 0) =>
+      r
+        .events(after)
+        .filter(one => one.type === 'record' && one.session === id)
+        .map(one => (one.record as Message).turn as Message)
+    const ask = turnsOf().find(turn => turn.ask !== undefined)!.ask as Message
+    expect(ask).toMatchObject({
+      tool: 'fileChange',
+      title: '写入 notes.md',
+      paths: ['notes.md'],
+      options: ['once', 'session', 'deny'],
+    })
+    expect(fs.existsSync(path.join(at.work, 'notes.md'))).toBe(false)
+    const answered = r.mark
+    await r.call('session.answer', {
+      session: id,
+      ask: ask.id,
+      decision: 'once',
+    })
+    await r.state(id, 'idle', answered)
+    expect(fs.readFileSync(path.join(at.work, 'notes.md'), 'utf8')).toBe(
+      'written by fake codex\n',
+    )
+    const state = path.join(at.state, 'codex')
+    const requests = logged(path.join(state, 'requests.ndjson'))
+    expect(
+      logged(path.join(state, 'argv.ndjson')) as unknown as string[][],
+    ).toEqual([['app-server']])
+    expect(
+      requests
+        .filter(one => one.method === 'thread/start')
+        .map(one => one.params),
+    ).toEqual([
+      {
+        cwd: at.work,
+        approvalPolicy: 'untrusted',
+        sandbox: 'workspace-write',
+        approvalsReviewer: 'user',
+      },
+    ])
+    expect(logged(path.join(state, 'answers.ndjson'))).toEqual([
+      {
+        method: 'item/fileChange/requestApproval',
+        result: { decision: 'accept' },
+      },
+    ])
+
+    // Not a Git repository: the changes are Codex's turn diff.
+    expect(await r.call('session.changes', { session: id })).toEqual({
+      source: 'session',
+      files: [
+        {
+          path: 'notes.md',
+          status: 'added',
+          added: 1,
+          removed: 0,
+          binary: false,
+        },
+      ],
+      truncated: false,
+    })
+    const diff = await r.call('session.diff', { session: id, path: 'notes.md' })
+    expect(String(diff.text)).toContain('+written by fake codex')
+
+    // A mode for the next turn, and the next turn in it.
+    expect(await r.call('session.mode', { session: id, mode: 'auto' })).toEqual(
+      { mode: 'auto', applies: 'next-turn' },
+    )
+    const second = r.mark
+    await r.call('session.send', {
+      session: id,
+      text: 'say sentinel-9e2b',
+      clientId: 'c-2',
+      origin: 'local',
+    })
+    await r.state(id, 'idle', second)
+    const answer = turnsOf(second).at(-1)!
+    expect(answer).toMatchObject({
+      author: 'agent',
+      text: 'codex(2): say sentinel-9e2b',
+    })
+    const deltas = r
+      .events(second)
+      .filter(one => one.type === 'delta' && one.session === id)
+    expect(deltas.map(one => one.text).join('')).toBe(String(answer.text))
+    const turnStarts = logged(path.join(state, 'requests.ndjson')).filter(
+      one => one.method === 'turn/start',
+    )
+    expect((turnStarts[1]!.params as Message).approvalPolicy).toBe('on-request')
+    const header = JSON.parse(
+      fs.readFileSync(
+        path.join(at.client, 'code', 'sessions', id, 'session.json'),
+        'utf8',
+      ),
+    ) as Message
+    expect(header).toMatchObject({
+      mode: 'auto',
+      native: { kind: 'codex-thread', started: true },
+    })
+    expect(r.events().filter(one => one.type === 'runner')).toEqual([])
+
+    expect(await r.call('shutdown')).toEqual({})
+    expect(await r.exited()).toBe(0)
+    procs.length = 0
+    expect(r.stderr).not.toContain('sentinel-9e2b')
   }, 60_000)
 
   test('every call of the shared contract reaches the runner in a shape it takes', async () => {
