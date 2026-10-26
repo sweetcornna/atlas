@@ -1,8 +1,9 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The shell's own words — menus, tray, window titles — in Chinese, English
-//! and Japanese, picked from the system's language. Labels only, as on the
+//! The shell's own words — menus, tray, window titles, local sessions'
+//! notifications and the question on quitting — in Chinese, English and
+//! Japanese, picked from the system's language. Labels only, as on the
 //! front (atlas-ui-copy-tone): no sentences where a label will do.
 
 use serde::Serialize;
@@ -65,6 +66,15 @@ pub struct Text {
     pub sign_in_title: &'static str,
     pub settings_title: &'static str,
     pub about_title: &'static str,
+    /// A local session's notification body: `<agent> · <word>`.
+    pub code_done: &'static str,
+    pub code_failed: &'static str,
+    pub code_waiting: &'static str,
+    /// Quitting with local sessions running; `{n}` is how many.
+    pub quit_title: &'static str,
+    pub quit_busy: &'static str,
+    pub quit_anyway: &'static str,
+    pub cancel: &'static str,
 }
 
 pub fn text(lang: Lang) -> &'static Text {
@@ -104,6 +114,13 @@ const ZH: Text = Text {
     sign_in_title: "登录",
     settings_title: "设置",
     about_title: "关于",
+    code_done: "完成",
+    code_failed: "出错",
+    code_waiting: "等你确认",
+    quit_title: "退出阡陌？",
+    quit_busy: "有 {n} 个会话在运行，退出会中止它们",
+    quit_anyway: "退出",
+    cancel: "取消",
 };
 
 const EN: Text = Text {
@@ -135,6 +152,13 @@ const EN: Text = Text {
     sign_in_title: "Sign In",
     settings_title: "Settings",
     about_title: "About",
+    code_done: "Done",
+    code_failed: "Failed",
+    code_waiting: "Needs your approval",
+    quit_title: "Quit Qmo?",
+    quit_busy: "Sessions running: {n}. Quitting stops them.",
+    quit_anyway: "Quit",
+    cancel: "Cancel",
 };
 
 const JA: Text = Text {
@@ -166,6 +190,13 @@ const JA: Text = Text {
     sign_in_title: "サインイン",
     settings_title: "設定",
     about_title: "情報",
+    code_done: "完了",
+    code_failed: "エラー",
+    code_waiting: "確認待ち",
+    quit_title: "Qmo を終了しますか？",
+    quit_busy: "{n} 件のセッションが実行中です。終了すると中止されます",
+    quit_anyway: "終了",
+    cancel: "キャンセル",
 };
 
 #[cfg(test)]
@@ -186,6 +217,13 @@ mod tests {
             ("C", Lang::En),
         ] {
             assert_eq!(lang_of(locale), lang, "{locale}");
+        }
+    }
+
+    #[test]
+    fn the_quit_question_has_its_count() {
+        for lang in [Lang::Zh, Lang::En, Lang::Ja] {
+            assert!(text(lang).quit_busy.contains("{n}"), "{lang:?}");
         }
     }
 }

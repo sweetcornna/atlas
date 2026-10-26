@@ -2,31 +2,33 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Code's two page scripts and the frames the server draws for them (P37.14a,
- * `docs/dev/qmo-local.md` §4.5.5):
+ * Code's four page scripts and the frames the server draws for them
+ * (P37.14a, P37.14d, P37.15, `docs/dev/qmo-local.md` §4.5.5):
  *
  * - **Budgets.** `CODE_RENDER_JS` under 14,000 characters, `CODE_JS` under
- *   37,000, `CODE_HUB_JS` under 7,000; all parse, all ship without their
- *   line comments.
- * - **No markup from strings, no hub but Remote's.** None of the three names
+ *   37,000, `CODE_MANAGE_JS` under 8,000, `CODE_HUB_JS` under 7,000; all
+ *   parse, all ship without their line comments.
+ * - **No markup from strings, no hub but Remote's.** None of the four names
  *   `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`
- *   or `new Function`; the first two never ask the hub for anything (`fetch`,
- *   `EventSource`, `XMLHttpRequest`, the runtime's `sendJson` / `loadHtml`),
- *   and `CODE_HUB_JS` asks only `/v0/code/…` (P37.15).
- * - **The policy.** `/code` carries the two in its one inline script, and
- *   its policy lists that script's hash; every other directive is the same
+ *   or `new Function`; the first three never ask the hub for anything
+ *   (`fetch`, `EventSource`, `XMLHttpRequest`, the runtime's `sendJson` /
+ *   `loadHtml`), and `CODE_HUB_JS` asks only `/v0/code/…` (P37.15).
+ * - **The policy.** `/code` carries them in its one inline script, and its
+ *   policy lists that script's hash; every other directive is the same
  *   string as the Work face's.
  * - **The frames.** Inside the app the box, the transcript and the changes
- *   panel are there and empty, the mode is 自动审批, Remote's switch waits for
- *   the runner to say it has Remote, the icons sit in a template; in a
- *   browser the one line. A personal account on a hub with Remote gets
- *   `data-remote` and `CODE_HUB_JS` too; anyone else's page is without them.
- *   The words travel with the page in each language.
+ *   panel are there and empty, the mode is 自动审批, the worktree switch
+ *   waits for the page script and Remote's for the runner to say it has
+ *   Remote, the line to undo a delete is hidden, the icons sit in a
+ *   template; in a browser the one line. A personal account on a hub with
+ *   Remote gets `data-remote` and `CODE_HUB_JS` too; anyone else's page is
+ *   without them. The words travel with the page in each language.
  */
 
 import { describe, expect, test } from 'bun:test'
 import { CODE_JS } from '../src/assets/codeClient.js'
 import { CODE_HUB_JS } from '../src/assets/codeHub.js'
+import { CODE_MANAGE_JS } from '../src/assets/codeManage.js'
 import { CODE_RENDER_JS } from '../src/assets/codeRender.js'
 import { inlineScripts, scriptHash } from '../src/respond.js'
 import { ADMIN, BASE, pageHarness } from './pageHarness.js'
@@ -55,8 +57,14 @@ describe("Code's page scripts", () => {
   test('stay inside their budgets, parse, and ship without line comments', () => {
     expect(CODE_RENDER_JS.length).toBeLessThan(14_000)
     expect(CODE_JS.length).toBeLessThan(37_000)
+    expect(CODE_MANAGE_JS.length).toBeLessThan(8_000)
     expect(CODE_HUB_JS.length).toBeLessThan(7_000)
-    for (const script of [CODE_RENDER_JS, CODE_JS, CODE_HUB_JS]) {
+    for (const script of [
+      CODE_RENDER_JS,
+      CODE_JS,
+      CODE_MANAGE_JS,
+      CODE_HUB_JS,
+    ]) {
       expect(() => new Function(script)).not.toThrow()
       expect(script.split('\n').filter(line => /^\s*\/\//.test(line))).toEqual(
         [],
@@ -65,7 +73,7 @@ describe("Code's page scripts", () => {
   })
 
   test('never turn a string into markup and never ask the hub', () => {
-    for (const script of [CODE_RENDER_JS, CODE_JS]) {
+    for (const script of [CODE_RENDER_JS, CODE_JS, CODE_MANAGE_JS]) {
       for (const banned of [
         'innerHTML',
         'outerHTML',
@@ -119,6 +127,13 @@ describe("Code's page scripts", () => {
       'qmo_local_stop',
       'qmo_local_watch',
     ])
+    const managing = [...CODE_MANAGE_JS.matchAll(/'(qmo_[a-z_]+)'/g)].map(
+      m => m[1],
+    )
+    expect([...new Set(managing)].sort()).toEqual([
+      'qmo_local_delete',
+      'qmo_local_rename',
+    ])
   })
 })
 
@@ -135,6 +150,7 @@ describe('the /code document', () => {
     const client = script.indexOf(CODE_JS)
     expect(render).toBeGreaterThan(0)
     expect(client).toBe(render + CODE_RENDER_JS.length)
+    expect(script.indexOf(CODE_MANAGE_JS)).toBe(client + CODE_JS.length)
     const policy = code.headers.get('content-security-policy') ?? ''
     expect(policy).toContain(scriptHash(script))
     const work = await h.handle(page('/app', 'qianmo_shell=macos'))
@@ -142,7 +158,9 @@ describe('the /code document', () => {
       otherDirectives(work.headers.get('content-security-policy') ?? ''),
     )
     // Work's documents do not carry Code's scripts.
-    expect(inlineScripts(await work.text())[0]).not.toContain(CODE_JS)
+    const workScript = inlineScripts(await work.text())[0]
+    expect(workScript).not.toContain(CODE_JS)
+    expect(workScript).not.toContain(CODE_MANAGE_JS)
     // Nor does a console without Remote carry Remote's.
     expect(script).not.toContain(CODE_HUB_JS)
     expect(html).not.toContain('data-remote')
@@ -202,7 +220,7 @@ describe('the /code document', () => {
     expect(admin).not.toContain('data-remote')
   })
 
-  test('inside the app: empty frames, 自动审批, Remote off until the runner says, the icons in a template', async () => {
+  test('inside the app: empty frames, 自动审批, the worktree and Remote held, the icons in a template', async () => {
     const h = pageHarness({ chat: true })
     const html = await (
       await h.handle(page('/code', 'qianmo_shell=macos'))
@@ -218,6 +236,15 @@ describe('the /code document', () => {
     expect(html).toContain(
       '<input type="checkbox" role="switch" id="code-remote" disabled>',
     )
+    expect(html).toContain(
+      '<input type="checkbox" role="switch" id="code-worktree" aria-describedby="code-wt-hint" disabled>',
+    )
+    expect(html).toContain(
+      '<p class="fx-code-hint fx-code-blank-only" id="code-wt-hint" hidden>从当前提交开始，没提交的改动不带过去</p>',
+    )
+    expect(html).toMatch(
+      /<div class="fx-code-undo" id="code-undo" role="status" hidden>.*>撤销<\/button><\/div>/,
+    )
     expect(html).toContain('<template id="code-icons">')
     for (const name of [
       'check',
@@ -225,6 +252,9 @@ describe('the /code document', () => {
       'alert-triangle',
       'list-checks',
       'copy',
+      'ellipsis',
+      'pencil',
+      'trash-2',
       'chev',
     ]) {
       expect(html).toContain(`<i data-i="${name}"><svg`)
@@ -246,7 +276,8 @@ describe('the /code document', () => {
         .replaceAll('&amp;', '&'),
     ) as Record<string, string>
     expect(parsed['updateApp']).toBe('更新桌面版后可开本机会话')
-    expect(parsed['notGit']).toBe('不是 Git 仓库，变更面板在后续版本补上')
+    expect(parsed['notGit']).toBe('不是 Git 仓库 · 按会话记录列出')
+    expect(parsed['removed']).toBe('已删除「{t}」')
     expect(parsed['once']).toBe('允许一次')
     expect(parsed['none']).toBe('还没有代码会话')
   })

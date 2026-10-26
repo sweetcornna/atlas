@@ -128,7 +128,8 @@ describe('the drivers', () => {
   test('one for every protocol the page may offer, and none else', () => {
     expect(Object.keys(DRIVERS).sort()).toEqual([...FEATURES.protocols].sort())
     expect(driverFor('codex-app-server').nativeKind).toBe('codex-thread')
-    expect(() => driverFor('acp')).toThrow('后续版本支持')
+    expect(driverFor('acp').nativeKind).toBe('acp-session')
+    expect(() => driverFor('no-such-protocol')).toThrow('后续版本支持')
     expect(() => driverFor('toString')).toThrow('后续版本支持')
   })
 })
@@ -574,7 +575,7 @@ describe.skipIf(!posix)('the runner with Codex', () => {
     expect(methods.some(one => /login|account|auth/i.test(one))).toBe(false)
   })
 
-  test('changes outside Git: Codex’s last turn diff, read from the record', async () => {
+  test('changes outside Git: from the record, Codex’s file changes; its last turn diff kept beside', async () => {
     const at = box()
     const r = runner(at)
     const folder = await pick(r, at.work)
@@ -602,9 +603,10 @@ describe.skipIf(!posix)('the runner with Codex', () => {
       binary: false,
     })
     expect(String(diff.text)).toContain('+written by fake codex')
+    // Not a file the records changed (P37.14d: the list's own source).
     expect(
       await refused(r.call('session.diff', { session: id, path: 'other.md' })),
-    ).toBe('E_GIT')
+    ).toBe('E_ARGS')
     const kept = path.join(at.code, 'sessions', id, 'turn-diff.json')
     expect(fs.statSync(kept).mode & 0o777).toBe(0o600)
     // From the record, not the disk: gone from the folder, still listed.

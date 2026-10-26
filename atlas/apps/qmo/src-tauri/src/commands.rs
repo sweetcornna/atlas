@@ -3,12 +3,12 @@
 
 //! The commands web content can invoke.
 //!
-//! The twenty-two `qmo_*` commands are the hub's (qmo-app.md §5.2): they
+//! The twenty-four `qmo_*` commands are the hub's (qmo-app.md §5.2): they
 //! reach the hub's origin through the remote capability `shell::grant` adds,
 //! and read their arguments from the raw body through `ipc.rs`; the three
 //! added for P37.13 also check that the calling page is on the hub's origin,
-//! and the thirteen `qmo_local_*` of local sessions (P37.14a) that it is the
-//! main window's. The `local_*` commands are the shell's own pages'
+//! and the fifteen `qmo_local_*` of local sessions (P37.14a, P37.14d) that it
+//! is the main window's. The `local_*` commands are the shell's own pages'
 //! (`capabilities/local.json`), never the hub's. Nothing else — no file
 //! system, shell, dialog or HTTP plugin — is exposed.
 
@@ -27,11 +27,12 @@ use tauri_plugin_notification::NotificationExt;
 
 use crate::{
     agents::Agents,
+    attention::Attention,
     code::{self, Code, Refusal},
     ipc,
     layout::Plan,
     settings::normalize_shortcut,
-    shell::{self, Phase, Problem, Shell, SignOutReport, MAIN},
+    shell::{self, Opened, Phase, Problem, Shell, SignOutReport, MAIN},
     text::Lang,
 };
 
@@ -76,7 +77,9 @@ pub fn qmo_notify(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<bo
     if in_front {
         return Ok(false);
     }
-    let id = app.state::<Shell>().remember_notification(notify.session);
+    let id = app
+        .state::<Shell>()
+        .remember_notification(notify.session.map(Opened::Chat));
     let mut builder = app.notification().builder().id(id).title(notify.title);
     if let Some(text) = notify.body {
         builder = builder.body(text);
@@ -85,16 +88,18 @@ pub fn qmo_notify(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<bo
     Ok(true)
 }
 
-/// The dock or taskbar badge; 0 clears it.
+/// The dock or taskbar badge: the page's count, and the local sessions
+/// waiting for an answer (`attention.rs`); 0 clears it.
 #[tauri::command]
 pub fn qmo_badge(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<(), String> {
     let count = ipc::badge(&body(&request)?).map_err(|e| e.to_string())?;
-    set_badge(&app, count);
+    app.state::<Attention>().set_page(count);
+    crate::attention::draw_badge(&app);
     Ok(())
 }
 
 #[cfg(not(windows))]
-fn set_badge<R: Runtime>(app: &AppHandle<R>, count: u32) {
+pub(crate) fn set_badge<R: Runtime>(app: &AppHandle<R>, count: u32) {
     if let Some(window) = app.get_webview_window(MAIN) {
         let _ = window.set_badge_count((count > 0).then_some(count as i64));
     }
@@ -102,7 +107,7 @@ fn set_badge<R: Runtime>(app: &AppHandle<R>, count: u32) {
 
 /// Windows has no badge count; the taskbar button gets a dot instead.
 #[cfg(windows)]
-fn set_badge<R: Runtime>(app: &AppHandle<R>, count: u32) {
+pub(crate) fn set_badge<R: Runtime>(app: &AppHandle<R>, count: u32) {
     if let Some(window) = app.get_webview_window(MAIN) {
         let _ = window.set_overlay_icon((count > 0).then(crate::icons::badge_dot));
     }
@@ -217,8 +222,9 @@ async fn forward(app: AppHandle, call: ipc::Call) -> Result<Box<RawValue>, Strin
     .map_err(|refusal| refusal.to_string())
 }
 
-/// `{v, features, folders, sessions}`: what the runner can drive and what
-/// it has. The first call starts it.
+/// `{v, features, folders, sessions, defaults}`: what the runner can drive
+/// and what it has, and what new sessions start with (the shell's settings,
+/// `defaults: {mode, remote}`). The first call starts it.
 #[tauri::command]
 pub async fn qmo_local_list(
     app: AppHandle,
@@ -226,7 +232,9 @@ pub async fn qmo_local_list(
     request: tauri::ipc::Request<'_>,
 ) -> Result<Box<RawValue>, String> {
     let call = checked(ipc::local_list(&local_body(&app, &webview, &request)?))?;
-    forward(app, call).await
+    let defaults = app.state::<Shell>().settings().code;
+    let answer = forward(app, call).await?;
+    Ok(code::with_defaults(answer, &defaults.mode, defaults.remote))
 }
 
 /// Register the page's event channel, replacing the one before. The channel
@@ -379,6 +387,29 @@ pub async fn qmo_local_diff(
     forward(app, call).await
 }
 
+/// `{}`: a new title; the runner says it to the page as a `session` event.
+#[tauri::command]
+pub async fn qmo_local_rename(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Box<RawValue>, String> {
+    let call = checked(ipc::local_rename(&local_body(&app, &webview, &request)?))?;
+    forward(app, call).await
+}
+
+/// `{}`, `{worktree: 'removed'}` or `{worktree: 'kept', path}`: the session
+/// stopped and gone, its worktree removed when clean (qmo-local.md §4.3.7).
+#[tauri::command]
+pub async fn qmo_local_delete(
+    app: AppHandle,
+    webview: tauri::Webview,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Box<RawValue>, String> {
+    let call = checked(ipc::local_delete(&local_body(&app, &webview, &request)?))?;
+    forward(app, call).await
+}
+
 /// Remote on or off for a session (P37.15): `{session}`, the runner's
 /// summary after it; the runner turns `on` down when this computer is not
 /// signed in.
@@ -458,6 +489,11 @@ pub struct SettingsView {
     keep_in_background: bool,
     autostart: bool,
     signed_in: bool,
+    /// New local sessions' permission mode and Remote.
+    code_mode: String,
+    code_remote: bool,
+    /// Whether the runner can do Remote: `null` before it first came up.
+    code_remote_open: Option<bool>,
 }
 
 #[tauri::command]
@@ -474,7 +510,29 @@ pub fn local_settings(app: AppHandle, shell: tauri::State<'_, Shell>) -> Setting
         keep_in_background: settings.keep_in_background,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         signed_in: shell.is_signed_in(),
+        code_mode: settings.code.mode,
+        code_remote: settings.code.remote,
+        code_remote_open: app.state::<Code>().runner.remote_supported(),
     }
+}
+
+/// New local sessions' permission mode: one of the four; fails with
+/// `invalid`.
+#[tauri::command]
+pub fn local_set_code_mode(shell: tauri::State<'_, Shell>, mode: String) -> Result<String, String> {
+    if !ipc::MODES.contains(&mode.as_str()) {
+        return Err("invalid".into());
+    }
+    Ok(shell.update_settings(|s| s.code.mode = mode).code.mode)
+}
+
+/// Whether new local sessions start with Remote on.
+#[tauri::command]
+pub fn local_set_code_remote(shell: tauri::State<'_, Shell>, enabled: bool) -> bool {
+    shell
+        .update_settings(|s| s.code.remote = enabled)
+        .code
+        .remote
 }
 
 /// Swap the quick entry shortcut; the old one stays when the new one cannot

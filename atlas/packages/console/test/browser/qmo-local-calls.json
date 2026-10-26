@@ -130,6 +130,24 @@
       "args": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-", "on": true },
       "method": "session.remote",
       "params": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-", "on": true }
+    },
+    {
+      "command": "qmo_local_rename",
+      "args": {
+        "session": "cs_AbCdEfGhIjKlMnOpQrSt_-",
+        "title": "整理 README"
+      },
+      "method": "session.rename",
+      "params": {
+        "session": "cs_AbCdEfGhIjKlMnOpQrSt_-",
+        "title": "整理 README"
+      }
+    },
+    {
+      "command": "qmo_local_delete",
+      "args": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-" },
+      "method": "session.delete",
+      "params": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-" }
     }
   ]
 }

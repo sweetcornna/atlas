@@ -18,12 +18,17 @@ export function isolatedRoot() {
     },
   }
 }
-export function fakeOpenAI(status = 200) {
-  const requests: {
-    path: string
-    headers: Headers
-    body: Record<string, unknown>
-  }[] = []
+interface FakeRequest {
+  path: string
+  headers: Headers
+  body: Record<string, unknown>
+}
+/** `received` runs after a POST is recorded; its promise delays the answer. */
+export function fakeOpenAI(
+  status = 200,
+  received?: (request: FakeRequest) => Promise<void> | void,
+) {
+  const requests: FakeRequest[] = []
   const server = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
@@ -31,11 +36,13 @@ export function fakeOpenAI(status = 200) {
       if (req.method !== 'POST')
         return Response.json({ data: [{ id: 'vendor-model-pro' }] })
       const body = (await req.json()) as Record<string, unknown>
-      requests.push({
+      const request = {
         path: new URL(req.url).pathname,
         headers: req.headers,
         body,
-      })
+      }
+      requests.push(request)
+      await received?.(request)
       if (status !== 200)
         return Response.json(
           {

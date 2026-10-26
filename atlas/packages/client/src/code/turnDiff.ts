@@ -119,7 +119,7 @@ export function turnDiffChanges(
   if (kept === undefined) return undefined
   const files = sections(root, kept.diff).map(one => one.file)
   if (files.length === 0) return undefined
-  return { source: 'session', files, truncated: kept.truncated }
+  return { source: 'session', files, truncated: kept.truncated, lastTurn: true }
 }
 
 /** One file's part of the kept diff; `undefined` when it has none. */

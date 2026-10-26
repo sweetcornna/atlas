@@ -7,6 +7,7 @@
 //! `qmo`'s alone.
 
 mod agents;
+mod attention;
 mod code;
 mod commands;
 mod deeplink;
@@ -28,7 +29,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_window_state::StateFlags;
 
-use shell::{Shell, ABOUT, MAIN, QUICK, SETTINGS, SIGNIN};
+use shell::{Opened, Shell, ABOUT, MAIN, QUICK, SETTINGS, SIGNIN};
 
 /// The argument the login item starts the app with: no window until asked.
 const HIDDEN_ARG: &str = "--hidden";
@@ -38,14 +39,15 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
     match event {
         WindowEvent::CloseRequested { api, .. } => match window.label() {
             MAIN | SIGNIN => {
+                api.prevent_close();
                 if shell::keeps_running(app) {
-                    api.prevent_close();
                     if window.is_fullscreen().unwrap_or(false) {
                         let _ = window.set_fullscreen(false);
                     }
                     let _ = window.hide();
                 } else {
-                    app.exit(0);
+                    // Closing it quits: asked first when sessions are running.
+                    attention::quit(app);
                 }
             }
             QUICK => {
@@ -132,6 +134,8 @@ pub fn run() {
             commands::qmo_local_changes,
             commands::qmo_local_diff,
             commands::qmo_local_set_remote,
+            commands::qmo_local_rename,
+            commands::qmo_local_delete,
             commands::local_state,
             commands::local_sign_in,
             commands::local_retry,
@@ -139,6 +143,8 @@ pub fn run() {
             commands::local_set_shortcut,
             commands::local_set_autostart,
             commands::local_set_keep_in_background,
+            commands::local_set_code_mode,
+            commands::local_set_code_remote,
             commands::local_sign_out,
             commands::local_open,
             commands::local_close,
@@ -155,6 +161,8 @@ pub fn run() {
             ));
             app.manage(agents::Agents::default());
             app.manage(code::Code::new());
+            app.manage(attention::Attention::default());
+            attention::watch(&handle);
 
             #[cfg(target_os = "macos")]
             app.set_menu(menu::app_menu(&handle)?)?;
@@ -178,7 +186,8 @@ pub fn run() {
                     .notification()
                     .and_then(|n| tapped.state::<Shell>().notification_session(n.id()));
                 match session {
-                    Some(id) => shell::open_session(&tapped, &id),
+                    Some(Opened::Chat(id)) => shell::open_session(&tapped, &id),
+                    Some(Opened::Code(id)) => shell::open_code_session(&tapped, &id),
                     None => shell::show_app(&tapped),
                 }
             })?;

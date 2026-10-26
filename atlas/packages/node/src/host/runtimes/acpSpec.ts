@@ -6,8 +6,8 @@
  * (`harness-backends.md` §5): how to start it for one agent, where its
  * native skills live, how a conversation continues after a restart, where
  * the real token usage is, and how its tool calls read in the node's
- * permission vocabulary. The channel (`acp.ts`) and the pool never branch on
- * a harness id; every difference lives here.
+ * permission vocabulary. The channel (`@qianmo/harness/acpClient.ts`) and
+ * the pool never branch on a harness id; every difference lives here.
  */
 
 /** Model lanes a runtime can call (a subset of `@qianmo/providers` lanes). */

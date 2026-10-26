@@ -34,8 +34,8 @@ export class CodeError extends Error {
 
 /** What this runner drives; the page offers only agents whose protocol is here. */
 export const FEATURES = {
-  protocols: ['claude-stream', 'codex-app-server'],
-  worktree: false,
+  protocols: ['claude-stream', 'codex-app-server', 'acp'],
+  worktree: true,
   remote: true,
 } as const
 
@@ -166,6 +166,7 @@ export type CodeEvent =
       readonly kind: 'thinking' | 'tool' | 'waiting' | 'queued' | 'starting'
       readonly words: string
     }
+  | { readonly type: 'removed'; readonly session: string }
   /** The device link's state (§5.1): off, connecting, up, retrying, refused. */
   | {
       readonly type: 'link'

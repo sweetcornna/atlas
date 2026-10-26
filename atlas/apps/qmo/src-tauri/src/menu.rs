@@ -41,7 +41,8 @@ pub fn on_menu(app: &AppHandle, event: MenuEvent) {
         SETTINGS => shell::open_settings_from_menu(app),
         ABOUT => shell::open_about(app),
         SHOW => shell::show_app(app),
-        QUIT => app.exit(0),
+        // Asked first when local sessions are running (`attention.rs`).
+        QUIT => crate::attention::quit(app),
         RELOAD => shell::reload(app),
         ZOOM_RESET => shell::zoom(app, None),
         ZOOM_IN => shell::zoom(app, Some(true)),

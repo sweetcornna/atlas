@@ -3,7 +3,9 @@
 
 /**
  * Code's page script (`/code`, `view/frontCode.ts`), after the shared
- * runtime, the front's own and `CODE_RENDER_JS` (`assets/codeRender.ts`).
+ * runtime, the front's own and `CODE_RENDER_JS` (`assets/codeRender.ts`),
+ * before `CODE_MANAGE_JS` (`assets/codeManage.ts`: the worktree switch, a
+ * row's ⋯, deleting with undo), which it hands what it needs on `R.host`.
  *
  * Inside the desktop app — `window.__QMO_SHELL__` an object and Tauri's
  * `invoke` and `Channel` both there — it drives local sessions through the
@@ -23,9 +25,11 @@
  *   and a dot for its state. `/code?session=<id>` by `pushState`; back and
  *   forward move between sessions.
  * - **A new session.** A recent folder or 选择文件夹… (the shell's native
- *   picker), the agent, the permission mode (自动审批 unless changed; 跳过权限确认
- *   asks once more in a line under the box), Remote (once the runner says
- *   `features.remote`), and the first line. Sent at once: the line is drawn first, and a start
+ *   picker), the agent, the permission mode (the shell's `defaults.mode`,
+ *   自动审批 unless changed; 跳过权限确认 asks once more in a line under the
+ *   box), a worktree of its own (a Git folder only), Remote (once the runner
+ *   says `features.remote`; the shell's `defaults.remote` then), and the
+ *   first line. Sent at once: the line is drawn first, and a start
  *   that fails puts it back in the box (§3.3, a new conversation).
  * - **A session.** `qmo_local_read` (the newest 200 records; the rest when
  *   the reader scrolls to the top). Every event carries `seq`: one already
@@ -37,7 +41,10 @@
  *   下一轮生效, or goes back and says why. An ask is answered from its card.
  * - **Changes.** `qmo_local_changes` lists the files, `qmo_local_diff`
  *   shows one; read again within a second of a tool finishing, and by hand.
- *   Outside Git the files are the agent's last turn (Codex), said so.
+ *   Outside Git the files are the agent's last turn (Codex), said so, or
+ *   the session's records; past the limits only the counts.
+ * - **Open.** The shell's `open` event (a notification clicked) opens that
+ *   session.
  *
  * - **Remote (P37.15).** Over this computer's own session a switch and the
  *   device link's state (`qmo_local_set_remote`, the runner's `link`
@@ -101,6 +108,7 @@ function codeScript(): string {
   var PICK = 'pick';
   var KEY = 'qianmo.code.';
   var NARROW = '(max-width: ${FRONT_NARROW_PX}px)';
+  var wt = byId('code-worktree');
   var box = byId('code-text');
   var form = byId('code-box');
   var say = byId('code-say');
@@ -169,10 +177,11 @@ function codeScript(): string {
 
   function side() {
     var list = byId('code-sessions');
-    if (!list) return;
+    if (!list || R.hold) return;
     var focused = document.activeElement && list.contains(document.activeElement) ?
       document.activeElement.getAttribute('data-session') : null;
-    var all = values(sessions).sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
+    var all = values(sessions).filter(function (s) { return !R.hidden[s.id]; })
+      .sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
     clear(list);
     if (!all.length) { list.appendChild(el('p', 'fx-none', tx('none', ''))); return; }
     var groups = {};
@@ -205,6 +214,7 @@ function codeScript(): string {
         var badge = copyOf(s) ? (!s.device.online ? tx('offline', '') : !s.remote ? tx('remoteOff', '') : '') : s.remote ? 'Remote' : '';
         if (badge) button.appendChild(el('span', 'fx-code-badge', badge));
         row.appendChild(button);
+        if (R.rowMenu) R.rowMenu(row, s);
         block.appendChild(row);
       }
       list.appendChild(block);
@@ -239,6 +249,7 @@ function codeScript(): string {
     folderPick.appendChild(more);
     folderPick.value = found;
     lastFolder = found;
+    if (R.sync) R.sync();
   }
 
   function drawAgents() {
@@ -510,6 +521,10 @@ function codeScript(): string {
       }
       return;
     }
+    if (type === 'open') {
+      if (listed && sessions[event.session]) { closeDrawer(); open(event.session, true); }
+      return;
+    }
     if (type === 'link') { link = event; head(); return; }
     if (type === 'removed') {
       delete sessions[event.session];
@@ -692,8 +707,8 @@ function codeScript(): string {
     tell('', 'muted');
     paint(true);
     call('qmo_local_start', {
-      folder: folder, agent: agent, mode: mode, worktree: false, text: text, clientId: line.clientId,
-      remote: !!(remoteBox && !remoteBox.disabled && remoteBox.checked)
+      folder: folder, agent: agent, mode: mode, worktree: !!wt && wt.checked && !wt.disabled, text: text,
+      clientId: line.clientId, remote: !!(remoteBox && !remoteBox.disabled && remoteBox.checked)
     }).then(function (data) {
       var s = data && data.session;
       if (!s || typeof s.id !== 'string') throw new Error('');
@@ -860,12 +875,12 @@ function codeScript(): string {
   function drawChanges(data) {
     var files = Array.isArray(data.files) ? data.files : [];
     var list = byId('code-files');
-    var note = byId('code-note');
+    var bits = data.source === 'git' ? [] : [tx(data.lastTurn ? 'lastTurn' : 'notGit', '')];
     clear(list);
-    byId('code-count').textContent = files.length ? String(files.length) : '';
-    var git = data.source === 'git';
-    if (!git && !files.length) { qc.say(note, tx('notGit', ''), 'muted'); return; }
-    qc.say(note, !files.length ? tx('clean', '') : data.truncated ? tx('cut', '') : git ? '' : tx('lastTurn', ''), 'muted');
+    byId('code-count').textContent = files.length ? String(files.length + (data.omitted || 0)) : '';
+    bits.push(!files.length ? tx('clean', '') : data.omitted > 0 ? tx('omitted', '').replace('{n}', data.omitted) :
+      data.truncated ? tx('cut', '') : '');
+    qc.say(byId('code-note'), bits.filter(Boolean).join(' \u00b7 '), 'muted');
     for (var i = 0; i < files.length; i++) {
       var f = files[i];
       var path = String(f.path || '');
@@ -880,7 +895,7 @@ function codeScript(): string {
       mark.title = status;
       row.appendChild(mark);
       row.appendChild(el('span', 'fx-code-fpath mono', path));
-      row.appendChild(f.binary ? el('span', 'fx-stat', tx('binary', '')) : R.stat(f.added, f.removed));
+      row.appendChild(f.binary || f.large ? el('span', 'fx-stat', tx(f.large ? 'large' : 'binary', '')) : R.stat(f.added, f.removed));
       li.appendChild(row);
       var pre = el('pre', 'fx-pre fx-diff');
       pre.hidden = !opened[path];
@@ -896,9 +911,9 @@ function codeScript(): string {
     call('qmo_local_diff', { session: id, path: path }).then(function (data) {
       if (current !== id) return;
       clear(pre);
-      if (data && data.binary) pre.appendChild(el('span', 'fx-diff-ctx', tx('binary', '')));
+      if (data && (data.binary || data.large)) pre.appendChild(el('span', 'fx-diff-ctx', tx(data.large ? 'tooBig' : 'binary', '')));
       else R.diff(pre, (data && data.text) || '');
-      if (data && data.truncated) pre.appendChild(el('span', 'fx-diff-hunk', tx('cut', '')));
+      if (data && data.truncated && !data.large) pre.appendChild(el('span', 'fx-diff-hunk', tx('cut', '')));
     }, function (err) {
       if (current !== id) return;
       clear(pre);
@@ -978,6 +993,9 @@ function codeScript(): string {
       if (remoteBox) { remoteBox.disabled = features.remote !== true; if (!remoteBox.disabled) remoteBox.parentNode.title = remoteHead ? remoteHead.title : ''; }
       folders = data && Array.isArray(data.folders) ? data.folders : [];
       var all = data && Array.isArray(data.sessions) ? data.sessions : [];
+      var d = (data && data.defaults) || {};
+      if (!listed && /^(off|accept-edits|auto|full-access)$/.test(d.mode)) blankMode = d.mode;
+      if (!listed && remoteBox && !remoteBox.disabled) remoteBox.checked = d.remote === true;
       sessions = {};
       for (var i = 0; i < all.length; i++) if (all[i] && typeof all[i].id === 'string') sessions[all[i].id] = all[i];
       listed = true;
@@ -998,6 +1016,10 @@ function codeScript(): string {
     if (shell && !/^qmo /.test(why(err))) { elsewhere(tx('updateApp', '')); return; }
     tell(why(err), 'warn');
   }
+
+  R.hidden = {};
+  R.host = { tx: tx, why: why, call: call, tell: tell, side: side, head: head, blank: blank,
+    st: function () { return { s: sessions, c: current, f: features, d: folders }; } };
 
   var channel = shell ? new core.Channel() : null;
   if (channel) channel.onmessage = function (event) { onEvent(event); };

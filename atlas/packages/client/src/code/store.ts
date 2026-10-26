@@ -12,6 +12,7 @@
  * | `sessions/<id>/session.json` | a session's header |
  * | `sessions/<id>/events.ndjson` | its conversation, append-only |
  * | `sessions/<id>/turn-diff.json` | the agent's last turn diff (Codex), for the panel outside Git |
+ * | `worktrees/` | the worktrees sessions run in (worktree.ts) |
  * | `runner.lock`, `children.json` | the runner's own (serve.ts) |
  *
  * `events.ndjson` has the hub console's chat-store envelope
@@ -39,6 +40,7 @@ import {
   SESSION_ID,
   type SessionState,
 } from './protocol.js'
+import type { Worktree } from './worktree.js'
 
 /** At most this many folders are remembered; the oldest pick goes first. */
 export const MAX_FOLDERS = 20
@@ -65,8 +67,10 @@ export interface SessionHeader {
   readonly createdAt: number
   readonly updatedAt: number
   readonly folder: { readonly path: string; readonly name: string }
-  /** The agent's working folder. */
+  /** The agent's working folder: the picked folder, or the same folder in its worktree. */
   readonly root: string
+  /** The session's own worktree, when it has one (worktree.ts). */
+  readonly worktree?: Worktree
   readonly agent: {
     readonly id: string
     readonly name: string
@@ -76,7 +80,10 @@ export interface SessionHeader {
   readonly mode: Mode
   readonly state: SessionState
   readonly lastSeq: number
-  /** The agent's own conversation: Claude Code's session id. */
+  /**
+   * The agent's own conversation: Claude Code's session id, or the ACP
+   * session id the agent gave (`''` before its first line).
+   */
   readonly native: {
     readonly kind: string
     readonly id: string
@@ -148,7 +155,8 @@ function tailBytes(text: string, max: number): string {
 }
 
 const MESSAGE_CUT = '\n\n（超过 256 KiB，后面的截掉了）'
-const DIFF_CUT = '\n…（差异太长，后面的截掉了）'
+/** What a diff cut at {@link MAX_DETAIL_BYTES} ends with. */
+export const DIFF_CUT = '\n…（差异太长，后面的截掉了）'
 const OUTPUT_CUT = '…（前面的截掉了）\n'
 
 /** An agent's message within {@link MAX_MESSAGE_BYTES}, saying so when cut. */
@@ -193,9 +201,37 @@ function appendPrivateLine(file: string, line: string): void {
   }
 }
 
+/**
+ * A header's `worktree`; `null` when it is there but does not read, which
+ * makes the header unreadable: a session never forgets its worktree.
+ */
+function worktreeOf(value: unknown): Worktree | null | undefined {
+  if (value === undefined) return undefined
+  if (
+    !isRecord(value) ||
+    typeof value.path !== 'string' ||
+    !path.isAbsolute(value.path) ||
+    typeof value.branch !== 'string' ||
+    typeof value.base !== 'string' ||
+    typeof value.repo !== 'string' ||
+    !path.isAbsolute(value.repo) ||
+    typeof value.ready !== 'boolean'
+  )
+    return null
+  return {
+    path: value.path,
+    branch: value.branch,
+    base: value.base,
+    repo: value.repo,
+    ready: value.ready,
+  }
+}
+
 function headerOf(value: unknown): SessionHeader | undefined {
   if (!isRecord(value)) return undefined
   const { folder, agent, native, remote } = value
+  const worktree = worktreeOf(value.worktree)
+  if (worktree === null) return undefined
   if (
     typeof value.id !== 'string' ||
     !SESSION_ID.test(value.id) ||
@@ -227,6 +263,7 @@ function headerOf(value: unknown): SessionHeader | undefined {
     updatedAt: value.updatedAt,
     folder: { path: folder.path, name: folder.name },
     root: value.root,
+    ...(worktree === undefined ? {} : { worktree }),
     agent: {
       id: agent.id,
       name: agent.name,
@@ -307,6 +344,9 @@ export class CodeStore {
   get sessionsDir(): string {
     return path.join(this.dir, 'sessions')
   }
+  get worktreesDir(): string {
+    return path.join(this.dir, 'worktrees')
+  }
   sessionDir(id: string): string {
     if (!SESSION_ID.test(id)) throw new CodeError('E_SESSION', '会话 id 不对')
     return path.join(this.sessionsDir, id)
@@ -371,6 +411,11 @@ export class CodeStore {
     } catch {
       return undefined
     }
+  }
+
+  /** A deleted session's folder, header and conversation; nothing of the agent's own. */
+  removeSession(id: string): void {
+    fs.rmSync(this.sessionDir(id), { recursive: true, force: true })
   }
 
   /** The agent's last turn diff, kept as it reported it (at most 1 MiB). */

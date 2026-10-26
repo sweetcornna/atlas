@@ -45,6 +45,28 @@
     </div>
   </section>
 
+  <h2 class="group-title" data-i18n="settings.code"></h2>
+  <section class="group">
+    <div class="row">
+      <label class="row-label" for="code-mode" data-i18n="settings.code.mode"></label>
+      <select class="choice" id="code-mode">
+        <option value="off" data-i18n="settings.code.off"></option>
+        <option value="accept-edits" data-i18n="settings.code.accept-edits"></option>
+        <option value="auto" data-i18n="settings.code.auto"></option>
+        <option value="full-access" data-i18n="settings.code.full-access"></option>
+      </select>
+    </div>
+    <div class="row" id="code-bypass" hidden>
+      <span class="row-label"><span data-i18n="settings.code.bypass"></span><span class="note" data-i18n="settings.code.bypass.note"></span></span>
+      <button class="btn btn-ghost" id="code-bypass-no" type="button" data-i18n="settings.code.cancel"></button>
+      <button class="btn btn-ghost btn-danger" id="code-bypass-ok" type="button" data-i18n="settings.code.bypass.ok"></button>
+    </div>
+    <div class="row">
+      <label class="row-label" for="code-remote"><span data-i18n="settings.code.remote"></span><span class="note" id="code-remote-note"></span></label>
+      <input class="switch" id="code-remote" type="checkbox" role="switch">
+    </div>
+  </section>
+
   <h2 class="group-title" data-i18n="settings.about"></h2>
   <section class="group">
     <div class="row">

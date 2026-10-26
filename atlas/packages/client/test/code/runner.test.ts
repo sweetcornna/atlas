@@ -60,8 +60,8 @@ describe.skipIf(!posix)('the runner', () => {
       version: expect.any(String),
       protocol: 1,
       features: {
-        protocols: ['claude-stream', 'codex-app-server'],
-        worktree: false,
+        protocols: ['claude-stream', 'codex-app-server', 'acp'],
+        worktree: true,
         remote: true,
       },
       codeDir: at.code,
@@ -239,8 +239,12 @@ describe.skipIf(!posix)('the runner', () => {
       text: 'hi',
       clientId: 'c',
     }
+    // A worktree of its own needs a Git folder (worktree.test.ts has the rest).
     expect(
       await refused(r.call('session.start', { ...base, worktree: true })),
+    ).toBe('E_GIT')
+    expect(
+      await refused(r.call('session.start', { ...base, worktree: 'yes' })),
     ).toBe('E_ARGS')
     // Signed out: no Remote (`remote.test.ts` has it signed in).
     expect(

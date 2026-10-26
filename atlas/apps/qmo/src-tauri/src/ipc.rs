@@ -365,9 +365,10 @@ pub fn local_forget_folder(body: &Value) -> Result<Call, Invalid> {
 }
 
 /// `qmo_local_start`: `folder`, `agent`, `mode`, `worktree`, `text`,
-/// `clientId`, `remote?`. The runner answers a `worktree: true` it cannot
-/// make yet; `remote` absent is `false`, and `true` asks the runner to sync
-/// the session from its first line (P37.15, qmo-local.md §5.0).
+/// `clientId`, `remote?`. Whether a worktree can be made there is the
+/// runner's to say (`E_GIT`); `remote` absent is `false`, and `true` asks
+/// the runner to sync the session from its first line (P37.15,
+/// qmo-local.md §5.0).
 pub fn local_start(body: &Value) -> Result<Call, Invalid> {
     let map = object(
         body,
@@ -428,6 +429,26 @@ pub fn local_stop(body: &Value) -> Result<Call, Invalid> {
 
 pub fn local_changes(body: &Value) -> Result<Call, Invalid> {
     session_only(body, "session.changes")
+}
+
+/// `qmo_local_delete`: `session`. The runner stops it first.
+pub fn local_delete(body: &Value) -> Result<Call, Invalid> {
+    session_only(body, "session.delete")
+}
+
+/// `qmo_local_rename`: `session`, `title` (at most 120 characters, one
+/// line, not only spaces). The runner trims its ends.
+pub fn local_rename(body: &Value) -> Result<Call, Invalid> {
+    let map = object(body, &["session", "title"])?;
+    let session = local_session(map)?;
+    let title = line(map, "title", TITLE_MAX)?.ok_or_else(|| invalid("title is required"))?;
+    if title.trim().is_empty() {
+        return Err(invalid("title is empty"));
+    }
+    Ok(call(
+        "session.rename",
+        serde_json::json!({ "session": session, "title": title }),
+    ))
 }
 
 /// `qmo_local_answer`: `session`, `ask`, `decision` (`once` / `session` /
@@ -1410,6 +1431,7 @@ mod tests {
                 "session.stop",
             ),
             (local_changes, "session.changes"),
+            (local_delete, "session.delete"),
         ] {
             assert_eq!(
                 check(&json!({ "session": SESSION })).unwrap(),
@@ -1479,6 +1501,40 @@ mod tests {
         }
         for body in bad {
             assert!(local_answer(&body).is_err(), "{body}");
+        }
+    }
+
+    #[test]
+    fn rename_takes_one_line_of_at_most_120() {
+        for title in [
+            "新标题",
+            " 两头有空格 ",
+            &"字".repeat(120),
+            "😀".repeat(60).as_str(),
+        ] {
+            assert_eq!(
+                local_rename(&json!({"session": SESSION, "title": title})).unwrap(),
+                Call {
+                    method: "session.rename",
+                    params: json!({"session": SESSION, "title": title})
+                }
+            );
+        }
+        for bad in [
+            json!({ "session": SESSION }),
+            json!({"session": SESSION, "title": ""}),
+            json!({"session": SESSION, "title": "   "}),
+            json!({"session": SESSION, "title": "一行\n两行"}),
+            json!({"session": SESSION, "title": "tab\there"}),
+            json!({"session": SESSION, "title": "字".repeat(121)}),
+            // 61 emoji are 122 UTF-16 code units.
+            json!({"session": SESSION, "title": "😀".repeat(61)}),
+            json!({"session": SESSION, "title": 7}),
+            json!({"session": SESSION, "title": null}),
+            json!({"session": "s-1", "title": "x"}),
+            json!({"session": SESSION, "title": "x", "folder": "0123456789abcdef"}),
+        ] {
+            assert!(local_rename(&bad).is_err(), "{bad}");
         }
     }
 
@@ -1598,6 +1654,8 @@ mod tests {
             "qmo_local_read" => local_read(args).map(Some),
             "qmo_local_changes" => local_changes(args).map(Some),
             "qmo_local_diff" => local_diff(args).map(Some),
+            "qmo_local_rename" => local_rename(args).map(Some),
+            "qmo_local_delete" => local_delete(args).map(Some),
             "qmo_local_set_remote" => local_set_remote(args).map(Some),
             other => panic!("{other} is not a local-session command"),
         }
