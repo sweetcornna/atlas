@@ -370,13 +370,13 @@ export function workRowState(lang: Lang): string {
 
 // --- files ------------------------------------------------------------------------
 
-/** Where a session's file is read from (`work-tasks.md` §4.3, §4.4). */
-export function workFileUrl(
-  sessionId: string,
-  name: string,
-  view: 'file' | 'preview',
-): string {
-  return `/v0/work/sessions/${encodeURIComponent(sessionId)}/${view}?name=${encodeURIComponent(name)}`
+/**
+ * Where a session's file is downloaded from (`work-tasks.md` §4.3). The
+ * preview's address is put in by the page script when 预览 is pressed
+ * (`assets/frontWork.ts`).
+ */
+function downloadUrl(sessionId: string, name: string): string {
+  return `/v0/work/sessions/${encodeURIComponent(sessionId)}/file?name=${encodeURIComponent(name)}`
 }
 
 /** What a file row needs: a delivered file, or an output the node listed. */
@@ -408,7 +408,7 @@ function fileRow(sessionId: string, file: FileFacts, w: WorkText): string {
             `data-session="${attr(sessionId)}" data-name="${attr(file.name)}" data-title="${attr(shown)}" ` +
             `aria-label="${attr(`${w.preview} · ${shown}`)}" title="${attr(w.preview)}">${icon('eye', { small: true })}</button>`
           : '') +
-        `<a class="fx-file-act" href="${attr(workFileUrl(sessionId, file.name, 'file'))}" download="${attr(baseName(file.name))}" ` +
+        `<a class="fx-file-act" href="${attr(downloadUrl(sessionId, file.name))}" download="${attr(baseName(file.name))}" ` +
         `aria-label="${attr(`${w.download} · ${shown}`)}" title="${attr(w.download)}">${icon('download', { small: true })}</a>`
   return (
     `<div class="fx-file" data-kind="${attr(file.kind)}" data-name="${attr(file.name)}">` +
