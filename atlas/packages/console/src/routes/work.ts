@@ -176,7 +176,7 @@ const DOWNLOAD_HEADERS = {
 } as const
 
 /** The preview's policy (§4.4): inline styles and `data:` images, no script. */
-export const WORK_PREVIEW_CSP =
+const WORK_PREVIEW_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox"
 
 async function fetchOutput(
