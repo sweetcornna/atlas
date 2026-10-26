@@ -170,6 +170,8 @@ function approvalNode(root: string) {
   const psk = 'approval-subscribe-psk-000000000000000'
   const seen = {
     subscriptions: [] as TransportChannel[],
+    /** The authenticated connection each subscription arrived on. */
+    connections: [] as (string | null | undefined)[],
     decisions: 0,
     revocations: 0,
     refuseDecisions: false,
@@ -191,9 +193,10 @@ function approvalNode(root: string) {
     ],
     onMessage: (message, context) => {
       const payload = message.payload as Record<string, unknown>
-      if (message.type === MessageType.AuthzRequest)
+      if (message.type === MessageType.AuthzRequest) {
         seen.subscriptions.push(context.channel)
-      else if (message.type === MessageType.AuthzDecision) {
+        seen.connections.push(context.connectionGeneration)
+      } else if (message.type === MessageType.AuthzDecision) {
         if (seen.refuseDecisions) throw new Error('forced unavailable')
         if (!grants.applyDecision(payload['decision']).ok)
           throw new Error('refused decision')
@@ -605,6 +608,8 @@ test("a call inside the owner's own running turn is decided by that request: no 
   }
   let channel: TransportChannel | undefined
   let decisions = 0
+  // While set, the node holds its receipt for a decision it has applied.
+  let receiptHeld: Promise<void> | undefined
   const server = startTransportServer({
     hostname: '127.0.0.1',
     port: 0,
@@ -620,13 +625,14 @@ test("a call inside the owner's own running turn is decided by that request: no 
       MessageType.AuthzDecision,
       MessageType.AuthzRevoke,
     ],
-    onMessage: (message, context) => {
+    onMessage: async (message, context) => {
       channel = context.channel
       const payload = message.payload as Record<string, unknown>
       if (message.type === MessageType.AuthzDecision) {
         if (!grants.applyDecision(payload['decision']).ok)
           throw new Error('refused decision')
         decisions++
+        await receiptHeld
       }
     },
   })
@@ -673,11 +679,22 @@ test("a call inside the owner's own running turn is decided by that request: no 
     hub.start()
     await until(() => channel !== undefined)
     // In the owner's live turn: decided at once, nobody clicks.
+    let release = () => {}
+    receiptHeld = new Promise(resolve => {
+      release = resolve
+    })
     const live = ask('live', 'turn-live')
     await raise(live.request)
     await until(() => decisions === 1)
     expect(grants.use(live.call).kind).toBe('hit')
-    expect(await status(live.request.requestId)).toBe('allowed')
+    // Applied at the node, but its receipt is still on the way: the hub says
+    // only that, and says allowed once the receipt is in.
+    expect(await status(live.request.requestId)).toBe('delivery-unknown')
+    receiptHeld = undefined
+    release()
+    await until(
+      async () => (await status(live.request.requestId)) === 'allowed',
+    )
     expect(asked).toEqual([
       {
         contextId: 'owned-chat',
@@ -769,10 +786,43 @@ test('one subscription per connection: quiet periods send nothing, a reconnect o
     keepAliveIntervalMs: 20,
     onError: error => errors.push(error),
   })
+  // No connection is subscribed twice. Checked per connection, not as a
+  // fixed total: hub and node share this event loop, and a stall past two
+  // periods (a synchronous fsync on a loaded runner) lets the silence
+  // watchdog rebuild a healthy link, which is owed one subscription of its
+  // own. That an idle link stays up is the transport's own test (`a quiet
+  // link stays up`).
+  const onePerConnection = () => {
+    expect(seen.connections).not.toContain(null)
+    expect(new Set(seen.connections).size).toBe(seen.connections.length)
+  }
   // About fifteen periods, after which nothing more may have reached the node.
-  const quiet = async (subscriptions: number) => {
+  const quiet = async () => {
     await Bun.sleep(300)
-    expect(seen.subscriptions).toHaveLength(subscriptions)
+    onePerConnection()
+  }
+  // The node raises a request on its newest subscribed channel. A rebuilt
+  // link closes the channel it replaced, so a send that finds its channel
+  // closed goes again on the successor; the hub keeps a request once by id.
+  const raise = async (request: AuthzRequest) => {
+    for (;;) {
+      const channel = seen.subscriptions.at(-1)!
+      try {
+        await channel.sendAndWait(
+          createMessage({
+            from: 'qianmo://worker/main',
+            to: 'qianmo://hub/console',
+            type: MessageType.AuthzRequest,
+            payload: { request: signAuthzRequest(node.nodeKeys, request) },
+            hops: ['worker'],
+          }),
+        )
+        return
+      } catch (error) {
+        if (!channel.isClosed()) throw error
+        await until(() => seen.subscriptions.at(-1) !== channel)
+      }
+    }
   }
   const ask = (content: string) => {
     const call = {
@@ -796,28 +846,21 @@ test('one subscription per connection: quiet periods send nothing, a reconnect o
   try {
     hub.start()
     await until(() => seen.subscriptions.length >= 1)
-    await quiet(1)
+    await quiet()
     // The socket drops: the client redials by itself and its onReady
     // subscribes the node's new channel, once.
+    const dropped = seen.subscriptions.at(-1)
     hop.drop()
-    await until(() => seen.subscriptions.length >= 2)
-    expect(seen.subscriptions[1]).not.toBe(seen.subscriptions[0])
-    await quiet(2)
+    await until(() => seen.subscriptions.at(-1) !== dropped)
+    await quiet()
     // A link closed for good (4003): the periodic check dials a new one.
+    const closed = seen.subscriptions.at(-1)
     node.server.closePeers(['hub'])
-    await until(() => seen.subscriptions.length >= 3)
-    await quiet(3)
+    await until(() => seen.subscriptions.at(-1) !== closed)
+    await quiet()
     // The newest subscribed channel carries a request; decide and revoke flow.
     const first = ask('after reconnect')
-    await seen.subscriptions[2]!.sendAndWait(
-      createMessage({
-        from: 'qianmo://worker/main',
-        to: 'qianmo://hub/console',
-        type: MessageType.AuthzRequest,
-        payload: { request: signAuthzRequest(node.nodeKeys, first.request) },
-        hops: ['worker'],
-      }),
-    )
+    await raise(first.request)
     const listed = await hub.list(alice)
     expect(listed.ok && listed.value.map(row => row.requestId)).toEqual([
       first.request.requestId,
@@ -841,15 +884,7 @@ test('one subscription per connection: quiet periods send nothing, a reconnect o
     expect(errors).toEqual([])
     // A failure on the way to a node says which node.
     const second = ask('refused')
-    await seen.subscriptions[2]!.sendAndWait(
-      createMessage({
-        from: 'qianmo://worker/main',
-        to: 'qianmo://hub/console',
-        type: MessageType.AuthzRequest,
-        payload: { request: signAuthzRequest(node.nodeKeys, second.request) },
-        hops: ['worker'],
-      }),
-    )
+    await raise(second.request)
     seen.refuseDecisions = true
     expect(
       (
@@ -864,7 +899,7 @@ test('one subscription per connection: quiet periods send nothing, a reconnect o
     expect(String(errors[0])).toMatch(
       /^节点 worker 未确认审批结果 · TransportReceiptError: .*E_UNDELIVERABLE/,
     )
-    expect(seen.subscriptions).toHaveLength(3)
+    onePerConnection()
   } finally {
     await hub.close()
     await hop.stop()
