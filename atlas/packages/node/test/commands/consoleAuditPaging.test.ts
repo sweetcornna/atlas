@@ -318,7 +318,10 @@ describe('100 000 records: the first screen is bounded (D5, G2)', () => {
     // face's markup — and the card is its list, its foot and the area, some
     // 29 KB of it the fifty rows. The bound is that plus about 4%. A page
     // that drew the trail instead of its first screen would be megabytes.
-    expect(warm.body.length).toBeLessThan(322_000)
+    // Since P37.18 the front's document carries the panes' script and sheet
+    // (57 KB, `assets/frontSplit.ts`): measured at 378 941 bytes, the bound
+    // is that plus about 4% again.
+    expect(warm.body.length).toBeLessThan(394_000)
 
     // The poll the page set up: since the head it was drawn at.
     const poll = /data-poll="([^"]+)"/
