@@ -76,7 +76,10 @@ export interface SessionHeader {
   readonly mode: Mode
   readonly state: SessionState
   readonly lastSeq: number
-  /** The agent's own conversation: Claude Code's session id. */
+  /**
+   * The agent's own conversation: Claude Code's session id, or the ACP
+   * session id the agent gave (`''` before its first line).
+   */
   readonly native: {
     readonly kind: string
     readonly id: string

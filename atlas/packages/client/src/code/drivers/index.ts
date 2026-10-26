@@ -8,6 +8,7 @@
  */
 
 import { CodeError } from '../protocol.js'
+import { ACP_DRIVER } from './acp.js'
 import type { Driver } from './agent.js'
 import { CLAUDE_DRIVER } from './claude.js'
 import { CODEX_DRIVER } from './codex.js'
@@ -15,6 +16,8 @@ import { CODEX_DRIVER } from './codex.js'
 export const DRIVERS: Readonly<Record<string, Driver>> = {
   'claude-stream': CLAUDE_DRIVER,
   'codex-app-server': CODEX_DRIVER,
+  // Gemini CLI, Qwen Code, opencode, dsh: one driver, a profile each (`acp.ts`).
+  acp: ACP_DRIVER,
 }
 
 /** The driver of an agent's protocol; one this runner has none for is refused. */

@@ -28,7 +28,7 @@ import {
   AcpChannel,
   AcpRpcError,
   acpSessionGone,
-} from '../../src/host/runtimes/acp.js'
+} from '@qianmo/harness/acpClient.ts'
 import {
   ExternalRuntimePool,
   type ExternalAgent,

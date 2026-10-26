@@ -897,6 +897,8 @@ export class SessionManager {
     }
     session.program = found.path
     session.agent = driverFor(session.header.agent.protocol).start({
+      agentId: session.header.agent.id,
+      name: session.header.agent.name,
       program: found.path,
       root: session.header.root,
       env: await this.#options.agentEnv(),
@@ -1016,8 +1018,8 @@ export class SessionManager {
       },
       activity: (kind, words) => this.#activity(session, kind, words),
       toolStart: tool => this.#toolStart(session, tool),
-      toolEnd: (toolId, isError, output) =>
-        this.#toolEnd(session, toolId, isError, output),
+      toolEnd: (toolId, isError, output, diff) =>
+        this.#toolEnd(session, toolId, isError, output, diff),
       ask: (view, signal) => this.#ask(session, view, signal),
       notice: (text, severity) => this.#notice(session, text, severity),
       started: nativeId =>
@@ -1081,6 +1083,7 @@ export class SessionManager {
     toolId: string,
     isError: boolean,
     output: string,
+    diff?: ToolView['diff'],
   ): void {
     const turnId = session.tools.get(toolId)
     session.tools.delete(toolId)
@@ -1091,10 +1094,14 @@ export class SessionManager {
     const approvedBy = session.approved.get(toolId)
     session.approved.delete(toolId)
     const status = denied ? 'denied' : isError ? 'failed' : 'done'
+    // A diff told only at the end (ACP) is the line's detail.
+    const late = diff !== undefined && diff.text !== '' ? diff : undefined
     const detail =
-      turn.tool.detailKind === 'output' && output.trim() !== ''
-        ? clipDetail(output, 'output')
-        : turn.detail
+      late !== undefined
+        ? clipDetail(late.text, 'diff')
+        : turn.tool.detailKind === 'output' && output.trim() !== ''
+          ? clipDetail(output, 'output')
+          : turn.detail
     this.#write(session, {
       ...turn,
       at: turn.at,
@@ -1104,6 +1111,13 @@ export class SessionManager {
       tool: {
         ...turn.tool,
         status,
+        ...(late === undefined
+          ? {}
+          : {
+              detailKind: 'diff' as const,
+              added: late.added,
+              removed: late.removed,
+            }),
         ...(approvedBy === undefined ? {} : { approvedBy }),
       },
     })

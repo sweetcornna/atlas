@@ -32,11 +32,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { qianmoConfigPath } from '@qianmo/paths'
+import { AcpChannel } from '@qianmo/harness/acpClient.ts'
 import { RUNTIME_MCP_SERVER } from '@qianmo/harness/claudeStream.ts'
 import type { OmpRpcFrame } from '@qianmo/resident'
 import { qmArgv } from '../../omp/launch.js'
-import { AcpChannel } from './acp.js'
 import type { RuntimeLane } from './acpSpec.js'
+import { acpVerdictCalls } from './acpTools.js'
 import { type RuntimeSpec, runtimeSpec } from './catalog.js'
 import type { ExternalRuntimeKind } from './channel.js'
 import {
@@ -657,6 +658,7 @@ async function acpSmoke(
       onSession: () => {},
       // Only the host's tool is called; the host decides it when called.
       permission: async () => true,
+      progress: call => acpVerdictCalls(acp, call)[0],
     })
     channel = opened
     const deadline = new Promise<'timeout'>(resolve =>
