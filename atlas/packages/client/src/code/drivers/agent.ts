@@ -64,14 +64,20 @@ export interface AgentHooks {
   /** For the waiting line: thinking, or a tool of a sub-agent's. */
   activity(kind: 'thinking' | 'tool', words: string): void
   toolStart(tool: ToolView): void
-  toolEnd(id: string, isError: boolean, output: string): void
+  /** `diff`: what the call changed, when the agent says so only at its end (ACP). */
+  toolEnd(
+    id: string,
+    isError: boolean,
+    output: string,
+    diff?: ToolView['diff'],
+  ): void
   /** Settles with the person's answer; a `signal` abort means it was denied already. */
   ask(ask: AskView, signal: AbortSignal): Promise<AskAnswer>
   /** A line of the runner's own in the conversation. */
   notice(text: string, severity: 'info' | 'warn' | 'error'): void
   /**
    * The agent's own conversation exists: the next process resumes it, by
-   * `nativeId` where the agent gave the id (a Codex thread).
+   * `nativeId` where the agent gave the id (a Codex thread, an ACP session).
    */
   started(nativeId?: string): void
   /** The mode in effect changed by itself (a fallback). */
@@ -109,6 +115,10 @@ export interface AgentProcess {
 
 /** What a driver starts a session's agent with. */
 export interface AgentStart {
+  /** The runtime catalog's id (`claude-code`, `gemini`, …). */
+  readonly agentId: string
+  /** The agent's display name. */
+  readonly name: string
   readonly program: string
   /** The agent's working folder. */
   readonly root: string
