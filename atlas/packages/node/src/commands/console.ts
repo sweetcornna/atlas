@@ -32,6 +32,7 @@ import { ConsoleApprovals } from './consoleApprovals.js'
 import { notifyAllowlist } from './consoleNotifyDestination.js'
 import { cliFilesExchangeCredentials } from './filesExchangeRepo.js'
 import { ConsoleFiles } from './consoleFiles.js'
+import { ConsoleWork, workHubCalls } from './consoleWork.js'
 import { tenantScope } from '@qianmo/console'
 import { ResidentEstop } from '@qianmo/resident'
 import { ConsoleConnectors } from './consoleConnectors.js'
@@ -1006,6 +1007,10 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
       : undefined
   if (peers) control!.onHubCall('peers', peers.handle)
+  // Work outputs (P37.17 B): file cards and progress come up as hub calls,
+  // and the files themselves are fetched over the same control links.
+  const work = control && chat.hub ? new ConsoleWork({ control }) : undefined
+  if (control && chat.hub) control.onHubCall('work', workHubCalls(chat.hub))
   // An agent changing settings (P40, agent-settings.md §5): each change is one
   // person's one-shot approval, made as that person through the console's own
   // routes. The console's in-process door exists once the server is up.
@@ -1425,6 +1430,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     avatars: new ConsoleAvatars(),
     ...(memory === undefined ? {} : { memory }),
     ...(files === undefined ? {} : { files }),
+    ...(work === undefined ? {} : { work }),
     ...(schedules === undefined ? {} : { schedules }),
     ...(tasks === undefined ? {} : { tasks }),
     ...(connectors === undefined ? {} : { connectors }),

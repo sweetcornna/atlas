@@ -727,8 +727,8 @@ export function scopedConsoleDeps(
           v => node(v.node) && address(v.target),
         )
       },
-      async open(target) {
-        return address(target) ? chat.open(target) : hidden()
+      async open(target, options) {
+        return address(target) ? chat.open(target, options) : hidden()
       },
       async transcript(id) {
         return (await visible(id)) ? chat.transcript(id) : hidden()
@@ -746,7 +746,32 @@ export function scopedConsoleDeps(
         })
       },
     }
-    return { deps: { ...result, chat: scoped }, scope }
+    // Work outputs (P37.17 B) are read for a session this port handed out;
+    // the session's node and agent are checked again on the way to the node.
+    const work = deps.work
+    return {
+      deps: {
+        ...result,
+        chat: scoped,
+        ...(work === undefined
+          ? {}
+          : {
+              work: {
+                async outputs(session) {
+                  return node(session.node) && address(session.target)
+                    ? work.outputs(session)
+                    : hidden()
+                },
+                async fetch(session, name, view) {
+                  return node(session.node) && address(session.target)
+                    ? work.fetch(session, name, view)
+                    : hidden()
+                },
+              },
+            }),
+      },
+      scope,
+    }
   }
   return { deps: result, scope }
 }
@@ -952,7 +977,7 @@ export async function tenantRequestDenial(
     if (target && !scope.address(target))
       return fail(404, 'not_found', '资源不存在')
   }
-  if (head === 'chat') {
+  if (head === 'chat' || head === 'work') {
     const id =
       pieces[0] === 'v0' && pieces[2] === 'sessions'
         ? pieces[3]
@@ -968,7 +993,7 @@ export async function tenantRequestDenial(
   if (
     request.method !== 'GET' &&
     request.method !== 'HEAD' &&
-    ['agents', 'registrations', 'wake', 'chat'].includes(head ?? '')
+    ['agents', 'registrations', 'wake', 'chat', 'work'].includes(head ?? '')
   ) {
     let body: unknown
     try {
@@ -978,7 +1003,13 @@ export async function tenantRequestDenial(
     }
     if (body && typeof body === 'object' && !Array.isArray(body)) {
       const row = body as Record<string, unknown>
-      for (const key of ['address', 'target', 'to'])
+      for (const key of [
+        'address',
+        'target',
+        'to',
+        // The executor of a work session (P37.17 B).
+        ...(head === 'work' ? ['agent'] : []),
+      ])
         if (typeof row[key] === 'string' && !scope.address(row[key]))
           return fail(404, 'not_found', '资源不存在')
       if (typeof row['node'] === 'string' && !scope.node(row['node']))

@@ -321,7 +321,15 @@ proper-lockfile、ws、zod、@modelcontextprotocol/server，均为 MIT；开发�
 @types/proper-lockfile、@types/ws，均为 MIT；@modelcontextprotocol/server-filesystem
 与 @modelcontextprotocol/server-memory 两个测试用开发依赖当时尚未安装，许可未核。
 根 `package.json` 为阡陌门禁追加的开发依赖：@biomejs/biome（MIT OR Apache-2.0）、
-husky（MIT）、knip（ISC）、madge（MIT）。依赖会变，以上面的命令与下面的 SBOM 为准。
+husky（MIT）、knip（ISC）、madge（MIT）。
+
+2026-10-25 补（P37.17 B，节点生成文档）：@qianmo/node 的运行期依赖 pptxgenjs 4.0.1、
+docx 9.14.0、write-excel-file 4.1.1，均为 MIT，随 `qm` 编进二进制。它们带进的间接
+依赖：jszip 3.10.2（MIT 或 GPL-3.0-or-later 二选一，本仓库按 MIT 使用）、pako 1.0.11
+（MIT 与 Zlib）；fflate、image-size、nanoid、hash.js、lie、immediate、setimmediate、
+readable-stream 2.3.8、string_decoder、safe-buffer、core-util-is、isarray、
+process-nextick-args、util-deprecate、queue，均为 MIT；inherits、minimalistic-assert
+与占位包 https 1.0.0 为 ISC。依赖会变，以上面的命令与下面的 SBOM 为准。
 
 五.3 依赖与许可清单（SBOM）
 ----------------------------------------
@@ -934,8 +942,17 @@ dependencies @modelcontextprotocol/server-filesystem and
 @modelcontextprotocol/server-memory were not installed at that time and their
 licenses were not checked. Development dependencies added to the root
 `package.json` for Qianmo's gates: @biomejs/biome (MIT OR Apache-2.0), husky
-(MIT), knip (ISC), madge (MIT). Dependencies change; the command above and the
-SBOM below are authoritative.
+(MIT), knip (ISC), madge (MIT).
+
+Added on 2026-10-25 (P37.17 B, documents made on the node): runtime dependencies
+of @qianmo/node pptxgenjs 4.0.1, docx 9.14.0 and write-excel-file 4.1.1, all
+MIT, compiled into `qm`. The indirect dependencies they bring: jszip 3.10.2
+(MIT or GPL-3.0-or-later at the user's choice; this repository uses it under
+MIT), pako 1.0.11 (MIT and Zlib); fflate, image-size, nanoid, hash.js, lie,
+immediate, setimmediate, readable-stream 2.3.8, string_decoder, safe-buffer,
+core-util-is, isarray, process-nextick-args, util-deprecate and queue, all MIT;
+inherits, minimalistic-assert and the placeholder package https 1.0.0, ISC.
+Dependencies change; the command above and the SBOM below are authoritative.
 
 5.3 Dependency and license inventory (SBOM)
 ----------------------------------------

@@ -37,6 +37,7 @@ const WRITES = ['POST', 'PUT', 'DELETE'] as const
 const EXEMPT: readonly { readonly route: string; readonly why: string }[] = [
   // The conversation itself: what the agent is already doing.
   { route: 'POST /v0/chat/sessions', why: 'opening a conversation' },
+  { route: 'POST /v0/work/sessions', why: 'opening a work conversation' },
   {
     route: 'POST /v0/chat/sessions/<会话 id>/messages',
     why: 'a line of the conversation',

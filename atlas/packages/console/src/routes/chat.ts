@@ -55,7 +55,6 @@ import { signedSenderRefusal } from './shared.js'
 import { agentAvatarKey } from '../avatar.js'
 import {
   chatPreview,
-  MAX_CHAT_TEXT_LENGTH,
   renderChatSessions,
   renderChatThread,
 } from '../view/chat.js'
@@ -70,6 +69,9 @@ import {
   type TranscriptReading,
 } from './chatReads.js'
 import { dispatchFrontFragment } from './front.js'
+import { parseChatText } from './chatText.js'
+import { dispatchWorkApi } from './work.js'
+import { isWorkflowId } from '../work.js'
 import {
   canWrite,
   failureOf,
@@ -79,7 +81,6 @@ import {
   outcomeOf,
   textParam,
   valueOf,
-  type Parsed,
   type Protection,
 } from './shared.js'
 import type { RouteContext, RouteModule } from './types.js'
@@ -342,28 +343,6 @@ function chatStream(
   return new Response(body, { status: 200, headers: EVENT_STREAM_HEADERS })
 }
 
-function parseChatText(body: Record<string, unknown>): Parsed<string> {
-  const text = requiredString(body, 'text')
-  if (!text.ok) return text
-  if (text.value.length > MAX_CHAT_TEXT_LENGTH) {
-    return {
-      ok: false,
-      message: `消息最长 ${MAX_CHAT_TEXT_LENGTH} 个字符，这条有 ${text.value.length} 个`,
-    }
-  }
-  // A private key never goes to a model, whatever page sent it. The front
-  // takes one out before sending (添加服务器); this is the line behind it.
-  if (PRIVATE_KEY_BLOCK.test(text.value)) {
-    return {
-      ok: false,
-      message: '消息里有私钥 · 没有发出 · 部署新服务器用「添加服务器」',
-    }
-  }
-  return text
-}
-
-const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/
-
 // --- local commands (P18.20, D-9) -------------------------------------------
 
 /**
@@ -521,12 +500,20 @@ async function dispatchChatApi(
       ) {
         return fail(403, 'forbidden', COMMAND_NEEDS_OPS)
       }
+      // A workflow picked again inside the conversation (P37.17 B,
+      // `work-tasks.md` §2.2); never with a local command.
+      const workflow = body['workflow'] ?? undefined
+      if (workflow !== undefined && !isWorkflowId(workflow))
+        return fail(400, 'invalid', '没有这个工作流')
+      if (workflow !== undefined && command !== null)
+        return fail(400, 'invalid', '本地命令不能带工作流')
       const blocked = await ctx.admit()
       if (blocked !== null) return blocked
       const result = await new ChatDispatch(ctx).send({
         sessionId,
         text: text.value,
         ...(command === null ? {} : { command }),
+        ...(workflow === undefined ? {} : { workflow }),
       })
       if (result instanceof Response) return result
       await ctx.record(
@@ -620,14 +607,17 @@ export const chatRoute: RouteModule = {
   // 形象 lives with 对话, the page that draws and edits figures
   // (`routes/avatars.ts`), and so do the Remote copies of Code sessions
   // (`routes/codeApi.ts`, P37.15); their heads guard themselves.
+  // Work outputs (P37.17 B, `routes/work.ts`) belong to the conversations.
   api: {
-    heads: ['chat', ...avatarsApiRoute.heads, ...codeApiRoute.heads],
+    heads: ['chat', 'work', ...avatarsApiRoute.heads, ...codeApiRoute.heads],
     handle: (ctx, head, rest) =>
       head === 'chat'
         ? dispatchChatApi(ctx, rest)
-        : head === 'code'
-          ? codeApiRoute.handle(ctx, head, rest)
-          : avatarsApiRoute.handle(ctx, head, rest),
+        : head === 'work'
+          ? dispatchWorkApi(ctx, rest)
+          : head === 'code'
+            ? codeApiRoute.handle(ctx, head, rest)
+            : avatarsApiRoute.handle(ctx, head, rest),
   },
   fragments: {
     heads: ['chat', ...avatarFragmentRoute.heads],

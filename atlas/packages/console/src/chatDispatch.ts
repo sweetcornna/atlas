@@ -4,6 +4,7 @@
 import { type Access, type ConsoleAccounts, subjectOf } from './access.js'
 import { chatScopeOf } from './accountsHttp.js'
 import type {
+  ChatOpenOptions,
   ChatSendInput,
   ChatSession,
   ChatTarget,
@@ -206,6 +207,7 @@ export class ChatDispatch {
   async open(
     target: string,
     recorded?: (result: ConsoleResult<ChatSession>) => Promise<void>,
+    options?: ChatOpenOptions,
   ): Promise<ConsoleResult<ChatSession> | Response> {
     const denied = this.authorize(target)
     if (denied) return denied
@@ -220,7 +222,7 @@ export class ChatDispatch {
     if (reservation instanceof Response) return reservation
     let result: ConsoleResult<ChatSession>
     try {
-      result = await ctx.deps.chat!.open(target)
+      result = await ctx.deps.chat!.open(target, options)
       if (typeof reservation === 'string' && result.ok)
         ctx.deps.usage?.adoptSession(reservation, result.value.id)
     } catch (error) {

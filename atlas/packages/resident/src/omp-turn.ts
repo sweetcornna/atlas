@@ -168,6 +168,28 @@ const TOOL_SUBJECT_FIELDS = [
 /** Argument fields that hold file paths. */
 const TOOL_PATH_FIELDS = ['path', 'file_path', 'paths', 'files'] as const
 
+/**
+ * One tool call of a turn as it happens, or the end of the turn
+ * (`work-tasks.md` §5.5). Raw facts off the RPC stream, for a host that
+ * keeps its own account of what a turn did; nothing here is rendered.
+ */
+export type ResidentToolEvent =
+  | {
+      readonly phase: 'start'
+      readonly toolCallId: string
+      readonly toolName: string
+      readonly args: Readonly<Record<string, unknown>> | undefined
+    }
+  | {
+      readonly phase: 'end'
+      readonly toolCallId: string
+      readonly toolName: string
+      readonly isError: boolean
+      /** The tool result's `details`, as the runtime sent them. */
+      readonly details: unknown
+    }
+  | { readonly phase: 'turn_end' }
+
 /** The two moments a tool call is reported in; see {@link turnStepDedupKey}. */
 export type TurnStepPhase = 'start' | 'failed'
 
@@ -347,6 +369,9 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
   readonly #router: OmpTurnRouter
   readonly #active = new Map<string, ActiveTurn>()
   readonly #onProgress: ((progress: ResidentTurnProgress) => void) | undefined
+  readonly #onToolEvent:
+    | ((input: ResidentTurnInput, event: ResidentToolEvent) => void)
+    | undefined
   readonly #onUsage:
     | ((
         input: ResidentTurnInput,
@@ -384,6 +409,11 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
       readonly upstreamHealth?: ResidentUpstreamHealth
       /** Where a turn's steps go. Absent means none are raised. */
       readonly onProgress?: (progress: ResidentTurnProgress) => void
+      /** Every tool start and end of a turn, then its end. Absent means none. */
+      readonly onToolEvent?: (
+        input: ResidentTurnInput,
+        event: ResidentToolEvent,
+      ) => void
       readonly onUsage?: (
         input: ResidentTurnInput,
         usage: Readonly<
@@ -399,6 +429,7 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
   ) {
     this.#router = router
     this.#onProgress = options.onProgress
+    this.#onToolEvent = options.onToolEvent
     this.#onUsage = options.onUsage
     this.#memoryAnswer = options.memoryAnswer
     this.#timings = options.timings
@@ -666,6 +697,11 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
         this.#active.delete(input.sessionId)
         this.#channels.delete(input.sessionId)
       }
+      try {
+        this.#onToolEvent?.(input, { phase: 'turn_end' })
+      } catch {
+        // As above.
+      }
     }
   }
 
@@ -806,11 +842,37 @@ export class OmpResidentTurnPort implements ResidentTurnPort {
     }
     if (frame.type === 'tool_execution_start') {
       this.#reportToolStep(active, frame, false)
+      this.#toolEvent(active, frame)
       return
     }
     if (frame.type === 'tool_execution_end') {
       if (frame.isError === true) this.#reportToolStep(active, frame, true)
       else active.successfulTool = true
+      this.#toolEvent(active, frame)
+    }
+  }
+
+  #toolEvent(active: ActiveTurn, frame: OmpRpcFrame): void {
+    const onToolEvent = this.#onToolEvent
+    if (onToolEvent === undefined) return
+    const toolCallId = text(frame.toolCallId)
+    const toolName = text(frame.toolName)
+    if (toolCallId === undefined || toolName === undefined) return
+    try {
+      onToolEvent(
+        active.input,
+        frame.type === 'tool_execution_start'
+          ? { phase: 'start', toolCallId, toolName, args: recordOf(frame.args) }
+          : {
+              phase: 'end',
+              toolCallId,
+              toolName,
+              isError: frame.isError === true,
+              details: recordOf(frame.result)?.details,
+            },
+      )
+    } catch {
+      // The host's bookkeeping never fails the turn.
     }
   }
 

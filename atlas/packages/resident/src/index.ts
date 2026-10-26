@@ -15,6 +15,7 @@ export {
   parseTurnStepDedupKey,
   turnFailureKind,
   turnStepDedupKey,
+  type ResidentToolEvent,
   type ResidentTurnProgress,
   type TurnStepKey,
   type TurnStepPhase,

@@ -16,7 +16,9 @@ export async function decorateConsoleResponse(
   if (
     request.method !== 'GET' ||
     response.status !== 200 ||
-    !response.headers.get('content-type')?.startsWith('text/html')
+    !response.headers.get('content-type')?.startsWith('text/html') ||
+    // A file handed out as it is (work outputs and their previews, P37.17 B).
+    response.headers.has('content-disposition')
   )
     return response
   const body = await response.text()

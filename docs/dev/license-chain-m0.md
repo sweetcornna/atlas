@@ -432,6 +432,7 @@
 | `@anthropic-ai/claude-agent-sdk-darwin-arm64` 0.2.114 | `SEE LICENSE IN LICENSE.md` | 同上（上一项的平台原生包） | 同上；另有 7 个平台变体在 lockfile 中、本机未安装 | 同上 |
 | `@modelcontextprotocol/server-filesystem` 2026.7.10 | `SEE LICENSE IN LICENSE` | **包内没有 `LICENSE` 文件**（tarball 只含 `README.md` / `dist/` / `package.json`）——字段指向的文件未随包发布，授权正文在本机不存在 | 仅被**测试**使用（`tests/integration/qianmo-mcp-conformance.test.ts` 以子进程启动 `node_modules/.../dist/index.js`），不被 `src/` 引用、不进 `dist/` | 到上游 `modelcontextprotocol/servers` 仓库取许可正文存证；**不阻断** |
 | `@modelcontextprotocol/server-memory` 2026.7.4 | `SEE LICENSE IN LICENSE` | 同上（包内无 `LICENSE` 文件） | 同上 | 同上 |
+| `pako` 1.0.11（2026-10-25 补） | `(MIT AND Zlib)` | 包内 `LICENSE` 为 MIT 全文（Vitaly Puzrin、Andrei Tuputcyn）；`Zlib` 指它移植自 zlib 的部分，zlib 许可同属宽松许可，要求保留声明、不得冒称原作 | 运行期：`@qianmo/node → docx / pptxgenjs → jszip → pako`，随 `qm` 编进二进制（P37.17 B 节点生成文档） | 两种许可都宽松，不阻断；声明见根 `NOTICE` 五.2。同一路径上的 `jszip` 3.10.2 为 `(MIT OR GPL-3.0-or-later)` 二选一，按 MIT 使用 |
 
 ### 为什么 `@anthropic-ai/claude-agent-sdk` 这条重要
 
