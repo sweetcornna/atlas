@@ -79,6 +79,8 @@ export interface FakeShellOptions {
    * the top one only, as WKWebView and WebKitGTK do (`qmo-app.md` §11.2).
    */
   readonly inFrames?: boolean
+  /** The shell's `platform` (`macos` when not given). */
+  readonly platform?: 'macos' | 'windows' | 'linux'
 }
 
 export const FOLDER: FakeFolder = {
@@ -350,7 +352,7 @@ export function fakeShell(options: FakeShellOptions = {}): string {
     set: function (key, value) { config[key] = value; },
     channel: function () { return channel; }
   };
-  window.__QMO_SHELL__ = Object.freeze({ platform: 'macos', window: 'main', version: 'test' });
+  window.__QMO_SHELL__ = Object.freeze({ platform: ${JSON.stringify(options.platform ?? 'macos')}, window: 'main', version: 'test' });
   window.__TAURI__ = { core: { invoke: invoke, Channel: Channel } };
 })();
 `

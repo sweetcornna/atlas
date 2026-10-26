@@ -22,8 +22,9 @@
  *    on the button floats it out over the content, which does not move;
  *    leaving folds it after the grace, coming back keeps it; a menu open in
  *    it keeps it out; a click opens it for good; Esc folds it and gives the
- *    button back the focus; the keyboard floats it at once; without hover it
- *    is a drawer; with reduced motion nothing slides.
+ *    button back the focus; the keyboard floats it at once; without hover a
+ *    tap makes it a drawer and a mouse's click still opens it for good; with
+ *    reduced motion nothing slides.
  * 4. **Code** in the fake app (`./codeShell.ts`): two local sessions side by
  *    side on the window's one runner channel, whether the app's globals are
  *    in the top frame only (WKWebView, WebKitGTK) or in every frame
@@ -159,6 +160,8 @@ interface OpenOptions {
   readonly scheme?: 'light' | 'dark'
   readonly motion?: 'reduce' | 'no-preference'
   readonly shell?: FakeShellOptions
+  /** What `navigator.platform` says (`'MacIntel'`, `'Win32'`, `'Linux x86_64'`): the keys go by it. */
+  readonly platform?: string
   /** Set before the page loads: the layout, the side list's state. */
   readonly store?: Readonly<Record<string, string>>
 }
@@ -192,11 +195,17 @@ async function open(
   if (options.shell !== undefined) {
     await tab.send('Network.setCookie', {
       name: 'qianmo_shell',
-      value: 'macos',
+      value: options.shell.platform ?? 'macos',
       url: served.base,
     })
     await tab.send('Page.addScriptToEvaluateOnNewDocument', {
       source: fakeShell(options.shell),
+    })
+  }
+  if (options.platform !== undefined) {
+    await tab.send('Emulation.setUserAgentOverride', {
+      userAgent: await tab.evaluate<string>('navigator.userAgent'),
+      platform: options.platform,
     })
   }
   await tab.send('Emulation.setEmulatedMedia', {
@@ -219,10 +228,14 @@ async function open(
   return tab
 }
 
-/** The modifiers of ⌃⌘ (Ctrl+Alt off a Mac) and of ⌘ (Ctrl), as the page reads the platform. */
+/**
+ * The modifiers of ⌃⌘ (Ctrl+Alt off a Mac) and of ⌘ (Ctrl), as the page reads
+ * the platform: the shell's word when there is a shell (the fake one says
+ * macOS on every runner), else `navigator.platform`.
+ */
 async function mods(tab: Tab): Promise<{ both: number; mod: number }> {
   const mac = await tab.evaluate<boolean>(
-    `/Mac|iPhone|iPad/.test(navigator.platform || '')`,
+    `(() => { const s = window.__QMO_SHELL__; return s && typeof s === 'object' ? s.platform === 'macos' : /Mac|iPhone|iPad/.test(navigator.platform || ''); })()`,
   )
   // CDP: Alt 1, Ctrl 2, Meta 4, Shift 8.
   return mac ? { both: 2 | 4, mod: 4 } : { both: 2 | 1, mod: 2 }
@@ -952,6 +965,78 @@ describe.skipIf(SKIP !== null)('分栏 on Work', () => {
     PANES_MS,
   )
 
+  // CDP's modifiers: Alt 1, Ctrl 2, Meta 4. Every runner checks every
+  // platform's keys: the browser's by `navigator.platform`, the app's by the
+  // shell's word (the page's own rule, `keyOf` in `assets/frontSplit.ts`).
+  const MAC_KEYS = { both: 2 | 4, mod: 4 }
+  const PC_KEYS = { both: 2 | 1, mod: 2 }
+  const PLATFORMS = [
+    {
+      name: 'a Mac',
+      platform: 'MacIntel',
+      shell: 'macos',
+      keys: MAC_KEYS,
+      other: PC_KEYS,
+    },
+    {
+      name: 'Windows',
+      platform: 'Win32',
+      shell: 'windows',
+      keys: PC_KEYS,
+      other: MAC_KEYS,
+    },
+    {
+      name: 'Linux',
+      platform: 'Linux x86_64',
+      shell: 'linux',
+      keys: PC_KEYS,
+      other: MAC_KEYS,
+    },
+  ] as const
+  for (const face of ['/', '/app'] as const) {
+    test(
+      `${face === '/' ? 'the browser' : 'the desktop app (/app)'}: ⌃⌘ and ⌘ on a Mac, Ctrl+Alt and Ctrl on Windows and Linux`,
+      async () => {
+        for (const p of PLATFORMS) {
+          const tab = await open(browser, served, face, {
+            platform: p.platform,
+            ...(face === '/app' ? { shell: { platform: p.shell } } : {}),
+          })
+          try {
+            const panes = `document.querySelectorAll('.fx-pane-frame').length`
+            const side = `${q('#fx')}.getAttribute('data-side')`
+            // The other platform's chord opens nothing.
+            await key(tab, 'right', p.other.both)
+            await key(tab, 'side', p.other.mod)
+            await pause(300)
+            expect([
+              await tab.evaluate<number>(panes),
+              await tab.evaluate<string>(side),
+              p.name,
+            ]).toEqual([0, 'open', p.name])
+            await key(tab, 'right', p.keys.both)
+            await tab.waitFor(READY(2), 10_000)
+            await key(tab, 'prev', 2)
+            expect([await tab.evaluate<number>(FOCUSED), p.name]).toEqual([
+              0,
+              p.name,
+            ])
+            await key(tab, 'side', p.keys.mod)
+            expect([await tab.evaluate<string>(side), p.name]).toEqual([
+              'closed',
+              p.name,
+            ])
+            await key(tab, 'close', p.keys.both)
+            await tab.waitFor(`${panes} === 0`, 10_000)
+          } finally {
+            await tab.close()
+          }
+        }
+      },
+      PANES_MS,
+    )
+  }
+
   test(
     '⌄ lists the row’s own items, then 只留这一栏 and 关闭分栏',
     async () => {
@@ -1205,7 +1290,7 @@ describe.skipIf(SKIP !== null)('the side list’s peek', () => {
     }
   }, 30_000)
 
-  test('without hover the button is a drawer’s, with a scrim; at 375 px the drawer is the front’s own', async () => {
+  test('without hover a tap on the button is a drawer’s, with a scrim, a mouse’s click opens it for good; at 375 px the drawer is the front’s own', async () => {
     const tab = await open(browser, served, '/', {
       store: { 'qianmo.front.side': 'closed' },
     })
@@ -1219,12 +1304,18 @@ describe.skipIf(SKIP !== null)('the side list’s peek', () => {
       expect(
         await tab.evaluate<boolean>(`matchMedia('(hover: hover)').matches`),
       ).toBe(false)
-      await tab.evaluate(`${q(OPENER)}.click()`)
+      // A finger's tap: the drawer, the side list still closed.
+      const [x, y] = await centre(tab, OPENER)
+      for (const type of ['touchStart', 'touchEnd']) {
+        await tab.send('Input.dispatchTouchEvent', {
+          type,
+          touchPoints: type === 'touchStart' ? [{ x, y }] : [],
+        })
+      }
+      await tab.waitFor(`${PEEK} === 'drawer'`)
       expect(
-        await tab.evaluate<[string, string | null]>(
-          `[${q('#fx')}.getAttribute('data-side'), ${PEEK}]`,
-        ),
-      ).toEqual(['closed', 'drawer'])
+        await tab.evaluate<string>(`${q('#fx')}.getAttribute('data-side')`),
+      ).toBe('closed')
       expect(
         await tab.evaluate<string>(
           `getComputedStyle(${q('.fx-scrim')}).display`,
@@ -1232,6 +1323,15 @@ describe.skipIf(SKIP !== null)('the side list’s peek', () => {
       ).toBe('block')
       await tab.evaluate(`${q('.fx-scrim')}.click()`)
       expect(await tab.evaluate<string | null>(PEEK)).toBe(null)
+      // The same device's mouse (a touch laptop's; a headless runner's,
+      // whose media say no hover too): a click opens the list for good.
+      await mouse(tab, 'mousePressed', x, y)
+      await mouse(tab, 'mouseReleased', x, y)
+      expect(
+        await tab.evaluate<[string, string | null]>(
+          `[${q('#fx')}.getAttribute('data-side'), ${PEEK}]`,
+        ),
+      ).toEqual(['open', null])
       await tab.send('Emulation.setTouchEmulationEnabled', { enabled: false })
       await tab.send('Emulation.setDeviceMetricsOverride', {
         width: 375,
