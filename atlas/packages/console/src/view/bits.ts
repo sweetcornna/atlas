@@ -128,6 +128,10 @@ const ICON_PATHS: Readonly<Record<string, string>> = {
     '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
   'panel-right':
     '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/>',
+  'columns-2':
+    '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/>',
+  'rows-2':
+    '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 12h18"/>',
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   ellipsis:
     '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',

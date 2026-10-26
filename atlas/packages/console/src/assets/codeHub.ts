@@ -24,7 +24,8 @@
  * read again and turned into the events the shell would send — a `session`
  * for a copy that changed, a trimmed `record` for one with more records (the
  * page reads it again), a `removed` for one that went. Every 30 s the list
- * is read anyway, should the stream be held up somewhere.
+ * is read anyway, should the stream be held up somewhere. In a pane of a
+ * window's (P37.18, `assets/frontSplit.ts`) the stream is the window's.
  *
  * A copy's folder is drawn as 设备 · 文件夹 so the side list groups by
  * computer; a copy whose computer is offline is never 运行中.
@@ -123,7 +124,8 @@ function hubScript(): string {
   function watch(listener) {
     listeners.push(listener);
     if (source || typeof EventSource !== 'function') return;
-    source = new EventSource(BASE + 'stream');
+    // A pane's (P37.18) is fed by the window's one stream.
+    source = window.qianmoSplit ? window.qianmoSplit.stream(BASE + 'stream') : new EventSource(BASE + 'stream');
     source.addEventListener('code', soon);
     setInterval(refresh, 30000);
   }

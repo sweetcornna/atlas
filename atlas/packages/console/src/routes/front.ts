@@ -379,6 +379,8 @@ interface FrontRender {
   readonly html: string
   readonly status: number
   readonly allow: readonly string[]
+  /** One pane of a window's (`?pane=1`, P37.18): it may be framed by this origin. */
+  readonly pane?: boolean
 }
 
 /** What every front document says about its reader, whichever face it is. */
@@ -403,7 +405,18 @@ function readerOf(
 }
 
 function drawn(model: FrontDocumentModel, status: number): FrontRender {
-  return { html: renderFrontDocument(model), status, allow: frontAllow(model) }
+  return {
+    html: renderFrontDocument(model),
+    status,
+    allow: frontAllow(model),
+    ...(model.pane === true ? { pane: true } : {}),
+  }
+}
+
+/** `?pane=1`, once: the face is one pane of a window's (P37.18, `view/frontSplit.ts`). */
+export function paneAsked(url: URL): boolean {
+  const asked = url.searchParams.getAll('pane')
+  return asked.length === 1 && asked[0] === '1'
 }
 
 /**
@@ -479,6 +492,7 @@ async function workFace(
       layout,
       picked: view.selected,
       ...(view.model.newWork === true ? { newWork: true } : {}),
+      ...(card === undefined && paneAsked(ctx.url) ? { pane: true } : {}),
     },
     view.status ?? 200,
   )
@@ -576,6 +590,7 @@ export async function renderCode(
           !ctx.access.breakGlass,
       },
       workHome: desktop ? '/app' : '/',
+      ...(card === undefined && paneAsked(ctx.url) ? { pane: true } : {}),
     },
     200,
   )

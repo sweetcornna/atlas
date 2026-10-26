@@ -103,8 +103,11 @@ export const CSP = cspFor([])
  * site"). The `<meta>` copy stays as well: it is what a saved copy of the
  * page still enforces.
  */
-export function documentCspFor(scripts: readonly string[]): string {
-  return `${cspFor(scripts)}; frame-ancestors 'none'`
+export function documentCspFor(
+  scripts: readonly string[],
+  framed = false,
+): string {
+  return `${cspFor(scripts)}; frame-ancestors ${framed ? "'self'" : "'none'"}`
 }
 
 /** {@link documentCspFor} of a document without a script. */
@@ -153,20 +156,28 @@ const PERMISSIONS_POLICY = [
  * `allow` are scripts the document does not carry but may run later, after
  * its own: the page scripts a management page swaps in place (P37.13). The
  * document's `<meta>` lists the same ones (`view/shell.ts`).
+ *
+ * `framed` is for one kind of document only: a face drawn as a pane of a
+ * window of the same origin (`?pane=1`, P37.18, `view/frontSplit.ts`). It
+ * may be framed by this origin — `frame-ancestors 'self'` and
+ * `SAMEORIGIN` — and by nothing else; every other document, the login
+ * door and the error pages that answer a pane's address included, keeps
+ * `'none'` and `DENY`.
  */
 export function documentHeaders(
   body: string,
   allow: readonly string[] = [],
+  framed = false,
 ): Record<string, string> {
   return {
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
-    'content-security-policy': documentCspFor([
-      ...inlineScripts(body),
-      ...allow,
-    ]),
-    'x-frame-options': 'DENY',
+    'content-security-policy': documentCspFor(
+      [...inlineScripts(body), ...allow],
+      framed,
+    ),
+    'x-frame-options': framed ? 'SAMEORIGIN' : 'DENY',
     'cross-origin-opener-policy': 'same-origin',
     'cross-origin-resource-policy': 'same-origin',
     'permissions-policy': PERMISSIONS_POLICY,
@@ -216,17 +227,18 @@ export function fail(
   return json({ error: { code, message } }, status, headers)
 }
 
-/** A document; `allow` as in {@link documentHeaders}. */
+/** A document; `allow` and `framed` as in {@link documentHeaders}. */
 export function html(
   body: string,
   status = 200,
   allow: readonly string[] = [],
+  framed = false,
 ): Response {
   return new Response(body, {
     status,
     headers: {
       'content-type': 'text/html; charset=utf-8',
-      ...documentHeaders(body, allow),
+      ...documentHeaders(body, allow, framed),
     },
   })
 }

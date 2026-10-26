@@ -66,6 +66,11 @@ export interface FakeShellOptions {
   /** The changes panel's answer, and each file's diff. */
   readonly changes?: object
   readonly diffs?: Readonly<Record<string, string>>
+  /**
+   * The app's globals in every frame, as WebView2 injects them, instead of
+   * the top one only, as WKWebView and WebKitGTK do (`qmo-app.md` §11.2).
+   */
+  readonly inFrames?: boolean
 }
 
 export const FOLDER: FakeFolder = {
@@ -128,6 +133,7 @@ export function fakeShell(options: FakeShellOptions = {}): string {
   }
   return `
 (function () {
+  if (window.top !== window && ${options.inFrames === true ? 'false' : 'true'}) return;
   var config = ${JSON.stringify(config)};
   var shapes = ${JSON.stringify(SHAPES)};
   var KEY = '__qmoFakeRunner';

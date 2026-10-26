@@ -91,6 +91,7 @@ import { NAV_MOUNTED_JS } from '../assets/nav.js'
 import { FRONT_PANEL_JS } from '../assets/frontPanel.js'
 import { FRONT_WORK_JS } from '../assets/frontWork.js'
 import { FRONT_SHELL_JS } from '../assets/frontShell.js'
+import { FRONT_SPLIT_JS } from '../assets/frontSplit.js'
 import { FRONT_TOOLS_JS } from '../assets/frontTools.js'
 import type { ConsoleRole } from '../auth.js'
 import { type Lang, LANG_NAMES, LANGS } from '../i18n.js'
@@ -163,6 +164,17 @@ import { qianmoMark } from './mark.js'
 import { renderRichText } from './richText.js'
 import { type SourceLinks, sourceFooter } from './source.js'
 import { codeHead, codeMain, codeSide, codeTail } from './frontCode.js'
+import {
+  agentQuery,
+  FRONT_SPLIT_CSS,
+  paneClose,
+  paneMenu,
+  SPLIT_TEXT,
+  sessionQuery,
+  splitFrame,
+  splitItems,
+  splitText,
+} from './frontSplit.js'
 import {
   CONSOLE_NAV_JS,
   documentHead,
@@ -489,6 +501,7 @@ function agentMenu(
   faces: ChatFaces,
   admin: boolean,
   t: FrontText,
+  lang: Lang,
 ): string {
   const node = encodeURIComponent(who.node)
   const items =
@@ -509,7 +522,9 @@ function agentMenu(
         `${icon('server', { small: true })}${escapeHtml(t.nodeDetails)}</a>` +
         `<a class="fx-menu-item" role="menuitem" href="${attr(`${ADMIN}/providers/nodes/${node}`)}">` +
         `${icon('cpu', { small: true })}${escapeHtml(t.modelSettings)}</a>`
-      : '')
+      : '') +
+    // Beside the panes already up (P37.18, view/frontSplit.ts).
+    splitItems(agentQuery(who.address), lang)
   return (
     `<details class="fx-more">` +
     `<summary class="fx-icon-btn fx-more-btn" aria-label="${attr(t.actionsFor(who.agent))}">` +
@@ -585,7 +600,7 @@ function agentRow(
     `<span class="fx-agent-sub">${running > 0 ? LIVE_DOTS : ''}${escapeHtml(preview)}</span></span>` +
     `<span class="fx-unread" aria-hidden="true"></span>` +
     `</button>` +
-    agentMenu(who, line?.others ?? 0, model.faces, model.admin, t) +
+    agentMenu(who, line?.others ?? 0, model.faces, model.admin, t, model.lang) +
     `</div>`
   )
 }
@@ -874,13 +889,15 @@ function sessionMenu(
   session: ChatSession,
   title: string,
   t: FrontText,
+  lang: Lang,
 ): string {
   const items =
     `<a class="fx-menu-item" role="menuitem" href="${attr(
       `${FRONT_HOME.agents}?session=${encodeURIComponent(session.id)}`,
     )}">${icon('bot', { small: true })}${escapeHtml(t.openInAgents)}</a>` +
     `<button type="button" class="fx-menu-item" role="menuitem" data-action="fx-copy" ` +
-    `data-copy="${attr(session.target)}">${icon('copy', { small: true })}${escapeHtml(t.copyAddress)}</button>`
+    `data-copy="${attr(session.target)}">${icon('copy', { small: true })}${escapeHtml(t.copyAddress)}</button>` +
+    splitItems(sessionQuery(session.id), lang)
   return (
     `<details class="fx-more">` +
     `<summary class="fx-icon-btn fx-more-btn" aria-label="${attr(t.sessionActions(title))}">` +
@@ -918,7 +935,7 @@ function recentItem(session: ChatSession, model: FrontSideModel): string {
     `</button>` +
     workRowState(model.lang) +
     `<span class="fx-unread" aria-hidden="true"></span>` +
-    sessionMenu(session, title, t) +
+    sessionMenu(session, title, t, model.lang) +
     `</div>`
   )
 }
@@ -1854,6 +1871,12 @@ export interface FrontDocumentModel {
   }
   /** Where Work goes from Code: `/app` in the desktop app, `/` in a browser. */
   readonly workHome?: string
+  /**
+   * The face drawn as one pane of a window's (`?pane=1`, P37.18,
+   * `view/frontSplit.ts`): no settings card, the side list hidden, ⌄ and ×
+   * in the bar. Only such a document may be framed (`respond.ts`).
+   */
+  readonly pane?: boolean
 }
 
 function composer(
@@ -2038,7 +2061,11 @@ function listHead(layout: FrontLayout, t: FrontText): string {
   )
 }
 
-/** A shortcut's keys: `Mod` is ⌘ on a Mac and Ctrl elsewhere (the page decides). */
+/**
+ * A shortcut's keys: `Mod` is ⌘ on a Mac and Ctrl elsewhere, `Ctrl` is ⌃ on
+ * a Mac, and `ModAlt` ⌘ on a Mac and Alt elsewhere, so ⌃⌘\ reads Ctrl Alt \
+ * off a Mac (P37.18). The page decides (`assets/frontShell.ts`).
+ */
 function keyCaps(keys: string): string {
   return keys
     .split(' ')
@@ -2047,7 +2074,11 @@ function keyCaps(keys: string): string {
         ? `<kbd data-mod>Ctrl</kbd>`
         : key === 'Shift'
           ? `<kbd data-shift>Shift</kbd>`
-          : `<kbd>${escapeHtml(key)}</kbd>`,
+          : key === 'Ctrl'
+            ? `<kbd data-ctrl>Ctrl</kbd>`
+            : key === 'ModAlt'
+              ? `<kbd data-modalt>Alt</kbd>`
+              : `<kbd>${escapeHtml(key)}</kbd>`,
     )
     .join('')
 }
@@ -2112,8 +2143,9 @@ function keyRow(keys: string, what: string, only = ''): string {
  * is ⌘⇧O. The quick-entry row is filled in by the desktop app
  * (`qmo_shell_info`).
  */
-function keyboardHelp(t: FrontText, settings: boolean): string {
+function keyboardHelp(t: FrontText, settings: boolean, lang: Lang): string {
   const k = t.keys
+  const p = SPLIT_TEXT[lang].keys
   return (
     `<dialog class="dialog fx-keys" id="keyboard-help" aria-labelledby="keyboard-help-title">` +
     `<h2 id="keyboard-help-title">${escapeHtml(t.keyboardTitle)}</h2>` +
@@ -2123,8 +2155,14 @@ function keyboardHelp(t: FrontText, settings: boolean): string {
     keyRow('Mod N', k.newWork, 'shell') +
     keyRow('Mod Shift O', k.newWork, 'web') +
     keyRow('Mod K', k.search) +
-    keyRow('Mod Shift S', k.side) +
+    keyRow('Mod B', k.side) +
     keyRow('Mod .', k.panel) +
+    // The panes (P37.18, qmo-app.md §11.3).
+    keyRow('Ctrl ModAlt \\', p.right) +
+    keyRow('Ctrl ModAlt -', p.below) +
+    keyRow('Ctrl ]', p.next) +
+    keyRow('Ctrl [', p.prev) +
+    keyRow('Ctrl ModAlt W', p.close) +
     (settings ? keyRow('Mod ,', k.settings) : '') +
     keyRow('Esc', k.close) +
     keyRow('?', k.help) +
@@ -2198,12 +2236,16 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
   // stays byte for byte what it was.
   const replicate = chatless ? 'off' : (model.replicate ?? 'off')
   const approvals = chatless ? undefined : model.approvals
-  const card = model.settings
+  // A pane (P37.18) is one conversation of a window's: the card is the window's.
+  const pane = model.pane === true
+  const card = pane ? undefined : model.settings
   const open = card?.open === true ? card.model : undefined
   // The card's runtime after the front's own, then the open area's script
   // inside its recording scope (`assets/nav.ts`).
   const script =
     runtime +
+    // Ahead of the front's own: the hooks they look for (assets/frontSplit.ts).
+    FRONT_SPLIT_JS +
     FRONT_JS +
     (chatless ? '' : FRONT_TOOLS_JS + FRONT_PANEL_JS + FRONT_WORK_JS) +
     FRONT_SHELL_JS +
@@ -2235,9 +2277,11 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `<button type="button" class="fx-icon-btn fx-side-open" data-action="fx-side" aria-label="${attr(t.expandSide)}" aria-controls="fx-side">` +
     `${icon('panel-left', { small: true })}</button>` +
     `<div class="fx-head-mount" data-tauri-drag-region>${code ? codeHead() : model.view.head}</div>` +
+    (pane ? paneMenu(model.lang) : '') +
     `<div class="fx-top-tail"><span class="fx-live" id="fx-live"></span>` +
     (code ? codeTail(t, model.lang) : '') +
     (chatless ? '' : frontPanelToggle(t)) +
+    (pane ? paneClose(model.lang) : '') +
     `</div>` +
     `</header>`
   const page = code
@@ -2277,17 +2321,19 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
         shared:
           FRONT_CSS +
           (chatless ? '' : FRONT_TOOLS_CSS + FRONT_PANEL_CSS + FRONT_WORK_CSS) +
+          FRONT_SPLIT_CSS +
           AVATAR_CSS +
           (replicate === 'off' ? '' : FRONT_REPLICATE_CSS) +
           (approvals === undefined ? '' : FRONT_APPROVAL_CSS),
       },
     ).replace('<html lang="zh-CN">', `<html lang="${attr(model.lang)}">`) +
-    `<body class="fx-body">\n` +
+    `<body class="fx-body${pane ? ' fx-pane-doc' : ''}">\n` +
     (code || chatless
       ? ''
       : `<a class="skip-link" href="#fx-text">${escapeHtml(t.skipToBox)}</a>\n`) +
     `<h1 class="sr-only">${escapeHtml(`${WORDMARK_CN} · ${name}`)}</h1>` +
-    `<div class="fx" id="fx" data-layout="${code ? 'code' : layout}"${chatless ? ' data-chatless' : ''} data-side="open" data-text="${attr(frontClientText(model.lang))}">` +
+    `<div class="fx" id="fx" data-layout="${code ? 'code' : layout}"${chatless ? ' data-chatless' : ''}${pane ? ' data-pane="1"' : ''} ` +
+    `data-side="open" data-text="${attr(frontClientText(model.lang))}" data-split-text="${attr(splitText(model.lang))}">` +
     `<aside class="fx-side" id="fx-side" aria-label="${attr(code ? t.codeSessions : chat ? t.recents : t.agents)}">` +
     sideHead(home, code ? 'code' : 'work', work, t) +
     (code || chatless
@@ -2324,9 +2370,11 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
           workTitle,
         )) +
     sessionExpired(model.relogin, model.lang) +
+    // A row's right-click menu (P37.18), where panes may open.
+    (pane || (chatless && !code) ? '' : splitFrame(model.lang)) +
     `<div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>\n` +
     `<p id="reply-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>` +
-    keyboardHelp(t, card !== undefined) +
+    keyboardHelp(t, card !== undefined, model.lang) +
     (chatless ? '' : othersDialog(model.side.history, t)) +
     // A work session's files (P37.17 B): the preview, and the rows the page
     // adds when the outputs folder lists more than was delivered.

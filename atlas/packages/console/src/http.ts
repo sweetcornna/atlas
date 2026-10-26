@@ -279,7 +279,12 @@ import {
   type PageMatch,
   settingsCard,
 } from './routes/index.js'
-import { renderCode, renderFront, renderQuick } from './routes/front.js'
+import {
+  paneAsked,
+  renderCode,
+  renderFront,
+  renderQuick,
+} from './routes/front.js'
 import {
   ADMIN_HOME,
   ADMIN_SEGMENT,
@@ -682,10 +687,15 @@ async function serveFrontDoor(
     const quick = await renderQuick(ctx)
     return quick instanceof Response ? quick : html(quick.html, quick.status)
   }
-  const rendered = await renderFront(ctx, page, await settingsCard(ctx))
+  // A pane (P37.18) is one conversation of a window's: the card is the window's.
+  const rendered = await renderFront(
+    ctx,
+    page,
+    paneAsked(url) ? undefined : await settingsCard(ctx),
+  )
   return rendered instanceof Response
     ? rendered
-    : html(rendered.html, rendered.status, rendered.allow)
+    : html(rendered.html, rendered.status, rendered.allow, rendered.pane)
 }
 
 /**
@@ -703,8 +713,11 @@ async function serveCodeDoor(
   const denied = guard(access.credential, 'view', 'document')
   if (denied !== null) return documentDenial(request, denied, deps, url, denial)
   if (request.method !== 'GET') return methodNotAllowed(['GET'])
-  const rendered = await renderCode(ctx, await settingsCard(ctx))
-  return html(rendered.html, rendered.status, rendered.allow)
+  const rendered = await renderCode(
+    ctx,
+    paneAsked(url) ? undefined : await settingsCard(ctx),
+  )
+  return html(rendered.html, rendered.status, rendered.allow, rendered.pane)
 }
 
 /**
