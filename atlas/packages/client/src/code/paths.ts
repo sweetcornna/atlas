@@ -112,6 +112,32 @@ export function sessionRoot(root: string): string {
 }
 
 /**
+ * Whether `file` (absolute, or relative to `root`) is in `root` as links
+ * resolve: a file not there yet by its nearest folder that is. For the
+ * runner's own answers to an agent's questions (§4.4): an edit it allows
+ * must stay in the session's folder.
+ */
+export function insideRoot(
+  root: string,
+  file: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const top = real(root)
+  if (top === undefined || file === '' || file.includes('\0')) return false
+  let probe = path.resolve(top, file)
+  const rest: string[] = []
+  for (;;) {
+    const found = real(probe)
+    if (found !== undefined)
+      return within(path.join(found, ...rest.reverse()), top, platform)
+    const parent = path.dirname(probe)
+    if (parent === probe) return false
+    rest.push(path.basename(probe))
+    probe = parent
+  }
+}
+
+/**
  * A checked relative path (`relativePathOf`) under a session's root: where
  * it is, links resolved (a deleted file through its nearest folder that is
  * still there), and the same relative to the resolved root. Leaving the

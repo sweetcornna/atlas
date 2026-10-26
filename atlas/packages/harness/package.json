@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-or-later",
-  "description": "The native agent protocols (Claude Code stream-json, Codex app-server) as process channels, shared by the resident node and the desktop app's local runner.",
+  "description": "The native agent protocols (Claude Code stream-json, Codex app-server, ACP) as process channels, shared by the resident node and the desktop app's local runner.",
   "exports": {
     "./*": "./src/*"
   },
