@@ -732,6 +732,8 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'chat.command.thinking': '设置会话推理档位',
   'chat.command.effort': '设置会话推理强度',
   'chat.transcript.open': '打开转录',
+  'work.session.open': '开始工作',
+  'work.output.read': '取产出文件',
   'chat.main': '设置主智能体',
   'breakglass.request': 'break-glass 请求',
   'alert.ack': '确认告警',
@@ -761,6 +763,10 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'approval.continue': '批准并继续会话',
   'handoff.device.pair': '签发设备配对码',
   'handoff.device.revoke': '吊销接力设备',
+  'code.remote.send': '在别处续写本机会话',
+  'code.remote.answer': '在别处答复本机征询',
+  'code.remote.stop': '在别处停下本机会话',
+  'code.remote.drop': '从中枢删除会话副本',
   'files.decide': '答复文件申请',
   'files.grant.revoke': '收回文件授权',
   'files.transfer': '发起文件互传',
@@ -851,6 +857,7 @@ const FAMILY_WORD: Readonly<Partial<Record<string, string>>> = {
   wake: '唤醒',
   server: '服务器备注',
   chat: '对话',
+  work: '工作',
   accounts: '账号',
   breakglass: 'break-glass',
   alert: '告警',
@@ -874,6 +881,7 @@ const FAMILY_WORD: Readonly<Partial<Record<string, string>>> = {
   runtime: '底层',
   billing: '订阅',
   avatar: '形象',
+  code: '本机会话',
 }
 
 function families(): readonly (readonly [string, string])[] {

@@ -94,20 +94,21 @@ interface ChatOpenOptions {
 
 ### 2.1 名字
 
-| `WorkflowId` | 中文名 | 技能名（omp） | 首条消息带的命令 | 主要产出 |
+| `WorkflowId` | 中文名 | 技能名（omp） | 智能体先读 | 主要产出 |
 |---|---|---|---|---|
-| `slides` | 演示文稿 | `qmo-slides` | `/skill:qmo-slides` | `.pptx`（另可 `.pdf`） |
-| `document` | 文档 | `qmo-document` | `/skill:qmo-document` | `.docx`（另可 `.pdf`） |
-| `sheet` | 表格 | `qmo-sheet` | `/skill:qmo-sheet` | `.xlsx` |
-| `research` | 调研报告 | `qmo-research` | `/skill:qmo-research` | `.docx`（含来源一节） |
-| `webpage` | 网页 | `qmo-webpage` | `/skill:qmo-webpage` | 自包含 `.html` |
-| `analysis` | 数据分析 | `qmo-analysis` | `/skill:qmo-analysis` | `.xlsx` 加 `.pptx` 或 `.docx` |
+| `slides` | 演示文稿 | `qmo-slides` | `skill://qmo-slides` | `.pptx`（另可 `.pdf`） |
+| `document` | 文档 | `qmo-document` | `skill://qmo-document` | `.docx`（另可 `.pdf`） |
+| `sheet` | 表格 | `qmo-sheet` | `skill://qmo-sheet` | `.xlsx` |
+| `research` | 调研报告 | `qmo-research` | `skill://qmo-research` | `.docx`（含来源一节） |
+| `webpage` | 网页 | `qmo-webpage` | `skill://qmo-webpage` | 自包含 `.html` |
+| `analysis` | 数据分析 | `qmo-analysis` | `skill://qmo-analysis` | `.xlsx` 加 `.pptx` 或 `.docx` |
 
 表的顺序就是卡片顺序。三种语言的名称与说明是界面文案，归界面一路（`frontText.ts`）。
 
 ### 2.2 触发
 
-- **点名**：卡片与 `/` 菜单都把选中的 `WorkflowId` 放进请求的 `workflow` 字段——开会话时是 `POST /v0/work/sessions` 的 `workflow`，会话里再点一次是 `POST /v0/chat/sessions/<id>/messages` 的可选 `workflow`（本路给这个路由加这一个键）。中枢据此把发给节点的 prompt 写成 `/skill:<技能名> <原文>`，转录里操作者那一行仍是人打的原文，另带 `workflow`（§3.1）。节点上 omp 照自己的技能命令展开（`/skill:` 记号在常驻侧拼好的消息里不在行首，omp 的句中记号形式照样认，§5.2 有用例）。
+- **点名**：卡片与 `/` 菜单都把选中的 `WorkflowId` 放进请求的 `workflow` 字段——开会话时是 `POST /v0/work/sessions` 的 `workflow`，会话里再点一次是 `POST /v0/chat/sessions/<id>/messages` 的可选 `workflow`（本路给这个路由加这一个键）。中枢据此在发给节点的 prompt 里、原文前面加一行 `[工作流 <技能名>] 先读 skill://<技能名>，按里面的步骤做。`，转录里操作者那一行仍是人打的原文，另带 `workflow`（§3.1）。智能体照这一行用 `read` 读技能，omp 从自己的技能目录取这份文件（§2.4），技能里再指向同目录的参考资料。
+- **为什么不用 omp 的技能命令 `/skill:<技能名>`**（v0.1 原写法，实测后改）：常驻侧把一句话包成 teammate 块（JSON 信封）交给 omp，命令落在引号后面，omp 的行首与句中两种认法都不认；把命令挪到包好的消息末行时，omp 把这一轮改成技能消息，常驻侧轮次端口等的那条用户消息不再出现，这一轮以「completed before input admission」收不进来（§8 的端到端记录）。点名一行只是文字，不改常驻侧收轮次的方式；代价是靠模型照做，而不是 omp 直接把技能正文放进这一轮。
 - **自动匹配**：六个技能的 `description` 写清用途与中英文关键词，omp 把它们列进系统提示，模型按描述自己去读（`read skill://qmo-slides`）。人没选工作流也能用上。
 - 本地命令（`/compact` 等）与工作流互斥：一句话认成本地命令时 `workflow` 答 400。
 
@@ -276,7 +277,7 @@ interface WorkOutput {
 ### 4.3 下载
 
 - 成功：`200`，正文是文件原样字节。头：`content-type` 为 §3.2 的 `mime`（认不出的一律 `application/octet-stream`）、`content-length`、`content-disposition: attachment; filename="<ASCII 退化名>"; filename*=UTF-8''<百分号编码>`、`cache-control: no-store`、`x-content-type-options: nosniff`、`cross-origin-resource-policy: same-origin`、`content-security-policy: default-src 'none'; sandbox`、`referrer-policy: no-referrer`。
-- 中枢不落盘：从节点按块取（每块原始字节 160 KiB、base64 后在 256 KiB 信封内），边取边写给浏览器。每个节点的取块速度限在每分钟 150 块（控制链路出站预算 300 的一半，`directions-2026-10.md` §1.1），约 400 KiB/s；50 MiB 的文件约两分钟。界面靠 `content-length` 画进度。
+- 中枢不落盘：从节点按块取（每块原始字节 160 KiB、base64 后在 256 KiB 信封内），边取边写给浏览器。每个节点的取块速度限在每分钟 150 块（控制链路出站预算 300 的一半，`directions-2026-10.md` §1.1），约 400 KiB/s；50 MiB 的文件约两分钟。路由设了 `content-length`，但 Bun 1.4.3 的服务端对边取边写的正文一律改用分块传输、把这个头丢掉（本机实测，§8），浏览器拿不到总长；界面要画进度用文件卡或列产出里的 `size`。
 - 中途文件被改（节点按设备号、inode、大小、修改时间核对每一块）或节点断开：响应体在中途报错断开，浏览器得到一个不完整的下载；不会把两个版本拼在一起。
 
 ### 4.4 预览
@@ -416,13 +417,61 @@ omp 的待办工具 `todo` 本来就在常驻工具面里（`RESIDENT_SESSION_TO
 
 ## §8 验收与状态（节点与接口）
 
-（实现完成后回写：用例、本机中枢 + 节点 + 假模型走一遍的记录、门禁、未实测项。）
+状态（2026-10-25）：节点与接口一路实现完，分支 `feat/p37-17-work-node`，未合入、未部署。
+
+### 8.1 用例
+
+| 验收项 | 用例（`bun test --preload ./atlas/tests/preload.ts <文件>`） |
+|---|---|
+| 工作会话的种类与工作流；执行者校验（不在名册 404、不可拨 400、地址不合法 400，都不开会话）；未知键与未知工作流 400 | `atlas/packages/console/test/work.test.ts`「opening a work session」6 条；落盘与重启后仍在：`atlas/packages/node/test/commands/consoleWork.test.ts` |
+| 开工作会话与会话里再点工作流，首条都带工作流；与本地命令互斥 | 同上两文件；端到端里首条 `workflow: 'slides'`、发给节点的那一句带点名行 |
+| 只有能读这条会话的人能取：看不见的与不存在的同一个 404 且不碰节点；跨源 cookie 403；账本停用 503；读记账 `work.output.read` | `work.test.ts`「only someone who can read the session can fetch its files」7 条 |
+| 产出路径越界与链接拒绝（`..`、绝对路径、`\`、别的会话、符号链接、硬链接、链接目录、链接的 outputs） | `atlas/packages/node/test/host/workTools.test.ts`「listing and fetching」；中枢侧 400 先于节点：`work.test.ts`、端到端最后一步 |
+| 单文件 50 MiB（列出带 `tooLarge`、不能取、不能预览、不能交付；恰好 50 MiB 可以） | `workTools.test.ts`「50 MiB」；中枢 413：`work.test.ts` |
+| 三种文档从描述生成，读取库（omp 的 markit）读回的文字与预览一致；字体、图表、公式、日期、冻结首行 | `atlas/packages/node/test/host/workDocuments.test.ts` 12 条 |
+| 预览 HTML 没有脚本、外部资源、事件属性；预览头 `script-src 'none'`、`sandbox`、`frame-ancestors 'self'` | `workDocuments.test.ts`「no preview has a script…」（HTMLRewriter 逐元素扫）；`work.test.ts`；端到端取回的预览 |
+| 工作流技能被 qianmopi 发现、假模型按名读到 | `atlas/packages/node/test/commands/consoleWork.integration.test.ts`：系统提示列出六个技能；`read skill://qmo-slides` 与 `skill://qmo-slides/reference.md` 读回技能正文与参考资料；技能文件随 `qm` 打包且与仓库逐字一致：`atlas/packages/node/test/host/workSkills.test.ts` |
+| 活动面板三块的数据：没有待办或清单清空时 `progress` 为 null；进度跨轮保留；上下文按轮替换；`delivered` 按名取最后一次 | `work.test.ts`「the activity panel」；`consoleWork.test.ts`；节点侧合并与收尾：`atlas/packages/node/test/host/workActivity.test.ts` 12 条；轮次工具事件钩子：`atlas/packages/resident/test/omp-turn.test.ts` |
+| 文件卡：交付一行不算一轮、不结束「还在跑」；200 行上限跨重启；错的节点、智能体、任务号拒绝 | `consoleWork.test.ts` |
+| 分块取文件：每块 160 KiB、每节点 400 ms 一块、中途改动断开响应体 | `consoleWork.test.ts`、`workTools.test.ts` |
+
+### 8.2 本机中枢 + 节点 + 假模型
+
+`consoleWork.integration.test.ts`：真 `qm console`（`--registry`、`--chat-url`、`--control`、`--trust`、`--chat-sign`）、真 `qm resident`（`--controller` 与 `--trust` 为控制台公钥、`--require-signed-tasks`）、qianmopi 子进程与回环假模型，HOME、两个配置根与工作区都在一个临时目录里。一次跑完约 4 秒：
+
+1. `GET /v0/work/workflows` 六项；`POST /v0/work/sessions { agent, workflow: 'slides', text }` 答 200，会话 `work: true`、`workflow: 'slides'`，操作者那一行是原文。
+2. 节点上：六个技能已写到 `<配置根>/qianmo/work-skills/`，系统提示里有它们；模型收到点名行，按名读技能与参考资料，记待办，调 `qianmo_make_document` 出 `季度汇报.pptx`，调 `qianmo_deliver_files` 交付，再答一句。
+3. 转录里文件卡（`noticeSource: 'files'`、`kind: 'presentation'`、`preview: true`）排在回答之前；`/activity` 的进度 3/3、上下文 `skills: ['qmo-slides']`、工具次数、`delivered`。
+4. `/outputs` 经控制链路现场列出；`/preview` 没有 `<script>`、带预览 CSP；`/file` 取回的字节与节点磁盘上的文件、文件卡的 `sha256` 一致，`ZipPackage` 打开有四页，markit 读出每页文字；`name=../sources/…` 答 400。
+
+设 `WORK_E2E_EVIDENCE=<绝对路径>` 时把取回的 pptx、预览、markit 读出的文字与转录、活动、列表、响应头写到那里；2026-10-25 的一份在负责人本机 `~/atlas-evidence/2026-10-25/p37-17n-e2e/`（不进仓库）。
+
+### 8.3 实测后改的三处
+
+- 工作流的触发从 `/skill:<名>` 命令改为原文前面加一行点名（§2.2 写了原因）。
+- 下载的 `content-length`：路由照设，Bun 1.4.3 对流式正文丢掉它（§4.3）。
+- 演示文稿改为 DEFLATE 打包：pptxgenjs 只在 `outputType: 'STREAM'` 时理会 `compression`，两页样例 55 KB → 18 KB。
+
+### 8.4 门禁（Bun 1.4.3，提交 `d444ba5db`）
+
+`bun run precheck` 0、`bun run atlas:check:unused` 0、`bun run atlas:check:cycles` 0（运行期与总计都是 0）、`bun run verify` 0（含 `atlas:sbom -- --check`、`atlas:build:qm`、`atlas:check:qm-smoke`、`atlas:build:client`、`atlas:check:client-smoke`）。第一轮 precheck 的 node-host 红一条 `residentStderr.test.ts`「real startup failure redacts combined truncated PEM…」超时，在相关文件与基点相同的检出上单跑 6 次红 1 次，是存量。`bun.lock` 变了，CI 会跑 omp 基座自己的测试：本机 `bun run test:ts` 退出 1，202 条命令 197 过，红的 5 条（openai-codex-stream 一条、shell-snapshot、broker-idle-shutdown、browser-attach、browser-nav-frames-dialogs）都是 15 路并行下的超时，这几个文件在本分支单跑 207 条全过。
+
+`qm` 体积：`dist/qm-darwin-arm64` 242 180 224 B，同基点其他工作树当天的构建 237 747 904 B，增量约 4.4 MB，主要是三个文档库与 jszip。
+
+### 8.5 未实测
+
+- Linux 节点上的 PDF（Chrome 自带沙箱起不来时退 `--no-sandbox` 那条路）与服务器缺中文字体时 PDF 的样子；本机只测了 macOS 的 Google Chrome。
+- 真 PowerPoint、Word、Excel、WPS、Keynote 打开生成的文件（只用 omp 的 markit 与 zip 读回核对）。
+- 真模型照点名行去读技能的比例；假模型是按脚本读的。
+- 50 MiB 文件经真控制链路的整段下载（用例按块与节流验到 20 字节样例和节点侧 50 MiB 边界）；浏览器 `<a download>` 与 sandbox iframe（界面一路）。
+- 外部底层（Claude Code、Codex、ACP）的轮次：这六个技能不随它们下发（§7），点名行对它们只是一句话。
+- 旧控制台读新 `chat.ndjson`（§3.4 的降级）只按 3247b9b2a 的 `ChatStore.load` 代码核对，没起旧版本跑。
 
 ---
 
 ## §9 界面
 
-由 B-界面一路写（`feat/p37-17-work`）。实现在 `view/frontWork.ts`（文案、卡片、文件卡、预览框、活动面板、样式）与 `assets/frontWork.ts`（预览与产出列表的页面脚本），接进 `view/front.ts`、`assets/frontClient.ts`、`routes/front.ts`；`work.ts` 是节点一路同名文件的原样拷贝（`7a96c7b95`），合并时不冲突。浏览器 `/` 与桌面 `/app` 是同一套渲染（`layout` 开关），下面不分开写的地方两处一样。依据是任务说明定下的取舍（§0）与 REA §1.5（侧栏与行状态）、§2.3（活动面板）、§2.5（中途插话）、§3.2（怎么挑工作流）、§4.2（文件卡与预览）。
+由 B-界面一路写（`feat/p37-17-work`）。实现在 `view/frontWork.ts`（文案、卡片、文件卡、预览框、活动面板、样式）与 `assets/frontWork.ts`（预览与产出列表的页面脚本），接进 `view/front.ts`、`assets/frontClient.ts`、`routes/front.ts`；`work.ts` 与 `/v0/work/*` 用节点一路的（两路已合在 `feat/p37-17-work`）。浏览器 `/` 与桌面 `/app` 是同一套渲染（`layout` 开关），下面不分开写的地方两处一样。依据是任务说明定下的取舍（§0）与 REA §1.5（侧栏与行状态）、§2.3（活动面板）、§2.5（中途插话）、§3.2（怎么挑工作流）、§4.2（文件卡与预览）。
 
 ### 9.1 侧栏：两种用法各在一处
 
@@ -462,14 +511,14 @@ omp 的待办工具 `todo` 本来就在常驻工具面里（`RESIDENT_SESSION_TO
 - 不另开第二个右侧栏：会话面板（后台任务、云端电脑）顶上加 `#fx-activity`，只在工作会话里有内容，bot 常驻会话里没有。宽窗口（≥ 1101 px）打开工作会话时面板自己打开，除非读者在这个浏览器里关过；离开工作会话时，自己打开的那次再自己收起，读者手动开着的不动。
 - `#fx-activity` 是视图片段的第三个挂载点，跟转录一起渲染、一起按 id 换：转录本来带 `activity`，SSE 的 ChatUpdate 已经会触发重取，所以不另起轮询，也不多一次读取。
 - **进度**：`activity.progress`，标题旁「第 x / y 步」，条目带状态记号（待做空心圈、进行中呼吸点、已完成对勾、受阻警示、已放弃划线），阶段多于一个时按阶段分段；`null` 或 `total` 为 0 不画这一块。
-- **产出**：先画转录里交付过的文件（与 §4.5 的 `delivered` 同一算法 `deliveredFiles`）。面板开着时页面再取 `GET …/outputs`，取到就换成产出目录的实际列表（按答复的顺序，mtime 倒序），交付过的那行原样保留（连同智能体给的名字）；有新交付、或工作还在跑时每 15 秒，再取一次；取不到（501、503，或本分支上路由还不存在的 404）就保持交付列表、15 秒内不再问。页面新加的行从文档里的 `<template id="fx-file-tpl">` 克隆，文字一律 `textContent`。都没有时一行「还没有产出」。
+- **产出**：先画转录里交付过的文件（与 §4.5 的 `delivered` 同一算法 `deliveredFiles`）。面板开着时页面再取 `GET …/outputs`，取到就换成产出目录的实际列表（按答复的顺序，mtime 倒序），交付过的那行原样保留（连同智能体给的名字）；有新交付、或工作还在跑时每 15 秒，再取一次；取不到（没接控制链路的 501、节点不在的 503 等）就保持交付列表、15 秒内不再问。页面新加的行从文档里的 `<template id="fx-file-tpl">` 克隆，文字一律 `textContent`。都没有时一行「还没有产出」。
 - **上下文**：会话的 `workflow` 加 `context.workflows`、不是工作流的技能（`qmo-*` 不重复列）、工具（名字 × 次数）、引用的文件；全空不画这一块。
 
 ### 9.6 预览框与下载
 
 - 预览：文档里一个 `<dialog id="fx-preview">`：文件名、下载、关闭，下面一块空的容器。点「预览」时页面脚本才建 `<iframe sandbox="" referrerpolicy="no-referrer">`、设 `src` 为 §4.4 的地址；关闭时把它拿掉。`sandbox` 不带任何 `allow-*`：不跑脚本、不同源、不能提交表单或弹窗。文档本身不含 iframe，页面仍然「不主动加载任何东西」（`pages.test.ts` 的规矩）。宽屏是一张大卡片，窄屏占满。
 - 页面 CSP 加 `frame-src 'self'`（`respond.ts` 的 `cspFor`，每个文档同一条）。没有它 iframe 会被 `default-src 'none'` 挡掉；同源的文档都带 `frame-ancestors 'none'` 与 `x-frame-options: DENY`，能被框进来的只有带 `frame-ancestors 'self'` 的预览路由。没有选 `srcdoc`：那要把取回来的 HTML 当字符串放进页面，页面脚本不做这种事。
-- 下载：`<a href="…/file?name=…" download="<文件名>">`，浏览器直接从中枢取（`stream` 等级，cookie 够）。桌面壳「下载并打开」本轮不做。
+- 下载：`<a href="…/file?name=…" download="<文件名>">`，浏览器直接从中枢取（`stream` 等级，cookie 够）。大小只用文件卡与产出列表里的 `size`，不读响应头（§4.3：边取边写的正文拿不到 `content-length`）。桌面壳「下载并打开」本轮不做。
 
 ### 9.7 文案
 

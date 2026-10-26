@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { pairHandoffDevice } from './routes/handoffDevices.js'
+import { CodeLinks } from './codeLink.js'
 import { bearerOf } from './auth.js'
 import {
   ClientTickets,
@@ -1090,6 +1091,7 @@ async function route(
         tokens,
         cookieKey,
         tickets,
+        links: deps.codeLinks,
         throttle,
         clientKey,
         actions: deps.actions,
@@ -1590,6 +1592,8 @@ export interface ConsoleVia {
  */
 export interface ConsoleHandler {
   (request: Request, source?: ClientAddressSource): Promise<Response>
+  /** The device link's table, when this console has Remote (P37.15). */
+  readonly links?: CodeLinks
   as(
     principal: ConsolePrincipal,
     request: Request,
@@ -1651,10 +1655,33 @@ export function createConsoleHandler(
   signupThrottles.set(throttle, new RegistrationThrottle())
   const tickets = new ClientTickets(now)
   const cookieKey = clientCookieKey(tokens)
+  // The device link and the Remote copies of local sessions (P37.15,
+  // `codeLink.ts`): only with personal accounts and a device ledger that can
+  // authenticate a token.
+  const links =
+    accounts !== undefined &&
+    deps.handoffDevices?.authenticate !== undefined &&
+    deps.codeCopies !== undefined
+      ? new CodeLinks({
+          devices: deps.handoffDevices,
+          accounts,
+          copies: deps.codeCopies,
+          ...(deps.billing === undefined ? {} : { billing: deps.billing }),
+          ...(deps.tenancy === undefined ? {} : { tenancy: deps.tenancy }),
+          ...(deps.codeCopies.note === undefined
+            ? {}
+            : { log: (line: string) => deps.codeCopies?.note?.(line) }),
+        })
+      : undefined
   // An account revoked or reset takes its devices' unspent tickets with it
-  // (the device ledger revokes the devices themselves).
-  accounts?.book.onAccountEnded(({ subject }) => tickets.endOwner(subject))
-  // Revoking a device closes the sessions its client tickets opened.
+  // (the device ledger revokes the devices themselves), and their links and
+  // Remote copies.
+  accounts?.book.onAccountEnded(({ subject }) => {
+    tickets.endOwner(subject)
+    links?.endOwner(subject)
+  })
+  // Revoking a device closes the sessions its client tickets opened, and its
+  // link.
   if (accounts !== undefined && deps.handoffDevices !== undefined) {
     deps = {
       ...deps,
@@ -1662,7 +1689,9 @@ export function createConsoleHandler(
         deps.handoffDevices,
         tickets,
         accounts,
+        links,
       ),
+      ...(links === undefined ? {} : { codeLinks: links }),
     }
   }
   const serve = async (
@@ -1767,7 +1796,10 @@ export function createConsoleHandler(
       ? await run()
       : await withAttribution({ subject: principal.subject, ...via }, run)
   }
-  return Object.assign(handler, { as })
+  return Object.assign(handler, {
+    as,
+    ...(links === undefined ? {} : { links }),
+  })
 }
 
 export interface ConsoleServerOptions {
@@ -1805,6 +1837,7 @@ export function startConsoleServer(
 ): ConsoleServerHandle {
   const hostname = options.hostname ?? '127.0.0.1'
   const handler = createConsoleHandler(deps, options.tokens, options.accounts)
+  const links = handler.links
   const server = Bun.serve({
     port,
     hostname,
@@ -1820,7 +1853,13 @@ export function startConsoleServer(
       255,
       Math.ceil((CHAT_STREAM_HEARTBEAT_MS / 1_000) * 2),
     ),
-    fetch: handler,
+    // The device link (P37.15) is the one WebSocket here: upgraded before
+    // the handler, after the checks `CodeLinks.upgrade` makes.
+    fetch: (request, server) =>
+      links !== undefined && CodeLinks.isUpgrade(request)
+        ? links.upgrade(request, server)
+        : handler(request, server),
+    websocket: links?.websocket ?? CodeLinks.none,
   })
 
   return {
@@ -1830,6 +1869,7 @@ export function startConsoleServer(
     url: `http://${hostname}:${server.port}`,
     as: handler.as,
     stop: async (): Promise<void> => {
+      links?.stop()
       await server.stop(true)
     },
   }

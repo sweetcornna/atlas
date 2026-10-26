@@ -635,7 +635,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/` | 成员 / ops / 管理令牌 | 对话前台：默认主智能体欢迎页；`?agent=<地址>` 选智能体，`?session=<会话 id>` 打开会话，`?work=new` 是新工作页（P37.17 B，[work-tasks.md](work-tasks.md) §9.3，不读转录）。已登录但不能对话或未接聊天通道时答 303 到 `/admin`；匿名导航到登录门并回跳 `/`；已登录的非 GET 答 405。公开版（`--billing`）先看订阅：匿名是套餐页；个人账号没有有效订阅时是一张指向 `/subscription` 的卡片，订阅有效而租户还没有节点时是「节点分配中」；平台主体与 break-glass 照旧 |
 | GET | `/app` | 成员 / ops / 管理令牌 | 前台的「对话」界面（桌面版主窗口的首页，[qmo-app.md](qmo-app.md) §4）：左侧是这个人能看到的全部会话，按今天、昨天、过去 7 天、更早分组；新对话是问候语加大输入框，在输入框里选智能体（默认主智能体）。`?session=`、`?agent=`、`?work=new` 与 `/` 相同；门禁、公开版的订阅判断、303 / 登录门 / 405 都与 `/` 相同 |
 | GET | `/app/quick` | 成员 / ops / 管理令牌 | 快速输入：一张浮卡，主智能体形象（点它换智能体）、自动增高的输入框、发送；回车开会话发出这一行后在桌面版交给主窗口（`qmo_open_session`），浏览器里转到 `/app?session=<会话 id>`。门禁与 `/` 相同；`/app` 下其他路径 404 |
-| GET | `/code` | view | 主窗口的 Code 面，即本机会话（[qmo-local.md](qmo-local.md) §3.6、§4.1、§4.5）：服务端只画空框（侧栏的会话列表、新会话与续写共用的输入框——文件夹、agent、权限模式缺省自动审批、Remote 占位关着、发送与停止——转录区、变更面板），页面脚本 `CODE_RENDER_JS` + `CODE_JS` 经壳的 `qmo_local_*` 命令与事件通道直达运行器填它们，按文件夹分组列会话、`/code?session=<id>` 切换、转录用 DOM 画（与 `renderRichText` 逐字一致）、征询卡片、Git 变更面板；载入之后不再向中枢发任何请求。浏览器里只有一行「Code 在 Qmo 桌面版里用」，早于本机会话的壳里是「更新桌面版后可开本机会话」。不读任何中枢会话；`?session=` 只给页面脚本用；`/code` 下其他路径 404；公开版的订阅判断与 `/` 相同；已登录的非 GET 答 405 |
+| GET | `/code` | view | 主窗口的 Code 面，即本机会话（[qmo-local.md](qmo-local.md) §3.6、§4.1、§4.5）：服务端只画空框（侧栏的会话列表、新会话与续写共用的输入框——文件夹、agent、权限模式缺省自动审批、Remote 占位关着、发送与停止——转录区、变更面板），页面脚本 `CODE_RENDER_JS` + `CODE_JS` 经壳的 `qmo_local_*` 命令与事件通道直达运行器填它们，按文件夹分组列会话、`/code?session=<id>` 切换、转录用 DOM 画（与 `renderRichText` 逐字一致）、征询卡片、Git 变更面板（不是 Git 仓库时列 agent 报的最近一轮改动，现在只有 Codex 报）。Remote（P37.15，[qmo-local.md](qmo-local.md) §5.2）：个人账号在开了 Remote 的中枢上，框上带 `data-remote="1"`，新会话输入框与会话标题栏上有 Remote 开关，页面另带 `CODE_HUB_JS`，经 `/v0/code/…`（带控制台头）列出同账号别的电脑上开着 Remote 的会话副本，按「设备 · 文件夹」分组排在本机会话旁边，设备在线时可续写、答复、停下，离线或 Remote 关着只读，Remote 关着时可从中枢删除副本；除此之外载入之后不向中枢发请求。浏览器里同一套页面只列副本、不能新开会话，空白处写「这里是你在别的电脑上开了 Remote 的会话 · 新会话在 Qmo 桌面版里开」，一个都没有时写「还没有开着 Remote 的会话 · 在 Qmo 桌面版里打开一个会话的 Remote」；没开 Remote 的中枢、旧令牌与 break-glass 照旧只有一行「Code 在 Qmo 桌面版里用」，早于本机会话的壳里是「更新桌面版后可开本机会话」。不读任何中枢会话；`?session=` 只给页面脚本用；`/code` 下其他路径 404；公开版的订阅判断与 `/` 相同；已登录的非 GET 答 405 |
 | GET | `/admin` | view | 设置卡片的总览。`/admin` 与 `/admin/…` 的文档都是 Work 面（带桌面版 cookie 时画成 `/app`，否则 `/`）加上画开着的设置卡片，区域在卡片里，首帧就有；Work 面不读对话（不过 `chatReads` 门），关卡片后经原有片段取默认对话。读者不能对话时 Work 面只写一行原因，接没接聊天通道都是同一行。守卫与 401 / 403 / 404 不变，404 画在卡片里（§5.2） |
 | GET | `/admin/overview` | view | 总览：会变的卡（智能体总数与在线、滞后、过期；消息链记录数与完整性；近 1 小时拒绝与丢弃；第四张是证书，没接证书源而接了对话时是近 1 小时会话，两样都没有就只有三张）与每个节点一行（A2）。原先的两项协议常量卡移到设置页 |
 | GET | `/admin/nodes?q=&state=&server=` | view | 节点名册。`q` 按地址或端点搜（不分大小写），`state` 是 `live` / `stale` / `expired`（与行上的判法同一个函数），`server` 按 `--node-server` 归属；原生 GET 表单，轮询的 `/fragments/roster` 带同样的查询串，计数「筛选后 n · 共 m」在片段里随刷新重算（D6）。接了登记簿时名册下另列「名册上没有的节点」：登记簿或托管清单里有、名册上没有的节点，链到它的生命周期页签（§5.5） |
@@ -795,6 +795,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/client/tickets` | **设备** | 阡陌客户端 `qmo` 打开前台用的一次性票据 `{id,ticket,expiresAt}`，201；60 秒、只能用一次、只存哈希。只有 `qmo sign-in` 配对的客户端设备能要，`qm handoff login` 的接力设备 403 `device_kind`，旧式令牌配对的设备 403。每台设备最多 4 张没用掉的、每分钟最多 20 张，超出 429；全台只算没用掉的票据。只认 `Authorization: Bearer` 的设备令牌，令牌不能用时 401 带原因：`device_revoked`、`owner_inactive` 或 `unauthorized`（[`clients.md`](./clients.md) §3.2） |
 | GET | `/v0/client/tickets/<票据 id>` | **设备** | `{id,state}`，`pending` / `used` / `expired`；别的设备的票据 404 |
 | GET、DELETE | `/v0/client/device` | **设备** | `GET` 回 `{deviceId,kind}`；`DELETE` 吊销这台设备自己（退出登录），204，动作账本记 `handoff.device.revoke` |
+| GET | `/v0/client/link` | **设备** | 设备链路（P37.15，[qmo-local.md](qmo-local.md) §5.1）：桌面版的运行器在有会话开着 Remote 时主动拨的 WebSocket，子协议 `qmo-link.1`，只认 `Authorization: Bearer` 的设备令牌；只有个人账号名下、状态正常的客户端设备能升级（接力设备 403 `device_kind`、旧式令牌配对 403、公开版没有有效订阅 402、地址里带 query 400）。吊销设备或停用账号时链路立刻以 4401 断开，账号只读或订阅到期由每 30 秒一次的复查断开（4403 / 4402）。不带升级的请求：有 Remote 的中枢 426 `upgrade_required`，没开 Remote 的 501 |
 | GET | `/client/enter?ticket=…` | 公开 | Linux 客户端自己的窗口（经管道加了 `X-Qmo-Device`，或带着只有这种进门才下发的客户端 cookie）直接用掉票据：开属主的普通服务端会话，会话表记下设备号，303 到 `/` 并下发 `qianmo_session`；带头的那次另下发客户端 cookie。别处（含 Windows 客户端的窗口）先显示「以 <账号> 身份进入」确认页，写明账号号码，票据不消耗。已以别的账号登录的浏览器 409；跨站来的 403；用错计入登录节流 |
 | POST | `/client/enter` | 公开，仅同源 | 确认页的表单：同源才受理，用掉票据，开会话同 `GET`，但不下发客户端 cookie。`/login`、`/logout` 和在浏览器里吊销这台设备都会清掉客户端 cookie。吊销设备时，经它的票据开的会话一并关闭，重启之后也一样。以上五条只在开了 `--accounts` 时存在，没开时照旧 |
 | POST | `/v0/handoff/projects` | 设备 | `{project}` 在 `--handoff-root` 建裸仓、装钩子并登记账号属主，幂等；其他账号 403，已有无属主的 SSH 仓库继续走原接法 |
@@ -864,11 +865,21 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/chat/sessions/<会话 id>` | **成员 / ops / 管理令牌** | 转录 |
 | POST | `/v0/chat/sessions/<会话 id>/messages` | **成员 / ops / 管理令牌** | 发一句话，返回**操作者那一轮**（§6.4） |
 | GET | `/v0/chat/stream` | **成员 / ops / 管理令牌** | SSE，事件只有 `{sessionId, revision}`（§6.6） |
+| GET | `/v0/work/workflows` | **成员 / ops / 管理令牌** | 六个工作流 `{ id, skill, outputs }`（[`work-tasks.md`](./work-tasks.md) §2.3） |
+| POST | `/v0/work/sessions` | **成员 / ops / 管理令牌** | 开一条工作会话 `{ agent?, workflow?, text? }`，答 `{ session, turn }`（work-tasks.md §1.2） |
+| GET | `/v0/work/sessions/<会话 id>/activity` | **成员 / ops / 管理令牌** | 进度、上下文与交付过的文件（work-tasks.md §4.5），按读转录记账 |
+| GET | `/v0/work/sessions/<会话 id>/outputs` | **成员 / ops / 管理令牌** | 现场向执行节点列产出目录（work-tasks.md §4.2）；没接控制链路答 501 |
+| GET | `/v0/work/sessions/<会话 id>/file?name=<相对路径>` | **成员 / ops / 管理令牌**（`stream`） | 下载一个产出（work-tasks.md §4.3），记只读事件 `work.output.read` |
+| GET | `/v0/work/sessions/<会话 id>/preview?name=<相对路径>` | **成员 / ops / 管理令牌**（`stream`） | 不含脚本的自包含 HTML 预览，`script-src 'none'`、`frame-ancestors 'self'`、`sandbox`（work-tasks.md §4.4） |
 | GET | `/fragments/chat/sessions?active=<会话 id>` | **成员 / ops / 管理令牌** | HTML 片段 |
 | GET | `/fragments/chat/thread/<会话 id>` | **成员 / ops / 管理令牌** | HTML 片段 |
 | GET | `/fragments/chat/greet?target=<地址>` | **成员 / ops / 管理令牌** | 旧问候片段保持兼容；前台使用 `front/view` |
 | GET | `/v0/avatars?key=<键>`（可重复） | view | 形象（`packages/console/src/avatar.ts`）：每个键的 `{ spec, saved, updatedAt }` 与 `editable`。键是 `agent:<地址>` 或 `user:<主体>`；没存过的给按地址或主体算出的默认形象。没接形象存储时也答，全是默认、`editable: false` |
 | PUT、DELETE | `/v0/avatars/<键>` | **成员** | 保存一个形象（七项都必须在固定清单里，否则 400），`DELETE` 回到默认；`user:` 键只能改自己的，ops 可以改任何人的。记 `avatar.save`。没接形象存储时 501 |
+| GET | `/v0/code/sessions` | **个人账号** | 本账号别的电脑开着 Remote 的本机会话副本（P37.15，[qmo-local.md](qmo-local.md) §5.2）：`{devices:[{id,name,online}], sessions:[…]}`，会话键是 `<设备 id>.<会话 id>`；本浏览器会话所在的那台设备自己的副本不列。两枚旧令牌与 break-glass 403；没开 Remote 的控制台 501 |
+| GET、DELETE | `/v0/code/sessions/<设备 id>/<会话 id>?before=&limit=` | **个人账号**（删除要成员或 ops） | `GET` 一页记录 `{session,records,more,lastSeq}`，与 `qmo_local_read` 同形；`DELETE` 从中枢删除这个副本，只在那台电脑把 Remote 关掉之后（开着 409 `remote_on`），204，记 `code.remote.drop`。别的账号的设备一律 404 |
+| POST | `/v0/code/sessions/<设备 id>/<会话 id>/<messages\|answer\|stop>` | **成员 / ops** | 经设备链路交给那台电脑的运行器：续写 `{text,clientId}`、答复征询 `{ask,decision,message?}`、停下；设备离线 409 `offline`，Remote 已关 409 `remote_off`，运行器 10 秒不答 504，运行器拒绝时带它的 `E_…` 码 409。记 `code.remote.send` / `answer` / `stop` |
+| GET | `/v0/code/stream` | **个人账号** | SSE，事件 `code` 只带 `{rev}`，本账号的副本或设备在线状态变了就发，页面据此重取 |
 | GET | `/fragments/avatar?key=<键>&spec=<草稿>&default=1` | view | HTML 片段：形象编辑器的正文（舞台、七种状态试看、每个选项一枚小图）。`spec` 是 JSON 草稿，不在清单里就当没给；`default=1` 画默认形象 |
 
 `qm console` 默认把形象存入 `<配置根>/qianmo/console/avatars.json`（文件 0600、父目录 0700）；文件损坏或权限不是 0600 时读写失败关闭，不覆盖原文件，页面照常显示默认形象。
@@ -942,10 +953,12 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 | 等级 | 哪些路由 | cookie 单独够不够 |
 | --- | --- | --- |
 | `document` | 每个区域页：`GET /`、`/admin/nodes`、`/admin/audit`……（`routes/` 里各模块的 `page`） | **够。**顶层导航带不了自定义头；而外站页面就算逼浏览器导航过来，同源策略让它一个字节都读不到，渲染一张页面本身也不改变这台控制台或它背后的网络 |
-| `stream` | `GET /v0/chat/stream` | **够，除非 `Sec-Fetch-Site` 说调用者来自别的源。**`EventSource` 同样带不了头，所以它只能拿这个等级 |
+| `stream` | `GET /v0/chat/stream`；`GET /v0/work/sessions/<会话 id>/file`、`…/preview` | **够，除非 `Sec-Fetch-Site` 说调用者来自别的源。**`EventSource`、`<a download>` 与 `<iframe src>` 同样带不了头，所以它们只能拿这个等级 |
 | `guarded` | **其余每一条要凭据的**：所有写、所有 JSON 读、所有 HTML 片段 | **不够**，必须同时带 `X-Qianmo-Console`。跨源调用者设不了它，因为那会触发一次本服务从不回答的预检 |
 
-**`/v0/chat/stream` 是唯一一条非文档、却接受纯 cookie 的路由**，所以它单独配了那个
+**`/v0/chat/stream` 与工作产出的 `file`、`preview` 两条（P37.17 B，[`work-tasks.md`](./work-tasks.md)
+§4.6）是仅有的三条非文档、却接受纯 cookie 的路由**；后两条只读、答复带
+`cross-origin-resource-policy: same-origin`，预览另带 `frame-ancestors 'self'`。它们因此单独配了那个
 `Sec-Fetch-Site` 检查——`SameSite` 漏掉的恰恰是「同站但不同端口」，而这个头由浏览器写、
 页面脚本伪造不了。**但它是 belt，不是 braces**：不发这个头的浏览器会退回上面那套规则，
 真正 fail-closed 的仍然是那个自定义头（`auth.ts` 的 `isCrossOriginRequest`、`http.ts` 的

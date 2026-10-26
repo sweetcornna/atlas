@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * A runner on fake pipes, a fake `claude` and the folders they live in. No
- * real agent is ever started: `claude` here is the harness package's
- * `fake-claude-stream.runner.ts` behind a shell script; HOME and the client
- * folder are fresh temporary folders.
+ * A runner on fake pipes, a fake `claude` and `codex` and the folders they
+ * live in. No real agent is ever started: `claude` and `codex` here are the
+ * harness package's `fake-claude-stream.runner.ts` and
+ * `fake-codex-app-server.runner.ts` behind shell scripts; HOME and the
+ * client folder are fresh temporary folders.
  */
 
 import * as fs from 'node:fs'
@@ -24,6 +25,12 @@ export const FAKE_CLAUDE = path.join(
   'test',
   'fixtures',
   'fake-claude-stream.runner.ts',
+)
+
+/** The harness package's fake Codex app-server. */
+export const FAKE_CODEX = path.join(
+  path.dirname(FAKE_CLAUDE),
+  'fake-codex-app-server.runner.ts',
 )
 
 export interface Box {
@@ -86,6 +93,39 @@ export function fakeClaude(
   )
   fs.chmodSync(file, 0o755)
   return file
+}
+
+/**
+ * `<bin>/codex`: the fake app-server, with `env` set for it; its logs go to
+ * `<state>/codex`.
+ */
+export function fakeCodex(
+  at: Box,
+  env: Readonly<Record<string, string>> = {},
+): string {
+  const file = path.join(at.bin, 'codex')
+  const state = path.join(at.state, 'codex')
+  fs.mkdirSync(state, { recursive: true })
+  const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`
+  const vars = Object.entries({ FAKE_CODEX_STATE: state, ...env })
+    .map(([name, value]) => `${name}=${quote(value)}`)
+    .join(' ')
+  fs.writeFileSync(
+    file,
+    `#!/bin/sh\n${vars} exec ${quote(process.execPath)} ${quote(FAKE_CODEX)} "$@"\n`,
+  )
+  fs.chmodSync(file, 0o755)
+  return file
+}
+
+/** What `qmo agents` would say: Codex at `program`, Claude Code at `claude`. */
+export function codexReport(program: string, claude: string): AgentsReport {
+  const report = claudeReport(claude)
+  return {
+    agents: report.agents.map(agent =>
+      agent.id === 'codex' ? { ...agent, path: program } : agent,
+    ),
+  }
 }
 
 /** What `qmo agents` would say: Claude Code at `program`. */
@@ -288,6 +328,10 @@ export interface StartOptions {
   readonly login?: Record<string, string> | null
   readonly env?: NodeJS.ProcessEnv
   readonly scan?: ServeOptions['scan']
+  /** The device link's pairing, HTTP and waits (P37.15). */
+  readonly pairing?: ServeOptions['pairing']
+  readonly linkFetch?: ServeOptions['linkFetch']
+  readonly linkBackoffMs?: ServeOptions['linkBackoffMs']
 }
 
 /** A runner with a fake Claude Code at `<bin>/claude`. */
@@ -308,6 +352,13 @@ export function startRunner(at: Box, options: StartOptions = {}): TestRunner {
     }),
     scan: options.scan ?? (async () => claudeReport(claude)),
     limits: { deltaMs: 10, ...options.limits },
+    ...(options.pairing === undefined ? {} : { pairing: options.pairing }),
+    ...(options.linkFetch === undefined
+      ? {}
+      : { linkFetch: options.linkFetch }),
+    ...(options.linkBackoffMs === undefined
+      ? {}
+      : { linkBackoffMs: options.linkBackoffMs }),
   })
 }
 
@@ -339,10 +390,11 @@ export async function begin(
   text: string,
   mode = 'auto',
   settle: string | null = 'idle',
+  agent = 'claude-code',
 ): Promise<string> {
   const started = await runner.call('session.start', {
     folder,
-    agent: 'claude-code',
+    agent,
     mode,
     worktree: false,
     text,

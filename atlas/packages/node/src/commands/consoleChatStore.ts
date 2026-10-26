@@ -40,7 +40,16 @@
 
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { CHAT_LOCAL_COMMANDS, type ChatTurn } from '@qianmo/console'
+import {
+  CHAT_LOCAL_COMMANDS,
+  isWorkflowId,
+  parseWorkActivity,
+  parseWorkFileRef,
+  type ChatTurn,
+  type WorkActivity,
+  type WorkFileRef,
+  type WorkflowId,
+} from '@qianmo/console'
 
 /** The half of a session that never changes. The rest is derived from turns. */
 export interface StoredChatSession {
@@ -57,6 +66,10 @@ export interface StoredChatSession {
    * before it existed, which is what those sessions are: not resident.
    */
   readonly resident?: true
+  /** A work session (P37.17 B, `work-tasks.md` §1.1). */
+  readonly work?: true
+  /** The workflow it was opened with; only on a work session. */
+  readonly workflow?: WorkflowId
 }
 
 /** Everything a replay yields, in write order. */
@@ -64,6 +77,8 @@ interface ChatStoreSnapshot {
   readonly sessions: readonly StoredChatSession[]
   /** One entry per turn id, last write wins, first-seen order preserved. */
   readonly turns: readonly ChatTurn[]
+  /** The last activity record of each session (`work-tasks.md` §3.4). */
+  readonly activity?: ReadonlyMap<string, WorkActivity>
 }
 
 const DIR_MODE = 0o700
@@ -159,9 +174,13 @@ function toTurn(value: unknown): ChatTurn | null {
     ...(value['variant'] === 'notice' ? { variant: 'notice' as const } : {}),
     ...(value['noticeSource'] === 'agent' ||
     value['noticeSource'] === 'step' ||
-    value['noticeSource'] === 'task'
+    value['noticeSource'] === 'task' ||
+    value['noticeSource'] === 'files'
       ? { noticeSource: value['noticeSource'] }
       : {}),
+    // P37.17 B：文件卡的文件与操作者那一行的工作流。认不出的文件整个不要。
+    ...filesOf(value['files']),
+    ...(isWorkflowId(value['workflow']) ? { workflow: value['workflow'] } : {}),
     ...(str(value['causeTaskId']) === undefined
       ? {}
       : { causeTaskId: str(value['causeTaskId']) }),
@@ -181,6 +200,12 @@ function toTurn(value: unknown): ChatTurn | null {
     // P18.20。认不出的命令名按一句话处理，理由同上。
     ...commandOf(value['command']),
   }
+}
+
+function filesOf(value: unknown): { files?: readonly WorkFileRef[] } {
+  if (!Array.isArray(value)) return {}
+  const files = value.flatMap(one => parseWorkFileRef(one) ?? [])
+  return files.length === 0 ? {} : { files }
 }
 
 function commandOf(value: unknown): Pick<ChatTurn, 'command'> {
@@ -204,6 +229,7 @@ function toSession(value: unknown): StoredChatSession | null {
   ) {
     return null
   }
+  const work = value['work'] === true
   return {
     id,
     target,
@@ -211,6 +237,10 @@ function toSession(value: unknown): StoredChatSession | null {
     agent,
     createdAt,
     ...(value['resident'] === true ? { resident: true as const } : {}),
+    ...(work ? { work: true as const } : {}),
+    ...(work && isWorkflowId(value['workflow'])
+      ? { workflow: value['workflow'] }
+      : {}),
   }
 }
 
@@ -237,10 +267,11 @@ export class ChatStore {
     try {
       raw = readFileSync(this.#path, 'utf8')
     } catch {
-      return { sessions: [], turns: [] }
+      return { sessions: [], turns: [], activity: new Map() }
     }
     const sessions: StoredChatSession[] = []
     const turns = new Map<string, ChatTurn>()
+    const activity = new Map<string, WorkActivity>()
     for (const line of raw.split('\n')) {
       if (line.trim() === '') continue
       let parsed: unknown
@@ -258,9 +289,17 @@ export class ChatStore {
         // `Map.set` on an existing key keeps the original insertion position,
         // so "last write wins" and "first-seen order" hold at the same time.
         if (turn !== null) turns.set(turn.id, turn)
+      } else if (
+        parsed['kind'] === 'activity' &&
+        isRecord(parsed['activity'])
+      ) {
+        const sessionId = str(parsed['activity']['sessionId'])
+        const read = parseWorkActivity(parsed['activity'])
+        if (sessionId !== undefined && read !== null)
+          activity.set(sessionId, read)
       }
     }
-    return { sessions, turns: [...turns.values()] }
+    return { sessions, turns: [...turns.values()], activity }
   }
 
   appendSession(session: StoredChatSession): void {
@@ -269,6 +308,11 @@ export class ChatStore {
 
   appendTurn(turn: ChatTurn): void {
     this.#append({ kind: 'turn', turn })
+  }
+
+  /** A session's progress and context, whole each time (`work-tasks.md` §3.4). */
+  appendActivity(sessionId: string, activity: WorkActivity): void {
+    this.#append({ kind: 'activity', activity: { sessionId, ...activity } })
   }
 
   #append(record: unknown): void {

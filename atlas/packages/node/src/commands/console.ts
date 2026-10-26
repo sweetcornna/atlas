@@ -32,6 +32,7 @@ import { ConsoleApprovals } from './consoleApprovals.js'
 import { notifyAllowlist } from './consoleNotifyDestination.js'
 import { cliFilesExchangeCredentials } from './filesExchangeRepo.js'
 import { ConsoleFiles } from './consoleFiles.js'
+import { ConsoleWork, workHubCalls } from './consoleWork.js'
 import { tenantScope } from '@qianmo/console'
 import { ResidentEstop } from '@qianmo/resident'
 import { ConsoleConnectors } from './consoleConnectors.js'
@@ -64,6 +65,7 @@ import { readTrustAnchors } from '../host/trustAnchors.js'
 import { publicSourceUrl, sourceCommit } from '../provenance.js'
 import {
   AccountBook,
+  codeOwnerKey,
   modelFromStartupEnv,
   resolveTokens,
   startConsoleServer,
@@ -116,6 +118,7 @@ import {
   runActionLedgerVerify,
 } from './consoleActionLedger.js'
 import { cliHandoffRepoCredentials } from './handoffRepoCli.js'
+import { openConsoleCodeCopies } from './consoleCodeCopies.js'
 import { openConsoleHandoffDevices } from './consoleHandoffDevices.js'
 import { openConsoleHandoffGit } from './consoleHandoffGit.js'
 import { handoffLockRefusal, openConsoleHandoff } from './consoleHandoff.js'
@@ -639,6 +642,35 @@ export async function runConsole(args: readonly string[]): Promise<void> {
             : { taskCount: handoff.taskCount }),
         })
 
+  // 本机会话的 Remote 副本（P37.15，qmo-local.md §5.3）：开了个人账号、有设备账本就有。
+  // 启动时按设备账本核对一遍：已吊销、已不在、属主对不上的设备，它的副本删掉（停机期间
+  // 的吊销也补上）。
+  const codeCopiesRoot = qianmoConfigPath('qianmo', 'console', 'code-remote')
+  const codeCopies =
+    accounts === undefined || handoffDevices === undefined
+      ? undefined
+      : openConsoleCodeCopies({
+          root: codeCopiesRoot,
+          note: line => process.stderr.write(`${line}\n`),
+        })
+  if (codeCopies !== undefined && handoffDevices !== undefined) {
+    const listed = await handoffDevices.listDevices()
+    if (listed.ok) {
+      const live = new Set(
+        listed.value
+          .filter(one => one.revokedAt === null && one.kind === 'client')
+          .map(one => `${codeOwnerKey(one.owner)}/${one.deviceId}`),
+      )
+      const dropped = codeCopies.prune((ownerKey, device) =>
+        live.has(`${ownerKey}/${device}`),
+      )
+      if (dropped > 0)
+        process.stderr.write(
+          `[code-link] dropped the Remote copies of ${dropped} revoked device(s)\n`,
+        )
+    }
+  }
+
   // 动作账本跟着个人账号走（P15.9）：记的是「哪个人」做了什么、读了谁的转录。
   // 坏了不阻止启动，理由同账号库；两枚 token 作为已知秘密交给它，万一出现在
   // 某条 URL 路径里，落盘的是 `***`。
@@ -975,6 +1007,10 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
       : undefined
   if (peers) control!.onHubCall('peers', peers.handle)
+  // Work outputs (P37.17 B): file cards and progress come up as hub calls,
+  // and the files themselves are fetched over the same control links.
+  const work = control && chat.hub ? new ConsoleWork({ control }) : undefined
+  if (control && chat.hub) control.onHubCall('work', workHubCalls(chat.hub))
   // An agent changing settings (P40, agent-settings.md §5): each change is one
   // person's one-shot approval, made as that person through the console's own
   // routes. The console's in-process door exists once the server is up.
@@ -1394,6 +1430,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     avatars: new ConsoleAvatars(),
     ...(memory === undefined ? {} : { memory }),
     ...(files === undefined ? {} : { files }),
+    ...(work === undefined ? {} : { work }),
     ...(schedules === undefined ? {} : { schedules }),
     ...(tasks === undefined ? {} : { tasks }),
     ...(connectors === undefined ? {} : { connectors }),
@@ -1469,6 +1506,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(actions === undefined ? {} : { actions }),
     ...(handoff === undefined ? {} : { handoff: handoff.port }),
     ...(handoffDevices === undefined ? {} : { handoffDevices }),
+    ...(codeCopies === undefined ? {} : { codeCopies }),
     ...(handoffGit === undefined ? {} : { handoffGit }),
     ...(providersPort === undefined ? {} : { providers: providersPort }),
     ...(desktop === undefined ? {} : { desktop }),
@@ -1509,6 +1547,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
               ['会话库', config.sessionsStorePath ?? ''] as const,
             ]),
         ...(actions === undefined ? [] : [['动作账本', actions.path] as const]),
+        ...(codeCopies === undefined
+          ? []
+          : [['Remote 副本', codeCopiesRoot] as const]),
         ...(providers === undefined || config.providers === undefined
           ? []
           : [['模型服务配置', config.providers.storePath] as const]),

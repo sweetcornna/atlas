@@ -183,11 +183,18 @@ type ConsoleErrorCode =
   | 'unavailable'
   | 'limit'
   | 'subscription_required'
-  | 'E_SENDER_MISMATCH'
   /** The `qmo` client's device door (`clientDoor.ts`). */
   | 'device_revoked'
   | 'owner_inactive'
   | 'device_kind'
+  /** The device link and the Remote copies (`codeLink.ts`, `routes/codeApi.ts`). */
+  | 'upgrade_required'
+  | 'offline'
+  | 'timeout'
+  | 'remote_off'
+  | 'remote_on'
+  /** A runner's own refusal, passed on as it gave it (`E_BUSY`, …). */
+  | `E_${string}`
 
 export function json(
   body: unknown,
@@ -268,6 +275,10 @@ export async function compressed(
 ): Promise<Response> {
   if (request.method !== 'GET' || response.body === null) return response
   if (response.headers.has('content-encoding')) return response
+  // A body streamed from elsewhere, byte for byte (work outputs, P37.17 B):
+  // compressing it here would hold the whole of it first.
+  if (/\bno-transform\b/.test(response.headers.get('cache-control') ?? ''))
+    return response
   if (!COMPRESSIBLE.test(response.headers.get('content-type') ?? '')) {
     return response
   }

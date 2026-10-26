@@ -37,6 +37,7 @@ const WRITES = ['POST', 'PUT', 'DELETE'] as const
 const EXEMPT: readonly { readonly route: string; readonly why: string }[] = [
   // The conversation itself: what the agent is already doing.
   { route: 'POST /v0/chat/sessions', why: 'opening a conversation' },
+  { route: 'POST /v0/work/sessions', why: 'opening a work conversation' },
   {
     route: 'POST /v0/chat/sessions/<会话 id>/messages',
     why: 'a line of the conversation',
@@ -89,6 +90,15 @@ const EXEMPT: readonly { readonly route: string; readonly why: string }[] = [
     why: 'a client device asking to sign in',
   },
   { route: 'DELETE /v0/client/device', why: 'a client device signing out' },
+  // Remote (P37.15): a local session's turns and copy, not a setting.
+  {
+    route: 'POST /v0/code/sessions/<设备 id>/<会话 id>/<messages|answer|stop>',
+    why: 'a line, an answer or a stop for a session on another computer',
+  },
+  {
+    route: 'DELETE /v0/code/sessions/<设备 id>/<会话 id>?before=&limit=',
+    why: 'deleting a session’s copy from the hub',
+  },
   { route: 'POST /v0/handoff/projects', why: 'device workflow' },
   {
     route:

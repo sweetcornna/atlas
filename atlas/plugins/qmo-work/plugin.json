@@ -1,0 +1,10 @@
+{
+  "name": "qmo-work",
+  "version": "3.0.0-dev",
+  "description": "阡陌 Qmo 的六个工作流：演示文稿、文档、表格、调研报告、网页、数据分析。",
+  "author": {
+    "name": "Qianmo AgentNest Team"
+  },
+  "license": "AGPL-3.0-or-later",
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+}

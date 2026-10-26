@@ -247,3 +247,41 @@ export function protectedConfigRoots(home: string = nodeHomeDir()): string[] {
     ),
   ]
 }
+
+/**
+ * Where one conversation's work lives inside the workspace of the agent that
+ * runs it (P37.17, `work-tasks.md` §5.1): a folder per console conversation,
+ * named by its id. Relative to the workspace and `/`-separated, because the
+ * node opens it one segment at a time from the workspace's own directory
+ * handle (`filesSafeFs.ts`), never through an absolute path a link could
+ * redirect.
+ */
+export const WORK_ROOT_NAME = 'qmo-work'
+
+/** A console conversation id that may name a work folder. */
+export const WORK_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
+
+/**
+ * One conversation's work folder, or one of its three parts: `outputs` (what
+ * is handed to the person), `previews` (the HTML drawn from each generated
+ * document) and `sources` (the descriptions they were generated from).
+ */
+export function workSessionDir(
+  session: string,
+  part?: 'outputs' | 'previews' | 'sources',
+): string {
+  if (!WORK_SESSION_ID.test(session))
+    throw new Error(`not a work session id: ${JSON.stringify(session)}`)
+  return [WORK_ROOT_NAME, session, ...(part === undefined ? [] : [part])].join(
+    '/',
+  )
+}
+
+/**
+ * The workflow skills the node lays out from its own binary for every
+ * qianmopi child (`work-tasks.md` §2.4): a plugin directory under the config
+ * root, apart from the skills the operator installs (`extensions/`).
+ */
+export function workSkillsDir(): string {
+  return qianmoConfigPath('qianmo', 'work-skills')
+}

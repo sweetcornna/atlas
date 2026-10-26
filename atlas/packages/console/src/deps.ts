@@ -36,8 +36,14 @@ import type {
   UpdatesPort,
 } from './directionPorts.js'
 import type { AvatarsPort } from './avatar.js'
+import type { CodeCopiesPort, CodeLinksPort } from './codeRemote.js'
 import type { ConsoleFailure, ConsoleResult } from './contracts.js'
-import type { WorkActivity, WorkFileRef, WorkflowId } from './work.js'
+import type {
+  WorkActivity,
+  WorkFileRef,
+  WorkflowId,
+  WorkOutput,
+} from './work.js'
 
 import type { AuditRecord, MessageChain } from '@qianmo/audit'
 import type { UsagePort, ApprovalPort } from './governance.js'
@@ -657,6 +663,11 @@ export interface ChatSendInput {
    * as the person typed it.
    */
   readonly context?: string
+  /**
+   * 这一句带着工作流发（work-tasks.md §2.2）：发给节点的 prompt 前面加一行
+   * 点名技能（`workflowPrompt`），转录里操作者那一行仍是原文、另带 `workflow`。
+   */
+  readonly workflow?: WorkflowId
 }
 
 /**
@@ -707,6 +718,43 @@ export interface ChatPort {
    * 会话不存在时是失败值。
    */
   note?(sessionId: string, text: string): Promise<ConsoleResult<ChatTurn>>
+}
+
+/** 产出端口的失败：在 {@link ConsoleFailure} 之外多一个 `limit`（413）。 */
+export interface WorkFailure {
+  readonly code: ConsoleFailure['code'] | 'limit'
+  readonly message: string
+}
+
+export type WorkResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly failure: WorkFailure }
+
+/** 一个取回中的文件：头先到，正文边从节点取边写（work-tasks.md §4.3）。 */
+export interface WorkDownload {
+  readonly name: string
+  readonly size: number
+  readonly mime: string
+  /** 中途文件被改或节点断开时以错误结束，浏览器得到不完整的下载。 */
+  readonly body: ReadableStream<Uint8Array>
+}
+
+/**
+ * 工作会话的产出（work-tasks.md §4.2–§4.4）。节点与智能体取自会话记录，
+ * 调用方从不传路径前缀；鉴权（能不能读这条会话）在路由层先做完。
+ */
+export interface WorkPort {
+  outputs(session: ChatSession): Promise<
+    WorkResult<{
+      readonly files: readonly WorkOutput[]
+      readonly truncated: boolean
+    }>
+  >
+  fetch(
+    session: ChatSession,
+    name: string,
+    view: 'file' | 'preview',
+  ): Promise<WorkResult<WorkDownload>>
 }
 
 // ---------------------------------------------------------------------------
@@ -1329,6 +1377,10 @@ export const CONSOLE_ACTIONS = [
   'chat.transcript.open',
   /** 主智能体（初始化配置页），target 是地址或 `default`（清除）。 */
   'chat.main',
+  /** 开工作会话（P37.17 B，work-tasks.md §1.2）：target 是执行者地址。 */
+  'work.session.open',
+  /** 下载或预览一个产出（只读事件）：target 是 `<会话 id> <文件名>`。 */
+  'work.output.read',
   /** 账号 API 的写请求，`accounts.<方法>`，target 是 `/v0/accounts` 之后的路径。 */
   'accounts.post',
   'accounts.put',
@@ -1379,6 +1431,14 @@ export const CONSOLE_ACTIONS = [
   /** 接力设备（P19）：签发配对码、吊销设备，target 是设备号；签发时是签发人。 */
   'handoff.device.pair',
   'handoff.device.revoke',
+  /**
+   * 本机会话的 Remote 副本（P37.15，`qmo-local.md` §5.2）：别的设备续写一句、答一条
+   * 征询、中止一轮、从中枢删除副本。target 是 `<设备号>/<会话号>`，不记正文。
+   */
+  'code.remote.send',
+  'code.remote.answer',
+  'code.remote.stop',
+  'code.remote.drop',
   /** 文件互通（P20），target 是申请、授权、传输或汇集组的 id。 */
   'files.decide',
   'files.grant.revoke',
@@ -1487,7 +1547,7 @@ export const CONSOLE_ACTIONS = [
  * 「只读事件」或「全部」才列（{@link ActionQuery.kind}）。新增只读动作时在这里补一行。
  */
 export const CONSOLE_READ_ACTIONS: readonly (typeof CONSOLE_ACTIONS)[number][] =
-  ['chat.transcript.open']
+  ['chat.transcript.open', 'work.output.read']
 
 /** 这个动作名是不是只读事件（{@link CONSOLE_READ_ACTIONS}）。 */
 export function isReadAction(action: string): boolean {
@@ -2504,6 +2564,11 @@ export interface ConsoleDeps {
   /** Absent removes the chat page and every `/v0/chat/*` route (§4.5). */
   readonly chat?: ChatPort
   /**
+   * 工作会话的产出（P37.17 B，work-tasks.md §4）：经中枢→节点控制链路列与取。
+   * 缺席时列产出、下载、预览答 501；开工作会话与活动照常（只用 {@link chat}）。
+   */
+  readonly work?: WorkPort
+  /**
    * The main agent the conversation home page opens (`--chat-default`). Absent,
    * or not in the roster, the home page opens the first dialable agent.
    */
@@ -2623,4 +2688,14 @@ export interface ConsoleDeps {
   readonly billing?: BillingPort
   /** 形象（`avatar.ts`）。缺席时人人用按地址或主体算出的默认形象，不能改。 */
   readonly avatars?: AvatarsPort
+  /**
+   * 本机会话的 Remote 副本（P37.15，`qmo-local.md` §5.3）。只在开了个人账号、接了
+   * 设备账本时接；缺席时 `/v0/client/link` 与 `/v0/code/*` 照旧是 404 / 501。
+   */
+  readonly codeCopies?: CodeCopiesPort
+  /**
+   * 设备链路的表（`codeLink.ts`）。由 `createConsoleHandler` 按 `codeCopies` 建好放进
+   * 来，调用方不传。
+   */
+  readonly codeLinks?: CodeLinksPort
 }

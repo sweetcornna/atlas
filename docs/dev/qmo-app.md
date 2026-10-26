@@ -132,7 +132,7 @@
 | `qmo_local_watch` | `channel`（`__CHANNEL__:<数字>`，即 `window.__TAURI__.core.Channel`） | 登记本页的事件通道，再调换掉旧的；主窗口开始载入页面时壳丢掉它 |
 | `qmo_local_pick_folder` | 无 | 弹系统文件夹选择框（同一时刻一个），取真实路径交给运行器 `folders.add`；取消答 `null` |
 | `qmo_local_forget_folder` | `folder`（`[0-9a-f]{16}`） | 运行器 `folders.forget` |
-| `qmo_local_start` | `folder`、`agent`（六个 id 之一）、`mode`（四档之一）、`worktree`、`text`（1–65,536 字、不含 NUL）、`clientId`（`[A-Za-z0-9_-]{1,64}`）、`remote?`（只收 `false`） | 运行器 `session.start`，壳补 `remote: false` |
+| `qmo_local_start` | `folder`、`agent`（六个 id 之一）、`mode`（四档之一）、`worktree`、`text`（1–65,536 字、不含 NUL）、`clientId`（`[A-Za-z0-9_-]{1,64}`）、`remote?` | 运行器 `session.start`，`remote` 缺省为 `false`；为 `true` 时从第一句起同步到中枢，这台电脑没登录时运行器拒绝 `E_REMOTE`（P37.15，[qmo-local.md](qmo-local.md) §5.0） |
 | `qmo_local_send` | `session`（`cs_` 加 22 位）、`text`、`clientId` | 运行器 `session.send`，壳补 `origin: 'local'` |
 | `qmo_local_stop` | `session` | 运行器 `session.stop` |
 | `qmo_local_answer` | `session`、`ask`（`[A-Za-z0-9_.:-]{1,128}`）、`decision`（`once` \| `session` \| `deny`）、`message?`（≤ 500 字、无控制字符） | 运行器 `session.answer` |
@@ -140,7 +140,7 @@
 | `qmo_local_read` | `session`、`before?`（正整数）、`limit?`（1–200） | 运行器 `session.read` |
 | `qmo_local_changes` | `session` | 运行器 `session.changes` |
 | `qmo_local_diff` | `session`、`path`（相对路径，≤ 1024 字，不以 `/`、`\`、`-` 开头，没有空段、`.`、`..`，无控制字符） | 运行器 `session.diff` |
-| `qmo_local_set_remote` | `session`、`on` | 校验后一律拒绝 `qmo local E_REMOTE: 未开放`（P37.15 前） |
+| `qmo_local_set_remote` | `session`、`on` | 运行器 `session.remote`，答 `{session: Summary}`；打开要这台电脑已登录中枢，否则 `E_REMOTE`。设备令牌只在运行器里，链路由运行器自己拨（P37.15，[qmo-local.md](qmo-local.md) §5.1） |
 
 页面什么时候发：智能体回复了一条不在眼前的对话（窗口不在前台或打开的是别的对话）时 `qmo_notify`；未读数变化时 `qmo_badge`。
 
@@ -178,7 +178,7 @@
 
 - 壳在 `atlas/apps/qmo/`：`src-tauri/`（Rust，自成 Cargo 工作区，不并入根工作区）与 `ui/`（本地页面，纯 HTML/CSS/JS）。
 - `bun run atlas:build:app` 先用 `atlas:build:client` 的办法编出本机目标的 `qmo` 放进 `src-tauri/binaries/qmo-<目标三元组>`，再 `cargo tauri build`。开发时 `bun run atlas:dev:app`。
-- 与 `qmo` 同一条规矩：各系统的安装包在本系统上构建。macOS 版的 `qmo` 只能在 macOS 上编；`qmo` 不用 WebSocket，不受 macOS 构建内联 ws 的问题影响。
+- 与 `qmo` 同一条规矩：各系统的安装包在本系统上构建。macOS 版的 `qmo` 只能在 macOS 上编。`qmo` 的设备链路（P37.15）用 Bun 自带的 `WebSocket`，不引 `ws` 包，所以不受 macOS 构建内联纯 JS `ws` 致握手失败的问题影响；编出来的 macOS `qmo` 对本机中枢的握手与推送有用例与实测（[qmo-local.md](qmo-local.md) §5.5、§9）。
 - 图标由阡陌标生成（`cargo tauri icon`）。
 - 安装包：macOS 在本机用 `hdiutil` 把 `Qmo.app` 与 `Applications` 快捷方式压成 `.dmg`（做法见 `atlas/apps/qmo/README.md`「打包」）。`tauri.conf.json` 的 `signingIdentity` 为 `-`（整包 ad-hoc 签名，资源封印）、`hardenedRuntime` 为 `false`（没有公证它没有用，随包的 `qmo` 是 Bun 编译产物，开着要另给 JIT 授权）；有 Developer ID 时用 `APPLE_SIGNING_IDENTITY` 覆盖。Rust 依赖的许可声明由 cargo-about 生成到 `src-tauri/THIRD-PARTY-NOTICES.txt`，随 `.app` 放进 `Resources/`。
 - Developer ID 签名、公证、自动更新不在本轮（P37.9）。
