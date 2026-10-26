@@ -65,6 +65,7 @@ function open(
     readonly env?: Record<string, string>
     readonly cwd?: string
     readonly state?: string
+    readonly admitted?: (messageId: string) => void
   } = {},
 ): Opened {
   const cwd = options.cwd ?? folder()
@@ -92,6 +93,7 @@ function open(
         sandbox: 'workspace-write',
       })),
     ...(options.threadId === undefined ? {} : { threadId: options.threadId }),
+    ...(options.admitted === undefined ? {} : { onAdmitted: options.admitted }),
     onThread: id => threads.push(id),
     ...(options.detail === false
       ? {}
@@ -204,6 +206,48 @@ describe('the resident path: no detail', () => {
         .map(frame => frame.subtype),
     ).toContain('item/agentMessage/delta')
     expect(opened.threads).toEqual([expect.stringMatching(/^thread-/)])
+  })
+
+  test('the turn/start answer and the turn in one read: the input is still first, prompt_result last', async () => {
+    // What a node reading late gets, and a turn that fails at once: the
+    // answer and the notifications after it in one chunk, so in one
+    // synchronous run of line handlers.
+    const order: string[] = []
+    const opened = open({
+      detail: false,
+      env: { FAKE_CODEX_ONE_WRITE: '1' },
+      admitted: id => order.push(`admitted:${id}`),
+    })
+    opened.channel.onFrame(frame => {
+      if (frame.type === 'runtime_status') return
+      const message = frame.message as { role?: string } | undefined
+      order.push(
+        frame.type === 'message_end'
+          ? `message_end:${String(message?.role)}`
+          : frame.type.startsWith('tool_execution')
+            ? `${frame.type}:${String(frame.toolName)}`
+            : frame.type === 'prompt_result'
+              ? `prompt_result:${String(frame.status)}`
+              : frame.type,
+      )
+    })
+    expect((await turn(opened, 'bash ls')).status).toBe('completed')
+    expect(order.splice(0)).toEqual([
+      'admitted:m1',
+      'message_end:user',
+      'tool_execution_start:bash',
+      'tool_execution_end:bash',
+      'message_end:assistant',
+      'message_end:assistant',
+      'prompt_result:completed',
+    ])
+    expect((await turn(opened, 'fail')).status).toBe('error')
+    expect(order).toEqual([
+      'admitted:m1',
+      'message_end:user',
+      'message_end:assistant',
+      'prompt_result:error',
+    ])
   })
 
   test('a thread is resumed with the same params; one that is gone starts anew', async () => {

@@ -106,6 +106,11 @@ interface Pending {
   readonly resolve: (value: unknown) => void
   readonly reject: (error: Error) => void
   readonly timer: Timer
+  /**
+   * Run on the answer as it is read, before the next line is: what must
+   * come before the frames of the notifications that follow it.
+   */
+  readonly answered?: (result: unknown) => void
 }
 
 const REQUEST_TIMEOUT_MS = 60_000
@@ -226,34 +231,44 @@ export class CodexChannel extends RuntimeChannelBase {
     const requestId = this.beginTurn()
     this.#aborting = false
     this.#baseline = this.#latest
-    let result: unknown
+    // Taken as the answer is read: the input's `message_end` is the turn's
+    // first frame even when the turn's notifications came in the same read
+    // (a client reading late, a turn that fails at once). Waiting for the
+    // answer's promise instead would put it after their frames, after this
+    // turn's `prompt_result`.
+    const admitted = (result: unknown) => {
+      const turnId = toolArgs(toolArgs(result).turn).id
+      if (typeof turnId === 'string' && this.currentRequest === requestId) {
+        this.#turnId = turnId
+        // Stopped while turn/start was pending: the interrupt goes now that
+        // the turn has an id.
+        if (this.#aborting)
+          void this.#request('turn/interrupt', { threadId, turnId }).catch(
+            () => {},
+          )
+      }
+      this.acceptInput(input.messageId, input.text)
+    }
     try {
-      result = await this.#request('turn/start', {
-        threadId,
-        clientUserMessageId: input.messageId,
-        input: [{ type: 'text', text: input.text, text_elements: [] }],
-        ...(input.approvalPolicy === undefined
-          ? {}
-          : { approvalPolicy: input.approvalPolicy }),
-        ...(input.sandboxPolicy === undefined
-          ? {}
-          : { sandboxPolicy: input.sandboxPolicy }),
-      })
+      await this.#request(
+        'turn/start',
+        {
+          threadId,
+          clientUserMessageId: input.messageId,
+          input: [{ type: 'text', text: input.text, text_elements: [] }],
+          ...(input.approvalPolicy === undefined
+            ? {}
+            : { approvalPolicy: input.approvalPolicy }),
+          ...(input.sandboxPolicy === undefined
+            ? {}
+            : { sandboxPolicy: input.sandboxPolicy }),
+        },
+        admitted,
+      )
     } catch (error) {
       if (this.currentRequest === requestId) this.currentRequest = undefined
       throw error
     }
-    const turnId = toolArgs(toolArgs(result).turn).id
-    if (typeof turnId === 'string' && this.currentRequest === requestId) {
-      this.#turnId = turnId
-      // Stopped while turn/start was pending: the interrupt goes now that
-      // the turn has an id.
-      if (this.#aborting)
-        void this.#request('turn/interrupt', { threadId, turnId }).catch(
-          () => {},
-        )
-    }
-    this.acceptInput(input.messageId, input.text)
     return { requestId, agentInvoked: true }
   }
 
@@ -266,7 +281,11 @@ export class CodexChannel extends RuntimeChannelBase {
     await this.#request('turn/interrupt', { threadId, turnId }).catch(() => {})
   }
 
-  #request(method: string, params: unknown): Promise<unknown> {
+  #request(
+    method: string,
+    params: unknown,
+    answered?: (result: unknown) => void,
+  ): Promise<unknown> {
     const id = ++this.#sequence
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -274,7 +293,13 @@ export class CodexChannel extends RuntimeChannelBase {
         reject(new Error(`Codex ${method} timed out`))
       }, REQUEST_TIMEOUT_MS)
       timer.unref()
-      this.#pending.set(id, { method, resolve, reject, timer })
+      this.#pending.set(id, {
+        method,
+        resolve,
+        reject,
+        timer,
+        ...(answered === undefined ? {} : { answered }),
+      })
       try {
         this.write({ id, method, params })
       } catch (error) {
@@ -313,13 +338,24 @@ export class CodexChannel extends RuntimeChannelBase {
       this.#pending.delete(id)
       clearTimeout(pending.timer)
       const error = toolArgs(message.error)
-      if (Object.keys(error).length > 0)
+      if (Object.keys(error).length > 0) {
         pending.reject(
           new Error(
             `Codex ${pending.method}: ${String(error.message ?? 'error')}`,
           ),
         )
-      else pending.resolve(message.result)
+        return
+      }
+      try {
+        pending.answered?.(message.result)
+      } catch (failure) {
+        // The caller's, as if it had failed after awaiting the answer.
+        pending.reject(
+          failure instanceof Error ? failure : new Error(String(failure)),
+        )
+        return
+      }
+      pending.resolve(message.result)
       return
     }
     if (typeof method === 'string')
