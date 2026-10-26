@@ -45,7 +45,8 @@
  *   is being dragged from it, a dialog it opened is up or the keyboard is
  *   in it. A click on the button while it is out opens the side list for
  *   good; Esc folds it; the keyboard's focus on the button floats it at once.
- *   Without hover the button is a drawer's.
+ *   A finger's tap on the button is a drawer's; so is a press of no known
+ *   kind on a device without hover.
  * - **The desktop app's menu** calls `window.__qmoMenu(<action>)`.
  *
  * **A pane's document** (`data-pane="1"`):
@@ -1269,6 +1270,7 @@ function splitScript(): string {
     // ---- the side list's peek (§11.4)
 
     var hover = window.matchMedia ? window.matchMedia('(hover: hover)') : null;
+    var pressed = '';
     var openTimer = null;
     var closeTimer = null;
     var overButton = false;
@@ -1319,10 +1321,15 @@ function splitScript(): string {
       opener.addEventListener('focus', function () {
         if (!hush && collapsed() && !peeking() && opener.matches && opener.matches(':focus-visible')) peek(true, 'key');
       });
+      opener.addEventListener('pointerdown', function (event) { pressed = event.pointerType || ''; }, true);
       opener.addEventListener('click', function (event) {
+        // By what pressed it, not the media (that names the main pointer: a
+        // mouse on a touch laptop, a headless browser). A finger's tap is a
+        // drawer's; a mouse, a pen, the keyboard (detail 0) open it for good.
+        var how = event.pointerType || (event.detail > 0 ? pressed : '');
+        pressed = '';
         if (!collapsed()) return;
-        // No hover (a touch screen): the button is a drawer's.
-        if (event.pointerType === 'touch' || (hover && !hover.matches)) {
+        if (how === 'touch' || (!how && event.detail > 0 && hover && !hover.matches)) {
           event.preventDefault();
           event.stopPropagation();
           peek(!peeking(), 'drawer');
