@@ -21,7 +21,8 @@
  *   stay.
  * - **Opening one.** A row dragged onto the content (its right third is a
  *   pane to the right, its bottom third one below, the rest that pane), a
- *   row's ⋯ or right-click 在右侧打开 / 在下方打开, and ⌃⌘\ / ⌃⌘- (Ctrl+Alt off
+ *   row's ⋯ (Code's gains the two as it opens) or right-click 在右侧打开 /
+ *   在下方打开, and ⌃⌘\ / ⌃⌘- (Ctrl+Alt off
  *   a Mac) for a new one — 开始一项工作 on Work, a new session on Code. With
  *   panes up a row picked in the side list opens in the focused pane, and
  *   one already open somewhere takes the focus instead.
@@ -110,8 +111,9 @@ function splitScript(): string {
   var info = null;
   try { info = (PANE ? window.parent : window).__QMO_SHELL__; } catch (e) { info = null; }
   var MAC = info && typeof info === 'object' ? info.platform === 'macos' : /Mac|iPhone|iPad/.test(navigator.platform || '');
-  // What encodeURIComponent leaves, the quote written as \\x27 so no string seems to start.
-  var ID = '[A-Za-z0-9_.!~*\\x27()%-]{1,800}';
+  // What encodeURIComponent leaves; ! and the quote as \\x21 and \\x27, so the
+  // string reads as no sentence and seems to start no other string.
+  var ID = '[A-Za-z0-9_.\\x21~*\\x27()%-]{1,800}';
   var QUERY = new RegExp(CODE ? '^(?:|session=' + ID + ')$' : '^(?:|work=new|(?:agent|session)=' + ID + ')$');
   function valid(q) { return typeof q === 'string' && QUERY.test(q); }
   // The pane an address names: '' is the face's own (the main agent, a new Code session).
@@ -1137,6 +1139,26 @@ function splitScript(): string {
       side.addEventListener('scroll', hideCtx, true);
     }
 
+    // Code's rows draw their own ⋯ (assets/codeManage.ts): the two go in as it opens.
+    document.addEventListener('toggle', function (event) {
+      var more = event.target;
+      if (!CODE || !ctx || !more || !more.open || !more.matches || !more.matches('details.fx-more') || !side.contains(more)) return;
+      var menu = more.querySelector('.fx-menu');
+      var pick = more.parentNode ? more.parentNode.querySelector('[data-action="code-open"]') : null;
+      var q = pick ? rowQuery(pick) : null;
+      if (!menu || q === null || menu.querySelector('.fx-split-item')) return;
+      var line = document.createElement('div');
+      line.className = 'fx-menu-sep fx-split-item';
+      line.setAttribute('role', 'separator');
+      menu.appendChild(line);
+      var picks = ctx.querySelectorAll('[data-action="fx-split"]');
+      for (var i = 0; i < picks.length; i++) {
+        var copy = picks[i].cloneNode(true);
+        copy.setAttribute('data-split-q', q);
+        menu.appendChild(copy);
+      }
+    }, true);
+
     var dragging = null;
     var hint = null;
     side.addEventListener('pointerover', function (event) {
@@ -1231,7 +1253,10 @@ function splitScript(): string {
           event.preventDefault();
           event.stopImmediatePropagation();
           peek(false);
+          // The focus goes back to the button without floating the list out again.
+          hush = true;
           if (opener) opener.focus();
+          hush = false;
           return;
         }
       }
@@ -1248,6 +1273,7 @@ function splitScript(): string {
     var closeTimer = null;
     var overButton = false;
     var overSide = false;
+    var hush = false;
     function collapsed() { return root.getAttribute('data-side') === 'closed' && !narrow(); }
     function peeking() { return root.hasAttribute('data-peek'); }
     function stopTimers() {
@@ -1291,7 +1317,7 @@ function splitScript(): string {
         soonClose();
       });
       opener.addEventListener('focus', function () {
-        if (collapsed() && !peeking() && opener.matches && opener.matches(':focus-visible')) peek(true, 'key');
+        if (!hush && collapsed() && !peeking() && opener.matches && opener.matches(':focus-visible')) peek(true, 'key');
       });
       opener.addEventListener('click', function (event) {
         if (!collapsed()) return;
