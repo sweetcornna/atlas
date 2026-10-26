@@ -10,9 +10,9 @@
  * hub never sees them. So the server draws only empty frames — the side
  * list's container and the line a deleted session can come back from, the
  * box a session starts from and continues in (folder, agent, permission
- * mode, a worktree of its own, Remote held off, send and stop), the
- * transcript's container, the changes panel's — and the page scripts fill
- * them through the shell (`assets/codeClient.ts`, `assets/codeRender.ts`,
+ * mode, a worktree of its own, Remote, send and stop), the transcript's
+ * container, the changes panel's — and the page scripts fill them through
+ * the shell (`assets/codeClient.ts`, `assets/codeRender.ts`,
  * `assets/codeManage.ts`). The icons the
  * script needs are the server's own SVG in a `<template>`, cloned, never
  * parsed from a string.
@@ -23,12 +23,21 @@
  * around it; the app's cookie (`preferences.ts`, `qianmo_shell`) is the best
  * guess, so the first paint draws the box for it and the line for a browser,
  * and the page script settles it.
+ *
+ * On a hub with Remote (P37.15) a personal account's page also carries
+ * `data-remote="1"` and `CODE_HUB_JS` (`assets/codeHub.ts`): the browser
+ * draws the copies of the account's sessions on its other computers in the
+ * same frames, and so does a desktop app beside its own sessions.
  */
 
 import type { Lang } from '../i18n.js'
 import { chevron, icon } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
-import { codeClientText, type FrontText } from './frontText.js'
+import {
+  CODE_REMOTE_TEXT,
+  codeClientText,
+  type FrontText,
+} from './frontText.js'
 
 /** The four permission modes, in the order the menu lists them (§4.4). */
 const MODES = ['off', 'accept-edits', 'auto', 'full-access'] as const
@@ -64,9 +73,26 @@ export function codeHead(): string {
   )
 }
 
-/** The bar's button for the changes panel, over an open session. */
-export function codeTail(t: FrontText): string {
+/**
+ * Over an open session, Remote (P37.15): on this computer's own session the
+ * switch and the link's state; on a copy from another computer whose Remote
+ * is off, 「从中枢删除副本」. The page script shows what applies.
+ */
+function remoteTail(lang: Lang): string {
+  const r = CODE_REMOTE_TEXT[lang]
   return (
+    `<span class="fx-code-link" id="code-link" role="status" hidden></span>` +
+    `<label class="sw fx-code-remote-head" id="code-remote-head" title="${attr(r.remoteHint)}" hidden>` +
+    `<input type="checkbox" role="switch" id="code-remote-on"><span class="trk"></span><span>Remote</span></label>` +
+    `<button type="button" class="btn btn-ghost btn-small" id="code-drop" data-action="code-drop" hidden>` +
+    `${escapeHtml(r.drop)}</button>`
+  )
+}
+
+/** The bar's button for the changes panel, over an open session. */
+export function codeTail(t: FrontText, lang: Lang): string {
+  return (
+    remoteTail(lang) +
     `<button type="button" class="fx-icon-btn fx-code-toggle" id="code-changes-btn" data-action="code-changes" ` +
     `aria-label="${attr(t.changes)}" aria-controls="code-changes" aria-pressed="false" hidden>` +
     `${icon('git-branch', { small: true })}</button>`
@@ -152,10 +178,16 @@ function changesPanel(t: FrontText): string {
  * transcript and the changes panel, all empty until the page script fills
  * them; in a browser the one line.
  */
-export function codeMain(t: FrontText, lang: Lang, desktop: boolean): string {
+export function codeMain(
+  t: FrontText,
+  lang: Lang,
+  desktop: boolean,
+  remote = false,
+): string {
   return (
     `<p class="fx-code-web" id="code-web"${desktop ? ' hidden' : ''}>${escapeHtml(t.codeInApp)}</p>` +
-    `<div class="fx-code-local" id="code-local" data-view="blank" data-text="${attr(codeClientText(lang))}"${desktop ? '' : ' hidden'}>` +
+    `<div class="fx-code-local" id="code-local" data-view="blank" data-text="${attr(codeClientText(lang))}"` +
+    `${remote ? ' data-remote="1"' : ''}${desktop ? '' : ' hidden'}>` +
     `<div class="fx-code-chat">` +
     `<div class="fx-scroll" id="code-scroll"><div class="fx-column"><div class="fx-msgs" id="code-msgs"></div></div></div>` +
     `<div class="fx-dock"><div class="fx-column">${box(t)}</div></div>` +

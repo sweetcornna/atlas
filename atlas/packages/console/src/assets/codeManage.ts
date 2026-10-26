@@ -5,14 +5,16 @@
  * Managing Code's local sessions (P37.14d, `qmo-local.md` §3.3, §4.3.7,
  * §4.5.5), the third of `/code`'s scripts, after `CODE_JS`
  * (`assets/codeClient.ts`), which hands it `R.host`: its words, the shell
- * call, the status line, the side list and the sessions it knows.
+ * call, the status line, the side list, and (`st()`) the sessions it knows,
+ * the one open, the runner's features and the folders.
  *
  * - **A worktree of its own.** The switch in a new session's box can be
  *   turned on where the runner can make one (`features.worktree`) and the
  *   folder is a Git one; the line under the box says what it means (from the
  *   current commit; what is not committed stays behind). `CODE_JS` sends it
  *   with `qmo_local_start`.
- * - **A row's ⋯.** 改名 turns the row's title into a field: Enter or leaving
+ * - **A row's ⋯.** This computer's sessions only (a copy from another one
+ *   has 「从中枢删除副本」 instead). 改名 turns the row's title into a field: Enter or leaving
  *   it keeps the new title (`qmo_local_rename`), Esc keeps the old one; the
  *   list is not redrawn under it meanwhile (`R.hold`). 删除 hides the row at
  *   once and says so with 撤销 for ten seconds (`R.hidden`); only then does
@@ -46,8 +48,10 @@ function manageScript(): string {
   var hint = byId('code-wt-hint');
   function sync() {
     if (!wt) return;
-    var f = H.folder();
-    var can = H.features().worktree === true;
+    var st = H.st();
+    var pick = byId('code-folder').value;
+    var f = st.d.filter(function (one) { return one.id === pick; })[0];
+    var can = st.f.worktree === true;
     var git = can && !!f && f.git === true;
     wt.disabled = !git;
     if (!git) wt.checked = false;
@@ -77,6 +81,7 @@ function manageScript(): string {
     return b;
   }
   R.rowMenu = function (row, s) {
+    if (s.device) return;
     var more = el('details', 'fx-more');
     var button = el('summary', 'fx-icon-btn fx-more-btn');
     button.setAttribute('aria-label', tx('actions', '') + ' \\u00b7 ' + (s.title || tx('untitled', '')));
@@ -87,6 +92,7 @@ function manageScript(): string {
     menu.appendChild(item('trash-2', tx('remove', ''), 'code-delete', s.id));
     more.appendChild(button);
     more.appendChild(menu);
+    row.classList.add('has-more');
     row.appendChild(more);
   };
 
@@ -98,7 +104,7 @@ function manageScript(): string {
   qc.onAction('code-rename', function (button) {
     var id = button.getAttribute('data-session') || '';
     close(button);
-    var s = H.sessions()[id];
+    var s = H.st().s[id];
     var row = rowOf(id);
     if (!s || !row) return;
     var before = s.title || '';
@@ -118,11 +124,11 @@ function manageScript(): string {
       done = true;
       R.hold = false;
       var next = field.value.replace(/[\\u0000-\\u001f\\u007f]+/g, ' ').trim();
-      var now = H.sessions()[id];
+      var now = H.st().s[id];
       if (save && now && next && next !== before) {
         now.title = next;
         H.call('qmo_local_rename', { session: id, title: next }).then(null, function (err) {
-          var back = H.sessions()[id];
+          var back = H.st().s[id];
           if (back && back.title === next) back.title = before;
           H.side();
           H.head();
@@ -154,7 +160,7 @@ function manageScript(): string {
     undo.hidden = true;
     H.call('qmo_local_delete', { session: p.id }).then(function (data) {
       delete R.hidden[p.id];
-      delete H.sessions()[p.id];
+      delete H.st().s[p.id];
       H.side();
       if (data && data.worktree === 'kept') H.tell(tx('kept', '').replace('{p}', String(data.path || '')), 'warn');
     }, function (err) {
@@ -167,12 +173,12 @@ function manageScript(): string {
   qc.onAction('code-delete', function (button) {
     var id = button.getAttribute('data-session') || '';
     close(button);
-    var s = H.sessions()[id];
+    var s = H.st().s[id];
     if (!s) return;
     settle();
     R.hidden[id] = true;
     waiting = { id: id, timer: setTimeout(settle, WAIT) };
-    if (H.current() === id) H.blank(true);
+    if (H.st().c === id) H.blank(true);
     else H.side();
     undo.querySelector('.fx-code-undo-word').textContent = tx('removed', '').replace('{t}', s.title || tx('untitled', ''));
     undo.hidden = false;

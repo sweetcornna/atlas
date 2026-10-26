@@ -59,6 +59,8 @@ export interface Changes {
   readonly truncated: boolean
   /** How many files past the first 1,000 were not listed. */
   readonly omitted?: number
+  /** Outside Git, the agent's last turn only (Codex's turn diff), not the whole session. */
+  readonly lastTurn?: true
 }
 
 export interface FileDiff {

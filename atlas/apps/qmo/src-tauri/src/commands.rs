@@ -310,8 +310,7 @@ pub async fn qmo_local_start(
     webview: tauri::Webview,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Box<RawValue>, String> {
-    let call = checked(ipc::local_start(&local_body(&app, &webview, &request)?))?
-        .map_err(|closed| Refusal::new("E_REMOTE", closed).to_string())?;
+    let call = checked(ipc::local_start(&local_body(&app, &webview, &request)?))?;
     forward(app, call).await
 }
 
@@ -411,18 +410,19 @@ pub async fn qmo_local_delete(
     forward(app, call).await
 }
 
-/// Remote comes with P37.15: checked, then turned down without asking the
-/// runner.
+/// Remote on or off for a session (P37.15): `{session}`, the runner's
+/// summary after it; the runner turns `on` down when this computer is not
+/// signed in.
 #[tauri::command]
 pub async fn qmo_local_set_remote(
     app: AppHandle,
     webview: tauri::Webview,
     request: tauri::ipc::Request<'_>,
-) -> Result<Value, String> {
-    checked(ipc::local_set_remote(&local_body(
+) -> Result<Box<RawValue>, String> {
+    let call = checked(ipc::local_set_remote(&local_body(
         &app, &webview, &request,
     )?))?;
-    Err(Refusal::new("E_REMOTE", ipc::REMOTE_CLOSED).to_string())
+    forward(app, call).await
 }
 
 // ---- the local pages ----------------------------------------------------

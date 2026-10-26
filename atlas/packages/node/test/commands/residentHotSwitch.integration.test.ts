@@ -16,7 +16,13 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
+import {
+  type ChildProcess,
+  execFileSync,
+  spawn,
+  spawnSync,
+} from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
 import {
   chmodSync,
@@ -50,8 +56,25 @@ const KEY_PROCESS = 'sk-test-canary-cli-process-env-4Fv1'
 const KEY_A = 'sk-test-canary-cli-hot-switch-a-8Tq6'
 const KEY_B = 'sk-test-canary-cli-hot-switch-b-2Mz0'
 
+interface Hold {
+  readonly marker: string
+  arrived: boolean
+  readonly released: PromiseWithResolvers<void>
+}
+
 function startDouble() {
-  const server = fakeOpenAI()
+  let hold: Hold | undefined
+  const server = fakeOpenAI(200, async request => {
+    const current = hold
+    if (
+      current === undefined ||
+      !JSON.stringify(request.body).includes(current.marker)
+    )
+      return
+    hold = undefined
+    current.arrived = true
+    await current.released.promise
+  })
   return {
     baseUrl: server.baseUrl,
     get seen() {
@@ -59,6 +82,27 @@ function startDouble() {
         path: r.path,
         authorization: r.headers.get('authorization') ?? '',
       }))
+    },
+    /**
+     * Keep the next model call whose body carries `marker` unanswered until
+     * `release`: the child that made it is mid-turn, so the pool cannot reap it.
+     */
+    hold(marker: string) {
+      const current: Hold = {
+        marker,
+        arrived: false,
+        released: Promise.withResolvers(),
+      }
+      hold = current
+      return {
+        get arrived() {
+          return current.arrived
+        },
+        release() {
+          if (hold === current) hold = undefined
+          current.released.resolve()
+        },
+      }
     },
     stop: server.stop,
   }
@@ -80,13 +124,31 @@ async function waitUntil(
   )
 }
 
-/** Live `--mode rpc` children of `parent`, from the process table. */
+/**
+ * Live `--mode rpc` children of `parent`, from the process table. Command
+ * lines are read for `parent`'s children only: all processes' together can
+ * outgrow execFileSync's 1 MiB buffer on a machine running other suites.
+ */
 function ompChildrenOf(parent: number): number[] {
-  const table = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,command='], {
+  const children: string[] = []
+  for (const line of execFileSync('ps', ['-A', '-o', 'pid=,ppid='], {
     encoding: 'utf8',
-  })
+  }).split('\n')) {
+    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
+    if (match !== null && Number(match[2]) === parent)
+      children.push(match[1] as string)
+  }
+  if (children.length === 0) return []
+  // Exit status 1 with no rows: every one of them exited in between.
+  const listed = spawnSync(
+    'ps',
+    ['-o', 'pid=,ppid=,command=', '-p', children.join(',')],
+    { encoding: 'utf8' },
+  )
+  if (listed.status !== 0 && (listed.status !== 1 || listed.stdout.trim()))
+    throw new Error(`ps -p failed: ${listed.status} ${listed.stderr}`)
   const pids: number[] = []
-  for (const line of table.split('\n')) {
+  for (const line of listed.stdout.split('\n')) {
     const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)
     if (match === null) continue
     if (
@@ -162,15 +224,37 @@ describe('qm resident: hot switch from the outside', () => {
           .filter(line => line.includes('"runtime_ready"')).length
       : 0
   }
+  /**
+   * Runs one task and returns the pid of the child that served it. The
+   * process table is read while the task's model call is held at the double,
+   * not after the result: by then the child is idle, and the 250 ms reap can
+   * win against a loaded machine's result delivery and `ps`.
+   */
   const runTask = async (contextId: string) => {
+    const marker = randomUUID()
     const request = createMessage({
       from: 'qianmo://hub/operator',
       to: 'qianmo://node-b/reviewer',
       type: MessageType.TaskRequest,
       contextId,
-      payload: { prompt: 'say OK' },
+      payload: { prompt: `say OK (${marker})` },
     })
-    await client.sendAndWait(request)
+    const holds = [processModel, modelA, modelB].map(double =>
+      double.hold(marker),
+    )
+    let live: number[]
+    try {
+      await client.sendAndWait(request)
+      await waitUntil(
+        () => holds.some(hold => hold.arrived),
+        "the task's model call",
+        30_000,
+        diagnose,
+      )
+      live = ompChildrenOf(residentPid)
+    } finally {
+      for (const hold of holds) hold.release()
+    }
     await waitUntil(
       () =>
         replies.some(
@@ -189,7 +273,6 @@ describe('qm resident: hot switch from the outside', () => {
           reply.taskId === request.taskId,
       )?.payload,
     ).toMatchObject({ outcome: 'completed' })
-    const live = ompChildrenOf(residentPid)
     expect(live).toHaveLength(1)
     return live[0]!
   }
@@ -463,8 +546,11 @@ describe('qm resident: hot switch from the outside', () => {
     async () => {
       const first = await runTask('capacity-first')
       const second = await runTask('capacity-second')
+      // runTask saw `second` alone while its turn ran: with one slot, the
+      // first child had exited. Whether `second` is still up now depends on
+      // how long the result took to arrive, so only the first is checked.
       expect(second).not.toBe(first)
-      expect(ompChildrenOf(residentPid)).toEqual([second])
+      expect(ompChildrenOf(residentPid)).not.toContain(first)
       const before = readFileSync(
         join(config, 'resident/sessions.json'),
         'utf8',

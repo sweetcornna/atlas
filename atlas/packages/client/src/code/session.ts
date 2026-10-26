@@ -11,7 +11,7 @@
  * deleting a session removes that worktree when it is clean.
  */
 
-import { randomBytes, randomUUID } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import * as path from 'node:path'
 import type {
   AgentHooks,
@@ -20,7 +20,8 @@ import type {
   AskView,
   ToolView,
 } from './drivers/agent.js'
-import { ClaudeAgent, NO_AUTO } from './drivers/claude.js'
+import { NO_AUTO } from './drivers/claude.js'
+import { driverFor } from './drivers/index.js'
 import {
   type Changes,
   diff as fileDiff,
@@ -59,6 +60,7 @@ import {
   type StoredFolder,
   Transcript,
 } from './store.js'
+import { turnDiffChanges, turnDiffFile } from './turnDiff.js'
 import {
   makeWorktree,
   planWorktree,
@@ -129,6 +131,22 @@ export interface SessionManagerOptions {
   readonly log?: (line: string) => void
 }
 
+/**
+ * Where Remote hears about a session (P37.15, `link.ts`): every line
+ * written, every head changed, every session deleted. The manager calls it
+ * for every session; the link takes those with Remote on, or with a copy on
+ * the hub.
+ */
+export interface RemoteSink {
+  record(header: SessionHeader, record: CodeRecord): void
+  head(header: SessionHeader): void
+  /** Deleted here, with the head it had: its copy on the hub goes too. */
+  removed(header: SessionHeader): void
+}
+
+/** How long an acknowledged `pushedSeq` may wait before it is written down. */
+const PUSHED_WRITE_MS = 2_000
+
 interface Live {
   readonly turn: string
   text: string
@@ -165,10 +183,12 @@ class Session {
   readonly asks = new Map<string, OpenAsk>()
   /** Tool call id → its process line. */
   readonly tools = new Map<string, string>()
-  readonly approved = new Map<string, 'user' | 'session'>()
+  readonly approved = new Map<string, 'mode' | 'user' | 'session'>()
   readonly denied = new Set<string>()
   /** Settles a wait for room with `false` when the turn is stopped. */
   cancelWait: ((go: boolean) => void) | undefined
+  /** A `remote.pushedSeq` acknowledged and not yet written down. */
+  pushedTimer: ReturnType<typeof setTimeout> | undefined
   /** Ends the `git worktree add` under way. */
   making: AbortController | undefined
   /** Woken when the turns in flight have ended. */
@@ -230,6 +250,7 @@ export class SessionManager {
   /** Programs found to have no `auto` (for this runner's life). */
   readonly #noAuto = new Set<string>()
   #closing = false
+  #sink: RemoteSink | undefined
 
   constructor(options: SessionManagerOptions) {
     this.#options = options
@@ -316,7 +337,7 @@ export class SessionManager {
       ...(header.worktree === undefined
         ? {}
         : { worktree: { branch: header.worktree.branch } }),
-      remote: false,
+      remote: header.remote.on,
       createdAt: header.createdAt,
       updatedAt: header.updatedAt,
       lastSeq: header.lastSeq,
@@ -326,18 +347,30 @@ export class SessionManager {
   #header(
     session: Session,
     change: Partial<
-      Pick<SessionHeader, 'state' | 'mode' | 'native' | 'title' | 'worktree'>
+      Pick<
+        SessionHeader,
+        'state' | 'mode' | 'native' | 'remote' | 'title' | 'worktree'
+      >
     >,
     announce = true,
   ): void {
     session.header = { ...session.header, ...change, updatedAt: this.#now() }
+    this.#persist(session)
+    if (announce) {
+      this.#options.emit({ type: 'session', session: this.#summary(session) })
+      this.#sink?.head(session.header)
+    }
+  }
+
+  /** The header as it is, written; `updatedAt` untouched. */
+  #persist(session: Session): void {
+    clearTimeout(session.pushedTimer)
+    session.pushedTimer = undefined
     try {
       this.#options.store.writeHeader(session.header)
     } catch (error) {
       this.#log(`could not write ${session.header.id}: ${String(error)}`)
     }
-    if (announce)
-      this.#options.emit({ type: 'session', session: this.#summary(session) })
   }
 
   #setState(session: Session, state: SessionState): void {
@@ -364,6 +397,7 @@ export class SessionManager {
           }
         : event,
     )
+    this.#sink?.record(session.header, record)
     return record
   }
 
@@ -452,6 +486,8 @@ export class SessionManager {
     readonly clientId: string
     /** In a worktree of its own (worktree.ts). */
     readonly worktree?: boolean
+    /** Remote on from the first line, under this device id (§5.0). */
+    readonly remoteDevice?: string
   }): Promise<{ session: Summary; turn: CodeTurn }> {
     if (this.#closing) throw new CodeError('E_RUNNER', '运行器正在退出')
     const folder = this.#folders.find(one => one.id === input.folder)
@@ -459,6 +495,7 @@ export class SessionManager {
     const picked = sessionRoot(folder.path)
     const found = await this.#options.findAgent(input.agent)
     if (!found.ok) throw new CodeError('E_AGENT', found.reason)
+    const driver = driverFor(found.protocol)
     const id = newSessionId()
     const now = this.#now()
     const title = titleOf(input.text)
@@ -492,8 +529,15 @@ export class SessionManager {
       mode: noAuto ? 'accept-edits' : input.mode,
       state: 'running',
       lastSeq: 0,
-      native: { kind: 'claude-session', id: randomUUID(), started: false },
-      remote: { on: false, pushedSeq: 0 },
+      native: {
+        kind: driver.nativeKind,
+        id: driver.newNativeId(),
+        started: false,
+      },
+      remote:
+        input.remoteDevice === undefined
+          ? { on: false, pushedSeq: 0 }
+          : { on: true, pushedSeq: 0, device: input.remoteDevice },
     }
     this.#options.store.ensure()
     this.#options.store.writeHeader(header)
@@ -508,6 +552,7 @@ export class SessionManager {
     session.program = found.path
     this.#sessions.set(id, session)
     this.#options.emit({ type: 'session', session: this.#summary(session) })
+    this.#sink?.head(header)
     const turn = this.#operator(session, input.text, input.clientId, 'read')
     if (noAuto) this.#notice(session, NO_AUTO, 'warn')
     session.queue.push({ turnId: turn.id, text: input.text })
@@ -520,6 +565,7 @@ export class SessionManager {
     text: string,
     clientId: string,
     state: 'read' | 'pending',
+    remote = false,
   ): CodeTurn {
     const turn: CodeTurn = {
       id: newTurnId(),
@@ -529,6 +575,7 @@ export class SessionManager {
       text,
       state,
       clientId,
+      ...(remote ? { origin: 'remote' as const } : {}),
     }
     this.#write(session, turn)
     return turn
@@ -538,10 +585,14 @@ export class SessionManager {
     readonly session: string
     readonly text: string
     readonly clientId: string
+    /** Sent from another device over the link (§5.1). */
+    readonly origin?: 'local' | 'remote'
   }): Promise<{ turn: CodeTurn; queued: boolean }> {
     if (this.#closing) throw new CodeError('E_RUNNER', '运行器正在退出')
     const session = this.#session(input.session)
     if (session.deleting) throw new CodeError('E_SESSION', '这个会话正在删除')
+    if (input.origin === 'remote' && !session.header.remote.on)
+      throw new CodeError('E_REMOTE', '这个会话的 Remote 没开')
     if (session.transcript.full)
       throw new CodeError(
         'E_LIMIT',
@@ -565,6 +616,7 @@ export class SessionManager {
       input.text,
       input.clientId,
       busy ? 'pending' : 'read',
+      input.origin === 'remote',
     )
     session.queue.push({ turnId: turn.id, text: input.text })
     if (!busy) {
@@ -670,16 +722,22 @@ export class SessionManager {
 
   /**
    * The 「变更」 panel: against `HEAD` in a Git folder, against its base in
-   * a worktree of its own, from the session's records elsewhere (no Git, no
-   * git, or a worktree not made yet).
+   * a worktree of its own; elsewhere (no Git, no git, or a worktree not made
+   * yet) from the session's records, or, when they name no file, from the
+   * agent's last turn diff (Codex, `lastTurn`).
    */
   async changes(id: string): Promise<Changes> {
     const session = this.#session(id)
     const { root, worktree } = session.header
     const context =
       worktree?.ready === false ? undefined : await this.#options.git()
-    if (!inGit(context, root))
-      return recordedChanges(session.transcript.turns())
+    if (!inGit(context, root)) {
+      const recorded = recordedChanges(session.transcript.turns())
+      if (recorded.files.length > 0) return recorded
+      return (
+        turnDiffChanges(this.#options.store.readTurnDiff(id), root) ?? recorded
+      )
+    }
     return gitChanges(context, root, worktree?.base)
   }
 
@@ -688,8 +746,17 @@ export class SessionManager {
     const { root, worktree } = session.header
     const context =
       worktree?.ready === false ? undefined : await this.#options.git()
-    if (!inGit(context, root))
-      return recordedDiff(session.transcript.turns(), relative)
+    if (!inGit(context, root)) {
+      const turns = session.transcript.turns()
+      if (recordedChanges(turns).files.length > 0)
+        return recordedDiff(turns, relative)
+      const kept = turnDiffFile(
+        this.#options.store.readTurnDiff(id),
+        root,
+        relative,
+      )
+      return kept ?? recordedDiff(turns, relative)
+    }
     return fileDiff(context, root, relative, worktree?.base)
   }
 
@@ -740,10 +807,91 @@ export class SessionManager {
             await this.#options.git(),
             session.header.worktree,
           )
+    // An acknowledgement written down after the folder went would bring it back.
+    clearTimeout(session.pushedTimer)
+    session.pushedTimer = undefined
     this.#sessions.delete(id)
     this.#options.store.removeSession(id)
     this.#options.emit({ type: 'removed', session: id })
+    this.#sink?.removed(session.header)
     return left
+  }
+
+  // ---- Remote (§5) ---------------------------------------------------------------
+
+  /** Where Remote hears about the sessions (`link.ts`). */
+  attachRemote(sink: RemoteSink): void {
+    this.#sink = sink
+  }
+
+  /**
+   * Remote on or off for a session; on, under `device` (this computer's
+   * pairing). Turning it off keeps `pushedSeq`: turned on again under the
+   * same device, the hub's copy goes on from where it was.
+   */
+  setRemote(input: {
+    readonly session: string
+    readonly on: boolean
+    readonly device?: string
+  }): Summary {
+    const session = this.#session(input.session)
+    const was = session.header.remote
+    if (input.on) {
+      if (input.device === undefined)
+        throw new CodeError('E_REMOTE', '这台电脑没有登录中枢')
+      if (!was.on || was.device !== input.device)
+        this.#header(session, {
+          remote: {
+            on: true,
+            pushedSeq: was.device === input.device ? was.pushedSeq : 0,
+            device: input.device,
+          },
+        })
+    } else if (was.on) this.#header(session, { remote: { ...was, on: false } })
+    return this.#summary(session)
+  }
+
+  /** Remote turned off by the link, with a line saying why. */
+  remoteOff(id: string, why: string): void {
+    const session = this.#sessions.get(id)
+    if (session === undefined || !session.header.remote.on) return
+    this.#header(session, { remote: { ...session.header.remote, on: false } })
+    this.#notice(session, why, 'warn')
+  }
+
+  /** Every session's head. */
+  heads(): SessionHeader[] {
+    return [...this.#sessions.values()].map(session => session.header)
+  }
+
+  /** A session's records after `seq`, every line in order, from its file. */
+  recordsAfter(id: string, seq: number): CodeRecord[] {
+    if (!this.#sessions.has(id)) return []
+    const out: CodeRecord[] = []
+    for (const line of this.#options.store.readEvents(id).lines)
+      if (line.kind === 'turn' && line.seq > seq)
+        out.push({ seq: line.seq, kind: 'turn', turn: line.turn })
+    return out
+  }
+
+  /** The hub has a session's records up to `seq`; written down within 2 s. */
+  pushed(id: string, seq: number): void {
+    const session = this.#sessions.get(id)
+    if (
+      session === undefined ||
+      session.deleting ||
+      seq <= session.header.remote.pushedSeq
+    )
+      return
+    session.header = {
+      ...session.header,
+      remote: { ...session.header.remote, pushedSeq: seq },
+    }
+    session.pushedTimer ??= setTimeout(
+      () => this.#persist(session),
+      PUSHED_WRITE_MS,
+    )
+    session.pushedTimer.unref?.()
   }
 
   // ---- turns -------------------------------------------------------------------
@@ -912,12 +1060,11 @@ export class SessionManager {
       throw new CodeError('E_AGENT', found.reason)
     }
     session.program = found.path
-    session.agent = new ClaudeAgent({
+    session.agent = driverFor(session.header.agent.protocol).start({
       program: found.path,
       root: session.header.root,
       env: await this.#options.agentEnv(),
-      sessionId: session.header.native.id,
-      started: session.header.native.started,
+      native: session.header.native,
       mode: session.header.mode,
       noAuto: this.#noAuto.has(found.path),
       hooks: this.#hooks(session),
@@ -1037,10 +1184,16 @@ export class SessionManager {
         this.#toolEnd(session, toolId, isError, output),
       ask: (view, signal) => this.#ask(session, view, signal),
       notice: (text, severity) => this.#notice(session, text, severity),
-      started: () =>
+      started: nativeId =>
         this.#header(
           session,
-          { native: { ...session.header.native, started: true } },
+          {
+            native: {
+              ...session.header.native,
+              ...(nativeId === undefined ? {} : { id: nativeId }),
+              started: true,
+            },
+          },
           false,
         ),
       modeChanged: mode => this.#header(session, { mode }),
@@ -1052,6 +1205,14 @@ export class SessionManager {
         this.#options.children.remove(pid)
         // Gone between turns (idle, crashed): the slot is free.
         if (!session.active) this.#release(session)
+      },
+      approvedByMode: toolId => session.approved.set(toolId, 'mode'),
+      turnDiff: diff => {
+        try {
+          this.#options.store.writeTurnDiff(id, diff, this.#now())
+        } catch (error) {
+          this.#log(`could not keep the turn diff of ${id}: ${String(error)}`)
+        }
       },
     }
   }
@@ -1199,6 +1360,7 @@ export class SessionManager {
     for (const session of this.#sessions.values()) {
       this.#finishLive(session)
       if (session.active) this.#setState(session, 'interrupted')
+      if (session.pushedTimer !== undefined) this.#persist(session)
     }
   }
 }

@@ -67,6 +67,7 @@ import {
   roleOfToken,
   SESSION_COOKIE,
 } from './auth.js'
+import type { CodeLinksPort } from './codeRemote.js'
 import type { ActionLedgerPort } from './deps.js'
 import type {
   HandoffDeviceIdentity,
@@ -272,6 +273,7 @@ export function closingClientSessions(
   devices: HandoffDevicesPort,
   tickets: ClientTickets,
   accounts: ConsoleAccounts,
+  links?: CodeLinksPort,
 ): HandoffDevicesPort {
   return {
     ...(devices.authenticate === undefined
@@ -291,6 +293,8 @@ export function closingClientSessions(
       if (result.ok) {
         tickets.endDevice(deviceId)
         accounts.book.endDeviceSessions(deviceId)
+        // Its link closes and its Remote copies go (P37.15).
+        links?.endDevice(deviceId, result.value.owner)
       }
       return result
     },
@@ -313,6 +317,8 @@ interface ClientDoorContext {
   readonly tokens: ConsoleTokens
   readonly cookieKey: Buffer
   readonly tickets: ClientTickets
+  /** The device link's table, when this hub has Remote (P37.15). */
+  readonly links: CodeLinksPort | undefined
   readonly throttle: LoginThrottle
   readonly clientKey: string
   readonly actions: ActionLedgerPort | undefined
@@ -510,10 +516,11 @@ async function api(
   rest: readonly string[],
 ): Promise<Response> {
   const { request, devices } = ctx
-  // Only these three paths are the door's; anything else under it is the
+  // Only these four paths are the door's; anything else under it is the
   // router's plain 404, whoever asks.
   const known =
-    (rest.length === 1 && (rest[0] === 'device' || rest[0] === 'tickets')) ||
+    (rest.length === 1 &&
+      (rest[0] === 'device' || rest[0] === 'tickets' || rest[0] === 'link')) ||
     (rest.length === 2 && rest[0] === 'tickets')
   if (!known) return notFound(`unknown path: ${ctx.url.pathname}`)
   if (ctx.url.searchParams.has('token'))
@@ -532,6 +539,15 @@ async function api(
     const why = devices.refusalOf?.(token) ?? 'unauthorized'
     return fail(401, why, REFUSALS[why])
   }
+
+  // The device link (P37.15) is a WebSocket, upgraded before this handler
+  // (`codeLink.ts`). Here is only a request without the upgrade: the
+  // runner's question whether this hub has the link at all — 426 when it
+  // has (a proxy in front dropped the upgrade), 501 when Remote is not wired.
+  if (rest[0] === 'link')
+    return ctx.links === undefined
+      ? fail(501, 'unsupported', '这台中枢没有开 Remote')
+      : fail(426, 'upgrade_required', '设备链路要用 WebSocket 连')
 
   if (rest[0] === 'device' && rest.length === 1) {
     if (request.method === 'GET')

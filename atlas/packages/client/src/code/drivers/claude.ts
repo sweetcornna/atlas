@@ -26,6 +26,7 @@ import type {
   AgentHooks,
   AgentProcess,
   AskView,
+  Driver,
   ToolView,
   TurnOutcome,
 } from './agent.js'
@@ -68,7 +69,8 @@ export function claudeArgv(input: {
   ]
 }
 
-function one(text: string, max = MAX_SUMMARY): string {
+/** The first line, cut to `max` characters. */
+export function one(text: string, max = MAX_SUMMARY): string {
   const line = text.split('\n', 1)[0]!.trim()
   return line.length > max ? `${line.slice(0, max - 1)}…` : line
 }
@@ -78,7 +80,7 @@ function str(value: unknown): string | undefined {
 }
 
 /** A path as the session shows it: relative to its root when inside. */
-function shown(root: string, file: string): string {
+export function shown(root: string, file: string): string {
   const rel = path.relative(root, file)
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)
     ? rel.split(path.sep).join('/')
@@ -247,12 +249,12 @@ export function claudeAskView(root: string, request: ClaudeAsk): AskView {
   }
 }
 
-/** Claude Code's own error, with how to sign in when it is about that. */
-export function withSignInHint(message: string): string {
+/** An agent's own error, with how to sign in when it is about that. */
+export function withSignInHint(message: string, hint = SIGN_IN_HINT): string {
   return /log ?in|not logged|authenticat|api key|unauthori[sz]ed|\b401\b|credential/i.test(
     message,
   )
-    ? `${message}\n${SIGN_IN_HINT}`
+    ? `${message}\n${hint}`
     : message
 }
 
@@ -650,4 +652,23 @@ export class ClaudeAgent implements AgentProcess {
     }
     await stopped
   }
+}
+
+/** Claude Code's driver: the session id is chosen here (`--session-id`). */
+export const CLAUDE_DRIVER: Driver = {
+  nativeKind: 'claude-session',
+  newNativeId: () => randomUUID(),
+  start: input =>
+    new ClaudeAgent({
+      program: input.program,
+      root: input.root,
+      env: input.env,
+      sessionId: input.native.id,
+      started: input.native.started,
+      mode: input.mode,
+      noAuto: input.noAuto,
+      hooks: input.hooks,
+      interruptGraceMs: input.interruptGraceMs,
+      termGraceMs: input.termGraceMs,
+    }),
 }

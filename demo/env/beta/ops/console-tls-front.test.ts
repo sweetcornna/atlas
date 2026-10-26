@@ -10,7 +10,11 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { CHAT_STREAM_HEARTBEAT_MS } from '@qianmo/console'
+import {
+  CHAT_STREAM_HEARTBEAT_MS,
+  CODE_LINK_MAX_FRAME,
+  CODE_LINK_PATH,
+} from '@qianmo/console'
 import { chmodSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,6 +22,11 @@ import { connect as connectTls } from 'node:tls'
 import {
   CONSOLE_CHAT_HEARTBEAT_MS,
   createFrontHandler,
+  createLinkRelay,
+  isLinkUpgrade,
+  LINK_MAX_FRAME,
+  LINK_PATH,
+  type LinkRelayData,
   FrontConfigError,
   IDLE_TIMEOUT_S,
   MAX_BODY_BYTES,
@@ -569,6 +578,272 @@ describe('startFront：真 TLS', () => {
       expect(lines.some(line => line.includes(' GET /echo 200 '))).toBe(true)
     } finally {
       await front.stop()
+    }
+  })
+})
+
+/**
+ * 设备链路（qmo-local.md §5.1）：上游是一个真的 WebSocket 服务，口令对了才 101，
+ * 一打开就先送一帧（验证设备那一端打开之前的帧不丢），收到什么回什么，
+ * 收到 `revoke` 就用 4401 关。
+ */
+describe('设备链路：只有 /v0/client/link 被升级并逐帧对转', () => {
+  let linkUpstream: ReturnType<typeof Bun.serve>
+  let linkUpstreamUrl: URL
+  const seen: { headers: Record<string, string>; closed?: number }[] = []
+
+  beforeAll(() => {
+    linkUpstream = Bun.serve<{ index: number }>({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: (request, server) => {
+        const url = new URL(request.url)
+        if (url.pathname !== '/v0/client/link')
+          return new Response('not found', { status: 404 })
+        if (request.headers.get('authorization') !== 'Bearer qmd_good')
+          return new Response('no', { status: 401 })
+        seen.push({ headers: Object.fromEntries(request.headers) })
+        const offered = request.headers.get('sec-websocket-protocol') ?? ''
+        const upgraded = server.upgrade(request, {
+          data: { index: seen.length - 1 },
+          headers: offered.includes('qmo-link.1')
+            ? { 'sec-websocket-protocol': 'qmo-link.1' }
+            : {},
+        })
+        return upgraded ? undefined : new Response('bad', { status: 400 })
+      },
+      websocket: {
+        open(ws) {
+          ws.send('hello-from-hub')
+        },
+        message(ws, message) {
+          if (message === 'revoke') ws.close(4401, 'revoked')
+          else ws.send(`echo:${String(message)}`)
+        },
+        close(ws, code) {
+          const entry = seen[ws.data.index]
+          if (entry !== undefined) entry.closed = code
+        },
+      },
+    })
+    linkUpstreamUrl = new URL(`http://127.0.0.1:${linkUpstream.port}/`)
+  })
+
+  afterAll(async () => {
+    await linkUpstream.stop(true)
+  })
+
+  /** 不起 TLS 的前置：与 `startFront` 同一个分流，只少一层证书。 */
+  const plainFront = (lines: string[]) => {
+    const handler = createFrontHandler(linkUpstreamUrl, line =>
+      lines.push(line),
+    )
+    const relay = createLinkRelay(linkUpstreamUrl, line => lines.push(line))
+    return Bun.serve<LinkRelayData>({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: (request, server) =>
+        isLinkUpgrade(request)
+          ? relay.upgrade(request, server)
+          : handler(request, server),
+      websocket: relay.websocket,
+    })
+  }
+
+  /** 拨一条链路，收集它收到的帧与关闭码。 */
+  const dial = (url: string, token: string, tls = false) => {
+    const frames: string[] = []
+    const socket = new WebSocket(url, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        'x-forwarded-for': '198.51.100.9',
+      },
+      protocols: ['qmo-link.1'],
+      ...(tls ? { tls: { rejectUnauthorized: false } } : {}),
+    })
+    const opened = new Promise<boolean>(resolve => {
+      socket.onopen = () => resolve(true)
+      socket.onerror = () => resolve(false)
+    })
+    const closed = new Promise<{ code: number; reason: string }>(resolve => {
+      socket.onclose = event =>
+        resolve({ code: event.code, reason: event.reason })
+    })
+    socket.onmessage = event => frames.push(String(event.data))
+    return { socket, frames, opened, closed }
+  }
+
+  const until = async (check: () => boolean): Promise<void> => {
+    const deadline = Date.now() + 5_000
+    while (!check()) {
+      if (Date.now() > deadline) throw new Error('等不到')
+      await Bun.sleep(10)
+    }
+  }
+
+  test('路径与帧上限是控制台那两个数的抄本', () => {
+    expect(LINK_PATH).toBe(CODE_LINK_PATH)
+    expect(LINK_MAX_FRAME).toBe(CODE_LINK_MAX_FRAME)
+  })
+
+  test('isLinkUpgrade：别的路径、带 query、不是升级的请求都不升级', () => {
+    const upgrade = { upgrade: 'websocket', connection: 'Upgrade' }
+    expect(
+      isLinkUpgrade(
+        new Request('https://q.example/v0/client/link', { headers: upgrade }),
+      ),
+    ).toBe(true)
+    expect(
+      isLinkUpgrade(
+        new Request('https://q.example/v0/chat/stream', { headers: upgrade }),
+      ),
+    ).toBe(false)
+    expect(
+      isLinkUpgrade(
+        new Request('https://q.example/v0/client/link?token=x', {
+          headers: upgrade,
+        }),
+      ),
+    ).toBe(false)
+    expect(isLinkUpgrade(new Request('https://q.example/v0/client/link'))).toBe(
+      false,
+    )
+  })
+
+  test('对转：上游先送的帧不丢、子协议照上游选的回、关闭码 4401 原样带回', async () => {
+    const lines: string[] = []
+    const front = plainFront(lines)
+    const before = seen.length
+    try {
+      const link = dial(
+        `ws://127.0.0.1:${front.port}/v0/client/link`,
+        'qmd_good',
+      )
+      expect(await link.opened).toBe(true)
+      expect(link.socket.protocol).toBe('qmo-link.1')
+      await until(() => link.frames.length >= 1)
+      expect(link.frames[0]).toBe('hello-from-hub')
+      link.socket.send('one')
+      await until(() => link.frames.length >= 2)
+      expect(link.frames[1]).toBe('echo:one')
+
+      const upstreamSaw = seen[before]?.headers ?? {}
+      expect(upstreamSaw.authorization).toBe('Bearer qmd_good')
+      expect(upstreamSaw['x-forwarded-proto']).toBe('https')
+      // 设备自己写的 X-Forwarded-For 不转交；转交的是前置看到的对端。
+      expect(upstreamSaw['x-forwarded-for']).toBe('127.0.0.1')
+
+      link.socket.send('revoke')
+      const closed = await link.closed
+      expect(closed.code).toBe(4401)
+      expect(closed.reason).toBe('revoked')
+      expect(
+        lines.some(line => line.includes(' GET /v0/client/link 101 ')),
+      ).toBe(true)
+    } finally {
+      await front.stop(true)
+    }
+  })
+
+  test('设备关了，上游那一端也关', async () => {
+    const front = plainFront([])
+    const before = seen.length
+    try {
+      const link = dial(
+        `ws://127.0.0.1:${front.port}/v0/client/link`,
+        'qmd_good',
+      )
+      expect(await link.opened).toBe(true)
+      link.socket.close(1000, 'runner stopping')
+      await link.closed
+      await until(() => seen[before]?.closed !== undefined)
+      expect(seen[before]?.closed).toBe(1000)
+    } finally {
+      await front.stop(true)
+    }
+  })
+
+  const openssl = Bun.which('openssl')
+  test.skipIf(openssl === null)(
+    'startFront：wss 握手之后同样对转',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'tls-front-link-'))
+      try {
+        const made = Bun.spawnSync([
+          openssl ?? 'openssl',
+          'req',
+          '-x509',
+          '-newkey',
+          'rsa:2048',
+          '-nodes',
+          '-keyout',
+          join(dir, 'key.pem'),
+          '-out',
+          join(dir, 'cert.pem'),
+          '-days',
+          '1',
+          '-subj',
+          '/CN=localhost',
+        ])
+        if (made.exitCode !== 0) throw new Error(made.stderr.toString())
+        chmodSync(join(dir, 'key.pem'), 0o600)
+        const lines: string[] = []
+        const front = startFront(
+          {
+            listenHost: '127.0.0.1',
+            listenPort: 0,
+            upstream: linkUpstreamUrl,
+            certFile: join(dir, 'cert.pem'),
+            keyFile: join(dir, 'key.pem'),
+          },
+          line => lines.push(line),
+        )
+        try {
+          const link = dial(
+            `wss://127.0.0.1:${front.port}/v0/client/link`,
+            'qmd_good',
+            true,
+          )
+          expect(await link.opened).toBe(true)
+          await until(() => link.frames.length >= 1)
+          link.socket.send('two')
+          await until(() => link.frames.length >= 2)
+          expect(link.frames).toEqual(['hello-from-hub', 'echo:two'])
+          link.socket.close(1000)
+          await link.closed
+        } finally {
+          await front.stop()
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    },
+  )
+
+  test('上游拒绝：设备拿不到 101，前置记 502；同一路径的普通 GET 照旧走转发', async () => {
+    const lines: string[] = []
+    const front = plainFront(lines)
+    try {
+      const link = dial(
+        `ws://127.0.0.1:${front.port}/v0/client/link`,
+        'qmd_bad',
+      )
+      expect(await link.opened).toBe(false)
+      const closed = await link.closed
+      expect(closed.code).not.toBe(1000)
+      expect(
+        lines.some(line => line.includes(' GET /v0/client/link 502 ')),
+      ).toBe(true)
+      // 设备随后用不带升级的 GET 问原因：那一条拿到的是上游自己的应答。
+      const probe = await fetch(
+        `http://127.0.0.1:${front.port}/v0/client/link`,
+        {
+          headers: { authorization: 'Bearer qmd_bad' },
+        },
+      )
+      expect(probe.status).toBe(401)
+    } finally {
+      await front.stop(true)
     }
   })
 })

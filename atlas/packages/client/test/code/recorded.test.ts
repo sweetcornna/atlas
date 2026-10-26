@@ -190,4 +190,54 @@ describe.skipIf(!posix)('the runner, in a folder that is not Git', () => {
     expect(String(diff.text)).toContain('+edited')
     expect(String(diff.text)).not.toContain('something else')
   }, 30_000)
+
+  test('records that name no file, a last turn diff kept (Codex’s): that turn, said to be only that', async () => {
+    const at = box()
+    const r = startRunner(at)
+    running.push(r)
+    const folder = await pick(r, at.work)
+    const id = await begin(r, folder, 'hi')
+    expect(await r.call('session.changes', { session: id })).toEqual({
+      source: 'session',
+      files: [],
+      truncated: false,
+    })
+    // What the Codex driver keeps from `turn/diff/updated` (store.ts).
+    const diff = [
+      'diff --git a/notes.md b/notes.md',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/notes.md',
+      '@@ -0,0 +1 @@',
+      '+from the turn',
+      '',
+    ].join('\n')
+    fs.writeFileSync(
+      path.join(at.code, 'sessions', id, 'turn-diff.json'),
+      `${JSON.stringify({ v: 1, at: 1, truncated: false, diff })}\n`,
+      { mode: 0o600 },
+    )
+    expect(await r.call('session.changes', { session: id })).toEqual({
+      source: 'session',
+      files: [
+        {
+          path: 'notes.md',
+          status: 'added',
+          added: 1,
+          removed: 0,
+          binary: false,
+        },
+      ],
+      truncated: false,
+      lastTurn: true,
+    })
+    const one = (await r.call('session.diff', {
+      session: id,
+      path: 'notes.md',
+    })) as Message
+    expect(String(one.text)).toContain('+from the turn')
+    await expect(
+      r.call('session.diff', { session: id, path: 'other.md' }),
+    ).rejects.toMatchObject({ code: 'E_ARGS' })
+  }, 30_000)
 })

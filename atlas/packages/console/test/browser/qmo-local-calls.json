@@ -127,7 +127,9 @@
     },
     {
       "command": "qmo_local_set_remote",
-      "args": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-", "on": false }
+      "args": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-", "on": true },
+      "method": "session.remote",
+      "params": { "session": "cs_AbCdEfGhIjKlMnOpQrSt_-", "on": true }
     },
     {
       "command": "qmo_local_rename",

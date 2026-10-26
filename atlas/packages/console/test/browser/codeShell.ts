@@ -59,6 +59,10 @@ export interface FakeShellOptions {
   readonly refuseMode?: string
   /** `qmo_local_set_mode` answers `next-turn` instead of `now`. */
   readonly modeNextTurn?: boolean
+  /** The runner says it has Remote (P37.15): `features.remote`. */
+  readonly remote?: boolean
+  /** `qmo_local_set_remote` refuses with this line (a computer not signed in). */
+  readonly remoteRefusal?: string
   /** The changes panel's answer, and each file's diff (a whole answer where it is not a string). */
   readonly changes?: object
   readonly diffs?: Readonly<Record<string, string | object>>
@@ -128,7 +132,11 @@ export function fakeShell(options: FakeShellOptions = {}): string {
     pick: null,
     changes: { source: 'git', files: [], truncated: false },
     diffs: {},
-    features: { protocols: ['claude-stream'], worktree: true, remote: false },
+    features: {
+      protocols: ['claude-stream'],
+      worktree: true,
+      remote: options.remote === true,
+    },
     defaults: { mode: 'auto', remote: false },
     deleted: {},
     ...options,
@@ -154,7 +162,7 @@ export function fakeShell(options: FakeShellOptions = {}): string {
   }
   function summary(s) {
     var out = { id: s.id, title: s.title, folder: { id: s.folder.id, name: s.folder.name }, agent: s.agent,
-      mode: s.mode, state: s.state, remote: false, createdAt: s.createdAt, updatedAt: s.updatedAt, lastSeq: s.seq };
+      mode: s.mode, state: s.state, remote: s.remote === true, createdAt: s.createdAt, updatedAt: s.updatedAt, lastSeq: s.seq };
     if (s.worktree) out.worktree = s.worktree;
     return out;
   }
@@ -190,7 +198,8 @@ export function fakeShell(options: FakeShellOptions = {}): string {
       if (config.listRefusal) throw config.listRefusal;
       var all = [];
       for (var k in state.sessions) all.push(summary(state.sessions[k]));
-      return { v: 1, features: config.features, folders: state.folders, sessions: all, defaults: config.defaults };
+      return { v: 1, features: config.features, folders: state.folders, sessions: all, defaults: config.defaults,
+        link: { state: 'off' } };
     }
     if (command === 'qmo_local_agents') {
       if (typeof config.agents === 'string') throw config.agents;
@@ -207,7 +216,9 @@ export function fakeShell(options: FakeShellOptions = {}): string {
       if (!folder) throw 'qmo local E_FOLDER: 文件夹不在了';
       var s = { id: id('cs_', 22), title: args.text.split('\\n')[0].slice(0, 40), folder: folder,
         agent: { id: args.agent, name: 'Claude Code' }, mode: args.mode, state: 'running', seq: 0, records: [], live: null,
-        createdAt: Date.now(), updatedAt: Date.now(), worktree: args.worktree ? { branch: 'qmo/20261025-test-abcd' } : null };
+        remote: args.remote === true, createdAt: Date.now(), updatedAt: Date.now(),
+        worktree: args.worktree ? { branch: 'qmo/20261025-test-abcd' } : null };
+      if (args.remote === true && config.remoteRefusal) throw config.remoteRefusal;
       state.sessions[s.id] = s;
       touch(s);
       var first = write(s, turn(s, { author: 'operator', text: args.text, state: 'read', clientId: args.clientId }));
@@ -272,7 +283,14 @@ export function fakeShell(options: FakeShellOptions = {}): string {
       emit({ type: 'removed', session: args.session });
       return config.deleted;
     }
-    if (command === 'qmo_local_set_remote') throw 'qmo local E_REMOTE: 未开放';
+    if (command === 'qmo_local_set_remote') {
+      if (config.remote !== true) throw 'qmo local E_REMOTE: 未开放';
+      if (args.on && config.remoteRefusal) throw config.remoteRefusal;
+      var r2 = find(args.session);
+      r2.remote = args.on;
+      touch(r2);
+      return { session: summary(r2) };
+    }
     if (command === 'qmo_boot_layout') return null;
     throw 'Command ' + command + ' not found';
   }

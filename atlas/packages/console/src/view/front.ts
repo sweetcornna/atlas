@@ -79,6 +79,7 @@ import {
   CONSOLE_CLIENT_JS_ACCOUNTS,
 } from '../assets/client.js'
 import { CODE_JS } from '../assets/codeClient.js'
+import { CODE_HUB_JS } from '../assets/codeHub.js'
 import { CODE_MANAGE_JS } from '../assets/codeManage.js'
 import { CODE_RENDER_JS } from '../assets/codeRender.js'
 import { FRONT_JS } from '../assets/frontClient.js'
@@ -1676,7 +1677,11 @@ export interface FrontDocumentModel {
    * The Code face (`/code`) instead of a Work face: `desktop` is the desktop
    * app's cookie, which draws the local agents' panel from the first paint.
    */
-  readonly code?: { readonly desktop: boolean }
+  readonly code?: {
+    readonly desktop: boolean
+    /** A personal account on a hub with Remote (P37.15): the copies are drawn too. */
+    readonly remote?: boolean
+  }
   /** Where Work goes from Code: `/app` in the desktop app, `/` in a browser. */
   readonly workHome?: string
 }
@@ -2007,7 +2012,12 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     FRONT_SHELL_JS +
     // The figure editor's script goes with the editor (below).
     (model.faces.editable ? AVATAR_PAGE_JS : '') +
-    (code ? CODE_RENDER_JS + CODE_JS + CODE_MANAGE_JS : '') +
+    (code
+      ? (model.code?.remote === true ? CODE_HUB_JS : '') +
+        CODE_RENDER_JS +
+        CODE_JS +
+        CODE_MANAGE_JS
+      : '') +
     (replicate === 'off' ? '' : FRONT_REPLICATE_JS) +
     (approvals === undefined ? '' : FRONT_APPROVAL_JS) +
     (card === undefined
@@ -2032,7 +2042,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
       : '') +
     `<div class="fx-head-mount" data-tauri-drag-region>${code ? codeHead() : model.view.head}</div>` +
     `<div class="fx-top-tail"><span class="fx-live" id="fx-live"></span>` +
-    (code ? codeTail(t) : '') +
+    (code ? codeTail(t, model.lang) : '') +
     (chat || chatless
       ? ''
       : `<details class="fx-more fx-hist-menu">` +
@@ -2044,7 +2054,12 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `</div>` +
     `</header>`
   const page = code
-    ? codeMain(t, model.lang, model.code?.desktop === true)
+    ? codeMain(
+        t,
+        model.lang,
+        model.code?.desktop === true,
+        model.code?.remote === true,
+      )
     : `<div class="fx-scroll" id="fx-scroll"><div class="fx-column">${model.view.thread}` +
       (approvals === undefined
         ? ''

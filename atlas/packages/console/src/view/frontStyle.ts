@@ -904,9 +904,18 @@ a.fx-id:hover { color: var(--color-text); text-decoration: underline; }
 .fx-code-dot.is-interrupted { background: var(--color-neutral-400); }
 .fx-code-dot.is-failed { background: var(--color-danger-fill); }
 .fx-code-tag { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-small); color: var(--color-muted); }
+/* Remote (P37.15): a row's badge, the switch and the link's state over a session, a browser's blank view. */
+.fx-code-badge { flex: none; padding: 0 var(--space-1); border-radius: var(--radius-xs); background: var(--ui-hover); font-size: var(--text-small); color: var(--color-quiet); }
+.fx-code-remote-head { padding: 0 var(--space-2); font-size: var(--text-ui); color: var(--color-quiet); }
+.fx-code-link { min-width: 0; max-width: 20em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-small); color: var(--color-muted); }
+.fx-code-link.is-wait { color: var(--color-warning-text); }
+.fx-code-link.is-bad { color: var(--color-danger-text); }
+.fx-code-remote-head[hidden], .fx-code-link[hidden], #code-drop[hidden] { display: none; }
+.fx-code-local[data-web][data-view="blank"] .fx-dock { display: none; }
+.fx-code-hub-line { margin: auto; padding: var(--space-8) var(--space-6); text-align: center; }
 /* ⋯ takes the agent's place while it shows; a title being renamed is a field in its place. */
-.fx-code-row:hover .fx-code-tag, .fx-code-row:focus-within .fx-code-tag { visibility: hidden; }
-@media (hover: none) { .fx-code-row .fx-ritem { padding-right: 32px; } }
+.fx-code-row.has-more:hover :is(.fx-code-tag, .fx-code-badge), .fx-code-row.has-more:focus-within :is(.fx-code-tag, .fx-code-badge) { visibility: hidden; }
+@media (hover: none) { .fx-code-row.has-more .fx-ritem { padding-right: 32px; } }
 .fx-code-row.is-renaming > .fx-more { display: none; }
 .fx-code-rename {
   width: 100%; height: var(--control-h); box-sizing: border-box; padding: 0 10px; border: 1px solid var(--color-focus);
@@ -977,7 +986,7 @@ a.fx-id:hover { color: var(--color-text); text-decoration: underline; }
 @media (max-width: ${FRONT_NARROW_PX}px) {
   .fx-code-changes { position: absolute; inset: 0; z-index: 4; width: auto; border-left: 0; box-shadow: var(--shadow-lg); }
   .fx-code-shut { display: inline-grid; }
-  .fx-code-head .fx-head-sub { display: none; }
+  .fx-code-head .fx-head-sub, .fx-code-link { display: none; }
   .fx-code-pill > select { max-width: calc(50vw - var(--space-8)); }
 }
 
