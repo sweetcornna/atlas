@@ -25,6 +25,10 @@
  *    from Codex's turn diff, the mode for the next turn, a second line.
  * 3. Every call of the shared contract reaches the runner in a shape it
  *    takes; one key more is refused.
+ * 4. A session in a worktree of its own (P37.14d): the agent's edit is in
+ *    the worktree and the checkout the folder was picked in stays as it
+ *    was; deleting the session removes the worktree once it is clean and
+ *    keeps its branch.
  *
  * POSIX only: the fake is a shell script and the agent runs in a process
  * group of its own.
@@ -169,6 +173,25 @@ function serve(at: Box): Served {
   return one
 }
 
+/** `git` in `cwd` with a temporary HOME and no system configuration; its output. */
+function gitIn(at: Box, cwd: string, ...args: string[]): string {
+  const done = Bun.spawnSync(['git', ...args], {
+    cwd,
+    env: {
+      PATH: '/usr/bin:/bin',
+      HOME: at.home,
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_AUTHOR_NAME: 't',
+      GIT_AUTHOR_EMAIL: 't@example.com',
+      GIT_COMMITTER_NAME: 't',
+      GIT_COMMITTER_EMAIL: 't@example.com',
+    },
+  })
+  if (done.exitCode !== 0)
+    throw new Error(`git ${args.join(' ')}: ${done.stderr.toString()}`)
+  return done.stdout.toString().trim()
+}
+
 /** A Git repository with one committed file, `README.md`. */
 function repository(at: Box): void {
   const git = (...args: string[]) => {
@@ -229,7 +252,7 @@ describe.skipIf(!posix)('the compiled qmo as the shell runs it', () => {
       protocol: 1,
       features: {
         protocols: ['claude-stream', 'codex-app-server', 'acp'],
-        worktree: false,
+        worktree: true,
         remote: true,
       },
       codeDir: path.join(at.client, 'code'),
@@ -634,9 +657,71 @@ describe.skipIf(!posix)('the compiled qmo as the shell runs it', () => {
         'E_ARGS',
       ])
     }
-    // list, folders.forget and the nine session methods a page reaches.
-    expect(asked).toBe(11)
+    // list, folders.forget and the eleven session methods a page reaches.
+    expect(asked).toBe(13)
     expect(await r.call('shutdown')).toEqual({})
     expect(await r.exited()).toBe(0)
   }, 30_000)
+
+  test('a session in a worktree of its own leaves the picked checkout alone; deleting it removes the clean worktree and keeps the branch', async () => {
+    const at = box()
+    repository(at)
+    fakeClaude(at)
+    const r = serve(at)
+    await r.call('hello')
+    const folder = await r.call('folders.add', { path: at.work })
+    const mark = r.mark
+    const started = await r.call('session.start', {
+      folder: folder.id,
+      agent: 'claude-code',
+      mode: 'accept-edits',
+      worktree: true,
+      text: 'edit README.md',
+      clientId: 'c-1',
+      remote: false,
+    })
+    const summary = started.session as Message
+    const id = String(summary.id)
+    const branch = String((summary.worktree as Message | undefined)?.branch)
+    expect(branch).toMatch(/^qmo\/\d{8}-edit-readme-md-[0-9a-f]{4}$/)
+    await r.state(id, 'idle', mark)
+    const header = JSON.parse(
+      fs.readFileSync(
+        path.join(at.client, 'code', 'sessions', id, 'session.json'),
+        'utf8',
+      ),
+    ) as { worktree: { path: string; ready: boolean; repo: string } }
+    const tree = header.worktree.path
+    expect(header.worktree.ready).toBe(true)
+    expect(header.worktree.repo).toBe(at.work)
+    expect(tree.startsWith(path.join(at.client, 'code', 'worktrees'))).toBe(
+      true,
+    )
+    // The edit is in the worktree; the checkout it was picked in is as it was.
+    expect(fs.readFileSync(path.join(tree, 'README.md'), 'utf8')).toBe(
+      'one\nedited\n',
+    )
+    expect(fs.readFileSync(path.join(at.work, 'README.md'), 'utf8')).toBe(
+      'one\n',
+    )
+    expect(gitIn(at, at.work, 'status', '--porcelain')).toBe('')
+    expect(await r.call('session.changes', { session: id })).toMatchObject({
+      source: 'git',
+      files: [{ path: 'README.md', status: 'modified', added: 1, removed: 0 }],
+    })
+    // The agent's work committed on its branch, the worktree is clean.
+    gitIn(at, tree, 'commit', '-qam', 'edited')
+    expect(await r.call('session.delete', { session: id })).toEqual({
+      worktree: 'removed',
+    })
+    expect(fs.existsSync(tree)).toBe(false)
+    expect(gitIn(at, at.work, 'branch', '--list', branch)).toContain(branch)
+    expect(gitIn(at, at.work, 'worktree', 'list')).not.toContain(tree)
+    expect(fs.existsSync(path.join(at.client, 'code', 'sessions', id))).toBe(
+      false,
+    )
+    expect(gitIn(at, at.work, 'status', '--porcelain')).toBe('')
+    expect(await r.call('shutdown')).toEqual({})
+    expect(await r.exited()).toBe(0)
+  }, 60_000)
 })

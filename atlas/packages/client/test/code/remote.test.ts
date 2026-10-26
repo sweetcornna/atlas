@@ -13,7 +13,8 @@
  * `origin: 'remote'`; the last Remote off hangs up; 4401 and a refused
  * handshake stop the retries and say why; a full copy turns Remote off;
  * Remote cannot be turned on signed out, and a session turned on under
- * another pairing is turned off. POSIX only, as `runner.test.ts`.
+ * another pairing is turned off; a session deleted here takes its copy on
+ * the hub with it (P37.14d). POSIX only, as `runner.test.ts`.
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -375,6 +376,44 @@ describe.skipIf(!posix)('Remote, the runner’s end', () => {
     await wait(
       () => h.dials === dials + 1 && h.copies.get(id)?.head.remote === true,
     )
+  }, 30_000)
+
+  test('deleted here, its copy goes from the hub: told at once, or dialled for when the link is down', async () => {
+    const at = box()
+    const h = hub()
+    const r = runner(at, h)
+    const folder = await pick(r, at.work)
+    const on = await begin(r, folder, 'hi')
+    const off = await begin(r, folder, 'hi')
+    for (const id of [on, off])
+      await r.call('session.remote', { session: id, on: true })
+    await wait(() => h.copies.has(on) && h.copies.has(off))
+    // Turned off: its copy stays on the hub, read-only.
+    await r.call('session.remote', { session: off, on: false })
+    await wait(() => h.copies.get(off)?.head.remote === false)
+
+    // Deleted with the link up: `gone` at once; the link then hangs up.
+    expect(await r.call('session.delete', { session: on })).toEqual({})
+    await wait(() => !h.copies.has(on))
+    expect(h.frames).toContainEqual({ t: 'gone', session: on })
+    await wait(() => h.socket === undefined)
+    expect(linkStates(r).at(-1)).toBe('off')
+
+    // Deleted with the link down: dialled for, told after the welcome.
+    const dials = h.dials
+    expect(await r.call('session.delete', { session: off })).toEqual({})
+    await wait(() => !h.copies.has(off))
+    expect(h.dials).toBe(dials + 1)
+    expect(h.frames).toContainEqual({ t: 'gone', session: off })
+    await wait(() => h.socket === undefined)
+
+    // One that never had Remote on is nobody's business but this computer's.
+    const local = await begin(r, folder, 'hi')
+    const before = h.dials
+    expect(await r.call('session.delete', { session: local })).toEqual({})
+    await Bun.sleep(100)
+    expect(h.dials).toBe(before)
+    expect(h.frames.some(one => one.session === local)).toBe(false)
   }, 30_000)
 
   test('4401 stops the retries and says why; a refused handshake is asked about', async () => {

@@ -85,6 +85,7 @@ import {
 } from '../assets/client.js'
 import { CODE_JS } from '../assets/codeClient.js'
 import { CODE_HUB_JS } from '../assets/codeHub.js'
+import { CODE_MANAGE_JS } from '../assets/codeManage.js'
 import { CODE_RENDER_JS } from '../assets/codeRender.js'
 import { FRONT_JS } from '../assets/frontClient.js'
 import { NAV_MOUNTED_JS } from '../assets/nav.js'
@@ -2212,7 +2213,8 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     (code
       ? (model.code?.remote === true ? CODE_HUB_JS : '') +
         CODE_RENDER_JS +
-        CODE_JS
+        CODE_JS +
+        CODE_MANAGE_JS
       : '') +
     (replicate === 'off' ? '' : FRONT_REPLICATE_JS) +
     (approvals === undefined ? '' : FRONT_APPROVAL_JS) +

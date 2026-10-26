@@ -394,6 +394,12 @@ describe.skipIf(SKIP !== null)('Code: Remote', () => {
           link: ${q('#code-link')}.hidden,
         })`),
       ).toEqual({ on: true, badge: 'Remote', link: true })
+      // This computer's row has ⋯ (rename, delete, P37.14d); the copy's not.
+      expect(
+        await tab.evaluate<unknown>(
+          `[${q(rowFor(local))}.closest('.fx-ritem-row').querySelector('.fx-more') !== null, ${q(rowFor(KEY))}.closest('.fx-ritem-row').querySelector('.fx-more') !== null]`,
+        ),
+      ).toEqual([true, false])
 
       // The runner says the link is up, then retrying.
       await tab.evaluate(`window.__fake.emit({ type: 'link', state: 'up' })`)

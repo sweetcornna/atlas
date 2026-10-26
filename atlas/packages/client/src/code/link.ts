@@ -366,6 +366,27 @@ export class RemoteLink {
     this.#pump(header.id, pusher)
   }
 
+  /**
+   * A session deleted here: the hub drops its copy (`gone`, §5.4). Told now
+   * when the link is up; else the link dials for it and the welcome tells it
+   * (the hub names what it has, this one no longer is here). Nothing to tell
+   * for one that never had Remote on and the hub never named.
+   */
+  removed(header: SessionHeader): void {
+    const id = header.id
+    this.#pushers.delete(id)
+    if (
+      !header.remote.on &&
+      header.remote.device === undefined &&
+      !this.#have.has(id) &&
+      !this.#offs.has(id)
+    )
+      return
+    this.#offs.add(id)
+    if (this.#welcomed) this.#send({ t: 'gone', session: id })
+    this.update()
+  }
+
   /** The runner is going: what was acknowledged is noted, the link closed. */
   async close(): Promise<void> {
     this.#closing = true

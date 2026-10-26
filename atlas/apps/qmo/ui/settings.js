@@ -4,8 +4,8 @@
 /**
  * The local settings page (qmo-app.md §6): the hub and device (read only),
  * the quick entry shortcut, opening at login, staying in the tray, signing
- * out, and the version. Every change goes to the shell at once; there is no
- * save button.
+ * out, what new Code sessions start with, and the version. Every change goes
+ * to the shell at once; there is no save button.
  */
 
 import { closeOnEscape, invoke, ready, t } from './shell.js'
@@ -53,6 +53,16 @@ $('signout').disabled = !view.signedIn
 $('version').textContent = view.version
 $('autostart').checked = view.autostart
 $('background').checked = view.keepInBackground
+$('code-mode').value = view.codeMode
+$('code-remote').checked = view.codeRemote
+// Remote is the runner's to offer (P37.15): grey until it says it can.
+$('code-remote').disabled = view.codeRemoteOpen !== true
+$('code-remote-note').textContent =
+  view.codeRemoteOpen === true
+    ? ''
+    : view.codeRemoteOpen === false
+      ? t('settings.code.remote.closed')
+      : t('settings.code.remote.unknown')
 // On a Mac a closed window always leaves the app running, as Mac apps do.
 $('background-row').hidden = platform === 'macos'
 
@@ -123,6 +133,39 @@ $('autostart').addEventListener('change', async event => {
 })
 $('background').addEventListener('change', async event => {
   event.target.checked = await invoke('local_set_keep_in_background', {
+    enabled: event.target.checked,
+  })
+})
+
+// New sessions' permission mode; skipping permissions is asked once more,
+// as on the Code page.
+let mode = view.codeMode
+async function setMode(next) {
+  try {
+    mode = await invoke('local_set_code_mode', { mode: next })
+  } catch {}
+  $('code-mode').value = mode
+}
+const bypass = on => {
+  $('code-bypass').hidden = !on
+  if (on) $('code-bypass-ok').focus()
+}
+$('code-mode').addEventListener('change', event => {
+  if (event.target.value === 'full-access') return bypass(true)
+  bypass(false)
+  setMode(event.target.value)
+})
+$('code-bypass-ok').addEventListener('click', () => {
+  bypass(false)
+  setMode('full-access')
+})
+$('code-bypass-no').addEventListener('click', () => {
+  bypass(false)
+  $('code-mode').value = mode
+  $('code-mode').focus()
+})
+$('code-remote').addEventListener('change', async event => {
+  event.target.checked = await invoke('local_set_code_remote', {
     enabled: event.target.checked,
   })
 })

@@ -3,7 +3,7 @@
 
 //! The app's commands go into the ACL manifest, so each needs a capability
 //! that names it: the local pages' are in `capabilities/local.json`, the hub's
-//! twenty-two are granted at run time to the signed-in hub's origin only.
+//! twenty-four are granted at run time to the signed-in hub's origin only.
 
 fn main() {
     let commands = &[
@@ -31,6 +31,8 @@ fn main() {
         "qmo_local_changes",
         "qmo_local_diff",
         "qmo_local_set_remote",
+        "qmo_local_rename",
+        "qmo_local_delete",
         // The local pages'.
         "local_state",
         "local_sign_in",
@@ -39,6 +41,8 @@ fn main() {
         "local_set_shortcut",
         "local_set_autostart",
         "local_set_keep_in_background",
+        "local_set_code_mode",
+        "local_set_code_remote",
         "local_sign_out",
         "local_open",
         "local_close",

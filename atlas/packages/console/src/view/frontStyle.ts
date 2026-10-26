@@ -937,6 +937,23 @@ a.fx-id:hover { color: var(--color-text); text-decoration: underline; }
 .fx-code-remote-head[hidden], .fx-code-link[hidden], #code-drop[hidden] { display: none; }
 .fx-code-local[data-web][data-view="blank"] .fx-dock { display: none; }
 .fx-code-hub-line { margin: auto; padding: var(--space-8) var(--space-6); text-align: center; }
+/* ⋯ takes the agent's place while it shows; a title being renamed is a field in its place. */
+.fx-code-row.has-more:hover :is(.fx-code-tag, .fx-code-badge), .fx-code-row.has-more:focus-within :is(.fx-code-tag, .fx-code-badge) { visibility: hidden; }
+@media (hover: none) { .fx-code-row.has-more .fx-ritem { padding-right: 32px; } }
+.fx-code-row.is-renaming > .fx-more { display: none; }
+.fx-code-rename {
+  width: 100%; height: var(--control-h); box-sizing: border-box; padding: 0 10px; border: 1px solid var(--color-focus);
+  border-radius: var(--radius-control); background: var(--color-field); color: var(--color-text); font: inherit; font-size: var(--text-ui);
+}
+.fx-code-rename:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--color-interactive-soft); }
+/* A deleted session's ten seconds to come back. */
+.fx-code-undo {
+  display: flex; align-items: center; gap: var(--space-2); margin: var(--space-2); padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  border-radius: var(--radius-control); background: var(--color-surface); box-shadow: var(--shadow-sm); font-size: var(--text-small); color: var(--color-quiet);
+}
+.fx-code-undo[hidden] { display: none; }
+.fx-code-undo-word { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-code-hint { grid-column: 1 / -1; margin: 0; padding: 0 10px 2px; font-size: var(--text-small); color: var(--color-muted); }
 /* A tool line's counts and diff, a line sent that did not arrive. */
 .fx-stat { display: inline-flex; gap: var(--space-1); flex: none; font-family: var(--font-mono); font-size: var(--text-small); }
 .fx-add { color: var(--color-success-text); }

@@ -101,7 +101,7 @@ atlas/apps/qmo/src-tauri/target/release/bundle/macos/Qmo.app/Contents/MacOS/qmo-
 
 ## 壳与中枢页面
 
-中枢源（登录时的地址）在运行时得到一条 remote 能力，只含下面二十二个命令和两个拖动权限；本地命令、文件系统、shell、HTTP、对话框等插件都不给网页。参数按原始请求体逐项校验，多一个键、类型不对、超长、越界都拒绝；`qmo_local_agents`、`qmo_boot_layout`、`qmo_open_local_settings` 与十三条本机会话命令另在命令里核一次调用方页面与中枢同源，本机会话命令还只收主窗口。
+中枢源（登录时的地址）在运行时得到一条 remote 能力，只含下面二十四个命令和两个拖动权限；本地命令、文件系统、shell、HTTP、对话框等插件都不给网页。参数按原始请求体逐项校验，多一个键、类型不对、超长、越界都拒绝；`qmo_local_agents`、`qmo_boot_layout`、`qmo_open_local_settings` 与十五条本机会话命令另在命令里核一次调用方页面与中枢同源，本机会话命令还只收主窗口。
 
 | 命令 | 参数 |
 |---|---|
@@ -114,7 +114,7 @@ atlas/apps/qmo/src-tauri/target/release/bundle/macos/Qmo.app/Contents/MacOS/qmo-
 | `qmo_local_agents` | `rescan?`（布尔）；返回 `{agents}`。30 秒超时，同一时刻只跑一个 `qmo agents`，后到的等同一个结果；失败时以一行说明拒绝 |
 | `qmo_boot_layout` | `layout`：`page`（`chat`、`agents`、`code`）、`side`、`sideWidth` 0–1000、`rows` 0–60、`labels` 0–20、`theme?`、`colors?`（`{dark, page, sidebar}`，`#rrggbb`）；存进设置，骨架页按它画 |
 | `qmo_open_local_settings` | 无；打开壳的设置窗 |
-| `qmo_local_list`、`qmo_local_watch`、`qmo_local_pick_folder`、`qmo_local_forget_folder`、`qmo_local_start`、`qmo_local_send`、`qmo_local_stop`、`qmo_local_answer`、`qmo_local_set_mode`、`qmo_local_read`、`qmo_local_changes`、`qmo_local_diff`、`qmo_local_set_remote` | 本机会话，见下节与 `qmo-app.md` §5.2 |
+| `qmo_local_list`、`qmo_local_watch`、`qmo_local_pick_folder`、`qmo_local_forget_folder`、`qmo_local_start`、`qmo_local_send`、`qmo_local_stop`、`qmo_local_answer`、`qmo_local_set_mode`、`qmo_local_read`、`qmo_local_changes`、`qmo_local_diff`、`qmo_local_set_remote`、`qmo_local_rename`、`qmo_local_delete` | 本机会话，见下节与 `qmo-app.md` §5.2 |
 
 页面这一侧要做的：
 

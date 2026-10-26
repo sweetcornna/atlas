@@ -174,17 +174,87 @@ describe.skipIf(git === null || !posix)('changes in a Git folder', () => {
     })
   })
 
-  test('a diff past 256 KiB is cut between characters', async () => {
+  test('past the limits only counts: a diff over 256 KiB, an untracked file over 1 MiB, files past a thousand', async () => {
     const { work, context, sh } = repo()
-    // One ASCII byte first: the 256 KiB mark falls inside a character.
     write(path.join(work, 'long.txt'), `a${'字'.repeat(100_000)}\n`)
     sh('add', '.')
     sh('commit', '-qm', 'first')
     write(path.join(work, 'long.txt'), `${'文'.repeat(100_000)}\n`)
-    const cut = await diff(context, work, 'long.txt')
-    expect(cut.truncated).toBe(true)
-    expect(Buffer.byteLength(cut.text)).toBeLessThanOrEqual(256 * 1024)
-    expect(cut.text).not.toContain('\uFFFD')
+    expect(await diff(context, work, 'long.txt')).toEqual({
+      path: 'long.txt',
+      text: '',
+      truncated: true,
+      binary: false,
+      large: true,
+    })
+    write(path.join(work, 'huge.log'), 'x\n'.repeat(600_000))
+    const found = await changes(context, work)
+    expect(found.files.find(one => one.path === 'long.txt')).toEqual({
+      path: 'long.txt',
+      status: 'modified',
+      added: 1,
+      removed: 1,
+      binary: false,
+    })
+    expect(found.files.find(one => one.path === 'huge.log')).toEqual({
+      path: 'huge.log',
+      status: 'untracked',
+      added: 0,
+      removed: 0,
+      binary: false,
+      large: true,
+    })
+    expect(await diff(context, work, 'huge.log')).toMatchObject({
+      text: '',
+      large: true,
+    })
+    for (let i = 0; i < 1_003; i++)
+      write(path.join(work, 'many', `f${i}.txt`), 'x\n')
+    const many = await changes(context, work)
+    expect(many.files).toHaveLength(1_000)
+    expect(many).toMatchObject({ truncated: true, omitted: 5 })
+  })
+
+  test('against a given commit: what was committed since counts, what is in it does not', async () => {
+    const { work, context, sh } = repo()
+    write(path.join(work, 'a.txt'), '1\n')
+    sh('add', '.')
+    sh('commit', '-qm', 'first')
+    const base = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], {
+      cwd: work,
+      env: { PATH: '/usr/bin:/bin', GIT_CONFIG_NOSYSTEM: '1' },
+    })
+      .stdout.toString()
+      .trim()
+    write(path.join(work, 'a.txt'), '1\n2\n')
+    write(path.join(work, 'b.txt'), 'b\n')
+    sh('add', '.')
+    sh('commit', '-qm', 'second')
+    write(path.join(work, 'c.txt'), 'c\n')
+    expect((await changes(context, work)).files.map(one => one.path)).toEqual([
+      'c.txt',
+    ])
+    const since = await changes(context, work, base)
+    expect(since.base).toBe(base)
+    expect(since.files).toEqual([
+      {
+        path: 'a.txt',
+        status: 'modified',
+        added: 1,
+        removed: 0,
+        binary: false,
+      },
+      { path: 'b.txt', status: 'added', added: 1, removed: 0, binary: false },
+      {
+        path: 'c.txt',
+        status: 'untracked',
+        added: 1,
+        removed: 0,
+        binary: false,
+      },
+    ])
+    expect((await diff(context, work, 'a.txt', base)).text).toContain('+2')
+    expect((await diff(context, work, 'a.txt')).text).toBe('')
   })
 
   test('a session in a subfolder sees only its files, relative to itself', async () => {
