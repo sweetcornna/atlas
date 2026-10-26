@@ -74,6 +74,13 @@ export interface FakeShellOptions {
   readonly deleteRefusal?: string
   /** What `qmo_local_delete` answers. */
   readonly deleted?: object
+  /**
+   * The app's globals in every frame, as WebView2 injects them, instead of
+   * the top one only, as WKWebView and WebKitGTK do (`qmo-app.md` §11.2).
+   */
+  readonly inFrames?: boolean
+  /** The shell's `platform` (`macos` when not given). */
+  readonly platform?: 'macos' | 'windows' | 'linux'
 }
 
 export const FOLDER: FakeFolder = {
@@ -143,6 +150,7 @@ export function fakeShell(options: FakeShellOptions = {}): string {
   }
   return `
 (function () {
+  if (window.top !== window && ${options.inFrames === true ? 'false' : 'true'}) return;
   var config = ${JSON.stringify(config)};
   var shapes = ${JSON.stringify(SHAPES)};
   var KEY = '__qmoFakeRunner';
@@ -344,7 +352,7 @@ export function fakeShell(options: FakeShellOptions = {}): string {
     set: function (key, value) { config[key] = value; },
     channel: function () { return channel; }
   };
-  window.__QMO_SHELL__ = Object.freeze({ platform: 'macos', window: 'main', version: 'test' });
+  window.__QMO_SHELL__ = Object.freeze({ platform: ${JSON.stringify(options.platform ?? 'macos')}, window: 'main', version: 'test' });
   window.__TAURI__ = { core: { invoke: invoke, Channel: Channel } };
 })();
 `

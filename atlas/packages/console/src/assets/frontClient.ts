@@ -75,6 +75,12 @@ function frontScript(): string {
   // Work for a reader who may not hold one here. The side list, the menus
   // and the keys work; nothing asks the conversation routes.
   var CHATLESS = !!byId('fx') && byId('fx').hasAttribute('data-chatless');
+  // One pane of a window's (P37.18, assets/frontSplit.ts): its side list is
+  // the window's, so it never asks for its own.
+  var PANE = !!byId('fx') && byId('fx').getAttribute('data-pane') === '1';
+  // The window shows panes: its own view is hidden under them.
+  function split() { return !!window.qianmoSplit && window.qianmoSplit.on(); }
+  var APPLE = /Mac|iPhone|iPad/.test(navigator.platform || '');
   var HOME = CHAT ? '/app' : '/';
   var LAYOUT_QUERY = CHAT ? 'layout=chat' : '';
   var NARROW = '(max-width: ${FRONT_NARROW_PX}px)';
@@ -199,7 +205,7 @@ function frontScript(): string {
   // opening marks the fetch that is somebody switching to a conversation: the
   // server writes a ledger line for it (P15.9), and never for a refresh.
   function refreshView(opening, toBottom) {
-    if (CHATLESS || qc.isExpired()) return Promise.resolve();
+    if (CHATLESS || split() || qc.isExpired()) return Promise.resolve();
     var seq = ++viewSeq;
     var scroller = byId('fx-scroll');
     var stick = toBottom === true || atBottom(scroller);
@@ -318,7 +324,7 @@ function frontScript(): string {
   }
 
   function refreshSide() {
-    if (CHATLESS || qc.isExpired()) return Promise.resolve();
+    if (CHATLESS || PANE || qc.isExpired()) return Promise.resolve();
     var seq = ++sideSeq;
     var query = [];
     if (state.agent) query.push('agent=' + encodeURIComponent(state.agent));
@@ -542,6 +548,8 @@ function frontScript(): string {
   // its does not. What this page has seen it remembers itself, so storage
   // that refuses a write cannot bring a read dot back.
   var seenHere = {};
+  // On screen: the open conversation, or with panes up one of theirs.
+  function onScreen(id) { return split() ? window.qianmoSplit.shows(id) : id === state.active && showsState(); }
   function seenOf(key) {
     if (Object.prototype.hasOwnProperty.call(seenHere, key)) return seenHere[key];
     var kept = stored(key);
@@ -561,7 +569,7 @@ function frontScript(): string {
     var before = Object.prototype.hasOwnProperty.call(drawnAt, key) ? drawnAt[key] : null;
     drawnAt[key] = updated;
     if (before === null || !(updated > before) || waiting || !window.qianmoShell) return;
-    var away = document.hidden || !document.hasFocus() || !session || session !== state.active;
+    var away = document.hidden || !document.hasFocus() || !session || !onScreen(session);
     if (away) window.qianmoShell.notify(title, body, session);
   }
 
@@ -575,7 +583,7 @@ function frontScript(): string {
       var updated = Number(rows[i].getAttribute('data-updated')) || 0;
       var key = 'seen.s.' + id;
       var seen = seenOf(key);
-      var here = !!id && id === state.active && showsState() && !document.hidden;
+      var here = !!id && onScreen(id) && !document.hidden;
       if (updated && (here || seen === null)) { markSeen(key, updated); seen = updated; }
       var unread = !!updated && updated > (seen || 0);
       rows[i].classList.toggle('is-unread', unread);
@@ -595,7 +603,7 @@ function frontScript(): string {
       var latest = rows[i].getAttribute('data-latest') || '';
       var key = 'seen.' + address;
       var seen = seenOf(key);
-      var here = !!latest && latest === state.active && showsState() && !document.hidden;
+      var here = !!latest && onScreen(latest) && !document.hidden;
       if (updated && (here || seen === null)) { markSeen(key, updated); seen = updated; }
       var unread = !!updated && updated > (seen || 0);
       rows[i].classList.toggle('is-unread', unread);
@@ -1491,7 +1499,7 @@ function frontScript(): string {
       startPolling(tx('polling', '轮询中'));
       return;
     }
-    try { source = new EventSource(ROUTES.stream); }
+    try { source = window.qianmoSplit ? window.qianmoSplit.stream(ROUTES.stream) : new EventSource(ROUTES.stream); }
     catch (e) { startPolling(tx('polling', '轮询中')); return; }
     source.addEventListener('open', function () {
       var resync = !!pollTimer || opened;
@@ -1712,6 +1720,8 @@ function frontScript(): string {
       if (!event.shiftKey && key === 'n') { event.preventDefault(); newWork(); return; }
       if (!event.shiftKey && key === 'k') { event.preventDefault(); focusSearch(); return; }
       if (event.shiftKey && key === 's') { event.preventDefault(); toggleSide(); return; }
+      // ⌘B (Ctrl B elsewhere; ⌃B on a Mac stays the text box's).
+      if (!event.shiftKey && key === 'b' && (APPLE ? event.metaKey : event.ctrlKey)) { event.preventDefault(); toggleSide(); return; }
       if (!event.shiftKey && (key === '.' || event.code === 'Period')) {
         event.preventDefault();
         var panel = byId('fx-panel-toggle');
@@ -1804,7 +1814,24 @@ function frontScript(): string {
       }
       if (state.active || address !== state.agent) selectAgent(address);
       else paintPicker();
-    }
+    },
+    // What the panes ask of this page (assets/frontSplit.ts): show a pane's
+    // conversation here (agent=, session=, work=new, or the main agent's),
+    // say which one is here, and the side list's two keys.
+    open: function (query) {
+      var params = new URLSearchParams(String(query || ''));
+      if (params.get('work') === 'new') { newWork(); return; }
+      var id = params.get('session') || '';
+      state.active = id;
+      state.resident = false;
+      state.work = false;
+      if (!id) state.agent = params.get('agent') || mainAgent;
+      setAddress(true);
+      go(true);
+    },
+    where: function () { return addressQuery().slice(1); },
+    side: function () { toggleSide(); },
+    search: function () { focusSearch(); }
   };
 
   if (document.readyState === 'loading') {

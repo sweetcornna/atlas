@@ -1006,6 +1006,9 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 
 **响应头**（`respond.ts`）：每个 HTML 文档都带 `Content-Security-Policy`（`<meta>` 那份
 策略加 `frame-ancestors 'none'`）和 `X-Frame-Options: DENY`；`<meta>` 里那份保留不动。
+唯一的例外是分栏文档（P37.18，§6.1「分栏与侧栏」）：`/`、`/app`、`/code` 带且只带一个
+`pane=1` 时答 `frame-ancestors 'self'` 与 `X-Frame-Options: SAMEORIGIN`，只能被同源的窗口框住；
+这些地址答出的重定向、登录页、错误页和其余每个文档照旧是 `'none'` 与 `DENY`（`test/split.test.ts`）。
 **脚本按哈希放行**（H2）：每份文档内联的脚本都是编译期常量，`cspFor` 对文档实际携带的
 那段脚本算 SHA-256，写成 `script-src 'sha256-…'`，没有脚本的文档写 `script-src 'none'`；
 `'unsafe-inline'` 只留给样式（`<style>` 和 `style=""` 属性）。头与 `<meta>` 由
@@ -1342,6 +1345,30 @@ Work（浏览器里是 `/`，桌面版里是 `/app`）与 Code（`/code`），�
 不算进执行它的智能体那一行；三种状态（进行中 / 等你 / 完成）只用已有的 `running` 与审批轮询；
 新工作页 `?work=new` 不读转录；活动面板是会话面板顶上的第三个挂载点，跟转录一起换；
 文件卡在任何会话里都画；预览是脚本按需建的空 `sandbox` 框，页面 CSP 因此加 `frame-src 'self'`。
+
+#### 分栏与侧栏（P37.18）
+
+负责人 10-26：一个窗口里并排开几个会话；侧栏能收起，收起后在按钮上停一下浮出。定案、取舍
+与三种壳内核下的核对在 [qmo-app.md](qmo-app.md) §11，前台这边的要点：
+
+- **分栏是同源 iframe。**每格装一份分栏文档：`/`、`/app`、`/code` 加 `pane=1`，可带一个
+  `agent=`、`session=` 或 `work=new`。它就是那个页面，只是 `#fx` 带 `data-pane="1"`、不画
+  设置卡片、侧栏不显示，顶栏多 ⌄（这一行的 ⋯ 项，再加「只留这一栏」「关闭分栏」）和 ×。
+  响应头见 §5「响应头」。没有新路由，也没有新片段。
+- **一个窗口一条长连接。**分栏文档不开 `EventSource`：`qianmoSplit.stream(url)` 拿到的是窗口
+  文档那条 `/v0/chat/stream`（Code 有 Remote 时另有 `/v0/code/stream`）的转发；Code 的运行器
+  通道只由窗口文档登记一次，再转给各格。浏览器对同一来源的 HTTP/1.1 连接最多 6 条，内测
+  的 TLS 前置不协商 ALPN，所以每格自己开流的话 4 格就会让片段、发送、审批排队。
+- **最多 4 格，一列最多上下 2 格，每格不小于 320 × 200。**行 ⋯ 与右键菜单的「在右侧打开」
+  「在下方打开」、从侧栏拖一行、⌃⌘\ 与 ⌃⌘-（别的系统 Ctrl+Alt）开新格；分栏时侧栏点一行在焦点格
+  里打开，已开在某格的会话把焦点移过去；⌃] / ⌃[ 换焦点，⌃⌘W 关焦点格，关到一格回到单栏。
+  布局按设备记在 `localStorage` 的 `qianmo.split.work` 与 `qianmo.split.code`，不合规整份丢弃。
+  Work 与 Code 不混放。
+- **侧栏收起与悬停浮出。**⌘B（原 ⌘⇧S 仍可用）或按钮收起，状态记在 `qianmo.front.side`；收起后
+  在按钮上停 300 ms 浮出浮层，离开按钮与浮层 250 ms 后收回，开着菜单、拖动、对话框或键盘焦点
+  在里面时不收；宽窗口里用手指点按钮是抽屉，鼠标、触控笔、键盘点按钮是正式展开（按指针类型判断，不按媒体查询）。
+- 实现：`assets/frontSplit.ts`（`FRONT_SPLIT_JS`，单独预算 52,000 字，按哈希进 CSP）与
+  `view/frontSplit.ts`；前台脚本只加了几处挂钩，`CODE_JS` 没改。
 
 旧 `/fragments/chat/sessions|thread|greet` 与 `/v0/chat/*` 保持兼容。前台实现位于
 `routes/front.ts`、`view/front.ts`、`view/frontStyle.ts` 与 `assets/frontClient.ts`，

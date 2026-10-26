@@ -73,6 +73,11 @@ function shellScript(): string {
     for (var i = 0; i < mods.length; i++) mods[i].textContent = '⌘';
     var shifts = document.querySelectorAll('kbd[data-shift]');
     for (var j = 0; j < shifts.length; j++) shifts[j].textContent = '⇧';
+    // The panes' keys (P37.18): ⌃⌘ on a Mac where Ctrl+Alt is elsewhere.
+    var ctrls = document.querySelectorAll('kbd[data-ctrl]');
+    for (var c = 0; c < ctrls.length; c++) ctrls[c].textContent = '⌃';
+    var alts = document.querySelectorAll('kbd[data-modalt]');
+    for (var a = 0; a < alts.length; a++) alts[a].textContent = '⌘';
   }
 
   // The device's sign-out, ahead of the runtime's own submit handling.

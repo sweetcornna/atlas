@@ -1207,7 +1207,8 @@ describe.skipIf(SKIP !== null)('Code: local sessions', () => {
       expect(
         await tab.evaluate<unknown>(`({
           open: ${q(`${row} .fx-more`)}.open,
-          items: [...document.querySelectorAll('${row} .fx-menu-item')].map(b => b.textContent),
+          // The panes' two (P37.18) are copied in after these as the menu opens.
+          items: [...document.querySelectorAll('${row} .fx-menu-item:not(.fx-split-item)')].map(b => b.textContent),
           label: ${q(`${row} .fx-more-btn`)}.getAttribute('aria-label'),
         })`),
       ).toEqual({
