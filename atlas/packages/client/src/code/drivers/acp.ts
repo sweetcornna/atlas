@@ -34,6 +34,7 @@ import type {
   AgentHooks,
   AgentProcess,
   AskView,
+  Driver,
   ToolView,
   TurnOutcome,
 } from './agent.js'
@@ -702,4 +703,24 @@ export class AcpAgent implements AgentProcess {
     }
     await stopped
   }
+}
+
+export const ACP_DRIVER: Driver = {
+  nativeKind: 'acp-session',
+  // The agent gives the id (`session/new`).
+  newNativeId: () => '',
+  start: input =>
+    new AcpAgent({
+      profile: acpProfile(input.agentId),
+      name: input.name,
+      program: input.program,
+      root: input.root,
+      env: input.env,
+      nativeId: input.native.id,
+      started: input.native.started,
+      mode: input.mode,
+      hooks: input.hooks,
+      interruptGraceMs: input.interruptGraceMs,
+      termGraceMs: input.termGraceMs,
+    }),
 }

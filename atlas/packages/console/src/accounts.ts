@@ -1317,6 +1317,15 @@ export class AccountBook {
   }
 
   /**
+   * The device whose client ticket opened `sid`, or `null` (a session that
+   * came in through `/login`, or none at all). The Remote list leaves that
+   * device's own copies out (`routes/codeApi.ts`).
+   */
+  sessionDevice(sid: string): string | null {
+    return this.#sessionOf(sid)?.device ?? null
+  }
+
+  /**
    * The principal behind a session cookie, or why there is none.
    *
    * `touch` is false for the stream's own re-checks: an open `EventSource` is

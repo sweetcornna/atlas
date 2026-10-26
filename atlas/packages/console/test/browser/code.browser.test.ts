@@ -1114,6 +1114,54 @@ describe.skipIf(SKIP !== null)('Code: local sessions', () => {
     }
   }, 30_000)
 
+  test('outside Git: the files the agent reported for its last turn, said so', async () => {
+    const notes = [
+      'diff --git a/notes.md b/notes.md',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/notes.md',
+      '@@ -0,0 +1 @@',
+      '+written by codex',
+    ].join('\n')
+    const { tab } = await open(browser, served.base, {
+      changes: {
+        source: 'session',
+        truncated: false,
+        files: [
+          {
+            path: 'notes.md',
+            status: 'added',
+            added: 1,
+            removed: 0,
+            binary: false,
+          },
+        ],
+      },
+      diffs: { 'notes.md': notes },
+    })
+    try {
+      await begin(tab, 'write the notes')
+      await tab.waitFor(
+        `document.querySelectorAll('#code-files .fx-code-file').length === 1`,
+      )
+      await tab.evaluate(`${q('#code-files .fx-code-frow')}.click()`)
+      await tab.waitFor(`${q('#code-files .fx-diff .fx-diff-add')} !== null`)
+      expect(
+        await tab.evaluate<unknown>(`({
+          note: ${q('#code-note')}.textContent,
+          files: [...document.querySelectorAll('#code-files .fx-code-frow')].map(r => r.textContent),
+          lines: ${q('#code-files .fx-diff')}.children.length,
+        })`),
+      ).toEqual({
+        note: '最近一轮的改动（不是 Git 仓库）',
+        files: ['Anotes.md+1\u22120'],
+        lines: notes.split('\n').length,
+      })
+    } finally {
+      await tab.close()
+    }
+  }, 30_000)
+
   test('three languages', async () => {
     const cases = [
       [

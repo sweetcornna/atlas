@@ -165,6 +165,7 @@ describe.skipIf(!posix)('the compiled qmo with an ACP agent', () => {
     const hello = await call('hello')
     expect((hello.features as Message).protocols).toEqual([
       'claude-stream',
+      'codex-app-server',
       'acp',
     ])
     const folder = await call('folders.add', { path: at.work })

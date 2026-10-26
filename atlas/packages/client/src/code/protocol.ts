@@ -34,9 +34,9 @@ export class CodeError extends Error {
 
 /** What this runner drives; the page offers only agents whose protocol is here. */
 export const FEATURES = {
-  protocols: ['claude-stream', 'acp'],
+  protocols: ['claude-stream', 'codex-app-server', 'acp'],
   worktree: false,
-  remote: false,
+  remote: true,
 } as const
 
 /** The runtime catalog's six ids, the only ones a page may name. */
@@ -73,7 +73,8 @@ export interface Summary {
   readonly mode: Mode
   readonly state: SessionState
   readonly worktree?: { readonly branch: string }
-  readonly remote: false
+  /** Remote on: synced to the hub over the device link (§5). */
+  readonly remote: boolean
   readonly createdAt: number
   readonly updatedAt: number
   readonly lastSeq: number
@@ -127,6 +128,8 @@ export interface CodeTurn {
   readonly tool?: ToolInfo
   readonly ask?: AskInfo
   readonly clientId?: string
+  /** A person's line sent from another device over the link (§5.1). */
+  readonly origin?: 'remote'
 }
 
 /** A line of `session.read`. */
@@ -162,6 +165,12 @@ export type CodeEvent =
       readonly session: string
       readonly kind: 'thinking' | 'tool' | 'waiting' | 'queued' | 'starting'
       readonly words: string
+    }
+  /** The device link's state (§5.1): off, connecting, up, retrying, refused. */
+  | {
+      readonly type: 'link'
+      readonly state: 'off' | 'connecting' | 'up' | 'retrying' | 'refused'
+      readonly reason?: string
     }
 
 // ---- checks ------------------------------------------------------------------

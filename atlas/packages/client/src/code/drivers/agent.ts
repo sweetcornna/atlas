@@ -73,13 +73,11 @@ export interface AgentHooks {
   ): void
   /** Settles with the person's answer; a `signal` abort means it was denied already. */
   ask(ask: AskView, signal: AbortSignal): Promise<AskAnswer>
-  /** The runner answered a question about this call by the mode (§4.4). */
-  approvedByMode(toolId: string): void
   /** A line of the runner's own in the conversation. */
   notice(text: string, severity: 'info' | 'warn' | 'error'): void
   /**
-   * The agent's own conversation exists: the next process resumes it.
-   * `nativeId`: its id, where the agent gives it (an ACP session).
+   * The agent's own conversation exists: the next process resumes it, by
+   * `nativeId` where the agent gave the id (a Codex thread, an ACP session).
    */
   started(nativeId?: string): void
   /** The mode in effect changed by itself (a fallback). */
@@ -88,6 +86,10 @@ export interface AgentHooks {
   noAuto(): void
   childStarted(child: ChildInfo): void
   childGone(pid: number): void
+  /** The runner answered the agent's question about this tool by the mode. */
+  approvedByMode(toolId: string): void
+  /** The turn's changes so far, as the agent reports them (one unified diff). */
+  turnDiff(diff: string): void
 }
 
 export interface TurnOutcome {
@@ -109,4 +111,34 @@ export interface AgentProcess {
   abort(): void
   /** Ends the process (idle, out of room, shutdown). */
   stop(): Promise<void>
+}
+
+/** What a driver starts a session's agent with. */
+export interface AgentStart {
+  /** The runtime catalog's id (`claude-code`, `gemini`, …). */
+  readonly agentId: string
+  /** The agent's display name. */
+  readonly name: string
+  readonly program: string
+  /** The agent's working folder. */
+  readonly root: string
+  readonly env: Readonly<Record<string, string>>
+  /** The agent's own conversation: its id (`''` until the agent gives one), and whether it exists. */
+  readonly native: { readonly id: string; readonly started: boolean }
+  readonly mode: Mode
+  /** Known already: this program has no `auto` (Claude Code). */
+  readonly noAuto: boolean
+  readonly hooks: AgentHooks
+  /** How long an interrupt has before the group gets SIGTERM, then SIGKILL. */
+  readonly interruptGraceMs: number
+  readonly termGraceMs: number
+}
+
+/** One native protocol's driver (§4.3.5), registered in `drivers/index.ts`. */
+export interface Driver {
+  /** `session.json`'s `native.kind`. */
+  readonly nativeKind: string
+  /** A new session's native id: chosen here, or `''` where the agent gives it. */
+  newNativeId(): string
+  start(input: AgentStart): AgentProcess
 }
