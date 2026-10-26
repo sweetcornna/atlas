@@ -86,7 +86,9 @@ async function renderSlides(deck: WorkSlides): Promise<Uint8Array> {
     drawSlide(pptx, slide, one, theme, base)
     if (one.notes !== undefined) slide.addNotes(one.notes)
   })
-  const out = await pptx.write({ outputType: 'uint8array' })
+  // 'STREAM' is the one output type pptxgenjs deflates (a Node Buffer);
+  // the others are stored uncompressed whatever `compression` says.
+  const out = await pptx.write({ outputType: 'STREAM', compression: true })
   if (!(out instanceof Uint8Array)) throw new Error('pptx output is not bytes')
   return out
 }
