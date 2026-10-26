@@ -454,7 +454,7 @@ omp 的待办工具 `todo` 本来就在常驻工具面里（`RESIDENT_SESSION_TO
 
 ### 8.4 门禁（Bun 1.4.3，提交 `d444ba5db`）
 
-`bun run precheck` 0、`bun run atlas:check:unused` 0、`bun run atlas:check:cycles` 0（运行期与总计都是 0）、`bun run verify` 0（含 `atlas:sbom -- --check`、`atlas:build:qm`、`atlas:check:qm-smoke`、`atlas:build:client`、`atlas:check:client-smoke`）。第一轮 precheck 的 node-host 红一条 `residentStderr.test.ts`「real startup failure redacts combined truncated PEM…」超时，在相关文件与基点相同的检出上单跑 6 次红 1 次，是存量。
+`bun run precheck` 0、`bun run atlas:check:unused` 0、`bun run atlas:check:cycles` 0（运行期与总计都是 0）、`bun run verify` 0（含 `atlas:sbom -- --check`、`atlas:build:qm`、`atlas:check:qm-smoke`、`atlas:build:client`、`atlas:check:client-smoke`）。第一轮 precheck 的 node-host 红一条 `residentStderr.test.ts`「real startup failure redacts combined truncated PEM…」超时，在相关文件与基点相同的检出上单跑 6 次红 1 次，是存量。`bun.lock` 变了，CI 会跑 omp 基座自己的测试：本机 `bun run test:ts` 退出 1，202 条命令 197 过，红的 5 条（openai-codex-stream 一条、shell-snapshot、broker-idle-shutdown、browser-attach、browser-nav-frames-dialogs）都是 15 路并行下的超时，这几个文件在本分支单跑 207 条全过。
 
 `qm` 体积：`dist/qm-darwin-arm64` 242 180 224 B，同基点其他工作树当天的构建 237 747 904 B，增量约 4.4 MB，主要是三个文档库与 jszip。
 
