@@ -163,7 +163,7 @@ describe('making, writing and delivering', () => {
   test('a deck lands in the outputs folder with its preview and description; folders 0700, files 0600', async () => {
     const node = work()
     const made = await tool(node, WORK_TOOL_NAMES.make).handler(DECK, CTX)
-    expect(made.ok).toBe(true)
+    expect(made).toMatchObject({ ok: true })
     expect(made.text).toContain('Made 季度汇报.pptx (2 slides')
     const file = outputs('季度汇报.pptx')
     expect(fs.statSync(file).mode & 0o777).toBe(0o600)
@@ -314,7 +314,7 @@ describe('making, writing and delivering', () => {
       { ...DECK, pdf: true },
       CTX,
     )
-    expect(made.ok).toBe(true)
+    expect(made).toMatchObject({ ok: true })
     expect(made.text).toContain(
       'PDF not made: this node has no Chrome or Chromium',
     )
@@ -330,7 +330,7 @@ describe('making, writing and delivering', () => {
         { ...DECK, pdf: true },
         CTX,
       )
-      expect(made.ok).toBe(true)
+      expect(made).toMatchObject({ ok: true })
       expect(made.text).toContain('Printed 季度汇报.pdf')
       const pdf = fs.readFileSync(outputs('季度汇报.pdf'))
       expect(pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-')
