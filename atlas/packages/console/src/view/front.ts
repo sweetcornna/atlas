@@ -21,8 +21,9 @@
  * conversation with it, or its welcome before the first line, and nothing
  * opens a second one. What the reader had with it before, and what schedules,
  * channels and background tasks opened, are its 其他对话 behind ⋯, read here
- * and not written in. Under the agents, by day, the conversations that are
- * not with one agent (P37.17 B; none yet, so nothing is drawn there). The
+ * and not written in. Above 搜索, 开始一项工作; under the agents, by day,
+ * the reader's work sessions with their state (P37.17 B, `frontWork.ts`,
+ * `docs/dev/work-tasks.md` §9), a work being no agent's row. The
  * transcript is bubbles in one centred column (the agent's light, the
  * person's dark), with a time divider where the conversation paused, the
  * process folded into one checklist per step group, and the composer pinned
@@ -87,6 +88,7 @@ import { CODE_RENDER_JS } from '../assets/codeRender.js'
 import { FRONT_JS } from '../assets/frontClient.js'
 import { NAV_MOUNTED_JS } from '../assets/nav.js'
 import { FRONT_PANEL_JS } from '../assets/frontPanel.js'
+import { FRONT_WORK_JS } from '../assets/frontWork.js'
 import { FRONT_SHELL_JS } from '../assets/frontShell.js'
 import { FRONT_TOOLS_JS } from '../assets/frontTools.js'
 import type { ConsoleRole } from '../auth.js'
@@ -142,6 +144,20 @@ import {
   permissionConfirm,
 } from './frontTools.js'
 import { FRONT_TEXT, frontClientText, type FrontText } from './frontText.js'
+import {
+  activityPanel,
+  fileCards,
+  fileTemplates,
+  flowChip,
+  flowIcon,
+  flowTag,
+  FRONT_WORK_CSS,
+  newWorkWelcome,
+  previewDialog,
+  WORK_TEXT,
+  workflowOptions,
+  workRowState,
+} from './frontWork.js'
 import { qianmoMark } from './mark.js'
 import { renderRichText } from './richText.js'
 import { type SourceLinks, sourceFooter } from './source.js'
@@ -400,7 +416,10 @@ interface AgentLine {
 
 function linesOf(model: FrontSideModel): ReadonlyMap<string, AgentLine> {
   const out = new Map<string, AgentLine>()
+  // The reader's work sessions are in the list by day, not the agent's row.
+  const works = new Set(model.works.map(session => session.id))
   for (const session of model.sessions) {
+    if (works.has(session.id)) continue
     const was = out.get(session.target)
     // The open conversation shows its own work in the thread.
     const busy = session.running === true && session.id !== model.activeId
@@ -431,8 +450,8 @@ export interface FrontSideModel {
    */
   readonly residents: ReadonlyMap<string, ChatSession>
   /**
-   * The conversations that are not with one agent, by day, under the agents
-   * (P37.17 B, 广泛性工作). None exist yet, so the list is drawn empty.
+   * The reader's work sessions (P37.17 B, 广泛性工作, `chatResident.ts`
+   * `workSessions`), by day under the agents.
    */
   readonly works: readonly ChatSession[]
   readonly sessionsFailure: ConsoleFailure | null
@@ -515,7 +534,10 @@ function agentRow(
   const t = FRONT_TEXT[model.lang]
   const target = who.target
   const verdict = stateOf(target, model.targets === null, t)
-  const current = who.address === model.selected
+  // A work session on screen is its own row's, not its agent's (P37.17 B).
+  const current =
+    who.address === model.selected &&
+    !model.works.some(session => session.id === model.activeId)
   const running = line?.running ?? 0
   const latest = line?.latest
   const live = verdict.tone === 'ok'
@@ -714,7 +736,12 @@ function renderHistory(model: FrontSideModel): string {
       open + head + failureBar(model.sessionsFailure, '会话列表') + `</section>`
     )
   }
-  const resident = new Set([...model.residents.values()].map(one => one.id))
+  // Neither the reader's resident conversations nor their work sessions:
+  // those are the agents' rows and the list by day.
+  const resident = new Set([
+    ...[...model.residents.values()].map(one => one.id),
+    ...model.works.map(one => one.id),
+  ])
   const ordered = model.sessions
     .filter(session => !resident.has(session.id))
     .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -862,39 +889,33 @@ function sessionMenu(
 }
 
 /**
- * One conversation in `/app`'s list: its title, the agent's small figure
- * when it is not the main agent's, the live mark while it waits for an
- * answer, the unread dot, and ⋯. The row carries what the page needs for the
- * unread dot and the shell's notification: when it last moved, whether it
- * waits, the agent, and the last line.
+ * One work session in the list (P37.17 B, `work-tasks.md` §9.1): its
+ * workflow's mark, its title, its state — 进行中, 等你 or 完成, the three
+ * drawn and `data-state` / the approval poll's `data-asking` showing one
+ * (`frontWork.ts`) — the unread dot, and ⋯. Who carries it out is in the
+ * row's tooltip and found by the search. The row carries what the page
+ * needs for the unread dot and the shell's notification: when it last
+ * moved, whether it waits, the agent, and the last line.
  */
 function recentItem(session: ChatSession, model: FrontSideModel): string {
   const t = FRONT_TEXT[model.lang]
   const active = session.id === model.activeId
   const running = session.running === true
   const title = sessionTitle(session, t)
-  const face =
-    session.target === model.main
-      ? ''
-      : `<span class="fx-ritem-face">${avatarSvg(
-          model.faces.agent(session.target),
-          { size: 18, state: running ? 'thinking' : 'idle' },
-        )}</span>`
   const cls =
     `fx-ritem-row${active ? ' is-current' : ''}` +
     `${running ? ' is-busy' : ''}`
   return (
     `<div class="${cls}" data-session="${attr(session.id)}" data-target="${attr(session.target)}" ` +
     `data-agent="${attr(session.agent)}" data-updated="${attr(String(session.updatedAt))}"` +
-    `${running ? ' data-running="1"' : ''} data-preview="${attr(chatPreview(session.preview))}">` +
+    `${running ? ' data-running="1"' : ''} data-preview="${attr(chatPreview(session.preview))}" ` +
+    `data-work="1" data-state="${running ? 'running' : 'done'}">` +
     `<button type="button" class="fx-ritem" data-action="fx-open" data-session="${attr(session.id)}"` +
-    `${active ? ' aria-current="true"' : ''} title="${attr(title)}">` +
-    face +
+    `${active ? ' aria-current="true"' : ''} title="${attr(`${title} · ${session.agent}`)}">` +
+    `<span class="fx-ritem-mark">${flowIcon(session.workflow)}</span>` +
     `<span class="fx-ritem-title">${escapeHtml(title)}</span>` +
-    (running
-      ? `<span class="fx-ritem-live" role="img" aria-label="${attr(t.working)}"><span class="fx-pulse"></span></span>`
-      : '') +
     `</button>` +
+    workRowState(model.lang) +
     `<span class="fx-unread" aria-hidden="true"></span>` +
     sessionMenu(session, title, t) +
     `</div>`
@@ -902,14 +923,14 @@ function recentItem(session: ChatSession, model: FrontSideModel): string {
 }
 
 /**
- * Under the agents on both faces (P37.17): the conversations that are not
- * with one agent — 广泛性工作, the second half of P37.17 — newest first under
- * 今天 / 昨天 / 过去 7 天 / 更早. A conversation with an agent is that agent's
- * row, or under its ⋯ when it is not the resident one; a background task's
- * worker (P29) stays in the panel's 后台任务. Until there are such
- * conversations the list has nothing in it and nothing is drawn for it: no
- * heading, no line saying it is empty. All four groups are always drawn, the
- * empty ones hidden, so the page can move rows between them.
+ * Under the agents on both faces (P37.17): the reader's work sessions —
+ * 广泛性工作, B — newest first under 今天 / 昨天 / 过去 7 天 / 更早. A
+ * conversation with an agent is that agent's row, or under its ⋯ when it is
+ * not the resident one; a background task's worker (P29) stays in the
+ * panel's 后台任务. With no work session the list has nothing in it and
+ * nothing is drawn for it: no heading, no line saying it is empty. All four
+ * groups are always drawn, the empty ones hidden, so the page can move rows
+ * between them.
  */
 function renderRecents(model: FrontSideModel): string {
   const t = FRONT_TEXT[model.lang]
@@ -936,8 +957,9 @@ function renderRecents(model: FrontSideModel): string {
 }
 
 /**
- * `/app`'s agent picker, the menu under the composer: the roster in the
- * side list's order, the agent the next conversation goes to checked. An
+ * The agent picker's menu under the composer: the roster in the side list's
+ * order, the agent the next conversation goes to checked — on `/app`'s
+ * welcome, and as 由谁来做 on the new work page of either face (P37.17 B). An
  * agent that cannot be dialled is listed and cannot be picked.
  */
 function renderRoster(model: FrontSideModel): string {
@@ -987,7 +1009,8 @@ function renderRoster(model: FrontSideModel): string {
   })
   return (
     open +
-    `<p class="fx-pick-head">${escapeHtml(t.agents)}</p>` +
+    `<p class="fx-pick-head fx-pick-head-agents">${escapeHtml(t.agents)}</p>` +
+    `<p class="fx-pick-head fx-pick-head-work">${escapeHtml(WORK_TEXT[model.lang].whoDoes)}</p>` +
     items.join('') +
     `</div>`
   )
@@ -995,10 +1018,10 @@ function renderRoster(model: FrontSideModel): string {
 
 /**
  * The side's mounts, apart: the document puts each where it lives. Both
- * faces have the agents with the conversations by day under them, and the
- * other conversations for the dialog an agent's ⋯ opens (P37.17); `/` has
- * the running strip, `/app` the composer's agent picker. A face's empty
- * parts are empty strings.
+ * faces have the agents with the work sessions by day under them, the other
+ * conversations for the dialog an agent's ⋯ opens (P37.17), and the
+ * composer's agent picker; `/` has the running strip. A face's empty parts
+ * are empty strings.
  */
 interface FrontSideParts {
   readonly agents: string
@@ -1017,7 +1040,7 @@ export function frontSideParts(model: FrontSideModel): FrontSideParts {
       ? `<div class="fx-stack" id="fx-stack" hidden></div>`
       : renderStack(model),
     recents: renderRecents(model),
-    roster: chat ? renderRoster(model) : '',
+    roster: renderRoster(model),
   }
 }
 
@@ -1054,11 +1077,22 @@ export interface FrontViewModel {
    */
   readonly resident?: boolean
   /**
-   * The open conversation is not one of the reader's resident ones — an
-   * older one, a schedule's, a channel's, a worker's, someone else's: read
-   * here, not written in. The way back is the agent's own conversation.
+   * The open conversation is not one of the reader's resident ones or work
+   * sessions — an older one, a schedule's, a channel's, a worker's, someone
+   * else's: read here, not written in. The way back is the agent's own
+   * conversation.
    */
   readonly readOnly?: boolean
+  /**
+   * The open conversation is one of the reader's own work sessions (P37.17
+   * B): written in here, with the activity beside it.
+   */
+  readonly work?: boolean
+  /**
+   * Nothing is open and the page is 开始一项工作 (P37.17 B): the workflows
+   * over the composer, `agent` being who does it.
+   */
+  readonly newWork?: boolean
 }
 
 /** The three facts under a person's line, as one compact mark. */
@@ -1145,6 +1179,8 @@ function userTurn(
     `${last ? ' is-last' : ''}${queued ? ' is-queued' : ''}`
   return (
     `<article class="${cls}">` +
+    // Sent with a workflow (P37.17 B): its mark over the line.
+    (turn.workflow === undefined ? '' : flowTag(turn.workflow, lang)) +
     `<div class="fx-bubble">${renderRichText(turn.text)}</div>` +
     `<div class="fx-meta"><span class="fx-meta-more">${timeTag(turn.at, 'clock', 'fx-when')}` +
     `${idMarks(turn, admin, t)}</span>${
@@ -1350,6 +1386,19 @@ function renderMessages(
     steps = []
   }
   for (const turn of turns) {
+    // Files handed over (P37.17 B, `work-tasks.md` §3.2): cards of their
+    // own, never folded into the steps around them.
+    if (
+      turn.variant === 'notice' &&
+      turn.noticeSource === 'files' &&
+      (turn.files?.length ?? 0) > 0
+    ) {
+      flush(false)
+      pause(turn.at)
+      runHead()
+      out.push(fileCards(turn, session.id, model.lang))
+      continue
+    }
     if (turn.variant === 'notice') {
       if (steps.length === 0) pause(turn.at)
       else previous = turn.at
@@ -1453,6 +1502,7 @@ function greeting(model: FrontViewModel): string {
 }
 
 function welcome(model: FrontViewModel): string {
+  if (model.newWork === true) return newWorkWelcome(model.lang)
   if (model.layout === 'chat') return greeting(model)
   const t = FRONT_TEXT[model.lang]
   const address = model.agent
@@ -1561,9 +1611,10 @@ function headInfo(
 }
 
 /**
- * `/app`'s head: the conversation's title, and the agent as a chip — figure,
- * name, node and, once the page has it, the model — that opens the agent's
- * facts. A new conversation has no head: the bar keeps only its buttons.
+ * `/app`'s head, and a work session's on either face (P37.17 B): the
+ * conversation's title, and the agent as a chip — figure, name, node and,
+ * once the page has it, the model — that opens the agent's facts. A new
+ * conversation or a new work has no head: the bar keeps only its buttons.
  */
 function renderChatHead(model: FrontViewModel): string {
   const t = FRONT_TEXT[model.lang]
@@ -1609,7 +1660,12 @@ function renderChatHead(model: FrontViewModel): string {
 }
 
 function renderHead(model: FrontViewModel): string {
-  if (model.layout === 'chat') return renderChatHead(model)
+  if (
+    model.layout === 'chat' ||
+    model.newWork === true ||
+    model.transcript?.session.work === true
+  )
+    return renderChatHead(model)
   const t = FRONT_TEXT[model.lang]
   const transcript = model.transcript
   const address = transcript?.session.target ?? model.agent ?? ''
@@ -1668,16 +1724,20 @@ function readOnlyLine(
   )
 }
 
-/** The view's two mounts, apart: the document puts the head in the top bar. */
+/**
+ * The view's three mounts, apart: the document puts the head in the top bar
+ * and a work session's activity in the session panel (P37.17 B).
+ */
 interface FrontViewParts {
   readonly head: string
   readonly thread: string
+  readonly activity: string
 }
 
-/** The view fragment: the head and the thread, two mounts swapped by id. */
+/** The view fragment: the head, the thread and the activity, swapped by id. */
 export function renderFrontView(model: FrontViewModel): string {
   const parts = frontViewParts(model)
-  return parts.head + parts.thread
+  return parts.head + parts.thread + parts.activity
 }
 
 export function frontViewParts(model: FrontViewModel): FrontViewParts {
@@ -1698,7 +1758,8 @@ export function frontViewParts(model: FrontViewModel): FrontViewParts {
     const startable = model.target?.dialable === true
     attrs =
       `data-target="${attr(address)}" data-open="0"` +
-      `${startable ? ' data-start="1"' : ''} data-welcome="1"`
+      `${startable ? ' data-start="1"' : ''} data-welcome="1"` +
+      `${model.newWork === true ? ' data-new-work="1"' : ''}`
   } else {
     inner =
       renderMessages(model, transcript) +
@@ -1708,6 +1769,7 @@ export function frontViewParts(model: FrontViewModel): FrontViewParts {
       `data-target="${attr(address)}" data-open="1" ` +
       `data-session="${attr(transcript.session.id)}"${running ? ' data-running="1"' : ''}` +
       `${model.resident === true ? ' data-resident="1"' : ''}` +
+      `${model.work === true ? ' data-work="1"' : ''}` +
       `${model.readOnly === true ? ' data-readonly="1"' : ''}`
   }
   const agentName =
@@ -1721,6 +1783,10 @@ export function frontViewParts(model: FrontViewModel): FrontViewParts {
       `data-state="${attr(verdict.text)}" data-tone="${attr(verdict.tone)}">` +
       inner +
       `</div>`,
+    activity: activityPanel(
+      model.failure === null ? transcript : null,
+      model.lang,
+    ),
   }
 }
 
@@ -1761,8 +1827,10 @@ export interface FrontDocumentModel {
   readonly approvals?: ApproverRole
   /** Which face the document is (`/` or `/app`); absent is `/`'s. */
   readonly layout?: FrontLayout
-  /** `/app`: the agent a new conversation goes to, for the composer's picker. */
+  /** The agent a new conversation or a new work goes to, for the composer's picker. */
   readonly picked?: string | null
+  /** The page is 开始一项工作 (P37.17 B, `frontWork.ts`). */
+  readonly newWork?: boolean
   /**
    * The settings card (`view/shell.ts`): drawn closed on every front a reader
    * who may see the management side gets, open on an area's address.
@@ -1787,18 +1855,23 @@ function composer(
   enabled: boolean,
   admin: boolean,
   t: FrontText,
+  lang: Lang,
   picker = '',
 ): string {
   const off = enabled ? '' : ' disabled'
-  const commands = CHAT_LOCAL_COMMANDS.map(
-    name =>
-      `<button type="button" class="fx-cmd" role="option" id="${attr(`fx-cmd-${name}`)}" ` +
-      `data-cmd="${attr(`/${name}`)}" tabindex="-1">` +
-      `<code class="mono">/${escapeHtml(name)}</code><span>${escapeHtml(t.commandWords[name] ?? '')}</span></button>`,
-  ).join('')
+  // The workflows first (P37.17 B): `/` picks one for the next line.
+  const commands =
+    workflowOptions(lang) +
+    CHAT_LOCAL_COMMANDS.map(
+      name =>
+        `<button type="button" class="fx-cmd" role="option" id="${attr(`fx-cmd-${name}`)}" ` +
+        `data-cmd="${attr(`/${name}`)}" tabindex="-1">` +
+        `<code class="mono">/${escapeHtml(name)}</code><span>${escapeHtml(t.commandWords[name] ?? '')}</span></button>`,
+    ).join('')
   return (
     `<form class="fx-composer" id="fx-composer" novalidate>` +
     `<div class="fx-cmds" id="fx-cmds" role="listbox" aria-label="${attr(t.localCommands)}" hidden>${commands}</div>` +
+    flowChip(lang) +
     `<label class="sr-only" for="fx-text">${escapeHtml(t.message)}</label>` +
     `<textarea id="fx-text" rows="1" spellcheck="false" ` +
     `maxlength="${attr(String(MAX_CHAT_TEXT_LENGTH))}" aria-describedby="fx-status" ` +
@@ -1819,18 +1892,22 @@ function composer(
 }
 
 /**
- * `/app`'s agent picker under the composer's line: who the next
- * conversation goes to, the main agent unless another was picked. Shown only
- * over a new conversation; an open one already has its agent. Its menu is
- * the side fragment's `#fx-agent-menu`, redrawn with the side list.
+ * The agent picker under the composer's line: who the next conversation
+ * goes to on `/app`'s welcome, and 由谁来做 on the new work page of either
+ * face (P37.17 B) — the main agent unless another was picked. Shown only
+ * there; an open conversation already has its agent, and on `/` an agent's
+ * welcome is that agent's. Its menu is the side fragment's
+ * `#fx-agent-menu`, redrawn with the side list.
  */
 function agentPicker(model: FrontDocumentModel, t: FrontText): string {
   const address = model.picked ?? ''
   const name = address === '' ? t.pickAgent : namesOf(address).agent
   const face =
     address === '' ? '' : avatarSvg(model.faces.agent(address), { size: 18 })
+  const shown =
+    model.welcome && (model.newWork === true || model.layout === 'chat')
   return (
-    `<div class="fx-pick fx-agent-pick" id="fx-agent-pick"${model.welcome ? '' : ' hidden'}>` +
+    `<div class="fx-pick fx-agent-pick" id="fx-agent-pick"${shown ? '' : ' hidden'}>` +
     `<button type="button" class="fx-pick-btn fx-agent-btn" id="fx-agent-btn" aria-haspopup="menu" ` +
     `aria-expanded="false" aria-controls="fx-agent-menu" title="${attr(t.pickAgent)}">` +
     `<span class="fx-agent-btn-face" id="fx-agent-face">${face}</span>` +
@@ -1992,13 +2069,23 @@ function sideHead(
 }
 
 /**
- * Work's rows under the switch: 搜索. Talking to an agent is its row in the
- * list (P37.17), so there is no 新对话 here; 开始一项工作 (B, 广泛性工作)
- * takes the row above 搜索 when it exists, with ⌘N.
+ * Work's rows under the switch: 开始一项工作 (P37.17 B, 广泛性工作; ⌘N, or
+ * ⌘⇧O in a browser) and 搜索. Talking to an agent is its row in the list
+ * (P37.17 A), so there is no 新对话 here.
  */
-function workRows(t: FrontText): string {
+function workRows(
+  t: FrontText,
+  layout: FrontLayout,
+  lang: Lang,
+  current: boolean,
+): string {
   return (
     `<div class="fx-side-rows">` +
+    `<a class="fx-row fx-new-work" id="fx-new-work" href="${attr(`${FRONT_HOME[layout]}?work=new`)}" ` +
+    `data-action="fx-new-work"${current ? ' aria-current="true"' : ''}>` +
+    `${icon('square-pen', { small: true })}<span class="fx-row-word">${escapeHtml(WORK_TEXT[lang].newWork)}</span>` +
+    `<span class="fx-row-keys" aria-hidden="true"><span class="fx-key-shell">${keyCaps('Mod N')}</span>` +
+    `<span class="fx-key-web">${keyCaps('Mod Shift O')}</span></span></a>` +
     `<label class="fx-row fx-search">${icon('search', { small: true })}<span class="sr-only">${escapeHtml(t.search)}</span>` +
     `<input type="search" id="fx-search" placeholder="${attr(t.search)}" autocomplete="off" spellcheck="false">` +
     `<span class="fx-row-keys" aria-hidden="true">${keyCaps('Mod K')}</span></label>` +
@@ -2015,10 +2102,10 @@ function keyRow(keys: string, what: string, only = ''): string {
 }
 
 /**
- * The front's own keyboard help, in place of the management side's. ⌘N
- * opens the main agent's conversation until 开始一项工作 takes it (P37.17 B);
- * a browser keeps ⌘N for a new window, so there it is ⌘⇧O. The quick-entry
- * row is filled in by the desktop app (`qmo_shell_info`).
+ * The front's own keyboard help, in place of the management side's. ⌘N is
+ * 开始一项工作 (P37.17 B); a browser keeps ⌘N for a new window, so there it
+ * is ⌘⇧O. The quick-entry row is filled in by the desktop app
+ * (`qmo_shell_info`).
  */
 function keyboardHelp(t: FrontText, settings: boolean): string {
   const k = t.keys
@@ -2028,8 +2115,8 @@ function keyboardHelp(t: FrontText, settings: boolean): string {
     `<dl class="fx-key-list">` +
     keyRow('Enter', k.send) +
     keyRow('Shift Enter', k.newline) +
-    keyRow('Mod N', k.mainAgent, 'shell') +
-    keyRow('Mod Shift O', k.mainAgent, 'web') +
+    keyRow('Mod N', k.newWork, 'shell') +
+    keyRow('Mod Shift O', k.newWork, 'web') +
     keyRow('Mod K', k.search) +
     keyRow('Mod Shift S', k.side) +
     keyRow('Mod .', k.panel) +
@@ -2079,6 +2166,7 @@ export function chatlessParts(line: string): {
       thread:
         `<div class="fx-thread" id="fx-thread" data-target="" data-open="0" data-welcome="1">` +
         `<div class="fx-welcome"><h2 class="fx-welcome-title">${escapeHtml(line)}</h2></div></div>`,
+      activity: '',
     },
   }
 }
@@ -2112,7 +2200,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
   const script =
     runtime +
     FRONT_JS +
-    (chatless ? '' : FRONT_TOOLS_JS + FRONT_PANEL_JS) +
+    (chatless ? '' : FRONT_TOOLS_JS + FRONT_PANEL_JS + FRONT_WORK_JS) +
     FRONT_SHELL_JS +
     // The figure editor's script goes with the editor (below).
     (model.faces.editable ? AVATAR_PAGE_JS : '') +
@@ -2162,7 +2250,8 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
             model.composerEnabled,
             model.admin,
             t,
-            chat ? agentPicker(model, t) : '',
+            model.lang,
+            agentPicker(model, t),
           ) +
           `</div></div>`)
   return (
@@ -2173,7 +2262,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
       {
         shared:
           FRONT_CSS +
-          (chatless ? '' : FRONT_TOOLS_CSS + FRONT_PANEL_CSS) +
+          (chatless ? '' : FRONT_TOOLS_CSS + FRONT_PANEL_CSS + FRONT_WORK_CSS) +
           AVATAR_CSS +
           (replicate === 'off' ? '' : FRONT_REPLICATE_CSS) +
           (approvals === undefined ? '' : FRONT_APPROVAL_CSS),
@@ -2187,7 +2276,9 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `<div class="fx" id="fx" data-layout="${code ? 'code' : layout}"${chatless ? ' data-chatless' : ''} data-side="open" data-text="${attr(frontClientText(model.lang))}">` +
     `<aside class="fx-side" id="fx-side" aria-label="${attr(code ? t.codeSessions : chat ? t.recents : t.agents)}">` +
     sideHead(home, code ? 'code' : 'work', work, t) +
-    (code || chatless ? '' : workRows(t)) +
+    (code || chatless
+      ? ''
+      : workRows(t, layout, model.lang, model.newWork === true)) +
     sideList +
     sideFoot(model) +
     (model.source === undefined
@@ -2202,7 +2293,7 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     viewerNotice(model.viewer) +
     page +
     `</main>` +
-    (chatless ? '' : frontPanelFrame(t)) +
+    (chatless ? '' : frontPanelFrame(t, model.view.activity)) +
     `</div>\n` +
     (card === undefined
       ? ''
@@ -2223,6 +2314,9 @@ export function renderFrontDocument(model: FrontDocumentModel): string {
     `<p id="reply-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>` +
     keyboardHelp(t, card !== undefined) +
     (chatless ? '' : othersDialog(model.side.history, t)) +
+    // A work session's files (P37.17 B): the preview, and the rows the page
+    // adds when the outputs folder lists more than was delivered.
+    (chatless ? '' : previewDialog(model.lang) + fileTemplates(model.lang)) +
     (chatless ? '' : permissionConfirm(t)) +
     // The figure editor, for a reader who may dress a figure (`routes/avatars.ts`).
     (model.faces.editable ? avatarDialog(model.lang) : '') +

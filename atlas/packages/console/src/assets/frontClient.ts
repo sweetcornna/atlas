@@ -82,6 +82,7 @@ function frontScript(): string {
     side: '/fragments/chat/front/side',
     view: '/fragments/chat/front/view',
     create: '/v0/chat/sessions',
+    work: '/v0/work/sessions',
     stream: '/v0/chat/stream',
     model: '/fragments/providers/chat?target='
   };
@@ -89,8 +90,10 @@ function frontScript(): string {
   var MODEL_REUSE_MS = 30000;
   var STORE = 'qianmo.front.';
   // resident: the thread on screen is the agent's own conversation with the
-  // reader (P37.17), addressed by the agent rather than by its id.
-  var state = { active: '', agent: '', scope: 'agent', busy: false, resident: false };
+  // reader (P37.17), addressed by the agent rather than by its id. work: the
+  // page is 开始一项工作 (P37.17 B), agent being who does it; flow: the
+  // workflow the next line goes with.
+  var state = { active: '', agent: '', scope: 'agent', busy: false, resident: false, work: false, flow: '' };
   // The agent whose other conversations the dialog lists (⋯ 其他对话).
   var othersFor = '';
   var mainAgent = '';
@@ -181,12 +184,14 @@ function frontScript(): string {
 
   // An agent's view is its resident conversation when the reader has one
   // (P37.17): opening it is a reading like opening one by id.
+  // The new work page reads nothing: it is never an opening.
   function viewUrl(opening) {
     var query = [];
     var path = ROUTES.view;
     if (state.active) path += '/' + encodeURIComponent(state.active);
-    else if (state.agent) query.push('agent=' + encodeURIComponent(state.agent));
-    if (opening && (state.active || state.agent)) query.push('open=1');
+    else if (state.work) query.push('work=new');
+    if (!state.active && state.agent) query.push('agent=' + encodeURIComponent(state.agent));
+    if (opening && (state.active || (state.agent && !state.work))) query.push('open=1');
     if (LAYOUT_QUERY) query.push(LAYOUT_QUERY);
     return path + (query.length ? '?' + query.join('&') : '');
   }
@@ -203,15 +208,17 @@ function frontScript(): string {
     return qc.loadHtml(viewUrl(opening)).then(function (html) {
       if (seq !== viewSeq || qc.isExpired()) return false;
       var was = threadState();
-      adopt(html, ['fx-head', 'fx-thread']);
+      adopt(html, ['fx-head', 'fx-thread', 'fx-activity']);
       stopRetry();
       keepFigure(figure);
       if (!opening) easeRedraw(was);
       keepUnsent();
       keepChoices(byId('fx-thread'));
+      keepChoices(byId('fx-activity'));
       var thread = byId('fx-thread');
       var target = thread ? thread.getAttribute('data-target') : '';
       if (target) state.agent = target;
+      state.work = !state.active && !!thread && thread.getAttribute('data-new-work') === '1';
       // An agent's view came back as its resident conversation: from here
       // on it is that session, refreshed and sent to by its id.
       var shown = thread ? thread.getAttribute('data-session') || '' : '';
@@ -343,6 +350,8 @@ function frontScript(): string {
       applyHistory();
       applyAgents();
       paintPicker();
+      // The approval poll marks a work session that waits on the reader (等你).
+      document.dispatchEvent(new CustomEvent('qianmo:front-side'));
     });
   }
 
@@ -409,11 +418,13 @@ function frontScript(): string {
     if (box) {
       box.setAttribute('placeholder', readOnly
         ? tx('readOnly', '只读')
+        : state.work && start ? tx('newWorkPlaceholder', '描述要做的事')
         : open || start ? tx('messageTo', '发消息给 ') + name : tx('unavailable', '暂不可对话'));
     }
     markCurrent();
     paintGreeting();
     paintPicker();
+    paintFlow();
     paintComputer();
     paintModes();
   }
@@ -429,13 +440,14 @@ function frontScript(): string {
     if (typeof said === 'string' && line.textContent !== said) line.textContent = said;
   }
 
-  // /app's agent picker: shown over a new conversation only, holding the
-  // agent it goes to - the figure and the name copied from its menu row.
+  // The agent picker: over /app's new conversation and, as 由谁来做, the new
+  // work page of either face (P37.17 B), holding the agent it goes to - the
+  // figure and the name copied from its menu row.
   function paintPicker() {
     var pick = byId('fx-agent-pick');
     if (!pick) return;
     var thread = byId('fx-thread');
-    pick.hidden = !(thread && thread.getAttribute('data-welcome') === '1');
+    pick.hidden = !(thread && thread.getAttribute('data-welcome') === '1' && (CHAT || state.work));
     var rows = document.querySelectorAll('#fx-agent-menu [data-agent-pick]');
     var chosen = null;
     for (var i = 0; i < rows.length; i++) {
@@ -479,13 +491,22 @@ function frontScript(): string {
   // its id.
   function addressQuery() {
     if (state.active && !state.resident) return '?session=' + encodeURIComponent(state.active);
+    if (state.work) return '?work=new';
     return state.agent && state.agent !== mainAgent ? '?agent=' + encodeURIComponent(state.agent) : '';
   }
 
   function markCurrent() {
+    var start = byId('fx-new-work');
+    if (start) {
+      if (state.work && !state.active) start.setAttribute('aria-current', 'true');
+      else start.removeAttribute('aria-current');
+    }
+    // The new work page and a work session are no agent's row (P37.17 B).
+    var thread = byId('fx-thread');
+    var working = state.work || (!!thread && thread.getAttribute('data-work') === '1');
     var rows = document.querySelectorAll('#fx-agents .fx-agent-row');
     for (var i = 0; i < rows.length; i++) {
-      var here = rows[i].getAttribute('data-address') === state.agent;
+      var here = !working && rows[i].getAttribute('data-address') === state.agent;
       rows[i].classList.toggle('is-current', here);
       var button = rows[i].querySelector('.fx-agent');
       if (button) {
@@ -850,7 +871,7 @@ function frontScript(): string {
     if (carded()) return;
     var url = HOME + addressQuery();
     try {
-      var entry = { active: state.resident ? '' : state.active, agent: state.agent };
+      var entry = { active: state.resident ? '' : state.active, agent: state.agent, work: state.work && !state.active };
       if (window.location.pathname + window.location.search === url) history.replaceState(entry, '', url);
       else if (replace) history.replaceState(entry, '', url);
       else history.pushState(entry, '', url);
@@ -957,6 +978,7 @@ function frontScript(): string {
     if (address === state.agent && state.resident && !switching && showsState()) { focusBox(); return; }
     state.active = '';
     state.resident = false;
+    state.work = false;
     state.agent = address;
     setAddress(false);
     go(true);
@@ -976,15 +998,25 @@ function frontScript(): string {
     if (id === state.active && !switching && showsState()) { focusBox(); return; }
     state.active = id;
     state.resident = false;
+    state.work = false;
     setAddress(false);
     go(true);
   }
 
-  // ⌘N: the main agent's conversation, until 开始一项工作 takes the key
-  // (P37.17 B).
-  function mainChat() {
-    if (CHATLESS || !mainAgent) return;
-    selectAgent(mainAgent);
+  // ⌘N (⌘⇧O in a browser) and the side's row: 开始一项工作 (P37.17 B), the
+  // main agent doing it until somebody picks another under 由谁来做.
+  function newWork() {
+    if (CHATLESS) return;
+    setDrawer(false);
+    closeMenus();
+    closeOthers();
+    if (state.work && !state.active && !switching && showsState()) { focusBox(); return; }
+    state.active = '';
+    state.resident = false;
+    state.work = true;
+    state.agent = mainAgent || state.agent;
+    setAddress(false);
+    go(false);
   }
 
   // ⋯ 其他对话: the dialog of an agent's other conversations, which open
@@ -1006,15 +1038,17 @@ function frontScript(): string {
     // The settings card's own moves (assets/nav.ts): the conversation under
     // the card did not change.
     if (CHATLESS || window.location.pathname.indexOf('/admin') === 0 || (entry && entry.qianmoNav)) return;
-    if (entry && (entry.active || '') === (state.resident ? '' : state.active) && (entry.agent || state.agent) === state.agent) return;
+    if (entry && (entry.active || '') === (state.resident ? '' : state.active) && (entry.agent || state.agent) === state.agent &&
+      !!entry.work === (state.work && !state.active)) return;
     if (!entry) {
       var params = new URLSearchParams(window.location.search);
-      entry = { active: params.get('session') || '', agent: params.get('agent') || mainAgent };
+      entry = { active: params.get('session') || '', agent: params.get('agent') || mainAgent, work: params.get('work') === 'new' };
     }
     state.active = entry.active || '';
     state.resident = false;
+    state.work = !state.active && !!entry.work;
     state.agent = entry.agent || state.agent;
-    go(true);
+    go(!state.work);
   });
 
   /* ---------------- sending ---------------- */
@@ -1036,6 +1070,36 @@ function frontScript(): string {
         setAddress(true);
       }
       return { id: id, fresh: true };
+    });
+  }
+
+  // 开始一项工作's first line (P37.17 B): one request opens the work session
+  // and sends the line in it, with the workflow and - when somebody else was
+  // picked under 由谁来做 - the agent. Opened with the line refused, the
+  // session is still the conversation from here on.
+  function openWork(pin, text, flow) {
+    var body = { text: text };
+    if (flow) body.workflow = flow;
+    if (pin.agent && pin.agent !== mainAgent) body.agent = pin.agent;
+    var adopt = function (id) {
+      if (pin.nav !== nav) return;
+      state.active = id;
+      state.work = false;
+      state.resident = false;
+      setAddress(true);
+    };
+    return qc.sendJson('POST', ROUTES.work, body).then(function (data) {
+      var id = data && data.session && data.session.id ? String(data.session.id) : '';
+      if (!id) throw { human: tx('noSession', '没能开出会话') };
+      adopt(id);
+      return { id: id, fresh: true };
+    }, function (err) {
+      var session = err && err.data && err.data.session;
+      if (session && session.id) {
+        adopt(String(session.id));
+        err.opened = { id: String(session.id), fresh: true };
+      }
+      throw err;
     });
   }
 
@@ -1136,26 +1200,40 @@ function frontScript(): string {
     var ready = !!thread && thread.getAttribute('data-readonly') !== '1' &&
       (thread.getAttribute('data-open') === '1' || thread.getAttribute('data-start') === '1');
     if (!ready) { say(status, tx('unavailable', '暂不可对话'), 'bad'); return; }
-    var pin = { nav: nav, agent: state.agent, active: state.active };
+    var pin = { nav: nav, agent: state.agent, active: state.active, work: state.work && !state.active };
     var welcome = !pin.active;
+    // The workflow goes with this line only, and never with a local command
+    // (work-tasks.md §2.2).
+    var flow = state.flow && !localCommand(text) ? state.flow : '';
     hideCommands();
     stopVoice();
     state.busy = true;
     if (form) form.setAttribute('aria-busy', 'true');
     var kept = box.value;
+    var keptFlow = state.flow;
     if (typeof given !== 'string') box.value = '';
     autosize();
+    if (flow) setFlow('');
     var ghost = paintSending(text);
     say(status, '', 'muted');
     play([['thinking', 0]]);
     var opened = null;
     var sent = false;
-    ensureSession(pin).then(function (session) {
-      opened = session;
-      return qc.sendJson('POST', ROUTES.create + '/' + encodeURIComponent(session.id) + '/messages', { text: text });
-    }).then(function () {
+    var going = pin.work
+      ? openWork(pin, text, flow).then(function (session) { opened = session; })
+      : ensureSession(pin).then(function (session) {
+        opened = session;
+        var body = { text: text };
+        if (flow) body.workflow = flow;
+        return qc.sendJson('POST', ROUTES.create + '/' + encodeURIComponent(session.id) + '/messages', body);
+      });
+    going.then(function () {
       sent = true;
     }, function (err) {
+      // A work that opened and whose first line did not go (work-tasks.md
+      // §1.2): its session is the conversation now.
+      if (err && err.opened) opened = err.opened;
+      if (pin.nav === nav && flow && !state.flow) setFlow(keptFlow);
       // The send itself failed. In a conversation that was already open the
       // line stays where it was, marked 未送达 with 重试 (P37.13, 先改后同步).
       // On a welcome the line replaced, the welcome is drawn again and the
@@ -1235,13 +1313,23 @@ function frontScript(): string {
     if (!list || !box || box.disabled) return;
     if (!list.hidden) { hideCommands(); box.focus(); return; }
     var all = list.querySelectorAll('.fx-cmd');
-    for (var i = 0; i < all.length; i++) { all[i].hidden = false; all[i].setAttribute('aria-selected', 'false'); }
-    list.hidden = !all.length;
-    picked = all.length ? 0 : -1;
+    var count = 0;
+    for (var i = 0; i < all.length; i++) {
+      all[i].hidden = !offered(all[i]);
+      all[i].setAttribute('aria-selected', 'false');
+      if (!all[i].hidden) count++;
+    }
+    list.hidden = !count;
+    picked = count ? 0 : -1;
     markPicked();
     var plus = byId('fx-plus');
-    if (plus) plus.setAttribute('aria-expanded', all.length ? 'true' : 'false');
+    if (plus) plus.setAttribute('aria-expanded', count ? 'true' : 'false');
     box.focus();
+  }
+  // A row the composer may offer now: on the new work page there is no
+  // conversation yet, so only the workflows (P37.17 B).
+  function offered(row) {
+    return !state.work || state.active || row.classList.contains('fx-cmd-flow');
   }
   function showCommands(box) {
     var list = byId('fx-cmds');
@@ -1251,7 +1339,8 @@ function frontScript(): string {
     var all = list.querySelectorAll('.fx-cmd');
     var any = false;
     for (var i = 0; i < all.length; i++) {
-      var match = (all[i].getAttribute('data-cmd') || '').indexOf(value) === 0;
+      var match = offered(all[i]) && ((all[i].getAttribute('data-cmd') || '').indexOf(value) === 0 ||
+        (all[i].getAttribute('data-alt') || '').indexOf(value) === 0);
       all[i].hidden = !match;
       all[i].setAttribute('aria-selected', 'false');
       if (match) any = true;
@@ -1320,10 +1409,55 @@ function frontScript(): string {
   function useCommand(row) {
     var box = byId('fx-text');
     if (!box || !row) return;
-    box.value = (row.getAttribute('data-cmd') || '') + ' ';
+    var flow = row.getAttribute('data-flow');
+    // A workflow is not typed: it becomes the chip, and what was typed to
+    // find it goes.
+    if (flow) {
+      if (box.value.charAt(0) === '/' && !/\\s/.test(box.value)) box.value = '';
+      setFlow(flow);
+    } else box.value = (row.getAttribute('data-cmd') || '') + ' ';
     hideCommands();
     autosize();
     box.focus();
+  }
+
+  // Whether a line is one of the console's local commands (/compact and
+  // the rest), which never go with a workflow.
+  function localCommand(text) {
+    var match = /^\\/([a-z-]+)/.exec(text);
+    return !!match && !!document.querySelector('#fx-cmds .fx-cmd:not(.fx-cmd-flow)[data-cmd="/' + match[1] + '"]');
+  }
+
+  /* ---------------- the workflow (P37.17 B) ---------------- */
+
+  // The chip in the composer says which workflow the next line goes with;
+  // the new work page's cards and the / menu set it, its x clears it.
+  function setFlow(id) {
+    state.flow = id && document.querySelector('#fx-cmds [data-flow="' + id + '"]') ? id : '';
+    paintFlow();
+  }
+  function paintFlow() {
+    var chip = byId('fx-flow-chip');
+    var flow = state.flow;
+    if (chip) {
+      chip.hidden = !flow;
+      chip.setAttribute('data-flow', flow);
+      var option = flow ? document.querySelector('#fx-cmds [data-flow="' + flow + '"]') : null;
+      var name = byId('fx-flow-chip-name');
+      var said = option ? option.querySelector('span') : null;
+      if (name) name.textContent = said ? said.textContent : '';
+      var mark = byId('fx-flow-chip-mark');
+      var glyph = option ? option.querySelector('svg') : null;
+      if (mark && (!glyph || !mark.firstChild || mark.getAttribute('data-flow') !== flow)) {
+        while (mark.firstChild) mark.removeChild(mark.firstChild);
+        if (glyph) mark.appendChild(glyph.cloneNode(true));
+        mark.setAttribute('data-flow', flow);
+      }
+    }
+    var cards = document.querySelectorAll('#fx-thread .fx-flow[data-workflow]');
+    for (var i = 0; i < cards.length; i++) {
+      cards[i].setAttribute('aria-pressed', cards[i].getAttribute('data-workflow') === flow ? 'true' : 'false');
+    }
   }
 
   /* ---------------- the jump button ---------------- */
@@ -1393,6 +1527,13 @@ function frontScript(): string {
   });
 
   qc.onAction('fx-agent', function (el) { pickAgent(el); });
+  qc.onAction('fx-new-work', function () { newWork(); });
+  qc.onAction('fx-flow', function (el) {
+    var id = el.getAttribute('data-workflow') || '';
+    setFlow(state.flow === id ? '' : id);
+    focusBox();
+  });
+  qc.onAction('fx-flow-clear', function () { setFlow(''); focusBox(); });
   qc.onAction('fx-others', function (el) { openOthers(el.getAttribute('data-address') || ''); });
   qc.onAction('fx-open', function (el) { openSession(el.getAttribute('data-session') || ''); });
   qc.onAction('fx-plus', function () { toggleCommands(); });
@@ -1561,14 +1702,14 @@ function frontScript(): string {
     }
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'O' || event.key === 'o')) {
       event.preventDefault();
-      mainChat();
+      newWork();
       return;
     }
     // The front's shortcuts (qmo-app.md §4.4), ⌘ on a Mac and Ctrl elsewhere;
     // an open dialog keeps the keys.
     if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.isComposing && !document.querySelector('dialog[open]')) {
       var key = String(event.key || '').toLowerCase();
-      if (!event.shiftKey && key === 'n') { event.preventDefault(); mainChat(); return; }
+      if (!event.shiftKey && key === 'n') { event.preventDefault(); newWork(); return; }
       if (!event.shiftKey && key === 'k') { event.preventDefault(); focusSearch(); return; }
       if (event.shiftKey && key === 's') { event.preventDefault(); toggleSide(); return; }
       if (!event.shiftKey && (key === '.' || event.code === 'Period')) {
@@ -1609,6 +1750,7 @@ function frontScript(): string {
     state.active = (thread && thread.getAttribute('data-session')) || '';
     state.agent = (thread && thread.getAttribute('data-target')) || '';
     state.resident = !!thread && thread.getAttribute('data-resident') === '1';
+    state.work = !state.active && !!thread && thread.getAttribute('data-new-work') === '1';
     var mainRow = document.querySelector('#fx-agents .fx-agent-main');
     var mainPick = document.querySelector('#fx-agent-menu [data-main]');
     mainAgent = mainRow ? mainRow.getAttribute('data-address') || ''
@@ -1620,7 +1762,7 @@ function frontScript(): string {
     // the entry is the card's (assets/nav.ts).
     if (!carded()) {
       try {
-        history.replaceState({ active: state.resident ? '' : state.active, agent: state.agent }, '', window.location.pathname + window.location.search);
+        history.replaceState({ active: state.resident ? '' : state.active, agent: state.agent, work: state.work }, '', window.location.pathname + window.location.search);
       } catch (e) { /* cosmetic */ }
     }
     var mic = byId('fx-mic');
@@ -1650,9 +1792,16 @@ function frontScript(): string {
       send(text);
       model.at = 0;
     },
-    // /app's agent picker (frontTools.ts): the agent a new conversation goes to.
+    // The agent picker (frontTools.ts): the agent a new conversation goes to
+    // on /app; on the new work page, who does it - the page stays.
     pickAgent: function (address) {
       if (!address) return;
+      if (state.work && !state.active) {
+        state.agent = address;
+        paintPicker();
+        focusBox();
+        return;
+      }
       if (state.active || address !== state.agent) selectAgent(address);
       else paintPicker();
     }

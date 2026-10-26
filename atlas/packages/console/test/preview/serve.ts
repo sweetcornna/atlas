@@ -38,6 +38,7 @@ import { FakeProviders } from '../providersFake.js'
 import { PreviewApprovals } from './approvals.js'
 import { PreviewChat, TARGETS, ownResidents } from './chat.js'
 import { PreviewTasks } from './tasks.js'
+import { WorkRoutes } from '../workFake.js'
 
 /** Test values, printed in `README.md`. Never a real console's tokens. */
 const PREVIEW_TOKENS: ConsoleTokens = {
@@ -105,7 +106,17 @@ const book = new AccountBook({
   sessions: new MemoryLedger('memory://sessions.ndjson'),
   now,
 })
-const handle = createConsoleHandler(deps, PREVIEW_TOKENS, { book })
+const consoleHandle = createConsoleHandler(deps, PREVIEW_TOKENS, { book })
+// 广泛性工作's routes (P37.17 B) as `docs/dev/work-tasks.md` §4 gives them:
+// the node's half is not on this branch.
+const work = new WorkRoutes({
+  chat,
+  handle: consoleHandle,
+  book,
+  main: 'qianmo://hub/ops',
+  outputs: chat.outputs,
+})
+const handle = (request: Request): Promise<Response> => work.fetch(request)
 
 /** Invite with the management token and redeem: a signed-in person. */
 async function signUp(

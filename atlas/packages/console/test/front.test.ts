@@ -894,14 +894,23 @@ describe('the 对话 face at /app and quick entry at /app/quick', () => {
       expect(page).not.toContain('fx-top-new')
       expect(page).not.toContain('fx-hist-menu')
     }
-    // `/app` picks the agent in the composer.
-    expect(agents).not.toContain('id="fx-agent-menu"')
-    expect(chat).toContain('id="fx-agent-menu"')
-    expect(chat).toContain('id="fx-agent-btn"')
+    // Both pick the agent in the composer: `/app` over its new
+    // conversation, either face as 由谁来做 on the new work page (P37.17 B).
+    // On `/` an agent's welcome is that agent's, so it is not shown there.
+    for (const page of [agents, chat]) {
+      expect(page).toContain('id="fx-agent-menu"')
+      expect(page).toContain('id="fx-agent-btn"')
+    }
+    expect(
+      /<div class="fx-pick fx-agent-pick"[^>]*>/.exec(agents)?.[0],
+    ).toContain(' hidden')
+    expect(
+      /<div class="fx-pick fx-agent-pick"[^>]*>/.exec(chat)?.[0],
+    ).not.toContain(' hidden')
     expect(chat).not.toContain('data-action="fx-suggest"')
   })
 
-  test('the list by day under the agents is empty before 广泛性工作: nothing drawn for it, every conversation with an agent elsewhere', async () => {
+  test('the list by day under the agents is empty with no work session: nothing drawn for it, every conversation with an agent elsewhere', async () => {
     const h = front()
     h.chat.seed('now', MAIN, 0, true, '现在', false, true)
     h.chat.seed('yesterday', REVIEWER, DAY, false, '昨天的')
@@ -928,7 +937,7 @@ describe('the 对话 face at /app and quick entry at /app/quick', () => {
     }
   })
 
-  test('the list by day, given conversations (P37.17 B): its days, no worker, a figure only for sub-agents, plain previews', () => {
+  test('the list by day, given work sessions (P37.17 B): its days, no worker, the workflow mark and the state, plain previews', () => {
     const at = (age: number, id: string, target: ChatTarget, extra = {}) => ({
       id,
       target: target.address,
@@ -983,9 +992,14 @@ describe('the 对话 face at /app and quick entry at /app/quick', () => {
         `<div class="fx-ritem-row[^"]*" data-session="${id}"[\\s\\S]*?</button>`,
       ).exec(recents)?.[0] ?? ''
     expect(row('now')).toContain('data-running="1"')
-    expect(row('now')).toContain('class="fx-ritem-live"')
-    expect(row('now')).not.toContain('fx-ritem-face')
-    expect(row('yesterday')).toContain('fx-ritem-face')
+    expect(row('now')).toContain('data-state="running"')
+    expect(row('old')).toContain('data-state="done"')
+    // Who does it is in the tooltip; the mark is the workflow's.
+    expect(row('yesterday')).toContain('title="yesterday · reviewer"')
+    for (const id of ['now', 'yesterday', 'week', 'old']) {
+      expect(row(id)).toContain('class="fx-ritem-mark"')
+      expect(row(id)).not.toContain('fx-ritem-face')
+    }
     expect(row('yesterday')).toContain('is-current')
     expect(row('yesterday')).toContain('aria-current="true"')
     expect(row('yesterday')).toContain('data-preview="完 x"')
@@ -1168,15 +1182,13 @@ describe('the 对话 face at /app and quick entry at /app/quick', () => {
 
   test('an agent’s ⋯, 其他对话 and a read-only conversation speak the reader language (P37.17)', async () => {
     for (const [lang, words] of [
-      ['zh-CN', ['其他对话', '只读', '回到 planner', '主智能体']],
+      // The last: ⌘N's row in the keyboard help (P37.17 B).
+      ['zh-CN', ['其他对话', '只读', '回到 planner', '开始一项工作']],
       [
         'en',
-        ['Other conversations', 'Read only', 'Back to planner', 'Main agent'],
+        ['Other conversations', 'Read only', 'Back to planner', 'New task'],
       ],
-      [
-        'ja',
-        ['ほかの会話', '閲覧のみ', 'planner に戻る', 'メインエージェント'],
-      ],
+      ['ja', ['ほかの会話', '閲覧のみ', 'planner に戻る', '新しいタスク']],
     ] as const) {
       const h = front()
       h.chat.seed('mine', MAIN, 0, false, 'mine', false, true)

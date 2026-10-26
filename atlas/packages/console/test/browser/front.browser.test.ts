@@ -592,8 +592,8 @@ describe.skipIf(SKIP !== null)(
         await tab.waitFor(
           `location.search === '' && document.getElementById('fx-thread').getAttribute('data-session') === 'session-1' && !document.getElementById('fx-text').disabled`,
         )
-        // ⌘⇧O / Ctrl Shift O (a browser keeps ⌘N): the main agent, from
-        // wherever the reader is.
+        // ⌘⇧O / Ctrl Shift O (a browser keeps ⌘N): a new task, from
+        // wherever the reader is (P37.17 B, work-tasks.md §9.1).
         await tab.evaluate(
           `document.querySelector('#fx-history .fx-hitem[data-session="${older}"]').click()`,
         )
@@ -602,7 +602,7 @@ describe.skipIf(SKIP !== null)(
         )
         await press('O', 'KeyO', 79, 10)
         await tab.waitFor(
-          `location.search === '' && document.getElementById('fx-thread').getAttribute('data-session') === 'session-1' && !document.getElementById('fx-text').disabled`,
+          `location.search === '?work=new' && document.getElementById('fx-thread').getAttribute('data-new-work') === '1' && !document.getElementById('fx-text').disabled`,
         )
         expect(
           await tab.evaluate<boolean>(`window.__sameDocument === true`),

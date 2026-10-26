@@ -84,6 +84,8 @@ const PAGES = [
   '/?session=session-1',
   '/app',
   '/app?session=session-1',
+  '/?work=new',
+  '/app?work=new',
   '/admin/audit',
   '/admin/alerts',
   '/admin/jobs',

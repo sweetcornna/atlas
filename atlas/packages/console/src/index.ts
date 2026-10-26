@@ -12,6 +12,7 @@
  */
 
 export * from './avatar.js'
+export * from './work.js'
 
 export type {
   AuditChainState,

@@ -19,16 +19,19 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { ChatTranscript, ChatTurn, ConsoleResult } from '../../src/deps.js'
 import { createConsoleHandler } from '../../src/http.js'
-import { CountingChat } from '../accountsHarness.js'
 import { ADMIN, NOW, TOKENS, pageHarness } from '../pageHarness.js'
+import { fileRef, WorkChat } from '../workFake.js'
 import { Browser, skipReason, type Tab } from './cdp.js'
 import { type Probe, probe, type Shortfall } from './contrastProbe.js'
 
 const SKIP = skipReason()
 if (SKIP !== null) console.warn(`[console contrast tests] skipped: ${SKIP}`)
 
-/** A conversation with one of each kind of turn, so every mark is drawn. */
-class TurnsChat extends CountingChat {
+/**
+ * A conversation with one of each kind of turn, so every mark is drawn; a
+ * work session's has a delivery too, and its activity (P37.17 B).
+ */
+class TurnsChat extends WorkChat {
   override async transcript(
     sessionId: string,
   ): Promise<ConsoleResult<ChatTranscript>> {
@@ -43,10 +46,23 @@ class TurnsChat extends CountingChat {
       state: 'read',
       ...over,
     })
+    const delivered = turn({
+      id: 'f',
+      author: 'agent',
+      state: 'done',
+      variant: 'notice',
+      noticeSource: 'files',
+      severity: 'info',
+      text: '交付了 2 个文件',
+      files: [
+        fileRef('季度汇报.pptx', 'presentation', 812_000, true),
+        fileRef('原始数据.csv', 'spreadsheet', 2_048, false),
+      ],
+    })
     return {
       ok: true,
       value: {
-        session: read.value.session,
+        ...read.value,
         turns: [
           turn({
             id: 'a',
@@ -77,6 +93,7 @@ class TurnsChat extends CountingChat {
             code: 'E_UNDELIVERABLE',
             text: '再发一次',
           }),
+          ...(read.value.session.work === true ? [delivered] : []),
         ],
       },
     }
@@ -92,6 +109,10 @@ const PAGES = [
   '/?session=session-1',
   '/app',
   '/app?session=session-1',
+  '/?work=new',
+  '/app?work=new',
+  '/?session=session-3',
+  '/app?session=session-3',
   '/admin/audit',
   '/admin/alerts',
   '/admin/jobs',
@@ -116,6 +137,32 @@ function serve() {
   // one, which `/` and `/app` open (P37.17).
   void chat.open('qianmo://tokyo-1/planner')
   void chat.open('qianmo://tokyo-1/planner', { resident: true })
+  // A work session (session-3), with its progress and context.
+  void chat.open('qianmo://tokyo-1/planner', { work: true, workflow: 'slides' })
+  chat.report('session-3', {
+    progress: {
+      taskId: 'task-w',
+      at: NOW,
+      total: 3,
+      done: 1,
+      step: 2,
+      current: '写大纲',
+      items: [
+        { phase: '准备', content: '读资料', status: 'completed' },
+        { phase: '准备', content: '写大纲', status: 'in_progress' },
+        { phase: '成稿', content: '出 pptx', status: 'pending' },
+        { phase: '成稿', content: '换模板', status: 'blocked' },
+      ],
+    },
+    context: {
+      taskId: 'task-w',
+      at: NOW,
+      workflows: ['slides'],
+      skills: ['pdf-notes'],
+      tools: [{ name: 'read', count: 3 }],
+      files: ['资料/年报.md'],
+    },
+  })
   const handle = createConsoleHandler({ ...harness.deps, chat }, TOKENS)
   const server = Bun.serve({
     port: 0,
@@ -211,6 +258,37 @@ describe.skipIf(SKIP !== null)('WCAG AA contrast, light and dark (B1)', () => {
           seen.set(where, result.total)
           for (const one of result.short) found.push({ ...one, page: where })
         }
+        // A new task with its workflow chip and the / menu, and a work
+        // session's preview (P37.17 B).
+        await tab.goto(`${served.base}/?work=new&token=${ADMIN}`)
+        await tab.waitFor('window.qianmoConsole !== undefined')
+        await tab.evaluate(
+          `document.querySelector('.fx-flow[data-workflow="research"]').click()`,
+        )
+        await tab.evaluate(`document.getElementById('fx-plus').click()`)
+        await tab.waitFor(`!document.getElementById('fx-cmds').hidden`)
+        for (const where of ['#fx-cmds', '#fx-composer']) {
+          const result = await tab.evaluate<Probe>(
+            probe(`document.querySelector('${where}')`),
+          )
+          total += result.total
+          seen.set(where, result.total)
+          for (const one of result.short) found.push({ ...one, page: where })
+        }
+        await tab.goto(`${served.base}/?session=session-3&token=${ADMIN}`)
+        await tab.waitFor('window.qianmoConsole !== undefined')
+        await tab.evaluate(
+          `document.querySelector('#fx-thread [data-action="fx-preview"]').click()`,
+        )
+        await tab.waitFor(`document.getElementById('fx-preview').open`)
+        // The page with the preview over it: the dialog's own words are its
+        // title alone, the rest are icons.
+        const preview = await tab.evaluate<Probe>(probe('document.body'))
+        total += preview.total
+        seen.set('/?session=session-3 #fx-preview', preview.total)
+        for (const one of preview.short)
+          found.push({ ...one, page: '#fx-preview' })
+
         // The two dialogs a writer opens most, and a failure toast.
         await tab.goto(`${served.base}/admin/nodes`)
         await tab.waitFor('window.qianmoConsole !== undefined')
@@ -270,7 +348,7 @@ describe.skipIf(SKIP !== null)('WCAG AA contrast, light and dark (B1)', () => {
         ([where, count]) => count < (where.startsWith('/') ? 8 : 2),
       )
       expect(thin).toEqual([])
-      expect(seen.size).toBe(PAGES.length + 7)
+      expect(seen.size).toBe(PAGES.length + 10)
       expect(total).toBeGreaterThan(400)
       expect(report(found)).toEqual([])
     }, 120_000)

@@ -15,6 +15,7 @@
  */
 
 import type { Lang } from '../i18n.js'
+import { workClientWords } from './frontWork.js'
 
 /** What a step's verb or tool is called, by kind of work (`front.ts`). */
 interface ActivityWords {
@@ -41,8 +42,8 @@ interface ActivityWords {
 interface KeyWords {
   readonly send: string
   readonly newline: string
-  /** ⌘N: the main agent's conversation, until 开始一项工作 takes it (P37.17 B). */
-  readonly mainAgent: string
+  /** ⌘N (⌘⇧O in a browser): 开始一项工作 (P37.17 B). */
+  readonly newWork: string
   readonly search: string
   readonly side: string
   readonly panel: string
@@ -480,7 +481,7 @@ const ZH: FrontText = {
   keys: {
     send: '发送',
     newline: '换行',
-    mainAgent: '主智能体',
+    newWork: '开始一项工作',
     search: '搜索',
     side: '收起或展开侧栏',
     panel: '会话面板',
@@ -723,7 +724,7 @@ const EN: FrontText = {
   keys: {
     send: 'Send',
     newline: 'New line',
-    mainAgent: 'Main agent',
+    newWork: 'New task',
     search: 'Search',
     side: 'Collapse or expand the sidebar',
     panel: 'Session panel',
@@ -967,7 +968,7 @@ const JA: FrontText = {
   keys: {
     send: '送信',
     newline: '改行',
-    mainAgent: 'メインエージェント',
+    newWork: '新しいタスク',
     search: '検索',
     side: 'サイドバーの開閉',
     panel: 'セッションパネル',
@@ -1354,6 +1355,7 @@ export function codeClientText(lang: Lang): string {
 export function frontClientText(lang: Lang): string {
   return JSON.stringify({
     ...CLIENT[lang],
+    ...workClientWords(lang),
     greetings: FRONT_TEXT[lang].greetings,
     switchAgent: FRONT_TEXT[lang].switchAgent,
   })

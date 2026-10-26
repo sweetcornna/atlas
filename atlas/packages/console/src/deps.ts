@@ -37,6 +37,7 @@ import type {
 } from './directionPorts.js'
 import type { AvatarsPort } from './avatar.js'
 import type { ConsoleFailure, ConsoleResult } from './contracts.js'
+import type { WorkActivity, WorkFileRef, WorkflowId } from './work.js'
 
 import type { AuditRecord, MessageChain } from '@qianmo/audit'
 import type { UsagePort, ApprovalPort } from './governance.js'
@@ -504,8 +505,15 @@ export interface ChatTurn {
   readonly code?: string
   /** 缺省为 `message`；`notice` 是任务跑到一半推过来的一条过程。 */
   readonly variant?: ChatTurnVariant
-  /** 宿主区分智能体显式通知、自动工具过程与后台任务结果（P29）；旧转录不带此字段。 */
-  readonly noticeSource?: 'agent' | 'step' | 'task'
+  /**
+   * 宿主区分智能体显式通知、自动工具过程与后台任务结果（P29），以及交付的
+   * 文件卡（P37.17 B，`files`）；旧转录不带此字段。
+   */
+  readonly noticeSource?: 'agent' | 'step' | 'task' | 'files'
+  /** 只在 `noticeSource: 'files'` 的行上：交给人的文件，按交付顺序（work-tasks.md §3.2）。 */
+  readonly files?: readonly WorkFileRef[]
+  /** 操作者那一行带着工作流发出（work-tasks.md §3.1、§2.2）。 */
+  readonly workflow?: WorkflowId
   /** 通知所由的任务（通知信封自己的 taskId 不是这个任务号）。 */
   readonly causeTaskId?: string
   /** 只有 `notice` 有：这条过程的分量。 */
@@ -583,17 +591,26 @@ export interface ChatSession {
    * （`chatResident.ts`）。定时任务、渠道、智能体互问、后台任务开的会话从不带它。
    */
   readonly resident?: true
+  /** 工作会话（P37.17 B，work-tasks.md §1.1）：经 `POST /v0/work/sessions` 开出。 */
+  readonly work?: true
+  /** 开这条工作会话时选的工作流；没选时不出现。 */
+  readonly workflow?: WorkflowId
 }
 
-/** 开会话时的选项。 */
+/** {@link ChatPort.open} 的选项（work-tasks.md §1.1）。 */
 export interface ChatOpenOptions {
   /** 这是常驻会话（{@link ChatSession.resident}）：写进会话记录，一次。 */
   readonly resident?: true
+  readonly work?: true
+  /** 只在 `work` 为真时接受。 */
+  readonly workflow?: WorkflowId
 }
 
 export interface ChatTranscript {
   readonly session: ChatSession
   readonly turns: readonly ChatTurn[]
+  /** 节点报来的进度与上下文（work-tasks.md §3.3）；从没报过时不出现。 */
+  readonly activity?: WorkActivity
 }
 
 export interface ChatSendInput {

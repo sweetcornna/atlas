@@ -93,6 +93,23 @@ export function residentSessions(
   return out
 }
 
+/**
+ * The reader's own work sessions (P37.17 B, `docs/dev/work-tasks.md` §9.1),
+ * listed by day on the front: of the sessions given, those with the work
+ * mark that the account book says are the reader's — the same owner rule as
+ * the resident ones, so with the book unavailable there are none.
+ */
+export function workSessions(
+  sessions: readonly ChatSession[],
+  owner: ResidentOwner | null,
+): readonly ChatSession[] {
+  if (owner === null) return []
+  return sessions.filter(
+    session =>
+      session.work === true && owner.ownerOf(session.id) === owner.opener,
+  )
+}
+
 /** Resolutions on their way, by reader and agent. */
 const resolving = new Map<string, Promise<void>>()
 
